@@ -1,7 +1,7 @@
 import * as THREE from "three/webgpu";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
-import { CONFIG, LIGHT_SCALE } from "../config";
+import { CONFIG } from "../config";
 import { createFacadeMaterial, BASEY_OFFSET, BASEY_SCALE, TOPH_SCALE } from "./facade";
 import { createRoadMaterial, createParkMaterial } from "./streets";
 import { createCrownMaterial } from "./salesforceCrown";
@@ -137,9 +137,7 @@ const goldenGateMat = new THREE.MeshStandardMaterial({
   color: 0xffb18a,
   vertexColors: true,
   roughness: 0.72,
-  metalness: 0.08,
-  emissive: 0xff5418,
-  emissiveIntensity: 0.045 * LIGHT_SCALE
+  metalness: 0.08
 });
 // one shared TSL material per surface family (world-position keyed, so sharing is free)
 const roadMat = createRoadMaterial();

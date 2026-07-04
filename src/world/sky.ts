@@ -478,9 +478,10 @@ export class Sky {
     // the Bay Lights fade up as the sun drops: faint at noon, full art after dark
     BAY_LIGHTS_INTENSITY.value =
       LIGHT_SCALE * (0.7 * dayW + 1.7 * goldW + 2.6 * nightW)
-    // Golden Gate architectural lighting: visible at sunset, brilliant at night.
-    GOLDEN_GATE_LIGHTS_INTENSITY.value =
-      LIGHT_SCALE * (0.55 * dayW + 2.1 * goldW + 3.0 * nightW)
+    // Golden Gate architectural lighting: off in daylight, fading in through
+    // evening twilight and fading back out as the sun returns.
+    const goldenGateTwilightW = smooth01(0.5, 7.5, -elevation)
+    GOLDEN_GATE_LIGHTS_INTENSITY.value = LIGHT_SCALE * 3.0 * goldenGateTwilightW
     // palace floodlights: off in daylight, warming through golden hour
     PALACE_GLOW_INTENSITY.value =
       LIGHT_SCALE * (0.03 * dayW + 0.62 * goldW + 1.35 * nightW)

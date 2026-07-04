@@ -15,7 +15,6 @@ import {
   vec4,
   vertexStage
 } from "three/tsl";
-import { LIGHT_SCALE } from "../config";
 import { tunables } from "../core/persist";
 import type { WorldMap } from "./heightmap";
 
@@ -23,7 +22,7 @@ import type { WorldMap } from "./heightmap";
 type N = any;
 
 /** Sky-driven bridge brightness, rewritten every frame by Sky.#applySun. */
-export const GOLDEN_GATE_LIGHTS_INTENSITY = uniform(2.4 * LIGHT_SCALE);
+export const GOLDEN_GATE_LIGHTS_INTENSITY = uniform(0);
 
 /** Installation clock, advanced by updateGoldenGateLights. */
 export const GOLDEN_GATE_LIGHTS_TIME = uniform(0);
@@ -31,7 +30,6 @@ export const GOLDEN_GATE_LIGHTS_TIME = uniform(0);
 export const GOLDEN_GATE_LIGHTS_SLIDERS = tunables("goldenGateLights", {
   brightness: { v: 1.45, min: 0, max: 4, step: 0.05, label: "brightness x" },
   deck: { v: 1.25, min: 0, max: 3, step: 0.05, label: "deck lamps" },
-  towers: { v: 1.35, min: 0, max: 3, step: 0.05, label: "tower wash" },
   cables: { v: 0.85, min: 0, max: 2.5, step: 0.05, label: "cable glow" },
   reflections: { v: 1.2, min: 0, max: 3, step: 0.05, label: "water reflections" },
   beacons: { v: 1.0, min: 0, max: 3, step: 0.05, label: "red beacons" },
@@ -41,7 +39,6 @@ export const GOLDEN_GATE_LIGHTS_SLIDERS = tunables("goldenGateLights", {
 export const GOLDEN_GATE_LIGHTS_TUNING = {
   brightness: uniform(GOLDEN_GATE_LIGHTS_SLIDERS.values.brightness),
   deck: uniform(GOLDEN_GATE_LIGHTS_SLIDERS.values.deck),
-  towers: uniform(GOLDEN_GATE_LIGHTS_SLIDERS.values.towers),
   cables: uniform(GOLDEN_GATE_LIGHTS_SLIDERS.values.cables),
   reflections: uniform(GOLDEN_GATE_LIGHTS_SLIDERS.values.reflections),
   beacons: uniform(GOLDEN_GATE_LIGHTS_SLIDERS.values.beacons),
@@ -138,7 +135,6 @@ function createGoldenGateMaterial(posK: number[], info: number[]) {
   const T = GOLDEN_GATE_LIGHTS_TIME as N;
 
   const wDeck = saturate(float(1).sub(kind.sub(0).abs()));
-  const wTower = saturate(float(1).sub(kind.sub(1).abs()));
   const wCable = saturate(float(1).sub(kind.sub(2).abs()));
   const wSuspender = saturate(float(1).sub(kind.sub(3).abs()));
   const wBeacon = saturate(float(1).sub(kind.sub(4).abs()));
@@ -154,7 +150,6 @@ function createGoldenGateMaterial(posK: number[], info: number[]) {
     .add(wSuspender.mul(2.2))
     .add(wBeacon.mul(4.6))
     .mul(farBoost)
-    .add(wTower.mul(24).mul(localSize).mul(GOLDEN_GATE_LIGHTS_TUNING.size as N))
     .add(wReflection.mul(20).mul(localSize).mul(GOLDEN_GATE_LIGHTS_TUNING.size as N));
   const sy: N = wDeck
     .mul(3.8)
@@ -162,12 +157,10 @@ function createGoldenGateMaterial(posK: number[], info: number[]) {
     .add(wSuspender.mul(2.2))
     .add(wBeacon.mul(4.6))
     .mul(farBoost)
-    .add(wTower.mul(56).mul(localSize).mul(GOLDEN_GATE_LIGHTS_TUNING.size as N))
     .add(wReflection.mul(112).mul(localSize).mul(GOLDEN_GATE_LIGHTS_TUNING.size as N));
   material.scaleNode = vec2(sx, sy);
 
   const deckPulse = sin(T.mul(0.9).add(u.mul(TAU * 13)).add(seed.mul(TAU))).mul(0.08).add(0.96);
-  const towerBreath = sin(T.mul(0.36).add(phase.mul(TAU))).mul(0.12).add(0.98);
   const cableTwinkle = sin(T.mul(0.72).add(u.mul(TAU * 41)).add(seed.mul(21))).mul(0.18).add(0.86);
   const beaconCycle = sin(T.mul(2.6).add(phase.mul(TAU)));
   const beaconPulse = saturate(beaconCycle).pow(8).mul(2.7).add(0.18);
@@ -177,28 +170,24 @@ function createGoldenGateMaterial(posK: number[], info: number[]) {
     .mul(sin(T.mul(0.47).add(seed.mul(41))).mul(0.16).add(0.92));
 
   const warmDeck = vec3(1.0, 0.72, 0.26).mul(deckPulse).mul(GOLDEN_GATE_LIGHTS_TUNING.deck as N);
-  const towerGold = vec3(1.0, 0.46, 0.12).mul(towerBreath).mul(GOLDEN_GATE_LIGHTS_TUNING.towers as N);
   const cableOrange = vec3(1.0, 0.25, 0.08).mul(cableTwinkle).mul(GOLDEN_GATE_LIGHTS_TUNING.cables as N);
   const redBeacon = vec3(1.0, 0.04, 0.02).mul(beaconPulse).mul(GOLDEN_GATE_LIGHTS_TUNING.beacons as N);
   const reflectedGold = vec3(1.0, 0.43, 0.04).mul(reflectionRipple).mul(GOLDEN_GATE_LIGHTS_TUNING.reflections as N);
 
   const show = warmDeck
     .mul(wDeck)
-    .add(towerGold.mul(wTower))
     .add(cableOrange.mul(wCable.add(wSuspender.mul(0.62))))
     .add(redBeacon.mul(wBeacon))
     .add(reflectedGold.mul(wReflection));
 
   const glow = vertexStage(show) as unknown as N;
   const vReflection = vertexStage(wReflection) as unknown as N;
-  const vTower = vertexStage(wTower) as unknown as N;
   const vBeacon = vertexStage(wBeacon) as unknown as N;
 
   const q = uv().sub(0.5).mul(2);
   const roundR = q.length();
   const reflectionR = vec2(q.x.mul(1.4), q.y.mul(0.16)).length();
-  const towerR = vec2(q.x.mul(0.68), q.y.mul(0.28)).length();
-  const r = mix(mix(roundR, towerR, vTower), reflectionR, vReflection);
+  const r = mix(roundR, reflectionR, vReflection);
 
   const soft = saturate(r.oneMinus()).pow(2.35);
   const core = saturate(r.mul(1.8).oneMinus()).pow(5.5);
@@ -229,8 +218,8 @@ function createGoldenGateMaterial(posK: number[], info: number[]) {
 }
 
 /**
- * Golden Gate architectural lighting: warm deck lamps, amber tower floodwash,
- * lit cable/suspender beads, red aviation beacons, and long water streaks.
+ * Golden Gate architectural lighting: warm deck lamps, lit cable/suspender
+ * beads, red aviation beacons, and long water streaks.
  * It is one instanced sprite draw so the bridge reads at night without adding
  * hundreds of dynamic lights to the WebGPU scene.
  */
@@ -316,16 +305,12 @@ export function createGoldenGateLights(map: WorldMap): THREE.Sprite | null {
 
   for (let t = 0; t < br.towers.length; t++) {
     const [tx, tz] = br.towers[t];
-    const deckY = map.bridgeDeck(tx, tz);
-    const base = deckY > -Infinity ? deckY : 66;
     const u = t === 0 ? 0.36 : 0.62;
     for (const sgn of [-1, 1]) {
       const x = tx + perpX * (br.width / 2 + 4.5) * sgn;
       const z = tz + perpZ * (br.width / 2 + 4.5) * sgn;
-      for (const h of [24, 58, 96, 134, 176]) push(x, base + h, z, 1, u + h * 0.0005, 0.95);
       push(x + perpX * 11 * sgn, 0.42, z + perpZ * 11 * sgn, 5, u, 1.25);
     }
-    for (const h of [70, 128, 190, 229]) push(tx, base + h, tz, h >= 220 ? 4 : 1, u + h * 0.0009, h >= 220 ? 1.1 : 0.78);
     push(tx, br.towerHeight + 4, tz, 4, u + 0.08, 1.25);
   }
 

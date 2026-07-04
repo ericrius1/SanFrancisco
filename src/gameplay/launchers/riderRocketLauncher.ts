@@ -37,26 +37,30 @@ export class RiderRocketLauncher implements Launcher {
       rail.position.set(sx, -0.32, 0);
       this.#prop.add(rail);
     }
-    // parked rocket + strapped rider, straddling
+    // parked rocket on the rail
     const rocket = buildRocket();
     this.#prop.add(rocket);
-    this.#staticRider = this.#buildRider(this.#avatar);
-    this.#staticRider.group.position.set(0, 0.34, 0.1);
-    this.#prop.add(this.#staticRider.group);
     // muzzle anchor at the nose; its world -Z is the launch direction
     this.#muzzle.position.set(0, 0.1, -1.35);
     this.#prop.add(this.#muzzle);
 
     this.#prop.rotation.x = tilt; // nose up-forward
     this.group.add(this.#prop);
-    this.#staticRider.ride(0); // pose straddling even before the rig is ticked
+
+    // the parked performer stands UPRIGHT on the flatbed beside the rail (not on
+    // the tilted rocket), jamming his set until you fire — then a fresh rider is
+    // the one strapped in and launched. Parented to the untilted group so the
+    // rail's elevation never reclines him.
+    this.#staticRider = this.#buildRider(this.#avatar);
+    this.#staticRider.group.position.set(-0.5, 0.56, -0.7);
+    this.group.add(this.#staticRider.group);
+    this.#staticRider.jam(0); // pose standing even before the rig is ticked
   }
 
   update(dt: number) {
     this.#t += dt;
-    if (this.#armed) {
-      this.#staticRider.ride(this.#t * 0.5); // warming up on the rail
-    } else {
+    this.#staticRider.jam(this.#t); // always jamming on the bed, armed or reloading
+    if (!this.#armed) {
       this.#reloadT -= dt;
       if (this.#reloadT <= 0) {
         this.#armed = true;
