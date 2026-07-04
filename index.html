@@ -1,0 +1,773 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>San Francisco</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌉</text></svg>"
+    />
+    <style>
+      html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #0b1520; }
+      #app { position: fixed; inset: 0; }
+      canvas { display: block; }
+      #hud {
+        position: fixed; inset: 0; pointer-events: none;
+        font-family: "Avenir Next", "Helvetica Neue", sans-serif;
+        color: #eaf4f8; text-shadow: 0 1px 3px rgba(0, 10, 20, 0.8);
+      }
+      #hud .br-stack {
+        position: absolute; bottom: 16px; right: 20px;
+        display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
+        max-width: 420px;
+      }
+      #hud .help {
+        max-width: 420px;
+        font-size: 12px; opacity: 0.9;
+        padding: 11px 13px; border-radius: 10px;
+        background: rgba(10, 24, 36, 0.55);
+        border: 1px solid rgba(190, 225, 240, 0.14);
+        backdrop-filter: blur(6px);
+      }
+      /* movement grid + vehicle roster, side by side */
+      #hud .help .cols { display: flex; gap: 16px; align-items: flex-start; }
+      #hud .help .modes {
+        padding-left: 15px; border-left: 1px solid rgba(190, 225, 240, 0.14);
+      }
+      #hud .help .modes-h {
+        opacity: 0.6; font-size: 10px; font-weight: 700; letter-spacing: 0.06em;
+        text-transform: uppercase; margin-bottom: 6px; white-space: nowrap;
+      }
+      #hud .help .modes-list { display: grid; gap: 4px; }
+      #hud .help .mi {
+        display: inline-flex; align-items: center; gap: 6px; opacity: 0.72;
+      }
+      #hud .help .mi .lbl { text-transform: capitalize; }
+      #hud .help .mi.on { opacity: 1; }
+      #hud .help .mi.on .k { border-color: #6fd7c4; color: #9ef2df; }
+      #hud .help .mi.on .lbl { color: #9ef2df; font-weight: 600; }
+      /* Tab toggles the user UI: panels fade out slowly, snap back quickly. */
+      #hud .help, #hud .toolbar, #hud .audio, #hud .minimap, #hud .avatar-ui, #hud .satchel, #hud .share-ui, #hud .tutorial-ui, #hud .tutorial-panel, #hud .links-ui, #hud .player-locator { transition: opacity 0.35s ease; }
+      #hud.faded .help, #hud.faded .toolbar, #hud.faded .audio, #hud.faded .minimap, #hud.faded .avatar-ui, #hud.faded .satchel, #hud.faded .share-ui, #hud.faded .tutorial-ui, #hud.faded .tutorial-panel, #hud.faded .links-ui, #hud.faded .player-locator { opacity: 0; transition: opacity 1s ease; }
+      #hud.faded .toolbar, #hud.faded .audio, #hud.faded .minimap, #hud.faded .avatar-ui, #hud.faded .share-ui, #hud.faded .tutorial-ui, #hud.faded .tutorial-panel, #hud.faded .links-ui { pointer-events: none; }
+      #hud .help.swap { animation: hudswap 0.28s ease; }
+      @keyframes hudswap { from { opacity: 0; transform: translateY(6px); } }
+      #hud .help .grid {
+        display: grid; grid-template-columns: max-content 1fr;
+        gap: 4px 9px; align-items: center;
+      }
+      #hud .help .grid .keys { display: flex; gap: 4px; justify-content: flex-end; }
+      #hud .help .k {
+        display: inline-flex; align-items: center; justify-content: center;
+        min-width: 10px; height: 17px; padding: 0 5px; border-radius: 4px;
+        background: rgba(18, 40, 56, 0.6); border: 1px solid rgba(190, 225, 240, 0.35);
+        box-shadow: 0 1px 0 rgba(190, 225, 240, 0.16);
+        font-size: 10.5px; font-weight: 600; letter-spacing: 0.02em; line-height: 1;
+      }
+      #hud .help .k.f { border-radius: 50%; min-width: 17px; width: 17px; padding: 0; font-size: 10px; }
+      #hud .help .k.fa { border-color: #7ed67e; color: #a5f0a5; }
+      #hud .help .k.fb { border-color: #f07f72; color: #ffb0a6; }
+      #hud .help .k.fx { border-color: #6aaaff; color: #a9ccff; }
+      #hud .help .k.fy { border-color: #f2ce6b; color: #ffe6a3; }
+      #hud .help .tip { margin-top: 8px; opacity: 0.7; font-style: italic; font-size: 11px; line-height: 1.4; }
+      #hud .help .ui-bar {
+        margin-top: 8px; display: flex; flex-wrap: wrap; gap: 5px 12px;
+        opacity: 0.72; font-size: 11px;
+      }
+      #hud .help .more {
+        pointer-events: auto; cursor: pointer;
+        margin-top: 9px; display: inline-flex; align-items: center; gap: 5px;
+        padding: 3px 8px 3px 6px; border-radius: 6px;
+        background: rgba(18, 40, 56, 0.5); border: 1px solid rgba(190, 225, 240, 0.2);
+        color: #bcd9e6; font: 600 10.5px "Avenir Next", "Helvetica Neue", sans-serif;
+        letter-spacing: 0.02em; opacity: 0.85; transition: border-color 0.15s, color 0.15s, opacity 0.15s;
+      }
+      #hud .help .more:hover { border-color: rgba(190, 225, 240, 0.5); color: #eaf4f8; opacity: 1; }
+      #hud .help .more .chev { font-size: 9px; line-height: 1; }
+      #hud .help .foot {
+        margin-top: 9px; padding-top: 9px;
+        border-top: 1px solid rgba(190, 225, 240, 0.14);
+        display: flex; flex-wrap: wrap; gap: 5px 10px;
+        opacity: 0.62; font-size: 11px;
+      }
+      #hud .help .foot .k { height: 15px; font-size: 9.5px; }
+      #hud .help .fi { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+      #hud .help .fi.on .k { border-color: #6fd7c4; color: #9ef2df; }
+      #hud .help .fi.on .lbl { color: #9ef2df; }
+      #hud .center {
+        position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+        font-size: 18px; opacity: 0.9;
+      }
+      #hud .player-locator {
+        position: absolute; inset: 0; pointer-events: none;
+      }
+      #hud .player-locator.empty { opacity: 0; }
+      #hud .player-locator-marker {
+        --hue: 180; --angle: 0rad;
+        position: absolute; display: inline-flex; align-items: center; gap: 7px;
+        min-width: 96px; max-width: min(188px, 42vw);
+        padding: 5px 8px 5px 5px; border-radius: 9px;
+        transform: translate(-50%, -112%);
+        background: rgba(7, 18, 28, 0.74);
+        border: 1px solid hsla(var(--hue), 78%, 66%, 0.72);
+        box-shadow: 0 8px 20px rgba(0, 6, 12, 0.28), inset 0 1px 0 rgba(255,255,255,0.06);
+        backdrop-filter: blur(5px);
+        color: #eaf4f8;
+      }
+      #hud .player-locator-marker.edge {
+        transform: translate(-50%, -50%);
+        background: rgba(9, 22, 34, 0.86);
+      }
+      #hud .player-locator-marker .pl-key {
+        flex: 0 0 auto; min-width: 22px; height: 22px; padding: 0 4px; display: inline-flex;
+        align-items: center; justify-content: center; border-radius: 7px;
+        background: hsl(var(--hue), 78%, 58%);
+        color: #06131a; font: 800 12px "Avenir Next", "Helvetica Neue", sans-serif;
+        text-shadow: none;
+      }
+      #hud .player-locator-marker .pl-body {
+        min-width: 0; display: grid; gap: 1px;
+      }
+      #hud .player-locator-marker .pl-name {
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        font: 800 11.5px "Avenir Next", "Helvetica Neue", sans-serif;
+      }
+      #hud .player-locator-marker .pl-distance {
+        color: #bcd9e6; opacity: 0.86;
+        font: 700 10px "Avenir Next", "Helvetica Neue", sans-serif;
+      }
+      #hud .player-locator-marker .pl-arrow {
+        display: none; flex: 0 0 9px; width: 9px; height: 9px;
+        border-top: 2px solid #eaf4f8; border-right: 2px solid #eaf4f8;
+        transform: rotate(var(--angle));
+        opacity: 0.86;
+      }
+      #hud .player-locator-marker.edge .pl-arrow { display: inline-block; }
+      #hud .toolbar {
+        position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%);
+        display: flex; flex-direction: column; align-items: center; gap: 6px;
+        pointer-events: auto;
+      }
+      #hud .toolbar .tools, #hud .toolbar .swatches {
+        display: flex; align-items: center; gap: 6px;
+        padding: 6px 8px; border-radius: 10px;
+        background: rgba(10, 24, 36, 0.55);
+        border: 1px solid rgba(190, 225, 240, 0.14);
+        backdrop-filter: blur(6px);
+      }
+      #hud .toolbar .tool {
+        display: inline-flex; align-items: center; gap: 6px;
+        padding: 4px 10px; border-radius: 7px; cursor: pointer;
+        background: rgba(18, 40, 56, 0.6); border: 1px solid rgba(190, 225, 240, 0.25);
+        color: #eaf4f8; font: 600 11.5px "Avenir Next", "Helvetica Neue", sans-serif;
+        letter-spacing: 0.02em; transition: border-color 0.15s, color 0.15s;
+      }
+      #hud .toolbar .tool .ic { font-size: 14px; line-height: 1; }
+      #hud .toolbar .tool:hover { border-color: rgba(190, 225, 240, 0.55); }
+      #hud .toolbar .tool.on { border-color: #6fd7c4; color: #9ef2df; }
+      #hud .toolbar .tool.kbd { box-shadow: 0 0 0 2px rgba(111, 215, 196, 0.55); }
+      #hud .toolbar .hint {
+        display: inline-flex; align-items: center; gap: 3px; margin-left: 2px; opacity: 0.85;
+      }
+      #hud .toolbar .hint .k {
+        display: inline-flex; align-items: center; justify-content: center;
+        min-width: 10px; height: 15px; padding: 0 4px; border-radius: 4px;
+        background: rgba(18, 40, 56, 0.6); border: 1px solid rgba(190, 225, 240, 0.3);
+        color: #bcd9e6; font: 600 9px "Avenir Next", "Helvetica Neue", sans-serif;
+        box-shadow: 0 1px 0 rgba(190, 225, 240, 0.12); line-height: 1;
+      }
+      #hud .toolbar .swatch {
+        width: 16px; height: 16px; border-radius: 50%; cursor: pointer; padding: 0;
+        border: 2px solid rgba(190, 225, 240, 0.25); transition: transform 0.12s, border-color 0.15s;
+      }
+      #hud .toolbar .swatch:hover { transform: scale(1.18); }
+      #hud .toolbar .swatch.on { border-color: #ffffff; transform: scale(1.18); }
+      #hud .toolbar .swatch.kbd { box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.75); }
+      #hud .toolbar .swatch.rainbow {
+        background: conic-gradient(#ff2e88, #ff7a1a, #ffd41f, #3dffb0, #29d5ff, #8f5bff, #ff2e88);
+      }
+      #hud .satchel {
+        display: flex; flex-direction: column; align-items: flex-end; gap: 5px;
+      }
+      #hud .satchel .srow {
+        display: inline-flex; align-items: center; gap: 7px;
+        padding: 4px 10px; border-radius: 9px;
+        background: rgba(10, 24, 36, 0.55);
+        border: 1px solid rgba(190, 225, 240, 0.14);
+        backdrop-filter: blur(6px);
+        color: #ffe9ae; font: 700 13px "Avenir Next", "Helvetica Neue", sans-serif;
+      }
+      #hud .satchel .sic { font-size: 15px; line-height: 1; }
+      #hud .satchel .srow.pop { animation: satchelpop 0.32s ease; }
+      @keyframes satchelpop {
+        0% { transform: scale(1); }
+        35% { transform: scale(1.22); border-color: rgba(255, 215, 106, 0.8); }
+        100% { transform: scale(1); }
+      }
+      #hud .avatar-ui {
+        position: absolute; right: 20px; top: 16px;
+        display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
+        pointer-events: auto; user-select: none; z-index: 2;
+      }
+      /* invite link button — sits under the avatar toggle; the open avatar
+         panel (z-index above) slides over it */
+      #hud .share-ui {
+        position: absolute; right: 20px; top: 70px; z-index: 1;
+        pointer-events: auto; user-select: none;
+      }
+      #hud .share-btn {
+        display: inline-flex; align-items: center; gap: 7px;
+        height: 34px; padding: 0 12px; cursor: pointer;
+        border-radius: 10px; border: 1px solid rgba(190, 225, 240, 0.22);
+        background: rgba(10, 24, 36, 0.62); color: #dceff5;
+        font: 600 11.5px "Avenir Next", "Helvetica Neue", sans-serif;
+        letter-spacing: 0.02em;
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 6px 18px rgba(0, 6, 12, 0.28);
+        backdrop-filter: blur(6px);
+        transition: border-color 0.15s, transform 0.12s, background 0.15s;
+      }
+      #hud .share-btn:hover {
+        border-color: #6fd7c4; color: #9ef2df; transform: translateY(-1px);
+        background: rgba(15, 33, 47, 0.82);
+      }
+      #hud .share-btn .ic { font-size: 14px; line-height: 1; }
+      /* tutorial button — under Share; fades with Tab like the rest of the UI */
+      #hud .tutorial-ui {
+        position: absolute; right: 20px; top: 116px; z-index: 1;
+        pointer-events: auto; user-select: none;
+      }
+      #hud .tutorial-ui .share-btn.pulse { animation: tutpulse 2.2s ease-in-out infinite; }
+      @keyframes tutpulse {
+        0%, 100% { box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 6px 18px rgba(0, 6, 12, 0.28); }
+        50% { box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 0 16px rgba(111, 215, 196, 0.65); border-color: #6fd7c4; }
+      }
+      /* tutorial objective card — top center, above the action */
+      #hud .tutorial-panel {
+        position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
+        width: min(440px, calc(100vw - 300px));
+        padding: 10px 13px 8px; border-radius: 12px;
+        background: rgba(10, 24, 36, 0.72);
+        border: 1px solid rgba(190, 225, 240, 0.2);
+        box-shadow: 0 10px 28px rgba(0, 6, 12, 0.3), inset 0 1px 0 rgba(255,255,255,0.05);
+        backdrop-filter: blur(6px);
+        pointer-events: auto; user-select: none;
+      }
+      #hud .tutorial-panel.swap { animation: hudswap 0.28s ease; }
+      #hud .tutorial-panel .tut-top {
+        display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 7px;
+        font: 700 10px "Avenir Next", "Helvetica Neue", sans-serif;
+        letter-spacing: 0.07em; text-transform: uppercase; color: #9ef2df; opacity: 0.85;
+      }
+      #hud .tutorial-panel .tut-prog { color: #bcd9e6; opacity: 0.8; text-transform: none; letter-spacing: 0.02em; }
+      #hud .tutorial-panel .tut-obj {
+        display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+        font-size: 13.5px; line-height: 1.2;
+      }
+      #hud .tutorial-panel .tut-action {
+        color: #9ef2df; font-size: 11px; font-weight: 800;
+        letter-spacing: 0.07em; text-transform: uppercase;
+      }
+      #hud .tutorial-panel .tut-keys { display: flex; gap: 4px; flex: 0 0 auto; }
+      #hud .tutorial-panel .tut-text { min-width: 0; }
+      #hud .tutorial-panel .k {
+        display: inline-flex; align-items: center; justify-content: center;
+        min-width: 12px; height: 19px; padding: 0 6px; border-radius: 4px;
+        background: rgba(18, 40, 56, 0.6); border: 1px solid rgba(190, 225, 240, 0.35);
+        box-shadow: 0 1px 0 rgba(190, 225, 240, 0.16);
+        font-size: 11px; font-weight: 600; letter-spacing: 0.02em; line-height: 1;
+      }
+      #hud .tutorial-panel .tut-check {
+        margin-left: auto; color: #9ef2df; font-size: 16px; font-weight: 800;
+        opacity: 0; transform: scale(0.4); transition: opacity 0.18s, transform 0.18s;
+      }
+      #hud .tutorial-panel .tut-obj.done .tut-check { opacity: 1; transform: scale(1); }
+      #hud .tutorial-panel .tut-obj.done .tut-text { color: #9ef2df; }
+      #hud .tutorial-panel .tut-bar {
+        height: 3px; margin-top: 8px; border-radius: 2px; overflow: hidden;
+        background: rgba(190, 225, 240, 0.16);
+      }
+      #hud .tutorial-panel .tut-fill { height: 100%; width: 0%; background: #6fd7c4; transition: width 0.2s ease; }
+      #hud .tutorial-panel .tut-hint { margin-top: 7px; font-size: 11px; font-style: italic; opacity: 0.65; }
+      #hud .tutorial-panel .tut-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+      #hud .tutorial-panel .tut-dots { display: inline-flex; gap: 5px; margin-right: auto; }
+      #hud .tutorial-panel .tut-dot {
+        width: 7px; height: 7px; border-radius: 50%;
+        background: rgba(190, 225, 240, 0.22);
+      }
+      #hud .tutorial-panel .tut-dot.on { background: #6fd7c4; box-shadow: 0 0 7px rgba(111, 215, 196, 0.6); }
+      #hud .tutorial-panel .tut-skip, #hud .tutorial-panel .tut-exit {
+        cursor: pointer; padding: 3px 9px; border-radius: 6px;
+        background: rgba(18, 40, 56, 0.5); border: 1px solid rgba(190, 225, 240, 0.2);
+        color: #bcd9e6; font: 600 10.5px "Avenir Next", "Helvetica Neue", sans-serif;
+        letter-spacing: 0.02em; transition: border-color 0.15s, color 0.15s;
+      }
+      #hud .tutorial-panel .tut-skip:hover, #hud .tutorial-panel .tut-exit:hover {
+        border-color: rgba(190, 225, 240, 0.5); color: #eaf4f8;
+      }
+      /* "Behind the scenes" button + X/GitHub icon row — parked under Tutorial */
+      #hud .links-ui {
+        position: absolute; right: 20px; top: 162px; z-index: 1;
+        display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
+        pointer-events: auto; user-select: none;
+      }
+      #hud .links-ui .social-row { display: inline-flex; gap: 8px; }
+      #hud .social-btn {
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 34px; height: 34px; cursor: pointer;
+        border-radius: 10px; border: 1px solid rgba(190, 225, 240, 0.22);
+        background: rgba(10, 24, 36, 0.62); color: #dceff5;
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 6px 18px rgba(0, 6, 12, 0.28);
+        backdrop-filter: blur(6px);
+        transition: border-color 0.15s, color 0.15s, transform 0.12s, background 0.15s;
+      }
+      #hud .social-btn svg { width: 16px; height: 16px; fill: currentColor; display: block; }
+      #hud .social-btn:hover {
+        border-color: #6fd7c4; color: #9ef2df; transform: translateY(-1px);
+        background: rgba(15, 33, 47, 0.82);
+      }
+
+      /* full-screen reading overlay opened by "Behind the scenes" */
+      #hud .bts-overlay {
+        position: fixed; inset: 0; z-index: 40;
+        display: none; align-items: center; justify-content: center;
+        padding: 4vh 16px;
+        background: rgba(4, 10, 16, 0.62);
+        backdrop-filter: blur(4px);
+        pointer-events: auto;
+      }
+      #hud .bts-overlay.open { display: flex; animation: btsfade 0.2s ease; }
+      @keyframes btsfade { from { opacity: 0; } to { opacity: 1; } }
+      #hud .bts-modal {
+        position: relative; width: min(920px, 94vw); max-height: 92vh;
+        display: flex; flex-direction: column; overflow: hidden;
+        border-radius: 16px; border: 1px solid rgba(190, 225, 240, 0.22);
+        background: linear-gradient(180deg, rgba(12, 28, 42, 0.97), rgba(8, 20, 31, 0.97));
+        box-shadow: 0 24px 70px rgba(0, 4, 10, 0.6), inset 0 1px 0 rgba(255,255,255,0.05);
+        color: #dceff5;
+        font: 400 14px/1.62 "Avenir Next", "Helvetica Neue", sans-serif;
+      }
+      #hud .bts-close {
+        position: absolute; top: 14px; right: 14px; z-index: 2;
+        width: 32px; height: 32px; cursor: pointer;
+        border-radius: 8px; border: 1px solid rgba(190, 225, 240, 0.22);
+        background: rgba(10, 24, 36, 0.6); color: #dceff5;
+        font-size: 15px; line-height: 1;
+        transition: border-color 0.15s, color 0.15s;
+      }
+      #hud .bts-close:hover { border-color: #6fd7c4; color: #9ef2df; }
+      #hud .bts-head {
+        padding: 26px 30px 20px; flex: 0 0 auto;
+        border-bottom: 1px solid rgba(190, 225, 240, 0.12);
+        background: rgba(6, 16, 25, 0.4);
+      }
+      #hud .bts-title {
+        font-size: 22px; font-weight: 800; letter-spacing: 0.01em; color: #eaf6fa;
+      }
+      #hud .bts-subtitle { margin-top: 4px; font-size: 13px; color: #9fc6d6; }
+      #hud .bts-socials { display: inline-flex; gap: 8px; margin-top: 14px; }
+      #hud .bts-body { padding: 8px 30px 30px; overflow-y: auto; flex: 1 1 auto; }
+      #hud .bts-body section { padding: 18px 0; border-bottom: 1px solid rgba(190, 225, 240, 0.09); }
+      #hud .bts-body section:last-child { border-bottom: none; }
+      #hud .bts-body .bts-act {
+        display: flex; align-items: center; gap: 12px;
+        margin: 12px 0 -6px; padding: 22px 0 0; border: none;
+        font-size: 11.5px; font-weight: 800; letter-spacing: 0.18em; text-transform: uppercase;
+        color: #6fd7c4;
+      }
+      #hud .bts-body .bts-act::after {
+        content: ""; flex: 1 1 auto; height: 1px;
+        background: linear-gradient(90deg, rgba(111, 215, 196, 0.4), rgba(111, 215, 196, 0));
+      }
+      #hud .bts-body em { color: #dff4f0; font-style: italic; }
+      #hud .bts-body .bts-aside {
+        margin: 10px 0 0; padding: 10px 14px; border-radius: 9px;
+        border-left: 2px solid rgba(111, 215, 196, 0.5);
+        background: rgba(18, 40, 56, 0.45); color: #b9dbe4; font-size: 13px;
+      }
+      #hud .bts-body h3 {
+        display: flex; align-items: center; gap: 9px; margin: 0 0 8px;
+        font-size: 15px; font-weight: 800; letter-spacing: 0.01em; color: #9ef2df;
+      }
+      #hud .bts-body .bts-ic { font-size: 17px; line-height: 1; }
+      #hud .bts-body p { margin: 0 0 8px; color: #cfe6ee; }
+      #hud .bts-body p:last-child { margin-bottom: 0; }
+      #hud .bts-body .bts-lede { font-size: 15px; color: #e2f2f7; }
+      #hud .bts-body code {
+        padding: 1px 6px; border-radius: 5px; font-size: 12.5px;
+        font-family: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, monospace;
+        background: rgba(18, 40, 56, 0.7); border: 1px solid rgba(190, 225, 240, 0.16);
+        color: #b6ecdd;
+      }
+      #hud .bts-body strong { color: #f0f7fa; font-weight: 700; }
+      #hud .bts-body a {
+        color: #7fe0cd; text-decoration: none;
+        border-bottom: 1px solid rgba(127, 224, 205, 0.4);
+        transition: color 0.12s, border-color 0.12s;
+      }
+      #hud .bts-body a:hover { color: #b6f6e8; border-color: #b6f6e8; }
+      #hud .bts-links-inline { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 10px; }
+      #hud .bts-links-inline a { font-weight: 600; }
+      #hud .bts-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+      #hud .bts-chips a {
+        padding: 5px 11px; border-radius: 8px; font-size: 12.5px; font-weight: 600;
+        border: 1px solid rgba(190, 225, 240, 0.22);
+        background: rgba(18, 40, 56, 0.5); color: #cfe6ee;
+      }
+      #hud .bts-chips a:hover { border-color: #6fd7c4; color: #9ef2df; }
+
+      /* lone affordance when Tab hides the HUD — hidden in immersive (display:none on #hud) */
+      #hud .ui-restore {
+        position: absolute; bottom: 16px; right: 20px; z-index: 3;
+        pointer-events: none; opacity: 0;
+        width: 34px; height: 34px; padding: 0; cursor: pointer;
+        display: inline-flex; align-items: center; justify-content: center;
+        border-radius: 10px; border: 1px solid rgba(190, 225, 240, 0.22);
+        background: rgba(10, 24, 36, 0.62); color: #dceff5;
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 6px 18px rgba(0, 6, 12, 0.28);
+        backdrop-filter: blur(6px);
+        transition: opacity 0.35s ease, border-color 0.15s, color 0.15s, transform 0.12s;
+      }
+      #hud.faded .ui-restore { opacity: 0.88; pointer-events: auto; }
+      #hud .ui-restore:hover {
+        opacity: 1; border-color: #6fd7c4; color: #9ef2df; transform: translateY(-1px);
+        background: rgba(15, 33, 47, 0.82);
+      }
+      #hud .ui-restore .ic { font-size: 15px; line-height: 1; }
+      #hud .avatar-toggle {
+        width: 46px; height: 46px; padding: 0; cursor: pointer;
+        position: relative; display: grid; place-items: center;
+        border-radius: 12px; border: 1px solid rgba(190, 225, 240, 0.22);
+        background: rgba(10, 24, 36, 0.62);
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 6px 18px rgba(0, 6, 12, 0.28);
+        backdrop-filter: blur(6px);
+        transition: border-color 0.15s, transform 0.12s, background 0.15s;
+      }
+      #hud .avatar-toggle:hover, #hud .avatar-ui.open .avatar-toggle {
+        border-color: #6fd7c4; transform: translateY(-1px);
+        background: rgba(15, 33, 47, 0.82);
+      }
+      #hud .avatar-head {
+        position: absolute; left: 15px; top: 8px; width: 16px; height: 16px; border-radius: 5px;
+        box-shadow: inset 0 -2px 0 rgba(0,0,0,0.12);
+      }
+      #hud .avatar-shirt {
+        position: absolute; left: 11px; top: 24px; width: 24px; height: 15px; border-radius: 5px 5px 7px 7px;
+        box-shadow: inset 0 -3px 0 rgba(0,0,0,0.18);
+      }
+      #hud .avatar-dot {
+        position: absolute; right: 8px; bottom: 8px; width: 9px; height: 9px; border-radius: 50%;
+        border: 1px solid rgba(255,255,255,0.7);
+      }
+      #hud .avatar-panel {
+        display: none; width: min(330px, calc(100vw - 32px)); max-height: min(74vh, 560px); overflow: auto;
+        padding: 10px; border-radius: 12px;
+        background: rgba(10, 24, 36, 0.78);
+        border: 1px solid rgba(190, 225, 240, 0.18);
+        box-shadow: 0 10px 32px rgba(0, 6, 12, 0.38), inset 0 1px 0 rgba(255,255,255,0.05);
+        backdrop-filter: blur(8px);
+      }
+      #hud .avatar-ui.open .avatar-panel { display: grid; gap: 9px; animation: avatarin 0.16s ease; }
+      @keyframes avatarin { from { opacity: 0; transform: translateY(-5px); } }
+      #hud .avatar-row {
+        display: grid; grid-template-columns: 58px minmax(0, 1fr); gap: 8px; align-items: start;
+      }
+      #hud .avatar-label {
+        padding-top: 7px; color: #bcd9e6;
+        font: 700 10.5px "Avenir Next", "Helvetica Neue", sans-serif;
+        letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.78;
+      }
+      #hud .avatar-controls { min-width: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+      #hud .avatar-choice, #hud .avatar-random {
+        min-height: 28px; padding: 0 9px; cursor: pointer;
+        border-radius: 7px; border: 1px solid rgba(190, 225, 240, 0.2);
+        background: rgba(18, 40, 56, 0.58); color: #dceff5;
+        font: 700 11px "Avenir Next", "Helvetica Neue", sans-serif;
+        letter-spacing: 0; transition: border-color 0.15s, color 0.15s, background 0.15s, transform 0.12s;
+      }
+      #hud .avatar-choice:hover, #hud .avatar-random:hover {
+        border-color: rgba(190, 225, 240, 0.5); transform: translateY(-1px);
+      }
+      #hud .avatar-choice.on {
+        border-color: #6fd7c4; color: #9ef2df; background: rgba(22, 64, 70, 0.62);
+      }
+      #hud .avatar-swatch {
+        width: 24px; height: 24px; padding: 0; cursor: pointer; border-radius: 8px;
+        border: 2px solid rgba(190, 225, 240, 0.24);
+        box-shadow: inset 0 -4px 0 rgba(0,0,0,0.14);
+        transition: transform 0.12s, border-color 0.15s;
+      }
+      #hud .avatar-swatch:hover { transform: scale(1.08); }
+      #hud .avatar-swatch.on { border-color: #ffffff; transform: scale(1.08); }
+      #hud .avatar-random {
+        justify-self: end; margin-top: 2px; background: #6fd7c4; border-color: #6fd7c4;
+        color: #062018; text-transform: uppercase; letter-spacing: 0.05em;
+      }
+      #hud .audio {
+        position: absolute; bottom: 16px; left: 20px;
+        display: flex; flex-direction: column; align-items: stretch; gap: 6px;
+        padding: 6px 10px; border-radius: 10px;
+        background: rgba(10, 24, 36, 0.55);
+        border: 1px solid rgba(190, 225, 240, 0.14);
+        backdrop-filter: blur(6px);
+        pointer-events: auto;
+      }
+      #hud .audio-vol {
+        display: flex; align-items: center; gap: 8px;
+      }
+      #hud .audio-sliders {
+        display: flex; flex-direction: column; gap: 5px; flex: 1; min-width: 0;
+      }
+      #hud .audio-row {
+        display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0;
+      }
+      #hud .audio-lbl {
+        flex: 0 0 34px; font: 600 10px "Avenir Next", "Helvetica Neue", sans-serif;
+        letter-spacing: 0.04em; text-transform: uppercase; color: rgba(188, 217, 230, 0.72);
+      }
+      #hud .audio .mute {
+        background: none; border: none; cursor: pointer;
+        font-size: 15px; line-height: 1; padding: 0;
+      }
+      #hud .audio .mic-btn {
+        display: inline-flex; align-items: center; gap: 8px;
+        padding: 5px 10px; border-radius: 7px; cursor: pointer;
+        background: rgba(18, 40, 56, 0.6); border: 1px solid rgba(190, 225, 240, 0.25);
+        color: #bcd9e6; font: 600 11.5px "Avenir Next", "Helvetica Neue", sans-serif;
+        letter-spacing: 0.02em; transition: border-color 0.15s, color 0.15s;
+      }
+      #hud .audio .mic-btn .ic { font-size: 18px; line-height: 1; }
+      #hud .audio .mic-btn:hover { border-color: rgba(190, 225, 240, 0.55); }
+      #hud .audio .mic-btn.on { border-color: #6fd7c4; color: #9ef2df; }
+      #hud .audio input[type="range"] {
+        -webkit-appearance: none; appearance: none;
+        flex: 1; min-width: 72px; height: 3px; border-radius: 2px;
+        background: rgba(190, 225, 240, 0.3); outline: none; cursor: pointer;
+        transition: opacity 0.2s;
+      }
+      #hud .audio input[type="range"]::-webkit-slider-thumb {
+        -webkit-appearance: none; appearance: none;
+        width: 11px; height: 11px; border-radius: 50%; background: #6fd7c4;
+      }
+      #hud .audio input[type="range"]::-moz-range-thumb {
+        width: 11px; height: 11px; border-radius: 50%; background: #6fd7c4; border: none;
+      }
+      #hud .audio input[type="range"].off { opacity: 0.35; }
+      #hud .minimap {
+        position: absolute; top: 16px; left: 20px;
+        display: flex; flex-direction: column; gap: 8px; width: 236px;
+        pointer-events: auto; user-select: none;
+      }
+      #hud .minimap .mm-card {
+        position: relative; border-radius: 18px; overflow: hidden;
+        border: 1px solid rgba(225, 235, 243, 0.28);
+        background: rgba(10, 24, 36, 0.68);
+        box-shadow: 0 5px 24px rgba(0, 6, 12, 0.38), inset 0 0 0 1px rgba(255,255,255,0.04);
+        cursor: grab; touch-action: none;
+      }
+      #hud .minimap .mm-card.dragging { cursor: grabbing; }
+      #hud .minimap canvas { display: block; }
+      #hud .minimap .mm-count {
+        position: absolute; left: 9px; bottom: 9px;
+        display: inline-flex; align-items: center; gap: 7px;
+        justify-content: center;
+        padding: 6px 10px; pointer-events: none;
+        border-radius: 999px;
+        font-size: 10.5px; font-weight: 600; letter-spacing: 0; text-transform: uppercase;
+        color: #edf7fb; background: rgba(12, 19, 27, 0.82);
+        border: 1px solid rgba(225, 235, 243, 0.18);
+        box-shadow: 0 8px 18px rgba(0, 0, 0, 0.26);
+      }
+      #hud .minimap .mm-count-dot {
+        width: 9px; height: 9px; flex: 0 0 9px; border-radius: 50%;
+        background: #57c46a; box-shadow: 0 0 10px rgba(87, 196, 106, 0.72);
+      }
+      /* bottom-right expand affordance — big enough to hit, small enough to
+         leave the rest of the map free for panning */
+      #hud .minimap .mm-expand {
+        position: absolute; right: 9px; bottom: 9px;
+        width: 34px; height: 34px; padding: 0; cursor: pointer;
+        display: inline-flex; align-items: center; justify-content: center;
+        border-radius: 10px; color: #eaf4f8;
+        background: rgba(12, 19, 27, 0.82);
+        border: 1px solid rgba(225, 235, 243, 0.28);
+        box-shadow: 0 8px 18px rgba(0, 0, 0, 0.26);
+        font-size: 18px; line-height: 1; font-weight: 700;
+        transition: border-color 0.15s, background 0.15s, transform 0.12s;
+      }
+      #hud .minimap .mm-expand:hover {
+        border-color: #6fd7c4; color: #9ef2df; transform: translateY(-1px);
+        background: rgba(16, 30, 42, 0.9);
+      }
+      #hud .minimap .mm-teleport {
+        display: flex; align-items: center; gap: 8px;
+        padding: 6px 8px 6px 11px; border-radius: 12px;
+        background: rgba(10, 24, 36, 0.72);
+        border: 1px solid rgba(225, 235, 243, 0.2);
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 5px 14px rgba(0, 0, 0, 0.22);
+      }
+      #hud .minimap .mm-teleport-name {
+        flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        font: 600 12px "Avenir Next", "Helvetica Neue", sans-serif; color: #eaf4f8;
+      }
+      #hud .minimap .mm-teleport-btn {
+        flex: 0 0 auto; cursor: pointer; padding: 5px 12px; border-radius: 8px;
+        color: #062018; background: #6fd7c4; border: 1px solid #6fd7c4;
+        font: 700 11.5px "Avenir Next", "Helvetica Neue", sans-serif; letter-spacing: 0.02em;
+        transition: filter 0.15s, transform 0.12s;
+      }
+      #hud .minimap .mm-teleport-btn:hover { filter: brightness(1.08); transform: translateY(-1px); }
+      #hud .minimap .mm-layers {
+        display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px;
+      }
+      #hud .minimap .mm-layer {
+        min-width: 0; height: 34px; padding: 0 7px;
+        display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+        border-radius: 12px; cursor: pointer;
+        border: 1px solid rgba(225, 235, 243, 0.18);
+        background: linear-gradient(180deg, rgba(56, 59, 72, 0.86), rgba(35, 38, 48, 0.9));
+        color: #f0f4f7;
+        font: 700 12.5px "Avenir Next", "Helvetica Neue", sans-serif;
+        text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 5px 14px rgba(0, 0, 0, 0.22);
+        transition: border-color 0.15s, opacity 0.15s, transform 0.12s, filter 0.15s;
+      }
+      #hud .minimap .mm-layer:hover { border-color: rgba(225, 235, 243, 0.42); transform: translateY(-1px); }
+      #hud .minimap .mm-layer:not(.on) { opacity: 0.42; filter: saturate(0.55); }
+      #hud .minimap .mm-layer-dot {
+        width: 10px; height: 10px; flex: 0 0 10px; border-radius: 50%;
+        background: var(--layer-color);
+        box-shadow: 0 0 10px var(--layer-color);
+      }
+      #hud .minimap .mm-layer-label {
+        min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      .bigmap {
+        position: fixed; inset: 0; z-index: 30;
+        display: flex; align-items: center; justify-content: center;
+        background: rgba(4, 10, 16, 0.55); backdrop-filter: blur(3px);
+        font-family: "Avenir Next", "Helvetica Neue", sans-serif;
+      }
+      .bigmap-inner { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+      .bigmap canvas {
+        border-radius: 14px; cursor: grab; touch-action: none;
+        border: 1px solid rgba(190, 225, 240, 0.2);
+        box-shadow: 0 14px 70px rgba(0, 0, 0, 0.55);
+      }
+      .bigmap canvas.dragging { cursor: grabbing; }
+      .bigmap-action {
+        min-width: min(420px, calc(100vw - 48px));
+        max-width: calc(100vw - 48px);
+        display: flex; align-items: center; gap: 10px;
+        padding: 8px 9px 8px 12px; border-radius: 12px;
+        background: rgba(10, 24, 36, 0.82);
+        border: 1px solid rgba(225, 235, 243, 0.24);
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 10px 28px rgba(0, 0, 0, 0.28);
+      }
+      .bigmap-target {
+        flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        color: #eaf4f8; font: 700 13px "Avenir Next", "Helvetica Neue", sans-serif;
+      }
+      .bigmap-teleport-btn {
+        flex: 0 0 auto; cursor: pointer; padding: 7px 14px; border-radius: 8px;
+        color: #062018; background: #6fd7c4; border: 1px solid #6fd7c4;
+        font: 800 12px "Avenir Next", "Helvetica Neue", sans-serif; letter-spacing: 0.02em;
+        transition: filter 0.15s, transform 0.12s;
+      }
+      .bigmap-teleport-btn:hover { filter: brightness(1.08); transform: translateY(-1px); }
+      .bigmap-hint { color: #bcd9e6; font-size: 12px; opacity: 0.85; text-shadow: 0 1px 3px rgba(0, 10, 20, 0.8); }
+      #loading {
+        position: fixed; inset: 0; display: flex; flex-direction: column;
+        align-items: center; justify-content: center; gap: 14px;
+        background: rgba(8, 20, 34, 0.62);
+        backdrop-filter: blur(2px) saturate(0.7);
+        color: #cfe8f2; font-family: "Avenir Next", "Helvetica Neue", sans-serif;
+        transition: opacity 0.6s ease; z-index: 10;
+      }
+      /* keep the HUD (center messages, minimap) out of sight behind the start
+         gate — otherwise "Online as …" bleeds through the translucent tint */
+      #hud { transition: opacity 0.4s ease; }
+      body:not(.started) #hud { opacity: 0; pointer-events: none; }
+      /* opaque backdrop while tiles stream in; once the city is ready it fades,
+         leaving the translucent tint above with the name form over the live city */
+      #loading::before {
+        content: ""; position: absolute; inset: 0; z-index: -1;
+        background: linear-gradient(180deg, #14283a 0%, #0b1520 100%);
+        transition: opacity 0.9s ease;
+      }
+      #loading.ready::before { opacity: 0; }
+      #loading h1 {
+        font-size: 22px; letter-spacing: 0.3em; font-weight: 500; margin: 0; text-transform: uppercase;
+        text-shadow: 0 2px 12px rgba(0, 8, 14, 0.75);
+      }
+      #loading .bar { width: 260px; height: 3px; background: rgba(255,255,255,0.15); border-radius: 2px; overflow: hidden; }
+      #loading .bar > div { height: 100%; width: 0%; background: #6fd7c4; transition: width 0.3s ease; }
+      #loading.done { opacity: 0; pointer-events: none; }
+      /* name gate: shows up front so you can type a name while the city streams
+         in; the Start button stays disabled until load completes (.ready) */
+      #loading .start-form { display: flex; margin-top: 4px; gap: 10px; align-items: center; animation: startin 0.35s ease; }
+      #loading.ready .bar, #loading.ready [data-loading-label] { display: none; }
+      @keyframes startin { from { opacity: 0; transform: translateY(8px); } }
+      #loading .start-form input {
+        width: 210px; padding: 9px 12px; border-radius: 8px; outline: none;
+        background: rgba(10, 24, 36, 0.6); color: #eaf4f8;
+        border: 1px solid rgba(190, 225, 240, 0.28);
+        font: 500 14px "Avenir Next", "Helvetica Neue", sans-serif;
+        letter-spacing: 0.02em; text-align: center;
+        transition: border-color 0.15s;
+      }
+      #loading .start-form input:focus { border-color: #6fd7c4; }
+      #loading .start-form input::placeholder { color: rgba(234, 244, 248, 0.38); }
+      #loading .start-form button {
+        padding: 9px 22px; border-radius: 8px; cursor: pointer;
+        background: #6fd7c4; color: #0b1520; border: none;
+        font: 600 14px "Avenir Next", "Helvetica Neue", sans-serif;
+        letter-spacing: 0.06em; text-transform: uppercase;
+        transition: transform 0.12s, background 0.15s;
+      }
+      #loading .start-form button:hover:not(:disabled) { background: #8ceedd; transform: translateY(-1px); }
+      #loading .start-form button:disabled { background: rgba(111, 215, 196, 0.3); color: rgba(11, 21, 32, 0.6); cursor: default; }
+      #loading .start-hint { font-size: 11px; opacity: 0.7; text-shadow: 0 1px 4px rgba(0, 8, 14, 0.8); }
+      #loading .controls-hint {
+        margin-top: 16px; display: flex; flex-direction: column; gap: 7px; align-items: center;
+        font-size: 12px; opacity: 0.9; text-shadow: 0 1px 4px rgba(0, 8, 14, 0.8);
+      }
+      #loading .controls-hint .row { display: inline-flex; align-items: center; gap: 8px; }
+      #loading .controls-hint .k {
+        display: inline-flex; align-items: center; justify-content: center;
+        min-width: 10px; height: 18px; padding: 0 6px; border-radius: 4px;
+        background: rgba(18, 40, 56, 0.6); border: 1px solid rgba(190, 225, 240, 0.35);
+        box-shadow: 0 1px 0 rgba(190, 225, 240, 0.16);
+        font-size: 10.5px; font-weight: 600; letter-spacing: 0.02em; line-height: 1;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="hud">
+      <div class="br-stack">
+        <div class="help" data-hud="help"></div>
+      </div>
+      <div class="center" data-hud="center"></div>
+      <button type="button" class="ui-restore" data-ui-restore title="Show UI (Tab)" aria-label="Show UI">
+        <span class="ic" aria-hidden="true">▤</span>
+      </button>
+    </div>
+    <div id="loading">
+      <h1>San Francisco</h1>
+      <div class="bar"><div data-loading-bar></div></div>
+      <div data-loading-label style="font-size:12px; opacity:0.7"></div>
+      <form class="start-form" data-start-form>
+        <input data-name-input type="text" maxlength="20" autocomplete="off" spellcheck="false" aria-label="Your name" autofocus />
+        <button type="submit" disabled>Start</button>
+      </form>
+      <div class="start-hint">pick a name, or roll with the one we gave you</div>
+      <div class="controls-hint" aria-label="Essential controls">
+        <div class="row"><span class="k">Tab</span><span>toggle UI</span></div>
+        <div class="row"><span class="k">Esc</span><span>release mouse</span></div>
+      </div>
+    </div>
+    <script type="module" src="/src/analyticsClient.ts"></script>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

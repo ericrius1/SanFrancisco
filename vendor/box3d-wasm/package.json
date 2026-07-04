@@ -1,0 +1,55 @@
+{
+  "name": "box3d-wasm",
+  "version": "0.1.0",
+  "description": "A small TypeScript and WebAssembly wrapper around Box3D for browser games and simulations.",
+  "type": "module",
+  "license": "MIT",
+  "homepage": "https://box3d-wasm.vercel.app",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ericrius1/box3d-wasm-test.git",
+    "directory": "packages/box3d-wasm"
+  },
+  "bugs": {
+    "url": "https://github.com/ericrius1/box3d-wasm-test/issues"
+  },
+  "keywords": [
+    "box3d",
+    "wasm",
+    "physics",
+    "rigid-body",
+    "threejs",
+    "simulation"
+  ],
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./box3d": {
+      "types": "./dist/box3d.d.mts",
+      "import": "./dist/box3d.mjs"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "native",
+    "scripts",
+    "vendor/box3d/include",
+    "vendor/box3d/src",
+    "vendor/box3d/LICENSE",
+    "vendor/box3d/README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "build:wasm": "node scripts/build.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}
+

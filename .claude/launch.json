@@ -1,0 +1,18 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "sf",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 5179
+    },
+    {
+      "name": "sf-verify",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c", "SF_RELAY_PORT=8788 exec npm run dev -- --port \"$PORT\" --strictPort"],
+      "port": 5240,
+      "autoPort": true
+    }
+  ]
+}

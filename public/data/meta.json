@@ -1,0 +1,191 @@
+{
+  "grid": {
+    "cellSize": 8,
+    "width": 1888,
+    "height": 1736,
+    "minX": -7168,
+    "minZ": -8896
+  },
+  "bbox": {
+    "south": 37.745,
+    "north": 37.87,
+    "west": -122.525,
+    "east": -122.355
+  },
+  "origin": {
+    "lat": 37.79,
+    "lon": -122.444
+  },
+  "mPerDegLat": 110574,
+  "mPerDegLon": 87971.96281224603,
+  "tile": 800,
+  "tilesX": 19,
+  "tilesZ": 18,
+  "seaLevel": 0,
+  "bridges": [
+    {
+      "name": "Golden Gate Bridge",
+      "line": [
+        [
+          -2882,
+          -1500,
+          62
+        ],
+        [
+          -2947,
+          -2289,
+          69
+        ],
+        [
+          -3017,
+          -3306,
+          69
+        ],
+        [
+          -3110,
+          -4640,
+          60
+        ],
+        [
+          -3150,
+          -5100,
+          20
+        ]
+      ],
+      "width": 24,
+      "towers": [
+        [
+          -2947,
+          -2289
+        ],
+        [
+          -3017,
+          -3306
+        ]
+      ],
+      "towerHeight": 227,
+      "deckThickness": 4,
+      "color": "internationalOrange"
+    },
+    {
+      "name": "Bay Bridge",
+      "line": [
+        [
+          4680,
+          640,
+          6
+        ],
+        [
+          4830,
+          500,
+          40
+        ],
+        [
+          4953,
+          376,
+          58
+        ],
+        [
+          6862,
+          -2267,
+          60
+        ],
+        [
+          7160,
+          -2680,
+          60
+        ]
+      ],
+      "width": 26,
+      "towers": [
+        [
+          5430,
+          -284
+        ],
+        [
+          5910,
+          -945
+        ],
+        [
+          6390,
+          -1606
+        ]
+      ],
+      "towerHeight": 158,
+      "deckThickness": 5,
+      "color": "gray"
+    }
+  ],
+  "landmarks": {
+    "transamerica": {
+      "x": 3680,
+      "z": 32,
+      "note": "computed in blender build"
+    },
+    "salesforce": {
+      "x": 4117,
+      "z": 33
+    },
+    "coit": {
+      "x": 3366,
+      "z": -1360
+    },
+    "ferry": {
+      "x": 4425,
+      "z": -608
+    },
+    "alcatraz": {
+      "x": 1848,
+      "z": -4058
+    },
+    "sutro": {
+      "x": -782,
+      "z": 3846
+    },
+    "palaceFineArts": {
+      "x": -388,
+      "z": -1426
+    },
+    "exploratorium": {
+      "x": 4085,
+      "z": -1272
+    }
+  },
+  "spawns": {
+    "coit": {
+      "x": 3366,
+      "z": -1405,
+      "heading": 3.14
+    },
+    "embarcadero": {
+      "x": 4340,
+      "z": -380,
+      "heading": 1.8
+    },
+    "downtown": {
+      "x": 3900,
+      "z": 200,
+      "heading": 0.5
+    },
+    "marina": {
+      "x": -700,
+      "z": -2350,
+      "heading": 0
+    },
+    "bay": {
+      "x": 3000,
+      "z": -2600,
+      "heading": 2.4
+    },
+    "goldenGate": {
+      "x": -2900,
+      "z": -1900,
+      "heading": 0
+    },
+    "palaceFineArts": {
+      "x": -360,
+      "z": -1426,
+      "heading": 1.57
+    }
+  }
+}

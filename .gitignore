@@ -1,0 +1,7 @@
+node_modules/
+/dist/
+.data/
+data/raw/
+data/city/
+.DS_Store
+*.blend1

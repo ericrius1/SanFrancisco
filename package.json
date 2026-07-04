@@ -1,0 +1,40 @@
+{
+  "name": "sanfrancisco",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "capture:reel": "node tools/capture-reel.mjs",
+    "capture:reel2": "node tools/capture-reel2.mjs",
+    "capture:reel3": "SF_CAPTURE_DEMO=reel3 SF_CAPTURE_SECONDS=25 node tools/capture-reel2.mjs",
+    "capture:frames": "node tools/capture-frames.mjs",
+    "preview": "vite preview",
+    "server": "node server/server.mjs",
+    "start": "node server/server.mjs",
+    "fetch:osm": "node tools/fetch-osm.mjs",
+    "fetch:terrain": "node tools/fetch-terrain.mjs",
+    "prepare:city": "node tools/prepare-city.mjs",
+    "optimize:tiles": "node tools/optimize-tiles.mjs",
+    "sync:box3d": "rm -rf vendor/box3d-wasm && mkdir -p vendor/box3d-wasm && cp -R ../box3d-wasm/packages/box3d-wasm/dist ../box3d-wasm/packages/box3d-wasm/package.json vendor/box3d-wasm/ && npm install"
+  },
+  "dependencies": {
+    "box3d-wasm": "file:vendor/box3d-wasm",
+    "camera-controls": "^3.1.2",
+    "three": "^0.185.1",
+    "tweakpane": "^4.0.5",
+    "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "@gltf-transform/core": "^4.4.1",
+    "@gltf-transform/extensions": "^4.4.1",
+    "@gltf-transform/functions": "^4.4.1",
+    "@tweakpane/core": "^2.0.5",
+    "@types/three": "^0.185.0",
+    "meshoptimizer": "^1.2.0",
+    "pngjs": "^7.0.0",
+    "typescript": "^5.7.2",
+    "vite": "^6.3.5"
+  }
+}

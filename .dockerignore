@@ -1,0 +1,8 @@
+node_modules
+dist
+.git
+data
+.claude
+perf-profile*.png
+Dockerfile
+README.md
