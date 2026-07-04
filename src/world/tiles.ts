@@ -1,7 +1,7 @@
 import * as THREE from "three/webgpu";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
-import { CONFIG } from "../config";
+import { CONFIG, LIGHT_SCALE } from "../config";
 import { createFacadeMaterial, BASEY_OFFSET, BASEY_SCALE, TOPH_SCALE } from "./facade";
 import { createRoadMaterial, createParkMaterial } from "./streets";
 import { createCrownMaterial } from "./salesforceCrown";
@@ -133,6 +133,14 @@ const plainMat = new THREE.MeshStandardMaterial({
   roughness: 0.92,
   metalness: 0
 });
+const goldenGateMat = new THREE.MeshStandardMaterial({
+  color: 0xffb18a,
+  vertexColors: true,
+  roughness: 0.72,
+  metalness: 0.08,
+  emissive: 0xff5418,
+  emissiveIntensity: 0.045 * LIGHT_SCALE
+});
 // one shared TSL material per surface family (world-position keyed, so sharing is free)
 const roadMat = createRoadMaterial();
 const parkMat = createParkMaterial();
@@ -197,6 +205,8 @@ export class TileStreamer {
           // cylinder axis + display height range
           mesh.geometry.computeBoundingBox();
           mesh.material = createCrownMaterial(mesh.geometry.boundingBox!);
+        } else if (mesh.name === "lm_bridge_goldengate") {
+          mesh.material = goldenGateMat;
         } else {
           mesh.material = plainMat;
         }

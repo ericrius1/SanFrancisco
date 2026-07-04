@@ -396,7 +396,7 @@ export class Fireworks {
         const grow = smoothstep(0.0, 0.06, t).mul(0.55).add(0.45);
         const scl = select(
           isRocket,
-          pos.w,
+          float(0), // hide the bright launch ball — the ascent reads as just its trail
           select(
             isTrail,
             pos.w.mul(inv.mul(0.75).add(0.25)),

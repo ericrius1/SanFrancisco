@@ -576,6 +576,13 @@ export class Minimap {
       size
     );
 
+    const mc = size / 2;
+    this.#drawBridges(
+      ctx,
+      (x) => mc + (x - center.x) * pxPerM,
+      (z) => mc + (z - center.z) * pxPerM,
+      pxPerM
+    );
     if (LAYERS_ENABLED) this.#drawMiniPlaces(ctx, center, pxPerM, size);
     this.#drawMiniLandmarks(ctx, center, pxPerM, size);
 
@@ -903,6 +910,53 @@ export class Minimap {
       ctx.stroke();
     }
     ctx.restore();
+  }
+
+  /** Paint every bridge deck as a coloured polyline (International Orange for
+   * the Golden Gate, gray for the Bay Bridge) with tower dots. Shared by the
+   * mini and expanded maps via the passed-in projection. */
+  #drawBridges(
+    ctx: CanvasRenderingContext2D,
+    px: (x: number) => number,
+    pz: (z: number) => number,
+    pxPerM: number
+  ) {
+    const dpr = this.#dpr;
+    for (const br of this.#map.meta.bridges) {
+      const line = br.line;
+      if (!line || line.length < 2) continue;
+      const color = (br.color && BRIDGE_COLORS[br.color]) || BRIDGE_FALLBACK_COLOR;
+      // deck thickness in screen px, tracking real width but clamped for reads
+      const deckPx = Math.max(2.2 * dpr, Math.min(br.width * pxPerM, 9 * dpr));
+      ctx.save();
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      for (let i = 0; i < line.length; i++) {
+        const x = px(line[i][0]);
+        const y = pz(line[i][1]);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      // dark casing under the deck for contrast against water
+      ctx.strokeStyle = "rgba(6,14,20,0.55)";
+      ctx.lineWidth = deckPx + 2 * dpr;
+      ctx.stroke();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = deckPx;
+      ctx.stroke();
+      // towers as small filled nodes riding the deck
+      for (const [tx, tz] of br.towers) {
+        ctx.beginPath();
+        ctx.arc(px(tx), pz(tz), Math.max(1.6 * dpr, deckPx * 0.62), 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(8,16,22,0.9)";
+        ctx.fill();
+        ctx.lineWidth = 1.2 * dpr;
+        ctx.strokeStyle = color;
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
   }
 
   #drawMiniLandmarks(ctx: CanvasRenderingContext2D, center: { x: number; z: number }, pxPerM: number, size: number) {
@@ -1318,6 +1372,9 @@ export class Minimap {
     const pz = (z: number) => canvas.height / 2 + (z - center.z) * sy;
     const visible = (x: number, y: number, margin = 16 * dpr) =>
       x >= -margin && y >= -margin && x <= canvas.width + margin && y <= canvas.height + margin;
+
+    // bridge decks under the pins
+    this.#drawBridges(ctx, px, pz, sx);
 
     // landmarks — clickable teal dots
     this.#bigLandmarkHits = [];

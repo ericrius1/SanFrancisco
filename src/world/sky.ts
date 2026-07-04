@@ -22,6 +22,7 @@ import {
 } from "three/tsl"
 import { CROWN_INTENSITY } from "./salesforceCrown"
 import { BAY_LIGHTS_INTENSITY } from "./bayLights"
+import { GOLDEN_GATE_LIGHTS_INTENSITY } from "./goldenGateLights"
 import { PALACE_GLOW_INTENSITY } from "./palaceGlow"
 import { SUTRO_LIGHTS_INTENSITY } from "./sutroTower"
 import { LIGHT_SCALE, RENDER_TUNING, SHADOW_QUALITY, WORLD_TUNING, type ShadowQuality } from "../config"
@@ -477,6 +478,9 @@ export class Sky {
     // the Bay Lights fade up as the sun drops: faint at noon, full art after dark
     BAY_LIGHTS_INTENSITY.value =
       LIGHT_SCALE * (0.7 * dayW + 1.7 * goldW + 2.6 * nightW)
+    // Golden Gate architectural lighting: visible at sunset, brilliant at night.
+    GOLDEN_GATE_LIGHTS_INTENSITY.value =
+      LIGHT_SCALE * (0.55 * dayW + 2.1 * goldW + 3.0 * nightW)
     // palace floodlights: off in daylight, warming through golden hour
     PALACE_GLOW_INTENSITY.value =
       LIGHT_SCALE * (0.03 * dayW + 0.62 * goldW + 1.35 * nightW)

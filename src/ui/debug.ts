@@ -15,6 +15,7 @@ import type { PlayerMode } from "../player/types";
 import { DEBRIS_LIGHTS, WINDOW_GLOW } from "../world/facade";
 import { CROWN_SLIDERS, CROWN_TUNING } from "../world/salesforceCrown";
 import { BAY_LIGHTS_SLIDERS, BAY_LIGHTS_TUNING } from "../world/bayLights";
+import { GOLDEN_GATE_LIGHTS_SLIDERS, GOLDEN_GATE_LIGHTS_TUNING } from "../world/goldenGateLights";
 import { PALACE_GLOW_SLIDERS, PALACE_GLOW_TUNING } from "../world/palaceGlow";
 import { SKY_TUNING, type Sky } from "../world/sky";
 import { POSTFX_TUNING, POSTFX_TOGGLES, POSTFX_QUALITY_KEYS, applyPostFxParams } from "../render/postfx";
@@ -347,6 +348,11 @@ export class DebugPanel {
     const bay = advanced.addFolder({ title: "bay lights" });
     BAY_LIGHTS_SLIDERS.bind(bay, {
       onChange: (key, value) => (BAY_LIGHTS_TUNING[key].value = value as number)
+    });
+
+    const goldenGate = advanced.addFolder({ title: "golden gate lights" });
+    GOLDEN_GATE_LIGHTS_SLIDERS.bind(goldenGate, {
+      onChange: (key, value) => (GOLDEN_GATE_LIGHTS_TUNING[key].value = value as number)
     });
 
     const palace = advanced.addFolder({ title: "palace aura" });

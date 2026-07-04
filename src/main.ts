@@ -12,6 +12,7 @@ import { Physics } from "./core/physics";
 import { createDebrisMaterial, DEBRIS_LIGHTS, WINDOW_GLOW } from "./world/facade";
 import { updateCrownDisplay, resetCrownTweaks } from "./world/salesforceCrown";
 import { createBayLights, updateBayLights, resetBayLightsTweaks } from "./world/bayLights";
+import { createGoldenGateLights, updateGoldenGateLights, resetGoldenGateLightsTweaks } from "./world/goldenGateLights";
 import { createPalaceGlow, updatePalaceGlow, resetPalaceGlowTweaks } from "./world/palaceGlow";
 import { createPalaceColonnade, PALACE_RING_BUILDINGS } from "./world/palaceColonnade";
 import { createSutroTower, updateSutroTower, resetSutroLightsTweaks } from "./world/sutroTower";
@@ -308,6 +309,8 @@ async function boot() {
 
   const bayLights = createBayLights(map);
   if (bayLights) scene.add(bayLights);
+  const goldenGateLights = createGoldenGateLights(map);
+  if (goldenGateLights) scene.add(goldenGateLights);
   const palaceGlow = createPalaceGlow(map);
   scene.add(palaceGlow);
   // Palace of Fine Arts peristyle: the OSM data carries the curved colonnade as
@@ -1206,6 +1209,7 @@ async function boot() {
       resetAllTweaks();
       resetCrownTweaks();
       resetBayLightsTweaks();
+      resetGoldenGateLightsTweaks();
       resetPalaceGlowTweaks();
       resetSutroLightsTweaks();
       START.spawn = START_DEFAULTS.spawn;
@@ -1243,6 +1247,7 @@ async function boot() {
     }
     updateCrownDisplay(frameDt);
     updateBayLights(frameDt);
+    updateGoldenGateLights(frameDt);
     // the Palace orb (and its 400+ drifting motes) only runs with someone
     // near enough to see it — same locality rule as the Exploratorium rooms
     const palaceNear =
@@ -1703,7 +1708,7 @@ async function boot() {
 
   const exposeDebugHooks = () => {
     Object.assign(window as never, {
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, props, exploratorium, traffic, creatures, forest, flora, splashes, vehicleAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, truckLaunchers }
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, props, exploratorium, traffic, creatures, forest, flora, splashes, vehicleAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, truckLaunchers, goldenGateLights }
     });
   };
   if (import.meta.env.DEV || new URLSearchParams(location.search).has("profile")) {

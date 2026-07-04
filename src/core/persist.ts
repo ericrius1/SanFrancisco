@@ -9,7 +9,7 @@ import type { PlayerMode } from "../player/types";
 
 const TWEAKS_KEY = "sf-tweaks";
 const TWEAKS_SCHEMA_KEY = "sf-tweaks-schema";
-const TWEAKS_SCHEMA = "2026-07-render-quality";
+const TWEAKS_SCHEMA = "2026-07-golden-gate-lights";
 const PLAYER_KEY = "sf-player";
 
 const saved: Record<string, unknown> = (() => {
