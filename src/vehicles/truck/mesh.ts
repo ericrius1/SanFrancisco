@@ -21,22 +21,18 @@ function buildEagle(): THREE.Group {
   body.position.y = 0.55;
   body.castShadow = true;
   g.add(body);
-  // pale chest
   const chest = new THREE.Mesh(new THREE.SphereGeometry(0.44, 16, 14), white);
   chest.scale.set(0.82, 1.0, 0.62);
   chest.position.set(0, 0.5, -0.24);
   g.add(chest);
-  // white head
   const head = new THREE.Mesh(new THREE.SphereGeometry(0.32, 18, 14), white);
   head.position.set(0, 1.12, -0.14);
   head.castShadow = true;
   g.add(head);
-  // gold hooked beak
   const beak = new THREE.Mesh(new THREE.ConeGeometry(0.13, 0.34, 12), gold);
   beak.rotation.x = -Math.PI / 2;
   beak.position.set(0, 1.06, -0.46);
   g.add(beak);
-  // brow ridges + eyes for the stern glare
   for (const sx of [-0.13, 0.13]) {
     const eye = new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 8), dark);
     eye.position.set(sx, 1.18, -0.32);
@@ -57,13 +53,11 @@ function buildEagle(): THREE.Group {
   };
   wing(1);
   wing(-1);
-  // white tail fan
   const tail = new THREE.Mesh(new THREE.ConeGeometry(0.42, 0.55, 12), white);
   tail.rotation.x = Math.PI / 2 - 0.35;
   tail.scale.set(1, 0.35, 1);
   tail.position.set(0, 0.38, 0.55);
   g.add(tail);
-  // gold talons gripping the roof
   for (const sx of [-0.22, 0.22]) {
     const foot = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.03, 0.22, 8), gold);
     foot.position.set(sx, 0.02, -0.08);
@@ -72,43 +66,47 @@ function buildEagle(): THREE.Group {
   return g;
 }
 
-/** A small flag flying from a short pole (roof corners, front bumper). */
+/** A flag flying from a pole (bed rails, front fender). */
 function poleFlag(height: number, flagW: number, flagH: number, phase = 0): THREE.Group {
   const g = new THREE.Group();
   const pole = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.03, 0.03, height, 8),
+    new THREE.CylinderGeometry(0.04, 0.04, height, 8),
     new THREE.MeshLambertMaterial({ color: 0x8a8f96 })
   );
   pole.position.y = height / 2;
   g.add(pole);
-  const knob = new THREE.Mesh(new THREE.SphereGeometry(0.055, 8, 8), new THREE.MeshLambertMaterial({ color: 0xf2b01a }));
-  knob.position.y = height + 0.02;
+  const knob = new THREE.Mesh(new THREE.SphereGeometry(0.07, 8, 8), new THREE.MeshLambertMaterial({ color: 0xf2b01a }));
+  knob.position.y = height + 0.03;
   g.add(knob);
-  const flag = buildFlag({ w: flagW, h: flagH, amp: 0.12, speed: 6, phase });
+  const flag = buildFlag({ w: flagW, h: flagH, amp: 0.13, speed: 6, phase });
   flag.position.set(0.02, height - flagH * 0.6, 0);
   g.add(flag);
   return g;
 }
 
 /**
- * The Freedom Truck: an open golf-cart pickup with a canopy roof, a blow-up
- * eagle and a spread of American flags/bunting up top, and two mounted
- * launchers in the bed (a firework honeycomb + a rider rocket). All the cloth
- * ripples in the wind. Front is local -Z (matches TruckController's forward).
+ * The Freedom Truck: an epic flatbed monster (bigger than a heavy pickup,
+ * shy of a semi) — tall crew cab up front, a vast open cargo bed behind, six
+ * fat wheels. A blow-up eagle rides the cab roof and American flags/bunting fly
+ * all over, every panel rippling in the wind. Two launchers sit way apart on
+ * the bed: a firework honeycomb and a rider rocket. Front is local -Z (matches
+ * TruckController's forward).
  *
- * The launchers hang off a LauncherRig exposed on `userData.launcherRig`; the
- * host is dependency-free — main.ts injects the fireworks/rocket-rider systems
- * at fire time.
+ * The launchers hang off a LauncherRig on `userData.launcherRig`; the host is
+ * dependency-free — main.ts injects the fireworks/rocket-rider systems at fire
+ * time, so the same rig drops onto a boat later untouched.
  */
 export function buildTruckMesh(): THREE.Group {
   const g = new THREE.Group();
-  const bodyMat = new THREE.MeshLambertMaterial({ color: 0x23262c });
-  const trim = new THREE.MeshLambertMaterial({ color: 0x121419 });
+  const bodyMat = new THREE.MeshLambertMaterial({ color: 0x262a31 });
+  const panel = new THREE.MeshLambertMaterial({ color: 0x1c1f25 });
+  const trim = new THREE.MeshLambertMaterial({ color: 0x0f1115 });
+  const deckMat = new THREE.MeshLambertMaterial({ color: 0x39312a }); // wood-ish flatbed
   const seatMat = new THREE.MeshLambertMaterial({ color: 0x6b4a30 });
   const glass = new THREE.MeshLambertMaterial({ color: 0x0e141c });
-  const chrome = new THREE.MeshLambertMaterial({ color: 0xb9bdc4 });
-  const headlight = new THREE.MeshLambertMaterial({ color: 0xfff4c9, emissive: 0xffedb0, emissiveIntensity: 2.4 * LIGHT_SCALE });
-  const taillight = new THREE.MeshLambertMaterial({ color: 0xd41818, emissive: 0xff1a10, emissiveIntensity: 2.6 * LIGHT_SCALE });
+  const chrome = new THREE.MeshLambertMaterial({ color: 0xc2c6cd });
+  const headlight = new THREE.MeshLambertMaterial({ color: 0xfff4c9, emissive: 0xffedb0, emissiveIntensity: 2.6 * LIGHT_SCALE });
+  const taillight = new THREE.MeshLambertMaterial({ color: 0xd41818, emissive: 0xff1a10, emissiveIntensity: 2.8 * LIGHT_SCALE });
 
   const box = (mat: THREE.Material, w: number, h: number, d: number, x: number, y: number, z: number, rx = 0) => {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
@@ -119,85 +117,94 @@ export function buildTruckMesh(): THREE.Group {
     return m;
   };
 
-  // --- chassis: chunky low tub, front hood, raised rear cargo bed
-  box(bodyMat, 2.2, 0.62, 4.0, 0, 0.05, 0);
-  box(trim, 2.26, 0.2, 4.05, 0, -0.24, 0); // rocker skirt
-  box(bodyMat, 2.08, 0.34, 1.2, 0, 0.28, -1.55); // hood
-  // cab floor + bench
-  box(trim, 1.94, 0.1, 1.7, 0, 0.42, -0.9);
-  box(seatMat, 1.9, 0.18, 0.66, 0, 0.6, -0.5);
-  box(seatMat, 1.9, 0.52, 0.16, 0, 0.86, -0.14);
-  box(trim, 2.0, 0.34, 0.22, 0, 0.82, -1.55); // dash
-  // cargo bed at the rear (launchers bolt in here)
-  box(trim, 2.0, 0.12, 1.8, 0, 0.5, 1.2); // bed floor
-  box(bodyMat, 0.12, 0.44, 1.8, 1.0, 0.7, 1.2); // bed wall R
-  box(bodyMat, 0.12, 0.44, 1.8, -1.0, 0.7, 1.2); // bed wall L
-  box(bodyMat, 2.0, 0.44, 0.12, 0, 0.7, 2.06); // tailgate
-  // canopy roof on four posts over the cab
-  for (const [px, pz] of [[-1.0, -1.95], [1.0, -1.95], [-1.0, 0.25], [1.0, 0.25]] as const) {
-    box(trim, 0.1, 1.0, 0.1, px, 1.2, pz);
-  }
-  box(bodyMat, 2.34, 0.1, 2.5, 0, 1.72, -0.85); // roof panel
-  box(trim, 2.4, 0.08, 0.16, 0, 1.68, -2.08); // front eave (bunting hangs here)
-  box(glass, 2.0, 0.62, 0.06, 0, 1.2, -1.98, 0.32); // windshield
-  // front face: bumper, grille, headlights
-  box(trim, 2.3, 0.28, 0.24, 0, -0.06, -2.06);
-  box(chrome, 1.0, 0.16, 0.06, 0, 0.16, -2.14);
-  box(headlight, 0.34, 0.18, 0.1, -0.76, 0.16, -2.12);
-  box(headlight, 0.34, 0.18, 0.1, 0.76, 0.16, -2.12);
-  // rear: bumper + light bar
-  box(trim, 2.3, 0.28, 0.24, 0, -0.06, 2.06);
-  box(taillight, 1.7, 0.14, 0.1, 0, 0.36, 2.13);
+  // --- ladder frame running the whole length
+  box(trim, 2.7, 0.42, 9.2, 0, -0.42, 0);
+  box(panel, 3.0, 0.3, 9.0, 0, -0.66, 0); // rocker/skirt
 
-  g.userData.cockpit = { seat: [-0.48, 0.74, -0.42], wheel: [-0.48, 0.98, -0.98] } satisfies Cockpit;
+  // --- tall crew cab up front (z −4.6 … −1.3)
+  box(bodyMat, 2.86, 1.7, 3.3, 0, 0.62, -2.95);
+  box(bodyMat, 2.9, 0.16, 3.4, 0, 1.52, -2.95); // roof
+  box(glass, 2.66, 1.0, 0.12, 0, 0.95, -4.58, 0.28); // windshield
+  box(glass, 2.66, 0.62, 0.1, 0, 0.86, -1.32); // rear cab glass
+  for (const sx of [-1.44, 1.44]) box(glass, 0.08, 0.8, 2.2, sx, 0.9, -3.0); // side windows
+  box(panel, 2.9, 0.2, 3.4, 0, 1.62, -2.95); // roof cap (eagle perch)
+  // hood + snout
+  box(bodyMat, 2.8, 0.66, 1.5, 0, 0.2, -5.05);
+  box(trim, 3.0, 0.8, 0.4, 0, 0.0, -5.78); // front bumper
+  box(chrome, 1.7, 0.5, 0.1, 0, 0.32, -5.84); // grille
+  box(headlight, 0.5, 0.26, 0.14, -1.0, 0.32, -5.82);
+  box(headlight, 0.5, 0.26, 0.14, 1.0, 0.32, -5.82);
 
-  // --- chunky off-road wheels
-  const wheelGeo = new THREE.CylinderGeometry(0.5, 0.5, 0.44, 18);
+  // --- huge flatbed (z −0.9 … 4.7, ~5.6 m of deck)
+  box(deckMat, 3.0, 0.28, 5.7, 0, 0.02, 1.9);
+  for (const px of [-0.9, -0.3, 0.3, 0.9]) box(trim, 0.05, 0.3, 5.7, px, 0.03, 1.9); // plank seams
+  box(bodyMat, 3.0, 0.66, 0.18, 0, 0.4, -0.95); // headboard behind cab
+  box(bodyMat, 0.18, 0.5, 5.7, 1.45, 0.32, 1.9); // side rail R
+  box(bodyMat, 0.18, 0.5, 5.7, -1.45, 0.32, 1.9); // side rail L
+  box(bodyMat, 3.0, 0.5, 0.18, 0, 0.32, 4.72); // tailgate
+  box(taillight, 2.4, 0.16, 0.12, 0, 0.5, 4.8);
+
+  g.userData.cockpit = { seat: [-0.62, 0.72, -3.0], wheel: [-0.62, 1.06, -3.75] } satisfies Cockpit;
+
+  // cab interior: bench + dash (driver rig sits here, visible through the glass)
+  box(seatMat, 2.4, 0.2, 0.7, 0, 0.5, -2.7);
+  box(seatMat, 2.4, 0.7, 0.18, 0, 0.86, -2.3);
+  box(trim, 2.5, 0.3, 0.24, 0, 0.7, -4.2); // dash
+
+  // --- six fat off-road wheels (front axle + rear tandem)
+  const wheelGeo = new THREE.CylinderGeometry(0.85, 0.85, 0.6, 20);
   wheelGeo.rotateZ(Math.PI / 2);
-  const hubGeo = new THREE.CylinderGeometry(0.22, 0.22, 0.46, 10);
+  const hubGeo = new THREE.CylinderGeometry(0.34, 0.34, 0.62, 12);
   hubGeo.rotateZ(Math.PI / 2);
   const tyre = new THREE.MeshLambertMaterial({ color: 0x14161a });
-  for (const [wx, wz] of [[-1.02, -1.45], [1.02, -1.45], [-1.02, 1.5], [1.02, 1.5]] as const) {
-    const wheel = new THREE.Mesh(wheelGeo, tyre);
-    wheel.position.set(wx, -0.28, wz);
-    wheel.castShadow = true;
-    g.add(wheel);
-    const hub = new THREE.Mesh(hubGeo, chrome);
-    hub.position.set(wx, -0.28, wz);
-    g.add(hub);
+  for (const wz of [-3.5, 2.5, 3.9]) {
+    for (const wx of [-1.42, 1.42]) {
+      const wheel = new THREE.Mesh(wheelGeo, tyre);
+      wheel.position.set(wx, -0.66, wz);
+      wheel.castShadow = true;
+      g.add(wheel);
+      const hub = new THREE.Mesh(hubGeo, chrome);
+      hub.position.set(wx, -0.66, wz);
+      g.add(hub);
+    }
   }
 
-  // --- roof decor: blow-up eagle, bunting, corner flags
+  // --- roof decor: a big blow-up eagle
   const eagle = buildEagle();
-  eagle.position.set(0, 1.78, -0.7);
-  eagle.scale.setScalar(1.15);
+  eagle.position.set(0, 1.72, -2.7);
+  eagle.scale.setScalar(1.7);
   g.add(eagle);
 
-  const bunting = buildBunting({ span: 2.0, count: 9, drop: 0.26, sag: 0.14 });
-  bunting.position.set(-1.0, 1.66, -2.06);
+  // bunting swagged across the headboard, above the bed
+  const bunting = buildBunting({ span: 2.8, count: 11, drop: 0.32, sag: 0.18 });
+  bunting.position.set(-1.4, 0.95, -0.85);
   g.add(bunting);
 
-  for (const sx of [-0.95, 0.95] as const) {
-    const cf = poleFlag(0.7, 0.66, 0.42, sx > 0 ? 0.5 : 1.7);
-    cf.position.set(sx, 1.74, 0.3);
-    g.add(cf);
+  // a run of flags flying off both bed rails
+  for (const sx of [-1.42, 1.42] as const) {
+    for (let i = 0; i < 3; i++) {
+      const f = poleFlag(1.1, 0.8, 0.5, i * 0.7 + (sx > 0 ? 0.3 : 1.5));
+      f.position.set(sx, 0.5, 0.4 + i * 1.9);
+      g.add(f);
+    }
   }
 
-  // --- big flags: draped over the passenger side + a tall pole up front
-  const sideFlag = buildDrape({ w: 1.7, h: 1.15, amp: 0.13, speed: 4.6 });
-  sideFlag.rotation.y = Math.PI / 2; // face +X (passenger side)
-  sideFlag.position.set(1.12, 0.98, -0.55);
+  // --- big flag draped down the passenger side of the bed + a tall fender pole
+  const sideFlag = buildDrape({ w: 3.0, h: 1.5, amp: 0.15, speed: 4.6 });
+  sideFlag.rotation.y = Math.PI / 2; // face +X
+  sideFlag.position.set(1.56, 0.9, 1.9);
   g.add(sideFlag);
 
-  const frontPole = poleFlag(1.5, 0.9, 0.58);
-  frontPole.position.set(-0.98, 0.1, -2.0);
+  const frontPole = poleFlag(2.4, 1.3, 0.82);
+  frontPole.position.set(-1.35, 0.2, -5.2);
   g.add(frontPole);
 
-  // --- the two launchers, bolted into the bed
+  // --- the two launchers, spaced way apart on the big deck
   const rig = new LauncherRig(g);
-  rig.add(new FireworkLauncher({ rows: 3, cols: 5, fuse: 5 }), [-0.62, 0.98, 1.28], [-0.16, 0, 0.34]);
-  const rail = rig.add(new RiderRocketLauncher({ buildRider: buildGuitarPlayer }), [0.64, 0.86, 1.05], [0, -0.18, 0]);
-  rail.group.scale.setScalar(0.82);
+  const comb = rig.add(new FireworkLauncher({ rows: 4, cols: 6, fuse: 5 }), [-0.72, 0.42, 2.9], [-0.14, 0, 0.26]);
+  comb.group.scale.setScalar(1.35);
+  const rail = rig.add(new RiderRocketLauncher({ buildRider: buildGuitarPlayer }), [0.78, 0.5, 1.2], [0, -0.16, 0]);
+  rail.group.scale.setScalar(1.25);
   g.userData.launcherRig = rig;
 
   return g;

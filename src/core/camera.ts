@@ -12,7 +12,7 @@ const OFFSETS: Record<PlayerMode, { back: number; up: number; look: number }> = 
   drone: { back: 7, up: 1.9, look: 0.4 },
   board: { back: 7.5, up: 2.6, look: 1.3 },
   bird: { back: 8, up: 2.1, look: 0.4 },
-  truck: { back: 11.5, up: 4.2, look: 1.3 }
+  truck: { back: 20, up: 8, look: 1.8 }
 };
 
 /**

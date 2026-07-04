@@ -47,7 +47,7 @@ import { PALACE_FINE_ARTS } from "./world/heightmap";
 import { Loot } from "./gameplay/loot";
 import { Hunt } from "./gameplay/hunt";
 import { Quidditch, QUIDDITCH_PITCH, type QuidditchRole, type QuidditchTeam } from "./gameplay/quidditch";
-import { QuidditchHUD } from "./ui/quidditchHud";
+import { QuidditchHUD, type QuidditchStartMode } from "./ui/quidditchHud";
 import { QuidditchAudio } from "./fx/quidditchAudio";
 import { Ropes, Grabber, type PickCandidate } from "./gameplay/ropes";
 import { Satchel } from "./ui/satchel";
@@ -259,15 +259,18 @@ async function boot() {
   quidditch.onMessage = (m, s) => hud.message(m, s);
   quidditch.onActiveChange = (on) => quidHud.setActive(on);
   quidditch.onWhistle = () => quidAudio.whistle();
-  quidditch.onScore = (team, red, blue) => {
-    quidAudio.goal();
+  quidditch.onScore = (team, red, blue, x, y, z) => {
     quidHud.setScores(red, blue);
     quidHud.flashGoal(team);
+    quidHud.noteTutorial("score");
+    fireworks.launchCelebration(x, y, z, 2);
+    chase.shake(0.08);
   };
   quidditch.onSnitchCaught = (team, red, blue) => {
     quidAudio.snitch();
     quidHud.setScores(red, blue);
     quidHud.setSnitch(true, team);
+    quidHud.noteTutorial("snitch");
     // a golden shower of fireworks over the pitch to crown the winner
     fireworks.launchCelebration(QUIDDITCH_PITCH.x, map.effectiveGround(QUIDDITCH_PITCH.x, QUIDDITCH_PITCH.z) + 40, QUIDDITCH_PITCH.z);
     chase.shake(0.16);
@@ -277,7 +280,10 @@ async function boot() {
     if (hitPlayer) chase.shake(0.22);
   };
   // Role picker → actually take the broom
-  quidHud.onPickRole = (team, role) => joinQuidditchRole(team, role);
+  quidHud.onPickRole = (team, role, mode) => joinQuidditchRole(team, role, mode);
+  quidHud.onCloseModal = () => {
+    if (!input.suspended && document.body.classList.contains("started")) input.requestLock();
+  };
   const ropes = new Ropes(physics, scene);
   const grabber = new Grabber(physics, scene);
   grabberRef = grabber;
@@ -315,7 +321,7 @@ async function boot() {
   let currentQuidditch: { team: "red" | "blue"; role: QuidditchRole } | null = null;
   // Take over a specific open broom (from the role picker). Mounts the drone
   // with the team-tinted broom and drops the player onto that flyer's spot.
-  function joinQuidditchRole(team: QuidditchTeam, role: QuidditchRole) {
+  function joinQuidditchRole(team: QuidditchTeam, role: QuidditchRole, startMode: QuidditchStartMode = "play") {
     const info = quidditch.joinAs(team, role, player.position);
     if (!info) {
       hud.message("That position was just taken — try another", 2);
@@ -328,8 +334,10 @@ async function boot() {
     player.velocity.set(info.vx, info.vy, info.vz);
     player.trySwitch("drone");
     quidHud.setRole(info.label);
+    if (startMode === "tutorial") quidHud.startTutorial(info.label, info.role);
+    else quidHud.stopTutorial();
     const verb = role === "Beater" ? "swat Bludgers" : role === "Seeker" ? "catch the Snitch" : role === "Keeper" ? "guard the hoops" : "sling the Quaffle";
-    hud.message(`You're the ${info.label} — ${verb}! E to dismount`, 3.4);
+    hud.message(startMode === "tutorial" ? `Tutorial started — ${verb}` : `You're the ${info.label} — ${verb}! E to dismount`, 3.4);
   }
   let currentPaint: number | undefined; // commandeered car's paint, so invites clone the exact look
   let zeroG = false;
@@ -605,6 +613,7 @@ async function boot() {
       currentQuidditch = null;
       player.clearDroneStyle();
       quidHud.setRole(null);
+      quidHud.stopTutorial();
       dropped = true;
     }
     return dropped;
@@ -682,6 +691,11 @@ async function boot() {
       } else if (toName === "Exploratorium") {
         // land inside, in front of the Water Works wave-tank screen, facing it
         player.respawn({ x: WATER_VIEW.x, z: WATER_VIEW.z, heading: WATER_VIEW.facing });
+      } else if (toName === QUIDDITCH_PITCH.name) {
+        dropCurrentDriveMount();
+        if (player.mode !== "walk") player.trySwitch("walk");
+        quidHud.stopTutorial();
+        player.respawn({ x: QUIDDITCH_PITCH.x, z: QUIDDITCH_PITCH.z, heading: -Math.PI / 2 });
       } else {
         const want = { x: tx, z: tz, heading };
         const open = await findOpenSpawn(map, tiles.manifest, want);
@@ -870,7 +884,7 @@ async function boot() {
     boat: { r: 4.5, y: 1.8 },
     drone: { r: 0.9, y: 0.3 },
     bird: { r: 1.0, y: 0.5 },
-    truck: { r: 2.7, y: 1.3 }
+    truck: { r: 3.6, y: 1.5 }
   };
 
   let fireCooldown = 0;
@@ -1134,12 +1148,9 @@ async function boot() {
           player.startRide();
           hud.message(`Riding with ${drv.name} — E to hop out`, 2.6);
         } else if (wantQuid) {
-          // first time: the rules briefing; after that, straight to the picker
-          if (!quidHud.showRules()) {
-            const open = quidditch.openRoles();
-            if (open.length) quidHud.showRoles(open);
-            else hud.message("Every broom is taken right now", 2);
-          }
+          const open = quidditch.openRoles();
+          if (open.length) quidHud.showStart(open);
+          else hud.message("Every broom is taken right now", 2);
         } else if (animal) {
           const info = forest.consume(animal);
           currentAnimal = info.kind;
@@ -1264,6 +1275,7 @@ async function boot() {
       // Beater: swing the bat at the nearest bludger along the aim ray
       chase.lookDir(aim);
       if (quidditch.swingBat(player.aimOrigin, aim)) {
+        quidHud.noteTutorial("action");
         fireCooldown = 0.34;
         chase.shake(0.12);
       }
@@ -1276,6 +1288,7 @@ async function boot() {
       chase.lookDir(aim);
       rayOrigin.copy(player.aimOrigin);
       if (quidditch.throwQuaffle(rayOrigin, aim, player.velocity)) {
+        quidHud.noteTutorial("action");
         fireCooldown = 0.28;
         chase.shake(0.07);
       }
@@ -1466,7 +1479,14 @@ async function boot() {
         }
       }
     }
-    quidHud.update(frameDt);
+    quidHud.update(frameDt, {
+      riding: currentQuidditch !== null,
+      role: currentQuidditch?.role ?? null,
+      x: player.position.x,
+      y: player.position.y,
+      z: player.position.z,
+      speed: player.speed
+    });
     loot.update(frameDt, player.position, elapsed);
     if (!highUp) hunt.update(frameDt, elapsed, player.position);
     ropes.update(frameDt, player.position, elapsed);
@@ -1487,7 +1507,7 @@ async function boot() {
           drv
             ? `E — ride with ${drv.name}`
             : quidLabel
-              ? `E — join as ${quidLabel}`
+              ? `E — start Quidditch`
               : nearAnimal
                 ? `E — ride the ${nearAnimal.label}`
                 : `E — hop in the ${DRIVE_PROFILES[near!.cls].label}`,

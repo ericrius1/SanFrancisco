@@ -6,10 +6,10 @@ import { enterOnLand } from "../shared";
 import { TRUCK_TUNING } from "./tuning";
 
 // Truck owns its own hull dims (it isn't a commandeered "drive" body, so it
-// doesn't read ctx.driveSpec) — a wide, tall, heavy box.
-const HALF: [number, number, number] = [1.22, 0.55, 2.15];
-const RIDE_HEIGHT = 1.0;
-const LIFT = 1.0;
+// doesn't read ctx.driveSpec) — a big, tall, heavy flatbed box (~3×2.2×9.2 m).
+const HALF: [number, number, number] = [1.45, 1.1, 4.6];
+const RIDE_HEIGHT = 1.5;
+const LIFT = 1.6;
 
 const V = {
   tmp: new THREE.Vector3(),

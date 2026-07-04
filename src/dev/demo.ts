@@ -229,7 +229,7 @@ export function runDemo(name: string, ctx: Ctx) {
         drone: { back: 8, up: 2.2, look: 0.4 },
         board: { back: 7.6, up: 2.7, look: 1.2 },
         bird: { back: 9, up: 2.4, look: 0.5 },
-        truck: { back: 12, up: 4.4, look: 1.2 }
+        truck: { back: 20, up: 8.5, look: 1.6 }
       };
       const snapCamera = (mode: PlayerMode) => {
         const o = cam[mode];
@@ -361,7 +361,7 @@ export function runDemo(name: string, ctx: Ctx) {
         drone: { back: 8.5, up: 2.6, look: 0.5 },
         board: { back: 7.2, up: 2.6, look: 1.1 },
         bird: { back: 9, up: 2.4, look: 0.5 },
-        truck: { back: 12, up: 4.4, look: 1.2 }
+        truck: { back: 20, up: 8.5, look: 1.6 }
       };
       const snapCamera = (mode: PlayerMode) => {
         const o = cam[mode];
@@ -544,7 +544,7 @@ export function runDemo(name: string, ctx: Ctx) {
         drone: { back: 8.5, up: 2.6, look: 0.5 },
         board: { back: 7.6, up: 2.7, look: 1.2 },
         bird: { back: 9.5, up: 2.6, look: 0.6 },
-        truck: { back: 12.5, up: 4.6, look: 1.3 }
+        truck: { back: 21, up: 8.5, look: 1.6 }
       };
       const snapCamera = (mode: PlayerMode) => {
         const o = cam[mode];

@@ -18,7 +18,6 @@ const LAUNCH_SPEED = 26; // initial pop off the rail
 const MAX_RIDERS = 6; // oldest jammer retired past this
 const DESPAWN = 1500; // horizontal metres from the player before we let one go
 const STAND_H = 0.92; // rig hip origin height above ground when landed
-const GRAV = 9;
 
 type Phase = "boost" | "chute" | "jam";
 
@@ -32,6 +31,7 @@ type FlyingRider = {
   vel: THREE.Vector3;
   target: THREE.Vector3;
   groundY: number;
+  cruiseY: number;
   yaw: number;
   phase: Phase;
   age: number;
@@ -104,6 +104,7 @@ export class RocketRiders {
       vel,
       target,
       groundY: target.y,
+      cruiseY: origin.y + 58, // boosters hold him up here for the whole burn
       yaw: Math.atan2(-vel.x, -vel.z),
       phase: "boost",
       age: 0,
@@ -151,14 +152,15 @@ export class RocketRiders {
     // horizontal steer toward the target, speed ramping up as the boosters bite
     V.hv.set(it.target.x - it.pos.x, 0, it.target.z - it.pos.z);
     if (V.hv.lengthSq() > 1e-4) V.hv.normalize();
-    const sp = THREE.MathUtils.lerp(LAUNCH_SPEED, 82, Math.min(1, it.phaseT / BOOST_TIME));
+    const sp = THREE.MathUtils.lerp(LAUNCH_SPEED, 58, Math.min(1, it.phaseT / BOOST_TIME));
     V.want.copy(V.hv).multiplyScalar(sp);
     const k = Math.min(1, dt * 1.6);
     it.vel.x += (V.want.x - it.vel.x) * k;
     it.vel.z += (V.want.z - it.vel.z) * k;
-    // vertical: hard thrust for the first stretch (climbs), then gravity arcs him over
-    const thrust = 30 * Math.max(0, 1 - it.phaseT / 4);
-    it.vel.y += (thrust - GRAV) * dt;
+    // boosters hold him aloft: climb to a cruise altitude and hold it for the
+    // whole burn, so he's still high when the chute pops (a proper descent)
+    const wantVy = THREE.MathUtils.clamp((it.cruiseY - it.pos.y) * 0.6, -7, 22);
+    it.vel.y += (wantVy - it.vel.y) * Math.min(1, dt * 1.6);
 
     it.pos.addScaledVector(it.vel, dt);
     it.group.position.copy(it.pos);
@@ -187,7 +189,7 @@ export class RocketRiders {
     it.chute.scale.setScalar(s);
 
     // approach a soft terminal velocity, bleed off the horizontal charge
-    it.vel.y += (-5.5 - it.vel.y) * Math.min(1, dt * 1.4);
+    it.vel.y += (-7 - it.vel.y) * Math.min(1, dt * 1.4);
     const damp = Math.exp(-1.1 * dt);
     it.vel.x *= damp;
     it.vel.z *= damp;

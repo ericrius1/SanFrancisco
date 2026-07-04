@@ -13,16 +13,16 @@ import { buildBroomMesh, broomRiderGeometry } from "../vehicles/broom/mesh";
  *   • 1 Seeker chases the Golden Snitch — catching it scores 150 and ENDS the
  *     match, so the leader-at-catch wins.
  *
- * The AI plays a real game on its own: chasers take possession and shoot,
- * keepers patrol, beaters redirect bludgers, seekers hunt the snitch. Walk into
- * the glowing circle and press E to take over any open role (drone controls);
- * E again to dismount and hand the broom back to the AI.
+ * The pitch wakes when a player is nearby, but the match stays parked until the
+ * player starts from the blue circle. Walk into the circle and press E to take
+ * over any open role (drone controls); E again to dismount and hand the broom
+ * back to the AI.
  */
 
 export const QUIDDITCH_PITCH = { x: -3431, z: 2322, name: "Quidditch Pitch" };
 
 const ACTIVATE_RADIUS = 380;
-const JOIN_ZONE_RADIUS = 9;
+const JOIN_ZONE_RADIUS = 18;
 const PITCH_LENGTH = 110;
 const PITCH_WIDTH = 62;
 const HOOP_HEIGHT = 16;
@@ -120,7 +120,7 @@ type Bludger = {
 export class Quidditch {
   onMessage: (msg: string, secs?: number) => void = () => {};
   /** A hoop goal landed. */
-  onScore: (team: QuidditchTeam, red: number, blue: number) => void = () => {};
+  onScore: (team: QuidditchTeam, red: number, blue: number, x: number, y: number, z: number) => void = () => {};
   /** Snitch caught — match over. */
   onSnitchCaught: (team: QuidditchTeam, red: number, blue: number, winner: QuidditchTeam | "draw") => void = () => {};
   /** Referee whistle moments (kickoff / match end). */
@@ -163,6 +163,7 @@ export class Quidditch {
   #state: MatchState = "idle";
   #clock = 0; // seconds of play in the current match (gates the snitch)
   #endTimer = 0;
+  #kickoffDelay = 0;
   #winner: QuidditchTeam | "draw" = "draw";
   #player: { team: QuidditchTeam; role: QuidditchRole } | null = null;
   #pendingKick: { x: number; y: number; z: number } | null = null;
@@ -227,9 +228,9 @@ export class Quidditch {
     this.#resetBall();
 
     this.#joinMat = new THREE.MeshBasicMaterial({
-      color: 0x6ef0c8,
+      color: 0x35a7ff,
       transparent: true,
-      opacity: 0.38,
+      opacity: 0.42,
       depthWrite: false,
       blending: THREE.AdditiveBlending
     });
@@ -239,7 +240,7 @@ export class Quidditch {
     this.#root.add(this.#joinGlow);
 
     this.#joinRingMat = new THREE.MeshBasicMaterial({
-      color: 0xfff6b8,
+      color: 0xb9e8ff,
       transparent: true,
       opacity: 0.72,
       depthWrite: false,
@@ -296,7 +297,7 @@ export class Quidditch {
 
   /** On the pitch while a match is running — click to throw the quaffle. */
   canThrow(pos: THREE.Vector3): boolean {
-    if (!this.#active || this.#state === "ended") return false;
+    if (!this.#active || this.#state !== "playing" || this.#kickoffDelay > 0) return false;
     const dx = pos.x - QUIDDITCH_PITCH.x;
     const dz = pos.z - QUIDDITCH_PITCH.z;
     return Math.abs(dx) < PITCH_LENGTH * 0.52 && Math.abs(dz) < PITCH_WIDTH * 0.52;
@@ -325,7 +326,7 @@ export class Quidditch {
 
   /** Player-as-Beater swing: knock the nearest bludger off toward midfield. */
   swingBat(pos: THREE.Vector3, dir: THREE.Vector3): boolean {
-    if (!this.#active) return false;
+    if (!this.#active || this.#state !== "playing" || this.#kickoffDelay > 0) return false;
     let best: Bludger | null = null;
     let bestD = 7 * 7;
     for (const b of this.#bludgers) {
@@ -372,17 +373,21 @@ export class Quidditch {
   }
 
   #ensurePlaying() {
+    if (!this.#active) {
+      this.#active = true;
+      this.onActiveChange(true);
+    }
     if (this.#state !== "playing") {
       this.#scores.red = 0;
       this.#scores.blue = 0;
       this.#state = "playing";
       this.#clock = 0;
+      this.#endTimer = 0;
+      this.#winner = "draw";
+      this.#kickoffDelay = 2.2;
+      this.#respawnAll();
       this.#resetBall();
       this.onWhistle();
-    }
-    if (!this.#active) {
-      this.#active = true;
-      this.onActiveChange(true);
     }
   }
 
@@ -474,14 +479,14 @@ export class Quidditch {
     const wantActive = dist < ACTIVATE_RADIUS;
     if (wantActive && !this.#active) {
       this.#active = true;
-      this.#state = "playing";
+      this.#state = "idle";
       this.#scores.red = 0;
       this.#scores.blue = 0;
       this.#clock = 0;
+      this.#kickoffDelay = 0;
       this.#resetBall();
       this.onActiveChange(true);
-      this.onWhistle();
-      this.onMessage("Quidditch match on — step into the glowing circle to fly", 3.4);
+      this.onMessage("Quidditch pitch ready — step into the blue circle to start", 3.4);
     } else if (!wantActive && this.#active) {
       this.#active = false;
       this.#parkFlyers();
@@ -515,6 +520,7 @@ export class Quidditch {
         this.#scores.red = 0;
         this.#scores.blue = 0;
         this.#clock = 0;
+        this.#kickoffDelay = 2.2;
         this.#respawnAll();
         this.#resetBall();
         this.onWhistle();
@@ -523,15 +529,20 @@ export class Quidditch {
     }
 
     const playing = this.#state === "playing";
+    const pausedForKickoff = playing && this.#kickoffDelay > 0;
     this.#quaffleMesh.visible = true;
     this.#snitchMesh.visible = true;
     for (const b of this.#bludgers) b.mesh.visible = true;
-    if (playing) this.#resolvePossession();
+    if (pausedForKickoff) {
+      this.#kickoffDelay = Math.max(0, this.#kickoffDelay - dt);
+      this.#holdKickoffBall(elapsed);
+    }
+    if (playing && !pausedForKickoff) this.#resolvePossession();
     for (const team of ["red", "blue"] as QuidditchTeam[]) {
       this.#teams[team].mesh.visible = true;
-      if (playing) this.#simulateTeam(team, dt, elapsed);
+      if (playing && !pausedForKickoff) this.#simulateTeam(team, dt, elapsed);
     }
-    if (playing) {
+    if (playing && !pausedForKickoff) {
       this.#clock += dt;
       this.#simulateBall(dt, elapsed);
       this.#simulateBludgers(dt, playerPos);
@@ -686,6 +697,7 @@ export class Quidditch {
     this.#holder = null;
     this.#player = null;
     this.#state = "idle";
+    this.#kickoffDelay = 0;
     this.#clearThrows();
     this.#resetBall();
     for (const hoop of this.#hoops) hoop.glow = 0;
@@ -721,6 +733,9 @@ export class Quidditch {
     q.x = QUIDDITCH_PITCH.x;
     q.y = this.#groundY + 16;
     q.z = QUIDDITCH_PITCH.z;
+    q.px = q.x;
+    q.py = q.y;
+    q.pz = q.z;
     q.vx = 0;
     q.vy = 0;
     q.vz = 0;
@@ -747,6 +762,21 @@ export class Quidditch {
       b.vz = 0;
       b.hitCd = 0;
     }
+  }
+
+  #holdKickoffBall(elapsed: number) {
+    const q = this.#quaffle;
+    q.x = QUIDDITCH_PITCH.x;
+    q.y = this.#groundY + 16 + Math.sin(elapsed * 3.2) * 0.45;
+    q.z = QUIDDITCH_PITCH.z;
+    q.px = q.x;
+    q.py = q.y;
+    q.pz = q.z;
+    q.vx = 0;
+    q.vy = 0;
+    q.vz = 0;
+    q.grabCd = Math.max(q.grabCd, 0.15);
+    this.#holder = null;
   }
 
   // ── AI ──────────────────────────────────────────────────────────────────
@@ -1252,7 +1282,7 @@ export class Quidditch {
 
   #checkQuaffleGoal() {
     const q = this.#quaffle;
-    if (this.#checkHoopScores(q.px, q.py, q.pz, q.x, q.y, q.z)) this.#resetBall();
+    this.#checkHoopScores(q.px, q.py, q.pz, q.x, q.y, q.z);
   }
 
   /** Segment-vs-hoop test; on a clean pass, award the goal. Returns true if scored. */
@@ -1266,19 +1296,21 @@ export class Quidditch {
       const zz = pz + t * (z - pz);
       if (Math.hypot(yy - hoop.wy, zz - hoop.wz) > HOOP_SCORE_RADIUS) continue;
       hoop.glow = 2.8;
-      this.#scoreGoal(hoop.scoringTeam);
+      this.#scoreGoal(hoop.scoringTeam, hoop);
       return true;
     }
     return false;
   }
 
-  #scoreGoal(team: QuidditchTeam) {
+  #scoreGoal(team: QuidditchTeam, hoop: Hoop) {
     if (this.#state !== "playing") return;
     this.#scores[team] += GOAL_POINTS;
     const { red, blue } = this.#scores;
-    this.onScore(team, red, blue);
+    this.#kickoffDelay = 6 + Math.random() * 4;
+    this.#resetBall();
+    this.onScore(team, red, blue, hoop.wx, this.#groundY + 1.2, hoop.wz);
     const side = team === "red" ? "Scarlet" : "Azure";
-    this.onMessage(`GOAL! ${side} score — ${red}–${blue}`, 2.4);
+    this.onMessage(`SCORE! ${side} — ${red}–${blue}`, 2.4);
   }
 
   #updateHoops(dt: number) {

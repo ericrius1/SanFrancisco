@@ -102,21 +102,41 @@ export class CarController implements ModeController {
       const newVx = fwd.x * targetSpeed + right.x * latSpeed * keepLat;
       const newVz = fwd.z * targetSpeed + right.z * latSpeed * keepLat;
 
-      // vertical: ride on the terrain instead of preserving raw fall velocity
-      // (prevents high-speed tunneling), but keep upward pops from ramps/collisions.
-      const rideY = ground + spec.rideHeight;
+      // vertical: ride the terrain on a height spring instead of preserving raw
+      // fall velocity (prevents high-speed tunneling) while still letting ramps
+      // fling us into the air. The anti-snag move is looking a whole box-length
+      // ahead: the collider reaches ~2.3 m past centre, so a rise the *nose* is
+      // already climbing must lift the spring NOW — otherwise the leading bottom
+      // edge digs into the carpet slab ahead and the solver eats all forward
+      // speed. That is the "stuck on a normal slope, hitting an invisible snag"
+      // report: the old feedforward only peeked newV·dt (~0.3 m) in front.
+      const travel = Math.sign(fwdSpeed) || (throttle > 0 ? 1 : throttle < 0 ? -1 : 1);
+      const nose = spec.halfExtents[2] + 0.6; // front-bumper reach + margin
+      const ahead = this.#ground(
+        ctx,
+        ctx.position.x + fwd.x * nose * travel + newVx * dt,
+        ctx.position.z + fwd.z * nose * travel + newVz * dt
+      );
+      const rise = ahead - ground;
+      const rideY = Math.max(ground, ahead) + spec.rideHeight; // float over the rise
       let vy = v.linear[1];
       if (ctx.position.y > rideY + 0.5) {
-        vy = Math.min(vy, 0); // airborne: let gravity pull down, no extra sink
+        // airborne off a ramp/crest: keep our velocity and let gravity arc us
+        // back down. Clamping upward speed to 0 here is what used to kill every
+        // jump before the car could ever leave the ground.
+        vy = v.linear[1];
       } else {
-        // spring + slope feedforward: a bare spring lags by speed·grade/gain, which
-        // buried the box in the road on climbs (solver contacts then eat the set
-        // forward velocity — the "car keeps getting stuck" judder). Sampling where
-        // the car will be next step tracks the hill exactly; the spring only has
-        // to correct residual error.
-        const ahead = this.#ground(ctx, ctx.position.x + newVx * dt, ctx.position.z + newVz * dt);
-        const slopeRate = THREE.MathUtils.clamp((ahead - ground) / dt, -12, 26);
+        // feedforward the climb rate (grade · ground speed) so the spring only
+        // trims residual error…
+        const horiz = Math.max(Math.abs(fwdSpeed), 2);
+        const slopeRate = THREE.MathUtils.clamp((rise / nose) * horiz, -14, 40);
         vy = (rideY - ctx.position.y) * td.rideSpring + slopeRate;
+        // …then a stuck-guard: pinned against a terrain lip while still asking
+        // for real speed → add lift to hop over it. Gated on the ground actually
+        // rising, so it bulldozes hills but never crawls up a building wall.
+        if (throttle > 0 && rise > 0.3 && Math.abs(fwdSpeed) < 3 && targetSpeed > 4) {
+          vy = Math.max(vy, rise * 5 + 4);
+        }
       }
 
       // steering yaw, scaled by speed and capped

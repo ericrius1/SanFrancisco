@@ -134,8 +134,8 @@ const SPECS: Record<MountMode, MountSpec> = {
   truck: {
     // a parked parade truck: settles and waits like an abandoned car
     build: buildTruckMesh,
-    halfExtents: [1.22, 0.55, 2.15],
-    density: 150,
+    halfExtents: [1.45, 1.1, 4.6],
+    density: 130,
     friction: 0.4,
     restitution: 0.08,
     gravityScale: 1,
