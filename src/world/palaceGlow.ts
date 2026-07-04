@@ -103,6 +103,12 @@ export function createPalaceGlow(map: WorldMap): THREE.Sprite {
     const a = arc0 + ((arc1 - arc0) * k) / 19;
     push(PX + Math.cos(a) * 33, g + 6.2, PZ - Math.sin(a) * 33, 0, k / 20);
   }
+  // outer grand peristyle washes (mirrors palaceColonnade: game-frame arc
+  // 55°..285° at r 51, where the swapped-out OSM buildings used to glow)
+  for (let k = 0; k < 24; k++) {
+    const t = ((55 + (285 - 55) * (k / 23)) * Math.PI) / 180;
+    push(PX + Math.cos(t) * 51, g + 6.8, PZ + Math.sin(t) * 51, 0, k / 24);
+  }
   // rotunda pier column washes (paired at r 15.9, taller: h 18)
   for (let k = 0; k < 8; k++) {
     const a = (k * TAU) / 8 + TAU / 16;

@@ -11,7 +11,13 @@ export type AvatarTraits = {
   accent: number;
 };
 
-export const AVATAR_STORAGE_KEY = "sf-avatar-v2";
+// v3: earlier versions auto-generated and persisted a random avatar on first
+// load, so every player looked "customized" and the per-id seed fallback
+// (avatarFromSeed, used by net.ts / remotes.ts / the server) never ran — every
+// tab on one machine shared the same saved blob and rendered identically. v3 is
+// written only when the player actually edits their avatar, so an absent key
+// means "no choice → seed me from my server id".
+export const AVATAR_STORAGE_KEY = "sf-avatar-v3";
 
 export const AVATAR_HATS: { id: AvatarHat; label: string }[] = [
   { id: "none", label: "none" },
@@ -133,16 +139,20 @@ export function randomAvatarTraits(): AvatarTraits {
   return avatarFromSeed(`${Date.now()}:${Math.random()}`);
 }
 
-export function loadAvatarTraits(): AvatarTraits {
+/**
+ * The avatar the player explicitly chose in the editor, or null if they never
+ * touched it. A null result means "no choice" — callers seed a distinct look
+ * from the player's server id instead (avatarFromSeed), which is what keeps
+ * un-customized players from all rendering identically.
+ */
+export function loadSavedAvatar(): AvatarTraits | null {
   try {
     const raw = localStorage.getItem(AVATAR_STORAGE_KEY);
     if (raw) return normalizeAvatarTraits(JSON.parse(raw));
   } catch {
-    // fall through to a new generated avatar
+    // corrupt entry: treat as no choice
   }
-  const next = randomAvatarTraits();
-  saveAvatarTraits(next);
-  return next;
+  return null;
 }
 
 export function saveAvatarTraits(traits: AvatarTraits) {

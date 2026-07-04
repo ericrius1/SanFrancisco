@@ -289,7 +289,10 @@ wss.on("connection", (ws) => {
       p.name = sanitizeName(msg.name);
       broadcast({ t: "name", id, name: p.name }, id);
     } else if (msg.t === "avatar") {
-      p.avatar = sanitizeAvatar(msg.avatar);
+      // mirror the "hi" guard: a cleared/default avatar falls back to the per-id
+      // seed, never to null — so a player can never blank out into the default look
+      const custom = sanitizeAvatar(msg.avatar);
+      p.avatar = custom && !isDefaultAvatar(custom) ? custom : avatarFromSeed(id);
       broadcast({ t: "avatar", id, avatar: p.avatar }, id);
     } else if (msg.t === "paint" && Array.isArray(msg.d) && msg.d.length === 7) {
       // paintball shot: [x,y,z,vx,vy,vz,rgb] — pure relay, every client

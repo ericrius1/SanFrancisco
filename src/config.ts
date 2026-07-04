@@ -46,7 +46,7 @@ export const RENDER_QUALITY_PRESETS: Record<
     maxPixelRatio: 1.5,
     shadowQuality: "low",
     sceneSamples: 2,
-    ssao: true,
+    ssao: false,
     ssaoScale: 0.5,
     ssaoSamples: 4,
     ssaoRadius: 1.35,

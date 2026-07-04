@@ -7,7 +7,8 @@ const MODE_ORDER: PlayerMode[] = [
   "boat",
   "drone",
   "board",
-  "bird"
+  "bird",
+  "truck"
 ]
 const MODE_SHORT: Record<PlayerMode, string> = {
   walk: "walk",
@@ -16,7 +17,8 @@ const MODE_SHORT: Record<PlayerMode, string> = {
   boat: "boat",
   drone: "drone",
   board: "board",
-  bird: "bird"
+  bird: "bird",
+  truck: "truck"
 }
 
 /** One help row: keycap chips + what they do. */
@@ -82,6 +84,14 @@ const KB: Record<PlayerMode, Row[]> = {
     { c: ["Shift"], label: "tuck dive" },
     { c: ["Q", "E"], label: "twirl" },
     { c: ["Click"], label: "shoot" }
+  ],
+  truck: [
+    { c: ["Mouse"], label: "look" },
+    { c: ["W", "S"], label: "gas · brake" },
+    { c: ["A", "D"], label: "steer" },
+    { c: ["Shift"], label: "boost" },
+    { c: ["Click"], label: "LAUNCH! 🎆🎸" },
+    { c: ["E"], label: "get out" }
   ]
 }
 
@@ -143,6 +153,14 @@ const PAD: Record<PlayerMode, Row[]> = {
     { c: ["RB"], label: "tuck dive" },
     { c: ["LB", "B"], label: "twirl" },
     { c: ["X"], label: "shoot" }
+  ],
+  truck: [
+    { c: ["RS"], label: "look" },
+    { c: ["RT", "LT"], label: "gas · brake" },
+    { c: ["LS"], label: "steer" },
+    { c: ["RB"], label: "boost" },
+    { c: ["X"], label: "launch" },
+    { c: ["B"], label: "get out" }
   ]
 }
 
@@ -151,7 +169,8 @@ const TIPS: Partial<Record<PlayerMode, string>> = {
   walk: "Walk into any building face to climb it",
   drive: "Ram buildings to topple them",
   board: "White glow = nose · surfs streets, hills and the bay",
-  bird: "Look down + Shift to stoop — skim the bay for spray"
+  bird: "Look down + Shift to stoop — skim the bay for spray",
+  truck: "Click to fire both launchers — fireworks + a rocket-riding guitarist"
 }
 
 // Xbox face buttons get their signature colors

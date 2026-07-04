@@ -49,7 +49,7 @@ export const POSTFX_TUNING = tunables("postfx", {
     step: 1,
     label: "scene AA samples"
   },
-  ssao: { v: true, label: "SSAO" },
+  ssao: { v: false, label: "SSAO" },
   ssaoScale: { v: 0.5, min: 0.35, max: 1, step: 0.05, label: "· SSAO scale" },
   ssaoSamples: { v: 4, min: 2, max: 12, step: 1, label: "· SSAO samples" },
   ssaoRadius: { v: 1.35, min: 0.5, max: 3, step: 0.05, label: "· SSAO radius" },

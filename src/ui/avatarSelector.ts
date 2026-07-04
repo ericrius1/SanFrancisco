@@ -53,6 +53,13 @@ export class AvatarSelector {
     this.#root.classList.toggle("open", open);
   }
 
+  /** Reflect an externally-assigned avatar (e.g. the server's per-id seed once
+   * the player is welcomed) without firing onChange. */
+  setTraits(traits: AvatarTraits) {
+    this.#traits = { ...traits };
+    this.#render();
+  }
+
   #set(next: Partial<AvatarTraits>) {
     this.#traits = { ...this.#traits, ...next };
     this.#render();

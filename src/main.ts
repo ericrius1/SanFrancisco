@@ -13,6 +13,7 @@ import { createDebrisMaterial, DEBRIS_LIGHTS, WINDOW_GLOW } from "./world/facade
 import { updateCrownDisplay, resetCrownTweaks } from "./world/salesforceCrown";
 import { createBayLights, updateBayLights, resetBayLightsTweaks } from "./world/bayLights";
 import { createPalaceGlow, updatePalaceGlow, resetPalaceGlowTweaks } from "./world/palaceGlow";
+import { createPalaceColonnade, PALACE_RING_BUILDINGS } from "./world/palaceColonnade";
 import { createSutroTower, updateSutroTower, resetSutroLightsTweaks } from "./world/sutroTower";
 import { findOpenSpawn } from "./world/spawn";
 import { Player } from "./player/player";
@@ -36,6 +37,7 @@ import { VehicleAudio } from "./fx/vehicleAudio";
 import { Props } from "./gameplay/props";
 import { Traffic, DRIVE_PROFILES, type VehicleClass } from "./gameplay/traffic";
 import { AbandonedMounts } from "./gameplay/abandonedMounts";
+import { RocketRiders, type LauncherRig } from "./gameplay/launchers";
 import { Creatures } from "./gameplay/creatures";
 import { Forest, ANIMALS, type AnimalKind } from "./gameplay/forest";
 import { Flora } from "./world/flora";
@@ -61,12 +63,12 @@ import { RemotePlayers } from "./net/remotes";
 import { Voice } from "./net/voice";
 import { Minimap } from "./ui/minimap";
 import { PlayerLocator } from "./ui/playerLocator";
-import { loadAvatarTraits, saveAvatarTraits } from "./player/avatar";
+import { avatarFromSeed, loadSavedAvatar, randomAvatarTraits, saveAvatarTraits } from "./player/avatar";
 
 CameraControls.install({ THREE });
 
 // digit-key vehicle order (1..7) — also the wrap order for pad next/prev
-const PLAYER_ORDER: PlayerMode[] = ["walk", "drive", "plane", "boat", "drone", "board", "bird"];
+const PLAYER_ORDER: PlayerMode[] = ["walk", "drive", "plane", "boat", "drone", "board", "bird", "truck"];
 
 const app = document.getElementById("app")!;
 const loading = document.getElementById("loading")!;
@@ -187,10 +189,18 @@ async function boot() {
   // hill), nudged onto open ground — never under (or inside) a building.
   const startAt = map.meta.spawns[START.spawn] ?? map.meta.spawns[START_DEFAULTS.spawn];
   const spawn = await findOpenSpawn(map, tiles.manifest, startAt);
-  let avatarTraits = loadAvatarTraits();
+  // Avatar identity: a saved avatar means the player chose one in the editor;
+  // otherwise leave it to the server's per-id seed (adopted on welcome below) so
+  // every player — every browser tab included — looks distinct. randomAvatarTraits
+  // is just a non-default placeholder for the seconds before we're welcomed (and
+  // the whole life of an offline single-player session).
+  const savedAvatar = loadSavedAvatar();
+  let customized = savedAvatar !== null;
+  let avatarTraits = savedAvatar ?? randomAvatarTraits();
   const player = new Player(physics, map, scene, spawn, avatarTraits);
   const birdTrails = new BirdTrails(scene, player.meshes.bird);
   const droneFireworkMounts = player.meshes.drone.userData.fireworkMounts as THREE.Object3D[] | undefined;
+  const truckLaunchers = player.meshes.truck.userData.launcherRig as LauncherRig | undefined;
   if (START.mode !== "walk") player.trySwitch(START.mode);
   player.onModeChange = (mode) => {
     hud.setMode(mode);
@@ -214,6 +224,7 @@ async function boot() {
   const creatures = new Creatures(map, scene);
   const forest = new Forest(map, scene);
   const abandonedMounts = new AbandonedMounts(physics, map, scene);
+  const rocketRiders = new RocketRiders(scene, map);
   // vegetation layer: park trees + grass masks ride the tile stream; the grass
   // field and Marin near-forest follow the camera (physics hooked unload first)
   const flora = new Flora(map, scene, tiles.manifest);
@@ -293,6 +304,10 @@ async function boot() {
   if (bayLights) scene.add(bayLights);
   const palaceGlow = createPalaceGlow(map);
   scene.add(palaceGlow);
+  // Palace of Fine Arts peristyle: the OSM data carries the curved colonnade as
+  // ordinary windowed buildings, so swap them for a real open row of columns.
+  for (const b of PALACE_RING_BUILDINGS) tiles.suppressBuilding(b.key, b.index);
+  scene.add(createPalaceColonnade(map));
   const sutroTower = createSutroTower(map);
   scene.add(sutroTower);
   let currentRide: VehicleClass | null = null;
@@ -398,14 +413,28 @@ async function boot() {
   // ---- multiplayer: presence relay (src/net/net.ts) + remote avatars +
   // minimap. Drop-in social layer: movement stays client-authoritative, the
   // server only relays poses, and losing the socket never breaks single-player.
-  const net = new Net(suggestedName, avatarTraits);
-  net.onWelcome = () => net.setAvatar(avatarTraits);
-  new AvatarSelector(avatarTraits, (traits) => {
+  // Send a custom avatar only if the player actually chose one; a null avatar
+  // lets the server keep its per-id seed (server.mjs), so un-customized players
+  // stay distinct instead of all sending the same saved blob.
+  const net = new Net(suggestedName, savedAvatar ?? undefined);
+  const avatarSelector = new AvatarSelector(avatarTraits, (traits) => {
     avatarTraits = traits;
+    customized = true; // an explicit edit — persist it and broadcast from here on
     saveAvatarTraits(traits);
     player.setAvatar(traits);
     net.setAvatar(traits);
   });
+  net.onWelcome = () => {
+    if (customized) {
+      net.setAvatar(avatarTraits); // re-assert my chosen look after a (re)connect
+    } else {
+      // adopt the server's per-id seed so my own body matches how everyone else
+      // sees me, and reflect it in the editor
+      avatarTraits = avatarFromSeed(net.selfId);
+      player.setAvatar(avatarTraits);
+      avatarSelector.setTraits(avatarTraits);
+    }
+  };
   const remotes = new RemotePlayers(scene);
   const syncRoster = () => {
     for (const info of net.roster.values()) {
@@ -840,7 +869,8 @@ async function boot() {
     plane: { r: 3.2, y: 1.0 },
     boat: { r: 4.5, y: 1.8 },
     drone: { r: 0.9, y: 0.3 },
-    bird: { r: 1.0, y: 0.5 }
+    bird: { r: 1.0, y: 0.5 },
+    truck: { r: 2.7, y: 1.3 }
   };
 
   let fireCooldown = 0;
@@ -1256,6 +1286,16 @@ async function boot() {
         fireworks.launchDroneSalvo(droneFireworkMounts ?? [], aim, player.velocity);
         chase.shake(0.08);
       }
+    } else if (player.mode === "truck") {
+      // parade truck: one press fires BOTH launchers — the firework honeycomb
+      // and the guitarist's rocket — at once
+      if (!input.suspended && input.firePressed && fireCooldown <= 0 && truckLaunchers) {
+        chase.lookDir(aim);
+        fireCooldown = 0.6;
+        truckLaunchers.fireAll({ scene, fireworks, rocketRiders, map, playerPos: player.position });
+        chase.shake(0.18);
+        hud.message("🎆 LAUNCH — happy 4th! 🎸", 1.8);
+      }
     } else if (input.firing && currentAnimal === "raccoon") {
       // mounted raccoon: the click-tools stand down, the gummy cannon speaks
       if (fireCooldown <= 0) {
@@ -1401,6 +1441,8 @@ async function boot() {
     props.update(frameDt, player.position);
     traffic.update(player.position, frameDt, sky.timeOfDay, sky.sunsetAzimuth);
     abandonedMounts.update(frameDt, player.position);
+    rocketRiders.update(frameDt, player.position); // the launched guitarists live their own lives
+    if (player.mode === "truck") truckLaunchers?.update(frameDt); // idle strum + reload
     creatures.update(elapsed, camera.position); // gulls live at altitude — never gated
     forest.update(frameDt, camera.position);
     flora.update(camera.position, highUp);
@@ -1632,7 +1674,7 @@ async function boot() {
 
   const exposeDebugHooks = () => {
     Object.assign(window as never, {
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, props, exploratorium, traffic, creatures, forest, flora, splashes, vehicleAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud }
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, props, exploratorium, traffic, creatures, forest, flora, splashes, vehicleAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, truckLaunchers }
     });
   };
   if (import.meta.env.DEV || new URLSearchParams(location.search).has("profile")) {

@@ -49,6 +49,7 @@ export class RiderRocketLauncher implements Launcher {
 
     this.#prop.rotation.x = tilt; // nose up-forward
     this.group.add(this.#prop);
+    this.#staticRider.ride(0); // pose straddling even before the rig is ticked
   }
 
   update(dt: number) {

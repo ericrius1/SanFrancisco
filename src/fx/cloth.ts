@@ -25,11 +25,13 @@ export type RippleOpts = {
   speed?: number;
   /** Phase offset (rad) — vary per panel so neighbours don't ripple in lockstep. */
   phase?: number;
+  /** Pin the top edge (uv.y 1) instead of the hoist — for banners hung from a rail. */
+  pinTop?: boolean;
   side?: THREE.Side;
-  emissiveIntensity?: number;
 };
 
-/** A cloth material that ripples in the wind. Pin edge = local uv.x 0. */
+/** A cloth material that ripples in the wind. Pin edge = local uv.x 0 (or the
+ * top edge when `pinTop`), displacing along local +Z. */
 export function rippleMaterial(opts: RippleOpts = {}): THREE.MeshLambertNodeMaterial {
   const { amp = 0.14, freq = 6, speed = 5.5, phase = 0, side = THREE.DoubleSide } = opts;
   const mat = new THREE.MeshLambertNodeMaterial({
@@ -40,15 +42,31 @@ export function rippleMaterial(opts: RippleOpts = {}): THREE.MeshLambertNodeMate
   const u = uv().x;
   const v = uv().y;
   const ph = float(phase);
-  // primary travelling wave + a shorter cross-ripple, both scaled by uv.x so the
-  // pinned pole edge never moves and the tail whips hardest
+  // amplitude ramps from 0 at the pinned edge to full at the free fly end
+  const anchor = opts.pinTop ? v.oneMinus() : u;
+  // primary travelling wave + a shorter cross-ripple
   const wave = sin(u.mul(freq).sub(time.mul(speed)).add(v.mul(3)).add(ph))
     .mul(0.72)
     .add(sin(u.mul(freq * 1.9).sub(time.mul(speed * 1.35)).add(ph)).mul(0.28))
-    .mul(u)
+    .mul(anchor)
     .mul(amp);
   mat.positionNode = positionLocal.add(vec3(0, 0, wave));
   return mat;
+}
+
+/**
+ * A banner hung from a top rail (tailgate flag, wall drape). Plane in local XY,
+ * normal +Z; pinned along the top edge and rippling toward the free bottom.
+ * Orient the returned mesh so its +Z faces outward.
+ */
+export function buildDrape(opts: { w?: number; h?: number; seg?: number; amp?: number; speed?: number; phase?: number; map?: THREE.Texture } = {}): THREE.Mesh {
+  const { w = 1.8, h = 1.15, seg = 18, amp = 0.12, speed = 4.5, phase = 0 } = opts;
+  const geo = new THREE.PlaneGeometry(w, h, seg, seg);
+  const map = opts.map ?? usFlagTexture();
+  const mat = rippleMaterial({ colorNode: texture(map, uv()), amp, speed, phase, pinTop: true });
+  const m = new THREE.Mesh(geo, mat);
+  m.castShadow = true;
+  return m;
 }
 
 /**

@@ -62,6 +62,11 @@ export class RocketRiders {
     return this.#items.length;
   }
 
+  /** Debug/verification: world position + phase of every live rider. */
+  get riders(): { x: number; y: number; z: number; phase: Phase }[] {
+    return this.#items.map((it) => ({ x: it.pos.x, y: it.pos.y, z: it.pos.z, phase: it.phase }));
+  }
+
   /**
    * Send a rider off from `origin` along `dir` (the rail's aim). They pick a
    * random target somewhere out in the city and boost toward it.

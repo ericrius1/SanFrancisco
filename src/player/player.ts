@@ -26,6 +26,7 @@ import { buildBoatMesh, BoatController, BOAT_TUNING, type BoatSailRig } from "..
 import { buildDroneMesh, DroneController } from "../vehicles/drone";
 import { buildBoardMesh, BoardController, BOARD_TUNING } from "../vehicles/board";
 import { buildBirdMesh, BirdController } from "../vehicles/bird";
+import { buildTruckMesh, TruckController } from "../vehicles/truck";
 
 const V = {
   tmp: new THREE.Vector3(),
@@ -93,6 +94,7 @@ export class Player {
     drone: DroneController;
     board: BoardController;
     bird: BirdController;
+    truck: TruckController;
   };
 
   // character rigs: one per embodiment (walker, board rider, car driver).
@@ -105,6 +107,8 @@ export class Player {
   #helmWheel: { group: THREE.Group; spin: THREE.Group };
   #pilotRig: Rig; // plane crew: open cockpit, hands on the built-in yoke
   #planeAnim: PlaneAnim;
+  #truckRig: Rig; // parade-truck driver: the truck never swaps meshes, keeps its own
+  #truckWheel: { group: THREE.Group; spin: THREE.Group };
   #avatar: AvatarTraits;
   #hasWheel = false;
   #animT = 0; // free-running clock for idle sway/bob
@@ -142,7 +146,8 @@ export class Player {
       boat: buildBoatMesh(),
       drone: buildDroneMesh(),
       board: buildBoardMesh(),
-      bird: buildBirdMesh()
+      bird: buildBirdMesh(),
+      truck: buildTruckMesh()
     };
     this.#modes = {
       walk: new WalkController(),
@@ -151,7 +156,8 @@ export class Player {
       boat: new BoatController(),
       drone: new DroneController(this.meshes.drone),
       board: new BoardController(),
-      bird: new BirdController(this.meshes.bird)
+      bird: new BirdController(this.meshes.bird),
+      truck: new TruckController()
     };
     // surf stance across the deck; ZYX order so the carve lean (z) rolls the
     // already-yawed stance around the board's long axis
@@ -176,6 +182,14 @@ export class Player {
     this.#pilotRig.group.position.set(pc.seat[0], pc.seat[1], pc.seat[2]);
     this.meshes.plane.add(this.#pilotRig.group);
     this.#planeAnim = collectPlaneAnim(this.meshes.plane);
+    // parade-truck driver on the bench, hands on a wheel at the console (same
+    // seat→wheel offsets as the car cockpit so poseDrive's reach lines up)
+    this.#truckRig = buildRig(this.#avatar);
+    this.#truckWheel = buildSteeringWheel();
+    const tc = this.meshes.truck.userData.cockpit as Cockpit;
+    this.#truckRig.group.position.set(tc.seat[0], tc.seat[1], tc.seat[2]);
+    this.#truckWheel.group.position.set(tc.wheel![0], tc.wheel![1], tc.wheel![2]);
+    this.meshes.truck.add(this.#truckRig.group, this.#truckWheel.group);
     this.#defaultDriveMesh = this.meshes.drive;
     this.#defaultDroneMesh = this.meshes.drone;
     this.#seatDriver(this.meshes.drive);
@@ -197,6 +211,7 @@ export class Player {
     applyAvatarToRig(this.#driverRig, this.#avatar);
     applyAvatarToRig(this.#helmRig, this.#avatar);
     applyAvatarToRig(this.#pilotRig, this.#avatar);
+    applyAvatarToRig(this.#truckRig, this.#avatar);
   }
 
   #destroyBody() {
@@ -548,6 +563,10 @@ export class Player {
       s.billow.value += (0.1 + wind * 0.36 - s.billow.value) * k;
       s.boom.rotation.y = 0.1 + wind * 0.2 + Math.sin(this.#animT * 0.6) * 0.05;
       s.heel.rotation.z = steer * 0.1 - wind * 0.08;
+    } else if (this.mode === "truck") {
+      const steer = this.#modes.truck.steerVis;
+      poseDrive(this.#truckRig, steer, this.#animT, true);
+      this.#truckWheel.spin.rotation.z = steer * 2.3;
     }
   }
 
