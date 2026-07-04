@@ -15,7 +15,13 @@ const ACTIVATE_RADIUS = 380;
 const JOIN_ZONE_RADIUS = 9;
 const PITCH_LENGTH = 110;
 const PITCH_WIDTH = 62;
-const HOOP_HEIGHT = 14;
+const HOOP_HEIGHT = 16;
+const HOOP_MAJOR = 2.55;
+const HOOP_TUBE = 0.16;
+const HOOP_SCORE_RADIUS = HOOP_MAJOR - HOOP_TUBE * 1.15;
+const THROW_SPEED = 44;
+const MAX_THROWS = 8;
+const THROW_LIFE = 9;
 const PLAYERS_PER_TEAM = 3;
 const TEAM_COLORS = { red: 0x9b1c1c, blue: 0x1e4a8c } as const;
 const ROLES = ["Keeper", "Chaser", "Seeker"] as const;
@@ -43,6 +49,31 @@ type TeamState = {
   robe: THREE.Color;
 };
 
+type Hoop = {
+  side: -1 | 1;
+  wx: number;
+  wy: number;
+  wz: number;
+  mesh: THREE.Mesh;
+  halo: THREE.Mesh;
+  mat: THREE.MeshStandardMaterial;
+  glow: number;
+};
+
+type ThrownQuaffle = {
+  x: number;
+  y: number;
+  z: number;
+  px: number;
+  py: number;
+  pz: number;
+  vx: number;
+  vy: number;
+  vz: number;
+  life: number;
+  mesh: THREE.Mesh;
+};
+
 export class Quidditch {
   onMessage: (msg: string, secs?: number) => void = () => {};
 
@@ -65,6 +96,11 @@ export class Quidditch {
   #euler = new THREE.Euler();
   #scale = new THREE.Vector3(1, 1, 1);
   #riddenMeshes = new Map<QuidditchTeam, THREE.Group>();
+  #hoops: Hoop[] = [];
+  #throws: ThrownQuaffle[] = [];
+  #throwPool: THREE.Mesh[] = [];
+  #throwGeo = new THREE.SphereGeometry(0.38, 14, 12);
+  #throwMat = new THREE.MeshStandardMaterial({ color: 0xc83828, roughness: 0.42, metalness: 0.12 });
 
   constructor(map: WorldMap, scene: THREE.Scene) {
     this.#groundY = map.effectiveGround(QUIDDITCH_PITCH.x, QUIDDITCH_PITCH.z);
@@ -149,6 +185,47 @@ export class Quidditch {
 
   get active() {
     return this.#active;
+  }
+
+  /** On the pitch while a match is running — click to throw the quaffle. */
+  canThrow(pos: THREE.Vector3): boolean {
+    if (!this.#active) return false;
+    const dx = pos.x - QUIDDITCH_PITCH.x;
+    const dz = pos.z - QUIDDITCH_PITCH.z;
+    return Math.abs(dx) < PITCH_LENGTH * 0.52 && Math.abs(dz) < PITCH_WIDTH * 0.52;
+  }
+
+  throwQuaffle(origin: THREE.Vector3, dir: THREE.Vector3, inherit: THREE.Vector3): boolean {
+    if (!this.canThrow(origin) || this.#throws.length >= MAX_THROWS) return false;
+    let mesh = this.#throwPool.pop();
+    if (!mesh) {
+      mesh = new THREE.Mesh(this.#throwGeo, this.#throwMat);
+      this.#root.add(mesh);
+    }
+    mesh.visible = true;
+    const d = dir.clone();
+    if (d.lengthSq() < 1e-6) d.set(0, 0, -1);
+    d.normalize().multiplyScalar(THROW_SPEED);
+    d.x += inherit.x * 0.65;
+    d.y += inherit.y * 0.65;
+    d.z += inherit.z * 0.65;
+    const x = origin.x;
+    const y = origin.y;
+    const z = origin.z;
+    this.#throws.push({
+      x,
+      y,
+      z,
+      px: x,
+      py: y,
+      pz: z,
+      vx: d.x,
+      vy: d.y,
+      vz: d.z,
+      life: THROW_LIFE,
+      mesh
+    });
+    return true;
   }
 
   /** Player's broom mesh tinted to their team. */
@@ -284,6 +361,7 @@ export class Quidditch {
       for (const team of ["red", "blue"] as QuidditchTeam[]) {
         this.#teams[team].mesh.visible = false;
       }
+      for (const t of this.#throws) t.mesh.visible = false;
       return;
     }
 
@@ -294,6 +372,8 @@ export class Quidditch {
       this.#simulateTeam(team, dt, elapsed);
     }
     this.#simulateBall(dt, elapsed);
+    this.#simulateThrows(dt);
+    this.#updateHoops(dt);
     this.#drawFlyers();
     this.#quaffleMesh.position.set(this.#quaffle.x - QUIDDITCH_PITCH.x, this.#quaffle.y - this.#groundY, this.#quaffle.z - QUIDDITCH_PITCH.z);
     this.#snitchMesh.position.set(this.#snitch.x - QUIDDITCH_PITCH.x, this.#snitch.y - this.#groundY, this.#snitch.z - QUIDDITCH_PITCH.z);
@@ -301,7 +381,6 @@ export class Quidditch {
 
   #buildPitch() {
     const lineMat = new THREE.MeshBasicMaterial({ color: 0xf2f6e8, transparent: true, opacity: 0.55 });
-    const hoopMat = new THREE.MeshStandardMaterial({ color: 0xffd54a, metalness: 0.55, roughness: 0.35 });
     const poleMat = new THREE.MeshStandardMaterial({ color: 0x8a8f94, metalness: 0.4, roughness: 0.5 });
 
     const turf = new THREE.Mesh(
@@ -318,7 +397,8 @@ export class Quidditch {
     center.position.y = 0.12;
     this.#root.add(center);
 
-    for (const side of [-1, 1]) {
+    const hoopX = PITCH_LENGTH / 2 - 6;
+    for (const side of [-1, 1] as const) {
       const line = new THREE.Mesh(new THREE.PlaneGeometry(0.35, PITCH_WIDTH), lineMat);
       line.rotation.x = -Math.PI / 2;
       line.position.set(side * (PITCH_LENGTH / 2 - 2), 0.11, 0);
@@ -326,15 +406,48 @@ export class Quidditch {
 
       for (let h = 0; h < 3; h++) {
         const z = (h - 1) * 18;
-        const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.14, HOOP_HEIGHT, 8), poleMat);
-        pole.position.set(side * (PITCH_LENGTH / 2 - 6), HOOP_HEIGHT / 2, z);
+        const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.17, HOOP_HEIGHT, 8), poleMat);
+        pole.position.set(side * hoopX, HOOP_HEIGHT / 2, z);
         pole.castShadow = true;
         this.#root.add(pole);
-        const hoop = new THREE.Mesh(new THREE.TorusGeometry(1.1, 0.07, 10, 24), hoopMat);
+
+        const mat = new THREE.MeshStandardMaterial({
+          color: 0xffd54a,
+          metalness: 0.55,
+          roughness: 0.32,
+          emissive: 0x332200,
+          emissiveIntensity: 0.08
+        });
+        const hoop = new THREE.Mesh(new THREE.TorusGeometry(HOOP_MAJOR, HOOP_TUBE, 12, 32), mat);
         hoop.rotation.y = Math.PI / 2;
-        hoop.position.set(side * (PITCH_LENGTH / 2 - 6), HOOP_HEIGHT, z);
+        hoop.position.set(side * hoopX, HOOP_HEIGHT, z);
         hoop.castShadow = true;
         this.#root.add(hoop);
+
+        const halo = new THREE.Mesh(
+          new THREE.TorusGeometry(HOOP_MAJOR + 0.35, 0.09, 8, 32),
+          new THREE.MeshBasicMaterial({
+            color: 0xfff0a0,
+            transparent: true,
+            opacity: 0,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending
+          })
+        );
+        halo.rotation.y = Math.PI / 2;
+        halo.position.copy(hoop.position);
+        this.#root.add(halo);
+
+        this.#hoops.push({
+          side,
+          wx: QUIDDITCH_PITCH.x + side * hoopX,
+          wy: this.#groundY + HOOP_HEIGHT,
+          wz: QUIDDITCH_PITCH.z + z,
+          mesh: hoop,
+          halo,
+          mat,
+          glow: 0
+        });
       }
     }
 
@@ -386,7 +499,17 @@ export class Quidditch {
       state.flyers = this.#spawnTeam(team);
       state.mesh.count = state.flyers.length;
     }
+    this.#clearThrows();
     this.#resetBall();
+    for (const hoop of this.#hoops) hoop.glow = 0;
+  }
+
+  #clearThrows() {
+    for (const t of this.#throws) {
+      t.mesh.visible = false;
+      this.#throwPool.push(t.mesh);
+    }
+    this.#throws.length = 0;
   }
 
   #resetBall() {
@@ -502,6 +625,66 @@ export class Quidditch {
     s.x += s.vx * dt;
     s.y += s.vy * dt;
     s.z += s.vz * dt;
+  }
+
+  #simulateThrows(dt: number) {
+    const floor = this.#groundY + 0.8;
+    let i = 0;
+    while (i < this.#throws.length) {
+      const b = this.#throws[i];
+      b.px = b.x;
+      b.py = b.y;
+      b.pz = b.z;
+      b.vy -= 9.2 * dt;
+      b.x += b.vx * dt;
+      b.y += b.vy * dt;
+      b.z += b.vz * dt;
+      b.vx *= 1 - dt * 0.08;
+      b.vz *= 1 - dt * 0.08;
+      b.life -= dt;
+
+      this.#checkHoopScores(b);
+
+      if (b.y < floor || b.life <= 0) {
+        b.mesh.visible = false;
+        this.#throwPool.push(b.mesh);
+        this.#throws.splice(i, 1);
+        continue;
+      }
+
+      b.mesh.position.set(b.x - QUIDDITCH_PITCH.x, b.y - this.#groundY, b.z - QUIDDITCH_PITCH.z);
+      i++;
+    }
+  }
+
+  #checkHoopScores(b: ThrownQuaffle) {
+    for (const hoop of this.#hoops) {
+      const ax = b.x - b.px;
+      if (Math.abs(ax) < 1e-5) continue;
+      const t = (hoop.wx - b.px) / ax;
+      if (t < 0 || t > 1) continue;
+      const y = b.py + t * (b.y - b.py);
+      const z = b.pz + t * (b.z - b.pz);
+      if (Math.hypot(y - hoop.wy, z - hoop.wz) > HOOP_SCORE_RADIUS) continue;
+      hoop.glow = 2.8;
+      this.onMessage("Through the hoop!", 2.2);
+      b.life = Math.min(b.life, 0.05);
+      return;
+    }
+  }
+
+  #updateHoops(dt: number) {
+    for (const hoop of this.#hoops) {
+      if (hoop.glow > 0) hoop.glow -= dt;
+      const lit = hoop.glow > 0;
+      const k = lit ? Math.min(1, hoop.glow / 2.8) : 0;
+      hoop.mat.emissive.setHex(0xffc400);
+      hoop.mat.emissiveIntensity = 0.08 + k * 2.4;
+      hoop.mat.color.setHex(lit ? 0xfff4a8 : 0xffd54a);
+      const haloMat = hoop.halo.material as THREE.MeshBasicMaterial;
+      haloMat.opacity = k * 0.92;
+      hoop.halo.scale.setScalar(1 + k * 0.12);
+    }
   }
 
   #drawFlyers() {

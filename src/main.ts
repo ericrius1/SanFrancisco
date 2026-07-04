@@ -1180,7 +1180,19 @@ async function boot() {
     // whatever the center-screen ray lands on, bubbles ride the wand, chimes ring
     // the struck surface (pitch keyed to strike height)
     fireCooldown -= frameDt;
-    if (player.mode === "drone") {
+    if (
+      !input.suspended &&
+      input.firePressed &&
+      fireCooldown <= 0 &&
+      quidditch.canThrow(player.position)
+    ) {
+      chase.lookDir(aim);
+      rayOrigin.copy(player.aimOrigin);
+      if (quidditch.throwQuaffle(rayOrigin, aim, player.velocity)) {
+        fireCooldown = 0.28;
+        chase.shake(0.07);
+      }
+    } else if (player.mode === "drone") {
       if (!input.suspended && input.firePressed && fireCooldown <= 0) {
         chase.lookDir(aim);
         fireCooldown = 0.22;
