@@ -114,6 +114,8 @@ export class Player {
   driveSpec: DriveSpec = DEFAULT_DRIVE_SPEC;
   swimEnter = false;
   #defaultDriveMesh!: THREE.Group;
+  #defaultDroneMesh!: THREE.Group;
+  #broomRigAttached = false;
   #scene: THREE.Scene;
   #lightPool: LightPool;
 
@@ -175,6 +177,7 @@ export class Player {
     this.meshes.plane.add(this.#pilotRig.group);
     this.#planeAnim = collectPlaneAnim(this.meshes.plane);
     this.#defaultDriveMesh = this.meshes.drive;
+    this.#defaultDroneMesh = this.meshes.drone;
     this.#seatDriver(this.meshes.drive);
     // pool constructed before the first render so the warm-up compile already
     // sees the final (and only-ever) light set
@@ -401,6 +404,33 @@ export class Player {
     this.driveSpec = spec ?? DEFAULT_DRIVE_SPEC;
   }
 
+  /** Swap the drone mesh (Quidditch broom, etc.). Null restores the stock drone. */
+  setDroneStyle(mesh: THREE.Group | null) {
+    const next = mesh ?? this.#defaultDroneMesh;
+    if (next === this.meshes.drone) return;
+    const old = this.meshes.drone;
+    this.#riderRig.group.removeFromParent();
+    this.#broomRigAttached = false;
+    setEmbodimentVisible(old, false);
+    if (old !== this.#defaultDroneMesh) this.#scene.remove(old);
+    if (next.parent !== this.#scene) this.#scene.add(next);
+    this.meshes.drone = next;
+    if (next.userData.broom) {
+      this.#riderRig.group.rotation.order = "ZYX";
+      this.#riderRig.group.rotation.set(0, 1.05, 0);
+      this.#riderRig.group.position.set(0, 0.72, -0.35);
+      next.add(this.#riderRig.group);
+      this.#broomRigAttached = true;
+    }
+    setEmbodimentVisible(next, this.mode === "drone");
+    if (this.mode === "drone") this.#lightPool.claim(next);
+  }
+
+  /** Restore the stock camera drone after a Quidditch broom ride. */
+  clearDroneStyle() {
+    if (this.meshes.drone !== this.#defaultDroneMesh) this.setDroneStyle(null);
+  }
+
   /**
    * Put the driver rig (and wheel, if the vehicle has one) into a drive mesh
    * at its cockpit anchor. Closed cabs (`hide`) park the rig invisible so it
@@ -488,6 +518,11 @@ export class Player {
       const crouch = Math.min(1, this.speed / BOARD_TUNING.values.boostMaxSpeed + Math.abs(board.lean) * 0.6);
       poseRide(this.#riderRig, board.lean, crouch, !board.grounded, this.#animT);
       this.#riderRig.group.rotation.z = board.lean * 0.4; // whole-body dip on top of the deck roll
+    } else if (this.mode === "drone" && this.#broomRigAttached) {
+      const lean = THREE.MathUtils.clamp(this.velocity.x * 0.04, -0.5, 0.5);
+      const crouch = Math.min(1, this.speed / 28);
+      poseRide(this.#riderRig, lean, crouch, this.speed > 8, this.#animT);
+      this.#riderRig.group.rotation.z = lean * 0.35;
     } else if (this.mode === "drive" && this.#driverRig.group.visible) {
       const steer = this.#modes.drive.steerVis;
       poseDrive(this.#driverRig, steer, this.#animT, this.#hasWheel);

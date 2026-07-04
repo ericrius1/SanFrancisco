@@ -44,6 +44,7 @@ import { Exploratorium, WATER_VIEW } from "./gameplay/exploratorium";
 import { PALACE_FINE_ARTS } from "./world/heightmap";
 import { Loot } from "./gameplay/loot";
 import { Hunt } from "./gameplay/hunt";
+import { Quidditch, type QuidditchRole } from "./gameplay/quidditch";
 import { Ropes, Grabber, type PickCandidate } from "./gameplay/ropes";
 import { Satchel } from "./ui/satchel";
 import { HUD } from "./ui/hud";
@@ -239,6 +240,8 @@ async function boot() {
     satchel.add(kind);
     hud.message(kind === "crab" ? "Crab caught!" : "Butterfly caught!", 1.1);
   };
+  const quidditch = new Quidditch(map, scene);
+  quidditch.onMessage = (m, s) => hud.message(m, s);
   const ropes = new Ropes(physics, scene);
   const grabber = new Grabber(physics, scene);
   grabberRef = grabber;
@@ -269,6 +272,7 @@ async function boot() {
   scene.add(sutroTower);
   let currentRide: VehicleClass | null = null;
   let currentAnimal: AnimalKind | null = null;
+  let currentQuidditch: { team: "red" | "blue"; role: QuidditchRole } | null = null;
   let currentPaint: number | undefined; // commandeered car's paint, so invites clone the exact look
   let zeroG = false;
   let ridePromptShown = false;
@@ -514,6 +518,20 @@ async function boot() {
       currentAnimal = null;
       currentPaint = undefined;
       player.setDriveStyle(null);
+      dropped = true;
+    }
+    if (currentQuidditch) {
+      quidditch.dropFlyer(
+        currentQuidditch.team,
+        currentQuidditch.role,
+        player.position.x,
+        player.position.y,
+        player.position.z,
+        player.heading - Math.PI,
+        { vx: motion.linear[0], vy: motion.linear[1], vz: motion.linear[2] }
+      );
+      currentQuidditch = null;
+      player.clearDroneStyle();
       dropped = true;
     }
     return dropped;
@@ -1000,8 +1018,9 @@ async function boot() {
     const order = PLAYER_ORDER;
     const switchMode = (mode: PlayerMode) => {
       leaveRide(); // a mode key while riding shotgun hops out first
-      if ((currentRide || currentAnimal) && mode !== "drive") dropCurrentDriveMount();
+      if ((currentRide || currentAnimal || currentQuidditch) && mode !== "drive" && mode !== "drone") dropCurrentDriveMount();
       if (mode === "drive" && !currentRide && !currentAnimal) player.setDriveStyle(null);
+      if (mode === "drone" && !currentQuidditch) player.clearDroneStyle();
       // always spawn a fresh mount — any one you left behind keeps living its own
       // life (the phoenix flies on, the plane lies where it crashed)
       player.trySwitch(mode);
@@ -1032,12 +1051,21 @@ async function boot() {
       if (exploratorium.pianoBusy) tutorial.note("piano");
     } else if (input.pressed("KeyE") && !exitToWalk()) {
         const drv = remotes.nearestDriver(player.position, 5.5);
-        // pecking order: a friend's passenger seat, then a forest animal, then traffic
-        const animal = drv ? null : forest.nearest(player.position, 5);
+        const quidJoin = drv || currentQuidditch ? null : quidditch.tryJoin(player.position);
+        const animal = drv || quidJoin ? null : forest.nearest(player.position, 5);
         if (drv) {
           passengerOf = drv.id;
           player.startRide();
           hud.message(`Riding with ${drv.name} — E to hop out`, 2.6);
+        } else if (quidJoin) {
+          const info = quidJoin;
+          currentQuidditch = { team: info.team, role: info.role };
+          player.setDroneStyle(quidditch.buildRiddenMesh(info.team));
+          player.position.set(info.x, info.y, info.z);
+          player.heading = info.heading;
+          player.velocity.set(info.vx, info.vy, info.vz);
+          player.trySwitch("drone");
+          hud.message(`You're the ${info.label} — fly the broom! E to dismount`, 3.2);
         } else if (animal) {
           const info = forest.consume(animal);
           currentAnimal = info.kind;
@@ -1310,6 +1338,7 @@ async function boot() {
     if (currentAnimal) forest.setRiddenSpeed(player.speed);
     islands.update(elapsed);
     exploratorium.update(frameDt, elapsed, player.position);
+    quidditch.update(frameDt, player.position, elapsed);
     loot.update(frameDt, player.position, elapsed);
     if (!highUp) hunt.update(frameDt, elapsed, player.position);
     ropes.update(frameDt, player.position, elapsed);
@@ -1322,20 +1351,23 @@ async function boot() {
     // "hop in" nudge when standing near a vehicle (a friend's car first, then wildlife)
     if (player.mode === "walk" && passengerOf === null) {
       const drv = remotes.nearestDriver(player.position, 5.5);
-      const nearAnimal = drv ? null : forest.nearest(player.position, 5);
-      const near = drv || nearAnimal ? null : traffic.nearest(player.position, 5.5);
-      if ((drv || nearAnimal || near) && !ridePromptShown) {
+      const quidLabel = drv || currentQuidditch ? null : quidditch.joinLabel();
+      const nearAnimal = drv || quidLabel ? null : forest.nearest(player.position, 5);
+      const near = drv || quidLabel || nearAnimal ? null : traffic.nearest(player.position, 5.5);
+      if ((drv || quidLabel || nearAnimal || near) && !ridePromptShown) {
         hud.message(
           drv
             ? `E — ride with ${drv.name}`
-            : nearAnimal
-              ? `E — ride the ${nearAnimal.label}`
-              : `E — hop in the ${DRIVE_PROFILES[near!.cls].label}`,
+            : quidLabel
+              ? `E — join as ${quidLabel}`
+              : nearAnimal
+                ? `E — ride the ${nearAnimal.label}`
+                : `E — hop in the ${DRIVE_PROFILES[near!.cls].label}`,
           1.8
         );
         ridePromptShown = true;
       }
-      if (!drv && !nearAnimal && !near) ridePromptShown = false;
+      if (!drv && !quidLabel && !nearAnimal && !near) ridePromptShown = false;
     } else {
       ridePromptShown = false;
     }

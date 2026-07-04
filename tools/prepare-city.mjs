@@ -658,7 +658,9 @@ async function main() {
       ferry: { x: 4425, z: -608 },
       alcatraz: { x: 1848, z: -4058 },
       sutro: { x: -782, z: 3846 },
-      palaceFineArts: { x: -388, z: -1426 }
+      palaceFineArts: { x: -388, z: -1426 },
+      exploratorium: { x: 4085, z: -1272 },
+      quidditchPitch: { x: -3431, z: 2322, note: "Golden Gate Park polo fields" }
     },
     spawns: {
       // Telegraph Hill just NE of Coit Tower, facing the bay into the sunset arc

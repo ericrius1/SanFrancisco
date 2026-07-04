@@ -149,6 +149,11 @@
     "exploratorium": {
       "x": 4085,
       "z": -1272
+    },
+    "quidditchPitch": {
+      "x": -3431,
+      "z": 2322,
+      "note": "Golden Gate Park polo fields"
     }
   },
   "spawns": {

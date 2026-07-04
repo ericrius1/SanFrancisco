@@ -53,8 +53,9 @@ const LANDMARK_LABELS: Record<string, string> = {
   ferry: "Ferry Building",
   alcatraz: "Alcatraz",
   sutro: "Sutro Tower",
-  palaceFineArts: "Palace of Fine Arts",
-  exploratorium: "Exploratorium"
+    palaceFineArts: "Palace of Fine Arts",
+    exploratorium: "Exploratorium",
+    quidditchPitch: "Quidditch Pitch"
 };
 
 type MapLayerDefinition = {
