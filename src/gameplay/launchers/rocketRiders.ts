@@ -13,13 +13,14 @@ import type { Rider } from "./types";
  * minus the solver.
  */
 
-const BOOST_TIME = 10; // seconds of powered flight before the chute
+const BOOST_TIME = 10; // seconds flying STRAIGHT forward+up before he veers off
+const VEER_TIME = 2.6; // banking toward the random landing spot, then chute
 const LAUNCH_SPEED = 26; // initial pop off the rail
 const MAX_RIDERS = 6; // oldest jammer retired past this
 const DESPAWN = 1500; // horizontal metres from the player before we let one go
 const STAND_H = 0.92; // rig hip origin height above ground when landed
 
-type Phase = "boost" | "chute" | "jam";
+type Phase = "boost" | "veer" | "chute" | "jam";
 
 type FlyingRider = {
   rider: Rider;
@@ -30,6 +31,7 @@ type FlyingRider = {
   pos: THREE.Vector3;
   vel: THREE.Vector3;
   target: THREE.Vector3;
+  launchDir: THREE.Vector3;
   groundY: number;
   cruiseY: number;
   yaw: number;
@@ -71,7 +73,7 @@ export class RocketRiders {
    * Send a rider off from `origin` along `dir` (the rail's aim). They pick a
    * random target somewhere out in the city and boost toward it.
    */
-  launch(origin: THREE.Vector3, dir: THREE.Vector3, rider: Rider) {
+  launch(origin: THREE.Vector3, dir: THREE.Vector3, rider: Rider, hostVel?: THREE.Vector3) {
     const group = new THREE.Group();
     // rider hip at the group origin; the rocket hangs just below (straddled),
     // the chute rigs above — so landing is just "drop the origin to standing
@@ -88,10 +90,15 @@ export class RocketRiders {
     const d = dir.clone();
     if (d.lengthSq() < 1e-5) d.set(0, 1, 0);
     d.normalize();
-    const vel = d.multiplyScalar(LAUNCH_SPEED);
+    // horizontal launch heading — he flies straight this way for the whole boost
+    const launchDir = new THREE.Vector3(d.x, 0, d.z);
+    if (launchDir.lengthSq() < 1e-5) launchDir.set(0, 0, -1);
+    launchDir.normalize();
+    const vel = d.clone().multiplyScalar(LAUNCH_SPEED);
+    if (hostVel) vel.add(hostVel); // inherit the truck's motion
     vel.y = Math.max(vel.y, 12); // guarantee some loft off the rail
 
-    // a random spot out in the city to boost toward
+    // a random spot out in the city to veer toward AFTER the straight boost
     const target = this.#pickTarget(origin);
 
     const item: FlyingRider = {
@@ -103,6 +110,7 @@ export class RocketRiders {
       pos,
       vel,
       target,
+      launchDir,
       groundY: target.y,
       cruiseY: origin.y + 58, // boosters hold him up here for the whole burn
       yaw: Math.atan2(-vel.x, -vel.z),
@@ -139,6 +147,7 @@ export class RocketRiders {
       it.animT += dt;
 
       if (it.phase === "boost") this.#boost(it, dt);
+      else if (it.phase === "veer") this.#veer(it, dt);
       else if (it.phase === "chute") this.#descend(it, dt);
       else this.#jam(it);
 
@@ -147,13 +156,11 @@ export class RocketRiders {
     }
   }
 
-  /** Powered climb: thrust up early then arc over, steering toward the target. */
+  /** Powered flight, dead straight along the launch heading (forward+up over the
+   *  truck) so you can watch him rocket out ahead — no veering yet. */
   #boost(it: FlyingRider, dt: number) {
-    // horizontal steer toward the target, speed ramping up as the boosters bite
-    V.hv.set(it.target.x - it.pos.x, 0, it.target.z - it.pos.z);
-    if (V.hv.lengthSq() > 1e-4) V.hv.normalize();
     const sp = THREE.MathUtils.lerp(LAUNCH_SPEED, 58, Math.min(1, it.phaseT / BOOST_TIME));
-    V.want.copy(V.hv).multiplyScalar(sp);
+    V.want.copy(it.launchDir).multiplyScalar(sp);
     const k = Math.min(1, dt * 1.6);
     it.vel.x += (V.want.x - it.vel.x) * k;
     it.vel.z += (V.want.z - it.vel.z) * k;
@@ -174,6 +181,34 @@ export class RocketRiders {
     it.rider.ride(it.animT);
 
     if (it.age >= BOOST_TIME) {
+      it.phase = "veer"; // NOW bank off toward the random landing spot
+      it.phaseT = 0;
+    }
+  }
+
+  /** After the straight burn, bank toward the random landing spot for a beat,
+   *  then pop the chute. */
+  #veer(it: FlyingRider, dt: number) {
+    V.hv.set(it.target.x - it.pos.x, 0, it.target.z - it.pos.z);
+    if (V.hv.lengthSq() > 1e-4) V.hv.normalize();
+    const sp = Math.hypot(it.vel.x, it.vel.z) || 40;
+    V.want.copy(V.hv).multiplyScalar(sp);
+    const k = Math.min(1, dt * 1.3);
+    it.vel.x += (V.want.x - it.vel.x) * k;
+    it.vel.z += (V.want.z - it.vel.z) * k;
+    // ease the cruise hold so he starts sinking as the burn ends
+    const wantVy = THREE.MathUtils.clamp((it.cruiseY - it.pos.y) * 0.4, -8, 10);
+    it.vel.y += (wantVy - it.vel.y) * Math.min(1, dt * 1.5);
+
+    it.pos.addScaledVector(it.vel, dt);
+    it.group.position.copy(it.pos);
+    this.#orientAlongVel(it);
+    it.flame.visible = true;
+    const pulse = 1 + Math.sin(it.animT * 45) * 0.22;
+    it.flame.scale.set(1, 1, pulse);
+    it.rider.ride(it.animT);
+
+    if (it.phaseT >= VEER_TIME) {
       it.phase = "chute";
       it.phaseT = 0;
       it.flame.visible = false;

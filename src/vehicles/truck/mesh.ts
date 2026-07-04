@@ -3,68 +3,7 @@ import { LIGHT_SCALE } from "../../config";
 import type { Cockpit } from "../../player/types";
 import { buildBunting, buildDrape, buildFlag } from "../../fx/cloth";
 import { FireworkLauncher, LauncherRig, RiderRocketLauncher, buildGuitarPlayer } from "../../gameplay/launchers";
-
-/**
- * A blow-up bald eagle for the roof: chunky inflatable body with a white head,
- * gold beak, and huge American-flag wings that ripple in the wind (the cloth
- * ripple from src/fx/cloth). Front is local -Z.
- */
-function buildEagle(): THREE.Group {
-  const g = new THREE.Group();
-  const brown = new THREE.MeshLambertMaterial({ color: 0x4a3520 });
-  const white = new THREE.MeshLambertMaterial({ color: 0xf1efe6 });
-  const gold = new THREE.MeshLambertMaterial({ color: 0xf2b01a });
-  const dark = new THREE.MeshLambertMaterial({ color: 0x121014 });
-
-  const body = new THREE.Mesh(new THREE.SphereGeometry(0.52, 18, 14), brown);
-  body.scale.set(0.95, 1.2, 0.9);
-  body.position.y = 0.55;
-  body.castShadow = true;
-  g.add(body);
-  const chest = new THREE.Mesh(new THREE.SphereGeometry(0.44, 16, 14), white);
-  chest.scale.set(0.82, 1.0, 0.62);
-  chest.position.set(0, 0.5, -0.24);
-  g.add(chest);
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.32, 18, 14), white);
-  head.position.set(0, 1.12, -0.14);
-  head.castShadow = true;
-  g.add(head);
-  const beak = new THREE.Mesh(new THREE.ConeGeometry(0.13, 0.34, 12), gold);
-  beak.rotation.x = -Math.PI / 2;
-  beak.position.set(0, 1.06, -0.46);
-  g.add(beak);
-  for (const sx of [-0.13, 0.13]) {
-    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 8), dark);
-    eye.position.set(sx, 1.18, -0.32);
-    g.add(eye);
-    const brow = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.05, 0.1), brown);
-    brow.position.set(sx, 1.24, -0.3);
-    brow.rotation.z = sx > 0 ? 0.4 : -0.4;
-    g.add(brow);
-  }
-  // flag wings — spread up, out and back; the ripple flutters the fly tips
-  const wing = (side: 1 | -1) => {
-    const w = buildFlag({ w: 1.55, h: 0.9, amp: 0.17, speed: 5, phase: side > 0 ? 0 : 1.3 });
-    w.rotation.order = "ZYX";
-    w.position.set(side * 0.34, 0.86, 0.08);
-    w.scale.x = side; // mirror the -x wing so both fan outward from the shoulder
-    w.rotation.set(-1.25, side * -0.35, side * 0.55);
-    g.add(w);
-  };
-  wing(1);
-  wing(-1);
-  const tail = new THREE.Mesh(new THREE.ConeGeometry(0.42, 0.55, 12), white);
-  tail.rotation.x = Math.PI / 2 - 0.35;
-  tail.scale.set(1, 0.35, 1);
-  tail.position.set(0, 0.38, 0.55);
-  g.add(tail);
-  for (const sx of [-0.22, 0.22]) {
-    const foot = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.03, 0.22, 8), gold);
-    foot.position.set(sx, 0.02, -0.08);
-    g.add(foot);
-  }
-  return g;
-}
+import { buildEagle } from "./eagle";
 
 /** A flag flying from a pole (bed rails, front fender). */
 function poleFlag(height: number, flagW: number, flagH: number, phase = 0): THREE.Group {
@@ -169,10 +108,12 @@ export function buildTruckMesh(): THREE.Group {
     }
   }
 
-  // --- roof decor: a big blow-up eagle
+  // --- the blow-up eagle: perched at the very BACK of the bed, towering over
+  // and behind the launchers, facing forward down the truck (-Z)
+  box(panel, 1.5, 0.5, 1.1, 0, 0.35, 4.0); // riser it stands on
   const eagle = buildEagle();
-  eagle.position.set(0, 1.72, -2.7);
-  eagle.scale.setScalar(1.7);
+  eagle.position.set(0, 0.58, 4.05);
+  eagle.scale.setScalar(1.55);
   g.add(eagle);
 
   // bunting swagged across the headboard, above the bed
@@ -180,11 +121,11 @@ export function buildTruckMesh(): THREE.Group {
   bunting.position.set(-1.4, 0.95, -0.85);
   g.add(bunting);
 
-  // a run of flags flying off both bed rails
+  // a run of flags flying off both bed rails (front + mid, clear of the eagle)
   for (const sx of [-1.42, 1.42] as const) {
     for (let i = 0; i < 3; i++) {
       const f = poleFlag(1.1, 0.8, 0.5, i * 0.7 + (sx > 0 ? 0.3 : 1.5));
-      f.position.set(sx, 0.5, 0.4 + i * 1.9);
+      f.position.set(sx, 0.5, -0.4 + i * 1.5);
       g.add(f);
     }
   }
@@ -199,12 +140,13 @@ export function buildTruckMesh(): THREE.Group {
   frontPole.position.set(-1.35, 0.2, -5.2);
   g.add(frontPole);
 
-  // --- the two launchers, spaced way apart on the big deck
+  // --- the two launchers, mid-bed, both aimed FORWARD over the cab (the actual
+  // launch direction comes from the fire ctx, so these tilts are just for show)
   const rig = new LauncherRig(g);
-  const comb = rig.add(new FireworkLauncher({ rows: 4, cols: 6, fuse: 5 }), [-0.72, 0.42, 2.9], [-0.14, 0, 0.26]);
-  comb.group.scale.setScalar(1.35);
-  const rail = rig.add(new RiderRocketLauncher({ buildRider: buildGuitarPlayer }), [0.78, 0.5, 1.2], [0, -0.16, 0]);
-  rail.group.scale.setScalar(1.25);
+  const comb = rig.add(new FireworkLauncher({ rows: 4, cols: 6, fuse: 5 }), [-0.62, 0.5, 1.7], [-0.5, 0, 0]);
+  comb.group.scale.setScalar(1.4);
+  const rail = rig.add(new RiderRocketLauncher({ buildRider: buildGuitarPlayer }), [0.64, 0.5, 1.5], [0, 0, 0]);
+  rail.group.scale.setScalar(1.3);
   g.userData.launcherRig = rig;
 
   return g;

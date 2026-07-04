@@ -68,12 +68,16 @@ export class RiderRocketLauncher implements Launcher {
   fire(ctx: FireContext) {
     if (!this.#armed) return;
     const origin = new THREE.Vector3();
-    const q = new THREE.Quaternion();
     this.#muzzle.getWorldPosition(origin);
-    this.#muzzle.getWorldQuaternion(q);
-    const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(q).normalize();
+    // launch FORWARD over the truck with a strong upward tilt (~40° elevation),
+    // so he flies out ahead in view before veering off later
+    const fwd = ctx.forward.clone();
+    fwd.y = 0;
+    if (fwd.lengthSq() < 1e-5) fwd.set(0, 0, -1);
+    fwd.normalize();
+    const dir = fwd.multiplyScalar(0.74).addScaledVector(new THREE.Vector3(0, 1, 0), 0.67).normalize();
     const rider = this.#buildRider(this.#avatar);
-    ctx.rocketRiders.launch(origin, dir, rider);
+    ctx.rocketRiders.launch(origin, dir, rider, ctx.hostVelocity);
     this.#armed = false;
     this.#reloadT = RELOAD;
     this.#prop.visible = false;

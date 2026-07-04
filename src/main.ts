@@ -1305,9 +1305,18 @@ async function boot() {
       if (!input.suspended && input.firePressed && fireCooldown <= 0 && truckLaunchers) {
         chase.lookDir(aim);
         fireCooldown = 0.6;
-        truckLaunchers.fireAll({ scene, fireworks, rocketRiders, map, playerPos: player.position });
+        const truckFwd = new THREE.Vector3(0, 0, -1).applyQuaternion(player.quaternion);
+        truckFwd.y = 0;
+        truckLaunchers.fireAll({
+          scene,
+          fireworks,
+          rocketRiders,
+          map,
+          playerPos: player.position,
+          forward: truckFwd,
+          hostVelocity: player.velocity
+        });
         chase.shake(0.18);
-        hud.message("🎆 LAUNCH — happy 4th! 🎸", 1.8);
       }
     } else if (input.firing && currentAnimal === "raccoon") {
       // mounted raccoon: the click-tools stand down, the gummy cannon speaks

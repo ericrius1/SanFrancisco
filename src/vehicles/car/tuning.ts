@@ -17,5 +17,11 @@ export const CAR_TUNING = tunables("movement.drive", {
   reverseGrind: { v: 2.5 },
   gripLat: { v: 0.12 },
   driftLat: { v: 0.86 },
-  rideSpring: { v: 10 }
+  rideSpring: { v: 10 },
+  // airborne stability off ramps/hills: leveling gain + how hard it can push +
+  // per-second spin decay. Higher = lands flatter; caps keep a wild launch able
+  // to still out-spin the fix and flip.
+  airLevel: { v: 5, min: 0, max: 20, step: 0.5, label: "air level" },
+  airLevelCap: { v: 3, min: 0, max: 10, step: 0.25, label: "air level cap" },
+  airDamp: { v: 1.0, min: 0, max: 8, step: 0.1, label: "air damp" }
 });

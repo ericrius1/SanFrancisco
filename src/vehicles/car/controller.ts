@@ -173,6 +173,31 @@ export class CarController implements ModeController {
         Math.cos(face / 2)
       ]);
       w.setBodyVelocity(ctx.body, [0, 0, 0], [0, 0, 0]);
+    } else {
+      // airborne off a ramp/hill: gravity still owns the linear arc (pass the
+      // velocity straight back), but stabilise the spin so a clean jump lands
+      // flat instead of tumbling. Damp whatever rotation the ramp edge kicked
+      // in and gently level toward upright — nose kept at our launch heading
+      // (from ctx.heading, robust when fwd goes near-vertical mid-tumble).
+      // Soft + capped on purpose: an ordinary ramp settles level before it
+      // touches down, but a wild, angled launch out-spins the fix and still
+      // flips — you have to go really crazy to lose it.
+      const yaw = ctx.heading - Math.PI;
+      V.qb.setFromAxisAngle(V.up, yaw); // desired = level car at our heading
+      V.qa.copy(q).invert().premultiply(V.qb); // error rotation current→upright
+      const flip = V.qa.w < 0 ? -1 : 1;
+      const g = td.airLevel;
+      const cap = td.airLevelCap;
+      const damp = Math.max(0, 1 - td.airDamp * dt); // per-step spin decay
+      const wv = v.angular;
+      const lx = THREE.MathUtils.clamp(V.qa.x * flip * g, -cap, cap);
+      const ly = THREE.MathUtils.clamp(V.qa.y * flip * g, -cap, cap);
+      const lz = THREE.MathUtils.clamp(V.qa.z * flip * g, -cap, cap);
+      w.setBodyVelocity(ctx.body, [v.linear[0], v.linear[1], v.linear[2]], [
+        wv[0] * damp + lx,
+        wv[1] * damp + ly,
+        wv[2] * damp + lz
+      ]);
     }
     ctx.heading = Math.atan2(-fwd.x, -fwd.z) + Math.PI;
   }

@@ -29,6 +29,10 @@ export type FireContext = {
   rocketRiders: RocketRiders;
   map: WorldMap;
   playerPos: THREE.Vector3;
+  /** Host forward in world space (horizontal) — everything fires this way. */
+  forward: THREE.Vector3;
+  /** Host velocity — shells and riders inherit it so a moving truck leads its shots. */
+  hostVelocity: THREE.Vector3;
 };
 
 /**

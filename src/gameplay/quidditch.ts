@@ -1306,7 +1306,7 @@ export class Quidditch {
     if (this.#state !== "playing") return;
     this.#scores[team] += GOAL_POINTS;
     const { red, blue } = this.#scores;
-    this.#kickoffDelay = 6 + Math.random() * 4;
+    this.#kickoffDelay = 10 + Math.random() * 8;
     this.#resetBall();
     this.onScore(team, red, blue, hoop.wx, this.#groundY + 1.2, hoop.wz);
     const side = team === "red" ? "Scarlet" : "Azure";

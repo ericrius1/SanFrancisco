@@ -59,26 +59,27 @@ export class FireworkLauncher implements Launcher {
   }
 
   fire(ctx: FireContext) {
+    // fire forward over the truck (+ up), inheriting the host's velocity so a
+    // moving truck's shells lead ahead — everything stays in view
+    const up = new THREE.Vector3(0, 1, 0);
+    const fwd = ctx.forward.clone();
+    fwd.y = 0;
+    if (fwd.lengthSq() < 1e-5) fwd.set(0, 0, -1);
+    fwd.normalize();
+    const right = new THREE.Vector3().crossVectors(fwd, up).normalize();
     const origin = new THREE.Vector3();
-    const barrel = new THREE.Vector3();
-    const q = new THREE.Quaternion();
-    this.group.getWorldQuaternion(q);
-    barrel.set(0, 1, 0).applyQuaternion(q).normalize(); // barrel axis in world
-    // a right vector to scatter shells laterally across the fan
-    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(q).normalize();
     const target = new THREE.Vector3();
-    for (const tube of this.#tubes) {
-      tube.getWorldPosition(origin);
-      const range = 84 + Math.random() * 26;
+    for (let i = 0; i < this.#tubes.length; i++) {
+      this.#tubes[i].getWorldPosition(origin);
       const T = this.#fuse * (0.94 + Math.random() * 0.12);
       target
         .copy(origin)
-        .addScaledVector(barrel, range)
-        .addScaledVector(right, (Math.random() - 0.5) * 26);
+        .addScaledVector(fwd, 72 + Math.random() * 30) // downrange
+        .addScaledVector(up, 58 + Math.random() * 26) // rise
+        .addScaledVector(right, (Math.random() - 0.5) * 24) // fan
+        .addScaledVector(ctx.hostVelocity, T); // inherit truck motion
       ctx.fireworks.launchShell(origin, target, T);
-      // muzzle flash
-      const idx = this.#tubes.indexOf(tube);
-      if (this.#glow[idx]) this.#glow[idx].opacity = 1;
+      if (this.#glow[i]) this.#glow[i].opacity = 1; // muzzle flash
     }
   }
 }
