@@ -4,6 +4,8 @@ import type { AvatarTraits } from "../../player/avatar";
 import type { FireContext, Launcher, Rider, RiderFactory } from "./types";
 
 const RELOAD = 4.5; // seconds before a fresh rider is racked up
+const PARKED_RIDER_POS = [-0.5, 0.45, -0.7] as const; // hip height puts feet on the truck bed
+const PARKED_ROCKET_POS = [PARKED_RIDER_POS[0], 0, PARKED_RIDER_POS[2]] as const;
 
 /**
  * A rail that flings a strapped-in performer skyward. The rider is a plugged-in
@@ -44,15 +46,14 @@ export class RiderRocketLauncher implements Launcher {
     this.#muzzle.position.set(0, 0.1, -1.35);
     this.#prop.add(this.#muzzle);
 
+    this.#prop.position.set(PARKED_ROCKET_POS[0], PARKED_ROCKET_POS[1], PARKED_ROCKET_POS[2]);
     this.#prop.rotation.x = tilt; // nose up-forward
     this.group.add(this.#prop);
 
-    // the parked performer stands UPRIGHT on the flatbed beside the rail (not on
-    // the tilted rocket), jamming his set until you fire — then a fresh rider is
-    // the one strapped in and launched. Parented to the untilted group so the
-    // rail's elevation never reclines him.
+    // The parked performer stays upright on the flatbed while the tilted rocket
+    // sits directly between his legs, ready to carry the fresh launched rider.
     this.#staticRider = this.#buildRider(this.#avatar);
-    this.#staticRider.group.position.set(-0.5, 0.56, -0.7);
+    this.#staticRider.group.position.set(PARKED_RIDER_POS[0], PARKED_RIDER_POS[1], PARKED_RIDER_POS[2]);
     this.group.add(this.#staticRider.group);
     this.#staticRider.jam(0); // pose standing even before the rig is ticked
   }

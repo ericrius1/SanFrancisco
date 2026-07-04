@@ -143,6 +143,62 @@ const goldenGateMat = new THREE.MeshStandardMaterial({
 const roadMat = createRoadMaterial();
 const parkMat = createParkMaterial();
 
+const GOLDEN_GATE_ROAD_INSET = 1.15;
+const BRIDGE_ROAD_SURFACE_OFFSET = 0.12;
+const BRIDGE_ROAD_SEGMENT_M = 60;
+
+function createGoldenGateRoadSurface(map: WorldMap): THREE.Mesh | null {
+  const bridge = map.meta.bridges.find((b) => b.name === "Golden Gate Bridge");
+  if (!bridge) return null;
+
+  const halfWidth = Math.max(1, bridge.width / 2 - GOLDEN_GATE_ROAD_INSET);
+  const positions: number[] = [];
+  const indices: number[] = [];
+
+  for (let i = 0; i < bridge.line.length - 1; i++) {
+    const [x0, z0, y0] = bridge.line[i];
+    const [x1, z1, y1] = bridge.line[i + 1];
+    const segLen = Math.hypot(x1 - x0, z1 - z0);
+    const steps = Math.max(1, Math.ceil(segLen / BRIDGE_ROAD_SEGMENT_M));
+
+    for (let s = 0; s < steps; s++) {
+      const t0 = s / steps;
+      const t1 = (s + 1) / steps;
+      const ax = x0 + (x1 - x0) * t0;
+      const az = z0 + (z1 - z0) * t0;
+      const ay = y0 + (y1 - y0) * t0 + BRIDGE_ROAD_SURFACE_OFFSET;
+      const bx = x0 + (x1 - x0) * t1;
+      const bz = z0 + (z1 - z0) * t1;
+      const by = y0 + (y1 - y0) * t1 + BRIDGE_ROAD_SURFACE_OFFSET;
+      const dx = bx - ax;
+      const dz = bz - az;
+      const len = Math.hypot(dx, dz) || 1;
+      const px = -dz / len;
+      const pz = dx / len;
+      const base = positions.length / 3;
+
+      positions.push(
+        ax + px * halfWidth, ay, az + pz * halfWidth,
+        bx + px * halfWidth, by, bz + pz * halfWidth,
+        bx - px * halfWidth, by, bz - pz * halfWidth,
+        ax - px * halfWidth, ay, az - pz * halfWidth
+      );
+      indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+    }
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  geometry.computeBoundingSphere();
+
+  const mesh = new THREE.Mesh(geometry, roadMat);
+  mesh.name = "lm_bridge_goldengate_asphalt";
+  mesh.receiveShadow = true;
+  return mesh;
+}
+
 export class TileStreamer {
   manifest!: Manifest;
   loaded = new Map<string, LoadedTile>();
@@ -212,6 +268,8 @@ export class TileStreamer {
         mesh.receiveShadow = true;
       });
       applyLandmarkFixes(gltf.scene, map);
+      const goldenGateRoad = createGoldenGateRoadSurface(map);
+      if (goldenGateRoad) gltf.scene.add(goldenGateRoad);
       this.landmarks = gltf.scene;
       this.#scene.add(gltf.scene);
     });

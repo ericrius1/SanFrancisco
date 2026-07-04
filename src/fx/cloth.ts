@@ -1,5 +1,5 @@
 import * as THREE from "three/webgpu";
-import { float, positionLocal, sin, texture, time, uv, vec3 } from "three/tsl";
+import { float, normalLocal, positionLocal, sin, texture, time, uv, vec3 } from "three/tsl";
 
 /**
  * Reusable wind-rippled cloth — the GPU vertex-displacement trick from the boat
@@ -51,6 +51,49 @@ export function rippleMaterial(opts: RippleOpts = {}): THREE.MeshLambertNodeMate
     .mul(anchor)
     .mul(amp);
   mat.positionNode = positionLocal.add(vec3(0, 0, wave));
+  return mat;
+}
+
+/**
+ * Wind ripple for an arbitrary loaded wing mesh (e.g. the eagle GLB's flag
+ * wings), where we can't rely on a clean spanwise UV like {@link rippleMaterial}.
+ * Amplitude ramps from 0 at the `shoulder` attach point out to full at the wing
+ * tip (`reach` = shoulder→tip distance), so the wing stays laced to the body
+ * while the trailing feathers snap. Displacement is along the surface normal so
+ * the chunky feathered membrane billows regardless of how the wing is oriented.
+ * Keep the mesh at raw GLB scale (positionLocal must match the baked coords used
+ * to measure `shoulder`/`reach`) — never feed it a quantised geometry.
+ */
+export function rippleWingMaterial(opts: {
+  map?: THREE.Texture;
+  color?: number;
+  /** Wing→body attach point in the mesh's own local space (ripple anchor, amp 0). */
+  shoulder: THREE.Vector3;
+  /** Farthest shoulder→tip distance in local units (normaliser for the ramp). */
+  reach: number;
+  /** Peak out-of-surface displacement in local units. */
+  amp?: number;
+  freq?: number;
+  speed?: number;
+  phase?: number;
+  roughness?: number;
+  metalness?: number;
+}): THREE.MeshStandardNodeMaterial {
+  const { amp = 0.08, freq = 7, speed = 4.6, phase = 0, roughness = 0.82, metalness = 0 } = opts;
+  const mat = new THREE.MeshStandardNodeMaterial({ side: THREE.DoubleSide, roughness, metalness });
+  if (opts.map) mat.map = opts.map;
+  else if (opts.color != null) mat.color.set(opts.color);
+  const sh = vec3(opts.shoulder.x, opts.shoulder.y, opts.shoulder.z);
+  const invReach = float(1 / Math.max(1e-4, opts.reach));
+  // 0 at the shoulder, 1 at the tip — ramps the ripple outward
+  const anchor = positionLocal.sub(sh).length().mul(invReach).clamp(0, 1);
+  const ph = float(phase);
+  const wave = sin(anchor.mul(freq).sub(time.mul(speed)).add(ph))
+    .mul(0.7)
+    .add(sin(anchor.mul(freq * 2.1).sub(time.mul(speed * 1.3)).add(ph.mul(1.7))).mul(0.3))
+    .mul(anchor)
+    .mul(amp);
+  mat.positionNode = positionLocal.add(normalLocal.mul(wave));
   return mat;
 }
 
