@@ -47,6 +47,7 @@ export async function findOpenSpawn(
   if (colliders.length === 0) return want;
 
   const open = (x: number, z: number): boolean => {
+    if (map.bridgeDeck(x, z) > -Infinity) return true;
     if (map.isWater(x, z)) return false;
     for (const c of colliders) {
       if (obbClearance(c, x, z) < clearance) return false;

@@ -170,7 +170,7 @@ const TIPS: Partial<Record<PlayerMode, string>> = {
   drive: "Ram buildings to topple them",
   board: "White glow = nose · surfs streets, hills and the bay",
   bird: "Look down + Shift to stoop — skim the bay for spray",
-  truck: "Click to fire both launchers — fireworks + a rocket-riding guitarist"
+  truck: "Click to launch the rocket battery — a red/white/blue firework barrage"
 }
 
 // Xbox face buttons get their signature colors

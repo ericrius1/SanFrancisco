@@ -18,7 +18,9 @@ import { rippleWingMaterial } from "../../fx/cloth";
 
 // eagle height in local units, before buildTruckMesh's 1.55× scale
 const TARGET_HEIGHT = 2.2;
-// GLB facing → game front (-Z). Tuned by eye against the truck.
+// GLB facing → game front (-Z). The head is modelled in a fierce side-profile,
+// so π points the body forward down the truck while the face reads from the
+// front quarter (the angle you see it from on the bed).
 const FACING_Y = Math.PI;
 // the US-flag mirror-pair wings (Tripo node names) that get the cloth ripple
 const WING_PARTS = new Set(["tripo_part_0", "tripo_part_7"]);

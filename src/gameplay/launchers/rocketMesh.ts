@@ -1,4 +1,5 @@
 import * as THREE from "three/webgpu";
+import { saturate, uv, vec3, vec4 } from "three/tsl";
 import { LIGHT_SCALE } from "../../config";
 import { usFlagTexture } from "../../fx/cloth";
 
@@ -52,26 +53,37 @@ export function buildRocket(): THREE.Group {
   return g;
 }
 
+/** A soft, textureless additive glow billboard material — a hot spot of light.
+ *  Shared module-wide (each flame reuses these), so they're never disposed
+ *  per-rocket (destroying a node material mid-frame corrupts the GPU submit). */
+function glowMaterial(hex: number, gain: number): THREE.SpriteNodeMaterial {
+  const mat = new THREE.SpriteNodeMaterial();
+  const d = uv().sub(0.5).length().mul(2);
+  const falloff = saturate(d.oneMinus()).pow(2.3).add(saturate(d.mul(1.7).oneMinus()).pow(6).mul(1.8));
+  const c = new THREE.Color(hex);
+  mat.colorNode = vec4(vec3(c.r, c.g, c.b).mul(falloff).mul(gain * LIGHT_SCALE), 1);
+  mat.blending = THREE.AdditiveBlending;
+  mat.transparent = true;
+  mat.depthWrite = false;
+  return mat;
+}
+
+const FLAME_CORE = glowMaterial(0xffe6a8, 2.4); // hot white-gold core
+const FLAME_HALO = glowMaterial(0xff8a28, 1.15); // softer orange halo
+
 /**
- * Booster exhaust — a stack of emissive cones streaming out the tail (+Z).
- * Caller toggles `.visible` and pulses `.scale.z` while thrusting.
+ * Booster exhaust — just a bright glow at the nozzle (+Z tail), no fake cones.
+ * A hot white-gold core inside a softer orange halo. Caller toggles `.visible`
+ * and pulses `.scale` while thrusting.
  */
 export function buildBoosterFlame(): THREE.Group {
   const g = new THREE.Group();
-  g.position.z = 1.08;
-  const cone = (len: number, r: number, hex: number, gain: number) => {
-    const m = new THREE.Mesh(
-      new THREE.ConeGeometry(r, len, 12, 1, true),
-      new THREE.MeshBasicMaterial({ color: hex, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false })
-    );
-    m.rotation.x = -Math.PI / 2; // open end toward +Z
-    m.position.z = len / 2;
-    void gain;
-    g.add(m);
-    return m;
-  };
-  cone(1.5, 0.22, 0xffe08a, 1); // hot core
-  cone(2.4, 0.34, 0xff7a1e, 1); // orange plume
+  g.position.z = 1.15; // just off the nozzle
+  const core = new THREE.Sprite(FLAME_CORE);
+  core.scale.setScalar(0.9);
+  const halo = new THREE.Sprite(FLAME_HALO);
+  halo.scale.setScalar(1.7);
+  g.add(halo, core);
   g.visible = false;
   return g;
 }

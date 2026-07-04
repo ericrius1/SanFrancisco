@@ -147,7 +147,7 @@ export class BirdController implements ModeController {
     // frame, so the yaw-rate term needs the opposite sign to the lateral-speed
     // term (which already leans correctly into a strafe) or the bird banks away
     // from every turn.
-    const targetRoll = THREE.MathUtils.clamp(-localLat * t.bankPerSpeed - dYaw * 1.4, -t.maxBank, t.maxBank);
+    const targetRoll = THREE.MathUtils.clamp(-localLat * t.bankPerSpeed + dYaw * 1.4, -t.maxBank, t.maxBank);
     this.#roll += (targetRoll - this.#roll) * Math.min(1, dt * 5);
     const posture = this.#flapPow * 0.16 - this.#tuck * 0.08;
     const q = ctx.quaternion.setFromEuler(V.euler.set(this.#pitch * 0.9 + posture, yaw, this.#roll + this.#spin, "YXZ"));

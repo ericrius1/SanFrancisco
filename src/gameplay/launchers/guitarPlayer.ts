@@ -149,13 +149,14 @@ function decorate(scene: THREE.Object3D): THREE.Group {
     if (foot) slab(foot, 12, 8, 24, 0, 4, 6, pal.shoe); // shoe, toe forward
   }
 
-  // sling the guitar across the chest, neck up to his left; built in cm so it
-  // shares the rig's units, then rotated into playing position
+  // the guitar rides between his hands: its body pinned to the strum (right)
+  // hand and its neck aimed at the fret (left) hand every frame (see
+  // #trackGuitar), so he's always actually playing it rather than strumming air.
+  // Built in cm — same units as the skeleton it lives under.
   const guitar = buildGuitar();
+  guitar.name = "guitar-prop";
   guitar.scale.setScalar(0.62);
-  guitar.rotation.set(0.2, 0.15, 1.15); // body at right hip, neck up-left
-  guitar.position.set(9, 6, 20); // out in front of the chest (+Z faces forward)
-  if (spine1) spine1.add(guitar);
+  scene.add(guitar); // sibling of the bones, inside the cm-scale holder
 
   // pin hips to the group origin, shrink to game scale
   const holder = new THREE.Group();
@@ -167,11 +168,53 @@ function decorate(scene: THREE.Object3D): THREE.Group {
   return holder;
 }
 
+/* --------------------------------------------------- per-frame guitar tracking */
+
+const _lh = new THREE.Vector3();
+const _rh = new THREE.Vector3();
+const _y = new THREE.Vector3();
+const _z = new THREE.Vector3();
+const _x = new THREE.Vector3();
+const _front = new THREE.Vector3(0, 0, 1); // character front in holder-local space
+const _basis = new THREE.Matrix4();
+
+type Tracked = { inst: THREE.Object3D; guitar: THREE.Object3D; lh: THREE.Object3D; rh: THREE.Object3D };
+
+/**
+ * Glue the guitar to the animated hands: body at the strum (right) hand, neck
+ * aimed at the fret (left) hand, face turned outward — so however the clip moves
+ * his arms, he's always playing the instrument instead of the air beside it.
+ */
+function trackGuitar(t: Tracked) {
+  t.inst.updateMatrixWorld(true); // bone world matrices reflect this frame's pose
+  const parent = t.guitar.parent;
+  if (!parent) return;
+  t.lh.getWorldPosition(_lh);
+  parent.worldToLocal(_lh);
+  t.rh.getWorldPosition(_rh);
+  parent.worldToLocal(_rh);
+  _y.subVectors(_lh, _rh); // neck direction: strum hand → fret hand
+  const len = _y.length();
+  if (len < 1e-3) return;
+  _y.divideScalar(len);
+  // orient the strings' face (guitar +Z) forward, orthogonal to the neck
+  _z.copy(_front).addScaledVector(_y, -_front.dot(_y));
+  if (_z.lengthSq() < 1e-6) _z.set(1, 0, 0);
+  else _z.normalize();
+  _x.crossVectors(_y, _z).normalize();
+  _basis.makeBasis(_x, _y, _z);
+  t.guitar.quaternion.setFromRotationMatrix(_basis);
+  // body at the strum hand, nudged a touch up the neck and out along the face so
+  // the hand rests on the strings rather than clipping through the wrist
+  t.guitar.position.copy(_rh).addScaledVector(_y, 8).addScaledVector(_z, 3);
+}
+
 /* --------------------------------------------------------------- async load */
 
 let template: THREE.Group | null = null;
 let clip: THREE.AnimationClip | null = null;
 let loading = false;
+let instances = 0; // stagger each jammer's phase so a stage-full isn't in lockstep
 const waiters: Array<() => void> = [];
 
 function ensureLoaded() {
@@ -197,6 +240,7 @@ function ensureLoaded() {
 export const buildGuitarPlayer: RiderFactory = (_avatar?: AvatarTraits): Rider => {
   const group = new THREE.Group();
   let mixer: THREE.AnimationMixer | null = null;
+  let tracked: Tracked | null = null;
   let last = -1;
 
   const build = () => {
@@ -206,6 +250,13 @@ export const buildGuitarPlayer: RiderFactory = (_avatar?: AvatarTraits): Rider =
     mixer = new THREE.AnimationMixer(inst);
     const action = mixer.clipAction(clip);
     action.play();
+    action.time = (instances++ * 0.83) % clip.duration;
+    const guitar = inst.getObjectByName("guitar-prop");
+    const lh = inst.getObjectByName("mixamorigLeftHand");
+    const rh = inst.getObjectByName("mixamorigRightHand");
+    if (guitar && lh && rh) tracked = { inst, guitar, lh, rh };
+    mixer.update(0); // snap to a playing pose now — never show the bind T-pose,
+    if (tracked) trackGuitar(tracked); // and put the guitar in his hands from frame 0
   };
 
   if (template && clip) build();
@@ -221,6 +272,7 @@ export const buildGuitarPlayer: RiderFactory = (_avatar?: AvatarTraits): Rider =
     const dt = last < 0 ? 0 : Math.min(0.1, Math.max(0, t - last));
     last = t;
     mixer.update(dt * speed);
+    if (tracked) trackGuitar(tracked);
   };
 
   return {

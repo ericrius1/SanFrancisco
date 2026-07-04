@@ -2,6 +2,7 @@ import * as THREE from "three/webgpu";
 import {
   cameraPosition,
   float,
+  floor,
   instancedArray,
   instanceIndex,
   mix,
@@ -169,7 +170,13 @@ function createGoldenGateMaterial(posK: number[], info: number[]) {
     .add(0.88)
     .mul(sin(T.mul(0.47).add(seed.mul(41))).mul(0.16).add(0.92));
 
-  const warmDeck = vec3(1.0, 0.72, 0.26).mul(deckPulse).mul(GOLDEN_GATE_LIGHTS_TUNING.deck as N);
+  // each deck lamp is red, white, or blue — picked per-lamp from its seed
+  const rwbSel = floor(seed.mul(3));
+  const wR = saturate(float(1).sub(rwbSel.abs()));
+  const wW = saturate(float(1).sub(rwbSel.sub(1).abs()));
+  const wB = saturate(float(1).sub(rwbSel.sub(2).abs()));
+  const rwbDeck = vec3(1.0, 0.16, 0.12).mul(wR).add(vec3(1.0, 1.0, 1.0).mul(wW)).add(vec3(0.22, 0.42, 1.0).mul(wB));
+  const warmDeck = rwbDeck.mul(deckPulse).mul(GOLDEN_GATE_LIGHTS_TUNING.deck as N);
   const cableOrange = vec3(1.0, 0.25, 0.08).mul(cableTwinkle).mul(GOLDEN_GATE_LIGHTS_TUNING.cables as N);
   const redBeacon = vec3(1.0, 0.04, 0.02).mul(beaconPulse).mul(GOLDEN_GATE_LIGHTS_TUNING.beacons as N);
   const reflectedGold = vec3(1.0, 0.43, 0.04).mul(reflectionRipple).mul(GOLDEN_GATE_LIGHTS_TUNING.reflections as N);
@@ -240,14 +247,13 @@ export function createGoldenGateLights(map: WorldMap): THREE.Sprite | null {
   const deck = sampleBridgeLine(br, DECK_SPACING);
   for (let i = 0; i < deck.length; i++) {
     const p = deck[i];
-    const edge = br.width / 2 + 1.7;
+    // small round lamps bolted onto the side railings (not floating off the deck,
+    // and no long streaks dropping to the water)
+    const edge = br.width / 2 + 0.4;
     for (const sgn of [-1, 1]) {
       const x = p.x + p.perpX * edge * sgn;
       const z = p.z + p.perpZ * edge * sgn;
-      push(x, p.y + 4.2, z, 0, p.u, 0.92);
-      if (i % 4 === 0) {
-        push(x + p.perpX * 7.5 * sgn, 0.36, z + p.perpZ * 7.5 * sgn, 5, p.u, 0.7 + hash01(i + sgn * 13) * 0.45);
-      }
+      push(x, p.y + 1.4, z, 0, p.u, 0.5);
     }
   }
 
@@ -306,11 +312,6 @@ export function createGoldenGateLights(map: WorldMap): THREE.Sprite | null {
   for (let t = 0; t < br.towers.length; t++) {
     const [tx, tz] = br.towers[t];
     const u = t === 0 ? 0.36 : 0.62;
-    for (const sgn of [-1, 1]) {
-      const x = tx + perpX * (br.width / 2 + 4.5) * sgn;
-      const z = tz + perpZ * (br.width / 2 + 4.5) * sgn;
-      push(x + perpX * 11 * sgn, 0.42, z + perpZ * 11 * sgn, 5, u, 1.25);
-    }
     push(tx, br.towerHeight + 4, tz, 4, u + 0.08, 1.25);
   }
 

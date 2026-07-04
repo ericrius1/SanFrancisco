@@ -1,0 +1,11 @@
+export const TRUCK_VISUAL_SCALE = 2;
+
+export const TRUCK_HALF_EXTENTS: [number, number, number] = [
+  1.45 * TRUCK_VISUAL_SCALE,
+  1.1 * TRUCK_VISUAL_SCALE,
+  4.6 * TRUCK_VISUAL_SCALE
+];
+
+export const TRUCK_RIDE_HEIGHT = 1.5 * TRUCK_VISUAL_SCALE;
+export const TRUCK_SPAWN_LIFT = 1.6 * TRUCK_VISUAL_SCALE;
+export const TRUCK_GROUND_PROBE_EXTENT = 2.5 * TRUCK_VISUAL_SCALE;

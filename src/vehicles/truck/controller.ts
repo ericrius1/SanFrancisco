@@ -3,13 +3,14 @@ import { BodyType } from "box3d-wasm";
 import type { Input } from "../../core/input";
 import type { ModeController, ModeFrame, PlayerCtx } from "../../player/types";
 import { enterOnLand } from "../shared";
+import { TRUCK_GROUND_PROBE_EXTENT, TRUCK_HALF_EXTENTS, TRUCK_RIDE_HEIGHT, TRUCK_SPAWN_LIFT } from "./dimensions";
 import { TRUCK_TUNING } from "./tuning";
 
 // Truck owns its own hull dims (it isn't a commandeered "drive" body, so it
-// doesn't read ctx.driveSpec) — a big, tall, heavy flatbed box (~3×2.2×9.2 m).
-const HALF: [number, number, number] = [1.45, 1.1, 4.6];
-const RIDE_HEIGHT = 1.5;
-const LIFT = 1.6;
+// doesn't read ctx.driveSpec) — a big, tall, heavy flatbed box.
+const HALF = TRUCK_HALF_EXTENTS;
+const RIDE_HEIGHT = TRUCK_RIDE_HEIGHT;
+const LIFT = TRUCK_SPAWN_LIFT;
 
 const V = {
   tmp: new THREE.Vector3(),
@@ -68,7 +69,7 @@ export class TruckController implements ModeController {
     const up = V.tmp2.set(0, 1, 0).applyQuaternion(q);
 
     const ground = this.#ground(ctx, ctx.position.x, ctx.position.z);
-    const grounded = ctx.position.y - ground < 3.0 && up.y > 0.35;
+    const grounded = ctx.position.y - ground < RIDE_HEIGHT * 2 && up.y > 0.35;
 
     const throttle = input.axis("KeyS", "KeyW");
     const steer = input.axis("KeyD", "KeyA");
@@ -109,7 +110,7 @@ export class TruckController implements ModeController {
       const grip = Math.min(Math.abs(fwdSpeed) / 6, 1);
       const steerRate = steer * dir * grip * (handbrake ? td.driftSteerRate : td.steerRate);
 
-      const e = 2.5;
+      const e = TRUCK_GROUND_PROBE_EXTENT;
       const n = V.tmp.set(
         this.#ground(ctx, ctx.position.x - e, ctx.position.z) - this.#ground(ctx, ctx.position.x + e, ctx.position.z),
         2 * e,
@@ -126,7 +127,7 @@ export class TruckController implements ModeController {
     } else if (up.y < 0.2 && ctx.speed < 2.5) {
       const face = ctx.heading - Math.PI;
       const t2 = w.getBodyTransform(ctx.body);
-      w.setBodyTransform(ctx.body, [t2.position[0], t2.position[1] + 1.6, t2.position[2]], [
+      w.setBodyTransform(ctx.body, [t2.position[0], t2.position[1] + LIFT, t2.position[2]], [
         0,
         Math.sin(face / 2),
         0,

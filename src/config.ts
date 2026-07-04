@@ -108,10 +108,10 @@ export const DEBRIS_TUNING = tunables("debrisLights", {
 });
 
 /**
- * Where and how a fresh session starts: hoverboarding by the Palace of Fine
- * Arts lagoon, facing the rotunda. Editable in the Tab panel (persisted);
+ * Where and how a fresh session starts: parade truck on the Golden Gate Bridge
+ * deck, heading toward Marin. Editable in the Tab panel (persisted);
  */
-export const START_DEFAULTS = { spawn: "palaceFineArts", mode: "board" as PlayerMode };
+export const START_DEFAULTS = { spawn: "goldenGate", mode: "truck" as PlayerMode };
 
 export const START = {
   spawn: tweakDefault("start.spawn", START_DEFAULTS.spawn),

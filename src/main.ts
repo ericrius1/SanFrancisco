@@ -65,6 +65,7 @@ import { Voice } from "./net/voice";
 import { Minimap } from "./ui/minimap";
 import { PlayerLocator } from "./ui/playerLocator";
 import { avatarFromSeed, loadSavedAvatar, randomAvatarTraits, saveAvatarTraits } from "./player/avatar";
+import { TRUCK_VISUAL_SCALE } from "./vehicles/truck/dimensions";
 
 CameraControls.install({ THREE });
 
@@ -186,8 +187,8 @@ async function boot() {
   const vehicleAudio = new VehicleAudio();
   const audioControls = new AudioControls();
 
-  // start where the "/" panel's start folder points (source default: Coit Tower's
-  // hill), nudged onto open ground — never under (or inside) a building.
+  // start where the "/" panel's start folder points (source default: Golden Gate
+  // Bridge deck), nudged onto open ground — never under (or inside) a building.
   const startAt = map.meta.spawns[START.spawn] ?? map.meta.spawns[START_DEFAULTS.spawn];
   const spawn = await findOpenSpawn(map, tiles.manifest, startAt);
   // Avatar identity: a saved avatar means the player chose one in the editor;
@@ -887,7 +888,7 @@ async function boot() {
     boat: { r: 4.5, y: 1.8 },
     drone: { r: 0.9, y: 0.3 },
     bird: { r: 1.0, y: 0.5 },
-    truck: { r: 3.6, y: 1.5 }
+    truck: { r: 3.6 * TRUCK_VISUAL_SCALE, y: 1.5 * TRUCK_VISUAL_SCALE }
   };
 
   let fireCooldown = 0;
@@ -1035,6 +1036,11 @@ async function boot() {
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") writeSession();
   });
+
+  // A demo can install a per-frame cinematic controller: it fully owns the
+  // truck's render pose AND the camera for a scripted shot (see dev/demo.ts
+  // "bridge"). Runs at the camera step, replacing the chase cam.
+  let cineHook: ((dt: number) => void) | null = null;
 
   const tick = (forcedDt?: number) => {
     timer.update();
@@ -1305,8 +1311,8 @@ async function boot() {
         chase.shake(0.08);
       }
     } else if (player.mode === "truck") {
-      // parade truck: one press fires BOTH launchers — the firework honeycomb
-      // and the guitarist's rocket — at once
+      // parade truck: one press launches the whole rocket battery in the bed —
+      // they fly out ahead and burst into a two-stage red/white/blue show
       if (!input.suspended && input.firePressed && fireCooldown <= 0 && truckLaunchers) {
         chase.lookDir(aim);
         fireCooldown = 0.6;
@@ -1533,7 +1539,9 @@ async function boot() {
     } else {
       ridePromptShown = false;
     }
-    if (cameraMode) {
+    if (cineHook) {
+      cineHook(frameDt); // scripted cinematic owns truck pose + camera
+    } else if (cameraMode) {
       orbit.update(frameDt);
     } else {
       chase.update(frameDt, player, input);
@@ -1721,7 +1729,38 @@ async function boot() {
     setInterval(() => {
       if (!manualDrive && (document.hidden || performance.now() - lastLoop > 250)) tick(0.05);
     }, 50);
-    const demoCtx = { input, player, physics, chase, hud, sky, minimap, setTool: (t: string) => setTool(t as ToolName) };
+    const demoCtx = {
+      input,
+      player,
+      physics,
+      chase,
+      hud,
+      sky,
+      minimap,
+      map,
+      setTool: (t: string) => setTool(t as ToolName),
+      setCine: (fn: ((dt: number) => void) | null) => {
+        cineHook = fn;
+      },
+      setExposure: (v: number) => {
+        renderer.toneMappingExposure = v;
+      },
+      setPostFx: (values: Record<string, number | boolean>) => {
+        Object.assign(POSTFX_TUNING.values, values);
+        pipeline.applyPostFx(); // rebuild the chain for the toggles + push uniforms
+      },
+      launchTruckFireworks: (forward: THREE.Vector3) => {
+        truckLaunchers?.fireAll({
+          scene,
+          fireworks,
+          rocketRiders,
+          map,
+          playerPos: player.position,
+          forward,
+          hostVelocity: player.velocity
+        });
+      }
+    };
     (window as never as { __demo: (n: string) => void }).__demo = (n: string) => {
       void import("./dev/demo").then(({ runDemo }) => runDemo(n, demoCtx));
     };
