@@ -44,6 +44,13 @@ const DOT_HIT_PX = 14; // expanded-map click tolerance around a player dot
 const PLACE_HIT_PX = 13;
 const GROUND_TARGET_NAME = "Selected spot";
 const LANDMARK_DOT_COLOR = "#6fd7c4";
+// Bridge decks are painted on the map in their real colour so the spans read at
+// a glance. Keyed by the `color` name in meta.json bridges.
+const BRIDGE_COLORS: Record<string, string> = {
+  internationalOrange: "#d1541f",
+  gray: "#9aa6af"
+};
+const BRIDGE_FALLBACK_COLOR = "#c85a2a";
 const LAYERS_ENABLED = false; // art/science/music layers parked for now
 
 const LANDMARK_LABELS: Record<string, string> = {
@@ -194,6 +201,13 @@ export class Minimap {
       z: pos.z,
       name: LANDMARK_LABELS[key] ?? key
     }));
+    // Pin the Golden Gate Bridge at its main-span midpoint (between the two
+    // towers) so it gets a landmark dot + label + teleport like the rest.
+    const ggb = this.#map.meta.bridges.find((b) => b.name === "Golden Gate Bridge");
+    if (ggb && ggb.towers.length >= 2) {
+      const [a, b] = ggb.towers;
+      this.#landmarks.push({ x: (a[0] + b[0]) / 2, z: (a[1] + b[1]) / 2, name: "Golden Gate Bridge" });
+    }
     this.#layers = MAP_LAYER_DEFS.map((def) => ({
       ...def,
       enabled: false,

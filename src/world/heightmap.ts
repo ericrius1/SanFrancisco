@@ -6,6 +6,8 @@ type BridgeDef = {
   width: number;
   towers: [number, number][];
   towerHeight: number;
+  color?: string;
+  deckThickness?: number;
 };
 
 export type Meta = {
