@@ -44,7 +44,9 @@ import { Exploratorium, WATER_VIEW } from "./gameplay/exploratorium";
 import { PALACE_FINE_ARTS } from "./world/heightmap";
 import { Loot } from "./gameplay/loot";
 import { Hunt } from "./gameplay/hunt";
-import { Quidditch, type QuidditchRole } from "./gameplay/quidditch";
+import { Quidditch, QUIDDITCH_PITCH, type QuidditchRole, type QuidditchTeam } from "./gameplay/quidditch";
+import { QuidditchHUD } from "./ui/quidditchHud";
+import { QuidditchAudio } from "./fx/quidditchAudio";
 import { Ropes, Grabber, type PickCandidate } from "./gameplay/ropes";
 import { Satchel } from "./ui/satchel";
 import { HUD } from "./ui/hud";
@@ -241,7 +243,30 @@ async function boot() {
     hud.message(kind === "crab" ? "Crab caught!" : "Butterfly caught!", 1.1);
   };
   const quidditch = new Quidditch(map, scene);
+  const quidHud = new QuidditchHUD();
+  const quidAudio = new QuidditchAudio();
   quidditch.onMessage = (m, s) => hud.message(m, s);
+  quidditch.onActiveChange = (on) => quidHud.setActive(on);
+  quidditch.onWhistle = () => quidAudio.whistle();
+  quidditch.onScore = (team, red, blue) => {
+    quidAudio.goal();
+    quidHud.setScores(red, blue);
+    quidHud.flashGoal(team);
+  };
+  quidditch.onSnitchCaught = (team, red, blue) => {
+    quidAudio.snitch();
+    quidHud.setScores(red, blue);
+    quidHud.setSnitch(true, team);
+    // a golden shower of fireworks over the pitch to crown the winner
+    fireworks.launchCelebration(QUIDDITCH_PITCH.x, map.effectiveGround(QUIDDITCH_PITCH.x, QUIDDITCH_PITCH.z) + 40, QUIDDITCH_PITCH.z);
+    chase.shake(0.16);
+  };
+  quidditch.onBludgerHit = (x, y, z, hitPlayer) => {
+    quidAudio.bludger();
+    if (hitPlayer) chase.shake(0.22);
+  };
+  // Role picker → actually take the broom
+  quidHud.onPickRole = (team, role) => joinQuidditchRole(team, role);
   const ropes = new Ropes(physics, scene);
   const grabber = new Grabber(physics, scene);
   grabberRef = grabber;
@@ -273,6 +298,24 @@ async function boot() {
   let currentRide: VehicleClass | null = null;
   let currentAnimal: AnimalKind | null = null;
   let currentQuidditch: { team: "red" | "blue"; role: QuidditchRole } | null = null;
+  // Take over a specific open broom (from the role picker). Mounts the drone
+  // with the team-tinted broom and drops the player onto that flyer's spot.
+  function joinQuidditchRole(team: QuidditchTeam, role: QuidditchRole) {
+    const info = quidditch.joinAs(team, role, player.position);
+    if (!info) {
+      hud.message("That position was just taken — try another", 2);
+      return;
+    }
+    currentQuidditch = { team: info.team, role: info.role };
+    player.setDroneStyle(quidditch.buildRiddenMesh(info.team));
+    player.position.set(info.x, info.y, info.z);
+    player.heading = info.heading;
+    player.velocity.set(info.vx, info.vy, info.vz);
+    player.trySwitch("drone");
+    quidHud.setRole(info.label);
+    const verb = role === "Beater" ? "swat Bludgers" : role === "Seeker" ? "catch the Snitch" : role === "Keeper" ? "guard the hoops" : "sling the Quaffle";
+    hud.message(`You're the ${info.label} — ${verb}! E to dismount`, 3.4);
+  }
   let currentPaint: number | undefined; // commandeered car's paint, so invites clone the exact look
   let zeroG = false;
   let ridePromptShown = false;
@@ -532,6 +575,7 @@ async function boot() {
       );
       currentQuidditch = null;
       player.clearDroneStyle();
+      quidHud.setRole(null);
       dropped = true;
     }
     return dropped;
@@ -1051,21 +1095,21 @@ async function boot() {
       if (exploratorium.pianoBusy) tutorial.note("piano");
     } else if (input.pressed("KeyE") && !exitToWalk()) {
         const drv = remotes.nearestDriver(player.position, 5.5);
-        const quidJoin = drv || currentQuidditch ? null : quidditch.tryJoin(player.position);
-        const animal = drv || quidJoin ? null : forest.nearest(player.position, 5);
+        // standing in the pitch's join circle: open the position picker instead
+        // of auto-assigning, so you can choose Seeker / Beater / Chaser / Keeper
+        const wantQuid = !drv && !currentQuidditch && quidditch.inJoinZoneAt(player.position);
+        const animal = drv || wantQuid ? null : forest.nearest(player.position, 5);
         if (drv) {
           passengerOf = drv.id;
           player.startRide();
           hud.message(`Riding with ${drv.name} — E to hop out`, 2.6);
-        } else if (quidJoin) {
-          const info = quidJoin;
-          currentQuidditch = { team: info.team, role: info.role };
-          player.setDroneStyle(quidditch.buildRiddenMesh(info.team));
-          player.position.set(info.x, info.y, info.z);
-          player.heading = info.heading;
-          player.velocity.set(info.vx, info.vy, info.vz);
-          player.trySwitch("drone");
-          hud.message(`You're the ${info.label} — fly the broom! E to dismount`, 3.2);
+        } else if (wantQuid) {
+          // first time: the rules briefing; after that, straight to the picker
+          if (!quidHud.showRules()) {
+            const open = quidditch.openRoles();
+            if (open.length) quidHud.showRoles(open);
+            else hud.message("Every broom is taken right now", 2);
+          }
         } else if (animal) {
           const info = forest.consume(animal);
           currentAnimal = info.kind;
@@ -1181,6 +1225,19 @@ async function boot() {
     // the struck surface (pitch keyed to strike height)
     fireCooldown -= frameDt;
     if (
+      !input.suspended &&
+      input.firePressed &&
+      fireCooldown <= 0 &&
+      currentQuidditch?.role === "Beater" &&
+      quidditch.active
+    ) {
+      // Beater: swing the bat at the nearest bludger along the aim ray
+      chase.lookDir(aim);
+      if (quidditch.swingBat(player.aimOrigin, aim)) {
+        fireCooldown = 0.34;
+        chase.shake(0.12);
+      }
+    } else if (
       !input.suspended &&
       input.firePressed &&
       fireCooldown <= 0 &&
@@ -1351,6 +1408,23 @@ async function boot() {
     islands.update(elapsed);
     exploratorium.update(frameDt, elapsed, player.position);
     quidditch.update(frameDt, player.position, elapsed);
+    if (quidditch.active) {
+      const qs = quidditch.scores;
+      quidHud.setScores(qs.red, qs.blue);
+      if (quidditch.matchState === "playing") quidHud.setSnitch(false);
+      // a bludger tagged the human rider: shove them and rattle the camera
+      if (currentQuidditch) {
+        const kick = quidditch.takeBludgerKick();
+        if (kick) {
+          player.velocity.x += kick.x;
+          player.velocity.y += kick.y;
+          player.velocity.z += kick.z;
+          chase.shake(0.2);
+          hud.message("Bludger! You're knocked off course", 1.4);
+        }
+      }
+    }
+    quidHud.update(frameDt);
     loot.update(frameDt, player.position, elapsed);
     if (!highUp) hunt.update(frameDt, elapsed, player.position);
     ropes.update(frameDt, player.position, elapsed);
@@ -1558,7 +1632,7 @@ async function boot() {
 
   const exposeDebugHooks = () => {
     Object.assign(window as never, {
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, props, exploratorium, traffic, creatures, forest, flora, splashes, vehicleAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial }
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, props, exploratorium, traffic, creatures, forest, flora, splashes, vehicleAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud }
     });
   };
   if (import.meta.env.DEV || new URLSearchParams(location.search).has("profile")) {

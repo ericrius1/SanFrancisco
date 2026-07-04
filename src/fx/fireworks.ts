@@ -576,6 +576,27 @@ export class Fireworks {
     }
   }
 
+  /**
+   * Launch one shell from `origin` that bursts at `target` after `flightTime`
+   * seconds — the public seam mounted launchers use to fire their own arcs (the
+   * parade truck's honeycomb rack). `palette` < 0 picks a random palette;
+   * broadcasts to the relay like any local volley so other players see it.
+   */
+  launchShell(origin: THREE.Vector3, target: THREE.Vector3, flightTime: number, palette = -1, size = this.params.sparkSize) {
+    const trailN = Math.round(THREE.MathUtils.clamp(this.params.trail, 0, MAX_TRAIL));
+    const pal = palette < 0
+      ? Math.floor(Math.random() * PALETTES.length)
+      : THREE.MathUtils.euclideanModulo(palette | 0, PALETTES.length);
+    this.#queueLaunch(
+      { x: origin.x, y: origin.y, z: origin.z },
+      { x: target.x, y: target.y, z: target.z },
+      Math.max(0.5, flightTime),
+      pal,
+      trailN,
+      size
+    );
+  }
+
   #burst(r: Rocket) {
     const p = this.params;
     const sparks = Math.round(THREE.MathUtils.clamp(p.sparks, 8, MAX_SPARKS));

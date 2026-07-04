@@ -19,7 +19,6 @@ import { createReadStream, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
-import { createAnalytics } from "./analytics.mjs";
 
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -32,7 +31,6 @@ const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // no state for 5 min → drop
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const DIST = path.join(ROOT, "..", "dist");
-const analytics = createAnalytics(ROOT);
 
 const getUrlPath = (url = "/") => {
   try {
@@ -65,10 +63,6 @@ const server = http.createServer(async (req, res) => {
   if (urlPath === "/healthz") {
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ ok: true, players: players.size }));
-    return;
-  }
-  if (analytics.isRoute(urlPath)) {
-    await analytics.handle(req, res, urlPath);
     return;
   }
   if (!existsSync(DIST)) {
@@ -384,7 +378,7 @@ for (const sig of ["SIGINT", "SIGTERM"]) {
     shuttingDown = true;
     console.log(`\n[sf-server] ${sig} — closing`);
     for (const p of players.values()) p.ws.close(1001, "server shutting down");
-    void analytics.flush().finally(() => server.close(() => process.exit(0)));
+    server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 1500).unref();
   });
 }

@@ -39,8 +39,24 @@ export class ChaseCamera {
   }
 
   update(dt: number, player: Player, input: Input) {
-    this.yaw -= input.mouseDX * 0.0032;
-    this.pitch = THREE.MathUtils.clamp(this.pitch + input.mouseDY * 0.0026, -0.62, 1.2);
+    if (player.mode === "plane") {
+      // The mouse *flies the plane* (steerFly), so the camera must ride behind
+      // the nose rather than orbit off the same mouse — integrating both at
+      // different rates is what drifted the view around to the plane's side and
+      // eventually flipped it. Ease yaw/pitch toward the plane's heading so the
+      // chase cam always trails the flight path, no matter how hard you turn.
+      const f = player.flyForward;
+      const targetYaw = Math.atan2(-f.x, -f.z);
+      const targetPitch = THREE.MathUtils.clamp(-Math.asin(THREE.MathUtils.clamp(f.y, -1, 1)), -0.62, 1.2);
+      const follow = 1 - Math.exp(-dt * 7);
+      let dYaw = targetYaw - this.yaw;
+      dYaw = Math.atan2(Math.sin(dYaw), Math.cos(dYaw)); // shortest way round
+      this.yaw += dYaw * follow;
+      this.pitch += (targetPitch - this.pitch) * follow;
+    } else {
+      this.yaw -= input.mouseDX * 0.0032;
+      this.pitch = THREE.MathUtils.clamp(this.pitch + input.mouseDY * 0.0026, -0.62, 1.2);
+    }
     this.zoom = THREE.MathUtils.clamp(this.zoom * (1 + input.wheel * 0.0009), 0.45, 2.6);
 
     const o = OFFSETS[player.mode];

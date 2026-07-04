@@ -2,7 +2,6 @@ import { fileURLToPath, URL } from "node:url";
 import { defineConfig, type Plugin } from "vite";
 
 const RELAY_PORT = process.env.SF_RELAY_PORT || "8787";
-const RELAY_HTTP = `http://localhost:${RELAY_PORT}`;
 const RELAY_WS = `ws://localhost:${RELAY_PORT}`;
 
 // Dev multiplayer with zero extra terminals: when the dev server boots, start
@@ -47,9 +46,7 @@ export default defineConfig({
     // same-origin app services in every environment: dev proxies to the local
     // relay, prod serves everything from the same Node process as the static files
     proxy: {
-      "/ws": { target: RELAY_WS, ws: true },
-      "/api/analytics": { target: RELAY_HTTP },
-      "/admin_view": { target: RELAY_HTTP }
+      "/ws": { target: RELAY_WS, ws: true }
     },
     fs: {
       allow: [

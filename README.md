@@ -270,8 +270,8 @@ otherwise connects to `/ws` on its own origin).
 | Thing | Value |
 | --- | --- |
 | Process | `node server/server.mjs` — serves `dist/` **and** the WebSocket at `/ws` |
-| Runtime dep | `ws` (nothing else; no database; multiplayer state is in memory, analytics are file-backed) |
-| Env vars | `PORT` (default `8787`), `HOST` (default `0.0.0.0`), `MAX_PLAYERS` (default `40`), optional analytics/admin vars below |
+| Runtime dep | `ws` (nothing else; no database; multiplayer state is in memory) |
+| Env vars | `PORT` (default `8787`), `HOST` (default `0.0.0.0`), `MAX_PLAYERS` (default `40`) |
 | Health check | `GET /healthz` → `{"ok":true,"players":N}` |
 | Capacity | one room, everyone shares it; joiners past `MAX_PLAYERS` get a "server full" close |
 | Hygiene | 15 s ping/pong heartbeat, 5 min idle kick, per-socket message rate + 2 KB size caps, names sanitized server-side |
@@ -293,30 +293,6 @@ in each client's `localStorage`, not on the server.
 - WebSocket origin is not checked — anyone who can reach the port can join by
   design. If you ever want a private server, the easy lever is a shared token
   in the `hi` message.
-
-### Analytics dashboard
-
-The server exposes a simple first-party analytics dashboard at `/admin_view`.
-The game shell loads a bundled analytics client, which records one visit per
-browser tab and sends a heartbeat every 15 seconds plus an end beacon on tab
-close. The dashboard shows total visits, unique browser visitors, currently
-active visits, visits in the last 24 hours, average stay length, and the recent
-visit list with per-visit duration.
-
-Analytics are stored as JSON in `ANALYTICS_DIR` when set, otherwise in
-`$RAILWAY_VOLUME_MOUNT_PATH/analytics` when a Railway volume is mounted, and
-finally in local `.data/analytics.json`. Without a Railway volume or database,
-analytics can disappear on a Railway restart or redeploy.
-
-Optional env vars:
-
-| Var | Purpose |
-| --- | --- |
-| `ADMIN_PASSWORD` or `ADMIN_TOKEN` | Enables Basic Auth for `/admin_view` and `/api/analytics/summary` |
-| `ADMIN_USER` | Basic Auth username when auth is enabled; defaults to `admin` |
-| `ANALYTICS_DIR` | Directory for `analytics.json`; overrides automatic Railway volume detection |
-| `ANALYTICS_MAX_VISITS` | Number of recent visits retained; defaults to `2000` |
-| `ANALYTICS_ACTIVE_MS` | How recently a heartbeat must arrive for a visit to count as active; defaults to `45000` |
 
 ## Asset pipeline
 
