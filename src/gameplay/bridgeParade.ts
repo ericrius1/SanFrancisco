@@ -76,6 +76,17 @@ export class BridgeParade {
     return this.#boats.length;
   }
 
+  /** Debug: live parade-boat summary (headless under-bridge checks). */
+  debugBoats() {
+    return this.#boats.map((b) => ({
+      x: +b.mesh.position.x.toFixed(1),
+      y: +b.mesh.position.y.toFixed(2),
+      z: +b.mesh.position.z.toFixed(1),
+      travelled: +b.travelled.toFixed(0),
+      sail: !!b.sail
+    }));
+  }
+
   /**
    * Send boats under the Golden Gate if the player is near it. `playerFwd` only
    * biases which way along the span the crossing is centred. Returns true if a

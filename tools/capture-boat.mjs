@@ -59,8 +59,9 @@ const BOOMS = [
   [13.15, 0.58],
   [13.55, 0.48]
 ];
-const MUSIC_GAIN = 0.9; // the song stays out front
-const BED_GAIN = 0.62; // the fireworks sit just under it
+const MUSIC_GAIN = 0.92; // the song plays full underneath
+const BED_GAIN = 0.9; // punchy booms layered on top — the loudest transients in the mix,
+// so they clearly read, but the song's body is untouched (noticeable, not overpowering)
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -132,6 +133,7 @@ class Cdp {
   #ws;
   #id = 1;
   #p = new Map();
+  onEvent = null; // (method, params) => void — CDP events (no id)
   constructor(u) {
     this.#ws = new WebSocket(u);
   }
@@ -142,7 +144,10 @@ class Cdp {
     });
     this.#ws.addEventListener("message", (e) => {
       const m = JSON.parse(e.data.toString());
-      if (!m.id) return;
+      if (!m.id) {
+        this.onEvent?.(m.method, m.params);
+        return;
+      }
       const p = this.#p.get(m.id);
       if (!p) return;
       this.#p.delete(m.id);
@@ -186,20 +191,23 @@ async function settle(c, iters, gapMs) {
   }
 }
 
-// A single firework "boom": a lowpassed brown-noise blast + a sub thud + a
-// highpassed crackle tail, all exponentially decaying. Synthesised once, then
-// stamped down at each burst time to build the bed.
+// A single firework "boom": a sharp broadband CRACK transient (so it pierces a
+// dense rock mix) + a lowpassed brown-noise BODY thump you feel + a sub tone + a
+// highpassed crackle tail, all exponentially decaying, then run hot into a
+// limiter. Synthesised once, then stamped down at each burst time to build the bed.
 async function synthBoom() {
   await runProcess("ffmpeg", [
     "-y",
-    "-f", "lavfi", "-i", "anoisesrc=color=brown:amplitude=0.9:duration=1.7:sample_rate=48000",
-    "-f", "lavfi", "-i", "sine=frequency=52:duration=0.32:sample_rate=48000",
-    "-f", "lavfi", "-i", "anoisesrc=color=pink:amplitude=0.55:duration=1.5:sample_rate=48000",
+    "-f", "lavfi", "-i", "anoisesrc=color=white:amplitude=1:duration=0.14:sample_rate=48000",
+    "-f", "lavfi", "-i", "anoisesrc=color=brown:amplitude=1:duration=1.5:sample_rate=48000",
+    "-f", "lavfi", "-i", "sine=frequency=48:duration=0.36:sample_rate=48000",
+    "-f", "lavfi", "-i", "anoisesrc=color=pink:amplitude=0.6:duration=1.3:sample_rate=48000",
     "-filter_complex",
-    "[0:a]lowpass=f=210,volume='exp(-3.4*t)':eval=frame[boom];" +
-      "[1:a]volume='exp(-13*t)':eval=frame[thud];" +
-      "[2:a]highpass=f=1600,volume='0.5*exp(-2.6*t)*(0.55+0.45*sin(2*PI*26*t))':eval=frame[crackle];" +
-      "[boom][thud][crackle]amix=inputs=3:normalize=0,alimiter=limit=0.95[out]",
+    "[0:a]highpass=f=700,volume='exp(-38*t)':eval=frame[crack];" +
+      "[1:a]lowpass=f=260,volume='exp(-4.5*t)':eval=frame[body];" +
+      "[2:a]volume='exp(-11*t)':eval=frame[sub];" +
+      "[3:a]highpass=f=1800,volume='0.5*exp(-3*t)*(0.5+0.5*sin(2*PI*30*t))':eval=frame[crackle];" +
+      "[crack][body][sub][crackle]amix=inputs=4:normalize=0,alimiter=limit=0.98,volume=2.2,alimiter=limit=0.99[out]",
     "-map", "[out]", "-ac", "2", "-ar", "48000", BOOM_WAV
   ]);
 }
@@ -314,9 +322,25 @@ async function main() {
     if (!ver) throw new Error("no CDP");
     const page = await (await fetch(`http://127.0.0.1:${dport}/json/new?about:blank`, { method: "PUT" })).json();
     client = new Cdp(page.webSocketDebuggerUrl);
+    // surface what actually kills a run: page reloads, JS exceptions, GPU/device
+    // loss, tab crashes — otherwise all we see is "__sfReelStep is not a function"
+    client.onEvent = (method, params) => {
+      if (method === "Runtime.exceptionThrown") {
+        const d = params?.exceptionDetails;
+        console.warn(`[boat][page-exception] ${d?.exception?.description ?? d?.text ?? JSON.stringify(d).slice(0, 300)}`);
+      } else if (method === "Log.entryAdded" && ["error", "warning"].includes(params?.entry?.level)) {
+        console.warn(`[boat][page-${params.entry.level}] ${String(params.entry.text).slice(0, 300)}`);
+      } else if (method === "Inspector.targetCrashed") {
+        console.warn("[boat][TAB CRASHED] renderer gone (likely GPU/device loss)");
+      } else if (method === "Page.frameStartedLoading") {
+        console.warn("[boat][RELOAD] page started loading again mid-capture");
+      }
+    };
     await client.open();
     await client.send("Page.enable");
     await client.send("Runtime.enable");
+    await client.send("Log.enable");
+    await client.send("Inspector.enable");
     await client.send("Emulation.setDeviceMetricsOverride", { width: WIDTH, height: HEIGHT, deviceScaleFactor: 1, mobile: false });
     await client.send("Page.navigate", { url });
     await waitEv(client, "Boolean(window.__sfReelArmed && window.__sf && window.__sfReelStep && window.__sfManual)", 120000, "cine arm");

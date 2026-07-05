@@ -80,7 +80,10 @@ export function goldenGateBridgeVisualLine(br: Bridge): BridgePoint[] {
 function setBridgeShadows(mesh: THREE.Object3D) {
   const m = mesh as THREE.Mesh;
   if (m.isMesh) {
-    m.castShadow = true;
+    // The stylized water surface receives hard directional shadows as crisp,
+    // road-like bands. Keep the bridge lit by the scene without projecting a
+    // false second roadway onto the bay below.
+    m.castShadow = false;
     m.receiveShadow = true;
   }
   mesh.frustumCulled = false;

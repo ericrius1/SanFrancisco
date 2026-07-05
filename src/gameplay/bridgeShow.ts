@@ -90,7 +90,6 @@ export class BridgeShow {
       this.#audio = null;
     }
     this.#deps.setCine((dt) => this.#tick(dt));
-    this.#deps.hud.message("🎸 Golden Gate show rolling — ] restarts, E hops out", 3.5);
   }
 
   #tick(dt: number) {

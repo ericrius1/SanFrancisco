@@ -17,9 +17,12 @@ import type { Physics } from "../core/physics";
 export const BOAT_SHOT_SECONDS = 14;
 export const BOAT_FIRE_AT = 9.4; // launch the barrage late so it peaks near the pass-under
 
-const SPEED = 18; // m/s — a believable fast cruise up the strait
+const SPEED = 11.5; // m/s — a stately cruise up the strait
 const SEAT = 0.2; // hull origin above the live water surface
-const START_BACK = 216; // metres back from mid-span the run begins → passes under ~T12
+// Metres back from mid-span the run begins. The boat closes to ~45 m of dead-centre
+// by the end — right under the deck's reach (it reads as sailing under the span) —
+// but never so close that the 69 m roadway swings straight overhead and out of frame.
+const START_BACK = 205;
 
 export type BoatPath = {
   start: THREE.Vector3;
@@ -71,9 +74,13 @@ export function boatPos(T: number, path: BoatPath, _map: WorldMap, out: THREE.Ve
 }
 
 /**
- * Camera move: azimuth starts ahead facing the boat (front 3/4), orbits round to
- * dead behind over T 3.4..8.2, then a slow crane-up push that tips the look
- * forward and up so the tall bridge + the barrage fill the frame at the climax.
+ * Camera move: azimuth starts ahead facing the boat (front 3/4), then swings
+ * round to a rear *quarter* — NOT dead behind, since looking straight along the
+ * strait flattens the span to an overhead line (the towers sit ~500 m to either
+ * side; the boat threads between them). Holding a quarter angle keeps one tower +
+ * the deck sweeping over the boat, which is kept low in frame — the "under the
+ * Golden Gate" look. The aim stays on the boat (with a small forward/up lead) so
+ * it never drops out while the bridge looms behind it and the barrage goes up.
  * `camPos`/`look` are caller-owned scratch vectors.
  */
 export function applyBoatCamera(
@@ -85,16 +92,19 @@ export function applyBoatCamera(
   look: THREE.Vector3
 ) {
   const { dir, right } = path;
-  const orbit = smooth((T - 3.4) / 4.8);
-  const fin = smooth((T - 9.0) / 5.0);
-  const a = mixf(0.55, Math.PI, orbit); // front-right 3/4 → dead behind
-  const R = mixf(22, 30, orbit) - fin * 4; // ease in a slow push toward the show
-  const H = mixf(4.2, 8.6, orbit) + fin * 2.6; // and crane up over the barrage
+  const orbit = smooth((T - 3.2) / 4.6);
+  const fin = smooth((T - 9.5) / 4.5);
+  const a = mixf(0.55, 2.3, orbit); // front 3/4 → rear quarter (holds one tower + deck in frame)
+  const R = mixf(16, 26, orbit) - fin * 1.5; // open up so the bridge fits, then a slow push in
+  const H = mixf(3.6, 7.4, orbit) + fin * 1.5; // crane up a touch over the barrage
   camPos.copy(pos).addScaledVector(dir, Math.cos(a) * R).addScaledVector(right, Math.sin(a) * R);
   camPos.y = pos.y + H;
-  const fwdLook = smooth((T - 7.6) / 2.8); // once behind, tip the look forward + up the towers
-  look.copy(pos).addScaledVector(dir, mixf(0, 48, fwdLook));
-  look.y = pos.y + mixf(2.2, 9, fwdLook); // lift hard at the end to catch the deck + high shells
+  // keep the aim on the boat, leading a little forward + up so the deck and the
+  // shells stay in the top of frame as the boat closes on the span
+  const lead = mixf(3, 10, orbit);
+  const rise = mixf(1.4, 3.6, orbit);
+  look.copy(pos).addScaledVector(dir, lead);
+  look.y = pos.y + rise;
   camera.position.copy(camPos);
   camera.lookAt(look);
 }

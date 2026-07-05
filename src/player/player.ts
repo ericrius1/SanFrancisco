@@ -202,6 +202,12 @@ export class Player {
     this.#truckRig.group.position.set(tc.seat[0], tc.seat[1], tc.seat[2]);
     this.#truckWheel.group.position.set(tc.wheel![0], tc.wheel![1], tc.wheel![2]);
     this.meshes.truck.add(this.#truckRig.group, this.#truckWheel.group);
+    // closed cab (real GLB truck): park the driver rig so it doesn't float in
+    // the tinted cab. poseDrive still ticks it harmlessly while it's hidden.
+    if (tc.hide) {
+      this.#truckRig.group.visible = false;
+      this.#truckWheel.group.visible = false;
+    }
     this.#defaultDriveMesh = this.meshes.drive;
     this.#defaultDroneMesh = this.meshes.drone;
     this.#seatDriver(this.meshes.drive);

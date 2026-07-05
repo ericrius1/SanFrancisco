@@ -209,6 +209,14 @@ export class AbandonedMounts {
     return this.#items.length;
   }
 
+  /** Debug: live mount summary (headless scatter/float checks). */
+  debugMounts() {
+    return this.#items.map((it) => {
+      const t = this.#physics.world.getBodyTransform(it.handle);
+      return { mode: it.mode, x: +t.position[0].toFixed(1), y: +t.position[1].toFixed(2), z: +t.position[2].toFixed(1), persistent: !!it.persistent };
+    });
+  }
+
   /**
    * Walk-up re-board: the nearest parked/roaming mount of ANY kind within
    * `radius`, removed from the world and handed back as a spawn pose so the

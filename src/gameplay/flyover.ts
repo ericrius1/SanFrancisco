@@ -19,23 +19,24 @@ import { poseBone, type BirdRig } from "../vehicles/bird/mesh";
 export const FLYOVER_TUNING = {
   planes: 6, // planes per wave
   birds: 7, // phoenixes per wave
-  planeAlt: 46, // metres above the player the planes cruise
-  birdAlt: 34, // phoenixes fly a touch lower so they layer under the planes
-  altJitter: 9, // random spread on cruise altitude
-  planeSpeed: 66, // m/s — planes overtake the player and pull ahead
-  birdSpeed: 47, // phoenixes cruise slower, so the planes streak past them
-  spread: 15, // lateral spacing between craft in a wave
-  startBack: 46, // how far behind the player the lead craft starts
-  backStagger: 26, // extra setback per craft so they stream past, not clump
-  // the chase cam pitches down at the deck, so the top of frame sits ~on the
-  // horizon: craft that hold a high cruise get shoved off the top as they pull
-  // away. Instead they whoosh over high, then glide DOWN toward the horizon so
-  // they keep receding in-frame toward the vanishing point.
-  glideDist: 470, // metres ahead over which they descend from cruise to low
-  lowAlt: 13, // settle altitude once well ahead (a shade under eye level)
+  planeAlt: 30, // metres over the player — a low, close pass reads far bigger than a high one that shrinks to specks
+  birdAlt: 22, // phoenixes fly a touch lower so they layer under the planes
+  altJitter: 7, // random spread on cruise altitude
+  planeSpeed: 60, // m/s — planes overtake the player and pull ahead (a hair slower = a longer, readable pass)
+  birdSpeed: 46, // phoenixes cruise slower, so the planes streak past them
+  spread: 13, // lateral spacing between craft in a wave (kept tight = reads as one flight)
+  // fly the flight up the strait OFF to one side of the bridge, over open water:
+  // dead down the centreline they merge with the tower/cables/deck and vanish,
+  // and a moderate side pass keeps them big and clear against the bay the whole way.
+  sideOffset: 80,
+  startBack: 60, // how far behind the player the lead craft starts
+  backStagger: 20, // extra setback per craft so they stream past, not clump
+  // hold a low, steady altitude as they recede so they stay big against the water
+  glideDist: 1400, // metres over which they ease from cruise to the settle altitude
+  lowAlt: 20, // settle altitude — a low cruise up the strait
   lowAltJitter: 5,
-  planeScale: 1.35, // read-at-distance size bump
-  birdScale: 1.7,
+  planeScale: 2.1, // read-at-distance size bump
+  birdScale: 2.5,
   bank: 0.16, // steady banked-turn roll amplitude
   bobAmp: 1.1, // gentle vertical bob so nothing looks rigid
   farLimit: 1250, // cull once this far ahead of the trigger point
@@ -142,7 +143,7 @@ export class Flyover {
         this.#scene.add(mesh);
         // line-abreast wave, centred on the travel line; outer craft trail a
         // little (a shallow V) so the formation reads with depth
-        const lateral = (i - (n - 1) / 2) * t.spread + (Math.random() - 0.5) * 4;
+        const lateral = t.sideOffset + (i - (n - 1) / 2) * t.spread + (Math.random() - 0.5) * 2.5;
         const along = -(t.startBack + i * t.backStagger + (kind === "bird" ? 10 : 0)) - Math.abs(lateral) * 0.5;
         const c: Craft = {
           kind,
