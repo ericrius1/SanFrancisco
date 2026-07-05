@@ -2,7 +2,7 @@ import * as THREE from "three/webgpu";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import type { Cockpit } from "../../player/types";
 import { buildBunting, buildFlag } from "../../fx/cloth";
-import { GuitaristStand, LauncherRig, RocketBattery, buildGuitarPlayer } from "../../gameplay/launchers";
+import { GuitaristStand, LauncherRig, LAUNCH_SPEED, RocketBattery, buildGuitarPlayer } from "../../gameplay/launchers";
 import { TRUCK_RIDE_HEIGHT } from "./dimensions";
 import { buildEagle } from "./eagle";
 
@@ -51,6 +51,9 @@ const BED_REAR_Z = anchorZ(RAW_X.bedRear); // ≈ 9.2
 const CAB_Z = anchorZ(RAW_X.cabCentre); // ≈ -2.0
 const BED_HALF_W = 2.5; // interior half-width of the bed (rails at ±2.6)
 
+// the six tyre parts (Tripo node names): front axle + rear tandem dually
+const WHEEL_PARTS = new Set(["tripo_part_5", "tripo_part_6", "tripo_part_7", "tripo_part_8", "tripo_part_9", "tripo_part_18"]);
+
 const BATTERY_SCALE = 1.7;
 const GUITARIST_SCALE = 1.5;
 const GUITARIST_FOOT_DROP = 0.05; // hips→sole in the guitarist's own units
@@ -94,12 +97,28 @@ export function buildTruckMesh(): THREE.Group {
     holder.rotation.y = Math.PI / 2; // cab (+X) → game front (-Z)
     holder.position.y = -RIDE; // wheels plant on the ground plane
 
+    // the six tyres are their own parts; recentre each one's geometry on its
+    // axle so it spins in place (the part nodes are identity-rotation, so a
+    // geometry translate + matching position nudge preserves the world pose),
+    // then hand them to the driver so they roll with forward speed. Axle is the
+    // model's width axis = THREE local Z.
+    const wheels: { mesh: THREE.Object3D; invRadius: number }[] = [];
     scene.traverse((o) => {
       const m = o as THREE.Mesh;
       if (!m.isMesh) return;
       m.castShadow = true;
       m.receiveShadow = true;
+      if (!WHEEL_PARTS.has(m.name)) return;
+      m.geometry.computeBoundingBox();
+      const bb = m.geometry.boundingBox!;
+      const c = bb.getCenter(new THREE.Vector3());
+      const size = bb.getSize(new THREE.Vector3());
+      m.geometry.translate(-c.x, -c.y, -c.z); // axle → mesh origin
+      m.position.add(c); // …compensate so it stays put
+      const radiusGame = ((size.x + size.y) / 4) * F; // round dims are x (length) & y (up)
+      wheels.push({ mesh: m, invRadius: 1 / Math.max(1e-3, radiusGame) });
     });
+    g.userData.wheels = wheels;
     g.add(holder);
   });
 
@@ -147,7 +166,7 @@ export function buildTruckMesh(): THREE.Group {
   // battery rows sit at local z {0.4,1.7}·scale; offset the origin so they centre
   // on the bed and nose forward toward the cab.
   const rowMid = ((0.4 + 1.7) / 2) * BATTERY_SCALE;
-  const battery = rig.add(new RocketBattery(), [0, BED_FLOOR_Y, BED_CENTRE_Z - rowMid], [0, 0, 0]);
+  const battery = rig.add(new RocketBattery(LAUNCH_SPEED * 1.5), [0, BED_FLOOR_Y, BED_CENTRE_Z - rowMid], [0, 0, 0]);
   battery.group.scale.setScalar(BATTERY_SCALE);
   const guitarist = rig.add(new GuitaristStand({ buildRider: buildGuitarPlayer }), [
     0,

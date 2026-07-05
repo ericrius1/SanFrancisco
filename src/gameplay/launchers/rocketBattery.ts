@@ -4,7 +4,7 @@ import type { Fireworks } from "../../fx/fireworks";
 import type { FireContext, Launcher } from "./types";
 
 const FLIGHT = 1.75; // seconds of powered climb before a rocket detonates
-const LAUNCH_SPEED = 46; // fast off the deck, so they carry well out ahead
+export const LAUNCH_SPEED = 46; // fast off the deck, so they carry well out ahead
 const RELOAD = 3.2; // seconds before a fresh rack of rockets is loaded
 const PARK_TILT = 0.34; // nose pitched up-forward while racked in the bed
 const GRAVITY = 4; // gentle — the rockets are still under thrust the whole climb
@@ -58,6 +58,7 @@ function dispose(obj: THREE.Object3D) {
  */
 export class RocketBattery implements Launcher {
   readonly group = new THREE.Group();
+  readonly #launchSpeed: number;
   #parked: Parked[] = [];
   #flying: Flyer[] = [];
   #fx?: Fireworks;
@@ -65,7 +66,8 @@ export class RocketBattery implements Launcher {
   #armed = true;
   #reloadT = 0;
 
-  constructor() {
+  constructor(launchSpeed = LAUNCH_SPEED) {
+    this.#launchSpeed = launchSpeed;
     this.#loadRack();
   }
 
@@ -154,7 +156,7 @@ export class RocketBattery implements Launcher {
         .applyAxisAngle(V.up, yaw)
         .applyAxisAngle(right, pitch)
         .normalize();
-      const vel = dir.multiplyScalar(LAUNCH_SPEED * (0.9 + Math.random() * 0.2));
+      const vel = dir.multiplyScalar(this.#launchSpeed * (0.9 + Math.random() * 0.2));
       if (ctx.hostVelocity) vel.addScaledVector(ctx.hostVelocity, 0.5); // lead with the truck
 
       // stagger the detonations so the display cascades rather than one big flash

@@ -943,6 +943,183 @@ def build_suspension_bridge(br, verts, faces, colors, color, tower_color=None, l
                     add_box(verts, faces, colors, sx, sy, (sz + deck_z) / 2, 0.25, 0.25, (sz - deck_z) / 2, color)
 
 
+def _bridge_line_samples(wpts, spacing):
+    """Sample the deck polyline (blender frame) at ~spacing arclength.
+    Returns (x, y, z, yaw, px, py): yaw along span, (px, py) unit perpendicular."""
+    out = []
+    for i in range(len(wpts) - 1):
+        a, b = wpts[i], wpts[i + 1]
+        seg_len = math.dist((a[0], a[1]), (b[0], b[1]))
+        n = max(1, int(seg_len / spacing))
+        yaw = math.atan2(b[1] - a[1], b[0] - a[0])
+        px, py = -math.sin(yaw), math.cos(yaw)
+        for s in range(n + (1 if i == len(wpts) - 2 else 0)):
+            t = s / n
+            out.append((a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t,
+                        a[2] + (b[2] - a[2]) * t, yaw, px, py))
+    return out
+
+
+def build_golden_gate(br, verts, faces, colors, color, lm=None):
+    """High-detail art-deco Golden Gate. Same collider footprint as
+    build_suspension_bridge (roadway + parapet lips only; towers/cables ghost).
+    Extra detail: stepped tower legs + recessed portal struts, base piers,
+    under-deck stiffening truss, curb railing + lamp posts (posts line up with
+    the goldenGateLights sprite anchors), denser cables + suspenders."""
+    ORANGE = color
+    DEEP = tuple(c * 0.55 for c in color)          # shadowed steel / recesses
+    BRIGHT = tuple(min(1.0, c * 1.22) for c in color)
+    line = br["line"]
+    wpts = [(p[0], -p[1], p[2]) for p in line]
+    width = br["width"]
+    th = br["towerHeight"]
+    dth = br["deckThickness"]
+    TRUSS_DEPTH = 7.6
+
+    # ------------------------------------------------------ deck + colliders
+    for i in range(len(wpts) - 1):
+        a, b = wpts[i], wpts[i + 1]
+        seg_len = math.dist((a[0], a[1]), (b[0], b[1]))
+        steps = max(1, int(seg_len / 60))
+        for s in range(steps):
+            t0, t1 = s / steps, (s + 1) / steps
+            m0 = (a[0] + (b[0] - a[0]) * t0, a[1] + (b[1] - a[1]) * t0, a[2] + (b[2] - a[2]) * t0)
+            m1 = (a[0] + (b[0] - a[0]) * t1, a[1] + (b[1] - a[1]) * t1, a[2] + (b[2] - a[2]) * t1)
+            cx, cy, cz = (m0[0] + m1[0]) / 2, (m0[1] + m1[1]) / 2, (m0[2] + m1[2]) / 2
+            yaw = math.atan2(m1[1] - m0[1], m1[0] - m0[0])
+            ln = math.dist((m0[0], m0[1]), (m1[0], m1[1])) / 2 + 0.5
+            add_box(verts, faces, colors, cx, cy, cz - dth / 2,
+                    ln, width / 2, dth / 2, ORANGE, yaw=yaw)
+            if lm:
+                cbox(lm, cx, -cy, cz - dth, cz, ln, width / 2, yaw=yaw)
+            ppx, ppy = -math.sin(yaw), math.cos(yaw)
+            po = width / 2 - 0.55
+            for sgn in (-1, 1):
+                rx, ry = cx + ppx * po * sgn, cy + ppy * po * sgn
+                # curb + open railing (thin handrail above the curb)
+                add_box(verts, faces, colors, rx, ry, cz + 0.42, ln, 0.28, 0.42, ORANGE, yaw=yaw)
+                add_box(verts, faces, colors, rx, ry, cz + 1.28, ln, 0.09, 0.07, BRIGHT, yaw=yaw)
+                if lm:
+                    cbox(lm, rx, -ry, cz, cz + 1.7, ln, 0.35, yaw=yaw)
+                # under-deck stiffening truss: edge girder down to bottom chord
+                gx, gy = cx + ppx * (width / 2 - 0.4) * sgn, cy + ppy * (width / 2 - 0.4) * sgn
+                add_box(verts, faces, colors, gx, gy, cz - dth - 0.7, ln, 0.32, 0.7, ORANGE, yaw=yaw)
+                add_box(verts, faces, colors, gx, gy, cz - TRUSS_DEPTH, ln, 0.32, 0.5, ORANGE, yaw=yaw)
+
+    # truss verticals + X diagonals + transverse floor beams, fixed 26 m bays
+    bays = _bridge_line_samples(wpts, 26)
+    for k, (sx, sy, sz, yaw, px, py) in enumerate(bays):
+        for sgn in (-1, 1):
+            gx, gy = sx + px * (width / 2 - 0.4) * sgn, sy + py * (width / 2 - 0.4) * sgn
+            add_box(verts, faces, colors, gx, gy, sz - dth / 2 - TRUSS_DEPTH / 2 + 0.6,
+                    0.28, 0.28, TRUSS_DEPTH / 2 - 1.4, DEEP, yaw=yaw)
+        if k + 1 < len(bays):
+            nx, ny, nz = bays[k + 1][0], bays[k + 1][1], bays[k + 1][2]
+            for sgn in (-1, 1):
+                ax_, ay_ = sx + px * (width / 2 - 0.4) * sgn, sy + py * (width / 2 - 0.4) * sgn
+                bx_, by_ = nx + px * (width / 2 - 0.4) * sgn, ny + py * (width / 2 - 0.4) * sgn
+                hi, lo = sz - dth - 1.2, nz - TRUSS_DEPTH + 0.4
+                if k % 2 == 0:
+                    add_tube(verts, faces, colors, [(ax_, ay_, hi), (bx_, by_, lo)], 0.18, DEEP)
+                else:
+                    add_tube(verts, faces, colors, [(ax_, ay_, lo), (bx_, by_, hi)], 0.18, DEEP)
+        # transverse floor beam
+        add_box(verts, faces, colors, sx, sy, sz - TRUSS_DEPTH, 0.3, width / 2 - 0.5, 0.4, DEEP, yaw=yaw)
+
+    # lamp posts on the curb, 23 m pitch — matches goldenGateLights DECK_SPACING
+    for (sx, sy, sz, yaw, px, py) in _bridge_line_samples(wpts, 23):
+        for sgn in (-1, 1):
+            lx_, ly_ = sx + px * (width / 2 - 0.55) * sgn, sy + py * (width / 2 - 0.55) * sgn
+            add_box(verts, faces, colors, lx_, ly_, sz + 1.05, 0.09, 0.09, 1.05, ORANGE, yaw=yaw)
+            add_box(verts, faces, colors, lx_, ly_, sz + 2.2, 0.17, 0.17, 0.16, BRIGHT, yaw=yaw)
+
+    # --------------------------------------------------------------- towers
+    for (tx, tz) in br["towers"]:
+        ty = -tz
+        deck_h = min(line, key=lambda p: (p[0] - tx) ** 2 + (p[1] - tz) ** 2)[2]
+        i_near = min(range(len(line) - 1), key=lambda i: (line[i][0] - tx) ** 2 + (line[i][1] - tz) ** 2)
+        dx = line[i_near + 1][0] - line[i_near][0]
+        dz = line[i_near + 1][1] - line[i_near][1]
+        dl = math.hypot(dx, dz) or 1
+        pxg, pzg = -dz / dl, dx / dl              # perpendicular, game frame
+        pxb, pyb = pxg, -pzg                      # blender frame
+        yaw_p = math.atan2(pyb, pxb)              # box long-axis across bridge
+        off = width / 2 + 1.5
+
+        # pier + fender at the waterline
+        pier_top = deck_h - 16
+        add_box(verts, faces, colors, tx, ty, (pier_top - 12) / 2, off + 5.0, 8.5,
+                (pier_top + 12) / 2, DEEP, yaw=yaw_p)
+        add_box(verts, faces, colors, tx, ty, -1.0, off + 7.5, 11.0, 4.0, DEEP, yaw=yaw_p)
+
+        # stepped legs: frustum per storey, setback at each portal strut
+        levels = [deck_h + (th - deck_h) * f for f in (0.30, 0.55, 0.78)]
+        storeys = [pier_top] + levels + [th + 2.0]
+        halfw = [4.0, 3.5, 3.05, 2.65, 2.3]
+        for sgn in (-1, 1):
+            lx_ = tx + pxb * off * sgn
+            ly_ = ty + pyb * off * sgn
+            for si in range(len(storeys) - 1):
+                add_frustum(verts, faces, colors, lx_, ly_, storeys[si], storeys[si + 1],
+                            halfw[si], halfw[si + 1], ORANGE, yaw=yaw_p)
+                # art-deco vertical ribs on the outer face of each storey
+                mid_h = (halfw[si] + halfw[si + 1]) / 2
+                rib_off = mid_h + 0.22
+                add_box(verts, faces, colors,
+                        lx_ + pxb * rib_off * sgn, ly_ + pyb * rib_off * sgn,
+                        (storeys[si] + storeys[si + 1]) / 2, 0.25, 1.1,
+                        (storeys[si + 1] - storeys[si]) / 2 - 0.8, DEEP, yaw=yaw_p)
+            # saddle housing + cap
+            add_box(verts, faces, colors, lx_, ly_, th + 3.0, 2.7, 2.7, 1.1, BRIGHT, yaw=yaw_p)
+            add_frustum(verts, faces, colors, lx_, ly_, th + 4.1, th + 5.6, 2.1, 1.2, ORANGE, yaw=yaw_p)
+
+        # portal struts: stepped, with dark recessed panel (art-deco)
+        depths = [6.5, 5.5, 4.6, 3.8]
+        strut_z = levels + [th - 4.0]
+        for i2, lz in enumerate(strut_z):
+            d = depths[i2]
+            add_box(verts, faces, colors, tx, ty, lz, off, 1.5, d / 2, ORANGE, yaw=yaw_p)
+            add_box(verts, faces, colors, tx, ty, lz, off - 2.2, 1.58, d / 2 - 0.8, DEEP, yaw=yaw_p)
+            add_box(verts, faces, colors, tx, ty, lz + d / 2 + 0.45, off - 1.0, 1.3, 0.45, ORANGE, yaw=yaw_p)
+
+        # below-deck X bracing between legs
+        aL = (tx - pxb * off, ty - pyb * off)
+        aR = (tx + pxb * off, ty + pyb * off)
+        add_tube(verts, faces, colors, [(aL[0], aL[1], pier_top + 1), (aR[0], aR[1], deck_h - 3)], 0.5, DEEP)
+        add_tube(verts, faces, colors, [(aR[0], aR[1], pier_top + 1), (aL[0], aL[1], deck_h - 3)], 0.5, DEEP)
+
+        # aviation beacon mast, centred on the top strut (sprite sits at th+4)
+        add_cylinder(verts, faces, colors, tx, ty, th - 2.0, th + 3.6, 0.38, BRIGHT, seg=8, r_top=0.22)
+
+    # ------------------------------------------- main cables and suspenders
+    tower_tops = [(txy[0], -txy[1], th) for txy in br["towers"]]
+    anchors = [wpts[0], wpts[-1]]
+    cable_nodes = [(anchors[0][0], anchors[0][1], anchors[0][2] + 2)] + tower_tops + \
+                  [(anchors[1][0], anchors[1][1], anchors[1][2] + 2)]
+    dx = wpts[-1][0] - wpts[0][0]
+    dy = wpts[-1][1] - wpts[0][1]
+    dl = math.hypot(dx, dy) or 1
+    px, py = -dy / dl, dx / dl
+    off = width / 2 + 1.5
+    for sgn in (-1, 1):
+        for k in range(len(cable_nodes) - 1):
+            a = cable_nodes[k]
+            b = cable_nodes[k + 1]
+            span = math.dist((a[0], a[1]), (b[0], b[1]))
+            sag = max(6.0, span * 0.095) if a[2] > 50 and b[2] > 50 else max(4.0, span * 0.05)
+            pts = catenary_points(
+                (a[0] + px * off * sgn, a[1] + py * off * sgn, a[2]),
+                (b[0] + px * off * sgn, b[1] + py * off * sgn, b[2]),
+                sag, max(10, int(span / 22)))
+            add_tube(verts, faces, colors, pts, 0.95, ORANGE)
+            for (sx, sy, sz) in pts[1:-1]:
+                deck_z = bridge_deck_heights(np.array([sx]), np.array([-sy]), DATA["meta"])[0]
+                if deck_z > -1e8 and sz > deck_z + 2.5:
+                    # cable band + slim suspender pair down to the deck edge
+                    add_box(verts, faces, colors, sx, sy, sz, 1.15, 1.15, 0.45, DEEP)
+                    add_box(verts, faces, colors, sx, sy, (sz + deck_z) / 2, 0.14, 0.14, (sz - deck_z) / 2, ORANGE)
+
+
 def build_landmarks():
     """One named object per landmark so the runtime can address them
     individually (e.g. the Salesforce crown gets its own material)."""
@@ -960,7 +1137,7 @@ def build_landmarks():
 
     # Golden Gate + Bay Bridge
     verts, faces, colors = [], [], []
-    build_suspension_bridge(meta["bridges"][0], verts, faces, colors, INTL_ORANGE, lm="goldengate")
+    build_golden_gate(meta["bridges"][0], verts, faces, colors, INTL_ORANGE, lm="goldengate")
     emit("lm_bridge_goldengate", verts, faces, colors)
     verts, faces, colors = [], [], []
     build_suspension_bridge(meta["bridges"][1], verts, faces, colors, STEEL_GRAY, lm="baybridge")

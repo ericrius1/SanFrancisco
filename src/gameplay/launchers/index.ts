@@ -1,6 +1,6 @@
 export type { Launcher, Rider, RiderFactory, FireContext } from "./types";
 export { LauncherRig } from "./launcherRig";
-export { RocketBattery } from "./rocketBattery";
+export { RocketBattery, LAUNCH_SPEED } from "./rocketBattery";
 export { GuitaristStand } from "./guitaristStand";
 export { RiderRocketLauncher } from "./riderRocketLauncher";
 export { RocketRiders } from "./rocketRiders";

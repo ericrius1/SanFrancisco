@@ -590,6 +590,14 @@ export class Player {
       const steer = this.#modes.truck.steerVis;
       poseDrive(this.#truckRig, steer, this.#animT, true);
       this.#truckWheel.spin.rotation.z = steer * 2.3;
+      // roll the six road wheels by the distance travelled this frame (signed by
+      // forward speed, so reversing spins them back). Axle is each wheel's local Z.
+      const wheels = this.meshes.truck.userData.wheels as { mesh: THREE.Object3D; invRadius: number }[] | undefined;
+      if (wheels) {
+        const fwd = V.tmp.set(0, 0, -1).applyQuaternion(this.renderQuaternion);
+        const roll = this.velocity.dot(fwd) * dt; // metres rolled forward this frame
+        for (const w of wheels) w.mesh.rotation.z -= roll * w.invRadius;
+      }
     }
   }
 
