@@ -249,19 +249,26 @@ async function boot() {
       { persistent: true }
     );
   };
+  // headings are only the starting facing now — the boats wander the bay on
+  // their own (see AbandonedMounts #sailBoat). Midpoint spots sit between two
+  // known-water spots so they stay in open bay.
   const SAIL_SPOTS: [number, number, number][] = [
     [2600, -2400, 1.2],
     [-700, -2380, 0.4],
     [1700, -3550, 2.3],
     [4000, -2000, -1.0],
-    [-1500, -2500, 0.8]
+    [-1500, -2500, 0.8],
+    [3300, -2200, 0.0],
+    [-1100, -2440, 2.0]
   ];
   const SPEED_SPOTS: [number, number, number][] = [
     [3300, -2600, -0.6],
     [900, -2950, 1.7],
     [-2350, -2150, 0.2],
     [4550, -1650, -1.4],
-    [250, -3750, 2.9]
+    [250, -3750, 2.9],
+    [3925, -2125, 1.0],
+    [575, -3350, -2.0]
   ];
   for (const [x, z, h] of SAIL_SPOTS) scatterBoat("boat", x, z, h);
   for (const [x, z, h] of SPEED_SPOTS) scatterBoat("speedboat", x, z, h);

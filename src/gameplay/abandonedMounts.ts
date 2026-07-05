@@ -302,6 +302,14 @@ export class AbandonedMounts {
       item.flapPhase = 0;
       item.animT = 0;
     }
+    if (mode === "boat" || mode === "speedboat") {
+      // scattered bay boats sail themselves: seed a heading from the release
+      // facing + a desynced bob clock (persistent ones actually wander)
+      V.fwd.set(0, 0, -1).applyQuaternion(pose.quaternion);
+      item.wanderYaw = Math.atan2(-V.fwd.x, -V.fwd.z);
+      item.wanderTimer = 2 + Math.random() * 3;
+      item.animT = Math.random() * 10;
+    }
     this.#items.push(item);
     // cap only the transient mounts; scattered persistent boats never get evicted
     if (!item.persistent) {
@@ -328,6 +336,12 @@ export class AbandonedMounts {
       const t = w.getBodyTransform(item.handle);
       const vel = w.getBodyVelocity(item.handle);
       w.setBodyAwake(item.handle, true);
+
+      // scattered bay boats sail themselves around the water on their own
+      if ((item.mode === "boat" || item.mode === "speedboat") && item.persistent) {
+        this.#sailBoat(item, dt);
+        continue;
+      }
 
       const linearDamp = Math.exp(-item.spec.linearDrag * dt);
       const angularDamp = Math.exp(-item.spec.angularDrag * dt);
@@ -395,6 +409,69 @@ export class AbandonedMounts {
     const speed = Math.hypot(cruise, vy);
     const pitch = Math.asin(THREE.MathUtils.clamp(vy / Math.max(speed, 4), -1, 1)) * 0.8;
     const roll = Math.sin(this.#time * 0.5 + (item.animT ?? 0)) * 0.12;
+    V.euler.set(pitch, yaw, roll);
+    V.quat.setFromEuler(V.euler);
+    w.setBodyTransform(item.handle, [x, y, z], [V.quat.x, V.quat.y, V.quat.z, V.quat.w]);
+  }
+
+  /**
+   * A scattered bay boat sails itself: it holds a wander heading (re-picked
+   * every few seconds), cruises at a lazy clip, rides the swell, and probes the
+   * water ahead so it veers back to open bay before it runs aground or into a
+   * bridge pier. Sailboats amble; speedboats run a touch quicker.
+   */
+  #sailBoat(item: AbandonedMount, dt: number) {
+    const w = this.#physics.world;
+    const t = w.getBodyTransform(item.handle);
+    const x = t.position[0];
+    const z = t.position[2];
+    const y = t.position[1];
+
+    const isSpeed = item.mode === "speedboat";
+    const cruise = isSpeed ? 12 : 7;
+    const lookahead = isSpeed ? 42 : 28;
+
+    // occasional lazy course change
+    item.wanderTimer = (item.wanderTimer ?? 0) - dt;
+    if (item.wanderTimer <= 0) {
+      item.wanderTimer = 4 + Math.random() * 5;
+      item.wanderYaw = (item.wanderYaw ?? 0) + (Math.random() - 0.5) * 1.2;
+    }
+
+    let yaw = item.wanderYaw ?? 0;
+    // stay on open water: is the spot `lookahead` metres ahead of this heading
+    // clear bay (water, no bridge deck overhead / pier)?
+    const open = (yw: number) => {
+      const px = x - Math.sin(yw) * lookahead;
+      const pz = z - Math.cos(yw) * lookahead;
+      return this.#map.isWater(px, pz) && this.#map.bridgeDeck(px, pz) === -Infinity;
+    };
+    if (!open(yaw)) {
+      // scan outward for the smallest turn that opens onto clear water
+      let found = false;
+      for (const d of [0.5, -0.5, 1.0, -1.0, 1.6, -1.6, 2.2, -2.2, 2.8, -2.8]) {
+        if (open(yaw + d)) {
+          yaw += d;
+          found = true;
+          break;
+        }
+      }
+      if (!found) yaw += Math.PI; // boxed in — come about
+      item.wanderYaw = yaw;
+      item.wanderTimer = 1.5 + Math.random() * 2;
+    }
+
+    const fwdX = -Math.sin(yaw);
+    const fwdZ = -Math.cos(yaw);
+    // ride the swell: spring toward the wave surface, same as the float path
+    const targetY = waterHeight(x, z, this.#time) + 0.15;
+    const vel = w.getBodyVelocity(item.handle);
+    const vy = THREE.MathUtils.clamp((targetY - y) * 6 + vel.linear[1] * 0.2, -7, 7);
+    w.setBodyVelocity(item.handle, [fwdX * cruise, vy, fwdZ * cruise], [0, 0, 0]);
+
+    // face the way it's sailing, with a gentle heel/pitch for life
+    const roll = Math.sin(this.#time * 0.6 + (item.animT ?? 0)) * 0.05;
+    const pitch = Math.sin(this.#time * 0.5 + (item.animT ?? 0) + 1.3) * 0.03;
     V.euler.set(pitch, yaw, roll);
     V.quat.setFromEuler(V.euler);
     w.setBodyTransform(item.handle, [x, y, z], [V.quat.x, V.quat.y, V.quat.z, V.quat.w]);
