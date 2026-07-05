@@ -70,11 +70,9 @@ import { Minimap } from "./ui/minimap";
 import { PlayerLocator } from "./ui/playerLocator";
 import { avatarFromSeed, loadSavedAvatar, randomAvatarTraits, saveAvatarTraits } from "./player/avatar";
 import { TRUCK_VISUAL_SCALE } from "./vehicles/truck/dimensions";
+import { MENU_MODES, ModeDiscovery, ALL_MODES } from "./player/discovery";
 
 CameraControls.install({ THREE });
-
-// digit-key vehicle order (1..7) — also the wrap order for pad next/prev
-const PLAYER_ORDER: PlayerMode[] = ["walk", "drive", "plane", "boat", "drone", "board", "bird", "truck", "speedboat"];
 
 const app = document.getElementById("app")!;
 const loading = document.getElementById("loading")!;
@@ -151,6 +149,8 @@ async function boot() {
   progress(62, "waking up san francisco");
   const input = new Input(renderer.domElement);
   const hud = new HUD();
+  const modeDiscovery = new ModeDiscovery();
+  hud.setDiscovery((m) => modeDiscovery.isKnown(m));
   const fx = new FX(scene);
   const shockwaves = new Shockwaves(scene);
   const wake = new WakeRipples(scene);
@@ -210,9 +210,14 @@ async function boot() {
   const boatLaunchers = player.meshes.speedboat.userData.launcherRig as LauncherRig | undefined;
   if (START.mode !== "walk") player.trySwitch(START.mode);
   player.onModeChange = (mode) => {
+    const fresh = modeDiscovery.discover(mode);
     hud.setMode(mode);
     input.setMode(mode); // trigger routing (fly puts them on the ↑/↓ throttle)
     debugPanel.setMode(mode); // tuning pane shows only the active mode's movement folder
+    if (fresh) {
+      const msg = modeDiscovery.revealMessage(mode);
+      if (msg) hud.message(msg, 2.8);
+    }
   };
   input.setMode(player.mode);
   // controller: swap the help labels to whichever device was touched last
@@ -814,7 +819,7 @@ async function boot() {
     const y = Number(p[1]);
     const z = Number(p[2]);
     const facing = Number(p[3]);
-    const mode = PLAYER_ORDER.find((m) => m === p[4]);
+    const mode = ALL_MODES.find((m) => m === p[4]);
     if (![x, y, z, facing].every(Number.isFinite) || !mode) return null;
     const ride = p[5] && p[5] in DRIVE_PROFILES ? (p[5] as VehicleClass) : null;
     const animal = p[5] && p[5] in ANIMALS ? (p[5] as AnimalKind) : null;
@@ -828,6 +833,8 @@ async function boot() {
   const resumed = invite ? null : loadPlayerState();
   if (resumed) {
     player.restoreState(resumed);
+    modeDiscovery.discover(resumed.mode);
+    hud.setDiscovery((m) => modeDiscovery.isKnown(m));
     chase.yaw = resumed.heading + Math.PI;
     camera.position.set(resumed.x + 20, resumed.y + 30, resumed.z + 20);
     if (import.meta.env.DEV) console.log("[sf] resumed session", resumed);
@@ -1208,7 +1215,6 @@ async function boot() {
     accumulator += frameDt;
 
     // plain number keys select vehicles; Shift+number teleports to player slots.
-    const order = PLAYER_ORDER;
     const switchMode = (mode: PlayerMode) => {
       leaveRide(); // a mode key while riding shotgun hops out first
       if ((currentRide || currentAnimal || currentQuidditch) && mode !== "drive" && mode !== "drone") dropCurrentDriveMount();
@@ -1226,7 +1232,8 @@ async function boot() {
         // Snapshot Shift from the digit's keydown event; a stale held-key entry
         // should never turn a plain number press into a player-slot teleport.
         if (!input.shiftedPress(`Digit${i}`)) {
-          if (i <= order.length) switchMode(order[i - 1]);
+          const mode = MENU_MODES[i - 1];
+          if (mode) switchMode(mode);
           continue;
         }
         const target = playerLocator.targetForDigit(i);
@@ -1234,7 +1241,12 @@ async function boot() {
         else hud.message(`No player in slot ${i}`, 1.9);
       }
     const cycle = (input.pressed("PadModeNext") ? 1 : 0) - (input.pressed("PadModePrev") ? 1 : 0);
-    if (cycle) switchMode(order[(order.indexOf(player.mode) + cycle + order.length) % order.length]);
+    if (cycle) {
+      const cycleOrder = MENU_MODES.filter((m) => modeDiscovery.isKnown(m));
+      const idx = cycleOrder.indexOf(player.mode);
+      const from = idx >= 0 ? idx : 0;
+      if (cycleOrder.length) switchMode(cycleOrder[(from + cycle + cycleOrder.length) % cycleOrder.length]);
+    }
 
     // E: Exploratorium piano, then exit any vehicle/creature, or on foot hop
     // into the nearest car (a friend's passenger seat wins over parked traffic)

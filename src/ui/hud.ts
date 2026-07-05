@@ -1,16 +1,5 @@
 import type { PlayerMode } from "../player/types"
-
-const MODE_ORDER: PlayerMode[] = [
-  "walk",
-  "drive",
-  "plane",
-  "boat",
-  "speedboat",
-  "drone",
-  "board",
-  "bird",
-  "truck"
-]
+import { MENU_MODES } from "../player/discovery"
 const MODE_SHORT: Record<PlayerMode, string> = {
   walk: "walk",
   drive: "drive",
@@ -217,6 +206,7 @@ export class HUD {
   #device: "kb" | "pad" = "kb"
   #toolVerb = "sling paintballs" // what a click does right now (the toolbar's tool)
   #expanded = false // advanced shortcuts folded away by default
+  #isKnown = (_m: PlayerMode) => true
 
   constructor() {
     // one delegated listener: the fold-out toggle lives inside #help
@@ -236,6 +226,12 @@ export class HUD {
 
   setMode(mode: PlayerMode) {
     this.#current = mode
+    this.#renderHelp()
+  }
+
+  /** Which roster slots show their name vs ??? */
+  setDiscovery(isKnown: (m: PlayerMode) => boolean) {
+    this.#isKnown = isKnown
     this.#renderHelp()
   }
 
@@ -269,9 +265,11 @@ export class HUD {
 
     // second column: the vehicle roster, always visible so newcomers see there's
     // more than walking. Keyboard picks a mode by number; the pad cycles ◀ ▶.
-    const vehicleRows = MODE_ORDER.map((m, i) => {
+    const vehicleRows = MENU_MODES.map((m, i) => {
+      const known = this.#isKnown(m)
       const key = pad ? "" : `<span class="k">${i + 1}</span>`
-      return `<div class="mi${m === this.#current ? " on" : ""}">${key}<span class="lbl">${MODE_SHORT[m]}</span></div>`
+      const label = known ? MODE_SHORT[m] : "???"
+      return `<div class="mi${m === this.#current ? " on" : ""}${known ? "" : " mystery"}">${key}<span class="lbl">${label}</span></div>`
     }).join("")
     const modes =
       `<div class="modes">` +
