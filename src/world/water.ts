@@ -16,18 +16,22 @@ import {
   sin,
   exp,
   max,
-  abs,
-  select,
   uv,
   mx_fractal_noise_float,
   mx_noise_float
 } from "three/tsl";
-import { PALACE_LAGOON, palaceLagoonMask, type WorldMap } from "./heightmap";
+import { PALACE_LAGOON, palaceLagoonMask, waterHeight, type WorldMap } from "./heightmap";
 import { bumpNormal, chopZoneMask, swellBase, swellChop } from "./tslUtil";
 import { LIGHT_SCALE } from "../config";
 
 const PALACE_LAGOON_SEGMENTS = 112;
 const PALACE_LAGOON_RINGS = 18;
+const NEAR_PATCH_SIZE = 560;
+const NEAR_PATCH_SEGMENTS = 110;
+const NEAR_PATCH_MASK_OUTER = 276;
+const NEAR_PATCH_MASK_INNER = 210;
+const NEAR_PATCH_FADE_START_HEIGHT = 5;
+const NEAR_PATCH_FADE_END_HEIGHT = 12;
 const TAU = Math.PI * 2;
 
 /**
@@ -44,7 +48,8 @@ export class Water {
   palaceLagoon: THREE.Mesh;
 
   #uTime = uniform(0);
-  #uNearRect = uniform(new THREE.Vector3(0, 0, 276));
+  #uNearRect = uniform(new THREE.Vector3(0, 0, NEAR_PATCH_MASK_OUTER));
+  #uNearVisibility = uniform(1);
   #uOrigin = uniform(new THREE.Vector2());
 
   constructor(scene: THREE.Scene, map: WorldMap) {
@@ -108,14 +113,23 @@ export class Water {
       const d2 = exp(depth.mul(-0.055)).oneMinus().toVar();
       const waterCol = mix(mix(color(0xa7bb9f), color(0x2f9d91), d1), color(0x0f5a5c), d2).toVar();
 
-      // hole under the near patch so the two sheets never double-blend —
-      // decided FIRST so hidden pixels skip the whole noise stack below
-      // (opacity 0 still pays full fragment cost otherwise)
+      // Feather the player-following near patch into the far bay sheet. This
+      // keeps the displaced water useful for watercraft without leaving a
+      // camera-following square over the ocean during flight.
       const p = positionWorld.xz;
       const rect = this.#uNearRect;
-      const hidden = holed
-        ? max(dry, step(max(abs(p.x.sub(rect.x)), abs(p.y.sub(rect.y))), rect.z)).toVar()
-        : dry;
+      const followMask = holed
+        ? smoothstep(
+            rect.z,
+            float(NEAR_PATCH_MASK_INNER),
+            vec2(p.x.sub(rect.x), p.y.sub(rect.y)).length()
+          ).mul(this.#uNearVisibility)
+        : smoothstep(
+            float(NEAR_PATCH_MASK_OUTER),
+            float(NEAR_PATCH_MASK_INNER),
+            positionLocal.xz.length()
+          ).mul(this.#uNearVisibility);
+      const waterVisibility = holed ? followMask.oneMinus() : followMask;
 
       const viewDist = positionView.z.negate();
       const detail = clamp(float(1).sub(viewDist.div(1900)), 0, 1).toVar();
@@ -158,7 +172,7 @@ export class Water {
       mat.roughnessNode = mix(baseRough, float(0.78), foam);
 
       const alpha = clamp(mix(0.42, 0.93, d2).add(foam.mul(0.4)), 0, 0.97);
-      mat.opacityNode = select(hidden.greaterThan(0.5), float(0), alpha);
+      mat.opacityNode = alpha.mul(waterVisibility).mul(dry.oneMinus());
 
       mat.envMapIntensity = 0.25;
       return mat;
@@ -231,7 +245,7 @@ export class Water {
     this.far.frustumCulled = false;
 
     // near patch: displaced vertices for a gentle bob around the player
-    const nearGeo = new THREE.PlaneGeometry(560, 560, 110, 110);
+    const nearGeo = new THREE.PlaneGeometry(NEAR_PATCH_SIZE, NEAR_PATCH_SIZE, NEAR_PATCH_SEGMENTS, NEAR_PATCH_SEGMENTS);
     nearGeo.rotateX(-Math.PI / 2);
     this.near = new THREE.Mesh(nearGeo, makeMaterial(1, false));
     this.near.renderOrder = 11;
@@ -248,11 +262,18 @@ export class Water {
   update(t: number, _camPos: THREE.Vector3, playerPos: THREE.Vector3) {
     this.#uTime.value = t;
     // snap the near patch to its own grid so vertices don't swim
-    const snap = 560 / 110;
+    const snap = NEAR_PATCH_SIZE / NEAR_PATCH_SEGMENTS;
     this.near.position.x = Math.round(playerPos.x / snap) * snap;
     this.near.position.z = Math.round(playerPos.z / snap) * snap;
     this.#uOrigin.value.set(this.near.position.x, this.near.position.z);
-    this.#uNearRect.value.set(this.near.position.x, this.near.position.z, 276);
+    this.#uNearRect.value.set(this.near.position.x, this.near.position.z, NEAR_PATCH_MASK_OUTER);
+
+    const clearance = playerPos.y - waterHeight(playerPos.x, playerPos.z, t);
+    this.#uNearVisibility.value = THREE.MathUtils.clamp(
+      (NEAR_PATCH_FADE_END_HEIGHT - clearance) / (NEAR_PATCH_FADE_END_HEIGHT - NEAR_PATCH_FADE_START_HEIGHT),
+      0,
+      1
+    );
   }
 }
 

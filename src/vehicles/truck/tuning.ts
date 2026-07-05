@@ -17,5 +17,11 @@ export const TRUCK_TUNING = tunables("movement.truck", {
   reverseGrind: { v: 2.5 },
   gripLat: { v: 0.14 },
   driftLat: { v: 0.82 },
-  rideSpring: { v: 10 }
+  rideSpring: { v: 10 },
+  // airborne stability off ramps/hills (mirrors the car): leveling gain + push
+  // cap + per-second spin decay. Higher = lands flatter; caps let a wild launch
+  // still out-spin the fix and flip.
+  airLevel: { v: 5, min: 0, max: 20, step: 0.5, label: "air level" },
+  airLevelCap: { v: 3, min: 0, max: 10, step: 0.25, label: "air level cap" },
+  airDamp: { v: 1.0, min: 0, max: 8, step: 0.1, label: "air damp" }
 });
