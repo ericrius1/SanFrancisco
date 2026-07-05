@@ -38,6 +38,7 @@ import { VehicleAudio } from "./fx/vehicleAudio";
 import { Props } from "./gameplay/props";
 import { Traffic, DRIVE_PROFILES, type VehicleClass } from "./gameplay/traffic";
 import { AbandonedMounts } from "./gameplay/abandonedMounts";
+import { HorseHerd } from "./gameplay/horse/horseHerd";
 import { RocketRiders, type LauncherRig } from "./gameplay/launchers";
 import { Flyover } from "./gameplay/flyover";
 import { BridgeParade } from "./gameplay/bridgeParade";
@@ -150,7 +151,6 @@ async function boot() {
   const input = new Input(renderer.domElement);
   const hud = new HUD();
   const modeDiscovery = new ModeDiscovery();
-  hud.setDiscovery((m) => modeDiscovery.isKnown(m));
   const fx = new FX(scene);
   const shockwaves = new Shockwaves(scene);
   const wake = new WakeRipples(scene);
@@ -236,6 +236,9 @@ async function boot() {
   const creatures = new Creatures(map, scene);
   const forest = new Forest(map, scene);
   const abandonedMounts = new AbandonedMounts(physics, map, scene);
+  // RL horses roaming Golden Gate Park — live box3d ragdolls running the trained
+  // policy, with their neural activations bubbling over their heads.
+  const horseHerd = new HorseHerd(physics, map, scene);
   const rocketRiders = new RocketRiders(scene, map);
   // "-" spectacle: planes + phoenixes overhead, boats under the Golden Gate
   const flyover = new Flyover(scene);
@@ -535,6 +538,7 @@ async function boot() {
   // The pose glue runs each frame in the render loop; every mode change,
   // respawn or teleport goes through leaveRide first.
   let passengerOf: number | null = null;
+  let ridingHorse = -1; // index of the RL horse the player is riding, or -1
   const ridePos = new THREE.Vector3();
   const rideQuat = new THREE.Quaternion();
   const leaveRide = () => {
@@ -674,6 +678,15 @@ async function boot() {
   };
   /** E (or pad B): leave any vehicle, creature, or passenger seat for on-foot. */
   const exitToWalk = () => {
+    if (ridingHorse >= 0) {
+      horseHerd.dismount();
+      ridingHorse = -1;
+      player.position.x += Math.cos(player.heading) * 2.2;
+      player.position.z -= Math.sin(player.heading) * 2.2;
+      player.endRide();
+      hud.message("Off the horse", 1.8);
+      return true;
+    }
     if (passengerOf !== null) {
       passengerOf = null;
       player.position.x += Math.cos(player.heading) * 2.4;
@@ -834,7 +847,6 @@ async function boot() {
   if (resumed) {
     player.restoreState(resumed);
     modeDiscovery.discover(resumed.mode);
-    hud.setDiscovery((m) => modeDiscovery.isKnown(m));
     chase.yaw = resumed.heading + Math.PI;
     camera.position.set(resumed.x + 20, resumed.y + 30, resumed.z + 20);
     if (import.meta.env.DEV) console.log("[sf] resumed session", resumed);
@@ -1242,7 +1254,7 @@ async function boot() {
       }
     const cycle = (input.pressed("PadModeNext") ? 1 : 0) - (input.pressed("PadModePrev") ? 1 : 0);
     if (cycle) {
-      const cycleOrder = MENU_MODES.filter((m) => modeDiscovery.isKnown(m));
+      const cycleOrder = MENU_MODES;
       const idx = cycleOrder.indexOf(player.mode);
       const from = idx >= 0 ? idx : 0;
       if (cycleOrder.length) switchMode(cycleOrder[(from + cycle + cycleOrder.length) % cycleOrder.length]);
@@ -1260,6 +1272,7 @@ async function boot() {
         // of auto-assigning, so you can choose Seeker / Beater / Chaser / Keeper
         const wantQuid = !drv && !currentQuidditch && quidditch.inJoinZoneAt(player.position);
         const animal = drv || wantQuid ? null : forest.nearest(player.position, 5);
+        const horseNear = drv || wantQuid || animal ? -1 : horseHerd.nearest(player.position.x, player.position.z, 3.5);
         if (drv) {
           passengerOf = drv.id;
           player.startRide();
@@ -1279,6 +1292,11 @@ async function boot() {
             info.kind === "raccoon" ? "You're riding the raccoon! Left click — gummy bears" : "You're riding the bear!",
             3
           );
+        } else if (horseNear >= 0) {
+          ridingHorse = horseNear;
+          horseHerd.mount(horseNear);
+          player.startRide();
+          hud.message("You're on the RL horse — look to steer, E to hop off", 3.2);
         } else {
           // re-board a vehicle/creature you left behind — walk up, press E,
           // just like a parked car (the phoenix, a crashed plane, a hoverboard…)
@@ -1579,6 +1597,7 @@ async function boot() {
       player.update(physics.world.fixedTimeStep, input, chase.yaw, aim);
       traffic.prePhysics(physics.world.fixedTimeStep, player.position, sky.timeOfDay, sky.sunsetAzimuth);
       abandonedMounts.prePhysics(physics.world.fixedTimeStep);
+      horseHerd.prePhysics(physics.world.fixedTimeStep); // step each horse's private RL sim
       physics.step(physics.world.fixedTimeStep, player.position);
       accumulator -= physics.world.fixedTimeStep;
       steps++;
@@ -1607,6 +1626,10 @@ async function boot() {
         player.endRide();
         hud.message("Your ride ended", 2.2);
       }
+    } else if (ridingHorse >= 0) {
+      horseHerd.steer(chase.yaw);
+      if (horseHerd.riddenSeat(ridePos, rideQuat)) player.setRidePose(ridePos, rideQuat, frameDt);
+      else { horseHerd.dismount(); ridingHorse = -1; player.endRide(); }
     } else {
       // interpolate the render transform between the last two physics states so
       // 120 Hz frames don't see a 60 Hz stutter
@@ -1627,6 +1650,7 @@ async function boot() {
     if (player.mode === "speedboat") boatLaunchers?.update(frameDt); // guitarist jam + rocket reload
     creatures.update(elapsed, camera.position); // gulls live at altitude — never gated
     forest.update(frameDt, camera.position);
+    horseHerd.update(frameDt, camera); // sync ragdoll meshes onto terrain + refresh brain bubbles
     flora.update(camera.position, highUp);
     if (currentAnimal) forest.setRiddenSpeed(player.speed);
     islands.update(elapsed);

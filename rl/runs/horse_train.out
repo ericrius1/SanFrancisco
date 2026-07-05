@@ -1,0 +1,21 @@
+(node:31753) ExperimentalWarning: Type Stripping is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+[train] creature=horse obs=22 act=10 params=2122
+gen 15  center=70.79  best=228.9  sigma=0.0742  steps=500/500  dist=1.37m  along=1.12m  meanH=0.40  [106s]
+gen 30  center=73.94  best=295.36  sigma=0.0688  steps=500/500  dist=0.87m  along=0.86m  meanH=0.40  [209s]
+gen 45  center=249.01  best=319.59  sigma=0.0638  steps=500/500  dist=1.23m  along=1.20m  meanH=0.39  [314s]
+gen 60  center=236.45  best=310.21  sigma=0.0592  steps=500/500  dist=1.64m  along=1.59m  meanH=0.39  [421s]
+gen 75  center=114.35  best=470.29  sigma=0.0549  steps=500/500  dist=2.14m  along=1.93m  meanH=0.39  [530s]
+gen 90  center=207.55  best=445.04  sigma=0.051  steps=500/500  dist=1.77m  along=1.65m  meanH=0.39  [631s]
+gen 105  center=270.62  best=369.21  sigma=0.0473  steps=500/500  dist=0.45m  along=0.39m  meanH=0.43  [728s]
+gen 120  center=157.47  best=555.31  sigma=0.0438  steps=500/500  dist=1.56m  along=1.55m  meanH=0.40  [836s]
+gen 135  center=214.08  best=537.19  sigma=0.0407  steps=500/500  dist=2.05m  along=1.81m  meanH=0.41  [947s]
+gen 150  center=229.4  best=563.52  sigma=0.0377  steps=500/500  dist=0.86m  along=0.86m  meanH=0.42  [1062s]
+gen 165  center=257.87  best=462.49  sigma=0.035  steps=500/500  dist=1.59m  along=1.17m  meanH=0.41  [1192s]
+gen 180  center=515.26  best=439.31  sigma=0.0325  steps=500/500  dist=1.82m  along=1.41m  meanH=0.39  [1305s]
+gen 195  center=225.35  best=448.5  sigma=0.0301  steps=500/500  dist=0.53m  along=0.47m  meanH=0.41  [1415s]
+gen 210  center=326.16  best=622.64  sigma=0.0279  steps=500/500  dist=0.62m  along=0.13m  meanH=0.42  [1527s]
+gen 225  center=376.93  best=453.24  sigma=0.0259  steps=500/500  dist=0.54m  along=-0.48m  meanH=0.44  [1641s]
+gen 240  center=202.39  best=323.94  sigma=0.024  steps=500/500  dist=0.93m  along=0.45m  meanH=0.43  [1754s]
+[train] done in 1754s. best center fitness 555.8
+[train] policy -> public/models/horse_policy.json
