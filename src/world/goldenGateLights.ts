@@ -17,7 +17,6 @@ import {
   vertexStage
 } from "three/tsl";
 import { tunables } from "../core/persist";
-import { goldenGateBridgeVisualLine } from "./goldenGateBridge";
 import type { WorldMap } from "./heightmap";
 
 // TSL node generics fight composition; any is the idiom here (see bayLights.ts)
@@ -119,38 +118,6 @@ function sampleBridgeLine(br: Bridge, spacing: number): BridgeSample[] {
     }
   }
   return out;
-}
-
-function nearestBridgeSample(line: Bridge["line"], x: number, z: number): BridgeSample {
-  let best: BridgeSample | null = null;
-  let bestD = Infinity;
-  for (let i = 0; i < line.length - 1; i++) {
-    const a = line[i];
-    const b = line[i + 1];
-    const dx = b[0] - a[0];
-    const dz = b[1] - a[1];
-    const len2 = dx * dx + dz * dz || 1;
-    const t = Math.max(0, Math.min(1, ((x - a[0]) * dx + (z - a[1]) * dz) / len2));
-    const px = a[0] + dx * t;
-    const pz = a[1] + dz * t;
-    const d = Math.hypot(x - px, z - pz);
-    if (d < bestD) {
-      const len = Math.sqrt(len2);
-      const dirX = dx / len;
-      const dirZ = dz / len;
-      bestD = d;
-      best = {
-        x: px,
-        y: a[2] + (b[2] - a[2]) * t,
-        z: pz,
-        u: 0,
-        yaw: Math.atan2(dirX, dirZ),
-        perpX: dirZ,
-        perpZ: -dirX
-      };
-    }
-  }
-  return best ?? { x, y: 66, z, u: 0, yaw: 0, perpX: 1, perpZ: 0 };
 }
 
 function createGoldenGateMaterial(posK: number[], info: number[]) {
@@ -266,8 +233,6 @@ function createGoldenGateMaterial(posK: number[], info: number[]) {
 export function createGoldenGateLights(map: WorldMap): THREE.Sprite | null {
   const br = map.meta.bridges.find((b) => b.name === "Golden Gate Bridge");
   if (!br) return null;
-  const line = goldenGateBridgeVisualLine(br);
-  const lightBridge = { ...br, line };
 
   // sprite fields: pos.xyz + kind, then u/phase/seed/size
   const posK: number[] = [];
@@ -279,7 +244,7 @@ export function createGoldenGateLights(map: WorldMap): THREE.Sprite | null {
     info.push(u, seed, seed, size);
   };
 
-  const deck = sampleBridgeLine(lightBridge, DECK_SPACING);
+  const deck = sampleBridgeLine(br, DECK_SPACING);
   for (let i = 0; i < deck.length; i++) {
     const p = deck[i];
     // small round lamps bolted onto the side railings (not floating off the deck,
@@ -292,53 +257,51 @@ export function createGoldenGateLights(map: WorldMap): THREE.Sprite | null {
     }
   }
 
-  const first = line[0];
-  const last = line[line.length - 1];
-  const cableOffset = br.width / 2 + 0.85;
-  const suspenderAttachOffset = br.width / 2 + 0.42;
+  const first = br.line[0];
+  const last = br.line[br.line.length - 1];
+  const dx = last[0] - first[0];
+  const dz = last[1] - first[1];
+  const dl = Math.hypot(dx, dz) || 1;
+  const perpX = dz / dl;
+  const perpZ = -dx / dl;
+  const cableOffset = br.width / 2 + 1.5;
   const nodes = [
-    { x: first[0], y: first[2] + 34, z: first[1] },
-    ...br.towers.map(([x, z]) => ({ x, y: br.towerHeight + 2, z })),
-    { x: last[0], y: last[2] + 34, z: last[1] }
+    { x: first[0], y: first[2] + 2, z: first[1] },
+    ...br.towers.map(([x, z]) => ({ x, y: br.towerHeight, z })),
+    { x: last[0], y: last[2] + 2, z: last[1] }
   ];
   let cableTotal = 0;
   const cableSpans = nodes.slice(0, -1).map((a, i) => {
     const b = nodes[i + 1];
     const span = Math.hypot(b.x - a.x, b.z - a.z);
-    const sag = a.y > 120 && b.y > 120 ? Math.max(70, span * 0.092) : Math.max(24, span * 0.055);
+    const sag = a.y > 50 && b.y > 50 ? Math.max(8, span * 0.095) : Math.max(5, span * 0.052);
     const u0 = cableTotal;
     cableTotal += span;
     return { a, b, span, sag, u0 };
   });
 
   for (const sgn of [-1, 1]) {
+    const ox = perpX * cableOffset * sgn;
+    const oz = perpZ * cableOffset * sgn;
     for (const span of cableSpans) {
       const nCable = Math.max(2, Math.round(span.span / CABLE_SPACING));
       for (let i = 0; i <= nCable; i++) {
         const t = i / nCable;
-        const centerX = span.a.x + (span.b.x - span.a.x) * t;
-        const centerZ = span.a.z + (span.b.z - span.a.z) * t;
-        const pose = nearestBridgeSample(line, centerX, centerZ);
-        const x = centerX + pose.perpX * cableOffset * sgn;
+        const x = span.a.x + (span.b.x - span.a.x) * t + ox;
         const y = span.a.y + (span.b.y - span.a.y) * t - span.sag * 4 * t * (1 - t);
-        const z = centerZ + pose.perpZ * cableOffset * sgn;
+        const z = span.a.z + (span.b.z - span.a.z) * t + oz;
         const u = (span.u0 + span.span * t) / cableTotal;
         push(x, y, z, 2, u, 0.8);
 
         if (i > 0 && i < nCable && i % 3 === 0) {
-          const deckY = map.bridgeDeck(pose.x, pose.z);
+          const deckY = map.bridgeDeck(x, z);
           if (deckY > -Infinity && y > deckY + 12) {
-            const bottomX = pose.x + pose.perpX * suspenderAttachOffset * sgn;
-            const bottomZ = pose.z + pose.perpZ * suspenderAttachOffset * sgn;
             const top = y - 2.5;
-            const bottom = deckY + 2.1;
+            const bottom = deckY + 8;
             const n = Math.max(1, Math.floor((top - bottom) / SUSPENDER_SPACING));
             for (let j = 0; j <= n; j++) {
-              const v = j / n;
-              const sx = bottomX + (x - bottomX) * v;
-              const sy = bottom + (top - bottom) * v;
-              const sz = bottomZ + (z - bottomZ) * v;
-              push(sx, sy, sz, 3, u, 0.58);
+              const ty = bottom + (j / n) * (top - bottom);
+              push(x, ty, z, 3, u, 0.58);
             }
           }
         }

@@ -6,7 +6,6 @@ import { createFacadeMaterial, BASEY_OFFSET, BASEY_SCALE, TOPH_SCALE } from "./f
 import { createRoadMaterial, createParkMaterial } from "./streets";
 import { createCrownMaterial } from "./salesforceCrown";
 import { applyLandmarkFixes } from "./landmarkFixes";
-import { createGoldenGateBridge } from "./goldenGateBridge";
 import type { WorldMap } from "./heightmap";
 
 export type BuildingCollider = {
@@ -134,118 +133,70 @@ const plainMat = new THREE.MeshStandardMaterial({
   roughness: 0.92,
   metalness: 0
 });
+const goldenGateMat = new THREE.MeshStandardMaterial({
+  color: 0xffb18a,
+  vertexColors: true,
+  roughness: 0.72,
+  metalness: 0.08
+});
 // one shared TSL material per surface family (world-position keyed, so sharing is free)
 const roadMat = createRoadMaterial();
 const parkMat = createParkMaterial();
 
-const GOLDEN_GATE_LEGACY_ROAD_CORE_M = 58;
-const GOLDEN_GATE_LEGACY_ROAD_WATER_M = 220;
-const GOLDEN_GATE_LEGACY_ROAD_Y_MIN = 8;
+const GOLDEN_GATE_ROAD_INSET = 1.15;
+const BRIDGE_ROAD_SURFACE_OFFSET = 0.12;
+const BRIDGE_ROAD_SEGMENT_M = 60;
 
-function goldenGateRoadDistance(map: WorldMap, x: number, z: number): number {
-  const br = map.meta.bridges.find((b) => b.name === "Golden Gate Bridge");
-  if (!br) return Infinity;
+function createGoldenGateRoadSurface(map: WorldMap): THREE.Mesh | null {
+  const bridge = map.meta.bridges.find((b) => b.name === "Golden Gate Bridge");
+  if (!bridge) return null;
 
-  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
-  for (const [px, pz] of br.line) {
-    minX = Math.min(minX, px);
-    maxX = Math.max(maxX, px);
-    minZ = Math.min(minZ, pz);
-    maxZ = Math.max(maxZ, pz);
-  }
-  const pad = GOLDEN_GATE_LEGACY_ROAD_WATER_M;
-  if (x < minX - pad || x > maxX + pad || z < minZ - pad || z > maxZ + pad) return Infinity;
+  const halfWidth = Math.max(1, bridge.width / 2 - GOLDEN_GATE_ROAD_INSET);
+  const positions: number[] = [];
+  const indices: number[] = [];
 
-  let best = Infinity;
-  for (let i = 0; i < br.line.length - 1; i++) {
-    const [x0, z0] = br.line[i];
-    const [x1, z1] = br.line[i + 1];
-    const dx = x1 - x0;
-    const dz = z1 - z0;
-    const len2 = dx * dx + dz * dz;
-    if (len2 < 1e-6) continue;
-    const t = Math.max(0, Math.min(1, ((x - x0) * dx + (z - z0) * dz) / len2));
-    const px = x0 + dx * t;
-    const pz = z0 + dz * t;
-    best = Math.min(best, Math.hypot(x - px, z - pz));
-  }
-  return best;
-}
+  for (let i = 0; i < bridge.line.length - 1; i++) {
+    const [x0, z0, y0] = bridge.line[i];
+    const [x1, z1, y1] = bridge.line[i + 1];
+    const segLen = Math.hypot(x1 - x0, z1 - z0);
+    const steps = Math.max(1, Math.ceil(segLen / BRIDGE_ROAD_SEGMENT_M));
 
-function shouldCullLegacyGoldenGateRoad(map: WorldMap, x: number, y: number, z: number): boolean {
-  const d = goldenGateRoadDistance(map, x, z);
-  if (d <= GOLDEN_GATE_LEGACY_ROAD_CORE_M) return true;
-  return d <= GOLDEN_GATE_LEGACY_ROAD_WATER_M && (y >= GOLDEN_GATE_LEGACY_ROAD_Y_MIN || map.isWater(x, z));
-}
+    for (let s = 0; s < steps; s++) {
+      const t0 = s / steps;
+      const t1 = (s + 1) / steps;
+      const ax = x0 + (x1 - x0) * t0;
+      const az = z0 + (z1 - z0) * t0;
+      const ay = y0 + (y1 - y0) * t0 + BRIDGE_ROAD_SURFACE_OFFSET;
+      const bx = x0 + (x1 - x0) * t1;
+      const bz = z0 + (z1 - z0) * t1;
+      const by = y0 + (y1 - y0) * t1 + BRIDGE_ROAD_SURFACE_OFFSET;
+      const dx = bx - ax;
+      const dz = bz - az;
+      const len = Math.hypot(dx, dz) || 1;
+      const px = -dz / len;
+      const pz = dx / len;
+      const base = positions.length / 3;
 
-function stripLegacyGoldenGateRoad(mesh: THREE.Mesh, map: WorldMap): void {
-  const original = mesh.geometry;
-  const source = original.index ? original.toNonIndexed() : original;
-  const position = source.getAttribute("position") as THREE.BufferAttribute | undefined;
-  if (!position || position.itemSize !== 3 || position.count < 3) {
-    if (source !== original) source.dispose();
-    return;
-  }
-
-  const keep: boolean[] = [];
-  let kept = 0;
-  let removed = 0;
-  for (let i = 0; i < position.count; i += 3) {
-    const ax = position.getX(i);
-    const ay = position.getY(i);
-    const az = position.getZ(i);
-    const bx = position.getX(i + 1);
-    const by = position.getY(i + 1);
-    const bz = position.getZ(i + 1);
-    const cx = position.getX(i + 2);
-    const cy = position.getY(i + 2);
-    const cz = position.getZ(i + 2);
-    const x = (ax + bx + cx) / 3;
-    const y = (ay + by + cy) / 3;
-    const z = (az + bz + cz) / 3;
-    const cull = shouldCullLegacyGoldenGateRoad(map, x, y, z);
-    keep.push(!cull);
-    if (cull) removed++;
-    else kept++;
-  }
-
-  if (removed === 0) {
-    if (source !== original) source.dispose();
-    return;
-  }
-
-  if (kept === 0) {
-    mesh.visible = false;
-    original.dispose();
-    if (source !== original) source.dispose();
-    return;
-  }
-
-  const filtered = new THREE.BufferGeometry();
-  for (const name of Object.keys(source.attributes)) {
-    const attr = source.getAttribute(name) as THREE.BufferAttribute;
-    if (!attr || !("array" in attr)) continue;
-    const values: number[] = [];
-    for (let tri = 0; tri < keep.length; tri++) {
-      if (!keep[tri]) continue;
-      const start = tri * 3;
-      for (let vertex = 0; vertex < 3; vertex++) {
-        const src = start + vertex;
-        for (let item = 0; item < attr.itemSize; item++) {
-          values.push(attr.array[src * attr.itemSize + item]);
-        }
-      }
+      positions.push(
+        ax + px * halfWidth, ay, az + pz * halfWidth,
+        bx + px * halfWidth, by, bz + pz * halfWidth,
+        bx - px * halfWidth, by, bz - pz * halfWidth,
+        ax - px * halfWidth, ay, az - pz * halfWidth
+      );
+      indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
     }
-    const ArrayCtor = attr.array.constructor as new (values: ArrayLike<number>) => THREE.TypedArray;
-    filtered.setAttribute(name, new THREE.BufferAttribute(new ArrayCtor(values), attr.itemSize, attr.normalized));
   }
 
-  filtered.computeBoundingBox();
-  filtered.computeBoundingSphere();
-  if (!filtered.getAttribute("normal")) filtered.computeVertexNormals();
-  mesh.geometry = filtered;
-  original.dispose();
-  if (source !== original) source.dispose();
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  geometry.computeBoundingSphere();
+
+  const mesh = new THREE.Mesh(geometry, roadMat);
+  mesh.name = "lm_bridge_goldengate_asphalt";
+  mesh.receiveShadow = true;
+  return mesh;
 }
 
 export class TileStreamer {
@@ -260,7 +211,6 @@ export class TileStreamer {
 
   #loader = new GLTFLoader();
   #scene: THREE.Scene;
-  #map: WorldMap | null = null;
   #pending = new Set<string>();
   #tick = 0;
   #entries: TileEntry[] = [];
@@ -289,7 +239,6 @@ export class TileStreamer {
   }
 
   async init(map: WorldMap) {
-    this.#map = map;
     this.manifest = await (await fetch("/data/manifest.json")).json();
     this.#entries = Object.keys(this.manifest.tiles).map((key) => {
       const [cx, cz] = this.keyToCenter(key);
@@ -302,7 +251,6 @@ export class TileStreamer {
     }
     // landmarks always resident
     this.#loader.load("/tiles/landmarks.glb", (gltf) => {
-      const oldGoldenGateMeshes: THREE.Mesh[] = [];
       gltf.scene.traverse((o) => {
         const mesh = o as THREE.Mesh;
         if (!mesh.isMesh) return;
@@ -312,26 +260,16 @@ export class TileStreamer {
           mesh.geometry.computeBoundingBox();
           mesh.material = createCrownMaterial(mesh.geometry.boundingBox!);
         } else if (mesh.name === "lm_bridge_goldengate") {
-          // Replaced at runtime by goldenGateBridge.ts. Remove the baked mesh
-          // entirely so the procedural bridge is the only Golden Gate visual.
-          mesh.visible = false;
-          mesh.castShadow = false;
-          mesh.receiveShadow = false;
-          oldGoldenGateMeshes.push(mesh);
-          return;
+          mesh.material = goldenGateMat;
         } else {
           mesh.material = plainMat;
         }
         mesh.castShadow = true;
         mesh.receiveShadow = true;
       });
-      for (const mesh of oldGoldenGateMeshes) {
-        mesh.parent?.remove(mesh);
-        mesh.geometry.dispose();
-      }
       applyLandmarkFixes(gltf.scene, map);
-      const goldenGateBridge = createGoldenGateBridge(map, roadMat);
-      if (goldenGateBridge) gltf.scene.add(goldenGateBridge);
+      const goldenGateRoad = createGoldenGateRoadSurface(map);
+      if (goldenGateRoad) gltf.scene.add(goldenGateRoad);
       this.landmarks = gltf.scene;
       this.#scene.add(gltf.scene);
     });
@@ -517,7 +455,6 @@ export class TileStreamer {
           mesh.castShadow = true;
           mesh.receiveShadow = true;
         } else if (mesh.name.startsWith("road_")) {
-          if (this.#map) stripLegacyGoldenGateRoad(mesh, this.#map);
           mesh.material = roadMat;
           mesh.receiveShadow = true;
         } else if (mesh.name.startsWith("grn_")) {

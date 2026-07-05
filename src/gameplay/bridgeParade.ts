@@ -17,12 +17,12 @@ const PARADE_TUNING = {
   sailboats: 5,
   speedboats: 4,
   triggerRange: 1500, // only fires when this near the mid-span
-  crossHalf: 340, // half the E–W crossing run (boats travel 2× this)
-  aheadOnSpan: 130, // shift the crossing this far ahead of you along the deck
-  spanSpacing: 48, // gap between boats spread along the span
+  crossHalf: 320, // half the E–W crossing run (boats travel 2× this)
+  aheadOnSpan: 95, // shift the crossing this far ahead of you along the deck
+  spanSpacing: 55, // gap between boats spread along the span
   sailSpeed: 8, // m/s
   speedSpeed: 18, // m/s — noticeably quicker than the sailboats
-  scale: 1.4, // size bump so they read from up on the deck
+  scale: 1.7, // size bump so they read from up on the deck
   seat: 0.32, // metres the hull origin rides over the water surface
   maxLife: 130,
   maxBoats: 26
