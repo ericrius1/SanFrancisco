@@ -3,7 +3,7 @@ import { applyAvatarToRig, buildRig, poseAir, poseDrive, poseIdle, poseRide, pos
 import { avatarFromSeed, avatarKey, type AvatarTraits } from "../player/avatar";
 import { buildCarMesh } from "../vehicles/car";
 import { buildPlaneMesh, collectPlaneAnim, type PlaneAnim } from "../vehicles/plane";
-import { buildBoatMesh } from "../vehicles/boat";
+import { buildBoatMesh, buildSpeedboatMesh } from "../vehicles/boat";
 import { buildDroneMesh } from "../vehicles/drone";
 import { buildBoardMesh } from "../vehicles/board";
 import { buildBirdMesh } from "../vehicles/bird";
@@ -75,6 +75,7 @@ const TAG_Y: Record<PlayerMode, number> = {
   drive: 2.2,
   plane: 2.6,
   boat: 7.6, // above the mast
+  speedboat: 2.4,
   drone: 1.6,
   board: 2.3,
   bird: 2.2,
@@ -136,6 +137,7 @@ export class RemotePlayers {
       drive: buildCarMesh(),
       plane: buildPlaneMesh(),
       boat: buildBoatMesh(),
+      speedboat: buildSpeedboatMesh(),
       drone: buildDroneMesh(),
       board: buildBoardMesh()
     };
@@ -339,7 +341,7 @@ export class RemotePlayers {
       rig.group.position.y = 0.93;
       g.add(rig.group);
       g.userData.remoteRig = rig;
-    } else if (mode === "drive" || mode === "plane") {
+    } else if (mode === "drive" || mode === "plane" || mode === "speedboat") {
       const c = proto.userData.cockpit as Cockpit | undefined;
       if (c && !c.hide) {
         const rig = buildRig(a.avatar);

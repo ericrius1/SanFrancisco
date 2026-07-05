@@ -17,6 +17,13 @@ const V = {
 export class BoatController implements ModeController {
   readonly spawnLift = 0.8;
   steerVis = 0; // smoothed steer input, read by the helm-arm/wheel animation
+  #tuning: typeof BOAT_TUNING;
+
+  // the sailboat and the speedboat share this controller — only the tunables
+  // differ (top speed, accel, steer), so pass the right table in
+  constructor(tuning: typeof BOAT_TUNING = BOAT_TUNING) {
+    this.#tuning = tuning;
+  }
 
   spawnBody(ctx: PlayerCtx, _facing: number): number {
     const p = ctx.position;
@@ -72,7 +79,7 @@ export class BoatController implements ModeController {
     const aheadX = px + fwd.x * 6;
     const aheadZ = pz + fwd.z * 6;
     const aheadGround = ctx.map.groundHeight(aheadX, aheadZ);
-    const tb = BOAT_TUNING.values;
+    const tb = this.#tuning.values;
     const beached = aheadGround > 0.05 && throttle > 0;
     const shallowFactor = aheadGround > -1.0 ? tb.shallowFactor : 1;
 

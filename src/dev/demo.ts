@@ -6,6 +6,22 @@ import type { PlayerMode } from "../player/types";
 import type { Physics } from "../core/physics";
 import type { ChaseCamera } from "../core/camera";
 import type { WorldMap } from "../world/heightmap";
+import {
+  BRIDGE_SHOT_SECONDS,
+  BRIDGE_FIRE_AT,
+  bridgePath,
+  bridgeTruckPos,
+  applyBridgeCamera,
+  pinBridgeTruck
+} from "../gameplay/bridgeShot";
+import {
+  BOAT_SHOT_SECONDS,
+  BOAT_FIRE_AT,
+  boatPath,
+  boatPos,
+  applyBoatCamera,
+  pinBoat
+} from "../gameplay/boatShot";
 import * as THREE from "three/webgpu";
 
 type Ctx = {
@@ -34,6 +50,7 @@ type Ctx = {
   setExposure?: (v: number) => void;
   setPostFx?: (values: Record<string, number | boolean>) => void;
   launchTruckFireworks?: (forward: THREE.Vector3) => void;
+  launchBoatFireworks?: (forward: THREE.Vector3) => void;
 };
 
 export function runDemo(name: string, ctx: Ctx) {
@@ -233,6 +250,7 @@ export function runDemo(name: string, ctx: Ctx) {
         drive: { back: 9.5, up: 3.2, look: 1.2 },
         plane: { back: 18, up: 5.2, look: 0.6 },
         boat: { back: 13, up: 4.4, look: 0.8 },
+        speedboat: { back: 12, up: 3.6, look: 0.7 },
         drone: { back: 8, up: 2.2, look: 0.4 },
         board: { back: 7.6, up: 2.7, look: 1.2 },
         bird: { back: 9, up: 2.4, look: 0.5 },
@@ -365,6 +383,7 @@ export function runDemo(name: string, ctx: Ctx) {
         drive: { back: 9.5, up: 3.2, look: 1.2 },
         plane: { back: 18, up: 5.2, look: 0.6 },
         boat: { back: 13, up: 4.4, look: 0.8 },
+        speedboat: { back: 12, up: 3.6, look: 0.7 },
         drone: { back: 8.5, up: 2.6, look: 0.5 },
         board: { back: 7.2, up: 2.6, look: 1.1 },
         bird: { back: 9, up: 2.4, look: 0.5 },
@@ -548,6 +567,7 @@ export function runDemo(name: string, ctx: Ctx) {
         drive: { back: 9.5, up: 3.2, look: 1.2 },
         plane: { back: 19, up: 5.4, look: 0.8 },
         boat: { back: 16, up: 3.2, look: 2.8 }, // sit well behind + tilt up at the tall bridge span
+        speedboat: { back: 13, up: 3.4, look: 1.0 },
         drone: { back: 8.5, up: 2.6, look: 0.5 },
         board: { back: 7.6, up: 2.7, look: 1.2 },
         bird: { back: 9.5, up: 2.6, look: 0.6 },
@@ -715,99 +735,133 @@ export function runDemo(name: string, ctx: Ctx) {
         retroScan: 0.35
       });
 
-      // --- Golden Gate main-span path (bridge 0; drive [1]→[3], the high deck)
-      const line = map.meta.bridges[0].line;
-      const mid = new THREE.Vector3(line[2][0], 0, line[2][1]);
-      const dir = new THREE.Vector3(line[3][0] - line[1][0], 0, line[3][1] - line[1][1]).normalize();
-      const right = new THREE.Vector3().crossVectors(dir, new THREE.Vector3(0, 1, 0)).normalize();
-      const heading = Math.atan2(-dir.x, -dir.z); // truck front (-Z) → dir
-      const yawQ = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), heading);
-      const SPEED = 25; // m/s — a believable parade cruise (~350 m over the shot)
-      const RIDE_H = 3.0; // chassis centre above the deck (wheels planted)
-      // drive the clear span BETWEEN the two towers, ending ~150 m short of the
-      // mid-span tower so it looms ahead the whole shot (and the orbit never
-      // swings the camera into it). towers sit at sFromMid 0 and -1019.
-      const START = mid.clone().addScaledVector(dir, -500);
-
-      const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
-      const smooth = (x: number) => {
-        const c = clamp01(x);
-        return c * c * (3 - 2 * c);
-      };
-      const mixf = (a: number, b: number, t: number) => a + (b - a) * t;
-
+      // shot math is shared with the live, in-game experience (gameplay/
+      // bridgeShow.ts) so the rendered reel and the playable version are the
+      // exact same drive + camera move + barrage timing — one source of truth.
+      const path = bridgePath(map);
       const camPos = new THREE.Vector3();
       const look = new THREE.Vector3();
       const truckPos = new THREE.Vector3();
       let fired = false;
 
-      const poseAt = (T: number) => {
-        const s = SPEED * Math.max(0, T);
-        const px = START.x + dir.x * s;
-        const pz = START.z + dir.z * s;
-        let deck = map.bridgeDeck(px, pz);
-        if (!Number.isFinite(deck)) deck = 66;
-        const py = deck + RIDE_H;
-        truckPos.set(px, py, pz);
-
-        // truck on rails: render pose (what the camera + mesh use), plus keep the
-        // physics body pinned so it can't drift/tumble under us
-        player.renderPosition.copy(truckPos);
-        player.position.copy(truckPos);
-        player.renderQuaternion.copy(yawQ);
-        player.quaternion.copy(yawQ);
-        player.velocity.set(dir.x * SPEED, 0, dir.z * SPEED);
-        player.speed = SPEED;
-        player.meshes.truck.position.copy(truckPos);
-        player.meshes.truck.quaternion.copy(yawQ);
-        physics.world.setBodyTransform(player.body, [px, py, pz], [yawQ.x, yawQ.y, yawQ.z, yawQ.w]);
-        physics.world.setBodyVelocity(player.body, [dir.x * SPEED, 0, dir.z * SPEED], [0, 0, 0]);
-
-        // camera: azimuth 0=ahead(front) → π=behind, orbiting past the bay side
-        const orbit = smooth((T - 3.4) / 4.8); // the sweep happens 3.4s..8.2s
-        const fin = smooth((T - 9.0) / 5.0); // finale drift as the shells go up
-        const a = mixf(0.55, Math.PI, orbit); // front-right 3/4 → dead behind
-        const R = mixf(23, 30, orbit) - fin * 4; // ease in a slow push toward the show
-        const H = mixf(4.6, 9.2, orbit) + fin * 2.2; // and crane up over the barrage
-        camPos
-          .copy(truckPos)
-          .addScaledVector(dir, Math.cos(a) * R)
-          .addScaledVector(right, Math.sin(a) * R);
-        camPos.y = truckPos.y + H;
-        // once behind, tip the look forward+up so the launched shells frame cleanly
-        const fwdLook = smooth((T - 8.0) / 2.6);
-        look
-          .copy(truckPos)
-          .addScaledVector(dir, mixf(0, 42, fwdLook));
-        look.y = truckPos.y + mixf(2.4, 6, fwdLook);
-        chase.camera.position.copy(camPos);
-        chase.camera.lookAt(look);
-      };
-
       const step = (T: number) => {
-        poseAt(T);
-        if (!fired && T >= 9.4) {
-          // launch late enough that the barrage is still peaking at the cut
+        bridgeTruckPos(T, path, map, truckPos);
+        pinBridgeTruck(player, physics, truckPos, path); // truck on rails
+        applyBridgeCamera(T, path, truckPos, chase.camera, camPos, look);
+        if (!fired && T >= BRIDGE_FIRE_AT) {
           fired = true;
-          fireGuns(dir.clone());
+          fireGuns(path.dir.clone());
         }
       };
 
       // put the truck on the bridge + into truck mode before the hook takes over
-      tp(START.x, map.bridgeDeck(START.x, START.z) + RIDE_H, START.z, heading);
+      let deck0 = map.bridgeDeck(path.start.x, path.start.z);
+      if (!Number.isFinite(deck0)) deck0 = 66;
+      tp(path.start.x, deck0 + path.rideH, path.start.z, path.heading);
       switchMode("truck");
-      tp(START.x, map.bridgeDeck(START.x, START.z) + RIDE_H, START.z, heading);
-      poseAt(0);
+      tp(path.start.x, deck0 + path.rideH, path.start.z, path.heading);
+      step(0);
 
       win.__cineT = 0;
       win.__sfReelArmed = true;
       win.__sfReelDone = false;
       setCine((dt: number) => {
-        if (!manual) win.__cineT = Math.min(14, (win.__cineT ?? 0) + dt);
+        if (!manual) win.__cineT = Math.min(BRIDGE_SHOT_SECONDS, (win.__cineT ?? 0) + dt);
         step(win.__cineT ?? 0);
-        if ((win.__cineT ?? 0) >= 14) win.__sfReelDone = true;
+        if ((win.__cineT ?? 0) >= BRIDGE_SHOT_SECONDS) win.__sfReelDone = true;
       });
       // deterministic capture drives virtual time; the hook reads it each frame
+      win.__sfReelStep = (sec: number) => {
+        win.__cineT = sec;
+      };
+      break;
+    }
+
+    case "ggboat": {
+      // 14-second twilight hero shot: the Freedom Boat sails the strait straight
+      // *under* the Golden Gate main span while the guitarist jams on the
+      // foredeck; the camera starts ahead facing the boat, orbits around to
+      // behind it, then the cockpit rocket battery fires a red/white/blue
+      // barrage forward over the water as it slips beneath the deck. Fully
+      // on-rails via the cine hook — boat pose AND camera are a pure function of
+      // virtual time, so the deterministic frame capture is glassy-smooth. The
+      // sea twin of case "bridge", off shared math (gameplay/boatShot.ts).
+      type CineWindow = Window &
+        typeof globalThis & {
+          __sfReelArmed?: boolean;
+          __sfReelDone?: boolean;
+          __sfReelStep?: (sec: number) => void;
+          __cineT?: number;
+        };
+      const win = window as CineWindow;
+      const q = new URLSearchParams(location.search);
+      const manual = q.has("manual");
+      const map = ctx.map!;
+      const setCine = ctx.setCine!;
+      const fireGuns = ctx.launchBoatFireworks!;
+
+      // clean plate — no HUD chrome
+      const style = document.createElement("style");
+      style.dataset.reelCapture = "true";
+      style.textContent = `body.reel-capture #hud, body.reel-capture #loading { display:none !important; }`;
+      document.head.appendChild(style);
+      document.body.classList.add("started", "reel-capture");
+      document.getElementById("loading")?.classList.add("done");
+      hud?.setHidden(true);
+      hud?.setFaded(true);
+
+      // twilight — late dusk, sun just under the WNW horizon (ahead of the boat);
+      // lift the night fill so the hull + guitarist read against the afterglow
+      if (sky) {
+        sky.cycleEnabled = false;
+        sky.sunsetAzimuth = 250;
+        sky.setTimeOfDay(18.85);
+        sky.nightBrightness = 2.15;
+      }
+      ctx.setExposure?.(0.2);
+      ctx.setPostFx?.({
+        ink: true,
+        inkStrength: 0.7,
+        inkWidth: 1.5,
+        dream: false,
+        retro: true,
+        retroPixel: 1,
+        retroLevels: 6,
+        retroScan: 0.35
+      });
+
+      // shot math shared with any live version — one source of truth
+      const path = boatPath(map);
+      const camPos = new THREE.Vector3();
+      const look = new THREE.Vector3();
+      const pos = new THREE.Vector3();
+      let fired = false;
+
+      const step = (T: number) => {
+        boatPos(T, path, map, pos);
+        pinBoat(player, physics, pos, path, T); // boat on rails, seated on the swell
+        applyBoatCamera(T, path, pos, chase.camera, camPos, look);
+        if (!fired && T >= BOAT_FIRE_AT) {
+          fired = true;
+          fireGuns(path.dir.clone());
+        }
+      };
+
+      // put the boat on the water at the start + into speedboat mode before the hook takes over
+      boatPos(0, path, map, pos);
+      tp(pos.x, pos.y, pos.z, path.heading);
+      switchMode("speedboat");
+      tp(pos.x, pos.y, pos.z, path.heading);
+      step(0);
+
+      win.__cineT = 0;
+      win.__sfReelArmed = true;
+      win.__sfReelDone = false;
+      setCine((dt: number) => {
+        if (!manual) win.__cineT = Math.min(BOAT_SHOT_SECONDS, (win.__cineT ?? 0) + dt);
+        step(win.__cineT ?? 0);
+        if ((win.__cineT ?? 0) >= BOAT_SHOT_SECONDS) win.__sfReelDone = true;
+      });
       win.__sfReelStep = (sec: number) => {
         win.__cineT = sec;
       };

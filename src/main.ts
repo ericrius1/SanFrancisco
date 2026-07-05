@@ -39,6 +39,10 @@ import { Props } from "./gameplay/props";
 import { Traffic, DRIVE_PROFILES, type VehicleClass } from "./gameplay/traffic";
 import { AbandonedMounts } from "./gameplay/abandonedMounts";
 import { RocketRiders, type LauncherRig } from "./gameplay/launchers";
+import { Flyover } from "./gameplay/flyover";
+import { BridgeParade } from "./gameplay/bridgeParade";
+import { BridgeShow } from "./gameplay/bridgeShow";
+import { effectsAudioLevel } from "./core/audioSettings";
 import { Creatures } from "./gameplay/creatures";
 import { Forest, ANIMALS, type AnimalKind } from "./gameplay/forest";
 import { Flora } from "./world/flora";
@@ -70,7 +74,7 @@ import { TRUCK_VISUAL_SCALE } from "./vehicles/truck/dimensions";
 CameraControls.install({ THREE });
 
 // digit-key vehicle order (1..7) — also the wrap order for pad next/prev
-const PLAYER_ORDER: PlayerMode[] = ["walk", "drive", "plane", "boat", "drone", "board", "bird", "truck"];
+const PLAYER_ORDER: PlayerMode[] = ["walk", "drive", "plane", "boat", "drone", "board", "bird", "truck", "speedboat"];
 
 const app = document.getElementById("app")!;
 const loading = document.getElementById("loading")!;
@@ -203,6 +207,7 @@ async function boot() {
   const birdTrails = new BirdTrails(scene, player.meshes.bird);
   const droneFireworkMounts = player.meshes.drone.userData.fireworkMounts as THREE.Object3D[] | undefined;
   const truckLaunchers = player.meshes.truck.userData.launcherRig as LauncherRig | undefined;
+  const boatLaunchers = player.meshes.speedboat.userData.launcherRig as LauncherRig | undefined;
   if (START.mode !== "walk") player.trySwitch(START.mode);
   player.onModeChange = (mode) => {
     hud.setMode(mode);
@@ -227,6 +232,39 @@ async function boot() {
   const forest = new Forest(map, scene);
   const abandonedMounts = new AbandonedMounts(physics, map, scene);
   const rocketRiders = new RocketRiders(scene, map);
+  // "-" spectacle: planes + phoenixes overhead, boats under the Golden Gate
+  const flyover = new Flyover(scene);
+  const bridgeParade = new BridgeParade(scene, map);
+  // scatter boardable boats around the bay — walk/swim up + E to drive one off.
+  // persistent: they wait at their spot no matter how far you roam.
+  const scatterBoat = (mode: "boat" | "speedboat", x: number, z: number, heading: number) => {
+    abandonedMounts.spawn(
+      mode,
+      {
+        position: new THREE.Vector3(x, waterHeight(x, z, 0) + 0.4, z),
+        quaternion: new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), heading),
+        linear: [0, 0, 0],
+        angular: [0, 0, 0]
+      },
+      { persistent: true }
+    );
+  };
+  const SAIL_SPOTS: [number, number, number][] = [
+    [2600, -2400, 1.2],
+    [-700, -2380, 0.4],
+    [1700, -3550, 2.3],
+    [4150, -950, -1.0],
+    [-1500, -2500, 0.8]
+  ];
+  const SPEED_SPOTS: [number, number, number][] = [
+    [3200, -1850, -0.6],
+    [900, -2950, 1.7],
+    [-2350, -2150, 0.2],
+    [4550, -1650, -1.4],
+    [250, -3750, 2.9]
+  ];
+  for (const [x, z, h] of SAIL_SPOTS) scatterBoat("boat", x, z, h);
+  for (const [x, z, h] of SPEED_SPOTS) scatterBoat("speedboat", x, z, h);
   // vegetation layer: park trees + grass masks ride the tile stream; the grass
   // field and Marin near-forest follow the camera (physics hooked unload first)
   const flora = new Flora(map, scene, tiles.manifest);
@@ -646,7 +684,7 @@ async function boot() {
         angular: motion.angular
       });
     }
-    if (exitMode === "boat") {
+    if (exitMode === "boat" || exitMode === "speedboat") {
       // step off the gunwale into the water — stay beside the hull so you can swim back on
       const side = 2.2;
       player.position.x += Math.sin(player.heading) * side;
@@ -886,6 +924,7 @@ async function boot() {
     drive: { r: 2.3, y: 0.8 },
     plane: { r: 3.2, y: 1.0 },
     boat: { r: 4.5, y: 1.8 },
+    speedboat: { r: 3.2, y: 1.2 },
     drone: { r: 0.9, y: 0.3 },
     bird: { r: 1.0, y: 0.5 },
     truck: { r: 3.6 * TRUCK_VISUAL_SCALE, y: 1.5 * TRUCK_VISUAL_SCALE }
@@ -1041,6 +1080,55 @@ async function boot() {
   // truck's render pose AND the camera for a scripted shot (see dev/demo.ts
   // "bridge"). Runs at the camera step, replacing the chase cam.
   let cineHook: ((dt: number) => void) | null = null;
+
+  // The Golden Gate "Freedom Truck" hero shot as a live experience: press `]`
+  // and it drops you onto the span in the truck and rolls the same on-rails
+  // drive/orbit/barrage as the rendered reel, in real time, with input left live
+  // so other toys can play over the top of the locked shot.
+  const bridgeShow = new BridgeShow({
+    map,
+    player,
+    physics,
+    chase,
+    hud,
+    effectsLevel: effectsAudioLevel,
+    fireGuns: (fwd: THREE.Vector3) =>
+      truckLaunchers?.fireAll({
+        scene,
+        fireworks,
+        rocketRiders,
+        map,
+        playerPos: player.position,
+        forward: fwd,
+        hostVelocity: player.velocity
+      }),
+    setCine: (fn) => {
+      cineHook = fn;
+    },
+    configureEnv: () => {
+      sky.cycleEnabled = false;
+      sky.sunsetAzimuth = 250;
+      sky.setTimeOfDay(18.85);
+      sky.nightBrightness = 2.15;
+      renderer.toneMappingExposure = 0.2;
+      Object.assign(POSTFX_TUNING.values, {
+        ink: true,
+        inkStrength: 0.7,
+        inkWidth: 1.5,
+        dream: false,
+        retro: true,
+        retroPixel: 1,
+        retroLevels: 6,
+        retroScan: 0.35
+      });
+      pipeline.applyPostFx();
+    },
+    restoreEnv: () => {
+      Object.assign(POSTFX_TUNING.values, { ink: false, retro: false });
+      pipeline.applyPostFx();
+    },
+    musicUrl: "/audio/rockin.mp3"
+  });
 
   const tick = (forcedDt?: number) => {
     timer.update();
@@ -1209,6 +1297,14 @@ async function boot() {
       hud.message("Back at the start");
     }
 
+    // "]": drop onto the Golden Gate and roll the exact filmed cinematic in real
+    // time — truck drives itself, camera on rails, "rockin" from the top. Input
+    // stays live so you can play effects over the locked shot; "]" again restarts.
+    if (input.pressed("BracketRight")) {
+      leaveRide();
+      bridgeShow.trigger();
+    }
+
     // ".": factory reset for tweaks — every tweakpane value back to its
     // source-code default, saved tweaks wiped. Player stays put ("R" respawns).
     if (input.pressed("Period")) {
@@ -1250,6 +1346,17 @@ async function boot() {
     if (input.pressed("KeyF")) {
       if (document.fullscreenElement) void document.exitFullscreen();
       else void document.documentElement.requestFullscreen().catch(() => hud.message("Fullscreen blocked by browser"));
+    }
+    // "-" : a flyover of planes + phoenixes streaks over the way you're facing;
+    // from the bridge, a flotilla of boats sails through underneath it too
+    if (input.pressed("Minus") || input.pressed("NumpadSubtract")) {
+      const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(player.meshes[player.mode].quaternion);
+      fwd.y = 0;
+      if (fwd.lengthSq() < 1e-4) fwd.set(Math.sin(player.heading - Math.PI), 0, -Math.cos(player.heading - Math.PI));
+      fwd.normalize();
+      flyover.trigger(player.renderPosition, fwd);
+      const underBridge = bridgeParade.trigger(player.renderPosition, fwd);
+      hud.message(underBridge ? "Flyover! 🛩️🔥🦅  — boats under the bridge ⛵️" : "Flyover! 🛩️🔥🦅", 2.4);
     }
     updateCrownDisplay(frameDt);
     updateBayLights(frameDt);
@@ -1325,6 +1432,25 @@ async function boot() {
           map,
           playerPos: player.position,
           forward: truckFwd,
+          hostVelocity: player.velocity
+        });
+        chase.shake(0.18);
+      }
+    } else if (player.mode === "speedboat") {
+      // freedom boat: one press launches the whole cockpit rocket battery forward
+      // over the water — same two-stage red/white/blue barrage as the truck
+      if (!input.suspended && input.firePressed && fireCooldown <= 0 && boatLaunchers) {
+        chase.lookDir(aim);
+        fireCooldown = 0.6;
+        const boatFwd = new THREE.Vector3(0, 0, -1).applyQuaternion(player.quaternion);
+        boatFwd.y = 0;
+        boatLaunchers.fireAll({
+          scene,
+          fireworks,
+          rocketRiders,
+          map,
+          playerPos: player.position,
+          forward: boatFwd,
           hostVelocity: player.velocity
         });
         chase.shake(0.18);
@@ -1474,8 +1600,11 @@ async function boot() {
     props.update(frameDt, player.position);
     traffic.update(player.position, frameDt, sky.timeOfDay, sky.sunsetAzimuth);
     abandonedMounts.update(frameDt, player.position);
+    flyover.update(frameDt); // planes + phoenixes streaking over on "-"
+    bridgeParade.update(frameDt); // boats crossing under the Golden Gate on "-"
     rocketRiders.update(frameDt, player.position); // the launched guitarists live their own lives
     if (player.mode === "truck") truckLaunchers?.update(frameDt); // idle strum + reload
+    if (player.mode === "speedboat") boatLaunchers?.update(frameDt); // guitarist jam + rocket reload
     creatures.update(elapsed, camera.position); // gulls live at altitude — never gated
     forest.update(frameDt, camera.position);
     flora.update(camera.position, highUp);
@@ -1716,7 +1845,7 @@ async function boot() {
 
   const exposeDebugHooks = () => {
     Object.assign(window as never, {
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, props, exploratorium, traffic, creatures, forest, flora, splashes, vehicleAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, truckLaunchers, goldenGateLights }
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, props, exploratorium, traffic, creatures, forest, flora, splashes, vehicleAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, truckLaunchers, boatLaunchers, goldenGateLights, bridgeShow, flyover, bridgeParade }
     });
   };
   if (import.meta.env.DEV || new URLSearchParams(location.search).has("profile")) {
@@ -1751,6 +1880,17 @@ async function boot() {
       },
       launchTruckFireworks: (forward: THREE.Vector3) => {
         truckLaunchers?.fireAll({
+          scene,
+          fireworks,
+          rocketRiders,
+          map,
+          playerPos: player.position,
+          forward,
+          hostVelocity: player.velocity
+        });
+      },
+      launchBoatFireworks: (forward: THREE.Vector3) => {
+        boatLaunchers?.fireAll({
           scene,
           fireworks,
           rocketRiders,

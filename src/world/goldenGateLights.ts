@@ -17,6 +17,7 @@ import {
   vertexStage
 } from "three/tsl";
 import { tunables } from "../core/persist";
+import { goldenGateBridgeVisualLine } from "./goldenGateBridge";
 import type { WorldMap } from "./heightmap";
 
 // TSL node generics fight composition; any is the idiom here (see bayLights.ts)
@@ -233,6 +234,8 @@ function createGoldenGateMaterial(posK: number[], info: number[]) {
 export function createGoldenGateLights(map: WorldMap): THREE.Sprite | null {
   const br = map.meta.bridges.find((b) => b.name === "Golden Gate Bridge");
   if (!br) return null;
+  const line = goldenGateBridgeVisualLine(br);
+  const lightBridge = { ...br, line };
 
   // sprite fields: pos.xyz + kind, then u/phase/seed/size
   const posK: number[] = [];
@@ -244,7 +247,7 @@ export function createGoldenGateLights(map: WorldMap): THREE.Sprite | null {
     info.push(u, seed, seed, size);
   };
 
-  const deck = sampleBridgeLine(br, DECK_SPACING);
+  const deck = sampleBridgeLine(lightBridge, DECK_SPACING);
   for (let i = 0; i < deck.length; i++) {
     const p = deck[i];
     // small round lamps bolted onto the side railings (not floating off the deck,
@@ -257,8 +260,8 @@ export function createGoldenGateLights(map: WorldMap): THREE.Sprite | null {
     }
   }
 
-  const first = br.line[0];
-  const last = br.line[br.line.length - 1];
+  const first = line[0];
+  const last = line[line.length - 1];
   const dx = last[0] - first[0];
   const dz = last[1] - first[1];
   const dl = Math.hypot(dx, dz) || 1;

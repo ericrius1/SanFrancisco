@@ -5,6 +5,7 @@ const MODE_ORDER: PlayerMode[] = [
   "drive",
   "plane",
   "boat",
+  "speedboat",
   "drone",
   "board",
   "bird",
@@ -15,6 +16,7 @@ const MODE_SHORT: Record<PlayerMode, string> = {
   drive: "drive",
   plane: "plane",
   boat: "boat",
+  speedboat: "speedboat",
   drone: "drone",
   board: "board",
   bird: "bird",
@@ -56,6 +58,14 @@ const KB: Record<PlayerMode, Row[]> = {
     { c: ["W", "S"], label: "throttle" },
     { c: ["A", "D"], label: "steer" },
     { c: ["Shift"], label: "boost" },
+    { c: ["Click"], label: "shoot" }
+  ],
+  speedboat: [
+    { c: ["Mouse"], label: "look" },
+    { c: ["W", "S"], label: "throttle" },
+    { c: ["A", "D"], label: "steer" },
+    { c: ["Shift"], label: "boost" },
+    { c: ["E"], label: "get out" },
     { c: ["Click"], label: "shoot" }
   ],
   drone: [
@@ -127,6 +137,14 @@ const PAD: Record<PlayerMode, Row[]> = {
     { c: ["RT", "LT"], label: "throttle" },
     { c: ["LS"], label: "steer" },
     { c: ["RB"], label: "boost" },
+    { c: ["X"], label: "shoot" }
+  ],
+  speedboat: [
+    { c: ["RS"], label: "look" },
+    { c: ["RT", "LT"], label: "throttle" },
+    { c: ["LS"], label: "steer" },
+    { c: ["RB"], label: "boost" },
+    { c: ["B"], label: "get out" },
     { c: ["X"], label: "shoot" }
   ],
   drone: [

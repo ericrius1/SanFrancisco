@@ -10,6 +10,7 @@
     "capture:reel2": "node tools/capture-reel2.mjs",
     "capture:reel3": "SF_CAPTURE_DEMO=reel3 SF_CAPTURE_SECONDS=25 node tools/capture-reel2.mjs",
     "capture:frames": "node tools/capture-frames.mjs",
+    "capture:ggboat": "node tools/capture-boat.mjs",
     "preview": "vite preview",
     "server": "node server/server.mjs",
     "start": "node server/server.mjs",

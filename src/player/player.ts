@@ -22,7 +22,7 @@ import { WalkController, WALK_TUNING } from "./walk";
 import { LightPool } from "./lightPool";
 import { buildCarMesh, CarController } from "../vehicles/car";
 import { buildPlaneMesh, collectPlaneAnim, FlyController, type PlaneAnim } from "../vehicles/plane";
-import { buildBoatMesh, BoatController, BOAT_TUNING, type BoatSailRig } from "../vehicles/boat";
+import { buildBoatMesh, buildSpeedboatMesh, BoatController, BOAT_TUNING, SPEEDBOAT_TUNING, type BoatSailRig } from "../vehicles/boat";
 import { buildDroneMesh, DroneController } from "../vehicles/drone";
 import { buildBoardMesh, BoardController, BOARD_TUNING } from "../vehicles/board";
 import { buildBirdMesh, BirdController } from "../vehicles/bird";
@@ -91,6 +91,7 @@ export class Player {
     drive: CarController;
     plane: FlyController;
     boat: BoatController;
+    speedboat: BoatController;
     drone: DroneController;
     board: BoardController;
     bird: BirdController;
@@ -105,6 +106,8 @@ export class Player {
   #wheel: { group: THREE.Group; spin: THREE.Group };
   #helmRig: Rig; // boat crew: the boat never swaps meshes, so it keeps its own
   #helmWheel: { group: THREE.Group; spin: THREE.Group };
+  #speedRig: Rig; // speedboat helm: same deal, its own seated crew + wheel
+  #speedWheel: { group: THREE.Group; spin: THREE.Group };
   #pilotRig: Rig; // plane crew: open cockpit, hands on the built-in yoke
   #planeAnim: PlaneAnim;
   #truckRig: Rig; // parade-truck driver: the truck never swaps meshes, keeps its own
@@ -144,6 +147,7 @@ export class Player {
       drive: buildCarMesh(),
       plane: buildPlaneMesh(),
       boat: buildBoatMesh(),
+      speedboat: buildSpeedboatMesh(),
       drone: buildDroneMesh(),
       board: buildBoardMesh(),
       bird: buildBirdMesh(),
@@ -154,6 +158,7 @@ export class Player {
       drive: new CarController(),
       plane: new FlyController(),
       boat: new BoatController(),
+      speedboat: new BoatController(SPEEDBOAT_TUNING),
       drone: new DroneController(this.meshes.drone),
       board: new BoardController(),
       bird: new BirdController(this.meshes.bird),
@@ -176,6 +181,13 @@ export class Player {
     this.#helmRig.group.position.set(0, 0.5, 2.26);
     this.#helmWheel.group.position.set(0, 0.61, 1.72);
     boatDeck.add(this.#helmRig.group, this.#helmWheel.group);
+    // speedboat helmsman at the open console (cockpit anchors on the mesh)
+    this.#speedRig = buildRig(this.#avatar);
+    this.#speedWheel = buildSteeringWheel();
+    const sc = this.meshes.speedboat.userData.cockpit as Cockpit;
+    this.#speedRig.group.position.set(sc.seat[0], sc.seat[1], sc.seat[2]);
+    this.#speedWheel.group.position.set(sc.wheel![0], sc.wheel![1], sc.wheel![2]);
+    this.meshes.speedboat.add(this.#speedRig.group, this.#speedWheel.group);
     // pilot in the plane's open cockpit; the yoke is part of the plane mesh
     this.#pilotRig = buildRig(this.#avatar);
     const pc = this.meshes.plane.userData.cockpit as Cockpit;
@@ -210,6 +222,7 @@ export class Player {
     applyAvatarToRig(this.#riderRig, this.#avatar);
     applyAvatarToRig(this.#driverRig, this.#avatar);
     applyAvatarToRig(this.#helmRig, this.#avatar);
+    applyAvatarToRig(this.#speedRig, this.#avatar);
     applyAvatarToRig(this.#pilotRig, this.#avatar);
     applyAvatarToRig(this.#truckRig, this.#avatar);
   }
@@ -563,6 +576,10 @@ export class Player {
       s.billow.value += (0.1 + wind * 0.36 - s.billow.value) * k;
       s.boom.rotation.y = 0.1 + wind * 0.2 + Math.sin(this.#animT * 0.6) * 0.05;
       s.heel.rotation.z = steer * 0.1 - wind * 0.08;
+    } else if (this.mode === "speedboat") {
+      const steer = this.#modes.speedboat.steerVis;
+      poseDrive(this.#speedRig, steer, this.#animT, true);
+      this.#speedWheel.spin.rotation.z = steer * 2.3;
     } else if (this.mode === "truck") {
       const steer = this.#modes.truck.steerVis;
       poseDrive(this.#truckRig, steer, this.#animT, true);

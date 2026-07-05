@@ -6,7 +6,7 @@ import { DEFAULT_DRIVE_SPEC } from "../player/types";
 import { waterHeight, type WorldMap } from "../world/heightmap";
 import { buildCarMesh } from "../vehicles/car";
 import { buildPlaneMesh, collectPlaneAnim, type PlaneAnim } from "../vehicles/plane";
-import { buildBoatMesh } from "../vehicles/boat";
+import { buildBoatMesh, buildSpeedboatMesh } from "../vehicles/boat";
 import { buildDroneMesh } from "../vehicles/drone";
 import { buildBoardMesh } from "../vehicles/board";
 import { buildBirdMesh, type BirdRig } from "../vehicles/bird";
@@ -53,6 +53,9 @@ type AbandonedMount = {
   // plane: flies straight for `glideTime`, then noses down; `crashed` freezes it
   glideTime?: number;
   crashed?: boolean;
+  // scattered "come find me" mounts: exempt from distance-despawn and the
+  // overflow eviction, so they wait at their bay spot however far you roam
+  persistent?: boolean;
 };
 
 const MAX_MOUNTS = 12;
@@ -96,6 +99,17 @@ const SPECS: Record<MountMode, MountSpec> = {
     linearDrag: 0.45,
     angularDrag: 1.2,
     maxSpeed: 45
+  },
+  speedboat: {
+    build: buildSpeedboatMesh,
+    halfExtents: [1.1, 0.6, 2.9],
+    density: 45,
+    friction: 0.2,
+    restitution: 0.1,
+    gravityScale: 0,
+    linearDrag: 0.4,
+    angularDrag: 1.1,
+    maxSpeed: 55
   },
   drone: {
     build: buildDroneMesh,
@@ -226,7 +240,7 @@ export class AbandonedMounts {
     return { mode, x: t.position[0], y: t.position[1], z: t.position[2], heading };
   }
 
-  spawn(mode: MountMode, pose: ReleasePose) {
+  spawn(mode: MountMode, pose: ReleasePose, opts?: { persistent?: boolean }) {
     const spec = SPECS[mode];
     const mesh = spec.build();
     showEmbodiment(mesh);
@@ -263,7 +277,7 @@ export class AbandonedMounts {
     ]);
     this.#physics.registerVehicle(handle);
 
-    const item: AbandonedMount = { mode, spec, handle, mesh, age: 0 };
+    const item: AbandonedMount = { mode, spec, handle, mesh, age: 0, persistent: opts?.persistent };
     if (mode === "plane") {
       item.planeAnim = collectPlaneAnim(mesh);
       // cruise straight for a few seconds, then tip into the crash dive
@@ -281,7 +295,14 @@ export class AbandonedMounts {
       item.animT = 0;
     }
     this.#items.push(item);
-    while (this.#items.length > MAX_MOUNTS) this.#remove(0);
+    // cap only the transient mounts; scattered persistent boats never get evicted
+    if (!item.persistent) {
+      while (this.#items.filter((m) => !m.persistent).length > MAX_MOUNTS) {
+        const idx = this.#items.findIndex((m) => !m.persistent);
+        if (idx < 0) break;
+        this.#remove(idx);
+      }
+    }
   }
 
   prePhysics(dt: number) {
@@ -306,7 +327,7 @@ export class AbandonedMounts {
       let vy = vel.linear[1];
       let vz = vel.linear[2] * linearDamp;
 
-      if (item.mode === "boat") {
+      if (item.mode === "boat" || item.mode === "speedboat") {
         const targetY = waterHeight(t.position[0], t.position[2], this.#time) + 0.15;
         vy = THREE.MathUtils.clamp((targetY - t.position[1]) * 6 + vy * 0.2, -7, 7);
       } else if (item.mode === "board") {
@@ -418,7 +439,7 @@ export class AbandonedMounts {
 
       const dist = Math.hypot(t.position[0] - playerPos.x, t.position[2] - playerPos.z);
       const maxDist = item.mode === "bird" ? BIRD_DESPAWN_DISTANCE : DESPAWN_DISTANCE;
-      if (dist > maxDist || t.position[1] < -100) this.#remove(i);
+      if (t.position[1] < -100 || (!item.persistent && dist > maxDist)) this.#remove(i);
     }
   }
 
