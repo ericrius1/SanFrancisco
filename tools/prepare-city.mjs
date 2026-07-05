@@ -669,7 +669,8 @@ async function main() {
       downtown: { x: 3900, z: 200, heading: 0.5 },
       marina: { x: -700, z: -2350, heading: 0 },
       bay: { x: 3000, z: -2600, heading: 2.4 },
-      goldenGate: { x: -2900, z: -1900, heading: 0 },
+      // dead centre of the main span, on the deck between the two towers (y≈69)
+      goldenGate: { x: -2982, z: -2798, heading: 0.07 },
       palaceFineArts: { x: -360, z: -1426, heading: 1.57 }
     }
   };

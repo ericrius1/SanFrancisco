@@ -6,6 +6,7 @@ import type { ChaseCamera } from "../core/camera";
 import {
   BRIDGE_SHOT_SECONDS,
   BRIDGE_FIRE_AT,
+  BRIDGE_FLYOVER_AT,
   bridgePath,
   bridgeTruckPos,
   applyBridgeCamera,
@@ -28,6 +29,8 @@ export type BridgeShowDeps = {
   configureEnv: () => void;
   /** Undo the post-fx stylization once the show ends (keeps twilight). */
   restoreEnv: () => void;
+  /** The "-" flyover — a wave of planes + phoenixes over the strait. */
+  flyover?: { preload: () => void; trigger: (origin: THREE.Vector3, fwd: THREE.Vector3) => void };
   musicUrl: string;
 };
 
@@ -45,6 +48,7 @@ export class BridgeShow {
   #active = false;
   #t = 0;
   #fired = false;
+  #flew = false;
   #audio: HTMLAudioElement | null = null;
   #truckPos = new THREE.Vector3();
   #camPos = new THREE.Vector3();
@@ -53,6 +57,7 @@ export class BridgeShow {
   constructor(deps: BridgeShowDeps) {
     this.#deps = deps;
     this.#path = bridgePath(deps.map);
+    this.#deps.flyover?.preload(); // warm the phoenix GLB so the mid-show wave never pops in
   }
 
   get active(): boolean {
@@ -79,6 +84,7 @@ export class BridgeShow {
     this.#active = true;
     this.#t = 0;
     this.#fired = false;
+    this.#flew = false;
     this.#deps.configureEnv();
     try {
       const a = new Audio(this.#deps.musicUrl);
@@ -103,6 +109,10 @@ export class BridgeShow {
     bridgeTruckPos(T, this.#path, this.#deps.map, this.#truckPos);
     pinBridgeTruck(this.#deps.player, this.#deps.physics, this.#truckPos, this.#path);
     applyBridgeCamera(T, this.#path, this.#truckPos, this.#deps.chase.camera, this.#camPos, this.#look);
+    if (!this.#flew && T >= BRIDGE_FLYOVER_AT) {
+      this.#flew = true;
+      this.#deps.flyover?.trigger(this.#truckPos.clone(), this.#path.dir.clone());
+    }
     if (!this.#fired && T >= BRIDGE_FIRE_AT) {
       this.#fired = true;
       this.#deps.fireGuns(this.#path.dir.clone());

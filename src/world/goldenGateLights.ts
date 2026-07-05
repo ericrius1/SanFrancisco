@@ -31,7 +31,7 @@ export const GOLDEN_GATE_LIGHTS_TIME = uniform(0);
 export const GOLDEN_GATE_LIGHTS_SLIDERS = tunables("goldenGateLights", {
   brightness: { v: 1.45, min: 0, max: 4, step: 0.05, label: "brightness x" },
   deck: { v: 1.25, min: 0, max: 3, step: 0.05, label: "deck lamps" },
-  cables: { v: 0.85, min: 0, max: 2.5, step: 0.05, label: "cable glow" },
+  cables: { v: 1.15, min: 0, max: 2.5, step: 0.05, label: "cable glow" },
   reflections: { v: 1.2, min: 0, max: 3, step: 0.05, label: "water reflections" },
   beacons: { v: 1.0, min: 0, max: 3, step: 0.05, label: "red beacons" },
   size: { v: 1.0, min: 0.4, max: 2.5, step: 0.05, label: "bulb size" }
@@ -60,7 +60,7 @@ export function updateGoldenGateLights(dt: number) {
 
 const TAU = Math.PI * 2;
 const DECK_SPACING = 23;
-const CABLE_SPACING = 18;
+const CABLE_SPACING = 12;
 const SUSPENDER_SPACING = 17;
 
 function hash01(n: number) {
@@ -96,7 +96,9 @@ function sampleBridgeLine(br: Bridge, spacing: number): BridgeSample[] {
 
   const out: BridgeSample[] = [];
   for (const seg of segs) {
-    const steps = Math.max(1, Math.round(seg.len / spacing));
+    // floor, not round: must mirror blender_city._bridge_line_samples (int())
+    // exactly, or bulbs drift off their modelled lamp posts mid-span
+    const steps = Math.max(1, Math.floor(seg.len / spacing));
     for (let i = 0; i <= steps; i++) {
       if (i === steps && seg !== segs[segs.length - 1]) continue;
       const t = i / steps;
@@ -143,20 +145,22 @@ function createGoldenGateMaterial(posK: number[], info: number[]) {
 
   material.positionNode = p.xyz;
 
+  // small, bolted-on bulbs: gentle distance growth so far spans still read,
+  // but nothing balloons past ~3x up close
   const dist = p.xyz.distance(cameraPosition);
-  const farBoost = dist.mul(0.0055).clamp(0.85, 5.5).mul(GOLDEN_GATE_LIGHTS_TUNING.size as N).mul(localSize);
+  const farBoost = dist.mul(0.0038).clamp(0.7, 3.0).mul(GOLDEN_GATE_LIGHTS_TUNING.size as N).mul(localSize);
   const sx: N = wDeck
-    .mul(3.5)
-    .add(wCable.mul(2.6))
-    .add(wSuspender.mul(2.2))
-    .add(wBeacon.mul(4.6))
+    .mul(2.1)
+    .add(wCable.mul(1.7))
+    .add(wSuspender.mul(1.4))
+    .add(wBeacon.mul(3.2))
     .mul(farBoost)
     .add(wReflection.mul(20).mul(localSize).mul(GOLDEN_GATE_LIGHTS_TUNING.size as N));
   const sy: N = wDeck
-    .mul(3.8)
-    .add(wCable.mul(2.6))
-    .add(wSuspender.mul(2.2))
-    .add(wBeacon.mul(4.6))
+    .mul(2.3)
+    .add(wCable.mul(1.7))
+    .add(wSuspender.mul(1.4))
+    .add(wBeacon.mul(3.2))
     .mul(farBoost)
     .add(wReflection.mul(112).mul(localSize).mul(GOLDEN_GATE_LIGHTS_TUNING.size as N));
   material.scaleNode = vec2(sx, sy);
@@ -175,15 +179,28 @@ function createGoldenGateMaterial(posK: number[], info: number[]) {
   const wR = saturate(float(1).sub(rwbSel.abs()));
   const wW = saturate(float(1).sub(rwbSel.sub(1).abs()));
   const wB = saturate(float(1).sub(rwbSel.sub(2).abs()));
-  const rwbDeck = vec3(1.0, 0.16, 0.12).mul(wR).add(vec3(1.0, 1.0, 1.0).mul(wW)).add(vec3(0.22, 0.42, 1.0).mul(wB));
+  const RED = vec3(1.0, 0.16, 0.12);
+  const WHITE = vec3(1.0, 1.0, 1.0);
+  const BLUE = vec3(0.22, 0.42, 1.0);
+  const rwbDeck = RED.mul(wR).add(WHITE.mul(wW)).add(BLUE.mul(wB));
   const warmDeck = rwbDeck.mul(deckPulse).mul(GOLDEN_GATE_LIGHTS_TUNING.deck as N);
-  const cableOrange = vec3(1.0, 0.25, 0.08).mul(cableTwinkle).mul(GOLDEN_GATE_LIGHTS_TUNING.cables as N);
+  // cables: red→white→blue bands chasing slowly along the catenary (July 4th garland)
+  const bandSel = floor(u.mul(36).add(T.mul(0.3)).mod(3));
+  const cR = saturate(float(1).sub(bandSel.abs()));
+  const cW = saturate(float(1).sub(bandSel.sub(1).abs()));
+  const cB = saturate(float(1).sub(bandSel.sub(2).abs()));
+  const cableRwb = RED.mul(cR).add(WHITE.mul(cW)).add(BLUE.mul(cB))
+    .mul(cableTwinkle)
+    .mul(GOLDEN_GATE_LIGHTS_TUNING.cables as N);
+  // suspenders: quiet white sparkle so the verticals read without competing
+  const suspenderWhite = vec3(1.0, 0.96, 0.9).mul(cableTwinkle).mul(GOLDEN_GATE_LIGHTS_TUNING.cables as N);
   const redBeacon = vec3(1.0, 0.04, 0.02).mul(beaconPulse).mul(GOLDEN_GATE_LIGHTS_TUNING.beacons as N);
   const reflectedGold = vec3(1.0, 0.43, 0.04).mul(reflectionRipple).mul(GOLDEN_GATE_LIGHTS_TUNING.reflections as N);
 
   const show = warmDeck
     .mul(wDeck)
-    .add(cableOrange.mul(wCable.add(wSuspender.mul(0.62))))
+    .add(cableRwb.mul(wCable))
+    .add(suspenderWhite.mul(wSuspender.mul(0.55)))
     .add(redBeacon.mul(wBeacon))
     .add(reflectedGold.mul(wReflection));
 
@@ -247,13 +264,13 @@ export function createGoldenGateLights(map: WorldMap): THREE.Sprite | null {
   const deck = sampleBridgeLine(br, DECK_SPACING);
   for (let i = 0; i < deck.length; i++) {
     const p = deck[i];
-    // small round lamps bolted onto the side railings (not floating off the deck,
-    // and no long streaks dropping to the water)
-    const edge = br.width / 2 + 0.4;
+    // bulbs sit on the modelled curb lamp posts (blender_city build_golden_gate
+    // places posts at width/2 - 0.55 every 23 m, head centred at deck + 2.2)
+    const edge = br.width / 2 - 0.55;
     for (const sgn of [-1, 1]) {
       const x = p.x + p.perpX * edge * sgn;
       const z = p.z + p.perpZ * edge * sgn;
-      push(x, p.y + 1.4, z, 0, p.u, 0.5);
+      push(x, p.y + 2.25, z, 0, p.u, 0.45);
     }
   }
 
@@ -291,17 +308,19 @@ export function createGoldenGateLights(map: WorldMap): THREE.Sprite | null {
         const y = span.a.y + (span.b.y - span.a.y) * t - span.sag * 4 * t * (1 - t);
         const z = span.a.z + (span.b.z - span.a.z) * t + oz;
         const u = (span.u0 + span.span * t) / cableTotal;
-        push(x, y, z, 2, u, 0.8);
+        push(x, y, z, 2, u, 0.6);
 
         if (i > 0 && i < nCable && i % 3 === 0) {
           const deckY = map.bridgeDeck(x, z);
-          if (deckY > -Infinity && y > deckY + 12) {
+          // start well above the deck: low beads sit next to thin dark rods
+          // at night and read as floating dots over the water
+          if (deckY > -Infinity && y > deckY + 24) {
             const top = y - 2.5;
-            const bottom = deckY + 8;
+            const bottom = deckY + 16;
             const n = Math.max(1, Math.floor((top - bottom) / SUSPENDER_SPACING));
             for (let j = 0; j <= n; j++) {
               const ty = bottom + (j / n) * (top - bottom);
-              push(x, ty, z, 3, u, 0.58);
+              push(x, ty, z, 3, u, 0.45);
             }
           }
         }
@@ -312,12 +331,8 @@ export function createGoldenGateLights(map: WorldMap): THREE.Sprite | null {
   for (let t = 0; t < br.towers.length; t++) {
     const [tx, tz] = br.towers[t];
     const u = t === 0 ? 0.36 : 0.62;
-    push(tx, br.towerHeight + 4, tz, 4, u + 0.08, 1.25);
-  }
-
-  // A few red navigation points along the outer cable path echo the photo reference.
-  for (const p of deck.filter((_, i) => i % 18 === 0)) {
-    push(p.x, p.y + 13, p.z, 4, p.u, 0.72);
+    // beacon sprite sits on the modelled mast tip (mast tops out at th + 3.6)
+    push(tx, br.towerHeight + 4, tz, 4, u + 0.08, 1.0);
   }
 
   return createGoldenGateMaterial(posK, info);

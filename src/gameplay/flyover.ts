@@ -98,6 +98,7 @@ export class Flyover {
   #scene: THREE.Scene;
   #craft: Craft[] = [];
   #cool = 0;
+  #warmed = false;
 
   constructor(scene: THREE.Scene) {
     this.#scene = scene;
@@ -105,6 +106,23 @@ export class Flyover {
 
   get count(): number {
     return this.#craft.length;
+  }
+
+  /**
+   * Warm the phoenix GLB (fetch + parse + GPU upload) ahead of time so a wave
+   * triggered mid-cinematic spawns its birds instantly instead of popping in a
+   * few frames late when the async load lands. Enables THREE.Cache so every
+   * subsequent buildBirdMesh() reuses the one fetched GLB. Idempotent; the warm
+   * bird is parked far below the world and never seen.
+   */
+  preload() {
+    if (this.#warmed) return;
+    this.#warmed = true;
+    THREE.Cache.enabled = true;
+    const b = buildBirdMesh();
+    b.visible = false;
+    b.position.set(0, -100000, 0);
+    this.#scene.add(b);
   }
 
   /** Debug: live craft world positions (headless framing checks). */

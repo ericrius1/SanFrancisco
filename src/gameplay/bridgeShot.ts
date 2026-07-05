@@ -11,8 +11,9 @@ import type { Physics } from "../core/physics";
  * rendered reel are frame-for-frame the same shot.
  */
 
-export const BRIDGE_SHOT_SECONDS = 14;
-export const BRIDGE_FIRE_AT = 9.4; // launch the barrage late so it peaks at the cut
+export const BRIDGE_SHOT_SECONDS = 15; // 14s of scripted move + a 1s tail to let the barrage settle as the truck cruises on
+export const BRIDGE_FIRE_AT = 9.4; // launch the barrage late so it peaks near the cut
+export const BRIDGE_FLYOVER_AT = 6.2; // planes + phoenixes streak over as the camera settles behind, building into the barrage
 const SPEED = 25; // m/s — a believable parade cruise (~350 m over the shot)
 const RIDE_H = 3.0; // chassis centre above the deck (wheels planted)
 const START_BACK = 500; // metres back from the mid-span tower the drive begins

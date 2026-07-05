@@ -268,8 +268,15 @@ def build_tile_roads(key, tile, collection):
         xs = np.array([p[0] for p in pts], dtype=np.float64)
         zs = np.array([p[1] for p in pts], dtype=np.float64)
         hs = np.maximum(sample_height(xs, zs), 0.15) + 0.3
+        gg_mask = None
         if road.get("bridge"):
             hs = np.maximum(hs, bridge_deck_heights(xs, zs, meta))
+            # the Golden Gate deck gets its own modelled roadway
+            # (lm_bridge_goldengate + runtime asphalt) — the flat OSM ribbon is
+            # wider than the deck and pokes out both sides, so suppress it there
+            gg = meta["bridges"][0]
+            ggh = bridge_deck_heights(xs, zs, {"bridges": [gg]})
+            gg_mask = ggh > -1e8
         n = len(pts)
         # per-point perpendicular (average of segment normals)
         dxs = np.gradient(xs)
@@ -287,6 +294,8 @@ def build_tile_roads(key, tile, collection):
             verts.append((lx, -lz, hs[i]))
             verts.append((rx, -rz, hs[i]))
         for i in range(n - 1):
+            if gg_mask is not None and (gg_mask[i] or gg_mask[i + 1]):
+                continue
             a = i0 + i * 2
             faces.append((a, a + 2, a + 3, a + 1))
             colors.extend([c4, c4, c4, c4])
@@ -960,6 +969,34 @@ def _bridge_line_samples(wpts, spacing):
     return out
 
 
+def add_span_prism(verts, faces, colors, m0, m1, off, hy, zb, zt, color):
+    """Sheared box following the deck line (no stair-stepping on slopes):
+    m0/m1 = (x, y, z_line) blender-frame subsegment endpoints, off = signed
+    perpendicular offset of the strip centre, hy = half width, zb/zt =
+    bottom/top offsets from the line height at each end."""
+    yaw = math.atan2(m1[1] - m0[1], m1[0] - m0[0])
+    px_, py_ = -math.sin(yaw), math.cos(yaw)
+    i0 = len(verts)
+    for (mx, my, mz) in (m0, m1):
+        cxo, cyo = mx + px_ * off, my + py_ * off
+        for dy in (-hy, hy):
+            for dz in (zb, zt):
+                verts.append((cxo + px_ * dy, cyo + py_ * dy, mz + dz))
+    # end0 verts 0..3, end1 verts 4..7; per-end order (-hy,zb),(-hy,zt),(hy,zb),(hy,zt)
+    quads = [
+        (2, 6, 4, 0),  # bottom
+        (1, 5, 7, 3),  # top
+        (0, 4, 5, 1),  # -hy side
+        (2, 3, 7, 6),  # +hy side
+        (0, 1, 3, 2),  # start cap
+        (4, 6, 7, 5),  # end cap
+    ]
+    c4 = (color[0], color[1], color[2], 1.0)
+    for q in quads:
+        faces.append(tuple(i0 + k for k in q))
+        colors.extend([c4] * 4)
+
+
 def build_golden_gate(br, verts, faces, colors, color, lm=None):
     """High-detail art-deco Golden Gate. Same collider footprint as
     build_suspension_bridge (roadway + parapet lips only; towers/cables ghost).
@@ -977,6 +1014,10 @@ def build_golden_gate(br, verts, faces, colors, color, lm=None):
     TRUSS_DEPTH = 7.6
 
     # ------------------------------------------------------ deck + colliders
+    # visuals are sheared prisms that follow the line exactly (no stair-steps
+    # poking through the sloped asphalt); colliders stay yaw-only boxes, so on
+    # grades they substep until each riser is < 0.4 m
+    po = width / 2 - 0.55
     for i in range(len(wpts) - 1):
         a, b = wpts[i], wpts[i + 1]
         seg_len = math.dist((a[0], a[1]), (b[0], b[1]))
@@ -985,26 +1026,29 @@ def build_golden_gate(br, verts, faces, colors, color, lm=None):
             t0, t1 = s / steps, (s + 1) / steps
             m0 = (a[0] + (b[0] - a[0]) * t0, a[1] + (b[1] - a[1]) * t0, a[2] + (b[2] - a[2]) * t0)
             m1 = (a[0] + (b[0] - a[0]) * t1, a[1] + (b[1] - a[1]) * t1, a[2] + (b[2] - a[2]) * t1)
-            cx, cy, cz = (m0[0] + m1[0]) / 2, (m0[1] + m1[1]) / 2, (m0[2] + m1[2]) / 2
             yaw = math.atan2(m1[1] - m0[1], m1[0] - m0[0])
-            ln = math.dist((m0[0], m0[1]), (m1[0], m1[1])) / 2 + 0.5
-            add_box(verts, faces, colors, cx, cy, cz - dth / 2,
-                    ln, width / 2, dth / 2, ORANGE, yaw=yaw)
-            if lm:
-                cbox(lm, cx, -cy, cz - dth, cz, ln, width / 2, yaw=yaw)
             ppx, ppy = -math.sin(yaw), math.cos(yaw)
-            po = width / 2 - 0.55
+            add_span_prism(verts, faces, colors, m0, m1, 0, width / 2, -dth, 0, ORANGE)
             for sgn in (-1, 1):
-                rx, ry = cx + ppx * po * sgn, cy + ppy * po * sgn
                 # curb + open railing (thin handrail above the curb)
-                add_box(verts, faces, colors, rx, ry, cz + 0.42, ln, 0.28, 0.42, ORANGE, yaw=yaw)
-                add_box(verts, faces, colors, rx, ry, cz + 1.28, ln, 0.09, 0.07, BRIGHT, yaw=yaw)
-                if lm:
-                    cbox(lm, rx, -ry, cz, cz + 1.7, ln, 0.35, yaw=yaw)
-                # under-deck stiffening truss: edge girder down to bottom chord
-                gx, gy = cx + ppx * (width / 2 - 0.4) * sgn, cy + ppy * (width / 2 - 0.4) * sgn
-                add_box(verts, faces, colors, gx, gy, cz - dth - 0.7, ln, 0.32, 0.7, ORANGE, yaw=yaw)
-                add_box(verts, faces, colors, gx, gy, cz - TRUSS_DEPTH, ln, 0.32, 0.5, ORANGE, yaw=yaw)
+                add_span_prism(verts, faces, colors, m0, m1, po * sgn, 0.28, 0.0, 0.84, ORANGE)
+                add_span_prism(verts, faces, colors, m0, m1, po * sgn, 0.09, 1.21, 1.35, BRIGHT)
+                # under-deck stiffening truss: edge girder + bottom chord
+                go = (width / 2 - 0.4) * sgn
+                add_span_prism(verts, faces, colors, m0, m1, go, 0.32, -dth - 1.4, -dth, ORANGE)
+                add_span_prism(verts, faces, colors, m0, m1, go, 0.32, -TRUSS_DEPTH - 0.5, -TRUSS_DEPTH + 0.5, ORANGE)
+            if lm:
+                nsub = max(1, int(math.ceil(abs(m1[2] - m0[2]) / 0.4)))
+                for k in range(nsub):
+                    k0, k1 = k / nsub, (k + 1) / nsub
+                    cx = m0[0] + (m1[0] - m0[0]) * (k0 + k1) / 2
+                    cy = m0[1] + (m1[1] - m0[1]) * (k0 + k1) / 2
+                    cz = m0[2] + (m1[2] - m0[2]) * (k0 + k1) / 2
+                    ln = math.dist((m0[0], m0[1]), (m1[0], m1[1])) / (2 * nsub) + 0.5
+                    cbox(lm, cx, -cy, cz - dth, cz, ln, width / 2, yaw=yaw)
+                    for sgn in (-1, 1):
+                        rx, ry = cx + ppx * po * sgn, cy + ppy * po * sgn
+                        cbox(lm, rx, -ry, cz, cz + 1.7, ln, 0.35, yaw=yaw)
 
     # truss verticals + X diagonals + transverse floor beams, fixed 26 m bays
     bays = _bridge_line_samples(wpts, 26)
@@ -1032,6 +1076,12 @@ def build_golden_gate(br, verts, faces, colors, color, lm=None):
             lx_, ly_ = sx + px * (width / 2 - 0.55) * sgn, sy + py * (width / 2 - 0.55) * sgn
             add_box(verts, faces, colors, lx_, ly_, sz + 1.05, 0.09, 0.09, 1.05, ORANGE, yaw=yaw)
             add_box(verts, faces, colors, lx_, ly_, sz + 2.2, 0.17, 0.17, 0.16, BRIGHT, yaw=yaw)
+
+    # railing pickets so the handrail visibly stands on the curb
+    for (sx, sy, sz, yaw, px, py) in _bridge_line_samples(wpts, 7.66):
+        for sgn in (-1, 1):
+            kx_, ky_ = sx + px * po * sgn, sy + py * po * sgn
+            add_box(verts, faces, colors, kx_, ky_, sz + 1.02, 0.06, 0.06, 0.34, ORANGE, yaw=yaw)
 
     # --------------------------------------------------------------- towers
     for (tx, tz) in br["towers"]:
@@ -1115,9 +1165,17 @@ def build_golden_gate(br, verts, faces, colors, color, lm=None):
             for (sx, sy, sz) in pts[1:-1]:
                 deck_z = bridge_deck_heights(np.array([sx]), np.array([-sy]), DATA["meta"])[0]
                 if deck_z > -1e8 and sz > deck_z + 2.5:
-                    # cable band + slim suspender pair down to the deck edge
+                    # cable band + slim suspender; the rod runs past the deck
+                    # into the truss depth so it never ends hanging in air
                     add_box(verts, faces, colors, sx, sy, sz, 1.15, 1.15, 0.45, DEEP)
-                    add_box(verts, faces, colors, sx, sy, (sz + deck_z) / 2, 0.14, 0.14, (sz - deck_z) / 2, ORANGE)
+                    bot = deck_z - 3.0
+                    add_box(verts, faces, colors, sx, sy, (sz + bot) / 2, 0.14, 0.14, (sz - bot) / 2, ORANGE)
+                    # bracket arm tying the rod back to the deck edge girder
+                    dcx, dcy = sx - px * off * sgn, sy - py * off * sgn
+                    bo = (width / 2 - 0.7 + off + 0.2) / 2
+                    add_box(verts, faces, colors, dcx + px * bo * sgn, dcy + py * bo * sgn,
+                            deck_z - 0.55, (off + 0.2 - (width / 2 - 0.7)) / 2 + 0.15, 0.22, 0.4,
+                            ORANGE, yaw=math.atan2(py, px))
 
 
 def build_landmarks():

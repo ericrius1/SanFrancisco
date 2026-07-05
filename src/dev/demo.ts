@@ -9,6 +9,7 @@ import type { WorldMap } from "../world/heightmap";
 import {
   BRIDGE_SHOT_SECONDS,
   BRIDGE_FIRE_AT,
+  BRIDGE_FLYOVER_AT,
   bridgePath,
   bridgeTruckPos,
   applyBridgeCamera,
@@ -51,6 +52,7 @@ type Ctx = {
   setPostFx?: (values: Record<string, number | boolean>) => void;
   launchTruckFireworks?: (forward: THREE.Vector3) => void;
   launchBoatFireworks?: (forward: THREE.Vector3) => void;
+  flyover?: { preload: () => void; trigger: (origin: THREE.Vector3, fwd: THREE.Vector3) => void };
 };
 
 export function runDemo(name: string, ctx: Ctx) {
@@ -731,7 +733,7 @@ export function runDemo(name: string, ctx: Ctx) {
         dream: false,
         retro: true,
         retroPixel: 1,
-        retroLevels: 6,
+        retroLevels: 8,
         retroScan: 0.35
       });
 
@@ -743,11 +745,23 @@ export function runDemo(name: string, ctx: Ctx) {
       const look = new THREE.Vector3();
       const truckPos = new THREE.Vector3();
       let fired = false;
+      let flew = false;
+
+      // a wave of planes + phoenixes (the "-" spectacle) streaks up the strait
+      // and sweeps overhead as the camera settles behind the truck, receding
+      // into the sky just as the barrage erupts — the build into the finale.
+      // Warm the phoenix GLB now so the mid-shot trigger has zero pop-in.
+      const FLYOVER_AT = BRIDGE_FLYOVER_AT;
+      ctx.flyover?.preload();
 
       const step = (T: number) => {
         bridgeTruckPos(T, path, map, truckPos);
         pinBridgeTruck(player, physics, truckPos, path); // truck on rails
         applyBridgeCamera(T, path, truckPos, chase.camera, camPos, look);
+        if (!flew && T >= FLYOVER_AT) {
+          flew = true;
+          ctx.flyover?.trigger(truckPos.clone(), path.dir.clone());
+        }
         if (!fired && T >= BRIDGE_FIRE_AT) {
           fired = true;
           fireGuns(path.dir.clone());

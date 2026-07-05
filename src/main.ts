@@ -1118,7 +1118,7 @@ async function boot() {
         dream: false,
         retro: true,
         retroPixel: 1,
-        retroLevels: 6,
+        retroLevels: 8,
         retroScan: 0.35
       });
       pipeline.applyPostFx();
@@ -1127,6 +1127,7 @@ async function boot() {
       Object.assign(POSTFX_TUNING.values, { ink: false, retro: false });
       pipeline.applyPostFx();
     },
+    flyover,
     musicUrl: "/audio/rockin.mp3"
   });
 
@@ -1899,7 +1900,8 @@ async function boot() {
           forward,
           hostVelocity: player.velocity
         });
-      }
+      },
+      flyover
     };
     (window as never as { __demo: (n: string) => void }).__demo = (n: string) => {
       void import("./dev/demo").then(({ runDemo }) => runDemo(n, demoCtx));
