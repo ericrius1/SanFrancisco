@@ -1,11 +1,6 @@
-(node:69663) ExperimentalWarning: Type Stripping is an experimental feature and might change at any time
+(node:29200) ExperimentalWarning: Type Stripping is an experimental feature and might change at any time
 (Use `node --trace-warnings ...` to show where the warning was created)
-[train] creature=horse obs=22 act=14 params=2254
+[train] creature=horse obs=23 act=14 params=2286
 [train] warm-started from public/models/horse_policy.json
-gen 15  center=514.38  best=685.86  sigma=0.0669  steps=450/450  dist=6.85m  along=-2.67m  meanH=1.36(99%)  [113s]
-gen 30  center=615.76  best=575.19  sigma=0.064  steps=450/450  dist=5.58m  along=-3.84m  meanH=1.31(95%)  [226s]
-gen 45  center=796.09  best=784.9  sigma=0.0611  steps=450/450  dist=8.19m  along=-5.82m  meanH=1.34(98%)  [337s]
-gen 60  center=841.19  best=558.48  sigma=0.0585  steps=450/450  dist=9.11m  along=-6.91m  meanH=1.29(94%)  [451s]
-gen 75  center=520.98  best=860.83  sigma=0.0559  steps=450/450  dist=9.09m  along=-6.26m  meanH=1.34(97%)  [564s]
-gen 90  center=562.47  best=793.78  sigma=0.0534  steps=450/450  dist=6.55m  along=-1.25m  meanH=1.30(95%)  [677s]
-gen 105  center=440.2  best=770.28  sigma=0.0511  steps=450/450  dist=6.54m  along=-5.89m  meanH=1.33(97%)  [791s]
+gen 20  center=767.96  best=745.85  sigma=0.0808  steps=480/480  dist=7.04m  along=-4.31m  meanH=1.39(101%)  [187s]
+gen 40  center=764.58  best=822.76  sigma=0.0769  steps=480/480  dist=10.04m  along=-5.98m  meanH=1.39(101%)  [372s]

@@ -59,6 +59,7 @@ type Horse = {
   anchor: { x: number; z: number };
   wanderYaw: number;
   wanderTimer: number;
+  speedNonDim: number; // commanded gait speed (Froude): walk-biased while roaming
   gx: number; gz: number; // smoothed goal direction (eased toward target so turns are gradual)
   downTimer: number; // >0 = lying where it fell, counting down before it gets back up
   wx: number; wy: number; wz: number;
@@ -129,6 +130,8 @@ export class HorseHerd {
   #ready = false;
   #ridden = -1;
   #steerYaw = 0;
+  #riddenSpeed = 1.4; // rider's commanded gait (Froude): trot by default, ramps toward gallop
+  #forceSpeed: number | null = null; // debug/verify: command every horse this gait speed
   #camPos = new THREE.Vector3();
   #worker: Worker | null = null;
   #training = false;
@@ -148,7 +151,7 @@ export class HorseHerd {
 
   get platformY(): number { return PLATFORM_Y; }
   /** Paddock centre in world space (for camera framing / headless verify). */
-  get center(): { x: number; y: number; z: number } { return { x: PARK.x, y: PLATFORM_Y, z: PARK.z }; }
+  get paddockCenter(): { x: number; y: number; z: number } { return { x: PARK.x, y: PLATFORM_Y, z: PARK.z }; }
   /** Ground-truth per-horse pose for headless verification (the ACTUAL in-world
    *  sim that drives the render — up.y, height fraction of standing, down timer). */
   debugStates(): { upY: number; tall: number; down: number; fallen: boolean; speed: number }[] {
@@ -419,7 +422,7 @@ export class HorseHerd {
       const yaw = Math.random() * Math.PI * 2;
       rag.setGoal(Math.sin(yaw), Math.cos(yaw));
       const m = this.#buildMeshes(rag.layers().map((l) => l.length));
-      this.#horses.push({ rag, m, anchor, wanderYaw: yaw, wanderTimer: 2 + Math.random() * 4, gx: Math.sin(yaw), gz: Math.cos(yaw), downTimer: 0, wx: anchor.x, wy: PLATFORM_Y, wz: anchor.z, wq: [0, 0, 0, 1] });
+      this.#horses.push({ rag, m, anchor, wanderYaw: yaw, wanderTimer: 2 + Math.random() * 4, speedNonDim: 0.45 + Math.random() * 0.35, gx: Math.sin(yaw), gz: Math.cos(yaw), downTimer: 0, wx: anchor.x, wy: PLATFORM_Y, wz: anchor.z, wq: [0, 0, 0, 1] });
     }
   }
 
@@ -441,11 +444,12 @@ export class HorseHerd {
         if (idx === this.#ridden) this.#ridden = -1; // throw the rider when the mount goes down
         continue;
       }
-      // Pick this horse's TARGET heading (rider's steer, or wandering yaw)...
-      let tx: number, tz: number;
+      // Pick this horse's TARGET heading (rider's steer, or wandering yaw) + gait speed...
+      let tx: number, tz: number, spd: number;
       if (idx === this.#ridden) {
         tx = -Math.sin(this.#steerYaw);
         tz = -Math.cos(this.#steerYaw);
+        spd = this.#riddenSpeed; // rider's throttle (walk..gallop)
       } else {
         h.wanderTimer -= dt;
         const t = h.rag.torsoLink;
@@ -459,9 +463,13 @@ export class HorseHerd {
         } else if (h.wanderTimer <= 0) {
           h.wanderYaw += (Math.random() - 0.5) * 1.6;
           h.wanderTimer = 3 + Math.random() * 5;
+          // re-pick a roaming gait: mostly a calm WALK, sometimes a trot, rarely a canter
+          const r = Math.random();
+          h.speedNonDim = r < 0.7 ? 0.4 + Math.random() * 0.35 : r < 0.93 ? 0.9 + Math.random() * 0.4 : 1.6 + Math.random() * 0.5;
         }
         tx = Math.sin(h.wanderYaw);
         tz = Math.cos(h.wanderYaw);
+        spd = h.speedNonDim;
       }
       // ...then ease the actual goal toward it so heading changes are GRADUAL. A
       // hard instant goal snap makes the policy crank a sharp turn and tip over.
@@ -469,6 +477,7 @@ export class HorseHerd {
       h.gx += (tx - h.gx) * k;
       h.gz += (tz - h.gz) * k;
       h.rag.setGoal(h.gx, h.gz); // setGoal normalizes
+      h.rag.setSpeed(this.#forceSpeed ?? spd);
       h.rag.update(dt);
     }
   }
@@ -494,6 +503,14 @@ export class HorseHerd {
   dismount(): void { this.#ridden = -1; }
   get riddenIndex(): number { return this.#ridden; }
   steer(yaw: number): void { this.#steerYaw = yaw; }
+  /** Rider throttle → commanded gait speed (Froude units: ~0.5 walk .. ~2.2 gallop). */
+  setRiddenSpeed(nonDim: number): void { this.#riddenSpeed = Math.max(0, Math.min(2.4, nonDim)); }
+  /** Verify/demo: force EVERY horse to one gait speed (null = back to per-horse roaming). */
+  debugForceSpeed(nonDim: number | null): void { this.#forceSpeed = nonDim; }
+  /** Make the ridden horse jump (rider pressed jump). */
+  jumpRidden(): void { if (this.#ridden >= 0) this.#horses[this.#ridden].rag.jump(); }
+  /** Verify/demo: every up horse hops at once. */
+  debugJumpAll(): void { for (const h of this.#horses) if (h.downTimer <= 0) h.rag.jump(); }
   riddenSeat(outPos: THREE.Vector3, outQuat: THREE.Quaternion): boolean {
     if (this.#ridden < 0) return false;
     const h = this.#horses[this.#ridden];

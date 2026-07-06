@@ -43,6 +43,7 @@ export class Box3DEnv {
   private phase = 0;
   private goalAngle = 0;
   private goalTarget = 0;
+  private targetNonDim = 1; // commanded gait speed in Froude units (0.25 walk .. 2.3 gallop)
   private rng: () => number = Math.random;
   private stepCount = 0;
   private torsoMass = 0;
@@ -57,21 +58,21 @@ export class Box3DEnv {
     this.dt = opts.dt ?? 1 / 120;
     this.substeps = opts.substeps ?? 8;
     this.world = box3d.createWorld([0, -9.81, 0]);
-    this.world.createBox({ type: BodyType.Static, position: [0, this.groundY - 0.5, 0], halfExtents: [60, 0.5, 60], friction: 1.0 });
+    this.world.createBox({ type: BodyType.Static, position: [0, this.groundY - 20, 0], halfExtents: [60, 20, 60], friction: 1.0 }); // deep slab backstop (top at groundY)
 
     const l0 = spec.legs[0];
     const legLen = 2 * l0.thigh.halfHeight + 2 * l0.shank.halfHeight;
     this.spawnY = this.groundY + legLen + l0.shank.radius - l0.hip[1];
 
-    this.torso = this.world.createBox({ type: BodyType.Dynamic, position: [0, this.spawnY, 0], halfExtents: spec.torso.half, density: spec.torso.density, friction: 0.7 });
+    this.torso = this.world.createBox({ type: BodyType.Dynamic, position: [0, this.spawnY, 0], halfExtents: spec.torso.half, density: spec.torso.density, friction: 0.7, bullet: true }); // CCD: no tunneling
 
     for (const leg of spec.legs) {
       const hip: V3 = [leg.hip[0], this.spawnY + leg.hip[1], leg.hip[2]];
       const knee: V3 = [hip[0], hip[1] - 2 * leg.thigh.halfHeight, hip[2]];
       const thighCenter: V3 = [hip[0], hip[1] - leg.thigh.halfHeight, hip[2]];
       const shankCenter: V3 = [hip[0], knee[1] - leg.shank.halfHeight, hip[2]];
-      const thigh = this.world.createCapsule({ type: BodyType.Dynamic, position: thighCenter, halfHeight: leg.thigh.halfHeight, radius: leg.thigh.radius, density: leg.thigh.density, friction: 0.8 });
-      const shank = this.world.createCapsule({ type: BodyType.Dynamic, position: shankCenter, halfHeight: leg.shank.halfHeight, radius: leg.shank.radius, density: leg.shank.density, friction: 1.3 });
+      const thigh = this.world.createCapsule({ type: BodyType.Dynamic, position: thighCenter, halfHeight: leg.thigh.halfHeight, radius: leg.thigh.radius, density: leg.thigh.density, friction: 0.8, bullet: true });
+      const shank = this.world.createCapsule({ type: BodyType.Dynamic, position: shankCenter, halfHeight: leg.shank.halfHeight, radius: leg.shank.radius, density: leg.shank.density, friction: 1.3, bullet: true });
       this.world.createSphericalJoint(this.torso, thigh, hip, { hertz: 0, dampingRatio: 1.0 });
       this.world.createSphericalJoint(thigh, shank, knee, { hertz: 0, dampingRatio: 1.0 });
       this.legBodies.push({ thigh, shank, hip, knee, thighCenter, shankCenter });
@@ -80,7 +81,7 @@ export class Box3DEnv {
     for (const lb of this.legBodies) this.all.push(lb.thigh, lb.shank);
 
     const legs: LegLinks[] = spec.legs.map(() => ({ thigh: mkLink(), shank: mkLink() }));
-    this.state = { torso: mkLink(), legs, groundY: this.groundY, goal: [0, 1] };
+    this.state = { torso: mkLink(), legs, groundY: this.groundY, goal: [0, 1], targetSpeed: 0 };
     this.obsBuf = new Float32Array(obsDim(spec));
   }
 
@@ -139,6 +140,10 @@ export class Box3DEnv {
     this.goalTarget = this.goalAngle;
     this.state.goal[0] = Math.sin(this.goalAngle);
     this.state.goal[1] = Math.cos(this.goalAngle);
+    // commanded gait speed for this episode (Froude units): the policy must learn
+    // to hit whatever it's told — walk, trot, or gallop — so all gaits are trained.
+    this.targetNonDim = 0.25 + rng() * 2.05;
+    this.state.targetSpeed = this.targetNonDim * Math.sqrt(9.81 * this.spec.standHeight);
     this.phase = rng() * Math.PI * 2;
     // settle with the stance HELD by control, so the legs don't fold before the
     // policy takes over. Freeze the CPG phase during the hold (neutral pose).
@@ -158,6 +163,12 @@ export class Box3DEnv {
     // staying up (in-world the goal changes; a fixed-goal policy tips on turns)
     this.stepCount++;
     if (this.stepCount % 80 === 0) this.goalTarget = this.goalAngle + (this.rng() - 0.5) * 3.2; // sharper turns
+    // change the commanded gait speed mid-episode so it learns to TRANSITION
+    // (walk->trot->gallop and back), not just hold one speed.
+    if (this.stepCount % 110 === 0) {
+      this.targetNonDim = 0.25 + this.rng() * 2.05;
+      this.state.targetSpeed = this.targetNonDim * Math.sqrt(9.81 * this.spec.standHeight);
+    }
     const da = this.goalTarget - this.goalAngle;
     this.goalAngle += da > 0.028 ? 0.028 : da < -0.028 ? -0.028 : da;
     this.state.goal[0] = Math.sin(this.goalAngle);

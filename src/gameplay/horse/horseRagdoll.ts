@@ -7,6 +7,7 @@ import {
   obsDim,
   actDim,
   scaledSpec,
+  qRot,
   type CreatureSpec,
   type CreatureState,
   type Link,
@@ -53,20 +54,24 @@ export class HorseRagdoll {
     // creature's activation curtain show the same (last-stepped) numbers.
     this.policy = new Policy(policyDef);
     this.world = box3d.createWorld([0, -9.81, 0]);
-    this.world.createBox({ type: BodyType.Static, position: [0, -0.5, 0], halfExtents: [40, 0.5, 40], friction: 1.0 });
+    // DEEP ground slab (top at y=0): a backstop so a fast-falling body can't punch
+    // through and keep going even in the worst case.
+    this.world.createBox({ type: BodyType.Static, position: [0, -20, 0], halfExtents: [60, 20, 60], friction: 1.0 });
 
     const l0 = spec.legs[0];
     const legLen = 2 * l0.thigh.halfHeight + 2 * l0.shank.halfHeight;
     this.spawnY = legLen + l0.shank.radius - l0.hip[1];
 
-    this.torso = this.world.createBox({ type: BodyType.Dynamic, position: [0, this.spawnY, 0], halfExtents: spec.torso.half, density: spec.torso.density, friction: 0.7 });
+    // bullet: true = continuous collision detection, so a fast fall/flail can't
+    // tunnel through the ground plane (the player body uses this too).
+    this.torso = this.world.createBox({ type: BodyType.Dynamic, position: [0, this.spawnY, 0], halfExtents: spec.torso.half, density: spec.torso.density, friction: 0.7, bullet: true });
     for (const leg of spec.legs) {
       const hip: V3 = [leg.hip[0], this.spawnY + leg.hip[1], leg.hip[2]];
       const knee: V3 = [hip[0], hip[1] - 2 * leg.thigh.halfHeight, hip[2]];
       const thighCenter: V3 = [hip[0], hip[1] - leg.thigh.halfHeight, hip[2]];
       const shankCenter: V3 = [hip[0], knee[1] - leg.shank.halfHeight, hip[2]];
-      const thigh = this.world.createCapsule({ type: BodyType.Dynamic, position: thighCenter, halfHeight: leg.thigh.halfHeight, radius: leg.thigh.radius, density: leg.thigh.density, friction: 0.8 });
-      const shank = this.world.createCapsule({ type: BodyType.Dynamic, position: shankCenter, halfHeight: leg.shank.halfHeight, radius: leg.shank.radius, density: leg.shank.density, friction: 1.3 });
+      const thigh = this.world.createCapsule({ type: BodyType.Dynamic, position: thighCenter, halfHeight: leg.thigh.halfHeight, radius: leg.thigh.radius, density: leg.thigh.density, friction: 0.8, bullet: true });
+      const shank = this.world.createCapsule({ type: BodyType.Dynamic, position: shankCenter, halfHeight: leg.shank.halfHeight, radius: leg.shank.radius, density: leg.shank.density, friction: 1.3, bullet: true });
       this.world.createSphericalJoint(this.torso, thigh, hip, { hertz: 0, dampingRatio: 1.0 });
       this.world.createSphericalJoint(thigh, shank, knee, { hertz: 0, dampingRatio: 1.0 });
       this.legBodies.push({ thigh, shank, thighCenter, shankCenter });
@@ -74,7 +79,7 @@ export class HorseRagdoll {
     this.all = [this.torso];
     for (const lb of this.legBodies) this.all.push(lb.thigh, lb.shank);
 
-    this.state = { torso: mkLink(), legs: spec.legs.map(() => ({ thigh: mkLink(), shank: mkLink() }) as LegLinks), groundY: 0, goal: [0, 1] };
+    this.state = { torso: mkLink(), legs: spec.legs.map(() => ({ thigh: mkLink(), shank: mkLink() }) as LegLinks), groundY: 0, goal: [0, 1], targetSpeed: 0.6 * Math.sqrt(9.81 * spec.standHeight) };
     this.obsBuf = new Float32Array(obsDim(spec));
     this.syncState();
     this.settle(14); // stand up cleanly before the policy takes over
@@ -85,6 +90,14 @@ export class HorseRagdoll {
     this.state.goal[0] = dx / m;
     this.state.goal[1] = dz / m;
   }
+
+  /** Commanded gait speed in Froude units (dimensionless, scale-invariant):
+   *  ~0.4 = walk, ~1.0 = trot, ~2.0 = gallop. Converted to m/s for this body. */
+  setSpeed(nonDim: number): void {
+    this.state.targetSpeed = nonDim * Math.sqrt(9.81 * this.spec.standHeight);
+  }
+  /** The Froude speed the body is standing-height-normalised to (for callers). */
+  get speedUnit(): number { return Math.sqrt(9.81 * this.spec.standHeight); }
 
   private readLink(handle: number, link: Link): void {
     const tr = this.world.getBodyTransform(handle);
@@ -152,6 +165,7 @@ export class HorseRagdoll {
 
   /** Advance the private sim by real dt, always in trained-size sub-steps. */
   update(dt: number): void {
+    if (this.jumpCooldown > 0) this.jumpCooldown -= dt;
     this.acc += Math.min(dt, 0.1);
     let n = 0;
     while (this.acc >= SIM_DT && n < 6) {
@@ -184,6 +198,25 @@ export class HorseRagdoll {
     const m = this.world.getBodyMass(this.torso);
     this.world.applyImpulse(this.torso, [vx * m, 0, vz * m]);
   }
+
+  private jumpCooldown = 0;
+  private _nose: V3 = [0, 0, 0];
+  /** A grounded push-off: up + a little forward, applied to the whole body so it
+   *  leaves the ground as one. Scale-invariant (impulse ∝ mass, Δv ∝ √(g·H)).
+   *  No-op when downed, airborne, or still on cooldown. */
+  jump(): void {
+    if (this.downed || this.jumpCooldown > 0) return;
+    if (this.state.torso.pos[1] > this.spawnY * 1.25) return; // already in the air
+    const vUp = 0.95 * this.speedUnit;
+    qRot(this.state.torso.quat, [0, 0, 1], this._nose); // forward (nose) dir
+    for (const h of this.all) {
+      const m = this.world.getBodyMass(h);
+      this.world.applyImpulse(h, [this._nose[0] * 0.25 * vUp * m, vUp * m, this._nose[2] * 0.25 * vUp * m]);
+      this.world.setBodyAwake(h, true);
+    }
+    this.jumpCooldown = 0.8; // seconds
+  }
+  get grounded(): boolean { return this.state.torso.pos[1] < this.spawnY * 1.2; }
 
   /** Reset to a clean stand (after a fall). */
   reset(): void {

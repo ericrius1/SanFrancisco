@@ -51,14 +51,35 @@ const envs = SCALES.map((s) => new Box3DEnv(box3d, spec, { scale: s }));
 const recEnv = envs[2]; // ~1.9x, near the in-world size, for recorded metrics
 const policy = Policy.random(sizes, rng32(1), creatureName);
 
+// Grow a saved policy's INPUT layer to a larger obs dim by appending zero weights
+// for the new inputs — so a policy trained before a new obs channel (e.g. the gait
+// speed command) warm-starts as its old self and LEARNS to use the new input.
+function expandPolicyInput(def: any, newIn: number): any {
+  const oldIn = def.sizes?.[0];
+  if (!oldIn || oldIn === newIn) return def;
+  if (oldIn > newIn) return def; // can't shrink; leave as-is (mismatch will be caught)
+  const out0 = def.sizes[1];
+  const w = def.weights as number[];
+  const nw: number[] = [];
+  let k = 0;
+  for (let o = 0; o < out0; o++) {
+    for (let i = 0; i < oldIn; i++) nw.push(w[k++]); // old input weights for this neuron
+    for (let i = oldIn; i < newIn; i++) nw.push(0); // new inputs: ignored until learned
+  }
+  while (k < w.length) nw.push(w[k++]); // bias0 + all later layers verbatim
+  return { ...def, sizes: [newIn, ...def.sizes.slice(1)], weights: nw };
+}
+
 // --warm continues from the currently-deployed policy (refine a good gait
 // under a new reward instead of relearning to stand from scratch)
 if (process.argv.includes("--warm")) {
   try {
-    const def = JSON.parse(await import("node:fs").then((m) => m.readFileSync(`public/models/${creatureName}_policy.json`, "utf8")));
+    const raw = JSON.parse(await import("node:fs").then((m) => m.readFileSync(`public/models/${creatureName}_policy.json`, "utf8")));
+    const def = expandPolicyInput(raw, sizes[0]);
     if (def.weights?.length === dim) {
       policy.setParams(Float32Array.from(def.weights));
-      console.log(`[train] warm-started from public/models/${creatureName}_policy.json`);
+      const grew = raw.sizes?.[0] !== sizes[0] ? ` (expanded obs ${raw.sizes?.[0]}->${sizes[0]})` : "";
+      console.log(`[train] warm-started from public/models/${creatureName}_policy.json${grew}`);
     } else console.log(`[train] warm start skipped: param mismatch (${def.weights?.length} vs ${dim})`);
   } catch (e) {
     console.log("[train] warm start failed:", (e as Error).message);

@@ -168,9 +168,9 @@ export function scaledSpec(base: CreatureSpec, s: number): CreatureSpec {
 }
 
 // ---------------------------------------------------------------- dims
-/** obs = up(3) goalXZ(2) velBody(3) angVel(3) height(1) cpg(2) thighPitch(nLeg) kneeAngle(nLeg). */
+/** obs = up(3) goalXZ(2) velBody(3) angVel(3) height(1) cpg(2) thighPitch(nLeg) kneeAngle(nLeg) targetSpeed(1). */
 export function obsDim(spec: CreatureSpec): number {
-  return 3 + 2 + 3 + 3 + 1 + 2 + spec.legs.length * 2;
+  return 3 + 2 + 3 + 3 + 1 + 2 + spec.legs.length * 2 + 1;
 }
 /**
  * action = freqMod(1) hipAmpMod(1) kneeAmpMod(1) perLegHipBias(nLeg)
@@ -190,6 +190,7 @@ export type CreatureState = {
   legs: LegLinks[];
   groundY: number;
   goal: [number, number]; // unit heading in world XZ the creature should walk toward
+  targetSpeed: number; // commanded NOSE-FIRST forward speed (m/s): walk vs trot vs gallop
 };
 
 // scratch (module-level; single-threaded per worker)
@@ -240,6 +241,7 @@ export function observe(spec: CreatureSpec, state: CreatureState, phase: number,
   out[k++] = Math.cos(phase);
   for (let i = 0; i < spec.legs.length; i++) out[k++] = thighPitch(state, i) * 0.6;
   for (let i = 0; i < spec.legs.length; i++) out[k++] = kneeAngle(state, i) * 0.5;
+  out[k++] = state.targetSpeed * invV; // commanded gait speed, non-dimensional (Froude)
   return out;
 }
 
@@ -353,17 +355,22 @@ export function reward(spec: CreatureSpec, state: CreatureState, action: ArrayLi
   // keep the legs extended and the body up (with a stand-tall bonus that gives a
   // gradient even at zero speed → learn to stand, then to run tall).
   const tall = Math.max(0, Math.min(1, (height - 0.5 * H) / (0.9 * H - 0.5 * H)));
-  // Froude speed: fwdSpeed / sqrt(g*standHeight) — dimensionless, so a "run"
-  // scores the same at any body size (Fr~2-3 is a gallop).
+  // Froude speed: fwdSpeed / sqrt(g*standHeight) — dimensionless, so the same
+  // COMMANDED gait scores the same at any body size (Fr~0.4 walk .. ~2.3 gallop).
   const V = Math.sqrt(9.81 * H);
-  const speed = Math.max(-1, Math.min(4, fwdSpeed / V));
+  const target = state.targetSpeed; // commanded nose-first speed (m/s)
+  const speedErr = (fwdSpeed - target) / V; // non-dimensional
+  const speedMatch = Math.exp(-2.2 * speedErr * speedErr); // 1 exactly at the commanded speed, decays away
   const gate = Math.max(0, upright) * tall; // must be UPRIGHT and TALL to earn anything
-  const faceGate = 0.3 + 0.7 * Math.max(0, facing); // run more when FACING the goal
+  const faceGate = 0.3 + 0.7 * Math.max(0, facing); // move more when FACING the goal
   const w = spec.reward;
   let r = 0;
   r += w.height * tall; // stand-tall bonus (the entry gradient)
-  r += w.forward * speed * gate * faceGate; // run nose-first toward the goal
-  r += w.forward * 0.9 * Math.max(0, speed - 0.35) * gate * faceGate; // faster is better
+  r += w.forward * speedMatch * gate * faceGate; // HIT the commanded gait speed (walk/trot/gallop), facing goal
+  // progress bonus that saturates AT the target: gives a gradient to get moving
+  // (so a commanded slow walk isn't satisfied by standing still), but pays nothing
+  // for overshooting — the match term above penalizes going faster than asked.
+  r += w.forward * 0.6 * (Math.min(Math.max(0, fwdSpeed), target) / V) * gate * faceGate;
   r += w.upright * upright * tall;
   r += w.alive * tall;
   r += w.heading * Math.max(0, facing) * tall; // turn to face the goal
