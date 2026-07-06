@@ -31,7 +31,7 @@ import { Graffiti, PAINT_COLORS } from "./fx/graffiti";
 import { Paintballs, PaintSkins, PAINTBALL_SPEED, type PaintTarget } from "./fx/paintball";
 import { Bubbles } from "./fx/bubbles";
 import { Chimes } from "./fx/chimes";
-import { Toolbar, TOOL_VERB, type ToolName } from "./ui/toolbar";
+import { Toolbar, TOOL_ORDER, TOOL_VERB, type ToolName } from "./ui/toolbar";
 import { AvatarSelector } from "./ui/avatarSelector";
 import { AudioControls } from "./ui/audioControls";
 import { VehicleAudio } from "./fx/vehicleAudio";
@@ -180,9 +180,11 @@ async function boot() {
     graffiti.colorIndex = i;
     toolbar.setColor(i);
   };
+  let switchModeFromToolbar: (mode: PlayerMode) => void = () => {};
   const toolbar = new Toolbar(
     (t) => setTool(t),
-    (i) => setColor(i, true)
+    (i) => setColor(i, true),
+    (mode) => switchModeFromToolbar(mode)
   );
   setTool("spray");
   setColor(0);
@@ -212,6 +214,7 @@ async function boot() {
   player.onModeChange = (mode) => {
     const fresh = modeDiscovery.discover(mode);
     hud.setMode(mode);
+    toolbar.setVehicle(mode);
     input.setMode(mode); // trigger routing (fly puts them on the ↑/↓ throttle)
     debugPanel.setMode(mode); // tuning pane shows only the active mode's movement folder
     if (fresh) {
@@ -220,6 +223,7 @@ async function boot() {
     }
   };
   input.setMode(player.mode);
+  toolbar.setVehicle(player.mode);
   // controller: swap the help labels to whichever device was touched last
   input.onDeviceChange = (device) => hud.setDevice(device);
   window.addEventListener("gamepadconnected", () => hud.message("Controller connected", 2.4));
@@ -798,6 +802,20 @@ async function boot() {
     updatePlaceHistoryHud();
     hud.message(spot.label, 2.2);
   };
+  const switchMode = (mode: PlayerMode) => {
+    if (mode === player.mode) return;
+    const record = mode !== "walk";
+    if (record) beginPlaceNavigation("Previous place");
+    leaveRide(); // a mode key while riding shotgun hops out first
+    if ((currentRide || currentAnimal || currentQuidditch) && mode !== "drive" && mode !== "drone") dropCurrentDriveMount();
+    if (mode === "drive" && !currentRide && !currentAnimal) player.setDriveStyle(null);
+    if (mode === "drone" && !currentQuidditch) player.clearDroneStyle();
+    // Always spawn a fresh mount — any one you left behind keeps living its own
+    // life (the phoenix flies on, the plane lies where it crashed).
+    player.trySwitch(mode);
+    if (record) finishPlaceNavigation(`${mode} place`);
+  };
+  switchModeFromToolbar = switchMode;
   hud.onHistoryBack = () => applyPlaceHistory(-1);
   hud.onHistoryForward = () => applyPlaceHistory(1);
   const teleportToTarget = (x: number, z: number, toName?: string, playerId?: number) => {
@@ -1306,42 +1324,35 @@ async function boot() {
     elapsed += frameDt;
     accumulator += frameDt;
 
-    // plain number keys select vehicles; Shift+number teleports to player slots.
-    const switchMode = (mode: PlayerMode) => {
-      if (mode === player.mode) return;
-      const record = mode !== "walk";
-      if (record) beginPlaceNavigation("Previous place");
-      leaveRide(); // a mode key while riding shotgun hops out first
-      if ((currentRide || currentAnimal || currentQuidditch) && mode !== "drive" && mode !== "drone") dropCurrentDriveMount();
-      if (mode === "drive" && !currentRide && !currentAnimal) player.setDriveStyle(null);
-      if (mode === "drone" && !currentQuidditch) player.clearDroneStyle();
-      // always spawn a fresh mount — any one you left behind keeps living its own
-      // life (the phoenix flies on, the plane lies where it crashed)
-      player.trySwitch(mode);
-      if (record) finishPlaceNavigation(`${mode} place`);
-    };
+    // Plain number keys select click-tools; Shift+number still teleports to player slots.
+    const numberPressed = (i: number) => input.pressed(`Digit${i}`) || input.pressed(`Numpad${i}`);
+    const shiftedNumberPress = (i: number) => input.shiftedPress(`Digit${i}`) || input.shiftedPress(`Numpad${i}`);
     // seated at the piano the digits play notes (handlePianoInput below) — the
-    // mode switcher stands down so hitting "3" doesn't turn you into a plane
+    // tool switcher stands down so hitting "3" plays the instrument instead
     if (!exploratorium.pianoBusy && !exploratorium.plaqueOpen)
       for (let i = 1; i <= 9; i++) {
-        if (!input.pressed(`Digit${i}`)) continue;
+        if (!numberPressed(i)) continue;
         // Snapshot Shift from the digit's keydown event; a stale held-key entry
         // should never turn a plain number press into a player-slot teleport.
-        if (!input.shiftedPress(`Digit${i}`)) {
-          const mode = MENU_MODES[i - 1];
-          if (mode) switchMode(mode);
+        if (!shiftedNumberPress(i)) {
+          const nextTool = TOOL_ORDER[i - 1];
+          if (nextTool) setTool(nextTool);
           continue;
         }
         const target = playerLocator.targetForDigit(i);
         if (target) teleportToTarget(target.x, target.z, target.name, target.id);
         else hud.message(`No player in slot ${i}`, 1.9);
       }
-    const cycle = (input.pressed("PadModeNext") ? 1 : 0) - (input.pressed("PadModePrev") ? 1 : 0);
+    const keyboardCycle =
+      ((input.pressed("ArrowRight") && !input.altPressed("ArrowRight")) || (input.pressed("ArrowDown") && !input.altPressed("ArrowDown")) ? 1 : 0) -
+      ((input.pressed("ArrowLeft") && !input.altPressed("ArrowLeft")) || (input.pressed("ArrowUp") && !input.altPressed("ArrowUp")) ? 1 : 0);
+    const cycle = keyboardCycle + (input.pressed("PadModeNext") ? 1 : 0) - (input.pressed("PadModePrev") ? 1 : 0);
     if (cycle) {
       const cycleOrder = MENU_MODES;
       const idx = cycleOrder.indexOf(player.mode);
       const from = idx >= 0 ? idx : 0;
-      if (cycleOrder.length) switchMode(cycleOrder[(from + cycle + cycleOrder.length) % cycleOrder.length]);
+      const step = cycle < 0 ? -1 : 1;
+      if (cycleOrder.length) switchMode(cycleOrder[(from + step + cycleOrder.length) % cycleOrder.length]);
     }
     if (input.altPressed("ArrowLeft")) applyPlaceHistory(-1);
     if (input.altPressed("ArrowRight")) applyPlaceHistory(1);
@@ -1506,14 +1517,6 @@ async function boot() {
     // Sutro's beacons are visible city-wide (that's the point) — keep the tiny
     // sprite set resident and just advance its blink clock every frame.
     updateSutroTower(frameDt);
-
-    // arrow keys: navigate toolbar rows and options while the UI is visible
-    if (uiOpen) {
-      if (input.pressed("ArrowLeft") && !input.altPressed("ArrowLeft")) toolbar.navigate("left");
-      else if (input.pressed("ArrowRight") && !input.altPressed("ArrowRight")) toolbar.navigate("right");
-      else if (input.pressed("ArrowUp")) toolbar.navigate("up");
-      else if (input.pressed("ArrowDown")) toolbar.navigate("down");
-    }
 
     // left-click tools, all along the true view direction: paint sticks to
     // whatever the center-screen ray lands on, bubbles ride the wand, chimes ring

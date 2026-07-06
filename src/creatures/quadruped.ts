@@ -104,7 +104,7 @@ export const HORSE: CreatureSpec = {
   // height is a modest stand-tall entry gradient; the tall-GATE (in reward())
   // already forces tallness, so keeping this small makes RUNNING the way to earn
   // real reward instead of just standing there.
-  reward: { forward: 6.0, upright: 0.25, alive: 0.03, height: 0.9, energy: 0.0012, spin: 0.03, heading: 0.4 },
+  reward: { forward: 6.0, upright: 0.25, alive: 0.03, height: 0.9, energy: 0.0012, spin: 0.03, heading: 0.9 },
   fall: { minUp: 0.4, minHeight: 0.32 }
 };
 
@@ -338,7 +338,11 @@ export function reward(spec: CreatureSpec, state: CreatureState, action: ArrayLi
   // don't let it accrue reward while sunk — this is the single biggest fix.
   const done = upright < spec.fall.minUp || height < 0.45 * H;
 
-  const fwdSpeed = t.vel[0] * state.goal[0] + t.vel[2] * state.goal[1];
+  // NOSE-FIRST speed: velocity along the body's own forward axis, NOT toward the
+  // goal. Rewarding toward-goal velocity let it satisfy the goal by walking
+  // BACKWARD; this makes it run face-first. The heading term turns it to face
+  // the goal, so nose-first + facing-goal = running forward toward the goal.
+  const fwdSpeed = t.vel[0] * _fwd[0] + t.vel[2] * _fwd[2];
   const facing = _fwd[0] * state.goal[0] + _fwd[2] * state.goal[1];
   let energy = 0;
   for (let i = 0; i < action.length; i++) energy += action[i] * action[i];
@@ -354,14 +358,15 @@ export function reward(spec: CreatureSpec, state: CreatureState, action: ArrayLi
   const V = Math.sqrt(9.81 * H);
   const speed = Math.max(-1, Math.min(4, fwdSpeed / V));
   const gate = Math.max(0, upright) * tall; // must be UPRIGHT and TALL to earn anything
+  const faceGate = 0.3 + 0.7 * Math.max(0, facing); // run more when FACING the goal
   const w = spec.reward;
   let r = 0;
   r += w.height * tall; // stand-tall bonus (the entry gradient)
-  r += w.forward * speed * gate; // run — but only while tall
-  r += w.forward * 0.9 * Math.max(0, speed - 0.35) * gate; // faster is better
+  r += w.forward * speed * gate * faceGate; // run nose-first toward the goal
+  r += w.forward * 0.9 * Math.max(0, speed - 0.35) * gate * faceGate; // faster is better
   r += w.upright * upright * tall;
   r += w.alive * tall;
-  r += w.heading * Math.max(0, facing) * tall;
+  r += w.heading * Math.max(0, facing) * tall; // turn to face the goal
   r -= w.energy * energy;
   r -= w.spin * spin;
   r *= dt * 60;

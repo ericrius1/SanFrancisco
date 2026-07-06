@@ -53,19 +53,22 @@ export class FlyController implements ModeController {
   }
 
   /**
-   * Frame-rate flight steering: the mouse flies the nose, A/D add banked yaw,
-   * and the keys are rate-capped so a hard input can't snap the plane. Pitch is
-   * kept off vertical so heading stays well-defined.
+   * Frame-rate flight steering: the mouse flies the nose, while A/D own a
+   * separate banked turn rate so held keys always yaw the plane left/right.
+   * Pitch is kept off vertical so heading stays well-defined.
    */
   steerFly(input: Input, dt: number) {
     if (input.suspended) return;
 
     const tf = PLANE_TUNING.values;
     const maxStep = tf.turnRate * dt;
+    const keySteer = input.axis("KeyD", "KeyA"); // A = left, D = right
+    const mouseYawDelta = THREE.MathUtils.clamp(-input.mouseDX * tf.mouseYaw, -maxStep, maxStep);
+    const keyYawDelta = keySteer * tf.keyYaw * dt;
     const yawDelta = THREE.MathUtils.clamp(
-      -input.mouseDX * tf.mouseYaw + input.axis("KeyD", "KeyA") * tf.keyYaw * dt,
-      -maxStep,
-      maxStep
+      mouseYawDelta + keyYawDelta,
+      -(maxStep + tf.keyYaw * dt),
+      maxStep + tf.keyYaw * dt
     );
     const pitchDelta = THREE.MathUtils.clamp(
       -input.mouseDY * tf.mousePitch,
@@ -98,7 +101,7 @@ export class FlyController implements ModeController {
 
     // throttle
     const keyThrottle = (input.down("KeyW") ? 1 : 0) - (input.down("KeyS") ? 1 : 0);
-    const throttle = THREE.MathUtils.clamp(keyThrottle + input.axis("ArrowDown", "ArrowUp"), -1, 1);
+    const throttle = THREE.MathUtils.clamp(keyThrottle + input.padAxis("ArrowDown", "ArrowUp"), -1, 1);
     const boost = input.down("ShiftLeft");
     const brake = input.down("Space");
     const maxSpeed = boost ? tf.boostMaxSpeed : tf.maxSpeed;

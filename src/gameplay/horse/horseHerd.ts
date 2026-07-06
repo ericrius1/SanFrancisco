@@ -5,6 +5,7 @@ import type { WorldMap } from "../../world/heightmap";
 import type { Physics } from "../../core/physics";
 import type { PolicyDef } from "../../creatures/policy";
 import { HORSE, type CreatureSpec, type Link } from "../../creatures/quadruped";
+import { HorseTrainingGuide } from "../../ui/horseTrainingGuide";
 import { HorseRagdoll } from "./horseRagdoll";
 
 /**
@@ -26,14 +27,22 @@ const PLATFORM_R = 85; // room for the whole herd to roam
 const ROAM = 78;
 const COUNT = 20;
 const SCALE = 2.3; // horse-sized vs the ~1.7m human (real horses tower over people)
-const BRAIN_LINE_GLOW = LIGHT_SCALE * 0.2;
-const BRAIN_NODE_GLOW = LIGHT_SCALE * 0.36;
-const BRAIN_NODE_RADIUS = 0.06;
+const BRAIN_SCALE = 1.9;
+const BRAIN_LINE_GLOW = LIGHT_SCALE * 0.14;
+const BRAIN_NODE_GLOW = LIGHT_SCALE * 0.34;
+const BRAIN_NODE_RADIUS = 0.045;
+const BRAIN_HALO_RADIUS = 0.11;
+const BRAIN_LAYER_GAP = 0.72;
+const BRAIN_LAYER_HEIGHT = 1.42;
+const BRAIN_LAYER_DEPTH = 0.86;
+
+const LAYER_COLORS = [0x12a8ff, 0x38d8ff, 0x8d67ff, 0xff8d2a] as const;
 
 type Brain = {
   group: THREE.Group;
   line: THREE.LineSegments;
   nodes: THREE.InstancedMesh;
+  halos: THREE.InstancedMesh;
   lineColors: Float32Array;
   lineAttr: THREE.BufferAttribute;
   lineLayer: Uint8Array; // which activation layer each line vertex belongs to
@@ -78,29 +87,33 @@ function glowMaterial(color: number, intensity: number, opacity = 1): THREE.Mesh
   return mat;
 }
 
-function writeActivationColor(out: Float32Array, i3: number, activation: number, boost: number): void {
-  const tt = activation < -1 ? 0 : activation > 1 ? 1 : (activation + 1) / 2;
-  const cold = 1 - tt;
-  const hot = tt;
-  const mid = 1 - Math.abs(tt * 2 - 1);
-  const k = 0.34 + tt * tt * 1.25;
-  out[i3] = (0.12 * cold + 1.18 * hot + 0.22 * mid) * k * boost;
-  out[i3 + 1] = (0.95 * cold + 0.8 * hot + 0.28 * mid) * k * boost;
-  out[i3 + 2] = (1.22 * cold + 0.16 * hot + 0.56 * mid) * k * boost;
+function layerColor(layer: number): THREE.Color {
+  return new THREE.Color(LAYER_COLORS[Math.min(LAYER_COLORS.length - 1, layer)]);
 }
 
-function setActivationColor(color: THREE.Color, activation: number, boost: number): void {
+function writeActivationColor(out: Float32Array, i3: number, activation: number, layer: number, boost: number): void {
   const tt = activation < -1 ? 0 : activation > 1 ? 1 : (activation + 1) / 2;
-  const cold = 1 - tt;
-  const hot = tt;
-  const mid = 1 - Math.abs(tt * 2 - 1);
-  const k = 0.34 + tt * tt * 1.25;
+  const base = layerColor(layer);
+  const heat = 0.36 + tt * tt * 1.55;
+  const white = tt > 0.72 ? (tt - 0.72) * 1.3 : 0;
+  out[i3] = (base.r * (1 - white) + white) * heat * boost;
+  out[i3 + 1] = (base.g * (1 - white) + white) * heat * boost;
+  out[i3 + 2] = (base.b * (1 - white) + white) * heat * boost;
+}
+
+function setActivationColor(color: THREE.Color, activation: number, layer: number, boost: number): void {
+  const tt = activation < -1 ? 0 : activation > 1 ? 1 : (activation + 1) / 2;
+  const base = layerColor(layer);
+  const heat = 0.54 + tt * tt * 1.7;
+  const white = tt > 0.66 ? (tt - 0.66) * 1.55 : 0;
   color.setRGB(
-    (0.12 * cold + 1.18 * hot + 0.22 * mid) * k * boost,
-    (0.95 * cold + 0.8 * hot + 0.28 * mid) * k * boost,
-    (1.22 * cold + 0.16 * hot + 0.56 * mid) * k * boost
+    (base.r * (1 - white) + white) * heat * boost,
+    (base.g * (1 - white) + white) * heat * boost,
+    (base.b * (1 - white) + white) * heat * boost
   );
 }
+
+type HorseHerdOptions = { onGuideToggle?: (open: boolean) => void };
 
 export class HorseHerd {
   #box3d: any;
@@ -117,11 +130,14 @@ export class HorseHerd {
   #training = false;
   #onProgress: ((p: { gen: number; fitness: number; best: number }) => void) | null = null;
   #nodeColor = new THREE.Color();
+  #haloColor = new THREE.Color();
+  #guide: HorseTrainingGuide;
 
-  constructor(physics: Physics, _map: WorldMap, scene: THREE.Scene) {
+  constructor(physics: Physics, _map: WorldMap, scene: THREE.Scene, opts: HorseHerdOptions = {}) {
     this.#box3d = physics.box3d;
     this.#world = physics.world;
     this.#scene = scene;
+    this.#guide = new HorseTrainingGuide(new THREE.Vector3(PARK.x, PLATFORM_Y + 9.5, PARK.z), opts.onGuideToggle);
     this.#buildPlatform();
     void this.#load();
   }
@@ -235,18 +251,21 @@ export class HorseHerd {
    * soft additive lines. Fixed geometry; only per-vertex colour changes each frame.
    */
   #buildBrain(sizes: number[]): Brain {
-    const GAP = 0.54; // spacing between layer columns
-    const HEIGHT = 1.22;
-    const DEPTH = 0.36;
-    const WOBBLE = 0.08;
     const nL = sizes.length;
+    const layerX = (li: number) => (li - (nL - 1) / 2) * BRAIN_LAYER_GAP;
     const nodePos = (li: number, j: number, out: number[]) => {
-      const t = sizes[li] <= 1 ? 0.5 : j / (sizes[li] - 1);
-      const phase = t * Math.PI * 2.35 + li * 0.85;
+      const n = sizes[li];
+      const cols = li === 0 || li === nL - 1 ? 1 : 4;
+      const rows = Math.ceil(n / cols);
+      const col = j % cols;
+      const row = Math.floor(j / cols);
+      const dz = cols <= 1 ? 0 : (col / (cols - 1) - 0.5) * BRAIN_LAYER_DEPTH;
+      const dy = rows <= 1 ? 0 : (0.5 - row / (rows - 1)) * BRAIN_LAYER_HEIGHT;
+      const curve = Math.sin((row + 1) * 0.68 + li * 0.9) * 0.025;
       out.push(
-        (li - (nL - 1) / 2) * GAP + Math.cos(phase) * WOBBLE,
-        (t - 0.5) * HEIGHT,
-        Math.sin(phase) * DEPTH
+        layerX(li),
+        dy,
+        dz + curve
       );
     };
     const linePos: number[] = [];
@@ -261,23 +280,30 @@ export class HorseHerd {
       addVert(bLi, bJ);
     };
     for (let li = 0; li < nL; li++) {
+      const cols = li === 0 || li === nL - 1 ? 1 : 4;
+      const rows = Math.ceil(sizes[li] / cols);
       for (let j = 0; j < sizes[li]; j++) {
         nodePos(li, j, pointPos);
         pointLayer.push(li);
         pointNode.push(j);
       }
-      // vertical intra-layer rails plus a few cross-depth braces for volume.
-      for (let j = 0; j + 1 < sizes[li]; j++) addEdge(li, j, li, j + 1);
-      const ribStep = Math.max(3, Math.floor(sizes[li] / 6));
-      for (let j = 0; j + ribStep < sizes[li]; j += ribStep) addEdge(li, j, li, j + ribStep);
-      // inter-layer connections: each node to neighbours in the next curved column.
+      // In-layer lattice: vertical rails plus cross-depth rows make the layer read as a volume.
+      for (let row = 0; row < rows; row++) {
+        for (let col = 0; col < cols; col++) {
+          const j = row * cols + col;
+          if (j >= sizes[li]) continue;
+          const right = row * cols + col + 1;
+          const down = (row + 1) * cols + col;
+          if (col + 1 < cols && right < sizes[li]) addEdge(li, j, li, right);
+          if (row + 1 < rows && down < sizes[li]) addEdge(li, j, li, down);
+        }
+      }
+      // Adjacent layers get dense wiring like the reference. The policy is small
+      // enough that full connections are still cheap here.
       if (li + 1 < nL) {
         const n = sizes[li], m = sizes[li + 1];
         for (let j = 0; j < n; j++) {
-          const b = m <= 1 ? 0 : Math.round((j * (m - 1)) / Math.max(1, n - 1));
-          addEdge(li, j, li + 1, b);
-          addEdge(li, j, li + 1, Math.min(m - 1, b + 1));
-          if (j % 2 === 0) addEdge(li, j, li + 1, Math.max(0, b - 1));
+          for (let b = 0; b < m; b++) addEdge(li, j, li + 1, b);
         }
       }
     }
@@ -286,9 +312,10 @@ export class HorseHerd {
     const lineColArr = new Float32Array(linePosArr.length);
     lineGeo.setAttribute("position", new THREE.BufferAttribute(linePosArr, 3));
     const lineAttr = new THREE.BufferAttribute(lineColArr, 3);
+    lineAttr.setUsage(THREE.DynamicDrawUsage);
     lineGeo.setAttribute("color", lineAttr);
     const lineMat = new THREE.LineBasicNodeMaterial({ vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
-    lineMat.opacity = 0.9;
+    lineMat.opacity = 0.46;
     lineMat.depthTest = false;
     lineMat.toneMapped = false;
     const line = new THREE.LineSegments(lineGeo, lineMat);
@@ -297,16 +324,26 @@ export class HorseHerd {
     const nodeMat = new THREE.MeshBasicMaterial({
       color: 0xffffff,
       vertexColors: true,
-      transparent: true,
-      opacity: 0.92,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending
+      depthWrite: false
     });
     nodeMat.depthTest = false;
     nodeMat.toneMapped = false;
     const nodes = new THREE.InstancedMesh(new THREE.SphereGeometry(BRAIN_NODE_RADIUS, 10, 8), nodeMat, pointLayer.length);
     nodes.instanceMatrix.setUsage(THREE.StaticDrawUsage);
     nodes.frustumCulled = false;
+    const haloMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.32,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending
+    });
+    haloMat.depthTest = false;
+    haloMat.toneMapped = false;
+    const halos = new THREE.InstancedMesh(new THREE.SphereGeometry(BRAIN_HALO_RADIUS, 10, 8), haloMat, pointLayer.length);
+    halos.instanceMatrix.setUsage(THREE.StaticDrawUsage);
+    halos.frustumCulled = false;
     const nodeM = new THREE.Matrix4();
     const nodePosV = new THREE.Vector3();
     const nodeQuat = new THREE.Quaternion();
@@ -318,19 +355,26 @@ export class HorseHerd {
       const layerBoost = pointLayer[i] === 0 || pointLayer[i] === nL - 1 ? 1.12 : 1;
       nodeM.compose(nodePosV, nodeQuat, nodeScale.setScalar(layerBoost));
       nodes.setMatrixAt(i, nodeM);
+      halos.setMatrixAt(i, nodeM);
       seedColor.setRGB(0.35, 0.85, 1.1);
       nodes.setColorAt(i, seedColor);
+      halos.setColorAt(i, seedColor);
     }
     nodes.instanceMatrix.needsUpdate = true;
+    halos.instanceMatrix.needsUpdate = true;
+    nodes.instanceColor?.setUsage(THREE.DynamicDrawUsage);
+    halos.instanceColor?.setUsage(THREE.DynamicDrawUsage);
     if (nodes.instanceColor) nodes.instanceColor.needsUpdate = true;
+    if (halos.instanceColor) halos.instanceColor.needsUpdate = true;
 
     const group = new THREE.Group();
-    group.add(line, nodes);
-    group.scale.setScalar(SCALE); // brain lattice sized to the (scaled) horse
+    group.add(line, halos, nodes);
+    group.scale.setScalar(BRAIN_SCALE);
     return {
       group,
       line,
       nodes,
+      halos,
       lineColors: lineColArr,
       lineAttr,
       lineLayer: Uint8Array.from(lineLayer),
@@ -453,6 +497,7 @@ export class HorseHerd {
   update(_dt: number, camera: THREE.Camera): void {
     if (!this.#ready) return;
     camera.getWorldPosition(this.#camPos);
+    this.#guide.update(camera, this.#camPos);
     for (const h of this.#horses) {
       const t = h.rag.torsoLink;
       const ox = h.anchor.x;
@@ -466,25 +511,29 @@ export class HorseHerd {
         this.#poseMesh(h.m.parts[1 + i * 2], legs[i].thigh, ox, oy, oz);
         this.#poseMesh(h.m.parts[2 + i * 2], legs[i].shank, ox, oy, oz);
       }
-      this.#updateBrain(h);
     }
+    for (const h of this.#horses) this.#updateBrain(h);
   }
 
   #updateBrain(h: Horse): void {
     const b = h.m.brain;
     const layers = h.rag.layers();
     for (let v = 0; v < b.lineLayer.length; v++) {
-      writeActivationColor(b.lineColors, v * 3, layers[b.lineLayer[v]][b.lineNode[v]], BRAIN_LINE_GLOW);
+      writeActivationColor(b.lineColors, v * 3, layers[b.lineLayer[v]][b.lineNode[v]], b.lineLayer[v], BRAIN_LINE_GLOW);
     }
     for (let v = 0; v < b.pointLayer.length; v++) {
-      setActivationColor(this.#nodeColor, layers[b.pointLayer[v]][b.pointNode[v]], BRAIN_NODE_GLOW);
+      const layer = b.pointLayer[v];
+      setActivationColor(this.#nodeColor, layers[layer][b.pointNode[v]], layer, BRAIN_NODE_GLOW);
       b.nodes.setColorAt(v, this.#nodeColor);
+      this.#haloColor.copy(this.#nodeColor).multiplyScalar(0.68);
+      b.halos.setColorAt(v, this.#haloColor);
     }
     b.lineAttr.needsUpdate = true;
     if (b.nodes.instanceColor) b.nodes.instanceColor.needsUpdate = true;
-    // Float above the horse with a camera-facing bias, but keep an angled yaw/pitch so the depth reads.
-    const yaw = Math.atan2(this.#camPos.x - h.wx, this.#camPos.z - h.wz) + 0.38;
-    b.group.position.set(h.wx, h.wy + 1.62 * SCALE, h.wz);
-    b.group.rotation.set(-0.16, yaw, Math.sin(h.wx * 0.013 + h.wz * 0.017) * 0.04);
+    if (b.halos.instanceColor) b.halos.instanceColor.needsUpdate = true;
+    // Float above the horse. The graph is angled for real depth and faces the camera.
+    const yaw = Math.atan2(this.#camPos.x - h.wx, this.#camPos.z - h.wz);
+    b.group.position.set(h.wx, h.wy + 1.92 * SCALE, h.wz);
+    b.group.rotation.set(-0.18, yaw + 0.22, Math.sin(h.wx * 0.013 + h.wz * 0.017) * 0.035);
   }
 }

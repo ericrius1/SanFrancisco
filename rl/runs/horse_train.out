@@ -1,4 +1,20 @@
-(node:93052) ExperimentalWarning: Type Stripping is an experimental feature and might change at any time
+(node:80139) ExperimentalWarning: Type Stripping is an experimental feature and might change at any time
 (Use `node --trace-warnings ...` to show where the warning was created)
 [train] creature=horse obs=22 act=14 params=2254
-[train] warm-started from public/models/horse_policy.json
+gen 10  center=292.33  best=290.14  sigma=0.0873  steps=400/400  dist=2.15m  along=-1.95m  meanH=1.46(106%)  [59s]
+gen 20  center=363.95  best=261.93  sigma=0.0848  steps=400/400  dist=1.19m  along=-1.02m  meanH=1.44(105%)  [119s]
+gen 30  center=344.51  best=411.49  sigma=0.0822  steps=400/400  dist=3.70m  along=-2.48m  meanH=1.42(103%)  [181s]
+gen 40  center=466.55  best=443.37  sigma=0.0798  steps=400/400  dist=1.89m  along=-1.45m  meanH=1.42(104%)  [242s]
+gen 50  center=274.33  best=607.42  sigma=0.0774  steps=400/400  dist=4.84m  along=-3.94m  meanH=1.44(104%)  [305s]
+gen 60  center=547.02  best=406.45  sigma=0.0752  steps=400/400  dist=4.69m  along=-4.15m  meanH=1.41(102%)  [365s]
+gen 70  center=591.01  best=473.87  sigma=0.0729  steps=400/400  dist=5.13m  along=-3.46m  meanH=1.41(103%)  [426s]
+gen 80  center=389.89  best=658.12  sigma=0.0708  steps=400/400  dist=6.87m  along=-4.45m  meanH=1.36(99%)  [488s]
+gen 90  center=463.31  best=536.76  sigma=0.0687  steps=400/400  dist=8.22m  along=-4.75m  meanH=1.29(93%)  [551s]
+gen 100  center=421.36  best=717.71  sigma=0.0666  steps=400/400  dist=6.93m  along=-3.99m  meanH=1.38(100%)  [615s]
+gen 110  center=515.92  best=591.87  sigma=0.0647  steps=400/400  dist=7.42m  along=-4.65m  meanH=1.30(95%)  [680s]
+gen 120  center=467.51  best=589.29  sigma=0.0628  steps=400/400  dist=6.26m  along=-0.10m  meanH=1.35(98%)  [745s]
+gen 130  center=434.96  best=537.71  sigma=0.0609  steps=400/400  dist=3.98m  along=-2.14m  meanH=1.30(94%)  [810s]
+gen 140  center=585.31  best=619.03  sigma=0.0591  steps=400/400  dist=6.39m  along=-3.26m  meanH=1.27(93%)  [875s]
+gen 150  center=398.56  best=691.07  sigma=0.0573  steps=400/400  dist=6.04m  along=-5.97m  meanH=1.21(88%)  [939s]
+[train] done in 939s. best center fitness 880.5
+[train] policy -> public/models/horse_policy.json

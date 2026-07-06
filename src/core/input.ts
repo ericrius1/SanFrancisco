@@ -66,7 +66,7 @@ export class Input {
   #padAxes = new Map<string, number>();
   #padFireHeld = false;
   #triggerRoute: "plane" | "bird" | "drone" | null = null; // plane: ↑/↓ throttle; bird/drone: Q/U vertical or twirl
-  #invertLookY = false; // walk + fly/drone/bird: right-stick pitch opposite mouse convention
+  #invertLookY = false; // walk + fly/drone/bird + boat: right-stick pitch opposite mouse convention
 
   constructor(el: HTMLElement) {
     this.#el = el;
@@ -140,11 +140,17 @@ export class Input {
     this.onDeviceChange(device);
   }
 
-  /** Per-mode pad routing: fly → ↑/↓ throttle, bird → Q/E twirl, drone → Q/U vertical; walk + flying modes invert right-stick pitch. */
+  /** Per-mode pad routing: fly → ↑/↓ throttle, bird → Q/E twirl, drone → Q/U vertical; walk + flying + boat modes invert right-stick pitch. */
   setMode(mode: PlayerMode) {
     this.#triggerRoute =
       mode === "plane" ? "plane" : mode === "bird" ? "bird" : mode === "drone" ? "drone" : null;
-    this.#invertLookY = mode === "walk" || mode === "plane" || mode === "drone" || mode === "bird";
+    this.#invertLookY =
+      mode === "walk" ||
+      mode === "plane" ||
+      mode === "drone" ||
+      mode === "bird" ||
+      mode === "boat" ||
+      mode === "speedboat";
   }
 
   /**
@@ -265,8 +271,19 @@ export class Input {
     let v = d(pos) - d(neg);
     // pad contributions are stored under one canonical pair; the reversed
     // lookup (e.g. steering's axis("KeyD","KeyA")) flips the sign
-    v += this.#padAxes.get(`${neg}|${pos}`) ?? -(this.#padAxes.get(`${pos}|${neg}`) ?? 0);
+    v += this.#padAxisValue(neg, pos);
     return Math.max(-1, Math.min(1, v));
+  }
+
+  /** −1..1 from pad-only virtual axes; useful when keyboard keys have another global action. */
+  padAxis(neg: string, pos: string) {
+    if (this.suspended) return 0;
+    const v = this.#padAxisValue(neg, pos);
+    return Math.max(-1, Math.min(1, v));
+  }
+
+  #padAxisValue(neg: string, pos: string) {
+    return this.#padAxes.get(`${neg}|${pos}`) ?? -(this.#padAxes.get(`${pos}|${neg}`) ?? 0);
   }
 
   get firing() {

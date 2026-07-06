@@ -11,7 +11,7 @@
 import { createBox3D } from "box3d-wasm";
 import { readFileSync } from "node:fs";
 import { HorseRagdoll } from "../../src/gameplay/horse/horseRagdoll.ts";
-import { HORSE } from "../../src/creatures/quadruped.ts";
+import { HORSE, qRot } from "../../src/creatures/quadruped.ts";
 import { type PolicyDef } from "../../src/creatures/policy.ts";
 
 const def = JSON.parse(readFileSync("public/models/horse_policy.json", "utf8")) as PolicyDef;
@@ -23,6 +23,8 @@ const upY = (q: readonly number[]) => 1 - 2 * (q[0] * q[0] + q[2] * q[2]);
 const dt = 1 / 60;
 let worstTorsoY = 99;
 let worstUp = 1;
+let noseSum = 0;
+let noseN = 0;
 let start: [number, number] | null = null;
 let end: [number, number] = [0, 0];
 let theta = 0; // goal heading; forward for 4s then a gradual continuous turn (like the game's wander)
@@ -35,14 +37,19 @@ for (let i = 0; i < 600; i++) {
   if (i >= 90) {
     worstTorsoY = Math.min(worstTorsoY, t.pos[1]);
     worstUp = Math.min(worstUp, upY(t.quat));
+    const nose = qRot(t.quat, [0, 0, 1]); // is it moving NOSE-FIRST (forward) not backward?
+    noseSum += t.vel[0] * nose[0] + t.vel[2] * nose[2];
+    noseN++;
   }
   end = [t.pos[0], t.pos[2]];
   if (i % 60 === 0) console.log(`t=${(i / 60).toFixed(1)}s torsoY=${t.pos[1].toFixed(3)} (${((t.pos[1] / standY) * 100) | 0}% of stand) up=${upY(t.quat).toFixed(3)}`);
 }
 const moved = start ? Math.hypot(end[0] - start[0], end[1] - start[1]) : 0;
+const noseSpeed = noseSum / Math.max(1, noseN);
 const tallPct = (worstTorsoY / standY) * 100;
-console.log(`\nstandY ${standY.toFixed(2)}m  WORST torsoY ${worstTorsoY.toFixed(2)}m (${tallPct | 0}% of stand)  WORST up ${worstUp.toFixed(2)}  moved ${moved.toFixed(1)}m`);
+console.log(`\nstandY ${standY.toFixed(2)}m  WORST torsoY ${worstTorsoY.toFixed(2)}m (${tallPct | 0}% of stand)  WORST up ${worstUp.toFixed(2)}  moved ${moved.toFixed(1)}m  noseSpeed ${noseSpeed.toFixed(2)} m/s (forward if >0)`);
 const tallOK = worstTorsoY > 0.72 * standY;
 const upOK = worstUp > 0.82;
 const moveOK = moved > 2;
-console.log(tallOK && upOK && moveOK ? "PASS — stands tall, upright, and moves in the real runtime" : `FAIL — tall=${tallOK} (need >72% of stand) up=${upOK} (need >0.82) move=${moveOK} (need >2m)`);
+const fwdOK = noseSpeed > 0.3; // moving NOSE-FIRST, not backward
+console.log(tallOK && upOK && moveOK && fwdOK ? "PASS — stands tall, upright, runs FORWARD (nose-first) in the real runtime" : `FAIL — tall=${tallOK} up=${upOK} move=${moveOK} forward=${fwdOK} (noseSpeed ${noseSpeed.toFixed(2)}, need >0.3)`);

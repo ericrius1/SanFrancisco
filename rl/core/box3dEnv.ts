@@ -45,6 +45,7 @@ export class Box3DEnv {
   private goalTarget = 0;
   private rng: () => number = Math.random;
   private stepCount = 0;
+  private torsoMass = 0;
   private torques: Torque[] = [];
   private groundY = 0;
   private spawnY: number;
@@ -154,11 +155,19 @@ export class Box3DEnv {
     // wander the goal DURING the episode so the policy learns to TURN while
     // staying up (in-world the goal changes; a fixed-goal policy tips on turns)
     this.stepCount++;
-    if (this.stepCount % 90 === 0) this.goalTarget = this.goalAngle + (this.rng() - 0.5) * 2.6;
+    if (this.stepCount % 80 === 0) this.goalTarget = this.goalAngle + (this.rng() - 0.5) * 3.2; // sharper turns
     const da = this.goalTarget - this.goalAngle;
-    this.goalAngle += da > 0.02 ? 0.02 : da < -0.02 ? -0.02 : da; // <= ~0.02 rad/step
+    this.goalAngle += da > 0.028 ? 0.028 : da < -0.028 ? -0.028 : da;
     this.state.goal[0] = Math.sin(this.goalAngle);
     this.state.goal[1] = Math.cos(this.goalAngle);
+    // random SHOVE now and then so the policy learns to RECOVER its balance —
+    // this is what stops the "runs a bit then falls over" in the noisier game.
+    if (this.stepCount > 50 && this.stepCount % 75 === 0) {
+      if (this.torsoMass <= 0) this.torsoMass = this.world.getBodyMass(this.torso);
+      const ka = this.rng() * Math.PI * 2;
+      const kick = this.torsoMass * (0.5 + this.rng() * 0.9);
+      this.world.applyImpulse(this.torso, [Math.cos(ka) * kick, 0, Math.sin(ka) * kick]);
+    }
     this.phase = advancePhase(this.spec, this.phase, action, this.dt);
     decode(this.spec, action, this.state, this.phase, this.torques);
     this.applyTorques();

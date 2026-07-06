@@ -1,16 +1,5 @@
 import type { PlayerMode } from "../player/types"
-import { MENU_MODES } from "../player/discovery"
-const MODE_SHORT: Record<PlayerMode, string> = {
-  walk: "walk",
-  drive: "drive",
-  plane: "plane",
-  boat: "boat",
-  speedboat: "speedboat",
-  drone: "drone",
-  board: "board",
-  bird: "bird",
-  truck: "truck"
-}
+import { MENU_MODES, MODE_META } from "../player/discovery"
 
 /** One help row: keycap chips + what they do. */
 type Row = { c: string[]; label: string }
@@ -290,14 +279,14 @@ export class HUD {
       .join("")
 
     // second column: the vehicle roster, always visible so newcomers see there's
-    // more than walking. Keyboard picks a mode by number; the pad cycles ◀ ▶.
+    // more than walking. Keyboard arrows and the pad d-pad cycle through it.
     const vehicleRows = MENU_MODES.map((m, i) => {
-      const key = pad ? "" : `<span class="k">${i + 1}</span>`
-      return `<div class="mi${m === this.#current ? " on" : ""}">${key}<span class="lbl">${MODE_SHORT[m]}</span></div>`
+      const meta = MODE_META[m]
+      return `<div class="mi${m === this.#current ? " on" : ""}"><span class="mode-ic">${meta.icon}</span><span class="lbl">${meta.label}</span></div>`
     }).join("")
     const modes =
       `<div class="modes">` +
-      `<div class="modes-h">vehicles${pad ? " · ◀ ▶" : ""}</div>` +
+      `<div class="modes-h">vehicles · ${pad ? "◀ ▶" : "← →"}</div>` +
       `<div class="modes-list">${vehicleRows}</div>` +
       `</div>`
 
