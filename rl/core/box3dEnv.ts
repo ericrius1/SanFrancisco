@@ -140,9 +140,10 @@ export class Box3DEnv {
     this.goalTarget = this.goalAngle;
     this.state.goal[0] = Math.sin(this.goalAngle);
     this.state.goal[1] = Math.cos(this.goalAngle);
-    // commanded gait speed for this episode (Froude units): the policy must learn
-    // to hit whatever it's told — walk, trot, or gallop — so all gaits are trained.
-    this.targetNonDim = 0.25 + rng() * 2.05;
+    // commanded gait speed for this episode, in REACHABLE Froude units: ~0.2 walk,
+    // ~0.5 trot, ~0.8 gallop (the body tops out near 0.85 V — commanding faster is
+    // impossible and makes the policy crank itself over trying).
+    this.targetNonDim = 0.15 + rng() * 0.7;
     this.state.targetSpeed = this.targetNonDim * Math.sqrt(9.81 * this.spec.standHeight);
     this.phase = rng() * Math.PI * 2;
     // settle with the stance HELD by control, so the legs don't fold before the
@@ -166,7 +167,7 @@ export class Box3DEnv {
     // change the commanded gait speed mid-episode so it learns to TRANSITION
     // (walk->trot->gallop and back), not just hold one speed.
     if (this.stepCount % 110 === 0) {
-      this.targetNonDim = 0.25 + this.rng() * 2.05;
+      this.targetNonDim = 0.15 + this.rng() * 0.7;
       this.state.targetSpeed = this.targetNonDim * Math.sqrt(9.81 * this.spec.standHeight);
     }
     const da = this.goalTarget - this.goalAngle;

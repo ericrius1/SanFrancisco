@@ -360,7 +360,7 @@ export function reward(spec: CreatureSpec, state: CreatureState, action: ArrayLi
   const V = Math.sqrt(9.81 * H);
   const target = state.targetSpeed; // commanded nose-first speed (m/s)
   const speedErr = (fwdSpeed - target) / V; // non-dimensional
-  const speedMatch = Math.exp(-2.2 * speedErr * speedErr); // 1 exactly at the commanded speed, decays away
+  const speedMatch = Math.exp(-6.0 * speedErr * speedErr); // sharp: overshooting a walk or undershooting a gallop clearly costs reward, so gaits SEPARATE
   const gate = Math.max(0, upright) * tall; // must be UPRIGHT and TALL to earn anything
   const faceGate = 0.3 + 0.7 * Math.max(0, facing); // move more when FACING the goal
   const w = spec.reward;

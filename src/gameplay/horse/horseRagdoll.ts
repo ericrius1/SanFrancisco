@@ -79,7 +79,7 @@ export class HorseRagdoll {
     this.all = [this.torso];
     for (const lb of this.legBodies) this.all.push(lb.thigh, lb.shank);
 
-    this.state = { torso: mkLink(), legs: spec.legs.map(() => ({ thigh: mkLink(), shank: mkLink() }) as LegLinks), groundY: 0, goal: [0, 1], targetSpeed: 0.6 * Math.sqrt(9.81 * spec.standHeight) };
+    this.state = { torso: mkLink(), legs: spec.legs.map(() => ({ thigh: mkLink(), shank: mkLink() }) as LegLinks), groundY: 0, goal: [0, 1], targetSpeed: 0.3 * Math.sqrt(9.81 * spec.standHeight) };
     this.obsBuf = new Float32Array(obsDim(spec));
     this.syncState();
     this.settle(14); // stand up cleanly before the policy takes over

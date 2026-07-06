@@ -127,8 +127,12 @@ for (let g = 0; g < GENS; g++) {
   writeFileSync(logPath, JSON.stringify(line) + "\n", { flag: "a" });
 
   const robust = robustnessScore(rep.center);
-  if (robust > bestCenter) {
-    bestCenter = robust;
+  const improved = robust > bestCenter;
+  if (improved) bestCenter = robust;
+  // Deploy on robustness improvement OR as a periodic checkpoint (if not a big
+  // regression), so a plateaued robustness metric never FREEZES the deployed
+  // policy while training keeps improving other qualities like gait tracking.
+  if (improved || (rep.gen % 15 === 0 && robust >= 0.9 * bestCenter)) {
     policy.setParams(rep.center);
     writeFileSync(`public/models/${creatureName}_policy.json`, JSON.stringify(policy.toDef()));
   }

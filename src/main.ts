@@ -1764,7 +1764,7 @@ async function boot() {
       }
     } else if (ridingHorse >= 0) {
       horseHerd.steer(chase.yaw);
-      horseHerd.setRiddenSpeed(1.0 + input.axis("KeyS", "KeyW") * 1.2); // W = gallop, neutral = trot, S = walk
+      horseHerd.setRiddenSpeed(0.45 + input.axis("KeyS", "KeyW") * 0.4); // W = gallop, neutral = trot, S = walk
       if (input.pressed("Space")) horseHerd.jumpRidden(); // hop (0.8s cooldown rate-limits held key)
       if (horseHerd.riddenSeat(ridePos, rideQuat)) player.setRidePose(ridePos, rideQuat, frameDt);
       else { horseHerd.dismount(); ridingHorse = -1; player.endRide(); }

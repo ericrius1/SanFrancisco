@@ -130,7 +130,7 @@ export class HorseHerd {
   #ready = false;
   #ridden = -1;
   #steerYaw = 0;
-  #riddenSpeed = 1.4; // rider's commanded gait (Froude): trot by default, ramps toward gallop
+  #riddenSpeed = 0.55; // rider's commanded gait (Froude): trot by default, ramps toward gallop
   #forceSpeed: number | null = null; // debug/verify: command every horse this gait speed
   #camPos = new THREE.Vector3();
   #worker: Worker | null = null;
@@ -422,7 +422,7 @@ export class HorseHerd {
       const yaw = Math.random() * Math.PI * 2;
       rag.setGoal(Math.sin(yaw), Math.cos(yaw));
       const m = this.#buildMeshes(rag.layers().map((l) => l.length));
-      this.#horses.push({ rag, m, anchor, wanderYaw: yaw, wanderTimer: 2 + Math.random() * 4, speedNonDim: 0.45 + Math.random() * 0.35, gx: Math.sin(yaw), gz: Math.cos(yaw), downTimer: 0, wx: anchor.x, wy: PLATFORM_Y, wz: anchor.z, wq: [0, 0, 0, 1] });
+      this.#horses.push({ rag, m, anchor, wanderYaw: yaw, wanderTimer: 2 + Math.random() * 4, speedNonDim: 0.2 + Math.random() * 0.25, gx: Math.sin(yaw), gz: Math.cos(yaw), downTimer: 0, wx: anchor.x, wy: PLATFORM_Y, wz: anchor.z, wq: [0, 0, 0, 1] });
     }
   }
 
@@ -463,9 +463,10 @@ export class HorseHerd {
         } else if (h.wanderTimer <= 0) {
           h.wanderYaw += (Math.random() - 0.5) * 1.6;
           h.wanderTimer = 3 + Math.random() * 5;
-          // re-pick a roaming gait: mostly a calm WALK, sometimes a trot, rarely a canter
+          // re-pick a roaming gait (REACHABLE Froude units): mostly a calm WALK,
+          // sometimes a trot, occasionally a canter (body tops out ~0.85).
           const r = Math.random();
-          h.speedNonDim = r < 0.7 ? 0.4 + Math.random() * 0.35 : r < 0.93 ? 0.9 + Math.random() * 0.4 : 1.6 + Math.random() * 0.5;
+          h.speedNonDim = r < 0.7 ? 0.2 + Math.random() * 0.2 : r < 0.93 ? 0.45 + Math.random() * 0.15 : 0.7 + Math.random() * 0.15;
         }
         tx = Math.sin(h.wanderYaw);
         tz = Math.cos(h.wanderYaw);
@@ -504,7 +505,7 @@ export class HorseHerd {
   get riddenIndex(): number { return this.#ridden; }
   steer(yaw: number): void { this.#steerYaw = yaw; }
   /** Rider throttle → commanded gait speed (Froude units: ~0.5 walk .. ~2.2 gallop). */
-  setRiddenSpeed(nonDim: number): void { this.#riddenSpeed = Math.max(0, Math.min(2.4, nonDim)); }
+  setRiddenSpeed(nonDim: number): void { this.#riddenSpeed = Math.max(0, Math.min(0.9, nonDim)); }
   /** Verify/demo: force EVERY horse to one gait speed (null = back to per-horse roaming). */
   debugForceSpeed(nonDim: number | null): void { this.#forceSpeed = nonDim; }
   /** Make the ridden horse jump (rider pressed jump). */

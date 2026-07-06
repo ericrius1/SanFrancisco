@@ -175,6 +175,10 @@ export class Sky {
   // are applied once the node has created its per-cascade lights
   #csm: CSMShadowNode
   #csmTuned = false
+  // shadow-render throttle state (see update())
+  #shadowFrame = 0
+  #shadowAutoDisabled = false
+  #lastShadowCam = new THREE.Vector3()
 
   constructor(scene: THREE.Scene) {
     this.#scene = scene
@@ -517,7 +521,25 @@ export class Sky {
         this.#csmTuned = true
         this.setShadowQuality(RENDER_TUNING.values.shadowQuality as ShadowQuality)
       }
-      this.#csm.updateFrustums() // tracks aspect/fov changes (resize, speed kicks)
+      // Shadow-render throttle: re-rendering all city geometry into the 3
+      // cascades EVERY frame was the single biggest cost in the frame (profiled
+      // 4–7 ms, > half the frame in the city). The sun is near-static and the
+      // world is static — only the camera moves and shadows are low-frequency —
+      // so refit + re-render the cascades every OTHER frame. Skip frames reuse
+      // the last depth maps; we must NOT refit on them, or the moved cascade
+      // projection would sample the stale texture and shadows would slide. A big
+      // camera jump (teleport) forces an immediate update so shadows never blank.
+      if (!this.#shadowAutoDisabled) {
+        this.#shadowAutoDisabled = true
+        for (const l of this.#csm.lights) if (l.shadow) l.shadow.autoUpdate = false
+      }
+      this.#shadowFrame++
+      const jump = cameraPos.distanceTo(this.#lastShadowCam) > 50
+      if (this.#shadowFrame % 2 === 0 || jump) {
+        this.#lastShadowCam.copy(cameraPos)
+        this.#csm.updateFrustums() // tracks aspect/fov changes (resize, speed kicks)
+        for (const l of this.#csm.lights) if (l.shadow) l.shadow.needsUpdate = true
+      }
     }
   }
 }

@@ -18,9 +18,9 @@ const upY = (q: readonly number[]) => 1 - 2 * (q[0] * q[0] + q[2] * q[2]);
 const dt = 1 / 60;
 
 const GAITS = [
-  { name: "walk", cmd: 0.5 },
-  { name: "trot", cmd: 1.1 },
-  { name: "gallop", cmd: 2.0 }
+  { name: "walk", cmd: 0.25 },
+  { name: "trot", cmd: 0.5 },
+  { name: "gallop", cmd: 0.8 }
 ];
 
 let allOK = true;
@@ -51,9 +51,10 @@ for (const g of GAITS) {
   const gotND = spdSum / n; // achieved Froude speed
   const meanTall = tallSum / n;
   const err = Math.abs(gotND - g.cmd);
-  // tolerance scales a bit with the command; walking need only be slow-ish, gallop fast-ish
-  const tol = 0.35 + 0.25 * g.cmd;
-  const speedOK = err < tol && (g.cmd < 0.7 ? gotND < 1.0 : true); // a "walk" must actually be slow
+  const tol = 0.18 + 0.3 * g.cmd;
+  const slowOK = g.cmd > 0.35 || gotND < 0.5; // a walk must actually be slow
+  const fastOK = g.cmd < 0.65 || gotND > 0.55; // a gallop must actually be fast
+  const speedOK = err < tol && slowOK && fastOK;
   const tallOK = meanTall > 0.72;
   const ok = speedOK && tallOK && !fell;
   allOK &&= ok;
