@@ -38,7 +38,6 @@ import { VehicleAudio } from "./fx/vehicleAudio";
 import { Props } from "./gameplay/props";
 import { Traffic, DRIVE_PROFILES, type VehicleClass } from "./gameplay/traffic";
 import { AbandonedMounts } from "./gameplay/abandonedMounts";
-import { HorseHerd } from "./gameplay/horse/horseHerd";
 import { RocketRiders, type LauncherRig } from "./gameplay/launchers";
 import { Flyover } from "./gameplay/flyover";
 import { BridgeParade } from "./gameplay/bridgeParade";
@@ -256,7 +255,6 @@ async function boot() {
   const forest = new Forest(map, scene);
   const abandonedMounts = new AbandonedMounts(physics, map, scene);
   let cameraMode = false;
-  const horseHerd = new HorseHerd(physics, map, scene);
   const rocketRiders = new RocketRiders(scene, map);
   // "-" spectacle: planes + phoenixes overhead, boats under the Golden Gate
   const flyover = new Flyover(scene);
@@ -560,7 +558,6 @@ async function boot() {
   // The pose glue runs each frame in the render loop; every mode change,
   // respawn or teleport goes through leaveRide first.
   let passengerOf: number | null = null;
-  let ridingHorse = -1; // index of the RL horse the player is riding, or -1
   const ridePos = new THREE.Vector3();
   const rideQuat = new THREE.Quaternion();
   const leaveRide = () => {
@@ -700,15 +697,6 @@ async function boot() {
   };
   /** E (or pad B): leave any vehicle, creature, or passenger seat for on-foot. */
   const exitToWalk = () => {
-    if (ridingHorse >= 0) {
-      horseHerd.dismount();
-      ridingHorse = -1;
-      player.position.x += Math.cos(player.heading) * 2.2;
-      player.position.z -= Math.sin(player.heading) * 2.2;
-      player.endRide();
-      hud.message("Off the horse", 1.8);
-      return true;
-    }
     if (passengerOf !== null) {
       passengerOf = null;
       player.position.x += Math.cos(player.heading) * 2.4;
@@ -867,15 +855,6 @@ async function boot() {
         if (player.mode !== "walk") player.trySwitch("walk");
         quidHud.stopTutorial();
         player.respawn({ x: QUIDDITCH_PITCH.x, z: QUIDDITCH_PITCH.z, heading: -Math.PI / 2 });
-      } else if (toName === "Horse Paddock") {
-        // the horses live on a raised platform above the buggy hill — put the
-        // rider up on it too (respawn grounds them, then lift onto the deck).
-        dropCurrentDriveMount();
-        if (player.mode !== "walk") player.trySwitch("walk");
-        player.respawn({ x, z, heading });
-        const py = horseHerd.platformY + 1.5;
-        player.position.y = py;
-        physics.world.setBodyTransform(player.body, [x, py, z], [0, Math.sin(heading / 2), 0, Math.cos(heading / 2)]);
       } else {
         const want = { x: tx, z: tz, heading };
         const open = await findOpenSpawn(map, tiles.manifest, want);
@@ -1395,7 +1374,6 @@ async function boot() {
         // of auto-assigning, so you can choose Seeker / Beater / Chaser / Keeper
         const wantQuid = !drv && !currentQuidditch && quidditch.inJoinZoneAt(player.position);
         const animal = drv || wantQuid ? null : forest.nearest(player.position, 5);
-        const horseNear = drv || wantQuid || animal ? -1 : horseHerd.nearest(player.position.x, player.position.z, 3.5);
         if (drv) {
           passengerOf = drv.id;
           player.startRide();
@@ -1415,11 +1393,6 @@ async function boot() {
             info.kind === "raccoon" ? "You're riding the raccoon! Left click — gummy bears" : "You're riding the bear!",
             3
           );
-        } else if (horseNear >= 0) {
-          ridingHorse = horseNear;
-          horseHerd.mount(horseNear);
-          player.startRide();
-          hud.message("You're on the RL horse — look to steer, E to hop off", 3.2);
         } else {
           // re-board a vehicle/creature you left behind — walk up, press E,
           // just like a parked car (the phoenix, a crashed plane, a hoverboard…)
@@ -1713,7 +1686,6 @@ async function boot() {
       player.update(physics.world.fixedTimeStep, input, chase.yaw, aim);
       traffic.prePhysics(physics.world.fixedTimeStep, player.position, sky.timeOfDay, sky.sunsetAzimuth);
       abandonedMounts.prePhysics(physics.world.fixedTimeStep);
-      horseHerd.prePhysics(physics.world.fixedTimeStep);
       physics.step(physics.world.fixedTimeStep, player.position);
       accumulator -= physics.world.fixedTimeStep;
       steps++;
@@ -1742,12 +1714,6 @@ async function boot() {
         player.endRide();
         hud.message("Your ride ended", 2.2);
       }
-    } else if (ridingHorse >= 0) {
-      horseHerd.steer(chase.yaw);
-      horseHerd.setRiddenSpeed(0.45 + input.axis("KeyS", "KeyW") * 0.4); // W = gallop, neutral = trot, S = walk
-      if (input.pressed("Space")) horseHerd.jumpRidden(); // hop (0.8s cooldown rate-limits held key)
-      if (horseHerd.riddenSeat(ridePos, rideQuat)) player.setRidePose(ridePos, rideQuat, frameDt);
-      else { horseHerd.dismount(); ridingHorse = -1; player.endRide(); }
     } else {
       // interpolate the render transform between the last two physics states so
       // 120 Hz frames don't see a 60 Hz stutter
@@ -1768,7 +1734,6 @@ async function boot() {
     if (player.mode === "speedboat") boatLaunchers?.update(frameDt); // guitarist jam + rocket reload
     creatures.update(elapsed, camera.position); // gulls live at altitude — never gated
     forest.update(frameDt, camera.position);
-    horseHerd.update(frameDt, camera);
     flora.update(camera.position, highUp);
     if (currentAnimal) forest.setRiddenSpeed(player.speed);
     islands.update(elapsed);
@@ -2007,7 +1972,7 @@ async function boot() {
 
   const exposeDebugHooks = () => {
     Object.assign(window as never, {
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, props, exploratorium, traffic, creatures, forest, flora, splashes, vehicleAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, truckLaunchers, boatLaunchers, goldenGateLights, bridgeShow, flyover, bridgeParade, horseHerd, teleportToTarget }
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, props, exploratorium, traffic, creatures, forest, flora, splashes, vehicleAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, truckLaunchers, boatLaunchers, goldenGateLights, bridgeShow, flyover, bridgeParade, teleportToTarget }
     });
   };
   if (import.meta.env.DEV || new URLSearchParams(location.search).has("profile")) {
