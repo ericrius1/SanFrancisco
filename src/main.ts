@@ -256,15 +256,7 @@ async function boot() {
   const forest = new Forest(map, scene);
   const abandonedMounts = new AbandonedMounts(physics, map, scene);
   let cameraMode = false;
-  // RL horses roaming Golden Gate Park — live box3d ragdolls running the trained
-  // policy, with their neural activations bubbling over their heads.
-  const horseHerd = new HorseHerd(physics, map, scene, {
-    onGuideToggle: (open) => {
-      input.suspended = open || cameraMode;
-      if (open) input.releaseLock();
-      else if (!cameraMode) input.requestLock();
-    }
-  });
+  const horseHerd = new HorseHerd(physics, map, scene);
   const rocketRiders = new RocketRiders(scene, map);
   // "-" spectacle: planes + phoenixes overhead, boats under the Golden Gate
   const flyover = new Flyover(scene);
@@ -1393,18 +1385,6 @@ async function boot() {
 
     // E: Exploratorium piano, then exit any vehicle/creature, or on foot hop
     // into the nearest car (a friend's passenger seat wins over parked traffic)
-    if (input.pressed("KeyL")) {
-      // L: train the horses LIVE in a worker — watch the herd learn in the patch
-      if (horseHerd.training) {
-        horseHerd.stopTraining();
-        hud.message("Live horse training: stopped", 2);
-      } else {
-        horseHerd.startTraining((p) => {
-          if (p.gen % 4 === 0) hud.message(`Training live — gen ${p.gen} · fitness ${p.fitness} (best ${p.best})`, 1.3);
-        });
-        hud.message("Live horse training started — watch the herd learn (L stops)", 3);
-      }
-    }
     if (input.pressed("KeyE") && exploratorium.tryInteract()) {
       // consumed E inside the museum: seated at the dome piano, or opened/closed
       // a plaque — only the piano advances the tutorial
@@ -1733,7 +1713,7 @@ async function boot() {
       player.update(physics.world.fixedTimeStep, input, chase.yaw, aim);
       traffic.prePhysics(physics.world.fixedTimeStep, player.position, sky.timeOfDay, sky.sunsetAzimuth);
       abandonedMounts.prePhysics(physics.world.fixedTimeStep);
-      horseHerd.prePhysics(physics.world.fixedTimeStep); // step each horse's private RL sim
+      horseHerd.prePhysics(physics.world.fixedTimeStep);
       physics.step(physics.world.fixedTimeStep, player.position);
       accumulator -= physics.world.fixedTimeStep;
       steps++;
@@ -1788,7 +1768,7 @@ async function boot() {
     if (player.mode === "speedboat") boatLaunchers?.update(frameDt); // guitarist jam + rocket reload
     creatures.update(elapsed, camera.position); // gulls live at altitude — never gated
     forest.update(frameDt, camera.position);
-    horseHerd.update(frameDt, camera); // sync ragdoll meshes onto terrain + refresh brain bubbles
+    horseHerd.update(frameDt, camera);
     flora.update(camera.position, highUp);
     if (currentAnimal) forest.setRiddenSpeed(player.speed);
     islands.update(elapsed);

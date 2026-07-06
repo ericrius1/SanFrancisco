@@ -208,7 +208,7 @@ export class Minimap {
       const [a, b] = ggb.towers;
       this.#landmarks.push({ x: (a[0] + b[0]) / 2, z: (a[1] + b[1]) / 2, name: "Golden Gate Bridge" });
     }
-    // The RL horse herd's meadow in Golden Gate Park (keep in sync with PARK in
+    // Horse herd meadow in Golden Gate Park (keep in sync with PARK in
     // src/gameplay/horse/horseHerd.ts) — dot + label + teleport like the rest.
     this.#landmarks.push({ x: -5250, z: 2380, name: "Horse Paddock" });
     this.#layers = MAP_LAYER_DEFS.map((def) => ({

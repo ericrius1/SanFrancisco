@@ -1,8 +1,0 @@
-(node:3135) ExperimentalWarning: Type Stripping is an experimental feature and might change at any time
-(Use `node --trace-warnings ...` to show where the warning was created)
-[train] tuning from rl/runs/search/test_footfall.cfg.json: {"freqBase":0.7909,"freqSpan":0.5198,"strideBase":0.7459,"strideSpan":1.5651,"actFreqAuth":0.7188,"actStrideAuth":0.3095,"actKneeAuth":0.7839,"speedMatchA":5.4003,"progressW":0.6879,"tallFloorSlope":0.0888,"doneFloorSlope":0.2372,"uprightSoften":0.4609,"maxTorqueScale":1.1028,"gallopBlend":0.85}
-[train] creature=horse obs=23 act=14 params=2286
-[train] warm-started from public/models/horse_policy.json
-gen 60  center=643.61  best=567.4  sigma=0.0786  steps=440/440  dist=4.21m  along=-1.37m  meanH=1.36(99%)  [353s]
-[train] done in 353s. best robustness score 1105.1
-[train] policy -> rl/runs/search/test_footfall.policy.json
