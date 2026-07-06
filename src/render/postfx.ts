@@ -23,11 +23,11 @@ import { tunables } from "../core/persist";
 
 /**
  * Stylized post effects, all OFF by default, toggled in the "/" panel's
- * "post fx" folder. Quality controls above them steer the render pipeline's
- * scene AA and SSAO passes; each stylized effect is an independent per-pixel
- * stage so they stack:
+ * "post fx" folder. The quality control above them steers the render pipeline's
+ * scene AA samples; each stylized effect is an independent per-pixel stage so
+ * they stack:
  *
- *  - ink & wash: pen outlines from the AO prepass's normals + depth, plus a
+ *  - ink & wash: pen outlines from the outline prepass's normals + depth, plus a
  *    soft luminance posterize — storybook illustration.
  *  - dream haze: halation blur + radial color fringe in linear light, then a
  *    pastel lift, gentle vignette and fine animated grain — hazy memory.
@@ -49,11 +49,6 @@ export const POSTFX_TUNING = tunables("postfx", {
     step: 1,
     label: "scene AA samples"
   },
-  ssao: { v: false, label: "SSAO" },
-  ssaoScale: { v: 0.5, min: 0.35, max: 1, step: 0.05, label: "· SSAO scale" },
-  ssaoSamples: { v: 4, min: 2, max: 12, step: 1, label: "· SSAO samples" },
-  ssaoRadius: { v: 1.35, min: 0.5, max: 3, step: 0.05, label: "· SSAO radius" },
-  ssaoIntensity: { v: 3.2, min: 0, max: 6, step: 0.1, label: "· SSAO intensity" },
   ink: { v: false, label: "ink & wash" },
   inkStrength: { v: 0.65, min: 0, max: 1, step: 0.05, label: "· ink strength" },
   inkWidth: { v: 1.5, min: 1, max: 4, step: 0.5, label: "· line width (px)" },
@@ -68,7 +63,7 @@ export const POSTFX_TUNING = tunables("postfx", {
 
 /** The keys that change the shader itself (everything else is a live uniform). */
 export const POSTFX_TOGGLES = ["ink", "dream", "retro"] as const;
-export const POSTFX_QUALITY_KEYS = ["sceneSamples", "ssao", "ssaoScale", "ssaoSamples", "ssaoRadius", "ssaoIntensity"] as const;
+export const POSTFX_QUALITY_KEYS = ["sceneSamples"] as const;
 
 const U = {
   inkStrength: uniform(POSTFX_TUNING.values.inkStrength),
@@ -106,16 +101,16 @@ const grainNoise = (p: any) =>
 export function createPostFx(deps: {
   /** lit scene pass texture (linear HDR) */
   sceneTex: any;
-  /** AO prepass packed-normal texture (half-res is fine for outlines) */
+  /** outline prepass packed-normal texture (half-res is fine for outlines) */
   normalTex: any;
-  /** AO prepass depth texture */
+  /** outline prepass depth texture */
   depthTex: any;
   camera: THREE.Camera;
 }) {
   const { sceneTex, normalTex, depthTex, camera } = deps;
 
   // object-reference uniform: uploads the camera's current inverse projection
-  // every frame, reversed-z included (same trick as the vendored SSAO)
+  // every frame, reversed-z included
   const projInv = uniform(camera.projectionMatrixInverse);
 
   const normalAt = (uv: any) => unpackRGBToNormal(normalTex.sample(uv)).normalize();

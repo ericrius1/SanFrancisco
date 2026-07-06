@@ -85,6 +85,19 @@ mkdirSync("public/models", { recursive: true });
 const logPath = `rl/runs/${creatureName}_log.jsonl`;
 writeFileSync(logPath, "");
 
+// Score the center policy against a FIXED shove/goal seed every generation, so the
+// number is comparable gen-to-gen. rep.centerFitness uses the per-gen training seed,
+// which makes it swing with shove luck — saving on that picks a lucky-easy gen, not
+// the genuinely most robust policy. This is the deploy criterion.
+function robustnessScore(params: Float32Array): number {
+  policy.setParams(params);
+  let total = 0;
+  for (let e = 0; e < SCALES.length; e++) {
+    total += rollout(envs[e], policy, { maxSteps: EP_STEPS, seed: 100003 + e }).reward;
+  }
+  return total / SCALES.length;
+}
+
 const t0 = Date.now();
 let bestCenter = -Infinity;
 for (let g = 0; g < GENS; g++) {
@@ -92,8 +105,9 @@ for (let g = 0; g < GENS; g++) {
   const line = { gen: rep.gen, mean: +rep.meanFitness.toFixed(2), best: +rep.bestFitness.toFixed(2), center: +rep.centerFitness.toFixed(2), sigma: +rep.sigma.toFixed(4) };
   writeFileSync(logPath, JSON.stringify(line) + "\n", { flag: "a" });
 
-  if (rep.centerFitness > bestCenter) {
-    bestCenter = rep.centerFitness;
+  const robust = robustnessScore(rep.center);
+  if (robust > bestCenter) {
+    bestCenter = robust;
     policy.setParams(rep.center);
     writeFileSync(`public/models/${creatureName}_policy.json`, JSON.stringify(policy.toDef()));
   }
@@ -123,5 +137,5 @@ for (let g = 0; g < GENS; g++) {
     );
   }
 }
-console.log(`[train] done in ${((Date.now() - t0) / 1000).toFixed(0)}s. best center fitness ${bestCenter.toFixed(1)}`);
+console.log(`[train] done in ${((Date.now() - t0) / 1000).toFixed(0)}s. best robustness score ${bestCenter.toFixed(1)}`);
 console.log(`[train] policy -> public/models/${creatureName}_policy.json`);

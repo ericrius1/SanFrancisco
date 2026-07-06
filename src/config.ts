@@ -25,42 +25,22 @@ export const RENDER_QUALITY_PRESETS: Record<
     maxPixelRatio: number;
     shadowQuality: ShadowQuality;
     sceneSamples: number;
-    ssao: boolean;
-    ssaoScale: number;
-    ssaoSamples: number;
-    ssaoRadius: number;
-    ssaoIntensity: number;
   }
 > = {
   performance: {
     maxPixelRatio: 1,
     shadowQuality: "off",
-    sceneSamples: 0,
-    ssao: false,
-    ssaoScale: 0.5,
-    ssaoSamples: 4,
-    ssaoRadius: 1.2,
-    ssaoIntensity: 2.5
+    sceneSamples: 0
   },
   balanced: {
     maxPixelRatio: 1.5,
     shadowQuality: "low",
-    sceneSamples: 2,
-    ssao: false,
-    ssaoScale: 0.5,
-    ssaoSamples: 4,
-    ssaoRadius: 1.35,
-    ssaoIntensity: 3.2
+    sceneSamples: 2
   },
   high: {
     maxPixelRatio: 1.5,
     shadowQuality: "high",
-    sceneSamples: 4,
-    ssao: true,
-    ssaoScale: 0.5,
-    ssaoSamples: 8,
-    ssaoRadius: 1.5,
-    ssaoIntensity: 4
+    sceneSamples: 4
   }
 };
 

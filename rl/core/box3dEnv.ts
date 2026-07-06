@@ -46,6 +46,7 @@ export class Box3DEnv {
   private rng: () => number = Math.random;
   private stepCount = 0;
   private torsoMass = 0;
+  private downCount = 0;
   private torques: Torque[] = [];
   private groundY = 0;
   private spawnY: number;
@@ -133,6 +134,7 @@ export class Box3DEnv {
     }
     this.rng = rng;
     this.stepCount = 0;
+    this.downCount = 0;
     this.goalAngle = rng() * Math.PI * 2;
     this.goalTarget = this.goalAngle;
     this.state.goal[0] = Math.sin(this.goalAngle);
@@ -174,9 +176,11 @@ export class Box3DEnv {
     this.keepAwake();
     this.world.step(this.dt, this.substeps);
     this.syncState();
-    const { r, done } = reward(this.spec, this.state, action, this.dt);
+    const { r, done: fell } = reward(this.spec, this.state, action, this.dt);
+    if (fell) this.downCount++;
+    else this.downCount = 0;
     const obs = observe(this.spec, this.state, this.phase, this.obsBuf);
-    return { obs, reward: r, done };
+    return { obs, reward: r, done: this.downCount > 28 }; // let it recover a stumble; end only if down ~0.25s
   }
 
   /** World transforms of every link (torso, then thigh+shank per leg) — for recording/video. */

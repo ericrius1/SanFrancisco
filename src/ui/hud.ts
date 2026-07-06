@@ -1,5 +1,4 @@
 import type { PlayerMode } from "../player/types"
-import { MENU_MODES, MODE_META } from "../player/discovery"
 
 /** One help row: keycap chips + what they do. */
 type Row = { c: string[]; label: string }
@@ -195,7 +194,6 @@ export class HUD {
   #current: PlayerMode = "walk"
   #device: "kb" | "pad" = "kb"
   #toolVerb = "sling paintballs" // what a click does right now (the toolbar's tool)
-  #expanded = false // advanced shortcuts folded away by default
   #historyCanBack = false
   #historyCanForward = false
 
@@ -205,13 +203,6 @@ export class HUD {
   constructor() {
     this.#history.className = "place-history"
     this.#root.appendChild(this.#history)
-    // one delegated listener: the fold-out toggle lives inside #help
-    this.#help.addEventListener("click", (e) => {
-      if ((e.target as HTMLElement).closest(".more")) {
-        this.#expanded = !this.#expanded
-        this.#renderHelp()
-      }
-    })
     this.#history.addEventListener("click", (e) => {
       if ((e.target as HTMLElement).closest('[data-history="back"]')) {
         this.onHistoryBack()
@@ -278,56 +269,37 @@ export class HUD {
       )
       .join("")
 
-    // second column: the vehicle roster, always visible so newcomers see there's
-    // more than walking. Keyboard arrows and the pad d-pad cycle through it.
-    const vehicleRows = MENU_MODES.map((m, i) => {
-      const meta = MODE_META[m]
-      return `<div class="mi${m === this.#current ? " on" : ""}"><span class="mode-ic">${meta.icon}</span><span class="lbl">${meta.label}</span></div>`
-    }).join("")
-    const modes =
-      `<div class="modes">` +
-      `<div class="modes-h">vehicles · ${pad ? "◀ ▶" : "← →"}</div>` +
-      `<div class="modes-list">${vehicleRows}</div>` +
-      `</div>`
+    const extraRows = (pad
+      ? [
+          { c: ["Y"], label: "respawn" },
+          { c: ["R3"], label: "camera" },
+          { c: ["▲"], label: "fireworks" },
+          { c: ["Start"], label: "pause" },
+          { c: ["Back"], label: "immersive" }
+        ]
+      : [
+          { c: ["R"], label: "respawn" },
+          { c: ["B"], label: "fireworks" },
+          { c: ["Z"], label: "hold — time of day" },
+          { c: ["P"], label: "pause" },
+          { c: ["C"], label: "camera" },
+          { c: ["/"], label: "debug" },
+          { c: ["I"], label: "immersive" },
+          { c: ["F"], label: "fullscreen" }
+        ]
+    )
+      .map(
+        (r) =>
+          `<div class="keys">${chips(r.c, pad)}</div>` +
+          `<div class="lbl">${r.label}</div>`
+      )
+      .join("")
+    const extras = `<div class="extras"><div class="grid">${extraRows}</div></div>`
 
-    html.push(`<div class="cols"><div class="grid">${rows}</div>${modes}</div>`)
+    html.push(`<div class="cols"><div class="grid">${rows}</div>${extras}</div>`)
 
     const tip = TIPS[this.#current]
     if (tip) html.push(`<div class="tip">${tip}</div>`)
-
-    // fold-out toggle: basic movement stays, the big shortcut list hides behind it
-    html.push(
-      `<button class="more" type="button">` +
-        `<span class="chev">${this.#expanded ? "▾" : "▸"}</span>` +
-        `<span>${this.#expanded ? "less" : "more"}</span>` +
-        `</button>`
-    )
-
-    // global shortcuts flow into a wrapped footer so the panel stays compact
-    const fi = (keys: string[], label: string, on = false) =>
-      `<span class="fi${on ? " on" : ""}">${chips(keys, pad)}<span class="lbl">${label}</span></span>`
-    const foot = pad
-      ? [
-          fi(["◀", "▶"], "switch mode"),
-          fi(["Y"], "respawn"),
-          fi(["R3"], "camera"),
-          fi(["▲"], "fireworks"),
-          fi(["▼"], "zero-g"),
-          fi(["Start"], "pause"),
-          fi(["Back"], "immersive")
-        ]
-      : [
-          fi(["R"], "respawn"),
-          fi(["B"], "fireworks"),
-          fi(["Z"], "hold — time of day"),
-          fi(["G"], "zero-g"),
-          fi(["P"], "pause"),
-          fi(["C"], "camera"),
-          fi(["/"], "debug"),
-          fi(["I"], "immersive"),
-          fi(["F"], "fullscreen")
-        ]
-    if (this.#expanded) html.push(`<div class="foot">${foot.join("")}</div>`)
 
     this.#help.innerHTML = html.join("")
     // restart the fade-in so mode/device swaps read as a deliberate change

@@ -240,9 +240,16 @@ async function boot() {
   const creatures = new Creatures(map, scene);
   const forest = new Forest(map, scene);
   const abandonedMounts = new AbandonedMounts(physics, map, scene);
+  let cameraMode = false;
   // RL horses roaming Golden Gate Park — live box3d ragdolls running the trained
   // policy, with their neural activations bubbling over their heads.
-  const horseHerd = new HorseHerd(physics, map, scene);
+  const horseHerd = new HorseHerd(physics, map, scene, {
+    onGuideToggle: (open) => {
+      input.suspended = open || cameraMode;
+      if (open) input.releaseLock();
+      else if (!cameraMode) input.requestLock();
+    }
+  });
   const rocketRiders = new RocketRiders(scene, map);
   // "-" spectacle: planes + phoenixes overhead, boats under the Golden Gate
   const flyover = new Flyover(scene);
@@ -418,7 +425,6 @@ async function boot() {
   orbit.smoothTime = 0.12;
   orbit.draggingSmoothTime = 0.08;
   orbit.maxDistance = 1200;
-  let cameraMode = false;
 
   const setCameraMode = (on: boolean) => {
     cameraMode = on;
@@ -476,7 +482,7 @@ async function boot() {
 
   hud.setMode(player.mode);
 
-  // post-processing: SSAO folded into the lit pass + optional stylized screen effects
+  // post-processing: scene pass AA + optional stylized screen effects
   const pipeline = createRenderPipeline(renderer, scene, camera);
 
   // ---- multiplayer: presence relay (src/net/net.ts) + remote avatars +

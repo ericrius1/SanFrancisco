@@ -26,6 +26,8 @@ const PLATFORM_Y = 35; // clears the ~34 m hilltop below
 const PLATFORM_R = 85; // room for the whole herd to roam
 const ROAM = 78;
 const COUNT = 20;
+const DOWN_SECONDS = 10; // a fallen horse lies where it landed this long before getting back up
+const GOAL_EASE = 0.45; // seconds — goal-direction smoothing time constant (gentler turns = fewer tip-overs)
 const SCALE = 2.3; // horse-sized vs the ~1.7m human (real horses tower over people)
 const BRAIN_SCALE = 1.9;
 const BRAIN_LINE_GLOW = LIGHT_SCALE * 0.14;
@@ -57,6 +59,8 @@ type Horse = {
   anchor: { x: number; z: number };
   wanderYaw: number;
   wanderTimer: number;
+  gx: number; gz: number; // smoothed goal direction (eased toward target so turns are gradual)
+  downTimer: number; // >0 = lying where it fell, counting down before it gets back up
   wx: number; wy: number; wz: number;
   wq: [number, number, number, number];
 };
@@ -403,7 +407,7 @@ export class HorseHerd {
       const yaw = Math.random() * Math.PI * 2;
       rag.setGoal(Math.sin(yaw), Math.cos(yaw));
       const m = this.#buildMeshes(rag.layers().map((l) => l.length));
-      this.#horses.push({ rag, m, anchor, wanderYaw: yaw, wanderTimer: 2 + Math.random() * 4, wx: anchor.x, wy: PLATFORM_Y, wz: anchor.z, wq: [0, 0, 0, 1] });
+      this.#horses.push({ rag, m, anchor, wanderYaw: yaw, wanderTimer: 2 + Math.random() * 4, gx: Math.sin(yaw), gz: Math.cos(yaw), downTimer: 0, wx: anchor.x, wy: PLATFORM_Y, wz: anchor.z, wq: [0, 0, 0, 1] });
     }
   }
 
@@ -411,10 +415,23 @@ export class HorseHerd {
     if (!this.#ready) return;
     for (let idx = 0; idx < this.#horses.length; idx++) {
       const h = this.#horses[idx];
+      // Down: a fallen horse lies limp where it landed for DOWN_SECONDS, THEN
+      // gets back up (rather than vanishing/snapping upright the instant it trips).
+      if (h.downTimer > 0) {
+        h.downTimer -= dt;
+        h.rag.update(dt); // limp — no policy control while downed
+        if (h.downTimer <= 0) { h.rag.setDowned(false); h.rag.reset(); }
+        continue;
+      }
+      if (h.rag.fallen) {
+        h.downTimer = DOWN_SECONDS;
+        h.rag.setDowned(true);
+        if (idx === this.#ridden) this.#ridden = -1; // throw the rider when the mount goes down
+        continue;
+      }
       if (idx === this.#ridden) {
         h.rag.setGoal(-Math.sin(this.#steerYaw), -Math.cos(this.#steerYaw));
         h.rag.update(dt);
-        if (h.rag.fallen) h.rag.reset();
         continue;
       }
       h.wanderTimer -= dt;
@@ -432,7 +449,6 @@ export class HorseHerd {
       }
       h.rag.setGoal(Math.sin(h.wanderYaw), Math.cos(h.wanderYaw));
       h.rag.update(dt);
-      if (h.rag.fallen) h.rag.reset();
     }
   }
 

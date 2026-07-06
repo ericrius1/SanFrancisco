@@ -103,7 +103,18 @@ export class HorseRagdoll {
     }
   }
 
+  private downed = false;
+  /** When downed, the ragdoll goes limp — no policy control — so it lies where
+   *  it fell (used to leave a fallen horse on the ground for a while). */
+  setDowned(b: boolean): void { this.downed = b; }
+
   private stepOnce(): void {
+    if (this.downed) {
+      // limp: just let physics settle it on the ground, no control, no wake
+      this.world.step(SIM_DT, SUBSTEPS);
+      this.syncState();
+      return;
+    }
     const { action } = this.policy.forward(this.obsBuf);
     this.phase = advancePhase(this.spec, this.phase, action, SIM_DT);
     decode(this.spec, action, this.state, this.phase, this.torques);
@@ -165,6 +176,13 @@ export class HorseRagdoll {
     const upY = 1 - 2 * (q[0] * q[0] + q[2] * q[2]); // world-up . body-up
     // lenient so a bouncing gallop (brief low dips) isn't falsely reset
     return upY < 0.3 || this.state.torso.pos[1] < this.spawnY * 0.34;
+  }
+
+  /** Knock the torso sideways — recovery testing, and in-game knockback later.
+   *  vx,vz are a target velocity kick in m/s (scaled by body mass to an impulse). */
+  shove(vx: number, vz: number): void {
+    const m = this.world.getBodyMass(this.torso);
+    this.world.applyImpulse(this.torso, [vx * m, 0, vz * m]);
   }
 
   /** Reset to a clean stand (after a fall). */

@@ -3,10 +3,10 @@ import type { PlayerMode } from "./types";
 export const MENU_MODES: PlayerMode[] = [
   "walk",
   "drive",
+  "board",
   "plane",
   "boat",
   "drone",
-  "board",
   "bird",
   "truck"
 ];

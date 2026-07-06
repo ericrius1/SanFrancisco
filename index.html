@@ -30,26 +30,12 @@
         border: 1px solid rgba(190, 225, 240, 0.14);
         backdrop-filter: blur(6px);
       }
-      /* movement grid + vehicle roster, side by side */
+      /* movement grid + global shortcuts, side by side */
       #hud .help .cols { display: flex; gap: 16px; align-items: flex-start; }
-      #hud .help .modes {
+      #hud .help .extras {
         padding-left: 15px; border-left: 1px solid rgba(190, 225, 240, 0.14);
+        opacity: 0.72;
       }
-      #hud .help .modes-h {
-        opacity: 0.6; font-size: 10px; font-weight: 700; letter-spacing: 0.06em;
-        text-transform: uppercase; margin-bottom: 6px; white-space: nowrap;
-      }
-      #hud .help .modes-list { display: grid; gap: 4px; }
-      #hud .help .mi {
-        display: inline-flex; align-items: center; gap: 6px; opacity: 0.72;
-      }
-      #hud .help .mi .mode-ic {
-        width: 18px; text-align: center; font-size: 14px; line-height: 1;
-      }
-      #hud .help .mi .lbl { text-transform: capitalize; }
-      #hud .help .mi.on { opacity: 1; }
-      #hud .help .mi.on .mode-ic { filter: drop-shadow(0 0 5px rgba(111, 215, 196, 0.9)); }
-      #hud .help .mi.on .lbl { color: #9ef2df; font-weight: 600; }
       #hud .place-history {
         position: absolute; top: 16px; left: 272px; z-index: 2;
         display: inline-flex; gap: 7px;
@@ -90,9 +76,9 @@
         }
       }
       /* Tab toggles the user UI: panels fade out slowly, snap back quickly. */
-      #hud .help, #hud .toolbar, #hud .audio, #hud .minimap, #hud .place-history, #hud .avatar-ui, #hud .satchel, #hud .share-ui, #hud .tutorial-ui, #hud .tutorial-panel, #hud .links-ui, #hud .player-locator { transition: opacity 0.35s ease; }
-      #hud.faded .help, #hud.faded .toolbar, #hud.faded .audio, #hud.faded .minimap, #hud.faded .place-history, #hud.faded .avatar-ui, #hud.faded .satchel, #hud.faded .share-ui, #hud.faded .tutorial-ui, #hud.faded .tutorial-panel, #hud.faded .links-ui, #hud.faded .player-locator { opacity: 0; transition: opacity 1s ease; }
-      #hud.faded .toolbar, #hud.faded .audio, #hud.faded .minimap, #hud.faded .place-history, #hud.faded .avatar-ui, #hud.faded .share-ui, #hud.faded .tutorial-ui, #hud.faded .tutorial-panel, #hud.faded .links-ui { pointer-events: none; }
+      #hud .help, #hud .toolbar, #hud .audio, #hud .minimap, #hud .place-history, #hud .avatar-ui, #hud .satchel, #hud .share-ui, #hud .tutorial-ui, #hud .tutorial-panel, #hud .links-ui, #hud .player-locator, #hud .horse-training-ui { transition: opacity 0.35s ease; }
+      #hud.faded .help, #hud.faded .toolbar, #hud.faded .audio, #hud.faded .minimap, #hud.faded .place-history, #hud.faded .avatar-ui, #hud.faded .satchel, #hud.faded .share-ui, #hud.faded .tutorial-ui, #hud.faded .tutorial-panel, #hud.faded .links-ui, #hud.faded .player-locator, #hud.faded .horse-training-ui { opacity: 0; transition: opacity 1s ease; }
+      #hud.faded .toolbar, #hud.faded .audio, #hud.faded .minimap, #hud.faded .place-history, #hud.faded .avatar-ui, #hud.faded .share-ui, #hud.faded .tutorial-ui, #hud.faded .tutorial-panel, #hud.faded .links-ui, #hud.faded .horse-training-ui { pointer-events: none; }
       #hud .help.swap { animation: hudswap 0.28s ease; }
       @keyframes hudswap { from { opacity: 0; transform: translateY(6px); } }
       #hud .help .grid {
@@ -117,26 +103,6 @@
         margin-top: 8px; display: flex; flex-wrap: wrap; gap: 5px 12px;
         opacity: 0.72; font-size: 11px;
       }
-      #hud .help .more {
-        pointer-events: auto; cursor: pointer;
-        margin-top: 9px; display: inline-flex; align-items: center; gap: 5px;
-        padding: 3px 8px 3px 6px; border-radius: 6px;
-        background: rgba(18, 40, 56, 0.5); border: 1px solid rgba(190, 225, 240, 0.2);
-        color: #bcd9e6; font: 600 10.5px "Avenir Next", "Helvetica Neue", sans-serif;
-        letter-spacing: 0.02em; opacity: 0.85; transition: border-color 0.15s, color 0.15s, opacity 0.15s;
-      }
-      #hud .help .more:hover { border-color: rgba(190, 225, 240, 0.5); color: #eaf4f8; opacity: 1; }
-      #hud .help .more .chev { font-size: 9px; line-height: 1; }
-      #hud .help .foot {
-        margin-top: 9px; padding-top: 9px;
-        border-top: 1px solid rgba(190, 225, 240, 0.14);
-        display: flex; flex-wrap: wrap; gap: 5px 10px;
-        opacity: 0.62; font-size: 11px;
-      }
-      #hud .help .foot .k { height: 15px; font-size: 9.5px; }
-      #hud .help .fi { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
-      #hud .help .fi.on .k { border-color: #6fd7c4; color: #9ef2df; }
-      #hud .help .fi.on .lbl { color: #9ef2df; }
       #hud .center {
         position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
         font-size: 18px; opacity: 0.9;
@@ -478,6 +444,259 @@
         background: rgba(18, 40, 56, 0.5); color: #cfe6ee;
       }
       #hud .bts-chips a:hover { border-color: #6fd7c4; color: #9ef2df; }
+
+      /* horse-zone NN training guide */
+      #hud .horse-training-icon {
+        position: fixed; left: 0; top: 0; z-index: 4;
+        transform: translate(-50%, -124%);
+        pointer-events: auto; cursor: pointer;
+        display: inline-flex; align-items: center; gap: 8px;
+        min-height: 36px; padding: 0 12px 0 7px;
+        border-radius: 10px; border: 1px solid rgba(111, 215, 196, 0.55);
+        background: rgba(6, 16, 25, 0.78); color: #eaf4f8;
+        box-shadow: 0 10px 26px rgba(0, 6, 12, 0.34), 0 0 18px rgba(111, 215, 196, 0.2), inset 0 1px 0 rgba(255,255,255,0.08);
+        backdrop-filter: blur(7px);
+        font: 800 11.5px "Avenir Next", "Helvetica Neue", sans-serif;
+        letter-spacing: 0; text-shadow: none;
+      }
+      #hud .horse-training-icon[hidden] { display: none; }
+      #hud .horse-training-icon:hover {
+        border-color: #9ef2df; color: #9ef2df; background: rgba(12, 34, 40, 0.86);
+      }
+      #hud .horse-training-icon .hti-mark {
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 26px; height: 22px; border-radius: 7px;
+        background: linear-gradient(135deg, #18b7ff, #ff8a2a);
+        color: #051018; font: 900 10px "Avenir Next", "Helvetica Neue", sans-serif;
+        letter-spacing: 0; text-shadow: none;
+        box-shadow: 0 0 15px rgba(24, 183, 255, 0.45);
+      }
+      #hud .horse-training-icon .hti-label { white-space: nowrap; }
+      #hud .horse-training-overlay {
+        position: fixed; inset: 0; z-index: 45;
+        display: none; align-items: center; justify-content: center;
+        padding: 4vh 16px;
+        background: rgba(4, 10, 16, 0.66);
+        backdrop-filter: blur(4px);
+        pointer-events: auto;
+        text-shadow: none;
+      }
+      #hud .horse-training-overlay.open { display: flex; animation: btsfade 0.2s ease; }
+      #hud .horse-training-modal {
+        position: relative; width: min(1180px, 96vw); max-height: 92vh;
+        display: flex; flex-direction: column; overflow: hidden;
+        border-radius: 14px; border: 1px solid rgba(190, 225, 240, 0.22);
+        background: linear-gradient(180deg, rgba(10, 22, 32, 0.98), rgba(6, 15, 24, 0.98));
+        box-shadow: 0 24px 70px rgba(0, 4, 10, 0.62), inset 0 1px 0 rgba(255,255,255,0.05);
+        color: #dceff5;
+        font: 400 14px/1.56 "Avenir Next", "Helvetica Neue", sans-serif;
+      }
+      #hud .horse-training-close {
+        position: absolute; top: 14px; right: 14px; z-index: 3;
+        width: 32px; height: 32px; cursor: pointer;
+        border-radius: 8px; border: 1px solid rgba(190, 225, 240, 0.22);
+        background: rgba(10, 24, 36, 0.62); color: #dceff5;
+        font: 800 15px "Avenir Next", "Helvetica Neue", sans-serif;
+        line-height: 1; letter-spacing: 0;
+      }
+      #hud .horse-training-close:hover { border-color: #6fd7c4; color: #9ef2df; }
+      #hud .horse-training-head {
+        flex: 0 0 auto; padding: 25px 30px 18px;
+        border-bottom: 1px solid rgba(190, 225, 240, 0.12);
+        background: rgba(6, 16, 25, 0.42);
+      }
+      #hud .horse-training-title {
+        font-size: 22px; font-weight: 800; letter-spacing: 0; color: #eaf6fa;
+      }
+      #hud .horse-training-subtitle {
+        margin-top: 4px; max-width: 760px;
+        font-size: 13px; color: #9fc6d6;
+      }
+      #hud .horse-training-body {
+        flex: 1 1 auto; min-height: 0; overflow-y: auto;
+        display: grid; grid-template-columns: minmax(520px, 1.08fr) minmax(330px, 0.92fr);
+        gap: 24px; padding: 22px 30px 32px;
+      }
+      #hud .horse-training-diagram {
+        position: sticky; top: 0; align-self: start;
+        padding: 16px; border-radius: 12px;
+        border: 1px solid rgba(190, 225, 240, 0.16);
+        background: radial-gradient(circle at 18% 12%, rgba(24, 183, 255, 0.16), transparent 34%),
+          radial-gradient(circle at 82% 92%, rgba(255, 138, 42, 0.18), transparent 36%),
+          rgba(4, 12, 20, 0.72);
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+      }
+      #hud .htr-stage {
+        display: flex; justify-content: space-between; align-items: baseline;
+        gap: 12px; margin-bottom: 12px;
+      }
+      #hud .htr-stage-k {
+        color: #9ef2df; font: 800 11px "Avenir Next", "Helvetica Neue", sans-serif;
+        letter-spacing: 0;
+      }
+      #hud .htr-stage-title {
+        color: #dceff5; font: 800 13px "Avenir Next", "Helvetica Neue", sans-serif;
+        letter-spacing: 0;
+      }
+      #hud .htr-network {
+        position: relative; min-height: 344px; overflow: hidden;
+        border-radius: 10px; border: 1px solid rgba(190, 225, 240, 0.12);
+        background: linear-gradient(180deg, rgba(7, 18, 28, 0.78), rgba(4, 10, 16, 0.52));
+      }
+      #hud .htr-wires {
+        position: absolute; inset: 56px 22px 34px;
+        width: calc(100% - 44px); height: calc(100% - 90px);
+        pointer-events: none;
+      }
+      #hud .htr-wire {
+        fill: none; stroke: #9fb7ff; stroke-width: 0.22; opacity: 0.16;
+        vector-effect: non-scaling-stroke;
+        transition: opacity 0.24s ease, stroke 0.24s ease, stroke-width 0.24s ease;
+      }
+      #hud .htr-wire.reward { opacity: 0; stroke: #75f08d; stroke-width: 0.45; }
+      #hud .htr-layers {
+        position: relative; z-index: 1;
+        display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 18px; height: 100%; min-height: 344px;
+        padding: 18px 18px 16px;
+      }
+      #hud .htr-layer {
+        --node: #38d8ff;
+        min-width: 0; display: flex; flex-direction: column; align-items: center;
+        transition: opacity 0.24s ease, filter 0.24s ease, transform 0.24s ease;
+      }
+      #hud .htr-layer.input { --node: #18b7ff; }
+      #hud .htr-layer.h1 { --node: #55dcff; }
+      #hud .htr-layer.h2 { --node: #9d70ff; }
+      #hud .htr-layer.output { --node: #ff8a2a; }
+      #hud .htr-layer-title {
+        color: var(--node); font: 800 12px "Avenir Next", "Helvetica Neue", sans-serif;
+        letter-spacing: 0; text-align: center;
+      }
+      #hud .htr-layer-sub {
+        margin-top: 2px; color: #9fb7c4; font: 700 10.5px "Avenir Next", "Helvetica Neue", sans-serif;
+        letter-spacing: 0; text-align: center;
+      }
+      #hud .htr-nodes {
+        flex: 1 1 auto; align-content: center;
+        display: grid; grid-template-columns: repeat(4, 13px); gap: 12px 10px;
+        margin-top: 14px;
+      }
+      #hud .htr-layer.input .htr-nodes,
+      #hud .htr-layer.output .htr-nodes { grid-template-columns: repeat(2, 13px); }
+      #hud .htr-nodes i {
+        width: 13px; height: 13px; border-radius: 50%;
+        background: radial-gradient(circle at 35% 30%, #ffffff 0 12%, var(--node) 38%, rgba(255,255,255,0.2) 68%);
+        box-shadow: 0 0 12px color-mix(in srgb, var(--node) 76%, transparent), 0 0 2px #ffffff;
+        transform: translateZ(0);
+      }
+      #hud .htr-detail {
+        display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+        margin-top: 14px;
+      }
+      #hud .htr-detail-col {
+        min-width: 0; max-height: 154px; overflow: auto;
+        padding: 10px 11px; border-radius: 10px;
+        border: 1px solid rgba(190, 225, 240, 0.12);
+        background: rgba(7, 18, 28, 0.62);
+      }
+      #hud .htr-detail-title {
+        margin-bottom: 7px; color: #eaf6fa; font: 800 11px "Avenir Next", "Helvetica Neue", sans-serif;
+        letter-spacing: 0;
+      }
+      #hud .htr-detail ol {
+        margin: 0; padding: 0; list-style: none;
+        display: grid; gap: 5px;
+      }
+      #hud .htr-detail li {
+        min-width: 0; display: flex; justify-content: space-between; gap: 9px;
+        color: #bfd9e4; font-size: 12px;
+      }
+      #hud .htr-output-list li b {
+        color: #ffb169; font-size: 12px;
+      }
+      #hud .htr-output-list li span {
+        min-width: 0; text-align: right; color: #9fb7c4;
+      }
+      #hud .htr-reward {
+        margin-top: 12px; padding: 10px 12px; border-radius: 10px;
+        border: 1px solid rgba(117, 240, 141, 0.22);
+        background: rgba(24, 64, 38, 0.24);
+        color: #b9f1c2; font-size: 12.5px; opacity: 0.38;
+        transition: opacity 0.24s ease, border-color 0.24s ease;
+      }
+      #hud .horse-training-copy {
+        display: grid; gap: 14px; align-content: start;
+      }
+      #hud .horse-training-step {
+        padding: 0 0 18px; border-bottom: 1px solid rgba(190, 225, 240, 0.1);
+        opacity: 0.52; transition: opacity 0.2s ease;
+      }
+      #hud .horse-training-step.active { opacity: 1; }
+      #hud .horse-training-step h3 {
+        margin: 0 0 8px; color: #9ef2df; font: 800 15px "Avenir Next", "Helvetica Neue", sans-serif;
+        letter-spacing: 0;
+      }
+      #hud .horse-training-step p {
+        margin: 0 0 9px; color: #cfe6ee;
+      }
+      #hud .horse-training-step p:last-child { margin-bottom: 0; }
+      #hud .horse-training-step code {
+        padding: 1px 6px; border-radius: 5px; font-size: 12px;
+        font-family: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, monospace;
+        background: rgba(18, 40, 56, 0.7); border: 1px solid rgba(190, 225, 240, 0.16);
+        color: #b6ecdd;
+      }
+      #hud .horse-training-diagram[data-step="0"] .htr-layer:not(.input),
+      #hud .horse-training-diagram[data-step="1"] .htr-layer:not(.h1):not(.h2),
+      #hud .horse-training-diagram[data-step="2"] .htr-layer:not(.output),
+      #hud .horse-training-diagram[data-step="3"] .htr-layer { opacity: 0.42; filter: saturate(0.58); }
+      #hud .horse-training-diagram[data-step="0"] .htr-layer.input,
+      #hud .horse-training-diagram[data-step="1"] .htr-layer.h1,
+      #hud .horse-training-diagram[data-step="1"] .htr-layer.h2,
+      #hud .horse-training-diagram[data-step="2"] .htr-layer.output,
+      #hud .horse-training-diagram[data-step="3"] .htr-layer.output {
+        opacity: 1; filter: none; transform: translateY(-2px);
+      }
+      #hud .horse-training-diagram[data-step="0"] .htr-wire.sensor,
+      #hud .horse-training-diagram[data-step="1"] .htr-wire.hidden,
+      #hud .horse-training-diagram[data-step="2"] .htr-wire.output {
+        opacity: 0.62; stroke-width: 0.5;
+      }
+      #hud .horse-training-diagram[data-step="0"] .htr-wire:not(.sensor),
+      #hud .horse-training-diagram[data-step="1"] .htr-wire:not(.hidden),
+      #hud .horse-training-diagram[data-step="2"] .htr-wire:not(.output) { opacity: 0.05; }
+      #hud .horse-training-diagram[data-step="0"] .htr-input-list,
+      #hud .horse-training-diagram[data-step="2"] .htr-output-list {
+        border-color: rgba(111, 215, 196, 0.38);
+        box-shadow: 0 0 18px rgba(111, 215, 196, 0.1);
+      }
+      #hud .horse-training-diagram[data-step="3"] .htr-wire.reward,
+      #hud .horse-training-diagram[data-step="3"] .htr-reward { opacity: 1; }
+      #hud .horse-training-diagram[data-step="3"] .htr-wire.sensor,
+      #hud .horse-training-diagram[data-step="3"] .htr-wire.hidden,
+      #hud .horse-training-diagram[data-step="3"] .htr-wire.output { opacity: 0.3; }
+      @media (max-width: 920px) {
+        #hud .horse-training-body {
+          grid-template-columns: 1fr;
+          padding: 18px 18px 28px;
+        }
+        #hud .horse-training-diagram { position: relative; top: auto; }
+        #hud .htr-layers { gap: 10px; padding-left: 10px; padding-right: 10px; }
+        #hud .htr-detail { grid-template-columns: 1fr; }
+      }
+      @media (max-width: 560px) {
+        #hud .horse-training-head { padding: 22px 52px 16px 18px; }
+        #hud .horse-training-title { font-size: 18px; }
+        #hud .htr-network { min-height: 290px; }
+        #hud .htr-layers { min-height: 290px; }
+        #hud .htr-layer-title { font-size: 10.5px; }
+        #hud .htr-layer-sub { font-size: 9.5px; }
+        #hud .htr-nodes { grid-template-columns: repeat(3, 11px); gap: 9px 7px; }
+        #hud .htr-layer.input .htr-nodes,
+        #hud .htr-layer.output .htr-nodes { grid-template-columns: repeat(2, 11px); }
+        #hud .htr-nodes i { width: 11px; height: 11px; }
+      }
 
       /* lone affordance when Tab hides the HUD — hidden in immersive (display:none on #hud) */
       #hud .ui-restore {

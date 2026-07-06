@@ -198,11 +198,6 @@ export class DebugPanel {
     this.#setRenderValue("maxPixelRatio", preset.maxPixelRatio);
     this.#setRenderValue("shadowQuality", preset.shadowQuality);
     this.#setPostValue("sceneSamples", preset.sceneSamples);
-    this.#setPostValue("ssao", preset.ssao);
-    this.#setPostValue("ssaoScale", preset.ssaoScale);
-    this.#setPostValue("ssaoSamples", preset.ssaoSamples);
-    this.#setPostValue("ssaoRadius", preset.ssaoRadius);
-    this.#setPostValue("ssaoIntensity", preset.ssaoIntensity);
 
     this.#renderer.setPixelRatio(Math.min(window.devicePixelRatio, preset.maxPixelRatio));
     this.#renderer.setSize(window.innerWidth, window.innerHeight);

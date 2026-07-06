@@ -20,6 +20,13 @@ const rag = new HorseRagdoll(box3d, HORSE, def, 2.3); // the in-world horse size
 const standY = rag.standY;
 const upY = (q: readonly number[]) => 1 - 2 * (q[0] * q[0] + q[2] * q[2]);
 
+// Seeded PRNG so the gate is reproducible run-to-run.
+let seed = 20260705;
+const rand = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+
+// Drive it the way the HERD actually does: SHARP yaw-wander (sudden heading
+// changes, not a gentle arc) plus periodic sideways SHOVES to test recovery.
+// Those are what make in-world horses stumble; a gentle-arc gate missed them.
 const dt = 1 / 60;
 let worstTorsoY = 99;
 let worstUp = 1;
@@ -27,16 +34,29 @@ let noseSum = 0;
 let noseN = 0;
 let start: [number, number] | null = null;
 let end: [number, number] = [0, 0];
-let theta = 0; // goal heading; forward for 4s then a gradual continuous turn (like the game's wander)
-for (let i = 0; i < 600; i++) {
-  if (i >= 240) theta += 0.006;
-  rag.setGoal(Math.sin(theta), Math.cos(theta));
+let goalYaw = 0;
+let fell = false; // did it ever truly tip over (not just dip)?
+let lastShove = -999;
+let shoves = 0;
+for (let i = 0; i < 720; i++) {
+  if (i > 0 && i % 130 === 0) goalYaw += (rand() - 0.5) * 2.6; // sharp wander turn
+  rag.setGoal(Math.sin(goalYaw), Math.cos(goalYaw));
+  if (i >= 150 && (i - 150) % 170 === 0) {
+    const a = rand() * Math.PI * 2; // shove sideways at 1.4 m/s (training envelope) — must recover, not fall
+    rag.shove(Math.cos(a) * 1.4, Math.sin(a) * 1.4);
+    lastShove = i;
+    shoves++;
+  }
   rag.update(dt);
   const t = rag.torsoLink;
   if (i === 60) start = [t.pos[0], t.pos[2]];
   if (i >= 90) {
-    worstTorsoY = Math.min(worstTorsoY, t.pos[1]);
-    worstUp = Math.min(worstUp, upY(t.quat));
+    if (upY(t.quat) < 0.35) fell = true; // a real tip-over
+    // "stays tall/upright" is judged OUTSIDE the brief recovery window after a shove
+    if (i - lastShove > 30) {
+      worstTorsoY = Math.min(worstTorsoY, t.pos[1]);
+      worstUp = Math.min(worstUp, upY(t.quat));
+    }
     const nose = qRot(t.quat, [0, 0, 1]); // is it moving NOSE-FIRST (forward) not backward?
     noseSum += t.vel[0] * nose[0] + t.vel[2] * nose[2];
     noseN++;
@@ -47,9 +67,10 @@ for (let i = 0; i < 600; i++) {
 const moved = start ? Math.hypot(end[0] - start[0], end[1] - start[1]) : 0;
 const noseSpeed = noseSum / Math.max(1, noseN);
 const tallPct = (worstTorsoY / standY) * 100;
-console.log(`\nstandY ${standY.toFixed(2)}m  WORST torsoY ${worstTorsoY.toFixed(2)}m (${tallPct | 0}% of stand)  WORST up ${worstUp.toFixed(2)}  moved ${moved.toFixed(1)}m  noseSpeed ${noseSpeed.toFixed(2)} m/s (forward if >0)`);
+console.log(`\nstandY ${standY.toFixed(2)}m  WORST torsoY ${worstTorsoY.toFixed(2)}m (${tallPct | 0}% of stand)  WORST up ${worstUp.toFixed(2)}  moved ${moved.toFixed(1)}m  noseSpeed ${noseSpeed.toFixed(2)} m/s  shoves=${shoves} everTippedOver=${fell}`);
 const tallOK = worstTorsoY > 0.72 * standY;
 const upOK = worstUp > 0.82;
-const moveOK = moved > 2;
+const moveOK = moved > 3;
 const fwdOK = noseSpeed > 0.3; // moving NOSE-FIRST, not backward
-console.log(tallOK && upOK && moveOK && fwdOK ? "PASS — stands tall, upright, runs FORWARD (nose-first) in the real runtime" : `FAIL — tall=${tallOK} up=${upOK} move=${moveOK} forward=${fwdOK} (noseSpeed ${noseSpeed.toFixed(2)}, need >0.3)`);
+const stoodOK = !fell; // survived every shove + sharp turn without tipping over
+console.log(tallOK && upOK && moveOK && fwdOK && stoodOK ? "PASS — stays tall + upright, runs FORWARD, and RECOVERS from shoves/sharp turns" : `FAIL — tall=${tallOK} up=${upOK} move=${moveOK} forward=${fwdOK} neverFell=${stoodOK} (noseSpeed ${noseSpeed.toFixed(2)})`);
