@@ -6,7 +6,6 @@ import { BOAT_TUNING, SPEEDBOAT_TUNING } from "../vehicles/boat";
 import { DRONE_TUNING } from "../vehicles/drone";
 import { BOARD_TUNING } from "../vehicles/board";
 import { BIRD_TUNING } from "../vehicles/bird";
-import { TRUCK_TUNING } from "../vehicles/truck";
 import type { PlayerMode } from "./types";
 
 type Folder = ReturnType<Pane["addFolder"]>;
@@ -21,8 +20,7 @@ export const MOVEMENT_TUNING = {
   speedboat: SPEEDBOAT_TUNING.values,
   drone: DRONE_TUNING.values,
   board: BOARD_TUNING.values,
-  bird: BIRD_TUNING.values,
-  truck: TRUCK_TUNING.values
+  bird: BIRD_TUNING.values
 };
 
 /** Movement tuning is context-dependent: all six mode folders are built once,
@@ -37,8 +35,7 @@ export function addMovementTuning(pane: Pane | FolderApi): Record<PlayerMode, Fo
     speedboat: movement.addFolder({ title: "speedboat" }),
     drone: movement.addFolder({ title: "drone" }),
     board: movement.addFolder({ title: "board" }),
-    bird: movement.addFolder({ title: "bird" }),
-    truck: movement.addFolder({ title: "truck" })
+    bird: movement.addFolder({ title: "bird" })
   };
   WALK_TUNING.bind(folders.walk);
   CAR_TUNING.bind(folders.drive);
@@ -48,6 +45,5 @@ export function addMovementTuning(pane: Pane | FolderApi): Record<PlayerMode, Fo
   DRONE_TUNING.bind(folders.drone);
   BOARD_TUNING.bind(folders.board);
   BIRD_TUNING.bind(folders.bird);
-  TRUCK_TUNING.bind(folders.truck);
   return folders;
 }

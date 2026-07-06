@@ -93,8 +93,7 @@ export const DEBRIS_TUNING = tunables("debrisLights", {
 });
 
 /**
- * Where and how a fresh session starts: parade truck on the Golden Gate Bridge
- * deck, heading toward Marin. Editable in the Tab panel (persisted);
+ * Where and how a fresh session starts. Editable in the Tab panel (persisted);
  */
 export const START_DEFAULTS = { spawn: "goldenGate", mode: "board" as PlayerMode };
 

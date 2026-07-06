@@ -11,8 +11,6 @@ import { buildDroneMesh } from "../vehicles/drone";
 import { buildBoardMesh } from "../vehicles/board";
 import { buildBirdMesh, type BirdRig } from "../vehicles/bird";
 import { poseBone } from "../vehicles/bird/mesh";
-import { buildTruckMesh } from "../vehicles/truck";
-import { TRUCK_HALF_EXTENTS } from "../vehicles/truck/dimensions";
 
 type MountMode = Exclude<PlayerMode, "walk">;
 
@@ -145,18 +143,6 @@ const SPECS: Record<MountMode, MountSpec> = {
     linearDrag: 0.22,
     angularDrag: 0.8,
     maxSpeed: 120
-  },
-  truck: {
-    // a parked parade truck: settles and waits like an abandoned car
-    build: buildTruckMesh,
-    halfExtents: [...TRUCK_HALF_EXTENTS],
-    density: 130,
-    friction: 0.4,
-    restitution: 0.08,
-    gravityScale: 1,
-    linearDrag: 0.18,
-    angularDrag: 1.8,
-    maxSpeed: 60
   }
 };
 

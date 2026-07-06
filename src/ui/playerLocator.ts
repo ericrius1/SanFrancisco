@@ -36,8 +36,7 @@ const MARKER_Y: Record<PlayerMode, number> = {
   speedboat: 2.6,
   drone: 2.2,
   board: 2.9,
-  bird: 2.8,
-  truck: 6.2
+  bird: 2.8
 };
 
 function distanceLabel(metres: number) {

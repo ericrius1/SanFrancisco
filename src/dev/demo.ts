@@ -7,15 +7,6 @@ import type { Physics } from "../core/physics";
 import type { ChaseCamera } from "../core/camera";
 import type { WorldMap } from "../world/heightmap";
 import {
-  BRIDGE_SHOT_SECONDS,
-  BRIDGE_FIRE_AT,
-  BRIDGE_FLYOVER_AT,
-  bridgePath,
-  bridgeTruckPos,
-  applyBridgeCamera,
-  pinBridgeTruck
-} from "../gameplay/bridgeShot";
-import {
   BOAT_SHOT_SECONDS,
   BOAT_FIRE_AT,
   boatPath,
@@ -50,7 +41,6 @@ type Ctx = {
   setCine?: (fn: ((dt: number) => void) | null) => void;
   setExposure?: (v: number) => void;
   setPostFx?: (values: Record<string, number | boolean>) => void;
-  launchTruckFireworks?: (forward: THREE.Vector3) => void;
   launchBoatFireworks?: (forward: THREE.Vector3) => void;
   flyover?: { preload: () => void; trigger: (origin: THREE.Vector3, fwd: THREE.Vector3) => void };
 };
@@ -255,8 +245,7 @@ export function runDemo(name: string, ctx: Ctx) {
         speedboat: { back: 12, up: 3.6, look: 0.7 },
         drone: { back: 8, up: 2.2, look: 0.4 },
         board: { back: 7.6, up: 2.7, look: 1.2 },
-        bird: { back: 9, up: 2.4, look: 0.5 },
-        truck: { back: 20, up: 8.5, look: 1.6 }
+        bird: { back: 9, up: 2.4, look: 0.5 }
       };
       const snapCamera = (mode: PlayerMode) => {
         const o = cam[mode];
@@ -388,8 +377,7 @@ export function runDemo(name: string, ctx: Ctx) {
         speedboat: { back: 12, up: 3.6, look: 0.7 },
         drone: { back: 8.5, up: 2.6, look: 0.5 },
         board: { back: 7.2, up: 2.6, look: 1.1 },
-        bird: { back: 9, up: 2.4, look: 0.5 },
-        truck: { back: 20, up: 8.5, look: 1.6 }
+        bird: { back: 9, up: 2.4, look: 0.5 }
       };
       const snapCamera = (mode: PlayerMode) => {
         const o = cam[mode];
@@ -572,8 +560,7 @@ export function runDemo(name: string, ctx: Ctx) {
         speedboat: { back: 13, up: 3.4, look: 1.0 },
         drone: { back: 8.5, up: 2.6, look: 0.5 },
         board: { back: 7.6, up: 2.7, look: 1.2 },
-        bird: { back: 9.5, up: 2.6, look: 0.6 },
-        truck: { back: 21, up: 8.5, look: 1.6 }
+        bird: { back: 9.5, up: 2.6, look: 0.6 }
       };
       const snapCamera = (mode: PlayerMode) => {
         const o = cam[mode];
@@ -679,115 +666,6 @@ export function runDemo(name: string, ctx: Ctx) {
         win.__sfStartReel = start;
         if (!holdForCapture) start();
       }
-      break;
-    }
-
-    case "bridge": {
-      // 14-second twilight hero shot: the Freedom Truck crosses the Golden Gate
-      // main span while the guitarist jams; the camera starts ahead facing the
-      // truck, orbits around to behind it, then the rocket battery fires a
-      // red/white/blue barrage down the deck. Fully on-rails via the cine hook
-      // (main.ts) — truck pose AND camera are a pure function of virtual time, so
-      // the deterministic frame capture is glassy-smooth.
-      type CineWindow = Window &
-        typeof globalThis & {
-          __sfReelArmed?: boolean;
-          __sfReelDone?: boolean;
-          __sfReelStep?: (sec: number) => void;
-          __cineT?: number;
-        };
-      const win = window as CineWindow;
-      const q = new URLSearchParams(location.search);
-      const manual = q.has("manual");
-      const map = ctx.map!;
-      const setCine = ctx.setCine!;
-      const fireGuns = ctx.launchTruckFireworks!;
-
-      // clean plate — no HUD chrome
-      const style = document.createElement("style");
-      style.dataset.reelCapture = "true";
-      style.textContent = `body.reel-capture #hud, body.reel-capture #loading { display:none !important; }`;
-      document.head.appendChild(style);
-      document.body.classList.add("started", "reel-capture");
-      document.getElementById("loading")?.classList.add("done");
-      hud?.setHidden(true);
-      hud?.setFaded(true);
-
-      // twilight — late dusk, sun just under the WNW horizon; lift the night fill
-      // hard so the truck + guitarist read against the afterglow (the fireworks
-      // are HDR and still punch through)
-      if (sky) {
-        sky.cycleEnabled = false;
-        sky.sunsetAzimuth = 250;
-        sky.setTimeOfDay(18.85);
-        sky.nightBrightness = 2.15;
-      }
-      ctx.setExposure?.(0.2); // lift the whole grade (default 0.13) so the dark
-      // truck reads at twilight; the HDR fireworks still punch well past it
-
-      // stylize the shot: ink & wash outlines + retro CRT (dream haze off)
-      ctx.setPostFx?.({
-        ink: true,
-        inkStrength: 0.7,
-        inkWidth: 1.5,
-        dream: false,
-        retro: true,
-        retroPixel: 1,
-        retroLevels: 8,
-        retroScan: 0.35
-      });
-
-      // shot math is shared with the live, in-game experience (gameplay/
-      // bridgeShow.ts) so the rendered reel and the playable version are the
-      // exact same drive + camera move + barrage timing — one source of truth.
-      const path = bridgePath(map);
-      const camPos = new THREE.Vector3();
-      const look = new THREE.Vector3();
-      const truckPos = new THREE.Vector3();
-      let fired = false;
-      let flew = false;
-
-      // a wave of planes + phoenixes (the "-" spectacle) streaks up the strait
-      // and sweeps overhead as the camera settles behind the truck, receding
-      // into the sky just as the barrage erupts — the build into the finale.
-      // Warm the phoenix GLB now so the mid-shot trigger has zero pop-in.
-      const FLYOVER_AT = BRIDGE_FLYOVER_AT;
-      ctx.flyover?.preload();
-
-      const step = (T: number) => {
-        bridgeTruckPos(T, path, map, truckPos);
-        pinBridgeTruck(player, physics, truckPos, path); // truck on rails
-        applyBridgeCamera(T, path, truckPos, chase.camera, camPos, look);
-        if (!flew && T >= FLYOVER_AT) {
-          flew = true;
-          ctx.flyover?.trigger(truckPos.clone(), path.dir.clone());
-        }
-        if (!fired && T >= BRIDGE_FIRE_AT) {
-          fired = true;
-          fireGuns(path.dir.clone());
-        }
-      };
-
-      // put the truck on the bridge + into truck mode before the hook takes over
-      let deck0 = map.bridgeDeck(path.start.x, path.start.z);
-      if (!Number.isFinite(deck0)) deck0 = 66;
-      tp(path.start.x, deck0 + path.rideH, path.start.z, path.heading);
-      switchMode("truck");
-      tp(path.start.x, deck0 + path.rideH, path.start.z, path.heading);
-      step(0);
-
-      win.__cineT = 0;
-      win.__sfReelArmed = true;
-      win.__sfReelDone = false;
-      setCine((dt: number) => {
-        if (!manual) win.__cineT = Math.min(BRIDGE_SHOT_SECONDS, (win.__cineT ?? 0) + dt);
-        step(win.__cineT ?? 0);
-        if ((win.__cineT ?? 0) >= BRIDGE_SHOT_SECONDS) win.__sfReelDone = true;
-      });
-      // deterministic capture drives virtual time; the hook reads it each frame
-      win.__sfReelStep = (sec: number) => {
-        win.__cineT = sec;
-      };
       break;
     }
 

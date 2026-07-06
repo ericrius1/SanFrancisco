@@ -6,8 +6,7 @@ import type { Physics } from "../core/physics";
 /**
  * The Golden Gate "Freedom Boat" hero shot, as pure math shared by the
  * deterministic frame capture (dev/demo.ts case "ggboat") and (later) a live,
- * in-game experience. It is the sea-borne twin of the Freedom Truck bridge shot
- * (gameplay/bridgeShot.ts): the speedboat sails the strait *underneath* the
+ * (gameplay/boatShot.ts): the speedboat sails the strait *underneath* the
  * Golden Gate main span while the guitarist jams and a rocket battery fires a
  * red/white/blue barrage forward over the water. Both the boat pose AND the
  * camera are a pure function of a single virtual time T, so the rendered reel is

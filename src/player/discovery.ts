@@ -7,8 +7,7 @@ export const MENU_MODES: PlayerMode[] = [
   "plane",
   "boat",
   "drone",
-  "bird",
-  "truck"
+  "bird"
 ];
 
 /** Every switchable mode (speedboat is bay-only — never on the roster). */
@@ -22,14 +21,12 @@ export const MODE_META: Record<PlayerMode, { icon: string; label: string }> = {
   speedboat: { icon: "🚤", label: "Speedboat" },
   drone: { icon: "🛸", label: "Drone" },
   board: { icon: "🛹", label: "Board" },
-  bird: { icon: "🦅", label: "Bird" },
-  truck: { icon: "🚚", label: "Truck" }
+  bird: { icon: "🦅", label: "Bird" }
 };
 
 const REVEAL_MSG: Partial<Record<PlayerMode, string>> = {
   board: "Hoverboard found!",
   bird: "Phoenix found!",
-  truck: "Parade truck found!",
   speedboat: "Speedboat!"
 };
 

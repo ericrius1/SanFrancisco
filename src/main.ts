@@ -41,8 +41,6 @@ import { AbandonedMounts } from "./gameplay/abandonedMounts";
 import { RocketRiders, type LauncherRig } from "./gameplay/launchers";
 import { Flyover } from "./gameplay/flyover";
 import { BridgeParade } from "./gameplay/bridgeParade";
-import { BridgeShow } from "./gameplay/bridgeShow";
-import { effectsAudioLevel } from "./core/audioSettings";
 import { Creatures } from "./gameplay/creatures";
 import { Forest, ANIMALS, type AnimalKind } from "./gameplay/forest";
 import { Flora } from "./world/flora";
@@ -69,7 +67,6 @@ import { Voice } from "./net/voice";
 import { Minimap } from "./ui/minimap";
 import { PlayerLocator } from "./ui/playerLocator";
 import { avatarFromSeed, loadSavedAvatar, randomAvatarTraits, saveAvatarTraits } from "./player/avatar";
-import { TRUCK_VISUAL_SCALE } from "./vehicles/truck/dimensions";
 import { MENU_MODES, ModeDiscovery, ALL_MODES } from "./player/discovery";
 
 CameraControls.install({ THREE });
@@ -222,9 +219,8 @@ async function boot() {
   const player = new Player(physics, map, scene, spawn, avatarTraits);
   const birdTrails = new BirdTrails(scene, player.meshes.bird);
   const droneFireworkMounts = player.meshes.drone.userData.fireworkMounts as THREE.Object3D[] | undefined;
-  const truckLaunchers = player.meshes.truck.userData.launcherRig as LauncherRig | undefined;
   const boatLaunchers = player.meshes.speedboat.userData.launcherRig as LauncherRig | undefined;
-  if (START.mode !== "walk") player.trySwitch(START.mode);
+  if (START.mode !== "walk" && ALL_MODES.includes(START.mode)) player.trySwitch(START.mode);
   player.onModeChange = (mode) => {
     const fresh = modeDiscovery.discover(mode);
     hud.setMode(mode);
@@ -1048,8 +1044,7 @@ async function boot() {
     boat: { r: 4.5, y: 1.8 },
     speedboat: { r: 3.2, y: 1.2 },
     drone: { r: 0.9, y: 0.3 },
-    bird: { r: 1.0, y: 0.5 },
-    truck: { r: 3.6 * TRUCK_VISUAL_SCALE, y: 1.5 * TRUCK_VISUAL_SCALE }
+    bird: { r: 1.0, y: 0.5 }
   };
 
   let fireCooldown = 0;
@@ -1198,60 +1193,9 @@ async function boot() {
     if (document.visibilityState === "hidden") writeSession();
   });
 
-  // A demo can install a per-frame cinematic controller: it fully owns the
-  // truck's render pose AND the camera for a scripted shot (see dev/demo.ts
-  // "bridge"). Runs at the camera step, replacing the chase cam.
+  // A demo can install a per-frame cinematic controller that fully owns the
+  // player pose AND the camera for a scripted shot (see dev/demo.ts "ggboat").
   let cineHook: ((dt: number) => void) | null = null;
-
-  // The Golden Gate "Freedom Truck" hero shot as a live experience: press `]`
-  // and it drops you onto the span in the truck and rolls the same on-rails
-  // drive/orbit/barrage as the rendered reel, in real time, with input left live
-  // so other toys can play over the top of the locked shot.
-  const bridgeShow = new BridgeShow({
-    map,
-    player,
-    physics,
-    chase,
-    hud,
-    effectsLevel: effectsAudioLevel,
-    fireGuns: (fwd: THREE.Vector3) =>
-      truckLaunchers?.fireAll({
-        scene,
-        fireworks,
-        rocketRiders,
-        map,
-        playerPos: player.position,
-        forward: fwd,
-        hostVelocity: player.velocity
-      }),
-    setCine: (fn) => {
-      cineHook = fn;
-    },
-    configureEnv: () => {
-      sky.cycleEnabled = false;
-      sky.sunsetAzimuth = 250;
-      sky.setTimeOfDay(18.85);
-      sky.nightBrightness = 2.15;
-      renderer.toneMappingExposure = 0.2;
-      Object.assign(POSTFX_TUNING.values, {
-        ink: true,
-        inkStrength: 0.7,
-        inkWidth: 1.5,
-        dream: false,
-        retro: true,
-        retroPixel: 1,
-        retroLevels: 8,
-        retroScan: 0.35
-      });
-      pipeline.applyPostFx();
-    },
-    restoreEnv: () => {
-      Object.assign(POSTFX_TUNING.values, { ink: false, retro: false });
-      pipeline.applyPostFx();
-    },
-    flyover,
-    musicUrl: "/audio/rockin.mp3"
-  });
 
   const tick = (forcedDt?: number) => {
     timer.update();
@@ -1431,14 +1375,6 @@ async function boot() {
       hud.message("Back at the start");
     }
 
-    // "]": drop onto the Golden Gate and roll the exact filmed cinematic in real
-    // time — truck drives itself, camera on rails, "rockin" from the top. Input
-    // stays live so you can play effects over the locked shot; "]" again restarts.
-    if (input.pressed("BracketRight")) {
-      leaveRide();
-      bridgeShow.trigger();
-    }
-
     // ".": factory reset for tweaks — every tweakpane value back to its
     // source-code default, saved tweaks wiped. Player stays put ("R" respawns).
     if (input.pressed("Period")) {
@@ -1544,28 +1480,9 @@ async function boot() {
         fireworks.launchDroneSalvo(droneFireworkMounts ?? [], aim, player.velocity);
         chase.shake(0.08);
       }
-    } else if (player.mode === "truck") {
-      // parade truck: one press launches the whole rocket battery in the bed —
-      // they fly out ahead and burst into a two-stage red/white/blue show
-      if (!input.suspended && input.firePressed && fireCooldown <= 0 && truckLaunchers) {
-        chase.lookDir(aim);
-        fireCooldown = 0.6;
-        const truckFwd = new THREE.Vector3(0, 0, -1).applyQuaternion(player.quaternion);
-        truckFwd.y = 0;
-        truckLaunchers.fireAll({
-          scene,
-          fireworks,
-          rocketRiders,
-          map,
-          playerPos: player.position,
-          forward: truckFwd,
-          hostVelocity: player.velocity
-        });
-        chase.shake(0.18);
-      }
     } else if (player.mode === "speedboat") {
       // freedom boat: one press launches the whole cockpit rocket battery forward
-      // over the water — same two-stage red/white/blue barrage as the truck
+      // over the water — red/white/blue barrage from the cockpit rocket battery
       if (!input.suspended && input.firePressed && fireCooldown <= 0 && boatLaunchers) {
         chase.lookDir(aim);
         fireCooldown = 0.6;
@@ -1730,7 +1647,6 @@ async function boot() {
     flyover.update(frameDt); // planes + phoenixes streaking over on "-"
     bridgeParade.update(frameDt); // boats crossing under the Golden Gate on "-"
     rocketRiders.update(frameDt, player.position); // the launched guitarists live their own lives
-    if (player.mode === "truck") truckLaunchers?.update(frameDt); // idle strum + reload
     if (player.mode === "speedboat") boatLaunchers?.update(frameDt); // guitarist jam + rocket reload
     creatures.update(elapsed, camera.position); // gulls live at altitude — never gated
     forest.update(frameDt, camera.position);
@@ -1796,7 +1712,7 @@ async function boot() {
       ridePromptShown = false;
     }
     if (cineHook) {
-      cineHook(frameDt); // scripted cinematic owns truck pose + camera
+      cineHook(frameDt); // scripted cinematic owns pose + camera
     } else if (cameraMode) {
       orbit.update(frameDt);
     } else {
@@ -1972,7 +1888,7 @@ async function boot() {
 
   const exposeDebugHooks = () => {
     Object.assign(window as never, {
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, props, exploratorium, traffic, creatures, forest, flora, splashes, vehicleAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, truckLaunchers, boatLaunchers, goldenGateLights, bridgeShow, flyover, bridgeParade, teleportToTarget }
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, props, exploratorium, traffic, creatures, forest, flora, splashes, vehicleAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, boatLaunchers, goldenGateLights, flyover, bridgeParade, teleportToTarget }
     });
   };
   if (import.meta.env.DEV || new URLSearchParams(location.search).has("profile")) {
@@ -2004,17 +1920,6 @@ async function boot() {
       setPostFx: (values: Record<string, number | boolean>) => {
         Object.assign(POSTFX_TUNING.values, values);
         pipeline.applyPostFx(); // rebuild the chain for the toggles + push uniforms
-      },
-      launchTruckFireworks: (forward: THREE.Vector3) => {
-        truckLaunchers?.fireAll({
-          scene,
-          fireworks,
-          rocketRiders,
-          map,
-          playerPos: player.position,
-          forward,
-          hostVelocity: player.velocity
-        });
       },
       launchBoatFireworks: (forward: THREE.Vector3) => {
         boatLaunchers?.fireAll({

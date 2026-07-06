@@ -78,8 +78,7 @@ const TAG_Y: Record<PlayerMode, number> = {
   speedboat: 2.4,
   drone: 1.6,
   board: 2.3,
-  bird: 2.2,
-  truck: 5.8 // above the roof eagle
+  bird: 2.2
 };
 
 type Avatar = {

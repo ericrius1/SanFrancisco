@@ -26,7 +26,6 @@ import { buildBoatMesh, buildSpeedboatMesh, BoatController, BOAT_TUNING, SPEEDBO
 import { buildDroneMesh, DroneController } from "../vehicles/drone";
 import { buildBoardMesh, BoardController, BOARD_TUNING } from "../vehicles/board";
 import { buildBirdMesh, BirdController } from "../vehicles/bird";
-import { buildTruckMesh, TruckController } from "../vehicles/truck";
 
 const V = {
   tmp: new THREE.Vector3(),
@@ -95,7 +94,6 @@ export class Player {
     drone: DroneController;
     board: BoardController;
     bird: BirdController;
-    truck: TruckController;
   };
 
   // character rigs: one per embodiment (walker, board rider, car driver).
@@ -110,8 +108,6 @@ export class Player {
   #speedWheel: { group: THREE.Group; spin: THREE.Group };
   #pilotRig: Rig; // plane crew: open cockpit, hands on the built-in yoke
   #planeAnim: PlaneAnim;
-  #truckRig: Rig; // parade-truck driver: the truck never swaps meshes, keeps its own
-  #truckWheel: { group: THREE.Group; spin: THREE.Group };
   #avatar: AvatarTraits;
   #hasWheel = false;
   #animT = 0; // free-running clock for idle sway/bob
@@ -150,8 +146,7 @@ export class Player {
       speedboat: buildSpeedboatMesh(),
       drone: buildDroneMesh(),
       board: buildBoardMesh(),
-      bird: buildBirdMesh(),
-      truck: buildTruckMesh()
+      bird: buildBirdMesh()
     };
     this.#modes = {
       walk: new WalkController(),
@@ -161,8 +156,7 @@ export class Player {
       speedboat: new BoatController(SPEEDBOAT_TUNING),
       drone: new DroneController(this.meshes.drone),
       board: new BoardController(),
-      bird: new BirdController(this.meshes.bird),
-      truck: new TruckController()
+      bird: new BirdController(this.meshes.bird)
     };
     // surf stance across the deck; ZYX order so the carve lean (z) rolls the
     // already-yawed stance around the board's long axis
@@ -194,20 +188,6 @@ export class Player {
     this.#pilotRig.group.position.set(pc.seat[0], pc.seat[1], pc.seat[2]);
     this.meshes.plane.add(this.#pilotRig.group);
     this.#planeAnim = collectPlaneAnim(this.meshes.plane);
-    // parade-truck driver on the bench, hands on a wheel at the console (same
-    // seat→wheel offsets as the car cockpit so poseDrive's reach lines up)
-    this.#truckRig = buildRig(this.#avatar);
-    this.#truckWheel = buildSteeringWheel();
-    const tc = this.meshes.truck.userData.cockpit as Cockpit;
-    this.#truckRig.group.position.set(tc.seat[0], tc.seat[1], tc.seat[2]);
-    this.#truckWheel.group.position.set(tc.wheel![0], tc.wheel![1], tc.wheel![2]);
-    this.meshes.truck.add(this.#truckRig.group, this.#truckWheel.group);
-    // closed cab (real GLB truck): park the driver rig so it doesn't float in
-    // the tinted cab. poseDrive still ticks it harmlessly while it's hidden.
-    if (tc.hide) {
-      this.#truckRig.group.visible = false;
-      this.#truckWheel.group.visible = false;
-    }
     this.#defaultDriveMesh = this.meshes.drive;
     this.#defaultDroneMesh = this.meshes.drone;
     this.#seatDriver(this.meshes.drive);
@@ -230,7 +210,6 @@ export class Player {
     applyAvatarToRig(this.#helmRig, this.#avatar);
     applyAvatarToRig(this.#speedRig, this.#avatar);
     applyAvatarToRig(this.#pilotRig, this.#avatar);
-    applyAvatarToRig(this.#truckRig, this.#avatar);
   }
 
   #destroyBody() {
@@ -321,8 +300,9 @@ export class Player {
    * heading is the facing+π convention, so the facing yaw is heading−π.
    */
   restoreState(s: SavedPlayer) {
-    this.position.set(s.x, s.y - this.#modes[s.mode].spawnLift, s.z);
-    this.#spawnBody(s.mode, s.heading - Math.PI);
+    const mode = s.mode in this.#modes ? s.mode : "walk";
+    this.position.set(s.x, s.y - this.#modes[mode].spawnLift, s.z);
+    this.#spawnBody(mode, s.heading - Math.PI);
   }
 
   /**
@@ -586,18 +566,6 @@ export class Player {
       const steer = this.#modes.speedboat.steerVis;
       poseDrive(this.#speedRig, steer, this.#animT, true);
       this.#speedWheel.spin.rotation.z = steer * 2.3;
-    } else if (this.mode === "truck") {
-      const steer = this.#modes.truck.steerVis;
-      poseDrive(this.#truckRig, steer, this.#animT, true);
-      this.#truckWheel.spin.rotation.z = steer * 2.3;
-      // roll the six road wheels by the distance travelled this frame (signed by
-      // forward speed, so reversing spins them back). Axle is each wheel's local Z.
-      const wheels = this.meshes.truck.userData.wheels as { mesh: THREE.Object3D; invRadius: number }[] | undefined;
-      if (wheels) {
-        const fwd = V.tmp.set(0, 0, -1).applyQuaternion(this.renderQuaternion);
-        const roll = this.velocity.dot(fwd) * dt; // metres rolled forward this frame
-        for (const w of wheels) w.mesh.rotation.z -= roll * w.invRadius;
-      }
     }
   }
 
