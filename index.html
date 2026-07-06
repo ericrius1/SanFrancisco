@@ -785,6 +785,33 @@
         background: rgba(18, 40, 56, 0.7); border: 1px solid rgba(190, 225, 240, 0.16);
         color: #b6ecdd;
       }
+      /* "the whole process" narrative block at the end of the copy */
+      #hud .horse-training-process { padding: 4px 0 12px; color: #cfe6ee; }
+      #hud .horse-training-process .htr-proc-divider {
+        height: 1px; margin: 0 0 18px;
+        background: linear-gradient(90deg, transparent, rgba(111,215,196,0.45), transparent);
+      }
+      #hud .horse-training-process h3 {
+        margin: 0 0 6px; color: #9ef2df; font: 800 17px "Avenir Next", "Helvetica Neue", sans-serif;
+      }
+      #hud .horse-training-process h4 {
+        margin: 17px 0 7px; color: #eaf4f8; font: 800 13px "Avenir Next", "Helvetica Neue", sans-serif;
+        letter-spacing: 0.02em; text-transform: uppercase;
+      }
+      #hud .horse-training-process p { margin: 0 0 9px; color: #cfe6ee; }
+      #hud .horse-training-process .htr-proc-by { color: #b6ecdd; font-size: 12.5px; opacity: 0.92; }
+      #hud .horse-training-process .htr-proc-list { margin: 0; padding-left: 18px; display: grid; gap: 8px; }
+      #hud .horse-training-process .htr-proc-list li { color: #cfe6ee; line-height: 1.42; }
+      #hud .horse-training-process b { color: #eaf4f8; }
+      #hud .horse-training-process .htr-proc-foot {
+        margin-top: 17px; padding-top: 13px; border-top: 1px solid rgba(190,225,240,0.12);
+        color: #9ef2df; font-size: 12.5px;
+      }
+      #hud .horse-training-process code {
+        padding: 1px 6px; border-radius: 5px; font-size: 12px;
+        font-family: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, monospace;
+        background: rgba(18, 40, 56, 0.7); border: 1px solid rgba(190, 225, 240, 0.16); color: #b6ecdd;
+      }
       #hud .horse-training-diagram[data-step="1"] .htr-layer:not(.input),
       #hud .horse-training-diagram[data-step="2"] .htr-layer:not(.h1):not(.h2),
       #hud .horse-training-diagram[data-step="3"] .htr-layer:not(.output) { opacity: 0.42; filter: saturate(0.58); }

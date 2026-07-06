@@ -80,7 +80,6 @@ const STEP_TITLES = [
   "Live hot swap"
 ];
 
-const GUIDE_DISTANCE = 310;
 
 function nodeDots(count: number): string {
   return Array.from({ length: count }, (_, i) => `<i style="--i:${i}"></i>`).join("");
@@ -291,11 +290,38 @@ const BODY = `
     <p>The overhead network is therefore both decoration and instrumentation. It shows the policy architecture and the current activations while the horse is walking. This panel explains what those signals mean; the world view shows them happening in real time.</p>
     <p>When a horse falls, that is also useful information. A fall is a bad rollout outcome, but it tells the optimizer which weight directions to avoid. Learning locomotion is mostly learning how not to exploit the wrong part of the reward.</p>
   </section>
+  <section class="horse-training-process">
+    <div class="htr-proc-divider"></div>
+    <h3>The whole process — how this was built</h3>
+    <p class="htr-proc-by">Built by <b>Claude Opus 4.8</b> (Anthropic) over one long autonomous session — designing the RL kit, writing the trainer and evaluators, running hundreds of training runs, watching the results in-world, and iterating.</p>
+
+    <h4>Where it started</h4>
+    <p>The idea began as an RL creature with a neural-network "voice." First a hummingbird, then an eagle — both too hard — and it settled on a <b>rideable horse</b> that roams this park. The key decision: instead of training in JAX or MuJoCo on a GPU, train directly against the game's <b>own physics engine</b> (box3d-wasm) headless in Node, using gradient-free <b>Evolution Strategies</b>. Train-time physics equals run-time physics, so there is zero sim-to-real gap — the policy you see here is the exact one that was trained.</p>
+
+    <h4>What I learned along the way</h4>
+    <ul class="htr-proc-list">
+      <li><b>Verify against the real runtime, not the trainer.</b> A policy looked "collapsed" in-world while the training metrics said it was fine — the in-world code path differed. Uprightness is physics, so it can be checked headlessly by running the actual game code.</li>
+      <li><b>Physics gotchas bite hard.</b> box3d sleeps resting bodies (torques do nothing unless you wake them); and without continuous collision detection the horses <b>tunnelled through the ground</b> when they fell fast.</li>
+      <li><b>Pure RL refuses to separate gaits.</b> Five reward variants all collapsed walk and gallop into one mid-trot. The fix was to <b>hard-wire cadence and stride length to the commanded speed</b> in the gait generator, and let the policy just balance.</li>
+      <li><b>Grade the right thing.</b> The first evaluator only asked "upright and moving?" — so a weak shuffle passed as a gallop. A richer evaluator that scores <b>stride length, bounding and turn stability</b> exposed the real problem.</li>
+      <li><b>A gallop needs a gallop footfall.</b> The generator was playing a walk footfall for every gait. Switching to a proper transverse <b>half-bound</b> (hind pair, then front, a half-cycle apart) is what finally made it bound instead of shuffle.</li>
+      <li><b>Build a loop that improves itself.</b> A recursive evolutionary <b>search over training configurations</b> — with a panel of expert sub-agents diagnosing the failures in parallel — found the levers faster than hand-tuning ever did.</li>
+    </ul>
+
+    <h4>What I would do next with more time and compute</h4>
+    <ul class="htr-proc-list">
+      <li><b>Body morphology.</b> A box torso on short legs may be the real ceiling. Search over leg length and add a <b>flexing spine</b> — the thing real horses gallop with.</li>
+      <li><b>A learned gait-transition controller</b> instead of a hand-shaped oscillator, so walk→trot→gallop transitions emerge rather than being scheduled.</li>
+      <li><b>Direct energetics rewards</b> — peak ground-reaction force and airborne (flight) time — to teach an explosive push, not just a fast cycle.</li>
+      <li><b>Far more search compute</b> — the config search was climbing when it stopped; longer runs and bigger populations should push the gallop faster and cleaner.</li>
+      <li><b>Sim-to-real.</b> Because the training physics is the game physics, the same pipeline could target a real quadruped robot with only a physics-parameter swap.</li>
+    </ul>
+    <p class="htr-proc-foot">Every horse in this paddock is running a live neural network trained this way. Press <code>L</code> to train them further, or ride one and hold <code>W</code> to gallop.</p>
+  </section>
 `;
 
 export class HorseTrainingGuide {
   #anchor: THREE.Vector3;
-  #screen = new THREE.Vector3();
   #button: HTMLButtonElement;
   #overlay: HTMLDivElement;
   #body: HTMLElement;
@@ -320,7 +346,7 @@ export class HorseTrainingGuide {
     this.#button.title = "Open the horse training guide";
     this.#button.setAttribute("aria-label", "Open the horse training guide");
     this.#button.innerHTML = `<span class="hti-mark">NN</span><span class="hti-label">Training</span>`;
-    this.#button.hidden = true;
+    this.#button.hidden = false; // fixed right-side HUD button, always available
     this.#button.addEventListener("click", () => this.setOpen(true));
     hud.appendChild(this.#button);
 
@@ -368,25 +394,11 @@ export class HorseTrainingGuide {
     hud.appendChild(this.#overlay);
   }
 
-  update(camera: THREE.Camera, cameraPos: THREE.Vector3): void {
-    if (this.#open) {
-      this.#button.hidden = true;
-      return;
-    }
-    const distSq = cameraPos.distanceToSquared(this.#anchor);
-    this.#screen.copy(this.#anchor).project(camera);
-    const margin = 72;
-    const inDepth = this.#screen.z > -1 && this.#screen.z < 1;
-    const projectedX = (this.#screen.x * 0.5 + 0.5) * window.innerWidth;
-    const projectedY = (-this.#screen.y * 0.5 + 0.5) * window.innerHeight;
-    let x = inDepth ? Math.min(window.innerWidth - margin, Math.max(margin, projectedX)) : window.innerWidth * 0.5;
-    const y = inDepth ? Math.min(window.innerHeight - margin, Math.max(margin, projectedY)) : margin;
-    if (x < 320 && y < 285) x = 320;
-    this.#button.hidden = distSq > GUIDE_DISTANCE * GUIDE_DISTANCE;
-    if (!this.#button.hidden) {
-      this.#button.style.left = `${Math.round(x)}px`;
-      this.#button.style.top = `${Math.round(y)}px`;
-    }
+  update(_camera: THREE.Camera, _cameraPos: THREE.Vector3): void {
+    // The NN button is now a fixed right-side HUD button (docked in the Tutorial
+    // stack via CSS), not a floating in-world marker — just hide it while open.
+    void this.#anchor;
+    this.#button.hidden = this.#open;
   }
 
   setOpen(open: boolean): void {
