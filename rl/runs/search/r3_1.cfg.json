@@ -1,1 +1,1 @@
-{"freqBase":0.78,"freqSpan":0.5,"strideBase":0.68,"strideSpan":1.05,"actFreqAuth":0.5,"actStrideAuth":0.5,"actKneeAuth":0.7,"speedMatchA":10,"progressW":0.55,"tallFloorSlope":0.13,"doneFloorSlope":0.12,"uprightSoften":0.4,"maxTorqueScale":1}
+{"freqBase":0.6901,"freqSpan":0.5048,"strideBase":0.7105,"strideSpan":1.9734,"actFreqAuth":0.7831,"actStrideAuth":0.3768,"actKneeAuth":0.8176,"speedMatchA":4,"progressW":0.7248,"tallFloorSlope":0.0604,"doneFloorSlope":0.24,"uprightSoften":0.4392,"maxTorqueScale":1.1803,"gallopBlend":0.1572,"boundRewardW":0}
