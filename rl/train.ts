@@ -12,7 +12,8 @@
 import { createBox3D } from "box3d-wasm";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { Policy, paramCount } from "../src/creatures/policy.ts";
-import { DOG, HORSE, obsDim, actDim, type CreatureSpec } from "../src/creatures/quadruped.ts";
+import { DOG, HORSE, obsDim, actDim, setTuning, type CreatureSpec } from "../src/creatures/quadruped.ts";
+import { readFileSync as _readFileSync } from "node:fs";
 import { Box3DEnv } from "./core/box3dEnv.ts";
 import { ES, rng32 } from "./core/es.ts";
 import { rollout } from "./core/rollout.ts";
@@ -31,6 +32,18 @@ function argStr(name: string, def: string): string {
 const creatureName = argStr("creature", "horse");
 const spec = CREATURES[creatureName];
 if (!spec) throw new Error("unknown creature " + creatureName);
+
+// Outer search loop hooks: CONFIG = a gait-tuning JSON to train under; OUT =
+// where to write the resulting policy (so parallel configs don't clobber).
+const CONFIG_PATH = process.env.CONFIG ?? "";
+const OUT_PATH = process.env.OUT ?? `public/models/${creatureName}_policy.json`;
+const WARM_PATH = process.env.WARM ?? `public/models/${creatureName}_policy.json`;
+let TUNING_CFG: Record<string, number> | null = null;
+if (CONFIG_PATH) {
+  TUNING_CFG = JSON.parse(_readFileSync(CONFIG_PATH, "utf8"));
+  setTuning(TUNING_CFG);
+  console.log(`[train] tuning from ${CONFIG_PATH}: ${JSON.stringify(TUNING_CFG)}`);
+}
 
 const GENS = arg("gens", 120);
 const PAIRS = arg("pairs", 96);
@@ -74,7 +87,7 @@ function expandPolicyInput(def: any, newIn: number): any {
 // under a new reward instead of relearning to stand from scratch)
 if (process.argv.includes("--warm")) {
   try {
-    const raw = JSON.parse(await import("node:fs").then((m) => m.readFileSync(`public/models/${creatureName}_policy.json`, "utf8")));
+    const raw = JSON.parse(await import("node:fs").then((m) => m.readFileSync(WARM_PATH, "utf8")));
     const def = expandPolicyInput(raw, sizes[0]);
     if (def.weights?.length === dim) {
       policy.setParams(Float32Array.from(def.weights));
@@ -122,6 +135,10 @@ function robustnessScore(params: Float32Array): number {
 const t0 = Date.now();
 let bestCenter = -Infinity;
 for (let g = 0; g < GENS; g++) {
+  // Speed-aware CPG hard-wires cadence+stride to the command, so gaits already
+  // separate — train the full range from the start (a short walk-first warmup helps balance).
+  const gaitHi = g < 15 ? 0.45 : 0.85;
+  for (const e of envs) e.setGaitRange(gaitHi);
   const rep = es.step(fitness);
   const line = { gen: rep.gen, mean: +rep.meanFitness.toFixed(2), best: +rep.bestFitness.toFixed(2), center: +rep.centerFitness.toFixed(2), sigma: +rep.sigma.toFixed(4) };
   writeFileSync(logPath, JSON.stringify(line) + "\n", { flag: "a" });
@@ -134,7 +151,7 @@ for (let g = 0; g < GENS; g++) {
   // policy while training keeps improving other qualities like gait tracking.
   if (improved || (rep.gen % 15 === 0 && robust >= 0.9 * bestCenter)) {
     policy.setParams(rep.center);
-    writeFileSync(`public/models/${creatureName}_policy.json`, JSON.stringify(policy.toDef()));
+    writeFileSync(OUT_PATH, JSON.stringify({ ...policy.toDef(), tuning: TUNING_CFG ?? undefined }));
   }
 
   if (rep.gen % RECORD_EVERY === 0 || g === GENS - 1) {
@@ -163,4 +180,4 @@ for (let g = 0; g < GENS; g++) {
   }
 }
 console.log(`[train] done in ${((Date.now() - t0) / 1000).toFixed(0)}s. best robustness score ${bestCenter.toFixed(1)}`);
-console.log(`[train] policy -> public/models/${creatureName}_policy.json`);
+console.log(`[train] policy -> ${OUT_PATH}`);

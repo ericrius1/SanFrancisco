@@ -21,6 +21,9 @@ export type PolicyDef = {
   /** Optional running-mean/std observation normalizer (obs-length each). */
   obsMean?: number[];
   obsStd?: number[];
+  /** Gait tuning this policy was trained under (GaitTuning). The runtime applies
+   *  it so the in-world gait replays exactly as trained. */
+  tuning?: Record<string, number>;
 };
 
 const tanh = Math.tanh;

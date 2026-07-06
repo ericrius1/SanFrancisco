@@ -26,6 +26,18 @@ import {
 const IDENT: [number, number, number, number] = [0, 0, 0, 1];
 const mkLink = (): Link => ({ pos: [0, 0, 0], quat: [0, 0, 0, 1], vel: [0, 0, 0], angVel: [0, 0, 0] });
 
+/** Commanded gait speed (Froude), sampled BIMODALLY between walk and the current
+ *  ceiling `hi`. Under a CURRICULUM `hi` starts low (walk only) so the policy first
+ *  masters a genuine slow walk, then widens toward a real gallop — one policy won't
+ *  separate the extremes if shown the full range from the start (it compromises to a trot). */
+function sampleGait(rng: () => number, hi: number): number {
+  if (hi <= 0.4) return 0.15 + rng() * (hi - 0.15); // early curriculum: walk only
+  const r = rng();
+  if (r < 0.5) return 0.15 + rng() * 0.2; // walk cluster 0.15–0.35
+  if (r < 0.6) return 0.38 + rng() * 0.18; // a little trot
+  return hi - 0.18 + rng() * 0.18; // fast cluster up to the ceiling
+}
+
 export type StepResult = { obs: Float32Array; reward: number; done: boolean };
 
 type LegBodies = { thigh: number; shank: number; hip: V3; knee: V3; thighCenter: V3; shankCenter: V3 };
@@ -44,6 +56,7 @@ export class Box3DEnv {
   private goalAngle = 0;
   private goalTarget = 0;
   private targetNonDim = 1; // commanded gait speed in Froude units (0.25 walk .. 2.3 gallop)
+  private gaitHi = 0.85; // curriculum ceiling on commanded speed (train.ts raises it over gens)
   private rng: () => number = Math.random;
   private stepCount = 0;
   private torsoMass = 0;
@@ -140,10 +153,10 @@ export class Box3DEnv {
     this.goalTarget = this.goalAngle;
     this.state.goal[0] = Math.sin(this.goalAngle);
     this.state.goal[1] = Math.cos(this.goalAngle);
-    // commanded gait speed for this episode, in REACHABLE Froude units: ~0.2 walk,
-    // ~0.5 trot, ~0.8 gallop (the body tops out near 0.85 V — commanding faster is
-    // impossible and makes the policy crank itself over trying).
-    this.targetNonDim = 0.15 + rng() * 0.7;
+    // commanded gait speed for this episode. BIMODAL toward the extremes (walk OR
+    // gallop, little mid) so the policy CAN'T settle on one compromise trot — it
+    // must read the command and produce a distinctly slow or fast gait.
+    this.targetNonDim = sampleGait(rng, this.gaitHi);
     this.state.targetSpeed = this.targetNonDim * Math.sqrt(9.81 * this.spec.standHeight);
     this.phase = rng() * Math.PI * 2;
     // settle with the stance HELD by control, so the legs don't fold before the
@@ -159,6 +172,11 @@ export class Box3DEnv {
     return observe(this.spec, this.state, this.phase, this.obsBuf);
   }
 
+  /** Curriculum: raise the commanded-speed ceiling as training progresses. */
+  setGaitRange(hi: number): void {
+    this.gaitHi = hi;
+  }
+
   step(action: ArrayLike<number>): StepResult {
     // wander the goal DURING the episode so the policy learns to TURN while
     // staying up (in-world the goal changes; a fixed-goal policy tips on turns)
@@ -167,7 +185,7 @@ export class Box3DEnv {
     // change the commanded gait speed mid-episode so it learns to TRANSITION
     // (walk->trot->gallop and back), not just hold one speed.
     if (this.stepCount % 110 === 0) {
-      this.targetNonDim = 0.15 + this.rng() * 0.7;
+      this.targetNonDim = sampleGait(this.rng, this.gaitHi);
       this.state.targetSpeed = this.targetNonDim * Math.sqrt(9.81 * this.spec.standHeight);
     }
     const da = this.goalTarget - this.goalAngle;
@@ -176,13 +194,16 @@ export class Box3DEnv {
     this.state.goal[1] = Math.cos(this.goalAngle);
     // random SHOVE now and then so the policy learns to RECOVER its balance —
     // this is what stops the "runs a bit then falls over" in the noisier game.
-    if (this.stepCount > 50 && this.stepCount % 75 === 0) {
+    // Occasional sideways SHOVE for balance-recovery — but NOT so frequent that a
+    // dynamic gallop is always risky (that made the policy retreat to a safe slow
+    // gait). Landing a scripted jump is already handled by this general robustness.
+    if (this.stepCount > 50 && this.stepCount % 100 === 0) {
       if (this.torsoMass <= 0) this.torsoMass = this.world.getBodyMass(this.torso);
       const ka = this.rng() * Math.PI * 2;
-      const kick = this.torsoMass * (0.5 + this.rng() * 0.9);
+      const kick = this.torsoMass * (0.4 + this.rng() * 0.7);
       this.world.applyImpulse(this.torso, [Math.cos(ka) * kick, 0, Math.sin(ka) * kick]);
     }
-    this.phase = advancePhase(this.spec, this.phase, action, this.dt);
+    this.phase = advancePhase(this.spec, this.state, this.phase, action, this.dt);
     decode(this.spec, action, this.state, this.phase, this.torques);
     this.applyTorques();
     this.keepAwake();

@@ -285,10 +285,43 @@ function jointServo(parent: Link, child: Link, qTargetLocal: Quat, kp: number, k
   out[2] = tz;
 }
 
+/**
+ * Searchable gait knobs — the outer training loop mutates these and saves the
+ * winning set WITH the policy (PolicyDef.tuning) so the runtime replays the exact
+ * gait it was trained under. Defaults reproduce the hand-tuned policy.
+ */
+export type GaitTuning = {
+  freqBase: number; freqSpan: number; // cadence: speedFreq = freqBase + freqSpan*targetND
+  strideBase: number; strideSpan: number; // stride: speedStride = strideBase + strideSpan*targetND
+  actFreqAuth: number; actStrideAuth: number; actKneeAuth: number; // policy authority over CPG
+  speedMatchA: number; progressW: number; // reward: speed-match sharpness + progress weight
+  tallFloorSlope: number; doneFloorSlope: number; uprightSoften: number; // gate relax with speed
+  maxTorqueScale: number; // multiplies joint torque limit (body power, searchable)
+  gallopBlend: number; // 0..1: how far the FOOTFALL shifts from walk-sequence toward a gallop half-bound at high speed
+};
+export const DEFAULT_TUNING: GaitTuning = {
+  freqBase: 0.78, freqSpan: 0.5, strideBase: 0.68, strideSpan: 1.05,
+  actFreqAuth: 0.5, actStrideAuth: 0.5, actKneeAuth: 0.7,
+  speedMatchA: 10, progressW: 0.55,
+  tallFloorSlope: 0.13, doneFloorSlope: 0.12, uprightSoften: 0.4,
+  maxTorqueScale: 1.0, gallopBlend: 0
+};
+let TUNING: GaitTuning = { ...DEFAULT_TUNING };
+export function setTuning(t: Partial<GaitTuning> | null | undefined): void {
+  TUNING = t ? { ...DEFAULT_TUNING, ...t } : { ...DEFAULT_TUNING };
+}
+export function getTuning(): GaitTuning { return TUNING; }
+
 export function decode(spec: CreatureSpec, action: ArrayLike<number>, state: CreatureState, phase: number, outTorques: Torque[]): void {
   const nLeg = spec.legs.length;
-  const hipAmp = spec.cpg.hipAmp * (1 + action[1]); // wider stride range for running
-  const kneeAmp = spec.cpg.kneeAmp * (1 + action[2]);
+  // stride length also scales with the commanded speed (short steps at a walk,
+  // long reaching strides at a gallop); the policy modulates around it.
+  const Vd = Math.sqrt(9.81 * spec.standHeight);
+  const targetND = state.targetSpeed / Vd;
+  const speedStride = TUNING.strideBase + TUNING.strideSpan * targetND;
+  const maxT = spec.pd.maxTorque * TUNING.maxTorqueScale;
+  const hipAmp = spec.cpg.hipAmp * speedStride * (1 + action[1] * TUNING.actStrideAuth);
+  const kneeAmp = spec.cpg.kneeAmp * (1 + action[2] * TUNING.actKneeAuth);
   const turn = action[3 + 2 * nLeg];
   const pitchGain = action[4 + 2 * nLeg];
 
@@ -300,29 +333,42 @@ export function decode(spec: CreatureSpec, action: ArrayLike<number>, state: Cre
     const spc = spec.legs[i];
     const isRight = spc.hip[0] > 0;
     const bias = 0.5 * action[3 + i] + (isRight ? -turn : turn) * 0.4;
+    // FOOTFALL: at low speed use the hand-set lateral WALK sequence; as commanded
+    // speed rises, blend toward a GALLOP half-bound (hind pair fire ~together, then
+    // the front pair ~half a cycle later) — a walk sequence can't gallop no matter
+    // how fast it cycles. gallopBlend (0..1) is searched; 0 = pure walk sequence.
+    const isFront = spc.hip[2] > 0;
+    const gallopOffset = (isFront ? 3.4 : 0) + (isRight ? 0.5 : 0);
+    const gblend = TUNING.gallopBlend * Math.max(0, Math.min(1, (targetND - 0.45) / 0.4));
+    const footfall = spc.phase * (1 - gblend) + gallopOffset * gblend;
     // per-leg phase offset lets the policy re-time each leg -> discover gaits
-    const gaitPhase = phase + spc.phase + action[3 + nLeg + i] * Math.PI;
+    const gaitPhase = phase + footfall + action[3 + nLeg + i] * Math.PI;
 
     // hip: swing the thigh fore-aft (about local right); zero roll/yaw target
     // keeps the leg in the sagittal plane (no splay). Pitch-balance leans all legs.
     const hipSwing = hipAmp * Math.sin(gaitPhase) + bias - pitchGain * tipFwd * 0.8;
     const t0: V3 = [0, 0, 0];
-    jointServo(state.torso, state.legs[i].thigh, qAxis(RIGHT, hipSwing), spec.pd.hipKp, spec.pd.hipKd, spec.pd.maxTorque, t0);
+    jointServo(state.torso, state.legs[i].thigh, qAxis(RIGHT, hipSwing), spec.pd.hipKp, spec.pd.hipKd, maxT, t0);
     outTorques.push({ leg: i, seg: 0, t: t0 });
 
     // knee: flex about thigh's local right during swing (lift foot), straight in stance
     const flex = Math.max(0, Math.sin(gaitPhase + spec.cpg.kneeLag));
     const kneeTarget = spec.cpg.kneeRest + kneeAmp * flex;
     const t1: V3 = [0, 0, 0];
-    jointServo(state.legs[i].thigh, state.legs[i].shank, qAxis(RIGHT, kneeTarget), spec.pd.kneeKp, spec.pd.kneeKd, spec.pd.maxTorque, t1);
+    jointServo(state.legs[i].thigh, state.legs[i].shank, qAxis(RIGHT, kneeTarget), spec.pd.kneeKp, spec.pd.kneeKd, maxT, t1);
     outTorques.push({ leg: i, seg: 1, t: t1 });
   }
 }
 
-export function advancePhase(spec: CreatureSpec, phase: number, action: ArrayLike<number>, dt: number): number {
-  // exponential mapping: action[0] in [-1,1] -> ~0.37x..2.7x the base frequency,
-  // so the policy can slow to a walk or wind up to a gallop.
-  const f = spec.cpg.baseFreq * Math.exp(action[0]);
+export function advancePhase(spec: CreatureSpec, state: CreatureState, phase: number, action: ArrayLike<number>, dt: number): number {
+  // The COMMANDED speed sets the step cadence directly (a walk steps slowly, a
+  // gallop cycles fast); the policy only fine-tunes around it (±, ×0.5 authority).
+  // Pure-RL speed conditioning refused to separate gaits — hard-wiring cadence to
+  // the command is what makes a real walk and a real gallop distinct.
+  const V = Math.sqrt(9.81 * spec.standHeight);
+  const targetND = state.targetSpeed / V; // ~0.15 walk .. ~0.85 gallop
+  const speedFreq = TUNING.freqBase + TUNING.freqSpan * targetND;
+  const f = spec.cpg.baseFreq * speedFreq * Math.exp(action[0] * TUNING.actFreqAuth);
   let p = phase + 2 * Math.PI * f * dt;
   if (p > 2 * Math.PI) p -= 2 * Math.PI;
   return p;
@@ -336,9 +382,13 @@ export function reward(spec: CreatureSpec, state: CreatureState, action: ArrayLi
   const height = t.pos[1] - state.groundY;
   const upright = _up[1];
   const H = spec.standHeight;
-  // TERMINATE a deep crouch (or a tip): a squatting horse looks collapsed, so we
-  // don't let it accrue reward while sunk — this is the single biggest fix.
-  const done = upright < spec.fall.minUp || height < 0.45 * H;
+  const Vg = Math.sqrt(9.81 * H);
+  const spdCmd = Math.max(0, Math.min(1, state.targetSpeed / Vg)); // 0 walk .. ~1 gallop
+  // A GALLOP is dynamic — the body pitches and bounds (height oscillates). Relax the
+  // terminate/height/upright floors as the commanded speed rises, so a fast bounding
+  // gait isn't punished into a speed cap; keep it strict for a clean upright walk.
+  const doneFloor = 0.45 - TUNING.doneFloorSlope * spdCmd;
+  const done = upright < spec.fall.minUp - 0.05 * spdCmd || height < doneFloor * H;
 
   // NOSE-FIRST speed: velocity along the body's own forward axis, NOT toward the
   // goal. Rewarding toward-goal velocity let it satisfy the goal by walking
@@ -354,14 +404,15 @@ export function reward(spec: CreatureSpec, state: CreatureState, action: ArrayLi
   // is multiplied by this, so a crouch earns almost nothing and ES is FORCED to
   // keep the legs extended and the body up (with a stand-tall bonus that gives a
   // gradient even at zero speed → learn to stand, then to run tall).
-  const tall = Math.max(0, Math.min(1, (height - 0.5 * H) / (0.9 * H - 0.5 * H)));
+  const tallFloor = 0.5 - TUNING.tallFloorSlope * spdCmd; // let a gallop ride lower (bounding) without losing reward
+  const tall = Math.max(0, Math.min(1, (height - tallFloor * H) / (0.9 * H - tallFloor * H)));
   // Froude speed: fwdSpeed / sqrt(g*standHeight) — dimensionless, so the same
   // COMMANDED gait scores the same at any body size (Fr~0.4 walk .. ~2.3 gallop).
   const V = Math.sqrt(9.81 * H);
   const target = state.targetSpeed; // commanded nose-first speed (m/s)
   const speedErr = (fwdSpeed - target) / V; // non-dimensional
-  const speedMatch = Math.exp(-6.0 * speedErr * speedErr); // sharp: overshooting a walk or undershooting a gallop clearly costs reward, so gaits SEPARATE
-  const gate = Math.max(0, upright) * tall; // must be UPRIGHT and TALL to earn anything
+  const speedMatch = Math.exp(-TUNING.speedMatchA * speedErr * speedErr); // pulls to the commanded speed at both ends
+  const gate = Math.pow(Math.max(0, upright), 1 - TUNING.uprightSoften * spdCmd) * tall; // upright demand softens at gallop (the horse pitches into the run)
   const faceGate = 0.3 + 0.7 * Math.max(0, facing); // move more when FACING the goal
   const w = spec.reward;
   let r = 0;
@@ -370,7 +421,7 @@ export function reward(spec: CreatureSpec, state: CreatureState, action: ArrayLi
   // progress bonus that saturates AT the target: gives a gradient to get moving
   // (so a commanded slow walk isn't satisfied by standing still), but pays nothing
   // for overshooting — the match term above penalizes going faster than asked.
-  r += w.forward * 0.6 * (Math.min(Math.max(0, fwdSpeed), target) / V) * gate * faceGate;
+  r += w.forward * TUNING.progressW * (Math.min(Math.max(0, fwdSpeed), target) / V) * gate * faceGate;
   r += w.upright * upright * tall;
   r += w.alive * tall;
   r += w.heading * Math.max(0, facing) * tall; // turn to face the goal

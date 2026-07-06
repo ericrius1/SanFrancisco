@@ -26,6 +26,11 @@ const PLATFORM_Y = 35; // clears the ~34 m hilltop below
 const PLATFORM_R = 85; // room for the whole herd to roam
 const ROAM = 78;
 const COUNT = 20;
+// show-jumping course: a ring of gates the horses run at and hop
+const GATE_COUNT = 5;
+const GATE_RING_R = 46; // gates in a ring, well inside ROAM
+const GATE_APPROACH_R = 20; // start seeking a gate within this range
+const GATE_JUMP_DIST = 5.5; // hop the rail when this close
 const DOWN_SECONDS = 10; // a fallen horse lies where it landed this long before getting back up
 const GOAL_EASE = 0.45; // seconds — goal-direction smoothing time constant (gentler turns = fewer tip-overs)
 const SCALE = 2.3; // horse-sized vs the ~1.7m human (real horses tower over people)
@@ -61,6 +66,7 @@ type Horse = {
   wanderTimer: number;
   speedNonDim: number; // commanded gait speed (Froude): walk-biased while roaming
   gx: number; gz: number; // smoothed goal direction (eased toward target so turns are gradual)
+  gateCd: number; // cooldown after hopping a gate, so it doesn't re-trigger mid-air
   downTimer: number; // >0 = lying where it fell, counting down before it gets back up
   wx: number; wy: number; wz: number;
   wq: [number, number, number, number];
@@ -132,6 +138,7 @@ export class HorseHerd {
   #steerYaw = 0;
   #riddenSpeed = 0.55; // rider's commanded gait (Froude): trot by default, ramps toward gallop
   #forceSpeed: number | null = null; // debug/verify: command every horse this gait speed
+  #gates: { x: number; z: number }[] = []; // show-jumping course centers
   #camPos = new THREE.Vector3();
   #worker: Worker | null = null;
   #training = false;
@@ -146,6 +153,7 @@ export class HorseHerd {
     this.#scene = scene;
     this.#guide = new HorseTrainingGuide(new THREE.Vector3(PARK.x, PLATFORM_Y + 9.5, PARK.z), opts.onGuideToggle);
     this.#buildPlatform();
+    this.#buildGates();
     void this.#load();
   }
 
@@ -203,6 +211,74 @@ export class HorseHerd {
     ring.rotation.x = Math.PI / 2;
     ring.position.set(PARK.x, PLATFORM_Y + 0.12, PARK.z);
     this.#scene.add(ring);
+  }
+
+  /** A ring of show-jumping gates (two standards + striped rails) the horses run at and hop. */
+  #buildGates(): void {
+    for (let i = 0; i < GATE_COUNT; i++) {
+      const th = (i / GATE_COUNT) * Math.PI * 2;
+      const gx = PARK.x + Math.sin(th) * GATE_RING_R;
+      const gz = PARK.z + Math.cos(th) * GATE_RING_R;
+      const yaw = th + Math.PI / 2; // rail tangent to the ring
+      const railTop = 0.6 + (i % 3) * 0.14; // varied heights: walk / trot / gallop sized
+      this.#buildGate(gx, gz, yaw, railTop);
+      this.#gates.push({ x: gx, z: gz });
+    }
+  }
+
+  #buildGate(gx: number, gz: number, yaw: number, railTop: number): void {
+    const ax = Math.cos(yaw); // rail axis in world X
+    const az = Math.sin(yaw); // rail axis in world Z
+    const halfW = 1.2;
+    const postH = railTop + 0.4;
+    const postMat = new THREE.MeshStandardMaterial({ color: 0xf4f1e8, roughness: 0.62, emissive: 0x30302a, emissiveIntensity: 0.045 * LIGHT_SCALE });
+    const postGeo = new THREE.BoxGeometry(0.16, postH, 0.16);
+    for (const s of [-1, 1]) {
+      const p = new THREE.Mesh(postGeo, postMat);
+      p.position.set(gx + ax * halfW * s, PLATFORM_Y + postH / 2, gz + az * halfW * s);
+      p.castShadow = true;
+      this.#scene.add(p);
+    }
+    // horizontal poles, classic red/white show-jump colours
+    const railGeo = new THREE.BoxGeometry(halfW * 2 + 0.18, 0.12, 0.12);
+    const rails = [
+      { h: railTop, c: 0xf4f1e8 },
+      { h: railTop - 0.3, c: 0xc0392b },
+      { h: railTop - 0.6, c: 0xf4f1e8 }
+    ];
+    for (const r of rails) {
+      if (r.h < 0.16) continue;
+      const rail = new THREE.Mesh(railGeo, new THREE.MeshStandardMaterial({ color: r.c, roughness: 0.55, emissive: new THREE.Color(r.c).multiplyScalar(0.14), emissiveIntensity: 0.05 * LIGHT_SCALE }));
+      rail.position.set(gx, PLATFORM_Y + r.h, gz);
+      rail.rotation.y = -yaw;
+      rail.castShadow = true;
+      this.#scene.add(rail);
+    }
+    // loose collider so the PLAYER has to jump it too (horses live in private worlds, no collision)
+    this.#world.createBox({
+      type: BodyType.Static,
+      position: [gx, PLATFORM_Y + railTop * 0.5, gz],
+      halfExtents: [Math.abs(ax) * halfW + 0.2, railTop * 0.5 + 0.1, Math.abs(az) * halfW + 0.2],
+      friction: 0.6
+    });
+  }
+
+  /** Nearest gate that's within range AND roughly ahead of a heading (hx,hz). */
+  #gateAhead(wx: number, wz: number, hx: number, hz: number): { x: number; z: number; d: number } | null {
+    let best: { x: number; z: number; d: number } | null = null;
+    let bd = GATE_APPROACH_R;
+    for (const g of this.#gates) {
+      const dx = g.x - wx;
+      const dz = g.z - wz;
+      const d = Math.hypot(dx, dz);
+      if (d > GATE_APPROACH_R || d < 0.4) continue;
+      if ((dx / d) * hx + (dz / d) * hz < 0.25) continue; // must be roughly ahead
+      if (d < bd) {
+        bd = d;
+        best = { x: g.x, z: g.z, d };
+      }
+    }
+    return best;
   }
 
   async #load(): Promise<void> {
@@ -422,7 +498,7 @@ export class HorseHerd {
       const yaw = Math.random() * Math.PI * 2;
       rag.setGoal(Math.sin(yaw), Math.cos(yaw));
       const m = this.#buildMeshes(rag.layers().map((l) => l.length));
-      this.#horses.push({ rag, m, anchor, wanderYaw: yaw, wanderTimer: 2 + Math.random() * 4, speedNonDim: 0.2 + Math.random() * 0.25, gx: Math.sin(yaw), gz: Math.cos(yaw), downTimer: 0, wx: anchor.x, wy: PLATFORM_Y, wz: anchor.z, wq: [0, 0, 0, 1] });
+      this.#horses.push({ rag, m, anchor, wanderYaw: yaw, wanderTimer: 2 + Math.random() * 4, speedNonDim: 0.2 + Math.random() * 0.25, gx: Math.sin(yaw), gz: Math.cos(yaw), gateCd: 0, downTimer: 0, wx: anchor.x, wy: PLATFORM_Y, wz: anchor.z, wq: [0, 0, 0, 1] });
     }
   }
 
@@ -471,6 +547,18 @@ export class HorseHerd {
         tx = Math.sin(h.wanderYaw);
         tz = Math.cos(h.wanderYaw);
         spd = h.speedNonDim;
+        // show-jumping: if a gate is close and ahead, run straight at it and hop the rail
+        if (h.gateCd > 0) h.gateCd -= dt;
+        const ga = this.#gateAhead(wx, wz, tx, tz);
+        if (ga && h.gateCd <= 0) {
+          tx = (ga.x - wx) / ga.d;
+          tz = (ga.z - wz) / ga.d;
+          spd = 0.62; // committed canter to clear the rail
+          if (ga.d < GATE_JUMP_DIST && h.rag.grounded) {
+            h.rag.jump();
+            h.gateCd = 4;
+          }
+        }
       }
       // ...then ease the actual goal toward it so heading changes are GRADUAL. A
       // hard instant goal snap makes the policy crank a sharp turn and tip over.

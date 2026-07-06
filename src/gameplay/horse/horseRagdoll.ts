@@ -7,6 +7,7 @@ import {
   obsDim,
   actDim,
   scaledSpec,
+  setTuning,
   qRot,
   type CreatureSpec,
   type CreatureState,
@@ -48,6 +49,7 @@ export class HorseRagdoll {
   private spawnY: number;
 
   constructor(box3d: any, spec: CreatureSpec, policyDef: PolicyDef, scale = 1) {
+    setTuning(policyDef.tuning); // replay the exact gait knobs this policy was trained under
     spec = scaledSpec(spec, scale); // build at the requested body size (horse-sized in-world)
     this.spec = spec;
     // its OWN policy instance — sharing one across horses would make every
@@ -129,7 +131,7 @@ export class HorseRagdoll {
       return;
     }
     const { action } = this.policy.forward(this.obsBuf);
-    this.phase = advancePhase(this.spec, this.phase, action, SIM_DT);
+    this.phase = advancePhase(this.spec, this.state, this.phase, action, SIM_DT);
     decode(this.spec, action, this.state, this.phase, this.torques);
     this.applyTorques();
     this.world.step(SIM_DT, SUBSTEPS);

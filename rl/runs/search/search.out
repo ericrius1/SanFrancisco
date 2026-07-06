@@ -1,0 +1,29 @@
+
+=== ROUND 0  (pop 6, 100 gens each, 5 parallel) ===
+   85.4  gallop[q82 spd0.42 str1.65 bnd0.34] walk[q83 spd0.27] turn100
+   83.4  gallop[q77 spd0.43 str1.43 bnd0.13] walk[q84 spd0.30] turn100
+   82.1  gallop[q88 spd0.62 str1.26 bnd0.12] walk[q57 spd0.36] turn100
+   76.9  gallop[q75 spd0.53 str0.81 bnd0.07] walk[q61 spd0.35] turn98
+   69.4  gallop[q84 spd0.45 str1.31 bnd0.26] walk[q73 spd0.28] turn92
+   45.7  gallop[q88 spd0.60 str1.29 bnd0.14] walk[q15 spd0.25] turn0
+  ** NEW BEST 85.4  {"freqBase":0.78,"freqSpan":0.5,"strideBase":0.68,"strideSpan":1.05,"actFreqAuth":0.5,"actStrideAuth":0.5,"actKneeAuth":0.7,"speedMatchA":10,"progressW":0.55,"tallFloorSlope":0.13,"doneFloorSlope":0.12,"uprightSoften":0.4,"maxTorqueScale":1}
+  (keep gallop specialist: gallopQ 88 spd 0.60)
+
+=== ROUND 1  (pop 6, 100 gens each, 5 parallel) ===
+   86.5  gallop[q88 spd0.52 str1.18 bnd0.21] walk[q74 spd0.36] turn99
+   85.4  gallop[q82 spd0.42 str1.65 bnd0.34] walk[q83 spd0.27] turn100
+   83.7  gallop[q83 spd0.44 str1.40 bnd0.41] walk[q76 spd0.32] turn100
+   83.4  gallop[q77 spd0.43 str1.43 bnd0.13] walk[q84 spd0.30] turn100
+   71.1  gallop[q80 spd0.43 str1.84 bnd0.60] walk[q69 spd0.37] turn0
+   45.7  gallop[q88 spd0.60 str1.29 bnd0.14] walk[q15 spd0.25] turn0
+  ** NEW BEST 86.5  {"freqBase":0.7909,"freqSpan":0.5198,"strideBase":0.7459,"strideSpan":1.5651,"actFreqAuth":0.7188,"actStrideAuth":0.3095,"actKneeAuth":0.7839,"speedMatchA":5.4003,"progressW":0.6879,"tallFloorSlope":0.0888,"doneFloorSlope":0.2372,"uprightSoften":0.4609,"maxTorqueScale":1.1028}
+
+=== ROUND 2  (pop 6, 100 gens each, 5 parallel) ===
+   86.5  gallop[q88 spd0.52 str1.18 bnd0.21] walk[q74 spd0.36] turn99
+   85.4  gallop[q82 spd0.42 str1.65 bnd0.34] walk[q83 spd0.27] turn100
+   79.9  gallop[q75 spd0.55 str0.79 bnd0.05] walk[q69 spd0.39] turn99
+   75.9  gallop[q82 spd0.46 str0.97 bnd0.17] walk[q84 spd0.30] turn0
+   67.1  gallop[q84 spd0.46 str1.83 bnd0.21] walk[q15 spd0.28] turn88
+   38.5  gallop[q10 spd0.04 str2.81 bnd0.77] walk[q82 spd0.22] turn0
+
+=== ROUND 3  (pop 6, 100 gens each, 5 parallel) ===
