@@ -55,14 +55,14 @@ export class Toolbar {
 
     const vehicles = document.createElement("div");
     vehicles.className = "vehicles";
-    for (const mode of MENU_MODES) {
+    for (const [i, mode] of MENU_MODES.entries()) {
       const meta = MODE_META[mode];
       const b = document.createElement("button");
       b.type = "button";
       b.className = "tool vehicle";
-      b.title = `${meta.label} (arrow keys)`;
+      b.title = `${meta.label} (${i + 1})`;
       b.setAttribute("aria-label", meta.label);
-      b.innerHTML = `<span class="ic">${meta.icon}</span><span>${meta.label}</span>`;
+      b.innerHTML = `<span class="ic">${meta.icon}</span><span>${meta.label}</span><span class="num">${i + 1}</span>`;
       b.addEventListener("click", () => onVehicle(mode));
       this.#vehicleBtns.set(mode, b);
       vehicles.appendChild(b);
@@ -76,8 +76,8 @@ export class Toolbar {
       const b = document.createElement("button");
       b.type = "button";
       b.className = "tool";
-      b.title = `${TOOL_META[t].label} (${i + 1})`;
-      b.innerHTML = `<span class="ic">${TOOL_META[t].icon}</span><span>${TOOL_META[t].label}</span><span class="num">${i + 1}</span>`;
+      b.title = `${TOOL_META[t].label} (Ctrl+${i + 1})`;
+      b.innerHTML = `<span class="ic">${TOOL_META[t].icon}</span><span>${TOOL_META[t].label}</span><span class="num"><span class="mod">⌃</span>${i + 1}</span>`;
       b.addEventListener("click", () => {
         this.#focusRow = "tools";
         this.#onTool(t);

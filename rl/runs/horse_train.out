@@ -5,3 +5,7 @@
 gen 15  center=514.38  best=685.86  sigma=0.0669  steps=450/450  dist=6.85m  along=-2.67m  meanH=1.36(99%)  [113s]
 gen 30  center=615.76  best=575.19  sigma=0.064  steps=450/450  dist=5.58m  along=-3.84m  meanH=1.31(95%)  [226s]
 gen 45  center=796.09  best=784.9  sigma=0.0611  steps=450/450  dist=8.19m  along=-5.82m  meanH=1.34(98%)  [337s]
+gen 60  center=841.19  best=558.48  sigma=0.0585  steps=450/450  dist=9.11m  along=-6.91m  meanH=1.29(94%)  [451s]
+gen 75  center=520.98  best=860.83  sigma=0.0559  steps=450/450  dist=9.09m  along=-6.26m  meanH=1.34(97%)  [564s]
+gen 90  center=562.47  best=793.78  sigma=0.0534  steps=450/450  dist=6.55m  along=-1.25m  meanH=1.30(95%)  [677s]
+gen 105  center=440.2  best=770.28  sigma=0.0511  steps=450/450  dist=6.54m  along=-5.89m  meanH=1.33(97%)  [791s]

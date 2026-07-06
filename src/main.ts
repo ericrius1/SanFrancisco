@@ -1,7 +1,7 @@
 import * as THREE from "three/webgpu";
 import { Inspector } from "three/addons/inspector/Inspector.js";
 import CameraControls from "camera-controls";
-import { CONFIG, DEBRIS_TUNING, RENDER_TUNING, START, START_DEFAULTS, WORLD_TUNING, type ShadowQuality } from "./config";
+import { CONFIG, DEBRIS_TUNING, FOLIAGE_TUNING, RENDER_TUNING, START, START_DEFAULTS, WORLD_TUNING, type ShadowQuality } from "./config";
 import { loadPlayerState, resetAllTweaks, savePlayerState } from "./core/persist";
 import { Input } from "./core/input";
 import { WorldMap, waterHeight } from "./world/heightmap";
@@ -94,13 +94,28 @@ function focusNameInput() {
 nameInput.value = suggestedName;
 startButton.disabled = true;
 requestAnimationFrame(focusNameInput);
-startForm.addEventListener("submit", (e) => {
-  e.preventDefault();
+
+function submitStart() {
   if (!startReady || !startGame || startButton.disabled) {
     focusNameInput();
     return;
   }
   startGame(nameInput.value.trim());
+}
+
+startForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+  submitStart();
+});
+
+window.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" || e.repeat || loading.classList.contains("done")) return;
+  const t = e.target;
+  if (t === startButton) return; // native click/submit handles this
+  if (t instanceof HTMLTextAreaElement) return;
+  if (t instanceof HTMLInputElement && t !== nameInput) return;
+  e.preventDefault();
+  submitStart();
 });
 
 function progress(pct: number, label: string) {
@@ -294,6 +309,11 @@ async function boot() {
   // vegetation layer: park trees + grass masks ride the tile stream; the grass
   // field and Marin near-forest follow the camera (physics hooked unload first)
   const flora = new Flora(map, scene, tiles.manifest);
+  const setFoliageVisible = (visible: boolean) => {
+    flora.setVisible(visible);
+    forest.setFoliageVisible(visible);
+  };
+  setFoliageVisible(FOLIAGE_TUNING.values.visible);
   tiles.onTileGreens = (key, group) => flora.onTileGreens(key, group);
   const prevTileUnload = tiles.onTileUnload;
   tiles.onTileUnload = (key) => {
@@ -920,7 +940,8 @@ async function boot() {
     fireworks,
     tiles,
     scene,
-    pipeline
+    pipeline,
+    setFoliageVisible
   );
   debugPanel.setMode(player.mode);
 
@@ -1330,24 +1351,31 @@ async function boot() {
     elapsed += frameDt;
     accumulator += frameDt;
 
-    // Plain number keys select click-tools; Shift+number still teleports to player slots.
+    // Plain number keys switch travel modes; Ctrl+number picks click-tools;
+    // Shift+number still teleports to player slots.
     const numberPressed = (i: number) => input.pressed(`Digit${i}`) || input.pressed(`Numpad${i}`);
+    const ctrlNumberPress = (i: number) => input.ctrlPressed(`Digit${i}`) || input.ctrlPressed(`Numpad${i}`);
     const shiftedNumberPress = (i: number) => input.shiftedPress(`Digit${i}`) || input.shiftedPress(`Numpad${i}`);
     // seated at the piano the digits play notes (handlePianoInput below) — the
-    // tool switcher stands down so hitting "3" plays the instrument instead
+    // mode/tool switcher stands down so hitting "3" plays the instrument instead
     if (!exploratorium.pianoBusy && !exploratorium.plaqueOpen)
       for (let i = 1; i <= 9; i++) {
         if (!numberPressed(i)) continue;
-        // Snapshot Shift from the digit's keydown event; a stale held-key entry
-        // should never turn a plain number press into a player-slot teleport.
-        if (!shiftedNumberPress(i)) {
+        if (ctrlNumberPress(i)) {
           const nextTool = TOOL_ORDER[i - 1];
           if (nextTool) setTool(nextTool);
           continue;
         }
-        const target = playerLocator.targetForDigit(i);
-        if (target) teleportToTarget(target.x, target.z, target.name, target.id);
-        else hud.message(`No player in slot ${i}`, 1.9);
+        // Snapshot Shift from the digit's keydown event; a stale held-key entry
+        // should never turn a plain number press into a player-slot teleport.
+        if (shiftedNumberPress(i)) {
+          const target = playerLocator.targetForDigit(i);
+          if (target) teleportToTarget(target.x, target.z, target.name, target.id);
+          else hud.message(`No player in slot ${i}`, 1.9);
+          continue;
+        }
+        const nextMode = MENU_MODES[i - 1];
+        if (nextMode) switchMode(nextMode);
       }
     const keyboardCycle =
       ((input.pressed("ArrowRight") && !input.altPressed("ArrowRight")) || (input.pressed("ArrowDown") && !input.altPressed("ArrowDown")) ? 1 : 0) -
@@ -1477,6 +1505,7 @@ async function boot() {
       sky.setShadowQuality(RENDER_TUNING.values.shadowQuality as ShadowQuality);
       CONFIG.tileLoadRadius = WORLD_TUNING.values.radius;
       CONFIG.tileUnloadRadius = WORLD_TUNING.values.radius + 400;
+      setFoliageVisible(FOLIAGE_TUNING.values.visible);
       tiles.forceScan();
       if (scene.fog) (scene.fog as THREE.FogExp2).density = WORLD_TUNING.values.fog;
       DEBRIS_LIGHTS.hold.value = DEBRIS_TUNING.values.hold;
@@ -1996,7 +2025,7 @@ async function boot() {
 
   const exposeDebugHooks = () => {
     Object.assign(window as never, {
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, props, exploratorium, traffic, creatures, forest, flora, splashes, vehicleAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, truckLaunchers, boatLaunchers, goldenGateLights, bridgeShow, flyover, bridgeParade }
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, props, exploratorium, traffic, creatures, forest, flora, splashes, vehicleAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, truckLaunchers, boatLaunchers, goldenGateLights, bridgeShow, flyover, bridgeParade, horseHerd, teleportToTarget }
     });
   };
   if (import.meta.env.DEV || new URLSearchParams(location.search).has("profile")) {

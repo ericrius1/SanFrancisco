@@ -57,6 +57,7 @@ export class Input {
 
   #justPressed = new Set<string>();
   #shiftedPresses = new Set<string>();
+  #ctrlPresses = new Set<string>();
   #altPresses = new Set<string>();
   #el: HTMLElement;
 
@@ -83,6 +84,7 @@ export class Input {
       this.keys.add(e.code);
       this.#justPressed.add(e.code);
       if (e.shiftKey) this.#shiftedPresses.add(e.code);
+      if (e.ctrlKey) this.#ctrlPresses.add(e.code);
       if (e.altKey) this.#altPresses.add(e.code);
       this.#setDevice("kb");
       // Slash: keep "/" (debug panel) from triggering Firefox quick-find
@@ -259,6 +261,11 @@ export class Input {
     return this.#shiftedPresses.has(code);
   }
 
+  /** True when this keydown happened with Ctrl held on the event itself. */
+  ctrlPressed(code: string) {
+    return this.#ctrlPresses.has(code);
+  }
+
   /** True when this keydown happened with Alt held on the event itself. */
   altPressed(code: string) {
     return this.#altPresses.has(code);
@@ -299,6 +306,7 @@ export class Input {
     this.firePressed = false;
     this.#justPressed.clear();
     this.#shiftedPresses.clear();
+    this.#ctrlPresses.clear();
     this.#altPresses.clear();
   }
 }

@@ -155,7 +155,7 @@
       #hud .toolbar {
         position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%);
         display: flex; flex-direction: column; align-items: center; gap: 6px;
-        width: calc(100vw - 32px); max-width: 760px;
+        width: calc(100vw - 32px); max-width: 860px;
         pointer-events: auto;
       }
       #hud .toolbar .vehicles, #hud .toolbar .tools, #hud .toolbar .swatches {
@@ -167,6 +167,9 @@
         border: 1px solid rgba(190, 225, 240, 0.14);
         backdrop-filter: blur(6px);
       }
+      #hud .toolbar .vehicles {
+        flex-wrap: nowrap; gap: 5px; padding: 5px 7px;
+      }
       #hud .toolbar .tool {
         display: inline-flex; align-items: center; gap: 6px;
         min-height: 29px; padding: 4px 10px; border-radius: 7px; cursor: pointer;
@@ -174,14 +177,21 @@
         color: #eaf4f8; font: 600 11.5px "Avenir Next", "Helvetica Neue", sans-serif;
         letter-spacing: 0.02em; transition: border-color 0.15s, color 0.15s;
       }
-      #hud .toolbar .vehicle { padding-left: 8px; padding-right: 8px; }
+      #hud .toolbar .vehicle {
+        gap: 5px; min-height: 27px; padding: 3px 7px;
+        font-size: 11px;
+      }
+      #hud .toolbar .vehicle .ic { width: 14px; font-size: 13px; }
       #hud .toolbar .tool .ic { width: 16px; text-align: center; font-size: 14px; line-height: 1; }
       #hud .toolbar .tool .num {
-        display: inline-flex; align-items: center; justify-content: center;
+        display: inline-flex; align-items: center; justify-content: center; gap: 1px;
         min-width: 14px; height: 16px; padding: 0 4px; border-radius: 4px;
         background: rgba(7, 18, 28, 0.68); border: 1px solid rgba(190, 225, 240, 0.28);
         color: #bcd9e6; font: 700 9px "Avenir Next", "Helvetica Neue", sans-serif;
         line-height: 1; text-shadow: none;
+      }
+      #hud .toolbar .tool .num .mod {
+        font-size: 8px; opacity: 0.82; line-height: 1;
       }
       #hud .toolbar .tool:hover { border-color: rgba(190, 225, 240, 0.55); }
       #hud .toolbar .tool.on { border-color: #6fd7c4; color: #9ef2df; }
@@ -207,13 +217,15 @@
       #hud .toolbar .swatch.rainbow {
         background: conic-gradient(#ff2e88, #ff7a1a, #ffd41f, #3dffb0, #29d5ff, #8f5bff, #ff2e88);
       }
-      @media (max-width: 520px) {
+      @media (max-width: 820px) {
         #hud .toolbar .vehicles .hint { display: none; }
         #hud .toolbar .vehicle {
-          min-width: 34px; justify-content: center;
-          padding-left: 7px; padding-right: 7px;
+          min-width: 32px; justify-content: center;
+          padding-left: 6px; padding-right: 6px;
         }
-        #hud .toolbar .vehicle span:not(.ic) { display: none; }
+        #hud .toolbar .vehicle span:not(.ic):not(.num) { display: none; }
+      }
+      @media (max-width: 520px) {
         #hud .toolbar .tool { padding-left: 8px; padding-right: 8px; }
       }
       #hud .satchel {

@@ -76,6 +76,11 @@ export const WORLD_TUNING = tunables("world", {
   fog: { v: 0.00055, min: 0, max: 0.006, step: 0.00001, format: (v: number) => v.toFixed(5), label: "fog density" }
 });
 
+/** Cosmetic vegetation visibility, bound in the "/" panel for performance checks. */
+export const FOLIAGE_TUNING = tunables("foliage", {
+  visible: { v: true, label: "trees / grass visible" }
+});
+
 /**
  * Window lights on falling chunks: stay lit for `hold` seconds, then flicker out
  * over `flicker` seconds; each chunk starts its fade at hold + rand * spread so a

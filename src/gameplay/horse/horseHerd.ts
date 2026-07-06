@@ -147,6 +147,18 @@ export class HorseHerd {
   }
 
   get platformY(): number { return PLATFORM_Y; }
+  /** Paddock centre in world space (for camera framing / headless verify). */
+  get center(): { x: number; y: number; z: number } { return { x: PARK.x, y: PLATFORM_Y, z: PARK.z }; }
+  /** Ground-truth per-horse pose for headless verification (the ACTUAL in-world
+   *  sim that drives the render — up.y, height fraction of standing, down timer). */
+  debugStates(): { upY: number; tall: number; down: number; fallen: boolean; speed: number }[] {
+    return this.#horses.map((h) => {
+      const t = h.rag.torsoLink;
+      const q = t.quat;
+      const upY = 1 - 2 * (q[0] * q[0] + q[2] * q[2]);
+      return { upY, tall: t.pos[1] / h.rag.standY, down: h.downTimer, fallen: h.rag.fallen, speed: Math.hypot(t.vel[0], t.vel[2]) };
+    });
+  }
   get center(): { x: number; z: number } { return PARK; }
   /** Is (x,z) over the horse platform? (for placing the rider on it) */
   onPlatform(x: number, z: number): boolean {
@@ -429,25 +441,34 @@ export class HorseHerd {
         if (idx === this.#ridden) this.#ridden = -1; // throw the rider when the mount goes down
         continue;
       }
+      // Pick this horse's TARGET heading (rider's steer, or wandering yaw)...
+      let tx: number, tz: number;
       if (idx === this.#ridden) {
-        h.rag.setGoal(-Math.sin(this.#steerYaw), -Math.cos(this.#steerYaw));
-        h.rag.update(dt);
-        continue;
+        tx = -Math.sin(this.#steerYaw);
+        tz = -Math.cos(this.#steerYaw);
+      } else {
+        h.wanderTimer -= dt;
+        const t = h.rag.torsoLink;
+        const wx = h.anchor.x + t.pos[0];
+        const wz = h.anchor.z + t.pos[2];
+        const toCx = PARK.x - wx;
+        const toCz = PARK.z - wz;
+        if (Math.hypot(toCx, toCz) > ROAM) {
+          h.wanderYaw = Math.atan2(toCx, toCz);
+          h.wanderTimer = 2 + Math.random() * 3;
+        } else if (h.wanderTimer <= 0) {
+          h.wanderYaw += (Math.random() - 0.5) * 1.6;
+          h.wanderTimer = 3 + Math.random() * 5;
+        }
+        tx = Math.sin(h.wanderYaw);
+        tz = Math.cos(h.wanderYaw);
       }
-      h.wanderTimer -= dt;
-      const t = h.rag.torsoLink;
-      const wx = h.anchor.x + t.pos[0];
-      const wz = h.anchor.z + t.pos[2];
-      const toCx = PARK.x - wx;
-      const toCz = PARK.z - wz;
-      if (Math.hypot(toCx, toCz) > ROAM) {
-        h.wanderYaw = Math.atan2(toCx, toCz);
-        h.wanderTimer = 2 + Math.random() * 3;
-      } else if (h.wanderTimer <= 0) {
-        h.wanderYaw += (Math.random() - 0.5) * 1.6;
-        h.wanderTimer = 3 + Math.random() * 5;
-      }
-      h.rag.setGoal(Math.sin(h.wanderYaw), Math.cos(h.wanderYaw));
+      // ...then ease the actual goal toward it so heading changes are GRADUAL. A
+      // hard instant goal snap makes the policy crank a sharp turn and tip over.
+      const k = 1 - Math.exp(-dt / GOAL_EASE);
+      h.gx += (tx - h.gx) * k;
+      h.gz += (tz - h.gz) * k;
+      h.rag.setGoal(h.gx, h.gz); // setGoal normalizes
       h.rag.update(dt);
     }
   }

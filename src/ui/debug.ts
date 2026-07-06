@@ -3,6 +3,7 @@ import type * as THREE from "three/webgpu";
 import {
   CONFIG,
   DEBRIS_TUNING,
+  FOLIAGE_TUNING,
   RENDER_QUALITY_PRESETS,
   RENDER_TUNING,
   WORLD_TUNING,
@@ -48,6 +49,7 @@ export class DebugPanel {
   #tiles: TileStreamer | null;
   #scene: THREE.Scene | null;
   #postfx: { applyPostFx: () => void; applyPostQuality: () => void } | null;
+  #setFoliageVisible: (visible: boolean) => void;
   #lastRefresh = 0;
   #lastWireframeScan = 0;
   #wireframeOriginals = new Map<WireframeMaterial, boolean>();
@@ -64,7 +66,8 @@ export class DebugPanel {
     fireworks: Fireworks | null = null,
     tiles: TileStreamer | null = null,
     scene: THREE.Scene | null = null,
-    postfx: { applyPostFx: () => void; applyPostQuality: () => void } | null = null
+    postfx: { applyPostFx: () => void; applyPostQuality: () => void } | null = null,
+    setFoliageVisible: (visible: boolean) => void = () => {}
   ) {
     this.#renderer = renderer;
     this.#sky = sky;
@@ -73,6 +76,7 @@ export class DebugPanel {
     this.#tiles = tiles;
     this.#scene = scene;
     this.#postfx = postfx;
+    this.#setFoliageVisible = setFoliageVisible;
   }
 
   toggle() {
@@ -117,6 +121,7 @@ export class DebugPanel {
   /** Re-read every binding now — call after "." resets values behind the pane's back. */
   syncNow() {
     this.#applyWireframe(RENDER_TUNING.values.wireframe, true);
+    this.#setFoliageVisible(Boolean(FOLIAGE_TUNING.values.visible));
     if (this.#lightingView) {
       this.#syncingFromSky = true;
       this.#lightingView.timeOfDay = this.#sky.timeOfDay;
@@ -321,6 +326,11 @@ export class DebugPanel {
           (this.#scene.fog as THREE.FogExp2).density = value as number;
         }
       }
+    });
+
+    const foliage = advanced.addFolder({ title: "foliage" });
+    FOLIAGE_TUNING.bind(foliage, {
+      onChange: (_key, value) => this.#setFoliageVisible(Boolean(value))
     });
 
     // debris window lights: hold fully lit, then flicker out; each chunk delays its

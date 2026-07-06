@@ -1231,26 +1231,31 @@ export class Flora {
   // systems and stop paying for scatter jobs / rebuilds until the player descends.
   // jobs stay queued (dropTile prunes them when tiles stream out), so parks fill
   // back in on the way down.
+  #enabled = true;
+  #highUp = false;
   #hidden = false;
 
+  setVisible(visible: boolean) {
+    if (this.#enabled === visible) return;
+    this.#enabled = visible;
+    this.#applyVisibility();
+  }
+
+  #applyVisibility() {
+    const hidden = !this.#enabled || this.#highUp;
+    if (this.#hidden === hidden) return;
+    this.#hidden = hidden;
+    const visible = !hidden;
+    this.#grass.visible = visible;
+    this.#flowers.visible = visible;
+    for (const p of this.#pools) p.mesh.visible = visible;
+    for (const m of this.#tileTrees.values()) m.visible = visible;
+  }
+
   update(viewPos: THREE.Vector3, highUp = false) {
-    if (highUp) {
-      if (!this.#hidden) {
-        this.#hidden = true;
-        this.#grass.visible = false;
-        this.#flowers.visible = false;
-        for (const p of this.#pools) p.mesh.visible = false;
-        for (const m of this.#tileTrees.values()) m.visible = false;
-      }
-      return;
-    }
-    if (this.#hidden) {
-      this.#hidden = false;
-      this.#grass.visible = true;
-      this.#flowers.visible = true;
-      for (const p of this.#pools) p.mesh.visible = true;
-      for (const m of this.#tileTrees.values()) m.visible = true;
-    }
+    this.#highUp = highUp;
+    this.#applyVisibility();
+    if (this.#hidden) return;
     this.#drainJob();
     const dxg = viewPos.x - this.#grassCenter.x;
     const dzg = viewPos.z - this.#grassCenter.y;

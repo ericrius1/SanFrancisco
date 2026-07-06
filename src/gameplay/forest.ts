@@ -197,6 +197,7 @@ export class Forest {
   #herds: Record<AnimalKind, Herd>;
   #riddenGait = uniform(0);
   #riddenMats = new Map<AnimalKind, THREE.MeshStandardNodeMaterial>();
+  #treeMeshes: THREE.InstancedMesh[] = [];
 
   // gummy pool: swap-remove slots, matrices rebuilt each frame
   #gummy: THREE.InstancedMesh;
@@ -237,6 +238,10 @@ export class Forest {
     this.#gummy.castShadow = false;
     this.#gummy.receiveShadow = false;
     scene.add(this.#gummy);
+  }
+
+  setFoliageVisible(visible: boolean) {
+    for (const mesh of this.#treeMeshes) mesh.visible = visible;
   }
 
   /** A few instanced draws (species × variant) over the headlands, wind sway in the shader. */
@@ -303,6 +308,7 @@ export class Forest {
       mesh.receiveShadow = true;
       mesh.raycast = () => {};
       scene.add(mesh);
+      this.#treeMeshes.push(mesh);
     }
   }
 
