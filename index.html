@@ -3,72 +3,131 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>San Francisco</title>
+    <title>San Francisco- og</title>
     <link
       rel="icon"
       href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌉</text></svg>"
     />
     <style>
-      html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #0b1520; }
-      #app { position: fixed; inset: 0; }
-      canvas { display: block; }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #0b1520;
+      }
+      #app {
+        position: fixed;
+        inset: 0;
+      }
+      canvas {
+        display: block;
+      }
       #hud {
-        position: fixed; inset: 0; pointer-events: none;
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
         font-family: "Avenir Next", "Helvetica Neue", sans-serif;
-        color: #eaf4f8; text-shadow: 0 1px 3px rgba(0, 10, 20, 0.8);
+        color: #eaf4f8;
+        text-shadow: 0 1px 3px rgba(0, 10, 20, 0.8);
       }
       #hud .br-stack {
-        position: absolute; bottom: 16px; right: 20px;
-        display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
+        position: absolute;
+        bottom: 16px;
+        right: 20px;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 8px;
         max-width: 420px;
       }
       #hud .help {
         max-width: 420px;
-        font-size: 12px; opacity: 0.9;
-        padding: 11px 13px; border-radius: 10px;
+        font-size: 12px;
+        opacity: 0.9;
+        padding: 11px 13px;
+        border-radius: 10px;
         background: rgba(10, 24, 36, 0.55);
         border: 1px solid rgba(190, 225, 240, 0.14);
         backdrop-filter: blur(6px);
       }
       /* movement grid + global shortcuts, side by side */
-      #hud .help .cols { display: flex; gap: 16px; align-items: flex-start; }
+      #hud .help .cols {
+        display: flex;
+        gap: 16px;
+        align-items: flex-start;
+      }
       #hud .help .extras {
-        padding-left: 15px; border-left: 1px solid rgba(190, 225, 240, 0.14);
+        padding-left: 15px;
+        border-left: 1px solid rgba(190, 225, 240, 0.14);
         opacity: 0.72;
       }
       #hud .place-history {
-        position: absolute; top: 16px; left: 272px; z-index: 2;
-        display: inline-flex; gap: 7px;
-        pointer-events: auto; user-select: none;
+        position: absolute;
+        top: 16px;
+        left: 272px;
+        z-index: 2;
+        display: inline-flex;
+        gap: 7px;
+        pointer-events: auto;
+        user-select: none;
       }
       #hud .place-history .history-btn {
-        pointer-events: auto; cursor: pointer;
-        min-width: 92px; min-height: 34px;
-        display: inline-flex; align-items: center; justify-content: center; gap: 7px;
-        padding: 0 11px; border-radius: 10px;
-        background: rgba(10, 24, 36, 0.72); border: 1px solid rgba(111, 215, 196, 0.42);
-        color: #9ef2df; font: 800 11px "Avenir Next", "Helvetica Neue", sans-serif;
+        pointer-events: auto;
+        cursor: pointer;
+        min-width: 92px;
+        min-height: 34px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+        padding: 0 11px;
+        border-radius: 10px;
+        background: rgba(10, 24, 36, 0.72);
+        border: 1px solid rgba(111, 215, 196, 0.42);
+        color: #9ef2df;
+        font:
+          800 11px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
         letter-spacing: 0.02em;
-        box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 6px 18px rgba(0, 6, 12, 0.28);
+        box-shadow:
+          inset 0 1px 0 rgba(255, 255, 255, 0.06),
+          0 6px 18px rgba(0, 6, 12, 0.28);
         backdrop-filter: blur(6px);
-        transition: border-color 0.15s, color 0.15s, background 0.15s, transform 0.12s, opacity 0.15s;
+        transition:
+          border-color 0.15s,
+          color 0.15s,
+          background 0.15s,
+          transform 0.12s,
+          opacity 0.15s;
       }
       #hud .place-history .history-btn:not(:disabled):hover {
-        border-color: #9ef2df; color: #eaf4f8; background: rgba(22, 64, 70, 0.62);
+        border-color: #9ef2df;
+        color: #eaf4f8;
+        background: rgba(22, 64, 70, 0.62);
         transform: translateY(-1px);
       }
       #hud .place-history .history-btn:disabled {
-        cursor: default; opacity: 0.38; color: #bcd9e6; border-color: rgba(190, 225, 240, 0.2);
+        cursor: default;
+        opacity: 0.38;
+        color: #bcd9e6;
+        border-color: rgba(190, 225, 240, 0.2);
       }
       #hud .place-history .history-btn .hist-main {
-        min-width: 42px; text-align: left;
+        min-width: 42px;
+        text-align: left;
       }
       #hud .place-history .history-btn .hist-keys {
-        display: inline-flex; gap: 3px; opacity: 0.86;
+        display: inline-flex;
+        gap: 3px;
+        opacity: 0.86;
       }
       @media (max-width: 620px) {
         #hud .place-history {
-          top: 266px; left: 20px;
+          top: 266px;
+          left: 20px;
           flex-direction: column;
         }
         #hud .place-history .history-btn {
@@ -76,50 +135,156 @@
         }
       }
       /* Tab toggles the user UI: panels fade out slowly, snap back quickly. */
-      #hud .help, #hud .toolbar, #hud .audio, #hud .minimap, #hud .place-history, #hud .avatar-ui, #hud .satchel, #hud .share-ui, #hud .tutorial-ui, #hud .tutorial-panel, #hud .links-ui, #hud .player-locator, #hud .horse-training-ui { transition: opacity 0.35s ease; }
-      #hud.faded .help, #hud.faded .toolbar, #hud.faded .audio, #hud.faded .minimap, #hud.faded .place-history, #hud.faded .avatar-ui, #hud.faded .satchel, #hud.faded .share-ui, #hud.faded .tutorial-ui, #hud.faded .tutorial-panel, #hud.faded .links-ui, #hud.faded .player-locator, #hud.faded .horse-training-ui { opacity: 0; transition: opacity 1s ease; }
-      #hud.faded .toolbar, #hud.faded .audio, #hud.faded .minimap, #hud.faded .place-history, #hud.faded .avatar-ui, #hud.faded .share-ui, #hud.faded .tutorial-ui, #hud.faded .tutorial-panel, #hud.faded .links-ui, #hud.faded .horse-training-ui { pointer-events: none; }
-      #hud .help.swap { animation: hudswap 0.28s ease; }
-      @keyframes hudswap { from { opacity: 0; transform: translateY(6px); } }
+      #hud .help,
+      #hud .toolbar,
+      #hud .audio,
+      #hud .minimap,
+      #hud .place-history,
+      #hud .avatar-ui,
+      #hud .satchel,
+      #hud .share-ui,
+      #hud .tutorial-ui,
+      #hud .tutorial-panel,
+      #hud .links-ui,
+      #hud .player-locator,
+      #hud .horse-training-ui {
+        transition: opacity 0.35s ease;
+      }
+      #hud.faded .help,
+      #hud.faded .toolbar,
+      #hud.faded .audio,
+      #hud.faded .minimap,
+      #hud.faded .place-history,
+      #hud.faded .avatar-ui,
+      #hud.faded .satchel,
+      #hud.faded .share-ui,
+      #hud.faded .tutorial-ui,
+      #hud.faded .tutorial-panel,
+      #hud.faded .links-ui,
+      #hud.faded .player-locator,
+      #hud.faded .horse-training-ui {
+        opacity: 0;
+        transition: opacity 1s ease;
+      }
+      #hud.faded .toolbar,
+      #hud.faded .audio,
+      #hud.faded .minimap,
+      #hud.faded .place-history,
+      #hud.faded .avatar-ui,
+      #hud.faded .share-ui,
+      #hud.faded .tutorial-ui,
+      #hud.faded .tutorial-panel,
+      #hud.faded .links-ui,
+      #hud.faded .horse-training-ui {
+        pointer-events: none;
+      }
+      #hud .help.swap {
+        animation: hudswap 0.28s ease;
+      }
+      @keyframes hudswap {
+        from {
+          opacity: 0;
+          transform: translateY(6px);
+        }
+      }
       #hud .help .grid {
-        display: grid; grid-template-columns: max-content 1fr;
-        gap: 4px 9px; align-items: center;
+        display: grid;
+        grid-template-columns: max-content 1fr;
+        gap: 4px 9px;
+        align-items: center;
       }
-      #hud .help .grid .keys { display: flex; gap: 4px; justify-content: flex-end; }
+      #hud .help .grid .keys {
+        display: flex;
+        gap: 4px;
+        justify-content: flex-end;
+      }
       #hud .help .k {
-        display: inline-flex; align-items: center; justify-content: center;
-        min-width: 10px; height: 17px; padding: 0 5px; border-radius: 4px;
-        background: rgba(18, 40, 56, 0.6); border: 1px solid rgba(190, 225, 240, 0.35);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 10px;
+        height: 17px;
+        padding: 0 5px;
+        border-radius: 4px;
+        background: rgba(18, 40, 56, 0.6);
+        border: 1px solid rgba(190, 225, 240, 0.35);
         box-shadow: 0 1px 0 rgba(190, 225, 240, 0.16);
-        font-size: 10.5px; font-weight: 600; letter-spacing: 0.02em; line-height: 1;
+        font-size: 10.5px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        line-height: 1;
       }
-      #hud .help .k.f { border-radius: 50%; min-width: 17px; width: 17px; padding: 0; font-size: 10px; }
-      #hud .help .k.fa { border-color: #7ed67e; color: #a5f0a5; }
-      #hud .help .k.fb { border-color: #f07f72; color: #ffb0a6; }
-      #hud .help .k.fx { border-color: #6aaaff; color: #a9ccff; }
-      #hud .help .k.fy { border-color: #f2ce6b; color: #ffe6a3; }
-      #hud .help .tip { margin-top: 8px; opacity: 0.7; font-style: italic; font-size: 11px; line-height: 1.4; }
+      #hud .help .k.f {
+        border-radius: 50%;
+        min-width: 17px;
+        width: 17px;
+        padding: 0;
+        font-size: 10px;
+      }
+      #hud .help .k.fa {
+        border-color: #7ed67e;
+        color: #a5f0a5;
+      }
+      #hud .help .k.fb {
+        border-color: #f07f72;
+        color: #ffb0a6;
+      }
+      #hud .help .k.fx {
+        border-color: #6aaaff;
+        color: #a9ccff;
+      }
+      #hud .help .k.fy {
+        border-color: #f2ce6b;
+        color: #ffe6a3;
+      }
+      #hud .help .tip {
+        margin-top: 8px;
+        opacity: 0.7;
+        font-style: italic;
+        font-size: 11px;
+        line-height: 1.4;
+      }
       #hud .help .ui-bar {
-        margin-top: 8px; display: flex; flex-wrap: wrap; gap: 5px 12px;
-        opacity: 0.72; font-size: 11px;
+        margin-top: 8px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px 12px;
+        opacity: 0.72;
+        font-size: 11px;
       }
       #hud .center {
-        position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
-        font-size: 18px; opacity: 0.9;
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        font-size: 18px;
+        opacity: 0.9;
       }
       #hud .player-locator {
-        position: absolute; inset: 0; pointer-events: none;
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
       }
-      #hud .player-locator.empty { opacity: 0; }
+      #hud .player-locator.empty {
+        opacity: 0;
+      }
       #hud .player-locator-marker {
-        --hue: 180; --angle: 0rad;
-        position: absolute; display: inline-flex; align-items: center; gap: 7px;
-        min-width: 96px; max-width: min(188px, 42vw);
-        padding: 5px 8px 5px 5px; border-radius: 9px;
+        --hue: 180;
+        --angle: 0rad;
+        position: absolute;
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        min-width: 96px;
+        max-width: min(188px, 42vw);
+        padding: 5px 8px 5px 5px;
+        border-radius: 9px;
         transform: translate(-50%, -112%);
         background: rgba(7, 18, 28, 0.74);
         border: 1px solid hsla(var(--hue), 78%, 66%, 0.72);
-        box-shadow: 0 8px 20px rgba(0, 6, 12, 0.28), inset 0 1px 0 rgba(255,255,255,0.06);
+        box-shadow:
+          0 8px 20px rgba(0, 6, 12, 0.28),
+          inset 0 1px 0 rgba(255, 255, 255, 0.06);
         backdrop-filter: blur(5px);
         color: #eaf4f8;
       }
@@ -128,437 +293,1008 @@
         background: rgba(9, 22, 34, 0.86);
       }
       #hud .player-locator-marker .pl-key {
-        flex: 0 0 auto; min-width: 22px; height: 22px; padding: 0 4px; display: inline-flex;
-        align-items: center; justify-content: center; border-radius: 7px;
+        flex: 0 0 auto;
+        min-width: 22px;
+        height: 22px;
+        padding: 0 4px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 7px;
         background: hsl(var(--hue), 78%, 58%);
-        color: #06131a; font: 800 12px "Avenir Next", "Helvetica Neue", sans-serif;
+        color: #06131a;
+        font:
+          800 12px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
         text-shadow: none;
       }
       #hud .player-locator-marker .pl-body {
-        min-width: 0; display: grid; gap: 1px;
+        min-width: 0;
+        display: grid;
+        gap: 1px;
       }
       #hud .player-locator-marker .pl-name {
-        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-        font: 800 11.5px "Avenir Next", "Helvetica Neue", sans-serif;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font:
+          800 11.5px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
       }
       #hud .player-locator-marker .pl-distance {
-        color: #bcd9e6; opacity: 0.86;
-        font: 700 10px "Avenir Next", "Helvetica Neue", sans-serif;
+        color: #bcd9e6;
+        opacity: 0.86;
+        font:
+          700 10px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
       }
       #hud .player-locator-marker .pl-arrow {
-        display: none; flex: 0 0 9px; width: 9px; height: 9px;
-        border-top: 2px solid #eaf4f8; border-right: 2px solid #eaf4f8;
+        display: none;
+        flex: 0 0 9px;
+        width: 9px;
+        height: 9px;
+        border-top: 2px solid #eaf4f8;
+        border-right: 2px solid #eaf4f8;
         transform: rotate(var(--angle));
         opacity: 0.86;
       }
-      #hud .player-locator-marker.edge .pl-arrow { display: inline-block; }
+      #hud .player-locator-marker.edge .pl-arrow {
+        display: inline-block;
+      }
       #hud .toolbar {
-        position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%);
-        display: flex; flex-direction: column; align-items: center; gap: 6px;
-        width: calc(100vw - 32px); max-width: 860px;
+        position: absolute;
+        bottom: 16px;
+        left: 50%;
+        transform: translateX(-50%);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
+        width: calc(100vw - 32px);
+        max-width: 860px;
         pointer-events: auto;
       }
-      #hud .toolbar .vehicles, #hud .toolbar .tools, #hud .toolbar .swatches {
-        display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 6px;
+      #hud .toolbar .vehicles,
+      #hud .toolbar .tools,
+      #hud .toolbar .swatches {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-wrap: wrap;
+        gap: 6px;
         width: max-content;
         max-width: 100%;
-        padding: 6px 8px; border-radius: 10px;
+        padding: 6px 8px;
+        border-radius: 10px;
         background: rgba(10, 24, 36, 0.55);
         border: 1px solid rgba(190, 225, 240, 0.14);
         backdrop-filter: blur(6px);
       }
       #hud .toolbar .vehicles {
-        flex-wrap: nowrap; gap: 5px; padding: 5px 7px;
+        flex-wrap: nowrap;
+        gap: 5px;
+        padding: 5px 7px;
       }
       #hud .toolbar .tool {
-        display: inline-flex; align-items: center; gap: 6px;
-        min-height: 29px; padding: 4px 10px; border-radius: 7px; cursor: pointer;
-        background: rgba(18, 40, 56, 0.6); border: 1px solid rgba(190, 225, 240, 0.25);
-        color: #eaf4f8; font: 600 11.5px "Avenir Next", "Helvetica Neue", sans-serif;
-        letter-spacing: 0.02em; transition: border-color 0.15s, color 0.15s;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        min-height: 29px;
+        padding: 4px 10px;
+        border-radius: 7px;
+        cursor: pointer;
+        background: rgba(18, 40, 56, 0.6);
+        border: 1px solid rgba(190, 225, 240, 0.25);
+        color: #eaf4f8;
+        font:
+          600 11.5px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
+        letter-spacing: 0.02em;
+        transition:
+          border-color 0.15s,
+          color 0.15s;
       }
       #hud .toolbar .vehicle {
-        gap: 5px; min-height: 27px; padding: 3px 7px;
+        gap: 5px;
+        min-height: 27px;
+        padding: 3px 7px;
         font-size: 11px;
       }
-      #hud .toolbar .vehicle .ic { width: 14px; font-size: 13px; }
-      #hud .toolbar .tool .ic { width: 16px; text-align: center; font-size: 14px; line-height: 1; }
+      #hud .toolbar .vehicle .ic {
+        width: 14px;
+        font-size: 13px;
+      }
+      #hud .toolbar .tool .ic {
+        width: 16px;
+        text-align: center;
+        font-size: 14px;
+        line-height: 1;
+      }
       #hud .toolbar .tool .num {
-        display: inline-flex; align-items: center; justify-content: center; gap: 1px;
-        min-width: 14px; height: 16px; padding: 0 4px; border-radius: 4px;
-        background: rgba(7, 18, 28, 0.68); border: 1px solid rgba(190, 225, 240, 0.28);
-        color: #bcd9e6; font: 700 9px "Avenir Next", "Helvetica Neue", sans-serif;
-        line-height: 1; text-shadow: none;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 1px;
+        min-width: 14px;
+        height: 16px;
+        padding: 0 4px;
+        border-radius: 4px;
+        background: rgba(7, 18, 28, 0.68);
+        border: 1px solid rgba(190, 225, 240, 0.28);
+        color: #bcd9e6;
+        font:
+          700 9px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
+        line-height: 1;
+        text-shadow: none;
       }
       #hud .toolbar .tool .num .mod {
-        font-size: 8px; opacity: 0.82; line-height: 1;
+        font-size: 8px;
+        opacity: 0.82;
+        line-height: 1;
       }
-      #hud .toolbar .tool:hover { border-color: rgba(190, 225, 240, 0.55); }
-      #hud .toolbar .tool.on { border-color: #6fd7c4; color: #9ef2df; }
-      #hud .toolbar .tool.on .num { border-color: rgba(111, 215, 196, 0.62); color: #9ef2df; }
-      #hud .toolbar .tool.kbd { box-shadow: 0 0 0 2px rgba(111, 215, 196, 0.55); }
+      #hud .toolbar .tool:hover {
+        border-color: rgba(190, 225, 240, 0.55);
+      }
+      #hud .toolbar .tool.on {
+        border-color: #6fd7c4;
+        color: #9ef2df;
+      }
+      #hud .toolbar .tool.on .num {
+        border-color: rgba(111, 215, 196, 0.62);
+        color: #9ef2df;
+      }
+      #hud .toolbar .tool.kbd {
+        box-shadow: 0 0 0 2px rgba(111, 215, 196, 0.55);
+      }
       #hud .toolbar .hint {
-        display: inline-flex; align-items: center; gap: 3px; margin-left: 2px; opacity: 0.85;
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        margin-left: 2px;
+        opacity: 0.85;
       }
       #hud .toolbar .hint .k {
-        display: inline-flex; align-items: center; justify-content: center;
-        min-width: 10px; height: 15px; padding: 0 4px; border-radius: 4px;
-        background: rgba(18, 40, 56, 0.6); border: 1px solid rgba(190, 225, 240, 0.3);
-        color: #bcd9e6; font: 600 9px "Avenir Next", "Helvetica Neue", sans-serif;
-        box-shadow: 0 1px 0 rgba(190, 225, 240, 0.12); line-height: 1;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 10px;
+        height: 15px;
+        padding: 0 4px;
+        border-radius: 4px;
+        background: rgba(18, 40, 56, 0.6);
+        border: 1px solid rgba(190, 225, 240, 0.3);
+        color: #bcd9e6;
+        font:
+          600 9px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
+        box-shadow: 0 1px 0 rgba(190, 225, 240, 0.12);
+        line-height: 1;
       }
       #hud .toolbar .swatch {
-        width: 16px; height: 16px; border-radius: 50%; cursor: pointer; padding: 0;
-        border: 2px solid rgba(190, 225, 240, 0.25); transition: transform 0.12s, border-color 0.15s;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        cursor: pointer;
+        padding: 0;
+        border: 2px solid rgba(190, 225, 240, 0.25);
+        transition:
+          transform 0.12s,
+          border-color 0.15s;
       }
-      #hud .toolbar .swatch:hover { transform: scale(1.18); }
-      #hud .toolbar .swatch.on { border-color: #ffffff; transform: scale(1.18); }
-      #hud .toolbar .swatch.kbd { box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.75); }
+      #hud .toolbar .swatch:hover {
+        transform: scale(1.18);
+      }
+      #hud .toolbar .swatch.on {
+        border-color: #ffffff;
+        transform: scale(1.18);
+      }
+      #hud .toolbar .swatch.kbd {
+        box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.75);
+      }
       #hud .toolbar .swatch.rainbow {
-        background: conic-gradient(#ff2e88, #ff7a1a, #ffd41f, #3dffb0, #29d5ff, #8f5bff, #ff2e88);
+        background: conic-gradient(
+          #ff2e88,
+          #ff7a1a,
+          #ffd41f,
+          #3dffb0,
+          #29d5ff,
+          #8f5bff,
+          #ff2e88
+        );
       }
       @media (max-width: 820px) {
-        #hud .toolbar .vehicles .hint { display: none; }
-        #hud .toolbar .vehicle {
-          min-width: 32px; justify-content: center;
-          padding-left: 6px; padding-right: 6px;
+        #hud .toolbar .vehicles .hint {
+          display: none;
         }
-        #hud .toolbar .vehicle span:not(.ic):not(.num) { display: none; }
+        #hud .toolbar .vehicle {
+          min-width: 32px;
+          justify-content: center;
+          padding-left: 6px;
+          padding-right: 6px;
+        }
+        #hud .toolbar .vehicle span:not(.ic):not(.num) {
+          display: none;
+        }
       }
       @media (max-width: 520px) {
-        #hud .toolbar .tool { padding-left: 8px; padding-right: 8px; }
+        #hud .toolbar .tool {
+          padding-left: 8px;
+          padding-right: 8px;
+        }
       }
       #hud .satchel {
-        display: flex; flex-direction: column; align-items: flex-end; gap: 5px;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 5px;
       }
       #hud .satchel .srow {
-        display: inline-flex; align-items: center; gap: 7px;
-        padding: 4px 10px; border-radius: 9px;
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        padding: 4px 10px;
+        border-radius: 9px;
         background: rgba(10, 24, 36, 0.55);
         border: 1px solid rgba(190, 225, 240, 0.14);
         backdrop-filter: blur(6px);
-        color: #ffe9ae; font: 700 13px "Avenir Next", "Helvetica Neue", sans-serif;
+        color: #ffe9ae;
+        font:
+          700 13px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
       }
-      #hud .satchel .sic { font-size: 15px; line-height: 1; }
-      #hud .satchel .srow.pop { animation: satchelpop 0.32s ease; }
+      #hud .satchel .sic {
+        font-size: 15px;
+        line-height: 1;
+      }
+      #hud .satchel .srow.pop {
+        animation: satchelpop 0.32s ease;
+      }
       @keyframes satchelpop {
-        0% { transform: scale(1); }
-        35% { transform: scale(1.22); border-color: rgba(255, 215, 106, 0.8); }
-        100% { transform: scale(1); }
+        0% {
+          transform: scale(1);
+        }
+        35% {
+          transform: scale(1.22);
+          border-color: rgba(255, 215, 106, 0.8);
+        }
+        100% {
+          transform: scale(1);
+        }
       }
       #hud .avatar-ui {
-        position: absolute; right: 20px; top: 16px;
-        display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
-        pointer-events: auto; user-select: none; z-index: 2;
+        position: absolute;
+        right: 20px;
+        top: 16px;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 8px;
+        pointer-events: auto;
+        user-select: none;
+        z-index: 2;
       }
       /* invite link button — sits under the avatar toggle; the open avatar
          panel (z-index above) slides over it */
       #hud .share-ui {
-        position: absolute; right: 20px; top: 70px; z-index: 1;
-        pointer-events: auto; user-select: none;
+        position: absolute;
+        right: 20px;
+        top: 70px;
+        z-index: 1;
+        pointer-events: auto;
+        user-select: none;
       }
       #hud .share-btn {
-        display: inline-flex; align-items: center; gap: 7px;
-        height: 34px; padding: 0 12px; cursor: pointer;
-        border-radius: 10px; border: 1px solid rgba(190, 225, 240, 0.22);
-        background: rgba(10, 24, 36, 0.62); color: #dceff5;
-        font: 600 11.5px "Avenir Next", "Helvetica Neue", sans-serif;
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        height: 34px;
+        padding: 0 12px;
+        cursor: pointer;
+        border-radius: 10px;
+        border: 1px solid rgba(190, 225, 240, 0.22);
+        background: rgba(10, 24, 36, 0.62);
+        color: #dceff5;
+        font:
+          600 11.5px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
         letter-spacing: 0.02em;
-        box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 6px 18px rgba(0, 6, 12, 0.28);
+        box-shadow:
+          inset 0 1px 0 rgba(255, 255, 255, 0.06),
+          0 6px 18px rgba(0, 6, 12, 0.28);
         backdrop-filter: blur(6px);
-        transition: border-color 0.15s, transform 0.12s, background 0.15s;
+        transition:
+          border-color 0.15s,
+          transform 0.12s,
+          background 0.15s;
       }
       #hud .share-btn:hover {
-        border-color: #6fd7c4; color: #9ef2df; transform: translateY(-1px);
+        border-color: #6fd7c4;
+        color: #9ef2df;
+        transform: translateY(-1px);
         background: rgba(15, 33, 47, 0.82);
       }
-      #hud .share-btn .ic { font-size: 14px; line-height: 1; }
+      #hud .share-btn .ic {
+        font-size: 14px;
+        line-height: 1;
+      }
       /* tutorial button — under Share; fades with Tab like the rest of the UI */
       #hud .tutorial-ui {
-        position: absolute; right: 20px; top: 116px; z-index: 1;
-        pointer-events: auto; user-select: none;
+        position: absolute;
+        right: 20px;
+        top: 116px;
+        z-index: 1;
+        pointer-events: auto;
+        user-select: none;
       }
-      #hud .tutorial-ui .share-btn.pulse { animation: tutpulse 2.2s ease-in-out infinite; }
+      #hud .tutorial-ui .share-btn.pulse {
+        animation: tutpulse 2.2s ease-in-out infinite;
+      }
       @keyframes tutpulse {
-        0%, 100% { box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 6px 18px rgba(0, 6, 12, 0.28); }
-        50% { box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 0 16px rgba(111, 215, 196, 0.65); border-color: #6fd7c4; }
+        0%,
+        100% {
+          box-shadow:
+            inset 0 1px 0 rgba(255, 255, 255, 0.06),
+            0 6px 18px rgba(0, 6, 12, 0.28);
+        }
+        50% {
+          box-shadow:
+            inset 0 1px 0 rgba(255, 255, 255, 0.06),
+            0 0 16px rgba(111, 215, 196, 0.65);
+          border-color: #6fd7c4;
+        }
       }
       /* tutorial objective card — top center, above the action */
       #hud .tutorial-panel {
-        position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
+        position: absolute;
+        top: 14px;
+        left: 50%;
+        transform: translateX(-50%);
         width: min(440px, calc(100vw - 300px));
-        padding: 10px 13px 8px; border-radius: 12px;
+        padding: 10px 13px 8px;
+        border-radius: 12px;
         background: rgba(10, 24, 36, 0.72);
         border: 1px solid rgba(190, 225, 240, 0.2);
-        box-shadow: 0 10px 28px rgba(0, 6, 12, 0.3), inset 0 1px 0 rgba(255,255,255,0.05);
+        box-shadow:
+          0 10px 28px rgba(0, 6, 12, 0.3),
+          inset 0 1px 0 rgba(255, 255, 255, 0.05);
         backdrop-filter: blur(6px);
-        pointer-events: auto; user-select: none;
+        pointer-events: auto;
+        user-select: none;
       }
-      #hud .tutorial-panel.swap { animation: hudswap 0.28s ease; }
+      #hud .tutorial-panel.swap {
+        animation: hudswap 0.28s ease;
+      }
       #hud .tutorial-panel .tut-top {
-        display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 7px;
-        font: 700 10px "Avenir Next", "Helvetica Neue", sans-serif;
-        letter-spacing: 0.07em; text-transform: uppercase; color: #9ef2df; opacity: 0.85;
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        margin-bottom: 7px;
+        font:
+          700 10px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+        color: #9ef2df;
+        opacity: 0.85;
       }
-      #hud .tutorial-panel .tut-prog { color: #bcd9e6; opacity: 0.8; text-transform: none; letter-spacing: 0.02em; }
+      #hud .tutorial-panel .tut-prog {
+        color: #bcd9e6;
+        opacity: 0.8;
+        text-transform: none;
+        letter-spacing: 0.02em;
+      }
       #hud .tutorial-panel .tut-obj {
-        display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
-        font-size: 13.5px; line-height: 1.2;
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        flex-wrap: wrap;
+        font-size: 13.5px;
+        line-height: 1.2;
       }
       #hud .tutorial-panel .tut-action {
-        color: #9ef2df; font-size: 11px; font-weight: 800;
-        letter-spacing: 0.07em; text-transform: uppercase;
+        color: #9ef2df;
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
       }
-      #hud .tutorial-panel .tut-keys { display: flex; gap: 4px; flex: 0 0 auto; }
-      #hud .tutorial-panel .tut-text { min-width: 0; }
+      #hud .tutorial-panel .tut-keys {
+        display: flex;
+        gap: 4px;
+        flex: 0 0 auto;
+      }
+      #hud .tutorial-panel .tut-text {
+        min-width: 0;
+      }
       #hud .tutorial-panel .k {
-        display: inline-flex; align-items: center; justify-content: center;
-        min-width: 12px; height: 19px; padding: 0 6px; border-radius: 4px;
-        background: rgba(18, 40, 56, 0.6); border: 1px solid rgba(190, 225, 240, 0.35);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 12px;
+        height: 19px;
+        padding: 0 6px;
+        border-radius: 4px;
+        background: rgba(18, 40, 56, 0.6);
+        border: 1px solid rgba(190, 225, 240, 0.35);
         box-shadow: 0 1px 0 rgba(190, 225, 240, 0.16);
-        font-size: 11px; font-weight: 600; letter-spacing: 0.02em; line-height: 1;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        line-height: 1;
       }
       #hud .tutorial-panel .tut-check {
-        margin-left: auto; color: #9ef2df; font-size: 16px; font-weight: 800;
-        opacity: 0; transform: scale(0.4); transition: opacity 0.18s, transform 0.18s;
+        margin-left: auto;
+        color: #9ef2df;
+        font-size: 16px;
+        font-weight: 800;
+        opacity: 0;
+        transform: scale(0.4);
+        transition:
+          opacity 0.18s,
+          transform 0.18s;
       }
-      #hud .tutorial-panel .tut-obj.done .tut-check { opacity: 1; transform: scale(1); }
-      #hud .tutorial-panel .tut-obj.done .tut-text { color: #9ef2df; }
+      #hud .tutorial-panel .tut-obj.done .tut-check {
+        opacity: 1;
+        transform: scale(1);
+      }
+      #hud .tutorial-panel .tut-obj.done .tut-text {
+        color: #9ef2df;
+      }
       #hud .tutorial-panel .tut-bar {
-        height: 3px; margin-top: 8px; border-radius: 2px; overflow: hidden;
+        height: 3px;
+        margin-top: 8px;
+        border-radius: 2px;
+        overflow: hidden;
         background: rgba(190, 225, 240, 0.16);
       }
-      #hud .tutorial-panel .tut-fill { height: 100%; width: 0%; background: #6fd7c4; transition: width 0.2s ease; }
-      #hud .tutorial-panel .tut-hint { margin-top: 7px; font-size: 11px; font-style: italic; opacity: 0.65; }
-      #hud .tutorial-panel .tut-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
-      #hud .tutorial-panel .tut-dots { display: inline-flex; gap: 5px; margin-right: auto; }
+      #hud .tutorial-panel .tut-fill {
+        height: 100%;
+        width: 0%;
+        background: #6fd7c4;
+        transition: width 0.2s ease;
+      }
+      #hud .tutorial-panel .tut-hint {
+        margin-top: 7px;
+        font-size: 11px;
+        font-style: italic;
+        opacity: 0.65;
+      }
+      #hud .tutorial-panel .tut-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 8px;
+      }
+      #hud .tutorial-panel .tut-dots {
+        display: inline-flex;
+        gap: 5px;
+        margin-right: auto;
+      }
       #hud .tutorial-panel .tut-dot {
-        width: 7px; height: 7px; border-radius: 50%;
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
         background: rgba(190, 225, 240, 0.22);
       }
-      #hud .tutorial-panel .tut-dot.on { background: #6fd7c4; box-shadow: 0 0 7px rgba(111, 215, 196, 0.6); }
-      #hud .tutorial-panel .tut-skip, #hud .tutorial-panel .tut-exit {
-        cursor: pointer; padding: 3px 9px; border-radius: 6px;
-        background: rgba(18, 40, 56, 0.5); border: 1px solid rgba(190, 225, 240, 0.2);
-        color: #bcd9e6; font: 600 10.5px "Avenir Next", "Helvetica Neue", sans-serif;
-        letter-spacing: 0.02em; transition: border-color 0.15s, color 0.15s;
+      #hud .tutorial-panel .tut-dot.on {
+        background: #6fd7c4;
+        box-shadow: 0 0 7px rgba(111, 215, 196, 0.6);
       }
-      #hud .tutorial-panel .tut-skip:hover, #hud .tutorial-panel .tut-exit:hover {
-        border-color: rgba(190, 225, 240, 0.5); color: #eaf4f8;
+      #hud .tutorial-panel .tut-skip,
+      #hud .tutorial-panel .tut-exit {
+        cursor: pointer;
+        padding: 3px 9px;
+        border-radius: 6px;
+        background: rgba(18, 40, 56, 0.5);
+        border: 1px solid rgba(190, 225, 240, 0.2);
+        color: #bcd9e6;
+        font:
+          600 10.5px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
+        letter-spacing: 0.02em;
+        transition:
+          border-color 0.15s,
+          color 0.15s;
+      }
+      #hud .tutorial-panel .tut-skip:hover,
+      #hud .tutorial-panel .tut-exit:hover {
+        border-color: rgba(190, 225, 240, 0.5);
+        color: #eaf4f8;
       }
       /* "Behind the scenes" button + X/GitHub icon row — parked under Tutorial */
       #hud .links-ui {
-        position: absolute; right: 20px; top: 162px; z-index: 1;
-        display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
-        pointer-events: auto; user-select: none;
+        position: absolute;
+        right: 20px;
+        top: 162px;
+        z-index: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 8px;
+        pointer-events: auto;
+        user-select: none;
       }
-      #hud .links-ui .social-row { display: inline-flex; gap: 8px; }
+      #hud .links-ui .social-row {
+        display: inline-flex;
+        gap: 8px;
+      }
       #hud .social-btn {
-        display: inline-flex; align-items: center; justify-content: center;
-        width: 34px; height: 34px; cursor: pointer;
-        border-radius: 10px; border: 1px solid rgba(190, 225, 240, 0.22);
-        background: rgba(10, 24, 36, 0.62); color: #dceff5;
-        box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 6px 18px rgba(0, 6, 12, 0.28);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 34px;
+        height: 34px;
+        cursor: pointer;
+        border-radius: 10px;
+        border: 1px solid rgba(190, 225, 240, 0.22);
+        background: rgba(10, 24, 36, 0.62);
+        color: #dceff5;
+        box-shadow:
+          inset 0 1px 0 rgba(255, 255, 255, 0.06),
+          0 6px 18px rgba(0, 6, 12, 0.28);
         backdrop-filter: blur(6px);
-        transition: border-color 0.15s, color 0.15s, transform 0.12s, background 0.15s;
+        transition:
+          border-color 0.15s,
+          color 0.15s,
+          transform 0.12s,
+          background 0.15s;
       }
-      #hud .social-btn svg { width: 16px; height: 16px; fill: currentColor; display: block; }
+      #hud .social-btn svg {
+        width: 16px;
+        height: 16px;
+        fill: currentColor;
+        display: block;
+      }
       #hud .social-btn:hover {
-        border-color: #6fd7c4; color: #9ef2df; transform: translateY(-1px);
+        border-color: #6fd7c4;
+        color: #9ef2df;
+        transform: translateY(-1px);
         background: rgba(15, 33, 47, 0.82);
       }
 
       /* full-screen reading overlay opened by "Behind the scenes" */
       #hud .bts-overlay {
-        position: fixed; inset: 0; z-index: 40;
-        display: none; align-items: center; justify-content: center;
+        position: fixed;
+        inset: 0;
+        z-index: 40;
+        display: none;
+        align-items: center;
+        justify-content: center;
         padding: 4vh 16px;
         background: rgba(4, 10, 16, 0.62);
         backdrop-filter: blur(4px);
         pointer-events: auto;
       }
-      #hud .bts-overlay.open { display: flex; animation: btsfade 0.2s ease; }
-      @keyframes btsfade { from { opacity: 0; } to { opacity: 1; } }
+      #hud .bts-overlay.open {
+        display: flex;
+        animation: btsfade 0.2s ease;
+      }
+      @keyframes btsfade {
+        from {
+          opacity: 0;
+        }
+        to {
+          opacity: 1;
+        }
+      }
       #hud .bts-modal {
-        position: relative; width: min(920px, 94vw); max-height: 92vh;
-        display: flex; flex-direction: column; overflow: hidden;
-        border-radius: 16px; border: 1px solid rgba(190, 225, 240, 0.22);
-        background: linear-gradient(180deg, rgba(12, 28, 42, 0.97), rgba(8, 20, 31, 0.97));
-        box-shadow: 0 24px 70px rgba(0, 4, 10, 0.6), inset 0 1px 0 rgba(255,255,255,0.05);
+        position: relative;
+        width: min(920px, 94vw);
+        max-height: 92vh;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        border-radius: 16px;
+        border: 1px solid rgba(190, 225, 240, 0.22);
+        background: linear-gradient(
+          180deg,
+          rgba(12, 28, 42, 0.97),
+          rgba(8, 20, 31, 0.97)
+        );
+        box-shadow:
+          0 24px 70px rgba(0, 4, 10, 0.6),
+          inset 0 1px 0 rgba(255, 255, 255, 0.05);
         color: #dceff5;
-        font: 400 14px/1.62 "Avenir Next", "Helvetica Neue", sans-serif;
+        font:
+          400 14px/1.62 "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
       }
       #hud .bts-close {
-        position: absolute; top: 14px; right: 14px; z-index: 2;
-        width: 32px; height: 32px; cursor: pointer;
-        border-radius: 8px; border: 1px solid rgba(190, 225, 240, 0.22);
-        background: rgba(10, 24, 36, 0.6); color: #dceff5;
-        font-size: 15px; line-height: 1;
-        transition: border-color 0.15s, color 0.15s;
+        position: absolute;
+        top: 14px;
+        right: 14px;
+        z-index: 2;
+        width: 32px;
+        height: 32px;
+        cursor: pointer;
+        border-radius: 8px;
+        border: 1px solid rgba(190, 225, 240, 0.22);
+        background: rgba(10, 24, 36, 0.6);
+        color: #dceff5;
+        font-size: 15px;
+        line-height: 1;
+        transition:
+          border-color 0.15s,
+          color 0.15s;
       }
-      #hud .bts-close:hover { border-color: #6fd7c4; color: #9ef2df; }
+      #hud .bts-close:hover {
+        border-color: #6fd7c4;
+        color: #9ef2df;
+      }
       #hud .bts-head {
-        padding: 26px 30px 20px; flex: 0 0 auto;
+        padding: 26px 30px 20px;
+        flex: 0 0 auto;
         border-bottom: 1px solid rgba(190, 225, 240, 0.12);
         background: rgba(6, 16, 25, 0.4);
       }
       #hud .bts-title {
-        font-size: 22px; font-weight: 800; letter-spacing: 0.01em; color: #eaf6fa;
+        font-size: 22px;
+        font-weight: 800;
+        letter-spacing: 0.01em;
+        color: #eaf6fa;
       }
-      #hud .bts-subtitle { margin-top: 4px; font-size: 13px; color: #9fc6d6; }
-      #hud .bts-socials { display: inline-flex; gap: 8px; margin-top: 14px; }
-      #hud .bts-body { padding: 8px 30px 30px; overflow-y: auto; flex: 1 1 auto; }
-      #hud .bts-body section { padding: 18px 0; border-bottom: 1px solid rgba(190, 225, 240, 0.09); }
-      #hud .bts-body section:last-child { border-bottom: none; }
+      #hud .bts-subtitle {
+        margin-top: 4px;
+        font-size: 13px;
+        color: #9fc6d6;
+      }
+      #hud .bts-socials {
+        display: inline-flex;
+        gap: 8px;
+        margin-top: 14px;
+      }
+      #hud .bts-body {
+        padding: 8px 30px 30px;
+        overflow-y: auto;
+        flex: 1 1 auto;
+      }
+      #hud .bts-body section {
+        padding: 18px 0;
+        border-bottom: 1px solid rgba(190, 225, 240, 0.09);
+      }
+      #hud .bts-body section:last-child {
+        border-bottom: none;
+      }
       #hud .bts-body .bts-act {
-        display: flex; align-items: center; gap: 12px;
-        margin: 12px 0 -6px; padding: 22px 0 0; border: none;
-        font-size: 11.5px; font-weight: 800; letter-spacing: 0.18em; text-transform: uppercase;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin: 12px 0 -6px;
+        padding: 22px 0 0;
+        border: none;
+        font-size: 11.5px;
+        font-weight: 800;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
         color: #6fd7c4;
       }
       #hud .bts-body .bts-act::after {
-        content: ""; flex: 1 1 auto; height: 1px;
-        background: linear-gradient(90deg, rgba(111, 215, 196, 0.4), rgba(111, 215, 196, 0));
+        content: "";
+        flex: 1 1 auto;
+        height: 1px;
+        background: linear-gradient(
+          90deg,
+          rgba(111, 215, 196, 0.4),
+          rgba(111, 215, 196, 0)
+        );
       }
-      #hud .bts-body em { color: #dff4f0; font-style: italic; }
+      #hud .bts-body em {
+        color: #dff4f0;
+        font-style: italic;
+      }
       #hud .bts-body .bts-aside {
-        margin: 10px 0 0; padding: 10px 14px; border-radius: 9px;
+        margin: 10px 0 0;
+        padding: 10px 14px;
+        border-radius: 9px;
         border-left: 2px solid rgba(111, 215, 196, 0.5);
-        background: rgba(18, 40, 56, 0.45); color: #b9dbe4; font-size: 13px;
+        background: rgba(18, 40, 56, 0.45);
+        color: #b9dbe4;
+        font-size: 13px;
       }
       #hud .bts-body h3 {
-        display: flex; align-items: center; gap: 9px; margin: 0 0 8px;
-        font-size: 15px; font-weight: 800; letter-spacing: 0.01em; color: #9ef2df;
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        margin: 0 0 8px;
+        font-size: 15px;
+        font-weight: 800;
+        letter-spacing: 0.01em;
+        color: #9ef2df;
       }
-      #hud .bts-body .bts-ic { font-size: 17px; line-height: 1; }
-      #hud .bts-body p { margin: 0 0 8px; color: #cfe6ee; }
-      #hud .bts-body p:last-child { margin-bottom: 0; }
-      #hud .bts-body .bts-lede { font-size: 15px; color: #e2f2f7; }
+      #hud .bts-body .bts-ic {
+        font-size: 17px;
+        line-height: 1;
+      }
+      #hud .bts-body p {
+        margin: 0 0 8px;
+        color: #cfe6ee;
+      }
+      #hud .bts-body p:last-child {
+        margin-bottom: 0;
+      }
+      #hud .bts-body .bts-lede {
+        font-size: 15px;
+        color: #e2f2f7;
+      }
       #hud .bts-body code {
-        padding: 1px 6px; border-radius: 5px; font-size: 12.5px;
-        font-family: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, monospace;
-        background: rgba(18, 40, 56, 0.7); border: 1px solid rgba(190, 225, 240, 0.16);
+        padding: 1px 6px;
+        border-radius: 5px;
+        font-size: 12.5px;
+        font-family:
+          "SF Mono", "JetBrains Mono", ui-monospace, Menlo, monospace;
+        background: rgba(18, 40, 56, 0.7);
+        border: 1px solid rgba(190, 225, 240, 0.16);
         color: #b6ecdd;
       }
-      #hud .bts-body strong { color: #f0f7fa; font-weight: 700; }
+      #hud .bts-body strong {
+        color: #f0f7fa;
+        font-weight: 700;
+      }
       #hud .bts-body a {
-        color: #7fe0cd; text-decoration: none;
+        color: #7fe0cd;
+        text-decoration: none;
         border-bottom: 1px solid rgba(127, 224, 205, 0.4);
-        transition: color 0.12s, border-color 0.12s;
+        transition:
+          color 0.12s,
+          border-color 0.12s;
       }
-      #hud .bts-body a:hover { color: #b6f6e8; border-color: #b6f6e8; }
-      #hud .bts-links-inline { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 10px; }
-      #hud .bts-links-inline a { font-weight: 600; }
-      #hud .bts-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+      #hud .bts-body a:hover {
+        color: #b6f6e8;
+        border-color: #b6f6e8;
+      }
+      #hud .bts-links-inline {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 16px;
+        margin-top: 10px;
+      }
+      #hud .bts-links-inline a {
+        font-weight: 600;
+      }
+      #hud .bts-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 4px;
+      }
       #hud .bts-chips a {
-        padding: 5px 11px; border-radius: 8px; font-size: 12.5px; font-weight: 600;
+        padding: 5px 11px;
+        border-radius: 8px;
+        font-size: 12.5px;
+        font-weight: 600;
         border: 1px solid rgba(190, 225, 240, 0.22);
-        background: rgba(18, 40, 56, 0.5); color: #cfe6ee;
+        background: rgba(18, 40, 56, 0.5);
+        color: #cfe6ee;
       }
-      #hud .bts-chips a:hover { border-color: #6fd7c4; color: #9ef2df; }
+      #hud .bts-chips a:hover {
+        border-color: #6fd7c4;
+        color: #9ef2df;
+      }
 
       /* horse-zone NN training guide */
       #hud .horse-training-icon {
-        position: absolute; right: 20px; top: 250px; z-index: 1;
-        pointer-events: auto; cursor: pointer;
-        display: inline-flex; align-items: center; gap: 8px;
-        min-height: 36px; padding: 0 12px 0 7px;
-        border-radius: 10px; border: 1px solid rgba(111, 215, 196, 0.55);
-        background: rgba(6, 16, 25, 0.78); color: #eaf4f8;
-        box-shadow: 0 10px 26px rgba(0, 6, 12, 0.34), 0 0 18px rgba(111, 215, 196, 0.2), inset 0 1px 0 rgba(255,255,255,0.08);
+        position: absolute;
+        right: 20px;
+        top: 250px;
+        z-index: 1;
+        pointer-events: auto;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 36px;
+        padding: 0 12px 0 7px;
+        border-radius: 10px;
+        border: 1px solid rgba(111, 215, 196, 0.55);
+        background: rgba(6, 16, 25, 0.78);
+        color: #eaf4f8;
+        box-shadow:
+          0 10px 26px rgba(0, 6, 12, 0.34),
+          0 0 18px rgba(111, 215, 196, 0.2),
+          inset 0 1px 0 rgba(255, 255, 255, 0.08);
         backdrop-filter: blur(7px);
-        font: 800 11.5px "Avenir Next", "Helvetica Neue", sans-serif;
-        letter-spacing: 0; text-shadow: none;
+        font:
+          800 11.5px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
+        letter-spacing: 0;
+        text-shadow: none;
       }
-      #hud .horse-training-icon[hidden] { display: none; }
+      #hud .horse-training-icon[hidden] {
+        display: none;
+      }
       #hud .horse-training-icon:hover {
-        border-color: #9ef2df; color: #9ef2df; background: rgba(12, 34, 40, 0.86);
+        border-color: #9ef2df;
+        color: #9ef2df;
+        background: rgba(12, 34, 40, 0.86);
       }
       #hud .horse-training-icon .hti-mark {
-        display: inline-flex; align-items: center; justify-content: center;
-        width: 26px; height: 22px; border-radius: 7px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 26px;
+        height: 22px;
+        border-radius: 7px;
         background: linear-gradient(135deg, #18b7ff, #ff8a2a);
-        color: #051018; font: 900 10px "Avenir Next", "Helvetica Neue", sans-serif;
-        letter-spacing: 0; text-shadow: none;
+        color: #051018;
+        font:
+          900 10px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
+        letter-spacing: 0;
+        text-shadow: none;
         box-shadow: 0 0 15px rgba(24, 183, 255, 0.45);
       }
-      #hud .horse-training-icon .hti-label { white-space: nowrap; }
+      #hud .horse-training-icon .hti-label {
+        white-space: nowrap;
+      }
       #hud .horse-training-overlay {
-        position: fixed; inset: 0; z-index: 45;
-        display: none; align-items: center; justify-content: center;
+        position: fixed;
+        inset: 0;
+        z-index: 45;
+        display: none;
+        align-items: center;
+        justify-content: center;
         padding: 4vh 16px;
         background: rgba(4, 10, 16, 0.66);
         backdrop-filter: blur(4px);
         pointer-events: auto;
         text-shadow: none;
       }
-      #hud .horse-training-overlay.open { display: flex; animation: btsfade 0.2s ease; }
+      #hud .horse-training-overlay.open {
+        display: flex;
+        animation: btsfade 0.2s ease;
+      }
       #hud .horse-training-modal {
-        position: relative; width: min(1180px, 96vw); max-height: 92vh;
-        display: flex; flex-direction: column; overflow: hidden;
-        border-radius: 14px; border: 1px solid rgba(190, 225, 240, 0.22);
-        background: linear-gradient(180deg, rgba(10, 22, 32, 0.98), rgba(6, 15, 24, 0.98));
-        box-shadow: 0 24px 70px rgba(0, 4, 10, 0.62), inset 0 1px 0 rgba(255,255,255,0.05);
+        position: relative;
+        width: min(1180px, 96vw);
+        max-height: 92vh;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        border-radius: 14px;
+        border: 1px solid rgba(190, 225, 240, 0.22);
+        background: linear-gradient(
+          180deg,
+          rgba(10, 22, 32, 0.98),
+          rgba(6, 15, 24, 0.98)
+        );
+        box-shadow:
+          0 24px 70px rgba(0, 4, 10, 0.62),
+          inset 0 1px 0 rgba(255, 255, 255, 0.05);
         color: #dceff5;
-        font: 400 14px/1.56 "Avenir Next", "Helvetica Neue", sans-serif;
+        font:
+          400 14px/1.56 "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
       }
       #hud .horse-training-close {
-        position: absolute; top: 14px; right: 14px; z-index: 3;
-        width: 32px; height: 32px; cursor: pointer;
-        border-radius: 8px; border: 1px solid rgba(190, 225, 240, 0.22);
-        background: rgba(10, 24, 36, 0.62); color: #dceff5;
-        font: 800 15px "Avenir Next", "Helvetica Neue", sans-serif;
-        line-height: 1; letter-spacing: 0;
+        position: absolute;
+        top: 14px;
+        right: 14px;
+        z-index: 3;
+        width: 32px;
+        height: 32px;
+        cursor: pointer;
+        border-radius: 8px;
+        border: 1px solid rgba(190, 225, 240, 0.22);
+        background: rgba(10, 24, 36, 0.62);
+        color: #dceff5;
+        font:
+          800 15px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
+        line-height: 1;
+        letter-spacing: 0;
       }
-      #hud .horse-training-close:hover { border-color: #6fd7c4; color: #9ef2df; }
+      #hud .horse-training-close:hover {
+        border-color: #6fd7c4;
+        color: #9ef2df;
+      }
       #hud .horse-training-head {
-        flex: 0 0 auto; padding: 25px 30px 18px;
+        flex: 0 0 auto;
+        padding: 25px 30px 18px;
         border-bottom: 1px solid rgba(190, 225, 240, 0.12);
         background: rgba(6, 16, 25, 0.42);
       }
       #hud .horse-training-title {
-        font-size: 22px; font-weight: 800; letter-spacing: 0; color: #eaf6fa;
+        font-size: 22px;
+        font-weight: 800;
+        letter-spacing: 0;
+        color: #eaf6fa;
       }
       #hud .horse-training-subtitle {
-        margin-top: 4px; max-width: 760px;
-        font-size: 13px; color: #9fc6d6;
+        margin-top: 4px;
+        max-width: 760px;
+        font-size: 13px;
+        color: #9fc6d6;
       }
       #hud .horse-training-body {
-        flex: 1 1 auto; min-height: 0; overflow-y: auto;
-        display: grid; grid-template-columns: minmax(520px, 1.08fr) minmax(330px, 0.92fr);
-        gap: 24px; padding: 22px 30px 32px;
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow-y: auto;
+        display: grid;
+        grid-template-columns: minmax(520px, 1.08fr) minmax(330px, 0.92fr);
+        gap: 24px;
+        padding: 22px 30px 32px;
       }
       #hud .horse-training-diagram {
-        position: sticky; top: 0; align-self: start;
-        display: flex; flex-direction: column;
+        position: sticky;
+        top: 0;
+        align-self: start;
+        display: flex;
+        flex-direction: column;
         max-height: calc(92vh - 154px);
-        padding: 14px 14px 12px; border-radius: 12px;
+        padding: 14px 14px 12px;
+        border-radius: 12px;
         border: 1px solid rgba(190, 225, 240, 0.16);
-        background: radial-gradient(circle at 18% 12%, rgba(24, 183, 255, 0.16), transparent 34%),
-          radial-gradient(circle at 82% 92%, rgba(255, 138, 42, 0.18), transparent 36%),
+        background:
+          radial-gradient(
+            circle at 18% 12%,
+            rgba(24, 183, 255, 0.16),
+            transparent 34%
+          ),
+          radial-gradient(
+            circle at 82% 92%,
+            rgba(255, 138, 42, 0.18),
+            transparent 36%
+          ),
           rgba(4, 12, 20, 0.72);
-        box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
       }
       #hud .htr-stage {
-        display: flex; justify-content: space-between; align-items: baseline;
-        gap: 12px; margin-bottom: 12px;
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 12px;
+        margin-bottom: 12px;
       }
       #hud .htr-stage-k {
-        color: #9ef2df; font: 800 11px "Avenir Next", "Helvetica Neue", sans-serif;
+        color: #9ef2df;
+        font:
+          800 11px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
         letter-spacing: 0;
       }
       #hud .htr-stage-title {
-        color: #dceff5; font: 800 13px "Avenir Next", "Helvetica Neue", sans-serif;
+        color: #dceff5;
+        font:
+          800 13px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
         letter-spacing: 0;
       }
       #hud .htr-step-nav {
-        display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-bottom: 10px;
       }
       #hud .htr-step-nav button {
-        min-height: 27px; padding: 0 8px; cursor: pointer;
-        border-radius: 7px; border: 1px solid rgba(190, 225, 240, 0.16);
-        background: rgba(9, 22, 34, 0.62); color: #bcd9e6;
-        font: 800 10.5px "Avenir Next", "Helvetica Neue", sans-serif;
+        min-height: 27px;
+        padding: 0 8px;
+        cursor: pointer;
+        border-radius: 7px;
+        border: 1px solid rgba(190, 225, 240, 0.16);
+        background: rgba(9, 22, 34, 0.62);
+        color: #bcd9e6;
+        font:
+          800 10.5px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
         letter-spacing: 0;
       }
       #hud .htr-step-nav button:hover,
@@ -568,267 +1304,506 @@
         color: #9ef2df;
       }
       #hud .htr-diagram-scroll {
-        flex: 1 1 auto; min-height: 0; overflow-y: auto;
-        padding: 0 6px 2px 0; overscroll-behavior: contain;
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow-y: auto;
+        padding: 0 6px 2px 0;
+        overscroll-behavior: contain;
       }
       #hud .htr-network-shell {
-        position: sticky; top: 0; z-index: 2;
+        position: sticky;
+        top: 0;
+        z-index: 2;
         padding-bottom: 10px;
-        background: linear-gradient(180deg, rgba(4, 12, 20, 0.98), rgba(4, 12, 20, 0.88) 82%, rgba(4, 12, 20, 0));
+        background: linear-gradient(
+          180deg,
+          rgba(4, 12, 20, 0.98),
+          rgba(4, 12, 20, 0.88) 82%,
+          rgba(4, 12, 20, 0)
+        );
       }
       #hud .htr-network {
-        position: relative; min-height: 292px; overflow: hidden;
-        border-radius: 10px; border: 1px solid rgba(190, 225, 240, 0.12);
-        background: linear-gradient(180deg, rgba(7, 18, 28, 0.78), rgba(4, 10, 16, 0.52));
+        position: relative;
+        min-height: 292px;
+        overflow: hidden;
+        border-radius: 10px;
+        border: 1px solid rgba(190, 225, 240, 0.12);
+        background: linear-gradient(
+          180deg,
+          rgba(7, 18, 28, 0.78),
+          rgba(4, 10, 16, 0.52)
+        );
       }
       #hud .htr-wires {
-        position: absolute; inset: 52px 22px 30px;
-        width: calc(100% - 44px); height: calc(100% - 82px);
+        position: absolute;
+        inset: 52px 22px 30px;
+        width: calc(100% - 44px);
+        height: calc(100% - 82px);
         pointer-events: none;
       }
       #hud .htr-wire {
-        fill: none; stroke: #9fb7ff; stroke-width: 0.22; opacity: 0.16;
+        fill: none;
+        stroke: #9fb7ff;
+        stroke-width: 0.22;
+        opacity: 0.16;
         vector-effect: non-scaling-stroke;
-        transition: opacity 0.24s ease, stroke 0.24s ease, stroke-width 0.24s ease;
+        transition:
+          opacity 0.24s ease,
+          stroke 0.24s ease,
+          stroke-width 0.24s ease;
       }
-      #hud .htr-wire.reward { opacity: 0; stroke: #75f08d; stroke-width: 0.45; }
+      #hud .htr-wire.reward {
+        opacity: 0;
+        stroke: #75f08d;
+        stroke-width: 0.45;
+      }
       #hud .htr-layers {
-        position: relative; z-index: 1;
-        display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
-        gap: 18px; height: 100%; min-height: 292px;
+        position: relative;
+        z-index: 1;
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 18px;
+        height: 100%;
+        min-height: 292px;
         padding: 18px 18px 16px;
       }
       #hud .htr-layer {
         --node: #38d8ff;
-        min-width: 0; display: flex; flex-direction: column; align-items: center;
-        transition: opacity 0.24s ease, filter 0.24s ease, transform 0.24s ease;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        transition:
+          opacity 0.24s ease,
+          filter 0.24s ease,
+          transform 0.24s ease;
       }
-      #hud .htr-layer.input { --node: #18b7ff; }
-      #hud .htr-layer.h1 { --node: #55dcff; }
-      #hud .htr-layer.h2 { --node: #9d70ff; }
-      #hud .htr-layer.output { --node: #ff8a2a; }
+      #hud .htr-layer.input {
+        --node: #18b7ff;
+      }
+      #hud .htr-layer.h1 {
+        --node: #55dcff;
+      }
+      #hud .htr-layer.h2 {
+        --node: #9d70ff;
+      }
+      #hud .htr-layer.output {
+        --node: #ff8a2a;
+      }
       #hud .htr-layer-title {
-        color: var(--node); font: 800 12px "Avenir Next", "Helvetica Neue", sans-serif;
-        letter-spacing: 0; text-align: center;
+        color: var(--node);
+        font:
+          800 12px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
+        letter-spacing: 0;
+        text-align: center;
       }
       #hud .htr-layer-sub {
-        margin-top: 2px; color: #9fb7c4; font: 700 10.5px "Avenir Next", "Helvetica Neue", sans-serif;
-        letter-spacing: 0; text-align: center;
+        margin-top: 2px;
+        color: #9fb7c4;
+        font:
+          700 10.5px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
+        letter-spacing: 0;
+        text-align: center;
       }
       #hud .htr-nodes {
-        flex: 1 1 auto; align-content: center;
-        display: grid; grid-template-columns: repeat(4, 13px); gap: 12px 10px;
+        flex: 1 1 auto;
+        align-content: center;
+        display: grid;
+        grid-template-columns: repeat(4, 13px);
+        gap: 12px 10px;
         margin-top: 14px;
       }
       #hud .htr-layer.input .htr-nodes,
-      #hud .htr-layer.output .htr-nodes { grid-template-columns: repeat(2, 13px); }
+      #hud .htr-layer.output .htr-nodes {
+        grid-template-columns: repeat(2, 13px);
+      }
       #hud .htr-nodes i {
-        width: 13px; height: 13px; border-radius: 50%;
-        background: radial-gradient(circle at 35% 30%, #ffffff 0 12%, var(--node) 38%, rgba(255,255,255,0.2) 68%);
-        box-shadow: 0 0 12px color-mix(in srgb, var(--node) 76%, transparent), 0 0 2px #ffffff;
+        width: 13px;
+        height: 13px;
+        border-radius: 50%;
+        background: radial-gradient(
+          circle at 35% 30%,
+          #ffffff 0 12%,
+          var(--node) 38%,
+          rgba(255, 255, 255, 0.2) 68%
+        );
+        box-shadow:
+          0 0 12px color-mix(in srgb, var(--node) 76%, transparent),
+          0 0 2px #ffffff;
         transform: translateZ(0);
       }
       #hud .htr-detail {
-        display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
         margin-top: 10px;
       }
       #hud .htr-detail-col {
-        min-width: 0; max-height: 174px; overflow: auto;
-        padding: 10px 11px; border-radius: 10px;
+        min-width: 0;
+        max-height: 174px;
+        overflow: auto;
+        padding: 10px 11px;
+        border-radius: 10px;
         border: 1px solid rgba(190, 225, 240, 0.12);
         background: rgba(7, 18, 28, 0.62);
       }
       #hud .htr-detail-title {
-        margin-bottom: 7px; color: #eaf6fa; font: 800 11px "Avenir Next", "Helvetica Neue", sans-serif;
+        margin-bottom: 7px;
+        color: #eaf6fa;
+        font:
+          800 11px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
         letter-spacing: 0;
       }
       #hud .htr-detail ol {
-        margin: 0; padding: 0; list-style: none;
-        display: grid; gap: 5px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        display: grid;
+        gap: 5px;
       }
       #hud .htr-detail li {
-        min-width: 0; display: flex; justify-content: space-between; gap: 9px;
-        color: #bfd9e4; font-size: 12px;
+        min-width: 0;
+        display: flex;
+        justify-content: space-between;
+        gap: 9px;
+        color: #bfd9e4;
+        font-size: 12px;
       }
       #hud .htr-output-list li b {
-        color: #ffb169; font-size: 12px;
+        color: #ffb169;
+        font-size: 12px;
       }
       #hud .htr-output-list li span {
-        min-width: 0; text-align: right; color: #9fb7c4;
+        min-width: 0;
+        text-align: right;
+        color: #9fb7c4;
       }
       #hud .htr-diagram-panel {
-        margin-top: 10px; padding: 12px;
-        border-radius: 10px; border: 1px solid rgba(190, 225, 240, 0.12);
+        margin-top: 10px;
+        padding: 12px;
+        border-radius: 10px;
+        border: 1px solid rgba(190, 225, 240, 0.12);
         background: rgba(7, 18, 28, 0.58);
-        color: #cfe6ee; opacity: 0.62;
-        transition: opacity 0.2s ease, border-color 0.2s ease, background 0.2s ease;
+        color: #cfe6ee;
+        opacity: 0.62;
+        transition:
+          opacity 0.2s ease,
+          border-color 0.2s ease,
+          background 0.2s ease;
       }
       #hud .htr-diagram-panel.active {
-        opacity: 1; border-color: rgba(111, 215, 196, 0.36);
+        opacity: 1;
+        border-color: rgba(111, 215, 196, 0.36);
         background: rgba(10, 28, 36, 0.74);
       }
       #hud .htr-diagram-panel h4 {
-        margin: 0 0 9px; color: #9ef2df;
-        font: 800 13px "Avenir Next", "Helvetica Neue", sans-serif;
+        margin: 0 0 9px;
+        color: #9ef2df;
+        font:
+          800 13px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
         letter-spacing: 0;
       }
       #hud .htr-diagram-panel p {
-        margin: 8px 0 0; font-size: 12.5px; line-height: 1.45;
+        margin: 8px 0 0;
+        font-size: 12.5px;
+        line-height: 1.45;
         color: #cfe6ee;
       }
       #hud .htr-loop {
-        display: grid; grid-template-columns: 1fr 48px 1fr 48px 1fr 48px;
-        gap: 8px; align-items: center;
+        display: grid;
+        grid-template-columns: 1fr 48px 1fr 48px 1fr 48px;
+        gap: 8px;
+        align-items: center;
       }
       #hud .htr-loop div,
       #hud .htr-live-stack span,
       #hud .htr-equation span {
-        min-width: 0; padding: 9px 10px; border-radius: 9px;
+        min-width: 0;
+        padding: 9px 10px;
+        border-radius: 9px;
         border: 1px solid rgba(190, 225, 240, 0.13);
         background: rgba(18, 40, 56, 0.56);
       }
       #hud .htr-loop b {
-        display: block; color: #eaf6fa; font-size: 12px;
+        display: block;
+        color: #eaf6fa;
+        font-size: 12px;
       }
       #hud .htr-loop span {
-        display: block; margin-top: 2px; color: #9fb7c4; font-size: 11px;
+        display: block;
+        margin-top: 2px;
+        color: #9fb7c4;
+        font-size: 11px;
       }
       #hud .htr-loop i {
-        color: #ffb169; font: 800 10.5px "Avenir Next", "Helvetica Neue", sans-serif;
-        letter-spacing: 0; text-align: center; font-style: normal;
+        color: #ffb169;
+        font:
+          800 10.5px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
+        letter-spacing: 0;
+        text-align: center;
+        font-style: normal;
       }
       #hud .htr-chip-grid {
-        display: grid; grid-template-columns: minmax(92px, 0.35fr) minmax(0, 1fr);
-        gap: 7px 10px; align-items: start;
+        display: grid;
+        grid-template-columns: minmax(92px, 0.35fr) minmax(0, 1fr);
+        gap: 7px 10px;
+        align-items: start;
       }
       #hud .htr-chip-grid b {
-        color: #9ef2df; font-size: 12px;
+        color: #9ef2df;
+        font-size: 12px;
       }
       #hud .htr-chip-grid span {
-        min-width: 0; color: #bfd9e4; font-size: 12px;
+        min-width: 0;
+        color: #bfd9e4;
+        font-size: 12px;
       }
       #hud .htr-equation {
-        display: flex; flex-wrap: wrap; align-items: center; gap: 7px;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 7px;
       }
       #hud .htr-equation span {
-        color: #eaf6fa; font: 800 11.5px "Avenir Next", "Helvetica Neue", sans-serif;
+        color: #eaf6fa;
+        font:
+          800 11.5px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
         letter-spacing: 0;
       }
       #hud .htr-equation b {
-        color: #ffb169; font: 900 13px "Avenir Next", "Helvetica Neue", sans-serif;
+        color: #ffb169;
+        font:
+          900 13px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
       }
       #hud .htr-timeline {
-        margin: 0; padding: 0; list-style: none; display: grid; gap: 8px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        display: grid;
+        gap: 8px;
       }
       #hud .htr-timeline li {
-        display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 8px; align-items: start;
+        display: grid;
+        grid-template-columns: 24px minmax(0, 1fr);
+        gap: 8px;
+        align-items: start;
       }
       #hud .htr-timeline b {
-        display: inline-flex; align-items: center; justify-content: center;
-        width: 22px; height: 22px; border-radius: 50%;
-        background: #6fd7c4; color: #051018;
-        font: 900 11px "Avenir Next", "Helvetica Neue", sans-serif;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        background: #6fd7c4;
+        color: #051018;
+        font:
+          900 11px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
       }
       #hud .htr-timeline span {
-        color: #cfe6ee; font-size: 12.5px;
+        color: #cfe6ee;
+        font-size: 12.5px;
       }
       #hud .htr-bars {
-        display: grid; gap: 8px;
+        display: grid;
+        gap: 8px;
       }
       #hud .htr-bar {
-        display: grid; grid-template-columns: minmax(112px, 0.52fr) minmax(0, 1fr) 30px;
-        gap: 8px; align-items: center;
+        display: grid;
+        grid-template-columns: minmax(112px, 0.52fr) minmax(0, 1fr) 30px;
+        gap: 8px;
+        align-items: center;
       }
       #hud .htr-bar span {
-        min-width: 0; color: #cfe6ee; font-size: 12px;
+        min-width: 0;
+        color: #cfe6ee;
+        font-size: 12px;
       }
       #hud .htr-bar i {
-        height: 8px; border-radius: 999px; overflow: hidden;
+        height: 8px;
+        border-radius: 999px;
+        overflow: hidden;
         background: rgba(190, 225, 240, 0.16);
       }
       #hud .htr-bar b {
-        display: block; height: 100%; border-radius: inherit;
+        display: block;
+        height: 100%;
+        border-radius: inherit;
         background: linear-gradient(90deg, #75f08d, #c9ff8a);
       }
       #hud .htr-bar.bad b {
         background: linear-gradient(90deg, #ff8a2a, #ffce6a);
       }
       #hud .htr-bar em {
-        color: #9fb7c4; font-style: normal; font: 800 11px "Avenir Next", "Helvetica Neue", sans-serif;
+        color: #9fb7c4;
+        font-style: normal;
+        font:
+          800 11px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
         text-align: right;
       }
       #hud .htr-live-stack {
-        display: grid; gap: 8px;
+        display: grid;
+        gap: 8px;
       }
       #hud .htr-live-stack span {
-        color: #eaf6fa; font-size: 12px;
+        color: #eaf6fa;
+        font-size: 12px;
       }
       #hud .horse-training-copy {
-        display: grid; gap: 14px; align-content: start;
+        display: grid;
+        gap: 14px;
+        align-content: start;
       }
       #hud .horse-training-step {
-        padding: 0 0 20px; border-bottom: 1px solid rgba(190, 225, 240, 0.1);
-        opacity: 0.52; transition: opacity 0.2s ease;
+        padding: 0 0 20px;
+        border-bottom: 1px solid rgba(190, 225, 240, 0.1);
+        opacity: 0.52;
+        transition: opacity 0.2s ease;
       }
-      #hud .horse-training-step.active { opacity: 1; }
+      #hud .horse-training-step.active {
+        opacity: 1;
+      }
       #hud .horse-training-step h3 {
-        margin: 0 0 8px; color: #9ef2df; font: 800 16px "Avenir Next", "Helvetica Neue", sans-serif;
+        margin: 0 0 8px;
+        color: #9ef2df;
+        font:
+          800 16px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
         letter-spacing: 0;
       }
       #hud .horse-training-step p {
-        margin: 0 0 9px; color: #cfe6ee;
+        margin: 0 0 9px;
+        color: #cfe6ee;
       }
-      #hud .horse-training-step p:last-child { margin-bottom: 0; }
+      #hud .horse-training-step p:last-child {
+        margin-bottom: 0;
+      }
       #hud .horse-training-step code {
-        padding: 1px 6px; border-radius: 5px; font-size: 12px;
-        font-family: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, monospace;
-        background: rgba(18, 40, 56, 0.7); border: 1px solid rgba(190, 225, 240, 0.16);
+        padding: 1px 6px;
+        border-radius: 5px;
+        font-size: 12px;
+        font-family:
+          "SF Mono", "JetBrains Mono", ui-monospace, Menlo, monospace;
+        background: rgba(18, 40, 56, 0.7);
+        border: 1px solid rgba(190, 225, 240, 0.16);
         color: #b6ecdd;
       }
       /* "the whole process" narrative block at the end of the copy */
-      #hud .horse-training-process { padding: 4px 0 12px; color: #cfe6ee; }
+      #hud .horse-training-process {
+        padding: 4px 0 12px;
+        color: #cfe6ee;
+      }
       #hud .horse-training-process .htr-proc-divider {
-        height: 1px; margin: 0 0 18px;
-        background: linear-gradient(90deg, transparent, rgba(111,215,196,0.45), transparent);
+        height: 1px;
+        margin: 0 0 18px;
+        background: linear-gradient(
+          90deg,
+          transparent,
+          rgba(111, 215, 196, 0.45),
+          transparent
+        );
       }
       #hud .horse-training-process h3 {
-        margin: 0 0 6px; color: #9ef2df; font: 800 17px "Avenir Next", "Helvetica Neue", sans-serif;
+        margin: 0 0 6px;
+        color: #9ef2df;
+        font:
+          800 17px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
       }
       #hud .horse-training-process h4 {
-        margin: 17px 0 7px; color: #eaf4f8; font: 800 13px "Avenir Next", "Helvetica Neue", sans-serif;
-        letter-spacing: 0.02em; text-transform: uppercase;
+        margin: 17px 0 7px;
+        color: #eaf4f8;
+        font:
+          800 13px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
       }
-      #hud .horse-training-process p { margin: 0 0 9px; color: #cfe6ee; }
-      #hud .horse-training-process .htr-proc-by { color: #b6ecdd; font-size: 12.5px; opacity: 0.92; }
-      #hud .horse-training-process .htr-proc-list { margin: 0; padding-left: 18px; display: grid; gap: 8px; }
-      #hud .horse-training-process .htr-proc-list li { color: #cfe6ee; line-height: 1.42; }
-      #hud .horse-training-process b { color: #eaf4f8; }
+      #hud .horse-training-process p {
+        margin: 0 0 9px;
+        color: #cfe6ee;
+      }
+      #hud .horse-training-process .htr-proc-by {
+        color: #b6ecdd;
+        font-size: 12.5px;
+        opacity: 0.92;
+      }
+      #hud .horse-training-process .htr-proc-list {
+        margin: 0;
+        padding-left: 18px;
+        display: grid;
+        gap: 8px;
+      }
+      #hud .horse-training-process .htr-proc-list li {
+        color: #cfe6ee;
+        line-height: 1.42;
+      }
+      #hud .horse-training-process b {
+        color: #eaf4f8;
+      }
       #hud .horse-training-process .htr-proc-foot {
-        margin-top: 17px; padding-top: 13px; border-top: 1px solid rgba(190,225,240,0.12);
-        color: #9ef2df; font-size: 12.5px;
+        margin-top: 17px;
+        padding-top: 13px;
+        border-top: 1px solid rgba(190, 225, 240, 0.12);
+        color: #9ef2df;
+        font-size: 12.5px;
       }
       #hud .horse-training-process code {
-        padding: 1px 6px; border-radius: 5px; font-size: 12px;
-        font-family: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, monospace;
-        background: rgba(18, 40, 56, 0.7); border: 1px solid rgba(190, 225, 240, 0.16); color: #b6ecdd;
+        padding: 1px 6px;
+        border-radius: 5px;
+        font-size: 12px;
+        font-family:
+          "SF Mono", "JetBrains Mono", ui-monospace, Menlo, monospace;
+        background: rgba(18, 40, 56, 0.7);
+        border: 1px solid rgba(190, 225, 240, 0.16);
+        color: #b6ecdd;
       }
       #hud .horse-training-diagram[data-step="1"] .htr-layer:not(.input),
       #hud .horse-training-diagram[data-step="2"] .htr-layer:not(.h1):not(.h2),
-      #hud .horse-training-diagram[data-step="3"] .htr-layer:not(.output) { opacity: 0.42; filter: saturate(0.58); }
+      #hud .horse-training-diagram[data-step="3"] .htr-layer:not(.output) {
+        opacity: 0.42;
+        filter: saturate(0.58);
+      }
       #hud .horse-training-diagram[data-step="1"] .htr-layer.input,
       #hud .horse-training-diagram[data-step="2"] .htr-layer.h1,
       #hud .horse-training-diagram[data-step="2"] .htr-layer.h2,
       #hud .horse-training-diagram[data-step="3"] .htr-layer.output {
-        opacity: 1; filter: none; transform: translateY(-2px);
+        opacity: 1;
+        filter: none;
+        transform: translateY(-2px);
       }
       #hud .horse-training-diagram[data-step="1"] .htr-wire.sensor,
       #hud .horse-training-diagram[data-step="2"] .htr-wire.hidden,
       #hud .horse-training-diagram[data-step="3"] .htr-wire.output {
-        opacity: 0.62; stroke-width: 0.5;
+        opacity: 0.62;
+        stroke-width: 0.5;
       }
       #hud .horse-training-diagram[data-step="1"] .htr-wire:not(.sensor),
       #hud .horse-training-diagram[data-step="2"] .htr-wire:not(.hidden),
-      #hud .horse-training-diagram[data-step="3"] .htr-wire:not(.output) { opacity: 0.05; }
+      #hud .horse-training-diagram[data-step="3"] .htr-wire:not(.output) {
+        opacity: 0.05;
+      }
       #hud .horse-training-diagram[data-step="1"] .htr-input-list,
       #hud .horse-training-diagram[data-step="3"] .htr-output-list,
       #hud .horse-training-diagram[data-step="5"] .htr-bars,
@@ -838,7 +1813,9 @@
       }
       #hud .horse-training-diagram[data-step="5"] .htr-wire.reward,
       #hud .horse-training-diagram[data-step="6"] .htr-wire.reward,
-      #hud .horse-training-diagram[data-step="7"] .htr-wire.reward { opacity: 0.85; }
+      #hud .horse-training-diagram[data-step="7"] .htr-wire.reward {
+        opacity: 0.85;
+      }
       #hud .horse-training-diagram[data-step="4"] .htr-wire.sensor,
       #hud .horse-training-diagram[data-step="4"] .htr-wire.hidden,
       #hud .horse-training-diagram[data-step="4"] .htr-wire.output,
@@ -847,356 +1824,824 @@
       #hud .horse-training-diagram[data-step="6"] .htr-wire.output,
       #hud .horse-training-diagram[data-step="7"] .htr-wire.sensor,
       #hud .horse-training-diagram[data-step="7"] .htr-wire.hidden,
-      #hud .horse-training-diagram[data-step="7"] .htr-wire.output { opacity: 0.34; }
+      #hud .horse-training-diagram[data-step="7"] .htr-wire.output {
+        opacity: 0.34;
+      }
       @media (max-width: 920px) {
         #hud .horse-training-body {
           grid-template-columns: 1fr;
           padding: 18px 18px 28px;
         }
-        #hud .horse-training-diagram { position: relative; top: auto; max-height: none; }
-        #hud .htr-diagram-scroll { max-height: 62vh; }
-        #hud .htr-layers { gap: 10px; padding-left: 10px; padding-right: 10px; }
-        #hud .htr-detail { grid-template-columns: 1fr; }
-        #hud .htr-loop { grid-template-columns: 1fr; }
+        #hud .horse-training-diagram {
+          position: relative;
+          top: auto;
+          max-height: none;
+        }
+        #hud .htr-diagram-scroll {
+          max-height: 62vh;
+        }
+        #hud .htr-layers {
+          gap: 10px;
+          padding-left: 10px;
+          padding-right: 10px;
+        }
+        #hud .htr-detail {
+          grid-template-columns: 1fr;
+        }
+        #hud .htr-loop {
+          grid-template-columns: 1fr;
+        }
       }
       @media (max-width: 560px) {
-        #hud .horse-training-head { padding: 22px 52px 16px 18px; }
-        #hud .horse-training-title { font-size: 18px; }
-        #hud .htr-network { min-height: 260px; }
-        #hud .htr-layers { min-height: 260px; }
-        #hud .htr-layer-title { font-size: 10.5px; }
-        #hud .htr-layer-sub { font-size: 9.5px; }
-        #hud .htr-nodes { grid-template-columns: repeat(3, 11px); gap: 9px 7px; }
+        #hud .horse-training-head {
+          padding: 22px 52px 16px 18px;
+        }
+        #hud .horse-training-title {
+          font-size: 18px;
+        }
+        #hud .htr-network {
+          min-height: 260px;
+        }
+        #hud .htr-layers {
+          min-height: 260px;
+        }
+        #hud .htr-layer-title {
+          font-size: 10.5px;
+        }
+        #hud .htr-layer-sub {
+          font-size: 9.5px;
+        }
+        #hud .htr-nodes {
+          grid-template-columns: repeat(3, 11px);
+          gap: 9px 7px;
+        }
         #hud .htr-layer.input .htr-nodes,
-        #hud .htr-layer.output .htr-nodes { grid-template-columns: repeat(2, 11px); }
-        #hud .htr-nodes i { width: 11px; height: 11px; }
-        #hud .htr-bar { grid-template-columns: 1fr; }
-        #hud .htr-bar em { text-align: left; }
+        #hud .htr-layer.output .htr-nodes {
+          grid-template-columns: repeat(2, 11px);
+        }
+        #hud .htr-nodes i {
+          width: 11px;
+          height: 11px;
+        }
+        #hud .htr-bar {
+          grid-template-columns: 1fr;
+        }
+        #hud .htr-bar em {
+          text-align: left;
+        }
       }
 
       /* lone affordance when Tab hides the HUD — hidden in immersive (display:none on #hud) */
       #hud .ui-restore {
-        position: absolute; bottom: 16px; right: 20px; z-index: 3;
-        pointer-events: none; opacity: 0;
-        width: 34px; height: 34px; padding: 0; cursor: pointer;
-        display: inline-flex; align-items: center; justify-content: center;
-        border-radius: 10px; border: 1px solid rgba(190, 225, 240, 0.22);
-        background: rgba(10, 24, 36, 0.62); color: #dceff5;
-        box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 6px 18px rgba(0, 6, 12, 0.28);
+        position: absolute;
+        bottom: 16px;
+        right: 20px;
+        z-index: 3;
+        pointer-events: none;
+        opacity: 0;
+        width: 34px;
+        height: 34px;
+        padding: 0;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 10px;
+        border: 1px solid rgba(190, 225, 240, 0.22);
+        background: rgba(10, 24, 36, 0.62);
+        color: #dceff5;
+        box-shadow:
+          inset 0 1px 0 rgba(255, 255, 255, 0.06),
+          0 6px 18px rgba(0, 6, 12, 0.28);
         backdrop-filter: blur(6px);
-        transition: opacity 0.35s ease, border-color 0.15s, color 0.15s, transform 0.12s;
+        transition:
+          opacity 0.35s ease,
+          border-color 0.15s,
+          color 0.15s,
+          transform 0.12s;
       }
-      #hud.faded .ui-restore { opacity: 0.88; pointer-events: auto; }
+      #hud.faded .ui-restore {
+        opacity: 0.88;
+        pointer-events: auto;
+      }
       #hud .ui-restore:hover {
-        opacity: 1; border-color: #6fd7c4; color: #9ef2df; transform: translateY(-1px);
+        opacity: 1;
+        border-color: #6fd7c4;
+        color: #9ef2df;
+        transform: translateY(-1px);
         background: rgba(15, 33, 47, 0.82);
       }
-      #hud .ui-restore .ic { font-size: 15px; line-height: 1; }
-      #hud .avatar-toggle {
-        width: 46px; height: 46px; padding: 0; cursor: pointer;
-        position: relative; display: grid; place-items: center;
-        border-radius: 12px; border: 1px solid rgba(190, 225, 240, 0.22);
-        background: rgba(10, 24, 36, 0.62);
-        box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 6px 18px rgba(0, 6, 12, 0.28);
-        backdrop-filter: blur(6px);
-        transition: border-color 0.15s, transform 0.12s, background 0.15s;
+      #hud .ui-restore .ic {
+        font-size: 15px;
+        line-height: 1;
       }
-      #hud .avatar-toggle:hover, #hud .avatar-ui.open .avatar-toggle {
-        border-color: #6fd7c4; transform: translateY(-1px);
+      #hud .avatar-toggle {
+        width: 46px;
+        height: 46px;
+        padding: 0;
+        cursor: pointer;
+        position: relative;
+        display: grid;
+        place-items: center;
+        border-radius: 12px;
+        border: 1px solid rgba(190, 225, 240, 0.22);
+        background: rgba(10, 24, 36, 0.62);
+        box-shadow:
+          inset 0 1px 0 rgba(255, 255, 255, 0.06),
+          0 6px 18px rgba(0, 6, 12, 0.28);
+        backdrop-filter: blur(6px);
+        transition:
+          border-color 0.15s,
+          transform 0.12s,
+          background 0.15s;
+      }
+      #hud .avatar-toggle:hover,
+      #hud .avatar-ui.open .avatar-toggle {
+        border-color: #6fd7c4;
+        transform: translateY(-1px);
         background: rgba(15, 33, 47, 0.82);
       }
       #hud .avatar-head {
-        position: absolute; left: 15px; top: 8px; width: 16px; height: 16px; border-radius: 5px;
-        box-shadow: inset 0 -2px 0 rgba(0,0,0,0.12);
+        position: absolute;
+        left: 15px;
+        top: 8px;
+        width: 16px;
+        height: 16px;
+        border-radius: 5px;
+        box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.12);
       }
       #hud .avatar-shirt {
-        position: absolute; left: 11px; top: 24px; width: 24px; height: 15px; border-radius: 5px 5px 7px 7px;
-        box-shadow: inset 0 -3px 0 rgba(0,0,0,0.18);
+        position: absolute;
+        left: 11px;
+        top: 24px;
+        width: 24px;
+        height: 15px;
+        border-radius: 5px 5px 7px 7px;
+        box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.18);
       }
       #hud .avatar-dot {
-        position: absolute; right: 8px; bottom: 8px; width: 9px; height: 9px; border-radius: 50%;
-        border: 1px solid rgba(255,255,255,0.7);
+        position: absolute;
+        right: 8px;
+        bottom: 8px;
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        border: 1px solid rgba(255, 255, 255, 0.7);
       }
       #hud .avatar-panel {
-        display: none; width: min(330px, calc(100vw - 32px)); max-height: min(74vh, 560px); overflow: auto;
-        padding: 10px; border-radius: 12px;
+        display: none;
+        width: min(330px, calc(100vw - 32px));
+        max-height: min(74vh, 560px);
+        overflow: auto;
+        padding: 10px;
+        border-radius: 12px;
         background: rgba(10, 24, 36, 0.78);
         border: 1px solid rgba(190, 225, 240, 0.18);
-        box-shadow: 0 10px 32px rgba(0, 6, 12, 0.38), inset 0 1px 0 rgba(255,255,255,0.05);
+        box-shadow:
+          0 10px 32px rgba(0, 6, 12, 0.38),
+          inset 0 1px 0 rgba(255, 255, 255, 0.05);
         backdrop-filter: blur(8px);
       }
-      #hud .avatar-ui.open .avatar-panel { display: grid; gap: 9px; animation: avatarin 0.16s ease; }
-      @keyframes avatarin { from { opacity: 0; transform: translateY(-5px); } }
+      #hud .avatar-ui.open .avatar-panel {
+        display: grid;
+        gap: 9px;
+        animation: avatarin 0.16s ease;
+      }
+      @keyframes avatarin {
+        from {
+          opacity: 0;
+          transform: translateY(-5px);
+        }
+      }
       #hud .avatar-row {
-        display: grid; grid-template-columns: 58px minmax(0, 1fr); gap: 8px; align-items: start;
+        display: grid;
+        grid-template-columns: 58px minmax(0, 1fr);
+        gap: 8px;
+        align-items: start;
       }
       #hud .avatar-label {
-        padding-top: 7px; color: #bcd9e6;
-        font: 700 10.5px "Avenir Next", "Helvetica Neue", sans-serif;
-        letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.78;
+        padding-top: 7px;
+        color: #bcd9e6;
+        font:
+          700 10.5px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        opacity: 0.78;
       }
-      #hud .avatar-controls { min-width: 0; display: flex; flex-wrap: wrap; gap: 6px; }
-      #hud .avatar-choice, #hud .avatar-random {
-        min-height: 28px; padding: 0 9px; cursor: pointer;
-        border-radius: 7px; border: 1px solid rgba(190, 225, 240, 0.2);
-        background: rgba(18, 40, 56, 0.58); color: #dceff5;
-        font: 700 11px "Avenir Next", "Helvetica Neue", sans-serif;
-        letter-spacing: 0; transition: border-color 0.15s, color 0.15s, background 0.15s, transform 0.12s;
+      #hud .avatar-controls {
+        min-width: 0;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
       }
-      #hud .avatar-choice:hover, #hud .avatar-random:hover {
-        border-color: rgba(190, 225, 240, 0.5); transform: translateY(-1px);
+      #hud .avatar-choice,
+      #hud .avatar-random {
+        min-height: 28px;
+        padding: 0 9px;
+        cursor: pointer;
+        border-radius: 7px;
+        border: 1px solid rgba(190, 225, 240, 0.2);
+        background: rgba(18, 40, 56, 0.58);
+        color: #dceff5;
+        font:
+          700 11px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
+        letter-spacing: 0;
+        transition:
+          border-color 0.15s,
+          color 0.15s,
+          background 0.15s,
+          transform 0.12s;
+      }
+      #hud .avatar-choice:hover,
+      #hud .avatar-random:hover {
+        border-color: rgba(190, 225, 240, 0.5);
+        transform: translateY(-1px);
       }
       #hud .avatar-choice.on {
-        border-color: #6fd7c4; color: #9ef2df; background: rgba(22, 64, 70, 0.62);
+        border-color: #6fd7c4;
+        color: #9ef2df;
+        background: rgba(22, 64, 70, 0.62);
       }
       #hud .avatar-swatch {
-        width: 24px; height: 24px; padding: 0; cursor: pointer; border-radius: 8px;
+        width: 24px;
+        height: 24px;
+        padding: 0;
+        cursor: pointer;
+        border-radius: 8px;
         border: 2px solid rgba(190, 225, 240, 0.24);
-        box-shadow: inset 0 -4px 0 rgba(0,0,0,0.14);
-        transition: transform 0.12s, border-color 0.15s;
+        box-shadow: inset 0 -4px 0 rgba(0, 0, 0, 0.14);
+        transition:
+          transform 0.12s,
+          border-color 0.15s;
       }
-      #hud .avatar-swatch:hover { transform: scale(1.08); }
-      #hud .avatar-swatch.on { border-color: #ffffff; transform: scale(1.08); }
+      #hud .avatar-swatch:hover {
+        transform: scale(1.08);
+      }
+      #hud .avatar-swatch.on {
+        border-color: #ffffff;
+        transform: scale(1.08);
+      }
       #hud .avatar-random {
-        justify-self: end; margin-top: 2px; background: #6fd7c4; border-color: #6fd7c4;
-        color: #062018; text-transform: uppercase; letter-spacing: 0.05em;
+        justify-self: end;
+        margin-top: 2px;
+        background: #6fd7c4;
+        border-color: #6fd7c4;
+        color: #062018;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
       }
       #hud .audio {
-        position: absolute; bottom: 16px; left: 20px;
-        display: flex; flex-direction: column; align-items: stretch; gap: 6px;
-        padding: 6px 10px; border-radius: 10px;
+        position: absolute;
+        bottom: 16px;
+        left: 20px;
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 6px;
+        padding: 6px 10px;
+        border-radius: 10px;
         background: rgba(10, 24, 36, 0.55);
         border: 1px solid rgba(190, 225, 240, 0.14);
         backdrop-filter: blur(6px);
         pointer-events: auto;
       }
       #hud .audio-vol {
-        display: flex; align-items: center; gap: 8px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
       }
       #hud .audio-sliders {
-        display: flex; flex-direction: column; gap: 5px; flex: 1; min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+        flex: 1;
+        min-width: 0;
       }
       #hud .audio-row {
-        display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex: 1;
+        min-width: 0;
       }
       #hud .audio-lbl {
-        flex: 0 0 34px; font: 600 10px "Avenir Next", "Helvetica Neue", sans-serif;
-        letter-spacing: 0.04em; text-transform: uppercase; color: rgba(188, 217, 230, 0.72);
+        flex: 0 0 34px;
+        font:
+          600 10px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: rgba(188, 217, 230, 0.72);
       }
       #hud .audio .mute {
-        background: none; border: none; cursor: pointer;
-        font-size: 15px; line-height: 1; padding: 0;
+        background: none;
+        border: none;
+        cursor: pointer;
+        font-size: 15px;
+        line-height: 1;
+        padding: 0;
       }
       #hud .audio .mic-btn {
-        display: inline-flex; align-items: center; gap: 8px;
-        padding: 5px 10px; border-radius: 7px; cursor: pointer;
-        background: rgba(18, 40, 56, 0.6); border: 1px solid rgba(190, 225, 240, 0.25);
-        color: #bcd9e6; font: 600 11.5px "Avenir Next", "Helvetica Neue", sans-serif;
-        letter-spacing: 0.02em; transition: border-color 0.15s, color 0.15s;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 5px 10px;
+        border-radius: 7px;
+        cursor: pointer;
+        background: rgba(18, 40, 56, 0.6);
+        border: 1px solid rgba(190, 225, 240, 0.25);
+        color: #bcd9e6;
+        font:
+          600 11.5px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
+        letter-spacing: 0.02em;
+        transition:
+          border-color 0.15s,
+          color 0.15s;
       }
-      #hud .audio .mic-btn .ic { font-size: 18px; line-height: 1; }
-      #hud .audio .mic-btn:hover { border-color: rgba(190, 225, 240, 0.55); }
-      #hud .audio .mic-btn.on { border-color: #6fd7c4; color: #9ef2df; }
+      #hud .audio .mic-btn .ic {
+        font-size: 18px;
+        line-height: 1;
+      }
+      #hud .audio .mic-btn:hover {
+        border-color: rgba(190, 225, 240, 0.55);
+      }
+      #hud .audio .mic-btn.on {
+        border-color: #6fd7c4;
+        color: #9ef2df;
+      }
       #hud .audio input[type="range"] {
-        -webkit-appearance: none; appearance: none;
-        flex: 1; min-width: 72px; height: 3px; border-radius: 2px;
-        background: rgba(190, 225, 240, 0.3); outline: none; cursor: pointer;
+        -webkit-appearance: none;
+        appearance: none;
+        flex: 1;
+        min-width: 72px;
+        height: 3px;
+        border-radius: 2px;
+        background: rgba(190, 225, 240, 0.3);
+        outline: none;
+        cursor: pointer;
         transition: opacity 0.2s;
       }
       #hud .audio input[type="range"]::-webkit-slider-thumb {
-        -webkit-appearance: none; appearance: none;
-        width: 11px; height: 11px; border-radius: 50%; background: #6fd7c4;
+        -webkit-appearance: none;
+        appearance: none;
+        width: 11px;
+        height: 11px;
+        border-radius: 50%;
+        background: #6fd7c4;
       }
       #hud .audio input[type="range"]::-moz-range-thumb {
-        width: 11px; height: 11px; border-radius: 50%; background: #6fd7c4; border: none;
+        width: 11px;
+        height: 11px;
+        border-radius: 50%;
+        background: #6fd7c4;
+        border: none;
       }
-      #hud .audio input[type="range"].off { opacity: 0.35; }
+      #hud .audio input[type="range"].off {
+        opacity: 0.35;
+      }
       #hud .minimap {
-        position: absolute; top: 16px; left: 20px;
-        display: flex; flex-direction: column; gap: 8px; width: 236px;
-        pointer-events: auto; user-select: none;
+        position: absolute;
+        top: 16px;
+        left: 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        width: 236px;
+        pointer-events: auto;
+        user-select: none;
       }
       #hud .minimap .mm-card {
-        position: relative; border-radius: 18px; overflow: hidden;
+        position: relative;
+        border-radius: 18px;
+        overflow: hidden;
         border: 1px solid rgba(225, 235, 243, 0.28);
         background: rgba(10, 24, 36, 0.68);
-        box-shadow: 0 5px 24px rgba(0, 6, 12, 0.38), inset 0 0 0 1px rgba(255,255,255,0.04);
-        cursor: grab; touch-action: none;
+        box-shadow:
+          0 5px 24px rgba(0, 6, 12, 0.38),
+          inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+        cursor: grab;
+        touch-action: none;
       }
-      #hud .minimap .mm-card.dragging { cursor: grabbing; }
-      #hud .minimap canvas { display: block; }
+      #hud .minimap .mm-card.dragging {
+        cursor: grabbing;
+      }
+      #hud .minimap canvas {
+        display: block;
+      }
       #hud .minimap .mm-count {
-        position: absolute; left: 9px; bottom: 9px;
-        display: inline-flex; align-items: center; gap: 7px;
+        position: absolute;
+        left: 9px;
+        bottom: 9px;
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
         justify-content: center;
-        padding: 6px 10px; pointer-events: none;
+        padding: 6px 10px;
+        pointer-events: none;
         border-radius: 999px;
-        font-size: 10.5px; font-weight: 600; letter-spacing: 0; text-transform: uppercase;
-        color: #edf7fb; background: rgba(12, 19, 27, 0.82);
+        font-size: 10.5px;
+        font-weight: 600;
+        letter-spacing: 0;
+        text-transform: uppercase;
+        color: #edf7fb;
+        background: rgba(12, 19, 27, 0.82);
         border: 1px solid rgba(225, 235, 243, 0.18);
         box-shadow: 0 8px 18px rgba(0, 0, 0, 0.26);
       }
       #hud .minimap .mm-count-dot {
-        width: 9px; height: 9px; flex: 0 0 9px; border-radius: 50%;
-        background: #57c46a; box-shadow: 0 0 10px rgba(87, 196, 106, 0.72);
+        width: 9px;
+        height: 9px;
+        flex: 0 0 9px;
+        border-radius: 50%;
+        background: #57c46a;
+        box-shadow: 0 0 10px rgba(87, 196, 106, 0.72);
       }
       /* bottom-right expand affordance — big enough to hit, small enough to
          leave the rest of the map free for panning */
       #hud .minimap .mm-expand {
-        position: absolute; right: 9px; bottom: 9px;
-        width: 34px; height: 34px; padding: 0; cursor: pointer;
-        display: inline-flex; align-items: center; justify-content: center;
-        border-radius: 10px; color: #eaf4f8;
+        position: absolute;
+        right: 9px;
+        bottom: 9px;
+        width: 34px;
+        height: 34px;
+        padding: 0;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 10px;
+        color: #eaf4f8;
         background: rgba(12, 19, 27, 0.82);
         border: 1px solid rgba(225, 235, 243, 0.28);
         box-shadow: 0 8px 18px rgba(0, 0, 0, 0.26);
-        font-size: 18px; line-height: 1; font-weight: 700;
-        transition: border-color 0.15s, background 0.15s, transform 0.12s;
+        font-size: 18px;
+        line-height: 1;
+        font-weight: 700;
+        transition:
+          border-color 0.15s,
+          background 0.15s,
+          transform 0.12s;
       }
       #hud .minimap .mm-expand:hover {
-        border-color: #6fd7c4; color: #9ef2df; transform: translateY(-1px);
+        border-color: #6fd7c4;
+        color: #9ef2df;
+        transform: translateY(-1px);
         background: rgba(16, 30, 42, 0.9);
       }
       #hud .minimap .mm-teleport {
-        display: flex; align-items: center; gap: 8px;
-        padding: 6px 8px 6px 11px; border-radius: 12px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 8px 6px 11px;
+        border-radius: 12px;
         background: rgba(10, 24, 36, 0.72);
         border: 1px solid rgba(225, 235, 243, 0.2);
-        box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 5px 14px rgba(0, 0, 0, 0.22);
+        box-shadow:
+          inset 0 1px 0 rgba(255, 255, 255, 0.06),
+          0 5px 14px rgba(0, 0, 0, 0.22);
       }
       #hud .minimap .mm-teleport-name {
-        flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-        font: 600 12px "Avenir Next", "Helvetica Neue", sans-serif; color: #eaf4f8;
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font:
+          600 12px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
+        color: #eaf4f8;
       }
       #hud .minimap .mm-teleport-btn {
-        flex: 0 0 auto; cursor: pointer; padding: 5px 12px; border-radius: 8px;
-        color: #062018; background: #6fd7c4; border: 1px solid #6fd7c4;
-        font: 700 11.5px "Avenir Next", "Helvetica Neue", sans-serif; letter-spacing: 0.02em;
-        transition: filter 0.15s, transform 0.12s;
+        flex: 0 0 auto;
+        cursor: pointer;
+        padding: 5px 12px;
+        border-radius: 8px;
+        color: #062018;
+        background: #6fd7c4;
+        border: 1px solid #6fd7c4;
+        font:
+          700 11.5px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
+        letter-spacing: 0.02em;
+        transition:
+          filter 0.15s,
+          transform 0.12s;
       }
-      #hud .minimap .mm-teleport-btn:hover { filter: brightness(1.08); transform: translateY(-1px); }
+      #hud .minimap .mm-teleport-btn:hover {
+        filter: brightness(1.08);
+        transform: translateY(-1px);
+      }
       #hud .minimap .mm-layers {
-        display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px;
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 7px;
       }
       #hud .minimap .mm-layer {
-        min-width: 0; height: 34px; padding: 0 7px;
-        display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-        border-radius: 12px; cursor: pointer;
+        min-width: 0;
+        height: 34px;
+        padding: 0 7px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        border-radius: 12px;
+        cursor: pointer;
         border: 1px solid rgba(225, 235, 243, 0.18);
-        background: linear-gradient(180deg, rgba(56, 59, 72, 0.86), rgba(35, 38, 48, 0.9));
+        background: linear-gradient(
+          180deg,
+          rgba(56, 59, 72, 0.86),
+          rgba(35, 38, 48, 0.9)
+        );
         color: #f0f4f7;
-        font: 700 12.5px "Avenir Next", "Helvetica Neue", sans-serif;
+        font:
+          700 12.5px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
         text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
-        box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 5px 14px rgba(0, 0, 0, 0.22);
-        transition: border-color 0.15s, opacity 0.15s, transform 0.12s, filter 0.15s;
+        box-shadow:
+          inset 0 1px 0 rgba(255, 255, 255, 0.08),
+          0 5px 14px rgba(0, 0, 0, 0.22);
+        transition:
+          border-color 0.15s,
+          opacity 0.15s,
+          transform 0.12s,
+          filter 0.15s;
       }
-      #hud .minimap .mm-layer:hover { border-color: rgba(225, 235, 243, 0.42); transform: translateY(-1px); }
-      #hud .minimap .mm-layer:not(.on) { opacity: 0.42; filter: saturate(0.55); }
+      #hud .minimap .mm-layer:hover {
+        border-color: rgba(225, 235, 243, 0.42);
+        transform: translateY(-1px);
+      }
+      #hud .minimap .mm-layer:not(.on) {
+        opacity: 0.42;
+        filter: saturate(0.55);
+      }
       #hud .minimap .mm-layer-dot {
-        width: 10px; height: 10px; flex: 0 0 10px; border-radius: 50%;
+        width: 10px;
+        height: 10px;
+        flex: 0 0 10px;
+        border-radius: 50%;
         background: var(--layer-color);
         box-shadow: 0 0 10px var(--layer-color);
       }
       #hud .minimap .mm-layer-label {
-        min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
       .bigmap {
-        position: fixed; inset: 0; z-index: 30;
-        display: flex; align-items: center; justify-content: center;
-        background: rgba(4, 10, 16, 0.55); backdrop-filter: blur(3px);
+        position: fixed;
+        inset: 0;
+        z-index: 30;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(4, 10, 16, 0.55);
+        backdrop-filter: blur(3px);
         font-family: "Avenir Next", "Helvetica Neue", sans-serif;
       }
-      .bigmap-inner { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+      .bigmap-inner {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 10px;
+      }
       .bigmap canvas {
-        border-radius: 14px; cursor: grab; touch-action: none;
+        border-radius: 14px;
+        cursor: grab;
+        touch-action: none;
         border: 1px solid rgba(190, 225, 240, 0.2);
         box-shadow: 0 14px 70px rgba(0, 0, 0, 0.55);
       }
-      .bigmap canvas.dragging { cursor: grabbing; }
+      .bigmap canvas.dragging {
+        cursor: grabbing;
+      }
       .bigmap-action {
         min-width: min(420px, calc(100vw - 48px));
         max-width: calc(100vw - 48px);
-        display: flex; align-items: center; gap: 10px;
-        padding: 8px 9px 8px 12px; border-radius: 12px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 9px 8px 12px;
+        border-radius: 12px;
         background: rgba(10, 24, 36, 0.82);
         border: 1px solid rgba(225, 235, 243, 0.24);
-        box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 10px 28px rgba(0, 0, 0, 0.28);
+        box-shadow:
+          inset 0 1px 0 rgba(255, 255, 255, 0.06),
+          0 10px 28px rgba(0, 0, 0, 0.28);
       }
       .bigmap-target {
-        flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-        color: #eaf4f8; font: 700 13px "Avenir Next", "Helvetica Neue", sans-serif;
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: #eaf4f8;
+        font:
+          700 13px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
       }
       .bigmap-teleport-btn {
-        flex: 0 0 auto; cursor: pointer; padding: 7px 14px; border-radius: 8px;
-        color: #062018; background: #6fd7c4; border: 1px solid #6fd7c4;
-        font: 800 12px "Avenir Next", "Helvetica Neue", sans-serif; letter-spacing: 0.02em;
-        transition: filter 0.15s, transform 0.12s;
+        flex: 0 0 auto;
+        cursor: pointer;
+        padding: 7px 14px;
+        border-radius: 8px;
+        color: #062018;
+        background: #6fd7c4;
+        border: 1px solid #6fd7c4;
+        font:
+          800 12px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
+        letter-spacing: 0.02em;
+        transition:
+          filter 0.15s,
+          transform 0.12s;
       }
-      .bigmap-teleport-btn:hover { filter: brightness(1.08); transform: translateY(-1px); }
-      .bigmap-hint { color: #bcd9e6; font-size: 12px; opacity: 0.85; text-shadow: 0 1px 3px rgba(0, 10, 20, 0.8); }
+      .bigmap-teleport-btn:hover {
+        filter: brightness(1.08);
+        transform: translateY(-1px);
+      }
+      .bigmap-hint {
+        color: #bcd9e6;
+        font-size: 12px;
+        opacity: 0.85;
+        text-shadow: 0 1px 3px rgba(0, 10, 20, 0.8);
+      }
       #loading {
-        position: fixed; inset: 0; display: flex; flex-direction: column;
-        align-items: center; justify-content: center; gap: 14px;
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 14px;
         background: rgba(8, 20, 34, 0.62);
         backdrop-filter: blur(2px) saturate(0.7);
-        color: #cfe8f2; font-family: "Avenir Next", "Helvetica Neue", sans-serif;
-        transition: opacity 0.6s ease; z-index: 10;
+        color: #cfe8f2;
+        font-family: "Avenir Next", "Helvetica Neue", sans-serif;
+        transition: opacity 0.6s ease;
+        z-index: 10;
       }
       /* keep the HUD (center messages, minimap) out of sight behind the start
          gate — otherwise "Online as …" bleeds through the translucent tint */
-      #hud { transition: opacity 0.4s ease; }
-      body:not(.started) #hud { opacity: 0; pointer-events: none; }
+      #hud {
+        transition: opacity 0.4s ease;
+      }
+      body:not(.started) #hud {
+        opacity: 0;
+        pointer-events: none;
+      }
       /* opaque backdrop while tiles stream in; once the city is ready it fades,
          leaving the translucent tint above with the name form over the live city */
       #loading::before {
-        content: ""; position: absolute; inset: 0; z-index: -1;
+        content: "";
+        position: absolute;
+        inset: 0;
+        z-index: -1;
         background: linear-gradient(180deg, #14283a 0%, #0b1520 100%);
         transition: opacity 0.9s ease;
       }
-      #loading.ready::before { opacity: 0; }
+      #loading.ready::before {
+        opacity: 0;
+      }
       #loading h1 {
-        font-size: 22px; letter-spacing: 0.3em; font-weight: 500; margin: 0; text-transform: uppercase;
+        font-size: 22px;
+        letter-spacing: 0.3em;
+        font-weight: 500;
+        margin: 0;
+        text-transform: uppercase;
         text-shadow: 0 2px 12px rgba(0, 8, 14, 0.75);
       }
-      #loading .bar { width: 260px; height: 3px; background: rgba(255,255,255,0.15); border-radius: 2px; overflow: hidden; }
-      #loading .bar > div { height: 100%; width: 0%; background: #6fd7c4; transition: width 0.3s ease; }
-      #loading.done { opacity: 0; pointer-events: none; }
+      #loading .bar {
+        width: 260px;
+        height: 3px;
+        background: rgba(255, 255, 255, 0.15);
+        border-radius: 2px;
+        overflow: hidden;
+      }
+      #loading .bar > div {
+        height: 100%;
+        width: 0%;
+        background: #6fd7c4;
+        transition: width 0.3s ease;
+      }
+      #loading.done {
+        opacity: 0;
+        pointer-events: none;
+      }
       /* name gate: shows up front so you can type a name while the city streams
          in; the Start button stays disabled until load completes (.ready) */
-      #loading .start-form { display: flex; margin-top: 4px; gap: 10px; align-items: center; animation: startin 0.35s ease; }
-      #loading.ready .bar, #loading.ready [data-loading-label] { display: none; }
-      @keyframes startin { from { opacity: 0; transform: translateY(8px); } }
+      #loading .start-form {
+        display: flex;
+        margin-top: 4px;
+        gap: 10px;
+        align-items: center;
+        animation: startin 0.35s ease;
+      }
+      #loading.ready .bar,
+      #loading.ready [data-loading-label] {
+        display: none;
+      }
+      @keyframes startin {
+        from {
+          opacity: 0;
+          transform: translateY(8px);
+        }
+      }
       #loading .start-form input {
-        width: 210px; padding: 9px 12px; border-radius: 8px; outline: none;
-        background: rgba(10, 24, 36, 0.6); color: #eaf4f8;
+        width: 210px;
+        padding: 9px 12px;
+        border-radius: 8px;
+        outline: none;
+        background: rgba(10, 24, 36, 0.6);
+        color: #eaf4f8;
         border: 1px solid rgba(190, 225, 240, 0.28);
-        font: 500 14px "Avenir Next", "Helvetica Neue", sans-serif;
-        letter-spacing: 0.02em; text-align: center;
+        font:
+          500 14px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
+        letter-spacing: 0.02em;
+        text-align: center;
         transition: border-color 0.15s;
       }
-      #loading .start-form input:focus { border-color: #6fd7c4; }
-      #loading .start-form input::placeholder { color: rgba(234, 244, 248, 0.38); }
+      #loading .start-form input:focus {
+        border-color: #6fd7c4;
+      }
+      #loading .start-form input::placeholder {
+        color: rgba(234, 244, 248, 0.38);
+      }
       #loading .start-form button {
-        padding: 9px 22px; border-radius: 8px; cursor: pointer;
-        background: #6fd7c4; color: #0b1520; border: none;
-        font: 600 14px "Avenir Next", "Helvetica Neue", sans-serif;
-        letter-spacing: 0.06em; text-transform: uppercase;
-        transition: transform 0.12s, background 0.15s;
+        padding: 9px 22px;
+        border-radius: 8px;
+        cursor: pointer;
+        background: #6fd7c4;
+        color: #0b1520;
+        border: none;
+        font:
+          600 14px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        transition:
+          transform 0.12s,
+          background 0.15s;
       }
-      #loading .start-form button:hover:not(:disabled) { background: #8ceedd; transform: translateY(-1px); }
-      #loading .start-form button:disabled { background: rgba(111, 215, 196, 0.3); color: rgba(11, 21, 32, 0.6); cursor: default; }
-      #loading .start-hint { font-size: 11px; opacity: 0.7; text-shadow: 0 1px 4px rgba(0, 8, 14, 0.8); }
+      #loading .start-form button:hover:not(:disabled) {
+        background: #8ceedd;
+        transform: translateY(-1px);
+      }
+      #loading .start-form button:disabled {
+        background: rgba(111, 215, 196, 0.3);
+        color: rgba(11, 21, 32, 0.6);
+        cursor: default;
+      }
+      #loading .start-hint {
+        font-size: 11px;
+        opacity: 0.7;
+        text-shadow: 0 1px 4px rgba(0, 8, 14, 0.8);
+      }
       #loading .controls-hint {
-        margin-top: 16px; display: flex; flex-direction: column; gap: 7px; align-items: center;
-        font-size: 12px; opacity: 0.9; text-shadow: 0 1px 4px rgba(0, 8, 14, 0.8);
+        margin-top: 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 7px;
+        align-items: center;
+        font-size: 12px;
+        opacity: 0.9;
+        text-shadow: 0 1px 4px rgba(0, 8, 14, 0.8);
       }
-      #loading .controls-hint .row { display: inline-flex; align-items: center; gap: 8px; }
+      #loading .controls-hint .row {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }
       #loading .controls-hint .k {
-        display: inline-flex; align-items: center; justify-content: center;
-        min-width: 10px; height: 18px; padding: 0 6px; border-radius: 4px;
-        background: rgba(18, 40, 56, 0.6); border: 1px solid rgba(190, 225, 240, 0.35);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 10px;
+        height: 18px;
+        padding: 0 6px;
+        border-radius: 4px;
+        background: rgba(18, 40, 56, 0.6);
+        border: 1px solid rgba(190, 225, 240, 0.35);
         box-shadow: 0 1px 0 rgba(190, 225, 240, 0.16);
-        font-size: 10.5px; font-weight: 600; letter-spacing: 0.02em; line-height: 1;
+        font-size: 10.5px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        line-height: 1;
       }
     </style>
   </head>
@@ -1207,22 +2652,40 @@
         <div class="help" data-hud="help"></div>
       </div>
       <div class="center" data-hud="center"></div>
-      <button type="button" class="ui-restore" data-ui-restore title="Show UI (Tab)" aria-label="Show UI">
+      <button
+        type="button"
+        class="ui-restore"
+        data-ui-restore
+        title="Show UI (Tab)"
+        aria-label="Show UI"
+      >
         <span class="ic" aria-hidden="true">▤</span>
       </button>
     </div>
     <div id="loading">
       <h1>San Francisco</h1>
       <div class="bar"><div data-loading-bar></div></div>
-      <div data-loading-label style="font-size:12px; opacity:0.7"></div>
+      <div data-loading-label style="font-size: 12px; opacity: 0.7"></div>
       <form class="start-form" data-start-form>
-        <input data-name-input type="text" maxlength="20" autocomplete="off" spellcheck="false" aria-label="Your name" autofocus />
+        <input
+          data-name-input
+          type="text"
+          maxlength="20"
+          autocomplete="off"
+          spellcheck="false"
+          aria-label="Your name"
+          autofocus
+        />
         <button type="submit" disabled>Start</button>
       </form>
-      <div class="start-hint">pick a name, or roll with the one we gave you</div>
+      <div class="start-hint">
+        pick a name, or roll with the one we gave you
+      </div>
       <div class="controls-hint" aria-label="Essential controls">
         <div class="row"><span class="k">Tab</span><span>toggle UI</span></div>
-        <div class="row"><span class="k">Esc</span><span>release mouse</span></div>
+        <div class="row">
+          <span class="k">Esc</span><span>release mouse</span>
+        </div>
       </div>
     </div>
     <script type="module" src="/src/main.ts"></script>
