@@ -298,13 +298,14 @@ export type GaitTuning = {
   tallFloorSlope: number; doneFloorSlope: number; uprightSoften: number; // gate relax with speed
   maxTorqueScale: number; // multiplies joint torque limit (body power, searchable)
   gallopBlend: number; // 0..1: how far the FOOTFALL shifts from walk-sequence toward a gallop half-bound at high speed
+  boundRewardW: number; // reward a forward BOUND (vertical torso motion while advancing) at gallop — trains the flight phase
 };
 export const DEFAULT_TUNING: GaitTuning = {
   freqBase: 0.78, freqSpan: 0.5, strideBase: 0.68, strideSpan: 1.05,
   actFreqAuth: 0.5, actStrideAuth: 0.5, actKneeAuth: 0.7,
   speedMatchA: 10, progressW: 0.55,
   tallFloorSlope: 0.13, doneFloorSlope: 0.12, uprightSoften: 0.4,
-  maxTorqueScale: 1.0, gallopBlend: 0
+  maxTorqueScale: 1.0, gallopBlend: 0, boundRewardW: 0
 };
 let TUNING: GaitTuning = { ...DEFAULT_TUNING };
 export function setTuning(t: Partial<GaitTuning> | null | undefined): void {
@@ -338,8 +339,10 @@ export function decode(spec: CreatureSpec, action: ArrayLike<number>, state: Cre
     // the front pair ~half a cycle later) — a walk sequence can't gallop no matter
     // how fast it cycles. gallopBlend (0..1) is searched; 0 = pure walk sequence.
     const isFront = spc.hip[2] > 0;
-    const gallopOffset = (isFront ? 3.4 : 0) + (isRight ? 0.5 : 0);
-    const gblend = TUNING.gallopBlend * Math.max(0, Math.min(1, (targetND - 0.45) / 0.4));
+    // TRUE transverse gallop: hind pair fire ~together, front pair ~together, π apart
+    // (the previous 3.4+0.5 offsets made a pace-like vertical bounce, not a gallop).
+    const gallopOffset = isFront ? Math.PI : 0;
+    const gblend = TUNING.gallopBlend * Math.max(0, Math.min(1, (targetND - 0.58) / 0.27)); // ramp ABOVE trot so only the gallop gets the half-bound
     const footfall = spc.phase * (1 - gblend) + gallopOffset * gblend;
     // per-leg phase offset lets the policy re-time each leg -> discover gaits
     const gaitPhase = phase + footfall + action[3 + nLeg + i] * Math.PI;
@@ -351,9 +354,11 @@ export function decode(spec: CreatureSpec, action: ArrayLike<number>, state: Cre
     jointServo(state.torso, state.legs[i].thigh, qAxis(RIGHT, hipSwing), spec.pd.hipKp, spec.pd.hipKd, maxT, t0);
     outTorques.push({ leg: i, seg: 0, t: t0 });
 
-    // knee: flex about thigh's local right during swing (lift foot), straight in stance
+    // knee: flex about thigh's local right during swing (lift foot), straight in stance.
+    // At gallop, drive the HIND legs to extend harder (propulsive push-off).
     const flex = Math.max(0, Math.sin(gaitPhase + spec.cpg.kneeLag));
-    const kneeTarget = spec.cpg.kneeRest + kneeAmp * flex;
+    const kneeGaitBias = gblend * (isFront ? 0 : -0.25); // hind push at gallop
+    const kneeTarget = spec.cpg.kneeRest + kneeAmp * flex + kneeGaitBias;
     const t1: V3 = [0, 0, 0];
     jointServo(state.legs[i].thigh, state.legs[i].shank, qAxis(RIGHT, kneeTarget), spec.pd.kneeKp, spec.pd.kneeKd, maxT, t1);
     outTorques.push({ leg: i, seg: 1, t: t1 });
@@ -425,6 +430,15 @@ export function reward(spec: CreatureSpec, state: CreatureState, action: ArrayLi
   r += w.upright * upright * tall;
   r += w.alive * tall;
   r += w.heading * Math.max(0, facing) * tall; // turn to face the goal
+  // GALLOP SHAPE: reward a FORWARD bound (vertical torso motion while advancing) only
+  // at high commanded speed — the training reward otherwise optimizes a flat shuffle
+  // that speed-matches but never learns the gallop's flight. Gated so the walk stays flat.
+  if (TUNING.boundRewardW > 0) {
+    const gallopGate = Math.max(0, Math.min(1, (spdCmd - 0.5) / 0.3));
+    const bound = Math.min(1, Math.abs(t.vel[1]) / V);
+    const fwdFrac = target > 0.01 ? Math.max(0, Math.min(1, fwdSpeed / target)) : 0;
+    r += w.forward * TUNING.boundRewardW * bound * fwdFrac * gallopGate * gate;
+  }
   r -= w.energy * energy;
   r -= w.spin * spin;
   r *= dt * 60;

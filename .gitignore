@@ -6,3 +6,7 @@ data/city/
 .DS_Store
 *.blend1
 *.mp4
+
+# RL hyperparameter search dev artifacts
+rl/runs/search/
+public/models/horse_policy.*.json
