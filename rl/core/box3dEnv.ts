@@ -41,6 +41,10 @@ export class Box3DEnv {
   state: CreatureState;
   private obsBuf: Float32Array;
   private phase = 0;
+  private goalAngle = 0;
+  private goalTarget = 0;
+  private rng: () => number = Math.random;
+  private stepCount = 0;
   private torques: Torque[] = [];
   private groundY = 0;
   private spawnY: number;
@@ -126,9 +130,12 @@ export class Box3DEnv {
       this.world.setBodyTransform(lb.shank, lb.shankCenter, IDENT);
       this.world.setBodyVelocity(lb.shank, [0, 0, 0], [0, 0, 0]);
     }
-    const a = rng() * Math.PI * 2;
-    this.state.goal[0] = Math.sin(a);
-    this.state.goal[1] = Math.cos(a);
+    this.rng = rng;
+    this.stepCount = 0;
+    this.goalAngle = rng() * Math.PI * 2;
+    this.goalTarget = this.goalAngle;
+    this.state.goal[0] = Math.sin(this.goalAngle);
+    this.state.goal[1] = Math.cos(this.goalAngle);
     this.phase = rng() * Math.PI * 2;
     // settle with the stance HELD by control, so the legs don't fold before the
     // policy takes over. Freeze the CPG phase during the hold (neutral pose).
@@ -144,6 +151,14 @@ export class Box3DEnv {
   }
 
   step(action: ArrayLike<number>): StepResult {
+    // wander the goal DURING the episode so the policy learns to TURN while
+    // staying up (in-world the goal changes; a fixed-goal policy tips on turns)
+    this.stepCount++;
+    if (this.stepCount % 90 === 0) this.goalTarget = this.goalAngle + (this.rng() - 0.5) * 2.6;
+    const da = this.goalTarget - this.goalAngle;
+    this.goalAngle += da > 0.02 ? 0.02 : da < -0.02 ? -0.02 : da; // <= ~0.02 rad/step
+    this.state.goal[0] = Math.sin(this.goalAngle);
+    this.state.goal[1] = Math.cos(this.goalAngle);
     this.phase = advancePhase(this.spec, this.phase, action, this.dt);
     decode(this.spec, action, this.state, this.phase, this.torques);
     this.applyTorques();

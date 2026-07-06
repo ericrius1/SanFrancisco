@@ -27,7 +27,10 @@ import { LIGHT_SCALE } from "../config";
 const PALACE_LAGOON_SEGMENTS = 112;
 const PALACE_LAGOON_RINGS = 18;
 const NEAR_PATCH_SIZE = 560;
-const NEAR_PATCH_SEGMENTS = 110;
+// 72 segments = 7.8 m spacing over the patch. The vertex swell is low-frequency
+// (shortest wavelength ~63 m), so this is still ~8× Nyquist — geometrically
+// identical to the old 110 but ~57% fewer verts + per-vertex swell sines.
+const NEAR_PATCH_SEGMENTS = 72;
 const NEAR_PATCH_MASK_OUTER = 276;
 const NEAR_PATCH_MASK_INNER = 210;
 const NEAR_PATCH_FADE_START_HEIGHT = 5;
@@ -153,7 +156,14 @@ export class Water {
       // shore foam: soft lapping band + speckle. FBM trimmed 3→2 octaves — foam
       // only reads in the shallows/chop, so the third octave never paid for
       // itself on a fragment-bound GPU.
-      const nA = mx_fractal_noise_float(vec3(pxz.mul(0.11), t.mul(0.05)), 2).mul(0.5).add(0.5);
+      // near patch drives the lapping band with real FBM; the full-screen far
+      // sheet uses a cheap sine instead (build-time branch, not a shader If()) —
+      // its foam only reads faintly at distant shorelines, never worth 2 octaves
+      // across the whole horizon.
+      const nA =
+        displace > 0
+          ? mx_fractal_noise_float(vec3(pxz.mul(0.11), t.mul(0.05)), 2).mul(0.5).add(0.5)
+          : sin(pxz.x.mul(0.09).add(pxz.y.mul(0.07)).add(t.mul(0.4))).mul(0.5).add(0.5);
       const lap = sin(t.mul(1.1).add(depth.mul(9)).add(nA.mul(6))).mul(0.5).add(0.5);
       const foamNoise = mx_fractal_noise_float(vec3(pxz.mul(0.9), t.mul(0.12)), 2).mul(0.5).add(0.5);
       // chop-zone whitecaps: scattered speckle so rough patches read from afar

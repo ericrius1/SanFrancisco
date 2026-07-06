@@ -1,5 +1,6 @@
 import * as THREE from "three/webgpu";
 import { BodyType } from "box3d-wasm";
+import { LIGHT_SCALE } from "../../config";
 import type { WorldMap } from "../../world/heightmap";
 import type { Physics } from "../../core/physics";
 import type { PolicyDef } from "../../creatures/policy";
@@ -25,13 +26,20 @@ const PLATFORM_R = 85; // room for the whole herd to roam
 const ROAM = 78;
 const COUNT = 20;
 const SCALE = 2.3; // horse-sized vs the ~1.7m human (real horses tower over people)
+const BRAIN_LINE_GLOW = LIGHT_SCALE * 0.2;
+const BRAIN_NODE_GLOW = LIGHT_SCALE * 0.36;
+const BRAIN_NODE_RADIUS = 0.06;
 
 type Brain = {
+  group: THREE.Group;
   line: THREE.LineSegments;
-  colors: Float32Array;
-  attr: THREE.BufferAttribute;
-  vLayer: Uint8Array; // which activation layer each vertex belongs to
-  vNode: Uint16Array; // which node within that layer
+  nodes: THREE.InstancedMesh;
+  lineColors: Float32Array;
+  lineAttr: THREE.BufferAttribute;
+  lineLayer: Uint8Array; // which activation layer each line vertex belongs to
+  lineNode: Uint16Array; // which node within that layer
+  pointLayer: Uint8Array;
+  pointNode: Uint16Array;
 };
 type HorseMeshes = { group: THREE.Group; parts: THREE.Mesh[]; brain: Brain };
 type Horse = {
@@ -45,10 +53,53 @@ type Horse = {
 };
 
 function partMesh(geo: THREE.BufferGeometry, color: number, rough: number): THREE.Mesh {
-  const mat = new THREE.MeshStandardNodeMaterial({ color, roughness: rough, metalness: 0.02 });
+  const mat = new THREE.MeshStandardMaterial({
+    color,
+    roughness: rough,
+    metalness: 0.03,
+    emissive: new THREE.Color(color).multiplyScalar(0.28),
+    emissiveIntensity: 0.014 * LIGHT_SCALE
+  });
   const m = new THREE.Mesh(geo, mat);
   m.castShadow = true;
+  m.receiveShadow = true;
   return m;
+}
+
+function glowMaterial(color: number, intensity: number, opacity = 1): THREE.MeshBasicMaterial {
+  const mat = new THREE.MeshBasicMaterial({
+    color: new THREE.Color(color).multiplyScalar(intensity),
+    transparent: opacity < 1,
+    opacity,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  });
+  mat.toneMapped = false;
+  return mat;
+}
+
+function writeActivationColor(out: Float32Array, i3: number, activation: number, boost: number): void {
+  const tt = activation < -1 ? 0 : activation > 1 ? 1 : (activation + 1) / 2;
+  const cold = 1 - tt;
+  const hot = tt;
+  const mid = 1 - Math.abs(tt * 2 - 1);
+  const k = 0.34 + tt * tt * 1.25;
+  out[i3] = (0.12 * cold + 1.18 * hot + 0.22 * mid) * k * boost;
+  out[i3 + 1] = (0.95 * cold + 0.8 * hot + 0.28 * mid) * k * boost;
+  out[i3 + 2] = (1.22 * cold + 0.16 * hot + 0.56 * mid) * k * boost;
+}
+
+function setActivationColor(color: THREE.Color, activation: number, boost: number): void {
+  const tt = activation < -1 ? 0 : activation > 1 ? 1 : (activation + 1) / 2;
+  const cold = 1 - tt;
+  const hot = tt;
+  const mid = 1 - Math.abs(tt * 2 - 1);
+  const k = 0.34 + tt * tt * 1.25;
+  color.setRGB(
+    (0.12 * cold + 1.18 * hot + 0.22 * mid) * k * boost,
+    (0.95 * cold + 0.8 * hot + 0.28 * mid) * k * boost,
+    (1.22 * cold + 0.16 * hot + 0.56 * mid) * k * boost
+  );
 }
 
 export class HorseHerd {
@@ -65,6 +116,7 @@ export class HorseHerd {
   #worker: Worker | null = null;
   #training = false;
   #onProgress: ((p: { gen: number; fitness: number; best: number }) => void) | null = null;
+  #nodeColor = new THREE.Color();
 
   constructor(physics: Physics, _map: WorldMap, scene: THREE.Scene) {
     this.#box3d = physics.box3d;
@@ -90,14 +142,32 @@ export class HorseHerd {
       friction: 0.9
     });
     // grass disc + a soft darker rim so the mesa reads
-    const grass = new THREE.Mesh(new THREE.CircleGeometry(PLATFORM_R, 64), new THREE.MeshStandardNodeMaterial({ color: 0x51702f, roughness: 0.95 }));
+    const grass = new THREE.Mesh(
+      new THREE.CircleGeometry(PLATFORM_R, 64),
+      new THREE.MeshStandardMaterial({
+        color: 0x7fae45,
+        roughness: 0.88,
+        emissive: 0x1d3812,
+        emissiveIntensity: 0.04 * LIGHT_SCALE
+      })
+    );
     grass.rotation.x = -Math.PI / 2;
     grass.position.set(PARK.x, PLATFORM_Y + 0.02, PARK.z);
     grass.receiveShadow = true;
     this.#scene.add(grass);
-    const rim = new THREE.Mesh(new THREE.CylinderGeometry(PLATFORM_R, PLATFORM_R * 0.98, 3, 64, 1, true), new THREE.MeshStandardNodeMaterial({ color: 0x3c5222, roughness: 1 }));
+    const rim = new THREE.Mesh(
+      new THREE.CylinderGeometry(PLATFORM_R, PLATFORM_R * 0.98, 3, 64, 1, true),
+      new THREE.MeshStandardMaterial({ color: 0x526f2d, roughness: 0.95, emissive: 0x16220d, emissiveIntensity: 0.025 * LIGHT_SCALE })
+    );
     rim.position.set(PARK.x, PLATFORM_Y - 1.5, PARK.z);
     this.#scene.add(rim);
+    const ring = new THREE.Mesh(
+      new THREE.TorusGeometry(PLATFORM_R * 0.985, 0.2, 8, 128),
+      glowMaterial(0xb5ff76, LIGHT_SCALE * 0.045, 0.58)
+    );
+    ring.rotation.x = Math.PI / 2;
+    ring.position.set(PARK.x, PLATFORM_Y + 0.12, PARK.z);
+    this.#scene.add(ring);
   }
 
   async #load(): Promise<void> {
@@ -113,16 +183,22 @@ export class HorseHerd {
   #buildDressedHorse(): THREE.Mesh[] {
     const s = this.#spec;
     const parts: THREE.Mesh[] = [];
-    const torso = partMesh(new THREE.BoxGeometry(s.torso.half[0] * 2, s.torso.half[1] * 1.9, s.torso.half[2] * 2), 0x6a4a30, 0.8);
+    const torso = partMesh(new THREE.BoxGeometry(s.torso.half[0] * 2, s.torso.half[1] * 1.9, s.torso.half[2] * 2), 0x9a6538, 0.68);
     torso.scale.setScalar(SCALE); // base geometry, scaled to horse size; children (neck/head/…) inherit
     parts.push(torso);
     // neck, head, ears, muzzle, mane, tail — children of the torso mesh so they
     // ride its RL pose. Local axes: x = right, y = up, z = forward (nose).
-    const neck = partMesh(new THREE.CylinderGeometry(0.07, 0.12, 0.44, 8), 0x5e4028, 0.85);
+    const neck = partMesh(new THREE.CylinderGeometry(0.07, 0.12, 0.44, 8), 0x81512e, 0.72);
     neck.position.set(0, 0.24, 0.5); neck.rotation.x = -0.95; torso.add(neck);
-    const head = partMesh(new THREE.BoxGeometry(0.13, 0.16, 0.3), 0x5e4028, 0.85);
+    const head = partMesh(new THREE.BoxGeometry(0.13, 0.16, 0.3), 0x81512e, 0.72);
     head.position.set(0, 0.44, 0.74); head.rotation.x = -0.35; torso.add(head);
-    const muzzle = partMesh(new THREE.BoxGeometry(0.1, 0.1, 0.14), 0x4a3120, 0.85);
+    const eyeMat = glowMaterial(0xfff2a4, LIGHT_SCALE * 0.18, 0.92);
+    for (const sx of [-0.055, 0.055]) {
+      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.017, 8, 6), eyeMat);
+      eye.position.set(sx, 0.035, 0.13);
+      head.add(eye);
+    }
+    const muzzle = partMesh(new THREE.BoxGeometry(0.1, 0.1, 0.14), 0x69442c, 0.78);
     muzzle.position.set(0, 0.4, 0.9); torso.add(muzzle);
     for (const sx of [-0.05, 0.05]) {
       const ear = partMesh(new THREE.ConeGeometry(0.035, 0.1, 6), 0x3b2716, 0.9);
@@ -132,12 +208,21 @@ export class HorseHerd {
     mane.position.set(0, 0.28, 0.52); mane.rotation.x = -0.95; torso.add(mane);
     const tail = partMesh(new THREE.CylinderGeometry(0.015, 0.06, 0.44, 6), 0x241408, 0.95);
     tail.position.set(0, 0.16, -0.56); tail.rotation.x = 0.7; torso.add(tail);
+    const blanket = partMesh(new THREE.BoxGeometry(0.5, 0.035, 0.5), 0x15a6b0, 0.42);
+    blanket.position.set(0, 0.17, -0.03);
+    torso.add(blanket);
+    const saddle = partMesh(new THREE.BoxGeometry(0.36, 0.045, 0.32), 0x2b1a12, 0.58);
+    saddle.position.set(0, 0.205, -0.06);
+    torso.add(saddle);
     for (const leg of s.legs) {
-      const thigh = partMesh(new THREE.CapsuleGeometry(leg.thigh.radius, leg.thigh.halfHeight * 2, 4, 8), 0x5a3d26, 0.85);
+      const thigh = partMesh(new THREE.CapsuleGeometry(leg.thigh.radius, leg.thigh.halfHeight * 2, 4, 8), 0x754727, 0.76);
       thigh.scale.setScalar(SCALE);
       parts.push(thigh);
-      const shank = partMesh(new THREE.CapsuleGeometry(leg.shank.radius, leg.shank.halfHeight * 2, 4, 8), 0x5a3d26, 0.85);
+      const shank = partMesh(new THREE.CapsuleGeometry(leg.shank.radius, leg.shank.halfHeight * 2, 4, 8), 0x754727, 0.76);
       shank.scale.setScalar(SCALE);
+      const sock = partMesh(new THREE.CylinderGeometry(leg.shank.radius * 1.04, leg.shank.radius * 1.08, 0.15, 8), 0xf0dcc0, 0.64);
+      sock.position.set(0, -leg.shank.halfHeight * 0.48, 0);
+      shank.add(sock);
       const hoof = partMesh(new THREE.CylinderGeometry(leg.shank.radius * 1.15, leg.shank.radius * 0.9, 0.06, 8), 0x141010, 0.6);
       hoof.position.set(0, -leg.shank.halfHeight - 0.02, 0); shank.add(hoof);
       parts.push(shank);
@@ -146,45 +231,113 @@ export class HorseHerd {
   }
 
   /**
-   * The activation "brain": layers of nodes as vertical columns, joined by soft
-   * additive lines (each node to its neighbours + a couple in the next layer),
-   * so the live activations drape into glowing sheets like the reference. Fixed
-   * geometry; only per-vertex colour changes each frame.
+   * The activation "brain": layers of nodes as curved 3D columns, joined by
+   * soft additive lines. Fixed geometry; only per-vertex colour changes each frame.
    */
   #buildBrain(sizes: number[]): Brain {
-    const GAP = 0.42; // spacing between layer columns
-    const HEIGHT = 1.05;
+    const GAP = 0.54; // spacing between layer columns
+    const HEIGHT = 1.22;
+    const DEPTH = 0.36;
+    const WOBBLE = 0.08;
     const nL = sizes.length;
-    const nodeY = (li: number, j: number) => (sizes[li] <= 1 ? 0 : (j / (sizes[li] - 1) - 0.5) * HEIGHT);
-    const nodeX = (li: number) => (li - (nL - 1) / 2) * GAP;
-    const pos: number[] = [];
-    const vLayer: number[] = [];
-    const vNode: number[] = [];
-    const addVert = (li: number, j: number) => { pos.push(nodeX(li), nodeY(li, j), 0); vLayer.push(li); vNode.push(j); };
+    const nodePos = (li: number, j: number, out: number[]) => {
+      const t = sizes[li] <= 1 ? 0.5 : j / (sizes[li] - 1);
+      const phase = t * Math.PI * 2.35 + li * 0.85;
+      out.push(
+        (li - (nL - 1) / 2) * GAP + Math.cos(phase) * WOBBLE,
+        (t - 0.5) * HEIGHT,
+        Math.sin(phase) * DEPTH
+      );
+    };
+    const linePos: number[] = [];
+    const pointPos: number[] = [];
+    const lineLayer: number[] = [];
+    const lineNode: number[] = [];
+    const pointLayer: number[] = [];
+    const pointNode: number[] = [];
+    const addVert = (li: number, j: number) => { nodePos(li, j, linePos); lineLayer.push(li); lineNode.push(j); };
+    const addEdge = (aLi: number, aJ: number, bLi: number, bJ: number) => {
+      addVert(aLi, aJ);
+      addVert(bLi, bJ);
+    };
     for (let li = 0; li < nL; li++) {
-      // vertical intra-layer lines (the "dotted sheet" texture)
-      for (let j = 0; j + 1 < sizes[li]; j++) { addVert(li, j); addVert(li, j + 1); }
-      // inter-layer connections: each node to two nodes in the next column
+      for (let j = 0; j < sizes[li]; j++) {
+        nodePos(li, j, pointPos);
+        pointLayer.push(li);
+        pointNode.push(j);
+      }
+      // vertical intra-layer rails plus a few cross-depth braces for volume.
+      for (let j = 0; j + 1 < sizes[li]; j++) addEdge(li, j, li, j + 1);
+      const ribStep = Math.max(3, Math.floor(sizes[li] / 6));
+      for (let j = 0; j + ribStep < sizes[li]; j += ribStep) addEdge(li, j, li, j + ribStep);
+      // inter-layer connections: each node to neighbours in the next curved column.
       if (li + 1 < nL) {
         const n = sizes[li], m = sizes[li + 1];
         for (let j = 0; j < n; j++) {
           const b = m <= 1 ? 0 : Math.round((j * (m - 1)) / Math.max(1, n - 1));
-          addVert(li, j); addVert(li + 1, b);
-          addVert(li, j); addVert(li + 1, Math.min(m - 1, b + 1));
+          addEdge(li, j, li + 1, b);
+          addEdge(li, j, li + 1, Math.min(m - 1, b + 1));
+          if (j % 2 === 0) addEdge(li, j, li + 1, Math.max(0, b - 1));
         }
       }
     }
-    const geo = new THREE.BufferGeometry();
-    const posArr = new Float32Array(pos);
-    const colArr = new Float32Array(posArr.length);
-    geo.setAttribute("position", new THREE.BufferAttribute(posArr, 3));
-    const attr = new THREE.BufferAttribute(colArr, 3);
-    geo.setAttribute("color", attr);
-    const mat = new THREE.LineBasicNodeMaterial({ vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
-    const line = new THREE.LineSegments(geo, mat);
+    const lineGeo = new THREE.BufferGeometry();
+    const linePosArr = new Float32Array(linePos);
+    const lineColArr = new Float32Array(linePosArr.length);
+    lineGeo.setAttribute("position", new THREE.BufferAttribute(linePosArr, 3));
+    const lineAttr = new THREE.BufferAttribute(lineColArr, 3);
+    lineGeo.setAttribute("color", lineAttr);
+    const lineMat = new THREE.LineBasicNodeMaterial({ vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
+    lineMat.opacity = 0.9;
+    lineMat.depthTest = false;
+    lineMat.toneMapped = false;
+    const line = new THREE.LineSegments(lineGeo, lineMat);
     line.frustumCulled = false;
-    line.scale.setScalar(SCALE); // brain lattice sized to the (scaled) horse
-    return { line, colors: colArr, attr, vLayer: Uint8Array.from(vLayer), vNode: Uint16Array.from(vNode) };
+
+    const nodeMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.92,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending
+    });
+    nodeMat.depthTest = false;
+    nodeMat.toneMapped = false;
+    const nodes = new THREE.InstancedMesh(new THREE.SphereGeometry(BRAIN_NODE_RADIUS, 10, 8), nodeMat, pointLayer.length);
+    nodes.instanceMatrix.setUsage(THREE.StaticDrawUsage);
+    nodes.frustumCulled = false;
+    const nodeM = new THREE.Matrix4();
+    const nodePosV = new THREE.Vector3();
+    const nodeQuat = new THREE.Quaternion();
+    const nodeScale = new THREE.Vector3();
+    const seedColor = new THREE.Color();
+    for (let i = 0; i < pointLayer.length; i++) {
+      const i3 = i * 3;
+      nodePosV.set(pointPos[i3], pointPos[i3 + 1], pointPos[i3 + 2]);
+      const layerBoost = pointLayer[i] === 0 || pointLayer[i] === nL - 1 ? 1.12 : 1;
+      nodeM.compose(nodePosV, nodeQuat, nodeScale.setScalar(layerBoost));
+      nodes.setMatrixAt(i, nodeM);
+      seedColor.setRGB(0.35, 0.85, 1.1);
+      nodes.setColorAt(i, seedColor);
+    }
+    nodes.instanceMatrix.needsUpdate = true;
+    if (nodes.instanceColor) nodes.instanceColor.needsUpdate = true;
+
+    const group = new THREE.Group();
+    group.add(line, nodes);
+    group.scale.setScalar(SCALE); // brain lattice sized to the (scaled) horse
+    return {
+      group,
+      line,
+      nodes,
+      lineColors: lineColArr,
+      lineAttr,
+      lineLayer: Uint8Array.from(lineLayer),
+      lineNode: Uint16Array.from(lineNode),
+      pointLayer: Uint8Array.from(pointLayer),
+      pointNode: Uint16Array.from(pointNode)
+    };
   }
 
   #buildMeshes(sizes: number[]): HorseMeshes {
@@ -193,7 +346,7 @@ export class HorseHerd {
     for (const p of parts) group.add(p);
     const brain = this.#buildBrain(sizes);
     this.#scene.add(group);
-    this.#scene.add(brain.line);
+    this.#scene.add(brain.group);
     return { group, parts, brain };
   }
 
@@ -320,20 +473,18 @@ export class HorseHerd {
   #updateBrain(h: Horse): void {
     const b = h.m.brain;
     const layers = h.rag.layers();
-    const c = b.colors;
-    for (let v = 0; v < b.vLayer.length; v++) {
-      const a = layers[b.vLayer[v]][b.vNode[v]];
-      const tt = a < -1 ? 0 : a > 1 ? 1 : (a + 1) / 2; // tanh -> 0..1
-      const k = 0.06 + tt * tt * 0.9; // dim resting units, bloom the firing ones
-      const i3 = v * 3;
-      c[i3] = (0.45 + tt * 0.45) * k;
-      c[i3 + 1] = (0.12 + tt * 0.35) * k;
-      c[i3 + 2] = (0.6 + tt * 0.4) * k;
+    for (let v = 0; v < b.lineLayer.length; v++) {
+      writeActivationColor(b.lineColors, v * 3, layers[b.lineLayer[v]][b.lineNode[v]], BRAIN_LINE_GLOW);
     }
-    b.attr.needsUpdate = true;
-    // float above the horse, billboard to the camera on yaw
-    const yaw = Math.atan2(this.#camPos.x - h.wx, this.#camPos.z - h.wz);
-    b.line.position.set(h.wx, h.wy + 1.5 * SCALE, h.wz);
-    b.line.rotation.set(0, yaw, 0);
+    for (let v = 0; v < b.pointLayer.length; v++) {
+      setActivationColor(this.#nodeColor, layers[b.pointLayer[v]][b.pointNode[v]], BRAIN_NODE_GLOW);
+      b.nodes.setColorAt(v, this.#nodeColor);
+    }
+    b.lineAttr.needsUpdate = true;
+    if (b.nodes.instanceColor) b.nodes.instanceColor.needsUpdate = true;
+    // Float above the horse with a camera-facing bias, but keep an angled yaw/pitch so the depth reads.
+    const yaw = Math.atan2(this.#camPos.x - h.wx, this.#camPos.z - h.wz) + 0.38;
+    b.group.position.set(h.wx, h.wy + 1.62 * SCALE, h.wz);
+    b.group.rotation.set(-0.16, yaw, Math.sin(h.wx * 0.013 + h.wz * 0.017) * 0.04);
   }
 }

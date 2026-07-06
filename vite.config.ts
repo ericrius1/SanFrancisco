@@ -41,6 +41,9 @@ export default defineConfig({
     exclude: ["box3d-wasm"],
     include: ["camera-controls"]
   },
+  worker: {
+    format: "es"
+  },
   server: {
     port: 5179,
     // same-origin app services in every environment: dev proxies to the local
