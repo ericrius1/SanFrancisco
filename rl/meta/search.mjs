@@ -30,10 +30,10 @@ const SPACE = {
   actFreqAuth: [0.25, 0.8], actStrideAuth: [0.25, 0.9], actKneeAuth: [0.4, 1.0],
   speedMatchA: [4, 14], progressW: [0.3, 1.1],
   tallFloorSlope: [0.05, 0.28], doneFloorSlope: [0.05, 0.24], uprightSoften: [0.15, 0.6],
-  maxTorqueScale: [0.85, 1.7], gallopBlend: [0, 1]
+  maxTorqueScale: [0.85, 1.7], gallopBlend: [0, 1], boundRewardW: [0, 0.6]
 };
 const KEYS = Object.keys(SPACE);
-const DEFAULT = { freqBase: 0.78, freqSpan: 0.5, strideBase: 0.68, strideSpan: 1.05, actFreqAuth: 0.5, actStrideAuth: 0.5, actKneeAuth: 0.7, speedMatchA: 10, progressW: 0.55, tallFloorSlope: 0.13, doneFloorSlope: 0.12, uprightSoften: 0.4, maxTorqueScale: 1.0, gallopBlend: 0 };
+const DEFAULT = { freqBase: 0.78, freqSpan: 0.5, strideBase: 0.68, strideSpan: 1.05, actFreqAuth: 0.5, actStrideAuth: 0.5, actKneeAuth: 0.7, speedMatchA: 10, progressW: 0.55, tallFloorSlope: 0.13, doneFloorSlope: 0.12, uprightSoften: 0.4, maxTorqueScale: 1.0, gallopBlend: 0, boundRewardW: 0 };
 
 const clamp = (v, [lo, hi]) => Math.max(lo, Math.min(hi, v));
 const lerp = ([lo, hi], t) => lo + (hi - lo) * t;

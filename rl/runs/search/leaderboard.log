@@ -1,29 +1,27 @@
 
 === ROUND 0  (pop 6, 100 gens each, 5 parallel) ===
-   85.4  gallop[q82 spd0.42 str1.65 bnd0.34] walk[q83 spd0.27] turn100
-   83.4  gallop[q77 spd0.43 str1.43 bnd0.13] walk[q84 spd0.30] turn100
-   82.1  gallop[q88 spd0.62 str1.26 bnd0.12] walk[q57 spd0.36] turn100
-   76.9  gallop[q75 spd0.53 str0.81 bnd0.07] walk[q61 spd0.35] turn98
-   69.4  gallop[q84 spd0.45 str1.31 bnd0.26] walk[q73 spd0.28] turn92
-   45.7  gallop[q88 spd0.60 str1.29 bnd0.14] walk[q15 spd0.25] turn0
-  ** NEW BEST 85.4  {"freqBase":0.78,"freqSpan":0.5,"strideBase":0.68,"strideSpan":1.05,"actFreqAuth":0.5,"actStrideAuth":0.5,"actKneeAuth":0.7,"speedMatchA":10,"progressW":0.55,"tallFloorSlope":0.13,"doneFloorSlope":0.12,"uprightSoften":0.4,"maxTorqueScale":1}
-  (keep gallop specialist: gallopQ 88 spd 0.60)
+   88.8  gallop[q91 spd0.60 str1.19 bnd0.18] walk[q76 spd0.33] turn100
+   85.8  gallop[q87 spd0.50 str1.75 bnd0.27] walk[q81 spd0.28] turn98
+   81.3  gallop[q78 spd0.41 str1.21 bnd0.16] walk[q78 spd0.29] turn100
+   62.2  gallop[q72 spd0.27 str2.18 bnd0.37] walk[q70 spd0.23] turn0
+   57.5  gallop[q69 spd0.28 str1.76 bnd0.66] walk[q10 spd0.16] turn100
+    8.2  gallop[q11 spd0.10 str2.37 bnd0.71] walk[q1 spd0.01] turn0
+  ** NEW BEST 88.8  {"freqBase":0.7909,"freqSpan":0.5198,"strideBase":0.7459,"strideSpan":1.5651,"actFreqAuth":0.7188,"actStrideAuth":0.3095,"actKneeAuth":0.7839,"speedMatchA":5.4003,"progressW":0.6879,"tallFloorSlope":0.0888,"doneFloorSlope":0.2372,"uprightSoften":0.4609,"maxTorqueScale":1.1028,"gallopBlend":0,"boundRewardW":0}
 
 === ROUND 1  (pop 6, 100 gens each, 5 parallel) ===
-   86.5  gallop[q88 spd0.52 str1.18 bnd0.21] walk[q74 spd0.36] turn99
-   85.4  gallop[q82 spd0.42 str1.65 bnd0.34] walk[q83 spd0.27] turn100
-   83.7  gallop[q83 spd0.44 str1.40 bnd0.41] walk[q76 spd0.32] turn100
-   83.4  gallop[q77 spd0.43 str1.43 bnd0.13] walk[q84 spd0.30] turn100
-   71.1  gallop[q80 spd0.43 str1.84 bnd0.60] walk[q69 spd0.37] turn0
-   45.7  gallop[q88 spd0.60 str1.29 bnd0.14] walk[q15 spd0.25] turn0
-  ** NEW BEST 86.5  {"freqBase":0.7909,"freqSpan":0.5198,"strideBase":0.7459,"strideSpan":1.5651,"actFreqAuth":0.7188,"actStrideAuth":0.3095,"actKneeAuth":0.7839,"speedMatchA":5.4003,"progressW":0.6879,"tallFloorSlope":0.0888,"doneFloorSlope":0.2372,"uprightSoften":0.4609,"maxTorqueScale":1.1028}
+   88.8  gallop[q91 spd0.60 str1.19 bnd0.18] walk[q76 spd0.33] turn100
+   85.8  gallop[q87 spd0.50 str1.75 bnd0.27] walk[q81 spd0.28] turn98
+   82.6  gallop[q83 spd0.53 str1.16 bnd0.12] walk[q70 spd0.40] turn100
+   78.3  gallop[q76 spd0.46 str1.22 bnd0.09] walk[q64 spd0.36] turn100
+   74.6  gallop[q84 spd0.45 str1.46 bnd0.21] walk[q80 spd0.31] turn0
+   66.6  gallop[q83 spd0.43 str1.25 bnd0.31] walk[q14 spd0.21] turn100
 
 === ROUND 2  (pop 6, 100 gens each, 5 parallel) ===
-   86.5  gallop[q88 spd0.52 str1.18 bnd0.21] walk[q74 spd0.36] turn99
-   85.4  gallop[q82 spd0.42 str1.65 bnd0.34] walk[q83 spd0.27] turn100
-   79.9  gallop[q75 spd0.55 str0.79 bnd0.05] walk[q69 spd0.39] turn99
-   75.9  gallop[q82 spd0.46 str0.97 bnd0.17] walk[q84 spd0.30] turn0
-   67.1  gallop[q84 spd0.46 str1.83 bnd0.21] walk[q15 spd0.28] turn88
-   38.5  gallop[q10 spd0.04 str2.81 bnd0.77] walk[q82 spd0.22] turn0
+   88.8  gallop[q91 spd0.60 str1.19 bnd0.18] walk[q76 spd0.33] turn100
+   87.7  gallop[q89 spd0.59 str1.28 bnd0.16] walk[q76 spd0.31] turn98
+   85.8  gallop[q87 spd0.50 str1.75 bnd0.27] walk[q81 spd0.28] turn98
+   81.7  gallop[q72 spd0.32 str2.14 bnd0.56] walk[q90 spd0.23] turn99
+   70.6  gallop[q72 spd0.27 str1.40 bnd0.50] walk[q87 spd0.23] turn0
+   53.0  gallop[q13 spd0.17 str1.91 bnd0.71] walk[q80 spd0.26] turn99
 
 === ROUND 3  (pop 6, 100 gens each, 5 parallel) ===

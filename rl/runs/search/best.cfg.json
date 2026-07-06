@@ -11,5 +11,7 @@
  "tallFloorSlope": 0.0888,
  "doneFloorSlope": 0.2372,
  "uprightSoften": 0.4609,
- "maxTorqueScale": 1.1028
+ "maxTorqueScale": 1.1028,
+ "gallopBlend": 0,
+ "boundRewardW": 0
 }
