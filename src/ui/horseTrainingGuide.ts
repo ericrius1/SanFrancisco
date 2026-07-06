@@ -296,7 +296,7 @@ const BODY = `
     <p class="htr-proc-by">Built by <b>Claude Opus 4.8</b> (Anthropic) over one long autonomous session — designing the RL kit, writing the trainer and evaluators, running hundreds of training runs, watching the results in-world, and iterating.</p>
 
     <h4>Where it started</h4>
-    <p>The idea began as an RL creature with a neural-network "voice." First a hummingbird, then an eagle — both too hard — and it settled on a <b>rideable horse</b> that roams this park. The key decision: instead of training in JAX or MuJoCo on a GPU, train directly against the game's <b>own physics engine</b> (box3d-wasm) headless in Node, using gradient-free <b>Evolution Strategies</b>. Train-time physics equals run-time physics, so there is zero sim-to-real gap — the policy you see here is the exact one that was trained.</p>
+    <p>The goal: a <b>rideable horse</b> that walks, trots and gallops around this park, driven entirely by a learned neural network. The key decision: instead of training in JAX or MuJoCo on a GPU, train directly against the game's <b>own physics engine</b> (box3d-wasm) headless in Node, using gradient-free <b>Evolution Strategies</b>. Train-time physics equals run-time physics, so there is zero sim-to-real gap — the policy you see here is the exact one that was trained.</p>
 
     <h4>What I learned along the way</h4>
     <ul class="htr-proc-list">
