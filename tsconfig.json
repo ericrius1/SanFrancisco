@@ -8,6 +8,7 @@
     "noUnusedLocals": true,
     "skipLibCheck": true,
     "isolatedModules": true,
+    "allowImportingTsExtensions": true,
     "useDefineForClassFields": true,
     "noEmit": true,
     "types": ["vite/client"]

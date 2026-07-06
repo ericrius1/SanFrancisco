@@ -46,7 +46,23 @@ const box3d = await createBox3D();
 const env = new Box3DEnv(box3d, spec);
 const policy = Policy.random(sizes, rng32(1), creatureName);
 
-const es = new ES({ dim, pairs: PAIRS, sigma: 0.08, lr: 0.03, weightDecay: 0.002, sigmaDecay: 0.995, seed: 2, init: policy.getParams() });
+// --warm continues from the currently-deployed policy (refine a good gait
+// under a new reward instead of relearning to stand from scratch)
+if (process.argv.includes("--warm")) {
+  try {
+    const def = JSON.parse(await import("node:fs").then((m) => m.readFileSync(`public/models/${creatureName}_policy.json`, "utf8")));
+    if (def.weights?.length === dim) {
+      policy.setParams(Float32Array.from(def.weights));
+      console.log(`[train] warm-started from public/models/${creatureName}_policy.json`);
+    } else console.log(`[train] warm start skipped: param mismatch (${def.weights?.length} vs ${dim})`);
+  } catch (e) {
+    console.log("[train] warm start failed:", (e as Error).message);
+  }
+}
+
+const SIGMA = arg("sigma", 0.08);
+const SIGMA_DECAY = arg("sigmaDecay", 0.996);
+const es = new ES({ dim, pairs: PAIRS, sigma: SIGMA, lr: 0.03, weightDecay: 0.002, sigmaDecay: SIGMA_DECAY, seed: 2, init: policy.getParams() });
 
 // same episode seeds for every member within a generation -> low-variance ranking
 function fitness(params: Float32Array, tag: { gen: number }): number {

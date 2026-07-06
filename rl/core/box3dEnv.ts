@@ -13,6 +13,7 @@ import {
   observe,
   reward,
   obsDim,
+  actDim,
   type CreatureSpec,
   type CreatureState,
   type Link,
@@ -114,7 +115,7 @@ export class Box3DEnv {
   private zeroAction: Float32Array = new Float32Array(0);
 
   reset(rng: () => number): Float32Array {
-    if (this.zeroAction.length === 0) this.zeroAction = new Float32Array(this.state.legs.length + 6);
+    if (this.zeroAction.length === 0) this.zeroAction = new Float32Array(actDim(this.spec));
     this.world.setBodyTransform(this.torso, [0, this.spawnY, 0], IDENT);
     this.world.setBodyVelocity(this.torso, [0, 0, 0], [0, 0, 0]);
     for (const lb of this.legBodies) {

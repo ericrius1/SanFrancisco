@@ -77,8 +77,8 @@ export type CreatureSpec = {
 function leg(hip: V3, phase: number): LegSpec {
   return {
     hip,
-    thigh: { halfHeight: 0.13, radius: 0.085, density: 260 },
-    shank: { halfHeight: 0.13, radius: 0.07, density: 240 },
+    thigh: { halfHeight: 0.16, radius: 0.09, density: 250 }, // longer legs: taller stance, room to bound
+    shank: { halfHeight: 0.16, radius: 0.075, density: 230 },
     phase
   };
 }
@@ -91,20 +91,18 @@ export const HORSE: CreatureSpec = {
     leg([-0.2, -0.07, -0.42], 0), // HL
     leg([0.2, -0.07, -0.42], Math.PI) // HR
   ],
-  standHeight: 0.6,
-  // straight legs bear load (a bent knee under compression buckles); the knee
-  // only flexes during the swing half of the cycle to lift the foot.
-  // kneeLag ~pi/2: the foot lifts while the leg swings forward and plants to
-  // push back through stance, so the cycle makes net forward thrust.
-  cpg: { baseFreq: 1.4, hipAmp: 0.38, kneeAmp: 0.6, kneeRest: 0.04, kneeLag: 1.57 },
-  // stiff, load-bearing "muscles" via a quaternion servo. Thin legs on ball
-  // joints buckle under body weight, so the gains are high enough to hold the
-  // legs as stiff columns (near-critically damped for the tiny leg inertia).
-  pd: { hipKp: 48, hipKd: 2.2, latKp: 24, latKd: 1.5, kneeKp: 48, kneeKd: 2.2, maxTorque: 48, reaction: 0.2 },
-  // travelling must beat standing still: forward progress dominates, the alive
-  // bonus is small (just enough to discourage suicidal lunges).
-  reward: { forward: 3.5, upright: 0.15, alive: 0.04, height: 0.3, energy: 0.002, spin: 0.03, heading: 0.5 },
-  fall: { minUp: 0.4, minHeight: 0.3 }
+  standHeight: 0.72,
+  // faster base rhythm + bigger stride so a run/gallop is reachable; the policy
+  // widens or slows it from here. kneeLag ~pi/2: foot lifts on the forward swing,
+  // plants to push back through stance -> net thrust.
+  cpg: { baseFreq: 2.0, hipAmp: 0.5, kneeAmp: 0.8, kneeRest: 0.04, kneeLag: 1.57 },
+  // strong, snappy "muscles" (quaternion servo) so the legs can drive a dynamic
+  // gait, not just hold a slow shuffle.
+  pd: { hipKp: 72, hipKd: 3.0, latKp: 26, latKd: 1.6, kneeKp: 72, kneeKd: 3.0, maxTorque: 95, reaction: 0.2 },
+  // RUN: forward speed dominates, staying TALL is strongly rewarded (kills the
+  // crouch-shuffle), alive bonus tiny. Speed only pays while upright (in reward()).
+  reward: { forward: 5.5, upright: 0.25, alive: 0.02, height: 0.35, energy: 0.0012, spin: 0.03, heading: 0.4 },
+  fall: { minUp: 0.4, minHeight: 0.32 }
 };
 
 function dogLeg(hip: V3, phase: number): LegSpec {
@@ -136,9 +134,14 @@ export const DOG: CreatureSpec = {
 export function obsDim(spec: CreatureSpec): number {
   return 3 + 2 + 3 + 3 + 1 + 2 + spec.legs.length * 2;
 }
-/** action = freqMod(1) hipAmpMod(1) kneeAmpMod(1) perLegHipBias(nLeg) turn(1) pitchGain(1) rollGain(1). */
+/**
+ * action = freqMod(1) hipAmpMod(1) kneeAmpMod(1) perLegHipBias(nLeg)
+ *          perLegPhase(nLeg) turn(1) pitchGain(1) rollGain(1).
+ * The per-leg phase offsets are what let the policy discover a gait (walk vs
+ * trot vs gallop) instead of being locked to the hand-set walk sequence.
+ */
 export function actDim(spec: CreatureSpec): number {
-  return 1 + 1 + 1 + spec.legs.length + 1 + 1 + 1;
+  return 3 + 2 * spec.legs.length + 3;
 }
 
 // ---------------------------------------------------------------- link state
@@ -238,10 +241,10 @@ function jointServo(parent: Link, child: Link, qTargetLocal: Quat, kp: number, k
 
 export function decode(spec: CreatureSpec, action: ArrayLike<number>, state: CreatureState, phase: number, outTorques: Torque[]): void {
   const nLeg = spec.legs.length;
-  const hipAmp = spec.cpg.hipAmp * (1 + 0.5 * action[1]);
-  const kneeAmp = spec.cpg.kneeAmp * (1 + 0.5 * action[2]);
-  const turn = action[nLeg + 3];
-  const pitchGain = action[nLeg + 4];
+  const hipAmp = spec.cpg.hipAmp * (1 + action[1]); // wider stride range for running
+  const kneeAmp = spec.cpg.kneeAmp * (1 + action[2]);
+  const turn = action[3 + 2 * nLeg];
+  const pitchGain = action[4 + 2 * nLeg];
 
   qRot(state.torso.quat, [0, 1, 0], _up);
   const tipFwd = _up[2]; // + = nose down
@@ -251,7 +254,8 @@ export function decode(spec: CreatureSpec, action: ArrayLike<number>, state: Cre
     const spc = spec.legs[i];
     const isRight = spc.hip[0] > 0;
     const bias = 0.5 * action[3 + i] + (isRight ? -turn : turn) * 0.4;
-    const gaitPhase = phase + spc.phase;
+    // per-leg phase offset lets the policy re-time each leg -> discover gaits
+    const gaitPhase = phase + spc.phase + action[3 + nLeg + i] * Math.PI;
 
     // hip: swing the thigh fore-aft (about local right); zero roll/yaw target
     // keeps the leg in the sagittal plane (no splay). Pitch-balance leans all legs.
@@ -270,7 +274,9 @@ export function decode(spec: CreatureSpec, action: ArrayLike<number>, state: Cre
 }
 
 export function advancePhase(spec: CreatureSpec, phase: number, action: ArrayLike<number>, dt: number): number {
-  const f = spec.cpg.baseFreq * (1 + 0.4 * action[0]);
+  // exponential mapping: action[0] in [-1,1] -> ~0.37x..2.7x the base frequency,
+  // so the policy can slow to a walk or wind up to a gallop.
+  const f = spec.cpg.baseFreq * Math.exp(action[0]);
   let p = phase + 2 * Math.PI * f * dt;
   if (p > 2 * Math.PI) p -= 2 * Math.PI;
   return p;
@@ -290,18 +296,28 @@ export function reward(spec: CreatureSpec, state: CreatureState, action: ArrayLi
   let energy = 0;
   for (let i = 0; i < action.length; i++) energy += action[i] * action[i];
   const spin = t.angVel[0] * t.angVel[0] + t.angVel[1] * t.angVel[1] + t.angVel[2] * t.angVel[2];
-  const heightErr = Math.abs(height - spec.standHeight);
+  // reward staying TALL: full credit at/above standing height, scaled when
+  // crouched, NO penalty for bouncing higher (so a gallop's float is fine)
+  const tall = height >= spec.standHeight ? 1 : Math.max(0, height / spec.standHeight);
 
+  // clamp so ES can't reward-hack a numerical blow-up; 6 m/s is a full gallop
+  const speed = fwdSpeed < -1.5 ? -1.5 : fwdSpeed > 6 ? 6 : fwdSpeed;
   const w = spec.reward;
   let r = 0;
-  r += w.forward * fwdSpeed;
+  // the ONLY way to bank big reward is to run while UPRIGHT and TALL — this is
+  // what forces a real running gait instead of "stand tall" or "crawl low".
+  const gate = Math.max(0, upright) * (0.3 + 0.7 * tall);
+  r += w.forward * speed * gate;
+  // super-linear bonus above walking pace: the faster it runs, the better —
+  // this is what pulls the gait off the "stable trot" plateau toward a gallop.
+  r += w.forward * 1.1 * Math.max(0, speed - 0.7) * gate;
   r += w.upright * upright;
   r += w.alive;
   r += w.heading * Math.max(0, facing);
-  r -= w.height * heightErr;
+  r += w.height * tall; // small anti-crouch floor so it doesn't sink when slow
   r -= w.energy * energy;
   r -= w.spin * spin;
   r *= dt * 60;
-  if (done) r -= 2;
+  if (done) r -= 3;
   return { r, done };
 }

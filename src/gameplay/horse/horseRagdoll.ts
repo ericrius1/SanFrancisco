@@ -1,10 +1,11 @@
 import { BodyType } from "box3d-wasm";
-import { Policy } from "../../creatures/policy";
+import { Policy, type PolicyDef } from "../../creatures/policy";
 import {
   advancePhase,
   decode,
   observe,
   obsDim,
+  actDim,
   type CreatureSpec,
   type CreatureState,
   type Link,
@@ -43,12 +44,12 @@ export class HorseRagdoll {
   private torques: Torque[] = [];
   private acc = 0;
   private spawnY: number;
-  /** last policy hidden activations, for the over-head brain bubble. */
-  hidden: Float32Array = new Float32Array(0);
 
-  constructor(box3d: any, spec: CreatureSpec, policy: Policy) {
+  constructor(box3d: any, spec: CreatureSpec, policyDef: PolicyDef) {
     this.spec = spec;
-    this.policy = policy;
+    // its OWN policy instance — sharing one across horses would make every
+    // creature's activation curtain show the same (last-stepped) numbers.
+    this.policy = new Policy(policyDef);
     this.world = box3d.createWorld([0, -9.81, 0]);
     this.world.createBox({ type: BodyType.Static, position: [0, -0.5, 0], halfExtents: [40, 0.5, 40], friction: 1.0 });
 
@@ -74,6 +75,7 @@ export class HorseRagdoll {
     this.state = { torso: mkLink(), legs: spec.legs.map(() => ({ thigh: mkLink(), shank: mkLink() }) as LegLinks), groundY: 0, goal: [0, 1] };
     this.obsBuf = new Float32Array(obsDim(spec));
     this.syncState();
+    this.settle(14); // stand up cleanly before the policy takes over
   }
 
   setGoal(dx: number, dz: number): void {
@@ -100,10 +102,16 @@ export class HorseRagdoll {
   }
 
   private stepOnce(): void {
-    const { action, hidden } = this.policy.forward(this.obsBuf);
-    this.hidden = hidden;
+    const { action } = this.policy.forward(this.obsBuf);
     this.phase = advancePhase(this.spec, this.phase, action, SIM_DT);
     decode(this.spec, action, this.state, this.phase, this.torques);
+    this.applyTorques();
+    this.world.step(SIM_DT, SUBSTEPS);
+    this.syncState();
+    observe(this.spec, this.state, this.phase, this.obsBuf);
+  }
+
+  private applyTorques(): void {
     const R = this.spec.pd.reaction;
     for (const q of this.torques) {
       const lb = this.legBodies[q.leg];
@@ -114,8 +122,18 @@ export class HorseRagdoll {
       this.world.applyAngularImpulse(parent, [-tx * R, -ty * R, -tz * R]);
     }
     for (const h of this.all) this.world.setBodyAwake(h, true);
-    this.world.step(SIM_DT, SUBSTEPS);
-    this.syncState();
+  }
+
+  private zeroAction = new Float32Array(0);
+  /** Hold a neutral stance under control for a few steps so it settles upright. */
+  private settle(steps: number): void {
+    if (this.zeroAction.length === 0) this.zeroAction = new Float32Array(actDim(this.spec));
+    for (let i = 0; i < steps; i++) {
+      decode(this.spec, this.zeroAction, this.state, this.phase, this.torques);
+      this.applyTorques();
+      this.world.step(SIM_DT, SUBSTEPS);
+      this.syncState();
+    }
     observe(this.spec, this.state, this.phase, this.obsBuf);
   }
 
@@ -133,13 +151,18 @@ export class HorseRagdoll {
   /** Torso pose in the private sim (caller adds the roaming world offset). */
   get torsoLink(): Link { return this.state.torso; }
   get legLinks(): LegLinks[] { return this.state.legs; }
+  /** Live activations, layer by layer: [obs, hidden1, hidden2, ..., action]. */
+  layers(): Float32Array[] { return [this.obsBuf, ...this.policy.layerOut]; }
+  /** Hot-swap the brain (live training streams new weights). */
+  setPolicy(def: PolicyDef): void { this.policy = new Policy(def); }
   /** Standing height reference (sim-space torso Y when upright). */
   get standY(): number { return this.spawnY; }
   /** Is it still on its feet? (fell if torso up-axis tips or it sinks) */
   get fallen(): boolean {
     const q = this.state.torso.quat;
     const upY = 1 - 2 * (q[0] * q[0] + q[2] * q[2]); // world-up . body-up
-    return upY < 0.4 || this.state.torso.pos[1] < this.spawnY * 0.5;
+    // lenient so a bouncing gallop (brief low dips) isn't falsely reset
+    return upY < 0.3 || this.state.torso.pos[1] < this.spawnY * 0.34;
   }
 
   /** Reset to a clean stand (after a fall). */
@@ -155,6 +178,7 @@ export class HorseRagdoll {
     this.phase = 0;
     this.acc = 0;
     this.syncState();
+    this.settle(10); // re-settle upright after a stumble instead of flailing
   }
 
   dispose(): void {

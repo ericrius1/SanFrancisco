@@ -1,32 +1,46 @@
 import * as THREE from "three/webgpu";
-import { texture } from "three/tsl";
+import { BodyType } from "box3d-wasm";
 import type { WorldMap } from "../../world/heightmap";
 import type { Physics } from "../../core/physics";
-import { Policy, type PolicyDef } from "../../creatures/policy";
-import { HORSE, qRot, type CreatureSpec, type Link } from "../../creatures/quadruped";
+import type { PolicyDef } from "../../creatures/policy";
+import { HORSE, type CreatureSpec, type Link } from "../../creatures/quadruped";
 import { HorseRagdoll } from "./horseRagdoll";
 
 /**
- * A little herd of RL horses roaming Golden Gate Park. Each is a live box3d
- * ragdoll (its own private world) running the trained policy every frame, drawn
- * as stylized capsules that track the ragdoll exactly — so what you see is the
- * neural net physically walking the body — and topped with a bubble that shows
- * its hidden activations firing, like the creature in the tweet.
+ * A herd of RL horses roaming a raised grass platform in Golden Gate Park. Each
+ * is a live box3d ragdoll (its own private world) running the trained policy
+ * every frame, drawn as a dressed-up capsule horse that tracks the ragdoll — so
+ * what you see is the neural net physically walking the body — and wearing its
+ * live network activations as a glowing lattice of connected nodes overhead,
+ * like the creature in the source reference.
+ *
+ * The terrain here is a steep, flora-choked hill you clip through, so instead of
+ * fighting it we float a flat platform above it (visual disc + one static
+ * collider) and let the horses AND the rider live on that.
  */
 
-const PARK = { x: -3300, z: 1900 }; // a meadow in Golden Gate Park
-const ROAM = 75; // metres they wander from the meadow centre
-const COUNT = 5;
+const PARK = { x: -5250, z: 2380 }; // west-end meadow in Golden Gate Park
+const PLATFORM_Y = 35; // clears the ~34 m hilltop below
+const PLATFORM_R = 85; // room for the whole herd to roam
+const ROAM = 78;
+const COUNT = 20;
 
-type HorseMeshes = { group: THREE.Group; parts: THREE.Mesh[]; bubble: THREE.Sprite; canvas: HTMLCanvasElement; tex: THREE.CanvasTexture };
+type Brain = {
+  line: THREE.LineSegments;
+  colors: Float32Array;
+  attr: THREE.BufferAttribute;
+  vLayer: Uint8Array; // which activation layer each vertex belongs to
+  vNode: Uint16Array; // which node within that layer
+};
+type HorseMeshes = { group: THREE.Group; parts: THREE.Mesh[]; brain: Brain };
 type Horse = {
   rag: HorseRagdoll;
   m: HorseMeshes;
-  anchor: { x: number; z: number }; // world XZ the sim origin maps to
+  anchor: { x: number; z: number };
   wanderYaw: number;
   wanderTimer: number;
-  wx: number; wy: number; wz: number; // last world torso position (for mount picking / seat)
-  wq: [number, number, number, number]; // last world torso orientation
+  wx: number; wy: number; wz: number;
+  wq: [number, number, number, number];
 };
 
 function partMesh(geo: THREE.BufferGeometry, color: number, rough: number): THREE.Mesh {
@@ -38,27 +52,56 @@ function partMesh(geo: THREE.BufferGeometry, color: number, rough: number): THRE
 
 export class HorseHerd {
   #box3d: any;
-  #map: WorldMap;
+  #world: any;
   #scene: THREE.Scene;
   #spec: CreatureSpec = HORSE;
-  #policy: Policy | null = null;
+  #policyDef: PolicyDef | null = null;
   #horses: Horse[] = [];
   #ready = false;
-  #nose: [number, number, number] = [0, 0, 0];
-  #ridden = -1; // index of the horse the player is riding, or -1
-  #steerYaw = 0; // camera yaw the rider is steering the mount toward
+  #ridden = -1;
+  #steerYaw = 0;
+  #camPos = new THREE.Vector3();
+  #worker: Worker | null = null;
+  #training = false;
+  #onProgress: ((p: { gen: number; fitness: number; best: number }) => void) | null = null;
 
-  constructor(physics: Physics, map: WorldMap, scene: THREE.Scene) {
+  constructor(physics: Physics, _map: WorldMap, scene: THREE.Scene) {
     this.#box3d = physics.box3d;
-    this.#map = map;
+    this.#world = physics.world;
     this.#scene = scene;
+    this.#buildPlatform();
     void this.#load();
+  }
+
+  get platformY(): number { return PLATFORM_Y; }
+  get center(): { x: number; z: number } { return PARK; }
+  /** Is (x,z) over the horse platform? (for placing the rider on it) */
+  onPlatform(x: number, z: number): boolean {
+    return (x - PARK.x) * (x - PARK.x) + (z - PARK.z) * (z - PARK.z) < PLATFORM_R * PLATFORM_R;
+  }
+
+  #buildPlatform(): void {
+    // one static collider so the rider stands on the flat top
+    this.#world.createBox({
+      type: BodyType.Static,
+      position: [PARK.x, PLATFORM_Y - 1.5, PARK.z],
+      halfExtents: [PLATFORM_R, 1.5, PLATFORM_R],
+      friction: 0.9
+    });
+    // grass disc + a soft darker rim so the mesa reads
+    const grass = new THREE.Mesh(new THREE.CircleGeometry(PLATFORM_R, 64), new THREE.MeshStandardNodeMaterial({ color: 0x51702f, roughness: 0.95 }));
+    grass.rotation.x = -Math.PI / 2;
+    grass.position.set(PARK.x, PLATFORM_Y + 0.02, PARK.z);
+    grass.receiveShadow = true;
+    this.#scene.add(grass);
+    const rim = new THREE.Mesh(new THREE.CylinderGeometry(PLATFORM_R, PLATFORM_R * 0.98, 3, 64, 1, true), new THREE.MeshStandardNodeMaterial({ color: 0x3c5222, roughness: 1 }));
+    rim.position.set(PARK.x, PLATFORM_Y - 1.5, PARK.z);
+    this.#scene.add(rim);
   }
 
   async #load(): Promise<void> {
     try {
-      const def = (await (await fetch("/models/horse_policy.json", { cache: "no-store" })).json()) as PolicyDef;
-      this.#policy = new Policy(def);
+      this.#policyDef = (await (await fetch("/models/horse_policy.json", { cache: "no-store" })).json()) as PolicyDef;
       this.#spawn();
       this.#ready = true;
     } catch (e) {
@@ -66,102 +109,120 @@ export class HorseHerd {
     }
   }
 
-  #buildMeshes(): HorseMeshes {
+  #buildDressedHorse(): THREE.Mesh[] {
     const s = this.#spec;
-    const group = new THREE.Group();
     const parts: THREE.Mesh[] = [];
-    // torso (index 0), then thigh+shank per leg (matching ragdoll link order)
     const torso = partMesh(new THREE.BoxGeometry(s.torso.half[0] * 2, s.torso.half[1] * 1.9, s.torso.half[2] * 2), 0x6a4a30, 0.8);
-    group.add(torso);
     parts.push(torso);
-    // dress the torso into a horse — neck, head, ears, muzzle, tail — as CHILDREN
-    // of the torso mesh, so they ride its RL-driven pose for free. Local axes:
-    // x = right, y = up, z = forward (nose).
+    // neck, head, ears, muzzle, mane, tail — children of the torso mesh so they
+    // ride its RL pose. Local axes: x = right, y = up, z = forward (nose).
     const neck = partMesh(new THREE.CylinderGeometry(0.07, 0.12, 0.44, 8), 0x5e4028, 0.85);
-    neck.position.set(0, 0.24, 0.5);
-    neck.rotation.x = -0.95;
-    torso.add(neck);
+    neck.position.set(0, 0.24, 0.5); neck.rotation.x = -0.95; torso.add(neck);
     const head = partMesh(new THREE.BoxGeometry(0.13, 0.16, 0.3), 0x5e4028, 0.85);
-    head.position.set(0, 0.44, 0.74);
-    head.rotation.x = -0.35;
-    torso.add(head);
+    head.position.set(0, 0.44, 0.74); head.rotation.x = -0.35; torso.add(head);
     const muzzle = partMesh(new THREE.BoxGeometry(0.1, 0.1, 0.14), 0x4a3120, 0.85);
-    muzzle.position.set(0, 0.4, 0.9);
-    torso.add(muzzle);
+    muzzle.position.set(0, 0.4, 0.9); torso.add(muzzle);
     for (const sx of [-0.05, 0.05]) {
       const ear = partMesh(new THREE.ConeGeometry(0.035, 0.1, 6), 0x3b2716, 0.9);
-      ear.position.set(sx, 0.56, 0.68);
-      torso.add(ear);
+      ear.position.set(sx, 0.56, 0.68); torso.add(ear);
     }
     const mane = partMesh(new THREE.BoxGeometry(0.04, 0.3, 0.42), 0x241408, 0.95);
-    mane.position.set(0, 0.28, 0.52);
-    mane.rotation.x = -0.95;
-    torso.add(mane);
+    mane.position.set(0, 0.28, 0.52); mane.rotation.x = -0.95; torso.add(mane);
     const tail = partMesh(new THREE.CylinderGeometry(0.015, 0.06, 0.44, 6), 0x241408, 0.95);
-    tail.position.set(0, 0.16, -0.56);
-    tail.rotation.x = 0.7;
-    torso.add(tail);
-    // legs: thigh + shank capsules, with a dark hoof on each shank
+    tail.position.set(0, 0.16, -0.56); tail.rotation.x = 0.7; torso.add(tail);
     for (const leg of s.legs) {
       const thigh = partMesh(new THREE.CapsuleGeometry(leg.thigh.radius, leg.thigh.halfHeight * 2, 4, 8), 0x5a3d26, 0.85);
-      group.add(thigh);
       parts.push(thigh);
       const shank = partMesh(new THREE.CapsuleGeometry(leg.shank.radius, leg.shank.halfHeight * 2, 4, 8), 0x5a3d26, 0.85);
       const hoof = partMesh(new THREE.CylinderGeometry(leg.shank.radius * 1.15, leg.shank.radius * 0.9, 0.06, 8), 0x141010, 0.6);
-      hoof.position.set(0, -leg.shank.halfHeight - 0.02, 0);
-      shank.add(hoof);
-      group.add(shank);
+      hoof.position.set(0, -leg.shank.halfHeight - 0.02, 0); shank.add(hoof);
       parts.push(shank);
     }
-    // NN activation bubble
-    const canvas = document.createElement("canvas");
-    canvas.width = 96;
-    canvas.height = 96;
-    const tex = new THREE.CanvasTexture(canvas);
-    const bmat = new THREE.SpriteNodeMaterial({ transparent: true, depthWrite: false });
-    bmat.colorNode = texture(tex);
-    const bubble = new THREE.Sprite(bmat);
-    bubble.scale.set(0.9, 0.9, 0.9);
-    group.add(bubble);
+    return parts;
+  }
 
+  /**
+   * The activation "brain": layers of nodes as vertical columns, joined by soft
+   * additive lines (each node to its neighbours + a couple in the next layer),
+   * so the live activations drape into glowing sheets like the reference. Fixed
+   * geometry; only per-vertex colour changes each frame.
+   */
+  #buildBrain(sizes: number[]): Brain {
+    const GAP = 0.42; // spacing between layer columns
+    const HEIGHT = 1.05;
+    const nL = sizes.length;
+    const nodeY = (li: number, j: number) => (sizes[li] <= 1 ? 0 : (j / (sizes[li] - 1) - 0.5) * HEIGHT);
+    const nodeX = (li: number) => (li - (nL - 1) / 2) * GAP;
+    const pos: number[] = [];
+    const vLayer: number[] = [];
+    const vNode: number[] = [];
+    const addVert = (li: number, j: number) => { pos.push(nodeX(li), nodeY(li, j), 0); vLayer.push(li); vNode.push(j); };
+    for (let li = 0; li < nL; li++) {
+      // vertical intra-layer lines (the "dotted sheet" texture)
+      for (let j = 0; j + 1 < sizes[li]; j++) { addVert(li, j); addVert(li, j + 1); }
+      // inter-layer connections: each node to two nodes in the next column
+      if (li + 1 < nL) {
+        const n = sizes[li], m = sizes[li + 1];
+        for (let j = 0; j < n; j++) {
+          const b = m <= 1 ? 0 : Math.round((j * (m - 1)) / Math.max(1, n - 1));
+          addVert(li, j); addVert(li + 1, b);
+          addVert(li, j); addVert(li + 1, Math.min(m - 1, b + 1));
+        }
+      }
+    }
+    const geo = new THREE.BufferGeometry();
+    const posArr = new Float32Array(pos);
+    const colArr = new Float32Array(posArr.length);
+    geo.setAttribute("position", new THREE.BufferAttribute(posArr, 3));
+    const attr = new THREE.BufferAttribute(colArr, 3);
+    geo.setAttribute("color", attr);
+    const mat = new THREE.LineBasicNodeMaterial({ vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
+    const line = new THREE.LineSegments(geo, mat);
+    line.frustumCulled = false;
+    return { line, colors: colArr, attr, vLayer: Uint8Array.from(vLayer), vNode: Uint16Array.from(vNode) };
+  }
+
+  #buildMeshes(sizes: number[]): HorseMeshes {
+    const group = new THREE.Group();
+    const parts = this.#buildDressedHorse();
+    for (const p of parts) group.add(p);
+    const brain = this.#buildBrain(sizes);
     this.#scene.add(group);
-    return { group, parts, bubble, canvas, tex };
+    this.#scene.add(brain.line);
+    return { group, parts, brain };
   }
 
   #spawn(): void {
     for (let i = 0; i < COUNT; i++) {
-      const a = (i / COUNT) * Math.PI * 2;
-      const r = 20 + Math.random() * (ROAM - 25);
+      const a = (i / COUNT) * Math.PI * 2 + Math.random();
+      const r = 6 + Math.random() * (ROAM - 8);
       const anchor = { x: PARK.x + Math.cos(a) * r, z: PARK.z + Math.sin(a) * r };
-      const rag = new HorseRagdoll(this.#box3d, this.#spec, this.#policy!);
+      const rag = new HorseRagdoll(this.#box3d, this.#spec, this.#policyDef!);
       const yaw = Math.random() * Math.PI * 2;
       rag.setGoal(Math.sin(yaw), Math.cos(yaw));
-      this.#horses.push({ rag, m: this.#buildMeshes(), anchor, wanderYaw: yaw, wanderTimer: 2 + Math.random() * 4, wx: anchor.x, wy: 0, wz: anchor.z, wq: [0, 0, 0, 1] });
+      const m = this.#buildMeshes(rag.layers().map((l) => l.length));
+      this.#horses.push({ rag, m, anchor, wanderYaw: yaw, wanderTimer: 2 + Math.random() * 4, wx: anchor.x, wy: PLATFORM_Y, wz: anchor.z, wq: [0, 0, 0, 1] });
     }
   }
 
-  /** Fixed-step: advance each ragdoll's private sim + steer it. */
   prePhysics(dt: number): void {
     if (!this.#ready) return;
     for (let idx = 0; idx < this.#horses.length; idx++) {
       const h = this.#horses[idx];
-      // the ridden horse walks where the rider is looking; no autonomous wander
       if (idx === this.#ridden) {
         h.rag.setGoal(-Math.sin(this.#steerYaw), -Math.cos(this.#steerYaw));
         h.rag.update(dt);
         if (h.rag.fallen) h.rag.reset();
         continue;
       }
-      // pick a new heading now and then; steer back toward the meadow if it strays
       h.wanderTimer -= dt;
       const t = h.rag.torsoLink;
       const wx = h.anchor.x + t.pos[0];
       const wz = h.anchor.z + t.pos[2];
       const toCx = PARK.x - wx;
       const toCz = PARK.z - wz;
-      const distC = Math.hypot(toCx, toCz);
-      if (distC > ROAM) {
-        h.wanderYaw = Math.atan2(toCx, toCz); // head home
+      if (Math.hypot(toCx, toCz) > ROAM) {
+        h.wanderYaw = Math.atan2(toCx, toCz);
         h.wanderTimer = 2 + Math.random() * 3;
       } else if (h.wanderTimer <= 0) {
         h.wanderYaw += (Math.random() - 0.5) * 1.6;
@@ -179,7 +240,6 @@ export class HorseHerd {
   }
 
   // ------------------------------------------------------------------ riding
-  /** Nearest ridable horse within maxDist of a world XZ point, or -1. */
   nearest(px: number, pz: number, maxDist: number): number {
     if (!this.#ready) return -1;
     let best = -1;
@@ -194,62 +254,81 @@ export class HorseHerd {
   mount(i: number): void { if (i >= 0 && i < this.#horses.length) this.#ridden = i; }
   dismount(): void { this.#ridden = -1; }
   get riddenIndex(): number { return this.#ridden; }
-  /** Point the mount along the rider's view yaw. */
   steer(yaw: number): void { this.#steerYaw = yaw; }
-  /** World seat pose of the ridden horse; false if nobody is mounted. */
   riddenSeat(outPos: THREE.Vector3, outQuat: THREE.Quaternion): boolean {
     if (this.#ridden < 0) return false;
     const h = this.#horses[this.#ridden];
     outQuat.set(h.wq[0], h.wq[1], h.wq[2], h.wq[3]);
-    outPos.set(h.wx, h.wy + 0.75, h.wz); // seated above the back
+    outPos.set(h.wx, h.wy + 0.75, h.wz);
     return true;
   }
 
-  /** Per-frame: track the meshes to the ragdoll, lift onto terrain, refresh bubbles. */
+  // -------------------------------------------------------------- live training
+  get training(): boolean { return this.#training; }
+  /** Kick off ES training in a worker; the herd hot-swaps to the improving policy live. */
+  startTraining(onProgress: (p: { gen: number; fitness: number; best: number }) => void): void {
+    if (this.#training) return;
+    this.#training = true;
+    this.#onProgress = onProgress;
+    this.#worker = new Worker(new URL("./trainWorker.ts", import.meta.url), { type: "module" });
+    this.#worker.onmessage = (e: MessageEvent) => {
+      const m = e.data as { type: string; gen: number; fitness: number; best: number; policy: PolicyDef };
+      if (m?.type !== "progress") return;
+      this.#applyPolicy(m.policy); // watch the horses change as the brain improves
+      this.#onProgress?.({ gen: m.gen, fitness: m.fitness, best: m.best });
+    };
+    this.#worker.postMessage({ type: "start", creature: "horse", init: this.#policyDef ?? undefined });
+  }
+  stopTraining(): void {
+    if (!this.#training) return;
+    this.#training = false;
+    this.#worker?.postMessage({ type: "stop" });
+    this.#worker?.terminate();
+    this.#worker = null;
+  }
+  #applyPolicy(def: PolicyDef): void {
+    this.#policyDef = def;
+    for (const h of this.#horses) h.rag.setPolicy(def);
+  }
+
+  /** Per-frame: track the meshes to the ragdolls (on the platform) + light up the brains. */
   update(_dt: number, camera: THREE.Camera): void {
     if (!this.#ready) return;
+    camera.getWorldPosition(this.#camPos);
     for (const h of this.#horses) {
       const t = h.rag.torsoLink;
-      const wx = h.anchor.x + t.pos[0];
-      const wz = h.anchor.z + t.pos[2];
-      const groundY = this.#map.effectiveGround(wx, wz);
       const ox = h.anchor.x;
-      const oy = groundY;
+      const oy = PLATFORM_Y; // flat platform — no terrain query
       const oz = h.anchor.z;
-      // remember world torso transform (mount picking + rider seat)
       h.wx = ox + t.pos[0]; h.wy = oy + t.pos[1]; h.wz = oz + t.pos[2];
       h.wq[0] = t.quat[0]; h.wq[1] = t.quat[1]; h.wq[2] = t.quat[2]; h.wq[3] = t.quat[3];
-      // torso
       this.#poseMesh(h.m.parts[0], t, ox, oy, oz);
-      // legs
       const legs = h.rag.legLinks;
       for (let i = 0; i < legs.length; i++) {
         this.#poseMesh(h.m.parts[1 + i * 2], legs[i].thigh, ox, oy, oz);
         this.#poseMesh(h.m.parts[2 + i * 2], legs[i].shank, ox, oy, oz);
       }
-      // bubble above the head (nose is +z); a Sprite billboards automatically
-      qRot(t.quat, [0, 0, 1], this.#nose);
-      h.m.bubble.position.set(ox + t.pos[0] + this.#nose[0] * 0.3, oy + t.pos[1] + 0.9, oz + t.pos[2] + this.#nose[2] * 0.3);
-      this.#drawBubble(h.m, h.rag.hidden);
+      this.#updateBrain(h);
     }
   }
 
-  #drawBubble(m: HorseMeshes, acts: Float32Array): void {
-    if (!acts.length) return;
-    const g = m.canvas.getContext("2d")!;
-    g.clearRect(0, 0, 96, 96);
-    g.fillStyle = "rgba(10,14,22,0.55)";
-    g.beginPath();
-    g.arc(48, 48, 46, 0, 7);
-    g.fill();
-    const cols = Math.ceil(Math.sqrt(acts.length));
-    const rows = Math.ceil(acts.length / cols);
-    const cw = 72 / cols, ch = 72 / rows;
-    for (let k = 0; k < acts.length; k++) {
-      const v = (acts[k] + 1) / 2;
-      g.fillStyle = `rgb(${40 + v * 70 | 0},${70 + v * 150 | 0},${100 + v * 150 | 0})`;
-      g.fillRect(12 + (k % cols) * cw + 0.5, 12 + ((k / cols) | 0) * ch + 0.5, cw - 1, ch - 1);
+  #updateBrain(h: Horse): void {
+    const b = h.m.brain;
+    const layers = h.rag.layers();
+    const c = b.colors;
+    for (let v = 0; v < b.vLayer.length; v++) {
+      const a = layers[b.vLayer[v]][b.vNode[v]];
+      const tt = a < -1 ? 0 : a > 1 ? 1 : (a + 1) / 2; // tanh -> 0..1
+      const k = 0.06 + tt * tt * 0.9; // dim resting units, bloom the firing ones
+      const i3 = v * 3;
+      c[i3] = (0.45 + tt * 0.45) * k;
+      c[i3 + 1] = (0.12 + tt * 0.35) * k;
+      c[i3 + 2] = (0.6 + tt * 0.4) * k;
     }
-    m.tex.needsUpdate = true;
+    b.attr.needsUpdate = true;
+    // float above the horse, billboard to the camera on yaw
+    const yaw = Math.atan2(this.#camPos.x - h.wx, this.#camPos.z - h.wz);
+    b.line.position.set(h.wx, h.wy + 1.5, h.wz);
+    b.line.rotation.set(0, yaw, 0);
   }
 }

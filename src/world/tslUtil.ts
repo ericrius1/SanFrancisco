@@ -28,14 +28,16 @@ export function swellBase(x: any, z: any, t: any): any {
     .add(sin(x.add(z).mul(0.021).add(t.mul(0.45))).mul(0.1));
 }
 
-/** Chop-zone mask, 0 calm … 1 full chop (GPU twin of chopZone()). */
+/** Chop-zone mask, 0 calm … 1 full chop (GPU twin of chopZone()). Widened
+ * (0.28/0.72) so livelier water shows up in more of the bay. */
 export function chopZoneMask(x: any, z: any): any {
-  return smoothstep(0.35, 0.75, sin(x.mul(0.0016).add(2.1)).mul(sin(z.mul(0.0013).sub(0.6))));
+  return smoothstep(0.28, 0.72, sin(x.mul(0.0016).add(2.1)).mul(sin(z.mul(0.0013).sub(0.6))));
 }
 
-/** Zone chop waves at full strength — callers scale by chopZoneMask (and any rim fade). */
+/** Zone chop waves at full strength — callers scale by chopZoneMask (and any rim
+ * fade). Amplitudes bumped ~20% for a bit more punch on the crests. */
 export function swellChop(x: any, z: any, t: any): any {
-  return sin(x.mul(0.1).add(t.mul(1.35))).mul(0.3)
-    .add(sin(z.mul(0.083).sub(t.mul(1.1))).mul(0.24))
-    .add(sin(x.add(z).mul(0.052).add(t.mul(0.8))).mul(0.2));
+  return sin(x.mul(0.1).add(t.mul(1.35))).mul(0.36)
+    .add(sin(z.mul(0.083).sub(t.mul(1.1))).mul(0.29))
+    .add(sin(x.add(z).mul(0.052).add(t.mul(0.8))).mul(0.24));
 }

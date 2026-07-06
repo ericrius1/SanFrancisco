@@ -203,7 +203,7 @@ export class WorldMap {
  */
 export function chopZone(x: number, z: number): number {
   const m = Math.sin(x * 0.0016 + 2.1) * Math.sin(z * 0.0013 - 0.6);
-  const s = Math.min(1, Math.max(0, (m - 0.35) / 0.4));
+  const s = Math.min(1, Math.max(0, (m - 0.28) / 0.44));
   return s * s * (3 - 2 * s);
 }
 
@@ -218,9 +218,9 @@ export function waterHeight(x: number, z: number, t: number): number {
     // travelling swells big enough to kick a board off a crest, still gentle
     h +=
       zone *
-      (Math.sin(x * 0.1 + t * 1.35) * 0.3 +
-        Math.sin(z * 0.083 - t * 1.1) * 0.24 +
-        Math.sin((x + z) * 0.052 + t * 0.8) * 0.2);
+      (Math.sin(x * 0.1 + t * 1.35) * 0.36 +
+        Math.sin(z * 0.083 - t * 1.1) * 0.29 +
+        Math.sin((x + z) * 0.052 + t * 0.8) * 0.24);
   }
   const lagoon = palaceLagoonMask(x, z);
   if (lagoon > 0.001) return PALACE_LAGOON.surfaceY + h * (0.35 + lagoon * 0.3);

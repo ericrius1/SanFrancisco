@@ -210,7 +210,7 @@ export class Minimap {
     }
     // The RL horse herd's meadow in Golden Gate Park (keep in sync with PARK in
     // src/gameplay/horse/horseHerd.ts) — dot + label + teleport like the rest.
-    this.#landmarks.push({ x: -3300, z: 1900, name: "Horse Paddock" });
+    this.#landmarks.push({ x: -5250, z: 2380, name: "Horse Paddock" });
     this.#layers = MAP_LAYER_DEFS.map((def) => ({
       ...def,
       enabled: false,

@@ -35,6 +35,21 @@ const NEAR_PATCH_FADE_END_HEIGHT = 12;
 const TAU = Math.PI * 2;
 
 /**
+ * Stylized wavelet height field: a sum of directional sines standing in for the
+ * old 2×3-octave FBM ripple. Water is the biggest surface on screen and the
+ * shader is fragment-bound on lighter GPUs (an M2 Air sputters over open bay),
+ * so trading ~6 gradient-noise octaves for ~4 sines per pixel is the single
+ * biggest saving — and the crisp interference crests read as *wavier*, not
+ * worse. `p` is world xz (a vec2 node), `t` seconds.
+ */
+function wavelets(p: any, t: any): any {
+  return sin(p.x.mul(0.13).add(p.y.mul(0.07)).add(t.mul(1.15))).mul(0.5)
+    .add(sin(p.x.mul(0.052).negate().add(p.y.mul(0.164)).sub(t.mul(0.93))).mul(0.42))
+    .add(sin(p.x.mul(0.093).sub(p.y.mul(0.121)).add(t.mul(1.45))).mul(0.32))
+    .add(sin(p.x.mul(0.205).add(p.y.mul(0.178)).add(t.mul(1.95))).mul(0.2));
+}
+
+/**
  * The bay: a calm, clear, Caribbean-green PBR water surface in TSL. Colour comes
  * from true depth (bay-floor height texture) — sandy glow in the shallows through
  * turquoise to deep teal — with shore foam, sun sparkle, and ripple bump. Fresnel
@@ -59,27 +74,20 @@ export class Water {
     const h = g.height * g.cellSize + 8000;
 
     const makeMaterial = (displace: number, holed: boolean) => {
-      // near patch: full physical (ior + tuned specular carry the sun path
-      // right around the player). Far sheet: standard — the physical fragment
-      // path is measurably heavier and the sheet is the biggest surface on
-      // screen over open water (2560×1440 open-bay: sheets hidden 120fps vs
-      // 69fps drawn), while past the near hole the extra sheen never reads.
-      const mat =
-        displace > 0
-          ? new THREE.MeshPhysicalNodeMaterial({
-              transparent: true,
-              depthWrite: false,
-              roughness: 0.48,
-              metalness: 0,
-              ior: 1.33,
-              specularIntensity: 0.16
-            })
-          : new THREE.MeshStandardNodeMaterial({
-              transparent: true,
-              depthWrite: false,
-              roughness: 0.48,
-              metalness: 0
-            });
+      // Both sheets are MeshStandard, not Physical. Water is the biggest surface
+      // on screen and the shader is fragment-bound on lighter GPUs (an M2 Air
+      // sputters over open bay); the physical fragment path (ior/specular BRDF)
+      // is measurably heavier (~0.5 ms/render here on the near patch alone) and
+      // the sun glint it bought is carried just as well by the env reflection +
+      // roughness gradient + emissive spark below — a headless A/B at sunset was
+      // pixel-indistinguishable. The env-mapped Fresnel sky reflection still
+      // falls out of Standard for free.
+      const mat = new THREE.MeshStandardNodeMaterial({
+        transparent: true,
+        depthWrite: false,
+        roughness: 0.48,
+        metalness: 0
+      });
 
       const t = this.#uTime;
 
@@ -107,11 +115,13 @@ export class Water {
       const dry = step(0.55, floorH).mul(inMap); // dry land under this pixel: hide
       const depth = max(0, positionWorld.y.sub(floorH)).toVar();
 
-      // Bay gradient: lift the deep water floor so the foreground stays teal,
-      // not black, while the stronger roughness below keeps sunset glare soft.
+      // Bay gradient — vivid Caribbean: a bright aqua-mint sandy shallow through
+      // luminous turquoise to a still-bright deep teal (never a near-black deep,
+      // so the whole bay glows). d2 softened (-0.042) so the turquoise carries
+      // further out before the deep tone takes over.
       const d1 = exp(depth.mul(-0.24)).oneMinus();
-      const d2 = exp(depth.mul(-0.055)).oneMinus().toVar();
-      const waterCol = mix(mix(color(0xa7bb9f), color(0x2f9d91), d1), color(0x0f5a5c), d2).toVar();
+      const d2 = exp(depth.mul(-0.042)).oneMinus().toVar();
+      const waterCol = mix(mix(color(0x93e6d4), color(0x16b8a6), d1), color(0x0b7580), d2).toVar();
 
       // Feather the player-following near patch into the far bay sheet. This
       // keeps the displaced water useful for watercraft without leaving a
@@ -140,38 +150,50 @@ export class Water {
       // uniformity miscompile around the mx_noise library — see facade.ts),
       // so the water stack runs unbranched like it always had, with foamBand/
       // detail as plain multipliers.
-      // shore foam: soft lapping band + speckle
-      const nA = mx_fractal_noise_float(vec3(pxz.mul(0.11), t.mul(0.05)), 3).mul(0.5).add(0.5);
+      // shore foam: soft lapping band + speckle. FBM trimmed 3→2 octaves — foam
+      // only reads in the shallows/chop, so the third octave never paid for
+      // itself on a fragment-bound GPU.
+      const nA = mx_fractal_noise_float(vec3(pxz.mul(0.11), t.mul(0.05)), 2).mul(0.5).add(0.5);
       const lap = sin(t.mul(1.1).add(depth.mul(9)).add(nA.mul(6))).mul(0.5).add(0.5);
-      const foamNoise = mx_fractal_noise_float(vec3(pxz.mul(0.9), t.mul(0.12)), 3).mul(0.5).add(0.5);
+      const foamNoise = mx_fractal_noise_float(vec3(pxz.mul(0.9), t.mul(0.12)), 2).mul(0.5).add(0.5);
       // chop-zone whitecaps: scattered speckle so rough patches read from afar
       const zoneF = chopZoneMask(pxz.x, pxz.y).toVar();
       const foam = foamBand.mul(smoothstep(0.45, 0.75, foamNoise.mul(0.75).add(lap.mul(0.35)))).mul(0.85)
-        .add(zoneF.mul(smoothstep(0.62, 0.88, foamNoise)).mul(0.28))
+        .add(zoneF.mul(smoothstep(0.6, 0.86, foamNoise)).mul(0.34))
         .toVar();
 
-      // ripple bump, faded fully out with distance to kill shimmer; the bump
-      // digs harder inside chop zones so the surface texture sells the waves
-      const rippleH = mx_fractal_noise_float(vec3(p.mul(0.11), t.mul(0.09)), 3)
-        .add(mx_fractal_noise_float(vec3(p.mul(0.045), t.mul(0.055).negate()), 3).mul(0.9))
-        .mul(0.22)
-        .mul(detail)
-        .mul(zoneF.mul(0.8).add(1));
+      // ripple bump: stylized directional wavelets (sum of sines) replace the old
+      // 2×3-octave FBM — a fraction of the per-pixel ALU on the biggest surface on
+      // screen, while reading crisper/wavier. Still faded out with distance to kill
+      // shimmer, and dug harder inside chop zones. bumpNormal is only screen-space
+      // derivatives of this height, so a cheaper height = a cheaper bump.
+      // NO If() gates here (see the branch-hazard note above).
+      let rippleH = wavelets(p, t).mul(0.3);
+      if (displace > 0) {
+        // near patch (where you actually look from a boat/board) keeps a touch of
+        // organic FBM(2) break-up on top of the wavelets
+        rippleH = rippleH.add(mx_fractal_noise_float(vec3(p.mul(0.09), t.mul(0.06)), 2).mul(0.12));
+      }
+      rippleH = rippleH.mul(detail).mul(zoneF.mul(0.9).add(1));
       mat.normalNode = bumpNormal(rippleH);
 
-      // sun sparkle: occasional near-field flecks only; the physical specular
-      // carries the sunset reflection, so this stays below the authored emissive accents.
+      // sun sparkle: occasional near-field flecks only; the env-mapped Fresnel
+      // reflection carries the broad sunset sheen, so this stays subtle on top.
       const sparkNoise = mx_noise_float(vec3(p.mul(2.2), t.mul(0.8)));
       const spark = smoothstep(0.78, 0.97, sparkNoise).mul(detail.mul(detail)).mul(foam.oneMinus());
       mat.emissiveNode = vec3(1.0, 0.95, 0.82).mul(spark.mul(0.035 * LIGHT_SCALE));
 
-      mat.colorNode = mix(waterCol, color(0xf0f7f2), foam);
+      mat.colorNode = mix(waterCol, color(0xf3faf6), foam);
       // roughness rises as the ripple bump fades (Toksvig-style): distant water
       // spreads the sun path into a soft band instead of a mirror streak
       const baseRough = mix(float(0.76), float(0.42), detail);
       mat.roughnessNode = mix(baseRough, float(0.78), foam);
 
-      const alpha = clamp(mix(0.42, 0.93, d2).add(foam.mul(0.4)), 0, 0.97);
+      // Body reads (near-)opaque so the Caribbean colour shows at full saturation
+      // instead of the sky bleeding through and greying it out: shallow 0.82,
+      // deep 1.0. Only the thin edges stay soft — the player-patch feather
+      // (waterVisibility) and the land cutout (dry) — so no seams, no z-fight.
+      const alpha = clamp(mix(0.82, 1.0, d2).add(foam.mul(0.25)), 0, 1);
       mat.opacityNode = alpha.mul(waterVisibility).mul(dry.oneMinus());
 
       mat.envMapIntensity = 0.25;
@@ -209,7 +231,7 @@ export class Water {
       const floorH = texture(tex, fuv).r;
       const shoreCut = smoothstep(PALACE_LAGOON.surfaceY + 0.45, PALACE_LAGOON.surfaceY - 0.05, floorH).toVar();
 
-      const foamNoise = mx_fractal_noise_float(vec3(p.mul(0.31), t.mul(0.1)), 3).mul(0.5).add(0.5);
+      const foamNoise = mx_fractal_noise_float(vec3(p.mul(0.31), t.mul(0.1)), 2).mul(0.5).add(0.5);
       const lap = sin(t.mul(1.25).add(radial.mul(11)).add(foamNoise.mul(5))).mul(0.5).add(0.5);
       const foam = shore
         .mul(smoothstep(0.56, 0.82, foamNoise.mul(0.62).add(lap.mul(0.38))))
@@ -217,16 +239,18 @@ export class Water {
         .mul(0.62)
         .toVar();
 
-      const rippleH = mx_fractal_noise_float(vec3(p.mul(0.18), t.mul(0.11)), 3)
-        .add(mx_fractal_noise_float(vec3(p.mul(0.07), t.mul(0.06).negate()), 3).mul(0.75))
-        .mul(0.16)
+      // wavelet ripple (see bay) + a little FBM(2) break-up — the lagoon is small
+      // and always close, so it keeps the organic layer.
+      const rippleH = wavelets(p, t)
+        .mul(0.2)
+        .add(mx_fractal_noise_float(vec3(p.mul(0.16), t.mul(0.08)), 2).mul(0.06))
         .mul(edgeFade);
       mat.normalNode = bumpNormal(rippleH);
 
-      const lagoonCol = mix(color(0x164f68), color(0x63c2b5), smoothstep(0.05, 0.9, radial));
-      mat.colorNode = mix(lagoonCol, color(0xecf5e9), foam);
+      const lagoonCol = mix(color(0x14708a), color(0x79dcc9), smoothstep(0.05, 0.9, radial));
+      mat.colorNode = mix(lagoonCol, color(0xf1faf0), foam);
       mat.roughnessNode = mix(float(0.42), float(0.72), shore);
-      mat.opacityNode = clamp(edgeFade.mul(0.94).add(foam.mul(0.16)), 0, 0.98).mul(shoreCut);
+      mat.opacityNode = clamp(edgeFade.mul(0.99).add(foam.mul(0.12)), 0, 1).mul(shoreCut);
 
       const sparkle = smoothstep(0.8, 0.98, mx_noise_float(vec3(p.mul(1.8), t.mul(0.7))))
         .mul(edgeFade)
@@ -274,6 +298,12 @@ export class Water {
       0,
       1
     );
+    // Once the patch has fully feathered out (flying high over the bay) stop
+    // drawing it altogether — it's 560 m of shaded-then-invisible water covering
+    // most of a downward view. The flat far sheet shows the identical colour
+    // underneath, so there's nothing to see; this is pure fragment savings while
+    // airborne. Re-shown the instant you drop back toward the surface.
+    this.near.visible = this.#uNearVisibility.value > 0.001;
   }
 }
 

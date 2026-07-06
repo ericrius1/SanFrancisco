@@ -206,6 +206,9 @@ export class HUD {
   #device: "kb" | "pad" = "kb"
   #toolVerb = "sling paintballs" // what a click does right now (the toolbar's tool)
   #expanded = false // advanced shortcuts folded away by default
+  #returnAvailable = false
+
+  onReturnPrevious: () => void = () => {}
 
   constructor() {
     // one delegated listener: the fold-out toggle lives inside #help
@@ -213,6 +216,8 @@ export class HUD {
       if ((e.target as HTMLElement).closest(".more")) {
         this.#expanded = !this.#expanded
         this.#renderHelp()
+      } else if ((e.target as HTMLElement).closest(".return-prev")) {
+        this.onReturnPrevious()
       }
     })
   }
@@ -225,6 +230,12 @@ export class HUD {
 
   setMode(mode: PlayerMode) {
     this.#current = mode
+    this.#renderHelp()
+  }
+
+  setReturnAvailable(available: boolean) {
+    if (available === this.#returnAvailable) return
+    this.#returnAvailable = available
     this.#renderHelp()
   }
 
@@ -262,10 +273,15 @@ export class HUD {
       const key = pad ? "" : `<span class="k">${i + 1}</span>`
       return `<div class="mi${m === this.#current ? " on" : ""}">${key}<span class="lbl">${MODE_SHORT[m]}</span></div>`
     }).join("")
+    const returnButton = this.#returnAvailable
+      ? `<button class="return-prev" type="button" title="Return to the spot before your last vehicle switch">` +
+        `${pad ? "" : `<span class="k">T</span>`}<span>return</span></button>`
+      : ""
     const modes =
       `<div class="modes">` +
       `<div class="modes-h">vehicles${pad ? " · ◀ ▶" : ""}</div>` +
       `<div class="modes-list">${vehicleRows}</div>` +
+      returnButton +
       `</div>`
 
     html.push(`<div class="cols"><div class="grid">${rows}</div>${modes}</div>`)
@@ -295,6 +311,7 @@ export class HUD {
           fi(["Back"], "immersive")
         ]
       : [
+          ...(this.#returnAvailable ? [fi(["T"], "return", true)] : []),
           fi(["R"], "respawn"),
           fi(["B"], "fireworks"),
           fi(["Z"], "hold — time of day"),

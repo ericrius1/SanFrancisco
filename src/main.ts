@@ -733,6 +733,34 @@ async function boot() {
     hud.message("Hopped out", 1.8);
     return true;
   };
+  type ReturnSpot = { x: number; y: number; z: number; heading: number; mode: PlayerMode };
+  let returnSpot: ReturnSpot | null = null;
+  const setReturnSpot = (spot: ReturnSpot | null) => {
+    returnSpot = spot;
+    hud.setReturnAvailable(spot !== null);
+  };
+  const rememberReturnSpot = () => {
+    setReturnSpot({
+      x: player.position.x,
+      y: player.position.y,
+      z: player.position.z,
+      heading: player.heading,
+      mode: player.mode
+    });
+  };
+  const returnToPreviousSpot = () => {
+    const spot = returnSpot;
+    if (!spot) {
+      hud.message("No previous spot saved", 1.8);
+      return;
+    }
+    exitToWalk();
+    player.restoreState({ mode: "walk", x: spot.x, y: spot.y, z: spot.z, heading: spot.heading });
+    chase.yaw = spot.heading + Math.PI;
+    setReturnSpot(null);
+    hud.message(`Back where you switched from ${spot.mode}`, 2.4);
+  };
+  hud.onReturnPrevious = returnToPreviousSpot;
   const teleportToTarget = (x: number, z: number, toName?: string, playerId?: number) => {
     void (async () => {
       const t = playerId !== undefined ? remotes.stateOf(playerId) : null;
@@ -763,6 +791,15 @@ async function boot() {
         if (player.mode !== "walk") player.trySwitch("walk");
         quidHud.stopTutorial();
         player.respawn({ x: QUIDDITCH_PITCH.x, z: QUIDDITCH_PITCH.z, heading: -Math.PI / 2 });
+      } else if (toName === "Horse Paddock") {
+        // the horses live on a raised platform above the buggy hill — put the
+        // rider up on it too (respawn grounds them, then lift onto the deck).
+        dropCurrentDriveMount();
+        if (player.mode !== "walk") player.trySwitch("walk");
+        player.respawn({ x, z, heading });
+        const py = horseHerd.platformY + 1.5;
+        player.position.y = py;
+        physics.world.setBodyTransform(player.body, [x, py, z], [0, Math.sin(heading / 2), 0, Math.cos(heading / 2)]);
       } else {
         const want = { x: tx, z: tz, heading };
         const open = await findOpenSpawn(map, tiles.manifest, want);
@@ -1228,6 +1265,8 @@ async function boot() {
 
     // plain number keys select vehicles; Shift+number teleports to player slots.
     const switchMode = (mode: PlayerMode) => {
+      if (mode === player.mode) return;
+      if (mode !== "walk" && (player.mode === "walk" || !returnSpot)) rememberReturnSpot();
       leaveRide(); // a mode key while riding shotgun hops out first
       if ((currentRide || currentAnimal || currentQuidditch) && mode !== "drive" && mode !== "drone") dropCurrentDriveMount();
       if (mode === "drive" && !currentRide && !currentAnimal) player.setDriveStyle(null);
@@ -1259,9 +1298,22 @@ async function boot() {
       const from = idx >= 0 ? idx : 0;
       if (cycleOrder.length) switchMode(cycleOrder[(from + cycle + cycleOrder.length) % cycleOrder.length]);
     }
+    if (input.pressed("KeyT")) returnToPreviousSpot();
 
     // E: Exploratorium piano, then exit any vehicle/creature, or on foot hop
     // into the nearest car (a friend's passenger seat wins over parked traffic)
+    if (input.pressed("KeyL")) {
+      // L: train the horses LIVE in a worker — watch the herd learn in the patch
+      if (horseHerd.training) {
+        horseHerd.stopTraining();
+        hud.message("Live horse training: stopped", 2);
+      } else {
+        horseHerd.startTraining((p) => {
+          if (p.gen % 4 === 0) hud.message(`Training live — gen ${p.gen} · fitness ${p.fitness} (best ${p.best})`, 1.3);
+        });
+        hud.message("Live horse training started — watch the herd learn (L stops)", 3);
+      }
+    }
     if (input.pressed("KeyE") && exploratorium.tryInteract()) {
       // consumed E inside the museum: seated at the dome piano, or opened/closed
       // a plaque — only the piano advances the tutorial
