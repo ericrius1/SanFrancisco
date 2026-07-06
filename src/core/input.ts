@@ -57,6 +57,7 @@ export class Input {
 
   #justPressed = new Set<string>();
   #shiftedPresses = new Set<string>();
+  #altPresses = new Set<string>();
   #el: HTMLElement;
 
   // gamepad state, rebuilt by pollPad() once per frame
@@ -76,10 +77,13 @@ export class Input {
       if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement) return;
       // Tab toggles the user UI — never let it (or its repeats) move focus
       if (e.code === "Tab") e.preventDefault();
+      // Alt+arrow is location history inside the game, not browser history.
+      if (e.altKey && (e.code === "ArrowLeft" || e.code === "ArrowRight")) e.preventDefault();
       if (e.repeat) return;
       this.keys.add(e.code);
       this.#justPressed.add(e.code);
       if (e.shiftKey) this.#shiftedPresses.add(e.code);
+      if (e.altKey) this.#altPresses.add(e.code);
       this.#setDevice("kb");
       // Slash: keep "/" (debug panel) from triggering Firefox quick-find
       if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Slash"].includes(e.code)) e.preventDefault();
@@ -249,6 +253,11 @@ export class Input {
     return this.#shiftedPresses.has(code);
   }
 
+  /** True when this keydown happened with Alt held on the event itself. */
+  altPressed(code: string) {
+    return this.#altPresses.has(code);
+  }
+
   /** −1..1: keyboard keys are digital, pad sticks/triggers merge in analog. */
   axis(neg: string, pos: string) {
     if (this.suspended) return 0;
@@ -273,5 +282,6 @@ export class Input {
     this.firePressed = false;
     this.#justPressed.clear();
     this.#shiftedPresses.clear();
+    this.#altPresses.clear();
   }
 }

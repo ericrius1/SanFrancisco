@@ -1,18 +1,19 @@
 import { BodyType } from "box3d-wasm";
-import { Policy, type PolicyDef } from "../../creatures/policy";
+import { Policy, type PolicyDef } from "../../creatures/policy.ts";
 import {
   advancePhase,
   decode,
   observe,
   obsDim,
   actDim,
+  scaledSpec,
   type CreatureSpec,
   type CreatureState,
   type Link,
   type LegLinks,
   type Torque,
   type V3
-} from "../../creatures/quadruped";
+} from "../../creatures/quadruped.ts";
 
 /**
  * One RL creature living in the browser, driven by its trained policy every
@@ -45,7 +46,8 @@ export class HorseRagdoll {
   private acc = 0;
   private spawnY: number;
 
-  constructor(box3d: any, spec: CreatureSpec, policyDef: PolicyDef) {
+  constructor(box3d: any, spec: CreatureSpec, policyDef: PolicyDef, scale = 1) {
+    spec = scaledSpec(spec, scale); // build at the requested body size (horse-sized in-world)
     this.spec = spec;
     // its OWN policy instance — sharing one across horses would make every
     // creature's activation curtain show the same (last-stepped) numbers.

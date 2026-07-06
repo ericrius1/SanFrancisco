@@ -24,6 +24,7 @@ const PLATFORM_Y = 35; // clears the ~34 m hilltop below
 const PLATFORM_R = 85; // room for the whole herd to roam
 const ROAM = 78;
 const COUNT = 20;
+const SCALE = 2.3; // horse-sized vs the ~1.7m human (real horses tower over people)
 
 type Brain = {
   line: THREE.LineSegments;
@@ -113,6 +114,7 @@ export class HorseHerd {
     const s = this.#spec;
     const parts: THREE.Mesh[] = [];
     const torso = partMesh(new THREE.BoxGeometry(s.torso.half[0] * 2, s.torso.half[1] * 1.9, s.torso.half[2] * 2), 0x6a4a30, 0.8);
+    torso.scale.setScalar(SCALE); // base geometry, scaled to horse size; children (neck/head/…) inherit
     parts.push(torso);
     // neck, head, ears, muzzle, mane, tail — children of the torso mesh so they
     // ride its RL pose. Local axes: x = right, y = up, z = forward (nose).
@@ -132,8 +134,10 @@ export class HorseHerd {
     tail.position.set(0, 0.16, -0.56); tail.rotation.x = 0.7; torso.add(tail);
     for (const leg of s.legs) {
       const thigh = partMesh(new THREE.CapsuleGeometry(leg.thigh.radius, leg.thigh.halfHeight * 2, 4, 8), 0x5a3d26, 0.85);
+      thigh.scale.setScalar(SCALE);
       parts.push(thigh);
       const shank = partMesh(new THREE.CapsuleGeometry(leg.shank.radius, leg.shank.halfHeight * 2, 4, 8), 0x5a3d26, 0.85);
+      shank.scale.setScalar(SCALE);
       const hoof = partMesh(new THREE.CylinderGeometry(leg.shank.radius * 1.15, leg.shank.radius * 0.9, 0.06, 8), 0x141010, 0.6);
       hoof.position.set(0, -leg.shank.halfHeight - 0.02, 0); shank.add(hoof);
       parts.push(shank);
@@ -179,6 +183,7 @@ export class HorseHerd {
     const mat = new THREE.LineBasicNodeMaterial({ vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
     const line = new THREE.LineSegments(geo, mat);
     line.frustumCulled = false;
+    line.scale.setScalar(SCALE); // brain lattice sized to the (scaled) horse
     return { line, colors: colArr, attr, vLayer: Uint8Array.from(vLayer), vNode: Uint16Array.from(vNode) };
   }
 
@@ -197,7 +202,7 @@ export class HorseHerd {
       const a = (i / COUNT) * Math.PI * 2 + Math.random();
       const r = 6 + Math.random() * (ROAM - 8);
       const anchor = { x: PARK.x + Math.cos(a) * r, z: PARK.z + Math.sin(a) * r };
-      const rag = new HorseRagdoll(this.#box3d, this.#spec, this.#policyDef!);
+      const rag = new HorseRagdoll(this.#box3d, this.#spec, this.#policyDef!, SCALE);
       const yaw = Math.random() * Math.PI * 2;
       rag.setGoal(Math.sin(yaw), Math.cos(yaw));
       const m = this.#buildMeshes(rag.layers().map((l) => l.length));
@@ -259,7 +264,7 @@ export class HorseHerd {
     if (this.#ridden < 0) return false;
     const h = this.#horses[this.#ridden];
     outQuat.set(h.wq[0], h.wq[1], h.wq[2], h.wq[3]);
-    outPos.set(h.wx, h.wy + 0.75, h.wz);
+    outPos.set(h.wx, h.wy + 0.75 * SCALE, h.wz);
     return true;
   }
 
@@ -328,7 +333,7 @@ export class HorseHerd {
     b.attr.needsUpdate = true;
     // float above the horse, billboard to the camera on yaw
     const yaw = Math.atan2(this.#camPos.x - h.wx, this.#camPos.z - h.wz);
-    b.line.position.set(h.wx, h.wy + 1.5, h.wz);
+    b.line.position.set(h.wx, h.wy + 1.5 * SCALE, h.wz);
     b.line.rotation.set(0, yaw, 0);
   }
 }

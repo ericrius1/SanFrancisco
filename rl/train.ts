@@ -43,7 +43,12 @@ const dim = paramCount(sizes);
 console.log(`[train] creature=${creatureName} obs=${sizes[0]} act=${sizes[sizes.length - 1]} params=${dim}`);
 
 const box3d = await createBox3D();
-const env = new Box3DEnv(box3d, spec);
+// DOMAIN RANDOMIZATION over body size: train across several scales so the policy
+// generalizes to any size (obs/reward are non-dimensional, so one policy works
+// at all of them). Each fitness eval is scored across the whole range.
+const SCALES = [0.8, 1.3, 1.9, 2.6];
+const envs = SCALES.map((s) => new Box3DEnv(box3d, spec, { scale: s }));
+const recEnv = envs[2]; // ~1.9x, near the in-world size, for recorded metrics
 const policy = Policy.random(sizes, rng32(1), creatureName);
 
 // --warm continues from the currently-deployed policy (refine a good gait
@@ -68,10 +73,11 @@ const es = new ES({ dim, pairs: PAIRS, sigma: SIGMA, lr: 0.03, weightDecay: 0.00
 function fitness(params: Float32Array, tag: { gen: number }): number {
   policy.setParams(params);
   let total = 0;
-  for (let e = 0; e < ROLLS; e++) {
-    total += rollout(env, policy, { maxSteps: EP_STEPS, seed: 7919 * (tag.gen + 1) + e }).reward;
+  const n = Math.max(ROLLS, SCALES.length);
+  for (let e = 0; e < n; e++) {
+    total += rollout(envs[e % SCALES.length], policy, { maxSteps: EP_STEPS, seed: 7919 * (tag.gen + 1) + e }).reward;
   }
-  return total / ROLLS;
+  return total / n;
 }
 
 mkdirSync("rl/runs", { recursive: true });
@@ -94,12 +100,13 @@ for (let g = 0; g < GENS; g++) {
 
   if (rep.gen % RECORD_EVERY === 0 || g === GENS - 1) {
     policy.setParams(rep.center);
-    const roll = rollout(env, policy, { maxSteps: EP_STEPS, seed: 42, record: true, recordEvery: 2 });
+    const roll = rollout(recEnv, policy, { maxSteps: EP_STEPS, seed: 42, record: true, recordEvery: 2 });
+    const rspec = recEnv.spec; // scaled dims so the viewer renders the recorded size
     const body = {
-      torso: spec.torso.half,
-      legs: spec.legs.map((l) => ({ hip: l.hip, thigh: [l.thigh.halfHeight, l.thigh.radius], shank: [l.shank.halfHeight, l.shank.radius] }))
+      torso: rspec.torso.half,
+      legs: rspec.legs.map((l) => ({ hip: l.hip, thigh: [l.thigh.halfHeight, l.thigh.radius], shank: [l.shank.halfHeight, l.shank.radius] }))
     };
-    writeFileSync(`rl/runs/${creatureName}_gen${rep.gen}.frames.json`, JSON.stringify({ creature: creatureName, gen: rep.gen, dt: env.dt * 2, body, reward: +roll.reward.toFixed(1), frames: roll.frames }));
+    writeFileSync(`rl/runs/${creatureName}_gen${rep.gen}.frames.json`, JSON.stringify({ creature: creatureName, gen: rep.gen, dt: recEnv.dt * 2, body, reward: +roll.reward.toFixed(1), frames: roll.frames }));
     // locomotion metrics: did it actually travel, and along the goal?
     const fr = roll.frames!;
     const a = fr[0].links[0].pos;
@@ -109,9 +116,10 @@ for (let g = 0; g < GENS; g++) {
     let hSum = 0;
     for (const f of fr) hSum += f.links[0].pos[1];
     const meanH = hSum / fr.length;
+    const hPct = ((meanH / rspec.standHeight) * 100) | 0; // scale-independent: % of standing height
     const secs = ((Date.now() - t0) / 1000).toFixed(0);
     console.log(
-      `gen ${rep.gen}  center=${line.center}  best=${line.best}  sigma=${line.sigma}  steps=${roll.steps}/${EP_STEPS}  dist=${dist.toFixed(2)}m  along=${along.toFixed(2)}m  meanH=${meanH.toFixed(2)}  [${secs}s]`
+      `gen ${rep.gen}  center=${line.center}  best=${line.best}  sigma=${line.sigma}  steps=${roll.steps}/${EP_STEPS}  dist=${dist.toFixed(2)}m  along=${along.toFixed(2)}m  meanH=${meanH.toFixed(2)}(${hPct}%)  [${secs}s]`
     );
   }
 }

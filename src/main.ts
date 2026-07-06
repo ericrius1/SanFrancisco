@@ -733,34 +733,73 @@ async function boot() {
     hud.message("Hopped out", 1.8);
     return true;
   };
-  type ReturnSpot = { x: number; y: number; z: number; heading: number; mode: PlayerMode };
-  let returnSpot: ReturnSpot | null = null;
-  const setReturnSpot = (spot: ReturnSpot | null) => {
-    returnSpot = spot;
-    hud.setReturnAvailable(spot !== null);
+  type PlaceHistoryEntry = { x: number; y: number; z: number; heading: number; mode: PlayerMode; label: string };
+  const PLACE_HISTORY_LIMIT = 32;
+  let placeHistory: PlaceHistoryEntry[] = [];
+  let placeHistoryIndex = -1;
+  const capturePlace = (label: string): PlaceHistoryEntry => ({
+    x: player.position.x,
+    y: player.position.y,
+    z: player.position.z,
+    heading: player.heading,
+    mode: player.mode,
+    label
+  });
+  const samePlace = (a: PlaceHistoryEntry, b: PlaceHistoryEntry) =>
+    a.mode === b.mode &&
+    Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z) < 0.5 &&
+    Math.abs(Math.atan2(Math.sin(a.heading - b.heading), Math.cos(a.heading - b.heading))) < 0.05;
+  const updatePlaceHistoryHud = () => {
+    hud.setTeleportHistory(placeHistoryIndex > 0, placeHistoryIndex >= 0 && placeHistoryIndex < placeHistory.length - 1);
   };
-  const rememberReturnSpot = () => {
-    setReturnSpot({
-      x: player.position.x,
-      y: player.position.y,
-      z: player.position.z,
-      heading: player.heading,
-      mode: player.mode
-    });
+  const beginPlaceNavigation = (label: string) => {
+    const current = capturePlace(label);
+    if (placeHistoryIndex < 0) {
+      placeHistory = [current];
+      placeHistoryIndex = 0;
+    } else {
+      placeHistory[placeHistoryIndex] = current;
+      placeHistory = placeHistory.slice(0, placeHistoryIndex + 1);
+    }
+    updatePlaceHistoryHud();
   };
-  const returnToPreviousSpot = () => {
-    const spot = returnSpot;
-    if (!spot) {
-      hud.message("No previous spot saved", 1.8);
+  const finishPlaceNavigation = (label: string) => {
+    const next = capturePlace(label);
+    if (placeHistoryIndex >= 0 && samePlace(placeHistory[placeHistoryIndex], next)) {
+      placeHistory[placeHistoryIndex] = next;
+      updatePlaceHistoryHud();
       return;
     }
-    exitToWalk();
-    player.restoreState({ mode: "walk", x: spot.x, y: spot.y, z: spot.z, heading: spot.heading });
-    chase.yaw = spot.heading + Math.PI;
-    setReturnSpot(null);
-    hud.message(`Back where you switched from ${spot.mode}`, 2.4);
+    placeHistory = placeHistory.slice(0, placeHistoryIndex + 1);
+    placeHistory.push(next);
+    if (placeHistory.length > PLACE_HISTORY_LIMIT) {
+      placeHistory.shift();
+    } else {
+      placeHistoryIndex++;
+    }
+    placeHistoryIndex = placeHistory.length - 1;
+    updatePlaceHistoryHud();
   };
-  hud.onReturnPrevious = returnToPreviousSpot;
+  const applyPlaceHistory = (step: -1 | 1) => {
+    const nextIndex = placeHistoryIndex + step;
+    if (nextIndex < 0 || nextIndex >= placeHistory.length) {
+      hud.message(step < 0 ? "No earlier place" : "No later place", 1.8);
+      updatePlaceHistoryHud();
+      return;
+    }
+    if (placeHistoryIndex >= 0) placeHistory[placeHistoryIndex] = capturePlace(placeHistory[placeHistoryIndex].label);
+    const spot = placeHistory[nextIndex];
+    exitToWalk();
+    if (spot.mode === "drive") player.setDriveStyle(null);
+    if (spot.mode === "drone") player.clearDroneStyle();
+    player.restoreState({ mode: spot.mode, x: spot.x, y: spot.y, z: spot.z, heading: spot.heading });
+    chase.yaw = spot.heading + Math.PI;
+    placeHistoryIndex = nextIndex;
+    updatePlaceHistoryHud();
+    hud.message(spot.label, 2.2);
+  };
+  hud.onHistoryBack = () => applyPlaceHistory(-1);
+  hud.onHistoryForward = () => applyPlaceHistory(1);
   const teleportToTarget = (x: number, z: number, toName?: string, playerId?: number) => {
     void (async () => {
       const t = playerId !== undefined ? remotes.stateOf(playerId) : null;
@@ -768,6 +807,7 @@ async function boot() {
         hud.message(`${toName ?? "Player"} is no longer available`, 2.2);
         return;
       }
+      beginPlaceNavigation("Previous place");
       leaveRide();
       const tx = t?.x ?? x;
       const tz = t?.z ?? z;
@@ -808,6 +848,7 @@ async function boot() {
         const faceHeading = Math.hypot(faceDx, faceDz) > 0.5 ? Math.atan2(-faceDx, -faceDz) : open.heading;
         player.respawn({ x: open.x, z: open.z, heading: faceHeading });
       }
+      finishPlaceNavigation(toName ?? "Teleported place");
       hud.message(toName ? `Teleported to ${toName}` : "Teleported", 2.4);
       tutorial.note("teleport"); // map/teleport chapter listens for this
     })();
@@ -836,10 +877,12 @@ async function boot() {
     pressed: (c) => input.pressed(c),
     mapOpen: () => minimap.expanded,
     teleport: (t) => {
+      beginPlaceNavigation("Previous place");
       leaveRide();
       dropCurrentDriveMount();
       player.teleportTo(t);
       chase.yaw = t.facing;
+      finishPlaceNavigation("Tutorial place");
     },
     message: (m, s) => hud.message(m, s)
   });
@@ -1266,7 +1309,8 @@ async function boot() {
     // plain number keys select vehicles; Shift+number teleports to player slots.
     const switchMode = (mode: PlayerMode) => {
       if (mode === player.mode) return;
-      if (mode !== "walk" && (player.mode === "walk" || !returnSpot)) rememberReturnSpot();
+      const record = mode !== "walk";
+      if (record) beginPlaceNavigation("Previous place");
       leaveRide(); // a mode key while riding shotgun hops out first
       if ((currentRide || currentAnimal || currentQuidditch) && mode !== "drive" && mode !== "drone") dropCurrentDriveMount();
       if (mode === "drive" && !currentRide && !currentAnimal) player.setDriveStyle(null);
@@ -1274,6 +1318,7 @@ async function boot() {
       // always spawn a fresh mount — any one you left behind keeps living its own
       // life (the phoenix flies on, the plane lies where it crashed)
       player.trySwitch(mode);
+      if (record) finishPlaceNavigation(`${mode} place`);
     };
     // seated at the piano the digits play notes (handlePianoInput below) — the
     // mode switcher stands down so hitting "3" doesn't turn you into a plane
@@ -1298,7 +1343,8 @@ async function boot() {
       const from = idx >= 0 ? idx : 0;
       if (cycleOrder.length) switchMode(cycleOrder[(from + cycle + cycleOrder.length) % cycleOrder.length]);
     }
-    if (input.pressed("KeyT")) returnToPreviousSpot();
+    if (input.altPressed("ArrowLeft")) applyPlaceHistory(-1);
+    if (input.altPressed("ArrowRight")) applyPlaceHistory(1);
 
     // E: Exploratorium piano, then exit any vehicle/creature, or on foot hop
     // into the nearest car (a friend's passenger seat wins over parked traffic)
@@ -1463,8 +1509,8 @@ async function boot() {
 
     // arrow keys: navigate toolbar rows and options while the UI is visible
     if (uiOpen) {
-      if (input.pressed("ArrowLeft")) toolbar.navigate("left");
-      else if (input.pressed("ArrowRight")) toolbar.navigate("right");
+      if (input.pressed("ArrowLeft") && !input.altPressed("ArrowLeft")) toolbar.navigate("left");
+      else if (input.pressed("ArrowRight") && !input.altPressed("ArrowRight")) toolbar.navigate("right");
       else if (input.pressed("ArrowUp")) toolbar.navigate("up");
       else if (input.pressed("ArrowDown")) toolbar.navigate("down");
     }

@@ -201,25 +201,36 @@ export class HUD {
   #root = document.getElementById("hud")!
   #help = document.querySelector<HTMLElement>('[data-hud="help"]')!
   #center = document.querySelector<HTMLElement>('[data-hud="center"]')!
+  #history = document.createElement("div")
   #msgTimer = 0
   #current: PlayerMode = "walk"
   #device: "kb" | "pad" = "kb"
   #toolVerb = "sling paintballs" // what a click does right now (the toolbar's tool)
   #expanded = false // advanced shortcuts folded away by default
-  #returnAvailable = false
+  #historyCanBack = false
+  #historyCanForward = false
 
-  onReturnPrevious: () => void = () => {}
+  onHistoryBack: () => void = () => {}
+  onHistoryForward: () => void = () => {}
 
   constructor() {
+    this.#history.className = "place-history"
+    this.#root.appendChild(this.#history)
     // one delegated listener: the fold-out toggle lives inside #help
     this.#help.addEventListener("click", (e) => {
       if ((e.target as HTMLElement).closest(".more")) {
         this.#expanded = !this.#expanded
         this.#renderHelp()
-      } else if ((e.target as HTMLElement).closest(".return-prev")) {
-        this.onReturnPrevious()
       }
     })
+    this.#history.addEventListener("click", (e) => {
+      if ((e.target as HTMLElement).closest('[data-history="back"]')) {
+        this.onHistoryBack()
+      } else if ((e.target as HTMLElement).closest('[data-history="forward"]')) {
+        this.onHistoryForward()
+      }
+    })
+    this.#renderHistory()
   }
 
   /** The Click/X row tracks the active toolbar tool. */
@@ -233,17 +244,28 @@ export class HUD {
     this.#renderHelp()
   }
 
-  setReturnAvailable(available: boolean) {
-    if (available === this.#returnAvailable) return
-    this.#returnAvailable = available
-    this.#renderHelp()
+  setTeleportHistory(canBack: boolean, canForward: boolean) {
+    if (canBack === this.#historyCanBack && canForward === this.#historyCanForward) return
+    this.#historyCanBack = canBack
+    this.#historyCanForward = canForward
+    this.#renderHistory()
   }
 
   /** Swap the help labels to whichever device was touched last. */
   setDevice(device: "kb" | "pad") {
     if (device === this.#device) return
     this.#device = device
+    this.#renderHistory()
     this.#renderHelp()
+  }
+
+  #renderHistory() {
+    const pad = this.#device === "pad"
+    this.#history.innerHTML =
+      `<button class="history-btn" data-history="back" type="button" title="Back (Alt+Left)"${this.#historyCanBack ? "" : " disabled"}>` +
+      `<span class="hist-main">Back</span><span class="hist-keys">${chips(["Alt", "←"], pad)}</span></button>` +
+      `<button class="history-btn" data-history="forward" type="button" title="Forward (Alt+Right)"${this.#historyCanForward ? "" : " disabled"}>` +
+      `<span class="hist-main">Forward</span><span class="hist-keys">${chips(["Alt", "→"], pad)}</span></button>`
   }
 
   #renderHelp() {
@@ -273,15 +295,10 @@ export class HUD {
       const key = pad ? "" : `<span class="k">${i + 1}</span>`
       return `<div class="mi${m === this.#current ? " on" : ""}">${key}<span class="lbl">${MODE_SHORT[m]}</span></div>`
     }).join("")
-    const returnButton = this.#returnAvailable
-      ? `<button class="return-prev" type="button" title="Return to the spot before your last vehicle switch">` +
-        `${pad ? "" : `<span class="k">T</span>`}<span>return</span></button>`
-      : ""
     const modes =
       `<div class="modes">` +
       `<div class="modes-h">vehicles${pad ? " · ◀ ▶" : ""}</div>` +
       `<div class="modes-list">${vehicleRows}</div>` +
-      returnButton +
       `</div>`
 
     html.push(`<div class="cols"><div class="grid">${rows}</div>${modes}</div>`)
@@ -311,7 +328,6 @@ export class HUD {
           fi(["Back"], "immersive")
         ]
       : [
-          ...(this.#returnAvailable ? [fi(["T"], "return", true)] : []),
           fi(["R"], "respawn"),
           fi(["B"], "fireworks"),
           fi(["Z"], "hold — time of day"),

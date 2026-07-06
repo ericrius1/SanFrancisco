@@ -1,0 +1,5 @@
+(node:91468) ExperimentalWarning: Type Stripping is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+[train] creature=horse obs=22 act=14 params=2254
+gen 8  center=337.88  best=386.39  sigma=0.0775  steps=340/340  dist=1.47m  along=0.45m  meanH=1.29(94%)  [47s]
+gen 16  center=363.34  best=429.76  sigma=0.075  steps=340/340  dist=0.21m  along=0.01m  meanH=1.47(107%)  [95s]

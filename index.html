@@ -47,24 +47,49 @@
       #hud .help .mi.on { opacity: 1; }
       #hud .help .mi.on .k { border-color: #6fd7c4; color: #9ef2df; }
       #hud .help .mi.on .lbl { color: #9ef2df; font-weight: 600; }
-      #hud .help .return-prev {
-        pointer-events: auto; cursor: pointer;
-        margin-top: 9px; width: 100%;
-        display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-        padding: 5px 8px; border-radius: 7px;
-        background: rgba(18, 40, 56, 0.6); border: 1px solid rgba(111, 215, 196, 0.42);
-        color: #9ef2df; font: 700 11px "Avenir Next", "Helvetica Neue", sans-serif;
-        letter-spacing: 0.02em; text-transform: uppercase;
-        transition: border-color 0.15s, color 0.15s, background 0.15s, transform 0.12s;
+      #hud .place-history {
+        position: absolute; top: 16px; left: 272px; z-index: 2;
+        display: inline-flex; gap: 7px;
+        pointer-events: auto; user-select: none;
       }
-      #hud .help .return-prev:hover {
+      #hud .place-history .history-btn {
+        pointer-events: auto; cursor: pointer;
+        min-width: 92px; min-height: 34px;
+        display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+        padding: 0 11px; border-radius: 10px;
+        background: rgba(10, 24, 36, 0.72); border: 1px solid rgba(111, 215, 196, 0.42);
+        color: #9ef2df; font: 800 11px "Avenir Next", "Helvetica Neue", sans-serif;
+        letter-spacing: 0.02em;
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 6px 18px rgba(0, 6, 12, 0.28);
+        backdrop-filter: blur(6px);
+        transition: border-color 0.15s, color 0.15s, background 0.15s, transform 0.12s, opacity 0.15s;
+      }
+      #hud .place-history .history-btn:not(:disabled):hover {
         border-color: #9ef2df; color: #eaf4f8; background: rgba(22, 64, 70, 0.62);
         transform: translateY(-1px);
       }
+      #hud .place-history .history-btn:disabled {
+        cursor: default; opacity: 0.38; color: #bcd9e6; border-color: rgba(190, 225, 240, 0.2);
+      }
+      #hud .place-history .history-btn .hist-main {
+        min-width: 42px; text-align: left;
+      }
+      #hud .place-history .history-btn .hist-keys {
+        display: inline-flex; gap: 3px; opacity: 0.86;
+      }
+      @media (max-width: 620px) {
+        #hud .place-history {
+          top: 266px; left: 20px;
+          flex-direction: column;
+        }
+        #hud .place-history .history-btn {
+          min-width: 112px;
+        }
+      }
       /* Tab toggles the user UI: panels fade out slowly, snap back quickly. */
-      #hud .help, #hud .toolbar, #hud .audio, #hud .minimap, #hud .avatar-ui, #hud .satchel, #hud .share-ui, #hud .tutorial-ui, #hud .tutorial-panel, #hud .links-ui, #hud .player-locator { transition: opacity 0.35s ease; }
-      #hud.faded .help, #hud.faded .toolbar, #hud.faded .audio, #hud.faded .minimap, #hud.faded .avatar-ui, #hud.faded .satchel, #hud.faded .share-ui, #hud.faded .tutorial-ui, #hud.faded .tutorial-panel, #hud.faded .links-ui, #hud.faded .player-locator { opacity: 0; transition: opacity 1s ease; }
-      #hud.faded .toolbar, #hud.faded .audio, #hud.faded .minimap, #hud.faded .avatar-ui, #hud.faded .share-ui, #hud.faded .tutorial-ui, #hud.faded .tutorial-panel, #hud.faded .links-ui { pointer-events: none; }
+      #hud .help, #hud .toolbar, #hud .audio, #hud .minimap, #hud .place-history, #hud .avatar-ui, #hud .satchel, #hud .share-ui, #hud .tutorial-ui, #hud .tutorial-panel, #hud .links-ui, #hud .player-locator { transition: opacity 0.35s ease; }
+      #hud.faded .help, #hud.faded .toolbar, #hud.faded .audio, #hud.faded .minimap, #hud.faded .place-history, #hud.faded .avatar-ui, #hud.faded .satchel, #hud.faded .share-ui, #hud.faded .tutorial-ui, #hud.faded .tutorial-panel, #hud.faded .links-ui, #hud.faded .player-locator { opacity: 0; transition: opacity 1s ease; }
+      #hud.faded .toolbar, #hud.faded .audio, #hud.faded .minimap, #hud.faded .place-history, #hud.faded .avatar-ui, #hud.faded .share-ui, #hud.faded .tutorial-ui, #hud.faded .tutorial-panel, #hud.faded .links-ui { pointer-events: none; }
       #hud .help.swap { animation: hudswap 0.28s ease; }
       @keyframes hudswap { from { opacity: 0; transform: translateY(6px); } }
       #hud .help .grid {

@@ -101,7 +101,10 @@ export const HORSE: CreatureSpec = {
   pd: { hipKp: 72, hipKd: 3.0, latKp: 26, latKd: 1.6, kneeKp: 72, kneeKd: 3.0, maxTorque: 95, reaction: 0.2 },
   // RUN: forward speed dominates, staying TALL is strongly rewarded (kills the
   // crouch-shuffle), alive bonus tiny. Speed only pays while upright (in reward()).
-  reward: { forward: 5.5, upright: 0.25, alive: 0.02, height: 0.35, energy: 0.0012, spin: 0.03, heading: 0.4 },
+  // height is a modest stand-tall entry gradient; the tall-GATE (in reward())
+  // already forces tallness, so keeping this small makes RUNNING the way to earn
+  // real reward instead of just standing there.
+  reward: { forward: 6.0, upright: 0.25, alive: 0.03, height: 0.9, energy: 0.0012, spin: 0.03, heading: 0.4 },
   fall: { minUp: 0.4, minHeight: 0.32 }
 };
 
@@ -128,6 +131,41 @@ export const DOG: CreatureSpec = {
   reward: { forward: 4.0, upright: 0.14, alive: 0.04, height: 0.34, energy: 0.002, spin: 0.035, heading: 0.5 },
   fall: { minUp: 0.4, minHeight: 0.32 }
 };
+
+/**
+ * Size-scaled copy of a creature spec. Lengths scale by s; density kept, so mass
+ * ~ s^3. For dynamically-SIMILAR motion under fixed gravity (Froude scaling):
+ * torque/gains ~ s^4, damping ~ s^3.5 (holds the damping ratio), stride
+ * frequency ~ 1/sqrt(s). With the non-dimensional observations/reward in
+ * observe()/reward(), ONE policy transfers across body sizes — and training
+ * randomizes s so it's robust to any scale.
+ */
+export function scaledSpec(base: CreatureSpec, s: number): CreatureSpec {
+  if (s === 1) return base;
+  const g4 = s * s * s * s;
+  const gd = Math.pow(s, 3.5);
+  const sf = 1 / Math.sqrt(s);
+  return {
+    name: base.name,
+    torso: { half: [base.torso.half[0] * s, base.torso.half[1] * s, base.torso.half[2] * s], density: base.torso.density },
+    legs: base.legs.map((l) => ({
+      hip: [l.hip[0] * s, l.hip[1] * s, l.hip[2] * s] as V3,
+      thigh: { halfHeight: l.thigh.halfHeight * s, radius: l.thigh.radius * s, density: l.thigh.density },
+      shank: { halfHeight: l.shank.halfHeight * s, radius: l.shank.radius * s, density: l.shank.density },
+      phase: l.phase
+    })),
+    standHeight: base.standHeight * s,
+    cpg: { baseFreq: base.cpg.baseFreq * sf, hipAmp: base.cpg.hipAmp, kneeAmp: base.cpg.kneeAmp, kneeRest: base.cpg.kneeRest, kneeLag: base.cpg.kneeLag },
+    pd: {
+      hipKp: base.pd.hipKp * g4, hipKd: base.pd.hipKd * gd,
+      latKp: base.pd.latKp * g4, latKd: base.pd.latKd * gd,
+      kneeKp: base.pd.kneeKp * g4, kneeKd: base.pd.kneeKd * gd,
+      maxTorque: base.pd.maxTorque * g4, reaction: base.pd.reaction
+    },
+    reward: base.reward,
+    fall: base.fall
+  };
+}
 
 // ---------------------------------------------------------------- dims
 /** obs = up(3) goalXZ(2) velBody(3) angVel(3) height(1) cpg(2) thighPitch(nLeg) kneeAngle(nLeg). */
@@ -179,19 +217,25 @@ export function observe(spec: CreatureSpec, state: CreatureState, phase: number,
   qRot(t.quat, [0, 1, 0], _up);
   qRot(t.quat, [0, 0, 1], _fwd);
   qRotInv(t.quat, t.vel, _velB);
+  // NON-DIMENSIONAL (Froude) scaling so the policy sees the SAME numbers at any
+  // body size: lengths / standHeight, velocities / sqrt(g*standHeight), angular
+  // velocities * sqrt(standHeight/g). One policy then transfers across scales.
+  const L = spec.standHeight;
+  const invV = 1 / Math.sqrt(9.81 * L);
+  const T = L * invV; // = sqrt(L/g)
   let k = 0;
   out[k++] = _up[0];
   out[k++] = _up[1];
   out[k++] = _up[2];
   out[k++] = state.goal[0] * _fwd[0] + state.goal[1] * _fwd[2]; // facing goal (cos)
   out[k++] = state.goal[0] * _fwd[2] - state.goal[1] * _fwd[0]; // turn error (sin)
-  out[k++] = _velB[0] * 0.4;
-  out[k++] = _velB[1] * 0.4;
-  out[k++] = _velB[2] * 0.4;
-  out[k++] = t.angVel[0] * 0.25;
-  out[k++] = t.angVel[1] * 0.25;
-  out[k++] = t.angVel[2] * 0.25;
-  out[k++] = (t.pos[1] - state.groundY - spec.standHeight) * 2;
+  out[k++] = _velB[0] * invV;
+  out[k++] = _velB[1] * invV;
+  out[k++] = _velB[2] * invV;
+  out[k++] = t.angVel[0] * T;
+  out[k++] = t.angVel[1] * T;
+  out[k++] = t.angVel[2] * T;
+  out[k++] = (t.pos[1] - state.groundY - L) / L;
   out[k++] = Math.sin(phase);
   out[k++] = Math.cos(phase);
   for (let i = 0; i < spec.legs.length; i++) out[k++] = thighPitch(state, i) * 0.6;
@@ -289,32 +333,35 @@ export function reward(spec: CreatureSpec, state: CreatureState, action: ArrayLi
   qRot(t.quat, [0, 0, 1], _fwd);
   const height = t.pos[1] - state.groundY;
   const upright = _up[1];
-  const done = upright < spec.fall.minUp || height < spec.fall.minHeight;
+  const H = spec.standHeight;
+  // TERMINATE a deep crouch (or a tip): a squatting horse looks collapsed, so we
+  // don't let it accrue reward while sunk — this is the single biggest fix.
+  const done = upright < spec.fall.minUp || height < 0.45 * H;
 
   const fwdSpeed = t.vel[0] * state.goal[0] + t.vel[2] * state.goal[1];
   const facing = _fwd[0] * state.goal[0] + _fwd[2] * state.goal[1];
   let energy = 0;
   for (let i = 0; i < action.length; i++) energy += action[i] * action[i];
   const spin = t.angVel[0] * t.angVel[0] + t.angVel[1] * t.angVel[1] + t.angVel[2] * t.angVel[2];
-  // reward staying TALL: full credit at/above standing height, scaled when
-  // crouched, NO penalty for bouncing higher (so a gallop's float is fine)
-  const tall = height >= spec.standHeight ? 1 : Math.max(0, height / spec.standHeight);
 
-  // clamp so ES can't reward-hack a numerical blow-up; 6 m/s is a full gallop
-  const speed = fwdSpeed < -1.5 ? -1.5 : fwdSpeed > 6 ? 6 : fwdSpeed;
+  // STEEP tallness ramp: ~0 at 0.6*standing, 1 near standing. Every reward term
+  // is multiplied by this, so a crouch earns almost nothing and ES is FORCED to
+  // keep the legs extended and the body up (with a stand-tall bonus that gives a
+  // gradient even at zero speed → learn to stand, then to run tall).
+  const tall = Math.max(0, Math.min(1, (height - 0.5 * H) / (0.9 * H - 0.5 * H)));
+  // Froude speed: fwdSpeed / sqrt(g*standHeight) — dimensionless, so a "run"
+  // scores the same at any body size (Fr~2-3 is a gallop).
+  const V = Math.sqrt(9.81 * H);
+  const speed = Math.max(-1, Math.min(4, fwdSpeed / V));
+  const gate = Math.max(0, upright) * tall; // must be UPRIGHT and TALL to earn anything
   const w = spec.reward;
   let r = 0;
-  // the ONLY way to bank big reward is to run while UPRIGHT and TALL — this is
-  // what forces a real running gait instead of "stand tall" or "crawl low".
-  const gate = Math.max(0, upright) * (0.3 + 0.7 * tall);
-  r += w.forward * speed * gate;
-  // super-linear bonus above walking pace: the faster it runs, the better —
-  // this is what pulls the gait off the "stable trot" plateau toward a gallop.
-  r += w.forward * 1.1 * Math.max(0, speed - 0.7) * gate;
-  r += w.upright * upright;
-  r += w.alive;
-  r += w.heading * Math.max(0, facing);
-  r += w.height * tall; // small anti-crouch floor so it doesn't sink when slow
+  r += w.height * tall; // stand-tall bonus (the entry gradient)
+  r += w.forward * speed * gate; // run — but only while tall
+  r += w.forward * 0.9 * Math.max(0, speed - 0.35) * gate; // faster is better
+  r += w.upright * upright * tall;
+  r += w.alive * tall;
+  r += w.heading * Math.max(0, facing) * tall;
   r -= w.energy * energy;
   r -= w.spin * spin;
   r *= dt * 60;

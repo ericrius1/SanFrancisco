@@ -14,6 +14,7 @@ import {
   reward,
   obsDim,
   actDim,
+  scaledSpec,
   type CreatureSpec,
   type CreatureState,
   type Link,
@@ -44,7 +45,8 @@ export class Box3DEnv {
   private groundY = 0;
   private spawnY: number;
 
-  constructor(box3d: any, spec: CreatureSpec, opts: { dt?: number; substeps?: number } = {}) {
+  constructor(box3d: any, spec: CreatureSpec, opts: { dt?: number; substeps?: number; scale?: number } = {}) {
+    spec = scaledSpec(spec, opts.scale ?? 1); // build (and observe/decode/reward) at this body size
     this.spec = spec;
     this.dt = opts.dt ?? 1 / 120;
     this.substeps = opts.substeps ?? 8;
