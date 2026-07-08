@@ -352,9 +352,9 @@ const TAB_PLAY = `
     <p>The city is stitched with little systems that reward wandering. Golden treasure chests conjure
     themselves on open ground under a light beacon you can spot a block away; walk up and one pops open
     on its own, spraying a fountain of coins and gems that magnet onto you and count into your satchel
-    (a lucky few throw a fireworks salvo on top). Crabs skitter along the waterline and butterflies bob
-    over the parks — each critter is one instanced mesh with its wiggle and flap done in the vertex
-    shader, so the CPU only steers; catch one and it poofs a sparkle ring and respawns somewhere fresh.
+    (a lucky few throw a fireworks salvo on top). Crabs skitter along the waterline as one instanced
+    mesh with its wiggle done in the vertex shader, so the CPU only steers; catch one and it poofs a
+    sparkle ring and respawns somewhere fresh.
     Blow soap bubbles and they drift off on a breeze with real thin-film iridescence — the colours are
     the viewing angle, not a texture — and burst against a wall, the water, or just old age.</p>
     <p>The traffic is real: sedans, taxis, a Muni bus, a cable car — each a dynamic body you can ram or

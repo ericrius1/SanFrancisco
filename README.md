@@ -101,8 +101,8 @@ Nothing here is required — it's a list of things people tend to find fun.
   light beacons. Walk up and they burst open in a fountain of coins and gems —
   the satchel bottom-right keeps score, and a lucky chest fires a firework
   salvo.
-- **Hunt the critters.** Crabs scuttle along the waterfront and butterflies
-  drift over the parks. Pounce close to catch them.
+- **Hunt the critters.** Crabs scuttle along the waterfront. Pounce close to
+  catch them.
 - **Sail the bay.** Take the boat (`Shift`+`4`) out past the promenade — the
   water actually heaves and the boat trims bow-up as it climbs the swell.
 - **Chase the light.** Hold `Z` and drag to scrub the time of day. Sunset over

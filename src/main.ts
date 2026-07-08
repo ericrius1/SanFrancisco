@@ -419,7 +419,7 @@ async function boot() {
   const citygenRing: { current: CityGenRing | null } = { current: null };
   createCityGenRing({}, { scene, physics, map, tiles }).then((r) => { citygenRing.current = r; });
 
-  // the Fortnite-ish layer: treasure chests raining coins, critters to hunt,
+  // the Fortnite-ish layer: treasure chests raining coins, crabs to hunt,
   // and the Garry's-Mod rope/grab click-tools (loot.ts / hunt.ts / ropes.ts)
   const satchel = new Satchel();
   const loot = new Loot(physics, map, scene);
@@ -430,7 +430,7 @@ async function boot() {
   const hunt = new Hunt(map, scene);
   hunt.onCatch = (kind) => {
     satchel.add(kind);
-    hud.message(kind === "crab" ? "Crab caught!" : "Butterfly caught!", 1.1);
+    hud.message("Crab caught!", 1.1);
   };
   const quidditch = new Quidditch(map, scene);
   const quidHud = new QuidditchHUD();
