@@ -1,6 +1,6 @@
 import { createBox3D } from "box3d-wasm";
 import { readFileSync } from "node:fs";
-import { HorseRagdoll } from "../../src/gameplay/horse/horseRagdoll.ts";
+import { HorseRagdoll } from "../core/nodeRagdoll.ts";
 import { HORSE } from "../../src/creatures/quadruped.ts";
 import { type PolicyDef } from "../../src/creatures/policy.ts";
 

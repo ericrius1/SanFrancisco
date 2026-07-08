@@ -52,6 +52,7 @@ import { createBotanicalGarden, windGustValue, type GrassDisplacer } from "./wor
 import { createWildlands } from "./world/wildlands";
 import { createChinatown, cullGeneratedBuildings, pumpGeneratedBuildings, type Chinatown } from "./world/buildings";
 import { createCityGenDemo } from "./world/citygen/demo";
+import { createCityGenRing, type CityGenRing } from "./world/citygen";
 import { Islands } from "./gameplay/islands";
 import { Exploratorium, WATER_VIEW } from "./gameplay/exploratorium";
 import { PALACE_FINE_ARTS } from "./world/heightmap";
@@ -395,11 +396,15 @@ async function boot() {
   const buildings: { current: Chinatown | null } = { current: null };
   createChinatown({}, { scene, physics, map, tiles }).then((c) => { buildings.current = c; });
 
-  // New SF-tuned procedural building module (src/world/citygen). Demo-only for
-  // now: exposed on __sf.citygen so a headless capture can spawn a terrace and
-  // screenshot it in the real renderer (sun + CSM shadows + SSAO). No mesh is
-  // added until spawn() is called, so normal play is unaffected.
+  // New SF-tuned procedural building module (src/world/citygen). Demo hook on
+  // __sf.citygen (headless capture spawns a terrace + screenshots it). Plus the
+  // live streaming ring: within LOAD_R it replaces each Victorian/Edwardian OSM
+  // building with a generated one (footprint-faithful → no shift) and suppresses
+  // the baked twin; other archetypes keep their baked facade until their grammar
+  // lands. Async; inert if the export JSON is missing.
   const citygen = createCityGenDemo({ scene, map });
+  const citygenRing: { current: CityGenRing | null } = { current: null };
+  createCityGenRing({}, { scene, physics, map, tiles }).then((r) => { citygenRing.current = r; });
 
   // the Fortnite-ish layer: treasure chests raining coins, critters to hunt,
   // and the Garry's-Mod rope/grab click-tools (loot.ts / hunt.ts / ropes.ts)
@@ -1139,6 +1144,33 @@ async function boot() {
     }
   };
   const cursorPos = new THREE.Vector3(); // where the world cursor rests this frame
+  // Nearest thing the cursor ray meets: the static world (buildings + terrain)
+  // raced against the dynamic movers already gathered for paint hits (buses,
+  // cars, other players — never me). A sphere hit lands the orb on the mover's
+  // near face, so it sits OVER a bus instead of being buried in it. `paintTargets`
+  // is refilled every frame before this runs.
+  const nearestCursorHit = (origin: THREE.Vector3, dir: THREE.Vector3, maxDist: number, out: THREE.Vector3): boolean => {
+    let bestT = Infinity;
+    const worldHit = physics.raycastWorld(origin, dir, maxDist);
+    if (worldHit) {
+      bestT = origin.distanceTo(worldHit.point);
+      out.copy(worldHit.point);
+    }
+    for (const c of paintTargets) {
+      if (c.owner === net.selfId) continue; // don't stick to my own body/vehicle
+      const ox = origin.x - c.x;
+      const oy = origin.y - c.y;
+      const oz = origin.z - c.z;
+      const b = ox * dir.x + oy * dir.y + oz * dir.z;
+      const disc = b * b - (ox * ox + oy * oy + oz * oz - c.r * c.r);
+      if (disc < 0) continue;
+      const t = -b - Math.sqrt(disc); // near-side intersection = the face toward us
+      if (t <= 0 || t >= bestT || t > maxDist) continue;
+      bestT = t;
+      out.set(origin.x + dir.x * t, origin.y + dir.y * t, origin.z + dir.z * t);
+    }
+    return bestT !== Infinity;
+  };
   const paintDir = new THREE.Vector3();
   const paintVel = new THREE.Vector3();
   const paintMuzzle = new THREE.Vector3();
@@ -1893,6 +1925,7 @@ async function boot() {
     islands.update(elapsed);
     exploratorium.update(frameDt, elapsed, player.position);
     buildings.current?.update(player.position, frameDt);
+    citygenRing.current?.update(player.position, frameDt);
     pumpGeneratedBuildings(6); // advance incremental building merges (~6ms/frame budget)
     quidditch.update(frameDt, player.position, elapsed);
     if (quidditch.active) {
@@ -1964,40 +1997,6 @@ async function boot() {
       orbit.update(frameDt);
     } else {
       chase.update(frameDt, player, input);
-    }
-    // The in-world cursor: a glowing orb that rests where you're pointing. It
-    // sits centre-screen while the mouse is captured (a soft aim reticle too),
-    // and rides the free mouse ray while Command is held. It swells, warms and
-    // sheds a swirl of particles when it lands on something inspectable (an AI
-    // entity's floating brain lattice) — so you can see it's clickable. Runs
-    // after the camera is posed so its billboard + depth match this frame.
-    {
-      const cursorLive =
-        document.body.classList.contains("started") &&
-        !brainPanel.isOpen &&
-        !cameraMode &&
-        !input.suspended &&
-        !cineHook &&
-        !(paused && freezePlayer);
-      if (cursorLive) {
-        aimRay(rayOrigin, aim);
-        const hoverBrain = pickBrain(rayOrigin, aim);
-        if (hoverBrain) {
-          hoverBrain.getWorldPos(cursorPos);
-          if (!input.firePressed && hoverBrain.id !== lastHoverBrain)
-            hud.message(`Click to inspect ${hoverBrain.label}'s brain`, 1.5);
-          lastHoverBrain = hoverBrain.id;
-        } else {
-          lastHoverBrain = null;
-          // rest on the nearest real surface for honest depth; else float ahead
-          const hit = physics.raycastWorld(rayOrigin, aim, 60);
-          if (hit) cursorPos.copy(hit.point);
-          else cursorPos.copy(rayOrigin).addScaledVector(aim, 22);
-        }
-        worldCursor.update(frameDt, camera, cursorPos, hoverBrain ? 1 : 0, true);
-      } else {
-        worldCursor.update(frameDt, camera, cursorPos, 0, false);
-      }
     }
     sky.update(elapsed, camera.position);
     water.update(elapsed, camera.position, player.renderPosition);
@@ -2075,6 +2074,41 @@ async function boot() {
     }
     paintballs.update(frameDt, physics, graffiti, paintSkins, paintTargets, (o, d, m) => exploratorium.raycast(o, d, m));
     paintSkins.update(frameDt, scene);
+
+    // The in-world cursor: a glowing orb that rests where you're pointing. It
+    // sits centre-screen while the mouse is captured (a soft aim reticle too),
+    // and rides the free mouse ray while Command is held. It swells, warms and
+    // sheds a swirl of particles when it lands on something inspectable (an AI
+    // entity's floating brain lattice) — so you can see it's clickable. Runs
+    // after everyone is posed (paintTargets is fresh) so its depth is world-aware:
+    // a hovered bus/car/avatar lifts it onto their near face instead of letting
+    // the ray punch through to the ground behind.
+    {
+      const cursorLive =
+        document.body.classList.contains("started") &&
+        !brainPanel.isOpen &&
+        !cameraMode &&
+        !input.suspended &&
+        !cineHook &&
+        !(paused && freezePlayer);
+      if (cursorLive) {
+        aimRay(rayOrigin, aim);
+        const hoverBrain = pickBrain(rayOrigin, aim);
+        if (hoverBrain) {
+          hoverBrain.getWorldPos(cursorPos);
+          if (!input.firePressed && hoverBrain.id !== lastHoverBrain)
+            hud.message(`Click to inspect ${hoverBrain.label}'s brain`, 1.5);
+          lastHoverBrain = hoverBrain.id;
+        } else {
+          lastHoverBrain = null;
+          // rest on the nearest surface OR dynamic mover for honest depth; else float ahead
+          if (!nearestCursorHit(rayOrigin, aim, 60, cursorPos)) cursorPos.copy(rayOrigin).addScaledVector(aim, 22);
+        }
+        worldCursor.update(frameDt, camera, cursorPos, hoverBrain ? 1 : 0, true);
+      } else {
+        worldCursor.update(frameDt, camera, cursorPos, 0, false);
+      }
+    }
 
     hud.update(frameDt);
     tutorial.update(frameDt);
@@ -2191,7 +2225,7 @@ async function boot() {
 
   const exposeDebugHooks = () => {
     Object.assign(window as never, {
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, WORLD_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, exploratorium, traffic, creatures, forest, garden, wildlands, splashes, vehicleAudio, nature, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, boatLaunchers, goldenGateLights, flyover, bridgeParade, teleportToTarget, aiCars, horses, buildings, citygen, cullGeneratedBuildings, brainPanel, inspectableBrains, worldCursor }
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, WORLD_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, exploratorium, traffic, creatures, forest, garden, wildlands, splashes, vehicleAudio, nature, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, boatLaunchers, goldenGateLights, flyover, bridgeParade, teleportToTarget, aiCars, horses, buildings, citygen, citygenRing, cullGeneratedBuildings, brainPanel, inspectableBrains, worldCursor }
     });
   };
   if (import.meta.env.DEV || new URLSearchParams(location.search).has("profile")) {

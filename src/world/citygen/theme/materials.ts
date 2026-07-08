@@ -35,12 +35,14 @@ export function makeWallMaterial(hex: number): THREE.MeshStandardMaterial {
 
 /** Build the shared id→material table (non-wall ids). Cached by the caller. */
 export function buildCityGenMaterials(): Record<string, THREE.Material> {
-  // window glass: light, sky-reflecting panes with a faint warm interior
+  // window glass: dark, reflective panes so windows punch through the coloured
+  // wall as clear openings (not more body colour). Mostly opaque + a sky-reflecting
+  // clearcoat, over the dark "room" backing, with a faint warm interior glow.
   const glass = new THREE.MeshPhysicalMaterial({
-    color: 0xaec6d2, roughness: 0.1, metalness: 0.1,
-    transparent: true, opacity: 0.5, depthWrite: false, side: THREE.DoubleSide,
-    clearcoat: 0.8, clearcoatRoughness: 0.15,
-    emissive: new THREE.Color(0xffe6b8), emissiveIntensity: 0.18,
+    color: 0x2b3b45, roughness: 0.08, metalness: 0.2,
+    transparent: true, opacity: 0.9, depthWrite: true, side: THREE.DoubleSide,
+    clearcoat: 1.0, clearcoatRoughness: 0.08,
+    emissive: new THREE.Color(0xffdca0), emissiveIntensity: 0.12,
   });
   return {
     // walls (normally replaced per-building by makeWallMaterial; kept as fallback)

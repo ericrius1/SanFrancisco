@@ -35,49 +35,40 @@ function faceWindow(
   const along = unit(sub(b, a));
   const W = len(sub(b, a));
   if (W < 0.5 || y1 - y0 < 0.6) return;
-  const reveal = 0.14;          // how deep the glass sits inside the wall
-  const fw = 0.05;              // frame face width (slim, so the body colour dominates)
-  const push = 0.015;           // frame proud of the wall
-  // corners of the opening on the wall plane
-  const bl: Vec3 = [a[0], y0, a[2]], br: Vec3 = [b[0], y0, b[2]];
-  const tl: Vec3 = [a[0], y1, a[2]], tr: Vec3 = [b[0], y1, b[2]];
-  const inw = (p: Vec3, d: number): Vec3 => [p[0] + n[0] * d, p[1], p[2] + n[2] * d];
-
-  // recessed reveal jamb walls (top + sides) so the opening reads deep
-  const rbl = inw(bl, -reveal), rbr = inw(br, -reveal), rtl = inw(tl, -reveal), rtr = inw(tr, -reveal);
-  out.quad(m.trim, bl, br, rbr, rbl, [0, 1, 0]);        // reveal underside (sill top)
-  out.quad(m.trim, tr, tl, rtl, rtr, [0, -1, 0]);       // reveal head
-  out.quad(m.trim, bl, rbl, rtl, tl, along);            // left reveal
-  out.quad(m.trim, br, tr, rtr, rbr, [-along[0], -along[1], -along[2]]); // right reveal
-  // opaque dark "room" backing so the glass reads as a window, not a hole through
-  // to the far (body-coloured) wall
-  const bk = (p: Vec3): Vec3 => [p[0] + n[0] * -(reveal + 0.03), p[1], p[2] + n[2] * -(reveal + 0.03)];
-  out.quad("citygen.room", bk(bl), bk(br), bk(tr), bk(tl), n);
-
-  // glass, split into 2 columns × 2 rows of panes by mullions
-  const cols = 2, rows = 2, mg = 0.05; // mullion gap
-  const gl = (t: number, yy: number): Vec3 => inw([a[0] + (b[0] - a[0]) * t, yy, a[2] + (b[2] - a[2]) * t], -reveal + 0.01);
-  for (let cx = 0; cx < cols; cx++) {
-    for (let cy = 0; cy < rows; cy++) {
-      const t0 = (cx + 0.04) / cols + mg / W, t1 = (cx + 0.96) / cols - mg / W;
-      const yy0 = y0 + (y1 - y0) * ((cy + 0.04) / rows) + mg, yy1 = y0 + (y1 - y0) * ((cy + 0.96) / rows) - mg;
-      out.quad(m.glass, gl(t0, yy0), gl(t1, yy0), gl(t1, yy1), gl(t0, yy1), n);
-    }
-  }
-
-  // projecting frame surround (four thin boxes at the wall plane)
-  const bar = (c: Vec3, ha: number, hu: number): void =>
-    out.box(m.frame, [c[0] + n[0] * push, c[1], c[2] + n[2] * push], [ha, hu, 0.05], along, UP, n, true);
-  const midY = (y0 + y1) / 2, cA = lerp(a, b, 0.5);
-  bar([cA[0], y0 - 0.0, cA[2]], W / 2 + fw, fw);         // bottom
-  bar([cA[0], y1 + 0.0, cA[2]], W / 2 + fw, fw);         // top
-  bar([a[0], midY, a[2]], fw, (y1 - y0) / 2 + fw);       // left
-  bar([b[0], midY, b[2]], fw, (y1 - y0) / 2 + fw);       // right
-
-  // sill (projects a little, a touch wider) + crowned lintel above
+  const cA = lerp(a, b, 0.5);
+  const midY = (y0 + y1) / 2;
   const off = (p: Vec3, d: number): Vec3 => [p[0] + n[0] * d, p[1], p[2] + n[2] * d];
-  out.box(m.trim, off([cA[0], y0 - 0.05, cA[2]], 0.07), [W / 2 + 0.10, 0.045, 0.10], along, UP, n, true);
-  out.box(m.trim, off([cA[0], y1 + 0.09, cA[2]], 0.09), [W / 2 + 0.13, 0.07, 0.12], along, UP, n, true);
+  // A glass pane must sit PROUD of the wall — the flat wall quad already covers
+  // this cell, so a recessed pane would be occluded (that was why windows never
+  // showed). Glass a hair in front, muntins in front of that, frame around it.
+  const gd = 0.03;   // glass proud of wall
+  const md_ = 0.05;  // muntin bars proud
+  const fw = 0.05;   // frame width
+  const glassCorner = (t: number, yy: number): Vec3 =>
+    off([a[0] + (b[0] - a[0]) * t, yy, a[2] + (b[2] - a[2]) * t], gd);
+  // single dark glass sheet filling the opening (inset a touch from the frame)
+  const inset = 0.06;
+  const gt0 = inset / W, gt1 = 1 - inset / W;
+  const gy0 = y0 + inset, gy1 = y1 - inset;
+  out.quad(m.glass, glassCorner(gt0, gy0), glassCorner(gt1, gy0), glassCorner(gt1, gy1), glassCorner(gt0, gy1), n);
+
+  // muntins: a white cross dividing the sash into 2×2 lites (thin bars proud of glass)
+  const muntin = (ha: number, hu: number, cx: Vec3): void =>
+    out.box(m.trim, [cx[0] + n[0] * md_, cx[1], cx[2] + n[2] * md_], [ha, hu, 0.012], along, UP, n, true);
+  muntin(W / 2 - inset, 0.02, [cA[0], midY, cA[2]]);                 // horizontal bar
+  muntin(0.02, (y1 - y0) / 2 - inset, [cA[0], midY, cA[2]]);         // vertical bar
+
+  // projecting frame surround (four slim boxes proud of the wall)
+  const bar = (c: Vec3, ha: number, hu: number): void =>
+    out.box(m.frame, off([c[0], c[1], c[2]], 0.02), [ha, hu, 0.05], along, UP, n, true);
+  bar([cA[0], y0, cA[2]], W / 2 + fw, fw);            // bottom
+  bar([cA[0], y1, cA[2]], W / 2 + fw, fw);            // top
+  bar([a[0], midY, a[2]], fw, (y1 - y0) / 2 + fw);    // left
+  bar([b[0], midY, b[2]], fw, (y1 - y0) / 2 + fw);    // right
+
+  // sill below + crowned lintel above (project further for relief)
+  out.box(m.trim, off([cA[0], y0 - 0.05, cA[2]], 0.08), [W / 2 + 0.12, 0.05, 0.11], along, UP, n, true);
+  out.box(m.trim, off([cA[0], y1 + 0.10, cA[2]], 0.10), [W / 2 + 0.15, 0.08, 0.13], along, UP, n, true);
 }
 
 /** horizontal projecting belt/string course across the whole edge at height y */

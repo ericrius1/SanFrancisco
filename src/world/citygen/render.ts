@@ -35,6 +35,45 @@ export interface CityGenMeshBundle {
   dispose(): void;
 }
 
+/** seeded painted-lady body colour for a building */
+export function bodyColour(seed: number): number {
+  const r = rng(seed, 99);
+  return PAINTED_LADY[Math.floor(r() * PAINTED_LADY.length) % PAINTED_LADY.length];
+}
+
+/** Build ONE building's meshes into a fresh group (used by the streaming ring). */
+export function buildBuilding(
+  spec: BuildingSpec,
+  mats: Record<string, THREE.Material>,
+): { group: THREE.Group; triangles: number; dispose(): void } {
+  const { meshes } = generate(spec);
+  const wallMat = makeWallMaterial(bodyColour(spec.seed));
+  const group = new THREE.Group();
+  group.name = "cityGenBuilding";
+  const geoms: THREE.BufferGeometry[] = [];
+  let triangles = 0;
+  for (const md of meshes) {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(md.positions, 3));
+    g.setAttribute("normal", new THREE.BufferAttribute(md.normals, 3));
+    g.setAttribute("uv", new THREE.BufferAttribute(md.uvs, 2));
+    g.setIndex(new THREE.BufferAttribute(md.indices, 1));
+    g.computeBoundingSphere();
+    geoms.push(g);
+    triangles += md.indices.length / 3;
+    const mat = md.materialId.startsWith("wall.") ? wallMat : (mats[md.materialId] ?? wallMat);
+    const mesh = new THREE.Mesh(g, mat);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    mesh.frustumCulled = true;
+    group.add(mesh);
+  }
+  return {
+    group, triangles,
+    dispose() { for (const g of geoms) g.dispose(); wallMat.dispose(); group.clear(); },
+  };
+}
+
 /** Build a THREE.Group of finished buildings from specs (no streaming/LOD). */
 export function buildCityGenGroup(
   specs: BuildingSpec[],

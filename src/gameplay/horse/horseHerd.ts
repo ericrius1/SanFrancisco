@@ -2,7 +2,7 @@ import * as THREE from "three/webgpu";
 import { LIGHT_SCALE } from "../../config";
 import type { WorldMap } from "../../world/heightmap";
 import type { Physics } from "../../core/physics";
-import type { Box3D } from "../../core/box3dWorld";
+import { BodyType, type Box3D, type PhysicsWorld } from "../../core/box3dWorld";
 import type { PolicyDef } from "../../creatures/policy";
 import { HORSE, type CreatureSpec, type Link } from "../../creatures/quadruped";
 import { GARDEN_MEADOW, gardenSurfaceHeight } from "../../world/garden/layout";
@@ -51,6 +51,17 @@ const SCALE = 2.3; // horse-sized vs the ~1.7 m human (real horses tower over pe
 // around (physics frozen, meshes/brains left at their last pose).
 const SIM_RANGE = 380;
 
+// A scatter of low "jump" obstacles (striped cross-rails + rustic logs) inside the
+// meadow for the herd to canter at and hop. The horses live in private flat worlds
+// so they don't physically collide the rail — the hop clears it in world space —
+// while a loose main-world collider makes the PLAYER (on foot or ridden) jump it too.
+const JUMP_COUNT = 6;
+const JUMP_RING = 0.52; // obstacles on a ring at this fraction of the roam ellipse
+const JUMP_APPROACH_R = 22; // start seeking a jump within this range (m)
+const JUMP_DIST = 6.0; // push off the ground when this close to the rail (m)
+const JUMP_CD = 4; // seconds cooldown after a hop so it doesn't re-trigger mid-air
+const GALLOP_ND = 0.78; // committed gallop (Froude, ~cmd 0.8) on a jump approach
+
 const BRAIN_SCALE = 1.9;
 const BRAIN_LINE_GLOW = LIGHT_SCALE * 0.14;
 const BRAIN_NODE_GLOW = LIGHT_SCALE * 0.34;
@@ -84,6 +95,7 @@ type Horse = {
   speedNonDim: number; // commanded gait speed (Froude): walk-biased while roaming
   gx: number; gz: number; // smoothed goal direction (eased toward target so turns are gradual)
   downTimer: number; // >0 = lying where it fell, counting down before it gets back up
+  jumpCd: number; // >0 = just hopped an obstacle, cooling down before it can seek another
   wx: number; wy: number; wz: number;
   wq: [number, number, number, number];
 };
@@ -146,11 +158,14 @@ function setActivationColor(color: THREE.Color, activation: number, layer: numbe
 
 export class HorseHerd {
   #box3d: Box3D;
+  #world: PhysicsWorld; // main physics world — for the jump-obstacle colliders
   #scene: THREE.Scene;
   #map: WorldMap;
   #spec: CreatureSpec = HORSE;
   #policyDef: PolicyDef | null = null;
   #horses: Horse[] = [];
+  #jumps: { x: number; z: number; y: number }[] = []; // jump-obstacle centers (world XZ + ground Y)
+  #forceSpeed: number | null = null; // debug/verify override: pin every horse's gait speed
   #ready = false;
   #active = false; // is a player near enough to simulate?
   #camPos = new THREE.Vector3();
@@ -160,8 +175,10 @@ export class HorseHerd {
 
   constructor(physics: Physics, map: WorldMap, scene: THREE.Scene) {
     this.#box3d = physics.box3d;
+    this.#world = physics.world;
     this.#map = map;
     this.#scene = scene;
+    this.#buildJumps(); // static course + colliders (doesn't need the async policy)
     void this.#load();
   }
 
@@ -212,6 +229,16 @@ export class HorseHerd {
       };
     });
   }
+
+  /** Fire every standing horse's jump — headless verification of the hop. */
+  debugJumpAll(): void {
+    for (const h of this.#horses) if (h.downTimer <= 0) h.rag.jump();
+  }
+  /** Pin every horse's commanded gait speed (Froude ND), or null to release —
+   *  verification/tuning hook (e.g. force the whole herd to gallop). */
+  debugForceSpeed(nd: number | null): void { this.#forceSpeed = nd; }
+  /** Jump-obstacle centers (world XZ + ground Y) for verification/overlays. */
+  get jumps(): { x: number; z: number; y: number }[] { return this.#jumps; }
 
   async #load(): Promise<void> {
     // the ~0.9 m/s pretrained gait; fall back to the plain checkpoint if absent
@@ -429,6 +456,93 @@ export class HorseHerd {
     return { group, parts, brain };
   }
 
+  /** Scatter low striped cross-rails + rustic log jumps around the meadow for the
+   *  herd to canter at and hop (see JUMP_* + the approach nav in prePhysics). */
+  #buildJumps(): void {
+    for (let i = 0; i < JUMP_COUNT; i++) {
+      // a ring inside the roam ellipse, jittered so the course doesn't read as a
+      // perfect circle; rail tangent to the ring so a wandering horse meets it square
+      const th = (i / JUMP_COUNT) * Math.PI * 2 + 0.35;
+      const rr = 0.82 + Math.random() * 0.3;
+      const gx = CENTER.x + Math.sin(th) * ROAM_RX * JUMP_RING * rr;
+      const gz = CENTER.z + Math.cos(th) * ROAM_RZ * JUMP_RING * rr;
+      const yaw = th + Math.PI / 2; // rail tangent to the ring
+      const y = gardenSurfaceHeight(this.#map, gx, gz);
+      const railTop = 0.5 + (i % 3) * 0.13; // varied low heights (~0.5–0.76 m)
+      this.#buildJump(gx, gz, yaw, y, railTop, i % 2 === 0 ? "rail" : "log");
+      this.#jumps.push({ x: gx, z: gz, y });
+    }
+  }
+
+  #buildJump(gx: number, gz: number, yaw: number, groundY: number, railTop: number, style: "rail" | "log"): void {
+    const ax = Math.cos(yaw); // rail axis in world X
+    const az = Math.sin(yaw); // rail axis in world Z
+    const halfW = 1.15;
+    if (style === "log") {
+      // rustic log jump: a horizontal timber resting on two short supports
+      const wood = new THREE.MeshStandardMaterial({ color: 0x6b4a2b, roughness: 0.9, emissive: 0x1a0f07, emissiveIntensity: 0.03 * LIGHT_SCALE });
+      const supGeo = new THREE.BoxGeometry(0.18, railTop, 0.3);
+      for (const s of [-1, 1]) {
+        const sup = new THREE.Mesh(supGeo, wood);
+        sup.position.set(gx + ax * halfW * s, groundY + railTop / 2, gz + az * halfW * s);
+        sup.castShadow = true; sup.receiveShadow = true;
+        this.#scene.add(sup);
+      }
+      const log = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.18, halfW * 2 + 0.3, 10), wood);
+      log.rotation.set(0, -yaw, Math.PI / 2);
+      log.position.set(gx, groundY + railTop, gz);
+      log.castShadow = true;
+      this.#scene.add(log);
+    } else {
+      // striped show-jump cross-rail: two white standards + red/white poles
+      const postH = railTop + 0.35;
+      const postMat = new THREE.MeshStandardMaterial({ color: 0xf4f1e8, roughness: 0.62, emissive: 0x30302a, emissiveIntensity: 0.045 * LIGHT_SCALE });
+      const postGeo = new THREE.BoxGeometry(0.14, postH, 0.14);
+      for (const s of [-1, 1]) {
+        const p = new THREE.Mesh(postGeo, postMat);
+        p.position.set(gx + ax * halfW * s, groundY + postH / 2, gz + az * halfW * s);
+        p.castShadow = true;
+        this.#scene.add(p);
+      }
+      const railGeo = new THREE.BoxGeometry(halfW * 2 + 0.16, 0.1, 0.1);
+      const rails = [
+        { h: railTop, c: 0xf4f1e8 },
+        { h: railTop - 0.26, c: 0xc0392b },
+        { h: railTop - 0.52, c: 0xf4f1e8 }
+      ];
+      for (const r of rails) {
+        if (r.h < 0.14) continue;
+        const rail = new THREE.Mesh(railGeo, new THREE.MeshStandardMaterial({ color: r.c, roughness: 0.55, emissive: new THREE.Color(r.c).multiplyScalar(0.14), emissiveIntensity: 0.05 * LIGHT_SCALE }));
+        rail.position.set(gx, groundY + r.h, gz);
+        rail.rotation.y = -yaw;
+        rail.castShadow = true;
+        this.#scene.add(rail);
+      }
+    }
+    // loose AABB collider so the PLAYER has to hop it too (horses are in private worlds)
+    this.#world.createBox({
+      type: BodyType.Static,
+      position: [gx, groundY + railTop * 0.5, gz],
+      halfExtents: [Math.abs(ax) * halfW + 0.18, railTop * 0.5 + 0.08, Math.abs(az) * halfW + 0.18],
+      friction: 0.6
+    });
+  }
+
+  /** Nearest jump obstacle within range AND roughly ahead of a heading (hx,hz). */
+  #jumpAhead(wx: number, wz: number, hx: number, hz: number): { x: number; z: number; d: number } | null {
+    let best: { x: number; z: number; d: number } | null = null;
+    let bd = JUMP_APPROACH_R;
+    for (const g of this.#jumps) {
+      const dx = g.x - wx;
+      const dz = g.z - wz;
+      const d = Math.hypot(dx, dz);
+      if (d > JUMP_APPROACH_R || d < 0.4) continue;
+      if ((dx / d) * hx + (dz / d) * hz < 0.25) continue; // must be roughly ahead
+      if (d < bd) { bd = d; best = { x: g.x, z: g.z, d }; }
+    }
+    return best;
+  }
+
   #spawn(): void {
     for (let i = 0; i < COUNT; i++) {
       // scatter within the meadow ellipse (sqrt keeps them area-uniform, not
@@ -444,7 +558,7 @@ export class HorseHerd {
       this.#horses.push({
         rag, m, anchor, wanderYaw: yaw, wanderTimer: 2 + Math.random() * 4,
         speedNonDim: 0.2 + Math.random() * 0.25, gx: Math.sin(yaw), gz: Math.cos(yaw),
-        downTimer: 0, wx: anchor.x, wy, wz: anchor.z, wq: [0, 0, 0, 1]
+        downTimer: 0, jumpCd: 0, wx: anchor.x, wy, wz: anchor.z, wq: [0, 0, 0, 1]
       });
     }
   }
@@ -485,20 +599,34 @@ export class HorseHerd {
       } else if (h.wanderTimer <= 0) {
         h.wanderYaw += (Math.random() - 0.5) * 1.6;
         h.wanderTimer = 3 + Math.random() * 5;
-        // re-pick a roaming gait (REACHABLE Froude units): mostly a calm WALK,
-        // sometimes a trot, occasionally a canter (body tops out ~0.85).
+        // re-pick a roaming gait (REACHABLE Froude units): a lively mix — often a
+        // walk, frequently a trot, and a real gallop a fifth of the time.
         const r = Math.random();
-        h.speedNonDim = r < 0.7 ? 0.2 + Math.random() * 0.2 : r < 0.93 ? 0.45 + Math.random() * 0.15 : 0.7 + Math.random() * 0.15;
+        h.speedNonDim = r < 0.5 ? 0.2 + Math.random() * 0.2 : r < 0.8 ? 0.45 + Math.random() * 0.15 : 0.68 + Math.random() * 0.16;
       }
-      const tx = Math.sin(h.wanderYaw);
-      const tz = Math.cos(h.wanderYaw);
+      let tx = Math.sin(h.wanderYaw);
+      let tz = Math.cos(h.wanderYaw);
+      let spd = h.speedNonDim;
+      // little jump course: if an obstacle is close and roughly ahead, commit to a
+      // gallop straight at it and push off the ground just before the rail.
+      if (h.jumpCd > 0) h.jumpCd -= dt;
+      const ja = this.#jumpAhead(wx, wz, tx, tz);
+      if (ja && h.jumpCd <= 0) {
+        tx = (ja.x - wx) / ja.d;
+        tz = (ja.z - wz) / ja.d;
+        spd = GALLOP_ND; // committed gallop to clear the rail
+        if (ja.d < JUMP_DIST && h.rag.grounded) {
+          h.rag.jump();
+          h.jumpCd = JUMP_CD;
+        }
+      }
       // ease the actual goal toward the target so heading changes are GRADUAL — a
       // hard snap makes the policy crank a sharp turn and tip over.
       const k = 1 - Math.exp(-dt / GOAL_EASE);
       h.gx += (tx - h.gx) * k;
       h.gz += (tz - h.gz) * k;
       h.rag.setGoal(h.gx, h.gz); // setGoal normalizes
-      h.rag.setSpeed(h.speedNonDim);
+      h.rag.setSpeed(this.#forceSpeed ?? spd);
       h.rag.update(dt);
     }
   }

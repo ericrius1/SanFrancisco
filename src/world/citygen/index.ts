@@ -24,6 +24,7 @@ import { decoratorFor } from "./theme/decorators";
 
 export type { BuildingSpec, MeshData, ColliderBox } from "./core/types";
 export { SF_THEME, ARCHETYPE_SPECS, specFor } from "./theme/archetypes";
+export { createCityGenRing, type CityGenRing } from "./stream/ring";
 
 /** Generate one building's geometry + colliders from its spec (pure; no scene).
  *  The theme's per-archetype façade decorator authors the detail (Victorian

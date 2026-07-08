@@ -528,5 +528,54 @@ export function collectWildFlowers(map: GardenTerrain): WildFlower[] {
       }
     }
   });
+
+  // --- scattered flowers + clumps EVERYWHERE grass grows (not only in drifts) --
+  // Every grassy nature area should show flowers: dense single-species CLUMPS
+  // carved by a low-frequency field (a patch of poppies here, lupines there),
+  // with sparse MIXED singles dotted between them. Same plantable ground as the
+  // grass, so flowers sit in the grass. The designed drifts above stay the big
+  // superblooms; this fills the rest.
+  const SCATTER_CELL = 7;
+  // region-appropriate species palettes (poppy 0, lupine 1, yarrow 2, goldfield 3)
+  const REGION_FLOWERS: Record<string, readonly number[]> = {
+    ggpark: [0, 1, 2, 3],
+    presidio: [1, 2, 0, 1],
+    marin: [0, 0, 3, 1], // poppy-heavy golden hills + goldfields
+    twinpeaks: [1, 2, 0, 3]
+  };
+  WILD_REGIONS.forEach((region, ri) => {
+    const salt = 7000 + ri * 131;
+    const pal = REGION_FLOWERS[region.id] ?? [0, 1, 2, 3];
+    const gx0 = Math.floor(region.minX / SCATTER_CELL);
+    const gx1 = Math.ceil(region.maxX / SCATTER_CELL);
+    const gz0 = Math.floor(region.minZ / SCATTER_CELL);
+    const gz1 = Math.ceil(region.maxZ / SCATTER_CELL);
+    for (let gz = gz0; gz <= gz1; gz++) {
+      for (let gx = gx0; gx <= gx1; gx++) {
+        const px = gx * SCATTER_CELL + (hash2(gx, gz, salt) - 0.5) * SCATTER_CELL;
+        const pz = gz * SCATTER_CELL + (hash2(gx, gz, salt + 1) - 0.5) * SCATTER_CELL;
+        if (!plantable(map, region, px, pz)) continue;
+        if (!slopeOk(map, px, pz, 8)) continue;
+        // low-freq clump field: high = a flower patch, low = sparse singles
+        const clump = valueNoise(px, pz, 34, salt + 2);
+        const inClump = clump > 0.58;
+        const keep = inClump ? 0.6 * smoothstep(0.58, 0.82, clump) : 0.055;
+        if (hash2(gx, gz, salt + 3) > keep) continue;
+        // clumps read as one dominant species (a real patch); singles are mixed
+        const species = inClump
+          ? pal[Math.floor(valueNoise(px, pz, 78, salt + 4) * pal.length) % pal.length]
+          : pal[Math.floor(hash2(gx, gz, salt + 5) * pal.length) % pal.length];
+        flowers.push({
+          x: px,
+          y: map.groundHeight(px, pz),
+          z: pz,
+          yaw: hash2(gx, gz, salt + 6) * Math.PI * 2,
+          scale: (inClump ? 0.85 : 0.68) + hash2(gx, gz, salt + 7) * 0.5,
+          species,
+          tint: hash2(gx, gz, salt + 8)
+        });
+      }
+    }
+  });
   return flowers;
 }
