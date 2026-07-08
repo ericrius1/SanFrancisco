@@ -116,8 +116,14 @@ export class BuildingBatchPools {
     batch.name = `buildingBatch:${material.name || "part"}`;
     batch.castShadow = false;       // shadows come from ShadowProxyPool only
     batch.receiveShadow = true;
-    batch.perObjectFrustumCulled = true;
-    batch.sortObjects = material.transparent === true; // only glass needs sorting
+    // Per-object culling/sorting iterate EVERY instance on the CPU each frame —
+    // measured 4.3 ms/frame at 87k instances (20 buildings), vs ~0.0 ms with the
+    // static full draw list. Whole-batch culling still applies via the batch
+    // boundingSphere, which flush() keeps current. Per-BUILDING visibility gating
+    // (setVisibleAt over a building's refs) is the scalable middle ground if GPU
+    // vertex cost ever bites; not needed at street scale.
+    batch.perObjectFrustumCulled = false;
+    batch.sortObjects = false;
     return batch;
   }
 

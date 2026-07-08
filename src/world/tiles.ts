@@ -599,6 +599,20 @@ export class TileStreamer {
     }
   }
 
+  /** Undo suppressBuilding — restores the baked mesh + colliders. Used by the
+   *  generated-building ring: an OSM building is suppressed only while its
+   *  generated replacement is streamed in, and revived when the ring unloads it
+   *  so the distant baked city has no holes. (Alive sentinel is 255; a building
+   *  that was independently fractured stays down — killBuilding also writes 0.) */
+  unsuppressBuilding(key: string, index: number) {
+    this.#suppressed.delete(`${key}:${index}`);
+    const tile = this.loaded.get(key);
+    if (tile?.slot && index >= 0 && index * 4 < tile.slot.data.length) {
+      tile.slot.data[index * 4] = 255;
+      tile.slot.tex.needsUpdate = true;
+    }
+  }
+
   /** Marks a building dead (collapses its mesh). Returns its collider if known. */
   killBuilding(key: string, index: number): BuildingCollider | null {
     const tile = this.loaded.get(key);

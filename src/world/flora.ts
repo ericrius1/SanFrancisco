@@ -2,6 +2,9 @@ import * as THREE from "three/webgpu";
 import { attribute, float, hash, instanceIndex, positionLocal, sin, time, vec3 } from "three/tsl";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { WorldMap } from "./heightmap";
+// Golden Gate Park / Presidio / Marin trees are owned by the wildlands SeedThree
+// layer — the old merged/instanced trees suppress themselves there (bushes stay).
+import { wildlandsSuppressesTree } from "./wildlands/layout";
 
 type N = any;
 
@@ -1183,6 +1186,9 @@ export class Flora {
       else if (roll < 0.86) kind = "conifer";
       else kind = "bush"; // understory keeps lawns from reading as empty golf greens
 
+      // wildlands regions grow their own SeedThree trees — keep only understory
+      if (kind !== "bush" && wildlandsSuppressesTree(px, pz)) continue;
+
       const proto = b[kind][Math.floor(rnd() * VARIANTS)];
       const g = proto.clone();
       (g.getAttribute("aPhase").array as Float32Array).fill(rnd() * 6.283);
@@ -1417,6 +1423,7 @@ export class Flora {
             const pz = iz * NEAR_CELL + rnd() * NEAR_CELL;
             const g = this.#marinGround(px, pz);
             if (g === null) continue;
+            if (!isBush && wildlandsSuppressesTree(px, pz)) continue; // wildlands owns Marin trees; bushes stay
             if (Math.abs(this.#map.groundHeight(px + 8, pz) - this.#map.groundHeight(px - 8, pz)) > 11) continue;
             if (Math.abs(this.#map.groundHeight(px, pz + 8) - this.#map.groundHeight(px, pz - 8)) > 11) continue;
             let pool: NearPool;

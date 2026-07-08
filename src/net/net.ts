@@ -62,7 +62,7 @@ export type AiCarsLife = { v: 2; born: number; cars: CarLifeBlob[] };
 
 const AICARS_ACTOR_LEN = 146;
 const AICARS_CRITIC_LEN = 133;
-const AICARS_MAX_ID = 31;
+const AICARS_MAX_ID = 47;
 const AICARS_W_MAX = 16;
 
 /** One interpolation sample for a remote player, timestamped in local ms. */
@@ -199,6 +199,11 @@ function parseCarBlob(raw: unknown): CarLifeBlob | null {
   const fin = (v: unknown) => typeof v === "number" && Number.isFinite(v);
   if (!fin(o.rhoBar) || !fin(o.sigma) || !fin(o.ageS) || !fin(o.odoM) || !fin(o.lessons)) return null;
   if (!fin(o.bodyKind) || !fin(o.paintHue) || !fin(o.x) || !fin(o.z) || !fin(o.heading)) return null;
+  // range caps: reject wildly out-of-range numeric fields (poison / overflow).
+  if (Math.abs(o.rhoBar as number) > 1e3) return null;
+  if ((o.ageS as number) < 0 || (o.ageS as number) > 1e12) return null;
+  if ((o.odoM as number) < 0 || (o.odoM as number) > 1e12) return null;
+  if ((o.lessons as number) < 0 || (o.lessons as number) > 1e9) return null;
   return {
     v: 2,
     id: o.id as number,

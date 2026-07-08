@@ -46,7 +46,8 @@ import { Creatures } from "./gameplay/creatures";
 import { Forest, ANIMALS, type AnimalKind } from "./gameplay/forest";
 import { Flora } from "./world/flora";
 import { createBotanicalGarden, type GrassDisplacer } from "./world/garden";
-import { createGeneratedStreet, type GeneratedStreet } from "./world/buildings";
+import { createWildlands } from "./world/wildlands";
+import { createChinatown, type Chinatown } from "./world/buildings";
 import { Islands } from "./gameplay/islands";
 import { Exploratorium, WATER_VIEW } from "./gameplay/exploratorium";
 import { PALACE_FINE_ARTS } from "./world/heightmap";
@@ -312,10 +313,17 @@ async function boot() {
   // reused per-frame trample slot so the player flattens the grass they stand in
   const gardenDisplacer: GrassDisplacer = { x: 0, z: 0, radius: 1.6, strength: 1 };
   const gardenDisplacers = [gardenDisplacer];
+  // Wildlands — designed SeedThree groves/windrows/savannas + noise-banded
+  // wildflower drifts across Golden Gate Park, the Presidio, and Marin. The old
+  // simple trees suppress themselves in these regions (flora.ts / forest.ts).
+  // Trees stream in per-species async; near-tier LOD self-drives via onBeforeRender.
+  const wildlands = createWildlands(map);
+  for (const g of wildlands.groups) scene.add(g);
   const setFoliageVisible = (visible: boolean) => {
     flora.setVisible(visible);
     forest.setFoliageVisible(visible);
     garden.group.visible = visible;
+    for (const g of wildlands.groups) g.visible = visible;
   };
   setFoliageVisible(FOLIAGE_TUNING.values.visible);
   tiles.onTileGreens = (key, group) => flora.onTileGreens(key, group);
@@ -331,16 +339,18 @@ async function boot() {
   const exploratorium = new Exploratorium(renderer, physics, map, scene, tiles);
   exploratorium.onMessage = (m, s) => hud.message(m, s);
 
-  // Generated-buildings street test (src/world/buildings): ~20 procedurally
-  // generated Hong-Kong-style buildings in two facing rows on flat ground near
-  // the Marina, all rendered through 3 global BatchedMesh pools + 1 shadow-proxy
-  // pool. Walkable interiors lazily build/dispose by player distance. Async load;
-  // inert stubs if the kit assets are missing so the app still boots.
-  const buildings: { current: GeneratedStreet | null } = { current: null };
-  createGeneratedStreet(
-    { center: { x: 200, z: -1800 }, baseSeed: 4242, count: 20 },
-    { scene, physics, map }
-  ).then((s) => { buildings.current = s; });
+  // Generated-buildings Chinatown ring (src/world/buildings): the baked OSM
+  // buildings in the Chinatown core are replaced with procedurally generated
+  // Hong-Kong-style buildings (which is what those blocks look like). Footprints
+  // come from tools/export-chinatown.mjs (public/buildinggen/chinatown.json,
+  // derived from the baked colliders). A distance ring generates each building +
+  // suppresses its OSM twin within ~165 m and disposes it + restores the OSM twin
+  // beyond ~230 m, so the whole city stays hole-free. Exteriors share 3 global
+  // BatchedMesh pools; walkable interiors lazily build/dispose per building, so
+  // any Chinatown building you walk up to is enterable. Async load; inert if the
+  // kit assets are missing so the app still boots.
+  const buildings: { current: Chinatown | null } = { current: null };
+  createChinatown({}, { scene, physics, map, tiles }).then((c) => { buildings.current = c; });
 
   // the Fortnite-ish layer: treasure chests raining coins, critters to hunt,
   // and the Garry's-Mod rope/grab click-tools (loot.ts / hunt.ts / ropes.ts)
@@ -1694,6 +1704,10 @@ async function boot() {
     gardenDisplacer.x = player.renderPosition.x;
     gardenDisplacer.z = player.renderPosition.z;
     garden.update(frameDt, player.renderPosition, gardenDisplacers);
+    // wildlands: chunk distance-culling for the SeedThree groves + flower drifts
+    // (near-tier tree LOD self-drives via onBeforeRender). Follow the camera so
+    // culling matches what's on screen.
+    wildlands.update(camera.position);
     if (currentAnimal) forest.setRiddenSpeed(player.speed);
     islands.update(elapsed);
     exploratorium.update(frameDt, elapsed, player.position);
@@ -1932,7 +1946,7 @@ async function boot() {
 
   const exposeDebugHooks = () => {
     Object.assign(window as never, {
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, props, exploratorium, traffic, creatures, forest, flora, garden, splashes, vehicleAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, boatLaunchers, goldenGateLights, flyover, bridgeParade, teleportToTarget, aiCars, buildings }
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, props, exploratorium, traffic, creatures, forest, flora, garden, wildlands, splashes, vehicleAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, boatLaunchers, goldenGateLights, flyover, bridgeParade, teleportToTarget, aiCars, buildings }
     });
   };
   if (import.meta.env.DEV || new URLSearchParams(location.search).has("profile")) {

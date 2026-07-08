@@ -343,7 +343,10 @@ export class AiCars {
     for (const [id, blob] of this.#brainCache) {
       const g = this.#ghosts?.cars[id];
       const c: CarBlob = { ...blob };
-      if (g && g.active) {
+      // Adopt the LIVE ghost pose if we saw it recently (~10 s), even if the
+      // ghost already timed out to inactive — otherwise a promotion >1.5 s after
+      // leader silence would snap cars back to blob positions up to 48 s stale.
+      if (g && g.spawned && performance.now() - g.seen < 10000) {
         c.x = g.pos.x;
         c.z = g.pos.z;
         c.heading = g.heading;

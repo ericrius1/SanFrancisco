@@ -14,7 +14,7 @@
 // Run: node server/server.mjs            (PORT / HOST env to override)
 // Prod: npm run build && node server/server.mjs  → serves dist/ + /ws
 import http from "node:http";
-import { readFile, stat, mkdir, writeFile } from "node:fs/promises";
+import { readFile, stat, mkdir, writeFile, rename } from "node:fs/promises";
 import { createReadStream, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -49,11 +49,11 @@ const LIFE_FILE = path.join(DATA_DIR, "aicars-life.json");
 // any other shape are rejected so a peer can't poison the relayed fleet.
 const ACTOR_LEN = 146;
 const CRITIC_LEN = 133;
-const MAX_CAR_ID = 31; // MAX_CARS 32 → ids 0..31
+const MAX_CAR_ID = 47; // MAX_CARS 48 → ids 0..47
 const W_MAX = 16; // hard weight bound (learner keeps ±8 internally)
 const POS_MAX = 1e5; // sane world-coordinate bound (metres)
 const CARS_ROW_LEN = 20; // netSync ROW_LEN: 8 header numbers + 12 hidden bytes
-const CARS_ROWS_MAX = 40; // MAX_CARS (32) + slack
+const CARS_ROWS_MAX = 56; // MAX_CARS (48) + slack
 const LIFE_WRITE_DEBOUNCE_MS = 15000;
 
 const lifeById = new Map(); // carId -> validated blob
@@ -74,15 +74,19 @@ const validBrain = (b) =>
   weightArray(b.actor, ACTOR_LEN) &&
   weightArray(b.critic, CRITIC_LEN) &&
   finite(b.rhoBar) &&
+  Math.abs(b.rhoBar) <= 1e3 &&
   finite(b.sigma) &&
   b.sigma > 0 &&
   b.sigma <= 1 &&
   finite(b.ageS) &&
   b.ageS >= 0 &&
+  b.ageS <= 1e12 &&
   finite(b.odoM) &&
   b.odoM >= 0 &&
+  b.odoM <= 1e12 &&
   finite(b.lessons) &&
   b.lessons >= 0 &&
+  b.lessons <= 1e9 &&
   finite(b.bodyKind) &&
   b.bodyKind >= 0 &&
   b.bodyKind < 256 &&
@@ -114,7 +118,11 @@ const scheduleLifeWrite = () => {
     if (lifeById.size === 0) return;
     try {
       await mkdir(DATA_DIR, { recursive: true });
-      await writeFile(LIFE_FILE, JSON.stringify({ v: 2, born: lifeBorn || Date.now(), cars: [...lifeById.values()] }));
+      // atomic write: fully write a temp file, then rename over the target so a
+      // crash mid-write can never leave a truncated / corrupt life file.
+      const tmp = LIFE_FILE + ".tmp";
+      await writeFile(tmp, JSON.stringify({ v: 2, born: lifeBorn || Date.now(), cars: [...lifeById.values()] }));
+      await rename(tmp, LIFE_FILE);
     } catch (err) {
       console.warn("[sf-server] AI-cars life write failed:", err.message);
     }

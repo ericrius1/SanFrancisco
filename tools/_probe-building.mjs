@@ -142,19 +142,28 @@ async function main() {
     await sleep(500);
     await shot(c, "street_exterior.jpg");
 
-    // --- SHADOW evidence: afternoon sun, camera looking at building + its ground
-    //     shadow from the shaded side ---
-    await evaluate(c, `(()=>{const s=window.__sf; s.sky.setTimeOfDay(15.5); return 1;})()`);
-    const b0 = await evaluate(c, `(()=>{const b=window.__sf.buildings.current.list[2];
+    // --- SHADOW evidence: midday sun, camera at ground level OUTSIDE the row,
+    //     looking at an end building and its shadow on the grass ---
+    const b0 = await evaluate(c, `(()=>{const b=window.__sf.buildings.current.list[0];
       return {p:b.group.position.toArray(), dims:b.dims};})()`);
     const [s0x,s0y,s0z] = b0.p;
+    const sh = b0.dims.height;
+    // sun at 13.5 casts shadows toward +x/east — shoot the west-end building from
+    // its southeast so the shadow stretches across the grass in view
     await evaluate(c, `(()=>{const s=window.__sf,c=s.camera;
-      c.position.set(${s0x+30},${s0y+16},${s0z+34}); c.lookAt(${s0x},${s0y+4},${s0z}); return 1;})()`);
+      c.position.set(${s0x+sh*2.4},${s0y+sh*1.1},${s0z-sh*2.2}); c.lookAt(${s0x+sh*0.6},${s0y},${s0z}); return 1;})()`);
     for (let i=0;i<15;i++){ await tick(c); }
-    await evaluate(c, `(()=>{const s=window.__sf,c=s.camera; c.position.set(${s0x+30},${s0y+16},${s0z+34}); c.lookAt(${s0x},${s0y+4},${s0z}); return 1;})()`);
+    await evaluate(c, `(()=>{const s=window.__sf,c=s.camera; c.position.set(${s0x+sh*2.4},${s0y+sh*1.1},${s0z-sh*2.2}); c.lookAt(${s0x+sh*0.6},${s0y},${s0z}); return 1;})()`);
     await sleep(400);
     await shot(c, "building_shadow.jpg");
-    await evaluate(c, `(()=>{const s=window.__sf; s.sky.setTimeOfDay(13.5); return 1;})()`);
+    // rigor: same frame with the proxy pool hidden — building shadows must vanish
+    await evaluate(c, `(()=>{let p=null; window.__sf.scene.traverse(o=>{if(o.name==='buildingShadowProxies')p=o;});
+      if(p) p.visible=false; return Boolean(p);})()`);
+    for (let i=0;i<8;i++){ await tick(c); }
+    await sleep(300);
+    await shot(c, "building_shadow_off.jpg");
+    await evaluate(c, `(()=>{let p=null; window.__sf.scene.traverse(o=>{if(o.name==='buildingShadowProxies')p=o;});
+      if(p) p.visible=true; return 1;})()`);
 
     // --- interior of one street building: teleport player inside, verify lazy
     //     build, screenshot. update() called directly (aiCars-crash-proof). ---
@@ -183,10 +192,19 @@ async function main() {
     const perf = await evaluate(c, `(async()=>{
       const s=window.__sf; const N=90;
       const bench=()=>{ let t0=performance.now(); for(let i=0;i<N;i++){ try{ s.tick(0.016); }catch{} } return (performance.now()-t0)/N; };
-      // present (20 buildings)
-      bench(); // warm
-      const withMs=bench();
       const st=s.buildings.current;
+      // move the player far away so all interiors dispose → pure exterior cost
+      const p=s.player; p.position.set(1200,10,-1800); p.renderPosition.set(1200,10,-1800);
+      st.update(p.position,0.016);
+      const withInteriors=null;
+      bench(); // warm
+      const withMs=bench();                       // 20 buildings, no interiors
+      // culling trade-off: whole-batch culling only
+      const batches=[]; s.scene.traverse(o=>{if(o.isBatchedMesh)batches.push(o);});
+      for(const b of batches) b.perObjectFrustumCulled=false;
+      bench();
+      const withMsNoCull=bench();
+      for(const b of batches) b.perObjectFrustumCulled=true;
       const poolsBefore=st.stats();
       // remove ONE building, timed (streaming-ring cost)
       const t1=performance.now();
@@ -198,9 +216,9 @@ async function main() {
       const removeRestMs=+(performance.now()-t2).toFixed(1);
       bench(); // warm
       const withoutMs=bench();
-      // structural counts after dispose
       let meshes=0, batched=0; s.scene.traverse(o=>{ if(o.isBatchedMesh) batched++; else if(o.isInstancedMesh||o.isMesh) meshes++; });
-      return {withMs:+withMs.toFixed(3), withoutMs:+withoutMs.toFixed(3), deltaMs:+(withMs-withoutMs).toFixed(3),
+      return {withMs:+withMs.toFixed(3), withMsNoCull:+withMsNoCull.toFixed(3), withoutMs:+withoutMs.toFixed(3),
+        deltaMs:+(withMs-withoutMs).toFixed(3), deltaNoCullMs:+(withMsNoCull-withoutMs).toFixed(3),
         removeOneMs, removeRestMs, poolsBefore, batchedMeshesInScene:batched};
     })()`);
     console.log("[probe] PERF:", JSON.stringify(perf, null, 0));

@@ -126,3 +126,31 @@ HUD `🧠 32 cars · skill 3 · 0 km · eldest 3s` verified via DOM.
 - Test-harness only: `__sf.teleportToTarget(x,z)` did not reliably move the player in the
   headless driver (a deferred/guarded teleport); tests worked around it by setting
   `player.position` directly. No product impact.
+
+## Reviewer-fix pass (5 fixes applied)
+
+Post-audit reviewer raised 6 findings; 5 applied here (finding #6 — `cars` pose msg
+not leader-gated — deliberately skipped, consistent with the relay's other un-authed
+cosmetic messages). Full per-fix detail in `audit-fixes.md`. Summary:
+
+1. **Partial-restore strands cars (blocker).** `fleet.ts importState` now place-inits
+   every slot the blob doesn't cover (random-road placement via the new
+   `#placeCarRandom`, fresh weights via the new `learner.resetCar`) so every slot ends
+   `alive=true` on a road. Covers both entry paths (localStorage restore + promotion
+   adoption via `#adoptCachedBrains → importState`). This resolves the "Promotion
+   completeness" open risk above.
+2. **Clock-jump mass-lesson on restore (blocker).** `learner.importCar` advances
+   `lastCheckAge` past the imported age and sets `lastLessonAge = ageS` (full post-import
+   cooldown); `lessonCheck` clamps `dt = 0` when `dt > 120 s`. Bulk restore now fires
+   ZERO lessons; the rescue rule still fires for a genuinely-bad car.
+3. **Stale-position adoption (index.ts).** `#adoptCachedBrains` accepts a ghost pose seen
+   within the last 10 s (via `Ghost.seen`) instead of requiring `g.active`, so a
+   promotion >1.5 s after leader silence no longer snaps cars to stale blob positions.
+4. **Unbounded numeric fields.** Range caps (`|rhoBar| ≤ 1e3`, `0 ≤ ageS ≤ 1e12`,
+   `0 ≤ odoM ≤ 1e12`, `0 ≤ lessons ≤ 1e9`) added to all three validators
+   (`net.ts parseCarBlob`, `learner.ts importCar`, `server.mjs validBrain`).
+5. **Atomic life-file write.** `server.mjs` writes `LIFE_FILE + ".tmp"` then `rename`s
+   over the target, so an interrupted write can't corrupt the persisted fleet.
+
+tsc `--noEmit` exit 0; `node --check server/server.mjs` OK; 4 node tests + browser boot
+smoke + truncated-restore browser scenario all PASS (numbers in `audit-fixes.md`).

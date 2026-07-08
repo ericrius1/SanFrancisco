@@ -3,6 +3,7 @@ import { float, hash, instanceIndex, positionLocal, sin, time, uniform, vec3 } f
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { WorldMap } from "../world/heightmap";
 import { MARIN, treeBank, treeMaterialInstanced } from "../world/flora";
+import { wildlandsSuppressesTree } from "../world/wildlands/layout";
 import type { Cockpit, DriveSpec } from "../player/types";
 
 type N = any;
@@ -285,6 +286,7 @@ export class Forest {
       if (Math.abs(this.#map.groundHeight(x, z + 10) - this.#map.groundHeight(x, z - 10)) > 14) continue;
       if (this.#map.bridgeDeck(x, z) > -Infinity) continue; // keep the roadway clear
       if (Math.hypot(x - BRIDGE_LANDING.x, z - BRIDGE_LANDING.z) < 50) continue;
+      if (wildlandsSuppressesTree(x, z)) continue; // Marin trees are grown by the wildlands SeedThree layer now
       const bucket = roll < 0.37 ? buckets[0] : roll < 0.74 ? buckets[1] : roll < 0.88 ? buckets[2] : buckets[3];
       bucket.placed.push({ x, z, y: ground - 0.5, s, yaw });
       total++;

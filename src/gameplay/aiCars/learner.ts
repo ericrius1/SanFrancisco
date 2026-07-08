@@ -388,6 +388,10 @@ export class Learner {
     for (let i = 0; i < n; i++) if (this.ageS[i] > now) now = this.ageS[i];
     let dt = now - this.lastCheckAge;
     if (dt < 0) dt = 0;
+    // clock-jump guard: legit gaps are ~30 s. A large dt means ages jumped
+    // (bulk import / restore); charge zero elapsed so belowS timers don't blow
+    // past RESCUE_BELOW_S and mass-fire lessons on the first post-restore check.
+    if (dt > 120) dt = 0;
     this.lastCheckAge = now;
 
     // fleet skill stats: median + MAD
@@ -483,11 +487,11 @@ export class Learner {
       const v = blob.critic[p];
       if (!Number.isFinite(v) || Math.abs(v) > 16) return false;
     }
-    if (!Number.isFinite(blob.rhoBar)) return false;
+    if (!Number.isFinite(blob.rhoBar) || Math.abs(blob.rhoBar) > 1e3) return false;
     if (!Number.isFinite(blob.sigma) || blob.sigma <= 0 || blob.sigma > 1) return false;
-    if (!Number.isFinite(blob.ageS) || blob.ageS < 0) return false;
-    if (!Number.isFinite(blob.odoM) || blob.odoM < 0) return false;
-    if (!Number.isFinite(blob.lessons) || blob.lessons < 0) return false;
+    if (!Number.isFinite(blob.ageS) || blob.ageS < 0 || blob.ageS > 1e12) return false;
+    if (!Number.isFinite(blob.odoM) || blob.odoM < 0 || blob.odoM > 1e12) return false;
+    if (!Number.isFinite(blob.lessons) || blob.lessons < 0 || blob.lessons > 1e9) return false;
 
     const wA = this.actorW[i];
     const wC = this.criticW[i];
@@ -502,8 +506,34 @@ export class Learner {
     this.lessons[i] = Math.round(blob.lessons);
     this.skillRate[i] = blob.rhoBar; // rho and skillRate share units (reward/s)
     this.belowS[i] = 0;
-    this.lastLessonAge[i] = blob.ageS - RESCUE_COOLDOWN_S;
+    // full cooldown after import (not COOLDOWN-expired) so a bulk restore can't
+    // immediately trigger a lesson for this car.
+    this.lastLessonAge[i] = blob.ageS;
+    // advance the shared lessonCheck clock past this car's age so the first
+    // post-restore check sees a tiny dt, not the hours the ages just jumped.
+    this.lastCheckAge = Math.max(this.lastCheckAge, blob.ageS);
     return true;
+  }
+
+  /**
+   * Reset car `i` to a fresh individual ("new resident"): reseed both nets,
+   * clear traces and all per-car bookkeeping. Used when a partial brain-cache /
+   * localStorage set leaves a slot uncovered — that slot gets fresh weights
+   * rather than being stranded at a stale/zero state.
+   */
+  resetCar(i: number): void {
+    this.actorW[i] = this.#seedActor();
+    this.criticW[i] = this.#seedCritic();
+    this.traceA[i].fill(0);
+    this.traceC[i].fill(0);
+    this.rhoBar[i] = 0;
+    this.sigma[i] = SIGMA_MAX;
+    this.skillRate[i] = 0;
+    this.ageS[i] = 0;
+    this.odoM[i] = 0;
+    this.lessons[i] = 0;
+    this.belowS[i] = 0;
+    this.lastLessonAge[i] = -RESCUE_COOLDOWN_S;
   }
 
   /** Mirror actor weights into a policy.ts Policy (the brain-overlay path). */

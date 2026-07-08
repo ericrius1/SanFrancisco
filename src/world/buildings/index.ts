@@ -211,3 +211,4 @@ export async function createGeneratedBuilding(
 }
 
 export { createGeneratedStreet, type GeneratedStreet } from "./street";
+export { createChinatown, type Chinatown } from "./chinatown";

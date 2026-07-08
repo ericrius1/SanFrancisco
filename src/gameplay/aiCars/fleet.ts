@@ -95,6 +95,8 @@ export interface Learner {
   exportCar(i: number): CarBrainBlob;
   /** Restore car i's brain from a blob; returns whether it validated. */
   importCar(i: number, blob: CarBrainBlob): boolean;
+  /** Reset car i to a fresh individual (uncovered slot on a partial restore). */
+  resetCar(i: number): void;
   /** Mirror canonical actor weights into a Policy (overlay path only, ≤ 5 Hz). */
   syncPolicy(i: number, policy: Policy): void;
 }
@@ -148,7 +150,7 @@ export interface FleetBlob {
 }
 
 // --- tunables ---------------------------------------------------------------
-export const MAX_CARS = 32;
+export const MAX_CARS = 48;
 const SPEED_MAX = 14; // m/s forward cap
 const SPEED_MIN = -4; // m/s reverse cap
 const ACCEL_FWD = 4; // m/s² for a positive accel command
@@ -160,7 +162,7 @@ const HALF_EXTENTS: [number, number, number] = [1.05, 0.45, 2.2];
 const AHEAD_RANGE = 25; // clearAhead probe (m)
 const SIDE_RANGE = 10; // clearLeft/Right probes (m)
 const SIDE_ANGLE = 0.61; // ±35°
-const PLACE_RADIUS = 600; // m, initial-placement radius around the first anchor
+const PLACE_RADIUS = 300; // m, initial-placement radius around the first anchor (denser = more cars visibly near the player)
 const NEAR_R = 380; // m, FAR→NEAR body-create boundary (hysteresis low)
 const FAR_R = 420; // m, NEAR→FAR body-destroy boundary (hysteresis high)
 const STUCK_SPEED = 0.3; // m/s, below which the stuck timer accrues
@@ -318,20 +320,27 @@ export class Fleet {
   #placeAll(): void {
     if (this.#born === 0) this.#born = this.#now();
     const a = this.#anchors[0];
-    for (const car of this.cars) {
-      let rp: ReturnType<RoadGraph["randomPointNear"]> = null;
-      for (let tries = 0; tries < 8 && !rp; tries++) {
-        rp = this.#roads.randomPointNear(a.x, a.z, 0, PLACE_RADIUS * (1 + tries * 0.5), this.#rng);
-      }
-      const x = rp ? rp.x : a.x;
-      const z = rp ? rp.z : a.z;
-      const tanX = rp ? rp.tangentX : 0;
-      const tanZ = rp ? rp.tangentZ : 1;
-      this.#initCarState(car, x, z, Math.atan2(tanX, tanZ));
-      // identity — assigned once, never rerolled
-      car.bodyKind = Math.floor(this.#rng() * 6);
-      car.paintHue = this.#rng();
+    for (const car of this.cars) this.#placeCarRandom(car, a.x, a.z);
+  }
+
+  /**
+   * Place one car on a random road point around (cx, cz) and give it a fresh
+   * identity. Used by #placeAll and by importState for slots a restored blob
+   * doesn't cover (new residents).
+   */
+  #placeCarRandom(car: AiCar, cx: number, cz: number): void {
+    let rp: ReturnType<RoadGraph["randomPointNear"]> = null;
+    for (let tries = 0; tries < 8 && !rp; tries++) {
+      rp = this.#roads.randomPointNear(cx, cz, 0, PLACE_RADIUS * (1 + tries * 0.5), this.#rng);
     }
+    const x = rp ? rp.x : cx;
+    const z = rp ? rp.z : cz;
+    const tanX = rp ? rp.tangentX : 0;
+    const tanZ = rp ? rp.tangentZ : 1;
+    this.#initCarState(car, x, z, Math.atan2(tanX, tanZ));
+    // identity — assigned once, never rerolled
+    car.bodyKind = Math.floor(this.#rng() * 6);
+    car.paintHue = this.#rng();
   }
 
   /** Reset a car's live state onto (x, z, heading). Body is (re)made by tiers. */
@@ -663,6 +672,10 @@ export class Fleet {
     }
     // tear down existing bodies (fires the release contract) before repositioning
     this.dispose();
+    const covered = new Array<boolean>(this.cars.length).fill(false);
+    let anchorX = 0;
+    let anchorZ = 0;
+    let anchorSet = false;
     for (let i = 0; i < n; i++) {
       const c = blob.cars[i];
       const car = this.cars[c.id];
@@ -670,6 +683,23 @@ export class Fleet {
       car.paintHue = THREE.MathUtils.clamp(c.paintHue, 0, 1);
       this.#initCarState(car, c.x, c.z, c.heading);
       this.#learner.importCar(car.id, c);
+      covered[c.id] = true;
+      if (!anchorSet) {
+        anchorX = c.x;
+        anchorZ = c.z;
+        anchorSet = true;
+      }
+    }
+    // Slots the blob doesn't cover (partial cache / short saved array) must NOT
+    // be stranded alive=false at (0,0,0): place each on a random road as a fresh
+    // resident with fresh learner weights. Center placement on a live anchor if
+    // we have one, else on a covered car's position.
+    const cx = this.#anchors[0] ? this.#anchors[0].x : anchorX;
+    const cz = this.#anchors[0] ? this.#anchors[0].z : anchorZ;
+    for (const car of this.cars) {
+      if (covered[car.id]) continue;
+      this.#placeCarRandom(car, cx, cz);
+      this.#learner.resetCar(car.id);
     }
     this.#born = typeof blob.born === "number" && Number.isFinite(blob.born) ? blob.born : this.#now();
     this.#initialized = true;
