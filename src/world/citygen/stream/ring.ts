@@ -17,18 +17,16 @@ import { buildBuilding, buildInterior } from "../render";
 import { buildChunkLOD, type ChunkLOD } from "../render/chunkLod";
 import { buildCityGenMaterials } from "../theme/materials";
 import type { BuildingSpec } from "../core/types";
+import { CITYGEN_TUNING } from "../../../config";
 
 const READY = new Set(["victorian", "edwardian", "marina", "downtown", "soma"]);
 
-const CELL_LOAD = 1;     // load chunks in the player's cell ± this (tile ≈ 800 m)
-const CELL_UNLOAD = 2;   // dispose chunks beyond this (hysteresis)
-const DETAIL_R = 95;     // full grammar + walk-in door + interior within this
-const DETAIL_EXIT = 120; // detail fades back to the chunk prism beyond this
-const MAX_DETAIL = 28;   // nearest-N full grammar meshes (expensive)
+// Live-tunable streaming params (CITYGEN_TUNING, "/" panel). Read fresh each scan.
+const CT = CITYGEN_TUNING.values;
+const DETAIL_EXIT_MARGIN = 25; // detail fades back to the chunk prism this far past detailRadius
 const DETAIL_BUDGET = 1; // detail builds per scan
 const CHUNK_BUDGET = 260;// buildings merged into chunk geometry per frame (no hitch)
 const SCAN_EVERY = 0.15;
-const FADE_T = 0.4;
 
 interface PhysWorld {
   createBox(o: { type: number; position: readonly [number, number, number]; halfExtents: readonly [number, number, number]; friction?: number }): number;
@@ -108,7 +106,6 @@ export async function createCityGenRing(
   const loaded = new Map<string, CellState>();
   const building: CellState[] = []; // cells still merging their chunk
   let accum = 0;
-  const detailR2 = DETAIL_R * DETAIL_R, detailExit2 = DETAIL_EXIT * DETAIL_EXIT;
 
   const addBody = (c: { x: number; y: number; z: number; hx: number; hy: number; hz: number; yaw: number }): number => {
     const h = ctx.physics.world.createBox({ type: 0, position: [c.x, c.y, c.z], halfExtents: [c.hx, c.hy, c.hz], friction: 0.8 });
@@ -145,7 +142,7 @@ export async function createCityGenRing(
   const advanceFades = (dt: number) => {
     for (const cell of loaded.values()) for (const e of cell.entries) {
       if (!e.detail || e.fadeDir === 0) continue;
-      e.fade += e.fadeDir * (dt / FADE_T);
+      e.fade += e.fadeDir * (dt / CT.fadeTime);
       if (e.fadeDir > 0 && e.fade >= 1) { e.fade = 1; e.fadeDir = 0; e.detail.setOpacity(1); }
       else if (e.fadeDir < 0 && e.fade <= 0) dropDetail(e);
       else e.detail.setOpacity(e.fade);
@@ -209,14 +206,19 @@ export async function createCityGenRing(
 
       const ptx = Math.floor((playerPos.x - minX) / tile);
       const ptz = Math.floor((playerPos.z - minZ) / tile);
+      // read the live-tunable knobs fresh each scan (dragging a "/" slider re-tunes now)
+      const cellLoad = CT.cellLoad, cellUnload = Math.max(CT.cellUnload, cellLoad + 1);
+      const detailR = CT.detailRadius, detailR2 = detailR * detailR;
+      const detailExit = detailR + DETAIL_EXIT_MARGIN, detailExit2 = detailExit * detailExit;
+      const maxDetail = CT.maxDetail;
 
       // unload cells beyond the ring
       for (const cell of [...loaded.values()]) {
-        if (Math.abs(cell.ix - ptx) > CELL_UNLOAD || Math.abs(cell.iz - ptz) > CELL_UNLOAD) unloadCell(cell);
+        if (Math.abs(cell.ix - ptx) > cellUnload || Math.abs(cell.iz - ptz) > cellUnload) unloadCell(cell);
       }
       // load cells in range
-      for (let cx = ptx - CELL_LOAD; cx <= ptx + CELL_LOAD; cx++) {
-        for (let cz = ptz - CELL_LOAD; cz <= ptz + CELL_LOAD; cz++) {
+      for (let cx = ptx - cellLoad; cx <= ptx + cellLoad; cx++) {
+        for (let cz = ptz - cellLoad; cz <= ptz + cellLoad; cz++) {
           const key = `${cx}_${cz}`;
           if (loaded.has(key)) continue;
           const entries = cellEntries.get(key);
@@ -241,7 +243,7 @@ export async function createCityGenRing(
       }
       wants.sort((a, b) => a[1] - b[1]);
       let db = DETAIL_BUDGET;
-      for (const [e] of wants) { if (db <= 0 || detailCount >= MAX_DETAIL) break; buildDetail(e); db--; detailCount++; }
+      for (const [e] of wants) { if (db <= 0 || detailCount >= maxDetail) break; buildDetail(e); db--; detailCount++; }
     },
     dispose() { for (const cell of [...loaded.values()]) unloadCell(cell); loaded.clear(); building.length = 0; },
     stats() {

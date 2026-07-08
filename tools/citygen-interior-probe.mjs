@@ -49,7 +49,7 @@ async function main() {
     // stream the Haight/Mission district
     await evaluate(c, `(()=>{const s=window.__sf,p=s.player; const y=s.map.groundHeight(900,2400)+2; p.position.set(900,y,2400); p.renderPosition.copy(p.position); s.physics.world.setBodyTransform(p.body,[900,y,2400],[0,0,0,1]); return 1;})()`);
     for (let i = 0; i < 100; i++) await tick(c);
-    await waitEval(c, "window.__sf.citygenRing.current && window.__sf.citygenRing.current.stats().loaded > 2", 20000);
+    await waitEval(c, "window.__sf.citygenRing.current && window.__sf.citygenRing.current.stats().buildings > 2", 30000);
 
     // pick a resident building, teleport INSIDE it → interior should build
     const b = await evaluate(c, `(()=>{const bs=window.__sf.citygenRing.current.debugBuildings(); if(!bs.length) return null;

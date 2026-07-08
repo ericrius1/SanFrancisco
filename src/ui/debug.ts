@@ -6,6 +6,7 @@ import {
   FLOWER_TUNING,
   FOLIAGE_TUNING,
   GRASS_TUNING,
+  CITYGEN_TUNING,
   RENDER_QUALITY_PRESETS,
   RENDER_TUNING,
   WORLD_TUNING,
@@ -390,6 +391,12 @@ export class DebugPanel {
         if (last) this.#refreshGrass();
       }
     });
+
+    // procedural building streaming (src/world/citygen). The ring reads these live
+    // each scan, so no onChange side-effect is needed — drag + watch the fps counter
+    // and the near-detail / far-chunk band move.
+    const citygenF = advanced.addFolder({ title: "buildings (citygen)", expanded: false });
+    CITYGEN_TUNING.bind(citygenF, { onChange: () => {} });
 
     // debris window lights: hold fully lit, then flicker out; each chunk delays its
     // fade by a random slice of `spread` so a collapse dies out non-uniformly.

@@ -10,7 +10,7 @@ import { buildCityGenMaterials, makeWallMaterial } from "./theme/materials";
 import { makeParallaxGlass, type ParallaxZone } from "./theme/parallaxWindow";
 import { rng } from "./core/rng";
 import { mergePanels } from "./core/mesh";
-import { buildVictorianInterior } from "./interior/interior";
+import { buildInterior as buildInteriorParts } from "./interior/interior";
 import type { ColliderBox } from "./core/types";
 
 // SF "painted lady" body colours — mid-saturated so the bright white trim reads
@@ -145,7 +145,8 @@ export function buildInterior(
   spec: BuildingSpec,
   mats: Record<string, THREE.Material>,
 ): { group: THREE.Group; colliders: ColliderBox[]; dispose(): void } {
-  const { panels, colliders } = buildVictorianInterior(spec);
+  // interior furnishing matches the parallax-window zone (home/shop/loft)
+  const { panels, colliders } = buildInteriorParts(spec, ARCH_ZONE[spec.archetype] ?? "residential");
   const merged = mergePanels(panels);
   const group = new THREE.Group();
   group.name = "cityGenInterior";

@@ -22,7 +22,6 @@ Modified:
 
 Import specifier rewritten (`"box3d-wasm"` → relative `core/physics`), no call-site
 changes in any of them:
-- `src/world/buildings/index.ts`
 - `src/gameplay/props.ts`, `exploratorium.ts`, `islands.ts`, `traffic.ts`,
   `loot.ts`, `ropes.ts`, `abandonedMounts.ts`, `aiCars/index.ts`
 - `src/vehicles/{car,boat,plane,drone,bird,board}/controller.ts`

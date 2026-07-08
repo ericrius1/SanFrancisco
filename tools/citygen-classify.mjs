@@ -16,15 +16,22 @@
 /** archetype ids the SF theme pack understands (excl. "tower", which is skipped). */
 export const ARCHETYPES = ["victorian", "edwardian", "marina", "downtown", "soma", "chinatown"];
 
-// Towers / superblocks stay BAKED (Salesforce, Transamerica, big FiDi/SoMa
-// slabs are bespoke). Skip the generator for anything this large.
+// Only genuinely TALL towers stay baked (Salesforce, Transamerica, big FiDi
+// high-rises are bespoke landmarks). Large-but-low footprints — warehouses, big
+// commercial blocks — now GENERATE (via the downtown/soma grammars, which suit
+// them) instead of leaving a baked hole; only true superblocks are excluded.
 export const TOWER = {
-  maxHeight: 110, // metres, roof above base
-  maxSpan: 68,    // metres, footprint longest axis
-  maxArea: 6000,  // m²
-  minHeight: 5,   // skip sheds/garages shorter than this
-  minArea: 40,    // skip tiny footprints
+  maxHeight: 110,  // metres, roof above base — tall high-rises stay baked
+  maxSpan: 145,    // metres, footprint longest axis — huge superblocks stay baked
+  maxArea: 16000,  // m² — "
+  minHeight: 5,    // skip sheds/garages shorter than this
+  minArea: 40,     // skip tiny footprints
 };
+
+/** a large footprint reads as commercial/industrial, never a rowhouse — used to
+ *  override the residential geography boxes so a big warehouse in the Mission
+ *  doesn't become a giant Victorian. */
+const BIG_FOOTPRINT = 2600; // m²
 
 /** longest axis of an axis-aligned bbox of the polygon ring (metres). */
 export function polySpan(poly) {
@@ -65,6 +72,11 @@ export function classify(x, z, { area = 0, height = 0, p = 0, seed = 0 } = {}) {
   // Industrial/warehouse tag survived into the palette → SoMa brick loft look,
   // wherever it is in the city.
   if (p === 6) return "soma";
+
+  // Large footprints are commercial/industrial, not houses — route them to the
+  // downtown/warehouse grammars regardless of neighborhood (a big block in a
+  // Victorian district is a school/market/warehouse, not a giant rowhouse).
+  if (area > BIG_FOOTPRINT) return "downtown";
 
   // Chinatown core (Grant/Stockton, just NW of downtown). Small box; the legacy
   // Chinatown ring still owns these today, so this only matters once citygen

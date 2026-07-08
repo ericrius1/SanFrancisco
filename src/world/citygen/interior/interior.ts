@@ -21,6 +21,10 @@ export interface BuiltInterior {
   floors: number;
 }
 
+/** matches the parallax-window zone so what you see through the glass ≈ what you
+ *  find inside: homes (parlour/apartments), shops (retail + offices), lofts (open). */
+export type InteriorZone = "residential" | "commercial" | "loft";
+
 const FLOOR_H = 3.4;
 const MAX_FLOORS = 4;      // furnish at most ground + 3 up (mesh/collider budget)
 const SLAB = 0.12;         // floor slab half-thickness
@@ -46,7 +50,7 @@ function slab(out: PanelBuilder, mat: string, poly: readonly (readonly [number, 
   }
 }
 
-export function buildVictorianInterior(spec: BuildingSpec): BuiltInterior {
+export function buildInterior(spec: BuildingSpec, zone: InteriorZone = "residential"): BuiltInterior {
   const poly = ensureCCW(spec.poly);
   const tris = triangulate(poly);
   const bb = bbox(poly);
@@ -84,22 +88,38 @@ export function buildVictorianInterior(spec: BuildingSpec): BuiltInterior {
     }
   }
 
-  // ---- furniture per storey (parlour on ground, apartments above) -----------
+  // ---- furniture per storey, by zone (matches the parallax you saw outside) --
+  const fx = bb.maxx - 1.0; // hug the +x wall so the stair/entry stays clear
   for (let i = 0; i < nFloors; i++) {
     const y = base + i * FLOOR_H + SLAB;
-    // hug the +x wall so the stair/entry stays clear
-    const fx = bb.maxx - 1.0;
-    if (i === 0) {
-      // parlour: sofa + low table + fireplace glow
-      furn(out, cols, "int.sofa", fx, y + 0.35, cz + 0.6, 0.9, 0.35, 0.4);
-      furn(out, cols, "int.wood", fx - 0.1, y + 0.25, cz - 0.6, 0.5, 0.25, 0.35);
-      furn(out, cols, "int.glow", bb.minx + 0.5, y + 0.6, cz, 0.15, 0.6, 0.5, false); // hearth
+    if (zone === "commercial") {
+      if (i === 0) {
+        // shop: service counter across the front + two shelving rows + bright light
+        furn(out, cols, "int.wood", cx, y + 0.5, bb.maxz - 1.2, bb.w * 0.34, 0.5, 0.28);
+        for (let s = -1; s <= 1; s += 2) furn(out, cols, "int.wood", cx + s * bb.w * 0.22, y + 0.8, cz, 0.18, 0.8, bb.d * 0.28);
+        furn(out, cols, "int.glow", cx, base + FLOOR_H - 0.15, cz, bb.w * 0.36, 0.05, bb.d * 0.36, false);
+      } else {
+        // office: a couple of desks
+        furn(out, cols, "int.wood", fx, y + 0.38, cz + 0.7, 0.7, 0.38, 0.4);
+        furn(out, cols, "int.wood", bb.minx + 1.0, y + 0.38, cz - 0.7, 0.7, 0.38, 0.4);
+      }
+    } else if (zone === "loft") {
+      // open loft: sparse — a work table + a couple of stacked crates, dimmer
+      furn(out, cols, "int.wood", cx + (r() - 0.5) * bb.w * 0.3, y + 0.4, cz + (r() - 0.5) * bb.d * 0.3, 0.6, 0.4, 0.5);
+      furn(out, cols, "int.wood", bb.minx + 1.0, y + 0.5, bb.maxz - 1.0, 0.45, 0.5, 0.45);
+      if (i === 0) furn(out, cols, "int.glow", cx, base + FLOOR_H - 0.2, cz, 0.6, 0.05, 0.6, false);
     } else {
-      // apartment: bed + dresser
-      furn(out, cols, "int.sofa", fx, y + 0.3, cz + 0.7, 0.95, 0.3, 0.6);
-      furn(out, cols, "int.wood", fx, y + 0.45, cz - 0.9, 0.5, 0.45, 0.3);
+      // residential: parlour on the ground, bedrooms above
+      if (i === 0) {
+        furn(out, cols, "int.sofa", fx, y + 0.35, cz + 0.6, 0.9, 0.35, 0.4);
+        furn(out, cols, "int.wood", fx - 0.1, y + 0.25, cz - 0.6, 0.5, 0.25, 0.35);
+        furn(out, cols, "int.glow", bb.minx + 0.5, y + 0.6, cz, 0.15, 0.6, 0.5, false); // hearth
+      } else {
+        furn(out, cols, "int.sofa", fx, y + 0.3, cz + 0.7, 0.95, 0.3, 0.6);
+        furn(out, cols, "int.wood", fx, y + 0.45, cz - 0.9, 0.5, 0.45, 0.3);
+      }
+      if (r() < 0.5) furn(out, cols, "int.wood", cx + (r() - 0.5) * bb.w * 0.4, y + 0.4, cz + (r() - 0.5) * bb.d * 0.4, 0.35, 0.4, 0.35);
     }
-    if (r() < 0.5) furn(out, cols, "int.wood", cx + (r() - 0.5) * bb.w * 0.4, y + 0.4, cz + (r() - 0.5) * bb.d * 0.4, 0.35, 0.4, 0.35);
   }
 
   return { panels: out.panels(), colliders: cols, floors: nFloors };

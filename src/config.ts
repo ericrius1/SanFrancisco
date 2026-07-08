@@ -125,6 +125,24 @@ export const FOLIAGE_TUNING = tunables("foliage", {
 });
 
 /**
+ * Procedural building streaming (src/world/citygen). Read LIVE by the ring each
+ * scan, so dragging these sliders in the "/" panel re-tunes streaming instantly —
+ * watch the fps + the near/far band move. All perf-relevant:
+ *  · detailRadius — distance the full grammar mesh (bays/windows/interior) crossfades
+ *    in from the cheap chunk prism. Bigger = richer further out, but more heavy meshes.
+ *  · maxDetail    — hard cap on resident full-detail buildings (the expensive ones).
+ *  · fadeTime     — LOD crossfade duration (s).
+ *  · cellLoad/Unload — how many tile cells (≈800 m) of chunk-LOD stream around you.
+ */
+export const CITYGEN_TUNING = tunables("citygen", {
+  detailRadius: { v: 150, min: 40, max: 400, step: 5, label: "detail distance (m)" },
+  maxDetail: { v: 40, min: 4, max: 140, step: 2, label: "max detail buildings" },
+  fadeTime: { v: 0.4, min: 0.05, max: 2, step: 0.05, label: "crossfade (s)" },
+  cellLoad: { v: 1, min: 1, max: 3, step: 1, label: "chunk cells (±)" },
+  cellUnload: { v: 2, min: 2, max: 5, step: 1, label: "chunk unload (±)" }
+});
+
+/**
  * Wildflower ring shaping, bound in the "/" panel's foliage folder. The flowers are
  * a player-following ring (like the grass); these knobs are read live on each
  * re-scatter, and the debug panel forces an immediate re-scatter on slider release.

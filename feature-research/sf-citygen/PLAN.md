@@ -1,7 +1,10 @@
 # SF CityGen — a portable, SF-tuned procedural building module
 
-**Status:** plan (written Jul 8 2026). Self-contained handoff — an agent starting cold
-should need only this doc + the files it names. Read the whole thing before touching code.
+**Status:** ✅ SHIPPED — CityGen is LIVE citywide (`createCityGenRing`; see
+`src/world/citygen/README.md` for the current system). The old vendored kit this doc set
+out to replace (`src/world/buildings` + `vendor/BuildingGenerator`) has been fully removed.
+Kept as design rationale + forward roadmap (Chinatown grammar, portability) — the "current
+system today" framing below is now historical. Written Jul 8 2026.
 
 **Intent (owner's words):** take the learnings from the vendored Hong-Kong building
 generator, but build *our own* open-source, modular version that is deeply optimized for
@@ -14,10 +17,10 @@ projects and retuned for other cities.
 
 ---
 
-## 1. What's wrong today (root-caused, all in one place)
+## 1. What was wrong with the old kit (root-caused, all in one place)
 
-The current system (`src/world/buildings/*` wrapping `vendor/BuildingGenerator`) has four
-defects, each traced to a concrete cause:
+The OLD system (`src/world/buildings/*` wrapping `vendor/BuildingGenerator`, since deleted)
+had four defects, each traced to a concrete cause — this is why CityGen was built:
 
 | Symptom | Root cause |
 |---|---|
@@ -26,10 +29,9 @@ defects, each traced to a concrete cause:
 | **Can't find the way inside** | The interior's open storefront faces the footprint OBB's `yaw`, which is **not street-aware**. The open side can face an alley or a neighbor. |
 | **Cars/AI clip through buildings** | Building collision (`physics.#tileColliders` + box3d static bodies) is materialized **only around the human player** (`CONFIG.colliderRadius = 260`, `maxActiveBuildingBodies = 240`, anchor = `player.position`). Collider *data itself* only exists for visual tiles streamed near the human. AI cars training across the city are in unloaded tiles with **zero** building bodies and zero sweep data → they clip through everything. |
 
-**Phase 0 already shipped** (this session): `src/main.ts` now calls `createChinatown`
-instead of `createBuildingRing`, confining the Kowloon kit to Chinatown (where it's
-correct) and restoring the good baked SF facades everywhere else. This is the safe interim
-state the new module replaces.
+**Outcome:** the new module is now LIVE citywide (`createCityGenRing`) and the old Kowloon
+kit — including the interim Chinatown-only `createChinatown` path — has been fully removed.
+Chinatown currently falls back to its baked SF facade until a `chinatown` grammar lands.
 
 ---
 
@@ -54,9 +56,9 @@ Everything the new generator needs is already baked by `tools/prepare-city.mjs`:
 - **The baked facade shader** (`src/world/facade.ts`, 724 lines TSL): masonry, window
   grids, storefronts, string courses, parapet masking, per-district palette. It renders the
   WHOLE city at 120 fps and is a *great far-LOD and fallback*. Keep it.
-- **Proven perf pipeline** (`src/world/buildings/pools.ts`): merged mesh per building (3
-  draws), invisible shadow-proxy box (shadows are this app's #1 GPU cost), frustum cull for
-  free, incremental cross-frame merge (`pump`). Reuse this machinery.
+- **Proven perf pipeline** (was `src/world/buildings/pools.ts`, now removed): merged mesh,
+  frustum cull for free, incremental cross-frame merge (`pump`). This machinery was
+  reimplemented in CityGen as `render/chunkLod.ts` (per-tile merged LOD chunks) + `render.ts`.
 
 ---
 
@@ -290,8 +292,8 @@ Sequential. main.ts has a known parallel-edit race — serialize any main.ts edi
   archetype; determinism holds across two headless clients.
 
 - **Phase 6 — Portability + docs.** `README.md` + `ThemePack` API frozen; a second sample
-  theme (or a documented "how to retune for another city") proving the core is SF-agnostic;
-  remove/retire the old `vendor/BuildingGenerator` dependency for non-Chinatown use.
+  theme (or a documented "how to retune for another city") proving the core is SF-agnostic.
+  (The old `vendor/BuildingGenerator` dependency has already been fully removed.)
 
 ---
 

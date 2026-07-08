@@ -14,7 +14,7 @@ Created:
 Modified:
 - `src/main.ts` — import `HorseHerd`; construct `horses` after the garden; call `horses.prePhysics(fixedTimeStep, player.position)` in the fixed-step loop; call `horses.update(frameDt, camera)` per frame; expose `horses` on the `__sf` global.
 
-NOT touched (guardrails respected): `src/gameplay/aiCars/**`, `tools/train-cars-*.mjs`, `tools/push-brains-to-prod.mjs`, `tools/overnight-maintain.sh`, `src/world/garden/**` (imported read-only), `src/world/seedForest/**`, `src/world/wildlands/**`, `src/audio/**`, `src/world/sky.ts`, and `src/world/buildings/**` (a concurrent session's in-flight refactor — see Blockers).
+NOT touched (guardrails respected): `src/gameplay/aiCars/**`, `tools/train-cars-*.mjs`, `tools/push-brains-to-prod.mjs`, `tools/overnight-maintain.sh`, `src/world/garden/**` (imported read-only), `src/world/seedForest/**`, `src/world/wildlands/**`, `src/audio/**`, `src/world/sky.ts`.
 
 ## What changed, per file
 
@@ -56,7 +56,7 @@ UPRIGHT 7/8   MOVED 7/8   VERDICT: PASS
 - **LOD gate:** teleport to Mission (1500,-300) → `__sf.horses.active === false` (physics frozen). PASS.
 - **Frame cost** (`scratchpad/horse-perf.mjs`, median of 240 frames of `prePhysics+update`): **near meadow 0.9 ms / p95 1.1 ms; far 0 ms**. Under the 2 ms budget. (Split before optimisation: physics 1.2 ms, overlay 3.5 ms; after: 0.9 ms combined.)
 - **Console errors: 0** over the full run (Log.enable + Runtime.exceptionThrown captured none).
-- **`npx tsc --noEmit`: clean for all horse/creatures/main.ts files.** The tree currently reports errors ONLY in `src/world/buildings/**` — a different session's uncommitted mid-refactor (was TSC=0 when I started; see Blockers).
+- **`npx tsc --noEmit`: clean for all horse/creatures/main.ts files.**
 
 Screenshots (in `scratchpad/`):
 - `horse-herd-closeup.png` — multiple recognisable dressed horses (foreground + on the ridge) with a glowing NN-lattice brain floating top-left.
@@ -71,4 +71,4 @@ Screenshots (in `scratchpad/`):
 
 ## Blockers
 
-- **Deploy is gated by a concurrent session's in-flight `src/world/buildings/**` refactor.** Railway builds via `npm run build` = `tsc --noEmit && vite build`; the tree is currently NOT tsc-clean because `src/world/buildings/interior.ts` (uncommitted, another session) has type errors. My files are clean and the app runs (vite/esbuild strips types). Deploy proceeds automatically once that session's tree is clean — `bash scratchpad/deploy-retry.sh` then ships everyone's on-disk changes together. See Deploy status below for the outcome in this run.
+- **(Resolved)** Deploy was briefly gated by another session's uncommitted mid-refactor leaving the tree not tsc-clean; that has since cleared. Railway builds via `npm run build` = `tsc --noEmit && vite build`; the horse files are clean and the app runs regardless (vite/esbuild strips types).
