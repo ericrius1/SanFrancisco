@@ -3,6 +3,7 @@ import type * as THREE from "three/webgpu";
 import {
   CONFIG,
   DEBRIS_TUNING,
+  FLOWER_TUNING,
   FOLIAGE_TUNING,
   RENDER_QUALITY_PRESETS,
   RENDER_TUNING,
@@ -51,6 +52,7 @@ export class DebugPanel {
   #scene: THREE.Scene | null;
   #postfx: { applyPostFx: () => void; applyPostQuality: () => void } | null;
   #setFoliageVisible: (visible: boolean) => void;
+  #refreshFlowers: () => void;
   #lastRefresh = 0;
   #lastWireframeScan = 0;
   #wireframeOriginals = new Map<WireframeMaterial, boolean>();
@@ -68,7 +70,8 @@ export class DebugPanel {
     tiles: TileStreamer | null = null,
     scene: THREE.Scene | null = null,
     postfx: { applyPostFx: () => void; applyPostQuality: () => void } | null = null,
-    setFoliageVisible: (visible: boolean) => void = () => {}
+    setFoliageVisible: (visible: boolean) => void = () => {},
+    refreshFlowers: () => void = () => {}
   ) {
     this.#renderer = renderer;
     this.#sky = sky;
@@ -78,6 +81,7 @@ export class DebugPanel {
     this.#scene = scene;
     this.#postfx = postfx;
     this.#setFoliageVisible = setFoliageVisible;
+    this.#refreshFlowers = refreshFlowers;
   }
 
   toggle() {
@@ -363,6 +367,15 @@ export class DebugPanel {
     const foliage = advanced.addFolder({ title: "foliage" });
     FOLIAGE_TUNING.bind(foliage, {
       onChange: (_key, value) => this.#setFoliageVisible(Boolean(value))
+    });
+    // Wildflower ring: density + clump↔scatter shaping. The ring reads these live on
+    // its next re-scatter; force one now (on slider RELEASE only, `last`) so the edit
+    // shows without waiting for the player to walk.
+    const flowers = foliage.addFolder({ title: "wildflowers" });
+    FLOWER_TUNING.bind(flowers, {
+      onChange: (_key, _value, last) => {
+        if (last) this.#refreshFlowers();
+      }
     });
 
     // debris window lights: hold fully lit, then flicker out; each chunk delays its

@@ -1,7 +1,7 @@
 import * as THREE from "three/webgpu";
 import { Inspector } from "three/addons/inspector/Inspector.js";
 import CameraControls from "camera-controls";
-import { CONFIG, DEBRIS_TUNING, FOLIAGE_TUNING, RENDER_TUNING, START, START_DEFAULTS, WORLD_TUNING, type ShadowQuality } from "./config";
+import { CONFIG, DEBRIS_TUNING, FLOWER_TUNING, FOLIAGE_TUNING, RENDER_TUNING, START, START_DEFAULTS, WORLD_TUNING, type ShadowQuality } from "./config";
 import { loadPlayerState, resetAllTweaks, savePlayerState } from "./core/persist";
 import { Input } from "./core/input";
 import { WorldMap, waterHeight } from "./world/heightmap";
@@ -32,6 +32,7 @@ import { Paintballs, PaintSkins, PAINTBALL_SPEED, type PaintTarget } from "./fx/
 import { Bubbles } from "./fx/bubbles";
 import { Chimes } from "./fx/chimes";
 import { WorldCursor } from "./fx/worldCursor";
+import { WorldQueries } from "./core/worldQueries";
 import { Toolbar, TOOL_ORDER, TOOL_VERB, type ToolName } from "./ui/toolbar";
 import { AvatarSelector } from "./ui/avatarSelector";
 import { AudioControls } from "./ui/audioControls";
@@ -67,6 +68,7 @@ import { HUD } from "./ui/hud";
 import { ShareButton } from "./ui/share";
 import { PauseToggle } from "./ui/pauseToggle";
 import { BehindTheScenes } from "./ui/behindTheScenes";
+import { parseReadLink, openReadLink } from "./ui/deepLinks";
 import { Tutorial } from "./ui/tutorial";
 import { createRenderPipeline } from "./render/pipeline";
 import { POSTFX_TUNING } from "./render/postfx";
@@ -90,7 +92,7 @@ const nameInput = document.querySelector<HTMLInputElement>("[data-name-input]")!
 const startButton = startForm.querySelector<HTMLButtonElement>("button")!;
 const suggestedName = makeFunName();
 let startReady = false;
-let startGame: ((typedName: string) => void) | null = null;
+let startGame: ((typedName: string, opts?: { lock?: boolean }) => void) | null = null;
 
 function focusNameInput() {
   nameInput.focus({ preventScroll: true });
@@ -381,6 +383,13 @@ async function boot() {
   const exploratorium = new Exploratorium(renderer, physics, map, scene, tiles);
   exploratorium.onMessage = (m, s) => hud.message(m, s);
 
+  // Decoupled world-query service: every "what does this ray hit" caller (paint,
+  // the in-world cursor, future systems) goes through here. Backed by box3d's
+  // broadphase cast over a dedicated query world of entity proxies, raced against
+  // the static-world caster + the museum's interior surfaces.
+  const worldQueries = new WorldQueries(physics);
+  worldQueries.setSurfaceRay((o, d, m) => exploratorium.raycast(o, d, m));
+
   // Generated buildings — SCOPED TO CHINATOWN ONLY (src/world/buildings).
   //
   // The vendored generator is a Hong-Kong / Kowloon tenement kit: its textures
@@ -590,13 +599,24 @@ async function boot() {
   // lets the server keep its per-id seed (server.mjs), so un-customized players
   // stay distinct instead of all sending the same saved blob.
   const net = new Net(suggestedName, savedAvatar ?? undefined);
-  const avatarSelector = new AvatarSelector(avatarTraits, (traits) => {
-    avatarTraits = traits;
-    customized = true; // an explicit edit — persist it and broadcast from here on
-    saveAvatarTraits(traits);
-    player.setAvatar(traits);
-    net.setAvatar(traits);
-  });
+  const avatarSelector = new AvatarSelector(
+    avatarTraits,
+    net.name,
+    (traits) => {
+      avatarTraits = traits;
+      customized = true; // an explicit edit — persist it and broadcast from here on
+      saveAvatarTraits(traits);
+      player.setAvatar(traits);
+      net.setAvatar(traits);
+    },
+    (name) => {
+      // rename from the avatar panel: net normalizes (blank / fun → a generated
+      // fun name), then we reflect that back into the field.
+      net.setName(name);
+      avatarSelector.setName(net.name);
+      hud.message(`You're now ${net.name}`, 2.2);
+    }
+  );
   net.onWelcome = () => {
     if (customized) {
       net.setAvatar(avatarTraits); // re-assert my chosen look after a (re)connect
@@ -691,12 +711,15 @@ async function boot() {
 
   // Name gate is wired at module startup so typing works during loading; this
   // callback is attached once the game objects it needs exist.
-  startGame = (typedName) => {
+  startGame = (typedName, opts) => {
     net.setName(typedName);
+    avatarSelector.setName(net.name); // keep the avatar-panel field in step with the gate
     nameInput.blur(); // hand the keyboard back to the game
     document.body.classList.add("started"); // reveals the HUD (hidden behind the gate)
     loading.classList.add("done");
-    input.requestLock(); // the submit click/Enter is the user gesture pointer lock needs
+    // the submit click/Enter is the gesture pointer lock needs. A deep-link start
+    // has no gesture (and opens a modal that frees the cursor anyway), so skip it.
+    if (opts?.lock !== false) input.requestLock();
     // `invite` is declared further down boot; by the time a submit can happen
     // (Start enables at load's end) it's long initialized
     hud.message(
@@ -1009,7 +1032,8 @@ async function boot() {
     tiles,
     scene,
     pipeline,
-    setFoliageVisible
+    setFoliageVisible,
+    () => wildlands.flowers.refresh()
   );
   debugPanel.setMode(player.mode);
 
@@ -1238,6 +1262,15 @@ async function boot() {
   // headless verification, demos and perf runs can't click — skip the gate
   const skipGate = ["autostart", "demo", "profile"].some((k) => new URLSearchParams(location.search).has(k));
   if (skipGate) loading.classList.add("done");
+
+  // `?read=<modal>[.<sub>]` — a shared "reading" link (e.g. ?read=bts.sound for
+  // the soundscape chapter). Drop straight into the reading: no name gate, a fun
+  // sample name handed out automatically, and the modal opened on its sub-view.
+  // Closing it lands the player in the live city with nothing left to fill in.
+  if (parseReadLink(location.search) && startGame) {
+    startGame(suggestedName, { lock: false });
+    openReadLink(); // opens the registered modal + strips ?read= from the URL
+  }
 
   const timer = new THREE.Timer();
   let accumulator = 0;
@@ -2239,7 +2272,7 @@ async function boot() {
 
   const exposeDebugHooks = () => {
     Object.assign(window as never, {
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, WORLD_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, exploratorium, traffic, creatures, forest, garden, wildlands, splashes, vehicleAudio, nature, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, boatLaunchers, goldenGateLights, flyover, bridgeParade, teleportToTarget, aiCars, horses, buildings, citygen, citygenRing, cullGeneratedBuildings, brainPanel, inspectableBrains, worldCursor }
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, exploratorium, traffic, creatures, forest, garden, wildlands, splashes, vehicleAudio, nature, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, boatLaunchers, goldenGateLights, flyover, bridgeParade, teleportToTarget, aiCars, horses, buildings, citygen, citygenRing, cullGeneratedBuildings, brainPanel, inspectableBrains, worldCursor, worldQueries }
     });
   };
   if (import.meta.env.DEV || new URLSearchParams(location.search).has("profile")) {

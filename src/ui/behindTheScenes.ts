@@ -9,6 +9,7 @@
  */
 
 import { SOUNDSCAPE_TAB_HTML, mountSoundscape } from "./btsSoundscape";
+import { registerShareable, buildReadUrl, copyText, type ShareableModal } from "./deepLinks";
 
 const X_URL = "https://x.com/EricAlar11";
 const REPO_URL = "https://github.com/ericrius1/SanFrancisco";
@@ -466,13 +467,17 @@ const TABS: Tab[] = [
   { id: "sound", label: "The soundscape", icon: "🐦", html: SOUNDSCAPE_TAB_HTML }
 ];
 
-export class BehindTheScenes {
+export class BehindTheScenes implements ShareableModal {
+  /** Deep-link key: `?read=bts` opens this panel, `?read=bts.sound` a tab. */
+  readonly id = "bts";
   #overlay: HTMLDivElement;
   #body!: HTMLDivElement;
   #open = false;
   #activeTab = "world";
   #soundscape: { activate(): void; deactivate(): void } | null = null;
   #onToggle?: (open: boolean) => void;
+  #shareBtn!: HTMLButtonElement;
+  #shareResetTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(onToggle?: (open: boolean) => void) {
     this.#onToggle = onToggle;
@@ -514,6 +519,8 @@ export class BehindTheScenes {
       `<div class="bts-title">Behind the scenes</div>` +
       `<div class="bts-subtitle">How this browser-native San Francisco is built</div>` +
       `<div class="bts-socials">` +
+      `<button class="bts-share" type="button" title="Copy a link straight to this chapter">` +
+      `<span class="ic">🔗</span><span class="bts-share-label">Share this chapter</span></button>` +
       `<a class="social-btn" href="${X_URL}" target="_blank" rel="noopener noreferrer" title="X / Twitter">${X_ICON}</a>` +
       `<a class="social-btn" href="${REPO_URL}" target="_blank" rel="noopener noreferrer" title="GitHub repo">${GH_ICON}</a>` +
       `</div></div>` +
@@ -551,8 +558,37 @@ export class BehindTheScenes {
       }
     });
 
+    // "Share this chapter" — copies a deep link to the tab currently on screen
+    this.#shareBtn = this.#overlay.querySelector(".bts-share")!;
+    this.#shareBtn.addEventListener("click", () => {
+      void copyText(buildReadUrl(this.id, this.#activeTab)).then((ok) =>
+        this.#flashShare(ok ? "Link copied!" : "Copy failed")
+      );
+    });
+
     hud.appendChild(this.#overlay);
     this.#selectTab(this.#activeTab);
+    // let a `?read=bts[.tab]` link open this panel straight from a shared URL
+    registerShareable(this);
+  }
+
+  #flashShare(text: string) {
+    const label = this.#shareBtn.querySelector(".bts-share-label");
+    if (!label) return;
+    label.textContent = text;
+    clearTimeout(this.#shareResetTimer);
+    this.#shareResetTimer = setTimeout(() => (label.textContent = "Share this chapter"), 1800);
+  }
+
+  /** ShareableModal: open the panel, optionally on a specific tab. */
+  open(sub?: string) {
+    if (sub && TABS.some((t) => t.id === sub)) this.#selectTab(sub);
+    this.setOpen(true);
+  }
+
+  /** ShareableModal: the tab on screen, so a link points back at it. */
+  shareSub(): string | undefined {
+    return this.#activeTab;
   }
 
   #selectTab(id: string) {

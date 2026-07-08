@@ -15,29 +15,13 @@ import {
   WIND_DIR,
   type GrassEntry
 } from "../groundcover/bladeGrass";
-import { inBotanicalGarden, type GardenTerrain } from "../garden/layout";
-import { wildRegionAt } from "./layout";
+import { hash2, valueNoise } from "../groundcover/scatter";
+import type { GardenTerrain } from "../garden/layout";
+import { grassyGround } from "./layout";
 
 const RING_RADIUS = 52; // dense grass within this of the player; fades at the rim
 const RESAMPLE_STEP = 8; // re-scatter after the focus moves this far (m)
 const SPACING = 0.95;
-
-function hash2(ix: number, iz: number, salt: number): number {
-  let h = (Math.imul(ix, 374761393) + Math.imul(iz, 668265263) + Math.imul(salt, 2246822519)) | 0;
-  h = Math.imul(h ^ (h >>> 15), 2246822519);
-  h = Math.imul(h ^ (h >>> 13), 3266489917);
-  h ^= h >>> 16;
-  return (h >>> 0) / 4294967296;
-}
-function valueNoise(x: number, z: number, cell: number, salt: number): number {
-  const fx = x / cell, fz = z / cell;
-  const ix = Math.floor(fx), iz = Math.floor(fz);
-  const ax = fx - ix, az = fz - iz;
-  const sx = ax * ax * (3 - 2 * ax), sz = az * az * (3 - 2 * az);
-  const n00 = hash2(ix, iz, salt), n10 = hash2(ix + 1, iz, salt);
-  const n01 = hash2(ix, iz + 1, salt), n11 = hash2(ix + 1, iz + 1, salt);
-  return (n00 * (1 - sx) + n10 * sx) * (1 - sz) + (n01 * (1 - sx) + n11 * sx) * sz;
-}
 
 export type WildGrass = {
   group: THREE.Group;
@@ -64,19 +48,10 @@ export function createWildGrass(map: GardenTerrain): WildGrass {
   const tall: GrassEntry[] = [];
   let count = 0;
 
-  function plantable(x: number, z: number): boolean {
-    const r = wildRegionAt(x, z);
-    if (!r) return false;
-    if (inBotanicalGarden(x, z, 6)) return false; // the garden grows its own grass
-    if (map.isWater(x, z)) return false;
-    if (!r.plantClasses.includes(map.surfaceType(x, z))) return false;
-    // No grass on steep faces — on Marin's steep hills the ring's uphill rim
-    // rose above the horizon and read as tufts "floating" in the sky, and grass
-    // clips through cliffs. Bare steep slopes also match the golden-hills look.
-    const dx = Math.abs(map.groundHeight(x + 5, z) - map.groundHeight(x - 5, z));
-    const dz = Math.abs(map.groundHeight(x, z + 5) - map.groundHeight(x, z - 5));
-    return dx <= 6 && dz <= 6;
-  }
+  // Grass grows exactly where the shared ground-cover gate allows — the same
+  // predicate the flower ring uses, so blooms always sit IN the grass (and both
+  // skip water, wrong surfaces, the botanical garden's turf, and steep faces).
+  const plantable = (x: number, z: number) => grassyGround(map, x, z);
 
   function resample(fx: number, fz: number) {
     low.length = 0;

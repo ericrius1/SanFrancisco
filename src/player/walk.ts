@@ -22,6 +22,11 @@ export const WALK_TUNING = tunables("movement.walk", {
 const JUMP_BUFFER_TIME = 0.18;
 const COYOTE_TIME = 0.12;
 
+// How deep the capsule bottom rests below the surface while swimming idle. The
+// capsule is ~1.8 m tall (centre = bottom + 0.9), so a 1.4 m rest sink puts the
+// waterline at the chest/shoulders — swimming *in* the water, not standing on it.
+const SWIM_REST_DEPTH = 1.4;
+
 const V = {
   tmp: new THREE.Vector3(),
   up: new THREE.Vector3(0, 1, 0)
@@ -55,8 +60,10 @@ export class WalkController implements ModeController {
   enter(ctx: PlayerCtx) {
     if (ctx.swimEnter) {
       ctx.swimEnter = false;
+      // drop in already at the swim waterline (centre a touch under the surface)
+      // so buoyancy holds instead of dropping you in from a hop above the water
       const y = waterHeight(ctx.position.x, ctx.position.z, ctx.time);
-      ctx.position.y = y + 0.45;
+      ctx.position.y = y - 0.2;
       return;
     }
     enterOnLand(ctx); // need land under us
@@ -128,16 +135,34 @@ export class WalkController implements ModeController {
     }
     if (!this.climbing) {
       if (swimming) {
-        vy = (waterY - 0.35 - bottom) * 3 - vy * 0.5;
-        if (input.down("Space")) vy += tw.swimBoost;
-      } else if (this.#jumpBuf > 0 && (this.grounded || this.#coyote > 0)) {
-        vy = Math.max(vy, tw.jump);
-        this.#jumpBuf = 0;
-        this.#coyote = 0;
+        // --- swimming: bob at the surface, dive when you look/press down ------
+        // Horizontal glide (run key is repurposed as dive, so use base speed).
+        const swimSpeed = tw.speed * tw.swimFactor;
+        vx = dir.x * swimSpeed;
+        vz = dir.z * swimSpeed;
+        // Vertical command: look-pitch dive while swimming forward (nose down + W
+        // = go under), plus explicit Space=up / Shift=down for fine control.
+        let vSwim = frame.aim.y * swimSpeed * iz;
+        if (input.down("Space")) vSwim += tw.swimBoost;
+        if (run) vSwim -= tw.swimBoost;
+        // Buoyancy floats you back to the waterline when idle; suppressed while
+        // actively diving so you can get under and roam instead of popping up.
+        const restBottom = waterY - SWIM_REST_DEPTH;
+        let buoy = (restBottom - bottom) * 3;
+        if (vSwim < 0) buoy = Math.min(buoy, 0);
+        vy = buoy + vSwim - v.linear[1] * 0.5;
+        // never burrow into the seabed
+        const minBottom = ground + 0.25;
+        if (bottom < minBottom) vy = Math.max(vy, (minBottom - bottom) * 4);
+      } else {
+        if (this.#jumpBuf > 0 && (this.grounded || this.#coyote > 0)) {
+          vy = Math.max(vy, tw.jump);
+          this.#jumpBuf = 0;
+          this.#coyote = 0;
+        }
+        vx = dir.x * speed;
+        vz = dir.z * speed;
       }
-      const factor = swimming ? tw.swimFactor : 1;
-      vx = dir.x * speed * factor;
-      vz = dir.z * speed * factor;
     }
     // velocity-only control: the solver owns position/contacts (teleporting the body
     // every step is what made walking jitter). Angular velocity pinned to zero keeps

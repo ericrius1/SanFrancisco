@@ -977,6 +977,42 @@
         display: inline-flex;
         gap: 8px;
         margin-top: 14px;
+        align-items: center;
+      }
+      #hud .bts-share {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        height: 34px;
+        padding: 0 13px;
+        cursor: pointer;
+        border-radius: 10px;
+        border: 1px solid rgba(111, 215, 196, 0.4);
+        background: rgba(22, 64, 70, 0.5);
+        color: #9ef2df;
+        font:
+          700 12px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
+        letter-spacing: 0.01em;
+        box-shadow:
+          inset 0 1px 0 rgba(255, 255, 255, 0.06),
+          0 6px 18px rgba(0, 6, 12, 0.28);
+        backdrop-filter: blur(6px);
+        transition:
+          border-color 0.15s,
+          color 0.15s,
+          transform 0.12s,
+          background 0.15s;
+      }
+      #hud .bts-share:hover {
+        border-color: #6fd7c4;
+        background: rgba(28, 78, 84, 0.62);
+        transform: translateY(-1px);
+      }
+      #hud .bts-share .ic {
+        font-size: 13px;
+        line-height: 1;
       }
       #hud .bts-body {
         padding: 8px 30px 30px;
@@ -1622,6 +1658,50 @@
         display: flex;
         flex-wrap: wrap;
         gap: 6px;
+      }
+      #hud .avatar-name-input {
+        flex: 1 1 auto;
+        min-width: 0;
+        height: 30px;
+        padding: 0 10px;
+        border-radius: 7px;
+        border: 1px solid rgba(190, 225, 240, 0.24);
+        background: rgba(6, 16, 25, 0.55);
+        color: #eaf6fa;
+        font:
+          700 12px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
+        outline: none;
+        transition:
+          border-color 0.15s,
+          background 0.15s;
+      }
+      #hud .avatar-name-input::placeholder {
+        color: rgba(220, 239, 245, 0.4);
+      }
+      #hud .avatar-name-input:focus {
+        border-color: #6fd7c4;
+        background: rgba(10, 24, 36, 0.7);
+      }
+      #hud .avatar-name-roll {
+        flex: 0 0 auto;
+        width: 30px;
+        height: 30px;
+        cursor: pointer;
+        border-radius: 7px;
+        border: 1px solid rgba(190, 225, 240, 0.2);
+        background: rgba(18, 40, 56, 0.58);
+        font-size: 14px;
+        line-height: 1;
+        transition:
+          border-color 0.15s,
+          transform 0.12s,
+          background 0.15s;
+      }
+      #hud .avatar-name-roll:hover {
+        border-color: rgba(190, 225, 240, 0.5);
+        transform: translateY(-1px);
       }
       #hud .avatar-choice,
       #hud .avatar-random {

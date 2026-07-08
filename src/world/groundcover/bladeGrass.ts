@@ -22,20 +22,20 @@ import {
   Loop,
   mix,
   modelWorldMatrix,
-  mx_noise_float,
   normalize,
   positionGeometry,
   positionLocal,
-  sin,
-  time,
   uniform,
   vec2,
   vec3,
   vec4
 } from "three/tsl";
-import { windSpeed, windStrength } from "../../../vendor/SeedThree/src/core/wind.js";
-import { windGustGlobal } from "./wind";
+import { groundSway } from "./sway";
 import { DISPLACERS, MAX_DISPLACERS } from "./displacers";
+
+// The prevailing wind direction now lives in the shared sway module; re-exported
+// here so existing importers (grassField) keep their path.
+export { WIND_DIR } from "./sway";
 
 export type GrassEntry = {
   x: number;
@@ -49,16 +49,12 @@ export type GrassEntry = {
   windZ: number;
 };
 
-/** Prevailing wind direction on the XZ plane (grass leans along it). */
-export const WIND_DIR = new THREE.Vector3(0.85, 0, 0.53).normalize();
 const GRASS_FADE_BAND = uniform(0.16);
 /** Set to the current view focus (x,z); blades fade out toward the field edge. */
 export const GRASS_DENSITY_FOCUS = uniform(new THREE.Vector2(1e6, 1e6));
 
 // TSL's d.ts narrows chained vector nodes too aggressively for vendored JS uniforms.
 type TslNode = any;
-const windSpeedNode = windSpeed as TslNode;
-const windStrengthNode = windStrength as TslNode;
 
 export function createBladeClusterGeometry({
   blades,
@@ -133,20 +129,6 @@ export function createBladeClusterGeometry({
   return geometry;
 }
 
-function grassSway(anchorWorldXZ: TslNode) {
-  const t = time.mul(windSpeedNode);
-  const phase = anchorWorldXZ.x.mul(0.35).add(anchorWorldXZ.y.mul(0.27)).mul(2.2);
-  const sine = sin(t.mul(1.15).add(phase)).mul(0.72).add(sin(t.mul(2.63).add(phase.mul(1.9))).mul(0.28));
-  const gustScale = 1 / 18;
-  const scroll = vec2(WIND_DIR.x, WIND_DIR.z).mul(t.mul(1.4 * gustScale));
-  const nUv = anchorWorldXZ.mul(gustScale).sub(scroll);
-  const gust = mx_noise_float(nUv).add(mx_noise_float(nUv.mul(3.1).add(vec2(37.7, 17.3))).mul(0.4)).mul(1.25);
-  // windGustGlobal is the shared CPU gust envelope that also drives the
-  // procedural wind audio — swells you hear are swells you see.
-  const gustEnvelope = (windGustGlobal as TslNode).mul(1.3).add(0.3);
-  return mix(sine, gust, 0.55).mul(windStrengthNode.mul(0.34)).mul(gustEnvelope);
-}
-
 /** The shared grass material: SSS blades, wind sway (shared envelope), and
  *  trample against the shared displacer field. Instances carry aGrassColor
  *  (rgb + per-mesh fade radius), aGrassWind (leanX,leanZ, anchorX,anchorZ), and
@@ -205,7 +187,7 @@ export function createGrassMaterial(): THREE.Material {
   const localTrample = vec3(trampleLocalX, trampleLocalY, trampleLocalZ).clamp(-4, 4);
 
   const windDamp = float(1).sub(crushed.mul(0.75));
-  const bend = vec3(wind.x, 0, wind.y).mul(grassSway(anchorWorld)).mul(bladeT.pow(2.05).mul(fade)).mul(windDamp);
+  const bend = vec3(wind.x, 0, wind.y).mul(groundSway(anchorWorld)).mul(bladeT.pow(2.05).mul(fade)).mul(windDamp);
   mat.positionNode = scaled.add(bend).add(localTrample);
 
   mat.normalNode = normalize(cameraViewMatrix.mul(vec4(0, 1, 0, 0)).xyz);

@@ -20,14 +20,23 @@ type TraitKey = "hair" | "hat" | "outfit";
 export class AvatarSelector {
   #root: HTMLElement;
   #panel: HTMLElement;
+  #traitsBody: HTMLElement;
+  #nameInput!: HTMLInputElement;
   #toggle: HTMLButtonElement;
   #traits: AvatarTraits;
   #onChange: (traits: AvatarTraits) => void;
+  #onRename: (name: string) => void;
   #open = false;
 
-  constructor(initial: AvatarTraits, onChange: (traits: AvatarTraits) => void) {
+  constructor(
+    initial: AvatarTraits,
+    initialName: string,
+    onChange: (traits: AvatarTraits) => void,
+    onRename: (name: string) => void
+  ) {
     this.#traits = { ...initial };
     this.#onChange = onChange;
+    this.#onRename = onRename;
 
     const hud = document.getElementById("hud")!;
     this.#root = document.createElement("div");
@@ -42,10 +51,51 @@ export class AvatarSelector {
 
     this.#panel = document.createElement("div");
     this.#panel.className = "avatar-panel";
+    // Name row is persistent (built once) so editing a trait — which rebuilds
+    // the swatch/button grid — never blows away the field mid-type.
+    this.#panel.appendChild(this.#buildNameRow(initialName));
+    this.#traitsBody = document.createElement("div");
+    this.#traitsBody.className = "avatar-traits";
+    this.#panel.appendChild(this.#traitsBody);
     this.#root.appendChild(this.#panel);
 
     hud.appendChild(this.#root);
     this.#render();
+  }
+
+  /** The "name" row: an editable field plus a dice that rolls a fun name. */
+  #buildNameRow(initialName: string): HTMLElement {
+    const input = document.createElement("input");
+    this.#nameInput = input;
+    input.className = "avatar-name-input";
+    input.type = "text";
+    input.maxLength = 20;
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    input.placeholder = "your name";
+    input.value = initialName;
+    input.setAttribute("aria-label", "Your name");
+    // commit on blur / Enter (Enter also drops focus back to the game)
+    input.addEventListener("change", () => this.#onRename(input.value.trim()));
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        input.blur();
+      }
+    });
+
+    const roll = document.createElement("button");
+    roll.type = "button";
+    roll.className = "avatar-name-roll";
+    roll.title = "Roll a fun name";
+    roll.textContent = "🎲";
+    // empty name → the rename callback (net.setName) hands back a fresh fun name
+    roll.addEventListener("click", () => this.#onRename(""));
+
+    const controls = document.createElement("div");
+    controls.className = "avatar-controls";
+    controls.append(input, roll);
+    return this.#row("name", [], controls);
   }
 
   setOpen(open: boolean) {
@@ -58,6 +108,11 @@ export class AvatarSelector {
   setTraits(traits: AvatarTraits) {
     this.#traits = { ...traits };
     this.#render();
+  }
+
+  /** Reflect the current (possibly normalized) name without firing onRename. */
+  setName(name: string) {
+    this.#nameInput.value = name;
   }
 
   #set(next: Partial<AvatarTraits>) {
@@ -76,15 +131,18 @@ export class AvatarSelector {
     return b;
   }
 
-  #row(label: string, children: HTMLElement[]) {
+  #row(label: string, children: HTMLElement[], prebuilt?: HTMLElement) {
     const row = document.createElement("div");
     row.className = "avatar-row";
     const name = document.createElement("div");
     name.className = "avatar-label";
     name.textContent = label;
-    const controls = document.createElement("div");
-    controls.className = "avatar-controls";
-    for (const child of children) controls.appendChild(child);
+    let controls = prebuilt;
+    if (!controls) {
+      controls = document.createElement("div");
+      controls.className = "avatar-controls";
+      for (const child of children) controls.appendChild(child);
+    }
     row.append(name, controls);
     return row;
   }
@@ -109,8 +167,8 @@ export class AvatarSelector {
       `<span class="avatar-shirt" style="background:#${primary.toString(16).padStart(6, "0")}"></span>` +
       `<span class="avatar-dot" style="background:#${accent.toString(16).padStart(6, "0")}"></span>`;
 
-    this.#panel.innerHTML = "";
-    this.#panel.append(
+    this.#traitsBody.innerHTML = "";
+    this.#traitsBody.append(
       this.#row(
         "skin",
         SKIN_TONES.map((s, i) => this.#swatch("skin", i, s.color, s.label))
@@ -142,6 +200,6 @@ export class AvatarSelector {
     random.className = "avatar-random";
     random.textContent = "random";
     random.addEventListener("click", () => this.#set(randomAvatarTraits()));
-    this.#panel.appendChild(random);
+    this.#traitsBody.appendChild(random);
   }
 }

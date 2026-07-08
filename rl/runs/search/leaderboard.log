@@ -8,3 +8,13 @@ BEST 41.8  {"freqBase":0.7795,"freqSpan":0.2625,"strideBase":0.6397,"strideSpan"
 to deploy: cp rl/runs/search/best.policy.json public/models/horse_policy.json
 
 === ROUND 0  (pop 6, 80 gens each, 4 parallel) ===
+   64.7  gallop[q79 spd0.50 str0.99 bnd0.09] walk[q15 spd0.23] turn100
+   64.5  gallop[q83 spd0.42 str1.44 bnd0.29] walk[q8 spd0.08] turn97
+   64.5  gallop[q86 spd0.47 str1.41 bnd0.22] walk[q1 spd0.00] turn100
+   64.3  gallop[q80 spd0.43 str1.91 bnd0.57] walk[q14 spd0.28] turn98
+   56.6  gallop[q19 spd0.38 str2.43 bnd0.71] walk[q87 spd0.25] turn97
+   32.0  gallop[q14 spd0.18 str2.23 bnd0.90] walk[q9 spd0.11] turn95
+  ** NEW BEST 64.7  {"freqBase":0.8034,"freqSpan":0.7313,"strideBase":0.6539,"strideSpan":1.0076,"actFreqAuth":0.6172,"actStrideAuth":0.3552,"actKneeAuth":0.826,"speedMatchA":8.1861,"progressW":0.7936,"tallFloorSlope":0.05,"doneFloorSlope":0.1076,"uprightSoften":0.4303,"maxTorqueScale":1.0594,"gallopBlend":0.0476,"boundRewardW":0.0197}
+  (keep gallop specialist: gallopQ 86 spd 0.47)
+
+=== ROUND 1  (pop 6, 80 gens each, 4 parallel) ===

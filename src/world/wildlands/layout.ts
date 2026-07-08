@@ -22,7 +22,7 @@
 //  Marin     x[-6300,-2700] z[-7800,-5000]
 
 import type { SeedTreeDesignSpec } from "../seedForest/templates";
-import { BOTANICAL_GARDEN_BOUNDS, type GardenTerrain } from "../garden/layout";
+import { BOTANICAL_GARDEN_BOUNDS, inBotanicalGarden, type GardenTerrain } from "../garden/layout";
 
 export type WildRegionId = "ggpark" | "presidio" | "marin" | "twinpeaks";
 
@@ -229,7 +229,7 @@ function savannaGate(s: Savanna, x: number, z: number): boolean {
 
 // --- flowers -----------------------------------------------------------------------
 
-/** Flower species ids (geometry + palette live in flowerField.ts). */
+/** Flower species ids (geometry + palette live in flowerRing.ts). */
 export const FLOWER_SPECIES = { poppy: 0, lupine: 1, yarrow: 2, goldfield: 3 } as const;
 
 export type FlowerDrift = {
@@ -270,10 +270,36 @@ export const FLOWER_DRIFTS: readonly FlowerDrift[] = [
   { name: "tp_wildflowers", cx: -560, cz: 4060, rx: 165, rz: 135, mix: [[1, 0.5], [2, 0.3], [0, 0.2]], density: 0.5, bandCell: 24 }
 ] as const;
 
-function driftEllipse(d: FlowerDrift, x: number, z: number): number {
+export function driftEllipse(d: FlowerDrift, x: number, z: number): number {
   const dx = (x - d.cx) / d.rx;
   const dz = (z - d.cz) / d.rz;
   return Math.sqrt(dx * dx + dz * dz);
+}
+
+/**
+ * The designed superbloom overlay for the player-following flower ring. Inside a
+ * drift ellipse it returns that drift's local keep-probability (its density ×
+ * two-scale noise banding × edge feather) plus the drift's dominant species, so the
+ * ring blooms a designed meadow into a real superbloom when you walk into it. Zero
+ * (species -1) everywhere no drift reaches — the ring's own scatter/clump rules there.
+ */
+export function flowerDriftAt(x: number, z: number): { boost: number; species: number } {
+  let boost = 0;
+  let species = -1;
+  for (const d of FLOWER_DRIFTS) {
+    const e = driftEllipse(d, x, z);
+    if (e >= 1) continue;
+    const band =
+      smoothstep(0.34, 0.62, valueNoise(x, z, d.bandCell, 9001)) *
+      (0.55 + 0.45 * smoothstep(0.3, 0.7, valueNoise(x, z, d.bandCell * 3.7, 9002)));
+    const feather = 1 - smoothstep(0.72, 1, e);
+    const b = d.density * band * feather;
+    if (b > boost) {
+      boost = b;
+      species = d.mix[0][0]; // the drift's dominant (first-listed) species
+    }
+  }
+  return { boost, species };
 }
 
 /** Trees keep out of flower meadows — the drifts ARE the clearings. */
@@ -352,6 +378,25 @@ function plantable(map: GardenTerrain, region: WildRegion, x: number, z: number)
   return !inAvoid(x, z);
 }
 
+/**
+ * The SHARED ground-cover placement gate: true where BOTH the wildlands grass and
+ * the wildflower ring may grow, so flowers land exactly in the grass (never on
+ * water, wrong surface classes, the botanical garden's own turf, or steep faces —
+ * on Marin's hills a steep uphill rim rose into the sky and read as floating tufts).
+ * Grass and flowers both call this so their coverage matches perfectly.
+ */
+export function grassyGround(map: GardenTerrain, x: number, z: number): boolean {
+  const r = wildRegionAt(x, z);
+  if (!r) return false;
+  if (inBotanicalGarden(x, z, 6)) return false; // the garden plants its own flora
+  if (map.isWater(x, z)) return false;
+  if (!r.plantClasses.includes(map.surfaceType(x, z))) return false;
+  if (map.groundHeight(x, z) < r.minGround) return false;
+  const dx = Math.abs(map.groundHeight(x + 5, z) - map.groundHeight(x - 5, z));
+  const dz = Math.abs(map.groundHeight(x, z + 5) - map.groundHeight(x, z - 5));
+  return dx <= 6 && dz <= 6;
+}
+
 // --- suppression exports (old simple trees die inside the wildlands) ----------------
 
 /**
@@ -366,11 +411,9 @@ export function wildlandsSuppressesTree(x: number, z: number): boolean {
 // --- collectors ----------------------------------------------------------------------
 
 export type WildTree = { x: number; y: number; z: number; yaw: number; scale: number; design: number };
-export type WildFlower = { x: number; y: number; z: number; yaw: number; scale: number; species: number; tint: number };
 
 const TREE_CELL = 8;
 const TREE_MIN_SPACING = 5.5;
-const FLOWER_CELL = 2.4;
 
 export function collectWildTrees(map: GardenTerrain): WildTree[] {
   const trees: WildTree[] = [];
@@ -474,108 +517,4 @@ export function collectWildTrees(map: GardenTerrain): WildTree[] {
   });
 
   return trees;
-}
-
-export function collectWildFlowers(map: GardenTerrain): WildFlower[] {
-  const flowers: WildFlower[] = [];
-  FLOWER_DRIFTS.forEach((d, di) => {
-    const salt = 9000 + di * 61;
-    // walk only the drift's bbox, not the whole region
-    const x0 = d.cx - d.rx;
-    const z0 = d.cz - d.rz;
-    const nx = Math.ceil((d.rx * 2) / FLOWER_CELL);
-    const nz = Math.ceil((d.rz * 2) / FLOWER_CELL);
-    // cumulative mix table
-    let total = 0;
-    for (const [, w] of d.mix) total += w;
-    for (let iz = 0; iz <= nz; iz++) {
-      for (let ix = 0; ix <= nx; ix++) {
-        const px = x0 + ix * FLOWER_CELL + (hash2(ix, iz, salt) - 0.5) * FLOWER_CELL;
-        const pz = z0 + iz * FLOWER_CELL + (hash2(ix, iz, salt + 1) - 0.5) * FLOWER_CELL;
-        const e = driftEllipse(d, px, pz);
-        if (e > 1) continue;
-        const region = wildRegionAt(px, pz);
-        if (!region || !plantable(map, region, px, pz)) continue;
-        if (!slopeOk(map, px, pz, 7)) continue;
-        // NOISE BANDING — the drift streaks: two scales of value noise carve
-        // ribbons through the ellipse; edge feather keeps the rim soft
-        const band =
-          smoothstep(0.34, 0.62, valueNoise(px, pz, d.bandCell, salt + 2)) *
-          (0.55 + 0.45 * smoothstep(0.3, 0.7, valueNoise(px, pz, d.bandCell * 3.7, salt + 3)));
-        const feather = 1 - smoothstep(0.72, 1, e);
-        const keep = d.density * band * feather;
-        if (hash2(ix, iz, salt + 4) > keep) continue;
-        // pick species from the mix
-        const r = hash2(ix, iz, salt + 5) * total;
-        let acc = 0;
-        let species = d.mix[d.mix.length - 1][0];
-        for (const [id, w] of d.mix) {
-          acc += w;
-          if (r <= acc) {
-            species = id;
-            break;
-          }
-        }
-        flowers.push({
-          x: px,
-          y: map.groundHeight(px, pz),
-          z: pz,
-          yaw: hash2(ix, iz, salt + 6) * Math.PI * 2,
-          scale: 0.85 + hash2(ix, iz, salt + 7) * 0.6, // a touch bigger so drifts read from range
-          species,
-          tint: hash2(ix, iz, salt + 8)
-        });
-      }
-    }
-  });
-
-  // --- scattered flowers + clumps EVERYWHERE grass grows (not only in drifts) --
-  // Every grassy nature area should show flowers: dense single-species CLUMPS
-  // carved by a low-frequency field (a patch of poppies here, lupines there),
-  // with sparse MIXED singles dotted between them. Same plantable ground as the
-  // grass, so flowers sit in the grass. The designed drifts above stay the big
-  // superblooms; this fills the rest.
-  const SCATTER_CELL = 7;
-  // region-appropriate species palettes (poppy 0, lupine 1, yarrow 2, goldfield 3)
-  const REGION_FLOWERS: Record<string, readonly number[]> = {
-    ggpark: [0, 1, 2, 3],
-    presidio: [1, 2, 0, 1],
-    marin: [0, 0, 3, 1], // poppy-heavy golden hills + goldfields
-    twinpeaks: [1, 2, 0, 3]
-  };
-  WILD_REGIONS.forEach((region, ri) => {
-    const salt = 7000 + ri * 131;
-    const pal = REGION_FLOWERS[region.id] ?? [0, 1, 2, 3];
-    const gx0 = Math.floor(region.minX / SCATTER_CELL);
-    const gx1 = Math.ceil(region.maxX / SCATTER_CELL);
-    const gz0 = Math.floor(region.minZ / SCATTER_CELL);
-    const gz1 = Math.ceil(region.maxZ / SCATTER_CELL);
-    for (let gz = gz0; gz <= gz1; gz++) {
-      for (let gx = gx0; gx <= gx1; gx++) {
-        const px = gx * SCATTER_CELL + (hash2(gx, gz, salt) - 0.5) * SCATTER_CELL;
-        const pz = gz * SCATTER_CELL + (hash2(gx, gz, salt + 1) - 0.5) * SCATTER_CELL;
-        if (!plantable(map, region, px, pz)) continue;
-        if (!slopeOk(map, px, pz, 8)) continue;
-        // low-freq clump field: high = a flower patch, low = sparse singles
-        const clump = valueNoise(px, pz, 34, salt + 2);
-        const inClump = clump > 0.58;
-        const keep = inClump ? 0.6 * smoothstep(0.58, 0.82, clump) : 0.055;
-        if (hash2(gx, gz, salt + 3) > keep) continue;
-        // clumps read as one dominant species (a real patch); singles are mixed
-        const species = inClump
-          ? pal[Math.floor(valueNoise(px, pz, 78, salt + 4) * pal.length) % pal.length]
-          : pal[Math.floor(hash2(gx, gz, salt + 5) * pal.length) % pal.length];
-        flowers.push({
-          x: px,
-          y: map.groundHeight(px, pz),
-          z: pz,
-          yaw: hash2(gx, gz, salt + 6) * Math.PI * 2,
-          scale: (inClump ? 0.85 : 0.68) + hash2(gx, gz, salt + 7) * 0.5,
-          species,
-          tint: hash2(gx, gz, salt + 8)
-        });
-      }
-    }
-  });
-  return flowers;
 }

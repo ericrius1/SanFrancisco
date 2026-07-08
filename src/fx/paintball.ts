@@ -1,7 +1,7 @@
 import * as THREE from "three/webgpu";
 import { attribute, normalView, instancedBufferAttribute } from "three/tsl";
 import { LIGHT_SCALE } from "../config";
-import type { Physics } from "../core/physics";
+import type { WorldQueries } from "../core/worldQueries";
 import type { Graffiti } from "./graffiti";
 import { splatShade } from "./graffiti";
 
@@ -17,16 +17,10 @@ const Z_AXIS = new THREE.Vector3(0, 0, 1);
 
 export const PAINTBALL_SPEED = 52;
 
-/** A paintable moving thing: splats parent to `obj`, hits test against the sphere. */
-export type PaintTarget = {
-  obj: THREE.Object3D;
-  x: number;
-  y: number;
-  z: number;
-  r: number;
-  /** Player id the target belongs to — balls never hit their own shooter. */
-  owner: number;
-};
+// Entity kinds whose paint hit becomes a decal stuck to the real mesh (a
+// PaintSkin), rather than a world graffiti burst. Kept here so the collision
+// branch reads clearly.
+const SKINNABLE = new Set(["vehicle", "mount", "avatar", "player", "creature"]);
 
 type Ball = {
   x: number;
@@ -97,15 +91,14 @@ export class Paintballs {
     this.#balls.push({ x, y, z, vx, vy, vz, r: color.r, g: color.g, b: color.b, age: 0, shooter });
   }
 
-  /** Integrate, collide, splat. Call once per rendered frame. */
-  update(
-    dt: number,
-    physics: Physics,
-    graffiti: Graffiti,
-    skins: PaintSkins,
-    targets: PaintTarget[],
-    surfaceRay?: (origin: THREE.Vector3, dir: THREE.Vector3, maxDist: number) => { point: THREE.Vector3; normal: THREE.Vector3 } | null
-  ) {
+  /**
+   * Integrate, collide, splat. Call once per rendered frame. All collision goes
+   * through the shared WorldQueries: one cast per flight step returns the nearest
+   * of every world entity (skipping this ball's own shooter), the buildings /
+   * terrain / water, and the museum's interiors. Entity hits with a real mesh
+   * get a PaintSkin decal; everything else a world graffiti burst (or a splash).
+   */
+  update(dt: number, queries: WorldQueries, graffiti: Graffiti, skins: PaintSkins) {
     for (let i = this.#balls.length - 1; i >= 0; i--) {
       const ball = this.#balls[i];
       ball.age += dt;
@@ -119,74 +112,43 @@ export class Paintballs {
       const stepZ = ball.vz * dt;
       const stepLen = Math.hypot(stepX, stepY, stepZ);
 
-      // moving targets first: segment-vs-sphere along this frame's flight
-      let consumed = false;
-      for (const tg of targets) {
-        if (tg.owner === ball.shooter) continue;
-        const rx = tg.x - ball.x;
-        const ry = tg.y - ball.y;
-        const rz = tg.z - ball.z;
-        const t = stepLen < 1e-6 ? 0 : Math.max(0, Math.min(1, (rx * stepX + ry * stepY + rz * stepZ) / (stepLen * stepLen)));
-        const cx = ball.x + stepX * t - tg.x;
-        const cy = ball.y + stepY * t - tg.y;
-        const cz = ball.z + stepZ * t - tg.z;
-        if (cx * cx + cy * cy + cz * cz > tg.r * tg.r) continue;
-        if (stepLen < 1e-6) continue;
-
-        tg.obj.updateWorldMatrix(true, true);
-        this.#pos.set(ball.x, ball.y, ball.z);
-        this.#dir.set(stepX / stepLen, stepY / stepLen, stepZ / stepLen);
-        this.#ray.set(this.#pos, this.#dir);
-        this.#ray.near = 0;
-        this.#ray.far = stepLen;
-        this.#hits.length = 0;
-        this.#ray.intersectObject(tg.obj, true, this.#hits);
-        const hit = this.#hits[0];
-        if (!hit) continue;
-
-        this.#hit.copy(hit.point);
-        if (hit.face) {
-          this.#normalMatrix.getNormalMatrix(hit.object.matrixWorld);
-          this.#nrm.copy(hit.face.normal).applyMatrix3(this.#normalMatrix).normalize();
-        } else {
-          this.#nrm.set(this.#hit.x - tg.x, this.#hit.y - tg.y, this.#hit.z - tg.z);
-          if (this.#nrm.lengthSq() < 1e-6) this.#nrm.set(0, 1, 0);
-          this.#nrm.normalize();
-        }
-        skins.stamp(tg.obj, this.#hit, this.#nrm, ball.r, ball.g, ball.b, 0.3 + Math.min(tg.r, 3) * 0.14);
-        this.#balls.splice(i, 1);
-        consumed = true;
-        break;
-      }
-      if (consumed) continue;
-
-      // world: buildings + terrain along the step; custom interiors (museum)
-      // race the OSM colliders. Water swallows the ball.
       if (stepLen > 1e-6) {
         this.#pos.set(ball.x, ball.y, ball.z);
         this.#dir.set(stepX / stepLen, stepY / stepLen, stepZ / stepLen);
-        const worldHit = physics.raycastWorld(this.#pos, this.#dir, stepLen);
-        const customHit = surfaceRay?.(this.#pos, this.#dir, stepLen) ?? null;
-        let hitT = Infinity;
-        let hitKind: "water" | "surface" | null = null;
-        if (worldHit) {
-          hitT = this.#pos.distanceTo(worldHit.point);
-          hitKind = worldHit.kind === "water" ? "water" : "surface";
-          this.#hit.copy(worldHit.point);
-          this.#nrm.copy(worldHit.normal);
-        }
-        if (customHit) {
-          const t = this.#pos.distanceTo(customHit.point);
-          if (t < hitT) {
-            hitT = t;
-            hitKind = "surface";
-            this.#hit.copy(customHit.point);
-            this.#nrm.copy(customHit.normal);
+        const hit = queries.raycast(this.#pos, this.#dir, stepLen, { ignoreId: ball.shooter });
+        if (hit) {
+          if (hit.object && SKINNABLE.has(hit.kind)) {
+            // paint sticks to the moving mesh — refine the proxy hit to the exact
+            // surface point/normal so the splat sits on the bodywork, not the box
+            hit.object.updateWorldMatrix(true, true);
+            this.#ray.set(this.#pos, this.#dir);
+            this.#ray.near = 0;
+            this.#ray.far = stepLen;
+            this.#hits.length = 0;
+            this.#ray.intersectObject(hit.object, true, this.#hits);
+            const h0 = this.#hits[0];
+            if (h0) {
+              this.#hit.copy(h0.point);
+              if (h0.face) {
+                this.#normalMatrix.getNormalMatrix(h0.object.matrixWorld);
+                this.#nrm.copy(h0.face.normal).applyMatrix3(this.#normalMatrix).normalize();
+              } else {
+                this.#nrm.copy(hit.normal);
+              }
+            } else {
+              // proxy reported a hit but the mesh has a gap there — use the proxy
+              this.#hit.copy(hit.point);
+              this.#nrm.copy(hit.normal);
+            }
+            skins.stamp(hit.object, this.#hit, this.#nrm, ball.r, ball.g, ball.b, 0.55);
+            this.#balls.splice(i, 1);
+            continue;
           }
-        }
-        if (hitKind) {
-          if (hitKind === "water") this.onWater(this.#hit.x, this.#hit.y, this.#hit.z);
-          else graffiti.burst(this.#hit, this.#nrm, TMP_COLOR.setRGB(ball.r, ball.g, ball.b));
+          if (hit.kind === "water") {
+            this.onWater(hit.point.x, hit.point.y, hit.point.z);
+          } else {
+            graffiti.burst(hit.point, hit.normal, TMP_COLOR.setRGB(ball.r, ball.g, ball.b));
+          }
           this.#balls.splice(i, 1);
           continue;
         }

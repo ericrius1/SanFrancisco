@@ -19,10 +19,16 @@ import type {
   b3WorldId,
   b3ShapeId,
   b3Quat,
+  b3Vec3,
   b3BodyType,
+  b3QueryFilter,
   EventsBuffer,
   ContactHitEvent as B3ContactHitEvent
 } from "box3d.js";
+
+// 64-bit "all categories" mask — the default query reach when a cast doesn't
+// restrict which proxy categories it may strike.
+const ALL_MASK = 0xffffffffffffffffn;
 
 export const BodyType = {
   Static: 0,
@@ -51,6 +57,9 @@ export type BoxOptions = {
   restitution?: number;
   rollingResistance?: number;
   bullet?: boolean;
+  /** Collision/query category bits for this shape (default 1). Lets query-only
+   * worlds tag proxies so a cast's maskBits can include/exclude them. */
+  categoryBits?: bigint;
 };
 export type SphereOptions = {
   type: BodyTypeValue;
@@ -61,6 +70,7 @@ export type SphereOptions = {
   restitution?: number;
   rollingResistance?: number;
   bullet?: boolean;
+  categoryBits?: bigint;
 };
 export type CapsuleOptions = {
   type: BodyTypeValue;
@@ -72,6 +82,20 @@ export type CapsuleOptions = {
   restitution?: number;
   rollingResistance?: number;
   bullet?: boolean;
+  categoryBits?: bigint;
+};
+
+/** One closest-hit result from PhysicsWorld.castRayClosest, in scalar form to
+ * avoid per-cast allocations. `handle` is the app body handle that was struck. */
+export type RayCastHit = {
+  handle: number;
+  px: number;
+  py: number;
+  pz: number;
+  nx: number;
+  ny: number;
+  nz: number;
+  distance: number;
 };
 export type JointSpringOptions = { hertz?: number; dampingRatio?: number };
 export type DistanceJointOptions = JointSpringOptions & { length?: number };
@@ -169,6 +193,12 @@ export class PhysicsWorld {
   #events: EventsBuffer;
   #hitScratch: B3ContactHitEvent;
 
+  // reused scratch for castRayClosest — one query filter + two vec3s, mutated
+  // per call so casting many rays a frame allocates nothing on our side
+  #queryFilter?: b3QueryFilter;
+  #rayOrigin: b3Vec3 = { x: 0, y: 0, z: 0 };
+  #rayEnd: b3Vec3 = { x: 0, y: 0, z: 0 };
+
   constructor(module: Box3DModule, world: b3WorldId) {
     this.#m = module;
     this.#world = world;
@@ -211,6 +241,7 @@ export class PhysicsWorld {
     sd.baseMaterial.friction = options.friction ?? 0.55;
     sd.baseMaterial.restitution = options.restitution ?? 0.05;
     sd.baseMaterial.rollingResistance = options.rollingResistance ?? 0;
+    if (options.categoryBits !== undefined) sd.filter.categoryBits = options.categoryBits;
     m.b3CreateBoxShape(id, sd, options.halfExtents[0], options.halfExtents[1], options.halfExtents[2]);
     return this.#register(id);
   }
@@ -229,6 +260,7 @@ export class PhysicsWorld {
     sd.baseMaterial.friction = options.friction ?? 0.35;
     sd.baseMaterial.restitution = options.restitution ?? 0.25;
     sd.baseMaterial.rollingResistance = options.rollingResistance ?? 0.02;
+    if (options.categoryBits !== undefined) sd.filter.categoryBits = options.categoryBits;
     m.b3CreateSphereShape(id, sd, { center: { x: 0, y: 0, z: 0 }, radius: options.radius });
     return this.#register(id);
   }
@@ -246,6 +278,7 @@ export class PhysicsWorld {
     sd.baseMaterial.friction = options.friction ?? 0.45;
     sd.baseMaterial.restitution = options.restitution ?? 0.1;
     sd.baseMaterial.rollingResistance = options.rollingResistance ?? 0.02;
+    if (options.categoryBits !== undefined) sd.filter.categoryBits = options.categoryBits;
     const hh = options.halfHeight;
     m.b3CreateCapsuleShape(id, sd, {
       center1: { x: 0, y: -hh, z: 0 },
@@ -274,6 +307,52 @@ export class PhysicsWorld {
 
   step(timeStep: number = this.fixedTimeStep, substeps: number = this.substeps): void {
     this.#m.b3World_Step(this.#world, timeStep, substeps);
+  }
+
+  // -- spatial queries ------------------------------------------------------
+
+  /**
+   * Closest-hit ray cast through the broadphase (box3d's "Cast Ray"): from
+   * `origin` along the unit `dir` for up to `maxDist` metres. `maskBits` selects
+   * which shape categories are eligible (default: all). Returns the struck app
+   * body handle plus the world hit point/normal, or null on a miss.
+   *
+   * Broadphase-accelerated and narrow-phased against the real shapes, so a
+   * query-only world (never stepped) still answers correctly — b3Body_SetTransform
+   * moves each proxy's broadphase AABB immediately (vendor box3d body.c).
+   */
+  castRayClosest(
+    ox: number,
+    oy: number,
+    oz: number,
+    dx: number,
+    dy: number,
+    dz: number,
+    maxDist: number,
+    maskBits?: bigint,
+    out?: RayCastHit
+  ): RayCastHit | null {
+    const m = this.#m;
+    const filter = (this.#queryFilter ??= m.b3DefaultQueryFilter());
+    filter.maskBits = maskBits ?? ALL_MASK;
+    this.#rayOrigin.x = ox;
+    this.#rayOrigin.y = oy;
+    this.#rayOrigin.z = oz;
+    this.#rayEnd.x = dx * maxDist;
+    this.#rayEnd.y = dy * maxDist;
+    this.#rayEnd.z = dz * maxDist;
+    const res = m.b3World_CastRayClosest(this.#world, this.#rayOrigin, this.#rayEnd, filter);
+    if (!res.hit) return null;
+    const hit = out ?? { handle: 0, px: 0, py: 0, pz: 0, nx: 0, ny: 0, nz: 0, distance: 0 };
+    hit.handle = this.#handleForShapeBody(res.shapeId);
+    hit.px = res.point.x;
+    hit.py = res.point.y;
+    hit.pz = res.point.z;
+    hit.nx = res.normal.x;
+    hit.ny = res.normal.y;
+    hit.nz = res.normal.z;
+    hit.distance = res.fraction * maxDist;
+    return hit;
   }
 
   // -- transforms & velocity ------------------------------------------------

@@ -73,8 +73,11 @@ export class ChaseCamera {
 
     this.#pos.set(cx, cy, cz);
 
-    // keep above terrain/water
-    const floor = Math.max(this.#map.effectiveGround(cx, cz), 0) + 0.7;
+    // keep above the terrain/seabed only — NOT above sea level. Clamping to y=0
+    // used to pin the camera on the surface, so diving or a sinking car left the
+    // view locked overhead. Following down to the bay floor lets the shot stay on
+    // the player underwater; the seabed clamp still stops it clipping through.
+    const floor = this.#map.effectiveGround(cx, cz) + 0.7;
     if (this.#pos.y < floor) this.#pos.y = floor;
 
     // critically-damped-ish follow; flying gets a floatier tail, the drone a
