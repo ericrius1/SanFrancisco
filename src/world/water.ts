@@ -64,11 +64,14 @@ export class Water {
   far: THREE.Mesh;
   near: THREE.Mesh;
   palaceLagoon: THREE.Mesh;
+  underside!: THREE.Mesh; // the surface seen from below — only shown when submerged
 
   #uTime = uniform(0);
   #uNearRect = uniform(new THREE.Vector3(0, 0, NEAR_PATCH_MASK_OUTER));
   #uNearVisibility = uniform(1);
   #uOrigin = uniform(new THREE.Vector2());
+  #uCamXZ = uniform(new THREE.Vector2());
+  #uCamY = uniform(0);
 
   constructor(scene: THREE.Scene, map: WorldMap) {
     const { tex, scale } = map.buildFloorTexture();
@@ -286,15 +289,66 @@ export class Water {
     this.near.position.y = 0.02;
     this.near.frustumCulled = false;
 
+    // Underside of the surface — the "ceiling" you see when diving. The top
+    // sheets are single-sided, so from below you'd otherwise stare straight
+    // through to the sky (pillars stabbing into "air"). This downward-facing
+    // plane, shown only when the camera is submerged, is that missing lid: a
+    // bright Snell's-window spot straight overhead fading to teal at grazing,
+    // with a gentle ripple, so up is always legible. Unlit (cheap) and follows
+    // the camera in XZ; ripple is world-locked so it doesn't swim.
+    const undMat = new THREE.MeshBasicNodeMaterial({ transparent: true, depthWrite: false, side: THREE.DoubleSide });
+    {
+      const t = this.#uTime;
+      const camXZ = this.#uCamXZ;
+      const camY = this.#uCamY;
+      const pw = positionWorld;
+      const horiz = pw.xz.sub(camXZ).length().toVar();
+      const depthY = max(0.4, float(0.0).sub(camY)); // surface(≈0) − camY = how deep the camera is
+      // bright "window to the sky" straight overhead → silvery-teal mirror at
+      // grazing. The window is generous (·2.4) because the look-up pitch is
+      // clamped, so you still catch the glow within reach.
+      const winR = depthY.mul(2.4);
+      const win = smoothstep(winR, winR.mul(0.25), horiz).toVar(); // 1 overhead → 0 grazing
+      const rip = sin(pw.x.mul(0.075).add(t.mul(1.1)))
+        .mul(sin(pw.z.mul(0.062).sub(t.mul(0.85))))
+        .mul(0.5)
+        .add(0.5);
+      const bright = clamp(win.add(rip.mul(win.mul(0.35).add(0.1))), 0, 1);
+      undMat.colorNode = mix(color(0x0c5567), color(0xe8feff), bright);
+      const rimUv = uv().sub(vec2(0.5, 0.5)).mul(2);
+      const rim = smoothstep(1.0, 0.6, rimUv.length()); // feather the plane rim into the fog
+      const distFade = clamp(float(1).sub(horiz.div(1400)), 0, 1);
+      // near-opaque so the real sky can't leak through the "surface"; the window
+      // lets a little brightness through (like looking out into the air).
+      undMat.opacityNode = clamp(mix(float(0.94), float(0.7), win).mul(rim).mul(distFade), 0, 1);
+    }
+    const undGeo = new THREE.PlaneGeometry(3200, 3200, 1, 1);
+    undGeo.rotateX(Math.PI / 2); // face DOWN (−y) → visible only from below
+    this.underside = new THREE.Mesh(undGeo, undMat);
+    this.underside.frustumCulled = false;
+    this.underside.renderOrder = 9;
+    this.underside.visible = false;
+    this.underside.position.y = -0.05;
+
     this.palaceLagoon = new THREE.Mesh(createPalaceLagoonGeometry(map), makePalaceLagoonMaterial());
     this.palaceLagoon.name = "palace_fine_arts_lagoon";
     this.palaceLagoon.renderOrder = 10.5;
 
-    scene.add(this.far, this.near, this.palaceLagoon);
+    scene.add(this.far, this.near, this.palaceLagoon, this.underside);
   }
 
-  update(t: number, _camPos: THREE.Vector3, playerPos: THREE.Vector3) {
+  update(t: number, camPos: THREE.Vector3, playerPos: THREE.Vector3) {
     this.#uTime.value = t;
+
+    // show the underside ceiling only while the camera is below the surface,
+    // parked at the camera's XZ so its Snell window stays centred overhead
+    const camUnder = camPos.y < waterHeight(camPos.x, camPos.z, t);
+    this.underside.visible = camUnder;
+    if (camUnder) {
+      this.underside.position.set(camPos.x, -0.05, camPos.z);
+      this.#uCamXZ.value.set(camPos.x, camPos.z);
+      this.#uCamY.value = camPos.y;
+    }
     // snap the near patch to its own grid so vertices don't swim
     const snap = NEAR_PATCH_SIZE / NEAR_PATCH_SEGMENTS;
     this.near.position.x = Math.round(playerPos.x / snap) * snap;

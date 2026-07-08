@@ -150,6 +150,16 @@ async function main() {
     check(ov && ov.tintOpacity > 0.1, `tint layer is casting the scene (opacity=${ov?.tintOpacity})`);
     check(ov && /matrix|translate/.test(ov.bodyTransform) && ov.bodyTransform !== "none", `waterline band is positioned by pitch (transform=${ov?.bodyTransform?.slice(0, 24)})`);
 
+    // --- seabed pillars: spatial-reference spires stream in around you ---
+    const pil = await evaluate(c, `(()=>{const p=window.__sf.seaPillars; return p?{count:p.mesh.count,visible:p.mesh.visible}:null;})()`);
+    console.log(`[swim] sea pillars: ${JSON.stringify(pil)}`);
+    check(pil && pil.visible && pil.count > 0, `seabed pillars populated around the diver (count=${pil?.count})`);
+
+    // --- water underside ("ceiling" seen from below) shows while submerged ---
+    const lid = await evaluate(c, `(()=>{const u=window.__sf.water.underside; return {visible:u.visible,y:+u.position.y.toFixed(2)};})()`);
+    console.log(`[swim] water underside: ${JSON.stringify(lid)}`);
+    check(lid && lid.visible, `water surface underside (ceiling) is drawn while submerged`);
+
     // 3) RELEASE — let go, buoyancy floats you back up toward the surface
     await evaluate(c, clearKeys);
     await sleep(2500);

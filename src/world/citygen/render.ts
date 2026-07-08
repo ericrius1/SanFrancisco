@@ -102,6 +102,26 @@ export function buildBuilding(spec: BuildingSpec, mats: Record<string, THREE.Mat
     mesh.frustumCulled = true;
     group.add(mesh);
   }
+  // Sit the detail mesh a hair PROUD of its chunk-LOD prism (same footprint) so it
+  // wins the depth test everywhere they overlap — no z-fighting. Geometric (the
+  // app is reversed-z, where the codebase separates coincident surfaces spatially
+  // rather than with polygonOffset). Scale ~0.6% about the base centroid; colliders
+  // stay at the true footprint, so collision is unchanged.
+  {
+    let cx = 0, cz = 0; for (const [px, pz] of spec.poly) { cx += px; cz += pz; }
+    cx /= spec.poly.length; cz /= spec.poly.length;
+    const s = 1.006, sy = 1.004, b = spec.base;
+    // + a deterministic ±3 cm XZ nudge (as facade.ts does) so two adjacent
+    // rowhouses that share a coplanar party wall don't z-fight against each other.
+    const rnd = rng(spec.seed, 71);
+    const nx = (rnd() - 0.5) * 0.06, nz = (rnd() - 0.5) * 0.06;
+    group.matrixAutoUpdate = false;
+    group.matrix
+      .makeTranslation(cx + nx, b, cz + nz)
+      .multiply(new THREE.Matrix4().makeScale(s, sy, s))
+      .multiply(new THREE.Matrix4().makeTranslation(-cx, -b, -cz));
+    group.matrixWorldNeedsUpdate = true;
+  }
   const allMats = [wallMat, ...local.values()];
   return {
     group, triangles,

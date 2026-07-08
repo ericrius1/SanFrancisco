@@ -8,6 +8,7 @@ import { WorldMap, waterHeight } from "./world/heightmap";
 import { Sky, SKY_TUNING } from "./world/sky";
 import { Water } from "./world/water";
 import { UnderwaterOverlay } from "./fx/underwater";
+import { SeaPillars } from "./world/seaPillars";
 import { TileStreamer } from "./world/tiles";
 import { Physics } from "./core/physics";
 import { createDebrisMaterial, DEBRIS_LIGHTS, WINDOW_GLOW } from "./world/facade";
@@ -165,6 +166,7 @@ async function boot() {
   const sky = new Sky(scene);
   const water = new Water(scene, map);
   const underwater = new UnderwaterOverlay(app, map);
+  const seaPillars = new SeaPillars(scene, map);
 
   progress(40, "streaming the city");
   const tiles = new TileStreamer(scene);
@@ -2026,6 +2028,7 @@ async function boot() {
     sky.update(elapsed, camera.position);
     water.update(elapsed, camera.position, player.renderPosition);
     underwater.update(camera, elapsed);
+    seaPillars.update(player.renderPosition, elapsed);
     fx.update(frameDt);
     shockwaves.update(frameDt);
     bubbles.update(frameDt, elapsed);
@@ -2253,7 +2256,7 @@ async function boot() {
 
   const exposeDebugHooks = () => {
     Object.assign(window as never, {
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, exploratorium, traffic, creatures, forest, garden, wildlands, splashes, vehicleAudio, nature, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, boatLaunchers, goldenGateLights, flyover, bridgeParade, teleportToTarget, aiCars, horses, buildings, citygen, citygenRing, cullGeneratedBuildings, brainPanel, inspectableBrains, worldCursor, worldQueries, underwater }
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, exploratorium, traffic, creatures, forest, garden, wildlands, splashes, vehicleAudio, nature, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, boatLaunchers, goldenGateLights, flyover, bridgeParade, teleportToTarget, aiCars, horses, buildings, citygen, citygenRing, cullGeneratedBuildings, brainPanel, inspectableBrains, worldCursor, worldQueries, underwater, seaPillars, water }
     });
   };
   if (import.meta.env.DEV || new URLSearchParams(location.search).has("profile")) {

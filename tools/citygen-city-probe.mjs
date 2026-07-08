@@ -66,19 +66,20 @@ async function main() {
       await evaluate(c, `(()=>{const s=window.__sf,p=s.player; const y=s.map.groundHeight(${x},${z})+2;
         p.position.set(${x},y,${z}); p.renderPosition.copy(p.position);
         s.physics.world.setBodyTransform(p.body,[${x},y,${z}],[0,0,0,1]); return 1;})()`);
-      for (let i = 0; i < 220; i++) await tick(c); // stream tiles + LOD tier fill + detail near
+      for (let i = 0; i < 260; i++) await tick(c); // stream tiles + chunk LOD build + detail near
       const st = await evaluate(c, "window.__sf.citygenRing.current ? JSON.stringify(window.__sf.citygenRing.current.stats()) : '0'");
       console.log(`[probe] spot ${x},${z} → stats ${st}`);
-      if (JSON.parse(st).loaded >= 4) { chosen = [x, z]; break; }
+      if ((JSON.parse(st).buildings || 0) >= 20) { chosen = [x, z]; break; }
     }
     if (!chosen) { console.log("[probe] no spot streamed buildings; screenshotting last"); chosen = spots[0]; }
     const [cx, cz] = chosen;
     const gy = await evaluate(c, `window.__sf.map.groundHeight(${cx},${cz})`);
     // elevated 3/4 street view
     const setCam = async (px, py, pz, lx, ly, lz) => evaluate(c, `(()=>{const c=window.__sf.camera; c.position.set(${px},${py},${pz}); c.lookAt(${lx},${ly},${lz}); return 1;})()`);
-    await setCam(cx - 45, gy + 26, cz - 45, cx, gy + 6, cz);
-    for (let i = 0; i < 20; i++) await tick(c);
-    await setCam(cx - 45, gy + 26, cz - 45, cx, gy + 6, cz);
+    // high, pulled-back shot to check the DISTANCE (verify no baked fabric out there)
+    await setCam(cx - 120, gy + 90, cz - 120, cx + 200, gy + 10, cz + 200);
+    for (let i = 0; i < 30; i++) await tick(c); // let far chunks stream in
+    await setCam(cx - 120, gy + 90, cz - 120, cx + 200, gy + 10, cz + 200);
     await sleep(500);
     await shot(c, "citygen_city.jpg");
     await setCam(cx - 14, gy + 5, cz - 14, cx + 10, gy + 8, cz + 10);
@@ -86,6 +87,22 @@ async function main() {
     await setCam(cx - 14, gy + 5, cz - 14, cx + 10, gy + 8, cz + 10);
     await sleep(400);
     await shot(c, "citygen_city_street.jpg");
+    // CLOSE-UP of a streamed DETAIL building (where chunk-LOD vs detail z-fight
+    // would show) — stand ~7 m off a wall corner and look at it
+    const db = await evaluate(c, "JSON.stringify((window.__sf.citygenRing.current.debugBuildings()||[]).slice(0,1))");
+    const dbs = JSON.parse(db);
+    if (dbs.length) {
+      const b = dbs[0];
+      const cy = await evaluate(c, `window.__sf.map.groundHeight(${b.cx},${b.cz})`);
+      const mid = (b.base + b.top) / 2;
+      // pull back ~22 m diagonally, eye level, frame the whole facade
+      await setCam(b.cx - 22, cy + 7, b.cz - 22, b.cx, mid, b.cz);
+      for (let i = 0; i < 12; i++) await tick(c);
+      await setCam(b.cx - 22, cy + 7, b.cz - 22, b.cx, mid, b.cz);
+      await sleep(400);
+      await shot(c, "citygen_zfight.jpg");
+      console.log("[probe] closeup at", b.cx, b.cz);
+    }
     c.close();
     console.log("[probe] done");
   } finally {

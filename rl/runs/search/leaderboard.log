@@ -56,3 +56,11 @@ to deploy: cp rl/runs/search/best.policy.json public/models/horse_policy.json
   ** NEW BEST 85.5  {"freqBase":0.7854,"freqSpan":0.4767,"strideBase":0.6988,"strideSpan":1.0438,"actFreqAuth":0.6342,"actStrideAuth":0.5121,"actKneeAuth":0.702,"speedMatchA":10.482,"progressW":0.6177,"tallFloorSlope":0.1129,"doneFloorSlope":0.148,"uprightSoften":0.5152,"maxTorqueScale":0.8539,"gallopBlend":0.1609,"boundRewardW":0.093}
 
 === ROUND 5  (pop 6, 80 gens each, 4 parallel) ===
+   85.5  gallop[q89 spd0.53 str1.62 bnd0.21] walk[q72 spd0.34] turn100
+   83.7  gallop[q80 spd0.38 str1.30 bnd0.24] walk[q80 spd0.29] turn100
+   82.5  gallop[q81 spd0.40 str1.71 bnd0.23] walk[q73 spd0.29] turn100
+   79.2  gallop[q73 spd0.26 str1.30 bnd0.39] walk[q76 spd0.29] turn100
+   76.9  gallop[q69 spd0.22 str1.45 bnd0.20] walk[q76 spd0.28] turn99
+   76.8  gallop[q78 spd0.34 str1.60 bnd0.25] walk[q62 spd0.38] turn100
+
+=== ROUND 6  (pop 6, 80 gens each, 4 parallel) ===

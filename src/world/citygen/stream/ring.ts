@@ -55,7 +55,7 @@ interface Entry extends BuildingSpec {
   state: "lod" | "detail";       // lod = baked mesh hidden R=1 (collider kept); detail = R=0 + walk-in
 }
 
-interface CellState { key: string; cx: number; cz: number; entries: Entry[]; chunk: ChunkLOD | null; phase: "building" | "ready"; }
+interface CellState { key: string; ix: number; iz: number; entries: Entry[]; chunk: ChunkLOD | null; phase: "building" | "ready"; }
 
 function boundsOf(poly: readonly (readonly [number, number])[]) {
   let x = 0, z = 0, minx = Infinity, maxx = -Infinity, minz = Infinity, maxz = -Infinity;
@@ -167,9 +167,8 @@ export async function createCityGenRing(
 
   // ---- cell load / unload -----------------------------------------------------
   const loadCell = (key: string, entries: Entry[]) => {
-    const c0 = boundsOf(entries[0].poly); void c0;
-    let sx = 0, sz = 0; for (const e of entries) { sx += e.cx; sz += e.cz; }
-    const cell: CellState = { key, cx: sx / entries.length, cz: sz / entries.length, entries, chunk: buildChunkLOD(entries as BuildingSpec[]), phase: "building" };
+    const [ix, iz] = key.split("_").map(Number);
+    const cell: CellState = { key, ix, iz, entries, chunk: buildChunkLOD(entries as BuildingSpec[]), phase: "building" };
     loaded.set(key, cell);
     building.push(cell);
   };
@@ -199,13 +198,9 @@ export async function createCityGenRing(
       for (const cell of loaded.values()) for (const e of cell.entries) gateInterior(e, playerPos);
       advanceFades(dt);
       if (building.length) {
-        let budget = CHUNK_BUDGET;
-        while (building.length && budget > 0) {
-          const cell = building[0];
-          cell.chunk!.pump(budget);
-          budget -= CHUNK_BUDGET; // one cell per frame slice max (keeps it simple + bounded)
-          if (cell.chunk!.done) { finishChunk(cell); building.shift(); } else break;
-        }
+        const cell = building[0]; // one cell slice per frame (bounded, no hitch)
+        cell.chunk!.pump(CHUNK_BUDGET);
+        if (cell.chunk!.done) { finishChunk(cell); building.shift(); }
       }
 
       accum += dt;
@@ -217,9 +212,7 @@ export async function createCityGenRing(
 
       // unload cells beyond the ring
       for (const cell of [...loaded.values()]) {
-        const dcx = Math.round((cell.cx - minX) / tile) - ptx;
-        const dcz = Math.round((cell.cz - minZ) / tile) - ptz;
-        if (Math.abs(dcx) > CELL_UNLOAD || Math.abs(dcz) > CELL_UNLOAD) unloadCell(cell);
+        if (Math.abs(cell.ix - ptx) > CELL_UNLOAD || Math.abs(cell.iz - ptz) > CELL_UNLOAD) unloadCell(cell);
       }
       // load cells in range
       for (let cx = ptx - CELL_LOAD; cx <= ptx + CELL_LOAD; cx++) {
