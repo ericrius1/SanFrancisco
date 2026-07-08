@@ -56,16 +56,16 @@ interface Tiles {
   unsuppressBuilding(key: string, index: number): void;
 }
 
-// Ring sizing. Each generated HK building carries ~8 k instance matrices, so the
-// resident set is what costs memory + per-frame vertex throughput (draw calls
-// stay at 3 regardless). LOAD_R 105 m holds ~60–70 dense Chinatown buildings
-// (~0.5 M instances) — measured safe; 165 m / ~1.3 M instances lost the WebGPU
-// device. MAX_LOADED is a hard ceiling so a dense pocket can't run memory away.
-const LOAD_R = 105;      // generate + suppress OSM within this (metres)
-const UNLOAD_R = 150;    // dispose + restore OSM beyond this (hysteresis gap)
-const MAX_LOADED = 85;   // hard cap on concurrently resident generated buildings
+// Ring sizing. Buildings now render as MERGED meshes (pools.ts) — THREE frustum-
+// culls them for free, so on-screen draw cost is only the handful actually in
+// view. The binding constraint is MEMORY: each merged building is unique
+// geometry (~4–8 MB), so the resident set must stay bounded. LOAD_R 85 m holds
+// ~35–45 dense Chinatown buildings; MAX_LOADED caps memory in a dense pocket.
+const LOAD_R = 85;       // generate + suppress OSM within this (metres)
+const UNLOAD_R = 120;    // dispose + restore OSM beyond this (hysteresis gap)
+const MAX_LOADED = 44;   // hard ceiling on concurrently resident generated buildings
 const SCAN_EVERY = 0.2;  // seconds between ring re-scans
-const LOAD_BUDGET = 3;   // max generations kicked off per scan (spreads hitches)
+const LOAD_BUDGET = 2;   // max generations (merges) kicked off per scan (spreads hitches)
 
 async function fetchData(url: string): Promise<ChinatownData | null> {
   try {
@@ -91,6 +91,7 @@ export async function createChinatown(
   const entries: Entry[] = (data?.buildings ?? []).map((b) => ({ ...b, built: null, loading: false }));
 
   let accum = 0;
+  const recentLoadMs: number[] = []; // per-building generate+merge wall time (hitch probe)
   const loadR2 = LOAD_R * LOAD_R;
   const unloadR2 = UNLOAD_R * UNLOAD_R;
 
@@ -100,6 +101,7 @@ export async function createChinatown(
     // tile is (or becomes) loaded — no double-draw during the async generate.
     ctx.tiles.suppressBuilding(e.key, e.i);
     const y = ctx.map.groundHeight(e.x, e.z);
+    const t0 = performance.now();
     createGeneratedBuilding(
       {
         position: { x: e.x, y, z: e.z },
@@ -110,6 +112,8 @@ export async function createChinatown(
       ctx
     ).then((b) => {
       e.loading = false;
+      recentLoadMs.push(performance.now() - t0);
+      if (recentLoadMs.length > 24) recentLoadMs.shift();
       if (e.disposedWhileLoading) {
         // ring moved away before the async build resolved — undo immediately
         b.dispose();
@@ -179,7 +183,13 @@ export async function createChinatown(
     stats() {
       let loaded = 0, loading = 0;
       for (const e of entries) { if (e.built) loaded++; else if (e.loading) loading++; }
-      return { total: entries.length, loaded, loading, pools: buildingPoolStats() };
+      const sorted = [...recentLoadMs].sort((a, b) => a - b);
+      const loadMs = sorted.length
+        ? { avg: +(sorted.reduce((a, b) => a + b, 0) / sorted.length).toFixed(1),
+            p50: +sorted[sorted.length >> 1].toFixed(1),
+            max: +sorted[sorted.length - 1].toFixed(1), n: sorted.length }
+        : null;
+      return { total: entries.length, loaded, loading, loadMs, pools: buildingPoolStats() };
     },
   };
 }

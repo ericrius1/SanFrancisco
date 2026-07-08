@@ -72,20 +72,36 @@ export const RENDER_TUNING = tunables("render", {
 
 /** Draw distance + fog, bound in the "/" panel. `radius` drives both tile radii. */
 export const WORLD_TUNING = tunables("world", {
-  radius: { v: 2100, min: 900, max: 6000, step: 100, label: "buildings (m)" },
+  // Draw distance. The marine-layer + distance fog (below) is tuned to fully melt
+  // geometry into the sky by ~1350 m, so the tile radius can sit low without a
+  // visible pop-in edge — the fog IS the far cull. Push it back up if you turn fog
+  // down.
+  radius: { v: 1500, min: 900, max: 6000, step: 100, label: "buildings (m)" },
   fogEnabled: { v: true, label: "custom fog" },
-  fogBase: { v: -20, min: -140, max: 240, step: 1, label: "base" },
-  fogTop: { v: 55, min: -20, max: 420, step: 1, label: "top" },
-  fogBank: { v: 1.15, min: 0, max: 3, step: 0.05, label: "bank density" },
-  fogSoftness: { v: 28, min: 1, max: 180, step: 1, label: "edge softness" },
-  fogNoise: { v: 0.68, min: 0, max: 1, step: 0.02, label: "billow" },
-  fogScale: { v: 0.0024, min: 0.0004, max: 0.01, step: 0.0001, format: (v: number) => v.toFixed(4), label: "billow scale" },
-  fogDrift: { v: 0.018, min: 0, max: 0.12, step: 0.001, format: (v: number) => v.toFixed(3), label: "drift" },
-  fogStart: { v: 25, min: 0, max: 1200, step: 10, label: "near fade" },
-  fog: { v: 0.00018, min: 0, max: 0.002, step: 0.00001, format: (v: number) => v.toFixed(5), label: "haze" },
-  fogHorizon: { v: 0.34, min: 0, max: 1.5, step: 0.02, label: "horizon veil" },
-  fogHorizonStart: { v: 1450, min: 300, max: 6000, step: 50, label: "horizon start (m)" },
-  fogHorizonSoftness: { v: 900, min: 100, max: 3000, step: 50, label: "horizon softness" }
+  // --- ground/valley bank: a marine layer that pools in low ground and lets the
+  // hills poke through. base/top are world-Y metres; billow gives it a churning
+  // edge; the marine field (fogMarine) makes it thick at the coast + Golden Gate
+  // and thin downtown.
+  fogBase: { v: -30, min: -140, max: 240, step: 1, label: "base" },
+  fogTop: { v: 170, min: -20, max: 420, step: 1, label: "top" },
+  fogBank: { v: 1.85, min: 0, max: 3, step: 0.05, label: "bank density" },
+  fogSoftness: { v: 45, min: 1, max: 180, step: 1, label: "edge softness" },
+  fogNoise: { v: 0.72, min: 0, max: 1, step: 0.02, label: "billow" },
+  fogScale: { v: 0.0026, min: 0.0004, max: 0.01, step: 0.0001, format: (v: number) => v.toFixed(4), label: "billow scale" },
+  fogDrift: { v: 0.03, min: 0, max: 0.12, step: 0.001, format: (v: number) => v.toFixed(3), label: "drift" },
+  fogStart: { v: 20, min: 0, max: 1200, step: 10, label: "near fade" },
+  // marine-layer contrast: 0 = uniform fog everywhere (old look), 1 = full
+  // west/Golden-Gate-heavy, thin-downtown gradient. Coast/Gate get fogPeak× the
+  // bank density, the sheltered east gets fogFloor×.
+  fogMarine: { v: 1, min: 0, max: 1, step: 0.02, label: "marine contrast" },
+  fogFloor: { v: 0.3, min: 0, max: 1.5, step: 0.02, label: "· east density" },
+  fogPeak: { v: 2.1, min: 0.5, max: 3, step: 0.05, label: "· coast density" },
+  // --- distance haze: exp² fog that slams shut far out so the draw edge melts
+  // into the sky. This is the draw-distance lever.
+  fog: { v: 0.0011, min: 0, max: 0.002, step: 0.00001, format: (v: number) => v.toFixed(5), label: "haze" },
+  fogHorizon: { v: 0.65, min: 0, max: 1.5, step: 0.02, label: "horizon veil" },
+  fogHorizonStart: { v: 650, min: 300, max: 6000, step: 50, label: "horizon start (m)" },
+  fogHorizonSoftness: { v: 600, min: 100, max: 3000, step: 50, label: "horizon softness" }
 });
 
 /** Cosmetic vegetation visibility, bound in the "/" panel for performance checks. */

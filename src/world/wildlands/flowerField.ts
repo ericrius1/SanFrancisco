@@ -42,37 +42,46 @@ function pushBothWindings(parts: THREE.BufferGeometry[], q: THREE.BufferGeometry
   parts.push(back);
 }
 
-/** Finalize: bake per-vertex color (stem vs head), head mask, and sway weight. */
+/** Bake the head mask (bloom vs stem) + wind sway weight. Colour comes from the
+ *  per-instance `aBloom` (bloom) or a constant stem green in the material — the
+ *  bloom is also emissive so it reads as a colour splash in any light. Upright
+ *  normals so petals take the open sky. */
 function finalize(g: THREE.BufferGeometry, stemH: number, totalH: number): THREE.BufferGeometry {
   const p = g.getAttribute("position");
   const normals = g.getAttribute("normal");
-  const colors = new Float32Array(p.count * 3);
   const head = new Float32Array(p.count);
   const sway = new Float32Array(p.count);
-  const stem = new THREE.Color(STEM);
   for (let i = 0; i < p.count; i++) {
     const y = p.getY(i);
-    const isHead = y > stemH - 0.02;
-    if (isHead) {
-      colors[i * 3] = 1;
-      colors[i * 3 + 1] = 1;
-      colors[i * 3 + 2] = 1; // white → per-instance bloom tint applies cleanly
-      head[i] = 1;
-    } else {
-      colors[i * 3] = stem.r;
-      colors[i * 3 + 1] = stem.g;
-      colors[i * 3 + 2] = stem.b;
-      head[i] = 0;
-    }
-    // upright normals so blooms take the sky/lawn light like grass
+    head[i] = y > stemH - 0.02 ? 1 : 0;
     normals.setXYZ(i, 0, 1, 0);
     const t = Math.min(1, Math.max(0, y / totalH));
     sway[i] = t * t;
   }
-  g.setAttribute("color", new THREE.BufferAttribute(colors, 3));
   g.setAttribute("aHead", new THREE.BufferAttribute(head, 1));
   g.setAttribute("aSway", new THREE.BufferAttribute(sway, 1));
   return g;
+}
+
+/** A ring of `n` petals radiating from the stem top at height `y`. `tilt` raises
+ *  the tips (0 = flat daisy, ~0.6 = cupped poppy). Petals overlap so the outline
+ *  reads as a round bloom, not a hard cross. */
+function radialPetals(
+  parts: THREE.BufferGeometry[],
+  n: number,
+  petalW: number,
+  petalL: number,
+  y: number,
+  tilt: number
+) {
+  for (let i = 0; i < n; i++) {
+    const petal = new THREE.PlaneGeometry(petalW, petalL);
+    petal.translate(0, petalL / 2, 0); // root at origin, tip outward
+    petal.rotateX(-Math.PI / 2 + tilt); // lay outward (flat), tip up by `tilt`
+    petal.translate(0, y, 0);
+    petal.rotateY((i / n) * Math.PI * 2 + i * 0.6); // spread + a little jitter
+    pushBothWindings(parts, petal);
+  }
 }
 
 function stemCards(stemH: number, w: number, rot: number): THREE.BufferGeometry[] {
@@ -86,20 +95,16 @@ function stemCards(stemH: number, w: number, rot: number): THREE.BufferGeometry[
   return parts;
 }
 
-/** 0 poppy — tall stem + a 4-petal open cup on top. */
+/** 0 poppy — tall stem + a full 6-petal cupped bloom (two offset rings read
+ *  round + layered, like a real poppy cup). */
 function poppyGeometry(): THREE.BufferGeometry {
   const stemH = 0.5;
   const parts = stemCards(stemH, 0.03, 0.3);
-  for (let i = 0; i < 4; i++) {
-    const petal = new THREE.PlaneGeometry(0.17, 0.15);
-    petal.rotateX(-Math.PI / 2 + 0.6); // tilt up into a cup
-    petal.translate(0, stemH + 0.04, 0.06);
-    petal.rotateY((i * Math.PI) / 2 + 0.2);
-    pushBothWindings(parts, petal);
-  }
+  radialPetals(parts, 6, 0.17, 0.19, stemH + 0.02, 0.5);
+  radialPetals(parts, 5, 0.13, 0.15, stemH + 0.07, 0.85); // inner cupped ring
   const g = mergeGeometries(parts);
   for (const p of parts) p.dispose();
-  return finalize(g, stemH, stemH + 0.12);
+  return finalize(g, stemH, stemH + 0.2);
 }
 
 /** 1 lupine — tall spike with a stacked column of florets. */
@@ -147,17 +152,12 @@ function yarrowGeometry(): THREE.BufferGeometry {
   return finalize(g, stemH, stemH + 0.07);
 }
 
-/** 3 goldfield — low, dense little daisy for carpeting drifts. */
+/** 3 goldfield — low daisy for carpeting drifts: a flat 7-petal star so the
+ *  ground reads as a wash of little gold flowers, not scattered dark specks. */
 function goldfieldGeometry(): THREE.BufferGeometry {
-  const stemH = 0.14;
+  const stemH = 0.16;
   const parts = stemCards(stemH, 0.02, 0.9);
-  for (let i = 0; i < 2; i++) {
-    const petal = new THREE.PlaneGeometry(0.09, 0.09);
-    petal.rotateX(-Math.PI / 2);
-    petal.translate(0, stemH + 0.01, 0);
-    petal.rotateY((i * Math.PI) / 2 + 0.3);
-    pushBothWindings(parts, petal);
-  }
+  radialPetals(parts, 7, 0.055, 0.075, stemH + 0.005, 0.08);
   const g = mergeGeometries(parts);
   for (const p of parts) p.dispose();
   return finalize(g, stemH, stemH + 0.05);
@@ -167,17 +167,22 @@ const BUILDERS = [poppyGeometry, lupineGeometry, yarrowGeometry, goldfieldGeomet
 
 // ---- material ------------------------------------------------------------------
 
+const STEM_COL = vec3(0.11, 0.2, 0.08);
+
 let sharedMaterial: THREE.MeshStandardNodeMaterial | null = null;
 function flowerMaterial(): THREE.MeshStandardNodeMaterial {
   if (sharedMaterial) return sharedMaterial;
-  const mat = new THREE.MeshStandardNodeMaterial({
-    vertexColors: true, // × instanceColor (bloom tint) via the standard path
-    roughness: 0.9,
-    metalness: 0,
-    side: THREE.FrontSide
-  });
+  const mat = new THREE.MeshStandardNodeMaterial({ roughness: 0.82, metalness: 0, side: THREE.FrontSide });
   const swayW: N = attribute("aSway", "float");
   const headMask: N = attribute("aHead", "float");
+  const bloom: N = attribute("aBloom", "vec3"); // per-instance bloom colour
+  // stems green, petals their bloom colour — set as the base colour directly
+  // (no vertexColors × instanceColor guessing).
+  mat.colorNode = mix(STEM_COL, bloom, headMask);
+  // SELF-LIT petals: the bloom emits its own colour so a drift reads as a wash of
+  // orange/purple/gold even in dusk shade or under grass, instead of dark cards.
+  mat.emissiveNode = (bloom as N).mul(headMask).mul(0.5);
+
   const ph: N = (hash(instanceIndex) as N).mul(6.283);
   // shared gust envelope drives amplitude — flowers gust with the grass/trees
   const g: N = (windGustGlobal as N).mul(0.9).add(0.35);
@@ -185,9 +190,6 @@ function flowerMaterial(): THREE.MeshStandardNodeMaterial {
   const cross: N = sin(time.mul(0.8).add(ph.mul(1.3)));
   const amp = 0.06;
   mat.positionNode = (positionLocal as N).add(vec3(bend.mul(amp), float(0), cross.mul(amp * 0.7)).mul(swayW).mul(g));
-  // gentle head glow so a superbloom reads warm at dusk (constant warm white,
-  // masked to the bloom — no instanceColor node needed)
-  mat.emissiveNode = mix(vec3(0, 0, 0), vec3(1.0, 0.86, 0.62), headMask).mul(0.14);
   mat.envMapIntensity = 0.5;
   sharedMaterial = mat;
   return mat;

@@ -22,7 +22,7 @@ const CKPT = process.env.SF_CKPT || path.join(ROOT, "tools", "aicars-trained.jso
 const CHECKPOINT_MS = 60_000;
 const DT = 1 / 60;
 const BATCH = 4000;              // sim substeps per event-loop tick (then yield)
-const ANCHORS = [new THREE.Vector3(1500, 0, -300)]; // Mission grid — road-dense, all cars NEAR
+const INIT_ANCHOR = [new THREE.Vector3(0, 0, 0)]; // only to trigger city-wide placement
 
 // ---- clear-everywhere world stub (brains learn road-following; the live client
 //      re-teaches building avoidance against real colliders) ----
@@ -48,7 +48,11 @@ if (existsSync(CKPT)) {
   } catch (e) { console.warn("[trainer] checkpoint load failed, fresh start:", e.message); }
 }
 // ensure fleet is initialized even with no checkpoint (first prePhysics does #placeAll)
-fleet.prePhysics(DT, ANCHORS);
+fleet.prePhysics(DT, INIT_ANCHOR);
+// each car is its own anchor → every car stays NEAR (fully simulated) wherever it
+// scattered to, and (because they're spread city-wide) they never pile up on each
+// other the way one clustered anchor made them. The Vector3s mutate in place.
+const anchors = fleet.cars.map((c) => c.pos);
 console.log(`[trainer] start — ${MAX_CARS} cars${resumed ? `, resumed ${resumed} from checkpoint` : " (fresh)"}`);
 
 let simSteps = 0;
@@ -100,7 +104,7 @@ setInterval(checkpoint, CHECKPOINT_MS);
 function tick() {
   if (stopping) return;
   try {
-    for (let i = 0; i < BATCH; i++) { fleet.prePhysics(DT, ANCHORS); simSteps++; }
+    for (let i = 0; i < BATCH; i++) { fleet.prePhysics(DT, anchors); simSteps++; }
   } catch (e) {
     console.error("[trainer] step error (continuing):", e.message);
   }

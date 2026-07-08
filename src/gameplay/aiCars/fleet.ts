@@ -162,7 +162,14 @@ const HALF_EXTENTS: [number, number, number] = [1.05, 0.45, 2.2];
 const AHEAD_RANGE = 25; // clearAhead probe (m)
 const SIDE_RANGE = 10; // clearLeft/Right probes (m)
 const SIDE_ANGLE = 0.61; // ±35°
-const PLACE_RADIUS = 300; // m, initial-placement radius around the first anchor (denser = more cars visibly near the player)
+// Cars are scattered city-wide, decoupled from the player — the city is alive
+// whether or not anyone is watching; you simply stumble on them as you explore.
+// Placement is restricted to the loaded-city extent (public/data/meta.json grid)
+// so cars land where players actually go, not on far-flung OSM freeways.
+const CITY_MIN_X = -7168;
+const CITY_MAX_X = 7936;
+const CITY_MIN_Z = -8896;
+const CITY_MAX_Z = 4992;
 const NEAR_R = 380; // m, FAR→NEAR body-create boundary (hysteresis low)
 const FAR_R = 420; // m, NEAR→FAR body-destroy boundary (hysteresis high)
 const STUCK_SPEED = 0.3; // m/s, below which the stuck timer accrues
@@ -316,28 +323,20 @@ export class Fleet {
 
   // ------------------------------------------------------------- placement
 
-  /** Place every car ONCE on a random road point around the first anchor. */
+  /** Place every car ONCE on a random road point somewhere across the city. */
   #placeAll(): void {
     if (this.#born === 0) this.#born = this.#now();
-    const a = this.#anchors[0];
-    for (const car of this.cars) this.#placeCarRandom(car, a.x, a.z);
+    for (const car of this.cars) this.#placeCarCityWide(car);
   }
 
   /**
-   * Place one car on a random road point around (cx, cz) and give it a fresh
-   * identity. Used by #placeAll and by importState for slots a restored blob
-   * doesn't cover (new residents).
+   * Scatter one car onto a random road point anywhere in the city and give it a
+   * fresh identity. Used by #placeAll and by importState for slots a restored
+   * blob doesn't cover (new residents). Decoupled from the player entirely.
    */
-  #placeCarRandom(car: AiCar, cx: number, cz: number): void {
-    let rp: ReturnType<RoadGraph["randomPointNear"]> = null;
-    for (let tries = 0; tries < 8 && !rp; tries++) {
-      rp = this.#roads.randomPointNear(cx, cz, 0, PLACE_RADIUS * (1 + tries * 0.5), this.#rng);
-    }
-    const x = rp ? rp.x : cx;
-    const z = rp ? rp.z : cz;
-    const tanX = rp ? rp.tangentX : 0;
-    const tanZ = rp ? rp.tangentZ : 1;
-    this.#initCarState(car, x, z, Math.atan2(tanX, tanZ));
+  #placeCarCityWide(car: AiCar): void {
+    const rp = this.#roads.randomPoint(this.#rng, CITY_MIN_X, CITY_MAX_X, CITY_MIN_Z, CITY_MAX_Z);
+    this.#initCarState(car, rp.x, rp.z, Math.atan2(rp.tangentX, rp.tangentZ));
     // identity — assigned once, never rerolled
     car.bodyKind = Math.floor(this.#rng() * 6);
     car.paintHue = this.#rng();
@@ -673,9 +672,6 @@ export class Fleet {
     // tear down existing bodies (fires the release contract) before repositioning
     this.dispose();
     const covered = new Array<boolean>(this.cars.length).fill(false);
-    let anchorX = 0;
-    let anchorZ = 0;
-    let anchorSet = false;
     for (let i = 0; i < n; i++) {
       const c = blob.cars[i];
       const car = this.cars[c.id];
@@ -684,21 +680,13 @@ export class Fleet {
       this.#initCarState(car, c.x, c.z, c.heading);
       this.#learner.importCar(car.id, c);
       covered[c.id] = true;
-      if (!anchorSet) {
-        anchorX = c.x;
-        anchorZ = c.z;
-        anchorSet = true;
-      }
     }
     // Slots the blob doesn't cover (partial cache / short saved array) must NOT
-    // be stranded alive=false at (0,0,0): place each on a random road as a fresh
-    // resident with fresh learner weights. Center placement on a live anchor if
-    // we have one, else on a covered car's position.
-    const cx = this.#anchors[0] ? this.#anchors[0].x : anchorX;
-    const cz = this.#anchors[0] ? this.#anchors[0].z : anchorZ;
+    // be stranded alive=false at (0,0,0): scatter each city-wide as a fresh
+    // resident with fresh learner weights.
     for (const car of this.cars) {
       if (covered[car.id]) continue;
-      this.#placeCarRandom(car, cx, cz);
+      this.#placeCarCityWide(car);
       this.#learner.resetCar(car.id);
     }
     this.#born = typeof blob.born === "number" && Number.isFinite(blob.born) ? blob.born : this.#now();

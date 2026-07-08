@@ -1667,6 +1667,65 @@
         opacity: 0.85;
         text-shadow: 0 1px 3px rgba(0, 10, 20, 0.8);
       }
+      .bigmap-debug {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .bigmap-debug-btn {
+        cursor: pointer;
+        padding: 7px 13px;
+        border-radius: 10px;
+        color: #eaf4f8;
+        background: linear-gradient(
+          180deg,
+          rgba(56, 59, 72, 0.86),
+          rgba(35, 38, 48, 0.9)
+        );
+        border: 1px solid rgba(225, 235, 243, 0.18);
+        font:
+          800 12px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
+        letter-spacing: 0.02em;
+        opacity: 0.62;
+        filter: saturate(0.6);
+        transition:
+          border-color 0.15s,
+          opacity 0.15s,
+          filter 0.15s,
+          transform 0.12s;
+      }
+      .bigmap-debug-btn:hover {
+        border-color: rgba(225, 235, 243, 0.42);
+        transform: translateY(-1px);
+      }
+      .bigmap-debug-btn.on {
+        opacity: 1;
+        filter: none;
+        border-color: rgba(79, 209, 255, 0.6);
+        box-shadow: 0 0 12px rgba(79, 209, 255, 0.35);
+      }
+      .bigmap-debug-legend {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        color: #bcd9e6;
+        font-size: 11.5px;
+        opacity: 0.85;
+      }
+      .bigmap-debug-key {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+      }
+      .bigmap-debug-dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: var(--c);
+        box-shadow: 0 0 8px var(--c);
+      }
       #loading {
         position: fixed;
         inset: 0;

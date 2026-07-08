@@ -1,0 +1,30 @@
+{
+  "forest-birds.mp3": {
+    "title": "Forest",
+    "artist": "Joseph SARDIN / LaSonotheque",
+    "sourcePage": "https://bigsoundbank.com/forest-s0100.html",
+    "license": "CC0 public domain",
+    "notes": "Forest ambience with varied birdsong, wing flutter, and insects. Daytime bed."
+  },
+  "wind-grass.mp3": {
+    "title": "Wind in Tall Grass",
+    "artist": "Joseph SARDIN / LaSonotheque",
+    "sourcePage": "https://bigsoundbank.com/wind-in-tall-grass-s0908.html",
+    "license": "CC0 public domain",
+    "notes": "Trimmed to 70 seconds. Meadow / golden-hill wind bed."
+  },
+  "wind-tree.mp3": {
+    "title": "Wind in a Tree",
+    "artist": "Joseph SARDIN / LaSonotheque",
+    "sourcePage": "https://bigsoundbank.com/wind-in-a-tree-s0659.html",
+    "license": "CC0 public domain",
+    "notes": "Trimmed to 58 seconds. Cypress / redwood canopy wind bed."
+  },
+  "night-crickets.mp3": {
+    "title": "Campaign at Night #4",
+    "artist": "Joseph SARDIN / LaSonotheque",
+    "sourcePage": "https://bigsoundbank.com/campaign-at-night-4-s1880.html",
+    "license": "CC0 public domain",
+    "notes": "75-second night meadow / field-cricket bed."
+  }
+}

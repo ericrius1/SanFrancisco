@@ -34,7 +34,9 @@ export type GrownTemplate = {
 const LOD_OPTS = { lod1Dist: 40, lod2Dist: 90 };
 
 const FOLIAGE_MESH_RE = /leaf|foliage|card|cluster|rosette|frond/i;
-const FAR_CARD_TINT = new THREE.Color(0x4e623a);
+// Slightly lighter, greener target than the garden's original 0x4e623a — the
+// wildlands sit on open sunny hills, and the darker tint read as brown at range.
+const FAR_CARD_TINT = new THREE.Color(0x5c7440);
 
 type ShadeableFoliageMaterial = THREE.Material & {
   color?: THREE.Color;
@@ -67,7 +69,7 @@ function shadeSeedTreeFoliage(root: THREE.Object3D) {
       seen.add(raw);
       const material = raw as ShadeableFoliageMaterial;
       if (material.color?.isColor) {
-        material.color.multiplyScalar(0.5).lerp(FAR_CARD_TINT, 0.45);
+        material.color.multiplyScalar(0.64).lerp(FAR_CARD_TINT, 0.34);
       }
       if (typeof material.roughness === "number") material.roughness = Math.max(material.roughness, 0.96);
       if (typeof material.metalness === "number") material.metalness = 0;

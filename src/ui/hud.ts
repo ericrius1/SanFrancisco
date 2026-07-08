@@ -266,6 +266,7 @@ export class HUD {
           { c: ["Z"], label: "hold — time of day" },
           { c: ["P"], label: "pause" },
           { c: ["C"], label: "camera" },
+          { c: ["N"], label: "watch cars" },
           { c: ["/"], label: "debug" },
           { c: ["I"], label: "immersive" },
           { c: ["F"], label: "fullscreen" }

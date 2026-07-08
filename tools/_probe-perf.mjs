@@ -82,6 +82,9 @@ async function shot(c, name) {
 async function benchRender(c, n = 24) {
   return await evaluate(c, `(async()=>{
     const s=window.__sf, r=s.renderer, sc=s.scene, cam=s.camera;
+    // apply per-building frustum culling for this (frozen) camera before timing —
+    // sets persistent visibility flags the batches respect on every renderAsync
+    if(s.cullGeneratedBuildings) s.cullGeneratedBuildings(cam);
     const times=[];
     for(let i=0;i<4;i++){ await r.renderAsync(sc,cam); }         // warm
     for(let i=0;i<${n};i++){ const t=performance.now(); await r.renderAsync(sc,cam); times.push(performance.now()-t); }
@@ -130,6 +133,9 @@ async function main() {
       if(!window.__frozen){window.__frozen=true; s.chase.update=()=>{}; s.player.update=()=>{}; } return 1;})()`);
 
     const CX = 3300, CZ = -400;
+    // concurrent sessions editing watched files can trigger a vite HMR reload
+    // mid-run — re-wait for __sf before reaching into it.
+    await waitEval(c, "Boolean(window.__sf && window.__sf.map && window.__sf.buildings)", 60000);
     const CY = await evaluate(c, `+window.__sf.map.groundHeight(${CX},${CZ}).toFixed(2)`);
 
     // stream tiles + ring in: place player, tick the real update via manual pump
@@ -139,20 +145,28 @@ async function main() {
       s.physics.world.setBodyTransform(p.body,[${CX},y,${CZ}],[0,0,0,1]); return 1;})()`);
     for (let i = 0; i < 50; i++) { await tick(c); }
     await sleep(1000);
+    // the ring loads async (createChinatown fetch) — wait for it before pumping
+    await waitEval(c, "Boolean(window.__sf.buildings && window.__sf.buildings.current)", 60000);
     console.log("[perf] streaming ring...");
     for (let k = 0; k < 40; k++) {
       await evaluate(c, `(()=>{const s=window.__sf,p=s.player; s.buildings.current.update(p.position,0.25); return 1;})()`);
       await tick(c);
-      await sleep(180);
+      await sleep(120);
       const st = await evaluate(c, "window.__sf.buildings.current.stats()");
-      if (st.loaded >= 80 || (st.loaded > 0 && st.loading === 0 && k > 20)) break;
+      if (st.loaded >= 80 || (st.loaded >= 38 && st.loading === 0 && k > 20)) break;
+    }
+    // drain incremental merge jobs (pumped by tick()'s frame loop) before benching
+    for (let k = 0; k < 120; k++) {
+      const pending = await evaluate(c, "window.__sf.buildings.current.stats().pools.pools.pendingJobs");
+      if (!pending) break;
+      await tick(c); await sleep(30);
     }
     const ring = await evaluate(c, "window.__sf.buildings.current.stats()");
     console.log("[perf] ring:", JSON.stringify(ring));
 
     // helper to toggle the generated-building render layers
     const setVis = async (v) => evaluate(c, `(()=>{let n=0; window.__sf.scene.traverse(o=>{
-      if(o.isBatchedMesh || o.name==='buildingShadowProxies' || o.name==='generatedBuilding'){ o.visible=${v}; n++; }}); return n;})()`);
+      if(o.isBatchedMesh || o.name==='genBuildingMerged' || o.name==='buildingShadowProxies' || o.name==='generatedBuilding'){ o.visible=${v}; n++; }}); return n;})()`);
 
     // === street-level view (the gameplay-relevant camera) ===
     await evaluate(c, `(()=>{const s=window.__sf,c=s.camera;

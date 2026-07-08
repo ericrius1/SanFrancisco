@@ -24,7 +24,7 @@
 import type { SeedTreeDesignSpec } from "../seedForest/templates";
 import { BOTANICAL_GARDEN_BOUNDS, type GardenTerrain } from "../garden/layout";
 
-export type WildRegionId = "ggpark" | "presidio" | "marin";
+export type WildRegionId = "ggpark" | "presidio" | "marin" | "twinpeaks";
 
 export type WildRegion = {
   id: WildRegionId;
@@ -45,7 +45,11 @@ export const WILD_REGIONS: readonly WildRegion[] = [
   // classes as 0 (developed post), so plant on 0+1 like Marin — the designed
   // groves keep it in the wooded areas, avoid zones keep it off the anchorage.
   { id: "presidio", minX: -3035, maxX: -200, minZ: -2250, maxZ: 180, plantClasses: [0, 1], minGround: -Infinity },
-  { id: "marin", minX: -6300, maxX: -2700, minZ: -7800, maxZ: -5000, plantClasses: [0, 1], minGround: 2 }
+  { id: "marin", minX: -6300, maxX: -2700, minZ: -7800, maxZ: -5000, plantClasses: [0, 1], minGround: 2 },
+  // Central hills — Mount Sutro (dense eucalyptus cloud-forest), Mount Davidson
+  // (forested), Twin Peaks (open grassy summit). plantClasses=[1] keeps the
+  // canopy on the actual parkland, not the surrounding neighborhoods (class 0).
+  { id: "twinpeaks", minX: -1500, maxX: 350, minZ: 3150, maxZ: 4650, plantClasses: [1], minGround: -Infinity }
 ] as const;
 
 export function wildRegionAt(x: number, z: number): WildRegion | null {
@@ -113,25 +117,43 @@ function smoothstep(a: number, b: number, t: number): number {
 
 // --- tree species (indices into WILD_TREE_DESIGNS) --------------------------------
 
+// Fuller + shorter than a first pass: the far tier renders LOD2, which keeps the
+// trunk but thins the foliage cards, so tall trees read as bare poles at range.
+// High leavesPerBranch/branchDensity + lower heights + a low baseSize (crown
+// clothes more of the trunk) fatten the far-tier silhouette into real canopy.
 export const WILD_TREE_DESIGNS: readonly SeedTreeDesignSpec[] = [
-  // 0 redwood/fir — tall, groves and valley forests
+  // 0 redwood/fir — valley forests and grove hearts. Fullness balanced against
+  // far-tier triangle cost: enough leaf density to kill the bare-pole read, not
+  // so much that a compact dense stand blows the GPU budget.
   {
     species: "douglasFir",
     seed: 911,
-    controls: { height: 30, branchDensity: 34, leavesPerBranch: 22, leafColorize: 0x44603a, leafTintAmount: 0.44 },
+    // firs are the poliest + costliest at the far tier — keep them shorter and
+    // the fullest of the four so a distant grove still reads as canopy not masts
+    controls: { height: 18, branchDensity: 46, leavesPerBranch: 36, leafColorize: 0x44603a, leafTintAmount: 0.44 },
     sink: 0.3
   },
-  // 1 Monterey cypress read — windrows and crest stands
+  // 1 Monterey cypress read — windrows and crest stands, fat rounded crown
   {
     species: "pine",
     seed: 922,
-    controls: { height: 13, branchDensity: 32, leavesPerBranch: 20, leafColorize: 0x3e5c33, leafTintAmount: 0.46 },
+    controls: { height: 11, branchDensity: 40, leavesPerBranch: 26, leafColorize: 0x3e5c33, leafTintAmount: 0.46 },
     sink: 0.28
   },
-  // 2 coast live oak — savanna loners and east-park woodland
-  { species: "whiteOak", seed: 933, controls: { height: 11, leafColorize: 0x4d6a34, leafTintAmount: 0.5 }, sink: 0.26 },
-  // 3 eucalyptus read — tall pale stands
-  { species: "americanBeech", seed: 944, controls: { height: 19, leafColorize: 0x5c6e40, leafTintAmount: 0.5 }, sink: 0.28 }
+  // 2 coast live oak — savanna loners and east-park woodland, broad round head
+  {
+    species: "whiteOak",
+    seed: 933,
+    controls: { height: 9.5, branchDensity: 32, leavesPerBranch: 26, leafColorize: 0x4d6a34, leafTintAmount: 0.5 },
+    sink: 0.26
+  },
+  // 3 eucalyptus read — tall pale stands, but not a flagpole
+  {
+    species: "americanBeech",
+    seed: 944,
+    controls: { height: 15, branchDensity: 34, leavesPerBranch: 26, leafColorize: 0x5c6e40, leafTintAmount: 0.5 },
+    sink: 0.28
+  }
 ] as const;
 
 export const WILD_SPECIES = { redwood: 0, cypress: 1, oak: 2, eucalyptus: 3 } as const;
@@ -172,7 +194,12 @@ const GROVES: readonly Grove[] = [
   { name: "mrn_redwood_valley_e", species: 0, cx: -3500, cz: -5600, r: 200, density: 0.2 },
   { name: "mrn_redwood_valley_sw", species: 0, cx: -5900, cz: -7300, r: 200, density: 0.22 },
   { name: "mrn_pine_crest_n", species: 1, cx: -4800, cz: -5400, r: 150, density: 0.15 },
-  { name: "mrn_pine_crest_e", species: 1, cx: -3100, cz: -6600, r: 140, density: 0.15 }
+  { name: "mrn_pine_crest_e", species: 1, cx: -3100, cz: -6600, r: 140, density: 0.15 },
+
+  // Central hills — Mount Sutro cloud-forest (dense eucalyptus) + Mount Davidson
+  { name: "sutro_cloud_forest", species: 3, cx: -782, cz: 3846, r: 205, density: 0.2 },
+  { name: "sutro_fir_pocket", species: 0, cx: -1080, cz: 4160, r: 110, density: 0.16 },
+  { name: "mount_davidson", species: 3, cx: -320, cz: 4330, r: 170, density: 0.18 }
 ] as const;
 
 const WINDROWS: readonly Windrow[] = [
@@ -230,12 +257,17 @@ export const FLOWER_DRIFTS: readonly FlowerDrift[] = [
   { name: "psd_crissy_meadow", cx: -1500, cz: -1960, rx: 850, rz: 190, mix: [[1, 0.45], [0, 0.3], [2, 0.25]], density: 0.42, bandCell: 26 },
   { name: "psd_clearing", cx: -1720, cz: -930, rx: 130, rz: 100, mix: [[3, 0.5], [0, 0.5]], density: 0.5, bandCell: 18 },
 
-  // Marin — the superbloom: giant poppy washes on the open hillsides
-  { name: "mrn_poppy_wash_w", cx: -5450, cz: -5650, rx: 270, rz: 200, mix: [[0, 0.75], [3, 0.25]], density: 0.55, bandCell: 30 },
-  { name: "mrn_poppy_wash_s", cx: -3950, cz: -6900, rx: 300, rz: 230, mix: [[0, 0.7], [3, 0.3]], density: 0.55, bandCell: 34 },
-  { name: "mrn_poppy_wash_sw", cx: -4750, cz: -7420, rx: 230, rz: 170, mix: [[0, 0.72], [3, 0.28]], density: 0.5, bandCell: 28 },
-  { name: "mrn_lupine_band_e", cx: -3300, cz: -5950, rx: 220, rz: 150, mix: [[1, 0.65], [2, 0.35]], density: 0.5, bandCell: 26 },
-  { name: "mrn_lupine_band_w", cx: -5850, cz: -6800, rx: 190, rz: 140, mix: [[1, 0.6], [2, 0.4]], density: 0.48, bandCell: 24 }
+  // Marin — the superbloom: giant poppy washes on the OPEN west-central
+  // headland hills (the SE of the region is built up; keep the blooms on the
+  // real open grassland between the redwood valleys).
+  { name: "mrn_poppy_hills", cx: -4450, cz: -6250, rx: 285, rz: 215, mix: [[0, 0.74], [3, 0.26]], density: 0.85, bandCell: 34 },
+  { name: "mrn_poppy_north", cx: -5180, cz: -5730, rx: 220, rz: 165, mix: [[0, 0.7], [3, 0.3]], density: 0.78, bandCell: 30 },
+  { name: "mrn_poppy_south", cx: -4980, cz: -6820, rx: 225, rz: 170, mix: [[0, 0.74], [3, 0.26]], density: 0.78, bandCell: 32 },
+  { name: "mrn_lupine_hills", cx: -4060, cz: -5900, rx: 200, rz: 150, mix: [[1, 0.6], [2, 0.2], [0, 0.2]], density: 0.62, bandCell: 26 },
+  { name: "mrn_goldfield_west", cx: -5650, cz: -6450, rx: 190, rz: 150, mix: [[3, 0.6], [0, 0.4]], density: 0.6, bandCell: 24 },
+
+  // Central hills — wildflowers on the open Mount Sutro / Twin Peaks slopes
+  { name: "tp_wildflowers", cx: -560, cz: 4060, rx: 165, rz: 135, mix: [[1, 0.5], [2, 0.3], [0, 0.2]], density: 0.5, bandCell: 24 }
 ] as const;
 
 function driftEllipse(d: FlowerDrift, x: number, z: number): number {
@@ -251,6 +283,57 @@ function inFlowerMeadow(x: number, z: number, pad = 0.15): boolean {
   }
   return false;
 }
+
+// --- open meadows (kept clear of trees; the big GG Park / post lawns) --------------
+
+type Meadow = { name: string; cx: number; cz: number; rx: number; rz: number };
+const MEADOWS: readonly Meadow[] = [
+  { name: "polo_fields", cx: -5000, cz: 2500, rx: 215, rz: 95 },
+  { name: "speedway_hellman", cx: -3760, cz: 2250, rx: 185, rz: 105 },
+  { name: "lindley_marx", cx: -4330, cz: 2410, rx: 150, rz: 95 },
+  { name: "big_rec_east", cx: -1520, cz: 2470, rx: 150, rz: 100 },
+  { name: "presidio_parade", cx: -1680, cz: -1050, rx: 165, rz: 115 }
+] as const;
+
+function inMeadow(x: number, z: number): boolean {
+  for (const m of MEADOWS) {
+    const dx = (x - m.cx) / m.rx;
+    const dz = (z - m.cz) / m.rz;
+    if (dx * dx + dz * dz < 1) return true;
+  }
+  return false;
+}
+
+// --- forest matrix (region-wide canopy with clearings) ----------------------------
+// GG Park and the Presidio are continuous urban forest, not a few groves. The
+// matrix plants wherever a low-frequency "stand" noise says wood (dense stands,
+// feathered edges, open clearings between), with species from a second low-freq
+// zone noise so neighbours share a species — real stands, not salt-and-pepper.
+// Marin has NO matrix: it stays open golden hills (groves + lone oaks only).
+
+type MatrixSpec = { density: number; standThresh: number; species: (zone: number, x: number) => number };
+const MATRIX: Partial<Record<WildRegionId, MatrixSpec>> = {
+  ggpark: {
+    density: 0.46,
+    standThresh: 0.57,
+    // east park (x>-1750) leans oak/eucalyptus; the long body is eucalyptus →
+    // cypress → redwood pockets. Fir kept a minority (poliest far-tier species).
+    species: (zone, x) => (x > -1750 ? (zone < 0.5 ? 2 : 3) : zone < 0.42 ? 3 : zone < 0.8 ? 1 : 0)
+  },
+  presidio: {
+    density: 0.4,
+    standThresh: 0.6, // wooded hills, but the post + Crissy stay open (compact region — keep GPU sane)
+    species: (zone) => (zone < 0.48 ? 1 : zone < 0.82 ? 3 : 0) // cypress / eucalyptus / fir
+  },
+  twinpeaks: {
+    // compact region + eucalyptus (costliest far-tier species) → keep it lean;
+    // the groves carry the dense-cloud-forest read, the matrix just fills between
+    density: 0.4,
+    standThresh: 0.6,
+    species: (zone) => (zone < 0.46 ? 3 : zone < 0.86 ? 1 : 0) // euc / cypress-leaning / fir
+  }
+};
+const MATRIX_CELL = 11;
 
 // --- terrain gates -----------------------------------------------------------------
 
@@ -298,7 +381,7 @@ export function collectWildTrees(map: GardenTerrain): WildTree[] {
   const push = (x: number, z: number, species: number, sBoost: number, salt: number, gx: number, gz: number) => {
     const region = wildRegionAt(x, z);
     if (!region || !plantable(map, region, x, z)) return false;
-    if (inFlowerMeadow(x, z)) return false;
+    if (inFlowerMeadow(x, z) || inMeadow(x, z)) return false;
     if (!slopeOk(map, x, z, 8.5)) return false;
     const k = takenKey(x, z);
     if (taken.has(k)) return false;
@@ -345,6 +428,28 @@ export function collectWildTrees(map: GardenTerrain): WildTree[] {
       const pz = w.az + (w.bz - w.az) * t + (hash2(i, 1, salt) - 0.5) * w.jitter;
       if (hash2(i, 2, salt) < 0.12) continue; // the odd missing tree keeps it alive
       push(px, pz, w.species, 0.95 + hash2(i, 3, salt) * 0.25, salt, i, 0);
+    }
+  });
+
+  // FOREST MATRIX — region-wide canopy (GG Park + Presidio). Dense stands where
+  // the low-freq stand-noise says wood, feathered edges, open clearings between.
+  WILD_REGIONS.forEach((region) => {
+    const spec = MATRIX[region.id];
+    if (!spec) return; // Marin: no matrix, stays open
+    const salt = 6000 + region.id.length * 17;
+    let gx = 0;
+    for (let x = region.minX; x <= region.maxX; x += MATRIX_CELL, gx++) {
+      let gz = 0;
+      for (let z = region.minZ; z <= region.maxZ; z += MATRIX_CELL, gz++) {
+        const px = x + (hash2(gx, gz, salt) - 0.5) * MATRIX_CELL * 1.4;
+        const pz = z + (hash2(gx, gz, salt + 1) - 0.5) * MATRIX_CELL * 1.4;
+        // stand mask: smooth so stands have dense hearts + feathered edges
+        const stand = smoothstep(spec.standThresh - 0.05, spec.standThresh + 0.12, valueNoise(px, pz, 300, salt + 2));
+        if (stand <= 0) continue;
+        if (hash2(gx, gz, salt + 3) > spec.density * stand) continue;
+        const zone = valueNoise(px, pz, 240, salt + 4);
+        push(px, pz, spec.species(zone, px), 1 + hash2(gx, gz, salt + 5) * 0.12, salt, gx, gz);
+      }
     }
   });
 
@@ -416,7 +521,7 @@ export function collectWildFlowers(map: GardenTerrain): WildFlower[] {
           y: map.groundHeight(px, pz),
           z: pz,
           yaw: hash2(ix, iz, salt + 6) * Math.PI * 2,
-          scale: 0.75 + hash2(ix, iz, salt + 7) * 0.55,
+          scale: 0.85 + hash2(ix, iz, salt + 7) * 0.6, // a touch bigger so drifts read from range
           species,
           tint: hash2(ix, iz, salt + 8)
         });

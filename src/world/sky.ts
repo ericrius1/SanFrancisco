@@ -4,6 +4,7 @@ import {
   Fn,
   abs,
   cameraPosition,
+  densityFogFactor,
   dot,
   float,
   floor,
@@ -21,6 +22,7 @@ import {
   smoothstep,
   step,
   time,
+  triNoise3D,
   uniform,
   vec3
 } from "three/tsl"
@@ -124,9 +126,9 @@ const PALETTE = {
   // the shader horizon colours (warm dusty rose at golden hour, a moonlit
   // blue-grey after dark) so far tiles melt into the sky instead of silhouetting.
   fog: {
-    day: new THREE.Color(0xc6d6df),
-    gold: new THREE.Color(0xc49e8b),
-    night: new THREE.Color(0x455168)
+    day: new THREE.Color(0xccdae2),
+    gold: new THREE.Color(0xc9a794),
+    night: new THREE.Color(0x475369)
   }
 }
 
@@ -171,6 +173,9 @@ export class Sky {
   #uFogScale = uniform(WORLD_TUNING.values.fogScale)
   #uFogDrift = uniform(WORLD_TUNING.values.fogDrift)
   #uFogStart = uniform(WORLD_TUNING.values.fogStart)
+  #uFogMarine = uniform(WORLD_TUNING.values.fogMarine)
+  #uFogFloor = uniform(WORLD_TUNING.values.fogFloor)
+  #uFogPeak = uniform(WORLD_TUNING.values.fogPeak)
   #uFogHorizon = uniform(WORLD_TUNING.values.fogHorizon)
   #uFogHorizonStart = uniform(WORLD_TUNING.values.fogHorizonStart)
   #uFogHorizonSoftness = uniform(WORLD_TUNING.values.fogHorizonSoftness)
@@ -389,54 +394,126 @@ export class Sky {
     return mat
   }
 
-  #fogBillow(p: N): N {
-    const billowA = mx_noise_float(p).mul(0.5).add(0.5)
-    const billowB = mx_noise_float(p.mul(2.15).add(vec3(17.1, 3.7, 31.4))).mul(0.5).add(0.5)
-    return smoothstep(0.32, 0.76, billowA.mul(0.68).add(billowB.mul(0.32)))
+  /**
+   * The marine-layer density field over the city, 0..1 in world XZ. San Francisco's
+   * fog is a Pacific marine layer: it's a wall at Ocean Beach / the Sunset, floods
+   * in through the Golden Gate over the Presidio, and thins out over downtown and
+   * the sheltered east bay. `westness` is a smooth W→E ramp; a Gaussian lobe at the
+   * Gate draws the bank inland; a very-large-scale slow noise advects the whole
+   * front east and west so the edge "rolls" over minutes, not seconds. Pure ALU,
+   * evaluated per fragment at its own world position, so distant western geometry
+   * genuinely reads foggier than distant eastern geometry.
+   */
+  #marineField(): N {
+    const px = (positionWorld as N).x
+    const pz = (positionWorld as N).z
+    // W→E ramp: full fog west of x≈-3200 (Ocean Beach / outer Sunset), clear by
+    // x≈+1700 (downtown / FiDi).
+    const westness = smoothstep(float(1700), float(-3200), px)
+    // Golden Gate inflow lobe (bridge ≈ (-2982,-2798)); reaches the Presidio + the
+    // northern waterfront so that corridor stays socked in even a bit east.
+    const gx = px.sub(-2982).mul(1 / 2700)
+    const gz = pz.sub(-2798).mul(1 / 2400)
+    const gate = gx.mul(gx).add(gz.mul(gz)).negate().exp()
+    const stable = westness.max(gate.mul(0.9))
+    // slow, very-large-scale advection (~3 km features) so the front breathes
+    const roll = mx_noise_float(
+      vec3(px, float(0), pz)
+        .mul(0.00034)
+        .add((vec3(1, 0, 0.35) as N).mul(time.mul((this.#uFogDrift as N).mul(0.5))))
+    )
+      .mul(0.5)
+      .add(0.5)
+    return saturate(stable.mul(mix(float(0.82), float(1.18), roll)).add(roll.sub(0.5).mul(0.22)))
   }
 
-  #fogNoisePosition(yScale = 0.45): N {
-    const drift = time.mul(this.#uFogDrift as N)
-    return (positionWorld as N)
-      .mul(this.#uFogScale as N)
-      .mul(vec3(1, yScale, 1))
-      .add((vec3(1, 0, -0.73) as N).mul(drift))
-  }
-
+  // Structure follows three's `webgpu_custom_fog` example (a ground-hugging band
+  // with a noise-wobbled top, unioned with distance haze) but adds the SF marine
+  // field so density varies by region, and keeps a near-fade + a phase-tracked,
+  // brighter-when-pooled fog colour.
   #buildFogNode(): N {
     const dist = cameraPosition.sub(positionWorld).length()
     const base = this.#uFogBase as N
-    const top = (this.#uFogTop as N).max(base.add(1))
-    const softness = (this.#uFogSoftness as N).max(1)
-    const distancePastStart = dist.sub(this.#uFogStart as N).max(0)
-    const distanceFog = pow(distancePastStart.mul(this.#uFogDensity as N), 2)
-      .negate()
-      .exp()
-      .oneMinus()
+    const y = (positionWorld as N).y
 
-    const layerFromBase = smoothstep(base.sub(softness), base.add(softness), positionWorld.y)
-    const layerToTop = smoothstep(top.sub(softness), top.add(softness), positionWorld.y).oneMinus()
-    const altitudeBand = layerFromBase.mul(layerToTop)
-    const billow = this.#fogBillow(this.#fogNoisePosition())
+    // marine field → per-region density multipliers. `fogMarine` (0..1) lerps
+    // between "uniform fog everywhere" and "full coast-heavy gradient".
+    const marine = this.#marineField()
+    const region = mix(float(1), marine, this.#uFogMarine as N)
+    const bankScale = mix(this.#uFogFloor as N, this.#uFogPeak as N, region)
+    // the distance haze also leans coastal, but only gently — downtown must still
+    // fog out at long range (can't see it from Ocean Beach), just with clearer air.
+    const distScale = mix(float(0.85), float(1.4), region)
+
+    // animated two-octave volumetric noise (three's built-in fog noise) churns the
+    // top of the bank so the marine layer boils and drifts rather than sitting as a
+    // flat lid. The drift knob feeds triNoise3D's time so it's one control.
+    const nScale = this.#uFogScale as N
+    const nTime = time.mul((this.#uFogDrift as N).mul(6))
+    const noiseA = triNoise3D((positionWorld as N).mul(nScale), 0.2, nTime)
+    const noiseB = triNoise3D(
+      (positionWorld as N).mul(nScale.mul(2.1)).add(vec3(11.3, 0, 7.7)),
+      0.2,
+      nTime.mul(1.25)
+    )
+    const fogNoise = noiseA.add(noiseB)
+
+    // ground-hugging band: solid from `fogBase` up, fading out through a noisy top
+    // (one-sided — real marine layer fills everything below, no bottom cutoff). The
+    // noise raises/lowers the top edge (scaled by edge softness) into drifting wisps.
+    const top = (this.#uFogTop as N)
+      .add(
+        fogNoise
+          .sub(0.7)
+          .mul((this.#uFogSoftness as N).mul(0.6))
+          .mul(this.#uFogNoise as N) // "billow" slider: 0 = flat lid, 1 = full wisps
+      )
+      .max(base.add(1))
+    const groundRamp = top.sub(y).div(top.sub(base)).saturate()
+    // near-fade so the first ~20 m around the camera stay clear — the player is
+    // never whited out in their own valley — then the bank builds in fast.
     const nearFade = smoothstep(
       this.#uFogStart as N,
-      (this.#uFogStart as N).add(280),
+      (this.#uFogStart as N).add(150),
       dist
     )
-    const bankFog = altitudeBand
+    const bankFog = groundRamp
       .mul(nearFade)
-      .mul(mix(float(1), billow, this.#uFogNoise as N))
-      .mul(this.#uFogBank as N)
+      .mul((this.#uFogBank as N).mul(bankScale))
+      .saturate()
+
+    // exp² distance haze (three's densityFogFactor, view-Z based) — the draw-distance
+    // lever — plus a far horizon veil for the last stretch out to the tile edge.
+    const distHaze = densityFogFactor((this.#uFogDensity as N).mul(distScale))
     const horizonVeil = smoothstep(
       this.#uFogHorizonStart as N,
       (this.#uFogHorizonStart as N).add((this.#uFogHorizonSoftness as N).max(1)),
       dist
-    ).mul(this.#uFogHorizon as N)
+    ).mul((this.#uFogHorizon as N).mul(distScale))
 
-    return tslFog(
+    // union-composite (probabilistic OR) instead of adding: 1 - ∏(1 - layer). Two
+    // moderate layers no longer sum into muddy over-fog in the mid-range, yet where
+    // any layer is near-opaque (the far edge) the union still slams shut.
+    const clear = bankFog
+      .oneMinus()
+      .mul(distHaze.oneMinus())
+      .mul(horizonVeil.oneMinus())
+    const total = clear.oneMinus().clamp(0, 0.985)
+
+    // The pooled ground bank reads brighter and whiter than the distance haze —
+    // a lit marine layer catching skylight, not the horizon smog. Lift the tint
+    // toward luminous white in proportion to how much of the fog here is bank, so
+    // the sea of fog in the valleys glows while far tiles still melt into the
+    // matched horizon colour. (uFogColor already tracks the phase of day, so at
+    // night this lifts a dark base only a little — moody, not glowing.)
+    const bankShare = (bankFog.div(total.max(0.001)).saturate() as N).mul(0.85)
+    const fogCol = mix(
       this.#uFogColor as N,
-      distanceFog.add(bankFog).add(horizonVeil).clamp(0, 0.96)
+      (this.#uFogColor as N).mul(1.28).add(vec3(0.05, 0.06, 0.07)),
+      bankShare as N
     )
+
+    return tslFog(fogCol as N, total as N)
   }
 
   applyFogParams() {
@@ -450,6 +527,9 @@ export class Sky {
     this.#uFogScale.value = v.fogScale
     this.#uFogDrift.value = v.fogDrift
     this.#uFogStart.value = v.fogStart
+    this.#uFogMarine.value = v.fogMarine
+    this.#uFogFloor.value = v.fogFloor
+    this.#uFogPeak.value = v.fogPeak
     this.#uFogHorizon.value = v.fogHorizon
     this.#uFogHorizonStart.value = v.fogHorizonStart
     this.#uFogHorizonSoftness.value = v.fogHorizonSoftness

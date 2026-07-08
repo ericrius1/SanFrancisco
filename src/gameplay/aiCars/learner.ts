@@ -68,11 +68,19 @@ const SIGMA_MAX = 0.25;
 const DT_LEARN = 0.05; // 20 Hz learn tick → +0.05 s of age per learnStep
 const SKILL_TAU = 60; // reward-rate EMA time constant (s)
 // social rescue
-const RESCUE_MEDIAN_K = 1.5; // threshold = median - K*MAD
-const RESCUE_BELOW_S = 15 * 60; // must stay below continuously this long (s)
-const RESCUE_COOLDOWN_S = 30 * 60; // max 1 lesson per car per this window (s)
-const LESSON_KEEP = 0.8;
-const LESSON_MENTOR = 0.2;
+const RESCUE_MEDIAN_K = 1.5; // relative threshold = median - K*MAD
+// Absolute skill floor (reward/min): a car below this is struggling REGARDLESS of
+// the fleet spread. The relative median−K·MAD trigger alone fails on a bimodal
+// fleet (half great, half stuck): the median sits between the clusters and the
+// stuck cars never fall below median−K·MAD, so they never get rescued and the
+// fleet stays permanently split. The absolute floor catches exactly that case —
+// but only once a genuinely good driver exists to learn from (see #floorActive).
+const RESCUE_ABS_FLOOR = 45;
+const RESCUE_FLOOR_MENTOR_MIN = 120; // need a mentor at least this good to floor-rescue
+const RESCUE_BELOW_S = 8 * 60; // must stay below continuously this long (s)
+const RESCUE_COOLDOWN_S = 20 * 60; // max 1 lesson per car per this window (s)
+const LESSON_KEEP = 0.65;
+const LESSON_MENTOR = 0.35;
 const LESSON_NOISE = 0.02;
 
 /** Per-car persistence blob (brain fields only; fleet owns pos/kind/hue). */
@@ -407,9 +415,13 @@ export class Learner {
     const order = Array.from({ length: n }, (_, i) => i).sort((p, q) => sk[q] - sk[p]);
     const qCount = Math.max(1, Math.floor(n / 4));
     const mentors = order.slice(0, qCount);
+    // the absolute floor only propagates skill once a real driver exists to copy,
+    // so early on (whole fleet flailing) we don't blend bad cars toward bad cars.
+    const floorActive = sk[order[0]] >= RESCUE_FLOOR_MENTOR_MIN;
 
     for (let i = 0; i < n; i++) {
-      if (sk[i] < threshold) this.belowS[i] += dt;
+      const struggling = sk[i] < threshold || (floorActive && sk[i] < RESCUE_ABS_FLOOR);
+      if (struggling) this.belowS[i] += dt;
       else this.belowS[i] = 0;
 
       if (

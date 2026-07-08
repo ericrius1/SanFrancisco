@@ -1,6 +1,7 @@
 import { palaceLagoonMask, type WorldMap } from "../world/heightmap";
 import type { PlayerMode } from "../player/types";
 import { BOTANICAL_GARDEN_BOUNDS } from "../world/garden/layout";
+import { WILD_REGIONS } from "../world/wildlands/layout";
 
 /**
  * Minimap (top-left, always on) + full-city map (M or click to expand).
@@ -18,6 +19,9 @@ import { BOTANICAL_GARDEN_BOUNDS } from "../world/garden/layout";
 
 export type MapSelf = { x: number; z: number; fx: number; fz: number; hue: number };
 export type MapRemote = { id: number; name: string; hue: number; x: number; z: number; mode: PlayerMode };
+// Live debug/training overlay points, fetched fresh each big-map draw.
+export type MapDebugCar = { x: number; z: number };
+export type MapDebugHorse = { x: number; z: number; fallen: boolean };
 export type MapLayerId = "art" | "science" | "music";
 export type MapLayerPoint = { id: string; layer: MapLayerId; title: string; x: number; z: number };
 
@@ -139,6 +143,10 @@ export class Minimap {
   #map: WorldMap;
   #getSelf: () => MapSelf;
   #getRemotes: () => MapRemote[];
+  // Optional live getters for the big-map Training/Debug overlay (may be absent).
+  #getDebugCars?: () => MapDebugCar[];
+  #getDebugHorses?: () => MapDebugHorse[];
+  #debugLayerOn = false;
 
   #world!: HTMLCanvasElement; // pre-rendered terrain, 1 grid cell = 1 px
   #mini!: HTMLCanvasElement;
@@ -192,10 +200,18 @@ export class Minimap {
   #miniLandmarkHits: [number, number, MiniLandmark][] = [];
   #landmarks: MiniLandmark[] = [];
 
-  constructor(map: WorldMap, getSelf: () => MapSelf, getRemotes: () => MapRemote[]) {
+  constructor(
+    map: WorldMap,
+    getSelf: () => MapSelf,
+    getRemotes: () => MapRemote[],
+    getDebugCars?: () => MapDebugCar[],
+    getDebugHorses?: () => MapDebugHorse[]
+  ) {
     this.#map = map;
     this.#getSelf = getSelf;
     this.#getRemotes = getRemotes;
+    this.#getDebugCars = getDebugCars;
+    this.#getDebugHorses = getDebugHorses;
     this.#paintWorld();
     this.#landmarks = Object.entries(this.#map.meta.landmarks).map(([key, pos]) => ({
       x: pos.x,
@@ -218,6 +234,22 @@ export class Minimap {
       z: (BOTANICAL_GARDEN_BOUNDS.minZ + BOTANICAL_GARDEN_BOUNDS.maxZ) / 2,
       name: "Botanical Garden"
     });
+    // Forest / open-space areas — the SeedThree wildlands regions each get a
+    // labelled dot + teleport at their centre, straight from the region data so
+    // the marker always tracks where the foliage actually renders.
+    const WILD_LABELS: Record<string, string> = {
+      ggpark: "Golden Gate Park",
+      presidio: "The Presidio",
+      marin: "Marin Headlands",
+      twinpeaks: "Mount Sutro"
+    };
+    for (const r of WILD_REGIONS) {
+      this.#landmarks.push({
+        x: (r.minX + r.maxX) / 2,
+        z: (r.minZ + r.maxZ) / 2,
+        name: WILD_LABELS[r.id] ?? r.id
+      });
+    }
     this.#layers = MAP_LAYER_DEFS.map((def) => ({
       ...def,
       enabled: false,
@@ -1184,6 +1216,34 @@ export class Minimap {
     inner.appendChild(canvas);
     inner.appendChild(action);
     inner.appendChild(hint);
+    // Big-map-only "Training" overlay toggle: live AI-car + horse dots. Lives
+    // here (not on the minimap) and defaults off. Only shown when a live getter
+    // is wired in.
+    if (this.#getDebugCars || this.#getDebugHorses) {
+      const debug = document.createElement("div");
+      debug.className = "bigmap-debug";
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "bigmap-debug-btn";
+      btn.setAttribute("aria-pressed", String(this.#debugLayerOn));
+      btn.classList.toggle("on", this.#debugLayerOn);
+      btn.textContent = "Training layer";
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this.#debugLayerOn = !this.#debugLayerOn;
+        btn.classList.toggle("on", this.#debugLayerOn);
+        btn.setAttribute("aria-pressed", String(this.#debugLayerOn));
+        this.#drawBig();
+      });
+      const legend = document.createElement("div");
+      legend.className = "bigmap-debug-legend";
+      legend.innerHTML =
+        `<span class="bigmap-debug-key"><span class="bigmap-debug-dot" style="--c:#4fd1ff"></span>cars</span>` +
+        `<span class="bigmap-debug-key"><span class="bigmap-debug-dot" style="--c:#ffb454"></span>horses</span>`;
+      debug.appendChild(btn);
+      debug.appendChild(legend);
+      inner.appendChild(debug);
+    }
     wrap.appendChild(inner);
     document.body.appendChild(wrap);
     // click outside the map closes; the canvas itself owns selection/pan/zoom
@@ -1419,6 +1479,7 @@ export class Minimap {
     ctx.textBaseline = "alphabetic";
 
     if (LAYERS_ENABLED) this.#drawBigPlaces(ctx, px, pz, canvas.width, canvas.height);
+    if (this.#debugLayerOn) this.#drawBigDebug(ctx, px, pz, canvas.width, canvas.height);
 
     // remote players with name labels (canvas text — no HTML injection path)
     this.#hits = [];
@@ -1484,6 +1545,39 @@ export class Minimap {
         this.#bigPlaceHits.push([x, y, place]);
         if (selected) this.#placeLabel(ctx, x, y, `${layer.label}: ${place.title}`, layer.color, width, height);
       }
+    }
+  }
+
+  /** Live Training/Debug overlay: every AI car (cyan) + horse (orange, red if
+   * fallen) as a small dot. Positions are fetched fresh here so they animate. */
+  #drawBigDebug(
+    ctx: CanvasRenderingContext2D,
+    px: (x: number) => number,
+    pz: (z: number) => number,
+    width: number,
+    height: number
+  ) {
+    const dpr = this.#dpr;
+    const margin = 16 * dpr;
+    const vis = (x: number, y: number) => x >= -margin && y >= -margin && x <= width + margin && y <= height + margin;
+    const spot = (x: number, y: number, rad: number, fill: string) => {
+      ctx.beginPath();
+      ctx.arc(x, y, rad, 0, Math.PI * 2);
+      ctx.fillStyle = fill;
+      ctx.fill();
+      ctx.lineWidth = 1.2 * dpr;
+      ctx.strokeStyle = "rgba(6,14,20,0.85)";
+      ctx.stroke();
+    };
+    for (const c of this.#getDebugCars?.() ?? []) {
+      const x = px(c.x);
+      const y = pz(c.z);
+      if (vis(x, y)) spot(x, y, 3.2 * dpr, "#4fd1ff");
+    }
+    for (const h of this.#getDebugHorses?.() ?? []) {
+      const x = px(h.x);
+      const y = pz(h.z);
+      if (vis(x, y)) spot(x, y, 3.6 * dpr, h.fallen ? "#ff5a5a" : "#ffb454");
     }
   }
 

@@ -33,6 +33,9 @@ export interface GeneratedBuildingOpts {
   yawRad?: number;
   params?: Partial<BuildingParams>;
   seed: number;
+  /** "low" drops greeble parts (AC units, clotheslines, signs, props) — roughly
+   *  halves merged vertex count + merge time. Used by the streaming ring. */
+  detail?: "full" | "low";
 }
 
 export interface GeneratedBuilding {
@@ -47,6 +50,20 @@ export interface GeneratedBuilding {
 // ---- module-level shared pools (created with the first building) -----------
 let pools: BuildingBatchPools | null = null;
 let proxies: ShadowProxyPool | null = null;
+
+/** Per-building frustum cull — call once per frame with the render camera BEFORE
+ *  rendering. Without this the batches draw every resident instance regardless of
+ *  camera (the ~71 ms/frame Chinatown regression); with it only on-screen
+ *  buildings draw. No-op until the first building creates the pools. */
+export function cullGeneratedBuildings(camera: THREE.Camera) {
+  pools?.cull(camera);
+}
+
+/** Advance incremental building merges — call once per frame (with a small time
+ *  budget) so streaming buildings in never stalls a frame. No-op until first build. */
+export function pumpGeneratedBuildings(maxMs = 6) {
+  pools?.pump(maxMs);
+}
 
 /** live pool stats for perf probes / debug */
 export function buildingPoolStats() {
@@ -91,11 +108,6 @@ export async function createGeneratedBuilding(
     .multiply(new THREE.Matrix4().makeRotationX(-Math.PI / 2))
     .multiply(new THREE.Matrix4().makeScale(BUILDING_SCALE, BUILDING_SCALE, BUILDING_SCALE));
 
-  // ---- exterior → global pools -------------------------------------------
-  const placements = generateBuilding(params, kit);
-  const handle: PoolHandle = pools.addBuilding(placements, root);
-  pools.flush(); // keep batch bounds fresh (stale bounds = invisible buildings)
-
   // ---- footprint dims in metres -------------------------------------------
   const length = params.length;  // Blender units along x (front/back span)
   const width = params.width;    // along y (depth)
@@ -104,6 +116,15 @@ export async function createGeneratedBuilding(
   const halfZ = (width * BUILDING_SCALE) / 2;
   const storeyH = BUILDING_SCALE;
   const height = floors * BUILDING_SCALE;
+
+  // ---- exterior → global pools --------------------------------------------
+  // world bounding sphere for per-building frustum culling: centre at mid-height,
+  // radius reaches the footprint corners + head-room for AC units / awnings /
+  // clotheslines / roof props that overhang the core footprint.
+  const cullCenter = new THREE.Vector3(pos.x, pos.y + height / 2, pos.z);
+  const cullRadius = Math.hypot(halfX, halfZ, height / 2) + 8;
+  const placements = generateBuilding(params, kit);
+  const handle: PoolHandle = pools.addBuilding(placements, root, { center: cullCenter, radius: cullRadius }, opts.detail ?? "full");
 
   // ---- shadow proxy: one solid box, slightly inset so the sun-facing facades
   //      sample in front of their own proxy depth (no self-shadow acne) -------
@@ -179,7 +200,7 @@ export async function createGeneratedBuilding(
   };
 
   const stats = {
-    exteriorInstances: handle.refs.length,
+    exteriorInstances: handle.vertexCount,
     get interiorMeshes() { return interiorMeshCount; },
     get interiorBuilt() { return interiorGroup !== null; },
   };
@@ -212,3 +233,4 @@ export async function createGeneratedBuilding(
 
 export { createGeneratedStreet, type GeneratedStreet } from "./street";
 export { createChinatown, type Chinatown } from "./chinatown";
+export { createBuildingRing, type BuildingRing } from "./ring";

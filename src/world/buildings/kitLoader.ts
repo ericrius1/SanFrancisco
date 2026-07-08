@@ -27,6 +27,15 @@ export function loadBuildingKit(): Promise<Kit | null> {
         `${BASE}/kit_manifest.json`,
         `${BASE}/textures`
       );
+      // The app lights the world through a custom sun + a faint SkyEnvNode
+      // (scene.environmentIntensity ≈ 0.075), so the kit's standard PBR materials
+      // read dark on faces the sun doesn't hit — especially in dense blocks where
+      // buildings shadow each other. Lift per-material env response so shadowed
+      // facades catch more sky fill and match the baked city's ambient.
+      for (const name of ["building", "floor"] as const) {
+        const m = kit.materials?.[name] as { envMapIntensity?: number } | undefined;
+        if (m) m.envMapIntensity = 4;
+      }
       return kit;
     } catch (err) {
       console.warn(

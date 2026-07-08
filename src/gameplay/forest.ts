@@ -2,8 +2,6 @@ import * as THREE from "three/webgpu";
 import { float, hash, instanceIndex, positionLocal, sin, time, uniform, vec3 } from "three/tsl";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { WorldMap } from "../world/heightmap";
-import { MARIN, treeBank, treeMaterialInstanced } from "../world/flora";
-import { wildlandsSuppressesTree } from "../world/wildlands/layout";
 import type { Cockpit, DriveSpec } from "../player/types";
 
 type N = any;
@@ -40,12 +38,12 @@ export const ANIMALS: Record<
   }
 };
 
-// Marin: everything north of the Golden Gate's landfall at (-3150, -5100)
-const FOREST = MARIN;
+// Marin: everything north of the Golden Gate's landfall at (-3150, -5100).
+// (Trees here are now grown by the wildlands SeedThree layer; Forest only owns
+// the rideable animals + gummy launcher.)
+const FOREST = { minX: -6300, maxX: -2700, minZ: -7800, maxZ: -5000 };
 const FOREST_CENTER = { x: -4400, z: -6300 };
 const BRIDGE_LANDING = { x: -3150, z: -5100 };
-const TREE_TARGET = 4200;
-const TREE_CLUSTERS = 150; // groves, not an even sprinkle — forests clump
 const ANIMAL_RANGE = 1400; // matrix churn only near the camera
 const MAX_PER_KIND = 80;
 
@@ -65,7 +63,6 @@ function mulberry32(seed: number) {
 }
 
 type BoxSpec = { w: number; h: number; d: number; x: number; y: number; z: number; c: number };
-type PlacedTree = { x: number; z: number; y: number; s: number; yaw: number };
 
 function buildBoxes(boxes: BoxSpec[]): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [];
@@ -198,7 +195,6 @@ export class Forest {
   #herds: Record<AnimalKind, Herd>;
   #riddenGait = uniform(0);
   #riddenMats = new Map<AnimalKind, THREE.MeshStandardNodeMaterial>();
-  #treeMeshes: THREE.InstancedMesh[] = [];
 
   // gummy pool: swap-remove slots, matrices rebuilt each frame
   #gummy: THREE.InstancedMesh;
@@ -218,7 +214,6 @@ export class Forest {
 
   constructor(map: WorldMap, scene: THREE.Scene) {
     this.#map = map;
-    this.#plantTrees(scene);
     this.#herds = {
       bear: this.#buildHerd("bear", scene),
       raccoon: this.#buildHerd("raccoon", scene)
@@ -241,78 +236,6 @@ export class Forest {
     scene.add(this.#gummy);
   }
 
-  setFoliageVisible(visible: boolean) {
-    for (const mesh of this.#treeMeshes) mesh.visible = visible;
-  }
-
-  /** A few instanced draws (species × variant) over the headlands, wind sway in the shader. */
-  #plantTrees(scene: THREE.Scene) {
-    const rnd = mulberry32(20260703);
-    const bank = treeBank();
-    const mat = treeMaterialInstanced();
-    // conifers dominate the groves; cypress and oak break up the silhouette
-    const buckets = [
-      { geo: bank.conifer[0], placed: [] as PlacedTree[] },
-      { geo: bank.conifer[2], placed: [] as PlacedTree[] },
-      { geo: bank.cypress[0], placed: [] as PlacedTree[] },
-      { geo: bank.oak[0], placed: [] as PlacedTree[] }
-    ];
-
-    // grove centres first (uniform, land-checked), then trees gaussian-scattered
-    // around a random grove — reads as forest stands with clearings between
-    const groves: { x: number; z: number }[] = [];
-    for (let i = 0; i < TREE_CLUSTERS * 5 && groves.length < TREE_CLUSTERS; i++) {
-      const x = FOREST.minX + rnd() * (FOREST.maxX - FOREST.minX);
-      const z = FOREST.minZ + rnd() * (FOREST.maxZ - FOREST.minZ);
-      if (this.#map.isWater(x, z) || this.#map.groundHeight(x, z) < 2.5) continue;
-      groves.push({ x, z });
-    }
-    let total = 0;
-    for (let i = 0; i < TREE_TARGET * 4 && total < TREE_TARGET; i++) {
-      const g = groves[Math.floor(rnd() * groves.length)];
-      // Box-Muller-ish radial falloff, σ ≈ 45 m
-      const a = rnd() * Math.PI * 2;
-      const r = Math.sqrt(-2 * Math.log(Math.max(1e-6, rnd()))) * 45;
-      const x = g.x + Math.cos(a) * r;
-      const z = g.z + Math.sin(a) * r;
-      const roll = rnd();
-      const yaw = rnd() * Math.PI * 2;
-      const s = 0.7 + rnd() * 0.75;
-      if (this.#map.isWater(x, z)) continue;
-      const ground = this.#map.groundHeight(x, z);
-      if (ground < 2.5) continue; // beaches stay open
-      // cliffs shed trees; ordinary hillsides keep them
-      if (Math.abs(this.#map.groundHeight(x + 10, z) - this.#map.groundHeight(x - 10, z)) > 14) continue;
-      if (Math.abs(this.#map.groundHeight(x, z + 10) - this.#map.groundHeight(x, z - 10)) > 14) continue;
-      if (this.#map.bridgeDeck(x, z) > -Infinity) continue; // keep the roadway clear
-      if (Math.hypot(x - BRIDGE_LANDING.x, z - BRIDGE_LANDING.z) < 50) continue;
-      if (wildlandsSuppressesTree(x, z)) continue; // Marin trees are grown by the wildlands SeedThree layer now
-      const bucket = roll < 0.37 ? buckets[0] : roll < 0.74 ? buckets[1] : roll < 0.88 ? buckets[2] : buckets[3];
-      bucket.placed.push({ x, z, y: ground - 0.5, s, yaw });
-      total++;
-    }
-
-    for (const bucket of buckets) {
-      if (bucket.placed.length === 0) continue;
-      const mesh = new THREE.InstancedMesh(bucket.geo, mat, bucket.placed.length);
-      for (let i = 0; i < bucket.placed.length; i++) {
-        const t = bucket.placed[i];
-        this.#pos.set(t.x, t.y, t.z);
-        this.#quat.setFromAxisAngle(this.#axis.set(0, 1, 0), t.yaw);
-        this.#mat4.compose(this.#pos, this.#quat, this.#scale.set(t.s, t.s * (0.85 + ((i * 37) % 10) * 0.04), t.s));
-        mesh.setMatrixAt(i, this.#mat4);
-        // gentle per-tree tint: sun-bleached to deep-shade greens
-        const v = 0.86 + ((i * 53) % 13) * 0.022;
-        mesh.setColorAt(i, this.#color.setRGB(v, 0.9 + ((i * 29) % 9) * 0.017, v * 0.95));
-      }
-      mesh.computeBoundingSphere(); // one sphere over all instances — culls the whole stand from downtown
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      mesh.raycast = () => {};
-      scene.add(mesh);
-      this.#treeMeshes.push(mesh);
-    }
-  }
 
   #buildHerd(kind: AnimalKind, scene: THREE.Scene): Herd {
     const geo = buildBoxes(kind === "bear" ? bearBoxes() : raccoonBoxes());

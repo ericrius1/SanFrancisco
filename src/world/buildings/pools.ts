@@ -1,34 +1,25 @@
-// Global cross-building rendering pools for generated buildings.
+// Per-building merged rendering for generated buildings.
 //
-// Phase 0 rendered each building as ~1,000 per-building InstancedMeshes (one per
-// unique kit part-mesh) — ~1,000 draw calls PER BUILDING, which can never scale.
-// Phase 1 collapses the whole system to THREE global THREE.BatchedMesh pools (one
-// per kit material: building / floor / glass). Each unique part-mesh geometry is
-// uploaded ONCE into its material's batch; every placed instance across ALL
-// buildings is just (geometryId, matrix) in the batch. Draw calls for any number
-// of generated buildings: ~3 (+1 shadow-proxy pool).
+// History: Phase 0 = ~1,000 InstancedMeshes/building (dead). Phase 1 = global
+// BatchedMesh pools, 3 draw calls total — BUT with per-object frustum culling off
+// it draws EVERY resident instance every frame, and the kit emits ~8,300 tiny
+// instances/building (every window mullion, AC fin, clothesline). ~71 buildings =
+// 589 k instances = 75 ms/frame, and per-instance visibility culling made it
+// WORSE (setVisibleAt bookkeeping over 589 k instances). Measured, both dead.
 //
-// Why BatchedMesh and not one-InstancedMesh-per-part-key pools: Phase 0 measured
-// 1,021 UNIQUE part meshes for a single building — per-part pools would still be
-// >1,000 draw calls for the whole street and fail the perf gate. BatchedMesh gives
-// the identical bookkeeping (global pools, append-on-add, O(building) removal,
-// per-instance frustum culling) with the draw-call count of a merged mesh.
+// This version MERGES each building into one THREE.Mesh per kit material
+// (building / floor / glass) — exactly how the baked city tiles render. The win:
+//   - zero per-instance overhead (raw triangles the GPU eats fast),
+//   - THREE frustum-culls each building for FREE (mesh.frustumCulled) — only the
+//     handful of buildings actually on screen draw,
+//   - O(1) dispose (3 geometry.dispose(), not 8,300 deleteInstance — that O(n)
+//     dispose was the earlier 30 s streaming hang).
+// Cost: merged geometry is per-building (no cross-building geometry sharing), so
+// the resident set is kept small by a tight streaming ring (chinatown.ts).
 //
-// Lifecycle:
-//   addBuilding(placements, root)  → appends instances, returns a handle
-//   removeBuilding(handle)         → deleteInstance per ref, O(building instances)
-//   flush()                        → recomputes batch bounding spheres when dirty
-//                                    (call once after a batch of adds/removes —
-//                                    stale bounds = invisible-buildings bug)
-// Growth: instance capacity and vertex/index capacity double on demand
-// (BatchedMesh.setInstanceCount / setGeometrySize preserve contents).
-//
-// Shadow proxies: the batches themselves NEVER cast shadows (castShadow=false —
-// the shadow pass is this app's #1 GPU cost and per-part casters would be worse
-// than Phase 0). Instead ShadowProxyPool holds ONE solid box per building in a
-// single InstancedMesh whose material writes neither color nor depth: invisible
-// to the main camera, but castShadow=true puts it in the CSM shadow maps, so each
-// building casts one clean silhouette shadow.
+// Shadow proxies (unchanged): the merged meshes never cast shadows (castShadow
+// =false — the shadow pass is this app's #1 GPU cost); ShadowProxyPool holds one
+// invisible solid box per building that casts a single clean silhouette instead.
 import * as THREE from "three/webgpu";
 import type { Kit } from "../../../vendor/BuildingGenerator/src/kit";
 import type { Placement } from "../../../vendor/BuildingGenerator/src/generator";
@@ -38,61 +29,64 @@ const MIRROR_X = new THREE.Matrix4().makeScale(-1, 1, 1);
 /** parts we never render: kit's own shallow interiors (replaced by interior.ts) */
 const SKIP_PART = /ROOMS|storeinside/i;
 
-interface InstanceRef {
-  rec: BatchRec;
-  id: number;
-  /** normalized geometry this instance renders — needed to re-add on rebuild */
-  geom: THREE.BufferGeometry;
-}
+/** greeble parts dropped at "low" detail — the numerous small props: AC units +
+ *  wires, clotheslines + clothes, curtains, loose props, roof props, ground lights.
+ *  Keeps walls, windows, corners, storefronts, awnings (roof.002) and signs — the
+ *  street-level silhouette and Kowloon character. Cuts a big chunk of vertices. */
+const GREEBLE_PART = /\bac\b|ac\.001|AC WIRE|cloth ?lines|CURTAINS|prop_store|prop_front|prop_groud|roof_prop|lightsground/i;
+
+// reused merge scratch (never allocate per part — GC churn dominated the old merge)
+const _m = new THREE.Matrix4();
+const _world = new THREE.Matrix4();
+const _nm = new THREE.Matrix3();
 
 export interface PoolHandle {
-  refs: InstanceRef[];
-  /** world-space bounding sphere for per-building frustum culling */
-  center: THREE.Vector3;
-  radius: number;
-  /** whether this building's instances are currently drawn (frustum state) */
-  visible: boolean;
+  meshes: THREE.Mesh[];
+  vertexCount: number;
+  /** in-progress merge job, if the building is still being built incrementally */
+  job: MergeJob | null;
 }
 
-interface BatchRec {
-  batch: THREE.BatchedMesh;
-  /** normalized geometry → geometryId in this batch */
-  geomIds: Map<THREE.BufferGeometry, number>;
-  /** all live instances, so a rebuild can re-add them */
-  live: Set<InstanceRef>;
-  maxInstances: number;
-  maxVerts: number;
-  maxIndices: number;
-  boundsDirty: boolean;
+interface Bucket {
+  mat: THREE.Material;
+  verts: number; indices: number;
+  pos?: Float32Array; nor?: Float32Array; uv?: Float32Array; idx?: Uint16Array | Uint32Array;
+  vo: number; io: number;
 }
 
-const INITIAL_INSTANCES = 8192;
-const INITIAL_VERTS = 1 << 17;   // 131072 — whole kit is ~52k verts
-const INITIAL_INDICES = 1 << 18;
+/** A building's merge spread across frames: pass over the placement list to count
+ *  (phase "count"), then again to fill pre-sized arrays (phase "fill"), a chunk of
+ *  placements at a time, so a ~30 ms merge becomes several ~6 ms slices instead of
+ *  a single stall while streaming. */
+interface MergeJob {
+  placements: Placement[];
+  root: THREE.Matrix4;
+  detail: "full" | "low";
+  handle: PoolHandle;
+  sphere: { center: THREE.Vector3; radius: number };
+  byMat: Map<THREE.Material, Bucket>;
+  phase: "count" | "fill" | "done";
+  cursor: number;
+  canceled: boolean;
+}
 
 export class BuildingBatchPools {
   #kit: Kit;
   #scene: THREE.Object3D;
-  #byMaterial = new Map<THREE.Material, BatchRec>();
   /** source geometry → normalized (position/normal/uv, indexed, de-interleaved) */
   #normCache = new Map<THREE.BufferGeometry, THREE.BufferGeometry>();
-  /** every live building, for per-building frustum culling */
-  #handles = new Set<PoolHandle>();
-  #frustum = new THREE.Frustum();
-  #projScreen = new THREE.Matrix4();
-  #cullSphere = new THREE.Sphere();
-  /** a capacity rebuild re-adds instances as visible; force the next cull to
-   *  re-apply every building's visibility instead of only transitions */
-  #cullDirty = false;
+  #buildings = new Set<PoolHandle>();
+  /** in-progress incremental merges, advanced by pump() each frame */
+  #jobs: MergeJob[] = [];
 
   constructor(kit: Kit, scene: THREE.Object3D) {
     this.#kit = kit;
     this.#scene = scene;
   }
 
-  /** BatchedMesh requires every geometry to share the exact attribute layout.
-   *  The kit is uniform (POSITION/NORMAL/TEXCOORD_0, indexed) but GLTFLoader may
-   *  interleave or add extras — normalize defensively to plain float32 buffers. */
+  /** mergeGeometries needs every input to share the exact attribute layout. The
+   *  kit is roughly uniform but GLTFLoader may interleave or add extras —
+   *  normalize defensively to plain float32 position/normal/uv, indexed. */
   #normalize(src: THREE.BufferGeometry): THREE.BufferGeometry {
     let g = this.#normCache.get(src);
     if (g) return g;
@@ -119,198 +113,173 @@ export class BuildingBatchPools {
       for (let i = 0; i < n; i++) arr[i] = i;
       g.setIndex(new THREE.BufferAttribute(arr, 1));
     }
-    g.computeBoundingSphere();
     this.#normCache.set(src, g);
     return g;
   }
 
-  #makeBatch(rec: Pick<BatchRec, "maxInstances" | "maxVerts" | "maxIndices">, material: THREE.Material): THREE.BatchedMesh {
-    const batch = new THREE.BatchedMesh(rec.maxInstances, rec.maxVerts, rec.maxIndices, material);
-    batch.name = `buildingBatch:${material.name || "part"}`;
-    batch.castShadow = false;       // shadows come from ShadowProxyPool only
-    batch.receiveShadow = true;
-    // Per-object culling/sorting iterate EVERY instance on the CPU each frame —
-    // measured 4.3 ms/frame at 87k instances (20 buildings), vs ~0.0 ms with the
-    // static full draw list. Whole-batch culling still applies via the batch
-    // boundingSphere, which flush() keeps current. Per-BUILDING visibility gating
-    // (setVisibleAt over a building's refs) is the scalable middle ground if GPU
-    // vertex cost ever bites; not needed at street scale.
-    batch.perObjectFrustumCulled = false;
-    batch.sortObjects = false;
-    return batch;
-  }
-
-  #batchFor(material: THREE.Material): BatchRec {
-    let rec = this.#byMaterial.get(material);
-    if (rec) return rec;
-    rec = {
-      batch: null as unknown as THREE.BatchedMesh,
-      geomIds: new Map(),
-      live: new Set(),
-      maxInstances: INITIAL_INSTANCES,
-      maxVerts: INITIAL_VERTS,
-      maxIndices: INITIAL_INDICES,
-      boundsDirty: true,
-    };
-    rec.batch = this.#makeBatch(rec, material);
-    this.#byMaterial.set(material, rec);
-    this.#scene.add(rec.batch);
-    return rec;
-  }
-
   /**
-   * Capacity growth = FULL REBUILD: a brand-new BatchedMesh at the new capacity,
-   * geometries + live instances re-added, swapped into the scene.
-   *
-   * Why not BatchedMesh.setInstanceCount/setGeometrySize: they replace the
-   * matrices/indirect textures (or attribute arrays) on the SAME mesh, and the
-   * three r185 WebGPU backend keeps rendering with the old disposed textures —
-   * every instance added after a resize renders with garbage matrices (verified
-   * with a minimal in-app repro; from-scratch construction at any capacity and
-   * post-render addInstance/setMatrixAt both work fine). A fresh object gets
-   * fresh bindings, which is the only resize path the backend handles correctly.
+   * Start an INCREMENTAL merge of one building. A synchronous merge (~30 ms low /
+   * ~55 ms full) stalls streaming, so this only queues a job and returns a handle
+   * immediately; pump() advances the merge a chunk of placements per frame and the
+   * handle's meshes appear a few frames later. The collider box + shadow proxy are
+   * created by the caller right away, so the building is present/solid meanwhile.
+   * `detail` "low" drops greeble parts.
    */
-  #rebuild(rec: BatchRec, minInstances: number, minVerts: number, minIndices: number): void {
-    while (rec.maxInstances < minInstances) rec.maxInstances *= 2;
-    while (rec.maxVerts < minVerts) rec.maxVerts *= 2;
-    while (rec.maxIndices < minIndices) rec.maxIndices *= 2;
-    const old = rec.batch;
-    const next = this.#makeBatch(rec, old.material as THREE.Material);
-    // re-add geometries in insertion order, then remap live instances
-    const newIds = new Map<THREE.BufferGeometry, number>();
-    for (const g of rec.geomIds.keys()) newIds.set(g, next.addGeometry(g));
-    rec.geomIds = newIds;
-    const m = new THREE.Matrix4();
-    for (const ref of rec.live) {
-      old.getMatrixAt(ref.id, m);
-      const nid = next.addInstance(newIds.get(ref.geom)!);
-      next.setMatrixAt(nid, m);
-      ref.id = nid;
-    }
-    this.#scene.remove(old);
-    old.dispose();
-    this.#scene.add(next);
-    rec.batch = next;
-    rec.boundsDirty = true;
-    this.#cullDirty = true; // re-added instances are visible; re-apply culling
+  addBuilding(
+    placements: Placement[],
+    root: THREE.Matrix4,
+    sphere: { center: THREE.Vector3; radius: number },
+    detail: "full" | "low" = "full"
+  ): PoolHandle {
+    const handle: PoolHandle = { meshes: [], vertexCount: 0, job: null };
+    const job: MergeJob = {
+      placements, root: root.clone(), detail, handle, sphere,
+      byMat: new Map(), phase: "count", cursor: 0, canceled: false,
+    };
+    handle.job = job;
+    this.#jobs.push(job);
+    this.#buildings.add(handle);
+    return handle;
   }
 
-  #geometryId(rec: BatchRec, geom: THREE.BufferGeometry): number {
-    let id = rec.geomIds.get(geom);
-    if (id !== undefined) return id;
-    const nv = geom.getAttribute("position").count;
-    const ni = geom.index!.count;
-    if (rec.batch.unusedVertexCount < nv || rec.batch.unusedIndexCount < ni) {
-      const g = rec.batch.geometry;
-      const curV = g.getAttribute("position").count;
-      const curI = g.index!.count;
-      this.#rebuild(rec, rec.maxInstances, curV + nv, curI + ni);
+  /** Advance queued merge jobs for up to ~maxMs this frame — call once per frame.
+   *  Turns a per-building merge stall into a few sub-frame slices while streaming. */
+  pump(maxMs = 6): void {
+    const t0 = performance.now();
+    while (this.#jobs.length && performance.now() - t0 < maxMs) {
+      const job = this.#jobs[0];
+      if (job.canceled) { this.#jobs.shift(); continue; }
+      this.#advance(job);
+      if (job.phase === "done") this.#jobs.shift();
     }
-    id = rec.batch.addGeometry(geom);
-    rec.geomIds.set(geom, id);
-    return id;
   }
 
-  #addInstance(rec: BatchRec, geom: THREE.BufferGeometry, matrix: THREE.Matrix4): InstanceRef {
-    let geomId = this.#geometryId(rec, geom);
-    let id: number;
-    try {
-      id = rec.batch.addInstance(geomId);
-    } catch {
-      this.#rebuild(rec, rec.maxInstances * 2, rec.maxVerts, rec.maxIndices);
-      geomId = rec.geomIds.get(geom)!;
-      id = rec.batch.addInstance(geomId);
+  #advance(job: MergeJob): void {
+    const CHUNK = 1500; // placements processed per slice
+    const { placements, detail } = job;
+    if (job.phase === "count") {
+      let n = 0;
+      while (job.cursor < placements.length && n < CHUNK) {
+        const pl = placements[job.cursor++]; n++;
+        if (SKIP_PART.test(pl.key)) continue;
+        if (detail === "low" && GREEBLE_PART.test(pl.key)) continue;
+        const entries = this.#kit.partMeshEntries(pl.key);
+        if (!entries) continue;
+        for (const e of entries) {
+          const g = this.#normalize(e.geometry); // cached; mirror has identical counts
+          let bucket = job.byMat.get(e.material);
+          if (!bucket) { bucket = { mat: e.material, verts: 0, indices: 0, vo: 0, io: 0 }; job.byMat.set(e.material, bucket); }
+          bucket.verts += g.getAttribute("position").count;
+          bucket.indices += g.index!.count;
+        }
+      }
+      if (job.cursor >= placements.length) {
+        for (const b of job.byMat.values()) {
+          b.pos = new Float32Array(b.verts * 3);
+          b.nor = new Float32Array(b.verts * 3);
+          b.uv = new Float32Array(b.verts * 2);
+          b.idx = b.verts > 65535 ? new Uint32Array(b.indices) : new Uint16Array(b.indices);
+        }
+        job.phase = "fill"; job.cursor = 0;
+      }
+      return;
     }
-    rec.batch.setMatrixAt(id, matrix);
-    rec.boundsDirty = true;
-    const ref: InstanceRef = { rec, id, geom };
-    rec.live.add(ref);
-    return ref;
-  }
-
-  /** Append every placement of one building. root = world matrix of the building
-   *  (position · yaw · Z-up→Y-up · metre scale). `sphere` is the building's world
-   *  bounding sphere, used for per-building frustum culling. Returns a handle. */
-  addBuilding(placements: Placement[], root: THREE.Matrix4, sphere: { center: THREE.Vector3; radius: number }): PoolHandle {
-    const refs: InstanceRef[] = [];
-    const m = new THREE.Matrix4();
-    const world = new THREE.Matrix4();
-    for (const pl of placements) {
+    // phase "fill": transform + write, reusing module scratch matrices
+    const m = _m, world = _world, nm = _nm, root = job.root;
+    let n = 0;
+    while (job.cursor < placements.length && n < CHUNK) {
+      const pl = placements[job.cursor++]; n++;
       if (SKIP_PART.test(pl.key)) continue;
+      if (detail === "low" && GREEBLE_PART.test(pl.key)) continue;
       const entries = this.#kit.partMeshEntries(pl.key);
       if (!entries) continue;
       for (const e of entries) {
         m.copy(pl.matrix).multiply(e.meshLocal);
-        // mirror-baked geometry for negative-determinant placements (root is
-        // rotation+uniform-scale+translation, so its determinant is positive and
-        // the sign is decided by placement × meshLocal — same rule as the kit).
+        // mirror-baked geometry for negative-determinant placements
         const mirrored = m.determinant() < 0;
-        const srcGeom = mirrored ? this.#kit.mirroredGeometry(this.#normalize(e.geometry)) : this.#normalize(e.geometry);
+        const g = mirrored ? this.#kit.mirroredGeometry(this.#normalize(e.geometry)) : this.#normalize(e.geometry);
         if (mirrored) m.multiply(MIRROR_X);
-        world.copy(root).multiply(m);
-        refs.push(this.#addInstance(this.#batchFor(e.material), srcGeom, world));
+        world.multiplyMatrices(root, m);
+        const wp = world.elements;
+        nm.getNormalMatrix(world);
+        const ne = nm.elements;
+        const bucket = job.byMat.get(e.material)!;
+        const pos = bucket.pos!, nor = bucket.nor!, uv = bucket.uv!, idx = bucket.idx!;
+        const sp = (g.getAttribute("position") as THREE.BufferAttribute).array as ArrayLike<number>;
+        const sn = (g.getAttribute("normal") as THREE.BufferAttribute).array as ArrayLike<number>;
+        const su = (g.getAttribute("uv") as THREE.BufferAttribute).array as ArrayLike<number>;
+        const si = g.index!.array as ArrayLike<number>;
+        const vc = g.getAttribute("position").count;
+        const vo = bucket.vo;
+        for (let v = 0; v < vc; v++) {
+          const x = sp[v * 3], y = sp[v * 3 + 1], z = sp[v * 3 + 2];
+          const o = (vo + v) * 3;
+          pos[o] = wp[0] * x + wp[4] * y + wp[8] * z + wp[12];
+          pos[o + 1] = wp[1] * x + wp[5] * y + wp[9] * z + wp[13];
+          pos[o + 2] = wp[2] * x + wp[6] * y + wp[10] * z + wp[14];
+          const nx = sn[v * 3], ny = sn[v * 3 + 1], nz = sn[v * 3 + 2];
+          const ox = ne[0] * nx + ne[3] * ny + ne[6] * nz;
+          const oy = ne[1] * nx + ne[4] * ny + ne[7] * nz;
+          const oz = ne[2] * nx + ne[5] * ny + ne[8] * nz;
+          const inv = 1 / (Math.hypot(ox, oy, oz) || 1);
+          nor[o] = ox * inv; nor[o + 1] = oy * inv; nor[o + 2] = oz * inv;
+          const uo = (vo + v) * 2;
+          uv[uo] = su[v * 2]; uv[uo + 1] = su[v * 2 + 1];
+        }
+        const ic = g.index!.count;
+        const io = bucket.io;
+        for (let i = 0; i < ic; i++) idx[io + i] = si[i] + vo;
+        bucket.vo += vc; bucket.io += ic;
       }
     }
-    const handle: PoolHandle = { refs, center: sphere.center.clone(), radius: sphere.radius, visible: true };
-    this.#handles.add(handle);
-    return handle;
+    if (job.cursor >= placements.length) this.#finalize(job);
   }
 
-  /** O(building's instances). Freed slots are recycled by BatchedMesh.addInstance. */
+  #finalize(job: MergeJob): void {
+    const meshes = job.handle.meshes;
+    let vertexCount = 0;
+    for (const bucket of job.byMat.values()) {
+      const merged = new THREE.BufferGeometry();
+      merged.setAttribute("position", new THREE.BufferAttribute(bucket.pos!, 3));
+      merged.setAttribute("normal", new THREE.BufferAttribute(bucket.nor!, 3));
+      merged.setAttribute("uv", new THREE.BufferAttribute(bucket.uv!, 2));
+      merged.setIndex(new THREE.BufferAttribute(bucket.idx!, 1));
+      merged.computeBoundingSphere(); // frustum culling reads this
+      vertexCount += bucket.verts;
+      const mesh = new THREE.Mesh(merged, bucket.mat);
+      mesh.name = "genBuildingMerged";
+      mesh.castShadow = false;       // ShadowProxyPool casts instead
+      mesh.receiveShadow = true;
+      mesh.frustumCulled = true;     // THREE culls per-building for free
+      mesh.matrixAutoUpdate = false; // geometry is already in world space
+      this.#scene.add(mesh);
+      meshes.push(mesh);
+    }
+    job.handle.vertexCount = vertexCount;
+    job.handle.job = null;
+    job.phase = "done";
+  }
+
+  /** O(materials) — dispose the merged geometries, or cancel an in-flight merge. */
   removeBuilding(handle: PoolHandle): void {
-    for (const ref of handle.refs) {
-      ref.rec.batch.deleteInstance(ref.id);
-      ref.rec.live.delete(ref);
-      ref.rec.boundsDirty = true;
+    if (handle.job) { handle.job.canceled = true; handle.job = null; } // shifted out of #jobs by pump
+    for (const mesh of handle.meshes) {
+      this.#scene.remove(mesh);
+      mesh.geometry.dispose();
     }
-    handle.refs.length = 0;
-    this.#handles.delete(handle);
+    handle.meshes.length = 0;
+    this.#buildings.delete(handle);
   }
 
-  /**
-   * Per-building frustum culling — the load-bearing perf lever. With
-   * perObjectFrustumCulled off, the batches would otherwise draw EVERY resident
-   * instance regardless of camera (measured 71 ms/frame for ~71 Chinatown
-   * buildings / 589 k instances). Instead we frustum-test each building's bounding
-   * sphere (cheap — tens of spheres) and toggle its instances' visibility only on
-   * a visible⇄hidden transition, so the batches draw just the handful of buildings
-   * actually on screen. Shadow proxies are NOT culled here (an off-screen building
-   * can still cast a shadow into view).
-   */
-  cull(camera: THREE.Camera): void {
-    this.#projScreen.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
-    this.#frustum.setFromProjectionMatrix(this.#projScreen);
-    const force = this.#cullDirty;
-    this.#cullDirty = false;
-    for (const h of this.#handles) {
-      this.#cullSphere.center.copy(h.center);
-      this.#cullSphere.radius = h.radius;
-      const vis = this.#frustum.intersectsSphere(this.#cullSphere);
-      if (!force && vis === h.visible) continue;
-      h.visible = vis;
-      for (const ref of h.refs) ref.rec.batch.setVisibleAt(ref.id, vis);
-    }
-  }
-
-  /** Recompute batch bounding spheres after adds/removes — a global batch spans
-   *  many buildings, and stale bounds would frustum-cull visible ones away. */
-  flush(): void {
-    for (const rec of this.#byMaterial.values()) {
-      if (!rec.boundsDirty) continue;
-      rec.boundsDirty = false;
-      rec.batch.computeBoundingSphere();
-    }
-  }
+  /** no-op — kept for API parity; merged meshes carry their own bounds. */
+  flush(): void {}
+  /** no-op — THREE frustum-culls the merged meshes automatically. */
+  cull(_camera: THREE.Camera): void {}
 
   stats() {
-    let batches = 0, instances = 0, geometries = 0, maxInstances = 0;
-    for (const rec of this.#byMaterial.values()) {
-      batches++;
-      instances += rec.batch.instanceCount;
-      geometries += rec.geomIds.size;
-      maxInstances += rec.maxInstances;
-    }
-    return { batches, instances, geometries, maxInstances };
+    let buildings = 0, meshes = 0, vertexCount = 0;
+    for (const h of this.#buildings) { buildings++; meshes += h.meshes.length; vertexCount += h.vertexCount; }
+    return { batches: meshes, instances: vertexCount, geometries: meshes, maxInstances: 0, buildings, pendingJobs: this.#jobs.length };
   }
 }
 

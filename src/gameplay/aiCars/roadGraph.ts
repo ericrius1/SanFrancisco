@@ -129,6 +129,43 @@ export class RoadGraph {
     return new RoadGraph(json);
   }
 
+  /**
+   * A uniformly random road point across the whole network, optionally rejected
+   * to a bbox. Sampling by stored point concentrates naturally where roads are
+   * dense (i.e. the city core), which is exactly what "scatter cars city-wide"
+   * wants. Never returns null — falls back to any point if the bbox is starved.
+   */
+  randomPoint(
+    rng: () => number,
+    minX = -Infinity,
+    maxX = Infinity,
+    minZ = -Infinity,
+    maxZ = Infinity
+  ): { x: number; z: number; tangentX: number; tangentZ: number } {
+    const N = this.px.length;
+    let g = Math.floor(rng() * N) % N;
+    for (let tries = 0; tries < 24; tries++) {
+      g = Math.floor(rng() * N) % N;
+      const x = this.px[g];
+      const z = this.pz[g];
+      if (x >= minX && x <= maxX && z >= minZ && z <= maxZ) break;
+    }
+    const seg = this.ptSeg[g];
+    const g0 = this.segStart[seg];
+    const gEnd = g0 + this.segNum[seg] - 1;
+    let tx = 0;
+    let tz = 1;
+    if (gEnd > g0) {
+      const gA = g < gEnd ? g : g - 1;
+      tx = this.px[gA + 1] - this.px[gA];
+      tz = this.pz[gA + 1] - this.pz[gA];
+      const tl = Math.hypot(tx, tz) || 1;
+      tx /= tl;
+      tz /= tl;
+    }
+    return { x: this.px[g], z: this.pz[g], tangentX: tx, tangentZ: tz };
+  }
+
   #buildEdgeHash() {
     for (let seg = 0; seg < this.segCount; seg++) {
       const g0 = this.segStart[seg];

@@ -39,7 +39,7 @@ export function createWildlands(map: GardenTerrain): Wildlands {
   const trees = createSeedForest(WILD_TREE_DESIGNS, treeSlots, {
     name: "wildlands_trees",
     chunkSize: 176,
-    visibleDistance: 560,
+    visibleDistance: 380, // small trees at range read as noise; cull tighter for GPU
     farCastShadow: false
   });
   const flowers = createFlowerField(flowerList);

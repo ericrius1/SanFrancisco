@@ -21,6 +21,7 @@ import { PALACE_GLOW_SLIDERS, PALACE_GLOW_TUNING } from "../world/palaceGlow";
 import { SKY_TUNING, type Sky } from "../world/sky";
 import { POSTFX_TUNING, POSTFX_TOGGLES, POSTFX_QUALITY_KEYS, applyPostFxParams } from "../render/postfx";
 import { VOICE_TUNING } from "../net/voice";
+import { NATURE_AUDIO_TUNING } from "../audio";
 import type { Fireworks } from "../fx/fireworks";
 import type { TileStreamer } from "../world/tiles";
 
@@ -279,6 +280,9 @@ export class DebugPanel {
         "fogScale",
         "fogDrift",
         "fogStart",
+        "fogMarine",
+        "fogFloor",
+        "fogPeak",
         "fog",
         "fogHorizon",
         "fogHorizonStart",
@@ -387,6 +391,10 @@ export class DebugPanel {
     // plain persisted bindings are enough — no onChange side effects
     const voiceF = advanced.addFolder({ title: "voice chat" });
     VOICE_TUNING.bind(voiceF);
+
+    // nature soundscape mix — engine polls these live each frame, no side effects
+    const natureF = advanced.addFolder({ title: "nature audio", expanded: false });
+    NATURE_AUDIO_TUNING.bind(natureF);
 
     this.#moveFolders = addMovementTuning(advanced);
     this.#applyMode();

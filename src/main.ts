@@ -35,6 +35,7 @@ import { Toolbar, TOOL_ORDER, TOOL_VERB, type ToolName } from "./ui/toolbar";
 import { AvatarSelector } from "./ui/avatarSelector";
 import { AudioControls } from "./ui/audioControls";
 import { VehicleAudio } from "./fx/vehicleAudio";
+import { createNatureSoundscape } from "./audio";
 import { Props } from "./gameplay/props";
 import { Traffic, DRIVE_PROFILES, type VehicleClass } from "./gameplay/traffic";
 import { AbandonedMounts } from "./gameplay/abandonedMounts";
@@ -43,11 +44,11 @@ import { RocketRiders, type LauncherRig } from "./gameplay/launchers";
 import { Flyover } from "./gameplay/flyover";
 import { BridgeParade } from "./gameplay/bridgeParade";
 import { Creatures } from "./gameplay/creatures";
+import { HorseHerd } from "./gameplay/horse/horseHerd";
 import { Forest, ANIMALS, type AnimalKind } from "./gameplay/forest";
-import { Flora } from "./world/flora";
-import { createBotanicalGarden, type GrassDisplacer } from "./world/garden";
+import { createBotanicalGarden, windGustValue, type GrassDisplacer } from "./world/garden";
 import { createWildlands } from "./world/wildlands";
-import { createChinatown, type Chinatown } from "./world/buildings";
+import { createBuildingRing, cullGeneratedBuildings, pumpGeneratedBuildings, type BuildingRing } from "./world/buildings";
 import { Islands } from "./gameplay/islands";
 import { Exploratorium, WATER_VIEW } from "./gameplay/exploratorium";
 import { PALACE_FINE_ARTS } from "./world/heightmap";
@@ -207,6 +208,10 @@ async function boot() {
   // procedural vehicle hum + the HUD's master volume/mute widget (bottom-left)
   const vehicleAudio = new VehicleAudio();
   const audioControls = new AudioControls();
+  // procedural, layered nature soundscape (Botanical Garden / GG Park / Presidio
+  // / Marin): sampled beds + gust-locked wind synth + spatial animal calls, all
+  // fading in per region. Suspends itself when the player is out in the city.
+  const nature = createNatureSoundscape();
 
   // start where the "/" panel's start folder points (source default: Golden Gate
   // Bridge deck), nudged onto open ground — never under (or inside) a building.
@@ -302,11 +307,12 @@ async function boot() {
   ];
   for (const [x, z, h] of SAIL_SPOTS) scatterBoat("boat", x, z, h);
   for (const [x, z, h] of SPEED_SPOTS) scatterBoat("speedboat", x, z, h);
-  // vegetation layer: park trees + grass masks ride the tile stream; the grass
-  // field and Marin near-forest follow the camera (physics hooked unload first)
-  const flora = new Flora(map, scene, tiles.manifest);
+  // Nature = SeedThree ONLY now. The old primitive Flora (whole-world low-poly
+  // trees + blade grass riding the tile stream) is gone — one better system,
+  // grown region by region, and no world-wide grass/tree tax on the GPU.
+  //
   // San Francisco Botanical Garden — self-contained module (src/world/garden):
-  // SeedThree trees + procedural blade grass + shrubs/flora, at the real SFBG
+  // SeedThree trees + procedural blade grass + shrubs/flora at the real SFBG
   // footprint inside Golden Gate Park. Trees stream in async; grass is live now.
   const garden = createBotanicalGarden(map);
   scene.add(garden.group);
@@ -314,24 +320,20 @@ async function boot() {
   const gardenDisplacer: GrassDisplacer = { x: 0, z: 0, radius: 1.6, strength: 1 };
   const gardenDisplacers = [gardenDisplacer];
   // Wildlands — designed SeedThree groves/windrows/savannas + noise-banded
-  // wildflower drifts across Golden Gate Park, the Presidio, and Marin. The old
-  // simple trees suppress themselves in these regions (flora.ts / forest.ts).
+  // wildflower drifts across Golden Gate Park, the Presidio, and Marin.
   // Trees stream in per-species async; near-tier LOD self-drives via onBeforeRender.
   const wildlands = createWildlands(map);
   for (const g of wildlands.groups) scene.add(g);
   const setFoliageVisible = (visible: boolean) => {
-    flora.setVisible(visible);
-    forest.setFoliageVisible(visible);
     garden.group.visible = visible;
     for (const g of wildlands.groups) g.visible = visible;
   };
   setFoliageVisible(FOLIAGE_TUNING.values.visible);
-  tiles.onTileGreens = (key, group) => flora.onTileGreens(key, group);
-  const prevTileUnload = tiles.onTileUnload;
-  tiles.onTileUnload = (key) => {
-    prevTileUnload(key);
-    flora.dropTile(key);
-  };
+  // A herd of RL horses grazing the Botanical Garden meadow: live box3d ragdolls
+  // running the pretrained gait policy, each wearing its neural-net activations
+  // as a floating lattice. Ambient + deterministic, so every client runs it
+  // locally (no net sync); physics is frozen unless a player is near the meadow.
+  const horses = new HorseHerd(physics, map, scene);
   const islands = new Islands(physics, map, scene);
 
   // the Exploratorium: Pier 15 rebuilt walkable — replaces the OSM shed and
@@ -339,18 +341,18 @@ async function boot() {
   const exploratorium = new Exploratorium(renderer, physics, map, scene, tiles);
   exploratorium.onMessage = (m, s) => hud.message(m, s);
 
-  // Generated-buildings Chinatown ring (src/world/buildings): the baked OSM
-  // buildings in the Chinatown core are replaced with procedurally generated
-  // Hong-Kong-style buildings (which is what those blocks look like). Footprints
-  // come from tools/export-chinatown.mjs (public/buildinggen/chinatown.json,
-  // derived from the baked colliders). A distance ring generates each building +
-  // suppresses its OSM twin within ~165 m and disposes it + restores the OSM twin
-  // beyond ~230 m, so the whole city stays hole-free. Exteriors share 3 global
-  // BatchedMesh pools; walkable interiors lazily build/dispose per building, so
-  // any Chinatown building you walk up to is enterable. Async load; inert if the
-  // kit assets are missing so the app still boots.
-  const buildings: { current: Chinatown | null } = { current: null };
-  createChinatown({}, { scene, physics, map, tiles }).then((c) => { buildings.current = c; });
+  // Generated-buildings citywide ring (src/world/buildings): mid-rise OSM
+  // buildings across the whole city are replaced with procedurally generated
+  // walkable buildings. Footprints come from tools/export-buildings-citywide.mjs
+  // (public/buildinggen/buildings-citywide.json, bucketed by tile). A distance
+  // ring generates each building + suppresses its baked twin within LOAD_R and
+  // disposes it + restores the twin beyond UNLOAD_R, so the far city stays
+  // hole-free; towers were filtered out and keep their baked mesh. Exteriors are
+  // merged, frustum-culled meshes; interiors build/dispose per building, so any
+  // building you walk up to is enterable. Async load; inert if the kit assets are
+  // missing so the app still boots.
+  const buildings: { current: BuildingRing | null } = { current: null };
+  createBuildingRing({}, { scene, physics, map, tiles }).then((c) => { buildings.current = c; });
 
   // the Fortnite-ish layer: treasure chests raining coins, critters to hunt,
   // and the Garry's-Mod rope/grab click-tools (loot.ts / hunt.ts / ropes.ts)
@@ -663,7 +665,10 @@ async function boot() {
       mapFwd.set(0, 0, -1).applyQuaternion(player.meshes[player.mode].quaternion);
       return { x: player.position.x, z: player.position.z, fx: mapFwd.x, fz: mapFwd.z, hue: net.selfHue };
     },
-    () => remotes.positions()
+    () => remotes.positions(),
+    // live Training/Debug overlay getters (big map only): AI cars + horse herd
+    () => (aiCars.debugCars() ?? []).map((c) => ({ x: c.x, z: c.z })),
+    () => (horses.debugStates() ?? []).map((h) => ({ x: h.wx, z: h.wz, fallen: h.fallen }))
   );
   const playerLocator = new PlayerLocator();
   type ReleaseMotion = {
@@ -909,6 +914,8 @@ async function boot() {
     })();
   };
   minimap.onTeleport = teleportToTarget;
+  // KeyN cycles the camera through the AI-car fleet so you can watch them drive.
+  let carViewIdx = -1;
   minimap.onPlaceClick = (place) => {
     const layer = place.layer[0].toUpperCase() + place.layer.slice(1);
     hud.message(`${layer}: ${place.title}`, 2.4);
@@ -1291,6 +1298,13 @@ async function boot() {
 
     if (paused) {
       vehicleAudio.update(frameDt, null); // fade the hum out while frozen
+      // ambience keeps breathing while frozen — it's a chill/social feature
+      nature.update(frameDt, {
+        playerPos: player.renderPosition,
+        camera,
+        gust: windGustValue(),
+        timeOfDay: sky.timeOfDay
+      });
       // stay social while frozen: peers keep moving, our keepalive keeps flowing
       net.sendState(player.mode, player.meshes[player.mode].position, player.meshes[player.mode].quaternion, 0, passengerOf ?? 0);
       remotes.selfId = net.selfId;
@@ -1458,6 +1472,15 @@ async function boot() {
     if (input.pressed("KeyC")) setCameraMode(!cameraMode);
     // V: voice chat mic on/off (same as the HUD mic button)
     if (input.pressed("KeyV")) toggleMic();
+    // N: hop to the next AI car and watch it drive (cycles the whole fleet)
+    if (input.pressed("KeyN")) {
+      const cars = aiCars.debugCars();
+      if (cars.length) {
+        carViewIdx = (carViewIdx + 1) % cars.length;
+        const c = cars[carViewIdx];
+        teleportToTarget(c.x, c.z, `▶ AI car ${carViewIdx + 1}/${cars.length}`);
+      }
+    }
     // F: fullscreen (keydown grants the transient activation this needs)
     if (input.pressed("KeyF")) {
       if (document.fullscreenElement) void document.exitFullscreen();
@@ -1648,6 +1671,7 @@ async function boot() {
       player.update(physics.world.fixedTimeStep, input, chase.yaw, aim);
       traffic.prePhysics(physics.world.fixedTimeStep, player.position, sky.timeOfDay, sky.sunsetAzimuth);
       aiCars.prePhysics(physics.world.fixedTimeStep, aiCarAnchors);
+      horses.prePhysics(physics.world.fixedTimeStep, player.position);
       abandonedMounts.prePhysics(physics.world.fixedTimeStep);
       physics.step(physics.world.fixedTimeStep, player.position);
       accumulator -= physics.world.fixedTimeStep;
@@ -1696,8 +1720,8 @@ async function boot() {
     rocketRiders.update(frameDt, player.position); // the launched guitarists live their own lives
     if (player.mode === "speedboat") boatLaunchers?.update(frameDt); // guitarist jam + rocket reload
     creatures.update(elapsed, camera.position); // gulls live at altitude — never gated
+    horses.update(frameDt, camera); // RL horse herd in the Botanical Garden meadow (self-gated)
     forest.update(frameDt, camera.position);
-    flora.update(camera.position, highUp);
     // garden: advance wind, move the near-grass detail ring to the player, and
     // flatten grass under them. Cheap when the player is nowhere near the garden
     // (updateFocus distance-culls base chunks and skips the near ring).
@@ -1708,10 +1732,20 @@ async function boot() {
     // (near-tier tree LOD self-drives via onBeforeRender). Follow the camera so
     // culling matches what's on screen.
     wildlands.update(camera.position);
+    // nature soundscape rides the same gust envelope garden.update just advanced,
+    // and reads the sky clock for dawn choruses / night owls. Cheap out in the
+    // city (suspends), so it's safe to tick unconditionally.
+    nature.update(frameDt, {
+      playerPos: player.renderPosition,
+      camera,
+      gust: windGustValue(),
+      timeOfDay: sky.timeOfDay
+    });
     if (currentAnimal) forest.setRiddenSpeed(player.speed);
     islands.update(elapsed);
     exploratorium.update(frameDt, elapsed, player.position);
     buildings.current?.update(player.position, frameDt);
+    pumpGeneratedBuildings(6); // advance incremental building merges (~6ms/frame budget)
     quidditch.update(frameDt, player.position, elapsed);
     if (quidditch.active) {
       const qs = quidditch.scores;
@@ -1913,6 +1947,7 @@ async function boot() {
     tracers.sync(physics);
 
     input.endFrame();
+    cullGeneratedBuildings(camera); // per-building frustum cull before draw
     pipeline.render();
   };
   // automation tabs (Playwright/Puppeteer probes) render with no vsync
@@ -1936,6 +1971,27 @@ async function boot() {
     renderer.setAnimationLoop(on ? null : loopFn);
   };
 
+  // Dev-only free camera for headless render probes: locks the camera to a fixed
+  // eye→target via the cine hook (owns pose+camera, so chase can't fight it).
+  // Pass null to release back to the chase camera.
+  if (import.meta.env.DEV) {
+    (window as never as { __sfFreeCam: (eye: [number, number, number] | null, target?: [number, number, number]) => void }).__sfFreeCam = (
+      eye,
+      target = [0, 0, 0]
+    ) => {
+      if (!eye) {
+        cineHook = null;
+        return;
+      }
+      cineHook = () => {
+        camera.position.set(eye[0], eye[1], eye[2]);
+        camera.up.set(0, 1, 0);
+        camera.lookAt(target[0], target[1], target[2]);
+        camera.updateMatrixWorld();
+      };
+    };
+  }
+
   window.addEventListener("resize", () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
@@ -1946,7 +2002,7 @@ async function boot() {
 
   const exposeDebugHooks = () => {
     Object.assign(window as never, {
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, props, exploratorium, traffic, creatures, forest, flora, garden, wildlands, splashes, vehicleAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, boatLaunchers, goldenGateLights, flyover, bridgeParade, teleportToTarget, aiCars, buildings }
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, WORLD_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, props, exploratorium, traffic, creatures, forest, garden, wildlands, splashes, vehicleAudio, nature, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, boatLaunchers, goldenGateLights, flyover, bridgeParade, teleportToTarget, aiCars, horses, buildings, cullGeneratedBuildings }
     });
   };
   if (import.meta.env.DEV || new URLSearchParams(location.search).has("profile")) {
