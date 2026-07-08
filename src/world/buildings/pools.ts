@@ -47,6 +47,11 @@ interface InstanceRef {
 
 export interface PoolHandle {
   refs: InstanceRef[];
+  /** world-space bounding sphere for per-building frustum culling */
+  center: THREE.Vector3;
+  radius: number;
+  /** whether this building's instances are currently drawn (frustum state) */
+  visible: boolean;
 }
 
 interface BatchRec {
@@ -71,6 +76,14 @@ export class BuildingBatchPools {
   #byMaterial = new Map<THREE.Material, BatchRec>();
   /** source geometry → normalized (position/normal/uv, indexed, de-interleaved) */
   #normCache = new Map<THREE.BufferGeometry, THREE.BufferGeometry>();
+  /** every live building, for per-building frustum culling */
+  #handles = new Set<PoolHandle>();
+  #frustum = new THREE.Frustum();
+  #projScreen = new THREE.Matrix4();
+  #cullSphere = new THREE.Sphere();
+  /** a capacity rebuild re-adds instances as visible; force the next cull to
+   *  re-apply every building's visibility instead of only transitions */
+  #cullDirty = false;
 
   constructor(kit: Kit, scene: THREE.Object3D) {
     this.#kit = kit;
@@ -179,6 +192,7 @@ export class BuildingBatchPools {
     this.#scene.add(next);
     rec.batch = next;
     rec.boundsDirty = true;
+    this.#cullDirty = true; // re-added instances are visible; re-apply culling
   }
 
   #geometryId(rec: BatchRec, geom: THREE.BufferGeometry): number {
@@ -215,8 +229,9 @@ export class BuildingBatchPools {
   }
 
   /** Append every placement of one building. root = world matrix of the building
-   *  (position · yaw · Z-up→Y-up · metre scale). Returns a removal handle. */
-  addBuilding(placements: Placement[], root: THREE.Matrix4): PoolHandle {
+   *  (position · yaw · Z-up→Y-up · metre scale). `sphere` is the building's world
+   *  bounding sphere, used for per-building frustum culling. Returns a handle. */
+  addBuilding(placements: Placement[], root: THREE.Matrix4, sphere: { center: THREE.Vector3; radius: number }): PoolHandle {
     const refs: InstanceRef[] = [];
     const m = new THREE.Matrix4();
     const world = new THREE.Matrix4();
@@ -236,7 +251,9 @@ export class BuildingBatchPools {
         refs.push(this.#addInstance(this.#batchFor(e.material), srcGeom, world));
       }
     }
-    return { refs };
+    const handle: PoolHandle = { refs, center: sphere.center.clone(), radius: sphere.radius, visible: true };
+    this.#handles.add(handle);
+    return handle;
   }
 
   /** O(building's instances). Freed slots are recycled by BatchedMesh.addInstance. */
@@ -247,6 +264,32 @@ export class BuildingBatchPools {
       ref.rec.boundsDirty = true;
     }
     handle.refs.length = 0;
+    this.#handles.delete(handle);
+  }
+
+  /**
+   * Per-building frustum culling — the load-bearing perf lever. With
+   * perObjectFrustumCulled off, the batches would otherwise draw EVERY resident
+   * instance regardless of camera (measured 71 ms/frame for ~71 Chinatown
+   * buildings / 589 k instances). Instead we frustum-test each building's bounding
+   * sphere (cheap — tens of spheres) and toggle its instances' visibility only on
+   * a visible⇄hidden transition, so the batches draw just the handful of buildings
+   * actually on screen. Shadow proxies are NOT culled here (an off-screen building
+   * can still cast a shadow into view).
+   */
+  cull(camera: THREE.Camera): void {
+    this.#projScreen.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    this.#frustum.setFromProjectionMatrix(this.#projScreen);
+    const force = this.#cullDirty;
+    this.#cullDirty = false;
+    for (const h of this.#handles) {
+      this.#cullSphere.center.copy(h.center);
+      this.#cullSphere.radius = h.radius;
+      const vis = this.#frustum.intersectsSphere(this.#cullSphere);
+      if (!force && vis === h.visible) continue;
+      h.visible = vis;
+      for (const ref of h.refs) ref.rec.batch.setVisibleAt(ref.id, vis);
+    }
   }
 
   /** Recompute batch bounding spheres after adds/removes — a global batch spans

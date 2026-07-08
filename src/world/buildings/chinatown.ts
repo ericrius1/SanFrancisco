@@ -56,8 +56,14 @@ interface Tiles {
   unsuppressBuilding(key: string, index: number): void;
 }
 
-const LOAD_R = 165;      // generate + suppress OSM within this (metres)
-const UNLOAD_R = 230;    // dispose + restore OSM beyond this (hysteresis gap)
+// Ring sizing. Each generated HK building carries ~8 k instance matrices, so the
+// resident set is what costs memory + per-frame vertex throughput (draw calls
+// stay at 3 regardless). LOAD_R 105 m holds ~60–70 dense Chinatown buildings
+// (~0.5 M instances) — measured safe; 165 m / ~1.3 M instances lost the WebGPU
+// device. MAX_LOADED is a hard ceiling so a dense pocket can't run memory away.
+const LOAD_R = 105;      // generate + suppress OSM within this (metres)
+const UNLOAD_R = 150;    // dispose + restore OSM beyond this (hysteresis gap)
+const MAX_LOADED = 85;   // hard cap on concurrently resident generated buildings
 const SCAN_EVERY = 0.2;  // seconds between ring re-scans
 const LOAD_BUDGET = 3;   // max generations kicked off per scan (spreads hitches)
 
@@ -138,18 +144,21 @@ export async function createChinatown(
       accum = 0;
 
       let budget = LOAD_BUDGET;
+      let resident = 0; // built + in-flight, against MAX_LOADED
       // nearest-first so the closest holes fill before the far edge of the ring
       const wants: Entry[] = [];
       for (const e of entries) {
         const dx = playerPos.x - e.x, dz = playerPos.z - e.z;
         const d2 = dx * dx + dz * dz;
         if (e.built) {
+          resident++;
           e.built.update(playerPos, dt);
           if (d2 > unloadR2) unloadOne(e);
-        } else if (!e.loading) {
-          if (d2 < loadR2) wants.push(e);
-        } else if (d2 > unloadR2) {
-          unloadOne(e); // cancel an in-flight load that already left the ring
+        } else if (e.loading) {
+          resident++;
+          if (d2 > unloadR2) unloadOne(e); // cancel an in-flight load that left the ring
+        } else if (d2 < loadR2) {
+          wants.push(e);
         }
       }
       wants.sort((a, b) => {
@@ -158,7 +167,8 @@ export async function createChinatown(
         return da - db;
       });
       for (const e of wants) {
-        if (budget-- <= 0) break;
+        if (budget <= 0 || resident >= MAX_LOADED) break;
+        budget--; resident++;
         loadOne(e, playerPos.y);
       }
     },

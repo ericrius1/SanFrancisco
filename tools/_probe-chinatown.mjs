@@ -50,7 +50,14 @@ class Cdp {
       if (m.id) { const p = this.#p.get(m.id); if (!p) return; this.#p.delete(m.id); m.error ? p.rej(new Error(m.error.message)) : p.res(m.result ?? {}); }
     });
   }
-  send(method, params = {}) { const id = this.#id++; this.#ws.send(JSON.stringify({ id, method, params })); return new Promise((res, rej) => this.#p.set(id, { res, rej })); }
+  send(method, params = {}) {
+    const id = this.#id++;
+    this.#ws.send(JSON.stringify({ id, method, params }));
+    return new Promise((res, rej) => {
+      const to = setTimeout(() => { this.#p.delete(id); rej(new Error(`CDP timeout: ${method}`)); }, 30000);
+      this.#p.set(id, { res: (v) => { clearTimeout(to); res(v); }, rej: (e) => { clearTimeout(to); rej(e); } });
+    });
+  }
   close() { this.#ws.close(); }
 }
 async function evaluate(c, expr) {
@@ -206,6 +213,7 @@ async function main() {
 
     // --- restoration: move the player far, pump so the ring unloads, confirm the
     //     OSM twins come back alive (no hole in the distant baked city) ---
+    try {
     const restore = await evaluate(c, `(async()=>{
       const s=window.__sf,p=s.player;
       const data=await (await fetch('/buildinggen/chinatown.json')).json();
@@ -223,16 +231,19 @@ async function main() {
       return {loadedAfterFar:st.loaded, revived, still};
     })()`);
     console.log("[probe] restoration:", JSON.stringify(restore));
+    } catch (e) { console.log("[probe] restoration FAILED:", e.message); }
 
     // --- perf: frame delta ring-loaded vs ring-empty ---
+    try {
     await evaluate(c, `(()=>{const s=window.__sf,p=s.player;
       p.position.set(${CX},${CY + 1.5},${CZ}); p.renderPosition.set(${CX},${CY + 1.5},${CZ}); return 1;})()`);
     const reload = await pumpRing(c, CX, CY + 1.5, CZ, 26);
+    console.log("[probe] reload-before-perf:", JSON.stringify(reload));
     await evaluate(c, `(()=>{const s=window.__sf,c=s.camera;
       c.position.set(${CX - 120},${CY + 150},${CZ + 170}); c.lookAt(${CX},${CY + 10},${CZ}); return 1;})()`);
     for (let i = 0; i < 8; i++) { await tick(c); }
     const perf = await evaluate(c, `(()=>{
-      const s=window.__sf; const N=80;
+      const s=window.__sf; const N=30;
       const bench=()=>{ let t0=performance.now(); for(let i=0;i<N;i++){ try{ s.tick(0.016); }catch{} } return (performance.now()-t0)/N; };
       bench();
       const withMs=bench();
@@ -246,7 +257,7 @@ async function main() {
         batchedMeshesInScene:batched};
     })()`);
     console.log("[probe] PERF:", JSON.stringify(perf));
-    console.log("[probe] reload-before-perf:", JSON.stringify(reload));
+    } catch (e) { console.log("[probe] perf FAILED:", e.message); }
 
     c.close();
     console.log("[probe] done");
