@@ -7,6 +7,23 @@ import type { PolicyDef } from "../../creatures/policy";
 import { HORSE, type CreatureSpec, type Link } from "../../creatures/quadruped";
 import { GARDEN_MEADOW, gardenSurfaceHeight } from "../../world/garden/layout";
 import { HorseRagdoll } from "./horseRagdoll";
+import type { InspectableBrain } from "../../ui/brainPanel/types";
+
+// obs/action layout mirrors src/creatures/quadruped.ts observe()/decode().
+function horseInputLabels(nLeg: number): string[] {
+  const L = ["up.x", "up.y", "up.z", "goal.x", "goal.z", "vel.x", "vel.y", "vel.z", "angV.x", "angV.y", "angV.z", "height", "cpg.sin", "cpg.cos"];
+  for (let i = 0; i < nLeg; i++) L.push(`thighPitch[${i}]`);
+  for (let i = 0; i < nLeg; i++) L.push(`kneeAngle[${i}]`);
+  L.push("targetSpeed");
+  return L;
+}
+function horseOutputLabels(nLeg: number): string[] {
+  const L = ["freqMod", "hipAmp", "kneeAmp"];
+  for (let i = 0; i < nLeg; i++) L.push(`hipBias[${i}]`);
+  for (let i = 0; i < nLeg; i++) L.push(`phase[${i}]`);
+  L.push("turn", "pitch");
+  return L;
+}
 
 /**
  * A small herd of RL horses grazing/walking the Botanical Garden meadow. Each is
@@ -151,6 +168,30 @@ export class HorseHerd {
   get center(): { x: number; z: number } { return CENTER; }
   get count(): number { return this.#horses.length; }
   get active(): boolean { return this.#active; }
+
+  /** Brains the player can click to inspect — only while the herd is simulated
+   *  (near the player; otherwise the brains are frozen/hidden). */
+  inspectables(): InspectableBrain[] {
+    if (!this.#ready || !this.#active) return [];
+    const out: InspectableBrain[] = [];
+    for (let i = 0; i < this.#horses.length; i++) {
+      const h = this.#horses[i];
+      const nLeg = h.rag.spec.legs.length;
+      const grp = h.m.brain.group;
+      const rag = h.rag;
+      out.push({
+        id: `horse:${i}`,
+        label: `RL Horse #${i}`,
+        getWorldPos: (o) => o.copy(grp.position),
+        pickRadius: 1.8,
+        net: rag.brain,
+        liveObs: () => rag.obs,
+        inputLabels: horseInputLabels(nLeg),
+        outputLabels: horseOutputLabels(nLeg)
+      });
+    }
+    return out;
+  }
 
   /** Ground-truth per-horse pose for headless verification (the ACTUAL in-world
    *  sim that drives the render — up.y, height fraction of standing, world XZ). */

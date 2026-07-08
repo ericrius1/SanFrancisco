@@ -8,6 +8,8 @@
  * hands it an `onToggle` so it can free the pointer lock while you're reading.
  */
 
+import { SOUNDSCAPE_TAB_HTML, mountSoundscape } from "./btsSoundscape";
+
 const X_URL = "https://x.com/EricAlar11";
 const REPO_URL = "https://github.com/ericrius1/SanFrancisco";
 const BOX3D_URL = "https://github.com/erincatto/box3d";
@@ -22,7 +24,7 @@ function a(href: string, text: string): string {
   return `<a href="${href}" target="_blank" rel="noopener noreferrer">${text}</a>`;
 }
 
-const BODY = `
+const TAB_WORLD = `
   <section>
     <p class="bts-lede">An open-world San Francisco you can walk, drive, fly, sail, skate and soar
     through — with friends, in a browser tab. It's rebuilt from real OpenStreetMap building and road
@@ -34,8 +36,6 @@ const BODY = `
     engine, a streaming renderer, a voice network, a dozen little worlds tucked inside the big one — and
     most of the fun, honestly, is in how they fit together.</p>
   </section>
-
-  <div class="bts-act">Building the world</div>
 
   <section>
     <h3><span class="bts-ic">🗺️</span> From map data to a city</h3>
@@ -140,8 +140,9 @@ const BODY = `
     <em>down</em> Lombard's switchbacks instead of dropping through the seams.</p>
   </section>
 
-  <div class="bts-act">Bringing it to life</div>
+`;
 
+const TAB_LIFE = `
   <section>
     <h3><span class="bts-ic">🎨</span> Rendering on WebGPU</h3>
     <p>${a("https://threejs.org/", "three.js")} on <strong>WebGPU</strong>, with shaders written in
@@ -281,8 +282,9 @@ const BODY = `
     second where the hardware allows.</p>
   </section>
 
-  <div class="bts-act">Playing in it</div>
+`;
 
+const TAB_PLAY = `
   <section>
     <h3><span class="bts-ic">✨</span> GPU particle worlds</h3>
     <p>Inside the Pier 15 Exploratorium, the sand tables, water tanks and star fields are real
@@ -337,6 +339,9 @@ const BODY = `
     for a slow shimmering beat, breathing through a slow filter sweep. Even the wind chimes are tuned —
     a C-major pentatonic across three octaves, pitched by where you struck, so tapping your way up the
     skyline plays it like a xylophone.</p>
+    <p class="bts-aside">The parks and wild places have a soundscape all their own — a whole procedural
+    ecology of birds, wind and weather. It has its own chapter: <a data-bts-tab="sound" href="#">The
+    soundscape →</a></p>
   </section>
 
   <section>
@@ -448,9 +453,23 @@ const BODY = `
   </section>
 `;
 
+type Tab = { id: string; label: string; icon: string; html: string };
+
+// Horizontal tabs across the top of the panel — the reading is long, so it's
+// split into chapters you can click between instead of one endless scroll.
+const TABS: Tab[] = [
+  { id: "world", label: "Building the world", icon: "🏗️", html: TAB_WORLD },
+  { id: "life", label: "Bringing it to life", icon: "🌆", html: TAB_LIFE },
+  { id: "play", label: "Playing in it", icon: "🎮", html: TAB_PLAY },
+  { id: "sound", label: "The soundscape", icon: "🐦", html: SOUNDSCAPE_TAB_HTML }
+];
+
 export class BehindTheScenes {
   #overlay: HTMLDivElement;
+  #body!: HTMLDivElement;
   #open = false;
+  #activeTab = "world";
+  #soundscape: { activate(): void; deactivate(): void } | null = null;
   #onToggle?: (open: boolean) => void;
 
   constructor(onToggle?: (open: boolean) => void) {
@@ -476,7 +495,14 @@ export class BehindTheScenes {
     ui.append(btn, social);
     hud.appendChild(ui);
 
-    // the reading overlay — a scrollable modal over a dimming backdrop
+    // the reading overlay — a tabbed, scrollable modal over a dimming backdrop
+    const tabsHtml = TABS.map(
+      (t) =>
+        `<button class="bts-tab" type="button" role="tab" data-tab="${t.id}">` +
+        `<span class="bts-tab-ic">${t.icon}</span><span>${t.label}</span></button>`
+    ).join("");
+    const panesHtml = TABS.map((t) => `<div class="bts-pane" data-pane="${t.id}">${t.html}</div>`).join("");
+
     this.#overlay = document.createElement("div");
     this.#overlay.className = "bts-overlay";
     this.#overlay.innerHTML =
@@ -489,8 +515,27 @@ export class BehindTheScenes {
       `<a class="social-btn" href="${X_URL}" target="_blank" rel="noopener noreferrer" title="X / Twitter">${X_ICON}</a>` +
       `<a class="social-btn" href="${REPO_URL}" target="_blank" rel="noopener noreferrer" title="GitHub repo">${GH_ICON}</a>` +
       `</div></div>` +
-      `<div class="bts-body">${BODY}</div>` +
+      `<div class="bts-tabs" role="tablist">${tabsHtml}</div>` +
+      `<div class="bts-body">${panesHtml}</div>` +
       `</div>`;
+
+    this.#body = this.#overlay.querySelector(".bts-body")!;
+
+    // tab bar: switch chapters
+    for (const tab of this.#overlay.querySelectorAll<HTMLButtonElement>(".bts-tab")) {
+      tab.addEventListener("click", () => this.#selectTab(tab.dataset.tab!));
+    }
+    // in-content cross-links ("The soundscape →") jump to a tab
+    for (const link of this.#overlay.querySelectorAll<HTMLAnchorElement>("[data-bts-tab]")) {
+      link.addEventListener("click", (e) => {
+        e.preventDefault();
+        this.#selectTab(link.dataset.btsTab!);
+      });
+    }
+
+    // the soundscape chapter animates its diagrams from scroll + a gentle rAF
+    const soundPane = this.#overlay.querySelector<HTMLElement>('[data-pane="sound"]');
+    if (soundPane) this.#soundscape = mountSoundscape(soundPane, this.#body);
 
     // backdrop click (but not clicks inside the modal) closes it
     this.#overlay.addEventListener("click", (e) => {
@@ -505,6 +550,21 @@ export class BehindTheScenes {
     });
 
     hud.appendChild(this.#overlay);
+    this.#selectTab(this.#activeTab);
+  }
+
+  #selectTab(id: string) {
+    this.#activeTab = id;
+    for (const tab of this.#overlay.querySelectorAll<HTMLButtonElement>(".bts-tab")) {
+      tab.classList.toggle("active", tab.dataset.tab === id);
+    }
+    for (const pane of this.#overlay.querySelectorAll<HTMLElement>(".bts-pane")) {
+      pane.classList.toggle("active", pane.dataset.pane === id);
+    }
+    this.#body.scrollTop = 0;
+    // only the soundscape tab runs an animation loop, and only while it's shown
+    if (id === "sound" && this.#open) this.#soundscape?.activate();
+    else this.#soundscape?.deactivate();
   }
 
   #iconLink(href: string, title: string, svg: string): HTMLAnchorElement {
@@ -522,7 +582,13 @@ export class BehindTheScenes {
     if (open === this.#open) return;
     this.#open = open;
     this.#overlay.classList.toggle("open", open);
-    if (open) this.#overlay.scrollTop = 0;
+    if (open) {
+      this.#body.scrollTop = 0;
+      // (re)start the diagram loop if we opened onto the soundscape chapter
+      if (this.#activeTab === "sound") this.#soundscape?.activate();
+    } else {
+      this.#soundscape?.deactivate();
+    }
     this.#onToggle?.(open);
   }
 }

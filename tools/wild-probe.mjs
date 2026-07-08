@@ -25,10 +25,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // back + high; ground/bloom views sit low + close so near-clone trees and the
 // flower drifts are actually visible.
 const VIEWS = [
-  // CLOSE-UP ground views (eye ~12 m back, ~3 m up) to see near-clone quality
-  ["closeup_marin_grove", -4500, -6100, 0.3, 12, 3],
-  ["closeup_sutro", -782, 3846, 0.5, 12, 3],
-  ["closeup_ggpark", -3050, 2000, 0.4, 12, 3]
+  ["grass_tuned_lupine", -2725, 2540, 1.2, 8, 2.2],
+  ["grass_tuned_marin", -4450, -6250, 0.3, 9, 2.4]
 ];
 
 async function isFile(p) { try { return existsSync(p); } catch { return false; } }

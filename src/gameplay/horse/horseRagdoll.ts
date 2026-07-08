@@ -187,6 +187,10 @@ export class HorseRagdoll {
   get legLinks(): LegLinks[] { return this.state.legs; }
   /** Live activations, layer by layer: [obs, hidden1, hidden2, ..., action]. */
   layers(): Float32Array[] { return [this.obsBuf, ...this.policy.layerOut]; }
+  /** The live policy (sizes/layerOut/forward/getParams) — for the brain inspector. */
+  get brain(): Policy { return this.policy; }
+  /** The current observation vector feeding the policy (raw, pre-normalisation). */
+  get obs(): Float32Array { return this.obsBuf; }
   /** Hot-swap the brain (live training streams new weights). */
   setPolicy(def: PolicyDef): void { this.policy = new Policy(def); }
   /** Standing height reference (sim-space torso Y when upright). */

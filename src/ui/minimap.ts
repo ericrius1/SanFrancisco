@@ -235,20 +235,18 @@ export class Minimap {
       name: "Botanical Garden"
     });
     // Forest / open-space areas — the SeedThree wildlands regions each get a
-    // labelled dot + teleport at their centre, straight from the region data so
-    // the marker always tracks where the foliage actually renders.
-    const WILD_LABELS: Record<string, string> = {
-      ggpark: "Golden Gate Park",
-      presidio: "The Presidio",
-      marin: "Marin Headlands",
-      twinpeaks: "Mount Sutro"
-    };
-    for (const r of WILD_REGIONS) {
-      this.#landmarks.push({
-        x: (r.minX + r.maxX) / 2,
-        z: (r.minZ + r.maxZ) / 2,
-        name: WILD_LABELS[r.id] ?? r.id
-      });
+    // labelled dot + teleport. The pin is a hand-picked point that lands you IN
+    // the foliage (a grove or bloom drift on plantable ground), NOT the raw
+    // region centre, which can fall on a road, rooftop or the bay.
+    const NATURE_ANCHORS: { id: string; name: string; x: number; z: number }[] = [
+      { id: "ggpark", name: "Golden Gate Park", x: -3050, z: 2000 }, // dense central forest
+      { id: "presidio", name: "The Presidio", x: -1820, z: -1520 }, // cypress ridge grove
+      { id: "marin", name: "Marin Headlands", x: -4450, z: -6250 }, // poppy hills + groves
+      { id: "twinpeaks", name: "Mount Sutro", x: -782, z: 3846 } // Sutro cloud-forest under the tower
+    ];
+    const wildIds = new Set<string>(WILD_REGIONS.map((r) => r.id));
+    for (const a of NATURE_ANCHORS) {
+      if (wildIds.has(a.id)) this.#landmarks.push({ x: a.x, z: a.z, name: a.name });
     }
     this.#layers = MAP_LAYER_DEFS.map((def) => ({
       ...def,

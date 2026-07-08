@@ -33,6 +33,21 @@ import { BrainOverlay } from "./brainOverlay.ts";
 import { buildCarMesh } from "./carMesh.ts";
 import { StatsChip, type LifeStats } from "./statsChip.ts";
 import { GhostStore, isLeader, serializeCars, HIDDEN } from "./netSync.ts";
+import type { InspectableBrain } from "../../ui/brainPanel/types.ts";
+
+// obs slots filled in fleet.ts (#obs): keep in sync with the sensor block there.
+const CAR_INPUT_LABELS = [
+  "speed",
+  "lateral off",
+  "sin(hdg err)",
+  "cos(hdg err)",
+  "curvature",
+  "clear ahead",
+  "clear left",
+  "clear right",
+  "bias"
+];
+const CAR_OUTPUT_LABELS = ["steer", "throttle"];
 
 /** Minimal slice of the Net client AiCars talks to (see src/net/net.ts). */
 export interface AiCarsNet {
@@ -456,6 +471,35 @@ export class AiCars {
         else chip.hide();
       }
     }
+  }
+
+  /**
+   * Brains the player can click to inspect: every visible (lattice-shown) leader
+   * car, wrapped as an InspectableBrain for src/ui/brainPanel. Ghost cars have no
+   * local Policy to forward, so only the leader's own fleet is inspectable.
+   */
+  inspectables(): InspectableBrain[] {
+    const fleet = this.#fleet;
+    const overlay = this.#overlay;
+    if (!this.#ready || !fleet || !overlay || !this.#isLeader) return [];
+    const out: InspectableBrain[] = [];
+    for (const car of fleet.cars) {
+      if (!car.alive || !car.mesh || !overlay.isShown(car.id)) continue;
+      const pos = car.pos; // live Vector3, mutated in place each frame
+      const policy = car.policy;
+      const lastObs = car.lastObs;
+      out.push({
+        id: `car:${car.id}`,
+        label: `AI Car #${car.id}`,
+        getWorldPos: (o) => o.set(pos.x, pos.y + CAR_TOP + OVERLAY_LIFT, pos.z),
+        pickRadius: 1.3,
+        net: policy,
+        liveObs: () => lastObs,
+        inputLabels: CAR_INPUT_LABELS,
+        outputLabels: CAR_OUTPUT_LABELS
+      });
+    }
+    return out;
   }
 
   /** Interpolate + draw received ghost cars (non-leader path). */

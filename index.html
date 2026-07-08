@@ -1080,6 +1080,158 @@
         color: #9ef2df;
       }
 
+      /* ---- tabbed chapters ---- */
+      #hud .bts-tabs {
+        display: flex;
+        gap: 4px;
+        flex: 0 0 auto;
+        padding: 8px 18px 0;
+        overflow-x: auto;
+        scrollbar-width: none;
+        border-bottom: 1px solid rgba(190, 225, 240, 0.12);
+        background: rgba(6, 16, 25, 0.4);
+      }
+      #hud .bts-tabs::-webkit-scrollbar {
+        display: none;
+      }
+      #hud .bts-tab {
+        flex: 0 0 auto;
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        padding: 9px 14px 11px;
+        cursor: pointer;
+        white-space: nowrap;
+        border: none;
+        border-bottom: 2px solid transparent;
+        background: none;
+        color: #9fc6d6;
+        font:
+          600 13px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
+        transition:
+          color 0.15s,
+          border-color 0.15s;
+      }
+      #hud .bts-tab-ic {
+        font-size: 15px;
+        line-height: 1;
+      }
+      #hud .bts-tab:hover {
+        color: #cfe6ee;
+      }
+      #hud .bts-tab.active {
+        color: #9ef2df;
+        border-bottom-color: #6fd7c4;
+      }
+      #hud .bts-pane {
+        display: none;
+      }
+      #hud .bts-pane.active {
+        display: block;
+        animation: btsfade 0.25s ease;
+      }
+
+      /* ---- scroll-driven diagrams ---- */
+      #hud .scrolly {
+        position: relative;
+        margin: 12px 0 6px;
+      }
+      #hud .scrolly-graphic {
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        height: 42vh;
+        min-height: 240px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 10px 6px;
+        border-radius: 14px;
+        border: 1px solid rgba(190, 225, 240, 0.14);
+        background: linear-gradient(
+          180deg,
+          rgba(10, 26, 39, 0.98),
+          rgba(8, 20, 31, 0.98)
+        );
+        box-shadow: 0 10px 30px rgba(0, 4, 10, 0.35);
+      }
+      #hud .ss-svg {
+        width: 100%;
+        height: 100%;
+        max-height: 100%;
+        overflow: visible;
+      }
+      #hud .ss-t {
+        fill: #cfe6ee;
+        font:
+          600 10px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
+      }
+      #hud .ss-tc {
+        text-anchor: middle;
+      }
+      #hud .ss-lbl {
+        fill: #9ef2df;
+        font-weight: 800;
+        font-size: 10px;
+        letter-spacing: 0.03em;
+      }
+      #hud .ss-sub {
+        fill: #9fc6d6;
+        font-size: 9px;
+      }
+      #hud .scrolly-steps {
+        position: relative;
+        z-index: 0;
+      }
+      #hud .scrolly-step {
+        min-height: 50vh;
+        display: flex;
+        align-items: center;
+        padding: 6px 0;
+      }
+      #hud .scrolly-step p {
+        margin: 0;
+        padding: 15px 18px;
+        border-radius: 12px;
+        border: 1px solid rgba(190, 225, 240, 0.12);
+        border-left: 2px solid rgba(111, 215, 196, 0.25);
+        background: rgba(12, 30, 44, 0.72);
+        color: #bcd6df;
+        opacity: 0.5;
+        transform: translateY(6px);
+        transition:
+          opacity 0.35s ease,
+          transform 0.35s ease,
+          border-color 0.35s ease,
+          color 0.35s ease;
+      }
+      #hud .scrolly-step.active p {
+        opacity: 1;
+        transform: none;
+        color: #dcecf2;
+        border-left-color: #6fd7c4;
+        box-shadow: 0 8px 24px rgba(0, 6, 12, 0.3);
+      }
+      #hud .bts-daygraphic {
+        margin: 14px 0 4px;
+        padding: 10px 6px;
+        height: 220px;
+        border-radius: 14px;
+        border: 1px solid rgba(190, 225, 240, 0.14);
+        background: linear-gradient(
+          180deg,
+          rgba(10, 26, 39, 0.9),
+          rgba(8, 20, 31, 0.9)
+        );
+      }
+      #hud .bts-daygraphic .ss-svg {
+        height: 200px;
+      }
+
       /* lone affordance when Tab hides the HUD — hidden in immersive (display:none on #hud) */
       #hud .ui-restore {
         position: absolute;

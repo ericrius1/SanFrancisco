@@ -11,6 +11,7 @@
 import type * as THREE from "three/webgpu";
 import { createSeedForest, type SeedForest } from "../seedForest";
 import { createFlowerField, type FlowerField } from "./flowerField";
+import { createWildGrass, type WildGrass } from "./grassField";
 import {
   collectWildFlowers,
   collectWildTrees,
@@ -22,12 +23,16 @@ import type { GardenTerrain } from "../garden/layout";
 
 export { wildlandsSuppressesTree, wildRegionAt, WILD_REGIONS } from "./layout";
 
+// The three wildlands layers stay separate + independently toggleable (each owns
+// its group); they only share the ground-cover infra (wind, displacers, chunked
+// LOD). Toggle a layer via `wildlands.<layer>.group.visible`.
 export type Wildlands = {
   trees: SeedForest;
   flowers: FlowerField;
-  /** add both to the scene */
+  grass: WildGrass;
+  /** add all layer groups to the scene */
   groups: THREE.Group[];
-  /** per-frame: chunk culling for trees + flowers, from a focus point */
+  /** per-frame: LOD/culling + the player-following grass ring, from a focus point */
   update(focus: { x: number; z: number }): void;
   stats: { trees: number; flowers: number; treeChunks: number; flowerChunks: number };
 };
@@ -43,14 +48,17 @@ export function createWildlands(map: GardenTerrain): Wildlands {
     farCastShadow: false
   });
   const flowers = createFlowerField(flowerList);
+  const grass = createWildGrass(map); // player-following ring; free outside the regions
 
   return {
     trees,
     flowers,
-    groups: [trees.group, flowers.group],
+    grass,
+    groups: [trees.group, flowers.group, grass.group],
     update(focus) {
       trees.update(focus);
       flowers.update(focus);
+      grass.update(focus);
     },
     stats: {
       trees: treeSlots.length,

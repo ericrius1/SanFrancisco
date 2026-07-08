@@ -255,6 +255,11 @@ export class BrainOverlay {
     }
   }
 
+  /** Is this car's lattice currently drawn? (drives which cars are inspectable.) */
+  isShown(carId: number): boolean {
+    return this.#lattices[carId]?.shown ?? false;
+  }
+
   setEnabled(on: boolean): void {
     this.#enabled = on;
     if (!on) {

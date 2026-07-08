@@ -45,10 +45,12 @@ import { Flyover } from "./gameplay/flyover";
 import { BridgeParade } from "./gameplay/bridgeParade";
 import { Creatures } from "./gameplay/creatures";
 import { HorseHerd } from "./gameplay/horse/horseHerd";
+import { BrainPanel } from "./ui/brainPanel/index.ts";
+import type { InspectableBrain } from "./ui/brainPanel/types.ts";
 import { Forest, ANIMALS, type AnimalKind } from "./gameplay/forest";
 import { createBotanicalGarden, windGustValue, type GrassDisplacer } from "./world/garden";
 import { createWildlands } from "./world/wildlands";
-import { createBuildingRing, cullGeneratedBuildings, pumpGeneratedBuildings, type BuildingRing } from "./world/buildings";
+import { createChinatown, cullGeneratedBuildings, pumpGeneratedBuildings, type Chinatown } from "./world/buildings";
 import { Islands } from "./gameplay/islands";
 import { Exploratorium, WATER_VIEW } from "./gameplay/exploratorium";
 import { PALACE_FINE_ARTS } from "./world/heightmap";
@@ -336,23 +338,58 @@ async function boot() {
   const horses = new HorseHerd(physics, map, scene);
   const islands = new Islands(physics, map, scene);
 
+  // Click any AI entity's floating brain lattice to open the inspector: it frees
+  // the pointer, freezes the world (see the pause gate below), and lets you drive
+  // the inputs → outputs live. Generic — anything exposing inspectables() joins.
+  const brainPanel = new BrainPanel(
+    () => input.releaseLock(),
+    () => {
+      if (!cameraMode) input.requestLock();
+    }
+  );
+  const inspectableBrains = (): InspectableBrain[] => [...aiCars.inspectables(), ...horses.inspectables()];
+  const brainPickPos = new THREE.Vector3();
+  const pickBrain = (origin: THREE.Vector3, dir: THREE.Vector3): InspectableBrain | null => {
+    let best: InspectableBrain | null = null;
+    let bestT = Infinity;
+    for (const b of inspectableBrains()) {
+      b.getWorldPos(brainPickPos);
+      const ox = brainPickPos.x - origin.x;
+      const oy = brainPickPos.y - origin.y;
+      const oz = brainPickPos.z - origin.z;
+      const t = ox * dir.x + oy * dir.y + oz * dir.z; // dir is unit-length (chase.lookDir)
+      if (t < 0 || t > 200 || t >= bestT) continue;
+      const dx = origin.x + dir.x * t - brainPickPos.x;
+      const dy = origin.y + dir.y * t - brainPickPos.y;
+      const dz = origin.z + dir.z * t - brainPickPos.z;
+      if (dx * dx + dy * dy + dz * dz <= b.pickRadius * b.pickRadius) {
+        bestT = t;
+        best = b;
+      }
+    }
+    return best;
+  };
+  let lastHoverBrain: string | null = null;
+
   // the Exploratorium: Pier 15 rebuilt walkable — replaces the OSM shed and
   // gates every exhibit (GPU sims, dome show, colliders) on actual presence
   const exploratorium = new Exploratorium(renderer, physics, map, scene, tiles);
   exploratorium.onMessage = (m, s) => hud.message(m, s);
 
-  // Generated-buildings citywide ring (src/world/buildings): mid-rise OSM
-  // buildings across the whole city are replaced with procedurally generated
-  // walkable buildings. Footprints come from tools/export-buildings-citywide.mjs
-  // (public/buildinggen/buildings-citywide.json, bucketed by tile). A distance
-  // ring generates each building + suppresses its baked twin within LOAD_R and
-  // disposes it + restores the twin beyond UNLOAD_R, so the far city stays
-  // hole-free; towers were filtered out and keep their baked mesh. Exteriors are
-  // merged, frustum-culled meshes; interiors build/dispose per building, so any
-  // building you walk up to is enterable. Async load; inert if the kit assets are
-  // missing so the app still boots.
-  const buildings: { current: BuildingRing | null } = { current: null };
-  createBuildingRing({}, { scene, physics, map, tiles }).then((c) => { buildings.current = c; });
+  // Generated buildings — SCOPED TO CHINATOWN ONLY (src/world/buildings).
+  //
+  // The vendored generator is a Hong-Kong / Kowloon tenement kit: its textures
+  // carry Chinese signage, AC units and clotheslines — which is exactly right for
+  // Chinatown and wrong everywhere else. The old citywide ring stamped that kit
+  // over every mid-rise in the city (Chinese lettering in the Marina/downtown/
+  // etc.), and approximated each footprint as a bbox rectangle so the generated
+  // twin visibly shifted from its baked original. Both are being replaced by the
+  // new SF-tuned citygen module (src/world/citygen; see
+  // feature-research/sf-citygen/PLAN.md). Until that lands, the Kowloon kit is
+  // confined to Chinatown, where it looks correct, and the rest of the city keeps
+  // its baked procedural facades. Async load; inert if the kit assets are missing.
+  const buildings: { current: Chinatown | null } = { current: null };
+  createChinatown({}, { scene, physics, map, tiles }).then((c) => { buildings.current = c; });
 
   // the Fortnite-ish layer: treasure chests raining coins, critters to hunt,
   // and the Garry's-Mod rope/grab click-tools (loot.ts / hunt.ts / ropes.ts)
@@ -1291,12 +1328,14 @@ async function boot() {
       hud.setFaded(!uiOpen);
     }
     // M (or clicking the minimap): the full city map — players, teleports.
-    // Works while paused; Esc also closes it.
-    if (input.pressed("KeyM") || (minimap.expanded && input.pressed("Escape"))) {
+    // Works while paused; Esc also closes it. (The brain inspector owns Esc while open.)
+    if (!brainPanel.isOpen && (input.pressed("KeyM") || (minimap.expanded && input.pressed("Escape")))) {
       minimap.setExpanded(!minimap.expanded);
     }
 
-    if (paused) {
+    // The brain inspector freezes the world exactly like pause: the sim, player,
+    // fx and vehicles all hold while the DOM panel floats on top.
+    if (paused || brainPanel.isOpen) {
       vehicleAudio.update(frameDt, null); // fade the hum out while frozen
       // ambience keeps breathing while frozen — it's a chill/social feature
       nature.update(frameDt, {
@@ -1514,7 +1553,21 @@ async function boot() {
     // whatever the center-screen ray lands on, bubbles ride the wand, chimes ring
     // the struck surface (pitch keyed to strike height)
     fireCooldown -= frameDt;
-    if (
+    // Brain inspector: a fresh click while aiming at an AI entity's floating
+    // lattice opens the inspector (and consumes the click — no tool fires).
+    let brainOpened = false;
+    if (input.firePressed && !input.suspended) {
+      chase.lookDir(aim);
+      rayOrigin.copy(player.aimOrigin);
+      const hit = pickBrain(rayOrigin, aim);
+      if (hit) {
+        brainPanel.open(hit);
+        brainOpened = true;
+      }
+    }
+    if (brainOpened) {
+      // consumed — the world is now frozen behind the panel
+    } else if (
       !input.suspended &&
       input.firePressed &&
       fireCooldown <= 0 &&
@@ -1630,6 +1683,19 @@ async function boot() {
         fireCooldown = 0.32;
         const hit = physics.raycastWorld(rayOrigin, aim, 300);
         if (hit) chimes.strike(hit.point, hit.normal, hit.kind, chase.yaw, camera.position);
+      }
+    }
+
+    // Hover affordance: aiming the crosshair at an inspectable brain hints once.
+    if (!brainPanel.isOpen && !input.firePressed) {
+      chase.lookDir(aim);
+      rayOrigin.copy(player.aimOrigin);
+      const hover = pickBrain(rayOrigin, aim);
+      if (hover && hover.id !== lastHoverBrain) {
+        hud.message(`Click to inspect ${hover.label}'s brain`, 1.5);
+        lastHoverBrain = hover.id;
+      } else if (!hover) {
+        lastHoverBrain = null;
       }
     }
 
@@ -2002,7 +2068,7 @@ async function boot() {
 
   const exposeDebugHooks = () => {
     Object.assign(window as never, {
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, WORLD_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, props, exploratorium, traffic, creatures, forest, garden, wildlands, splashes, vehicleAudio, nature, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, boatLaunchers, goldenGateLights, flyover, bridgeParade, teleportToTarget, aiCars, horses, buildings, cullGeneratedBuildings }
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, WORLD_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, props, exploratorium, traffic, creatures, forest, garden, wildlands, splashes, vehicleAudio, nature, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, boatLaunchers, goldenGateLights, flyover, bridgeParade, teleportToTarget, aiCars, horses, buildings, cullGeneratedBuildings, brainPanel, inspectableBrains }
     });
   };
   if (import.meta.env.DEV || new URLSearchParams(location.search).has("profile")) {

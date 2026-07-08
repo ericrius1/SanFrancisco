@@ -15,7 +15,6 @@ import {
   sin,
   time,
   uniform,
-  uniformArray,
   vec2,
   vec3,
   vec4
@@ -32,6 +31,7 @@ import {
   type GardenTerrain,
   type GardenTree
 } from "./layout";
+import { DISPLACERS, MAX_DISPLACERS, setGroundDisplacers, type GroundDisplacer } from "../groundcover/displacers";
 import { GRASS_TUNING } from "./grassTuning";
 
 type GrassEntry = {
@@ -68,29 +68,13 @@ const DETAIL_SALT = 1307;
 const WIND_DIR = new THREE.Vector3(0.85, 0, 0.53).normalize();
 const GRASS_FADE_BAND = uniform(0.16);
 const GRASS_DENSITY_FOCUS = uniform(new THREE.Vector2(1e6, 1e6));
-// Creature/player trample slots: xyzw = (worldX, worldZ, radius, strength).
-// Radius 0 disables a slot. Written every frame from main via setGrassDisplacers.
-export const MAX_GRASS_DISPLACERS = 12;
-const GRASS_DISPLACER_DATA = Array.from({ length: MAX_GRASS_DISPLACERS }, () => new THREE.Vector4(0, 0, 0, 0));
-const GRASS_DISPLACERS = uniformArray(GRASS_DISPLACER_DATA);
-
-export type GrassDisplacer = { x: number; z: number; radius: number; strength: number };
-export function setGrassDisplacers(list: readonly GrassDisplacer[]) {
-  let slot = 0;
-  for (const d of list) {
-    if (slot >= MAX_GRASS_DISPLACERS) break;
-    // Live-training deer can glitch to NaN/huge positions; a NaN that reaches
-    // the uniform turns into NaN vertices (blades smeared across the sky).
-    if (!Number.isFinite(d.x) || !Number.isFinite(d.z) || !Number.isFinite(d.strength)) continue;
-    if (!(d.radius > 0)) continue;
-    GRASS_DISPLACER_DATA[slot].set(d.x, d.z, Math.min(d.radius, 12), Math.min(Math.max(d.strength, 0), 3));
-    slot++;
-  }
-  for (; slot < MAX_GRASS_DISPLACERS; slot++) {
-    const v = GRASS_DISPLACER_DATA[slot];
-    if (v.z !== 0) v.set(0, 0, 0, 0);
-  }
-}
+// Player/creature trample now lives in the SHARED ground-cover displacer field
+// (../groundcover/displacers) so the wildlands grass + wildflowers bend to the
+// same points. Re-exported here under the historical names so garden/index and
+// main keep importing them from the grass module.
+export const MAX_GRASS_DISPLACERS = MAX_DISPLACERS;
+export type GrassDisplacer = GroundDisplacer;
+export const setGrassDisplacers = setGroundDisplacers;
 // TSL's d.ts narrows chained vector nodes too aggressively for vendored JS uniforms.
 type TslNode = any;
 const windSpeedNode = windSpeed as TslNode;
@@ -277,8 +261,8 @@ function createGrassMaterial(): THREE.Material {
   const trampleAccum = (Fn(() => {
     const push = vec2(0).toVar();
     const crush = float(0).toVar();
-    Loop(MAX_GRASS_DISPLACERS, ({ i }: { i: TslNode }) => {
-      const d = (GRASS_DISPLACERS as TslNode).element(i);
+    Loop(MAX_DISPLACERS, ({ i }: { i: TslNode }) => {
+      const d = (DISPLACERS as TslNode).element(i);
       const delta = anchorWorld.sub(d.xy);
       const len = delta.length().max(1e-4);
       const infl = d.z.sub(len).div(d.z.max(1e-4)).clamp(0, 1);

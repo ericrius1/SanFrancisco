@@ -11,8 +11,10 @@
 
 import * as THREE from "three/webgpu";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
-import { attribute, float, hash, instanceIndex, mix, positionLocal, sin, time, vec3 } from "three/tsl";
+import { attribute, float, Fn, hash, instanceIndex, Loop, mix, modelWorldMatrix, positionLocal, sin, time, vec3, vec4 } from "three/tsl";
 import { windGustGlobal } from "../garden/wind";
+import { DISPLACERS, MAX_DISPLACERS } from "../groundcover/displacers";
+import { ChunkedField } from "../groundcover/chunkedField";
 import type { WildFlower } from "./layout";
 
 type N = any;
@@ -24,8 +26,6 @@ const PALETTES: { a: number; b: number; glow: number }[] = [
   { a: 0xf3ead2, b: 0xf7d65a, glow: 0xfff0c0 }, // 2 yarrow — cream→gold
   { a: 0xffc31e, b: 0xffd94a, glow: 0xffe66a } // 3 goldfield — bright gold
 ];
-
-const STEM = 0x3a5a24;
 
 // ---- geometry ------------------------------------------------------------------
 
@@ -189,13 +189,33 @@ function flowerMaterial(): THREE.MeshStandardNodeMaterial {
   const bend: N = (sin(time.mul(1.1).add(ph)) as N).mul(0.6).add((sin(time.mul(2.4).add(ph.mul(1.7))) as N).mul(0.4));
   const cross: N = sin(time.mul(0.8).add(ph.mul(1.3)));
   const amp = 0.06;
-  mat.positionNode = (positionLocal as N).add(vec3(bend.mul(amp), float(0), cross.mul(amp * 0.7)).mul(swayW).mul(g));
+
+  // SHARED player/creature trample — read the same displacer field as the grass
+  // so walking through a drift presses the blooms down (crush is direction-free:
+  // the head dips + the wind sway damps, so a flower flattens as you pass).
+  const anchorWorld: N = (modelWorldMatrix as N).mul(vec4(0, 0, 0, 1)).xz;
+  const crush: N = (Fn(() => {
+    const c = (float(0) as N).toVar();
+    Loop(MAX_DISPLACERS, ({ i }: { i: N }) => {
+      const d = (DISPLACERS as N).element(i);
+      const len = anchorWorld.sub(d.xy).length().max(1e-4);
+      const infl = d.z.sub(len).div(d.z.max(1e-4)).clamp(0, 1);
+      c.addAssign(infl.mul(infl).mul(d.w));
+    });
+    return c.min(1);
+  }) as N)();
+  const windOffset: N = vec3(bend.mul(amp), float(0), cross.mul(amp * 0.7)).mul(swayW).mul(g).mul(float(1).sub(crush.mul(0.7)));
+  const dip: N = vec3(0, crush.mul(-0.4).mul(swayW), 0); // head sinks when stepped on
+  mat.positionNode = (positionLocal as N).add(windOffset).add(dip);
   mat.envMapIntensity = 0.5;
   sharedMaterial = mat;
   return mat;
 }
 
-// ---- chunked field -------------------------------------------------------------
+// ---- field ---------------------------------------------------------------------
+// Chunking, per-chunk bounding spheres, frustum + distance culling all come from
+// the shared ground-cover ChunkedField — this module only says how to turn one
+// chunk's blooms into instanced meshes (its own geometry + material).
 
 const CHUNK = 176;
 const VIS_DIST = 340; // flowers are small — cull tighter than trees
@@ -207,92 +227,58 @@ export type FlowerField = {
 };
 
 export function createFlowerField(flowers: readonly WildFlower[]): FlowerField {
-  const group = new THREE.Group();
-  group.name = "wildlands_flowers";
   const material = flowerMaterial();
   const geoms = BUILDERS.map((b) => b());
-
-  // bucket by chunk, then species
-  const byChunk = new Map<string, WildFlower[]>();
-  for (const f of flowers) {
-    const key = `${Math.floor(f.x / CHUNK)},${Math.floor(f.z / CHUNK)}`;
-    const list = byChunk.get(key);
-    if (list) list.push(f);
-    else byChunk.set(key, [f]);
-  }
-
-  const chunks: { group: THREE.Group; cx: number; cz: number }[] = [];
   const dummy = new THREE.Object3D();
   const color = new THREE.Color();
   const a = new THREE.Color();
   const bcol = new THREE.Color();
   let draws = 0;
 
-  for (const [key, list] of byChunk) {
-    const cGroup = new THREE.Group();
-    cGroup.name = `wildlands_flowers_${key}`;
-    const bySpecies: WildFlower[][] = geoms.map(() => []);
-    for (const f of list) bySpecies[f.species]?.push(f);
-
-    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity, minY = Infinity, maxY = -Infinity;
-    for (const f of list) {
-      if (f.x < minX) minX = f.x;
-      if (f.x > maxX) maxX = f.x;
-      if (f.z < minZ) minZ = f.z;
-      if (f.z > maxZ) maxZ = f.z;
-      if (f.y < minY) minY = f.y;
-      if (f.y > maxY) maxY = f.y;
-    }
-    const cx = (minX + maxX) / 2;
-    const cz = (minZ + maxZ) / 2;
-    const sphere = new THREE.Sphere(
-      new THREE.Vector3(cx, (minY + maxY) / 2 + 0.5, cz),
-      Math.hypot(maxX - minX, maxY - minY + 1, maxZ - minZ) / 2 + 1
-    );
-
-    bySpecies.forEach((fs, species) => {
-      if (fs.length === 0) return;
-      const mesh = new THREE.InstancedMesh(geoms[species], material, fs.length);
-      mesh.name = `wildlands_flowers_${key}_sp${species}`;
-      const pal = PALETTES[species];
-      a.setHex(pal.a);
-      bcol.setHex(pal.b);
-      fs.forEach((f, i) => {
-        dummy.position.set(f.x, f.y, f.z);
-        dummy.rotation.set(0, f.yaw, 0);
-        dummy.scale.set(f.scale, f.scale * (0.85 + f.tint * 0.3), f.scale);
-        dummy.updateMatrix();
-        mesh.setMatrixAt(i, dummy.matrix);
-        color.copy(a).lerp(bcol, f.tint);
-        mesh.setColorAt(i, color);
+  const field = new ChunkedField<WildFlower>(
+    flowers,
+    { name: "wildlands_flowers", chunkSize: CHUNK, visibleDistance: VIS_DIST, canopyHeadroom: 1 },
+    (list, sphere) => {
+      const cGroup = new THREE.Group();
+      const bySpecies: WildFlower[][] = geoms.map(() => []);
+      for (const f of list) bySpecies[f.species]?.push(f);
+      bySpecies.forEach((fs, species) => {
+        if (fs.length === 0) return;
+        // clone the species geometry so this mesh carries its own per-instance
+        // aBloom colour attribute (shared geometry can't hold instanced data)
+        const geo = geoms[species].clone();
+        const mesh = new THREE.InstancedMesh(geo, material, fs.length);
+        mesh.name = `wildlands_flowers_sp${species}`;
+        const pal = PALETTES[species];
+        a.setHex(pal.a);
+        bcol.setHex(pal.b);
+        const bloomArr = new Float32Array(fs.length * 3);
+        fs.forEach((f, i) => {
+          dummy.position.set(f.x, f.y, f.z);
+          dummy.rotation.set(0, f.yaw, 0);
+          dummy.scale.set(f.scale, f.scale * (0.85 + f.tint * 0.3), f.scale);
+          dummy.updateMatrix();
+          mesh.setMatrixAt(i, dummy.matrix);
+          color.copy(a).lerp(bcol, f.tint);
+          bloomArr[i * 3] = color.r;
+          bloomArr[i * 3 + 1] = color.g;
+          bloomArr[i * 3 + 2] = color.b;
+        });
+        geo.setAttribute("aBloom", new THREE.InstancedBufferAttribute(bloomArr, 3));
+        mesh.castShadow = false;
+        mesh.receiveShadow = true;
+        mesh.boundingSphere = sphere.clone();
+        mesh.frustumCulled = true;
+        cGroup.add(mesh);
+        draws++;
       });
-      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-      mesh.castShadow = false;
-      mesh.receiveShadow = true;
-      mesh.boundingSphere = sphere.clone();
-      mesh.frustumCulled = true;
-      cGroup.add(mesh);
-      draws++;
-    });
-
-    chunks.push({ group: cGroup, cx, cz });
-    group.add(cGroup);
-  }
-
-  const lastFocus = { x: 1e9, z: 1e9 };
-  function cull(x: number, z: number, force = false) {
-    if (!force && Math.hypot(x - lastFocus.x, z - lastFocus.z) < 20) return;
-    lastFocus.x = x;
-    lastFocus.z = z;
-    for (const c of chunks) c.group.visible = Math.hypot(c.cx - x, c.cz - z) < VIS_DIST;
-  }
-  cull(0, 0, true);
+      return cGroup;
+    }
+  );
 
   return {
-    group,
-    update(focus) {
-      cull(focus.x, focus.z);
-    },
-    stats: { flowers: flowers.length, chunks: chunks.length, draws }
+    group: field.group,
+    update: (focus) => field.update(focus),
+    stats: { flowers: flowers.length, chunks: field.chunkCount, draws }
   };
 }
