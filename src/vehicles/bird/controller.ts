@@ -143,11 +143,11 @@ export class BirdController implements ModeController {
     const targetPitch = speed > 2 ? Math.asin(THREE.MathUtils.clamp(V.tmp2.y / Math.max(speed, 4), -1, 1)) : 0;
     this.#pitch += (targetPitch - this.#pitch) * Math.min(1, dt * 5);
     const localLat = V.tmp2.x * Math.cos(yaw) - V.tmp2.z * Math.sin(yaw); // speed to the right
-    // bank INTO the turn: the mesh's visual roll axis is π-flipped from the body
-    // frame, so the yaw-rate term needs the opposite sign to the lateral-speed
-    // term (which already leans correctly into a strafe) or the bird banks away
-    // from every turn.
-    const targetRoll = THREE.MathUtils.clamp(-localLat * t.bankPerSpeed + dYaw * 1.4, -t.maxBank, t.maxBank);
+    // bank INTO the turn from two sources that MUST agree in sign: lateral speed
+    // (A/D strafe) and yaw rate (mouse steer). Both terms are negated so a mouse
+    // turn leans the same way an A/D strafe does. The yaw term used to be +dYaw,
+    // which banked the bird the wrong way whenever you steered with the mouse.
+    const targetRoll = THREE.MathUtils.clamp(-localLat * t.bankPerSpeed - dYaw * 1.4, -t.maxBank, t.maxBank);
     this.#roll += (targetRoll - this.#roll) * Math.min(1, dt * 5);
     const posture = this.#flapPow * 0.16 - this.#tuck * 0.08;
     const q = ctx.quaternion.setFromEuler(V.euler.set(this.#pitch * 0.9 + posture, yaw, this.#roll + this.#spin, "YXZ"));
