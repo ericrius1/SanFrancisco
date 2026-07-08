@@ -5,7 +5,7 @@ import { CONFIG, DEBRIS_TUNING, FOLIAGE_TUNING, RENDER_TUNING, START, START_DEFA
 import { loadPlayerState, resetAllTweaks, savePlayerState } from "./core/persist";
 import { Input } from "./core/input";
 import { WorldMap, waterHeight } from "./world/heightmap";
-import { Sky, PRE_SUNSET_TIME, SKY_TUNING } from "./world/sky";
+import { Sky, SKY_TUNING } from "./world/sky";
 import { Water } from "./world/water";
 import { TileStreamer } from "./world/tiles";
 import { Physics } from "./core/physics";
@@ -1602,11 +1602,11 @@ async function boot() {
       DEBRIS_LIGHTS.spread.value = DEBRIS_TUNING.values.spread;
       WINDOW_GLOW.far.value = RENDER_TUNING.values.farWindowGlow ? 1 : 0;
       pipeline.applyPostFx(); // toggles back off + sliders back to defaults
-      sky.cycleEnabled = true;
+      sky.cycleEnabled = SKY_TUNING.values.cycleEnabled;
       sky.cycleDuration = SKY_TUNING.values.cycleDuration;
       sky.sunsetAzimuth = SKY_TUNING.values.sunsetAzimuth;
       sky.nightBrightness = SKY_TUNING.values.nightBrightness;
-      sky.setTimeOfDay(PRE_SUNSET_TIME);
+      sky.followRealTime(); // default: back to mirroring the real SF clock
       sky.applyFogParams();
       debugPanel.syncNow();
       hud.message("Tweaks back to source defaults", 3);

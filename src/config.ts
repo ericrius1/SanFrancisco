@@ -73,11 +73,12 @@ export const RENDER_TUNING = tunables("render", {
 /** Draw distance + fog, bound in the "/" panel. `radius` drives both tile radii. */
 export const WORLD_TUNING = tunables("world", {
   // Draw distance. The marine-layer + distance fog (below) is tuned to fully melt
-  // geometry into the sky by ~1200 m — the distance haze + a GLOBAL horizon veil
+  // geometry into the sky by ~1350 m — the distance haze + a GLOBAL horizon veil
   // densify everywhere (not just the coast), so the tile radius sits low without a
-  // visible pop-in edge: the fog IS the far cull. Push it back up if you turn fog
-  // down.
-  radius: { v: 1300, min: 900, max: 6000, step: 100, label: "buildings (m)" },
+  // visible pop-in edge: the fog IS the far cull. (Down from 1500; 1300 was a touch
+  // too tight — it culled the FiDi cluster from the Embarcadero before the fog had
+  // fully closed over it.) Push it back up if you turn fog down.
+  radius: { v: 1400, min: 900, max: 6000, step: 100, label: "buildings (m)" },
   fogEnabled: { v: true, label: "custom fog" },
   // --- ground/valley bank: a marine layer that pools in low ground and lets the
   // hills poke through. base/top are world-Y metres; billow gives it a churning

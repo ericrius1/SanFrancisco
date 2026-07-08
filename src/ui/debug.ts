@@ -109,6 +109,7 @@ export class DebugPanel {
     if (this.#lightingView) {
       this.#syncingFromSky = true;
       this.#lightingView.timeOfDay = this.#sky.timeOfDay;
+      this.#lightingView.realTime = this.#sky.realTime;
       this.#lightingView.sunsetAzimuth = this.#sky.sunsetAzimuth;
       this.#lightingView.cycleEnabled = this.#sky.cycleEnabled;
       this.#lightingView.nightBrightness = this.#sky.nightBrightness;
@@ -126,6 +127,7 @@ export class DebugPanel {
     if (this.#lightingView) {
       this.#syncingFromSky = true;
       this.#lightingView.timeOfDay = this.#sky.timeOfDay;
+      this.#lightingView.realTime = this.#sky.realTime;
       this.#lightingView.sunsetAzimuth = this.#sky.sunsetAzimuth;
       this.#lightingView.cycleEnabled = this.#sky.cycleEnabled;
       this.#lightingView.cycleDuration = this.#sky.cycleDuration;
@@ -229,6 +231,7 @@ export class DebugPanel {
     // proxy so tweakpane's slider step never quantizes the live cycle clock
     const lightingView = {
       timeOfDay: this.#sky.timeOfDay,
+      realTime: this.#sky.realTime,
       sunsetAzimuth: this.#sky.sunsetAzimuth,
       cycleEnabled: this.#sky.cycleEnabled,
       cycleDuration: this.#sky.cycleDuration,
@@ -238,11 +241,18 @@ export class DebugPanel {
     const onSkyChange = (key: string, value: unknown, last: boolean) => {
       if (key === "timeOfDay") {
         if (this.#syncingFromSky) return;
-        this.#sky.setTimeOfDay(value as number);
+        this.#sky.setTimeOfDay(value as number); // clears realTime — a manual pin
+        return;
+      }
+      if (key === "realTime") {
+        if (this.#syncingFromSky) return;
+        if (value) this.#sky.followRealTime();
+        else this.#sky.realTime = false;
         return;
       }
       if (key === "cycleEnabled") {
         this.#sky.cycleEnabled = value as boolean;
+        if (value) this.#sky.realTime = false; // the cycle can't run while tracking real time
         return;
       }
       if (key === "cycleDuration") {
@@ -260,7 +270,7 @@ export class DebugPanel {
     };
     SKY_TUNING.bind(pane, {
       target: lightingView,
-      keys: ["timeOfDay", "cycleEnabled", "cycleDuration", "nightBrightness"],
+      keys: ["timeOfDay", "realTime", "cycleEnabled", "cycleDuration", "nightBrightness"],
       onChange: onSkyChange
     });
     RENDER_TUNING.bind(pane, {

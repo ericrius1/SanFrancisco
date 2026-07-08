@@ -45,7 +45,15 @@ export function createWildlands(map: GardenTerrain): Wildlands {
     name: "wildlands_trees",
     chunkSize: 176,
     visibleDistance: 380, // small trees at range read as noise; cull tighter for GPU
-    farCastShadow: false
+    farCastShadow: false,
+    // Kill LOD pop: the near hero clones reach OUT PAST lod2Dist (78 m), so by
+    // the time a clone hands off to the instanced far tier it is already showing
+    // the same LOD2 geometry — the swap is invisible. Clones on LOD2 are cheap
+    // (flat cards), so a big budget is affordable; only the few within ~46 m are
+    // full geometry. Hysteresis on the exit radius stops boundary flicker.
+    nearRadius: 96,
+    nearExitRadius: 110,
+    nearMax: 46
   });
   const flowers = createFlowerField(flowerList);
   const grass = createWildGrass(map); // player-following ring; free outside the regions

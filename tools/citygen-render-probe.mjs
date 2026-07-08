@@ -103,8 +103,12 @@ async function main() {
     // Fronts face +x/east; put the sun in the WEST so those fronts are lit by SKY
     // (soft, no photometric blowout) → the painted-lady body colour actually shows.
     // The sunlit sides/roofs stay bright for contrast. Neutralise aiCars crash.
-    await evaluate(c, `(()=>{const s=window.__sf; s.sky.cycleEnabled=false; s.sky.setTimeOfDay(9.2);
-      try{ s.renderer.toneMappingExposure = (s.renderer.toneMappingExposure||1) * 0.8; }catch{}
+    // BRIGHT mid-morning day: sun in the east directly lights the east-facing
+    // fronts, ambient fill lifted so nothing reads black. Build in daylight — no
+    // dim/dusk shots (that's what burned cycles before).
+    await evaluate(c, `(()=>{const s=window.__sf; s.sky.cycleEnabled=false; s.sky.setTimeOfDay(10.5);
+      try{ s.scene.environmentIntensity = 0.35; }catch{}
+      try{ s.renderer.toneMappingExposure = (s.renderer.toneMappingExposure||1) * 1.05; }catch{}
       try{ if(s.aiCars){ s.aiCars.prePhysics=()=>{}; s.aiCars.update=()=>{}; if(s.aiCars.postPhysics) s.aiCars.postPhysics=()=>{}; } }catch{}
       if(!window.__camFrozen){window.__camFrozen=true; s.chase.update=()=>{}; s.player.update=()=>{};} return 1;})()`);
 

@@ -34,9 +34,31 @@ import { SUTRO_LIGHTS_INTENSITY } from "./sutroTower"
 import { LIGHT_SCALE, RENDER_TUNING, SHADOW_QUALITY, WORLD_TUNING, type ShadowQuality } from "../config"
 import { tunables } from "../core/persist"
 
-// Hours on the 24h clock where each session starts: warm pre-sunset, not restored
-// from the last visit (scrubbing still works within a session).
+// Fallback hour used only before the first real-time read lands (warm pre-sunset).
+// The default sky follows the real SF clock (see sanFranciscoTimeOfDay / followRealTime).
 export const PRE_SUNSET_TIME = 15.48
+
+// Real San-Francisco wall-clock time as decimal hours (0..24), DST-correct via the
+// IANA zone. The default sky mirrors this so the game's time of day matches what it
+// actually is in SF right now — no matter where in the world the player is sitting.
+const SF_TIME_FMT = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/Los_Angeles",
+  hourCycle: "h23",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit"
+})
+export function sanFranciscoTimeOfDay(): number {
+  let h = 0,
+    m = 0,
+    s = 0
+  for (const p of SF_TIME_FMT.formatToParts(new Date())) {
+    if (p.type === "hour") h = +p.value
+    else if (p.type === "minute") m = +p.value
+    else if (p.type === "second") s = +p.value
+  }
+  return (h % 24) + m / 60 + s / 3600
+}
 
 // Day/night cycle tuning, bound in the "/" panel's lighting folder (persisted).
 // timeOfDay: hours 0..24 — 6 sunrise, 18 sunset, but the sun is capped low so
@@ -49,6 +71,9 @@ export const PRE_SUNSET_TIME = 15.48
 // bears ~θ232 from downtown, ~θ262 from Coit.
 export const SKY_TUNING = tunables("sky", {
   timeOfDay: { v: 18.48, min: 0, max: 24, step: 0.01, label: "time of day" },
+  // default: mirror the real SF wall clock. Scrubbing (Z), dragging the time
+  // slider, or turning on the cycle drops this off — a personal, local override.
+  realTime: { v: true, label: "follow real SF time" },
   sunsetAzimuth: {
     v: 224,
     min: 0,
@@ -56,7 +81,7 @@ export const SKY_TUNING = tunables("sky", {
     step: 1,
     label: "sunset azimuth (°)"
   },
-  cycleEnabled: { v: true, label: "day/night cycle" },
+  cycleEnabled: { v: false, label: "fast day/night cycle" },
   cycleDuration: {
     v: 1500,
     min: 30,
@@ -162,7 +187,11 @@ export class Sky {
   hemi: THREE.HemisphereLight
   timeOfDay = PRE_SUNSET_TIME
   sunsetAzimuth = SKY_TUNING.values.sunsetAzimuth
-  cycleEnabled = true // start cycling; this field then acts as a per-session on/off toggle
+  // When set, the sky tracks the real SF wall clock every frame (the default).
+  // A manual override (scrub / setTimeOfDay / enabling the cycle) clears it, and
+  // only affects this player — time of day is never sent over the network.
+  realTime: boolean = SKY_TUNING.values.realTime
+  cycleEnabled: boolean = SKY_TUNING.values.cycleEnabled // fast demo cycle; off unless opted in
   cycleDuration = SKY_TUNING.values.cycleDuration
 
   #scene: THREE.Scene
@@ -280,7 +309,7 @@ export class Sky {
     scene.fog = null
     this.applyFogParams()
 
-    this.setTimeOfDay(PRE_SUNSET_TIME)
+    this.followRealTime()
   }
 
   /**
@@ -572,8 +601,19 @@ export class Sky {
     return this.#skyRadiance(dir, { pointFeatures: false, soften: level })
   }
 
+  /** Pin a fixed hour. A manual override: stops the sky from tracking the real
+   *  SF clock (the fast cycle keeps running only if it was already on). */
   setTimeOfDay(hours: number) {
+    this.realTime = false
     this.timeOfDay = ((hours % 24) + 24) % 24
+    this.#applySun()
+  }
+
+  /** Snap to the current real SF time and keep mirroring it every frame — the
+   *  default sky. Wherever the player is, the game reads the SF wall clock. */
+  followRealTime() {
+    this.realTime = true
+    this.timeOfDay = sanFranciscoTimeOfDay()
     this.#applySun()
   }
 
@@ -711,10 +751,14 @@ export class Sky {
       this.#lastElapsed < 0 ? 0 : Math.min(elapsed - this.#lastElapsed, 0.1)
     this.#lastElapsed = elapsed
 
-    if (this.cycleEnabled && dt > 0) {
+    if (this.realTime) {
+      // default: mirror the real San-Francisco wall clock, wherever the player is
+      this.timeOfDay = sanFranciscoTimeOfDay()
+      this.#applySun() // the analytic env reads #uSun, so the IBL tracks for free
+    } else if (this.cycleEnabled && dt > 0) {
       this.timeOfDay =
         (this.timeOfDay + (dt / Math.max(this.cycleDuration, 5)) * 24) % 24
-      this.#applySun() // the analytic env reads #uSun, so the IBL tracks for free
+      this.#applySun()
     }
 
     this.mesh.position.copy(cameraPos)

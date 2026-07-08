@@ -30,7 +30,7 @@ function standard(col: number, roughness: number, opts: { metalness?: number; em
  * colorNode/emissiveNode silently no-op'd under this app's WebGPU pipeline.)
  */
 export function makeWallMaterial(hex: number): THREE.MeshStandardMaterial {
-  return standard(hex, 0.92, { emissive: 0.55 });
+  return standard(hex, 0.92, { emissive: 0.3 });
 }
 
 /** Build the shared id→material table (non-wall ids). Cached by the caller. */
@@ -51,8 +51,8 @@ export function buildCityGenMaterials(): Record<string, THREE.Material> {
     "wall.brick": standard(0x8f4a3a, 0.95),
     "wall.chinatown": standard(0xcabf9e, 0.88),
     // trim / cornice / bay frames — bright painted trim, the SF contrast
-    "trim.victorian": standard(0xf9f4ea, 0.55, { emissive: 0.34 }),
-    "trim.edwardian": standard(0xf2eee4, 0.55, { emissive: 0.34 }),
+    "trim.victorian": standard(0xf9f4ea, 0.55, { emissive: 0.16 }),
+    "trim.edwardian": standard(0xf2eee4, 0.55, { emissive: 0.16 }),
     // ground-floor base tones
     "base.stoop": standard(0xa89e8c, 0.82),
     "citygen.door": standard(0x53382c, 0.55, { emissive: 0.12 }),

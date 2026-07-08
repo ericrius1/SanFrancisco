@@ -190,10 +190,12 @@ const TAB_LIFE = `
 
   <section>
     <h3><span class="bts-ic">🌆</span> The hour that never quite ends</h3>
-    <p>There's a full day/night cycle you can scrub with the trackpad, seeded each session to a warm
-    pre-sunset hour. The sun is deliberately <strong>capped low</strong> — the light lingers in that
-    long golden-hour glow rather than flattening out at noon — which is a big part of why the city looks
-    the way it does.</p>
+    <p>By default the sky runs on <strong>real San-Francisco time</strong> — whatever hour it actually is
+    in SF right now is the hour you see, wherever in the world you're playing from. Hold <strong>Z</strong>
+    and drag the trackpad to scrub to any time you like (just for you), or flip on the fast day/night
+    cycle in the tuning panel. The sun is deliberately <strong>capped low</strong> — the light lingers in
+    that long golden-hour glow rather than flattening out at noon — which is a big part of why the city
+    looks the way it does.</p>
     <p>As the light dims, the landmark <strong>light installations</strong> come up, all driven by that
     one sky-brightness value so they fade in together: the Bay Bridge's shimmering Bay Lights (a field
     of instanced sprite LEDs), Sutro Tower's red aviation beacons blinking up its masts, the Salesforce

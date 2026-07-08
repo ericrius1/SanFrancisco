@@ -25,9 +25,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // back + high; ground/bloom views sit low + close so near-clone trees and the
 // flower drifts are actually visible.
 const VIEWS = [
-  ["garden_grass_intact", -2260, 2450, 0.42, 7, 2.2],
-  ["wild_grass_meadow", -2725, 2540, 0.42, 7, 2.2],
-  ["wild_grass_marin", -4450, -6250, 0.42, 8, 2.4]
+  ["forest_pop_check", -3050, 2000, 0.4, 24, 6],
+  ["grass_float_ggpark", -2725, 2540, 1.2, 6, 1.6],
+  ["grass_float_marin", -4450, -6250, 0.3, 7, 1.8]
 ];
 
 async function isFile(p) { try { return existsSync(p); } catch { return false; } }
@@ -171,6 +171,8 @@ async function main() {
       for (let i = 0; i < 20; i++) { await tick(c, 1 / 60); await sleep(30); }
       const diag = await ev(c, `(()=>{const s=window.__sf.wildlands.trees.stats;return{nearActive:s.nearActive(),instances:s.instances,chunks:s.chunks,designs:s.designs};})()`);
       console.log(`[diag] ${name}`, JSON.stringify(diag));
+      const gdiag = await ev(c, `(()=>{const g=window.__sf.wildlands.grass.group;const m=g.children.find(o=>o.isInstancedMesh);if(!m)return{grass:'none'};const a=m.instanceMatrix.array;let n=m.count,lo=1e9,hi=-1e9;for(let i=0;i<n;i++){const y=a[i*16+13];if(y<lo)lo=y;if(y>hi)hi=y;}const cam=window.__sf.camera.position;const gh=window.__sf.map.groundHeight(cam.x,cam.z);return{count:n,yLo:+lo.toFixed(1),yHi:+hi.toFixed(1),camGround:+gh.toFixed(1),camY:+cam.y.toFixed(1)};})()`);
+      console.log(`[grass] ${name}`, JSON.stringify(gdiag));
       const shot = await c.send("Page.captureScreenshot", { format: "jpeg", quality: 88, fromSurface: true });
       writeFileSync(path.join(OUT, `${name}.jpg`), Buffer.from(shot.data, "base64"));
       const all = await measure(c); // wildlands + garden on

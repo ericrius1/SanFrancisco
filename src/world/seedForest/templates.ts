@@ -30,8 +30,11 @@ export type GrownTemplate = {
   lod2: THREE.Object3D;
 };
 
-// Hero-clone LOD switch distances (same as the garden's).
-const LOD_OPTS = { lod1Dist: 40, lod2Dist: 90 };
+// Hero-clone LOD switch distances. lod2Dist is kept BELOW the seedForest near
+// radius (see index.ts) on purpose: a hero clone is already showing LOD2 by the
+// time it hands off to the instanced far tier (same LOD2 geometry), so the
+// clone→far swap is seamless instead of popping full-geometry → flat cards.
+const LOD_OPTS = { lod1Dist: 46, lod2Dist: 78 };
 
 const FOLIAGE_MESH_RE = /leaf|foliage|card|cluster|rosette|frond/i;
 // Slightly lighter, greener target than the garden's original 0x4e623a — the

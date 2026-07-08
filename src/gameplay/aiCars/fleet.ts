@@ -127,8 +127,10 @@ export type AiCar = {
   prevZ: number;
   prevSteer: number; // last steer, for steer-smoothness reward
   prevHeading: number; // last-step heading, for the sustained-yaw penalty
-  travelDir: 1 | -1; // COMMITTED direction along the current road segment (see stepCar)
+  travelDir: 1 | -1; // COMMITTED road direction (see stepCar) — re-anchored by NET distance
   commitSeg: number; // segId travelDir was committed for (-1 = uncommitted)
+  commitX: number; // position where travelDir was last committed (net-distance gate)
+  commitZ: number;
   stuckT: number; // seconds continuously |speed| < STUCK_SPEED
   rewardAccum: number; // integrated reward summed across the current learn window
   windowDt: number; // elapsed seconds across the current learn window (→ rate)
@@ -191,6 +193,9 @@ const R_STUCK = 1.0;
 // max-lock turn (a spin) paid nothing — this charges for actual heading change per
 // second, so continuous spinning is costly while a one-off corner is cheap.
 const R_YAW = 0.6;
+// Net metres the car must translate before its committed road direction re-anchors.
+// A spin never covers this ground, so its progress reward stays pinned at ≈0.
+const COMMIT_DIST = 20;
 
 function wrap(a: number): number {
   return Math.atan2(Math.sin(a), Math.cos(a));
@@ -245,6 +250,8 @@ export class Fleet {
         prevHeading: 0,
         travelDir: 1,
         commitSeg: -1,
+        commitX: 0,
+        commitZ: 0,
         stuckT: 0,
         rewardAccum: 0,
         windowDt: 0,
@@ -361,6 +368,8 @@ export class Fleet {
     car.prevHeading = heading;
     car.commitSeg = -1; // re-commit travel direction on the next projection
     car.travelDir = 1;
+    car.commitX = x;
+    car.commitZ = z;
     car.stuckT = 0;
     car.rewardAccum = 0;
     car.windowDt = 0;
@@ -451,16 +460,23 @@ export class Fleet {
       lateralRaw = proj.lateral;
       onRoad = Math.abs(proj.lateral) <= halfW;
       lateralN = THREE.MathUtils.clamp(proj.lateral / halfW, -2, 2);
-      // COMMITTED travel direction. The old code re-picked `dir` to align with the
-      // car's current heading EVERY step, so the progress reward (dx·travel) was
-      // positive for ANY motion near a road — a tight in-place spin scored max
-      // reward and the trainer collapsed onto it. Instead we commit a direction
-      // when the car ENTERS a segment and hold it while it stays on that segment,
-      // so a loop nets ≈0 progress and only real down-the-road travel is paid.
-      if (proj.segId !== car.commitSeg) {
+      // COMMITTED travel direction, re-anchored by NET DISTANCE. The old code
+      // re-picked `dir` to align with the car's heading EVERY step, so the
+      // progress reward (dx·travel) was positive for ANY motion near a road — a
+      // tight spin scored max reward. Committing per-segment still leaked: a fast
+      // spin in dense SF roads crosses segments constantly and re-aligned `dir`
+      // to its heading each time. So we only re-commit once the car has moved
+      // COMMIT_DIST metres NET from where it last committed — a spin never
+      // translates that far, so its `dir` stays frozen and the progress reward
+      // over a circle sums to ≈0. Only genuine down-the-road travel is paid.
+      const movedX = x - car.commitX;
+      const movedZ = z - car.commitZ;
+      if (car.commitSeg < 0 || movedX * movedX + movedZ * movedZ >= COMMIT_DIST * COMMIT_DIST) {
         const dot = fwdX * proj.tangentX + fwdZ * proj.tangentZ;
         car.travelDir = dot >= 0 ? 1 : -1;
         car.commitSeg = proj.segId;
+        car.commitX = x;
+        car.commitZ = z;
       }
       dir = car.travelDir;
       travelX = proj.tangentX * dir;
