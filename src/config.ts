@@ -73,10 +73,11 @@ export const RENDER_TUNING = tunables("render", {
 /** Draw distance + fog, bound in the "/" panel. `radius` drives both tile radii. */
 export const WORLD_TUNING = tunables("world", {
   // Draw distance. The marine-layer + distance fog (below) is tuned to fully melt
-  // geometry into the sky by ~1350 m, so the tile radius can sit low without a
-  // visible pop-in edge — the fog IS the far cull. Push it back up if you turn fog
+  // geometry into the sky by ~1200 m — the distance haze + a GLOBAL horizon veil
+  // densify everywhere (not just the coast), so the tile radius sits low without a
+  // visible pop-in edge: the fog IS the far cull. Push it back up if you turn fog
   // down.
-  radius: { v: 1500, min: 900, max: 6000, step: 100, label: "buildings (m)" },
+  radius: { v: 1300, min: 900, max: 6000, step: 100, label: "buildings (m)" },
   fogEnabled: { v: true, label: "custom fog" },
   // --- ground/valley bank: a marine layer that pools in low ground and lets the
   // hills poke through. base/top are world-Y metres; billow gives it a churning
@@ -99,9 +100,11 @@ export const WORLD_TUNING = tunables("world", {
   // --- distance haze: exp² fog that slams shut far out so the draw edge melts
   // into the sky. This is the draw-distance lever.
   fog: { v: 0.0011, min: 0, max: 0.002, step: 0.00001, format: (v: number) => v.toFixed(5), label: "haze" },
-  fogHorizon: { v: 0.65, min: 0, max: 1.5, step: 0.02, label: "horizon veil" },
-  fogHorizonStart: { v: 650, min: 300, max: 6000, step: 50, label: "horizon start (m)" },
-  fogHorizonSoftness: { v: 600, min: 100, max: 3000, step: 50, label: "horizon softness" }
+  // GLOBAL far veil (region-independent) — the unified far-cull that lets the tile
+  // radius sit low. Ramps in from `start` and is near-solid by the tile edge.
+  fogHorizon: { v: 0.82, min: 0, max: 1.5, step: 0.02, label: "horizon veil" },
+  fogHorizonStart: { v: 600, min: 300, max: 6000, step: 50, label: "horizon start (m)" },
+  fogHorizonSoftness: { v: 550, min: 100, max: 3000, step: 50, label: "horizon softness" }
 });
 
 /** Cosmetic vegetation visibility, bound in the "/" panel for performance checks. */

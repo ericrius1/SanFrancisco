@@ -95,8 +95,15 @@ export function capsulesToLocal(mesh: THREE.Object3D, ref: THREE.Object3D, caps:
  * TSL: push a local-space position out of every active capsule. Branchless —
  * a vertex outside all capsules is returned untouched. Sequential per capsule,
  * which is fine for the few well-separated spars a panel ever sees.
+ *
+ * `escape` is the cloth's displacement axis (local, e.g. +x for a sail, +z for a
+ * flag). It seeds the push direction so a vertex sitting ON or very near the
+ * capsule axis — where the radial `p − closest` collapses to ~0 and has no
+ * well-defined outward direction — is shoved out the same (leeward) side the
+ * cloth already bellies toward, instead of not moving at all. Off-axis vertices
+ * keep their natural radial push; the bias fades out by the capsule surface.
  */
-export function pushOutOfColliders(pos: unknown, colliders: ClothColliders): unknown {
+export function pushOutOfColliders(pos: unknown, colliders: ClothColliders, escape?: unknown): unknown {
   let out = pos as any;
   for (const s of colliders.slots) {
     const a = s.a as any;
@@ -108,10 +115,15 @@ export function pushOutOfColliders(pos: unknown, colliders: ClothColliders): unk
     // closest point on the segment (t clamped to the endpoints)
     const t = pa.dot(ba).div(ba.dot(ba).max(1e-5)).clamp(0, 1);
     const closest = a.add(ba.mul(t));
-    const away = out.sub(closest);
-    const dist = away.length().max(1e-4); // guard div-by-zero on the axis
+    const radial = out.sub(closest);
+    const dist = radial.length();
+    // Direction to exit along. Near the axis (dist < r) lean on the escape axis
+    // so we always have a stable, leeward-biased normal; farther out, pure radial.
+    let dir = radial;
+    if (escape) dir = radial.add((escape as any).mul(r.sub(dist).max(0)));
+    dir = dir.normalize();
     const pen = r.add(skin).sub(dist).max(0); // 0 when outside ⇒ no-op
-    out = out.add(away.div(dist).mul(pen));
+    out = out.add(dir.mul(pen));
   }
   return out;
 }
@@ -171,7 +183,7 @@ export function rippleMaterial(opts: RippleOpts = {}): THREE.MeshLambertNodeMate
     .mul(amp);
   if (opts.oneSided) wave = wave.max(0); // stay on one side of any pole in the pin plane
   let pos: unknown = positionLocal.add(vec3(0, 0, wave));
-  if (opts.colliders) pos = pushOutOfColliders(pos, opts.colliders);
+  if (opts.colliders) pos = pushOutOfColliders(pos, opts.colliders, vec3(0, 0, 1));
   mat.positionNode = pos as never;
   return mat;
 }

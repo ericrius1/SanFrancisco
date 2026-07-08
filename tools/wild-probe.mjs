@@ -25,8 +25,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // back + high; ground/bloom views sit low + close so near-clone trees and the
 // flower drifts are actually visible.
 const VIEWS = [
-  ["grass_tuned_lupine", -2725, 2540, 1.2, 8, 2.2],
-  ["grass_tuned_marin", -4450, -6250, 0.3, 9, 2.4]
+  ["garden_grass_intact", -2260, 2450, 0.42, 7, 2.2],
+  ["wild_grass_meadow", -2725, 2540, 0.42, 7, 2.2],
+  ["wild_grass_marin", -4450, -6250, 0.42, 8, 2.4]
 ];
 
 async function isFile(p) { try { return existsSync(p); } catch { return false; } }

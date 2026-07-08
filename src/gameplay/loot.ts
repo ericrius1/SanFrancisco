@@ -1,19 +1,19 @@
 import * as THREE from "three/webgpu";
-import { BodyType } from "../core/physics";
 import { LIGHT_SCALE } from "../config";
 import type { Physics } from "../core/physics";
+import type { PlayerMode } from "../player/types";
 import type { WorldMap } from "../world/heightmap";
 
 /**
  * Treasure chests, Fortnite style. Golden chests conjure themselves on open
  * ground around the player, humming under a light beacon you can spot from a
- * block away. Walk up and one pops open on its own: the lid swings back and a
- * fountain of coins (and the odd big gem) sprays out. Coins scatter with a
- * toy ballistic sim, then magnet onto the player and count into the satchel.
- * Some chests throw in a fireworks salvo on top.
+ * block away. Run one over or walk up close and it pops open: the lid swings
+ * back, the chest crumbles away, and a fountain of coins (and the odd big gem)
+ * sprays out. Coins scatter with a toy ballistic sim, then magnet onto the
+ * player and count into the satchel. Some chests throw in a fireworks salvo.
  *
- * Coins are pure visuals (no physics bodies) so a 20-coin burst costs nothing;
- * each chest does carry one static box so it thunks when you drive into it.
+ * Chests are visual-only — no physics bodies — so driving through them never
+ * breaks momentum.
  */
 
 type ChestState = "closed" | "opening" | "open";
@@ -23,7 +23,6 @@ type Chest = {
   lid: THREE.Group;
   beacon: THREE.Mesh;
   seam: THREE.Mesh;
-  body: number;
   x: number;
   y: number;
   z: number;
@@ -31,7 +30,10 @@ type Chest = {
   anim: number; // 0 closed .. 1 fully open
   sparkle: number; // burst flash timer
   yaw: number;
+  fastOpen: boolean; // smashed at speed — quick pop and vanish
 };
+
+type Poof = { x: number; y: number; z: number; age: number };
 
 type Coin = {
   kind: "coin" | "gem";
@@ -49,7 +51,8 @@ const CHEST_MIN = 34;
 const CHEST_MAX = 150;
 const CHEST_DROP = 280;
 const CHEST_SPACING = 46;
-const OPEN_RANGE = 2.9;
+const CHEST_RADIUS = 0.55;
+const WALK_OPEN_RANGE = 2.9;
 const COIN_LIFE = 26;
 const MAGNET_RANGE = 5.5;
 const COLLECT_RANGE = 1.35;
@@ -100,19 +103,70 @@ function chestParts(): { base: THREE.Group; lid: THREE.Group } {
   return { base, lid };
 }
 
+function playerFootprint(mode: PlayerMode, driveHalf?: [number, number, number]): number {
+  switch (mode) {
+    case "drive":
+      return driveHalf ? Math.hypot(driveHalf[0], driveHalf[2]) : 2.5;
+    case "board":
+      return 1.25;
+    case "walk":
+      return 0.55;
+    case "bird":
+      return 1.4;
+    case "plane":
+      return 2.8;
+    case "drone":
+      return 0.7;
+    case "boat":
+    case "speedboat":
+      return 2.2;
+    default:
+      return 0.7;
+  }
+}
+
+function hitsChest(
+  px: number,
+  pz: number,
+  py: number,
+  prevPx: number,
+  prevPz: number,
+  cx: number,
+  cz: number,
+  cy: number,
+  radius: number
+): boolean {
+  if (Math.abs(py - cy) > 3.4) return false;
+  if (Math.hypot(px - cx, pz - cz) < radius) return true;
+  const sx = px - prevPx;
+  const sz = pz - prevPz;
+  const len2 = sx * sx + sz * sz;
+  if (len2 < 1e-4) return false;
+  const t = Math.max(0, Math.min(1, ((cx - prevPx) * sx + (cz - prevPz) * sz) / len2));
+  const nx = prevPx + sx * t - cx;
+  const nz = prevPz + sz * t - cz;
+  return Math.hypot(nx, nz) < radius;
+}
+
 export class Loot {
   /** Fired per pickup: kind and how many the satchel should add. */
   onCollect: (kind: "coin" | "gem", n: number) => void = () => {};
   /** A lucky chest celebrates itself. */
   onFireworks: (x: number, y: number, z: number) => void = () => {};
   onOpen: () => void = () => {};
+  /** Run-over dust puff at the chest. */
+  onSmash: (x: number, y: number, z: number) => void = () => {};
 
   #physics: Physics;
   #map: WorldMap;
   #scene: THREE.Scene;
   #chests: Chest[] = [];
   #coins: Coin[] = [];
+  #poofs: Poof[] = [];
   #spawnTimer = 3;
+  #prevPlayerX = 0;
+  #prevPlayerZ = 0;
+  #hasPrevPlayer = false;
 
   #coinMesh: THREE.InstancedMesh;
   #gemMesh: THREE.InstancedMesh;
@@ -120,6 +174,7 @@ export class Loot {
   #beaconMat: THREE.MeshBasicMaterial;
   #seamGeo = new THREE.BoxGeometry(0.94, 0.05, 0.6);
   #seamMat: THREE.MeshStandardMaterial;
+  #poofMesh: THREE.InstancedMesh;
 
   #tmpMat = new THREE.Matrix4();
   #tmpQuat = new THREE.Quaternion();
@@ -173,6 +228,19 @@ export class Loot {
       emissiveIntensity: 1.1 * LIGHT_SCALE,
       roughness: 0.4
     });
+
+    const poofMat = new THREE.MeshBasicMaterial({
+      color: "#ffd76a",
+      transparent: true,
+      opacity: 0.85,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false
+    });
+    this.#poofMesh = new THREE.InstancedMesh(new THREE.OctahedronGeometry(0.11, 0), poofMat, 8 * 6);
+    this.#poofMesh.count = 0;
+    this.#poofMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.#poofMesh.frustumCulled = false;
+    scene.add(this.#poofMesh);
   }
 
   get chestCount() {
@@ -213,15 +281,8 @@ export class Loot {
     group.add(seam);
 
     this.#scene.add(group);
-    const body = this.#physics.world.createBox({
-      type: BodyType.Static,
-      position: [x, y + 0.35, z],
-      halfExtents: [0.52, 0.35, 0.35],
-      friction: 0.6
-    });
-    this.#physics.world.setBodyTransform(body, [x, y + 0.35, z], [0, Math.sin(yaw / 2), 0, Math.cos(yaw / 2)]);
 
-    this.#chests.push({ group, lid, beacon, seam, body, x, y, z, state: "closed", anim: 0, sparkle: 0, yaw });
+    this.#chests.push({ group, lid, beacon, seam, x, y, z, state: "closed", anim: 0, sparkle: 0, yaw, fastOpen: false });
     return true;
   }
 
@@ -229,16 +290,23 @@ export class Loot {
     const i = this.#chests.indexOf(chest);
     if (i === -1) return;
     this.#chests.splice(i, 1);
-    this.#physics.world.destroyBody(chest.body);
     this.#scene.remove(chest.group);
     (chest.beacon.material as THREE.Material).dispose(); // per-chest clone
     // everything else is shared geometry/material and stays alive
   }
 
-  #open(chest: Chest) {
+  #poof(x: number, y: number, z: number) {
+    if (this.#poofs.length >= 6) this.#poofs.shift();
+    this.#poofs.push({ x, y, z, age: 0 });
+  }
+
+  #open(chest: Chest, speed: number) {
     chest.state = "opening";
     chest.sparkle = 1;
+    chest.fastOpen = speed > 4;
     this.onOpen();
+    this.onSmash(chest.x, chest.y + 0.35, chest.z);
+    this.#poof(chest.x, chest.y + 0.45, chest.z);
 
     // the payout: a fountain of coins, a few gems, sometimes a firework salvo
     const coins = 13 + Math.floor(Math.random() * 8);
@@ -264,7 +332,21 @@ export class Loot {
     if (Math.random() < 0.28) this.onFireworks(chest.x, chest.y + 1, chest.z);
   }
 
-  update(dt: number, playerPos: THREE.Vector3, elapsed: number) {
+  update(
+    dt: number,
+    playerPos: THREE.Vector3,
+    elapsed: number,
+    mode: PlayerMode = "walk",
+    speed = 0,
+    driveHalf?: [number, number, number]
+  ) {
+    const prevPx = this.#hasPrevPlayer ? this.#prevPlayerX : playerPos.x;
+    const prevPz = this.#hasPrevPlayer ? this.#prevPlayerZ : playerPos.z;
+    const playerR = playerFootprint(mode, driveHalf);
+    const openR =
+      mode === "walk"
+        ? WALK_OPEN_RANGE
+        : CHEST_RADIUS + playerR + (speed > 8 ? 0.65 : 0.4);
     // conjure new chests in the ring around the player
     this.#spawnTimer -= dt;
     if (this.#spawnTimer <= 0) {
@@ -287,9 +369,24 @@ export class Loot {
         const pulse = 0.75 + Math.sin(elapsed * 3.1 + chest.x) * 0.45;
         this.#seamMat.emissiveIntensity = (0.7 + pulse * 0.6) * LIGHT_SCALE;
         chest.beacon.rotation.y = elapsed * 0.4;
-        if (dist < OPEN_RANGE && Math.abs(playerPos.y - chest.y) < 3.4) this.#open(chest);
+        if (
+          hitsChest(
+            playerPos.x,
+            playerPos.z,
+            playerPos.y,
+            prevPx,
+            prevPz,
+            chest.x,
+            chest.z,
+            chest.y,
+            openR
+          )
+        ) {
+          this.#open(chest, speed);
+        }
       } else if (chest.state === "opening") {
-        chest.anim = Math.min(1, chest.anim + dt * 2.4);
+        const rate = chest.fastOpen ? 5.6 : 2.4;
+        chest.anim = Math.min(1, chest.anim + dt * rate);
         // overshoot ease: the lid flies back and settles
         const t = chest.anim;
         const angle = -(Math.PI * 0.62) * (1 - Math.pow(1 - t, 3));
@@ -298,15 +395,42 @@ export class Loot {
         chest.beacon.position.y = 7.6 * (1 - t) + 1.2;
         (chest.beacon.material as THREE.MeshBasicMaterial).opacity = 0.16 * (1 - t);
         chest.seam.visible = false;
-        if (t >= 1) {
-          chest.state = "open";
-          chest.beacon.visible = false;
-        }
+        const shrink = chest.fastOpen ? Math.max(0, 1 - t * 1.35) : Math.max(0.15, 1 - t * 0.85);
+        chest.group.scale.setScalar(shrink);
+        if (t >= 1) this.#dropChest(chest);
       }
       if (chest.sparkle > 0) chest.sparkle -= dt;
     }
 
+    this.#prevPlayerX = playerPos.x;
+    this.#prevPlayerZ = playerPos.z;
+    this.#hasPrevPlayer = true;
+
     this.#updateCoins(dt, playerPos, elapsed);
+    this.#drawPoofs(dt);
+  }
+
+  #drawPoofs(dt: number) {
+    let n = 0;
+    for (let i = this.#poofs.length - 1; i >= 0; i--) {
+      const p = this.#poofs[i];
+      p.age += dt;
+      if (p.age > 0.55) {
+        this.#poofs.splice(i, 1);
+        continue;
+      }
+      const bloom = 1 + p.age * 4.2;
+      const fade = 1 - p.age / 0.55;
+      for (let k = 0; k < 8; k++) {
+        const a = (k / 8) * Math.PI * 2 + p.age * 5;
+        const r = 0.35 * bloom;
+        this.#tmpVec.set(p.x + Math.cos(a) * r, p.y + 0.15 * bloom, p.z + Math.sin(a) * r);
+        this.#tmpMat.compose(this.#tmpVec, this.#tmpQuat, this.#tmpScale.setScalar(0.55 * fade));
+        this.#poofMesh.setMatrixAt(n++, this.#tmpMat);
+      }
+    }
+    this.#poofMesh.count = n;
+    if (n) this.#poofMesh.instanceMatrix.needsUpdate = true;
   }
 
   #updateCoins(dt: number, playerPos: THREE.Vector3, elapsed: number) {

@@ -37,7 +37,6 @@ import { AvatarSelector } from "./ui/avatarSelector";
 import { AudioControls } from "./ui/audioControls";
 import { VehicleAudio } from "./fx/vehicleAudio";
 import { createNatureSoundscape } from "./audio";
-import { Props } from "./gameplay/props";
 import { Traffic, DRIVE_PROFILES, type VehicleClass } from "./gameplay/traffic";
 import { AbandonedMounts } from "./gameplay/abandonedMounts";
 import { AiCars } from "./gameplay/aiCars/index.ts";
@@ -52,6 +51,7 @@ import { Forest, ANIMALS, type AnimalKind } from "./gameplay/forest";
 import { createBotanicalGarden, windGustValue, type GrassDisplacer } from "./world/garden";
 import { createWildlands } from "./world/wildlands";
 import { createChinatown, cullGeneratedBuildings, pumpGeneratedBuildings, type Chinatown } from "./world/buildings";
+import { createCityGenDemo } from "./world/citygen/demo";
 import { Islands } from "./gameplay/islands";
 import { Exploratorium, WATER_VIEW } from "./gameplay/exploratorium";
 import { PALACE_FINE_ARTS } from "./world/heightmap";
@@ -256,10 +256,8 @@ async function boot() {
     hud.setDevice("kb");
   });
 
-  // the playground layer: physics-toy discovery sites at the landmarks, ambient
-  // traffic you can commandeer with E, and the local wildlife
-  const props = new Props(physics, map, scene);
-  props.onDiscover = (name) => hud.message(`Discovered: ${name}`, 4);
+  // the playground layer: ambient traffic you can commandeer with E, and the
+  // local wildlife
   const traffic = new Traffic(physics, map, scene);
   // AI cars: a self-training neuro-evolution fleet driving the streets, each with
   // a floating brain lattice. Async init loads the road graph off the boot path.
@@ -397,6 +395,12 @@ async function boot() {
   const buildings: { current: Chinatown | null } = { current: null };
   createChinatown({}, { scene, physics, map, tiles }).then((c) => { buildings.current = c; });
 
+  // New SF-tuned procedural building module (src/world/citygen). Demo-only for
+  // now: exposed on __sf.citygen so a headless capture can spawn a terrace and
+  // screenshot it in the real renderer (sun + CSM shadows + SSAO). No mesh is
+  // added until spawn() is called, so normal play is unaffected.
+  const citygen = createCityGenDemo({ scene, map });
+
   // the Fortnite-ish layer: treasure chests raining coins, critters to hunt,
   // and the Garry's-Mod rope/grab click-tools (loot.ts / hunt.ts / ropes.ts)
   const satchel = new Satchel();
@@ -404,6 +408,7 @@ async function boot() {
   loot.onCollect = (kind, n) => satchel.add(kind, n);
   loot.onOpen = () => hud.message("Treasure! Grab the coins", 2.2);
   loot.onFireworks = (x, y, z) => fireworks.launchCelebration(x, y, z);
+  loot.onSmash = (x, y, z) => fx.impactPuff(new THREE.Vector3(x, y, z));
   const hunt = new Hunt(map, scene);
   hunt.onCatch = (kind) => {
     satchel.add(kind);
@@ -443,19 +448,17 @@ async function boot() {
   const ropes = new Ropes(physics, scene);
   const grabber = new Grabber(physics, scene);
   grabberRef = grabber;
-  // bodies owned by props/traffic can vanish (zones retire, cars despawn or get
-  // commandeered) — ropes and the grab beam must let go BEFORE the destroy
+  // bodies owned by traffic can vanish (cars despawn or get commandeered) —
+  // ropes and the grab beam must let go BEFORE the destroy
   const releaseBody = (h: number) => {
     ropes.severBody(h);
     grabber.dropIf(h);
   };
-  props.onWillRemoveBody = releaseBody;
   traffic.onWillRemoveBody = releaseBody;
   aiCars.onWillRemoveBody = releaseBody;
   const pickables: PickCandidate[] = [];
   const gatherPickables = () => {
     pickables.length = 0;
-    props.collectPickables(pickables);
     for (const v of traffic.vehicles) {
       const he = DRIVE_PROFILES[v.cls].halfExtents;
       pickables.push({ handle: v.handle, x: v.pos.x, y: v.pos.y, z: v.pos.z, r: Math.hypot(he[0], he[1], he[2]) + 0.5 });
@@ -499,7 +502,6 @@ async function boot() {
     hud.message(startMode === "tutorial" ? `Tutorial started — ${verb}` : `You're the ${info.label} — ${verb}! E to dismount`, 3.4);
   }
   let currentPaint: number | undefined; // commandeered car's paint, so invites clone the exact look
-  let zeroG = false;
   let ridePromptShown = false;
   // way high above the ground (plane/drone cruising), ground flora and critters
   // are subpixel — their systems pause. Hysteresis so hill flanks don't flicker it.
@@ -1421,14 +1423,6 @@ async function boot() {
         steps++;
       }
       if (steps === 3) accumulator = 0;
-      // trampolines still bounce a walker/boarder standing on a pad
-      if ((player.mode === "walk" || player.mode === "board") && !player.riding && steps > 0) {
-        const launch = props.padLaunch(player.position, player.velocity.y);
-        if (launch !== null) {
-          physics.world.setBodyVelocity(player.body, [player.velocity.x, launch, player.velocity.z]);
-          chase.shake(0.12);
-        }
-      }
       remotes.selfId = net.selfId;
       remotes.update(frameDt);
       // riding shotgun with a friend keeps you glued to their seat; otherwise
@@ -1575,13 +1569,6 @@ async function boot() {
     }
     exploratorium.handlePianoInput((c) => input.pressed(c));
 
-    // G: zero-g playground (props + ragdolls float off)
-    if (input.pressed("KeyG")) {
-      zeroG = !zeroG;
-      props.setZeroG(zeroG);
-      ropes.setZeroG(zeroG);
-      hud.message(zeroG ? "Zero-G — the toys are floating" : "Gravity restored", 2.4);
-    }
     if (input.pressed("KeyR")) {
       leaveRide();
       player.respawn(spawn);
@@ -1850,15 +1837,6 @@ async function boot() {
     }
     if (steps === 3) accumulator = 0;
 
-    // trampolines: launch the walker/boarder standing on a pad
-    if ((player.mode === "walk" || player.mode === "board") && !player.riding && steps > 0) {
-      const launch = props.padLaunch(player.position, player.velocity.y);
-      if (launch !== null) {
-        physics.world.setBodyVelocity(player.body, [player.velocity.x, launch, player.velocity.z]);
-        chase.shake(0.12);
-      }
-    }
-
     // everyone else's interpolation advances BEFORE my pose settles: a
     // passenger's seat is glued to this frame's view of the driver's car
     remotes.selfId = net.selfId;
@@ -1882,7 +1860,6 @@ async function boot() {
     highUp = highUp ? altitude > 110 : altitude > 150;
     // high over the city streams buildings only — no park lawns / trees uploaded
     tiles.update(player.position.x, player.position.z, highUp);
-    props.update(frameDt, player.position);
     traffic.update(player.position, frameDt, sky.timeOfDay, sky.sunsetAzimuth);
     aiCars.update(frameDt, player.position, highUp);
     abandonedMounts.update(frameDt, player.position);
@@ -1942,7 +1919,14 @@ async function boot() {
       z: player.position.z,
       speed: player.speed
     });
-    loot.update(frameDt, player.position, elapsed);
+    loot.update(
+      frameDt,
+      player.position,
+      elapsed,
+      player.mode,
+      player.speed,
+      player.mode === "drive" ? player.driveSpec.halfExtents : undefined
+    );
     if (!highUp) hunt.update(frameDt, elapsed, player.position);
     ropes.update(frameDt, player.position, elapsed);
     if (grabber.holding) {
@@ -2207,7 +2191,7 @@ async function boot() {
 
   const exposeDebugHooks = () => {
     Object.assign(window as never, {
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, WORLD_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, props, exploratorium, traffic, creatures, forest, garden, wildlands, splashes, vehicleAudio, nature, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, boatLaunchers, goldenGateLights, flyover, bridgeParade, teleportToTarget, aiCars, horses, buildings, cullGeneratedBuildings, brainPanel, inspectableBrains, worldCursor }
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, WORLD_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, exploratorium, traffic, creatures, forest, garden, wildlands, splashes, vehicleAudio, nature, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, boatLaunchers, goldenGateLights, flyover, bridgeParade, teleportToTarget, aiCars, horses, buildings, citygen, cullGeneratedBuildings, brainPanel, inspectableBrains, worldCursor }
     });
   };
   if (import.meta.env.DEV || new URLSearchParams(location.search).has("profile")) {

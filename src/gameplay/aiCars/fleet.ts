@@ -126,6 +126,9 @@ export type AiCar = {
   prevX: number; // last-step position, for forward-progress reward
   prevZ: number;
   prevSteer: number; // last steer, for steer-smoothness reward
+  prevHeading: number; // last-step heading, for the sustained-yaw penalty
+  travelDir: 1 | -1; // COMMITTED direction along the current road segment (see stepCar)
+  commitSeg: number; // segId travelDir was committed for (-1 = uncommitted)
   stuckT: number; // seconds continuously |speed| < STUCK_SPEED
   rewardAccum: number; // integrated reward summed across the current learn window
   windowDt: number; // elapsed seconds across the current learn window (→ rate)
@@ -184,6 +187,10 @@ const R_GRIND = 2.0;
 const R_STEER = 0.02;
 const R_REVERSE = 0.3;
 const R_STUCK = 1.0;
+// Sustained-yaw penalty. R_STEER only punishes CHANGING the steer, so a constant
+// max-lock turn (a spin) paid nothing — this charges for actual heading change per
+// second, so continuous spinning is costly while a one-off corner is cheap.
+const R_YAW = 0.6;
 
 function wrap(a: number): number {
   return Math.atan2(Math.sin(a), Math.cos(a));
@@ -235,6 +242,9 @@ export class Fleet {
         prevX: 0,
         prevZ: 0,
         prevSteer: 0,
+        prevHeading: 0,
+        travelDir: 1,
+        commitSeg: -1,
         stuckT: 0,
         rewardAccum: 0,
         windowDt: 0,
@@ -348,6 +358,9 @@ export class Fleet {
     car.speed = 0;
     car.steer = 0;
     car.prevSteer = 0;
+    car.prevHeading = heading;
+    car.commitSeg = -1; // re-commit travel direction on the next projection
+    car.travelDir = 1;
     car.stuckT = 0;
     car.rewardAccum = 0;
     car.windowDt = 0;
@@ -438,9 +451,18 @@ export class Fleet {
       lateralRaw = proj.lateral;
       onRoad = Math.abs(proj.lateral) <= halfW;
       lateralN = THREE.MathUtils.clamp(proj.lateral / halfW, -2, 2);
-      // road direction aligned with the way the car is currently heading
-      const dot = fwdX * proj.tangentX + fwdZ * proj.tangentZ;
-      dir = dot >= 0 ? 1 : -1;
+      // COMMITTED travel direction. The old code re-picked `dir` to align with the
+      // car's current heading EVERY step, so the progress reward (dx·travel) was
+      // positive for ANY motion near a road — a tight in-place spin scored max
+      // reward and the trainer collapsed onto it. Instead we commit a direction
+      // when the car ENTERS a segment and hold it while it stays on that segment,
+      // so a loop nets ≈0 progress and only real down-the-road travel is paid.
+      if (proj.segId !== car.commitSeg) {
+        const dot = fwdX * proj.tangentX + fwdZ * proj.tangentZ;
+        car.travelDir = dot >= 0 ? 1 : -1;
+        car.commitSeg = proj.segId;
+      }
+      dir = car.travelDir;
       travelX = proj.tangentX * dir;
       travelZ = proj.tangentZ * dir;
       // heading error toward a point 8 m ahead along the road
@@ -562,6 +584,9 @@ export class Fleet {
     r -= R_STEER * Math.abs(steerRate) * dt;
     if (car.speed < -0.1) r -= R_REVERSE * dt; // reversing is a tool, not a lifestyle
     if (car.stuckT > STUCK_TIME) r -= R_STUCK * dt; // wedged
+    // sustained yaw: |heading change| this step (a spin bleeds reward continuously)
+    r -= R_YAW * Math.abs(wrap(car.heading - car.prevHeading));
+    car.prevHeading = car.heading;
     car.rewardAccum += r;
     car.windowDt += dt;
 

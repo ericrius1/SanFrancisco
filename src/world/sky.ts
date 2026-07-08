@@ -129,6 +129,15 @@ const PALETTE = {
     day: new THREE.Color(0xccdae2),
     gold: new THREE.Color(0xc9a794),
     night: new THREE.Color(0x475369)
+  },
+  // Directional sun-glow the fog picks up when you look toward the sun: the marine
+  // haze scatters sunlight, so it warms to gold on the sunward side and stays the
+  // neutral `fog` tint (a moonlit blue-grey after dark) away from it. Applied by an
+  // amount that's near-zero at night, so night fog just reads bluish.
+  fogGlow: {
+    day: new THREE.Color(0xe9d6b4),
+    gold: new THREE.Color(0xf4b878),
+    night: new THREE.Color(0x000000)
   }
 }
 
@@ -179,6 +188,10 @@ export class Sky {
   #uFogHorizon = uniform(WORLD_TUNING.values.fogHorizon)
   #uFogHorizonStart = uniform(WORLD_TUNING.values.fogHorizonStart)
   #uFogHorizonSoftness = uniform(WORLD_TUNING.values.fogHorizonSoftness)
+  // directional sun-glow tint (warms the fog toward the sun) — see PALETTE.fogGlow
+  #fogGlow = new THREE.Color(0x000000)
+  #uFogGlow = uniform(this.#fogGlow.clone())
+  #uFogGlowAmt = uniform(0)
   #fogNode: N | null = null
 
   // night-only brightness multiplier (the "/" panel's night brightness slider);
@@ -441,9 +454,10 @@ export class Sky {
     const marine = this.#marineField()
     const region = mix(float(1), marine, this.#uFogMarine as N)
     const bankScale = mix(this.#uFogFloor as N, this.#uFogPeak as N, region)
-    // the distance haze also leans coastal, but only gently — downtown must still
-    // fog out at long range (can't see it from Ocean Beach), just with clearer air.
-    const distScale = mix(float(0.85), float(1.4), region)
+    // the distance haze leans coastal (coast fogs sooner) but never below 1× —
+    // downtown must still fog out at long range so distant geometry densifies
+    // everywhere, not just at the coast.
+    const distScale = mix(float(1), float(1.4), region)
 
     // animated two-octave volumetric noise (three's built-in fog noise) churns the
     // top of the bank so the marine layer boils and drifts rather than sitting as a
@@ -483,13 +497,18 @@ export class Sky {
       .saturate()
 
     // exp² distance haze (three's densityFogFactor, view-Z based) — the draw-distance
-    // lever — plus a far horizon veil for the last stretch out to the tile edge.
+    // lever. The coast fogs a little sooner (distScale ≥ 1) but downtown is never
+    // thinned below the global base, so distant geometry densifies everywhere.
     const distHaze = densityFogFactor((this.#uFogDensity as N).mul(distScale))
+    // far horizon veil: a GLOBAL blanket over the last stretch to the tile edge,
+    // region-independent so the whole draw distance melts into the sky evenly (you
+    // can't see downtown from Ocean Beach, and the radius can sit low). This is the
+    // unified far-cull — not a separate grey height fog.
     const horizonVeil = smoothstep(
       this.#uFogHorizonStart as N,
       (this.#uFogHorizonStart as N).add((this.#uFogHorizonSoftness as N).max(1)),
       dist
-    ).mul((this.#uFogHorizon as N).mul(distScale))
+    ).mul(this.#uFogHorizon as N)
 
     // union-composite (probabilistic OR) instead of adding: 1 - ∏(1 - layer). Two
     // moderate layers no longer sum into muddy over-fog in the mid-range, yet where
@@ -507,9 +526,20 @@ export class Sky {
     // matched horizon colour. (uFogColor already tracks the phase of day, so at
     // night this lifts a dark base only a little — moody, not glowing.)
     const bankShare = (bankFog.div(total.max(0.001)).saturate() as N).mul(0.85)
+
+    // Directional sun-glow: the haze scatters sunlight, so it warms toward gold on
+    // the sunward side of the sky and stays the neutral phase tint elsewhere. View
+    // ray · sun direction, sharpened, scaled by a day/gold-weighted amount (≈0 at
+    // night → night fog just reads bluish). Makes far geometry melt into the actual
+    // colour of the sky behind it instead of a flat grey band.
+    const viewDir = (positionWorld as N).sub(cameraPosition).normalize()
+    const sunAlign = saturate(dot(viewDir, this.#uSun as N))
+    const glow = pow(sunAlign as N, float(2.5)).mul(this.#uFogGlowAmt as N) as N
+    const litColor = mix(this.#uFogColor as N, this.#uFogGlow as N, glow as N) as N
+
     const fogCol = mix(
-      this.#uFogColor as N,
-      (this.#uFogColor as N).mul(1.28).add(vec3(0.05, 0.06, 0.07)),
+      litColor,
+      (litColor as N).mul(1.28).add(vec3(0.05, 0.06, 0.07)),
       bankShare as N
     )
 
@@ -642,6 +672,19 @@ export class Sky {
       nightW
     )
     ;(this.#uFogColor.value as THREE.Color).copy(this.#fogColor)
+    // directional sun-glow tint + how strongly to apply it (rich at golden hour, a
+    // little by day, ~nil at night so the fog stays cool blue-grey after dark)
+    blend3(
+      this.#fogGlow,
+      PALETTE.fogGlow.day,
+      PALETTE.fogGlow.gold,
+      PALETTE.fogGlow.night,
+      dayW,
+      goldW,
+      nightW
+    )
+    ;(this.#uFogGlow.value as THREE.Color).copy(this.#fogGlow)
+    this.#uFogGlowAmt.value = dayW * 0.4 + goldW * 0.85
 
     // the crown display holds its proportion to the ambient light: brilliant at
     // noon, eased down after dark so emissive landmarks do not blow out

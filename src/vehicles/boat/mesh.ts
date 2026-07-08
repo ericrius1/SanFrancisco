@@ -83,7 +83,9 @@ function sailMaterial(colorHex: number, flap: SailUniform, billow: SailUniform, 
   const dispX = belly.add(flutter).max(0);
   let pos: unknown = positionLocal.add(vec3(dispX, 0, 0));
   // A: push any vertex that still sits inside a spar/stay back out to its surface.
-  if (colliders) pos = pushOutOfColliders(pos, colliders);
+  // Escape axis = +x (the belly/leeward side) so canvas ON the mast axis is shoved
+  // clear rather than stalling at the degenerate radial-zero point.
+  if (colliders) pos = pushOutOfColliders(pos, colliders, vec3(1, 0, 0));
   mat.positionNode = pos as never;
   return mat;
 }
@@ -235,8 +237,14 @@ export function buildBoatMesh(): THREE.Group {
   // drifts the main's mast/backstay by <2cm at runtime — well inside the skin —
   // so this one-time bake avoids any per-frame collider work.
   g.updateMatrixWorld(true);
-  mainColliders.set(capsulesToLocal(main, heel, [mastCap, backstayCap, boomCap]));
-  jibColliders.set(capsulesToLocal(jib, heel, [forestayCap, mastCap]));
+  main.name = "mainSail";
+  jib.name = "jibSail";
+  const mainCaps = capsulesToLocal(main, heel, [mastCap, backstayCap, boomCap]);
+  const jibCaps = capsulesToLocal(jib, heel, [forestayCap, mastCap]);
+  mainColliders.set(mainCaps);
+  jibColliders.set(jibCaps);
+  main.userData.clothCapsules = mainCaps; // debug: inspect where push-out is defined
+  jib.userData.clothCapsules = jibCaps;
 
   g.userData.sail = { flap, billow, boom, heel } satisfies BoatSailRig;
   return g;

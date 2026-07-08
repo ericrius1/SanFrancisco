@@ -1,33 +1,143 @@
 // Victorian rowhouse façade decorator (Italianate / Stick / Queen Anne).
 //
-// The signature SF move rendered as REAL geometry: the projecting **canted bay
-// window** that runs the upper floors, plus a bracketed **cornice** at the
-// roofline and a ground-floor **stoop/garage** band. Non-street faces stay plain
-// (flat wall + cornice) to save triangles. Pure geometry via the core grammar
+// The richness that keeps SF Victorians from reading as plain boxes is DETAIL:
+// projecting canted bay windows, deep recessed double-hung windows with frames,
+// mullions, sills and crowns, horizontal belt courses between floors, a bracketed
+// cornice with corbels + dentils at the roofline, corner boards, and a raised
+// stoop with a panelled door. All of it is real geometry (so the sun + SSAO in
+// the host actually shade the relief) authored through the core grammar
 // primitives — no THREE here.
-//
-// A canted bay cross-section (plan view) is a trapezoid: it leaves the wall at
-// [tL,tR], cants inward to a narrower front face, and projects `proj` metres out.
-// We extrude that trapezoid across the upper floors and glaze the three outer
-// faces per storey.
 import {
   type FacadeDecorator, type FacadeEdge, type Vec3,
   PanelBuilder, pointOnWall, outset, floorBands, bayCount,
 } from "../core/facade";
 
-const norm3 = (a: Vec3, b: Vec3, c: Vec3): Vec3 => {
-  const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
-  const vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
-  const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
-  const l = Math.hypot(nx, ny, nz) || 1;
-  return [nx / l, ny / l, nz / l];
-};
+// ---- small vector helpers ---------------------------------------------------
+const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const len = (a: Vec3) => Math.hypot(a[0], a[1], a[2]) || 1;
+const unit = (a: Vec3): Vec3 => { const l = len(a); return [a[0] / l, a[1] / l, a[2] / l]; };
+const lerp = (a: Vec3, b: Vec3, t: number): Vec3 => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+const UP: Vec3 = [0, 1, 0];
 
-/** vertical quad between two ground points (ax,az)&(bx,bz) from y0→y1 */
-function wallQuad(out: PanelBuilder, mat: string, a: Vec3, b: Vec3, y0: number, y1: number, nHint?: Vec3): void {
+/** ground point at fraction t along the edge (y=0 placeholder replaced by caller) */
+const gp = (e: FacadeEdge, t: number): Vec3 => pointOnWall(e, t, 0);
+
+/**
+ * A deep, framed, double-hung-style window on a face defined by two ground
+ * points a→b, spanning y0..y1, with outward normal n. Draws: a recessed glass
+ * plane split into panes by mullions, a projecting frame surround, a sill below
+ * and a crown/lintel above — the Victorian window signature.
+ */
+function faceWindow(
+  out: PanelBuilder, a: Vec3, b: Vec3, y0: number, y1: number, n: Vec3,
+  m: { frame: string; glass: string; trim: string },
+): void {
+  const along = unit(sub(b, a));
+  const W = len(sub(b, a));
+  if (W < 0.5 || y1 - y0 < 0.6) return;
+  const reveal = 0.14;          // how deep the glass sits inside the wall
+  const fw = 0.05;              // frame face width (slim, so the body colour dominates)
+  const push = 0.015;           // frame proud of the wall
+  // corners of the opening on the wall plane
   const bl: Vec3 = [a[0], y0, a[2]], br: Vec3 = [b[0], y0, b[2]];
-  const tr: Vec3 = [b[0], y1, b[2]], tl: Vec3 = [a[0], y1, a[2]];
-  out.quad(mat, bl, br, tr, tl, nHint ?? norm3(bl, br, tl));
+  const tl: Vec3 = [a[0], y1, a[2]], tr: Vec3 = [b[0], y1, b[2]];
+  const inw = (p: Vec3, d: number): Vec3 => [p[0] + n[0] * d, p[1], p[2] + n[2] * d];
+
+  // recessed reveal jamb walls (top + sides) so the opening reads deep
+  const rbl = inw(bl, -reveal), rbr = inw(br, -reveal), rtl = inw(tl, -reveal), rtr = inw(tr, -reveal);
+  out.quad(m.trim, bl, br, rbr, rbl, [0, 1, 0]);        // reveal underside (sill top)
+  out.quad(m.trim, tr, tl, rtl, rtr, [0, -1, 0]);       // reveal head
+  out.quad(m.trim, bl, rbl, rtl, tl, along);            // left reveal
+  out.quad(m.trim, br, tr, rtr, rbr, [-along[0], -along[1], -along[2]]); // right reveal
+  // opaque dark "room" backing so the glass reads as a window, not a hole through
+  // to the far (body-coloured) wall
+  const bk = (p: Vec3): Vec3 => [p[0] + n[0] * -(reveal + 0.03), p[1], p[2] + n[2] * -(reveal + 0.03)];
+  out.quad("citygen.room", bk(bl), bk(br), bk(tr), bk(tl), n);
+
+  // glass, split into 2 columns × 2 rows of panes by mullions
+  const cols = 2, rows = 2, mg = 0.05; // mullion gap
+  const gl = (t: number, yy: number): Vec3 => inw([a[0] + (b[0] - a[0]) * t, yy, a[2] + (b[2] - a[2]) * t], -reveal + 0.01);
+  for (let cx = 0; cx < cols; cx++) {
+    for (let cy = 0; cy < rows; cy++) {
+      const t0 = (cx + 0.04) / cols + mg / W, t1 = (cx + 0.96) / cols - mg / W;
+      const yy0 = y0 + (y1 - y0) * ((cy + 0.04) / rows) + mg, yy1 = y0 + (y1 - y0) * ((cy + 0.96) / rows) - mg;
+      out.quad(m.glass, gl(t0, yy0), gl(t1, yy0), gl(t1, yy1), gl(t0, yy1), n);
+    }
+  }
+
+  // projecting frame surround (four thin boxes at the wall plane)
+  const bar = (c: Vec3, ha: number, hu: number): void =>
+    out.box(m.frame, [c[0] + n[0] * push, c[1], c[2] + n[2] * push], [ha, hu, 0.05], along, UP, n, true);
+  const midY = (y0 + y1) / 2, cA = lerp(a, b, 0.5);
+  bar([cA[0], y0 - 0.0, cA[2]], W / 2 + fw, fw);         // bottom
+  bar([cA[0], y1 + 0.0, cA[2]], W / 2 + fw, fw);         // top
+  bar([a[0], midY, a[2]], fw, (y1 - y0) / 2 + fw);       // left
+  bar([b[0], midY, b[2]], fw, (y1 - y0) / 2 + fw);       // right
+
+  // sill (projects a little, a touch wider) + crowned lintel above
+  const off = (p: Vec3, d: number): Vec3 => [p[0] + n[0] * d, p[1], p[2] + n[2] * d];
+  out.box(m.trim, off([cA[0], y0 - 0.05, cA[2]], 0.07), [W / 2 + 0.10, 0.045, 0.10], along, UP, n, true);
+  out.box(m.trim, off([cA[0], y1 + 0.09, cA[2]], 0.09), [W / 2 + 0.13, 0.07, 0.12], along, UP, n, true);
+}
+
+/** horizontal projecting belt/string course across the whole edge at height y */
+function beltCourse(out: PanelBuilder, e: FacadeEdge, y: number, mat: string, depth = 0.06, h = 0.07): void {
+  const a = gp(e, 0), b = gp(e, 1);
+  const c: Vec3 = [(a[0] + b[0]) / 2, y, (a[2] + b[2]) / 2];
+  const along = unit(sub([b[0], y, b[2]], [a[0], y, a[2]]));
+  out.box(mat, [c[0] + e.normal[0] * depth * 0.5, y, c[2] + e.normal[1] * depth * 0.5],
+    [e.length / 2, h, depth], along, UP, [e.normal[0], 0, e.normal[1]], true);
+}
+
+/** bracketed cornice: crown slab + a row of corbel brackets + a dentil band */
+function bracketedCornice(out: PanelBuilder, e: FacadeEdge, mat: string, proj: number): void {
+  const along = unit(sub(gp(e, 1), gp(e, 0)));
+  const n3: Vec3 = [e.normal[0], 0, e.normal[1]];
+  const crownY = e.top - 0.05;
+  const cc: Vec3 = [(gp(e, 0)[0] + gp(e, 1)[0]) / 2, crownY, (gp(e, 0)[2] + gp(e, 1)[2]) / 2];
+  // main crown slab
+  out.box(mat, [cc[0] + n3[0] * proj * 0.5, crownY + 0.16, cc[2] + n3[2] * proj * 0.5],
+    [e.length / 2 + 0.05, 0.16, proj], along, UP, n3, false);
+  // dentil band just under the crown
+  out.box(mat, [cc[0] + n3[0] * proj * 0.3, crownY - 0.05, cc[2] + n3[2] * proj * 0.3],
+    [e.length / 2, 0.06, proj * 0.6], along, UP, n3, true);
+  // corbel brackets, evenly spaced
+  const nB = Math.max(2, Math.round(e.length / 1.6));
+  for (let i = 0; i < nB; i++) {
+    const t = (i + 0.5) / nB;
+    const p = gp(e, t);
+    out.box(mat, [p[0] + n3[0] * proj * 0.55, crownY - 0.22, p[2] + n3[2] * proj * 0.55],
+      [0.07, 0.2, proj * 0.7], along, UP, n3, true);
+  }
+}
+
+/** raised stoop (steps) + panelled, trimmed door at the entrance */
+function stoopAndDoor(out: PanelBuilder, e: FacadeEdge, base: number, groundTopY: number, m: { base: string; trim: string; door: string }): void {
+  const dw = Math.min(1.5, e.length * 0.28);
+  const tc = e.length > 6 ? 0.22 : 0.5;             // entrance offset (side for wide lots)
+  const along = unit(sub(gp(e, 1), gp(e, 0)));
+  const n3: Vec3 = [e.normal[0], 0, e.normal[1]];
+  const dl = gp(e, tc - dw / 2 / e.length), dr = gp(e, tc + dw / 2 / e.length);
+  const doorTop = Math.min(groundTopY + 0.9, base + 2.6);
+
+  // stoop: three steps projecting outward, climbing to the raised entry
+  const steps = 3, rise = (0.55) / steps;
+  for (let s = 0; s < steps; s++) {
+    const proj = 0.9 - s * 0.22;
+    const c = lerp(dl, dr, 0.5);
+    out.box(m.trim, [c[0] + n3[0] * proj * 0.5, base + rise * (s + 0.5), c[2] + n3[2] * proj * 0.5],
+      [dw / 2 + 0.25, rise / 2, proj / 2], along, UP, n3, true);
+  }
+
+  const doorBase = base + 0.55;
+  // recessed door panel (dark) + trim surround
+  const inw = (p: Vec3, d: number, yy: number): Vec3 => [p[0] + n3[0] * d, yy, p[2] + n3[2] * d];
+  out.quad(m.door, inw(dl, -0.12, doorBase), inw(dr, -0.12, doorBase), inw(dr, -0.12, doorTop), inw(dl, -0.12, doorTop), n3);
+  // surround
+  const cA = lerp(dl, dr, 0.5), midY = (doorBase + doorTop) / 2;
+  out.box(m.trim, [cA[0] + n3[0] * 0.03, doorTop + 0.06, cA[2] + n3[2] * 0.03], [dw / 2 + 0.14, 0.1, 0.06], along, UP, n3, true);
+  out.box(m.trim, [dl[0] + n3[0] * 0.03, midY, dl[2] + n3[2] * 0.03], [0.08, (doorTop - doorBase) / 2, 0.06], along, UP, n3, true);
+  out.box(m.trim, [dr[0] + n3[0] * 0.03, midY, dr[2] + n3[2] * 0.03], [0.08, (doorTop - doorBase) / 2, 0.06], along, UP, n3, true);
 }
 
 export const victorianFacade: FacadeDecorator = (e, out, rng) => {
@@ -36,114 +146,83 @@ export const victorianFacade: FacadeDecorator = (e, out, rng) => {
   const trim = arch.trimMaterial ?? wall;
   const glass = arch.glassMaterial ?? "glass";
   const baseMat = arch.baseMaterial ?? trim;
-  const groundH = Math.min(arch.floorH * 1.1, (e.top - e.base) * 0.5);
-  const groundTopY = e.base + groundH;
-  const nGround: Vec3 = [e.normal[0], 0, e.normal[1]];
+  const doorMat = "citygen.door";
+  const n3: Vec3 = [e.normal[0], 0, e.normal[1]];
+  const bands = floorBands(e);
+  const groundTopY = bands[0]?.y1 ?? e.base + arch.floorH;
+  const wm = { frame: trim, glass, trim };
 
-  // ---- ground floor band (stoop/garage tone) + upper wall -------------------
-  const g0 = pointOnWall(e, 0, 0), g1 = pointOnWall(e, 1, 0);
-  wallQuad(out, baseMat, g0, g1, e.base, groundTopY, nGround);
-  wallQuad(out, wall, g0, g1, groundTopY, e.top, nGround);
+  // ---- flat wall (ground band in base tone, upper in wall tone) -------------
+  const g0 = gp(e, 0), g1 = gp(e, 1);
+  out.quad(baseMat, [g0[0], e.base, g0[2]], [g1[0], e.base, g1[2]], [g1[0], groundTopY, g1[2]], [g0[0], groundTopY, g0[2]], n3);
+  out.quad(wall, [g0[0], groundTopY, g0[2]], [g1[0], groundTopY, g1[2]], [g1[0], e.top, g1[2]], [g0[0], e.top, g0[2]], n3);
 
-  // stoop door / garage recess on the street face
-  if (e.isStreet && e.length > 2.5) {
-    const dw = Math.min(2.4, e.length * 0.35);
-    const tc = 0.5;
-    const dl = pointOnWall(e, tc - dw / 2 / e.length, 0);
-    const dr = pointOnWall(e, tc + dw / 2 / e.length, 0);
-    // recess panel pushed slightly IN so it reads as an opening
-    const din = 0.12;
-    const dlI = outset(dl, e, -din), drI = outset(dr, e, -din);
-    wallQuad(out, arch.roofMaterial === "roof.flatTrim" ? trim : baseMat, dlI, drI, e.base, groundTopY * 0.92, nGround);
+  // corner boards (vertical trim at the façade ends) on the street face
+  if (e.isStreet) {
+    for (const t of [0.012, 0.988]) {
+      const p = gp(e, t), along = unit(sub(g1, g0));
+      out.box(trim, [p[0] + n3[0] * 0.025, (e.base + e.top) / 2, p[2] + n3[2] * 0.025],
+        [0.07, (e.top - e.base) / 2, 0.04], along, UP, n3, true);
+    }
   }
 
-  // ---- canted bay windows over the upper floors (street face only) ----------
-  const upper = floorBands(e).filter((b) => b.y0 >= groundTopY - 0.01);
+  // ---- ground floor: stoop + door on the street face -----------------------
+  if (e.isStreet && e.length > 2.4) {
+    stoopAndDoor(out, e, e.base, groundTopY, { base: baseMat, trim, door: doorMat });
+    // a ground-floor bay/garden window on the other side of the door
+    const gw0 = gp(e, 0.62), gw1 = gp(e, 0.92);
+    faceWindow(out, gw0, gw1, e.base + 0.7, groundTopY - 0.25, n3, wm);
+  }
+
+  // ---- upper floors ---------------------------------------------------------
+  const upper = bands.filter((b) => b.y0 >= groundTopY - 0.01);
+
+  // belt course at each floor line
+  for (const b of upper) beltCourse(out, e, b.y0, trim);
+
   if (e.isStreet && arch.bayProjection && upper.length >= 1) {
+    // canted bay over ~55% of the façade; flanking wall gets its own windows
     const proj = arch.bayProjection;
-    const nBays = bayCount(e, arch.bayWidth ? arch.bayWidth * 2.6 : 7);
-    for (let k = 0; k < nBays; k++) {
-      const slot0 = k / nBays, slot1 = (k + 1) / nBays;
-      const openFrac = 0.62;                    // bay opening = 62% of the slot
-      const mid = (slot0 + slot1) / 2, half = (slot1 - slot0) * openFrac / 2;
-      const tL = mid - half, tR = mid + half;
-      const cant = (tR - tL) * 0.22;            // how far the front face cants in
-      const wallL = pointOnWall(e, tL, 0), wallR = pointOnWall(e, tR, 0);
-      const frontL = outset(pointOnWall(e, tL + cant, 0), e, proj);
-      const frontR = outset(pointOnWall(e, tR - cant, 0), e, proj);
-      const yb = upper[0].y0, yt = e.top;
+    const bl = 0.30, br = 0.70;                    // bay opening fraction
+    const cant = (br - bl) * 0.2;
+    const wallL = gp(e, bl), wallR = gp(e, br);
+    const frontL = outset(gp(e, bl + cant), e, proj);
+    const frontR = outset(gp(e, br - cant), e, proj);
+    const yb = upper[0].y0, yt = e.top;
+    const fL: Vec3 = [frontL[0], 0, frontL[2]], fR: Vec3 = [frontR[0], 0, frontR[2]];
+    const nFrontU = unit(sub(fR, fL)); const nFront: Vec3 = [nFrontU[2], 0, -nFrontU[0]];
+    const nLU = unit(sub(fL, [wallL[0], 0, wallL[2]])); const nL: Vec3 = [nLU[2], 0, -nLU[0]];
+    const nRU = unit(sub([wallR[0], 0, wallR[2]], fR)); const nR: Vec3 = [nRU[2], 0, -nRU[0]];
 
-      // three outer faces: left slant, front, right slant
-      wallQuad(out, trim, wallL, frontL, yb, yt);
-      wallQuad(out, trim, frontL, frontR, yb, yt, nGround);
-      wallQuad(out, trim, frontR, wallR, yb, yt);
-      // bay top + bottom caps
-      capQuad(out, trim, wallL, frontL, frontR, wallR, yt, true);
-      capQuad(out, trim, wallL, frontL, frontR, wallR, yb, false);
+    // bay shell faces are BODY colour (the bay is part of the house, trimmed only
+    // at its window frames + corners); flat cap on top
+    const q = (p0: Vec3, p1: Vec3, nn: Vec3) =>
+      out.quad(wall, [p0[0], yb, p0[2]], [p1[0], yb, p1[2]], [p1[0], yt, p1[2]], [p0[0], yt, p0[2]], nn);
+    q(wallL, frontL, nL); q(frontL, frontR, nFront); q(frontR, wallR, nR);
+    out.quad(trim, [wallL[0], yt, wallL[2]], [frontL[0], yt, frontL[2]], [frontR[0], yt, frontR[2]], [wallR[0], yt, wallR[2]], UP);
 
-      // glaze each upper storey on the front + slanted faces
-      for (const band of upper) {
-        const gy0 = band.y0 + 0.35, gy1 = band.y1 - 0.25;
-        if (gy1 <= gy0) continue;
-        glazeFace(out, glass, wallL, frontL, gy0, gy1, e, 0.02);
-        glazeFace(out, glass, frontL, frontR, gy0, gy1, e, 0.02);
-        glazeFace(out, glass, frontR, wallR, gy0, gy1, e, 0.02);
+    // windows on each bay face + flanking wall, per storey
+    for (const band of upper) {
+      const wy0 = band.y0 + 0.45, wy1 = band.y1 - 0.2;
+      faceWindow(out, frontL, frontR, wy0, wy1, nFront, wm);
+      faceWindow(out, wallL, frontL, wy0, wy1, nL, wm);
+      faceWindow(out, frontR, wallR, wy0, wy1, nR, wm);
+      // flanking windows left & right of the bay
+      faceWindow(out, gp(e, 0.06), gp(e, 0.24), wy0, wy1, n3, wm);
+      faceWindow(out, gp(e, 0.76), gp(e, 0.94), wy0, wy1, n3, wm);
+    }
+  } else {
+    // non-street / no-bay faces: an even grid of framed windows
+    const cols = bayCount(e, 3.4);
+    for (const band of upper) {
+      const wy0 = band.y0 + 0.45, wy1 = band.y1 - 0.25;
+      for (let c = 0; c < cols; c++) {
+        if (rng() < 0.05) continue;
+        faceWindow(out, gp(e, (c + 0.24) / cols), gp(e, (c + 0.76) / cols), wy0, wy1, n3, wm);
       }
     }
-  } else if (upper.length) {
-    // non-street / no-bay: a simple recessed window grid so it isn't a blank slab
-    plainWindows(out, e, glass, groundTopY, rng);
   }
 
-  // ---- bracketed cornice at the roofline (wraps all faces) -------------------
-  if (arch.cornice && arch.cornice > 0) {
-    const c = arch.cornice;
-    const y0 = e.top - 0.35, y1 = e.top + 0.15;
-    const inA = pointOnWall(e, 0, 0), inB = pointOnWall(e, 1, 0);
-    const outA = outset(inA, e, c), outB = outset(inB, e, c);
-    wallQuad(out, trim, outA, outB, y0, y1, nGround);              // fascia
-    // underside + top slab
-    capStrip(out, trim, inA, inB, outA, outB, y1, true);
-    capStrip(out, trim, inA, inB, outA, outB, y0, false);
-  }
+  // ---- bracketed cornice at the roofline (wraps all faces) ------------------
+  bracketedCornice(out, e, trim, (arch.cornice ?? 0.4) + 0.15);
 };
-
-/** horizontal cap across the 4-point bay trapezoid at height y */
-function capQuad(out: PanelBuilder, mat: string, wallL: Vec3, frontL: Vec3, frontR: Vec3, wallR: Vec3, y: number, up: boolean): void {
-  const n: Vec3 = up ? [0, 1, 0] : [0, -1, 0];
-  const a: Vec3 = [wallL[0], y, wallL[2]], b: Vec3 = [frontL[0], y, frontL[2]];
-  const c: Vec3 = [frontR[0], y, frontR[2]], d: Vec3 = [wallR[0], y, wallR[2]];
-  out.quad(mat, a, b, c, d, n);
-}
-
-/** horizontal strip between an inner edge and an outset edge (cornice slab) */
-function capStrip(out: PanelBuilder, mat: string, inA: Vec3, inB: Vec3, outA: Vec3, outB: Vec3, y: number, up: boolean): void {
-  const n: Vec3 = up ? [0, 1, 0] : [0, -1, 0];
-  out.quad(mat, [inA[0], y, inA[2]], [inB[0], y, inB[2]], [outB[0], y, outB[2]], [outA[0], y, outA[2]], n);
-}
-
-/** glass pane covering most of a face between two ground points, outset a hair */
-function glazeFace(out: PanelBuilder, mat: string, a: Vec3, b: Vec3, y0: number, y1: number, e: FacadeEdge, push: number): void {
-  const n = norm3([a[0], y0, a[2]], [b[0], y0, b[2]], [a[0], y1, a[2]]);
-  const ao: Vec3 = [a[0] + n[0] * push, 0, a[2] + n[2] * push];
-  const bo: Vec3 = [b[0] + n[0] * push, 0, b[2] + n[2] * push];
-  out.quad(mat, [ao[0], y0, ao[2]], [bo[0], y0, bo[2]], [bo[0], y1, bo[2]], [ao[0], y1, ao[2]], n);
-}
-
-/** simple per-storey recessed window band on a flat wall (non-street faces) */
-function plainWindows(out: PanelBuilder, e: FacadeEdge, glass: string, groundTopY: number, rng: () => number): void {
-  const n: Vec3 = [e.normal[0], 0, e.normal[1]];
-  const cols = bayCount(e, 3.2);
-  for (const band of floorBands(e)) {
-    if (band.y0 < groundTopY - 0.01) continue;
-    const gy0 = band.y0 + 0.4, gy1 = band.y1 - 0.35;
-    if (gy1 <= gy0) continue;
-    for (let c = 0; c < cols; c++) {
-      if (rng() < 0.06) continue; // an occasional blank bay
-      const t0 = (c + 0.28) / cols, t1 = (c + 0.72) / cols;
-      const a = outset(pointOnWall(e, t0, 0), e, 0.02);
-      const b = outset(pointOnWall(e, t1, 0), e, 0.02);
-      out.quad(glass, [a[0], gy0, a[2]], [b[0], gy0, b[2]], [b[0], gy1, b[2]], [a[0], gy1, a[2]], n);
-    }
-  }
-}
