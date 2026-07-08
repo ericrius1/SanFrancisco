@@ -248,6 +248,18 @@ export class Minimap {
     for (const a of NATURE_ANCHORS) {
       if (wildIds.has(a.id)) this.#landmarks.push({ x: a.x, z: a.z, name: a.name });
     }
+    // Procedurally-generated building districts (src/world/citygen): each pin drops
+    // you into a neighborhood the CityGen ring rebuilds in its true SF style, so you
+    // can go see the new buildings. Coords are dense, style-correct clusters verified
+    // against the export (see tools/citygen-classify.mjs district boxes).
+    const CITYGEN_ANCHORS: { name: string; x: number; z: number }[] = [
+      { name: "Pacific Heights", x: 402, z: -1608 }, // grand Victorians
+      { name: "The Castro", x: 199, z: 3197 },       // Victorian/Edwardian rowhouses
+      { name: "Sunset District", x: -3900, z: 4300 },// Mediterranean stucco
+      { name: "SoMa", x: 592, z: 1205 },             // brick warehouses + lofts
+      { name: "Downtown", x: 2412, z: -796 }         // commercial mid-rise
+    ];
+    for (const a of CITYGEN_ANCHORS) this.#landmarks.push({ x: a.x, z: a.z, name: a.name });
     this.#layers = MAP_LAYER_DEFS.map((def) => ({
       ...def,
       enabled: false,

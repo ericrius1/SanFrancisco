@@ -11,6 +11,7 @@
 //    envMapIntensity AND add a faint self-lit emissive body tint so the colour
 //    reads in any light (how the baked city stays colourful at dusk).
 import * as THREE from "three/webgpu";
+import { makeParallaxGlass } from "./parallaxWindow";
 
 const ENV = 5.5;
 
@@ -35,15 +36,13 @@ export function makeWallMaterial(hex: number): THREE.MeshStandardMaterial {
 
 /** Build the shared id→material table (non-wall ids). Cached by the caller. */
 export function buildCityGenMaterials(): Record<string, THREE.Material> {
-  // window glass: dark, reflective panes so windows punch through the coloured
-  // wall as clear openings (not more body colour). Mostly opaque + a sky-reflecting
-  // clearcoat, over the dark "room" backing, with a faint warm interior glow.
-  const glass = new THREE.MeshPhysicalMaterial({
-    color: 0x2b3b45, roughness: 0.08, metalness: 0.2,
-    transparent: true, opacity: 0.9, depthWrite: true, side: THREE.DoubleSide,
-    clearcoat: 1.0, clearcoatRoughness: 0.08,
-    emissive: new THREE.Color(0xffdca0), emissiveIntensity: 0.12,
-  });
+  // window glass: parallax/raymarched interior — each pane shows a shallow
+  // recessed room behind the glass that shifts with the camera (see
+  // parallaxWindow.ts), plus a glassy sky sheen and distance/grazing fades. The
+  // default zone is a warm residential parlor; render.ts can call
+  // makeParallaxGlass({ zone }) per building for shopfronts/lofts and hand that
+  // material to buildBuilding as the glass.
+  const glass = makeParallaxGlass();
   return {
     // walls (normally replaced per-building by makeWallMaterial; kept as fallback)
     "wall.victorian": standard(0xd9cdb0, 0.9),

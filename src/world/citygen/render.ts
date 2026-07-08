@@ -7,6 +7,7 @@
 import * as THREE from "three/webgpu";
 import { generate, type BuildingSpec } from "./index";
 import { buildCityGenMaterials, makeWallMaterial } from "./theme/materials";
+import { makeParallaxGlass, type ParallaxZone } from "./theme/parallaxWindow";
 import { rng } from "./core/rng";
 import { mergePanels } from "./core/mesh";
 import { buildVictorianInterior } from "./interior/interior";
@@ -51,6 +52,20 @@ export interface BuiltBuilding {
   dispose(): void;
 }
 
+// which parallax interior a building's windows show, by archetype
+const ARCH_ZONE: Record<string, ParallaxZone> = {
+  victorian: "residential", edwardian: "residential", marina: "residential",
+  downtown: "commercial", chinatown: "commercial", soma: "loft",
+};
+// one parallax glass per zone (cloned per building for the crossfade opacity)
+const zoneGlassSrc = new Map<ParallaxZone, THREE.Material>();
+function zoneGlass(archetype: string): THREE.Material {
+  const zone = ARCH_ZONE[archetype] ?? "residential";
+  let m = zoneGlassSrc.get(zone);
+  if (!m) { m = makeParallaxGlass({ zone }); zoneGlassSrc.set(zone, m); }
+  return m;
+}
+
 /** Build ONE building's meshes into a fresh group (used by the streaming ring).
  *  Materials are PER-BUILDING (cloned) so the ring can crossfade this building in
  *  without touching its neighbours. */
@@ -61,7 +76,11 @@ export function buildBuilding(spec: BuildingSpec, mats: Record<string, THREE.Mat
   const getMat = (id: string): THREE.Material => {
     if (id.startsWith("wall.")) return wallMat;
     let m = local.get(id);
-    if (!m) { m = (mats[id] ?? wallMat).clone(); local.set(id, m); }
+    if (!m) {
+      const src = id === "glass" ? zoneGlass(spec.archetype) : (mats[id] ?? wallMat);
+      m = src.clone();
+      local.set(id, m);
+    }
     return m;
   };
   const group = new THREE.Group();

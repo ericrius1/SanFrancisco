@@ -440,7 +440,8 @@ export class TileStreamer {
         aliveData[i * 4 + 3] = Math.max(1, Math.min(254, Math.round((top - base) / TOPH_SCALE)));
       }
       for (let i = 0; i < nB; i++) {
-        if (this.#suppressed.has(`${key}:${i}`)) aliveData[i * 4] = 0;
+        if (this.#suppressed.has(`${key}:${i}`)) aliveData[i * 4] = 0;         // mesh + collider off
+        else if (this.#meshSuppressed.has(`${key}:${i}`)) aliveData[i * 4] = 1; // mesh off, collider kept
       }
       slot.tex.needsUpdate = true;
       const bMat = slot.mat;
@@ -588,6 +589,10 @@ export class TileStreamer {
   // its own Pier 15 shed): mesh dies via the alive flag the moment the tile
   // lands, and physics skips them through the same isAlive gate fractures use
   #suppressed = new Set<string>();
+  // mesh hidden but COLLIDER kept alive (alive flag = 1, not 0). Used by the
+  // CityGen ring so its own LOD/detail render in place of the baked mesh while the
+  // accurate baked collider still catches cars + the player (no oversized proxy).
+  #meshSuppressed = new Set<string>();
 
   /** Permanently hide a building (mesh + colliders) — survives tile reloads. */
   suppressBuilding(key: string, index: number) {
@@ -595,6 +600,27 @@ export class TileStreamer {
     const tile = this.loaded.get(key);
     if (tile?.slot && index >= 0 && index * 4 < tile.slot.data.length) {
       tile.slot.data[index * 4] = 0;
+      tile.slot.tex.needsUpdate = true;
+    }
+  }
+
+  /** Hide only the baked MESH (alive flag → 1); the baked collider stays live so
+   *  physics still sees the real footprint. Survives tile reloads. */
+  suppressBuildingMesh(key: string, index: number) {
+    this.#meshSuppressed.add(`${key}:${index}`);
+    const tile = this.loaded.get(key);
+    if (tile?.slot && index >= 0 && index * 4 < tile.slot.data.length && tile.slot.data[index * 4] !== 0) {
+      tile.slot.data[index * 4] = 1;
+      tile.slot.tex.needsUpdate = true;
+    }
+  }
+
+  /** Undo suppressBuildingMesh — restore the baked mesh (alive flag → 255). */
+  unsuppressBuildingMesh(key: string, index: number) {
+    this.#meshSuppressed.delete(`${key}:${index}`);
+    const tile = this.loaded.get(key);
+    if (tile?.slot && index >= 0 && index * 4 < tile.slot.data.length && tile.slot.data[index * 4] === 1) {
+      tile.slot.data[index * 4] = 255;
       tile.slot.tex.needsUpdate = true;
     }
   }
@@ -631,6 +657,8 @@ export class TileStreamer {
     // building count (bake-colliders LM_BASE): always alive, never
     // fracturable (killBuilding's range guard already returns null for them)
     if (index >= (this.manifest.tiles[key]?.b ?? 0)) return true;
-    return !!tile.slot && tile.slot.data[index * 4] === 255;
+    // alive flag: 255 = visible+solid, 1 = mesh-hidden but collider kept (CityGen
+    // LOD tier), 0 = dead (fractured / fully suppressed). Non-zero = collidable.
+    return !!tile.slot && tile.slot.data[index * 4] !== 0;
   }
 }

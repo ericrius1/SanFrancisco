@@ -66,10 +66,10 @@ async function main() {
       await evaluate(c, `(()=>{const s=window.__sf,p=s.player; const y=s.map.groundHeight(${x},${z})+2;
         p.position.set(${x},y,${z}); p.renderPosition.copy(p.position);
         s.physics.world.setBodyTransform(p.body,[${x},y,${z}],[0,0,0,1]); return 1;})()`);
-      for (let i = 0; i < 80; i++) await tick(c); // stream tiles + ring
-      const loaded = await evaluate(c, "window.__sf.citygenRing.current ? window.__sf.citygenRing.current.stats().loaded : 0");
-      console.log(`[probe] spot ${x},${z} → loaded ${loaded}`);
-      if (loaded >= 4) { chosen = [x, z]; break; }
+      for (let i = 0; i < 220; i++) await tick(c); // stream tiles + LOD tier fill + detail near
+      const st = await evaluate(c, "window.__sf.citygenRing.current ? JSON.stringify(window.__sf.citygenRing.current.stats()) : '0'");
+      console.log(`[probe] spot ${x},${z} → stats ${st}`);
+      if (JSON.parse(st).loaded >= 4) { chosen = [x, z]; break; }
     }
     if (!chosen) { console.log("[probe] no spot streamed buildings; screenshotting last"); chosen = spots[0]; }
     const [cx, cz] = chosen;

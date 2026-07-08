@@ -27,3 +27,32 @@ to deploy: cp rl/runs/search/best.policy.json public/models/horse_policy.json
   (keep gallop specialist: gallopQ 86 spd 0.47)
 
 === ROUND 2  (pop 6, 80 gens each, 4 parallel) ===
+   75.8  gallop[q83 spd0.49 str1.39 bnd0.16] walk[q86 spd0.22] turn0
+   64.7  gallop[q79 spd0.50 str0.99 bnd0.09] walk[q15 spd0.23] turn100
+   64.5  gallop[q83 spd0.42 str1.44 bnd0.29] walk[q8 spd0.08] turn97
+   64.5  gallop[q86 spd0.47 str1.41 bnd0.22] walk[q1 spd0.00] turn100
+   39.4  gallop[q18 spd0.33 str2.21 bnd0.66] walk[q70 spd0.25] turn99
+   36.5  gallop[q12 spd0.07 str2.34 bnd0.86] walk[q79 spd0.16] turn0
+  ** NEW BEST 75.8  {"freqBase":0.8147,"freqSpan":0.5345,"strideBase":0.5951,"strideSpan":0.9004,"actFreqAuth":0.5388,"actStrideAuth":0.5109,"actKneeAuth":0.7348,"speedMatchA":8.5702,"progressW":0.619,"tallFloorSlope":0.0826,"doneFloorSlope":0.1035,"uprightSoften":0.5415,"maxTorqueScale":1.0523,"gallopBlend":0.1746,"boundRewardW":0}
+  (keep gallop specialist: gallopQ 86 spd 0.47)
+
+=== ROUND 3  (pop 6, 80 gens each, 4 parallel) ===
+   76.9  gallop[q77 spd0.40 str1.21 bnd0.16] walk[q65 spd0.31] turn94
+   75.8  gallop[q83 spd0.49 str1.39 bnd0.16] walk[q86 spd0.22] turn0
+   70.7  gallop[q81 spd0.43 str1.08 bnd0.18] walk[q75 spd0.31] turn100
+   64.7  gallop[q79 spd0.50 str0.99 bnd0.09] walk[q15 spd0.23] turn100
+   64.5  gallop[q86 spd0.47 str1.41 bnd0.22] walk[q1 spd0.00] turn100
+   38.7  gallop[q12 spd0.10 str2.98 bnd0.83] walk[q53 spd0.12] turn100
+  ** NEW BEST 76.9  {"freqBase":0.7737,"freqSpan":0.6099,"strideBase":0.8203,"strideSpan":0.8263,"actFreqAuth":0.5994,"actStrideAuth":0.612,"actKneeAuth":0.8476,"speedMatchA":13.1911,"progressW":0.8321,"tallFloorSlope":0.1169,"doneFloorSlope":0.0934,"uprightSoften":0.506,"maxTorqueScale":0.912,"gallopBlend":0.1015,"boundRewardW":0.1613}
+  (keep gallop specialist: gallopQ 86 spd 0.47)
+
+=== ROUND 4  (pop 6, 80 gens each, 4 parallel) ===
+   85.5  gallop[q89 spd0.53 str1.62 bnd0.21] walk[q72 spd0.34] turn100
+   83.7  gallop[q80 spd0.38 str1.30 bnd0.24] walk[q80 spd0.29] turn100
+   76.9  gallop[q77 spd0.40 str1.21 bnd0.16] walk[q65 spd0.31] turn94
+   75.8  gallop[q83 spd0.49 str1.39 bnd0.16] walk[q86 spd0.22] turn0
+   69.8  gallop[q79 spd0.45 str1.22 bnd0.14] walk[q77 spd0.29] turn96
+   64.5  gallop[q86 spd0.47 str1.41 bnd0.22] walk[q1 spd0.00] turn100
+  ** NEW BEST 85.5  {"freqBase":0.7854,"freqSpan":0.4767,"strideBase":0.6988,"strideSpan":1.0438,"actFreqAuth":0.6342,"actStrideAuth":0.5121,"actKneeAuth":0.702,"speedMatchA":10.482,"progressW":0.6177,"tallFloorSlope":0.1129,"doneFloorSlope":0.148,"uprightSoften":0.5152,"maxTorqueScale":0.8539,"gallopBlend":0.1609,"boundRewardW":0.093}
+
+=== ROUND 5  (pop 6, 80 gens each, 4 parallel) ===

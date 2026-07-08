@@ -12,13 +12,28 @@
 // wildflowers in a field, not an even sprinkle. Designed superbloom meadows still
 // bloom hard up close via flowerDriftAt (the old FLOWER_DRIFTS as a density boost).
 //
-// Look upgrades over the old cards: structural petal normals (kept from each petal's
-// lay angle, not flattened to "all up") so blooms read dimensional, plus per-clump
-// and per-rotation colour variation so a patch isn't copy-pasted.
+// LOOK (chasing momentchan/false-earth's luminous roses, our own wildflowers): real
+// 3D curved layered petals with true normals + a translucent MeshSSS material + a
+// fresnel rim glow + a pale-centre→saturated-edge colour ramp, so blooms read as
+// dimensional, back-lit, glowing cups — not flat cards. Plus per-clump + per-rotation
+// colour variation so a patch isn't copy-pasted.
 
 import * as THREE from "three/webgpu";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
-import { attribute, float, Fn, Loop, mix, modelWorldMatrix, positionLocal, uniform, vec3, vec4 } from "three/tsl";
+import {
+  attribute,
+  float,
+  Fn,
+  Loop,
+  mix,
+  modelWorldMatrix,
+  normalView,
+  positionLocal,
+  positionViewDirection,
+  uniform,
+  vec3,
+  vec4
+} from "three/tsl";
 import { groundSway, WIND_DIR } from "../groundcover/sway";
 import { DISPLACERS, MAX_DISPLACERS } from "../groundcover/displacers";
 import { hash2, smoothstep, worleyClump } from "../groundcover/scatter";
@@ -45,134 +60,187 @@ const REGION_FLOWERS: Record<string, readonly number[]> = {
 };
 const DEFAULT_PAL: readonly number[] = [0, 1, 2, 3];
 
-// ---- geometry ------------------------------------------------------------------
+// ---- geometry: real 3D curved petals -------------------------------------------
+// A petal is a curved ruled strip that grows +Z outward from the origin and arcs
+// up in +Y, with a petal-shaped width profile and TRUE surface normals — so a bloom
+// reads as a layered 3D cup that catches light, not a flat card. Every part bakes
+// aHead (1 = petal, 0 = stem) + aG (0 at the bloom centre → 1 at the petal tip, for
+// the colour ramp); aSway (tip-weighted wind) is added after the merge.
 
-/** Add a card and its reverse-wound twin so a FrontSide material shows both faces. */
-function pushBothWindings(parts: THREE.BufferGeometry[], q: THREE.BufferGeometry) {
-  parts.push(q);
-  const back = q.clone();
-  const idx = back.getIndex()!;
-  for (let j = 0; j < idx.count; j += 3) {
-    const sw = idx.getX(j);
-    idx.setX(j, idx.getX(j + 2));
-    idx.setX(j + 2, sw);
-  }
-  parts.push(back);
-}
+type Ring = { count: number; pitch: number; len: number; wid: number; rise: number; close: number; cup: number; out: number; spin?: number };
 
-/** Bake the head mask (bloom vs stem) + wind-sway tip weight, and give the bloom
- *  STRUCTURAL normals: keep each petal's built-in outward tilt (from the angle it
- *  was laid at) and only lift it toward the sky, instead of flattening every normal
- *  to straight up — that flat look was half of why the old flowers read as paper. */
-function finalize(g: THREE.BufferGeometry, stemH: number, totalH: number): THREE.BufferGeometry {
-  const p = g.getAttribute("position");
-  const normals = g.getAttribute("normal");
-  const head = new Float32Array(p.count);
-  const sway = new Float32Array(p.count);
-  for (let i = 0; i < p.count; i++) {
-    const y = p.getY(i);
-    head[i] = y > stemH - 0.02 ? 1 : 0;
-    let nx = normals.getX(i) * 0.55;
-    let ny = normals.getY(i) * 0.55 + 0.55;
-    let nz = normals.getZ(i) * 0.55;
-    const inv = 1 / (Math.hypot(nx, ny, nz) || 1);
-    nx *= inv; ny *= inv; nz *= inv;
-    normals.setXYZ(i, nx, ny, nz);
-    const t = Math.min(1, Math.max(0, y / totalH));
-    sway[i] = t * t; // tip leans most (matches the grass's bladeT^2)
+/** One soft curved petal in canonical frame (root at origin, growing +Z, arcing +Y).
+ *  Three columns across the width so the petal SCOOPS (edges lift by `cup`) like a real
+ *  cupped petal, `segs` rows along the length for a smooth curl + rounded tip, and
+ *  smoothed normals — no hard facets, so it reads soft and catches light gently. */
+function makePetal(len: number, wid: number, rise: number, close: number, cup: number, segs: number): THREE.BufferGeometry {
+  const pos: number[] = [], head: number[] = [], grad: number[] = [], idx: number[] = [];
+  const point = (u: number): [number, number] => {
+    const z = len * u * (1 - close * smoothstep(0.45, 1, u) * 0.5); // outward, curls in near the tip
+    const y = rise * len * (1 - Math.cos(u * Math.PI * 0.5)); // arcs upward
+    return [y, z];
+  };
+  for (let s = 0; s <= segs; s++) {
+    const u = s / segs;
+    const [y, z] = point(u);
+    // rounded, full outline (pow < 1 fattens it, +min keeps the tip from a sharp point)
+    const halfW = wid * 0.5 * (0.06 + 0.98 * Math.pow(Math.sin(Math.min(1, u * 1.02) * Math.PI), 0.7));
+    for (let c = -1; c <= 1; c++) {
+      const x = c * halfW;
+      const yc = y + cup * halfW * (c * c); // edges (c=±1) lift → scooped cross-section
+      pos.push(x, yc, z);
+      head.push(1);
+      grad.push(u);
+    }
   }
-  g.setAttribute("aHead", new THREE.BufferAttribute(head, 1));
-  g.setAttribute("aSway", new THREE.BufferAttribute(sway, 1));
+  for (let s = 0; s < segs; s++) {
+    for (let c = 0; c < 2; c++) {
+      const a = s * 3 + c, b = s * 3 + c + 1, d = (s + 1) * 3 + c, e = (s + 1) * 3 + c + 1;
+      idx.push(a, b, e, a, e, d);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute("aHead", new THREE.Float32BufferAttribute(head, 1));
+  g.setAttribute("aG", new THREE.Float32BufferAttribute(grad, 1));
+  g.setIndex(idx);
+  g.computeVertexNormals(); // smooth shading across the scooped surface
   return g;
 }
 
-/** A ring of `n` petals radiating from the stem top at height `y`. `tilt` raises the
- *  tips (0 = flat daisy, ~0.85 = cupped poppy). Petals overlap so the outline reads
- *  as a round bloom, not a hard cross. */
-function radialPetals(parts: THREE.BufferGeometry[], n: number, petalW: number, petalL: number, y: number, tilt: number) {
-  for (let i = 0; i < n; i++) {
-    const petal = new THREE.PlaneGeometry(petalW, petalL);
-    petal.translate(0, petalL / 2, 0); // root at origin, tip outward
-    petal.rotateX(-Math.PI / 2 + tilt); // lay outward (flat), tip up by `tilt`
-    petal.translate(0, y, 0);
-    petal.rotateY((i / n) * Math.PI * 2 + i * 0.6); // spread + a little jitter
-    pushBothWindings(parts, petal);
+/** Clone a petal into place: push it out from centre, pitch it up (openness), spin
+ *  it around the bloom, lift to the stem top. */
+function layPetal(src: THREE.BufferGeometry, pitch: number, spin: number, y: number, outR: number): THREE.BufferGeometry {
+  const p = src.clone();
+  if (outR) p.translate(0, 0, outR);
+  p.rotateX(-pitch);
+  p.rotateY(spin);
+  p.translate(0, y, 0);
+  return p;
+}
+
+function bloomRings(parts: THREE.BufferGeometry[], y: number, rings: Ring[], segs: number) {
+  for (const r of rings) {
+    const petal = makePetal(r.len, r.wid, r.rise, r.close, r.cup, segs);
+    for (let i = 0; i < r.count; i++) {
+      const spin = (i / r.count) * Math.PI * 2 + (r.spin ?? 0);
+      parts.push(layPetal(petal, r.pitch, spin, y, r.out));
+    }
+    petal.dispose();
   }
 }
 
-function stemCards(stemH: number, w: number, rot: number): THREE.BufferGeometry[] {
+/** Two crossed tapered strips — a thin stem. aHead 0 → stays a matte green, no glow. */
+function makeStem(h: number, w: number): THREE.BufferGeometry[] {
   const parts: THREE.BufferGeometry[] = [];
-  for (let i = 0; i < 2; i++) {
-    const s = new THREE.PlaneGeometry(w, stemH);
-    s.translate(0, stemH / 2, 0);
-    s.rotateY((i * Math.PI) / 2 + rot);
-    pushBothWindings(parts, s);
+  const segs = 3;
+  for (let k = 0; k < 2; k++) {
+    const pos: number[] = [], nor: number[] = [], head: number[] = [], grad: number[] = [], idx: number[] = [];
+    for (let s = 0; s <= segs; s++) {
+      const t = s / segs;
+      const halfW = w * 0.5 * (1 - t * 0.55);
+      pos.push(-halfW, t * h, 0, halfW, t * h, 0);
+      nor.push(0, 0, 1, 0, 0, 1);
+      head.push(0, 0);
+      grad.push(0, 0);
+    }
+    for (let s = 0; s < segs; s++) {
+      const aI = s * 2, cI = (s + 1) * 2;
+      idx.push(aI, aI + 1, cI, aI + 1, cI + 1, cI);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute("normal", new THREE.Float32BufferAttribute(nor, 3));
+    g.setAttribute("aHead", new THREE.Float32BufferAttribute(head, 1));
+    g.setAttribute("aG", new THREE.Float32BufferAttribute(grad, 1));
+    g.setIndex(idx);
+    g.rotateY((k * Math.PI) / 2);
+    parts.push(g);
   }
   return parts;
 }
 
-/** 0 poppy — tall stem + a full cupped bloom (two offset rings read round + layered). */
-function poppyGeometry(): THREE.BufferGeometry {
-  const stemH = 0.5;
-  const parts = stemCards(stemH, 0.03, 0.3);
-  radialPetals(parts, 7, 0.18, 0.2, stemH + 0.02, 0.5);
-  radialPetals(parts, 5, 0.13, 0.15, stemH + 0.07, 0.85); // inner cupped ring
+/** Merge the parts, bias petal normals toward the sky (so cupped petals still catch
+ *  skylight instead of going black — same trick the grass uses), and bake aSway. */
+function finalizeBloom(parts: THREE.BufferGeometry[], totalH: number): THREE.BufferGeometry {
   const g = mergeGeometries(parts);
   for (const p of parts) p.dispose();
-  return finalize(g, stemH, stemH + 0.2);
-}
-
-/** 1 lupine — tall spike with a stacked column of florets. */
-function lupineGeometry(): THREE.BufferGeometry {
-  const stemH = 0.34;
-  const parts = stemCards(stemH, 0.028, 0.5);
-  const spikeH = 0.42;
-  const tiers = 7;
-  for (let t = 0; t < tiers; t++) {
-    const frac = t / (tiers - 1);
-    const r = 0.075 * (1 - frac * 0.7); // taper toward the tip
-    const y = stemH + frac * spikeH;
-    for (let i = 0; i < 3; i++) {
-      const f = new THREE.PlaneGeometry(0.09, 0.07);
-      f.rotateX(-0.5);
-      f.translate(0, y, r);
-      f.rotateY((i * Math.PI * 2) / 3 + t * 0.7);
-      pushBothWindings(parts, f);
+  const pos = g.getAttribute("position");
+  const nor = g.getAttribute("normal");
+  const head = g.getAttribute("aHead");
+  const sway = new Float32Array(pos.count);
+  for (let i = 0; i < pos.count; i++) {
+    const t = Math.min(1, Math.max(0, pos.getY(i) / totalH));
+    sway[i] = t * t;
+    if (head.getX(i) > 0.5) {
+      // lift toward +Y so the petal reads dimensional (keeps some of its own tilt for
+      // the fresnel rim) but is lit by the sky rather than shadowed to black
+      let nx = nor.getX(i) * 0.5;
+      let ny = nor.getY(i) * 0.5 + 0.62;
+      let nz = nor.getZ(i) * 0.5;
+      const inv = 1 / (Math.hypot(nx, ny, nz) || 1);
+      nor.setXYZ(i, nx * inv, ny * inv, nz * inv);
     }
   }
-  const g = mergeGeometries(parts);
-  for (const p of parts) p.dispose();
-  return finalize(g, stemH, stemH + spikeH);
+  g.setAttribute("aSway", new THREE.Float32BufferAttribute(sway, 1));
+  return g;
 }
 
-/** 2 yarrow — short stem + a flat-topped umbel of tiny florets. */
-function yarrowGeometry(): THREE.BufferGeometry {
-  const stemH = 0.32;
-  const parts = stemCards(stemH, 0.03, 0.7);
-  const cap = new THREE.PlaneGeometry(0.17, 0.17);
-  cap.rotateX(-Math.PI / 2);
-  cap.translate(0, stemH + 0.02, 0);
-  pushBothWindings(parts, cap);
-  for (let i = 0; i < 7; i++) {
-    const a = (i / 7) * Math.PI * 2;
-    const d = new THREE.PlaneGeometry(0.055, 0.055);
-    d.rotateX(-Math.PI / 2 + 0.15);
-    d.translate(Math.cos(a) * 0.055, stemH + 0.05, Math.sin(a) * 0.055);
-    pushBothWindings(parts, d);
+/** 0 poppy — the hero: a lush, many-petalled, layered ranunculus-form bloom. Five
+ *  rings of small cupped petals, each ring tighter + more upright toward the centre,
+ *  spun by irregular offsets so the packing reads natural, not radially symmetric. */
+function poppyGeometry(): THREE.BufferGeometry {
+  const stemH = 0.5;
+  const parts = makeStem(stemH, 0.02);
+  bloomRings(parts, stemH + 0.02, [
+    { count: 8, pitch: 0.12, len: 0.2, wid: 0.17, rise: 0.32, close: 0.12, cup: 0.5, out: 0.022 },
+    { count: 8, pitch: 0.42, len: 0.16, wid: 0.14, rise: 0.46, close: 0.26, cup: 0.7, out: 0.016, spin: 0.4 },
+    { count: 7, pitch: 0.78, len: 0.13, wid: 0.12, rise: 0.58, close: 0.36, cup: 0.9, out: 0.011, spin: 0.85 },
+    { count: 6, pitch: 1.12, len: 0.095, wid: 0.1, rise: 0.7, close: 0.46, cup: 1.1, out: 0.007, spin: 0.25 },
+    { count: 5, pitch: 1.45, len: 0.06, wid: 0.08, rise: 0.8, close: 0.55, cup: 1.3, out: 0.004, spin: 0.6 }
+  ], 4);
+  return finalizeBloom(parts, stemH + 0.24);
+}
+
+/** 1 lupine — tall spike of stacked cupped florets. */
+function lupineGeometry(): THREE.BufferGeometry {
+  const stemH = 0.34, spikeH = 0.44, tiers = 8;
+  const parts = makeStem(stemH, 0.02);
+  const floret = makePetal(0.075, 0.07, 0.55, 0.35, 0.7, 3);
+  for (let t = 0; t < tiers; t++) {
+    const frac = t / (tiers - 1);
+    const y = stemH + frac * spikeH;
+    const r = 0.018 + 0.05 * (1 - frac * 0.7);
+    for (let i = 0; i < 5; i++) parts.push(layPetal(floret, 0.65, (i / 5) * Math.PI * 2 + t * 0.7, y, r));
   }
-  const g = mergeGeometries(parts);
-  for (const p of parts) p.dispose();
-  return finalize(g, stemH, stemH + 0.07);
+  floret.dispose();
+  return finalizeBloom(parts, stemH + spikeH);
 }
 
-/** 3 goldfield — low daisy for carpeting drifts: a flat 8-petal star. */
+/** 2 yarrow — short stem + a domed umbel of tiny florets. */
+function yarrowGeometry(): THREE.BufferGeometry {
+  const stemH = 0.3;
+  const parts = makeStem(stemH, 0.02);
+  const flo = makePetal(0.05, 0.05, 0.3, 0.2, 0.5, 2);
+  const n = 13;
+  for (let i = 0; i < n; i++) {
+    const a = i * 2.399; // golden-angle spread
+    const rr = 0.015 + 0.075 * Math.sqrt(i / n);
+    parts.push(layPetal(flo, 0.5, a, stemH + 0.02, rr));
+  }
+  flo.dispose();
+  return finalizeBloom(parts, stemH + 0.08);
+}
+
+/** 3 goldfield — low daisy for carpeting drifts: a small cupped gold star. */
 function goldfieldGeometry(): THREE.BufferGeometry {
   const stemH = 0.16;
-  const parts = stemCards(stemH, 0.02, 0.9);
-  radialPetals(parts, 8, 0.06, 0.08, stemH + 0.005, 0.12);
-  const g = mergeGeometries(parts);
-  for (const p of parts) p.dispose();
-  return finalize(g, stemH, stemH + 0.05);
+  const parts = makeStem(stemH, 0.016);
+  bloomRings(parts, stemH + 0.005, [
+    { count: 11, pitch: 0.18, len: 0.075, wid: 0.045, rise: 0.28, close: 0.05, cup: 0.5, out: 0.006 },
+    { count: 8, pitch: 0.5, len: 0.05, wid: 0.038, rise: 0.45, close: 0.2, cup: 0.7, out: 0.004, spin: 0.4 }
+  ], 3);
+  return finalizeBloom(parts, stemH + 0.07);
 }
 
 const BUILDERS = [poppyGeometry, lupineGeometry, yarrowGeometry, goldfieldGeometry];
@@ -183,12 +251,18 @@ const STEM_COL = vec3(0.12, 0.22, 0.09);
 const FLOWER_FADE_FOCUS = uniform(new THREE.Vector2(1e6, 1e6));
 const FLOWER_REACH_U = uniform(80);
 
-let sharedMaterial: THREE.MeshStandardNodeMaterial | null = null;
-function flowerMaterial(): THREE.MeshStandardNodeMaterial {
+let sharedMaterial: THREE.MeshSSSNodeMaterial | null = null;
+function flowerMaterial(): THREE.MeshSSSNodeMaterial {
   if (sharedMaterial) return sharedMaterial;
-  const mat = new THREE.MeshStandardNodeMaterial({ roughness: 0.82, metalness: 0, side: THREE.FrontSide });
+  // MeshSSS (same family as the grass) so petals are TRANSLUCENT — light passes
+  // through them and they glow when back-lit, the ethereal look from the reference.
+  const mat = new THREE.MeshSSSNodeMaterial();
+  mat.side = THREE.DoubleSide;
+  mat.roughness = 0.5;
+  mat.metalness = 0;
   const swayW: N = attribute("aSway", "float");
   const headMask: N = attribute("aHead", "float");
+  const grad: N = attribute("aG", "float"); // 0 bloom centre → 1 petal tip
   const bloom: N = attribute("aBloom", "vec3"); // per-instance bloom colour
   // Per-instance (cosYaw, sinYaw, worldX, worldZ). We must carry the world anchor in
   // an attribute because modelWorldMatrix on an InstancedMesh is the MESH origin, not
@@ -200,9 +274,28 @@ function flowerMaterial(): THREE.MeshStandardNodeMaterial {
   // to bloom for free — no extra attribute, no extra pass.
   const rotShade: N = inst.x.mul(0.1).add(inst.y.mul(0.06)).add(1.0);
   const bloomV: N = bloom.mul(rotShade);
-  mat.colorNode = mix(STEM_COL, bloomV, headMask);
-  // self-lit petals so a drift reads as a colour wash even in dusk shade
-  mat.emissiveNode = bloomV.mul(headMask).mul(0.4);
+  // Petal COLOUR RAMP: just a small luminous lift at the very centre → the SATURATED
+  // bloom over most of the petal (a soft glow without washing the flower out — pale
+  // reads as sickly in a bright daylit meadow, unlike the reference's dark scene).
+  const core: N = mix(bloomV, vec3(1.0, 0.95, 0.86), 0.34);
+  const petalCol: N = mix(core, bloomV, (grad as N).pow(0.55));
+  mat.colorNode = mix(STEM_COL, petalCol, headMask);
+
+  // FRESNEL RIM: grazing petal edges glow, the way a back-lit petal's rim lights up.
+  const facing: N = (normalView as N).normalize().dot((positionViewDirection as N).normalize()).abs();
+  const rim: N = facing.oneMinus().pow(2.6);
+  // Emissive keeps blooms luminous (a colour wash even in shade) with a brighter rim
+  // edge — the reference blooms read self-lit, not lit only by where the sun happens
+  // to hit them. Combined with the sky-biased normals + SSS this glows without going flat.
+  mat.emissiveNode = petalCol.mul(rim.mul(0.5).add(0.42)).mul(headMask);
+
+  // Translucency: petals let colour through when back-lit; stems stay opaque green.
+  mat.thicknessColorNode = petalCol.mul(0.9).mul(headMask);
+  mat.thicknessDistortionNode = uniform(0.45);
+  mat.thicknessAmbientNode = uniform(0.24);
+  mat.thicknessAttenuationNode = uniform(1.0);
+  mat.thicknessPowerNode = uniform(3.0);
+  mat.thicknessScaleNode = uniform(9.0);
 
   const anchorWorld: N = (modelWorldMatrix as N).mul(vec4(inst.z, 0, inst.w, 1)).xz;
 

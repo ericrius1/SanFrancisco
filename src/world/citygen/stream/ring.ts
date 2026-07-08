@@ -1,59 +1,61 @@
-// Citywide CityGen streaming ring.
+// Citywide CityGen streaming ring — CHUNKED LOD + own crossfade, no baked fabric.
 //
-// Streams generated buildings across the real city: within LOAD_R of the player,
-// each qualifying OSM building (from tools/export-citygen.mjs, bucketed by tile)
-// is generated + its baked twin suppressed; beyond UNLOAD_R it is disposed and
-// the baked twin restored, so the distant city stays whole. Only archetypes that
-// have a bespoke decorator render (Victorian/Edwardian today); everything else
-// keeps its baked facade until its grammar lands. Loads are budgeted per scan so
-// arriving in a district streams in over ~1 s instead of hitching.
+// The whole visible city is OURS. Buildings are grouped by tile cell; each cell
+// within view is baked into ONE merged LOD chunk (render/chunkLod.ts) — a couple
+// dozen draw calls for the entire skyline. The baked OSM mesh is hidden across
+// every loaded cell (mesh-only suppression: R=1, so the ACCURATE baked collider
+// stays live and catches cars/players via the multi-anchor physics — no oversized
+// proxy box). As you approach a building (DETAIL_R) its full grammar mesh dithers
+// in OVER the chunk prism (an all-ours crossfade), its baked collider is swapped
+// for per-edge walk-in walls + a door, and the lazy interior gates on being inside.
 //
-// Generated buildings sit on the SAME footprint + height as their baked twin, so
-// the swap is silhouette-identical (no "shift"). Each contributes precise per-edge
-// wall + ground-pad colliders so you collide with the real geometry.
+// Everything is STATIC: world-space geometry, matrixAutoUpdate off, Static bodies.
+// Nothing here is destructible (only the baked layer is, and we hide that).
 import type * as THREE from "three/webgpu";
 import { generate } from "../index";
 import { buildBuilding, buildInterior } from "../render";
+import { buildChunkLOD, type ChunkLOD } from "../render/chunkLod";
 import { buildCityGenMaterials } from "../theme/materials";
 import type { BuildingSpec } from "../core/types";
 
-/** archetypes that currently have a bespoke decorator worth showing */
 const READY = new Set(["victorian", "edwardian", "marina", "downtown", "soma"]);
 
-const LOAD_R = 120;      // generate + suppress OSM within this (metres)
-const UNLOAD_R = 170;    // dispose + restore OSM beyond this (hysteresis gap)
-const MAX_LOADED = 48;   // hard ceiling on concurrently resident generated buildings
-const SCAN_EVERY = 0.2;  // seconds between ring re-scans
-const LOAD_BUDGET = 2;   // generations kicked off per scan (spreads the hitch)
-const CELL_RADIUS = 1;   // tiles around the player's cell to consider
+const CELL_LOAD = 1;     // load chunks in the player's cell ± this (tile ≈ 800 m)
+const CELL_UNLOAD = 2;   // dispose chunks beyond this (hysteresis)
+const DETAIL_R = 95;     // full grammar + walk-in door + interior within this
+const DETAIL_EXIT = 120; // detail fades back to the chunk prism beyond this
+const MAX_DETAIL = 28;   // nearest-N full grammar meshes (expensive)
+const DETAIL_BUDGET = 1; // detail builds per scan
+const CHUNK_BUDGET = 260;// buildings merged into chunk geometry per frame (no hitch)
+const SCAN_EVERY = 0.15;
+const FADE_T = 0.4;
 
 interface PhysWorld {
   createBox(o: { type: number; position: readonly [number, number, number]; halfExtents: readonly [number, number, number]; friction?: number }): number;
   setBodyTransform(h: number, p: readonly [number, number, number], q: readonly [number, number, number, number]): void;
   destroyBody(h: number): void;
 }
-
 interface Tiles {
   suppressBuilding(key: string, index: number): void;
   unsuppressBuilding(key: string, index: number): void;
+  suppressBuildingMesh(key: string, index: number): void;
+  unsuppressBuildingMesh(key: string, index: number): void;
 }
-
-interface Entry extends BuildingSpec {
-  key: string;  // tile key of the baked twin
-  cx: number; cz: number; // footprint centroid (for distance tests)
-  bb: { minx: number; maxx: number; minz: number; maxz: number }; // footprint bbox
-  built: BuiltGroup | null;
-  bodies: number[];
-  interior: { group: THREE.Group; dispose(): void } | null;
-  intBodies: number[];
-  fade: number;      // 0..1 current crossfade opacity
-  fadeDir: number;   // +1 fading in, -1 fading out, 0 settled
-  bakedHidden: boolean; // baked twin currently suppressed
-}
-
 interface BuiltGroup { group: THREE.Group; setOpacity(o: number): void; dispose(): void; }
 
-const FADE_T = 0.45; // seconds for a building to crossfade in/out
+interface Entry extends BuildingSpec {
+  key: string;
+  cx: number; cz: number;
+  bb: { minx: number; maxx: number; minz: number; maxz: number };
+  detail: BuiltGroup | null;
+  fade: number; fadeDir: number;
+  bodies: number[];              // walk-in colliders (detail tier only)
+  interior: { group: THREE.Group; dispose(): void } | null;
+  intBodies: number[];
+  state: "lod" | "detail";       // lod = baked mesh hidden R=1 (collider kept); detail = R=0 + walk-in
+}
+
+interface CellState { key: string; cx: number; cz: number; entries: Entry[]; chunk: ChunkLOD | null; phase: "building" | "ready"; }
 
 function boundsOf(poly: readonly (readonly [number, number])[]) {
   let x = 0, z = 0, minx = Infinity, maxx = -Infinity, minz = Infinity, maxz = -Infinity;
@@ -70,17 +72,13 @@ export interface CityGenRing {
   count: number;
   update(playerPos: THREE.Vector3, dt: number): void;
   dispose(): void;
-  stats(): { total: number; loaded: number; interiors: number };
-  /** debug: currently-resident buildings (for headless entry tests) */
+  stats(): { total: number; cells: number; buildings: number; detail: number; interiors: number };
   debugBuildings(): { cx: number; cz: number; base: number; top: number; interior: boolean }[];
 }
 
 async function fetchGrid(url: string): Promise<GridData | null> {
-  try {
-    const r = await fetch(url, { cache: "force-cache" });
-    if (!r.ok) return null;
-    return (await r.json()) as GridData;
-  } catch { return null; }
+  try { const r = await fetch(url, { cache: "force-cache" }); if (!r.ok) return null; return (await r.json()) as GridData; }
+  catch { return null; }
 }
 
 export async function createCityGenRing(
@@ -91,162 +89,177 @@ export async function createCityGenRing(
   const grid = await fetchGrid(url);
   const materials = buildCityGenMaterials();
 
-  // materialize each cell's entries once (only the ready archetypes), indexed by cell
-  const cells = new Map<string, Entry[]>();
+  // materialize entries per cell (ready archetypes only)
+  const cellEntries = new Map<string, Entry[]>();
   let total = 0;
   if (grid) {
     for (const [key, list] of Object.entries(grid.cells)) {
-      const entries = list
-        .filter((b) => READY.has(b.archetype))
-        .map((b) => {
-          const g = boundsOf(b.poly);
-          return { ...b, key, cx: g.cx, cz: g.cz, bb: { minx: g.minx, maxx: g.maxx, minz: g.minz, maxz: g.maxz }, built: null, bodies: [] as number[], interior: null, intBodies: [] as number[], fade: 0, fadeDir: 0, bakedHidden: false } as Entry;
-        });
-      if (entries.length) { cells.set(key, entries); total += entries.length; }
+      const entries = list.filter((b) => READY.has(b.archetype)).map((b) => {
+        const g = boundsOf(b.poly);
+        return { ...b, key, cx: g.cx, cz: g.cz, bb: { minx: g.minx, maxx: g.maxx, minz: g.minz, maxz: g.maxz },
+          detail: null, fade: 0, fadeDir: 0, bodies: [] as number[], interior: null, intBodies: [] as number[], state: "lod" as const } as Entry;
+      });
+      if (entries.length) { cellEntries.set(key, entries); total += entries.length; }
     }
   }
   const tile = grid?.tile ?? 800;
   const minX = grid?.minX ?? 0, minZ = grid?.minZ ?? 0;
-  const tilesX = grid?.tilesX ?? 0, tilesZ = grid?.tilesZ ?? 0;
 
-  const built = new Set<Entry>();
+  const loaded = new Map<string, CellState>();
+  const building: CellState[] = []; // cells still merging their chunk
   let accum = 0;
-  const loadR2 = LOAD_R * LOAD_R, unloadR2 = UNLOAD_R * UNLOAD_R;
+  const detailR2 = DETAIL_R * DETAIL_R, detailExit2 = DETAIL_EXIT * DETAIL_EXIT;
 
   const addBody = (c: { x: number; y: number; z: number; hx: number; hy: number; hz: number; yaw: number }): number => {
     const h = ctx.physics.world.createBox({ type: 0, position: [c.x, c.y, c.z], halfExtents: [c.hx, c.hy, c.hz], friction: 0.8 });
     ctx.physics.world.setBodyTransform(h, [c.x, c.y, c.z], [0, Math.sin(c.yaw / 2), 0, Math.cos(c.yaw / 2)]);
     return h;
   };
-
-  // ---- crossfade lifecycle ---------------------------------------------------
-  // Load: build the generated twin at opacity 0 OVER the still-visible baked twin,
-  // fade it in, and suppress the baked twin only once fully opaque. Unload: restore
-  // the baked twin, fade the generated one out, then dispose. Silhouettes match, so
-  // the fade reads as detail resolving in/out — never a pop or shift.
-  const loadOne = (e: Entry) => {
-    const b = buildBuilding(e as BuildingSpec, materials);
-    b.setOpacity(0);
-    ctx.scene.add(b.group);
-    e.built = b;
-    e.fade = 0; e.fadeDir = 1; e.bakedHidden = false;
-    const { colliders } = generate(e as BuildingSpec, true); // collide immediately
-    for (const c of colliders) e.bodies.push(addBody(c));
-    built.add(e);
-  };
-
+  const clearBodies = (e: Entry) => { for (const h of e.bodies) ctx.physics.world.destroyBody(h); e.bodies.length = 0; };
   const disposeInterior = (e: Entry) => {
     if (e.interior) { ctx.scene.remove(e.interior.group); e.interior.dispose(); e.interior = null; }
     for (const h of e.intBodies) ctx.physics.world.destroyBody(h);
     e.intBodies.length = 0;
   };
 
-  // begin fading out (restore the baked twin underneath); dispose happens at fade 0
-  const beginUnload = (e: Entry) => {
-    if (e.fadeDir === -1) return;
-    e.fadeDir = -1;
-    if (e.bakedHidden) { ctx.tiles.unsuppressBuilding(e.key, e.i); e.bakedHidden = false; }
+  // ---- detail tier -----------------------------------------------------------
+  const buildDetail = (e: Entry) => {
+    const b = buildBuilding(e as BuildingSpec, materials);
+    b.setOpacity(0);
+    ctx.scene.add(b.group);
+    e.detail = b; e.fade = 0; e.fadeDir = 1; e.state = "detail";
+    // baked mesh+collider fully off; add per-edge walk-in walls + door
+    ctx.tiles.suppressBuilding(e.key, e.i);
+    const { colliders } = generate(e as BuildingSpec, true);
+    for (const c of colliders) e.bodies.push(addBody(c));
   };
-
-  const finishUnload = (e: Entry) => {
+  const dropDetail = (e: Entry) => {
     disposeInterior(e);
-    if (e.built) { ctx.scene.remove(e.built.group); e.built.dispose(); e.built = null; }
-    for (const h of e.bodies) ctx.physics.world.destroyBody(h);
-    e.bodies.length = 0;
-    if (e.bakedHidden) { ctx.tiles.unsuppressBuilding(e.key, e.i); e.bakedHidden = false; }
-    e.fadeDir = 0; e.fade = 0;
-    built.delete(e);
+    if (e.detail) { ctx.scene.remove(e.detail.group); e.detail.dispose(); e.detail = null; }
+    clearBodies(e);
+    // back to LOD: baked mesh hidden (R=1) but accurate baked collider live again
+    ctx.tiles.unsuppressBuilding(e.key, e.i);
+    ctx.tiles.suppressBuildingMesh(e.key, e.i);
+    e.state = "lod"; e.fade = 0; e.fadeDir = 0;
   };
-
   const advanceFades = (dt: number) => {
-    for (const e of [...built]) {
-      if (!e.built || e.fadeDir === 0) continue;
+    for (const cell of loaded.values()) for (const e of cell.entries) {
+      if (!e.detail || e.fadeDir === 0) continue;
       e.fade += e.fadeDir * (dt / FADE_T);
-      if (e.fadeDir > 0 && e.fade >= 1) {
-        e.fade = 1; e.fadeDir = 0; e.built.setOpacity(1);
-        if (!e.bakedHidden) { ctx.tiles.suppressBuilding(e.key, e.i); e.bakedHidden = true; }
-      } else if (e.fadeDir < 0 && e.fade <= 0) {
-        finishUnload(e);
-      } else {
-        e.built.setOpacity(e.fade);
-      }
+      if (e.fadeDir > 0 && e.fade >= 1) { e.fade = 1; e.fadeDir = 0; e.detail.setOpacity(1); }
+      else if (e.fadeDir < 0 && e.fade <= 0) dropDetail(e);
+      else e.detail.setOpacity(e.fade);
     }
   };
 
-  // interior lazy gate: build only while the player is INSIDE the footprint,
-  // dispose once they step out (nothing renders for a building nobody is in).
   const gateInterior = (e: Entry, p: THREE.Vector3) => {
-    const inX = p.x > e.bb.minx - 1.2 && p.x < e.bb.maxx + 1.2;
-    const inZ = p.z > e.bb.minz - 1.2 && p.z < e.bb.maxz + 1.2;
-    const inY = p.y > e.base - 1.5 && p.y < e.top + 1.0;
-    const inside = inX && inZ && inY;
-    if (inside && !e.interior) {
+    const inside = e.state === "detail" && p.x > e.bb.minx - 1.2 && p.x < e.bb.maxx + 1.2 && p.z > e.bb.minz - 1.2 && p.z < e.bb.maxz + 1.2 && p.y > e.base - 1.5 && p.y < e.top + 1.0;
+    if (inside && !e.interior && e.bodies.length) {
       const it = buildInterior(e as BuildingSpec, materials);
       ctx.scene.add(it.group);
       for (const c of it.colliders) e.intBodies.push(addBody(c));
       e.interior = it;
     } else if (!inside && e.interior) {
-      // hysteresis: only dispose once well clear of the footprint
       const clear = p.x < e.bb.minx - 4 || p.x > e.bb.maxx + 4 || p.z < e.bb.minz - 4 || p.z > e.bb.maxz + 4;
       if (clear) disposeInterior(e);
     }
   };
 
+  // ---- cell load / unload -----------------------------------------------------
+  const loadCell = (key: string, entries: Entry[]) => {
+    const c0 = boundsOf(entries[0].poly); void c0;
+    let sx = 0, sz = 0; for (const e of entries) { sx += e.cx; sz += e.cz; }
+    const cell: CellState = { key, cx: sx / entries.length, cz: sz / entries.length, entries, chunk: buildChunkLOD(entries as BuildingSpec[]), phase: "building" };
+    loaded.set(key, cell);
+    building.push(cell);
+  };
+  const unloadCell = (cell: CellState) => {
+    for (const e of cell.entries) {
+      if (e.detail || e.state === "detail") dropDetail(e);
+      ctx.tiles.unsuppressBuildingMesh(e.key, e.i); // restore baked mesh
+      e.state = "lod";
+    }
+    if (cell.chunk?.mesh) ctx.scene.remove(cell.chunk.mesh);
+    cell.chunk?.dispose();
+    const idx = building.indexOf(cell); if (idx >= 0) building.splice(idx, 1);
+    loaded.delete(cell.key);
+  };
+  // finish a chunk: add its merged mesh + hide the baked MESH for every building
+  // in the cell (collider stays live). Atomic swap → no hole while it built.
+  const finishChunk = (cell: CellState) => {
+    if (cell.chunk?.mesh) ctx.scene.add(cell.chunk.mesh);
+    for (const e of cell.entries) if (e.state === "lod") ctx.tiles.suppressBuildingMesh(e.key, e.i);
+    cell.phase = "ready";
+  };
+
   return {
     count: total,
     update(playerPos, dt) {
-      // interior gate runs every frame so entering a door is instant (cheap: only
-      // the resident set, ~40, and it only builds meshes when actually inside)
-      for (const e of built) gateInterior(e, playerPos);
-      advanceFades(dt); // crossfade in/out every frame
+      // per-frame: interior gate + detail crossfade + chunk merging
+      for (const cell of loaded.values()) for (const e of cell.entries) gateInterior(e, playerPos);
+      advanceFades(dt);
+      if (building.length) {
+        let budget = CHUNK_BUDGET;
+        while (building.length && budget > 0) {
+          const cell = building[0];
+          cell.chunk!.pump(budget);
+          budget -= CHUNK_BUDGET; // one cell per frame slice max (keeps it simple + bounded)
+          if (cell.chunk!.done) { finishChunk(cell); building.shift(); } else break;
+        }
+      }
 
       accum += dt;
       if (accum < SCAN_EVERY) return;
       accum = 0;
 
-      // unload pass — begin fading out anything past the ring
-      for (const e of built) {
-        const dx = playerPos.x - e.cx, dz = playerPos.z - e.cz;
-        if (dx * dx + dz * dz > unloadR2) beginUnload(e);
-      }
-      if (built.size >= MAX_LOADED) return;
-
-      // load pass over nearby cells
       const ptx = Math.floor((playerPos.x - minX) / tile);
       const ptz = Math.floor((playerPos.z - minZ) / tile);
-      const wants: Entry[] = [];
-      for (let cx = ptx - CELL_RADIUS; cx <= ptx + CELL_RADIUS; cx++) {
-        if (cx < 0 || cx >= tilesX) continue;
-        for (let cz = ptz - CELL_RADIUS; cz <= ptz + CELL_RADIUS; cz++) {
-          if (cz < 0 || cz >= tilesZ) continue;
-          const list = cells.get(`${cx}_${cz}`);
-          if (!list) continue;
-          for (const e of list) {
-            const dx = playerPos.x - e.cx, dz = playerPos.z - e.cz;
-            const d2 = dx * dx + dz * dz;
-            if (e.built) { if (e.fadeDir < 0 && d2 < loadR2) e.fadeDir = 1; continue; } // came back → fade back in
-            if (d2 < loadR2) wants.push(e);
-          }
+
+      // unload cells beyond the ring
+      for (const cell of [...loaded.values()]) {
+        const dcx = Math.round((cell.cx - minX) / tile) - ptx;
+        const dcz = Math.round((cell.cz - minZ) / tile) - ptz;
+        if (Math.abs(dcx) > CELL_UNLOAD || Math.abs(dcz) > CELL_UNLOAD) unloadCell(cell);
+      }
+      // load cells in range
+      for (let cx = ptx - CELL_LOAD; cx <= ptx + CELL_LOAD; cx++) {
+        for (let cz = ptz - CELL_LOAD; cz <= ptz + CELL_LOAD; cz++) {
+          const key = `${cx}_${cz}`;
+          if (loaded.has(key)) continue;
+          const entries = cellEntries.get(key);
+          if (entries) loadCell(key, entries);
         }
       }
-      wants.sort((a, b) =>
-        ((playerPos.x - a.cx) ** 2 + (playerPos.z - a.cz) ** 2) -
-        ((playerPos.x - b.cx) ** 2 + (playerPos.z - b.cz) ** 2));
-      let budget = LOAD_BUDGET;
-      for (const e of wants) {
-        if (budget <= 0 || built.size >= MAX_LOADED) break;
-        budget--;
-        loadOne(e);
+
+      // detail tier: nearest-N ready-cell buildings within DETAIL_R
+      let detailCount = 0;
+      const wants: [Entry, number][] = [];
+      for (const cell of loaded.values()) {
+        if (cell.phase !== "ready") continue;
+        for (const e of cell.entries) {
+          const dx = playerPos.x - e.cx, dz = playerPos.z - e.cz;
+          const d2 = dx * dx + dz * dz;
+          if (e.detail) {
+            detailCount++;
+            if (d2 > detailExit2 && e.fadeDir >= 0) e.fadeDir = -1;
+            else if (d2 < detailR2 && e.fadeDir < 0) e.fadeDir = 1;
+          } else if (d2 < detailR2) wants.push([e, d2]);
+        }
       }
+      wants.sort((a, b) => a[1] - b[1]);
+      let db = DETAIL_BUDGET;
+      for (const [e] of wants) { if (db <= 0 || detailCount >= MAX_DETAIL) break; buildDetail(e); db--; detailCount++; }
     },
-    dispose() { for (const e of [...built]) finishUnload(e); built.clear(); },
+    dispose() { for (const cell of [...loaded.values()]) unloadCell(cell); loaded.clear(); building.length = 0; },
     stats() {
-      let interiors = 0;
-      for (const e of built) if (e.interior) interiors++;
-      return { total, loaded: built.size, interiors };
+      let buildings = 0, detail = 0, interiors = 0;
+      for (const cell of loaded.values()) { buildings += cell.entries.length; for (const e of cell.entries) { if (e.detail) detail++; if (e.interior) interiors++; } }
+      return { total, cells: loaded.size, buildings, detail, interiors };
     },
     debugBuildings() {
-      return [...built].filter((e) => e.built).map((e) => ({ cx: e.cx, cz: e.cz, base: e.base, top: e.top, interior: !!e.interior }));
+      const out: { cx: number; cz: number; base: number; top: number; interior: boolean }[] = [];
+      for (const cell of loaded.values()) for (const e of cell.entries) if (e.detail) out.push({ cx: e.cx, cz: e.cz, base: e.base, top: e.top, interior: !!e.interior });
+      return out;
     },
   };
 }

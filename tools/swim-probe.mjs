@@ -140,6 +140,16 @@ async function main() {
     // THE camera fix: diving deep should pull the camera below the old sea-level clamp (y=0.7)
     check(dive.camY < 0.5, `camera followed underwater (camera y=${dive.camY.toFixed(2)} < 0.5; old clamp pinned it ≥ 0.7)`);
 
+    // --- underwater overlay: active while submerged, waterline band positioned ---
+    const ov = await evaluate(c, `(()=>{const r=document.getElementById('uw-root'); if(!r) return null;
+      const cs=getComputedStyle(r), tint=r.children[0], body=r.children[1];
+      const tOp=+getComputedStyle(tint).opacity, bTf=getComputedStyle(body).transform;
+      return {vis:cs.visibility, tintOpacity:+tOp.toFixed(3), tintBg:getComputedStyle(tint).backgroundColor, bodyTransform:bTf};})()`);
+    console.log(`[swim] overlay while submerged: ${JSON.stringify(ov)}`);
+    check(ov && ov.vis === "visible", `underwater overlay is visible while submerged`);
+    check(ov && ov.tintOpacity > 0.1, `tint layer is casting the scene (opacity=${ov?.tintOpacity})`);
+    check(ov && /matrix|translate/.test(ov.bodyTransform) && ov.bodyTransform !== "none", `waterline band is positioned by pitch (transform=${ov?.bodyTransform?.slice(0, 24)})`);
+
     // 3) RELEASE — let go, buoyancy floats you back up toward the surface
     await evaluate(c, clearKeys);
     await sleep(2500);
@@ -148,13 +158,27 @@ async function main() {
     check(up.cy > dive.cy + 1.0, `release: buoyancy floats you back up (centre ${up.cy.toFixed(2)} > dive ${dive.cy.toFixed(2)} + 1.0)`);
     check(Math.abs(up.cy - idle.cy) < 0.8, `release: returns near the idle surface rest (${up.cy.toFixed(2)} ≈ ${idle.cy.toFixed(2)})`);
     check(up.camY > dive.camY + 0.5, `camera rose back with you (${up.camY.toFixed(2)} > ${dive.camY.toFixed(2)})`);
+    // camera is above the surface again → overlay must switch off (no stuck tint)
+    const ovUp = await evaluate(c, `(()=>{const r=document.getElementById('uw-root'); return r?getComputedStyle(r).visibility:'none';})()`);
+    check(ovUp === "hidden", `overlay clears when the camera is back above water (visibility=${ovUp})`);
 
-    // capture a proof screenshot of the underwater dive framing
+    // proof screenshots: dive deep, then look DOWN (into the depths) and UP
+    // (toward the bright surface) so the waterline band visibly tracks pitch.
     await evaluate(c, `${clearKeys} window.__sf.input.keys.add('ShiftLeft');`);
-    await sleep(1600);
+    await sleep(2600);
+    await evaluate(c, `window.__sf.chase.pitch=0.75;`); // look down
+    await sleep(500);
+    const sDown = await c.send("Page.captureScreenshot", { format: "jpeg", quality: 88 });
+    writeFileSync(path.join(OUT, "swim_dive_down.jpg"), Buffer.from(sDown.data, "base64"));
+    await evaluate(c, `window.__sf.chase.pitch=-0.5;`); // look up toward the surface
+    await sleep(500);
+    const sUp = await c.send("Page.captureScreenshot", { format: "jpeg", quality: 88 });
+    writeFileSync(path.join(OUT, "swim_dive_up.jpg"), Buffer.from(sUp.data, "base64"));
+    await evaluate(c, `window.__sf.chase.pitch=0.12;`); // level
+    await sleep(400);
     const s1 = await c.send("Page.captureScreenshot", { format: "jpeg", quality: 88 });
     writeFileSync(path.join(OUT, "swim_dive.jpg"), Buffer.from(s1.data, "base64"));
-    console.log("[swim] saved swim_dive.jpg");
+    console.log("[swim] saved swim_dive.jpg + swim_dive_down.jpg + swim_dive_up.jpg");
 
     const errs = [...new Set(c.errors)].slice(0, 6);
     check(c.errors.length === 0, `no uncaught runtime errors (${c.errors.length})`);
