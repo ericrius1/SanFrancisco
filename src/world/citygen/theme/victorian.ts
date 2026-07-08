@@ -102,25 +102,23 @@ function bracketedCornice(out: PanelBuilder, e: FacadeEdge, mat: string, proj: n
   }
 }
 
-/** raised stoop (steps) + panelled, trimmed door at the entrance */
+/** ground-level panelled + trimmed door at the entrance (aligned with the
+ *  walk-through gap the collider cuts in the street wall, so you enter here). */
 function stoopAndDoor(out: PanelBuilder, e: FacadeEdge, base: number, groundTopY: number, m: { base: string; trim: string; door: string }): void {
-  const dw = Math.min(1.5, e.length * 0.28);
-  const tc = e.length > 6 ? 0.22 : 0.5;             // entrance offset (side for wide lots)
+  // MATCH core/collider.ts doorway: tc + width, so the visual door is the gap
+  const halfW = Math.min(0.9, e.length * 0.16);
+  const dw = halfW * 2;
+  const tc = e.length > 6 ? 0.24 : 0.5;
   const along = unit(sub(gp(e, 1), gp(e, 0)));
   const n3: Vec3 = [e.normal[0], 0, e.normal[1]];
   const dl = gp(e, tc - dw / 2 / e.length), dr = gp(e, tc + dw / 2 / e.length);
-  const doorTop = Math.min(groundTopY + 0.9, base + 2.6);
+  const doorBase = base + 0.02;
+  const doorTop = Math.min(base + (e.top - base) * 0.55, base + 2.5);
 
-  // stoop: three steps projecting outward, climbing to the raised entry
-  const steps = 3, rise = (0.55) / steps;
-  for (let s = 0; s < steps; s++) {
-    const proj = 0.9 - s * 0.22;
-    const c = lerp(dl, dr, 0.5);
-    out.box(m.trim, [c[0] + n3[0] * proj * 0.5, base + rise * (s + 0.5), c[2] + n3[2] * proj * 0.5],
-      [dw / 2 + 0.25, rise / 2, proj / 2], along, UP, n3, true);
-  }
+  // a single flat threshold slab at the doorsill (cosmetic)
+  const cSill = lerp(dl, dr, 0.5);
+  out.box(m.trim, [cSill[0] + n3[0] * 0.2, base + 0.06, cSill[2] + n3[2] * 0.2], [dw / 2 + 0.2, 0.06, 0.2], along, UP, n3, true);
 
-  const doorBase = base + 0.55;
   // recessed door panel (dark) + trim surround
   const inw = (p: Vec3, d: number, yy: number): Vec3 => [p[0] + n3[0] * d, yy, p[2] + n3[2] * d];
   out.quad(m.door, inw(dl, -0.12, doorBase), inw(dr, -0.12, doorBase), inw(dr, -0.12, doorTop), inw(dl, -0.12, doorTop), n3);

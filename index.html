@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>San Francisco- og</title>
+    <title>San Francisco</title>
     <link
       rel="icon"
       href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌉</text></svg>"
@@ -20,6 +20,12 @@
       #app {
         position: fixed;
         inset: 0;
+        transition: opacity 0.5s ease;
+      }
+      /* while a reading overlay is open the world stops rendering entirely and
+         the frozen canvas dims a touch — no live frames flicker through. */
+      #app.world-dimmed {
+        opacity: 0.45;
       }
       canvas {
         display: block;
@@ -889,8 +895,8 @@
         align-items: center;
         justify-content: center;
         padding: 4vh 16px;
-        background: rgba(4, 10, 16, 0.62);
-        backdrop-filter: blur(4px);
+        background: rgba(4, 10, 16, 0.34);
+        backdrop-filter: blur(5px);
         pointer-events: auto;
       }
       #hud .bts-overlay.open {
@@ -1153,35 +1159,62 @@
         animation: btsfade 0.25s ease;
       }
 
-      /* ---- scroll-driven diagrams ---- */
+      /* ---- scroll-driven diagrams ----
+         Two columns: a graphic pinned in view on the left while its captions
+         scroll past on the right, then it releases when the section ends. The
+         graphic and the text never overlap — captions have their own column. */
       #hud .scrolly {
         position: relative;
-        margin: 12px 0 6px;
+        display: flex;
+        align-items: flex-start;
+        gap: 22px;
+        margin: 18px 0 10px;
       }
       #hud .scrolly-graphic {
         position: sticky;
-        top: 0;
+        top: 10px;
         z-index: 1;
-        height: 42vh;
-        min-height: 240px;
+        flex: 0 0 clamp(280px, 47%, 460px);
+        align-self: flex-start;
+        height: min(50vh, 380px);
+        min-height: 230px;
         display: flex;
         align-items: center;
         justify-content: center;
-        padding: 10px 6px;
-        border-radius: 14px;
-        border: 1px solid rgba(190, 225, 240, 0.14);
-        background: linear-gradient(
-          180deg,
-          rgba(10, 26, 39, 0.98),
-          rgba(8, 20, 31, 0.98)
-        );
-        box-shadow: 0 10px 30px rgba(0, 4, 10, 0.35);
+        padding: 12px 10px;
+        border-radius: 16px;
+        border: 1px solid rgba(190, 225, 240, 0.16);
+        background:
+          radial-gradient(
+            120% 90% at 50% 0%,
+            rgba(20, 48, 68, 0.6),
+            rgba(8, 20, 31, 0) 70%
+          ),
+          linear-gradient(180deg, rgba(10, 26, 39, 0.98), rgba(7, 18, 28, 0.98));
+        box-shadow:
+          0 14px 40px rgba(0, 4, 10, 0.4),
+          inset 0 1px 0 rgba(160, 220, 240, 0.06);
       }
       #hud .ss-svg {
         width: 100%;
         height: 100%;
         max-height: 100%;
         overflow: visible;
+      }
+      @media (max-width: 680px) {
+        #hud .scrolly {
+          flex-direction: column;
+          gap: 0;
+        }
+        #hud .scrolly-graphic {
+          top: 0;
+          flex-basis: auto;
+          width: 100%;
+          height: 40vh;
+        }
+        #hud .scrolly-step {
+          min-height: 68vh;
+        }
       }
       #hud .ss-t {
         fill: #cfe6ee;
@@ -1206,12 +1239,20 @@
       #hud .scrolly-steps {
         position: relative;
         z-index: 0;
+        flex: 1 1 0;
+        min-width: 0;
       }
       #hud .scrolly-step {
-        min-height: 50vh;
+        min-height: 60vh;
         display: flex;
         align-items: center;
         padding: 6px 0;
+      }
+      #hud .scrolly-step:first-child {
+        min-height: 42vh;
+      }
+      #hud .scrolly-step:last-child {
+        min-height: 46vh;
       }
       #hud .scrolly-step p {
         margin: 0;
@@ -1250,6 +1291,191 @@
       }
       #hud .bts-daygraphic .ss-svg {
         height: 200px;
+      }
+
+      /* ---- interactive toys (synthesis explorer, build-a-bird, day scrub) ---- */
+      #hud .ss-interactive {
+        margin: 14px 0 6px;
+        padding: 14px 16px 16px;
+        border-radius: 16px;
+        border: 1px solid rgba(127, 224, 205, 0.22);
+        background:
+          radial-gradient(
+            130% 100% at 50% 0%,
+            rgba(20, 50, 70, 0.55),
+            rgba(8, 20, 31, 0) 72%
+          ),
+          linear-gradient(180deg, rgba(11, 28, 41, 0.96), rgba(8, 19, 29, 0.96));
+        box-shadow:
+          0 14px 40px rgba(0, 4, 10, 0.4),
+          inset 0 1px 0 rgba(160, 220, 240, 0.06);
+      }
+      #hud .ss-toy-head {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        margin-bottom: 4px;
+        font-size: 13px;
+        font-weight: 800;
+        letter-spacing: 0.01em;
+        color: #9ef2df;
+      }
+      #hud .ss-toy-ic {
+        font-size: 15px;
+      }
+      #hud .ss-toy-hint {
+        margin-left: auto;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        color: #7fa6b6;
+      }
+      #hud .ss-toysvg {
+        display: block;
+        width: 100%;
+        height: auto;
+        margin: 2px 0 6px;
+        overflow: visible;
+      }
+      #hud .ss-tabrow {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin: 4px 0 8px;
+      }
+      #hud .ss-mtab {
+        flex: 1 1 auto;
+        padding: 7px 10px;
+        cursor: pointer;
+        border-radius: 9px;
+        border: 1px solid rgba(190, 225, 240, 0.16);
+        background: rgba(14, 32, 46, 0.6);
+        color: #9fc6d6;
+        font:
+          700 12px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
+        transition:
+          color 0.15s,
+          border-color 0.15s,
+          background 0.15s;
+      }
+      #hud .ss-mtab:hover {
+        color: #cfe6ee;
+        border-color: rgba(127, 224, 205, 0.4);
+      }
+      #hud .ss-mtab.active {
+        color: #08202e;
+        border-color: #6fd7c4;
+        background: linear-gradient(180deg, #9ef2df, #6fd7c4);
+      }
+      #hud .ss-mtinfo {
+        min-height: 44px;
+        margin: 0 0 10px;
+        font-size: 12.5px;
+        line-height: 1.5;
+        color: #bcd6df;
+      }
+      #hud .ss-controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+        margin: 6px 0;
+      }
+      #hud .ss-toy-actions {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        margin-top: 10px;
+      }
+      #hud .ss-btn {
+        padding: 8px 13px;
+        cursor: pointer;
+        border-radius: 9px;
+        border: 1px solid rgba(190, 225, 240, 0.18);
+        background: rgba(14, 32, 46, 0.66);
+        color: #a9cbd7;
+        font:
+          700 12px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
+        transition:
+          color 0.15s,
+          border-color 0.15s,
+          background 0.15s,
+          box-shadow 0.15s;
+      }
+      #hud .ss-btn:hover {
+        color: #e2f2f7;
+        border-color: rgba(127, 224, 205, 0.45);
+      }
+      #hud .ss-btn.active {
+        color: #08202e;
+        border-color: #6fd7c4;
+        background: linear-gradient(180deg, #b7f6e8, #6fd7c4);
+        box-shadow: 0 4px 14px rgba(111, 215, 196, 0.28);
+      }
+      #hud .ss-btn-primary {
+        color: #06202c;
+        border-color: #6fd7c4;
+        background: linear-gradient(180deg, #a6f0df, #57c7b0);
+        box-shadow: 0 6px 18px rgba(87, 199, 176, 0.32);
+      }
+      #hud .ss-btn-primary:hover {
+        color: #06202c;
+        background: linear-gradient(180deg, #b9f7ea, #63d3bc);
+      }
+      #hud .ss-btn-primary:active {
+        transform: translateY(1px);
+      }
+      #hud .ss-btn-ghost {
+        background: rgba(10, 24, 36, 0.5);
+      }
+      #hud .ss-daybar {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin: 8px 2px 2px;
+      }
+      #hud .ss-slider {
+        flex: 1 1 auto;
+        height: 4px;
+        cursor: pointer;
+        appearance: none;
+        -webkit-appearance: none;
+        border-radius: 3px;
+        background: linear-gradient(
+          90deg,
+          rgba(158, 242, 223, 0.5),
+          rgba(196, 164, 96, 0.5)
+        );
+      }
+      #hud .ss-slider::-webkit-slider-thumb {
+        appearance: none;
+        -webkit-appearance: none;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        cursor: pointer;
+        background: #eafff9;
+        border: 2px solid #6fd7c4;
+        box-shadow: 0 2px 8px rgba(0, 8, 14, 0.5);
+      }
+      #hud .ss-slider::-moz-range-thumb {
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        cursor: pointer;
+        background: #eafff9;
+        border: 2px solid #6fd7c4;
+      }
+      #hud .ss-readout {
+        font-size: 11.5px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        color: #8fb3c1;
+        white-space: nowrap;
       }
 
       /* lone affordance when Tab hides the HUD — hidden in immersive (display:none on #hud) */

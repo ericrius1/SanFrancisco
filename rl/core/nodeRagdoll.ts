@@ -209,11 +209,11 @@ export class HorseRagdoll {
   jump(): void {
     if (this.downed || this.jumpCooldown > 0) return;
     if (this.state.torso.pos[1] > this.spawnY * 1.25) return; // already in the air
-    const vUp = 0.95 * this.speedUnit;
+    const vUp = 0.82 * this.speedUnit; // flatter softer arc (mirror src horseRagdoll)
     qRot(this.state.torso.quat, [0, 0, 1], this._nose); // forward (nose) dir
     for (const h of this.all) {
       const m = this.world.getBodyMass(h);
-      this.world.applyImpulse(h, [this._nose[0] * 0.25 * vUp * m, vUp * m, this._nose[2] * 0.25 * vUp * m]);
+      this.world.applyImpulse(h, [this._nose[0] * 0.3 * vUp * m, vUp * m, this._nose[2] * 0.3 * vUp * m]);
       this.world.setBodyAwake(h, true);
     }
     this.jumpCooldown = 0.8; // seconds

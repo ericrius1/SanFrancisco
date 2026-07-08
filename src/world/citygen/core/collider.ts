@@ -1,50 +1,76 @@
-// Building → collider boxes. Phase 1 emits one oriented wall box per footprint
-// edge (yawed to the edge) plus a ground pad — precise to the REAL polygon, so a
-// car hitting a re-entrant façade stops on the actual wall instead of a bbox that
-// either overhangs the sidewalk or leaves a gap. Interior floor/stair colliders
-// arrive with the walkable-interior phase (Phase 4/5). Pure, no THREE.
+// Building → collider boxes. One oriented wall box per footprint edge (yawed to
+// the edge) plus a ground pad — precise to the REAL polygon, so a car hitting a
+// re-entrant façade stops on the actual wall instead of a bbox. With `door`, the
+// street-facing edge (longest) gets a walk-through gap: its wall becomes two side
+// segments + a lintel above the opening, so the player can enter. Pure, no THREE.
 import type { BuildingSpec, ColliderBox } from "./types";
-import { ensureCCW } from "./footprint";
+import { ensureCCW, streetEdgeIndex } from "./footprint";
 
 const WALL_T = 0.25; // wall half-thickness (metres)
 
-/** Oriented wall boxes + ground pad in the host world frame. */
-export function buildingColliders(spec: BuildingSpec): ColliderBox[] {
+export interface DoorOpening {
+  /** which edge got the door (longest / street), for the caller to place the visual */
+  edge: number;
+  /** door centre fraction along that edge, and half-width in metres */
+  tCenter: number; halfW: number;
+  /** door head height above base (walk-through clearance) */
+  head: number;
+}
+
+/** Oriented wall boxes + ground pad. If `withDoor`, cut a doorway in the street
+ *  edge and return where it is (so the theme can align the visual door). */
+export function buildingColliders(spec: BuildingSpec, withDoor = false): { boxes: ColliderBox[]; door: DoorOpening | null } {
   const poly = ensureCCW(spec.poly);
   const base = spec.base;
   const top = spec.top;
   const midY = (base + top) / 2;
   const halfH = Math.max(0.1, (top - base) / 2);
   const boxes: ColliderBox[] = [];
+  const streetI = withDoor ? streetEdgeIndex(poly) : -1;
+  let door: DoorOpening | null = null;
 
   for (let i = 0; i < poly.length; i++) {
     const p0 = poly[i];
     const p1 = poly[(i + 1) % poly.length];
     const dx = p1[0] - p0[0], dz = p1[1] - p0[1];
     const len = Math.hypot(dx, dz);
-    if (len < 0.3) continue; // skip degenerate micro-edges
-    const yaw = Math.atan2(dz, dx); // edge direction about +Y
-    boxes.push({
-      x: (p0[0] + p1[0]) / 2,
-      y: midY,
-      z: (p0[1] + p1[1]) / 2,
-      hx: len / 2,
-      hy: halfH,
-      hz: WALL_T,
-      yaw,
-    });
+    if (len < 0.3) continue;
+    const yaw = Math.atan2(dz, dx);
+    const ux = dx / len, uz = dz / len; // unit along edge
+
+    if (i === streetI && len > 2.2) {
+      // doorway split: door centred (offset for wide lots) with a lintel above
+      const halfW = Math.min(0.9, len * 0.16);
+      const head = Math.min(2.5, (top - base) * 0.55);
+      const tc = len > 6 ? 0.24 : 0.5;
+      const dCenter = tc * len;                  // metres from p0
+      const gapL = dCenter - halfW, gapR = dCenter + halfW;
+      const midHalf = halfH, ly = midY;
+      // left segment (p0 → gapL)
+      if (gapL > 0.15) {
+        const s = gapL / 2;
+        boxes.push({ x: p0[0] + ux * s, y: ly, z: p0[1] + uz * s, hx: s, hy: midHalf, hz: WALL_T, yaw });
+      }
+      // right segment (gapR → end)
+      if (len - gapR > 0.15) {
+        const s = (len - gapR) / 2;
+        boxes.push({ x: p0[0] + ux * (gapR + s), y: ly, z: p0[1] + uz * (gapR + s), hx: s, hy: midHalf, hz: WALL_T, yaw });
+      }
+      // lintel above the opening (head → top)
+      const lintelH = Math.max(0.05, (top - (base + head)) / 2);
+      boxes.push({ x: p0[0] + ux * dCenter, y: base + head + lintelH, z: p0[1] + uz * dCenter, hx: halfW, hy: lintelH, hz: WALL_T, yaw });
+      door = { edge: i, tCenter: tc, halfW, head };
+    } else {
+      boxes.push({ x: (p0[0] + p1[0]) / 2, y: midY, z: (p0[1] + p1[1]) / 2, hx: len / 2, hy: halfH, hz: WALL_T, yaw });
+    }
   }
 
-  // ground pad — keeps a car that mounts the footprint from sinking to base-2m
+  // ground pad — keeps a car that mounts the footprint from sinking
   let minx = Infinity, maxx = -Infinity, minz = Infinity, maxz = -Infinity;
   for (const [x, z] of poly) {
-    if (x < minx) minx = x; if (x > maxx) maxx = x;
-    if (z < minz) minz = z; if (z > maxz) maxz = z;
+    if (x < minx) minx = x; if (x > maxx) maxx = x; if (z < minz) minz = z; if (z > maxz) maxz = z;
   }
-  boxes.push({
-    x: (minx + maxx) / 2, y: base - 0.15, z: (minz + maxz) / 2,
-    hx: (maxx - minx) / 2, hy: 0.15, hz: (maxz - minz) / 2, yaw: 0,
-  });
+  boxes.push({ x: (minx + maxx) / 2, y: base - 0.15, z: (minz + maxz) / 2, hx: (maxx - minx) / 2, hy: 0.15, hz: (maxz - minz) / 2, yaw: 0 });
 
-  return boxes;
+  return { boxes, door };
 }

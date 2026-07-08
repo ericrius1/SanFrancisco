@@ -42,10 +42,16 @@ function horseOutputLabels(nLeg: number): string[] {
 const CENTER = { x: GARDEN_MEADOW.x, z: GARDEN_MEADOW.z };
 const ROAM_RX = 90; // wander bounds inside the 130×95 meadow (leaves a tree margin)
 const ROAM_RZ = 65;
-const COUNT = 8;
+const COUNT = 12; // a mix of ages/sizes roaming the meadow
 const DOWN_SECONDS = 8; // a fallen horse lies where it landed this long before getting back up
 const GOAL_EASE = 0.45; // seconds — goal-direction smoothing (gentler turns = fewer tip-overs)
-const SCALE = 2.3; // horse-sized vs the ~1.7 m human (real horses tower over people)
+// Per-horse size spread so the herd reads as a mix of ages — small youngsters up to
+// big adults (vs the ~1.7 m human, adults tower). The RL policy is scale-invariant
+// (Froude non-dim obs/reward + scaledSpec, trained domain-randomised over sizes) so ONE
+// brain drives any size; each horse's mesh is built at the SAME scale as its ragdoll.
+// Kept inside the trained envelope (~0.8–2.6).
+const SCALE_MIN = 1.65; // youngster
+const SCALE_MAX = 2.6; // big adult
 // Only simulate the ragdolls + light the brains when a player is near the meadow;
 // the herd is a long way from most of the map, so it costs nothing when nobody's
 // around (physics frozen, meshes/brains left at their last pose).
@@ -55,12 +61,12 @@ const SIM_RANGE = 380;
 // meadow for the herd to canter at and hop. The horses live in private flat worlds
 // so they don't physically collide the rail — the hop clears it in world space —
 // while a loose main-world collider makes the PLAYER (on foot or ridden) jump it too.
-const JUMP_COUNT = 6;
+const JUMP_COUNT = 9;
 const JUMP_RING = 0.52; // obstacles on a ring at this fraction of the roam ellipse
 const JUMP_APPROACH_R = 22; // start seeking a jump within this range (m)
 const JUMP_DIST = 6.0; // push off the ground when this close to the rail (m)
-const JUMP_CD = 4; // seconds cooldown after a hop so it doesn't re-trigger mid-air
-const GALLOP_ND = 0.78; // committed gallop (Froude, ~cmd 0.8) on a jump approach
+const JUMP_CD = 5; // seconds cooldown after a hop so it doesn't re-trigger + fully re-settles
+const GALLOP_ND = 0.7; // committed canter (Froude) on a jump approach — steadier run-up than a flat-out gallop
 
 const BRAIN_SCALE = 1.9;
 const BRAIN_LINE_GLOW = LIGHT_SCALE * 0.14;
@@ -89,6 +95,7 @@ type HorseMeshes = { group: THREE.Group; parts: THREE.Mesh[]; brain: Brain };
 type Horse = {
   rag: HorseRagdoll;
   m: HorseMeshes;
+  scale: number; // this horse's body size (young..adult); mesh + ragdoll share it
   anchor: { x: number; z: number };
   wanderYaw: number;
   wanderTimer: number;
@@ -258,11 +265,11 @@ export class HorseHerd {
     this.#ready = true;
   }
 
-  #buildDressedHorse(): THREE.Mesh[] {
+  #buildDressedHorse(scale: number): THREE.Mesh[] {
     const s = this.#spec;
     const parts: THREE.Mesh[] = [];
     const torso = partMesh(new THREE.BoxGeometry(s.torso.half[0] * 2, s.torso.half[1] * 1.9, s.torso.half[2] * 2), 0x9a6538, 0.68);
-    torso.scale.setScalar(SCALE); // base geometry, scaled to horse size; children (neck/head/…) inherit
+    torso.scale.setScalar(scale); // base geometry, scaled to this horse's size; children (neck/head/…) inherit
     parts.push(torso);
     // neck, head, ears, muzzle, mane, tail — children of the torso mesh so they
     // ride its RL pose. Local axes: x = right, y = up, z = forward (nose).
@@ -294,10 +301,10 @@ export class HorseHerd {
     torso.add(saddle);
     for (const leg of s.legs) {
       const thigh = partMesh(new THREE.CapsuleGeometry(leg.thigh.radius, leg.thigh.halfHeight * 2, 4, 8), 0x754727, 0.76);
-      thigh.scale.setScalar(SCALE);
+      thigh.scale.setScalar(scale);
       parts.push(thigh);
       const shank = partMesh(new THREE.CapsuleGeometry(leg.shank.radius, leg.shank.halfHeight * 2, 4, 8), 0x754727, 0.76);
-      shank.scale.setScalar(SCALE);
+      shank.scale.setScalar(scale);
       const sock = partMesh(new THREE.CylinderGeometry(leg.shank.radius * 1.04, leg.shank.radius * 1.08, 0.15, 8), 0xf0dcc0, 0.64);
       sock.position.set(0, -leg.shank.halfHeight * 0.48, 0);
       shank.add(sock);
@@ -446,9 +453,9 @@ export class HorseHerd {
     };
   }
 
-  #buildMeshes(sizes: number[]): HorseMeshes {
+  #buildMeshes(sizes: number[], scale: number): HorseMeshes {
     const group = new THREE.Group();
-    const parts = this.#buildDressedHorse();
+    const parts = this.#buildDressedHorse(scale);
     for (const p of parts) group.add(p);
     const brain = this.#buildBrain(sizes);
     this.#scene.add(group);
@@ -468,7 +475,7 @@ export class HorseHerd {
       const gz = CENTER.z + Math.cos(th) * ROAM_RZ * JUMP_RING * rr;
       const yaw = th + Math.PI / 2; // rail tangent to the ring
       const y = gardenSurfaceHeight(this.#map, gx, gz);
-      const railTop = 0.5 + (i % 3) * 0.13; // varied low heights (~0.5–0.76 m)
+      const railTop = 0.44 + (i % 3) * 0.11; // varied low heights (~0.44–0.66 m) — clearable even on a soft hop
       this.#buildJump(gx, gz, yaw, y, railTop, i % 2 === 0 ? "rail" : "log");
       this.#jumps.push({ x: gx, z: gz, y });
     }
@@ -550,13 +557,15 @@ export class HorseHerd {
       const a = (i / COUNT) * Math.PI * 2 + Math.random() * 0.8;
       const r = Math.sqrt(0.12 + Math.random() * 0.72);
       const anchor = { x: CENTER.x + Math.cos(a) * ROAM_RX * r, z: CENTER.z + Math.sin(a) * ROAM_RZ * r };
-      const rag = new HorseRagdoll(this.#box3d, this.#spec, this.#policyDef!, SCALE);
+      // this horse's body size — a spread across the herd reads as young..old
+      const scale = SCALE_MIN + Math.random() * (SCALE_MAX - SCALE_MIN);
+      const rag = new HorseRagdoll(this.#box3d, this.#spec, this.#policyDef!, scale);
       const yaw = Math.random() * Math.PI * 2;
       rag.setGoal(Math.sin(yaw), Math.cos(yaw));
-      const m = this.#buildMeshes(rag.layers().map((l) => l.length));
+      const m = this.#buildMeshes(rag.layers().map((l) => l.length), scale);
       const wy = gardenSurfaceHeight(this.#map, anchor.x, anchor.z);
       this.#horses.push({
-        rag, m, anchor, wanderYaw: yaw, wanderTimer: 2 + Math.random() * 4,
+        rag, m, scale, anchor, wanderYaw: yaw, wanderTimer: 2 + Math.random() * 4,
         speedNonDim: 0.2 + Math.random() * 0.25, gx: Math.sin(yaw), gz: Math.cos(yaw),
         downTimer: 0, jumpCd: 0, wx: anchor.x, wy, wz: anchor.z, wq: [0, 0, 0, 1]
       });
@@ -600,9 +609,12 @@ export class HorseHerd {
         h.wanderYaw += (Math.random() - 0.5) * 1.6;
         h.wanderTimer = 3 + Math.random() * 5;
         // re-pick a roaming gait (REACHABLE Froude units): a lively mix — often a
-        // walk, frequently a trot, and a real gallop a fifth of the time.
+        // walk, frequently a trot, and a canter/gallop a sixth of the time. The top
+        // is capped shy of a flat-out gallop, which the current brain can't hold for
+        // long in box3d.js (sustained gallop is the open training target); bursts +
+        // the jump run-ups still read as galloping.
         const r = Math.random();
-        h.speedNonDim = r < 0.5 ? 0.2 + Math.random() * 0.2 : r < 0.8 ? 0.45 + Math.random() * 0.15 : 0.68 + Math.random() * 0.16;
+        h.speedNonDim = r < 0.52 ? 0.2 + Math.random() * 0.2 : r < 0.84 ? 0.45 + Math.random() * 0.15 : 0.66 + Math.random() * 0.12;
       }
       let tx = Math.sin(h.wanderYaw);
       let tz = Math.cos(h.wanderYaw);
@@ -614,7 +626,7 @@ export class HorseHerd {
       if (ja && h.jumpCd <= 0) {
         tx = (ja.x - wx) / ja.d;
         tz = (ja.z - wz) / ja.d;
-        spd = GALLOP_ND; // committed gallop to clear the rail
+        spd = GALLOP_ND; // committed canter straight at the rail
         if (ja.d < JUMP_DIST && h.rag.grounded) {
           h.rag.jump();
           h.jumpCd = JUMP_CD;
@@ -685,7 +697,7 @@ export class HorseHerd {
     }
     // Float above the horse. The graph is angled for real depth and faces the camera.
     const yaw = Math.atan2(this.#camPos.x - h.wx, this.#camPos.z - h.wz);
-    b.group.position.set(h.wx, h.wy + 1.92 * SCALE, h.wz);
+    b.group.position.set(h.wx, h.wy + 1.92 * h.scale, h.wz);
     b.group.rotation.set(-0.18, yaw + 0.22, Math.sin(h.wx * 0.013 + h.wz * 0.017) * 0.035);
   }
 }

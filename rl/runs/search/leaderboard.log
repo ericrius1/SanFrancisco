@@ -1,0 +1,10 @@
+
+=== ROUND 0  (pop 2, 3 gens each, 2 parallel) ===
+   41.8  gallop[q11 spd0.11 str1.95 bnd0.66] walk[q83 spd0.24] turn0
+   23.8  gallop[q19 spd0.41 str2.27 bnd0.65] walk[q11 spd0.14] turn100
+  ** NEW BEST 41.8  {"freqBase":0.7795,"freqSpan":0.2625,"strideBase":0.6397,"strideSpan":0.8615,"actFreqAuth":0.5272,"actStrideAuth":0.2594,"actKneeAuth":0.4114,"speedMatchA":12.9283,"progressW":1.0872,"tallFloorSlope":0.2183,"doneFloorSlope":0.208,"uprightSoften":0.2634,"maxTorqueScale":1.0751,"gallopBlend":0.0902,"boundRewardW":0.5649}
+
+BEST 41.8  {"freqBase":0.7795,"freqSpan":0.2625,"strideBase":0.6397,"strideSpan":0.8615,"actFreqAuth":0.5272,"actStrideAuth":0.2594,"actKneeAuth":0.4114,"speedMatchA":12.9283,"progressW":1.0872,"tallFloorSlope":0.2183,"doneFloorSlope":0.208,"uprightSoften":0.2634,"maxTorqueScale":1.0751,"gallopBlend":0.0902,"boundRewardW":0.5649}
+to deploy: cp rl/runs/search/best.policy.json public/models/horse_policy.json
+
+=== ROUND 0  (pop 6, 80 gens each, 4 parallel) ===

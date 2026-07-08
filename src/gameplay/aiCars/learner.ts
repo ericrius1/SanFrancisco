@@ -57,14 +57,14 @@ const C_B1 = 132; // 1
 
 // --- hyper-parameters (LOCKED) ----------------------------------------------
 const LAMBDA = 0.9; // eligibility-trace decay (both nets)
-const ALPHA_A = 1e-3; // actor step size
+const ALPHA_A = 3e-4; // actor step size (gentled: 1e-3 eroded a cloned driving policy)
 const ALPHA_C = 3e-3; // critic step size
 const ALPHA_RHO = 1e-3; // average-reward EMA rate
 const GRAD_CLIP = 1.0; // per-net per-step gradient L2 clip
 const PARAM_CLAMP = 8; // hard clamp on every weight
 const WEIGHT_DECAY = 1e-5; // tiny L2 pull-to-zero each step
 const SIGMA_MIN = 0.06;
-const SIGMA_MAX = 0.25;
+const SIGMA_MAX = 0.12; // capped: 0.25 let a dipping car explode into a spin runaway
 const DT_LEARN = 0.05; // 20 Hz learn tick → +0.05 s of age per learnStep
 const SKILL_TAU = 60; // reward-rate EMA time constant (s)
 // social rescue

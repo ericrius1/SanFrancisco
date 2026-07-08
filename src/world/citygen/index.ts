@@ -28,13 +28,14 @@ export { createCityGenRing, type CityGenRing } from "./stream/ring";
 
 /** Generate one building's geometry + colliders from its spec (pure; no scene).
  *  The theme's per-archetype façade decorator authors the detail (Victorian
- *  canted bays, etc.); the mass silhouette always equals the real footprint. */
-export function generate(spec: BuildingSpec): { mass: Massing; meshes: MeshData[]; colliders: ColliderBox[] } {
+ *  canted bays, etc.); the mass silhouette always equals the real footprint.
+ *  `withDoor` cuts a walk-through doorway in the street wall + returns where. */
+export function generate(spec: BuildingSpec, withDoor = false): { mass: Massing; meshes: MeshData[]; colliders: ColliderBox[]; door: import("./core/collider").DoorOpening | null } {
   const arch = specFor(spec.archetype);
   const mass = massBuilding(spec, arch, decoratorFor(spec.archetype));
   const meshes = mergePanels(mass.panels);
-  const colliders = buildingColliders(spec);
-  return { mass, meshes, colliders };
+  const { boxes: colliders, door } = buildingColliders(spec, withDoor);
+  return { mass, meshes, colliders, door };
 }
 
 export interface CityGen {

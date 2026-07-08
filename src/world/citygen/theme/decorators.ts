@@ -6,11 +6,17 @@
 import type { ArchetypeId } from "../core/types";
 import { defaultFlatWall, type FacadeDecorator } from "../core/facade";
 import { victorianFacade } from "./victorian";
+import { marinaFacade } from "./marina";
+import { downtownFacade } from "./downtown";
+import { somaFacade } from "./soma";
 
 const REGISTRY: Record<ArchetypeId, FacadeDecorator> = {
   victorian: victorianFacade,
   edwardian: victorianFacade, // shallow-bay variant driven by bayProjection in the spec
-  // marina / downtown / soma / chinatown → bespoke decorators (Phase 2 cont.)
+  marina: marinaFacade,
+  downtown: downtownFacade,
+  soma: somaFacade,
+  // chinatown → still baked / legacy ring for now
 };
 
 /** Decorator for an archetype; plain flat wall + grid until a bespoke one lands. */

@@ -39,17 +39,19 @@ export function createCityGenDemo(ctx: Ctx): CityGenDemo {
       // with the FRONT façade facing WEST (−x) so a low afternoon sun rakes across
       // the bays and cornices. Front width runs along z (the longer edge → the
       // street face); depth runs along x.
+      const mix = ["victorian", "marina", "downtown", "soma", "edwardian"];
       let z = cz;
       for (let k = 0; k < count; k++) {
-        const w = 7.2 + ((k * 37) % 5) * 0.35;     // 7.2–8.6 m fronts (along z)
-        const depth = 6.4;                          // shallower (along x)
+        const arche = archetype === "mix" ? mix[k % mix.length] : archetype;
+        const w = 7.6 + ((k * 37) % 5) * 0.5;      // fronts (along z)
+        const depth = 6.6;                          // shallower (along x)
         const floors = 3 + (k % 2);                 // 3–4 storeys
         const floorH = 3.4;
         const base = ctx.map.groundHeight(cx + depth / 2, z + w / 2);
         const top = base + floors * floorH;
         // wound so the WEST edge ([cx,z]→[cx,z+w]) is the longest → the street face
         const poly: [number, number][] = [[cx, z], [cx, z + w], [cx + depth, z + w], [cx + depth, z]];
-        specs.push({ i: k, id: 900000 + k, poly, base, top, archetype, seed: (k * 2654435761) >>> 0 });
+        specs.push({ i: k, id: 900000 + k, poly, base, top, archetype: arche, seed: (k * 2654435761) >>> 0 });
         z += w + 0.06;
       }
       bundle = buildCityGenGroup(specs, { materials, castShadow: true });

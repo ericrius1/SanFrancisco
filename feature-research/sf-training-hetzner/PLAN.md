@@ -34,7 +34,7 @@
 
 **Client-side fleet sim + net** — `src/gameplay/aiCars/`
 - `fleet.ts` — 48 persistent cars, `prePhysics`/afterSteps, city-wide placement. Sensors → 9-float obs (`fleet.ts:534`): speed, lateral, heading err (sin/cos), curvature, `clearAhead/Left/Right`.
-- **Perception is siloed today (this is the key limitation for interaction):** `#clearAhead` (`fleet.ts:619`) sweeps buildings via `world.sweep` **and loops `this.cars`** — so a car senses other **cars** and static walls, but is **blind to every non-car entity** (a horse/deer walking in front produces no obs change). Water reads blocked (`fleet.ts:643`).
+- **Perception is siloed today (this is the key limitation for interaction):** `#clearAhead` (`fleet.ts:619`) sweeps buildings via `world.sweep` **and loops `this.cars`** — so a car senses other **cars** and static walls, but is **blind to every non-car entity** (a horse/dog walking in front produces no obs change). Water reads blocked (`fleet.ts:643`).
 - `learner.ts` — **online continuing actor-critic**, average-reward, eligibility traces (λ0.9). Actor `[9,12,2]`, critic `[9,12,1]`, hand-rolled flat Float32Array, zero-alloc. `learnStep` is a separate call from `actorForward` (`fleet.ts:551`/`:557`) — so **inference-without-learning is already a one-line gate**.
 - `roadGraph.ts` — road-follow graph from `public/data/roads.json`.
 - `netSync.ts` — `isLeader(net)` = lowest live id (`netSync.ts:48`); `serializeCars()` → wire rows `[slot,kind,hue,x,y,z,heading,speed, …12 hidden bytes]` (car-specific, `ROW_LEN=8+HIDDEN`); `GhostStore` (non-leaders interpolate, no re-sim). **Consistency is snapshot-driven, not lockstep.**
@@ -105,19 +105,19 @@ Three separate processes (crash isolation — a physics NaN in the farm must not
 ```
 
 - **v1 (ship first):** live authority is inference-only (learning toggle off); farm does all learning; promotion swaps champions on the timer.
-- **v2 interaction slice (designed-in, enabled later):** flip the learning toggle **on** for a subset of entities in the live shared world so cars + creatures *learn from actually meeting each other* (§5). Because the toggle, perception registry, typed pipeline, and layered world all exist from v1, v2 is a **config/enable step, not a rewrite**. Promotion then only overwrites a live brain when a champion is measurably better (`learner.skill(i)` compare).
+- **v2 interaction slice = live-world *fine-tuning* (designed-in, enabled later):** graduate baseline-competent agents (§5e), then flip the learning toggle **on** for a subset in the live shared world so they *fine-tune on meeting each other* (§5). Because the toggle, perception registry, typed pipeline, and layered world all exist from v1, v2 is a **config/enable step, not a rewrite**. Promotion then only overwrites a live brain when a champion is measurably better (`learner.skill(i)` compare).
 
 ---
 
 ## 5. Interaction, perception & shared-world training (foundational — build the seams from day one)
 
-The goal: a car learning to drive should actually **come across** things — walls, water, other cars, and **other species** (a deer) — and (eventually) both sides adapt to the encounter. Today that can't happen anywhere, because perception is siloed and the pipeline is car-only. Four foundational pieces make it possible; **all four are cheap to stub now and expensive to retrofit later**, so build the seams from the first commit even where behavior stays v1.
+The goal: a car learning to drive should actually **come across** things — walls, water, other cars, and **other species** (dogs — see §5f) — and the driver adapts to the encounter. Today that can't happen anywhere, because perception is siloed and the pipeline is car-only. Four foundational pieces make it possible; **all four are cheap to stub now and expensive to retrofit later**, so build the seams from the first commit even where behavior stays v1.
 
 ### 5a. Shared perception / entity registry — *the non-optional foundation*
-A common spatial index every entity writes into each step (`pos`, `radius`, `kind`, `velocity`, `id`) and queries for "who's near me." Generalize `#clearAhead`'s car-only loop (`fleet.ts:623`) into an **all-entities cone query** against the registry. The world object owns it; extend the world interface (`ground/isWater/sweep`) with `registerEntity()` / `queryNearby(pos, radius|cone)`. **Without this, entities co-exist visually but are invisible to each other's brains** — a car drives *through* a deer because its obs never changed. Cars are the first consumer; creatures register from day one even before their obs uses it.
+A common spatial index every entity writes into each step (`pos`, `radius`, `kind`, `velocity`, `id`) and queries for "who's near me." Generalize `#clearAhead`'s car-only loop (`fleet.ts:623`) into an **all-entities cone query** against the registry. The world object owns it; extend the world interface (`ground/isWater/sweep`) with `registerEntity()` / `queryNearby(pos, radius|cone)`. **Without this, entities co-exist visually but are invisible to each other's brains** — a car drives *through* a dog because its obs never changed. Cars are the first consumer; creatures register from day one even before their obs uses it.
 
 ### 5b. Entity-type-tagged data pipeline — *forward-compat or bust*
-Every stage that is car-shaped today must carry a **`kind`** and a per-kind shape, so adding deer/bird later doesn't break the relay, wire, persistence, or viz:
+Every stage that is car-shaped today must carry a **`kind`** and a per-kind shape, so adding dogs (and later species) doesn't break the relay, wire, persistence, or viz:
 - **Brain blob:** add `kind`; validator holds a **per-kind spec** (shape lengths + field bounds). `kind:"car"` keeps today's exact 146/133 shape (back-compat).
 - **Snapshot rows:** generalize `cars` → a typed `ents` message; each row carries `kind`; the car row stays byte-identical (kind 0). Viz + `GhostStore` switch on `kind`.
 - **Persistence:** `lifeById` keyed by `(kind,id)`; champions at `/data/champions/<kind>.json`.
@@ -134,6 +134,24 @@ Strict v1 (inference-only live) has a hole: today building avoidance is "re-taug
 - **Fast isolated/simple farm** — locomotion + road-following + car-vs-car + (now) static colliders. Parallel across cores. Skill acquisition.
 - **Shared-world tier** — one (or a few) rich instances where cars + creatures co-exist **and learn from meeting each other** (learning toggle on). Runs near **1× on ~1 core** (a single shared world can't shard across cores). This is the v2 slice; the natural host is the live authority itself.
 - **Multi-agent honesty:** co-training two learning species is higher-variance/slower to converge (each is a moving target for the other). Mitigations: alternate which side learns, or keep one scripted/simple while the other learns, or accept slow co-adaptation. For a co-op sandbox the slow emergent messiness is the *feature*, not a bug.
+
+### 5e. Two-stage curriculum: isolated training grounds → live fine-tuning (adopted)
+Split every species' training into two explicit stages:
+- **Stage 1 — isolated training grounds (out of the main game):** each species trains alone in a simple env until a **baseline competence** (walk / drive). Fast, embarrassingly parallel (the farm across cores), stable — no other agents to destabilize learning. Cars: road-following + car-vs-car + static colliders. Dogs: locomotion, already trainable (`rl/train.ts --creature dog`, `DOG` spec `quadruped.ts:119`).
+- **Graduation gate:** promote to the live world only above a per-kind **skill threshold** (cars: `learner.skill(i)`; creatures: ES robustness/reward). Under-baseline agents stay in the grounds.
+- **Stage 2 — live-world fine-tuning:** graduated (already-competent) agents enter the shared world and *continue* learning the **delta** — avoid each other and other hazards. Because they can already walk/drive, the encounter is a meaningful, near-stationary perturbation → this is what makes shared-world co-learning tractable (directly defuses R7). Runs ~1× on ~1 core; short, because it's fine-tuning not from-scratch.
+
+**Why:** textbook curriculum/transfer learning. Learning to walk *and* dodge from scratch at once is brutal (the agent falls before it meets anyone). Decouple → more stable *and* more compute-efficient (minimizes time in the expensive shared-world regime).
+
+**Two rules that make transfer seamless (build in from day one):**
+1. **Same obs shape in both stages.** Neighbor-perception channels (§5a) exist in the obs from the start; isolated grounds feed them "nothing nearby" (max clearance), the shared world feeds real registry queries. A net trained in isolation drops into the shared world with **zero surgery** — it has the input wiring, it just hasn't learned to *use* it. **Cars already satisfy this:** the existing `clearAhead/Left/Right` slots read "clear" in the stub, real with obstacles → a car needs **no net-shape change** to sense dogs (the clearAhead cone just queries all entities, §5a). Only creatures that must sense others need a versioned obs growth (`expandPolicyInput`).
+2. **Additive staged reward + anti-forgetting.** Stage 2 reward = **baseline reward + interaction terms** (never a replacement), with a low fine-tune step size and low exploration sigma, so agents don't "forget" how to walk while chasing the avoidance signal (catastrophic forgetting). Optional: occasional isolated-env rehearsal episodes.
+
+### 5f. First cross-species: cars ↔ dogs
+- **Roles (recommended, simplest-robust):** the **car is the only learner** (learns to avoid dogs); the **dog is a moving hazard**, not a car-avoidance learner. A dog runs its Stage-1 trained gait + **scripted behavior**: wander neighborhood/residential areas, and *occasionally dart into the road*. Realistic (dogs don't reason about traffic — that's *why* they're a hazard) and it sidesteps multi-agent instability (one learner + a scripted hazard, not two co-learners).
+- **Car side:** the clearAhead cone queries the perception registry → dogs register → the existing clearance slot carries "dog ahead"; add a collision/near-miss penalty (Stage-2 additive reward) so the car learns to brake/swerve. **No car net-shape change.**
+- **Dog side (Stage 1 mostly ready):** locomotion via existing ES (`--creature dog`). New work = the **in-world dog entity** (mesh, neighborhood spawn, wander + dart-into-road scripted nav) + registering it in the perception index. Dogs learning to avoid cars is a **later optional** toggle — start scripted.
+- **Placement:** spawn in neighborhood/residential zones (near buildings, off the arterials), crossing only occasionally → encounters sparse but real.
 
 ---
 
@@ -171,8 +189,10 @@ Dependency order: **WS-F and WS-G are foundational** (schema + perception) and s
 ### WS-D — Promotion / hot-swap (depends on B + C)
 - Authority promotion trigger: interval (`SF_PROMOTE_EVERY`, default 2 h) or farm "improved" signal → atomically load `/data/champions/*` → hot-swap per kind (`fleet.importState`) → broadcast brain updates. Guard: validate + (v2) beat incumbent skill. Log before/after skill + odometer.
 
-### WS-H — Shared-world interaction tier (v2 slice; depends on B+C+F; later phase)
-- Enable the **learning toggle** for a subset of live-world entities so cross-species encounters are learned in situ. Add cross-species reward terms (near-miss/collision penalties reading the perception registry). Start with cars-learn / creatures-scripted, then allow slow co-adaptation. Keep it scoped and behind a flag.
+### WS-H — Shared-world interaction tier / live fine-tuning (v2 slice; depends on B+C+F; later phase)
+- Graduate baseline-competent agents (§5e skill gate). Enable the **learning toggle** for the **car** so it fine-tunes to avoid dogs; keep the **dog scripted** (Stage-1 gait + wander + dart-into-road, §5f) as a moving hazard. Cross-species reward terms (near-miss/collision penalties reading the perception registry) added as **additive** Stage-2 shaping; low fine-tune LR + low sigma to prevent forgetting.
+- New in-world **dog entity**: mesh, neighborhood/residential spawn, wander + occasional dart-into-road scripted nav, registered in the perception index. Reuse the `DOG` quadruped for gait.
+- Dogs-learn-to-avoid-cars is a later optional toggle. Keep scoped + flagged.
 
 ### WS-E — Observability & safety (cross-cutting)
 - Per-process structured logs + status line (players, per-kind counts, median/best skill, last promotion, farm gens/s, avg CPU).
@@ -224,9 +244,9 @@ Colliders + perception queries make each world step heavier → the shared/live 
 - **Phase 0 — de-risk (½ day):** stand up CAX31, Docker, run existing `train-cars-headless.mjs` in a container on ARM against `/data`. Prove box3d-wasm trains on the box. Gate everything on this.
 - **Phase 1 — infra + foundational schema (WS-A + WS-G):** container/compose/volume/deploy/TLS **and** freeze the typed-entity schema + `CONTRACTS.md` (data is still cars-only). Relay serves `dist/` from the box.
 - **Phase 2 — authority + perception (WS-B + WS-F):** token protocol, perception registry, learning-capable authority (learn=off). Live world runs on the box, always-on, humans never leader; cars now sense all registered entities (only cars exist yet, but the channel is live).
-- **Phase 3 — farm with colliders (WS-C):** worker-thread accelerated training over the world-spec **with real colliders** (static avoidance trained headless). Parallel with Phase 2.
+- **Phase 3 — farm with colliders (WS-C):** worker-thread accelerated training over the world-spec **with real colliders** (static avoidance trained headless). Also runs Stage-1 grounds for dogs (locomotion via existing `--creature dog` ES) + the per-kind graduation threshold (§5e). Parallel with Phase 2.
 - **Phase 4 — promotion (WS-D):** timed hot-swap champions → live. Loop closed; v1 complete.
-- **Phase 5 — interaction tier (WS-H):** enable the learning toggle for a live subset; add cross-species reward terms; first real "car meets deer and adapts." The v2 slice.
+- **Phase 5 — interaction tier / live fine-tuning (WS-H):** graduate baseline-competent agents (§5e) into the shared world; enable the learning toggle for the car; add cross-species reward terms; first real **car learns to avoid dogs** darting into the road (dogs scripted, §5f). The v2 fine-tuning slice.
 - **Phase 6 — polish (WS-E):** observability, backups, throttle tuning, optional SIMD wasm.
 
 ---
@@ -245,8 +265,8 @@ Colliders + perception queries make each world step heavier → the shared/live 
 ## 12. Open questions for Eric (answer before Phase 2)
 
 1. Promotion cadence default — 1 h / 2 h / 6 h? (env-tunable regardless; default 2 h.)
-2. v1 inference-only base is set; confirm the interaction tier (WS-H/Phase 5) is the intended path for "cars meet deer and adapt" (recommended), vs keeping live pure-inference forever.
+2. v1 inference-only base is set; confirm the interaction tier (WS-H/Phase 5) — live-world fine-tuning where cars learn to avoid dogs — is the intended path (recommended), vs keeping live pure-inference forever.
 3. TLS: Caddy on-box (recommended) or Cloudflare in front?
 4. Migration: dual-run alongside Railway then cut over (recommended), or hard cutover?
 5. Budget: CAX31 (~$23, 8 core) vs strict-under-$20 CAX21 (4 core)? More cores = materially faster farm (and headroom for the v2 interaction tier).
-6. Which species after cars for the first cross-species encounter — deer, or the existing horses (already CPG-driven and in-world)?
+6. Cars↔dogs is the first cross-species (§5f); horses stay as-is for now. Confirm the split — **car learns / dog scripted hazard** first, dog-learns-to-avoid-cars a later optional toggle — and roughly how often a dog should dart into the road (hazard density/tuning).

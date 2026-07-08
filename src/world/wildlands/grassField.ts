@@ -69,7 +69,13 @@ export function createWildGrass(map: GardenTerrain): WildGrass {
     if (!r) return false;
     if (inBotanicalGarden(x, z, 6)) return false; // the garden grows its own grass
     if (map.isWater(x, z)) return false;
-    return r.plantClasses.includes(map.surfaceType(x, z));
+    if (!r.plantClasses.includes(map.surfaceType(x, z))) return false;
+    // No grass on steep faces — on Marin's steep hills the ring's uphill rim
+    // rose above the horizon and read as tufts "floating" in the sky, and grass
+    // clips through cliffs. Bare steep slopes also match the golden-hills look.
+    const dx = Math.abs(map.groundHeight(x + 5, z) - map.groundHeight(x - 5, z));
+    const dz = Math.abs(map.groundHeight(x, z + 5) - map.groundHeight(x, z - 5));
+    return dx <= 6 && dz <= 6;
   }
 
   function resample(fx: number, fz: number) {

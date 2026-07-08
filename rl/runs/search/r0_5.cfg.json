@@ -1,0 +1,1 @@
+{"freqBase":0.8048,"freqSpan":0.4046,"strideBase":0.7454,"strideSpan":1.5726,"actFreqAuth":0.578,"actStrideAuth":0.797,"actKneeAuth":0.9856,"speedMatchA":12.0836,"progressW":0.6341,"tallFloorSlope":0.1371,"doneFloorSlope":0.1031,"uprightSoften":0.3714,"maxTorqueScale":1.3072,"gallopBlend":0.206,"boundRewardW":0.3437}

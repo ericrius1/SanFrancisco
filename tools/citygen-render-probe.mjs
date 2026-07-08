@@ -118,7 +118,7 @@ async function main() {
       s.physics.world.setBodyTransform(p.body,[200,s.map.groundHeight(200,-1800)+2,-1790],[0,0,0,1]); return 1;})()`);
     for (let i = 0; i < 40; i++) await tick(c); // let terrain/tiles stream
 
-    const info = await evaluate(c, `(()=>{ const r = window.__sf.citygen.spawn({x:200,z:-1800,count:6});
+    const info = await evaluate(c, `(()=>{ const r = window.__sf.citygen.spawn({x:200,z:-1800,count:5,archetype:"mix"});
       return r; })()`);
     console.log("[probe] spawned:", JSON.stringify(info));
     for (let i = 0; i < 20; i++) await tick(c);

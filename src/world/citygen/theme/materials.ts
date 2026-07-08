@@ -59,6 +59,13 @@ export function buildCityGenMaterials(): Record<string, THREE.Material> {
     "base.stoop": standard(0xa89e8c, 0.82),
     "citygen.door": standard(0x53382c, 0.55, { emissive: 0.12 }),
     "citygen.room": standard(0x171922, 0.9, { emissive: 0.05 }),
+    "citygen.awn": standard(0x8a3b34, 0.7, { emissive: 0.2 }),    // storefront awning
+    "citygen.sign": standard(0x2c2f36, 0.6, { emissive: 0.28 }),  // shop signband
+    // interiors — self-lit (the room has no sky light) so they read when entered
+    "int.floor": standard(0x6b4e34, 0.8, { emissive: 0.4 }),    // wood floor
+    "int.wood": standard(0x5a4028, 0.7, { emissive: 0.35 }),    // furniture / stairs
+    "int.sofa": standard(0x7a5a52, 0.85, { emissive: 0.4 }),    // upholstery
+    "int.glow": standard(0xffdca0, 0.9, { emissive: 2.4 }),     // warm lamp / hearth
     // glass
     "glass": glass,
     // roofs

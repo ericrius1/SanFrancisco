@@ -8,25 +8,26 @@ import * as THREE from "three/webgpu";
 import { generate, type BuildingSpec } from "./index";
 import { buildCityGenMaterials, makeWallMaterial } from "./theme/materials";
 import { rng } from "./core/rng";
+import { mergePanels } from "./core/mesh";
+import { buildVictorianInterior } from "./interior/interior";
+import type { ColliderBox } from "./core/types";
 
 // SF "painted lady" body colours — mid-saturated so the bright white trim reads
 // as the classic Victorian contrast (bodies vary building-to-building).
-// saturated SF painted-lady bodies — paired with a strong self-lit emissive so
-// the colour survives the engine's bright exposure + ACES instead of washing grey
+// Per-archetype body palettes. Victorians are saturated painted ladies; other
+// districts read as their real materials (stucco pastels, grey masonry, brick).
 const PAINTED_LADY = [
-  0x2e8577, // teal green
-  0xb05f28, // terracotta
-  0x4666b8, // periwinkle blue
-  0x5f8a2e, // olive green
-  0xc06e26, // pumpkin
-  0x3f52a8, // cornflower
-  0xb03a52, // rose
-  0xc79320, // gold
-  0x1f7f92, // teal
-  0x74459f, // violet
-  0x3f8f4a, // sage green
-  0xc17c1e, // mustard
+  0x2e8577, 0xb05f28, 0x4666b8, 0x5f8a2e, 0xc06e26, 0x3f52a8,
+  0xb03a52, 0xc79320, 0x1f7f92, 0x74459f, 0x3f8f4a, 0xc17c1e,
 ];
+const PALETTES: Record<string, number[]> = {
+  victorian: PAINTED_LADY,
+  edwardian: [0xdcd8cc, 0xcdc6b4, 0xd8d0be, 0xc6cdc0, 0xd0c8b8, 0xbfc4c0], // pale Edwardian
+  marina: [0xe6d8bc, 0xe0c9a6, 0xd9b48a, 0xe8d2b0, 0xcdd8c0, 0xe8cfc0, 0xefe2c2], // stucco pastels
+  downtown: [0x9a9d9f, 0xb0a894, 0x8f9498, 0xa6a29a, 0x8a8d90, 0xa89f8c], // grey/tan masonry
+  soma: [0x8f4a3a, 0x9c5540, 0x7a3f34, 0xa5634a, 0x86584a, 0x944e3c], // brick reds
+  chinatown: [0xcabf9e, 0xc7b58a, 0xbfae86],
+};
 
 export interface CityGenMeshBundle {
   group: THREE.Group;
@@ -35,19 +36,34 @@ export interface CityGenMeshBundle {
   dispose(): void;
 }
 
-/** seeded painted-lady body colour for a building */
-export function bodyColour(seed: number): number {
+/** seeded body colour for a building, keyed to its archetype's palette */
+export function bodyColour(seed: number, archetype = "victorian"): number {
+  const pal = PALETTES[archetype] ?? PAINTED_LADY;
   const r = rng(seed, 99);
-  return PAINTED_LADY[Math.floor(r() * PAINTED_LADY.length) % PAINTED_LADY.length];
+  return pal[Math.floor(r() * pal.length) % pal.length];
 }
 
-/** Build ONE building's meshes into a fresh group (used by the streaming ring). */
-export function buildBuilding(
-  spec: BuildingSpec,
-  mats: Record<string, THREE.Material>,
-): { group: THREE.Group; triangles: number; dispose(): void } {
+export interface BuiltBuilding {
+  group: THREE.Group;
+  triangles: number;
+  /** crossfade: o<1 → dithered (alphaHash) transparent at opacity o; o>=1 → opaque */
+  setOpacity(o: number): void;
+  dispose(): void;
+}
+
+/** Build ONE building's meshes into a fresh group (used by the streaming ring).
+ *  Materials are PER-BUILDING (cloned) so the ring can crossfade this building in
+ *  without touching its neighbours. */
+export function buildBuilding(spec: BuildingSpec, mats: Record<string, THREE.Material>): BuiltBuilding {
   const { meshes } = generate(spec);
-  const wallMat = makeWallMaterial(bodyColour(spec.seed));
+  const wallMat = makeWallMaterial(bodyColour(spec.seed, spec.archetype));
+  const local = new Map<string, THREE.Material>();     // per-building material clones
+  const getMat = (id: string): THREE.Material => {
+    if (id.startsWith("wall.")) return wallMat;
+    let m = local.get(id);
+    if (!m) { m = (mats[id] ?? wallMat).clone(); local.set(id, m); }
+    return m;
+  };
   const group = new THREE.Group();
   group.name = "cityGenBuilding";
   const geoms: THREE.BufferGeometry[] = [];
@@ -61,17 +77,54 @@ export function buildBuilding(
     g.computeBoundingSphere();
     geoms.push(g);
     triangles += md.indices.length / 3;
-    const mat = md.materialId.startsWith("wall.") ? wallMat : (mats[md.materialId] ?? wallMat);
-    const mesh = new THREE.Mesh(g, mat);
+    const mesh = new THREE.Mesh(g, getMat(md.materialId));
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     mesh.frustumCulled = true;
     group.add(mesh);
   }
+  const allMats = [wallMat, ...local.values()];
   return {
     group, triangles,
-    dispose() { for (const g of geoms) g.dispose(); wallMat.dispose(); group.clear(); },
+    setOpacity(o: number) {
+      const fading = o < 0.999;
+      for (const m of allMats) {
+        const mm = m as THREE.Material & { alphaHash?: boolean; opacity: number };
+        mm.transparent = fading;
+        mm.alphaHash = fading;       // dithered fade → no transparency sorting
+        mm.opacity = fading ? Math.max(0.02, o) : 1;
+        mm.needsUpdate = true;
+      }
+    },
+    dispose() { for (const g of geoms) g.dispose(); for (const m of allMats) m.dispose(); group.clear(); },
   };
+}
+
+/** Build a building's INTERIOR meshes + colliders (lazy: only when entered).
+ *  Emissive-lit, no shadow casting; shares the interior materials. */
+export function buildInterior(
+  spec: BuildingSpec,
+  mats: Record<string, THREE.Material>,
+): { group: THREE.Group; colliders: ColliderBox[]; dispose(): void } {
+  const { panels, colliders } = buildVictorianInterior(spec);
+  const merged = mergePanels(panels);
+  const group = new THREE.Group();
+  group.name = "cityGenInterior";
+  const geoms: THREE.BufferGeometry[] = [];
+  for (const md of merged) {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(md.positions, 3));
+    g.setAttribute("normal", new THREE.BufferAttribute(md.normals, 3));
+    g.setAttribute("uv", new THREE.BufferAttribute(md.uvs, 2));
+    g.setIndex(new THREE.BufferAttribute(md.indices, 1));
+    g.computeBoundingSphere();
+    geoms.push(g);
+    const mesh = new THREE.Mesh(g, mats[md.materialId] ?? mats["int.wood"]);
+    mesh.castShadow = false;
+    mesh.receiveShadow = false;
+    group.add(mesh);
+  }
+  return { group, colliders, dispose() { for (const g of geoms) g.dispose(); group.clear(); } };
 }
 
 /** Build a THREE.Group of finished buildings from specs (no streaming/LOD). */

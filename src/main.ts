@@ -1096,7 +1096,12 @@ async function boot() {
 
   // "Behind the scenes" overlay + X/GitHub links (top-right, under Tutorial).
   // Free the pointer lock while it's open so the cursor can reach the links.
+  // While it's open the whole world stops rendering (see `btsReading` in tick)
+  // and the frozen canvas dims a touch, so no live frames flicker behind the read.
+  let btsReading = false;
   new BehindTheScenes((open) => {
+    btsReading = open;
+    app.classList.toggle("world-dimmed", open);
     input.suspended = open || cameraMode;
     if (open) input.releaseLock();
     else if (!cameraMode) input.requestLock();
@@ -1359,6 +1364,15 @@ async function boot() {
 
     // gamepad first so its synthetic key codes exist for every consumer below
     input.pollPad(frameDt);
+
+    // Behind-the-scenes overlay open: freeze the world completely — no sim, no
+    // render. The canvas keeps its last frame (dimmed via CSS) so nothing
+    // flickers behind the modal; the panel's own diagrams animate on their own
+    // rAF, independent of this loop. Resumes cleanly the frame it's closed.
+    if (btsReading) {
+      input.endFrame();
+      return;
+    }
 
     // P freezes the whole game — player, physics, fx, sky, water, crown.
     // We keep rendering the frozen frame so the window stays live.
