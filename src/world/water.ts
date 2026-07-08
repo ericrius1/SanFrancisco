@@ -296,8 +296,9 @@ export class Water {
     // bright Snell's-window spot straight overhead fading to teal at grazing,
     // with a gentle ripple, so up is always legible. Unlit (cheap) and follows
     // the camera in XZ; ripple is world-locked so it doesn't swim.
-    const undMat = new THREE.MeshBasicNodeMaterial({ transparent: true, depthWrite: false, side: THREE.DoubleSide });
-    {
+    const undMat: any = new THREE.MeshBasicMaterial({ color: 0xff0000, side: THREE.DoubleSide, depthTest: false, depthWrite: false });
+    // eslint-disable-next-line no-constant-condition
+    if (false) {
       const t = this.#uTime;
       const camXZ = this.#uCamXZ;
       const camY = this.#uCamY;

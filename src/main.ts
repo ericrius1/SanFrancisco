@@ -932,8 +932,13 @@ async function boot() {
   };
   const switchMode = (mode: PlayerMode) => {
     if (mode === player.mode) return;
-    const record = mode !== "walk";
-    if (record) beginPlaceNavigation("Previous place");
+    // Switching to walk = hop off wherever you are, same as pressing E
+    // (steps off the gunwale into the water when leaving a boat, etc.)
+    if (mode === "walk") {
+      exitToWalk();
+      return;
+    }
+    beginPlaceNavigation("Previous place");
     leaveRide(); // a mode key while riding shotgun hops out first
     if ((currentRide || currentAnimal || currentQuidditch) && mode !== "drive" && mode !== "drone") dropCurrentDriveMount();
     if (mode === "drive" && !currentRide && !currentAnimal) player.setDriveStyle(null);
@@ -941,7 +946,7 @@ async function boot() {
     // Always spawn a fresh mount — any one you left behind keeps living its own
     // life (the phoenix flies on, the plane lies where it crashed).
     player.trySwitch(mode);
-    if (record) finishPlaceNavigation(`${mode} place`);
+    finishPlaceNavigation(`${mode} place`);
   };
   switchModeFromToolbar = switchMode;
   hud.onHistoryBack = () => applyPlaceHistory(-1);
