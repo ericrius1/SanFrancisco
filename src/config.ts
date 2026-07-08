@@ -141,6 +141,20 @@ export const FLOWER_TUNING = tunables("flowers", {
 });
 
 /**
+ * Wildlands grass ring shaping — the player-following blade grass (the same
+ * blades as the botanical garden). Read live on each re-scatter; the debug panel
+ * forces one on slider release. These only change how MANY blades grow and where
+ * — the wind sway is a GLOBAL shared envelope, so grass bends in lockstep with
+ * the flowers at any density.
+ *  · density    — keep multiplier (0 = bare ground, 1 = designed, up to 2.5 = carpet)
+ *  · patchiness — 0 = even lawn, 0.5 = designed clumps/clearings, 1 = strong patches
+ */
+export const GRASS_TUNING = tunables("grass", {
+  density: { v: 1, min: 0, max: 2.5, step: 0.05, label: "density" },
+  patchiness: { v: 0.5, min: 0, max: 1, step: 0.02, label: "even ↔ patchy" }
+});
+
+/**
  * Window lights on falling chunks: stay lit for `hold` seconds, then flicker out
  * over `flicker` seconds; each chunk starts its fade at hold + rand * spread so a
  * collapse never blacks out in one frame. Bound in the "/" panel's debris folder.

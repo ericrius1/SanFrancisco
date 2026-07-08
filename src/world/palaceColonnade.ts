@@ -2,7 +2,7 @@ import * as THREE from "three/webgpu";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { WorldMap } from "./heightmap";
 
-// Palace of Fine Arts centre (game frame), shared with palaceGlow / blender_city.
+// Palace of Fine Arts centre (game frame), mirrors blender_city.py.
 const CX = -388;
 const CZ = -1426;
 

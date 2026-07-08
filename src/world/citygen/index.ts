@@ -1,15 +1,15 @@
 // SF CityGen — portable, neighborhood-aware procedural building module.
 //
-// Replaces the vendored Hong-Kong/Kowloon kit (src/world/buildings + vendor/
-// BuildingGenerator). See feature-research/sf-citygen/PLAN.md for the full design.
+// Replaced the vendored Hong-Kong/Kowloon kit (the old src/world/buildings +
+// vendor/BuildingGenerator, now removed). See feature-research/sf-citygen/PLAN.md.
 //
-// Status: PHASE 1 (foundation). The engine (core/) turns a BuildingSpec built on
-// the REAL OSM footprint into geometry (footprint-faithful → no "shift") and
-// colliders; the SF theme pack (theme/) chooses per-neighborhood style. The
-// streaming ring, multi-anchor citywide physics, LOD crossfade and walkable
-// interiors arrive in Phases 3–5 — so createCityGen is a wired-to-nothing stub
-// today (it does not mutate the scene). main.ts still runs the Chinatown-only
-// legacy ring until this module is feature-complete.
+// Status: LIVE citywide. The engine (core/) turns a BuildingSpec built on the
+// REAL OSM footprint into geometry (footprint-faithful → no "shift") + colliders;
+// the SF theme pack (theme/) chooses per-neighborhood style; createCityGenRing
+// (stream/ring.ts) streams the whole city — merged LOD chunks for the far skyline
+// crossfading into full grammar meshes + walkable interiors up close. Chinatown
+// currently has no facade grammar, so it falls back to its baked OSM facade until
+// a chinatown decorator lands (theme/decorators.ts).
 //
 // Portability: everything under core/ is city-agnostic (no SF, no THREE-in-core).
 // To retune for another city, swap theme/ + tools/citygen-classify.mjs. See

@@ -238,6 +238,10 @@ const grassWriteDummy = new THREE.Object3D();
  *  any slots a previous larger write left behind. `fadeRadius` is the field
  *  radius the blades fade toward. */
 export function writeGrassMesh(mesh: THREE.InstancedMesh, entries: GrassEntry[], fadeRadius: number) {
+  // never write past the mesh's fixed capacity — a high density knob can sample
+  // more blades than the buffers hold; the overflow is simply dropped.
+  const capacity = mesh.instanceMatrix.count;
+  if (entries.length > capacity) entries = entries.slice(0, capacity);
   const matrices = mesh.instanceMatrix.array as Float32Array;
   const colorAttr = mesh.geometry.getAttribute("aGrassColor") as THREE.StorageInstancedBufferAttribute;
   const windAttr = mesh.geometry.getAttribute("aGrassWind") as THREE.StorageInstancedBufferAttribute;

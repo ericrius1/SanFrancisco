@@ -5,6 +5,7 @@ import {
   DEBRIS_TUNING,
   FLOWER_TUNING,
   FOLIAGE_TUNING,
+  GRASS_TUNING,
   RENDER_QUALITY_PRESETS,
   RENDER_TUNING,
   WORLD_TUNING,
@@ -18,7 +19,6 @@ import { DEBRIS_LIGHTS, WINDOW_GLOW } from "../world/facade";
 import { CROWN_SLIDERS, CROWN_TUNING } from "../world/salesforceCrown";
 import { BAY_LIGHTS_SLIDERS, BAY_LIGHTS_TUNING } from "../world/bayLights";
 import { GOLDEN_GATE_LIGHTS_SLIDERS, GOLDEN_GATE_LIGHTS_TUNING } from "../world/goldenGateLights";
-import { PALACE_GLOW_SLIDERS, PALACE_GLOW_TUNING } from "../world/palaceGlow";
 import { SKY_TUNING, type Sky } from "../world/sky";
 import { POSTFX_TUNING, POSTFX_TOGGLES, POSTFX_QUALITY_KEYS, applyPostFxParams } from "../render/postfx";
 import { VOICE_TUNING } from "../net/voice";
@@ -53,6 +53,7 @@ export class DebugPanel {
   #postfx: { applyPostFx: () => void; applyPostQuality: () => void } | null;
   #setFoliageVisible: (visible: boolean) => void;
   #refreshFlowers: () => void;
+  #refreshGrass: () => void;
   #lastRefresh = 0;
   #lastWireframeScan = 0;
   #wireframeOriginals = new Map<WireframeMaterial, boolean>();
@@ -71,7 +72,8 @@ export class DebugPanel {
     scene: THREE.Scene | null = null,
     postfx: { applyPostFx: () => void; applyPostQuality: () => void } | null = null,
     setFoliageVisible: (visible: boolean) => void = () => {},
-    refreshFlowers: () => void = () => {}
+    refreshFlowers: () => void = () => {},
+    refreshGrass: () => void = () => {}
   ) {
     this.#renderer = renderer;
     this.#sky = sky;
@@ -82,6 +84,7 @@ export class DebugPanel {
     this.#postfx = postfx;
     this.#setFoliageVisible = setFoliageVisible;
     this.#refreshFlowers = refreshFlowers;
+    this.#refreshGrass = refreshGrass;
   }
 
   toggle() {
@@ -378,6 +381,16 @@ export class DebugPanel {
       }
     });
 
+    // Grass ring: density + patchiness, independent of the flowers but sharing
+    // the same global wind. Re-scatters on slider RELEASE (`last`) so the edit
+    // shows immediately without waiting for the player to walk.
+    const grass = foliage.addFolder({ title: "grass" });
+    GRASS_TUNING.bind(grass, {
+      onChange: (_key, _value, last) => {
+        if (last) this.#refreshGrass();
+      }
+    });
+
     // debris window lights: hold fully lit, then flicker out; each chunk delays its
     // fade by a random slice of `spread` so a collapse dies out non-uniformly.
     // bind() persists edits; onChange pushes them into the live uniforms
@@ -403,11 +416,6 @@ export class DebugPanel {
     const goldenGate = advanced.addFolder({ title: "golden gate lights" });
     GOLDEN_GATE_LIGHTS_SLIDERS.bind(goldenGate, {
       onChange: (key, value) => (GOLDEN_GATE_LIGHTS_TUNING[key].value = value as number)
-    });
-
-    const palace = advanced.addFolder({ title: "palace aura" });
-    PALACE_GLOW_SLIDERS.bind(palace, {
-      onChange: (key, value) => (PALACE_GLOW_TUNING[key].value = value as number)
     });
 
     // proximity voice chat: Voice.update polls these live every frame, so

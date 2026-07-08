@@ -29,7 +29,6 @@ import {
 import { CROWN_INTENSITY } from "./salesforceCrown"
 import { BAY_LIGHTS_INTENSITY } from "./bayLights"
 import { GOLDEN_GATE_LIGHTS_INTENSITY } from "./goldenGateLights"
-import { PALACE_GLOW_INTENSITY } from "./palaceGlow"
 import { SUTRO_LIGHTS_INTENSITY } from "./sutroTower"
 import { LIGHT_SCALE, RENDER_TUNING, SHADOW_QUALITY, WORLD_TUNING, type ShadowQuality } from "../config"
 import { tunables } from "../core/persist"
@@ -737,9 +736,6 @@ export class Sky {
     // evening twilight and fading back out as the sun returns.
     const goldenGateTwilightW = smooth01(0.5, 7.5, -elevation)
     GOLDEN_GATE_LIGHTS_INTENSITY.value = LIGHT_SCALE * 3.0 * goldenGateTwilightW
-    // palace floodlights: off in daylight, warming through golden hour
-    PALACE_GLOW_INTENSITY.value =
-      LIGHT_SCALE * (0.03 * dayW + 0.62 * goldW + 1.35 * nightW)
     // Sutro's aviation beacons: faint red by day, blazing after dark
     SUTRO_LIGHTS_INTENSITY.value =
       LIGHT_SCALE * (0.12 * dayW + 0.9 * goldW + 1.9 * nightW)

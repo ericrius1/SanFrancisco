@@ -15,7 +15,6 @@ import { createDebrisMaterial, DEBRIS_LIGHTS, WINDOW_GLOW } from "./world/facade
 import { updateCrownDisplay, resetCrownTweaks } from "./world/salesforceCrown";
 import { createBayLights, updateBayLights, resetBayLightsTweaks } from "./world/bayLights";
 import { createGoldenGateLights, updateGoldenGateLights, resetGoldenGateLightsTweaks } from "./world/goldenGateLights";
-import { createPalaceGlow, updatePalaceGlow, resetPalaceGlowTweaks } from "./world/palaceGlow";
 import { createPalaceColonnade, PALACE_RING_BUILDINGS } from "./world/palaceColonnade";
 import { createSutroTower, updateSutroTower, resetSutroLightsTweaks } from "./world/sutroTower";
 import { findOpenSpawn } from "./world/spawn";
@@ -53,12 +52,10 @@ import type { InspectableBrain } from "./ui/brainPanel/types.ts";
 import { Forest, ANIMALS, type AnimalKind } from "./gameplay/forest";
 import { createBotanicalGarden, windGustValue, type GrassDisplacer } from "./world/garden";
 import { createWildlands } from "./world/wildlands";
-import { createChinatown, cullGeneratedBuildings, pumpGeneratedBuildings, type Chinatown } from "./world/buildings";
 import { createCityGenDemo } from "./world/citygen/demo";
 import { createCityGenRing, type CityGenRing } from "./world/citygen";
 import { Islands } from "./gameplay/islands";
 import { Exploratorium, WATER_VIEW } from "./gameplay/exploratorium";
-import { PALACE_FINE_ARTS } from "./world/heightmap";
 import { Loot } from "./gameplay/loot";
 import { Hunt } from "./gameplay/hunt";
 import { Quidditch, QUIDDITCH_PITCH, type QuidditchRole, type QuidditchTeam } from "./gameplay/quidditch";
@@ -394,27 +391,13 @@ async function boot() {
   const worldQueries = new WorldQueries(physics);
   worldQueries.setSurfaceRay((o, d, m) => exploratorium.raycast(o, d, m));
 
-  // Generated buildings — SCOPED TO CHINATOWN ONLY (src/world/buildings).
-  //
-  // The vendored generator is a Hong-Kong / Kowloon tenement kit: its textures
-  // carry Chinese signage, AC units and clotheslines — which is exactly right for
-  // Chinatown and wrong everywhere else. The old citywide ring stamped that kit
-  // over every mid-rise in the city (Chinese lettering in the Marina/downtown/
-  // etc.), and approximated each footprint as a bbox rectangle so the generated
-  // twin visibly shifted from its baked original. Both are being replaced by the
-  // new SF-tuned citygen module (src/world/citygen; see
-  // feature-research/sf-citygen/PLAN.md). Until that lands, the Kowloon kit is
-  // confined to Chinatown, where it looks correct, and the rest of the city keeps
-  // its baked procedural facades. Async load; inert if the kit assets are missing.
-  const buildings: { current: Chinatown | null } = { current: null };
-  createChinatown({}, { scene, physics, map, tiles }).then((c) => { buildings.current = c; });
-
-  // New SF-tuned procedural building module (src/world/citygen). Demo hook on
-  // __sf.citygen (headless capture spawns a terrace + screenshots it). Plus the
-  // live streaming ring: within LOAD_R it replaces each Victorian/Edwardian OSM
-  // building with a generated one (footprint-faithful → no shift) and suppresses
-  // the baked twin; other archetypes keep their baked facade until their grammar
-  // lands. Async; inert if the export JSON is missing.
+  // SF-tuned procedural building module (src/world/citygen) — the WHOLE city.
+  // Demo hook on __sf.citygen (headless capture spawns a terrace + screenshots it).
+  // Plus the live streaming ring: within LOAD_R it replaces each OSM building with
+  // a generated one (footprint-faithful → no shift), bakes the far skyline into
+  // merged LOD chunks, and crossfades detail in as you approach. Async; inert if
+  // the export JSON is missing. (Chinatown now falls back to its baked OSM facade
+  // until a citygen chinatown grammar lands — the old Kowloon kit was removed.)
   const citygen = createCityGenDemo({ scene, map });
   const citygenRing: { current: CityGenRing | null } = { current: null };
   createCityGenRing({}, { scene, physics, map, tiles }).then((r) => { citygenRing.current = r; });
@@ -488,8 +471,6 @@ async function boot() {
   if (bayLights) scene.add(bayLights);
   const goldenGateLights = createGoldenGateLights(map);
   if (goldenGateLights) scene.add(goldenGateLights);
-  const palaceGlow = createPalaceGlow(map);
-  scene.add(palaceGlow);
   // Palace of Fine Arts peristyle: the OSM data carries the curved colonnade as
   // ordinary windowed buildings, so swap them for a real open row of columns.
   for (const b of PALACE_RING_BUILDINGS) tiles.suppressBuilding(b.key, b.index);
@@ -1042,7 +1023,8 @@ async function boot() {
     scene,
     pipeline,
     setFoliageVisible,
-    () => wildlands.flowers.refresh()
+    () => wildlands.flowers.refresh(),
+    () => wildlands.grass.refresh()
   );
   debugPanel.setMode(player.mode);
 
@@ -1529,7 +1511,6 @@ async function boot() {
       playerLocator.update(camera, player.position, remotes.locatorTargets());
       hud.update(frameDt);
       input.endFrame();
-      cullGeneratedBuildings(camera);
       pipeline.render();
       return;
     }
@@ -1646,7 +1627,6 @@ async function boot() {
       resetCrownTweaks();
       resetBayLightsTweaks();
       resetGoldenGateLightsTweaks();
-      resetPalaceGlowTweaks();
       resetSutroLightsTweaks();
       START.spawn = START_DEFAULTS.spawn;
       START.mode = START_DEFAULTS.mode;
@@ -1706,12 +1686,6 @@ async function boot() {
     updateCrownDisplay(frameDt);
     updateBayLights(frameDt);
     updateGoldenGateLights(frameDt);
-    // the Palace orb (and its 400+ drifting motes) only runs with someone
-    // near enough to see it — same locality rule as the Exploratorium rooms
-    const palaceNear =
-      (player.position.x - PALACE_FINE_ARTS.x) ** 2 + (player.position.z - PALACE_FINE_ARTS.z) ** 2 < 1100 * 1100;
-    if (palaceGlow.visible !== palaceNear) palaceGlow.visible = palaceNear;
-    if (palaceNear) updatePalaceGlow(frameDt);
     // Sutro's beacons are visible city-wide (that's the point) — keep the tiny
     // sprite set resident and just advance its blink clock every frame.
     updateSutroTower(frameDt);
@@ -1956,9 +1930,7 @@ async function boot() {
     if (currentAnimal) forest.setRiddenSpeed(player.speed);
     islands.update(elapsed);
     exploratorium.update(frameDt, elapsed, player.position);
-    buildings.current?.update(player.position, frameDt);
     citygenRing.current?.update(player.position, frameDt);
-    pumpGeneratedBuildings(6); // advance incremental building merges (~6ms/frame budget)
     quidditch.update(frameDt, player.position, elapsed);
     if (quidditch.active) {
       const qs = quidditch.scores;
@@ -2206,7 +2178,6 @@ async function boot() {
     tracers.sync(physics);
 
     input.endFrame();
-    cullGeneratedBuildings(camera); // per-building frustum cull before draw
     pipeline.render();
   };
   // automation tabs (Playwright/Puppeteer probes) render with no vsync
@@ -2261,7 +2232,7 @@ async function boot() {
 
   const exposeDebugHooks = () => {
     Object.assign(window as never, {
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, exploratorium, traffic, creatures, forest, garden, wildlands, splashes, vehicleAudio, nature, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, boatLaunchers, goldenGateLights, flyover, bridgeParade, teleportToTarget, aiCars, horses, buildings, citygen, citygenRing, cullGeneratedBuildings, brainPanel, inspectableBrains, worldCursor, worldQueries, underwater, seaPillars, water }
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, exploratorium, traffic, creatures, forest, garden, wildlands, splashes, vehicleAudio, nature, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, boatLaunchers, goldenGateLights, flyover, bridgeParade, teleportToTarget, aiCars, horses, citygen, citygenRing, brainPanel, inspectableBrains, worldCursor, worldQueries, underwater, seaPillars, water }
     });
   };
   if (import.meta.env.DEV || new URLSearchParams(location.search).has("profile")) {

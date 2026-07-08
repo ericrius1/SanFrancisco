@@ -67,8 +67,10 @@ and for AI-car training to see a stable world.
 
 ## Status
 
-Phase 1 (foundation) complete: real-polygon export, classifier, portable core
-(massing/mesh/collider), SF theme specs, verified. Streaming, LOD crossfade,
-citywide multi-anchor physics and walkable interiors land in Phases 2–5;
-`createCityGen` is a no-op stub until then, so `main.ts` still runs the
-Chinatown-only legacy ring.
+LIVE citywide via `createCityGenRing` (stream/ring.ts): real-polygon export,
+classifier, portable core (massing/mesh/collider), SF theme specs, chunked LOD
+skyline crossfading into full grammar meshes + walkable interiors, multi-anchor
+physics. The old vendored Kowloon kit (`src/world/buildings` + `vendor/
+BuildingGenerator`) has been removed. Chinatown has no facade grammar yet, so it
+falls back to its baked OSM facade until a `chinatown` decorator lands
+(theme/decorators.ts).

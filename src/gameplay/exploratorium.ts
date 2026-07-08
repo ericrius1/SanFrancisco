@@ -53,6 +53,10 @@ const SIN = Math.sin(YAW);
 const HL = 125.6; // half length: +u = shore/entrance end, -u = bay end
 const HW = 31.4; // half width: +v = the Pier 17 side
 const FLOOR = 3.78; // walking surface — the pier apron tops out at ~3.7
+// The whole museum only DRAWS when you're at the pier. Past this many metres
+// outside the shell its group is hidden, so the shell mesh, dome sky shader,
+// signage and plaques cost nothing to render — only a distance check remains.
+const VISIBLE_MARGIN = 80;
 
 const DOME_C = { u: -72, v: 0 }; // dome theater center
 // Star Table: exhibit centre (u,v) and the half-extent its sim frame origin is
@@ -238,6 +242,20 @@ export class Exploratorium {
 
     if (d < 300 && this.#bodies.length === 0) this.#createColliders();
     else if (d > 380 && this.#bodies.length > 0) this.#dropColliders();
+
+    // hide the whole museum unless you're right at the pier — far away it draws
+    // nothing. Bail before any per-frame exhibit work; if we left a room active
+    // (e.g. a teleport straight out), stop its compute on the way out.
+    const near = d < VISIBLE_MARGIN;
+    if (this.#group && this.#group.visible !== near) this.#group.visible = near;
+    if (!near) {
+      this.#inside = false;
+      if (this.#room !== null) {
+        this.#room = null;
+        this.#onRoomChange(null);
+      }
+      return;
+    }
 
     const y = playerPos.y;
     this.#inside =

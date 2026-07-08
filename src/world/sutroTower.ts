@@ -4,10 +4,10 @@ import { float, instancedArray, instanceIndex, saturate, sin, uniform, uv, vec2,
 import { tunables } from "../core/persist";
 import type { WorldMap } from "./heightmap";
 
-// TSL node generics fight composition; any is the idiom here (see palaceGlow.ts)
+// TSL node generics fight composition; any is the idiom here (see facade.ts)
 type N = any;
 
-/** Sky-driven beacon brightness, rewritten every frame next to PALACE_GLOW_INTENSITY. */
+/** Sky-driven beacon brightness, rewritten every frame next to BAY_LIGHTS_INTENSITY. */
 export const SUTRO_LIGHTS_INTENSITY = uniform(0);
 
 /** Blink clock, advanced by updateSutroTower. */

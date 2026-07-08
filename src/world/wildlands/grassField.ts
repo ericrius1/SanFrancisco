@@ -18,6 +18,7 @@ import {
 import { hash2, valueNoise } from "../groundcover/scatter";
 import type { GardenTerrain } from "../garden/layout";
 import { grassyGround } from "./layout";
+import { GRASS_TUNING } from "../../config";
 
 const RING_RADIUS = 52; // dense grass within this of the player; fades at the rim
 const RESAMPLE_STEP = 8; // re-scatter after the focus moves this far (m)
@@ -26,6 +27,8 @@ const SPACING = 0.95;
 export type WildGrass = {
   group: THREE.Group;
   update(focus: { x: number; z: number }): void;
+  /** force an immediate re-scatter at the last focus (debug slider release) */
+  refresh(): void;
   stats: { count: number };
 };
 
@@ -54,6 +57,10 @@ export function createWildGrass(map: GardenTerrain): WildGrass {
   const plantable = (x: number, z: number) => grassyGround(map, x, z);
 
   function resample(fx: number, fz: number) {
+    // live tuning: density scales the count, patchiness blends even↔clumpy.
+    // Wind is untouched here — it comes from the global WIND_DIR/sway envelope.
+    const density = Math.max(0, GRASS_TUNING.values.density as number);
+    const patchiness = Math.min(1, Math.max(0, GRASS_TUNING.values.patchiness as number));
     low.length = 0;
     tall.length = 0;
     const r2 = RING_RADIUS * RING_RADIUS;
@@ -67,9 +74,13 @@ export function createWildGrass(map: GardenTerrain): WildGrass {
         const pz = gz * SPACING + (hash2(gx, gz, 17) - 0.5) * SPACING * 0.9;
         const dx = px - fx, dz = pz - fz;
         if (dx * dx + dz * dz > r2) continue;
-        // density noise → clumps + clearings, not an even carpet
+        // density noise → clumps + clearings, not an even carpet.
+        // keep = density · lerp(evenLawn, patchNoise, patchiness). At the
+        // defaults (density 1, patchiness 0.5) this is exactly 0.5 + 0.5·patch,
+        // the original look; patchiness 0 = even lawn, 1 = full clumps/clearings.
         const patch = valueNoise(px, pz, 26, 701);
-        if (hash2(gx, gz, 23) > 0.5 + patch * 0.5) continue;
+        const keep = Math.min(1, density * ((1 - patchiness) + patchiness * patch));
+        if (hash2(gx, gz, 23) > keep) continue;
         if (!plantable(px, pz)) continue;
         const y = map.groundHeight(px, pz) - 0.04;
 
@@ -114,6 +125,9 @@ export function createWildGrass(map: GardenTerrain): WildGrass {
       // shared fade focus → blades collapse toward the ring rim (hides the pop)
       GRASS_DENSITY_FOCUS.value.set(focus.x, focus.z);
       resample(focus.x, focus.z);
+    },
+    refresh() {
+      if (last.x < 1e8) resample(last.x, last.z);
     },
     get stats() {
       return { count };
