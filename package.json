@@ -21,8 +21,9 @@
     "sync:box3d": "rm -rf vendor/box3d-wasm && mkdir -p vendor/box3d-wasm && cp -R ../box3d-wasm/packages/box3d-wasm/dist ../box3d-wasm/packages/box3d-wasm/package.json vendor/box3d-wasm/ && npm install"
   },
   "dependencies": {
-    "box3d-wasm": "file:vendor/box3d-wasm",
+    "box3d.js": "^0.0.2",
     "camera-controls": "^3.1.2",
+    "lil-gui": "^0.21.0",
     "three": "^0.185.1",
     "tweakpane": "^4.0.5",
     "ws": "^8.21.0"

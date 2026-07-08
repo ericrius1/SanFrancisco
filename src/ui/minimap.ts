@@ -1,5 +1,6 @@
 import { palaceLagoonMask, type WorldMap } from "../world/heightmap";
 import type { PlayerMode } from "../player/types";
+import { BOTANICAL_GARDEN_BOUNDS } from "../world/garden/layout";
 
 /**
  * Minimap (top-left, always on) + full-city map (M or click to expand).
@@ -208,6 +209,15 @@ export class Minimap {
       const [a, b] = ggb.towers;
       this.#landmarks.push({ x: (a[0] + b[0]) / 2, z: (a[1] + b[1]) / 2, name: "Golden Gate Bridge" });
     }
+    // San Francisco Botanical Garden — a labelled dot + teleport at the garden's
+    // own centre (real SFBG, east end of Golden Gate Park by the 9th Ave gate).
+    // Location comes from the garden module itself, so the marker always sits
+    // exactly where the vegetation renders.
+    this.#landmarks.push({
+      x: (BOTANICAL_GARDEN_BOUNDS.minX + BOTANICAL_GARDEN_BOUNDS.maxX) / 2,
+      z: (BOTANICAL_GARDEN_BOUNDS.minZ + BOTANICAL_GARDEN_BOUNDS.maxZ) / 2,
+      name: "Botanical Garden"
+    });
     this.#layers = MAP_LAYER_DEFS.map((def) => ({
       ...def,
       enabled: false,

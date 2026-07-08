@@ -3,14 +3,18 @@ import { CSMShadowNode } from "three/addons/csm/CSMShadowNode.js"
 import {
   Fn,
   abs,
+  cameraPosition,
   dot,
   float,
   floor,
+  fog as tslFog,
   fract,
   hash,
   mix,
+  mx_noise_float,
   normalize,
   positionLocal,
+  positionWorld,
   pow,
   saturate,
   sin,
@@ -156,6 +160,21 @@ export class Sky {
   // sky shader uniforms
   #uSun = uniform(new THREE.Vector3(0, 1, 0))
   #uNightLift = uniform(SKY_TUNING.values.nightBrightness)
+  #fogColor = new THREE.Color(0xc6d6df)
+  #uFogColor = uniform(this.#fogColor.clone())
+  #uFogDensity = uniform(WORLD_TUNING.values.fog)
+  #uFogBase = uniform(WORLD_TUNING.values.fogBase)
+  #uFogTop = uniform(WORLD_TUNING.values.fogTop)
+  #uFogBank = uniform(WORLD_TUNING.values.fogBank)
+  #uFogSoftness = uniform(WORLD_TUNING.values.fogSoftness)
+  #uFogNoise = uniform(WORLD_TUNING.values.fogNoise)
+  #uFogScale = uniform(WORLD_TUNING.values.fogScale)
+  #uFogDrift = uniform(WORLD_TUNING.values.fogDrift)
+  #uFogStart = uniform(WORLD_TUNING.values.fogStart)
+  #uFogHorizon = uniform(WORLD_TUNING.values.fogHorizon)
+  #uFogHorizonStart = uniform(WORLD_TUNING.values.fogHorizonStart)
+  #uFogHorizonSoftness = uniform(WORLD_TUNING.values.fogHorizonSoftness)
+  #fogNode: N | null = null
 
   // night-only brightness multiplier (the "/" panel's night brightness slider);
   // the setter re-applies so edits land even while the cycle is paused
@@ -239,7 +258,9 @@ export class Sky {
     this.hemi = new THREE.HemisphereLight(0xa9c4d9, 0x9c8468, 14)
     scene.add(this.hemi)
 
-    scene.fog = new THREE.FogExp2(0xc6d6df, WORLD_TUNING.values.fog)
+    this.#fogNode = this.#buildFogNode()
+    scene.fog = null
+    this.applyFogParams()
 
     this.setTimeOfDay(PRE_SUNSET_TIME)
   }
@@ -368,6 +389,74 @@ export class Sky {
     return mat
   }
 
+  #fogBillow(p: N): N {
+    const billowA = mx_noise_float(p).mul(0.5).add(0.5)
+    const billowB = mx_noise_float(p.mul(2.15).add(vec3(17.1, 3.7, 31.4))).mul(0.5).add(0.5)
+    return smoothstep(0.32, 0.76, billowA.mul(0.68).add(billowB.mul(0.32)))
+  }
+
+  #fogNoisePosition(yScale = 0.45): N {
+    const drift = time.mul(this.#uFogDrift as N)
+    return (positionWorld as N)
+      .mul(this.#uFogScale as N)
+      .mul(vec3(1, yScale, 1))
+      .add((vec3(1, 0, -0.73) as N).mul(drift))
+  }
+
+  #buildFogNode(): N {
+    const dist = cameraPosition.sub(positionWorld).length()
+    const base = this.#uFogBase as N
+    const top = (this.#uFogTop as N).max(base.add(1))
+    const softness = (this.#uFogSoftness as N).max(1)
+    const distancePastStart = dist.sub(this.#uFogStart as N).max(0)
+    const distanceFog = pow(distancePastStart.mul(this.#uFogDensity as N), 2)
+      .negate()
+      .exp()
+      .oneMinus()
+
+    const layerFromBase = smoothstep(base.sub(softness), base.add(softness), positionWorld.y)
+    const layerToTop = smoothstep(top.sub(softness), top.add(softness), positionWorld.y).oneMinus()
+    const altitudeBand = layerFromBase.mul(layerToTop)
+    const billow = this.#fogBillow(this.#fogNoisePosition())
+    const nearFade = smoothstep(
+      this.#uFogStart as N,
+      (this.#uFogStart as N).add(280),
+      dist
+    )
+    const bankFog = altitudeBand
+      .mul(nearFade)
+      .mul(mix(float(1), billow, this.#uFogNoise as N))
+      .mul(this.#uFogBank as N)
+    const horizonVeil = smoothstep(
+      this.#uFogHorizonStart as N,
+      (this.#uFogHorizonStart as N).add((this.#uFogHorizonSoftness as N).max(1)),
+      dist
+    ).mul(this.#uFogHorizon as N)
+
+    return tslFog(
+      this.#uFogColor as N,
+      distanceFog.add(bankFog).add(horizonVeil).clamp(0, 0.96)
+    )
+  }
+
+  applyFogParams() {
+    const v = WORLD_TUNING.values
+    this.#uFogDensity.value = v.fog
+    this.#uFogBase.value = v.fogBase
+    this.#uFogTop.value = v.fogTop
+    this.#uFogBank.value = v.fogBank
+    this.#uFogSoftness.value = v.fogSoftness
+    this.#uFogNoise.value = v.fogNoise
+    this.#uFogScale.value = v.fogScale
+    this.#uFogDrift.value = v.fogDrift
+    this.#uFogStart.value = v.fogStart
+    this.#uFogHorizon.value = v.fogHorizon
+    this.#uFogHorizonStart.value = v.fogHorizonStart
+    this.#uFogHorizonSoftness.value = v.fogHorizonSoftness
+    this.#scene.fog = null
+    this.#scene.fogNode = v.fogEnabled ? this.#fogNode : null
+  }
+
   /** Environment radiance for the IBL: no point features, roughness-softened. */
   envRadiance(dir: N, level: N): N {
     return this.#skyRadiance(dir, { pointFeatures: false, soften: level })
@@ -463,17 +552,16 @@ export class Sky {
       goldW,
       nightW
     )
-    const fog = this.#scene.fog as THREE.FogExp2 | null
-    if (fog)
-      blend3(
-        fog.color,
-        PALETTE.fog.day,
-        PALETTE.fog.gold,
-        PALETTE.fog.night,
-        dayW,
-        goldW,
-        nightW
-      )
+    blend3(
+      this.#fogColor,
+      PALETTE.fog.day,
+      PALETTE.fog.gold,
+      PALETTE.fog.night,
+      dayW,
+      goldW,
+      nightW
+    )
+    ;(this.#uFogColor.value as THREE.Color).copy(this.#fogColor)
 
     // the crown display holds its proportion to the ambient light: brilliant at
     // noon, eased down after dark so emissive landmarks do not blow out

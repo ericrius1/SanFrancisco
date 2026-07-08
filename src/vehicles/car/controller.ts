@@ -1,5 +1,5 @@
 import * as THREE from "three/webgpu";
-import { BodyType } from "box3d-wasm";
+import { BodyType } from "../../core/physics";
 import type { Input } from "../../core/input";
 import type { ModeController, ModeFrame, PlayerCtx } from "../../player/types";
 import { enterOnLand } from "../shared";

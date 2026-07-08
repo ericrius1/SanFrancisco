@@ -1,0 +1,6 @@
+# trim railway upload (BadRecordMac on large tarballs)
+# seedthree textures are optional — garden falls back to procedural trees
+/public/seedthree/
+/data/
+/feature-research/
+/*.png

@@ -6,7 +6,21 @@ import {
   type ContactHitEvent,
   type PhysicsWorld,
   type TransformBatch
-} from "box3d-wasm";
+} from "./box3dWorld";
+// Re-exported so the ~20 gameplay/vehicle modules depend on the physics facade
+// rather than the underlying engine package directly.
+export { BodyType, TRANSFORM_STRIDE, TransformBatch } from "./box3dWorld";
+export type {
+  ContactHitEvent,
+  PhysicsWorld,
+  Transform,
+  BodyVelocity,
+  CapsuleShape,
+  HumanRagdoll,
+  BodyTypeValue,
+  Vec3,
+  Quat
+} from "./box3dWorld";
 import { CONFIG } from "../config";
 import type { WorldMap } from "../world/heightmap";
 import type { BuildingCollider, TileStreamer } from "../world/tiles";

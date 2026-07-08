@@ -1,0 +1,1084 @@
+{
+ "collections": {
+  "AC WIRE.001": {
+   "children": [
+    {
+     "index": 0,
+     "kind": "COLLECTION",
+     "name": "AC WIRE 1.001"
+    },
+    {
+     "index": 1,
+     "kind": "COLLECTION",
+     "name": "AC WIRE 2.001"
+    },
+    {
+     "index": 2,
+     "kind": "COLLECTION",
+     "name": "AC WIRE 3.001"
+    },
+    {
+     "index": 3,
+     "kind": "COLLECTION",
+     "name": "AC WIRE 4.001"
+    },
+    {
+     "index": 4,
+     "kind": "COLLECTION",
+     "name": "AC WIRE 5.001"
+    },
+    {
+     "index": 5,
+     "kind": "COLLECTION",
+     "name": "AC WIRE 6.001"
+    },
+    {
+     "index": 6,
+     "kind": "COLLECTION",
+     "name": "AC WIRE 7.001"
+    },
+    {
+     "index": 7,
+     "kind": "COLLECTION",
+     "name": "AC WIRE 8.001"
+    }
+   ]
+  },
+  "ac.001": {
+   "children": [
+    {
+     "index": 0,
+     "kind": "COLLECTION",
+     "name": "ac 1 1.001"
+    },
+    {
+     "index": 1,
+     "kind": "COLLECTION",
+     "name": "ac 1 2.001"
+    },
+    {
+     "index": 2,
+     "kind": "COLLECTION",
+     "name": "ac 1 3.001"
+    },
+    {
+     "index": 3,
+     "kind": "COLLECTION",
+     "name": "ac 1 4.001"
+    },
+    {
+     "index": 4,
+     "kind": "COLLECTION",
+     "name": "ac 2 1.001"
+    },
+    {
+     "index": 5,
+     "kind": "COLLECTION",
+     "name": "ac 2 2.001"
+    },
+    {
+     "index": 6,
+     "kind": "COLLECTION",
+     "name": "ac 2 3.001"
+    },
+    {
+     "index": 7,
+     "kind": "COLLECTION",
+     "name": "ac 2 4.001"
+    },
+    {
+     "index": 8,
+     "kind": "COLLECTION",
+     "name": "ac 3 1.001"
+    },
+    {
+     "index": 9,
+     "kind": "COLLECTION",
+     "name": "ac 3 2.001"
+    },
+    {
+     "index": 10,
+     "kind": "COLLECTION",
+     "name": "ac 3 3.001"
+    },
+    {
+     "index": 11,
+     "kind": "COLLECTION",
+     "name": "ac 3 4.001"
+    }
+   ]
+  },
+  "cloth lines WITH CLOTHES.001": {
+   "children": [
+    {
+     "index": 0,
+     "kind": "COLLECTION",
+     "name": "cloth lines 1.004"
+    },
+    {
+     "index": 1,
+     "kind": "COLLECTION",
+     "name": "cloth lines 1.005"
+    },
+    {
+     "index": 2,
+     "kind": "COLLECTION",
+     "name": "cloth lines 2.004"
+    },
+    {
+     "index": 3,
+     "kind": "COLLECTION",
+     "name": "cloth lines 2.005"
+    },
+    {
+     "index": 4,
+     "kind": "COLLECTION",
+     "name": "cloth lines 3.003"
+    }
+   ]
+  },
+  "cloth lines.001": {
+   "children": [
+    {
+     "index": 0,
+     "kind": "COLLECTION",
+     "name": "cloth lines 1.003"
+    },
+    {
+     "index": 1,
+     "kind": "COLLECTION",
+     "name": "cloth lines 2.003"
+    },
+    {
+     "index": 2,
+     "kind": "COLLECTION",
+     "name": "cloth lines 3.002"
+    }
+   ]
+  },
+  "corner": {
+   "children": [
+    {
+     "index": 0,
+     "kind": "OBJECT",
+     "name": "corner"
+    }
+   ]
+  },
+  "CURTAINS.001": {
+   "children": [
+    {
+     "index": 0,
+     "kind": "OBJECT",
+     "name": "Plane.048"
+    },
+    {
+     "index": 1,
+     "kind": "OBJECT",
+     "name": "Plane.049"
+    }
+   ]
+  },
+  "eletricarea": {
+   "children": [
+    {
+     "index": 0,
+     "kind": "COLLECTION",
+     "name": "eletricarea 1"
+    },
+    {
+     "index": 1,
+     "kind": "COLLECTION",
+     "name": "eletricarea 1.001"
+    },
+    {
+     "index": 2,
+     "kind": "COLLECTION",
+     "name": "eletricarea 1.002"
+    }
+   ]
+  },
+  "groud side wall": {
+   "children": [
+    {
+     "index": 0,
+     "kind": "OBJECT",
+     "name": "ground_side_wall"
+    }
+   ]
+  },
+  "groud_front": {
+   "children": [
+    {
+     "index": 0,
+     "kind": "OBJECT",
+     "name": "groundfront1"
+    },
+    {
+     "index": 1,
+     "kind": "OBJECT",
+     "name": "groundfront2"
+    },
+    {
+     "index": 2,
+     "kind": "OBJECT",
+     "name": "groundfront2.001"
+    },
+    {
+     "index": 3,
+     "kind": "OBJECT",
+     "name": "groundfront2.002"
+    }
+   ]
+  },
+  "ground_back": {
+   "children": [
+    {
+     "index": 0,
+     "kind": "OBJECT",
+     "name": "groundfront.002"
+    }
+   ]
+  },
+  "ground_corner": {
+   "children": [
+    {
+     "index": 0,
+     "kind": "OBJECT",
+     "name": "ground_corner"
+    }
+   ]
+  },
+  "guardrail back": {
+   "children": [
+    {
+     "index": 0,
+     "kind": "OBJECT",
+     "name": "guardrail_back"
+    }
+   ]
+  },
+  "guardrail front": {
+   "children": [
+    {
+     "index": 0,
+     "kind": "OBJECT",
+     "name": "1guardrail_front"
+    },
+    {
+     "index": 1,
+     "kind": "OBJECT",
+     "name": "guardrail_back2"
+    },
+    {
+     "index": 2,
+     "kind": "OBJECT",
+     "name": "guardrail_back2.001"
+    },
+    {
+     "index": 3,
+     "kind": "OBJECT",
+     "name": "guardrail_back2.002"
+    }
+   ]
+  },
+  "guardrailside": {
+   "children": [
+    {
+     "index": 0,
+     "kind": "OBJECT",
+     "name": "guardrail_side"
+    }
+   ]
+  },
+  "lights.001": {
+   "children": [
+    {
+     "index": 0,
+     "kind": "COLLECTION",
+     "name": "light 1.001"
+    },
+    {
+     "index": 1,
+     "kind": "COLLECTION",
+     "name": "light 2.001"
+    },
+    {
+     "index": 2,
+     "kind": "COLLECTION",
+     "name": "light 3.001"
+    }
+   ]
+  },
+  "lightsground": {
+   "children": [
+    {
+     "index": 0,
+     "kind": "COLLECTION",
+     "name": "lightsground 1"
+    },
+    {
+     "index": 1,
+     "kind": "COLLECTION",
+     "name": "lightsground 2"
+    }
+   ]
+  },
+  "old store_sign": {
+   "children": [
+    {
+     "index": 0,
+     "kind": "OBJECT",
+     "name": "Cube.198"
+    },
+    {
+     "index": 1,
+     "kind": "OBJECT",
+     "name": "Cube.201"
+    }
+   ]
+  },
+  "prop_front": {
+   "children": [
+    {
+     "index": 0,
+     "kind": "COLLECTION",
+     "name": "prop_front 1"
+    },
+    {
+     "index": 1,
+     "kind": "COLLECTION",
+     "name": "prop_front 1.001"
+    },
+    {
+     "index": 2,
+     "kind": "COLLECTION",
+     "name": "prop_front 1.002"
+    },
+    {
+     "index": 3,
+     "kind": "COLLECTION",
+     "name": "prop_front 1.003"
+    },
+    {
+     "index": 4,
+     "kind": "COLLECTION",
+     "name": "prop_front 1.004"
+    },
+    {
+     "index": 5,
+     "kind": "COLLECTION",
+     "name": "prop_front 1.005"
+    },
+    {
+     "index": 6,
+     "kind": "COLLECTION",
+     "name": "prop_front 7"
+    },
+    {
+     "index": 7,
+     "kind": "COLLECTION",
+     "name": "prop_front 7.001"
+    },
+    {
+     "index": 8,
+     "kind": "COLLECTION",
+     "name": "prop_front 9"
+    }
+   ]
+  },
+  "prop_groud": {
+   "children": [
+    {
+     "index": 0,
+     "kind": "COLLECTION",
+     "name": "prop_groud 1.001"
+    },
+    {
+     "index": 1,
+     "kind": "COLLECTION",
+     "name": "prop_groud 1.002"
+    },
+    {
+     "index": 2,
+     "kind": "COLLECTION",
+     "name": "prop_groud 1.003"
+    },
+    {
+     "index": 3,
+     "kind": "COLLECTION",
+     "name": "prop_groud 1.004"
+    },
+    {
+     "index": 4,
+     "kind": "COLLECTION",
+     "name": "prop_groud 1.005"
+    },
+    {
+     "index": 5,
+     "kind": "COLLECTION",
+     "name": "prop_groud 1.006"
+    },
+    {
+     "index": 6,
+     "kind": "COLLECTION",
+     "name": "prop_groud 8"
+    }
+   ]
+  },
+  "prop_store": {
+   "children": [
+    {
+     "index": 0,
+     "kind": "COLLECTION",
+     "name": "prop_store 1"
+    },
+    {
+     "index": 1,
+     "kind": "COLLECTION",
+     "name": "prop_store 2"
+    },
+    {
+     "index": 2,
+     "kind": "COLLECTION",
+     "name": "prop_store 3"
+    },
+    {
+     "index": 3,
+     "kind": "COLLECTION",
+     "name": "prop_store 3.001"
+    },
+    {
+     "index": 4,
+     "kind": "COLLECTION",
+     "name": "prop_store 5"
+    }
+   ]
+  },
+  "roof": {
+   "children": [
+    {
+     "index": 0,
+     "kind": "OBJECT",
+     "name": "roof"
+    }
+   ]
+  },
+  "roof.002": {
+   "children": [
+    {
+     "index": 0,
+     "kind": "COLLECTION",
+     "name": "ROOFTYPE1.001"
+    },
+    {
+     "index": 1,
+     "kind": "COLLECTION",
+     "name": "ROOFTYPE2.001"
+    },
+    {
+     "index": 2,
+     "kind": "COLLECTION",
+     "name": "ROOFTYPE3.001"
+    }
+   ]
+  },
+  "roof_prop": {
+   "children": [
+    {
+     "index": 0,
+     "kind": "COLLECTION",
+     "name": "roof_prop 1"
+    },
+    {
+     "index": 1,
+     "kind": "COLLECTION",
+     "name": "roof_prop 1.001"
+    },
+    {
+     "index": 2,
+     "kind": "COLLECTION",
+     "name": "roof_prop 1.002"
+    },
+    {
+     "index": 3,
+     "kind": "COLLECTION",
+     "name": "roof_prop 1.003"
+    },
+    {
+     "index": 4,
+     "kind": "COLLECTION",
+     "name": "roof_prop 1.004"
+    },
+    {
+     "index": 5,
+     "kind": "COLLECTION",
+     "name": "roof_prop 1.005"
+    },
+    {
+     "index": 6,
+     "kind": "COLLECTION",
+     "name": "roof_prop 1.006"
+    },
+    {
+     "index": 7,
+     "kind": "COLLECTION",
+     "name": "roof_prop 1.007"
+    },
+    {
+     "index": 8,
+     "kind": "COLLECTION",
+     "name": "roof_prop 1.008"
+    },
+    {
+     "index": 9,
+     "kind": "COLLECTION",
+     "name": "roof_prop 1.009"
+    },
+    {
+     "index": 10,
+     "kind": "COLLECTION",
+     "name": "roof_prop 1.010"
+    },
+    {
+     "index": 11,
+     "kind": "COLLECTION",
+     "name": "roof_prop 1.011"
+    },
+    {
+     "index": 12,
+     "kind": "COLLECTION",
+     "name": "roof_prop 11"
+    },
+    {
+     "index": 13,
+     "kind": "COLLECTION",
+     "name": "roof_prop 11.001"
+    },
+    {
+     "index": 14,
+     "kind": "COLLECTION",
+     "name": "roof_prop 11.002"
+    },
+    {
+     "index": 15,
+     "kind": "COLLECTION",
+     "name": "roof_prop 13"
+    },
+    {
+     "index": 16,
+     "kind": "COLLECTION",
+     "name": "roof_prop 8"
+    },
+    {
+     "index": 17,
+     "kind": "COLLECTION",
+     "name": "roof_prop 8.001"
+    },
+    {
+     "index": 18,
+     "kind": "COLLECTION",
+     "name": "roof_prop 8.002"
+    }
+   ]
+  },
+  "roofcorner": {
+   "children": [
+    {
+     "index": 0,
+     "kind": "OBJECT",
+     "name": "guardrail_corner"
+    }
+   ]
+  },
+  "ROOMS.001": {
+   "children": [
+    {
+     "index": 0,
+     "kind": "OBJECT",
+     "name": "Cube.041"
+    },
+    {
+     "index": 1,
+     "kind": "OBJECT",
+     "name": "Cube.061"
+    },
+    {
+     "index": 2,
+     "kind": "OBJECT",
+     "name": "Cube.062"
+    },
+    {
+     "index": 3,
+     "kind": "OBJECT",
+     "name": "Cube.063"
+    },
+    {
+     "index": 4,
+     "kind": "OBJECT",
+     "name": "Cube.064"
+    },
+    {
+     "index": 5,
+     "kind": "OBJECT",
+     "name": "Cube.065"
+    },
+    {
+     "index": 6,
+     "kind": "OBJECT",
+     "name": "Cube.066"
+    },
+    {
+     "index": 7,
+     "kind": "OBJECT",
+     "name": "Cube.067"
+    },
+    {
+     "index": 8,
+     "kind": "OBJECT",
+     "name": "Cube.068"
+    }
+   ]
+  },
+  "shutter": {
+   "children": [
+    {
+     "index": 0,
+     "kind": "OBJECT",
+     "name": "shutter"
+    },
+    {
+     "index": 1,
+     "kind": "OBJECT",
+     "name": "shutter.001"
+    },
+    {
+     "index": 2,
+     "kind": "OBJECT",
+     "name": "shutter.002"
+    },
+    {
+     "index": 3,
+     "kind": "OBJECT",
+     "name": "shutter.004"
+    }
+   ]
+  },
+  "side_wall": {
+   "children": [
+    {
+     "index": 0,
+     "kind": "OBJECT",
+     "name": "side_wall"
+    }
+   ]
+  },
+  "steel window top preset.001": {
+   "children": [
+    {
+     "index": 0,
+     "kind": "COLLECTION",
+     "name": "steel window top preset 1.007"
+    },
+    {
+     "index": 1,
+     "kind": "COLLECTION",
+     "name": "steel window top preset 1.008"
+    },
+    {
+     "index": 2,
+     "kind": "COLLECTION",
+     "name": "steel window top preset 1.009"
+    },
+    {
+     "index": 3,
+     "kind": "COLLECTION",
+     "name": "steel window top preset 1.010"
+    },
+    {
+     "index": 4,
+     "kind": "COLLECTION",
+     "name": "steel window top preset 1.011"
+    },
+    {
+     "index": 5,
+     "kind": "COLLECTION",
+     "name": "steel window top preset 1.012"
+    },
+    {
+     "index": 6,
+     "kind": "COLLECTION",
+     "name": "steel window top preset 1.013"
+    },
+    {
+     "index": 7,
+     "kind": "COLLECTION",
+     "name": "steel window top preset 10.001"
+    },
+    {
+     "index": 8,
+     "kind": "COLLECTION",
+     "name": "steel window top preset 11.001"
+    },
+    {
+     "index": 9,
+     "kind": "COLLECTION",
+     "name": "steel window top preset 12.001"
+    },
+    {
+     "index": 10,
+     "kind": "COLLECTION",
+     "name": "steel window top preset 13.001"
+    },
+    {
+     "index": 11,
+     "kind": "COLLECTION",
+     "name": "steel window top preset 2.001"
+    },
+    {
+     "index": 12,
+     "kind": "COLLECTION",
+     "name": "steel window top preset 3.001"
+    },
+    {
+     "index": 13,
+     "kind": "COLLECTION",
+     "name": "steel window top preset 4.001"
+    },
+    {
+     "index": 14,
+     "kind": "COLLECTION",
+     "name": "steel window top preset 5.001"
+    },
+    {
+     "index": 15,
+     "kind": "COLLECTION",
+     "name": "steel window top preset 6.001"
+    },
+    {
+     "index": 16,
+     "kind": "COLLECTION",
+     "name": "steel window top preset 7.001"
+    },
+    {
+     "index": 17,
+     "kind": "COLLECTION",
+     "name": "steel window top preset 8.001"
+    },
+    {
+     "index": 18,
+     "kind": "COLLECTION",
+     "name": "steel window top preset 9.001"
+    }
+   ]
+  },
+  "store_sign": {
+   "children": [
+    {
+     "index": 0,
+     "kind": "OBJECT",
+     "name": "Cube.119"
+    },
+    {
+     "index": 1,
+     "kind": "OBJECT",
+     "name": "Cube.120"
+    },
+    {
+     "index": 2,
+     "kind": "OBJECT",
+     "name": "Cube.121"
+    },
+    {
+     "index": 3,
+     "kind": "OBJECT",
+     "name": "Cube.122"
+    },
+    {
+     "index": 4,
+     "kind": "OBJECT",
+     "name": "Cube.123"
+    },
+    {
+     "index": 5,
+     "kind": "OBJECT",
+     "name": "Cube.124"
+    },
+    {
+     "index": 6,
+     "kind": "OBJECT",
+     "name": "Cube.125"
+    }
+   ]
+  },
+  "store_sign_hanging": {
+   "children": [
+    {
+     "index": 0,
+     "kind": "OBJECT",
+     "name": "Cube.126"
+    },
+    {
+     "index": 1,
+     "kind": "OBJECT",
+     "name": "Cube.127"
+    },
+    {
+     "index": 2,
+     "kind": "OBJECT",
+     "name": "Cube.128"
+    },
+    {
+     "index": 3,
+     "kind": "OBJECT",
+     "name": "Cube.129"
+    },
+    {
+     "index": 4,
+     "kind": "OBJECT",
+     "name": "Cube.130"
+    },
+    {
+     "index": 5,
+     "kind": "OBJECT",
+     "name": "Cube.131"
+    }
+   ]
+  },
+  "storefront": {
+   "children": [
+    {
+     "index": 0,
+     "kind": "OBJECT",
+     "name": "store"
+    },
+    {
+     "index": 1,
+     "kind": "OBJECT",
+     "name": "store1"
+    },
+    {
+     "index": 2,
+     "kind": "OBJECT",
+     "name": "store1.002"
+    },
+    {
+     "index": 3,
+     "kind": "OBJECT",
+     "name": "store3"
+    }
+   ]
+  },
+  "storeinside": {
+   "children": [
+    {
+     "index": 0,
+     "kind": "OBJECT",
+     "name": "ground room1"
+    },
+    {
+     "index": 1,
+     "kind": "OBJECT",
+     "name": "ground room2"
+    },
+    {
+     "index": 2,
+     "kind": "OBJECT",
+     "name": "ground room2.001"
+    },
+    {
+     "index": 3,
+     "kind": "OBJECT",
+     "name": "ground room2.002"
+    }
+   ]
+  },
+  "wall.001": {
+   "children": [
+    {
+     "index": 0,
+     "kind": "OBJECT",
+     "name": "Plane.050"
+    },
+    {
+     "index": 1,
+     "kind": "OBJECT",
+     "name": "Plane.051"
+    }
+   ]
+  },
+  "watertank": {
+   "children": [
+    {
+     "index": 0,
+     "kind": "OBJECT",
+     "name": "WATERTANK"
+    },
+    {
+     "index": 1,
+     "kind": "OBJECT",
+     "name": "WATERTANK.001"
+    },
+    {
+     "index": 2,
+     "kind": "OBJECT",
+     "name": "WATERTANK.002"
+    }
+   ]
+  },
+  "window guard.001": {
+   "children": [
+    {
+     "index": 0,
+     "kind": "COLLECTION",
+     "name": "grid 1.001"
+    },
+    {
+     "index": 1,
+     "kind": "COLLECTION",
+     "name": "grid 2.001"
+    },
+    {
+     "index": 2,
+     "kind": "COLLECTION",
+     "name": "grid 3.001"
+    }
+   ]
+  },
+  "window wood top preset.001": {
+   "children": [
+    {
+     "index": 0,
+     "kind": "COLLECTION",
+     "name": "window wood top preset 1.006"
+    },
+    {
+     "index": 1,
+     "kind": "COLLECTION",
+     "name": "window wood top preset 1.007"
+    },
+    {
+     "index": 2,
+     "kind": "COLLECTION",
+     "name": "window wood top preset 1.008"
+    },
+    {
+     "index": 3,
+     "kind": "COLLECTION",
+     "name": "window wood top preset 1.009"
+    },
+    {
+     "index": 4,
+     "kind": "COLLECTION",
+     "name": "window wood top preset 1.010"
+    },
+    {
+     "index": 5,
+     "kind": "COLLECTION",
+     "name": "window wood top preset 1.011"
+    },
+    {
+     "index": 6,
+     "kind": "COLLECTION",
+     "name": "window wood top preset 10.001"
+    },
+    {
+     "index": 7,
+     "kind": "COLLECTION",
+     "name": "window wood top preset 11.001"
+    },
+    {
+     "index": 8,
+     "kind": "COLLECTION",
+     "name": "window wood top preset 12.001"
+    },
+    {
+     "index": 9,
+     "kind": "COLLECTION",
+     "name": "window wood top preset 13.001"
+    },
+    {
+     "index": 10,
+     "kind": "COLLECTION",
+     "name": "window wood top preset 2.001"
+    },
+    {
+     "index": 11,
+     "kind": "COLLECTION",
+     "name": "window wood top preset 3.001"
+    },
+    {
+     "index": 12,
+     "kind": "COLLECTION",
+     "name": "window wood top preset 4.001"
+    },
+    {
+     "index": 13,
+     "kind": "COLLECTION",
+     "name": "window wood top preset 5.001"
+    },
+    {
+     "index": 14,
+     "kind": "COLLECTION",
+     "name": "window wood top preset 6.001"
+    },
+    {
+     "index": 15,
+     "kind": "COLLECTION",
+     "name": "window wood top preset 7.001"
+    },
+    {
+     "index": 16,
+     "kind": "COLLECTION",
+     "name": "window wood top preset 8.001"
+    },
+    {
+     "index": 17,
+     "kind": "COLLECTION",
+     "name": "window wood top preset 9.001"
+    }
+   ]
+  },
+  "wire": {
+   "children": [
+    {
+     "index": 0,
+     "kind": "COLLECTION",
+     "name": "wire 1"
+    },
+    {
+     "index": 1,
+     "kind": "COLLECTION",
+     "name": "wire 1.001"
+    },
+    {
+     "index": 2,
+     "kind": "COLLECTION",
+     "name": "wire 1.002"
+    },
+    {
+     "index": 3,
+     "kind": "COLLECTION",
+     "name": "wire 1.003"
+    }
+   ]
+  }
+ },
+ "objects": {
+  "steel frame.001": {
+   "exported": true
+  },
+  "steel window.001": {
+   "exported": true
+  },
+  "store_roof": {
+   "exported": true
+  },
+  "wood frame.001": {
+   "exported": true
+  },
+  "wood window.001": {
+   "exported": true
+  }
+ }
+}

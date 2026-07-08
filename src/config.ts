@@ -73,7 +73,19 @@ export const RENDER_TUNING = tunables("render", {
 /** Draw distance + fog, bound in the "/" panel. `radius` drives both tile radii. */
 export const WORLD_TUNING = tunables("world", {
   radius: { v: 2100, min: 900, max: 6000, step: 100, label: "buildings (m)" },
-  fog: { v: 0.00055, min: 0, max: 0.006, step: 0.00001, format: (v: number) => v.toFixed(5), label: "fog density" }
+  fogEnabled: { v: true, label: "custom fog" },
+  fogBase: { v: -20, min: -140, max: 240, step: 1, label: "base" },
+  fogTop: { v: 55, min: -20, max: 420, step: 1, label: "top" },
+  fogBank: { v: 1.15, min: 0, max: 3, step: 0.05, label: "bank density" },
+  fogSoftness: { v: 28, min: 1, max: 180, step: 1, label: "edge softness" },
+  fogNoise: { v: 0.68, min: 0, max: 1, step: 0.02, label: "billow" },
+  fogScale: { v: 0.0024, min: 0.0004, max: 0.01, step: 0.0001, format: (v: number) => v.toFixed(4), label: "billow scale" },
+  fogDrift: { v: 0.018, min: 0, max: 0.12, step: 0.001, format: (v: number) => v.toFixed(3), label: "drift" },
+  fogStart: { v: 25, min: 0, max: 1200, step: 10, label: "near fade" },
+  fog: { v: 0.00018, min: 0, max: 0.002, step: 0.00001, format: (v: number) => v.toFixed(5), label: "haze" },
+  fogHorizon: { v: 0.34, min: 0, max: 1.5, step: 0.02, label: "horizon veil" },
+  fogHorizonStart: { v: 1450, min: 300, max: 6000, step: 50, label: "horizon start (m)" },
+  fogHorizonSoftness: { v: 900, min: 100, max: 3000, step: 50, label: "horizon softness" }
 });
 
 /** Cosmetic vegetation visibility, bound in the "/" panel for performance checks. */

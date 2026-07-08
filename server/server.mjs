@@ -14,8 +14,8 @@
 // Run: node server/server.mjs            (PORT / HOST env to override)
 // Prod: npm run build && node server/server.mjs  → serves dist/ + /ws
 import http from "node:http";
-import { readFile, stat } from "node:fs/promises";
-import { createReadStream, existsSync } from "node:fs";
+import { readFile, stat, mkdir, writeFile } from "node:fs/promises";
+import { createReadStream, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
@@ -31,6 +31,105 @@ const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // no state for 5 min → drop
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const DIST = path.join(ROOT, "..", "dist");
+
+/* --------------------------------------------- AI-cars "life" persistence */
+// Every AI car is a PERSISTENT INDIVIDUAL that learns forever. The training
+// leader (lowest-id client) round-robins one car's full brain+pose per ~1.5 s as
+// a `brain` message. We keep the latest blob PER CAR ID in memory AND debounce-
+// write the whole set to disk so a fresh leader (or a just-restarted server) can
+// resume every individual via the `welcome` message. NOTE: on Railway the disk
+// is EPHEMERAL across redeploys — a deploy wipes this file; the fleet then
+// rebuilds from whichever connected client still has a localStorage set (or
+// fresh). Acceptable.
+const DATA_DIR = path.join(ROOT, "data");
+const LIFE_FILE = path.join(DATA_DIR, "aicars-life.json");
+// Exact param counts for the actor [9,12,2] and critic [9,12,1] nets:
+//   actor : 9*12+12 + 12*2+2 = 146      critic : 9*12+12 + 12*1+1 = 133
+// Hardcoded (server.mjs is plain JS — can't import the TS constant); blobs of
+// any other shape are rejected so a peer can't poison the relayed fleet.
+const ACTOR_LEN = 146;
+const CRITIC_LEN = 133;
+const MAX_CAR_ID = 31; // MAX_CARS 32 → ids 0..31
+const W_MAX = 16; // hard weight bound (learner keeps ±8 internally)
+const POS_MAX = 1e5; // sane world-coordinate bound (metres)
+const CARS_ROW_LEN = 20; // netSync ROW_LEN: 8 header numbers + 12 hidden bytes
+const CARS_ROWS_MAX = 40; // MAX_CARS (32) + slack
+const LIFE_WRITE_DEBOUNCE_MS = 15000;
+
+const lifeById = new Map(); // carId -> validated blob
+let lifeBorn = 0; // epoch ms the persisted world was first born
+let lifeWriteTimer = null;
+
+const finite = (v) => typeof v === "number" && Number.isFinite(v);
+const weightArray = (a, len) => Array.isArray(a) && a.length === len && a.every((n) => finite(n) && Math.abs(n) <= W_MAX);
+
+// Strict per-blob validation (exact array lengths, finiteness, bounded fields).
+const validBrain = (b) =>
+  b &&
+  typeof b === "object" &&
+  b.v === 2 &&
+  Number.isInteger(b.id) &&
+  b.id >= 0 &&
+  b.id <= MAX_CAR_ID &&
+  weightArray(b.actor, ACTOR_LEN) &&
+  weightArray(b.critic, CRITIC_LEN) &&
+  finite(b.rhoBar) &&
+  finite(b.sigma) &&
+  b.sigma > 0 &&
+  b.sigma <= 1 &&
+  finite(b.ageS) &&
+  b.ageS >= 0 &&
+  finite(b.odoM) &&
+  b.odoM >= 0 &&
+  finite(b.lessons) &&
+  b.lessons >= 0 &&
+  finite(b.bodyKind) &&
+  b.bodyKind >= 0 &&
+  b.bodyKind < 256 &&
+  finite(b.paintHue) &&
+  finite(b.x) &&
+  Math.abs(b.x) <= POS_MAX &&
+  finite(b.z) &&
+  Math.abs(b.z) <= POS_MAX &&
+  finite(b.heading);
+
+const loadLife = () => {
+  try {
+    if (!existsSync(LIFE_FILE)) return;
+    const parsed = JSON.parse(readFileSync(LIFE_FILE, "utf8"));
+    if (!parsed || parsed.v !== 2 || !Array.isArray(parsed.cars)) return;
+    let n = 0;
+    for (const b of parsed.cars) if (validBrain(b)) { lifeById.set(b.id, b); n++; }
+    lifeBorn = finite(parsed.born) ? parsed.born : Date.now();
+    if (n) console.log(`[sf-server] loaded AI-cars life: ${n} cars (born ${new Date(lifeBorn).toISOString()})`);
+  } catch (err) {
+    console.warn("[sf-server] AI-cars life load failed:", err.message);
+  }
+};
+
+const scheduleLifeWrite = () => {
+  if (lifeWriteTimer) return; // already pending: coalesce
+  lifeWriteTimer = setTimeout(async () => {
+    lifeWriteTimer = null;
+    if (lifeById.size === 0) return;
+    try {
+      await mkdir(DATA_DIR, { recursive: true });
+      await writeFile(LIFE_FILE, JSON.stringify({ v: 2, born: lifeBorn || Date.now(), cars: [...lifeById.values()] }));
+    } catch (err) {
+      console.warn("[sf-server] AI-cars life write failed:", err.message);
+    }
+  }, LIFE_WRITE_DEBOUNCE_MS);
+  lifeWriteTimer.unref?.();
+};
+
+/** The current training leader = lowest connected id (cheap leader auth). */
+const leaderId = () => {
+  let min = Infinity;
+  for (const pid of players.keys()) if (pid < min) min = pid;
+  return min;
+};
+
+loadLife();
 
 const getUrlPath = (url = "/") => {
   try {
@@ -275,7 +374,10 @@ wss.on("connection", (ws) => {
         name: p.name,
         players: [...players.values()]
           .filter((o) => o.id !== id)
-          .map((o) => ({ id: o.id, name: o.name, hue: o.hue, avatar: o.avatar }))
+          .map((o) => ({ id: o.id, name: o.name, hue: o.hue, avatar: o.avatar })),
+        // hand the whole saved AI-cars fleet to the newcomer so a future leader
+        // resumes every individual's accumulated learning instead of fresh
+        ...(lifeById.size ? { aicarsLife: { v: 2, born: lifeBorn || Date.now(), cars: [...lifeById.values()] } } : {})
       });
       broadcast({ t: "join", id, name: p.name, hue: p.hue, avatar: p.avatar }, id);
       console.log(`[sf-server] join #${id} "${p.name}" (${players.size} online)`);
@@ -305,6 +407,24 @@ wss.on("connection", (ws) => {
       // pure relay, every client replays the launches locally
       if (msg.d.every((r) => Array.isArray(r) && r.length === 9 && r.every((n) => typeof n === "number" && Number.isFinite(n)))) {
         broadcast({ t: "fw", id, d: msg.d }, id);
+      }
+    } else if (msg.t === "cars" && Array.isArray(msg.d) && msg.d.length >= 1 && msg.d.length <= CARS_ROWS_MAX) {
+      // AI-cars snapshot from the training leader: rows [slot,kind,hue,x,y,z,
+      // heading,speed, ...12 hidden bytes] — pure relay, ghosts interpolate
+      if (msg.d.every((r) => Array.isArray(r) && r.length === CARS_ROW_LEN && r.every((n) => typeof n === "number" && Number.isFinite(n)))) {
+        broadcast({ t: "cars", id, d: msg.d }, id);
+      }
+    } else if (msg.t === "brain") {
+      // One AI car's brain+pose from the training leader. ONLY accept it from the
+      // current lowest-id connected client (cheap leader auth — the server knows
+      // every id) and only if it passes the strict per-blob validator. Store the
+      // latest per car id, debounce-persist the set, and relay to everyone else
+      // (non-leaders cache it for a future promotion).
+      if (id === leaderId() && validBrain(msg.d)) {
+        if (lifeById.size === 0 && !lifeBorn) lifeBorn = Date.now();
+        lifeById.set(msg.d.id, msg.d);
+        scheduleLifeWrite();
+        broadcast({ t: "brain", from: id, d: msg.d }, id);
       }
     } else if (msg.t === "note" && Array.isArray(msg.d) && msg.d.length === 2) {
       // museum instrument note: [instrument, key] — pure relay, every client

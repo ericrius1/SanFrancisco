@@ -267,6 +267,26 @@ export class DebugPanel {
       onChange: (_key, value) => this.#applyRenderPreset(value)
     });
 
+    const fog = pane.addFolder({ title: "fog" });
+    WORLD_TUNING.bind(fog, {
+      keys: [
+        "fogEnabled",
+        "fogBase",
+        "fogTop",
+        "fogBank",
+        "fogSoftness",
+        "fogNoise",
+        "fogScale",
+        "fogDrift",
+        "fogStart",
+        "fog",
+        "fogHorizon",
+        "fogHorizonStart",
+        "fogHorizonSoftness"
+      ],
+      onChange: () => this.#sky.applyFogParams()
+    });
+
     // stylized post effects: toggles rebuild the output shader (one quad
     // recompile), sliders are live uniforms — see render/postfx.ts
     const postfx = pane.addFolder({ title: "post fx", expanded: false });
@@ -317,14 +337,12 @@ export class DebugPanel {
     // the change take effect immediately instead of on the next 30-frame scan
     const world = advanced.addFolder({ title: "draw distance" });
     WORLD_TUNING.bind(world, {
+      keys: ["radius"],
       onChange: (key, value) => {
-        if (key === "radius") {
-          CONFIG.tileLoadRadius = value as number;
-          CONFIG.tileUnloadRadius = (value as number) + 400;
-          this.#tiles?.forceScan();
-        } else if (this.#scene?.fog) {
-          (this.#scene.fog as THREE.FogExp2).density = value as number;
-        }
+        if (key !== "radius") return;
+        CONFIG.tileLoadRadius = value as number;
+        CONFIG.tileUnloadRadius = (value as number) + 400;
+        this.#tiles?.forceScan();
       }
     });
 

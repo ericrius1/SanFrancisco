@@ -1,6 +1,6 @@
 import * as THREE from "three/webgpu";
-import { BodyType, TRANSFORM_STRIDE } from "box3d-wasm";
-import type { TransformBatch } from "box3d-wasm";
+import { BodyType, TRANSFORM_STRIDE } from "../core/physics";
+import type { TransformBatch } from "../core/physics";
 import type { Physics } from "../core/physics";
 
 /**

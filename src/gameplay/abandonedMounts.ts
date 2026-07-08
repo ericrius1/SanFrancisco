@@ -1,5 +1,5 @@
 import * as THREE from "three/webgpu";
-import { BodyType } from "box3d-wasm";
+import { BodyType } from "../core/physics";
 import type { Physics } from "../core/physics";
 import type { PlayerMode } from "../player/types";
 import { DEFAULT_DRIVE_SPEC } from "../player/types";

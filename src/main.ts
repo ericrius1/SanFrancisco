@@ -38,12 +38,15 @@ import { VehicleAudio } from "./fx/vehicleAudio";
 import { Props } from "./gameplay/props";
 import { Traffic, DRIVE_PROFILES, type VehicleClass } from "./gameplay/traffic";
 import { AbandonedMounts } from "./gameplay/abandonedMounts";
+import { AiCars } from "./gameplay/aiCars/index.ts";
 import { RocketRiders, type LauncherRig } from "./gameplay/launchers";
 import { Flyover } from "./gameplay/flyover";
 import { BridgeParade } from "./gameplay/bridgeParade";
 import { Creatures } from "./gameplay/creatures";
 import { Forest, ANIMALS, type AnimalKind } from "./gameplay/forest";
 import { Flora } from "./world/flora";
+import { createBotanicalGarden, type GrassDisplacer } from "./world/garden";
+import { createGeneratedStreet, type GeneratedStreet } from "./world/buildings";
 import { Islands } from "./gameplay/islands";
 import { Exploratorium, WATER_VIEW } from "./gameplay/exploratorium";
 import { PALACE_FINE_ARTS } from "./world/heightmap";
@@ -247,6 +250,12 @@ async function boot() {
   const props = new Props(physics, map, scene);
   props.onDiscover = (name) => hud.message(`Discovered: ${name}`, 4);
   const traffic = new Traffic(physics, map, scene);
+  // AI cars: a self-training neuro-evolution fleet driving the streets, each with
+  // a floating brain lattice. Async init loads the road graph off the boot path.
+  const aiCars = new AiCars(physics, map, scene, () => camera);
+  void aiCars.ready();
+  // stable anchor array (player.position is mutated in place) — no per-frame alloc
+  const aiCarAnchors = [player.position];
   const creatures = new Creatures(map, scene);
   const forest = new Forest(map, scene);
   const abandonedMounts = new AbandonedMounts(physics, map, scene);
@@ -295,9 +304,18 @@ async function boot() {
   // vegetation layer: park trees + grass masks ride the tile stream; the grass
   // field and Marin near-forest follow the camera (physics hooked unload first)
   const flora = new Flora(map, scene, tiles.manifest);
+  // San Francisco Botanical Garden — self-contained module (src/world/garden):
+  // SeedThree trees + procedural blade grass + shrubs/flora, at the real SFBG
+  // footprint inside Golden Gate Park. Trees stream in async; grass is live now.
+  const garden = createBotanicalGarden(map);
+  scene.add(garden.group);
+  // reused per-frame trample slot so the player flattens the grass they stand in
+  const gardenDisplacer: GrassDisplacer = { x: 0, z: 0, radius: 1.6, strength: 1 };
+  const gardenDisplacers = [gardenDisplacer];
   const setFoliageVisible = (visible: boolean) => {
     flora.setVisible(visible);
     forest.setFoliageVisible(visible);
+    garden.group.visible = visible;
   };
   setFoliageVisible(FOLIAGE_TUNING.values.visible);
   tiles.onTileGreens = (key, group) => flora.onTileGreens(key, group);
@@ -312,6 +330,17 @@ async function boot() {
   // gates every exhibit (GPU sims, dome show, colliders) on actual presence
   const exploratorium = new Exploratorium(renderer, physics, map, scene, tiles);
   exploratorium.onMessage = (m, s) => hud.message(m, s);
+
+  // Generated-buildings street test (src/world/buildings): ~20 procedurally
+  // generated Hong-Kong-style buildings in two facing rows on flat ground near
+  // the Marina, all rendered through 3 global BatchedMesh pools + 1 shadow-proxy
+  // pool. Walkable interiors lazily build/dispose by player distance. Async load;
+  // inert stubs if the kit assets are missing so the app still boots.
+  const buildings: { current: GeneratedStreet | null } = { current: null };
+  createGeneratedStreet(
+    { center: { x: 200, z: -1800 }, baseSeed: 4242, count: 20 },
+    { scene, physics, map }
+  ).then((s) => { buildings.current = s; });
 
   // the Fortnite-ish layer: treasure chests raining coins, critters to hunt,
   // and the Garry's-Mod rope/grab click-tools (loot.ts / hunt.ts / ropes.ts)
@@ -367,6 +396,7 @@ async function boot() {
   };
   props.onWillRemoveBody = releaseBody;
   traffic.onWillRemoveBody = releaseBody;
+  aiCars.onWillRemoveBody = releaseBody;
   const pickables: PickCandidate[] = [];
   const gatherPickables = () => {
     pickables.length = 0;
@@ -546,6 +576,10 @@ async function boot() {
   // shared skies: my rocket launches go out, friends' volleys replay here
   fireworks.onVolley = (rockets) => net.sendFireworks(rockets);
   net.onFireworks = (_id, rockets) => fireworks.launchRemote(rockets);
+  // AI cars: only the lowest-id client trains + broadcasts; everyone else renders
+  // the fleet as interpolated ghosts. The leader anchors spawning around remotes
+  // too, so cars stay near whoever is online.
+  aiCars.attachNet(net, () => remotes.positions());
 
   // passenger seat support: remotes resolves "riding MY car" through this
   remotes.localDriveMesh = () => (player.mode === "drive" && !player.riding ? player.meshes.drive : null);
@@ -1396,7 +1430,7 @@ async function boot() {
       CONFIG.tileUnloadRadius = WORLD_TUNING.values.radius + 400;
       setFoliageVisible(FOLIAGE_TUNING.values.visible);
       tiles.forceScan();
-      if (scene.fog) (scene.fog as THREE.FogExp2).density = WORLD_TUNING.values.fog;
+      sky.applyFogParams();
       DEBRIS_LIGHTS.hold.value = DEBRIS_TUNING.values.hold;
       DEBRIS_LIGHTS.flicker.value = DEBRIS_TUNING.values.flicker;
       DEBRIS_LIGHTS.spread.value = DEBRIS_TUNING.values.spread;
@@ -1407,6 +1441,7 @@ async function boot() {
       sky.sunsetAzimuth = SKY_TUNING.values.sunsetAzimuth;
       sky.nightBrightness = SKY_TUNING.values.nightBrightness;
       sky.setTimeOfDay(PRE_SUNSET_TIME);
+      sky.applyFogParams();
       debugPanel.syncNow();
       hud.message("Tweaks back to source defaults", 3);
     }
@@ -1602,6 +1637,7 @@ async function boot() {
     while (accumulator >= physics.world.fixedTimeStep && steps < 3) {
       player.update(physics.world.fixedTimeStep, input, chase.yaw, aim);
       traffic.prePhysics(physics.world.fixedTimeStep, player.position, sky.timeOfDay, sky.sunsetAzimuth);
+      aiCars.prePhysics(physics.world.fixedTimeStep, aiCarAnchors);
       abandonedMounts.prePhysics(physics.world.fixedTimeStep);
       physics.step(physics.world.fixedTimeStep, player.position);
       accumulator -= physics.world.fixedTimeStep;
@@ -1643,6 +1679,7 @@ async function boot() {
     tiles.update(player.position.x, player.position.z, highUp);
     props.update(frameDt, player.position);
     traffic.update(player.position, frameDt, sky.timeOfDay, sky.sunsetAzimuth);
+    aiCars.update(frameDt, player.position, highUp);
     abandonedMounts.update(frameDt, player.position);
     flyover.update(frameDt); // planes + phoenixes streaking over on "-"
     bridgeParade.update(frameDt); // boats crossing under the Golden Gate on "-"
@@ -1651,9 +1688,16 @@ async function boot() {
     creatures.update(elapsed, camera.position); // gulls live at altitude — never gated
     forest.update(frameDt, camera.position);
     flora.update(camera.position, highUp);
+    // garden: advance wind, move the near-grass detail ring to the player, and
+    // flatten grass under them. Cheap when the player is nowhere near the garden
+    // (updateFocus distance-culls base chunks and skips the near ring).
+    gardenDisplacer.x = player.renderPosition.x;
+    gardenDisplacer.z = player.renderPosition.z;
+    garden.update(frameDt, player.renderPosition, gardenDisplacers);
     if (currentAnimal) forest.setRiddenSpeed(player.speed);
     islands.update(elapsed);
     exploratorium.update(frameDt, elapsed, player.position);
+    buildings.current?.update(player.position, frameDt);
     quidditch.update(frameDt, player.position, elapsed);
     if (quidditch.active) {
       const qs = quidditch.scores;
@@ -1888,7 +1932,7 @@ async function boot() {
 
   const exposeDebugHooks = () => {
     Object.assign(window as never, {
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, props, exploratorium, traffic, creatures, forest, flora, splashes, vehicleAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, boatLaunchers, goldenGateLights, flyover, bridgeParade, teleportToTarget }
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, props, exploratorium, traffic, creatures, forest, flora, garden, splashes, vehicleAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, boatLaunchers, goldenGateLights, flyover, bridgeParade, teleportToTarget, aiCars, buildings }
     });
   };
   if (import.meta.env.DEV || new URLSearchParams(location.search).has("profile")) {

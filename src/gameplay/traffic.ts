@@ -1,5 +1,5 @@
 import * as THREE from "three/webgpu";
-import { BodyType } from "box3d-wasm";
+import { BodyType } from "../core/physics";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { LIGHT_SCALE } from "../config";
 import type { Physics } from "../core/physics";

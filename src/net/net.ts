@@ -34,6 +34,37 @@ export const NET_MODES: PlayerMode[] = ["walk", "drive", "plane", "boat", "drone
 
 export type RemoteInfo = { id: number; name: string; hue: number; avatar?: AvatarTraits };
 
+/**
+ * One persistent AI car's full brain + identity + pose (continual-learning
+ * "life" blob). Structurally identical to fleet.ts's CarBlob so it round-trips
+ * through the leader→relay→ghost path without a conversion. Actor is 146 floats,
+ * critic 133 (net shape [9,12,2] / [9,12,1]).
+ */
+export type CarLifeBlob = {
+  v: 2;
+  id: number;
+  actor: number[];
+  critic: number[];
+  rhoBar: number;
+  sigma: number;
+  ageS: number;
+  odoM: number;
+  lessons: number;
+  bodyKind: number;
+  paintHue: number;
+  x: number;
+  z: number;
+  heading: number;
+};
+
+/** The whole fleet's persisted lives (relay welcome / localStorage set). */
+export type AiCarsLife = { v: 2; born: number; cars: CarLifeBlob[] };
+
+const AICARS_ACTOR_LEN = 146;
+const AICARS_CRITIC_LEN = 133;
+const AICARS_MAX_ID = 31;
+const AICARS_W_MAX = 16;
+
 /** One interpolation sample for a remote player, timestamped in local ms. */
 export type NetSample = {
   t: number;
@@ -148,6 +179,59 @@ export function pickName(): string {
   return pickGeneratedName();
 }
 
+/** Finite-number array of an exact length with |w| bounded (weight vectors). */
+function isWeightArray(a: unknown, len: number): a is number[] {
+  if (!Array.isArray(a) || a.length !== len) return false;
+  for (const n of a) if (typeof n !== "number" || !Number.isFinite(n) || Math.abs(n) > AICARS_W_MAX) return false;
+  return true;
+}
+
+/** Validate one incoming AI-car life blob (from `brain` or a welcome set).
+ * Mirrors the relay's strict gate so a poisoned blob can't reach the fleet even
+ * if it slipped past the server. Returns null on anything malformed. */
+function parseCarBlob(raw: unknown): CarLifeBlob | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  if (o.v !== 2) return null;
+  if (!Number.isInteger(o.id) || (o.id as number) < 0 || (o.id as number) > AICARS_MAX_ID) return null;
+  if (!isWeightArray(o.actor, AICARS_ACTOR_LEN)) return null;
+  if (!isWeightArray(o.critic, AICARS_CRITIC_LEN)) return null;
+  const fin = (v: unknown) => typeof v === "number" && Number.isFinite(v);
+  if (!fin(o.rhoBar) || !fin(o.sigma) || !fin(o.ageS) || !fin(o.odoM) || !fin(o.lessons)) return null;
+  if (!fin(o.bodyKind) || !fin(o.paintHue) || !fin(o.x) || !fin(o.z) || !fin(o.heading)) return null;
+  return {
+    v: 2,
+    id: o.id as number,
+    actor: o.actor as number[],
+    critic: o.critic as number[],
+    rhoBar: o.rhoBar as number,
+    sigma: o.sigma as number,
+    ageS: o.ageS as number,
+    odoM: o.odoM as number,
+    lessons: o.lessons as number,
+    bodyKind: o.bodyKind as number,
+    paintHue: o.paintHue as number,
+    x: o.x as number,
+    z: o.z as number,
+    heading: o.heading as number
+  };
+}
+
+/** Validate a whole AI-cars life set (the relay's saved fleet in `welcome`). */
+function parseAiCarsLife(raw: unknown): AiCarsLife | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as { v?: unknown; born?: unknown; cars?: unknown };
+  if (o.v !== 2 || !Array.isArray(o.cars) || o.cars.length === 0) return null;
+  const cars: CarLifeBlob[] = [];
+  for (const c of o.cars) {
+    const blob = parseCarBlob(c);
+    if (blob) cars.push(blob);
+  }
+  if (cars.length === 0) return null;
+  const born = typeof o.born === "number" && Number.isFinite(o.born) ? o.born : Date.now();
+  return { v: 2, born, cars };
+}
+
 function rosterAvatar(id: number, raw: unknown): AvatarTraits {
   if (raw) {
     const traits = normalizeAvatarTraits(raw);
@@ -178,6 +262,12 @@ export class Net {
   /** Someone else launched fireworks: rows [ox,oy,oz,tx,ty,tz,T,pal,size]
    * (replayed locally by fireworks.launchRemote). */
   onFireworks: (id: number, rockets: number[][]) => void = () => {};
+  /** AI-cars snapshot from the training leader (rows per netSync.serializeCars). */
+  onCars: (id: number, rows: number[][]) => void = () => {};
+  /** One AI car's brain/pose from the leader (round-robin `brain` broadcast). */
+  onBrain: (blob: CarLifeBlob) => void = () => {};
+  /** The whole AI-cars fleet the relay had saved when we joined (null if none). */
+  aicarsLife: AiCarsLife | null = null;
 
   #ws: WebSocket | null = null;
   #url: string;
@@ -259,6 +349,7 @@ export class Net {
         for (const p of msg.players as RemoteInfo[]) {
           this.roster.set(p.id, { ...p, avatar: rosterAvatar(p.id, p.avatar) });
         }
+        this.aicarsLife = parseAiCarsLife(msg.aicarsLife); // relay's saved fleet, if any
         this.#setStatus("online");
         this.onRoster();
         this.onWelcome();
@@ -343,6 +434,23 @@ export class Net {
         }
         break;
       }
+      case "cars": {
+        const id = msg.id as number;
+        const d = msg.d;
+        if (id !== this.selfId && this.roster.has(id) && Array.isArray(d)) {
+          const rows = d.filter((r) => Array.isArray(r) && r.every((n) => Number.isFinite(n)));
+          if (rows.length) this.onCars(id, rows as number[][]);
+        }
+        break;
+      }
+      case "brain": {
+        // one AI car's brain/pose from the training leader; the relay stamps the
+        // sender as `from` and only forwards `brain` from the leader (lowest id).
+        const from = msg.from as number;
+        const blob = parseCarBlob(msg.d);
+        if (from !== this.selfId && this.roster.has(from) && blob) this.onBrain(blob);
+        break;
+      }
     }
   }
 
@@ -369,6 +477,19 @@ export class Net {
     for (let i = 0; i < rockets.length; i += 64) {
       this.#ws.send(JSON.stringify({ t: "fw", d: rockets.slice(i, i + 64) }));
     }
+  }
+
+  /** Leader → everyone: one AI-cars snapshot (rows from netSync.serializeCars). */
+  sendCars(rows: number[][]) {
+    if (this.#ws?.readyState !== WebSocket.OPEN || !this.selfId) return;
+    this.#ws.send(JSON.stringify({ t: "cars", d: rows }));
+  }
+
+  /** Leader → everyone: one AI car's full brain + pose (round-robin, relay
+   * persists the latest per car id and re-serves the set on `welcome`). */
+  sendBrain(blob: CarLifeBlob) {
+    if (this.#ws?.readyState !== WebSocket.OPEN || !this.selfId) return;
+    this.#ws.send(JSON.stringify({ t: "brain", d: blob }));
   }
 
   /** Broadcast one museum instrument note (instrument index, key index). */
