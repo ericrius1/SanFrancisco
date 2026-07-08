@@ -2,6 +2,7 @@ import * as THREE from "three/webgpu";
 import { positionLocal, sin, smoothstep, time, uniform, uv, vec3 } from "three/tsl";
 import { LIGHT_SCALE } from "../../config";
 import { lightAnchor } from "../../player/lightPool";
+import { capsulesToLocal, clothColliders, pushOutOfColliders, type Capsule, type ClothColliders } from "../../fx/cloth";
 
 // animation handles Player's per-frame animate drives while the boat is embodied
 export type BoatSailRig = {
@@ -66,7 +67,7 @@ type SailUniform = ReturnType<typeof sailUniform>;
  * rides the boom; a jib's foot flies free). The shared flap/billow uniforms
  * let the boat animation luff the canvas at idle and fill it with speed.
  */
-function sailMaterial(colorHex: number, flap: SailUniform, billow: SailUniform, boomFoot: boolean) {
+function sailMaterial(colorHex: number, flap: SailUniform, billow: SailUniform, boomFoot: boolean, colliders?: ClothColliders) {
   const mat = new THREE.MeshLambertNodeMaterial({ color: colorHex, side: THREE.DoubleSide });
   const u = uv().x;
   const v = uv().y;
@@ -77,7 +78,13 @@ function sailMaterial(colorHex: number, flap: SailUniform, billow: SailUniform, 
     .add(sin(u.mul(15).sub(time.mul(8.3))).mul(0.3))
     .mul(pin)
     .mul(flap);
-  mat.positionNode = positionLocal.add(vec3(belly.add(flutter), 0, 0));
+  // B: rectify to one side — the canvas only ever bellies to leeward (+x), so the
+  // flutter never sweeps back through the mast/stay plane at x=0.
+  const dispX = belly.add(flutter).max(0);
+  let pos: unknown = positionLocal.add(vec3(dispX, 0, 0));
+  // A: push any vertex that still sits inside a spar/stay back out to its surface.
+  if (colliders) pos = pushOutOfColliders(pos, colliders);
+  mat.positionNode = pos as never;
   return mat;
 }
 
@@ -180,17 +187,27 @@ export function buildBoatMesh(): THREE.Group {
   stay(1.12, 0.7, -0.65, 0, 6.3, -1.0); // shrouds
   stay(-1.12, 0.7, -0.65, 0, 6.3, -1.0);
 
-  // canvas: main on the boom, jib on the forestay, pennant at the masthead
+  // canvas: main on the boom, jib on the forestay, pennant at the masthead.
+  // Spars/stays the canvas must not clip, as capsules in `heel` space (matches
+  // the geometry above). Transformed into each sail's local frame below.
+  const V = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
+  const mastCap: Capsule = { a: V(0, 0.61, -1.0), b: V(0, 7.51, -1.0), radius: 0.075, skin: 0.045 };
+  const boomCap: Capsule = { a: V(0, 2.0, -0.95), b: V(0, 2.0, 1.8), radius: 0.045, skin: 0.035 };
+  const forestayCap: Capsule = { a: V(0, 0.75, -3.55), b: V(0, 7.45, -1.0), radius: 0.03, skin: 0.035 };
+  const backstayCap: Capsule = { a: V(0, 7.45, -1.0), b: V(0, 0.72, 2.85), radius: 0.03, skin: 0.035 };
+
   const flap = sailUniform(0.5);
   const billow = sailUniform(0.15);
+  const mainColliders = clothColliders();
   const main = new THREE.Mesh(
     sailGeometry(new THREE.Vector3(0, 5.3, 0.06), new THREE.Vector3(0, 0.12, 0.12), new THREE.Vector3(0, 0.12, 2.62)),
-    sailMaterial(0xf2ecd8, flap, billow, true)
+    sailMaterial(0xf2ecd8, flap, billow, true, mainColliders)
   );
   boom.add(main);
+  const jibColliders = clothColliders();
   const jib = new THREE.Mesh(
     sailGeometry(new THREE.Vector3(0, 6.9, -1.2), new THREE.Vector3(0, 0.9, -3.45), new THREE.Vector3(0, 1.15, -0.75)),
-    sailMaterial(0xece2c8, flap, billow, false)
+    sailMaterial(0xece2c8, flap, billow, false, jibColliders)
   );
   heel.add(jib);
   const pennantMat = new THREE.MeshLambertNodeMaterial({ color: 0xe8563f, side: THREE.DoubleSide });
@@ -213,6 +230,13 @@ export function buildBoatMesh(): THREE.Group {
   heel.add(lightAnchor({ color: 0xfff0d0, intensity: 11, distance: 10 }, 0, 0.9, -2.3));
   heel.add(lightAnchor({ color: 0xffd9a0, intensity: 13, distance: 16 }, 2.35, 4.0, -0.7));
   heel.add(lightAnchor({ color: 0xcdd8ff, intensity: 13, distance: 16 }, -2.35, 4.0, -0.7));
+
+  // Bake the spar capsules into each sail's local frame. Boom swing (≤~0.3 rad)
+  // drifts the main's mast/backstay by <2cm at runtime — well inside the skin —
+  // so this one-time bake avoids any per-frame collider work.
+  g.updateMatrixWorld(true);
+  mainColliders.set(capsulesToLocal(main, heel, [mastCap, backstayCap, boomCap]));
+  jibColliders.set(capsulesToLocal(jib, heel, [forestayCap, mastCap]));
 
   g.userData.sail = { flap, billow, boom, heel } satisfies BoatSailRig;
   return g;

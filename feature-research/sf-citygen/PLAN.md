@@ -256,12 +256,18 @@ Sequential. main.ts has a known parallel-edit race — serialize any main.ts edi
 - **Phase 0 — Stop the bleeding. ✅ DONE.** Kowloon kit confined to Chinatown; baked
   facades restored citywide. Accept: no Chinese lettering outside Chinatown; typecheck clean.
 
-- **Phase 1 — CityGen core + SF classifier + footprint-faithful massing.** New module
-  skeleton; extend export to carry real `poly` + `h` + tags + archetype id; engine extrudes
-  real polygon → floor stack → plain LOD1 shell (no fancy grammar yet); wire a *narrow* test
-  ring in one Victorian block. Accept: a generated building sits exactly on its baked
-  silhouette (no shift), correct archetype chosen by district, merges through `pools.ts`,
-  120 fps-class.
+- **Phase 1 — CityGen core + SF classifier + footprint-faithful massing. ✅ DONE (Jul 8).**
+  Built: `tools/citygen-classify.mjs` (single-source SF archetype classifier),
+  `tools/export-citygen.mjs` → `public/citygen/buildings.json` (91,449 buildings, real
+  polygons kept — 82.3% non-rectangular; histogram victorian 22% / edwardian 6% / marina
+  29% / downtown 37% / soma 4% / chinatown 1.4%), portable `src/world/citygen/core/`
+  (types/rng/footprint+earclip/massing/mesh/collider — zero SF, zero THREE),
+  `theme/archetypes.ts` (SF specs), `index.ts` (`generate()` pure API + `createCityGen`
+  no-op stub), `README.md`. Verified: `tools/citygen-probe.mjs` all-pass + esbuild-bundled
+  core unit check (convex + concave-L + real footprint → exact silhouette/area, per-edge
+  colliders). tsc clean. NOT yet wired to main.ts (no visual change).
+  **DECISIONS (owner):** full 3D massing (not shader-only); Victorian rowhouse = first
+  vertical slice. Next: Phase 2 grammar starts with the Victorian bay-window archetype.
 
 - **Phase 2 — Facade split-grammar + SF theme packs.** Implement `core/grammar.ts` + the
   archetype packs (Victorian bay, Edwardian, Marina, downtown, SoMa, Chinatown). Accept:

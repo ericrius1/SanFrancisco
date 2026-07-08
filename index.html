@@ -649,6 +649,26 @@
           border-color: #6fd7c4;
         }
       }
+      /* pause control — bottom center, only while paused (reuses .share-btn) */
+      #hud .pause-ui {
+        position: absolute;
+        bottom: 26px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 2;
+        pointer-events: auto;
+        user-select: none;
+      }
+      #hud .pause-btn.armed {
+        border-color: #f2b96f;
+        color: #ffdca8;
+        background: rgba(47, 30, 10, 0.72);
+      }
+      #hud .pause-btn.armed:hover {
+        border-color: #ffcf8c;
+        color: #ffe6c2;
+        background: rgba(60, 39, 14, 0.85);
+      }
       /* tutorial objective card — top center, above the action */
       #hud .tutorial-panel {
         position: absolute;

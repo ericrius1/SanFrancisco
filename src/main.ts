@@ -63,6 +63,7 @@ import { Ropes, Grabber, type PickCandidate } from "./gameplay/ropes";
 import { Satchel } from "./ui/satchel";
 import { HUD } from "./ui/hud";
 import { ShareButton } from "./ui/share";
+import { PauseToggle } from "./ui/pauseToggle";
 import { BehindTheScenes } from "./ui/behindTheScenes";
 import { Tutorial } from "./ui/tutorial";
 import { createRenderPipeline } from "./render/pipeline";
@@ -1185,6 +1186,10 @@ async function boot() {
   let accumulator = 0;
   let elapsed = 0;
   let paused = false;
+  // When paused, the world sim freezes but the player stays live by default
+  // (walk/drive/fly on) so you can approach a training car and click its brain.
+  // The pause toggle flips this to freeze the player too, for a still shot.
+  let freezePlayer = false;
   let immersive = false;
   // Z (hold): scrub the time of day with the trackpad — cursor drag or
   // two-finger swipe, right = later. `target` accumulates raw input; the sky
@@ -1255,6 +1260,17 @@ async function boot() {
     setInspector(on);
   };
 
+  // Bottom-center pause control: only up while paused (and not immersive, since
+  // it lives under #hud). Clicking it freezes/unfreezes the player.
+  const pauseToggle = new PauseToggle((freeze) => {
+    freezePlayer = freeze;
+    hud.message(freeze ? "Player frozen — click the toggle to move again" : "Player live while paused", 2.2);
+  });
+  const refreshPauseToggle = () => {
+    pauseToggle.setVisible(paused && !immersive);
+    pauseToggle.setFrozen(freezePlayer);
+  };
+
   // session state persistence: 1 Hz while playing + on tab close/refresh.
   // Only the visible tab writes — localStorage is shared per origin, and the
   // dev keep-alive keeps hidden tabs ticking, so an idle background tab would
@@ -1296,7 +1312,12 @@ async function boot() {
     // We keep rendering the frozen frame so the window stays live.
     if (input.pressed("KeyP")) {
       paused = !paused;
-      hud.message(paused ? "Paused — P to resume" : "Resumed", paused ? Infinity : 2.6);
+      if (paused) freezePlayer = false; // each pause starts with the player live
+      refreshPauseToggle();
+      hud.message(
+        paused ? "Paused — you can still move. P to resume" : "Resumed",
+        paused ? Infinity : 2.6
+      );
     }
     // /: all debug UI — tuning pane + three.js inspector (works while paused too)
     if (input.pressed("Slash")) {
@@ -1321,6 +1342,7 @@ async function boot() {
         setDebugUI(debugWasOn);
         hud.message("Immersive off");
       }
+      refreshPauseToggle(); // the toggle hides in immersive mode
     }
     // Tab: toggle the user UI — fade panels in/out. Runs while paused too.
     if (input.pressed("Tab")) {
@@ -1333,9 +1355,10 @@ async function boot() {
       minimap.setExpanded(!minimap.expanded);
     }
 
-    // The brain inspector freezes the world exactly like pause: the sim, player,
-    // fx and vehicles all hold while the DOM panel floats on top.
-    if (paused || brainPanel.isOpen) {
+    // Full freeze: the brain inspector, or a pause with "freeze player" armed.
+    // Everything holds — sim, player, fx, vehicles — while a DOM panel (or a
+    // clean screenshot) floats on top.
+    if ((paused && freezePlayer) || brainPanel.isOpen) {
       vehicleAudio.update(frameDt, null); // fade the hum out while frozen
       // ambience keeps breathing while frozen — it's a chill/social feature
       nature.update(frameDt, {
@@ -1356,6 +1379,82 @@ async function boot() {
       minimap.update();
       playerLocator.update(camera, player.position, remotes.locatorTargets());
       input.endFrame();
+      pipeline.render();
+      return;
+    }
+
+    // World frozen, player live: the default pause. The whole city sim holds
+    // (traffic, AI cars, horses, sky, water, fx never tick) but the player keeps
+    // moving — walk, drive, fly — so you can roll up to a training car and click
+    // its brain. We run ONLY the player's own step + camera + tile streaming +
+    // brain-pick. The player's dynamic body still steps physics; kinematic AI-car
+    // bodies get no prePhysics and so stay put.
+    if (paused) {
+      accumulator += frameDt; // no elapsed++ — the world clock stays frozen
+      if (player.mode === "plane") player.steerFly(input, frameDt);
+      if (!input.suspended && player.mode === "board" && input.pressed("Space")) player.requestBoardJump();
+      if (!input.suspended && player.mode === "walk" && input.pressed("Space")) player.requestWalkJump();
+      chase.lookDir(aim);
+      let steps = 0;
+      while (accumulator >= physics.world.fixedTimeStep && steps < 3) {
+        player.update(physics.world.fixedTimeStep, input, chase.yaw, aim);
+        physics.step(physics.world.fixedTimeStep, player.position);
+        accumulator -= physics.world.fixedTimeStep;
+        steps++;
+      }
+      if (steps === 3) accumulator = 0;
+      // trampolines still bounce a walker/boarder standing on a pad
+      if ((player.mode === "walk" || player.mode === "board") && !player.riding && steps > 0) {
+        const launch = props.padLaunch(player.position, player.velocity.y);
+        if (launch !== null) {
+          physics.world.setBodyVelocity(player.body, [player.velocity.x, launch, player.velocity.z]);
+          chase.shake(0.12);
+        }
+      }
+      remotes.selfId = net.selfId;
+      remotes.update(frameDt);
+      // riding shotgun with a friend keeps you glued to their seat; otherwise
+      // settle the render transform between physics states like a live frame
+      if (passengerOf !== null && remotes.ridePose(passengerOf, ridePos, rideQuat)) {
+        player.setRidePose(ridePos, rideQuat, frameDt);
+      } else {
+        player.afterSteps(steps, accumulator / physics.world.fixedTimeStep);
+        player.syncMesh(frameDt);
+      }
+      const altitude = player.position.y - map.groundHeight(player.position.x, player.position.z);
+      highUp = highUp ? altitude > 110 : altitude > 150;
+      tiles.update(player.position.x, player.position.z, highUp);
+      // a click on an AI entity's floating lattice opens the brain inspector —
+      // the whole point of pause-and-approach (it then fully freezes behind it)
+      if (input.firePressed && !input.suspended) {
+        chase.lookDir(aim);
+        rayOrigin.copy(player.aimOrigin);
+        const hit = pickBrain(rayOrigin, aim);
+        if (hit) brainPanel.open(hit);
+      }
+      if (cameraMode) orbit.update(frameDt);
+      else chase.update(frameDt, player, input);
+      // keep the vehicle hum, ambience and social presence alive like full pause
+      vehicleAudio.update(frameDt, {
+        mode: player.mode,
+        speed: player.speed,
+        vspeed: player.velocity.y,
+        boost: input.down("ShiftLeft"),
+        grounded: player.mode !== "board" || player.boardGrounded
+      });
+      nature.update(frameDt, {
+        playerPos: player.renderPosition,
+        camera,
+        gust: windGustValue(),
+        timeOfDay: sky.timeOfDay
+      });
+      net.sendState(player.mode, player.meshes[player.mode].position, player.meshes[player.mode].quaternion, player.speed, passengerOf ?? 0);
+      voice.update(camera);
+      minimap.update();
+      playerLocator.update(camera, player.position, remotes.locatorTargets());
+      hud.update(frameDt);
+      input.endFrame();
+      cullGeneratedBuildings(camera);
       pipeline.render();
       return;
     }

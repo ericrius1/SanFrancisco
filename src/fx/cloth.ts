@@ -1,5 +1,120 @@
 import * as THREE from "three/webgpu";
-import { float, normalLocal, positionLocal, sin, texture, time, uv, vec3 } from "three/tsl";
+import { float, normalLocal, positionLocal, sin, texture, time, uniform, uv, vec3 } from "three/tsl";
+
+/**
+ * ───────────────────────────────────────────────────────────────────────────
+ * Cloth-vs-spar collision (shared by every shader-displaced cloth)
+ * ───────────────────────────────────────────────────────────────────────────
+ * None of the game's "cloth" is a physics sim — it's all GPU vertex
+ * displacement (see rippleMaterial / boat sailMaterial). That means a fluttering
+ * panel has no idea a mast, stay or flagpole is in its way and happily pokes
+ * through it. Rather than bolt on a Verlet solver (per-frame CPU solve + vertex
+ * upload = the exact perf cost we want to avoid), we push penetrating vertices
+ * back out in the SAME vertex shader, right after the ripple displacement.
+ *
+ * Each obstacle is a CAPSULE (segment a→b + radius) — a pole, spar or stay. For
+ * every vertex we find the closest point on the segment and, if the vertex is
+ * inside `radius + skin`, slide it radially out to that surface. The maths is
+ * fully branchless (a `max(0, …)` gates the push) so it never trips the
+ * If()+noise pixel-corruption hazard, and it's a handful of ops on already
+ * low-seg cloth — cost is shader noise, geometry stays static & GPU-resident.
+ *
+ * Capsules are supplied in the cloth mesh's OWN local space (the frame its
+ * positions live in). For a rig whose spars sit in a shared parent, transform
+ * them once with {@link capsulesToLocal} and hand the result to `set()`.
+ */
+
+/** Max obstacles a single cloth panel can be told about. Unused slots are free. */
+export const MAX_CLOTH_CAPSULES = 4;
+/** Default clearance added on top of the capsule radius so cloth hugs, not z-fights. */
+const DEFAULT_SKIN = 0.03;
+
+/** A pole/spar/stay as a fat line segment, in some reference frame. */
+export type Capsule = { a: THREE.Vector3; b: THREE.Vector3; radius: number; skin?: number };
+
+type CapsuleSlot = {
+  a: ReturnType<typeof uniform>;
+  b: ReturnType<typeof uniform>;
+  rs: ReturnType<typeof uniform>; // (radius, skin) — radius 0 ⇒ slot disabled
+};
+
+/** A live, updatable set of capsule uniforms bound into a cloth material. */
+export type ClothColliders = {
+  readonly slots: CapsuleSlot[];
+  /** Replace the active capsules (coords in the cloth mesh's LOCAL space). */
+  set(capsules: Capsule[]): void;
+};
+
+/** Allocate a collider set (uniforms) to hand to a cloth material and later fill. */
+export function clothColliders(max = MAX_CLOTH_CAPSULES): ClothColliders {
+  const slots: CapsuleSlot[] = [];
+  for (let i = 0; i < max; i++) {
+    slots.push({
+      a: uniform(new THREE.Vector3()),
+      b: uniform(new THREE.Vector3()),
+      rs: uniform(new THREE.Vector2(0, 0))
+    });
+  }
+  return {
+    slots,
+    set(caps) {
+      for (let i = 0; i < slots.length; i++) {
+        const c = caps[i];
+        if (c) {
+          (slots[i].a.value as THREE.Vector3).copy(c.a);
+          (slots[i].b.value as THREE.Vector3).copy(c.b);
+          (slots[i].rs.value as THREE.Vector2).set(c.radius, c.skin ?? DEFAULT_SKIN);
+        } else {
+          (slots[i].rs.value as THREE.Vector2).set(0, 0); // disable
+        }
+      }
+    }
+  };
+}
+
+const _m = new THREE.Matrix4();
+/**
+ * Re-express capsules given in `ref`'s local space into `mesh`'s local space
+ * (the frame its shader positions live in). Assumes ~uniform scale — radius is
+ * carried through unchanged. Call after the transforms you care about are set;
+ * for a static rig, once at build time. Both objects must share an ancestor.
+ */
+export function capsulesToLocal(mesh: THREE.Object3D, ref: THREE.Object3D, caps: Capsule[]): Capsule[] {
+  mesh.updateWorldMatrix(true, false);
+  ref.updateWorldMatrix(true, false);
+  _m.copy(mesh.matrixWorld).invert().multiply(ref.matrixWorld); // ref-local → mesh-local
+  return caps.map((c) => ({
+    a: c.a.clone().applyMatrix4(_m),
+    b: c.b.clone().applyMatrix4(_m),
+    radius: c.radius,
+    skin: c.skin
+  }));
+}
+
+/**
+ * TSL: push a local-space position out of every active capsule. Branchless —
+ * a vertex outside all capsules is returned untouched. Sequential per capsule,
+ * which is fine for the few well-separated spars a panel ever sees.
+ */
+export function pushOutOfColliders(pos: unknown, colliders: ClothColliders): unknown {
+  let out = pos as any;
+  for (const s of colliders.slots) {
+    const a = s.a as any;
+    const b = s.b as any;
+    const r = (s.rs as any).x;
+    const skin = (s.rs as any).y;
+    const ba = b.sub(a);
+    const pa = out.sub(a);
+    // closest point on the segment (t clamped to the endpoints)
+    const t = pa.dot(ba).div(ba.dot(ba).max(1e-5)).clamp(0, 1);
+    const closest = a.add(ba.mul(t));
+    const away = out.sub(closest);
+    const dist = away.length().max(1e-4); // guard div-by-zero on the axis
+    const pen = r.add(skin).sub(dist).max(0); // 0 when outside ⇒ no-op
+    out = out.add(away.div(dist).mul(pen));
+  }
+  return out;
+}
 
 /**
  * Reusable wind-rippled cloth — the GPU vertex-displacement trick from the boat
@@ -27,6 +142,10 @@ export type RippleOpts = {
   phase?: number;
   /** Pin the top edge (uv.y 1) instead of the hoist — for banners hung from a rail. */
   pinTop?: boolean;
+  /** Displace to one side of the pin plane only (+Z), so a pole in that plane is never crossed. */
+  oneSided?: boolean;
+  /** Spars/poles to keep the cloth out of (in the mesh's own local space). */
+  colliders?: ClothColliders;
   side?: THREE.Side;
 };
 
@@ -45,12 +164,15 @@ export function rippleMaterial(opts: RippleOpts = {}): THREE.MeshLambertNodeMate
   // amplitude ramps from 0 at the pinned edge to full at the free fly end
   const anchor = opts.pinTop ? v.oneMinus() : u;
   // primary travelling wave + a shorter cross-ripple
-  const wave = sin(u.mul(freq).sub(time.mul(speed)).add(v.mul(3)).add(ph))
+  let wave: any = sin(u.mul(freq).sub(time.mul(speed)).add(v.mul(3)).add(ph))
     .mul(0.72)
     .add(sin(u.mul(freq * 1.9).sub(time.mul(speed * 1.35)).add(ph)).mul(0.28))
     .mul(anchor)
     .mul(amp);
-  mat.positionNode = positionLocal.add(vec3(0, 0, wave));
+  if (opts.oneSided) wave = wave.max(0); // stay on one side of any pole in the pin plane
+  let pos: unknown = positionLocal.add(vec3(0, 0, wave));
+  if (opts.colliders) pos = pushOutOfColliders(pos, opts.colliders);
+  mat.positionNode = pos as never;
   return mat;
 }
 
