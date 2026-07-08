@@ -85,8 +85,13 @@ export const WORLD_TUNING = tunables("world", {
   // edge; the marine field (fogMarine) makes it thick at the coast + Golden Gate
   // and thin downtown.
   fogBase: { v: -30, min: -140, max: 240, step: 1, label: "base" },
-  fogTop: { v: 170, min: -20, max: 420, step: 1, label: "top" },
-  fogBank: { v: 1.85, min: 0, max: 3, step: 0.05, label: "bank density" },
+  // top pulled down (was 170) so the bank doesn't tower over the elevated Golden
+  // Gate deck (y≈67) or bury the tops of things — the lid now sits below deck level.
+  fogTop: { v: 130, min: -20, max: 420, step: 1, label: "top" },
+  // bank density dropped (was 1.85) so the marine layer reads as a translucent veil,
+  // not an opaque wall: from the GG deck you can now see the bay water below rather
+  // than a grey wall. See fogPeak for the coast/Gate multiplier this scales.
+  fogBank: { v: 1.05, min: 0, max: 3, step: 0.05, label: "bank density" },
   fogSoftness: { v: 45, min: 1, max: 180, step: 1, label: "edge softness" },
   fogNoise: { v: 0.72, min: 0, max: 1, step: 0.02, label: "billow" },
   fogScale: { v: 0.0026, min: 0.0004, max: 0.01, step: 0.0001, format: (v: number) => v.toFixed(4), label: "billow scale" },
@@ -97,13 +102,19 @@ export const WORLD_TUNING = tunables("world", {
   // bank density, the sheltered east gets fogFloor×.
   fogMarine: { v: 1, min: 0, max: 1, step: 0.02, label: "marine contrast" },
   fogFloor: { v: 0.3, min: 0, max: 1.5, step: 0.02, label: "· east density" },
-  fogPeak: { v: 2.1, min: 0.5, max: 3, step: 0.05, label: "· coast density" },
+  // coast/Gate multiplier dropped (was 2.1): 1.85×2.1 = 3.885 fully saturated the
+  // low band along the whole coast + Golden Gate, so the bay water read as an opaque
+  // wall from the bridge. 1.05×1.25 ≈ 1.3 leaves the near/mid water visible while the
+  // far water + distance still fog out via the horizon veil (the actual far-cull).
+  fogPeak: { v: 1.25, min: 0.5, max: 3, step: 0.05, label: "· coast density" },
   // --- distance haze: exp² fog that slams shut far out so the draw edge melts
   // into the sky. This is the draw-distance lever.
   fog: { v: 0.0011, min: 0, max: 0.002, step: 0.00001, format: (v: number) => v.toFixed(5), label: "haze" },
   // GLOBAL far veil (region-independent) — the unified far-cull that lets the tile
   // radius sit low. Ramps in from `start` and is near-solid by the tile edge.
-  fogHorizon: { v: 0.82, min: 0, max: 1.5, step: 0.02, label: "horizon veil" },
+  // veil nudged up (was 0.82) to keep the far-cull firm now that the bank is thinner —
+  // the last stretch to the tile edge still melts into sky so radius can stay at 1400.
+  fogHorizon: { v: 0.92, min: 0, max: 1.5, step: 0.02, label: "horizon veil" },
   fogHorizonStart: { v: 600, min: 300, max: 6000, step: 50, label: "horizon start (m)" },
   fogHorizonSoftness: { v: 550, min: 100, max: 3000, step: 50, label: "horizon softness" }
 });

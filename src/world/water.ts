@@ -296,32 +296,38 @@ export class Water {
     // bright Snell's-window spot straight overhead fading to teal at grazing,
     // with a gentle ripple, so up is always legible. Unlit (cheap) and follows
     // the camera in XZ; ripple is world-locked so it doesn't swim.
-    const undMat: any = new THREE.MeshBasicMaterial({ color: 0xff0000, side: THREE.DoubleSide, depthTest: false, depthWrite: false });
-    // eslint-disable-next-line no-constant-condition
-    if (false) {
+    // depthTest OFF: with reversed-z the lid otherwise fails the depth compare
+    // against the sky and vanishes (the whole reason it looked see-through). It's
+    // a submerged-only ceiling drawn before the water sheets, so skipping the test
+    // is safe — nothing legitimately sits between you and the surface above.
+    const undMat = new THREE.MeshBasicNodeMaterial({ transparent: true, depthTest: false, depthWrite: false, side: THREE.DoubleSide });
+    {
       const t = this.#uTime;
       const camXZ = this.#uCamXZ;
       const camY = this.#uCamY;
       const pw = positionWorld;
       const horiz = pw.xz.sub(camXZ).length().toVar();
       const depthY = max(0.4, float(0.0).sub(camY)); // surface(≈0) − camY = how deep the camera is
-      // bright "window to the sky" straight overhead → silvery-teal mirror at
-      // grazing. The window is generous (·2.4) because the look-up pitch is
-      // clamped, so you still catch the glow within reach.
-      const winR = depthY.mul(2.4);
-      const win = smoothstep(winR, winR.mul(0.25), horiz).toVar(); // 1 overhead → 0 grazing
-      const rip = sin(pw.x.mul(0.075).add(t.mul(1.1)))
-        .mul(sin(pw.z.mul(0.062).sub(t.mul(0.85))))
+      // A SMALL bright "window to the sky" straight overhead; everything else is
+      // an opaque rippled teal surface. Keeping the window tight matters because
+      // the look-up pitch is clamped — a wide window filled the whole up-view with
+      // near-white and just looked like open sky. NB: TSL smoothstep(lo,hi,x)
+      // needs lo<hi — reversed edges silently return 0, so invert with oneMinus().
+      const winR = depthY.mul(0.9);
+      const win = smoothstep(winR.mul(0.3), winR, horiz).oneMinus().toVar(); // 1 overhead → 0 grazing
+      const rip = sin(pw.x.mul(0.09).add(t.mul(1.2)))
+        .mul(sin(pw.z.mul(0.075).sub(t.mul(0.95))))
         .mul(0.5)
         .add(0.5);
-      const bright = clamp(win.add(rip.mul(win.mul(0.35).add(0.1))), 0, 1);
-      undMat.colorNode = mix(color(0x0c5567), color(0xe8feff), bright);
-      const rimUv = uv().sub(vec2(0.5, 0.5)).mul(2);
-      const rim = smoothstep(1.0, 0.6, rimUv.length()); // feather the plane rim into the fog
-      const distFade = clamp(float(1).sub(horiz.div(1400)), 0, 1);
+      const bright = clamp(win.add(rip.mul(0.14)), 0, 1); // ripple shimmers across the whole lid
+      undMat.colorNode = mix(color(0x0b5265), color(0xd8fbff), bright);
+      // Feather by horizontal distance (NOT uv — this plane's uv isn't 0..1 after
+      // the rotate, and a uv rim silently zeroed the whole opacity). distFade
+      // melts the far rim into the marine fog; the window stays a touch clearer.
+      const distFade = clamp(float(1).sub(horiz.div(1300)), 0, 1);
       // near-opaque so the real sky can't leak through the "surface"; the window
       // lets a little brightness through (like looking out into the air).
-      undMat.opacityNode = clamp(mix(float(0.94), float(0.7), win).mul(rim).mul(distFade), 0, 1);
+      undMat.opacityNode = clamp(mix(float(0.98), float(0.88), win).mul(distFade), 0, 1);
     }
     const undGeo = new THREE.PlaneGeometry(3200, 3200, 1, 1);
     undGeo.rotateX(Math.PI / 2); // face DOWN (−y) → visible only from below

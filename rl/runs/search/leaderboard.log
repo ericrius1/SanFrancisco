@@ -64,3 +64,37 @@ to deploy: cp rl/runs/search/best.policy.json public/models/horse_policy.json
    76.8  gallop[q78 spd0.34 str1.60 bnd0.25] walk[q62 spd0.38] turn100
 
 === ROUND 6  (pop 6, 80 gens each, 4 parallel) ===
+   86.3  gallop[q89 spd0.54 str1.60 bnd0.20] walk[q72 spd0.31] turn94
+   86.3  gallop[q81 spd0.40 str1.36 bnd0.23] walk[q89 spd0.25] turn98
+   85.5  gallop[q89 spd0.53 str1.62 bnd0.21] walk[q72 spd0.34] turn100
+   83.7  gallop[q80 spd0.38 str1.30 bnd0.24] walk[q80 spd0.29] turn100
+   81.8  gallop[q80 spd0.39 str1.19 bnd0.21] walk[q74 spd0.32] turn99
+   76.2  gallop[q70 spd0.21 str1.49 bnd0.35] walk[q83 spd0.25] turn97
+  ** NEW BEST 86.3  {"freqBase":0.8234,"freqSpan":0.4345,"strideBase":0.7281,"strideSpan":1.0719,"actFreqAuth":0.6821,"actStrideAuth":0.6264,"actKneeAuth":0.7026,"speedMatchA":11.066,"progressW":0.7089,"tallFloorSlope":0.1315,"doneFloorSlope":0.0967,"uprightSoften":0.4628,"maxTorqueScale":0.8768,"gallopBlend":0.1571,"boundRewardW":0.0581}
+
+=== ROUND 7  (pop 6, 80 gens each, 4 parallel) ===
+   86.3  gallop[q89 spd0.54 str1.60 bnd0.20] walk[q72 spd0.31] turn94
+   86.3  gallop[q81 spd0.40 str1.36 bnd0.23] walk[q89 spd0.25] turn98
+   81.9  gallop[q84 spd0.45 str1.67 bnd0.40] walk[q69 spd0.34] turn95
+   72.1  gallop[q88 spd0.52 str1.47 bnd0.21] walk[q73 spd0.26] turn100
+   61.9  gallop[q81 spd0.41 str1.52 bnd0.40] walk[q14 spd0.31] turn99
+   37.8  gallop[q14 spd0.16 str2.21 bnd0.96] walk[q74 spd0.28] turn90
+
+=== ROUND 8  (pop 6, 80 gens each, 4 parallel) ===
+   86.3  gallop[q89 spd0.54 str1.60 bnd0.20] walk[q72 spd0.31] turn94
+   86.3  gallop[q81 spd0.40 str1.36 bnd0.23] walk[q89 spd0.25] turn98
+   80.3  gallop[q81 spd0.41 str1.35 bnd0.35] walk[q64 spd0.31] turn99
+   53.2  gallop[q9 spd0.01 str2.09 bnd0.47] walk[q83 spd0.30] turn99
+   42.8  gallop[q14 spd0.20 str2.07 bnd0.88] walk[q78 spd0.29] turn0
+   30.8  gallop[q12 spd0.12 str2.81 bnd0.84] walk[q85 spd0.27] turn0
+
+=== ROUND 9  (pop 6, 80 gens each, 4 parallel) ===
+   86.3  gallop[q89 spd0.54 str1.60 bnd0.20] walk[q72 spd0.31] turn94
+   86.3  gallop[q81 spd0.40 str1.36 bnd0.23] walk[q89 spd0.25] turn98
+   84.8  gallop[q84 spd0.44 str1.64 bnd0.26] walk[q77 spd0.29] turn99
+   84.0  gallop[q80 spd0.43 str1.52 bnd0.17] walk[q81 spd0.32] turn96
+   68.8  gallop[q78 spd0.38 str1.26 bnd0.20] walk[q79 spd0.30] turn90
+   23.0  gallop[q12 spd0.12 str2.77 bnd0.92] walk[q55 spd0.15] turn0
+
+BEST 86.3  {"freqBase":0.8234,"freqSpan":0.4345,"strideBase":0.7281,"strideSpan":1.0719,"actFreqAuth":0.6821,"actStrideAuth":0.6264,"actKneeAuth":0.7026,"speedMatchA":11.066,"progressW":0.7089,"tallFloorSlope":0.1315,"doneFloorSlope":0.0967,"uprightSoften":0.4628,"maxTorqueScale":0.8768,"gallopBlend":0.1571,"boundRewardW":0.0581}
+to deploy: cp rl/runs/search/best.policy.json public/models/horse_policy.json

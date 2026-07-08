@@ -529,6 +529,51 @@ async function main() {
   const roads = parseRoads(JSON.parse(await readFile(new URL("roads.json", RAW), "utf8")));
   console.log(`[prep] roads ${roads.length}`);
 
+  // Stamp road ribbons into the surface grid as class 4 so ground-cover (grass +
+  // wildflowers, keyed on surfaceType) never plants on the asphalt. Sweep each
+  // road as a width-w ribbon over land cells (0/1 only — leave water 3 + sand 2).
+  // Keep this in lockstep with tools/mark-roads-surface.mjs, which patches an
+  // already-baked surface.bin without a full re-bake.
+  {
+    const ROAD_CLASS = 4;
+    const PAD = 1.5;
+    let roadCells = 0;
+    const stamp = (gx, gy) => {
+      const i = idx(gx, gy);
+      if (surface[i] === 0 || surface[i] === 1) {
+        surface[i] = ROAD_CLASS;
+        roadCells++;
+      }
+    };
+    for (const r of roads) {
+      if (r.bridge) continue; // elevated: don't mask the ground below
+      const half = r.w / 2 + PAD;
+      for (let i = 0; i < r.pts.length - 1; i++) {
+        const [ax, az] = r.pts[i];
+        const [bx, bz] = r.pts[i + 1];
+        let dx = bx - ax, dz = bz - az;
+        const len = Math.hypot(dx, dz);
+        if (len < 1e-4) continue;
+        dx /= len; dz /= len;
+        const nx = -dz, nz = dx;
+        const e0 = i > 0 ? half : 0;
+        const e1 = i < r.pts.length - 2 ? half : 0;
+        const a0x = ax - dx * e0, a0z = az - dz * e0;
+        const b0x = bx + dx * e1, b0z = bz + dz * e1;
+        rasterizePolygon(
+          [
+            [a0x + nx * half, a0z + nz * half],
+            [b0x + nx * half, b0z + nz * half],
+            [b0x - nx * half, b0z - nz * half],
+            [a0x - nx * half, a0z - nz * half]
+          ],
+          stamp
+        );
+      }
+    }
+    console.log(`[prep] road surface class → ${roadCells} cells`);
+  }
+
   // Tile assignment.
   const tiles = new Map();
   const tileOf = (x, z) => {

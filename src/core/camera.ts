@@ -2,7 +2,7 @@ import * as THREE from "three/webgpu";
 import type { Input } from "./input";
 import type { Player } from "../player/player";
 import type { PlayerMode } from "../player/types";
-import type { WorldMap } from "../world/heightmap";
+import { waterHeight, type WorldMap } from "../world/heightmap";
 
 const OFFSETS: Record<PlayerMode, { back: number; up: number; look: number }> = {
   walk: { back: 6.5, up: 2.4, look: 1.4 },
@@ -79,6 +79,21 @@ export class ChaseCamera {
     // the player underwater; the seabed clamp still stops it clipping through.
     const floor = this.#map.effectiveGround(cx, cz) + 0.7;
     if (this.#pos.y < floor) this.#pos.y = floor;
+
+    // When you're swimming BELOW the surface, duck the camera under with you.
+    // The `up` offset otherwise keeps the eye above the waterline on a shallow
+    // dive, so you'd watch yourself through the surface instead of being under
+    // it — the underwater world (surface ceiling, tint) never reads. Only kicks
+    // in over water deep enough to submerge the rig, never at the surface rest.
+    if (player.mode === "walk") {
+      const waterY = waterHeight(anchor.x, anchor.z, player.time);
+      const seabed = this.#map.effectiveGround(anchor.x, anchor.z);
+      // threshold sits well below the surface-swim rest (~0.8 m down) so bobbing
+      // at the top keeps the eye above water; only a committed dive ducks it under
+      if (anchor.y < waterY - 1.6 && seabed < waterY - 2.5) {
+        this.#pos.y = Math.min(this.#pos.y, waterY - 0.8);
+      }
+    }
 
     // critically-damped-ish follow; flying gets a floatier tail, the drone a
     // slightly loose one so swoops read as motion instead of a rigid rig

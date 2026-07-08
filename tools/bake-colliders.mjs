@@ -31,6 +31,10 @@ const lmByTile = new Map();
 let lmBoxes = 0;
 try {
   const lms = JSON.parse(await readFile(new URL("data/landmark-colliders.json", ROOT), "utf8"));
+  // Served flat for the runtime query world (physics #solids): the bridge +
+  // landmarks load once at boot as always-resident static solids, independent of
+  // the per-tile stream (open-water bridge tiles aren't even in the manifest).
+  await writeFile(new URL("landmark-colliders.json", PUB), JSON.stringify(lms));
   const names = [...new Set(lms.map((b) => b.lm))];
   for (const b of lms) {
     const ix = Math.floor((b.x - meta.grid.minX) / meta.tile);

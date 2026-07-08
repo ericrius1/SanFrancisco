@@ -378,20 +378,38 @@ function plantable(map: GardenTerrain, region: WildRegion, x: number, z: number)
   return !inAvoid(x, z);
 }
 
+/** surface.bin class stamped over road ribbons by tools/mark-roads-surface.mjs —
+ *  grass/flowers must never grow on the asphalt (it isn't in any plantClasses, but
+ *  reject it explicitly so the intent is obvious and survives a plantClass edit). */
+const SURFACE_ROAD = 4;
+
 /**
  * The SHARED ground-cover placement gate: true where BOTH the wildlands grass and
  * the wildflower ring may grow, so flowers land exactly in the grass (never on
- * water, wrong surface classes, the botanical garden's own turf, or steep faces —
- * on Marin's hills a steep uphill rim rose into the sky and read as floating tufts).
- * Grass and flowers both call this so their coverage matches perfectly.
+ * water, roads, wrong surface classes, the botanical garden's own turf, or steep
+ * faces — on Marin's hills a steep uphill rim rose into the sky and read as floating
+ * tufts). Grass and flowers both call this so their coverage matches perfectly.
+ *
+ * Coverage is NOT confined to the four wildlands regions: any class-1 green (OSM
+ * parks/greens) grows grass CITYWIDE, so the little neighborhood parks green up too.
+ * Inside a wildlands region the region's own plantClasses apply (e.g. the Presidio
+ * plants its developed class-0 ground); everywhere else it's parks-only.
  */
 export function grassyGround(map: GardenTerrain, x: number, z: number): boolean {
-  const r = wildRegionAt(x, z);
-  if (!r) return false;
   if (inBotanicalGarden(x, z, 6)) return false; // the garden plants its own flora
   if (map.isWater(x, z)) return false;
-  if (!r.plantClasses.includes(map.surfaceType(x, z))) return false;
-  if (map.groundHeight(x, z) < r.minGround) return false;
+  const st = map.surfaceType(x, z);
+  if (st === SURFACE_ROAD) return false; // never on the streets
+
+  const r = wildRegionAt(x, z);
+  // region → its plantClasses + ground gate; outside any region → city parks (green) only
+  if (r) {
+    if (!r.plantClasses.includes(st)) return false;
+    if (map.groundHeight(x, z) < r.minGround) return false;
+  } else if (st !== 1) {
+    return false;
+  }
+
   const dx = Math.abs(map.groundHeight(x + 5, z) - map.groundHeight(x - 5, z));
   const dz = Math.abs(map.groundHeight(x, z + 5) - map.groundHeight(x, z - 5));
   return dx <= 6 && dz <= 6;

@@ -89,6 +89,9 @@ export class Input {
       // Alt+arrow is location history inside the game, not browser history.
       if (e.altKey && (e.code === "ArrowLeft" || e.code === "ArrowRight")) e.preventDefault();
       if (e.repeat) return;
+      // Any key with Command demonstrably up recovers a stale free cursor whose
+      // Meta keyup was lost (macOS) — heal then relock (keydown is a gesture).
+      if (this.freeCursor && !e.metaKey && !this.suspended) this.#endFreeCursor(true);
       // Command/Meta held: drop pointer lock so a free cursor can roam the world
       // and reach UI panels. Its keyup re-locks. Never fights the map/camera modes.
       if ((e.code === "MetaLeft" || e.code === "MetaRight") && this.locked && !this.suspended && !this.freeCursor) {
@@ -120,8 +123,16 @@ export class Input {
       if (this.freeCursor) this.#endFreeCursor(false);
     });
 
-    el.addEventListener("click", () => {
-      if (!this.locked && !this.suspended && !this.freeCursor) this.requestLock();
+    el.addEventListener("click", (e) => {
+      if (this.suspended) return;
+      // Command released but its keyup never arrived (macOS Chrome swallows the
+      // Meta keyup behind system shortcuts / Mission Control) — the click's
+      // metaKey is authoritative, so drop the stale free cursor and recapture.
+      if (this.freeCursor && !e.metaKey) {
+        this.#endFreeCursor(true);
+        return;
+      }
+      if (!this.locked && !this.freeCursor) this.requestLock();
     });
 
     document.addEventListener("pointerlockchange", () => {
@@ -151,11 +162,14 @@ export class Input {
       if (this.locked) {
         this.mouseDX += e.movementX;
         this.mouseDY += e.movementY;
-      } else {
-        // free cursor / unlocked: track the absolute pointer as NDC (-1..1)
-        this.mouseNDCx = (e.clientX / window.innerWidth) * 2 - 1;
-        this.mouseNDCy = -((e.clientY / window.innerHeight) * 2 - 1);
+        return;
       }
+      // stale free cursor (lost Meta keyup): metaKey is authoritative, so drop
+      // it here too — the next canvas click then relocks like it used to.
+      if (this.freeCursor && !e.metaKey) this.#endFreeCursor(false);
+      // free cursor / unlocked: track the absolute pointer as NDC (-1..1)
+      this.mouseNDCx = (e.clientX / window.innerWidth) * 2 - 1;
+      this.mouseNDCy = -((e.clientY / window.innerHeight) * 2 - 1);
     });
 
     el.addEventListener(

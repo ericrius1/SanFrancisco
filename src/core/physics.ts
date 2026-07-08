@@ -5,6 +5,7 @@ import {
   type Box3D,
   type ContactHitEvent,
   type PhysicsWorld,
+  type RayCastHit,
   type TransformBatch
 } from "./box3dWorld";
 // Re-exported so the ~20 gameplay/vehicle modules depend on the physics facade
@@ -73,6 +74,10 @@ export type Projectile = {
   prev: [number, number, number]; // last step's position, for the building sweep
 };
 
+// One baked always-resident box (bridge deck/rail segment, or a landmark proxy)
+// as served by data/landmark-colliders.json.
+type LandmarkBox = { x: number; y: number; z: number; hx: number; hy: number; hz: number; yaw?: number };
+
 export class Physics {
   box3d!: Box3D;
   world!: PhysicsWorld;
@@ -113,6 +118,18 @@ export class Physics {
   // when this passes its volume-scaled strength (see CONFIG.buildingHp*)
   #damage = new Map<string, number>();
   #tileColliders = new Map<string, BuildingCollider[]>();
+
+  // Query-only world of static SOLIDS — every alive building box, plus the
+  // always-resident bridge + landmark boxes. Never stepped: box3d seeds a body's
+  // broadphase AABB at shape-create time, so castRayClosest answers immediately
+  // (verified). This is the single geometry authority behind raycastWorld — the
+  // hand-rolled OBB slab test is gone, and the bridge is a real solid here rather
+  // than a heightfield plane, so shots hit its deck/rails/underside at any angle.
+  #solids!: PhysicsWorld;
+  #solidByBuilding = new Map<string, number[]>(); // "key:i" -> its sub-box handles
+  #solidTileIndex = new Map<string, string[]>(); // tile key -> "key:i" it owns (bulk unload)
+  #landmarkSolids: number[] = []; // boot-resident bridge + landmark box handles
+  #solidRay: RayCastHit = { handle: 0, px: 0, py: 0, pz: 0, nx: 0, ny: 0, nz: 0, distance: 0 };
   // baked OBBs streamed around every collider anchor, decoupled from the visual
   // tile stream, so AI cars far from the player still have building data (see
   // buildingColliderIndex.ts). Null until create() finishes loading the manifest.
@@ -137,6 +154,8 @@ export class Physics {
     p.box3d = await createBox3D();
     p.world = p.box3d.createWorld([...CONFIG.gravity]);
     p.world.setHitEventThreshold(2.5);
+    // separate, never-stepped world backing every world-solid query (see #solids)
+    p.#solids = p.box3d.createWorld([0, 0, 0]);
 
     const n = CONFIG.carpetSize * CONFIG.carpetSize;
     for (let i = 0; i < n; i++) {
@@ -173,9 +192,13 @@ export class Physics {
       );
     }
 
-    tiles.onTileColliders = (key, colliders) => p.#tileColliders.set(key, colliders);
+    tiles.onTileColliders = (key, colliders) => {
+      p.#tileColliders.set(key, colliders);
+      p.#addTileSolids(key, colliders);
+    };
     tiles.onTileUnload = (key) => {
       p.#tileColliders.delete(key);
+      p.#removeTileSolids(key);
       for (const [handle, info] of p.#buildingBodies) {
         if (info.key === key) {
           p.world.destroyBody(handle);
@@ -187,6 +210,24 @@ export class Physics {
         if (id.startsWith(`${key}:`)) p.#damage.delete(id);
       }
     };
+    // runtime solid add/drop on full suppress, revive, or fracture (mesh-only
+    // suppression keeps the collider, so tiles never fires it for that)
+    tiles.onBuildingAlive = (key, index, alive) => p.#setBuildingSolidAlive(key, index, alive);
+
+    // always-resident bridge + landmark solids: a fixed ~860-box set that no
+    // longer rides the per-tile stream, so open-water bridge spans (whose tiles
+    // aren't in the manifest) get a real collider. Best-effort — a failed fetch
+    // just leaves them ghost, exactly as before this system existed.
+    try {
+      const res = await fetch("/data/landmark-colliders.json");
+      if (res.ok) {
+        for (const b of (await res.json()) as LandmarkBox[]) {
+          p.#landmarkSolids.push(p.#makeSolid(b.x, b.y, b.z, b.hx, b.hy, b.hz, b.yaw ?? 0));
+        }
+      }
+    } catch (err) {
+      console.warn("[physics] landmark/bridge solids unavailable — bridge stays ghost", err);
+    }
 
     // citywide collider index: baked OBBs around every anchor, decoupled from the
     // visual tile stream. Best-effort — a failed manifest load just leaves the
@@ -743,103 +784,61 @@ export class Physics {
   }
 
   /**
-   * Nearest surface along a ray: building OBBs (full 3-axis slab test, so roofs
-   * and undersides count) raced against the terrain/bridge-deck heightfield.
-   * Returns the world hit point, outward surface normal, and what was struck.
-   * `kind: "water"` means the ray landed on open bay rather than land.
+   * Nearest world surface along a ray: static SOLIDS (buildings + bridge +
+   * landmarks) via one broadphase-accelerated cast over the never-stepped
+   * #solids world, raced against the analytic terrain heightfield. Returns the
+   * world hit point, outward surface normal, and what was struck. `kind: "water"`
+   * means the ray landed on open bay rather than land. The bridge is a real solid
+   * here (deck + rails + underside), so it is hit at any angle — not a top plane.
    */
   raycastWorld(
     origin: THREE.Vector3,
     dir: THREE.Vector3,
     maxDist: number
   ): { point: THREE.Vector3; normal: THREE.Vector3; kind: "building" | "ground" | "water" } | null {
-    // --- buildings: slab test in each box's yaw frame, tracking the entry axis
+    // --- static solids: one broadphase cast over the never-stepped world (dir
+    // is unit, so hit.distance is metres). Buildings, bridge + landmarks all live
+    // here, so this single call replaces the old per-collider slab sweep.
     let bestT = Infinity;
     let bestN: [number, number, number] | null = null;
-    const midX = origin.x + (dir.x * maxDist) / 2;
-    const midZ = origin.z + (dir.z * maxDist) / 2;
-    for (const [key, colliders] of this.#tileColliders) {
-      const [tcx, tcz] = this.tiles.keyToCenter(key);
-      if (Math.hypot(tcx - midX, tcz - midZ) > this.tiles.manifest.tile * 0.75 + maxDist / 2 + 120) continue;
-      for (const c of colliders) {
-        const cdx = c.x - midX;
-        const cdz = c.z - midZ;
-        const reach = c.hx + c.hz + maxDist / 2;
-        if (cdx * cdx + cdz * cdz > reach * reach) continue;
-        if (!this.tiles.isAlive(key, c.i)) continue;
-
-        const cos = c.cosYaw;
-        const sin = c.sinYaw;
-        const ox = (origin.x - c.x) * cos - (origin.z - c.z) * sin;
-        const oz = (origin.x - c.x) * sin + (origin.z - c.z) * cos;
-        const oy = origin.y - c.y;
-        const dx = dir.x * cos - dir.z * sin;
-        const dz = dir.x * sin + dir.z * cos;
-        const dy = dir.y;
-
-        let tmin = 0;
-        let tmax = maxDist;
-        let axis = -1;
-        let sign = 1;
-        let miss = false;
-        for (const [o, d, h, ax] of [
-          [ox, dx, c.hx, 0],
-          [oy, dy, c.hy, 1],
-          [oz, dz, c.hz, 2]
-        ] as const) {
-          if (Math.abs(d) < 1e-9) {
-            if (Math.abs(o) > h) {
-              miss = true;
-              break;
-            }
-            continue;
-          }
-          let t0 = (-h - o) / d;
-          let t1 = (h - o) / d;
-          const s = d > 0 ? -1 : 1;
-          if (t0 > t1) [t0, t1] = [t1, t0];
-          if (t0 > tmin) {
-            tmin = t0;
-            axis = ax;
-            sign = s;
-          }
-          tmax = Math.min(tmax, t1);
-          if (tmin > tmax) {
-            miss = true;
-            break;
-          }
-        }
-        if (miss || axis === -1 || tmin >= bestT) continue;
-        bestT = tmin;
-        if (axis === 1) bestN = [0, sign, 0];
-        else {
-          const lnx = axis === 0 ? sign : 0;
-          const lnz = axis === 2 ? sign : 0;
-          bestN = [lnx * cos + lnz * sin, 0, -lnx * sin + lnz * cos];
-        }
-      }
+    const sHit = this.#solids.castRayClosest(
+      origin.x,
+      origin.y,
+      origin.z,
+      dir.x,
+      dir.y,
+      dir.z,
+      maxDist,
+      undefined,
+      this.#solidRay
+    );
+    if (sHit) {
+      bestT = sHit.distance;
+      bestN = [sHit.nx, sHit.ny, sHit.nz];
     }
 
-    // --- terrain/bridge deck: coarse march + bisection refine on sign flip
+    // --- terrain: coarse march + bisection refine on the sign flip. Uses the raw
+    // heightfield, NOT effectiveGround — the bridge deck is a solid above (cast
+    // separately), so it must not also appear here as a phantom plane.
     let groundT = Infinity;
     if (dir.y < 0.35) {
       // rays angled well upward can't land on the heightfield
       const step = 3;
       let prevT = 0;
-      let prevAbove = origin.y - this.map.effectiveGround(origin.x, origin.z) > 0;
+      let prevAbove = origin.y - this.map.groundHeight(origin.x, origin.z) > 0;
       const limit = Math.min(maxDist, bestT);
       for (let t = step; t <= limit + step; t += step) {
         const tt = Math.min(t, limit);
         const x = origin.x + dir.x * tt;
         const z = origin.z + dir.z * tt;
-        const above = origin.y + dir.y * tt - this.map.effectiveGround(x, z) > 0;
+        const above = origin.y + dir.y * tt - this.map.groundHeight(x, z) > 0;
         if (prevAbove && !above) {
           let lo = prevT;
           let hi = tt;
           for (let i = 0; i < 8; i++) {
             const m = (lo + hi) / 2;
             const my = origin.y + dir.y * m;
-            if (my - this.map.effectiveGround(origin.x + dir.x * m, origin.z + dir.z * m) > 0) lo = m;
+            if (my - this.map.groundHeight(origin.x + dir.x * m, origin.z + dir.z * m) > 0) lo = m;
             else hi = m;
           }
           groundT = (lo + hi) / 2;
@@ -859,11 +858,80 @@ export class Physics {
         origin.z + dir.z * groundT
       );
       const normal = this.map.normal(point.x, point.z, new THREE.Vector3());
-      const kind = this.map.isWater(point.x, point.z) && this.map.bridgeDeck(point.x, point.z) === -Infinity ? "water" : "ground";
+      const kind = this.map.isWater(point.x, point.z) ? "water" : "ground";
       return { point, normal, kind };
     }
     const point = new THREE.Vector3(origin.x + dir.x * bestT, origin.y + dir.y * bestT, origin.z + dir.z * bestT);
     return { point, normal: new THREE.Vector3(...bestN!), kind: "building" };
+  }
+
+  // ------------------------------------------------- world-solid query bodies
+
+  /** Create one static box in the #solids query world; yaw via SetTransform
+   * (which also seeds the broadphase AABB). Returns its handle. */
+  #makeSolid(x: number, y: number, z: number, hx: number, hy: number, hz: number, yaw: number): number {
+    const h = this.#solids.createBox({ type: BodyType.Static, position: [x, y, z], halfExtents: [hx, hy, hz] });
+    if (yaw) this.#solids.setBodyTransform(h, [x, y, z], [0, Math.sin(yaw / 2), 0, Math.cos(yaw / 2)]);
+    return h;
+  }
+
+  /** Mirror a freshly streamed tile's ALIVE building colliders into #solids.
+   * Landmark boxes (i beyond the OSM building count) are skipped — they are
+   * always-resident (loaded once at boot), so the stream must not double them. */
+  #addTileSolids(key: string, colliders: BuildingCollider[]): void {
+    const nB = this.tiles.manifest.tiles[key]?.b ?? 0;
+    const owned: string[] = [];
+    for (const c of colliders) {
+      if (c.i >= nB) continue; // landmark — boot-resident
+      if (!this.tiles.isAlive(key, c.i)) continue; // suppressed / dead at load
+      const bk = `${key}:${c.i}`;
+      let arr = this.#solidByBuilding.get(bk);
+      if (!arr) {
+        arr = [];
+        this.#solidByBuilding.set(bk, arr);
+        owned.push(bk);
+      }
+      arr.push(this.#makeSolid(c.x, c.y, c.z, c.hx, c.hy, c.hz, c.yaw));
+    }
+    if (owned.length) this.#solidTileIndex.set(key, owned);
+  }
+
+  /** Drop every building solid a tile owns when it unloads. */
+  #removeTileSolids(key: string): void {
+    const owned = this.#solidTileIndex.get(key);
+    if (!owned) return;
+    for (const bk of owned) {
+      const arr = this.#solidByBuilding.get(bk);
+      if (arr) for (const h of arr) this.#solids.destroyBody(h);
+      this.#solidByBuilding.delete(bk);
+    }
+    this.#solidTileIndex.delete(key);
+  }
+
+  /** Add/drop a single building's solid when its alive state flips at runtime
+   * (full suppress, revive, or fracture). Keeps #solids in step with the visual
+   * alive flags the old per-ray isAlive test used to consult. */
+  #setBuildingSolidAlive(key: string, i: number, alive: boolean): void {
+    const bk = `${key}:${i}`;
+    const arr = this.#solidByBuilding.get(bk);
+    if (alive) {
+      if (arr && arr.length) return; // already present
+      const cols = this.#tileColliders.get(key);
+      if (!cols) return;
+      const fresh: number[] = [];
+      for (const c of cols) if (c.i === i) fresh.push(this.#makeSolid(c.x, c.y, c.z, c.hx, c.hy, c.hz, c.yaw));
+      if (fresh.length) {
+        this.#solidByBuilding.set(bk, fresh);
+        const owned = this.#solidTileIndex.get(key) ?? [];
+        if (!owned.includes(bk)) {
+          owned.push(bk);
+          this.#solidTileIndex.set(key, owned);
+        }
+      }
+    } else if (arr) {
+      for (const h of arr) this.#solids.destroyBody(h);
+      this.#solidByBuilding.set(bk, []); // keep the entry so the tile index still owns it
+    }
   }
 
   /** true distance from a point to the OBB surface, in the box's yaw frame (0 inside) */

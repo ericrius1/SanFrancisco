@@ -206,6 +206,10 @@ export class TileStreamer {
   landmarks: THREE.Object3D | null = null;
   onTileColliders: (key: string, colliders: BuildingCollider[]) => void = () => {};
   onTileUnload: (key: string) => void = () => {};
+  // fired when a building's SOLID state flips at runtime (full suppress / revive /
+  // fracture) so the physics query world can add or drop its collider. Mesh-only
+  // suppression keeps the collider, so it does NOT fire this.
+  onBuildingAlive: (key: string, index: number, alive: boolean) => void = () => {};
   // fired after a tile lands in the scene — the flora layer scatters trees/grass on its parks
   onTileGreens: (key: string, group: THREE.Group) => void = () => {};
 
@@ -602,6 +606,7 @@ export class TileStreamer {
       tile.slot.data[index * 4] = 0;
       tile.slot.tex.needsUpdate = true;
     }
+    this.onBuildingAlive(key, index, false);
   }
 
   /** Hide only the baked MESH (alive flag → 1); the baked collider stays live so
@@ -637,6 +642,7 @@ export class TileStreamer {
       tile.slot.data[index * 4] = 255;
       tile.slot.tex.needsUpdate = true;
     }
+    this.onBuildingAlive(key, index, true);
   }
 
   /** Marks a building dead (collapses its mesh). Returns its collider if known. */
@@ -647,6 +653,7 @@ export class TileStreamer {
     if (tile.slot.data[index * 4] === 0) return null;
     tile.slot.data[index * 4] = 0;
     tile.slot.tex.needsUpdate = true;
+    this.onBuildingAlive(key, index, false);
     return tile.colliders?.find((c) => c.i === index) ?? null;
   }
 

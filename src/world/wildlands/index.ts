@@ -49,7 +49,7 @@ export function createWildlands(map: GardenTerrain): Wildlands {
     nearMax: 46
   });
   const flowers = createFlowerRing(map); // player-following ring, like the grass
-  const grass = createWildGrass(map); // player-following ring; free outside the regions
+  const grass = createWildGrass(map); // player-following ring; free off green (grows in city parks too)
 
   return {
     trees,
