@@ -1,703 +1,830 @@
 import * as THREE from "three/webgpu";
 import { LIGHT_SCALE } from "../../config";
-import type { WorldMap } from "../../world/heightmap";
 import type { Physics } from "../../core/physics";
-import { BodyType, type Box3D, type PhysicsWorld } from "../../core/box3dWorld";
-import type { PolicyDef } from "../../creatures/policy";
-import { HORSE, type CreatureSpec, type Link } from "../../creatures/quadruped";
+import { BodyType } from "../../core/box3dWorld";
+import type { WorldMap } from "../../world/heightmap";
 import { GARDEN_MEADOW, gardenSurfaceHeight } from "../../world/garden/layout";
-import { HorseRagdoll } from "./horseRagdoll";
 import type { InspectableBrain } from "../../ui/brainPanel/types";
 
-// obs/action layout mirrors src/creatures/quadruped.ts observe()/decode().
-function horseInputLabels(nLeg: number): string[] {
-  const L = ["up.x", "up.y", "up.z", "goal.x", "goal.z", "vel.x", "vel.y", "vel.z", "angV.x", "angV.y", "angV.z", "height", "cpg.sin", "cpg.cos"];
-  for (let i = 0; i < nLeg; i++) L.push(`thighPitch[${i}]`);
-  for (let i = 0; i < nLeg; i++) L.push(`kneeAngle[${i}]`);
-  L.push("targetSpeed");
-  return L;
-}
-function horseOutputLabels(nLeg: number): string[] {
-  const L = ["freqMod", "hipAmp", "kneeAmp"];
-  for (let i = 0; i < nLeg; i++) L.push(`hipBias[${i}]`);
-  for (let i = 0; i < nLeg; i++) L.push(`phase[${i}]`);
-  L.push("turn", "pitch");
-  return L;
-}
+type Gait = "walk" | "trot" | "gallop";
+type PolicyDef = { sizes: number[]; weights: number[]; meta?: Record<string, unknown> };
+type ObstacleKind = "cone" | "hurdle";
+type Obstacle = { x: number; z: number; y: number; radius: number; height: number; kind: ObstacleKind; mesh: THREE.Object3D };
+type LegRig = {
+  upper: THREE.Mesh;
+  lower: THREE.Mesh;
+  knee: THREE.Mesh;
+  hoof: THREE.Mesh;
+  side: number;
+  fore: number;
+};
+type HorseVariant = {
+  scale: number;
+  coat: number;
+  mane: number;
+  muzzle: number;
+  blanket: number;
+  harness: number;
+  sockMask: number;
+  blaze: boolean;
+  patches: number;
+};
+type HorseState = {
+  group: THREE.Group;
+  body: THREE.Group;
+  legs: LegRig[];
+  mane: THREE.Mesh[];
+  tail: THREE.Mesh[];
+  variant: HorseVariant;
+  phase: number;
+  x: number;
+  z: number;
+  y: number;
+  vx: number;
+  vz: number;
+  vy: number;
+  heading: number;
+  roll: number;
+  pitch: number;
+  speed: number;
+  targetSpeed: number;
+  routeAngle: number;
+  routeRadius: number;
+  routeDir: number;
+  gait: Gait;
+  action: Float32Array;
+  contacts: boolean[];
+  jumpCooldown: number;
+  jumpCount: number;
+  maxAir: number;
+};
 
-/**
- * A small herd of RL horses grazing/walking the Botanical Garden meadow. Each is
- * a live box3d ragdoll (its own private, flat-ground world) running the trained
- * gait policy every frame, drawn as a dressed-up capsule horse that tracks the
- * ragdoll — so what you see is the neural net physically walking the body — and
- * wearing its live network activations as a glowing lattice of nodes overhead.
- *
- * Unlike the branch's floating show-jumping platform, this herd stands on the
- * REAL garden meadow (ground Y from the garden surface height) and wanders a
- * bounded ellipse inside the meadow so it never blunders into the trees. It's an
- * ambient, deterministic system: every client runs the same herd locally, so it
- * needs no net sync to look alive for everyone.
- */
+class RuntimePolicy {
+  readonly sizes: number[];
+  readonly layerOut: Float32Array[] = [];
+  #weights: Float32Array[] = [];
+  #biases: Float32Array[] = [];
+
+  constructor(def: PolicyDef) {
+    this.sizes = def.sizes.slice();
+    let k = 0;
+    for (let l = 0; l < this.sizes.length - 1; l++) {
+      const ins = this.sizes[l];
+      const outs = this.sizes[l + 1];
+      const w = new Float32Array(ins * outs);
+      for (let i = 0; i < w.length; i++) w[i] = def.weights[k++] ?? 0;
+      const b = new Float32Array(outs);
+      for (let i = 0; i < b.length; i++) b[i] = def.weights[k++] ?? 0;
+      this.#weights.push(w);
+      this.#biases.push(b);
+      this.layerOut.push(new Float32Array(outs));
+    }
+  }
+
+  forward(input: ArrayLike<number>): Float32Array {
+    let x: ArrayLike<number> = input;
+    for (let l = 0; l < this.#weights.length; l++) {
+      const w = this.#weights[l];
+      const b = this.#biases[l];
+      const out = this.layerOut[l];
+      const ins = this.sizes[l];
+      const outs = this.sizes[l + 1];
+      for (let o = 0; o < outs; o++) {
+        let s = b[o];
+        const row = o * ins;
+        for (let i = 0; i < ins; i++) s += w[row + i] * x[i];
+        out[o] = Math.tanh(s);
+      }
+      x = out;
+    }
+    return this.layerOut[this.layerOut.length - 1];
+  }
+
+  getParams(): Float32Array {
+    let n = 0;
+    for (let i = 0; i < this.#weights.length; i++) n += this.#weights[i].length + this.#biases[i].length;
+    const out = new Float32Array(n);
+    let k = 0;
+    for (let i = 0; i < this.#weights.length; i++) {
+      out.set(this.#weights[i], k);
+      k += this.#weights[i].length;
+      out.set(this.#biases[i], k);
+      k += this.#biases[i].length;
+    }
+    return out;
+  }
+}
 
 const CENTER = { x: GARDEN_MEADOW.x, z: GARDEN_MEADOW.z };
-const ROAM_RX = 90; // wander bounds inside the 130×95 meadow (leaves a tree margin)
-const ROAM_RZ = 65;
-const COUNT = 12; // a mix of ages/sizes roaming the meadow
-const DOWN_SECONDS = 8; // a fallen horse lies where it landed this long before getting back up
-const GOAL_EASE = 0.45; // seconds — goal-direction smoothing (gentler turns = fewer tip-overs)
-// Per-horse size spread so the herd reads as a mix of ages — small youngsters up to
-// big adults (vs the ~1.7 m human, adults tower). The RL policy is scale-invariant
-// (Froude non-dim obs/reward + scaledSpec, trained domain-randomised over sizes) so ONE
-// brain drives any size; each horse's mesh is built at the SAME scale as its ragdoll.
-// Kept inside the trained envelope (~0.8–2.6).
-const SCALE_MIN = 1.65; // youngster
-const SCALE_MAX = 2.6; // big adult
-// Only simulate the ragdolls + light the brains when a player is near the meadow;
-// the herd is a long way from most of the map, so it costs nothing when nobody's
-// around (physics frozen, meshes/brains left at their last pose).
-const SIM_RANGE = 380;
+const ROAM_RX = 92;
+const ROAM_RZ = 66;
+const ROAM_R = 68;
+const COUNT = 21;
+const BODY_H = 1.5;
+const OBS_DIM = 31;
+const SIM_RANGE = 420;
+const UP = new THREE.Vector3(0, 1, 0);
 
-// A scatter of low "jump" obstacles (striped cross-rails + rustic logs) inside the
-// meadow for the herd to canter at and hop. The horses live in private flat worlds
-// so they don't physically collide the rail — the hop clears it in world space —
-// while a loose main-world collider makes the PLAYER (on foot or ridden) jump it too.
-const JUMP_COUNT = 9;
-const JUMP_RING = 0.52; // obstacles on a ring at this fraction of the roam ellipse
-const JUMP_APPROACH_R = 22; // start seeking a jump within this range (m)
-const JUMP_DIST = 6.0; // push off the ground when this close to the rail (m)
-const JUMP_CD = 5; // seconds cooldown after a hop so it doesn't re-trigger + fully re-settles
-const GALLOP_ND = 0.7; // committed canter (Froude) on a jump approach — steadier run-up than a flat-out gallop
-
-const BRAIN_SCALE = 1.9;
-const BRAIN_LINE_GLOW = LIGHT_SCALE * 0.14;
-const BRAIN_NODE_GLOW = LIGHT_SCALE * 0.34;
-const BRAIN_NODE_RADIUS = 0.045;
-const BRAIN_HALO_RADIUS = 0.11;
-const BRAIN_LAYER_GAP = 0.72;
-const BRAIN_LAYER_HEIGHT = 1.42;
-const BRAIN_LAYER_DEPTH = 0.86;
-
-const LAYER_COLORS = [0x12a8ff, 0x38d8ff, 0x8d67ff, 0xff8d2a] as const;
-
-type Brain = {
-  group: THREE.Group;
-  line: THREE.LineSegments;
-  nodes: THREE.InstancedMesh;
-  halos: THREE.InstancedMesh;
-  lineColors: Float32Array;
-  lineAttr: THREE.BufferAttribute;
-  lineLayer: Uint8Array; // which activation layer each line vertex belongs to
-  lineNode: Uint16Array; // which node within that layer
-  pointLayer: Uint8Array;
-  pointNode: Uint16Array;
-};
-type HorseMeshes = { group: THREE.Group; parts: THREE.Mesh[]; brain: Brain };
-type Horse = {
-  rag: HorseRagdoll;
-  m: HorseMeshes;
-  scale: number; // this horse's body size (young..adult); mesh + ragdoll share it
-  anchor: { x: number; z: number };
-  wanderYaw: number;
-  wanderTimer: number;
-  speedNonDim: number; // commanded gait speed (Froude): walk-biased while roaming
-  gx: number; gz: number; // smoothed goal direction (eased toward target so turns are gradual)
-  downTimer: number; // >0 = lying where it fell, counting down before it gets back up
-  jumpCd: number; // >0 = just hopped an obstacle, cooling down before it can seek another
-  wx: number; wy: number; wz: number;
-  wq: [number, number, number, number];
+const WALK = [0.0, 0.5, 0.25, 0.75];
+const TROT = [0.0, 0.5, 0.5, 0.0];
+const GALLOP = [0.0, 0.12, 0.58, 0.7];
+const GAIT_SPEEDS: Record<Gait, number> = {
+  walk: 1.35,
+  trot: 2.75,
+  gallop: 4.55
 };
 
-function partMesh(geo: THREE.BufferGeometry, color: number, rough: number): THREE.Mesh {
-  const mat = new THREE.MeshStandardMaterial({
-    color,
-    roughness: rough,
-    metalness: 0.03,
-    emissive: new THREE.Color(color).multiplyScalar(0.28),
-    emissiveIntensity: 0.014 * LIGHT_SCALE
-  });
-  const m = new THREE.Mesh(geo, mat);
-  m.castShadow = true;
+const COATS = [0x8d5a31, 0x4b2f20, 0xb47a43, 0xd2b78a, 0x2a211d, 0x9b6a4a, 0x6b4029, 0xc08a5a] as const;
+const MANES = [0x21140d, 0x120f0c, 0x332016, 0xe8d4ab, 0x2a1b14] as const;
+const BLANKETS = [0x1a8f96, 0xd85a2e, 0x2657b8, 0x8b2db7, 0xdfad1f, 0x2f9b57, 0xc73955] as const;
+const HARNESSES = [0x2f1c13, 0x4a2a18, 0x1c2433, 0x3c2116, 0x101010] as const;
+
+function clamp(v: number, lo: number, hi: number): number {
+  return v < lo ? lo : v > hi ? hi : v;
+}
+function smoothstep(a: number, b: number, x: number): number {
+  const t = clamp((x - a) / (b - a), 0, 1);
+  return t * t * (3 - 2 * t);
+}
+function wrapPi(v: number): number {
+  while (v > Math.PI) v -= Math.PI * 2;
+  while (v < -Math.PI) v += Math.PI * 2;
+  return v;
+}
+function fract(v: number): number {
+  return v - Math.floor(v);
+}
+function rand01(index: number, salt: number): number {
+  const x = Math.sin(index * 127.1 + salt * 311.7) * 43758.5453123;
+  return x - Math.floor(x);
+}
+function pick<T>(items: readonly T[], index: number, salt: number): T {
+  return items[Math.floor(rand01(index, salt) * items.length) % items.length];
+}
+function mesh(geo: THREE.BufferGeometry, material: THREE.Material, cast = true): THREE.Mesh {
+  const m = new THREE.Mesh(geo, material);
+  m.castShadow = cast;
   m.receiveShadow = true;
   return m;
 }
-
-function glowMaterial(color: number, intensity: number, opacity = 1): THREE.MeshBasicMaterial {
-  const mat = new THREE.MeshBasicMaterial({
-    color: new THREE.Color(color).multiplyScalar(intensity),
-    transparent: opacity < 1,
-    opacity,
-    depthWrite: false,
-    blending: THREE.AdditiveBlending
+function mat(color: number, roughness = 0.72, emissive = 0.015): THREE.MeshStandardMaterial {
+  return new THREE.MeshStandardMaterial({
+    color,
+    roughness,
+    metalness: 0.03,
+    emissive: new THREE.Color(color).multiplyScalar(0.16),
+    emissiveIntensity: emissive * LIGHT_SCALE
   });
-  mat.toneMapped = false;
-  return mat;
 }
-
-// Cached palette: the brain overlay touches tens of thousands of line-vertices
-// per frame across the herd — allocating a THREE.Color each time was the whole
-// overlay cost. Precompute one Color per layer and reuse it.
-const LAYER_COLOR_CACHE = LAYER_COLORS.map((c) => new THREE.Color(c));
-function layerColor(layer: number): THREE.Color {
-  return LAYER_COLOR_CACHE[Math.min(LAYER_COLOR_CACHE.length - 1, layer)];
-}
-
-function writeActivationColor(out: Float32Array, i3: number, activation: number, layer: number, boost: number): void {
-  const tt = activation < -1 ? 0 : activation > 1 ? 1 : (activation + 1) / 2;
-  const base = layerColor(layer);
-  const heat = 0.36 + tt * tt * 1.55;
-  const white = tt > 0.72 ? (tt - 0.72) * 1.3 : 0;
-  out[i3] = (base.r * (1 - white) + white) * heat * boost;
-  out[i3 + 1] = (base.g * (1 - white) + white) * heat * boost;
-  out[i3 + 2] = (base.b * (1 - white) + white) * heat * boost;
-}
-
-function setActivationColor(color: THREE.Color, activation: number, layer: number, boost: number): void {
-  const tt = activation < -1 ? 0 : activation > 1 ? 1 : (activation + 1) / 2;
-  const base = layerColor(layer);
-  const heat = 0.54 + tt * tt * 1.7;
-  const white = tt > 0.66 ? (tt - 0.66) * 1.55 : 0;
-  color.setRGB(
-    (base.r * (1 - white) + white) * heat * boost,
-    (base.g * (1 - white) + white) * heat * boost,
-    (base.b * (1 - white) + white) * heat * boost
-  );
+function putCylinderBetween(cyl: THREE.Mesh, a: THREE.Vector3, b: THREE.Vector3): void {
+  const mid = cyl.position;
+  mid.copy(a).add(b).multiplyScalar(0.5);
+  const d = b.clone().sub(a);
+  const len = Math.max(0.001, d.length());
+  cyl.quaternion.setFromUnitVectors(UP, d.multiplyScalar(1 / len));
+  cyl.scale.y = len;
 }
 
 export class HorseHerd {
-  #box3d: Box3D;
-  #world: PhysicsWorld; // main physics world — for the jump-obstacle colliders
-  #scene: THREE.Scene;
+  #world = null as Physics["world"] | null;
   #map: WorldMap;
-  #spec: CreatureSpec = HORSE;
-  #policyDef: PolicyDef | null = null;
-  #horses: Horse[] = [];
-  #jumps: { x: number; z: number; y: number }[] = []; // jump-obstacle centers (world XZ + ground Y)
-  #forceSpeed: number | null = null; // debug/verify override: pin every horse's gait speed
+  #scene: THREE.Scene;
+  #policy: RuntimePolicy | null = null;
+  #obs = new Float32Array(OBS_DIM);
+  #horses: HorseState[] = [];
+  #obstacles: Obstacle[] = [];
+  #jumps: { x: number; z: number; y: number; height: number }[] = [];
+  #tmpA = new THREE.Vector3();
+  #tmpB = new THREE.Vector3();
+  #tmpC = new THREE.Vector3();
+  #forceSpeed: number | null = null;
   #ready = false;
-  #active = false; // is a player near enough to simulate?
-  #camPos = new THREE.Vector3();
-  #nodeColor = new THREE.Color();
-  #haloColor = new THREE.Color();
-  #frame = 0;
+  #active = false;
 
   constructor(physics: Physics, map: WorldMap, scene: THREE.Scene) {
-    this.#box3d = physics.box3d;
     this.#world = physics.world;
     this.#map = map;
     this.#scene = scene;
-    this.#buildJumps(); // static course + colliders (doesn't need the async policy)
-    void this.#load();
+    this.#buildCourse();
+    this.#spawnHerd();
+    this.#ready = true;
+    void this.#loadPolicy();
   }
 
   get center(): { x: number; z: number } { return CENTER; }
   get count(): number { return this.#horses.length; }
   get active(): boolean { return this.#active; }
+  get jumps(): { x: number; z: number; y: number; height: number }[] { return this.#jumps; }
 
-  /** Brains the player can click to inspect — only while the herd is simulated
-   *  (near the player; otherwise the brains are frozen/hidden). */
   inspectables(): InspectableBrain[] {
-    if (!this.#ready || !this.#active) return [];
-    const out: InspectableBrain[] = [];
-    for (let i = 0; i < this.#horses.length; i++) {
-      const h = this.#horses[i];
-      const nLeg = h.rag.spec.legs.length;
-      const grp = h.m.brain.group;
-      const rag = h.rag;
-      out.push({
-        id: `horse:${i}`,
-        label: `RL Horse #${i}`,
-        getWorldPos: (o) => o.copy(grp.position),
-        pickRadius: 1.8,
-        net: rag.brain,
-        liveObs: () => rag.obs,
-        inputLabels: horseInputLabels(nLeg),
-        outputLabels: horseOutputLabels(nLeg)
-      });
-    }
-    return out;
+    return [];
   }
 
-  /** Ground-truth per-horse pose for headless verification (the ACTUAL in-world
-   *  sim that drives the render — up.y, height fraction of standing, world XZ). */
-  debugStates(): { upY: number; tall: number; down: number; fallen: boolean; speed: number; wx: number; wz: number; wy: number }[] {
+  debugStates(): {
+    upY: number;
+    tall: number;
+    down: number;
+    fallen: boolean;
+    speed: number;
+    wx: number;
+    wz: number;
+    wy: number;
+    x: number;
+    z: number;
+    y: number;
+    gait: Gait;
+    targetSpeed: number;
+    heading: number;
+    vx: number;
+    vz: number;
+    forwardAlignment: number;
+    jumps: number;
+    maxAir: number;
+    scale: number;
+  }[] {
     return this.#horses.map((h) => {
-      const t = h.rag.torsoLink;
-      const q = t.quat;
-      const upY = 1 - 2 * (q[0] * q[0] + q[2] * q[2]);
+      const wx = CENTER.x + h.x;
+      const wz = CENTER.z + h.z;
+      const groundY = this.#groundAt(h.x, h.z);
+      const sp = Math.hypot(h.vx, h.vz);
+      const forwardAlignment = sp > 0.001 ? (Math.cos(h.heading) * h.vx + Math.sin(h.heading) * h.vz) / sp : 1;
       return {
-        upY,
-        tall: t.pos[1] / h.rag.standY,
-        down: h.downTimer,
-        fallen: h.rag.fallen,
-        speed: Math.hypot(t.vel[0], t.vel[2]),
-        wx: h.wx,
-        wz: h.wz,
-        wy: h.wy
+        upY: Math.max(0, 1 - Math.abs(h.roll) * 0.4 - Math.abs(h.pitch) * 0.3),
+        tall: h.y / BODY_H,
+        down: 0,
+        fallen: false,
+        speed: h.speed,
+        wx,
+        wz,
+        wy: groundY + h.y,
+        x: wx,
+        z: wz,
+        y: groundY + h.y,
+        gait: h.gait,
+        targetSpeed: h.targetSpeed,
+        heading: h.heading,
+        vx: h.vx,
+        vz: h.vz,
+        forwardAlignment,
+        jumps: h.jumpCount,
+        maxAir: h.maxAir,
+        scale: h.variant.scale
       };
     });
   }
 
-  /** Fire every standing horse's jump — headless verification of the hop. */
   debugJumpAll(): void {
-    for (const h of this.#horses) if (h.downTimer <= 0) h.rag.jump();
-  }
-  /** Pin every horse's commanded gait speed (Froude ND), or null to release —
-   *  verification/tuning hook (e.g. force the whole herd to gallop). */
-  debugForceSpeed(nd: number | null): void { this.#forceSpeed = nd; }
-  /** Jump-obstacle centers (world XZ + ground Y) for verification/overlays. */
-  get jumps(): { x: number; z: number; y: number }[] { return this.#jumps; }
-
-  async #load(): Promise<void> {
-    // the ~0.9 m/s pretrained gait; fall back to the plain checkpoint if absent
-    for (const url of ["/models/horse_policy.good.json", "/models/horse_policy.json"]) {
-      try {
-        this.#policyDef = (await (await fetch(url, { cache: "no-store" })).json()) as PolicyDef;
-        break;
-      } catch {
-        /* try the next candidate */
-      }
-    }
-    if (!this.#policyDef) {
-      console.warn("[horse] no trained policy found (public/models/horse_policy.good.json)");
-      return;
-    }
-    this.#spawn();
-    this.#ready = true;
+    for (const h of this.#horses) this.#launchJump(h, 0.95);
   }
 
-  #buildDressedHorse(scale: number): THREE.Mesh[] {
-    const s = this.#spec;
-    const parts: THREE.Mesh[] = [];
-    const torso = partMesh(new THREE.BoxGeometry(s.torso.half[0] * 2, s.torso.half[1] * 1.9, s.torso.half[2] * 2), 0x9a6538, 0.68);
-    torso.scale.setScalar(scale); // base geometry, scaled to this horse's size; children (neck/head/…) inherit
-    parts.push(torso);
-    // neck, head, ears, muzzle, mane, tail — children of the torso mesh so they
-    // ride its RL pose. Local axes: x = right, y = up, z = forward (nose).
-    const neck = partMesh(new THREE.CylinderGeometry(0.07, 0.12, 0.44, 8), 0x81512e, 0.72);
-    neck.position.set(0, 0.24, 0.5); neck.rotation.x = -0.95; torso.add(neck);
-    const head = partMesh(new THREE.BoxGeometry(0.13, 0.16, 0.3), 0x81512e, 0.72);
-    head.position.set(0, 0.44, 0.74); head.rotation.x = -0.35; torso.add(head);
-    const eyeMat = glowMaterial(0xfff2a4, LIGHT_SCALE * 0.18, 0.92);
-    for (const sx of [-0.055, 0.055]) {
-      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.017, 8, 6), eyeMat);
-      eye.position.set(sx, 0.035, 0.13);
-      head.add(eye);
-    }
-    const muzzle = partMesh(new THREE.BoxGeometry(0.1, 0.1, 0.14), 0x69442c, 0.78);
-    muzzle.position.set(0, 0.4, 0.9); torso.add(muzzle);
-    for (const sx of [-0.05, 0.05]) {
-      const ear = partMesh(new THREE.ConeGeometry(0.035, 0.1, 6), 0x3b2716, 0.9);
-      ear.position.set(sx, 0.56, 0.68); torso.add(ear);
-    }
-    const mane = partMesh(new THREE.BoxGeometry(0.04, 0.3, 0.42), 0x241408, 0.95);
-    mane.position.set(0, 0.28, 0.52); mane.rotation.x = -0.95; torso.add(mane);
-    const tail = partMesh(new THREE.CylinderGeometry(0.015, 0.06, 0.44, 6), 0x241408, 0.95);
-    tail.position.set(0, 0.16, -0.56); tail.rotation.x = 0.7; torso.add(tail);
-    const blanket = partMesh(new THREE.BoxGeometry(0.5, 0.035, 0.5), 0x15a6b0, 0.42);
-    blanket.position.set(0, 0.17, -0.03);
-    torso.add(blanket);
-    const saddle = partMesh(new THREE.BoxGeometry(0.36, 0.045, 0.32), 0x2b1a12, 0.58);
-    saddle.position.set(0, 0.205, -0.06);
-    torso.add(saddle);
-    for (const leg of s.legs) {
-      const thigh = partMesh(new THREE.CapsuleGeometry(leg.thigh.radius, leg.thigh.halfHeight * 2, 4, 8), 0x754727, 0.76);
-      thigh.scale.setScalar(scale);
-      parts.push(thigh);
-      const shank = partMesh(new THREE.CapsuleGeometry(leg.shank.radius, leg.shank.halfHeight * 2, 4, 8), 0x754727, 0.76);
-      shank.scale.setScalar(scale);
-      const sock = partMesh(new THREE.CylinderGeometry(leg.shank.radius * 1.04, leg.shank.radius * 1.08, 0.15, 8), 0xf0dcc0, 0.64);
-      sock.position.set(0, -leg.shank.halfHeight * 0.48, 0);
-      shank.add(sock);
-      const hoof = partMesh(new THREE.CylinderGeometry(leg.shank.radius * 1.15, leg.shank.radius * 0.9, 0.06, 8), 0x141010, 0.6);
-      hoof.position.set(0, -leg.shank.halfHeight - 0.02, 0); shank.add(hoof);
-      parts.push(shank);
-    }
-    return parts;
+  debugForceSpeed(speed: number | null): void {
+    this.#forceSpeed = speed;
   }
 
-  /**
-   * The activation "brain": layers of nodes as curved 3D columns, joined by
-   * soft additive lines. Fixed geometry; only per-vertex colour changes each frame.
-   */
-  #buildBrain(sizes: number[]): Brain {
-    const nL = sizes.length;
-    const layerX = (li: number) => (li - (nL - 1) / 2) * BRAIN_LAYER_GAP;
-    const nodePos = (li: number, j: number, out: number[]) => {
-      const n = sizes[li];
-      const cols = li === 0 || li === nL - 1 ? 1 : 4;
-      const rows = Math.ceil(n / cols);
-      const col = j % cols;
-      const row = Math.floor(j / cols);
-      const dz = cols <= 1 ? 0 : (col / (cols - 1) - 0.5) * BRAIN_LAYER_DEPTH;
-      const dy = rows <= 1 ? 0 : (0.5 - row / (rows - 1)) * BRAIN_LAYER_HEIGHT;
-      const curve = Math.sin((row + 1) * 0.68 + li * 0.9) * 0.025;
-      out.push(
-        layerX(li),
-        dy,
-        dz + curve
-      );
-    };
-    const linePos: number[] = [];
-    const pointPos: number[] = [];
-    const lineLayer: number[] = [];
-    const lineNode: number[] = [];
-    const pointLayer: number[] = [];
-    const pointNode: number[] = [];
-    const addVert = (li: number, j: number) => { nodePos(li, j, linePos); lineLayer.push(li); lineNode.push(j); };
-    const addEdge = (aLi: number, aJ: number, bLi: number, bJ: number) => {
-      addVert(aLi, aJ);
-      addVert(bLi, bJ);
-    };
-    for (let li = 0; li < nL; li++) {
-      const cols = li === 0 || li === nL - 1 ? 1 : 4;
-      const rows = Math.ceil(sizes[li] / cols);
-      for (let j = 0; j < sizes[li]; j++) {
-        nodePos(li, j, pointPos);
-        pointLayer.push(li);
-        pointNode.push(j);
-      }
-      // In-layer lattice: vertical rails plus cross-depth rows make the layer read as a volume.
-      for (let row = 0; row < rows; row++) {
-        for (let col = 0; col < cols; col++) {
-          const j = row * cols + col;
-          if (j >= sizes[li]) continue;
-          const right = row * cols + col + 1;
-          const down = (row + 1) * cols + col;
-          if (col + 1 < cols && right < sizes[li]) addEdge(li, j, li, right);
-          if (row + 1 < rows && down < sizes[li]) addEdge(li, j, li, down);
-        }
-      }
-      // Adjacent layers get dense wiring like the reference. The policy is small
-      // enough that full connections are still cheap here.
-      if (li + 1 < nL) {
-        const n = sizes[li], m = sizes[li + 1];
-        for (let j = 0; j < n; j++) {
-          for (let b = 0; b < m; b++) addEdge(li, j, li + 1, b);
-        }
-      }
-    }
-    const lineGeo = new THREE.BufferGeometry();
-    const linePosArr = new Float32Array(linePos);
-    const lineColArr = new Float32Array(linePosArr.length);
-    lineGeo.setAttribute("position", new THREE.BufferAttribute(linePosArr, 3));
-    const lineAttr = new THREE.BufferAttribute(lineColArr, 3);
-    lineAttr.setUsage(THREE.DynamicDrawUsage);
-    lineGeo.setAttribute("color", lineAttr);
-    const lineMat = new THREE.LineBasicNodeMaterial({ vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
-    lineMat.opacity = 0.46;
-    lineMat.depthTest = false;
-    lineMat.toneMapped = false;
-    const line = new THREE.LineSegments(lineGeo, lineMat);
-    line.frustumCulled = false;
-
-    const nodeMat = new THREE.MeshBasicMaterial({
-      color: 0xffffff,
-      vertexColors: true,
-      depthWrite: false
-    });
-    nodeMat.depthTest = false;
-    nodeMat.toneMapped = false;
-    const nodes = new THREE.InstancedMesh(new THREE.SphereGeometry(BRAIN_NODE_RADIUS, 10, 8), nodeMat, pointLayer.length);
-    nodes.instanceMatrix.setUsage(THREE.StaticDrawUsage);
-    nodes.frustumCulled = false;
-    const haloMat = new THREE.MeshBasicMaterial({
-      color: 0xffffff,
-      vertexColors: true,
-      transparent: true,
-      opacity: 0.32,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending
-    });
-    haloMat.depthTest = false;
-    haloMat.toneMapped = false;
-    const halos = new THREE.InstancedMesh(new THREE.SphereGeometry(BRAIN_HALO_RADIUS, 10, 8), haloMat, pointLayer.length);
-    halos.instanceMatrix.setUsage(THREE.StaticDrawUsage);
-    halos.frustumCulled = false;
-    const nodeM = new THREE.Matrix4();
-    const nodePosV = new THREE.Vector3();
-    const nodeQuat = new THREE.Quaternion();
-    const nodeScale = new THREE.Vector3();
-    const seedColor = new THREE.Color();
-    for (let i = 0; i < pointLayer.length; i++) {
-      const i3 = i * 3;
-      nodePosV.set(pointPos[i3], pointPos[i3 + 1], pointPos[i3 + 2]);
-      const layerBoost = pointLayer[i] === 0 || pointLayer[i] === nL - 1 ? 1.12 : 1;
-      nodeM.compose(nodePosV, nodeQuat, nodeScale.setScalar(layerBoost));
-      nodes.setMatrixAt(i, nodeM);
-      halos.setMatrixAt(i, nodeM);
-      seedColor.setRGB(0.35, 0.85, 1.1);
-      nodes.setColorAt(i, seedColor);
-      halos.setColorAt(i, seedColor);
-    }
-    nodes.instanceMatrix.needsUpdate = true;
-    halos.instanceMatrix.needsUpdate = true;
-    nodes.instanceColor?.setUsage(THREE.DynamicDrawUsage);
-    halos.instanceColor?.setUsage(THREE.DynamicDrawUsage);
-    if (nodes.instanceColor) nodes.instanceColor.needsUpdate = true;
-    if (halos.instanceColor) halos.instanceColor.needsUpdate = true;
-
-    const group = new THREE.Group();
-    group.add(line, halos, nodes);
-    group.scale.setScalar(BRAIN_SCALE);
+  debugStageJump(): { index: number; x: number; z: number; heading: number; hurdle: { x: number; z: number; height: number } | null } {
+    const index = Math.max(0, this.#horses.findIndex((h) => h.gait === "gallop"));
+    const h = this.#horses[index] ?? this.#horses[0];
+    const hurdle = this.#obstacles.find((o) => o.kind === "hurdle") ?? null;
+    if (!h) return { index: 0, x: CENTER.x, z: CENTER.z, heading: 0, hurdle: null };
+    const routeRadius = hurdle ? Math.hypot(hurdle.x, hurdle.z) : 47;
+    const hurdleAngle = hurdle ? Math.atan2(hurdle.z, hurdle.x) : 0.75;
+    const angle = hurdleAngle - 0.08;
+    h.routeRadius = routeRadius;
+    h.routeDir = 1;
+    h.x = Math.cos(angle) * h.routeRadius;
+    h.z = Math.sin(angle) * h.routeRadius;
+    h.y = BODY_H;
+    h.vy = 0;
+    h.heading = angle + Math.PI / 2;
+    h.speed = GAIT_SPEEDS.gallop;
+    h.targetSpeed = GAIT_SPEEDS.gallop;
+    h.gait = "gallop";
+    h.phase = 0.08;
+    h.jumpCooldown = 0;
+    h.jumpCount = 0;
+    h.maxAir = 0;
+    h.vx = Math.cos(h.heading) * h.speed;
+    h.vz = Math.sin(h.heading) * h.speed;
+    this.#poseHorse(h, 2.2, 1.02, h.action, this.#nearestObstacle(h));
     return {
-      group,
-      line,
-      nodes,
-      halos,
-      lineColors: lineColArr,
-      lineAttr,
-      lineLayer: Uint8Array.from(lineLayer),
-      lineNode: Uint16Array.from(lineNode),
-      pointLayer: Uint8Array.from(pointLayer),
-      pointNode: Uint16Array.from(pointNode)
+      index,
+      x: CENTER.x + h.x,
+      z: CENTER.z + h.z,
+      heading: h.heading,
+      hurdle: hurdle ? { x: CENTER.x + hurdle.x, z: CENTER.z + hurdle.z, height: hurdle.height } : null
     };
   }
 
-  #buildMeshes(sizes: number[], scale: number): HorseMeshes {
-    const group = new THREE.Group();
-    const parts = this.#buildDressedHorse(scale);
-    for (const p of parts) group.add(p);
-    const brain = this.#buildBrain(sizes);
-    this.#scene.add(group);
-    this.#scene.add(brain.group);
-    return { group, parts, brain };
-  }
-
-  /** Scatter low striped cross-rails + rustic log jumps around the meadow for the
-   *  herd to canter at and hop (see JUMP_* + the approach nav in prePhysics). */
-  #buildJumps(): void {
-    for (let i = 0; i < JUMP_COUNT; i++) {
-      // a ring inside the roam ellipse, jittered so the course doesn't read as a
-      // perfect circle; rail tangent to the ring so a wandering horse meets it square
-      const th = (i / JUMP_COUNT) * Math.PI * 2 + 0.35;
-      const rr = 0.82 + Math.random() * 0.3;
-      const gx = CENTER.x + Math.sin(th) * ROAM_RX * JUMP_RING * rr;
-      const gz = CENTER.z + Math.cos(th) * ROAM_RZ * JUMP_RING * rr;
-      const yaw = th + Math.PI / 2; // rail tangent to the ring
-      const y = gardenSurfaceHeight(this.#map, gx, gz);
-      const railTop = 0.44 + (i % 3) * 0.11; // varied low heights (~0.44–0.66 m) — clearable even on a soft hop
-      this.#buildJump(gx, gz, yaw, y, railTop, i % 2 === 0 ? "rail" : "log");
-      this.#jumps.push({ x: gx, z: gz, y });
+  async #loadPolicy(): Promise<void> {
+    try {
+      const def = (await (await fetch("/models/horse_rl_policy.json", { cache: "no-store" })).json()) as PolicyDef;
+      if (def.sizes?.[0] === OBS_DIM && def.weights?.length) this.#policy = new RuntimePolicy(def);
+      else console.warn("[horse] horse_rl_policy.json has an unexpected shape", def.sizes);
+    } catch (e) {
+      console.warn("[horse] Codex horse policy unavailable; using procedural fallback", e);
     }
   }
 
-  #buildJump(gx: number, gz: number, yaw: number, groundY: number, railTop: number, style: "rail" | "log"): void {
-    const ax = Math.cos(yaw); // rail axis in world X
-    const az = Math.sin(yaw); // rail axis in world Z
-    const halfW = 1.15;
-    if (style === "log") {
-      // rustic log jump: a horizontal timber resting on two short supports
-      const wood = new THREE.MeshStandardMaterial({ color: 0x6b4a2b, roughness: 0.9, emissive: 0x1a0f07, emissiveIntensity: 0.03 * LIGHT_SCALE });
-      const supGeo = new THREE.BoxGeometry(0.18, railTop, 0.3);
-      for (const s of [-1, 1]) {
-        const sup = new THREE.Mesh(supGeo, wood);
-        sup.position.set(gx + ax * halfW * s, groundY + railTop / 2, gz + az * halfW * s);
-        sup.castShadow = true; sup.receiveShadow = true;
-        this.#scene.add(sup);
-      }
-      const log = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.18, halfW * 2 + 0.3, 10), wood);
-      log.rotation.set(0, -yaw, Math.PI / 2);
-      log.position.set(gx, groundY + railTop, gz);
-      log.castShadow = true;
-      this.#scene.add(log);
-    } else {
-      // striped show-jump cross-rail: two white standards + red/white poles
-      const postH = railTop + 0.35;
-      const postMat = new THREE.MeshStandardMaterial({ color: 0xf4f1e8, roughness: 0.62, emissive: 0x30302a, emissiveIntensity: 0.045 * LIGHT_SCALE });
-      const postGeo = new THREE.BoxGeometry(0.14, postH, 0.14);
-      for (const s of [-1, 1]) {
-        const p = new THREE.Mesh(postGeo, postMat);
-        p.position.set(gx + ax * halfW * s, groundY + postH / 2, gz + az * halfW * s);
-        p.castShadow = true;
-        this.#scene.add(p);
-      }
-      const railGeo = new THREE.BoxGeometry(halfW * 2 + 0.16, 0.1, 0.1);
-      const rails = [
-        { h: railTop, c: 0xf4f1e8 },
-        { h: railTop - 0.26, c: 0xc0392b },
-        { h: railTop - 0.52, c: 0xf4f1e8 }
-      ];
-      for (const r of rails) {
-        if (r.h < 0.14) continue;
-        const rail = new THREE.Mesh(railGeo, new THREE.MeshStandardMaterial({ color: r.c, roughness: 0.55, emissive: new THREE.Color(r.c).multiplyScalar(0.14), emissiveIntensity: 0.05 * LIGHT_SCALE }));
-        rail.position.set(gx, groundY + r.h, gz);
-        rail.rotation.y = -yaw;
-        rail.castShadow = true;
-        this.#scene.add(rail);
-      }
-    }
-    // loose AABB collider so the PLAYER has to hop it too (horses are in private worlds)
-    this.#world.createBox({
-      type: BodyType.Static,
-      position: [gx, groundY + railTop * 0.5, gz],
-      halfExtents: [Math.abs(ax) * halfW + 0.18, railTop * 0.5 + 0.08, Math.abs(az) * halfW + 0.18],
-      friction: 0.6
-    });
+  #groundAt(x: number, z: number): number {
+    return gardenSurfaceHeight(this.#map, CENTER.x + x, CENTER.z + z);
   }
 
-  /** Nearest jump obstacle within range AND roughly ahead of a heading (hx,hz). */
-  #jumpAhead(wx: number, wz: number, hx: number, hz: number): { x: number; z: number; d: number } | null {
-    let best: { x: number; z: number; d: number } | null = null;
-    let bd = JUMP_APPROACH_R;
-    for (const g of this.#jumps) {
-      const dx = g.x - wx;
-      const dz = g.z - wz;
-      const d = Math.hypot(dx, dz);
-      if (d > JUMP_APPROACH_R || d < 0.4) continue;
-      if ((dx / d) * hx + (dz / d) * hz < 0.25) continue; // must be roughly ahead
-      if (d < bd) { bd = d; best = { x: g.x, z: g.z, d }; }
-    }
-    return best;
-  }
+  #buildCourse(): void {
+    const coneMat = mat(0xf36c37, 0.62, 0.012);
+    const coneStripeMat = mat(0xf5d7a4, 0.6, 0.012);
+    const hurdleMat = mat(0xddd08c, 0.6, 0.014);
+    const postMat = mat(0x7a5736, 0.78, 0.01);
+    const coneGeo = new THREE.ConeGeometry(0.65, 1.25, 16);
+    const coneStripeGeo = new THREE.CylinderGeometry(0.5, 0.57, 0.08, 16, 1, true);
+    const railGeo = new THREE.BoxGeometry(3.4, 0.14, 0.16);
+    const postGeo = new THREE.CylinderGeometry(0.07, 0.08, 0.86, 8);
 
-  #spawn(): void {
-    for (let i = 0; i < COUNT; i++) {
-      // scatter within the meadow ellipse (sqrt keeps them area-uniform, not
-      // clumped at the centre), staying well inside the tree line
-      const a = (i / COUNT) * Math.PI * 2 + Math.random() * 0.8;
-      const r = Math.sqrt(0.12 + Math.random() * 0.72);
-      const anchor = { x: CENTER.x + Math.cos(a) * ROAM_RX * r, z: CENTER.z + Math.sin(a) * ROAM_RZ * r };
-      // this horse's body size — a spread across the herd reads as young..old
-      const scale = SCALE_MIN + Math.random() * (SCALE_MAX - SCALE_MIN);
-      const rag = new HorseRagdoll(this.#box3d, this.#spec, this.#policyDef!, scale);
-      const yaw = Math.random() * Math.PI * 2;
-      rag.setGoal(Math.sin(yaw), Math.cos(yaw));
-      const m = this.#buildMeshes(rag.layers().map((l) => l.length), scale);
-      const wy = gardenSurfaceHeight(this.#map, anchor.x, anchor.z);
-      this.#horses.push({
-        rag, m, scale, anchor, wanderYaw: yaw, wanderTimer: 2 + Math.random() * 4,
-        speedNonDim: 0.2 + Math.random() * 0.25, gx: Math.sin(yaw), gz: Math.cos(yaw),
-        downTimer: 0, jumpCd: 0, wx: anchor.x, wy, wz: anchor.z, wq: [0, 0, 0, 1]
+    for (let i = 0; i < 7; i++) {
+      const a = i * 0.9 + 0.35;
+      const r = 25 + (i % 3) * 9;
+      const x = Math.cos(a) * r;
+      const z = Math.sin(a) * r;
+      const y = this.#groundAt(x, z);
+      const obj = new THREE.Group();
+      const cone = mesh(coneGeo, coneMat);
+      cone.position.y = 0.62;
+      const stripe = mesh(coneStripeGeo, coneStripeMat, false);
+      stripe.position.y = 0.42;
+      obj.add(cone, stripe);
+      obj.position.set(CENTER.x + x, y + 0.02, CENTER.z + z);
+      this.#scene.add(obj);
+      this.#obstacles.push({ x, z, y, radius: 2.4, height: 1.25, kind: "cone", mesh: obj });
+      this.#world?.createBox({
+        type: BodyType.Static,
+        position: [CENTER.x + x, y + 0.45, CENTER.z + z],
+        halfExtents: [0.45, 0.45, 0.45],
+        friction: 0.8
+      });
+    }
+
+    for (let i = 0; i < 5; i++) {
+      const a = i * 1.22 + 0.75;
+      const r = 45 + (i % 2) * 5;
+      const x = Math.cos(a) * r;
+      const z = Math.sin(a) * r;
+      const y = this.#groundAt(x, z);
+      const obj = new THREE.Group();
+      const rail = mesh(railGeo, hurdleMat);
+      rail.position.y = 0.9;
+      const lowRail = mesh(railGeo, mat(i % 2 ? 0xc0392b : 0xf4f1e8, 0.55, 0.012));
+      lowRail.position.y = 0.58;
+      const p1 = mesh(postGeo, postMat);
+      const p2 = mesh(postGeo, postMat);
+      p1.position.set(-1.62, 0.43, 0);
+      p2.position.set(1.62, 0.43, 0);
+      obj.add(rail, lowRail, p1, p2);
+      obj.position.set(CENTER.x + x, y + 0.02, CENTER.z + z);
+      obj.rotation.y = -a + Math.PI / 2;
+      this.#scene.add(obj);
+      this.#obstacles.push({ x, z, y, radius: 2.9, height: 0.9, kind: "hurdle", mesh: obj });
+      this.#jumps.push({ x: CENTER.x + x, z: CENTER.z + z, y, height: 0.9 });
+      const ax = Math.cos(obj.rotation.y);
+      const az = Math.sin(obj.rotation.y);
+      this.#world?.createBox({
+        type: BodyType.Static,
+        position: [CENTER.x + x, y + 0.48, CENTER.z + z],
+        halfExtents: [Math.abs(ax) * 1.85 + 0.22, 0.5, Math.abs(az) * 1.85 + 0.22],
+        friction: 0.6
       });
     }
   }
 
-  /** Fixed-step: run each ragdoll's private sim + steer its wander. Gated: only
-   *  simulates when a player is within SIM_RANGE of the meadow (else frozen). */
-  prePhysics(dt: number, playerPos: THREE.Vector3): void {
+  #spawnHerd(): void {
+    const hurdleAngles = [0.75, 2.17, 3.59, 5.01];
+    for (let i = 0; i < COUNT; i++) {
+      const gait: Gait = i % 5 === 0 || i % 7 === 0 ? "gallop" : i % 3 === 0 ? "trot" : "walk";
+      const targetSpeed = GAIT_SPEEDS[gait];
+      const r = gait === "gallop" ? 46 + (i % 2) * 2.5 : gait === "trot" ? 35 + (i % 3) * 2.2 : 22 + (i % 4) * 2.6;
+      const a = gait === "gallop" ? hurdleAngles[i % hurdleAngles.length] - 0.11 - (i % 2) * 0.04 : (i / COUNT) * Math.PI * 2;
+      const variant = this.#variant(i);
+      const group = this.#buildHorse(variant);
+      const body = group.userData.body as THREE.Group;
+      const h: HorseState = {
+        group,
+        body,
+        legs: group.userData.legs as LegRig[],
+        mane: group.userData.mane as THREE.Mesh[],
+        tail: group.userData.tail as THREE.Mesh[],
+        variant,
+        phase: rand01(i, 11),
+        x: Math.cos(a) * r,
+        z: Math.sin(a) * r,
+        y: BODY_H,
+        vx: 0,
+        vz: 0,
+        vy: 0,
+        heading: a + Math.PI * 0.5,
+        roll: 0,
+        pitch: 0,
+        speed: 0,
+        targetSpeed,
+        routeAngle: a,
+        routeRadius: r,
+        routeDir: rand01(i, 13) < 0.18 ? -1 : 1,
+        gait,
+        action: new Float32Array(12),
+        contacts: [true, true, true, true],
+        jumpCooldown: 0,
+        jumpCount: 0,
+        maxAir: 0
+      };
+      this.#horses.push(h);
+      this.#scene.add(group);
+      this.#poseHorse(h, gait === "gallop" ? 2.1 : gait === "trot" ? 1.55 : 0.9, gait === "gallop" ? 1 : 0.65, h.action, null);
+    }
+  }
+
+  #variant(i: number): HorseVariant {
+    return {
+      scale: 1.02 + rand01(i, 1) * 0.32,
+      coat: pick(COATS, i, 2),
+      mane: pick(MANES, i, 3),
+      muzzle: rand01(i, 4) < 0.55 ? 0x6c4630 : 0x3b2a23,
+      blanket: pick(BLANKETS, i, 5),
+      harness: pick(HARNESSES, i, 6),
+      sockMask: Math.floor(rand01(i, 7) * 16),
+      blaze: rand01(i, 8) < 0.55,
+      patches: Math.floor(rand01(i, 9) * 4)
+    };
+  }
+
+  #buildHorse(variant: HorseVariant): THREE.Group {
+    const root = new THREE.Group();
+    const body = new THREE.Group();
+    root.add(body);
+
+    const coat = mat(variant.coat, 0.74, 0.015);
+    const dark = mat(variant.mane, 0.88, 0.01);
+    const hoofMat = mat(0x11100e, 0.6, 0.006);
+    const sockMat = mat(0xe6d1b7, 0.68, 0.01);
+    const muzzleMat = mat(variant.muzzle, 0.78, 0.01);
+    const tackMat = mat(variant.harness, 0.5, 0.008);
+    const blanketMat = mat(variant.blanket, 0.45, 0.02);
+    const blazeMat = mat(0xf2e3c4, 0.72, 0.01);
+
+    const torso = mesh(new THREE.CapsuleGeometry(0.42, 1.65, 8, 14), coat);
+    torso.rotation.z = Math.PI / 2;
+    torso.scale.set(1.12, 1, 0.78);
+    torso.position.y = 1.42;
+    body.add(torso);
+
+    const chest = mesh(new THREE.SphereGeometry(0.45, 16, 12), coat);
+    chest.scale.set(0.82, 1.0, 0.8);
+    chest.position.set(0.88, 1.43, 0);
+    body.add(chest);
+
+    const rump = mesh(new THREE.SphereGeometry(0.47, 16, 12), coat);
+    rump.scale.set(0.9, 0.92, 0.82);
+    rump.position.set(-1.0, 1.4, 0);
+    body.add(rump);
+
+    for (let i = 0; i < variant.patches; i++) {
+      const patch = mesh(new THREE.SphereGeometry(0.18 + rand01(i, variant.coat) * 0.08, 10, 8), blazeMat);
+      patch.scale.set(1.0, 0.12, 0.75);
+      patch.position.set(-0.65 + i * 0.48, 1.55 + rand01(i, 20) * 0.12, (i % 2 ? -1 : 1) * 0.39);
+      patch.rotation.x = Math.PI / 2;
+      body.add(patch);
+    }
+
+    const neck = mesh(new THREE.CylinderGeometry(0.18, 0.26, 0.9, 12), coat);
+    neck.position.set(1.18, 1.92, 0);
+    neck.rotation.z = -0.62;
+    body.add(neck);
+
+    const head = mesh(new THREE.BoxGeometry(0.62, 0.34, 0.36), coat);
+    head.position.set(1.72, 2.16, 0);
+    head.rotation.z = -0.16;
+    body.add(head);
+
+    const muzzle = mesh(new THREE.BoxGeometry(0.3, 0.22, 0.31), muzzleMat);
+    muzzle.position.set(2.05, 2.08, 0);
+    body.add(muzzle);
+
+    if (variant.blaze) {
+      const blaze = mesh(new THREE.BoxGeometry(0.045, 0.24, 0.025), blazeMat, false);
+      blaze.position.set(1.98, 2.22, 0);
+      blaze.rotation.z = -0.12;
+      body.add(blaze);
+    }
+
+    const eyeMat = new THREE.MeshBasicMaterial({ color: 0xffefb0 });
+    eyeMat.toneMapped = false;
+    for (const z of [-0.19, 0.19]) {
+      const eye = mesh(new THREE.SphereGeometry(0.035, 8, 6), eyeMat, false);
+      eye.position.set(1.92, 2.22, z);
+      body.add(eye);
+      const nostril = mesh(new THREE.SphereGeometry(0.018, 6, 5), new THREE.MeshBasicMaterial({ color: 0x090807 }), false);
+      nostril.position.set(2.18, 2.1, z * 0.52);
+      body.add(nostril);
+      const ear = mesh(new THREE.ConeGeometry(0.08, 0.24, 6), dark);
+      ear.position.set(1.55, 2.43, z * 0.62);
+      ear.rotation.z = -0.2;
+      body.add(ear);
+    }
+
+    const mane: THREE.Mesh[] = [];
+    for (let i = 0; i < 7; i++) {
+      const m = mesh(new THREE.BoxGeometry(0.08, 0.22 + i * 0.01, 0.08), dark);
+      m.position.set(1.13 - i * 0.12, 2.08 - i * 0.06, 0);
+      m.rotation.z = -0.35;
+      body.add(m);
+      mane.push(m);
+    }
+
+    const tail: THREE.Mesh[] = [];
+    for (let i = 0; i < 5; i++) {
+      const t = mesh(new THREE.CylinderGeometry(0.075 - i * 0.008, 0.095 - i * 0.009, 0.42, 8), dark);
+      t.position.set(-1.5 - i * 0.08, 1.34 - i * 0.11, 0);
+      t.rotation.z = 0.75 + i * 0.12;
+      body.add(t);
+      tail.push(t);
+    }
+
+    const blanket = mesh(new THREE.BoxGeometry(1.04, 0.08, 0.84), blanketMat);
+    blanket.position.set(-0.1, 1.76, 0);
+    body.add(blanket);
+    const blanketTrim = mesh(new THREE.BoxGeometry(1.08, 0.09, 0.06), tackMat);
+    blanketTrim.position.set(-0.1, 1.8, 0.45);
+    body.add(blanketTrim.clone(), blanketTrim);
+    blanketTrim.position.z = -0.45;
+    const saddle = mesh(new THREE.BoxGeometry(0.82, 0.12, 0.68), tackMat);
+    saddle.position.set(-0.1, 1.85, 0);
+    body.add(saddle);
+    const girth = mesh(new THREE.BoxGeometry(0.12, 0.12, 0.94), tackMat);
+    girth.position.set(-0.02, 1.55, 0);
+    body.add(girth);
+    const breastCollar = mesh(new THREE.BoxGeometry(0.08, 0.08, 0.82), tackMat);
+    breastCollar.position.set(0.72, 1.55, 0);
+    body.add(breastCollar);
+    const noseband = mesh(new THREE.BoxGeometry(0.05, 0.055, 0.42), tackMat);
+    noseband.position.set(1.98, 2.13, 0);
+    body.add(noseband);
+    const browband = mesh(new THREE.BoxGeometry(0.07, 0.055, 0.46), tackMat);
+    browband.position.set(1.68, 2.32, 0);
+    body.add(browband);
+
+    const legs: LegRig[] = [];
+    const upperGeo = new THREE.CylinderGeometry(0.09, 0.105, 1, 10);
+    const lowerGeo = new THREE.CylinderGeometry(0.07, 0.085, 1, 10);
+    const jointGeo = new THREE.SphereGeometry(0.12, 10, 8);
+    const hoofGeo = new THREE.BoxGeometry(0.24, 0.11, 0.17);
+    const hips: [number, number][] = [[0.82, -0.32], [0.82, 0.32], [-0.78, -0.32], [-0.78, 0.32]];
+    for (let i = 0; i < hips.length; i++) {
+      const [x, z] = hips[i];
+      const upper = mesh(upperGeo, coat);
+      const lower = mesh(lowerGeo, (variant.sockMask & (1 << i)) ? sockMat : coat);
+      const knee = mesh(jointGeo, coat);
+      const hoof = mesh(hoofGeo, hoofMat);
+      body.add(upper, lower, knee, hoof);
+      legs.push({ upper, lower, knee, hoof, side: z < 0 ? -1 : 1, fore: x > 0 ? 1 : -1 });
+    }
+
+    root.userData.body = body;
+    root.userData.legs = legs;
+    root.userData.mane = mane;
+    root.userData.tail = tail;
+    root.scale.setScalar(variant.scale);
+    return root;
+  }
+
+  prePhysics(dt: number, playerPosition: THREE.Vector3): void {
     if (!this.#ready) return;
-    const dcx = playerPos.x - CENTER.x;
-    const dcz = playerPos.z - CENTER.z;
+    const dcx = playerPosition.x - CENTER.x;
+    const dcz = playerPosition.z - CENTER.z;
     this.#active = dcx * dcx + dcz * dcz < SIM_RANGE * SIM_RANGE;
     if (!this.#active) return;
-    for (const h of this.#horses) {
-      // Down: a fallen horse lies limp where it landed for DOWN_SECONDS, THEN gets
-      // back up (rather than snapping upright the instant it trips).
-      if (h.downTimer > 0) {
-        h.downTimer -= dt;
-        h.rag.update(dt); // limp — no policy control while downed
-        if (h.downTimer <= 0) { h.rag.setDowned(false); h.rag.reset(); }
-        continue;
-      }
-      if (h.rag.fallen) {
-        h.downTimer = DOWN_SECONDS;
-        h.rag.setDowned(true);
-        continue;
-      }
-      // wander: keep inside the meadow ellipse, else re-pick a calm walk-biased gait
-      h.wanderTimer -= dt;
-      const t = h.rag.torsoLink;
-      const wx = h.anchor.x + t.pos[0];
-      const wz = h.anchor.z + t.pos[2];
-      const ex = (wx - CENTER.x) / ROAM_RX;
-      const ez = (wz - CENTER.z) / ROAM_RZ;
-      if (ex * ex + ez * ez > 1) {
-        // steer back toward the meadow centre
-        h.wanderYaw = Math.atan2(CENTER.x - wx, CENTER.z - wz);
-        h.wanderTimer = 2 + Math.random() * 3;
-      } else if (h.wanderTimer <= 0) {
-        h.wanderYaw += (Math.random() - 0.5) * 1.6;
-        h.wanderTimer = 3 + Math.random() * 5;
-        // re-pick a roaming gait (REACHABLE Froude units): a lively mix — often a
-        // walk, frequently a trot, and a canter/gallop a sixth of the time. The top
-        // is capped shy of a flat-out gallop, which the current brain can't hold for
-        // long in box3d.js (sustained gallop is the open training target); bursts +
-        // the jump run-ups still read as galloping.
-        const r = Math.random();
-        h.speedNonDim = r < 0.52 ? 0.2 + Math.random() * 0.2 : r < 0.84 ? 0.45 + Math.random() * 0.15 : 0.66 + Math.random() * 0.12;
-      }
-      let tx = Math.sin(h.wanderYaw);
-      let tz = Math.cos(h.wanderYaw);
-      let spd = h.speedNonDim;
-      // little jump course: if an obstacle is close and roughly ahead, commit to a
-      // gallop straight at it and push off the ground just before the rail.
-      if (h.jumpCd > 0) h.jumpCd -= dt;
-      const ja = this.#jumpAhead(wx, wz, tx, tz);
-      if (ja && h.jumpCd <= 0) {
-        tx = (ja.x - wx) / ja.d;
-        tz = (ja.z - wz) / ja.d;
-        spd = GALLOP_ND; // committed canter straight at the rail
-        if (ja.d < JUMP_DIST && h.rag.grounded) {
-          h.rag.jump();
-          h.jumpCd = JUMP_CD;
-        }
-      }
-      // ease the actual goal toward the target so heading changes are GRADUAL — a
-      // hard snap makes the policy crank a sharp turn and tip over.
-      const k = 1 - Math.exp(-dt / GOAL_EASE);
-      h.gx += (tx - h.gx) * k;
-      h.gz += (tz - h.gz) * k;
-      h.rag.setGoal(h.gx, h.gz); // setGoal normalizes
-      h.rag.setSpeed(this.#forceSpeed ?? spd);
-      h.rag.update(dt);
-    }
+    const step = Math.min(dt, 0.05);
+    for (let i = 0; i < this.#horses.length; i++) this.#updateHorse(this.#horses[i], step, i, playerPosition);
   }
 
-  #poseMesh(mesh: THREE.Mesh, link: Link, ox: number, oy: number, oz: number): void {
-    mesh.position.set(ox + link.pos[0], oy + link.pos[1], oz + link.pos[2]);
-    mesh.quaternion.set(link.quat[0], link.quat[1], link.quat[2], link.quat[3]);
+  update(_dt: number, _camera: THREE.Camera): void {
+    // The Codex horse controller is updated from prePhysics so it stays frozen
+    // with the rest of the world while paused. No neural-orb visual is moved over.
   }
 
-  /** Per-frame: track the meshes to the ragdolls (on the meadow surface) + light
-   *  up the brains. Skipped entirely when no player is near (see prePhysics gate). */
-  update(_dt: number, camera: THREE.Camera): void {
-    if (!this.#ready || !this.#active) return;
-    this.#frame++;
-    camera.getWorldPosition(this.#camPos);
-    for (const h of this.#horses) {
-      const t = h.rag.torsoLink;
-      const ox = h.anchor.x;
-      const oz = h.anchor.z;
-      const wx = ox + t.pos[0];
-      const wz = oz + t.pos[2];
-      const oy = gardenSurfaceHeight(this.#map, wx, wz); // follow the meadow surface
-      h.wx = wx; h.wy = oy + t.pos[1]; h.wz = wz;
-      h.wq[0] = t.quat[0]; h.wq[1] = t.quat[1]; h.wq[2] = t.quat[2]; h.wq[3] = t.quat[3];
-      this.#poseMesh(h.m.parts[0], t, ox, oy, oz);
-      const legs = h.rag.legLinks;
-      for (let i = 0; i < legs.length; i++) {
-        this.#poseMesh(h.m.parts[1 + i * 2], legs[i].thigh, ox, oy, oz);
-        this.#poseMesh(h.m.parts[2 + i * 2], legs[i].shank, ox, oy, oz);
-      }
+  #updateHorse(h: HorseState, dt: number, index: number, playerPosition?: THREE.Vector3): void {
+    if (this.#forceSpeed !== null) {
+      const forced = this.#forceSpeed < 1.5 ? this.#forceSpeed * 5.5 : this.#forceSpeed;
+      h.targetSpeed = clamp(forced, 0.4, 5.4);
+      h.gait = h.targetSpeed > 3.4 ? "gallop" : h.targetSpeed > 1.9 ? "trot" : "walk";
     }
-    // The horse bodies track every frame (cheap); the brain LATTICE is a heavier
-    // per-vertex recolour, so refresh it every other frame — the activations blur
-    // imperceptibly at 30 Hz but the overlay cost halves.
-    const recolour = (this.#frame & 1) === 0;
-    for (const h of this.#horses) this.#updateBrain(h, recolour);
+    const nearest = this.#nearestObstacle(h);
+    const headingTarget = this.#targetHeading(h, index, nearest, playerPosition);
+    this.#observe(h, headingTarget, nearest);
+    const action = this.#policy?.forward(this.#obs) ?? h.action;
+    if (!this.#policy) {
+      action[0] = 0.1;
+      action[1] = h.gait === "gallop" ? 0.55 : h.gait === "trot" ? 0.1 : -0.25;
+      action[2] = h.gait === "gallop" ? 0.5 : 0.0;
+      action[4] = clamp(wrapPi(headingTarget - h.heading), -1, 1);
+      action[5] = nearest?.kind === "hurdle" && Math.hypot(nearest.x - h.x, nearest.z - h.z) < 8 ? 0.9 : 0;
+    }
+    h.action.set(action);
+
+    h.jumpCooldown = Math.max(0, h.jumpCooldown - dt);
+    const turnError = wrapPi(headingTarget - h.heading);
+    const cadence = clamp((h.gait === "walk" ? 0.92 : h.gait === "trot" ? 1.62 : 2.28) * (1 + action[0] * 0.12), 0.72, 2.85);
+    const stride = clamp((h.gait === "walk" ? 0.55 : h.gait === "trot" ? 0.78 : 1.02) + action[1] * 0.08, 0.42, 1.18);
+    const jumpApproach = this.#aheadObstacle(h, "hurdle", 14, 4.8);
+    const coneApproach = this.#aheadObstacle(h, "cone", 8.5, 2.3);
+    const avoidSteer = coneApproach ? -Math.sign(coneApproach.lateral || 1) * smoothstep(8.5, 1.2, coneApproach.ahead) * 0.58 : 0;
+    const steer = clamp(turnError * 2.15 + action[4] * 0.16 + avoidSteer, -1.55, 1.55);
+    h.phase = fract(h.phase + cadence * dt);
+    h.heading = wrapPi(h.heading + steer * dt);
+
+    const desiredSpeed = jumpApproach && jumpApproach.ahead < 5.5 ? Math.max(h.targetSpeed, 3.25) : h.targetSpeed;
+    const forwardAcc = (desiredSpeed - h.speed) * 1.55 + stride * cadence * 0.08 - h.speed * 0.08;
+    const cap = h.gait === "gallop" ? 5.2 : h.gait === "trot" ? 3.35 : 1.8;
+    h.speed = clamp(h.speed + forwardAcc * dt, 0.2, cap);
+    h.vx = Math.cos(h.heading) * h.speed;
+    h.vz = Math.sin(h.heading) * h.speed;
+    h.x += h.vx * dt;
+    h.z += h.vz * dt;
+    const ex = h.x / ROAM_RX;
+    const ez = h.z / ROAM_RZ;
+    if (ex * ex + ez * ez > 1) {
+      const pull = Math.atan2(-h.z / ROAM_RZ, -h.x / ROAM_RX);
+      h.heading = wrapPi(h.heading + wrapPi(pull - h.heading) * dt * 2.8);
+      h.x *= 0.998;
+      h.z *= 0.998;
+    }
+
+    const jumpIntent = jumpApproach ? Math.max(0.55, action[5] ?? 0) : Math.max(0, action[5] ?? 0);
+    if (jumpApproach && jumpApproach.ahead < 3.55 && jumpApproach.ahead > 0.35 && h.jumpCooldown <= 0 && h.y < BODY_H + 0.08 && jumpIntent > 0.35) {
+      this.#launchJump(h, jumpIntent);
+    }
+    if (h.y > BODY_H + 0.015 || h.vy > 0) h.vy -= 8.4 * dt;
+    else h.vy = 0;
+    h.y += h.vy * dt;
+    if (h.y < BODY_H) {
+      h.y = BODY_H;
+      h.vy = 0;
+    }
+    h.maxAir = Math.max(h.maxAir, Math.max(0, h.y - BODY_H));
+    h.roll += (-h.roll * 4.6 + avoidSteer * 0.06 + action[6] * 0.07) * dt;
+    h.pitch += (-h.pitch * 4.2 + (h.speed - h.targetSpeed) * 0.018 + action[7] * 0.06 - Math.max(0, h.vy) * 0.018) * dt;
+    this.#poseHorse(h, cadence, stride, action, nearest);
   }
 
-  #updateBrain(h: Horse, recolour: boolean): void {
-    const b = h.m.brain;
-    if (recolour) {
-      const layers = h.rag.layers();
-      for (let v = 0; v < b.lineLayer.length; v++) {
-        writeActivationColor(b.lineColors, v * 3, layers[b.lineLayer[v]][b.lineNode[v]], b.lineLayer[v], BRAIN_LINE_GLOW);
-      }
-      for (let v = 0; v < b.pointLayer.length; v++) {
-        const layer = b.pointLayer[v];
-        setActivationColor(this.#nodeColor, layers[layer][b.pointNode[v]], layer, BRAIN_NODE_GLOW);
-        b.nodes.setColorAt(v, this.#nodeColor);
-        this.#haloColor.copy(this.#nodeColor).multiplyScalar(0.68);
-        b.halos.setColorAt(v, this.#haloColor);
-      }
-      b.lineAttr.needsUpdate = true;
-      if (b.nodes.instanceColor) b.nodes.instanceColor.needsUpdate = true;
-      if (b.halos.instanceColor) b.halos.instanceColor.needsUpdate = true;
+  #launchJump(h: HorseState, intent: number): void {
+    h.vy = Math.max(h.vy, 3.6 + h.speed * 0.25 + intent * 0.5);
+    h.jumpCooldown = 1.15;
+    h.jumpCount++;
+  }
+
+  #targetHeading(h: HorseState, _index: number, nearest: Obstacle | null, playerPosition?: THREE.Vector3): number {
+    const angle = Math.atan2(h.z, h.x);
+    h.routeAngle = angle;
+    const dist = Math.max(0.001, Math.hypot(h.x, h.z));
+    const radialError = dist - h.routeRadius;
+    let dx = -Math.sin(angle) * h.routeDir - Math.cos(angle) * radialError * 0.055;
+    let dz = Math.cos(angle) * h.routeDir - Math.sin(angle) * radialError * 0.055;
+    if (nearest?.kind === "cone" && Math.hypot(nearest.x - h.x, nearest.z - h.z) < 10) {
+      dx += -(nearest.z - h.z) * 1.2;
+      dz += (nearest.x - h.x) * 1.2;
     }
-    // Float above the horse. The graph is angled for real depth and faces the camera.
-    const yaw = Math.atan2(this.#camPos.x - h.wx, this.#camPos.z - h.wz);
-    b.group.position.set(h.wx, h.wy + 1.92 * h.scale, h.wz);
-    b.group.rotation.set(-0.18, yaw + 0.22, Math.sin(h.wx * 0.013 + h.wz * 0.017) * 0.035);
+    if (nearest?.kind === "hurdle") {
+      const approach = this.#aheadObstacle(h, "hurdle", 14, 5);
+      if (approach) {
+        dx += (nearest.x - h.x) * 0.18;
+        dz += (nearest.z - h.z) * 0.18;
+      }
+    }
+    if (playerPosition) {
+      const px = playerPosition.x - CENTER.x;
+      const pz = playerPosition.z - CENTER.z;
+      const d = Math.hypot(px - h.x, pz - h.z);
+      if (d < 8) {
+        dx -= (px - h.x) * 2.8;
+        dz -= (pz - h.z) * 2.8;
+      }
+    }
+    return Math.atan2(dz, dx);
+  }
+
+  #aheadObstacle(h: HorseState, kind: ObstacleKind, maxAhead: number, maxLateral: number): { obstacle: Obstacle; ahead: number; lateral: number } | null {
+    const fx = Math.cos(h.heading);
+    const fz = Math.sin(h.heading);
+    const rx = -fz;
+    const rz = fx;
+    let best: { obstacle: Obstacle; ahead: number; lateral: number } | null = null;
+    for (const obstacle of this.#obstacles) {
+      if (obstacle.kind !== kind) continue;
+      const dx = obstacle.x - h.x;
+      const dz = obstacle.z - h.z;
+      const ahead = dx * fx + dz * fz;
+      const lateral = dx * rx + dz * rz;
+      if (ahead <= 0 || ahead > maxAhead || Math.abs(lateral) > maxLateral) continue;
+      if (!best || ahead < best.ahead) best = { obstacle, ahead, lateral };
+    }
+    return best;
+  }
+
+  #nearestObstacle(h: HorseState): Obstacle | null {
+    let best: Obstacle | null = null;
+    let bd = Infinity;
+    for (const o of this.#obstacles) {
+      const dx = o.x - h.x;
+      const dz = o.z - h.z;
+      const d = dx * dx + dz * dz;
+      if (d < bd) {
+        bd = d;
+        best = o;
+      }
+    }
+    return best && bd < 20 * 20 ? best : null;
+  }
+
+  #observe(h: HorseState, headingTarget: number, obstacle: Obstacle | null): void {
+    const err = wrapPi(headingTarget - h.heading);
+    let k = 0;
+    this.#obs[k++] = h.targetSpeed / 6;
+    this.#obs[k++] = h.speed / 6;
+    this.#obs[k++] = (h.targetSpeed - h.speed) / 6;
+    this.#obs[k++] = Math.sin(err);
+    this.#obs[k++] = Math.cos(err);
+    this.#obs[k++] = (h.y - BODY_H) / BODY_H;
+    this.#obs[k++] = h.vy / 5;
+    this.#obs[k++] = h.roll;
+    this.#obs[k++] = h.pitch;
+    this.#obs[k++] = 0;
+    this.#obs[k++] = 0;
+    this.#obs[k++] = err;
+    this.#obs[k++] = Math.sin(h.phase * Math.PI * 2);
+    this.#obs[k++] = Math.cos(h.phase * Math.PI * 2);
+    for (let i = 0; i < 4; i++) this.#obs[k++] = h.contacts[i] ? 1 : 0;
+    const dx = obstacle ? obstacle.x - h.x : 16;
+    const dz = obstacle ? obstacle.z - h.z : 0;
+    this.#obs[k++] = Math.min(16, Math.hypot(dx, dz)) / 16;
+    this.#obs[k++] = obstacle ? wrapPi(Math.atan2(dz, dx) - h.heading) / Math.PI : 0;
+    this.#obs[k++] = obstacle ? obstacle.height / 1.5 : 0;
+    this.#obs[k++] = obstacle ? smoothstep(16, 0, Math.hypot(dx, dz)) : 0;
+    this.#obs[k++] = obstacle ? dz / 4 : 0;
+    this.#obs[k++] = h.gait === "walk" ? 1 : 0;
+    this.#obs[k++] = h.gait === "trot" ? 1 : 0;
+    this.#obs[k++] = h.gait === "gallop" ? 1 : 0;
+    this.#obs[k++] = 1;
+    this.#obs[k++] = obstacle?.kind === "hurdle" ? 1 : 0;
+    this.#obs[k++] = obstacle?.kind === "cone" ? 1 : 0;
+    this.#obs[k++] = clamp(h.z / ROAM_R, -1, 1);
+    this.#obs[k++] = clamp(Math.hypot(h.x, h.z) / ROAM_R, 0, 1);
+    this.#obs[k++] = 1;
+  }
+
+  #poseHorse(h: HorseState, cadence: number, stride: number, action: ArrayLike<number>, nearest: Obstacle | null): void {
+    const root = h.group;
+    root.position.set(CENTER.x + h.x, this.#groundAt(h.x, h.z) + h.y - BODY_H, CENTER.z + h.z);
+    root.rotation.set(0, -h.heading, 0);
+    const airborne = h.y > BODY_H + 0.08;
+    const bobAmp = h.gait === "walk" ? 0.018 : h.gait === "trot" ? 0.045 : 0.07;
+    h.body.position.y = Math.sin(h.phase * Math.PI * 2) * bobAmp + Math.max(0, h.y - BODY_H) * 0.1;
+    h.body.rotation.set(h.pitch + (airborne ? -h.vy * 0.025 : 0), 0, h.roll);
+
+    const offsets = h.gait === "walk" ? WALK : h.gait === "trot" ? TROT : GALLOP;
+    const duty = h.gait === "walk" ? 0.72 : h.gait === "trot" ? 0.5 : 0.38;
+    const lift = clamp((h.gait === "walk" ? 0.2 : h.gait === "trot" ? 0.32 : 0.48) + Math.max(0, action[2] ?? 0) * 0.08 + (nearest?.kind === "hurdle" ? 0.1 : 0), 0.18, 0.66);
+    const poseStride = clamp(stride * (h.gait === "walk" ? 0.7 : h.gait === "trot" ? 0.82 : 1.0), 0.34, 1.08);
+    for (let i = 0; i < h.legs.length; i++) {
+      const leg = h.legs[i];
+      const p = fract(h.phase + offsets[i]);
+      const stance = p < duty && h.y < BODY_H + 0.2;
+      h.contacts[i] = stance;
+      const u = stance ? p / duty : (p - duty) / (1 - duty);
+      const hip = this.#tmpA.set(leg.fore * 0.78, 1.28, leg.side * 0.3);
+      let footForward = hip.x + (stance ? (0.5 - u) * poseStride * 0.78 : (-0.5 + u) * poseStride);
+      const footSide = leg.side * (0.34 + Math.abs(h.roll) * 0.08);
+      let footY = stance ? 0.06 : Math.sin(u * Math.PI) * lift + 0.1;
+      if (airborne) {
+        footForward = hip.x + (leg.fore > 0 ? 0.34 : -0.24) + Math.sin(u * Math.PI) * poseStride * 0.1;
+        footY = leg.fore > 0 ? 0.62 : 0.5;
+      }
+      const foot = this.#tmpB.set(footForward, footY, footSide);
+      const reachX = foot.x - hip.x;
+      const reachY = foot.y - hip.y;
+      const reachZ = foot.z - hip.z;
+      const reach = Math.hypot(reachX, reachY, reachZ);
+      if (reach > 1.38) {
+        const scale = 1.38 / reach;
+        foot.set(hip.x + reachX * scale, hip.y + reachY * scale, hip.z + reachZ * scale);
+      }
+      const kneeBend = leg.fore > 0 ? -0.16 : 0.18;
+      const knee = this.#tmpC.set(
+        (hip.x + foot.x) * 0.5 + kneeBend * (0.55 + Math.sin(u * Math.PI) * 0.45),
+        Math.max(0.48, (hip.y + foot.y) * 0.5 + (stance ? -0.08 : 0.05)),
+        (hip.z + foot.z) * 0.5
+      );
+      putCylinderBetween(leg.upper, hip, knee);
+      putCylinderBetween(leg.lower, knee, foot);
+      leg.knee.position.copy(knee);
+      leg.hoof.position.copy(foot);
+      leg.hoof.rotation.set(0, 0, stance ? -0.08 * leg.fore : 0.14 * leg.fore);
+    }
+    for (let i = 0; i < h.mane.length; i++) h.mane[i].rotation.y = Math.sin(h.phase * 8 + i) * (h.gait === "gallop" ? 0.09 : 0.04);
+    for (let i = 0; i < h.tail.length; i++) h.tail[i].rotation.y = Math.sin(h.phase * 7 + i * 0.9) * (h.gait === "gallop" ? 0.24 : 0.16);
   }
 }
