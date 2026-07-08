@@ -15,12 +15,18 @@ export const ARCHETYPE_SPECS: Record<ArchetypeId, ArchetypeSpec> = {
   // inner Mission. Narrow lots, slanted bay windows, bracketed cornice, stoop.
   victorian: {
     floorH: 3.4, wallMaterial: "wall.victorian", roofMaterial: "roof.flatTrim",
-    roofType: "flat", note: "painted-lady rowhouse; slanted bay windows (Phase 2)",
+    roofType: "flat",
+    trimMaterial: "trim.victorian", glassMaterial: "glass", baseMaterial: "base.stoop",
+    bayWidth: 2.6, bayProjection: 0.85, cornice: 0.55, groundFloor: "stoop",
+    note: "painted-lady rowhouse; slanted (canted) bay windows",
   },
   // Post-1906 flat-front rowhouse — squared bays, restrained trim.
   edwardian: {
     floorH: 3.3, wallMaterial: "wall.edwardian", roofMaterial: "roof.flatTrim",
-    roofType: "flat", note: "flat-front rowhouse; squared bay windows",
+    roofType: "flat",
+    trimMaterial: "trim.edwardian", glassMaterial: "glass", baseMaterial: "base.stoop",
+    bayWidth: 2.8, bayProjection: 0.5, cornice: 0.4, groundFloor: "stoop",
+    note: "flat-front rowhouse; shallow squared bay windows",
   },
   // Marina / Sunset / Richmond — Mediterranean/Spanish Revival stucco. Flat roof
   // with low tile cornice, arched garage + entry, bow window over the garage.

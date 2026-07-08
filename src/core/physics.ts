@@ -25,6 +25,14 @@ import { CONFIG } from "../config";
 import type { WorldMap } from "../world/heightmap";
 import type { BuildingCollider, TileStreamer } from "../world/tiles";
 import { buildingTone } from "../world/facade";
+import { BuildingColliderIndex } from "./buildingColliderIndex";
+import {
+  selectBodyCandidates,
+  obbContainsXZ,
+  anchorHold,
+  type ColliderAnchor,
+  type BodyTileSource
+} from "./buildingBodies";
 
 const pointScratch = new THREE.Vector3();
 const slabUp = new THREE.Vector3(0, 1, 0);
@@ -105,6 +113,16 @@ export class Physics {
   // when this passes its volume-scaled strength (see CONFIG.buildingHp*)
   #damage = new Map<string, number>();
   #tileColliders = new Map<string, BuildingCollider[]>();
+  // baked OBBs streamed around every collider anchor, decoupled from the visual
+  // tile stream, so AI cars far from the player still have building data (see
+  // buildingColliderIndex.ts). Null until create() finishes loading the manifest.
+  #colliderIndex: BuildingColliderIndex | null = null;
+  // extra collider anchors beyond the player (AI cars, active vehicles). Provided
+  // by main.ts via setColliderAnchors; each returned point pulls building bodies
+  // + index tiles into existence around it.
+  #colliderAnchors: (() => THREE.Vector3[]) | null = null;
+  #anchorList: ColliderAnchor[] = []; // reused per body update — no per-tick alloc
+  #bodyTiles: BodyTileSource<BuildingCollider>[] = []; // reused merged tile source
   #vehicleHandles = new Set<number>();
   #debrisBatch: TransformBatch | null = null;
   #tick = 0;
@@ -169,7 +187,28 @@ export class Physics {
         if (id.startsWith(`${key}:`)) p.#damage.delete(id);
       }
     };
+
+    // citywide collider index: baked OBBs around every anchor, decoupled from the
+    // visual tile stream. Best-effort — a failed manifest load just leaves the
+    // index null and physics falls back to visual-only (the prior behaviour).
+    try {
+      const index = new BuildingColliderIndex();
+      await index.init();
+      p.#colliderIndex = index;
+    } catch (err) {
+      console.warn("[physics] collider index disabled — visual-only building bodies", err);
+    }
     return p;
+  }
+
+  /**
+   * Register a provider of extra collider anchors (AI cars / active vehicles).
+   * The player is always anchor #0; each point this returns pulls building static
+   * bodies + citywide-index tiles into existence around it, so agents elsewhere in
+   * the city collide with buildings instead of clipping through them.
+   */
+  setColliderAnchors(provider: () => THREE.Vector3[]) {
+    this.#colliderAnchors = provider;
   }
 
   registerVehicle(handle: number) {
@@ -383,59 +422,103 @@ export class Physics {
     return Math.hypot(ex, ez);
   }
 
-  #bodyCandidates: { key: string; c: BuildingCollider; d: number }[] = [];
+  /** Player (anchor #0, full radius) + every registered extra anchor (AI cars /
+   *  vehicles, tight radius). Reused array — no per-tick allocation. */
+  #gatherAnchors(playerPos: THREE.Vector3): ColliderAnchor[] {
+    const out = this.#anchorList;
+    out.length = 0;
+    out.push({ x: playerPos.x, z: playerPos.z, r: CONFIG.colliderRadius });
+    const provider = this.#colliderAnchors;
+    if (provider) {
+      for (const p of provider()) out.push({ x: p.x, z: p.z, r: CONFIG.carColliderRadius });
+    }
+    return out;
+  }
 
-  #updateBuildingBodies(playerPos: THREE.Vector3) {
-    const r = CONFIG.colliderRadius;
-    const rOut = r * 1.35;
-    const budget = CONFIG.maxActiveBuildingBodies;
+  /** A building box by identity, from the visual tiles first then the index. */
+  #findCollider(key: string, i: number, s: number): BuildingCollider | undefined {
+    const visual = this.#tileColliders.get(key);
+    if (visual) {
+      const c = visual.find((col) => col.i === i && col.s === s);
+      if (c) return c;
+    }
+    return this.#colliderIndex?.tiles.get(key)?.find((col) => col.i === i && col.s === s);
+  }
 
-    // rank every alive building in range by wall distance (footprint edge, not
-    // centre — a pier-sized footprint can hug the player while its centre is
-    // 100m out). The old sweep filled the budget in tile-map order, so downtown
-    // a facade right beside the player could stay bodiless (walk straight
-    // through) while buildings 250m away held slots.
-    const cands = this.#bodyCandidates;
-    cands.length = 0;
+  /** Merged tile source for a body/sweep query: visual tiles (alive-gated) plus
+   *  index tiles for keys the player can't see. Reused array — no per-tick alloc. */
+  #mergedBodyTiles(): BodyTileSource<BuildingCollider>[] {
+    const src = this.#bodyTiles;
+    src.length = 0;
     for (const [key, colliders] of this.#tileColliders) {
-      const [tcx, tcz] = this.tiles.keyToCenter(key);
-      if (Math.hypot(tcx - playerPos.x, tcz - playerPos.z) > r + this.tiles.manifest.tile) continue;
-      for (const c of colliders) {
-        const d = this.#obbPlanarDistance(c, playerPos.x, playerPos.z);
-        if (d > r) continue;
-        if (!this.tiles.isAlive(key, c.i)) continue;
-        cands.push({ key, c, d });
+      const [cx, cz] = this.tiles.keyToCenter(key);
+      src.push({ key, cx, cz, colliders });
+    }
+    const idx = this.#colliderIndex;
+    if (idx) {
+      for (const [key, colliders] of idx.tiles) {
+        if (this.#tileColliders.has(key)) continue; // visual copy already added (and alive-gated)
+        const [cx, cz] = this.tiles.keyToCenter(key);
+        src.push({ key, cx, cz, colliders });
       }
     }
-    cands.sort((a, b) => a.d - b.d);
-    const kept = Math.min(cands.length, budget);
+    return src;
+  }
+
+  /** A building is alive when its visual tile says so; index-only tiles (no one
+   *  looking) can't have been demolished, so they're always alive. */
+  #bodyIsAlive = (key: string, i: number): boolean =>
+    this.#tileColliders.has(key) ? this.tiles.isAlive(key, i) : true;
+
+  #updateBuildingBodies(playerPos: THREE.Vector3) {
+    const budget = CONFIG.maxActiveBuildingBodies;
+    const anchors = this.#gatherAnchors(playerPos);
+    // stream baked OBBs around every anchor so far-off cars have building data
+    this.#colliderIndex?.update(anchors);
+
+    // rank every alive building within ANY anchor's radius by min wall distance
+    // to any anchor (footprint edge, not centre). Cars anchor themselves, so a
+    // facade beside a car 300 m from the player — outside the old player-only
+    // 260 m radius — now gets a body instead of being driven straight through.
+    const tiles = this.#mergedBodyTiles();
+    const kept = selectBodyCandidates(anchors, tiles, budget, this.#bodyIsAlive, this.tiles.manifest.tile);
+
     // when the budget saturates, everything past the cutoff is fair game to
     // evict — with hysteresis so bodies don't churn at the boundary
-    const cutoff = kept === budget && kept > 0 ? cands[kept - 1].d : r;
+    const cutoff = kept.length === budget && budget > 0 ? kept[kept.length - 1].d : Infinity;
     const wanted = new Set<string>();
-    for (let i = 0; i < kept; i++) wanted.add(`${cands[i].key}:${cands[i].c.i}:${cands[i].c.s}`);
+    for (const cand of kept) wanted.add(`${cand.key}:${cand.c.i}:${cand.c.s}`);
 
     for (const [handle, info] of this.#buildingBodies) {
       const id = `${info.key}:${info.i}:${info.s}`;
-      const c = this.#tileColliders.get(info.key)?.find((col) => col.i === info.i && col.s === info.s);
-      const d = c ? this.#obbPlanarDistance(c, playerPos.x, playerPos.z) : Infinity;
-      if (!c || d > rOut || (!wanted.has(id) && d > cutoff * 1.2 + 10)) {
+      const c = this.#findCollider(info.key, info.i, info.s);
+      // hold = min wall distance to any anchor whose OUTER band still covers it;
+      // Infinity once the box has left every anchor's band (old d > rOut test)
+      const hold = c ? anchorHold(c, anchors, 1.35) : Infinity;
+      if (!c || hold === Infinity || (!wanted.has(id) && hold > cutoff * 1.2 + 10)) {
         this.world.destroyBody(handle);
         this.#buildingBodies.delete(handle);
         this.#bodyByBuilding.delete(id);
       }
     }
 
-    for (let i = 0; i < kept; i++) {
+    for (const cand of kept) {
       if (this.#buildingBodies.size >= budget) return;
-      const { key, c } = cands[i];
+      const { key, c } = cand;
       const id = `${key}:${c.i}:${c.s}`;
       if (this.#bodyByBuilding.has(id)) continue;
-      // never materialise a collider around the player: some footprint OBBs
-      // overhang plazas, and a body spawned inside a static box gets pinned
-      // by the solver. Defer it — once the player steps out, the next sweep
-      // creates it normally.
-      if (this.#obbContains(c, playerPos, 2.5)) continue;
+      // never materialise a box around an anchor already inside its footprint:
+      // some OBBs overhang plazas, and a dynamic body spawned inside a static box
+      // gets pinned by the solver. Defer it — the next update creates it once the
+      // anchor steps out.
+      let insideAny = false;
+      for (const a of anchors) {
+        if (obbContainsXZ(c, a.x, a.z, 2.5)) {
+          insideAny = true;
+          break;
+        }
+      }
+      if (insideAny) continue;
       const yaw = c.yaw;
       const handle = this.world.createBox({
         type: BodyType.Static,
@@ -580,16 +663,43 @@ export class Physics {
     const midX = (p0[0] + p1[0]) / 2;
     const midZ = (p0[2] + p1[2]) / 2;
 
-    let bestT = Infinity;
-    for (const [key, colliders] of this.#tileColliders) {
+    // visual tiles (alive-gated) raced against index-only tiles (buildings in
+    // regions no one is looking at, so nothing there can be demolished) — the
+    // latter is why an AI car far from the player still stops at walls.
+    let bestT = this.#sweepTiles(this.#tileColliders, true, p0, dxs, dys, dzs, segLen, midX, midZ, Infinity);
+    const idx = this.#colliderIndex;
+    if (idx) bestT = this.#sweepTiles(idx.tiles, false, p0, dxs, dys, dzs, segLen, midX, midZ, bestT);
+    if (bestT === Infinity) return null;
+    return new THREE.Vector3(p0[0] + dxs * bestT, p0[1] + dys * bestT, p0[2] + dzs * bestT);
+  }
+
+  /** Slab-sweep p0→(p0+d) against one map of tiles, returning the earliest tmin
+   *  (≤ prevBest). `gate` alive-gates through the visual tile stream; index-only
+   *  tiles pass everything (a building no one can see can't be demolished). */
+  #sweepTiles(
+    tiles: ReadonlyMap<string, BuildingCollider[]>,
+    gate: boolean,
+    p0: [number, number, number],
+    dxs: number,
+    dys: number,
+    dzs: number,
+    segLen: number,
+    midX: number,
+    midZ: number,
+    prevBest: number
+  ): number {
+    let bestT = prevBest;
+    const tileCull = this.tiles.manifest.tile * 0.75 + segLen + 120;
+    for (const [key, colliders] of tiles) {
+      if (!gate && this.#tileColliders.has(key)) continue; // visual copy already swept
       const [tcx, tcz] = this.tiles.keyToCenter(key);
-      if (Math.hypot(tcx - midX, tcz - midZ) > this.tiles.manifest.tile * 0.75 + segLen + 120) continue;
+      if (Math.hypot(tcx - midX, tcz - midZ) > tileCull) continue;
       for (const c of colliders) {
         const cdx = c.x - midX;
         const cdz = c.z - midZ;
         const reach = c.hx + c.hz + segLen;
         if (cdx * cdx + cdz * cdz > reach * reach) continue;
-        if (!this.tiles.isAlive(key, c.i)) continue;
+        if (gate && !this.tiles.isAlive(key, c.i)) continue;
 
         // segment into the box's local (yaw-aligned) frame: R_y(-yaw) * offset
         const cos = c.cosYaw;
@@ -629,8 +739,7 @@ export class Physics {
         if (!miss && tmin < bestT) bestT = tmin;
       }
     }
-    if (bestT === Infinity) return null;
-    return new THREE.Vector3(p0[0] + dxs * bestT, p0[1] + dys * bestT, p0[2] + dzs * bestT);
+    return bestT;
   }
 
   /**

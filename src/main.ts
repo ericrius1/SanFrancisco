@@ -31,6 +31,7 @@ import { Graffiti, PAINT_COLORS } from "./fx/graffiti";
 import { Paintballs, PaintSkins, PAINTBALL_SPEED, type PaintTarget } from "./fx/paintball";
 import { Bubbles } from "./fx/bubbles";
 import { Chimes } from "./fx/chimes";
+import { WorldCursor } from "./fx/worldCursor";
 import { Toolbar, TOOL_ORDER, TOOL_VERB, type ToolName } from "./ui/toolbar";
 import { AvatarSelector } from "./ui/avatarSelector";
 import { AudioControls } from "./ui/audioControls";
@@ -184,6 +185,7 @@ async function boot() {
   paintballs.onWater = (x, y, z) => splashes.splash(x, y, z, elapsed, 0.5);
   const bubbles = new Bubbles(scene, map, physics);
   const chimes = new Chimes(scene);
+  const worldCursor = new WorldCursor(scene);
   let tool: ToolName = "spray";
   let grabberRef: Grabber | null = null; // assigned below; setTool runs once before it exists
   const setTool = (t: ToolName) => {
@@ -263,6 +265,9 @@ async function boot() {
   // a floating brain lattice. Async init loads the road graph off the boot path.
   const aiCars = new AiCars(physics, map, scene, () => camera);
   void aiCars.ready();
+  // building static bodies + the citywide collider index materialise around every
+  // AI car (not just the human), so cars collide with walls instead of clipping.
+  physics.setColliderAnchors(() => aiCars.anchorPositions());
   // stable anchor array (player.position is mutated in place) — no per-frame alloc
   const aiCarAnchors = [player.position];
   const creatures = new Creatures(map, scene);
@@ -538,7 +543,7 @@ async function boot() {
   let uiOpen = true;
 
   input.onLockChange = (locked) => {
-    if (!locked && !cameraMode) hud.message("Click to capture the mouse · Esc releases it", 2.8);
+    if (!locked && !cameraMode && !input.freeCursor) hud.message("Click to capture the mouse · Esc releases it", 2.8);
   };
 
   const showUi = () => {
@@ -1119,6 +1124,19 @@ async function boot() {
   const scl = new THREE.Vector3();
   const aim = new THREE.Vector3();
   const rayOrigin = new THREE.Vector3(); // aimOrigin returns a shared tmp — keep our own copy
+  // The interaction ray. Normally it's the centre-screen aim; while the free
+  // cursor is out (Command held) it's the camera-through-mouse ray instead, so
+  // clicks and the hover glow track wherever the loose orb is pointing.
+  const aimRay = (origin: THREE.Vector3, dir: THREE.Vector3) => {
+    if (input.freeCursor) {
+      origin.copy(camera.position);
+      dir.set(input.mouseNDCx, input.mouseNDCy, 0.5).unproject(camera).sub(camera.position).normalize();
+    } else {
+      chase.lookDir(dir);
+      origin.copy(player.aimOrigin);
+    }
+  };
+  const cursorPos = new THREE.Vector3(); // where the world cursor rests this frame
   const paintDir = new THREE.Vector3();
   const paintVel = new THREE.Vector3();
   const paintMuzzle = new THREE.Vector3();
@@ -1427,8 +1445,7 @@ async function boot() {
       // a click on an AI entity's floating lattice opens the brain inspector —
       // the whole point of pause-and-approach (it then fully freezes behind it)
       if (input.firePressed && !input.suspended) {
-        chase.lookDir(aim);
-        rayOrigin.copy(player.aimOrigin);
+        aimRay(rayOrigin, aim);
         const hit = pickBrain(rayOrigin, aim);
         if (hit) brainPanel.open(hit);
       }
@@ -1656,8 +1673,7 @@ async function boot() {
     // lattice opens the inspector (and consumes the click — no tool fires).
     let brainOpened = false;
     if (input.firePressed && !input.suspended) {
-      chase.lookDir(aim);
-      rayOrigin.copy(player.aimOrigin);
+      aimRay(rayOrigin, aim);
       const hit = pickBrain(rayOrigin, aim);
       if (hit) {
         brainPanel.open(hit);
@@ -1666,6 +1682,9 @@ async function boot() {
     }
     if (brainOpened) {
       // consumed — the world is now frozen behind the panel
+    } else if (input.freeCursor) {
+      // free cursor out: clicks only inspect brains / reach UI panels — the
+      // spray/chime/grab tools stand down so pointing around never fires them
     } else if (
       !input.suspended &&
       input.firePressed &&
@@ -1782,19 +1801,6 @@ async function boot() {
         fireCooldown = 0.32;
         const hit = physics.raycastWorld(rayOrigin, aim, 300);
         if (hit) chimes.strike(hit.point, hit.normal, hit.kind, chase.yaw, camera.position);
-      }
-    }
-
-    // Hover affordance: aiming the crosshair at an inspectable brain hints once.
-    if (!brainPanel.isOpen && !input.firePressed) {
-      chase.lookDir(aim);
-      rayOrigin.copy(player.aimOrigin);
-      const hover = pickBrain(rayOrigin, aim);
-      if (hover && hover.id !== lastHoverBrain) {
-        hud.message(`Click to inspect ${hover.label}'s brain`, 1.5);
-        lastHoverBrain = hover.id;
-      } else if (!hover) {
-        lastHoverBrain = null;
       }
     }
 
@@ -1974,6 +1980,40 @@ async function boot() {
       orbit.update(frameDt);
     } else {
       chase.update(frameDt, player, input);
+    }
+    // The in-world cursor: a glowing orb that rests where you're pointing. It
+    // sits centre-screen while the mouse is captured (a soft aim reticle too),
+    // and rides the free mouse ray while Command is held. It swells, warms and
+    // sheds a swirl of particles when it lands on something inspectable (an AI
+    // entity's floating brain lattice) — so you can see it's clickable. Runs
+    // after the camera is posed so its billboard + depth match this frame.
+    {
+      const cursorLive =
+        document.body.classList.contains("started") &&
+        !brainPanel.isOpen &&
+        !cameraMode &&
+        !input.suspended &&
+        !cineHook &&
+        !(paused && freezePlayer);
+      if (cursorLive) {
+        aimRay(rayOrigin, aim);
+        const hoverBrain = pickBrain(rayOrigin, aim);
+        if (hoverBrain) {
+          hoverBrain.getWorldPos(cursorPos);
+          if (!input.firePressed && hoverBrain.id !== lastHoverBrain)
+            hud.message(`Click to inspect ${hoverBrain.label}'s brain`, 1.5);
+          lastHoverBrain = hoverBrain.id;
+        } else {
+          lastHoverBrain = null;
+          // rest on the nearest real surface for honest depth; else float ahead
+          const hit = physics.raycastWorld(rayOrigin, aim, 60);
+          if (hit) cursorPos.copy(hit.point);
+          else cursorPos.copy(rayOrigin).addScaledVector(aim, 22);
+        }
+        worldCursor.update(frameDt, camera, cursorPos, hoverBrain ? 1 : 0, true);
+      } else {
+        worldCursor.update(frameDt, camera, cursorPos, 0, false);
+      }
     }
     sky.update(elapsed, camera.position);
     water.update(elapsed, camera.position, player.renderPosition);
@@ -2167,7 +2207,7 @@ async function boot() {
 
   const exposeDebugHooks = () => {
     Object.assign(window as never, {
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, WORLD_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, props, exploratorium, traffic, creatures, forest, garden, wildlands, splashes, vehicleAudio, nature, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, boatLaunchers, goldenGateLights, flyover, bridgeParade, teleportToTarget, aiCars, horses, buildings, cullGeneratedBuildings, brainPanel, inspectableBrains }
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, WORLD_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, props, exploratorium, traffic, creatures, forest, garden, wildlands, splashes, vehicleAudio, nature, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, boatLaunchers, goldenGateLights, flyover, bridgeParade, teleportToTarget, aiCars, horses, buildings, cullGeneratedBuildings, brainPanel, inspectableBrains, worldCursor }
     });
   };
   if (import.meta.env.DEV || new URLSearchParams(location.search).has("profile")) {

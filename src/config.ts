@@ -136,7 +136,14 @@ export const CONFIG = {
   tileLoadRadius: WORLD_TUNING.values.radius,
   tileUnloadRadius: WORLD_TUNING.values.radius + 400,
   colliderRadius: 260,
-  maxActiveBuildingBodies: 240,
+  // per-AI-car collider anchor radius: a car only needs a few tens of metres of
+  // building bodies around it (it moves ~2.8 m between the 5 Hz body updates), so
+  // this is far tighter than the player's, keeping the citywide budget bounded.
+  carColliderRadius: 60,
+  // static building AABBs are ~free in the box3d broadphase (they never move), so
+  // this is generous enough to cover the player plus every bodied AI car at once
+  // (48 cars × a handful of downtown boxes each) without starving the player.
+  maxActiveBuildingBodies: 700,
 
   // physics
   gravity: [0, -9.81, 0] as const,

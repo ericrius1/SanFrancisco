@@ -144,6 +144,8 @@ export class AiCars {
   #zeroObs = new Float32Array(ACTOR_SIZES[0]);
   #zeroOut = new Float32Array(ACTOR_SIZES[ACTOR_SIZES.length - 1]);
   #ghostLayerOut: Float32Array[] = []; // [hidden, output] handed to the overlay
+  #anchorOut: THREE.Vector3[] = []; // reused collider-anchor result (physics reads it)
+  #anchorPool: THREE.Vector3[] = []; // reused per-car anchor vectors
 
   constructor(physics: Physics, map: WorldMap, scene: THREE.Scene, getCamera: () => THREE.Camera) {
     this.#physics = physics;
@@ -740,6 +742,36 @@ export class AiCars {
       for (const c of this.#fleet.cars) out.push({ id: c.id, x: c.pos.x, z: c.pos.z, speed: c.speed, hasMesh: !!c.mesh, visible: !!c.mesh && c.mesh.visible });
     } else if (this.#ghosts) {
       for (const g of this.#ghosts.cars) if (g.active) out.push({ id: g.id, x: g.pos.x, z: g.pos.z, speed: g.speed, hasMesh: !!g.mesh, visible: !!g.mesh && g.mesh.visible });
+    }
+    return out;
+  }
+
+  /**
+   * Live world positions of every AI car that owns a kinematic body (NEAR tier)
+   * — the physics collider anchors. Building static bodies + the citywide collider
+   * index materialise around each, so a car training far from the human still
+   * collides with walls instead of clipping through them. Only bodied cars are
+   * returned: FAR cars integrate kinematically with road-estimate sensors and have
+   * no body to collide, so anchoring them would only waste the body budget. Ghost
+   * clients run no local sim (render-only), so they contribute no anchors.
+   * Reuses a pooled array — no per-call allocation on the physics hot path.
+   */
+  anchorPositions(): THREE.Vector3[] {
+    const out = this.#anchorOut;
+    out.length = 0;
+    const fleet = this.#fleet;
+    if (!this.#ready || !this.#isLeader || !fleet) return out;
+    let n = 0;
+    for (const car of fleet.cars) {
+      if (!car.alive || car.bodyHandle === 0) continue;
+      let v = this.#anchorPool[n];
+      if (!v) {
+        v = new THREE.Vector3();
+        this.#anchorPool[n] = v;
+      }
+      v.copy(car.pos);
+      out.push(v);
+      n++;
     }
     return out;
   }

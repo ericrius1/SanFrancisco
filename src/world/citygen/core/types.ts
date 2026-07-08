@@ -63,8 +63,7 @@ export interface ColliderBox {
   yaw: number;
 }
 
-/** Per-archetype style parameters a theme pack supplies to the engine. Phase 1
- *  uses only floorH + material ids + roofType; the grammar phase extends this. */
+/** Per-archetype style parameters a theme pack supplies to the engine. */
 export interface ArchetypeSpec {
   /** metres per storey (drives floor count from real height) */
   floorH: number;
@@ -74,6 +73,21 @@ export interface ArchetypeSpec {
   roofMaterial: string;
   /** flat | pitched | gable — Phase 1 builds flat; others reserved for grammar */
   roofType: "flat" | "pitched" | "gable";
+  // ---- grammar / detail material ids (Phase 2, all optional) ---------------
+  /** trim / cornice / window-frame material */
+  trimMaterial?: string;
+  /** window glass material */
+  glassMaterial?: string;
+  /** storefront / garage door material */
+  baseMaterial?: string;
+  /** target bay (window column) width in metres */
+  bayWidth?: number;
+  /** how far a bay window projects from the façade (metres); 0 = flush */
+  bayProjection?: number;
+  /** ground floor treatment the theme should draw on the street face */
+  groundFloor?: "storefront" | "stoop" | "garage" | "loadingDock" | "plain";
+  /** cornice projection at the roofline (metres); 0 = none */
+  cornice?: number;
   /** human-readable note on the real SF style (documentation only) */
   note?: string;
 }

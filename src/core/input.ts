@@ -52,8 +52,16 @@ export class Input {
   padConnected = false;
   device: "kb" | "pad" = "kb";
 
+  // Hold Command/Meta to temporarily release the pointer and steer a free
+  // in-world cursor (mouseNDC is the live screen position, -1..1). Releasing
+  // Meta re-locks. While true, canvas clicks feed the cursor, not re-lock.
+  freeCursor = false;
+  mouseNDCx = 0;
+  mouseNDCy = 0;
+
   onLockChange: (locked: boolean) => void = () => {};
   onDeviceChange: (device: "kb" | "pad") => void = () => {};
+  onFreeCursorChange: (free: boolean) => void = () => {};
 
   #justPressed = new Set<string>();
   #shiftedPresses = new Set<string>();
@@ -81,6 +89,16 @@ export class Input {
       // Alt+arrow is location history inside the game, not browser history.
       if (e.altKey && (e.code === "ArrowLeft" || e.code === "ArrowRight")) e.preventDefault();
       if (e.repeat) return;
+      // Command/Meta held: drop pointer lock so a free cursor can roam the world
+      // and reach UI panels. Its keyup re-locks. Never fights the map/camera modes.
+      if ((e.code === "MetaLeft" || e.code === "MetaRight") && this.locked && !this.suspended && !this.freeCursor) {
+        this.freeCursor = true;
+        this.mouseNDCx = 0;
+        this.mouseNDCy = 0;
+        this.fireHeld = false;
+        this.onFreeCursorChange(true);
+        document.exitPointerLock();
+      }
       this.keys.add(e.code);
       this.#justPressed.add(e.code);
       if (e.shiftKey) this.#shiftedPresses.add(e.code);
@@ -90,14 +108,20 @@ export class Input {
       // Slash: keep "/" (debug panel) from triggering Firefox quick-find
       if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Slash"].includes(e.code)) e.preventDefault();
     });
-    window.addEventListener("keyup", (e) => this.keys.delete(e.code));
+    window.addEventListener("keyup", (e) => {
+      this.keys.delete(e.code);
+      if ((e.code === "MetaLeft" || e.code === "MetaRight") && this.freeCursor) this.#endFreeCursor(true);
+    });
     window.addEventListener("blur", () => {
       this.keys.clear();
       this.fireHeld = false;
+      // Cmd+Tab etc. blurs while Meta is held and eats its keyup — bail cleanly,
+      // no re-lock (needs a gesture); the next canvas click recaptures.
+      if (this.freeCursor) this.#endFreeCursor(false);
     });
 
     el.addEventListener("click", () => {
-      if (!this.locked && !this.suspended) this.requestLock();
+      if (!this.locked && !this.suspended && !this.freeCursor) this.requestLock();
     });
 
     document.addEventListener("pointerlockchange", () => {
@@ -107,9 +131,14 @@ export class Input {
     });
 
     el.addEventListener("mousedown", (e) => {
+      // captured: fire the held tool. free cursor: a single click-to-inspect
+      // (no held auto-fire — the world stays put while you point at things).
       if (e.button === 0 && this.locked) {
         this.firePressed = true;
         this.fireHeld = true;
+        this.#setDevice("kb");
+      } else if (e.button === 0 && this.freeCursor) {
+        this.firePressed = true;
         this.#setDevice("kb");
       }
     });
@@ -122,6 +151,10 @@ export class Input {
       if (this.locked) {
         this.mouseDX += e.movementX;
         this.mouseDY += e.movementY;
+      } else {
+        // free cursor / unlocked: track the absolute pointer as NDC (-1..1)
+        this.mouseNDCx = (e.clientX / window.innerWidth) * 2 - 1;
+        this.mouseNDCy = -((e.clientY / window.innerHeight) * 2 - 1);
       }
     });
 
@@ -234,6 +267,12 @@ export class Input {
     }
 
     if (active) this.#setDevice("pad");
+  }
+
+  #endFreeCursor(relock: boolean) {
+    this.freeCursor = false;
+    this.onFreeCursorChange(false);
+    if (relock && !this.suspended) this.requestLock();
   }
 
   requestLock() {
