@@ -28,11 +28,11 @@ import { BirdTrails } from "./fx/birdTrail";
 import { WaterSplashes } from "./fx/splash";
 import { Fireworks } from "./fx/fireworks";
 import { Graffiti, PAINT_COLORS } from "./fx/graffiti";
-import { Paintballs, PaintSkins, PAINTBALL_SPEED, type PaintTarget } from "./fx/paintball";
+import { Paintballs, PaintSkins, PAINTBALL_SPEED } from "./fx/paintball";
 import { Bubbles } from "./fx/bubbles";
 import { Chimes } from "./fx/chimes";
 import { WorldCursor } from "./fx/worldCursor";
-import { WorldQueries } from "./core/worldQueries";
+import { WorldQueries, ProxySet } from "./core/worldQueries";
 import { Toolbar, TOOL_ORDER, TOOL_VERB, type ToolName } from "./ui/toolbar";
 import { AvatarSelector } from "./ui/avatarSelector";
 import { AudioControls } from "./ui/audioControls";
@@ -1173,38 +1173,14 @@ async function boot() {
     }
   };
   const cursorPos = new THREE.Vector3(); // where the world cursor rests this frame
-  // Nearest thing the cursor ray meets: the static world (buildings + terrain)
-  // raced against the dynamic movers already gathered for paint hits (buses,
-  // cars, other players — never me). A sphere hit lands the orb on the mover's
-  // near face, so it sits OVER a bus instead of being buried in it. `paintTargets`
-  // is refilled every frame before this runs.
-  const nearestCursorHit = (origin: THREE.Vector3, dir: THREE.Vector3, maxDist: number, out: THREE.Vector3): boolean => {
-    let bestT = Infinity;
-    const worldHit = physics.raycastWorld(origin, dir, maxDist);
-    if (worldHit) {
-      bestT = origin.distanceTo(worldHit.point);
-      out.copy(worldHit.point);
-    }
-    for (const c of paintTargets) {
-      if (c.owner === net.selfId) continue; // don't stick to my own body/vehicle
-      const ox = origin.x - c.x;
-      const oy = origin.y - c.y;
-      const oz = origin.z - c.z;
-      const b = ox * dir.x + oy * dir.y + oz * dir.z;
-      const disc = b * b - (ox * ox + oy * oy + oz * oz - c.r * c.r);
-      if (disc < 0) continue;
-      const t = -b - Math.sqrt(disc); // near-side intersection = the face toward us
-      if (t <= 0 || t >= bestT || t > maxDist) continue;
-      bestT = t;
-      out.set(origin.x + dir.x * t, origin.y + dir.y * t, origin.z + dir.z * t);
-    }
-    return bestT !== Infinity;
-  };
+  // Every raycastable world entity gets a proxy in the shared query world. This
+  // keyed set is synced once per frame (begin → put per live entity → end); the
+  // cursor and paintballs then just query worldQueries. Grass/flowers never join.
+  const entityProxies = new ProxySet(worldQueries);
   const paintDir = new THREE.Vector3();
   const paintVel = new THREE.Vector3();
   const paintMuzzle = new THREE.Vector3();
   const paintTmp = new THREE.Vector3();
-  const paintTargets: PaintTarget[] = [];
   // hit spheres for paint-vs-player, per embodiment: radius + centre lift
   const PAINT_HIT: Record<PlayerMode, { r: number; y: number }> = {
     walk: { r: 1.05, y: 0.95 },
@@ -2080,46 +2056,45 @@ async function boot() {
     minimap.update();
     playerLocator.update(camera, player.position, remotes.locatorTargets());
 
-    // paintballs fly after everyone is posed: candidate targets are traffic,
-    // remote avatars, and me (remote shots can splatter my clothes)
-    paintTargets.length = 0;
+    // Sync the raycastable-entity proxies once, after everyone is posed: traffic,
+    // remote avatars, and me (id = net.selfId, tagged self so the cursor skips it
+    // but remote paint still lands). paintballs + cursor then just query.
+    entityProxies.begin();
     for (const v of traffic.vehicles) {
       const big = v.cls === "bus" || v.cls === "cable";
-      paintTargets.push({
-        obj: v.mesh,
-        x: v.mesh.position.x,
-        y: v.mesh.position.y + (big ? 1.5 : 0.7),
-        z: v.mesh.position.z,
-        r: big ? 3.6 : 2.1,
-        owner: -1
-      });
+      entityProxies.put(
+        v,
+        { id: -1, kind: "vehicle", object: v.mesh, shape: { form: "sphere", radius: big ? 3.6 : 2.1 } },
+        v.mesh.position.x,
+        v.mesh.position.y + (big ? 1.5 : 0.7),
+        v.mesh.position.z
+      );
     }
     for (const a of remotes.avatars.values()) {
       const body = a.mode ? a.bodies[a.mode] : undefined;
       if (!body || !a.root.visible) continue;
       const hitSphere = PAINT_HIT[a.mode!];
-      paintTargets.push({
-        obj: body,
-        x: a.root.position.x,
-        y: a.root.position.y + hitSphere.y,
-        z: a.root.position.z,
-        r: hitSphere.r,
-        owner: a.info.id
-      });
+      entityProxies.put(
+        a,
+        { id: a.info.id, kind: "avatar", object: body, shape: { form: "sphere", radius: hitSphere.r } },
+        a.root.position.x,
+        a.root.position.y + hitSphere.y,
+        a.root.position.z
+      );
     }
     {
       const mesh = player.meshes[player.mode];
       const hitSphere = PAINT_HIT[player.mode];
-      paintTargets.push({
-        obj: mesh,
-        x: mesh.position.x,
-        y: mesh.position.y + hitSphere.y,
-        z: mesh.position.z,
-        r: hitSphere.r,
-        owner: net.selfId
-      });
+      entityProxies.put(
+        player,
+        { id: net.selfId, kind: "player", object: mesh, shape: { form: "sphere", radius: hitSphere.r }, self: true },
+        mesh.position.x,
+        mesh.position.y + hitSphere.y,
+        mesh.position.z
+      );
     }
-    paintballs.update(frameDt, physics, graffiti, paintSkins, paintTargets, (o, d, m) => exploratorium.raycast(o, d, m));
+    entityProxies.end();
+    paintballs.update(frameDt, worldQueries, graffiti, paintSkins);
     paintSkins.update(frameDt, scene);
 
     // The in-world cursor: a glowing orb that rests where you're pointing. It
@@ -2127,9 +2102,9 @@ async function boot() {
     // and rides the free mouse ray while Command is held. It swells, warms and
     // sheds a swirl of particles when it lands on something inspectable (an AI
     // entity's floating brain lattice) — so you can see it's clickable. Runs
-    // after everyone is posed (paintTargets is fresh) so its depth is world-aware:
-    // a hovered bus/car/avatar lifts it onto their near face instead of letting
-    // the ray punch through to the ground behind.
+    // after the entity proxies are synced so its depth is world-aware: a hovered
+    // bus/car/avatar lifts it onto their near face instead of letting the ray
+    // punch through to the ground behind.
     {
       const cursorLive =
         document.body.classList.contains("started") &&
@@ -2148,8 +2123,11 @@ async function boot() {
           lastHoverBrain = hoverBrain.id;
         } else {
           lastHoverBrain = null;
-          // rest on the nearest surface OR dynamic mover for honest depth; else float ahead
-          if (!nearestCursorHit(rayOrigin, aim, 60, cursorPos)) cursorPos.copy(rayOrigin).addScaledVector(aim, 22);
+          // rest on the nearest thing the ray meets — entity, building, terrain
+          // or water (never my own body) — for honest depth; else float ahead
+          const hit = worldQueries.raycast(rayOrigin, aim, 60, { ignoreSelf: true });
+          if (hit) cursorPos.copy(hit.point);
+          else cursorPos.copy(rayOrigin).addScaledVector(aim, 22);
         }
         worldCursor.update(frameDt, camera, cursorPos, hoverBrain ? 1 : 0, true);
       } else {

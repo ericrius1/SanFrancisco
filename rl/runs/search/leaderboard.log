@@ -18,3 +18,12 @@ to deploy: cp rl/runs/search/best.policy.json public/models/horse_policy.json
   (keep gallop specialist: gallopQ 86 spd 0.47)
 
 === ROUND 1  (pop 6, 80 gens each, 4 parallel) ===
+   64.7  gallop[q79 spd0.50 str0.99 bnd0.09] walk[q15 spd0.23] turn100
+   64.5  gallop[q83 spd0.42 str1.44 bnd0.29] walk[q8 spd0.08] turn97
+   64.5  gallop[q86 spd0.47 str1.41 bnd0.22] walk[q1 spd0.00] turn100
+   61.7  gallop[q80 spd0.39 str1.45 bnd0.33] walk[q9 spd0.08] turn97
+   32.4  gallop[q6 spd-0.02 str1.20 bnd0.03] walk[q68 spd0.30] turn92
+   24.3  gallop[q8 spd0.00 str1.65 bnd0.18] walk[q4 spd0.03] turn97
+  (keep gallop specialist: gallopQ 86 spd 0.47)
+
+=== ROUND 2  (pop 6, 80 gens each, 4 parallel) ===

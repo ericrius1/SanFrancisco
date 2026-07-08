@@ -190,18 +190,21 @@ function flowerMaterial(): THREE.MeshStandardNodeMaterial {
   const swayW: N = attribute("aSway", "float");
   const headMask: N = attribute("aHead", "float");
   const bloom: N = attribute("aBloom", "vec3"); // per-instance bloom colour
-  const yawCS: N = attribute("aYaw", "vec2"); // per-instance (cosYaw, sinYaw)
+  // Per-instance (cosYaw, sinYaw, worldX, worldZ). We must carry the world anchor in
+  // an attribute because modelWorldMatrix on an InstancedMesh is the MESH origin, not
+  // the instance's — exactly how the grass passes its anchor (aGrassWind.zw).
+  const inst: N = attribute("aInst", "vec4");
 
   // COLOUR-FROM-ROTATION (the article's cheap-variation trick): a flower's yaw
   // nudges its brightness, so a patch of the same species + tint still varies bloom
   // to bloom for free — no extra attribute, no extra pass.
-  const rotShade: N = yawCS.x.mul(0.1).add(yawCS.y.mul(0.06)).add(1.0);
+  const rotShade: N = inst.x.mul(0.1).add(inst.y.mul(0.06)).add(1.0);
   const bloomV: N = bloom.mul(rotShade);
   mat.colorNode = mix(STEM_COL, bloomV, headMask);
   // self-lit petals so a drift reads as a colour wash even in dusk shade
   mat.emissiveNode = bloomV.mul(headMask).mul(0.4);
 
-  const anchorWorld: N = (modelWorldMatrix as N).mul(vec4(0, 0, 0, 1)).xz;
+  const anchorWorld: N = (modelWorldMatrix as N).mul(vec4(inst.z, 0, inst.w, 1)).xz;
 
   // SHARED trample — read the same displacer field the grass reads, so walking a
   // drift presses the blooms down as the grass flattens (head dips, wind damps).
@@ -222,8 +225,8 @@ function flowerMaterial(): THREE.MeshStandardNodeMaterial {
   const swayAmt: N = groundSway(anchorWorld);
   const wWorldX: N = swayAmt.mul(WIND_DIR.x);
   const wWorldZ: N = swayAmt.mul(WIND_DIR.z);
-  const localX: N = wWorldX.mul(yawCS.x).sub(wWorldZ.mul(yawCS.y)); // R(-yaw) * worldWind
-  const localZ: N = wWorldX.mul(yawCS.y).add(wWorldZ.mul(yawCS.x));
+  const localX: N = wWorldX.mul(inst.x).sub(wWorldZ.mul(inst.y)); // R(-yaw) * worldWind
+  const localZ: N = wWorldX.mul(inst.y).add(wWorldZ.mul(inst.x));
   const windDamp: N = float(1).sub(crush.mul(0.7));
   const windOffset: N = vec3(localX, float(0), localZ).mul(0.11).mul(swayW).mul(windDamp);
   const dip: N = vec3(0, crush.mul(-0.4).mul(swayW), 0); // head sinks when stepped on
@@ -278,10 +281,10 @@ export function createFlowerRing(map: GardenTerrain): FlowerRing {
     mesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
     const bloom = new THREE.InstancedBufferAttribute(new Float32Array(capPerSpecies * 3), 3);
     bloom.setUsage(THREE.StaticDrawUsage);
-    const yaw = new THREE.InstancedBufferAttribute(new Float32Array(capPerSpecies * 2), 2);
-    yaw.setUsage(THREE.StaticDrawUsage);
+    const inst = new THREE.InstancedBufferAttribute(new Float32Array(capPerSpecies * 4), 4);
+    inst.setUsage(THREE.StaticDrawUsage);
     mesh.geometry.setAttribute("aBloom", bloom);
-    mesh.geometry.setAttribute("aYaw", yaw);
+    mesh.geometry.setAttribute("aInst", inst);
     mesh.count = 0;
     group.add(mesh);
     return mesh;
@@ -297,8 +300,10 @@ export function createFlowerRing(map: GardenTerrain): FlowerRing {
 
   function write(mesh: THREE.InstancedMesh, list: Row[]) {
     const m = mesh.instanceMatrix.array as Float32Array;
-    const bloom = (mesh.geometry.getAttribute("aBloom") as THREE.InstancedBufferAttribute).array as Float32Array;
-    const yaw = (mesh.geometry.getAttribute("aYaw") as THREE.InstancedBufferAttribute).array as Float32Array;
+    const bloomAttr = mesh.geometry.getAttribute("aBloom") as THREE.InstancedBufferAttribute;
+    const instAttr = mesh.geometry.getAttribute("aInst") as THREE.InstancedBufferAttribute;
+    const bloom = bloomAttr.array as Float32Array;
+    const inst = instAttr.array as Float32Array;
     for (let i = 0; i < list.length; i++) {
       const f = list[i];
       dummy.position.set(f.x, f.y, f.z);
@@ -309,13 +314,15 @@ export function createFlowerRing(map: GardenTerrain): FlowerRing {
       bloom[i * 3] = f.r;
       bloom[i * 3 + 1] = f.g;
       bloom[i * 3 + 2] = f.b;
-      yaw[i * 2] = Math.cos(f.yaw);
-      yaw[i * 2 + 1] = Math.sin(f.yaw);
+      inst[i * 4] = Math.cos(f.yaw);
+      inst[i * 4 + 1] = Math.sin(f.yaw);
+      inst[i * 4 + 2] = f.x;
+      inst[i * 4 + 3] = f.z;
     }
     mesh.count = list.length;
     mesh.instanceMatrix.needsUpdate = true;
-    (mesh.geometry.getAttribute("aBloom") as THREE.InstancedBufferAttribute).needsUpdate = true;
-    (mesh.geometry.getAttribute("aYaw") as THREE.InstancedBufferAttribute).needsUpdate = true;
+    bloomAttr.needsUpdate = true;
+    instAttr.needsUpdate = true;
   }
 
   function resample(fx: number, fz: number) {

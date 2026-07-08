@@ -38,10 +38,10 @@ type Ball = {
 
 /**
  * Paintballs: kinematic blobs of paint that actually fly — no physics bodies,
- * just a ballistic integrate + a per-step sweep against buildings/terrain
- * (physics.raycastWorld) and the moving targets the caller hands in. Impacts
- * are cosmetic only: walls get a Graffiti burst, vehicles/players get a splat
- * stuck to their mesh via PaintSkins.
+ * just a ballistic integrate + a per-step cast through the shared WorldQueries
+ * (buildings/terrain/water + every registered world entity). Impacts are
+ * cosmetic only: walls/trees/ground get a Graffiti burst, vehicles/players/
+ * creatures get a splat stuck to their mesh via PaintSkins.
  *
  * Every client simulates every shot locally (the net message is just origin +
  * velocity + color), so remote paint lands where *this* client sees the wall.
