@@ -9,7 +9,7 @@
 // primitives — no THREE here.
 import {
   type FacadeDecorator, type FacadeEdge, type Vec3,
-  PanelBuilder, pointOnWall, outset, floorBands, bayCount,
+  PanelBuilder, pointOnWall, outset, floorBands, bayCount, aboveGrade,
 } from "../core/facade";
 
 // ---- small vector helpers ---------------------------------------------------
@@ -156,11 +156,14 @@ export const victorianFacade: FacadeDecorator = (e, out, rng) => {
   }
 
   // ---- ground floor: stoop + door on the street face -----------------------
-  if (e.isStreet && e.length > 2.4) {
-    stoopAndDoor(out, e, e.base, groundTopY, { base: baseMat, trim, door: doorMat });
+  // On a hillside lot the ground floor can be buried up to `grade`; only lay the
+  // stoop/door/garden window when enough of it clears the ground line.
+  const gBase = Math.max(e.base, e.grade);
+  if (e.isStreet && e.length > 2.4 && groundTopY - gBase > 1.2) {
+    stoopAndDoor(out, e, gBase, groundTopY, { base: baseMat, trim, door: doorMat });
     // a ground-floor bay/garden window on the other side of the door
     const gw0 = gp(e, 0.62), gw1 = gp(e, 0.92);
-    faceWindow(out, gw0, gw1, e.base + 0.7, groundTopY - 0.25, n3, wm);
+    faceWindow(out, gw0, gw1, aboveGrade(e, e.base + 0.7), groundTopY - 0.25, n3, wm);
   }
 
   // ---- upper floors ---------------------------------------------------------
@@ -177,7 +180,8 @@ export const victorianFacade: FacadeDecorator = (e, out, rng) => {
     const wallL = gp(e, bl), wallR = gp(e, br);
     const frontL = outset(gp(e, bl + cant), e, proj);
     const frontR = outset(gp(e, br - cant), e, proj);
-    const yb = upper[0].y0, yt = e.top;
+    // start the projecting bay at the ground line so it never juts out below grade
+    const yb = Math.max(upper[0].y0, e.grade), yt = e.top;
     const fL: Vec3 = [frontL[0], 0, frontL[2]], fR: Vec3 = [frontR[0], 0, frontR[2]];
     const nFrontU = unit(sub(fR, fL)); const nFront: Vec3 = [nFrontU[2], 0, -nFrontU[0]];
     const nLU = unit(sub(fL, [wallL[0], 0, wallL[2]])); const nL: Vec3 = [nLU[2], 0, -nLU[0]];
@@ -192,7 +196,7 @@ export const victorianFacade: FacadeDecorator = (e, out, rng) => {
 
     // windows on each bay face + flanking wall, per storey
     for (const band of upper) {
-      const wy0 = band.y0 + 0.45, wy1 = band.y1 - 0.2;
+      const wy0 = aboveGrade(e, band.y0 + 0.45), wy1 = band.y1 - 0.2;
       faceWindow(out, frontL, frontR, wy0, wy1, nFront, wm);
       faceWindow(out, wallL, frontL, wy0, wy1, nL, wm);
       faceWindow(out, frontR, wallR, wy0, wy1, nR, wm);
@@ -204,7 +208,7 @@ export const victorianFacade: FacadeDecorator = (e, out, rng) => {
     // non-street / no-bay faces: an even grid of framed windows
     const cols = bayCount(e, 3.4);
     for (const band of upper) {
-      const wy0 = band.y0 + 0.45, wy1 = band.y1 - 0.25;
+      const wy0 = aboveGrade(e, band.y0 + 0.45), wy1 = band.y1 - 0.25;
       for (let c = 0; c < cols; c++) {
         if (rng() < 0.05) continue;
         faceWindow(out, gp(e, (c + 0.24) / cols), gp(e, (c + 0.76) / cols), wy0, wy1, n3, wm);

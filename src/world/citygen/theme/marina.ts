@@ -1,7 +1,7 @@
 // Marina / Sunset Mediterranean (Spanish Revival) façade — boxy smooth stucco,
 // flat roof with a low tile cornice, an arched garage under a big bow/picture
 // window, arched upper windows. Reuses the shared façade kit.
-import { floorBands, type FacadeDecorator, type Vec3 } from "../core/facade";
+import { floorBands, aboveGrade, type FacadeDecorator, type Vec3 } from "../core/facade";
 import { gp, beltCourse, cornice, windowGrid, garageDoor, faceWindow } from "./facadeKit";
 
 export const marinaFacade: FacadeDecorator = (e, out) => {
@@ -22,7 +22,7 @@ export const marinaFacade: FacadeDecorator = (e, out) => {
     // big bow / picture window over the garage (first upper floor)
     if (bands[1]) {
       const b = bands[1];
-      faceWindow(out, gp(e, 0.18), gp(e, 0.82), b.y0 + 0.35, b.y1 - 0.2, n3, { frame: trim, glass, trim }, true);
+      faceWindow(out, gp(e, 0.18), gp(e, 0.82), aboveGrade(e, b.y0 + 0.35), b.y1 - 0.2, n3, { frame: trim, glass, trim }, true);
     }
   }
 

@@ -28,7 +28,6 @@ type Ctx = {
   };
   sky?: {
     cycleEnabled: boolean;
-    sunsetAzimuth: number;
     nightBrightness: number;
     setTimeOfDay: (time: number) => void;
   };
@@ -278,8 +277,7 @@ export function runDemo(name: string, ctx: Ctx) {
         win.__sfReelDone = false;
         if (sky) {
           sky.cycleEnabled = false;
-          sky.sunsetAzimuth = 232;
-          sky.setTimeOfDay(16.4); // warm, low late-afternoon sun
+          sky.setTimeOfDay(16.4); // warm late-afternoon sun
         }
 
         // Clip 1 (0-5s) — the guu carves the open bay on his hoverboard.
@@ -445,18 +443,8 @@ export function runDemo(name: string, ctx: Ctx) {
         win.__sfReelDone = false;
         if (sky) sky.cycleEnabled = false;
         const night = () => sky?.setTimeOfDay(21.0);
-        const dusk = () => {
-          if (sky) {
-            sky.sunsetAzimuth = 232;
-            sky.setTimeOfDay(18.5);
-          }
-        };
-        const sunset = () => {
-          if (sky) {
-            sky.sunsetAzimuth = 232;
-            sky.setTimeOfDay(16.8);
-          }
-        };
+        const dusk = () => sky?.setTimeOfDay(18.5);
+        const sunset = () => sky?.setTimeOfDay(16.8);
         const day = () => sky?.setTimeOfDay(12.6);
 
         // Clip 1 (0-7s) — DUSK — sling paint at the wall across the street.
@@ -596,18 +584,8 @@ export function runDemo(name: string, ctx: Ctx) {
         snapCamera(mode);
       };
 
-      const golden = () => {
-        if (sky) {
-          sky.sunsetAzimuth = 232;
-          sky.setTimeOfDay(16.4);
-        }
-      };
-      const duskLo = () => {
-        if (sky) {
-          sky.sunsetAzimuth = 232;
-          sky.setTimeOfDay(18.6);
-        }
-      };
+      const golden = () => sky?.setTimeOfDay(16.4);
+      const duskLo = () => sky?.setTimeOfDay(18.6);
       const midday = () => sky?.setTimeOfDay(12.5); // bright ambient for the museum interior
 
       // Timeline as data so the real-time path and the deterministic
@@ -706,7 +684,6 @@ export function runDemo(name: string, ctx: Ctx) {
       // lift the night fill so the hull + guitarist read against the afterglow
       if (sky) {
         sky.cycleEnabled = false;
-        sky.sunsetAzimuth = 250;
         sky.setTimeOfDay(18.85);
         sky.nightBrightness = 2.15;
       }

@@ -165,7 +165,7 @@ async function main() {
 
   const ok =
     insp.n > 0 &&
-    JSON.stringify(insp.sizes) === JSON.stringify([31, 48, 32, 12]) &&
+    JSON.stringify(insp.sizes) === JSON.stringify([31, 48, 32, 7]) &&
     insp.obsLen === 31 && insp.obsNonzero > 0 &&
     insp.visibleLattices > 0 &&
     insp.worldY > insp.groundY + 1.5 &&

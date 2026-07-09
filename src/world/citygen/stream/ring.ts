@@ -78,6 +78,30 @@ function boundsOf(poly: readonly (readonly [number, number])[]) {
   return { cx: x / poly.length, cz: z / poly.length, minx, maxx, minz, maxz };
 }
 
+// Highest ground under a footprint (verts + edge midpoints), from live terrain.
+// The baked `base` is the LOWEST ground (buildings dig into hills), so on a slope
+// the bottom window rows would sit below the uphill grade — this is the line the
+// façade/LOD keep windows above. Clamped into (base, top) against a bad sample.
+function footprintGrade(
+  poly: readonly (readonly [number, number])[], base: number, top: number,
+  map: { groundHeight(x: number, z: number): number },
+): number {
+  let gmax = -Infinity;
+  for (let k = 0; k < poly.length; k++) {
+    const [x0, z0] = poly[k];
+    const [x1, z1] = poly[(k + 1) % poly.length];
+    const h0 = map.groundHeight(x0, z0);
+    const hm = map.groundHeight((x0 + x1) / 2, (z0 + z1) / 2);
+    if (h0 > gmax) gmax = h0;
+    if (hm > gmax) gmax = hm;
+  }
+  if (!Number.isFinite(gmax)) return base;
+  // grade = the true ground line (highest terrain under the footprint). Ground-floor
+  // doors/storefronts meet it exactly; window sills clear it via aboveGrade()'s own
+  // margin (so no +margin here, or entries would float above flat-lot sidewalks).
+  return Math.min(Math.max(gmax, base), top - 1.5);
+}
+
 interface GridData {
   tile: number; minX: number; minZ: number; tilesX: number; tilesZ: number;
   cells: Record<string, (BuildingSpec & { i: number })[]>;
@@ -113,7 +137,8 @@ export async function createCityGenRing(
     for (const [key, list] of Object.entries(grid.cells)) {
       const entries = list.filter((b) => READY.has(b.archetype)).map((b) => {
         const g = boundsOf(b.poly);
-        return { ...b, key, cx: g.cx, cz: g.cz, bb: { minx: g.minx, maxx: g.maxx, minz: g.minz, maxz: g.maxz },
+        const grade = footprintGrade(b.poly, b.base, b.top, ctx.map);
+        return { ...b, grade, key, cx: g.cx, cz: g.cz, bb: { minx: g.minx, maxx: g.maxx, minz: g.minz, maxz: g.maxz },
           detail: null, fade: 0, fadeDir: 0, bodies: [] as number[], wallBoxes: [] as ColliderBox[],
           interior: null, intBodies: [] as number[], intBoxes: [] as ColliderBox[], state: "lod" as const } as Entry;
       });

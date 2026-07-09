@@ -32,54 +32,28 @@ import { GOLDEN_GATE_LIGHTS_INTENSITY } from "./goldenGateLights"
 import { SUTRO_LIGHTS_INTENSITY } from "./sutroTower"
 import { LIGHT_SCALE, RENDER_TUNING, SHADOW_QUALITY, WORLD_TUNING, type ShadowQuality } from "../config"
 import { tunables } from "../core/persist"
+import {
+  sanFranciscoCivilNow,
+  sanFranciscoTimeOfDay,
+  solarPosition,
+  type SfCivilTime
+} from "./solar"
+
+export { sanFranciscoTimeOfDay }
 
 // Fallback hour used only before the first real-time read lands (warm pre-sunset).
 // The default sky follows the real SF clock (see sanFranciscoTimeOfDay / followRealTime).
 export const PRE_SUNSET_TIME = 15.48
 
-// Real San-Francisco wall-clock time as decimal hours (0..24), DST-correct via the
-// IANA zone. The default sky mirrors this so the game's time of day matches what it
-// actually is in SF right now — no matter where in the world the player is sitting.
-const SF_TIME_FMT = new Intl.DateTimeFormat("en-US", {
-  timeZone: "America/Los_Angeles",
-  hourCycle: "h23",
-  hour: "2-digit",
-  minute: "2-digit",
-  second: "2-digit"
-})
-export function sanFranciscoTimeOfDay(): number {
-  let h = 0,
-    m = 0,
-    s = 0
-  for (const p of SF_TIME_FMT.formatToParts(new Date())) {
-    if (p.type === "hour") h = +p.value
-    else if (p.type === "minute") m = +p.value
-    else if (p.type === "second") s = +p.value
-  }
-  return (h % 24) + m / 60 + s / 3600
-}
-
 // Day/night cycle tuning, bound in the "/" panel's lighting folder (persisted).
-// timeOfDay: hours 0..24 — 6 sunrise, 18 sunset, but the sun is capped low so
-// the hours between hold at just-before-golden-hour, never bright midday.
-// cycleDuration: real seconds for a full 24h lap. Sky instance fields seed
-// from these.
-// sunsetAzimuth: compass angle (three.js spherical θ, degrees) the sun sits at
-// during the golden-hour anchor t=15.0 — drag it to park the sunset anywhere on
-// the horizon circle. θ180 = north (-z), θ270 = west (-x); the Golden Gate
-// bears ~θ232 from downtown, ~θ262 from Coit.
+// timeOfDay: hours 0..24 on the current SF calendar date — the sun follows the
+// real astronomical path for that day (seasonal elevation + azimuth), not a
+// stylized arc. cycleDuration: real seconds for a full 24h lap.
 export const SKY_TUNING = tunables("sky", {
   timeOfDay: { v: 18.48, min: 0, max: 24, step: 0.01, label: "time of day" },
   // default: mirror the real SF wall clock. Scrubbing (Z), dragging the time
   // slider, or turning on the cycle drops this off — a personal, local override.
   realTime: { v: true, label: "follow real SF time" },
-  sunsetAzimuth: {
-    v: 224,
-    min: 0,
-    max: 360,
-    step: 1,
-    label: "sunset azimuth (°)"
-  },
   cycleEnabled: { v: false, label: "fast day/night cycle" },
   cycleDuration: {
     v: 1500,
@@ -146,7 +120,7 @@ const PALETTE = {
   // fog tracks the sky's *horizon* tint per phase so the haze band reads as the
   // same air as the dome, not a dark smudge in front of it. The old gold/night
   // values were near-black cool tones while the dusk horizon is warm — against
-  // the dusk-locked sky that made distant geometry fade to black. These mirror
+  // a low sun that made distant geometry fade to black. These mirror
   // the shader horizon colours (warm dusty rose at golden hour, a moonlit
   // blue-grey after dark) so far tiles melt into the sky instead of silhouetting.
   fog: {
@@ -174,18 +148,20 @@ const PALETTE = {
  * (SkyEnvNode below — no PMREM bake), and a single directional key light — sun by
  * day, moon by night — supplies the crisp shadows the IBL alone cannot.
  *
- * Time runs on a full 24h clock, but the cycle is dusk-locked: the sun never
- * climbs past ~12°, so the loop holds at just-before-golden-hour through the
- * daytime hours, then moves through sunset, twilight, night, and sunrise with
- * no bright midday. `cycleEnabled`/`cycleDuration` animate it (default: a day
- * lasts 10 real minutes); `setTimeOfDay` jumps it directly.
+ * The sun follows the real astronomical path for San Francisco (lat/lon + current
+ * civil date), so noon elevation and sunset bearing shift with the seasons.
+ * `cycleEnabled`/`cycleDuration` scrub hours on today's SF date; `setTimeOfDay`
+ * jumps the hour directly.
  */
 export class Sky {
   mesh: THREE.Mesh
   sun: THREE.DirectionalLight
   hemi: THREE.HemisphereLight
   timeOfDay = PRE_SUNSET_TIME
-  sunsetAzimuth = SKY_TUNING.values.sunsetAzimuth
+  /** Degrees above the horizon; negative when the sun is down. */
+  sunElevation = 0
+  /** Compass degrees clockwise from north (0=N, 90=E, 180=S, 270=W). */
+  sunAzimuth = 0
   // When set, the sky tracks the real SF wall clock every frame (the default).
   // A manual override (scrub / setTimeOfDay / enabling the cycle) clears it, and
   // only affects this player — time of day is never sent over the network.
@@ -195,6 +171,13 @@ export class Sky {
 
   #scene: THREE.Scene
   #sunVec = new THREE.Vector3() // true sun direction (may point below the horizon)
+  // Calendar day the scrubbed/cycled hour is evaluated against. Real-time mode
+  // refreshes this every frame; manual mode keeps the SF date from the last
+  // followRealTime / construction so season stays coherent while scrubbing hours.
+  #civilDate: Pick<SfCivilTime, "year" | "month" | "day"> = (() => {
+    const n = sanFranciscoCivilNow()
+    return { year: n.year, month: n.month, day: n.day }
+  })()
 
   // sky shader uniforms
   #uSun = uniform(new THREE.Vector3(0, 1, 0))
@@ -216,6 +199,11 @@ export class Sky {
   #uFogHorizon = uniform(WORLD_TUNING.values.fogHorizon)
   #uFogHorizonStart = uniform(WORLD_TUNING.values.fogHorizonStart)
   #uFogHorizonSoftness = uniform(WORLD_TUNING.values.fogHorizonSoftness)
+  // reference near-white marine base (three's webgpu_custom_fog groundColor). The
+  // ground bank lerps white → phase-atmospheric by `fogTint`; the far veil always
+  // stays atmospheric so distant geometry melts into the sky, not into a white band.
+  #uFogWhite = uniform(new THREE.Color(0xd0dee7))
+  #uFogTint = uniform(WORLD_TUNING.values.fogTint)
   // directional sun-glow tint (warms the fog toward the sun) — see PALETTE.fogGlow
   #fogGlow = new THREE.Color(0x000000)
   #uFogGlow = uniform(this.#fogGlow.clone())
@@ -512,11 +500,12 @@ export class Sky {
       )
       .max(base.add(1))
     const groundRamp = top.sub(y).div(top.sub(base)).saturate()
-    // near-fade so the first ~20 m around the camera stay clear — the player is
-    // never whited out in their own valley — then the bank builds in fast.
+    // near-fade so the first ~60 m around the camera stay clear — the player is
+    // never whited out in their own valley — then the bank builds in over ~250 m so
+    // you're not walled into dense fog the moment you leave the clear bubble.
     const nearFade = smoothstep(
       this.#uFogStart as N,
-      (this.#uFogStart as N).add(150),
+      (this.#uFogStart as N).add(250),
       dist
     )
     const bankFog = groundRamp
@@ -545,7 +534,10 @@ export class Sky {
       .oneMinus()
       .mul(distHaze.oneMinus())
       .mul(horizonVeil.oneMinus())
-    const total = clear.oneMinus().clamp(0, 0.985)
+    // clamp near 1.0 (was 0.985) so the far veil genuinely closes — distant emissive
+    // landmarks (bridge lights, Sutro beacons, FiDi) no longer punch through a residual
+    // gap; the last stretch to the tile edge goes fully opaque.
+    const total = clear.oneMinus().clamp(0, 0.997)
 
     // The pooled ground bank reads brighter and whiter than the distance haze —
     // a lit marine layer catching skylight, not the horizon smog. Lift the tint
@@ -565,11 +557,14 @@ export class Sky {
     const glow = pow(sunAlign as N, float(2.5)).mul(this.#uFogGlowAmt as N) as N
     const litColor = mix(this.#uFogColor as N, this.#uFogGlow as N, glow as N) as N
 
-    const fogCol = mix(
-      litColor,
-      (litColor as N).mul(1.28).add(vec3(0.05, 0.06, 0.07)),
-      bankShare as N
-    )
+    // Bank colour = the reference near-white marine base with a slider-controlled
+    // amount of the phase-atmospheric `litColor` bled in (fogTint: 0 = pure white,
+    // 1 = fully atmospheric). The FAR end keeps pure `litColor` so distant geometry
+    // melts into the actual sky; the pooled ground bank glows luminous white (lifted
+    // a touch for a lit-marine-layer feel). `bankShare` crossfades between them.
+    const bankBase = mix(this.#uFogWhite as N, litColor, this.#uFogTint as N) as N
+    const bankBright = bankBase.mul(1.12).add(vec3(0.02, 0.03, 0.04)) as N
+    const fogCol = mix(litColor, bankBright, bankShare as N)
 
     return tslFog(fogCol as N, total as N)
   }
@@ -591,6 +586,7 @@ export class Sky {
     this.#uFogHorizon.value = v.fogHorizon
     this.#uFogHorizonStart.value = v.fogHorizonStart
     this.#uFogHorizonSoftness.value = v.fogHorizonSoftness
+    this.#uFogTint.value = v.fogTint
     this.#scene.fog = null
     this.#scene.fogNode = v.fogEnabled ? this.#fogNode : null
   }
@@ -600,7 +596,7 @@ export class Sky {
     return this.#skyRadiance(dir, { pointFeatures: false, soften: level })
   }
 
-  /** Pin a fixed hour. A manual override: stops the sky from tracking the real
+  /** Pin a fixed hour on today's SF calendar date. Stops tracking the real
    *  SF clock (the fast cycle keeps running only if it was already on). */
   setTimeOfDay(hours: number) {
     this.realTime = false
@@ -608,11 +604,13 @@ export class Sky {
     this.#applySun()
   }
 
-  /** Snap to the current real SF time and keep mirroring it every frame — the
-   *  default sky. Wherever the player is, the game reads the SF wall clock. */
+  /** Snap to the current real SF date+time and keep mirroring it every frame —
+   *  the default sky. Wherever the player is, the game reads the SF wall clock. */
   followRealTime() {
     this.realTime = true
-    this.timeOfDay = sanFranciscoTimeOfDay()
+    const now = sanFranciscoCivilNow()
+    this.#civilDate = { year: now.year, month: now.month, day: now.day }
+    this.timeOfDay = now.hour
     this.#applySun()
   }
 
@@ -637,26 +635,14 @@ export class Sky {
   }
 
   #applySun() {
-    const t = this.timeOfDay
-    // dusk-locked arc: the sun tops out at ~12° so the brightest the day ever
-    // gets is the warm slot just before golden hour; sunrise/sunset climb out
-    // of the golden band in about an hour, and midnight still dives to -72°
-    // for a real night.
-    const phase = ((t - 6) / 24) * Math.PI * 2
-    const s = Math.sin(phase)
-    const elevation = s > 0 ? 12 * Math.pow(s, 0.85) : 72 * s
-    // 360° per 24h so the sweep is continuous across midnight; sunsetAzimuth
-    // (the "/" panel slider) pins where on the horizon the sun sits at the
-    // golden-hour anchor t=15.0
-    const azimuth = this.sunsetAzimuth + (t - 15) * 15
-
-    this.#sunVec.setFromSphericalCoords(
-      1,
-      THREE.MathUtils.degToRad(90 - elevation),
-      THREE.MathUtils.degToRad(azimuth)
-    )
+    const civil: SfCivilTime = { ...this.#civilDate, hour: this.timeOfDay }
+    const pos = solarPosition(civil)
+    this.sunElevation = pos.elevation
+    this.sunAzimuth = pos.azimuth
+    this.#sunVec.set(pos.x, pos.y, pos.z)
     ;(this.#uSun.value as THREE.Vector3).copy(this.#sunVec)
 
+    const elevation = pos.elevation
     const dayW = smooth01(1.5, 18, elevation)
     const nightW = smooth01(6, 17, -elevation)
     const goldW = (1 - dayW) * (1 - nightW)
@@ -748,8 +734,10 @@ export class Sky {
     this.#lastElapsed = elapsed
 
     if (this.realTime) {
-      // default: mirror the real San-Francisco wall clock, wherever the player is
-      this.timeOfDay = sanFranciscoTimeOfDay()
+      // default: mirror the real San-Francisco date + clock, wherever the player is
+      const now = sanFranciscoCivilNow()
+      this.#civilDate = { year: now.year, month: now.month, day: now.day }
+      this.timeOfDay = now.hour
       this.#applySun() // the analytic env reads #uSun, so the IBL tracks for free
     } else if (this.cycleEnabled && dt > 0) {
       this.timeOfDay =

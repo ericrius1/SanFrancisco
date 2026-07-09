@@ -144,7 +144,7 @@ const OVERLAY_RANGE = 140; // metres: horses within this get a live brain lattic
 const OVERLAY_LIFT = 0.7; // metres above the head the lattice floats
 
 // Human-readable names for the 31 observation inputs (see #observe order) and
-// the 12 policy outputs (see #updateHorse action usage). Shown in the inspector.
+// the 7 policy outputs (see #updateHorse action usage). Shown in the inspector.
 const HORSE_INPUT_LABELS = [
   "tgt speed", "speed", "speed err", "sin Δhead", "cos Δhead",
   "height", "v vert", "roll", "pitch", "—", "—", "Δheading",
@@ -153,7 +153,8 @@ const HORSE_INPUT_LABELS = [
   "is walk", "is trot", "is gallop", "bias", "obs hurdle", "obs cone",
   "lane z", "arena r"
 ];
-const HORSE_OUTPUT_LABELS = ["cadence", "stride", "lift", "out3", "steer", "jump", "roll", "pitch", "out8", "out9", "out10", "out11"];
+const HORSE_OUTPUT_LABELS = ["cadence", "stride", "lift", "steer", "jump", "roll", "pitch"];
+const ACT_DIM = HORSE_OUTPUT_LABELS.length;
 
 const COATS = [0x8d5a31, 0x4b2f20, 0xb47a43, 0xd2b78a, 0x2a211d, 0x9b6a4a, 0x6b4029, 0xc08a5a] as const;
 const MANES = [0x21140d, 0x120f0c, 0x332016, 0xe8d4ab, 0x2a1b14] as const;
@@ -485,7 +486,7 @@ export class HorseHerd {
         routeRadius: r,
         routeDir: rand01(i, 13) < 0.18 ? -1 : 1,
         gait,
-        action: new Float32Array(12),
+        action: new Float32Array(ACT_DIM),
         contacts: [true, true, true, true],
         jumpCooldown: 0,
         jumpCount: 0,
@@ -704,8 +705,8 @@ export class HorseHerd {
       action[0] = 0.1;
       action[1] = h.gait === "gallop" ? 0.55 : h.gait === "trot" ? 0.1 : -0.25;
       action[2] = h.gait === "gallop" ? 0.5 : 0.0;
-      action[4] = clamp(wrapPi(headingTarget - h.heading), -1, 1);
-      action[5] = nearest?.kind === "hurdle" && Math.hypot(nearest.x - h.x, nearest.z - h.z) < 8 ? 0.9 : 0;
+      action[3] = clamp(wrapPi(headingTarget - h.heading), -1, 1);
+      action[4] = nearest?.kind === "hurdle" && Math.hypot(nearest.x - h.x, nearest.z - h.z) < 8 ? 0.9 : 0;
     }
     h.action.set(action);
     if (this.#policy && h.layerSnap.length) {
@@ -722,7 +723,7 @@ export class HorseHerd {
     const jumpApproach = this.#aheadObstacle(h, "hurdle", 14, 4.8);
     const coneApproach = this.#aheadObstacle(h, "cone", 8.5, 2.3);
     const avoidSteer = coneApproach ? -Math.sign(coneApproach.lateral || 1) * smoothstep(8.5, 1.2, coneApproach.ahead) * 0.58 : 0;
-    const steer = clamp(turnError * 2.15 + action[4] * 0.16 + avoidSteer, -1.55, 1.55);
+    const steer = clamp(turnError * 2.15 + action[3] * 0.16 + avoidSteer, -1.55, 1.55);
     h.phase = fract(h.phase + cadence * dt);
     h.heading = wrapPi(h.heading + steer * dt);
 
@@ -743,7 +744,7 @@ export class HorseHerd {
       h.z *= 0.998;
     }
 
-    const jumpIntent = jumpApproach ? Math.max(0.55, action[5] ?? 0) : Math.max(0, action[5] ?? 0);
+    const jumpIntent = jumpApproach ? Math.max(0.55, action[4] ?? 0) : Math.max(0, action[4] ?? 0);
     if (jumpApproach && jumpApproach.ahead < 3.55 && jumpApproach.ahead > 0.35 && h.jumpCooldown <= 0 && h.y < BODY_H + 0.08 && jumpIntent > 0.35) {
       this.#launchJump(h, jumpIntent);
     }
@@ -755,8 +756,8 @@ export class HorseHerd {
       h.vy = 0;
     }
     h.maxAir = Math.max(h.maxAir, Math.max(0, h.y - BODY_H));
-    h.roll += (-h.roll * 4.6 + avoidSteer * 0.06 + action[6] * 0.07) * dt;
-    h.pitch += (-h.pitch * 4.2 + (h.speed - h.targetSpeed) * 0.018 + action[7] * 0.06 - Math.max(0, h.vy) * 0.018) * dt;
+    h.roll += (-h.roll * 4.6 + avoidSteer * 0.06 + action[5] * 0.07) * dt;
+    h.pitch += (-h.pitch * 4.2 + (h.speed - h.targetSpeed) * 0.018 + action[6] * 0.06 - Math.max(0, h.vy) * 0.018) * dt;
     this.#poseHorse(h, cadence, stride, action, nearest);
   }
 

@@ -69,12 +69,24 @@ export function appendPrism(spec: BuildingSpec, out: PrismArrays): void {
   const poly = ensureCCW(spec.poly);
   const n = poly.length;
   const base = spec.base, top = spec.top;
+  // grade = highest ground under the footprint (matches core/massing). Windows are
+  // laid grade→top; base→grade is a solid skirt so a sloped lot doesn't show a
+  // half-buried bottom row even at LOD range.
+  const grade = Math.min(Math.max(spec.grade ?? base, base), top - 1.5);
   const [br, bg, bb] = linRgb(bodyColour(spec.seed, spec.archetype));
   const rr = br * 0.35 + 0.04, rg = bg * 0.35 + 0.04, rb = bb * 0.35 + 0.045; // dark roof tone
   const floorH = specFor(spec.archetype).floorH;
-  const nFloors = Math.max(1, Math.round((top - base) / floorH)); // == massing floors
+  const winFloors = Math.max(1, Math.round((top - grade) / floorH)); // storeys above grade
   const { pos, nor, uvs, col, idx } = out;
   let v0 = pos.length / 3;
+  const pushQuad = (x0: number, z0: number, y0: number, x1: number, z1: number, y1: number, nx: number, nz: number, u1: number, v1: number): void => {
+    const c: [number, number, number, number, number][] = [
+      [x0, y0, z0, 0, 0], [x1, y0, z1, u1, 0], [x1, y1, z1, u1, v1], [x0, y1, z0, 0, v1],
+    ];
+    for (const [px, py, pz, uu, vv] of c) { pos.push(px, py, pz); nor.push(nx, 0, nz); uvs.push(uu, vv); col.push(br, bg, bb); }
+    idx.push(v0, v0 + 1, v0 + 2, v0, v0 + 2, v0 + 3);
+    v0 += 4;
+  };
 
   for (let e = 0; e < n; e++) {
     const [x0, z0] = poly[e];
@@ -83,12 +95,10 @@ export function appendPrism(spec: BuildingSpec, out: PrismArrays): void {
     const len = Math.hypot(ex, ez) || 1e-3;
     const nx = ez / len, nz = -ex / len; // outward (CCW)
     const nCols = Math.max(1, Math.round(len / WIN_SPACING)); // snap → whole windows
-    const c: [number, number, number, number, number][] = [
-      [x0, base, z0, 0, 0], [x1, base, z1, nCols, 0], [x1, top, z1, nCols, nFloors], [x0, top, z0, 0, nFloors],
-    ];
-    for (const [px, py, pz, uu, vv] of c) { pos.push(px, py, pz); nor.push(nx, 0, nz); uvs.push(uu, vv); col.push(br, bg, bb); }
-    idx.push(v0, v0 + 1, v0 + 2, v0, v0 + 2, v0 + 3);
-    v0 += 4;
+    // solid skirt below grade (v held at 0 → the shader draws no window band)
+    if (grade > base + 0.05) pushQuad(x0, z0, base, x1, z1, grade, nx, nz, nCols, 0);
+    // windowed wall from grade up to the roof
+    pushQuad(x0, z0, grade, x1, z1, top, nx, nz, nCols, winFloors);
   }
   const tris = triangulate(poly);
   const roofStart = pos.length / 3;

@@ -3,7 +3,7 @@
 // projects PROUD of the flat wall quad so it reads (a recessed piece would be
 // occluded by the wall). Pure geometry, no THREE.
 import {
-  type FacadeEdge, type Vec3, PanelBuilder, pointOnWall, floorBands, bayCount,
+  type FacadeEdge, type Vec3, PanelBuilder, pointOnWall, floorBands, bayCount, aboveGrade,
 } from "../core/facade";
 
 // ---- vector helpers ---------------------------------------------------------
@@ -52,7 +52,9 @@ export function windowGrid(out: PanelBuilder, e: FacadeEdge, m: WinMats, bandY0:
   const cols = bayCount(e, colW);
   for (const band of floorBands(e)) {
     if (band.y0 < bandY0 - 0.01) continue;
-    const wy0 = band.y0 + 0.45, wy1 = band.y1 - 0.28;
+    // lift the sill to grade; a row fully below the ground line is dropped
+    // (faceWindow bails when the opening shrinks under 0.6 m).
+    const wy0 = aboveGrade(e, band.y0 + 0.45), wy1 = band.y1 - 0.28;
     for (let c = 0; c < cols; c++) {
       faceWindow(out, gp(e, (c + 0.24) / cols), gp(e, (c + 0.76) / cols), wy0, wy1, n, m, arched);
     }
@@ -107,6 +109,8 @@ export function cornerBoards(out: PanelBuilder, e: FacadeEdge, mat: string, w = 
 export function storefront(out: PanelBuilder, e: FacadeEdge, y0: number, y1: number, m: { glass: string; trim: string; awn: string; sign: string }): void {
   const n: Vec3 = [e.normal[0], 0, e.normal[1]];
   const along = unit(sub(gp(e, 1), gp(e, 0)));
+  y0 = Math.max(y0, e.grade); // start the shopfront at the ground line, not below it
+  if (y1 - y0 < 1.2) return;  // ground floor fully buried on this (uphill) face → plain wall
   const bulk = y0 + 0.5, glassTop = y1 - 0.7;
   const cols = bayCount(e, 3.6);
   for (let c = 0; c < cols; c++) {
@@ -124,6 +128,8 @@ export function storefront(out: PanelBuilder, e: FacadeEdge, y0: number, y1: num
 export function garageDoor(out: PanelBuilder, e: FacadeEdge, y0: number, y1: number, m: { door: string; trim: string }, arched = false): void {
   const n: Vec3 = [e.normal[0], 0, e.normal[1]];
   const along = unit(sub(gp(e, 1), gp(e, 0)));
+  y0 = Math.max(y0, e.grade); // sit the garage at grade so it isn't sunk into the hill
+  if (y1 - y0 < 1.2) return;
   const w = Math.min(3.0, e.length * 0.5), tc = e.length > 6 ? 0.72 : 0.5;
   const dl = gp(e, tc - w / 2 / e.length), dr = gp(e, tc + w / 2 / e.length);
   const top = Math.min(y1 - 0.2, y0 + 2.4);

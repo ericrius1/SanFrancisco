@@ -118,7 +118,6 @@ export class DebugPanel {
       this.#syncingFromSky = true;
       this.#lightingView.timeOfDay = this.#sky.timeOfDay;
       this.#lightingView.realTime = this.#sky.realTime;
-      this.#lightingView.sunsetAzimuth = this.#sky.sunsetAzimuth;
       this.#lightingView.cycleEnabled = this.#sky.cycleEnabled;
       this.#lightingView.nightBrightness = this.#sky.nightBrightness;
     }
@@ -136,7 +135,6 @@ export class DebugPanel {
       this.#syncingFromSky = true;
       this.#lightingView.timeOfDay = this.#sky.timeOfDay;
       this.#lightingView.realTime = this.#sky.realTime;
-      this.#lightingView.sunsetAzimuth = this.#sky.sunsetAzimuth;
       this.#lightingView.cycleEnabled = this.#sky.cycleEnabled;
       this.#lightingView.cycleDuration = this.#sky.cycleDuration;
       this.#lightingView.nightBrightness = this.#sky.nightBrightness;
@@ -240,7 +238,6 @@ export class DebugPanel {
     const lightingView = {
       timeOfDay: this.#sky.timeOfDay,
       realTime: this.#sky.realTime,
-      sunsetAzimuth: this.#sky.sunsetAzimuth,
       cycleEnabled: this.#sky.cycleEnabled,
       cycleDuration: this.#sky.cycleDuration,
       nightBrightness: this.#sky.nightBrightness
@@ -271,10 +268,6 @@ export class DebugPanel {
         this.#sky.nightBrightness = value as number;
         return;
       }
-      if (key === "sunsetAzimuth") this.#sky.sunsetAzimuth = value as number;
-      // while the cycle runs, per-frame updates pick the new azimuth up live but
-      // only rebake the IBL on elevation drift — force a rebake once the drag ends
-      if (key === "sunsetAzimuth" && (last || !this.#sky.cycleEnabled)) this.#sky.setTimeOfDay(this.#sky.timeOfDay);
     };
     SKY_TUNING.bind(pane, {
       target: lightingView,
@@ -290,6 +283,7 @@ export class DebugPanel {
     WORLD_TUNING.bind(fog, {
       keys: [
         "fogEnabled",
+        "fogTint",
         "fogBase",
         "fogTop",
         "fogBank",
@@ -323,7 +317,6 @@ export class DebugPanel {
     const advanced = pane.addFolder({ title: "advanced", expanded: false });
 
     const lighting = advanced.addFolder({ title: "lighting" });
-    SKY_TUNING.bind(lighting, { target: lightingView, keys: ["sunsetAzimuth"], onChange: onSkyChange });
     RENDER_TUNING.bind(lighting, {
       keys: ["exposure", "maxPixelRatio", "farWindowGlow"],
       onChange: (key, value) => {

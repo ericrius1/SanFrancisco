@@ -82,8 +82,17 @@ export const WORLD_TUNING = tunables("world", {
   // visible pop-in edge: the fog IS the far cull. (Down from 1500; 1300 was a touch
   // too tight — it culled the FiDi cluster from the Embarcadero before the fog had
   // fully closed over it.) Push it back up if you turn fog down.
-  radius: { v: 1400, min: 900, max: 6000, step: 100, label: "buildings (m)" },
+  // 1200: the horizon veil now closes to full opacity (fogHorizon 1.0) by ~1150 m,
+  // so the far cull is genuinely solid and the radius can drop below where it used
+  // to pop — fewer far buildings drawn, all of them fully fogged before the edge.
+  radius: { v: 1200, min: 900, max: 6000, step: 100, label: "buildings (m)" },
   fogEnabled: { v: true, label: "custom fog" },
+  // fog colour: 0 = pure reference near-white (0xd0dee7, three's webgpu_custom_fog),
+  // 1 = fully phase-atmospheric (blue by day, rose at golden hour, dark blue at
+  // night). The DEFAULT bank reads as a luminous white marine layer with a little
+  // sky colour bled in; the far horizon veil always stays atmospheric regardless so
+  // distant geometry melts into the actual sky, never a white band.
+  fogTint: { v: 0.3, min: 0, max: 1, step: 0.02, label: "atmosphere tint" },
   // --- ground/valley bank: a marine layer that pools in low ground and lets the
   // hills poke through. base/top are world-Y metres; billow gives it a churning
   // edge; the marine field (fogMarine) makes it thick at the coast + Golden Gate
@@ -100,7 +109,7 @@ export const WORLD_TUNING = tunables("world", {
   fogNoise: { v: 0.72, min: 0, max: 1, step: 0.02, label: "billow" },
   fogScale: { v: 0.0026, min: 0.0004, max: 0.01, step: 0.0001, format: (v: number) => v.toFixed(4), label: "billow scale" },
   fogDrift: { v: 0.03, min: 0, max: 0.12, step: 0.001, format: (v: number) => v.toFixed(3), label: "drift" },
-  fogStart: { v: 20, min: 0, max: 1200, step: 10, label: "near fade" },
+  fogStart: { v: 60, min: 0, max: 1200, step: 10, label: "near fade" },
   // marine-layer contrast: 0 = uniform fog everywhere (old look), 1 = full
   // west/Golden-Gate-heavy, thin-downtown gradient. Coast/Gate get fogPeak× the
   // bank density, the sheltered east gets fogFloor×.
@@ -110,7 +119,7 @@ export const WORLD_TUNING = tunables("world", {
   // low band along the whole coast + Golden Gate, so the bay water read as an opaque
   // wall from the bridge. 1.05×1.25 ≈ 1.3 leaves the near/mid water visible while the
   // far water + distance still fog out via the horizon veil (the actual far-cull).
-  fogPeak: { v: 1.25, min: 0.5, max: 3, step: 0.05, label: "· coast density" },
+  fogPeak: { v: 1.05, min: 0.5, max: 3, step: 0.05, label: "· coast density" },
   // --- distance haze: exp² fog that slams shut far out so the draw edge melts
   // into the sky. This is the draw-distance lever.
   fog: { v: 0.0011, min: 0, max: 0.002, step: 0.00001, format: (v: number) => v.toFixed(5), label: "haze" },
@@ -118,7 +127,7 @@ export const WORLD_TUNING = tunables("world", {
   // radius sit low. Ramps in from `start` and is near-solid by the tile edge.
   // veil nudged up (was 0.82) to keep the far-cull firm now that the bank is thinner —
   // the last stretch to the tile edge still melts into sky so radius can stay at 1400.
-  fogHorizon: { v: 0.92, min: 0, max: 1.5, step: 0.02, label: "horizon veil" },
+  fogHorizon: { v: 1.0, min: 0, max: 1.5, step: 0.02, label: "horizon veil" },
   fogHorizonStart: { v: 600, min: 300, max: 6000, step: 50, label: "horizon start (m)" },
   fogHorizonSoftness: { v: 550, min: 100, max: 3000, step: 50, label: "horizon softness" }
 });

@@ -190,13 +190,13 @@ const TAB_LIFE = `
   </section>
 
   <section>
-    <h3><span class="bts-ic">🌆</span> The hour that never quite ends</h3>
-    <p>By default the sky runs on <strong>real San-Francisco time</strong> — whatever hour it actually is
-    in SF right now is the hour you see, wherever in the world you're playing from. Hold <strong>Z</strong>
-    and drag the trackpad to scrub to any time you like (just for you), or flip on the fast day/night
-    cycle in the tuning panel. The sun is deliberately <strong>capped low</strong> — the light lingers in
-    that long golden-hour glow rather than flattening out at noon — which is a big part of why the city
-    looks the way it does.</p>
+    <h3><span class="bts-ic">🌆</span> Real San Francisco light</h3>
+    <p>By default the sky runs on <strong>real San-Francisco time and date</strong> — whatever hour and
+    season it actually is in SF right now is the light you see, wherever in the world you're playing
+    from. The sun follows its true astronomical path for the city's latitude, so a July noon sits high
+    and bright while a December afternoon stays low and long. Hold <strong>Z</strong> and drag the
+    trackpad to scrub to any hour you like (just for you), or flip on the fast day/night cycle in the
+    tuning panel.</p>
     <p>As the light dims, the landmark <strong>light installations</strong> come up, all driven by that
     one sky-brightness value so they fade in together: the Bay Bridge's shimmering Bay Lights (a field
     of instanced sprite LEDs), Sutro Tower's red aviation beacons blinking up its masts, the Salesforce
@@ -360,8 +360,7 @@ const TAB_PLAY = `
     <p>The traffic is real: sedans, taxis, a Muni bus, a cable car — each a dynamic body you can ram or
     ride (press E and it's yours). There's no road-network data, so they <strong>navigate by feel</strong>,
     probing the building-collider field ahead and steering toward open air, which reads surprisingly
-    like real city traffic on the SF grid. Once an evening a convertible even breaks ranks to pull up
-    beside you and watch the sunset. Up in the Marin redwoods the wildlife is rideable — walk up to a
+    like real city traffic on the SF grid. Up in the Marin redwoods the wildlife is rideable — walk up to a
     bear or raccoon and mount it with the same plumbing that commandeers a car. Gulls wheel over the
     landmarks in one draw call, and something big and green circles Alcatraz, surfacing every so often.
     And the fireworks are <strong>entirely GPU-driven</strong>: the whole particle population lives in

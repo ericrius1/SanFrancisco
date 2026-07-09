@@ -1692,7 +1692,6 @@ async function boot() {
       pipeline.applyPostFx(); // toggles back off + sliders back to defaults
       sky.cycleEnabled = SKY_TUNING.values.cycleEnabled;
       sky.cycleDuration = SKY_TUNING.values.cycleDuration;
-      sky.sunsetAzimuth = SKY_TUNING.values.sunsetAzimuth;
       sky.nightBrightness = SKY_TUNING.values.nightBrightness;
       sky.followRealTime(); // default: back to mirroring the real SF clock
       sky.applyFogParams();
@@ -1914,7 +1913,7 @@ async function boot() {
     let steps = 0;
     while (accumulator >= physics.world.fixedTimeStep && steps < 3) {
       player.update(physics.world.fixedTimeStep, input, chase.yaw, aim);
-      traffic.prePhysics(physics.world.fixedTimeStep, player.position, sky.timeOfDay, sky.sunsetAzimuth);
+      traffic.prePhysics(physics.world.fixedTimeStep, player.position);
       aiCars.prePhysics(physics.world.fixedTimeStep, aiCarAnchors);
       horses.prePhysics(physics.world.fixedTimeStep, player.position);
       abandonedMounts.prePhysics(physics.world.fixedTimeStep);
@@ -1947,7 +1946,7 @@ async function boot() {
     highUp = highUp ? altitude > 110 : altitude > 150;
     // high over the city streams buildings only — no park lawns / trees uploaded
     tiles.update(player.position.x, player.position.z, highUp);
-    traffic.update(player.position, frameDt, sky.timeOfDay, sky.sunsetAzimuth);
+    traffic.update(player.position, frameDt);
     aiCars.update(frameDt, player.position, highUp);
     abandonedMounts.update(frameDt, player.position);
     flyover.update(frameDt); // planes + phoenixes streaking over on "-"
