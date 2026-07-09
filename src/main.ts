@@ -1663,7 +1663,7 @@ async function boot() {
         if (hit) brainPanel?.open(hit);
       }
       if (cameraMode) orbit.update(frameDt);
-      else chase.update(frameDt, player, input);
+      else { chase.indoor = citygenRing.current?.isPlayerInside() ?? false; chase.update(frameDt, player, input); }
       // keep the vehicle hum, ambience and social presence alive like full pause
       vehicleAudio.update(frameDt, {
         mode: player.mode,
@@ -2212,6 +2212,7 @@ async function boot() {
     } else if (cameraMode) {
       orbit.update(frameDt);
     } else {
+      chase.indoor = citygenRing.current?.isPlayerInside() ?? false; // pull the boom in indoors
       chase.update(frameDt, player, input);
     }
     sky.update(elapsed, camera.position);

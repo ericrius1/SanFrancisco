@@ -25,6 +25,11 @@ export class ChaseCamera {
   pitch = 0.3;
   zoom = 1;
   shakeAmount = 0;
+  /** set true while the player is inside a building — pulls the boom in to near
+   *  first-person so the third-person camera doesn't sit outside the wall showing
+   *  the façade (there's no camera-collision; this is the interior handling). */
+  indoor = false;
+  #indoor = 0; // smoothed 0..1
 
   #pos = new THREE.Vector3();
   #target = new THREE.Vector3();
@@ -61,8 +66,13 @@ export class ChaseCamera {
     this.zoom = THREE.MathUtils.clamp(this.zoom * (1 + input.wheel * 0.0009), 0.45, 2.6);
 
     const o = OFFSETS[player.mode];
-    const back = o.back * this.zoom;
-    const up = o.up * this.zoom;
+    // pull the boom in toward first-person while indoors (walk mode only), smoothed
+    const indoorTarget = this.indoor && player.mode === "walk" ? 1 : 0;
+    this.#indoor += (indoorTarget - this.#indoor) * (1 - Math.exp(-dt * 8));
+    const boomScale = 1 - this.#indoor * 0.82;   // 6.5 m → ~1.2 m boom
+    const upScale = 1 - this.#indoor * 0.5;       // sit nearer eye height inside
+    const back = o.back * this.zoom * boomScale;
+    const up = o.up * this.zoom * upScale;
 
     // anchor on the interpolated render transform — the raw physics transform
     // only advances at the fixed step and stutters at high refresh rates

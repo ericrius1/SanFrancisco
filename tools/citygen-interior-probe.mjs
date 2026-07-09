@@ -69,18 +69,27 @@ async function main() {
     // stand in a room CORNER (open floor — partitions are interior) looking across
     // the plan toward the opposite corner, so walls/doorways/furniture/daylight read
     const bbx = b.bb || { minx: b.cx - 4, maxx: b.cx + 4, minz: b.cz - 4, maxz: b.cz + 4 };
-    const eye = floorY + 1.55;
-    await setCam(bbx.minx + 1.2, eye, bbx.minz + 1.2, bbx.maxx - 1, eye - 0.2, bbx.maxz - 1);
+    const eye = floorY + 1.5;
+    const w = bbx.maxx - bbx.minx, d = bbx.maxz - bbx.minz;
+    // longest axis = the corridor to look down (through rooms/doorways), mid the short axis
+    const longX = w >= d;
+    const midS = longX ? (bbx.minz + bbx.maxz) / 2 : (bbx.minx + bbx.maxx) / 2;
+    const A = longX ? bbx.minx : bbx.minz, B = longX ? bbx.maxx : bbx.maxz;
+    const at = (fromLo) => longX
+      ? [fromLo ? A + 1.4 : B - 1.4, eye, midS, fromLo ? B - 1.2 : A + 1.2, eye - 0.12, midS]
+      : [midS, eye, fromLo ? A + 1.4 : B - 1.4, midS, eye - 0.12, fromLo ? B - 1.2 : A + 1.2];
+    // 1: down the length from one end
+    await setCam(...at(true));
     for (let i = 0; i < 10; i++) await tick(c);
-    await setCam(bbx.minx + 1.2, eye, bbx.minz + 1.2, bbx.maxx - 1, eye - 0.2, bbx.maxz - 1);
+    await setCam(...at(true));
     await sleep(400);
     await shot(c, "citygen_interior.jpg");
-    // 2: opposite corner back toward the entry
-    await setCam(bbx.maxx - 1.2, eye, bbx.maxz - 1.2, bbx.minx + 1, eye - 0.2, bbx.minz + 1);
+    // 2: down the length from the other end
+    await setCam(...at(false));
     await sleep(300);
     await shot(c, "citygen_interior2.jpg");
-    // 3: from the centre looking UP the stairwell to the next floor
-    await setCam(b.cx, floorY + 1.4, b.cz, bbx.minx + 0.8, floorY + 3.4, bbx.minz + 0.8);
+    // 3: from a corner across the plan (catches partition walls + daylight on side walls)
+    await setCam(bbx.minx + 1.4, eye, bbx.minz + 1.4, bbx.maxx - 1.5, eye - 0.15, bbx.maxz - 1.5);
     await sleep(300);
     await shot(c, "citygen_interior3.jpg");
 

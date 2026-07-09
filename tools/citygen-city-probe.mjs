@@ -60,8 +60,9 @@ async function main() {
       if(!window.__f){window.__f=1; s.chase.update=()=>{}; s.player.update=()=>{};} return 1;})()`);
     console.log("[probe] ring total victorian/edwardian:", await evaluate(c, "window.__sf.citygenRing.current ? window.__sf.citygenRing.current.count : 'ring not ready'"));
 
-    // candidate Victorian-district spots (game coords); pick the first that streams buildings
-    const spots = [[900, 2400], [1400, 2000], [300, -1500], [-400, 2600], [1800, 2800]];
+    // candidate spots (game coords); pick the first that streams buildings. SF_SPOT="x,z" overrides.
+    const envSpot = process.env.SF_SPOT ? [process.env.SF_SPOT.split(",").map(Number)] : [];
+    const spots = [...envSpot, [900, 2400], [1400, 2000], [300, -1500], [-400, 2600], [1800, 2800]];
     let chosen = null;
     for (const [x, z] of spots) {
       await evaluate(c, `(()=>{const s=window.__sf,p=s.player; const y=s.map.groundHeight(${x},${z})+2;

@@ -112,6 +112,8 @@ export interface CityGenRing {
   update(playerPos: THREE.Vector3, dt: number): void;
   dispose(): void;
   stats(): { total: number; cells: number; buildings: number; detail: number; interiors: number };
+  /** true while the player is inside a generated building (drives the indoor camera). */
+  isPlayerInside(): boolean;
   debugBuildings(): { cx: number; cz: number; base: number; top: number; interior: boolean; bb: { minx: number; maxx: number; minz: number; maxz: number } }[];
   /** DEBUG: live walk-in wall + interior collider OBBs for the "/" x-ray overlay. */
   debugColliders(walls: ColliderBox[], interiors: ColliderBox[]): void;
@@ -224,8 +226,10 @@ export async function createCityGenRing(
     }
   };
 
+  let insideBuilding = false; // set each frame by gateInterior; drives the indoor camera
   const gateInterior = (e: Entry, p: THREE.Vector3) => {
     const inside = e.state === "detail" && p.x > e.bb.minx - 1.2 && p.x < e.bb.maxx + 1.2 && p.z > e.bb.minz - 1.2 && p.z < e.bb.maxz + 1.2 && p.y > e.base - 1.5 && p.y < e.top + 1.0;
+    if (inside) insideBuilding = true;
     if (inside && !e.interior && e.bodies.length) {
       const it = buildInterior(e as BuildingSpec, materials);
       ctx.scene.add(it.group);
@@ -273,6 +277,7 @@ export async function createCityGenRing(
     count: total,
     update(playerPos, dt) {
       // per-frame: interior gate + detail crossfade + chunk merging
+      insideBuilding = false;
       for (const cell of loaded.values()) for (const e of cell.entries) gateInterior(e, playerPos);
       advanceFades(dt);
       if (building.length) {
@@ -383,6 +388,7 @@ export async function createCityGenRing(
       for (const cell of loaded.values()) { buildings += cell.entries.length; for (const e of cell.entries) { if (e.detail) detail++; if (e.interior) interiors++; } }
       return { total, cells: loaded.size, buildings, detail, interiors };
     },
+    isPlayerInside() { return insideBuilding; },
     debugBuildings() {
       const out: { cx: number; cz: number; base: number; top: number; interior: boolean; bb: { minx: number; maxx: number; minz: number; maxz: number } }[] = [];
       for (const cell of loaded.values()) for (const e of cell.entries) if (e.detail) out.push({ cx: e.cx, cz: e.cz, base: e.base, top: e.top, interior: !!e.interior, bb: { ...e.bb } });
