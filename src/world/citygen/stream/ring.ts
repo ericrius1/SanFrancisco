@@ -112,7 +112,7 @@ export interface CityGenRing {
   update(playerPos: THREE.Vector3, dt: number): void;
   dispose(): void;
   stats(): { total: number; cells: number; buildings: number; detail: number; interiors: number };
-  debugBuildings(): { cx: number; cz: number; base: number; top: number; interior: boolean }[];
+  debugBuildings(): { cx: number; cz: number; base: number; top: number; interior: boolean; bb: { minx: number; maxx: number; minz: number; maxz: number } }[];
   /** DEBUG: live walk-in wall + interior collider OBBs for the "/" x-ray overlay. */
   debugColliders(walls: ColliderBox[], interiors: ColliderBox[]): void;
 }
@@ -384,8 +384,8 @@ export async function createCityGenRing(
       return { total, cells: loaded.size, buildings, detail, interiors };
     },
     debugBuildings() {
-      const out: { cx: number; cz: number; base: number; top: number; interior: boolean }[] = [];
-      for (const cell of loaded.values()) for (const e of cell.entries) if (e.detail) out.push({ cx: e.cx, cz: e.cz, base: e.base, top: e.top, interior: !!e.interior });
+      const out: { cx: number; cz: number; base: number; top: number; interior: boolean; bb: { minx: number; maxx: number; minz: number; maxz: number } }[] = [];
+      for (const cell of loaded.values()) for (const e of cell.entries) if (e.detail) out.push({ cx: e.cx, cz: e.cz, base: e.base, top: e.top, interior: !!e.interior, bb: { ...e.bb } });
       return out;
     },
     debugColliders(walls, interiors) {

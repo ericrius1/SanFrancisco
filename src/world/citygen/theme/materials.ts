@@ -102,8 +102,9 @@ export function buildCityGenMaterials(): Record<string, THREE.Material> {
     "int.wood": standard(0x5a4028, 0.7, { emissive: 0.35 }),    // furniture / stairs
     "int.sofa": standard(0x7a5a52, 0.85, { emissive: 0.4 }),    // upholstery
     "int.glow": standard(0xffdca0, 0.9, { emissive: 2.4 }),     // warm lamp / hearth
-    "int.wall": standard(0xcfc4b2, 0.94, { emissive: 0.42 }),   // interior partition (plaster)
-    "int.ceil": standard(0xe6ddcb, 0.95, { emissive: 0.5 }),    // ceiling (brighter, self-lit)
+    "int.wall": standard(0xd7ccba, 0.94, { emissive: 0.62 }),   // interior partition (plaster)
+    "int.ceil": standard(0xefe7d6, 0.95, { emissive: 0.85 }),   // ceiling doubles as the room's fill light
+    "int.window": standard(0xbcd6ea, 0.3, { emissive: 2.6 }),   // daylight behind an interior window (bright, so rooms aren't caves)
     "int.trim": standard(0xece4d4, 0.6, { emissive: 0.4 }),     // baseboards / door casing
     "int.rug": standard(0x7a3b34, 0.9, { emissive: 0.38 }),     // area rug
     "int.metal": standard(0x8a8f96, 0.5, { metalness: 0.6, emissive: 0.3 }), // loft/industrial

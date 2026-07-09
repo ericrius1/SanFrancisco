@@ -33,6 +33,30 @@ export interface BuiltInterior {
  *  find inside: homes (parlour/apartments), shops (retail + offices), lofts (open). */
 export type InteriorZone = "residential" | "commercial" | "loft";
 
+/** Bright "daylight" glow panels along the perimeter walls at window height, so a
+ *  room reads as lit by its windows instead of a cave (the parallax glass is
+ *  one-sided → dark from inside). Cheap emissive quads, no colliders; not aligned
+ *  to the exact exterior windows but spaced to read as them. */
+function daylight(out: PanelBuilder, poly: readonly (readonly [number, number])[], cx: number, cz: number, fY: number): void {
+  const y0 = fY + 1.35, y1 = fY + 2.15, off = 0.08, winW = 1.1;
+  for (let i = 0; i < poly.length; i++) {
+    const [x0, z0] = poly[i], [x1, z1] = poly[(i + 1) % poly.length];
+    const ex = x1 - x0, ez = z1 - z0; const L = Math.hypot(ex, ez);
+    if (L < 1.8) continue;
+    let nx = -ez / L, nz = ex / L;                        // wall normal
+    const mx = (x0 + x1) / 2, mz = (z0 + z1) / 2;
+    if ((cx - mx) * nx + (cz - mz) * nz < 0) { nx = -nx; nz = -nz; } // point inward
+    const n = Math.max(1, Math.floor(L / 2.8));
+    for (let w = 0; w < n; w++) {
+      const tc = (w + 0.5) / n, half = (winW / 2) / L;
+      const s0 = Math.max(0.02, tc - half), s1 = Math.min(0.98, tc + half);
+      const ax0 = x0 + ex * s0 + nx * off, az0 = z0 + ez * s0 + nz * off;
+      const ax1 = x0 + ex * s1 + nx * off, az1 = z0 + ez * s1 + nz * off;
+      out.quad("int.window", [ax0, y0, az0], [ax1, y0, az1], [ax1, y1, az1], [ax0, y1, az0], [nx, 0, nz]);
+    }
+  }
+}
+
 /** index of the roomiest cell (best chance of fitting the stair). */
 function roomiest(rooms: Rect[]): number {
   let best = 0, bestV = -1;
@@ -89,6 +113,9 @@ export function buildInterior(spec: BuildingSpec, zone: InteriorZone = "resident
     // ceiling: under each upper floor with the stairwell open; a plain cap on top
     if (k < nFloors - 1) deck(out, null, "int.ceil", area, hole, base + (k + 1) * FLOOR_H - 0.06, false);
     else deck(out, null, "int.ceil", area, null, Math.min(spec.top - 0.12, fY + FLOOR_H - 0.06), false);
+
+    // window daylight along the perimeter so rooms read as lit
+    daylight(out, poly, (bb.x0 + bb.x1) / 2, (bb.z0 + bb.z1) / 2, fY);
 
     // partition walls (skip on open plans), then the stair up to the next floor
     if (!openFloor) buildWalls(out, cols, walls, fY);

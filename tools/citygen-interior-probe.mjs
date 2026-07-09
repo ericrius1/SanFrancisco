@@ -66,18 +66,21 @@ async function main() {
     // so anchor the camera to the actual ground under the building.
     const floorY = await evaluate(c, `window.__sf.map.groundHeight(${b.cx},${b.cz})`);
     const setCam = async (px, py, pz, lx, ly, lz) => evaluate(c, `(()=>{const c=window.__sf.camera; c.position.set(${px},${py},${pz}); c.lookAt(${lx},${ly},${lz}); return 1;})()`);
-    // 1: entry room, across the floor
-    await setCam(b.cx - 2.4, floorY + 1.6, b.cz - 2.4, b.cx + 2, floorY + 1.2, b.cz + 2);
+    // stand in a room CORNER (open floor — partitions are interior) looking across
+    // the plan toward the opposite corner, so walls/doorways/furniture/daylight read
+    const bbx = b.bb || { minx: b.cx - 4, maxx: b.cx + 4, minz: b.cz - 4, maxz: b.cz + 4 };
+    const eye = floorY + 1.55;
+    await setCam(bbx.minx + 1.2, eye, bbx.minz + 1.2, bbx.maxx - 1, eye - 0.2, bbx.maxz - 1);
     for (let i = 0; i < 10; i++) await tick(c);
-    await setCam(b.cx - 2.4, floorY + 1.6, b.cz - 2.4, b.cx + 2, floorY + 1.2, b.cz + 2);
+    await setCam(bbx.minx + 1.2, eye, bbx.minz + 1.2, bbx.maxx - 1, eye - 0.2, bbx.maxz - 1);
     await sleep(400);
     await shot(c, "citygen_interior.jpg");
-    // 2: pan the other way to catch partition walls / doorways / art
-    await setCam(b.cx + 2.4, floorY + 1.6, b.cz + 2.4, b.cx - 2.5, floorY + 1.4, b.cz - 2.5);
+    // 2: opposite corner back toward the entry
+    await setCam(bbx.maxx - 1.2, eye, bbx.maxz - 1.2, bbx.minx + 1, eye - 0.2, bbx.minz + 1);
     await sleep(300);
     await shot(c, "citygen_interior2.jpg");
-    // 3: look UP toward the stairwell / next floor
-    await setCam(b.cx, floorY + 1.5, b.cz, b.bb ? b.bb.minx : b.cx - 3, floorY + 3.2, b.bb ? b.bb.minz : b.cz - 3);
+    // 3: from the centre looking UP the stairwell to the next floor
+    await setCam(b.cx, floorY + 1.4, b.cz, bbx.minx + 0.8, floorY + 3.4, bbx.minz + 0.8);
     await sleep(300);
     await shot(c, "citygen_interior3.jpg");
 
