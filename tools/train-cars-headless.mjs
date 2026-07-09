@@ -231,13 +231,17 @@ function checkpoint() {
     renameSync(tmp, CKPT);
   } catch (e) { console.warn("[trainer] checkpoint write failed:", e.message); }
   const realMin = (Date.now() - t0) / 60000;
+  const clampKm = s.diag.distanceM > 0 ? s.diag.roadClamps / (s.diag.distanceM / 1000) : 0;
   console.log(
     `[trainer] +${realMin.toFixed(1)}min real | sim ${(simSteps * DT / 3600).toFixed(1)}h | ` +
     `skill med ${s.median.toFixed(1)} best ${s.best.toFixed(1)} | ${s.km.toFixed(0)} km | ` +
     `eldest ${s.ageH.toFixed(1)}h | coll ${s.diag.collisions}` +
     ` bld ${s.diag.buildingCollisions} car ${s.diag.carCollisions} water ${s.diag.waterHits} clamp ${s.diag.roadClamps}` +
-    ` red ${s.diag.redLightViolations} ` +
-    `wrong ${s.diag.wrongWaySteps} lane ${s.diag.meanLaneError.toFixed(2)}${s.nan ? ` | WARN ${s.nan} NaN` : ""}`
+    ` red ${s.diag.redLightViolations} hold ${s.diag.stopLineHolds} ` +
+    `wrong ${s.diag.wrongWaySteps} lane ${s.diag.meanLaneError.toFixed(2)}` +
+    ` prog ${s.diag.progressRatio.toFixed(2)} dist ${s.diag.distanceM.toFixed(0)} clampkm ${clampKm.toFixed(0)}` +
+    ` lanefix ${s.diag.laneCorrections}` +
+    `${s.nan ? ` | WARN ${s.nan} NaN` : ""}`
   );
 }
 

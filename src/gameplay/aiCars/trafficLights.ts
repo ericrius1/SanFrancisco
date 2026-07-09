@@ -14,8 +14,13 @@ type LightRig = {
 
 type SignalGantry = {
   root: THREE.Group;
-  bulbs0: Record<LightState, THREE.Mesh>;
-  bulbs1: Record<LightState, THREE.Mesh>;
+  head0: SignalHead;
+  head1: SignalHead;
+};
+
+type SignalHead = {
+  root: THREE.Group;
+  bulbs: Record<LightState, THREE.Mesh>;
 };
 
 export class TrafficLightView {
@@ -76,19 +81,17 @@ export class TrafficLightView {
   }
 
   #setGantry(gantry: SignalGantry, signal: TrafficSignal, axis: 0 | 1, timeS: number): void {
-    if (!this.#hasAxis(signal, axis)) {
+    const approaches = signal.approaches.filter((a) => a.axis === axis);
+    if (approaches.length === 0) {
       gantry.root.visible = false;
       return;
     }
     gantry.root.visible = true;
     gantry.root.rotation.y = this.#axisRotation(signal, axis);
     const state = this.#signals.stateForAxis(signal, axis, timeS);
-    this.#setBulbs(gantry.bulbs0, state);
-    this.#setBulbs(gantry.bulbs1, state);
-  }
-
-  #hasAxis(signal: TrafficSignal, axis: 0 | 1): boolean {
-    return signal.approaches.some((a) => a.axis === axis);
+    this.#orientHeads(gantry, approaches);
+    this.#setBulbs(gantry.head0.bulbs, state);
+    this.#setBulbs(gantry.head1.bulbs, state);
   }
 
   #axisRotation(signal: TrafficSignal, axis: 0 | 1): number {
@@ -98,20 +101,54 @@ export class TrafficLightView {
     return axis === 0 ? base : base + Math.PI * 0.5;
   }
 
+  #orientHeads(gantry: SignalGantry, approaches: TrafficSignal["approaches"]): void {
+    const axisYaw = gantry.root.rotation.y;
+    const axisX = Math.sin(axisYaw);
+    const axisZ = Math.cos(axisYaw);
+    let pos = false;
+    let neg = false;
+    let maxLanes = 1;
+    for (const app of approaches) {
+      const dot = app.tangentX * axisX + app.tangentZ * axisZ;
+      if (dot >= 0) pos = true;
+      else neg = true;
+      maxLanes = Math.max(maxLanes, app.lanes);
+    }
+
+    const bothDirections = pos && neg;
+    gantry.head0.root.visible = true;
+    gantry.head1.root.visible = bothDirections || maxLanes > 1 || approaches.length > 1;
+
+    // Approach tangents point toward the junction. Signal faces point back at
+    // the approaching drivers; one-way multi-lane approaches get matching heads.
+    if (bothDirections) {
+      gantry.head0.root.rotation.y = 0;
+      gantry.head1.root.rotation.y = Math.PI;
+    } else if (pos) {
+      gantry.head0.root.rotation.y = Math.PI;
+      gantry.head1.root.rotation.y = Math.PI;
+    } else {
+      gantry.head0.root.rotation.y = 0;
+      gantry.head1.root.rotation.y = 0;
+    }
+    gantry.head0.root.position.x = bothDirections ? 3.95 : maxLanes > 1 ? 4.35 : 2.95;
+    gantry.head1.root.position.x = bothDirections ? -1.1 : 0.9;
+  }
+
   #makeRig(): LightRig {
     const root = new THREE.Group();
     root.name = "TrafficLightRig";
     root.userData.trafficLightRig = true;
-    const poleH = 6.1;
-    const poleX = -5.0;
-    const armY = 5.62;
-    const armX = 0.7;
-    const headY = 5.02;
-    const headFaceZ = 0.29;
-    const poleGeo = new THREE.CylinderGeometry(0.18, 0.23, poleH, 12);
-    const armGeo = new THREE.BoxGeometry(11.6, 0.32, 0.3);
-    const headGeo = new THREE.BoxGeometry(0.94, 1.88, 0.54);
-    const bulbGeo = new THREE.CircleGeometry(0.24, 18);
+    const poleH = 7.05;
+    const poleX = -5.8;
+    const armY = 6.46;
+    const armX = 0.85;
+    const headY = 5.78;
+    const headFaceZ = 0.37;
+    const poleGeo = new THREE.CylinderGeometry(0.24, 0.29, poleH, 14);
+    const armGeo = new THREE.BoxGeometry(13.5, 0.42, 0.38);
+    const headGeo = new THREE.BoxGeometry(1.18, 2.34, 0.68);
+    const bulbGeo = new THREE.CircleGeometry(0.33, 22);
 
     const makeGantry = (name: string, shiftZ: number): SignalGantry => {
       const gantry = new THREE.Group();
@@ -126,7 +163,7 @@ export class TrafficLightView {
       arm.position.set(armX, armY, shiftZ);
       gantry.add(arm);
 
-      const makeHead = (x: number, z: number, yaw: number): Record<LightState, THREE.Mesh> => {
+      const makeHead = (x: number, z: number, yaw: number): SignalHead => {
         const head = new THREE.Group();
         head.position.set(x, headY, shiftZ + z);
         head.rotation.y = yaw;
@@ -137,17 +174,17 @@ export class TrafficLightView {
         const red = new THREE.Mesh(bulbGeo, this.#redDim);
         const yellow = new THREE.Mesh(bulbGeo, this.#yellowDim);
         const green = new THREE.Mesh(bulbGeo, this.#greenDim);
-        red.position.set(0, 0.58, headFaceZ);
+        red.position.set(0, 0.74, headFaceZ);
         yellow.position.set(0, 0, headFaceZ);
-        green.position.set(0, -0.58, headFaceZ);
+        green.position.set(0, -0.74, headFaceZ);
         head.add(red, yellow, green);
-        return { red, yellow, green };
+        return { root: head, bulbs: { red, yellow, green } };
       };
 
       return {
         root: gantry,
-        bulbs0: makeHead(3.25, -0.24, 0),
-        bulbs1: makeHead(-0.7, 0.24, Math.PI)
+        head0: makeHead(3.95, -0.28, 0),
+        head1: makeHead(-1.1, 0.28, Math.PI)
       };
     };
 

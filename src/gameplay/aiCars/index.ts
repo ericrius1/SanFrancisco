@@ -66,6 +66,7 @@ export interface AiCarsNet {
   aicarsLife: AiCarsLife | null;
   onCars: (id: number, rows: number[][]) => void;
   onBrain: (blob: CarLifeBlob) => void;
+  onAiCarsLife: (life: AiCarsLife) => void;
   sendCars(rows: number[][]): void;
   sendBrain(blob: CarLifeBlob): void;
 }
@@ -222,6 +223,7 @@ export class AiCars {
     this.#remotePositions = remotePositions ?? null;
     net.onCars = (_id, rows) => this.#ghosts?.ingest(rows);
     net.onBrain = (blob) => this.#receiveBrain(blob);
+    net.onAiCarsLife = (life) => this.#receiveLife(life);
     if (net.aicarsLife) this.#seedCacheFromLife(net.aicarsLife); // welcome carried a saved fleet
     this.#syncRole();
   }
@@ -236,6 +238,12 @@ export class AiCars {
     this.#cachedBorn = life.born;
     for (const c of life.cars) this.#brainCache.set(c.id, c);
     this.#seededLife = life;
+  }
+
+  /** A newer relay-saved fleet arrived after welcome, usually from watchdog promotion. */
+  #receiveLife(life: AiCarsLife): void {
+    if (this.#isLeader) this.#maybeAdoptLife();
+    else this.#seedCacheFromLife(life);
   }
 
   #fleetSize(fleet: Fleet): number {
@@ -592,7 +600,8 @@ export class AiCars {
       paintHue: r4(car.paintHue),
       x: r4(car.pos.x),
       z: r4(car.pos.z),
-      heading: r4(car.heading)
+      heading: r4(car.heading),
+      speed: r4(car.speed)
     };
   }
 

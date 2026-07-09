@@ -15,7 +15,7 @@
 // Prod: npm run build && node server/server.mjs  → serves dist/ + /ws
 import http from "node:http";
 import { readFile, stat, mkdir, writeFile, rename } from "node:fs/promises";
-import { createReadStream, existsSync, readFileSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, watchFile } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createBrotliCompress, createGzip, constants as zlibConstants } from "node:zlib";
@@ -97,19 +97,47 @@ const validBrain = (b) =>
   Math.abs(b.x) <= POS_MAX &&
   finite(b.z) &&
   Math.abs(b.z) <= POS_MAX &&
-  finite(b.heading);
+  finite(b.heading) &&
+  (b.speed == null || (finite(b.speed) && Math.abs(b.speed) <= 32));
 
-const loadLife = () => {
+const lifeAgeSum = (cars = lifeById.values()) => {
+  let age = 0;
+  for (const car of cars) age += finite(car.ageS) ? car.ageS : 0;
+  return age;
+};
+
+const readLifeFile = () => {
+  if (!existsSync(LIFE_FILE)) return null;
+  const parsed = JSON.parse(readFileSync(LIFE_FILE, "utf8"));
+  if (!parsed || parsed.v !== 3 || !Array.isArray(parsed.cars)) return null;
+  const cars = parsed.cars.filter(validBrain);
+  if (cars.length === 0) return null;
+  return {
+    born: finite(parsed.born) ? parsed.born : Date.now(),
+    cars,
+    ageSum: lifeAgeSum(cars)
+  };
+};
+
+const currentAiCarsLife = () => ({ v: 3, born: lifeBorn || Date.now(), cars: [...lifeById.values()] });
+
+const loadLife = (reason = "startup", force = false) => {
   try {
-    if (!existsSync(LIFE_FILE)) return;
-    const parsed = JSON.parse(readFileSync(LIFE_FILE, "utf8"));
-    if (!parsed || parsed.v !== 3 || !Array.isArray(parsed.cars)) return;
-    let n = 0;
-    for (const b of parsed.cars) if (validBrain(b)) { lifeById.set(b.id, b); n++; }
-    lifeBorn = finite(parsed.born) ? parsed.born : Date.now();
-    if (n) console.log(`[sf-server] loaded AI-cars life: ${n} cars (born ${new Date(lifeBorn).toISOString()})`);
+    const life = readLifeFile();
+    if (!life) return false;
+    const currentAge = lifeAgeSum();
+    if (!force && lifeById.size > 0 && life.ageSum <= currentAge) return false;
+    lifeById.clear();
+    for (const b of life.cars) lifeById.set(b.id, b);
+    lifeBorn = life.born;
+    console.log(
+      `[sf-server] loaded AI-cars life: ${life.cars.length} cars ` +
+        `(born ${new Date(lifeBorn).toISOString()}, age ${Math.round(life.ageSum)}s, ${reason})`
+    );
+    return true;
   } catch (err) {
     console.warn("[sf-server] AI-cars life load failed:", err.message);
+    return false;
   }
 };
 
@@ -139,7 +167,10 @@ const leaderId = () => {
   return min;
 };
 
-loadLife();
+loadLife("startup", true);
+watchFile(LIFE_FILE, { interval: 5000 }, (cur, prev) => {
+  if (cur.mtimeMs > prev.mtimeMs && loadLife("disk update")) broadcastAiCarsLife();
+});
 
 const getUrlPath = (url = "/") => {
   try {
@@ -406,6 +437,11 @@ const broadcast = (obj, exceptId = 0) => {
   }
 };
 
+function broadcastAiCarsLife() {
+  if (lifeById.size === 0 || players.size === 0) return;
+  broadcast({ t: "aicarsLife", aicarsLife: currentAiCarsLife() });
+}
+
 wss.on("connection", (ws) => {
   if (players.size >= MAX_PLAYERS) {
     send(ws, { t: "full" });
@@ -451,7 +487,7 @@ wss.on("connection", (ws) => {
           .map((o) => ({ id: o.id, name: o.name, hue: o.hue, avatar: o.avatar })),
         // hand the whole saved AI-cars fleet to the newcomer so a future leader
         // resumes every individual's accumulated learning instead of fresh
-        ...(lifeById.size ? { aicarsLife: { v: 3, born: lifeBorn || Date.now(), cars: [...lifeById.values()] } } : {})
+        ...(lifeById.size ? { aicarsLife: currentAiCarsLife() } : {})
       });
       broadcast({ t: "join", id, name: p.name, hue: p.hue, avatar: p.avatar }, id);
       console.log(`[sf-server] join #${id} "${p.name}" (${players.size} online)`);

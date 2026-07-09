@@ -152,6 +152,7 @@ export type CarBlob = CarBrainBlob & {
   x: number;
   z: number;
   heading: number;
+  speed?: number;
 };
 export interface FleetBlob {
   v: 3;
@@ -197,6 +198,8 @@ const CAR_FOOTPRINT_SIDE = HALF_EXTENTS[0] * 2 + 0.35; // centre-to-centre side 
 const CAR_FOOTPRINT_ALONG = HALF_EXTENTS[2] * 2 + 0.55; // centre-to-centre nose/tail clearance for car bodies
 const CAR_BRAKE_SIDE = CAR_FOOTPRINT_SIDE + 0.55;
 const CAR_BRAKE_ALONG = CAR_FOOTPRINT_ALONG + 3.0;
+const CAR_CAUTION_CLEAR = 0.82;
+const CAR_STOP_GAP = CAR_FOOTPRINT_ALONG + 1.8;
 const CAR_HARD_SIDE = HALF_EXTENTS[0] * 2;
 const CAR_HARD_ALONG = HALF_EXTENTS[2] * 2;
 const CAR_CONTACT_COOLDOWN = 1.25;
@@ -260,10 +263,14 @@ export class Fleet {
     carCollisions: 0,
     waterHits: 0,
     roadClamps: 0,
+    laneCorrections: 0,
     redLightViolations: 0,
+    stopLineHolds: 0,
     offRoadSteps: 0,
     wrongWaySteps: 0,
     laneErrorSum: 0,
+    distanceM: 0,
+    forwardProgressM: 0,
     samples: 0
   };
 
@@ -390,22 +397,33 @@ export class Fleet {
     carCollisions: number;
     waterHits: number;
     roadClamps: number;
+    laneCorrections: number;
     redLightViolations: number;
+    stopLineHolds: number;
     offRoadSteps: number;
     wrongWaySteps: number;
     meanLaneError: number;
+    distanceM: number;
+    forwardProgressM: number;
+    progressRatio: number;
     samples: number;
   } {
+    const distanceM = this.#diag.distanceM;
     return {
       collisions: this.#diag.collisions,
       buildingCollisions: this.#diag.buildingCollisions,
       carCollisions: this.#diag.carCollisions,
       waterHits: this.#diag.waterHits,
       roadClamps: this.#diag.roadClamps,
+      laneCorrections: this.#diag.laneCorrections,
       redLightViolations: this.#diag.redLightViolations,
+      stopLineHolds: this.#diag.stopLineHolds,
       offRoadSteps: this.#diag.offRoadSteps,
       wrongWaySteps: this.#diag.wrongWaySteps,
       meanLaneError: this.#diag.samples ? this.#diag.laneErrorSum / this.#diag.samples : 0,
+      distanceM,
+      forwardProgressM: this.#diag.forwardProgressM,
+      progressRatio: distanceM > 1e-6 ? this.#diag.forwardProgressM / distanceM : 0,
       samples: this.#diag.samples
     };
   }
@@ -734,12 +752,16 @@ export class Fleet {
     let steer = THREE.MathUtils.clamp(action[0], -1, 1);
     let accelCmd = THREE.MathUtils.clamp(action[1], -1, 1);
     if (proj) {
-      const laneAssist = THREE.MathUtils.clamp(sinErr * 0.9 + laneErr * 0.55 + curvature * 0.14, -1, 1);
-      const laneBlend = Math.min(0.5, 0.18 + Math.abs(laneErr) * 0.18);
+      const laneAssist = THREE.MathUtils.clamp(sinErr * 0.95 - laneErr * dir * 0.8 - curvature * 0.14, -1, 1);
+      const laneBlend = Math.min(0.62, 0.2 + Math.abs(laneErr) * 0.22);
       steer = THREE.MathUtils.clamp(steer * (1 - laneBlend) + laneAssist * laneBlend, -1, 1);
     }
-    if (clearAhead < 0.24 && car.speed > 1.2) {
-      accelCmd = Math.min(accelCmd, -0.75);
+    if (clearAhead < CAR_CAUTION_CLEAR && car.speed > 0.4) {
+      const obstacleM = clearAhead * AHEAD_RANGE;
+      const targetSpeed = Math.max(0, (obstacleM - CAR_STOP_GAP) * 0.5);
+      if (car.speed > targetSpeed) {
+        accelCmd = Math.min(accelCmd, obstacleM < 8 ? -1 : -0.85);
+      }
     }
     if (signal.hasSignal && signal.stopRequired && signal.distance < 32) {
       const targetSpeed = Math.max(0, (signal.distance - 3.5) * 0.38);
@@ -799,6 +821,7 @@ export class Fleet {
       nz = z;
       ny = w.ground(nx, nz) + RIDE_HEIGHT;
       car.speed = Math.min(car.speed, 0);
+      this.#diag.stopLineHolds++;
     }
     if (w.isWater(nx, nz)) {
       if (proj && onRoad) {
@@ -867,8 +890,20 @@ export class Fleet {
       waterHit = true;
       hardCollision = true;
     }
+    if (!hardCollision && this.#carFootprintOverlaps(car, car.pos.x, car.pos.z, car.heading, 0.2, 0.4)) {
+      car.pos.set(x, w.ground(x, z) + RIDE_HEIGHT, z);
+      car.speed = Math.min(car.speed, 0);
+      carBlocked = true;
+      postProj = this.#roads.project(car.pos.x, car.pos.z);
+    }
     const carHit = this.#separateCars(car);
     if (carHit) hardCollision = true;
+    postProj = this.#roads.project(car.pos.x, car.pos.z);
+    if (!postProj) {
+      this.#recoverToSafeRoad(car);
+      recoveredToRoad = true;
+      postProj = this.#roads.project(car.pos.x, car.pos.z);
+    }
     if (hardCollision && (waterHit || !postProj)) {
       this.#recoverToSafeRoad(car);
       recoveredToRoad = true;
@@ -881,7 +916,10 @@ export class Fleet {
     // --- shaped reward (per plan; per-second rates × dt) ---
     const dx = car.pos.x - car.prevX;
     const dz = car.pos.z - car.prevZ;
+    const ds = recoveredToRoad ? 0 : Math.hypot(dx, dz);
     const progress = proj && !recoveredToRoad ? dx * travelX + dz * travelZ : 0;
+    this.#diag.distanceM += ds;
+    this.#diag.forwardProgressM += progress;
     // Progress is only credited against a real road tangent. With no projection
     // travel*=heading, so crediting dx·travel would pay raw heading speed for
     // driving into the void — zero it (the penalties below still apply).
@@ -902,7 +940,6 @@ export class Fleet {
     if (carBlocked) r -= R_CLOSE_FOLLOW * dt;
     if (roadClamp) {
       r -= R_ROAD_CLAMP * dt;
-      this.#diag.roadClamps++;
     }
     if (hardCollision) {
       r -= R_COLLISION;
@@ -930,7 +967,7 @@ export class Fleet {
     car.windowDt += dt;
 
     // odometer (distance travelled, either direction)
-    this.#learner.addOdometer(car.id, recoveredToRoad ? 0 : Math.hypot(car.pos.x - car.prevX, car.pos.z - car.prevZ));
+    this.#learner.addOdometer(car.id, ds);
 
     car.prevSteer = steer;
     car.prevX = car.pos.x;
@@ -940,6 +977,11 @@ export class Fleet {
   }
 
   #recoverToSafeRoad(car: AiCar): void {
+    const safeProj = this.#roads.project(car.safeX, car.safeZ);
+    if (!safeProj) {
+      this.#forceRoadPose(car);
+      return;
+    }
     car.pos.set(car.safeX, this.#world.ground(car.safeX, car.safeZ) + RIDE_HEIGHT, car.safeZ);
     car.heading = car.safeHeading;
     car.speed = 0;
@@ -962,10 +1004,11 @@ export class Fleet {
       const ox = other.pos.x - x;
       const oz = other.pos.z - z;
       const along = ox * fwdX + oz * fwdZ;
-      if (along <= 0 || along > AHEAD_RANGE) continue;
+      const d = Math.hypot(ox, oz);
+      if (along > AHEAD_RANGE || (along <= 0 && d >= 12)) continue;
       const side = Math.abs(ox * fwdZ - oz * fwdX); // perpendicular offset
-      if (side > CAR_BRAKE_SIDE) continue;
-      const c = along / AHEAD_RANGE;
+      if (side > CAR_BRAKE_SIDE && !(d < 12 && along > -1.5)) continue;
+      const c = Math.max(0, Math.min(along, d)) / AHEAD_RANGE;
       if (c < clear) clear = c;
     }
     return clear;
@@ -979,9 +1022,27 @@ export class Fleet {
       const dx = other.pos.x - x;
       const dz = other.pos.z - z;
       const ahead = dx * fwdX + dz * fwdZ;
-      if (ahead < -CAR_FOOTPRINT_ALONG * 0.35 || ahead > CAR_BRAKE_ALONG) continue;
+      if (ahead < -CAR_FOOTPRINT_ALONG * 0.45 || ahead > CAR_BRAKE_ALONG * 1.35) continue;
       const side = Math.abs(dx * fwdZ - dz * fwdX);
       if (side > CAR_BRAKE_SIDE) continue;
+      return true;
+    }
+    return false;
+  }
+
+  #carFootprintOverlaps(car: AiCar, x: number, z: number, heading: number, sidePad = 0, alongPad = 0): boolean {
+    const fwdX = Math.sin(heading);
+    const fwdZ = Math.cos(heading);
+    const rightX = fwdZ;
+    const rightZ = -fwdX;
+    for (const other of this.cars) {
+      if (other === car) continue;
+      const dx = x - other.pos.x;
+      const dz = z - other.pos.z;
+      const along = dx * fwdX + dz * fwdZ;
+      if (Math.abs(along) >= CAR_FOOTPRINT_ALONG + alongPad) continue;
+      const side = dx * rightX + dz * rightZ;
+      if (Math.abs(side) >= CAR_FOOTPRINT_SIDE + sidePad) continue;
       return true;
     }
     return false;
@@ -1034,6 +1095,7 @@ export class Fleet {
       car.speed *= 0.25;
       other.speed *= 0.35;
       this.#constrainToRoad(other, this.#roads.project(other.pos.x, other.pos.z), other.prevX, other.prevZ);
+      this.#ensureRoadProjected(other);
       other.prevX = other.pos.x;
       other.prevZ = other.pos.z;
       this.#writeBody(other);
@@ -1068,6 +1130,7 @@ export class Fleet {
         this.#constrainToRoad(a, this.#roads.project(a.pos.x, a.pos.z), a.prevX, a.prevZ);
         this.#constrainToRoad(b, this.#roads.project(b.pos.x, b.pos.z), b.prevX, b.prevZ);
         for (const car of [a, b]) {
+          this.#ensureRoadProjected(car);
           car.pos.y = this.#world.ground(car.pos.x, car.pos.z) + RIDE_HEIGHT;
           car.prevX = car.pos.x;
           car.prevZ = car.pos.z;
@@ -1081,7 +1144,11 @@ export class Fleet {
   #constrainToRoad(car: AiCar, proj: Projection | null, baseX: number, baseZ: number): boolean {
     const liveProj = this.#roads.project(car.pos.x, car.pos.z);
     const activeProj = liveProj ?? proj;
-    if (!activeProj) return false;
+    if (!activeProj) {
+      const changed = this.#forceRoadPose(car, baseX, baseZ);
+      if (changed) this.#diag.roadClamps++;
+      return changed;
+    }
     const edge = Math.max(1.2, activeProj.halfWidth * ROAD_EDGE_FRACTION);
     const clampEdge = Math.max(0.8, edge - 0.15);
     const wet = this.#world.isWater(car.pos.x, car.pos.z);
@@ -1099,9 +1166,17 @@ export class Fleet {
       (car.speed > 0.5 && Math.abs(headingDot) > 0.45 ? (headingDot >= 0 ? 1 : -1) : car.travelDir);
     if (activeProj.oneWayDir === 0) car.travelDir = dir;
     const rightLane = THREE.MathUtils.clamp(laneCenterFor(activeProj, dir), -clampEdge, clampEdge);
+    const centerlineGrace = Math.max(0.45, Math.min(1.4, activeProj.halfWidth * 0.18));
+    const enforceSide = Math.abs(car.speed) > 0.35 && Math.abs(headingDot) > 0.45;
     const wrongSide =
-      activeProj.oneWayDir === 0 && ((dir === 1 && lateral > -0.15) || (dir === -1 && lateral < 0.15));
-    if (Math.abs(lateral) <= edge && !wet && !wrongSide) return false;
+      enforceSide &&
+      activeProj.oneWayDir === 0 &&
+      ((dir === 1 && lateral > centerlineGrace) || (dir === -1 && lateral < -centerlineGrace));
+    const offEdge = Math.abs(lateral) > edge;
+    if (!offEdge && !wet && !wrongSide) return false;
+
+    if (wet || offEdge) this.#diag.roadClamps++;
+    else this.#diag.laneCorrections++;
 
     let clamped = THREE.MathUtils.clamp(lateral, -clampEdge, clampEdge);
     if (wet) {
@@ -1123,6 +1198,67 @@ export class Fleet {
     car.pos.z = centerZ + nz * clamped;
     car.pos.y = this.#world.ground(car.pos.x, car.pos.z) + RIDE_HEIGHT;
     car.speed *= ROAD_RECOVERY_SPEED_DAMP;
+    return true;
+  }
+
+  #ensureRoadProjected(car: AiCar): boolean {
+    const proj = this.#roads.project(car.pos.x, car.pos.z);
+    if (proj && !this.#world.isWater(car.pos.x, car.pos.z)) return false;
+    const changed = this.#forceRoadPose(car);
+    if (changed) {
+      this.#diag.roadClamps++;
+      this.#writeBody(car);
+    }
+    return changed;
+  }
+
+  #forceRoadPose(car: AiCar, aroundX = car.pos.x, aroundZ = car.pos.z): boolean {
+    let x = aroundX;
+    let z = aroundZ;
+    let proj = this.#roads.project(x, z);
+    if (!proj) {
+      const near = this.#roads.randomPointNear(x, z, 0, 260, this.#rng);
+      const rp = near ?? this.#roads.randomPoint(this.#rng, CITY_MIN_X, CITY_MAX_X, CITY_MIN_Z, CITY_MAX_Z);
+      x = rp.x;
+      z = rp.z;
+      proj = this.#roads.project(x, z);
+    }
+    if (!proj) return false;
+
+    const nx = -proj.tangentZ;
+    const nz = proj.tangentX;
+    const centerX = x - nx * proj.lateral;
+    const centerZ = z - nz * proj.lateral;
+    const headingDot = Math.sin(car.heading) * proj.tangentX + Math.cos(car.heading) * proj.tangentZ;
+    const dir: 1 | -1 = proj.oneWayDir || (Number.isFinite(headingDot) && headingDot < 0 ? -1 : 1);
+    const edge = Math.max(1.2, proj.halfWidth * ROAD_EDGE_FRACTION);
+    const lane = THREE.MathUtils.clamp(laneCenterFor(proj, dir), -edge, edge);
+    const candidates = [lane, 0, -edge * 0.5, edge * 0.5, -edge, edge];
+    let lateral = lane;
+    for (const candidate of candidates) {
+      const tx = centerX + nx * candidate;
+      const tz = centerZ + nz * candidate;
+      if (!this.#world.isWater(tx, tz)) {
+        lateral = candidate;
+        break;
+      }
+    }
+
+    car.pos.set(centerX + nx * lateral, this.#world.ground(centerX + nx * lateral, centerZ + nz * lateral) + RIDE_HEIGHT, centerZ + nz * lateral);
+    car.heading = Math.atan2(proj.tangentX * dir, proj.tangentZ * dir);
+    car.speed = 0;
+    car.prevHeading = car.heading;
+    car.prevX = car.pos.x;
+    car.prevZ = car.pos.z;
+    car.safeX = car.pos.x;
+    car.safeZ = car.pos.z;
+    car.safeHeading = car.heading;
+    car.travelDir = dir;
+    car.commitSeg = -1;
+    car.commitX = car.pos.x;
+    car.commitZ = car.pos.z;
+    car.stuckT = 0;
+    car.wrongWayT = 0;
     return true;
   }
 
@@ -1171,6 +1307,7 @@ export class Fleet {
   exportState(): FleetBlob {
     const cars: CarBlob[] = [];
     for (const car of this.cars) {
+      this.#ensureRoadProjected(car);
       const brain = this.#learner.exportCar(car.id);
       cars.push({
         ...brain,
@@ -1179,7 +1316,8 @@ export class Fleet {
         paintHue: car.paintHue,
         x: car.pos.x,
         z: car.pos.z,
-        heading: car.heading
+        heading: car.heading,
+        speed: car.speed
       });
     }
     return { v: 3, born: this.#born || this.#now(), cars };
@@ -1200,6 +1338,7 @@ export class Fleet {
       if (!c || typeof c !== "object") return false;
       if (!Number.isInteger(c.id) || c.id < 0 || c.id >= this.cars.length) return false;
       if (!Number.isFinite(c.x) || !Number.isFinite(c.z) || !Number.isFinite(c.heading)) return false;
+      if (c.speed != null && !Number.isFinite(c.speed)) return false;
       if (!Number.isFinite(c.bodyKind) || !Number.isFinite(c.paintHue)) return false;
     }
     // tear down existing bodies (fires the release contract) before repositioning
@@ -1211,6 +1350,7 @@ export class Fleet {
       car.bodyKind = Math.floor(c.bodyKind) & 255;
       car.paintHue = THREE.MathUtils.clamp(c.paintHue, 0, 1);
       this.#initCarState(car, c.x, c.z, c.heading);
+      this.#ensureRoadProjected(car);
       this.#learner.importCar(car.id, c);
       covered[c.id] = true;
     }

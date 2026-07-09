@@ -17,25 +17,32 @@ type RoadSegmentJson = {
 };
 
 const ROAD_MARKING_VERSION = 3;
-const Y_OFFSET = 0.1;
+const Y_OFFSET = 0.45;
 const EDGE_INSET = 0.55;
 const DASH_M = 4.6;
 const GAP_M = 6.4;
 const MIN_EDGE_M = 0.4;
-const WHITE_W = 0.16;
-const YELLOW_W = 0.2;
+const WHITE_W = 0.52;
+const YELLOW_W = 0.62;
 
 const whiteMat = new THREE.MeshBasicNodeMaterial({
-  color: 0xf2f1e8,
+  color: 0xffffff,
   depthWrite: false,
+  opacity: 0.96,
   side: THREE.DoubleSide
 });
 
 const yellowMat = new THREE.MeshBasicNodeMaterial({
-  color: 0xf2c230,
+  color: 0xffcc33,
   depthWrite: false,
+  opacity: 0.98,
   side: THREE.DoubleSide
 });
+
+whiteMat.transparent = true;
+yellowMat.transparent = true;
+whiteMat.toneMapped = false;
+yellowMat.toneMapped = false;
 
 function clampLaneCount(n: number, fallback: number): number {
   return Math.max(1, Math.min(8, Math.round(Number.isFinite(n) ? n : fallback)));
@@ -62,8 +69,8 @@ function pushStrip(
   const aCz = az + nz * offset;
   const bCx = bx + nx * offset;
   const bCz = bz + nz * offset;
-  const ay = map.groundTop(aCx, aCz) + Y_OFFSET;
-  const by = map.groundTop(bCx, bCz) + Y_OFFSET;
+  const ay = map.effectiveGround(aCx, aCz) + Y_OFFSET;
+  const by = map.effectiveGround(bCx, bCz) + Y_OFFSET;
   const wx = nx * width * 0.5;
   const wz = nz * width * 0.5;
 
@@ -171,7 +178,7 @@ function meshFromPositions(name: string, positions: number[], mat: THREE.Materia
   geo.computeBoundingSphere();
   const mesh = new THREE.Mesh(geo, mat);
   mesh.name = name;
-  mesh.renderOrder = 4;
+  mesh.renderOrder = 20;
   mesh.frustumCulled = true;
   return mesh;
 }

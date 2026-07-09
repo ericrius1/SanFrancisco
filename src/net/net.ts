@@ -15,6 +15,7 @@ import { avatarFromSeed, isDefaultAvatar, normalizeAvatarTraits, type AvatarTrai
  *   → {t:"hi", name, avatar}            on open
  *   ← {t:"welcome", id, hue, name, players:[{id,name,hue,avatar}]}
  *   ← {t:"join"|{t:"leave"}|{t:"name"}|{t:"avatar"} roster changes
+ *   ← {t:"aicarsLife", aicarsLife}      promoted full AI-car fleet update
  *   → {t:"s", d:[mode,x,y,z,qx,qy,qz,qw,speed,ride?]}   ~12 Hz while moving
  *   ← {t:"snap", ts, ps:[[id,...d]]}    batched world snapshot, ~12 Hz
  *   → {t:"rtc", to, payload}            voice signaling to one peer
@@ -57,6 +58,7 @@ export type CarLifeBlob = {
   x: number;
   z: number;
   heading: number;
+  speed?: number;
 };
 
 /** The whole fleet's persisted lives (relay welcome / localStorage set). */
@@ -202,6 +204,7 @@ function parseCarBlob(raw: unknown): CarLifeBlob | null {
   const fin = (v: unknown) => typeof v === "number" && Number.isFinite(v);
   if (!fin(o.rhoBar) || !fin(o.sigma) || !fin(o.ageS) || !fin(o.odoM) || !fin(o.lessons)) return null;
   if (!fin(o.bodyKind) || !fin(o.paintHue) || !fin(o.x) || !fin(o.z) || !fin(o.heading)) return null;
+  if (o.speed != null && !fin(o.speed)) return null;
   // range caps: reject wildly out-of-range numeric fields (poison / overflow).
   if (Math.abs(o.rhoBar as number) > 1e3) return null;
   if ((o.ageS as number) < 0 || (o.ageS as number) > 1e12) return null;
@@ -221,7 +224,8 @@ function parseCarBlob(raw: unknown): CarLifeBlob | null {
     paintHue: o.paintHue as number,
     x: o.x as number,
     z: o.z as number,
-    heading: o.heading as number
+    heading: o.heading as number,
+    speed: o.speed == null ? 0 : (o.speed as number)
   };
 }
 
@@ -276,6 +280,8 @@ export class Net {
   onCars: (id: number, rows: number[][]) => void = () => {};
   /** One AI car's brain/pose from the leader (round-robin `brain` broadcast). */
   onBrain: (blob: CarLifeBlob) => void = () => {};
+  /** The relay promoted a newer full AI-cars fleet while we were connected. */
+  onAiCarsLife: (life: AiCarsLife) => void = () => {};
   /** The whole AI-cars fleet the relay had saved when we joined (null if none). */
   aicarsLife: AiCarsLife | null = null;
 
@@ -459,6 +465,14 @@ export class Net {
         const from = msg.from as number;
         const blob = parseCarBlob(msg.d);
         if (from !== this.selfId && this.roster.has(from) && blob) this.onBrain(blob);
+        break;
+      }
+      case "aicarsLife": {
+        const life = parseAiCarsLife(msg.aicarsLife);
+        if (life) {
+          this.aicarsLife = life;
+          this.onAiCarsLife(life);
+        }
         break;
       }
       case "chat": {
