@@ -93,8 +93,8 @@ export class TrafficLightView {
 
   #axisRotation(signal: TrafficSignal, axis: 0 | 1): number {
     const app = signal.approaches.find((a) => a.axis === axis);
-    if (app) return Math.atan2(app.tangentZ, app.tangentX);
-    const base = Math.atan2(signal.axisZ, signal.axisX);
+    if (app) return Math.atan2(app.tangentX, app.tangentZ);
+    const base = Math.atan2(signal.axisX, signal.axisZ);
     return axis === 0 ? base : base + Math.PI * 0.5;
   }
 
@@ -102,16 +102,16 @@ export class TrafficLightView {
     const root = new THREE.Group();
     root.name = "TrafficLightRig";
     root.userData.trafficLightRig = true;
-    const poleH = 5.45;
-    const poleX = -4.0;
-    const armY = 5.05;
+    const poleH = 6.1;
+    const poleX = -5.0;
+    const armY = 5.62;
     const armX = 0.7;
-    const headY = 4.52;
-    const headFaceZ = 0.25;
-    const poleGeo = new THREE.CylinderGeometry(0.13, 0.16, poleH, 10);
-    const armGeo = new THREE.BoxGeometry(9.6, 0.22, 0.22);
-    const headGeo = new THREE.BoxGeometry(0.74, 1.55, 0.38);
-    const bulbGeo = new THREE.SphereGeometry(0.19, 14, 10);
+    const headY = 5.02;
+    const headFaceZ = 0.29;
+    const poleGeo = new THREE.CylinderGeometry(0.18, 0.23, poleH, 12);
+    const armGeo = new THREE.BoxGeometry(11.6, 0.32, 0.3);
+    const headGeo = new THREE.BoxGeometry(0.94, 1.88, 0.54);
+    const bulbGeo = new THREE.CircleGeometry(0.24, 18);
 
     const makeGantry = (name: string, shiftZ: number): SignalGantry => {
       const gantry = new THREE.Group();
@@ -137,9 +137,9 @@ export class TrafficLightView {
         const red = new THREE.Mesh(bulbGeo, this.#redDim);
         const yellow = new THREE.Mesh(bulbGeo, this.#yellowDim);
         const green = new THREE.Mesh(bulbGeo, this.#greenDim);
-        red.position.set(0, 0.46, headFaceZ);
+        red.position.set(0, 0.58, headFaceZ);
         yellow.position.set(0, 0, headFaceZ);
-        green.position.set(0, -0.46, headFaceZ);
+        green.position.set(0, -0.58, headFaceZ);
         head.add(red, yellow, green);
         return { red, yellow, green };
       };

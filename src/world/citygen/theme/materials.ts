@@ -84,9 +84,10 @@ export function buildCityGenMaterials(): Record<string, THREE.Material> {
     "lc.pier": standard(0x9a948a, 0.85),                        // vertical piers
     // glass
     "glass": glass,
-    // roofs
-    "roof.flatTrim": standard(0x6f6a60, 0.9),
-    "roof.tileCornice": standard(0xa4593a, 0.85),
-    "roof.parapet": standard(0x767068, 0.9),
+    // roofs — you see these from the air + hills, so they must READ (not crush to
+    // black at play exposure): tar-and-gravel grey with a strong self-lit term.
+    "roof.flatTrim": standard(0x9a9384, 0.92, { emissive: 0.5 }),
+    "roof.tileCornice": standard(0xb56545, 0.85, { emissive: 0.4 }),   // clay tile, warm
+    "roof.parapet": standard(0x969084, 0.9, { emissive: 0.5 }),
   };
 }

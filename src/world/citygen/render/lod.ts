@@ -87,7 +87,10 @@ export function appendPrism(spec: BuildingSpec, out: PrismArrays, conform?: Pris
     ? Math.min(Math.max(conform.grade, foot), top - 1.5)
     : Math.min(Math.max(spec.grade ?? base, base), top - 1.5);
   const [br, bg, bb] = linRgb(bodyColour(spec.seed, spec.archetype));
-  const rr = br * 0.35 + 0.04, rg = bg * 0.35 + 0.04, rb = bb * 0.35 + 0.045; // dark roof tone
+  // tar-and-gravel grey roof (reads from the air/hills, not black) with a faint
+  // body tint so a block still varies. Rides the vertex colour → also self-lit
+  // via the material's bodyTint, so it stays visible in low ambient.
+  const rr = 0.28 + br * 0.10, rg = 0.27 + bg * 0.10, rb = 0.25 + bb * 0.10;
   const floorH = specFor(spec.archetype).floorH;
   const winFloors = Math.max(1, Math.round((top - grade) / floorH)); // storeys above grade
   const { pos, nor, uvs, col, idx } = out;

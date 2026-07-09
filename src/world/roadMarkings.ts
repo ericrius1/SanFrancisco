@@ -17,34 +17,39 @@ type RoadSegmentJson = {
 };
 
 const ROAD_MARKING_VERSION = 3;
-const Y_OFFSET = 0.08;
+const Y_OFFSET = 0.1;
 const EDGE_INSET = 0.55;
 const DASH_M = 4.6;
 const GAP_M = 6.4;
 const MIN_EDGE_M = 0.4;
+const WHITE_W = 0.16;
+const YELLOW_W = 0.2;
 
-const whiteMat = new THREE.LineBasicNodeMaterial({
+const whiteMat = new THREE.MeshBasicNodeMaterial({
   color: 0xf2f1e8,
-  depthWrite: false
+  depthWrite: false,
+  side: THREE.DoubleSide
 });
 
-const yellowMat = new THREE.LineBasicNodeMaterial({
+const yellowMat = new THREE.MeshBasicNodeMaterial({
   color: 0xf2c230,
-  depthWrite: false
+  depthWrite: false,
+  side: THREE.DoubleSide
 });
 
 function clampLaneCount(n: number, fallback: number): number {
   return Math.max(1, Math.min(8, Math.round(Number.isFinite(n) ? n : fallback)));
 }
 
-function pushLine(
+function pushStrip(
   out: number[],
   map: WorldMap,
   ax: number,
   az: number,
   bx: number,
   bz: number,
-  offset: number
+  offset: number,
+  width: number
 ): void {
   const dx = bx - ax;
   const dz = bz - az;
@@ -59,8 +64,17 @@ function pushLine(
   const bCz = bz + nz * offset;
   const ay = map.groundTop(aCx, aCz) + Y_OFFSET;
   const by = map.groundTop(bCx, bCz) + Y_OFFSET;
+  const wx = nx * width * 0.5;
+  const wz = nz * width * 0.5;
 
-  out.push(aCx, ay, aCz, bCx, by, bCz);
+  out.push(
+    aCx - wx, ay, aCz - wz,
+    bCx - wx, by, bCz - wz,
+    bCx + wx, by, bCz + wz,
+    aCx - wx, ay, aCz - wz,
+    bCx + wx, by, bCz + wz,
+    aCx + wx, ay, aCz + wz
+  );
 }
 
 function pushDashedLine(
@@ -71,7 +85,8 @@ function pushDashedLine(
   bx: number,
   bz: number,
   offset: number,
-  phase: number
+  phase: number,
+  width: number
 ): number {
   const dx = bx - ax;
   const dz = bz - az;
@@ -83,14 +98,15 @@ function pushDashedLine(
     if (to - from < MIN_EDGE_M) return;
     const t0 = from / len;
     const t1 = to / len;
-    pushLine(
+    pushStrip(
       out,
       map,
       ax + dx * t0,
       az + dz * t0,
       ax + dx * t1,
       az + dz * t1,
-      offset
+      offset,
+      width
     );
   };
 
@@ -141,23 +157,23 @@ function addRoadLines(seg: RoadSegmentJson, map: WorldMap, white: number[], yell
     const az = points[i + 1] / 10;
     const bx = points[i + 2] / 10;
     const bz = points[i + 3] / 10;
-    if (drawYellow) pushLine(yellow, map, ax, az, bx, bz, 0);
+    if (drawYellow) pushStrip(yellow, map, ax, az, bx, bz, 0, YELLOW_W);
     for (let j = 0; j < whiteOffsets.length; j++) {
-      phases[j] = pushDashedLine(white, map, ax, az, bx, bz, whiteOffsets[j], phases[j]);
+      phases[j] = pushDashedLine(white, map, ax, az, bx, bz, whiteOffsets[j], phases[j], WHITE_W);
     }
   }
 }
 
-function lineFromPositions(name: string, positions: number[], mat: THREE.Material): THREE.LineSegments | null {
+function meshFromPositions(name: string, positions: number[], mat: THREE.Material): THREE.Mesh | null {
   if (positions.length === 0) return null;
   const geo = new THREE.BufferGeometry();
   geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
   geo.computeBoundingSphere();
-  const line = new THREE.LineSegments(geo, mat);
-  line.name = name;
-  line.renderOrder = 4;
-  line.frustumCulled = true;
-  return line;
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.name = name;
+  mesh.renderOrder = 4;
+  mesh.frustumCulled = true;
+  return mesh;
 }
 
 export async function createRoadMarkings(scene: THREE.Scene, map: WorldMap, url = "/data/roads.json"): Promise<THREE.Group> {
@@ -174,8 +190,8 @@ export async function createRoadMarkings(scene: THREE.Scene, map: WorldMap, url 
 
   const group = new THREE.Group();
   group.name = "RoadMarkings";
-  const yellowMesh = lineFromPositions("RoadMarkingsYellow", yellow, yellowMat);
-  const whiteMesh = lineFromPositions("RoadMarkingsWhite", white, whiteMat);
+  const yellowMesh = meshFromPositions("RoadMarkingsYellow", yellow, yellowMat);
+  const whiteMesh = meshFromPositions("RoadMarkingsWhite", white, whiteMat);
   if (yellowMesh) group.add(yellowMesh);
   if (whiteMesh) group.add(whiteMesh);
   scene.add(group);

@@ -196,6 +196,7 @@ const R_LANE = 0.35;
 const R_WRONG_WAY = 2.5;
 const R_CLOSE_FOLLOW = 1.1;
 const R_COLLISION = 5.0;
+const R_ROAD_CLAMP = 0.9;
 const R_RED_LIGHT = 5.0;
 const R_RED_APPROACH = 0.25;
 // Sustained-yaw penalty. R_STEER only punishes CHANGING the steer, so a constant
@@ -208,6 +209,15 @@ const COMMIT_DIST = 20;
 
 function wrap(a: number): number {
   return Math.atan2(Math.sin(a), Math.cos(a));
+}
+
+function laneCenterFor(proj: Projection, dir: 1 | -1): number {
+  const lanes =
+    proj.oneWayDir !== 0
+      ? Math.max(1, proj.oneWayDir === 1 ? proj.forwardLanes || proj.lanes : proj.backwardLanes || proj.lanes)
+      : Math.max(1, dir === 1 ? proj.forwardLanes || Math.ceil(proj.lanes / 2) : proj.backwardLanes || Math.floor(proj.lanes / 2));
+  const laneW = (proj.oneWayDir !== 0 ? proj.halfWidth * 2 : proj.halfWidth) / lanes;
+  return -dir * (proj.halfWidth - laneW * 0.5);
 }
 
 export class Fleet {
@@ -228,6 +238,10 @@ export class Fleet {
   #timeS = 0;
   #diag = {
     collisions: 0,
+    buildingCollisions: 0,
+    carCollisions: 0,
+    waterHits: 0,
+    roadClamps: 0,
     redLightViolations: 0,
     offRoadSteps: 0,
     wrongWaySteps: 0,
@@ -348,6 +362,10 @@ export class Fleet {
 
   diagnostics(): {
     collisions: number;
+    buildingCollisions: number;
+    carCollisions: number;
+    waterHits: number;
+    roadClamps: number;
     redLightViolations: number;
     offRoadSteps: number;
     wrongWaySteps: number;
@@ -356,6 +374,10 @@ export class Fleet {
   } {
     return {
       collisions: this.#diag.collisions,
+      buildingCollisions: this.#diag.buildingCollisions,
+      carCollisions: this.#diag.carCollisions,
+      waterHits: this.#diag.waterHits,
+      roadClamps: this.#diag.roadClamps,
       redLightViolations: this.#diag.redLightViolations,
       offRoadSteps: this.#diag.offRoadSteps,
       wrongWaySteps: this.#diag.wrongWaySteps,
@@ -552,7 +574,7 @@ export class Fleet {
       }
       travelX = proj.tangentX * dir;
       travelZ = proj.tangentZ * dir;
-      const rightLaneTarget = -dir * halfW * (proj.oneWayDir !== 0 ? 0.45 : 0.5);
+      const rightLaneTarget = laneCenterFor(proj, dir);
       laneErr = THREE.MathUtils.clamp((lateralRaw - rightLaneTarget) / halfW, -2, 2);
       // heading error toward a point 8 m ahead along the road
       const look = this.#roads.lookAhead(proj.segId, proj.s, dir, 8);
@@ -674,13 +696,16 @@ export class Fleet {
     let nx = x + nfx * car.speed * dt;
     let nz = z + nfz * car.speed * dt;
     let ny = w.ground(nx, nz) + RIDE_HEIGHT;
-    let collision = false;
+    let hardCollision = false;
+    let buildingHit = false;
+    let waterHit = false;
     if (w.isWater(nx, nz)) {
       nx = x;
       nz = z;
       ny = w.ground(nx, nz) + RIDE_HEIGHT;
       car.speed = Math.min(car.speed, 0);
-      collision = true;
+      waterHit = true;
+      hardCollision = true;
     } else {
       const moveLen = Math.hypot(nx - x, nz - z);
       const nextProj = this.#roads.project(nx, nz);
@@ -699,13 +724,15 @@ export class Fleet {
           nz = z + (nz - z) * t;
           ny = w.ground(nx, nz) + RIDE_HEIGHT;
           car.speed = Math.min(car.speed, 0);
-          collision = true;
+          buildingHit = true;
+          hardCollision = true;
         }
       }
     }
     car.pos.set(nx, ny, nz);
-    if (this.#separateCars(car)) collision = true;
-    if (this.#constrainToRoad(car, proj, x, z)) collision = true;
+    const carHit = this.#separateCars(car);
+    if (carHit) hardCollision = true;
+    const roadClamp = this.#constrainToRoad(car, proj, x, z);
 
     // --- stuck bookkeeping (a STATE for reward, never a teleport trigger) ---
     if (Math.abs(car.speed) < STUCK_SPEED) car.stuckT += dt;
@@ -732,9 +759,16 @@ export class Fleet {
     }
     if (clearAhead < 0.08 && Math.abs(car.speed) > 1) r -= R_GRIND * dt; // grinding
     if (clearAhead < 0.28 && car.speed > 2) r -= R_CLOSE_FOLLOW * (0.28 - clearAhead) * dt;
-    if (collision) {
+    if (roadClamp) {
+      r -= R_ROAD_CLAMP * dt;
+      this.#diag.roadClamps++;
+    }
+    if (hardCollision) {
       r -= R_COLLISION;
       this.#diag.collisions++;
+      if (buildingHit) this.#diag.buildingCollisions++;
+      if (carHit) this.#diag.carCollisions++;
+      if (waterHit) this.#diag.waterHits++;
     }
     if (signal.hasSignal && signal.stopRequired) {
       if (signal.distance < 22 && car.speed > 0.4) r -= R_RED_APPROACH * car.speed * (1 - signal.distanceN) * dt;
@@ -814,21 +848,25 @@ export class Fleet {
 
   /** Keep failed policies from disappearing into buildings/blocks forever. */
   #constrainToRoad(car: AiCar, proj: Projection | null, baseX: number, baseZ: number): boolean {
-    if (!proj) return false;
-    const edge = Math.max(1.2, proj.halfWidth * ROAD_EDGE_FRACTION);
+    const liveProj = this.#roads.project(car.pos.x, car.pos.z);
+    const activeProj = liveProj ?? proj;
+    if (!activeProj) return false;
+    const edge = Math.max(1.2, activeProj.halfWidth * ROAD_EDGE_FRACTION);
     const wet = this.#world.isWater(car.pos.x, car.pos.z);
 
-    const nx = -proj.tangentZ;
-    const nz = proj.tangentX;
-    const centerX = baseX - nx * proj.lateral;
-    const centerZ = baseZ - nz * proj.lateral;
-    const lateral = (car.pos.x - centerX) * nx + (car.pos.z - centerZ) * nz;
+    const nx = -activeProj.tangentZ;
+    const nz = activeProj.tangentX;
+    const lateral = liveProj
+      ? liveProj.lateral
+      : (car.pos.x - (baseX - nx * activeProj.lateral)) * nx + (car.pos.z - (baseZ - nz * activeProj.lateral)) * nz;
+    const centerX = liveProj ? car.pos.x - nx * lateral : baseX - nx * activeProj.lateral;
+    const centerZ = liveProj ? car.pos.z - nz * lateral : baseZ - nz * activeProj.lateral;
     if (Math.abs(lateral) <= edge && !wet) return false;
 
     let clamped = THREE.MathUtils.clamp(lateral, -edge, edge);
     if (wet) {
-      const dir = proj.oneWayDir || car.travelDir;
-      const rightLane = THREE.MathUtils.clamp(-dir * proj.halfWidth * (proj.oneWayDir ? 0.45 : 0.5), -edge, edge);
+      const dir = activeProj.oneWayDir || car.travelDir;
+      const rightLane = THREE.MathUtils.clamp(laneCenterFor(activeProj, dir), -edge, edge);
       const candidates = [clamped, rightLane, 0, -edge * 0.5, edge * 0.5, -edge, edge];
       for (const candidate of candidates) {
         const tx = centerX + nx * candidate;

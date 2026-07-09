@@ -19,10 +19,17 @@ import { Learner } from "../src/gameplay/aiCars/learner.ts";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const CKPT = process.env.SF_CKPT || path.join(ROOT, "tools", "aicars-trained-v3.json");
-const CHECKPOINT_MS = 60_000;
+const CHECKPOINT_MS = envNumber("SF_CHECKPOINT_MS", 60_000);
 const DT = 1 / 60;
-const BATCH = 320;               // sim substeps per event-loop tick (then yield)
+const BATCH = envNumber("SF_BATCH", 320); // sim substeps per event-loop tick (then yield)
+const MAX_REAL_MS = envNumber("SF_MAX_REAL_MS", 0);
+const FRESH = process.env.SF_FRESH === "1" || process.env.SF_FRESH === "true";
 const INIT_ANCHOR = [new THREE.Vector3(0, 0, 0)]; // only to trigger city-wide placement
+
+function envNumber(name, fallback) {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
 
 function floatGrid(file) {
   const b = readFileSync(file);
@@ -166,7 +173,9 @@ const fleet = new Fleet(world, roads, learner);
 
 // resume
 let resumed = 0;
-if (existsSync(CKPT)) {
+if (FRESH) {
+  console.log(`[trainer] fresh start requested; ignoring existing checkpoint at ${CKPT}`);
+} else if (existsSync(CKPT)) {
   try {
     const blob = JSON.parse(readFileSync(CKPT, "utf8"));
     if (fleet.importState(blob)) resumed = blob.cars?.length ?? 0;
@@ -210,7 +219,9 @@ function checkpoint() {
   console.log(
     `[trainer] +${realMin.toFixed(1)}min real | sim ${(simSteps * DT / 3600).toFixed(1)}h | ` +
     `skill med ${s.median.toFixed(1)} best ${s.best.toFixed(1)} | ${s.km.toFixed(0)} km | ` +
-    `eldest ${s.ageH.toFixed(1)}h | coll ${s.diag.collisions} red ${s.diag.redLightViolations} ` +
+    `eldest ${s.ageH.toFixed(1)}h | coll ${s.diag.collisions}` +
+    ` bld ${s.diag.buildingCollisions} car ${s.diag.carCollisions} water ${s.diag.waterHits} clamp ${s.diag.roadClamps}` +
+    ` red ${s.diag.redLightViolations} ` +
     `wrong ${s.diag.wrongWaySteps} lane ${s.diag.meanLaneError.toFixed(2)}${s.nan ? ` | WARN ${s.nan} NaN` : ""}`
   );
 }
@@ -224,7 +235,7 @@ for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => {
   process.exit(0);
 });
 
-setInterval(checkpoint, CHECKPOINT_MS);
+if (CHECKPOINT_MS > 0) setInterval(checkpoint, CHECKPOINT_MS);
 
 // accelerated run loop — batch of substeps, then yield so timers/signals fire
 function tick() {
@@ -233,6 +244,12 @@ function tick() {
     for (let i = 0; i < BATCH; i++) { fleet.prePhysics(DT, anchors); simSteps++; }
   } catch (e) {
     console.error("[trainer] step error (continuing):", e.message);
+  }
+  if (MAX_REAL_MS > 0 && Date.now() - t0 >= MAX_REAL_MS) {
+    stopping = true;
+    console.log(`[trainer] max real runtime reached (${MAX_REAL_MS}ms) — final checkpoint`);
+    checkpoint();
+    process.exit(0);
   }
   setImmediate(tick);
 }

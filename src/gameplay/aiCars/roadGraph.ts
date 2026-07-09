@@ -35,6 +35,8 @@ export type Projection = {
   tangentZ: number;
   halfWidth: number; // half the road width (m)
   lanes: number;
+  forwardLanes: number;
+  backwardLanes: number;
   oneWayDir: -1 | 0 | 1;
   roadClass: number;
 };
@@ -71,6 +73,8 @@ export class RoadGraph {
   private segTotal: Float32Array; // segId → total polyline length
   private segW: Float32Array; // segId → road width
   private segLanes: Int8Array; // segId → lane count
+  private segForwardLanes: Int8Array; // segId → lanes along stored point order
+  private segBackwardLanes: Int8Array; // segId → lanes against stored point order
   private segDir: Int8Array; // segId → one-way dir (-1,0,+1)
   private segClass: Int8Array; // segId → coarse road class
 
@@ -102,6 +106,8 @@ export class RoadGraph {
     this.segTotal = new Float32Array(this.segCount);
     this.segW = new Float32Array(this.segCount);
     this.segLanes = new Int8Array(this.segCount);
+    this.segForwardLanes = new Int8Array(this.segCount);
+    this.segBackwardLanes = new Int8Array(this.segCount);
     this.segDir = new Int8Array(this.segCount);
     this.segClass = new Int8Array(this.segCount);
     this.endX = new Float32Array(this.segCount * 2);
@@ -116,8 +122,31 @@ export class RoadGraph {
       this.segStart[seg] = g;
       this.segNum[seg] = n;
       this.segW[seg] = segs[seg].w;
-      this.segLanes[seg] = Math.max(1, Math.min(8, Math.round(segs[seg].l ?? Math.max(1, segs[seg].w / 4))));
-      this.segDir[seg] = segs[seg].d === 1 ? 1 : segs[seg].d === -1 ? -1 : 0;
+      const lanes = Math.max(1, Math.min(8, Math.round(segs[seg].l ?? Math.max(1, segs[seg].w / 4))));
+      const dir = segs[seg].d === 1 ? 1 : segs[seg].d === -1 ? -1 : 0;
+      this.segLanes[seg] = lanes;
+      this.segDir[seg] = dir;
+      if (dir === 1) {
+        this.segForwardLanes[seg] = lanes;
+        this.segBackwardLanes[seg] = 0;
+      } else if (dir === -1) {
+        this.segForwardLanes[seg] = 0;
+        this.segBackwardLanes[seg] = lanes;
+      } else {
+        let forward = Math.max(1, Math.min(8, Math.round(segs[seg].f ?? Math.ceil(lanes / 2))));
+        let backward = Math.max(1, Math.min(8, Math.round(segs[seg].b ?? Math.max(1, lanes - forward))));
+        while (forward + backward < lanes) {
+          if (forward <= backward) forward++;
+          else backward++;
+        }
+        while (forward + backward > lanes) {
+          if (forward >= backward && forward > 1) forward--;
+          else if (backward > 1) backward--;
+          else break;
+        }
+        this.segForwardLanes[seg] = forward;
+        this.segBackwardLanes[seg] = backward;
+      }
       this.segClass[seg] = Math.max(0, Math.min(5, Math.round(segs[seg].k ?? (segs[seg].w >= 14 ? 4 : segs[seg].w >= 10 ? 3 : 1))));
       let acc = 0;
       for (let i = 0; i < n; i++) {
@@ -417,16 +446,28 @@ export class RoadGraph {
       tangentZ: ez,
       halfWidth: this.segW[seg] * 0.5,
       lanes: this.segLanes[seg],
+      forwardLanes: this.segForwardLanes[seg],
+      backwardLanes: this.segBackwardLanes[seg],
       oneWayDir: this.segDir[seg] as -1 | 0 | 1,
       roadClass: this.segClass[seg]
     };
   }
 
-  segmentMeta(segId: number): { total: number; halfWidth: number; lanes: number; oneWayDir: -1 | 0 | 1; roadClass: number } {
+  segmentMeta(segId: number): {
+    total: number;
+    halfWidth: number;
+    lanes: number;
+    forwardLanes: number;
+    backwardLanes: number;
+    oneWayDir: -1 | 0 | 1;
+    roadClass: number;
+  } {
     return {
       total: this.segTotal[segId] ?? 0,
       halfWidth: (this.segW[segId] ?? 0) * 0.5,
       lanes: this.segLanes[segId] ?? 1,
+      forwardLanes: this.segForwardLanes[segId] ?? 1,
+      backwardLanes: this.segBackwardLanes[segId] ?? 1,
       oneWayDir: (this.segDir[segId] ?? 0) as -1 | 0 | 1,
       roadClass: this.segClass[segId] ?? 1
     };
