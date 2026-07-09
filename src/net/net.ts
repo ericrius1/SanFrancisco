@@ -23,6 +23,8 @@ import { avatarFromSeed, isDefaultAvatar, normalizeAvatarTraits, type AvatarTrai
  *   ← {t:"paint", id, d}                relayed to everyone else
  *   → {t:"fw", d:[[ox,oy,oz,tx,ty,tz,T,pal,size],...]}  fireworks volley
  *   ← {t:"fw", id, d}                   relayed to everyone else
+ *   → {t:"chat", text}                  ephemeral text chat (no persistence)
+ *   ← {t:"chat", id, name, text}        relayed to everyone else
  *
  * Movement is client-authoritative by design: each browser runs its own
  * box3d world (destruction and all), so the server can only ever relay
@@ -88,6 +90,7 @@ export type NetStatus = "connecting" | "online" | "offline" | "full";
 const SEND_HZ = 12;
 const KEEPALIVE_MS = 2000; // resend an unchanged pose this often (server idle-timer food)
 const NAME_MAX = 20;
+const CHAT_MAX = 200;
 const PLAYER_NAME_KEY = "sf.playerName";
 const PLAYER_NAME_KIND_KEY = "sf.playerNameKind";
 const LAST_GENERATED_NAME_KEY = "sf.lastGeneratedPlayerName";
@@ -267,6 +270,8 @@ export class Net {
   /** Someone else launched fireworks: rows [ox,oy,oz,tx,ty,tz,T,pal,size]
    * (replayed locally by fireworks.launchRemote). */
   onFireworks: (id: number, rockets: number[][]) => void = () => {};
+  /** Someone else sent a chat line (name is server-stamped from their roster). */
+  onChat: (id: number, name: string, text: string) => void = () => {};
   /** AI-cars snapshot from the training leader (rows per netSync.serializeCars). */
   onCars: (id: number, rows: number[][]) => void = () => {};
   /** One AI car's brain/pose from the leader (round-robin `brain` broadcast). */
@@ -456,6 +461,13 @@ export class Net {
         if (from !== this.selfId && this.roster.has(from) && blob) this.onBrain(blob);
         break;
       }
+      case "chat": {
+        const id = msg.id as number;
+        const name = String(msg.name ?? "");
+        const text = String(msg.text ?? "");
+        if (id !== this.selfId && this.roster.has(id) && name && text) this.onChat(id, name, text);
+        break;
+      }
     }
   }
 
@@ -501,6 +513,14 @@ export class Net {
   sendNote(instrument: number, key: number) {
     if (this.#ws?.readyState !== WebSocket.OPEN || !this.selfId) return;
     this.#ws.send(JSON.stringify({ t: "note", d: [instrument, key] }));
+  }
+
+  /** Broadcast one chat line (server sanitizes + stamps name; no persistence). */
+  sendChat(text: string) {
+    if (this.#ws?.readyState !== WebSocket.OPEN || !this.selfId) return;
+    const clean = text.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, CHAT_MAX);
+    if (!clean) return;
+    this.#ws.send(JSON.stringify({ t: "chat", text: clean }));
   }
 
   /** Voice signaling: relay `payload` (SDP/ICE) to one peer through the server. */

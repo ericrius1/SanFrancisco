@@ -25,6 +25,7 @@ const HOST = process.env.HOST || "0.0.0.0";
 const MAX_PLAYERS = Number(process.env.MAX_PLAYERS || 40);
 const TICK_HZ = 12; // snapshot broadcast rate
 const NAME_MAX = 20;
+const CHAT_MAX = 200;
 const MSG_MAX_BYTES = 16384; // fits a WebRTC SDP offer (voice signaling); poses are ~100 B
 const MSG_BUDGET_PER_SEC = 80; // state at 12 Hz + several simultaneous RTC negotiations; flooders get cut
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // no state for 5 min → drop
@@ -445,6 +446,14 @@ wss.on("connection", (ws) => {
       // relay to one peer, sender id stamped server-side so it can't be forged
       const target = players.get(msg.to);
       if (target) send(target.ws, { t: "rtc", from: id, payload: msg.payload });
+    } else if (msg.t === "chat" && typeof msg.text === "string") {
+      // ephemeral text chat — strip controls, cap length, stamp name from roster
+      // (never trust the client's claimed name). No persistence across reconnects.
+      const text = String(msg.text)
+        .replace(/[\u0000-\u001f\u007f]/g, "")
+        .trim()
+        .slice(0, CHAT_MAX);
+      if (text) broadcast({ t: "chat", id, name: p.name, text }, id);
     }
   });
 

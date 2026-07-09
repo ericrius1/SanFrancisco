@@ -37,6 +37,7 @@ import { WorldQueries, ProxySet } from "./core/worldQueries";
 import { Toolbar, TOOL_ORDER, TOOL_VERB, type ToolName } from "./ui/toolbar";
 import { AvatarSelector } from "./ui/avatarSelector";
 import { AudioControls } from "./ui/audioControls";
+import { Chat } from "./ui/chat";
 import { VehicleAudio } from "./fx/vehicleAudio";
 import { createNatureSoundscape } from "./audio";
 import { Traffic, DRIVE_PROFILES, type VehicleClass } from "./gameplay/traffic";
@@ -543,10 +544,6 @@ async function boot() {
   // Tab toggles the user UI — HUD + start panel fade in/out; pointer lock is independent
   let uiOpen = true;
 
-  input.onLockChange = (locked) => {
-    if (!locked && !cameraMode && !input.freeCursor) hud.message("Click to capture the mouse · Esc releases it", 2.8);
-  };
-
   const showUi = () => {
     if (!uiOpen) {
       uiOpen = true;
@@ -643,6 +640,26 @@ async function boot() {
   // shared skies: my rocket launches go out, friends' volleys replay here
   fireworks.onVolley = (rockets) => net.sendFireworks(rockets);
   net.onFireworks = (_id, rockets) => fireworks.launchRemote(rockets);
+  // ephemeral text chat (T to type) — fire-and-forget over the relay, no history
+  const chat = new Chat(
+    (text) => {
+      chat.addMessage(net.name, text, true); // local echo (server doesn't bounce back to sender)
+      net.sendChat(text);
+    },
+    (focused) => {
+      if (focused) {
+        input.releaseLock();
+      } else if (!cameraMode && document.body.classList.contains("started") && !input.suspended) {
+        input.requestLock();
+      }
+    }
+  );
+  net.onChat = (_id, name, text) => chat.addMessage(name, text);
+  input.onLockChange = (locked) => {
+    if (!locked && !cameraMode && !input.freeCursor && !chat.focused) {
+      hud.message("Click to capture the mouse · Esc releases it", 2.8);
+    }
+  };
   // AI cars: only the lowest-id client trains + broadcasts; everyone else renders
   // the fleet as interpolated ghosts. The leader anchors spawning around remotes
   // too, so cars stay near whoever is online.
@@ -1658,6 +1675,11 @@ async function boot() {
     if (input.pressed("KeyC")) setCameraMode(!cameraMode);
     // V: voice chat mic on/off (same as the HUD mic button)
     if (input.pressed("KeyV")) toggleMic();
+    // T: focus the text chat field (releases pointer lock so you can type)
+    if (input.pressed("KeyT")) {
+      chat.focus();
+      input.releaseLock();
+    }
     // N: hop to the next AI car and watch it drive (cycles the whole fleet)
     if (input.pressed("KeyN")) {
       const cars = aiCars.debugCars();

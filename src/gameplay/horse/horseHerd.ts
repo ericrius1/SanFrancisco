@@ -4,6 +4,7 @@ import type { Physics } from "../../core/physics";
 import { BodyType } from "../../core/box3dWorld";
 import type { WorldMap } from "../../world/heightmap";
 import { GARDEN_MEADOW, gardenSurfaceHeight } from "../../world/garden/layout";
+import { BrainOverlay } from "../aiCars/brainOverlay";
 import type { InspectableBrain } from "../../ui/brainPanel/types";
 
 type Gait = "walk" | "trot" | "gallop";
@@ -57,6 +58,11 @@ type HorseState = {
   jumpCooldown: number;
   jumpCount: number;
   maxAir: number;
+  // Per-horse snapshots for the floating brain lattice: the shared #obs and
+  // #policy.layerOut buffers are overwritten each horse in the sim loop, so we
+  // copy this horse's activations here for the render-frame overlay to read.
+  obsSnap: Float32Array;
+  layerSnap: Float32Array[];
 };
 
 class RuntimePolicy {
@@ -134,6 +140,21 @@ const GAIT_SPEEDS: Record<Gait, number> = {
   gallop: 4.55
 };
 
+const OVERLAY_RANGE = 140; // metres: horses within this get a live brain lattice
+const OVERLAY_LIFT = 0.7; // metres above the head the lattice floats
+
+// Human-readable names for the 31 observation inputs (see #observe order) and
+// the 12 policy outputs (see #updateHorse action usage). Shown in the inspector.
+const HORSE_INPUT_LABELS = [
+  "tgt speed", "speed", "speed err", "sin Δhead", "cos Δhead",
+  "height", "v vert", "roll", "pitch", "—", "—", "Δheading",
+  "gait sin", "gait cos", "contact 0", "contact 1", "contact 2", "contact 3",
+  "obs dist", "obs bearing", "obs height", "obs near", "obs lateral",
+  "is walk", "is trot", "is gallop", "bias", "obs hurdle", "obs cone",
+  "lane z", "arena r"
+];
+const HORSE_OUTPUT_LABELS = ["cadence", "stride", "lift", "out3", "steer", "jump", "roll", "pitch", "out8", "out9", "out10", "out11"];
+
 const COATS = [0x8d5a31, 0x4b2f20, 0xb47a43, 0xd2b78a, 0x2a211d, 0x9b6a4a, 0x6b4029, 0xc08a5a] as const;
 const MANES = [0x21140d, 0x120f0c, 0x332016, 0xe8d4ab, 0x2a1b14] as const;
 const BLANKETS = [0x1a8f96, 0xd85a2e, 0x2657b8, 0x8b2db7, 0xdfad1f, 0x2f9b57, 0xc73955] as const;
@@ -190,6 +211,10 @@ export class HorseHerd {
   #map: WorldMap;
   #scene: THREE.Scene;
   #policy: RuntimePolicy | null = null;
+  #overlay: BrainOverlay | null = null;
+  #overlaysOn = true;
+  #camera: THREE.Camera | null = null;
+  #worldPos = new THREE.Vector3();
   #obs = new Float32Array(OBS_DIM);
   #horses: HorseState[] = [];
   #obstacles: Obstacle[] = [];
@@ -217,7 +242,25 @@ export class HorseHerd {
   get jumps(): { x: number; z: number; y: number; height: number }[] { return this.#jumps; }
 
   inspectables(): InspectableBrain[] {
-    return [];
+    const overlay = this.#overlay;
+    const policy = this.#policy;
+    if (!overlay || !policy) return [];
+    const out: InspectableBrain[] = [];
+    for (let i = 0; i < this.#horses.length; i++) {
+      if (!overlay.isShown(i)) continue;
+      const h = this.#horses[i];
+      out.push({
+        id: `horse:${i}`,
+        label: `RL Horse #${i}`,
+        getWorldPos: (o) => this.#latticePos(h, o),
+        pickRadius: 1.3,
+        net: policy,
+        liveObs: () => h.obsSnap,
+        inputLabels: HORSE_INPUT_LABELS,
+        outputLabels: HORSE_OUTPUT_LABELS
+      });
+    }
+    return out;
   }
 
   debugStates(): {
@@ -318,11 +361,26 @@ export class HorseHerd {
   async #loadPolicy(): Promise<void> {
     try {
       const def = (await (await fetch("/models/horse_rl_policy.json", { cache: "no-store" })).json()) as PolicyDef;
-      if (def.sizes?.[0] === OBS_DIM && def.weights?.length) this.#policy = new RuntimePolicy(def);
-      else console.warn("[horse] horse_rl_policy.json has an unexpected shape", def.sizes);
+      if (def.sizes?.[0] === OBS_DIM && def.weights?.length) {
+        const policy = new RuntimePolicy(def);
+        this.#policy = policy;
+        this.#buildOverlay(policy);
+      } else console.warn("[horse] horse_rl_policy.json has an unexpected shape", def.sizes);
     } catch (e) {
       console.warn("[horse] Codex horse policy unavailable; using procedural fallback", e);
     }
+  }
+
+  /**
+   * Give each horse its floating neural-net lattice (reusing the AI-car
+   * BrainOverlay) and allocate the per-horse activation snapshot buffers now that
+   * the policy — and thus the layer sizes — is known. On by default.
+   */
+  #buildOverlay(policy: RuntimePolicy): void {
+    for (const h of this.#horses) h.layerSnap = policy.layerOut.map((l) => new Float32Array(l.length));
+    const overlay = new BrainOverlay(this.#scene, policy.sizes, this.#horses.length, () => this.#camera as THREE.Camera);
+    overlay.setEnabled(this.#overlaysOn);
+    this.#overlay = overlay;
   }
 
   #groundAt(x: number, z: number): number {
@@ -431,7 +489,9 @@ export class HorseHerd {
         contacts: [true, true, true, true],
         jumpCooldown: 0,
         jumpCount: 0,
-        maxAir: 0
+        maxAir: 0,
+        obsSnap: new Float32Array(OBS_DIM),
+        layerSnap: []
       };
       this.#horses.push(h);
       this.#scene.add(group);
@@ -602,9 +662,32 @@ export class HorseHerd {
     for (let i = 0; i < this.#horses.length; i++) this.#updateHorse(this.#horses[i], step, i, playerPosition);
   }
 
-  update(_dt: number, _camera: THREE.Camera): void {
-    // The Codex horse controller is updated from prePhysics so it stays frozen
-    // with the rest of the world while paused. No neural-orb visual is moved over.
+  update(_dt: number, camera: THREE.Camera): void {
+    // The Codex horse controller is stepped from prePhysics so it stays frozen
+    // with the rest of the world while paused. Here we only billboard + repaint
+    // each horse's floating neural-net lattice from its cached activations, so
+    // the brains keep glowing (and stay inspectable) even while paused.
+    this.#camera = camera;
+    const overlay = this.#overlay;
+    if (!overlay) return;
+    if (!this.#active || !this.#overlaysOn) {
+      for (let i = 0; i < this.#horses.length; i++) overlay.hide(i);
+      return;
+    }
+    const range2 = OVERLAY_RANGE * OVERLAY_RANGE;
+    for (let i = 0; i < this.#horses.length; i++) {
+      const h = this.#horses[i];
+      this.#latticePos(h, this.#worldPos);
+      const dx = this.#worldPos.x - camera.position.x;
+      const dz = this.#worldPos.z - camera.position.z;
+      if (!h.layerSnap.length || dx * dx + dz * dz > range2) overlay.hide(i);
+      else overlay.update(i, this.#worldPos, h.layerSnap, h.obsSnap);
+    }
+  }
+
+  /** World position of a horse's floating lattice: above its head. */
+  #latticePos(h: HorseState, out: THREE.Vector3): void {
+    out.set(h.group.position.x, h.group.position.y + 2.55 * h.variant.scale + OVERLAY_LIFT, h.group.position.z);
   }
 
   #updateHorse(h: HorseState, dt: number, index: number, playerPosition?: THREE.Vector3): void {
@@ -625,6 +708,12 @@ export class HorseHerd {
       action[5] = nearest?.kind === "hurdle" && Math.hypot(nearest.x - h.x, nearest.z - h.z) < 8 ? 0.9 : 0;
     }
     h.action.set(action);
+    if (this.#policy && h.layerSnap.length) {
+      // capture this horse's activations before the next horse overwrites the
+      // shared buffers, so the render-frame overlay draws the right brain.
+      h.obsSnap.set(this.#obs);
+      for (let l = 0; l < h.layerSnap.length; l++) h.layerSnap[l].set(this.#policy.layerOut[l]);
+    }
 
     h.jumpCooldown = Math.max(0, h.jumpCooldown - dt);
     const turnError = wrapPi(headingTarget - h.heading);

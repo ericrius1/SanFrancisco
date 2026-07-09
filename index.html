@@ -144,6 +144,7 @@
       #hud .help,
       #hud .toolbar,
       #hud .audio,
+      #hud .chat,
       #hud .minimap,
       #hud .place-history,
       #hud .avatar-ui,
@@ -158,6 +159,7 @@
       #hud.faded .help,
       #hud.faded .toolbar,
       #hud.faded .audio,
+      #hud.faded .chat,
       #hud.faded .minimap,
       #hud.faded .place-history,
       #hud.faded .avatar-ui,
@@ -172,6 +174,7 @@
       }
       #hud.faded .toolbar,
       #hud.faded .audio,
+      #hud.faded .chat,
       #hud.faded .minimap,
       #hud.faded .place-history,
       #hud.faded .avatar-ui,
@@ -1761,9 +1764,105 @@
         text-transform: uppercase;
         letter-spacing: 0.05em;
       }
+      #hud .chat {
+        position: absolute;
+        bottom: 148px;
+        left: 20px;
+        width: 280px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        padding: 8px 10px 10px;
+        border-radius: 10px;
+        background: rgba(10, 24, 36, 0.72);
+        border: 1px solid rgba(111, 215, 196, 0.28);
+        box-shadow:
+          0 0 0 1px rgba(111, 215, 196, 0.06) inset,
+          0 8px 22px rgba(0, 6, 12, 0.32);
+        backdrop-filter: blur(8px);
+        pointer-events: auto;
+      }
+      #hud .chat-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      #hud .chat-tag {
+        font:
+          700 10px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: #6fd7c4;
+      }
+      #hud .chat-hint {
+        font:
+          600 10px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
+        letter-spacing: 0.04em;
+        color: rgba(188, 217, 230, 0.55);
+        border: 1px solid rgba(190, 225, 240, 0.2);
+        border-radius: 4px;
+        padding: 1px 5px;
+      }
+      #hud .chat-log {
+        max-height: 132px;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        scrollbar-width: thin;
+        scrollbar-color: rgba(111, 215, 196, 0.35) transparent;
+      }
+      #hud .chat-msg {
+        font:
+          500 12px/1.35 "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
+        color: #eaf4f8;
+        word-break: break-word;
+      }
+      #hud .chat-who {
+        color: #9ef2df;
+        font-weight: 700;
+        margin-right: 6px;
+      }
+      #hud .chat-who::after {
+        content: ":";
+      }
+      #hud .chat-msg.self .chat-who {
+        color: #6fd7c4;
+      }
+      #hud .chat-body {
+        color: #dceff5;
+      }
+      #hud .chat-input {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 7px 9px;
+        border-radius: 7px;
+        border: 1px solid rgba(190, 225, 240, 0.22);
+        background: rgba(6, 16, 25, 0.65);
+        color: #eaf6fa;
+        outline: none;
+        font:
+          500 12.5px "Avenir Next",
+          "Helvetica Neue",
+          sans-serif;
+      }
+      #hud .chat-input::placeholder {
+        color: rgba(188, 217, 230, 0.45);
+      }
+      #hud .chat-input:focus {
+        border-color: #6fd7c4;
+        box-shadow: 0 0 0 1px rgba(111, 215, 196, 0.25);
+      }
       #hud .audio {
         position: absolute;
-        bottom: 16px;
+        bottom: 48px;
         left: 20px;
         display: flex;
         flex-direction: column;

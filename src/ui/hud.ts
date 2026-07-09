@@ -241,6 +241,7 @@ export class HUD {
       : [
           ...source,
           { c: ["M"], label: "map" },
+          { c: ["T"], label: "chat" },
           { c: ["Tab"], label: "toggle UI" },
           { c: ["Esc"], label: "release mouse" }
         ]
