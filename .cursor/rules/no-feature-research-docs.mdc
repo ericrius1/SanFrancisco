@@ -1,0 +1,25 @@
+---
+description: Do not create feature-research, training plans, or audit docs in-repo
+alwaysApply: true
+---
+
+# No in-repo research / planning docs
+
+This project deliberately has **no** `feature-research/`, training architecture plans, audit writeups, or similar agent-facing design docs in the repo. Prior versions were removed so work starts from first principles and from **code**, not stale plans.
+
+## Do not create
+
+- `feature-research/**` (or any rename: `docs/plans/`, `research/`, `audits/`, etc. for the same purpose)
+- Training-farm / Hetzner / champion-pipeline / multiplayer-architecture PLAN.md files
+- Long `audit.md` / `audit-*.md` / design-roadmap markdown left in the tree for future agents
+- New markdown that encodes “locked decisions” about training, deployment topology, or species pipeline
+
+## Do instead
+
+- Read and change **source** (`src/`, `tools/`, `rl/`, `server/`)
+- Keep reasoning in the chat (or the user’s external notes), not as durable in-repo plan files
+- Only add markdown when the user explicitly asks for a specific doc, or when it is a short module README that documents the **current** code API (like an existing `README.md` next to code)
+
+## If tempted to “document the plan for the next agent”
+
+Don’t. Implement, or discuss with the user. Do not leave planning artifacts for other models to discover.

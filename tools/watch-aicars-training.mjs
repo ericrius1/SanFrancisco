@@ -18,6 +18,8 @@ const MAX_TRAINER_LOG_AGE_S = envNumber("SF_WATCH_MAX_TRAINER_LOG_AGE_S", 180);
 const MIN_PROGRESS_RATIO = envNumber("SF_WATCH_MIN_PROGRESS_RATIO", 0.04);
 const MAX_ROAD_CLAMPS_PER_KM = envNumber("SF_WATCH_MAX_ROAD_CLAMPS_PER_KM", 12_000);
 const MAX_LANE_FIXES_PER_KM = envNumber("SF_WATCH_MAX_LANEFIX_PER_KM", 150);
+const MAX_STEP_M = envNumber("SF_WATCH_MAX_STEP_M", 8);
+const MAX_YAW_STEP_RAD = envNumber("SF_WATCH_MAX_YAW_STEP_RAD", 0.35);
 const MIN_STOPLINE_HOLDS = envNumber("SF_WATCH_MIN_STOPLINE_HOLDS", 1);
 const MAX_STOP_LINE_SPEED = envNumber("SF_WATCH_MAX_STOP_LINE_SPEED", 0.35);
 const LOG = process.env.SF_WATCH_LOG || "/tmp/sf-aicars/watchdog.log";
@@ -93,6 +95,10 @@ function tick() {
     String(MAX_ROAD_CLAMPS_PER_KM),
     "--max-lanefix-per-km",
     String(MAX_LANE_FIXES_PER_KM),
+    "--max-step-m",
+    String(MAX_STEP_M),
+    "--max-yaw-step-rad",
+    String(MAX_YAW_STEP_RAD),
     "--min-stopline-holds",
     String(MIN_STOPLINE_HOLDS),
     "--max-stop-line-speed",
@@ -113,6 +119,8 @@ write(
   `[watchdog] start intervalMs=${INTERVAL_MS} maxTrainerLogAgeS=${MAX_TRAINER_LOG_AGE_S}` +
     ` minProgressRatio=${MIN_PROGRESS_RATIO} maxRoadClampsPerKm=${MAX_ROAD_CLAMPS_PER_KM}` +
     ` maxLaneFixesPerKm=${MAX_LANE_FIXES_PER_KM}` +
+    ` maxStepM=${MAX_STEP_M}` +
+    ` maxYawStepRad=${MAX_YAW_STEP_RAD}` +
     ` minStoplineHolds=${MIN_STOPLINE_HOLDS}` +
     ` maxStopLineSpeed=${MAX_STOP_LINE_SPEED}` +
     ` promote=${PROMOTE} checkpoint=${path.relative(ROOT, CHECKPOINT)}` +

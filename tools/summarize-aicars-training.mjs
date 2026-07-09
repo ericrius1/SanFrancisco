@@ -35,6 +35,8 @@ const maxWatchdogLogAgeS = argNumber("--max-watchdog-log-age-s", 900);
 const maxTrainerLogAgeS = argNumber("--max-trainer-log-age-s", 180);
 const maxRoadClampsPerKm = argNumber("--max-road-clamps-per-km", 12_000);
 const maxLaneFixesPerKm = argNumber("--max-lanefix-per-km", 150);
+const maxStepM = argNumber("--max-step-m", 8);
+const maxYawStepRad = argNumber("--max-yaw-step-rad", 0.35);
 const minProgressRatio = argNumber("--min-progress-ratio", 0.04);
 const minStopLineHolds = argNumber("--min-stopline-holds", 1);
 
@@ -76,6 +78,12 @@ if (trainer.latest) {
   else if (trainer.latest.laneCorrectionsPerKm > maxLaneFixesPerKm) {
     failures.push(`trainer lane corrections ${round(trainer.latest.laneCorrectionsPerKm)} / km > ${maxLaneFixesPerKm}`);
   }
+  if (trainer.latest.maxStepM == null) failures.push("trainer latest line does not include max per-step movement");
+  else if (trainer.latest.maxStepM > maxStepM) failures.push(`trainer max per-step movement ${round(trainer.latest.maxStepM)}m > ${maxStepM}m`);
+  if (trainer.latest.maxYawStepRad == null) failures.push("trainer latest line does not include max per-step yaw");
+  else if (trainer.latest.maxYawStepRad > maxYawStepRad) {
+    failures.push(`trainer max per-step yaw ${round(trainer.latest.maxYawStepRad)}rad > ${maxYawStepRad}rad`);
+  }
 } else if (trainer.exists) {
   failures.push("no parseable trainer stat line found");
 }
@@ -96,6 +104,8 @@ const summary = {
     maxTrainerLogAgeS,
     maxRoadClampsPerKm,
     maxLaneFixesPerKm,
+    maxStepM,
+    maxYawStepRad,
     minProgressRatio,
     minStopLineHolds
   },
@@ -187,7 +197,7 @@ function summarizeTrainer(file) {
 
 function parseTrainerLine(line) {
   const rx =
-    /\[trainer\] \+([\d.]+)min real \| sim ([\d.]+)h .*? \| (\d+) km \| eldest ([\d.]+)h \| coll (\d+) bld (\d+) car (\d+) water (\d+) clamp (\d+) red (\d+)(?: hold (\d+))? wrong (\d+) lane ([\d.]+)(?: prog (-?[\d.]+) dist (\d+)(?: clampkm (-?[\d.]+))?(?: lanefix (\d+))?)?/;
+    /\[trainer\] \+([\d.]+)min real \| sim ([\d.]+)h .*? \| (\d+) km \| eldest ([\d.]+)h \| coll (\d+) bld (\d+) car (\d+) water (\d+) clamp (\d+) red (\d+)(?: hold (\d+))? wrong (\d+) lane ([\d.]+)(?: prog (-?[\d.]+) dist (\d+)(?: clampkm (-?[\d.]+))?(?: lanefix (\d+)(?: step ([\d.]+) yaw ([\d.]+)(?: recover (\d+))?)?)?)?/;
   const m = line.match(rx);
   if (!m) return null;
   const distanceM = m[15] == null ? null : Number(m[15]);
@@ -211,7 +221,10 @@ function parseTrainerLine(line) {
     distanceM,
     roadClampsPerKm: distanceM && distanceM > 0 ? roadClamps / (distanceM / 1000) : null,
     laneCorrections,
-    laneCorrectionsPerKm: distanceM && distanceM > 0 && laneCorrections != null ? laneCorrections / (distanceM / 1000) : null
+    laneCorrectionsPerKm: distanceM && distanceM > 0 && laneCorrections != null ? laneCorrections / (distanceM / 1000) : null,
+    maxStepM: m[18] == null ? null : Number(m[18]),
+    maxYawStepRad: m[19] == null ? null : Number(m[19]),
+    forcedRoadRecoveries: m[20] == null ? null : Number(m[20])
   };
 }
 

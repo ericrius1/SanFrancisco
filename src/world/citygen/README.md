@@ -2,8 +2,7 @@
 
 A neighborhood-aware procedural building generator. Built for this San Francisco
 world, but structured so it can be lifted into another project and retuned for
-another city by swapping one folder. Full design + roadmap:
-`feature-research/sf-citygen/PLAN.md`.
+another city by swapping one folder.
 
 ## Why it exists
 

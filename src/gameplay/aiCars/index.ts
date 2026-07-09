@@ -85,11 +85,18 @@ const CAR_TOP = 1.3; // ~ roof height above the wheel-contact origin
 const WHEEL_RADIUS = 0.35; // nominal, for rolling-speed → spin rate
 const MAX_STEER_ANGLE = 0.5; // rad, visual front-wheel turn at full steer
 const STATS_INTERVAL = 1.0; // s between HUD chip refreshes
+const CAR_RENDER_POS_SMOOTH = 22; // 1/s; hides fixed-step/safety-correction pops
+const CAR_RENDER_ROT_SMOOTH = 18; // 1/s
+const CAR_RENDER_SNAP_DIST = 70; // m; initial load / true teleport should not glide across town
 
 type CarMeshData = {
   wheels: THREE.Mesh[]; // all four, spun by speed
   front: THREE.Mesh[]; // fl + fr, steered by car.steer
   spin: number; // accumulated wheel roll angle
+  renderPos: THREE.Vector3;
+  renderQuat: THREE.Quaternion;
+  targetQuat: THREE.Quaternion;
+  initialized: boolean;
 };
 
 /** Median of a numeric list (0 for empty). */
@@ -638,12 +645,20 @@ export class AiCars {
           if (o.name === "wheel_fl" || o.name === "wheel_fr") front.push(w);
         }
       });
-      (mesh.userData as { car?: CarMeshData }).car = { wheels, front, spin: 0 };
+      (mesh.userData as { car?: CarMeshData }).car = {
+        wheels,
+        front,
+        spin: 0,
+        renderPos: new THREE.Vector3(),
+        renderQuat: new THREE.Quaternion(),
+        targetQuat: new THREE.Quaternion(),
+        initialized: false
+      };
     }
 
-    this.#mirror(pos, heading, mesh);
-
     const data = (mesh.userData as { car?: CarMeshData }).car;
+    this.#mirror(pos, heading, mesh, data, frameDt);
+
     if (data) {
       data.spin -= (speed / WHEEL_RADIUS) * frameDt; // -x rolls forward (+z)
       const steerAngle = steer * MAX_STEER_ANGLE;
@@ -653,10 +668,11 @@ export class AiCars {
 
     const force = this.#forceOverlayId === id;
     if (overlaysActive || force) {
-      const dx = pos.x - playerPos.x;
-      const dz = pos.z - playerPos.z;
+      const drawPos = mesh.position;
+      const dx = drawPos.x - playerPos.x;
+      const dz = drawPos.z - playerPos.z;
       if (force || dx * dx + dz * dz <= range2) {
-        this.#worldPos.set(pos.x, pos.y + CAR_TOP + OVERLAY_LIFT, pos.z);
+        this.#worldPos.set(drawPos.x, drawPos.y + CAR_TOP + OVERLAY_LIFT, drawPos.z);
         overlay.update(id, this.#worldPos, layerOut, obs);
       } else {
         overlay.hide(id);
@@ -667,7 +683,7 @@ export class AiCars {
   }
 
   /** yaw + ground-normal tilt into the car mesh (matches the kinematic body). */
-  #mirror(pos: THREE.Vector3, heading: number, mesh: THREE.Group): void {
+  #mirror(pos: THREE.Vector3, heading: number, mesh: THREE.Group, data: CarMeshData | undefined, frameDt: number): void {
     const e = 2.5;
     const x = pos.x;
     const z = pos.z;
@@ -677,8 +693,27 @@ export class AiCars {
       .normalize();
     this.#qYaw.setFromAxisAngle(this.#up, heading);
     this.#qTilt.setFromUnitVectors(this.#up, this.#nrm).multiply(this.#qYaw);
-    mesh.position.copy(pos);
-    mesh.quaternion.copy(this.#qTilt);
+    if (!data) {
+      mesh.position.copy(pos);
+      mesh.quaternion.copy(this.#qTilt);
+      return;
+    }
+
+    data.targetQuat.copy(this.#qTilt);
+    const snap =
+      !data.initialized ||
+      frameDt <= 0 ||
+      data.renderPos.distanceToSquared(pos) > CAR_RENDER_SNAP_DIST * CAR_RENDER_SNAP_DIST;
+    if (snap) {
+      data.renderPos.copy(pos);
+      data.renderQuat.copy(data.targetQuat);
+      data.initialized = true;
+    } else {
+      data.renderPos.lerp(pos, 1 - Math.exp(-frameDt * CAR_RENDER_POS_SMOOTH));
+      data.renderQuat.slerp(data.targetQuat, 1 - Math.exp(-frameDt * CAR_RENDER_ROT_SMOOTH));
+    }
+    mesh.position.copy(data.renderPos);
+    mesh.quaternion.copy(data.renderQuat);
   }
 
   /** Raw fleet stats (no HUD-trend side effects) — leader reads the live learner,

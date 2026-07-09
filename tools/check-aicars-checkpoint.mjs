@@ -42,6 +42,8 @@ const maxTrainerLogAgeS = argNumber("--max-trainer-log-age-s", 0);
 const minProgressRatio = argNumber("--min-progress-ratio", -Infinity);
 const maxRoadClampsPerKm = argNumber("--max-road-clamps-per-km", Infinity);
 const maxLaneFixesPerKm = argNumber("--max-lanefix-per-km", Infinity);
+const maxStepM = argNumber("--max-step-m", Infinity);
+const maxYawStepRad = argNumber("--max-yaw-step-rad", Infinity);
 const minStopLineHolds = argNumber("--min-stopline-holds", 0);
 const minFollowingGapM = argNumber("--min-following-gap-m", 8);
 const maxStopLineSpeed = argNumber("--max-stop-line-speed", 0.35);
@@ -76,11 +78,13 @@ function latestTrainerStats(file) {
   };
   const raw = readFileSync(file, "utf8").trim();
   if (!raw) return { ...meta, line: null, parsed: false };
-  const lines = raw.split(/\r?\n/).reverse();
-  const line = lines.find((l) => l.includes("[trainer] +") && l.includes(" coll "));
+  const lines = raw.split(/\r?\n/);
+  const startIdx = lines.reduce((latest, line, idx) => (line.includes("[trainer] start") ? idx : latest), -1);
+  const runLines = startIdx >= 0 ? lines.slice(startIdx + 1) : lines;
+  const line = [...runLines].reverse().find((l) => l.includes("[trainer] +") && l.includes(" coll "));
   if (!line) return { ...meta, line: null, parsed: false };
   const rx =
-    /sim ([\d.]+)h .*? coll (\d+) bld (\d+) car (\d+) water (\d+) clamp (\d+) red (\d+)(?: hold (\d+))? wrong (\d+) lane ([\d.]+)(?: prog (-?[\d.]+) dist (\d+)(?: clampkm (-?[\d.]+))?(?: lanefix (\d+))?)?/;
+    /sim ([\d.]+)h .*? coll (\d+) bld (\d+) car (\d+) water (\d+) clamp (\d+) red (\d+)(?: hold (\d+))? wrong (\d+) lane ([\d.]+)(?: prog (-?[\d.]+) dist (\d+)(?: clampkm (-?[\d.]+))?(?: lanefix (\d+)(?: step ([\d.]+) yaw ([\d.]+)(?: recover (\d+))?)?)?)?/;
   const m = line.match(rx);
   if (!m) return { ...meta, line, parsed: false };
   const roadClamps = Number(m[6]);
@@ -105,7 +109,10 @@ function latestTrainerStats(file) {
     distanceM,
     roadClampsPerKm: distanceM && distanceM > 0 ? roadClamps / (distanceM / 1000) : null,
     laneCorrections,
-    laneCorrectionsPerKm: distanceM && distanceM > 0 && laneCorrections != null ? laneCorrections / (distanceM / 1000) : null
+    laneCorrectionsPerKm: distanceM && distanceM > 0 && laneCorrections != null ? laneCorrections / (distanceM / 1000) : null,
+    maxStepM: m[15] == null ? null : Number(m[15]),
+    maxYawStepRad: m[16] == null ? null : Number(m[16]),
+    forcedRoadRecoveries: m[17] == null ? null : Number(m[17])
   };
 }
 
@@ -279,6 +286,20 @@ if (trainer) {
         failures.push(`trainer lane corrections ${round(trainer.laneCorrectionsPerKm)} / km > ${maxLaneFixesPerKm}`);
       }
     }
+    if (Number.isFinite(maxStepM)) {
+      if (trainer.maxStepM == null) {
+        failures.push("trainer log does not include max per-step movement");
+      } else if (trainer.maxStepM > maxStepM) {
+        failures.push(`trainer max per-step movement ${round(trainer.maxStepM)}m > ${maxStepM}m`);
+      }
+    }
+    if (Number.isFinite(maxYawStepRad)) {
+      if (trainer.maxYawStepRad == null) {
+        failures.push("trainer log does not include max per-step yaw");
+      } else if (trainer.maxYawStepRad > maxYawStepRad) {
+        failures.push(`trainer max per-step yaw ${round(trainer.maxYawStepRad)}rad > ${maxYawStepRad}rad`);
+      }
+    }
   }
 } else {
   const msg = `trainer log missing: ${logPath}`;
@@ -306,6 +327,8 @@ const summary = {
   unknownStopLineSpeed,
   maxStopLineSpeed,
   maxLaneFixesPerKm,
+  maxStepM,
+  maxYawStepRad,
   minStopLineHolds,
   meanLaneError: round(meanLaneError),
   laneMax: round(laneMax),

@@ -109,6 +109,7 @@ export type AiCar = {
   heading: number; // yaw radians, 0 = +Z (see convention above)
   speed: number; // signed m/s along heading (negative = reversing)
   steer: number; // last steer action[0], for wheel visuals
+  accelCmd: number; // last throttle/brake command after safety filtering
   bodyKind: number; // 0..N-1 → which carMesh variant (identity)
   paintHue: number; // 0..1 (identity)
   mesh?: THREE.Group; // attached by index.ts
@@ -191,9 +192,16 @@ const SYNC_INTERVAL = 0.2; // s between overlay policy syncs (≤ 5 Hz)
 const LESSON_INTERVAL = 30; // s between social-rescue lesson checks
 const ROAD_EDGE_FRACTION = 0.88; // physical training guard: stay inside the paved envelope
 const ROAD_RECOVERY_SPEED_DAMP = 0.35; // lose speed when the road envelope catches you
+const ROAD_LATERAL_CORRECTION_STEP = 0.75; // m per correction; avoid cross-street pose snaps
 const WRONG_WAY_FACE_DOT = -0.05; // start recovery before a one-way car is fully backwards
 const WRONG_WAY_PENALTY_DOT = -0.15; // count only clear wrong-way motion as a training violation
 const WRONG_WAY_RECOVERY_TIME = 2.5; // seconds before a one-way street forces a safe reorientation
+const ONE_WAY_RECOVERY_TURN_RATE = 2.4; // rad/s; avoid visible yaw snaps during recovery
+const RECOVERY_DEFAULT_DT = 1 / 60;
+const STEER_RESPONSE = 2.8; // normalized steer units / s; filters sampled policy jitter
+const ACCEL_RESPONSE = 2.6; // normalized throttle units / s
+const BRAKE_RESPONSE = 9.0; // normalized brake units / s; emergency stops stay prompt
+const FORCE_ROAD_SEARCH = 260; // m; deterministic nearest-road recovery radius
 const CAR_FOOTPRINT_SIDE = HALF_EXTENTS[0] * 2 + 0.35; // centre-to-centre side clearance for car bodies
 const CAR_FOOTPRINT_ALONG = HALF_EXTENTS[2] * 2 + 0.55; // centre-to-centre nose/tail clearance for car bodies
 const CAR_BRAKE_SIDE = CAR_FOOTPRINT_SIDE + 0.55;
@@ -205,6 +213,8 @@ const CAR_HARD_ALONG = HALF_EXTENTS[2] * 2;
 const CAR_CONTACT_COOLDOWN = 1.25;
 const CAR_SETTLE_DIST = 4.05;
 const CAR_SETTLE_DIST2 = CAR_SETTLE_DIST * CAR_SETTLE_DIST;
+const CAR_FOLLOW_SETTLE_GAP = 8.2;
+const CAR_FOLLOW_SETTLE_STEP = 0.18;
 
 // reward shaping (per-second rates; multiplied by dt in the hot loop)
 const R_OFFROAD = 0.5;
@@ -230,6 +240,17 @@ const COMMIT_DIST = 20;
 
 function wrap(a: number): number {
   return Math.atan2(Math.sin(a), Math.cos(a));
+}
+
+function approach(current: number, target: number, maxDelta: number): number {
+  const d = target - current;
+  if (Math.abs(d) <= maxDelta) return target;
+  return current + Math.sign(d) * maxDelta;
+}
+
+function turnToward(current: number, target: number, maxDelta: number): number {
+  const turn = wrap(target - current);
+  return wrap(current + THREE.MathUtils.clamp(turn, -maxDelta, maxDelta));
 }
 
 function laneCenterFor(proj: Projection, dir: 1 | -1): number {
@@ -264,6 +285,7 @@ export class Fleet {
     waterHits: 0,
     roadClamps: 0,
     laneCorrections: 0,
+    forcedRoadRecoveries: 0,
     redLightViolations: 0,
     stopLineHolds: 0,
     offRoadSteps: 0,
@@ -271,6 +293,8 @@ export class Fleet {
     laneErrorSum: 0,
     distanceM: 0,
     forwardProgressM: 0,
+    maxStepM: 0,
+    maxYawStepRad: 0,
     samples: 0
   };
 
@@ -295,6 +319,7 @@ export class Fleet {
         heading: 0,
         speed: 0,
         steer: 0,
+        accelCmd: 0,
         bodyKind: 0,
         paintHue: 0,
         alive: false,
@@ -349,6 +374,8 @@ export class Fleet {
     this.#substep++;
     for (const car of this.cars) this.#stepCar(car, dt, learnTick);
     this.#settleCarPairs();
+    this.#settleFollowingGaps();
+    this.#settleRoadEnvelope();
 
     // overlay policy mirror (≤ 5 Hz)
     this.#syncTimer -= dt;
@@ -398,6 +425,7 @@ export class Fleet {
     waterHits: number;
     roadClamps: number;
     laneCorrections: number;
+    forcedRoadRecoveries: number;
     redLightViolations: number;
     stopLineHolds: number;
     offRoadSteps: number;
@@ -406,6 +434,8 @@ export class Fleet {
     distanceM: number;
     forwardProgressM: number;
     progressRatio: number;
+    maxStepM: number;
+    maxYawStepRad: number;
     samples: number;
   } {
     const distanceM = this.#diag.distanceM;
@@ -416,6 +446,7 @@ export class Fleet {
       waterHits: this.#diag.waterHits,
       roadClamps: this.#diag.roadClamps,
       laneCorrections: this.#diag.laneCorrections,
+      forcedRoadRecoveries: this.#diag.forcedRoadRecoveries,
       redLightViolations: this.#diag.redLightViolations,
       stopLineHolds: this.#diag.stopLineHolds,
       offRoadSteps: this.#diag.offRoadSteps,
@@ -424,6 +455,8 @@ export class Fleet {
       distanceM,
       forwardProgressM: this.#diag.forwardProgressM,
       progressRatio: distanceM > 1e-6 ? this.#diag.forwardProgressM / distanceM : 0,
+      maxStepM: this.#diag.maxStepM,
+      maxYawStepRad: this.#diag.maxYawStepRad,
       samples: this.#diag.samples
     };
   }
@@ -492,6 +525,7 @@ export class Fleet {
     car.heading = heading;
     car.speed = 0;
     car.steer = 0;
+    car.accelCmd = 0;
     car.prevSteer = 0;
     car.prevHeading = heading;
     car.commitSeg = -1; // re-commit travel direction on the next projection
@@ -573,6 +607,7 @@ export class Fleet {
     const w = this.#world;
     const x = car.pos.x;
     const z = car.pos.z;
+    const startHeading = car.heading;
     car.carContactCooldown = Math.max(0, car.carContactCooldown - dt);
     let fwdX = Math.sin(car.heading);
     let fwdZ = Math.cos(car.heading);
@@ -616,14 +651,14 @@ export class Fleet {
         facingWrongWay = oneWayAlignment < WRONG_WAY_FACE_DOT;
         wrongWay = oneWayAlignment < WRONG_WAY_PENALTY_DOT && car.speed > 0.5;
         if (wrongWay) {
-          car.heading = Math.atan2(proj.tangentX * dir, proj.tangentZ * dir);
-          car.speed = 0;
-          car.prevHeading = car.heading;
-          car.safeHeading = car.heading;
-          car.wrongWayT = 0;
+          // Do not yaw-snap: stop the car immediately, then let the normal
+          // facingWrongWay recovery turn it back over several frames. This keeps
+          // the visible car/camera from popping while still preventing wrong-way
+          // travel from accumulating distance.
+          car.speed = Math.min(car.speed, 0);
           fwdX = Math.sin(car.heading);
           fwdZ = Math.cos(car.heading);
-          facingWrongWay = false;
+          facingWrongWay = true;
           wrongWay = false;
         }
       } else {
@@ -776,19 +811,29 @@ export class Fleet {
       if (car.speed > 0.2) accelCmd = Math.min(accelCmd, -1);
       else if (car.speed < -0.2) accelCmd = Math.max(accelCmd, 0.8);
       else accelCmd = Math.min(accelCmd, 0.1);
-      if (car.wrongWayT > 1.5 && Math.abs(car.speed) < 1.2) {
-        car.heading = wrap(car.heading + THREE.MathUtils.clamp(turn, -2.4 * dt, 2.4 * dt));
+      if (Math.abs(car.speed) < 1.2) {
+        car.heading = wrap(car.heading + THREE.MathUtils.clamp(turn, -ONE_WAY_RECOVERY_TURN_RATE * dt, ONE_WAY_RECOVERY_TURN_RATE * dt));
       }
       if (car.wrongWayT > WRONG_WAY_RECOVERY_TIME) {
-        car.heading = desiredHeading;
+        car.heading = wrap(
+          car.heading + THREE.MathUtils.clamp(turn, -ONE_WAY_RECOVERY_TURN_RATE * dt, ONE_WAY_RECOVERY_TURN_RATE * dt)
+        );
         car.speed = 0;
         steer = 0;
         accelCmd = Math.min(accelCmd, 0.1);
-        car.prevHeading = car.heading;
-        car.safeHeading = car.heading;
-        car.wrongWayT = 0;
+        if (Math.abs(wrap(desiredHeading - car.heading)) < 0.05) {
+          car.safeHeading = car.heading;
+          car.wrongWayT = 0;
+        }
       }
     }
+
+    const targetSteer = steer;
+    steer = THREE.MathUtils.clamp(approach(car.steer, targetSteer, STEER_RESPONSE * dt), -1, 1);
+    const targetAccel = accelCmd;
+    const accelRate = targetAccel < car.accelCmd ? BRAKE_RESPONSE : ACCEL_RESPONSE;
+    accelCmd = THREE.MathUtils.clamp(approach(car.accelCmd, targetAccel, accelRate * dt), -1, 1);
+    car.accelCmd = accelCmd;
 
     // open a new learn window with the safety-filtered action actually executed
     if (learnTick) {
@@ -849,8 +894,12 @@ export class Fleet {
           nz = z + (nz - z) * t;
           ny = w.ground(nx, nz) + RIDE_HEIGHT;
           car.speed = Math.min(car.speed, 0);
-          buildingHit = true;
-          hardCollision = true;
+          if (hit <= 0.5) {
+            buildingHit = true;
+            hardCollision = true;
+          } else {
+            carBlocked = true;
+          }
         }
       }
     }
@@ -863,10 +912,10 @@ export class Fleet {
     }
     let recoveredToRoad = false;
     car.pos.set(nx, ny, nz);
-    let roadClamp = this.#constrainToRoad(car, proj, x, z);
+    let roadClamp = this.#constrainToRoad(car, proj, x, z, dt);
     let postProj = this.#roads.project(car.pos.x, car.pos.z);
     if (!postProj) {
-      this.#recoverToSafeRoad(car);
+      this.#recoverToSafeRoad(car, dt);
       roadClamp = true;
       recoveredToRoad = true;
       postProj = this.#roads.project(car.pos.x, car.pos.z);
@@ -875,11 +924,14 @@ export class Fleet {
       const legalDir = postProj.oneWayDir;
       const legalAlignment = Math.sin(car.heading) * postProj.tangentX * legalDir + Math.cos(car.heading) * postProj.tangentZ * legalDir;
       if (legalAlignment < WRONG_WAY_PENALTY_DOT) {
-        car.heading = Math.atan2(postProj.tangentX * legalDir, postProj.tangentZ * legalDir);
+        const desiredHeading = Math.atan2(postProj.tangentX * legalDir, postProj.tangentZ * legalDir);
+        const turn = wrap(desiredHeading - car.heading);
+        car.heading = wrap(car.heading + THREE.MathUtils.clamp(turn, -ONE_WAY_RECOVERY_TURN_RATE * dt, ONE_WAY_RECOVERY_TURN_RATE * dt));
         car.speed = 0;
-        car.prevHeading = car.heading;
-        car.safeHeading = car.heading;
-        car.wrongWayT = 0;
+        if (Math.abs(wrap(desiredHeading - car.heading)) < 0.05) {
+          car.safeHeading = car.heading;
+          car.wrongWayT = 0;
+        }
         roadClamp = true;
         recoveredToRoad = true;
       }
@@ -900,12 +952,12 @@ export class Fleet {
     if (carHit) hardCollision = true;
     postProj = this.#roads.project(car.pos.x, car.pos.z);
     if (!postProj) {
-      this.#recoverToSafeRoad(car);
+      this.#recoverToSafeRoad(car, dt);
       recoveredToRoad = true;
       postProj = this.#roads.project(car.pos.x, car.pos.z);
     }
     if (hardCollision && (waterHit || !postProj)) {
-      this.#recoverToSafeRoad(car);
+      this.#recoverToSafeRoad(car, dt);
       recoveredToRoad = true;
     }
 
@@ -916,6 +968,7 @@ export class Fleet {
     // --- shaped reward (per plan; per-second rates × dt) ---
     const dx = car.pos.x - car.prevX;
     const dz = car.pos.z - car.prevZ;
+    this.#noteStepMotion(car, x, z, startHeading);
     const ds = recoveredToRoad ? 0 : Math.hypot(dx, dz);
     const progress = proj && !recoveredToRoad ? dx * travelX + dz * travelZ : 0;
     this.#diag.distanceM += ds;
@@ -976,19 +1029,29 @@ export class Fleet {
     this.#writeBody(car);
   }
 
-  #recoverToSafeRoad(car: AiCar): void {
+  #noteStepMotion(car: AiCar, beforeX: number, beforeZ: number, beforeHeading = car.heading): void {
+    this.#diag.maxStepM = Math.max(this.#diag.maxStepM, Math.hypot(car.pos.x - beforeX, car.pos.z - beforeZ));
+    this.#diag.maxYawStepRad = Math.max(this.#diag.maxYawStepRad, Math.abs(wrap(car.heading - beforeHeading)));
+  }
+
+  #recoverToSafeRoad(car: AiCar, correctionDt = RECOVERY_DEFAULT_DT): void {
     const safeProj = this.#roads.project(car.safeX, car.safeZ);
     if (!safeProj) {
-      this.#forceRoadPose(car);
+      this.#forceRoadPose(car, car.pos.x, car.pos.z, correctionDt);
+      this.#diag.forcedRoadRecoveries++;
       return;
     }
     car.pos.set(car.safeX, this.#world.ground(car.safeX, car.safeZ) + RIDE_HEIGHT, car.safeZ);
-    car.heading = car.safeHeading;
+    car.heading = turnToward(car.heading, car.safeHeading, ONE_WAY_RECOVERY_TURN_RATE * correctionDt);
     car.speed = 0;
     car.prevHeading = car.heading;
     car.prevX = car.pos.x;
     car.prevZ = car.pos.z;
-    car.commitSeg = -1;
+    const safeDir: 1 | -1 =
+      safeProj.oneWayDir ||
+      (Math.sin(car.safeHeading) * safeProj.tangentX + Math.cos(car.safeHeading) * safeProj.tangentZ >= 0 ? 1 : -1);
+    car.travelDir = safeDir;
+    car.commitSeg = safeProj.segId;
     car.commitX = car.pos.x;
     car.commitZ = car.pos.z;
     car.stuckT = 0;
@@ -1086,6 +1149,8 @@ export class Fleet {
         pushX = fwdX * sign * (alongOverlap + 0.24);
         pushZ = fwdZ * sign * (alongOverlap + 0.24);
       }
+      const otherX = other.pos.x;
+      const otherZ = other.pos.z;
       car.pos.x += pushX * 0.55;
       car.pos.z += pushZ * 0.55;
       other.pos.x -= pushX * 0.45;
@@ -1096,6 +1161,7 @@ export class Fleet {
       other.speed *= 0.35;
       this.#constrainToRoad(other, this.#roads.project(other.pos.x, other.pos.z), other.prevX, other.prevZ);
       this.#ensureRoadProjected(other);
+      this.#noteStepMotion(other, otherX, otherZ);
       other.prevX = other.pos.x;
       other.prevZ = other.pos.z;
       this.#writeBody(other);
@@ -1121,6 +1187,10 @@ export class Fleet {
         const push = (CAR_SETTLE_DIST - d) / d;
         const px = dx * push * 0.5;
         const pz = dz * push * 0.5;
+        const ax = a.pos.x;
+        const az = a.pos.z;
+        const bx = b.pos.x;
+        const bz = b.pos.z;
         a.pos.x += px;
         a.pos.z += pz;
         b.pos.x -= px;
@@ -1132,6 +1202,7 @@ export class Fleet {
         for (const car of [a, b]) {
           this.#ensureRoadProjected(car);
           car.pos.y = this.#world.ground(car.pos.x, car.pos.z) + RIDE_HEIGHT;
+          this.#noteStepMotion(car, car === a ? ax : bx, car === a ? az : bz);
           car.prevX = car.pos.x;
           car.prevZ = car.pos.z;
           this.#writeBody(car);
@@ -1140,12 +1211,79 @@ export class Fleet {
     }
   }
 
+  #settleFollowingGaps(): void {
+    for (let i = 0; i < this.cars.length; i++) {
+      const a = this.cars[i];
+      const pa = this.#roads.project(a.pos.x, a.pos.z);
+      if (!pa) continue;
+      const dirA = this.#projectedTravelDir(a, pa);
+      for (let j = i + 1; j < this.cars.length; j++) {
+        const b = this.cars[j];
+        const pb = this.#roads.project(b.pos.x, b.pos.z);
+        if (!pb || pa.segId !== pb.segId) continue;
+        const dirB = this.#projectedTravelDir(b, pb);
+        if (dirA !== dirB) continue;
+        const lateralGap = Math.abs(pa.lateral - pb.lateral);
+        const laneTolerance = Math.max(1.15, Math.min(pa.halfWidth, pb.halfWidth) * 0.28);
+        if (lateralGap > laneTolerance) continue;
+        const deltaS = pb.s - pa.s;
+        const gap = Math.abs(deltaS);
+        if (gap < 0.01 || gap >= CAR_FOLLOW_SETTLE_GAP) continue;
+        const move = Math.min(CAR_FOLLOW_SETTLE_STEP, (CAR_FOLLOW_SETTLE_GAP - gap) * 0.5);
+        const sign = deltaS >= 0 ? 1 : -1;
+        const pushX = pa.tangentX * sign * move;
+        const pushZ = pa.tangentZ * sign * move;
+        const ax = a.pos.x;
+        const az = a.pos.z;
+        const bx = b.pos.x;
+        const bz = b.pos.z;
+        a.pos.x -= pushX;
+        a.pos.z -= pushZ;
+        b.pos.x += pushX;
+        b.pos.z += pushZ;
+        a.speed *= 0.85;
+        b.speed *= 0.85;
+        this.#constrainToRoad(a, pa, ax, az);
+        this.#constrainToRoad(b, pb, bx, bz);
+        for (const car of [a, b]) {
+          this.#ensureRoadProjected(car);
+          car.pos.y = this.#world.ground(car.pos.x, car.pos.z) + RIDE_HEIGHT;
+          this.#noteStepMotion(car, car === a ? ax : bx, car === a ? az : bz);
+          car.prevX = car.pos.x;
+          car.prevZ = car.pos.z;
+          this.#writeBody(car);
+        }
+      }
+    }
+  }
+
+  #settleRoadEnvelope(): void {
+    for (const car of this.cars) {
+      const x = car.pos.x;
+      const z = car.pos.z;
+      const proj = this.#roads.project(x, z);
+      if (!this.#constrainToRoad(car, proj, x, z)) continue;
+      this.#ensureRoadProjected(car);
+      this.#noteStepMotion(car, x, z);
+      car.prevX = car.pos.x;
+      car.prevZ = car.pos.z;
+      this.#writeBody(car);
+    }
+  }
+
+  #projectedTravelDir(car: AiCar, proj: Projection): 1 | -1 {
+    if (proj.oneWayDir) return proj.oneWayDir;
+    const headingDot = Math.sin(car.heading) * proj.tangentX + Math.cos(car.heading) * proj.tangentZ;
+    if (car.speed > 0.5 && Math.abs(headingDot) > 0.45) return headingDot >= 0 ? 1 : -1;
+    return car.travelDir;
+  }
+
   /** Keep failed policies from disappearing into buildings/blocks forever. */
-  #constrainToRoad(car: AiCar, proj: Projection | null, baseX: number, baseZ: number): boolean {
+  #constrainToRoad(car: AiCar, proj: Projection | null, baseX: number, baseZ: number, correctionDt = RECOVERY_DEFAULT_DT): boolean {
     const liveProj = this.#roads.project(car.pos.x, car.pos.z);
     const activeProj = liveProj ?? proj;
     if (!activeProj) {
-      const changed = this.#forceRoadPose(car, baseX, baseZ);
+      const changed = this.#forceRoadPose(car, baseX, baseZ, correctionDt);
       if (changed) this.#diag.roadClamps++;
       return changed;
     }
@@ -1189,10 +1327,13 @@ export class Fleet {
           break;
         }
       }
-    } else {
+    } else if (wrongSide) {
       const tx = centerX + nx * rightLane;
       const tz = centerZ + nz * rightLane;
       if (!this.#world.isWater(tx, tz)) clamped = rightLane;
+    }
+    if (!wet) {
+      clamped = lateral + THREE.MathUtils.clamp(clamped - lateral, -ROAD_LATERAL_CORRECTION_STEP, ROAD_LATERAL_CORRECTION_STEP);
     }
     car.pos.x = centerX + nx * clamped;
     car.pos.z = centerZ + nz * clamped;
@@ -1212,16 +1353,25 @@ export class Fleet {
     return changed;
   }
 
-  #forceRoadPose(car: AiCar, aroundX = car.pos.x, aroundZ = car.pos.z): boolean {
+  #forceRoadPose(car: AiCar, aroundX = car.pos.x, aroundZ = car.pos.z, correctionDt = RECOVERY_DEFAULT_DT): boolean {
     let x = aroundX;
     let z = aroundZ;
     let proj = this.#roads.project(x, z);
     if (!proj) {
-      const near = this.#roads.randomPointNear(x, z, 0, 260, this.#rng);
-      const rp = near ?? this.#roads.randomPoint(this.#rng, CITY_MIN_X, CITY_MAX_X, CITY_MIN_Z, CITY_MAX_Z);
-      x = rp.x;
-      z = rp.z;
-      proj = this.#roads.project(x, z);
+      const near = this.#roads.nearestPoint(x, z, FORCE_ROAD_SEARCH);
+      if (near) {
+        x = near.x;
+        z = near.z;
+        proj = near;
+        this.#diag.forcedRoadRecoveries++;
+      } else {
+        const safeProj = this.#roads.project(car.safeX, car.safeZ);
+        if (!safeProj) return false;
+        x = car.safeX;
+        z = car.safeZ;
+        proj = safeProj;
+        this.#diag.forcedRoadRecoveries++;
+      }
     }
     if (!proj) return false;
 
@@ -1245,16 +1395,17 @@ export class Fleet {
     }
 
     car.pos.set(centerX + nx * lateral, this.#world.ground(centerX + nx * lateral, centerZ + nz * lateral) + RIDE_HEIGHT, centerZ + nz * lateral);
-    car.heading = Math.atan2(proj.tangentX * dir, proj.tangentZ * dir);
+    const targetHeading = Math.atan2(proj.tangentX * dir, proj.tangentZ * dir);
+    car.heading = turnToward(car.heading, targetHeading, ONE_WAY_RECOVERY_TURN_RATE * correctionDt);
     car.speed = 0;
     car.prevHeading = car.heading;
     car.prevX = car.pos.x;
     car.prevZ = car.pos.z;
     car.safeX = car.pos.x;
     car.safeZ = car.pos.z;
-    car.safeHeading = car.heading;
+    car.safeHeading = targetHeading;
     car.travelDir = dir;
-    car.commitSeg = -1;
+    car.commitSeg = proj.segId;
     car.commitX = car.pos.x;
     car.commitZ = car.pos.z;
     car.stuckT = 0;

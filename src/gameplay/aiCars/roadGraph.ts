@@ -41,6 +41,12 @@ export type Projection = {
   roadClass: number;
 };
 
+export type NearestRoadPoint = Projection & {
+  x: number;
+  z: number;
+  distance: number;
+};
+
 const CELL = 64; // spatial-hash cell size (m); project() search radius (40 m) < CELL
 const MAX_PROJECT_DIST = 40; // nearest-road cap (m)
 const HOP_DIST = 15; // max gap to jump across at a polyline end (m)
@@ -442,6 +448,80 @@ export class RoadGraph {
       segId: seg,
       s,
       lateral,
+      tangentX: ex,
+      tangentZ: ez,
+      halfWidth: this.segW[seg] * 0.5,
+      lanes: this.segLanes[seg],
+      forwardLanes: this.segForwardLanes[seg],
+      backwardLanes: this.segBackwardLanes[seg],
+      oneWayDir: this.segDir[seg] as -1 | 0 | 1,
+      roadClass: this.segClass[seg]
+    };
+  }
+
+  /** Deterministic nearest road point within `maxDist` of (x, z), or null. */
+  nearestPoint(x: number, z: number, maxDist = MAX_PROJECT_DIST): NearestRoadPoint | null {
+    const gen = ++this.stampGen;
+    const ccx = Math.floor(x / CELL);
+    const ccz = Math.floor(z / CELL);
+    const cellR = Math.ceil(maxDist / CELL);
+    let bestD2 = maxDist * maxDist;
+    let bestG = -1;
+    let bestT = 0;
+    for (let cx = ccx - cellR; cx <= ccx + cellR; cx++) {
+      for (let cz = ccz - cellR; cz <= ccz + cellR; cz++) {
+        const list = this.cells.get(cellKey(cx, cz));
+        if (!list) continue;
+        for (let li = 0; li < list.length; li++) {
+          const g = list[li];
+          if (this.stamp[g] === gen) continue;
+          this.stamp[g] = gen;
+          const ax = this.px[g];
+          const az = this.pz[g];
+          const bx = this.px[g + 1];
+          const bz = this.pz[g + 1];
+          const ex = bx - ax;
+          const ez = bz - az;
+          const len2 = ex * ex + ez * ez;
+          let t = len2 > 1e-9 ? ((x - ax) * ex + (z - az) * ez) / len2 : 0;
+          if (t < 0) t = 0;
+          else if (t > 1) t = 1;
+          const projX = ax + t * ex;
+          const projZ = az + t * ez;
+          const dx = x - projX;
+          const dz = z - projZ;
+          const d2 = dx * dx + dz * dz;
+          if (d2 < bestD2) {
+            bestD2 = d2;
+            bestG = g;
+            bestT = t;
+          }
+        }
+      }
+    }
+    if (bestG < 0) return null;
+
+    const g = bestG;
+    const seg = this.ptSeg[g];
+    const ax = this.px[g];
+    const az = this.pz[g];
+    const bx = this.px[g + 1];
+    const bz = this.pz[g + 1];
+    let ex = bx - ax;
+    let ez = bz - az;
+    const elen = Math.hypot(ex, ez) || 1;
+    const t = bestT;
+    const projX = ax + t * (bx - ax);
+    const projZ = az + t * (bz - az);
+    ex /= elen;
+    ez /= elen;
+    return {
+      x: projX,
+      z: projZ,
+      distance: Math.sqrt(bestD2),
+      segId: seg,
+      s: this.cum[g] + t * elen,
+      lateral: 0,
       tangentX: ex,
       tangentZ: ez,
       halfWidth: this.segW[seg] * 0.5,

@@ -15,7 +15,6 @@
 //    all be culled while near clones must still manage themselves).
 //
 // Consumers hand in designs + slot lists; the engine owns rendering + LOD.
-// See feature-research/seedtrees-citywide-plan.md (this is its Phase-0 core).
 
 import * as THREE from "three/webgpu";
 import { growTemplate, type GrownTemplate, type SeedTreeDesignSpec } from "./templates";

@@ -1,7 +1,7 @@
 // SF CityGen — portable, neighborhood-aware procedural building module.
 //
 // Replaced the vendored Hong-Kong/Kowloon kit (the old src/world/buildings +
-// vendor/BuildingGenerator, now removed). See feature-research/sf-citygen/PLAN.md.
+// vendor/BuildingGenerator, now removed).
 //
 // Status: LIVE citywide. The engine (core/) turns a BuildingSpec built on the
 // REAL OSM footprint into geometry (footprint-faithful → no "shift") + colliders;

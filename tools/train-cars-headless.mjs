@@ -241,6 +241,7 @@ function checkpoint() {
     `wrong ${s.diag.wrongWaySteps} lane ${s.diag.meanLaneError.toFixed(2)}` +
     ` prog ${s.diag.progressRatio.toFixed(2)} dist ${s.diag.distanceM.toFixed(0)} clampkm ${clampKm.toFixed(0)}` +
     ` lanefix ${s.diag.laneCorrections}` +
+    ` step ${s.diag.maxStepM.toFixed(2)} yaw ${s.diag.maxYawStepRad.toFixed(3)} recover ${s.diag.forcedRoadRecoveries}` +
     `${s.nan ? ` | WARN ${s.nan} NaN` : ""}`
   );
 }

@@ -4,9 +4,8 @@
 // of ms), so growth is serialized through one chain — parallel growth just
 // thrashes the main thread.
 //
-// This is Phase-0 seed of feature-research/seedtrees-citywide-plan.md. The
-// botanical garden still grows its own heroes (different seeds/controls — no
-// sharing win); unifying it onto this cache is the plan's Phase 0 cleanup.
+// The botanical garden still grows its own heroes (different seeds/controls —
+// no sharing win); unifying it onto this cache is a later cleanup.
 
 import * as THREE from "three/webgpu";
 import { uniform } from "three/tsl";
