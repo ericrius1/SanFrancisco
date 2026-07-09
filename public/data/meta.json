@@ -192,5 +192,11 @@
       "z": -1426,
       "heading": 1.57
     }
+  },
+  "terrain": {
+    "formatVersion": 1,
+    "heightEncoding": "int16",
+    "heightBase": -60,
+    "heightQuant": 0.02
   }
 }

@@ -16,6 +16,7 @@ export type Meta = {
   tilesX: number;
   tilesZ: number;
   seaLevel: number;
+  terrain?: { formatVersion: number; heightEncoding: "int16"; heightBase: number; heightQuant: number };
   bridges: BridgeDef[];
   spawns: Record<string, { x: number; z: number; heading: number }>;
   landmarks: Record<string, { x: number; z: number }>;
@@ -62,14 +63,44 @@ export class WorldMap {
       fetch("/data/meta.json").then((r) => r.json()),
       fetch("/data/heightmap.bin").then((r) => r.arrayBuffer()),
       fetch("/data/surface.bin").then((r) => r.arrayBuffer()),
-      fetch("/data/groundtop.bin")
-        .then((r) => (r.ok ? r.arrayBuffer() : null))
-        .catch(() => null)
+      // prefer sparse delta; fall back to legacy float32; fall back to null
+      (async (): Promise<{ buf: ArrayBuffer; format: "delta" | "float32" } | null> => {
+        const r1 = await fetch("/data/groundtop-delta.bin").catch(() => null);
+        if (r1?.ok) {
+          const b = await r1.arrayBuffer().catch(() => null);
+          if (b) return { buf: b, format: "delta" };
+        }
+        const r2 = await fetch("/data/groundtop.bin").catch(() => null);
+        if (!r2?.ok) return null;
+        const b2 = await r2.arrayBuffer().catch(() => null);
+        return b2 ? { buf: b2, format: "float32" } : null;
+      })()
     ]);
     map.meta = meta;
-    map.heights = new Float32Array(hBuf);
+
+    // decode heightmap: int16 (post-repack) or legacy float32
+    const terrain = meta.terrain;
+    if (terrain?.heightEncoding === "int16") {
+      const int16 = new Int16Array(hBuf);
+      const { heightBase, heightQuant } = terrain;
+      const heights = new Float32Array(int16.length);
+      for (let i = 0; i < int16.length; i++) heights[i] = heightBase + int16[i] * heightQuant;
+      map.heights = heights;
+    } else {
+      map.heights = new Float32Array(hBuf);
+    }
+
     map.surface = new Uint8Array(sBuf);
-    map.groundTops = gBuf ? new Float32Array(gBuf) : map.heights;
+
+    // decode groundTops from delta or legacy float32
+    if (!gBuf) {
+      map.groundTops = map.heights;
+    } else if (gBuf.format === "delta") {
+      map.groundTops = decodeGroundTopDelta(gBuf.buf, map.heights);
+    } else {
+      map.groundTops = new Float32Array(gBuf.buf);
+    }
+
     return map;
   }
 
@@ -221,6 +252,25 @@ export class WorldMap {
     const scale = new THREE.Vector4(minX, minZ, W * cellSize, H * cellSize);
     return { tex, scale };
   }
+}
+
+/** Decode a sparse SFGD groundtop-delta buffer into a full groundTops array. */
+function decodeGroundTopDelta(buffer: ArrayBuffer, heights: Float32Array): Float32Array {
+  const view = new DataView(buffer);
+  const magic = String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3));
+  if (magic !== "SFGD") {
+    console.warn("[heightmap] unexpected groundtop-delta magic:", magic, "— using heights");
+    return heights;
+  }
+  const count = view.getUint32(6, true);
+  const top = new Float32Array(heights);
+  for (let k = 0; k < count; k++) {
+    const off = 10 + k * 6;
+    const cellIndex = view.getUint32(off, true);
+    const deltaMm = view.getUint16(off + 4, true);
+    top[cellIndex] = heights[cellIndex] + deltaMm / 1000;
+  }
+  return top;
 }
 
 /**

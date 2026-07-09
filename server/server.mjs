@@ -18,6 +18,7 @@ import { readFile, stat, mkdir, writeFile, rename } from "node:fs/promises";
 import { createReadStream, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createBrotliCompress, createGzip, constants as zlibConstants } from "node:zlib";
 import { WebSocketServer } from "ws";
 
 const PORT = Number(process.env.PORT || 8787);
@@ -165,6 +166,51 @@ const MIME = {
   ".woff2": "font/woff2"
 };
 
+const COMPRESSIBLE_DYNAMIC = new Set([".html", ".js", ".css", ".json", ".bin", ".svg"]);
+const WORLD_ASSET_PREFIXES = ["/data/", "/tiles/", "/models/", "/seedthree/", "/buildinggen/", "/citygen/", "/audio/"];
+
+const acceptsEncoding = (req, token) => String(req.headers["accept-encoding"] ?? "").includes(token);
+const weakEtag = (st) => `W/"${st.size.toString(16)}-${Math.trunc(st.mtimeMs).toString(16)}"`;
+const cacheControlFor = (urlPath) => {
+  if (urlPath.startsWith("/assets/")) return "public, max-age=31536000, immutable";
+  if (WORLD_ASSET_PREFIXES.some((prefix) => urlPath.startsWith(prefix))) {
+    return "public, max-age=3600, stale-while-revalidate=604800";
+  }
+  return "no-cache";
+};
+
+async function compressedVariant(req, filePath, ext, st) {
+  if (acceptsEncoding(req, "br")) {
+    const brPath = `${filePath}.br`;
+    const br = await stat(brPath).catch(() => null);
+    if (br?.isFile()) return { path: brPath, stat: br, encoding: "br", dynamic: null };
+  }
+  if (acceptsEncoding(req, "gzip")) {
+    const gzPath = `${filePath}.gz`;
+    const gz = await stat(gzPath).catch(() => null);
+    if (gz?.isFile()) return { path: gzPath, stat: gz, encoding: "gzip", dynamic: null };
+  }
+  if (st.size < 1024 || !COMPRESSIBLE_DYNAMIC.has(ext)) {
+    return { path: filePath, stat: st, encoding: null, dynamic: null };
+  }
+  if (acceptsEncoding(req, "br")) {
+    return {
+      path: filePath,
+      stat: st,
+      encoding: "br",
+      dynamic: createBrotliCompress({
+        params: {
+          [zlibConstants.BROTLI_PARAM_QUALITY]: 4
+        }
+      })
+    };
+  }
+  if (acceptsEncoding(req, "gzip")) {
+    return { path: filePath, stat: st, encoding: "gzip", dynamic: createGzip({ level: 6 }) };
+  }
+  return { path: filePath, stat: st, encoding: null, dynamic: null };
+}
+
 const server = http.createServer(async (req, res) => {
   const urlPath = getUrlPath(req.url);
 
@@ -197,14 +243,33 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     const ext = path.extname(filePath).toLowerCase();
-    // content-hashed assets cache forever; html/data revalidate
-    const immutable = urlPath.startsWith("/assets/");
-    res.writeHead(200, {
+    const etag = weakEtag(st);
+    if (req.headers["if-none-match"] === etag) {
+      res.writeHead(304, {
+        "cache-control": cacheControlFor(urlPath),
+        "etag": etag
+      });
+      res.end();
+      return;
+    }
+    const body = await compressedVariant(req, filePath, ext, st);
+    const headers = {
       "content-type": MIME[ext] || "application/octet-stream",
-      "content-length": st.size,
-      "cache-control": immutable ? "public, max-age=31536000, immutable" : "no-cache"
-    });
-    createReadStream(filePath).pipe(res);
+      "cache-control": cacheControlFor(urlPath),
+      "etag": etag,
+      "last-modified": st.mtime.toUTCString(),
+      "vary": "Accept-Encoding"
+    };
+    if (!body.dynamic) headers["content-length"] = body.stat.size;
+    if (body.encoding) headers["content-encoding"] = body.encoding;
+    res.writeHead(200, headers);
+    if (req.method === "HEAD") {
+      res.end();
+      return;
+    }
+    const stream = createReadStream(body.path);
+    if (body.dynamic) stream.pipe(body.dynamic).pipe(res);
+    else stream.pipe(res);
   } catch (err) {
     res.writeHead(500);
     res.end();

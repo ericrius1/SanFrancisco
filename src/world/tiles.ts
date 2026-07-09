@@ -237,6 +237,13 @@ export class TileStreamer {
   #slotPool: FacadeSlot[] = [];
   #aliveW = 4;
 
+  // terrain chunks: 5×5 grid, loaded/unloaded by player distance
+  #terrainEntries: { name: string; cx: number; cz: number }[] = [];
+  #terrainPending = new Set<string>();
+  #terrainInFlight = 0;
+  // max concurrent terrain loads (separate budget from building tiles)
+  static readonly #TERRAIN_MAX_IN_FLIGHT = 2;
+
   constructor(scene: THREE.Scene) {
     this.#scene = scene;
     this.#loader.setMeshoptDecoder(MeshoptDecoder);
@@ -253,7 +260,7 @@ export class TileStreamer {
     for (const t of Object.values(this.manifest.tiles)) {
       this.#aliveW = Math.max(this.#aliveW, t.b);
     }
-    // landmarks always resident
+    // landmarks always resident (includes GG bridge at ~0.8 MB)
     this.#loader.load("/tiles/landmarks.glb", (gltf) => {
       gltf.scene.traverse((o) => {
         const mesh = o as THREE.Mesh;
@@ -277,29 +284,26 @@ export class TileStreamer {
       this.landmarks = gltf.scene;
       this.#scene.add(gltf.scene);
     });
-    // all terrain chunks (coarse, they're cheap and the map is the star) —
-    // a fixed 5×5 grid matching the checked-in terrain_*.glb set in public/tiles
+
+    // Pre-compute the world-space centre of each 5×5 terrain chunk so
+    // update() can distance-cull them without parsing tile names each frame.
+    // The 5×5 grid evenly partitions the map AABB from meta.grid.
     const TERRAIN_GRID = 5;
-    for (let cx = 0; cx < TERRAIN_GRID; cx++) {
-      for (let cz = 0; cz < TERRAIN_GRID; cz++) {
-        const name = `terrain_${cx}_${cz}`;
-        this.#loader.load(
-          `/tiles/${name}.glb`,
-          (gltf) => {
-            gltf.scene.traverse((o) => {
-              if ((o as THREE.Mesh).isMesh) {
-                (o as THREE.Mesh).material = plainMat;
-                o.receiveShadow = true;
-              }
-            });
-            this.terrain.set(name, gltf.scene);
-            this.#scene.add(gltf.scene);
-          },
-          undefined,
-          () => {} // a missing chunk is non-fatal
-        );
+    const { minX: gMinX, minZ: gMinZ, width: gW, height: gH, cellSize } = map.meta.grid;
+    const terrWorldW = gW * cellSize;
+    const terrWorldH = gH * cellSize;
+    const chunkW = terrWorldW / TERRAIN_GRID;
+    const chunkH = terrWorldH / TERRAIN_GRID;
+    for (let tcx = 0; tcx < TERRAIN_GRID; tcx++) {
+      for (let tcz = 0; tcz < TERRAIN_GRID; tcz++) {
+        this.#terrainEntries.push({
+          name: `terrain_${tcx}_${tcz}`,
+          cx: gMinX + (tcx + 0.5) * chunkW,
+          cz: gMinZ + (tcz + 0.5) * chunkH
+        });
       }
     }
+    // The first scan happens in update() once the player position is known.
   }
 
   keyToCenter(key: string): [number, number] {
@@ -320,6 +324,7 @@ export class TileStreamer {
       if (!highUp) this.#resumeDetail();
     }
     if (this.#tick % 30 === 1) this.#scan(px, pz);
+    if (this.#tick % 60 === 2) this.#scanTerrain(px, pz);
     // one mesh attach (GPU upload) OR one finalize OR one dispose per frame,
     // so tile streaming costs stay flat instead of spiking when loads land in
     // bursts
@@ -329,6 +334,78 @@ export class TileStreamer {
   /** Re-evaluate load/unload immediately (e.g. after a draw-distance change). */
   forceScan() {
     if (this.#hasScanned) this.#scan(this.#px, this.#pz);
+  }
+
+  // terrain load radius: slightly larger than building tiles so the ground
+  // backdrop is always present before buildings pop in
+  static readonly #TERRAIN_LOAD_R = 3200;
+  static readonly #TERRAIN_UNLOAD_R = 4000;
+
+  #scanTerrain(px: number, pz: number) {
+    const loadR2 = TileStreamer.#TERRAIN_LOAD_R * TileStreamer.#TERRAIN_LOAD_R;
+    const unloadR2 = TileStreamer.#TERRAIN_UNLOAD_R * TileStreamer.#TERRAIN_UNLOAD_R;
+    for (const e of this.#terrainEntries) {
+      const d2 = (px - e.cx) * (px - e.cx) + (pz - e.cz) * (pz - e.cz);
+      const loaded = this.terrain.has(e.name);
+      const pending = this.#terrainPending.has(e.name);
+      if (d2 < loadR2 && !loaded && !pending) {
+        this.#loadTerrainChunk(e.name);
+      } else if (d2 > unloadR2 && loaded) {
+        const obj = this.terrain.get(e.name)!;
+        this.terrain.delete(e.name);
+        this.#scene.remove(obj);
+        obj.traverse((o) => {
+          if ((o as THREE.Mesh).isMesh) (o as THREE.Mesh).geometry.dispose();
+        });
+      }
+    }
+  }
+
+  #loadTerrainChunk(name: string) {
+    if (this.#terrainInFlight >= TileStreamer.#TERRAIN_MAX_IN_FLIGHT) return;
+    // mark pending before the load so a slow GLB isn't re-queued every scan
+    this.#terrainPending.add(name);
+    this.#terrainInFlight++;
+    this.#loader.load(
+      `/tiles/${name}.glb`,
+      (gltf) => {
+        this.#terrainInFlight--;
+        this.#terrainPending.delete(name);
+        // flown out of range while decoding? drop without attaching
+        if (!this.#terrainWanted(name)) {
+          gltf.scene.traverse((o) => {
+            if ((o as THREE.Mesh).isMesh) (o as THREE.Mesh).geometry.dispose();
+          });
+          this.#scanTerrain(this.#px, this.#pz);
+          return;
+        }
+        gltf.scene.traverse((o) => {
+          if ((o as THREE.Mesh).isMesh) {
+            (o as THREE.Mesh).material = plainMat;
+            o.receiveShadow = true;
+          }
+        });
+        this.terrain.set(name, gltf.scene);
+        this.#scene.add(gltf.scene);
+        // retry others that were deferred by the in-flight cap
+        this.#scanTerrain(this.#px, this.#pz);
+      },
+      undefined,
+      () => {
+        // missing chunk is non-fatal (ocean / out-of-coverage cells)
+        this.#terrainInFlight--;
+        this.#terrainPending.delete(name);
+      }
+    );
+  }
+
+  /** Still inside the unload radius? Used to abandon late-arriving terrain GLBs. */
+  #terrainWanted(name: string): boolean {
+    const e = this.#terrainEntries.find((t) => t.name === name);
+    if (!e) return false;
+    const dx = this.#px - e.cx;
+    const dz = this.#pz - e.cz;
+    return dx * dx + dz * dz < TileStreamer.#TERRAIN_UNLOAD_R * TileStreamer.#TERRAIN_UNLOAD_R;
   }
 
   #scan(px: number, pz: number) {

@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && vite build && node tools/precompress-dist.mjs",
+    "precompress": "node tools/precompress-dist.mjs",
     "capture:reel": "node tools/capture-reel.mjs",
     "capture:reel2": "node tools/capture-reel2.mjs",
     "capture:reel3": "SF_CAPTURE_DEMO=reel3 SF_CAPTURE_SECONDS=25 node tools/capture-reel2.mjs",

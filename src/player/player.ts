@@ -254,13 +254,17 @@ export class Player {
   }
 
   /**
-   * Loading-screen shader warm-up: show every embodiment at once (true), then
-   * restore the real mode (false). One render with everything visible compiles
-   * every vehicle material before play; the scene light set never changes
-   * after construction, so mode switches stay compile-free.
+   * Pre-compile GPU pipelines by making the given modes' meshes visible for a
+   * render. Pass `"all"` for every mode, an array for a subset, or omit to show
+   * only the current mode (restore after a warm pass). Caller must render while
+   * the meshes are visible — visibility alone does not compile WGSL.
    */
-  warmup(all: boolean) {
-    for (const [k, m] of Object.entries(this.meshes)) setEmbodimentVisible(m, all || k === this.mode);
+  warmup(modes?: PlayerMode[] | "all") {
+    for (const [k, m] of Object.entries(this.meshes)) {
+      const on =
+        modes === "all" || (Array.isArray(modes) ? modes.includes(k as PlayerMode) : k === this.mode);
+      setEmbodimentVisible(m, on);
+    }
   }
 
   trySwitch(mode: PlayerMode) {
