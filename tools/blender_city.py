@@ -98,7 +98,12 @@ def load_data():
     grid = DATA["meta"]["grid"]
     W, H = grid["width"], grid["height"]
     DATA["grid"] = grid
-    hm = np.fromfile(HEIGHT_BIN, dtype=np.float32).reshape(H, W)
+    terrain_meta = DATA["meta"].get("terrain", {})
+    if terrain_meta.get("heightEncoding") == "int16":
+        hm_i16 = np.fromfile(HEIGHT_BIN, dtype=np.int16).reshape(H, W)
+        hm = terrain_meta["heightBase"] + hm_i16.astype(np.float32) * terrain_meta["heightQuant"]
+    else:
+        hm = np.fromfile(HEIGHT_BIN, dtype=np.float32).reshape(H, W)
     sf = np.fromfile(SURFACE_BIN, dtype=np.uint8).reshape(H, W)
     DATA["height"] = hm
     DATA["surface"] = sf

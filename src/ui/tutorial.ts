@@ -1,5 +1,5 @@
 import type { PlayerMode } from "../player/types"
-import { PIER_ENTRANCE, DOME_WORLD, insidePier } from "../gameplay/exploratorium"
+import { PIER_ENTRANCE, DOME_WORLD, insidePier } from "../gameplay/pierLayout"
 
 /**
  * Interactive tutorial: a chaptered checklist that watches real play instead

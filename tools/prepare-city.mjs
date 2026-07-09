@@ -1,14 +1,16 @@
 // Turns raw OSM + DEM into game-ready data:
-//   public/data/heightmap.bin   Float32 W*H final terrain heights (bay floor shaped)
-//   public/data/surface.bin     Uint8 W*H: 0 urban, 1 park, 2 sand, 3 water
-//   public/data/meta.json       grid + tiles + bridges + spawn points
+//   public/data/heightmap.bin       Int16 W*H terrain heights (int16 encoded, see terrain-codec.mjs)
+//   public/data/groundtop-delta.bin Sparse SFGD delta for park lawns
+//   public/data/surface.bin         Uint8 W*H: 0 urban, 1 park, 2 sand, 3 water
+//   public/data/meta.json           grid + tiles + bridges + spawn points + terrain encoding
 //   public/data/colliders/tile_X_Y.json  building OBBs for physics
-//   public/data/manifest.json   tile index for streaming
-//   data/city/city.json         full geometry payload for the Blender build
+//   public/data/manifest.json       tile index for streaming
+//   data/city/city.json             full geometry payload for the Blender build
 import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { BBOX, GRID, ORIGIN, M_PER_DEG_LAT, M_PER_DEG_LON, lonLatToLocal } from "./geo.mjs";
 import { decomposeFootprint, minAreaRect } from "./collider-lib.mjs";
 import { computeGroundTop } from "./groundtop-lib.mjs";
+import { encodeHeightmap, encodeGroundTopDelta } from "./terrain-codec.mjs";
 
 const RAW = new URL("../data/raw/", import.meta.url);
 const PUB = new URL("../public/data/", import.meta.url);
@@ -683,14 +685,20 @@ async function main() {
   }
 
   await writeFile(new URL("manifest.json", PUB), JSON.stringify(manifest));
-  await writeFile(new URL("heightmap.bin", PUB), Buffer.from(height.buffer));
+
+  // int16 heightmap: halves the file size (13 MB → 6.5 MB) with 2 cm precision
+  const { int16: heightI16, heightBase, heightQuant } = encodeHeightmap(height);
+  await writeFile(new URL("heightmap.bin", PUB), Buffer.from(heightI16.buffer));
   await writeFile(new URL("surface.bin", PUB), Buffer.from(surface.buffer));
 
-  // rendered top-ground surface (base terrain + draped park lawns) for ground
-  // raycasts / the walk carpet — see groundtop-lib.mjs. The mesh bake for these
-  // lawns lives in tools/blender_city.py; both must agree on PARK_LIFT.
+  // rendered top-ground surface (base terrain + draped park lawns) as a sparse
+  // delta — only park cells differ from base terrain (~1–2 MB vs 13 MB float32).
+  // See groundtop-lib.mjs + terrain-codec.mjs.
   const groundTop = computeGroundTop(GRID, height, [...tiles.values()].map((t) => t.green || []));
-  await writeFile(new URL("groundtop.bin", PUB), Buffer.from(groundTop.buffer));
+  const groundTopDelta = encodeGroundTopDelta(height, groundTop);
+  await writeFile(new URL("groundtop-delta.bin", PUB), groundTopDelta);
+  console.log(`[prep] heightmap: ${(height.buffer.byteLength / 1e6).toFixed(1)}MB float32 → ${(heightI16.byteLength / 1e6).toFixed(1)}MB int16`);
+  console.log(`[prep] groundtop-delta.bin: ${(groundTopDelta.byteLength / 1e3).toFixed(1)}KB (was ${(groundTop.buffer.byteLength / 1e6).toFixed(1)}MB float32)`);
 
   const meta = {
     grid: GRID,
@@ -702,6 +710,7 @@ async function main() {
     tilesX: TILES_X,
     tilesZ: TILES_Z,
     seaLevel: 0,
+    terrain: { formatVersion: 1, heightEncoding: "int16", heightBase, heightQuant },
     bridges: BRIDGES,
     landmarks: {
       transamerica: { x: 3680, z: 32, note: "computed in blender build" },

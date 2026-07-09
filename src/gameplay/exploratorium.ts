@@ -26,6 +26,7 @@ import type { WorldMap } from "../world/heightmap";
 import type { TileStreamer } from "../world/tiles";
 import { GrainSim, RipplePool } from "./exhibits";
 import { FluidSim } from "./fluidSim";
+import { PIER, PIER_ENTRANCE, DOME_WORLD, WATER_VIEW, insidePier } from "./pierLayout";
 
 type N = any;
 
@@ -44,21 +45,15 @@ type N = any;
 
 // ---- the shed's OBB, straight from the baked collider (tile 14_9, i=1)
 const KEY = "14_9";
+// re-export layout helpers so existing `from exploratorium` imports keep working
+export { PIER_ENTRANCE, DOME_WORLD, WATER_VIEW, insidePier };
 const BID = 1;
-const CX = 4084.7;
-const CZ = -1271.5;
-const YAW = -2.523; // deck-aligned (post-rebake the shed splits to sub-boxes; footprint is the same)
-const COS = Math.cos(YAW);
-const SIN = Math.sin(YAW);
-const HL = 125.6; // half length: +u = shore/entrance end, -u = bay end
-const HW = 31.4; // half width: +v = the Pier 17 side
-const FLOOR = 3.78; // walking surface — the pier apron tops out at ~3.7
+const { CX, CZ, YAW, COS, SIN, HL, HW, FLOOR, DOME_C, toLocal } = PIER;
 // The whole museum only DRAWS when you're at the pier. Past this many metres
 // outside the shell its group is hidden, so the shell mesh, dome sky shader,
 // signage and plaques cost nothing to render — only a distance check remains.
 const VISIBLE_MARGIN = 80;
 
-const DOME_C = { u: -72, v: 0 }; // dome theater center
 // Star Table: exhibit centre (u,v) and the half-extent its sim frame origin is
 // offset by — the stir mapping must match the frame passed at construction
 const STAR_U = 42;
@@ -83,40 +78,6 @@ const PIANO_NEAR = 2.8;
 function esc(s: string): string {
   return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 }
-
-// world <-> pier-local (matches physics' OBB convention exactly)
-function toLocal(x: number, z: number): { u: number; v: number } {
-  const dx = x - CX;
-  const dz = z - CZ;
-  return { u: dx * COS - dz * SIN, v: dx * SIN + dz * COS };
-}
-
-// pier-frame guide points for the tutorial (ui/tutorial.ts)
-function pierWorld(u: number, v: number): { x: number; z: number } {
-  return { x: CX + u * COS + v * SIN, z: CZ - u * SIN + v * COS };
-}
-/** Is a world point on the pier footprint (inside the museum shell)? */
-export function insidePier(x: number, z: number): boolean {
-  const { u, v } = toLocal(x, z);
-  return Math.abs(u) < HL && Math.abs(v) < HW;
-}
-/** Just outside the front doors, facing down the hall. */
-export const PIER_ENTRANCE = (() => {
-  const p = pierWorld(HL + 9, 0);
-  // forward(θ) = (−sinθ, −cosθ); face −u (into the pier) ⇒ θ = atan2(COS, −SIN)
-  return { x: p.x, y: FLOOR + 1.2, z: p.z, facing: Math.atan2(COS, -SIN) };
-})();
-/** Dome theater center, world space. */
-export const DOME_WORLD = pierWorld(DOME_C.u, DOME_C.v);
-/**
- * In front of the Water Works wave tank, centred on the SPH screen (plane at
- * v=-28.72, u∈[-22.5,-17.5]) and stood ~7 m back on the room side, facing it.
- * face −v (toward the screen): forward=(−SIN,−COS) ⇒ θ = YAW.
- */
-export const WATER_VIEW = (() => {
-  const p = pierWorld(-20, -21.7);
-  return { x: p.x, y: FLOOR + 1.2, z: p.z, facing: YAW };
-})();
 
 const NOTE_SLOTS = 16;
 const KEY_COUNT = 8;

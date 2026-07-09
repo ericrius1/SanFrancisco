@@ -47,28 +47,27 @@ import { AiCars } from "./gameplay/aiCars/index.ts";
 import { RocketRiders, type LauncherRig } from "./gameplay/launchers";
 import { Flyover } from "./gameplay/flyover";
 import { BridgeParade } from "./gameplay/bridgeParade";
-import { Creatures } from "./gameplay/creatures";
-import { HorseHerd } from "./gameplay/horse/horseHerd";
-import { BrainPanel } from "./ui/brainPanel/index.ts";
+import type { Creatures } from "./gameplay/creatures";
+import type { HorseHerd } from "./gameplay/horse/horseHerd";
+import type { BrainPanel } from "./ui/brainPanel/index.ts";
 import type { InspectableBrain } from "./ui/brainPanel/types.ts";
-import { Forest, ANIMALS, type AnimalKind } from "./gameplay/forest";
-import { createBotanicalGarden, windGustValue, type GrassDisplacer } from "./world/garden";
-import { createWildlands } from "./world/wildlands";
-import { createCityGenDemo } from "./world/citygen/demo";
-import { createCityGenRing, type CityGenRing, type ColliderBox } from "./world/citygen";
+import type { Forest, AnimalKind } from "./gameplay/forest";
+import type { GrassDisplacer } from "./world/garden";
+import type { CityGenRing, ColliderBox } from "./world/citygen";
 import { Islands } from "./gameplay/islands";
-import { Exploratorium, WATER_VIEW } from "./gameplay/exploratorium";
+import type { Exploratorium } from "./gameplay/exploratorium";
 import { Loot } from "./gameplay/loot";
 import { Hunt } from "./gameplay/hunt";
-import { Quidditch, QUIDDITCH_PITCH, type QuidditchRole, type QuidditchTeam } from "./gameplay/quidditch";
-import { QuidditchHUD, type QuidditchStartMode } from "./ui/quidditchHud";
-import { QuidditchAudio } from "./fx/quidditchAudio";
+import type { Quidditch, QuidditchRole, QuidditchTeam } from "./gameplay/quidditch";
+import type { QuidditchHUD, QuidditchStartMode } from "./ui/quidditchHud";
+// QUIDDITCH_PITCH coordinates inlined — avoids a static import on the chunk
+const QUIDDITCH_PITCH_X = -3431, QUIDDITCH_PITCH_Z = 2322, QUIDDITCH_PITCH_NAME = "Quidditch Pitch";
 import { Ropes, Grabber, type PickCandidate } from "./gameplay/ropes";
 import { Satchel } from "./ui/satchel";
 import { HUD } from "./ui/hud";
 import { ShareButton } from "./ui/share";
 import { PauseToggle } from "./ui/pauseToggle";
-import { BehindTheScenes } from "./ui/behindTheScenes";
+// BehindTheScenes is deferred (dynamic import after start is ready)
 import { parseReadLink, openReadLink } from "./ui/deepLinks";
 import { Tutorial } from "./ui/tutorial";
 import { createRenderPipeline } from "./render/pipeline";
@@ -276,8 +275,11 @@ async function boot() {
   physics.setColliderAnchors(() => aiCars.anchorPositions());
   // stable anchor array (player.position is mutated in place) — no per-frame alloc
   const aiCarAnchors = [player.position];
-  const creatures = new Creatures(map, scene);
-  const forest = new Forest(map, scene);
+  let creatures: Creatures | null = null;
+  let forest: Forest | null = null;
+  // ANIMALS record — populated by the deferred forest module load
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let ANIMALS: Record<string, any> | null = null;
   const abandonedMounts = new AbandonedMounts(physics, map, scene);
   let cameraMode = false;
   const rocketRiders = new RocketRiders(scene, map);
@@ -328,38 +330,23 @@ async function boot() {
   // San Francisco Botanical Garden — self-contained module (src/world/garden):
   // SeedThree trees + procedural blade grass + shrubs/flora at the real SFBG
   // footprint inside Golden Gate Park. Trees stream in async; grass is live now.
-  const garden = createBotanicalGarden(map);
-  scene.add(garden.group);
-  // reused per-frame trample slot so the player flattens the grass they stand in
+  // garden, wildlands, horses are deferred — constructed after progress(100)
+  // so they don't block first paint. Nullable refs; update calls are guarded.
+  let garden: { group: THREE.Group; update: (dt: number, pos: THREE.Vector3, d: GrassDisplacer[]) => void } | null = null;
+  let wildlands: { groups: THREE.Group[]; flowers: { refresh: () => void }; grass: { refresh: () => void }; update: (pos: THREE.Vector3, cam: THREE.Vector3) => void } | null = null;
+  let windGustValue: (() => number) | null = null;
   const gardenDisplacer: GrassDisplacer = { x: 0, z: 0, radius: 1.6, strength: 1 };
   const gardenDisplacers = [gardenDisplacer];
-  // Wildlands — designed SeedThree groves/windrows/savannas + noise-banded
-  // wildflower drifts across Golden Gate Park, the Presidio, and Marin.
-  // Trees stream in per-species async; near-tier LOD self-drives via onBeforeRender.
-  const wildlands = createWildlands(map);
-  for (const g of wildlands.groups) scene.add(g);
   const setFoliageVisible = (visible: boolean) => {
-    garden.group.visible = visible;
-    for (const g of wildlands.groups) g.visible = visible;
+    if (garden) garden.group.visible = visible;
+    if (wildlands) for (const g of wildlands.groups) g.visible = visible;
   };
-  setFoliageVisible(FOLIAGE_TUNING.values.visible);
-  // A herd of RL horses grazing the Botanical Garden meadow: live box3d ragdolls
-  // running the pretrained gait policy, each wearing its neural-net activations
-  // as a floating lattice. Ambient + deterministic, so every client runs it
-  // locally (no net sync); physics is frozen unless a player is near the meadow.
-  const horses = new HorseHerd(physics, map, scene);
+  let horses: HorseHerd | null = null;
   const islands = new Islands(physics, map, scene);
 
-  // Click any AI entity's floating brain lattice to open the inspector: it frees
-  // the pointer, freezes the world (see the pause gate below), and lets you drive
-  // the inputs → outputs live. Generic — anything exposing inspectables() joins.
-  const brainPanel = new BrainPanel(
-    () => input.releaseLock(),
-    () => {
-      if (!cameraMode) input.requestLock();
-    }
-  );
-  const inspectableBrains = (): InspectableBrain[] => [...aiCars.inspectables(), ...horses.inspectables()];
+  // brainPanel is deferred — dynamic import after progress(100)
+  let brainPanel: BrainPanel | null = null;
+  const inspectableBrains = (): InspectableBrain[] => [...aiCars.inspectables(), ...(horses?.inspectables() ?? [])];
   const brainPickPos = new THREE.Vector3();
   const pickBrain = (origin: THREE.Vector3, dir: THREE.Vector3): InspectableBrain | null => {
     let best: InspectableBrain | null = null;
@@ -383,28 +370,21 @@ async function boot() {
   };
   let lastHoverBrain: string | null = null;
 
-  // the Exploratorium: Pier 15 rebuilt walkable — replaces the OSM shed and
-  // gates every exhibit (GPU sims, dome show, colliders) on actual presence
-  const exploratorium = new Exploratorium(renderer, physics, map, scene, tiles);
-  exploratorium.onMessage = (m, s) => hud.message(m, s);
+  // Exploratorium, citygen ring/demo, quidditch, BehindTheScenes are all deferred
+  let exploratorium: Exploratorium | null = null;
+  let WATER_VIEW: { x: number; z: number; facing: number } | null = null;
 
   // Decoupled world-query service: every "what does this ray hit" caller (paint,
   // the in-world cursor, future systems) goes through here. Backed by box3d's
   // broadphase cast over a dedicated query world of entity proxies, raced against
   // the static-world caster + the museum's interior surfaces.
   const worldQueries = new WorldQueries(physics);
-  worldQueries.setSurfaceRay((o, d, m) => exploratorium.raycast(o, d, m));
+  // setSurfaceRay is called again in the deferred loader once exploratorium loads
 
-  // SF-tuned procedural building module (src/world/citygen) — the WHOLE city.
-  // Demo hook on __sf.citygen (headless capture spawns a terrace + screenshots it).
-  // Plus the live streaming ring: within LOAD_R it replaces each OSM building with
-  // a generated one (footprint-faithful → no shift), bakes the far skyline into
-  // merged LOD chunks, and crossfades detail in as you approach. Async; inert if
-  // the export JSON is missing. (Chinatown now falls back to its baked OSM facade
-  // until a citygen chinatown grammar lands — the old Kowloon kit was removed.)
-  const citygen = createCityGenDemo({ scene, map });
+  // citygen (demo + ring) and quidditch are deferred — populated by the loader
+  // after progress(100); citygenRing uses the existing nullable-current pattern
+  let citygen: { update?: (dt: number) => void; [k: string]: unknown } | null = null;
   const citygenRing: { current: CityGenRing | null } = { current: null };
-  createCityGenRing({}, { scene, physics, map, tiles }).then((r) => { citygenRing.current = r; });
 
   // the Fortnite-ish layer: treasure chests raining coins, crabs to hunt,
   // and the Garry's-Mod rope/grab click-tools (loot.ts / hunt.ts / ropes.ts)
@@ -419,37 +399,8 @@ async function boot() {
     satchel.add(kind);
     hud.message("Crab caught!", 1.1);
   };
-  const quidditch = new Quidditch(map, scene);
-  const quidHud = new QuidditchHUD();
-  const quidAudio = new QuidditchAudio();
-  quidditch.onMessage = (m, s) => hud.message(m, s);
-  quidditch.onActiveChange = (on) => quidHud.setActive(on);
-  quidditch.onWhistle = () => quidAudio.whistle();
-  quidditch.onScore = (team, red, blue, x, y, z) => {
-    quidHud.setScores(red, blue);
-    quidHud.flashGoal(team);
-    quidHud.noteTutorial("score");
-    fireworks.launchCelebration(x, y, z, 2);
-    chase.shake(0.08);
-  };
-  quidditch.onSnitchCaught = (team, red, blue) => {
-    quidAudio.snitch();
-    quidHud.setScores(red, blue);
-    quidHud.setSnitch(true, team);
-    quidHud.noteTutorial("snitch");
-    // a golden shower of fireworks over the pitch to crown the winner
-    fireworks.launchCelebration(QUIDDITCH_PITCH.x, map.effectiveGround(QUIDDITCH_PITCH.x, QUIDDITCH_PITCH.z) + 40, QUIDDITCH_PITCH.z);
-    chase.shake(0.16);
-  };
-  quidditch.onBludgerHit = (x, y, z, hitPlayer) => {
-    quidAudio.bludger();
-    if (hitPlayer) chase.shake(0.22);
-  };
-  // Role picker → actually take the broom
-  quidHud.onPickRole = (team, role, mode) => joinQuidditchRole(team, role, mode);
-  quidHud.onCloseModal = () => {
-    if (!input.suspended && document.body.classList.contains("started")) input.requestLock();
-  };
+  let quidditch: Quidditch | null = null;
+  let quidHud: QuidditchHUD | null = null;
   const ropes = new Ropes(physics, scene);
   const grabber = new Grabber(physics, scene);
   grabberRef = grabber;
@@ -487,20 +438,22 @@ async function boot() {
   // Take over a specific open broom (from the role picker). Mounts the drone
   // with the team-tinted broom and drops the player onto that flyer's spot.
   function joinQuidditchRole(team: QuidditchTeam, role: QuidditchRole, startMode: QuidditchStartMode = "play") {
-    const info = quidditch.joinAs(team, role, player.position);
+    if (!quidditch || !quidHud) { hud.message("Quidditch is still loading…", 2); return; }
+    const _q = quidditch, _qh = quidHud; // narrow for TypeScript after the guard
+    const info = _q.joinAs(team, role, player.position);
     if (!info) {
       hud.message("That position was just taken — try another", 2);
       return;
     }
     currentQuidditch = { team: info.team, role: info.role };
-    player.setDroneStyle(quidditch.buildRiddenMesh(info.team));
+    player.setDroneStyle(_q.buildRiddenMesh(info.team));
     player.position.set(info.x, info.y, info.z);
     player.heading = info.heading;
     player.velocity.set(info.vx, info.vy, info.vz);
     player.trySwitch("drone");
-    quidHud.setRole(info.label);
-    if (startMode === "tutorial") quidHud.startTutorial(info.label, info.role);
-    else quidHud.stopTutorial();
+    _qh.setRole(info.label);
+    if (startMode === "tutorial") _qh.startTutorial(info.label, info.role);
+    else _qh.stopTutorial();
     const verb = role === "Beater" ? "swat Bludgers" : role === "Seeker" ? "catch the Snitch" : role === "Keeper" ? "guard the hoops" : "sling the Quaffle";
     hud.message(startMode === "tutorial" ? `Tutorial started — ${verb}` : `You're the ${info.label} — ${verb}! E to dismount`, 3.4);
   }
@@ -635,11 +588,8 @@ async function boot() {
   const remotePaint = new THREE.Color();
   // museum jam session: my notes go out, friends' notes play the same
   // flash + dome ripple here (audible only if I'm actually at the theater)
-  exploratorium.onNote = (inst, key) => {
-    net.sendNote(inst, key);
-    tutorial.note("note"); // the tutorial's museum chapter counts these
-  };
-  net.onNote = (_id, inst, key) => exploratorium.remoteNote(inst, key);
+  // exploratorium.onNote is wired in the deferred loader once the module loads
+  net.onNote = (_id, inst, key) => exploratorium?.remoteNote(inst, key);
   // shared skies: my rocket launches go out, friends' volleys replay here
   fireworks.onVolley = (rockets) => net.sendFireworks(rockets);
   net.onFireworks = (_id, rockets) => fireworks.launchRemote(rockets);
@@ -760,7 +710,7 @@ async function boot() {
     () => remotes.positions(),
     // live Training/Debug overlay getters (big map only): AI cars + horse herd
     () => (aiCars.debugCars() ?? []).map((c) => ({ id: c.id, x: c.x, z: c.z })),
-    () => (horses.debugStates() ?? []).map((h) => ({ x: h.wx, z: h.wz, fallen: h.fallen }))
+    () => (horses?.debugStates() ?? []).map((h) => ({ x: h.wx, z: h.wz, fallen: h.fallen }))
   );
   const playerLocator = new PlayerLocator();
   type ReleaseMotion = {
@@ -806,7 +756,7 @@ async function boot() {
       player.setDriveStyle(null);
       dropped = true;
     }
-    if (currentAnimal) {
+    if (currentAnimal && forest) {
       const mount = player.meshes.drive.position;
       forest.dropAnimal(currentAnimal, mount.x, mount.z, player.heading - Math.PI, { speed: motion.horizontalSpeed });
       currentAnimal = null;
@@ -814,8 +764,9 @@ async function boot() {
       player.setDriveStyle(null);
       dropped = true;
     }
-    if (currentQuidditch) {
-      quidditch.dropFlyer(
+    if (currentQuidditch && quidditch) {
+      const _qd = quidditch; // narrowed ref for TypeScript
+      _qd.dropFlyer(
         currentQuidditch.team,
         currentQuidditch.role,
         player.position.x,
@@ -826,8 +777,8 @@ async function boot() {
       );
       currentQuidditch = null;
       player.clearDroneStyle();
-      quidHud.setRole(null);
-      quidHud.stopTutorial();
+      quidHud?.setRole(null);
+      quidHud?.stopTutorial();
       dropped = true;
     }
     return dropped;
@@ -1001,12 +952,12 @@ async function boot() {
         player.teleportTo({ x: tx - (dx / d) * back, y: t.y, z: tz - (dz / d) * back, facing: heading, mode: t.mode });
       } else if (toName === "Exploratorium") {
         // land inside, in front of the Water Works wave-tank screen, facing it
-        player.respawn({ x: WATER_VIEW.x, z: WATER_VIEW.z, heading: WATER_VIEW.facing });
-      } else if (toName === QUIDDITCH_PITCH.name) {
+        if (WATER_VIEW) player.respawn({ x: WATER_VIEW.x, z: WATER_VIEW.z, heading: WATER_VIEW.facing });
+      } else if (toName === QUIDDITCH_PITCH_NAME) {
         dropCurrentDriveMount();
         if (player.mode !== "walk") player.trySwitch("walk");
-        quidHud.stopTutorial();
-        player.respawn({ x: QUIDDITCH_PITCH.x, z: QUIDDITCH_PITCH.z, heading: -Math.PI / 2 });
+        quidHud?.stopTutorial();
+        player.respawn({ x: QUIDDITCH_PITCH_X, z: QUIDDITCH_PITCH_Z, heading: -Math.PI / 2 });
       } else {
         const want = { x: tx, z: tz, heading };
         const open = await findOpenSpawn(map, tiles.manifest, want);
@@ -1067,8 +1018,8 @@ async function boot() {
     scene,
     pipeline,
     setFoliageVisible,
-    () => wildlands.flowers.refresh(),
-    () => wildlands.grass.refresh()
+    () => wildlands?.flowers.refresh(),
+    () => wildlands?.grass.refresh()
   );
   debugPanel.setMode(player.mode);
 
@@ -1087,7 +1038,7 @@ async function boot() {
     const mode = ALL_MODES.find((m) => m === p[4]);
     if (![x, y, z, facing].every(Number.isFinite) || !mode) return null;
     const ride = p[5] && p[5] in DRIVE_PROFILES ? (p[5] as VehicleClass) : null;
-    const animal = p[5] && p[5] in ANIMALS ? (p[5] as AnimalKind) : null;
+    const animal = p[5] && ANIMALS && p[5] in ANIMALS ? (p[5] as AnimalKind) : null;
     const paint = p[6] ? parseInt(p[6], 16) : NaN;
     return { x, y, z, facing, mode, ride, animal, paint: Number.isFinite(paint) ? paint : undefined, from: q.get("via") };
   })();
@@ -1112,7 +1063,11 @@ async function boot() {
       mode = "drive";
     } else if (invite.animal) {
       currentAnimal = invite.animal;
-      player.setDriveStyle(forest.buildRiddenMesh(invite.animal), ANIMALS[invite.animal].spec);
+      if (forest && ANIMALS && invite.animal) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const animalEntry: any = ANIMALS[invite.animal];
+        player.setDriveStyle(forest.buildRiddenMesh(invite.animal), animalEntry?.spec);
+      }
       mode = "drive";
     }
     // land to the sharer's right so nobody spawns inside anybody — wider for
@@ -1158,13 +1113,7 @@ async function boot() {
   // While it's open the whole world stops rendering (see `btsReading` in tick)
   // and the frozen canvas dims a touch, so no live frames flicker behind the read.
   let btsReading = false;
-  new BehindTheScenes((open) => {
-    btsReading = open;
-    app.classList.toggle("world-dimmed", open);
-    input.suspended = open || cameraMode;
-    if (open) input.releaseLock();
-    else if (!cameraMode) input.requestLock();
-  });
+  // BehindTheScenes is constructed after progress(100) in the deferred loader
 
   // debris instancing: chunks keep the facade look. Per-instance attributes carry
   // the building tone/baseY, the parent bid + chunk half extents, and the frozen
@@ -1259,35 +1208,29 @@ async function boot() {
   // Warm the GPU pipelines while the loading screen still covers the canvas.
   // First render lets the CSM shadow node build its cascade lights (that build
   // changes the scene light set once, and anything compiled before it would
-  // need a second compile after). Then one render with every embodiment's
-  // meshes visible compiles all the vehicle materials up front. Vehicle lamps
-  // come from Player's fixed-size LightPool (always in the scene), so this is
-  // the only compile the vehicles ever pay — later mode switches recompile
-  // nothing. Culling is off so the meshes still parked at the origin draw no
-  // matter where the camera looks.
+  // need a second compile after). Then one render with the START mode's meshes
+  // visible compiles that vehicle up front; remaining modes idle-warm below so
+  // Start isn't blocked on all 8. Vehicle lamps come from Player's fixed-size
+  // LightPool (always in the scene), so mode switches stay compile-free once
+  // warmed. Culling is off so meshes parked at the origin still draw.
   progress(88, "warming up the vehicles");
   sky.update(0, camera.position);
   pipeline.render();
-  player.warmup(true);
+  player.warmup([player.mode]);
   fx.prewarm(); // compiles both sprite blend pipelines before gameplay
   const unculled: THREE.Object3D[] = [];
-  for (const m of Object.values(player.meshes)) {
-    m.traverse((o) => {
-      if (o.frustumCulled) {
-        o.frustumCulled = false;
-        unculled.push(o);
-      }
-    });
-  }
-  pipeline.render();
-  // let the GPU process flush the compiles; hidden tabs never fire rAF
-  // (headless/preview verification), so a timer backstops the wait
-  await new Promise((r) => {
-    requestAnimationFrame(r);
-    setTimeout(r, 350);
+  const startMesh = player.meshes[player.mode];
+  startMesh.traverse((o) => {
+    if (o.frustumCulled) {
+      o.frustumCulled = false;
+      unculled.push(o);
+    }
   });
+  pipeline.render();
+  // one rAF flush is enough for a single-mode compile; no fixed 350ms wait
+  await new Promise<void>((r) => requestAnimationFrame(() => r()));
   for (const o of unculled) o.frustumCulled = true;
-  player.warmup(false);
+  player.warmup(); // restore: only the current mode visible
 
   progress(100, "ready");
   // Load done: enable Start (form already sits over the idling city), fade the
@@ -1296,6 +1239,152 @@ async function boot() {
   startButton.disabled = false;
   loading.classList.add("ready");
   focusNameInput();
+
+  // Idle-warm remaining modes one-at-a-time so the first mode-switch is hitch-free
+  // without blocking Start. Keep the current embodiment visible (city is already
+  // on screen behind the gate). Must pipeline.render() while the extra mesh is
+  // drawn — visibility alone does not compile WGSL.
+  {
+    const modesLeft: PlayerMode[] = (["walk", "drive", "plane", "boat", "speedboat", "drone", "board", "bird"] as PlayerMode[])
+      .filter((m) => m !== player.mode);
+    const warmNext = () => {
+      const m = modesLeft.shift();
+      if (!m) return;
+      player.warmup([player.mode, m]);
+      const mesh = player.meshes[m];
+      const freed: THREE.Object3D[] = [];
+      mesh.traverse((o) => {
+        if (o.frustumCulled) {
+          o.frustumCulled = false;
+          freed.push(o);
+        }
+      });
+      pipeline.render();
+      requestAnimationFrame(() => {
+        for (const o of freed) o.frustumCulled = true;
+        player.warmup(); // restore current mode only
+        const schedule: (cb: () => void) => void =
+          typeof requestIdleCallback !== "undefined"
+            ? (cb) => requestIdleCallback(cb, { timeout: 2000 })
+            : (cb) => setTimeout(cb, 200);
+        schedule(warmNext);
+      });
+    };
+    (typeof requestIdleCallback !== "undefined"
+      ? (cb: () => void) => requestIdleCallback(cb, { timeout: 3000 })
+      : (cb: () => void) => setTimeout(cb, 500))(warmNext);
+  }
+  // Deferred module loader — constructs all non-critical systems after the Start
+  // button is visible. Modules are dynamically imported so Vite emits separate
+  // chunks; the world fills while the user types their name. The Start button is
+  // already enabled above so this never blocks first interaction.
+  (async () => {
+    // small stagger so the deferred request doesn't compete with the initial render
+    await new Promise<void>((r) => setTimeout(r, 100));
+
+    // Forest + Creatures: ambient wildlife and rideable animals
+    const [forestMod, creaturesMod] = await Promise.all([
+      import("./gameplay/forest"),
+      import("./gameplay/creatures")
+    ]);
+    ANIMALS = forestMod.ANIMALS as NonNullable<typeof ANIMALS>;
+    creatures = new creaturesMod.Creatures(map, scene);
+    forest = new forestMod.Forest(map, scene);
+
+    // Garden + Wildlands: botanical garden grass + designed SeedThree groves
+    const [gardenMod, wildlandsMod] = await Promise.all([
+      import("./world/garden"),
+      import("./world/wildlands")
+    ]);
+    windGustValue = gardenMod.windGustValue;
+    const _garden = gardenMod.createBotanicalGarden(map);
+    scene.add(_garden.group);
+    _garden.group.visible = FOLIAGE_TUNING.values.visible;
+    garden = _garden;
+    const _wildlands = wildlandsMod.createWildlands(map);
+    for (const g of _wildlands.groups) { g.visible = FOLIAGE_TUNING.values.visible; scene.add(g); }
+    wildlands = _wildlands;
+
+    // HorseHerd: RL ragdoll horses in the Botanical Garden meadow
+    const { HorseHerd: HorseHerdCls } = await import("./gameplay/horse/horseHerd");
+    horses = new HorseHerdCls(physics, map, scene);
+
+    // BrainPanel: AI brain inspector overlay
+    const { BrainPanel: BrainPanelCls } = await import("./ui/brainPanel/index.ts");
+    brainPanel = new BrainPanelCls(
+      () => input.releaseLock(),
+      () => { if (!cameraMode) input.requestLock(); }
+    );
+
+    // Exploratorium: Pier 15 museum + dome show
+    const { Exploratorium: ExploratoriumCls, WATER_VIEW: wv } = await import("./gameplay/exploratorium");
+    WATER_VIEW = wv;
+    const _exp = new ExploratoriumCls(renderer, physics, map, scene, tiles);
+    _exp.onMessage = (m, s) => hud.message(m, s);
+    _exp.onNote = (inst: number, key: number) => {
+      net.sendNote(inst, key);
+      tutorial.note("note");
+    };
+    worldQueries.setSurfaceRay((o, d, m) => _exp.raycast(o, d, m));
+    exploratorium = _exp;
+
+    // CityGen: procedural building ring + demo
+    const [citygenMod, citygenDemoMod] = await Promise.all([
+      import("./world/citygen"),
+      import("./world/citygen/demo")
+    ]);
+    citygen = citygenDemoMod.createCityGenDemo({ scene, map }) as NonNullable<typeof citygen>;
+    citygenMod.createCityGenRing({}, { scene, physics, map, tiles }).then((r) => { citygenRing.current = r; });
+
+    // Quidditch + HUD + audio
+    const [quidMod, quidHudMod, quidAudioMod] = await Promise.all([
+      import("./gameplay/quidditch"),
+      import("./ui/quidditchHud"),
+      import("./fx/quidditchAudio")
+    ]);
+    const _quid = new quidMod.Quidditch(map, scene);
+    const _quidHud = new quidHudMod.QuidditchHUD();
+    const _quidAudio = new quidAudioMod.QuidditchAudio();
+    _quid.onMessage = (m, s) => hud.message(m, s);
+    _quid.onActiveChange = (on) => _quidHud.setActive(on);
+    _quid.onWhistle = () => _quidAudio.whistle();
+    _quid.onScore = (team, red, blue, x, y, z) => {
+      _quidHud.setScores(red, blue);
+      _quidHud.flashGoal(team);
+      _quidHud.noteTutorial("score");
+      fireworks.launchCelebration(x, y, z, 2);
+      chase.shake(0.08);
+    };
+    _quid.onSnitchCaught = (team, red, blue) => {
+      _quidAudio.snitch();
+      _quidHud.setScores(red, blue);
+      _quidHud.setSnitch(true, team);
+      _quidHud.noteTutorial("snitch");
+      fireworks.launchCelebration(QUIDDITCH_PITCH_X, map.effectiveGround(QUIDDITCH_PITCH_X, QUIDDITCH_PITCH_Z) + 40, QUIDDITCH_PITCH_Z);
+      chase.shake(0.16);
+    };
+    _quid.onBludgerHit = (_x, _y, _z, hitPlayer) => {
+      _quidAudio.bludger();
+      if (hitPlayer) chase.shake(0.22);
+    };
+    _quidHud.onPickRole = (team: QuidditchTeam, role: QuidditchRole, mode: QuidditchStartMode) => joinQuidditchRole(team, role, mode);
+    _quidHud.onCloseModal = () => {
+      if (!input.suspended && document.body.classList.contains("started")) input.requestLock();
+    };
+    quidditch = _quid;
+    quidHud = _quidHud;
+
+    // BehindTheScenes: the "how it was made" reading overlay
+    const { BehindTheScenes } = await import("./ui/behindTheScenes");
+    new BehindTheScenes((open: boolean) => {
+      btsReading = open;
+      app.classList.toggle("world-dimmed", open);
+      input.suspended = open || cameraMode;
+      if (open) input.releaseLock();
+      else if (!cameraMode) input.requestLock();
+    });
+  })().catch((err) => console.warn("[sf] deferred module load failed:", err));
+
   // headless verification, demos and perf runs can't click — skip the gate
   const skipGate = ["autostart", "demo", "profile"].some((k) => new URLSearchParams(location.search).has(k));
   if (skipGate) loading.classList.add("done");
@@ -1487,21 +1576,21 @@ async function boot() {
     }
     // M (or clicking the minimap): the full city map — players, teleports.
     // Works while paused; Esc also closes it. (The brain inspector owns Esc while open.)
-    if (!brainPanel.isOpen && (input.pressed("KeyM") || (minimap.expanded && input.pressed("Escape")))) {
+    if (!brainPanel?.isOpen && (input.pressed("KeyM") || (minimap.expanded && input.pressed("Escape")))) {
       minimap.setExpanded(!minimap.expanded);
     }
 
     // Full freeze: the brain inspector, or a pause with "freeze player" armed.
     // Everything holds — sim, player, fx, vehicles — while a DOM panel (or a
     // clean screenshot) floats on top.
-    if ((paused && freezePlayer) || brainPanel.isOpen) {
+    if ((paused && freezePlayer) || brainPanel?.isOpen) {
       vehicleAudio.update(frameDt, null); // fade the hum out while frozen
       aiCarCabinAudio.update(frameDt, aiCarPassengerOf !== null ? { active: true, speed: 0 } : null);
       // ambience keeps breathing while frozen — it's a chill/social feature
       nature.update(frameDt, {
         playerPos: player.renderPosition,
         camera,
-        gust: windGustValue(),
+        gust: windGustValue?.() ?? 0,
         timeOfDay: sky.timeOfDay
       });
       // stay social while frozen: peers keep moving, our keepalive keeps flowing
@@ -1562,7 +1651,7 @@ async function boot() {
       if (input.firePressed && !input.suspended) {
         aimRay(rayOrigin, aim);
         const hit = pickBrain(rayOrigin, aim);
-        if (hit) brainPanel.open(hit);
+        if (hit) brainPanel?.open(hit);
       }
       if (cameraMode) orbit.update(frameDt);
       else chase.update(frameDt, player, input);
@@ -1581,7 +1670,7 @@ async function boot() {
       nature.update(frameDt, {
         playerPos: player.renderPosition,
         camera,
-        gust: windGustValue(),
+        gust: windGustValue?.() ?? 0,
         timeOfDay: sky.timeOfDay
       });
       net.sendState(player.mode, player.meshes[player.mode].position, player.meshes[player.mode].quaternion, player.speed, passengerOf ?? 0);
@@ -1604,7 +1693,7 @@ async function boot() {
     const shiftedNumberPress = (i: number) => input.shiftedPress(`Digit${i}`) || input.shiftedPress(`Numpad${i}`);
     // seated at the piano the digits play notes (handlePianoInput below) — the
     // mode/tool switcher stands down so hitting "3" plays the instrument instead
-    if (!exploratorium.pianoBusy && !exploratorium.plaqueOpen)
+    if (!exploratorium?.pianoBusy && !exploratorium?.plaqueOpen)
       for (let i = 1; i <= 9; i++) {
         if (!numberPressed(i)) continue;
         if (ctrlNumberPress(i)) {
@@ -1639,26 +1728,26 @@ async function boot() {
 
     // E: Exploratorium piano, then exit any vehicle/creature, or on foot hop
     // into the nearest car (a friend's passenger seat wins over parked traffic)
-    if (input.pressed("KeyE") && exploratorium.tryInteract()) {
+    if (input.pressed("KeyE") && exploratorium?.tryInteract()) {
       // consumed E inside the museum: seated at the dome piano, or opened/closed
       // a plaque — only the piano advances the tutorial
-      if (exploratorium.pianoBusy) tutorial.note("piano");
+      if (exploratorium?.pianoBusy) tutorial.note("piano");
     } else if (input.pressed("KeyE") && !exitToWalk()) {
         const drv = remotes.nearestDriver(player.position, 5.5);
         // standing in the pitch's join circle: open the position picker instead
         // of auto-assigning, so you can choose Seeker / Beater / Chaser / Keeper
-        const wantQuid = !drv && !currentQuidditch && quidditch.inJoinZoneAt(player.position);
-        const animal = drv || wantQuid ? null : forest.nearest(player.position, 5);
+        const wantQuid = !drv && !currentQuidditch && quidditch?.inJoinZoneAt(player.position);
+        const animal = drv || wantQuid ? null : forest?.nearest(player.position, 5);
         const aiCar = drv || wantQuid || animal ? null : aiCars.nearestCar(player.position, 5.5);
         if (drv) {
           passengerOf = drv.id;
           player.startRide();
           hud.message(`Riding with ${drv.name} — E to hop out`, 2.6);
         } else if (wantQuid) {
-          const open = quidditch.openRoles();
-          if (open.length) quidHud.showStart(open);
+          const open = quidditch?.openRoles() ?? [];
+          if (open.length) quidHud?.showStart(open);
           else hud.message("Every broom is taken right now", 2);
-        } else if (animal) {
+        } else if (animal && forest && ANIMALS) {
           const info = forest.consume(animal);
           currentAnimal = info.kind;
           player.setDriveStyle(forest.buildRiddenMesh(info.kind), ANIMALS[info.kind].spec);
@@ -1694,7 +1783,7 @@ async function boot() {
           }
         }
     }
-    exploratorium.handlePianoInput((c) => input.pressed(c));
+    exploratorium?.handlePianoInput((c) => input.pressed(c));
 
     if (input.pressed("KeyR")) {
       leaveRide();
@@ -1787,7 +1876,7 @@ async function boot() {
       aimRay(rayOrigin, aim);
       const hit = pickBrain(rayOrigin, aim);
       if (hit) {
-        brainPanel.open(hit);
+        brainPanel?.open(hit);
         brainOpened = true;
       }
     }
@@ -1801,12 +1890,12 @@ async function boot() {
       input.firePressed &&
       fireCooldown <= 0 &&
       currentQuidditch?.role === "Beater" &&
-      quidditch.active
+      quidditch?.active
     ) {
       // Beater: swing the bat at the nearest bludger along the aim ray
       chase.lookDir(aim);
-      if (quidditch.swingBat(player.aimOrigin, aim)) {
-        quidHud.noteTutorial("action");
+      if (quidditch?.swingBat(player.aimOrigin, aim)) {
+        quidHud?.noteTutorial("action");
         fireCooldown = 0.34;
         chase.shake(0.12);
       }
@@ -1814,12 +1903,12 @@ async function boot() {
       !input.suspended &&
       input.firePressed &&
       fireCooldown <= 0 &&
-      quidditch.canThrow(player.position)
+      quidditch?.canThrow(player.position)
     ) {
       chase.lookDir(aim);
       rayOrigin.copy(player.aimOrigin);
-      if (quidditch.throwQuaffle(rayOrigin, aim, player.velocity)) {
-        quidHud.noteTutorial("action");
+      if (quidditch?.throwQuaffle(rayOrigin, aim, player.velocity)) {
+        quidHud?.noteTutorial("action");
         fireCooldown = 0.28;
         chase.shake(0.07);
       }
@@ -1855,12 +1944,12 @@ async function boot() {
         chase.lookDir(aim);
         fireCooldown = 0.13;
         rayOrigin.copy(player.aimOrigin);
-        forest.fireGummy(rayOrigin, aim, player.velocity);
+        forest?.fireGummy(rayOrigin, aim, player.velocity);
       }
     } else if (
       (input.firing || input.firePressed) &&
       !input.suspended &&
-      (chase.lookDir(aim), rayOrigin.copy(player.aimOrigin), exploratorium.handleFire(rayOrigin, aim, input.firePressed, input.firing))
+      (chase.lookDir(aim), rayOrigin.copy(player.aimOrigin), exploratorium?.handleFire(rayOrigin, aim, input.firePressed, input.firing))
     ) {
       // inside the Exploratorium and aiming at an exhibit: the museum consumed
       // the click (piano key, tank stir, pool poke) — click-tools stand down
@@ -1953,7 +2042,7 @@ async function boot() {
       player.update(physics.world.fixedTimeStep, input, chase.yaw, aim);
       traffic.prePhysics(physics.world.fixedTimeStep, player.position);
       aiCars.prePhysics(physics.world.fixedTimeStep, aiCarAnchors);
-      horses.prePhysics(physics.world.fixedTimeStep, player.position);
+      horses?.prePhysics(physics.world.fixedTimeStep, player.position);
       abandonedMounts.prePhysics(physics.world.fixedTimeStep);
       physics.step(physics.world.fixedTimeStep, player.position);
       accumulator -= physics.world.fixedTimeStep;
@@ -2000,41 +2089,41 @@ async function boot() {
     bridgeParade.update(frameDt); // boats crossing under the Golden Gate on "-"
     rocketRiders.update(frameDt, player.position); // the launched guitarists live their own lives
     if (player.mode === "speedboat") boatLaunchers?.update(frameDt); // guitarist jam + rocket reload
-    creatures.update(elapsed, camera.position); // gulls live at altitude — never gated
-    horses.update(frameDt, camera); // RL horse herd in the Botanical Garden meadow (self-gated)
-    forest.update(frameDt, camera.position);
+    creatures?.update(elapsed, camera.position); // gulls live at altitude — never gated
+    horses?.update(frameDt, camera); // RL horse herd in the Botanical Garden meadow (self-gated)
+    forest?.update(frameDt, camera.position);
     // garden: advance wind, move the near-grass detail ring to the player, and
     // flatten grass under them. Cheap when the player is nowhere near the garden
     // (updateFocus distance-culls base chunks and skips the near ring).
     gardenDisplacer.x = player.renderPosition.x;
     gardenDisplacer.z = player.renderPosition.z;
-    garden.update(frameDt, player.renderPosition, gardenDisplacers);
+    garden?.update(frameDt, player.renderPosition, gardenDisplacers);
     // wildlands: the grass + flower rings follow the PLAYER (like the garden ring
     // above) so they stay put when you just look around — the chase camera orbits
     // the player, and anchoring the rings to it slid the whole field around you.
     // Tree distance-culling still follows the camera so off-screen groves drop.
-    wildlands.update(player.renderPosition, camera.position);
+    wildlands?.update(player.renderPosition, camera.position);
     // nature soundscape rides the same gust envelope garden.update just advanced,
     // and reads the sky clock for dawn choruses / night owls. Cheap out in the
     // city (suspends), so it's safe to tick unconditionally.
     nature.update(frameDt, {
       playerPos: player.renderPosition,
       camera,
-      gust: windGustValue(),
+      gust: windGustValue?.() ?? 0,
       timeOfDay: sky.timeOfDay
     });
-    if (currentAnimal) forest.setRiddenSpeed(player.speed);
+    if (currentAnimal) forest?.setRiddenSpeed(player.speed);
     islands.update(elapsed);
-    exploratorium.update(frameDt, elapsed, player.position);
+    exploratorium?.update(frameDt, elapsed, player.position);
     citygenRing.current?.update(player.position, frameDt);
-    quidditch.update(frameDt, player.position, elapsed);
-    if (quidditch.active) {
-      const qs = quidditch.scores;
-      quidHud.setScores(qs.red, qs.blue);
-      if (quidditch.matchState === "playing") quidHud.setSnitch(false);
+    quidditch?.update(frameDt, player.position, elapsed);
+    if (quidditch?.active) {
+      const qs = quidditch?.scores;
+      quidHud?.setScores(qs.red, qs.blue);
+      if (quidditch?.matchState === "playing") quidHud?.setSnitch(false);
       // a bludger tagged the human rider: shove them and rattle the camera
       if (currentQuidditch) {
-        const kick = quidditch.takeBludgerKick();
+        const kick = quidditch?.takeBludgerKick();
         if (kick) {
           player.velocity.x += kick.x;
           player.velocity.y += kick.y;
@@ -2044,7 +2133,7 @@ async function boot() {
         }
       }
     }
-    quidHud.update(frameDt, {
+    quidHud?.update(frameDt, {
       riding: currentQuidditch !== null,
       role: currentQuidditch?.role ?? null,
       x: player.position.x,
@@ -2071,8 +2160,8 @@ async function boot() {
     // "hop in" nudge when standing near a vehicle (friend → AI car → wildlife → traffic)
     if (player.mode === "walk" && passengerOf === null && aiCarPassengerOf === null) {
       const drv = remotes.nearestDriver(player.position, 5.5);
-      const quidLabel = drv || currentQuidditch ? null : quidditch.joinLabel();
-      const nearAnimal = drv || quidLabel ? null : forest.nearest(player.position, 5);
+      const quidLabel = drv || currentQuidditch ? null : quidditch?.joinLabel();
+      const nearAnimal = drv || quidLabel ? null : forest?.nearest(player.position, 5);
       const nearAi = drv || quidLabel || nearAnimal ? null : aiCars.nearestCar(player.position, 5.5);
       const near = drv || quidLabel || nearAnimal || nearAi ? null : traffic.nearest(player.position, 5.5);
       if ((drv || quidLabel || nearAnimal || nearAi || near) && !ridePromptShown) {
@@ -2194,7 +2283,7 @@ async function boot() {
     {
       const cursorLive =
         document.body.classList.contains("started") &&
-        !brainPanel.isOpen &&
+        !brainPanel?.isOpen &&
         !cameraMode &&
         !input.suspended &&
         !cineHook &&

@@ -1,4 +1,4 @@
-// Shared bake for the terrain-query surface (`public/data/groundtop.bin`).
+// Shared bake for the terrain-query surface (emitted as `groundtop-delta.bin`).
 //
 // The RENDERED ground the player sees is NOT the raw heightfield: park lawns are
 // separate meshes draped PARK_LIFT metres ABOVE the terrain (see build_tile_green
