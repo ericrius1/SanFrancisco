@@ -39,6 +39,7 @@ import { AvatarSelector } from "./ui/avatarSelector";
 import { AudioControls } from "./ui/audioControls";
 import { Chat } from "./ui/chat";
 import { VehicleAudio } from "./fx/vehicleAudio";
+import { AiCarCabinAudio } from "./fx/aiCarCabinAudio";
 import { createNatureSoundscape } from "./audio";
 import { Traffic, DRIVE_PROFILES, type VehicleClass } from "./gameplay/traffic";
 import { AbandonedMounts } from "./gameplay/abandonedMounts";
@@ -218,6 +219,7 @@ async function boot() {
 
   // procedural vehicle hum + the HUD's master volume/mute widget (bottom-left)
   const vehicleAudio = new VehicleAudio();
+  const aiCarCabinAudio = new AiCarCabinAudio();
   const audioControls = new AudioControls();
   // procedural, layered nature soundscape (Botanical Garden / GG Park / Presidio
   // / Marin): sampled beds + gust-locked wind synth + spatial animal calls, all
@@ -669,16 +671,30 @@ async function boot() {
   // passenger seat support: remotes resolves "riding MY car" through this
   remotes.localDriveMesh = () => (player.mode === "drive" && !player.riding ? player.meshes.drive : null);
 
-  // riding shotgun in a friend's car: who's driving me (null = on my own).
-  // The pose glue runs each frame in the render loop; every mode change,
+  // riding shotgun: either a friend's car (remote player id) or a self-driving
+  // AI training car (fleet id). Pose glue runs each frame; every mode change,
   // respawn or teleport goes through leaveRide first.
   let passengerOf: number | null = null;
+  let aiCarPassengerOf: number | null = null;
   const ridePos = new THREE.Vector3();
   const rideQuat = new THREE.Quaternion();
   const leaveRide = () => {
-    if (passengerOf === null) return;
+    if (passengerOf === null && aiCarPassengerOf === null) return;
     passengerOf = null;
+    aiCarPassengerOf = null;
+    aiCars.forceOverlay(null);
     player.endRide();
+  };
+  /** Board an AI training car as a passenger (self-driving — no human driver). */
+  const boardAiCar = (carId: number, label?: string) => {
+    leaveRide();
+    dropCurrentDriveMount();
+    if (player.mode !== "walk") player.trySwitch("walk");
+    aiCarPassengerOf = carId;
+    aiCars.forceOverlay(carId);
+    player.startRide();
+    if (aiCars.ridePose(carId, ridePos, rideQuat)) player.setRidePose(ridePos, rideQuat, 0);
+    hud.message(label ?? `Riding AI car ${carId + 1} — E to hop out`, 2.8);
   };
 
   // proximity voice chat: P2P audio spatialised onto the remote avatars,
@@ -743,7 +759,7 @@ async function boot() {
     },
     () => remotes.positions(),
     // live Training/Debug overlay getters (big map only): AI cars + horse herd
-    () => (aiCars.debugCars() ?? []).map((c) => ({ x: c.x, z: c.z })),
+    () => (aiCars.debugCars() ?? []).map((c) => ({ id: c.id, x: c.x, z: c.z })),
     () => (horses.debugStates() ?? []).map((h) => ({ x: h.wx, z: h.wz, fallen: h.fallen }))
   );
   const playerLocator = new PlayerLocator();
@@ -818,8 +834,10 @@ async function boot() {
   };
   /** E (or pad B): leave any vehicle, creature, or passenger seat for on-foot. */
   const exitToWalk = () => {
-    if (passengerOf !== null) {
+    if (passengerOf !== null || aiCarPassengerOf !== null) {
       passengerOf = null;
+      aiCarPassengerOf = null;
+      aiCars.forceOverlay(null);
       player.position.x += Math.cos(player.heading) * 2.4;
       player.position.z -= Math.sin(player.heading) * 2.4;
       player.endRide();
@@ -950,8 +968,16 @@ async function boot() {
   switchModeFromToolbar = switchMode;
   hud.onHistoryBack = () => applyPlaceHistory(-1);
   hud.onHistoryForward = () => applyPlaceHistory(1);
-  const teleportToTarget = (x: number, z: number, toName?: string, playerId?: number) => {
+  const teleportToTarget = (x: number, z: number, toName?: string, playerId?: number, aiCarId?: number) => {
     void (async () => {
+      // AI training car: board as a passenger in the self-driving cabin
+      if (aiCarId !== undefined) {
+        beginPlaceNavigation("Previous place");
+        boardAiCar(aiCarId, toName ? `${toName} — E to hop out` : undefined);
+        finishPlaceNavigation(toName ?? "AI car");
+        tutorial.note("teleport");
+        return;
+      }
       const t = playerId !== undefined ? remotes.stateOf(playerId) : null;
       if (playerId !== undefined && !t) {
         hud.message(`${toName ?? "Player"} is no longer available`, 2.2);
@@ -1470,6 +1496,7 @@ async function boot() {
     // clean screenshot) floats on top.
     if ((paused && freezePlayer) || brainPanel.isOpen) {
       vehicleAudio.update(frameDt, null); // fade the hum out while frozen
+      aiCarCabinAudio.update(frameDt, aiCarPassengerOf !== null ? { active: true, speed: 0 } : null);
       // ambience keeps breathing while frozen — it's a chill/social feature
       nature.update(frameDt, {
         playerPos: player.renderPosition,
@@ -1481,8 +1508,10 @@ async function boot() {
       net.sendState(player.mode, player.meshes[player.mode].position, player.meshes[player.mode].quaternion, 0, passengerOf ?? 0);
       remotes.selfId = net.selfId;
       remotes.update(frameDt);
-      // if a friend is still driving me around, stay in the seat while frozen
+      // stay glued to a friend's car or an AI training car while frozen
       if (passengerOf !== null && remotes.ridePose(passengerOf, ridePos, rideQuat)) {
+        player.setRidePose(ridePos, rideQuat, frameDt);
+      } else if (aiCarPassengerOf !== null && aiCars.ridePose(aiCarPassengerOf, ridePos, rideQuat)) {
         player.setRidePose(ridePos, rideQuat, frameDt);
       }
       voice.update(camera); // keep talking while paused — it's a social feature
@@ -1515,9 +1544,11 @@ async function boot() {
       if (steps === 3) accumulator = 0;
       remotes.selfId = net.selfId;
       remotes.update(frameDt);
-      // riding shotgun with a friend keeps you glued to their seat; otherwise
+      // riding shotgun with a friend or AI car keeps you glued; otherwise
       // settle the render transform between physics states like a live frame
       if (passengerOf !== null && remotes.ridePose(passengerOf, ridePos, rideQuat)) {
+        player.setRidePose(ridePos, rideQuat, frameDt);
+      } else if (aiCarPassengerOf !== null && aiCars.ridePose(aiCarPassengerOf, ridePos, rideQuat)) {
         player.setRidePose(ridePos, rideQuat, frameDt);
       } else {
         player.afterSteps(steps, accumulator / physics.world.fixedTimeStep);
@@ -1543,6 +1574,10 @@ async function boot() {
         boost: input.down("ShiftLeft"),
         grounded: player.mode !== "board" || player.boardGrounded
       });
+      aiCarCabinAudio.update(
+        frameDt,
+        aiCarPassengerOf !== null ? { active: true, speed: player.speed } : null
+      );
       nature.update(frameDt, {
         playerPos: player.renderPosition,
         camera,
@@ -1614,6 +1649,7 @@ async function boot() {
         // of auto-assigning, so you can choose Seeker / Beater / Chaser / Keeper
         const wantQuid = !drv && !currentQuidditch && quidditch.inJoinZoneAt(player.position);
         const animal = drv || wantQuid ? null : forest.nearest(player.position, 5);
+        const aiCar = drv || wantQuid || animal ? null : aiCars.nearestCar(player.position, 5.5);
         if (drv) {
           passengerOf = drv.id;
           player.startRide();
@@ -1633,6 +1669,8 @@ async function boot() {
             info.kind === "raccoon" ? "You're riding the raccoon! Left click — gummy bears" : "You're riding the bear!",
             3
           );
+        } else if (aiCar) {
+          boardAiCar(aiCar.id);
         } else {
           // re-board a vehicle/creature you left behind — walk up, press E,
           // just like a parked car (the phoenix, a crashed plane, a hoverboard…)
@@ -1706,13 +1744,13 @@ async function boot() {
       chat.focus();
       input.releaseLock();
     }
-    // N: hop to the next AI car and watch it drive (cycles the whole fleet)
+    // N: hop into the next AI car as a passenger (cycles the whole fleet)
     if (input.pressed("KeyN")) {
       const cars = aiCars.debugCars();
       if (cars.length) {
         carViewIdx = (carViewIdx + 1) % cars.length;
         const c = cars[carViewIdx];
-        teleportToTarget(c.x, c.z, `▶ AI car ${carViewIdx + 1}/${cars.length}`);
+        teleportToTarget(c.x, c.z, `▶ AI car ${carViewIdx + 1}/${cars.length}`, undefined, c.id);
       }
     }
     // F: fullscreen (keydown grants the transient activation this needs)
@@ -1936,6 +1974,15 @@ async function boot() {
         player.endRide();
         hud.message("Your ride ended", 2.2);
       }
+    } else if (aiCarPassengerOf !== null) {
+      if (aiCars.ridePose(aiCarPassengerOf, ridePos, rideQuat)) {
+        player.setRidePose(ridePos, rideQuat, frameDt);
+      } else {
+        aiCarPassengerOf = null;
+        aiCars.forceOverlay(null);
+        player.endRide();
+        hud.message("Your ride ended", 2.2);
+      }
     } else {
       // interpolate the render transform between the last two physics states so
       // 120 Hz frames don't see a 60 Hz stutter
@@ -2021,13 +2068,14 @@ async function boot() {
       grabber.update(rayOrigin.copy(player.aimOrigin), aim);
     }
 
-    // "hop in" nudge when standing near a vehicle (a friend's car first, then wildlife)
-    if (player.mode === "walk" && passengerOf === null) {
+    // "hop in" nudge when standing near a vehicle (friend → AI car → wildlife → traffic)
+    if (player.mode === "walk" && passengerOf === null && aiCarPassengerOf === null) {
       const drv = remotes.nearestDriver(player.position, 5.5);
       const quidLabel = drv || currentQuidditch ? null : quidditch.joinLabel();
       const nearAnimal = drv || quidLabel ? null : forest.nearest(player.position, 5);
-      const near = drv || quidLabel || nearAnimal ? null : traffic.nearest(player.position, 5.5);
-      if ((drv || quidLabel || nearAnimal || near) && !ridePromptShown) {
+      const nearAi = drv || quidLabel || nearAnimal ? null : aiCars.nearestCar(player.position, 5.5);
+      const near = drv || quidLabel || nearAnimal || nearAi ? null : traffic.nearest(player.position, 5.5);
+      if ((drv || quidLabel || nearAnimal || nearAi || near) && !ridePromptShown) {
         hud.message(
           drv
             ? `E — ride with ${drv.name}`
@@ -2035,12 +2083,14 @@ async function boot() {
               ? `E — start Quidditch`
               : nearAnimal
                 ? `E — ride the ${nearAnimal.label}`
-                : `E — hop in the ${DRIVE_PROFILES[near!.cls].label}`,
+                : nearAi
+                  ? `E — ride AI car ${nearAi.id + 1}`
+                  : `E — hop in the ${DRIVE_PROFILES[near!.cls].label}`,
           1.8
         );
         ridePromptShown = true;
       }
-      if (!drv && !quidLabel && !nearAnimal && !near) ridePromptShown = false;
+      if (!drv && !quidLabel && !nearAnimal && !nearAi && !near) ridePromptShown = false;
     } else {
       ridePromptShown = false;
     }
@@ -2070,6 +2120,10 @@ async function boot() {
       boost: input.down("ShiftLeft"),
       grounded: player.mode !== "board" || player.boardGrounded
     });
+    aiCarCabinAudio.update(
+      frameDt,
+      aiCarPassengerOf !== null ? { active: true, speed: player.speed } : null
+    );
     // B launches fireworks ahead of the player along the camera heading; airborne
     // modes push them further out and up to the player's altitude
     fireworks.update(frameDt, {
@@ -2283,7 +2337,7 @@ async function boot() {
 
   const exposeDebugHooks = () => {
     Object.assign(window as never, {
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, exploratorium, traffic, creatures, forest, garden, wildlands, splashes, vehicleAudio, nature, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, boatLaunchers, goldenGateLights, flyover, bridgeParade, teleportToTarget, aiCars, horses, citygen, citygenRing, brainPanel, inspectableBrains, worldCursor, worldQueries, underwater, seaPillars, water, colliderDebug }
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, exploratorium, traffic, creatures, forest, garden, wildlands, splashes, vehicleAudio, aiCarCabinAudio, nature, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, boatLaunchers, goldenGateLights, flyover, bridgeParade, teleportToTarget, aiCars, horses, citygen, citygenRing, brainPanel, inspectableBrains, worldCursor, worldQueries, underwater, seaPillars, water, colliderDebug }
     });
   };
   if (import.meta.env.DEV || new URLSearchParams(location.search).has("profile")) {

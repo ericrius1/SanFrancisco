@@ -34,6 +34,7 @@ import { buildCarMesh } from "./carMesh.ts";
 import { StatsChip, type LifeStats } from "./statsChip.ts";
 import { GhostStore, isLeader, serializeCars, HIDDEN } from "./netSync.ts";
 import type { InspectableBrain } from "../../ui/brainPanel/types.ts";
+import type { Cockpit } from "../../player/types";
 
 // obs slots filled in fleet.ts (#obs): keep in sync with the sensor block there.
 const CAR_INPUT_LABELS = [
@@ -113,7 +114,15 @@ export class AiCars {
   #chip: StatsChip | null = null;
   #ready = false;
   #overlaysOn = true;
+  /** When set, that car's brain lattice stays visible regardless of range/altitude. */
+  #forceOverlayId: number | null = null;
   #statsTimer = 0;
+  // passenger-seat scratch (ridePose) — no per-call allocation
+  #seatLocal = new THREE.Vector3(0.42, 0.55, 0.66);
+  #rideUp = new THREE.Vector3(0, 1, 0);
+  #rideNrm = new THREE.Vector3();
+  #rideQYaw = new THREE.Quaternion();
+  #rideQTilt = new THREE.Quaternion();
 
   // --- multiplayer (netSync) ---
   #net: AiCarsNet | null = null;
@@ -620,10 +629,11 @@ export class AiCars {
       for (const w of data.front) w.rotation.y = steerAngle;
     }
 
-    if (overlaysActive) {
+    const force = this.#forceOverlayId === id;
+    if (overlaysActive || force) {
       const dx = pos.x - playerPos.x;
       const dz = pos.z - playerPos.z;
-      if (dx * dx + dz * dz <= range2) {
+      if (force || dx * dx + dz * dz <= range2) {
         this.#worldPos.set(pos.x, pos.y + CAR_TOP + OVERLAY_LIFT, pos.z);
         overlay.update(id, this.#worldPos, layerOut, obs);
       } else {
@@ -744,6 +754,87 @@ export class AiCars {
       for (const g of this.#ghosts.cars) if (g.active) out.push({ id: g.id, x: g.pos.x, z: g.pos.z, speed: g.speed, hasMesh: !!g.mesh, visible: !!g.mesh && g.mesh.visible });
     }
     return out;
+  }
+
+  /** Keep this car's neural-net lattice visible while the player rides in it. */
+  forceOverlay(id: number | null): void {
+    this.#forceOverlayId = id;
+  }
+
+  /** Nearest live AI car within maxDist (hop-in / teleport candidate). */
+  nearestCar(pos: THREE.Vector3, maxDist: number): { id: number; x: number; z: number } | null {
+    let best: { id: number; x: number; z: number } | null = null;
+    let bestD = maxDist;
+    const consider = (id: number, x: number, z: number) => {
+      const d = Math.hypot(x - pos.x, z - pos.z);
+      if (d < bestD) {
+        bestD = d;
+        best = { id, x, z };
+      }
+    };
+    if (this.#isLeader && this.#fleet) {
+      for (const c of this.#fleet.cars) if (c.alive) consider(c.id, c.pos.x, c.pos.z);
+    } else if (this.#ghosts) {
+      for (const g of this.#ghosts.cars) if (g.active) consider(g.id, g.pos.x, g.pos.z);
+    }
+    return best;
+  }
+
+  /**
+   * Passenger-seat world pose of an AI training car. Uses the live mesh when
+   * present; otherwise synthesizes yaw+ground-tilt from the kinematic pose so
+   * boarding still works for FAR-tier cars that haven't grown a mesh yet.
+   */
+  ridePose(carId: number, outPos: THREE.Vector3, outQuat: THREE.Quaternion): boolean {
+    const mesh = this.#meshOf(carId);
+    if (mesh) {
+      const c = mesh.userData.cockpit as Cockpit | undefined;
+      if (c) outPos.set(c.seat[0], c.seat[1], c.seat[2]);
+      else outPos.copy(this.#seatLocal);
+      outQuat.copy(mesh.quaternion);
+      outPos.applyQuaternion(outQuat).add(mesh.position);
+      return true;
+    }
+    const pose = this.#poseOf(carId);
+    if (!pose) return false;
+    this.#synthCarQuat(pose.x, pose.z, pose.heading, outQuat);
+    outPos.copy(this.#seatLocal).applyQuaternion(outQuat);
+    outPos.x += pose.x;
+    outPos.y += pose.y;
+    outPos.z += pose.z;
+    return true;
+  }
+
+  #meshOf(carId: number): THREE.Group | undefined {
+    if (this.#isLeader && this.#fleet) {
+      const c = this.#fleet.cars[carId];
+      return c?.alive ? c.mesh : undefined;
+    }
+    const g = this.#ghosts?.cars[carId];
+    return g?.active ? g.mesh : undefined;
+  }
+
+  #poseOf(carId: number): { x: number; y: number; z: number; heading: number } | null {
+    if (this.#isLeader && this.#fleet) {
+      const c = this.#fleet.cars[carId];
+      if (!c?.alive) return null;
+      return { x: c.pos.x, y: c.pos.y, z: c.pos.z, heading: c.heading };
+    }
+    const g = this.#ghosts?.cars[carId];
+    if (!g?.active) return null;
+    return { x: g.pos.x, y: g.pos.y, z: g.pos.z, heading: g.heading };
+  }
+
+  /** Same yaw + ground-normal tilt as #mirror, without needing a mesh. */
+  #synthCarQuat(x: number, z: number, heading: number, out: THREE.Quaternion): void {
+    const e = 2.5;
+    const g = this.#map;
+    this.#rideNrm
+      .set(g.effectiveGround(x - e, z) - g.effectiveGround(x + e, z), 2 * e, g.effectiveGround(x, z - e) - g.effectiveGround(x, z + e))
+      .normalize();
+    this.#rideQYaw.setFromAxisAngle(this.#rideUp, heading);
+    this.#rideQTilt.setFromUnitVectors(this.#rideUp, this.#rideNrm).multiply(this.#rideQYaw);
+    out.copy(this.#rideQTilt);
   }
 
   /**

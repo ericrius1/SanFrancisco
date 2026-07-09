@@ -16,6 +16,11 @@
 import * as THREE from "three/webgpu";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { LIGHT_SCALE } from "../../config";
+import type { Cockpit } from "../../player/types";
+
+/** Passenger seat (mesh-local). Driver would be mirrored across X; AI cars are
+ * self-driving so the rider always sits shotgun. Matches the player car mesh. */
+const PASSENGER_COCKPIT: Cockpit = { seat: [0.42, 0.55, 0.66], hide: true };
 
 /** Number of body variants. */
 export const BODY_KINDS = 6;
@@ -323,5 +328,6 @@ export function buildCarMesh(bodyKind: number, paintHue: number): THREE.Group {
   }
 
   group.userData.bodyKind = kind;
+  group.userData.cockpit = PASSENGER_COCKPIT;
   return group;
 }

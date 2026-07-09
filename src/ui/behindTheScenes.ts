@@ -11,7 +11,7 @@
 import { SOUNDSCAPE_TAB_HTML, mountSoundscape } from "./btsSoundscape";
 import { registerShareable, buildReadUrl, copyText, type ShareableModal } from "./deepLinks";
 
-const X_URL = "https://x.com/EricAlar11";
+const X_URL = "https://x.com/EricLevin77";
 const REPO_URL = "https://github.com/ericrius1/SanFrancisco";
 const BOX3D_URL = "https://github.com/erincatto/box3d";
 const BOX3D_WASM_DEMO = "https://box3d-wasm-test.vercel.app/";
@@ -450,7 +450,7 @@ const TAB_PLAY = `
       ${a("https://gltf-transform.dev/", "glTF-Transform")}
       ${a("https://meshoptimizer.org/", "meshoptimizer")}
       ${a("https://www.openstreetmap.org/", "OpenStreetMap")}
-      ${a(X_URL, "@EricAlar11")}
+      ${a(X_URL, "@EricLevin77")}
     </div>
   </section>
 `;
