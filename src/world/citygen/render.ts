@@ -6,7 +6,7 @@
 // file is the direct "build these buildings now" path used by the demo + tests.
 import * as THREE from "three/webgpu";
 import { generate, type BuildingSpec } from "./index";
-import { buildCityGenMaterials, makeWallMaterial } from "./theme/materials";
+import { buildCityGenMaterials, makeWallMaterial, type WallKind } from "./theme/materials";
 import { makeParallaxGlass, type ParallaxZone } from "./theme/parallaxWindow";
 import { rng } from "./core/rng";
 import { mergePanels } from "./core/mesh";
@@ -57,6 +57,12 @@ const ARCH_ZONE: Record<string, ParallaxZone> = {
   victorian: "residential", edwardian: "residential", marina: "residential",
   downtown: "commercial", chinatown: "commercial", soma: "loft",
 };
+// wall surface texture by archetype: wood clapboard on the painted ladies, brick
+// on the SoMa/industrial stock, troweled stucco on the Marina, smooth on downtown.
+const WALL_KIND: Record<string, WallKind> = {
+  victorian: "clapboard", edwardian: "clapboard", marina: "stucco",
+  downtown: "smooth", chinatown: "smooth", soma: "brick",
+};
 // one parallax glass per zone (cloned per building for the crossfade opacity)
 const zoneGlassSrc = new Map<ParallaxZone, THREE.Material>();
 function zoneGlass(archetype: string): THREE.Material {
@@ -71,7 +77,7 @@ function zoneGlass(archetype: string): THREE.Material {
  *  without touching its neighbours. */
 export function buildBuilding(spec: BuildingSpec, mats: Record<string, THREE.Material>): BuiltBuilding {
   const { meshes } = generate(spec);
-  const wallMat = makeWallMaterial(bodyColour(spec.seed, spec.archetype));
+  const wallMat = makeWallMaterial(bodyColour(spec.seed, spec.archetype), WALL_KIND[spec.archetype] ?? "smooth");
   const local = new Map<string, THREE.Material>();     // per-building material clones
   const getMat = (id: string): THREE.Material => {
     if (id.startsWith("wall.")) return wallMat;
@@ -189,7 +195,7 @@ export function buildCityGenGroup(
     // seeded painted-lady body colour → its own clapboard wall material
     const r = rng(spec.seed, 99);
     const body = PAINTED_LADY[Math.floor(r() * PAINTED_LADY.length) % PAINTED_LADY.length];
-    const wallMat = makeWallMaterial(body);
+    const wallMat = makeWallMaterial(body, WALL_KIND[spec.archetype] ?? "smooth");
     perBuildingWall.set(spec.id, wallMat);
 
     for (const md of meshes) {

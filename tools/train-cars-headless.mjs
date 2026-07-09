@@ -16,6 +16,7 @@ import * as THREE from "three/webgpu";
 import { RoadGraph } from "../src/gameplay/aiCars/roadGraph.ts";
 import { Fleet, MAX_CARS } from "../src/gameplay/aiCars/fleet.ts";
 import { Learner } from "../src/gameplay/aiCars/learner.ts";
+import { decodeGroundTopDelta, decodeHeightmapBuffer } from "./terrain-codec.mjs";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const CKPT = process.env.SF_CKPT || path.join(ROOT, "tools", "aicars-trained-v3.json");
@@ -36,10 +37,24 @@ function floatGrid(file) {
   return new Float32Array(b.buffer, b.byteOffset, b.byteLength / 4);
 }
 
+function slicedArrayBuffer(buf) {
+  return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+}
+
+function loadGroundTops(meta) {
+  const heightBuf = readFileSync(path.join(ROOT, "public/data/heightmap.bin"));
+  const heights = decodeHeightmapBuffer(slicedArrayBuffer(heightBuf), meta);
+  const deltaPath = path.join(ROOT, "public/data/groundtop-delta.bin");
+  if (existsSync(deltaPath)) return decodeGroundTopDelta(readFileSync(deltaPath), heights);
+  const legacyPath = path.join(ROOT, "public/data/groundtop.bin");
+  if (existsSync(legacyPath)) return floatGrid(legacyPath);
+  return heights;
+}
+
 function makeWorld() {
   const meta = JSON.parse(readFileSync(path.join(ROOT, "public/data/meta.json"), "utf8"));
   const { cellSize, width: W, height: H, minX, minZ } = meta.grid;
-  const groundTops = floatGrid(path.join(ROOT, "public/data/groundtop.bin"));
+  const groundTops = loadGroundTops(meta);
   const surface = readFileSync(path.join(ROOT, "public/data/surface.bin"));
   const bridges = meta.bridges ?? [];
   const bridgeBounds = bridges.map((br) => {

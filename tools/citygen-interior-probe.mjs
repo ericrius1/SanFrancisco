@@ -26,8 +26,9 @@ async function shot(c, name) { const s = await c.send("Page.captureScreenshot", 
 async function main() {
   await mkdir(OUT, { recursive: true });
   const vitePort = await freePort();
+  const relayPort = await freePort();
   const SERVER_URL = `http://127.0.0.1:${vitePort}`;
-  const dev = spawn("npm", ["run", "dev", "--", "--host", "127.0.0.1", "--port", String(vitePort), "--strictPort"], { cwd: ROOT, env: { ...process.env, SF_RELAY_PORT: "8788" }, stdio: ["ignore", "ignore", "ignore"], detached: true });
+  const dev = spawn("npm", ["run", "dev", "--", "--host", "127.0.0.1", "--port", String(vitePort), "--strictPort"], { cwd: ROOT, env: { ...process.env, SF_RELAY_PORT: String(relayPort) }, stdio: ["ignore", "ignore", "ignore"], detached: true });
   const chromePath = await findChrome();
   const dport = await freePort();
   let chrome;

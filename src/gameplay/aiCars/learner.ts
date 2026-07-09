@@ -200,9 +200,9 @@ export class Learner {
     setUnit(8, 0, [[1, 0.75]]); // raw lateral sanity
 
     w[A_W1 + 0 * H + 0] = 1.05;
-    w[A_W1 + 0 * H + 1] = -0.78;
+    w[A_W1 + 0 * H + 1] = 0.78;
     w[A_W1 + 0 * H + 2] = 0.18;
-    w[A_W1 + 0 * H + 8] = -0.22;
+    w[A_W1 + 0 * H + 8] = 0.22;
 
     w[A_W1 + 1 * H + 3] = -1.0;
     w[A_W1 + 1 * H + 4] = -1.6;

@@ -15,6 +15,7 @@
     "preview": "vite preview",
     "server": "node server/server.mjs",
     "start": "node server/server.mjs",
+    "check:aicars": "node --experimental-strip-types tools/check-aicars-checkpoint.mjs",
     "fetch:osm": "node tools/fetch-osm.mjs",
     "fetch:terrain": "node tools/fetch-terrain.mjs",
     "prepare:city": "node tools/prepare-city.mjs",

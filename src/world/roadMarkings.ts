@@ -177,6 +177,9 @@ function meshFromPositions(name: string, positions: number[], mat: THREE.Materia
 }
 
 export async function createRoadMarkings(scene: THREE.Scene, map: WorldMap, url = "/data/roads.json"): Promise<THREE.Group> {
+  const existing = scene.getObjectByName("RoadMarkings");
+  if (existing instanceof THREE.Group) return existing;
+
   const res = await fetch(url);
   if (!res.ok) throw new Error(`RoadMarkings: failed to load ${url} (${res.status})`);
   const json = (await res.json()) as RoadsJson;

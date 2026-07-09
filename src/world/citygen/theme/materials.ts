@@ -11,9 +11,14 @@
 //    envMapIntensity AND add a faint self-lit emissive body tint so the colour
 //    reads in any light (how the baked city stays colourful at dusk).
 import * as THREE from "three/webgpu";
+import { color, uv, float, fract, floor as tslFloor, mod, mix, step, smoothstep, positionWorld, mx_noise_float } from "three/tsl";
 import { makeParallaxGlass } from "./parallaxWindow";
 
 const ENV = 5.5;
+const UV_SCALE = 3.0; // MUST match core/facade.ts (metric UVs = metres / UV_SCALE)
+
+/** wall surface texture kind, chosen per archetype in render.ts */
+export type WallKind = "clapboard" | "brick" | "stucco" | "smooth";
 
 /** A plain, DoubleSide standard material with a faint self-lit tint. */
 function standard(col: number, roughness: number, opts: { metalness?: number; emissive?: number } = {}): THREE.MeshStandardMaterial {
@@ -30,8 +35,40 @@ function standard(col: number, roughness: number, opts: { metalness?: number; em
  * trim in any lighting. (Kept a plain MeshStandardMaterial — node-material
  * colorNode/emissiveNode silently no-op'd under this app's WebGPU pipeline.)
  */
-export function makeWallMaterial(hex: number): THREE.MeshStandardMaterial {
-  return standard(hex, 0.92, { emissive: 0.3 });
+export function makeWallMaterial(hex: number, kind: WallKind = "smooth"): THREE.MeshStandardNodeMaterial {
+  const m = new THREE.MeshStandardNodeMaterial({ roughness: 0.92, metalness: 0, side: THREE.DoubleSide });
+  m.envMapIntensity = ENV;
+  const base = color(new THREE.Color(hex));
+  // uv() is metric (metres / UV_SCALE) from each wall quad's corner — good for
+  // surface patterns. positionWorld drives large-scale weathering mottle.
+  const uy = uv().y.mul(UV_SCALE), ux = uv().x.mul(UV_SCALE); // metres up / along
+  let pattern: any = float(1);
+  if (kind === "clapboard") {
+    // horizontal lap-siding shadow line every ~0.19 m
+    const lap = fract(uy.mul(1 / 0.19));
+    pattern = mix(float(0.8), float(1.0), smoothstep(0.0, 0.06, lap));
+  } else if (kind === "brick") {
+    // running-bond brick: offset alternate courses; mortar lines darken
+    const course = 0.086, brickW = 0.22, mortar = 0.02;
+    const row = tslFloor(uy.mul(1 / course));
+    const xoff = mod(row, float(2)).mul(brickW * 0.5);
+    const my = fract(uy.mul(1 / course));
+    const mx = fract(ux.add(xoff).mul(1 / brickW));
+    const face = step(mortar / course, my).mul(step(mortar / brickW, mx));
+    // per-brick tone jitter so the wall isn't a flat field
+    const brickId = tslFloor(uy.mul(1 / course)).add(tslFloor(ux.add(xoff).mul(1 / brickW)).mul(37.0));
+    const jitter = fract(brickId.mul(0.113)).mul(0.16).add(0.9);
+    pattern = mix(float(0.52), jitter, face); // mortar ≈ 0.52·body, brick face ≈ body·jitter
+  } else if (kind === "stucco") {
+    // fine troweled mottle
+    pattern = mx_noise_float(positionWorld.mul(2.2)).mul(0.06).add(1);
+  }
+  const mottle = mx_noise_float(positionWorld.mul(0.12)).mul(0.04).add(1);
+  const tinted = base.mul(pattern).mul(mottle);
+  m.colorNode = tinted;
+  // self-lit body tint (the world's ambient is near-zero) so shaded façades read.
+  m.emissiveNode = tinted.mul(float(0.3));
+  return m;
 }
 
 /** Build the shared id→material table (non-wall ids). Cached by the caller. */
