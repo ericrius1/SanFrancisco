@@ -24,6 +24,16 @@ const RING_RADIUS = 52; // dense grass within this of the player; fades at the r
 const RESAMPLE_STEP = 8; // re-scatter after the focus moves this far (m)
 const SPACING = 0.95;
 
+// Ground fit for each blade CLUSTER (6–8 blades spread over ~0.6 m). A cluster
+// shares one base Y, so sampling a single centre point floats the downhill
+// blades whenever the ground tilts under it — the "floating grass" bug. Seat the
+// cluster on the LOWEST point of a small footprint instead (uphill blades bury
+// out of sight, downhill blades reach the ground), exactly like the botanical
+// garden grass does. GROUND_FOOT ≈ the widest cluster's horizontal reach.
+const GROUND_FOOT = 0.6; // footprint half-width sampled under a cluster (m)
+const GROUND_SLOPE_CULL = 0.85; // drop clusters whose footprint breaks more than this (m)
+const GROUND_SINK = 0.05; // seat blade bases this far into the ground (m)
+
 export type WildGrass = {
   group: THREE.Group;
   update(focus: { x: number; z: number }): void;
@@ -82,7 +92,20 @@ export function createWildGrass(map: GardenTerrain): WildGrass {
         const keep = Math.min(1, density * ((1 - patchiness) + patchiness * patch));
         if (hash2(gx, gz, 23) > keep) continue;
         if (!plantable(px, pz)) continue;
-        const y = map.groundHeight(px, pz) - 0.04;
+        // Seat the whole cluster on the lowest point of its footprint (see
+        // GROUND_* above) so no blade lifts off a tilt. NaN from a bad height
+        // sample must never bake a stray blade into the sky, and a footprint
+        // that breaks too hard (curb/step/steep pocket the coarse grassyGround
+        // gate averaged over) is dropped rather than floated.
+        const h0 = map.groundHeight(px, pz);
+        const h1 = map.groundHeight(px - GROUND_FOOT, pz);
+        const h2 = map.groundHeight(px + GROUND_FOOT, pz);
+        const h3 = map.groundHeight(px, pz - GROUND_FOOT);
+        const h4 = map.groundHeight(px, pz + GROUND_FOOT);
+        const hMin = Math.min(h0, h1, h2, h3, h4);
+        if (!Number.isFinite(hMin)) continue;
+        if (Math.max(h0, h1, h2, h3, h4) - hMin > GROUND_SLOPE_CULL) continue;
+        const y = hMin - GROUND_SINK;
 
         const isTall = hash2(gx, gz, 31) < 0.26 * (0.7 + patch * 0.6);
         const heightBase = isTall ? 0.9 + hash2(gx, gz, 37) * 0.7 : 0.46 + hash2(gx, gz, 41) * 0.4;
