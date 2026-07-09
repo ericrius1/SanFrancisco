@@ -80,7 +80,8 @@ export function buildInterior(spec: BuildingSpec, zone: InteriorZone = "resident
 
   // ---- one shared partition, reused on every floor so walls + the stairwell
   //      stack (realistic, and keeps the stair footprint clear on each storey) --
-  const target = zone === "loft" ? 1 : Math.max(2, Math.min(4, Math.round(rectArea(area) / 20)));
+  // fewer, bigger rooms (each ~35 m²) so the plan feels roomy at player scale
+  const target = zone === "loft" ? 1 : Math.max(1, Math.min(3, Math.round(rectArea(area) / 35)));
   let { rooms, walls } = partition(area, target, rng(spec.seed, 101));
   let stairIdx = roomiest(rooms);
 

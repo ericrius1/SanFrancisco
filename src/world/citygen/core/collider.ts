@@ -8,6 +8,17 @@ import { ensureCCW, streetEdgeIndex } from "./footprint";
 
 const WALL_T = 0.25; // wall half-thickness (metres)
 
+/** THE single source of truth for where the front door goes on an edge of length
+ *  `len` (a building base→top). Both the collider gap and the visible door (the
+ *  theme's frontDoor) read this so they line up exactly. */
+export function doorMetrics(len: number, base: number, top: number): { tc: number; halfW: number; head: number } {
+  return {
+    tc: len > 6 ? 0.24 : 0.5,               // door centre fraction along the edge
+    halfW: Math.min(0.9, len * 0.16),       // half the door width (metres)
+    head: Math.min(2.5, (top - base) * 0.55), // door head height above base
+  };
+}
+
 export interface DoorOpening {
   /** which edge got the door (longest / street), for the caller to place the visual */
   edge: number;
@@ -40,9 +51,7 @@ export function buildingColliders(spec: BuildingSpec, withDoor = false): { boxes
 
     if (i === streetI && len > 2.2) {
       // doorway split: door centred (offset for wide lots) with a lintel above
-      const halfW = Math.min(0.9, len * 0.16);
-      const head = Math.min(2.5, (top - base) * 0.55);
-      const tc = len > 6 ? 0.24 : 0.5;
+      const { tc, halfW, head } = doorMetrics(len, base, top);
       const dCenter = tc * len;                  // metres from p0
       const gapL = dCenter - halfW, gapR = dCenter + halfW;
       const midHalf = halfH, ly = midY;

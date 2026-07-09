@@ -2,7 +2,7 @@
 // flat roof with a low tile cornice, an arched garage under a big bow/picture
 // window, arched upper windows. Reuses the shared façade kit.
 import { floorBands, aboveGrade, type FacadeDecorator, type Vec3 } from "../core/facade";
-import { gp, beltCourse, cornice, windowGrid, garageDoor, faceWindow } from "./facadeKit";
+import { gp, beltCourse, cornice, windowGrid, garageDoor, faceWindow, frontDoor } from "./facadeKit";
 
 export const marinaFacade: FacadeDecorator = (e, out) => {
   const arch = e.arch;
@@ -19,6 +19,7 @@ export const marinaFacade: FacadeDecorator = (e, out) => {
 
   if (e.isStreet) {
     garageDoor(out, e, e.base, groundTopY, { door: "citygen.door", trim }, true); // arched garage
+    frontDoor(out, e, { door: "citygen.door", trim }); // person door beside the garage (aligned to the gap)
     // big bow / picture window over the garage (first upper floor)
     if (bands[1]) {
       const b = bands[1];

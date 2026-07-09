@@ -67,6 +67,9 @@ export interface ColliderBox {
   hx: number; hy: number; hz: number;
   /** yaw about Y (radians) for oriented wall boxes; 0 = axis-aligned */
   yaw: number;
+  /** optional full orientation quaternion [x,y,z,w]; overrides `yaw` when set
+   *  (tilted stair ramps, so a capsule walks up a smooth incline not steps). */
+  quat?: readonly [number, number, number, number];
 }
 
 /** Per-archetype style parameters a theme pack supplies to the engine. */

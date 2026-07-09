@@ -119,9 +119,10 @@ function stoopAndDoor(out: PanelBuilder, e: FacadeEdge, base: number, groundTopY
   const cSill = lerp(dl, dr, 0.5);
   out.box(m.trim, [cSill[0] + n3[0] * 0.2, base + 0.06, cSill[2] + n3[2] * 0.2], [dw / 2 + 0.2, 0.06, 0.2], along, UP, n3, true);
 
-  // recessed door panel (dark) + trim surround
+  // door panel (dark, PROUD of the wall — a recessed panel is occluded by the flat
+  // wall quad, which is why the door read as "missing") + trim surround
   const inw = (p: Vec3, d: number, yy: number): Vec3 => [p[0] + n3[0] * d, yy, p[2] + n3[2] * d];
-  out.quad(m.door, inw(dl, -0.12, doorBase), inw(dr, -0.12, doorBase), inw(dr, -0.12, doorTop), inw(dl, -0.12, doorTop), n3);
+  out.quad(m.door, inw(dl, 0.03, doorBase), inw(dr, 0.03, doorBase), inw(dr, 0.03, doorTop), inw(dl, 0.03, doorTop), n3);
   // surround
   const cA = lerp(dl, dr, 0.5), midY = (doorBase + doorTop) / 2;
   out.box(m.trim, [cA[0] + n3[0] * 0.03, doorTop + 0.06, cA[2] + n3[2] * 0.03], [dw / 2 + 0.14, 0.1, 0.06], along, UP, n3, true);

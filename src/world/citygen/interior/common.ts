@@ -8,11 +8,11 @@ import { PanelBuilder } from "../core/facade";
 export const FLOOR_H = 3.4;   // storey height (matches the exterior grammar)
 export const MAX_FLOORS = 4;  // furnish at most ground + 3 up (budget cap)
 export const SLAB = 0.09;     // floor-slab half-thickness
-export const WALL_H = 2.6;    // interior partition height (below the ceiling)
+export const WALL_H = 2.7;    // interior partition height (below the ceiling)
 export const WALL_T = 0.05;   // partition half-thickness
-export const DOOR_W = 1.0;    // clear doorway width
-export const DOOR_H = 2.05;   // clear doorway height (a 1.8 m capsule + headroom)
-export const INSET = 0.3;     // keep the interior clear of the exterior shell
+export const DOOR_W = 1.5;    // clear doorway width (roomy for a 0.7 m capsule)
+export const DOOR_H = 2.2;    // clear doorway height (a 1.8 m capsule + headroom)
+export const INSET = 0.2;     // keep the interior clear of the exterior shell
 export const EYE = 1.6;       // picture-hanging / eye height
 
 /** an axis-aligned floorplan rectangle in world x/z (metres). */

@@ -2,7 +2,7 @@
 // storefront (bulkhead + glazing + signband + fabric awning), regular upper
 // window grid with string courses, a flat parapet cap.
 import { floorBands, type FacadeDecorator, type Vec3 } from "../core/facade";
-import { gp, beltCourse, cornice, windowGrid, storefront, cornerBoards } from "./facadeKit";
+import { gp, beltCourse, cornice, windowGrid, storefront, cornerBoards, frontDoor } from "./facadeKit";
 import { largeCommercialFacade } from "./largeCommercial";
 
 export const downtownFacade: FacadeDecorator = (e, out, rng) => {
@@ -31,9 +31,10 @@ export const downtownFacade: FacadeDecorator = (e, out, rng) => {
   out.quad(baseMat, [g0[0], e.base, g0[2]], [g1[0], e.base, g1[2]], [g1[0], groundTopY, g1[2]], [g0[0], groundTopY, g0[2]], n3);
   out.quad(wall, [g0[0], groundTopY, g0[2]], [g1[0], groundTopY, g1[2]], [g1[0], e.top, g1[2]], [g0[0], e.top, g0[2]], n3);
 
-  // ground floor: storefront on the street face, plain windows elsewhere
+  // ground floor: storefront on the street face + a clear entrance door
   if (e.isStreet && e.length > 2.4) {
     storefront(out, e, e.base, groundTopY, { glass, trim, awn: "citygen.awn", sign: "citygen.sign" });
+    frontDoor(out, e, { door: "citygen.door", trim });
   }
 
   // upper floors: regular window grid + a string course each floor

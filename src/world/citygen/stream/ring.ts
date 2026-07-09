@@ -154,9 +154,12 @@ export async function createCityGenRing(
   const building: CellState[] = []; // cells still merging their chunk
   let accum = 0;
 
-  const addBody = (c: { x: number; y: number; z: number; hx: number; hy: number; hz: number; yaw: number }): number => {
+  const addBody = (c: { x: number; y: number; z: number; hx: number; hy: number; hz: number; yaw: number; quat?: readonly [number, number, number, number] }): number => {
     const h = ctx.physics.world.createBox({ type: 0, position: [c.x, c.y, c.z], halfExtents: [c.hx, c.hy, c.hz], friction: 0.8 });
-    ctx.physics.world.setBodyTransform(h, [c.x, c.y, c.z], [0, Math.sin(c.yaw / 2), 0, Math.cos(c.yaw / 2)]);
+    const q: [number, number, number, number] = c.quat
+      ? [c.quat[0], c.quat[1], c.quat[2], c.quat[3]]
+      : [0, Math.sin(c.yaw / 2), 0, Math.cos(c.yaw / 2)];
+    ctx.physics.world.setBodyTransform(h, [c.x, c.y, c.z], q);
     return h;
   };
   const clearBodies = (e: Entry) => { for (const h of e.bodies) ctx.physics.world.destroyBody(h); e.bodies.length = 0; e.wallBoxes = []; };

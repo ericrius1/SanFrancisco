@@ -5,6 +5,7 @@
 import {
   type FacadeEdge, type Vec3, PanelBuilder, pointOnWall, floorBands, bayCount, aboveGrade,
 } from "../core/facade";
+import { doorMetrics } from "../core/collider";
 
 // ---- vector helpers ---------------------------------------------------------
 export const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -44,6 +45,40 @@ export function faceWindow(out: PanelBuilder, a: Vec3, b: Vec3, y0: number, y1: 
   // sill + crown (a chunkier keystone crown when arched)
   out.box(m.trim, off([cA[0], y0 - 0.05, cA[2]], 0.08), [W / 2 + 0.12, 0.05, 0.11], along, UP, n, true);
   out.box(m.trim, off([cA[0], y1 + 0.10, cA[2]], 0.10), [W / 2 + (arched ? 0.05 : 0.15), arched ? 0.14 : 0.08, 0.13], along, UP, n, true);
+}
+
+/**
+ * A clear, obvious FRONT DOOR on the street edge, at the exact spot the collider
+ * leaves its walk-through gap (both read core's doorMetrics), so you can see where
+ * to walk in. Proud geometry (a recess would be occluded by the flat wall quad):
+ * a dark opening, a door leaf swung ajar, a white frame + threshold step.
+ */
+export function frontDoor(out: PanelBuilder, e: FacadeEdge, m: { door: string; trim: string }): void {
+  if (e.length <= 2.2) return;
+  const { tc, halfW, head } = doorMetrics(e.length, e.base, e.top);
+  const n: Vec3 = [e.normal[0], 0, e.normal[1]];
+  const along = unit(sub(gp(e, 1), gp(e, 0)));
+  const c = gp(e, tc);
+  const y0 = Math.max(e.base, e.grade), y1 = y0 + head, midY = (y0 + y1) / 2, hH = (y1 - y0) / 2;
+  const off = (p: Vec3, d: number): Vec3 => [p[0] + n[0] * d, p[1], p[2] + n[2] * d];
+  const pt = (t: number, yy: number, d: number): Vec3 => off([c[0] + along[0] * t, yy, c[2] + along[2] * t], d);
+  // dark opening panel (proud a hair so it isn't occluded by the wall quad)
+  out.quad("citygen.room", pt(-halfW, y0, 0.03), pt(halfW, y0, 0.03), pt(halfW, y1, 0.03), pt(-halfW, y1, 0.03), n);
+  // door leaf, only slightly ajar so its FACE reads as an obvious door (a wide-open
+  // leaf goes edge-on and disappears against the storefront glazing). leafW = half
+  // the opening → hinged at the left jamb, the leaf covers the full opening width.
+  const ang = 0.26, leafW = halfW * 0.98;
+  const swingDir: Vec3 = [along[0] * Math.cos(ang) + n[0] * Math.sin(ang), 0, along[2] * Math.cos(ang) + n[2] * Math.sin(ang)];
+  const swingNorm: Vec3 = [-swingDir[2], 0, swingDir[0]];
+  const hinge = pt(-halfW, midY, 0.03);
+  const lc: Vec3 = [hinge[0] + swingDir[0] * leafW, midY, hinge[2] + swingDir[2] * leafW];
+  out.box(m.door, lc, [leafW, hH - 0.04, 0.03], swingDir, UP, swingNorm, true);
+  // white frame: jambs + lintel, proud
+  out.box(m.trim, off(pt(-halfW, midY, 0), 0.05), [0.06, hH + 0.06, 0.07], along, UP, n, true);
+  out.box(m.trim, off(pt(halfW, midY, 0), 0.05), [0.06, hH + 0.06, 0.07], along, UP, n, true);
+  out.box(m.trim, off(pt(0, y1, 0), 0.06), [halfW + 0.06, 0.07, 0.08], along, UP, n, true);
+  // threshold step
+  out.box(m.trim, off([c[0], y0 - 0.06, c[2]], 0.13), [halfW + 0.16, 0.06, 0.16], along, UP, n, true);
 }
 
 /** even grid of framed windows on a wall span (piers between). */
