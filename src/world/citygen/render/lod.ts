@@ -60,19 +60,32 @@ function linRgb(hex: number): [number, number, number] {
   return [c.r, c.g, c.b];
 }
 
+/** Optional terrain-conform override for a merged chunk building: the windowed
+ *  wall + roof are emitted from `grade` (highest ground) up, and a plain
+ *  foundation skirt fills `foot` (lowest ground) → `grade`. Supplied by
+ *  buildChunkLOD when it was given a live ground sampler; see render/foundation.ts.
+ *  When omitted, appendPrism falls back to `spec.grade`/`spec.base` exactly as before. */
+export interface PrismConform { grade: number; foot: number; }
+
 /** Append one building's prism (walls + roof cap) into shared arrays, world space.
  *  Window UVs are emitted in CELL units, SNAPPED to an integer column/storey count
  *  per wall, so the grid fits base→top and edge→edge with no clipped half-window
  *  (the "cut-off top row" artefact). Storey count uses the archetype floor height,
  *  so the far grid lines up with the near mesh's real floors. */
-export function appendPrism(spec: BuildingSpec, out: PrismArrays): void {
+export function appendPrism(spec: BuildingSpec, out: PrismArrays, conform?: PrismConform): void {
   const poly = ensureCCW(spec.poly);
   const n = poly.length;
   const base = spec.base, top = spec.top;
   // grade = highest ground under the footprint (matches core/massing). Windows are
-  // laid grade→top; base→grade is a solid skirt so a sloped lot doesn't show a
-  // half-buried bottom row even at LOD range.
-  const grade = Math.min(Math.max(spec.grade ?? base, base), top - 1.5);
+  // laid grade→top; foot→grade is a solid skirt so a sloped lot doesn't show a
+  // half-buried bottom row even at LOD range. `foot` is where the wall meets the
+  // ground: the baked lowest `base` for the legacy path, or the live-sampled
+  // lowest ground when a `conform` override was computed from live terrain (so the
+  // far chunk building neither buries its uphill windows nor floats downhill).
+  const foot = conform ? conform.foot : base;
+  const grade = conform
+    ? Math.min(Math.max(conform.grade, foot), top - 1.5)
+    : Math.min(Math.max(spec.grade ?? base, base), top - 1.5);
   const [br, bg, bb] = linRgb(bodyColour(spec.seed, spec.archetype));
   const rr = br * 0.35 + 0.04, rg = bg * 0.35 + 0.04, rb = bb * 0.35 + 0.045; // dark roof tone
   const floorH = specFor(spec.archetype).floorH;
@@ -95,8 +108,10 @@ export function appendPrism(spec: BuildingSpec, out: PrismArrays): void {
     const len = Math.hypot(ex, ez) || 1e-3;
     const nx = ez / len, nz = -ex / len; // outward (CCW)
     const nCols = Math.max(1, Math.round(len / WIN_SPACING)); // snap → whole windows
-    // solid skirt below grade (v held at 0 → the shader draws no window band)
-    if (grade > base + 0.05) pushQuad(x0, z0, base, x1, z1, grade, nx, nz, nCols, 0);
+    // solid skirt below grade (v held at 0 → the shader draws no window band):
+    // foundation from the lowest ground `foot` up to `grade`, so the far building
+    // fills a sloped lot instead of floating on the downhill side.
+    if (grade > foot + 0.05) pushQuad(x0, z0, foot, x1, z1, grade, nx, nz, nCols, 0);
     // windowed wall from grade up to the roof
     pushQuad(x0, z0, grade, x1, z1, top, nx, nz, nCols, winFloors);
   }

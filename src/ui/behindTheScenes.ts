@@ -243,13 +243,13 @@ const TAB_LIFE = `
   </section>
 
   <section>
-    <h3><span class="bts-ic">🧗</span> Every wall is a ladder</h3>
-    <p>One quiet decision colours the whole game: <strong>every building is climbable</strong>. Push
-    into a wall on foot and you start scaling it — no gear, no grapple, no special button, just lean in
-    and go — and when you reach the top the parapet pops you up onto the roof. It turns the entire
-    skyline into a jungle gym, rewards curiosity about what's up there, and is a big part of why the
-    physics has to keep those building boxes honest even a hundred metres off the ground. Space bails
-    you off the wall whenever you like.</p>
+    <h3><span class="bts-ic">🚪</span> Every door opens</h3>
+    <p>One quiet decision colours the whole game: <strong>every building is enterable</strong>. The city
+    isn't a set of facades — walk up to any house or shop, in through the front door, and you're in a
+    real interior: rooms to wander, a staircase to the floors above, furniture and pictures on the walls.
+    The buildings generate procedurally by neighbourhood, and their insides are built the instant you
+    step in and thrown away when you leave, so the whole city can be hollow-and-explorable without a
+    hundred thousand rooms ever existing at once.</p>
   </section>
 
   <section>
@@ -406,9 +406,9 @@ const TAB_PLAY = `
   <section>
     <h3><span class="bts-ic">🎓</span> Learning by doing</h3>
     <p>Newcomers get an interactive tutorial that <strong>watches real play</strong> instead of
-    narrating over it. It's a chaptered checklist — first steps, climbing a wall, the vehicle roster,
-    the map and teleport, a field trip into the Exploratorium — and each step completes only when you
-    actually do the thing: it measures how far you've walked, how high you've climbed, which mode you're
+    narrating over it. It's a chaptered checklist — first steps, stepping inside a building, the vehicle
+    roster, the map and teleport, a field trip into the Exploratorium — and each step completes only when
+    you actually do the thing: it measures how far you've walked, how high you've flown, which mode you're
     in, which notes you played on the museum's piano. The game hands it a thin stream of read-only
     signals and one-shot events, and the tutorial never reaches in to fake progress — so finishing it
     means you can genuinely play, not that you clicked "next" five times.</p>

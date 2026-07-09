@@ -65,6 +65,23 @@ export function buildCityGenMaterials(): Record<string, THREE.Material> {
     "int.wood": standard(0x5a4028, 0.7, { emissive: 0.35 }),    // furniture / stairs
     "int.sofa": standard(0x7a5a52, 0.85, { emissive: 0.4 }),    // upholstery
     "int.glow": standard(0xffdca0, 0.9, { emissive: 2.4 }),     // warm lamp / hearth
+    "int.wall": standard(0xcfc4b2, 0.94, { emissive: 0.42 }),   // interior partition (plaster)
+    "int.ceil": standard(0xe6ddcb, 0.95, { emissive: 0.5 }),    // ceiling (brighter, self-lit)
+    "int.trim": standard(0xece4d4, 0.6, { emissive: 0.4 }),     // baseboards / door casing
+    "int.rug": standard(0x7a3b34, 0.9, { emissive: 0.38 }),     // area rug
+    "int.metal": standard(0x8a8f96, 0.5, { metalness: 0.6, emissive: 0.3 }), // loft/industrial
+    "int.counter": standard(0x40352a, 0.6, { emissive: 0.34 }), // shop counter / shelving
+    // placeholder framed art (paintings/photos) — self-lit so they read on the wall;
+    // real art textures come later. int.frame = the gilt/dark frame around each.
+    "int.frame": standard(0x2a231a, 0.5, { metalness: 0.3, emissive: 0.5 }),
+    "int.art1": standard(0x3f5d7a, 0.85, { emissive: 0.9 }),    // cool landscape
+    "int.art2": standard(0x8a5a2c, 0.85, { emissive: 0.9 }),    // warm portrait/sepia
+    "int.art3": standard(0x5a7a4a, 0.85, { emissive: 0.9 }),    // green pastoral
+    "int.art4": standard(0x7a3550, 0.85, { emissive: 0.9 }),    // rose abstract
+    // large-commercial (big downtown/warehouse blocks) — stone base + banding
+    "lc.stone": standard(0xb8b0a2, 0.82),                       // limestone/precast base
+    "lc.band": standard(0xd9d2c4, 0.7, { emissive: 0.14 }),     // spandrel banding
+    "lc.pier": standard(0x9a948a, 0.85),                        // vertical piers
     // glass
     "glass": glass,
     // roofs

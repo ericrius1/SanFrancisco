@@ -141,9 +141,11 @@ export const FOLIAGE_TUNING = tunables("foliage", {
  * Procedural building streaming (src/world/citygen). Read LIVE by the ring each
  * scan, so dragging these sliders in the "/" panel re-tunes streaming instantly —
  * watch the fps + the near/far band move. All perf-relevant:
- *  · detailRadius — distance the full grammar mesh (bays/windows/interior) crossfades
- *    in from the cheap chunk prism. Bigger = richer further out, but more heavy meshes.
- *  · maxDetail    — hard cap on resident full-detail buildings (the expensive ones).
+ *  · detailRadius — distance band where buildings are *eligible* for the full grammar
+ *    mesh (bays/windows/interior). Bigger = more candidates; the nearest maxDetail
+ *    inside the band actually get the mesh (rest stay as chunk prisms).
+ *  · maxDetail    — hard cap on resident full-detail buildings. Always the nearest-N
+ *    inside detailRadius (far holders are evicted when nearer ones need a slot).
  *  · fadeTime     — LOD crossfade duration (s).
  *  · cellLoad/Unload — how many tile cells (≈800 m) of chunk-LOD stream around you.
  */

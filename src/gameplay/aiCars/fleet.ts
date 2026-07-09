@@ -1,9 +1,9 @@
 import * as THREE from "three/webgpu";
 import { Policy } from "./policy.ts";
-import type { RoadGraph } from "./roadGraph.ts";
+import type { Projection, RoadGraph } from "./roadGraph.ts";
 import { ACTOR_SIZES, type CarBrainBlob } from "./learner.ts";
 
-// Net shape [9,12,2] — sourced from learner.ts now that the GA trainer.ts is
+// Net shape is sourced from learner.ts now that the GA trainer.ts is
 // gone. Named CAR_SIZES locally so the existing sim/overlay code is untouched.
 const CAR_SIZES = ACTOR_SIZES;
 
@@ -139,7 +139,7 @@ export type AiCar = {
   learnAction: Float32Array; // sampled action at the current window's start
 };
 
-// --- persistence blob (LOCKED format v:2) ------------------------------------
+// --- persistence blob (LOCKED format v:3) ------------------------------------
 export type CarBlob = CarBrainBlob & {
   id: number;
   bodyKind: number;
@@ -149,7 +149,7 @@ export type CarBlob = CarBrainBlob & {
   heading: number;
 };
 export interface FleetBlob {
-  v: 2;
+  v: 3;
   born: number; // epoch ms the world was first born
   cars: CarBlob[];
 }
@@ -167,6 +167,7 @@ const HALF_EXTENTS: [number, number, number] = [1.05, 0.45, 2.2];
 const AHEAD_RANGE = 25; // clearAhead probe (m)
 const SIDE_RANGE = 10; // clearLeft/Right probes (m)
 const SIDE_ANGLE = 0.61; // ±35°
+const SIGNAL_RANGE = 55; // metres ahead for traffic-light observation
 // Cars are scattered city-wide, decoupled from the player — the city is alive
 // whether or not anyone is watching; you simply stumble on them as you explore.
 // Placement is restricted to the loaded-city extent (public/data/meta.json grid)
@@ -182,6 +183,8 @@ const STUCK_TIME = 5; // s continuously stuck before the stuck penalty applies
 const LEARN_EVERY = 3; // substeps per learn tick (20 Hz at 60 Hz substeps)
 const SYNC_INTERVAL = 0.2; // s between overlay policy syncs (≤ 5 Hz)
 const LESSON_INTERVAL = 30; // s between social-rescue lesson checks
+const ROAD_EDGE_FRACTION = 0.86; // physical training guard: stay inside the paved envelope
+const ROAD_RECOVERY_SPEED_DAMP = 0.35; // lose speed when the road envelope catches you
 
 // reward shaping (per-second rates; multiplied by dt in the hot loop)
 const R_OFFROAD = 0.5;
@@ -189,6 +192,12 @@ const R_GRIND = 2.0;
 const R_STEER = 0.02;
 const R_REVERSE = 0.3;
 const R_STUCK = 1.0;
+const R_LANE = 0.35;
+const R_WRONG_WAY = 2.5;
+const R_CLOSE_FOLLOW = 1.1;
+const R_COLLISION = 5.0;
+const R_RED_LIGHT = 5.0;
+const R_RED_APPROACH = 0.25;
 // Sustained-yaw penalty. R_STEER only punishes CHANGING the steer, so a constant
 // max-lock turn (a spin) paid nothing — this charges for actual heading change per
 // second, so continuous spinning is costly while a one-off corner is cheap.
@@ -216,6 +225,15 @@ export class Fleet {
   #substep = 0;
   #syncTimer = 0;
   #lessonTimer = LESSON_INTERVAL;
+  #timeS = 0;
+  #diag = {
+    collisions: 0,
+    redLightViolations: 0,
+    offRoadSteps: 0,
+    wrongWaySteps: 0,
+    laneErrorSum: 0,
+    samples: 0
+  };
 
   // reused scratch — the sim allocates nothing per step
   #obs = new Float32Array(CAR_SIZES[0]);
@@ -274,6 +292,7 @@ export class Fleet {
 
   /** Fixed-step control: place once, manage tiers, then sim every car. */
   prePhysics(dt: number, anchors: THREE.Vector3[]): void {
+    this.#timeS += dt;
     this.#anchors = anchors;
     if (!this.#initialized) {
       if (anchors.length === 0) return; // wait for a real anchor to place around
@@ -327,6 +346,24 @@ export class Fleet {
     return { gen: 0, bestFit: n ? best : 0, meanFit: n ? sum / n : 0 };
   }
 
+  diagnostics(): {
+    collisions: number;
+    redLightViolations: number;
+    offRoadSteps: number;
+    wrongWaySteps: number;
+    meanLaneError: number;
+    samples: number;
+  } {
+    return {
+      collisions: this.#diag.collisions,
+      redLightViolations: this.#diag.redLightViolations,
+      offRoadSteps: this.#diag.offRoadSteps,
+      wrongWaySteps: this.#diag.wrongWaySteps,
+      meanLaneError: this.#diag.samples ? this.#diag.laneErrorSum / this.#diag.samples : 0,
+      samples: this.#diag.samples
+    };
+  }
+
   dispose(): void {
     for (const car of this.cars) {
       if (car.bodyHandle) {
@@ -352,11 +389,34 @@ export class Fleet {
    * blob doesn't cover (new residents). Decoupled from the player entirely.
    */
   #placeCarCityWide(car: AiCar): void {
-    const rp = this.#roads.randomPoint(this.#rng, CITY_MIN_X, CITY_MAX_X, CITY_MIN_Z, CITY_MAX_Z);
+    let rp = this.#roads.randomPoint(this.#rng, CITY_MIN_X, CITY_MAX_X, CITY_MIN_Z, CITY_MAX_Z);
+    for (let tries = 0; tries < 64; tries++) {
+      if (this.#spawnClear(rp.x, rp.z, Math.atan2(rp.tangentX, rp.tangentZ))) break;
+      rp = this.#roads.randomPoint(this.#rng, CITY_MIN_X, CITY_MAX_X, CITY_MIN_Z, CITY_MAX_Z);
+    }
     this.#initCarState(car, rp.x, rp.z, Math.atan2(rp.tangentX, rp.tangentZ));
     // identity — assigned once, never rerolled
     car.bodyKind = Math.floor(this.#rng() * 6);
     car.paintHue = this.#rng();
+  }
+
+  #spawnClear(x: number, z: number, heading: number): boolean {
+    if (this.#world.isWater(x, z)) return false;
+    const y = this.#world.ground(x, z) + RIDE_HEIGHT + 0.35;
+    const fx = Math.sin(heading);
+    const fz = Math.cos(heading);
+    const front = HALF_EXTENTS[2] + 0.35;
+    const probes: [number, number][] = [
+      [x, z],
+      [x + fx * front, z + fz * front],
+      [x - fx * front, z - fz * front]
+    ];
+    for (const [px, pz] of probes) {
+      if (this.#world.isWater(px, pz)) return false;
+      const hit = this.#world.sweep([px, y, pz], [px + fx * 0.25, y, pz + fz * 0.25]);
+      if (hit != null) return false;
+    }
+    return true;
   }
 
   /** Reset a car's live state onto (x, z, heading). Body is (re)made by tiers. */
@@ -455,6 +515,8 @@ export class Fleet {
     let cosErr = 1;
     let curvature = 0;
     let dir: 1 | -1 = 1;
+    let laneErr = 0;
+    let wrongWay = false;
     if (proj) {
       halfW = Math.max(2, proj.halfWidth);
       lateralRaw = proj.lateral;
@@ -469,18 +531,29 @@ export class Fleet {
       // COMMIT_DIST metres NET from where it last committed — a spin never
       // translates that far, so its `dir` stays frozen and the progress reward
       // over a circle sums to ≈0. Only genuine down-the-road travel is paid.
-      const movedX = x - car.commitX;
-      const movedZ = z - car.commitZ;
-      if (car.commitSeg < 0 || movedX * movedX + movedZ * movedZ >= COMMIT_DIST * COMMIT_DIST) {
-        const dot = fwdX * proj.tangentX + fwdZ * proj.tangentZ;
-        car.travelDir = dot >= 0 ? 1 : -1;
+      if (proj.oneWayDir !== 0) {
+        dir = proj.oneWayDir;
+        car.travelDir = dir;
         car.commitSeg = proj.segId;
         car.commitX = x;
         car.commitZ = z;
+        wrongWay = fwdX * proj.tangentX * dir + fwdZ * proj.tangentZ * dir < -0.15;
+      } else {
+        const movedX = x - car.commitX;
+        const movedZ = z - car.commitZ;
+        if (car.commitSeg < 0 || movedX * movedX + movedZ * movedZ >= COMMIT_DIST * COMMIT_DIST) {
+          const dot = fwdX * proj.tangentX + fwdZ * proj.tangentZ;
+          car.travelDir = dot >= 0 ? 1 : -1;
+          car.commitSeg = proj.segId;
+          car.commitX = x;
+          car.commitZ = z;
+        }
+        dir = car.travelDir;
       }
-      dir = car.travelDir;
       travelX = proj.tangentX * dir;
       travelZ = proj.tangentZ * dir;
+      const rightLaneTarget = -dir * halfW * (proj.oneWayDir !== 0 ? 0.45 : 0.5);
+      laneErr = THREE.MathUtils.clamp((lateralRaw - rightLaneTarget) / halfW, -2, 2);
       // heading error toward a point 8 m ahead along the road
       const look = this.#roads.lookAhead(proj.segId, proj.s, dir, 8);
       const targetHeading = Math.atan2(look.x - x, look.z - z);
@@ -499,6 +572,20 @@ export class Fleet {
         curvature = THREE.MathUtils.clamp(Math.atan2(cross, dd), -1, 1);
       }
     }
+
+    const signal = proj
+      ? this.#roads.signals.query(proj.segId, proj.s, dir, this.#timeS, SIGNAL_RANGE)
+      : {
+          hasSignal: false,
+          signalId: -1,
+          distance: SIGNAL_RANGE,
+          distanceN: 1,
+          state: "green" as const,
+          red: 0,
+          yellow: 0,
+          green: 1,
+          stopRequired: false
+        };
 
     // --- clearance sensors (tier-dependent, same obs slots) ---
     let clearAhead: number;
@@ -531,7 +618,7 @@ export class Fleet {
       }
     }
 
-    // --- sensors → obs (9 floats, all ~[-1,1]) ---
+    // --- sensors → obs (16 floats, all ~[-1,1]) ---
     const o = this.#obs;
     o[0] = car.speed / 12; // signed now (reverse reads negative)
     o[1] = lateralN;
@@ -541,7 +628,14 @@ export class Fleet {
     o[5] = clearAhead;
     o[6] = clearLeft;
     o[7] = clearRight;
-    o[8] = 1;
+    o[8] = laneErr;
+    o[9] = wrongWay ? 1 : 0;
+    o[10] = signal.hasSignal ? 1 - signal.distanceN : 0;
+    o[11] = signal.red;
+    o[12] = signal.yellow;
+    o[13] = signal.green;
+    o[14] = signal.stopRequired ? 1 : 0;
+    o[15] = 1;
 
     // --- learn tick: close the previous window on this transition ---
     // The learner wants a per-SECOND reward RATE (not the dt-integrated sum), so
@@ -577,24 +671,78 @@ export class Fleet {
     car.speed = THREE.MathUtils.clamp(car.speed + accel * dt, SPEED_MIN, SPEED_MAX);
     const nfx = Math.sin(car.heading);
     const nfz = Math.cos(car.heading);
-    const nx = x + nfx * car.speed * dt;
-    const nz = z + nfz * car.speed * dt;
-    const ny = w.ground(nx, nz) + RIDE_HEIGHT;
+    let nx = x + nfx * car.speed * dt;
+    let nz = z + nfz * car.speed * dt;
+    let ny = w.ground(nx, nz) + RIDE_HEIGHT;
+    let collision = false;
+    if (w.isWater(nx, nz)) {
+      nx = x;
+      nz = z;
+      ny = w.ground(nx, nz) + RIDE_HEIGHT;
+      car.speed = Math.min(car.speed, 0);
+      collision = true;
+    } else {
+      const moveLen = Math.hypot(nx - x, nz - z);
+      const nextProj = this.#roads.project(nx, nz);
+      const nextRoadSafe =
+        nextProj !== null && Math.abs(nextProj.lateral) <= Math.max(1.2, nextProj.halfWidth * ROAD_EDGE_FRACTION);
+      if (moveLen > 1e-4 && !nextRoadSafe) {
+        const front = HALF_EXTENTS[2] + 0.25;
+        const sx = x + nfx * front;
+        const sz = z + nfz * front;
+        const ex = nx + nfx * front;
+        const ez = nz + nfz * front;
+        const hit = w.sweep([sx, car.pos.y + 0.35, sz], [ex, ny + 0.35, ez]);
+        if (hit != null) {
+          const t = THREE.MathUtils.clamp((hit - 0.5) / moveLen, 0, 1);
+          nx = x + (nx - x) * t;
+          nz = z + (nz - z) * t;
+          ny = w.ground(nx, nz) + RIDE_HEIGHT;
+          car.speed = Math.min(car.speed, 0);
+          collision = true;
+        }
+      }
+    }
     car.pos.set(nx, ny, nz);
+    if (this.#separateCars(car)) collision = true;
+    if (this.#constrainToRoad(car, proj, x, z)) collision = true;
 
     // --- stuck bookkeeping (a STATE for reward, never a teleport trigger) ---
     if (Math.abs(car.speed) < STUCK_SPEED) car.stuckT += dt;
     else car.stuckT = 0;
 
     // --- shaped reward (per plan; per-second rates × dt) ---
-    const dx = nx - car.prevX;
-    const dz = nz - car.prevZ;
+    const dx = car.pos.x - car.prevX;
+    const dz = car.pos.z - car.prevZ;
+    const progress = proj ? dx * travelX + dz * travelZ : 0;
     // Progress is only credited against a real road tangent. With no projection
     // travel*=heading, so crediting dx·travel would pay raw heading speed for
     // driving into the void — zero it (the penalties below still apply).
-    let r = proj ? dx * travelX + dz * travelZ : 0; // forward progress along road (m)
-    if (!onRoad) r -= R_OFFROAD * dt;
+    let r = progress; // forward progress along road (m)
+    if (!onRoad) {
+      r -= R_OFFROAD * dt;
+      this.#diag.offRoadSteps++;
+    }
+    r -= R_LANE * Math.min(2, Math.abs(laneErr)) * dt;
+    this.#diag.laneErrorSum += Math.abs(laneErr);
+    this.#diag.samples++;
+    if (wrongWay) {
+      r -= R_WRONG_WAY * dt;
+      this.#diag.wrongWaySteps++;
+    }
     if (clearAhead < 0.08 && Math.abs(car.speed) > 1) r -= R_GRIND * dt; // grinding
+    if (clearAhead < 0.28 && car.speed > 2) r -= R_CLOSE_FOLLOW * (0.28 - clearAhead) * dt;
+    if (collision) {
+      r -= R_COLLISION;
+      this.#diag.collisions++;
+    }
+    if (signal.hasSignal && signal.stopRequired) {
+      if (signal.distance < 22 && car.speed > 0.4) r -= R_RED_APPROACH * car.speed * (1 - signal.distanceN) * dt;
+      if (signal.red && signal.distance < 1.5 && progress > 0.05 && car.speed > 1) {
+        r -= R_RED_LIGHT;
+        this.#diag.redLightViolations++;
+      }
+    }
     // steer smoothness: penalise change in steer command (jerk)
     const steerRate = (steer - car.prevSteer) / dt;
     r -= R_STEER * Math.abs(steerRate) * dt;
@@ -607,11 +755,11 @@ export class Fleet {
     car.windowDt += dt;
 
     // odometer (distance travelled, either direction)
-    this.#learner.addOdometer(car.id, Math.abs(car.speed) * dt);
+    this.#learner.addOdometer(car.id, Math.hypot(car.pos.x - car.prevX, car.pos.z - car.prevZ));
 
     car.prevSteer = steer;
-    car.prevX = nx;
-    car.prevZ = nz;
+    car.prevX = car.pos.x;
+    car.prevZ = car.pos.z;
 
     this.#writeBody(car);
   }
@@ -632,6 +780,70 @@ export class Fleet {
       if (c < clear) clear = c;
     }
     return clear;
+  }
+
+  /** Resolve simple car-vs-car overlap in the authoritative kinematic state. */
+  #separateCars(car: AiCar): boolean {
+    let hit = false;
+    const min = 3.4;
+    const min2 = min * min;
+    for (const other of this.cars) {
+      if (other === car) continue;
+      const dx = car.pos.x - other.pos.x;
+      const dz = car.pos.z - other.pos.z;
+      let d2 = dx * dx + dz * dz;
+      if (d2 >= min2) continue;
+      if (d2 < 1e-6) {
+        const px = Math.sin(car.heading + Math.PI * 0.5);
+        const pz = Math.cos(car.heading + Math.PI * 0.5);
+        car.pos.x += px * 0.4;
+        car.pos.z += pz * 0.4;
+        d2 = 0.16;
+      } else {
+        const d = Math.sqrt(d2);
+        const push = (min - d) / d;
+        car.pos.x += dx * push;
+        car.pos.z += dz * push;
+      }
+      car.pos.y = this.#world.ground(car.pos.x, car.pos.z) + RIDE_HEIGHT;
+      car.speed *= 0.25;
+      hit = true;
+    }
+    return hit;
+  }
+
+  /** Keep failed policies from disappearing into buildings/blocks forever. */
+  #constrainToRoad(car: AiCar, proj: Projection | null, baseX: number, baseZ: number): boolean {
+    if (!proj) return false;
+    const edge = Math.max(1.2, proj.halfWidth * ROAD_EDGE_FRACTION);
+    const wet = this.#world.isWater(car.pos.x, car.pos.z);
+
+    const nx = -proj.tangentZ;
+    const nz = proj.tangentX;
+    const centerX = baseX - nx * proj.lateral;
+    const centerZ = baseZ - nz * proj.lateral;
+    const lateral = (car.pos.x - centerX) * nx + (car.pos.z - centerZ) * nz;
+    if (Math.abs(lateral) <= edge && !wet) return false;
+
+    let clamped = THREE.MathUtils.clamp(lateral, -edge, edge);
+    if (wet) {
+      const dir = proj.oneWayDir || car.travelDir;
+      const rightLane = THREE.MathUtils.clamp(-dir * proj.halfWidth * (proj.oneWayDir ? 0.45 : 0.5), -edge, edge);
+      const candidates = [clamped, rightLane, 0, -edge * 0.5, edge * 0.5, -edge, edge];
+      for (const candidate of candidates) {
+        const tx = centerX + nx * candidate;
+        const tz = centerZ + nz * candidate;
+        if (!this.#world.isWater(tx, tz)) {
+          clamped = candidate;
+          break;
+        }
+      }
+    }
+    car.pos.x = centerX + nx * clamped;
+    car.pos.z = centerZ + nz * clamped;
+    car.pos.y = this.#world.ground(car.pos.x, car.pos.z) + RIDE_HEIGHT;
+    car.speed *= ROAD_RECOVERY_SPEED_DAMP;
+    return true;
   }
 
   /** One directional clearance probe in [0,1]: water ahead reads as blocked. */
@@ -690,7 +902,7 @@ export class Fleet {
         heading: car.heading
       });
     }
-    return { v: 2, born: this.#born || this.#now(), cars };
+    return { v: 3, born: this.#born || this.#now(), cars };
   }
 
   /**
@@ -700,7 +912,7 @@ export class Fleet {
    * bodies are created lazily by the tier manager on the next prePhysics.
    */
   importState(blob: FleetBlob | null | undefined): boolean {
-    if (!blob || blob.v !== 2 || !Array.isArray(blob.cars) || blob.cars.length === 0) return false;
+    if (!blob || blob.v !== 3 || !Array.isArray(blob.cars) || blob.cars.length === 0) return false;
     const n = Math.min(blob.cars.length, this.cars.length);
     // validate every entry we intend to apply before touching any state
     for (let i = 0; i < n; i++) {

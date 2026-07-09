@@ -31,6 +31,7 @@ import { Fleet, MAX_CARS, type FleetWorld, type FleetBlob, type CarBlob } from "
 import { Learner, ACTOR_SIZES } from "./learner.ts";
 import { BrainOverlay } from "./brainOverlay.ts";
 import { buildCarMesh } from "./carMesh.ts";
+import { TrafficLightView } from "./trafficLights.ts";
 import { StatsChip, type LifeStats } from "./statsChip.ts";
 import { GhostStore, isLeader, serializeCars, HIDDEN } from "./netSync.ts";
 import type { InspectableBrain } from "../../ui/brainPanel/types.ts";
@@ -46,6 +47,13 @@ const CAR_INPUT_LABELS = [
   "clear ahead",
   "clear left",
   "clear right",
+  "right lane err",
+  "wrong way",
+  "signal near",
+  "red",
+  "yellow",
+  "green",
+  "must stop",
   "bias"
 ];
 const CAR_OUTPUT_LABELS = ["steer", "throttle"];
@@ -65,7 +73,7 @@ const CARS_SEND_INTERVAL = 1 / 8; // s: leader → ghost pose-snapshot rate (8 H
 const BRAIN_INTERVAL = 1.5; // s: leader round-robins ONE car's brain this often
 const REMOTE_ANCHOR_REFRESH = 200; // ms: how often the leader re-reads remotes
 const SAVE_INTERVAL = 60; // s: localStorage autosave cadence (leader only)
-const LS_KEY = "sf_aicars_life_v2"; // localStorage key for the persisted fleet
+const LS_KEY = "sf_aicars_life_v3"; // localStorage key for the persisted fleet
 const TREND_WINDOW_S = 600; // s: HUD skill-trend baseline (10 min)
 const TREND_EPS = 5; // reward/min dead-band for the trend arrow
 
@@ -111,6 +119,7 @@ export class AiCars {
   #fleet: Fleet | null = null;
   #learner: Learner | null = null;
   #overlay: BrainOverlay | null = null;
+  #trafficLights: TrafficLightView | null = null;
   #chip: StatsChip | null = null;
   #ready = false;
   #overlaysOn = true;
@@ -187,6 +196,7 @@ export class AiCars {
     const overlay = new BrainOverlay(this.#scene, [...ACTOR_SIZES], this.#fleetSize(fleet), this.#getCamera);
     overlay.setEnabled(this.#overlaysOn);
     this.#overlay = overlay;
+    this.#trafficLights = new TrafficLightView(this.#scene, this.#map, roads.signals);
     this.#chip = new StatsChip();
     this.#ghosts = new GhostStore(this.#fleetSize(fleet));
     this.#ghostLayerOut = [new Float32Array(HIDDEN), this.#zeroOut];
@@ -283,7 +293,7 @@ export class AiCars {
     let incoming = 0;
     for (const c of life.cars) incoming += c.ageS;
     if (incoming > this.#fleetAgeSum()) {
-      fleet.importState({ v: 2, born: life.born, cars: life.cars as CarBlob[] });
+      fleet.importState({ v: 3, born: life.born, cars: life.cars as CarBlob[] });
       this.#cachedBorn = life.born;
     }
   }
@@ -379,7 +389,7 @@ export class AiCars {
       }
       cars.push(c);
     }
-    fleet.importState({ v: 2, born: this.#cachedBorn || Date.now(), cars });
+    fleet.importState({ v: 3, born: this.#cachedBorn || Date.now(), cars });
   }
 
   /** Leader → ghost: tear down the local fleet's bodies and go render-only. */
@@ -447,6 +457,7 @@ export class AiCars {
 
     const overlaysActive = this.#overlaysOn && !highUp;
     const range2 = OVERLAY_RANGE * OVERLAY_RANGE;
+    this.#trafficLights?.update(playerPos, typeof performance !== "undefined" ? performance.now() / 1000 : 0);
 
     if (this.#isLeader) {
       for (const car of fleet.cars) {
@@ -566,7 +577,7 @@ export class AiCars {
     if (!car) return null;
     const brain = learner.exportCar(i);
     return {
-      v: 2,
+      v: 3,
       id: car.id,
       actor: round4(brain.actor),
       critic: round4(brain.critic),

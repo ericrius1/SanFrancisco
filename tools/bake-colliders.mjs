@@ -11,12 +11,17 @@
 // balance (buildingHpPerM3) is unchanged from the old bake.
 import { readFile, writeFile, mkdir, readdir, unlink } from "node:fs/promises";
 import { decomposeFootprint, minAreaRect, polyArea } from "./collider-lib.mjs";
+import {
+  filterRoadOverlappingColliders,
+  loadRoadClearanceIndexFromRoadsJson
+} from "./road-collider-clearance.mjs";
 
 const ROOT = new URL("../", import.meta.url);
 const PUB = new URL("public/data/", ROOT);
 const round1 = (v) => Math.round(v * 10) / 10;
 
 const city = JSON.parse(await readFile(new URL("data/city/city.json", ROOT), "utf8"));
+const roadClearance = await loadRoadClearanceIndexFromRoadsJson(new URL("public/data/roads.json", ROOT));
 
 await mkdir(new URL("colliders/", PUB), { recursive: true });
 
@@ -29,8 +34,11 @@ const LM_BASE = 100000;
 const meta = JSON.parse(await readFile(new URL("public/data/meta.json", ROOT), "utf8"));
 const lmByTile = new Map();
 let lmBoxes = 0;
+let nRoadFiltered = 0;
 try {
-  const lms = JSON.parse(await readFile(new URL("data/landmark-colliders.json", ROOT), "utf8"));
+  const rawLms = JSON.parse(await readFile(new URL("data/landmark-colliders.json", ROOT), "utf8"));
+  const { kept: lms, dropped } = filterRoadOverlappingColliders(rawLms, roadClearance);
+  nRoadFiltered += dropped.length;
   // Served flat for the runtime query world (physics #solids): the bridge +
   // landmarks load once at boot as always-resident static solids, independent of
   // the per-tile stream (open-water bridge tiles aren't even in the manifest).
@@ -102,7 +110,9 @@ for (const [key, t] of Object.entries(city.tiles)) {
     colliders.push(...extra);
     lmByTile.delete(key);
   }
-  await writeFile(new URL(`colliders/tile_${key}.json`, PUB), JSON.stringify(colliders));
+  const { kept, dropped } = filterRoadOverlappingColliders(colliders, roadClearance);
+  nRoadFiltered += dropped.length;
+  await writeFile(new URL(`colliders/tile_${key}.json`, PUB), JSON.stringify(kept));
   written.add(`tile_${key}.json`);
 }
 
@@ -110,7 +120,9 @@ for (const [key, t] of Object.entries(city.tiles)) {
 // spans) still need a collider file — the streamer fetches by manifest key
 // and tolerates a missing GLB
 for (const [key, extra] of lmByTile) {
-  await writeFile(new URL(`colliders/tile_${key}.json`, PUB), JSON.stringify(extra));
+  const { kept, dropped } = filterRoadOverlappingColliders(extra, roadClearance);
+  nRoadFiltered += dropped.length;
+  await writeFile(new URL(`colliders/tile_${key}.json`, PUB), JSON.stringify(kept));
   written.add(`tile_${key}.json`);
 }
 
@@ -128,5 +140,7 @@ for (const f of await readdir(new URL("colliders/", PUB))) {
 console.log(
   `[colliders] ${nBuildings} buildings -> ${nBoxes} boxes (${nSplit} split, +${(
     (100 * (nBoxes - nBuildings)) / nBuildings
-  ).toFixed(1)}%), worst rect/poly cover ${worstBefore.toFixed(1)}x -> ${worstAfter.toFixed(1)}x, +${lmBoxes} landmark boxes, swept ${swept} stale files`
+  ).toFixed(1)}%), worst rect/poly cover ${worstBefore.toFixed(1)}x -> ${worstAfter.toFixed(
+    1
+  )}x, +${lmBoxes} landmark boxes, filtered ${nRoadFiltered} road-overlap boxes, swept ${swept} stale files`
 );

@@ -145,8 +145,8 @@ const PAD: Record<PlayerMode, Row[]> = {
 
 // one-liner flavor tip under the controls
 const TIPS: Partial<Record<PlayerMode, string>> = {
-  walk: "Walk into any building face to climb it",
-  drive: "Ram buildings to topple them",
+  walk: "Every building has a front door — walk in and explore",
+  drive: "Handbrake (Space) drifts · Shift boosts",
   board: "White glow = nose · surfs streets, hills and the bay",
   bird: "Look down + Shift to stoop — skim the bay for spray"
 }

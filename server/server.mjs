@@ -44,12 +44,12 @@ const DIST = path.join(ROOT, "..", "dist");
 // fresh). Acceptable.
 const DATA_DIR = path.join(ROOT, "data");
 const LIFE_FILE = path.join(DATA_DIR, "aicars-life.json");
-// Exact param counts for the actor [9,12,2] and critic [9,12,1] nets:
-//   actor : 9*12+12 + 12*2+2 = 146      critic : 9*12+12 + 12*1+1 = 133
+// Exact param counts for the actor [16,16,2] and critic [16,16,1] nets:
+//   actor : 16*16+16 + 16*2+2 = 306      critic : 16*16+16 + 16*1+1 = 289
 // Hardcoded (server.mjs is plain JS — can't import the TS constant); blobs of
 // any other shape are rejected so a peer can't poison the relayed fleet.
-const ACTOR_LEN = 146;
-const CRITIC_LEN = 133;
+const ACTOR_LEN = 306;
+const CRITIC_LEN = 289;
 const MAX_CAR_ID = 47; // MAX_CARS 48 → ids 0..47
 const W_MAX = 16; // hard weight bound (learner keeps ±8 internally)
 const POS_MAX = 1e5; // sane world-coordinate bound (metres)
@@ -68,7 +68,7 @@ const weightArray = (a, len) => Array.isArray(a) && a.length === len && a.every(
 const validBrain = (b) =>
   b &&
   typeof b === "object" &&
-  b.v === 2 &&
+  b.v === 3 &&
   Number.isInteger(b.id) &&
   b.id >= 0 &&
   b.id <= MAX_CAR_ID &&
@@ -102,7 +102,7 @@ const loadLife = () => {
   try {
     if (!existsSync(LIFE_FILE)) return;
     const parsed = JSON.parse(readFileSync(LIFE_FILE, "utf8"));
-    if (!parsed || parsed.v !== 2 || !Array.isArray(parsed.cars)) return;
+    if (!parsed || parsed.v !== 3 || !Array.isArray(parsed.cars)) return;
     let n = 0;
     for (const b of parsed.cars) if (validBrain(b)) { lifeById.set(b.id, b); n++; }
     lifeBorn = finite(parsed.born) ? parsed.born : Date.now();
@@ -122,7 +122,7 @@ const scheduleLifeWrite = () => {
       // atomic write: fully write a temp file, then rename over the target so a
       // crash mid-write can never leave a truncated / corrupt life file.
       const tmp = LIFE_FILE + ".tmp";
-      await writeFile(tmp, JSON.stringify({ v: 2, born: lifeBorn || Date.now(), cars: [...lifeById.values()] }));
+      await writeFile(tmp, JSON.stringify({ v: 3, born: lifeBorn || Date.now(), cars: [...lifeById.values()] }));
       await rename(tmp, LIFE_FILE);
     } catch (err) {
       console.warn("[sf-server] AI-cars life write failed:", err.message);
@@ -386,7 +386,7 @@ wss.on("connection", (ws) => {
           .map((o) => ({ id: o.id, name: o.name, hue: o.hue, avatar: o.avatar })),
         // hand the whole saved AI-cars fleet to the newcomer so a future leader
         // resumes every individual's accumulated learning instead of fresh
-        ...(lifeById.size ? { aicarsLife: { v: 2, born: lifeBorn || Date.now(), cars: [...lifeById.values()] } } : {})
+        ...(lifeById.size ? { aicarsLife: { v: 3, born: lifeBorn || Date.now(), cars: [...lifeById.values()] } } : {})
       });
       broadcast({ t: "join", id, name: p.name, hue: p.hue, avatar: p.avatar }, id);
       console.log(`[sf-server] join #${id} "${p.name}" (${players.size} online)`);

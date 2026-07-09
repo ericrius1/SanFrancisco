@@ -241,7 +241,11 @@ export async function createCityGenRing(
   // ---- cell load / unload -----------------------------------------------------
   const loadCell = (key: string, entries: Entry[]) => {
     const [ix, iz] = key.split("_").map(Number);
-    const cell: CellState = { key, ix, iz, entries, chunk: buildChunkLOD(entries as BuildingSpec[]), phase: "building" };
+    const cell: CellState = { key, ix, iz, entries,
+      // conform LOD chunk buildings to terrain (highest ground under each footprint
+      // + a foundation skirt down to the lowest) so hillside windows aren't buried.
+      chunk: buildChunkLOD(entries as BuildingSpec[], { groundHeight: (x, z) => ctx.map.groundHeight(x, z) }),
+      phase: "building" };
     loaded.set(key, cell);
     building.push(cell);
   };
@@ -307,8 +311,15 @@ export async function createCityGenRing(
       // two tiers within detailR: the nearest-N get the full grammar MESH (budgeted,
       // expensive); everyone else in range gets a tight exact-poly COLLIDER (cheap)
       // so the car never hits the loose baked box on a building drawn as its prism.
-      let detailCount = 0;
-      const wantDetail: [Entry, number][] = [];
+      //
+      // Slots are a true nearest-N, not first-come. A wide detailRadius can cover
+      // hundreds of buildings; without eviction the cap fills with far ones and
+      // nearby façades stay as chunk prisms forever (and raising maxDetail only
+      // helps after a long drive frees slots). Rank everyone in range, keep the
+      // closest maxDetail, fade the rest. Fading-out holders do NOT count toward
+      // the cap, so a nearer candidate can start building while the far one fades.
+      const candidates: [Entry, number][] = [];
+      const haveDetail: [Entry, number][] = [];
       const wantColl: [Entry, number][] = [];
       for (const cell of loaded.values()) {
         if (cell.phase !== "ready") continue;
@@ -316,21 +327,50 @@ export async function createCityGenRing(
           const dx = playerPos.x - e.cx, dz = playerPos.z - e.cz;
           const d2 = dx * dx + dz * dz;
           if (e.detail) {
-            detailCount++;
-            if (d2 > detailExit2 && e.fadeDir >= 0) e.fadeDir = -1;
-            else if (d2 < detailR2 && e.fadeDir < 0) e.fadeDir = 1;
-          } else {
-            // lod or coll: may earn a mesh (detailR) and/or a tight collider (collR)
-            if (d2 < detailR2) wantDetail.push([e, d2]);
+            haveDetail.push([e, d2]);
+          } else if (d2 < detailR2) {
+            candidates.push([e, d2]);
+          }
+          if (!e.detail) {
             if (e.state === "lod") { if (d2 < collR2) wantColl.push([e, d2]); }
-            else if (d2 > collExit2) dropExactCollider(e); // coll left the band → loose baked
+            else if (e.state === "coll" && d2 > collExit2) dropExactCollider(e);
           }
         }
       }
-      // nearest detail meshes first (expensive, low budget)
-      wantDetail.sort((a, b) => a[1] - b[1]);
+
+      // Rank holders + candidates by distance; nearest maxDetail earn/keep a slot.
+      // Holders past detailExit are ranked but never kept (they must leave).
+      const ranked = haveDetail.concat(candidates);
+      ranked.sort((a, b) => a[1] - b[1]);
+      const keep = new Set<Entry>();
+      for (const [e, d2] of ranked) {
+        if (keep.size >= maxDetail) break;
+        if (d2 > detailExit2) continue;
+        if (d2 > detailR2 && !e.detail) continue; // candidates need the entry band
+        keep.add(e);
+      }
+      // Drive fade direction from keep membership (not a separate distance hysteresis
+      // that would fight eviction and flicker opacity every scan).
+      for (const [e, d2] of haveDetail) {
+        if (keep.has(e)) {
+          if (e.fadeDir < 0) e.fadeDir = 1; // reclaimed a slot → fade back in
+        } else if (d2 > detailExit2) {
+          dropDetail(e); // past hard exit — free the slot now
+        } else if (e.fadeDir >= 0) {
+          e.fadeDir = -1; // displaced by nearer / over cap — crossfade out
+        }
+      }
+      // Active (not fading-out) detail count — fading holders don't block new builds.
+      let detailCount = 0;
+      for (const cell of loaded.values()) {
+        for (const e of cell.entries) if (e.detail && e.fadeDir >= 0) detailCount++;
+      }
       let db = DETAIL_BUDGET;
-      for (const [e] of wantDetail) { if (db <= 0 || detailCount >= maxDetail) break; buildDetail(e); db--; detailCount++; }
+      for (const [e] of ranked) {
+        if (db <= 0 || detailCount >= maxDetail) break;
+        if (!keep.has(e) || e.detail) continue;
+        buildDetail(e); db--; detailCount++;
+      }
       // then tighten the nearest still-loose colliders (cheap; guard skips any that
       // just upgraded to detail this scan)
       wantColl.sort((a, b) => a[1] - b[1]);

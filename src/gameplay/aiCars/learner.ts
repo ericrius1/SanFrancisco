@@ -7,12 +7,12 @@
  * Algorithm (LOCKED by the continual-learning plan): online continuing
  * actor-critic in the average-reward formulation with accumulating eligibility
  * traces. Per car:
- *   - Actor MLP [9,12,2] (tanh everywhere, matching policy.ts so the brain
+ *   - Actor MLP [16,16,2] (tanh everywhere, matching policy.ts so the brain
  *     overlay is untouched). Its 2 outputs are the MEAN of a Gaussian over
  *     [steer, accel]; exploration noise is a state-independent scalar `sigma`
  *     set by a schedule (not gradient) that shrinks as the car's reward rate
  *     rises but never below 0.06 — that floor is the visible "alive" texture.
- *   - Critic MLP [9,12,1] (tanh hidden, LINEAR value head) estimating the
+ *   - Critic MLP [16,16,1] (tanh hidden, LINEAR value head) estimating the
  *     differential value V(s).
  *   - Average-reward baseline rhoBar (EMA via the TD error).
  *   - TD error delta = r - rhoBar + V(s') - V(s)  (no gamma — average reward).
@@ -30,30 +30,30 @@
  *   what the sigma schedule and the social-rescue skill metric both assume.
  *
  * HEADING/OBS layout is fleet's concern; the learner is agnostic — it only sees
- * a length-9 obs vector and a length-2 action.
+ * a length-16 obs vector and a length-2 action.
  */
 
 import type { Policy } from "./policy.ts";
 
 // --- net shapes (LOCKED) ----------------------------------------------------
-export const ACTOR_SIZES = [9, 12, 2] as const;
-export const CRITIC_SIZES = [9, 12, 1] as const;
-export const ACTOR_PARAMS = 146; // 9*12+12 + 12*2+2
-export const CRITIC_PARAMS = 133; // 9*12+12 + 12*1+1
+const IN = 16;
+const H = 16;
+export const ACTOR_SIZES = [IN, H, 2] as const;
+export const CRITIC_SIZES = [IN, H, 1] as const;
+export const ACTOR_PARAMS = IN * H + H + H * 2 + 2;
+export const CRITIC_PARAMS = IN * H + H + H + 1;
 
 // flat-layout offsets (per policy.ts: layer weights row-major [out][in], then bias)
-const IN = 9;
-const H = 12;
 // actor
-const A_W0 = 0; //  12*9 = 108  (W0[j*9 + i])
-const A_B0 = 108; // 12
-const A_W1 = 120; // 2*12 = 24  (W1[k*12 + j])
-const A_B1 = 144; // 2
+const A_W0 = 0;
+const A_B0 = A_W0 + H * IN;
+const A_W1 = A_B0 + H;
+const A_B1 = A_W1 + 2 * H;
 // critic
-const C_W0 = 0; //   12*9 = 108
-const C_B0 = 108; // 12
-const C_W1 = 120; // 12    (W1[0*12 + j])
-const C_B1 = 132; // 1
+const C_W0 = 0;
+const C_B0 = C_W0 + H * IN;
+const C_W1 = C_B0 + H;
+const C_B1 = C_W1 + H;
 
 // --- hyper-parameters (LOCKED) ----------------------------------------------
 const LAMBDA = 0.9; // eligibility-trace decay (both nets)
@@ -65,6 +65,7 @@ const PARAM_CLAMP = 8; // hard clamp on every weight
 const WEIGHT_DECAY = 1e-5; // tiny L2 pull-to-zero each step
 const SIGMA_MIN = 0.06;
 const SIGMA_MAX = 0.12; // capped: 0.25 let a dipping car explode into a spin runaway
+const SIGMA_START = 0.075; // warm-start policy needs exploration, not random thrashing
 const DT_LEARN = 0.05; // 20 Hz learn tick → +0.05 s of age per learnStep
 const SKILL_TAU = 60; // reward-rate EMA time constant (s)
 // social rescue
@@ -85,7 +86,7 @@ const LESSON_NOISE = 0.02;
 
 /** Per-car persistence blob (brain fields only; fleet owns pos/kind/hue). */
 export type CarBrainBlob = {
-  v: 2;
+  v: 3;
   actor: number[];
   critic: number[];
   rhoBar: number;
@@ -150,7 +151,7 @@ export class Learner {
       this.criticW.push(this.#seedCritic());
       this.traceA.push(new Float32Array(ACTOR_PARAMS));
       this.traceC.push(new Float32Array(CRITIC_PARAMS));
-      this.sigma[i] = SIGMA_MAX; // fresh cars explore fully
+      this.sigma[i] = SIGMA_START;
       // lastLessonAge starts at -cooldown so an early lesson isn't blocked by age 0
       this.lastLessonAge[i] = -RESCUE_COOLDOWN_S;
     }
@@ -172,15 +173,44 @@ export class Learner {
     return mag * Math.cos(2 * Math.PI * v);
   }
 
-  /** Fresh actor: small Glorot-ish init, biases 0 + a small +accel bias so a
-   *  gen-0 car creeps forward (and thus gets a progress gradient to learn on). */
+  /**
+   * Fresh actor: a deterministic road-driver warm start plus tiny per-car noise.
+   * Pure random policies spend most early training embedded in recovery clamps,
+   * which is a poor signal. This seed can already follow the road frame, prefer
+   * the right lane, brake for close obstacles, and slow for red/yellow lights;
+   * the online actor-critic then improves it from real reward.
+   */
   #seedActor(): Float32Array {
     const w = new Float32Array(ACTOR_PARAMS);
-    const s0 = 1 / Math.sqrt(IN);
-    for (let j = 0; j < H; j++) for (let i = 0; i < IN; i++) w[A_W0 + j * IN + i] = (this.rng() * 2 - 1) * s0 * 0.5;
-    const s1 = 1 / Math.sqrt(H);
-    for (let k = 0; k < 2; k++) for (let j = 0; j < H; j++) w[A_W1 + k * H + j] = (this.rng() * 2 - 1) * s1 * 0.5;
-    w[A_B1 + 1] = 0.2; // accel output pre-tanh bias → mean accel ≈ +0.2
+    const setUnit = (unit: number, bias: number, terms: [number, number][]) => {
+      for (const [input, gain] of terms) w[A_W0 + unit * IN + input] = gain;
+      w[A_B0 + unit] = bias;
+    };
+    // Observation layout from fleet.ts:
+    // 0 speed, 2 sin heading error, 4 curvature, 5 clearAhead, 8 laneErr,
+    // 9 wrong-way, 10 signal-near, 11 red, 12 yellow, 14 must-stop, 15 bias.
+    setUnit(0, 0, [[2, 1.45]]); // steering target
+    setUnit(1, 0, [[8, 1.15]]); // right-lane error
+    setUnit(2, 0, [[4, 0.85]]); // curvature preview
+    setUnit(3, 0, [[0, 1.1]]); // signed speed
+    setUnit(4, 1.5, [[5, -1.5]]); // 0 when clear, positive when close/blocked
+    setUnit(5, -2.2, [[14, 1.4], [10, 1.4]]); // stoplight close enough to matter
+    setUnit(6, -1.5, [[11, 1.1], [12, 0.75], [10, 1.15]]); // red/yellow pressure
+    setUnit(7, 0, [[9, 1.25]]); // wrong-way brake pressure
+    setUnit(8, 0, [[1, 0.75]]); // raw lateral sanity
+
+    w[A_W1 + 0 * H + 0] = 1.05;
+    w[A_W1 + 0 * H + 1] = -0.78;
+    w[A_W1 + 0 * H + 2] = 0.18;
+    w[A_W1 + 0 * H + 8] = -0.22;
+
+    w[A_W1 + 1 * H + 3] = -1.0;
+    w[A_W1 + 1 * H + 4] = -1.6;
+    w[A_W1 + 1 * H + 5] = -0.8;
+    w[A_W1 + 1 * H + 7] = -0.3;
+    w[A_B1 + 1] = -0.25;
+
+    for (let p = 0; p < ACTOR_PARAMS; p++) w[p] += (this.rng() * 2 - 1) * 0.004;
     return w;
   }
 
@@ -471,7 +501,7 @@ export class Learner {
   /** Brain fields for this car (fleet merges pos/kind/hue and stamps v). */
   exportCar(i: number): CarBrainBlob {
     return {
-      v: 2,
+      v: 3,
       actor: Array.from(this.actorW[i]),
       critic: Array.from(this.criticW[i]),
       rhoBar: this.rhoBar[i],
@@ -488,7 +518,7 @@ export class Learner {
    * gate is ±16; internal invariant is ±8). Traces reset; skill primed from rho.
    */
   importCar(i: number, blob: CarBrainBlob): boolean {
-    if (!blob || blob.v !== 2) return false;
+    if (!blob || blob.v !== 3) return false;
     if (!Array.isArray(blob.actor) || blob.actor.length !== ACTOR_PARAMS) return false;
     if (!Array.isArray(blob.critic) || blob.critic.length !== CRITIC_PARAMS) return false;
     for (let p = 0; p < ACTOR_PARAMS; p++) {
@@ -539,7 +569,7 @@ export class Learner {
     this.traceA[i].fill(0);
     this.traceC[i].fill(0);
     this.rhoBar[i] = 0;
-    this.sigma[i] = SIGMA_MAX;
+    this.sigma[i] = SIGMA_START;
     this.skillRate[i] = 0;
     this.ageS[i] = 0;
     this.odoM[i] = 0;

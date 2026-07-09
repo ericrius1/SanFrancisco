@@ -39,11 +39,11 @@ export type RemoteInfo = { id: number; name: string; hue: number; avatar?: Avata
 /**
  * One persistent AI car's full brain + identity + pose (continual-learning
  * "life" blob). Structurally identical to fleet.ts's CarBlob so it round-trips
- * through the leader→relay→ghost path without a conversion. Actor is 146 floats,
- * critic 133 (net shape [9,12,2] / [9,12,1]).
+ * through the leader→relay→ghost path without a conversion. Actor is 306 floats,
+ * critic 289 (net shape [16,16,2] / [16,16,1]).
  */
 export type CarLifeBlob = {
-  v: 2;
+  v: 3;
   id: number;
   actor: number[];
   critic: number[];
@@ -60,10 +60,10 @@ export type CarLifeBlob = {
 };
 
 /** The whole fleet's persisted lives (relay welcome / localStorage set). */
-export type AiCarsLife = { v: 2; born: number; cars: CarLifeBlob[] };
+export type AiCarsLife = { v: 3; born: number; cars: CarLifeBlob[] };
 
-const AICARS_ACTOR_LEN = 146;
-const AICARS_CRITIC_LEN = 133;
+const AICARS_ACTOR_LEN = 306;
+const AICARS_CRITIC_LEN = 289;
 const AICARS_MAX_ID = 47;
 const AICARS_W_MAX = 16;
 
@@ -195,7 +195,7 @@ function isWeightArray(a: unknown, len: number): a is number[] {
 function parseCarBlob(raw: unknown): CarLifeBlob | null {
   if (!raw || typeof raw !== "object") return null;
   const o = raw as Record<string, unknown>;
-  if (o.v !== 2) return null;
+  if (o.v !== 3) return null;
   if (!Number.isInteger(o.id) || (o.id as number) < 0 || (o.id as number) > AICARS_MAX_ID) return null;
   if (!isWeightArray(o.actor, AICARS_ACTOR_LEN)) return null;
   if (!isWeightArray(o.critic, AICARS_CRITIC_LEN)) return null;
@@ -208,7 +208,7 @@ function parseCarBlob(raw: unknown): CarLifeBlob | null {
   if ((o.odoM as number) < 0 || (o.odoM as number) > 1e12) return null;
   if ((o.lessons as number) < 0 || (o.lessons as number) > 1e9) return null;
   return {
-    v: 2,
+    v: 3,
     id: o.id as number,
     actor: o.actor as number[],
     critic: o.critic as number[],
@@ -229,7 +229,7 @@ function parseCarBlob(raw: unknown): CarLifeBlob | null {
 function parseAiCarsLife(raw: unknown): AiCarsLife | null {
   if (!raw || typeof raw !== "object") return null;
   const o = raw as { v?: unknown; born?: unknown; cars?: unknown };
-  if (o.v !== 2 || !Array.isArray(o.cars) || o.cars.length === 0) return null;
+  if (o.v !== 3 || !Array.isArray(o.cars) || o.cars.length === 0) return null;
   const cars: CarLifeBlob[] = [];
   for (const c of o.cars) {
     const blob = parseCarBlob(c);
@@ -237,7 +237,7 @@ function parseAiCarsLife(raw: unknown): AiCarsLife | null {
   }
   if (cars.length === 0) return null;
   const born = typeof o.born === "number" && Number.isFinite(o.born) ? o.born : Date.now();
-  return { v: 2, born, cars };
+  return { v: 3, born, cars };
 }
 
 function rosterAvatar(id: number, raw: unknown): AvatarTraits {

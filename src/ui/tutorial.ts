@@ -5,8 +5,8 @@ import { PIER_ENTRANCE, DOME_WORLD, insidePier } from "../gameplay/exploratorium
  * Interactive tutorial: a chaptered checklist that watches real play instead
  * of narrating over it. The "Tutorial" button (top-right, under Share) is
  * always on screen outside immersive mode; clicking it walks a newcomer from
- * WASD through climbing, the vehicle roster, the map/teleport flow and a
- * field trip into the Exploratorium. main.ts feeds it a thin context of
+ * WASD through stepping inside a building, the vehicle roster, the map/teleport
+ * flow and a field trip into the Exploratorium. main.ts feeds it a thin context of
  * getters plus one-shot events (note("teleport") etc.) — the tutorial never
  * reaches into game objects itself.
  */
@@ -14,7 +14,6 @@ import { PIER_ENTRANCE, DOME_WORLD, insidePier } from "../gameplay/exploratorium
 export interface TutorialCtx {
   mode: () => PlayerMode
   pos: () => { x: number; y: number; z: number }
-  climbing: () => boolean
   mouseDelta: () => number
   down: (code: string) => boolean
   pressed: (code: string) => boolean
@@ -90,19 +89,14 @@ const CHAPTERS: Chapter[] = [
     ]
   },
   {
-    title: "Walls are climbable",
-    onEnter: (c) => c.message("Every building in the city is climbable — no gear, just grit", 4),
+    title: "Step inside",
+    onEnter: (c) => c.message("Every building has a front door — walk in and explore, then step back out", 4),
     steps: [
       {
         keys: ["W"],
-        action: "Hold",
-        text: "to push into a building wall — up you go",
-        check: (c, dt, st) => (st.n += c.climbing() ? dt : 0) / 1.2
-      },
-      {
-        text: "climb 10 m — the parapet pops you onto the roof",
-        hint: "Space bails out anytime",
-        check: (c, _dt, st) => climbed(c, st, 10, c.climbing())
+        action: "Walk",
+        text: "up to a building and in through its door",
+        check: (c, _dt, st) => traveled(c, st, 15, c.mode() === "walk")
       }
     ]
   },
@@ -205,7 +199,7 @@ export class Tutorial {
     const btn = document.createElement("button")
     btn.className = "share-btn"
     btn.type = "button"
-    btn.title = "Learn the ropes — movement, climbing, vehicles, teleporting"
+    btn.title = "Learn the ropes — movement, entering buildings, vehicles, teleporting"
     btn.innerHTML = `<span class="ic">🎓</span><span class="tut-btn-label">Tutorial</span>`
     if (!localStorage.getItem(DONE_KEY)) btn.classList.add("pulse")
     this.#btnLabel = btn.querySelector(".tut-btn-label")!

@@ -1034,13 +1034,12 @@ async function boot() {
   };
 
   // interactive tutorial (ui/tutorial.ts): the 🎓 button under Share starts a
-  // chaptered walkthrough — movement, climbing, vehicles, the map, and a field
+  // chaptered walkthrough — movement, entering buildings, vehicles, the map, and a field
   // trip into the Exploratorium. It only reads through this thin context;
   // one-shot events (teleports, piano notes) arrive via tutorial.note().
   const tutorial = new Tutorial({
     mode: () => player.mode,
     pos: () => player.position,
-    climbing: () => player.climbing,
     mouseDelta: () => Math.abs(input.mouseDX) + Math.abs(input.mouseDY),
     down: (c) => input.down(c),
     pressed: (c) => input.pressed(c),

@@ -11,11 +11,11 @@ import { fileURLToPath } from "node:url";
 import WebSocket from "../node_modules/ws/wrapper.mjs";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const CKPT = process.argv[2] || path.join(ROOT, "tools", "aicars-trained.json");
+const CKPT = process.argv[2] || path.join(ROOT, "tools", "aicars-trained-v3.json");
 const WS = process.argv[3] || process.env.SF_WS || "wss://sanfrancisco.up.railway.app/ws";
 
 const blob = JSON.parse(readFileSync(CKPT, "utf8"));
-if (blob.v !== 2 || !Array.isArray(blob.cars) || !blob.cars.length) {
+if (blob.v !== 3 || !Array.isArray(blob.cars) || !blob.cars.length) {
   console.error("bad checkpoint:", CKPT);
   process.exit(1);
 }

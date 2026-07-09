@@ -388,24 +388,6 @@ export function poseAir(r: Rig) {
   set(r.foreR, 0.35, 0, 0);
 }
 
-/** Scaling a wall: alternating overhead reaches, face to the bricks. */
-export function poseClimb(r: Rig, t: number) {
-  const sL = Math.sin(t);
-  const sR = Math.sin(t + Math.PI);
-  r.hips.position.y = Math.sin(2 * t) * 0.02;
-  set(r.hips, 0, 0, 0);
-  set(r.torso, 0.12, 0, 0);
-  set(r.head, -0.5, 0, 0); // eyes on the parapet
-  set(r.armL, 2.5 + sL * 0.45, 0, 0.12);
-  set(r.armR, 2.5 + sR * 0.45, 0, -0.12);
-  set(r.foreL, 0.3, 0, 0);
-  set(r.foreR, 0.3, 0, 0);
-  set(r.legL, 0.55 + sR * 0.35, 0, 0.05);
-  set(r.legR, 0.55 + sL * 0.35, 0, -0.05);
-  set(r.shinL, -(0.8 + sR * 0.3), 0, 0);
-  set(r.shinR, -(0.8 + sL * 0.3), 0, 0);
-}
-
 /** Front crawl: body flat, windmilling arms, flutter kick. */
 export function poseSwim(r: Rig, t: number) {
   r.hips.position.y = 0;

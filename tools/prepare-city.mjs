@@ -9,6 +9,7 @@ import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { BBOX, GRID, ORIGIN, M_PER_DEG_LAT, M_PER_DEG_LON, lonLatToLocal } from "./geo.mjs";
 import { decomposeFootprint, minAreaRect } from "./collider-lib.mjs";
 import { computeGroundTop } from "./groundtop-lib.mjs";
+import { buildRoadClearanceIndex, filterRoadOverlappingColliders } from "./road-collider-clearance.mjs";
 
 const RAW = new URL("../data/raw/", import.meta.url);
 const PUB = new URL("../public/data/", import.meta.url);
@@ -644,6 +645,10 @@ async function main() {
 
   // Collider files per tile.
   const manifest = { tile: TILE, tilesX: TILES_X, tilesZ: TILES_Z, minX: MINX, minZ: MINZ, tiles: {} };
+  const roadClearance = buildRoadClearanceIndex(
+    [...tiles.values()].flatMap((t) => t.roads.map((r) => ({ width: r.w, points: r.pts })))
+  );
+  let roadFilteredColliders = 0;
   for (const [key, t] of tiles) {
     // Stable per-tile building index shared by mesh (_BID attribute) + colliders.
     t.buildings.forEach((b, i) => {
@@ -673,7 +678,9 @@ async function main() {
         });
       }
     }
-    await writeFile(new URL(`colliders/tile_${key}.json`, PUB), JSON.stringify(colliders));
+    const { kept, dropped } = filterRoadOverlappingColliders(colliders, roadClearance);
+    roadFilteredColliders += dropped.length;
+    await writeFile(new URL(`colliders/tile_${key}.json`, PUB), JSON.stringify(kept));
     manifest.tiles[key] = {
       b: t.buildings.length,
       r: t.roads.length,
@@ -736,6 +743,7 @@ async function main() {
   await writeFile(new URL("city.json", CITY), JSON.stringify(cityJson));
   const sizeMb = (JSON.stringify(cityJson).length / 1e6).toFixed(1);
   console.log(`[prep] city.json ${sizeMb}MB, tiles ${tiles.size}`);
+  console.log(`[prep] filtered ${roadFilteredColliders} road-overlap collider boxes`);
   console.log("[prep] done");
 }
 

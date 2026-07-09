@@ -14,9 +14,17 @@
  * directly. `RoadGraph.load()` is just a browser fetch wrapper around that.
  */
 
+import {
+  TrafficSignalSystem,
+  chooseSignalNodes,
+  signalCandidateScore,
+  type SignalApproachSeed,
+  type SignalNodeSeed
+} from "./trafficSignals.ts";
+
 export type RoadsJson = {
   v: number;
-  segs: { p: number[]; w: number }[];
+  segs: { p: number[]; w: number; l?: number; d?: number; k?: number }[];
 };
 
 export type Projection = {
@@ -26,19 +34,33 @@ export type Projection = {
   tangentX: number; // unit tangent at the projected point
   tangentZ: number;
   halfWidth: number; // half the road width (m)
+  lanes: number;
+  oneWayDir: -1 | 0 | 1;
+  roadClass: number;
 };
 
 const CELL = 64; // spatial-hash cell size (m); project() search radius (40 m) < CELL
 const MAX_PROJECT_DIST = 40; // nearest-road cap (m)
 const HOP_DIST = 15; // max gap to jump across at a polyline end (m)
+const SIGNAL_CELL = 12; // cluster nearby road vertices into one intersection candidate
+const ARM_EPS = Math.PI * 0.16; // ~29°, distinct approach-direction clustering
 
 // integer cell key; world coords comfortably inside ±(4096·64) m
 function cellKey(cx: number, cz: number): number {
   return (cx + 4096) * 8192 + (cz + 4096);
 }
 
+function signalKey(x: number, z: number): number {
+  return (Math.round(x / SIGNAL_CELL) + 4096) * 8192 + (Math.round(z / SIGNAL_CELL) + 4096);
+}
+
+function angleDiff(a: number, b: number): number {
+  return Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
+}
+
 export class RoadGraph {
   readonly segCount: number;
+  readonly signals: TrafficSignalSystem;
   // flat point store (all segments concatenated)
   private px: Float32Array;
   private pz: Float32Array;
@@ -48,6 +70,9 @@ export class RoadGraph {
   private segNum: Int32Array; // segId → point count
   private segTotal: Float32Array; // segId → total polyline length
   private segW: Float32Array; // segId → road width
+  private segLanes: Int8Array; // segId → lane count
+  private segDir: Int8Array; // segId → one-way dir (-1,0,+1)
+  private segClass: Int8Array; // segId → coarse road class
 
   // edge hash: cell → global start-indices g (edge is point g → g+1, same seg)
   private cells = new Map<number, number[]>();
@@ -76,6 +101,9 @@ export class RoadGraph {
     this.segNum = new Int32Array(this.segCount);
     this.segTotal = new Float32Array(this.segCount);
     this.segW = new Float32Array(this.segCount);
+    this.segLanes = new Int8Array(this.segCount);
+    this.segDir = new Int8Array(this.segCount);
+    this.segClass = new Int8Array(this.segCount);
     this.endX = new Float32Array(this.segCount * 2);
     this.endZ = new Float32Array(this.segCount * 2);
     this.endSeg = new Int32Array(this.segCount * 2);
@@ -88,6 +116,9 @@ export class RoadGraph {
       this.segStart[seg] = g;
       this.segNum[seg] = n;
       this.segW[seg] = segs[seg].w;
+      this.segLanes[seg] = Math.max(1, Math.min(8, Math.round(segs[seg].l ?? Math.max(1, segs[seg].w / 4))));
+      this.segDir[seg] = segs[seg].d === 1 ? 1 : segs[seg].d === -1 ? -1 : 0;
+      this.segClass[seg] = Math.max(0, Math.min(5, Math.round(segs[seg].k ?? (segs[seg].w >= 14 ? 4 : segs[seg].w >= 10 ? 3 : 1))));
       let acc = 0;
       for (let i = 0; i < n; i++) {
         const x = p[i * 2] / 10;
@@ -120,6 +151,7 @@ export class RoadGraph {
 
     this.#buildEdgeHash();
     this.#buildEndHash();
+    this.signals = new TrafficSignalSystem(this.#buildSignalNodes());
   }
 
   static async load(url = "data/roads.json"): Promise<RoadGraph> {
@@ -162,6 +194,10 @@ export class RoadGraph {
       const tl = Math.hypot(tx, tz) || 1;
       tx /= tl;
       tz /= tl;
+      if (this.segDir[seg] === -1) {
+        tx = -tx;
+        tz = -tz;
+      }
     }
     return { x: this.px[g], z: this.pz[g], tangentX: tx, tangentZ: tz };
   }
@@ -207,6 +243,111 @@ export class RoadGraph {
       }
       list.push(e);
     }
+  }
+
+  #buildSignalNodes(): SignalNodeSeed[] {
+    const groups = new Map<number, { sx: number; sz: number; n: number; approaches: SignalApproachSeed[] }>();
+    const add = (x: number, z: number, app: SignalApproachSeed) => {
+      const key = signalKey(x, z);
+      let g = groups.get(key);
+      if (!g) {
+        g = { sx: 0, sz: 0, n: 0, approaches: [] };
+        groups.set(key, g);
+      }
+      g.sx += x;
+      g.sz += z;
+      g.n++;
+      g.approaches.push(app);
+    };
+
+    for (let seg = 0; seg < this.segCount; seg++) {
+      // Freeways and highway ramps are still drivable road graph, but they are not
+      // good stoplight candidates.
+      if (this.segClass[seg] >= 5) continue;
+      const g0 = this.segStart[seg];
+      const n = this.segNum[seg];
+      const oneWay = this.segDir[seg];
+      for (let i = 0; i < n; i++) {
+        const g = g0 + i;
+        const x = this.px[g];
+        const z = this.pz[g];
+        const s = this.cum[g];
+        if (i > 0 && oneWay !== -1) {
+          const pg = g - 1;
+          let tx = this.px[g] - this.px[pg];
+          let tz = this.pz[g] - this.pz[pg];
+          const tl = Math.hypot(tx, tz) || 1;
+          tx /= tl;
+          tz /= tl;
+          add(x, z, {
+            segId: seg,
+            s,
+            dir: 1,
+            x,
+            z,
+            tangentX: tx,
+            tangentZ: tz,
+            roadClass: this.segClass[seg],
+            lanes: this.segLanes[seg],
+            halfWidth: this.segW[seg] * 0.5
+          });
+        }
+        if (i < n - 1 && oneWay !== 1) {
+          const ng = g + 1;
+          let tx = this.px[g] - this.px[ng];
+          let tz = this.pz[g] - this.pz[ng];
+          const tl = Math.hypot(tx, tz) || 1;
+          tx /= tl;
+          tz /= tl;
+          add(x, z, {
+            segId: seg,
+            s,
+            dir: -1,
+            x,
+            z,
+            tangentX: tx,
+            tangentZ: tz,
+            roadClass: this.segClass[seg],
+            lanes: this.segLanes[seg],
+            halfWidth: this.segW[seg] * 0.5
+          });
+        }
+      }
+    }
+
+    const candidates: SignalNodeSeed[] = [];
+    for (const g of groups.values()) {
+      if (g.approaches.length < 3) continue;
+      const angles: number[] = [];
+      let maxClass = 0;
+      let maxLanes = 1;
+      const seen = new Set<string>();
+      const approaches: SignalApproachSeed[] = [];
+      for (const app of g.approaches) {
+        const id = `${app.segId}:${app.dir}`;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        approaches.push(app);
+        maxClass = Math.max(maxClass, app.roadClass);
+        maxLanes = Math.max(maxLanes, app.lanes);
+        const a = Math.atan2(app.tangentX, app.tangentZ);
+        let fresh = true;
+        for (const prev of angles) {
+          if (angleDiff(a, prev) < ARM_EPS) {
+            fresh = false;
+            break;
+          }
+        }
+        if (fresh) angles.push(a);
+      }
+      if (angles.length < 3) continue;
+      const x = g.sx / g.n;
+      const z = g.sz / g.n;
+      const score = signalCandidateScore(x, z, angles.length, maxClass, maxLanes);
+      if (score < 0) continue;
+      candidates.push({ x, z, score, approaches });
+    }
+    return chooseSignalNodes(candidates);
   }
 
   /** Nearest road point within 40 m of (x, z), or null. */
@@ -274,7 +415,20 @@ export class RoadGraph {
       lateral,
       tangentX: ex,
       tangentZ: ez,
-      halfWidth: this.segW[seg] * 0.5
+      halfWidth: this.segW[seg] * 0.5,
+      lanes: this.segLanes[seg],
+      oneWayDir: this.segDir[seg] as -1 | 0 | 1,
+      roadClass: this.segClass[seg]
+    };
+  }
+
+  segmentMeta(segId: number): { total: number; halfWidth: number; lanes: number; oneWayDir: -1 | 0 | 1; roadClass: number } {
+    return {
+      total: this.segTotal[segId] ?? 0,
+      halfWidth: (this.segW[segId] ?? 0) * 0.5,
+      lanes: this.segLanes[segId] ?? 1,
+      oneWayDir: (this.segDir[segId] ?? 0) as -1 | 0 | 1,
+      roadClass: this.segClass[segId] ?? 1
     };
   }
 

@@ -11,8 +11,7 @@ export const WALK_TUNING = tunables("movement.walk", {
   runSpeed: { v: 10, min: 2, max: 30, step: 0.1, label: "run speed" },
   jump: { v: 7.2, min: 2, max: 20, step: 0.1, label: "jump" },
   swimFactor: { v: 0.45, min: 0.1, max: 1, step: 0.05, label: "swim speed ×" },
-  swimBoost: { v: 2, min: 0, max: 8, step: 0.1, label: "swim boost" },
-  climbSpeed: { v: 4.2, min: 1, max: 12, step: 0.1, label: "wall climb" }
+  swimBoost: { v: 2, min: 0, max: 8, step: 0.1, label: "swim boost" }
 });
 
 // jump feel, same trick as the board: buffer an early press so it survives
@@ -32,14 +31,13 @@ const V = {
   up: new THREE.Vector3(0, 1, 0)
 };
 
-/** On foot: walking, running, swimming, and climbing any building face. */
+/** On foot: walking, running, and swimming. */
 export class WalkController implements ModeController {
   readonly spawnLift = 0.8;
 
   // read by the walker-pose animation
   grounded = false;
   swimming = false;
-  climbing = false;
   #jumpBuf = 0; // seconds a Space press stays pending
   #coyote = 0; // seconds after losing footing a jump still fires
 
@@ -106,63 +104,37 @@ export class WalkController implements ModeController {
     const swimming = ground < waterY - 1.0 && bottom < waterY;
     this.swimming = swimming;
 
-    // wall climbing: press into any building face and just walk straight up it.
-    // Velocity-driven like everything else — the static building body keeps us
-    // from phasing through; a gentle push into the face keeps us tracking it.
-    this.climbing = false;
     let vx = dir.x * speed;
     let vz = dir.z * speed;
     let vy = v.linear[1];
-    if (dir.lengthSq() > 0 && !swimming) {
-      const wall = ctx.physics.wallAhead(ctx.position, dir.x, dir.z, 1.25);
-      if (wall && dir.x * wall.nx + dir.z * wall.nz < -0.45 && wall.top > bottom + 0.3) {
-        this.climbing = true;
-        if (this.#jumpBuf > 0) {
-          // kick off the wall (flag stays set this frame so the ground branch
-          // below doesn't overwrite the leap velocities)
-          const wallKick = 7; // m/s shove straight off the wall face
-          vx = wall.nx * wallKick;
-          vz = wall.nz * wallKick;
-          vy = tw.jump * 0.9;
-          this.#jumpBuf = 0;
-        } else {
-          const atLip = bottom > wall.top - 0.6;
-          vy = atLip ? tw.jump * 0.75 : tw.climbSpeed; // pop over the parapet at the top
-          vx = dir.x * (atLip ? 3.2 : 0.9);
-          vz = dir.z * (atLip ? 3.2 : 0.9);
-        }
+    if (swimming) {
+      // --- swimming: bob at the surface, dive when you look/press down ------
+      // Horizontal glide (run key is repurposed as dive, so use base speed).
+      const swimSpeed = tw.speed * tw.swimFactor;
+      vx = dir.x * swimSpeed;
+      vz = dir.z * swimSpeed;
+      // Vertical command: look-pitch dive while swimming forward (nose down + W
+      // = go under), plus explicit Space=up / Shift=down for fine control.
+      let vSwim = frame.aim.y * swimSpeed * iz;
+      if (input.down("Space")) vSwim += tw.swimBoost;
+      if (run) vSwim -= tw.swimBoost;
+      // Buoyancy floats you back to the waterline when idle; suppressed while
+      // actively diving so you can get under and roam instead of popping up.
+      const restBottom = waterY - SWIM_REST_DEPTH;
+      let buoy = (restBottom - bottom) * 3;
+      if (vSwim < 0) buoy = Math.min(buoy, 0);
+      vy = buoy + vSwim - v.linear[1] * 0.5;
+      // never burrow into the seabed
+      const minBottom = ground + 0.25;
+      if (bottom < minBottom) vy = Math.max(vy, (minBottom - bottom) * 4);
+    } else {
+      if (this.#jumpBuf > 0 && (this.grounded || this.#coyote > 0)) {
+        vy = Math.max(vy, tw.jump);
+        this.#jumpBuf = 0;
+        this.#coyote = 0;
       }
-    }
-    if (!this.climbing) {
-      if (swimming) {
-        // --- swimming: bob at the surface, dive when you look/press down ------
-        // Horizontal glide (run key is repurposed as dive, so use base speed).
-        const swimSpeed = tw.speed * tw.swimFactor;
-        vx = dir.x * swimSpeed;
-        vz = dir.z * swimSpeed;
-        // Vertical command: look-pitch dive while swimming forward (nose down + W
-        // = go under), plus explicit Space=up / Shift=down for fine control.
-        let vSwim = frame.aim.y * swimSpeed * iz;
-        if (input.down("Space")) vSwim += tw.swimBoost;
-        if (run) vSwim -= tw.swimBoost;
-        // Buoyancy floats you back to the waterline when idle; suppressed while
-        // actively diving so you can get under and roam instead of popping up.
-        const restBottom = waterY - SWIM_REST_DEPTH;
-        let buoy = (restBottom - bottom) * 3;
-        if (vSwim < 0) buoy = Math.min(buoy, 0);
-        vy = buoy + vSwim - v.linear[1] * 0.5;
-        // never burrow into the seabed
-        const minBottom = ground + 0.25;
-        if (bottom < minBottom) vy = Math.max(vy, (minBottom - bottom) * 4);
-      } else {
-        if (this.#jumpBuf > 0 && (this.grounded || this.#coyote > 0)) {
-          vy = Math.max(vy, tw.jump);
-          this.#jumpBuf = 0;
-          this.#coyote = 0;
-        }
-        vx = dir.x * speed;
-        vz = dir.z * speed;
-      }
+      vx = dir.x * speed;
+      vz = dir.z * speed;
     }
     // velocity-only control: the solver owns position/contacts (teleporting the body
     // every step is what made walking jitter). Angular velocity pinned to zero keeps

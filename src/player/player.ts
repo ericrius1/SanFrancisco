@@ -8,7 +8,6 @@ import {
   buildRig,
   buildSteeringWheel,
   poseAir,
-  poseClimb,
   poseDrive,
   poseIdle,
   poseRide,
@@ -382,11 +381,6 @@ export class Player {
     return this.#modes.board.grounded;
   }
 
-  /** On a wall right now — the tutorial's climbing chapter watches this. */
-  get climbing(): boolean {
-    return this.mode === "walk" && this.#modes.walk.climbing;
-  }
-
   /** Frame-rate flight steering — mouse aims the plane, A/D add banked yaw. */
   steerFly(input: Input, dt: number) {
     if (this.mode !== "plane") return;
@@ -510,10 +504,7 @@ export class Player {
     if (this.mode === "walk") {
       const r = this.#walkRig;
       const walk = this.#modes.walk;
-      if (walk.climbing) {
-        this.#strideT += dt * 7;
-        poseClimb(r, this.#strideT);
-      } else if (walk.swimming) {
+      if (walk.swimming) {
         this.#strideT += dt * 3.4;
         poseSwim(r, this.#strideT);
       } else if (!walk.grounded) {

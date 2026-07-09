@@ -1,4 +1,5 @@
 import { Pane } from "tweakpane";
+import type { BladeApi, FolderApi } from "tweakpane";
 import type * as THREE from "three/webgpu";
 import {
   CONFIG,
@@ -29,6 +30,55 @@ import type { TileStreamer } from "../world/tiles";
 
 type WireframeMaterial = THREE.Material & { wireframe: boolean };
 
+function isFolderApi(blade: BladeApi): blade is FolderApi {
+  return "children" in blade && "title" in blade && "expanded" in blade;
+}
+
+function bladeLabel(blade: BladeApi): string {
+  if ("label" in blade && typeof (blade as { label?: unknown }).label === "string") {
+    return (blade as { label: string }).label;
+  }
+  if (isFolderApi(blade) && blade.title) return blade.title;
+  return "";
+}
+
+function revealAll(blade: BladeApi) {
+  blade.hidden = false;
+  if (isFolderApi(blade)) for (const child of blade.children) revealAll(child);
+}
+
+/** Case-insensitive substring filter over the pane tree. Returns whether any
+ * descendant matched (so parent folders stay visible when a child hits). A
+ * folder whose own title matches reveals its whole subtree. */
+function filterPane(blade: BladeApi, query: string): boolean {
+  if (!query) {
+    blade.hidden = false;
+    if (isFolderApi(blade)) for (const child of blade.children) filterPane(child, query);
+    return true;
+  }
+
+  const selfMatch = bladeLabel(blade).toLowerCase().includes(query);
+
+  if (!isFolderApi(blade)) {
+    blade.hidden = !selfMatch;
+    return selfMatch;
+  }
+
+  if (selfMatch) {
+    revealAll(blade);
+    blade.expanded = true;
+    return true;
+  }
+
+  let childMatch = false;
+  for (const child of blade.children) {
+    if (filterPane(child, query)) childMatch = true;
+  }
+  blade.hidden = !childMatch;
+  if (childMatch) blade.expanded = true;
+  return childMatch;
+}
+
 function isWireframeMaterial(material: THREE.Material): material is WireframeMaterial {
   return "wireframe" in material && typeof (material as WireframeMaterial).wireframe === "boolean";
 }
@@ -43,6 +93,7 @@ export class DebugPanel {
 
   #pane: Pane | null = null;
   #root: HTMLDivElement | null = null;
+  #searchQuery = "";
   #mode: PlayerMode = "walk";
   #moveFolders: ReturnType<typeof addMovementTuning> | null = null;
   #renderer: THREE.WebGPURenderer;
@@ -98,12 +149,21 @@ export class DebugPanel {
   /** Movement tuning is context-dependent — only the active mode's folder shows. */
   setMode(mode: PlayerMode) {
     this.#mode = mode;
-    this.#applyMode();
+    this.#applyFilter();
   }
 
-  #applyMode() {
-    if (!this.#moveFolders) return;
-    for (const [m, folder] of Object.entries(this.#moveFolders)) folder.hidden = m !== this.#mode;
+  /** Hide/show blades by the live search query, then re-assert mode-only movement. */
+  #applyFilter() {
+    if (!this.#pane) return;
+    const query = this.#searchQuery.trim().toLowerCase();
+    for (const child of this.#pane.children) filterPane(child, query);
+    // Without a query, movement stays mode-gated. While searching, any matching
+    // mode folder can surface (so you can find plane/boat knobs while walking).
+    if (!query && this.#moveFolders) {
+      for (const [m, folder] of Object.entries(this.#moveFolders)) {
+        folder.hidden = m !== this.#mode;
+      }
+    }
   }
 
   /** Keep the pane in sync with the running day/night cycle (call per frame; throttled). */
@@ -228,6 +288,33 @@ export class DebugPanel {
       "position:fixed;top:12px;right:12px;z-index:40;width:300px;max-height:calc(100vh - 24px);overflow:auto;overscroll-behavior:contain";
     document.body.appendChild(root);
     this.#root = root;
+
+    const search = document.createElement("input");
+    search.type = "search";
+    search.placeholder = "search tweaks…";
+    search.autocomplete = "off";
+    search.spellcheck = false;
+    search.setAttribute("aria-label", "Search tweaks");
+    search.style.cssText =
+      "display:block;box-sizing:border-box;width:100%;margin:0 0 6px;padding:7px 10px;border:1px solid rgba(255,255,255,0.12);border-radius:4px;background:rgba(12,12,14,0.92);color:#eee;font:12px/1.3 ui-monospace,SFMono-Regular,Menlo,monospace;outline:none";
+    search.addEventListener("input", () => {
+      this.#searchQuery = search.value;
+      this.#applyFilter();
+    });
+    search.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Escape") {
+        if (search.value) {
+          search.value = "";
+          this.#searchQuery = "";
+          this.#applyFilter();
+        } else {
+          search.blur();
+        }
+        e.preventDefault();
+      }
+    });
+    root.appendChild(search);
 
     const pane = new Pane({ container: root, title: "tuning — / to close" });
     this.#pane = pane;
@@ -431,9 +518,9 @@ export class DebugPanel {
     NATURE_AUDIO_TUNING.bind(natureF);
 
     this.#moveFolders = addMovementTuning(advanced);
-    this.#applyMode();
 
     // fireworks bindings read/write the params object the sim consumes each frame
     this.#fireworks?.addTuning(advanced);
+    this.#applyFilter();
   }
 }

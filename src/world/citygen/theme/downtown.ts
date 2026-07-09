@@ -3,8 +3,20 @@
 // window grid with string courses, a flat parapet cap.
 import { floorBands, type FacadeDecorator, type Vec3 } from "../core/facade";
 import { gp, beltCourse, cornice, windowGrid, storefront, cornerBoards } from "./facadeKit";
+import { largeCommercialFacade } from "./largeCommercial";
 
-export const downtownFacade: FacadeDecorator = (e, out) => {
+export const downtownFacade: FacadeDecorator = (e, out, rng) => {
+  // Big downtown/warehouse blocks get the rich tripartite masonry treatment
+  // (stone base + entrance, pier×band shaft grid, bracketed cornice) instead of
+  // the small storefront-and-grid look, which reads as a flat window-wall at
+  // this scale. "Large" = tall (height/floor count is building-wide, so every
+  // face agrees) OR a long, multi-storey block face (footprint-span proxy).
+  const height = e.top - e.base;
+  if (height >= 24 || e.floors >= 7 || (e.length >= 32 && e.floors >= 4)) {
+    largeCommercialFacade(e, out, rng);
+    return;
+  }
+
   const arch = e.arch;
   const wall = arch.wallMaterial;
   const trim = arch.trimMaterial ?? "trim.edwardian";
