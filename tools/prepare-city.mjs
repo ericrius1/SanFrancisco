@@ -8,6 +8,7 @@
 import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { BBOX, GRID, ORIGIN, M_PER_DEG_LAT, M_PER_DEG_LON, lonLatToLocal } from "./geo.mjs";
 import { decomposeFootprint, minAreaRect } from "./collider-lib.mjs";
+import { computeGroundTop } from "./groundtop-lib.mjs";
 
 const RAW = new URL("../data/raw/", import.meta.url);
 const PUB = new URL("../public/data/", import.meta.url);
@@ -684,6 +685,12 @@ async function main() {
   await writeFile(new URL("manifest.json", PUB), JSON.stringify(manifest));
   await writeFile(new URL("heightmap.bin", PUB), Buffer.from(height.buffer));
   await writeFile(new URL("surface.bin", PUB), Buffer.from(surface.buffer));
+
+  // rendered top-ground surface (base terrain + draped park lawns) for ground
+  // raycasts / the walk carpet — see groundtop-lib.mjs. The mesh bake for these
+  // lawns lives in tools/blender_city.py; both must agree on PARK_LIFT.
+  const groundTop = computeGroundTop(GRID, height, [...tiles.values()].map((t) => t.green || []));
+  await writeFile(new URL("groundtop.bin", PUB), Buffer.from(groundTop.buffer));
 
   const meta = {
     grid: GRID,

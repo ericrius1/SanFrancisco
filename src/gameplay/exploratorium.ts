@@ -243,11 +243,17 @@ export class Exploratorium {
     if (d < 300 && this.#bodies.length === 0) this.#createColliders();
     else if (d > 380 && this.#bodies.length > 0) this.#dropColliders();
 
-    // hide the whole museum unless you're right at the pier — far away it draws
-    // nothing. Bail before any per-frame exhibit work; if we left a room active
-    // (e.g. a teleport straight out), stop its compute on the way out.
+    // The shell has colliders whenever bodies are up (d < 380 with hysteresis).
+    // Keep the mesh drawn for EXACTLY that band so you never collide with an
+    // invisible shed — hiding it at the tight VISIBLE_MARGIN (80 m) left an
+    // 80–380 m ring where the pier collider was solid but nothing rendered.
+    // The costly per-frame exhibit work still bails at `near` below; only the
+    // static shell/dome draw in the outer band, which is cheap and must be
+    // visible there anyway.
+    const showShell = this.#bodies.length > 0 || d < VISIBLE_MARGIN;
+    if (this.#group && this.#group.visible !== showShell) this.#group.visible = showShell;
+
     const near = d < VISIBLE_MARGIN;
-    if (this.#group && this.#group.visible !== near) this.#group.visible = near;
     if (!near) {
       this.#inside = false;
       if (this.#room !== null) {

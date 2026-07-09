@@ -13,10 +13,11 @@
 // Nothing here is destructible (only the baked layer is, and we hide that).
 import type * as THREE from "three/webgpu";
 import { generate } from "../index";
+import { buildingColliders } from "../core/collider";
 import { buildBuilding, buildInterior } from "../render";
 import { buildChunkLOD, type ChunkLOD } from "../render/chunkLod";
 import { buildCityGenMaterials } from "../theme/materials";
-import type { BuildingSpec } from "../core/types";
+import type { BuildingSpec, ColliderBox } from "../core/types";
 import { CITYGEN_TUNING } from "../../../config";
 
 const READY = new Set(["victorian", "edwardian", "marina", "downtown", "soma"]);
@@ -24,7 +25,15 @@ const READY = new Set(["victorian", "edwardian", "marina", "downtown", "soma"]);
 // Live-tunable streaming params (CITYGEN_TUNING, "/" panel). Read fresh each scan.
 const CT = CITYGEN_TUNING.values;
 const DETAIL_EXIT_MARGIN = 25; // detail fades back to the chunk prism this far past detailRadius
-const DETAIL_BUDGET = 1; // detail builds per scan
+const DETAIL_BUDGET = 1; // detail MESH builds per scan (expensive)
+// Exact-collider tier: tight radius (you can only ever TOUCH a building a few
+// metres away — a wider band would just spawn hundreds of idle static walls).
+// 55 m + a 12/scan nearest-first fill beats the fastest approach to the ~3 m
+// touch range before the loose baked box is ever hit. Own radius, NOT detailR
+// (which is 150 m for the mesh and would over-spawn).
+const COLLIDER_R = 55;
+const COLLIDER_EXIT = 75; // hysteresis: drop back to baked only past here
+const COLLIDER_BUDGET = 12; // exact-collider swaps per scan (cheap: no mesh) — nearest first
 const CHUNK_BUDGET = 260;// buildings merged into chunk geometry per frame (no hitch)
 const SCAN_EVERY = 0.15;
 
@@ -47,10 +56,18 @@ interface Entry extends BuildingSpec {
   bb: { minx: number; maxx: number; minz: number; maxz: number };
   detail: BuiltGroup | null;
   fade: number; fadeDir: number;
-  bodies: number[];              // walk-in colliders (detail tier only)
+  bodies: number[];              // exact-poly wall colliders (coll + detail tiers)
+  wallBoxes: ColliderBox[];      // source OBBs of `bodies` (debug x-ray only)
   interior: { group: THREE.Group; dispose(): void } | null;
   intBodies: number[];
-  state: "lod" | "detail";       // lod = baked mesh hidden R=1 (collider kept); detail = R=0 + walk-in
+  intBoxes: ColliderBox[];       // source OBBs of `intBodies` (debug x-ray only)
+  // lod    = far: baked mesh hidden (R=1), the LOOSE baked collider is live.
+  // coll   = near: baked collider dropped (R=0) + exact-poly SOLID walls, so the
+  //          collider matches the visible LOD prism (no "invisible box" — the
+  //          baked decomposition overshoots the true footprint by ~2 m). Mesh is
+  //          still the prism (the pretty grammar mesh is budgeted separately).
+  // detail = closest-N: exact-poly walls WITH a door + full grammar mesh + interior.
+  state: "lod" | "coll" | "detail";
 }
 
 interface CellState { key: string; ix: number; iz: number; entries: Entry[]; chunk: ChunkLOD | null; phase: "building" | "ready"; }
@@ -72,6 +89,8 @@ export interface CityGenRing {
   dispose(): void;
   stats(): { total: number; cells: number; buildings: number; detail: number; interiors: number };
   debugBuildings(): { cx: number; cz: number; base: number; top: number; interior: boolean }[];
+  /** DEBUG: live walk-in wall + interior collider OBBs for the "/" x-ray overlay. */
+  debugColliders(walls: ColliderBox[], interiors: ColliderBox[]): void;
 }
 
 async function fetchGrid(url: string): Promise<GridData | null> {
@@ -95,7 +114,8 @@ export async function createCityGenRing(
       const entries = list.filter((b) => READY.has(b.archetype)).map((b) => {
         const g = boundsOf(b.poly);
         return { ...b, key, cx: g.cx, cz: g.cz, bb: { minx: g.minx, maxx: g.maxx, minz: g.minz, maxz: g.maxz },
-          detail: null, fade: 0, fadeDir: 0, bodies: [] as number[], interior: null, intBodies: [] as number[], state: "lod" as const } as Entry;
+          detail: null, fade: 0, fadeDir: 0, bodies: [] as number[], wallBoxes: [] as ColliderBox[],
+          interior: null, intBodies: [] as number[], intBoxes: [] as ColliderBox[], state: "lod" as const } as Entry;
       });
       if (entries.length) { cellEntries.set(key, entries); total += entries.length; }
     }
@@ -112,11 +132,36 @@ export async function createCityGenRing(
     ctx.physics.world.setBodyTransform(h, [c.x, c.y, c.z], [0, Math.sin(c.yaw / 2), 0, Math.cos(c.yaw / 2)]);
     return h;
   };
-  const clearBodies = (e: Entry) => { for (const h of e.bodies) ctx.physics.world.destroyBody(h); e.bodies.length = 0; };
+  const clearBodies = (e: Entry) => { for (const h of e.bodies) ctx.physics.world.destroyBody(h); e.bodies.length = 0; e.wallBoxes = []; };
   const disposeInterior = (e: Entry) => {
     if (e.interior) { ctx.scene.remove(e.interior.group); e.interior.dispose(); e.interior = null; }
     for (const h of e.intBodies) ctx.physics.world.destroyBody(h);
     e.intBodies.length = 0;
+    e.intBoxes = [];
+  };
+
+  // ---- collider tier (cheap, eager) ------------------------------------------
+  // Swap the LOOSE baked collider for tight exact-poly SOLID walls the moment a
+  // building is near enough to touch. The baked decomposition overshoots the true
+  // footprint by ~2 m (bake-time box-count reduction), but the LOD prism we draw
+  // is the exact poly — so in "lod" the car stops short of the visible wall on an
+  // invisible box. "coll" removes that gap without paying for the detail mesh.
+  const ensureExactCollider = (e: Entry) => {
+    if (e.state !== "lod") return;
+    ctx.tiles.suppressBuilding(e.key, e.i); // baked mesh + loose collider off (R=0)
+    // buildingColliders directly (not generate): colliders only, no throwaway mesh
+    const { boxes } = buildingColliders(e as BuildingSpec, false); // SOLID (no door yet)
+    for (const c of boxes) e.bodies.push(addBody(c));
+    e.wallBoxes = boxes;
+    e.state = "coll";
+  };
+  const dropExactCollider = (e: Entry) => {
+    if (e.state !== "coll") return;
+    clearBodies(e);
+    // back to LOD: baked mesh hidden (R=1) but the accurate baked collider is live
+    ctx.tiles.unsuppressBuilding(e.key, e.i);
+    ctx.tiles.suppressBuildingMesh(e.key, e.i);
+    e.state = "lod";
   };
 
   // ---- detail tier -----------------------------------------------------------
@@ -124,17 +169,22 @@ export async function createCityGenRing(
     const b = buildBuilding(e as BuildingSpec, materials);
     b.setOpacity(0);
     ctx.scene.add(b.group);
-    e.detail = b; e.fade = 0; e.fadeDir = 1; e.state = "detail";
+    e.detail = b; e.fade = 0; e.fadeDir = 1;
+    // upgrade from "coll": its SOLID walls are re-cut with the walk-in door below.
+    clearBodies(e);
+    e.state = "detail";
     // baked mesh+collider fully off; add per-edge walk-in walls + door
     ctx.tiles.suppressBuilding(e.key, e.i);
     const { colliders } = generate(e as BuildingSpec, true);
     for (const c of colliders) e.bodies.push(addBody(c));
+    e.wallBoxes = colliders;
   };
   const dropDetail = (e: Entry) => {
     disposeInterior(e);
     if (e.detail) { ctx.scene.remove(e.detail.group); e.detail.dispose(); e.detail = null; }
     clearBodies(e);
-    // back to LOD: baked mesh hidden (R=1) but accurate baked collider live again
+    // back to LOD: baked mesh hidden (R=1) but accurate baked collider live again.
+    // If still within collider range the next scan re-swaps it to a tight "coll".
     ctx.tiles.unsuppressBuilding(e.key, e.i);
     ctx.tiles.suppressBuildingMesh(e.key, e.i);
     e.state = "lod"; e.fade = 0; e.fadeDir = 0;
@@ -155,6 +205,7 @@ export async function createCityGenRing(
       const it = buildInterior(e as BuildingSpec, materials);
       ctx.scene.add(it.group);
       for (const c of it.colliders) e.intBodies.push(addBody(c));
+      e.intBoxes = it.colliders;
       e.interior = it;
     } else if (!inside && e.interior) {
       const clear = p.x < e.bb.minx - 4 || p.x > e.bb.maxx + 4 || p.z < e.bb.minz - 4 || p.z > e.bb.maxz + 4;
@@ -172,6 +223,7 @@ export async function createCityGenRing(
   const unloadCell = (cell: CellState) => {
     for (const e of cell.entries) {
       if (e.detail || e.state === "detail") dropDetail(e);
+      else if (e.state === "coll") dropExactCollider(e);
       ctx.tiles.unsuppressBuildingMesh(e.key, e.i); // restore baked mesh
       e.state = "lod";
     }
@@ -211,6 +263,7 @@ export async function createCityGenRing(
       const detailR = CT.detailRadius, detailR2 = detailR * detailR;
       const detailExit = detailR + DETAIL_EXIT_MARGIN, detailExit2 = detailExit * detailExit;
       const maxDetail = CT.maxDetail;
+      const collR2 = COLLIDER_R * COLLIDER_R, collExit2 = COLLIDER_EXIT * COLLIDER_EXIT;
 
       // unload cells beyond the ring
       for (const cell of [...loaded.values()]) {
@@ -226,9 +279,12 @@ export async function createCityGenRing(
         }
       }
 
-      // detail tier: nearest-N ready-cell buildings within DETAIL_R
+      // two tiers within detailR: the nearest-N get the full grammar MESH (budgeted,
+      // expensive); everyone else in range gets a tight exact-poly COLLIDER (cheap)
+      // so the car never hits the loose baked box on a building drawn as its prism.
       let detailCount = 0;
-      const wants: [Entry, number][] = [];
+      const wantDetail: [Entry, number][] = [];
+      const wantColl: [Entry, number][] = [];
       for (const cell of loaded.values()) {
         if (cell.phase !== "ready") continue;
         for (const e of cell.entries) {
@@ -238,12 +294,23 @@ export async function createCityGenRing(
             detailCount++;
             if (d2 > detailExit2 && e.fadeDir >= 0) e.fadeDir = -1;
             else if (d2 < detailR2 && e.fadeDir < 0) e.fadeDir = 1;
-          } else if (d2 < detailR2) wants.push([e, d2]);
+          } else {
+            // lod or coll: may earn a mesh (detailR) and/or a tight collider (collR)
+            if (d2 < detailR2) wantDetail.push([e, d2]);
+            if (e.state === "lod") { if (d2 < collR2) wantColl.push([e, d2]); }
+            else if (d2 > collExit2) dropExactCollider(e); // coll left the band → loose baked
+          }
         }
       }
-      wants.sort((a, b) => a[1] - b[1]);
+      // nearest detail meshes first (expensive, low budget)
+      wantDetail.sort((a, b) => a[1] - b[1]);
       let db = DETAIL_BUDGET;
-      for (const [e] of wants) { if (db <= 0 || detailCount >= maxDetail) break; buildDetail(e); db--; detailCount++; }
+      for (const [e] of wantDetail) { if (db <= 0 || detailCount >= maxDetail) break; buildDetail(e); db--; detailCount++; }
+      // then tighten the nearest still-loose colliders (cheap; guard skips any that
+      // just upgraded to detail this scan)
+      wantColl.sort((a, b) => a[1] - b[1]);
+      let cb = COLLIDER_BUDGET;
+      for (const [e] of wantColl) { if (cb <= 0) break; if (e.state !== "lod") continue; ensureExactCollider(e); cb--; }
     },
     dispose() { for (const cell of [...loaded.values()]) unloadCell(cell); loaded.clear(); building.length = 0; },
     stats() {
@@ -255,6 +322,13 @@ export async function createCityGenRing(
       const out: { cx: number; cz: number; base: number; top: number; interior: boolean }[] = [];
       for (const cell of loaded.values()) for (const e of cell.entries) if (e.detail) out.push({ cx: e.cx, cz: e.cz, base: e.base, top: e.top, interior: !!e.interior });
       return out;
+    },
+    debugColliders(walls, interiors) {
+      walls.length = 0; interiors.length = 0;
+      for (const cell of loaded.values()) for (const e of cell.entries) {
+        for (const c of e.wallBoxes) walls.push(c);
+        for (const c of e.intBoxes) interiors.push(c);
+      }
     },
   };
 }

@@ -353,6 +353,9 @@ export class DebugPanel {
         this.#applyWireframe(Boolean(value), true);
       }
     });
+    // collider x-ray: persisted toggle only — main's tick polls the live value
+    // each frame, gathers active colliders and drives the overlay.
+    RENDER_TUNING.bind(render, { keys: ["colliderDebug"] });
 
     // draw distance: one slider drives both streaming radii (unload trails load by a
     // fixed hysteresis margin so tiles never thrash at the boundary). forceScan makes

@@ -54,7 +54,7 @@ import { Forest, ANIMALS, type AnimalKind } from "./gameplay/forest";
 import { createBotanicalGarden, windGustValue, type GrassDisplacer } from "./world/garden";
 import { createWildlands } from "./world/wildlands";
 import { createCityGenDemo } from "./world/citygen/demo";
-import { createCityGenRing, type CityGenRing } from "./world/citygen";
+import { createCityGenRing, type CityGenRing, type ColliderBox } from "./world/citygen";
 import { Islands } from "./gameplay/islands";
 import { Exploratorium, WATER_VIEW } from "./gameplay/exploratorium";
 import { Loot } from "./gameplay/loot";
@@ -73,6 +73,7 @@ import { Tutorial } from "./ui/tutorial";
 import { createRenderPipeline } from "./render/pipeline";
 import { POSTFX_TUNING } from "./render/postfx";
 import { DebugPanel } from "./ui/debug";
+import { ColliderDebug, type DebugBox } from "./ui/colliderDebug";
 import { Net, makeFunName } from "./net/net";
 import { RemotePlayers } from "./net/remotes";
 import { Voice } from "./net/voice";
@@ -1162,6 +1163,32 @@ async function boot() {
   // projectile tracers: instanced TSL energy orbs (fx/projectile.ts)
   const tracers = new ProjectileTracers(scene);
 
+  // collider x-ray overlay (debug: "/" → collider x-ray). Off unless toggled;
+  // the tick gathers active colliders and drives it. Scratch arrays reused so an
+  // enabled overlay allocates nothing per frame.
+  const colliderDebug = new ColliderDebug(scene);
+  const colliderBoxes: DebugBox[] = [];
+  const dbgBaked: { x: number; y: number; z: number; hx: number; hy: number; hz: number; yaw: number; index: boolean }[] = [];
+  const dbgWalls: ColliderBox[] = [];
+  const dbgInteriors: ColliderBox[] = [];
+  const syncColliderDebug = () => {
+    const on = Boolean(RENDER_TUNING.values.colliderDebug);
+    if (on !== colliderDebug.visible) colliderDebug.setVisible(on);
+    if (!on) return;
+    colliderBoxes.length = 0;
+    physics.debugBuildingBodies(dbgBaked);
+    for (const b of dbgBaked) {
+      // red = baked visual-tile body, orange = citywide-index body
+      colliderBoxes.push({ ...b, r: 1, g: b.index ? 0.55 : 0.12, b: 0.12 });
+    }
+    if (citygenRing.current) {
+      citygenRing.current.debugColliders(dbgWalls, dbgInteriors);
+      for (const c of dbgWalls) colliderBoxes.push({ ...c, r: 0.15, g: 1, b: 0.3 });      // green = walk-in wall
+      for (const c of dbgInteriors) colliderBoxes.push({ ...c, r: 0.25, g: 0.55, b: 1 }); // blue = interior
+    }
+    colliderDebug.sync(colliderBoxes);
+  };
+
   const mat4 = new THREE.Matrix4();
   const quat = new THREE.Quaternion();
   const pos = new THREE.Vector3();
@@ -2199,6 +2226,8 @@ async function boot() {
     // projectile sync: pose + stretch each tracer along its velocity
     tracers.sync(physics);
 
+    syncColliderDebug(); // debug x-ray of active colliders (no-op unless toggled)
+
     input.endFrame();
     pipeline.render();
   };
@@ -2254,7 +2283,7 @@ async function boot() {
 
   const exposeDebugHooks = () => {
     Object.assign(window as never, {
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, exploratorium, traffic, creatures, forest, garden, wildlands, splashes, vehicleAudio, nature, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, boatLaunchers, goldenGateLights, flyover, bridgeParade, teleportToTarget, aiCars, horses, citygen, citygenRing, brainPanel, inspectableBrains, worldCursor, worldQueries, underwater, seaPillars, water }
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, exploratorium, traffic, creatures, forest, garden, wildlands, splashes, vehicleAudio, nature, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, boatLaunchers, goldenGateLights, flyover, bridgeParade, teleportToTarget, aiCars, horses, citygen, citygenRing, brainPanel, inspectableBrains, worldCursor, worldQueries, underwater, seaPillars, water, colliderDebug }
     });
   };
   if (import.meta.env.DEV || new URLSearchParams(location.search).has("profile")) {

@@ -47,23 +47,34 @@ export function palaceLagoonMask(x: number, z: number): number {
 export class WorldMap {
   meta!: Meta;
   heights!: Float32Array;
+  // Top of the RENDERED ground: base terrain raised onto draped park lawns
+  // (baked by tools/bake-groundtop.mjs). Distinct from `heights`, which is the
+  // raw heightfield the lawns sit ABOVE — a ray marching `heights` lands under
+  // the visible grass and the splat is occluded. Falls back to `heights` when
+  // the bake is missing (older deploys), so behaviour degrades to the old one.
+  groundTops!: Float32Array;
   surface!: Uint8Array;
   #bridgeBounds?: { minX: number; maxX: number; minZ: number; maxZ: number }[];
 
   static async load(): Promise<WorldMap> {
     const map = new WorldMap();
-    const [meta, hBuf, sBuf] = await Promise.all([
+    const [meta, hBuf, sBuf, gBuf] = await Promise.all([
       fetch("/data/meta.json").then((r) => r.json()),
       fetch("/data/heightmap.bin").then((r) => r.arrayBuffer()),
-      fetch("/data/surface.bin").then((r) => r.arrayBuffer())
+      fetch("/data/surface.bin").then((r) => r.arrayBuffer()),
+      fetch("/data/groundtop.bin")
+        .then((r) => (r.ok ? r.arrayBuffer() : null))
+        .catch(() => null)
     ]);
     map.meta = meta;
     map.heights = new Float32Array(hBuf);
     map.surface = new Uint8Array(sBuf);
+    map.groundTops = gBuf ? new Float32Array(gBuf) : map.heights;
     return map;
   }
 
-  groundHeight(x: number, z: number): number {
+  /** Bilinear sample of a W*H grid array at world (x, z). */
+  #sampleGrid(arr: Float32Array, x: number, z: number): number {
     const { cellSize, width: W, height: H, minX, minZ } = this.meta.grid;
     const fx = Math.min(Math.max((x - minX) / cellSize, 0), W - 1.001);
     const fy = Math.min(Math.max((z - minZ) / cellSize, 0), H - 1.001);
@@ -71,12 +82,26 @@ export class WorldMap {
     const iy = Math.floor(fy);
     const ax = fx - ix;
     const ay = fy - iy;
-    const h = this.heights;
-    const h00 = h[iy * W + ix];
-    const h10 = h[iy * W + ix + 1];
-    const h01 = h[(iy + 1) * W + ix];
-    const h11 = h[(iy + 1) * W + ix + 1];
+    const i = iy * W + ix;
+    const h00 = arr[i];
+    const h10 = arr[i + 1];
+    const h01 = arr[i + W];
+    const h11 = arr[i + W + 1];
     return (h00 * (1 - ax) + h10 * ax) * (1 - ay) + (h01 * (1 - ax) + h11 * ax) * ay;
+  }
+
+  /** Raw heightfield: the base terrain / bay floor. Use for water depth and
+   *  altitude — NOT for "what does a ray hit" (that is `groundTop`). */
+  groundHeight(x: number, z: number): number {
+    return this.#sampleGrid(this.heights, x, z);
+  }
+
+  /** Top of the rendered ground — the surface paint, the cursor and the walk
+   *  carpet should rest on. Equals `groundHeight` off-park; on park lawns it is
+   *  raised to the draped grass you actually see. Excludes the bridge deck (a
+   *  real solid, cast separately in physics.raycastWorld). */
+  groundTop(x: number, z: number): number {
+    return this.#sampleGrid(this.groundTops, x, z);
   }
 
   surfaceType(x: number, z: number): number {
@@ -145,9 +170,11 @@ export class WorldMap {
     });
   }
 
-  /** Ground the player actually stands/drives on: terrain or bridge deck. */
+  /** Ground the player actually stands/drives on: rendered top ground (draped
+   *  lawns included, so the walk carpet seats on the grass you see) or bridge
+   *  deck. */
   effectiveGround(x: number, z: number): number {
-    const terrain = this.groundHeight(x, z);
+    const terrain = this.groundTop(x, z);
     const deck = this.bridgeDeck(x, z);
     return deck > -Infinity ? Math.max(terrain, deck) : terrain;
   }

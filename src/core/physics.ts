@@ -476,6 +476,18 @@ export class Physics {
     return out;
   }
 
+  /** DEBUG: every materialised building STATIC body as an oriented box, tagged by
+   *  source (index = citywide baked index vs. visual tile stream). Feeds the "/"
+   *  collider x-ray overlay so a body with no matching mesh is visible. */
+  debugBuildingBodies(out: { x: number; y: number; z: number; hx: number; hy: number; hz: number; yaw: number; index: boolean }[]): void {
+    out.length = 0;
+    for (const info of this.#buildingBodies.values()) {
+      const c = this.#findCollider(info.key, info.i, info.s);
+      if (!c) continue;
+      out.push({ x: c.x, y: c.y, z: c.z, hx: c.hx, hy: c.hy, hz: c.hz, yaw: c.yaw, index: !this.#tileColliders.has(info.key) });
+    }
+  }
+
   /** A building box by identity, from the visual tiles first then the index. */
   #findCollider(key: string, i: number, s: number): BuildingCollider | undefined {
     const visual = this.#tileColliders.get(key);
@@ -817,28 +829,31 @@ export class Physics {
       bestN = [sHit.nx, sHit.ny, sHit.nz];
     }
 
-    // --- terrain: coarse march + bisection refine on the sign flip. Uses the raw
-    // heightfield, NOT effectiveGround — the bridge deck is a solid above (cast
-    // separately), so it must not also appear here as a phantom plane.
+    // --- terrain: coarse march + bisection refine on the sign flip. Marches the
+    // rendered top-ground surface (map.groundTop = terrain + draped park lawns),
+    // NOT the raw heightfield — the raw field sits UNDER every lawn, so a shot
+    // marching it lands beneath the visible grass and the splat is occluded. Also
+    // NOT effectiveGround: the bridge deck is a solid above (cast separately), so
+    // groundTop excludes it and it can't reappear here as a phantom plane.
     let groundT = Infinity;
     if (dir.y < 0.35) {
       // rays angled well upward can't land on the heightfield
       const step = 3;
       let prevT = 0;
-      let prevAbove = origin.y - this.map.groundHeight(origin.x, origin.z) > 0;
+      let prevAbove = origin.y - this.map.groundTop(origin.x, origin.z) > 0;
       const limit = Math.min(maxDist, bestT);
       for (let t = step; t <= limit + step; t += step) {
         const tt = Math.min(t, limit);
         const x = origin.x + dir.x * tt;
         const z = origin.z + dir.z * tt;
-        const above = origin.y + dir.y * tt - this.map.groundHeight(x, z) > 0;
+        const above = origin.y + dir.y * tt - this.map.groundTop(x, z) > 0;
         if (prevAbove && !above) {
           let lo = prevT;
           let hi = tt;
           for (let i = 0; i < 8; i++) {
             const m = (lo + hi) / 2;
             const my = origin.y + dir.y * m;
-            if (my - this.map.groundHeight(origin.x + dir.x * m, origin.z + dir.z * m) > 0) lo = m;
+            if (my - this.map.groundTop(origin.x + dir.x * m, origin.z + dir.z * m) > 0) lo = m;
             else hi = m;
           }
           groundT = (lo + hi) / 2;

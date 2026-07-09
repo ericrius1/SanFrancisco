@@ -67,7 +67,11 @@ export const RENDER_TUNING = tunables("render", {
     options: { Off: "off", Low: "low", High: "high" },
     label: "shadow quality"
   },
-  wireframe: { v: false, label: "wireframe mode" }
+  wireframe: { v: false, label: "wireframe mode" },
+  // collider x-ray: draw every active physics collider as a wireframe box (red =
+  // baked body, orange = citywide index, green = walk-in wall, blue = interior).
+  // Diagnoses "invisible collision" — a box that sits where no mesh is drawn.
+  colliderDebug: { v: false, label: "collider x-ray" }
 });
 
 /** Draw distance + fog, bound in the "/" panel. `radius` drives both tile radii. */

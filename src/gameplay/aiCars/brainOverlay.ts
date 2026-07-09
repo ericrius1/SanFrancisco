@@ -118,7 +118,9 @@ export class BrainOverlay {
     lineAttr.setUsage(THREE.DynamicDrawUsage);
     lineGeo.setAttribute("color", lineAttr);
     const lineMat = new THREE.LineBasicNodeMaterial({ vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
-    lineMat.opacity = 0.5;
+    // dense fully-connected layers stack additively — keep this low so the
+    // lattice stays readable instead of blowing out to a white slab
+    lineMat.opacity = 0.22;
     lineMat.depthTest = false;
     lineMat.toneMapped = false;
     const line = new THREE.LineSegments(lineGeo, lineMat);
@@ -128,6 +130,7 @@ export class BrainOverlay {
     const nodeLayer = new Uint8Array(nodeCount);
     const nodeIdx = new Uint16Array(nodeCount);
     const nodeMat = new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
+    nodeMat.opacity = 0.85;
     nodeMat.depthTest = false;
     nodeMat.toneMapped = false;
     const nodes = new THREE.InstancedMesh(new THREE.SphereGeometry(NODE_R, 8, 6), nodeMat, nodeCount);
@@ -193,8 +196,10 @@ export class BrainOverlay {
     const a = Math.max(-1, Math.min(1, act));
     const t = Math.abs(a);
     const base = a >= 0 ? POS : NEG;
-    const heat = (0.32 + t * t * 1.7) * gain;
-    const white = t > 0.7 ? (t - 0.7) * 1.4 : 0;
+    // softer heat curve + lighter white lift so hot edges stay tinted (orange/
+    // cyan) instead of clipping to additive white when many lines overlap
+    const heat = (0.22 + t * t * 0.95) * gain;
+    const white = t > 0.75 ? (t - 0.75) * 0.55 : 0;
     out.setRGB((base.r * (1 - white) + white) * heat, (base.g * (1 - white) + white) * heat, (base.b * (1 - white) + white) * heat);
   }
 
@@ -231,7 +236,7 @@ export class BrainOverlay {
     const lc = lat.lineCol;
     for (let e = 0; e < lat.edgeSrc.length; e++) {
       const prod = act[lat.edgeSrc[e]] * act[lat.edgeDst[e]];
-      this.#tint(this.#col, prod, 0.9);
+      this.#tint(this.#col, prod, 0.55);
       const o = e * 6;
       lc[o] = lc[o + 3] = this.#col.r;
       lc[o + 1] = lc[o + 4] = this.#col.g;
@@ -239,9 +244,10 @@ export class BrainOverlay {
     }
     lat.lineAttr.needsUpdate = true;
 
-    // nodes: brightness ∝ |activation|
+    // nodes: brightness ∝ |activation| — a bit hotter than edges so energy
+    // pulses still read clearly against the quieter lattice
     for (let n = 0; n < lat.nodeLayer.length; n++) {
-      this.#tint(this.#col, act[n], 1.25);
+      this.#tint(this.#col, act[n], 0.95);
       lat.nodes.setColorAt(n, this.#col);
     }
     if (lat.nodes.instanceColor) lat.nodes.instanceColor.needsUpdate = true;
