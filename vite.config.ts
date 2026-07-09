@@ -1,16 +1,34 @@
+import { createServer } from "node:net";
 import { fileURLToPath, URL } from "node:url";
 import { defineConfig, type Plugin } from "vite";
 
 const RELAY_PORT = process.env.SF_RELAY_PORT || "8787";
 const RELAY_WS = `ws://localhost:${RELAY_PORT}`;
 
+/** True if nothing is listening on the relay port (best-effort; race still handled in server.mjs). */
+function relayPortFree(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const s = createServer();
+    s.once("error", () => resolve(false));
+    s.once("listening", () => {
+      s.close(() => resolve(true));
+    });
+    s.listen(port, "0.0.0.0");
+  });
+}
+
 // Dev multiplayer with zero extra terminals: when the dev server boots, start
 // the WebSocket relay (server/server.mjs) in-process on 8787 and proxy /ws to
 // it. If a relay is already running on that port (another vite, or a manual
-// `npm run server`), the import just logs a warning and we proxy to that one.
+// `npm run server`), skip starting and proxy to that one.
 const relayPlugin = (): Plugin => ({
   name: "sf-multiplayer-relay",
   async configureServer() {
+    const port = Number(RELAY_PORT);
+    if (!(await relayPortFree(port))) {
+      console.warn(`[sf] relay port ${port} already in use — proxying to existing relay`);
+      return;
+    }
     // server.mjs reads PORT at import — pin it to the relay port for the
     // import, then restore (hosting panels/preview harnesses inject PORT for
     // the dev server itself, which must not leak into the relay)

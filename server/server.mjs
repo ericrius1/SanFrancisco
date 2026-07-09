@@ -498,14 +498,18 @@ setInterval(() => {
 
 // vite's relay plugin imports this file at dev boot; if another relay already
 // owns the port (second vite, manual `npm run server`), warn and stand down
-// instead of killing the host process
-server.on("error", (err) => {
+// instead of killing the host process. `ws` re-emits the HTTP server's
+// `error` onto the WebSocketServer — without a listener there, Node treats it
+// as unhandled and crashes the whole Vite process.
+const onListenError = (err) => {
   if (err.code === "EADDRINUSE") {
     console.warn(`[sf-server] port ${PORT} already in use — assuming a relay is already running`);
   } else {
     console.error("[sf-server]", err);
   }
-});
+};
+server.on("error", onListenError);
+wss.on("error", onListenError);
 
 server.listen(PORT, HOST, () => {
   console.log(`[sf-server] http://${HOST}:${PORT}  (ws: /ws, static: ${existsSync(DIST) ? "dist/" : "none — dev mode"})`);
