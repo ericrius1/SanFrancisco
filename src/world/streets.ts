@@ -18,8 +18,8 @@ import { bumpNormal } from "./tslUtil";
  * Street asphalt in the spirit of the reference city generator's road material:
  * warm-grey patchwork pours, oily wear stains, low-frequency wet patches that go
  * glossy and mirror the sky, and fine aggregate grit that only resolves near the
- * camera. (No painted lane lines — real SF streets curve; the grid trick from the
- * reference doesn't apply to OSM ribbons.)
+ * camera. Painted lane markings are rendered as an OSM-derived overlay so they
+ * can follow curved ribbons and one-way/two-way metadata instead of a grid.
  */
 export function createRoadMaterial(): THREE.MeshStandardNodeMaterial {
   const mat = new THREE.MeshStandardNodeMaterial();

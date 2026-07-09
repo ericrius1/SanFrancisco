@@ -32,6 +32,7 @@ import { Learner, ACTOR_SIZES } from "./learner.ts";
 import { BrainOverlay } from "./brainOverlay.ts";
 import { buildCarMesh } from "./carMesh.ts";
 import { TrafficLightView } from "./trafficLights.ts";
+import { createRoadMarkings } from "../../world/roadMarkings";
 import { StatsChip, type LifeStats } from "./statsChip.ts";
 import { GhostStore, isLeader, serializeCars, HIDDEN } from "./netSync.ts";
 import type { InspectableBrain } from "../../ui/brainPanel/types.ts";
@@ -197,6 +198,7 @@ export class AiCars {
     overlay.setEnabled(this.#overlaysOn);
     this.#overlay = overlay;
     this.#trafficLights = new TrafficLightView(this.#scene, this.#map, roads.signals);
+    void createRoadMarkings(this.#scene, this.#map).catch((err) => console.warn("[roads] lane markings unavailable", err));
     this.#chip = new StatsChip();
     this.#ghosts = new GhostStore(this.#fleetSize(fleet));
     this.#ghostLayerOut = [new Float32Array(HIDDEN), this.#zeroOut];
