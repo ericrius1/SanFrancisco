@@ -142,12 +142,14 @@ export class BirdController implements ModeController {
     this.#speedVis = speed;
     const targetPitch = speed > 2 ? Math.asin(THREE.MathUtils.clamp(V.tmp2.y / Math.max(speed, 4), -1, 1)) : 0;
     this.#pitch += (targetPitch - this.#pitch) * Math.min(1, dt * 5);
-    const localLat = V.tmp2.x * Math.cos(yaw) - V.tmp2.z * Math.sin(yaw); // speed to the right
-    // bank INTO the turn from two sources that MUST agree in sign: lateral speed
-    // (A/D strafe) and yaw rate (mouse steer). Both terms are negated so a mouse
-    // turn leans the same way an A/D strafe does. The yaw term used to be +dYaw,
-    // which banked the bird the wrong way whenever you steered with the mouse.
-    const targetRoll = THREE.MathUtils.clamp(-localLat * t.bankPerSpeed - dYaw * 1.4, -t.maxBank, t.maxBank);
+    // bank INTO the turn. Lean on the COMMANDED velocity (`target`), not the eased
+    // actual velocity: in a sustained mouse turn the real velocity slips to the
+    // OUTSIDE of the turn (it lags the rotating heading), so banking into it rolled
+    // the bird the wrong way. The command instead points where we're steering — the
+    // strafe axis for A/D, the aim-lead for a mouse turn — so both bank the same way,
+    // and the yaw-rate term (dYaw) reinforces the same direction.
+    const cmdLat = target.x * Math.cos(yaw) - target.z * Math.sin(yaw); // commanded speed to the right
+    const targetRoll = THREE.MathUtils.clamp(-cmdLat * t.bankPerSpeed + dYaw * 1.4, -t.maxBank, t.maxBank);
     this.#roll += (targetRoll - this.#roll) * Math.min(1, dt * 5);
     const posture = this.#flapPow * 0.16 - this.#tuck * 0.08;
     const q = ctx.quaternion.setFromEuler(V.euler.set(this.#pitch * 0.9 + posture, yaw, this.#roll + this.#spin, "YXZ"));

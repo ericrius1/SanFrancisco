@@ -19,10 +19,16 @@ export interface BuildingSpec {
   id: number;
   /** REAL footprint ring (not a bbox) — the anti-"shift" guarantee */
   poly: Vec2[];
-  /** world Y where the walls meet the ground */
+  /** world Y where the walls meet the ground (= LOWEST ground under the footprint;
+   *  buildings dig into hills, so the wall skirt runs below grade on the uphill side) */
   base: number;
   /** world Y of the roof */
   top: number;
+  /** world Y of the HIGHEST ground under the footprint. Windows + ground-floor
+   *  detail are never drawn below this line so a sloped lot doesn't half-bury the
+   *  bottom row (the buried skirt between base and grade stays solid wall).
+   *  Optional — supplied by the streaming host from live terrain; defaults to base. */
+  grade?: number;
   h?: number;
   archetype: ArchetypeId;
   /** deterministic per-building seed (drives all style jitter) */

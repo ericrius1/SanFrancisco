@@ -1963,10 +1963,11 @@ async function boot() {
     gardenDisplacer.x = player.renderPosition.x;
     gardenDisplacer.z = player.renderPosition.z;
     garden.update(frameDt, player.renderPosition, gardenDisplacers);
-    // wildlands: chunk distance-culling for the SeedThree groves + flower drifts
-    // (near-tier tree LOD self-drives via onBeforeRender). Follow the camera so
-    // culling matches what's on screen.
-    wildlands.update(camera.position);
+    // wildlands: the grass + flower rings follow the PLAYER (like the garden ring
+    // above) so they stay put when you just look around — the chase camera orbits
+    // the player, and anchoring the rings to it slid the whole field around you.
+    // Tree distance-culling still follows the camera so off-screen groves drop.
+    wildlands.update(player.renderPosition, camera.position);
     // nature soundscape rides the same gust envelope garden.update just advanced,
     // and reads the sky clock for dawn choruses / night owls. Cheap out in the
     // city (suspends), so it's safe to tick unconditionally.

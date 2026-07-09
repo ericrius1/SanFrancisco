@@ -26,8 +26,15 @@ export type Wildlands = {
   grass: WildGrass;
   /** add all layer groups to the scene */
   groups: THREE.Group[];
-  /** per-frame: LOD/culling + the player-following grass & flower rings, from a focus point */
-  update(focus: { x: number; z: number }): void;
+  /**
+   * Per-frame update. `ringFocus` anchors the player-following grass + flower
+   * rings — it MUST be the player, not the camera: the chase camera orbits the
+   * player when you look around, so anchoring the rings to it slides the whole
+   * field around you (grass swims / detaches from the ground). `cullFocus`
+   * (defaults to ringFocus) drives the tree distance-culling and legitimately
+   * wants the camera so off-screen groves drop.
+   */
+  update(ringFocus: { x: number; z: number }, cullFocus?: { x: number; z: number }): void;
   stats: { trees: number; flowers: number; treeChunks: number };
 };
 
@@ -56,10 +63,10 @@ export function createWildlands(map: GardenTerrain): Wildlands {
     flowers,
     grass,
     groups: [trees.group, flowers.group, grass.group],
-    update(focus) {
-      trees.update(focus);
-      flowers.update(focus);
-      grass.update(focus);
+    update(ringFocus, cullFocus = ringFocus) {
+      trees.update(cullFocus); // distance-cull to what the camera sees
+      flowers.update(ringFocus); // rings stay centred on the player, not the camera
+      grass.update(ringFocus);
     },
     get stats() {
       return {

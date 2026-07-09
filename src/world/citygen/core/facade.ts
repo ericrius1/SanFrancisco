@@ -16,6 +16,11 @@ export interface FacadeEdge {
   p1: Vec2;
   base: number;
   top: number;
+  /** highest ground line under the building — no window/ground-floor detail is
+   *  drawn below this (defaults to base on flat lots). The wall itself still runs
+   *  base→top; only detail respects grade, so a sloped lot keeps a solid skirt
+   *  instead of half-buried windows. */
+  grade: number;
   floors: number;
   /** unit direction p0→p1 in x/z */
   along: Vec2;
@@ -124,4 +129,11 @@ export function floorBands(e: FacadeEdge): { y0: number; y1: number; i: number }
 /** integer bay count for a target bay width, ≥1 */
 export function bayCount(e: FacadeEdge, targetWidth: number): number {
   return Math.max(1, Math.round(e.length / targetWidth));
+}
+
+/** Lift a windowsill / ground-floor detail bottom to the grade line so nothing is
+ *  drawn below the highest ground under the building (the buried-window fix). A
+ *  small margin keeps the sill trim clear of the dirt. */
+export function aboveGrade(e: FacadeEdge, y0: number): number {
+  return Math.max(y0, e.grade + 0.15);
 }

@@ -27,6 +27,9 @@ export function massBuilding(spec: BuildingSpec, arch: ArchetypeSpec, decorate: 
   const poly = ensureCCW(spec.poly);
   const base = spec.base;
   const top = spec.top;
+  // grade = highest ground under the footprint; clamp into (base, top) so a lot
+  // never loses its whole façade to a bad sample. Windows sit above this line.
+  const grade = Math.min(Math.max(spec.grade ?? base, base), top - 1.5);
   const height = Math.max(0.1, top - base);
   const floors = Math.max(1, Math.round(height / arch.floorH));
   const streetI = streetEdgeIndex(poly);
@@ -43,7 +46,7 @@ export function massBuilding(spec: BuildingSpec, arch: ArchetypeSpec, decorate: 
     const along: Vec2 = [dx / length, dz / length];
     const normal = edgeOutwardNormal(p0, p1);
     const edge: FacadeEdge = {
-      p0, p1, base, top, floors, along, normal, length,
+      p0, p1, base, top, grade, floors, along, normal, length,
       isStreet: i === streetI, arch,
     };
     // Seed salt per edge so each face varies but stays deterministic.
