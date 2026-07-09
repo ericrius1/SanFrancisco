@@ -43,7 +43,7 @@ import { tunables } from "../core/persist";
  */
 export const POSTFX_TUNING = tunables("postfx", {
   sceneSamples: {
-    v: 2,
+    v: 0,
     min: 0,
     max: 4,
     step: 1,

@@ -47,23 +47,24 @@ export const RENDER_QUALITY_PRESETS: Record<
 /** Renderer grading, bound in the "/" panel's lighting folder. */
 export const RENDER_TUNING = tunables("render", {
   renderQuality: {
-    v: "balanced",
+    v: "performance",
     options: { Performance: "performance", Balanced: "balanced", High: "high" },
     label: "quality preset"
   },
   exposure: { v: 0.13, min: 0.01, max: 1, label: "exposure" },
   // drawing-buffer cap on devicePixelRatio. The scene is fragment-bound: retina
   // dpr 2 costs ~2× the frame time of 1.5 for a near-invisible sharpness delta
-  // (measured 17.1 → 8.6 ms p50 at 2560×1600), so 1.5 is the default; dpr-1
-  // displays are unaffected (the cap only ever lowers the ratio).
-  maxPixelRatio: { v: 1.5, min: 0.5, max: 2, step: 0.05, label: "max pixel ratio" },
+  // (measured 17.1 → 8.6 ms p50 at 2560×1600). Default follows the performance
+  // preset (1); balanced/high bump to 1.5. dpr-1 displays are unaffected
+  // (the cap only ever lowers the ratio).
+  maxPixelRatio: { v: 1, min: 0.5, max: 2, step: 0.05, label: "max pixel ratio" },
   // lit windows beyond the interior-raymarch range (~520 m): OFF (default) is
   // the original 0.55 "dusk sparkle" glow; ON boosts far panes toward the
   // room-emissive average so the whole skyline burns brighter at dusk. Purely
   // a look toggle — the shader cost is identical either way.
   farWindowGlow: { v: false, label: "far window glow boost" },
   shadowQuality: {
-    v: "low",
+    v: "off",
     options: { Off: "off", Low: "low", High: "high" },
     label: "shadow quality"
   },
