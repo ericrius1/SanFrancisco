@@ -22,7 +22,7 @@ import type { BrainNet, InspectableBrain } from "./types";
 // warm orange (positive) ↔ cool cyan (negative) — matches brainOverlay.ts #tint
 const POS: [number, number, number] = [1.0, 0.52, 0.16];
 const NEG: [number, number, number] = [0.18, 0.78, 1.0];
-const BG = "#0a0e18";
+const BG = "#0a141f"; // deep navy canvas so the warm/cool node tints glow
 const TOP_WEIGHTS = 6; // incoming weights listed in the node detail
 
 /** activation (or edge product) → 0..255 rgb glow, mirroring the in-world overlay. */
@@ -43,17 +43,18 @@ const rgba = (c: [number, number, number], a: number) => `rgba(${c[0] | 0},${c[1
 type NodeHit = { x: number; y: number; layer: number; idx: number };
 
 const PANEL_CSS =
-  "position:fixed; inset:0; z-index:60; display:none; align-items:center; justify-content:center;" +
-  "background:rgba(4,7,14,0.55); font-family:'Inter',system-ui,sans-serif; color:#dfe7f2;";
+  "position:fixed; inset:0; z-index:var(--z-modal); display:none; align-items:center; justify-content:center;" +
+  "background:var(--scrim); backdrop-filter:blur(5px); font-family:var(--font); color:var(--text);";
 const CARD_CSS =
   "width:min(1040px,94vw); max-height:92vh; display:flex; flex-direction:column; gap:10px;" +
-  "background:rgba(10,15,26,0.94); border:1px solid rgba(120,190,255,0.22); border-radius:14px;" +
-  "padding:16px 18px; box-shadow:0 24px 80px rgba(0,0,0,0.6); backdrop-filter:blur(6px);";
+  "background:linear-gradient(180deg,rgba(12,28,42,0.97),rgba(8,20,31,0.97)); border:1px solid var(--hairline-2); border-radius:var(--r-xl);" +
+  "padding:16px 18px; box-shadow:var(--shadow-lg),var(--edge-hi); backdrop-filter:blur(var(--blur));";
 const COL_CSS = "flex:0 0 210px; overflow-y:auto; max-height:56vh; display:flex; flex-direction:column; gap:7px;";
 const BTN_CSS =
-  "background:rgba(120,190,255,0.14); border:1px solid rgba(120,190,255,0.3); color:#dfe7f2;" +
-  "border-radius:8px; padding:6px 12px; cursor:pointer; font-size:13px;";
-const HEAD_CSS = "font-size:12px; letter-spacing:0.08em; text-transform:uppercase; opacity:0.65; margin-bottom:2px;";
+  "background:var(--surface-raised); border:1px solid var(--hairline-2); color:var(--text);" +
+  "border-radius:var(--r-sm); padding:6px 12px; cursor:pointer; font-size:13px; font-family:var(--font);";
+const HEAD_CSS =
+  "font-size:12px; letter-spacing:0.08em; text-transform:uppercase; color:var(--text-mut); opacity:0.85; margin-bottom:2px;";
 
 export class BrainPanel {
   #root: HTMLDivElement;
@@ -150,8 +151,8 @@ export class BrainPanel {
     // detail + footer
     this.#detail = document.createElement("div");
     this.#detail.style.cssText =
-      "font-size:12.5px; line-height:1.5; min-height:44px; background:rgba(0,0,0,0.28);" +
-      "border-radius:8px; padding:8px 10px; white-space:pre-wrap; font-variant-numeric:tabular-nums;";
+      "font-size:12.5px; line-height:1.5; min-height:44px; background:var(--surface-sunken); border:1px solid var(--hairline);" +
+      "border-radius:var(--r-sm); padding:8px 10px; white-space:pre-wrap; font-variant-numeric:tabular-nums;";
 
     const footer = document.createElement("div");
     footer.style.cssText = "display:flex; gap:10px; align-items:center;";
@@ -229,7 +230,7 @@ export class BrainPanel {
       slider.max = "1";
       slider.step = "0.01";
       slider.value = String(this.#editObs[i]);
-      slider.style.cssText = "width:100%; accent-color:#59b6ff;";
+      slider.style.cssText = "width:100%; accent-color:var(--accent);";
       slider.addEventListener("input", () => {
         this.#editObs[i] = parseFloat(slider.value);
         val.textContent = this.#editObs[i].toFixed(2);
@@ -260,8 +261,8 @@ export class BrainPanel {
       // bar: centre line at 0, fill grows left (neg) / right (pos)
       const track = document.createElement("div");
       track.style.cssText =
-        "position:relative; height:12px; border-radius:6px; background:rgba(255,255,255,0.06);" +
-        "border:1px solid rgba(255,255,255,0.08); overflow:hidden;";
+        "position:relative; height:12px; border-radius:6px; background:var(--surface-sunken);" +
+        "border:1px solid var(--hairline); overflow:hidden;";
       const fill = document.createElement("div");
       fill.style.cssText = "position:absolute; top:0; bottom:0; left:50%; width:0;";
       track.appendChild(fill);
@@ -358,7 +359,7 @@ export class BrainPanel {
     // nodes + their screen coords for hit-testing
     this.#nodePos = [];
     ctx.textBaseline = "middle";
-    ctx.font = "11px system-ui,sans-serif";
+    ctx.font = "11px 'InterVariable', system-ui, sans-serif";
     for (let l = 0; l < L; l++) {
       const x = layerX(l);
       const isIn = l === 0;

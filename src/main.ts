@@ -1,7 +1,7 @@
 import * as THREE from "three/webgpu";
 import { Inspector } from "three/addons/inspector/Inspector.js";
 import CameraControls from "camera-controls";
-import { CONFIG, DEBRIS_TUNING, FLOWER_TUNING, FOLIAGE_TUNING, RENDER_TUNING, START, START_DEFAULTS, WORLD_TUNING, type ShadowQuality } from "./config";
+import { CONFIG, DEBRIS_TUNING, FLOWER_TUNING, FOLIAGE_TUNING, RENDER_MODE, RENDER_TUNING, START, START_DEFAULTS, WORLD_TUNING } from "./config";
 import { loadPlayerState, resetAllTweaks, savePlayerState } from "./core/persist";
 import { Input } from "./core/input";
 import { WorldMap, waterHeight } from "./world/heightmap";
@@ -147,11 +147,11 @@ async function boot() {
   // (pipeline.ts) — a multisampled canvas would only buy a 4x resolve of the
   // final fullscreen quad
   const renderer = new THREE.WebGPURenderer({ antialias: false, reversedDepthBuffer: true });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, RENDER_TUNING.values.maxPixelRatio));
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, RENDER_MODE.pixelRatioCap));
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = RENDER_TUNING.values.exposure; // reference grading: physical sun (~100) + low exposure
-  renderer.shadowMap.enabled = RENDER_TUNING.values.shadowQuality !== "off";
+  renderer.shadowMap.enabled = true; // universal render mode: CSM shadows always on (see world/sky.ts)
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   app.appendChild(renderer.domElement);
   await renderer.init();
@@ -355,27 +355,39 @@ async function boot() {
 
   // brainPanel is deferred — dynamic import after progress(100)
   let brainPanel: BrainPanel | null = null;
+  // Debug/console convenience only (exposed on __sf below) — spreads both
+  // sources into a fresh array, so NOT used by the per-frame hot path.
   const inspectableBrains = (): InspectableBrain[] => [...aiCars.inspectables(), ...(horses?.inspectables() ?? [])];
   const brainPickPos = new THREE.Vector3();
-  const pickBrain = (origin: THREE.Vector3, dir: THREE.Vector3): InspectableBrain | null => {
-    let best: InspectableBrain | null = null;
-    let bestT = Infinity;
-    for (const b of inspectableBrains()) {
-      b.getWorldPos(brainPickPos);
-      const ox = brainPickPos.x - origin.x;
-      const oy = brainPickPos.y - origin.y;
-      const oz = brainPickPos.z - origin.z;
-      const t = ox * dir.x + oy * dir.y + oz * dir.z; // dir is unit-length (chase.lookDir)
-      if (t < 0 || t > 200 || t >= bestT) continue;
-      const dx = origin.x + dir.x * t - brainPickPos.x;
-      const dy = origin.y + dir.y * t - brainPickPos.y;
-      const dz = origin.z + dir.z * t - brainPickPos.z;
-      if (dx * dx + dy * dy + dz * dz <= b.pickRadius * b.pickRadius) {
-        bestT = t;
-        best = b;
-      }
+  // pickBrain runs every frame the world cursor is live (see the cursorLive
+  // block below) + on click, so it must allocate nothing: aiCars.inspectables()
+  // / horses.inspectables() each hand back a cached, reused array (see their
+  // definitions) and this iterates both directly — no spread/concat array —
+  // via considerBrainPick, a helper created once (not per call) that folds its
+  // running best into the outer pickBest/pickBestT instead of a per-call closure.
+  let pickBest: InspectableBrain | null = null;
+  let pickBestT = Infinity;
+  const considerBrainPick = (b: InspectableBrain, origin: THREE.Vector3, dir: THREE.Vector3): void => {
+    b.getWorldPos(brainPickPos);
+    const ox = brainPickPos.x - origin.x;
+    const oy = brainPickPos.y - origin.y;
+    const oz = brainPickPos.z - origin.z;
+    const t = ox * dir.x + oy * dir.y + oz * dir.z; // dir is unit-length (chase.lookDir)
+    if (t < 0 || t > 200 || t >= pickBestT) return;
+    const dx = origin.x + dir.x * t - brainPickPos.x;
+    const dy = origin.y + dir.y * t - brainPickPos.y;
+    const dz = origin.z + dir.z * t - brainPickPos.z;
+    if (dx * dx + dy * dy + dz * dz <= b.pickRadius * b.pickRadius) {
+      pickBestT = t;
+      pickBest = b;
     }
-    return best;
+  };
+  const pickBrain = (origin: THREE.Vector3, dir: THREE.Vector3): InspectableBrain | null => {
+    pickBest = null;
+    pickBestT = Infinity;
+    for (const b of aiCars.inspectables()) considerBrainPick(b, origin, dir);
+    if (horses) for (const b of horses.inspectables()) considerBrainPick(b, origin, dir);
+    return pickBest;
   };
   let lastHoverBrain: string | null = null;
 
@@ -1815,12 +1827,10 @@ async function boot() {
       resetSutroLightsTweaks();
       START.spawn = START_DEFAULTS.spawn;
       START.mode = START_DEFAULTS.mode;
-      // re-apply the side effects the pane's onChange handlers normally push
+      // re-apply the side effects the pane's onChange handlers normally push.
+      // Pixel ratio + shadows are no longer tweakable (universal render mode),
+      // so there's nothing to reset for them here.
       renderer.toneMappingExposure = RENDER_TUNING.values.exposure;
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio, RENDER_TUNING.values.maxPixelRatio));
-      renderer.setSize(window.innerWidth, window.innerHeight);
-      renderer.shadowMap.enabled = RENDER_TUNING.values.shadowQuality !== "off";
-      sky.setShadowQuality(RENDER_TUNING.values.shadowQuality as ShadowQuality);
       CONFIG.tileLoadRadius = WORLD_TUNING.values.radius;
       CONFIG.tileUnloadRadius = WORLD_TUNING.values.radius + 400;
       setFoliageVisible(FOLIAGE_TUNING.values.visible);

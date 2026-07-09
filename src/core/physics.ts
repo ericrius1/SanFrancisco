@@ -130,6 +130,15 @@ export class Physics {
   #solidTileIndex = new Map<string, string[]>(); // tile key -> "key:i" it owns (bulk unload)
   #landmarkSolids: number[] = []; // boot-resident bridge + landmark box handles
   #solidRay: RayCastHit = { handle: 0, px: 0, py: 0, pz: 0, nx: 0, ny: 0, nz: 0, distance: 0 };
+  // CityGen exact-poly wall + interior boxes are created on the STEPPED world
+  // (world/citygen/stream/ring.ts), so they're invisible to #solids — the query
+  // world every raycast (paint, world cursor, aim reticle) consults via
+  // raycastWorld. The ring mirrors each of its boxes here through addQuerySolid,
+  // keyed by the stepped-body handle, so a ray strikes citygen geometry exactly
+  // where the baked twin has been suppressed. Wall boxes also carry a {key,i}
+  // damage tag so a vehicle crash chips them (interiors don't — nothing rams them).
+  #querySolids = new Map<number, number>(); // caller id (stepped handle) -> #solids handle
+  #citygenDamage = new Map<number, { key: string; i: number }>(); // wall id -> baked twin it stands in for
   // baked OBBs streamed around every collider anchor, decoupled from the visual
   // tile stream, so AI cars far from the player still have building data (see
   // buildingColliderIndex.ts). Null until create() finishes loading the manifest.
@@ -808,11 +817,13 @@ export class Physics {
 
   // ------------------------------------------------- world-solid query bodies
 
-  /** Create one static box in the #solids query world; yaw via SetTransform
-   * (which also seeds the broadphase AABB). Returns its handle. */
-  #makeSolid(x: number, y: number, z: number, hx: number, hy: number, hz: number, yaw: number): number {
+  /** Create one static box in the #solids query world; orientation via SetTransform
+   * (which also seeds the broadphase AABB). A full `quat` wins over `yaw` (citygen
+   * tilted stair ramps); otherwise the box is yawed about Y. Returns its handle. */
+  #makeSolid(x: number, y: number, z: number, hx: number, hy: number, hz: number, yaw: number, quat?: readonly [number, number, number, number]): number {
     const h = this.#solids.createBox({ type: BodyType.Static, position: [x, y, z], halfExtents: [hx, hy, hz] });
-    if (yaw) this.#solids.setBodyTransform(h, [x, y, z], [0, Math.sin(yaw / 2), 0, Math.cos(yaw / 2)]);
+    if (quat) this.#solids.setBodyTransform(h, [x, y, z], [quat[0], quat[1], quat[2], quat[3]]);
+    else if (yaw) this.#solids.setBodyTransform(h, [x, y, z], [0, Math.sin(yaw / 2), 0, Math.cos(yaw / 2)]);
     return h;
   }
 
@@ -875,6 +886,35 @@ export class Physics {
     }
   }
 
+  /**
+   * Register one extra static box into the #solids query world so raycastWorld —
+   * and thus paint / the world cursor / the aim reticle — sees it. `id` is any
+   * caller-stable key: the citygen ring passes its stepped-world body handle so
+   * add/remove stay locked to the real collider. Re-registering an id replaces its
+   * box. A full `box.quat` wins over `box.yaw` (citygen tilted stair ramps). Pass
+   * `tag` (the baked building key:index a wall stands in for) so a vehicle crash
+   * into it routes to the cosmetic chip path; omit it for interior boxes.
+   */
+  addQuerySolid(
+    id: number,
+    box: { x: number; y: number; z: number; hx: number; hy: number; hz: number; yaw?: number; quat?: readonly [number, number, number, number] },
+    tag?: { key: string; i: number }
+  ): void {
+    const existing = this.#querySolids.get(id);
+    if (existing !== undefined) this.#solids.destroyBody(existing);
+    this.#querySolids.set(id, this.#makeSolid(box.x, box.y, box.z, box.hx, box.hy, box.hz, box.yaw ?? 0, box.quat));
+    if (tag) this.#citygenDamage.set(id, tag);
+  }
+
+  /** Drop a previously registered extra query solid (no-op if the id is unknown). */
+  removeQuerySolid(id: number): void {
+    const h = this.#querySolids.get(id);
+    if (h === undefined) return;
+    this.#solids.destroyBody(h);
+    this.#querySolids.delete(id);
+    this.#citygenDamage.delete(id);
+  }
+
   /** true distance from a point to the OBB surface, in the box's yaw frame (0 inside) */
   #obbDistance(c: BuildingCollider, p: THREE.Vector3): number {
     const dx = p.x - c.x;
@@ -924,6 +964,10 @@ export class Physics {
     const bVehicle = this.#vehicleHandles.has(ev.bodyB);
 
     const building = aBuilding ?? bBuilding;
+    // citygen walls are real stepped bodies but not baked buildings — a crash into
+    // one still leaves cosmetic chips (no structural tally / fracture: they're
+    // procedural, and whole-building demolition is baked-only, out of scope here).
+    const citygen = building ? undefined : this.#citygenDamage.get(ev.bodyA) ?? this.#citygenDamage.get(ev.bodyB);
     const vehicleInvolved = aVehicle || bVehicle;
 
     if (building && vehicleInvolved && ev.approachSpeed > CONFIG.chipSpeed) {
@@ -965,6 +1009,16 @@ export class Physics {
         }
       }
       if (ev.approachSpeed > 9) this.onHardImpact(point, ev.approachSpeed);
+    } else if (citygen && vehicleInvolved && ev.approachSpeed > CONFIG.chipSpeed) {
+      const vehicleHandle = aVehicle ? ev.bodyA : ev.bodyB;
+      const vel = this.world.getBodyVelocity(vehicleHandle);
+      const v = new THREE.Vector3(...vel.linear);
+      const mass = this.world.getBodyMass(vehicleHandle);
+      const energy = (0.5 * mass * ev.approachSpeed * ev.approachSpeed) / 1000;
+      // cosmetic only: chip the facade (force — the baked twin's alive-flag is off).
+      // No #damage tally and no fracture: procedural buildings don't collapse.
+      if (energy > CONFIG.chipEnergy) this.chipBuilding(citygen.key, citygen.i, point, v, energy, 1, true);
+      if (ev.approachSpeed > 9) this.onHardImpact(point, ev.approachSpeed);
     } else if (vehicleInvolved && ev.approachSpeed > 9) {
       this.onHardImpact(point, ev.approachSpeed);
     }
@@ -974,8 +1028,11 @@ export class Physics {
    * Knock a few chunks out of the facade where a crash landed, leaving the
    * building itself standing — a drone strike leaves a scar, not a crater.
    */
-  chipBuilding(key: string, index: number, at: THREE.Vector3, impactVel: THREE.Vector3, energy: number, sizeScale = 1) {
-    if (!this.tiles.isAlive(key, index)) return;
+  chipBuilding(key: string, index: number, at: THREE.Vector3, impactVel: THREE.Vector3, energy: number, sizeScale = 1, force = false) {
+    // `force` chips a building whose visual alive-flag is off: a citygen building
+    // suppresses its baked twin (R=0), but that twin's collider — with its facade
+    // tone — is still in #tileColliders, so chips spawn the right colour + facing.
+    if (!force && !this.tiles.isAlive(key, index)) return;
     const c = this.#nearestBoxFor(key, index, at.x, at.z);
     if (!c) return;
 

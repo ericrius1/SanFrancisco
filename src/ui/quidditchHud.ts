@@ -27,12 +27,12 @@ const CSS = `
 #hud .quid-board {
   position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
   display: none; flex-direction: column; align-items: center; gap: 6px;
-  padding: 10px 16px 11px; border-radius: 14px;
-  background: rgba(8, 18, 30, 0.66); backdrop-filter: blur(7px);
-  border: 1px solid rgba(190, 225, 240, 0.16);
-  box-shadow: 0 6px 26px rgba(0,0,0,0.4);
-  font-family: "Avenir Next", "Helvetica Neue", sans-serif; color: #eaf4f8;
-  pointer-events: none; user-select: none; z-index: 6;
+  padding: 10px 16px 11px; border-radius: var(--r-lg);
+  background: var(--surface-strong); backdrop-filter: blur(var(--blur-strong));
+  border: 1px solid var(--hairline);
+  box-shadow: var(--shadow-md), var(--edge-hi);
+  font-family: var(--font); color: var(--text);
+  pointer-events: none; user-select: none; z-index: var(--z-panel);
 }
 #hud .quid-board.on { display: flex; animation: quidpop 0.4s ease; }
 @keyframes quidpop { from { opacity: 0; transform: translate(-50%, -10px); } }
@@ -54,20 +54,20 @@ const CSS = `
 #hud .quid-snitch.caught { opacity: 0.55; text-decoration: line-through; }
 #hud .quid-snitch.caught .dot { animation: none; background: #7c8a94; box-shadow: none; }
 #hud .quid-role { font-size: 10.5px; opacity: 0.9; }
-#hud .quid-role b { color: #9ef2df; }
+#hud .quid-role b { color: var(--accent-strong); }
 
 #hud .quid-modal {
   position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
-  background: rgba(4, 10, 18, 0.62); backdrop-filter: blur(4px); z-index: 40;
-  font-family: "Avenir Next", "Helvetica Neue", sans-serif; color: #eaf4f8;
+  background: var(--scrim); backdrop-filter: blur(5px); z-index: var(--z-modal);
+  font-family: var(--font); color: var(--text);
   pointer-events: auto;
 }
 #hud .quid-modal.on { display: flex; }
 #hud .quid-card {
   width: min(560px, 92vw); max-height: 88vh; overflow-y: auto;
-  background: rgba(10, 22, 34, 0.94); border: 1px solid rgba(190,225,240,0.18);
-  border-radius: 18px; padding: 24px 26px 22px; box-shadow: 0 20px 60px rgba(0,0,0,0.55);
-  animation: quidcard 0.32s ease;
+  background: linear-gradient(180deg, rgba(12,28,42,0.97), rgba(8,20,31,0.97)); border: 1px solid var(--hairline-2);
+  border-radius: var(--r-xl); padding: 24px 26px 22px; box-shadow: var(--shadow-lg), var(--edge-hi);
+  animation: quidcard 0.32s var(--ease);
 }
 @keyframes quidcard { from { opacity: 0; transform: translateY(14px) scale(0.98); } }
 #hud .quid-card h2 { margin: 0 0 4px; font-size: 20px; letter-spacing: 0.5px; }
@@ -80,27 +80,28 @@ const CSS = `
 #hud .quid-col.blue > .h { color: #8fbcff; }
 #hud .quid-opt {
   display: block; width: 100%; text-align: left; cursor: pointer;
-  background: rgba(255,255,255,0.04); border: 1px solid rgba(190,225,240,0.14);
-  border-radius: 11px; padding: 9px 11px; margin-bottom: 8px; color: #eaf4f8;
-  transition: border-color 0.15s, background 0.15s, transform 0.1s;
+  background: var(--surface-raised); border: 1px solid var(--hairline);
+  border-radius: var(--r-lg); padding: 9px 11px; margin-bottom: 8px; color: var(--text);
+  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease), transform 0.1s var(--ease);
 }
-#hud .quid-opt:hover { background: rgba(120,220,200,0.12); border-color: #6fd7c4; transform: translateY(-1px); }
+#hud .quid-opt:hover { background: var(--accent-soft); border-color: var(--accent); transform: translateY(-1px); }
 #hud .quid-opt .r { font-size: 13px; font-weight: 700; }
 #hud .quid-opt .b { font-size: 10.5px; opacity: 0.66; line-height: 1.4; margin-top: 2px; }
 #hud .quid-opt:disabled { opacity: 0.32; cursor: default; }
-#hud .quid-opt:disabled:hover { background: rgba(255,255,255,0.04); border-color: rgba(190,225,240,0.14); transform: none; }
+#hud .quid-opt:disabled:hover { background: var(--surface-raised); border-color: var(--hairline); transform: none; }
 #hud .quid-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 8px; }
 #hud .quid-btn {
-  cursor: pointer; font: inherit; font-size: 12px; padding: 7px 15px; border-radius: 9px;
-  background: rgba(255,255,255,0.06); border: 1px solid rgba(190,225,240,0.2); color: #eaf4f8;
+  cursor: pointer; font: inherit; font-size: 12px; padding: 7px 15px; border-radius: var(--r-sm);
+  background: var(--surface-raised); border: 1px solid var(--hairline-2); color: var(--text);
+  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
 }
-#hud .quid-btn:hover { border-color: #6fd7c4; }
-#hud .quid-btn.go { background: rgba(120,220,200,0.16); border-color: #6fd7c4; color: #9ef2df; font-weight: 700; }
+#hud .quid-btn:hover { border-color: var(--accent); }
+#hud .quid-btn.go { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-strong); font-weight: 700; }
 #hud .quid-start-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 18px 0 14px; }
 #hud .quid-start-option {
-  min-height: 116px; cursor: pointer; text-align: left; color: #eaf4f8;
-  background: rgba(255,255,255,0.045); border: 1px solid rgba(190,225,240,0.16);
-  border-radius: 12px; padding: 14px 14px 13px; transition: transform 0.12s, border-color 0.15s, background 0.15s;
+  min-height: 116px; cursor: pointer; text-align: left; color: var(--text);
+  background: var(--surface-raised); border: 1px solid var(--hairline);
+  border-radius: var(--r-lg); padding: 14px 14px 13px; transition: transform 0.12s var(--ease), border-color var(--dur) var(--ease), background var(--dur) var(--ease);
 }
 #hud .quid-start-option:hover { transform: translateY(-1px); border-color: #69cfff; background: rgba(70,160,255,0.13); }
 #hud .quid-start-option .h { display: block; font-size: 14px; font-weight: 800; margin-bottom: 7px; }
@@ -109,14 +110,14 @@ const CSS = `
 #hud .quid-rules-list { margin: 6px 0 16px; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 9px; }
 #hud .quid-rules-list li { display: flex; gap: 10px; font-size: 12.5px; line-height: 1.45; }
 #hud .quid-rules-list .ic { font-size: 17px; line-height: 1.2; flex-shrink: 0; }
-#hud .quid-rules-list b { color: #9ef2df; }
+#hud .quid-rules-list b { color: var(--accent-strong); }
 
 #hud .quid-tutorial {
   position: absolute; right: 18px; bottom: 92px; width: min(360px, calc(100vw - 32px));
-  display: none; padding: 13px 14px 14px; z-index: 7; pointer-events: none; user-select: none;
-  color: #eaf4f8; font-family: "Avenir Next", "Helvetica Neue", sans-serif;
-  background: rgba(7, 17, 30, 0.78); border: 1px solid rgba(120,205,255,0.24);
-  border-radius: 12px; box-shadow: 0 12px 34px rgba(0,0,0,0.44); backdrop-filter: blur(8px);
+  display: none; padding: 13px 14px 14px; z-index: var(--z-panel); pointer-events: none; user-select: none;
+  color: var(--text); font-family: var(--font);
+  background: var(--surface-strong); border: 1px solid var(--hairline-2);
+  border-radius: var(--r-lg); box-shadow: var(--shadow-md), var(--edge-hi); backdrop-filter: blur(var(--blur-strong));
 }
 #hud .quid-tutorial.on { display: block; animation: quidcard 0.28s ease; }
 #hud .quid-tutorial .top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 7px; }
@@ -127,7 +128,7 @@ const CSS = `
 #hud .quid-tutorial .keys { display: flex; flex-wrap: wrap; gap: 5px; min-height: 23px; margin: 9px 0 10px; }
 #hud .quid-tutorial .key {
   min-width: 24px; height: 22px; padding: 0 7px; display: inline-flex; align-items: center; justify-content: center;
-  border-radius: 6px; background: rgba(255,255,255,0.08); border: 1px solid rgba(190,225,240,0.18);
+  border-radius: var(--r-xs); background: var(--surface-raised); border: 1px solid var(--hairline-2);
   color: #bde8ff; font-size: 11px; font-weight: 700;
 }
 #hud .quid-tutorial .bar { height: 5px; overflow: hidden; border-radius: 999px; background: rgba(255,255,255,0.09); }

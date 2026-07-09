@@ -103,6 +103,7 @@ export function buildBuilding(spec: BuildingSpec, mats: Record<string, THREE.Mat
     geoms.push(g);
     triangles += md.indices.length / 3;
     const mesh = new THREE.Mesh(g, getMat(md.materialId));
+    mesh.name = md.materialId; // lets probes tell a wall/base panel from door/glass
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     mesh.frustumCulled = true;

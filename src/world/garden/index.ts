@@ -35,6 +35,24 @@ import {
 
 const NO_DISPLACERS: readonly GrassDisplacer[] = [];
 
+// Whole-garden visibility gate. The SeedThree far tier is frustumCulled=false
+// (its instanced bounds span the whole garden), so those ~4M triangles draw from
+// ANYWHERE in the city — pure waste past the marine fog, which closes well inside
+// 1.2 km. Gate the ENTIRE garden group by the player's distance to the garden's
+// bounding circle (center + radius, computed once from the layout bounds): hidden
+// past ~1.5 km beyond the circle, with ~100 m hysteresis so it never flickers at
+// the boundary.
+const GARDEN_GATE = (() => {
+  const b = BOTANICAL_GARDEN_BOUNDS;
+  return {
+    cx: (b.minX + b.maxX) / 2,
+    cz: (b.minZ + b.maxZ) / 2,
+    radius: Math.hypot(b.maxX - b.minX, b.maxZ - b.minZ) / 2,
+    hideDist: 1500, // hide once the player is this far OUTSIDE the bounding circle
+    showDist: 1400 // re-show when back within this (100 m hysteresis band)
+  };
+})();
+
 export type BotanicalGarden = {
   /** Add to your scene. Trees stream in asynchronously; grass is live at once. */
   group: THREE.Group;
@@ -61,6 +79,10 @@ export type BotanicalGarden = {
  *  their textures + growth resolve (fire-and-forget inside). */
 export function createBotanicalGarden(map: GardenTerrain): BotanicalGarden {
   const veg = createGardenVegetation(map);
+  // Are we currently forcing the garden hidden by distance? Tracked so we only
+  // write group.visible when CROSSING a threshold — an external foliage on/off
+  // toggle (host debug panel) then still wins while the player is in range.
+  let gatedOut = false;
   return {
     group: veg.group,
     proxy: veg.proxy,
@@ -68,9 +90,30 @@ export function createBotanicalGarden(map: GardenTerrain): BotanicalGarden {
     colliders: veg.colliders,
     stats: veg.stats,
     update(dt, focus, displacers) {
+      // Shared ground-cover meta-modules must advance regardless of the garden's
+      // own visibility: the wind-gust envelope also drives the wildlands foliage
+      // sway + the nature soundscape, and the trample field is read by the
+      // wildlands grass/flowers too — and the garden is their sole per-frame
+      // driver. Freezing them here would stall wind/trample across the whole city.
       updateWindGusts(dt);
-      veg.grass.updateFocus(focus);
       setGrassDisplacers(displacers ?? NO_DISPLACERS);
+
+      // Whole-garden distance gate (see GARDEN_GATE). Hiding the group stops the
+      // far-tier trees from rendering AND parks the self-driven tree LOD rebin
+      // (its driver meshes no longer render, so onBeforeRender stops firing); the
+      // rebin resumes cleanly on re-entry off the live camera. Skip the
+      // garden-only near-grass resample while out of range.
+      const edge = Math.hypot(focus.x - GARDEN_GATE.cx, focus.z - GARDEN_GATE.cz) - GARDEN_GATE.radius;
+      if (!gatedOut && edge > GARDEN_GATE.hideDist) {
+        gatedOut = true;
+        veg.group.visible = false;
+      } else if (gatedOut && edge < GARDEN_GATE.showDist) {
+        gatedOut = false;
+        veg.group.visible = true;
+      }
+      if (gatedOut) return;
+
+      veg.grass.updateFocus(focus);
     }
   };
 }

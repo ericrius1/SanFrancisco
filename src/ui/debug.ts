@@ -8,13 +8,9 @@ import {
   FOLIAGE_TUNING,
   GRASS_TUNING,
   CITYGEN_TUNING,
-  RENDER_QUALITY_PRESETS,
   RENDER_TUNING,
-  WORLD_TUNING,
-  type RenderQualityPreset,
-  type ShadowQuality
+  WORLD_TUNING
 } from "../config";
-import { saveTweak } from "../core/persist";
 import { addMovementTuning } from "../player/tuning";
 import type { PlayerMode } from "../player/types";
 import { DEBRIS_LIGHTS, WINDOW_GLOW } from "../world/facade";
@@ -251,37 +247,6 @@ export class DebugPanel {
     });
   }
 
-  #applyShadowQuality(value: unknown) {
-    const quality = value as ShadowQuality;
-    this.#renderer.shadowMap.enabled = quality !== "off";
-    this.#sky.setShadowQuality(quality);
-  }
-
-  #setRenderValue(key: keyof typeof RENDER_TUNING.values, value: unknown) {
-    (RENDER_TUNING.values as Record<string, unknown>)[key] = value;
-    saveTweak(`render.${key}`, value);
-  }
-
-  #setPostValue(key: keyof typeof POSTFX_TUNING.values, value: unknown) {
-    (POSTFX_TUNING.values as Record<string, unknown>)[key] = value;
-    saveTweak(`postfx.${key}`, value);
-  }
-
-  #applyRenderPreset(value: unknown) {
-    const preset = RENDER_QUALITY_PRESETS[value as RenderQualityPreset] ?? RENDER_QUALITY_PRESETS.balanced;
-    this.#setRenderValue("maxPixelRatio", preset.maxPixelRatio);
-    this.#setRenderValue("shadowQuality", preset.shadowQuality);
-    this.#setPostValue("sceneSamples", preset.sceneSamples);
-
-    this.#renderer.setPixelRatio(Math.min(window.devicePixelRatio, preset.maxPixelRatio));
-    this.#renderer.setSize(window.innerWidth, window.innerHeight);
-    this.#applyShadowQuality(preset.shadowQuality);
-    this.#postfx?.applyPostQuality();
-    this.#syncingPane = true;
-    this.#pane?.refresh();
-    this.#syncingPane = false;
-  }
-
   #build() {
     const root = document.createElement("div");
     root.style.cssText =
@@ -361,10 +326,6 @@ export class DebugPanel {
       keys: ["timeOfDay", "realTime", "cycleEnabled", "cycleDuration", "nightBrightness"],
       onChange: onSkyChange
     });
-    RENDER_TUNING.bind(pane, {
-      keys: ["renderQuality"],
-      onChange: (_key, value) => this.#applyRenderPreset(value)
-    });
 
     const fog = pane.addFolder({ title: "fog" });
     WORLD_TUNING.bind(fog, {
@@ -405,13 +366,10 @@ export class DebugPanel {
 
     const lighting = advanced.addFolder({ title: "lighting" });
     RENDER_TUNING.bind(lighting, {
-      keys: ["exposure", "maxPixelRatio", "farWindowGlow"],
+      keys: ["exposure", "farWindowGlow"],
       onChange: (key, value) => {
         if (key === "exposure") {
           this.#renderer.toneMappingExposure = value as number;
-        } else if (key === "maxPixelRatio") {
-          this.#renderer.setPixelRatio(Math.min(window.devicePixelRatio, value as number));
-          this.#renderer.setSize(window.innerWidth, window.innerHeight);
         } else if (key === "farWindowGlow") {
           WINDOW_GLOW.far.value = value ? 1 : 0;
         }
@@ -419,13 +377,6 @@ export class DebugPanel {
     });
 
     const render = advanced.addFolder({ title: "render" });
-    RENDER_TUNING.bind(render, {
-      keys: ["shadowQuality"],
-      onChange: (key, value) => {
-        if (this.#syncingPane) return;
-        if (key === "shadowQuality") this.#applyShadowQuality(value);
-      }
-    });
     RENDER_TUNING.bind(render, {
       keys: ["wireframe"],
       onChange: (_key, value) => {

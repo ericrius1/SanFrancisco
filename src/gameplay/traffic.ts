@@ -60,6 +60,8 @@ export type Vehicle = {
   blockedTime: number;
   wreckTimer: number;
   pos: THREE.Vector3;
+  /** Uniform mesh scale 0..1 — drives the spawn/despawn fade tween. */
+  scale: number;
 };
 
 export type VehicleReleaseMotion = {
@@ -75,7 +77,11 @@ const CONVERTIBLE_PAINTS = [0xe8563f, 0x54b0f0, 0xf0c040, 0x8f6fd0, 0x3fbf8f, 0x
 const MAX_VEHICLES = 7;
 const SPAWN_MIN = 90;
 const SPAWN_MAX = 240;
-const DESPAWN = 340;
+const DESPAWN = 380;
+const FADE_DIST = 20; // despawn fade starts DESPAWN-FADE_DIST out, hard-removes past DESPAWN+FADE_DIST
+const FADE_TIME = 0.35; // seconds for the spawn/despawn scale tween
+const VIEW_CONE_DOT = 0.5; // ~60 degree half-angle forward cone (cos of the half-angle)
+const VIEW_CONE_DIST = 180; // spawns past this range read as distant background, not a pop-in, even head-on
 
 type BoxSpec = { w: number; h: number; d: number; x: number; y: number; z: number; c: number; rx?: number };
 
@@ -259,6 +265,14 @@ export class Traffic {
   #qa = new THREE.Quaternion();
   #qb = new THREE.Quaternion();
 
+  // update() only ever gets the player's position (that call site lives in
+  // main.ts, out of scope here), so there's no camera ref to test spawns
+  // against. Consecutive positions give a cheap facing proxy instead — it's
+  // noisy while the player stands still, but that's exactly when pop-in isn't
+  // noticeable, and it snaps onto the real heading the moment they're moving.
+  #lastPlayerPos: THREE.Vector3 | null = null;
+  #viewDir = new THREE.Vector3(0, 0, -1);
+
   constructor(physics: Physics, map: WorldMap, scene: THREE.Scene) {
     this.#physics = physics;
     this.#map = map;
@@ -308,7 +322,8 @@ export class Traffic {
     state: VehicleState,
     paintOverride?: number,
     withDriver = state === "drive",
-    yOverride?: number
+    yOverride?: number,
+    fadeIn = true
   ): Vehicle {
     const p = DRIVE_PROFILES[cls];
     const y = yOverride ?? this.#map.effectiveGround(x, z) + p.rideHeight;
@@ -326,6 +341,12 @@ export class Traffic {
     // only cruising convertibles carry the baked driver
     const mesh = this.buildMesh(cls, paint, withDriver);
     mesh.position.set(x, y, z);
+    // fresh ambient spawns grow in from a near-zero scale (0.01, not 0 — a
+    // literal zero scale degenerates the mesh's matrix); vehicles the player
+    // just released back into traffic were already on-screen a moment ago and
+    // should not visibly pop, so they start at full scale.
+    const scale = fadeIn ? 0.01 : 1;
+    mesh.scale.setScalar(scale);
     this.#scene.add(mesh);
     const v: Vehicle = {
       cls,
@@ -339,7 +360,8 @@ export class Traffic {
       probeTimer: Math.random() * 0.3,
       blockedTime: 0,
       wreckTimer: 0,
-      pos: new THREE.Vector3(x, y, z)
+      pos: new THREE.Vector3(x, y, z),
+      scale
     };
     this.vehicles.push(v);
     return v;
@@ -377,7 +399,9 @@ export class Traffic {
 
   /** Release a commandeered vehicle back into traffic with the player's last motion. */
   releaseVehicle(cls: VehicleClass, x: number, z: number, heading: number, motion: VehicleReleaseMotion = {}) {
-    const v = this.#createVehicle(cls, x, z, heading, "drive", motion.paint, false, motion.y);
+    // false: this vehicle was already visible a frame ago (the player was just
+    // driving it) — it must not shrink-and-regrow like a fresh ambient spawn.
+    const v = this.#createVehicle(cls, x, z, heading, "drive", motion.paint, false, motion.y, false);
     const linear = motion.linear;
     if (linear) {
       const angular = motion.angular ?? [0, 0, 0];
@@ -514,32 +538,69 @@ export class Traffic {
 
   /** Frame-rate work: spawn/despawn management + mesh mirroring. */
   update(playerPos: THREE.Vector3, dt: number) {
-    // mirror bodies into meshes
+    // refresh the facing proxy from consecutive player positions (see #viewDir's
+    // declaration) — skip near-zero deltas so standing still doesn't spin it
+    // toward physics/input jitter; it just coasts on the last real heading.
+    if (this.#lastPlayerPos) {
+      const dx = playerPos.x - this.#lastPlayerPos.x;
+      const dz = playerPos.z - this.#lastPlayerPos.z;
+      const moved = Math.hypot(dx, dz);
+      if (moved > 1e-4 && moved / Math.max(dt, 1e-4) > 0.5) {
+        this.#viewDir.set(dx / moved, 0, dz / moved);
+      }
+      this.#lastPlayerPos.copy(playerPos);
+    } else {
+      this.#lastPlayerPos = playerPos.clone();
+    }
+
+    // mirror bodies into meshes, animate the spawn/despawn fade, and drop
+    // anything that has fully faded out (or blown well past the despawn ring
+    // without finishing its fade, e.g. a fast getaway) — all per-frame so the
+    // 0.35s tween reads smoothly instead of ticking on the 1.2s spawn beat.
     const w = this.#physics.world;
-    for (const v of this.vehicles) {
+    for (const v of [...this.vehicles]) {
       const t = w.getBodyTransform(v.handle);
       v.mesh.position.set(t.position[0], t.position[1], t.position[2]);
       v.mesh.quaternion.set(t.rotation[0], t.rotation[1], t.rotation[2], t.rotation[3]);
+
+      const dist = Math.hypot(v.pos.x - playerPos.x, v.pos.z - playerPos.z);
+      const fadingOut = dist > DESPAWN - FADE_DIST;
+      const step = dt / FADE_TIME;
+      v.scale = THREE.MathUtils.clamp(v.scale + (fadingOut ? -step : step), 0, 1);
+      v.mesh.scale.setScalar(Math.max(v.scale, 0.01));
+
+      if ((fadingOut && v.scale <= 0) || dist > DESPAWN + FADE_DIST) {
+        this.#removeVehicle(v);
+      }
     }
 
     this.#spawnTimer -= dt;
     if (this.#spawnTimer > 0) return;
     this.#spawnTimer = 1.2;
 
-    for (const v of [...this.vehicles]) {
-      if (Math.hypot(v.pos.x - playerPos.x, v.pos.z - playerPos.z) > DESPAWN) {
-        this.#removeVehicle(v);
-      }
-    }
-
     if (this.vehicles.length >= MAX_VEHICLES) return;
 
     // one spawn attempt per beat: random ring position on land, outside buildings,
-    // with at least one clear driving corridor
-    const a = Math.random() * Math.PI * 2;
-    const d = SPAWN_MIN + Math.random() * (SPAWN_MAX - SPAWN_MIN);
-    const x = playerPos.x + Math.cos(a) * d;
-    const z = playerPos.z + Math.sin(a) * d;
+    // with at least one clear driving corridor. Candidates inside the player's
+    // forward view cone are rejected unless they're far enough out to read as
+    // distant background rather than a pop — behind/beside spawns are fine at
+    // the normal SPAWN_MIN range.
+    let x = 0;
+    let z = 0;
+    let placed = false;
+    for (let i = 0; i < 5; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const d = SPAWN_MIN + Math.random() * (SPAWN_MAX - SPAWN_MIN);
+      const dirX = Math.cos(a);
+      const dirZ = Math.sin(a);
+      const inView = dirX * this.#viewDir.x + dirZ * this.#viewDir.z > VIEW_CONE_DOT;
+      if (inView && d < VIEW_CONE_DIST) continue;
+      x = playerPos.x + dirX * d;
+      z = playerPos.z + dirZ * d;
+      placed = true;
+      break;
+    }
+    if (!placed) return;
     if (this.#map.isWater(x, z)) return;
     if (this.#physics.pointInBuilding(x, this.#map.effectiveGround(x, z) + 1, z)) return;
 
@@ -559,7 +620,8 @@ export class Traffic {
       probeTimer: 0,
       blockedTime: 0,
       wreckTimer: 0,
-      pos: new THREE.Vector3(x, this.#map.effectiveGround(x, z) + 1, z)
+      pos: new THREE.Vector3(x, this.#map.effectiveGround(x, z) + 1, z),
+      scale: 1
     };
     for (let i = 0; i < 6; i++) {
       const heading = Math.random() * Math.PI * 2;

@@ -23,9 +23,9 @@ import { tunables } from "../core/persist";
 
 /**
  * Stylized post effects, all OFF by default, toggled in the "/" panel's
- * "post fx" folder. The quality control above them steers the render pipeline's
- * scene AA samples; each stylized effect is an independent per-pixel stage so
- * they stack:
+ * "post fx" folder. The scene-AA-samples knob (first in the folder) sets the
+ * render pipeline's MSAA level; each stylized effect is an independent
+ * per-pixel stage so they stack:
  *
  *  - ink & wash: pen outlines from the outline prepass's normals + depth, plus a
  *    soft luminance posterize — storybook illustration.
@@ -43,7 +43,10 @@ import { tunables } from "../core/persist";
  */
 export const POSTFX_TUNING = tunables("postfx", {
   sceneSamples: {
-    v: 0,
+    // universal render mode fixes scene MSAA at 2 (the old presets used 0/2/4).
+    // 2 is the measured sweet spot — clear edge cleanup over 0 at a fraction of
+    // 4's resolve cost. Kept as a dev knob here for A/B profiling.
+    v: 2,
     min: 0,
     max: 4,
     step: 1,

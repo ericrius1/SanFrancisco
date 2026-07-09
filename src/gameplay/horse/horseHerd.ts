@@ -129,6 +129,13 @@ const COUNT = 21;
 const BODY_H = 1.5;
 const OBS_DIM = 31;
 const SIM_RANGE = 420;
+// Herd MESH visibility gate. The horses (~40 meshes each) + course props sit at
+// the meadow and otherwise render from across the city whenever the meadow falls
+// in the frustum (like the garden's far trees) — waste past the fog. Hidden past
+// ~600 m, comfortably outside SIM_RANGE so a horse is never frozen-yet-visible up
+// close; ~100 m hysteresis so it doesn't flicker at the boundary.
+const MESH_HIDE_RANGE = 600;
+const MESH_SHOW_RANGE = 500;
 const UP = new THREE.Vector3(0, 1, 0);
 
 const WALK = [0.0, 0.5, 0.25, 0.75];
@@ -226,6 +233,9 @@ export class HorseHerd {
   #forceSpeed: number | null = null;
   #ready = false;
   #active = false;
+  #meshesShown = true;
+  #inspectableCache: (InspectableBrain | null)[] = []; // one InspectableBrain per horse index, built once and reused
+  #inspectableOut: InspectableBrain[] = []; // reused output array for inspectables() (length reset each call)
 
   constructor(physics: Physics, map: WorldMap, scene: THREE.Scene) {
     this.#world = physics.world;
@@ -242,26 +252,47 @@ export class HorseHerd {
   get active(): boolean { return this.#active; }
   get jumps(): { x: number; z: number; y: number; height: number }[] { return this.#jumps; }
 
+  /**
+   * This runs every frame the world cursor is live (main.ts pickBrain), so it
+   * must not allocate: each horse's descriptor is built once (#buildInspectable)
+   * and cached by index — horses are a fixed-size, never-recreated array whose
+   * obsSnap/policy are mutated in place, so the cached closures always read live
+   * state without needing to be rebuilt. The result is written into the reused
+   * #inspectableOut array instead of a fresh array per call.
+   */
   inspectables(): InspectableBrain[] {
     const overlay = this.#overlay;
     const policy = this.#policy;
-    if (!overlay || !policy) return [];
-    const out: InspectableBrain[] = [];
+    const out = this.#inspectableOut;
+    out.length = 0;
+    if (!overlay || !policy) return out;
     for (let i = 0; i < this.#horses.length; i++) {
       if (!overlay.isShown(i)) continue;
-      const h = this.#horses[i];
-      out.push({
-        id: `horse:${i}`,
-        label: `RL Horse #${i}`,
-        getWorldPos: (o) => this.#latticePos(h, o),
-        pickRadius: 1.3,
-        net: policy,
-        liveObs: () => h.obsSnap,
-        inputLabels: HORSE_INPUT_LABELS,
-        outputLabels: HORSE_OUTPUT_LABELS
-      });
+      let brain = this.#inspectableCache[i];
+      if (!brain) {
+        brain = this.#buildInspectable(i, this.#horses[i], policy);
+        this.#inspectableCache[i] = brain;
+      }
+      out.push(brain);
     }
     return out;
+  }
+
+  /** Builds one horse's InspectableBrain descriptor ONCE (lazily, first time
+   * it's shown). `h` is a stable per-index object for the whole app life; its
+   * obsSnap is always mutated in place (never reassigned), so this closure
+   * stays correct forever without rebuilding. */
+  #buildInspectable(i: number, h: HorseState, policy: RuntimePolicy): InspectableBrain {
+    return {
+      id: `horse:${i}`,
+      label: `RL Horse #${i}`,
+      getWorldPos: (o) => this.#latticePos(h, o),
+      pickRadius: 1.3,
+      net: policy,
+      liveObs: () => h.obsSnap,
+      inputLabels: HORSE_INPUT_LABELS,
+      outputLabels: HORSE_OUTPUT_LABELS
+    };
   }
 
   debugStates(): {
@@ -669,6 +700,17 @@ export class HorseHerd {
     // each horse's floating neural-net lattice from its cached activations, so
     // the brains keep glowing (and stay inspectable) even while paused.
     this.#camera = camera;
+
+    // Herd mesh visibility gate (see MESH_HIDE_RANGE). Toggle on threshold
+    // crossings only. The brain overlays are already distance-gated below (all
+    // hidden once the player is past SIM_RANGE, and per-horse past OVERLAY_RANGE),
+    // so a hidden herd carries no stray lattices.
+    const dcx = camera.position.x - CENTER.x;
+    const dcz = camera.position.z - CENTER.z;
+    const camDist2 = dcx * dcx + dcz * dcz;
+    if (this.#meshesShown && camDist2 > MESH_HIDE_RANGE * MESH_HIDE_RANGE) this.#setHerdVisible(false);
+    else if (!this.#meshesShown && camDist2 < MESH_SHOW_RANGE * MESH_SHOW_RANGE) this.#setHerdVisible(true);
+
     const overlay = this.#overlay;
     if (!overlay) return;
     if (!this.#active || !this.#overlaysOn) {
@@ -684,6 +726,13 @@ export class HorseHerd {
       if (!h.layerSnap.length || dx * dx + dz * dz > range2) overlay.hide(i);
       else overlay.update(i, this.#worldPos, h.layerSnap, h.obsSnap);
     }
+  }
+
+  /** Show/hide every horse + course prop in one shot (distance mesh gate). */
+  #setHerdVisible(visible: boolean): void {
+    this.#meshesShown = visible;
+    for (const h of this.#horses) h.group.visible = visible;
+    for (const o of this.#obstacles) o.mesh.visible = visible;
   }
 
   /** World position of a horse's floating lattice: above its head. */

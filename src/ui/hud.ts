@@ -304,13 +304,15 @@ export class HUD {
 
   message(text: string, seconds = 2.6) {
     this.#center.textContent = text
+    this.#center.classList.add("show") // CSS rises + fades it in
     this.#msgTimer = seconds
   }
 
   update(dt: number) {
     if (this.#msgTimer > 0) {
       this.#msgTimer -= dt
-      if (this.#msgTimer <= 0) this.#center.textContent = ""
+      // fade the toast out (keep the text so the words fade, not pop away)
+      if (this.#msgTimer <= 0) this.#center.classList.remove("show")
     }
   }
 }

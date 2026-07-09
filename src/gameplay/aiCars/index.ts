@@ -27,7 +27,7 @@ import type { Physics } from "../../core/physics";
 import type { WorldMap } from "../../world/heightmap";
 import type { AiCarsLife, CarLifeBlob } from "../../net/net";
 import { RoadGraph } from "./roadGraph.ts";
-import { Fleet, MAX_CARS, type FleetWorld, type FleetBlob, type CarBlob } from "./fleet.ts";
+import { Fleet, MAX_CARS, type FleetWorld, type FleetBlob, type CarBlob, type AiCar } from "./fleet.ts";
 import { Learner, ACTOR_SIZES } from "./learner.ts";
 import { BrainOverlay } from "./brainOverlay.ts";
 import { buildCarMesh } from "./carMesh.ts";
@@ -88,6 +88,14 @@ const STATS_INTERVAL = 1.0; // s between HUD chip refreshes
 const CAR_RENDER_POS_SMOOTH = 22; // 1/s; hides fixed-step/safety-correction pops
 const CAR_RENDER_ROT_SMOOTH = 18; // 1/s
 const CAR_RENDER_SNAP_DIST = 70; // m; initial load / true teleport should not glide across town
+// Render-distance gate: cars keep SIMULATING citywide (fleet/learning untouched),
+// but their meshes only draw when near the camera. Beyond ~600 m a car's mesh is
+// hidden and all its per-frame pose writes (position/quaternion/wheel spin/lattice)
+// are skipped. Hysteresis (show ≤550 m, hide >650 m) stops boundary flicker.
+const CAR_RENDER_RANGE = 600; // m from the camera
+const CAR_RENDER_HYST = 50; // m band around the gate
+const CAR_SHOW_R2 = (CAR_RENDER_RANGE - CAR_RENDER_HYST) * (CAR_RENDER_RANGE - CAR_RENDER_HYST);
+const CAR_HIDE_R2 = (CAR_RENDER_RANGE + CAR_RENDER_HYST) * (CAR_RENDER_RANGE + CAR_RENDER_HYST);
 
 type CarMeshData = {
   wheels: THREE.Mesh[]; // all four, spun by speed
@@ -168,11 +176,15 @@ export class AiCars {
   #qYaw = new THREE.Quaternion();
   #qTilt = new THREE.Quaternion();
   #worldPos = new THREE.Vector3();
+  #camX = 0; // camera world X/Z cached each update() for the per-car render gate
+  #camZ = 0;
   #zeroObs = new Float32Array(ACTOR_SIZES[0]);
   #zeroOut = new Float32Array(ACTOR_SIZES[ACTOR_SIZES.length - 1]);
   #ghostLayerOut: Float32Array[] = []; // [hidden, output] handed to the overlay
   #anchorOut: THREE.Vector3[] = []; // reused collider-anchor result (physics reads it)
   #anchorPool: THREE.Vector3[] = []; // reused per-car anchor vectors
+  #inspectableCache: (InspectableBrain | null)[] = []; // one InspectableBrain per car id, built once and reused
+  #inspectableOut: InspectableBrain[] = []; // reused output array for inspectables() (length reset each call)
 
   constructor(physics: Physics, map: WorldMap, scene: THREE.Scene, getCamera: () => THREE.Camera) {
     this.#physics = physics;
@@ -472,6 +484,12 @@ export class AiCars {
     if (!this.#ready || fleet === null || overlay === null) return;
     this.#syncRole();
 
+    // Cache the camera XZ once per frame — the per-car render gate below measures
+    // distance from the CAMERA (not the player), matching what the renderer draws.
+    const cam = this.#getCamera();
+    this.#camX = cam.position.x;
+    this.#camZ = cam.position.z;
+
     const overlaysActive = this.#overlaysOn && !highUp;
     const range2 = OVERLAY_RANGE * OVERLAY_RANGE;
     this.#trafficLights?.update(playerPos, typeof performance !== "undefined" ? performance.now() / 1000 : 0);
@@ -516,29 +534,48 @@ export class AiCars {
    * Brains the player can click to inspect: every visible (lattice-shown) leader
    * car, wrapped as an InspectableBrain for src/ui/brainPanel. Ghost cars have no
    * local Policy to forward, so only the leader's own fleet is inspectable.
+   *
+   * This runs every frame the world cursor is live (main.ts pickBrain), so it
+   * must not allocate: each car's descriptor is built once (#buildInspectable)
+   * and cached by id in #inspectableCache — cars are persistent individuals
+   * (stable pos/policy/lastObs references for the app's whole life, see AiCar in
+   * fleet.ts), so the cached closures always read live state without ever
+   * needing to be rebuilt. The result is written into the reused #inspectableOut
+   * array instead of a fresh array per call.
    */
   inspectables(): InspectableBrain[] {
     const fleet = this.#fleet;
     const overlay = this.#overlay;
-    if (!this.#ready || !fleet || !overlay || !this.#isLeader) return [];
-    const out: InspectableBrain[] = [];
+    const out = this.#inspectableOut;
+    out.length = 0;
+    if (!this.#ready || !fleet || !overlay || !this.#isLeader) return out;
     for (const car of fleet.cars) {
       if (!car.alive || !car.mesh || !overlay.isShown(car.id)) continue;
-      const pos = car.pos; // live Vector3, mutated in place each frame
-      const policy = car.policy;
-      const lastObs = car.lastObs;
-      out.push({
-        id: `car:${car.id}`,
-        label: `AI Car #${car.id}`,
-        getWorldPos: (o) => o.set(pos.x, pos.y + CAR_TOP + OVERLAY_LIFT, pos.z),
-        pickRadius: 1.3,
-        net: policy,
-        liveObs: () => lastObs,
-        inputLabels: CAR_INPUT_LABELS,
-        outputLabels: CAR_OUTPUT_LABELS
-      });
+      let brain = this.#inspectableCache[car.id];
+      if (!brain) {
+        brain = this.#buildInspectable(car);
+        this.#inspectableCache[car.id] = brain;
+      }
+      out.push(brain);
     }
     return out;
+  }
+
+  /** Builds one car's InspectableBrain descriptor ONCE (lazily, first time it's
+   * shown). `car` is a stable per-id object for the whole app life; its pos/
+   * policy/lastObs fields are always mutated in place, never reassigned — so
+   * these closures stay correct forever without rebuilding. */
+  #buildInspectable(car: AiCar): InspectableBrain {
+    return {
+      id: `car:${car.id}`,
+      label: `AI Car #${car.id}`,
+      getWorldPos: (o) => o.set(car.pos.x, car.pos.y + CAR_TOP + OVERLAY_LIFT, car.pos.z),
+      pickRadius: 1.3,
+      net: car.policy,
+      liveObs: () => car.lastObs,
+      inputLabels: CAR_INPUT_LABELS,
+      outputLabels: CAR_OUTPUT_LABELS
+    };
   }
 
   /** Interpolate + draw received ghost cars (non-leader path). */
@@ -631,7 +668,25 @@ export class AiCars {
   ): void {
     const overlay = this.#overlay;
     if (!overlay) return;
+    // Render-distance gate (camera-relative). A car beyond ~600 m doesn't draw:
+    // hide its mesh if one was built, hide the lattice, and skip every per-frame
+    // pose write below. The kinematic sim + learning (fleet.ts) keep running
+    // regardless — this governs rendering only. `force` (the car the player is
+    // riding) always renders. Uses the live sim `pos` so the test stays valid even
+    // while a car's pose writes are being skipped. Building the mesh is deferred to
+    // first time in range, so cars that never come near never allocate one.
+    const force = this.#forceOverlayId === id;
     let mesh = holder.mesh;
+    const dxc = pos.x - this.#camX;
+    const dzc = pos.z - this.#camZ;
+    const camD2 = dxc * dxc + dzc * dzc;
+    const gate = mesh && mesh.visible ? CAR_HIDE_R2 : CAR_SHOW_R2;
+    if (!force && camD2 > gate) {
+      if (mesh && mesh.visible) mesh.visible = false;
+      overlay.hide(id);
+      return;
+    }
+
     if (!mesh) {
       mesh = buildCarMesh(kind, hue);
       this.#scene.add(mesh);
@@ -654,6 +709,8 @@ export class AiCars {
         targetQuat: new THREE.Quaternion(),
         initialized: false
       };
+    } else if (!mesh.visible) {
+      mesh.visible = true;
     }
 
     const data = (mesh.userData as { car?: CarMeshData }).car;
@@ -666,7 +723,6 @@ export class AiCars {
       for (const w of data.front) w.rotation.y = steerAngle;
     }
 
-    const force = this.#forceOverlayId === id;
     if (overlaysActive || force) {
       const drawPos = mesh.position;
       const dx = drawPos.x - playerPos.x;

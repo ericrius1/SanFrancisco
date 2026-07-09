@@ -2,6 +2,14 @@ import * as THREE from "three/webgpu";
 import { waterHeight, type WorldMap } from "../world/heightmap";
 
 /**
+ * Underwater colour ramp — the one place the effect's hues live, kept in the
+ * same teal→navy family as the UI design tokens (the deep end matches the app's
+ * navy surfaces). Deliberately low-saturation so the world stays readable.
+ */
+const UW_TINT_SHALLOW = 0x0f6f8a; // near-surface teal
+const UW_TINT_DEEP = 0x06283e; // deep navy — mirrors the --surface navy family
+
+/**
  * Stylized underwater screen overlay — pure DOM/CSS, zero GPU cost (no extra
  * render pass, no pipeline rebuild). It kicks in whenever the *camera* dips
  * below the water surface (diving, or riding a car/boat that sinks), giving two
@@ -36,7 +44,8 @@ export class UnderwaterOverlay {
 
     const root = document.createElement("div");
     root.id = "uw-root";
-    root.style.cssText = "position:absolute;inset:0;pointer-events:none;overflow:hidden;z-index:1;";
+    root.style.cssText =
+      "position:absolute;inset:0;pointer-events:none;overflow:hidden;z-index:var(--z-underwater);";
 
     // 1) tint — a light translucent teal→navy veil over the scene
     const tint = document.createElement("div");
@@ -101,7 +110,7 @@ export class UnderwaterOverlay {
     const deepK = THREE.MathUtils.clamp(d / 16, 0, 1); // 0 at surface → 1 deep
     const e = this.#ease;
 
-    this.#tint.style.background = lerpHex(0x0f6f8a, 0x06283e, deepK);
+    this.#tint.style.background = lerpHex(UW_TINT_SHALLOW, UW_TINT_DEEP, deepK);
     this.#tint.style.opacity = String((0.24 + deepK * 0.26) * e);
     this.#body.style.opacity = String((0.42 + deepK * 0.22) * e);
     this.#vignette.style.opacity = String((0.16 + deepK * 0.3) * e);

@@ -74,7 +74,87 @@ export const SEED_TREE_DESIGNS: SeedTreeDesign[] = [
 
 // Hero-clone LOD switch distances (passed to buildTree so every level exists
 // with these thresholds baked into the returned THREE.LOD).
-const LOD_OPTS = { lod1Dist: 40, lod2Dist: 90 };
+//
+// LOD2 DIET: in this garden LOD2 is exclusively the far-tier instancing source
+// — near clones are demoted back to instances at NEAR_EXIT_RADIUS (66 m), well
+// inside lod2Dist (90 m), so no clone ever DISPLAYS LOD2. That means its
+// budget can sit far below SeedThree's 15% default with zero near-view change:
+//  · lod2Pct 4    → the branch budget solver drives bark tubes to their
+//                   3-sided / ring-stride floor (~6.2k → ~2k tris per oak).
+//  · lod2Prune .55 → more of the thinnest twig tubes (and their cluster
+//                   cards) drop; the top-20% crown band is never pruned, so
+//                   the silhouette holds at ≥58 m.
+//  · lod2Density .8 → rosette species only (joshua): thins far rosette rings.
+// The near view (LOD0 <40 m, LOD1 40–90 m) is untouched.
+const LOD_OPTS = { lod1Dist: 40, lod2Dist: 90, lod2Pct: 4, lod2Prune: 0.55, lod2Density: 0.8 };
+
+// Far-tier cluster-card subsample: keep this fraction of each tree's foliage
+// cards in the instanced far tier, growing the survivors by 1/√keep so the
+// canopy holds its visual mass (SpeedTree's "fewer and bigger"). Cards are
+// base-anchored quads, so scaling the geometry grows each spray in place
+// around its twig anchor. Applies to the flat cluster-card foliage only —
+// joshua rosette cones are real geometry and keep every instance.
+const FAR_CARD_KEEP = 0.57;
+const FAR_CARD_GROW = 1 / Math.sqrt(FAR_CARD_KEEP);
+
+// Joshua rosette cones are real geometry (no growth compensation — growing a
+// cone reads as a fatter spike, not a denser rosette); a mild subsample only.
+const FAR_CONE_KEEP = 0.72;
+
+// Far bark importance decimation: the LOD2 tube mesh is already at SeedThree's
+// 3-sided / ring-stride floor, so its remaining cost is RING COUNT — hundreds
+// of thin twig tubes that are sub-pixel behind the foliage cards at ≥58 m.
+// Sort the indexed triangles by area (tube radius × ring spacing) and keep the
+// largest FAR_BARK_KEEP fraction, but never cut below FAR_BARK_AREA_FLOOR of
+// the total surface area — trunk and limb tubes always survive intact.
+const FAR_BARK_KEEP = 0.4;
+const FAR_BARK_AREA_FLOOR = 0.88;
+
+const _dA = new THREE.Vector3();
+const _dB = new THREE.Vector3();
+const _dC = new THREE.Vector3();
+
+/** Returns a clone of `geo` whose index keeps only the biggest triangles (see
+ *  FAR_BARK_KEEP). Non-indexed geometry is returned as a plain clone. */
+function decimateBarkByArea(geo: THREE.BufferGeometry): THREE.BufferGeometry {
+  const out = geo.clone();
+  const index = out.index;
+  const pos = out.attributes.position as THREE.BufferAttribute;
+  if (!index || !pos) return out;
+  const triCount = index.count / 3;
+  const areas = new Float32Array(triCount);
+  let totalArea = 0;
+  for (let t = 0; t < triCount; t++) {
+    _dA.fromBufferAttribute(pos, index.getX(t * 3));
+    _dB.fromBufferAttribute(pos, index.getX(t * 3 + 1));
+    _dC.fromBufferAttribute(pos, index.getX(t * 3 + 2));
+    _dB.sub(_dA);
+    _dC.sub(_dA);
+    const area = _dB.cross(_dC).length() * 0.5;
+    areas[t] = area;
+    totalArea += area;
+  }
+  const order = Array.from({ length: triCount }, (_, t) => t).sort((a, b) => areas[b] - areas[a]);
+  const minKeep = Math.ceil(triCount * FAR_BARK_KEEP);
+  const areaTarget = totalArea * FAR_BARK_AREA_FLOOR;
+  let kept = 0;
+  let areaKept = 0;
+  while (kept < triCount && (kept < minKeep || areaKept < areaTarget)) {
+    areaKept += areas[order[kept]];
+    kept++;
+  }
+  if (kept >= triCount) return out;
+  const src = index.array;
+  const arr = new (src.constructor as new (n: number) => typeof src)(kept * 3);
+  for (let j = 0; j < kept; j++) {
+    const t = order[j] * 3;
+    arr[j * 3] = src[t];
+    arr[j * 3 + 1] = src[t + 1];
+    arr[j * 3 + 2] = src[t + 2];
+  }
+  out.setIndex(new THREE.BufferAttribute(arr, 1));
+  return out;
+}
 
 // Near-tier budget: how many full-quality hero clones may exist at once, and
 // how far out a slot qualifies. Slight exit hysteresis stops boundary flicker.
@@ -173,9 +253,22 @@ type FarBranchBucket = { im: THREE.InstancedMesh; base: THREE.Matrix4 };
 type FarCardBucket = { im: THREE.InstancedMesh; k: number; base: THREE.Matrix4; cardMats: Float32Array };
 type FarSet = { group: THREE.Group; branches: FarBranchBucket[]; cards: FarCardBucket[]; triangles: number };
 
+/** Deterministic, spatially-uniform card subset: golden-ratio stepping keeps
+ *  every region of the canopy represented at any keep fraction. */
+function pickCardSubset(k: number, keep: number): number[] {
+  const pick: number[] = [];
+  for (let j = 0; j < k; j++) {
+    if (((j * 0.6180339887498949) % 1) < keep) pick.push(j);
+  }
+  return pick.length > 0 ? pick : [0];
+}
+
 /** Build the species' static far tier over all slots (grove recipe: bark →
  *  InstancedMesh over slots, card InstancedMeshes → flattened k×N with tiled
- *  per-instance attributes). */
+ *  per-instance attributes). Every far mesh gets a real bounding sphere over
+ *  the species' slots (+canopy headroom) with frustumCulled=true, so a whole
+ *  species zone stops rendering when the camera faces away — the old
+ *  frustumCulled=false meant all ~4M far triangles drew from every angle. */
 function buildFarSet(lod2: THREE.Object3D, slots: Slot[], name: string): FarSet {
   const group = new THREE.Group();
   group.name = name;
@@ -188,43 +281,81 @@ function buildFarSet(lod2: THREE.Object3D, slots: Slot[], name: string): FarSet 
   const card = new THREE.Matrix4();
   lod2.updateMatrixWorld(true);
 
+  // Species bounding sphere over slot extents, with generous canopy headroom —
+  // a too-big sphere only costs cull efficiency, never correctness.
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (const s of slots) {
+    if (s.x < minX) minX = s.x;
+    if (s.x > maxX) maxX = s.x;
+    if (s.y < minY) minY = s.y;
+    if (s.y + 40 * s.scale > maxY) maxY = s.y + 40 * s.scale;
+    if (s.z < minZ) minZ = s.z;
+    if (s.z > maxZ) maxZ = s.z;
+  }
+  const sphere = new THREE.Sphere(
+    new THREE.Vector3((minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2),
+    Math.hypot(maxX - minX, maxY - minY, maxZ - minZ) / 2 + 12
+  );
+
   lod2.traverse((child) => {
     if (!(child as THREE.Mesh).isMesh) return;
     const mesh = child as THREE.Mesh;
-    const geoTris = (mesh.geometry.index ? mesh.geometry.index.count : mesh.geometry.attributes.position.count) / 3;
 
     if ((mesh as THREE.InstancedMesh).isInstancedMesh) {
       const src = mesh as THREE.InstancedMesh;
       const k = src.count;
-      const total = k * N;
+      // Cluster-card foliage gets subsampled + grown (see FAR_CARD_KEEP);
+      // rosette cones get a mild subsample with no growth (FAR_CONE_KEEP);
+      // any other instanced geometry keeps every instance.
+      const isCards = mesh.name === "foliage";
+      const isCone = /^cone\d+$/.test(mesh.name);
+      const keep = isCards ? FAR_CARD_KEEP : isCone ? FAR_CONE_KEEP : 1;
+      const pick = keep < 1 ? pickCardSubset(k, keep) : null;
+      const kSub = pick ? pick.length : k;
+      const total = kSub * N;
       const geo = src.geometry.clone();
+      if (isCards && pick && FAR_CARD_GROW !== 1) geo.scale(FAR_CARD_GROW, FAR_CARD_GROW, FAR_CARD_GROW);
       for (const [attrName, attr] of Object.entries(src.geometry.attributes)) {
         const a = attr as THREE.InstancedBufferAttribute;
         if (!a.isInstancedBufferAttribute) continue;
-        const arr = new (a.array.constructor as new (n: number) => typeof a.array)(total * a.itemSize);
-        for (let slot = 0; slot < N; slot++) {
-          arr.set(a.array.subarray(0, k * a.itemSize), slot * k * a.itemSize);
+        const one = new (a.array.constructor as new (n: number) => typeof a.array)(kSub * a.itemSize);
+        for (let j = 0; j < kSub; j++) {
+          const s = (pick ? pick[j] : j) * a.itemSize;
+          for (let c = 0; c < a.itemSize; c++) one[j * a.itemSize + c] = a.array[s + c];
         }
+        const arr = new (a.array.constructor as new (n: number) => typeof a.array)(total * a.itemSize);
+        for (let slot = 0; slot < N; slot++) arr.set(one, slot * kSub * a.itemSize);
         geo.setAttribute(attrName, new THREE.InstancedBufferAttribute(arr, a.itemSize));
       }
       // frozen card-transform snapshot (the source mesh belongs to the live template)
-      const cardMats = new Float32Array(k * 16);
-      for (let j = 0; j < k; j++) {
-        src.getMatrixAt(j, card);
+      const cardMats = new Float32Array(kSub * 16);
+      for (let j = 0; j < kSub; j++) {
+        src.getMatrixAt(pick ? pick[j] : j, card);
         cardMats.set(card.elements, j * 16);
       }
       const im = new THREE.InstancedMesh(geo, src.material, total);
-      const bucket: FarCardBucket = { im, k, base: mesh.matrixWorld.clone(), cardMats };
+      const bucket: FarCardBucket = { im, k: kSub, base: mesh.matrixWorld.clone(), cardMats };
       for (let slot = 0; slot < N; slot++) writeFarCardSlot(bucket, slots[slot], slot, false);
       im.name = `${name}_${mesh.name || "cards"}`;
-      im.castShadow = true;
+      // far tier never casts: at 66m+ a 2048-map cascade resolves no card shadow,
+      // but 240 instanced draws x 3 cascades of encode was the meadow CPU bill.
+      // Near hero clones still cast.
+      im.castShadow = false;
       im.receiveShadow = true;
-      im.frustumCulled = false;
+      geo.boundingSphere = sphere.clone();
+      im.boundingSphere = sphere.clone();
+      im.frustumCulled = true;
       group.add(im);
       cards.push(bucket);
+      const geoTris = (geo.index ? geo.index.count : geo.attributes.position.count) / 3;
       triangles += geoTris * total;
     } else {
-      const im = new THREE.InstancedMesh(mesh.geometry, mesh.material, N);
+      // decimated clone (see decimateBarkByArea) so the far set carries its own
+      // slimmed index + world-space bounding sphere without touching the
+      // template geometry the near clones share
+      const geo = decimateBarkByArea(mesh.geometry);
+      geo.boundingSphere = sphere.clone();
+      const im = new THREE.InstancedMesh(geo, mesh.material, N);
       const bucket: FarBranchBucket = { im, base: mesh.matrixWorld.clone() };
       for (let slot = 0; slot < N; slot++) {
         slotMatrix(slots[slot], slotM);
@@ -232,11 +363,13 @@ function buildFarSet(lod2: THREE.Object3D, slots: Slot[], name: string): FarSet 
         im.setMatrixAt(slot, tmp);
       }
       im.name = `${name}_${mesh.name || "bark"}`;
-      im.castShadow = true;
+      im.castShadow = false; // far tier never casts (see cards note above)
       im.receiveShadow = true;
-      im.frustumCulled = false;
+      im.boundingSphere = sphere.clone();
+      im.frustumCulled = true;
       group.add(im);
       branches.push(bucket);
+      const geoTris = (geo.index ? geo.index.count : geo.attributes.position.count) / 3;
       triangles += geoTris * N;
     }
   });
@@ -455,18 +588,24 @@ export async function buildSeedTreeGarden(trees: GardenTree[]): Promise<SeedTree
     }
   };
 
-  // Self-drive the rebin off the render loop: far branch meshes are
-  // frustumCulled=false, so one of them renders every frame — its
+  // Self-drive the rebin off the render loop. The far meshes are now
+  // frustum-culled (species bounding spheres), so none of them is guaranteed
+  // to render every frame — park a tiny always-rendered driver quad instead
+  // (colorWrite off, far underground; same recipe as seedForest). Its
   // onBeforeRender hands us the live camera with zero caller plumbing.
   // Shadow passes invoke it too, with the sun's OrthographicCamera; only the
   // perspective gameplay camera may steer the rebin.
-  const anyRuntime = runtimes.find(Boolean);
-  const driver = anyRuntime?.farSet.branches[0]?.im ?? anyRuntime?.farSet.cards[0]?.im;
-  if (driver) {
-    driver.onBeforeRender = (_renderer, _scene, camera) => {
-      if ((camera as THREE.PerspectiveCamera).isPerspectiveCamera) update(camera);
-    };
-  }
+  const driver = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.01, 0.01),
+    new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false })
+  );
+  driver.name = "sfbg_seedthree_rebin_driver";
+  driver.position.set(0, -4000, 0);
+  driver.frustumCulled = false;
+  driver.onBeforeRender = (_renderer, _scene, camera) => {
+    if ((camera as THREE.PerspectiveCamera).isPerspectiveCamera) update(camera);
+  };
+  group.add(driver);
 
   return {
     group,

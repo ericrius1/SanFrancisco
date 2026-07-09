@@ -442,20 +442,22 @@ export class Exploratorium {
       document.body.appendChild(el);
       this.#plaqueEl = el;
     }
+    // on-theme reading modal (glass navy card, per-exhibit accent bar retained)
     el.style.cssText =
-      "position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;" +
-      "background:rgba(6,9,14,0.62);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);" +
-      "font-family:system-ui,sans-serif;cursor:pointer;animation:none;";
+      "position:fixed;inset:0;z-index:var(--z-modal);display:flex;align-items:center;justify-content:center;" +
+      "background:var(--scrim);backdrop-filter:blur(5px);-webkit-backdrop-filter:blur(5px);" +
+      "font-family:var(--font);cursor:pointer;animation:none;";
     el.innerHTML =
       `<div style="max-width:620px;width:calc(100% - 48px);max-height:82vh;overflow:auto;cursor:auto;` +
-      `background:#101418;color:#f5f2ea;border-radius:14px;border-top:6px solid ${p.accent};` +
-      `box-shadow:0 24px 80px rgba(0,0,0,0.6);padding:34px 38px;">` +
-      `<div style="font:700 30px/1.2 system-ui,sans-serif;margin-bottom:16px;">${esc(p.title)}</div>` +
-      `<div style="font:400 18px/1.62 system-ui,sans-serif;color:#d3d8de;">${esc(p.body)}</div>` +
+      `background:linear-gradient(180deg,rgba(12,28,42,0.97),rgba(8,20,31,0.97));color:var(--text);` +
+      `border:1px solid var(--hairline-2);border-top:4px solid ${p.accent};border-radius:var(--r-xl);` +
+      `box-shadow:var(--shadow-lg),var(--edge-hi);padding:32px 36px;">` +
+      `<div style="font:700 30px/1.2 var(--font);letter-spacing:0.01em;margin-bottom:16px;">${esc(p.title)}</div>` +
+      `<div style="font:400 17px/1.62 var(--font);color:var(--text-soft);">${esc(p.body)}</div>` +
       `<div style="display:flex;align-items:center;justify-content:space-between;margin-top:26px;">` +
-      `<span style="font:italic 15px system-ui,sans-serif;color:${p.accent};">Exploratorium · Pier 15</span>` +
-      `<button data-close style="cursor:pointer;border:1px solid #3a3f47;background:#1b2027;color:#f5f2ea;` +
-      `border-radius:8px;padding:8px 16px;font:600 14px system-ui,sans-serif;">Close · E</button>` +
+      `<span style="font:italic 14px var(--font);color:${p.accent};">Exploratorium · Pier 15</span>` +
+      `<button data-close style="cursor:pointer;border:1px solid var(--hairline-2);background:var(--surface-raised);color:var(--text);` +
+      `border-radius:var(--r-sm);padding:8px 16px;font:600 13px var(--font);">Close · E</button>` +
       `</div></div>`;
     el.style.display = "flex";
     // free the locked cursor so the reader can scroll / click Close; a locked

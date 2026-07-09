@@ -55,11 +55,13 @@ export class StatsChip {
     }
     const el = document.createElement("div");
     el.className = "ai-cars-chip";
+    // on-theme glass chip; tabular-nums so the live counters don't jitter width
     el.style.cssText =
-      "position:fixed;left:12px;bottom:12px;z-index:5;pointer-events:none;" +
-      "font:600 12px/1.35 system-ui,sans-serif;color:#cfe8ff;" +
-      "background:rgba(10,16,24,0.52);border:1px solid rgba(120,180,230,0.28);" +
-      "border-radius:8px;padding:4px 9px;letter-spacing:0.2px;" +
+      "position:fixed;left:12px;bottom:12px;z-index:var(--z-panel);pointer-events:none;" +
+      "font:600 12px/1.35 var(--font);font-variant-numeric:tabular-nums;color:var(--text-soft);" +
+      "background:var(--surface);border:1px solid var(--hairline-2);" +
+      "border-radius:var(--r-md);padding:5px 10px;letter-spacing:0.2px;" +
+      "box-shadow:var(--shadow-sm),var(--edge-hi);backdrop-filter:blur(var(--blur));" +
       "text-shadow:0 1px 2px rgba(0,0,0,0.6);display:none;";
     // parent to #hud so Tab-fade applies; fall back to body if hud missing
     (document.getElementById("hud") ?? document.body).appendChild(el);

@@ -40,6 +40,9 @@ type LandmarkLabelPlacement = {
   pill?: { x: number; y: number; w: number; h: number };
 };
 
+// Canvas 2D can't read CSS custom properties, so mirror the --font stack here
+// for the labels painted straight onto the map.
+const MAP_FONT = "'InterVariable', Inter, system-ui, -apple-system, sans-serif";
 const MINI_SIZE = 236; // css px
 const MINI_SPAN = 1400; // metres across the minimap view
 const MINI_MIN_SPAN = 260;
@@ -705,7 +708,7 @@ export class Minimap {
 
     // north tick
     ctx.fillStyle = "rgba(234,244,248,0.75)";
-    ctx.font = `600 ${10 * dpr}px 'Avenir Next', sans-serif`;
+    ctx.font = `600 ${10 * dpr}px ${MAP_FONT}`;
     ctx.textAlign = "center";
     ctx.fillText("N", c, 15 * dpr);
     ctx.beginPath();
@@ -1020,7 +1023,7 @@ export class Minimap {
     const c = size / 2;
     const margin = 12 * dpr;
     this.#miniLandmarkHits = [];
-    const font = `600 ${9 * dpr}px 'Avenir Next', sans-serif`;
+    const font = `600 ${9 * dpr}px ${MAP_FONT}`;
     const rad = 4.8 * dpr;
     const labelH = 11 * dpr;
     const visible: { lm: MiniLandmark; x: number; y: number; selected: boolean }[] = [];
@@ -1493,7 +1496,7 @@ export class Minimap {
 
     // landmarks — clickable teal dots
     this.#bigLandmarkHits = [];
-    const lmFont = `600 ${10.5 * dpr}px 'Avenir Next', sans-serif`;
+    const lmFont = `600 ${10.5 * dpr}px ${MAP_FONT}`;
     const lmRad = 4.8 * dpr;
     const lmLabelH = 14 * dpr;
     const lmPillH = 16 * dpr;
@@ -1528,7 +1531,7 @@ export class Minimap {
 
     // remote players with name labels (canvas text — no HTML injection path)
     this.#hits = [];
-    ctx.font = `600 ${11.5 * dpr}px 'Avenir Next', sans-serif`;
+    ctx.font = `600 ${11.5 * dpr}px ${MAP_FONT}`;
     for (const r of this.#getRemotes()) {
       const x = px(r.x);
       const y = pz(r.z);
@@ -1678,7 +1681,7 @@ export class Minimap {
   ) {
     const dpr = this.#dpr;
     ctx.save();
-    ctx.font = `700 ${11.5 * dpr}px 'Avenir Next', sans-serif`;
+    ctx.font = `700 ${11.5 * dpr}px ${MAP_FONT}`;
     const padX = 7 * dpr;
     const padY = 4 * dpr;
     const tw = ctx.measureText(text).width;

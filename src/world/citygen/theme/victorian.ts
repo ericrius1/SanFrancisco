@@ -11,6 +11,8 @@ import {
   type FacadeDecorator, type FacadeEdge, type Vec3,
   PanelBuilder, pointOnWall, outset, floorBands, bayCount, aboveGrade,
 } from "../core/facade";
+import { wallWithDoorway } from "./facadeKit";
+import { doorEligible } from "../core/collider";
 
 // ---- small vector helpers ---------------------------------------------------
 const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -119,10 +121,17 @@ function stoopAndDoor(out: PanelBuilder, e: FacadeEdge, base: number, groundTopY
   const cSill = lerp(dl, dr, 0.5);
   out.box(m.trim, [cSill[0] + n3[0] * 0.2, base + 0.06, cSill[2] + n3[2] * 0.2], [dw / 2 + 0.2, 0.06, 0.2], along, UP, n3, true);
 
-  // door panel (dark, PROUD of the wall — a recessed panel is occluded by the flat
-  // wall quad, which is why the door read as "missing") + trim surround
+  // The wall quad behind is cut open (wallWithDoorway), so this reads as a real
+  // entrance: a dark entry backing filling the opening (a hair proud so it occludes
+  // the LOD prism through the hole) + a panelled leaf swung ajar so the doorway
+  // reads OPEN, not a flat decal, + a trim surround.
   const inw = (p: Vec3, d: number, yy: number): Vec3 => [p[0] + n3[0] * d, yy, p[2] + n3[2] * d];
-  out.quad(m.door, inw(dl, 0.03, doorBase), inw(dr, 0.03, doorBase), inw(dr, 0.03, doorTop), inw(dl, 0.03, doorTop), n3);
+  out.quad("citygen.room", inw(dl, 0.02, doorBase), inw(dr, 0.02, doorBase), inw(dr, 0.02, doorTop), inw(dl, 0.02, doorTop), n3);
+  const ang = 0.28, leafHalf = (dw / 2) * 0.96, dMid = (doorBase + doorTop) / 2;
+  const swing: Vec3 = [along[0] * Math.cos(ang) + n3[0] * Math.sin(ang), 0, along[2] * Math.cos(ang) + n3[2] * Math.sin(ang)];
+  const swingN: Vec3 = [-swing[2], 0, swing[0]];
+  const hinge = inw(dl, 0.05, dMid);
+  out.box(m.door, [hinge[0] + swing[0] * leafHalf, dMid, hinge[2] + swing[2] * leafHalf], [leafHalf, (doorTop - doorBase) / 2 - 0.03, 0.03], swing, UP, swingN, true);
   // surround
   const cA = lerp(dl, dr, 0.5), midY = (doorBase + doorTop) / 2;
   out.box(m.trim, [cA[0] + n3[0] * 0.03, doorTop + 0.06, cA[2] + n3[2] * 0.03], [dw / 2 + 0.14, 0.1, 0.06], along, UP, n3, true);
@@ -143,8 +152,10 @@ export const victorianFacade: FacadeDecorator = (e, out, rng) => {
   const wm = { frame: trim, glass, trim };
 
   // ---- flat wall (ground band in base tone, upper in wall tone) -------------
+  // the ground band is cut open at the doorway so the collider's walk-through gap
+  // isn't backed by a solid quad; the upper band spans the whole edge.
   const g0 = gp(e, 0), g1 = gp(e, 1);
-  out.quad(baseMat, [g0[0], e.base, g0[2]], [g1[0], e.base, g1[2]], [g1[0], groundTopY, g1[2]], [g0[0], groundTopY, g0[2]], n3);
+  wallWithDoorway(out, e, baseMat, e.base, groundTopY, n3);
   out.quad(wall, [g0[0], groundTopY, g0[2]], [g1[0], groundTopY, g1[2]], [g1[0], e.top, g1[2]], [g0[0], e.top, g0[2]], n3);
 
   // corner boards (vertical trim at the façade ends) on the street face
@@ -160,7 +171,7 @@ export const victorianFacade: FacadeDecorator = (e, out, rng) => {
   // On a hillside lot the ground floor can be buried up to `grade`; only lay the
   // stoop/door/garden window when enough of it clears the ground line.
   const gBase = Math.max(e.base, e.grade);
-  if (e.isStreet && e.length > 2.4 && groundTopY - gBase > 1.2) {
+  if (doorEligible(e)) {
     stoopAndDoor(out, e, gBase, groundTopY, { base: baseMat, trim, door: doorMat });
     // a ground-floor bay/garden window on the other side of the door
     const gw0 = gp(e, 0.62), gw1 = gp(e, 0.92);

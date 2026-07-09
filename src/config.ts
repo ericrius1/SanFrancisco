@@ -7,67 +7,31 @@ import type { PlayerMode } from "./player/types";
 // keep its old proportion to the lit world.
 export const LIGHT_SCALE = 100 / 6;
 
-export type RenderQualityPreset = "performance" | "balanced" | "high";
-export type ShadowQuality = "off" | "low" | "high";
-
-export const SHADOW_QUALITY: Record<
-  ShadowQuality,
-  { enabled: boolean; mapSize: number; maxFar: number; lightMargin: number; normalBias: [number, number, number] }
-> = {
-  off: { enabled: false, mapSize: 0, maxFar: 0, lightMargin: 0, normalBias: [0.25, 1.0, 3.0] },
-  low: { enabled: true, mapSize: 1024, maxFar: 220, lightMargin: 160, normalBias: [0.35, 1.2, 2.6] },
-  high: { enabled: true, mapSize: 2048, maxFar: 600, lightMargin: 400, normalBias: [0.25, 1.0, 3.0] }
-};
-
-export const RENDER_QUALITY_PRESETS: Record<
-  RenderQualityPreset,
-  {
-    maxPixelRatio: number;
-    shadowQuality: ShadowQuality;
-    sceneSamples: number;
-  }
-> = {
-  performance: {
-    maxPixelRatio: 1,
-    shadowQuality: "off",
-    sceneSamples: 0
-  },
-  balanced: {
-    maxPixelRatio: 1.5,
-    shadowQuality: "low",
-    sceneSamples: 2
-  },
-  high: {
-    maxPixelRatio: 1.5,
-    shadowQuality: "high",
-    sceneSamples: 4
-  }
-};
+/**
+ * The one universal render mode: the fixed, measurement-tuned settings every
+ * session runs. Replaces the old three-tier quality preset system (performance /
+ * balanced / high) and its separate shadow-quality tiers, both removed 2026-07 —
+ * there is no user-facing quality switch any more. The two other universal-mode
+ * values live with the systems they configure: scene MSAA = 2 in
+ * POSTFX_TUNING.sceneSamples (render/postfx.ts) and the always-on CSM shadow
+ * config as named constants near the setup in world/sky.ts.
+ */
+export const RENDER_MODE = {
+  // drawing-buffer cap on devicePixelRatio. The scene is fragment-bound: retina
+  // dpr 2 costs ~2× the frame time of 1.5 for a near-invisible sharpness delta
+  // (measured 17.1 → 8.6 ms p50 at 2560×1600). dpr-1 displays are unaffected —
+  // the cap only ever lowers the ratio.
+  pixelRatioCap: 1.5
+} as const;
 
 /** Renderer grading, bound in the "/" panel's lighting folder. */
 export const RENDER_TUNING = tunables("render", {
-  renderQuality: {
-    v: "performance",
-    options: { Performance: "performance", Balanced: "balanced", High: "high" },
-    label: "quality preset"
-  },
   exposure: { v: 0.13, min: 0.01, max: 1, label: "exposure" },
-  // drawing-buffer cap on devicePixelRatio. The scene is fragment-bound: retina
-  // dpr 2 costs ~2× the frame time of 1.5 for a near-invisible sharpness delta
-  // (measured 17.1 → 8.6 ms p50 at 2560×1600). Default follows the performance
-  // preset (1); balanced/high bump to 1.5. dpr-1 displays are unaffected
-  // (the cap only ever lowers the ratio).
-  maxPixelRatio: { v: 1, min: 0.5, max: 2, step: 0.05, label: "max pixel ratio" },
   // lit windows beyond the interior-raymarch range (~520 m): OFF (default) is
   // the original 0.55 "dusk sparkle" glow; ON boosts far panes toward the
   // room-emissive average so the whole skyline burns brighter at dusk. Purely
   // a look toggle — the shader cost is identical either way.
   farWindowGlow: { v: false, label: "far window glow boost" },
-  shadowQuality: {
-    v: "off",
-    options: { Off: "off", Low: "low", High: "high" },
-    label: "shadow quality"
-  },
   wireframe: { v: false, label: "wireframe mode" },
   // collider x-ray: draw every active physics collider as a wireframe box (red =
   // baked body, orange = citywide index, green = walk-in wall, blue = interior).

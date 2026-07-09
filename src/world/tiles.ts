@@ -47,11 +47,10 @@ type LoadedTile = {
   // one frame is a visible spike, so children re-attach one per frame instead
   pendingParts?: THREE.Object3D[];
   // park ground (grn_) held back while the player is high — a plane climb should
-  // upload only the skyline, not the (up to 379k-vert) lawn meshes. Attached one
-  // per frame once the player descends (see #drainAttach / #resumeDetail).
+  // upload only the skyline, not the (up to 379k-vert) lawn meshes. Drained
+  // once the player descends, at a catch-up rate for the first few frames so
+  // it doesn't trickle in tile by tile (see #drainAttach / #resumeDetail).
   detailParts?: THREE.Object3D[];
-  // tree scatter owed once the tile is whole AND the player is low
-  needsGreens?: boolean;
 };
 
 // a pooled facade material + its alive texture: the facade shader is by far the
@@ -77,6 +76,9 @@ type TileEntry = { key: string; cx: number; cz: number; d2: number };
 // concurrent GLB loads: meshopt decode rides a 4-worker pool (see useWorkers below),
 // so this caps how many decodes can be queued on it at once
 const MAX_IN_FLIGHT = 4;
+// raised in-flight cap while the player is moving fast (see #fastStream) — at
+// plane/boost speed the ~1150m fog veil can otherwise be outrun before tiles land
+const MAX_IN_FLIGHT_FAST = 6;
 // meshopt decompression workers: without them decodeGltfBufferAsync runs the WASM
 // decode synchronously on the main thread — the biggest single hitch per tile load
 MeshoptDecoder.useWorkers(4);
@@ -210,8 +212,6 @@ export class TileStreamer {
   // fracture) so the physics query world can add or drop its collider. Mesh-only
   // suppression keeps the collider, so it does NOT fire this.
   onBuildingAlive: (key: string, index: number, alive: boolean) => void = () => {};
-  // fired after a tile lands in the scene — the flora layer scatters trees/grass on its parks
-  onTileGreens: (key: string, group: THREE.Group) => void = () => {};
 
   #loader = new GLTFLoader();
   #scene: THREE.Scene;
@@ -222,6 +222,10 @@ export class TileStreamer {
   #inFlight = 0;
   #px = 0;
   #pz = 0;
+  // previous-frame position, for a speed estimate (see #fastStream in update())
+  #prevPx = 0;
+  #prevPz = 0;
+  #hasPrevPos = false;
   #hasScanned = false;
   // parsed tiles awaiting finalize, drained one per frame
   #ready: ReadyTile[] = [];
@@ -231,6 +235,14 @@ export class TileStreamer {
   #deferred = new Set<string>();
   // true when the player is high enough that only buildings/roads should stream
   #highUp = false;
+  // true for the frames right after a highUp→low descent, while #resumeDetail's
+  // backlog is still draining faster than 1/frame (see update())
+  #catchingUp = false;
+  // true while moving fast enough to outrun the fog veil at the normal scan
+  // cadence; hysteresis vs speed (mirrors the highUp altitude gate above) so a
+  // speed hovering near the threshold can't thrash the scan interval / in-flight cap
+  #fastStream = false;
+  #maxInFlight = MAX_IN_FLIGHT;
   // out-of-range tiles awaiting dispose, drained one per frame
   #unloads = new Set<string>();
   // reusable facade material slots (see FacadeSlot)
@@ -318,17 +330,42 @@ export class TileStreamer {
     this.#tick++;
     this.#px = px;
     this.#pz = pz;
+    // speed estimate (world units/sec): update() carries no dt, so this assumes
+    // a steady ~60fps between calls — good enough to gate cadence, not physics
+    if (this.#hasPrevPos) {
+      const speed = Math.hypot(px - this.#prevPx, pz - this.#prevPz) * 60;
+      this.#fastStream = this.#fastStream ? speed > 28 : speed > 40;
+      this.#maxInFlight = this.#fastStream ? MAX_IN_FLIGHT_FAST : MAX_IN_FLIGHT;
+    }
+    this.#prevPx = px;
+    this.#prevPz = pz;
+    this.#hasPrevPos = true;
     if (highUp !== this.#highUp) {
       this.#highUp = highUp;
-      // descended: re-queue every tile whose park detail / tree scatter was held
-      if (!highUp) this.#resumeDetail();
+      // descended: re-queue every tile whose park detail / tree scatter was
+      // held, and catch that backlog up faster than the usual 1/frame drain so
+      // it doesn't visibly roll in tile by tile as the ground approaches
+      if (!highUp) {
+        this.#resumeDetail();
+        this.#catchingUp = true;
+      }
     }
-    if (this.#tick % 30 === 1) this.#scan(px, pz);
+    // building-tile scan: every 30 ticks (~0.5s) normally, every 10 while
+    // #fastStream — otherwise plane/boost speed can outrun the ~1150m fog veil
+    // and tiles pop in inside visible range
+    if (this.#tick % (this.#fastStream ? 10 : 30) === 1) this.#scan(px, pz);
     if (this.#tick % 60 === 2) this.#scanTerrain(px, pz);
     // one mesh attach (GPU upload) OR one finalize OR one dispose per frame,
     // so tile streaming costs stay flat instead of spiking when loads land in
-    // bursts
-    if (!this.#drainAttach() && !this.#drainReady()) this.#drainUnload();
+    // bursts. Exception: while #catchingUp, drain up to 4/frame so a
+    // post-descent detail backlog (see #resumeDetail) clears in a handful of
+    // frames instead of trickling in one mesh at a time.
+    let attached = false;
+    for (let i = 0, n = this.#catchingUp ? 4 : 1; i < n; i++) {
+      if (!this.#drainAttach()) { this.#catchingUp = false; break; }
+      attached = true;
+    }
+    if (!attached && !this.#drainReady()) this.#drainUnload();
   }
 
   /** Re-evaluate load/unload immediately (e.g. after a draw-distance change). */
@@ -424,14 +461,15 @@ export class TileStreamer {
         this.#unloads.add(e.key);
       }
     }
-    // nearest first, drained MAX_IN_FLIGHT at a time as loads finish
+    // nearest first, drained #maxInFlight at a time as loads finish (raised
+    // while #fastStream — see update())
     this.#queue.sort((a, b) => a.d2 - b.d2);
     this.#pump();
   }
 
   #pump() {
     const loadR2 = CONFIG.tileLoadRadius * CONFIG.tileLoadRadius;
-    while (this.#inFlight < MAX_IN_FLIGHT && this.#queue.length > 0) {
+    while (this.#inFlight < this.#maxInFlight && this.#queue.length > 0) {
       const e = this.#queue.shift()!;
       if (this.loaded.has(e.key) || this.#pending.has(e.key)) continue;
       // the queue can be stale (player moved, radius shrank) — re-check before fetching
@@ -529,6 +567,11 @@ export class TileStreamer {
       group.traverse((o) => {
         const mesh = o as THREE.Mesh;
         if (!mesh.isMesh) return;
+        // tile content is static and drawn via a WebGPU render bundle (below):
+        // the bundle records each child's draw once, so per-child frustum tests
+        // would freeze whatever culling the record-time camera saw. Children
+        // draw unconditionally; the whole tile is distance/radius managed.
+        mesh.frustumCulled = false;
         const lowerBid = mesh.geometry.getAttribute("_bid");
         const bid = lowerBid ?? mesh.geometry.getAttribute("_BID");
         if (bid) {
@@ -555,15 +598,21 @@ export class TileStreamer {
       const detail: THREE.Object3D[] = [];
       for (const o of group.children) (o.name.startsWith("grn_") ? detail : core).push(o);
       group.clear();
-      this.#scene.add(group);
+      // static tile content renders as one WebGPU render bundle: ~40 per-building
+      // draws per tile collapse to a cached command buffer, so per-frame encode
+      // cost stops scaling with building count. Building hide/show (citygen swap,
+      // destruction) rides the alive TEXTURE, never mesh structure, so the bundle
+      // only re-records while the tile is still attaching parts.
+      const bundle = new THREE.BundleGroup();
+      bundle.name = `tile_${key}`;
+      this.#scene.add(bundle);
       this.loaded.set(key, {
         key,
-        group,
+        group: bundle,
         slot,
         colliders,
         pendingParts: core,
-        detailParts: detail.length ? detail : undefined,
-        needsGreens: true
+        detailParts: detail.length ? detail : undefined
       });
       this.#attaching.push(key);
     } else {
@@ -586,29 +635,25 @@ export class TileStreamer {
       // 1) core meshes (buildings/roads): one GPU upload per frame
       if (tile.pendingParts && tile.pendingParts.length > 0) {
         tile.group.add(tile.pendingParts.shift()!);
+        (tile.group as THREE.BundleGroup).needsUpdate = true; // structure changed → re-record bundle
         if (tile.pendingParts.length === 0) tile.pendingParts = undefined;
         return true;
       }
       // 2) park detail: only while low — while high it stays off the GPU
       if (!this.#highUp && tile.detailParts && tile.detailParts.length > 0) {
         tile.group.add(tile.detailParts.shift()!);
+        (tile.group as THREE.BundleGroup).needsUpdate = true;
         if (tile.detailParts.length === 0) tile.detailParts = undefined;
         return true;
       }
-      // 3) high, but detail/scatter still owed: park the tile until descent
-      if (this.#highUp && ((tile.detailParts && tile.detailParts.length > 0) || tile.needsGreens)) {
+      // 3) high, but park detail still owed: park the tile until descent
+      if (this.#highUp && tile.detailParts && tile.detailParts.length > 0) {
         this.#deferred.add(key);
         this.#attaching.shift();
         continue;
       }
-      // 4) tile whole (low): scatter its trees once, then it's done
+      // 4) tile whole
       this.#attaching.shift();
-      if (tile.needsGreens) {
-        tile.needsGreens = false;
-        // flora scatters once the tile is whole — its park meshes are in place
-        this.onTileGreens(key, tile.group);
-        return true;
-      }
     }
     return false;
   }

@@ -30,7 +30,7 @@ import { CROWN_INTENSITY } from "./salesforceCrown"
 import { BAY_LIGHTS_INTENSITY } from "./bayLights"
 import { GOLDEN_GATE_LIGHTS_INTENSITY } from "./goldenGateLights"
 import { SUTRO_LIGHTS_INTENSITY } from "./sutroTower"
-import { LIGHT_SCALE, RENDER_TUNING, SHADOW_QUALITY, WORLD_TUNING, type ShadowQuality } from "../config"
+import { LIGHT_SCALE, WORLD_TUNING } from "../config"
 import { tunables } from "../core/persist"
 import {
   sanFranciscoCivilNow,
@@ -78,6 +78,18 @@ export const SKY_TUNING = tunables("sky", {
 // reference and read it every frame.
 export const SUN_DIR = new THREE.Vector3(-0.52, 0.42, -0.28).normalize()
 const WARM_SUN = new THREE.Color(0xfff4e8) // midday sun tint, lerped toward as it climbs
+
+// Universal render-mode shadow config — the fixed values #applyShadowConfig
+// pushes onto the sun + every CSM cascade. This is the old "high" tier, now the
+// only tier: cascaded shadow maps are always on (the retired off/low/high
+// presets are gone). mapSize 2048 holds ~4 cm near-cascade texels; maxFar 600 m
+// covers the visible block; lightMargin 400 m catches tall up-light casters
+// (towers) at grazing dusk angles; normalBias grows per cascade (texel size runs
+// ~4–5× coarser each step) to kill acne without peter-panning the contact.
+const SHADOW_MAP_SIZE = 2048
+const SHADOW_MAX_FAR = 600
+const SHADOW_LIGHT_MARGIN = 400
+const SHADOW_NORMAL_BIAS = [0.25, 1.0, 3.0] as const
 
 // TSL node generics fight composition; any is the idiom here (see facade.ts)
 type N = any
@@ -254,12 +266,12 @@ export class Sky {
 
     this.sun = new THREE.DirectionalLight(0xfff2e0, 100)
     this.sun.castShadow = true
-    this.sun.shadow.mapSize.set(2048, 2048)
+    this.sun.shadow.mapSize.set(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE)
     const cam = this.sun.shadow.camera
     cam.near = 0.5
     cam.far = 1400
     this.sun.shadow.bias = -0.0002 // CSM scales this ×(cascade index + 1)
-    this.sun.shadow.normalBias = 0.25 // near-cascade value; coarser cascades bumped in update()
+    this.sun.shadow.normalBias = SHADOW_NORMAL_BIAS[0] // near-cascade value; coarser cascades bumped in update()
     scene.add(this.sun)
     scene.add(this.sun.target)
 
@@ -271,7 +283,7 @@ export class Sky {
     // are irrelevant — the node refits each cascade from the view frustum.
     this.#csm = new CSMShadowNode(this.sun, {
       cascades: 3,
-      maxFar: 600,
+      maxFar: SHADOW_MAX_FAR,
       mode: "custom",
       customSplitsCallback: (
         _amount: number,
@@ -281,11 +293,11 @@ export class Sky {
       ) => {
         target.push(35 / far, 150 / far, 1)
       },
-      lightMargin: 400 // catch tall up-light casters (towers) at grazing dusk angles
+      lightMargin: SHADOW_LIGHT_MARGIN // catch tall up-light casters (towers) at grazing dusk angles
     })
     this.#csm.fade = true
     ;(this.sun.shadow as any).shadowNode = this.#csm
-    this.setShadowQuality(RENDER_TUNING.values.shadowQuality as ShadowQuality)
+    this.#applyShadowConfig()
 
     // warm ground-bounce fill: stands in for light-probe GI. Intensity and colour
     // follow the phase of day in #applySun
@@ -614,20 +626,26 @@ export class Sky {
     this.#applySun()
   }
 
-  setShadowQuality(quality: ShadowQuality) {
-    const q = SHADOW_QUALITY[quality] ?? SHADOW_QUALITY.low
-    const mapSize = Math.max(1, q.mapSize)
-    this.sun.castShadow = q.enabled
-    this.sun.shadow.mapSize.set(mapSize, mapSize)
+  /**
+   * Push the fixed universal-mode shadow config (the SHADOW_* constants above)
+   * onto the sun + every CSM cascade light. Called once from the constructor and
+   * again as a one-shot in update() the frame the CSM node finishes building its
+   * per-cascade lights — they don't exist yet at construct time, so their
+   * mapSize/normalBias need a second pass. Shadows are always on now; the old
+   * off/low/high tiers (and the runtime setShadowQuality switch) are gone.
+   */
+  #applyShadowConfig() {
+    this.sun.castShadow = true
+    this.sun.shadow.mapSize.set(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE)
     this.sun.shadow.needsUpdate = true
-    this.#csm.maxFar = Math.max(1, q.maxFar)
-    this.#csm.lightMargin = q.lightMargin
+    this.#csm.maxFar = SHADOW_MAX_FAR
+    this.#csm.lightMargin = SHADOW_LIGHT_MARGIN
     for (let i = 0; i < this.#csm.lights.length; i++) {
       const l = this.#csm.lights[i]
-      l.castShadow = q.enabled
+      l.castShadow = true
       if (l.shadow) {
-        l.shadow.mapSize.set(mapSize, mapSize)
-        l.shadow.normalBias = q.normalBias[i] ?? q.normalBias[q.normalBias.length - 1]
+        l.shadow.mapSize.set(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE)
+        l.shadow.normalBias = SHADOW_NORMAL_BIAS[i] ?? SHADOW_NORMAL_BIAS[SHADOW_NORMAL_BIAS.length - 1]
         l.shadow.needsUpdate = true
       }
     }
@@ -758,7 +776,7 @@ export class Sky {
       // larger normal bias (texel size grows roughly 4-5x per cascade)
       if (!this.#csmTuned) {
         this.#csmTuned = true
-        this.setShadowQuality(RENDER_TUNING.values.shadowQuality as ShadowQuality)
+        this.#applyShadowConfig()
       }
       // Shadow-render throttle: re-rendering all city geometry into the 3
       // cascades EVERY frame was the single biggest cost in the frame (profiled

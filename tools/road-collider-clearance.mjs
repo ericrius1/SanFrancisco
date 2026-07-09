@@ -3,6 +3,43 @@ import { readFile } from "node:fs/promises";
 const CELL = 96;
 const ROAD_MARGIN = 0.9;
 
+// A box whose closest point merely grazed a road's clearance margin used to
+// be dropped WHOLE (audit R4): a real, street-facing building wall could lose
+// its entire collider over a ~1m corner overlap, leaving a visibly solid wall
+// walk/drive-through right at the sidewalk line. ROAD_MARGIN exists so baked
+// boxes don't block AI traffic lanes — it isn't meant to veto any box that so
+// much as brushes it. So filterRoadOverlappingColliders below only drops a
+// box once a real chunk of ITS OWN footprint sits inside the road corridor,
+// measured as a sampled area fraction rather than "any point is within
+// margin". Below the threshold the box is kept at full size: a shallow curb
+// intrusion an AI car can steer around beats an invisible wall a player walks
+// through.
+//
+// True clipping (shrinking the OBB to hug the corridor boundary) was the
+// first thing tried, but the corridor is a rounded-cap capsule per road
+// segment and a box can sit at any angle to the nearest segment — there's no
+// single axis-aligned-in-the-box's-own-frame cut that reliably resolves an
+// arbitrary-angle capsule intersection back into one box. The fractional
+// keep/drop rule gets the same practical outcome (real walls survive, deep
+// intrusions still get removed) without that geometry. Road widths here top
+// out under 20m (see roads.json), so the sampled boxes and their candidate
+// lists both stay small — this is cheap even at city scale.
+//
+// Area fraction alone isn't quite enough, though: measured against the real
+// baked city, a handful of very large or elongated boxes (mostly landmark
+// sub-boxes — a 220m-long box is not unusual there) can sit at a LOW area
+// fraction while still poking several metres past the corridor edge at their
+// nearest point, because the same fraction represents a much bigger absolute
+// distance on a much bigger box. That poke is a genuine lane blocker, not a
+// shallow graze. So a box is dropped if EITHER the sampled fraction is high
+// OR its closest point still penetrates more than ROAD_DROP_DEPTH_M past the
+// corridor boundary — the fraction gate protects small/typical boxes from
+// being nuked over a corner graze, the depth gate caps how bad that graze is
+// allowed to get on a large box.
+const ROAD_DROP_FRACTION = 0.4; // drop once > 40% of the box's own area sits inside the corridor
+const ROAD_DROP_DEPTH_M = 2.5; // ...or drop once the box's closest point is this many metres past the corridor boundary
+const OVERLAP_SAMPLE_AXIS = 15; // 15x15 sample grid to estimate the fraction (only spent on boxes that already fail the cheap distance test)
+
 const cellKey = (cx, cz) => `${cx},${cz}`;
 
 function pointRectDistance(x, z, hx, hz) {
@@ -105,7 +142,13 @@ export async function loadRoadClearanceIndexFromRoadsJson(url, margin = ROAD_MAR
   return buildRoadClearanceIndex(roads, margin);
 }
 
-export function colliderOverlapsRoad(collider, index) {
+// Roads near a collider, transformed into the box's own LOCAL frame (origin
+// at the box center, box axis-aligned — matches the runtime collider frame,
+// see collider-lib.mjs toLocal/toWorld) with each road's lane-clearance
+// half-width attached. Shared by the cheap "touches at all" test and the
+// fractional-area sampler below so both agree on exactly which roads are in
+// play, and so the (identical) cell scan only runs once per box.
+function localRoadCandidates(collider, index) {
   const cos = Math.cos(collider.yaw);
   const sin = Math.sin(collider.yaw);
   const radius = Math.hypot(collider.hx, collider.hz) + index.maxHalf;
@@ -114,6 +157,7 @@ export function colliderOverlapsRoad(collider, index) {
   const z0 = Math.floor((collider.z - radius) / CELL);
   const z1 = Math.floor((collider.z + radius) / CELL);
   const seen = new Set();
+  const out = [];
   for (let cx = x0; cx <= x1; cx++) {
     for (let cz = z0; cz <= z1; cz++) {
       const list = index.cells.get(cellKey(cx, cz));
@@ -125,21 +169,75 @@ export function colliderOverlapsRoad(collider, index) {
         const az = (road.ax - collider.x) * sin + (road.az - collider.z) * cos;
         const bx = (road.bx - collider.x) * cos - (road.bz - collider.z) * sin;
         const bz = (road.bx - collider.x) * sin + (road.bz - collider.z) * cos;
-        const roadHalf = road.width * 0.5 + index.margin;
-        if (segmentRectDistance(ax, az, bx, bz, collider.hx, collider.hz) <= roadHalf) return road;
+        out.push({ road, ax, az, bx, bz, roadHalf: road.width * 0.5 + index.margin });
       }
     }
   }
+  return out;
+}
+
+/** Nearest road whose clearance margin the box's closest point falls inside, or null. A cheap coarse "touches at all" test — necessary but not sufficient for real lane overlap, see filterRoadOverlappingColliders. */
+export function colliderOverlapsRoad(collider, index) {
+  for (const c of localRoadCandidates(collider, index)) {
+    if (segmentRectDistance(c.ax, c.az, c.bx, c.bz, collider.hx, collider.hz) <= c.roadHalf) return c.road;
+  }
   return null;
+}
+
+// Fraction (0..1) of the box's own footprint that lies within clearance of
+// any candidate road, estimated with a uniform sample grid in the box's local
+// frame (cell-center samples, so the grid is an unbiased area estimator).
+// Exact analytic area of an OBB against a union of rounded-cap capsules has
+// no simple closed form once several segments and an arbitrary box rotation
+// are in play; sampling gets within a fraction of a percent and stays trivial
+// to reason about (see the module comment above for why this replaced true
+// clipping).
+function overlapFraction(collider, candidates) {
+  const { hx, hz } = collider;
+  const n = OVERLAP_SAMPLE_AXIS;
+  const du = (2 * hx) / n;
+  const dv = (2 * hz) / n;
+  let inside = 0;
+  for (let i = 0; i < n; i++) {
+    const u = -hx + (i + 0.5) * du;
+    for (let j = 0; j < n; j++) {
+      const v = -hz + (j + 0.5) * dv;
+      for (const c of candidates) {
+        if (pointSegmentDistance(u, v, c.ax, c.az, c.bx, c.bz) <= c.roadHalf) {
+          inside++;
+          break;
+        }
+      }
+    }
+  }
+  return inside / (n * n);
 }
 
 export function filterRoadOverlappingColliders(colliders, index) {
   const kept = [];
   const dropped = [];
   for (const collider of colliders) {
-    const road = colliderOverlapsRoad(collider, index);
-    if (road) dropped.push({ collider, roadId: road.id });
-    else kept.push(collider);
+    const candidates = localRoadCandidates(collider, index);
+    // worst-case penetration across every touching candidate, not just the
+    // first found — a box can graze one road shallowly but another deeply
+    let touching = null;
+    let depth = 0;
+    for (const c of candidates) {
+      const d = c.roadHalf - segmentRectDistance(c.ax, c.az, c.bx, c.bz, collider.hx, collider.hz);
+      if (d < 0) continue; // this candidate alone doesn't reach the box
+      if (!touching) touching = c;
+      if (d > depth) depth = d;
+    }
+    if (!touching) {
+      kept.push(collider);
+      continue;
+    }
+    const fraction = overlapFraction(collider, candidates);
+    if (fraction > ROAD_DROP_FRACTION || depth > ROAD_DROP_DEPTH_M) {
+      dropped.push({ collider, roadId: touching.road.id, fraction, depth });
+    } else {
+      kept.push(collider);
+    }
   }
   return { kept, dropped };
 }

@@ -37,7 +37,8 @@ const BUFFER_KEEP_MS = 1200;
 function makeTag(name: string, hue: number): THREE.Sprite {
   const ss = 3; // supersample so text stays crisp when viewed close
   const pad = 14 * ss;
-  const font = `600 ${34 * ss}px 'Avenir Next', 'Helvetica Neue', sans-serif`;
+  // mirror the UI --font stack (canvas 2D can't read CSS custom properties)
+  const font = `600 ${34 * ss}px 'InterVariable', Inter, system-ui, -apple-system, sans-serif`;
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d")!;
   ctx.font = font;

@@ -19,6 +19,30 @@ export function doorMetrics(len: number, base: number, top: number): { tc: numbe
   };
 }
 
+/** Minimal shape the door predicate needs — a theme's FacadeEdge satisfies it,
+ *  and the collider builds a matching literal per polygon edge. */
+export interface DoorEdge {
+  isStreet: boolean;
+  length: number;
+  base: number;
+  top: number;
+  /** highest ground under the footprint (defaults to base) */
+  grade?: number;
+}
+
+/** THE single predicate for "this edge gets a front door" — called by BOTH the
+ *  collider (walk-through gap) and every theme façade (visible door + wall hole),
+ *  so a collider gap exists IFF a visible doorway is drawn. Requires the street
+ *  edge, enough length for a leaf, and enough of the opening clearing the ground
+ *  line to be a usable entrance (a heavily-buried hillside base takes no door on
+ *  either side and stays a solid skirt). */
+export function doorEligible(e: DoorEdge): boolean {
+  if (!e.isStreet || e.length <= 2.2) return false;
+  const grade = e.grade ?? e.base;
+  const { head } = doorMetrics(e.length, e.base, e.top);
+  return e.base + head - Math.max(e.base, grade) > 0.8;
+}
+
 export interface DoorOpening {
   /** which edge got the door (longest / street), for the caller to place the visual */
   edge: number;
@@ -49,7 +73,7 @@ export function buildingColliders(spec: BuildingSpec, withDoor = false): { boxes
     const yaw = Math.atan2(dz, dx);
     const ux = dx / len, uz = dz / len; // unit along edge
 
-    if (i === streetI && len > 2.2) {
+    if (doorEligible({ isStreet: i === streetI, length: len, base, top, grade: spec.grade })) {
       // doorway split: door centred (offset for wide lots) with a lintel above
       const { tc, halfW, head } = doorMetrics(len, base, top);
       const dCenter = tc * len;                  // metres from p0
