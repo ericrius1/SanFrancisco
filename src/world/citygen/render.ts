@@ -145,8 +145,12 @@ export function buildInterior(
   spec: BuildingSpec,
   mats: Record<string, THREE.Material>,
 ): { group: THREE.Group; colliders: ColliderBox[]; dispose(): void } {
-  // interior furnishing matches the parallax-window zone (home/shop/loft)
-  const { panels, colliders } = buildInteriorParts(spec, ARCH_ZONE[spec.archetype] ?? "residential");
+  // interior furnishing matches the parallax-window zone (home/shop/loft). Its
+  // ground floor sits at the terrain GRADE (where you actually walk in the door),
+  // not the low baked base — otherwise on a hill the floor buries below the entry.
+  const gradeBase = (spec as { grade?: number }).grade ?? spec.base;
+  const ispec = gradeBase !== spec.base ? { ...spec, base: gradeBase } : spec;
+  const { panels, colliders } = buildInteriorParts(ispec, ARCH_ZONE[spec.archetype] ?? "residential");
   const merged = mergePanels(panels);
   const group = new THREE.Group();
   group.name = "cityGenInterior";

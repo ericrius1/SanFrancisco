@@ -4,7 +4,8 @@ import { buildBroomMesh, broomRiderGeometry } from "../vehicles/broom/mesh";
 
 /**
  * Quidditch pitch in Golden Gate Park. Two full seven-a-side teams fly on
- * broomsticks whenever a player is nearby; otherwise the pitch sits idle.
+ * broomsticks whenever a player is within ACTIVATE_RADIUS; otherwise the whole
+ * pitch (meshes, AI, balls, sim) is hidden and fully parked.
  *
  * Rules, mirrored from the real game:
  *   • 3 Chasers per side pass the red Quaffle and hurl it through a hoop (10 pts)
@@ -16,7 +17,8 @@ import { buildBroomMesh, broomRiderGeometry } from "../vehicles/broom/mesh";
  * The pitch wakes when a player is nearby, but the match stays parked until the
  * player starts from the blue circle. Walk into the circle and press E to take
  * over any open role (drone controls); E again to dismount and hand the broom
- * back to the AI.
+ * back to the AI. Flying beyond ACTIVATE_RADIUS parks everything and ejects
+ * any human rider (main.ts clears the broom mount).
  */
 
 export const QUIDDITCH_PITCH = { x: -3431, z: 2322, name: "Quidditch Pitch" };
@@ -250,6 +252,13 @@ export class Quidditch {
     this.#joinRing.rotation.x = -Math.PI / 2;
     this.#joinRing.position.y = 0.16;
     this.#root.add(this.#joinRing);
+
+    // Start fully parked — wake only when a player enters ACTIVATE_RADIUS.
+    this.#root.visible = false;
+    this.#quaffleMesh.visible = false;
+    this.#snitchMesh.visible = false;
+    for (const b of this.#bludgers) b.mesh.visible = false;
+    for (const team of ["red", "blue"] as QuidditchTeam[]) this.#teams[team].mesh.visible = false;
   }
 
   get inJoinZone() {
@@ -485,32 +494,33 @@ export class Quidditch {
       this.#clock = 0;
       this.#kickoffDelay = 0;
       this.#resetBall();
+      this.#root.visible = true;
       this.onActiveChange(true);
       this.onMessage("Quidditch pitch ready — step into the blue circle to start", 3.4);
     } else if (!wantActive && this.#active) {
       this.#active = false;
       this.#parkFlyers();
-      this.onActiveChange(false);
-    }
-
-    this.#root.visible = dist < ACTIVATE_RADIUS * 1.4;
-    this.#playerInJoinZone = this.inJoinZoneAt(playerPos);
-    const pulse = 0.36 + Math.sin(elapsed * 3.1) * 0.14;
-    const hot = this.#playerInJoinZone && this.#active;
-    this.#joinMat.opacity = hot ? pulse + 0.22 : pulse;
-    this.#joinRingMat.opacity = hot ? 0.95 : 0.55 + Math.sin(elapsed * 2.4) * 0.15;
-    const glowScale = 1 + Math.sin(elapsed * 2.2) * 0.035 + (hot ? 0.06 : 0);
-    this.#joinGlow.scale.setScalar(glowScale);
-    this.#joinRing.scale.setScalar(glowScale);
-
-    if (!this.#active) {
+      this.#root.visible = false;
+      this.#playerInJoinZone = false;
       this.#quaffleMesh.visible = false;
       this.#snitchMesh.visible = false;
       for (const b of this.#bludgers) b.mesh.visible = false;
       for (const team of ["red", "blue"] as QuidditchTeam[]) this.#teams[team].mesh.visible = false;
       for (const t of this.#throws) t.mesh.visible = false;
-      return;
+      this.onActiveChange(false);
     }
+
+    // Far from the pitch: nothing to animate — root stays hidden, sim stays parked.
+    if (!this.#active) return;
+
+    this.#playerInJoinZone = this.inJoinZoneAt(playerPos);
+    const pulse = 0.36 + Math.sin(elapsed * 3.1) * 0.14;
+    const hot = this.#playerInJoinZone;
+    this.#joinMat.opacity = hot ? pulse + 0.22 : pulse;
+    this.#joinRingMat.opacity = hot ? 0.95 : 0.55 + Math.sin(elapsed * 2.4) * 0.15;
+    const glowScale = 1 + Math.sin(elapsed * 2.2) * 0.035 + (hot ? 0.06 : 0);
+    this.#joinGlow.scale.setScalar(glowScale);
+    this.#joinRing.scale.setScalar(glowScale);
 
     // celebration freeze: hold the final tableau, then whistle in a fresh match
     if (this.#state === "ended") {

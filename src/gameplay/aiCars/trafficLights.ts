@@ -8,6 +8,12 @@ const VIEW_R = 260;
 
 type LightRig = {
   root: THREE.Group;
+  axis0: SignalGantry;
+  axis1: SignalGantry;
+};
+
+type SignalGantry = {
+  root: THREE.Group;
   bulbs0: Record<LightState, THREE.Mesh>;
   bulbs1: Record<LightState, THREE.Mesh>;
 };
@@ -18,14 +24,14 @@ export class TrafficLightView {
   #signals: TrafficSignalSystem;
   #pool: LightRig[] = [];
   #near: TrafficSignal[] = [];
-  #poleMat = new THREE.MeshStandardMaterial({ color: 0x2f3439, roughness: 0.62, metalness: 0.25 });
-  #headMat = new THREE.MeshStandardMaterial({ color: 0x15191d, roughness: 0.7, metalness: 0.1 });
-  #redDim = new THREE.MeshBasicMaterial({ color: 0x3a0806 });
-  #yellowDim = new THREE.MeshBasicMaterial({ color: 0x332504 });
-  #greenDim = new THREE.MeshBasicMaterial({ color: 0x063316 });
-  #redLit = new THREE.MeshBasicMaterial({ color: new THREE.Color(0xff2b1f).multiplyScalar(LIGHT_SCALE * 0.55) });
-  #yellowLit = new THREE.MeshBasicMaterial({ color: new THREE.Color(0xffd23a).multiplyScalar(LIGHT_SCALE * 0.48) });
-  #greenLit = new THREE.MeshBasicMaterial({ color: new THREE.Color(0x36ff7a).multiplyScalar(LIGHT_SCALE * 0.5) });
+  #poleMat = new THREE.MeshStandardMaterial({ color: 0x171a1d, roughness: 0.58, metalness: 0.32 });
+  #headMat = new THREE.MeshStandardMaterial({ color: 0x0d1013, roughness: 0.68, metalness: 0.16 });
+  #redDim = new THREE.MeshBasicMaterial({ color: 0x56110c });
+  #yellowDim = new THREE.MeshBasicMaterial({ color: 0x4b3607 });
+  #greenDim = new THREE.MeshBasicMaterial({ color: 0x0a4c22 });
+  #redLit = new THREE.MeshBasicMaterial({ color: new THREE.Color(0xff2b1f).multiplyScalar(LIGHT_SCALE * 0.64) });
+  #yellowLit = new THREE.MeshBasicMaterial({ color: new THREE.Color(0xffd23a).multiplyScalar(LIGHT_SCALE * 0.58) });
+  #greenLit = new THREE.MeshBasicMaterial({ color: new THREE.Color(0x36ff7a).multiplyScalar(LIGHT_SCALE * 0.6) });
 
   constructor(scene: THREE.Scene, map: WorldMap, signals: TrafficSignalSystem) {
     this.#scene = scene;
@@ -50,9 +56,8 @@ export class TrafficLightView {
       }
       rig.root.visible = true;
       rig.root.position.set(sig.x, this.#map.effectiveGround(sig.x, sig.z), sig.z);
-      rig.root.rotation.y = Math.atan2(sig.axisZ, sig.axisX);
-      this.#setBulbs(rig.bulbs0, this.#signals.stateForAxis(sig, 0, timeS));
-      this.#setBulbs(rig.bulbs1, this.#signals.stateForAxis(sig, 1, timeS));
+      this.#setGantry(rig.axis0, sig, 0, timeS);
+      this.#setGantry(rig.axis1, sig, 1, timeS);
     }
   }
 
@@ -65,50 +70,91 @@ export class TrafficLightView {
     bulbs.red.material = state === "red" ? this.#redLit : this.#redDim;
     bulbs.yellow.material = state === "yellow" ? this.#yellowLit : this.#yellowDim;
     bulbs.green.material = state === "green" ? this.#greenLit : this.#greenDim;
-    bulbs.red.scale.setScalar(state === "red" ? 1.18 : 0.82);
-    bulbs.yellow.scale.setScalar(state === "yellow" ? 1.18 : 0.82);
-    bulbs.green.scale.setScalar(state === "green" ? 1.18 : 0.82);
+    bulbs.red.scale.setScalar(state === "red" ? 1.16 : 0.9);
+    bulbs.yellow.scale.setScalar(state === "yellow" ? 1.16 : 0.9);
+    bulbs.green.scale.setScalar(state === "green" ? 1.16 : 0.9);
+  }
+
+  #setGantry(gantry: SignalGantry, signal: TrafficSignal, axis: 0 | 1, timeS: number): void {
+    if (!this.#hasAxis(signal, axis)) {
+      gantry.root.visible = false;
+      return;
+    }
+    gantry.root.visible = true;
+    gantry.root.rotation.y = this.#axisRotation(signal, axis);
+    const state = this.#signals.stateForAxis(signal, axis, timeS);
+    this.#setBulbs(gantry.bulbs0, state);
+    this.#setBulbs(gantry.bulbs1, state);
+  }
+
+  #hasAxis(signal: TrafficSignal, axis: 0 | 1): boolean {
+    return signal.approaches.some((a) => a.axis === axis);
+  }
+
+  #axisRotation(signal: TrafficSignal, axis: 0 | 1): number {
+    const app = signal.approaches.find((a) => a.axis === axis);
+    if (app) return Math.atan2(app.tangentZ, app.tangentX);
+    const base = Math.atan2(signal.axisZ, signal.axisX);
+    return axis === 0 ? base : base + Math.PI * 0.5;
   }
 
   #makeRig(): LightRig {
     const root = new THREE.Group();
     root.name = "TrafficLightRig";
     root.userData.trafficLightRig = true;
-    const poleGeo = new THREE.CylinderGeometry(0.07, 0.09, 4.8, 8);
-    const armGeo = new THREE.BoxGeometry(7.8, 0.12, 0.12);
-    const headGeo = new THREE.BoxGeometry(0.42, 1.1, 0.22);
-    const bulbGeo = new THREE.SphereGeometry(0.11, 10, 8);
+    const poleH = 5.45;
+    const poleX = -4.0;
+    const armY = 5.05;
+    const armX = 0.7;
+    const headY = 4.52;
+    const headFaceZ = 0.25;
+    const poleGeo = new THREE.CylinderGeometry(0.13, 0.16, poleH, 10);
+    const armGeo = new THREE.BoxGeometry(9.6, 0.22, 0.22);
+    const headGeo = new THREE.BoxGeometry(0.74, 1.55, 0.38);
+    const bulbGeo = new THREE.SphereGeometry(0.19, 14, 10);
 
-    const pole = new THREE.Mesh(poleGeo, this.#poleMat);
-    pole.position.set(-3.2, 2.4, 0);
-    root.add(pole);
+    const makeGantry = (name: string, shiftZ: number): SignalGantry => {
+      const gantry = new THREE.Group();
+      gantry.name = name;
+      root.add(gantry);
 
-    const arm = new THREE.Mesh(armGeo, this.#poleMat);
-    arm.position.set(0.45, 4.55, 0);
-    root.add(arm);
+      const pole = new THREE.Mesh(poleGeo, this.#poleMat);
+      pole.position.set(poleX, poleH * 0.5, shiftZ);
+      gantry.add(pole);
 
-    const makeHead = (x: number, z: number, yaw: number): Record<LightState, THREE.Mesh> => {
-      const h = new THREE.Mesh(headGeo, this.#headMat);
-      h.position.set(x, 4.05, z);
-      h.rotation.y = yaw;
-      root.add(h);
-      const red = new THREE.Mesh(bulbGeo, this.#redDim);
-      const yellow = new THREE.Mesh(bulbGeo, this.#yellowDim);
-      const green = new THREE.Mesh(bulbGeo, this.#greenDim);
-      red.position.set(x, 4.35, z + 0.13);
-      yellow.position.set(x, 4.05, z + 0.13);
-      green.position.set(x, 3.75, z + 0.13);
-      red.rotation.y = yaw;
-      yellow.rotation.y = yaw;
-      green.rotation.y = yaw;
-      root.add(red, yellow, green);
-      return { red, yellow, green };
+      const arm = new THREE.Mesh(armGeo, this.#poleMat);
+      arm.position.set(armX, armY, shiftZ);
+      gantry.add(arm);
+
+      const makeHead = (x: number, z: number, yaw: number): Record<LightState, THREE.Mesh> => {
+        const head = new THREE.Group();
+        head.position.set(x, headY, shiftZ + z);
+        head.rotation.y = yaw;
+        gantry.add(head);
+
+        const h = new THREE.Mesh(headGeo, this.#headMat);
+        head.add(h);
+        const red = new THREE.Mesh(bulbGeo, this.#redDim);
+        const yellow = new THREE.Mesh(bulbGeo, this.#yellowDim);
+        const green = new THREE.Mesh(bulbGeo, this.#greenDim);
+        red.position.set(0, 0.46, headFaceZ);
+        yellow.position.set(0, 0, headFaceZ);
+        green.position.set(0, -0.46, headFaceZ);
+        head.add(red, yellow, green);
+        return { red, yellow, green };
+      };
+
+      return {
+        root: gantry,
+        bulbs0: makeHead(3.25, -0.24, 0),
+        bulbs1: makeHead(-0.7, 0.24, Math.PI)
+      };
     };
 
     return {
       root,
-      bulbs0: makeHead(2.8, -0.12, 0),
-      bulbs1: makeHead(-0.8, 0.12, Math.PI)
+      axis0: makeGantry("TrafficLightAxis0", -0.18),
+      axis1: makeGantry("TrafficLightAxis1", 0.18)
     };
   }
 }

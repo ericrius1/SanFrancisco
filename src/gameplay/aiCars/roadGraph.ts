@@ -24,7 +24,7 @@ import {
 
 export type RoadsJson = {
   v: number;
-  segs: { p: number[]; w: number; l?: number; d?: number; k?: number }[];
+  segs: { p: number[]; w: number; l?: number; d?: number; k?: number; f?: number; b?: number }[];
 };
 
 export type Projection = {

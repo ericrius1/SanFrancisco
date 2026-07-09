@@ -61,13 +61,24 @@ async function main() {
     const st = await evaluate(c, "window.__sf.citygenRing.current.stats()");
     console.log("[probe] ring stats:", JSON.stringify(st));
 
-    // camera inside the room, looking across the floor at the furniture/stairs
+    // camera inside the room. Floor sits at terrain GRADE (not the low baked base),
+    // so anchor the camera to the actual ground under the building.
+    const floorY = await evaluate(c, `window.__sf.map.groundHeight(${b.cx},${b.cz})`);
     const setCam = async (px, py, pz, lx, ly, lz) => evaluate(c, `(()=>{const c=window.__sf.camera; c.position.set(${px},${py},${pz}); c.lookAt(${lx},${ly},${lz}); return 1;})()`);
-    await setCam(b.cx - 2.4, b.base + 1.6, b.cz - 2.4, b.cx + 2, b.base + 1.2, b.cz + 2);
+    // 1: entry room, across the floor
+    await setCam(b.cx - 2.4, floorY + 1.6, b.cz - 2.4, b.cx + 2, floorY + 1.2, b.cz + 2);
     for (let i = 0; i < 10; i++) await tick(c);
-    await setCam(b.cx - 2.4, b.base + 1.6, b.cz - 2.4, b.cx + 2, b.base + 1.2, b.cz + 2);
-    await sleep(500);
+    await setCam(b.cx - 2.4, floorY + 1.6, b.cz - 2.4, b.cx + 2, floorY + 1.2, b.cz + 2);
+    await sleep(400);
     await shot(c, "citygen_interior.jpg");
+    // 2: pan the other way to catch partition walls / doorways / art
+    await setCam(b.cx + 2.4, floorY + 1.6, b.cz + 2.4, b.cx - 2.5, floorY + 1.4, b.cz - 2.5);
+    await sleep(300);
+    await shot(c, "citygen_interior2.jpg");
+    // 3: look UP toward the stairwell / next floor
+    await setCam(b.cx, floorY + 1.5, b.cz, b.bb ? b.bb.minx : b.cx - 3, floorY + 3.2, b.bb ? b.bb.minz : b.cz - 3);
+    await sleep(300);
+    await shot(c, "citygen_interior3.jpg");
 
     // step OUT → interior should dispose
     await evaluate(c, `(()=>{const s=window.__sf,p=s.player; const y=s.map.groundHeight(${b.cx + 30},${b.cz})+2; p.position.set(${b.cx + 30},y,${b.cz}); p.renderPosition.copy(p.position); s.physics.world.setBodyTransform(p.body,[${b.cx + 30},y,${b.cz}],[0,0,0,1]); return 1;})()`);

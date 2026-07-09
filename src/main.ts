@@ -10,6 +10,7 @@ import { Water } from "./world/water";
 import { UnderwaterOverlay } from "./fx/underwater";
 import { SeaPillars } from "./world/seaPillars";
 import { TileStreamer } from "./world/tiles";
+import { createRoadMarkings } from "./world/roadMarkings";
 import { Physics } from "./core/physics";
 import { createDebrisMaterial, DEBRIS_LIGHTS, WINDOW_GLOW } from "./world/facade";
 import { updateCrownDisplay, resetCrownTweaks } from "./world/salesforceCrown";
@@ -40,6 +41,7 @@ import { AudioControls } from "./ui/audioControls";
 import { Chat } from "./ui/chat";
 import { VehicleAudio } from "./fx/vehicleAudio";
 import { AiCarCabinAudio } from "./fx/aiCarCabinAudio";
+import { SwimAudio } from "./fx/swimAudio";
 import { createNatureSoundscape } from "./audio";
 import { Traffic, DRIVE_PROFILES, type VehicleClass } from "./gameplay/traffic";
 import { AbandonedMounts } from "./gameplay/abandonedMounts";
@@ -170,6 +172,12 @@ async function boot() {
   progress(40, "streaming the city");
   const tiles = new TileStreamer(scene);
   await tiles.init(map);
+  let roadMarkings: THREE.Group | null = null;
+  void createRoadMarkings(scene, map)
+    .then((group) => {
+      roadMarkings = group;
+    })
+    .catch((err) => console.warn("[roads] lane markings unavailable", err));
 
   const physics = await Physics.create(map, tiles);
 
@@ -219,6 +227,7 @@ async function boot() {
   // procedural vehicle hum + the HUD's master volume/mute widget (bottom-left)
   const vehicleAudio = new VehicleAudio();
   const aiCarCabinAudio = new AiCarCabinAudio();
+  const swimAudio = new SwimAudio();
   const audioControls = new AudioControls();
   // procedural, layered nature soundscape (Botanical Garden / GG Park / Presidio
   // / Marin): sampled beds + gust-locked wind synth + spatial animal calls, all
@@ -1585,6 +1594,7 @@ async function boot() {
     if ((paused && freezePlayer) || brainPanel?.isOpen) {
       vehicleAudio.update(frameDt, null); // fade the hum out while frozen
       aiCarCabinAudio.update(frameDt, aiCarPassengerOf !== null ? { active: true, speed: 0 } : null);
+      swimAudio.update(frameDt, null);
       // ambience keeps breathing while frozen — it's a chill/social feature
       nature.update(frameDt, {
         playerPos: player.renderPosition,
@@ -1666,6 +1676,11 @@ async function boot() {
         frameDt,
         aiCarPassengerOf !== null ? { active: true, speed: player.speed } : null
       );
+      swimAudio.update(frameDt, {
+        swimming: player.swimming,
+        speed: Math.hypot(player.velocity.x, player.velocity.z),
+        vspeed: player.velocity.y
+      });
       nature.update(frameDt, {
         playerPos: player.renderPosition,
         camera,
@@ -2116,13 +2131,23 @@ async function boot() {
     exploratorium?.update(frameDt, elapsed, player.position);
     citygenRing.current?.update(player.position, frameDt);
     quidditch?.update(frameDt, player.position, elapsed);
+    // Flew past the activate radius while on a broom — Quidditch already parked
+    // the match/AI; clear the local mount so the broom doesn't linger city-wide.
+    if (currentQuidditch && quidditch && !quidditch.active) {
+      currentQuidditch = null;
+      player.clearDroneStyle();
+      quidHud?.setRole(null);
+      quidHud?.stopTutorial();
+      if (player.mode === "drone") player.trySwitch("walk");
+      hud.message("Left the Quidditch pitch", 2.2);
+    }
     if (quidditch?.active) {
-      const qs = quidditch?.scores;
+      const qs = quidditch.scores;
       quidHud?.setScores(qs.red, qs.blue);
-      if (quidditch?.matchState === "playing") quidHud?.setSnitch(false);
+      if (quidditch.matchState === "playing") quidHud?.setSnitch(false);
       // a bludger tagged the human rider: shove them and rattle the camera
       if (currentQuidditch) {
-        const kick = quidditch?.takeBludgerKick();
+        const kick = quidditch.takeBludgerKick();
         if (kick) {
           player.velocity.x += kick.x;
           player.velocity.y += kick.y;
@@ -2212,6 +2237,11 @@ async function boot() {
       frameDt,
       aiCarPassengerOf !== null ? { active: true, speed: player.speed } : null
     );
+    swimAudio.update(frameDt, {
+      swimming: player.swimming,
+      speed: Math.hypot(player.velocity.x, player.velocity.z),
+      vspeed: player.velocity.y
+    });
     // B launches fireworks ahead of the player along the camera heading; airborne
     // modes push them further out and up to the player's altitude
     fireworks.update(frameDt, {
@@ -2425,7 +2455,7 @@ async function boot() {
 
   const exposeDebugHooks = () => {
     Object.assign(window as never, {
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, exploratorium, traffic, creatures, forest, garden, wildlands, splashes, vehicleAudio, aiCarCabinAudio, nature, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, boatLaunchers, goldenGateLights, flyover, bridgeParade, teleportToTarget, aiCars, horses, citygen, citygenRing, brainPanel, inspectableBrains, worldCursor, worldQueries, underwater, seaPillars, water, colliderDebug }
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, exploratorium, traffic, creatures, forest, garden, wildlands, splashes, vehicleAudio, aiCarCabinAudio, swimAudio, nature, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, boatLaunchers, goldenGateLights, flyover, bridgeParade, teleportToTarget, aiCars, horses, citygen, citygenRing, brainPanel, inspectableBrains, worldCursor, worldQueries, underwater, seaPillars, water, roadMarkings, colliderDebug }
     });
   };
   if (import.meta.env.DEV || new URLSearchParams(location.search).has("profile")) {

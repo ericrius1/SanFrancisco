@@ -1,19 +1,27 @@
-// Walkable Victorian interior — a PURE FUNCTION of (spec). Built lazily only when
-// the player actually steps inside (the ring gates it on the footprint), and
-// thrown away when they leave, so nothing pays for an interior nobody is in.
+// Walkable, multi-room building interiors — a PURE FUNCTION of (spec, zone).
+// Built lazily only when the player actually steps inside (the ring gates it on
+// the footprint) and thrown away when they leave, so nothing pays for an
+// interior nobody is in.
 //
 // What it builds, in world space (same frame as the exterior, so no transform):
-//   • a floor slab per storey (you stand on each floor) with a warm ceiling glow,
-//   • a switchback stair threading every floor (real step colliders — you climb it),
-//   • a little parlour/apartment furniture per floor (emissive-lit),
-//   • no interior walls — the exterior shell is DoubleSide, so its inner face is
-//     the room wall for free.
-// Determinism: all variation from spec.seed via mulberry32. Emissive-only lighting
-// (no THREE lights — the app has a fixed LightPool).
+//   • a floor slab per storey (you stand on each floor) + a ceiling under each,
+//   • the storey partitioned into 2–4 rooms joined by 1 m doorways (a connected,
+//     walkable plan) — or ONE open room for lofts/warehouses,
+//   • a real U-switchback staircase with step colliders threading every floor,
+//     with a matching hole cut in the slab above so you emerge onto the next,
+//   • zone-appropriate furniture, warm emissive lamps, and framed placeholder
+//     art hung at eye height (frame box + swappable art quad).
+//
+// Determinism: all variation from spec.seed via mulberry32 (rng). Emissive-only
+// lighting (no THREE lights — the app has a fixed LightPool), so every room reads.
 import type { BuildingSpec, ColliderBox, Panel } from "../core/types";
-import { PanelBuilder, type Vec3 } from "../core/facade";
+import { PanelBuilder } from "../core/facade";
 import { ensureCCW, triangulate } from "../core/footprint";
-import { rng, type Rng } from "../core/rng";
+import { rng } from "../core/rng";
+import { FLOOR_H, MAX_FLOORS, INSET, bboxOf, inset, rectArea, rectMinDim, type Rect } from "./common";
+import { partition, buildWalls, deck, polyGroundSlab } from "./rooms";
+import { planStair, buildStair, stairFits, type StairPlan } from "./stairs";
+import { furnish, type Role } from "./props";
 
 export interface BuiltInterior {
   panels: Panel[];
@@ -25,100 +33,85 @@ export interface BuiltInterior {
  *  find inside: homes (parlour/apartments), shops (retail + offices), lofts (open). */
 export type InteriorZone = "residential" | "commercial" | "loft";
 
-const FLOOR_H = 3.4;
-const MAX_FLOORS = 4;      // furnish at most ground + 3 up (mesh/collider budget)
-const SLAB = 0.12;         // floor slab half-thickness
-
-function bbox(poly: readonly (readonly [number, number])[]) {
-  let minx = Infinity, maxx = -Infinity, minz = Infinity, maxz = -Infinity;
-  for (const [x, z] of poly) { if (x < minx) minx = x; if (x > maxx) maxx = x; if (z < minz) minz = z; if (z > maxz) maxz = z; }
-  return { minx, maxx, minz, maxz, w: maxx - minx, d: maxz - minz };
-}
-
-/** a solid emissive/box piece of furniture + its collider */
-function furn(out: PanelBuilder, cols: ColliderBox[], mat: string, cx: number, cy: number, cz: number, hx: number, hy: number, hz: number, collide = true): void {
-  out.box(mat, [cx, cy, cz], [hx, hy, hz], [1, 0, 0], [0, 1, 0], [0, 0, 1], false);
-  if (collide) cols.push({ x: cx, y: cy, z: cz, hx, hy, hz, yaw: 0 });
-}
-
-/** a flat horizontal floor laid from the footprint triangulation at height y */
-function slab(out: PanelBuilder, mat: string, poly: readonly (readonly [number, number])[], tris: number[], y: number): void {
-  const verts: Vec3[] = poly.map(([x, z]) => [x, y, z]);
-  for (let t = 0; t + 2 < tris.length; t += 3) {
-    const a = verts[tris[t]], c = verts[tris[t + 1]], d = verts[tris[t + 2]];
-    out.quad(mat, a, c, d, a, [0, 1, 0]); // 4th pt = 1st → one triangle (2nd is degenerate)
+/** index of the roomiest cell (best chance of fitting the stair). */
+function roomiest(rooms: Rect[]): number {
+  let best = 0, bestV = -1;
+  for (let i = 0; i < rooms.length; i++) {
+    const v = rectMinDim(rooms[i]);
+    if (v > bestV) { bestV = v; best = i; }
   }
+  return best;
 }
 
 export function buildInterior(spec: BuildingSpec, zone: InteriorZone = "residential"): BuiltInterior {
   const poly = ensureCCW(spec.poly);
   const tris = triangulate(poly);
-  const bb = bbox(poly);
+  const bb = bboxOf(poly);
+  const area = inset(bb, INSET);
   const base = spec.base;
-  const height = spec.top - spec.base;
-  const nFloors = Math.max(1, Math.min(MAX_FLOORS, Math.round(height / FLOOR_H)));
-  const r: Rng = rng(spec.seed, 202);
+  const nFloors = Math.max(1, Math.min(MAX_FLOORS, Math.round((spec.top - base) / FLOOR_H)));
+
   const out = new PanelBuilder();
   const cols: ColliderBox[] = [];
 
-  const cx = (bb.minx + bb.maxx) / 2, cz = (bb.minz + bb.maxz) / 2;
+  // ---- one shared partition, reused on every floor so walls + the stairwell
+  //      stack (realistic, and keeps the stair footprint clear on each storey) --
+  const target = zone === "loft" ? 1 : Math.max(2, Math.min(4, Math.round(rectArea(area) / 20)));
+  let { rooms, walls } = partition(area, target, rng(spec.seed, 101));
+  let stairIdx = roomiest(rooms);
 
-  // ---- floor slabs (stand on each storey) + ceiling glow ---------------------
-  for (let i = 0; i < nFloors; i++) {
-    const y = base + i * FLOOR_H;
-    slab(out, "int.floor", poly, tris, y + SLAB);
-    // floor collider = footprint bbox slab (concave overhang is minor indoors)
-    cols.push({ x: cx, y: y, z: cz, hx: bb.w / 2, hy: SLAB, hz: bb.d / 2, yaw: 0 });
-    // warm ceiling glow just under the next floor
-    const gy = base + (i + 1) * FLOOR_H - 0.12;
-    out.box("int.glow", [cx, gy, cz], [Math.min(1.2, bb.w * 0.3), 0.04, Math.min(1.2, bb.d * 0.3)], [1, 0, 0], [0, 1, 0], [0, 0, 1], false);
-  }
-
-  // ---- switchback stair in the back-left corner, floor to floor --------------
-  const stairW = 1.0;
-  const sx0 = bb.minx + 0.4, sz0 = bb.minz + 0.4;
-  for (let i = 0; i < nFloors - 1; i++) {
-    const y0 = base + i * FLOOR_H + SLAB;
-    const steps = 8, rise = (FLOOR_H) / steps, run = 0.28;
-    for (let s = 0; s < steps; s++) {
-      const sy = y0 + rise * (s + 0.5);
-      const sxc = sx0 + stairW / 2;
-      const szc = sz0 + run * (s + 0.5);
-      furn(out, cols, "int.wood", sxc, sy, szc, stairW / 2, rise / 2, run / 2);
+  // ---- reserve a staircase (multi-storey only); fall back to one open room if
+  //      the roomiest cell can't hold it, so tiny lots still get a usable stair --
+  let stair: StairPlan | null = null;
+  if (nFloors > 1) {
+    if (!stairFits(rooms[stairIdx])) {
+      ({ rooms, walls } = partition(area, 1, rng(spec.seed, 102)));
+      stairIdx = 0;
     }
+    if (stairFits(rooms[stairIdx])) stair = planStair(rooms[stairIdx]);
   }
+  const hole: Rect | null = stair ? stair.hole : null;
 
-  // ---- furniture per storey, by zone (matches the parallax you saw outside) --
-  const fx = bb.maxx - 1.0; // hug the +x wall so the stair/entry stays clear
-  for (let i = 0; i < nFloors; i++) {
-    const y = base + i * FLOOR_H + SLAB;
-    if (zone === "commercial") {
-      if (i === 0) {
-        // shop: service counter across the front + two shelving rows + bright light
-        furn(out, cols, "int.wood", cx, y + 0.5, bb.maxz - 1.2, bb.w * 0.34, 0.5, 0.28);
-        for (let s = -1; s <= 1; s += 2) furn(out, cols, "int.wood", cx + s * bb.w * 0.22, y + 0.8, cz, 0.18, 0.8, bb.d * 0.28);
-        furn(out, cols, "int.glow", cx, base + FLOOR_H - 0.15, cz, bb.w * 0.36, 0.05, bb.d * 0.36, false);
-      } else {
-        // office: a couple of desks
-        furn(out, cols, "int.wood", fx, y + 0.38, cz + 0.7, 0.7, 0.38, 0.4);
-        furn(out, cols, "int.wood", bb.minx + 1.0, y + 0.38, cz - 0.7, 0.7, 0.38, 0.4);
-      }
-    } else if (zone === "loft") {
-      // open loft: sparse — a work table + a couple of stacked crates, dimmer
-      furn(out, cols, "int.wood", cx + (r() - 0.5) * bb.w * 0.3, y + 0.4, cz + (r() - 0.5) * bb.d * 0.3, 0.6, 0.4, 0.5);
-      furn(out, cols, "int.wood", bb.minx + 1.0, y + 0.5, bb.maxz - 1.0, 0.45, 0.5, 0.45);
-      if (i === 0) furn(out, cols, "int.glow", cx, base + FLOOR_H - 0.2, cz, 0.6, 0.05, 0.6, false);
+  // bath goes in the last non-stair cell on residential upper floors (stacked)
+  let bathIdx = -1;
+  for (let i = rooms.length - 1; i >= 0; i--) if (!(stair && i === stairIdx)) { bathIdx = i; break; }
+
+  for (let k = 0; k < nFloors; k++) {
+    const fY = base + k * FLOOR_H;                       // this storey's floor surface
+    const rf = rng(spec.seed, 300 + k);                  // per-floor furniture stream
+    const openFloor = zone === "loft" || (zone === "commercial" && k === 0);
+
+    // floor slab: faithful footprint on the ground, inset-bbox ring (with the
+    // stairwell hole) on floors above
+    if (k === 0) polyGroundSlab(out, cols, poly, tris, fY, area);
+    else deck(out, cols, "int.floor", area, hole, fY, true);
+
+    // ceiling: under each upper floor with the stairwell open; a plain cap on top
+    if (k < nFloors - 1) deck(out, null, "int.ceil", area, hole, base + (k + 1) * FLOOR_H - 0.06, false);
+    else deck(out, null, "int.ceil", area, null, Math.min(spec.top - 0.12, fY + FLOOR_H - 0.06), false);
+
+    // partition walls (skip on open plans), then the stair up to the next floor
+    if (!openFloor) buildWalls(out, cols, walls, fY);
+    if (stair && k < nFloors - 1) buildStair(out, cols, stair.region, stair.runAxis, fY);
+
+    // ---- furniture + art -----------------------------------------------------
+    if (openFloor) {
+      furnish(out, cols, stair ? stair.region : null, zone === "commercial" ? "retail" : "loft", area, fY, rf);
     } else {
-      // residential: parlour on the ground, bedrooms above
-      if (i === 0) {
-        furn(out, cols, "int.sofa", fx, y + 0.35, cz + 0.6, 0.9, 0.35, 0.4);
-        furn(out, cols, "int.wood", fx - 0.1, y + 0.25, cz - 0.6, 0.5, 0.25, 0.35);
-        furn(out, cols, "int.glow", bb.minx + 0.5, y + 0.6, cz, 0.15, 0.6, 0.5, false); // hearth
-      } else {
-        furn(out, cols, "int.sofa", fx, y + 0.3, cz + 0.7, 0.95, 0.3, 0.6);
-        furn(out, cols, "int.wood", fx, y + 0.45, cz - 0.9, 0.5, 0.45, 0.3);
+      let parlorDone = false, kitchenDone = false;
+      for (let i = 0; i < rooms.length; i++) {
+        let role: Role;
+        if (stair && i === stairIdx) role = "stair";
+        else if (zone === "commercial") role = "office";
+        else if (k === 0) {
+          if (!parlorDone) { role = "parlor"; parlorDone = true; }
+          else if (!kitchenDone) { role = "kitchen"; kitchenDone = true; }
+          else role = "hall";
+        } else {
+          role = i === bathIdx ? "bath" : "bedroom";
+        }
+        furnish(out, cols, stair ? stair.region : null, role, rooms[i], fY, rf);
       }
-      if (r() < 0.5) furn(out, cols, "int.wood", cx + (r() - 0.5) * bb.w * 0.4, y + 0.4, cz + (r() - 0.5) * bb.d * 0.4, 0.35, 0.4, 0.35);
     }
   }
 

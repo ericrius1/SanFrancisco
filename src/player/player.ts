@@ -385,6 +385,11 @@ export class Player {
     return this.#modes.board.grounded;
   }
 
+  /** True while the walk controller has you in the bay (drives swim audio / pose). */
+  get swimming(): boolean {
+    return this.mode === "walk" && this.#modes.walk.swimming;
+  }
+
   /** Frame-rate flight steering — mouse aims the plane, A/D add banked yaw. */
   steerFly(input: Input, dt: number) {
     if (this.mode !== "plane") return;
