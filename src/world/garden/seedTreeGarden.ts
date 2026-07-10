@@ -251,7 +251,15 @@ const UP = new THREE.Vector3(0, 1, 0);
 
 type FarBranchBucket = { im: THREE.InstancedMesh; base: THREE.Matrix4 };
 type FarCardBucket = { im: THREE.InstancedMesh; k: number; base: THREE.Matrix4; cardMats: Float32Array };
-type FarSet = { group: THREE.Group; branches: FarBranchBucket[]; cards: FarCardBucket[]; triangles: number };
+// `group` is a WebGPU render bundle: a species' handful of bark/card instanced
+// draws collapse to one cached command buffer, so the far tier stops paying
+// per-draw encode. It is structurally static (slot hide/show writes instanceMatrix
+// buffers, which flow through the bundle via the per-render refresh — no re-record).
+// `sphere` is the species' world bounding sphere: the children are frustumCulled=false
+// (a bundle records them once), so per-species frustum culling — the win the old
+// per-mesh frustumCulled bought — is preserved by testing this sphere each frame and
+// toggling group.visible (see cullFarSets); an invisible group is skipped whole.
+type FarSet = { group: THREE.BundleGroup; branches: FarBranchBucket[]; cards: FarCardBucket[]; triangles: number; sphere: THREE.Sphere };
 
 /** Deterministic, spatially-uniform card subset: golden-ratio stepping keeps
  *  every region of the canopy represented at any keep fraction. */
@@ -265,12 +273,13 @@ function pickCardSubset(k: number, keep: number): number[] {
 
 /** Build the species' static far tier over all slots (grove recipe: bark →
  *  InstancedMesh over slots, card InstancedMeshes → flattened k×N with tiled
- *  per-instance attributes). Every far mesh gets a real bounding sphere over
- *  the species' slots (+canopy headroom) with frustumCulled=true, so a whole
- *  species zone stops rendering when the camera faces away — the old
- *  frustumCulled=false meant all ~4M far triangles drew from every angle. */
+ *  per-instance attributes). The set is one render bundle (see FarSet); its
+ *  children draw unconditionally, so a whole species zone stops rendering when
+ *  the camera faces away via the group-level cull (cullFarSets) against the
+ *  species bounding sphere over its slots (+canopy headroom) built here — the
+ *  old un-culled far tier drew all ~4M far triangles from every angle. */
 function buildFarSet(lod2: THREE.Object3D, slots: Slot[], name: string): FarSet {
-  const group = new THREE.Group();
+  const group = new THREE.BundleGroup();
   group.name = name;
   const N = slots.length;
   const branches: FarBranchBucket[] = [];
@@ -344,7 +353,7 @@ function buildFarSet(lod2: THREE.Object3D, slots: Slot[], name: string): FarSet 
       im.receiveShadow = true;
       geo.boundingSphere = sphere.clone();
       im.boundingSphere = sphere.clone();
-      im.frustumCulled = true;
+      im.frustumCulled = false; // bundle child: culled at the group level (cullFarSets)
       group.add(im);
       cards.push(bucket);
       const geoTris = (geo.index ? geo.index.count : geo.attributes.position.count) / 3;
@@ -366,14 +375,14 @@ function buildFarSet(lod2: THREE.Object3D, slots: Slot[], name: string): FarSet 
       im.castShadow = false; // far tier never casts (see cards note above)
       im.receiveShadow = true;
       im.boundingSphere = sphere.clone();
-      im.frustumCulled = true;
+      im.frustumCulled = false; // bundle child: culled at the group level (cullFarSets)
       group.add(im);
       branches.push(bucket);
       const geoTris = (geo.index ? geo.index.count : geo.attributes.position.count) / 3;
       triangles += geoTris * N;
     }
   });
-  return { group, branches, cards, triangles };
+  return { group, branches, cards, triangles, sphere };
 }
 
 const _wSlot = new THREE.Matrix4();
@@ -576,9 +585,31 @@ export async function buildSeedTreeGarden(trees: GardenTree[]): Promise<SeedTree
   }
 
   const near = new NearTierManager(runtimes, group);
+  // Per-species far-tier frustum cull. The far meshes are bundle children
+  // (frustumCulled=false), so the renderer no longer culls them per mesh — cull
+  // the whole species bundle here against its world bounding sphere and toggle
+  // group.visible (an invisible group is skipped before the bundle records/replays).
+  // This keeps the exact culling the old per-mesh frustumCulled bought while the
+  // draws collapse to one cached command buffer. Runs every frame (camera turns
+  // faster than the rebin throttle); onBeforeRender applies it a frame later,
+  // same 1-frame lag the existing rebin already lives with.
+  const _cullFrustum = new THREE.Frustum();
+  const _cullMat = new THREE.Matrix4();
+  const cullFarSets = (camera: THREE.Camera) => {
+    _cullMat.multiplyMatrices(
+      (camera as THREE.PerspectiveCamera).projectionMatrix,
+      camera.matrixWorldInverse
+    );
+    _cullFrustum.setFromProjectionMatrix(_cullMat);
+    for (const rt of runtimes) {
+      if (!rt) continue;
+      rt.farSet.group.visible = _cullFrustum.intersectsSphere(rt.farSet.sphere);
+    }
+  };
   // one bad rebin must not take down the render loop — disable and report
   let rebinBroken = false;
   const update = (camera: THREE.Camera) => {
+    cullFarSets(camera);
     if (rebinBroken) return;
     try {
       near.update(camera);

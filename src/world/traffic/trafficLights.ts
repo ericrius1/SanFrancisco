@@ -32,9 +32,17 @@ const MIN_HALF = 2.6;
 const MAX_HALF = 12;
 
 type LightRig = {
-  root: THREE.Group;
+  // each rig is its own WebGPU render bundle: its ~18 pole/head/lens draws collapse
+  // to one cached command buffer. Per-rig (not one pool-wide bundle) so a rig only
+  // re-records when ITS assignment or signal phase changes — a standing player pays
+  // zero encode for the whole visible signal set. Repositioning (transform), head
+  // offsets (transform) and lens scale (transform) flow through the bundle via the
+  // per-render uniform refresh; only structural changes (geometry swap, gantry
+  // visibility flip, lit/dim material swap) bump needsUpdate (see update()).
+  root: THREE.BundleGroup;
   axis0: SignalGantry;
   axis1: SignalGantry;
+  sigId: number; // signal currently shown (-1 = none); a change forces a re-record
 };
 
 type SignalGantry = {
@@ -101,13 +109,22 @@ export class TrafficLightView {
       const rig = this.#pool[i];
       const sig = this.#near[i];
       if (!sig) {
+        // visible=false is checked before the bundle records/replays, so hiding an
+        // unused rig needs no re-record; drop its assignment so a later reuse re-records.
         rig.root.visible = false;
+        rig.sigId = -1;
         continue;
       }
       rig.root.visible = true;
+      // position is a per-object uniform (modelMatrix) → refreshes through the bundle
       rig.root.position.set(sig.x, this.#map.effectiveGround(sig.x, sig.z), sig.z);
-      this.#applyGantry(rig.axis0, sig, 0, timeS);
-      this.#applyGantry(rig.axis1, sig, 1, timeS);
+      let changed = rig.sigId !== sig.id;
+      rig.sigId = sig.id;
+      const c0 = this.#applyGantry(rig.axis0, sig, 0, timeS);
+      const c1 = this.#applyGantry(rig.axis1, sig, 1, timeS);
+      // structural change this frame (reassignment / geometry swap / phase flip) →
+      // re-record; otherwise the cached command buffer replays untouched.
+      if (changed || c0 || c1) rig.root.needsUpdate = true;
     }
   }
 
@@ -120,29 +137,44 @@ export class TrafficLightView {
     this.#lensGeo.dispose();
   }
 
-  #applyGantry(gantry: SignalGantry, signal: TrafficSignal, axis: 0 | 1, timeS: number): void {
+  /** Returns true if a STRUCTURAL change happened (gantry visibility flip, geometry
+   *  swap, or a lit/dim material swap) — the caller uses it to bump the rig bundle's
+   *  needsUpdate. Transform-only changes (yaw, head offsets, lens scale) are omitted:
+   *  they refresh through the bundle as uniforms with no re-record. */
+  #applyGantry(gantry: SignalGantry, signal: TrafficSignal, axis: 0 | 1, timeS: number): boolean {
     const plan = this.#planFor(signal, axis);
     if (!plan) {
+      const changed = gantry.root.visible !== false;
       gantry.root.visible = false;
-      return;
+      return changed;
     }
+    let changed = gantry.root.visible !== true;
     gantry.root.visible = true;
     gantry.root.rotation.y = plan.yaw;
-    if (gantry.structure.geometry !== plan.geo) gantry.structure.geometry = plan.geo;
+    if (gantry.structure.geometry !== plan.geo) { gantry.structure.geometry = plan.geo; changed = true; }
     gantry.head0.root.position.set(plan.headLx[0], HEAD_CENTER_Y, plan.poleLz);
     gantry.head1.root.position.set(plan.headLx[1], HEAD_CENTER_Y, plan.poleLz);
     const state = this.#signals.stateForAxis(signal, axis, timeS);
-    this.#setBulbs(gantry.head0.bulbs, state);
-    this.#setBulbs(gantry.head1.bulbs, state);
+    const c0 = this.#setBulbs(gantry.head0.bulbs, state);
+    const c1 = this.#setBulbs(gantry.head1.bulbs, state);
+    return changed || c0 || c1;
   }
 
-  #setBulbs(bulbs: Record<LightState, THREE.Mesh>, state: LightState): void {
-    bulbs.red.material = state === "red" ? this.#redLit : this.#redDim;
-    bulbs.yellow.material = state === "yellow" ? this.#yellowLit : this.#yellowDim;
-    bulbs.green.material = state === "green" ? this.#greenLit : this.#greenDim;
+  /** Returns true if any lens material reference changed (i.e. the signal state
+   *  changed) — that is a pipeline swap the recorded bundle must re-capture. Lens
+   *  scale is a transform and refreshes through the bundle without a re-record. */
+  #setBulbs(bulbs: Record<LightState, THREE.Mesh>, state: LightState): boolean {
+    const red = state === "red" ? this.#redLit : this.#redDim;
+    const yellow = state === "yellow" ? this.#yellowLit : this.#yellowDim;
+    const green = state === "green" ? this.#greenLit : this.#greenDim;
+    const changed = bulbs.red.material !== red || bulbs.yellow.material !== yellow || bulbs.green.material !== green;
+    bulbs.red.material = red;
+    bulbs.yellow.material = yellow;
+    bulbs.green.material = green;
     bulbs.red.scale.setScalar(state === "red" ? 1.12 : 0.95);
     bulbs.yellow.scale.setScalar(state === "yellow" ? 1.12 : 0.95);
     bulbs.green.scale.setScalar(state === "green" ? 1.12 : 0.95);
+    return changed;
   }
 
   #planFor(signal: TrafficSignal, axis: 0 | 1): GantryPlan | null {
@@ -222,17 +254,22 @@ export class TrafficLightView {
   }
 
   #makeRig(): LightRig {
-    const root = new THREE.Group();
+    const root = new THREE.BundleGroup();
     root.name = "TrafficLightRig";
     root.userData.trafficLightRig = true;
 
+    // bundle children draw unconditionally (a bundle records each draw once, so a
+    // per-child frustum test would freeze whatever the record-time camera saw); the
+    // whole rig is culled as a unit by rig.root.visible (VIEW_R / nearest-N pool).
+    const noCull = (m: THREE.Mesh) => { m.frustumCulled = false; return m; };
+
     const makeHead = (): SignalHead => {
       const head = new THREE.Group();
-      const housing = new THREE.Mesh(this.#headGeo, this.#headMat);
+      const housing = noCull(new THREE.Mesh(this.#headGeo, this.#headMat));
       head.add(housing);
-      const red = new THREE.Mesh(this.#lensGeo, this.#redDim);
-      const yellow = new THREE.Mesh(this.#lensGeo, this.#yellowDim);
-      const green = new THREE.Mesh(this.#lensGeo, this.#greenDim);
+      const red = noCull(new THREE.Mesh(this.#lensGeo, this.#redDim));
+      const yellow = noCull(new THREE.Mesh(this.#lensGeo, this.#yellowDim));
+      const green = noCull(new THREE.Mesh(this.#lensGeo, this.#greenDim));
       const bulbs = { red, yellow, green } as Record<LightState, THREE.Mesh>;
       const order: LightState[] = ["red", "yellow", "green"];
       order.forEach((k, i) => {
@@ -247,7 +284,7 @@ export class TrafficLightView {
     const makeGantry = (name: string): SignalGantry => {
       const gantry = new THREE.Group();
       gantry.name = name;
-      const structure = new THREE.Mesh(EMPTY_GEO, this.#steelMat);
+      const structure = noCull(new THREE.Mesh(EMPTY_GEO, this.#steelMat));
       gantry.add(structure);
       const head0 = makeHead();
       const head1 = makeHead();
@@ -256,7 +293,7 @@ export class TrafficLightView {
       return { root: gantry, structure, head0, head1 };
     };
 
-    return { root, axis0: makeGantry("TrafficLightAxis0"), axis1: makeGantry("TrafficLightAxis1") };
+    return { root, axis0: makeGantry("TrafficLightAxis0"), axis1: makeGantry("TrafficLightAxis1"), sigId: -1 };
   }
 }
 

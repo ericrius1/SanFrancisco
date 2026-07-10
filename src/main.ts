@@ -62,6 +62,7 @@ import { PauseToggle } from "./ui/pauseToggle";
 import { parseReadLink, openReadLink } from "./ui/deepLinks";
 import { Tutorial } from "./ui/tutorial";
 import { createRenderPipeline } from "./render/pipeline";
+import { createDynamicResolution } from "./render/dynamicRes";
 import { POSTFX_TUNING } from "./render/postfx";
 import { DebugPanel } from "./ui/debug";
 import { ColliderDebug, type DebugBox } from "./ui/colliderDebug";
@@ -455,6 +456,22 @@ async function boot() {
 
   // post-processing: scene pass AA + optional stylized screen effects
   const pipeline = createRenderPipeline(renderer, scene, camera);
+
+  // Dynamic-resolution governor: watches the real rAF cadence and steps the
+  // drawing-buffer pixel ratio between RENDER_MODE.minPixelRatio and the boot
+  // ceiling — min(devicePixelRatio, RENDER_MODE.pixelRatioCap) — to hold the
+  // frame budget on weaker GPUs. The apply path is exactly what boot + resize
+  // do (setPixelRatio + setSize); the WebGPU pass targets re-derive from the
+  // drawing-buffer on the next render, so nothing else needs a resize hook.
+  // Starts at the ceiling boot already applied above.
+  const applyPixelRatio = (ratio: number) => {
+    renderer.setPixelRatio(ratio);
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  };
+  const dynRes = createDynamicResolution({
+    apply: applyPixelRatio,
+    readRatio: () => renderer.getPixelRatio()
+  });
 
   // ---- multiplayer: presence relay (src/net/net.ts) + remote avatars +
   // minimap. Drop-in social layer: movement stays client-authoritative, the
@@ -1542,9 +1559,10 @@ async function boot() {
       START.spawn = START_DEFAULTS.spawn;
       START.mode = START_DEFAULTS.mode;
       // re-apply the side effects the pane's onChange handlers normally push.
-      // Pixel ratio + shadows are no longer tweakable (universal render mode),
-      // so there's nothing to reset for them here.
+      // Pixel ratio + shadows are no longer tweakable (universal render mode);
+      // the reset just re-asserts the dynamic-res governor's ceiling.
       renderer.toneMappingExposure = RENDER_TUNING.values.exposure;
+      dynRes.syncToCap();
       CONFIG.tileLoadRadius = WORLD_TUNING.values.radius;
       CONFIG.tileUnloadRadius = WORLD_TUNING.values.radius + 400;
       setFoliageVisible(FOLIAGE_TUNING.values.visible);
@@ -1988,9 +2006,12 @@ async function boot() {
   let lastLoop = performance.now();
   let manualDrive = false; // frame-by-frame capture drives tick(dt) itself
   const loopFn = () => {
-    if (throttleRaf && performance.now() - lastLoop < 50) return;
-    lastLoop = performance.now();
+    const now = performance.now();
+    if (throttleRaf && now - lastLoop < 50) return;
+    const frameMs = now - lastLoop; // true rAF-to-rAF cadence, incl. render
+    lastLoop = now;
     tick();
+    dynRes.sample(frameMs); // step pixel ratio to hold the frame budget
   };
   renderer.setAnimationLoop(loopFn);
   // Deterministic capture: stop the wall-clock loop (and the hidden-tab fallback
@@ -2025,6 +2046,9 @@ async function boot() {
   window.addEventListener("resize", () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
+    // Keep the governor's CURRENT ratio across resize/fullscreen — not the cap —
+    // so a size change doesn't silently undo an active down-step.
+    renderer.setPixelRatio(dynRes.ratio);
     renderer.setSize(window.innerWidth, window.innerHeight);
   });
 
@@ -2032,7 +2056,7 @@ async function boot() {
 
   const exposeDebugHooks = () => {
     Object.assign(window as never, {
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, creatures, forest, garden, wildlands, splashes, vehicleAudio, swimAudio, nature, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, rocketRiders, boatLaunchers, goldenGateLights, teleportToTarget, trafficLights, citygen, citygenRing, worldCursor, worldQueries, underwater, seaPillars, water, roadMarkings, colliderDebug, FOLIAGE_TUNING, setFoliageVisible }
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, creatures, forest, garden, wildlands, splashes, vehicleAudio, swimAudio, nature, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, rocketRiders, boatLaunchers, goldenGateLights, teleportToTarget, trafficLights, citygen, citygenRing, worldCursor, worldQueries, underwater, seaPillars, water, roadMarkings, colliderDebug, FOLIAGE_TUNING, setFoliageVisible }
     });
   };
   if (import.meta.env.DEV || new URLSearchParams(location.search).has("profile")) {

@@ -21,7 +21,14 @@ export const RENDER_MODE = {
   // dpr 2 costs ~2× the frame time of 1.5 for a near-invisible sharpness delta
   // (measured 17.1 → 8.6 ms p50 at 2560×1600). dpr-1 displays are unaffected —
   // the cap only ever lowers the ratio.
-  pixelRatioCap: 1.5
+  pixelRatioCap: 1.5,
+  // Dynamic-resolution governor (src/render/dynamicRes.ts): under sustained
+  // frame pressure the drawing-buffer pixel ratio steps down from the ceiling
+  // — min(devicePixelRatio, pixelRatioCap) — toward minPixelRatio, and back up
+  // when there's headroom, so weaker GPUs hold the display's frame budget.
+  dynamicRes: true,
+  // Lowest pixel ratio the governor will drop to under sustained load.
+  minPixelRatio: 1.0
 } as const;
 
 /** Renderer grading, bound in the "/" panel's lighting folder. */

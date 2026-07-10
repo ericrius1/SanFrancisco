@@ -89,7 +89,17 @@ export function buildBuilding(spec: BuildingSpec, mats: Record<string, THREE.Mat
     }
     return m;
   };
-  const group = new THREE.Group();
+  // Each faded-in detail building draws as ONE WebGPU render bundle — a downtown
+  // block can hold dozens of detail buildings, ~9 per-panel draws each, so
+  // collapsing every settled building to a cached command buffer takes those
+  // hundreds of draws off the per-frame encode (main AND shadow passes). Same
+  // pattern as the baked tiles (world/tiles.ts): a real bundle for its whole life
+  // (never toggling isBundleGroup — that flip mid-session corrupts the shadow
+  // pass's bundle state), re-recorded via needsUpdate whenever its meshes/materials
+  // change. The only such change is the crossfade (setOpacity mutates the
+  // transparent/alphaHash pipeline + opacity each frame): needsUpdate fires per
+  // fade frame — cheap, few fade at once — then the building is static and free.
+  const group = new THREE.BundleGroup();
   group.name = "cityGenBuilding";
   const geoms: THREE.BufferGeometry[] = [];
   let triangles = 0;
@@ -106,7 +116,10 @@ export function buildBuilding(spec: BuildingSpec, mats: Record<string, THREE.Mat
     mesh.name = md.materialId; // lets probes tell a wall/base panel from door/glass
     mesh.castShadow = true;
     mesh.receiveShadow = true;
-    mesh.frustumCulled = true;
+    // a bundle records each child's draw once, so per-child frustum culling would
+    // freeze whatever the record-time camera saw — children draw unconditionally,
+    // the whole (near-player) building is distance-managed by the streaming ring.
+    mesh.frustumCulled = false;
     group.add(mesh);
   }
   // Sit the detail mesh a hair PROUD of its chunk-LOD prism (same footprint) so it
@@ -141,6 +154,10 @@ export function buildBuilding(spec: BuildingSpec, mats: Record<string, THREE.Mat
         mm.opacity = fading ? Math.max(0.02, o) : 1;
         mm.needsUpdate = true;
       }
+      // materials' pipeline (transparent/alphaHash) + version changed → re-record
+      // the bundle. Fires each fade frame (cheap) and once at the opaque settle
+      // (setOpacity(1), the last call); the building is static and free afterward.
+      group.needsUpdate = true;
     },
     dispose() { for (const g of geoms) g.dispose(); for (const m of allMats) m.dispose(); group.clear(); },
   };
