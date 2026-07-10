@@ -245,6 +245,13 @@ export class BotanicalGrassController extends THREE.Group {
   #detailTall: THREE.InstancedMesh | null = null;
   #focus: GrassFocus | null = null;
   #lastDetailFocus: GrassFocus | null = null;
+  // focus speed estimate (m/s) — at vehicle/flight speed the near-detail ring is
+  // unresolvable AND its full-ring resample every nearRebuildStep was a measured
+  // 100-180 ms hitch crossing GG Park; fast movers skip it (base grass persists)
+  #lastFocusAt = 0;
+  #lastFocusX = 0;
+  #lastFocusZ = 0;
+  #focusSpeed = 0;
 
   constructor(map: GardenTerrain, trees: GardenTree[]) {
     super();
@@ -285,6 +292,21 @@ export class BotanicalGrassController extends THREE.Group {
     this.#focus = { x: focus.x, z: focus.z };
     GRASS_DENSITY_FOCUS.value.set(focus.x, focus.z);
 
+    // smoothed focus speed (m/s) from successive calls; long gaps reset
+    {
+      const now = performance.now();
+      const dtms = now - this.#lastFocusAt;
+      if (dtms > 0 && dtms < 500) {
+        const v = (Math.hypot(focus.x - this.#lastFocusX, focus.z - this.#lastFocusZ) / dtms) * 1000;
+        this.#focusSpeed += 0.25 * (v - this.#focusSpeed);
+      } else {
+        this.#focusSpeed = 0;
+      }
+      this.#lastFocusAt = now;
+      this.#lastFocusX = focus.x;
+      this.#lastFocusZ = focus.z;
+    }
+
     // Distance-cull whole base chunks (the shader fade collapses blades near
     // the view distance anyway, so hidden chunks were already invisible).
     // Visible chunks additionally GRADE their instance count by distance:
@@ -304,7 +326,11 @@ export class BotanicalGrassController extends THREE.Group {
         chunk.mesh.count = Math.max(1, Math.round(chunk.full * nearUnderlap * farThin));
       }
     }
-    if (values.nearRadius <= 0 || values.nearDensity <= 0 || !inBotanicalGarden(focus.x, focus.z, values.nearRadius)) {
+    // fast movers (car boost / plane / bird) skip the near-detail ring exactly
+    // like being outside the garden: clumps are unresolvable at that speed and
+    // the resample was the hitch. Rebuilds once you slow back under ~18 m/s.
+    const tooFast = this.#focusSpeed > 18 && !force;
+    if (tooFast || values.nearRadius <= 0 || values.nearDensity <= 0 || !inBotanicalGarden(focus.x, focus.z, values.nearRadius)) {
       if (this.stats.detailLow || this.stats.detailTall) {
         if (this.#detailLow) this.#detailLow.count = 0;
         if (this.#detailTall) this.#detailTall.count = 0;

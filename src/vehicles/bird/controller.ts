@@ -27,7 +27,7 @@ const V = {
  * (splash FX key off that).
  */
 export class BirdController implements ModeController {
-  readonly spawnLift = 1.5;
+  readonly spawnLift = 3.5;
 
   // smoothed yaw (chases the camera) + visual attitude and wing state
   #yaw = 0;
@@ -55,7 +55,7 @@ export class BirdController implements ModeController {
     ctx.body = w.createBox({
       type: BodyType.Dynamic,
       position: [p.x, p.y + 1.5, p.z],
-      halfExtents: [0.62, 0.28, 0.62],
+      halfExtents: [1.86, 0.84, 1.86],
       density: 20,
       friction: 0.3,
       restitution: 0.2

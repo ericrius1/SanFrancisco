@@ -214,9 +214,16 @@ export class WorldMap {
    * effectiveGround for hovering riders: the bridge deck only counts once `y`
    * is already near or above it — passing under a bridge must target the
    * water/terrain below, not catapult the hover spring up to the deck.
+   *
+   * Terrain source is groundTop (the RENDERED surface: draped roads + lawns —
+   * what the physics carpet seats on), not the raw heightfield. On graded
+   * streets the road ribbon stands up to ~0.9 m proud of the raw field, and a
+   * spring targeting the raw height pressed cars/boards INTO the road surface —
+   * the nose ploughed into the climbing carpet slabs and the contact solver ate
+   * all forward velocity (the "car stuck mid-street on every Castro hill" bug).
    */
   rideGround(x: number, z: number, y: number): number {
-    const terrain = this.groundHeight(x, z);
+    const terrain = this.groundTop(x, z);
     const deck = this.bridgeDeck(x, z);
     return deck > -Infinity && y > deck - 2.5 ? Math.max(terrain, deck) : terrain;
   }

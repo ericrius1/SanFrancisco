@@ -171,6 +171,15 @@ export class Fireworks {
   stats = { alive: 0, queuedCmds: 0 };
 
   audio = new FireworksAudio();
+  #warmFrames = 0;
+
+  /** Boot warmup: force the sprite pool to draw (empty) for the next couple of
+   *  frames so its WebGPU pipeline compiles before the first real launch, and
+   *  build the boom-synth audio buffers off the first-gesture path. */
+  prewarm(): void {
+    this.#warmFrames = 2;
+    this.audio.prewarm();
+  }
 
   /** Every locally launched rocket this frame, as wire rows
    * [ox,oy,oz,tx,ty,tz,flightTime,palette,size] — main.ts forwards them to
@@ -790,6 +799,15 @@ export class Fireworks {
       this.#cursor = 0;
     }
     this.#sprite.count = this.#highWater;
+    if (this.#warmFrames > 0) {
+      // boot warmup: draw the (empty) pool for a couple of frames so the sprite
+      // pipeline compiles before the first real B-press. Instance 0's life is
+      // zero → scale 0 → nothing visible; the compile is the whole point. The
+      // ratcheting #highWater is left alone — only this frame's draw is forced.
+      this.#warmFrames--;
+      this.#sprite.visible = true;
+      if (this.#sprite.count < 1) this.#sprite.count = 1;
+    }
     if (active) {
       this.#dtU.value = Math.min(dt, 0.05);
       this.#gravU.value = p.gravity;

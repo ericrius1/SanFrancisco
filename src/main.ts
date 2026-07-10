@@ -40,6 +40,7 @@ import { WorldCursor } from "./fx/worldCursor";
 import { WorldQueries, ProxySet } from "./core/worldQueries";
 import { Toolbar, TOOL_ORDER, TOOL_VERB, type ToolName } from "./ui/toolbar";
 import { AvatarSelector } from "./ui/avatarSelector";
+import { BoardSelector } from "./ui/boardSelector";
 import { AudioControls } from "./ui/audioControls";
 import { Chat } from "./ui/chat";
 import { VehicleAudio } from "./fx/vehicleAudio";
@@ -72,6 +73,7 @@ import { Voice } from "./net/voice";
 import { Minimap } from "./ui/minimap";
 import { PlayerLocator } from "./ui/playerLocator";
 import { avatarFromSeed, loadSavedAvatar, randomAvatarTraits, saveAvatarTraits } from "./player/avatar";
+import { boardFromSeed, loadSavedBoard, randomBoardConfig, saveBoardConfig, setLocalBoardConfig } from "./vehicles/board";
 import { MENU_MODES, ModeDiscovery, ALL_MODES } from "./player/discovery";
 
 CameraControls.install({ THREE });
@@ -234,7 +236,14 @@ async function boot() {
   const savedAvatar = loadSavedAvatar();
   let customized = savedAvatar !== null;
   let avatarTraits = savedAvatar ?? randomAvatarTraits();
-  const player = new Player(physics, map, scene, spawn, avatarTraits);
+  // Board identity follows the exact same contract as the avatar: saved means
+  // chosen; otherwise a placeholder until the server's per-id seed arrives.
+  const savedBoard = loadSavedBoard();
+  let boardCustomized = savedBoard !== null;
+  let boardConfig = savedBoard ?? randomBoardConfig();
+  setLocalBoardConfig(boardConfig); // abandonedMounts builds YOUR board from this
+  vehicleAudio.setBoardStyle(boardConfig);
+  const player = new Player(physics, map, scene, spawn, avatarTraits, boardConfig);
   const birdTrails = new BirdTrails(scene, player.meshes.bird);
   const droneFireworkMounts = player.meshes.drone.userData.fireworkMounts as THREE.Object3D[] | undefined;
   const boatLaunchers = player.meshes.speedboat.userData.launcherRig as LauncherRig | undefined;
@@ -466,7 +475,7 @@ async function boot() {
   // Send a custom avatar only if the player actually chose one; a null avatar
   // lets the server keep its per-id seed (server.mjs), so un-customized players
   // stay distinct instead of all sending the same saved blob.
-  const net = new Net(suggestedName, savedAvatar ?? undefined);
+  const net = new Net(suggestedName, savedAvatar ?? undefined, savedBoard ?? undefined);
   const avatarSelector = new AvatarSelector(
     avatarTraits,
     net.name,
@@ -485,6 +494,29 @@ async function boot() {
       hud.message(`You're now ${net.name}`, 2.2);
     }
   );
+  // hoverboard garage: docked next to the avatar toggle. Edits rebuild the
+  // mesh in place, persist, re-voice the hum and broadcast — and sound edits
+  // audition through the real synth path immediately.
+  const applyBoardConfig = (config: typeof boardConfig) => {
+    boardConfig = config;
+    setLocalBoardConfig(config);
+    player.setBoardConfig(config);
+    vehicleAudio.setBoardStyle(config);
+  };
+  const boardSelector = new BoardSelector(
+    boardConfig,
+    (config) => {
+      boardCustomized = true; // an explicit edit — persist it and broadcast from here on
+      saveBoardConfig(config);
+      applyBoardConfig(config);
+      net.setBoard(config);
+    },
+    () => vehicleAudio.previewBoard(),
+    () => {
+      // opening the garage on foot hops you onto the board so edits are live
+      if (player.mode === "walk" && !player.riding) player.trySwitch("board");
+    }
+  );
   net.onWelcome = () => {
     if (customized) {
       net.setAvatar(avatarTraits); // re-assert my chosen look after a (re)connect
@@ -495,6 +527,13 @@ async function boot() {
       player.setAvatar(avatarTraits);
       avatarSelector.setTraits(avatarTraits);
     }
+    if (boardCustomized) {
+      net.setBoard(boardConfig); // re-assert my chosen board after a (re)connect
+    } else {
+      const seeded = boardFromSeed(net.selfId);
+      applyBoardConfig(seeded);
+      boardSelector.setConfig(seeded);
+    }
   };
   const remotes = new RemotePlayers(scene);
   const syncRoster = () => {
@@ -504,6 +543,7 @@ async function boot() {
       else {
         if (existing.info.name !== info.name) remotes.rename(info);
         remotes.updateAvatar(info);
+        remotes.updateBoard(info);
       }
     }
   };
@@ -640,7 +680,8 @@ async function boot() {
   const exitClearance = (mode: PlayerMode) => {
     if (mode === "drive" && currentAnimal) return currentAnimal === "bear" ? 3.0 : 2.4;
     if (mode === "plane" || mode === "boat") return 6.5;
-    if (mode === "drone" || mode === "board" || mode === "bird") return 2.8;
+    if (mode === "drone" || mode === "board") return 2.8;
+    if (mode === "bird") return 6.5;
     return 2.4;
   };
   const dropCurrentDriveMount = (motion = readPlayerMotion()) => {
@@ -1019,7 +1060,7 @@ async function boot() {
     boat: { r: 4.5, y: 1.8 },
     speedboat: { r: 3.2, y: 1.2 },
     drone: { r: 0.9, y: 0.3 },
-    bird: { r: 1.0, y: 0.5 }
+    bird: { r: 3.0, y: 1.5 }
   };
 
   let fireCooldown = 0;
@@ -1136,6 +1177,26 @@ async function boot() {
     ]);
     citygen = citygenDemoMod.createCityGenDemo({ scene, map }) as NonNullable<typeof citygen>;
     citygenMod.createCityGenRing({}, { scene, physics, map, tiles, schedule: scheduler.schedule }).then((r) => { citygenRing.current = r; });
+
+    // Idle prewarms for the lazy first-use hitches the tracer measured:
+    // procedural audio buffers (contexts stay suspended until a real gesture
+    // resumes them — autoplay policy holds) and lazily-compiled render
+    // pipelines (fireworks sprite pool, the underwater ceiling, one paintball).
+    {
+      const idler = typeof requestIdleCallback !== "undefined"
+        ? (cb: () => void) => requestIdleCallback(cb, { timeout: 4000 })
+        : (cb: () => void) => setTimeout(cb, 800);
+      idler(() => {
+        fireworks.prewarm();
+        nature.prewarm();
+        paintballs.spawn(0, -520, 0, 0, 0, 0, new THREE.Color(PAINT_COLORS[0]), 0);
+        let warmTicks = 0;
+        scheduler.schedule("background", () => {
+          water.underside.visible = true; // water.update() re-hides it next frame
+          return ++warmTicks < 2 ? "again" : undefined;
+        });
+      });
+    }
 
     // BehindTheScenes: the "how it was made" reading overlay
     const { BehindTheScenes } = await import("./ui/behindTheScenes");

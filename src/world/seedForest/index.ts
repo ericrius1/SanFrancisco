@@ -221,6 +221,37 @@ export function createSeedForest(
   });
 
   const chunks: Chunk[] = [];
+
+  // Texture/pipeline warmup: the first time a design renders (hero clone OR far
+  // set) its SeedThree textures upload — flying into a park used to land dozens
+  // of copyExternalImageToTexture calls in one frame. After build, draw one
+  // hidden clone of EVERY LOD level of one design per frame (y=-4000: clipped,
+  // zero fragments, but bind/upload still happens) until all designs are warm.
+  const warmQueue: number[] = [];
+  let warmGroup: THREE.Group | null = null;
+  let warmAge = 0;
+  function stepWarmup() {
+    if (warmGroup) {
+      if (++warmAge >= 2) {
+        group.remove(warmGroup); // cloned meshes share template geometry/materials — no dispose
+        warmGroup = null;
+      }
+      return;
+    }
+    const d = warmQueue.shift();
+    if (d === undefined) return;
+    const t = templates[d];
+    if (!t) return;
+    warmGroup = new THREE.Group();
+    warmGroup.position.set(0, -4000, 0);
+    for (const lvl of (t.template as THREE.LOD).levels) {
+      const m = lvl.object.clone();
+      m.traverse((o) => (o.frustumCulled = false));
+      warmGroup.add(m);
+    }
+    warmAge = 0;
+    group.add(warmGroup);
+  }
   const templates: (GrownTemplate | null)[] = designs.map(() => null);
   const pools: THREE.LOD[][] = designs.map(() => []);
   const allNearSlots: { slot: Slot; chunk: Chunk }[] = [];
@@ -302,6 +333,7 @@ export function createSeedForest(
     stats.instances = instances;
     stats.chunks = chunks.length;
     stats.farTriangles = Math.round(tris);
+    for (const d of designUsed) warmQueue.push(d); // stagger first-render texture uploads
     applyDistanceCull(lastFocus.x, lastFocus.z, true);
     console.log(
       `[seedForest] ${options.name} online: ${designUsed.size} designs, ${instances} trees, ${chunks.length} chunks, ~${(tris / 1e6).toFixed(1)}M far tris (culled per frame)`
@@ -343,7 +375,13 @@ export function createSeedForest(
       if (cd) setFarSlotHidden(cd.farSet, entry.slot, entry.slot.index, false);
       active.delete(key);
     }
+    // Cap hero swaps per rebin: entering a forest at speed used to promote a
+    // whole ring of heroes at once (template clones + their first-render
+    // uploads in one frame). Nearest-first fills within a few 250 ms rebins;
+    // the far instances stay visible until each swap, so nothing pops empty.
+    let added = 0;
     for (const c of cand) {
+      if (added >= 4) break;
       if (!next.has(c.key) || active.has(c.key)) continue;
       const t = templates[c.slot.design];
       if (!t) continue;
@@ -355,6 +393,7 @@ export function createSeedForest(
       const cd = c.chunk.byDesign.get(c.slot.design);
       if (cd) setFarSlotHidden(cd.farSet, c.slot, c.slot.index, true);
       active.set(c.key, { slot: c.slot, chunk: c.chunk, clone });
+      added++;
     }
   }
 
@@ -372,6 +411,7 @@ export function createSeedForest(
   driver.onBeforeRender = (_r, _s, camera) => {
     if (!(camera as THREE.PerspectiveCamera).isPerspectiveCamera || rebinBroken) return;
     try {
+      stepWarmup(); // one design's textures/pipelines per frame until warm
       rebin(camera);
     } catch (e) {
       rebinBroken = true; // one bad rebin must not take down the render loop

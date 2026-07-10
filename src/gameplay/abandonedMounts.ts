@@ -8,7 +8,7 @@ import { buildCarMesh } from "../vehicles/car";
 import { buildPlaneMesh, collectPlaneAnim, type PlaneAnim } from "../vehicles/plane";
 import { buildBoatMesh, buildSpeedboatMesh } from "../vehicles/boat";
 import { buildDroneMesh } from "../vehicles/drone";
-import { buildBoardMesh } from "../vehicles/board";
+import { buildBoardMesh, localBoardConfig } from "../vehicles/board";
 import { buildBirdMesh, type BirdRig } from "../vehicles/bird";
 import { poseBone } from "../vehicles/bird/mesh";
 
@@ -121,7 +121,8 @@ const SPECS: Record<MountMode, MountSpec> = {
     maxSpeed: 80
   },
   board: {
-    build: buildBoardMesh,
+    // your abandoned board should look like YOUR board, not the default
+    build: () => buildBoardMesh(localBoardConfig()),
     halfExtents: [0.55, 0.25, 1.15],
     density: 60,
     friction: 0.15,
@@ -133,7 +134,7 @@ const SPECS: Record<MountMode, MountSpec> = {
   },
   bird: {
     build: buildBirdMesh,
-    halfExtents: [0.62, 0.28, 0.62],
+    halfExtents: [1.86, 0.84, 1.86],
     density: 20,
     friction: 0.3,
     restitution: 0.2,

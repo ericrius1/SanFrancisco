@@ -1871,6 +1871,33 @@
         text-transform: uppercase;
         letter-spacing: 0.05em;
       }
+      /* hoverboard garage — docked left of the avatar toggle, shares its
+         recipes (root carries both avatar-ui and board-ui classes) */
+      #hud .board-ui {
+        right: 74px;
+      }
+      #hud .board-toggle .board-ic-deck {
+        position: absolute;
+        left: 10px;
+        top: 18px;
+        width: 26px;
+        height: 8px;
+        border-radius: 4px;
+        transform: rotate(-14deg);
+        box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.22);
+      }
+      #hud .board-toggle .board-ic-rail {
+        position: absolute;
+        left: 12px;
+        top: 29px;
+        width: 22px;
+        height: 3px;
+        border-radius: 2px;
+        transform: rotate(-14deg);
+      }
+      #hud .board-panel .avatar-label {
+        padding-top: 5px;
+      }
       #hud .chat {
         position: absolute;
         bottom: 148px;

@@ -50,6 +50,14 @@ export class FireworksAudio {
     window.addEventListener("keydown", unlock);
   }
 
+  /** Build the context, echo bus and synth buffers off the first-gesture path
+   *  (boot idle) — ~250k samples of noise/crackle synthesis that otherwise lands
+   *  in the first-keydown frame. The context stays suspended until a real
+   *  gesture resumes it (the unlock listeners above), so autoplay policy holds. */
+  prewarm(): void {
+    this.#ensure();
+  }
+
   #ensure(): AudioContext | null {
     if (this.#ctx) return this.#ctx;
     if (typeof AudioContext === "undefined") return null;

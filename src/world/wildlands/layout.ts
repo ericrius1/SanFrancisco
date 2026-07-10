@@ -59,6 +59,17 @@ export function wildRegionAt(x: number, z: number): WildRegion | null {
   return null;
 }
 
+/** True when the disc (x,z,reach) touches ANY wild region's AABB. The cheap
+ *  early-out for the player-following scatter rings: outside every region
+ *  nothing can grow, so their whole grid re-scan (thousands of hash/terrain
+ *  samples every few metres of travel) is skipped across most of the city. */
+export function nearAnyWildRegion(x: number, z: number, reach: number): boolean {
+  for (const r of WILD_REGIONS) {
+    if (x >= r.minX - reach && x <= r.maxX + reach && z >= r.minZ - reach && z <= r.maxZ + reach) return true;
+  }
+  return false;
+}
+
 // --- keep-out zones (existing world content owns these) --------------------------
 
 const AVOID: readonly { x: number; z: number; r: number; label: string }[] = [

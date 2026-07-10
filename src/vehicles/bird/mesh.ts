@@ -18,7 +18,7 @@ import { dressPhoenix } from "./feathers";
  * animates, which is exactly how a wing chain should stack.
  */
 
-const PHOENIX_SCALE = 0.42;
+const PHOENIX_SCALE = 1.26; // 3× the original 0.42 — a proper mount, not a lap pet
 
 export type BoneCtl = {
   bone: THREE.Bone;

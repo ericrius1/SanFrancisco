@@ -220,6 +220,16 @@ const AVATAR_OUTFITS = ["jacket", "hoodie", "tee", "overalls", "dress"];
 const SKIN_COUNT = 6;
 const COLOR_COUNT = 8;
 
+// hoverboard customization — mirrors src/vehicles/board/config.ts (lists,
+// defaults, AND the seed draw order are part of the wire contract)
+const BOARD_SHAPES = ["classic", "dart", "manta", "saucer", "twintip"];
+const BOARD_FINS = ["none", "twin", "spoiler", "halo"];
+const BOARD_DECOS = ["clean", "stripe", "chevrons", "dots", "comet"];
+const BOARD_HUMS = ["hum", "crystal", "deep", "choir", "retro"];
+const BOARD_DECK_COUNT = 8;
+const BOARD_GLOW_COUNT = 8;
+const BOARD_PITCH_COUNT = 5;
+
 const makeFunName = () => `${ADJ[(Math.random() * ADJ.length) | 0]} ${NOUN[(Math.random() * NOUN.length) | 0]}`;
 
 const needsFunName = (name) => name.length === 0 || name.length < 3 || FUN_NAME_FALLBACK.test(name);
@@ -288,6 +298,44 @@ const sanitizeAvatar = (raw) => {
   };
 };
 
+const DEFAULT_BOARD = { shape: "classic", fin: "none", deco: "stripe", deck: 0, trim: 5, glow: 0, hum: "hum", pitch: 0 };
+
+// identical algorithm + draw order to boardFromSeed in src/vehicles/board/config.ts
+const boardFromSeed = (seed) => {
+  const roll = lcg(hashSeed(seed));
+  const deck = Math.floor(roll() * BOARD_DECK_COUNT) % BOARD_DECK_COUNT;
+  let trim = Math.floor(roll() * BOARD_DECK_COUNT) % BOARD_DECK_COUNT;
+  if (trim === deck) trim = (trim + 3) % BOARD_DECK_COUNT;
+  return {
+    deck,
+    trim,
+    glow: Math.floor(roll() * BOARD_GLOW_COUNT) % BOARD_GLOW_COUNT,
+    shape: pick(BOARD_SHAPES, roll),
+    fin: pick(BOARD_FINS, roll),
+    deco: pick(BOARD_DECOS, roll),
+    hum: pick(BOARD_HUMS, roll),
+    pitch: Math.floor(roll() * BOARD_PITCH_COUNT) % BOARD_PITCH_COUNT
+  };
+};
+
+const boardKey = (b) => `${b.shape}|${b.fin}|${b.deco}|${b.deck}|${b.trim}|${b.glow}|${b.hum}|${b.pitch}`;
+
+const isDefaultBoard = (b) => boardKey(b) === boardKey(DEFAULT_BOARD);
+
+const sanitizeBoard = (raw) => {
+  if (!raw || typeof raw !== "object") return null;
+  return {
+    shape: oneOf(raw.shape, BOARD_SHAPES, DEFAULT_BOARD.shape),
+    fin: oneOf(raw.fin, BOARD_FINS, DEFAULT_BOARD.fin),
+    deco: oneOf(raw.deco, BOARD_DECOS, DEFAULT_BOARD.deco),
+    deck: intRange(raw.deck, BOARD_DECK_COUNT, DEFAULT_BOARD.deck),
+    trim: intRange(raw.trim, BOARD_DECK_COUNT, DEFAULT_BOARD.trim),
+    glow: intRange(raw.glow, BOARD_GLOW_COUNT, DEFAULT_BOARD.glow),
+    hum: oneOf(raw.hum, BOARD_HUMS, DEFAULT_BOARD.hum),
+    pitch: intRange(raw.pitch, BOARD_PITCH_COUNT, DEFAULT_BOARD.pitch)
+  };
+};
+
 const send = (ws, obj) => {
   if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj));
 };
@@ -313,6 +361,7 @@ wss.on("connection", (ws) => {
     name: makeFunName(),
     hue: Math.round((id * 137.508) % 360),
     avatar: avatarFromSeed(id),
+    board: boardFromSeed(id),
     alive: true,
     budget: MSG_BUDGET_PER_SEC,
     lastState: Date.now(),
@@ -334,6 +383,8 @@ wss.on("connection", (ws) => {
       p.name = sanitizeName(msg.name);
       const custom = sanitizeAvatar(msg.avatar);
       if (custom && !isDefaultAvatar(custom)) p.avatar = custom;
+      const customBoard = sanitizeBoard(msg.board);
+      if (customBoard && !isDefaultBoard(customBoard)) p.board = customBoard;
       send(ws, {
         t: "welcome",
         id,
@@ -341,9 +392,9 @@ wss.on("connection", (ws) => {
         name: p.name,
         players: [...players.values()]
           .filter((o) => o.id !== id)
-          .map((o) => ({ id: o.id, name: o.name, hue: o.hue, avatar: o.avatar }))
+          .map((o) => ({ id: o.id, name: o.name, hue: o.hue, avatar: o.avatar, board: o.board }))
       });
-      broadcast({ t: "join", id, name: p.name, hue: p.hue, avatar: p.avatar }, id);
+      broadcast({ t: "join", id, name: p.name, hue: p.hue, avatar: p.avatar, board: p.board }, id);
       console.log(`[sf-server] join #${id} "${p.name}" (${players.size} online)`);
     } else if (msg.t === "s" && Array.isArray(msg.d) && (msg.d.length === 9 || msg.d.length === 10)) {
       // [modeIndex, x, y, z, qx, qy, qz, qw, speed, ride?] — validate finite numbers
@@ -360,6 +411,11 @@ wss.on("connection", (ws) => {
       const custom = sanitizeAvatar(msg.avatar);
       p.avatar = custom && !isDefaultAvatar(custom) ? custom : avatarFromSeed(id);
       broadcast({ t: "avatar", id, avatar: p.avatar }, id);
+    } else if (msg.t === "board") {
+      // same guard as avatars: default/garbage falls back to the per-id seed
+      const custom = sanitizeBoard(msg.board);
+      p.board = custom && !isDefaultBoard(custom) ? custom : boardFromSeed(id);
+      broadcast({ t: "board", id, board: p.board }, id);
     } else if (msg.t === "paint" && Array.isArray(msg.d) && msg.d.length === 7) {
       // paintball shot: [x,y,z,vx,vy,vz,rgb] — pure relay, every client
       // simulates the flight and splats locally

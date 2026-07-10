@@ -23,7 +23,7 @@ import { buildCarMesh, CarController } from "../vehicles/car";
 import { buildPlaneMesh, collectPlaneAnim, FlyController, type PlaneAnim } from "../vehicles/plane";
 import { buildBoatMesh, buildSpeedboatMesh, BoatController, BOAT_TUNING, SPEEDBOAT_TUNING, type BoatSailRig } from "../vehicles/boat";
 import { buildDroneMesh, DroneController } from "../vehicles/drone";
-import { buildBoardMesh, BoardController, BOARD_TUNING } from "../vehicles/board";
+import { buildBoardMesh, animateBoard, BoardController, BOARD_TUNING, type BoardConfig } from "../vehicles/board";
 import { buildBirdMesh, BirdController } from "../vehicles/bird";
 
 const V = {
@@ -128,7 +128,8 @@ export class Player {
     map: WorldMap,
     scene: THREE.Scene,
     spawn: { x: number; z: number; heading: number },
-    avatar: AvatarTraits = avatarFromSeed("local-default")
+    avatar: AvatarTraits = avatarFromSeed("local-default"),
+    board?: BoardConfig
   ) {
     this.physics = physics;
     this.map = map;
@@ -144,7 +145,7 @@ export class Player {
       boat: buildBoatMesh(),
       speedboat: buildSpeedboatMesh(),
       drone: buildDroneMesh(),
-      board: buildBoardMesh(),
+      board: buildBoardMesh(board),
       bird: buildBirdMesh()
     };
     this.#modes = {
@@ -447,6 +448,35 @@ export class Player {
   }
 
   /**
+   * Rebuild the hoverboard from a customizer config, in place: the new mesh
+   * adopts the old one's transform (no pop while riding) and the rider rig —
+   * whose stance transform lives on its own group — moves across untouched.
+   */
+  setBoardConfig(config: BoardConfig) {
+    const old = this.meshes.board;
+    const next = buildBoardMesh(config);
+    next.position.copy(old.position);
+    next.quaternion.copy(old.quaternion);
+    // the rider rig is shared with the broom drone style — only re-seat it if
+    // the broom doesn't currently own it, and restore the surf stance (the
+    // broom writes its own offsets onto the same group)
+    if (!this.#broomRigAttached) {
+      this.#riderRig.group.removeFromParent();
+      this.#riderRig.group.rotation.order = "ZYX";
+      this.#riderRig.group.rotation.set(0, 1.05, 0);
+      this.#riderRig.group.position.set(0, 0.93, 0);
+      next.add(this.#riderRig.group);
+    }
+    setEmbodimentVisible(old, false);
+    this.#scene.remove(old);
+    (old.userData.dispose as (() => void) | undefined)?.();
+    this.#scene.add(next);
+    this.meshes.board = next;
+    setEmbodimentVisible(next, this.mode === "board");
+    if (this.mode === "board") this.#lightPool.claim(next);
+  }
+
+  /**
    * Put the driver rig (and wheel, if the vehicle has one) into a drive mesh
    * at its cockpit anchor. Closed cabs (`hide`) park the rig invisible so it
    * doesn't poke through the roof.
@@ -530,6 +560,7 @@ export class Player {
       const crouch = Math.min(1, this.speed / BOARD_TUNING.values.boostMaxSpeed + Math.abs(board.lean) * 0.6);
       poseRide(this.#riderRig, board.lean, crouch, !board.grounded, this.#animT);
       this.#riderRig.group.rotation.z = board.lean * 0.4; // whole-body dip on top of the deck roll
+      animateBoard(this.meshes.board, dt, this.#animT, this.speed);
     } else if (this.mode === "drone" && this.#broomRigAttached) {
       const lean = THREE.MathUtils.clamp(this.velocity.x * 0.04, -0.5, 0.5);
       const crouch = Math.min(1, this.speed / 28);

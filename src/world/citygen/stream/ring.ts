@@ -178,6 +178,8 @@ export interface CityGenRing {
   debugBuildings(): { cx: number; cz: number; base: number; top: number; interior: boolean; bb: { minx: number; maxx: number; minz: number; maxz: number } }[];
   /** DEBUG: live walk-in wall + interior collider OBBs for the "/" x-ray overlay. */
   debugColliders(walls: ColliderBox[], interiors: ColliderBox[]): void;
+  /** DEBUG/probe: streaming state of every entry within r metres of (x,z). */
+  debugEntriesNear(x: number, z: number, r: number): { i: number; d: number; state: string; bodies: number; pendingBuild: boolean; insideBB: boolean }[];
   /** DEBUG/probe: world-space door frames for every faded-in detail building. */
   debugDoors(): CityGenDoorProbe[];
 }
@@ -256,25 +258,46 @@ export async function createCityGenRing(
   // is the exact poly — so in "lod" the car stops short of the visible wall on an
   // invisible box. "coll" removes that gap without paying for the detail mesh.
   //
-  // Body creation goes through the host scheduler's "physics" lane: the scan can
-  // admit 20 buildings at once, and 20×~7 boxes ×2 worlds of WASM createBox in
-  // one frame was a measured hitch. One queued job per building (~14-24 creates,
-  // well under a lane budget slice) keeps the swap invisible. The job re-checks
-  // state on entry — the building may have left the ring while queued.
-  const createSolidWalls = (e: Entry) => {
-    schedule("physics", () => {
-      if ((e.state !== "coll" && e.state !== "detail") || e.bodies.length) return; // stale/duplicate
-      const { boxes } = buildingColliders(e as BuildingSpec, false); // SOLID (no door yet)
-      for (const c of boxes) e.bodies.push(addBody(c));
-      e.wallBoxes = boxes;
-    });
+  // The swap MUST be atomic per building: suppressBuilding() kills the baked
+  // collider the moment it runs, so it may only run in the same job (= same
+  // frame) that creates the exact walls. The regression this guards against:
+  // suppress at enqueue + walls queued frames later left a no-collider hole —
+  // a car nosed into the lot edge, then the walls materialized AROUND it and
+  // wedged it inside static boxes (repro: 8 stuck events/min in the Castro).
+  //
+  // Body creation still goes through the host scheduler's "physics" lane: the
+  // scan can admit 20 buildings at once, and 20×~7 boxes ×2 worlds of WASM
+  // createBox in one frame was a measured hitch. One queued job per building
+  // (~14-24 creates, well under a lane budget slice) keeps the swap invisible.
+  // The job re-checks state on entry — the building may have left the ring
+  // while queued (drop/unload flip state back to "lod" → job is a no-op).
+  const buildSolidWallsNow = (e: Entry) => {
+    const { boxes } = buildingColliders(e as BuildingSpec, false); // SOLID (no door yet)
+    for (const c of boxes) e.bodies.push(addBody(c));
+    e.wallBoxes = boxes;
   };
+  // Player XZ inside the footprint AABB (+margin) at building height → walls must
+  // NEVER materialize this frame (they'd spawn around/inside the player = wedge);
+  // the coll job defers with "again" until the player clears the lot.
+  const lastPlayer = new THREE.Vector3();
+  const playerInsideBB = (e: Entry, margin: number) =>
+    lastPlayer.x > e.bb.minx - margin && lastPlayer.x < e.bb.maxx + margin &&
+    lastPlayer.z > e.bb.minz - margin && lastPlayer.z < e.bb.maxz + margin &&
+    lastPlayer.y > e.base - 5 && lastPlayer.y < e.top + 5;
   const ensureExactCollider = (e: Entry) => {
     if (e.state !== "lod") return;
-    ctx.tiles.suppressBuilding(e.key, e.i); // baked mesh + loose collider off (R=0)
+    // "coll" now = in-flight marker; the baked collider stays LIVE until the job
+    // runs. dropExactCollider on a still-queued entry stays safe: clearBodies is
+    // a no-op on empty, and unsuppressing a never-suppressed building is just an
+    // idempotent alive-texel write + onBuildingAlive(true) re-fire (tiles.ts).
     e.state = "coll";
-    // buildingColliders directly (not generate): colliders only, no throwaway mesh
-    createSolidWalls(e);
+    schedule("physics", () => {
+      if (e.state !== "coll" || e.bodies.length) return; // stale/duplicate (dropped, unloaded, or upgraded to detail)
+      if (playerInsideBB(e, 3.5)) return "again";        // anti-wedge: retry next frame
+      // ATOMIC: baked collider off (R=0) + exact walls on, in this same frame
+      ctx.tiles.suppressBuilding(e.key, e.i);
+      buildSolidWallsNow(e);
+    });
   };
   const dropExactCollider = (e: Entry) => {
     if (e.state !== "coll") return;
@@ -301,11 +324,28 @@ export async function createCityGenRing(
     // still transparent, and the chunk prism behind it is solid, so an open gap now
     // would be a walk-through in front of a solid-looking face. Keep SOLID walls up;
     // openDoorway() swaps in the door-gapped walls once the mesh has fully faded in.
-    // Reuse the "coll" solid walls if we came from there (or the queued job that's
-    // about to create them); build them from "lod".
-    const hadColl = e.state === "coll";
+    // Reuse the "coll" solid walls if we came from there; otherwise (from "lod", or
+    // "coll" whose queued job hasn't run) build them SYNCHRONOUSLY — the suppress
+    // above just killed the baked collider, so the walls should land this same
+    // frame (no collider hole). Detail builds are capped at 1-3 per scan, so this
+    // inline burst is ~30-60 createBox worst case — sub-ms, unlike the 20-per-scan
+    // coll tier which stays on the physics lane.
+    // EXCEPT anti-wedge: if the player is inside the footprint AABB right now
+    // (e.g. a car driving across the lot while the worker build landed), walls
+    // materializing this frame would spawn AROUND the car and wedge it — the same
+    // failure the coll job's playerInsideBB guard prevents. Defer to a "physics"
+    // job that retries ("again") until the player clears the lot. The baked
+    // collider is already suppressed above, so this leaves a temporary collider
+    // hole while the player is inside — acceptable, strictly better than wedging.
     e.state = "detail";
-    if (!hadColl && !e.bodies.length) createSolidWalls(e);
+    if (!e.bodies.length) {
+      if (!playerInsideBB(e, 3.5)) buildSolidWallsNow(e);
+      else schedule("physics", () => {
+        if (e.state !== "detail" || e.bodies.length) return; // stale/duplicate (dropped, unloaded, or walls landed elsewhere)
+        if (playerInsideBB(e, 3.5)) return "again";          // anti-wedge: retry next frame
+        buildSolidWallsNow(e);
+      });
+    }
     e.doorPending = true;
   };
   let buildWorker: Worker | null = null;
@@ -323,6 +363,11 @@ export async function createCityGenRing(
       schedule("build", () => {
         e.pendingBuild = false;
         if (e.detail || e.state === "detail" || !loaded.has(e.key)) return; // superseded
+        // stale reply: the player has driven well past this building while the
+        // worker chewed — materializing it now would just fade in and back out
+        const sdx = e.cx - lastPlayer.x, sdz = e.cz - lastPlayer.z;
+        const staleR = CT.detailRadius + 40;
+        if (sdx * sdx + sdz * sdz > staleR * staleR) return;
         finishDetail(e, assembleBuilding(e as BuildingSpec, meshes, materials));
       });
     };
@@ -520,6 +565,7 @@ export async function createCityGenRing(
   return {
     count: total,
     update(playerPos, dt) {
+      lastPlayer.copy(playerPos); // read by queued coll jobs (anti-wedge) + stale-build check
       if (!warmupStarted) startWarmup(playerPos); // one-shot pipeline warmup rig
       // per-frame: interior gate + detail crossfade + chunk merging
       insideBuilding = false;
@@ -650,6 +696,20 @@ export async function createCityGenRing(
     debugBuildings() {
       const out: { cx: number; cz: number; base: number; top: number; interior: boolean; bb: { minx: number; maxx: number; minz: number; maxz: number } }[] = [];
       for (const cell of loaded.values()) for (const e of cell.entries) if (e.detail) out.push({ cx: e.cx, cz: e.cz, base: e.base, top: e.top, interior: !!e.interior, bb: { ...e.bb } });
+      return out;
+    },
+    debugEntriesNear(x, z, r) {
+      const out: { i: number; d: number; state: string; bodies: number; pendingBuild: boolean; insideBB: boolean }[] = [];
+      const r2 = r * r;
+      for (const cell of loaded.values()) for (const e of cell.entries) {
+        const dx = x - e.cx, dz = z - e.cz;
+        const d2 = dx * dx + dz * dz;
+        if (d2 > r2) continue;
+        out.push({ i: e.i, d: Math.round(Math.sqrt(d2) * 10) / 10, state: e.state, bodies: e.bodies.length,
+          pendingBuild: e.pendingBuild,
+          insideBB: x > e.bb.minx - 1 && x < e.bb.maxx + 1 && z > e.bb.minz - 1 && z < e.bb.maxz + 1 });
+      }
+      out.sort((a, b) => a.d - b.d);
       return out;
     },
     debugColliders(walls, interiors) {

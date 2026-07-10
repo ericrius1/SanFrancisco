@@ -40,14 +40,17 @@ export class CarController implements ModeController {
   }
 
   /**
-   * Ground the car rides on. Unlike effectiveGround, a bridge deck only counts
-   * when the car is actually up at deck level — driving *under* an approach used
-   * to snap the spring target to the roadway overhead and launch the car.
+   * Ground the car rides on — map.rideGround: the RENDERED road surface
+   * (groundTop, same source the physics carpet seats on) with the bridge deck
+   * counted only when the car is already up at deck level (driving *under* an
+   * approach must not snap the spring target to the roadway overhead). The car
+   * previously sampled the raw heightfield here, which sits up to ~0.9 m BELOW
+   * the draped road on graded streets — the down-spring pressed the nose into
+   * the climbing carpet and the solver ate all forward velocity (the Castro
+   * hill stuck-car bug).
    */
   #ground(ctx: PlayerCtx, x: number, z: number): number {
-    const terrain = ctx.map.groundHeight(x, z);
-    const deck = ctx.map.bridgeDeck(x, z);
-    return deck > -Infinity && ctx.position.y > deck - 3 ? Math.max(terrain, deck) : terrain;
+    return ctx.map.rideGround(x, z, ctx.position.y);
   }
 
   update(ctx: PlayerCtx, dt: number, input: Input, frame: ModeFrame) {
@@ -134,7 +137,10 @@ export class CarController implements ModeController {
         // …then a stuck-guard: pinned against a terrain lip while still asking
         // for real speed → add lift to hop over it. Gated on the ground actually
         // rising, so it bulldozes hills but never crawls up a building wall.
-        if (throttle > 0 && rise > 0.3 && Math.abs(fwdSpeed) < 3 && targetSpeed > 4) {
+        // Threshold is grindSpeed-aware: when blocked, targetSpeed floors at
+        // td.grindSpeed (3.5), so the old `targetSpeed > 4` could never be true
+        // and this guard was dead code — every lip-block was permanent.
+        if (throttle > 0 && rise > 0.3 && Math.abs(fwdSpeed) < 3 && targetSpeed >= td.grindSpeed - 0.01) {
           vy = Math.max(vy, rise * 5 + 4);
         }
       }

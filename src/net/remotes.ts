@@ -5,7 +5,7 @@ import { buildCarMesh } from "../vehicles/car";
 import { buildPlaneMesh, collectPlaneAnim, type PlaneAnim } from "../vehicles/plane";
 import { buildBoatMesh, buildSpeedboatMesh } from "../vehicles/boat";
 import { buildDroneMesh } from "../vehicles/drone";
-import { buildBoardMesh } from "../vehicles/board";
+import { buildBoardMesh, animateBoard, boardFromSeed, boardKey, normalizeBoardConfig, type BoardConfig } from "../vehicles/board";
 import { buildBirdMesh } from "../vehicles/bird";
 import type { Cockpit, PlayerMode } from "../player/types";
 import type { NetSample, RemoteInfo } from "./net";
@@ -97,6 +97,8 @@ type Avatar = {
   ride: number; // driver id while riding shotgun (0 = not riding)
   avatar: AvatarTraits;
   avatarKey: string;
+  board: BoardConfig;
+  boardKey: string;
 };
 
 const TMP = {
@@ -117,6 +119,10 @@ function avatarForInfo(info: RemoteInfo): AvatarTraits {
   return info.avatar ?? avatarFromSeed(info.id);
 }
 
+function boardForInfo(info: RemoteInfo): BoardConfig {
+  return info.board ? normalizeBoardConfig(info.board) : boardFromSeed(info.id);
+}
+
 export class RemotePlayers {
   readonly avatars = new Map<number, Avatar>();
 
@@ -133,13 +139,14 @@ export class RemotePlayers {
     this.#scene = scene;
     // prototypes share the exact material instances the clones will use;
     // built up front so nothing compiles at first join
+    // boards are NOT prototyped: each remote builds its own from their config
+    // (same material classes as the local player's board, so nothing compiles)
     this.#protos = {
       drive: buildCarMesh(),
       plane: buildPlaneMesh(),
       boat: buildBoatMesh(),
       speedboat: buildSpeedboatMesh(),
-      drone: buildDroneMesh(),
-      board: buildBoardMesh()
+      drone: buildDroneMesh()
     };
     const c = this.#protos.drive!.userData.cockpit as Cockpit | undefined;
     if (c) this.#passengerSeat.set(-c.seat[0], c.seat[1], c.seat[2]);
@@ -234,6 +241,7 @@ export class RemotePlayers {
     root.add(tag);
     this.#scene.add(root);
     const av = avatarForInfo(info);
+    const bd = boardForInfo(info);
     this.avatars.set(info.id, {
       info,
       root,
@@ -248,7 +256,9 @@ export class RemotePlayers {
       vy: 0,
       ride: 0,
       avatar: av,
-      avatarKey: avatarKey(av)
+      avatarKey: avatarKey(av),
+      board: bd,
+      boardKey: boardKey(bd)
     });
   }
 
@@ -280,6 +290,28 @@ export class RemotePlayers {
     }
   }
 
+  /** They recustomized their hoverboard: tear down the old build, and if
+   * they're riding it right now, re-embody so the swap is instant. */
+  updateBoard(info: RemoteInfo) {
+    const a = this.avatars.get(info.id);
+    if (!a) return;
+    a.info = info;
+    const next = boardForInfo(info);
+    const key = boardKey(next);
+    if (key === a.boardKey) return;
+    a.board = next;
+    a.boardKey = key;
+    const old = a.bodies.board;
+    if (!old) return;
+    a.root.remove(old);
+    (old.userData.dispose as (() => void) | undefined)?.();
+    delete a.bodies.board;
+    if (a.mode === "board") {
+      a.mode = null; // force #embody to rebuild from the new config
+      this.#embody(a, "board");
+    }
+  }
+
   remove(id: number) {
     const a = this.avatars.get(id);
     if (!a) return;
@@ -287,7 +319,9 @@ export class RemotePlayers {
     this.#scene.remove(a.root);
     a.tag.material.map?.dispose();
     a.tag.material.dispose();
-    // meshes are clones sharing prototype materials/geometry — nothing else to dispose
+    // vehicle meshes are clones sharing prototype materials/geometry — only the
+    // board is a per-remote build that owns its resources
+    (a.bodies.board?.userData.dispose as (() => void) | undefined)?.();
   }
 
   sample(id: number, s: NetSample) {
@@ -332,16 +366,21 @@ export class RemotePlayers {
       // loads its own copy (served from HTTP cache after the first)
       return buildBirdMesh();
     }
-    const proto = this.#protos[mode]!;
-    const g = proto.clone(true);
     if (mode === "board") {
+      // built fresh from their config (not cloned) — clone() JSON-snapshots
+      // userData, which would sever the boardAnim/dispose contracts
+      const g = buildBoardMesh(a.board);
       const rig = buildRig(a.avatar);
       rig.group.rotation.order = "ZYX";
       rig.group.rotation.y = 1.05; // surf stance across the deck (player.ts)
       rig.group.position.y = 0.93;
       g.add(rig.group);
       g.userData.remoteRig = rig;
-    } else if (mode === "drive" || mode === "plane" || mode === "speedboat") {
+      return g;
+    }
+    const proto = this.#protos[mode]!;
+    const g = proto.clone(true);
+    if (mode === "drive" || mode === "plane" || mode === "speedboat") {
       const c = proto.userData.cockpit as Cockpit | undefined;
       if (c && !c.hide) {
         const rig = buildRig(a.avatar);
@@ -433,6 +472,8 @@ export class RemotePlayers {
     } else if (a.mode === "board") {
       const crouch = Math.min(1, a.speed / 34);
       poseRide(rig, 0, crouch, Math.abs(a.vy) > 4, a.animT);
+      const body = a.bodies.board;
+      if (body) animateBoard(body, dt, a.animT, a.speed);
     } else if (a.mode === "drive") {
       poseDrive(rig, 0, a.animT, false);
     } else if (a.mode === "plane") {

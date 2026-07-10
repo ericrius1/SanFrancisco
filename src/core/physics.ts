@@ -351,6 +351,32 @@ export class Physics {
     }
   }
 
+  /** DEBUG: every ACTIVE ground-carpet slab (8m cells + 4m/2m refinement pool)
+   *  within `r` of (x, z) — centre/half-extents/quat straight from the stepped
+   *  world. Parked slabs (deep underground) are skipped. Probe-only; no gameplay
+   *  caller, no behaviour change. */
+  debugCarpet(
+    out: { x: number; y: number; z: number; hx: number; hy: number; hz: number; quat: [number, number, number, number]; kind: "cell" | "sub" | "sub2" }[],
+    x: number,
+    z: number,
+    r: number
+  ): void {
+    out.length = 0;
+    const t = { position: [0, 0, 0] as [number, number, number], rotation: [0, 0, 0, 1] as [number, number, number, number] };
+    const scan = (handles: number[], count: number, he: number, kind: "cell" | "sub" | "sub2") => {
+      for (let i = 0; i < count; i++) {
+        this.world.getBodyTransform(handles[i], t);
+        const [px, py, pz] = t.position;
+        if (py < -100) continue; // parked pool slab
+        if (Math.hypot(px - x, pz - z) > r) continue;
+        out.push({ x: px, y: py, z: pz, hx: he, hy: 1.5, hz: he, quat: [t.rotation[0], t.rotation[1], t.rotation[2], t.rotation[3]], kind });
+      }
+    };
+    scan(this.#carpet, this.#carpet.length, CONFIG.carpetCell * 0.62, "cell");
+    scan(this.#carpetSub, this.#carpetSubUsed, CONFIG.carpetCell * 0.31, "sub");
+    scan(this.#carpetSub2, this.#carpetSub2Used, CONFIG.carpetCell * 0.155, "sub2");
+  }
+
   /** A building box by identity, from the visual tiles first then the index. */
   #findCollider(key: string, i: number, s: number): BuildingCollider | undefined {
     const visual = this.#tileColliders.get(key);

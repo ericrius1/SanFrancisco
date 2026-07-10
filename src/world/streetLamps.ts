@@ -36,6 +36,7 @@ const LATERAL_PAD = 0.8; // extra set-back past the paved edge (m)
 const CAP = 1024; // per-mesh instance capacity; nearest lamps win the slots
 const REFRESH_MOVE = 30; // re-scan residency only after the player moves this far
 const RESIDENT_R = 500; // residency scan radius around the player
+const FILL_PER_FRAME = 128; // amortized residency fill: lamps placed per frame (~8 frames per refresh)
 const RES_CELL = 64; // residency spatial-hash cell (m)
 const DEDUP_CELL = 16; // build-time dedup spatial-hash cell (m)
 const DEDUP_R = 12; // reject a candidate within this of an existing lamp (m)
@@ -98,7 +99,17 @@ export class StreetLamps {
   #pos = new THREE.Vector3();
   #scl = new THREE.Vector3(1, 1, 1);
   #up = new THREE.Vector3(0, 0, 1); // CircleGeometry faces local +Z
-  #cand: { i: number; d2: number }[] = [];
+  // residency-refresh scratch (reused — the old per-refresh {i,d2} object pushes
+  // were measurable GC churn at driving speed) + the amortized fill state: the
+  // ~CAP×3 terrain samples of a refresh used to land in ONE frame every ~30 m
+  // of travel — a reliable ~1 s-cadence driving hitch. Now the gather+sort runs
+  // on the trigger frame (cheap) and placements drain ≤FILL_PER_FRAME per
+  // update(); the instance buffers upload once, at fill completion.
+  #candI: number[] = [];
+  #candD2: number[] = [];
+  #order: number[] = [];
+  #fillCursor = -1; // -1 = idle; else next #order rank to place
+  #fillN = 0;
 
   constructor(scene: THREE.Scene, map: WorldMap, roads: RoadGraph) {
     this.#map = map;
@@ -262,6 +273,8 @@ export class StreetLamps {
     this.#discs.visible = STREET_LAMPS_INTENSITY.value > 0.01;
     if (this.#count === 0) return;
 
+    this.#drainFill(); // an in-progress residency fill continues regardless of movement
+
     const dx = playerPos.x - this.#lastX;
     const dz = playerPos.z - this.#lastZ;
     if (dx * dx + dz * dz <= REFRESH_MOVE * REFRESH_MOVE) return;
@@ -269,9 +282,12 @@ export class StreetLamps {
     this.#lastZ = playerPos.z;
 
     // gather residency-cell lamps within RESIDENT_R, keep the nearest CAP so the
-    // slots always fill inner-out (nearest lamps never lose to farther ones)
-    const cand = this.#cand;
-    cand.length = 0;
+    // slots always fill inner-out (nearest lamps never lose to farther ones).
+    // Parallel number arrays + an argsorted rank list — no per-candidate objects.
+    const candI = this.#candI;
+    const candD2 = this.#candD2;
+    candI.length = 0;
+    candD2.length = 0;
     const r2 = RESIDENT_R * RESIDENT_R;
     const pcx = Math.floor(playerPos.x / RES_CELL);
     const pcz = Math.floor(playerPos.z / RES_CELL);
@@ -284,16 +300,32 @@ export class StreetLamps {
           const lx = this.#lamps[idx * 4] - playerPos.x;
           const lz = this.#lamps[idx * 4 + 1] - playerPos.z;
           const d2 = lx * lx + lz * lz;
-          if (d2 <= r2) cand.push({ i: idx, d2 });
+          if (d2 <= r2) {
+            candI.push(idx);
+            candD2.push(d2);
+          }
         }
       }
     }
-    cand.sort((a, b) => a.d2 - b.d2);
-    const n = Math.min(CAP, cand.length);
+    const order = this.#order;
+    order.length = candI.length;
+    for (let i = 0; i < order.length; i++) order[i] = i;
+    order.sort((a, b) => candD2[a] - candD2[b]);
+    // arm the amortized fill: placements (2 ground + 1 normal sample each) drain
+    // over the next frames; the visible set holds the previous lamps meanwhile
+    this.#fillN = Math.min(CAP, candI.length);
+    this.#fillCursor = 0;
+    this.#drainFill(); // first slice lands this frame
+  }
 
+  // Place up to FILL_PER_FRAME lamps of the armed refresh; on the last slice,
+  // publish the new counts + upload the instance buffers ONCE.
+  #drainFill(): void {
+    if (this.#fillCursor < 0) return;
     const map = this.#map;
-    for (let k = 0; k < n; k++) {
-      const idx = cand[k].i;
+    const end = Math.min(this.#fillN, this.#fillCursor + FILL_PER_FRAME);
+    for (let k = this.#fillCursor; k < end; k++) {
+      const idx = this.#candI[this.#order[k]];
       const x = this.#lamps[idx * 4];
       const z = this.#lamps[idx * 4 + 1];
       const tx = this.#lamps[idx * 4 + 2];
@@ -320,10 +352,13 @@ export class StreetLamps {
       this.#mat.compose(this.#pos.set(gx, gy, gz), this.#quat, this.#scl);
       this.#discs.setMatrixAt(k, this.#mat);
     }
+    this.#fillCursor = end;
+    if (end < this.#fillN) return; // more slices next frames — no upload yet
 
-    this.#posts.count = n;
-    this.#bulbs.count = n;
-    this.#discs.count = n;
+    this.#fillCursor = -1;
+    this.#posts.count = this.#fillN;
+    this.#bulbs.count = this.#fillN;
+    this.#discs.count = this.#fillN;
     this.#posts.instanceMatrix.needsUpdate = true;
     this.#bulbs.instanceMatrix.needsUpdate = true;
     this.#discs.instanceMatrix.needsUpdate = true;

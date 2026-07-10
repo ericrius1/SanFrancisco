@@ -1,6 +1,7 @@
 import type * as THREE from "three/webgpu";
 import type { PlayerMode } from "../player/types";
 import { avatarFromSeed, isDefaultAvatar, normalizeAvatarTraits, type AvatarTraits } from "../player/avatar";
+import { boardFromSeed, isDefaultBoard, normalizeBoardConfig, type BoardConfig } from "../vehicles/board/config";
 
 /**
  * Client side of the multiplayer presence relay (server/server.mjs).
@@ -12,9 +13,9 @@ import { avatarFromSeed, isDefaultAvatar, normalizeAvatarTraits, type AvatarTrai
  * hosting (static files on a CDN, relay elsewhere).
  *
  * Protocol (JSON, one room):
- *   → {t:"hi", name, avatar}            on open
- *   ← {t:"welcome", id, hue, name, players:[{id,name,hue,avatar}]}
- *   ← {t:"join"|{t:"leave"}|{t:"name"}|{t:"avatar"} roster changes
+ *   → {t:"hi", name, avatar, board}      on open
+ *   ← {t:"welcome", id, hue, name, players:[{id,name,hue,avatar,board}]}
+ *   ← {t:"join"|{t:"leave"}|{t:"name"}|{t:"avatar"}|{t:"board"} roster changes
  *   → {t:"s", d:[mode,x,y,z,qx,qy,qz,qw,speed,ride?]}   ~12 Hz while moving
  *   ← {t:"snap", ts, ps:[[id,...d]]}    batched world snapshot, ~12 Hz
  *   → {t:"rtc", to, payload}            voice signaling to one peer
@@ -34,7 +35,7 @@ import { avatarFromSeed, isDefaultAvatar, normalizeAvatarTraits, type AvatarTrai
 /** Wire order for modes — index into this array is what goes over the socket. */
 export const NET_MODES: PlayerMode[] = ["walk", "drive", "plane", "boat", "drone", "board", "bird"];
 
-export type RemoteInfo = { id: number; name: string; hue: number; avatar?: AvatarTraits };
+export type RemoteInfo = { id: number; name: string; hue: number; avatar?: AvatarTraits; board?: BoardConfig };
 
 /** One interpolation sample for a remote player, timestamped in local ms. */
 export type NetSample = {
@@ -159,6 +160,16 @@ function rosterAvatar(id: number, raw: unknown): AvatarTraits {
   return avatarFromSeed(id);
 }
 
+// same guard as avatars: absent/default board (old relay, uncustomized player)
+// falls back to the per-id seed so everyone still rides something distinct
+function rosterBoard(id: number, raw: unknown): BoardConfig {
+  if (raw) {
+    const config = normalizeBoardConfig(raw);
+    if (!isDefaultBoard(config)) return config;
+  }
+  return boardFromSeed(id);
+}
+
 export class Net {
   /** My server-assigned identity (0 until welcomed). */
   selfId = 0;
@@ -190,13 +201,15 @@ export class Net {
   #lastSent = "";
   #lastSentAt = 0;
   #avatar: AvatarTraits | null;
+  #board: BoardConfig | null;
   // serverTs → local-clock mapping (EWMA of arrival offset; interp buffer
   // absorbs the residual jitter)
   #clockOffset: number | null = null;
 
-  constructor(name = pickName(), avatar?: AvatarTraits) {
+  constructor(name = pickName(), avatar?: AvatarTraits, board?: BoardConfig) {
     this.name = name;
     this.#avatar = avatar ? normalizeAvatarTraits(avatar) : null;
+    this.#board = board ? normalizeBoardConfig(board) : null;
     const envUrl = import.meta.env.VITE_WS_URL as string | undefined;
     const proto = location.protocol === "https:" ? "wss" : "ws";
     this.#url = envUrl || `${proto}://${location.host}/ws`;
@@ -216,7 +229,7 @@ export class Net {
     this.#ws = ws;
     ws.onopen = () => {
       this.#retryMs = 1000;
-      ws.send(JSON.stringify({ t: "hi", name: this.name, avatar: this.#avatar }));
+      ws.send(JSON.stringify({ t: "hi", name: this.name, avatar: this.#avatar, board: this.#board }));
     };
     ws.onmessage = (ev) => this.#handle(String(ev.data));
     ws.onclose = () => {
@@ -260,7 +273,7 @@ export class Net {
         this.selfHue = msg.hue as number;
         this.name = msg.name as string; // server-sanitized
         for (const p of msg.players as RemoteInfo[]) {
-          this.roster.set(p.id, { ...p, avatar: rosterAvatar(p.id, p.avatar) });
+          this.roster.set(p.id, { ...p, avatar: rosterAvatar(p.id, p.avatar), board: rosterBoard(p.id, p.board) });
         }
         this.#setStatus("online");
         this.onRoster();
@@ -272,7 +285,8 @@ export class Net {
           id: msg.id as number,
           name: msg.name as string,
           hue: msg.hue as number,
-          avatar: rosterAvatar(msg.id as number, msg.avatar)
+          avatar: rosterAvatar(msg.id as number, msg.avatar),
+          board: rosterBoard(msg.id as number, msg.board)
         });
         this.onRoster();
         break;
@@ -295,6 +309,14 @@ export class Net {
         const p = this.roster.get(msg.id as number);
         if (p) {
           p.avatar = normalizeAvatarTraits(msg.avatar);
+          this.onRoster();
+        }
+        break;
+      }
+      case "board": {
+        const p = this.roster.get(msg.id as number);
+        if (p) {
+          p.board = rosterBoard(p.id, msg.board);
           this.onRoster();
         }
         break;
@@ -400,6 +422,11 @@ export class Net {
   setAvatar(avatar: AvatarTraits) {
     this.#avatar = normalizeAvatarTraits(avatar);
     if (this.#ws?.readyState === WebSocket.OPEN) this.#ws.send(JSON.stringify({ t: "avatar", avatar: this.#avatar }));
+  }
+
+  setBoard(board: BoardConfig) {
+    this.#board = normalizeBoardConfig(board);
+    if (this.#ws?.readyState === WebSocket.OPEN) this.#ws.send(JSON.stringify({ t: "board", board: this.#board }));
   }
 
   /**

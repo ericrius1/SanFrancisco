@@ -37,7 +37,7 @@ import {
 import { groundSway, WIND_DIR } from "../groundcover/sway";
 import { DISPLACERS, MAX_DISPLACERS } from "../groundcover/displacers";
 import { hash2, smoothstep, worleyClump } from "../groundcover/scatter";
-import { flowerDriftAt, grassyGround, wildRegionAt } from "./layout";
+import { flowerDriftAt, grassyGround, nearAnyWildRegion, wildRegionAt } from "./layout";
 import type { GardenTerrain } from "../garden/layout";
 import { FLOWER_TUNING } from "../../config";
 
@@ -503,6 +503,18 @@ export function createFlowerRing(map: GardenTerrain): FlowerRing {
       if (dx * dx + dz * dz < RESAMPLE_STEP * RESAMPLE_STEP) return;
       last.x = focus.x;
       last.z = focus.z;
+      // Region AABB early-out: the ~8k-cell worley scan used to run every 9 m
+      // city-wide, even downtown where grassyGround rejects every cell. Outside
+      // every wild region (+reach) skip the scan; one clearing write empties
+      // the ring on the way out.
+      if (!nearAnyWildRegion(focus.x, focus.z, MAX_REACH + 2)) {
+        if (count > 0) {
+          for (const list of rows) list.length = 0;
+          meshes.forEach((mesh, species) => write(mesh, rows[species]));
+          count = 0;
+        }
+        return;
+      }
       resample(focus.x, focus.z);
     },
     refresh() {

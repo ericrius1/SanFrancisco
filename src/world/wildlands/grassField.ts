@@ -17,7 +17,7 @@ import {
 } from "../groundcover/bladeGrass";
 import { hash2, valueNoise } from "../groundcover/scatter";
 import type { GardenTerrain } from "../garden/layout";
-import { grassyGround } from "./layout";
+import { grassyGround, nearAnyWildRegion } from "./layout";
 import { GRASS_TUNING } from "../../config";
 
 const RING_RADIUS = 52; // dense grass within this of the player; fades at the rim
@@ -145,6 +145,20 @@ export function createWildGrass(map: GardenTerrain): WildGrass {
       if (dx * dx + dz * dz < RESAMPLE_STEP * RESAMPLE_STEP) return;
       last.x = focus.x;
       last.z = focus.z;
+      // Region AABB early-out: the ~12k-cell scan used to run every 8 m even
+      // downtown, where grassyGround culls every single cell — pure waste. If no
+      // wild region is within reach, skip the scan; one clearing write on the
+      // way out empties the ring.
+      if (!nearAnyWildRegion(focus.x, focus.z, RING_RADIUS + 2)) {
+        if (count > 0) {
+          low.length = 0;
+          tall.length = 0;
+          writeGrassMesh(lowMesh, low, RING_RADIUS);
+          writeGrassMesh(tallMesh, tall, RING_RADIUS);
+          count = 0;
+        }
+        return;
+      }
       // shared fade focus → blades collapse toward the ring rim (hides the pop)
       GRASS_DENSITY_FOCUS.value.set(focus.x, focus.z);
       resample(focus.x, focus.z);

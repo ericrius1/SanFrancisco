@@ -12,6 +12,7 @@
 
 import type { PlayerMode } from "../player/types";
 import { effectsAudioLevel } from "../core/audioSettings";
+import { BOARD_PITCHES, type BoardHum } from "../vehicles/board/config";
 
 export type VehicleSignals = {
   mode: PlayerMode;
@@ -34,12 +35,106 @@ const approach = (cur: number, target: number, dt: number, rate: number) =>
 
 const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
 
+/** What the hoverboard customizer can voice: hum character + root note. */
+export type BoardVoiceStyle = { hum: BoardHum; pitch: number };
+
+// Each hum character is a 6-slot partial stack (type, freq multiple of the
+// root, gain) plus a filter/LFO personality. Every stack keeps consonant
+// ratios (octaves/fifths/thirds) with one barely-sharp partial for the
+// electric shimmer beat, and every cutoff stays low enough that the +5
+// semitone speed lift can never turn shrill.
+type BoardStack = {
+  parts: [OscillatorType, number, number][];
+  cutoff: number;
+  lfoRate: number;
+  lfoDepth: number;
+  level: number; // per-style loudness trim so switching never jumps volume
+};
+
+const BOARD_STACKS: Record<BoardHum, BoardStack> = {
+  hum: {
+    parts: [
+      ["sine", 1, 1.0],
+      ["sine", 1.5, 0.5],
+      ["triangle", 2, 0.28],
+      ["sine", 3, 0.15],
+      ["sine", 4.012, 0.09],
+      ["sine", 0.5, 0]
+    ],
+    cutoff: 300,
+    lfoRate: 0.37,
+    lfoDepth: 45,
+    level: 1.0
+  },
+  crystal: {
+    parts: [
+      ["sine", 1, 0.6],
+      ["sine", 2, 0.5],
+      ["sine", 2.5, 0.3],
+      ["triangle", 4, 0.16],
+      ["sine", 6.01, 0.07],
+      ["sine", 3, 0.12]
+    ],
+    cutoff: 520,
+    lfoRate: 0.6,
+    lfoDepth: 80,
+    level: 0.95
+  },
+  deep: {
+    parts: [
+      ["sine", 0.5, 1.15],
+      ["sine", 1, 0.6],
+      ["triangle", 1.5, 0.18],
+      ["sine", 2.004, 0.1],
+      ["sine", 3, 0],
+      ["sine", 4, 0]
+    ],
+    cutoff: 210,
+    lfoRate: 0.22,
+    lfoDepth: 26,
+    level: 1.05
+  },
+  choir: {
+    parts: [
+      ["sawtooth", 1, 0.32],
+      ["sawtooth", 1.006, 0.32],
+      ["sine", 1.5, 0.3],
+      ["sine", 2, 0.2],
+      ["triangle", 3, 0.1],
+      ["sine", 2.5, 0.12]
+    ],
+    cutoff: 360,
+    lfoRate: 0.31,
+    lfoDepth: 55,
+    level: 0.9
+  },
+  retro: {
+    parts: [
+      ["square", 1, 0.28],
+      ["square", 2, 0.12],
+      ["triangle", 1.5, 0.24],
+      ["sine", 0.5, 0.5],
+      ["sine", 4.01, 0.05],
+      ["sine", 3, 0]
+    ],
+    cutoff: 330,
+    lfoRate: 0.5,
+    lfoDepth: 70,
+    level: 0.9
+  }
+};
+
+const BOARD_PREVIEW_DUR = 1.9; // seconds of swell when auditioning in the customizer
+
 export class VehicleAudio {
   #ctx: AudioContext | null = null;
   #master!: GainNode;
   #noise!: AudioBuffer;
   #voices: Voice[] = [];
   #masterLevel = 0;
+  #boardStyle: BoardVoiceStyle = { hum: "hum", pitch: 0 };
+  #applyBoardStyle: (() => void) | null = null; // bound once the voice exists
+  #previewT: number | null = null; // seconds into a customizer audition swell
 
   constructor() {
     // autoplay policy: same unlock dance as the fireworks — build + resume on
@@ -65,8 +160,43 @@ export class VehicleAudio {
     };
   }
 
+  /**
+   * Voice the hoverboard from the customizer config. Safe to call any time —
+   * applied immediately if the audio graph exists, or on first unlock.
+   */
+  setBoardStyle(style: BoardVoiceStyle) {
+    this.#boardStyle = { hum: style.hum, pitch: style.pitch };
+    this.#applyBoardStyle?.();
+  }
+
+  /**
+   * Audition the current board voice (customizer click): a short speed swell
+   * through the real voice path, skipped if the player is already riding —
+   * the live hum is its own preview.
+   */
+  previewBoard() {
+    const ctx = this.#ensure(); // UI click is a gesture, so this can unlock
+    if (!ctx) return;
+    if (ctx.state === "suspended") void ctx.resume();
+    this.#previewT = 0;
+  }
+
   /** Per rendered frame. `sig` null (paused) fades every voice out. */
   update(dt: number, sig: VehicleSignals | null) {
+    // customizer audition: impersonate a board run swelling 0→fast→0
+    if (this.#previewT !== null) {
+      if (sig?.mode === "board") {
+        this.#previewT = null; // already riding — live hum wins
+      } else {
+        this.#previewT += dt;
+        if (this.#previewT >= BOARD_PREVIEW_DUR) {
+          this.#previewT = null;
+        } else {
+          const env = Math.sin((Math.PI * this.#previewT) / BOARD_PREVIEW_DUR);
+          sig = { mode: "board", speed: env * 24, vspeed: 0, boost: false, grounded: true };
+        }
+      }
+    }
     const ctx = this.#ctx;
     if (!ctx) return; // not unlocked yet
     const targetMaster = effectsAudioLevel();
@@ -175,10 +305,11 @@ export class VehicleAudio {
   }
 
   /**
-   * Hoverboard: the low harmonious electric hum. A-rooted stack (A1 root,
-   * E2 fifth, A2 octave, E3, and a barely-sharp near-A3 whose beat against the
-   * octave reads as electric shimmer), all under a breathing lowpass. Speed
-   * lifts the whole stack a few semitones together, so it stays a chord.
+   * Hoverboard: the low harmonious electric hum, now voiced by the customizer.
+   * Six retunable oscillator slots under a breathing lowpass — a hum change
+   * just rewrites types/freqs/gains and filter personality on the live nodes
+   * (no rebuild, no click). Speed lifts the whole stack a few semitones
+   * together, so whatever the voicing, it stays a chord.
    */
   #buildBoard(ctx: AudioContext): Voice {
     const out = this.#out(ctx);
@@ -188,18 +319,44 @@ export class VehicleAudio {
     filter.Q.value = 0.9;
     filter.connect(out);
 
-    const stack: [OscillatorType, number, number][] = [
-      ["sine", 55, 1.0],
-      ["sine", 82.41, 0.5],
-      ["triangle", 110, 0.28],
-      ["sine", 164.81, 0.15],
-      ["sine", 220.7, 0.09]
-    ];
-    const oscs = stack.map(([type, f, g]) => this.#oscInto(ctx, type, f, g, filter));
-    this.#lfo(ctx, 0.37, 45, filter.frequency); // slow breathing so the hum never sits still
-    for (const o of oscs) this.#lfo(ctx, 0.23, 4, o.detune); // faint organic pitch drift
+    // six generic slots; #applyBoardStyle re-voices them from BOARD_STACKS
+    const slots = Array.from({ length: 6 }, () => {
+      const o = ctx.createOscillator();
+      o.type = "sine";
+      o.frequency.value = 55;
+      const g = ctx.createGain();
+      g.gain.value = 0;
+      o.connect(g);
+      g.connect(filter);
+      o.start();
+      return { o, g };
+    });
+    const filterLfo = ctx.createOscillator();
+    filterLfo.frequency.value = 0.37;
+    const filterLfoDepth = ctx.createGain();
+    filterLfoDepth.gain.value = 45;
+    filterLfo.connect(filterLfoDepth);
+    filterLfoDepth.connect(filter.frequency);
+    filterLfo.start();
+    for (const s of slots) this.#lfo(ctx, 0.23, 4, s.o.detune); // faint organic pitch drift
 
-    const s = { detune: 0, cutoff: 300 };
+    const state = { detune: 0, cutoff: 300, base: BOARD_STACKS.hum };
+    this.#applyBoardStyle = () => {
+      const stack = BOARD_STACKS[this.#boardStyle.hum] ?? BOARD_STACKS.hum;
+      const root = (BOARD_PITCHES[this.#boardStyle.pitch] ?? BOARD_PITCHES[0]).hz;
+      state.base = stack;
+      for (let i = 0; i < slots.length; i++) {
+        const [type, mul, gain] = stack.parts[i];
+        slots[i].o.type = type;
+        slots[i].o.frequency.value = root * mul;
+        slots[i].g.gain.value = gain;
+      }
+      filter.frequency.value = stack.cutoff;
+      filterLfo.frequency.value = stack.lfoRate;
+      filterLfoDepth.gain.value = stack.lfoDepth;
+    };
+    this.#applyBoardStyle();
+
     return {
       mode: "board",
       gain: out,
@@ -207,11 +364,11 @@ export class VehicleAudio {
       drive: (sig, dt) => {
         const norm = clamp01(sig.speed / 40);
         // +4 semitones flat out, +1 more on boost — audible lift, never a whine
-        s.detune = approach(s.detune, norm * 400 + (sig.boost ? 110 : 0), dt, 4);
-        s.cutoff = approach(s.cutoff, (sig.grounded ? 300 : 220) + 480 * norm, dt, 4);
-        for (const o of oscs) o.detune.value = s.detune;
-        filter.frequency.value = s.cutoff;
-        return sig.grounded ? 0.2 + 0.4 * norm : 0.13 + 0.24 * norm;
+        state.detune = approach(state.detune, norm * 400 + (sig.boost ? 110 : 0), dt, 4);
+        state.cutoff = approach(state.cutoff, (sig.grounded ? state.base.cutoff : state.base.cutoff * 0.75) + 480 * norm, dt, 4);
+        for (const s of slots) s.o.detune.value = state.detune;
+        filter.frequency.value = state.cutoff;
+        return (sig.grounded ? 0.2 + 0.4 * norm : 0.13 + 0.24 * norm) * state.base.level;
       }
     };
   }

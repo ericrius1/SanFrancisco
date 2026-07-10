@@ -123,6 +123,14 @@ export class NatureSoundscape {
     this.#startBeds();
   }
 
+  /** Build the context, buses and synth buffers (convolver impulse, wind noise)
+   *  off the first-gesture path — boot idle calls this so the ~tens-of-ms of
+   *  buffer synthesis never lands in the first-keydown frame. The context stays
+   *  suspended until a real gesture resumes it; beds stay silent until unlock. */
+  prewarm(): void {
+    this.#ensure();
+  }
+
   update(
     dt: number,
     o: { playerPos: { x: number; y: number; z: number }; camera: THREE.Camera; gust: number; timeOfDay: number }
