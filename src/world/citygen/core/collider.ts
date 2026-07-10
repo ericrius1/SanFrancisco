@@ -149,6 +149,31 @@ function appendStoop(
   });
 }
 
+/** Stoop-only boxes (threshold landing + tilted ramp) for a building's street
+ *  door, or [] when there is no eligible door / no rise / no frontGround. The
+ *  SOLID (closed-door) wall set includes these too: the stoop STEPS are always
+ *  drawn by the theme regardless of door state, so they must always be tangible
+ *  — the door toggle swaps only the wall gap, never the floor underfoot (a ramp
+ *  that appeared on open could spawn under a standing player, and one removed on
+ *  close could drop them ~3 m down a hillside frontage). */
+export function stoopColliders(spec: BuildingSpec, frontGround: number | undefined): ColliderBox[] {
+  if (frontGround === undefined) return [];
+  const poly = ensureCCW(spec.poly);
+  const streetI = streetEdgeIndex(poly);
+  const p0 = poly[streetI];
+  const p1 = poly[(streetI + 1) % poly.length];
+  const dx = p1[0] - p0[0], dz = p1[1] - p0[1];
+  const len = Math.hypot(dx, dz);
+  if (!doorEligible({ isStreet: true, length: len, base: spec.base, top: spec.top, grade: spec.grade })) return [];
+  const { tc, halfW, sill } = doorMetrics(len, spec.base, spec.top, spec.grade ?? spec.base);
+  const ux = dx / len, uz = dz / len;
+  const d = tc * len;
+  const nrm = edgeOutwardNormal(p0, p1);
+  const boxes: ColliderBox[] = [];
+  appendStoop(boxes, p0[0] + ux * d, p0[1] + uz * d, -nrm[0], -nrm[1], halfW, sill, frontGround);
+  return boxes;
+}
+
 /** Oriented wall boxes + ground pad. If `withDoor`, cut a doorway in the street
  *  edge and return where it is (so the theme can align the visual door). When a
  *  `frontGround` (live terrain height just outside the door) is supplied with a

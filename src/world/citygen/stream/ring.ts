@@ -13,7 +13,7 @@
 // Everything is STATIC: world-space geometry, matrixAutoUpdate off, Static bodies.
 // Nothing is destructible — buildings don't break; a crash just stops you.
 import * as THREE from "three/webgpu";
-import { buildingColliders, doorMetrics, doorEligible } from "../core/collider";
+import { buildingColliders, doorMetrics, doorEligible, stoopColliders } from "../core/collider";
 import { ensureCCW, streetEdgeIndex, edgeOutwardNormal, signedDistToPoly } from "../core/footprint";
 import { buildBuilding, buildInterior, assembleBuilding, warmupMaterials } from "../render";
 import { buildChunkLOD, type ChunkLOD } from "../render/chunkLod";
@@ -315,10 +315,26 @@ export async function createCityGenRing(
   // (~14-24 creates, well under a lane budget slice) keeps the swap invisible.
   // The job re-checks state on entry — the building may have left the ring
   // while queued (drop/unload flip state back to "lod" → job is a no-op).
-  const buildSolidWallsNow = (e: Entry) => {
-    const { boxes } = buildingColliders(e as BuildingSpec, false); // SOLID (no door yet)
+  // Stoop bodies (landing + ramp) appended to whatever wall set is live. The
+  // DETAIL tier draws the stoop steps, so its collider set must make them
+  // tangible in BOTH door states — the door toggle then swaps only the wall
+  // gap, never the floor underfoot (review R1: a ramp appearing only on open
+  // could spawn under a standing player; one removed on close dropped them down
+  // the hillside frontage). The coll tier stays stoop-free: its mesh is the
+  // plain LOD prism with NO drawn steps, and an invisible ramp in the street is
+  // exactly the obstacle class the ground-source fix just eliminated.
+  const appendStoopNow = (e: Entry) => {
+    if (e.frontGround === undefined) e.frontGround = frontGroundFor(e);
+    for (const c of stoopColliders(e as BuildingSpec, e.frontGround)) {
+      e.bodies.push(addBody(c));
+      e.wallBoxes.push(c);
+    }
+  };
+  const buildSolidWallsNow = (e: Entry, withStoop = false) => {
+    const { boxes } = buildingColliders(e as BuildingSpec, false); // SOLID (no door gap)
     for (const c of boxes) e.bodies.push(addBody(c));
     e.wallBoxes = boxes;
+    if (withStoop) appendStoopNow(e);
   };
   // Player XZ inside the footprint AABB (+margin) at building height → walls must
   // NEVER materialize this frame (they'd spawn around/inside the player = wedge);
@@ -382,12 +398,15 @@ export async function createCityGenRing(
     // hole while the player is inside — acceptable, strictly better than wedging.
     e.state = "detail";
     if (!e.bodies.length) {
-      if (!playerInsideBB(e, 3.5)) buildSolidWallsNow(e);
+      if (!playerInsideBB(e, 3.5)) buildSolidWallsNow(e, true);
       else schedule("physics", () => {
         if (e.state !== "detail" || e.bodies.length) return; // stale/duplicate (dropped, unloaded, or walls landed elsewhere)
         if (playerInsideBB(e, 3.5)) return "again";          // anti-wedge: retry next frame
-        buildSolidWallsNow(e);
+        buildSolidWallsNow(e, true);
       });
+    } else {
+      // coll→detail reuse: the walls stand, but the newly-drawn steps need bodies
+      appendStoopNow(e);
     }
     e.doorPending = true;
   };
@@ -586,7 +605,7 @@ export async function createCityGenRing(
     if (playerInGap(rt)) { rt.needSolid = true; return; }
     rt.needSolid = false;
     clearBodies(e);
-    buildSolidWallsNow(e);
+    buildSolidWallsNow(e, true); // detail tier: steps stay tangible across the swap
   };
   // leaf reached the frame: logically closed — restore the baked leaf + solid walls
   const finishClose = (e: Entry, rt: DoorRt) => {

@@ -180,6 +180,20 @@ async function main() {
   await c.open();
   await c.send("Page.enable"); await c.send("Runtime.enable");
   await c.send("Emulation.setDeviceMetricsOverride", { width: W, height: H, deviceScaleFactor: 1, mobile: false });
+  // Neuter vite's HMR websocket: a parallel editing session saving any src file
+  // mid-leg full-reloads the page, wiping the injected __rec/__key/__tp helpers
+  // (observed as "window.__key is not a function" mid-run). The stub swallows
+  // the HMR connection so the page under test stays exactly as booted.
+  await c.send("Page.addScriptToEvaluateOnNewDocument", {
+    source: `(() => { const W = window.WebSocket; window.WebSocket = function(url, p) {
+      const u = String(url);
+      if (u.includes("token=") || u.includes("vite") || u.includes("hmr")) {
+        return { addEventListener(){}, removeEventListener(){}, send(){}, close(){}, readyState: 3 };
+      }
+      return p === undefined ? new W(url) : new W(url, p);
+    }; window.WebSocket.prototype = W.prototype; })()`
+  });
+  await c.send("Page.reload"); // pick up the stub from a clean load
 
   console.log("[probe] waiting for app boot...");
   const t0 = Date.now();

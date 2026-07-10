@@ -68,8 +68,9 @@ function pier(out: PanelBuilder, e: FacadeEdge, t: number, y0: number, y1: numbe
  *  lintel + keystone, with a glazed transom over the doors and a broad stoop
  *  slab. Aligned to the walk-through gap the collider cuts (tc), so it matches. */
 function grandEntrance(out: PanelBuilder, e: FacadeEdge, base: number, topY: number, mats: { stone: string; glass: string }): void {
-  const y0 = doorMetrics(e.length, e.base, e.top, e.grade).sill; // raised entry floor (= interior grade)
-  if (topY - y0 < 2.0 || e.length < 3) return;
+  const dm = doorMetrics(e.length, e.base, e.top, e.grade);
+  const y0 = dm.sill; // raised entry floor (= interior grade)
+  if (topY - y0 < 2.0 || e.length < 3) return; // callers gate on this too (R2) — kept as a safety net
   const halfW = Math.min(2.2, e.length * 0.13);
   const tc = e.length > 6 ? 0.24 : 0.5; // MATCH core/collider.ts doorway centre
   const along = unit(sub(gp(e, 1), gp(e, 0)));
@@ -79,11 +80,24 @@ function grandEntrance(out: PanelBuilder, e: FacadeEdge, base: number, topY: num
   const off = (p: Vec3, d: number, yy: number): Vec3 => [p[0] + n3[0] * d, yy, p[2] + n3[2] * d];
   const transomY = Math.min(y0 + 3.0, topY - 1.2); // door head; glazed transom above
 
-  // dark door leaves + glazed transom, a hair proud so they win over the base quad.
-  // The (already CLOSED) door quad is emitted under the dedicated
-  // "citygen.doorleaf" bucket so mergePanels gives it its own sub-mesh — the ring
-  // runtime finds it by name, hides it and swings a live hinged twin on E.
-  out.quad("citygen.doorleaf", off(dl, 0.03, y0), off(dr, 0.03, y0), off(dr, 0.03, transomY), off(dl, 0.03, transomY), n3);
+  // The portal splits into a SWINGING leaf and FIXED dark side/top panels (R3).
+  // Only the doorMetrics-sized leaf goes in the "citygen.doorleaf" bucket — it is
+  // exactly the collider's walk-through gap, so the ring's live hinged twin and
+  // the wall cut match it 1:1 (the old full-portal leaf popped a ~4 m slab of
+  // portal to bare wall on open). The rest of the portal reads as the fixed
+  // leaves of a grand entrance and never moves.
+  const lw = dm.halfW;
+  const leafTop = Math.min(dm.openTop, transomY);
+  const ll = gp(e, tc - lw / e.length), lr = gp(e, tc + lw / e.length);
+  out.quad("citygen.doorleaf", off(ll, 0.03, y0), off(lr, 0.03, y0), off(lr, 0.03, leafTop), off(ll, 0.03, leafTop), n3);
+  // fixed dark panels: left / right of the leaf + the strip above it up to the transom
+  if (lw < halfW - 0.05) {
+    out.quad("citygen.door", off(dl, 0.03, y0), off(ll, 0.03, y0), off(ll, 0.03, transomY), off(dl, 0.03, transomY), n3);
+    out.quad("citygen.door", off(lr, 0.03, y0), off(dr, 0.03, y0), off(dr, 0.03, transomY), off(lr, 0.03, transomY), n3);
+  }
+  if (leafTop < transomY - 0.05) {
+    out.quad("citygen.door", off(ll, 0.03, leafTop), off(lr, 0.03, leafTop), off(lr, 0.03, transomY), off(ll, 0.03, transomY), n3);
+  }
   out.quad(mats.glass, off(dl, 0.03, transomY + 0.12), off(dr, 0.03, transomY + 0.12), off(dr, 0.03, topY - 0.12), off(dl, 0.03, topY - 0.12), n3);
   // transom bar between doors and fanlight
   out.box(mats.stone, [cD[0] + n3[0] * 0.14, transomY + 0.06, cD[2] + n3[2] * 0.14], [halfW + 0.06, 0.08, 0.16], along, UP, n3, true);
@@ -138,7 +152,12 @@ export function largeCommercialFacade(e: FacadeEdge, out: PanelBuilder, _rng: Rn
     // wide lots get the grand double-height portal; a narrow street edge (2.2–6 m),
     // which grandEntrance handles poorly, gets a plain frontDoor instead — so the
     // collider's walk-through gap always has a matching visible doorway.
-    if (e.length > 6) grandEntrance(out, e, base, baseTopY - 0.55, { stone, glass });
+    // The portal ALSO needs ≥2 m of base above the raised sill (hillside lots can
+    // push the sill nearly to the base cap) — grandEntrance would bail and leave
+    // an operable-but-invisible door on bare stone (R2), so fall back to frontDoor.
+    const portalTop = baseTopY - 0.55;
+    const sill = doorMetrics(e.length, e.base, e.top, e.grade).sill;
+    if (e.length > 6 && portalTop - sill >= 2.0) grandEntrance(out, e, base, portalTop, { stone, glass });
     else frontDoor(out, e, { door: "citygen.door", trim });
     frontStoop(out, e, stone); // walkable-looking stone steps up to the raised entry
     // tall shopfront-scale windows in the outer bays, clear of the central portal
