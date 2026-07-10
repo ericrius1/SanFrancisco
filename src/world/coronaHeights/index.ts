@@ -17,6 +17,9 @@ const ACTIVITY_RANGE = 700;
 const HILL_RX = 118;
 const HILL_RZ = 126;
 const HILL_STEP = 4;
+const DOG_SURFACE_LIFT = 0.18;
+const CORONA_GROUND_LIFT = 0.38;
+const preparedMaps = new WeakSet<WorldMap>();
 
 type FencePiece = { ax: number; az: number; bx: number; bz: number };
 type TrailSample = { x: number; z: number; tx: number; tz: number };
@@ -78,6 +81,48 @@ function fract(v: number) {
 
 function hash2(x: number, z: number, salt = 0) {
   return fract(Math.sin(x * 12.9898 + z * 78.233 + salt * 37.719) * 43758.5453123);
+}
+
+function valueNoise(x: number, z: number, cell: number, salt: number) {
+  const fx = x / cell;
+  const fz = z / cell;
+  const ix = Math.floor(fx);
+  const iz = Math.floor(fz);
+  const ax = smooth01(fx - ix);
+  const az = smooth01(fz - iz);
+  const a = lerp(hash2(ix, iz, salt), hash2(ix + 1, iz, salt), ax);
+  const b = lerp(hash2(ix, iz + 1, salt), hash2(ix + 1, iz + 1, salt), ax);
+  return lerp(a, b, az);
+}
+
+/**
+ * The shipped Corona Heights lawn is a constrained-Delaunay overlay while
+ * WorldMap queries are bilinear. On the hill's sharp folds those two surfaces
+ * can differ by almost 30 cm, enough for either the lawn or the player to poke
+ * through an authored detail skin. Raise the query carpet beneath the authored
+ * hill, then feather it outside the visible skin. This is deliberately called
+ * immediately after WorldMap.load(), before physics and world props are built.
+ */
+export function prepareCoronaHeightsGround(map: WorldMap) {
+  if (preparedMaps.has(map)) return;
+  preparedMaps.add(map);
+  const { cellSize, width, height, minX, minZ } = map.meta.grid;
+  const cx = CORONA_HEIGHTS_SUMMIT.x;
+  const cz = CORONA_HEIGHTS_SUMMIT.z + 8;
+  const minGX = Math.max(0, Math.floor((cx - HILL_RX * 1.12 - minX) / cellSize));
+  const maxGX = Math.min(width - 1, Math.ceil((cx + HILL_RX * 1.12 - minX) / cellSize));
+  const minGZ = Math.max(0, Math.floor((cz - HILL_RZ * 1.12 - minZ) / cellSize));
+  const maxGZ = Math.min(height - 1, Math.ceil((cz + HILL_RZ * 1.12 - minZ) / cellSize));
+  for (let gz = minGZ; gz <= maxGZ; gz++) {
+    const z = minZ + gz * cellSize;
+    for (let gx = minGX; gx <= maxGX; gx++) {
+      const x = minX + gx * cellSize;
+      const q = ((x - cx) / HILL_RX) ** 2 + ((z - cz) / HILL_RZ) ** 2;
+      if (q >= 1.12) continue;
+      const feather = 1 - smooth01((q - 0.9) / 0.22);
+      map.groundTops[gz * width + gx] += CORONA_GROUND_LIFT * feather;
+    }
+  }
 }
 
 function pointInPolygon(x: number, z: number, polygon: readonly CoronaXZ[]) {
@@ -156,9 +201,9 @@ function makeHillSkin(map: WorldMap) {
       const x = cx - HILL_RX + gx * HILL_STEP;
       const i = gz * nx + gx;
       const q = ((x - cx) / HILL_RX) ** 2 + ((z - cz) / HILL_RZ) ** 2;
-      const edge = 1 + (hash2(gx, gz, 9) - 0.5) * 0.055;
-      inside[i] = q < edge ? 1 : 0;
-      const y = map.groundTop(x, z) + 0.045;
+      const edge = 1.08 + (hash2(gx, gz, 9) - 0.5) * 0.035;
+      inside[i] = q < edge && !pointInPolygon(x, z, CORONA_DOG_PARK) ? 1 : 0;
+      const y = map.groundTop(x, z) + 0.08;
       positions[i * 3] = x;
       positions[i * 3 + 1] = y;
       positions[i * 3 + 2] = z;
@@ -166,11 +211,11 @@ function makeHillSkin(map: WorldMap) {
       map.normal(x, z, normal, 4);
       const slope = 1 - normal.y;
       const ridge = clamp01((y - 124) / 27);
-      const grain = hash2(gx, gz, 21);
-      const band = 0.5 + 0.5 * Math.sin(x * 0.075 + z * 0.042 + grain * 2.2);
+      const grain = valueNoise(x, z, 21, 21);
+      const band = valueNoise(x + z * 0.22, z - x * 0.16, 37, 23);
       let rock = clamp01((slope - 0.035) / 0.2) * (0.32 + ridge * 0.78);
       rock = clamp01(rock + clamp01((y - 140) / 11) * 0.38) * (0.48 + grain * 0.52);
-      const edgeBlend = smooth01((q - 0.68) / 0.27);
+      const edgeBlend = smooth01((q - 0.7) / 0.36);
       color.copy(green).lerp(dry, 0.6 + ridge * 0.24).lerp(ochre, rock * 0.28);
       color.lerp(grain > 0.32 ? chert : darkChert, rock * (0.58 + band * 0.32));
       color.lerp(green, edgeBlend * 0.88);
@@ -244,13 +289,13 @@ function makeQuarryFace(map: WorldMap) {
       const slope = 1 - normal.y;
       inside[i] = q < 1 && slope > 0.018 ? 1 : 0;
       positions[i * 3] = x;
-      positions[i * 3 + 1] = map.groundTop(x, z) + 0.06;
+      positions[i * 3 + 1] = map.groundTop(x, z) + 0.11;
       positions[i * 3 + 2] = z;
-      const grain = hash2(gx, gz, 149);
-      const seam = 0.5 + 0.5 * Math.sin(x * 0.19 - z * 0.075 + grain * 1.7);
+      const grain = valueNoise(x, z, 15, 149);
+      const seam = valueNoise(x + z * 0.35, z - x * 0.12, 24, 151);
       const shadowing = clamp01((slope - 0.08) / 0.24);
       const edge = smooth01((q - 0.7) / 0.27);
-      color.copy(pale).lerp(pink, 0.28 + seam * 0.28).lerp(rust, seam * shadowing * 0.62);
+      color.copy(pale).lerp(pink, 0.2 + seam * 0.24 + grain * 0.12).lerp(rust, seam * shadowing * 0.62);
       color.lerp(shadow, shadowing * (1 - seam) * 0.32).lerp(edgeGreen, edge * 0.86);
       colors[i * 3] = color.r;
       colors[i * 3 + 1] = color.g;
@@ -303,7 +348,7 @@ function makeTrailRibbon(map: WorldMap, trail: CoronaTrail, material: THREE.Mate
     for (const side of [-1, 1]) {
       const x = p.x + nx * half * side;
       const z = p.z + nz * half * side;
-      positions.push(x, map.groundTop(x, z) + 0.105, z);
+      positions.push(x, map.groundTop(x, z) + 0.165, z);
       const shade = 0.86 + hash2(i, side, trail.name.length) * 0.18;
       colors.push(shade, shade, shade);
     }
@@ -332,7 +377,7 @@ function makeStepTies(map: WorldMap, trail: CoronaTrail, material: THREE.Materia
   samples.forEach((p, i) => {
     const nx = -p.tz;
     const nz = p.tx;
-    dummy.position.set(p.x, map.groundTop(p.x, p.z) + 0.13, p.z);
+    dummy.position.set(p.x, map.groundTop(p.x, p.z) + 0.19, p.z);
     dummy.rotation.set(0, Math.atan2(-nz, nx), 0);
     dummy.scale.set(trail.width + 0.25, 0.16, 0.24);
     dummy.updateMatrix();
@@ -358,7 +403,7 @@ function makeTrails(map: WorldMap) {
   return group;
 }
 
-function makeRockField(map: WorldMap) {
+function makeRockField(map: WorldMap, physics: Physics) {
   const geometry = new THREE.DodecahedronGeometry(1, 0);
   const material = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.95, metalness: 0 });
   const capacity = 118;
@@ -380,13 +425,34 @@ function makeRockField(map: WorldMap) {
     if (distanceToTrails(x, z) < 2.8 || pointInPolygon(x, z, CORONA_DOG_PARK)) continue;
     if (Math.hypot(x - CORONA_HEIGHTS_SUMMIT.x, z - CORONA_HEIGHTS_SUMMIT.z) < 5.2) continue;
     const size = 0.65 + hash2(i, 29, 31) * 1.8 + steep * 3.5;
+    const sx = size * (1.15 + hash2(i, 47));
+    const sy = size * (0.5 + steep * 1.5);
+    const sz = size * (0.8 + hash2(i, 53));
+    const yaw = hash2(i, 41) * Math.PI * 2;
     dummy.position.set(x, y - size * 0.34, z);
-    dummy.rotation.set(hash2(i, 37) * 0.8, hash2(i, 41) * Math.PI * 2, hash2(i, 43) * 0.55);
-    dummy.scale.set(size * (1.15 + hash2(i, 47)), size * (0.5 + steep * 1.5), size * (0.8 + hash2(i, 53)));
+    dummy.rotation.set(hash2(i, 37) * 0.8, yaw, hash2(i, 43) * 0.55);
+    dummy.scale.set(sx, sy, sz);
     dummy.updateMatrix();
     mesh.setMatrixAt(count, dummy.matrix);
     color.setHex(hash2(i, 59) > 0.28 ? 0x87463d : 0x593235).offsetHSL((hash2(i, 61) - 0.5) * 0.035, 0, (hash2(i, 67) - 0.5) * 0.12);
     mesh.setColorAt(count, color);
+    // Tiny fragments remain decorative, but the big chert blocks are real
+    // obstacles for walkers, vehicles, paint rays and grab tools.
+    if (size > 1.4) {
+      const visibleHeight = Math.max(0.36, sy - size * 0.34);
+      const cy = y + visibleHeight * 0.46;
+      const hx = sx * 0.74;
+      const hy = visibleHeight * 0.46;
+      const hz = sz * 0.74;
+      const body = physics.world.createBox({
+        type: BodyType.Static,
+        position: [x, cy, z],
+        halfExtents: [hx, hy, hz],
+        friction: 0.82
+      });
+      physics.world.setBodyTransform(body, [x, cy, z], [0, Math.sin(yaw / 2), 0, Math.cos(yaw / 2)]);
+      physics.addQuerySolid(body, { x, y: cy, z, hx, hy, hz, yaw });
+    }
     count++;
   }
   mesh.count = count;
@@ -406,11 +472,9 @@ function makeTuftGeometry() {
     const a = (q / 3) * Math.PI;
     const dx = Math.cos(a) * 0.5;
     const dz = Math.sin(a) * 0.5;
-    const nx = -Math.sin(a);
-    const nz = Math.cos(a);
     const base = q * 5;
     positions.push(-dx, 0, -dz, dx, 0, dz, dx * 0.55, 0.72, dz * 0.55, 0, 1.05, 0, -dx * 0.55, 0.72, -dz * 0.55);
-    for (let i = 0; i < 5; i++) normals.push(nx, 0.45, nz);
+    for (let i = 0; i < 5; i++) normals.push(0, 1, 0);
     indices.push(base, base + 1, base + 2, base, base + 2, base + 4, base + 4, base + 2, base + 3);
   }
   const geometry = new THREE.BufferGeometry();
@@ -596,20 +660,45 @@ function makeShrubsAndTrees(map: WorldMap) {
 }
 
 function polygonSurface(map: WorldMap, polygon: readonly CoronaXZ[]) {
-  const contour = polygon.map(([x, z]) => new THREE.Vector2(x, z));
-  const faces = THREE.ShapeUtils.triangulateShape(contour, []);
-  const positions: number[] = [];
-  const colors: number[] = [];
-  for (let i = 0; i < polygon.length; i++) {
-    const [x, z] = polygon[i];
-    positions.push(x, map.groundTop(x, z) + 0.14, z);
-    const shade = 0.82 + hash2(i, 2, 113) * 0.22;
-    colors.push(shade, shade * 0.97, shade * 0.9);
+  const minX = Math.floor(Math.min(...polygon.map((p) => p[0]))) - 1;
+  const maxX = Math.ceil(Math.max(...polygon.map((p) => p[0]))) + 1;
+  const minZ = Math.floor(Math.min(...polygon.map((p) => p[1]))) - 1;
+  const maxZ = Math.ceil(Math.max(...polygon.map((p) => p[1]))) + 1;
+  const step = 1.8;
+  const nx = Math.ceil((maxX - minX) / step) + 1;
+  const nz = Math.ceil((maxZ - minZ) / step) + 1;
+  const positions = new Float32Array(nx * nz * 3);
+  const colors = new Float32Array(nx * nz * 3);
+  for (let gz = 0; gz < nz; gz++) {
+    const z = minZ + gz * step;
+    for (let gx = 0; gx < nx; gx++) {
+      const x = minX + gx * step;
+      const i = gz * nx + gx;
+      positions[i * 3] = x;
+      positions[i * 3 + 1] = map.groundTop(x, z) + DOG_SURFACE_LIFT;
+      positions[i * 3 + 2] = z;
+      const shade = 0.84 + valueNoise(x, z, 8, 113) * 0.18;
+      colors[i * 3] = shade;
+      colors[i * 3 + 1] = shade * 0.97;
+      colors[i * 3 + 2] = shade * 0.9;
+    }
+  }
+  const indices: number[] = [];
+  for (let gz = 0; gz < nz - 1; gz++) {
+    for (let gx = 0; gx < nx - 1; gx++) {
+      const a = gz * nx + gx;
+      const b = a + 1;
+      const c = a + nx;
+      const d = c + 1;
+      const centerX = minX + (gx + 0.5) * step;
+      const centerZ = minZ + (gz + 0.5) * step;
+      if (pointInPolygon(centerX, centerZ, polygon)) indices.push(a, c, b, b, c, d);
+    }
   }
   const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-  geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
-  geometry.setIndex(faces.flat());
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  geometry.setIndex(indices);
   geometry.computeVertexNormals();
   const material = new THREE.MeshStandardMaterial({ color: 0x8a603d, vertexColors: true, roughness: 1 });
   const mesh = new THREE.Mesh(geometry, material);
@@ -634,7 +723,7 @@ function makeWoodchips(map: WorldMap) {
     const z = 2677 + hash2(i, 5, 131) * 55;
     if (!pointInPolygon(x, z, CORONA_DOG_PARK)) continue;
     const length = 0.14 + hash2(i, 7, 137) * 0.34;
-    dummy.position.set(x, map.groundTop(x, z) + 0.18, z);
+    dummy.position.set(x, map.groundTop(x, z) + DOG_SURFACE_LIFT + 0.04, z);
     dummy.rotation.set(0, hash2(i, 11, 139) * Math.PI * 2, (hash2(i, 13) - 0.5) * 0.2);
     dummy.scale.set(length, 0.025, 0.055 + hash2(i, 17) * 0.045);
     dummy.updateMatrix();
@@ -684,22 +773,48 @@ function fencePieces() {
   return pieces;
 }
 
-function registerFenceCollider(physics: Physics, map: WorldMap, piece: FencePiece) {
+type FenceFrame = {
+  x: number;
+  y: number;
+  z: number;
+  y0: number;
+  y1: number;
+  length: number;
+  quat: readonly [number, number, number, number];
+};
+
+function fenceFrame(map: WorldMap, piece: FencePiece): FenceFrame {
   const dx = piece.bx - piece.ax;
   const dz = piece.bz - piece.az;
-  const length = Math.hypot(dx, dz);
-  const x = (piece.ax + piece.bx) / 2;
-  const z = (piece.az + piece.bz) / 2;
-  const y = (map.groundTop(piece.ax, piece.az) + map.groundTop(piece.bx, piece.bz)) / 2 + 0.72;
-  const yaw = Math.atan2(-dz, dx);
+  const y0 = map.groundTop(piece.ax, piece.az);
+  const y1 = map.groundTop(piece.bx, piece.bz);
+  const xAxis = new THREE.Vector3(dx, y1 - y0, dz).normalize();
+  const zAxis = new THREE.Vector3(-dz, 0, dx).normalize();
+  const yAxis = new THREE.Vector3().crossVectors(zAxis, xAxis).normalize();
+  const rotation = new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis);
+  const q = new THREE.Quaternion().setFromRotationMatrix(rotation);
+  return {
+    x: (piece.ax + piece.bx) / 2,
+    y: (y0 + y1) / 2,
+    z: (piece.az + piece.bz) / 2,
+    y0,
+    y1,
+    length: Math.hypot(dx, y1 - y0, dz),
+    quat: [q.x, q.y, q.z, q.w]
+  };
+}
+
+function registerFenceCollider(physics: Physics, frame: FenceFrame) {
+  const { x, z, length, quat } = frame;
+  const y = frame.y + 0.72;
   const body = physics.world.createBox({
     type: BodyType.Static,
     position: [x, y, z],
     halfExtents: [length / 2, 0.72, 0.09],
     friction: 0.7
   });
-  physics.world.setBodyTransform(body, [x, y, z], [0, Math.sin(yaw / 2), 0, Math.cos(yaw / 2)]);
-  physics.addQuerySolid(body, { x, y, z, hx: length / 2, hy: 0.72, hz: 0.09, yaw });
+  physics.world.setBodyTransform(body, [x, y, z], quat);
+  physics.addQuerySolid(body, { x, y, z, hx: length / 2, hy: 0.72, hz: 0.09, quat });
 }
 
 function makeFence(map: WorldMap, physics: Physics) {
@@ -726,26 +841,19 @@ function makeFence(map: WorldMap, physics: Physics) {
   let railIndex = 0;
   const wirePositions: number[] = [];
   for (const piece of pieces) {
-    const dx = piece.bx - piece.ax;
-    const dz = piece.bz - piece.az;
-    const length = Math.hypot(dx, dz);
-    const x = (piece.ax + piece.bx) / 2;
-    const z = (piece.az + piece.bz) / 2;
-    const y0 = map.groundTop(piece.ax, piece.az);
-    const y1 = map.groundTop(piece.bx, piece.bz);
-    const yaw = Math.atan2(-dz, dx);
+    const frame = fenceFrame(map, piece);
     for (const lift of [0.3, 1.15]) {
-      dummy.position.set(x, (y0 + y1) / 2 + lift, z);
-      dummy.rotation.set(0, yaw, 0);
-      dummy.scale.set(length, 0.035, 0.035);
+      dummy.position.set(frame.x, frame.y + lift, frame.z);
+      dummy.quaternion.set(frame.quat[0], frame.quat[1], frame.quat[2], frame.quat[3]);
+      dummy.scale.set(frame.length, 0.035, 0.035);
       dummy.updateMatrix();
       rails.setMatrixAt(railIndex++, dummy.matrix);
     }
     for (const lift of [0.52, 0.76, 0.98]) {
-      wirePositions.push(piece.ax, y0 + lift, piece.az, piece.bx, y1 + lift, piece.bz);
+      wirePositions.push(piece.ax, frame.y0 + lift, piece.az, piece.bx, frame.y1 + lift, piece.bz);
     }
-    wirePositions.push(piece.ax, y0 + 0.28, piece.az, piece.bx, y1 + 1.14, piece.bz);
-    registerFenceCollider(physics, map, piece);
+    wirePositions.push(piece.ax, frame.y0 + 0.28, piece.az, piece.bx, frame.y1 + 1.14, piece.bz);
+    registerFenceCollider(physics, frame);
   }
   posts.instanceMatrix.needsUpdate = true;
   rails.instanceMatrix.needsUpdate = true;
@@ -777,7 +885,7 @@ function addBox(
   return mesh;
 }
 
-function makeBench(map: WorldMap, x: number, z: number, yaw: number) {
+function makeBench(map: WorldMap, x: number, z: number, yaw: number, lift = 0) {
   const group = new THREE.Group();
   const wood = new THREE.MeshStandardMaterial({ color: 0x745139, roughness: 0.94 });
   const iron = new THREE.MeshStandardMaterial({ color: 0x26312d, metalness: 0.42, roughness: 0.6 });
@@ -788,7 +896,7 @@ function makeBench(map: WorldMap, x: number, z: number, yaw: number) {
     addBox(group, iron, [0.12, 0.72, 0.12], [bx, 0.36, -0.05]);
     addBox(group, iron, [0.12, 0.8, 0.12], [bx, 0.76, 0.28]).rotation.x = -0.12;
   }
-  group.position.set(x, map.groundTop(x, z), z);
+  group.position.set(x, map.groundTop(x, z) + lift, z);
   group.rotation.y = yaw;
   return group;
 }
@@ -833,7 +941,11 @@ function makeDogParkSign(map: WorldMap) {
   face.position.set(0, 1.65, -0.066);
   face.rotation.y = Math.PI;
   group.add(board, face);
-  group.position.set(CORONA_DOG_GATE[0] - 0.8, map.groundTop(CORONA_DOG_GATE[0] - 0.8, CORONA_DOG_GATE[1] + 0.4), CORONA_DOG_GATE[1] + 0.4);
+  group.position.set(
+    CORONA_DOG_GATE[0] - 0.8,
+    map.groundTop(CORONA_DOG_GATE[0] - 0.8, CORONA_DOG_GATE[1] + 0.4) + DOG_SURFACE_LIFT,
+    CORONA_DOG_GATE[1] + 0.4
+  );
   group.rotation.y = -0.95;
   return group;
 }
@@ -845,21 +957,21 @@ function makeDogPark(map: WorldMap, physics: Physics) {
   group.add(makeWoodchips(map));
   group.add(makeFence(map, physics));
   group.add(makeDogParkSign(map));
-  group.add(makeBench(map, 350.1, 2703.4, -0.68));
-  group.add(makeBench(map, 353.1, 2720.6, -1.02));
+  group.add(makeBench(map, 350.1, 2703.4, -0.68, DOG_SURFACE_LIFT));
+  group.add(makeBench(map, 353.1, 2720.6, -1.02, DOG_SURFACE_LIFT));
   const bin = new THREE.Mesh(
     new THREE.CylinderGeometry(0.34, 0.38, 0.9, 10),
     new THREE.MeshStandardMaterial({ color: 0x34443d, metalness: 0.35, roughness: 0.62 })
   );
-  bin.position.set(331, map.groundTop(331, 2723) + 0.45, 2723);
+  bin.position.set(331, map.groundTop(331, 2723) + DOG_SURFACE_LIFT + 0.45, 2723);
   bin.castShadow = true;
   group.add(bin);
   const fountainMat = new THREE.MeshStandardMaterial({ color: 0x65716b, metalness: 0.66, roughness: 0.42 });
   const fountain = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.28, 0.92, 10), fountainMat);
-  fountain.position.set(328.1, map.groundTop(328.1, 2730.2) + 0.46, 2730.2);
+  fountain.position.set(328.1, map.groundTop(328.1, 2730.2) + DOG_SURFACE_LIFT + 0.46, 2730.2);
   fountain.castShadow = true;
   const bowl = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.28, 0.1, 14), fountainMat);
-  bowl.position.set(331.4, map.groundTop(331.4, 2722.2) + 0.09, 2722.2);
+  bowl.position.set(331.4, map.groundTop(331.4, 2722.2) + DOG_SURFACE_LIFT + 0.09, 2722.2);
   bowl.castShadow = true;
   group.add(fountain, bowl);
   return group;
@@ -936,7 +1048,7 @@ function makeOwner(map: WorldMap, action: OwnerAction, x: number, z: number, tx:
   rig.group.name = `corona_owner_${action}`;
   rig.group.scale.setScalar(1.04);
   const facing = ownerFacing(x, z, tx, tz);
-  rig.group.position.set(x, map.groundTop(x, z) + 0.93, z);
+  rig.group.position.set(x, map.groundTop(x, z) + DOG_SURFACE_LIFT + 0.93, z);
   rig.group.rotation.y = facing;
   return { action, rig, x, z, facing } satisfies ParkOwner;
 }
@@ -952,7 +1064,7 @@ function throwArmPose(owner: ParkOwner, elapsed: number, phase: number) {
 }
 
 function placeOwner(map: WorldMap, owner: ParkOwner, elapsed: number, phase: number) {
-  owner.rig.group.position.set(owner.x, map.groundTop(owner.x, owner.z) + 0.93, owner.z);
+  owner.rig.group.position.set(owner.x, map.groundTop(owner.x, owner.z) + DOG_SURFACE_LIFT + 0.93, owner.z);
   owner.rig.group.rotation.y = owner.facing;
   if (owner.action === "watch") {
     poseIdle(owner.rig, elapsed);
@@ -966,7 +1078,7 @@ function moveDog(map: WorldMap, dog: ParkDog, tx: number, tz: number, dt: number
   const dx = tx - dog.x;
   const dz = tz - dog.z;
   const d = Math.hypot(dx, dz);
-  const maxSpeed = 6.8 / dog.style.scale;
+  const maxSpeed = 11.8 / dog.style.scale;
   const step = Math.min(d, maxSpeed * Math.min(dt, 0.08));
   let vx = 0;
   let vz = 0;
@@ -979,7 +1091,7 @@ function moveDog(map: WorldMap, dog: ParkDog, tx: number, tz: number, dt: number
   }
   dog.speed = dt > 1e-4 ? step / dt : 0;
   dog.stride += step * 4.6;
-  dog.group.position.set(dog.x, map.groundTop(dog.x, dog.z) + 0.04, dog.z);
+  dog.group.position.set(dog.x, map.groundTop(dog.x, dog.z) + DOG_SURFACE_LIFT + 0.04, dog.z);
   dog.group.rotation.y = dog.heading;
   dog.group.position.y += Math.abs(Math.sin(dog.stride * 0.5)) * Math.min(0.08, dog.speed * 0.012) * dog.style.scale;
   const swing = Math.sin(dog.stride) * Math.min(0.85, dog.speed * 0.15);
@@ -993,14 +1105,10 @@ function moveDog(map: WorldMap, dog: ParkDog, tx: number, tz: number, dt: number
 }
 
 function fetchTarget(phase: number, owner: CoronaXZ, landing: CoronaXZ, waiting: CoronaXZ) {
-  if (phase < 0.15) return waiting;
-  if (phase < 0.58) {
-    const t = smooth01((phase - 0.15) / 0.43);
-    return [lerp(waiting[0], landing[0], t), lerp(waiting[1], landing[1], t)] as const;
-  }
-  if (phase < 0.72) return landing;
-  const t = smooth01((phase - 0.72) / 0.28);
-  return [lerp(landing[0], owner[0], t), lerp(landing[1], owner[1], t)] as const;
+  if (phase < 0.12) return waiting;
+  if (phase < 0.54) return landing;
+  if (phase < 0.94) return owner;
+  return waiting;
 }
 
 function dogMouth(dog: ParkDog, out: THREE.Vector3) {
@@ -1036,7 +1144,7 @@ export class CoronaHeightsPark {
     this.group.add(makeHillSkin(map));
     this.group.add(makeQuarryFace(map));
     this.group.add(makeTrails(map));
-    this.group.add(makeRockField(map));
+    this.group.add(makeRockField(map, physics));
     this.foliage.add(makeHillGrass(map), makeWildflowers(map), makeShrubsAndTrees(map));
     this.group.add(this.foliage);
     this.group.add(makeDogPark(map, physics));
@@ -1052,13 +1160,13 @@ export class CoronaHeightsPark {
     this.dogs.forEach((dog, i) => {
       dog.x = initial[i][0];
       dog.z = initial[i][1];
-      dog.group.position.set(dog.x, map.groundTop(dog.x, dog.z) + 0.04, dog.z);
+      dog.group.position.set(dog.x, map.groundTop(dog.x, dog.z) + DOG_SURFACE_LIFT + 0.04, dog.z);
       this.activity.add(dog.group);
     });
 
     this.owners = [
-      makeOwner(map, "ball", 342, 2717, 394, 2698, "corona-ball-owner"),
-      makeOwner(map, "frisbee", 399, 2687, 354, 2703, "corona-frisbee-owner"),
+      makeOwner(map, "ball", 342, 2717, 366, 2708, "corona-ball-owner"),
+      makeOwner(map, "frisbee", 399, 2687, 378, 2700, "corona-frisbee-owner"),
       makeOwner(map, "watch", 372, 2711, 372, 2700, "corona-watching-owner")
     ];
     for (const owner of this.owners) this.activity.add(owner.rig.group);
@@ -1091,7 +1199,7 @@ export class CoronaHeightsPark {
     this.activity.visible = distance < ACTIVITY_RANGE;
     if (!this.activity.visible) return;
 
-    const ballPhase = ((elapsed + 0.35) % 5.2) / 5.2;
+    const ballPhase = ((elapsed + 0.35) % 6.2) / 6.2;
     const frisbeePhase = ((elapsed + 2.1) % 6.35) / 6.35;
     placeOwner(this.#map, this.owners[0], elapsed, ballPhase);
     placeOwner(this.#map, this.owners[1], elapsed, frisbeePhase);
@@ -1099,8 +1207,8 @@ export class CoronaHeightsPark {
 
     const ballOwner: CoronaXZ = [this.owners[0].x, this.owners[0].z];
     const frisbeeOwner: CoronaXZ = [this.owners[1].x, this.owners[1].z];
-    const ballLanding: CoronaXZ = [394, 2698];
-    const frisbeeLanding: CoronaXZ = [354, 2703];
+    const ballLanding: CoronaXZ = [366, 2708];
+    const frisbeeLanding: CoronaXZ = [378, 2700];
     const ballTarget = fetchTarget(ballPhase, ballOwner, ballLanding, [349, 2714]);
     const frisbeeTarget = fetchTarget(frisbeePhase, frisbeeOwner, frisbeeLanding, [393, 2691]);
     moveDog(this.#map, this.dogs[0], ballTarget[0], ballTarget[1], dt);
@@ -1113,19 +1221,19 @@ export class CoronaHeightsPark {
   }
 
   #updateBall(phase: number, owner: CoronaXZ, landing: CoronaXZ, dog: ParkDog) {
-    const ownerY = this.#map.groundTop(owner[0], owner[1]) + 1.58;
-    if (phase < 0.17) {
+    const ownerY = this.#map.groundTop(owner[0], owner[1]) + DOG_SURFACE_LIFT + 1.58;
+    if (phase < 0.14) {
       this.#ball.position.set(owner[0] - 0.35, ownerY, owner[1] - 0.45);
-    } else if (phase < 0.52) {
-      const t = (phase - 0.17) / 0.35;
+    } else if (phase < 0.34) {
+      const t = (phase - 0.14) / 0.2;
       this.#ball.position.set(
         lerp(owner[0], landing[0], t),
-        lerp(ownerY, this.#map.groundTop(landing[0], landing[1]) + 0.17, t) + Math.sin(t * Math.PI) * 5.2,
+        lerp(ownerY, this.#map.groundTop(landing[0], landing[1]) + DOG_SURFACE_LIFT + 0.17, t) + Math.sin(t * Math.PI) * 5.2,
         lerp(owner[1], landing[1], t)
       );
-    } else if (phase < 0.71) {
-      this.#ball.position.set(landing[0], this.#map.groundTop(landing[0], landing[1]) + 0.17, landing[1]);
-    } else if (phase < 0.95) {
+    } else if (phase < 0.54) {
+      this.#ball.position.set(landing[0], this.#map.groundTop(landing[0], landing[1]) + DOG_SURFACE_LIFT + 0.17, landing[1]);
+    } else if (phase < 0.94) {
       this.#ball.position.copy(dogMouth(dog, this.#mouth));
     } else {
       this.#ball.position.set(owner[0] - 0.35, ownerY, owner[1] - 0.45);
@@ -1133,19 +1241,19 @@ export class CoronaHeightsPark {
   }
 
   #updateFrisbee(phase: number, owner: CoronaXZ, landing: CoronaXZ, dog: ParkDog, elapsed: number) {
-    const ownerY = this.#map.groundTop(owner[0], owner[1]) + 1.64;
-    if (phase < 0.16) {
+    const ownerY = this.#map.groundTop(owner[0], owner[1]) + DOG_SURFACE_LIFT + 1.64;
+    if (phase < 0.13) {
       this.#frisbee.position.set(owner[0] + 0.35, ownerY, owner[1] + 0.3);
-    } else if (phase < 0.54) {
-      const t = (phase - 0.16) / 0.38;
+    } else if (phase < 0.34) {
+      const t = (phase - 0.13) / 0.21;
       this.#frisbee.position.set(
         lerp(owner[0], landing[0], t),
-        lerp(ownerY, this.#map.groundTop(landing[0], landing[1]) + 0.28, t) + Math.sin(t * Math.PI) * 3.6,
+        lerp(ownerY, this.#map.groundTop(landing[0], landing[1]) + DOG_SURFACE_LIFT + 0.28, t) + Math.sin(t * Math.PI) * 3.6,
         lerp(owner[1], landing[1], t)
       );
-    } else if (phase < 0.7) {
-      this.#frisbee.position.set(landing[0], this.#map.groundTop(landing[0], landing[1]) + 0.24, landing[1]);
-    } else if (phase < 0.95) {
+    } else if (phase < 0.54) {
+      this.#frisbee.position.set(landing[0], this.#map.groundTop(landing[0], landing[1]) + DOG_SURFACE_LIFT + 0.24, landing[1]);
+    } else if (phase < 0.94) {
       this.#frisbee.position.copy(dogMouth(dog, this.#mouth));
     } else {
       this.#frisbee.position.set(owner[0] + 0.35, ownerY, owner[1] + 0.3);

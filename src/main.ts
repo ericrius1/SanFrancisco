@@ -23,7 +23,7 @@ import { createBayLights, updateBayLights, resetBayLightsTweaks } from "./world/
 import { createGoldenGateLights, updateGoldenGateLights, resetGoldenGateLightsTweaks } from "./world/goldenGateLights";
 import { createPalaceColonnade, PALACE_RING_BUILDINGS } from "./world/palaceColonnade";
 import { createSutroTower, updateSutroTower, resetSutroLightsTweaks } from "./world/sutroTower";
-import { CoronaHeightsPark } from "./world/coronaHeights";
+import { CoronaHeightsPark, prepareCoronaHeightsGround } from "./world/coronaHeights";
 import { findOpenSpawn } from "./world/spawn";
 import { Player } from "./player/player";
 import type { PlayerMode } from "./player/types";
@@ -132,6 +132,7 @@ async function boot() {
   const bootT0 = performance.now();
   progress(8, "reading the map");
   const map = await WorldMap.load();
+  prepareCoronaHeightsGround(map);
 
   progress(18, "waking the gpu");
   // reversed-z: near 0.3 / far 24000 leaves classic depth with sub-metre steps
@@ -440,7 +441,7 @@ async function boot() {
     input.suspended = on;
     orbit.enabled = on;
     if (on) {
-      player.setFirstPersonView(false); // orbit should always show the local avatar
+      chase.suspend(player); // orbit owns the camera and should show the local avatar
       input.releaseLock();
       orbit.setLookAt(
         camera.position.x,
@@ -1072,7 +1073,7 @@ async function boot() {
       origin.copy(camera.position);
       dir.set(input.mouseNDCx, input.mouseNDCy, 0.5).unproject(camera).sub(camera.position).normalize();
     } else {
-      chase.lookDir(dir);
+      chase.interactionDir(dir, player);
       chase.viewOrigin(origin, player);
     }
   };
@@ -1590,7 +1591,7 @@ async function boot() {
       // and streaming focus current so crossing a doorway cannot leave the camera
       // stuck in the previous indoor/outdoor mode.
       citygenRing.current?.update(player.position, frameDt);
-      if (cameraMode) orbit.update(frameDt);
+      if (cameraMode) { chase.suspend(player); orbit.update(frameDt); }
       else { chase.indoor = citygenRing.current?.isPlayerInside() ?? false; chase.update(frameDt, player, input); }
       // keep the vehicle hum, ambience and social presence alive like full pause
       vehicleAudio.update(frameDt, {
@@ -1803,7 +1804,7 @@ async function boot() {
     } else if (input.firing && currentAnimal === "raccoon") {
       // mounted raccoon: the click-tools stand down, the gummy cannon speaks
       if (fireCooldown <= 0) {
-        chase.lookDir(aim);
+        chase.interactionDir(aim, player);
         fireCooldown = 0.13;
         chase.viewOrigin(rayOrigin, player);
         forest?.fireGummy(rayOrigin, aim, player.velocity);
@@ -1811,13 +1812,13 @@ async function boot() {
     } else if (tool === "rope") {
       // rope tool: click one end, click the other — ropes.ts narrates each step
       if (input.firePressed && !input.suspended) {
-        chase.lookDir(aim);
+        chase.interactionDir(aim, player);
         chase.viewOrigin(rayOrigin, player);
         hud.message(ropes.toolClick(rayOrigin, aim, gatherPickables()), 2.4);
       }
     } else if (tool === "grab") {
       // grab tool: hold to tractor-beam something, release to drop/throw
-      chase.lookDir(aim);
+      chase.interactionDir(aim, player);
       chase.viewOrigin(rayOrigin, player);
       if (input.firing && !grabber.holding && fireCooldown <= 0) {
         if (!grabber.tryGrab(rayOrigin, aim, gatherPickables())) fireCooldown = 0.2; // re-probe 5×/s while held on air
@@ -1825,7 +1826,7 @@ async function boot() {
         grabber.release(aim);
       }
     } else if (input.firing) {
-      chase.lookDir(aim);
+      chase.interactionDir(aim, player);
       chase.viewOrigin(rayOrigin, player);
       if (tool === "spray" && fireCooldown <= 0) {
         // paintballs: visible ballistic shots that splat wherever they land —
@@ -1974,7 +1975,7 @@ async function boot() {
     ropes.update(frameDt, player.position, elapsed);
     if (grabber.holding) {
       // the carry servo chases a point in front of the live camera every frame
-      chase.lookDir(aim);
+      chase.interactionDir(aim, player);
       grabber.update(chase.viewOrigin(rayOrigin, player), aim);
     }
 
@@ -2005,13 +2006,16 @@ async function boot() {
       doorPromptShown = false;
     }
     if (cineHook) {
+      chase.suspend(player);
       cineHook(frameDt); // scripted cinematic owns pose + camera
     } else if (golf?.updateBallCam(frameDt, camera)) {
+      chase.suspend(player);
       // golf flight cam: chases the ball until it settles, then hands back
     } else if (cameraMode) {
+      chase.suspend(player);
       orbit.update(frameDt);
     } else {
-      chase.indoor = citygenRing.current?.isPlayerInside() ?? false; // pull the boom in indoors
+      chase.indoor = citygenRing.current?.isPlayerInside() ?? false; // blend into the indoor eye rig
       chase.update(frameDt, player, input);
     }
     sky.update(elapsed, camera.position);

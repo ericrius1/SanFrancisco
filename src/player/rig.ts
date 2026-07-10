@@ -344,10 +344,10 @@ export function buildGolfClub(): THREE.Group {
 
   const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.021, 0.22, 7), STATIC_MAT.clubGrip);
   grip.position.y = -0.1;
-  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.017, 0.76, 7), STATIC_MAT.clubShaft);
-  shaft.position.y = -0.59;
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.017, 0.6, 7), STATIC_MAT.clubShaft);
+  shaft.position.y = -0.51;
   const head = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.075, 0.095), STATIC_MAT.clubHead);
-  head.position.set(0.075, -0.98, 0);
+  head.position.set(0.075, -0.82, 0);
   head.rotation.z = -0.12;
   for (const mesh of [grip, shaft, head]) {
     mesh.castShadow = true;

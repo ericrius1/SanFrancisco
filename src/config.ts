@@ -80,9 +80,9 @@ export const WORLD_TUNING = tunables("world", {
   // The five fog controls. Shape, colour, octave scales, path accumulation and
   // cull-edge calibration live together in sky.ts beside the r185 reference graph.
   //
-  // Top of the marine layer in world metres. The 105 m default socks in low
+  // Top of the marine layer in world metres. The 95 m default socks in low
   // districts while Twin Peaks, Sutro and the bridge towers emerge above it.
-  fogTop: { v: 105, min: -20, max: 320, step: 1, label: "height (m)" },
+  fogTop: { v: 95, min: -20, max: 320, step: 1, label: "height (m)" },
   // Beer-Lambert path density inside the layer; 1 is the authored reference.
   fogBank: { v: 1, min: 0, max: 2, step: 0.02, label: "density" },
   // 1 = the official 22 m noisy-ceiling variation; 0 = a flat bank.

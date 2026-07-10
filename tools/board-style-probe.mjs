@@ -244,6 +244,22 @@ async function main() {
     await sleep(250);
   }
 
+  // A concurrently edited Vite workspace can reload between initial readiness
+  // and the warm-up loop. Reacquire the live hooks instead of failing later on
+  // a stale page generation.
+  let liveAfterWarmup = false;
+  for (let i = 0; i < 120; i++) {
+    try {
+      if (await ev(c, `!!(window.__sf?.renderer?.backend?.device&&window.__sf?.player&&window.__sf?.tick)`)) {
+        await ev(c, `window.__sfManual&&window.__sfManual(true)`);
+        liveAfterWarmup = true;
+        break;
+      }
+    } catch {}
+    await sleep(250);
+  }
+  assertProbe(liveAfterWarmup, "app hooks disappeared during Vite warm-up");
+
   // ride the board on a real street, then park a low three-quarter free camera
   // on it (recomputed per shot — the hover spring bobs)
   await ev(c, `(async()=>{ ${P}
@@ -500,6 +516,24 @@ async function main() {
   })()`);
   assertProbe(results.ui.toggle && results.ui.open && results.ui.structure.complete, "simplified four-lab board UI is incomplete or Finish still exists");
 
+  // The prior UI showed the same frozen texture in every visual card. Prove
+  // Motion and both audio instruments now have distinct live preview frames.
+  results.ui.previewFrames = await ev(c, `(async()=>{
+    const kinds=['motion','sound','thrust'];
+    const checksum=canvas=>{
+      const data=canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data;
+      let h=2166136261;
+      for(let i=0;i<data.length;i+=97) h=Math.imul(h^data[i],16777619);
+      return h>>>0;
+    };
+    const canvases=Object.fromEntries(kinds.map(k=>[k,document.querySelector('.board-lab-'+k+' .board-xy-canvas')]));
+    const before=Object.fromEntries(kinds.map(k=>[k,canvases[k]?checksum(canvases[k]):null]));
+    for(let i=0;i<8;i++) await new Promise(r=>requestAnimationFrame(r));
+    const after=Object.fromEntries(kinds.map(k=>[k,canvases[k]?checksum(canvases[k]):null]));
+    return {before,after,changed:Object.fromEntries(kinds.map(k=>[k,before[k]!==after[k]]))};
+  })()`);
+  assertProbe(Object.values(results.ui.previewFrames.changed).every(Boolean), `live pad previews did not animate: ${JSON.stringify(results.ui.previewFrames.changed)}`);
+
   // End coordinates intentionally land in distinct quadrants. Y is inverted by
   // the pad, so the expected committed values are noted beside each endpoint.
   const padDrags = [
@@ -574,18 +608,37 @@ async function main() {
   await sleep(50);
   await ev(c, `(async()=>{ document.querySelector('.board-toggle').click(); return true; })()`);
 
-  // ---- 5. hum re-voice + preview swell ----
+  // ---- 5. two audio instruments: voice + material thrust/air response ----
   results.audio = await ev(c, `(async()=>{ ${P}
     sf.player.trySwitch('walk'); await tick(10); // not riding: preview path, not live hum
-    sf.vehicleAudio.setBoardStyle({hum:'crystal',pitch:2,soundTone:84,soundMotion:76});
-    sf.vehicleAudio.previewBoard();
-    let peak=0;
-    for(let i=0;i<70;i++){ await tick(1); const v=sf.vehicleAudio.debugState.voices.find(x=>x.mode==='board'); if(v&&v.level>peak) peak=v.level; }
-    for(let i=0;i<160;i++){ await tick(1); }
+    const base={hum:'crystal',pitch:2,soundTone:84,soundMotion:76};
+    const sample=async(soundThrust,soundAir)=>{
+      sf.vehicleAudio.setBoardStyle({...base,soundThrust,soundAir});
+      sf.vehicleAudio.previewBoard();
+      let peak=0;
+      for(let i=0;i<58;i++){
+        await tick(1);
+        const v=sf.vehicleAudio.debugState.voices.find(x=>x.mode==='board');
+        if(v&&v.level>peak) peak=v.level;
+      }
+      const state=sf.vehicleAudio.debugState;
+      const runtime={...state.boardRuntime};
+      for(let i=0;i<150;i++) await tick(1);
+      return {runtime,peak:+peak.toFixed(3)};
+    };
+    const low=await sample(0,0);
+    const high=await sample(100,100);
     const state=sf.vehicleAudio.debugState;
     const after=state.voices.find(x=>x.mode==='board').level;
-    return { ctx:state.ctx, boardStyle:state.boardStyle, peak:+peak.toFixed(3), after:+after.toFixed(3) };
+    return {ctx:state.ctx,boardStyle:state.boardStyle,low,high,after:+after.toFixed(3)};
   })()`);
+  assertProbe(results.audio.ctx === "running", `audio context is ${results.audio.ctx}`);
+  assertProbe(results.audio.boardStyle.soundThrust === 100 && results.audio.boardStyle.soundAir === 100, "second audio macros did not stick");
+  assertProbe(results.audio.high.runtime.response >= results.audio.low.runtime.response + 0.2, "thrust response delta is too subtle");
+  assertProbe(results.audio.high.runtime.detuneCents >= results.audio.low.runtime.detuneCents + 180, "thrust pitch delta is too subtle");
+  assertProbe(results.audio.high.runtime.cutoffHz >= results.audio.low.runtime.cutoffHz + 220, "thrust filter delta is too subtle");
+  assertProbe(results.audio.high.runtime.airGain >= Math.max(0.02, results.audio.low.runtime.airGain * 5), "air macro did not add a material noise layer");
+  assertProbe(results.audio.low.peak > 0.1 && results.audio.high.peak > 0.1 && results.audio.after < 0.02, "audio previews did not swell and decay cleanly");
 
   writeFileSync(path.join(OUT, "result.json"), JSON.stringify(results, null, 2));
   console.log(JSON.stringify(results, null, 2));

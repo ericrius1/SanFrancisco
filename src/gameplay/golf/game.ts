@@ -170,6 +170,7 @@ export class GolfGame {
     this.#totalDelta = 0;
     this.#holesDone = 0;
     this.#holeScores.length = 0;
+    this.#charge = 0;
     this.#teePromptShown = false;
     this.#beginHole(hud, true);
     this.#ui.setVisible(true);
@@ -198,6 +199,7 @@ export class GolfGame {
     this.#ballMesh.visible = true;
     this.#syncBallMesh();
     this.#phase = "toBall";
+    this.#charge = 0;
     // swing the camera to face down the hole line (view dir = -(sin,cos) of yaw)
     this.#wantCamYaw = this.#course.teeAim(this.#holeIdx) + Math.PI;
     this.#autoClub();
@@ -440,6 +442,7 @@ export class GolfGame {
     if (!near) {
       if (this.#phase !== "toBall") {
         this.#phase = "toBall";
+        this.#charge = 0;
         this.#ui.showSwing(false);
         this.#aimArrow.visible = false;
       }
@@ -448,6 +451,7 @@ export class GolfGame {
 
     if (this.#phase === "toBall") {
       this.#phase = "aim";
+      this.#charge = 0;
       this.#ui.showSwing(true);
       this.#ui.setClubs(CLUBS, this.#clubIdx);
       this.#ui.setCharge(0, 0, false);

@@ -55,7 +55,9 @@ export class WorldMap {
   // the bake is missing (older deploys), so behaviour degrades to the old one.
   groundTops!: Float32Array;
   surface!: Uint8Array;
+  groundRevision = 0;
   #bridgeBounds?: { minX: number; maxX: number; minZ: number; maxZ: number }[];
+  #groundTopOverlay?: (x: number, z: number, base: number) => number;
 
   static async load(): Promise<WorldMap> {
     const map = new WorldMap();
@@ -127,12 +129,26 @@ export class WorldMap {
     return this.#sampleGrid(this.heights, x, z);
   }
 
-  /** Top of the rendered ground — the surface paint, the cursor and the walk
-   *  carpet should rest on. Equals `groundHeight` off-park; on park lawns it is
-   *  raised to the draped grass you actually see. Excludes the bridge deck (a
-   *  real solid, cast separately in physics.raycastWorld). */
-  groundTop(x: number, z: number): number {
+  /** Baked top of the rendered ground before a runtime gameplay surface is
+   *  applied. Terrain-fitting systems use this to avoid feeding an overlay
+   *  back into itself. */
+  baseGroundTop(x: number, z: number): number {
     return this.#sampleGrid(this.groundTops, x, z);
+  }
+
+  /** Install the single current runtime ground sheet. Its result is shared by
+   *  rendering helpers, player/vehicle grounding, the physics carpet and world
+   *  raycasts, so authored surfaces cannot visually diverge from collision. */
+  setGroundTopOverlay(overlay?: (x: number, z: number, base: number) => number) {
+    this.#groundTopOverlay = overlay;
+    this.groundRevision++;
+  }
+
+  /** Top of the rendered/playable ground — the surface paint, cursor and walk
+   *  carpet all rest here. Excludes bridge decks, which effectiveGround adds. */
+  groundTop(x: number, z: number): number {
+    const base = this.baseGroundTop(x, z);
+    return this.#groundTopOverlay?.(x, z, base) ?? base;
   }
 
   surfaceType(x: number, z: number): number {

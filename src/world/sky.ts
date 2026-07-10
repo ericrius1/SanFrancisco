@@ -181,7 +181,9 @@ const FOG_NOISE_SCALE_B = 0.01 // ~100 m secondary wisps
 const FOG_NOISE_SPEED = 0.2
 const FOG_NOISE_CENTER = 0.7
 const FOG_TOP_VARIATION = 22 // metres, exactly the r185 reference amplitude
-const FOG_PATH_LENGTH = 80 // metres; Beer-Lambert accumulation inside the bank
+const FOG_EXTINCTION_LENGTH = 160 // metres at unit density (Beer-Lambert mean free path)
+const FOG_DENSITY_MIN = 0.82 // moving pockets, centred on the reference density
+const FOG_DENSITY_MAX = 1.18
 const FOG_EDGE_START = 0.88 // narrow streamed-geometry cull fade
 const FOG_EDGE_END = 0.98
 const FOG_SKY_BLEND_HEIGHT = 0.08 // match the visible horizon over its lowest ~5°
@@ -495,6 +497,7 @@ export class Sky {
   // deliberately gone: they overwhelmed the reference billows and made a flat wall.
   #buildFogNode(): N {
     const dist = cameraPosition.sub(positionWorld).length()
+    const horizontalDist = (cameraPosition as N).xz.sub((positionWorld as N).xz).length()
     const base = float(FOG_BASE) as N
     const y = (positionWorld as N).y
 
@@ -523,24 +526,52 @@ export class Sky {
           .mul(this.#uFogNoise as N)
       )
       .max(base.add(1))
-    const groundFogArea = top.sub(y).div(top.sub(base)).saturate().mul(0.98)
+    // The alpine reference gets most of its visible density structure from terrain
+    // crossing the noisy ceiling. Large parts of SF are flat, so let that same
+    // reference noise gently modulate density throughout the layer as well. This
+    // preserves rolling white pockets over streets and water instead of a solid fill.
+    const billowDensity = smoothstep(float(0.25), float(0.9), fogNoise)
+    const densityShape = mix(
+      float(1),
+      mix(float(FOG_DENSITY_MIN), float(FOG_DENSITY_MAX), billowDensity),
+      (this.#uFogNoise as N).saturate()
+    )
 
-    // Unlike the reference's elevated spectator camera, gameplay can stand inside
-    // the bank. Accumulate extinction continuously along the sight line instead of
-    // carving a spherical clear bubble with a visible outer wall.
-    const pathAccumulation = dist
-      .div(FOG_PATH_LENGTH)
+    // Unlike the reference's fixed elevated camera, gameplay can walk inside the
+    // bank or fly far above it. Approximate the density integral along the ray:
+    // sample the height ramp at both ends, then count only the fraction of the ray
+    // below the noisy ceiling. A high bird/plane therefore sees a pooled layer
+    // beneath it instead of treating the whole kilometre of clear air as fog.
+    const layerDepth = top.sub(base).max(1)
+    const surfaceDensity = top.sub(y).div(layerDepth).saturate().mul(0.98)
+    const cameraDensity = top
+      .sub((cameraPosition as N).y)
+      .div(layerDepth)
+      .saturate()
+      .mul(0.98)
+    const verticalSpan = (cameraPosition as N).y.sub(y).abs().max(0.001)
+    const lowerEnd = (cameraPosition as N).y.min(y)
+    const inLayerFraction = top.sub(lowerEnd).div(verticalSpan).saturate()
+    const meanRayDensity = surfaceDensity
+      .add(cameraDensity)
+      .mul(0.5)
+      .mul(inLayerFraction)
+      .mul(densityShape)
+    const opticalDepth = dist
+      .mul(meanRayDensity)
       .mul(this.#uFogBank as N)
-      .negate()
-      .exp()
-      .oneMinus()
-    const bankFog = groundFogArea.mul(pathAccumulation)
+      .div(FOG_EXTINCTION_LENGTH)
+    const bankFog = opticalDepth.negate().exp().oneMinus()
 
     // The reference exp² distance haze supplies the broad atmospheric falloff.
     const distHaze = densityFogFactor(this.#uFogDensity as N)
-    // Streaming still needs guaranteed opacity before geometry disappears, but
-    // confine it to the final 12–2% of the draw radius instead of half the city.
-    const edgeFade = smoothstep(this.#uFogEdgeStart as N, this.#uFogEdgeEnd as N, dist)
+    // Finish the streamed-world fade only at the horizontal draw edge. Altitude is
+    // irrelevant to the XZ streaming rings and must never whiten geometry below.
+    const edgeFade = smoothstep(
+      this.#uFogEdgeStart as N,
+      this.#uFogEdgeEnd as N,
+      horizontalDist
+    )
 
     // Probabilistic union, identical to the reference for bank + haze and extended
     // by only the narrow cull fade: 1 - (1-bank)(1-haze)(1-edge).

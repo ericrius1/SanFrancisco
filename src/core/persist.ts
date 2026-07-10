@@ -9,7 +9,7 @@ import type { PlayerMode } from "../player/types";
 
 const TWEAKS_KEY = "sf-tweaks";
 const TWEAKS_SCHEMA_KEY = "sf-tweaks-schema";
-const TWEAKS_SCHEMA = "2026-07-official-fog-r185"; // reset the incompatible charcoal-fog settings/scale
+const TWEAKS_SCHEMA = "2026-07-official-fog-r185-2"; // reset the incompatible charcoal-fog settings/scale
 const PLAYER_KEY = "sf-player";
 
 const saved: Record<string, unknown> = (() => {

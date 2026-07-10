@@ -46,16 +46,24 @@ export class ChaseCamera {
   indoor = false
   #indoor = 0 // smoothed 0..1
 
-  #pos = new THREE.Vector3()
   #chasePos = new THREE.Vector3()
   #eyePos = new THREE.Vector3()
+  #orbitPos = new THREE.Vector3()
+  #firstPersonPos = new THREE.Vector3()
+  #orbitViewPos = new THREE.Vector3()
+  #viewDir = new THREE.Vector3()
   #target = new THREE.Vector3()
   #orbitQuat = new THREE.Quaternion()
+  #heldOrbitQuat = new THREE.Quaternion()
   #firstPersonQuat = new THREE.Quaternion()
   #lookMatrix = new THREE.Matrix4()
   #firstPersonEuler = new THREE.Euler(0, 0, 0, "YXZ")
   #up = new THREE.Vector3(0, 1, 0)
   #firstPersonAvatarHidden = false
+  #initialized = false
+  #externallyOwned = false
+  #holdOrbitPose = false
+  #lastMode: PlayerMode | null = null
   #map: WorldMap
 
   constructor(camera: THREE.PerspectiveCamera, map: WorldMap) {
@@ -75,15 +83,56 @@ export class ChaseCamera {
   /** Blend the avatar's third-person muzzle into the actual eye in first person. */
   viewOrigin(out: THREE.Vector3, player: Player): THREE.Vector3 {
     out.copy(player.aimOrigin)
-    return out.lerp(this.camera.position, this.firstPersonBlend)
+    const blend = player.mode === "walk" ? this.firstPersonBlend : 0
+    return out.lerp(this.camera.position, blend)
+  }
+
+  /** Exact rendered direction during an indoor handoff; canonical look outdoors. */
+  interactionDir(out: THREE.Vector3, player: Player): THREE.Vector3 {
+    if (player.mode === "walk" && this.firstPersonBlend > 0.001)
+      return this.camera.getWorldDirection(out)
+    return this.lookDir(out)
+  }
+
+  /** Hand camera ownership to orbit/cinematics and restore the local avatar. */
+  suspend(player: Player) {
+    if (!this.#externallyOwned) this.#externallyOwned = true
+    this.#indoor = 0
+    this.#holdOrbitPose = false
+    this.#firstPersonAvatarHidden = false
+    player.setFirstPersonView(false)
+  }
+
+  #resume(player: Player) {
+    if (!this.#externallyOwned) return
+    this.#externallyOwned = false
+    this.camera.getWorldDirection(this.#viewDir)
+    this.yaw = Math.atan2(-this.#viewDir.x, -this.#viewDir.z)
+    this.pitch = THREE.MathUtils.clamp(
+      -Math.asin(THREE.MathUtils.clamp(this.#viewDir.y, -1, 1)),
+      VIEW.firstPersonPitchMin,
+      VIEW.firstPersonPitchMax
+    )
+    this.#orbitPos.copy(this.camera.position)
+    this.#heldOrbitQuat.copy(this.camera.quaternion)
+    this.#firstPersonPos.set(
+      player.renderPosition.x,
+      player.renderPosition.y + VIEW.eyeHeight,
+      player.renderPosition.z
+    )
+    this.#holdOrbitPose = this.indoor && player.mode === "walk"
+    this.#initialized = true
   }
 
   update(dt: number, player: Player, input: Input) {
+    this.#resume(player)
     const indoorTarget = this.indoor && player.mode === "walk" ? 1 : 0
     this.#indoor +=
       (indoorTarget - this.#indoor) *
       (1 - Math.exp(-Math.min(dt, 0.1) * VIEW.transitionRate))
-    const firstPersonBlend = this.firstPersonBlend
+    // A vehicle switch must drop the active eye rig immediately. The stored
+    // scalar may decay in the background so returning to walk remains smooth.
+    const firstPersonBlend = player.mode === "walk" ? this.firstPersonBlend : 0
     // Hide late on entry, after the avatar nearly fills the frame, and restore
     // farther back on exit. The hysteresis avoids both clipped self-geometry and
     // a visible on/off flutter around the threshold.
@@ -132,11 +181,15 @@ export class ChaseCamera {
         pitchMax
       )
     }
-    this.zoom = THREE.MathUtils.clamp(
-      this.zoom * (1 + input.wheel * 0.0009),
-      0.45,
-      2.6
-    )
+    // FPS ignores chase zoom, so do not silently mutate the outdoor boom while
+    // the wheel appears to do nothing indoors. Vehicle modes remain unaffected.
+    if (player.mode !== "walk" || (indoorTarget === 0 && firstPersonBlend < 0.001)) {
+      this.zoom = THREE.MathUtils.clamp(
+        this.zoom * (1 + input.wheel * 0.0009),
+        0.45,
+        2.6
+      )
+    }
 
     const o = OFFSETS[player.mode]
     const backBase = o.back * this.zoom
@@ -185,11 +238,10 @@ export class ChaseCamera {
     // fixed to that eye line and deliberately ignores chase zoom; the local walk
     // embodiment is hidden near the end of the blend to prevent self-clipping.
     this.#eyePos.set(anchor.x, anchor.y + VIEW.eyeHeight, anchor.z)
-    this.#pos.lerpVectors(this.#chasePos, this.#eyePos, firstPersonBlend)
 
     // critically-damped-ish follow; flying gets a floatier tail, the drone a
     // slightly loose one so swoops read as motion instead of a rigid rig
-    let stiff =
+    let orbitStiff =
       player.mode === "plane"
         ? 6.5
         : player.mode === "bird" || player.mode === "drone"
@@ -200,19 +252,50 @@ export class ChaseCamera {
     // and the phoenix shrinks to a dot. Tighten the tail as airspeed climbs so
     // the boost pulls the camera along instead of away (~5m at full stoop).
     if (player.mode === "bird")
-      stiff = THREE.MathUtils.clamp(player.speed * 0.2, 7.5, 17)
-    // A chase camera should trail; an FPS eye should not. The desired pose above
-    // already transitions smoothly, so tightening follow here removes run/stair
-    // lag without making the handoff snap.
-    stiff = THREE.MathUtils.lerp(stiff, VIEW.firstPersonFollow, firstPersonBlend)
+      orbitStiff = THREE.MathUtils.clamp(player.speed * 0.2, 7.5, 17)
     // clamp the smoothing step. A tile-upload spike inflates the *next* frame's
-    // dt, and an uncapped 1-exp(-dt*stiff) then snaps the camera a large fraction
+    // dt, and an uncapped 1-exp(-dt*stiff) then snaps an orbit a large fraction
     // of the way to target in that one frame — the visible "hitch" as chunks
     // stream in (worst in fly, whose floaty tail trails farthest). The anchor
     // (renderPosition) is interpolated and never jumps, so a small residual lag
     // after a spike is imperceptible and heals within a few frames.
     const smoothDt = Math.min(dt, 1 / 30)
-    this.camera.position.lerp(this.#pos, 1 - Math.exp(-smoothDt * stiff))
+    const modeChanged = this.#lastMode !== player.mode
+    this.#lastMode = player.mode
+    if (!this.#initialized) {
+      this.#orbitPos.copy(this.camera.position)
+      this.#firstPersonPos.copy(this.#eyePos)
+      this.#initialized = true
+    } else if (modeChanged && player.mode !== "walk") {
+      // Leaving FPS for a vehicle must clear its geometry immediately rather than
+      // easing the camera outward from the vehicle's centre for several frames.
+      this.#orbitPos.copy(this.#chasePos)
+    }
+    if (this.#holdOrbitPose && indoorTarget === 1) {
+      // Returning from an arbitrary orbit/cinematic inside should travel directly
+      // from that camera to the eye. Moving this endpoint toward the chase boom at
+      // the same time creates a visible outward-then-inward loop.
+      if (firstPersonBlend > 0.995) {
+        this.#holdOrbitPose = false
+        this.#orbitPos.copy(this.#chasePos)
+      }
+    } else {
+      this.#holdOrbitPose = false
+      this.#orbitPos.lerp(
+        this.#chasePos,
+        1 - Math.exp(-smoothDt * orbitStiff)
+      )
+    }
+    this.#firstPersonPos.lerp(
+      this.#eyePos,
+      1 - Math.exp(-smoothDt * VIEW.firstPersonFollow)
+    )
+    this.camera.position.lerpVectors(
+      this.#orbitPos,
+      this.#firstPersonPos,
+      firstPersonBlend
+    )
+    this.#orbitViewPos.copy(this.#orbitPos)
 
     this.#target.copy(anchor)
     this.#target.y += o.look
@@ -225,6 +308,9 @@ export class ChaseCamera {
       this.camera.position.x += sx
       this.camera.position.y += sy
       this.camera.position.z += sz
+      this.#orbitViewPos.x += sx
+      this.#orbitViewPos.y += sy
+      this.#orbitViewPos.z += sz
       this.#target.x += sx * 0.6
       this.#target.y += sy * 0.6
       this.#target.z += sz * 0.6
@@ -235,8 +321,12 @@ export class ChaseCamera {
     // look-at framing; FPS uses the same canonical yaw/pitch as lookDir(), so the
     // rendered centre ray, movement heading and tools all agree. Nothing calls
     // lookAt after this slerp, leaving one clear owner of the final orientation.
-    this.#lookMatrix.lookAt(this.camera.position, this.#target, this.#up)
-    this.#orbitQuat.setFromRotationMatrix(this.#lookMatrix)
+    if (this.#holdOrbitPose) {
+      this.#orbitQuat.copy(this.#heldOrbitQuat)
+    } else {
+      this.#lookMatrix.lookAt(this.#orbitViewPos, this.#target, this.#up)
+      this.#orbitQuat.setFromRotationMatrix(this.#lookMatrix)
+    }
     this.#firstPersonEuler.set(-this.pitch, this.yaw, 0, "YXZ")
     this.#firstPersonQuat.setFromEuler(this.#firstPersonEuler)
     this.camera.quaternion.slerpQuaternions(

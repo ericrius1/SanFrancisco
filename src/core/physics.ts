@@ -68,6 +68,7 @@ export class Physics {
   #refineSub2 = 0;
   #carpetCX = NaN;
   #carpetCZ = NaN;
+  #carpetGroundRevision = -1;
 
   // one entry per materialised BOX — concave buildings bake to several boxes
   // sharing an `i` (tiles.ts patches in the sub-ordinal `s`), so bodies key by
@@ -224,9 +225,11 @@ export class Physics {
     const cell = CONFIG.carpetCell;
     const cx = Math.round(playerPos.x / cell);
     const cz = Math.round(playerPos.z / cell);
-    if (cx === this.#carpetCX && cz === this.#carpetCZ) return;
+    const revision = this.map.groundRevision;
+    if (cx === this.#carpetCX && cz === this.#carpetCZ && revision === this.#carpetGroundRevision) return;
     this.#carpetCX = cx;
     this.#carpetCZ = cz;
+    this.#carpetGroundRevision = revision;
 
     // pass 1: every 8m cell gets its plane slab. Refined cells keep it too —
     // a sunk backstop underneath, so pool exhaustion degrades instead of

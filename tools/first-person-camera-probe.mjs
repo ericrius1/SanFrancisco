@@ -85,7 +85,16 @@ class Cdp {
   send(method, params = {}) {
     const id = this.#nextId++;
     this.#socket.send(JSON.stringify({ id, method, params }));
-    return new Promise((resolve, reject) => this.#pending.set(id, { resolve, reject }));
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.#pending.delete(id);
+        reject(new Error(`CDP timeout: ${method}`));
+      }, 30_000);
+      this.#pending.set(id, {
+        resolve: (value) => { clearTimeout(timer); resolve(value); },
+        reject: (error) => { clearTimeout(timer); reject(error); }
+      });
+    });
   }
   close() { this.#socket.close(); }
 }
@@ -163,11 +172,11 @@ async function main() {
     await waitEval(cdp, "window.__sf.citygenRing.current.isPlayerInside() && window.__sf.chase.firstPersonBlend > 0.995", 30_000);
 
     const inspect = () => `(() => {
-      const s=window.__sf, actual=new s.THREE.Vector3(), expected=new s.THREE.Vector3(), origin=new s.THREE.Vector3();
-      s.camera.getWorldDirection(actual); s.chase.lookDir(expected); s.chase.viewOrigin(origin,s.player);
+      const s=window.__sf, actual=new s.THREE.Vector3(), expected=new s.THREE.Vector3(), interaction=new s.THREE.Vector3(), origin=new s.THREE.Vector3();
+      s.camera.getWorldDirection(actual); s.chase.lookDir(expected); s.chase.interactionDir(interaction,s.player); s.chase.viewOrigin(origin,s.player);
       const eye=new s.THREE.Vector3(s.player.renderPosition.x,s.player.renderPosition.y+0.8,s.player.renderPosition.z);
       return { blend:s.chase.firstPersonBlend, zoom:s.chase.zoom, pitch:s.chase.pitch, yaw:s.chase.yaw,
-        eyeDistance:s.camera.position.distanceTo(eye), directionDot:actual.dot(expected),
+        eyeDistance:s.camera.position.distanceTo(eye), directionDot:actual.dot(expected), interactionDot:actual.dot(interaction),
         originDistance:origin.distanceTo(s.camera.position), avatarVisible:s.player.meshes.walk.visible,
         camera:s.camera.position.toArray() };
     })()`;
@@ -175,6 +184,11 @@ async function main() {
     const neutral = await evaluate(cdp, inspect());
     console.log("[indoor]", JSON.stringify(neutral));
     await screenshot(cdp, "indoor-neutral.png");
+
+    // Wheel input is intentionally inert in FPS; it must not invisibly alter the
+    // outdoor boom that will be restored on exit.
+    await evaluate(cdp, "window.__sf.input.wheel=1000"); await tick(cdp, 1);
+    const zoomAfterIndoorWheel = await evaluate(cdp, "window.__sf.chase.zoom");
 
     // Exercise the real window mousemove listener used by pointer lock. The test
     // marks Input locked because headless Chrome cannot grant pointer lock.
@@ -194,6 +208,20 @@ async function main() {
     await evaluate(cdp, "window.__sf.chase.zoom=2.6"); await tick(cdp, 30);
     const zoomFar = await evaluate(cdp, inspect());
     console.log("[zoom endpoints]", JSON.stringify({ zoomNear, zoomFar }));
+
+    // Exercise the real C/orbit ownership handoff. Orbit must restore the avatar;
+    // returning indoors must restart a smooth eye transition from the orbit pose.
+    await evaluate(cdp, "window.__sf.chase.zoom=1");
+    await evaluate(cdp, "window.dispatchEvent(new KeyboardEvent('keydown',{code:'KeyC'}))"); await tick(cdp, 1);
+    await evaluate(cdp, "window.dispatchEvent(new KeyboardEvent('keyup',{code:'KeyC'}))");
+    const orbitState = await evaluate(cdp, inspect());
+    const orbitSuspended = await evaluate(cdp, "window.__sf.input.suspended");
+    await evaluate(cdp, "window.dispatchEvent(new KeyboardEvent('keydown',{code:'KeyC'}))"); await tick(cdp, 1);
+    await evaluate(cdp, "window.dispatchEvent(new KeyboardEvent('keyup',{code:'KeyC'}))");
+    const resumeState = await evaluate(cdp, inspect());
+    const resumeSuspended = await evaluate(cdp, "window.__sf.input.suspended");
+    const orbitResumeStep = Math.hypot(...resumeState.camera.map((value, index) => value - orbitState.camera[index]));
+    await tick(cdp, 90);
 
     // The widened first-person range should allow a near-vertical look both ways.
     await evaluate(cdp, "window.__sf.input.mouseDY=-10000"); await tick(cdp, 1);
@@ -217,15 +245,33 @@ async function main() {
     const outside = await evaluate(cdp, inspect());
     const monotonicExit = exitBlend.every((value, index) => index === 0 || value <= exitBlend[index - 1] + 1e-9);
 
-    await evaluate(cdp, `(() => { const s=window.__sf,p=s.player;
-      p.position.set(${BUILDING.x},${BUILDING.y},${BUILDING.z}); p.renderPosition.copy(p.position);
-      s.physics.world.setBodyTransform(p.body,[${BUILDING.x},${BUILDING.y},${BUILDING.z}],[0,0,0,1]); return true; })()`);
-    const entryBlend = [];
+    await evaluate(cdp, "window.__sf.chase.pitch=0");
+    await tick(cdp, 30);
+    // Isolate the camera handoff at one stable anchor. The full app/gate path was
+    // exercised above; avoiding another teleport here makes elevation continuity
+    // measure the pose blend itself rather than a 30 m player jump.
+    await evaluate(cdp, "window.__sf.chase.indoor=true");
+    const entrySamples = [];
     for (let i = 0; i < 45; i++) {
-      await tick(cdp, 1);
-      entryBlend.push(await evaluate(cdp, "window.__sf.chase.firstPersonBlend"));
+      await evaluate(cdp, "window.__sf.chase.update(1/60,window.__sf.player,window.__sf.input)");
+      entrySamples.push(await evaluate(cdp, `(() => { const s=window.__sf,d=new s.THREE.Vector3(),a=new s.THREE.Vector3();
+        s.camera.getWorldDirection(d); s.chase.interactionDir(a,s.player);
+        return { blend:s.chase.firstPersonBlend, y:d.y, interactionDot:d.dot(a) }; })()`));
     }
+    const entryBlend = entrySamples.map((sample) => sample.blend);
     const monotonicEntry = entryBlend.every((value, index) => index === 0 || value + 1e-9 >= entryBlend[index - 1]);
+    const monotonicElevation = entrySamples.every((sample, index) => index === 0 || sample.y + 1e-4 >= entrySamples[index - 1].y);
+    const noPitchOvershoot = entrySamples.every((sample) => sample.y <= 0.002);
+    const transitionAimAligned = entrySamples.filter((sample) => sample.blend > 0.001).every((sample) => sample.interactionDot > 0.99999);
+    console.log("[entry transition]", JSON.stringify({ monotonicEntry, monotonicElevation, noPitchOvershoot,
+      first:entrySamples[0], last:entrySamples.at(-1), minY:Math.min(...entrySamples.map(s=>s.y)), maxY:Math.max(...entrySamples.map(s=>s.y)) }));
+
+    // Switching embodiment at full indoor blend must use the vehicle chase rig
+    // immediately; neither camera position nor interaction origin may stay in FPS.
+    await evaluate(cdp, "window.__sf.player.trySwitch('drive'); window.__sf.chase.update(1/60,window.__sf.player,window.__sf.input)");
+    const vehicleState = await evaluate(cdp, `(() => { const s=window.__sf,o=new s.THREE.Vector3(),m=s.player.aimOrigin.clone();
+      s.chase.viewOrigin(o,s.player); return { mode:s.player.mode,
+        cameraDistance:s.camera.position.distanceTo(s.player.renderPosition), originDistance:o.distanceTo(m) }; })()`);
 
     const checks = {
       inside: neutral.blend > 0.995,
@@ -234,11 +280,16 @@ async function main() {
       mouseYawChanged: Math.abs(afterInput.yaw - beforeInput.yaw) > 0.5,
       mousePitchChanged: Math.abs(afterInput.pitch - beforeInput.pitch) > 0.35,
       originAligned: neutral.originDistance < 0.01,
+      indoorWheelIgnored: Math.abs(zoomAfterIndoorWheel - neutral.zoom) < 1e-9,
       zoomIndependent: zoomNear.eyeDistance < 0.04 && zoomFar.eyeDistance < 0.04,
+      orbitOwnership: orbitSuspended && orbitState.avatarVisible && orbitState.blend < 0.001 &&
+        !resumeSuspended && resumeState.blend < 0.1 && orbitResumeStep < 0.5,
       fullPitch: lookUp.pitch < -1.44 && lookDown.pitch > 1.44,
       avatarHiddenInFps: !neutral.avatarVisible && outside.avatarVisible,
-      smoothEnter: monotonicEntry && entryBlend.at(-1) > 0.995,
+      smoothEnter: monotonicEntry && monotonicElevation && noPitchOvershoot && entryBlend.at(-1) > 0.995,
       smoothExit: monotonicExit && outside.blend < 0.005,
+      transitionAimAligned,
+      vehicleSwitchClearsFps: vehicleState.mode === "drive" && vehicleState.cameraDistance > 5 && vehicleState.originDistance < 0.01,
       noPageErrors: cdp.errors.length === 0
     };
     for (const [name, pass] of Object.entries(checks)) console.log(`  ${pass ? "PASS" : "FAIL"} ${name}`);

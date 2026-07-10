@@ -46,6 +46,11 @@ export const CLUBS: Club[] = [
   { id: "putter", label: "Putter", short: "PT", speed: 6.63, loft: 0, carry: 40, bite: 0 }
 ];
 
+const GRAVITY = 9.81;
+const DRAG = 0.0016; // quadratic air drag (1/m) — mild, speeds are pre-calibrated
+const SUBSTEP = 1 / 120;
+const carryCache = new Map<string, number>();
+
 /** Strike quality multiplier when swinging OFF the short stuff. */
 export function lieFactor(kind: GolfSurface, club: Club): number {
   if (kind === "bunker") return club.id === "sand" ? 0.85 : 0.4;
@@ -53,22 +58,41 @@ export function lieFactor(kind: GolfSurface, club: Club): number {
   return 1;
 }
 
-/** Flat-ground distance estimate for the radial HUD. Calibrated lofted shots
- *  follow power^~1.75 under this integrator's quadratic drag; a rolling putt
- *  follows the exact v² relationship. */
+/** Flat-ground distance estimate for the radial HUD. Lofted shots run the same
+ *  120 Hz drag/gravity integrator as flight, cached at 1% power increments; a
+ *  rolling putt follows the exact v² relationship. */
 export function estimatedCarry(club: Club, power: number, lie: GolfSurface): number {
-  const effectivePower = THREE.MathUtils.clamp(power * lieFactor(lie, club), 0, 1);
-  return club.carry * Math.pow(effectivePower, club.id === "putter" ? 2 : 1.75);
+  const effectivePower = Math.round(THREE.MathUtils.clamp(power * lieFactor(lie, club), 0, 1) * 100) / 100;
+  if (club.id === "putter") return club.carry * effectivePower * effectivePower;
+  const key = `${club.id}:${effectivePower}`;
+  const cached = carryCache.get(key);
+  if (cached !== undefined) return cached;
+
+  let x = 0;
+  let y = 0.02; // strike() lifts a flying ball 2 cm above contact
+  let vx = Math.cos(club.loft) * club.speed * effectivePower;
+  let vy = Math.sin(club.loft) * club.speed * effectivePower;
+  for (let i = 0; i < 60 / SUBSTEP; i++) {
+    const speed = Math.hypot(vx, vy);
+    const k = 1 - Math.min(0.9, DRAG * speed * SUBSTEP);
+    vx *= k;
+    vy = vy * k - GRAVITY * SUBSTEP;
+    x += vx * SUBSTEP;
+    y += vy * SUBSTEP;
+    if (y <= 0) break;
+  }
+  carryCache.set(key, x);
+  return x;
 }
 
 /** Auto-caddie: specialized short-game clubs first, otherwise the shortest
- *  normal club whose advertised carry clears the pin by a small safety margin. */
+ *  normal club whose full-power carry from the current lie clears the pin. */
 export function suggestedClubIndex(distance: number, lie: GolfSurface): number {
   if (lie === "green") return CLUBS.length - 1;
   if (lie === "bunker") return CLUBS.findIndex((c) => c.id === "sand");
   if (distance < 30) return CLUBS.findIndex((c) => c.id === "wedge");
   for (let i = CLUBS.length - 3; i >= 0; i--) {
-    if (CLUBS[i].carry >= distance * 1.02) return i;
+    if (estimatedCarry(CLUBS[i], 1, lie) >= distance * 1.02) return i;
   }
   return 0;
 }
@@ -84,9 +108,6 @@ const SURFACE: Record<GolfSurface, SurfaceParams> = {
   out: { restitution: 0.14, grip: 0.62, mu: 5.5 }
 };
 
-const GRAVITY = 9.81;
-const DRAG = 0.0016; // quadratic air drag (1/m) — mild, speeds are pre-calibrated
-const SUBSTEP = 1 / 120;
 const CUP_RADIUS = 0.16; // forgiving arcade cup
 const CUP_SPEED = 2.6; // faster than this lips out
 const STOP_SPEED = 0.14;
