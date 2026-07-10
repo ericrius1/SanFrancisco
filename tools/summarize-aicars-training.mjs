@@ -51,6 +51,9 @@ if (watchdog.exists && !watchdog.strictStartAt) failures.push("no strict watchdo
 if (watchdog.exists && watchdog.logAgeS > maxWatchdogLogAgeS) {
   failures.push(`watchdog log age ${watchdog.logAgeS}s > ${maxWatchdogLogAgeS}s`);
 }
+if (watchdog.strictStartReason === "last-failure-reset" && watchdog.passCount === 0) {
+  failures.push("strict watchdog has not passed since the latest failure tick");
+}
 if (watchdog.strictStartAt && watchdog.strictElapsedHours < minStrictHours) {
   failures.push(`strict watchdog elapsed ${round(watchdog.strictElapsedHours)}h < ${minStrictHours}h`);
 }
@@ -116,6 +119,7 @@ const summary = {
 console.log(
   `[aicars-report] ${summary.status}` +
     ` strict=${round(watchdog.strictElapsedHours)}h` +
+    ` reset=${watchdog.strictStartReason || "none"}` +
     ` passes=${watchdog.passCount}` +
     ` fails=${watchdog.failCount}` +
     ` trainer=${trainer.latest ? `${round(trainer.latest.realMin)}min/${round(trainer.latest.simH)}simh` : "none"}`
@@ -128,6 +132,9 @@ function summarizeWatchdog(file) {
     exists: existsSync(file),
     logAgeS: null,
     strictStartAt: null,
+    strictStartReason: null,
+    watchdogStartAt: null,
+    lastFailureResetAt: null,
     strictElapsedHours: 0,
     passCount: 0,
     failCount: 0,
@@ -144,10 +151,20 @@ function summarizeWatchdog(file) {
     if (lines[i].includes("[watchdog] start") && /minStoplineHolds=([1-9]\d*)/.test(lines[i])) {
       startIndex = i;
       result.strictStartAt = lineTime(lines[i]);
+      result.watchdogStartAt = result.strictStartAt;
+      result.strictStartReason = "watchdog-start";
       break;
     }
   }
   if (startIndex < 0) return result;
+  for (let i = startIndex + 1; i < lines.length; i++) {
+    if (lines[i].includes("[watchdog] FAIL")) {
+      startIndex = i;
+      result.lastFailureResetAt = lineTime(lines[i]);
+      result.strictStartAt = result.lastFailureResetAt;
+      result.strictStartReason = "last-failure-reset";
+    }
+  }
   result.strictElapsedHours = result.strictStartAt ? round((Date.now() - Date.parse(result.strictStartAt)) / 3_600_000) : 0;
   for (let i = startIndex + 1; i < lines.length; i++) {
     const line = lines[i];

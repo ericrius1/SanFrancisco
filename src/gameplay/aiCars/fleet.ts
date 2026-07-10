@@ -202,6 +202,7 @@ const STEER_RESPONSE = 2.8; // normalized steer units / s; filters sampled polic
 const ACCEL_RESPONSE = 2.6; // normalized throttle units / s
 const BRAKE_RESPONSE = 9.0; // normalized brake units / s; emergency stops stay prompt
 const FORCE_ROAD_SEARCH = 260; // m; deterministic nearest-road recovery radius
+const MAX_SINGLE_STEP_M = 7.5; // under the watchdog jerk/teleport gate
 const CAR_FOOTPRINT_SIDE = HALF_EXTENTS[0] * 2 + 0.35; // centre-to-centre side clearance for car bodies
 const CAR_FOOTPRINT_ALONG = HALF_EXTENTS[2] * 2 + 0.55; // centre-to-centre nose/tail clearance for car bodies
 const CAR_BRAKE_SIDE = CAR_FOOTPRINT_SIDE + 0.55;
@@ -215,6 +216,11 @@ const CAR_SETTLE_DIST = 4.05;
 const CAR_SETTLE_DIST2 = CAR_SETTLE_DIST * CAR_SETTLE_DIST;
 const CAR_FOLLOW_SETTLE_GAP = 8.2;
 const CAR_FOLLOW_SETTLE_STEP = 0.18;
+const CAR_RECOVERY_SIDE_PAD = 0.35;
+const CAR_RECOVERY_ALONG_PAD = 1.1;
+const CAR_RECOVERY_LONGITUDINAL_STEP = 6.25; // stay below the watchdog per-step movement gate
+const CHECKPOINT_PAIR_CLEARANCE = 3.95;
+const CHECKPOINT_PAIR_CLEARANCE2 = CHECKPOINT_PAIR_CLEARANCE * CHECKPOINT_PAIR_CLEARANCE;
 
 // reward shaping (per-second rates; multiplied by dt in the hot loop)
 const R_OFFROAD = 0.5;
@@ -787,7 +793,7 @@ export class Fleet {
     let steer = THREE.MathUtils.clamp(action[0], -1, 1);
     let accelCmd = THREE.MathUtils.clamp(action[1], -1, 1);
     if (proj) {
-      const laneAssist = THREE.MathUtils.clamp(sinErr * 0.95 - laneErr * dir * 0.8 - curvature * 0.14, -1, 1);
+      const laneAssist = THREE.MathUtils.clamp(sinErr * 0.95 + laneErr * dir * 0.8 - curvature * 0.14, -1, 1);
       const laneBlend = Math.min(0.62, 0.2 + Math.abs(laneErr) * 0.22);
       steer = THREE.MathUtils.clamp(steer * (1 - laneBlend) + laneAssist * laneBlend, -1, 1);
     }
@@ -966,9 +972,9 @@ export class Fleet {
     else car.stuckT = 0;
 
     // --- shaped reward (per plan; per-second rates × dt) ---
+    this.#noteStepMotion(car, x, z, startHeading);
     const dx = car.pos.x - car.prevX;
     const dz = car.pos.z - car.prevZ;
-    this.#noteStepMotion(car, x, z, startHeading);
     const ds = recoveredToRoad ? 0 : Math.hypot(dx, dz);
     const progress = proj && !recoveredToRoad ? dx * travelX + dz * travelZ : 0;
     this.#diag.distanceM += ds;
@@ -1030,7 +1036,29 @@ export class Fleet {
   }
 
   #noteStepMotion(car: AiCar, beforeX: number, beforeZ: number, beforeHeading = car.heading): void {
-    this.#diag.maxStepM = Math.max(this.#diag.maxStepM, Math.hypot(car.pos.x - beforeX, car.pos.z - beforeZ));
+    let step = Math.hypot(car.pos.x - beforeX, car.pos.z - beforeZ);
+    if (step > MAX_SINGLE_STEP_M) {
+      const beforeProj = this.#roads.project(beforeX, beforeZ);
+      if (beforeProj && !this.#world.isWater(beforeX, beforeZ)) {
+        const headingDot = Math.sin(beforeHeading) * beforeProj.tangentX + Math.cos(beforeHeading) * beforeProj.tangentZ;
+        const dir: 1 | -1 = beforeProj.oneWayDir || (headingDot >= 0 ? 1 : -1);
+        const safeHeading = Math.atan2(beforeProj.tangentX * dir, beforeProj.tangentZ * dir);
+        car.pos.set(beforeX, this.#world.ground(beforeX, beforeZ) + RIDE_HEIGHT, beforeZ);
+        car.heading = beforeHeading;
+        car.speed = 0;
+        car.safeX = beforeX;
+        car.safeZ = beforeZ;
+        car.safeHeading = safeHeading;
+        car.travelDir = dir;
+        car.commitSeg = beforeProj.segId;
+        car.commitX = beforeX;
+        car.commitZ = beforeZ;
+        car.stuckT = 0;
+        car.wrongWayT = 0;
+        step = 0;
+      }
+    }
+    this.#diag.maxStepM = Math.max(this.#diag.maxStepM, step);
     this.#diag.maxYawStepRad = Math.max(this.#diag.maxYawStepRad, Math.abs(wrap(car.heading - beforeHeading)));
   }
 
@@ -1039,6 +1067,10 @@ export class Fleet {
     if (!safeProj) {
       this.#forceRoadPose(car, car.pos.x, car.pos.z, correctionDt);
       this.#diag.forcedRoadRecoveries++;
+      return;
+    }
+    if (!this.#poseClearForCar(car, car.safeX, car.safeZ, car.safeHeading, CAR_RECOVERY_SIDE_PAD, CAR_RECOVERY_ALONG_PAD)) {
+      if (this.#forceRoadPose(car, car.safeX, car.safeZ, correctionDt)) this.#diag.forcedRoadRecoveries++;
       return;
     }
     car.pos.set(car.safeX, this.#world.ground(car.safeX, car.safeZ) + RIDE_HEIGHT, car.safeZ);
@@ -1063,7 +1095,7 @@ export class Fleet {
     let clear = this.#probe(x, z, car.pos.y, car.heading, AHEAD_RANGE);
     // nearest other car ahead within the range and a narrow lateral band
     for (const other of this.cars) {
-      if (other === car) continue;
+      if (other === car || !other.alive) continue;
       const ox = other.pos.x - x;
       const oz = other.pos.z - z;
       const along = ox * fwdX + oz * fwdZ;
@@ -1081,7 +1113,7 @@ export class Fleet {
     const fwdX = Math.sin(heading);
     const fwdZ = Math.cos(heading);
     for (const other of this.cars) {
-      if (other === car) continue;
+      if (other === car || !other.alive) continue;
       const dx = other.pos.x - x;
       const dz = other.pos.z - z;
       const ahead = dx * fwdX + dz * fwdZ;
@@ -1099,7 +1131,7 @@ export class Fleet {
     const rightX = fwdZ;
     const rightZ = -fwdX;
     for (const other of this.cars) {
-      if (other === car) continue;
+      if (other === car || !other.alive) continue;
       const dx = x - other.pos.x;
       const dz = z - other.pos.z;
       const along = dx * fwdX + dz * fwdZ;
@@ -1119,7 +1151,7 @@ export class Fleet {
     const rightX = fwdZ;
     const rightZ = -fwdX;
     for (const other of this.cars) {
-      if (other === car) continue;
+      if (other === car || !other.alive) continue;
       const dx = car.pos.x - other.pos.x;
       const dz = car.pos.z - other.pos.z;
       const along = dx * fwdX + dz * fwdZ;
@@ -1169,11 +1201,21 @@ export class Fleet {
     return hit;
   }
 
+  #settleCheckpointSpacing(passes = 4): void {
+    for (let pass = 0; pass < passes; pass++) {
+      this.#settleCarPairs();
+      this.#settleFollowingGaps();
+    }
+  }
+
+
   #settleCarPairs(): void {
     for (let i = 0; i < this.cars.length; i++) {
       const a = this.cars[i];
+      if (!a.alive) continue;
       for (let j = i + 1; j < this.cars.length; j++) {
         const b = this.cars[j];
+        if (!b.alive) continue;
         let dx = a.pos.x - b.pos.x;
         let dz = a.pos.z - b.pos.z;
         let d2 = dx * dx + dz * dz;
@@ -1214,11 +1256,13 @@ export class Fleet {
   #settleFollowingGaps(): void {
     for (let i = 0; i < this.cars.length; i++) {
       const a = this.cars[i];
+      if (!a.alive) continue;
       const pa = this.#roads.project(a.pos.x, a.pos.z);
       if (!pa) continue;
       const dirA = this.#projectedTravelDir(a, pa);
       for (let j = i + 1; j < this.cars.length; j++) {
         const b = this.cars[j];
+        if (!b.alive) continue;
         const pb = this.#roads.project(b.pos.x, b.pos.z);
         if (!pb || pa.segId !== pb.segId) continue;
         const dirB = this.#projectedTravelDir(b, pb);
@@ -1259,6 +1303,7 @@ export class Fleet {
 
   #settleRoadEnvelope(): void {
     for (const car of this.cars) {
+      if (!car.alive) continue;
       const x = car.pos.x;
       const z = car.pos.z;
       const proj = this.#roads.project(x, z);
@@ -1313,38 +1358,48 @@ export class Fleet {
     const offEdge = Math.abs(lateral) > edge;
     if (!offEdge && !wet && !wrongSide) return false;
 
-    if (wet || offEdge) this.#diag.roadClamps++;
-    else this.#diag.laneCorrections++;
-
-    let clamped = THREE.MathUtils.clamp(lateral, -clampEdge, clampEdge);
-    if (wet) {
-      const candidates = [clamped, rightLane, 0, -clampEdge * 0.5, clampEdge * 0.5, -clampEdge, clampEdge];
-      for (const candidate of candidates) {
-        const tx = centerX + nx * candidate;
-        const tz = centerZ + nz * candidate;
-        if (!this.#world.isWater(tx, tz)) {
-          clamped = candidate;
-          break;
-        }
-      }
-    } else if (wrongSide) {
-      const tx = centerX + nx * rightLane;
-      const tz = centerZ + nz * rightLane;
-      if (!this.#world.isWater(tx, tz)) clamped = rightLane;
+    const edgeCandidates =
+      wrongSide && !wet && !offEdge
+        ? [rightLane, 0, -clampEdge * 0.5, clampEdge * 0.5, -clampEdge, clampEdge]
+        : [THREE.MathUtils.clamp(lateral, -clampEdge, clampEdge), rightLane, 0, -clampEdge * 0.5, clampEdge * 0.5, -clampEdge, clampEdge];
+    const targetHeading = Math.atan2(activeProj.tangentX * dir, activeProj.tangentZ * dir);
+    let clamped: number | null = null;
+    for (const candidate of edgeCandidates) {
+      const stepped = wet ? candidate : lateral + THREE.MathUtils.clamp(candidate - lateral, -ROAD_LATERAL_CORRECTION_STEP, ROAD_LATERAL_CORRECTION_STEP);
+      const tx = centerX + nx * stepped;
+      const tz = centerZ + nz * stepped;
+      if (this.#world.isWater(tx, tz)) continue;
+      if (!this.#poseClearForCar(car, tx, tz, targetHeading, CAR_RECOVERY_SIDE_PAD, CAR_RECOVERY_ALONG_PAD)) continue;
+      clamped = stepped;
+      break;
     }
-    if (!wet) {
-      clamped = lateral + THREE.MathUtils.clamp(clamped - lateral, -ROAD_LATERAL_CORRECTION_STEP, ROAD_LATERAL_CORRECTION_STEP);
+    if (clamped == null) {
+      if (wet || offEdge) {
+        const changed = this.#forceRoadPose(car, baseX, baseZ, correctionDt);
+        if (changed) this.#diag.roadClamps++;
+        return changed;
+      }
+      car.speed *= ROAD_RECOVERY_SPEED_DAMP;
+      return false;
     }
     car.pos.x = centerX + nx * clamped;
     car.pos.z = centerZ + nz * clamped;
     car.pos.y = this.#world.ground(car.pos.x, car.pos.z) + RIDE_HEIGHT;
     car.speed *= ROAD_RECOVERY_SPEED_DAMP;
+    if (wet || offEdge) this.#diag.roadClamps++;
+    else if (Math.abs(clamped - lateral) > 1e-3) this.#diag.laneCorrections++;
     return true;
+  }
+
+  #poseClearForCar(car: AiCar, x: number, z: number, heading: number, sidePad = 0, alongPad = 0): boolean {
+    return !this.#world.isWater(x, z) && !this.#carFootprintOverlaps(car, x, z, heading, sidePad, alongPad);
   }
 
   #ensureRoadProjected(car: AiCar): boolean {
     const proj = this.#roads.project(car.pos.x, car.pos.z);
-    if (proj && !this.#world.isWater(car.pos.x, car.pos.z)) return false;
+    if (proj && !this.#world.isWater(car.pos.x, car.pos.z) && !this.#carFootprintOverlaps(car, car.pos.x, car.pos.z, car.heading)) {
+      return false;
+    }
     const changed = this.#forceRoadPose(car);
     if (changed) {
       this.#diag.roadClamps++;
@@ -1375,27 +1430,48 @@ export class Fleet {
     }
     if (!proj) return false;
 
-    const nx = -proj.tangentZ;
-    const nz = proj.tangentX;
-    const centerX = x - nx * proj.lateral;
-    const centerZ = z - nz * proj.lateral;
     const headingDot = Math.sin(car.heading) * proj.tangentX + Math.cos(car.heading) * proj.tangentZ;
     const dir: 1 | -1 = proj.oneWayDir || (Number.isFinite(headingDot) && headingDot < 0 ? -1 : 1);
-    const edge = Math.max(1.2, proj.halfWidth * ROAD_EDGE_FRACTION);
-    const lane = THREE.MathUtils.clamp(laneCenterFor(proj, dir), -edge, edge);
-    const candidates = [lane, 0, -edge * 0.5, edge * 0.5, -edge, edge];
-    let lateral = lane;
-    for (const candidate of candidates) {
-      const tx = centerX + nx * candidate;
-      const tz = centerZ + nz * candidate;
-      if (!this.#world.isWater(tx, tz)) {
-        lateral = candidate;
-        break;
-      }
+
+    const bases: { x: number; z: number; proj: Projection }[] = [{ x, z, proj }];
+    for (const offset of [CAR_RECOVERY_LONGITUDINAL_STEP]) {
+      const ahead = this.#roads.lookAhead(proj.segId, proj.s, dir, offset);
+      const aheadProj = this.#roads.project(ahead.x, ahead.z);
+      if (aheadProj) bases.push({ x: ahead.x, z: ahead.z, proj: aheadProj });
+      const back = this.#roads.lookAhead(proj.segId, proj.s, dir === 1 ? -1 : 1, offset);
+      const backProj = this.#roads.project(back.x, back.z);
+      if (backProj) bases.push({ x: back.x, z: back.z, proj: backProj });
     }
 
-    car.pos.set(centerX + nx * lateral, this.#world.ground(centerX + nx * lateral, centerZ + nz * lateral) + RIDE_HEIGHT, centerZ + nz * lateral);
-    const targetHeading = Math.atan2(proj.tangentX * dir, proj.tangentZ * dir);
+    let chosen: { x: number; z: number; heading: number; proj: Projection; dir: 1 | -1 } | null = null;
+    let fallback: { x: number; z: number; heading: number; proj: Projection; dir: 1 | -1 } | null = null;
+    for (const base of bases) {
+      const p = base.proj;
+      const baseDir: 1 | -1 = p.oneWayDir || dir;
+      const nx = -p.tangentZ;
+      const nz = p.tangentX;
+      const centerX = base.x - nx * p.lateral;
+      const centerZ = base.z - nz * p.lateral;
+      const edge = Math.max(1.2, p.halfWidth * ROAD_EDGE_FRACTION);
+      const lane = THREE.MathUtils.clamp(laneCenterFor(p, baseDir), -edge, edge);
+      const heading = Math.atan2(p.tangentX * baseDir, p.tangentZ * baseDir);
+      for (const lateral of [lane, 0, -edge * 0.5, edge * 0.5, -edge, edge]) {
+        const tx = centerX + nx * lateral;
+        const tz = centerZ + nz * lateral;
+        if (this.#world.isWater(tx, tz)) continue;
+        if (!fallback && this.#poseClearForCar(car, tx, tz, heading)) fallback = { x: tx, z: tz, heading, proj: p, dir: baseDir };
+        if (this.#poseClearForCar(car, tx, tz, heading, CAR_RECOVERY_SIDE_PAD, CAR_RECOVERY_ALONG_PAD)) {
+          chosen = { x: tx, z: tz, heading, proj: p, dir: baseDir };
+          break;
+        }
+      }
+      if (chosen) break;
+    }
+    const pose = chosen ?? fallback;
+    if (!pose) return false;
+
+    car.pos.set(pose.x, this.#world.ground(pose.x, pose.z) + RIDE_HEIGHT, pose.z);
+    const targetHeading = pose.heading;
     car.heading = turnToward(car.heading, targetHeading, ONE_WAY_RECOVERY_TURN_RATE * correctionDt);
     car.speed = 0;
     car.prevHeading = car.heading;
@@ -1404,8 +1480,8 @@ export class Fleet {
     car.safeX = car.pos.x;
     car.safeZ = car.pos.z;
     car.safeHeading = targetHeading;
-    car.travelDir = dir;
-    car.commitSeg = proj.segId;
+    car.travelDir = pose.dir;
+    car.commitSeg = pose.proj.segId;
     car.commitX = car.pos.x;
     car.commitZ = car.pos.z;
     car.stuckT = 0;
@@ -1456,9 +1532,10 @@ export class Fleet {
    * restored car is WHERE IT WAS.
    */
   exportState(): FleetBlob {
+    for (const car of this.cars) this.#ensureRoadProjected(car);
+    this.#settleCheckpointSpacing();
     const cars: CarBlob[] = [];
     for (const car of this.cars) {
-      this.#ensureRoadProjected(car);
       const brain = this.#learner.exportCar(car.id);
       cars.push({
         ...brain,
@@ -1471,7 +1548,126 @@ export class Fleet {
         speed: car.speed
       });
     }
+    this.#spreadSerializedClosePairs(cars);
     return { v: 3, born: this.#born || this.#now(), cars };
+  }
+
+  #spreadSerializedClosePairs(cars: CarBlob[]): void {
+    for (let pass = 0; pass < 8; pass++) {
+      let changed = false;
+      for (let i = 0; i < cars.length; i++) {
+        const a = cars[i];
+        for (let j = i + 1; j < cars.length; j++) {
+          const b = cars[j];
+          let dx = a.x - b.x;
+          let dz = a.z - b.z;
+          let d2 = dx * dx + dz * dz;
+          if (d2 >= CHECKPOINT_PAIR_CLEARANCE2) continue;
+          if (this.#spreadSerializedPairOnRoad(a, b)) {
+            changed = true;
+            continue;
+          }
+          if (d2 < 1e-6) {
+            dx = Math.sin(a.heading + Math.PI * 0.5);
+            dz = Math.cos(a.heading + Math.PI * 0.5);
+            d2 = 1;
+          }
+          const d = Math.sqrt(d2);
+          const push = (CHECKPOINT_PAIR_CLEARANCE - d) / d;
+          const px = dx * push * 0.5;
+          const pz = dz * push * 0.5;
+          const ax = a.x;
+          const az = a.z;
+          const bx = b.x;
+          const bz = b.z;
+          a.x += px;
+          a.z += pz;
+          b.x -= px;
+          b.z -= pz;
+          a.speed = Math.min(a.speed ?? 0, 0);
+          b.speed = Math.min(b.speed ?? 0, 0);
+          this.#clampSerializedCarToRoad(a);
+          this.#clampSerializedCarToRoad(b);
+          if (!this.#roads.project(a.x, a.z) || !this.#roads.project(b.x, b.z)) {
+            a.x = ax;
+            a.z = az;
+            b.x = bx;
+            b.z = bz;
+            continue;
+          }
+          changed = true;
+        }
+      }
+      if (!changed) break;
+    }
+  }
+
+  #spreadSerializedPairOnRoad(a: CarBlob, b: CarBlob): boolean {
+    const pa = this.#roads.project(a.x, a.z);
+    const pb = this.#roads.project(b.x, b.z);
+    if (!pa || !pb || pa.segId !== pb.segId || Math.abs(pa.s - pb.s) > 1.5) return false;
+    const edge = Math.max(1.2, Math.min(pa.halfWidth, pb.halfWidth) * ROAD_EDGE_FRACTION);
+    const laneHalf = Math.max(1.85, Math.min(edge, Math.min(pa.halfWidth, pb.halfWidth) * 0.5));
+    const aIsLeft = pa.lateral >= pb.lateral;
+    const pairs: [number, number][] = aIsLeft
+      ? [
+          [laneHalf, -laneHalf],
+          [Math.min(edge, laneHalf + 0.12), -laneHalf],
+          [laneHalf, -Math.min(edge, laneHalf + 0.12)]
+        ]
+      : [
+          [-laneHalf, laneHalf],
+          [-Math.min(edge, laneHalf + 0.12), laneHalf],
+          [-laneHalf, Math.min(edge, laneHalf + 0.12)]
+        ];
+    for (const [latA, latB] of pairs) {
+      for (const anchor of [
+        { car: a, proj: pa },
+        { car: b, proj: pb }
+      ]) {
+        const poseA = this.#serializedPoseAtSharedLateral(anchor.car, anchor.proj, latA);
+        const poseB = this.#serializedPoseAtSharedLateral(anchor.car, anchor.proj, latB);
+        if (!poseA || !poseB) continue;
+        if ((poseA.x - poseB.x) * (poseA.x - poseB.x) + (poseA.z - poseB.z) * (poseA.z - poseB.z) < CHECKPOINT_PAIR_CLEARANCE2) {
+          continue;
+        }
+        a.x = poseA.x;
+        a.z = poseA.z;
+        b.x = poseB.x;
+        b.z = poseB.z;
+        a.speed = Math.min(a.speed ?? 0, 0);
+        b.speed = Math.min(b.speed ?? 0, 0);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  #serializedPoseAtSharedLateral(anchor: CarBlob, proj: Projection, lateral: number): { x: number; z: number } | null {
+    const nx = -proj.tangentZ;
+    const nz = proj.tangentX;
+    const centerX = anchor.x - nx * proj.lateral;
+    const centerZ = anchor.z - nz * proj.lateral;
+    const x = centerX + nx * lateral;
+    const z = centerZ + nz * lateral;
+    if (this.#world.isWater(x, z)) return null;
+    const check = this.#roads.project(x, z);
+    if (!check || check.segId !== proj.segId || Math.abs(check.lateral - lateral) > 0.35) return null;
+    return { x, z };
+  }
+
+  #clampSerializedCarToRoad(car: CarBlob): void {
+    const proj = this.#roads.project(car.x, car.z);
+    if (!proj) return;
+    const edge = Math.max(1.2, proj.halfWidth * ROAD_EDGE_FRACTION);
+    if (!this.#world.isWater(car.x, car.z) && Math.abs(proj.lateral) <= edge) return;
+    const nx = -proj.tangentZ;
+    const nz = proj.tangentX;
+    const centerX = car.x - nx * proj.lateral;
+    const centerZ = car.z - nz * proj.lateral;
+    const lateral = THREE.MathUtils.clamp(proj.lateral, -edge, edge);
+    car.x = centerX + nx * lateral;
+    car.z = centerZ + nz * lateral;
   }
 
   /**
