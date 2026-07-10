@@ -11,7 +11,7 @@
 //    envMapIntensity AND add a faint self-lit emissive body tint so the colour
 //    reads in any light (how the baked city stays colourful at dusk).
 import * as THREE from "three/webgpu";
-import { color, uv, float, fract, floor as tslFloor, mod, mix, step, smoothstep, positionWorld, mx_noise_float } from "three/tsl";
+import { materialColor, uv, float, fract, floor as tslFloor, mod, mix, step, smoothstep, positionWorld, mx_noise_float } from "three/tsl";
 import { makeParallaxGlass } from "./parallaxWindow";
 
 const ENV = 5.5;
@@ -32,13 +32,21 @@ function standard(col: number, roughness: number, opts: { metalness?: number; em
 /**
  * Per-building wall material carrying the painted-lady body colour. A brighter
  * self-lit tint than the trim so the colour is unmistakable against the near-white
- * trim in any lighting. (Kept a plain MeshStandardMaterial — node-material
- * colorNode/emissiveNode silently no-op'd under this app's WebGPU pipeline.)
+ * trim in any lighting.
+ *
+ * PIPELINE-SHARING DESIGN (the hitch fix): the body colour enters the node graph
+ * through `materialColor` — a per-material UNIFORM (material.color) — never as a
+ * baked TSL constant, and the whole node graph is built ONCE per WallKind and
+ * shared by every material instance. Two consequences:
+ *   • every wall of a kind generates identical WGSL → one WebGPU pipeline per
+ *     kind (per pass), reused city-wide, instead of a compile per building;
+ *   • re-colouring is `m.color.set(hex)` — a uniform write, nothing rebuilds.
  */
-export function makeWallMaterial(hex: number, kind: WallKind = "smooth"): THREE.MeshStandardNodeMaterial {
-  const m = new THREE.MeshStandardNodeMaterial({ roughness: 0.92, metalness: 0, side: THREE.DoubleSide });
-  m.envMapIntensity = ENV;
-  const base = color(new THREE.Color(hex));
+type WallNodes = { color: THREE.MeshStandardNodeMaterial["colorNode"]; emissive: THREE.MeshStandardNodeMaterial["emissiveNode"] };
+const wallNodeCache = new Map<WallKind, WallNodes>();
+function wallNodes(kind: WallKind): WallNodes {
+  let g = wallNodeCache.get(kind);
+  if (g) return g;
   // uv() is metric (metres / UV_SCALE) from each wall quad's corner — good for
   // surface patterns. positionWorld drives large-scale weathering mottle.
   const uy = uv().y.mul(UV_SCALE), ux = uv().x.mul(UV_SCALE); // metres up / along
@@ -64,10 +72,20 @@ export function makeWallMaterial(hex: number, kind: WallKind = "smooth"): THREE.
     pattern = mx_noise_float(positionWorld.mul(2.2)).mul(0.06).add(1);
   }
   const mottle = mx_noise_float(positionWorld.mul(0.12)).mul(0.04).add(1);
-  const tinted = base.mul(pattern).mul(mottle);
-  m.colorNode = tinted;
+  const tinted = materialColor.mul(pattern).mul(mottle);
   // self-lit body tint (the world's ambient is near-zero) so shaded façades read.
-  m.emissiveNode = tinted.mul(float(0.3));
+  g = { color: tinted as WallNodes["color"], emissive: tinted.mul(float(0.3)) as WallNodes["emissive"] };
+  wallNodeCache.set(kind, g);
+  return g;
+}
+
+export function makeWallMaterial(hex: number, kind: WallKind = "smooth"): THREE.MeshStandardNodeMaterial {
+  const m = new THREE.MeshStandardNodeMaterial({ roughness: 0.92, metalness: 0, side: THREE.DoubleSide });
+  m.envMapIntensity = ENV;
+  const g = wallNodes(kind);
+  m.colorNode = g.color;
+  m.emissiveNode = g.emissive;
+  m.color.set(hex); // read by materialColor inside the shared graph — a uniform
   return m;
 }
 

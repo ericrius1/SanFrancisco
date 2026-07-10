@@ -2,6 +2,7 @@ import * as THREE from "three/webgpu";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
 import { CONFIG } from "../config";
+import { tracer } from "../core/hitchTracer";
 import { createFacadeMaterial, BASEY_OFFSET, BASEY_SCALE, TOPH_SCALE } from "./facade";
 import { createRoadMaterial, createParkMaterial } from "./streets";
 import { createCrownMaterial } from "./salesforceCrown";
@@ -637,6 +638,7 @@ export class TileStreamer {
         tile.group.add(tile.pendingParts.shift()!);
         (tile.group as THREE.BundleGroup).needsUpdate = true; // structure changed → re-record bundle
         if (tile.pendingParts.length === 0) tile.pendingParts = undefined;
+        tracer.count("tileAttach");
         return true;
       }
       // 2) park detail: only while low — while high it stays off the GPU
@@ -644,6 +646,7 @@ export class TileStreamer {
         tile.group.add(tile.detailParts.shift()!);
         (tile.group as THREE.BundleGroup).needsUpdate = true;
         if (tile.detailParts.length === 0) tile.detailParts = undefined;
+        tracer.count("tileAttach");
         return true;
       }
       // 3) high, but park detail still owed: park the tile until descent

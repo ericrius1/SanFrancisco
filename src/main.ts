@@ -5,6 +5,8 @@ import CameraControls from "camera-controls";
 import { CONFIG, FLOWER_TUNING, FOLIAGE_TUNING, RENDER_MODE, RENDER_TUNING, START, START_DEFAULTS, WORLD_TUNING } from "./config";
 import { loadPlayerState, resetAllTweaks, savePlayerState } from "./core/persist";
 import { Input } from "./core/input";
+import { tracer } from "./core/hitchTracer";
+import { createFrameScheduler } from "./core/frameBudget";
 import { WorldMap, waterHeight } from "./world/heightmap";
 import { Sky, SKY_TUNING } from "./world/sky";
 import { Water } from "./world/water";
@@ -349,6 +351,11 @@ async function boot() {
   // broadphase cast over a dedicated query world of entity proxies, raced against
   // the static-world caster.
   const worldQueries = new WorldQueries(physics);
+
+  // Frame-budget scheduler: ALL deferrable bursty work (streamed physics bodies,
+  // citygen assembly, material warmups) queues here and drains under a per-frame
+  // ms budget in the tick — see core/frameBudget.ts for the contract.
+  const scheduler = createFrameScheduler();
 
   // citygen (demo + ring) are deferred — populated by the loader
   // after progress(100); citygenRing uses the existing nullable-current pattern
@@ -1128,7 +1135,7 @@ async function boot() {
       import("./world/citygen/demo")
     ]);
     citygen = citygenDemoMod.createCityGenDemo({ scene, map }) as NonNullable<typeof citygen>;
-    citygenMod.createCityGenRing({}, { scene, physics, map, tiles }).then((r) => { citygenRing.current = r; });
+    citygenMod.createCityGenRing({}, { scene, physics, map, tiles, schedule: scheduler.schedule }).then((r) => { citygenRing.current = r; });
 
     // BehindTheScenes: the "how it was made" reading overlay
     const { BehindTheScenes } = await import("./ui/behindTheScenes");
@@ -1433,6 +1440,9 @@ async function boot() {
       minimap.update();
       playerLocator.update(camera, player.position, remotes.locatorTargets());
       hud.update(frameDt);
+      // paused-but-roaming still streams tiles/citygen — keep their deferred
+      // assembly draining so the frozen city fills in around the live player
+      scheduler.run(frameDt < 1 / 55 ? 3 : 1.5);
       input.endFrame();
       pipeline.render();
       return;
@@ -1692,6 +1702,7 @@ async function boot() {
     if (!input.suspended && player.mode === "walk" && input.pressed("Space")) player.requestWalkJump();
 
     chase.lookDir(aim); // drone moves along the true view direction (no shot bias)
+    tracer.begin("physics");
     let steps = 0;
     while (accumulator >= physics.world.fixedTimeStep && steps < 3) {
       player.update(physics.world.fixedTimeStep, input, chase.yaw, aim);
@@ -1701,6 +1712,8 @@ async function boot() {
       steps++;
     }
     if (steps === 3) accumulator = 0;
+    tracer.end("physics");
+    tracer.begin("world");
 
     // everyone else's interpolation advances BEFORE my pose settles: a
     // passenger's seat is glued to this frame's view of the driver's car
@@ -1904,9 +1917,18 @@ async function boot() {
     }
 
     syncColliderDebug(); // debug x-ray of active colliders (no-op unless toggled)
+    tracer.end("world");
+
+    // Drain deferred bursty work (streamed bodies, citygen assembly, warmups)
+    // under a headroom-scaled budget: fast frames catch up, tight frames yield.
+    tracer.begin("sched");
+    scheduler.run(frameDt < 1 / 55 ? 3 : frameDt < 1 / 35 ? 1.5 : 0.8);
+    tracer.end("sched");
 
     input.endFrame();
+    tracer.begin("render");
     pipeline.render();
+    tracer.end("render");
     if (debugOn) stats.update(); // cheap FPS box; skipped entirely while hidden
   };
   // automation tabs (Playwright/Puppeteer probes) render with no vsync
@@ -1923,6 +1945,7 @@ async function boot() {
     lastLoop = now;
     tick();
     dynRes.sample(frameMs); // step pixel ratio to hold the frame budget
+    tracer.frame(frameMs); // spike log: phases + counters snapshot on bad frames
   };
   renderer.setAnimationLoop(loopFn);
   // Deterministic capture: stop the wall-clock loop (and the hidden-tab fallback
@@ -1967,7 +1990,7 @@ async function boot() {
 
   const exposeDebugHooks = () => {
     Object.assign(window as never, {
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, splashes, vehicleAudio, swimAudio, nature, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, rocketRiders, boatLaunchers, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, underwater, seaPillars, water, roadMarkings, colliderDebug, FOLIAGE_TUNING, setFoliageVisible }
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, splashes, vehicleAudio, swimAudio, nature, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, rocketRiders, boatLaunchers, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, underwater, seaPillars, water, roadMarkings, colliderDebug, FOLIAGE_TUNING, setFoliageVisible }
     });
   };
   if (import.meta.env.DEV || new URLSearchParams(location.search).has("profile")) {

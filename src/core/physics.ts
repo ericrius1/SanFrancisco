@@ -20,6 +20,7 @@ export type {
   Quat
 } from "./box3dWorld";
 import { CONFIG } from "../config";
+import { tracer } from "./hitchTracer";
 import type { WorldMap } from "../world/heightmap";
 import type { BuildingCollider, TileStreamer } from "../world/tiles";
 import { BuildingColliderIndex } from "./buildingColliderIndex";
@@ -84,6 +85,11 @@ export class Physics {
   #solids!: PhysicsWorld;
   #solidByBuilding = new Map<string, number[]>(); // "key:i" -> its sub-box handles
   #solidTileIndex = new Map<string, string[]>(); // tile key -> "key:i" it owns (bulk unload)
+  // freshly streamed tiles whose query solids are still materializing — drained
+  // ~0.8 ms/frame in step() so a dense tile's hundreds of createBox calls never
+  // land in the arrival frame (measured hitch). `started` marks buildings this
+  // batch created, so a runtime alive-flip that raced ahead isn't double-added.
+  #solidQueue: { key: string; colliders: BuildingCollider[]; cursor: number; started: Set<string> }[] = [];
   #landmarkSolids: number[] = []; // boot-resident bridge + landmark box handles
   #solidRay: RayCastHit = { handle: 0, px: 0, py: 0, pz: 0, nx: 0, ny: 0, nz: 0, distance: 0 };
   // CityGen exact-poly wall + interior boxes are created on the STEPPED world
@@ -150,7 +156,9 @@ export class Physics {
 
     tiles.onTileColliders = (key, colliders) => {
       p.#tileColliders.set(key, colliders);
-      p.#addTileSolids(key, colliders);
+      // solids materialize over the NEXT frames (see #drainTileSolids) — the
+      // synchronous whole-tile createBox burst was a measured arrival-frame hitch
+      p.#solidQueue.push({ key, colliders, cursor: 0, started: new Set() });
     };
     tiles.onTileUnload = (key) => {
       p.#tileColliders.delete(key);
@@ -199,6 +207,7 @@ export class Physics {
     this.#tick++;
     this.#updateCarpet(playerPos);
     this.#drainRefine();
+    this.#drainTileSolids();
     if (this.#tick % 12 === 0) this.#updateBuildingBodies(playerPos);
 
     // 2 solver substeps: every mover here is velocity-driven (cars, player,
@@ -572,29 +581,51 @@ export class Physics {
     return h;
   }
 
-  /** Mirror a freshly streamed tile's ALIVE building colliders into #solids.
-   * Landmark boxes (i beyond the OSM building count) are skipped — they are
-   * always-resident (loaded once at boot), so the stream must not double them. */
-  #addTileSolids(key: string, colliders: BuildingCollider[]): void {
-    const nB = this.tiles.manifest.tiles[key]?.b ?? 0;
-    const owned: string[] = [];
-    for (const c of colliders) {
-      if (c.i >= nB) continue; // landmark — boot-resident
-      if (!this.tiles.isAlive(key, c.i)) continue; // suppressed / dead at load
-      const bk = `${key}:${c.i}`;
-      let arr = this.#solidByBuilding.get(bk);
-      if (!arr) {
-        arr = [];
-        this.#solidByBuilding.set(bk, arr);
-        owned.push(bk);
+  /** Mirror freshly streamed tiles' ALIVE building colliders into #solids,
+   * budgeted (~0.8 ms/frame): a dense downtown tile carries hundreds of boxes and
+   * creating them all in the arrival frame was a measured hitch. Landmark boxes
+   * (i beyond the OSM building count) are skipped — boot-resident. A building the
+   * runtime alive-flip already materialized (or killed) while its tile sat in the
+   * queue is left alone: only buildings THIS batch `started` accept more boxes. */
+  #drainTileSolids(): void {
+    const queue = this.#solidQueue;
+    if (queue.length === 0) return;
+    const t0 = performance.now();
+    while (queue.length > 0) {
+      const job = queue[0];
+      const nB = this.tiles.manifest.tiles[job.key]?.b ?? 0;
+      while (job.cursor < job.colliders.length) {
+        if (performance.now() - t0 > 0.8) {
+          tracer.count("tileSolidQ", queue.length);
+          return; // resume next step
+        }
+        const c = job.colliders[job.cursor++];
+        if (c.i >= nB) continue; // landmark — boot-resident
+        if (!this.tiles.isAlive(job.key, c.i)) continue; // suppressed / dead at load
+        const bk = `${job.key}:${c.i}`;
+        let arr = this.#solidByBuilding.get(bk);
+        if (!arr) {
+          this.#solidByBuilding.set(bk, (arr = []));
+          job.started.add(bk);
+          const owned = this.#solidTileIndex.get(job.key);
+          if (owned) owned.push(bk);
+          else this.#solidTileIndex.set(job.key, [bk]);
+        } else if (!job.started.has(bk)) {
+          continue; // alive-flip materialized this building first — don't double-add
+        }
+        arr.push(this.#makeSolid(c.x, c.y, c.z, c.hx, c.hy, c.hz, c.yaw));
+        tracer.count("tileSolids");
       }
-      arr.push(this.#makeSolid(c.x, c.y, c.z, c.hx, c.hy, c.hz, c.yaw));
+      queue.shift();
     }
-    if (owned.length) this.#solidTileIndex.set(key, owned);
   }
 
-  /** Drop every building solid a tile owns when it unloads. */
+  /** Drop every building solid a tile owns when it unloads (and abandon any
+   * still-queued materialization for it). */
   #removeTileSolids(key: string): void {
+    for (let i = this.#solidQueue.length - 1; i >= 0; i--) {
+      if (this.#solidQueue[i].key === key) this.#solidQueue.splice(i, 1);
+    }
     const owned = this.#solidTileIndex.get(key);
     if (!owned) return;
     for (const bk of owned) {

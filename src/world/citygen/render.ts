@@ -11,7 +11,7 @@ import { makeParallaxGlass, type ParallaxZone } from "./theme/parallaxWindow";
 import { rng } from "./core/rng";
 import { mergePanels } from "./core/mesh";
 import { buildInterior as buildInteriorParts } from "./interior/interior";
-import type { ColliderBox } from "./core/types";
+import type { ColliderBox, MeshData } from "./core/types";
 
 // SF "painted lady" body colours — mid-saturated so the bright white trim reads
 // as the classic Victorian contrast (bodies vary building-to-building).
@@ -72,22 +72,58 @@ function zoneGlass(archetype: string): THREE.Material {
   return m;
 }
 
-/** Build ONE building's meshes into a fresh group (used by the streaming ring).
- *  Materials are PER-BUILDING (cloned) so the ring can crossfade this building in
- *  without touching its neighbours. */
-export function buildBuilding(spec: BuildingSpec, mats: Record<string, THREE.Material>): BuiltBuilding {
-  const { meshes } = generate(spec);
-  const wallMat = makeWallMaterial(bodyColour(spec.seed, spec.archetype), WALL_KIND[spec.archetype] ?? "smooth");
-  const local = new Map<string, THREE.Material>();     // per-building material clones
-  const getMat = (id: string): THREE.Material => {
-    if (id.startsWith("wall.")) return wallMat;
-    let m = local.get(id);
-    if (!m) {
-      const src = id === "glass" ? zoneGlass(spec.archetype) : (mats[id] ?? wallMat);
-      m = src.clone();
-      local.set(id, m);
-    }
-    return m;
+// ---- pooled building materials (the compile-churn fix) -----------------------
+// SETTLED materials (opaque, post-fade) are SHARED city-wide: one wall material
+// per (kind, body colour) — identical WGSL per kind since the colour is a uniform
+// (see theme/materials.ts) — and the theme's shared id→material table for trim/
+// roof/door/glass. FADE materials are per-building clones of those, created with
+// alphaHash ON from birth so their pipeline variant exists before first render;
+// a fade animates ONLY material.opacity (a uniform — no needsUpdate, no bundle
+// re-record, no recompile). At the opaque settle the meshes swap to the shared
+// settled materials (one bundle re-record) and the clones idle until dispose.
+const settledWalls = new Map<string, THREE.Material>();
+function settledWall(spec: BuildingSpec): THREE.Material {
+  const kind = WALL_KIND[spec.archetype] ?? "smooth";
+  const hex = bodyColour(spec.seed, spec.archetype);
+  const key = `${kind}:${hex}`;
+  let m = settledWalls.get(key);
+  if (!m) { m = makeWallMaterial(hex, kind); settledWalls.set(key, m); }
+  return m;
+}
+function fadeCloneOf(settled: THREE.Material): THREE.Material {
+  const f = settled.clone() as THREE.Material & { alphaHash: boolean };
+  f.alphaHash = true; // dithered fade in the OPAQUE pass — no sorting, no blending
+  f.opacity = 0.02;
+  return f;
+}
+
+/** Representative material set for boot warmup: one settled + one fade-clone per
+ *  distinct pipeline (wall kinds, glass zones, one shared standard). Rendering a
+ *  tiny hidden mesh per entry compiles every pipeline a streamed building will
+ *  ever need — after that, builds and fades never compile at runtime. */
+export function warmupMaterials(mats: Record<string, THREE.Material>): THREE.Material[] {
+  const out: THREE.Material[] = [];
+  const kinds: [WallKind, string][] = [["clapboard", "victorian"], ["brick", "soma"], ["stucco", "marina"], ["smooth", "downtown"]];
+  for (const [kind, arch] of kinds) {
+    const w = makeWallMaterial(bodyColour(1, arch), kind);
+    out.push(w, fadeCloneOf(w));
+  }
+  for (const zone of ["residential", "commercial", "loft"] as ParallaxZone[]) {
+    const g = zoneGlass(zone === "residential" ? "victorian" : zone === "commercial" ? "downtown" : "soma");
+    out.push(g, fadeCloneOf(g));
+  }
+  const std = mats["trim.victorian"] ?? mats["base.stoop"];
+  if (std) out.push(std, fadeCloneOf(std));
+  return out;
+}
+
+/** Assemble ONE building's THREE meshes from already-generated MeshData (the
+ *  expensive generate() may have run on a worker). Used by the streaming ring. */
+export function assembleBuilding(spec: BuildingSpec, meshes: MeshData[], mats: Record<string, THREE.Material>): BuiltBuilding {
+  const settledOf = (id: string): THREE.Material => {
+    if (id.startsWith("wall.")) return settledWall(spec);
+    if (id === "glass") return zoneGlass(spec.archetype);
+    return mats[id] ?? settledWall(spec);
   };
   // Each faded-in detail building draws as ONE WebGPU render bundle — a downtown
   // block can hold dozens of detail buildings, ~9 per-panel draws each, so
@@ -95,13 +131,15 @@ export function buildBuilding(spec: BuildingSpec, mats: Record<string, THREE.Mat
   // hundreds of draws off the per-frame encode (main AND shadow passes). Same
   // pattern as the baked tiles (world/tiles.ts): a real bundle for its whole life
   // (never toggling isBundleGroup — that flip mid-session corrupts the shadow
-  // pass's bundle state), re-recorded via needsUpdate whenever its meshes/materials
-  // change. The only such change is the crossfade (setOpacity mutates the
-  // transparent/alphaHash pipeline + opacity each frame): needsUpdate fires per
-  // fade frame — cheap, few fade at once — then the building is static and free.
+  // pass's bundle state). The bundle re-records exactly TWICE per fade direction:
+  // once when meshes swap onto their fade clones, once when they settle back onto
+  // the shared opaque materials — the fade frames in between write one opacity
+  // uniform per material and re-record nothing.
   const group = new THREE.BundleGroup();
   group.name = "cityGenBuilding";
   const geoms: THREE.BufferGeometry[] = [];
+  const parts: { mesh: THREE.Mesh; settled: THREE.Material; fade: THREE.Material }[] = [];
+  const fadeClones = new Map<THREE.Material, THREE.Material>(); // settled → this building's clone
   let triangles = 0;
   for (const md of meshes) {
     const g = new THREE.BufferGeometry();
@@ -112,7 +150,10 @@ export function buildBuilding(spec: BuildingSpec, mats: Record<string, THREE.Mat
     g.computeBoundingSphere();
     geoms.push(g);
     triangles += md.indices.length / 3;
-    const mesh = new THREE.Mesh(g, getMat(md.materialId));
+    const settled = settledOf(md.materialId);
+    let fade = fadeClones.get(settled);
+    if (!fade) { fade = fadeCloneOf(settled); fadeClones.set(settled, fade); }
+    const mesh = new THREE.Mesh(g, fade); // born fading (ring fades every build in)
     mesh.name = md.materialId; // lets probes tell a wall/base panel from door/glass
     mesh.castShadow = true;
     mesh.receiveShadow = true;
@@ -121,6 +162,7 @@ export function buildBuilding(spec: BuildingSpec, mats: Record<string, THREE.Mat
     // the whole (near-player) building is distance-managed by the streaming ring.
     mesh.frustumCulled = false;
     group.add(mesh);
+    parts.push({ mesh, settled, fade });
   }
   // Sit the detail mesh a hair PROUD of its chunk-LOD prism (same footprint) so it
   // wins the depth test everywhere they overlap — no z-fighting. Geometric (the
@@ -142,25 +184,36 @@ export function buildBuilding(spec: BuildingSpec, mats: Record<string, THREE.Mat
       .multiply(new THREE.Matrix4().makeTranslation(-cx, -b, -cz));
     group.matrixWorldNeedsUpdate = true;
   }
-  const allMats = [wallMat, ...local.values()];
+  let onFadeMats = true; // meshes start on their fade clones
   return {
     group, triangles,
     setOpacity(o: number) {
       const fading = o < 0.999;
-      for (const m of allMats) {
-        const mm = m as THREE.Material & { alphaHash?: boolean; opacity: number };
-        mm.transparent = fading;
-        mm.alphaHash = fading;       // dithered fade → no transparency sorting
-        mm.opacity = fading ? Math.max(0.02, o) : 1;
-        mm.needsUpdate = true;
+      if (fading !== onFadeMats) {
+        // crossing the settle boundary (either direction) swaps material pointers
+        // — the ONLY re-record a fade ever causes
+        for (const p of parts) p.mesh.material = fading ? p.fade : p.settled;
+        onFadeMats = fading;
+        group.needsUpdate = true;
       }
-      // materials' pipeline (transparent/alphaHash) + version changed → re-record
-      // the bundle. Fires each fade frame (cheap) and once at the opaque settle
-      // (setOpacity(1), the last call); the building is static and free afterward.
-      group.needsUpdate = true;
+      if (fading) {
+        const oo = Math.max(0.02, o);
+        for (const f of fadeClones.values()) f.opacity = oo; // uniform write only
+      }
     },
-    dispose() { for (const g of geoms) g.dispose(); for (const m of allMats) m.dispose(); group.clear(); },
+    dispose() {
+      for (const g of geoms) g.dispose();
+      for (const f of fadeClones.values()) f.dispose(); // settled materials are SHARED — never disposed here
+      group.clear();
+    },
   };
+}
+
+/** Build ONE building's meshes into a fresh group (synchronous path: generate()
+ *  runs here on the main thread — the streaming ring prefers the worker +
+ *  assembleBuilding; demos/tests and the no-worker fallback use this). */
+export function buildBuilding(spec: BuildingSpec, mats: Record<string, THREE.Material>): BuiltBuilding {
+  return assembleBuilding(spec, generate(spec).meshes, mats);
 }
 
 /** Build a building's INTERIOR meshes + colliders (lazy: only when entered).

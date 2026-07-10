@@ -11,13 +11,14 @@
 //
 // Everything is STATIC: world-space geometry, matrixAutoUpdate off, Static bodies.
 // Nothing is destructible — buildings don't break; a crash just stops you.
-import type * as THREE from "three/webgpu";
+import * as THREE from "three/webgpu";
 import { buildingColliders, doorMetrics, doorEligible } from "../core/collider";
 import { ensureCCW, streetEdgeIndex, edgeOutwardNormal, signedDistToPoly } from "../core/footprint";
-import { buildBuilding, buildInterior } from "../render";
+import { buildBuilding, buildInterior, assembleBuilding, warmupMaterials } from "../render";
 import { buildChunkLOD, type ChunkLOD } from "../render/chunkLod";
+import { lodMaterial } from "../render/lod";
 import { buildCityGenMaterials } from "../theme/materials";
-import type { BuildingSpec, ColliderBox } from "../core/types";
+import type { BuildingSpec, ColliderBox, MeshData } from "../core/types";
 import { CITYGEN_TUNING } from "../../../config";
 
 const READY = new Set(["victorian", "edwardian", "marina", "downtown", "soma"]);
@@ -70,6 +71,11 @@ interface Tiles {
   suppressBuildingMesh(key: string, index: number): void;
   unsuppressBuildingMesh(key: string, index: number): void;
 }
+// Optional host frame-budget scheduler (SF's core/frameBudget.ts): deferrable
+// bursty work — physics body batches, mesh assembly, material warmups — queues
+// here and drains under the host's per-frame ms budget. Without a host
+// scheduler the module stays portable: work runs immediately (old behaviour).
+type ScheduleFn = (lane: "physics" | "build" | "upload" | "background", job: () => void | "again") => void;
 interface BuiltGroup { group: THREE.Group; setOpacity(o: number): void; dispose(): void; }
 
 interface Entry extends BuildingSpec {
@@ -95,6 +101,9 @@ interface Entry extends BuildingSpec {
   // never an open collider gap in front of a still-transparent doorway (R6). Cleared
   // by openDoorway() at fade end.
   doorPending: boolean;
+  // a grammar-build request is in flight on the worker (counts against the
+  // detail cap; cleared on assemble, displacement is handled by normal eviction)
+  pendingBuild: boolean;
 }
 
 interface CellState { key: string; ix: number; iz: number; entries: Entry[]; chunk: ChunkLOD | null; phase: "building" | "ready"; }
@@ -180,11 +189,13 @@ async function fetchGrid(url: string): Promise<GridData | null> {
 
 export async function createCityGenRing(
   opts: { url?: string },
-  ctx: { scene: THREE.Object3D; physics: { world: PhysWorld } & Partial<QuerySolidHost>; map: { groundHeight(x: number, z: number): number }; tiles: Tiles },
+  ctx: { scene: THREE.Object3D; physics: { world: PhysWorld } & Partial<QuerySolidHost>; map: { groundHeight(x: number, z: number): number }; tiles: Tiles; schedule?: ScheduleFn },
 ): Promise<CityGenRing> {
   const url = opts.url ?? "/citygen/buildings.json";
   const grid = await fetchGrid(url);
   const materials = buildCityGenMaterials();
+  // no host scheduler → run deferred work immediately (portable fallback)
+  const schedule: ScheduleFn = ctx.schedule ?? ((_lane, job) => { let v = job(); let guard = 0; while (v === "again" && guard++ < 10000) v = job(); });
 
   // materialize entries per cell (ready archetypes only)
   const cellEntries = new Map<string, Entry[]>();
@@ -197,7 +208,7 @@ export async function createCityGenRing(
         return { ...b, grade, key, cx: g.cx, cz: g.cz, bb: { minx: g.minx, maxx: g.maxx, minz: g.minz, maxz: g.maxz },
           detail: null, fade: 0, fadeDir: 0, bodies: [] as number[], wallBoxes: [] as ColliderBox[],
           interior: null, intBodies: [] as number[], intBoxes: [] as ColliderBox[],
-          state: "lod" as const, doorPending: false } as Entry;
+          state: "lod" as const, doorPending: false, pendingBuild: false } as Entry;
       });
       if (entries.length) { cellEntries.set(key, entries); total += entries.length; }
     }
@@ -244,14 +255,26 @@ export async function createCityGenRing(
   // footprint by ~2 m (bake-time box-count reduction), but the LOD prism we draw
   // is the exact poly — so in "lod" the car stops short of the visible wall on an
   // invisible box. "coll" removes that gap without paying for the detail mesh.
+  //
+  // Body creation goes through the host scheduler's "physics" lane: the scan can
+  // admit 20 buildings at once, and 20×~7 boxes ×2 worlds of WASM createBox in
+  // one frame was a measured hitch. One queued job per building (~14-24 creates,
+  // well under a lane budget slice) keeps the swap invisible. The job re-checks
+  // state on entry — the building may have left the ring while queued.
+  const createSolidWalls = (e: Entry) => {
+    schedule("physics", () => {
+      if ((e.state !== "coll" && e.state !== "detail") || e.bodies.length) return; // stale/duplicate
+      const { boxes } = buildingColliders(e as BuildingSpec, false); // SOLID (no door yet)
+      for (const c of boxes) e.bodies.push(addBody(c));
+      e.wallBoxes = boxes;
+    });
+  };
   const ensureExactCollider = (e: Entry) => {
     if (e.state !== "lod") return;
     ctx.tiles.suppressBuilding(e.key, e.i); // baked mesh + loose collider off (R=0)
-    // buildingColliders directly (not generate): colliders only, no throwaway mesh
-    const { boxes } = buildingColliders(e as BuildingSpec, false); // SOLID (no door yet)
-    for (const c of boxes) e.bodies.push(addBody(c));
-    e.wallBoxes = boxes;
     e.state = "coll";
+    // buildingColliders directly (not generate): colliders only, no throwaway mesh
+    createSolidWalls(e);
   };
   const dropExactCollider = (e: Entry) => {
     if (e.state !== "coll") return;
@@ -263,12 +286,13 @@ export async function createCityGenRing(
   };
 
   // ---- detail tier -----------------------------------------------------------
-  const buildDetail = (e: Entry) => {
-    // sample the live street terrain at the door front ONCE, before the mesh build:
-    // the visible stoop steps (frontStoop) and the walkable ramp collider
-    // (openDoorway → appendStoop) both read this same number, so steps ⟺ ramp.
-    if (e.frontGround === undefined) e.frontGround = frontGroundFor(e);
-    const b = buildBuilding(e as BuildingSpec, materials);
+  // The grammar mesh (generate()) is the single most expensive synchronous call
+  // in the app — 30-100 ms for a dense Victorian, the measured driving hitch.
+  // It runs on a WORKER now: the scan posts a request (requestDetail), the reply's
+  // typed arrays come back zero-copy, and only the cheap THREE assembly runs on
+  // the main thread, through the host's "build" lane. A missing/failed worker
+  // falls back to the old synchronous path so the module keeps working anywhere.
+  const finishDetail = (e: Entry, b: BuiltGroup) => {
     b.setOpacity(0);
     ctx.scene.add(b.group);
     e.detail = b; e.fade = 0; e.fadeDir = 1;
@@ -277,15 +301,59 @@ export async function createCityGenRing(
     // still transparent, and the chunk prism behind it is solid, so an open gap now
     // would be a walk-through in front of a solid-looking face. Keep SOLID walls up;
     // openDoorway() swaps in the door-gapped walls once the mesh has fully faded in.
-    // Reuse the "coll" solid walls if we came from there; build them from "lod".
-    if (!(e.state === "coll" && e.bodies.length)) {
-      clearBodies(e);
-      const { boxes } = buildingColliders(e as BuildingSpec, false); // SOLID, no door
-      for (const c of boxes) e.bodies.push(addBody(c));
-      e.wallBoxes = boxes;
-    }
-    e.doorPending = true;
+    // Reuse the "coll" solid walls if we came from there (or the queued job that's
+    // about to create them); build them from "lod".
+    const hadColl = e.state === "coll";
     e.state = "detail";
+    if (!hadColl && !e.bodies.length) createSolidWalls(e);
+    e.doorPending = true;
+  };
+  let buildWorker: Worker | null = null;
+  const pendingBuilds = new Map<number, Entry>();
+  let nextBuildId = 1;
+  try {
+    buildWorker = new Worker(new URL("./buildWorker.ts", import.meta.url), { type: "module" });
+    buildWorker.onmessage = (ev: MessageEvent<{ id: number; meshes: MeshData[] }>) => {
+      const { id, meshes } = ev.data;
+      const e = pendingBuilds.get(id);
+      pendingBuilds.delete(id);
+      if (!e || !e.pendingBuild) return; // cancelled while in flight
+      // assembly (geometry + materials + bundle) is main-thread but cheap-ish —
+      // still, keep it off loaded frames via the build lane, one building per job
+      schedule("build", () => {
+        e.pendingBuild = false;
+        if (e.detail || e.state === "detail" || !loaded.has(e.key)) return; // superseded
+        finishDetail(e, assembleBuilding(e as BuildingSpec, meshes, materials));
+      });
+    };
+    buildWorker.onerror = (err) => {
+      console.warn("[citygen] build worker failed — falling back to sync builds", err);
+      for (const e of pendingBuilds.values()) e.pendingBuild = false;
+      pendingBuilds.clear();
+      buildWorker = null;
+    };
+  } catch {
+    buildWorker = null;
+  }
+  // the worker gets a PLAIN spec — Entry carries THREE objects/body handles that
+  // must not (and cannot) cross the structured-clone boundary
+  const specOf = (e: Entry): BuildingSpec => ({
+    i: e.i, id: e.id, poly: e.poly, base: e.base, top: e.top,
+    grade: e.grade, frontGround: e.frontGround, h: e.h, archetype: e.archetype, seed: e.seed,
+  });
+  const requestDetail = (e: Entry) => {
+    // sample the live street terrain at the door front ONCE, before the mesh build:
+    // the visible stoop steps (frontStoop) and the walkable ramp collider
+    // (openDoorway → appendStoop) both read this same number, so steps ⟺ ramp.
+    if (e.frontGround === undefined) e.frontGround = frontGroundFor(e);
+    if (!buildWorker) {
+      finishDetail(e, buildBuilding(e as BuildingSpec, materials)); // sync fallback
+      return;
+    }
+    e.pendingBuild = true;
+    const id = nextBuildId++;
+    pendingBuilds.set(id, e);
+    buildWorker.postMessage({ id, spec: specOf(e) });
   };
   // Live terrain height just outside the street door (for the stoop rise). Recomputes
   // the same street edge + door centre the collider does, then samples the street
@@ -333,7 +401,7 @@ export async function createCityGenRing(
     // If still within collider range the next scan re-swaps it to a tight "coll".
     ctx.tiles.unsuppressBuilding(e.key, e.i);
     ctx.tiles.suppressBuildingMesh(e.key, e.i);
-    e.state = "lod"; e.fade = 0; e.fadeDir = 0; e.doorPending = false;
+    e.state = "lod"; e.fade = 0; e.fadeDir = 0; e.doorPending = false; e.pendingBuild = false;
   };
   const advanceFades = (dt: number) => {
     for (const cell of loaded.values()) for (const e of cell.entries) {
@@ -391,6 +459,7 @@ export async function createCityGenRing(
     for (const e of cell.entries) {
       if (e.detail || e.state === "detail") dropDetail(e);
       else if (e.state === "coll") dropExactCollider(e);
+      e.pendingBuild = false; // orphan any in-flight worker build (reply is dropped)
       ctx.tiles.unsuppressBuildingMesh(e.key, e.i); // restore baked mesh
       e.state = "lod";
     }
@@ -407,9 +476,51 @@ export async function createCityGenRing(
     cell.phase = "ready";
   };
 
+  // ---- pipeline warmup --------------------------------------------------------
+  // Compile every WebGPU pipeline a streamed building will ever need — pooled
+  // wall kinds (settled + alphaHash fade variants), glass zones, the chunk-LOD
+  // vertex-colour material — by drawing one hidden 2 cm triangle per material,
+  // ONE PER FRAME through the background lane. Each addition compiles inside
+  // that frame's render, so the cost is a dozen sub-frame compiles at ring boot
+  // instead of a hard stall on the first building you drive up to. The warm
+  // fade-clones are held (not disposed) so their pipelines stay cached.
+  let warmupStarted = false;
+  const warmHold: THREE.Material[] = [];
+  const startWarmup = (at: THREE.Vector3) => {
+    warmupStarted = true;
+    const mats = warmupMaterials(materials);
+    mats.push(lodMaterial());
+    warmHold.push(...mats);
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array([0, 0, 0, 0.02, 0, 0, 0, 0.02, 0]), 3));
+    geo.setAttribute("normal", new THREE.BufferAttribute(new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]), 3));
+    geo.setAttribute("uv", new THREE.BufferAttribute(new Float32Array([0, 0, 1, 0, 0, 1]), 2));
+    geo.setAttribute("color", new THREE.BufferAttribute(new Float32Array([1, 1, 1, 1, 1, 1, 1, 1, 1]), 3)); // lodMaterial reads vertex colour
+    geo.setIndex(new THREE.BufferAttribute(new Uint32Array([0, 1, 2]), 1));
+    const group = new THREE.Group();
+    group.position.set(at.x, ctx.map.groundHeight(at.x, at.z) + 0.4, at.z);
+    ctx.scene.add(group);
+    let i = 0;
+    let settle = 0;
+    schedule("background", () => {
+      if (i < mats.length) {
+        const m = new THREE.Mesh(geo, mats[i++]);
+        m.castShadow = true;
+        m.receiveShadow = true;
+        m.frustumCulled = false;
+        group.add(m);
+        return "again"; // next material next frame — one compile per frame
+      }
+      if (settle++ < 2) return "again"; // let the last mesh render (+ shadow pass) once
+      ctx.scene.remove(group);
+      geo.dispose();
+    });
+  };
+
   return {
     count: total,
     update(playerPos, dt) {
+      if (!warmupStarted) startWarmup(playerPos); // one-shot pipeline warmup rig
       // per-frame: interior gate + detail crossfade + chunk merging
       insideBuilding = false;
       for (const cell of loaded.values()) for (const e of cell.entries) gateInterior(e, playerPos);
@@ -503,16 +614,18 @@ export async function createCityGenRing(
           e.fadeDir = -1; // displaced by nearer / over cap — crossfade out
         }
       }
-      // Active (not fading-out) detail count — fading holders don't block new builds.
+      // Active (not fading-out) detail count — fading holders don't block new
+      // builds; in-flight worker requests DO count so a fast scan cadence can't
+      // over-request past the cap while replies are pending.
       let detailCount = 0;
       for (const cell of loaded.values()) {
-        for (const e of cell.entries) if (e.detail && e.fadeDir >= 0) detailCount++;
+        for (const e of cell.entries) if ((e.detail && e.fadeDir >= 0) || e.pendingBuild) detailCount++;
       }
       let db = detailBudget;
       for (const [e] of ranked) {
         if (db <= 0 || detailCount >= maxDetail) break;
-        if (!keep.has(e) || e.detail) continue;
-        buildDetail(e); db--; detailCount++;
+        if (!keep.has(e) || e.detail || e.pendingBuild) continue;
+        requestDetail(e); db--; detailCount++;
       }
       // then tighten the nearest still-loose colliders (cheap; guard skips any that
       // just upgraded to detail this scan)
@@ -520,7 +633,14 @@ export async function createCityGenRing(
       let cb = COLLIDER_BUDGET;
       for (const [e] of wantColl) { if (cb <= 0) break; if (e.state !== "lod") continue; ensureExactCollider(e); cb--; }
     },
-    dispose() { for (const cell of [...loaded.values()]) unloadCell(cell); loaded.clear(); building.length = 0; },
+    dispose() {
+      buildWorker?.terminate();
+      buildWorker = null;
+      pendingBuilds.clear();
+      for (const cell of [...loaded.values()]) unloadCell(cell);
+      loaded.clear();
+      building.length = 0;
+    },
     stats() {
       let buildings = 0, detail = 0, interiors = 0;
       for (const cell of loaded.values()) { buildings += cell.entries.length; for (const e of cell.entries) { if (e.detail) detail++; if (e.interior) interiors++; } }

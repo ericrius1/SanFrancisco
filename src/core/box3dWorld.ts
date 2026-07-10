@@ -12,6 +12,7 @@
 // step and the ragdoll bone layout are all kept identical to the old wrapper.
 
 import Box3DFactory from "box3d.js/inline";
+import { tracer } from "./hitchTracer";
 import type {
   Box3DModule,
   b3BodyId,
@@ -228,6 +229,7 @@ export class PhysicsWorld {
     sd.baseMaterial.rollingResistance = options.rollingResistance ?? 0;
     if (options.categoryBits !== undefined) sd.filter.categoryBits = options.categoryBits;
     m.b3CreateBoxShape(id, sd, options.halfExtents[0], options.halfExtents[1], options.halfExtents[2]);
+    tracer.count("bodyCreate"); // spike attribution: body churn shows on hitch frames
     return this.#register(id);
   }
 
@@ -279,6 +281,7 @@ export class PhysicsWorld {
     // box3d destroys joints attached to a body automatically; the app's own
     // notify-before-remove / joints-before-bodies ordering is preserved by
     // callers, and destroyJoint below guards against already-freed joints.
+    tracer.count("bodyDestroy");
     this.#m.b3DestroyBody(id);
     this.#bodies.delete(bodyHandle);
     const key = this.#handleKey.get(bodyHandle);
