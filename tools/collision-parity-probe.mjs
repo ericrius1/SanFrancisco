@@ -275,17 +275,37 @@ window.__parityCast = (x, z) => {
     // visual: nearest solid wall + nearest-of-any
     rc.set(origin, dvec);
     const hits = rc.intersectObjects(cand, false);
-    let visAny = Infinity, visAnyName = null, visWall = Infinity, visWallName = null, visWallClass = null, visWallPt = null;
+    let visAny = Infinity, visAnyName = null, visAnyClass = null, visWall = Infinity, visWallName = null, visWallClass = null, visWallPt = null;
     for (const h of hits) {
       if (h.distance < 0.05) continue;
-      if (visAny === Infinity) { visAny = h.distance; visAnyName = h.object.name || "?"; }
+      if (visAny === Infinity) { visAny = h.distance; visAnyName = h.object.name || "?"; visAnyClass = window.__wallClass(h.object); }
       const cls = window.__wallClass(h.object);
       if (WALLCLASS[cls] && visWall === Infinity) { visWall = h.distance; visWallName = h.object.name || "?"; visWallClass = cls; visWallPt = h.point; }
       if (visAny !== Infinity && visWall !== Infinity) break;
     }
+
+    // TERRAIN-SLOPE GRAZE exclusion (the audit charter's third known-good case). A
+    // horizontal chest-height ray on SF's hills runs into the RISING ground ahead;
+    // the stepped world has terrain colliders, so the walker "stops" there with NO
+    // building involved. The old test only kept terrain out of visWall (WALLCLASS),
+    // which — since visWall then stayed Infinity — made every such graze read as a
+    // PHANTOM and, because physBuild is Infinity for a "ground" hit, a ray-blind
+    // MIRROR too. Both are false: nothing invisible is there, and paint/cursor land
+    // on the same ground the walker does. Detect the graze off what the STEPPED stop
+    // actually is — the #solids raycast calls it "ground" at ~the same range, or the
+    // nearest visible thing is terrain/road right there — and never off a building.
+    // A genuine invisible box (query solid stripped) keeps walkDist FAR short of the
+    // ground raycast / visible terrain, so it survives this filter and stays flagged.
+    const GROUNDISH = { terrain: 1, road: 1, ground: 1 };
+    const grazeGround = visWall === Infinity && (
+      (physKind === "ground" && isFinite(physDist) && Math.abs(physDist - walkDist) < 3.0) ||
+      (isFinite(visAny) && GROUNDISH[visAnyClass] && Math.abs(visAny - walkDist) < 3.0)
+    );
+
     let klass = "ok", gap = 0, note = "";
-    // PHANTOM: the WALKING player is stopped >=1 m CLOSER than any visible wall.
-    if (walkDist !== Infinity && walkDist + 1.0 <= visWall) {
+    // PHANTOM: the WALKING player is stopped >=1 m CLOSER than any visible wall
+    // (terrain grazes excluded — those are ground, not an invisible building box).
+    if (!grazeGround && walkDist !== Infinity && walkDist + 1.0 <= visWall) {
       klass = "phantom"; gap = +(Math.min(visWall, MAX) - walkDist).toFixed(2);
       note = (isFinite(obbDist) && Math.abs(obbDist - walkDist) < 1.0) ? "citygen-wall" : "baked/other";
     }
@@ -296,14 +316,16 @@ window.__parityCast = (x, z) => {
     }
     // MIRROR mismatch (info, NOT a walk defect): the #solids raycast world disagrees
     // with the real stepped collision by >=1 m — paint / cursor / aim land wrong.
+    // Only meaningful for BUILDINGS (the metric's charter); a terrain graze is not a
+    // paint-vs-walk wall mismatch, so it's excluded on the same grazeGround signal.
     let mirror = null;
-    if (Math.abs(physBuild - walkDist) > 1.0) mirror = physBuild < walkDist ? "ray-proud" : "ray-blind";
-    dirs.push({ i, deg: Math.round(a * 180 / Math.PI), klass, gap, note, mirror,
+    if (!grazeGround && Math.abs(physBuild - walkDist) > 1.0) mirror = physBuild < walkDist ? "ray-proud" : "ray-blind";
+    dirs.push({ i, deg: Math.round(a * 180 / Math.PI), klass, gap, note, mirror, grazeGround,
       physKind, physDist: isFinite(physDist) ? +physDist.toFixed(2) : null,
       walkDist: isFinite(walkDist) ? +walkDist.toFixed(2) : null,
       obbDist: isFinite(obbDist) ? +obbDist.toFixed(2) : null,
       visWall: isFinite(visWall) ? +visWall.toFixed(2) : null, visWallName, visWallClass,
-      visAny: isFinite(visAny) ? +visAny.toFixed(2) : null, visAnyName });
+      visAny: isFinite(visAny) ? +visAny.toFixed(2) : null, visAnyName, visAnyClass });
   }
 
   // VERTICAL: ray down from gy+3. physFloorY is the collision floor you stand on.
@@ -398,29 +420,30 @@ async function main() {
       const st = await settleSite(c, site.x, site.z);
       const cast = await ev(c, `window.__parityCast(${site.x},${site.z})`);
       // tally
-      let phantom = 0, ghost = 0, door = 0, mirror = 0, worst = 0, worstDir = null;
+      let phantom = 0, ghost = 0, door = 0, mirror = 0, graze = 0, worst = 0, worstDir = null;
       for (const d of cast.dirs) {
         if (d.klass === "phantom") { phantom++; if (d.gap > worst) { worst = d.gap; worstDir = d; } }
         else if (d.klass === "ghost") { ghost++; if (d.gap > worst) { worst = d.gap; worstDir = d; } }
         else if (d.klass === "door") door++;
         if (d.mirror) mirror++;
+        if (d.grazeGround) graze++;
       }
       const v = cast.vertical;
       const vert = v.klass === "floatbury" ? Math.abs(v.delta) : 0;
       const score = phantom * 2 + ghost * 2 + (vert > 0 ? 1 + Math.min(vert, 3) : 0) + Math.min(worst, 15) * 0.3;
-      results.push({ ...site, go, settled: st.settled, collNear: st.coll, nObb: cast.nObb, phantom, ghost, door, mirror, worst: +worst.toFixed(2), worstDir, vert: +vert.toFixed(2), vertRec: v, nCand: cast.nCand, dirs: cast.dirs, score: +score.toFixed(2) });
+      results.push({ ...site, go, settled: st.settled, collNear: st.coll, nObb: cast.nObb, phantom, ghost, door, mirror, graze, worst: +worst.toFixed(2), worstDir, vert: +vert.toFixed(2), vertRec: v, nCand: cast.nCand, dirs: cast.dirs, score: +score.toFixed(2) });
       const flag = (!st.settled) ? " UNSETTLED" : "";
-      process.stdout.write(`  [${String(n + 1).padStart(2)}/${sites.length}] ${site.id.padEnd(18)} (${String(Math.round(site.x)).padStart(5)},${String(Math.round(site.z)).padStart(6)}) ph=${phantom} gh=${ghost} mir=${mirror} vert=${vert ? vert.toFixed(2) : "-"} obb=${cast.nObb}${flag}\n`);
+      process.stdout.write(`  [${String(n + 1).padStart(2)}/${sites.length}] ${site.id.padEnd(18)} (${String(Math.round(site.x)).padStart(5)},${String(Math.round(site.z)).padStart(6)}) ph=${phantom} gh=${ghost} mir=${mirror} graze=${graze} vert=${vert ? vert.toFixed(2) : "-"} obb=${cast.nObb}${flag}\n`);
     }
     console.log(`[parity] all sites cast in ${((Date.now() - startAll) / 1000).toFixed(0)}s`);
 
     // ---- aggregate ----------------------------------------------------------
     const byDistrict = {};
-    let totPh = 0, totGh = 0, totDoor = 0, totVert = 0, totRays = 0, totMirror = 0;
+    let totPh = 0, totGh = 0, totDoor = 0, totVert = 0, totRays = 0, totMirror = 0, totGraze = 0;
     for (const r of results) {
-      const d = byDistrict[r.district] || (byDistrict[r.district] = { sites: 0, rays: 0, phantom: 0, ghost: 0, door: 0, mirror: 0, vert: 0, unsettled: 0 });
-      d.sites++; d.rays += 16; d.phantom += r.phantom; d.ghost += r.ghost; d.door += r.door; d.mirror += r.mirror; if (r.vert > 0) d.vert++; if (!r.settled) d.unsettled++;
-      totPh += r.phantom; totGh += r.ghost; totDoor += r.door; totMirror += r.mirror; if (r.vert > 0) totVert++; totRays += 16;
+      const d = byDistrict[r.district] || (byDistrict[r.district] = { sites: 0, rays: 0, phantom: 0, ghost: 0, door: 0, mirror: 0, graze: 0, vert: 0, unsettled: 0 });
+      d.sites++; d.rays += 16; d.phantom += r.phantom; d.ghost += r.ghost; d.door += r.door; d.mirror += r.mirror; d.graze += r.graze; if (r.vert > 0) d.vert++; if (!r.settled) d.unsettled++;
+      totPh += r.phantom; totGh += r.ghost; totDoor += r.door; totMirror += r.mirror; totGraze += r.graze; if (r.vert > 0) totVert++; totRays += 16;
     }
     // breakdowns: what ghosts SEE, phantom source, mirror-mismatch kind, vertical top-mesh
     const ghostByClass = {}, phantomSource = {}, mirrorKind = {}, vertTopMesh = {};
@@ -453,7 +476,7 @@ async function main() {
     }
 
     // ---- write report -------------------------------------------------------
-    const report = { generated: new Date().toISOString(), branch: "claude/game-perf-polish-79a383", sites: results.length, totals: { rays: totRays, phantom: totPh, ghost: totGh, mirrorMismatch: totMirror, doorExcluded: totDoor, vertMismatchSites: totVert }, byDistrict, ghostByClass, phantomSource, mirrorKind, vertTopMesh, worst20: worst20.map((r) => ({ id: r.id, district: r.district, x: Math.round(r.x), z: Math.round(r.z), gy: r.go.gy, phantom: r.phantom, ghost: r.ghost, mirror: r.mirror, worstGap: r.worst, worstDeg: r.worstDir?.deg ?? null, worstVisWall: r.worstDir?.visWallName ?? null, worstVisClass: r.worstDir?.visWallClass ?? null, worstKlass: r.worstDir?.klass ?? null, worstNote: r.worstDir?.note ?? null, worstWalkDist: r.worstDir?.walkDist ?? null, worstObbDist: r.worstDir?.obbDist ?? null, vert: r.vert, vertRec: r.vertRec, settled: r.settled, collNear: r.collNear, nObb: r.nObb, score: r.score })), shots, full: results };
+    const report = { generated: new Date().toISOString(), branch: "claude/game-perf-polish-79a383", sites: results.length, totals: { rays: totRays, phantom: totPh, ghost: totGh, mirrorMismatch: totMirror, grazeExcluded: totGraze, doorExcluded: totDoor, vertMismatchSites: totVert }, byDistrict, ghostByClass, phantomSource, mirrorKind, vertTopMesh, worst20: worst20.map((r) => ({ id: r.id, district: r.district, x: Math.round(r.x), z: Math.round(r.z), gy: r.go.gy, phantom: r.phantom, ghost: r.ghost, mirror: r.mirror, worstGap: r.worst, worstDeg: r.worstDir?.deg ?? null, worstVisWall: r.worstDir?.visWallName ?? null, worstVisClass: r.worstDir?.visWallClass ?? null, worstKlass: r.worstDir?.klass ?? null, worstNote: r.worstDir?.note ?? null, worstWalkDist: r.worstDir?.walkDist ?? null, worstObbDist: r.worstDir?.obbDist ?? null, vert: r.vert, vertRec: r.vertRec, settled: r.settled, collNear: r.collNear, nObb: r.nObb, score: r.score })), shots, full: results };
     writeFileSync(path.join(OUT, "report.json"), JSON.stringify(report, null, 2));
 
     // ---- console summary ----------------------------------------------------
@@ -463,10 +486,11 @@ async function main() {
     console.log(`GHOST   (visible wall, WALK-through)   : ${totGh}   <- real walk-through`);
     console.log(`MIRROR  (#solids raycast != stepped)   : ${totMirror}  <- paint/cursor/aim only`);
     console.log(`FLOAT/BURY (vertical>0.3m)             : ${totVert} sites`);
+    console.log(`terrain-slope grazes excluded (ok)     : ${totGraze}  <- horizontal ray into rising ground`);
     console.log(`door gaps excluded (ok)                : ${totDoor}`);
     console.log(`unsettled sites                        : ${results.filter((r) => !r.settled).length}`);
-    console.log("\n-- per district (phantom / ghost / mirror / vertSites / unsettled) --");
-    for (const [name, d] of Object.entries(byDistrict)) console.log(`  ${name.padEnd(12)} ph=${String(d.phantom).padStart(3)}  gh=${String(d.ghost).padStart(3)}  mir=${String(d.mirror).padStart(3)}  vert=${String(d.vert).padStart(2)}  rays=${String(d.rays).padStart(3)}  unsettled=${d.unsettled}`);
+    console.log("\n-- per district (phantom / ghost / mirror / graze / vertSites / unsettled) --");
+    for (const [name, d] of Object.entries(byDistrict)) console.log(`  ${name.padEnd(12)} ph=${String(d.phantom).padStart(3)}  gh=${String(d.ghost).padStart(3)}  mir=${String(d.mirror).padStart(3)}  graze=${String(d.graze).padStart(3)}  vert=${String(d.vert).padStart(2)}  rays=${String(d.rays).padStart(3)}  unsettled=${d.unsettled}`);
     console.log("\n-- ghost hits by visual wall kind --");
     for (const [k, v] of Object.entries(ghostByClass).sort((a, b) => b[1] - a[1])) console.log(`  ${k.padEnd(14)} ${v}`);
     console.log("-- phantom source (which collider stopped the walker early) --");

@@ -249,7 +249,18 @@ export function buildInterior(spec: BuildingSpec, zone: InteriorZone = "resident
     }
     // colliders: rotate each centre, and orient the box. Plain boxes (yaw 0) become
     // yaw θ; tilted stair ramps (a `quat`) get the θ yaw composed onto their tilt.
-    const qy: Quat = [0, Math.sin(theta / 2), 0, Math.cos(theta / 2)];
+    //
+    // YAW SIGN (same handedness class as ring.addBody): the mesh above rotates
+    // local→world by the app's PLANAR +θ (dx·cosT − dz·sinT, dx·sinT + dz·cosT),
+    // which sends local +X to (cosθ, +sinθ). box3d/THREE apply a +Y quaternion in
+    // the textbook right-handed sense (a +Y rotation by ψ sends +X to (cosψ, −sinψ)),
+    // so the box3d rotation that reproduces the mesh's +θ planar turn is −θ about Y.
+    // Plain boxes reach that correctly because they store yaw += θ and ring.addBody
+    // NEGATES the yaw; tilted ramps carry a full `quat` that addBody uses verbatim,
+    // so the world-outer factor must itself be the −θ quaternion or every ramp on a
+    // rotated lot (SF lots sit ~30–45° off-axis) lands MIRRORED about its centre —
+    // the incline tilts the wrong way and the stair collider peels off its treads.
+    const qy: Quat = [0, Math.sin(-theta / 2), 0, Math.cos(-theta / 2)];
     for (const c of cols) {
       const dx = c.x - ctrX, dz = c.z - ctrZ;
       c.x = ctrX + dx * cosT - dz * sinT;

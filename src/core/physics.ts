@@ -400,7 +400,15 @@ export class Physics {
       // hold = min wall distance to any anchor whose OUTER band still covers it;
       // Infinity once the box has left every anchor's band (old d > rOut test)
       const hold = c ? anchorHold(c, anchors, 1.35) : Infinity;
-      if (!c || hold === Infinity || (!wanted.has(id) && hold > cutoff * 1.2 + 10)) {
+      // A building the CityGen ring suppressed (alive→0) drops out of selectBody-
+      // Candidates so it's never re-`wanted`, but distance-only eviction keeps its
+      // ALREADY-materialised stepped body alive while the player stays close — the
+      // loose baked box (~1–1.6 m proud of the exact-poly LOD wall the ring swapped
+      // in) then blocks the walker with nothing visible there (a PHANTOM; the query
+      // twin was already dropped via onBuildingAlive → ray-blind mirror). Evict on
+      // death, not just distance, so the baked body is gone the instant the exact
+      // walls take over and returns when the ring retires them (alive→1/255).
+      if (!c || hold === Infinity || !this.#bodyIsAlive(info.key, info.i) || (!wanted.has(id) && hold > cutoff * 1.2 + 10)) {
         this.world.destroyBody(handle);
         this.#buildingBodies.delete(handle);
         this.#bodyByBuilding.delete(id);
