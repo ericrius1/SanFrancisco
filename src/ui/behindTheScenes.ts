@@ -239,7 +239,8 @@ const TAB_LIFE = `
     iridescent sheen and glows faintly at dusk. The camera drone is the pure free-flight rig the
     phoenix borrows its controls from — mouse aims, W flies straight along that aim, four rotors spin in
     the shader with green-front / red-rear nav lights on the tips. And the same "become a vehicle"
-    plumbing is what lets you press E to commandeer a passing car — or, up in the hills, a bear.</p>
+    plumbing is what lets you press E to ride along in a friend's car, hop on a bear up in the hills,
+    or take the wheel of a boat drifting in the bay.</p>
   </section>
 
   <section>
@@ -318,7 +319,7 @@ const TAB_PLAY = `
     from z-fighting the wall.</p>
     <p><strong>Paintballs</strong> actually fly: they're kinematic blobs (no physics body), integrated
     ballistically and swept each step with a raycast against buildings and terrain — plus the moving
-    cars and players you're aiming at. A wall hit spawns a graffiti burst; a hit on a vehicle or player
+    players and vehicles you're aiming at. A wall hit spawns a graffiti burst; a hit on a vehicle or player
     sticks a splat <em>to their mesh</em> via a paint-skin layer that rides the moving object (capped,
     oldest overwritten). Over the network a shot is just origin + velocity + colour, so every client
     re-simulates it and the paint lands exactly where <em>that</em> client sees the wall.</p>
@@ -357,11 +358,9 @@ const TAB_PLAY = `
     sparkle ring and respawns somewhere fresh.
     Blow soap bubbles and they drift off on a breeze with real thin-film iridescence — the colours are
     the viewing angle, not a texture — and burst against a wall, the water, or just old age.</p>
-    <p>The traffic is real: sedans, taxis, a Muni bus, a cable car — each a dynamic body you can ram or
-    ride (press E and it's yours). There's no road-network data, so they <strong>navigate by feel</strong>,
-    probing the building-collider field ahead and steering toward open air, which reads surprisingly
-    like real city traffic on the SF grid. Up in the Marin redwoods the wildlife is rideable — walk up to a
-    bear or raccoon and mount it with the same plumbing that commandeers a car. Gulls wheel over the
+    <p>The wildlife is rideable: up in the Marin redwoods, walk up to a bear or raccoon and mount it with
+    the same "become a vehicle" plumbing your own car uses, and boats drift out in the bay waiting for you
+    to take the wheel. Gulls wheel over the
     landmarks in one draw call, and something big and green circles Alcatraz, surfacing every so often.
     And the fireworks are <strong>entirely GPU-driven</strong>: the whole particle population lives in
     storage buffers integrated by one compute pass, and the CPU only decides when and where — so a burst
@@ -426,7 +425,7 @@ const TAB_PLAY = `
     skating into walls.</p>
     <p>Remote players show up as full embodiments — walker, sports car, plane, sailboat, drone,
     hoverboard with rider, phoenix — with name tags and walk/ride animation driven by their reported
-    speed. What <em>isn't</em> synced is just as deliberate: building destruction, traffic, fireworks and
+    speed. What <em>isn't</em> synced is just as deliberate: building destruction, fireworks and
     paint all stay local, because everyone runs their own copy of the city. That's exactly why you can
     knock a block flat without ruining anyone else's skyline. The relay itself is almost aggressively
     boring by design: no database, everything in memory, a 15-second heartbeat to drop dead sockets,

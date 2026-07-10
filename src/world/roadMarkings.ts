@@ -17,32 +17,44 @@ type RoadSegmentJson = {
 };
 
 const ROAD_MARKING_VERSION = 3;
-const Y_OFFSET = 0.45;
+// Decal lift: sit a hair above the asphalt only to defeat coincident-plane
+// z-fighting. The heavy lifting is done by depthWrite:false + polygonOffset, so
+// this can stay tiny — a couple of cm keeps the marking glued to the road and
+// far below the avatar's body, so it can never plane through the player the way
+// the old 45cm lift did (the quad floated up to shin height on slopes).
+const LIFT_M = 0.025;
 const EDGE_INSET = 0.55;
 const DASH_M = 4.6;
 const GAP_M = 6.4;
 const MIN_EDGE_M = 0.4;
 const WHITE_W = 0.52;
 const YELLOW_W = 0.62;
+// Re-drape long strips: sampling ground only at a strip's endpoints lets it
+// float above convex hills or sink into valleys (the yellow centre line runs a
+// whole OSM polyline segment, often tens of metres). Subdivide so every node
+// re-samples effectiveGround and the quad hugs the terrain-conformed road.
+const DRAPE_STEP_M = 2.5;
 
-const whiteMat = new THREE.MeshBasicNodeMaterial({
-  color: 0xffffff,
-  depthWrite: false,
-  opacity: 0.96,
-  side: THREE.DoubleSide
-});
+function makeMarkingMaterial(colorHex: number, opacity: number): THREE.MeshBasicNodeMaterial {
+  const mat = new THREE.MeshBasicNodeMaterial({
+    color: colorHex,
+    depthWrite: false,
+    opacity,
+    side: THREE.DoubleSide
+  });
+  mat.transparent = true;
+  mat.toneMapped = false;
+  // True decal: bias the depth test toward the camera so the marking wins
+  // against the coincident road surface without any physical lift, and never
+  // z-fights the asphalt on a slope.
+  mat.polygonOffset = true;
+  mat.polygonOffsetFactor = -2;
+  mat.polygonOffsetUnits = -2;
+  return mat;
+}
 
-const yellowMat = new THREE.MeshBasicNodeMaterial({
-  color: 0xffcc33,
-  depthWrite: false,
-  opacity: 0.98,
-  side: THREE.DoubleSide
-});
-
-whiteMat.transparent = true;
-yellowMat.transparent = true;
-whiteMat.toneMapped = false;
-yellowMat.toneMapped = false;
+const whiteMat = makeMarkingMaterial(0xffffff, 0.96);
+const yellowMat = makeMarkingMaterial(0xffcc33, 0.98);
 
 function clampLaneCount(n: number, fallback: number): number {
   return Math.max(1, Math.min(8, Math.round(Number.isFinite(n) ? n : fallback)));
@@ -64,24 +76,43 @@ function pushStrip(
   if (len < MIN_EDGE_M) return;
   const nx = -dz / len;
   const nz = dx / len;
-
-  const aCx = ax + nx * offset;
-  const aCz = az + nz * offset;
-  const bCx = bx + nx * offset;
-  const bCz = bz + nz * offset;
-  const ay = map.effectiveGround(aCx, aCz) + Y_OFFSET;
-  const by = map.effectiveGround(bCx, bCz) + Y_OFFSET;
   const wx = nx * width * 0.5;
   const wz = nz * width * 0.5;
 
-  out.push(
-    aCx - wx, ay, aCz - wz,
-    bCx - wx, by, bCz - wz,
-    bCx + wx, by, bCz + wz,
-    aCx - wx, ay, aCz - wz,
-    bCx + wx, by, bCz + wz,
-    aCx + wx, ay, aCz + wz
-  );
+  // Walk the offset centre line, re-sampling the road height at each node so the
+  // ribbon conforms to sloped/curved streets instead of chording across them.
+  // Both the left and right edge of every node are draped independently, so the
+  // strip also follows the street's cross-camber and each corner sits exactly
+  // LIFT_M above the road it covers (a single centre sample would let the edges
+  // float or dip a few cm on a canted street).
+  const steps = Math.max(1, Math.ceil(len / DRAPE_STEP_M));
+  const cx = ax + nx * offset;
+  const cz = az + nz * offset;
+  let plx = cx - wx, plz = cz - wz;
+  let prx = cx + wx, prz = cz + wz;
+  let ply = map.effectiveGround(plx, plz) + LIFT_M;
+  let pry = map.effectiveGround(prx, prz) + LIFT_M;
+  for (let s = 1; s <= steps; s++) {
+    const t = s / steps;
+    const ncx = ax + dx * t + nx * offset;
+    const ncz = az + dz * t + nz * offset;
+    const qlx = ncx - wx, qlz = ncz - wz;
+    const qrx = ncx + wx, qrz = ncz + wz;
+    const qly = map.effectiveGround(qlx, qlz) + LIFT_M;
+    const qry = map.effectiveGround(qrx, qrz) + LIFT_M;
+
+    out.push(
+      plx, ply, plz,
+      qlx, qly, qlz,
+      qrx, qry, qrz,
+      plx, ply, plz,
+      qrx, qry, qrz,
+      prx, pry, prz
+    );
+
+    plx = qlx; plz = qlz; ply = qly;
+    prx = qrx; prz = qrz; pry = qry;
+  }
 }
 
 function pushDashedLine(
@@ -178,8 +209,15 @@ function meshFromPositions(name: string, positions: number[], mat: THREE.Materia
   geo.computeBoundingSphere();
   const mesh = new THREE.Mesh(geo, mat);
   mesh.name = name;
+  // Draw after the road surface (renderOrder 0) so the decal composites on top.
   mesh.renderOrder = 20;
   mesh.frustumCulled = true;
+  // Paint should take the road's shadow but never cast one of its own. (The
+  // MeshBasicNodeMaterial does not sample lighting, so receiveShadow is intent
+  // only; if shadowed markings ever read too bright, switch to a Standard/lit
+  // decal material — see report.)
+  mesh.castShadow = false;
+  mesh.receiveShadow = true;
   return mesh;
 }
 

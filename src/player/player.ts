@@ -112,7 +112,7 @@ export class Player {
   #animT = 0; // free-running clock for idle sway/bob
   #strideT = 0; // stride/stroke phase, advanced by speed
 
-  // what the player is currently driving; swapped when commandeering traffic
+  // what the player is currently driving; swapped when mounting a ridden animal
   driveSpec: DriveSpec = DEFAULT_DRIVE_SPEC;
   swimEnter = false;
   #defaultDriveMesh!: THREE.Group;
@@ -402,9 +402,9 @@ export class Player {
   }
 
   /**
-   * Swap what "drive" means: the mesh (a commandeered taxi/bus/cable car from
-   * traffic, or null for the default sports car) and the matching body/handling
-   * spec. Takes effect on the next drive body spawn.
+   * Swap what "drive" means: the mesh (a ridden animal from the forest, or null
+   * for the default sports car) and the matching body/handling spec. Takes effect
+   * on the next drive body spawn.
    */
   setDriveStyle(mesh: THREE.Group | null, spec?: DriveSpec) {
     const next = mesh ?? this.#defaultDriveMesh;

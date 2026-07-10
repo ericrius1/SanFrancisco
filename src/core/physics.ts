@@ -139,14 +139,10 @@ export class Physics {
   // damage tag so a vehicle crash chips them (interiors don't — nothing rams them).
   #querySolids = new Map<number, number>(); // caller id (stepped handle) -> #solids handle
   #citygenDamage = new Map<number, { key: string; i: number }>(); // wall id -> baked twin it stands in for
-  // baked OBBs streamed around every collider anchor, decoupled from the visual
-  // tile stream, so AI cars far from the player still have building data (see
-  // buildingColliderIndex.ts). Null until create() finishes loading the manifest.
+  // baked OBBs streamed around the player collider anchor, decoupled from the
+  // visual tile stream (see buildingColliderIndex.ts). Null until create()
+  // finishes loading the manifest.
   #colliderIndex: BuildingColliderIndex | null = null;
-  // extra collider anchors beyond the player (AI cars, active vehicles). Provided
-  // by main.ts via setColliderAnchors; each returned point pulls building bodies
-  // + index tiles into existence around it.
-  #colliderAnchors: (() => THREE.Vector3[]) | null = null;
   #anchorList: ColliderAnchor[] = []; // reused per body update — no per-tick alloc
   #bodyTiles: BodyTileSource<BuildingCollider>[] = []; // reused merged tile source
   #vehicleHandles = new Set<number>();
@@ -249,16 +245,6 @@ export class Physics {
       console.warn("[physics] collider index disabled — visual-only building bodies", err);
     }
     return p;
-  }
-
-  /**
-   * Register a provider of extra collider anchors (AI cars / active vehicles).
-   * The player is always anchor #0; each point this returns pulls building static
-   * bodies + citywide-index tiles into existence around it, so agents elsewhere in
-   * the city collide with buildings instead of clipping through them.
-   */
-  setColliderAnchors(provider: () => THREE.Vector3[]) {
-    this.#colliderAnchors = provider;
   }
 
   registerVehicle(handle: number) {
@@ -472,16 +458,11 @@ export class Physics {
     return Math.hypot(ex, ez);
   }
 
-  /** Player (anchor #0, full radius) + every registered extra anchor (AI cars /
-   *  vehicles, tight radius). Reused array — no per-tick allocation. */
+  /** Player collider anchor (#0, full radius). Reused array — no per-tick alloc. */
   #gatherAnchors(playerPos: THREE.Vector3): ColliderAnchor[] {
     const out = this.#anchorList;
     out.length = 0;
     out.push({ x: playerPos.x, z: playerPos.z, r: CONFIG.colliderRadius });
-    const provider = this.#colliderAnchors;
-    if (provider) {
-      for (const p of provider()) out.push({ x: p.x, z: p.z, r: CONFIG.carColliderRadius });
-    }
     return out;
   }
 
@@ -535,13 +516,11 @@ export class Physics {
   #updateBuildingBodies(playerPos: THREE.Vector3) {
     const budget = CONFIG.maxActiveBuildingBodies;
     const anchors = this.#gatherAnchors(playerPos);
-    // stream baked OBBs around every anchor so far-off cars have building data
+    // stream baked OBBs around the player anchor so nearby buildings have data
     this.#colliderIndex?.update(anchors);
 
-    // rank every alive building within ANY anchor's radius by min wall distance
-    // to any anchor (footprint edge, not centre). Cars anchor themselves, so a
-    // facade beside a car 300 m from the player — outside the old player-only
-    // 260 m radius — now gets a body instead of being driven straight through.
+    // rank every alive building within the anchor's radius by min wall distance
+    // (footprint edge, not centre) so the closest facades get a static body.
     const tiles = this.#mergedBodyTiles();
     const kept = selectBodyCandidates(anchors, tiles, budget, this.#bodyIsAlive, this.tiles.manifest.tile);
 
@@ -652,8 +631,7 @@ export class Physics {
     const midZ = (p0[2] + p1[2]) / 2;
 
     // visual tiles (alive-gated) raced against index-only tiles (buildings in
-    // regions no one is looking at, so nothing there can be demolished) — the
-    // latter is why an AI car far from the player still stops at walls.
+    // regions no one is looking at, so nothing there can be demolished).
     let bestT = this.#sweepTiles(this.#tileColliders, true, p0, dxs, dys, dzs, segLen, midX, midZ, Infinity);
     const idx = this.#colliderIndex;
     if (idx) bestT = this.#sweepTiles(idx.tiles, false, p0, dxs, dys, dzs, segLen, midX, midZ, bestT);

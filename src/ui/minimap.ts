@@ -20,16 +20,14 @@ import { WILD_REGIONS } from "../world/wildlands/layout";
 export type MapSelf = { x: number; z: number; fx: number; fz: number; hue: number };
 export type MapRemote = { id: number; name: string; hue: number; x: number; z: number; mode: PlayerMode };
 // Live debug/training overlay points, fetched fresh each big-map draw.
-export type MapDebugCar = { id: number; x: number; z: number };
 export type MapDebugHorse = { x: number; z: number; fallen: boolean };
 export type MapLayerId = "art" | "science" | "music";
 export type MapLayerPoint = { id: string; layer: MapLayerId; title: string; x: number; z: number };
 
-// A minimap teleport target: a player follows its dot, AI cars board as
-// passengers, everything else is a fixed ground/landmark point.
+// A minimap teleport target: a player follows its dot, everything else is a
+// fixed ground/landmark point.
 type MiniSelection =
   | { kind: "player"; id: number; name: string }
-  | { kind: "aicar"; id: number; x: number; z: number; name: string }
   | { kind: "fixed"; x: number; z: number; name: string; toName?: string };
 type MiniLandmark = { x: number; z: number; name: string };
 type LabelBox = { l: number; t: number; r: number; b: number };
@@ -138,9 +136,8 @@ const MAP_LAYER_DEFS: readonly MapLayerDefinition[] = [
 export class Minimap {
   /** Fires with a world position when the user asks to teleport. `playerId`
    * is set when the target is a player — main.ts matches their altitude and
-   * mode instead of dropping to the ground. `aiCarId` boards as a passenger
-   * in that self-driving training car. */
-  onTeleport: (x: number, z: number, toName?: string, playerId?: number, aiCarId?: number) => void = () => {};
+   * mode instead of dropping to the ground. */
+  onTeleport: (x: number, z: number, toName?: string, playerId?: number) => void = () => {};
   /** Fires when a map-layer point is clicked. Real spots/exhibits/films can hook in here later. */
   onPlaceClick: (place: MapLayerPoint) => void = () => {};
   /** Expanded state changed (main.ts releases/requests pointer lock). */
@@ -149,8 +146,7 @@ export class Minimap {
   #map: WorldMap;
   #getSelf: () => MapSelf;
   #getRemotes: () => MapRemote[];
-  // Optional live getters for the big-map Training/Debug overlay (may be absent).
-  #getDebugCars?: () => MapDebugCar[];
+  // Optional live getter for the big-map Training/Debug overlay (may be absent).
   #getDebugHorses?: () => MapDebugHorse[];
   #debugLayerOn = false;
 
@@ -201,7 +197,6 @@ export class Minimap {
   #miniPlaceHits: [number, number, MapLayerPoint][] = [];
   #bigPlaceHits: [number, number, MapLayerPoint][] = [];
   #bigLandmarkHits: [number, number, MiniLandmark][] = [];
-  #bigDebugCarHits: [number, number, MapDebugCar][] = [];
   // collapsed-map hit-boxes rebuilt every draw, for click-to-select-then-teleport
   #miniPlayerHits: [number, number, MapRemote][] = [];
   #miniLandmarkHits: [number, number, MiniLandmark][] = [];
@@ -211,13 +206,11 @@ export class Minimap {
     map: WorldMap,
     getSelf: () => MapSelf,
     getRemotes: () => MapRemote[],
-    getDebugCars?: () => MapDebugCar[],
     getDebugHorses?: () => MapDebugHorse[]
   ) {
     this.#map = map;
     this.#getSelf = getSelf;
     this.#getRemotes = getRemotes;
-    this.#getDebugCars = getDebugCars;
     this.#getDebugHorses = getDebugHorses;
     this.#paintWorld();
     this.#landmarks = Object.entries(this.#map.meta.landmarks).map(([key, pos]) => ({
@@ -399,7 +392,7 @@ export class Minimap {
     teleBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       const t = this.#resolveSelected();
-      if (t) this.onTeleport(t.x, t.z, t.toName, t.playerId, t.aiCarId);
+      if (t) this.onTeleport(t.x, t.z, t.toName, t.playerId);
       this.#clearSelection();
     });
     tele.appendChild(teleName);
@@ -1134,17 +1127,11 @@ export class Minimap {
     this.#clearSelection();
   }
 
-  /** Resolve the current selection to a live world position (players / AI cars move). */
-  #resolveSelected(): { x: number; z: number; name: string; toName?: string; playerId?: number; aiCarId?: number } | null {
+  /** Resolve the current selection to a live world position (players move). */
+  #resolveSelected(): { x: number; z: number; name: string; toName?: string; playerId?: number } | null {
     const s = this.#selected;
     if (!s) return null;
     if (s.kind === "fixed") return { x: s.x, z: s.z, name: s.name, toName: s.toName };
-    if (s.kind === "aicar") {
-      const live = this.#getDebugCars?.().find((c) => c.id === s.id);
-      const x = live?.x ?? s.x;
-      const z = live?.z ?? s.z;
-      return { x, z, name: s.name, toName: s.name, aiCarId: s.id };
-    }
     const r = this.#getRemotes().find((r) => r.id === s.id);
     return r ? { x: r.x, z: r.z, name: s.name, toName: s.name, playerId: s.id } : null;
   }
@@ -1230,7 +1217,7 @@ export class Minimap {
       e.stopPropagation();
       const target = this.#resolveSelected();
       if (!target) return;
-      this.onTeleport(target.x, target.z, target.toName, target.playerId, target.aiCarId);
+      this.onTeleport(target.x, target.z, target.toName, target.playerId);
       this.#clearSelection();
       this.setExpanded(false);
     });
@@ -1239,10 +1226,9 @@ export class Minimap {
     inner.appendChild(canvas);
     inner.appendChild(action);
     inner.appendChild(hint);
-    // Big-map-only "Training" overlay toggle: live AI-car + horse dots. Lives
-    // here (not on the minimap) and defaults off. Only shown when a live getter
-    // is wired in.
-    if (this.#getDebugCars || this.#getDebugHorses) {
+    // Big-map-only "Training" overlay toggle: live horse dots. Lives here (not on
+    // the minimap) and defaults off. Only shown when a live getter is wired in.
+    if (this.#getDebugHorses) {
       const debug = document.createElement("div");
       debug.className = "bigmap-debug";
       const btn = document.createElement("button");
@@ -1261,7 +1247,6 @@ export class Minimap {
       const legend = document.createElement("div");
       legend.className = "bigmap-debug-legend";
       legend.innerHTML =
-        `<span class="bigmap-debug-key"><span class="bigmap-debug-dot" style="--c:#4fd1ff"></span>cars</span>` +
         `<span class="bigmap-debug-key"><span class="bigmap-debug-dot" style="--c:#ffb454"></span>horses</span>`;
       debug.appendChild(btn);
       debug.appendChild(legend);
@@ -1406,31 +1391,6 @@ export class Minimap {
       };
       this.update();
       return;
-    }
-
-    if (this.#debugLayerOn) {
-      let bestCar: MapDebugCar | null = null;
-      bestDist = Infinity;
-      const carR = DOT_HIT_PX * this.#dpr * 1.15;
-      for (const [hx, hy, c] of this.#bigDebugCarHits) {
-        const d = Math.hypot(mx - hx, my - hy);
-        if (d < carR && d < bestDist) {
-          bestCar = c;
-          bestDist = d;
-        }
-      }
-      if (bestCar) {
-        this.#selectedPlaceId = null;
-        this.#selected = {
-          kind: "aicar",
-          id: bestCar.id,
-          x: bestCar.x,
-          z: bestCar.z,
-          name: `▶ AI car ${bestCar.id + 1}`
-        };
-        this.update();
-        return;
-      }
     }
 
     if (LAYERS_ENABLED) {
@@ -1596,8 +1556,8 @@ export class Minimap {
     }
   }
 
-  /** Live Training/Debug overlay: every AI car (cyan) + horse (orange, red if
-   * fallen) as a small dot. Positions are fetched fresh here so they animate. */
+  /** Live Training/Debug overlay: every horse (orange, red if fallen) as a small
+   * dot. Positions are fetched fresh here so they animate. */
   #drawBigDebug(
     ctx: CanvasRenderingContext2D,
     px: (x: number) => number,
@@ -1617,15 +1577,6 @@ export class Minimap {
       ctx.strokeStyle = "rgba(6,14,20,0.85)";
       ctx.stroke();
     };
-    this.#bigDebugCarHits = [];
-    for (const c of this.#getDebugCars?.() ?? []) {
-      const x = px(c.x);
-      const y = pz(c.z);
-      if (!vis(x, y)) continue;
-      const selected = this.#selected?.kind === "aicar" && this.#selected.id === c.id;
-      spot(x, y, (selected ? 4.6 : 3.2) * dpr, selected ? "#7ee8ff" : "#4fd1ff");
-      this.#bigDebugCarHits.push([x, y, c]);
-    }
     for (const h of this.#getDebugHorses?.() ?? []) {
       const x = px(h.x);
       const y = pz(h.z);

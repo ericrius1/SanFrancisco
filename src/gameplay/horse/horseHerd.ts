@@ -1,11 +1,11 @@
 import * as THREE from "three/webgpu";
 import { attribute } from "three/tsl";
-import { LIGHT_SCALE } from "../../config";
+import { HORSE_TUNING, LIGHT_SCALE } from "../../config";
 import type { Physics } from "../../core/physics";
 import { BodyType } from "../../core/box3dWorld";
 import type { WorldMap } from "../../world/heightmap";
 import { GARDEN_MEADOW, gardenSurfaceHeight } from "../../world/garden/layout";
-import { BrainOverlay } from "../aiCars/brainOverlay";
+import { BrainOverlay } from "./brainOverlay";
 import type { InspectableBrain } from "../../ui/brainPanel/types";
 
 type N = any; // TSL node (loosely typed, matching the repo's fx/* convention)
@@ -226,7 +226,6 @@ export class HorseHerd {
   #scene: THREE.Scene;
   #policy: RuntimePolicy | null = null;
   #overlay: BrainOverlay | null = null;
-  #overlaysOn = true;
   #camera: THREE.Camera | null = null;
   #worldPos = new THREE.Vector3();
   #obs = new Float32Array(OBS_DIM);
@@ -255,6 +254,10 @@ export class HorseHerd {
   #instParts: InstPart[] = []; // every live (scratch-obj → mesh slot) mapping, walked each synced frame
   #tintAttrs: THREE.InstancedBufferAttribute[] = []; // per-instance colour buffers, uploaded once after spawn
   #needsInstanceResync = true; // force one matrix sync when the herd (re)appears while frozen
+  // Master on/off (HORSE_TUNING.values.enabled), tracked to act only on transitions —
+  // mirrors the #meshesShown distance-gate pattern. Seeded wrong-on-purpose so the
+  // very first update() call always applies the current tunable at least once.
+  #herdEnabledLast: boolean | null = null;
 
   constructor(physics: Physics, map: WorldMap, scene: THREE.Scene) {
     this.#world = physics.world;
@@ -266,6 +269,10 @@ export class HorseHerd {
     this.#buildCourse();
     this.#spawnHerd();
     this.#ready = true;
+    // Apply the master toggle's boot-time value immediately (default OFF) so the
+    // herd never flashes visible for a frame before the first update() call.
+    this.#herdEnabledLast = HORSE_TUNING.values.enabled;
+    if (!this.#herdEnabledLast) this.#setHerdVisible(false);
     void this.#loadPolicy();
   }
 
@@ -433,7 +440,7 @@ export class HorseHerd {
   #buildOverlay(policy: RuntimePolicy): void {
     for (const h of this.#horses) h.layerSnap = policy.layerOut.map((l) => new Float32Array(l.length));
     const overlay = new BrainOverlay(this.#scene, policy.sizes, this.#horses.length, () => this.#camera as THREE.Camera);
-    overlay.setEnabled(this.#overlaysOn);
+    overlay.setEnabled(Boolean(HORSE_TUNING.values.overlays));
     this.#overlay = overlay;
   }
 
@@ -835,6 +842,12 @@ export class HorseHerd {
 
   prePhysics(dt: number, playerPosition: THREE.Vector3): void {
     if (!this.#ready) return;
+    // Master toggle: while off, the herd is fully deactivated — no sim step, no
+    // obstacle/policy work, zero per-frame cost beyond this one flag read.
+    if (!HORSE_TUNING.values.enabled) {
+      this.#active = false;
+      return;
+    }
     const dcx = playerPosition.x - CENTER.x;
     const dcz = playerPosition.z - CENTER.z;
     this.#active = dcx * dcx + dcz * dcz < SIM_RANGE * SIM_RANGE;
@@ -849,6 +862,21 @@ export class HorseHerd {
     // each horse's floating neural-net lattice from its cached activations, so
     // the brains keep glowing (and stay inspectable) even while paused.
     this.#camera = camera;
+
+    // Master toggle: act only on ON↔OFF transitions (mirrors the mesh distance
+    // gate below), then bail out for zero per-frame cost while off. Turning it
+    // back on falls straight through into the normal distance-gated show/hide +
+    // resync logic below, so the herd reappears exactly as it would naturally.
+    const enabled = Boolean(HORSE_TUNING.values.enabled);
+    if (enabled !== this.#herdEnabledLast) {
+      this.#herdEnabledLast = enabled;
+      if (!enabled) {
+        this.#setHerdVisible(false);
+        const overlay = this.#overlay;
+        if (overlay) for (let i = 0; i < this.#horses.length; i++) overlay.hide(i);
+      }
+    }
+    if (!enabled) return;
 
     // Herd mesh visibility gate (see MESH_HIDE_RANGE). Toggle on threshold
     // crossings only. The brain overlays are already distance-gated below (all
@@ -871,7 +899,7 @@ export class HorseHerd {
 
     const overlay = this.#overlay;
     if (!overlay) return;
-    if (!this.#active || !this.#overlaysOn) {
+    if (!this.#active || !HORSE_TUNING.values.overlays) {
       for (let i = 0; i < this.#horses.length; i++) overlay.hide(i);
       return;
     }

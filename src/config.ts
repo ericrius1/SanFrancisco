@@ -27,11 +27,6 @@ export const RENDER_MODE = {
 /** Renderer grading, bound in the "/" panel's lighting folder. */
 export const RENDER_TUNING = tunables("render", {
   exposure: { v: 0.13, min: 0.01, max: 1, label: "exposure" },
-  // lit windows beyond the interior-raymarch range (~520 m): OFF (default) is
-  // the original 0.55 "dusk sparkle" glow; ON boosts far panes toward the
-  // room-emissive average so the whole skyline burns brighter at dusk. Purely
-  // a look toggle — the shader cost is identical either way.
-  farWindowGlow: { v: false, label: "far window glow boost" },
   wireframe: { v: false, label: "wireframe mode" },
   // collider x-ray: draw every active physics collider as a wireframe box (red =
   // baked body, orange = citywide index, green = walk-in wall, blue = interior).
@@ -100,6 +95,19 @@ export const WORLD_TUNING = tunables("world", {
 /** Cosmetic vegetation visibility, bound in the "/" panel for performance checks. */
 export const FOLIAGE_TUNING = tunables("foliage", {
   visible: { v: true, label: "trees / grass visible" }
+});
+
+/**
+ * Horse herd (Botanical Garden RL herd) master switch, bound at the TOP of the
+ * "/" panel. Off by default: the whole herd — instanced meshes, course props
+ * (cones/hurdles), and brain-lattice overlays — is hidden, and its per-frame
+ * work (sim step, pose sync, brain-overlay update) is skipped entirely via
+ * early returns in horseHerd.ts prePhysics()/update(). `overlays` only matters
+ * while `enabled` is on — it toggles just the floating NN lattices.
+ */
+export const HORSE_TUNING = tunables("horses", {
+  enabled: { v: false, label: "horses" },
+  overlays: { v: true, label: "horse NN overlays" }
 });
 
 /**
@@ -179,13 +187,8 @@ export const CONFIG = {
   tileLoadRadius: WORLD_TUNING.values.radius,
   tileUnloadRadius: WORLD_TUNING.values.radius + 400,
   colliderRadius: 260,
-  // per-AI-car collider anchor radius: a car only needs a few tens of metres of
-  // building bodies around it (it moves ~2.8 m between the 5 Hz body updates), so
-  // this is far tighter than the player's, keeping the citywide budget bounded.
-  carColliderRadius: 60,
   // static building AABBs are ~free in the box3d broadphase (they never move), so
-  // this is generous enough to cover the player plus every bodied AI car at once
-  // (48 cars × a handful of downtown boxes each) without starving the player.
+  // this comfortably covers every facade within the player's collider radius.
   maxActiveBuildingBodies: 700,
 
   // physics

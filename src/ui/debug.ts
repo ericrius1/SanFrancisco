@@ -8,12 +8,13 @@ import {
   FOLIAGE_TUNING,
   GRASS_TUNING,
   CITYGEN_TUNING,
+  HORSE_TUNING,
   RENDER_TUNING,
   WORLD_TUNING
 } from "../config";
 import { addMovementTuning } from "../player/tuning";
 import type { PlayerMode } from "../player/types";
-import { DEBRIS_LIGHTS, WINDOW_GLOW } from "../world/facade";
+import { DEBRIS_LIGHTS } from "../world/facade";
 import { CROWN_SLIDERS, CROWN_TUNING } from "../world/salesforceCrown";
 import { BAY_LIGHTS_SLIDERS, BAY_LIGHTS_TUNING } from "../world/bayLights";
 import { GOLDEN_GATE_LIGHTS_SLIDERS, GOLDEN_GATE_LIGHTS_TUNING } from "../world/goldenGateLights";
@@ -284,6 +285,12 @@ export class DebugPanel {
     const pane = new Pane({ container: root, title: "tuning — / to close" });
     this.#pane = pane;
 
+    // Horse herd master switch, right at the top: off by default, the whole RL
+    // herd (meshes + course props + brain lattices) stays hidden and its
+    // per-frame work is skipped entirely (see horseHerd.ts prePhysics/update
+    // early-returns). "horse NN overlays" only matters while "horses" is on.
+    HORSE_TUNING.bind(pane, { keys: ["enabled", "overlays"] });
+
     // basics live at the root — the handful of things touched every session;
     // everything else tucks into the collapsed "advanced" folder below.
     // proxy so tweakpane's slider step never quantizes the live cycle clock
@@ -366,12 +373,10 @@ export class DebugPanel {
 
     const lighting = advanced.addFolder({ title: "lighting" });
     RENDER_TUNING.bind(lighting, {
-      keys: ["exposure", "farWindowGlow"],
+      keys: ["exposure"],
       onChange: (key, value) => {
         if (key === "exposure") {
           this.#renderer.toneMappingExposure = value as number;
-        } else if (key === "farWindowGlow") {
-          WINDOW_GLOW.far.value = value ? 1 : 0;
         }
       }
     });

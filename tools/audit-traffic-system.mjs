@@ -9,7 +9,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { RoadGraph } from "../src/gameplay/aiCars/roadGraph.ts";
+import { RoadGraph } from "../src/world/traffic/roadGraph.ts";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const roads = JSON.parse(readFileSync(path.join(ROOT, "public/data/roads.json"), "utf8"));

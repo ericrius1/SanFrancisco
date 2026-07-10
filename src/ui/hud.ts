@@ -10,7 +10,7 @@ const KB: Record<PlayerMode, Row[]> = {
     { c: ["W", "A", "S", "D"], label: "move" },
     { c: ["Shift"], label: "run" },
     { c: ["Space"], label: "jump" },
-    { c: ["E"], label: "hop in a car" },
+    { c: ["E"], label: "hop on a ride" },
     { c: ["Click"], label: "shoot" }
   ],
   drive: [
@@ -81,7 +81,7 @@ const PAD: Record<PlayerMode, Row[]> = {
     { c: ["LS"], label: "move" },
     { c: ["RB"], label: "run" },
     { c: ["A"], label: "jump" },
-    { c: ["B"], label: "hop in a car" },
+    { c: ["B"], label: "hop on a ride" },
     { c: ["X"], label: "shoot" }
   ],
   drive: [
@@ -267,7 +267,6 @@ export class HUD {
           { c: ["Z"], label: "hold — time of day" },
           { c: ["P"], label: "pause" },
           { c: ["C"], label: "camera" },
-          { c: ["N"], label: "ride AI car" },
           { c: ["/"], label: "debug" },
           { c: ["I"], label: "immersive" },
           { c: ["F"], label: "fullscreen" }

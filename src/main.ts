@@ -1,7 +1,7 @@
 import * as THREE from "three/webgpu";
 import { Inspector } from "three/addons/inspector/Inspector.js";
 import CameraControls from "camera-controls";
-import { CONFIG, DEBRIS_TUNING, FLOWER_TUNING, FOLIAGE_TUNING, RENDER_MODE, RENDER_TUNING, START, START_DEFAULTS, WORLD_TUNING } from "./config";
+import { CONFIG, DEBRIS_TUNING, FLOWER_TUNING, FOLIAGE_TUNING, HORSE_TUNING, RENDER_MODE, RENDER_TUNING, START, START_DEFAULTS, WORLD_TUNING } from "./config";
 import { loadPlayerState, resetAllTweaks, savePlayerState } from "./core/persist";
 import { Input } from "./core/input";
 import { WorldMap, waterHeight } from "./world/heightmap";
@@ -11,8 +11,10 @@ import { UnderwaterOverlay } from "./fx/underwater";
 import { SeaPillars } from "./world/seaPillars";
 import { TileStreamer } from "./world/tiles";
 import { createRoadMarkings } from "./world/roadMarkings";
+import { RoadGraph } from "./world/traffic/roadGraph";
+import { TrafficLightView } from "./world/traffic/trafficLights";
 import { Physics } from "./core/physics";
-import { createDebrisMaterial, DEBRIS_LIGHTS, WINDOW_GLOW } from "./world/facade";
+import { createDebrisMaterial, DEBRIS_LIGHTS } from "./world/facade";
 import { updateCrownDisplay, resetCrownTweaks } from "./world/salesforceCrown";
 import { createBayLights, updateBayLights, resetBayLightsTweaks } from "./world/bayLights";
 import { createGoldenGateLights, updateGoldenGateLights, resetGoldenGateLightsTweaks } from "./world/goldenGateLights";
@@ -40,12 +42,9 @@ import { AvatarSelector } from "./ui/avatarSelector";
 import { AudioControls } from "./ui/audioControls";
 import { Chat } from "./ui/chat";
 import { VehicleAudio } from "./fx/vehicleAudio";
-import { AiCarCabinAudio } from "./fx/aiCarCabinAudio";
 import { SwimAudio } from "./fx/swimAudio";
 import { createNatureSoundscape } from "./audio";
-import { Traffic, DRIVE_PROFILES, type VehicleClass } from "./gameplay/traffic";
 import { AbandonedMounts } from "./gameplay/abandonedMounts";
-import { AiCars } from "./gameplay/aiCars/index.ts";
 import { RocketRiders, type LauncherRig } from "./gameplay/launchers";
 import { Flyover } from "./gameplay/flyover";
 import { BridgeParade } from "./gameplay/bridgeParade";
@@ -226,7 +225,6 @@ async function boot() {
 
   // procedural vehicle hum + the HUD's master volume/mute widget (bottom-left)
   const vehicleAudio = new VehicleAudio();
-  const aiCarCabinAudio = new AiCarCabinAudio();
   const swimAudio = new SwimAudio();
   const audioControls = new AudioControls();
   // procedural, layered nature soundscape (Botanical Garden / GG Park / Presidio
@@ -272,18 +270,16 @@ async function boot() {
     hud.setDevice("kb");
   });
 
-  // the playground layer: ambient traffic you can commandeer with E, and the
-  // local wildlife
-  const traffic = new Traffic(physics, map, scene);
-  // AI cars: a self-training neuro-evolution fleet driving the streets, each with
-  // a floating brain lattice. Async init loads the road graph off the boot path.
-  const aiCars = new AiCars(physics, map, scene, () => camera);
-  void aiCars.ready();
-  // building static bodies + the citywide collider index materialise around every
-  // AI car (not just the human), so cars collide with walls instead of clipping.
-  physics.setColliderAnchors(() => aiCars.anchorPositions());
-  // stable anchor array (player.position is mutated in place) — no per-frame alloc
-  const aiCarAnchors = [player.position];
+  // Traffic lights: procedural signals along the road graph. The road graph
+  // loads off the boot path; once it's ready the light rigs pool into the scene
+  // and their state machine cycles (see world/traffic/). Failures leave the city
+  // without signals but never block boot.
+  let trafficLights: TrafficLightView | null = null;
+  void RoadGraph.load()
+    .then((roads) => {
+      trafficLights = new TrafficLightView(scene, map, roads);
+    })
+    .catch((err: unknown) => console.warn("[traffic] signals unavailable", err));
   let creatures: Creatures | null = null;
   let forest: Forest | null = null;
   // ANIMALS record — populated by the deferred forest module load
@@ -357,14 +353,14 @@ async function boot() {
   let brainPanel: BrainPanel | null = null;
   // Debug/console convenience only (exposed on __sf below) — spreads both
   // sources into a fresh array, so NOT used by the per-frame hot path.
-  const inspectableBrains = (): InspectableBrain[] => [...aiCars.inspectables(), ...(horses?.inspectables() ?? [])];
+  const inspectableBrains = (): InspectableBrain[] => [...(horses?.inspectables() ?? [])];
   const brainPickPos = new THREE.Vector3();
   // pickBrain runs every frame the world cursor is live (see the cursorLive
-  // block below) + on click, so it must allocate nothing: aiCars.inspectables()
-  // / horses.inspectables() each hand back a cached, reused array (see their
-  // definitions) and this iterates both directly — no spread/concat array —
-  // via considerBrainPick, a helper created once (not per call) that folds its
-  // running best into the outer pickBest/pickBestT instead of a per-call closure.
+  // block below) + on click, so it must allocate nothing: horses.inspectables()
+  // hands back a cached, reused array (see its definition) and this iterates it
+  // directly — no spread/concat array — via considerBrainPick, a helper created
+  // once (not per call) that folds its running best into the outer pickBest/
+  // pickBestT instead of a per-call closure.
   let pickBest: InspectableBrain | null = null;
   let pickBestT = Infinity;
   const considerBrainPick = (b: InspectableBrain, origin: THREE.Vector3, dir: THREE.Vector3): void => {
@@ -385,7 +381,6 @@ async function boot() {
   const pickBrain = (origin: THREE.Vector3, dir: THREE.Vector3): InspectableBrain | null => {
     pickBest = null;
     pickBestT = Infinity;
-    for (const b of aiCars.inspectables()) considerBrainPick(b, origin, dir);
     if (horses) for (const b of horses.inspectables()) considerBrainPick(b, origin, dir);
     return pickBest;
   };
@@ -425,23 +420,10 @@ async function boot() {
   const ropes = new Ropes(physics, scene);
   const grabber = new Grabber(physics, scene);
   grabberRef = grabber;
-  // bodies owned by traffic can vanish (cars despawn or get commandeered) —
-  // ropes and the grab beam must let go BEFORE the destroy
-  const releaseBody = (h: number) => {
-    ropes.severBody(h);
-    grabber.dropIf(h);
-  };
-  traffic.onWillRemoveBody = releaseBody;
-  aiCars.onWillRemoveBody = releaseBody;
+  // No ambient vehicles anymore, so the rope/grab tools have no extra spherical
+  // candidates to offer — they still reach the static world directly.
   const pickables: PickCandidate[] = [];
-  const gatherPickables = () => {
-    pickables.length = 0;
-    for (const v of traffic.vehicles) {
-      const he = DRIVE_PROFILES[v.cls].halfExtents;
-      pickables.push({ handle: v.handle, x: v.pos.x, y: v.pos.y, z: v.pos.z, r: Math.hypot(he[0], he[1], he[2]) + 0.5 });
-    }
-    return pickables;
-  };
+  const gatherPickables = () => pickables;
 
   const bayLights = createBayLights(map);
   if (bayLights) scene.add(bayLights);
@@ -453,7 +435,6 @@ async function boot() {
   scene.add(createPalaceColonnade(map));
   const sutroTower = createSutroTower(map);
   scene.add(sutroTower);
-  let currentRide: VehicleClass | null = null;
   let currentAnimal: AnimalKind | null = null;
   let currentQuidditch: { team: "red" | "blue"; role: QuidditchRole } | null = null;
   // Take over a specific open broom (from the role picker). Mounts the drone
@@ -478,7 +459,6 @@ async function boot() {
     const verb = role === "Beater" ? "swat Bludgers" : role === "Seeker" ? "catch the Snitch" : role === "Keeper" ? "guard the hoops" : "sling the Quaffle";
     hud.message(startMode === "tutorial" ? `Tutorial started — ${verb}` : `You're the ${info.label} — ${verb}! E to dismount`, 3.4);
   }
-  let currentPaint: number | undefined; // commandeered car's paint, so invites clone the exact look
   let ridePromptShown = false;
   // way high above the ground (plane/drone cruising), ground flora and critters
   // are subpixel — their systems pause. Hysteresis so hill flanks don't flicker it.
@@ -634,38 +614,18 @@ async function boot() {
       hud.message("Click to capture the mouse · Esc releases it", 2.8);
     }
   };
-  // AI cars: only the lowest-id client trains + broadcasts; everyone else renders
-  // the fleet as interpolated ghosts. The leader anchors spawning around remotes
-  // too, so cars stay near whoever is online.
-  aiCars.attachNet(net, () => remotes.positions());
-
   // passenger seat support: remotes resolves "riding MY car" through this
   remotes.localDriveMesh = () => (player.mode === "drive" && !player.riding ? player.meshes.drive : null);
 
-  // riding shotgun: either a friend's car (remote player id) or a self-driving
-  // AI training car (fleet id). Pose glue runs each frame; every mode change,
-  // respawn or teleport goes through leaveRide first.
+  // riding shotgun in a friend's car (remote player id). Pose glue runs each
+  // frame; every mode change, respawn or teleport goes through leaveRide first.
   let passengerOf: number | null = null;
-  let aiCarPassengerOf: number | null = null;
   const ridePos = new THREE.Vector3();
   const rideQuat = new THREE.Quaternion();
   const leaveRide = () => {
-    if (passengerOf === null && aiCarPassengerOf === null) return;
+    if (passengerOf === null) return;
     passengerOf = null;
-    aiCarPassengerOf = null;
-    aiCars.forceOverlay(null);
     player.endRide();
-  };
-  /** Board an AI training car as a passenger (self-driving — no human driver). */
-  const boardAiCar = (carId: number, label?: string) => {
-    leaveRide();
-    dropCurrentDriveMount();
-    if (player.mode !== "walk") player.trySwitch("walk");
-    aiCarPassengerOf = carId;
-    aiCars.forceOverlay(carId);
-    player.startRide();
-    if (aiCars.ridePose(carId, ridePos, rideQuat)) player.setRidePose(ridePos, rideQuat, 0);
-    hud.message(label ?? `Riding AI car ${carId + 1} — E to hop out`, 2.8);
   };
 
   // proximity voice chat: P2P audio spatialised onto the remote avatars,
@@ -729,8 +689,7 @@ async function boot() {
       return { x: player.position.x, z: player.position.z, fx: mapFwd.x, fz: mapFwd.z, hue: net.selfHue };
     },
     () => remotes.positions(),
-    // live Training/Debug overlay getters (big map only): AI cars + horse herd
-    () => (aiCars.debugCars() ?? []).map((c) => ({ id: c.id, x: c.x, z: c.z })),
+    // live Training/Debug overlay getter (big map only): horse herd
     () => (horses?.debugStates() ?? []).map((h) => ({ x: h.wx, z: h.wz, fallen: h.fallen }))
   );
   const playerLocator = new PlayerLocator();
@@ -756,7 +715,6 @@ async function boot() {
     };
   };
   const exitClearance = (mode: PlayerMode) => {
-    if (mode === "drive" && currentRide) return Math.max(2.8, DRIVE_PROFILES[currentRide].halfExtents[0] + 1.7);
     if (mode === "drive" && currentAnimal) return currentAnimal === "bear" ? 3.0 : 2.4;
     if (mode === "plane" || mode === "boat") return 6.5;
     if (mode === "drone" || mode === "board" || mode === "bird") return 2.8;
@@ -764,24 +722,10 @@ async function boot() {
   };
   const dropCurrentDriveMount = (motion = readPlayerMotion()) => {
     let dropped = false;
-    if (currentRide) {
-      const mount = player.meshes.drive.position;
-      traffic.releaseVehicle(currentRide, mount.x, mount.z, player.heading - Math.PI, {
-        paint: currentPaint,
-        y: mount.y,
-        linear: motion.linear,
-        angular: motion.angular
-      });
-      currentRide = null;
-      currentPaint = undefined;
-      player.setDriveStyle(null);
-      dropped = true;
-    }
     if (currentAnimal && forest) {
       const mount = player.meshes.drive.position;
       forest.dropAnimal(currentAnimal, mount.x, mount.z, player.heading - Math.PI, { speed: motion.horizontalSpeed });
       currentAnimal = null;
-      currentPaint = undefined;
       player.setDriveStyle(null);
       dropped = true;
     }
@@ -806,10 +750,8 @@ async function boot() {
   };
   /** E (or pad B): leave any vehicle, creature, or passenger seat for on-foot. */
   const exitToWalk = () => {
-    if (passengerOf !== null || aiCarPassengerOf !== null) {
+    if (passengerOf !== null) {
       passengerOf = null;
-      aiCarPassengerOf = null;
-      aiCars.forceOverlay(null);
       player.position.x += Math.cos(player.heading) * 2.4;
       player.position.z -= Math.sin(player.heading) * 2.4;
       player.endRide();
@@ -929,8 +871,8 @@ async function boot() {
     }
     beginPlaceNavigation("Previous place");
     leaveRide(); // a mode key while riding shotgun hops out first
-    if ((currentRide || currentAnimal || currentQuidditch) && mode !== "drive" && mode !== "drone") dropCurrentDriveMount();
-    if (mode === "drive" && !currentRide && !currentAnimal) player.setDriveStyle(null);
+    if ((currentAnimal || currentQuidditch) && mode !== "drive" && mode !== "drone") dropCurrentDriveMount();
+    if (mode === "drive" && !currentAnimal) player.setDriveStyle(null);
     if (mode === "drone" && !currentQuidditch) player.clearDroneStyle();
     // Always spawn a fresh mount — any one you left behind keeps living its own
     // life (the phoenix flies on, the plane lies where it crashed).
@@ -940,16 +882,8 @@ async function boot() {
   switchModeFromToolbar = switchMode;
   hud.onHistoryBack = () => applyPlaceHistory(-1);
   hud.onHistoryForward = () => applyPlaceHistory(1);
-  const teleportToTarget = (x: number, z: number, toName?: string, playerId?: number, aiCarId?: number) => {
+  const teleportToTarget = (x: number, z: number, toName?: string, playerId?: number) => {
     void (async () => {
-      // AI training car: board as a passenger in the self-driving cabin
-      if (aiCarId !== undefined) {
-        beginPlaceNavigation("Previous place");
-        boardAiCar(aiCarId, toName ? `${toName} — E to hop out` : undefined);
-        finishPlaceNavigation(toName ?? "AI car");
-        tutorial.note("teleport");
-        return;
-      }
       const t = playerId !== undefined ? remotes.stateOf(playerId) : null;
       if (playerId !== undefined && !t) {
         hud.message(`${toName ?? "Player"} is no longer available`, 2.2);
@@ -993,8 +927,6 @@ async function boot() {
     })();
   };
   minimap.onTeleport = teleportToTarget;
-  // KeyN cycles the camera through the AI-car fleet so you can watch them drive.
-  let carViewIdx = -1;
   minimap.onPlaceClick = (place) => {
     const layer = place.layer[0].toUpperCase() + place.layer.slice(1);
     hud.message(`${layer}: ${place.title}`, 2.4);
@@ -1043,9 +975,9 @@ async function boot() {
   );
   debugPanel.setMode(player.mode);
 
-  // ?j=x,y,z,facing,mode[,ride[,paint]] — invite links from the Share button.
+  // ?j=x,y,z,facing,mode[,animal] — invite links from the Share button.
   // A friend opening one spawns right where the sharer stood, in the same kind
-  // of vehicle (commandeered taxi/bus/cable car and ridden animals included).
+  // of vehicle (a ridden animal included).
   const invite = (() => {
     const q = new URLSearchParams(location.search);
     const raw = q.get("j");
@@ -1057,10 +989,8 @@ async function boot() {
     const facing = Number(p[3]);
     const mode = ALL_MODES.find((m) => m === p[4]);
     if (![x, y, z, facing].every(Number.isFinite) || !mode) return null;
-    const ride = p[5] && p[5] in DRIVE_PROFILES ? (p[5] as VehicleClass) : null;
     const animal = p[5] && ANIMALS && p[5] in ANIMALS ? (p[5] as AnimalKind) : null;
-    const paint = p[6] ? parseInt(p[6], 16) : NaN;
-    return { x, y, z, facing, mode, ride, animal, paint: Number.isFinite(paint) ? paint : undefined, from: q.get("via") };
+    return { x, y, z, facing, mode, animal, from: q.get("via") };
   })();
 
   // resume last session: position, heading and vehicle survive a refresh
@@ -1076,12 +1006,7 @@ async function boot() {
   }
   if (invite) {
     let mode = invite.mode;
-    if (invite.ride) {
-      currentRide = invite.ride;
-      currentPaint = invite.paint;
-      player.setDriveStyle(traffic.buildMesh(invite.ride, invite.paint), DRIVE_PROFILES[invite.ride]);
-      mode = "drive";
-    } else if (invite.animal) {
+    if (invite.animal) {
       currentAnimal = invite.animal;
       if (forest && ANIMALS && invite.animal) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1108,7 +1033,7 @@ async function boot() {
   }
 
   // Share button (top-right): copy an invite link that reproduces where I am
-  // right now — position, facing, mode, and the exact ride if I'm in one
+  // right now — position, facing, mode, and the ridden animal if I'm on one
   const buildShareUrl = () => {
     const facing = player.heading - Math.PI; // player.heading stores facing+π
     const parts = [
@@ -1118,10 +1043,7 @@ async function boot() {
       facing.toFixed(2),
       player.riding ? "walk" : player.mode // a passenger's friend joins on foot beside the car
     ];
-    if (!player.riding && player.mode === "drive") {
-      if (currentAnimal) parts.push(currentAnimal);
-      else if (currentRide) parts.push(currentRide, (currentPaint ?? 0).toString(16));
-    }
+    if (!player.riding && player.mode === "drive" && currentAnimal) parts.push(currentAnimal);
     return `${location.origin}${location.pathname}?j=${parts.join(",")}&via=${encodeURIComponent(net.name)}`;
   };
   new ShareButton(buildShareUrl, (ok) =>
@@ -1605,7 +1527,6 @@ async function boot() {
     // clean screenshot) floats on top.
     if ((paused && freezePlayer) || brainPanel?.isOpen) {
       vehicleAudio.update(frameDt, null); // fade the hum out while frozen
-      aiCarCabinAudio.update(frameDt, aiCarPassengerOf !== null ? { active: true, speed: 0 } : null);
       swimAudio.update(frameDt, null);
       // ambience keeps breathing while frozen — it's a chill/social feature
       nature.update(frameDt, {
@@ -1618,10 +1539,8 @@ async function boot() {
       net.sendState(player.mode, player.meshes[player.mode].position, player.meshes[player.mode].quaternion, 0, passengerOf ?? 0);
       remotes.selfId = net.selfId;
       remotes.update(frameDt);
-      // stay glued to a friend's car or an AI training car while frozen
+      // stay glued to a friend's car while frozen
       if (passengerOf !== null && remotes.ridePose(passengerOf, ridePos, rideQuat)) {
-        player.setRidePose(ridePos, rideQuat, frameDt);
-      } else if (aiCarPassengerOf !== null && aiCars.ridePose(aiCarPassengerOf, ridePos, rideQuat)) {
         player.setRidePose(ridePos, rideQuat, frameDt);
       }
       voice.update(camera); // keep talking while paused — it's a social feature
@@ -1633,11 +1552,10 @@ async function boot() {
     }
 
     // World frozen, player live: the default pause. The whole city sim holds
-    // (traffic, AI cars, horses, sky, water, fx never tick) but the player keeps
-    // moving — walk, drive, fly — so you can roll up to a training car and click
-    // its brain. We run ONLY the player's own step + camera + tile streaming +
-    // brain-pick. The player's dynamic body still steps physics; kinematic AI-car
-    // bodies get no prePhysics and so stay put.
+    // (horses, sky, water, fx never tick) but the player keeps moving — walk,
+    // drive, fly — so you can roll up to a horse and click its brain. We run ONLY
+    // the player's own step + camera + tile streaming + brain-pick. The player's
+    // dynamic body still steps physics.
     if (paused) {
       accumulator += frameDt; // no elapsed++ — the world clock stays frozen
       if (player.mode === "plane") player.steerFly(input, frameDt);
@@ -1654,11 +1572,9 @@ async function boot() {
       if (steps === 3) accumulator = 0;
       remotes.selfId = net.selfId;
       remotes.update(frameDt);
-      // riding shotgun with a friend or AI car keeps you glued; otherwise
-      // settle the render transform between physics states like a live frame
+      // riding shotgun with a friend keeps you glued; otherwise settle the render
+      // transform between physics states like a live frame
       if (passengerOf !== null && remotes.ridePose(passengerOf, ridePos, rideQuat)) {
-        player.setRidePose(ridePos, rideQuat, frameDt);
-      } else if (aiCarPassengerOf !== null && aiCars.ridePose(aiCarPassengerOf, ridePos, rideQuat)) {
         player.setRidePose(ridePos, rideQuat, frameDt);
       } else {
         player.afterSteps(steps, accumulator / physics.world.fixedTimeStep);
@@ -1684,10 +1600,6 @@ async function boot() {
         boost: input.down("ShiftLeft"),
         grounded: player.mode !== "board" || player.boardGrounded
       });
-      aiCarCabinAudio.update(
-        frameDt,
-        aiCarPassengerOf !== null ? { active: true, speed: player.speed } : null
-      );
       swimAudio.update(frameDt, {
         swimming: player.swimming,
         speed: Math.hypot(player.velocity.x, player.velocity.z),
@@ -1753,7 +1665,8 @@ async function boot() {
     if (input.altPressed("ArrowRight")) applyPlaceHistory(1);
 
     // E: Exploratorium piano, then exit any vehicle/creature, or on foot hop
-    // into the nearest car (a friend's passenger seat wins over parked traffic)
+    // into the nearest ride (a friend's passenger seat, a rideable animal, or a
+    // mount you left behind)
     if (input.pressed("KeyE") && exploratorium?.tryInteract()) {
       // consumed E inside the museum: seated at the dome piano, or opened/closed
       // a plaque — only the piano advances the tutorial
@@ -1764,7 +1677,6 @@ async function boot() {
         // of auto-assigning, so you can choose Seeker / Beater / Chaser / Keeper
         const wantQuid = !drv && !currentQuidditch && quidditch?.inJoinZoneAt(player.position);
         const animal = drv || wantQuid ? null : forest?.nearest(player.position, 5);
-        const aiCar = drv || wantQuid || animal ? null : aiCars.nearestCar(player.position, 5.5);
         if (drv) {
           passengerOf = drv.id;
           player.startRide();
@@ -1784,28 +1696,16 @@ async function boot() {
             info.kind === "raccoon" ? "You're riding the raccoon! Left click — gummy bears" : "You're riding the bear!",
             3
           );
-        } else if (aiCar) {
-          boardAiCar(aiCar.id);
         } else {
           // re-board a vehicle/creature you left behind — walk up, press E,
-          // just like a parked car (the phoenix, a crashed plane, a hoverboard…)
+          // just like a parked mount (the phoenix, a crashed plane, a hoverboard…)
           const mount = abandonedMounts.boardNearest(player.position.x, player.position.z, 5.5);
-          const v = mount ? null : traffic.nearest(player.position, 5.5);
           if (mount) {
             if (mount.mode === "drive") player.setDriveStyle(null);
             player.position.set(mount.x, mount.y, mount.z);
             player.heading = mount.heading;
             player.trySwitch(mount.mode);
             hud.message("Back on board — E to hop off", 2.4);
-          } else if (v) {
-            const info = traffic.consume(v);
-            currentRide = info.cls;
-            currentPaint = info.paint;
-            player.setDriveStyle(traffic.buildMesh(info.cls, info.paint), DRIVE_PROFILES[info.cls]);
-            player.position.set(info.x, player.position.y, info.z);
-            player.heading = info.heading + Math.PI; // storage convention is facing+π
-            player.trySwitch("drive");
-            hud.message(`You're driving the ${DRIVE_PROFILES[info.cls].label}!`, 2.6);
           }
         }
     }
@@ -1839,7 +1739,6 @@ async function boot() {
       DEBRIS_LIGHTS.hold.value = DEBRIS_TUNING.values.hold;
       DEBRIS_LIGHTS.flicker.value = DEBRIS_TUNING.values.flicker;
       DEBRIS_LIGHTS.spread.value = DEBRIS_TUNING.values.spread;
-      WINDOW_GLOW.far.value = RENDER_TUNING.values.farWindowGlow ? 1 : 0;
       pipeline.applyPostFx(); // toggles back off + sliders back to defaults
       sky.cycleEnabled = SKY_TUNING.values.cycleEnabled;
       sky.cycleDuration = SKY_TUNING.values.cycleDuration;
@@ -1856,15 +1755,6 @@ async function boot() {
     if (input.pressed("KeyT")) {
       chat.focus();
       input.releaseLock();
-    }
-    // N: hop into the next AI car as a passenger (cycles the whole fleet)
-    if (input.pressed("KeyN")) {
-      const cars = aiCars.debugCars();
-      if (cars.length) {
-        carViewIdx = (carViewIdx + 1) % cars.length;
-        const c = cars[carViewIdx];
-        teleportToTarget(c.x, c.z, `▶ AI car ${carViewIdx + 1}/${cars.length}`, undefined, c.id);
-      }
     }
     // F: fullscreen (keydown grants the transient activation this needs)
     if (input.pressed("KeyF")) {
@@ -2064,8 +1954,6 @@ async function boot() {
     let steps = 0;
     while (accumulator >= physics.world.fixedTimeStep && steps < 3) {
       player.update(physics.world.fixedTimeStep, input, chase.yaw, aim);
-      traffic.prePhysics(physics.world.fixedTimeStep, player.position);
-      aiCars.prePhysics(physics.world.fixedTimeStep, aiCarAnchors);
       horses?.prePhysics(physics.world.fixedTimeStep, player.position);
       abandonedMounts.prePhysics(physics.world.fixedTimeStep);
       physics.step(physics.world.fixedTimeStep, player.position);
@@ -2087,15 +1975,6 @@ async function boot() {
         player.endRide();
         hud.message("Your ride ended", 2.2);
       }
-    } else if (aiCarPassengerOf !== null) {
-      if (aiCars.ridePose(aiCarPassengerOf, ridePos, rideQuat)) {
-        player.setRidePose(ridePos, rideQuat, frameDt);
-      } else {
-        aiCarPassengerOf = null;
-        aiCars.forceOverlay(null);
-        player.endRide();
-        hud.message("Your ride ended", 2.2);
-      }
     } else {
       // interpolate the render transform between the last two physics states so
       // 120 Hz frames don't see a 60 Hz stutter
@@ -2106,8 +1985,7 @@ async function boot() {
     highUp = highUp ? altitude > 110 : altitude > 150;
     // high over the city streams buildings only — no park lawns / trees uploaded
     tiles.update(player.position.x, player.position.z, highUp);
-    traffic.update(player.position, frameDt);
-    aiCars.update(frameDt, player.position, highUp);
+    trafficLights?.update(player.position, performance.now() / 1000);
     abandonedMounts.update(frameDt, player.position);
     flyover.update(frameDt); // planes + phoenixes streaking over on "-"
     bridgeParade.update(frameDt); // boats crossing under the Golden Gate on "-"
@@ -2191,29 +2069,23 @@ async function boot() {
       grabber.update(rayOrigin.copy(player.aimOrigin), aim);
     }
 
-    // "hop in" nudge when standing near a vehicle (friend → AI car → wildlife → traffic)
-    if (player.mode === "walk" && passengerOf === null && aiCarPassengerOf === null) {
+    // "hop in" nudge when standing near a ride (friend → Quidditch → wildlife)
+    if (player.mode === "walk" && passengerOf === null) {
       const drv = remotes.nearestDriver(player.position, 5.5);
       const quidLabel = drv || currentQuidditch ? null : quidditch?.joinLabel();
       const nearAnimal = drv || quidLabel ? null : forest?.nearest(player.position, 5);
-      const nearAi = drv || quidLabel || nearAnimal ? null : aiCars.nearestCar(player.position, 5.5);
-      const near = drv || quidLabel || nearAnimal || nearAi ? null : traffic.nearest(player.position, 5.5);
-      if ((drv || quidLabel || nearAnimal || nearAi || near) && !ridePromptShown) {
+      if ((drv || quidLabel || nearAnimal) && !ridePromptShown) {
         hud.message(
           drv
             ? `E — ride with ${drv.name}`
             : quidLabel
               ? `E — start Quidditch`
-              : nearAnimal
-                ? `E — ride the ${nearAnimal.label}`
-                : nearAi
-                  ? `E — ride AI car ${nearAi.id + 1}`
-                  : `E — hop in the ${DRIVE_PROFILES[near!.cls].label}`,
+              : `E — ride the ${nearAnimal!.label}`,
           1.8
         );
         ridePromptShown = true;
       }
-      if (!drv && !quidLabel && !nearAnimal && !nearAi && !near) ridePromptShown = false;
+      if (!drv && !quidLabel && !nearAnimal) ridePromptShown = false;
     } else {
       ridePromptShown = false;
     }
@@ -2244,10 +2116,6 @@ async function boot() {
       boost: input.down("ShiftLeft"),
       grounded: player.mode !== "board" || player.boardGrounded
     });
-    aiCarCabinAudio.update(
-      frameDt,
-      aiCarPassengerOf !== null ? { active: true, speed: player.speed } : null
-    );
     swimAudio.update(frameDt, {
       swimming: player.swimming,
       speed: Math.hypot(player.velocity.x, player.velocity.z),
@@ -2271,20 +2139,10 @@ async function boot() {
     minimap.update();
     playerLocator.update(camera, player.position, remotes.locatorTargets());
 
-    // Sync the raycastable-entity proxies once, after everyone is posed: traffic,
-    // remote avatars, and me (id = net.selfId, tagged self so the cursor skips it
-    // but remote paint still lands). paintballs + cursor then just query.
+    // Sync the raycastable-entity proxies once, after everyone is posed: remote
+    // avatars and me (id = net.selfId, tagged self so the cursor skips it but
+    // remote paint still lands). paintballs + cursor then just query.
     entityProxies.begin();
-    for (const v of traffic.vehicles) {
-      const big = v.cls === "bus" || v.cls === "cable";
-      entityProxies.put(
-        v,
-        { id: -1, kind: "vehicle", object: v.mesh, shape: { form: "sphere", radius: big ? 3.6 : 2.1 } },
-        v.mesh.position.x,
-        v.mesh.position.y + (big ? 1.5 : 0.7),
-        v.mesh.position.z
-      );
-    }
     for (const a of remotes.avatars.values()) {
       const body = a.mode ? a.bodies[a.mode] : undefined;
       if (!body || !a.root.visible) continue;
@@ -2466,7 +2324,7 @@ async function boot() {
 
   const exposeDebugHooks = () => {
     Object.assign(window as never, {
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, exploratorium, traffic, creatures, forest, garden, wildlands, splashes, vehicleAudio, aiCarCabinAudio, swimAudio, nature, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, boatLaunchers, goldenGateLights, flyover, bridgeParade, teleportToTarget, aiCars, horses, citygen, citygenRing, brainPanel, inspectableBrains, worldCursor, worldQueries, underwater, seaPillars, water, roadMarkings, colliderDebug }
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, HORSE_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, exploratorium, creatures, forest, garden, wildlands, splashes, vehicleAudio, swimAudio, nature, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, boatLaunchers, goldenGateLights, flyover, bridgeParade, teleportToTarget, trafficLights, horses, citygen, citygenRing, brainPanel, inspectableBrains, worldCursor, worldQueries, underwater, seaPillars, water, roadMarkings, colliderDebug }
     });
   };
   if (import.meta.env.DEV || new URLSearchParams(location.search).has("profile")) {
