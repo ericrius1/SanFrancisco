@@ -12,7 +12,7 @@ const OFFSETS: Record<PlayerMode, { back: number; up: number; look: number }> = 
   speedboat: { back: 11, up: 3.6, look: 0.7 },
   drone: { back: 7, up: 1.9, look: 0.4 },
   board: { back: 7.5, up: 2.6, look: 1.3 },
-  bird: { back: 8, up: 2.1, look: 0.4 }
+  bird: { back: 13, up: 3.1, look: 0.55 }
 };
 
 /**
@@ -71,8 +71,16 @@ export class ChaseCamera {
     this.#indoor += (indoorTarget - this.#indoor) * (1 - Math.exp(-dt * 8));
     const boomScale = 1 - this.#indoor * 0.82;   // 6.5 m → ~1.2 m boom
     const upScale = 1 - this.#indoor * 0.5;       // sit nearer eye height inside
-    const back = o.back * this.zoom * boomScale;
-    const up = o.up * this.zoom * upScale;
+    const backBase = o.back * this.zoom * boomScale;
+    let back = backBase;
+    let up = o.up * this.zoom * upScale;
+    // bigger phoenix needs more boom; tuck/stoop adds a little more so the mount
+    // stays in frame instead of filling the viewport at triple speed
+    if (player.mode === "bird") {
+      const fast = THREE.MathUtils.clamp(player.speed / 110, 0, 1);
+      back = backBase * (1 + fast * 0.38);
+      up += fast * 1.1;
+    }
 
     // anchor on the interpolated render transform — the raw physics transform
     // only advances at the fixed step and stutters at high refresh rates
@@ -112,7 +120,7 @@ export class ChaseCamera {
     // exponential follow settles ~speed/stiff behind, so a boost trails ~13m
     // and the phoenix shrinks to a dot. Tighten the tail as airspeed climbs so
     // the boost pulls the camera along instead of away (~5m at full stoop).
-    if (player.mode === "bird") stiff = THREE.MathUtils.clamp(player.speed * 0.25, 8.5, 22);
+    if (player.mode === "bird") stiff = THREE.MathUtils.clamp(player.speed * 0.2, 7.5, 17);
     // clamp the smoothing step. A tile-upload spike inflates the *next* frame's
     // dt, and an uncapped 1-exp(-dt*stiff) then snaps the camera a large fraction
     // of the way to target in that one frame — the visible "hitch" as chunks

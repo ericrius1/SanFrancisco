@@ -9,6 +9,7 @@ import {
   attribute, normalWorld, uv, float, color, mix, step, fract, floor as tslFloor, hash,
 } from "three/tsl";
 import type { BuildingSpec } from "../core/types";
+import { EXPOSURE_REBASE } from "../../../config";
 import { ensureCCW, triangulate } from "../core/footprint";
 import { bodyColour } from "../render";
 import { specFor } from "../theme/archetypes";
@@ -18,7 +19,9 @@ import { specFor } from "../theme/archetypes";
 // units (1 unit = 1 window) and just reads fract()/floor() — no divide, and no
 // half-window is ever clipped at a wall's top or trailing edge.
 const WIN_SPACING = 2.4;   // ~metres between window centres (column target)
-const BODY_EMISSIVE = 0.3; // self-lit body tint — MATCHES makeWallMaterial (theme/materials.ts)
+// self-lit body tint — MATCHES makeWallMaterial (theme/materials.ts), both
+// carrying the exposure re-anchor factor (config.EXPOSURE_REBASE)
+const BODY_EMISSIVE = 0.3 * EXPOSURE_REBASE;
 
 let sharedMat: THREE.MeshStandardNodeMaterial | null = null;
 
@@ -39,7 +42,7 @@ export function lodMaterial(): THREE.MeshStandardNodeMaterial {
   const winMask = inU.mul(inV).mul(float(1).sub(isRoof));
   m.colorNode = mix(body, color(new THREE.Color(0x1b1f27)), winMask);
   const cellId = tslFloor(u).add(tslFloor(v).mul(31.0));
-  const litWin = winMask.mul(step(0.7, hash(cellId))).mul(color(new THREE.Color(0xffdca0))).mul(0.7);
+  const litWin = winMask.mul(step(0.7, hash(cellId))).mul(color(new THREE.Color(0xffdca0))).mul(0.7 * EXPOSURE_REBASE);
   // faint self-lit body tint on the SOLID wall only (not the glass) so shaded
   // façades don't read near-black — the near mesh's wall material does the same.
   const bodyTint = body.mul(BODY_EMISSIVE).mul(float(1).sub(winMask));

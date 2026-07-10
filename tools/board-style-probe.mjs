@@ -1,12 +1,13 @@
 // Headless hoverboard-customizer probe. Boots the real app (own vite, WebGPU/
-// metal), rides the board at Marina Green, then:
+// metal), rides the board on a known Castro street anchor, then:
 //   1. swaps through customizer configs via player.setBoardConfig (screenshots
-//      day + one night shot for the glow),
+//      each procedural surface, a close overhead texture shot, and night glow),
 //   2. spawns a fake remote rider with a custom board and re-customizes it
 //      (exercises remotes.updateBoard's dispose/rebuild path),
-//   3. opens the garage panel UI and screenshots it,
-//   4. re-voices the hum + previewBoard() and samples vehicleAudio.debugState
-//      to prove the board voice swells and decays.
+//   3. opens the garage panel, verifies both XY canvases + reroll, and drives
+//      each pad through Chrome input so pointer capture/commit paths execute,
+//   4. re-voices the hum + macro controls and samples vehicleAudio.debugState
+//      to prove the selected style sticks while the voice swells and decays.
 //   node tools/board-style-probe.mjs
 // Env: SF_PROBE_URL (own vite; NOT 5179), SF_PROBE_OUT (default .data/board-style)
 import { spawn } from "node:child_process";
@@ -78,11 +79,31 @@ async function shot(c, name) {
   return name;
 }
 
+async function dragPad(c, rect, from, to) {
+  const point = ([x, y]) => ({ x: rect.left + rect.width * x, y: rect.top + rect.height * y });
+  const start = point(from);
+  const end = point(to);
+  await c.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...start, button: "none", buttons: 0, pointerType: "mouse" });
+  await c.send("Input.dispatchMouseEvent", { type: "mousePressed", ...start, button: "left", buttons: 1, clickCount: 1, pointerType: "mouse" });
+  for (let i = 1; i <= 3; i++) {
+    const u = i / 3;
+    await c.send("Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: start.x + (end.x - start.x) * u,
+      y: start.y + (end.y - start.y) * u,
+      button: "left",
+      buttons: 1,
+      pointerType: "mouse"
+    });
+  }
+  await c.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...end, button: "left", buttons: 0, clickCount: 1, pointerType: "mouse" });
+}
+
 const CONFIGS = [
-  { name: "classic", cfg: { shape: "classic", fin: "none", deco: "stripe", deck: 0, trim: 5, glow: 0, hum: "hum", pitch: 0 } },
-  { name: "dart", cfg: { shape: "dart", fin: "spoiler", deco: "chevrons", deck: 1, trim: 3, glow: 4, hum: "retro", pitch: 3 } },
-  { name: "manta", cfg: { shape: "manta", fin: "halo", deco: "clean", deck: 4, trim: 5, glow: 3, hum: "choir", pitch: 1 } },
-  { name: "saucer", cfg: { shape: "saucer", fin: "twin", deco: "dots", deck: 5, trim: 6, glow: 2, hum: "crystal", pitch: 4 } }
+  { name: "classic", cfg: { shape: "classic", fin: "none", deck: 0, trim: 5, glow: 0, surface: "aurora", surfaceScale: 24, surfaceWarp: 68, surfaceSeed: 101, hum: "hum", pitch: 0, soundTone: 45, soundMotion: 35 } },
+  { name: "dart", cfg: { shape: "dart", fin: "spoiler", deck: 1, trim: 3, glow: 4, surface: "topo", surfaceScale: 70, surfaceWarp: 18, surfaceSeed: 202, hum: "retro", pitch: 3, soundTone: 80, soundMotion: 72 } },
+  { name: "manta", cfg: { shape: "manta", fin: "halo", deck: 4, trim: 5, glow: 3, surface: "terrazzo", surfaceScale: 48, surfaceWarp: 88, surfaceSeed: 303, hum: "choir", pitch: 1, soundTone: 32, soundMotion: 64 } },
+  { name: "saucer", cfg: { shape: "saucer", fin: "twin", deck: 5, trim: 6, glow: 2, surface: "circuit", surfaceScale: 76, surfaceWarp: 42, surfaceSeed: 404, hum: "crystal", pitch: 4, soundTone: 68, soundMotion: 82 } }
 ];
 
 async function main() {
@@ -140,7 +161,7 @@ async function main() {
   const FRAME = `const frame=()=>{ const p=sf.player.renderPosition;
     window.__sfFreeCam([p.x+2.1,p.y+1.15,p.z-2.5],[p.x,p.y+0.3,p.z]); };`;
 
-  const results = { shots: [], boards: [], remote: {}, audio: {}, ui: {}, errors: [] };
+  const results = { shots: [], boards: [], texture: {}, remote: {}, audio: {}, ui: {}, errors: [] };
 
   // ---- 1. config swaps on the local player ----
   for (const { name, cfg } of CONFIGS) {
@@ -156,6 +177,26 @@ async function main() {
     results.boards.push({ name, ...r });
     results.shots.push(await shot(c, `board-${name}.png`));
   }
+  // Texture proof: hide only the rider rig, then move close and above the live
+  // board. This keeps the real world lighting/material path while exposing the
+  // whole top surface instead of photographing it through the rider's legs.
+  results.texture = await ev(c, `(async()=>{ ${P}
+    const g=sf.player.meshes.board;
+    const rider=g.children.find(o=>o.isGroup&&o.children.length>0&&o.position.y>0.75&&o.position.y<1.1);
+    if(rider){ window.__sfProbeRider=rider; window.__sfProbeRiderVisible=rider.visible; rider.visible=false; }
+    const wp=g.getWorldPosition(new sf.THREE.Vector3());
+    window.__sfFreeCam([wp.x+0.55,wp.y+2.2,wp.z-0.45],[wp.x,wp.y+0.02,wp.z]);
+    await tick(4);
+    const surface=g.userData.boardSurface;
+    return { riderHidden:!!rider, hasSurface:!!surface, canvas:surface?.canvas?[surface.canvas.width,surface.canvas.height]:null };
+  })()`);
+  results.shots.push(await shot(c, "board-surface-close.png"));
+  await ev(c, `(async()=>{ ${P}
+    const rider=window.__sfProbeRider;
+    if(rider) rider.visible=window.__sfProbeRiderVisible;
+    delete window.__sfProbeRider; delete window.__sfProbeRiderVisible;
+    window.__sfFreeCam(null); await tick(4); return true;
+  })()`);
   // night shot: glow check on the last config
   await ev(c, `(async()=>{ ${P} ${FRAME} sf.sky.setTimeOfDay(23.2); await tick(30); frame(); await tick(4); return true; })()`);
   results.shots.push(await shot(c, "board-night.png"));
@@ -201,22 +242,63 @@ async function main() {
     const panel=document.querySelector('.board-panel');
     const rows=panel?panel.querySelectorAll('.avatar-row').length:0;
     const swatches=panel?panel.querySelectorAll('.avatar-swatch').length:0;
+    const pads=panel?[...panel.querySelectorAll('.board-xy-pad')]:[];
+    const canvases=panel?panel.querySelectorAll('.board-xy-canvas').length:0;
+    const rerolls=panel?panel.querySelectorAll('.board-lab-reroll').length:0;
+    const rect=(el)=>{ const r=el?.getBoundingClientRect(); return r?{left:r.left,top:r.top,width:r.width,height:r.height}:null; };
     const open=document.querySelector('.board-ui').classList.contains('open');
-    return { toggle:true, open, rows, swatches, mode: sf.player.mode };
+    return {
+      toggle:true, open, rows, swatches, mode:sf.player.mode,
+      structure:{pads:pads.length,canvases,rerolls,complete:pads.length===2&&canvases===2&&rerolls===1},
+      rects:{surface:rect(pads[0]),sound:rect(pads[1])},
+      before:{readouts:[...panel.querySelectorAll('.board-lab-readout')].map(x=>x.value)}
+    };
   })()`);
+  if (results.ui.rects?.surface && results.ui.rects?.sound) {
+    // End coordinates intentionally land in different quadrants, making it
+    // obvious that both X and Y values changed and committed through pointerup.
+    await dragPad(c, results.ui.rects.surface, [0.18, 0.76], [0.82, 0.18]);
+    await dragPad(c, results.ui.rects.sound, [0.76, 0.2], [0.22, 0.72]);
+    await sleep(80);
+    results.ui.afterDrag = await ev(c, `(()=>{
+      const panel=document.querySelector('.board-panel');
+      const saved=JSON.parse(localStorage.getItem('sf-board-v2')||'null');
+      return {
+        readouts:[...panel.querySelectorAll('.board-lab-readout')].map(x=>x.value),
+        saved:saved?{surfaceScale:saved.surfaceScale,surfaceWarp:saved.surfaceWarp,soundTone:saved.soundTone,soundMotion:saved.soundMotion}:null,
+        committed:!!saved&&saved.surfaceScale===82&&saved.surfaceWarp===82&&saved.soundTone===22&&saved.soundMotion===28,
+        boardStyle:window.__sf.vehicleAudio.debugState.boardStyle
+      };
+    })()`);
+    results.ui.reroll = await ev(c, `(()=>{
+      const before=JSON.parse(localStorage.getItem('sf-board-v2')||'null')?.surfaceSeed??null;
+      let button=document.querySelector('.board-lab-reroll');
+      if(!button) return {clicked:false,before,after:before,changed:false};
+      button.click();
+      let after=JSON.parse(localStorage.getItem('sf-board-v2')||'null')?.surfaceSeed??null;
+      let attempts=1;
+      if(after===before){
+        button=document.querySelector('.board-lab-reroll');
+        button?.click(); attempts++;
+        after=JSON.parse(localStorage.getItem('sf-board-v2')||'null')?.surfaceSeed??null;
+      }
+      return {clicked:true,before,after,attempts,changed:before!==after};
+    })()`);
+  }
   results.shots.push(await shot(c, "board-panel.png"));
   await ev(c, `(async()=>{ document.querySelector('.board-toggle').click(); return true; })()`);
 
   // ---- 4. hum re-voice + preview swell ----
   results.audio = await ev(c, `(async()=>{ ${P}
     sf.player.trySwitch('walk'); await tick(10); // not riding: preview path, not live hum
-    sf.vehicleAudio.setBoardStyle({hum:'crystal',pitch:2});
+    sf.vehicleAudio.setBoardStyle({hum:'crystal',pitch:2,soundTone:84,soundMotion:76});
     sf.vehicleAudio.previewBoard();
     let peak=0;
     for(let i=0;i<70;i++){ await tick(1); const v=sf.vehicleAudio.debugState.voices.find(x=>x.mode==='board'); if(v&&v.level>peak) peak=v.level; }
     for(let i=0;i<160;i++){ await tick(1); }
-    const after=sf.vehicleAudio.debugState.voices.find(x=>x.mode==='board').level;
-    return { ctx: sf.vehicleAudio.debugState.ctx, peak:+peak.toFixed(3), after:+after.toFixed(3) };
+    const state=sf.vehicleAudio.debugState;
+    const after=state.voices.find(x=>x.mode==='board').level;
+    return { ctx:state.ctx, boardStyle:state.boardStyle, peak:+peak.toFixed(3), after:+after.toFixed(3) };
   })()`);
 
   writeFileSync(path.join(OUT, "result.json"), JSON.stringify(results, null, 2));

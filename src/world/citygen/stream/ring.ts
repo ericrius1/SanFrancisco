@@ -7,7 +7,8 @@
 // stays live and catches cars/players via the multi-anchor physics — no oversized
 // proxy box). As you approach a building (DETAIL_R) its full grammar mesh dithers
 // in OVER the chunk prism (an all-ours crossfade), its baked collider is swapped
-// for per-edge walk-in walls + a door, and the lazy interior gates on being inside.
+// for per-edge walk-in walls with a CLOSED street door (E toggles it — nearestDoor/
+// toggleDoor), and the lazy interior gates on being inside.
 //
 // Everything is STATIC: world-space geometry, matrixAutoUpdate off, Static bodies.
 // Nothing is destructible — buildings don't break; a crash just stops you.
@@ -19,7 +20,7 @@ import { buildChunkLOD, type ChunkLOD } from "../render/chunkLod";
 import { lodMaterial } from "../render/lod";
 import { buildCityGenMaterials } from "../theme/materials";
 import type { BuildingSpec, ColliderBox, MeshData } from "../core/types";
-import { CITYGEN_TUNING } from "../../../config";
+import { CITYGEN_TUNING, CONFIG } from "../../../config";
 
 const READY = new Set(["victorian", "edwardian", "marina", "downtown", "soma"]);
 
@@ -50,6 +51,13 @@ const COLLIDER_EXIT = 115; // hysteresis: drop back to baked only past here
 const COLLIDER_BUDGET = 20; // exact-collider swaps per scan (cheap: no mesh) — nearest first
 const CHUNK_BUDGET = 260;// buildings merged into chunk geometry per frame (no hitch)
 const SCAN_EVERY = 0.15;
+// Player-operated doors (E → toggleDoor). Doors start CLOSED (solid walls + the
+// grammar's baked leaf); opening hides the baked leaf, swings a dynamic twin
+// inward on the hinge, and swaps in the door-gapped colliders.
+const DOOR_RANGE = 8;        // nearestDoor scan radius (m)
+const DOOR_SWING = 1.95;     // open leaf angle (rad, swung INTO the building)
+const DOOR_SWING_TIME = 0.45;// swing duration (s), ease-out
+const DOOR_LEAF_T = 0.06;    // leaf thickness (m) — matches the grammar-authored leaf
 
 interface PhysWorld {
   createBox(o: { type: number; position: readonly [number, number, number]; halfExtents: readonly [number, number, number]; friction?: number }): number;
@@ -96,14 +104,37 @@ interface Entry extends BuildingSpec {
   //          still the prism (the pretty grammar mesh is budgeted separately).
   // detail = closest-N: exact-poly walls WITH a door + full grammar mesh + interior.
   state: "lod" | "coll" | "detail";
-  // detail tier: SOLID walls are live but the door gap is not cut yet — the swap to
-  // door-gapped walls waits until the detail mesh has fully faded in, so there's
-  // never an open collider gap in front of a still-transparent doorway (R6). Cleared
-  // by openDoorway() at fade end.
+  // detail tier: true = the street door is CLOSED — SOLID walls live, the baked
+  // leaf drawn in the doorway. Doors are PLAYER-OPERATED (E → toggleDoor): the old
+  // fade-end auto-open is gone. Set on materialization and by a finished close;
+  // cleared by openDoorway() when toggleDoor swings the leaf open.
   doorPending: boolean;
+  // lazily-computed door runtime (world-space metrics cached once per entry +
+  // swing animation state). undefined = never computed, null = edge takes no door.
+  door?: DoorRt | null;
   // a grammar-build request is in flight on the worker (counts against the
   // detail cap; cleared on assemble, displacement is handled by normal eviction)
   pendingBuild: boolean;
+}
+
+/** Per-door runtime: world-space metrics cached ONCE per entry (the footprint is
+ *  static, so ensureCCW/doorMetrics never run twice for a building) + the swing
+ *  animation / dynamic-leaf state. The id is a stable session-wide handle. */
+interface DoorRt {
+  id: number;
+  cx: number; cz: number;        // door centre on the street edge (world XZ)
+  sill: number; openTop: number; halfW: number;
+  hx: number; hz: number;        // hinge point (edge of the opening, dC − halfW along)
+  baseYaw: number;               // leaf group yaw when CLOSED (leaf lies in the wall plane)
+  w: number; h: number;          // leaf dimensions (match the grammar-authored baked leaf)
+  // swing animation (advanced by ring.update while on the active list)
+  swing: number;                 // current angle, 0 = closed .. DOOR_SWING = open
+  from: number; to: number; t: number;
+  animating: boolean;
+  needSolid: boolean;            // close finished but the solid-wall swap is deferred (player in gap)
+  leaf: THREE.Group | null;      // dynamic hinged leaf (lives OUTSIDE the bundle)
+  leafGeo: THREE.BufferGeometry | null;
+  bakedLeaf: THREE.Mesh | null;  // the bundle's merged "citygen.doorleaf" mesh
 }
 
 interface CellState { key: string; ix: number; iz: number; entries: Entry[]; chunk: ChunkLOD | null; phase: "building" | "ready"; }
@@ -159,8 +190,8 @@ export interface CityGenDoorProbe {
   /** doorway floor (raised to grade) + head of the walk-through opening (world Y) */
   sill: number; openTop: number;
   halfW: number; base: number; grade: number; top: number; length: number;
-  /** true once the fade finished and openDoorway swapped in the gap + stoop
-   *  colliders (false while the detail mesh is still fading in over solid walls) */
+  /** true while the door is OPEN (player toggled it — walk-through gap + stoop
+   *  colliders live); false = closed (solid walls, baked leaf drawn) */
   open: boolean;
   /** DEBUG: the entry's sampled front-terrain height + how many tilted (stoop
    *  ramp) collider boxes are live for this building */
@@ -182,6 +213,19 @@ export interface CityGenRing {
   debugEntriesNear(x: number, z: number, r: number): { i: number; d: number; state: string; bodies: number; pendingBuild: boolean; insideBB: boolean }[];
   /** DEBUG/probe: world-space door frames for every faded-in detail building. */
   debugDoors(): CityGenDoorProbe[];
+  /** Nearest operable street door within ~8 m of pos (fully faded-in detail
+   *  buildings only), or null. Alloc-light: per-entry door metrics are cached on
+   *  first sight (no repeated ensureCCW/doorMetrics) and the scan allocates
+   *  nothing — one small result object only when a door is in range.
+   *  `open` = the walk-through gap is live (door open or mid-swing);
+   *  `id` = stable handle for toggleDoor. */
+  nearestDoor(pos: { x: number; y: number; z: number }): { x: number; z: number; sill: number; dist: number; open: boolean; id: number } | null;
+  /** Open/close a door by handle. Opening swaps in the door-gapped colliders
+   *  (+ stoop ramp) and swings a dynamic leaf inward over ~0.45 s; closing
+   *  reverses the swing, then restores the SOLID walls and the baked leaf.
+   *  "blocked" = refused — the player is standing in the doorway (never wall
+   *  someone in). "gone" = the building is no longer a faded-in detail mesh. */
+  toggleDoor(id: number): "opened" | "closed" | "blocked" | "gone";
 }
 
 async function fetchGrid(url: string): Promise<GridData | null> {
@@ -320,10 +364,9 @@ export async function createCityGenRing(
     ctx.scene.add(b.group);
     e.detail = b; e.fade = 0; e.fadeDir = 1;
     ctx.tiles.suppressBuilding(e.key, e.i); // baked mesh + loose collider fully off
-    // R6: DON'T open the door gap yet — the detail mesh (with its doorway hole) is
-    // still transparent, and the chunk prism behind it is solid, so an open gap now
-    // would be a walk-through in front of a solid-looking face. Keep SOLID walls up;
-    // openDoorway() swaps in the door-gapped walls once the mesh has fully faded in.
+    // R6: DON'T open the door gap — the walls stay SOLID after fade-in too, because
+    // doors are now player-operated: they materialize CLOSED (doorPending=true) and
+    // only toggleDoor → openDoorway() swaps in the door-gapped walls.
     // Reuse the "coll" solid walls if we came from there; otherwise (from "lod", or
     // "coll" whose queued job hasn't run) build them SYNCHRONOUSLY — the suppress
     // above just killed the baked collider, so the walls should land this same
@@ -425,9 +468,10 @@ export async function createCityGenRing(
     const foot = 0.3 + Math.max(0.5, (sill - near) / 0.63); // ≈ ramp run for that rise
     return Math.min(near, at(foot));
   };
-  // swap the solid street wall for the door-gapped one — called when the detail mesh
-  // is fully opaque, so the visible doorway and the walk-through gap appear together.
-  // Passes the live front-terrain height so a downhill door gets a walkable stoop.
+  // swap the solid street wall for the door-gapped one — called by toggleDoor when
+  // the player OPENS the door, so the swinging leaf and the walk-through gap appear
+  // together. Passes the live front-terrain height so a downhill door gets a
+  // walkable stoop.
   const openDoorway = (e: Entry) => {
     if (!e.doorPending) return;
     e.doorPending = false;
@@ -438,7 +482,144 @@ export async function createCityGenRing(
     for (const c of boxes) e.bodies.push(addBody(c));
     e.wallBoxes = boxes;
   };
+
+  // ---- player-operated doors ---------------------------------------------------
+  // Doors are CLOSED by default (solid walls + the grammar's baked leaf mesh, its
+  // own "citygen.doorleaf" bucket). E → toggleDoor: opening hides the baked leaf
+  // (one bundle re-record), swaps in the door-gapped colliders (openDoorway), and
+  // swings a dynamic twin leaf inward on the hinge; closing reverses, restores the
+  // SOLID walls, and re-shows the baked leaf. The dynamic leaf lives in doorRoot
+  // (OUTSIDE the BundleGroup) so its per-frame rotation never re-records a bundle.
+  const doorRoot = new THREE.Group();
+  doorRoot.name = "cityGenDoors";
+  ctx.scene.add(doorRoot);
+  const doorRegistry = new Map<number, Entry>(); // stable id → entry
+  let nextDoorId = 1;
+  const activeDoors: Entry[] = []; // doors animating or awaiting a deferred wall swap
+  const markDoorActive = (e: Entry) => { if (!activeDoors.includes(e)) activeDoors.push(e); };
+  // Compute-once world door metrics (same math as debugDoors / core's collider —
+  // doorMetrics is the single source of truth, so leaf ⟺ gap ⟺ baked leaf line up).
+  const doorRtOf = (e: Entry): DoorRt | null => {
+    if (e.door !== undefined) return e.door;
+    const poly = ensureCCW(e.poly);
+    const si = streetEdgeIndex(poly);
+    const p0 = poly[si], p1 = poly[(si + 1) % poly.length];
+    const dx = p1[0] - p0[0], dz = p1[1] - p0[1];
+    const length = Math.hypot(dx, dz);
+    const grade = e.grade ?? e.base;
+    if (length < 0.3 || !doorEligible({ isStreet: true, length, base: e.base, top: e.top, grade })) {
+      e.door = null;
+      return null;
+    }
+    const ux = dx / length, uz = dz / length;
+    const { tc, halfW, sill, openTop } = doorMetrics(length, e.base, e.top, grade);
+    const dC = tc * length;
+    const rt: DoorRt = {
+      id: nextDoorId++,
+      cx: p0[0] + ux * dC, cz: p0[1] + uz * dC,
+      sill, openTop, halfW,
+      // hinge at the dC − halfW edge of the opening (grammar authors the baked
+      // leaf against this same edge, so the dynamic twin pivots where it should)
+      hx: p0[0] + ux * (dC - halfW), hz: p0[1] + uz * (dC - halfW),
+      // group yaw mapping local +X → the edge direction u: THREE's +Y rotation by
+      // θ sends +X to (cos θ, 0, −sin θ), so θ = atan2(−uz, ux). This is a plain
+      // THREE Object3D rotation — the box3d addBody half-angle negation gotcha
+      // (see addBody above) does NOT apply here; no physics body is created.
+      baseYaw: Math.atan2(-uz, ux),
+      w: 2 * halfW * 0.96, h: (openTop - sill) - 0.04,
+      swing: 0, from: 0, to: 0, t: 1, animating: false, needSolid: false,
+      leaf: null, leafGeo: null, bakedLeaf: null,
+    };
+    e.door = rt;
+    doorRegistry.set(rt.id, e);
+    return rt;
+  };
+  // player standing in the doorway volume (XZ disc around the door centre between
+  // sill and head) — closing now would rebuild a wall around them (wedge)
+  const playerInGap = (rt: DoorRt): boolean => {
+    const dx = lastPlayer.x - rt.cx, dz = lastPlayer.z - rt.cz;
+    const r = rt.halfW + 0.4;
+    return dx * dx + dz * dz < r * r && lastPlayer.y > rt.sill - 0.5 && lastPlayer.y < rt.openTop;
+  };
+  const retargetSwing = (rt: DoorRt, to: number) => { rt.from = rt.swing; rt.to = to; rt.t = 0; rt.animating = true; };
+  // spawn the dynamic hinged leaf + hide the baked one (one bundle re-record).
+  // SWING SIGN: rotating a vector by +φ about +Y sends the edge direction u to the
+  // OUTWARD normal (u=(ux,uz) → (uz,−ux) = edgeOutwardNormal) — so the INWARD
+  // swing is the NEGATIVE delta: rotation.y = baseYaw − swing (verified with edge
+  // u=+X → street at −Z: baseYaw 0, swing π/2 points the leaf at +Z = inward).
+  const spawnLeaf = (e: Entry, rt: DoorRt) => {
+    const bundle = e.detail!.group as THREE.BundleGroup;
+    let baked: THREE.Mesh | null = null;
+    for (const ch of bundle.children) if (ch.name === "citygen.doorleaf") { baked = ch as THREE.Mesh; break; }
+    if (baked) { baked.visible = false; bundle.needsUpdate = true; }
+    rt.bakedLeaf = baked;
+    // SAME shared material instance as the baked leaf (settled at fade≥1) → no new
+    // pipeline, and it must never be disposed with the leaf
+    const mat = (baked?.material as THREE.Material | undefined) ?? materials["citygen.doorleaf"] ?? materials["citygen.door"];
+    const geo = new THREE.BoxGeometry(rt.w, rt.h, DOOR_LEAF_T);
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    mesh.position.set(rt.w / 2, 0.02 + rt.h / 2, 0); // left box edge ON the hinge axis
+    const leaf = new THREE.Group();
+    leaf.add(mesh);
+    // sit the hinge where the detail mesh actually drew the doorway: the bundle is
+    // scaled ~0.6% proud of the true footprint (z-fight offset in assembleBuilding),
+    // so run the true-world hinge through its matrix — no cm-pop at leaf swap.
+    leaf.position.set(rt.hx, rt.sill, rt.hz).applyMatrix4(bundle.matrix);
+    leaf.rotation.y = rt.baseYaw - rt.swing;
+    doorRoot.add(leaf);
+    rt.leaf = leaf;
+    rt.leafGeo = geo;
+  };
+  const disposeLeaf = (rt: DoorRt) => {
+    if (rt.leaf) doorRoot.remove(rt.leaf);
+    rt.leafGeo?.dispose(); // geometry only — the material is SHARED, never disposed here
+    rt.leaf = null;
+    rt.leafGeo = null;
+  };
+  // door-gapped walls out, SOLID walls back in — ATOMIC (same frame), and never
+  // while the player occupies the gap (anti-wedge, same convention as the coll
+  // tier's playerInsideBB guard: retried from update() via needSolid).
+  const trySolidify = (e: Entry, rt: DoorRt) => {
+    if (e.state !== "detail") { rt.needSolid = false; return; } // dropped — dropDetail owns the bodies
+    if (playerInGap(rt)) { rt.needSolid = true; return; }
+    rt.needSolid = false;
+    clearBodies(e);
+    buildSolidWallsNow(e);
+  };
+  // leaf reached the frame: logically closed — restore the baked leaf + solid walls
+  const finishClose = (e: Entry, rt: DoorRt) => {
+    e.doorPending = true;
+    if (rt.bakedLeaf && e.detail) { rt.bakedLeaf.visible = true; (e.detail.group as THREE.BundleGroup).needsUpdate = true; }
+    disposeLeaf(rt);
+    trySolidify(e, rt);
+    if (rt.needSolid) markDoorActive(e); // keep retrying the wall swap
+  };
+  // instant close (no animation) — fade-out path: the baked leaf must dither away
+  // with the bundle, and no dynamic leaf may outlive the detail mesh
+  const closeDoorNow = (e: Entry) => {
+    const rt = e.door;
+    if (!rt) return;
+    rt.animating = false;
+    rt.swing = 0; rt.from = 0; rt.to = 0; rt.t = 1;
+    finishClose(e, rt);
+  };
+  // full reset on dropDetail/unload: dynamic leaf gone, bookkeeping cleared
+  const resetDoorRt = (e: Entry) => {
+    const rt = e.door;
+    if (!rt) return;
+    disposeLeaf(rt);
+    if (rt.bakedLeaf) { rt.bakedLeaf.visible = true; rt.bakedLeaf = null; } // group is being disposed; restore for tidiness
+    rt.swing = 0; rt.from = 0; rt.to = 0; rt.t = 1;
+    rt.animating = false;
+    rt.needSolid = false;
+    const idx = activeDoors.indexOf(e);
+    if (idx >= 0) activeDoors.splice(idx, 1);
+  };
+
   const dropDetail = (e: Entry) => {
+    resetDoorRt(e); // dynamic leaf + door bookkeeping first (leaf must not outlive the mesh)
     disposeInterior(e);
     if (e.detail) { ctx.scene.remove(e.detail.group); e.detail.dispose(); e.detail = null; }
     clearBodies(e);
@@ -446,15 +627,41 @@ export async function createCityGenRing(
     // If still within collider range the next scan re-swaps it to a tight "coll".
     ctx.tiles.unsuppressBuilding(e.key, e.i);
     ctx.tiles.suppressBuildingMesh(e.key, e.i);
-    e.state = "lod"; e.fade = 0; e.fadeDir = 0; e.doorPending = false; e.pendingBuild = false;
+    e.state = "lod"; e.fade = 0; e.fadeDir = 0; e.doorPending = true; e.pendingBuild = false;
   };
   const advanceFades = (dt: number) => {
     for (const cell of loaded.values()) for (const e of cell.entries) {
       if (!e.detail || e.fadeDir === 0) continue;
+      // fading out with the door open/mid-swing → snap it shut first, so the baked
+      // leaf dithers away with the bundle and the walls settle back to solid
+      if (e.fadeDir < 0 && !e.doorPending) closeDoorNow(e);
       e.fade += e.fadeDir * (dt / CT.fadeTime);
-      if (e.fadeDir > 0 && e.fade >= 1) { e.fade = 1; e.fadeDir = 0; e.detail.setOpacity(1); openDoorway(e); }
+      // at fade end the door stays CLOSED (solid walls) — the player opens it with E
+      if (e.fadeDir > 0 && e.fade >= 1) { e.fade = 1; e.fadeDir = 0; e.detail.setOpacity(1); }
       else if (e.fadeDir < 0 && e.fade <= 0) dropDetail(e);
       else e.detail.setOpacity(e.fade);
+    }
+  };
+  // advance swinging doors + retry deferred wall swaps; drop settled doors from
+  // the active list (a resting OPEN door costs nothing per frame)
+  const advanceDoors = (dt: number) => {
+    for (let i = activeDoors.length - 1; i >= 0; i--) {
+      const e = activeDoors[i];
+      const rt = e.door;
+      if (!rt) { activeDoors.splice(i, 1); continue; }
+      if (rt.animating) {
+        rt.t = Math.min(1, rt.t + dt / DOOR_SWING_TIME);
+        const k = 1 - (1 - rt.t) ** 3; // ease-out cubic
+        rt.swing = rt.from + (rt.to - rt.from) * k;
+        if (rt.leaf) rt.leaf.rotation.y = rt.baseYaw - rt.swing;
+        if (rt.t >= 1) {
+          rt.animating = false;
+          rt.swing = rt.to;
+          if (rt.to === 0) finishClose(e, rt);
+        }
+      }
+      if (!rt.animating && rt.needSolid) trySolidify(e, rt); // player was in the gap — retry
+      if (!rt.animating && !rt.needSolid) activeDoors.splice(i, 1);
     }
   };
 
@@ -571,6 +778,7 @@ export async function createCityGenRing(
       insideBuilding = false;
       for (const cell of loaded.values()) for (const e of cell.entries) gateInterior(e, playerPos);
       advanceFades(dt);
+      advanceDoors(dt);
       if (building.length) {
         const cell = building[0]; // one cell slice per frame (bounded, no hitch)
         cell.chunk!.pump(CHUNK_BUDGET);
@@ -583,8 +791,12 @@ export async function createCityGenRing(
 
       const ptx = Math.floor((playerPos.x - minX) / tile);
       const ptz = Math.floor((playerPos.z - minZ) / tile);
-      // read the live-tunable knobs fresh each scan (dragging a "/" slider re-tunes now)
-      const cellLoad = CT.cellLoad, cellUnload = Math.max(CT.cellUnload, cellLoad + 1);
+      // read the live-tunable knobs fresh each scan (dragging a "/" slider re-tunes now).
+      // chunk reach follows the master draw-distance slider (not its own knob): whole
+      // cells inside the tile radius, never below the ±1 the near detail band needs.
+      // unload one cell further out — the same hysteresis the old sliders defaulted to.
+      const cellLoad = Math.max(1, Math.floor(CONFIG.tileLoadRadius / tile));
+      const cellUnload = cellLoad + 1;
       const detailR = CT.detailRadius, detailR2 = detailR * detailR;
       const detailExit = detailR + DETAIL_EXIT_MARGIN, detailExit2 = detailExit * detailExit;
       const maxDetail = CT.maxDetail;
@@ -683,9 +895,12 @@ export async function createCityGenRing(
       buildWorker?.terminate();
       buildWorker = null;
       pendingBuilds.clear();
-      for (const cell of [...loaded.values()]) unloadCell(cell);
+      for (const cell of [...loaded.values()]) unloadCell(cell); // → dropDetail → resetDoorRt per entry
       loaded.clear();
       building.length = 0;
+      activeDoors.length = 0;
+      doorRegistry.clear();
+      ctx.scene.remove(doorRoot);
     },
     stats() {
       let buildings = 0, detail = 0, interiors = 0;
@@ -747,6 +962,53 @@ export async function createCityGenRing(
         });
       }
       return out;
+    },
+    nearestDoor(pos) {
+      let bestE: Entry | null = null;
+      let bestRt: DoorRt | null = null;
+      let bestD2 = DOOR_RANGE * DOOR_RANGE;
+      for (const cell of loaded.values()) for (const e of cell.entries) {
+        if (!e.detail || e.state !== "detail" || e.fade < 1) continue; // operable = fully faded in
+        // cheap AABB reject before touching the cached (or computing the first) metrics
+        if (pos.x < e.bb.minx - DOOR_RANGE - 2 || pos.x > e.bb.maxx + DOOR_RANGE + 2 ||
+            pos.z < e.bb.minz - DOOR_RANGE - 2 || pos.z > e.bb.maxz + DOOR_RANGE + 2) continue;
+        const rt = doorRtOf(e);
+        if (!rt) continue;
+        if (pos.y < rt.sill - 3 || pos.y > rt.openTop + 3) continue; // street-level approaches only
+        const dx = pos.x - rt.cx, dz = pos.z - rt.cz;
+        const d2 = dx * dx + dz * dz;
+        if (d2 < bestD2) { bestD2 = d2; bestE = e; bestRt = rt; }
+      }
+      if (!bestE || !bestRt) return null;
+      return { x: bestRt.cx, z: bestRt.cz, sill: bestRt.sill, dist: Math.sqrt(bestD2), open: !bestE.doorPending, id: bestRt.id };
+    },
+    toggleDoor(id) {
+      const e = doorRegistry.get(id);
+      const rt = e?.door;
+      if (!e || !rt || !e.detail || e.state !== "detail" || e.fade < 1) return "gone";
+      if (e.doorPending) {
+        // CLOSED → open. Anti-wedge guard: if the solid walls never materialized
+        // (finishDetail deferred them — player inside the footprint), cutting the
+        // gapped set now would spawn walls around the player.
+        if (!e.bodies.length && playerInsideBB(e, 3.5)) return "blocked";
+        rt.needSolid = false;       // cancel any deferred solid swap — we're going gapped
+        openDoorway(e);             // ATOMIC: solid walls out, door gap + stoop in (this frame)
+        if (!rt.leaf) spawnLeaf(e, rt);
+        retargetSwing(rt, DOOR_SWING);
+        markDoorActive(e);
+        return "opened";
+      }
+      if (rt.animating && rt.to === 0) {
+        // mid-close → swing back open (colliders still gapped, leaf still live)
+        retargetSwing(rt, DOOR_SWING);
+        markDoorActive(e);
+        return "opened";
+      }
+      // OPEN (or opening) → close; refused while the player stands in the gap
+      if (playerInGap(rt)) return "blocked";
+      retargetSwing(rt, 0);
+      markDoorActive(e);
+      return "closed";
     },
   };
 }

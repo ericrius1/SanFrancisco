@@ -106,7 +106,7 @@ function bracketedCornice(out: PanelBuilder, e: FacadeEdge, mat: string, proj: n
 
 /** ground-level panelled + trimmed door at the entrance (aligned with the
  *  walk-through gap the collider cuts in the street wall, so you enter here). */
-function stoopAndDoor(out: PanelBuilder, e: FacadeEdge, base: number, groundTopY: number, m: { base: string; trim: string; door: string }): void {
+function stoopAndDoor(out: PanelBuilder, e: FacadeEdge, base: number, groundTopY: number, m: { base: string; trim: string }): void {
   // MATCH core/collider.ts doorway: tc + width + sill/openTop, so the visual door
   // is exactly the walk-through gap (raised to the sill, capped at openTop).
   const { tc, halfW, sill, openTop } = doorMetrics(e.length, e.base, e.top, e.grade);
@@ -123,15 +123,17 @@ function stoopAndDoor(out: PanelBuilder, e: FacadeEdge, base: number, groundTopY
 
   // The wall quad behind is cut open (wallWithDoorway), so this reads as a real
   // entrance: a dark entry backing filling the opening (a hair proud so it occludes
-  // the LOD prism through the hole) + a panelled leaf swung ajar so the doorway
-  // reads OPEN, not a flat decal, + a trim surround.
+  // the LOD prism through the hole) + a CLOSED panelled leaf + a trim surround.
+  // The leaf is emitted under its own "citygen.doorleaf" bucket (NOT m.door) so
+  // mergePanels gives it a dedicated sub-mesh the ring runtime can find by name,
+  // hide, and replace with a live hinged twin when the player opens it with E.
+  // Hinge at the LEFT jamb (dl = dCenter − halfW viewed from the street); proud
+  // 0.055 so no face is coplanar with the 0.02 backing or the 0.09 trim front.
   const inw = (p: Vec3, d: number, yy: number): Vec3 => [p[0] + n3[0] * d, yy, p[2] + n3[2] * d];
   out.quad("citygen.room", inw(dl, 0.02, doorBase), inw(dr, 0.02, doorBase), inw(dr, 0.02, doorTop), inw(dl, 0.02, doorTop), n3);
-  const ang = 0.28, leafHalf = (dw / 2) * 0.96, dMid = (doorBase + doorTop) / 2;
-  const swing: Vec3 = [along[0] * Math.cos(ang) + n3[0] * Math.sin(ang), 0, along[2] * Math.cos(ang) + n3[2] * Math.sin(ang)];
-  const swingN: Vec3 = [-swing[2], 0, swing[0]];
-  const hinge = inw(dl, 0.05, dMid);
-  out.box(m.door, [hinge[0] + swing[0] * leafHalf, dMid, hinge[2] + swing[2] * leafHalf], [leafHalf, (doorTop - doorBase) / 2 - 0.03, 0.03], swing, UP, swingN, true);
+  const leafHalf = halfW * 0.96, dMid = (sill + openTop) / 2;
+  const hinge = inw(dl, 0.055, dMid);
+  out.box("citygen.doorleaf", [hinge[0] + along[0] * leafHalf, dMid, hinge[2] + along[2] * leafHalf], [leafHalf, (openTop - sill) / 2 - 0.02, 0.03], along, UP, n3, true);
   // surround
   const cA = lerp(dl, dr, 0.5), midY = (doorBase + doorTop) / 2;
   out.box(m.trim, [cA[0] + n3[0] * 0.03, doorTop + 0.06, cA[2] + n3[2] * 0.03], [dw / 2 + 0.14, 0.1, 0.06], along, UP, n3, true);
@@ -145,7 +147,6 @@ export const victorianFacade: FacadeDecorator = (e, out, rng) => {
   const trim = arch.trimMaterial ?? wall;
   const glass = arch.glassMaterial ?? "glass";
   const baseMat = arch.baseMaterial ?? trim;
-  const doorMat = "citygen.door";
   const n3: Vec3 = [e.normal[0], 0, e.normal[1]];
   const bands = floorBands(e);
   const groundTopY = bands[0]?.y1 ?? e.base + arch.floorH;
@@ -173,7 +174,7 @@ export const victorianFacade: FacadeDecorator = (e, out, rng) => {
   const gBase = Math.max(e.base, e.grade);
   if (doorEligible(e)) {
     frontStoop(out, e, baseMat); // stone steps up to the raised stoop (downhill lots)
-    stoopAndDoor(out, e, gBase, groundTopY, { base: baseMat, trim, door: doorMat });
+    stoopAndDoor(out, e, gBase, groundTopY, { base: baseMat, trim });
     // a ground-floor bay/garden window on the other side of the door
     const gw0 = gp(e, 0.62), gw1 = gp(e, 0.92);
     faceWindow(out, gw0, gw1, aboveGrade(e, e.base + 0.7), groundTopY - 0.25, n3, wm);

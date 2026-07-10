@@ -29,7 +29,11 @@ export function doorMetrics(len: number, base: number, top: number, grade: numbe
   const openTop = Math.min(sill + 2.45, top - 0.2);
   return {
     tc: len > 6 ? 0.24 : 0.5,               // door centre fraction along the edge
-    halfW: Math.min(0.9, len * 0.16),       // half the door width (metres)
+    // half the door width (metres). Floor of 0.55 so the narrowest opening is
+    // 1.1 m — the old len-proportional min could shrink to ~0.70 m, exactly the
+    // player capsule's diameter, an unenterable doorway. Consumed by BOTH the
+    // visual grammar and the collider gap, so leaf and gap stay in sync.
+    halfW: Math.min(0.9, Math.max(0.55, len * 0.16)),
     sill,
     openTop,
   };

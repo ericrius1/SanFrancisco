@@ -89,12 +89,12 @@ const CHAPTERS: Chapter[] = [
   },
   {
     title: "Step inside",
-    onEnter: (c) => c.message("Every building has a front door — walk in and explore, then step back out", 4),
+    onEnter: (c) => c.message("Every building has a front door — press E at the door to open it, then walk in", 4),
     steps: [
       {
-        keys: ["W"],
-        action: "Walk",
-        text: "up to a building and in through its door",
+        keys: ["E"],
+        action: "Press",
+        text: "at a front door to open it, then step inside",
         check: (c, _dt, st) => traveled(c, st, 15, c.mode() === "walk")
       }
     ]

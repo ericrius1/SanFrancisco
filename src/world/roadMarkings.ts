@@ -1,4 +1,5 @@
 import * as THREE from "three/webgpu";
+import { EXPOSURE_REBASE } from "../config";
 import type { WorldMap } from "./heightmap";
 
 type RoadsJson = {
@@ -66,6 +67,10 @@ function makeMarkingMaterial(colorHex: number, opacity: number): THREE.MeshBasic
   mat.polygonOffset = true;
   mat.polygonOffsetFactor = -2;
   mat.polygonOffsetUnits = -2;
+  // Authored against the reference exposure (toneMapped=false is a no-op here —
+  // the render pipeline tone-maps in its output pass, not per material), so the
+  // paint rebases with the rest of the unlit world (config.EXPOSURE_REBASE).
+  mat.color.multiplyScalar(EXPOSURE_REBASE);
   return mat;
 }
 

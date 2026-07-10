@@ -115,7 +115,10 @@ export function faceWindow(out: PanelBuilder, a: Vec3, b: Vec3, y0: number, y1: 
  * A clear, obvious FRONT DOOR on the street edge, at the exact spot the collider
  * leaves its walk-through gap (both read core's doorMetrics), so you can see where
  * to walk in. Proud geometry (a recess would be occluded by the flat wall quad):
- * a dark opening, a door leaf swung ajar, a white frame + threshold step.
+ * a dark opening, a CLOSED door leaf, a white frame + threshold step. The leaf is
+ * emitted under its own "citygen.doorleaf" bucket (NOT m.door) so mergePanels
+ * gives it a dedicated sub-mesh the ring runtime can find by name, hide, and
+ * replace with a live hinged twin when the player opens it with E.
  */
 export function frontDoor(out: PanelBuilder, e: FacadeEdge, m: { door: string; trim: string }): void {
   if (!doorEligible(e)) return;
@@ -128,15 +131,15 @@ export function frontDoor(out: PanelBuilder, e: FacadeEdge, m: { door: string; t
   const pt = (t: number, yy: number, d: number): Vec3 => off([c[0] + along[0] * t, yy, c[2] + along[2] * t], d);
   // dark opening panel (proud a hair so it isn't occluded by the wall quad)
   out.quad("citygen.room", pt(-halfW, y0, 0.03), pt(halfW, y0, 0.03), pt(halfW, y1, 0.03), pt(-halfW, y1, 0.03), n);
-  // door leaf, only slightly ajar so its FACE reads as an obvious door (a wide-open
-  // leaf goes edge-on and disappears against the storefront glazing). leafW = half
-  // the opening → hinged at the left jamb, the leaf covers the full opening width.
-  const ang = 0.26, leafW = halfW * 0.98;
-  const swingDir: Vec3 = [along[0] * Math.cos(ang) + n[0] * Math.sin(ang), 0, along[2] * Math.cos(ang) + n[2] * Math.sin(ang)];
-  const swingNorm: Vec3 = [-swingDir[2], 0, swingDir[0]];
-  const hinge = pt(-halfW, midY, 0.03);
-  const lc: Vec3 = [hinge[0] + swingDir[0] * leafW, midY, hinge[2] + swingDir[2] * leafW];
-  out.box(m.door, lc, [leafW, hH - 0.04, 0.03], swingDir, UP, swingNorm, true);
+  // door leaf, authored fully CLOSED: it lies in the doorway plane (a hair proud
+  // so no face is coplanar with the wall/LOD prism), hinged at the LEFT jamb
+  // (dCenter − halfW viewed from the street) and spanning the opening. leafW =
+  // half the opening → covers the full opening width. The ring runtime hides this
+  // baked leaf + swings a dynamic twin from the same hinge when opened.
+  const leafW = halfW * 0.96;
+  const hinge = pt(-halfW, midY, 0.035);
+  const lc: Vec3 = [hinge[0] + along[0] * leafW, midY, hinge[2] + along[2] * leafW];
+  out.box("citygen.doorleaf", lc, [leafW, hH - 0.02, 0.03], along, UP, n, true);
   // white frame: jambs + lintel, proud
   out.box(m.trim, off(pt(-halfW, midY, 0), 0.05), [0.06, hH + 0.06, 0.07], along, UP, n, true);
   out.box(m.trim, off(pt(halfW, midY, 0), 0.05), [0.06, hH + 0.06, 0.07], along, UP, n, true);

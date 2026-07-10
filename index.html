@@ -1898,6 +1898,232 @@
       #hud .board-panel .avatar-label {
         padding-top: 5px;
       }
+      #hud .board-panel {
+        box-sizing: border-box;
+        width: min(390px, calc(100vw - 24px));
+        max-height: min(78vh, 680px);
+        padding: 12px;
+        gap: 8px;
+        overscroll-behavior: contain;
+        background:
+          linear-gradient(145deg, rgba(17, 40, 52, 0.92), rgba(5, 16, 25, 0.94)),
+          rgba(6, 16, 25, 0.92);
+        border-color: rgba(115, 238, 211, 0.24);
+        box-shadow:
+          0 18px 48px rgba(0, 6, 12, 0.52),
+          inset 0 1px 0 rgba(255, 255, 255, 0.07),
+          inset 3px 0 0 rgba(91, 235, 204, 0.1);
+      }
+      #hud .board-panel-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 1px 1px 7px;
+        border-bottom: 1px solid rgba(155, 226, 231, 0.12);
+      }
+      #hud .board-panel-head > span {
+        color: #9dffe2;
+        font: 800 12px var(--font);
+        letter-spacing: 0.17em;
+      }
+      #hud .board-panel-head > small {
+        color: rgba(221, 241, 243, 0.48);
+        font: 700 9px var(--font);
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+      #hud .board-panel .avatar-row {
+        grid-template-columns: 54px minmax(0, 1fr);
+      }
+      #hud .board-panel .avatar-choice {
+        min-height: 27px;
+        padding-inline: 8px;
+        border-radius: 6px;
+        background: rgba(14, 38, 50, 0.7);
+      }
+      #hud .board-panel .avatar-choice.on {
+        box-shadow: inset 0 -2px 0 rgba(110, 255, 218, 0.22);
+      }
+      #hud .board-labs {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        margin: 3px 0 2px;
+      }
+      #hud .board-lab {
+        min-width: 0;
+        padding: 8px;
+        border-radius: 9px;
+        border: 1px solid rgba(143, 222, 228, 0.18);
+        background: rgba(2, 11, 18, 0.64);
+        box-shadow:
+          inset 0 1px 0 rgba(255, 255, 255, 0.045),
+          0 6px 16px rgba(0, 4, 8, 0.16);
+      }
+      #hud .board-lab-head {
+        min-height: 29px;
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 5px;
+        margin-bottom: 6px;
+      }
+      #hud .board-lab-name {
+        color: #dffbf6;
+        font: 800 9.5px var(--font);
+        letter-spacing: 0.12em;
+      }
+      #hud .board-lab-sub {
+        margin-top: 2px;
+        overflow: hidden;
+        color: rgba(216, 238, 241, 0.46);
+        font: 650 8px var(--font);
+        letter-spacing: 0.02em;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      #hud .board-lab-readout {
+        flex: 0 0 auto;
+        min-width: 42px;
+        color: #76f5d3;
+        font: 750 9px ui-monospace, SFMono-Regular, Menlo, monospace;
+        letter-spacing: -0.04em;
+        text-align: right;
+      }
+      #hud .board-xy-pad {
+        position: relative;
+        height: 112px;
+        overflow: hidden;
+        cursor: crosshair;
+        touch-action: none;
+        user-select: none;
+        border-radius: 7px;
+        border: 1px solid rgba(152, 231, 228, 0.23);
+        outline: none;
+        box-shadow:
+          inset 0 0 18px rgba(0, 5, 10, 0.28),
+          0 0 0 1px rgba(0, 0, 0, 0.24);
+      }
+      #hud .board-xy-pad:focus-visible {
+        border-color: #a6ffe6;
+        box-shadow:
+          0 0 0 2px rgba(83, 237, 198, 0.34),
+          inset 0 0 18px rgba(0, 5, 10, 0.28);
+      }
+      #hud .board-xy-pad.dragging {
+        border-color: rgba(139, 255, 225, 0.72);
+      }
+      #hud .board-xy-canvas,
+      #hud .board-xy-grid {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+      }
+      #hud .board-xy-canvas {
+        display: block;
+        opacity: 0.88;
+      }
+      #hud .board-lab-surface .board-xy-canvas {
+        filter: saturate(1.12) contrast(1.04) brightness(0.83);
+      }
+      #hud .board-xy-grid {
+        pointer-events: none;
+        background-image:
+          linear-gradient(rgba(220, 255, 250, 0.1) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(220, 255, 250, 0.1) 1px, transparent 1px),
+          linear-gradient(rgba(220, 255, 250, 0.045) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(220, 255, 250, 0.045) 1px, transparent 1px);
+        background-size:
+          50% 50%,
+          50% 50%,
+          12.5% 12.5%,
+          12.5% 12.5%;
+      }
+      #hud .board-xy-puck {
+        position: absolute;
+        z-index: 3;
+        width: 17px;
+        height: 17px;
+        pointer-events: none;
+        border: 2px solid #effffb;
+        border-radius: 50%;
+        background: rgba(42, 245, 191, 0.42);
+        box-shadow:
+          0 0 0 3px rgba(42, 245, 191, 0.12),
+          0 0 14px rgba(67, 255, 204, 0.9),
+          inset 0 0 5px rgba(255, 255, 255, 0.75);
+        transform: translate(-50%, -50%);
+        transition:
+          width 0.12s,
+          height 0.12s;
+      }
+      #hud .board-xy-pad.dragging .board-xy-puck {
+        width: 21px;
+        height: 21px;
+      }
+      #hud .board-axis {
+        position: absolute;
+        z-index: 2;
+        pointer-events: none;
+        color: rgba(236, 255, 251, 0.6);
+        font: 800 7px var(--font);
+        letter-spacing: 0.06em;
+        text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
+        text-transform: uppercase;
+      }
+      #hud .board-axis-x0 {
+        left: 6px;
+        bottom: 5px;
+      }
+      #hud .board-axis-x1 {
+        right: 6px;
+        bottom: 5px;
+      }
+      #hud .board-axis-y0 {
+        left: 6px;
+        bottom: 18px;
+        opacity: 0.75;
+      }
+      #hud .board-axis-y1 {
+        left: 6px;
+        top: 5px;
+      }
+      #hud .board-lab-reroll {
+        width: 100%;
+        min-height: 27px;
+        margin-top: 6px;
+        cursor: pointer;
+        border: 1px solid rgba(113, 226, 216, 0.2);
+        border-radius: 6px;
+        background: rgba(14, 44, 53, 0.72);
+        color: rgba(220, 251, 246, 0.78);
+        font: 750 9px var(--font);
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      #hud .board-lab-reroll:hover,
+      #hud .board-lab-reroll:focus-visible {
+        border-color: rgba(139, 255, 225, 0.62);
+        color: #a4ffe6;
+      }
+      @media (max-width: 480px) {
+        #hud .board-ui {
+          right: 8px;
+        }
+        #hud .board-panel {
+          width: min(370px, calc(100vw - 16px));
+          max-height: min(76vh, 650px);
+          padding: 10px;
+        }
+        #hud .board-xy-pad {
+          height: 104px;
+        }
+        #hud .board-panel-head > small {
+          display: none;
+        }
+      }
       #hud .chat {
         position: absolute;
         bottom: 148px;

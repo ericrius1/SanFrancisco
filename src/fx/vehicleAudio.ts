@@ -35,8 +35,16 @@ const approach = (cur: number, target: number, dt: number, rate: number) =>
 
 const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
 
-/** What the hoverboard customizer can voice: hum character + root note. */
-export type BoardVoiceStyle = { hum: BoardHum; pitch: number };
+/**
+ * What the hoverboard customizer can voice. The two 0..100 macros are neutral
+ * at 50 so older authored stacks keep their original character by default.
+ */
+export type BoardVoiceStyle = {
+  hum: BoardHum;
+  pitch: number;
+  soundTone: number;
+  soundMotion: number;
+};
 
 // Each hum character is a 6-slot partial stack (type, freq multiple of the
 // root, gain) plus a filter/LFO personality. Every stack keeps consonant
@@ -132,7 +140,7 @@ export class VehicleAudio {
   #noise!: AudioBuffer;
   #voices: Voice[] = [];
   #masterLevel = 0;
-  #boardStyle: BoardVoiceStyle = { hum: "hum", pitch: 0 };
+  #boardStyle: BoardVoiceStyle = { hum: "hum", pitch: 0, soundTone: 50, soundMotion: 50 };
   #applyBoardStyle: (() => void) | null = null; // bound once the voice exists
   #previewT: number | null = null; // seconds into a customizer audition swell
 
@@ -156,6 +164,7 @@ export class VehicleAudio {
     return {
       ctx: this.#ctx?.state ?? "none",
       master: this.#masterLevel,
+      boardStyle: { ...this.#boardStyle },
       voices: this.#voices.map((v) => ({ mode: v.mode, level: v.level }))
     };
   }
@@ -165,14 +174,23 @@ export class VehicleAudio {
    * applied immediately if the audio graph exists, or on first unlock.
    */
   setBoardStyle(style: BoardVoiceStyle) {
-    this.#boardStyle = { hum: style.hum, pitch: style.pitch };
+    const macro = (value: number) =>
+      Number.isFinite(value) ? Math.round(clamp01(value / 100) * 100) : 50;
+    this.#boardStyle = {
+      hum: BOARD_STACKS[style.hum] ? style.hum : "hum",
+      pitch: Number.isFinite(style.pitch)
+        ? Math.min(BOARD_PITCHES.length - 1, Math.max(0, Math.round(style.pitch)))
+        : 0,
+      soundTone: macro(style.soundTone),
+      soundMotion: macro(style.soundMotion)
+    };
     this.#applyBoardStyle?.();
   }
 
   /**
-   * Audition the current board voice (customizer click): a short speed swell
-   * through the real voice path, skipped if the player is already riding —
-   * the live hum is its own preview.
+   * Audition the current board voice (customizer click): a short speed + level
+   * swell through the real voice path. While riding it layers onto the live
+   * signal, so a sound edit still has an obvious audible response.
    */
   previewBoard() {
     const ctx = this.#ensure(); // UI click is a gesture, so this can unlock
@@ -183,17 +201,20 @@ export class VehicleAudio {
 
   /** Per rendered frame. `sig` null (paused) fades every voice out. */
   update(dt: number, sig: VehicleSignals | null) {
+    let boardPreviewEnv = 0;
     // customizer audition: impersonate a board run swelling 0→fast→0
     if (this.#previewT !== null) {
-      if (sig?.mode === "board") {
-        this.#previewT = null; // already riding — live hum wins
+      this.#previewT += dt;
+      if (this.#previewT >= BOARD_PREVIEW_DUR) {
+        this.#previewT = null;
       } else {
-        this.#previewT += dt;
-        if (this.#previewT >= BOARD_PREVIEW_DUR) {
-          this.#previewT = null;
+        boardPreviewEnv = Math.sin((Math.PI * this.#previewT) / BOARD_PREVIEW_DUR);
+        const previewSpeed = boardPreviewEnv * 24;
+        if (sig?.mode === "board") {
+          // Preserve the real ride, but guarantee a tonal lift even at idle.
+          sig = { ...sig, speed: Math.max(sig.speed, previewSpeed) };
         } else {
-          const env = Math.sin((Math.PI * this.#previewT) / BOARD_PREVIEW_DUR);
-          sig = { mode: "board", speed: env * 24, vspeed: 0, boost: false, grounded: true };
+          sig = { mode: "board", speed: previewSpeed, vspeed: 0, boost: false, grounded: true };
         }
       }
     }
@@ -215,7 +236,10 @@ export class VehicleAudio {
     this.#masterLevel = approach(this.#masterLevel, targetMaster, dt, 6);
     this.#master.gain.value = this.#masterLevel;
     for (const v of this.#voices) {
-      const target = sig && sig.mode === v.mode ? v.drive(sig, dt) : 0;
+      let target = sig && sig.mode === v.mode ? v.drive(sig, dt) : 0;
+      // The extra trim makes previewBoard read as an audition even when the
+      // player is already moving faster than the synthetic preview signal.
+      if (v.mode === "board") target = Math.min(1, target + boardPreviewEnv * 0.16);
       v.level = approach(v.level, target, dt, 4.5);
       v.gain.gain.value = v.level;
     }
@@ -340,20 +364,35 @@ export class VehicleAudio {
     filterLfo.start();
     for (const s of slots) this.#lfo(ctx, 0.23, 4, s.o.detune); // faint organic pitch drift
 
-    const state = { detune: 0, cutoff: 300, base: BOARD_STACKS.hum };
+    const state = { detune: 0, cutoff: 300, baseCutoff: 300, base: BOARD_STACKS.hum };
+    const smooth = (param: AudioParam, value: number, timeConstant = 0.035) => {
+      const now = ctx.currentTime;
+      param.cancelScheduledValues(now);
+      param.setTargetAtTime(value, now, timeConstant);
+    };
     this.#applyBoardStyle = () => {
       const stack = BOARD_STACKS[this.#boardStyle.hum] ?? BOARD_STACKS.hum;
       const root = (BOARD_PITCHES[this.#boardStyle.pitch] ?? BOARD_PITCHES[0]).hz;
+      const tone = this.#boardStyle.soundTone / 100;
+      const motion = this.#boardStyle.soundMotion / 100;
+      // Neutral at 50: tone spans roughly 0.6×–1.7× cutoff and
+      // 0.45×–1.55× upper-partial energy without changing wave types.
+      const cutoffScale = Math.pow(2, (tone - 0.5) * 1.5);
+      const richness = 0.45 + tone * 1.1;
+      // Motion keeps each preset's personality while ranging from still to a
+      // noticeably lively flutter. At 50 both values equal the authored stack.
+      const motionRate = stack.lfoRate * Math.pow(6, motion - 0.5);
+      const motionDepth = stack.lfoDepth * motion * 2;
       state.base = stack;
+      state.baseCutoff = stack.cutoff * cutoffScale;
       for (let i = 0; i < slots.length; i++) {
         const [type, mul, gain] = stack.parts[i];
         slots[i].o.type = type;
-        slots[i].o.frequency.value = root * mul;
-        slots[i].g.gain.value = gain;
+        smooth(slots[i].o.frequency, root * mul, 0.025);
+        smooth(slots[i].g.gain, gain * (mul >= 2 ? richness : 1));
       }
-      filter.frequency.value = stack.cutoff;
-      filterLfo.frequency.value = stack.lfoRate;
-      filterLfoDepth.gain.value = stack.lfoDepth;
+      smooth(filterLfo.frequency, motionRate, 0.05);
+      smooth(filterLfoDepth.gain, motionDepth, 0.05);
     };
     this.#applyBoardStyle();
 
@@ -365,7 +404,7 @@ export class VehicleAudio {
         const norm = clamp01(sig.speed / 40);
         // +4 semitones flat out, +1 more on boost — audible lift, never a whine
         state.detune = approach(state.detune, norm * 400 + (sig.boost ? 110 : 0), dt, 4);
-        state.cutoff = approach(state.cutoff, (sig.grounded ? state.base.cutoff : state.base.cutoff * 0.75) + 480 * norm, dt, 4);
+        state.cutoff = approach(state.cutoff, (sig.grounded ? state.baseCutoff : state.baseCutoff * 0.75) + 480 * norm, dt, 7);
         for (const s of slots) s.o.detune.value = state.detune;
         filter.frequency.value = state.cutoff;
         return (sig.grounded ? 0.2 + 0.4 * norm : 0.13 + 0.24 * norm) * state.base.level;

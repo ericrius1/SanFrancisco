@@ -8,7 +8,7 @@
 //   SF_PROBE_OUT  out dir (default .data/fog-probe)
 //   SF_PROBE_URL  existing vite (default http://127.0.0.1:5190)
 //   SF_TIME       time of day hours (default 13.5; also try 17.8 golden hour)
-//   SF_FOG        JSON of WORLD_TUNING fog overrides, e.g. '{"fog":0.0007,"fogPeak":2}'
+//   SF_FOG        JSON of WORLD_TUNING fog overrides, e.g. '{"fog":0.0007,"fogBank":2}'
 //   SF_VIEWS      comma list of view names to render (default all)
 
 import { spawn } from "node:child_process";

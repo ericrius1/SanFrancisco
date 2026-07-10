@@ -5,7 +5,7 @@ import { buildCarMesh } from "../vehicles/car";
 import { buildPlaneMesh, collectPlaneAnim, type PlaneAnim } from "../vehicles/plane";
 import { buildBoatMesh, buildSpeedboatMesh } from "../vehicles/boat";
 import { buildDroneMesh } from "../vehicles/drone";
-import { buildBoardMesh, animateBoard, boardFromSeed, boardKey, normalizeBoardConfig, type BoardConfig } from "../vehicles/board";
+import { buildBoardMesh, animateBoard, boardFromSeed, boardVisualKey, normalizeBoardConfig, type BoardConfig } from "../vehicles/board";
 import { buildBirdMesh } from "../vehicles/bird";
 import type { Cockpit, PlayerMode } from "../player/types";
 import type { NetSample, RemoteInfo } from "./net";
@@ -258,7 +258,7 @@ export class RemotePlayers {
       avatar: av,
       avatarKey: avatarKey(av),
       board: bd,
-      boardKey: boardKey(bd)
+      boardKey: boardVisualKey(bd)
     });
   }
 
@@ -297,9 +297,9 @@ export class RemotePlayers {
     if (!a) return;
     a.info = info;
     const next = boardForInfo(info);
-    const key = boardKey(next);
-    if (key === a.boardKey) return;
+    const key = boardVisualKey(next);
     a.board = next;
+    if (key === a.boardKey) return;
     a.boardKey = key;
     const old = a.bodies.board;
     if (!old) return;

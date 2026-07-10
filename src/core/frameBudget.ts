@@ -38,6 +38,14 @@ export interface FrameScheduler {
   run(budgetMs: number): void;
   /** Queued job count (all lanes) — probes/debug. */
   readonly pending: number;
+  /**
+   * Of `pending`, how many jobs re-queued themselves ("again") on the last
+   * run — parked work waiting on external state (anti-wedge retries wait for
+   * the player to move) plus mid-flight multi-slice jobs. `pending - waiting`
+   * is the backlog that has never had a turn; the boot settle gate keys on it
+   * so a job parked on "player inside this footprint" can't wedge the reveal.
+   */
+  readonly waiting: number;
   /** Per-lane queue depths — probes/debug. */
   depths(): Record<Lane, number>;
 }
@@ -45,6 +53,7 @@ export interface FrameScheduler {
 export function createFrameScheduler(): FrameScheduler {
   const queues: Record<Lane, Job[]> = { physics: [], build: [], upload: [], background: [] };
   let pending = 0;
+  let waiting = 0;
 
   return {
     schedule(lane, job) {
@@ -52,7 +61,10 @@ export function createFrameScheduler(): FrameScheduler {
       pending++;
     },
     run(budgetMs) {
-      if (pending === 0) return;
+      if (pending === 0) {
+        waiting = 0;
+        return;
+      }
       const t0 = performance.now();
       const deadline = t0 + budgetMs;
       // Starvation guard: however tight the frame, run at least one job so the
@@ -83,12 +95,16 @@ export function createFrameScheduler(): FrameScheduler {
         queues[lane].push(job);
         pending++;
       }
+      waiting = requeued.length;
       const spent = performance.now() - t0;
       tracer.count("schedJobs", ran);
       if (spent > 0.05) tracer.count("schedMs", Math.round(spent * 100) / 100);
     },
     get pending() {
       return pending;
+    },
+    get waiting() {
+      return waiting;
     },
     depths() {
       return { physics: queues.physics.length, build: queues.build.length, upload: queues.upload.length, background: queues.background.length };

@@ -1,6 +1,6 @@
 /**
  * Hoverboard identity — the rider-facing customization knobs (shape, colors,
- * fins, deck art, hum voicing). Mirrors the avatar-traits contract exactly:
+ * fins, procedural surface, hum voicing). Mirrors the avatar-traits contract:
  * normalize accepts any junk off the wire, a per-id seed gives uncustomized
  * players distinct boards, and localStorage is written only when the player
  * actually edits (an absent key means "seed me from my server id" — the same
@@ -9,21 +9,28 @@
 
 export type BoardShape = "classic" | "dart" | "manta" | "saucer" | "twintip";
 export type BoardFin = "none" | "twin" | "spoiler" | "halo";
-export type BoardDeco = "clean" | "stripe" | "chevrons" | "dots" | "comet";
+export type BoardSurface = "aurora" | "topo" | "terrazzo" | "circuit";
 export type BoardHum = "hum" | "crystal" | "deep" | "choir" | "retro";
 
 export type BoardConfig = {
   shape: BoardShape;
   fin: BoardFin;
-  deco: BoardDeco;
   deck: number; // index into BOARD_DECK_COLORS
-  trim: number; // index into BOARD_DECK_COLORS (deck art, fins, spoiler)
+  trim: number; // index into BOARD_DECK_COLORS (surface ink, edge guard, fins)
   glow: number; // index into BOARD_GLOW_COLORS (rails, underglow, thrusters, light)
+  surface: BoardSurface;
+  surfaceScale: number; // 0..100: broad pools -> fine detail
+  surfaceWarp: number; // 0..100: ordered -> turbulent
+  surfaceSeed: number; // 0..65535 deterministic reroll
   hum: BoardHum; // synth voicing (fx/vehicleAudio.ts)
   pitch: number; // index into BOARD_PITCHES
+  soundTone: number; // 0..100: warm -> glassy
+  soundMotion: number; // 0..100: still -> fluttering LFO
 };
 
-export const BOARD_STORAGE_KEY = "sf-board-v1";
+// One current schema only. v1's tiny raised deck-art presets are deliberately
+// reset instead of migrated into the procedural surface model.
+export const BOARD_STORAGE_KEY = "sf-board-v2";
 
 export const BOARD_SHAPES: { id: BoardShape; label: string }[] = [
   { id: "classic", label: "classic" },
@@ -40,12 +47,11 @@ export const BOARD_FINS: { id: BoardFin; label: string }[] = [
   { id: "halo", label: "halo ring" }
 ];
 
-export const BOARD_DECOS: { id: BoardDeco; label: string }[] = [
-  { id: "clean", label: "clean" },
-  { id: "stripe", label: "stripe" },
-  { id: "chevrons", label: "chevrons" },
-  { id: "dots", label: "dots" },
-  { id: "comet", label: "comet" }
+export const BOARD_SURFACES: { id: BoardSurface; label: string }[] = [
+  { id: "aurora", label: "aurora" },
+  { id: "topo", label: "topo" },
+  { id: "terrazzo", label: "terrazzo" },
+  { id: "circuit", label: "circuit" }
 ];
 
 export const BOARD_HUMS: { id: BoardHum; label: string }[] = [
@@ -87,21 +93,26 @@ export const BOARD_GLOW_COLORS = [
   { label: "sea glass", color: 0x3dffc0 }
 ];
 
-/** Today's board, upgraded: coral deck, cloud stripe, bay-ice glow, classic hum. */
+/** The authored starting point for the current surface + sound schema. */
 const DEFAULT_BOARD: BoardConfig = {
   shape: "classic",
   fin: "none",
-  deco: "stripe",
   deck: 0,
   trim: 5,
   glow: 0,
+  surface: "aurora",
+  surfaceScale: 52,
+  surfaceWarp: 58,
+  surfaceSeed: 1847,
   hum: "hum",
-  pitch: 0
+  pitch: 0,
+  soundTone: 50,
+  soundMotion: 50
 };
 
 const SHAPES = BOARD_SHAPES.map((v) => v.id);
 const FINS = BOARD_FINS.map((v) => v.id);
-const DECOS = BOARD_DECOS.map((v) => v.id);
+const SURFACES = BOARD_SURFACES.map((v) => v.id);
 const HUMS = BOARD_HUMS.map((v) => v.id);
 
 function int(value: unknown, max: number, fallback: number) {
@@ -117,12 +128,17 @@ export function normalizeBoardConfig(raw: unknown): BoardConfig {
   return {
     shape: oneOf(v.shape, SHAPES, DEFAULT_BOARD.shape),
     fin: oneOf(v.fin, FINS, DEFAULT_BOARD.fin),
-    deco: oneOf(v.deco, DECOS, DEFAULT_BOARD.deco),
     deck: int(v.deck, BOARD_DECK_COLORS.length, DEFAULT_BOARD.deck),
     trim: int(v.trim, BOARD_DECK_COLORS.length, DEFAULT_BOARD.trim),
     glow: int(v.glow, BOARD_GLOW_COLORS.length, DEFAULT_BOARD.glow),
+    surface: oneOf(v.surface, SURFACES, DEFAULT_BOARD.surface),
+    surfaceScale: int(v.surfaceScale, 101, DEFAULT_BOARD.surfaceScale),
+    surfaceWarp: int(v.surfaceWarp, 101, DEFAULT_BOARD.surfaceWarp),
+    surfaceSeed: int(v.surfaceSeed, 65536, DEFAULT_BOARD.surfaceSeed),
     hum: oneOf(v.hum, HUMS, DEFAULT_BOARD.hum),
-    pitch: int(v.pitch, BOARD_PITCHES.length, DEFAULT_BOARD.pitch)
+    pitch: int(v.pitch, BOARD_PITCHES.length, DEFAULT_BOARD.pitch),
+    soundTone: int(v.soundTone, 101, DEFAULT_BOARD.soundTone),
+    soundMotion: int(v.soundMotion, 101, DEFAULT_BOARD.soundMotion)
   };
 }
 
@@ -164,9 +180,14 @@ export function boardFromSeed(seed: string | number): BoardConfig {
     glow: Math.floor(roll() * BOARD_GLOW_COLORS.length) % BOARD_GLOW_COLORS.length,
     shape: pick(SHAPES, roll),
     fin: pick(FINS, roll),
-    deco: pick(DECOS, roll),
+    surface: pick(SURFACES, roll),
+    surfaceScale: 22 + Math.floor(roll() * 67),
+    surfaceWarp: 18 + Math.floor(roll() * 73),
+    surfaceSeed: Math.floor(roll() * 65536),
     hum: pick(HUMS, roll),
-    pitch: Math.floor(roll() * BOARD_PITCHES.length) % BOARD_PITCHES.length
+    pitch: Math.floor(roll() * BOARD_PITCHES.length) % BOARD_PITCHES.length,
+    soundTone: 20 + Math.floor(roll() * 66),
+    soundMotion: 12 + Math.floor(roll() * 77)
   };
 }
 
@@ -176,7 +197,13 @@ export function randomBoardConfig(): BoardConfig {
 
 export function boardKey(config: BoardConfig): string {
   const c = normalizeBoardConfig(config);
-  return `${c.shape}|${c.fin}|${c.deco}|${c.deck}|${c.trim}|${c.glow}|${c.hum}|${c.pitch}`;
+  return `${boardVisualKey(c)}|${c.hum}|${c.pitch}|${c.soundTone}|${c.soundMotion}`;
+}
+
+/** Mesh-relevant identity. Audio edits never need geometry/material rebuilds. */
+export function boardVisualKey(config: BoardConfig): string {
+  const c = normalizeBoardConfig(config);
+  return `${c.shape}|${c.fin}|${c.deck}|${c.trim}|${c.glow}|${c.surface}|${c.surfaceScale}|${c.surfaceWarp}|${c.surfaceSeed}`;
 }
 
 export function isDefaultBoard(config: BoardConfig): boolean {

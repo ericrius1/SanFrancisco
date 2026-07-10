@@ -12,6 +12,7 @@
 //    reads in any light (how the baked city stays colourful at dusk).
 import * as THREE from "three/webgpu";
 import { materialColor, uv, float, fract, floor as tslFloor, mod, mix, step, smoothstep, positionWorld, mx_noise_float } from "three/tsl";
+import { EXPOSURE_REBASE } from "../../../config";
 import { makeParallaxGlass } from "./parallaxWindow";
 
 const ENV = 5.5;
@@ -25,7 +26,9 @@ function standard(col: number, roughness: number, opts: { metalness?: number; em
   const m = new THREE.MeshStandardMaterial({ color: col, roughness, metalness: opts.metalness ?? 0, side: THREE.DoubleSide });
   m.envMapIntensity = ENV;
   m.emissive = new THREE.Color(col);
-  m.emissiveIntensity = opts.emissive ?? 0.22;
+  // self-lit tints were authored against the reference exposure — rebased so
+  // they render identically at the 1.0 anchor (see config.EXPOSURE_REBASE)
+  m.emissiveIntensity = (opts.emissive ?? 0.22) * EXPOSURE_REBASE;
   return m;
 }
 
@@ -74,7 +77,7 @@ function wallNodes(kind: WallKind): WallNodes {
   const mottle = mx_noise_float(positionWorld.mul(0.12)).mul(0.04).add(1);
   const tinted = materialColor.mul(pattern).mul(mottle);
   // self-lit body tint (the world's ambient is near-zero) so shaded façades read.
-  g = { color: tinted as WallNodes["color"], emissive: tinted.mul(float(0.3)) as WallNodes["emissive"] };
+  g = { color: tinted as WallNodes["color"], emissive: tinted.mul(float(0.3 * EXPOSURE_REBASE)) as WallNodes["emissive"] };
   wallNodeCache.set(kind, g);
   return g;
 }
@@ -112,6 +115,12 @@ export function buildCityGenMaterials(): Record<string, THREE.Material> {
     // ground-floor base tones
     "base.stoop": standard(0xa89e8c, 0.82),
     "citygen.door": standard(0x53382c, 0.55, { emissive: 0.12 }),
+    // operable front-door LEAF — same look as citygen.door but its OWN id +
+    // material instance: mergePanels buckets it into a dedicated sub-mesh (named
+    // "citygen.doorleaf" by assembleBuilding) that the ring runtime finds/hides
+    // when the player opens a door with E, and the dynamic swinging leaf reuses
+    // this shared material so baked + live leaves match exactly.
+    "citygen.doorleaf": standard(0x53382c, 0.55, { emissive: 0.12 }),
     "citygen.room": standard(0x171922, 0.9, { emissive: 0.05 }),
     "citygen.awn": standard(0x8a3b34, 0.7, { emissive: 0.2 }),    // storefront awning
     "citygen.sign": standard(0x2c2f36, 0.6, { emissive: 0.28 }),  // shop signband

@@ -152,6 +152,17 @@ export function pickName(): string {
   return pickGeneratedName();
 }
 
+/**
+ * A real, player-chosen name is on disk from a prior visit — the boot can skip
+ * the name gate and drop straight in. Fun/generated names never count (they're
+ * re-rolled every load), so a returning player who never picked one still gets
+ * the gate.
+ */
+export function hasChosenName(): boolean {
+  if (localStorage.getItem(PLAYER_NAME_KIND_KEY) !== CUSTOM_NAME_KIND) return false;
+  return !needsFunName(cleanName(localStorage.getItem(PLAYER_NAME_KEY) ?? ""));
+}
+
 function rosterAvatar(id: number, raw: unknown): AvatarTraits {
   if (raw) {
     const traits = normalizeAvatarTraits(raw);

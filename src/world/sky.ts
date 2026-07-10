@@ -31,7 +31,7 @@ import { BAY_LIGHTS_INTENSITY } from "./bayLights"
 import { GOLDEN_GATE_LIGHTS_INTENSITY } from "./goldenGateLights"
 import { SUTRO_LIGHTS_INTENSITY } from "./sutroTower"
 import { STREET_LAMPS_INTENSITY } from "./streetLamps"
-import { LIGHT_SCALE, WORLD_TUNING } from "../config"
+import { DRAW_BASELINE, EXPOSURE_REBASE, LIGHT_SCALE, WORLD_TUNING } from "../config"
 import { tunables } from "../core/persist"
 import {
   sanFranciscoCivilNow,
@@ -71,8 +71,25 @@ export const SKY_TUNING = tunables("sky", {
     max: 2.5,
     step: 0.05,
     label: "night brightness"
-  }
+  },
+  // --- day grade: how much light the daytime scene actually receives. The
+  // renderer exposure (RENDER_TUNING, anchored at 1.0) is the FIXED global
+  // anchor — night, emissives (LIGHT_SCALE) and the sky dome are all balanced
+  // against it — so where daylight lands on the ACES curve is set HERE, not
+  // with the exposure slider. At the historical rig (sun 13, fill 1.8 in
+  // today's units) the sunlit 18% grey card measured ~+2 stops above
+  // photographic neutral: everything over ~30% albedo mashed together on the
+  // ACES shoulder (the washed pastel noon, dead exposure slider). 3.6/0.9
+  // lands the grey card ~+0.8 stop — still a sunny grade, but with real tonal
+  // separation. Referee: "/" grey cards + tools/calibration-probe.mjs.
+  sunDay: { v: 3.6, min: 0.6, max: 16, step: 0.1, label: "sun strength" },
+  hemiDay: { v: 0.9, min: 0, max: 2.6, step: 0.05, label: "day sky fill" }
 })
+
+// The dome/IBL counter-boost: authored 0..1 sky colours were graded to read
+// as-authored under the reference exposure (7 ≈ 1/0.13 pre-rebase, carried
+// through the exposure re-anchor so the dome renders identically).
+const SKY_DOME_BOOST = 7.0 * EXPOSURE_REBASE
 
 // Live light direction (world space, pointing toward the dominant light — the sun
 // by day, the moon by night). Mutated by Sky; other modules (water) hold a
@@ -115,7 +132,7 @@ const smooth01 = (a: number, b: number, x: number) => {
   return t * t * (3 - 2 * t)
 }
 
-// three-way palette blend for the JS-side lights/fog (shader does its own)
+// three-way palette blend for the JS-side lights (shader does its own)
 const blend3 = (() => {
   const tmp = new THREE.Color()
   return (
@@ -144,28 +161,29 @@ const PALETTE = {
     day: new THREE.Color(0x9c8468),
     gold: new THREE.Color(0x4a3f42),
     night: new THREE.Color(0x30364a)
-  },
-  // fog tracks the sky's *horizon* tint per phase so the haze band reads as the
-  // same air as the dome, not a dark smudge in front of it. The old gold/night
-  // values were near-black cool tones while the dusk horizon is warm — against
-  // a low sun that made distant geometry fade to black. These mirror
-  // the shader horizon colours (warm dusty rose at golden hour, a moonlit
-  // blue-grey after dark) so far tiles melt into the sky instead of silhouetting.
-  fog: {
-    day: new THREE.Color(0xccdae2),
-    gold: new THREE.Color(0xc9a794),
-    night: new THREE.Color(0x475369)
-  },
-  // Directional sun-glow the fog picks up when you look toward the sun: the marine
-  // haze scatters sunlight, so it warms to gold on the sunward side and stays the
-  // neutral `fog` tint (a moonlit blue-grey after dark) away from it. Applied by an
-  // amount that's near-zero at night, so night fog just reads bluish.
-  fogGlow: {
-    day: new THREE.Color(0xe9d6b4),
-    gold: new THREE.Color(0xf4b878),
-    night: new THREE.Color(0x000000)
   }
 }
+
+// ---------------------------------------------------------------------------
+// Fog constants. The five expressive controls (height, density, billow, drift,
+// haze) live in WORLD_TUNING; everything below is fixed shape/calibration.
+// ---------------------------------------------------------------------------
+// Fog colour: plain white, the reference from three's webgpu_custom_fog example.
+// No phase tint, no sun-glow, no mixing — colour treatment may return later.
+const FOG_COLOR = new THREE.Color(0xd0dee7)
+const FOG_BASE = -30 // bank floor, world-Y m (fills everything below)
+const FOG_SOFTNESS = 45 // top-edge softness the billow noise modulates, m
+const FOG_NOISE_SCALE = 0.0026 // billow feature size, 1/m
+const FOG_NEAR_FADE = 60 // clear bubble around the camera, m
+// marine-field density multipliers: coast/Gate get PEAK× bank density, the
+// sheltered east FLOOR×.
+const FOG_MARINE_FLOOR = 0.3
+const FOG_MARINE_PEAK = 1.05
+// far horizon veil — the unified far-cull. Hand-tuned at DRAW_BASELINE
+// (applyFogParams rescales start/softness with the draw-distance slider).
+const FOG_HORIZON = 1.0
+const FOG_HORIZON_START = 600
+const FOG_HORIZON_SOFTNESS = 550
 
 /**
  * A custom analytic sky driving both the backdrop and the image-based lighting.
@@ -210,32 +228,16 @@ export class Sky {
   // sky shader uniforms
   #uSun = uniform(new THREE.Vector3(0, 1, 0))
   #uNightLift = uniform(SKY_TUNING.values.nightBrightness)
-  #fogColor = new THREE.Color(0xc6d6df)
-  #uFogColor = uniform(this.#fogColor.clone())
+  // the five fog controls (uniforms so the "/" panel edits land live); the rest
+  // of the fog shape is the FOG_* constants above. Density + horizon start/softness
+  // are draw-distance-scaled in applyFogParams, hence uniforms too.
   #uFogDensity = uniform(WORLD_TUNING.values.fog)
-  #uFogBase = uniform(WORLD_TUNING.values.fogBase)
   #uFogTop = uniform(WORLD_TUNING.values.fogTop)
   #uFogBank = uniform(WORLD_TUNING.values.fogBank)
-  #uFogSoftness = uniform(WORLD_TUNING.values.fogSoftness)
   #uFogNoise = uniform(WORLD_TUNING.values.fogNoise)
-  #uFogScale = uniform(WORLD_TUNING.values.fogScale)
   #uFogDrift = uniform(WORLD_TUNING.values.fogDrift)
-  #uFogStart = uniform(WORLD_TUNING.values.fogStart)
-  #uFogMarine = uniform(WORLD_TUNING.values.fogMarine)
-  #uFogFloor = uniform(WORLD_TUNING.values.fogFloor)
-  #uFogPeak = uniform(WORLD_TUNING.values.fogPeak)
-  #uFogHorizon = uniform(WORLD_TUNING.values.fogHorizon)
-  #uFogHorizonStart = uniform(WORLD_TUNING.values.fogHorizonStart)
-  #uFogHorizonSoftness = uniform(WORLD_TUNING.values.fogHorizonSoftness)
-  // reference near-white marine base (three's webgpu_custom_fog groundColor). The
-  // ground bank lerps white → phase-atmospheric by `fogTint`; the far veil always
-  // stays atmospheric so distant geometry melts into the sky, not into a white band.
-  #uFogWhite = uniform(new THREE.Color(0xd0dee7))
-  #uFogTint = uniform(WORLD_TUNING.values.fogTint)
-  // directional sun-glow tint (warms the fog toward the sun) — see PALETTE.fogGlow
-  #fogGlow = new THREE.Color(0x000000)
-  #uFogGlow = uniform(this.#fogGlow.clone())
-  #uFogGlowAmt = uniform(0)
+  #uFogHorizonStart = uniform(FOG_HORIZON_START)
+  #uFogHorizonSoftness = uniform(FOG_HORIZON_SOFTNESS)
   #fogNode: N | null = null
 
   // night-only brightness multiplier (the "/" panel's night brightness slider);
@@ -356,8 +358,8 @@ export class Sky {
    * carries the sun, exactly like the old PMREM bake with `uDisc = 0` — and instead
    * softens toward the hemispheric mean as `soften` (env roughness level) rises,
    * standing in for the prefiltered-mip blur the PMREM chain used to provide.
-   * Output counters the photometric exposure (×7) so authored 0..1 colours read as
-   * authored.
+   * Output counters the reference exposure (SKY_DOME_BOOST) so authored 0..1
+   * colours read as authored.
    */
   #skyRadiance(d: N, opts: { pointFeatures: boolean; soften?: N }): N {
     const uSun = this.#uSun as N
@@ -451,10 +453,10 @@ export class Sky {
         const mean = mix(hor, zen, 0.35).mul(
           mix(float(1), float(0.5), smoothstep(0.2, -0.6, d.y))
         )
-        return mix(sky, mean, saturate(opts.soften).mul(0.8)).mul(7.0)
+        return mix(sky, mean, saturate(opts.soften).mul(0.8)).mul(SKY_DOME_BOOST)
       }
 
-      return sky.mul(7.0)
+      return sky.mul(SKY_DOME_BOOST)
     })()
   }
 
@@ -506,18 +508,16 @@ export class Sky {
 
   // Structure follows three's `webgpu_custom_fog` example (a ground-hugging band
   // with a noise-wobbled top, unioned with distance haze) but adds the SF marine
-  // field so density varies by region, and keeps a near-fade + a phase-tracked,
-  // brighter-when-pooled fog colour.
+  // field so density varies by region, and keeps a near-fade. Fog colour is plain
+  // white (FOG_COLOR) — no mixing.
   #buildFogNode(): N {
     const dist = cameraPosition.sub(positionWorld).length()
-    const base = this.#uFogBase as N
+    const base = float(FOG_BASE) as N
     const y = (positionWorld as N).y
 
-    // marine field → per-region density multipliers. `fogMarine` (0..1) lerps
-    // between "uniform fog everywhere" and "full coast-heavy gradient".
-    const marine = this.#marineField()
-    const region = mix(float(1), marine, this.#uFogMarine as N)
-    const bankScale = mix(this.#uFogFloor as N, this.#uFogPeak as N, region)
+    // marine field → per-region density multipliers (coast/Gate thick, east thin)
+    const region = this.#marineField()
+    const bankScale = mix(float(FOG_MARINE_FLOOR), float(FOG_MARINE_PEAK), region)
     // the distance haze leans coastal (coast fogs sooner) but never below 1× —
     // downtown must still fog out at long range so distant geometry densifies
     // everywhere, not just at the coast.
@@ -526,7 +526,7 @@ export class Sky {
     // animated two-octave volumetric noise (three's built-in fog noise) churns the
     // top of the bank so the marine layer boils and drifts rather than sitting as a
     // flat lid. The drift knob feeds triNoise3D's time so it's one control.
-    const nScale = this.#uFogScale as N
+    const nScale = float(FOG_NOISE_SCALE) as N
     const nTime = time.mul((this.#uFogDrift as N).mul(6))
     const noiseA = triNoise3D((positionWorld as N).mul(nScale), 0.2, nTime)
     const noiseB = triNoise3D(
@@ -536,14 +536,14 @@ export class Sky {
     )
     const fogNoise = noiseA.add(noiseB)
 
-    // ground-hugging band: solid from `fogBase` up, fading out through a noisy top
+    // ground-hugging band: solid from FOG_BASE up, fading out through a noisy top
     // (one-sided — real marine layer fills everything below, no bottom cutoff). The
     // noise raises/lowers the top edge (scaled by edge softness) into drifting wisps.
     const top = (this.#uFogTop as N)
       .add(
         fogNoise
           .sub(0.7)
-          .mul((this.#uFogSoftness as N).mul(0.6))
+          .mul(FOG_SOFTNESS * 0.6)
           .mul(this.#uFogNoise as N) // "billow" slider: 0 = flat lid, 1 = full wisps
       )
       .max(base.add(1))
@@ -552,8 +552,8 @@ export class Sky {
     // never whited out in their own valley — then the bank builds in over ~250 m so
     // you're not walled into dense fog the moment you leave the clear bubble.
     const nearFade = smoothstep(
-      this.#uFogStart as N,
-      (this.#uFogStart as N).add(250),
+      float(FOG_NEAR_FADE) as N,
+      float(FOG_NEAR_FADE + 250) as N,
       dist
     )
     const bankFog = groundRamp
@@ -573,7 +573,7 @@ export class Sky {
       this.#uFogHorizonStart as N,
       (this.#uFogHorizonStart as N).add((this.#uFogHorizonSoftness as N).max(1)),
       dist
-    ).mul(this.#uFogHorizon as N)
+    ).mul(FOG_HORIZON)
 
     // union-composite (probabilistic OR) instead of adding: 1 - ∏(1 - layer). Two
     // moderate layers no longer sum into muddy over-fog in the mid-range, yet where
@@ -587,54 +587,30 @@ export class Sky {
     // gap; the last stretch to the tile edge goes fully opaque.
     const total = clear.oneMinus().clamp(0, 0.997)
 
-    // The pooled ground bank reads brighter and whiter than the distance haze —
-    // a lit marine layer catching skylight, not the horizon smog. Lift the tint
-    // toward luminous white in proportion to how much of the fog here is bank, so
-    // the sea of fog in the valleys glows while far tiles still melt into the
-    // matched horizon colour. (uFogColor already tracks the phase of day, so at
-    // night this lifts a dark base only a little — moody, not glowing.)
-    const bankShare = (bankFog.div(total.max(0.001)).saturate() as N).mul(0.85)
-
-    // Directional sun-glow: the haze scatters sunlight, so it warms toward gold on
-    // the sunward side of the sky and stays the neutral phase tint elsewhere. View
-    // ray · sun direction, sharpened, scaled by a day/gold-weighted amount (≈0 at
-    // night → night fog just reads bluish). Makes far geometry melt into the actual
-    // colour of the sky behind it instead of a flat grey band.
-    const viewDir = (positionWorld as N).sub(cameraPosition).normalize()
-    const sunAlign = saturate(dot(viewDir, this.#uSun as N))
-    const glow = pow(sunAlign as N, float(2.5)).mul(this.#uFogGlowAmt as N) as N
-    const litColor = mix(this.#uFogColor as N, this.#uFogGlow as N, glow as N) as N
-
-    // Bank colour = the reference near-white marine base with a slider-controlled
-    // amount of the phase-atmospheric `litColor` bled in (fogTint: 0 = pure white,
-    // 1 = fully atmospheric). The FAR end keeps pure `litColor` so distant geometry
-    // melts into the actual sky; the pooled ground bank glows luminous white (lifted
-    // a touch for a lit-marine-layer feel). `bankShare` crossfades between them.
-    const bankBase = mix(this.#uFogWhite as N, litColor, this.#uFogTint as N) as N
-    const bankBright = bankBase.mul(1.12).add(vec3(0.02, 0.03, 0.04)) as N
-    const fogCol = mix(litColor, bankBright, bankShare as N)
-
-    return tslFog(fogCol as N, total as N)
+    // fog colour is authored against the reference exposure like everything
+    // unlit — rebased so it renders identically at the 1.0 anchor
+    return tslFog(
+      vec3(FOG_COLOR.r, FOG_COLOR.g, FOG_COLOR.b).mul(EXPOSURE_REBASE) as N,
+      total as N
+    )
   }
 
   applyFogParams() {
     const v = WORLD_TUNING.values
-    this.#uFogDensity.value = v.fog
-    this.#uFogBase.value = v.fogBase
+    // The distance components (exp² haze + horizon veil) are hand-tuned at
+    // DRAW_BASELINE so the veil closes just inside the tile edge. Scale them by
+    // the master draw-distance slider so the visibility edge tracks it: veil
+    // start/softness stretch with k, haze density shrinks by 1/k (exp² fog —
+    // constant d·density keeps the same opacity at the scaled distance). The
+    // ground marine layer (base/top/bank/…) is height-based and stays put.
+    const k = v.radius / DRAW_BASELINE
+    this.#uFogDensity.value = v.fog / k
     this.#uFogTop.value = v.fogTop
     this.#uFogBank.value = v.fogBank
-    this.#uFogSoftness.value = v.fogSoftness
     this.#uFogNoise.value = v.fogNoise
-    this.#uFogScale.value = v.fogScale
     this.#uFogDrift.value = v.fogDrift
-    this.#uFogStart.value = v.fogStart
-    this.#uFogMarine.value = v.fogMarine
-    this.#uFogFloor.value = v.fogFloor
-    this.#uFogPeak.value = v.fogPeak
-    this.#uFogHorizon.value = v.fogHorizon
-    this.#uFogHorizonStart.value = v.fogHorizonStart
-    this.#uFogHorizonSoftness.value = v.fogHorizonSoftness
-    this.#uFogTint.value = v.fogTint
+    this.#uFogHorizonStart.value = FOG_HORIZON_START * k
+    this.#uFogHorizonSoftness.value = FOG_HORIZON_SOFTNESS * k
     this.#scene.fog = null
     this.#scene.fogNode = v.fogEnabled ? this.#fogNode : null
   }
@@ -642,6 +618,13 @@ export class Sky {
   /** Environment radiance for the IBL: no point features, roughness-softened. */
   envRadiance(dir: N, level: N): N {
     return this.#skyRadiance(dir, { pointFeatures: false, soften: level })
+  }
+
+  /** Re-run the sun/hemi pass after a day-grade tunable (sunDay/hemiDay)
+   *  changes — the "/" panel calls this so the sliders re-grade live even
+   *  while the time of day is pinned. */
+  applyLightGrade() {
+    this.#applySun()
   }
 
   /** Pin a fixed hour on today's SF calendar date. Stops tracking the real
@@ -720,9 +703,11 @@ export class Sky {
     const goldW = (1 - dayW) * (1 - nightW)
     const lowSunW = smooth01(-1, 9, -elevation)
 
-    // key light: the sun while it's up (photometric ~100 at noon, dimming and
-    // warming toward the horizon), handed over to a cold full moon at night —
-    // bright enough to read the player by, scaled by the night brightness slider
+    // key light: the sun while it's up (sunDay at noon — see the day-grade
+    // comment on SKY_TUNING — dimming and warming toward the horizon), handed
+    // over to a cold full moon at night — bright enough to read the player by,
+    // scaled by the night brightness slider. Moon/twilight terms carry the
+    // exposure re-anchor factor; the day terms are the live day-grade sliders.
     const nb = this.#nightLift
     const lowSunLift = 1 + (nb - 1) * lowSunW
     const sinEl = Math.sin(THREE.MathUtils.degToRad(elevation))
@@ -731,16 +716,18 @@ export class Sky {
       this.sun.color
         .set(0xffb072)
         .lerp(WARM_SUN, transmittance)
-      this.sun.intensity = 100 * transmittance
+      this.sun.intensity = SKY_TUNING.values.sunDay * transmittance
       SUN_DIR.copy(this.#sunVec)
     } else {
       this.sun.color.set(0xa8bfe6)
-      this.sun.intensity = 6.2 * lowSunLift * smooth01(1.5, 10, -elevation)
+      this.sun.intensity =
+        6.2 * EXPOSURE_REBASE * lowSunLift * smooth01(1.5, 10, -elevation)
       SUN_DIR.copy(this.#sunVec).negate() // the moon is the light source now
     }
 
     this.hemi.intensity =
-      14 * dayW + 3.8 * lowSunLift * goldW + 3.1 * lowSunLift * nightW
+      SKY_TUNING.values.hemiDay * dayW +
+      EXPOSURE_REBASE * lowSunLift * (3.8 * goldW + 3.1 * nightW)
     blend3(
       this.hemi.color,
       PALETTE.hemiSky.day,
@@ -759,29 +746,6 @@ export class Sky {
       goldW,
       nightW
     )
-    blend3(
-      this.#fogColor,
-      PALETTE.fog.day,
-      PALETTE.fog.gold,
-      PALETTE.fog.night,
-      dayW,
-      goldW,
-      nightW
-    )
-    ;(this.#uFogColor.value as THREE.Color).copy(this.#fogColor)
-    // directional sun-glow tint + how strongly to apply it (rich at golden hour, a
-    // little by day, ~nil at night so the fog stays cool blue-grey after dark)
-    blend3(
-      this.#fogGlow,
-      PALETTE.fogGlow.day,
-      PALETTE.fogGlow.gold,
-      PALETTE.fogGlow.night,
-      dayW,
-      goldW,
-      nightW
-    )
-    ;(this.#uFogGlow.value as THREE.Color).copy(this.#fogGlow)
-    this.#uFogGlowAmt.value = dayW * 0.4 + goldW * 0.85
 
     // the crown display holds its proportion to the ambient light: brilliant at
     // noon, eased down after dark so emissive landmarks do not blow out

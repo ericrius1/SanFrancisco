@@ -23,7 +23,7 @@ import { buildCarMesh, CarController } from "../vehicles/car";
 import { buildPlaneMesh, collectPlaneAnim, FlyController, type PlaneAnim } from "../vehicles/plane";
 import { buildBoatMesh, buildSpeedboatMesh, BoatController, BOAT_TUNING, SPEEDBOAT_TUNING, type BoatSailRig } from "../vehicles/boat";
 import { buildDroneMesh, DroneController } from "../vehicles/drone";
-import { buildBoardMesh, animateBoard, BoardController, BOARD_TUNING, type BoardConfig } from "../vehicles/board";
+import { buildBoardMesh, animateBoard, updateBoardSurface, BoardController, BOARD_TUNING, type BoardConfig } from "../vehicles/board";
 import { buildBirdMesh, BirdController } from "../vehicles/bird";
 
 const V = {
@@ -474,6 +474,11 @@ export class Player {
     this.meshes.board = next;
     setEmbodimentVisible(next, this.mode === "board");
     if (this.mode === "board") this.#lightPool.claim(next);
+  }
+
+  /** Lightweight local-only preview used while the deck XY pad is held. */
+  previewBoardSurface(config: BoardConfig) {
+    updateBoardSurface(this.meshes.board, config);
   }
 
   /**

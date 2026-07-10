@@ -292,6 +292,23 @@ export class DebugPanel {
       onChange: (_key, value) => this.#setFoliageVisible(Boolean(value))
     });
 
+    // MASTER draw distance — one top-level slider for how far the world draws.
+    // Drives the tile streaming radii (unload trails load by a fixed hysteresis
+    // margin so tiles never thrash at the boundary), rescales the distance fog so
+    // the far-cull veil closes just inside the new edge (sky.applyFogParams reads
+    // the radius), and the citygen ring derives its chunk reach from it each scan.
+    // forceScan makes it take effect now instead of on the next 30-frame scan.
+    WORLD_TUNING.bind(pane, {
+      keys: ["radius"],
+      onChange: (key, value) => {
+        if (key !== "radius") return;
+        CONFIG.tileLoadRadius = value as number;
+        CONFIG.tileUnloadRadius = (value as number) + 400;
+        this.#tiles?.forceScan();
+        this.#sky.applyFogParams();
+      }
+    });
+
     // basics live at the root — the handful of things touched every session;
     // everything else tucks into the collapsed "advanced" folder below.
     // proxy so tweakpane's slider step never quantizes the live cycle clock
@@ -337,25 +354,7 @@ export class DebugPanel {
 
     const fog = pane.addFolder({ title: "fog" });
     WORLD_TUNING.bind(fog, {
-      keys: [
-        "fogEnabled",
-        "fogTint",
-        "fogBase",
-        "fogTop",
-        "fogBank",
-        "fogSoftness",
-        "fogNoise",
-        "fogScale",
-        "fogDrift",
-        "fogStart",
-        "fogMarine",
-        "fogFloor",
-        "fogPeak",
-        "fog",
-        "fogHorizon",
-        "fogHorizonStart",
-        "fogHorizonSoftness"
-      ],
+      keys: ["fogEnabled", "fogTop", "fogBank", "fogNoise", "fogDrift", "fog"],
       onChange: () => this.#sky.applyFogParams()
     });
 
@@ -374,12 +373,20 @@ export class DebugPanel {
 
     const lighting = advanced.addFolder({ title: "lighting" });
     RENDER_TUNING.bind(lighting, {
-      keys: ["exposure"],
+      // greyCards is a persisted toggle only — main's tick polls the live value
+      // and poses the calibration chart (src/ui/calibrationChart.ts).
+      keys: ["exposure", "greyCards"],
       onChange: (key, value) => {
         if (key === "exposure") {
           this.#renderer.toneMappingExposure = value as number;
         }
       }
+    });
+    // day grade: where daylight lands on the ACES curve (sun key + sky fill).
+    // Read by #applySun — re-run it so a drag re-grades even with time pinned.
+    SKY_TUNING.bind(lighting, {
+      keys: ["sunDay", "hemiDay"],
+      onChange: () => this.#sky.applyLightGrade()
     });
 
     const render = advanced.addFolder({ title: "render" });
@@ -393,20 +400,6 @@ export class DebugPanel {
     // collider x-ray: persisted toggle only — main's tick polls the live value
     // each frame, gathers active colliders and drives the overlay.
     RENDER_TUNING.bind(render, { keys: ["colliderDebug"] });
-
-    // draw distance: one slider drives both streaming radii (unload trails load by a
-    // fixed hysteresis margin so tiles never thrash at the boundary). forceScan makes
-    // the change take effect immediately instead of on the next 30-frame scan
-    const world = advanced.addFolder({ title: "draw distance" });
-    WORLD_TUNING.bind(world, {
-      keys: ["radius"],
-      onChange: (key, value) => {
-        if (key !== "radius") return;
-        CONFIG.tileLoadRadius = value as number;
-        CONFIG.tileUnloadRadius = (value as number) + 400;
-        this.#tiles?.forceScan();
-      }
-    });
 
     // foliage detail knobs (the master on/off lives at the very top of the pane).
     const foliage = advanced.addFolder({ title: "foliage" });
@@ -430,9 +423,10 @@ export class DebugPanel {
       }
     });
 
-    // procedural building streaming (src/world/citygen). The ring reads these live
-    // each scan, so no onChange side-effect is needed — drag + watch the fps counter
-    // and the near-detail / far-chunk band move.
+    // procedural building DETAIL (src/world/citygen) — how many nearby buildings get
+    // the full grammar mesh. Reach comes from the top-level draw-distance slider.
+    // The ring reads these live each scan, so no onChange side-effect is needed —
+    // drag + watch the fps counter and the near-detail band move.
     const citygenF = advanced.addFolder({ title: "buildings (citygen)", expanded: false });
     CITYGEN_TUNING.bind(citygenF, { onChange: () => {} });
 

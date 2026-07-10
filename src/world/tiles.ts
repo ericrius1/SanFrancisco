@@ -80,6 +80,9 @@ const MAX_IN_FLIGHT = 4;
 // raised in-flight cap while the player is moving fast (see #fastStream) — at
 // plane/boost speed the ~1150m fog veil can otherwise be outrun before tiles land
 const MAX_IN_FLIGHT_FAST = 6;
+// boot turbo (behind the opaque loading cover): saturate the network + decode
+// pool — nothing is on screen, so decode-queue pressure can't hitch anything
+const MAX_IN_FLIGHT_TURBO = 8;
 // meshopt decompression workers: without them decodeGltfBufferAsync runs the WASM
 // decode synchronously on the main thread — the biggest single hitch per tile load
 MeshoptDecoder.useWorkers(4);
@@ -250,6 +253,9 @@ export class TileStreamer {
   #slotPool: FacadeSlot[] = [];
   #aliveW = 4;
 
+  // landmarks GLB still in flight (counts toward `busy` for the boot settle gate)
+  #landmarksPending = false;
+
   // terrain chunks: 5×5 grid, loaded/unloaded by player distance
   #terrainEntries: { name: string; cx: number; cz: number }[] = [];
   #terrainPending = new Set<string>();
@@ -274,7 +280,9 @@ export class TileStreamer {
       this.#aliveW = Math.max(this.#aliveW, t.b);
     }
     // landmarks always resident (includes GG bridge at ~0.8 MB)
+    this.#landmarksPending = true;
     this.#loader.load("/tiles/landmarks.glb", (gltf) => {
+      this.#landmarksPending = false;
       gltf.scene.traverse((o) => {
         const mesh = o as THREE.Mesh;
         if (!mesh.isMesh) return;
@@ -296,6 +304,10 @@ export class TileStreamer {
       if (goldenGateRoad) gltf.scene.add(goldenGateRoad);
       this.landmarks = gltf.scene;
       this.#scene.add(gltf.scene);
+    }, undefined, (err) => {
+      // missing landmarks never wedge the boot settle gate (see `busy`)
+      this.#landmarksPending = false;
+      console.warn("[tiles] landmarks unavailable", err);
     });
 
     // Pre-compute the world-space centre of each 5×5 terrain chunk so
@@ -327,7 +339,28 @@ export class TileStreamer {
     ];
   }
 
-  update(px: number, pz: number, highUp = false) {
+  /**
+   * Outstanding streaming work, for the boot settle gate: queued/in-flight
+   * loads, parsed-but-unfinalized tiles, meshes still attaching, pending
+   * disposals, terrain chunks and the landmarks GLB. Reports 1 before the
+   * first scan so a just-constructed streamer never reads as settled.
+   * Intentionally excludes #deferred — that's park detail held back by design
+   * while the player is high, not work in progress.
+   */
+  get busy(): number {
+    if (!this.#hasScanned) return 1;
+    return (
+      this.#queue.length +
+      this.#pending.size +
+      this.#ready.length +
+      this.#attaching.length +
+      this.#unloads.size +
+      this.#terrainPending.size +
+      (this.#landmarksPending ? 1 : 0)
+    );
+  }
+
+  update(px: number, pz: number, highUp = false, turbo = false) {
     this.#tick++;
     this.#px = px;
     this.#pz = pz;
@@ -336,7 +369,7 @@ export class TileStreamer {
     if (this.#hasPrevPos) {
       const speed = Math.hypot(px - this.#prevPx, pz - this.#prevPz) * 60;
       this.#fastStream = this.#fastStream ? speed > 28 : speed > 40;
-      this.#maxInFlight = this.#fastStream ? MAX_IN_FLIGHT_FAST : MAX_IN_FLIGHT;
+      this.#maxInFlight = turbo ? MAX_IN_FLIGHT_TURBO : this.#fastStream ? MAX_IN_FLIGHT_FAST : MAX_IN_FLIGHT;
     }
     this.#prevPx = px;
     this.#prevPz = pz;
@@ -354,8 +387,19 @@ export class TileStreamer {
     // building-tile scan: every 30 ticks (~0.5s) normally, every 10 while
     // #fastStream — otherwise plane/boost speed can outrun the ~1150m fog veil
     // and tiles pop in inside visible range
-    if (this.#tick % (this.#fastStream ? 10 : 30) === 1) this.#scan(px, pz);
-    if (this.#tick % 60 === 2) this.#scanTerrain(px, pz);
+    if (this.#tick % (turbo ? 5 : this.#fastStream ? 10 : 30) === 1) this.#scan(px, pz);
+    if (this.#tick % (turbo ? 15 : 60) === 2) this.#scanTerrain(px, pz);
+    // TURBO (boot, behind the opaque loading cover): nothing on screen, so
+    // per-frame smoothness doesn't matter — drain finalizes/attaches/disposals
+    // under a flat ms budget instead of one per frame, and let the scan above
+    // run hotter. The cover only lifts once `busy` reaches 0 (see main.ts).
+    if (turbo) {
+      const deadline = performance.now() + 10;
+      while (performance.now() < deadline) {
+        if (!this.#drainAttach() && !this.#drainReady() && !this.#drainUnload()) break;
+      }
+      return;
+    }
     // one mesh attach (GPU upload) OR one finalize OR one dispose per frame,
     // so tile streaming costs stay flat instead of spiking when loads land in
     // bursts. Exception: while #catchingUp, drain up to 4/frame so a
@@ -669,8 +713,8 @@ export class TileStreamer {
     this.#deferred.clear();
   }
 
-  /** Dispose one out-of-range tile per frame. */
-  #drainUnload() {
+  /** Dispose one out-of-range tile per call. Returns false when idle. */
+  #drainUnload(): boolean {
     const loadR2 = CONFIG.tileLoadRadius * CONFIG.tileLoadRadius;
     for (const key of this.#unloads) {
       this.#unloads.delete(key);
@@ -680,8 +724,9 @@ export class TileStreamer {
       const d2 = (this.#px - cx) * (this.#px - cx) + (this.#pz - cz) * (this.#pz - cz);
       if (d2 < loadR2) continue;
       this.#unloadTile(key);
-      return;
+      return true;
     }
+    return false;
   }
 
   #unloadTile(key: string) {

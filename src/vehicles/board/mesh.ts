@@ -8,6 +8,7 @@ import {
   type BoardConfig,
   type BoardShape
 } from "./config";
+import { paintBoardSurface } from "./surfaceTexture";
 
 /**
  * Hoverboard, front is local -Z. The deck is a real silhouette now — a closed
@@ -143,6 +144,32 @@ function kickLift(p: Profile, z: number): number {
   return u * u * (z < 0 ? p.noseKick : p.tailKick);
 }
 
+/** A bent inset copy of the deck cap with stable full-range UVs. */
+function topGeometry(outline: THREE.Vector2[], p: Profile, scaleX: number, scaleZ: number, y: number) {
+  const inset = outline.map((v) => new THREE.Vector2(v.x * scaleX, v.y * scaleZ));
+  const top = new THREE.ShapeGeometry(new THREE.Shape(inset));
+  top.rotateX(Math.PI / 2);
+  const halfW = Math.max(...p.pts.map(([, w]) => w)) * scaleX;
+  const halfL = p.halfL * scaleZ;
+  const pos = top.attributes.position;
+  const uv = top.attributes.uv;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const z = pos.getZ(i);
+    pos.setY(i, y + kickLift(p, z));
+    uv.setXY(i, x / (halfW * 2) + 0.5, 1 - (z / (halfL * 2) + 0.5));
+  }
+  pos.needsUpdate = true;
+  uv.needsUpdate = true;
+  top.computeVertexNormals();
+  return top;
+}
+
+type BoardSurfaceState = {
+  canvas: HTMLCanvasElement;
+  texture: THREE.CanvasTexture;
+};
+
 export type BoardAnim = {
   spinners: { obj: THREE.Object3D; axis: "y" | "z"; rate: number }[];
   pulseMat: THREE.MeshBasicMaterial;
@@ -166,6 +193,9 @@ export function buildBoardMesh(config?: BoardConfig): THREE.Group {
 
   const deckMat = mat(new THREE.MeshLambertMaterial({ color: deckColor }));
   const trimMat = mat(new THREE.MeshLambertMaterial({ color: trimColor }));
+  // ShapeGeometry's +Z face points downward after our +90° X rotation. The
+  // inset top layers are deliberately double-sided so their upward face reads.
+  const frameMat = mat(new THREE.MeshLambertMaterial({ color: trimColor, side: THREE.DoubleSide }));
   const darkMat = mat(new THREE.MeshLambertMaterial({ color: 0x262c36 }));
   const glowMat = mat(new THREE.MeshBasicMaterial({ color: new THREE.Color(glowColor).multiplyScalar(LIGHT_SCALE) }));
   // the breathing set (underglow plate + pod rings) gets its own instance so
@@ -197,7 +227,33 @@ export function buildBoardMesh(config?: BoardConfig): THREE.Group {
     for (let i = 0; i < pos.count; i++) pos.setY(i, pos.getY(i) + kickLift(p, pos.getZ(i)));
     deckGeo.computeVertexNormals(); // faceted after the bend — matches the app's stylized look
   }
-  g.add(new THREE.Mesh(deckGeo, deckMat));
+  // ExtrudeGeometry assigns cap groups to material 0 and side/bevel groups to
+  // material 1. The trim/guard therefore reads from the chase camera in every
+  // configuration instead of becoming a no-op when fins and old deck art were off.
+  g.add(new THREE.Mesh(deckGeo, [deckMat, trimMat]));
+
+  // --- full procedural deck skin: deterministic CanvasTexture shared with the
+  // 2D editor preview. It is broad and inset only slightly, so the design is
+  // legible around the rider while a slim trim frame still outlines the deck.
+  const frameGeo = geo(topGeometry(outline, p, 0.98, 0.96, DECK_TOP + 0.006));
+  g.add(new THREE.Mesh(frameGeo, frameMat));
+  const surfaceCanvas = document.createElement("canvas");
+  surfaceCanvas.width = 128;
+  surfaceCanvas.height = 256;
+  paintBoardSurface(surfaceCanvas, cfg);
+  const surfaceTexture = new THREE.CanvasTexture(surfaceCanvas);
+  surfaceTexture.colorSpace = THREE.SRGBColorSpace;
+  surfaceTexture.anisotropy = 4;
+  const surfaceMat = mat(
+    new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      map: surfaceTexture,
+      side: THREE.DoubleSide,
+      toneMapped: false
+    })
+  );
+  const surfaceGeo = geo(topGeometry(outline, p, 0.92, 0.9, DECK_TOP + 0.011));
+  g.add(new THREE.Mesh(surfaceGeo, surfaceMat));
 
   // --- glow rail: one tube riding the rim (follows the kicks). Pushed out
   // along the 2D outward normal so the deck's bevel (which widens the plan by
@@ -263,41 +319,6 @@ export function buildBoardMesh(config?: BoardConfig): THREE.Group {
   bar.position.set(0, kickLift(p, tailZ) + 0.01, tailZ);
   g.add(bar);
 
-  // --- deck art (trim color), sitting just proud of the top face ---
-  const artY = DECK_TOP + 0.007;
-  if (cfg.deco === "stripe") {
-    const s = new THREE.Mesh(geo(new THREE.BoxGeometry(0.12, 0.012, p.halfL * 1.24)), trimMat);
-    s.position.y = artY;
-    g.add(s);
-  } else if (cfg.deco === "chevrons") {
-    const cGeo = geo(new THREE.BoxGeometry(0.26, 0.012, 0.07));
-    for (const cz of [-0.38, 0, 0.38]) {
-      for (const side of [-1, 1]) {
-        const c = new THREE.Mesh(cGeo, trimMat);
-        c.position.set(side * 0.11, artY, cz);
-        c.rotation.y = side * 0.65; // the pair points at the nose
-        g.add(c);
-      }
-    }
-  } else if (cfg.deco === "dots") {
-    const dGeo = geo(new THREE.CylinderGeometry(0.052, 0.052, 0.012, 10));
-    for (let i = 0; i < 5; i++) {
-      const d = new THREE.Mesh(dGeo, trimMat);
-      d.position.set(0, artY, -0.6 + i * 0.3);
-      g.add(d);
-    }
-  } else if (cfg.deco === "comet") {
-    const head = new THREE.Mesh(geo(new THREE.CylinderGeometry(0.09, 0.09, 0.012, 12)), trimMat);
-    head.position.set(0, artY, -0.32);
-    g.add(head);
-    const t1 = new THREE.Mesh(geo(new THREE.BoxGeometry(0.1, 0.012, 0.3)), trimMat);
-    t1.position.set(0, artY, 0.02);
-    g.add(t1);
-    const t2 = new THREE.Mesh(geo(new THREE.BoxGeometry(0.06, 0.012, 0.22)), trimMat);
-    t2.position.set(0, artY, 0.42);
-    g.add(t2);
-  }
-
   // --- tail furniture ---
   if (cfg.fin === "twin") {
     const finGeo = geo(new THREE.BoxGeometry(0.018, 0.16, 0.22));
@@ -357,12 +378,22 @@ export function buildBoardMesh(config?: BoardConfig): THREE.Group {
 
   const anim: BoardAnim = { spinners, pulseMat, pulseBase, lightSpec, lightBase: 10 };
   g.userData.boardAnim = anim;
+  g.userData.boardSurface = { canvas: surfaceCanvas, texture: surfaceTexture } satisfies BoardSurfaceState;
   g.userData.dispose = () => {
     for (const x of geos) x.dispose();
     for (const x of mats) x.dispose();
+    surfaceTexture.dispose();
   };
   // the rider rig is added by Player/remotes (they own and animate the joints)
   return g;
+}
+
+/** Repaint the existing GPU texture in place during a surface-pad drag. */
+export function updateBoardSurface(board: THREE.Group, config: BoardConfig) {
+  const state = board.userData.boardSurface as BoardSurfaceState | undefined;
+  if (!state) return;
+  paintBoardSurface(state.canvas, normalizeBoardConfig(config));
+  state.texture.needsUpdate = true;
 }
 
 /**

@@ -67,13 +67,14 @@ import { createDynamicResolution } from "./render/dynamicRes";
 import { POSTFX_TUNING } from "./render/postfx";
 import { DebugPanel } from "./ui/debug";
 import { ColliderDebug, type DebugBox } from "./ui/colliderDebug";
-import { Net, makeFunName } from "./net/net";
+import { CalibrationChart } from "./ui/calibrationChart";
+import { Net, makeFunName, hasChosenName, pickName } from "./net/net";
 import { RemotePlayers } from "./net/remotes";
 import { Voice } from "./net/voice";
 import { Minimap } from "./ui/minimap";
 import { PlayerLocator } from "./ui/playerLocator";
 import { avatarFromSeed, loadSavedAvatar, randomAvatarTraits, saveAvatarTraits } from "./player/avatar";
-import { boardFromSeed, loadSavedBoard, randomBoardConfig, saveBoardConfig, setLocalBoardConfig } from "./vehicles/board";
+import { boardFromSeed, boardVisualKey, loadSavedBoard, randomBoardConfig, saveBoardConfig, setLocalBoardConfig } from "./vehicles/board";
 import { MENU_MODES, ModeDiscovery, ALL_MODES } from "./player/discovery";
 
 CameraControls.install({ THREE });
@@ -127,6 +128,7 @@ function progress(pct: number, label: string) {
 }
 
 async function boot() {
+  const bootT0 = performance.now();
   progress(8, "reading the map");
   const map = await WorldMap.load();
 
@@ -164,12 +166,18 @@ async function boot() {
   progress(40, "streaming the city");
   const tiles = new TileStreamer(scene);
   await tiles.init(map);
+  // off-boot-path loads (lane markings, the road graph's signals + lamps)
+  // still don't block boot, but the settle gate holds the loading cover until
+  // they land — success OR failure — so they never pop over the revealed city
+  let auxPending = 0;
   let roadMarkings: THREE.Group | null = null;
+  auxPending++;
   void createRoadMarkings(scene, map)
     .then((group) => {
       roadMarkings = group;
     })
-    .catch((err) => console.warn("[roads] lane markings unavailable", err));
+    .catch((err) => console.warn("[roads] lane markings unavailable", err))
+    .finally(() => auxPending--);
 
   const physics = await Physics.create(map, tiles);
 
@@ -275,6 +283,7 @@ async function boot() {
   // without signals but never block boot.
   let trafficLights: TrafficLightView | null = null;
   let streetLamps: StreetLamps | null = null;
+  auxPending++;
   void RoadGraph.load()
     .then((roads) => {
       trafficLights = new TrafficLightView(scene, map, roads);
@@ -283,7 +292,8 @@ async function boot() {
       const sfHooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
       if (sfHooks) Object.assign(sfHooks, { streetLamps });
     })
-    .catch((err: unknown) => console.warn("[traffic] signals unavailable", err));
+    .catch((err: unknown) => console.warn("[traffic] signals unavailable", err))
+    .finally(() => auxPending--);
   let creatures: Creatures | null = null;
   let forest: Forest | null = null;
   // ANIMALS record — populated by the deferred forest module load
@@ -399,6 +409,7 @@ async function boot() {
   scene.add(sutroTower);
   let currentAnimal: AnimalKind | null = null;
   let ridePromptShown = false;
+  let doorPromptShown = false;
   // way high above the ground (plane/drone cruising), ground flora and critters
   // are subpixel — their systems pause. Hysteresis so hill flanks don't flicker it.
   let highUp = false;
@@ -494,13 +505,14 @@ async function boot() {
       hud.message(`You're now ${net.name}`, 2.2);
     }
   );
-  // hoverboard garage: docked next to the avatar toggle. Edits rebuild the
-  // mesh in place, persist, re-voice the hum and broadcast — and sound edits
-  // audition through the real synth path immediately.
+  // Hoverboard lab: pad moves preview only the live texture/audio graph; one
+  // pointer-up commit persists and broadcasts. Audio-only edits skip the mesh
+  // teardown entirely.
   const applyBoardConfig = (config: typeof boardConfig) => {
+    const visualChanged = boardVisualKey(boardConfig) !== boardVisualKey(config);
     boardConfig = config;
     setLocalBoardConfig(config);
-    player.setBoardConfig(config);
+    if (visualChanged) player.setBoardConfig(config);
     vehicleAudio.setBoardStyle(config);
   };
   const boardSelector = new BoardSelector(
@@ -511,10 +523,14 @@ async function boot() {
       applyBoardConfig(config);
       net.setBoard(config);
     },
+    (config, kind) => {
+      if (kind === "surface") player.previewBoardSurface(config);
+      else vehicleAudio.setBoardStyle(config);
+    },
     () => vehicleAudio.previewBoard(),
     () => {
-      // opening the garage on foot hops you onto the board so edits are live
-      if (player.mode === "walk" && !player.riding) player.trySwitch("board");
+      // The object being edited should always be on screen while the lab is open.
+      if (player.mode !== "board" && !player.riding) player.trySwitch("board");
     }
   );
   net.onWelcome = () => {
@@ -1006,6 +1022,9 @@ async function boot() {
   // the tick gathers active colliders and drives it. Scratch arrays reused so an
   // enabled overlay allocates nothing per frame.
   const colliderDebug = new ColliderDebug(scene);
+  // grey-card calibration chart ("/" → advanced → lighting → grey cards): a
+  // camera-locked row of known-albedo spheres for reading the tone grade.
+  const calibrationChart = new CalibrationChart(scene);
   const colliderBoxes: DebugBox[] = [];
   const dbgBaked: { x: number; y: number; z: number; hx: number; hy: number; hz: number; yaw: number; index: boolean }[] = [];
   const dbgWalls: ColliderBox[] = [];
@@ -1068,80 +1087,54 @@ async function boot() {
   // Warm the GPU pipelines while the loading screen still covers the canvas.
   // First render lets the CSM shadow node build its cascade lights (that build
   // changes the scene light set once, and anything compiled before it would
-  // need a second compile after). Then one render with the START mode's meshes
-  // visible compiles that vehicle up front; remaining modes idle-warm below so
-  // Start isn't blocked on all 8. Vehicle lamps come from Player's fixed-size
-  // LightPool (always in the scene), so mode switches stay compile-free once
-  // warmed. Culling is off so meshes parked at the origin still draw.
+  // need a second compile after). Then one render with EVERY mode's meshes
+  // visible compiles all eight vehicles in a single covered pass — the compile
+  // stall lands behind the opaque backdrop where nobody can see it, so the
+  // old post-reveal idle-warm chain (one visible hitch per mode) is gone and
+  // every mode-switch in play is compile-free from the first frame. Vehicle
+  // lamps come from Player's fixed-size LightPool (always in the scene).
+  // Culling is off so meshes parked at the origin still draw.
   progress(88, "warming up the vehicles");
   sky.update(0, camera.position);
   pipeline.render();
-  player.warmup([player.mode]);
+  player.warmup("all");
   fx.prewarm(); // compiles both sprite blend pipelines before gameplay
+  fireworks.prewarm(); // sprite-pool pipeline — was a lazy first-use hitch
+  nature.prewarm(); // procedural audio buffers (contexts stay suspended until a gesture — autoplay policy holds)
+  paintballs.spawn(0, -520, 0, 0, 0, 0, new THREE.Color(PAINT_COLORS[0]), 0); // paintball pipeline
   const unculled: THREE.Object3D[] = [];
-  const startMesh = player.meshes[player.mode];
-  startMesh.traverse((o) => {
-    if (o.frustumCulled) {
-      o.frustumCulled = false;
-      unculled.push(o);
-    }
-  });
+  for (const mesh of Object.values(player.meshes)) {
+    mesh.traverse((o) => {
+      if (o.frustumCulled) {
+        o.frustumCulled = false;
+        unculled.push(o);
+      }
+    });
+  }
   pipeline.render();
-  // one rAF flush is enough for a single-mode compile; no fixed 350ms wait
+  // one rAF flush is enough for the compile submit; no fixed 350ms wait
   await new Promise<void>((r) => requestAnimationFrame(() => r()));
   for (const o of unculled) o.frustumCulled = true;
   player.warmup(); // restore: only the current mode visible
-
-  progress(100, "ready");
-  // Load done: enable Start (form already sits over the idling city), fade the
-  // opaque backdrop and re-focus in case the player clicked away while waiting.
-  startReady = true;
-  startButton.disabled = false;
-  loading.classList.add("ready");
-  focusNameInput();
-
-  // Idle-warm remaining modes one-at-a-time so the first mode-switch is hitch-free
-  // without blocking Start. Keep the current embodiment visible (city is already
-  // on screen behind the gate). Must pipeline.render() while the extra mesh is
-  // drawn — visibility alone does not compile WGSL.
   {
-    const modesLeft: PlayerMode[] = (["walk", "drive", "plane", "boat", "speedboat", "drone", "board", "bird"] as PlayerMode[])
-      .filter((m) => m !== player.mode);
-    const warmNext = () => {
-      const m = modesLeft.shift();
-      if (!m) return;
-      player.warmup([player.mode, m]);
-      const mesh = player.meshes[m];
-      const freed: THREE.Object3D[] = [];
-      mesh.traverse((o) => {
-        if (o.frustumCulled) {
-          o.frustumCulled = false;
-          freed.push(o);
-        }
-      });
-      pipeline.render();
-      requestAnimationFrame(() => {
-        for (const o of freed) o.frustumCulled = true;
-        player.warmup(); // restore current mode only
-        const schedule: (cb: () => void) => void =
-          typeof requestIdleCallback !== "undefined"
-            ? (cb) => requestIdleCallback(cb, { timeout: 2000 })
-            : (cb) => setTimeout(cb, 200);
-        schedule(warmNext);
-      });
-    };
-    (typeof requestIdleCallback !== "undefined"
-      ? (cb: () => void) => requestIdleCallback(cb, { timeout: 3000 })
-      : (cb: () => void) => setTimeout(cb, 500))(warmNext);
+    // underwater ceiling pipeline: visible for two scheduled frames under the
+    // cover (water.update() re-hides it each frame after it draws once)
+    let warmTicks = 0;
+    scheduler.schedule("background", () => {
+      water.underside.visible = true;
+      return ++warmTicks < 2 ? "again" : undefined;
+    });
   }
-  // Deferred module loader — constructs all non-critical systems after the Start
-  // button is visible. Modules are dynamically imported so Vite emits separate
-  // chunks; the world fills while the user types their name. The Start button is
-  // already enabled above so this never blocks first interaction.
-  (async () => {
-    // small stagger so the deferred request doesn't compete with the initial render
-    await new Promise<void>((r) => setTimeout(r, 100));
 
+  // Deferred module construction — still split into separate Vite chunks, but
+  // built BEHIND the opaque cover now instead of after it lifts: the forest,
+  // garden, wildlands and the citygen ring used to pop into the live city
+  // while the player looked at the name gate. The settle gate below holds the
+  // cover (and the Start button) until these exist and the work they queue on
+  // the scheduler has fully drained.
+  progress(92, "growing the parks");
+  let modulesReady = false;
+  void (async () => {
     // Forest + Creatures: ambient wildlife and rideable animals
     const [forestMod, creaturesMod] = await Promise.all([
       import("./gameplay/forest"),
@@ -1170,33 +1163,15 @@ async function boot() {
     const sfHooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
     if (sfHooks) Object.assign(sfHooks, { garden: _garden, wildlands: _wildlands });
 
-    // CityGen: procedural building ring + demo
+    // CityGen: procedural building ring + demo. Awaited (not fire-and-forget)
+    // so modulesReady only flips once the ring exists — its cell builds land in
+    // the scheduler on the next covered tick and keep the settle gate honest.
     const [citygenMod, citygenDemoMod] = await Promise.all([
       import("./world/citygen"),
       import("./world/citygen/demo")
     ]);
     citygen = citygenDemoMod.createCityGenDemo({ scene, map }) as NonNullable<typeof citygen>;
-    citygenMod.createCityGenRing({}, { scene, physics, map, tiles, schedule: scheduler.schedule }).then((r) => { citygenRing.current = r; });
-
-    // Idle prewarms for the lazy first-use hitches the tracer measured:
-    // procedural audio buffers (contexts stay suspended until a real gesture
-    // resumes them — autoplay policy holds) and lazily-compiled render
-    // pipelines (fireworks sprite pool, the underwater ceiling, one paintball).
-    {
-      const idler = typeof requestIdleCallback !== "undefined"
-        ? (cb: () => void) => requestIdleCallback(cb, { timeout: 4000 })
-        : (cb: () => void) => setTimeout(cb, 800);
-      idler(() => {
-        fireworks.prewarm();
-        nature.prewarm();
-        paintballs.spawn(0, -520, 0, 0, 0, 0, new THREE.Color(PAINT_COLORS[0]), 0);
-        let warmTicks = 0;
-        scheduler.schedule("background", () => {
-          water.underside.visible = true; // water.update() re-hides it next frame
-          return ++warmTicks < 2 ? "again" : undefined;
-        });
-      });
-    }
+    citygenRing.current = await citygenMod.createCityGenRing({}, { scene, physics, map, tiles, schedule: scheduler.schedule });
 
     // BehindTheScenes: the "how it was made" reading overlay
     const { BehindTheScenes } = await import("./ui/behindTheScenes");
@@ -1207,17 +1182,96 @@ async function boot() {
       if (open) input.releaseLock();
       else if (!cameraMode) input.requestLock();
     });
-  })().catch((err) => console.warn("[sf] deferred module load failed:", err));
+  })()
+    .catch((err) => console.warn("[sf] deferred module load failed:", err))
+    .finally(() => { modulesReady = true; }); // a failed chunk never wedges the cover
 
+  // ------------------------------------------------------- settle gate
+  // Hold the opaque cover until the world stops moving. Everything above
+  // queued bursty work that used to run visibly behind the translucent name
+  // gate — tile finalizes, citygen assembly, physics body batches, module
+  // construction, streetlight/marking loads. While covered, tick() drains it
+  // all in TURBO (24 ms scheduler budget, hot tile streaming) precisely
+  // because none of it can be seen. Once nothing is outstanding for a
+  // sustained window — which also guarantees every late-added mesh has been
+  // rendered (= compiled) under the cover — the backdrop fades and Start
+  // enables over a city that is already built, warm and idle-smooth.
+  const settleStart = performance.now();
+  console.info(`[boot] core up in ${((settleStart - bootT0) / 1000).toFixed(1)}s — settling the world`);
+  let revealed = false;
+  let quietFrames = 0;
+  let peakRemaining = 0;
+  let settlePct = 88;
+  let settleLabel = "";
   // headless verification, demos and perf runs can't click — skip the gate
+  // (and the settle hold: they measure live-frame behaviour, not boot polish)
   const skipGate = ["autostart", "demo", "profile"].some((k) => new URLSearchParams(location.search).has(k));
-  if (skipGate) loading.classList.add("done");
+  // A returning player who already picked a real name skips the gate: once the
+  // world is ready we drop them straight in under their saved name. Fun/generated
+  // names don't count (re-rolled each load), and the headless/demo (`skipGate`)
+  // and reading-link paths run their own start, so they opt out here.
+  const autoStartSaved = !skipGate && !parseReadLink(location.search) && hasChosenName();
+  const revealWorld = (reason = "settled") => {
+    if (revealed) return;
+    revealed = true;
+    progress(100, "ready");
+    startReady = true;
+    startButton.disabled = false;
+    loading.classList.add("ready");
+    console.info(
+      `[boot] world ${reason} in ${((performance.now() - bootT0) / 1000).toFixed(1)}s` +
+        ` (sched ${scheduler.pending}/${scheduler.waiting} waiting, tiles ${tiles.busy}, modules ${modulesReady}, aux ${auxPending})`
+    );
+    if (autoStartSaved && startGame) {
+      // no click to consume, so pointer lock has no gesture — startGame still
+      // requests it (a no-op if the browser declines; first click re-locks)
+      startGame(pickName());
+      return;
+    }
+    focusNameInput(); // re-focus in case the player clicked away while waiting
+  };
+  // Called once per covered tick, after the scheduler drain. The weights only
+  // shape the progress bar; the gate itself is remaining === 0.
+  const settleTick = () => {
+    if (revealed) return;
+    // pending minus waiting: jobs parked on external state (anti-wedge retries
+    // wait for the player to move — permanent while they idle at spawn) must
+    // not hold the cover; fresh backlog must.
+    const backlog = Math.max(0, scheduler.pending - scheduler.waiting);
+    const remaining = backlog + tiles.busy + (modulesReady ? 0 : 24) + auxPending * 4;
+    peakRemaining = Math.max(peakRemaining, remaining);
+    if (remaining === 0) quietFrames++;
+    else quietFrames = 0;
+    // 15 s cap: a missing chunk or a genuinely slow connection falls back to
+    // the old behaviour (reveal while still streaming) instead of wedging.
+    if (quietFrames >= 30) {
+      revealWorld();
+      return;
+    }
+    if (performance.now() - settleStart > 15000) {
+      revealWorld("reveal-forced (15s cap)");
+      return;
+    }
+    settlePct = Math.min(99, Math.max(settlePct, 88 + Math.round(11 * (1 - remaining / Math.max(1, peakRemaining)))));
+    const label = !modulesReady ? "growing the parks" : tiles.busy > 0 ? "paving the streets" : "settling the city";
+    if (label !== settleLabel) {
+      settleLabel = label;
+      console.info(`[boot] +${((performance.now() - bootT0) / 1000).toFixed(1)}s ${label} (sched ${scheduler.pending}, tiles ${tiles.busy}, aux ${auxPending})`);
+    }
+    progress(settlePct, label);
+  };
+
+  if (skipGate) {
+    loading.classList.add("done");
+    revealWorld("skip-gate");
+  }
 
   // `?read=<modal>[.<sub>]` — a shared "reading" link (e.g. ?read=bts.sound for
   // the soundscape chapter). Drop straight into the reading: no name gate, a fun
   // sample name handed out automatically, and the modal opened on its sub-view.
   // Closing it lands the player in the live city with nothing left to fill in.
   if (parseReadLink(location.search) && startGame) {
+    revealWorld("read-link"); // reading mode starts immediately — the modal covers any late streaming
     startGame(suggestedName, { lock: false });
     openReadLink(); // opens the registered modal + strips ?read= from the URL
   }
@@ -1579,6 +1633,16 @@ async function boot() {
             player.heading = mount.heading;
             player.trySwitch(mount.mode);
             hud.message("Back on board — E to hop off", 2.4);
+          } else if (player.mode === "walk" && citygenRing.current) {
+            // front doors: on foot, E toggles the nearest generated-building
+            // door (the ring owns the state — swing + collider swap live there)
+            const d = citygenRing.current.nearestDoor(player.position);
+            if (d && d.dist < 2.6) {
+              const r = citygenRing.current.toggleDoor(d.id);
+              if (r === "opened") hud.message("Door's open — step inside", 2.4);
+              else if (r === "closed") hud.message("Door closed", 1.6);
+              else if (r === "blocked") hud.message("Step out of the doorway first", 2);
+            }
           }
         }
     }
@@ -1797,8 +1861,9 @@ async function boot() {
     }
     const altitude = player.position.y - map.groundHeight(player.position.x, player.position.z);
     highUp = highUp ? altitude > 110 : altitude > 150;
-    // high over the city streams buildings only — no park lawns / trees uploaded
-    tiles.update(player.position.x, player.position.z, highUp);
+    // high over the city streams buildings only — no park lawns / trees uploaded.
+    // turbo while the loading cover is still up (see the settle gate)
+    tiles.update(player.position.x, player.position.z, highUp, !revealed);
     trafficLights?.update(player.position, performance.now() / 1000);
     streetLamps?.update(player.position);
     abandonedMounts.update(frameDt, player.position);
@@ -1858,8 +1923,19 @@ async function boot() {
         ridePromptShown = true;
       }
       if (!drv && !nearAnimal) ridePromptShown = false;
+      // "open the door" nudge — same one-shot pattern; the ride prompt wins
+      // when both are in range. nearestDoor is alloc-light but not free, so
+      // it runs at most once per frame and only on foot.
+      const door = citygenRing.current?.nearestDoor(player.position) ?? null;
+      const nearClosedDoor = !!door && !door.open && door.dist < 3.2;
+      if (nearClosedDoor && !drv && !nearAnimal && !doorPromptShown) {
+        hud.message("E — open the door", 1.8);
+        doorPromptShown = true;
+      }
+      if (!nearClosedDoor) doorPromptShown = false;
     } else {
       ridePromptShown = false;
+      doorPromptShown = false;
     }
     if (cineHook) {
       cineHook(frameDt); // scripted cinematic owns pose + camera
@@ -1978,12 +2054,17 @@ async function boot() {
     }
 
     syncColliderDebug(); // debug x-ray of active colliders (no-op unless toggled)
+    // grey cards ride the FINAL camera pose (chase or cine hook both settled above)
+    calibrationChart.sync(camera, Boolean(RENDER_TUNING.values.greyCards));
     tracer.end("world");
 
     // Drain deferred bursty work (streamed bodies, citygen assembly, warmups)
     // under a headroom-scaled budget: fast frames catch up, tight frames yield.
+    // Behind the opaque loading cover nothing is visible, so the budget jumps
+    // to 24 ms/frame and the settle gate re-checks after every drain.
     tracer.begin("sched");
-    scheduler.run(frameDt < 1 / 55 ? 3 : frameDt < 1 / 35 ? 1.5 : 0.8);
+    scheduler.run(revealed ? (frameDt < 1 / 55 ? 3 : frameDt < 1 / 35 ? 1.5 : 0.8) : 24);
+    settleTick();
     tracer.end("sched");
 
     input.endFrame();
@@ -2005,8 +2086,13 @@ async function boot() {
     const frameMs = now - lastLoop; // true rAF-to-rAF cadence, incl. render
     lastLoop = now;
     tick();
-    dynRes.sample(frameMs); // step pixel ratio to hold the frame budget
-    tracer.frame(frameMs); // spike log: phases + counters snapshot on bad frames
+    // covered boot frames are deliberately long (turbo drains + compiles) —
+    // keep them out of the res governor's cadence/EMA and the spike log so
+    // the refresh-rate lock and hitch stats only ever see live frames
+    if (revealed) {
+      dynRes.sample(frameMs); // step pixel ratio to hold the frame budget
+      tracer.frame(frameMs); // spike log: phases + counters snapshot on bad frames
+    }
   };
   renderer.setAnimationLoop(loopFn);
   // Deterministic capture: stop the wall-clock loop (and the hidden-tab fallback
@@ -2038,20 +2124,29 @@ async function boot() {
     };
   }
 
-  window.addEventListener("resize", () => {
+  const applyViewportSize = () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     // Keep the governor's CURRENT ratio across resize/fullscreen — not the cap —
     // so a size change doesn't silently undo an active down-step.
     renderer.setPixelRatio(dynRes.ratio);
     renderer.setSize(window.innerWidth, window.innerHeight);
-  });
+  };
+  window.addEventListener("resize", applyViewportSize);
+  // Booting inside a zero-sized viewport (hidden tab, embedded pane still
+  // laying out) leaves a 0×0 swapchain and no `resize` event ever corrects it
+  // — the canvas stays black. Watch the app container itself and re-apply
+  // whenever its box actually changes.
+  new ResizeObserver(() => {
+    const el = renderer.domElement;
+    if (el.clientWidth !== window.innerWidth || el.clientHeight !== window.innerHeight) applyViewportSize();
+  }).observe(app);
 
   console.log("[sf] city online (webgpu)");
 
   const exposeDebugHooks = () => {
     Object.assign(window as never, {
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, splashes, vehicleAudio, swimAudio, nature, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, rocketRiders, boatLaunchers, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, underwater, seaPillars, water, roadMarkings, colliderDebug, FOLIAGE_TUNING, setFoliageVisible }
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, splashes, vehicleAudio, swimAudio, nature, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, rocketRiders, boatLaunchers, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, underwater, seaPillars, water, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, setFoliageVisible }
     });
   };
   if (import.meta.env.DEV || new URLSearchParams(location.search).has("profile")) {

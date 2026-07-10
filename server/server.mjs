@@ -224,7 +224,7 @@ const COLOR_COUNT = 8;
 // defaults, AND the seed draw order are part of the wire contract)
 const BOARD_SHAPES = ["classic", "dart", "manta", "saucer", "twintip"];
 const BOARD_FINS = ["none", "twin", "spoiler", "halo"];
-const BOARD_DECOS = ["clean", "stripe", "chevrons", "dots", "comet"];
+const BOARD_SURFACES = ["aurora", "topo", "terrazzo", "circuit"];
 const BOARD_HUMS = ["hum", "crystal", "deep", "choir", "retro"];
 const BOARD_DECK_COUNT = 8;
 const BOARD_GLOW_COUNT = 8;
@@ -298,7 +298,21 @@ const sanitizeAvatar = (raw) => {
   };
 };
 
-const DEFAULT_BOARD = { shape: "classic", fin: "none", deco: "stripe", deck: 0, trim: 5, glow: 0, hum: "hum", pitch: 0 };
+const DEFAULT_BOARD = {
+  shape: "classic",
+  fin: "none",
+  deck: 0,
+  trim: 5,
+  glow: 0,
+  surface: "aurora",
+  surfaceScale: 52,
+  surfaceWarp: 58,
+  surfaceSeed: 1847,
+  hum: "hum",
+  pitch: 0,
+  soundTone: 50,
+  soundMotion: 50
+};
 
 // identical algorithm + draw order to boardFromSeed in src/vehicles/board/config.ts
 const boardFromSeed = (seed) => {
@@ -312,13 +326,19 @@ const boardFromSeed = (seed) => {
     glow: Math.floor(roll() * BOARD_GLOW_COUNT) % BOARD_GLOW_COUNT,
     shape: pick(BOARD_SHAPES, roll),
     fin: pick(BOARD_FINS, roll),
-    deco: pick(BOARD_DECOS, roll),
+    surface: pick(BOARD_SURFACES, roll),
+    surfaceScale: 22 + Math.floor(roll() * 67),
+    surfaceWarp: 18 + Math.floor(roll() * 73),
+    surfaceSeed: Math.floor(roll() * 65536),
     hum: pick(BOARD_HUMS, roll),
-    pitch: Math.floor(roll() * BOARD_PITCH_COUNT) % BOARD_PITCH_COUNT
+    pitch: Math.floor(roll() * BOARD_PITCH_COUNT) % BOARD_PITCH_COUNT,
+    soundTone: 20 + Math.floor(roll() * 66),
+    soundMotion: 12 + Math.floor(roll() * 77)
   };
 };
 
-const boardKey = (b) => `${b.shape}|${b.fin}|${b.deco}|${b.deck}|${b.trim}|${b.glow}|${b.hum}|${b.pitch}`;
+const boardKey = (b) =>
+  `${b.shape}|${b.fin}|${b.deck}|${b.trim}|${b.glow}|${b.surface}|${b.surfaceScale}|${b.surfaceWarp}|${b.surfaceSeed}|${b.hum}|${b.pitch}|${b.soundTone}|${b.soundMotion}`;
 
 const isDefaultBoard = (b) => boardKey(b) === boardKey(DEFAULT_BOARD);
 
@@ -327,12 +347,17 @@ const sanitizeBoard = (raw) => {
   return {
     shape: oneOf(raw.shape, BOARD_SHAPES, DEFAULT_BOARD.shape),
     fin: oneOf(raw.fin, BOARD_FINS, DEFAULT_BOARD.fin),
-    deco: oneOf(raw.deco, BOARD_DECOS, DEFAULT_BOARD.deco),
     deck: intRange(raw.deck, BOARD_DECK_COUNT, DEFAULT_BOARD.deck),
     trim: intRange(raw.trim, BOARD_DECK_COUNT, DEFAULT_BOARD.trim),
     glow: intRange(raw.glow, BOARD_GLOW_COUNT, DEFAULT_BOARD.glow),
+    surface: oneOf(raw.surface, BOARD_SURFACES, DEFAULT_BOARD.surface),
+    surfaceScale: intRange(raw.surfaceScale, 101, DEFAULT_BOARD.surfaceScale),
+    surfaceWarp: intRange(raw.surfaceWarp, 101, DEFAULT_BOARD.surfaceWarp),
+    surfaceSeed: intRange(raw.surfaceSeed, 65536, DEFAULT_BOARD.surfaceSeed),
     hum: oneOf(raw.hum, BOARD_HUMS, DEFAULT_BOARD.hum),
-    pitch: intRange(raw.pitch, BOARD_PITCH_COUNT, DEFAULT_BOARD.pitch)
+    pitch: intRange(raw.pitch, BOARD_PITCH_COUNT, DEFAULT_BOARD.pitch),
+    soundTone: intRange(raw.soundTone, 101, DEFAULT_BOARD.soundTone),
+    soundMotion: intRange(raw.soundMotion, 101, DEFAULT_BOARD.soundMotion)
   };
 };
 

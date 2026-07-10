@@ -1,11 +1,20 @@
 import { tunables, tweakDefault } from "./core/persist";
 import type { PlayerMode } from "./player/types";
 
-// The scene's light-unit rescale: the reference sun illuminance (100, paired with
-// ~0.13 exposure) over the old artistic sun (6 at 0.62). Anything that emits in
-// absolute units — emissive nodes, unlit sprites/tracers — multiplies by this to
-// keep its old proportion to the lit world.
-export const LIGHT_SCALE = 100 / 6;
+// 2026-07 exposure re-anchor: toneMappingExposure now sits at an honest 1.0
+// (the "/" slider trims 0.5–1.5 around it); historically the whole rig was
+// authored against a 0.13 exposure. Every linear value the old rig authored —
+// key/fill/moon intensities and the sky dome boost (sky.ts), the fog colours,
+// baked emissive tints, LIGHT_SCALE below — shrinks by this factor so the
+// rendered image is IDENTICAL at the anchor. New emitters should use
+// LIGHT_SCALE (or author true linear values) and never reference this directly.
+export const EXPOSURE_REBASE = 0.13;
+
+// The scene's light-unit rescale for things that emit in absolute units —
+// emissive nodes, unlit sprites/tracers — sized so authored 0..1 colours keep
+// their proportion to the lit world. Historically 100/6 (the reference sun over
+// the old artistic sun), carried through the exposure re-anchor above.
+export const LIGHT_SCALE = (100 / 6) * EXPOSURE_REBASE;
 
 /**
  * The one universal render mode: the fixed, measurement-tuned settings every
@@ -33,7 +42,13 @@ export const RENDER_MODE = {
 
 /** Renderer grading, bound in the "/" panel's lighting folder. */
 export const RENDER_TUNING = tunables("render", {
-  exposure: { v: 0.13, min: 0.01, max: 1, label: "exposure" },
+  // Anchored at 1.0 — a ±half-stop-ish artistic trim, NOT the day-brightness
+  // control (that's sky.ts sunDay/hemiDay). Night, emissives and fog are all
+  // balanced against the anchor, so big moves here shift everything at once.
+  exposure: { v: 1.0, min: 0.5, max: 1.5, step: 0.01, label: "exposure" },
+  // grey-card calibration chart (src/ui/calibrationChart.ts): camera-locked row
+  // of matte spheres at 5/18/50/90% albedo — the referee for any grading change.
+  greyCards: { v: false, label: "grey cards (5·18·50·90%)" },
   wireframe: { v: false, label: "wireframe mode" },
   // collider x-ray: draw every active physics collider as a wireframe box (red =
   // baked body, orange = citywide index, green = walk-in wall, blue = interior).
@@ -41,62 +56,42 @@ export const RENDER_TUNING = tunables("render", {
   colliderDebug: { v: false, label: "collider x-ray" }
 });
 
-/** Draw distance + fog, bound in the "/" panel. `radius` drives both tile radii. */
+/**
+ * The distance-fog bank below (haze + horizon veil) is hand-tuned at THIS draw
+ * distance: the veil closes to full opacity by ~1150 m so a 1200 m tile radius
+ * culls with zero pop — the fog IS the far cull. Sky.applyFogParams scales the
+ * distance components (haze density, horizon start/softness) by
+ * radius / DRAW_BASELINE, so the whole visibility edge tracks the one
+ * draw-distance slider; the fog folder's values stay calibrated to 1200.
+ */
+export const DRAW_BASELINE = 1200;
+
+/** Draw distance + fog, bound in the "/" panel. `radius` is the MASTER draw
+ * distance: one top-level slider drives the tile streaming radii, rescales the
+ * distance fog (see DRAW_BASELINE), and sets the citygen chunk reach — pull it
+ * and the whole visible world grows or shrinks together. */
 export const WORLD_TUNING = tunables("world", {
-  // Draw distance. The marine-layer + distance fog (below) is tuned to fully melt
-  // geometry into the sky by ~1350 m — the distance haze + a GLOBAL horizon veil
-  // densify everywhere (not just the coast), so the tile radius sits low without a
-  // visible pop-in edge: the fog IS the far cull. (Down from 1500; 1300 was a touch
-  // too tight — it culled the FiDi cluster from the Embarcadero before the fog had
-  // fully closed over it.) Push it back up if you turn fog down.
-  // 1200: the horizon veil now closes to full opacity (fogHorizon 1.0) by ~1150 m,
-  // so the far cull is genuinely solid and the radius can drop below where it used
-  // to pop — fewer far buildings drawn, all of them fully fogged before the edge.
-  radius: { v: 1200, min: 900, max: 6000, step: 100, label: "buildings (m)" },
+  radius: { v: DRAW_BASELINE, min: 900, max: 6000, step: 100, label: "draw distance (m)" },
   fogEnabled: { v: true, label: "custom fog" },
-  // fog colour: 0 = pure reference near-white (0xd0dee7, three's webgpu_custom_fog),
-  // 1 = fully phase-atmospheric (blue by day, rose at golden hour, dark blue at
-  // night). The DEFAULT bank reads as a luminous white marine layer with a little
-  // sky colour bled in; the far horizon veil always stays atmospheric regardless so
-  // distant geometry melts into the actual sky, never a white band.
-  fogTint: { v: 0.3, min: 0, max: 1, step: 0.02, label: "atmosphere tint" },
-  // --- ground/valley bank: a marine layer that pools in low ground and lets the
-  // hills poke through. base/top are world-Y metres; billow gives it a churning
-  // edge; the marine field (fogMarine) makes it thick at the coast + Golden Gate
-  // and thin downtown.
-  fogBase: { v: -30, min: -140, max: 240, step: 1, label: "base" },
-  // top pulled down (was 170) so the bank doesn't tower over the elevated Golden
-  // Gate deck (y≈67) or bury the tops of things — the lid now sits below deck level.
-  fogTop: { v: 130, min: -20, max: 420, step: 1, label: "top" },
-  // bank density dropped (was 1.85) so the marine layer reads as a translucent veil,
-  // not an opaque wall: from the GG deck you can now see the bay water below rather
-  // than a grey wall. See fogPeak for the coast/Gate multiplier this scales.
-  fogBank: { v: 1.05, min: 0, max: 3, step: 0.05, label: "bank density" },
-  fogSoftness: { v: 45, min: 1, max: 180, step: 1, label: "edge softness" },
+  // The five fog controls. Fog colour is plain white (three's webgpu_custom_fog
+  // reference); everything else — bank base height, edge softness, billow scale,
+  // near fade, marine-field shape, horizon-veil calibration — is a fixed constant
+  // in sky.ts (see FOG_* there).
+  //
+  // height: top of the ground-hugging marine layer, world-Y metres. Kept below the
+  // elevated Golden Gate deck (y≈67) so the bank doesn't bury it.
+  fogTop: { v: 130, min: -20, max: 420, step: 1, label: "height (m)" },
+  // density: opacity of the pooled bank. ~1 reads as a translucent veil — from the
+  // GG deck you can still see the bay below rather than a grey wall.
+  fogBank: { v: 1.05, min: 0, max: 3, step: 0.05, label: "density" },
+  // billow: 0 = flat lid, 1 = full churning wisps along the bank's top edge.
   fogNoise: { v: 0.72, min: 0, max: 1, step: 0.02, label: "billow" },
-  fogScale: { v: 0.0026, min: 0.0004, max: 0.01, step: 0.0001, format: (v: number) => v.toFixed(4), label: "billow scale" },
+  // drift: how fast the whole layer rolls and boils (feeds the noise + the
+  // marine-front advection).
   fogDrift: { v: 0.03, min: 0, max: 0.12, step: 0.001, format: (v: number) => v.toFixed(3), label: "drift" },
-  fogStart: { v: 60, min: 0, max: 1200, step: 10, label: "near fade" },
-  // marine-layer contrast: 0 = uniform fog everywhere (old look), 1 = full
-  // west/Golden-Gate-heavy, thin-downtown gradient. Coast/Gate get fogPeak× the
-  // bank density, the sheltered east gets fogFloor×.
-  fogMarine: { v: 1, min: 0, max: 1, step: 0.02, label: "marine contrast" },
-  fogFloor: { v: 0.3, min: 0, max: 1.5, step: 0.02, label: "· east density" },
-  // coast/Gate multiplier dropped (was 2.1): 1.85×2.1 = 3.885 fully saturated the
-  // low band along the whole coast + Golden Gate, so the bay water read as an opaque
-  // wall from the bridge. 1.05×1.25 ≈ 1.3 leaves the near/mid water visible while the
-  // far water + distance still fog out via the horizon veil (the actual far-cull).
-  fogPeak: { v: 1.05, min: 0.5, max: 3, step: 0.05, label: "· coast density" },
-  // --- distance haze: exp² fog that slams shut far out so the draw edge melts
-  // into the sky. This is the draw-distance lever.
-  fog: { v: 0.0011, min: 0, max: 0.002, step: 0.00001, format: (v: number) => v.toFixed(5), label: "haze" },
-  // GLOBAL far veil (region-independent) — the unified far-cull that lets the tile
-  // radius sit low. Ramps in from `start` and is near-solid by the tile edge.
-  // veil nudged up (was 0.82) to keep the far-cull firm now that the bank is thinner —
-  // the last stretch to the tile edge still melts into sky so radius can stay at 1400.
-  fogHorizon: { v: 1.0, min: 0, max: 1.5, step: 0.02, label: "horizon veil" },
-  fogHorizonStart: { v: 600, min: 300, max: 6000, step: 50, label: "horizon start (m)" },
-  fogHorizonSoftness: { v: 550, min: 100, max: 3000, step: 50, label: "horizon softness" }
+  // haze: exp² distance fog that slams shut far out so the draw edge melts into
+  // the sky. This is the draw-distance lever.
+  fog: { v: 0.0011, min: 0, max: 0.002, step: 0.00001, format: (v: number) => v.toFixed(5), label: "haze" }
 });
 
 /** Cosmetic vegetation visibility, bound in the "/" panel for performance checks. */
@@ -105,7 +100,7 @@ export const FOLIAGE_TUNING = tunables("foliage", {
 });
 
 /**
- * Procedural building streaming (src/world/citygen). Read LIVE by the ring each
+ * Procedural building DETAIL (src/world/citygen). Read LIVE by the ring each
  * scan, so dragging these sliders in the "/" panel re-tunes streaming instantly —
  * watch the fps + the near/far band move. All perf-relevant:
  *  · detailRadius — distance band where buildings are *eligible* for the full grammar
@@ -114,14 +109,13 @@ export const FOLIAGE_TUNING = tunables("foliage", {
  *  · maxDetail    — hard cap on resident full-detail buildings. Always the nearest-N
  *    inside detailRadius (far holders are evicted when nearer ones need a slot).
  *  · fadeTime     — LOD crossfade duration (s).
- *  · cellLoad/Unload — how many tile cells (≈800 m) of chunk-LOD stream around you.
+ * How FAR chunk-LOD cells stream is no longer its own knob — the ring derives it
+ * from the master draw-distance slider (CONFIG.tileLoadRadius) each scan.
  */
 export const CITYGEN_TUNING = tunables("citygen", {
   detailRadius: { v: 150, min: 40, max: 400, step: 5, label: "detail distance (m)" },
   maxDetail: { v: 40, min: 4, max: 140, step: 2, label: "max detail buildings" },
-  fadeTime: { v: 0.4, min: 0.05, max: 2, step: 0.05, label: "crossfade (s)" },
-  cellLoad: { v: 1, min: 1, max: 3, step: 1, label: "chunk cells (±)" },
-  cellUnload: { v: 2, min: 2, max: 5, step: 1, label: "chunk unload (±)" }
+  fadeTime: { v: 0.4, min: 0.05, max: 2, step: 0.05, label: "crossfade (s)" }
 });
 
 /**
