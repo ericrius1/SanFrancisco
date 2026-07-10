@@ -707,6 +707,130 @@
           transform: scale(1);
         }
       }
+      /* golf: round scorecard chip (top center) + swing rail/force meter
+         (bottom center). Same glass recipe as the satchel; keyboard-only, so
+         pointer-events stay off like the rest of #hud. */
+      #hud .golf-card {
+        position: absolute;
+        left: 50%;
+        top: 14px;
+        transform: translateX(-50%) translateY(-8px);
+        display: flex;
+        align-items: baseline;
+        gap: 12px;
+        padding: 7px 14px;
+        border-radius: var(--r-md);
+        background: var(--surface-strong);
+        border: 1px solid var(--hairline-2);
+        box-shadow: var(--shadow-sm), var(--edge-hi);
+        backdrop-filter: blur(var(--blur));
+        opacity: 0;
+        transition: opacity 0.25s var(--ease), transform 0.25s var(--ease);
+        pointer-events: none;
+        white-space: nowrap;
+      }
+      #hud .golf-card.show {
+        opacity: 1;
+        transform: translateX(-50%) translateY(0);
+      }
+      #hud .golf-card .gc-hole {
+        font: 700 14px var(--font);
+        color: var(--accent-strong);
+        letter-spacing: 0.02em;
+      }
+      #hud .golf-card .gc-score {
+        font: 600 13px var(--font);
+        color: rgba(233, 244, 250, 0.92);
+        font-variant-numeric: tabular-nums;
+      }
+      #hud .golf-swing {
+        position: absolute;
+        left: 50%;
+        bottom: 86px;
+        transform: translateX(-50%);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 12px;
+        opacity: 0;
+        transition: opacity 0.2s var(--ease);
+        pointer-events: none;
+      }
+      #hud .golf-swing.show {
+        opacity: 1;
+      }
+      #hud .golf-clubs {
+        display: flex;
+        gap: 6px;
+      }
+      #hud .golf-clubs .gclub {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        padding: 3px 8px;
+        border-radius: var(--r-sm);
+        background: var(--surface);
+        border: 1px solid var(--hairline);
+        backdrop-filter: blur(var(--blur));
+        font: 600 12px var(--font);
+        color: rgba(233, 244, 250, 0.8);
+        transition: border-color 0.15s var(--ease), color 0.15s var(--ease);
+      }
+      #hud .golf-clubs .gclub b {
+        font-size: 10px;
+        opacity: 0.6;
+      }
+      #hud .golf-clubs .gclub.on {
+        border-color: var(--accent-strong);
+        color: var(--accent-strong);
+        box-shadow: 0 0 10px var(--accent-soft);
+      }
+      #hud .golf-meter {
+        position: relative;
+        width: 96px;
+        height: 96px;
+      }
+      #hud .golf-meter .gm-ring {
+        position: absolute;
+        inset: 0;
+        border-radius: 50%;
+        background: conic-gradient(var(--accent-soft) 0deg, var(--accent-soft) 0deg);
+        -webkit-mask: radial-gradient(closest-side, transparent 68%, #000 70%);
+        mask: radial-gradient(closest-side, transparent 68%, #000 70%);
+        transition: none;
+      }
+      #hud .golf-meter .gm-inner {
+        position: absolute;
+        inset: 14px;
+        border-radius: 50%;
+        background: var(--surface-strong);
+        border: 1px solid var(--hairline-2);
+        box-shadow: var(--shadow-sm), var(--edge-hi);
+        backdrop-filter: blur(var(--blur));
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 1px;
+      }
+      #hud .golf-meter .gm-club {
+        font: 800 18px var(--font);
+        color: var(--accent-strong);
+      }
+      #hud .golf-meter .gm-carry {
+        font: 600 11px var(--font);
+        color: rgba(233, 244, 250, 0.75);
+        font-variant-numeric: tabular-nums;
+      }
+      #hud .golf-meter.charging .gm-inner {
+        border-color: var(--accent-strong);
+      }
+      /* Tab's UI-hide covers golf too (defined after .show so it wins) */
+      #hud.faded .golf-card,
+      #hud.faded .golf-swing {
+        opacity: 0;
+        transition: opacity 1s ease;
+      }
       #hud .avatar-ui {
         position: absolute;
         right: 20px;
@@ -1905,6 +2029,9 @@
         padding: 12px;
         gap: 8px;
         overscroll-behavior: contain;
+        scroll-padding-block: 12px;
+        scrollbar-gutter: stable;
+        -webkit-overflow-scrolling: touch;
         background:
           linear-gradient(145deg, rgba(17, 40, 52, 0.92), rgba(5, 16, 25, 0.94)),
           rgba(6, 16, 25, 0.92);
@@ -1948,12 +2075,12 @@
       #hud .board-labs {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 8px;
+        gap: 7px;
         margin: 3px 0 2px;
       }
       #hud .board-lab {
         min-width: 0;
-        padding: 8px;
+        padding: 7px;
         border-radius: 9px;
         border: 1px solid rgba(143, 222, 228, 0.18);
         background: rgba(2, 11, 18, 0.64);
@@ -1962,12 +2089,12 @@
           0 6px 16px rgba(0, 4, 8, 0.16);
       }
       #hud .board-lab-head {
-        min-height: 29px;
+        min-height: 27px;
         display: flex;
         align-items: flex-start;
         justify-content: space-between;
         gap: 5px;
-        margin-bottom: 6px;
+        margin-bottom: 5px;
       }
       #hud .board-lab-name {
         color: #dffbf6;
@@ -1988,12 +2115,12 @@
         min-width: 42px;
         color: #76f5d3;
         font: 750 9px ui-monospace, SFMono-Regular, Menlo, monospace;
-        letter-spacing: -0.04em;
+        letter-spacing: 0;
         text-align: right;
       }
       #hud .board-xy-pad {
         position: relative;
-        height: 112px;
+        height: 96px;
         overflow: hidden;
         cursor: crosshair;
         touch-action: none;
@@ -2025,7 +2152,9 @@
         display: block;
         opacity: 0.88;
       }
-      #hud .board-lab-surface .board-xy-canvas {
+      #hud .board-lab-surface .board-xy-canvas,
+      #hud .board-lab-finish .board-xy-canvas,
+      #hud .board-lab-life .board-xy-canvas {
         filter: saturate(1.12) contrast(1.04) brightness(0.83);
       }
       #hud .board-xy-grid {
@@ -2114,11 +2243,12 @@
         }
         #hud .board-panel {
           width: min(370px, calc(100vw - 16px));
-          max-height: min(76vh, 650px);
+          max-height: min(76dvh, 650px);
           padding: 10px;
+          scroll-padding-block: 10px;
         }
         #hud .board-xy-pad {
-          height: 104px;
+          height: 90px;
         }
         #hud .board-panel-head > small {
           display: none;

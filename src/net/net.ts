@@ -26,6 +26,8 @@ import { boardFromSeed, isDefaultBoard, normalizeBoardConfig, type BoardConfig }
  *   ← {t:"fw", id, d}                   relayed to everyone else
  *   → {t:"chat", text}                  ephemeral text chat (no persistence)
  *   ← {t:"chat", id, name, text}        relayed to everyone else
+ *   → {t:"golf", k, d?|h?|p?|s?|r?}     golf events (swing/ball snap/rest/score/quit)
+ *   ← {t:"golf", id, ...}               relayed to everyone else (owner-simulated ball)
  *
  * Movement is client-authoritative by design: each browser runs its own
  * box3d world, so the server can only ever relay
@@ -203,6 +205,8 @@ export class Net {
   onFireworks: (id: number, rockets: number[][]) => void = () => {};
   /** Someone else sent a chat line (name is server-stamped from their roster). */
   onChat: (id: number, name: string, text: string) => void = () => {};
+  /** relayed golf event from another player (k discriminates; see gameplay/golf) */
+  onGolf: (id: number, msg: Record<string, unknown>) => void = () => {};
 
   #ws: WebSocket | null = null;
   #url: string;
@@ -378,6 +382,11 @@ export class Net {
         if (id !== this.selfId && this.roster.has(id) && name && text) this.onChat(id, name, text);
         break;
       }
+      case "golf": {
+        const id = msg.id as number;
+        if (id !== this.selfId && this.roster.has(id) && typeof msg.k === "string") this.onGolf(id, msg);
+        break;
+      }
     }
   }
 
@@ -404,6 +413,13 @@ export class Net {
     for (let i = 0; i < rockets.length; i += 64) {
       this.#ws.send(JSON.stringify({ t: "fw", d: rockets.slice(i, i + 64) }));
     }
+  }
+
+  /** Broadcast one golf event (swing / ball snapshot / rest / score / quit).
+   * Fire-and-forget like paint — the sender's sim is authoritative for its ball. */
+  sendGolf(msg: Record<string, unknown>) {
+    if (this.#ws?.readyState !== WebSocket.OPEN || !this.selfId) return;
+    this.#ws.send(JSON.stringify({ t: "golf", ...msg }));
   }
 
   /** Broadcast one chat line (server sanitizes + stamps name; no persistence). */

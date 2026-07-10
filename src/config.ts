@@ -1,5 +1,5 @@
-import { tunables, tweakDefault } from "./core/persist";
-import type { PlayerMode } from "./player/types";
+import { tunables, tweakDefault } from "./core/persist"
+import type { PlayerMode } from "./player/types"
 
 // 2026-07 exposure re-anchor: toneMappingExposure now sits at an honest 1.0
 // (the "/" slider trims 0.5–1.5 around it); historically the whole rig was
@@ -8,13 +8,13 @@ import type { PlayerMode } from "./player/types";
 // baked emissive tints, LIGHT_SCALE below — shrinks by this factor so the
 // rendered image is IDENTICAL at the anchor. New emitters should use
 // LIGHT_SCALE (or author true linear values) and never reference this directly.
-export const EXPOSURE_REBASE = 0.13;
+export const EXPOSURE_REBASE = 0.13
 
 // The scene's light-unit rescale for things that emit in absolute units —
 // emissive nodes, unlit sprites/tracers — sized so authored 0..1 colours keep
 // their proportion to the lit world. Historically 100/6 (the reference sun over
 // the old artistic sun), carried through the exposure re-anchor above.
-export const LIGHT_SCALE = (100 / 6) * EXPOSURE_REBASE;
+export const LIGHT_SCALE = (100 / 6) * EXPOSURE_REBASE
 
 /**
  * The one universal render mode: the fixed, measurement-tuned settings every
@@ -38,7 +38,7 @@ export const RENDER_MODE = {
   dynamicRes: true,
   // Lowest pixel ratio the governor will drop to under sustained load.
   minPixelRatio: 1.0
-} as const;
+} as const
 
 /** Renderer grading, bound in the "/" panel's lighting folder. */
 export const RENDER_TUNING = tunables("render", {
@@ -54,7 +54,7 @@ export const RENDER_TUNING = tunables("render", {
   // baked body, orange = citywide index, green = walk-in wall, blue = interior).
   // Diagnoses "invisible collision" — a box that sits where no mesh is drawn.
   colliderDebug: { v: false, label: "collider x-ray" }
-});
+})
 
 /**
  * The distance-fog bank below (haze + horizon veil) is hand-tuned at THIS draw
@@ -64,14 +64,20 @@ export const RENDER_TUNING = tunables("render", {
  * radius / DRAW_BASELINE, so the whole visibility edge tracks the one
  * draw-distance slider; the fog folder's values stay calibrated to 1200.
  */
-export const DRAW_BASELINE = 1200;
+export const DRAW_BASELINE = 1200
 
 /** Draw distance + fog, bound in the "/" panel. `radius` is the MASTER draw
  * distance: one top-level slider drives the tile streaming radii, rescales the
  * distance fog (see DRAW_BASELINE), and sets the citygen chunk reach — pull it
  * and the whole visible world grows or shrinks together. */
 export const WORLD_TUNING = tunables("world", {
-  radius: { v: DRAW_BASELINE, min: 900, max: 6000, step: 100, label: "draw distance (m)" },
+  radius: {
+    v: DRAW_BASELINE,
+    min: 50,
+    max: 6000,
+    step: 100,
+    label: "draw distance (m)"
+  },
   fogEnabled: { v: true, label: "custom fog" },
   // The five fog controls. Fog colour is plain white (three's webgpu_custom_fog
   // reference); everything else — bank base height, edge softness, billow scale,
@@ -88,16 +94,30 @@ export const WORLD_TUNING = tunables("world", {
   fogNoise: { v: 0.72, min: 0, max: 1, step: 0.02, label: "billow" },
   // drift: how fast the whole layer rolls and boils (feeds the noise + the
   // marine-front advection).
-  fogDrift: { v: 0.03, min: 0, max: 0.12, step: 0.001, format: (v: number) => v.toFixed(3), label: "drift" },
+  fogDrift: {
+    v: 0.03,
+    min: 0,
+    max: 0.12,
+    step: 0.001,
+    format: (v: number) => v.toFixed(3),
+    label: "drift"
+  },
   // haze: exp² distance fog that slams shut far out so the draw edge melts into
   // the sky. This is the draw-distance lever.
-  fog: { v: 0.0011, min: 0, max: 0.002, step: 0.00001, format: (v: number) => v.toFixed(5), label: "haze" }
-});
+  fog: {
+    v: 0.0011,
+    min: 0,
+    max: 0.002,
+    step: 0.00001,
+    format: (v: number) => v.toFixed(5),
+    label: "haze"
+  }
+})
 
 /** Cosmetic vegetation visibility, bound in the "/" panel for performance checks. */
 export const FOLIAGE_TUNING = tunables("foliage", {
   visible: { v: true, label: "foliage (trees/grass/flowers)" }
-});
+})
 
 /**
  * Procedural building DETAIL (src/world/citygen). Read LIVE by the ring each
@@ -113,10 +133,22 @@ export const FOLIAGE_TUNING = tunables("foliage", {
  * from the master draw-distance slider (CONFIG.tileLoadRadius) each scan.
  */
 export const CITYGEN_TUNING = tunables("citygen", {
-  detailRadius: { v: 150, min: 40, max: 400, step: 5, label: "detail distance (m)" },
-  maxDetail: { v: 40, min: 4, max: 140, step: 2, label: "max detail buildings" },
+  detailRadius: {
+    v: 150,
+    min: 40,
+    max: 400,
+    step: 5,
+    label: "detail distance (m)"
+  },
+  maxDetail: {
+    v: 40,
+    min: 4,
+    max: 140,
+    step: 2,
+    label: "max detail buildings"
+  },
   fadeTime: { v: 0.4, min: 0.05, max: 2, step: 0.05, label: "crossfade (s)" }
-});
+})
 
 /**
  * Wildflower ring shaping, bound in the "/" panel's foliage folder. The flowers are
@@ -132,7 +164,7 @@ export const FLOWER_TUNING = tunables("flowers", {
   clumpiness: { v: 0.6, min: 0, max: 1, step: 0.02, label: "clump ↔ scatter" },
   clumpSize: { v: 9, min: 2, max: 30, step: 0.5, label: "clump size (m)" },
   reach: { v: 80, min: 30, max: 110, step: 2, label: "reach (m)" }
-});
+})
 
 /**
  * Wildlands grass ring shaping — the player-following blade grass (the same
@@ -146,17 +178,20 @@ export const FLOWER_TUNING = tunables("flowers", {
 export const GRASS_TUNING = tunables("grass", {
   density: { v: 1, min: 0, max: 2.5, step: 0.05, label: "density" },
   patchiness: { v: 0.5, min: 0, max: 1, step: 0.02, label: "even ↔ patchy" }
-});
+})
 
 /**
  * Where and how a fresh session starts. Editable in the Tab panel (persisted);
  */
-export const START_DEFAULTS = { spawn: "goldenGate", mode: "board" as PlayerMode };
+export const START_DEFAULTS = {
+  spawn: "goldenGate",
+  mode: "board" as PlayerMode
+}
 
 export const START = {
   spawn: tweakDefault("start.spawn", START_DEFAULTS.spawn),
   mode: tweakDefault<PlayerMode>("start.mode", START_DEFAULTS.mode)
-};
+}
 
 export const CONFIG = {
   // streaming (load/unload gap is hysteresis so tiles don't thrash at the boundary;
@@ -189,4 +224,4 @@ export const CONFIG = {
     near: 0.3,
     far: 24000
   }
-};
+}

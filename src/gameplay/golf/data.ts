@@ -116,7 +116,7 @@ export class GolfCourse {
   #greenFlat: Flatten[] = [];
   #teeFlat: Flatten[] = [];
   // coarse lookup grid over the course AABB: cell → feature indices, priority-sorted
-  #grid: Int32Array;
+  #grid: Int32Array = new Int32Array(0);
   #gridLists: Indexed[][] = [];
   #gw = 0;
   #gh = 0;

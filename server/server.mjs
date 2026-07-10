@@ -224,7 +224,8 @@ const COLOR_COUNT = 8;
 // defaults, AND the seed draw order are part of the wire contract)
 const BOARD_SHAPES = ["classic", "dart", "manta", "saucer", "twintip"];
 const BOARD_FINS = ["none", "twin", "spoiler", "halo"];
-const BOARD_SURFACES = ["aurora", "topo", "terrazzo", "circuit"];
+const BOARD_SURFACES = ["aurora", "topo", "terrazzo", "circuit", "plasma"];
+const BOARD_SURFACE_EFFECTS = ["clean", "grain", "scanlines", "prism"];
 const BOARD_HUMS = ["hum", "crystal", "deep", "choir", "retro"];
 const BOARD_DECK_COUNT = 8;
 const BOARD_GLOW_COUNT = 8;
@@ -308,6 +309,11 @@ const DEFAULT_BOARD = {
   surfaceScale: 52,
   surfaceWarp: 58,
   surfaceSeed: 1847,
+  surfaceContrast: 58,
+  surfaceEffect: "grain",
+  surfaceEffectAmount: 28,
+  surfaceFlow: 24,
+  surfaceReaction: 52,
   hum: "hum",
   pitch: 0,
   soundTone: 50,
@@ -330,6 +336,11 @@ const boardFromSeed = (seed) => {
     surfaceScale: 22 + Math.floor(roll() * 67),
     surfaceWarp: 18 + Math.floor(roll() * 73),
     surfaceSeed: Math.floor(roll() * 65536),
+    surfaceContrast: 28 + Math.floor(roll() * 61),
+    surfaceEffect: pick(BOARD_SURFACE_EFFECTS, roll),
+    surfaceEffectAmount: 15 + Math.floor(roll() * 76),
+    surfaceFlow: Math.floor(roll() * 66),
+    surfaceReaction: 20 + Math.floor(roll() * 71),
     hum: pick(BOARD_HUMS, roll),
     pitch: Math.floor(roll() * BOARD_PITCH_COUNT) % BOARD_PITCH_COUNT,
     soundTone: 20 + Math.floor(roll() * 66),
@@ -338,7 +349,7 @@ const boardFromSeed = (seed) => {
 };
 
 const boardKey = (b) =>
-  `${b.shape}|${b.fin}|${b.deck}|${b.trim}|${b.glow}|${b.surface}|${b.surfaceScale}|${b.surfaceWarp}|${b.surfaceSeed}|${b.hum}|${b.pitch}|${b.soundTone}|${b.soundMotion}`;
+  `${b.shape}|${b.fin}|${b.deck}|${b.trim}|${b.glow}|${b.surface}|${b.surfaceScale}|${b.surfaceWarp}|${b.surfaceSeed}|${b.surfaceContrast}|${b.surfaceEffect}|${b.surfaceEffectAmount}|${b.surfaceFlow}|${b.surfaceReaction}|${b.hum}|${b.pitch}|${b.soundTone}|${b.soundMotion}`;
 
 const isDefaultBoard = (b) => boardKey(b) === boardKey(DEFAULT_BOARD);
 
@@ -354,6 +365,11 @@ const sanitizeBoard = (raw) => {
     surfaceScale: intRange(raw.surfaceScale, 101, DEFAULT_BOARD.surfaceScale),
     surfaceWarp: intRange(raw.surfaceWarp, 101, DEFAULT_BOARD.surfaceWarp),
     surfaceSeed: intRange(raw.surfaceSeed, 65536, DEFAULT_BOARD.surfaceSeed),
+    surfaceContrast: intRange(raw.surfaceContrast, 101, DEFAULT_BOARD.surfaceContrast),
+    surfaceEffect: oneOf(raw.surfaceEffect, BOARD_SURFACE_EFFECTS, DEFAULT_BOARD.surfaceEffect),
+    surfaceEffectAmount: intRange(raw.surfaceEffectAmount, 101, DEFAULT_BOARD.surfaceEffectAmount),
+    surfaceFlow: intRange(raw.surfaceFlow, 101, DEFAULT_BOARD.surfaceFlow),
+    surfaceReaction: intRange(raw.surfaceReaction, 101, DEFAULT_BOARD.surfaceReaction),
     hum: oneOf(raw.hum, BOARD_HUMS, DEFAULT_BOARD.hum),
     pitch: intRange(raw.pitch, BOARD_PITCH_COUNT, DEFAULT_BOARD.pitch),
     soundTone: intRange(raw.soundTone, 101, DEFAULT_BOARD.soundTone),
@@ -452,6 +468,23 @@ wss.on("connection", (ws) => {
       // pure relay, every client replays the launches locally
       if (msg.d.every((r) => Array.isArray(r) && r.length === 9 && r.every((n) => typeof n === "number" && Number.isFinite(n)))) {
         broadcast({ t: "fw", id, d: msg.d }, id);
+      }
+    } else if (msg.t === "golf" && typeof msg.k === "string" && msg.k.length <= 8) {
+      // golf events: swing / ball snapshot / rest / score / quit. The owner's
+      // client simulates its own ball; this is a pure relay of whitelisted
+      // fields (d = up to 8 finite numbers, h/p/s/r = finite numbers).
+      const d = msg.d;
+      const dOk =
+        d === undefined ||
+        (Array.isArray(d) && d.length <= 8 && d.every((n) => typeof n === "number" && Number.isFinite(n)));
+      const numsOk = ["h", "p", "s", "r"].every(
+        (key) => msg[key] === undefined || (typeof msg[key] === "number" && Number.isFinite(msg[key]))
+      );
+      if (dOk && numsOk) {
+        const out = { t: "golf", id, k: msg.k };
+        if (d !== undefined) out.d = d;
+        for (const key of ["h", "p", "s", "r"]) if (msg[key] !== undefined) out[key] = msg[key];
+        broadcast(out, id);
       }
     } else if (msg.t === "rtc" && typeof msg.to === "number") {
       // voice-chat signaling (SDP offers/answers + ICE candidates): targeted

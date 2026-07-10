@@ -144,30 +144,45 @@ function kickLift(p: Profile, z: number): number {
   return u * u * (z < 0 ? p.noseKick : p.tailKick);
 }
 
-/** A bent inset copy of the deck cap with stable full-range UVs. */
-function topGeometry(outline: THREE.Vector2[], p: Profile, scaleX: number, scaleZ: number, y: number) {
-  const inset = outline.map((v) => new THREE.Vector2(v.x * scaleX, v.y * scaleZ));
-  const top = new THREE.ShapeGeometry(new THREE.Shape(inset));
-  top.rotateX(Math.PI / 2);
-  const halfW = Math.max(...p.pts.map(([, w]) => w)) * scaleX;
-  const halfL = p.halfL * scaleZ;
-  const pos = top.attributes.position;
-  const uv = top.attributes.uv;
+/**
+ * Project the finished board silhouette through its thickness. Both caps get
+ * the complete artwork; bevel/front/tail/side vertices inherit the boundary
+ * texel directly above them, so the skin visibly continues over every edge.
+ */
+function projectShellUV(geometry: THREE.BufferGeometry) {
+  geometry.computeBoundingBox();
+  const bounds = geometry.boundingBox!;
+  const width = Math.max(1e-6, bounds.max.x - bounds.min.x);
+  const length = Math.max(1e-6, bounds.max.z - bounds.min.z);
+  const pos = geometry.attributes.position;
+  const uv = new Float32Array(pos.count * 2);
   for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i);
-    const z = pos.getZ(i);
-    pos.setY(i, y + kickLift(p, z));
-    uv.setXY(i, x / (halfW * 2) + 0.5, 1 - (z / (halfL * 2) + 0.5));
+    uv[i * 2] = (pos.getX(i) - bounds.min.x) / width;
+    uv[i * 2 + 1] = 1 - (pos.getZ(i) - bounds.min.z) / length;
   }
-  pos.needsUpdate = true;
-  uv.needsUpdate = true;
-  top.computeVertexNormals();
-  return top;
+  geometry.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
+}
+
+function surfacePaintKey(config: BoardConfig) {
+  return `${config.deck}|${config.trim}|${config.surface}|${config.surfaceScale}|${config.surfaceWarp}|${config.surfaceSeed}|${config.surfaceContrast}|${config.surfaceEffect}|${config.surfaceEffectAmount}`;
 }
 
 type BoardSurfaceState = {
   canvas: HTMLCanvasElement;
   texture: THREE.CanvasTexture;
+  material: THREE.MeshLambertMaterial;
+  paintKey: string;
+  flow: number;
+  reaction: number;
+  phase: number;
+  air: number;
+  airTime: number;
+  minVerticalSpeed: number;
+  wasGrounded: boolean;
+  impact: number;
+  impactAge: number;
+  visualImpact: number;
+  reducedMotion: boolean;
 };
 
 export type BoardAnim = {
@@ -176,12 +191,12 @@ export type BoardAnim = {
   pulseBase: THREE.Color; // LIGHT_SCALE already applied
   lightSpec: LightAnchorSpec;
   lightBase: number;
+  surface: BoardSurfaceState;
 };
 
 export function buildBoardMesh(config?: BoardConfig): THREE.Group {
   const cfg = normalizeBoardConfig(config ?? {});
   const p = PROFILES[cfg.shape];
-  const deckColor = BOARD_DECK_COLORS[cfg.deck].color;
   const trimColor = BOARD_DECK_COLORS[cfg.trim].color;
   const glowColor = BOARD_GLOW_COLORS[cfg.glow].color;
 
@@ -191,11 +206,7 @@ export function buildBoardMesh(config?: BoardConfig): THREE.Group {
   const geo = <T extends THREE.BufferGeometry>(x: T): T => (geos.push(x), x);
   const mat = <T extends THREE.Material>(x: T): T => (mats.push(x), x);
 
-  const deckMat = mat(new THREE.MeshLambertMaterial({ color: deckColor }));
   const trimMat = mat(new THREE.MeshLambertMaterial({ color: trimColor }));
-  // ShapeGeometry's +Z face points downward after our +90° X rotation. The
-  // inset top layers are deliberately double-sided so their upward face reads.
-  const frameMat = mat(new THREE.MeshLambertMaterial({ color: trimColor, side: THREE.DoubleSide }));
   const darkMat = mat(new THREE.MeshLambertMaterial({ color: 0x262c36 }));
   const glowMat = mat(new THREE.MeshBasicMaterial({ color: new THREE.Color(glowColor).multiplyScalar(LIGHT_SCALE) }));
   // the breathing set (underglow plate + pod rings) gets its own instance so
@@ -206,6 +217,29 @@ export function buildBoardMesh(config?: BoardConfig): THREE.Group {
   const glowTail = mat(new THREE.MeshBasicMaterial({ color: new THREE.Color(0xff2818).multiplyScalar(LIGHT_SCALE) }));
 
   const outline = outlinePoints(p);
+
+  // One authored image is the actual closed shell material, rather than an
+  // inset sticker on top. Texture transforms are updated in animateBoard;
+  // canvas pixels are uploaded only when the editor changes paint controls.
+  const surfaceCanvas = document.createElement("canvas");
+  surfaceCanvas.width = 128;
+  surfaceCanvas.height = 256;
+  paintBoardSurface(surfaceCanvas, cfg);
+  const surfaceTexture = new THREE.CanvasTexture(surfaceCanvas);
+  surfaceTexture.colorSpace = THREE.SRGBColorSpace;
+  surfaceTexture.anisotropy = 4;
+  surfaceTexture.wrapS = THREE.RepeatWrapping;
+  surfaceTexture.wrapT = THREE.RepeatWrapping;
+  surfaceTexture.center.set(0.5, 0.5);
+  const surfaceMat = mat(
+    new THREE.MeshLambertMaterial({
+      color: 0xffffff,
+      map: surfaceTexture,
+      emissive: 0x151515,
+      emissiveMap: surfaceTexture,
+      emissiveIntensity: 0.18
+    })
+  );
 
   // --- deck: bevelled extrude of the silhouette, then bend the kicks in ---
   const shape = new THREE.Shape(outline);
@@ -225,35 +259,14 @@ export function buildBoardMesh(config?: BoardConfig): THREE.Group {
   {
     const pos = deckGeo.attributes.position;
     for (let i = 0; i < pos.count; i++) pos.setY(i, pos.getY(i) + kickLift(p, pos.getZ(i)));
+    pos.needsUpdate = true;
     deckGeo.computeVertexNormals(); // faceted after the bend — matches the app's stylized look
   }
-  // ExtrudeGeometry assigns cap groups to material 0 and side/bevel groups to
-  // material 1. The trim/guard therefore reads from the chase camera in every
-  // configuration instead of becoming a no-op when fins and old deck art were off.
-  g.add(new THREE.Mesh(deckGeo, [deckMat, trimMat]));
-
-  // --- full procedural deck skin: deterministic CanvasTexture shared with the
-  // 2D editor preview. It is broad and inset only slightly, so the design is
-  // legible around the rider while a slim trim frame still outlines the deck.
-  const frameGeo = geo(topGeometry(outline, p, 0.98, 0.96, DECK_TOP + 0.006));
-  g.add(new THREE.Mesh(frameGeo, frameMat));
-  const surfaceCanvas = document.createElement("canvas");
-  surfaceCanvas.width = 128;
-  surfaceCanvas.height = 256;
-  paintBoardSurface(surfaceCanvas, cfg);
-  const surfaceTexture = new THREE.CanvasTexture(surfaceCanvas);
-  surfaceTexture.colorSpace = THREE.SRGBColorSpace;
-  surfaceTexture.anisotropy = 4;
-  const surfaceMat = mat(
-    new THREE.MeshBasicMaterial({
-      color: 0xffffff,
-      map: surfaceTexture,
-      side: THREE.DoubleSide,
-      toneMapped: false
-    })
-  );
-  const surfaceGeo = geo(topGeometry(outline, p, 0.92, 0.9, DECK_TOP + 0.011));
-  g.add(new THREE.Mesh(surfaceGeo, surfaceMat));
+  projectShellUV(deckGeo);
+  deckGeo.clearGroups();
+  const shell = new THREE.Mesh(deckGeo, surfaceMat);
+  shell.name = "board-surface-shell";
+  g.add(shell);
 
   // --- glow rail: one tube riding the rim (follows the kicks). Pushed out
   // along the 2D outward normal so the deck's bevel (which widens the plan by
@@ -272,12 +285,14 @@ export function buildBoardMesh(config?: BoardConfig): THREE.Group {
   const railGeo = geo(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(railPts, true), 110, 0.024, 5, true));
   g.add(new THREE.Mesh(railGeo, glowMat));
 
-  // --- underglow plate: the shaped light pool the board rides on ---
-  const plateShape = new THREE.Shape(outline.map((v) => new THREE.Vector2(v.x * 0.78, v.y * 0.8)));
-  const plateGeo = geo(new THREE.ShapeGeometry(plateShape));
-  plateGeo.rotateX(Math.PI / 2);
-  plateGeo.translate(0, -0.075, 0);
-  g.add(new THREE.Mesh(plateGeo, pulseMat));
+  // --- underglow ring: leaves the wrapped underside visible from below ---
+  const underPts = outline.map(
+    (v) => new THREE.Vector3(v.x * 0.7, -0.075 + kickLift(p, v.y) * 0.55, v.y * 0.72)
+  );
+  const underGeo = geo(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(underPts, true), 96, 0.027, 5, true));
+  const underglow = new THREE.Mesh(underGeo, pulseMat);
+  underglow.name = "board-underglow-ring";
+  g.add(underglow);
 
   // --- thruster pods: dark casing, glow intake ring, spinning turbine ---
   const spinners: BoardAnim["spinners"] = [];
@@ -376,9 +391,27 @@ export function buildBoardMesh(config?: BoardConfig): THREE.Group {
   // secondary chest-height fill so the rider's vertical faces aren't black at night
   g.add(lightAnchor({ color: glowColor, intensity: 5, distance: 6 }, 0.75, 1.5, -0.65));
 
-  const anim: BoardAnim = { spinners, pulseMat, pulseBase, lightSpec, lightBase: 10 };
+  const surfaceState: BoardSurfaceState = {
+    canvas: surfaceCanvas,
+    texture: surfaceTexture,
+    material: surfaceMat,
+    paintKey: surfacePaintKey(cfg),
+    flow: cfg.surfaceFlow / 100,
+    reaction: cfg.surfaceReaction / 100,
+    phase: (cfg.surfaceSeed / 65536) * Math.PI * 2,
+    air: 0,
+    airTime: 0,
+    minVerticalSpeed: 0,
+    wasGrounded: true,
+    impact: 0,
+    impactAge: 0,
+    visualImpact: 0,
+    reducedMotion:
+      typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches
+  };
+  const anim: BoardAnim = { spinners, pulseMat, pulseBase, lightSpec, lightBase: 10, surface: surfaceState };
   g.userData.boardAnim = anim;
-  g.userData.boardSurface = { canvas: surfaceCanvas, texture: surfaceTexture } satisfies BoardSurfaceState;
+  g.userData.boardSurface = surfaceState;
   g.userData.dispose = () => {
     for (const x of geos) x.dispose();
     for (const x of mats) x.dispose();
@@ -388,28 +421,110 @@ export function buildBoardMesh(config?: BoardConfig): THREE.Group {
   return g;
 }
 
-/** Repaint the existing GPU texture in place during a surface-pad drag. */
+/** Update a live editor preview; motion-only edits avoid a canvas upload. */
 export function updateBoardSurface(board: THREE.Group, config: BoardConfig) {
   const state = board.userData.boardSurface as BoardSurfaceState | undefined;
   if (!state) return;
-  paintBoardSurface(state.canvas, normalizeBoardConfig(config));
-  state.texture.needsUpdate = true;
+  const cfg = normalizeBoardConfig(config);
+  const paintKey = surfacePaintKey(cfg);
+  if (paintKey !== state.paintKey) {
+    paintBoardSurface(state.canvas, cfg);
+    state.texture.needsUpdate = true;
+    state.paintKey = paintKey;
+  }
+  state.flow = cfg.surfaceFlow / 100;
+  state.reaction = cfg.surfaceReaction / 100;
+  state.phase = (cfg.surfaceSeed / 65536) * Math.PI * 2;
 }
 
 /**
- * Per-frame board life: turbines spool with speed, the underglow (and its
- * pooled light, when this is the local player's board) breathes, the halo
- * spark orbits. Cheap — a couple of rotations and one material color write.
+ * Per-frame board life. Art moves by texture uniforms only: there are no canvas
+ * repaints, texture uploads, material swaps, or vertex changes while riding.
  */
-export function animateBoard(board: THREE.Group, dt: number, t: number, speed: number) {
+export function animateBoard(
+  board: THREE.Group,
+  dt: number,
+  t: number,
+  speed: number,
+  grounded = true,
+  verticalSpeed = 0,
+  landingImpact = 0,
+  boosting = false
+) {
   const anim = board.userData.boardAnim as BoardAnim | undefined;
   if (!anim) return;
+  const step = THREE.MathUtils.clamp(dt, 0, 0.05);
   const norm = Math.min(1, speed / 30);
   for (const s of anim.spinners) {
     const spool = s.axis === "y" ? 0.55 + norm * 2.6 : 1 + norm * 0.8;
-    s.obj.rotation[s.axis] += dt * s.rate * spool;
+    s.obj.rotation[s.axis] += step * s.rate * spool;
   }
+
+  const surface = anim.surface;
+  const motion = surface.reducedMotion ? 0 : surface.flow;
+  const reaction = surface.reducedMotion ? 0 : surface.reaction;
+  const safeVy = Number.isFinite(verticalSpeed) ? verticalSpeed : 0;
+  const airTarget = grounded ? 0 : 1;
+  const airRate = grounded ? 8.5 : 4.5;
+  surface.air += (airTarget - surface.air) * (1 - Math.exp(-step * airRate));
+
+  // Remotes do not transmit grounded state, so keep a conservative fallback
+  // impact detector alongside the exact one-shot local controller impulse.
+  let inferredImpact = 0;
+  if (!grounded) {
+    if (surface.wasGrounded) {
+      surface.airTime = 0;
+      surface.minVerticalSpeed = Math.min(0, safeVy);
+    }
+    surface.airTime += step;
+    surface.minVerticalSpeed = Math.min(surface.minVerticalSpeed, safeVy);
+  } else {
+    if (surface.wasGrounded === false && surface.airTime >= 0.08 && surface.minVerticalSpeed <= -3) {
+      inferredImpact = THREE.MathUtils.clamp((-surface.minVerticalSpeed - 3) / 21, 0, 1);
+    }
+    surface.airTime = 0;
+    surface.minVerticalSpeed = 0;
+  }
+  surface.wasGrounded = grounded;
+
+  const trigger = Math.max(THREE.MathUtils.clamp(landingImpact, 0, 1), inferredImpact);
+  if (trigger > 0.001) {
+    surface.impact = Math.max(surface.visualImpact, trigger);
+    surface.impactAge = 0;
+  } else if (surface.impact > 0) {
+    surface.impactAge += step;
+  }
+  const landing =
+    surface.impact *
+    Math.exp(-surface.impactAge * 7.2) *
+    (0.35 + 0.65 * (1 - Math.exp(-surface.impactAge * 28)));
+  surface.visualImpact = landing;
+  if (landing < 0.0005 && surface.impactAge > 0.4) {
+    surface.impact = 0;
+    surface.impactAge = 0;
+    surface.visualImpact = 0;
+  }
+
+  const phase = t * (0.42 + motion * 1.15) + surface.phase;
+  const airDrift = surface.air * reaction;
+  const landingReact = landing * reaction;
+  const boostGain = boosting ? 1.22 : 1;
+  const drift = motion * (0.0025 + norm * 0.0015 + airDrift * 0.004) * boostGain;
+  surface.texture.offset.set(
+    Math.sin(phase) * drift + Math.sin(phase * 2.7) * landingReact * 0.003,
+    Math.cos(phase * 0.73) * drift * 0.78 + Math.cos(phase * 3.1) * landingReact * 0.002
+  );
+  surface.texture.rotation =
+    Math.sin(phase * 0.61) * motion * 0.008 + Math.sin(phase * 3.8) * landingReact * 0.012;
+  const airStretch = airDrift * 0.006;
+  const landingZoom = landingReact * 0.014;
+  surface.texture.repeat.set(1 + airStretch - landingZoom, 1 - airStretch * 0.45 - landingZoom);
+  surface.texture.updateMatrix();
+  surface.material.emissiveIntensity =
+    0.18 + airDrift * 0.08 + landingReact * 0.28 + (boosting ? motion * 0.035 : 0);
+
   const breathe = 0.82 + 0.18 * Math.sin(t * 2.4) + 0.06 * Math.sin(t * 11) * norm;
-  anim.pulseMat.color.copy(anim.pulseBase).multiplyScalar(breathe);
-  anim.lightSpec.intensity = anim.lightBase * (0.88 + 0.24 * (breathe - 0.82));
+  const pulse = breathe + landingReact * 0.12;
+  anim.pulseMat.color.copy(anim.pulseBase).multiplyScalar(pulse);
+  anim.lightSpec.intensity = anim.lightBase * (0.88 + 0.24 * (pulse - 0.82));
 }

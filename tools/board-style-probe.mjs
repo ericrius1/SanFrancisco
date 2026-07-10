@@ -1,12 +1,13 @@
 // Headless hoverboard-customizer probe. Boots the real app (own vite, WebGPU/
 // metal), rides the board on a known Castro street anchor, then:
-//   1. swaps through customizer configs via player.setBoardConfig (screenshots
-//      each procedural surface, a close overhead texture shot, and night glow),
+//   1. swaps through all v3 procedural configs via player.setBoardConfig,
+//      verifies one fully-wrapped shell, and captures every side of the artwork,
 //   2. spawns a fake remote rider with a custom board and re-customizes it
 //      (exercises remotes.updateBoard's dispose/rebuild path),
-//   3. opens the garage panel, verifies both XY canvases + reroll, and drives
-//      each pad through Chrome input so pointer capture/commit paths execute,
-//   4. re-voices the hum + macro controls and samples vehicleAudio.debugState
+//   3. proves flow/air/landing animation changes texture uniforms without uploads,
+//   4. opens the garage panel, drives all four named XY pads through Chrome input,
+//      and checks desktop/mobile scroll reachability,
+//   5. re-voices the hum + macro controls and samples vehicleAudio.debugState
 //      to prove the selected style sticks while the voice swells and decays.
 //   node tools/board-style-probe.mjs
 // Env: SF_PROBE_URL (own vite; NOT 5179), SF_PROBE_OUT (default .data/board-style)
@@ -27,6 +28,10 @@ const SERVER_URL = process.env.SF_PROBE_URL ?? "http://127.0.0.1:5236";
 const W = 1280, H = 800;
 const FLAT = { x: 206, z: 3194, facing: 1.58 }; // Castro St core (verified street anchor)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function assertProbe(ok, message) {
+  if (!ok) throw new Error(`[board-style-probe] ${message}`);
+}
 
 async function findChrome() {
   for (const c of [process.env.CHROME_BIN, "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/Applications/Chromium.app/Contents/MacOS/Chromium"].filter(Boolean)) {
@@ -99,11 +104,105 @@ async function dragPad(c, rect, from, to) {
   await c.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...end, button: "left", buttons: 0, clickCount: 1, pointerType: "mouse" });
 }
 
+async function revealPad(c, kind) {
+  return ev(c, `(async()=>{
+    const pad=document.querySelector('.board-lab-${kind} .board-xy-pad');
+    if(!pad) return null;
+    pad.scrollIntoView({block:'center',inline:'nearest'});
+    await new Promise(r=>requestAnimationFrame(r));
+    const b=pad.getBoundingClientRect();
+    return {left:b.left,top:b.top,width:b.width,height:b.height};
+  })()`);
+}
+
+async function measurePanel(c) {
+  return ev(c, `(async()=>{
+    const panel=document.querySelector('.board-panel');
+    if(!panel) return {exists:false};
+    const kinds=['surface','finish','life','sound'];
+    panel.scrollTop=0;
+    await new Promise(r=>requestAnimationFrame(r));
+    const pr=panel.getBoundingClientRect();
+    const fitsViewport=pr.left>=-1&&pr.top>=-1&&pr.right<=innerWidth+1&&pr.bottom<=innerHeight+1;
+    const reachable={};
+    for(const kind of kinds){
+      const pad=panel.querySelector('.board-lab-'+kind+' .board-xy-pad');
+      if(!pad){ reachable[kind]=false; continue; }
+      pad.scrollIntoView({block:'center',inline:'nearest'});
+      await new Promise(r=>requestAnimationFrame(r));
+      const b=pad.getBoundingClientRect(),p=panel.getBoundingClientRect();
+      reachable[kind]=b.left>=Math.max(0,p.left)-1&&b.right<=Math.min(innerWidth,p.right)+1&&
+        b.top>=Math.max(0,p.top)-1&&b.bottom<=Math.min(innerHeight,p.bottom)+1;
+    }
+    const last=panel.querySelector('.avatar-random');
+    last?.scrollIntoView({block:'end',inline:'nearest'});
+    await new Promise(r=>requestAnimationFrame(r));
+    const lr=last?.getBoundingClientRect(),p2=panel.getBoundingClientRect();
+    const lastReachable=!!lr&&lr.left>=Math.max(0,p2.left)-1&&lr.right<=Math.min(innerWidth,p2.right)+1&&
+      lr.top>=Math.max(0,p2.top)-1&&lr.bottom<=Math.min(innerHeight,p2.bottom)+1;
+    const overflowY=getComputedStyle(panel).overflowY;
+    const scrollable=panel.scrollHeight>panel.clientHeight+1;
+    return {
+      exists:true,viewport:[innerWidth,innerHeight],
+      rect:{left:pr.left,top:pr.top,right:pr.right,bottom:pr.bottom,width:pr.width,height:pr.height},
+      clientHeight:panel.clientHeight,scrollHeight:panel.scrollHeight,scrollTop:panel.scrollTop,
+      overflowY,scrollable,scrollReady:!scrollable||/auto|scroll/.test(overflowY),
+      fitsViewport,reachable,lastReachable,allPadsReachable:Object.values(reachable).every(Boolean)
+    };
+  })()`);
+}
+
 const CONFIGS = [
-  { name: "classic", cfg: { shape: "classic", fin: "none", deck: 0, trim: 5, glow: 0, surface: "aurora", surfaceScale: 24, surfaceWarp: 68, surfaceSeed: 101, hum: "hum", pitch: 0, soundTone: 45, soundMotion: 35 } },
-  { name: "dart", cfg: { shape: "dart", fin: "spoiler", deck: 1, trim: 3, glow: 4, surface: "topo", surfaceScale: 70, surfaceWarp: 18, surfaceSeed: 202, hum: "retro", pitch: 3, soundTone: 80, soundMotion: 72 } },
-  { name: "manta", cfg: { shape: "manta", fin: "halo", deck: 4, trim: 5, glow: 3, surface: "terrazzo", surfaceScale: 48, surfaceWarp: 88, surfaceSeed: 303, hum: "choir", pitch: 1, soundTone: 32, soundMotion: 64 } },
-  { name: "saucer", cfg: { shape: "saucer", fin: "twin", deck: 5, trim: 6, glow: 2, surface: "circuit", surfaceScale: 76, surfaceWarp: 42, surfaceSeed: 404, hum: "crystal", pitch: 4, soundTone: 68, soundMotion: 82 } }
+  {
+    name: "classic",
+    cfg: {
+      shape: "classic", fin: "none", deck: 0, trim: 5, glow: 0,
+      surface: "aurora", surfaceScale: 24, surfaceWarp: 68, surfaceSeed: 101,
+      surfaceContrast: 38, surfaceEffect: "clean", surfaceEffectAmount: 0,
+      surfaceFlow: 0, surfaceReaction: 0,
+      hum: "hum", pitch: 0, soundTone: 45, soundMotion: 35
+    }
+  },
+  {
+    name: "dart",
+    cfg: {
+      shape: "dart", fin: "spoiler", deck: 1, trim: 3, glow: 4,
+      surface: "topo", surfaceScale: 70, surfaceWarp: 18, surfaceSeed: 202,
+      surfaceContrast: 76, surfaceEffect: "grain", surfaceEffectAmount: 44,
+      surfaceFlow: 35, surfaceReaction: 48,
+      hum: "retro", pitch: 3, soundTone: 80, soundMotion: 72
+    }
+  },
+  {
+    name: "manta",
+    cfg: {
+      shape: "manta", fin: "halo", deck: 4, trim: 5, glow: 3,
+      surface: "terrazzo", surfaceScale: 48, surfaceWarp: 88, surfaceSeed: 303,
+      surfaceContrast: 62, surfaceEffect: "prism", surfaceEffectAmount: 72,
+      surfaceFlow: 58, surfaceReaction: 82,
+      hum: "choir", pitch: 1, soundTone: 32, soundMotion: 64
+    }
+  },
+  {
+    name: "saucer",
+    cfg: {
+      shape: "saucer", fin: "twin", deck: 5, trim: 6, glow: 2,
+      surface: "circuit", surfaceScale: 76, surfaceWarp: 42, surfaceSeed: 404,
+      surfaceContrast: 88, surfaceEffect: "scanlines", surfaceEffectAmount: 66,
+      surfaceFlow: 42, surfaceReaction: 64,
+      hum: "crystal", pitch: 4, soundTone: 68, soundMotion: 82
+    }
+  },
+  {
+    name: "plasma",
+    cfg: {
+      shape: "twintip", fin: "halo", deck: 6, trim: 1, glow: 7,
+      surface: "plasma", surfaceScale: 56, surfaceWarp: 76, surfaceSeed: 505,
+      surfaceContrast: 92, surfaceEffect: "grain", surfaceEffectAmount: 55,
+      surfaceFlow: 88, surfaceReaction: 94,
+      hum: "deep", pitch: 2, soundTone: 58, soundMotion: 90
+    }
+  }
 ];
 
 async function main() {
@@ -161,9 +260,85 @@ async function main() {
   const FRAME = `const frame=()=>{ const p=sf.player.renderPosition;
     window.__sfFreeCam([p.x+2.1,p.y+1.15,p.z-2.5],[p.x,p.y+0.3,p.z]); };`;
 
-  const results = { shots: [], boards: [], texture: {}, remote: {}, audio: {}, ui: {}, errors: [] };
+  const results = { shots: [], boards: [], texture: {}, animation: {}, remote: {}, audio: {}, ui: {}, errors: [] };
 
-  // ---- 1. config swaps on the local player ----
+  // ---- 1. texture-uniform animation contract ----
+  // Drive the real board animation function directly against the live mesh. The
+  // controller path is covered by board-fix-probe; here direct ticks make upload
+  // and one-shot envelope assertions deterministic and independent of terrain.
+  results.animation = await ev(c, `(async()=>{ ${P}
+    const {animateBoard}=await import('/src/vehicles/board/mesh.ts');
+    const base=${JSON.stringify(CONFIGS[0].cfg)};
+    sf.player.setBoardConfig(base);
+    const g=sf.player.meshes.board;
+    const surface=g.userData.boardSurface;
+    surface.reducedMotion=false;
+    const snap=()=>({
+      matrix:[...surface.texture.matrix.elements],
+      offset:[surface.texture.offset.x,surface.texture.offset.y],
+      repeat:[surface.texture.repeat.x,surface.texture.repeat.y],
+      rotation:surface.texture.rotation
+    });
+    const delta=(a,b)=>Math.max(...a.matrix.map((v,i)=>Math.abs(v-b.matrix[i])));
+
+    animateBoard(g,1/60,0,12,true,0,0,false);
+    const version0=surface.texture.version;
+    const staticA=snap();
+    for(let i=1;i<=60;i++) animateBoard(g,1/60,i/60,12,true,0,0,false);
+    const staticB=snap();
+    const staticDelta=delta(staticA,staticB);
+    const versionAfterStatic=surface.texture.version;
+
+    // Motion-only preview must update scalar state without repainting/uploading.
+    sf.player.previewBoardSurface({...base,surfaceFlow:82,surfaceReaction:91});
+    const versionAfterMotionEdit=surface.texture.version;
+    const flowSet=surface.flow;
+    const reactionSet=surface.reaction;
+    const motionA=snap();
+    for(let i=1;i<=45;i++) animateBoard(g,1/60,2+i/60,18,true,0,0,false);
+    const motionB=snap();
+    const motionDelta=delta(motionA,motionB);
+    const versionAfterMotion=surface.texture.version;
+
+    const airBefore=surface.air;
+    for(let i=0;i<30;i++) animateBoard(g,1/60,3+i/60,18,false,5,0,false);
+    const airAfter=surface.air;
+    // Establish a real downward history, then send exactly one explicit local
+    // landing impulse. The visual envelope may ease up before decaying, but it
+    // must form one contiguous pulse and return to zero.
+    for(let i=0;i<12;i++) animateBoard(g,1/60,3.5+i/60,18,false,-14,0,false);
+    let episodes=0,active=false,peak=0;
+    const pulse=[];
+    for(let i=0;i<150;i++){
+      animateBoard(g,1/60,3.7+i/60,18,true,0,i===0?0.8:0,false);
+      const value=surface.visualImpact;
+      pulse.push(value);
+      peak=Math.max(peak,value);
+      const next=value>0.001;
+      if(next&&!active) episodes++;
+      active=next;
+    }
+    const finalImpact=surface.visualImpact;
+    const versionFinal=surface.texture.version;
+    return {
+      version0,versionAfterStatic,versionAfterMotionEdit,versionAfterMotion,versionFinal,
+      versionStable:version0===versionAfterStatic&&version0===versionAfterMotionEdit&&version0===versionAfterMotion&&version0===versionFinal,
+      staticDelta,motionDelta,flowSet,reactionSet,airBefore,airAfter,
+      episodes,peak,firstImpact:pulse[0],finalImpact,
+      flowZeroStatic:staticDelta<1e-9,
+      motionMovedWithoutUpload:motionDelta>1e-6&&versionAfterMotionEdit===versionAfterMotion
+    };
+  })()`);
+  assertProbe(results.animation.versionStable, "animation changed CanvasTexture.version (unexpected upload)");
+  assertProbe(results.animation.flowZeroStatic, `flow=0 moved texture matrix (${results.animation.staticDelta})`);
+  assertProbe(results.animation.motionMovedWithoutUpload, "flow/reaction did not move texture uniforms without upload");
+  assertProbe(Math.abs(results.animation.flowSet - 0.82) < 1e-9, "flow preview did not reach 0.82");
+  assertProbe(Math.abs(results.animation.reactionSet - 0.91) < 1e-9, "reaction preview did not reach 0.91");
+  assertProbe(results.animation.airAfter > results.animation.airBefore + 0.5, "air response did not rise");
+  assertProbe(results.animation.episodes === 1, `landing envelope fired ${results.animation.episodes} times`);
+  assertProbe(results.animation.peak > 0.1 && results.animation.finalImpact < 0.001, "landing pulse did not peak and decay");
+
+  // ---- 2. config swaps on the local player ----
   for (const { name, cfg } of CONFIGS) {
     const r = await ev(c, `(async()=>{ ${P} ${FRAME}
       sf.player.setBoardConfig(${JSON.stringify(cfg)});
@@ -177,24 +352,84 @@ async function main() {
     results.boards.push({ name, ...r });
     results.shots.push(await shot(c, `board-${name}.png`));
   }
-  // Texture proof: hide only the rider rig, then move close and above the live
-  // board. This keeps the real world lighting/material path while exposing the
-  // whole top surface instead of photographing it through the rider's legs.
+  assertProbe(results.boards.length === 5 && results.boards.every((b) => b.hasAnim), "not all five v3 presets built");
+
+  // Wrapped-shell proof: one named mesh, one mapped material, projected finite
+  // UVs, and normals facing both directions on every axis. Hide the shared rider
+  // while photographing the top, underside, nose, tail, port and starboard.
   results.texture = await ev(c, `(async()=>{ ${P}
     const g=sf.player.meshes.board;
     const rider=g.children.find(o=>o.isGroup&&o.children.length>0&&o.position.y>0.75&&o.position.y<1.1);
     if(rider){ window.__sfProbeRider=rider; window.__sfProbeRiderVisible=rider.visible; rider.visible=false; }
-    const wp=g.getWorldPosition(new sf.THREE.Vector3());
-    window.__sfFreeCam([wp.x+0.55,wp.y+2.2,wp.z-0.45],[wp.x,wp.y+0.02,wp.z]);
-    await tick(4);
+    const under=g.getObjectByName('board-underglow-ring');
+    if(under){ window.__sfProbeUnder=under; window.__sfProbeUnderVisible=under.visible; }
+    const shell=g.getObjectByName('board-surface-shell');
     const surface=g.userData.boardSurface;
-    return { riderHidden:!!rider, hasSurface:!!surface, canvas:surface?.canvas?[surface.canvas.width,surface.canvas.height]:null };
+    if(!shell||!surface) return {riderHidden:!!rider,hasSurface:!!surface,shell:false};
+    const uv=shell.geometry.getAttribute('uv');
+    const normal=shell.geometry.getAttribute('normal');
+    let uvMin=Infinity,uvMax=-Infinity,finiteUV=true;
+    for(let i=0;i<uv.count;i++){
+      const u=uv.getX(i),v=uv.getY(i);
+      finiteUV&&=Number.isFinite(u)&&Number.isFinite(v);
+      uvMin=Math.min(uvMin,u,v); uvMax=Math.max(uvMax,u,v);
+    }
+    const faces={px:0,nx:0,py:0,ny:0,pz:0,nz:0};
+    for(let i=0;i<normal.count;i++){
+      const x=normal.getX(i),y=normal.getY(i),z=normal.getZ(i);
+      if(x>.35)faces.px++; if(x<-.35)faces.nx++;
+      if(y>.35)faces.py++; if(y<-.35)faces.ny++;
+      if(z>.35)faces.pz++; if(z<-.35)faces.nz++;
+    }
+    const materials=Array.isArray(shell.material)?shell.material:[shell.material];
+    const mapped=materials.filter(m=>!!m.map);
+    return {
+      riderHidden:!!rider,hasSurface:true,shell:true,shellName:shell.name,
+      canvas:[surface.canvas.width,surface.canvas.height],vertices:uv.count,
+      materialCount:materials.length,mappedMaterialCount:mapped.length,
+      mapShared:mapped.length===1&&mapped[0].map===surface.texture,
+      finiteUV,uvMin,uvMax,uvInRange:finiteUV&&uvMin>=-1e-6&&uvMax<=1+1e-6,
+      normalFaces:faces,groups:shell.geometry.groups.length
+    };
   })()`);
-  results.shots.push(await shot(c, "board-surface-close.png"));
+  const faces = results.texture.normalFaces ?? {};
+  assertProbe(results.texture.shell && results.texture.shellName === "board-surface-shell", "named surface shell missing");
+  assertProbe(results.texture.materialCount === 1 && results.texture.mappedMaterialCount === 1 && results.texture.mapShared, "shell is not using one shared mapped material");
+  assertProbe(results.texture.uvInRange, `shell UVs invalid (${results.texture.uvMin}..${results.texture.uvMax})`);
+  assertProbe([faces.px, faces.nx, faces.py, faces.ny, faces.pz, faces.nz].every((n) => n > 0), "shell normals do not cover both caps, nose/tail and sides");
+
+  const wrapViews = [
+    { name: "top", eye: [0, 2.45, 0.12], target: [0, 0, 0] },
+    { name: "underside", eye: [0, -1.75, 0.05], target: [0, -0.02, 0], hideUnder: true },
+    { name: "nose", eye: [0, 0.24, -2.45], target: [0, 0, -0.3] },
+    { name: "tail", eye: [0, 0.24, 2.45], target: [0, 0, 0.3] },
+    { name: "port", eye: [-2.2, 0.24, 0], target: [-0.08, 0, 0] },
+    { name: "starboard", eye: [2.2, 0.24, 0], target: [0.08, 0, 0] }
+  ];
+  results.texture.views = [];
+  for (const view of wrapViews) {
+    const framed = await ev(c, `(async()=>{ ${P}
+      const g=sf.player.meshes.board;
+      const q=g.getWorldQuaternion(new sf.THREE.Quaternion());
+      const wp=g.getWorldPosition(new sf.THREE.Vector3());
+      const eye=new sf.THREE.Vector3(...${JSON.stringify(view.eye)}).applyQuaternion(q).add(wp);
+      const target=new sf.THREE.Vector3(...${JSON.stringify(view.target)}).applyQuaternion(q).add(wp);
+      const under=window.__sfProbeUnder;
+      if(under) under.visible=${view.hideUnder ? "false" : "window.__sfProbeUnderVisible"};
+      window.__sfFreeCam([eye.x,eye.y,eye.z],[target.x,target.y,target.z]);
+      await tick(4);
+      return {eye:[eye.x,eye.y,eye.z],target:[target.x,target.y,target.z],underHidden:!!under&&!under.visible};
+    })()`);
+    results.texture.views.push({ name: view.name, ...framed });
+    results.shots.push(await shot(c, `board-wrap-${view.name}.png`));
+  }
   await ev(c, `(async()=>{ ${P}
     const rider=window.__sfProbeRider;
     if(rider) rider.visible=window.__sfProbeRiderVisible;
+    const under=window.__sfProbeUnder;
+    if(under) under.visible=window.__sfProbeUnderVisible;
     delete window.__sfProbeRider; delete window.__sfProbeRiderVisible;
+    delete window.__sfProbeUnder; delete window.__sfProbeUnderVisible;
     window.__sfFreeCam(null); await tick(4); return true;
   })()`);
   // night shot: glow check on the last config
@@ -202,7 +437,7 @@ async function main() {
   results.shots.push(await shot(c, "board-night.png"));
   await ev(c, `(async()=>{ ${P} sf.sky.setTimeOfDay(14.0); await tick(10); return true; })()`);
 
-  // ---- 2. remote rider with a custom board, then re-customized ----
+  // ---- 3. remote rider with a custom board, then re-customized ----
   results.remote = await ev(c, `(async()=>{ ${P}
     const cfgA=${JSON.stringify(CONFIGS[1].cfg)}, cfgB=${JSON.stringify(CONFIGS[2].cfg)};
     sf.remotes.add({id:999,name:'Probe Pal',hue:120,board:cfgA});

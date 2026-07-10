@@ -229,6 +229,67 @@ function paintTopo(
   ctx.putImageData(image, 0, 0);
 }
 
+/** Curling interference cells with bright electric seams. */
+function paintPlasma(
+  canvas: HTMLCanvasElement,
+  ctx: CanvasRenderingContext2D,
+  p: Palette,
+  scale: number,
+  warp: number,
+  seed: number
+) {
+  const { width: w, height: h } = canvas;
+  const image = pixelsFor(canvas, ctx);
+  const data = image.data;
+  const density = lerp(1.15, 3.8, scale);
+  const curl = lerp(0.12, 1.15, warp);
+  const phase = hash2(43, 79, seed) * TAU;
+  const phaseB = hash2(97, 23, seed ^ 0x4f1bbcdc) * TAU;
+  let index = 0;
+
+  for (let y = 0; y < h; y++) {
+    const v = y / Math.max(1, h - 1);
+    const py = (v - 0.5) * 3.2;
+    for (let x = 0; x < w; x++) {
+      const u = x / Math.max(1, w - 1);
+      const px = (u - 0.5) * 2;
+      const coarse = fbm(px * density * 0.36 + 5.7, py * density * 0.24 - 3.2, seed);
+      const fine = noise2(px * density * 1.4 - 11.3, py * density * 0.92 + 7.1, seed ^ 0x7136a4d9);
+      const dx = Math.sin(py * density * 2.1 + phase + coarse * TAU) * curl * 0.28;
+      const dy = Math.cos(px * density * 2.35 - phaseB + fine * TAU) * curl * 0.2;
+      const qx = px + dx + (coarse - 0.5) * curl * 0.34;
+      const qy = py + dy - (fine - 0.5) * curl * 0.24;
+      const radial = Math.hypot(qx * 1.18 + 0.22, qy * 0.62 - 0.16);
+      const interference =
+        Math.sin(qx * density * 4.8 + phase) +
+        Math.sin(qy * density * 3.65 - phaseB) +
+        Math.sin((qx + qy * 0.54) * density * 3.1 + phaseB * 0.62) +
+        Math.sin(radial * density * 5.4 - phase * 0.74);
+      const energy = 0.5 + 0.5 * Math.sin(interference * 1.12 + (coarse - 0.5) * curl * 4.2);
+      const basin = clamp01(0.12 + energy * 0.82 + (fine - 0.5) * 0.12);
+      const seam = 1 - smoothstep(0.025, lerp(0.15, 0.075, scale), Math.abs(energy - 0.5));
+      const core = smoothstep(0.76, 0.985, energy) * (0.68 + coarse * 0.32);
+
+      let r = lerp(p.deep[0], p.base[0], basin);
+      let g = lerp(p.deep[1], p.base[1], basin);
+      let b = lerp(p.deep[2], p.base[2], basin);
+      const ink = seam * lerp(0.5, 0.88, warp);
+      r = lerp(r, p.trimLift[0], ink);
+      g = lerp(g, p.trimLift[1], ink);
+      b = lerp(b, p.trimLift[2], ink);
+      r = lerp(r, p.glowLift[0], core * 0.9);
+      g = lerp(g, p.glowLift[1], core * 0.9);
+      b = lerp(b, p.glowLift[2], core * 0.9);
+
+      data[index++] = r;
+      data[index++] = g;
+      data[index++] = b;
+      data[index++] = 255;
+    }
+  }
+  ctx.putImageData(image, 0, 0);
+}
+
 function fillBackground(ctx: CanvasRenderingContext2D, w: number, h: number, p: Palette) {
   const background = ctx.createLinearGradient(0, 0, w, h);
   background.addColorStop(0, css(p.lift));
@@ -403,6 +464,91 @@ function paintCircuit(
 }
 
 /**
+ * One deterministic post stack shared by every preset. Contrast is always
+ * available; the selected finish adds at most one overlay. This only runs when
+ * the caller asks for a repaint, never from the board's animation loop.
+ */
+function applySurfaceFinish(
+  canvas: HTMLCanvasElement,
+  ctx: CanvasRenderingContext2D,
+  p: Palette,
+  config: BoardConfig,
+  seed: number
+) {
+  const { width: w, height: h } = canvas;
+  const image = ctx.getImageData(0, 0, w, h);
+  const data = image.data;
+  const contrast = clamp01(config.surfaceContrast / 100);
+  const contrastGain = contrast < 0.5
+    ? lerp(0.55, 1, contrast * 2)
+    : lerp(1, 1.8, (contrast - 0.5) * 2);
+
+  if (Math.abs(contrastGain - 1) > 1e-6) {
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      const luma = r * 0.2126 + g * 0.7152 + b * 0.0722;
+      const adjusted = (luma - 128) * contrastGain + 128;
+      const delta = adjusted - luma;
+      data[i] = r + delta;
+      data[i + 1] = g + delta;
+      data[i + 2] = b + delta;
+    }
+  }
+
+  const amount = clamp01(config.surfaceEffectAmount / 100);
+  if (amount > 0 && config.surfaceEffect === "grain") {
+    const grainSeed = seed ^ 0x2d8f31a7;
+    for (let y = 0, i = 0; y < h; y++) {
+      for (let x = 0; x < w; x++, i += 4) {
+        const fine = hash2(x, y, grainSeed) - 0.5;
+        const coarse = hash2(x >> 1, y >> 1, grainSeed ^ 0x6a09e667) - 0.5;
+        const grain = (fine * 1.6 + coarse * 0.4) * amount * 34;
+        data[i] += grain;
+        data[i + 1] += grain;
+        data[i + 2] += grain;
+      }
+    }
+  } else if (amount > 0 && config.surfaceEffect === "scanlines") {
+    const spacing = lerp(8, 3.2, amount);
+    const phase = hash2(13, 61, seed ^ 0x9e3779b9) * spacing;
+    for (let y = 0, i = 0; y < h; y++) {
+      const wave = 0.5 + 0.5 * Math.cos(((y + phase) / spacing) * TAU);
+      const dark = smoothstep(0.58, 0.96, wave) * amount * 0.36;
+      const shine = smoothstep(0.82, 0.995, 1 - wave) * amount * 0.1;
+      for (let x = 0; x < w; x++, i += 4) {
+        data[i] = lerp(lerp(data[i], p.deep[0], dark), p.glowLift[0], shine);
+        data[i + 1] = lerp(lerp(data[i + 1], p.deep[1], dark), p.glowLift[1], shine);
+        data[i + 2] = lerp(lerp(data[i + 2], p.deep[2], dark), p.glowLift[2], shine);
+      }
+    }
+  } else if (amount > 0 && config.surfaceEffect === "prism") {
+    // Work from a frozen, already-contrasted source so neighbouring reads do not
+    // feed back into later pixels. Clamp at the edges: board textures are not
+    // required to tile, and a wrapped seam would be much more conspicuous.
+    const source = data.slice();
+    const phase = hash2(71, 19, seed ^ 0x85ebca6b) * TAU;
+    for (let y = 0, i = 0; y < h; y++) {
+      const rowWave = 0.5 + 0.5 * Math.sin((y / Math.max(1, h - 1)) * TAU * 2.3 + phase);
+      const shift = Math.round(amount * lerp(1.5, 7, rowWave));
+      for (let x = 0; x < w; x++, i += 4) {
+        const redX = Math.min(w - 1, x + shift);
+        const blueX = Math.max(0, x - shift);
+        const red = source[(y * w + redX) * 4];
+        const blue = source[(y * w + blueX) * 4 + 2];
+        const split = amount * (0.58 + rowWave * 0.22);
+        data[i] = lerp(source[i], red, split);
+        data[i + 1] = source[i + 1];
+        data[i + 2] = lerp(source[i + 2], blue, split);
+      }
+    }
+  }
+
+  ctx.putImageData(image, 0, 0);
+}
+
+/**
  * Paint the board's procedural color surface into a caller-owned canvas.
  * Inputs are deliberately compact and quantized so the exact same board can be
  * reconstructed for remote riders. The caller owns scheduling; this function
@@ -431,9 +577,13 @@ export function paintBoardSurface(canvas: HTMLCanvasElement, config: BoardConfig
     paintTerrazzo(ctx, canvas.width, canvas.height, p, scale, warp, seed);
   } else if (config.surface === "circuit") {
     paintCircuit(ctx, canvas.width, canvas.height, p, scale, warp, seed);
+  } else if (config.surface === "plasma") {
+    paintPlasma(canvas, ctx, p, scale, warp, seed);
   } else {
     paintAurora(canvas, ctx, p, scale, warp, seed);
   }
+
+  applySurfaceFinish(canvas, ctx, p, config, seed);
 
   ctx.restore();
 }

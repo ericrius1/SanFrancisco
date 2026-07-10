@@ -5,6 +5,7 @@ import {
   BOARD_HUMS,
   BOARD_PITCHES,
   BOARD_SHAPES,
+  BOARD_SURFACE_EFFECTS,
   BOARD_SURFACES,
   normalizeBoardConfig,
   randomBoardConfig,
@@ -12,13 +13,23 @@ import {
 } from "../vehicles/board/config";
 import { paintBoardSurface } from "../vehicles/board/surfaceTexture";
 
-type PadKind = "surface" | "sound";
-type PadKey = "surfaceScale" | "surfaceWarp" | "soundTone" | "soundMotion";
+type PreviewKind = "surface" | "sound";
+type LabKind = "surface" | "finish" | "life" | "sound";
+type PadKey =
+  | "surfaceScale"
+  | "surfaceWarp"
+  | "surfaceContrast"
+  | "surfaceEffectAmount"
+  | "surfaceFlow"
+  | "surfaceReaction"
+  | "soundTone"
+  | "soundMotion";
 
 /**
- * The hoverboard garage is a tiny instrument, not just a preset list. Two XY
- * pads preview the procedural deck skin and live synth macros while held, then
- * commit once on release so persistence, mesh rebuilds, and net sync stay calm.
+ * The hoverboard garage is a tiny instrument, not just a preset list. Four XY
+ * pads preview the procedural deck, finish, reactive motion, and live synth
+ * macros while held, then commit once on release so persistence, mesh rebuilds,
+ * and net sync stay calm.
  */
 export class BoardSelector {
   #root: HTMLElement;
@@ -26,7 +37,7 @@ export class BoardSelector {
   #toggle: HTMLButtonElement;
   #config: BoardConfig;
   #onChange: (config: BoardConfig) => void;
-  #onPreview: (config: BoardConfig, kind: PadKind) => void;
+  #onPreview: (config: BoardConfig, kind: PreviewKind) => void;
   #onSoundEdit: () => void;
   #onOpen: () => void;
   #open = false;
@@ -36,7 +47,7 @@ export class BoardSelector {
   constructor(
     initial: BoardConfig,
     onChange: (config: BoardConfig) => void,
-    onPreview: (config: BoardConfig, kind: PadKind) => void,
+    onPreview: (config: BoardConfig, kind: PreviewKind) => void,
     onSoundEdit: () => void,
     onOpen: () => void
   ) {
@@ -92,7 +103,7 @@ export class BoardSelector {
     if (sound) this.#onSoundEdit();
   }
 
-  #button<K extends "shape" | "fin" | "surface" | "hum">(
+  #button<K extends "shape" | "fin" | "surface" | "surfaceEffect" | "hum">(
     key: K,
     id: BoardConfig[K],
     label: string,
@@ -135,7 +146,7 @@ export class BoardSelector {
   }
 
   #xyLab(
-    kind: PadKind,
+    kind: LabKind,
     title: string,
     subtitle: string,
     xKey: PadKey,
@@ -164,6 +175,8 @@ export class BoardSelector {
     pad.className = "board-xy-pad";
     pad.tabIndex = 0;
     pad.setAttribute("role", "group");
+    pad.setAttribute("aria-roledescription", "two-dimensional control");
+    pad.setAttribute("aria-keyshortcuts", "ArrowLeft ArrowRight ArrowUp ArrowDown");
     pad.setAttribute("aria-label", `${title}: horizontal ${xLabels[0]} to ${xLabels[1]}, vertical ${yLabels[0]} to ${yLabels[1]}`);
     const canvas = document.createElement("canvas");
     canvas.className = "board-xy-canvas";
@@ -196,8 +209,10 @@ export class BoardSelector {
       puck.style.left = `${x}%`;
       puck.style.top = `${100 - y}%`;
       readout.value = `${x.toString().padStart(2, "0")} · ${y.toString().padStart(2, "0")}`;
-      pad.setAttribute("aria-valuetext", `${xLabels[0]} ${100 - x}%, ${xLabels[1]} ${x}%; ${yLabels[0]} ${100 - y}%, ${yLabels[1]} ${y}%`);
-      if (kind === "surface") paintBoardSurface(canvas, this.#config);
+      const valueText = `${xLabels[0]} ${100 - x}%, ${xLabels[1]} ${x}%; ${yLabels[0]} ${100 - y}%, ${yLabels[1]} ${y}%`;
+      readout.setAttribute("aria-label", `${title}: ${valueText}`);
+      pad.setAttribute("aria-valuetext", valueText);
+      if (kind !== "sound") paintBoardSurface(canvas, this.#config);
     };
 
     const apply = (x: number, y: number, preview = true) => {
@@ -207,7 +222,7 @@ export class BoardSelector {
         [yKey]: Math.round(Math.max(0, Math.min(100, y)))
       });
       draw();
-      if (preview) this.#onPreview({ ...this.#config }, kind);
+      if (preview) this.#onPreview({ ...this.#config }, kind === "sound" ? "sound" : "surface");
     };
 
     const point = (e: PointerEvent) => {
@@ -361,6 +376,10 @@ export class BoardSelector {
       this.#row(
         "texture",
         BOARD_SURFACES.map((s) => this.#button("surface", s.id, s.label))
+      ),
+      this.#row(
+        "finish",
+        BOARD_SURFACE_EFFECTS.map((effect) => this.#button("surfaceEffect", effect.id, effect.label))
       )
     );
 
@@ -385,8 +404,26 @@ export class BoardSelector {
     labs.append(
       surfaceLab,
       this.#xyLab(
+        "finish",
+        "FINISH / 02",
+        "contrast × effect amount",
+        "surfaceContrast",
+        "surfaceEffectAmount",
+        ["soft", "punch"],
+        ["subtle", "full"]
+      ),
+      this.#xyLab(
+        "life",
+        "LIFE / 03",
+        "flow × reaction",
+        "surfaceFlow",
+        "surfaceReaction",
+        ["still", "flow"],
+        ["calm", "react"]
+      ),
+      this.#xyLab(
         "sound",
-        "VOICE / 02",
+        "VOICE / 04",
         "tone × LFO motion",
         "soundTone",
         "soundMotion",

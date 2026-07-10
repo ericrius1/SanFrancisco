@@ -384,6 +384,9 @@ async function boot() {
   // crabs to hunt plus the Garry's-Mod rope/grab click-tools
   // (hunt.ts / ropes.ts)
   const satchel = new Satchel();
+  // Presidio golf: full 18 playable holes on the real course footprint —
+  // deferred (data fetch + course meshes build behind the settle gate below)
+  let golf: import("./gameplay/golf").GolfGame | null = null;
   const hunt = new Hunt(map, scene);
   hunt.onCatch = (kind) => {
     satchel.add(kind);
@@ -567,6 +570,7 @@ async function boot() {
   net.onLeave = (id) => {
     remotes.remove(id);
     voice.drop(id);
+    golf?.removeRemote(id);
   };
   net.onSample = (id, s) => remotes.sample(id, s);
   // someone else's paintball: same ballistic sim, their color, splats locally
@@ -590,6 +594,8 @@ async function boot() {
     }
   );
   net.onChat = (_id, name, text) => chat.addMessage(name, text);
+  // golf: friends' swings/balls/scores replay here (owner-simulated snapshots)
+  net.onGolf = (id, m) => golf?.handleNet(id, m, hud, net.roster.get(id)?.name ?? "Player");
   input.onLockChange = (locked) => {
     if (!locked && !cameraMode && !input.freeCursor && !chat.focused) {
       hud.message("Click to capture the mouse · Esc releases it", 2.8);
@@ -1182,6 +1188,22 @@ async function boot() {
       if (open) input.releaseLock();
       else if (!cameraMode) input.requestLock();
     });
+
+    // Presidio Golf Course: greens/bunkers/tees over the real OSM layout, the
+    // full multiplayer round loop. Own try — a bad golf.json must not take the
+    // forest/citygen down with it.
+    try {
+      const { createGolf } = await import("./gameplay/golf");
+      const g = await createGolf(map, physics, scene);
+      g.onNet = (m) => net.sendGolf(m);
+      g.onImpact = (p) => fx.impactPuff(p);
+      golf = g;
+      // same late-patch as garden/wildlands: __sf snapshotted golf as null
+      const hooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
+      if (hooks) Object.assign(hooks, { golf: g });
+    } catch (err) {
+      console.warn("[golf] course unavailable:", err);
+    }
   })()
     .catch((err) => console.warn("[sf] deferred module load failed:", err))
     .finally(() => { modulesReady = true; }); // a failed chunk never wedges the cover
@@ -1573,6 +1595,7 @@ async function boot() {
     const shiftedNumberPress = (i: number) => input.shiftedPress(`Digit${i}`) || input.shiftedPress(`Numpad${i}`);
     for (let i = 1; i <= 9; i++) {
       if (!numberPressed(i)) continue;
+      if (golf?.capturesDigits) break; // golf swing UI owns the number row (club picks)
       if (ctrlNumberPress(i)) {
         const nextTool = TOOL_ORDER[i - 1];
         if (nextTool) setTool(nextTool);
@@ -1605,7 +1628,7 @@ async function boot() {
 
     // E: exit any vehicle/creature, or on foot hop into the nearest ride (a
     // friend's passenger seat, a rideable animal, or a mount you left behind)
-    if (input.pressed("KeyE") && !exitToWalk()) {
+    if (input.pressed("KeyE") && !exitToWalk() && !golf?.tryStartAtTee(player, hud)) {
         const drv = remotes.nearestDriver(player.position, 5.5);
         const animal = drv ? null : forest?.nearest(player.position, 5);
         if (drv) {
@@ -1709,6 +1732,9 @@ async function boot() {
     if (input.freeCursor) {
       // free cursor out: clicks only reach UI panels — the spray/chime/grab
       // tools stand down so pointing around never fires them
+    } else if (golf?.capturesFire) {
+      // golf swing context: the held mouse is the power meter (gameplay/golf
+      // reads input.firing itself) — every click-tool stands down
     } else if (player.mode === "drone") {
       if (!input.suspended && input.firePressed && fireCooldown <= 0) {
         chase.lookDir(aim);
@@ -1904,6 +1930,7 @@ async function boot() {
     islands.update(elapsed);
     citygenRing.current?.update(player.position, frameDt);
     if (!highUp) hunt.update(frameDt, elapsed, player.position);
+    golf?.update(frameDt, elapsed, { player, input, hud, chase, camera });
     ropes.update(frameDt, player.position, elapsed);
     if (grabber.holding) {
       // the carry servo chases a point in front of the live camera every frame
@@ -1939,6 +1966,8 @@ async function boot() {
     }
     if (cineHook) {
       cineHook(frameDt); // scripted cinematic owns pose + camera
+    } else if (golf?.updateBallCam(frameDt, camera)) {
+      // golf flight cam: chases the ball until it settles, then hands back
     } else if (cameraMode) {
       orbit.update(frameDt);
     } else {
