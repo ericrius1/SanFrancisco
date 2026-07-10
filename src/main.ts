@@ -1,5 +1,6 @@
 import * as THREE from "three/webgpu";
 import { Inspector } from "three/addons/inspector/Inspector.js";
+import Stats from "three/addons/libs/stats.module.js";
 import CameraControls from "camera-controls";
 import { CONFIG, FLOWER_TUNING, FOLIAGE_TUNING, RENDER_MODE, RENDER_TUNING, START, START_DEFAULTS, WORLD_TUNING } from "./config";
 import { loadPlayerState, resetAllTweaks, savePlayerState } from "./core/persist";
@@ -861,7 +862,13 @@ async function boot() {
     pipeline,
     setFoliageVisible,
     () => wildlands?.flowers.refresh(),
-    () => wildlands?.grass.refresh()
+    () => wildlands?.grass.refresh(),
+    // toggle the heavy three.js Inspector on/off; returns its new on-state so the
+    // pane button can relabel. Defined below the pane, but only ever runs on click.
+    () => {
+      setInspector(!inspectorOn);
+      return inspectorOn;
+    }
   );
   debugPanel.setMode(player.mode);
 
@@ -1215,14 +1222,25 @@ async function boot() {
     requestAnimationFrame(applyInspector);
   };
 
-  // "/" drives the tuning pane + inspector as one debug-UI switch; I (immersive)
+  // Cheap FPS readout (the little green Stats.js box). This is what the debug UI
+  // shows by default — near-zero cost, unlike the full Inspector's per-frame GPU
+  // timestamp queries + canvas graph redraw. update() is called each frame only
+  // while debug is on. Anchored top-left so it clears the top-right tuning pane.
+  const stats = new Stats();
+  stats.dom.style.cssText += ";position:fixed;top:12px;left:12px;z-index:40";
+  stats.dom.style.display = "none";
+  document.body.appendChild(stats.dom);
+
+  // "/" drives the tuning pane + Stats box as one debug-UI switch; the full
+  // Inspector is opt-in via a button at the bottom of the pane. I (immersive)
   // hides every scrap of UI, stashing the debug state to restore on exit
   let debugOn = false;
   let debugWasOn = false;
   const setDebugUI = (on: boolean) => {
     debugOn = on;
     if (debugPanel.visible !== on) debugPanel.toggle();
-    setInspector(on);
+    stats.dom.style.display = on ? "" : "none";
+    if (!on) setInspector(false); // closing debug also stops the heavy profiler
   };
 
   // Bottom-center pause control: only up while paused (and not immersive, since
@@ -1889,6 +1907,7 @@ async function boot() {
 
     input.endFrame();
     pipeline.render();
+    if (debugOn) stats.update(); // cheap FPS box; skipped entirely while hidden
   };
   // automation tabs (Playwright/Puppeteer probes) render with no vsync
   // backpressure — one orphaned headless probe pegged the GPU at 100%

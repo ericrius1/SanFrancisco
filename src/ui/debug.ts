@@ -100,6 +100,7 @@ export class DebugPanel {
   #setFoliageVisible: (visible: boolean) => void;
   #refreshFlowers: () => void;
   #refreshGrass: () => void;
+  #toggleProfiler: () => boolean;
   #lastRefresh = 0;
   #lastWireframeScan = 0;
   #wireframeOriginals = new Map<WireframeMaterial, boolean>();
@@ -119,7 +120,8 @@ export class DebugPanel {
     postfx: { applyPostFx: () => void; applyPostQuality: () => void } | null = null,
     setFoliageVisible: (visible: boolean) => void = () => {},
     refreshFlowers: () => void = () => {},
-    refreshGrass: () => void = () => {}
+    refreshGrass: () => void = () => {},
+    toggleProfiler: () => boolean = () => false
   ) {
     this.#renderer = renderer;
     this.#sky = sky;
@@ -131,6 +133,7 @@ export class DebugPanel {
     this.#setFoliageVisible = setFoliageVisible;
     this.#refreshFlowers = refreshFlowers;
     this.#refreshGrass = refreshGrass;
+    this.#toggleProfiler = toggleProfiler;
   }
 
   toggle() {
@@ -465,6 +468,18 @@ export class DebugPanel {
 
     // fireworks bindings read/write the params object the sim consumes each frame
     this.#fireworks?.addTuning(advanced);
+
+    // Full GPU profiler (three.js Inspector: FPS/CPU/GPU graph, timing, memory).
+    // Heavy — per-frame GPU timestamp queries + canvas redraw — so it's OFF by
+    // default; the cheap green Stats box covers everyday FPS watching. Deliberate
+    // opt-in via this button, last in the pane so you scroll to the bottom for it.
+    let profilerOn = false;
+    const profiler = pane.addButton({ title: "open full profiler ▸", label: "profiler" });
+    profiler.on("click", () => {
+      profilerOn = this.#toggleProfiler();
+      profiler.title = profilerOn ? "close full profiler ▾" : "open full profiler ▸";
+    });
+
     this.#applyFilter();
   }
 }
