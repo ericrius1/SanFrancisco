@@ -21,6 +21,9 @@ export interface FacadeEdge {
    *  base→top; only detail respects grade, so a sloped lot keeps a solid skirt
    *  instead of half-buried windows. */
   grade: number;
+  /** live terrain just outside the street door (host-supplied; defaults to base).
+   *  The front stoop reads this so its steps match the walkable ramp collider. */
+  frontGround?: number;
   floors: number;
   /** unit direction p0→p1 in x/z */
   along: Vec2;

@@ -53,21 +53,24 @@ function hangRoomArt(out: PanelBuilder, cell: Rect, max: number, r: Rng): void {
 }
 
 /**
- * Furnish one room. `stair`, when set, is a keep-clear footprint (pieces that
- * would overlap it are dropped). Adds a ceiling lamp so the room always reads.
+ * Furnish one room. `stair` and `avoid` (the entrance keep-clear zone), when
+ * set, are keep-clear footprints (pieces that would overlap either are
+ * dropped — never a sofa parked against the front door). Adds a ceiling lamp
+ * so the room always reads.
  */
 export function furnish(
   out: PanelBuilder, cols: ColliderBox[], stair: Rect | null,
-  role: Role, cell: Rect, floorY: number, r: Rng,
+  role: Role, cell: Rect, floorY: number, r: Rng, avoid: Rect | null = null,
 ): void {
   const inner = inset(cell, 0.28);
   const cx = rectCX(inner), cz = rectCZ(inner);
   const w = rectW(inner), d = rectD(inner);
 
-  /** place a solid box, skipping it if it would sit in the stairwell. */
+  /** place a solid box, skipping it if it would sit in the stairwell / doorway. */
   const put = (mat: string, px: number, py: number, pz: number, hx: number, hy: number, hz: number, collide = true): void => {
     const foot: Rect = { x0: px - hx, x1: px + hx, z0: pz - hz, z1: pz + hz };
     if (stair && overlaps(foot, stair)) return;
+    if (avoid && collide && overlaps(foot, avoid)) return; // rugs/lamps can stay
     addBox(out, collide ? cols : null, mat, px, py, pz, hx, hy, hz);
   };
   /** thin floor rug (no collider). */

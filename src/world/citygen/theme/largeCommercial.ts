@@ -24,8 +24,8 @@ import {
   type FacadeEdge, type Vec3, type PanelBuilder,
 } from "../core/facade";
 import type { Rng } from "../core/rng";
-import { sub, len, unit, lerp, UP, gp, beltCourse, cornice, faceWindow, frontDoor, wallWithDoorway, type WinMats } from "./facadeKit";
-import { doorEligible } from "../core/collider";
+import { sub, len, unit, lerp, UP, gp, beltCourse, cornice, faceWindow, frontDoor, frontStoop, wallWithDoorway, type WinMats } from "./facadeKit";
+import { doorEligible, doorMetrics } from "../core/collider";
 
 // Relief depths (metres proud of the flat wall). Piers stand deepest, then the
 // spandrel bands, then the window frame/glass — so a window sits in a genuine
@@ -68,7 +68,7 @@ function pier(out: PanelBuilder, e: FacadeEdge, t: number, y0: number, y1: numbe
  *  lintel + keystone, with a glazed transom over the doors and a broad stoop
  *  slab. Aligned to the walk-through gap the collider cuts (tc), so it matches. */
 function grandEntrance(out: PanelBuilder, e: FacadeEdge, base: number, topY: number, mats: { stone: string; door: string; glass: string }): void {
-  const y0 = Math.max(base, e.grade);
+  const y0 = doorMetrics(e.length, e.base, e.top, e.grade).sill; // raised entry floor (= interior grade)
   if (topY - y0 < 2.0 || e.length < 3) return;
   const halfW = Math.min(2.2, e.length * 0.13);
   const tc = e.length > 6 ? 0.24 : 0.5; // MATCH core/collider.ts doorway centre
@@ -137,6 +137,7 @@ export function largeCommercialFacade(e: FacadeEdge, out: PanelBuilder, _rng: Rn
     // collider's walk-through gap always has a matching visible doorway.
     if (e.length > 6) grandEntrance(out, e, base, baseTopY - 0.55, { stone, door: "citygen.door", glass });
     else frontDoor(out, e, { door: "citygen.door", trim });
+    frontStoop(out, e, stone); // walkable-looking stone steps up to the raised entry
     // tall shopfront-scale windows in the outer bays, clear of the central portal
     for (let c = 0; c < cols; c++) {
       const t = (c + 0.5) / cols;

@@ -11,8 +11,8 @@ import {
   type FacadeDecorator, type FacadeEdge, type Vec3,
   PanelBuilder, pointOnWall, outset, floorBands, bayCount, aboveGrade,
 } from "../core/facade";
-import { wallWithDoorway } from "./facadeKit";
-import { doorEligible } from "../core/collider";
+import { wallWithDoorway, frontStoop } from "./facadeKit";
+import { doorEligible, doorMetrics } from "../core/collider";
 
 // ---- small vector helpers ---------------------------------------------------
 const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -107,15 +107,15 @@ function bracketedCornice(out: PanelBuilder, e: FacadeEdge, mat: string, proj: n
 /** ground-level panelled + trimmed door at the entrance (aligned with the
  *  walk-through gap the collider cuts in the street wall, so you enter here). */
 function stoopAndDoor(out: PanelBuilder, e: FacadeEdge, base: number, groundTopY: number, m: { base: string; trim: string; door: string }): void {
-  // MATCH core/collider.ts doorway: tc + width, so the visual door is the gap
-  const halfW = Math.min(0.9, e.length * 0.16);
+  // MATCH core/collider.ts doorway: tc + width + sill/openTop, so the visual door
+  // is exactly the walk-through gap (raised to the sill, capped at openTop).
+  const { tc, halfW, sill, openTop } = doorMetrics(e.length, e.base, e.top, e.grade);
   const dw = halfW * 2;
-  const tc = e.length > 6 ? 0.24 : 0.5;
   const along = unit(sub(gp(e, 1), gp(e, 0)));
   const n3: Vec3 = [e.normal[0], 0, e.normal[1]];
   const dl = gp(e, tc - dw / 2 / e.length), dr = gp(e, tc + dw / 2 / e.length);
-  const doorBase = base + 0.02;
-  const doorTop = Math.min(base + (e.top - base) * 0.55, base + 2.5);
+  const doorBase = sill + 0.02;
+  const doorTop = openTop;
 
   // a single flat threshold slab at the doorsill (cosmetic)
   const cSill = lerp(dl, dr, 0.5);
@@ -172,6 +172,7 @@ export const victorianFacade: FacadeDecorator = (e, out, rng) => {
   // stoop/door/garden window when enough of it clears the ground line.
   const gBase = Math.max(e.base, e.grade);
   if (doorEligible(e)) {
+    frontStoop(out, e, baseMat); // stone steps up to the raised stoop (downhill lots)
     stoopAndDoor(out, e, gBase, groundTopY, { base: baseMat, trim, door: doorMat });
     // a ground-floor bay/garden window on the other side of the door
     const gw0 = gp(e, 0.62), gw1 = gp(e, 0.92);

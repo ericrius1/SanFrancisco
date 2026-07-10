@@ -2,7 +2,7 @@
 // industrial windows, a loading-dock storefront at grade, restrained trim and a
 // flat parapet. Minimal ornament (the brick + big sash do the work).
 import { floorBands, type FacadeDecorator, type Vec3 } from "../core/facade";
-import { cornice, windowGrid, storefront, beltCourse, frontDoor, wallWithDoorway } from "./facadeKit";
+import { cornice, windowGrid, storefront, beltCourse, frontDoor, frontStoop, wallWithDoorway } from "./facadeKit";
 import { doorEligible } from "../core/collider";
 
 export const somaFacade: FacadeDecorator = (e, out) => {
@@ -21,6 +21,7 @@ export const somaFacade: FacadeDecorator = (e, out) => {
   // loading-dock storefront on the street face + a clear entrance door (aligned
   // with the collider's walk-through gap so you can see where to go in)
   if (doorEligible(e)) {
+    frontStoop(out, e, trim); // steps up to the raised entry on a downhill lot
     storefront(out, e, e.base, groundTopY, { glass, trim, awn: "citygen.awn", sign: "citygen.sign" });
     frontDoor(out, e, { door: "citygen.door", trim });
   }

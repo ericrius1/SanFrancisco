@@ -29,6 +29,10 @@ export interface BuildingSpec {
    *  bottom row (the buried skirt between base and grade stays solid wall).
    *  Optional — supplied by the streaming host from live terrain; defaults to base. */
   grade?: number;
+  /** world Y of the live terrain just OUTSIDE the street door (≈1.3 m out).
+   *  Optional — supplied by the streaming host; drives the front-stoop rise so the
+   *  visible steps and the walkable stoop ramp collider agree exactly. */
+  frontGround?: number;
   h?: number;
   archetype: ArchetypeId;
   /** deterministic per-building seed (drives all style jitter) */

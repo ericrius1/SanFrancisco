@@ -40,10 +40,10 @@ window.__cgPick = (opts) => {
   const doors = ring.debugDoors();
   if (!doors.length) return { ok:false, err:"no detail doors streamed yet" };
   const d2 = (d) => { const dx=d.center[0]-near[0], dz=d.center[2]-near[1]; return dx*dx+dz*dz; };
-  // walkable opening height = door head above the ground line. On a steep hillside
-  // base the head (fixed above base) can sit barely above grade → a genuinely short
-  // door; test a real walk-through one (≥1.8 m) so the ray samples the opening.
-  const openH = (d) => (d.base + d.head) - Math.max(d.base, d.grade);
+  // walkable opening height = openTop − sill (the door is anchored at the raised
+  // sill = interior-floor line, so this is the true walk-through clearance; every
+  // eligible door now clears ≥1.8 m by construction).
+  const openH = (d) => d.openTop - d.sill;
   const sideRoom = (d) => Math.max(d.dcenter, d.length - d.dcenter) > 2.0 + d.halfW + 0.35;
   const roomy = doors.filter(d => sideRoom(d) && openH(d) >= 1.8);
   const pool = (roomy.length ? roomy : doors.filter(d => openH(d) >= 1.2)).slice();
@@ -77,7 +77,7 @@ window.__cgPick = (opts) => {
   // heuristic, a pre-existing TODO) — irrelevant to whether THIS door is open.
   const OUT = 1.2, T = 2.0, FAR = 2.1;
   const evalDoor = (d) => {
-    const y = Math.max(d.base, d.grade) + Math.min(0.9, openH(d) * 0.5);
+    const y = d.sill + Math.min(0.9, openH(d) * 0.5);
     const inx=d.inward[0], inz=d.inward[2], ax=d.along[0], az=d.along[2];
     const boxes = walls.filter(b => b.x>d.bb.minx-1.5 && b.x<d.bb.maxx+1.5 && b.z>d.bb.minz-1.5 && b.z<d.bb.maxz+1.5);
     const ms = []; for (const mi of meshes) { const c=mi.c; if (c.x>d.bb.minx-2 && c.x<d.bb.maxx+2 && c.z>d.bb.minz-2 && c.z<d.bb.maxz+2) ms.push(mi.m); }
@@ -106,9 +106,9 @@ window.__cgPick = (opts) => {
   for (const d of scanned) {
     const r = evalDoor(d);
     const rec = { ok:true, archetype:d.archetype, height:+(d.top-d.base).toFixed(1),
-      openH:+openH(d).toFixed(2), gradeRise:+(Math.max(d.base,d.grade)-d.base).toFixed(2), ...r,
-      door: { center:d.center, inward:d.inward, along:d.along, grade:d.grade, halfW:+d.halfW.toFixed(2),
-              length:+d.length.toFixed(1), dcenter:+d.dcenter.toFixed(1) } };
+      openH:+openH(d).toFixed(2), gradeRise:+(d.sill-d.base).toFixed(2), ...r,
+      door: { center:d.center, inward:d.inward, along:d.along, grade:d.grade, sill:d.sill, openTop:d.openTop,
+              halfW:+d.halfW.toFixed(2), length:+d.length.toFixed(1), dcenter:+d.dcenter.toFixed(1) } };
     if (!best) best = rec;
     if (r.colliderDoorClear && r.colliderSideBlocked && r.rayDoorClear && r.raySideHit) return { ...rec, clear:true };
   }
@@ -120,7 +120,7 @@ async function pushThrough(c, door) {
   const dj = JSON.stringify(door);
   await ev(c, `(()=>{const s=window.__sf,d=${dj};
     s.__savedUpd=s.player.update; s.player.update=()=>{};
-    const st=[d.center[0]-d.inward[0]*1.6, d.grade+1.1, d.center[2]-d.inward[2]*1.6];
+    const st=[d.center[0]-d.inward[0]*1.6, d.sill+1.1, d.center[2]-d.inward[2]*1.6];
     s.physics.world.setBodyTransform(s.player.body, st, [0,0,0,1]);
     s.player.position.set(st[0],st[1],st[2]); s.player.renderPosition.copy(s.player.position); return 1;})()`);
   for (let i = 0; i < 45; i++) {
@@ -154,10 +154,10 @@ async function verifyDistrict(c, spot, label, preferLarge) {
   // camera at the opening from outside + off to one side (3/4 view).
   const dj = JSON.stringify(pick.door);
   const frame = `(()=>{const s=window.__sf,d=${dj}; s.chase.update=()=>{}; s.player.update=()=>{};
-    const st=[d.center[0]-d.inward[0]*1.4, d.grade+1.1, d.center[2]-d.inward[2]*1.4];
+    const st=[d.center[0]-d.inward[0]*1.4, d.sill+1.1, d.center[2]-d.inward[2]*1.4];
     s.player.position.set(st[0],st[1],st[2]); s.player.renderPosition.copy(s.player.position);
-    const eye=[d.center[0]-d.inward[0]*5.5+d.along[0]*2.2, d.grade+2.6, d.center[2]-d.inward[2]*5.5+d.along[2]*2.2];
-    s.camera.position.set(eye[0],eye[1],eye[2]); s.camera.lookAt(d.center[0], d.grade+1.3, d.center[2]); return 1;})()`;
+    const eye=[d.center[0]-d.inward[0]*5.5+d.along[0]*2.2, d.sill+2.6, d.center[2]-d.inward[2]*5.5+d.along[2]*2.2];
+    s.camera.position.set(eye[0],eye[1],eye[2]); s.camera.lookAt(d.center[0], d.sill+1.3, d.center[2]); return 1;})()`;
   await ev(c, frame); for (let i = 0; i < 6; i++) await tick(c); await ev(c, frame);
   await sleep(150); await shot(c, `citygen_door_${label}.jpg`);
   const push = await pushThrough(c, pick.door);

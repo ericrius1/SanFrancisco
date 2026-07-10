@@ -6,7 +6,7 @@
 // the two lanes sit side by side across it (up one, turn on the landing, up the other).
 import type { ColliderBox } from "../core/types";
 import { PanelBuilder, type Vec3 } from "../core/facade";
-import { addBox, FLOOR_H, type Rect, rectW, rectD } from "./common";
+import { addBox, FLOOR_H, overlaps, type Rect, rectW, rectD } from "./common";
 import type { Axis } from "./rooms";
 
 const N = 9;            // steps per flight → 18 per storey → rise 3.4/18 ≈ 0.189 m
@@ -34,13 +34,21 @@ export function stairFits(cell: Rect): boolean {
   return hi >= STAIR_ALONG + 0.4 && lo >= STAIR_CROSS + 0.4;
 }
 
-/** anchor the stair in a corner of `cell`, flights along the cell's long axis. */
-export function planStair(cell: Rect): StairPlan {
+/** anchor the stair in a corner of `cell`, flights along the cell's long axis.
+ *  `avoid` (the entrance keep-clear zone) rejects corners whose stair footprint
+ *  would sit in front of the front door — first clear corner wins (fallback:
+ *  the original first corner, so legacy layouts are unchanged when clear). */
+export function planStair(cell: Rect, avoid?: Rect | null): StairPlan {
   const runAxis: Axis = rectW(cell) >= rectD(cell) ? "x" : "z";
   const m = 0.25; // keep off the walls
-  const region: Rect = runAxis === "x"
-    ? { x0: cell.x0 + m, x1: cell.x0 + m + STAIR_ALONG, z0: cell.z0 + m, z1: cell.z0 + m + STAIR_CROSS }
-    : { x0: cell.x0 + m, x1: cell.x0 + m + STAIR_CROSS, z0: cell.z0 + m, z1: cell.z0 + m + STAIR_ALONG };
+  const [aw, cw] = runAxis === "x" ? [STAIR_ALONG, STAIR_CROSS] : [STAIR_CROSS, STAIR_ALONG];
+  const corners: Rect[] = [
+    { x0: cell.x0 + m, x1: cell.x0 + m + aw, z0: cell.z0 + m, z1: cell.z0 + m + cw },
+    { x0: cell.x1 - m - aw, x1: cell.x1 - m, z0: cell.z0 + m, z1: cell.z0 + m + cw },
+    { x0: cell.x0 + m, x1: cell.x0 + m + aw, z0: cell.z1 - m - cw, z1: cell.z1 - m },
+    { x0: cell.x1 - m - aw, x1: cell.x1 - m, z0: cell.z1 - m - cw, z1: cell.z1 - m },
+  ];
+  const region = (avoid ? corners.find((r) => !overlaps(r, avoid)) : corners[0]) ?? corners[0];
   return { region, hole: { ...region }, runAxis };
 }
 

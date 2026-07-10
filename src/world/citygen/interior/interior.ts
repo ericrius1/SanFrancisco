@@ -17,6 +17,7 @@
 import type { BuildingSpec, ColliderBox, Panel, Vec2 } from "../core/types";
 import { PanelBuilder } from "../core/facade";
 import { ensureCCW, triangulate, centroid, streetEdgeIndex, pointInPoly, distToPolyEdge } from "../core/footprint";
+import { doorMetrics } from "../core/collider";
 import { rng } from "../core/rng";
 import { FLOOR_H, MAX_FLOORS, INSET, bboxOf, inset, rectArea, rectMinDim, type Rect } from "./common";
 import { partition, buildWalls, deck, polyGroundSlab } from "./rooms";
@@ -146,6 +147,24 @@ export function buildInterior(spec: BuildingSpec, zone: InteriorZone = "resident
   const out = new PanelBuilder();
   const cols: ColliderBox[] = [];
 
+  // ---- entrance keep-clear zone -----------------------------------------------
+  // The front DOOR sits on the street edge at core doorMetrics' tc — in the local
+  // frame that edge is axis-aligned, so the door is a point on it. Keep a small
+  // rect just inside the doorway clear of the stair + furniture, or a sofa/flight
+  // parked against the entrance blocks the walk-in the doorway contract promises.
+  let doorClear: Rect | null = null;
+  {
+    const s0L = poly[si], s1L = poly[(si + 1) % poly.length];
+    const eLen = Math.hypot(s1L[0] - s0L[0], s1L[1] - s0L[1]);
+    if (eLen > 2.2) {
+      const { tc, halfW } = doorMetrics(eLen, spec.base, spec.top, spec.grade ?? spec.base);
+      const dX = s0L[0] + (s1L[0] - s0L[0]) * tc, dZ = s0L[1] + (s1L[1] - s0L[1]) * tc;
+      const inZ = ctrZ > dZ ? 1 : -1;            // toward the lot interior (edge is x-aligned)
+      const hw = halfW + 0.55, depth = 2.0;      // doorway span + a clear path inward
+      doorClear = { x0: dX - hw, x1: dX + hw, z0: Math.min(dZ, dZ + inZ * depth), z1: Math.max(dZ, dZ + inZ * depth) };
+    }
+  }
+
   // ---- one shared partition, reused on every floor so walls + the stairwell
   //      stack (realistic, and keeps the stair footprint clear on each storey) --
   // fewer, bigger rooms (each ~35 m²) so the plan feels roomy at player scale
@@ -161,7 +180,7 @@ export function buildInterior(spec: BuildingSpec, zone: InteriorZone = "resident
       ({ rooms, walls } = partition(area, 1, rng(spec.seed, 102)));
       stairIdx = 0;
     }
-    if (stairFits(rooms[stairIdx])) stair = planStair(rooms[stairIdx]);
+    if (stairFits(rooms[stairIdx])) stair = planStair(rooms[stairIdx], doorClear);
   }
   const hole: Rect | null = stair ? stair.hole : null;
 
@@ -190,9 +209,10 @@ export function buildInterior(spec: BuildingSpec, zone: InteriorZone = "resident
     if (!openFloor) buildWalls(out, cols, walls, fY);
     if (stair && k < nFloors - 1) buildStair(out, cols, stair.region, stair.runAxis, fY);
 
-    // ---- furniture + art -----------------------------------------------------
+    // ---- furniture + art (ground floor keeps the entrance zone clear) ---------
+    const avoid = k === 0 ? doorClear : null;
     if (openFloor) {
-      furnish(out, cols, stair ? stair.region : null, zone === "commercial" ? "retail" : "loft", area, fY, rf);
+      furnish(out, cols, stair ? stair.region : null, zone === "commercial" ? "retail" : "loft", area, fY, rf, avoid);
     } else {
       let parlorDone = false, kitchenDone = false;
       for (let i = 0; i < rooms.length; i++) {
@@ -206,7 +226,7 @@ export function buildInterior(spec: BuildingSpec, zone: InteriorZone = "resident
         } else {
           role = i === bathIdx ? "bath" : "bedroom";
         }
-        furnish(out, cols, stair ? stair.region : null, role, rooms[i], fY, rf);
+        furnish(out, cols, stair ? stair.region : null, role, rooms[i], fY, rf, avoid);
       }
     }
   }

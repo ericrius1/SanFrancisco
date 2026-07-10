@@ -139,7 +139,7 @@ interface GridData {
  *  the visible doorway exactly (all read core's doorMetrics/doorEligible). */
 export interface CityGenDoorProbe {
   archetype: string;
-  /** door centre on the street edge, at the grade line (world x,y,z) */
+  /** door centre on the street edge, at the SILL / doorway-floor line (world x,y,z) */
   center: [number, number, number];
   /** unit vector pointing INTO the building (−outward normal) */
   inward: [number, number, number];
@@ -147,7 +147,15 @@ export interface CityGenDoorProbe {
   along: [number, number, number];
   /** metres from p0 to the door centre along the edge (for on-wall side tests) */
   dcenter: number;
-  halfW: number; head: number; base: number; grade: number; top: number; length: number;
+  /** doorway floor (raised to grade) + head of the walk-through opening (world Y) */
+  sill: number; openTop: number;
+  halfW: number; base: number; grade: number; top: number; length: number;
+  /** true once the fade finished and openDoorway swapped in the gap + stoop
+   *  colliders (false while the detail mesh is still fading in over solid walls) */
+  open: boolean;
+  /** DEBUG: the entry's sampled front-terrain height + how many tilted (stoop
+   *  ramp) collider boxes are live for this building */
+  fg?: number; nRamp: number;
   bb: { minx: number; maxx: number; minz: number; maxz: number };
 }
 
@@ -204,13 +212,22 @@ export async function createCityGenRing(
   // Every box is mirrored into the query world (walls AND interior geometry) so
   // raycasts (paint / world cursor / aim reticle) hit citygen geometry exactly
   // where the baked twin has been suppressed.
+  //
+  // YAW SIGN: citygen authors `yaw` in the app's planar convention — the box's
+  // local +X lies along (cos yaw, +sin yaw) in the x/z ground plane (this is what
+  // core/collider's edge math produces and what the "/" collider x-ray draws).
+  // box3d (like THREE) applies quaternions in the textbook right-handed sense,
+  // where a +Y rotation by ψ sends +X to (cos ψ, −sin ψ) — so the half-angle must
+  // be NEGATED here or every rotated wall/box lands mirrored about its centre
+  // (verified against headless box3d ray profiles; scratch yaw-semantics test).
+  // The query-world mirror gets the same negation so raycasts agree with contacts.
   const addBody = (c: { x: number; y: number; z: number; hx: number; hy: number; hz: number; yaw: number; quat?: readonly [number, number, number, number] }): number => {
     const h = ctx.physics.world.createBox({ type: 0, position: [c.x, c.y, c.z], halfExtents: [c.hx, c.hy, c.hz], friction: 0.8 });
     const q: [number, number, number, number] = c.quat
       ? [c.quat[0], c.quat[1], c.quat[2], c.quat[3]]
-      : [0, Math.sin(c.yaw / 2), 0, Math.cos(c.yaw / 2)];
+      : [0, Math.sin(-c.yaw / 2), 0, Math.cos(-c.yaw / 2)];
     ctx.physics.world.setBodyTransform(h, [c.x, c.y, c.z], q);
-    ctx.physics.addQuerySolid?.(h, c); // mirror into the raycast query world
+    ctx.physics.addQuerySolid?.(h, c.quat ? c : { ...c, yaw: -c.yaw }); // raycast query world (same convention fix)
     return h;
   };
   const clearBodies = (e: Entry) => { for (const h of e.bodies) { ctx.physics.removeQuerySolid?.(h); ctx.physics.world.destroyBody(h); } e.bodies.length = 0; e.wallBoxes = []; };
@@ -247,6 +264,10 @@ export async function createCityGenRing(
 
   // ---- detail tier -----------------------------------------------------------
   const buildDetail = (e: Entry) => {
+    // sample the live street terrain at the door front ONCE, before the mesh build:
+    // the visible stoop steps (frontStoop) and the walkable ramp collider
+    // (openDoorway → appendStoop) both read this same number, so steps ⟺ ramp.
+    if (e.frontGround === undefined) e.frontGround = frontGroundFor(e);
     const b = buildBuilding(e as BuildingSpec, materials);
     b.setOpacity(0);
     ctx.scene.add(b.group);
@@ -266,13 +287,41 @@ export async function createCityGenRing(
     e.doorPending = true;
     e.state = "detail";
   };
+  // Live terrain height just outside the street door (for the stoop rise). Recomputes
+  // the same street edge + door centre the collider does, then samples the street
+  // side TWICE — near the wall (1.3 m out) and near where the stoop ramp's foot
+  // would land — taking the LOWER, so on a street that keeps dropping the ramp
+  // reaches the real ground instead of leaving its foot floating as a step face.
+  // undefined when the edge takes no door (collider skips the stoop).
+  const frontGroundFor = (e: Entry): number | undefined => {
+    const poly = ensureCCW(e.poly);
+    const si = streetEdgeIndex(poly);
+    const p0 = poly[si], p1 = poly[(si + 1) % poly.length];
+    const dx = p1[0] - p0[0], dz = p1[1] - p0[1];
+    const length = Math.hypot(dx, dz);
+    if (length < 0.3) return undefined;
+    const grade = e.grade ?? e.base;
+    if (!doorEligible({ isStreet: true, length, base: e.base, top: e.top, grade })) return undefined;
+    const ux = dx / length, uz = dz / length;
+    const nrm = edgeOutwardNormal(p0, p1);           // unit outward (street side)
+    const { tc, sill } = doorMetrics(length, e.base, e.top, grade);
+    const dC = tc * length;
+    const cxd = p0[0] + ux * dC, czd = p0[1] + uz * dC;
+    const at = (d: number) => ctx.map.groundHeight(cxd + nrm[0] * d, czd + nrm[1] * d);
+    const near = at(1.3);
+    const foot = 0.3 + Math.max(0.5, (sill - near) / 0.63); // ≈ ramp run for that rise
+    return Math.min(near, at(foot));
+  };
   // swap the solid street wall for the door-gapped one — called when the detail mesh
   // is fully opaque, so the visible doorway and the walk-through gap appear together.
+  // Passes the live front-terrain height so a downhill door gets a walkable stoop.
   const openDoorway = (e: Entry) => {
     if (!e.doorPending) return;
     e.doorPending = false;
     clearBodies(e);
-    const { boxes } = buildingColliders(e as BuildingSpec, true); // door gap cut
+    // same frontGround the mesh build used → the ramp matches the drawn steps
+    const fg = e.frontGround ?? frontGroundFor(e);
+    const { boxes } = buildingColliders(e as BuildingSpec, true, fg); // door gap + stoop
     for (const c of boxes) e.bodies.push(addBody(c));
     e.wallBoxes = boxes;
   };
@@ -503,16 +552,17 @@ export async function createCityGenRing(
         if (!doorEligible({ isStreet: true, length, base: e.base, top: e.top, grade })) continue;
         const ux = dx / length, uz = dz / length;
         const nrm = edgeOutwardNormal(p0, p1);     // unit outward (x,z)
-        const { tc, halfW, head } = doorMetrics(length, e.base, e.top);
+        const { tc, halfW, sill, openTop } = doorMetrics(length, e.base, e.top, grade);
         const dC = tc * length;                    // metres from p0 to door centre
-        const y = Math.max(e.base, grade);
         out.push({
           archetype: e.archetype,
-          center: [p0[0] + ux * dC, y, p0[1] + uz * dC],
+          center: [p0[0] + ux * dC, sill, p0[1] + uz * dC],
           inward: [-nrm[0], 0, -nrm[1]],
           along: [ux, 0, uz],
           dcenter: dC,
-          halfW, head, base: e.base, grade, top: e.top, length,
+          sill, openTop, halfW, base: e.base, grade, top: e.top, length,
+          open: !e.doorPending,
+          fg: e.frontGround, nRamp: e.wallBoxes.reduce((n, b) => n + (b.quat ? 1 : 0), 0),
           bb: { ...e.bb },
         });
       }

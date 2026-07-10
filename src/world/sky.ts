@@ -308,6 +308,25 @@ export class Sky {
       ) => {
         // cascade 0 = near..SHADOW_NEAR_SPLIT, cascade 1 = split..far
         target.push(SHADOW_NEAR_SPLIT / far, 1)
+        // Size each cascade's shadow map to its FINAL per-cascade resolution HERE,
+        // while the CSM node is mid-`_init`: the cascade lights already exist (the
+        // node pushes them before it calls updateFrustums → this callback) but their
+        // depth-map render targets are not built until `_setupShadow` runs a moment
+        // later. Setting mapSize now means each ShadowDepthTexture is *born* at its
+        // final size, so three's per-frame `shadowMap.setSize(...)` is always a
+        // no-op and the GPU texture is never destroyed/recreated at runtime.
+        //
+        // Why this matters: the far cascade is half-res (1024) but the cascades are
+        // cloned from `sun.shadow` at 2048, so the far map used to be shrunk 2048→1024
+        // AFTER creation by #applyShadowConfig — a real GPU realloc. If any recorded
+        // render bundle (tiles / citygen detail / garden far tier / traffic rigs) had
+        // captured a bind group referencing the old 2048 ShadowDepthTexture before that
+        // realloc, every subsequent submit throws
+        //   "Destroyed texture [ShadowDepthTexture] used in a submit"
+        // once per frame, because re-recording a BundleGroup does NOT rebuild a bind
+        // group that points at a destroyed shadow texture. Birthing the map at its
+        // final size removes the realloc entirely, closing that race by construction.
+        this.#presizeCascadeShadows()
       },
       lightMargin: SHADOW_LIGHT_MARGIN // catch tall up-light casters (towers) at grazing dusk angles
     })
@@ -643,12 +662,37 @@ export class Sky {
   }
 
   /**
+   * Stamp each CSM cascade light with its FINAL per-cascade shadow resolution
+   * (and matching normal bias). Split out from #applyShadowConfig so the CSM node
+   * can call it from `customSplitsCallback` during `_init` — i.e. *before* the
+   * cascade depth-map render targets exist — so every ShadowDepthTexture is born
+   * at its final size and is never reallocated at runtime. See the long note at the
+   * customSplitsCallback for the render-bundle hazard this closes. Idempotent:
+   * because the maps are already at these sizes, later calls never resize (no
+   * GPU realloc), they just re-assert the values.
+   */
+  #presizeCascadeShadows() {
+    const lights = this.#csm?.lights
+    if (!lights) return
+    for (let i = 0; i < lights.length; i++) {
+      const l = lights[i]
+      l.castShadow = true
+      if (!l.shadow) continue
+      // per-cascade map size: near cascade stays 2048, far cascade halves
+      const size = SHADOW_MAP_SIZES[i] ?? SHADOW_MAP_SIZES[SHADOW_MAP_SIZES.length - 1]
+      l.shadow.mapSize.set(size, size)
+      l.shadow.normalBias = SHADOW_NORMAL_BIAS[i] ?? SHADOW_NORMAL_BIAS[SHADOW_NORMAL_BIAS.length - 1]
+    }
+  }
+
+  /**
    * Push the fixed universal-mode shadow config (the SHADOW_* constants above)
    * onto the sun + every CSM cascade light. Called once from the constructor and
    * again as a one-shot in update() the frame the CSM node finishes building its
-   * per-cascade lights — they don't exist yet at construct time, so their
-   * mapSize/normalBias need a second pass. Shadows are always on now; the old
-   * off/low/high tiers (and the runtime setShadowQuality switch) are gone.
+   * per-cascade lights. The per-cascade MAP SIZES are already stamped at cascade
+   * birth (see #presizeCascadeShadows / customSplitsCallback), so re-asserting them
+   * here is a no-op resize — no ShadowDepthTexture is ever destroyed. Shadows are
+   * always on now; the old off/low/high tiers (and setShadowQuality) are gone.
    */
   #applyShadowConfig() {
     this.sun.castShadow = true
@@ -656,17 +700,8 @@ export class Sky {
     this.sun.shadow.needsUpdate = true
     this.#csm.maxFar = SHADOW_MAX_FAR
     this.#csm.lightMargin = SHADOW_LIGHT_MARGIN
-    for (let i = 0; i < this.#csm.lights.length; i++) {
-      const l = this.#csm.lights[i]
-      l.castShadow = true
-      if (l.shadow) {
-        // per-cascade map size: near cascade stays 2048, far cascade halves
-        const size = SHADOW_MAP_SIZES[i] ?? SHADOW_MAP_SIZES[SHADOW_MAP_SIZES.length - 1]
-        l.shadow.mapSize.set(size, size)
-        l.shadow.normalBias = SHADOW_NORMAL_BIAS[i] ?? SHADOW_NORMAL_BIAS[SHADOW_NORMAL_BIAS.length - 1]
-        l.shadow.needsUpdate = true
-      }
-    }
+    this.#presizeCascadeShadows() // sizes already final → never a realloc
+    for (const l of this.#csm.lights) if (l.shadow) l.shadow.needsUpdate = true
     if (this.#csm.camera) this.#csm.updateFrustums()
   }
 

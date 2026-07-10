@@ -36,17 +36,50 @@ export function wallWithDoorway(out: PanelBuilder, e: FacadeEdge, mat: string, y
     out.quad(mat, [a[0], y0, a[2]], [b[0], y0, b[2]], [b[0], y1, b[2]], [a[0], y1, a[2]], n);
   };
   if (!doorEligible(e)) { seg(0, 1, yBottom, yTop); return; }
-  const { tc, halfW, head } = doorMetrics(e.length, e.base, e.top);
+  const { tc, halfW, sill, openTop } = doorMetrics(e.length, e.base, e.top, e.grade);
   const dCenter = tc * e.length;
   const fL = Math.max(0, (dCenter - halfW) / e.length);   // opening left fraction
   const fR = Math.min(1, (dCenter + halfW) / e.length);   // opening right fraction
-  const holeBase = Math.max(yBottom, e.grade);            // buried skirt stays solid
-  const holeTop = Math.min(yTop, e.base + head);          // door head = walk-through clearance
+  const holeBase = Math.max(yBottom, sill);               // buried foundation skirt stays solid
+  const holeTop = Math.min(yTop, openTop);                // walk-through clearance above the sill
   if (holeTop - holeBase < 0.6 || fR - fL < 0.001) { seg(0, 1, yBottom, yTop); return; }
   if (holeBase - yBottom > 0.001) seg(fL, fR, yBottom, holeBase); // skirt under the opening
   if (fL > 0.001) seg(0, fL, yBottom, yTop);              // left jamb wall
   if (fR < 0.999) seg(fR, 1, yBottom, yTop);              // right jamb wall
   if (yTop - holeTop > 0.02) seg(fL, fR, holeTop, yTop);  // header over the opening
+}
+
+/**
+ * Simple stone steps descending from the raised door SILL down to the street
+ * terrain in front (e.frontGround, host-supplied; falls back to the building
+ * base), centred on the doorway and projecting outward — the visible half of the
+ * walkable stoop ramp the collider adds on a downhill approach (core/collider's
+ * appendStoop). Same rise source, same slope envelope and the SAME ≤3 m cap as
+ * the collider ramp, so steps are drawn IFF the walkable ramp exists. Stacked
+ * solid boxes: the lowest step reaches furthest into the street, each higher
+ * step sets back toward the wall along the ramp incline. No-op on a flat lot.
+ * Shared so every archetype's raised entry reads the same way.
+ */
+export function frontStoop(out: PanelBuilder, e: FacadeEdge, mat: string): void {
+  if (!doorEligible(e)) return;
+  const { tc, halfW, sill } = doorMetrics(e.length, e.base, e.top, e.grade);
+  const fg = e.frontGround ?? e.base;
+  const rise = sill - fg;
+  if (rise <= 0.25 || rise > 3.0) return; // MATCH core/collider appendStoop's gate
+  const n: Vec3 = [e.normal[0], 0, e.normal[1]];
+  const along = unit(sub(gp(e, 1), gp(e, 0)));
+  const c = gp(e, tc);
+  const run = rise / Math.tan(0.56);          // MATCH the collider ramp's incline
+  const nSteps = Math.min(8, Math.max(2, Math.round(rise / 0.4)));
+  const stepH = rise / nSteps, tread = run / nSteps;
+  for (let s = 0; s < nSteps; s++) {
+    const topY = fg + (s + 1) * stepH;          // step s top surface
+    const proj = (nSteps - s) * tread;          // lowest step projects furthest out
+    const cx = c[0] + n[0] * (proj / 2), cz = c[2] + n[2] * (proj / 2);
+    // solid to just below street level so the flight reads as masonry, not slabs
+    const y0 = fg - 0.25;
+    out.box(mat, [cx, (y0 + topY) / 2, cz], [halfW + 0.25, (topY - y0) / 2, proj / 2], along, UP, n, false);
+  }
 }
 
 /**
@@ -86,11 +119,11 @@ export function faceWindow(out: PanelBuilder, a: Vec3, b: Vec3, y0: number, y1: 
  */
 export function frontDoor(out: PanelBuilder, e: FacadeEdge, m: { door: string; trim: string }): void {
   if (!doorEligible(e)) return;
-  const { tc, halfW, head } = doorMetrics(e.length, e.base, e.top);
+  const { tc, halfW, sill, openTop } = doorMetrics(e.length, e.base, e.top, e.grade);
   const n: Vec3 = [e.normal[0], 0, e.normal[1]];
   const along = unit(sub(gp(e, 1), gp(e, 0)));
   const c = gp(e, tc);
-  const y0 = Math.max(e.base, e.grade), y1 = y0 + head, midY = (y0 + y1) / 2, hH = (y1 - y0) / 2;
+  const y0 = sill, y1 = openTop, midY = (y0 + y1) / 2, hH = (y1 - y0) / 2;
   const off = (p: Vec3, d: number): Vec3 => [p[0] + n[0] * d, p[1], p[2] + n[2] * d];
   const pt = (t: number, yy: number, d: number): Vec3 => off([c[0] + along[0] * t, yy, c[2] + along[2] * t], d);
   // dark opening panel (proud a hair so it isn't occluded by the wall quad)
@@ -194,11 +227,12 @@ export function storefront(out: PanelBuilder, e: FacadeEdge, y0: number, y1: num
 export function garageDoor(out: PanelBuilder, e: FacadeEdge, y0: number, y1: number, m: { door: string; trim: string }, arched = false): void {
   const n: Vec3 = [e.normal[0], 0, e.normal[1]];
   const along = unit(sub(gp(e, 1), gp(e, 0)));
-  y0 = Math.max(y0, e.grade); // sit the garage at grade so it isn't sunk into the hill
+  const { sill, openTop } = doorMetrics(e.length, e.base, e.top, e.grade);
+  y0 = Math.max(y0, sill); // sit the garage at the sill (grade) so it isn't sunk into the hill
   if (y1 - y0 < 1.2) return;
   const w = Math.min(3.0, e.length * 0.5), tc = e.length > 6 ? 0.72 : 0.5;
   const dl = gp(e, tc - w / 2 / e.length), dr = gp(e, tc + w / 2 / e.length);
-  const top = Math.min(y1 - 0.2, y0 + 2.4);
+  const top = Math.min(y1 - 0.2, Math.max(y0 + 2.4, openTop));
   const cD = lerp(dl, dr, 0.5), midY = (y0 + 0.1 + top) / 2;
   out.box(m.door, [cD[0] - n[0] * 0.06, midY, cD[2] - n[1] * 0.06], [w / 2, (top - y0 - 0.1) / 2, 0.06], along, UP, n, true);
   out.box(m.trim, [cD[0] + n[0] * 0.02, top + (arched ? 0.16 : 0.08), cD[2] + n[1] * 0.02], [w / 2 + 0.12, arched ? 0.16 : 0.08, 0.08], along, UP, n, true);
