@@ -473,7 +473,7 @@ export class RemotePlayers {
       const crouch = Math.min(1, a.speed / 34);
       poseRide(rig, 0, crouch, Math.abs(a.vy) > 4, a.animT);
       const body = a.bodies.board;
-      if (body) animateBoard(body, dt, a.animT, a.speed, Math.abs(a.vy) <= 4, a.vy, 0, false);
+      if (body) animateBoard(body, dt, a.animT, a.speed);
     } else if (a.mode === "drive") {
       poseDrive(rig, 0, a.animT, false);
     } else if (a.mode === "plane") {

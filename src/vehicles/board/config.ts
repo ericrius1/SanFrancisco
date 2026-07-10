@@ -10,6 +10,7 @@
 export type BoardShape = "classic" | "dart" | "manta" | "saucer" | "twintip";
 export type BoardFin = "none" | "twin" | "spoiler" | "halo";
 export type BoardSurface = "aurora" | "topo" | "terrazzo" | "circuit" | "plasma";
+export type BoardFx = "vortex" | "ripple" | "glitch";
 export type BoardHum = "hum" | "crystal" | "deep" | "choir" | "retro";
 
 export type BoardConfig = {
@@ -22,8 +23,9 @@ export type BoardConfig = {
   surfaceScale: number; // 0..100: broad pools -> fine detail
   surfaceWarp: number; // 0..100: ordered -> turbulent
   surfaceSeed: number; // 0..65535 deterministic reroll
-  surfaceFlow: number; // 0..100: still -> animated
-  surfaceReaction: number; // 0..100: calm -> motion-reactive
+  surfaceFlow: number; // 0..100: still -> animated (tempo of every surface motion)
+  surfaceFx: number; // 0..100: strength of the chosen deck effect
+  surfaceFxKind: BoardFx; // which post effect warps the artwork
   hum: BoardHum; // synth voicing (fx/vehicleAudio.ts)
   pitch: number; // index into BOARD_PITCHES
   soundTone: number; // 0..100: warm -> glassy
@@ -34,7 +36,7 @@ export type BoardConfig = {
 
 // One current schema only. Earlier saved boards are deliberately left behind;
 // the simplified visual + expanded audio model starts clean instead of migrating.
-export const BOARD_STORAGE_KEY = "sf-board-v4";
+export const BOARD_STORAGE_KEY = "sf-board-v5";
 
 export const BOARD_SHAPES: { id: BoardShape; label: string }[] = [
   { id: "classic", label: "classic" },
@@ -57,6 +59,12 @@ export const BOARD_SURFACES: { id: BoardSurface; label: string }[] = [
   { id: "terrazzo", label: "terrazzo" },
   { id: "circuit", label: "circuit" },
   { id: "plasma", label: "plasma" }
+];
+
+export const BOARD_FX: { id: BoardFx; label: string }[] = [
+  { id: "vortex", label: "vortex" },
+  { id: "ripple", label: "ripple" },
+  { id: "glitch", label: "glitch" }
 ];
 
 export const BOARD_HUMS: { id: BoardHum; label: string }[] = [
@@ -110,7 +118,8 @@ const DEFAULT_BOARD: BoardConfig = {
   surfaceWarp: 58,
   surfaceSeed: 1847,
   surfaceFlow: 24,
-  surfaceReaction: 52,
+  surfaceFx: 45,
+  surfaceFxKind: "vortex",
   hum: "hum",
   pitch: 0,
   soundTone: 50,
@@ -122,6 +131,7 @@ const DEFAULT_BOARD: BoardConfig = {
 const SHAPES = BOARD_SHAPES.map((v) => v.id);
 const FINS = BOARD_FINS.map((v) => v.id);
 const SURFACES = BOARD_SURFACES.map((v) => v.id);
+const FX = BOARD_FX.map((v) => v.id);
 const HUMS = BOARD_HUMS.map((v) => v.id);
 
 function int(value: unknown, max: number, fallback: number) {
@@ -145,7 +155,8 @@ export function normalizeBoardConfig(raw: unknown): BoardConfig {
     surfaceWarp: int(v.surfaceWarp, 101, DEFAULT_BOARD.surfaceWarp),
     surfaceSeed: int(v.surfaceSeed, 65536, DEFAULT_BOARD.surfaceSeed),
     surfaceFlow: int(v.surfaceFlow, 101, DEFAULT_BOARD.surfaceFlow),
-    surfaceReaction: int(v.surfaceReaction, 101, DEFAULT_BOARD.surfaceReaction),
+    surfaceFx: int(v.surfaceFx, 101, DEFAULT_BOARD.surfaceFx),
+    surfaceFxKind: oneOf(v.surfaceFxKind, FX, DEFAULT_BOARD.surfaceFxKind),
     hum: oneOf(v.hum, HUMS, DEFAULT_BOARD.hum),
     pitch: int(v.pitch, BOARD_PITCHES.length, DEFAULT_BOARD.pitch),
     soundTone: int(v.soundTone, 101, DEFAULT_BOARD.soundTone),
@@ -198,13 +209,16 @@ export function boardFromSeed(seed: string | number): BoardConfig {
     surfaceWarp: 18 + Math.floor(roll() * 73),
     surfaceSeed: Math.floor(roll() * 65536),
     surfaceFlow: Math.floor(roll() * 66),
-    surfaceReaction: 20 + Math.floor(roll() * 71),
+    surfaceFx: 20 + Math.floor(roll() * 71),
     hum: pick(HUMS, roll),
     pitch: Math.floor(roll() * BOARD_PITCHES.length) % BOARD_PITCHES.length,
     soundTone: 20 + Math.floor(roll() * 66),
     soundMotion: 12 + Math.floor(roll() * 77),
     soundThrust: 20 + Math.floor(roll() * 66),
-    soundAir: 10 + Math.floor(roll() * 71)
+    soundAir: 10 + Math.floor(roll() * 71),
+    // appended AFTER the audio draws so every earlier field keeps the exact
+    // roll it had before effects existed (draw order = wire contract)
+    surfaceFxKind: pick(FX, roll)
   };
 }
 
@@ -220,7 +234,7 @@ export function boardKey(config: BoardConfig): string {
 /** Mesh-relevant identity. Audio edits never need geometry/material rebuilds. */
 export function boardVisualKey(config: BoardConfig): string {
   const c = normalizeBoardConfig(config);
-  return `${c.shape}|${c.fin}|${c.deck}|${c.trim}|${c.glow}|${c.surface}|${c.surfaceScale}|${c.surfaceWarp}|${c.surfaceSeed}|${c.surfaceFlow}|${c.surfaceReaction}`;
+  return `${c.shape}|${c.fin}|${c.deck}|${c.trim}|${c.glow}|${c.surface}|${c.surfaceScale}|${c.surfaceWarp}|${c.surfaceSeed}|${c.surfaceFlow}|${c.surfaceFx}|${c.surfaceFxKind}`;
 }
 
 export function isDefaultBoard(config: BoardConfig): boolean {

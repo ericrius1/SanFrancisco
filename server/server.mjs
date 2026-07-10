@@ -225,6 +225,7 @@ const COLOR_COUNT = 8;
 const BOARD_SHAPES = ["classic", "dart", "manta", "saucer", "twintip"];
 const BOARD_FINS = ["none", "twin", "spoiler", "halo"];
 const BOARD_SURFACES = ["aurora", "topo", "terrazzo", "circuit", "plasma"];
+const BOARD_FX = ["vortex", "ripple", "glitch"];
 const BOARD_HUMS = ["hum", "crystal", "deep", "choir", "retro"];
 const BOARD_DECK_COUNT = 8;
 const BOARD_GLOW_COUNT = 8;
@@ -309,7 +310,8 @@ const DEFAULT_BOARD = {
   surfaceWarp: 58,
   surfaceSeed: 1847,
   surfaceFlow: 24,
-  surfaceReaction: 52,
+  surfaceFx: 45,
+  surfaceFxKind: "vortex",
   hum: "hum",
   pitch: 0,
   soundTone: 50,
@@ -335,18 +337,21 @@ const boardFromSeed = (seed) => {
     surfaceWarp: 18 + Math.floor(roll() * 73),
     surfaceSeed: Math.floor(roll() * 65536),
     surfaceFlow: Math.floor(roll() * 66),
-    surfaceReaction: 20 + Math.floor(roll() * 71),
+    surfaceFx: 20 + Math.floor(roll() * 71),
     hum: pick(BOARD_HUMS, roll),
     pitch: Math.floor(roll() * BOARD_PITCH_COUNT) % BOARD_PITCH_COUNT,
     soundTone: 20 + Math.floor(roll() * 66),
     soundMotion: 12 + Math.floor(roll() * 77),
     soundThrust: 20 + Math.floor(roll() * 66),
-    soundAir: 10 + Math.floor(roll() * 71)
+    soundAir: 10 + Math.floor(roll() * 71),
+    // appended AFTER the audio draws — keeps every earlier field's roll identical
+    // to the client's config.ts (draw order = wire contract, change both)
+    surfaceFxKind: pick(BOARD_FX, roll)
   };
 };
 
 const boardKey = (b) =>
-  `${b.shape}|${b.fin}|${b.deck}|${b.trim}|${b.glow}|${b.surface}|${b.surfaceScale}|${b.surfaceWarp}|${b.surfaceSeed}|${b.surfaceFlow}|${b.surfaceReaction}|${b.hum}|${b.pitch}|${b.soundTone}|${b.soundMotion}|${b.soundThrust}|${b.soundAir}`;
+  `${b.shape}|${b.fin}|${b.deck}|${b.trim}|${b.glow}|${b.surface}|${b.surfaceScale}|${b.surfaceWarp}|${b.surfaceSeed}|${b.surfaceFlow}|${b.surfaceFx}|${b.surfaceFxKind}|${b.hum}|${b.pitch}|${b.soundTone}|${b.soundMotion}|${b.soundThrust}|${b.soundAir}`;
 
 const isDefaultBoard = (b) => boardKey(b) === boardKey(DEFAULT_BOARD);
 
@@ -363,7 +368,8 @@ const sanitizeBoard = (raw) => {
     surfaceWarp: intRange(raw.surfaceWarp, 101, DEFAULT_BOARD.surfaceWarp),
     surfaceSeed: intRange(raw.surfaceSeed, 65536, DEFAULT_BOARD.surfaceSeed),
     surfaceFlow: intRange(raw.surfaceFlow, 101, DEFAULT_BOARD.surfaceFlow),
-    surfaceReaction: intRange(raw.surfaceReaction, 101, DEFAULT_BOARD.surfaceReaction),
+    surfaceFx: intRange(raw.surfaceFx, 101, DEFAULT_BOARD.surfaceFx),
+    surfaceFxKind: oneOf(raw.surfaceFxKind, BOARD_FX, DEFAULT_BOARD.surfaceFxKind),
     hum: oneOf(raw.hum, BOARD_HUMS, DEFAULT_BOARD.hum),
     pitch: intRange(raw.pitch, BOARD_PITCH_COUNT, DEFAULT_BOARD.pitch),
     soundTone: intRange(raw.soundTone, 101, DEFAULT_BOARD.soundTone),

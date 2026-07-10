@@ -11,6 +11,7 @@ import {
   type CoronaTrail,
   type CoronaXZ
 } from "./layout";
+import { makeSummitCrags, summitKeepOut } from "./summitCrags";
 
 const DETAIL_RANGE = 1450;
 const ACTIVITY_RANGE = 420;
@@ -425,7 +426,8 @@ function makeRockField(map: WorldMap, physics: Physics) {
     const steep = 1 - normal.y;
     if (y < 126 || (steep < 0.065 && y < 139) || hash2(i, 19, 23) < 0.38) continue;
     if (distanceToTrails(x, z) < 2.8 || pointInPolygon(x, z, CORONA_DOG_PARK)) continue;
-    if (Math.hypot(x - CORONA_HEIGHTS_SUMMIT.x, z - CORONA_HEIGHTS_SUMMIT.z) < 5.2) continue;
+    // The authored summit crags own the peak; keep the generic rocks downslope.
+    if (summitKeepOut(x, z, 3)) continue;
     const size = 0.65 + hash2(i, 29, 31) * 1.8 + steep * 3.5;
     const sx = size * (1.15 + hash2(i, 47));
     const sy = size * (0.5 + steep * 1.5);
@@ -504,7 +506,7 @@ function makeHillGrass(map: WorldMap) {
       const q = ((x - CORONA_HEIGHTS_SUMMIT.x) / HILL_RX) ** 2 + ((z - CORONA_HEIGHTS_SUMMIT.z - 8) / HILL_RZ) ** 2;
       if (q > 0.94 || hash2(gx, gz, 7) > 0.22) continue;
       if (pointInPolygon(x, z, CORONA_DOG_PARK) || distanceToTrails(x, z) < 2.7) continue;
-      if (Math.hypot(x - CORONA_HEIGHTS_SUMMIT.x, z - CORONA_HEIGHTS_SUMMIT.z) < 5.5) continue;
+      if (summitKeepOut(x, z, 1)) continue;
       const y = map.groundTop(x, z);
       map.normal(x, z, normal, 2);
       if (normal.y < 0.86 || (y > 140 && hash2(gx, gz, 11) > 0.48)) continue;
@@ -555,7 +557,7 @@ function makeWildflowers(map: WorldMap) {
     const z = CORONA_HEIGHTS_SUMMIT.z + 8 + Math.sin(a) * HILL_RZ * r;
     if (hash2(i, 3, 79) > 0.18 || pointInPolygon(x, z, CORONA_DOG_PARK) || distanceToTrails(x, z) < 3.2) continue;
     const y = map.groundTop(x, z);
-    if (y > 145 || Math.hypot(x - CORONA_HEIGHTS_SUMMIT.x, z - CORONA_HEIGHTS_SUMMIT.z) < 6) continue;
+    if (y > 145 || summitKeepOut(x, z, 1.5)) continue;
     const h = 0.28 + hash2(i, 5, 83) * 0.55;
     stemDummy.position.set(x, y + h / 2 + 0.04, z);
     stemDummy.scale.set(1, h, 1);
@@ -1150,6 +1152,7 @@ export class CoronaHeightsPark {
     this.group.add(makeQuarryFace(map));
     this.group.add(makeTrails(map));
     this.group.add(makeRockField(map, physics));
+    this.group.add(makeSummitCrags(map, physics));
     this.foliage.add(makeHillGrass(map), makeWildflowers(map), makeShrubsAndTrees(map));
     this.group.add(this.foliage);
     this.group.add(makeDogPark(map, physics));

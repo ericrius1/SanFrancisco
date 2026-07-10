@@ -601,16 +601,7 @@ export class Player {
       const crouch = Math.min(1, this.speed / BOARD_TUNING.values.boostMaxSpeed + Math.abs(board.lean) * 0.6);
       poseRide(this.#riderRig, board.lean, crouch, !board.grounded, this.#animT);
       this.#riderRig.group.rotation.z = board.lean * 0.4; // whole-body dip on top of the deck roll
-      animateBoard(
-        this.meshes.board,
-        dt,
-        this.#animT,
-        board.horizontalSpeed,
-        board.visualGrounded,
-        this.velocity.y,
-        board.consumeLandingImpact(),
-        board.boosting
-      );
+      animateBoard(this.meshes.board, dt, this.#animT, board.horizontalSpeed, board.boosting);
     } else if (this.mode === "drone" && this.#broomRigAttached) {
       const lean = THREE.MathUtils.clamp(this.velocity.x * 0.04, -0.5, 0.5);
       const crouch = Math.min(1, this.speed / 28);

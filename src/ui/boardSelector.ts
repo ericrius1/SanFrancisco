@@ -1,6 +1,7 @@
 import {
   BOARD_DECK_COLORS,
   BOARD_FINS,
+  BOARD_FX,
   BOARD_GLOW_COLORS,
   BOARD_HUMS,
   BOARD_PITCHES,
@@ -18,7 +19,7 @@ type PadKey =
   | "surfaceScale"
   | "surfaceWarp"
   | "surfaceFlow"
-  | "surfaceReaction"
+  | "surfaceFx"
   | "soundTone"
   | "soundMotion"
   | "soundThrust"
@@ -45,6 +46,7 @@ export class BoardSelector {
   #previewCanvases = new Map<LabKind, HTMLCanvasElement>();
   #surfaceSource = document.createElement("canvas");
   #previewFrame = 0;
+  #fxOpen = false; // effect drawer survives re-renders (chip clicks rebuild the panel)
 
   constructor(
     initial: BoardConfig,
@@ -318,6 +320,48 @@ export class BoardSelector {
     return lab;
   }
 
+  /** Effect picker that slides out of the MOTION lab when its header (or the
+   *  effect button) is clicked. Chip clicks commit like any other edit. */
+  #attachFxDrawer(lab: HTMLElement) {
+    const head = lab.querySelector<HTMLElement>(".board-lab-head")!;
+    const tools = head.querySelector<HTMLElement>(".board-lab-tools")!;
+    const current = BOARD_FX.find((f) => f.id === this.#config.surfaceFxKind) ?? BOARD_FX[0];
+
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "board-fx-toggle";
+    toggle.textContent = `${current.label} ▾`;
+    toggle.title = "Choose the deck effect";
+    const setOpen = (open: boolean) => {
+      this.#fxOpen = open;
+      lab.classList.toggle("fx-open", open);
+      toggle.setAttribute("aria-expanded", String(open));
+    };
+    toggle.addEventListener("click", () => setOpen(!this.#fxOpen));
+    tools.appendChild(toggle);
+    head.addEventListener("click", (e) => {
+      if ((e.target as HTMLElement).closest("button")) return; // the button handles itself
+      setOpen(!this.#fxOpen);
+    });
+
+    const drawer = document.createElement("div");
+    drawer.className = "board-fx-drawer";
+    const chips = document.createElement("div");
+    chips.className = "board-fx-chips";
+    for (const f of BOARD_FX) {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "avatar-choice";
+      chip.textContent = f.label;
+      chip.classList.toggle("on", this.#config.surfaceFxKind === f.id);
+      chip.addEventListener("click", () => this.#set({ surfaceFxKind: f.id }));
+      chips.appendChild(chip);
+    }
+    drawer.appendChild(chips);
+    lab.appendChild(drawer);
+    setOpen(this.#fxOpen);
+  }
+
   #paintVisualPreviews() {
     paintBoardSurface(this.#surfaceSource, this.#config);
     const deck = this.#previewCanvases.get("surface");
@@ -329,6 +373,9 @@ export class BoardSelector {
     this.#drawMotionPreview(performance.now());
   }
 
+  /** Flow streams the artwork; the chosen effect overlays its own signature.
+   *  These are cheap 2D sketches of the real shader — the live board next to
+   *  the panel is the true preview. */
   #drawMotionPreview(time: number) {
     const canvas = this.#previewCanvases.get("motion");
     const ctx = canvas?.getContext("2d");
@@ -336,33 +383,80 @@ export class BoardSelector {
     const w = canvas.width;
     const h = canvas.height;
     const flow = this.#config.surfaceFlow / 100;
-    const reaction = this.#config.surfaceReaction / 100;
-    const cycle = (time % 2500) / 2500;
-    const impact = Math.sin(Math.min(1, cycle * 10) * Math.PI * 0.5) * Math.exp(-cycle * 8) * reaction;
-    const drift = (time * 0.018 * flow) % w;
-    const floatY = Math.sin(time * 0.0017) * flow * 2.8 - impact * 3.5;
+    const fx = this.#config.surfaceFx / 100;
+    const kind = this.#config.surfaceFxKind;
+    // flow reads at a glance: still pad when 0, artwork visibly streaming when up
+    const drift = (time * (0.01 + flow * 0.16)) % w;
 
     ctx.fillStyle = "#07131d";
     ctx.fillRect(0, 0, w, h);
     ctx.save();
-    ctx.translate(w * 0.5, h * 0.5 + floatY);
-    ctx.rotate(Math.sin(time * 0.0011) * flow * 0.012);
-    ctx.scale(1 + impact * 0.035, 1 - impact * 0.05);
+    ctx.translate(w * 0.5, h * 0.5 + Math.sin(time * 0.0017) * flow * 3.2);
+    const swirl = kind === "vortex" ? Math.sin(time * (0.0005 + flow * 0.0016)) * fx * 0.4 : 0;
+    const pulse = kind === "ripple" ? 1 + Math.sin(time * (0.0015 + flow * 0.005)) * fx * 0.05 : 1;
+    ctx.rotate(Math.sin(time * 0.0011) * flow * 0.05 + swirl);
+    ctx.scale(pulse, pulse);
     ctx.translate(-w * 0.5, -h * 0.5);
     for (let x = -w - drift; x < w * 2; x += w) {
       ctx.drawImage(this.#surfaceSource, x, 0, w, h);
     }
     ctx.restore();
 
-    if (impact > 0.005) {
+    if (fx < 0.01) return;
+    if (kind === "vortex") {
+      // spiral arms winding tighter as strength rises
       ctx.save();
       ctx.globalCompositeOperation = "screen";
-      ctx.strokeStyle = `rgba(121,255,220,${Math.min(0.72, impact * 0.9)})`;
-      ctx.lineWidth = 2 + impact * 3;
-      ctx.beginPath();
-      ctx.ellipse(w * 0.5, h * 0.75, w * (0.12 + cycle * 0.55), h * (0.025 + cycle * 0.12), 0, 0, Math.PI * 2);
-      ctx.stroke();
+      ctx.translate(w * 0.5, h * 0.5);
+      ctx.strokeStyle = `rgba(121,255,220,${0.12 + fx * 0.42})`;
+      ctx.lineWidth = 1.4 + fx * 1.6;
+      const spin = time * (0.0005 + flow * 0.0024);
+      for (let arm = 0; arm < 3; arm++) {
+        ctx.beginPath();
+        for (let i = 0; i <= 26; i++) {
+          const u = i / 26;
+          const a = spin + arm * ((Math.PI * 2) / 3) + u * Math.PI * (0.7 + fx * 1.5);
+          const r = 5 + u * h * 0.52;
+          const px = Math.cos(a) * r * 1.35;
+          const py = Math.sin(a) * r * 0.85;
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        }
+        ctx.stroke();
+      }
       ctx.restore();
+    } else if (kind === "ripple") {
+      // shockwave rings racing outward from the deck centre
+      ctx.save();
+      ctx.globalCompositeOperation = "screen";
+      for (let k = 0; k < 3; k++) {
+        const cycle = (time * (0.0003 + flow * 0.0011) + k / 3) % 1;
+        ctx.strokeStyle = `rgba(121,255,220,${(1 - cycle) * fx * 0.6})`;
+        ctx.lineWidth = 1.5 + fx * 2 * (1 - cycle);
+        ctx.beginPath();
+        ctx.ellipse(w * 0.5, h * 0.5, (0.04 + cycle * 0.5) * w, (0.05 + cycle * 0.52) * h, 0, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.restore();
+    } else {
+      // glitch: shear whole bands of the finished frame sideways (self-copy)
+      const tick = Math.floor(time * (0.0016 + flow * 0.006));
+      const bands = 6;
+      const bh = Math.ceil(h / bands);
+      for (let band = 0; band < bands; band++) {
+        const jolt = Math.abs(Math.sin(band * 127.1 + tick * 311.7)) % 1;
+        if (jolt < 0.42) continue;
+        const dx = Math.round((jolt - 0.7) * fx * w * 0.5);
+        if (!dx) continue;
+        const sy = band * bh;
+        ctx.drawImage(canvas, 0, sy, w, bh, dx, sy, w, bh);
+        ctx.fillStyle = `rgba(121,255,220,${fx * 0.2 * jolt})`;
+        ctx.fillRect(dx > 0 ? 0 : w + dx, sy, Math.abs(dx), 1.5);
+      }
+      // continuous CRT sweep so the pad reads live even between band re-deals
+      const scanY = (time * (0.02 + flow * 0.1)) % h;
+      ctx.fillStyle = `rgba(121,255,220,${fx * 0.16})`;
+      ctx.fillRect(0, scanY, w, 1.5);
     }
   }
 
@@ -516,17 +610,19 @@ export class BoardSelector {
         run: () => this.#set({ surfaceSeed: Math.floor(Math.random() * 65536) })
       }
     );
+    const motionLab = this.#xyLab(
+      "motion",
+      "MOTION / 02",
+      "flow × effect",
+      "surfaceFlow",
+      "surfaceFx",
+      ["still", "flow"],
+      ["clean", "warped"]
+    );
+    this.#attachFxDrawer(motionLab);
     labs.append(
       surfaceLab,
-      this.#xyLab(
-        "motion",
-        "MOTION / 02",
-        "flow × reaction",
-        "surfaceFlow",
-        "surfaceReaction",
-        ["still", "flow"],
-        ["subtle", "react"]
-      ),
+      motionLab,
       this.#xyLab(
         "sound",
         "VOICE / 03",

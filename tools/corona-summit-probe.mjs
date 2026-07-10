@@ -1,16 +1,15 @@
-// Headless render probe for the marine-layer fog. Boots the app in headless
-// Chrome (WebGPU via ANGLE-metal), freezes the wall clock, teleports to a set of
-// fog-showcase viewpoints across the city, and screenshots each so the fog can be
-// iterated on visually.
+// Headless render probe for the Corona Heights summit crags. Boots the app in
+// headless Chrome (WebGPU via ANGLE-metal), pins the clock, walks a set of
+// summit viewpoints and screenshots each so the chert crags can be iterated on
+// visually. Also sanity-checks that the crag meshes exist and that the hero
+// crag's collider answers raycasts (paint / grab / walker parity).
 //
-//   node tools/fog-probe.mjs
+//   node tools/corona-summit-probe.mjs
 // Env:
-//   SF_PROBE_OUT  out dir (default .data/fog-probe)
+//   SF_PROBE_OUT  out dir (default .data/corona-summit-probe)
 //   SF_PROBE_URL  existing vite (default http://127.0.0.1:5190)
 //   SF_TIME       time of day hours (default 13.5; also try 17.8 golden hour)
-//   SF_FOG        JSON of WORLD_TUNING fog overrides, e.g. '{"fog":0.0007,"fogBank":2}'
 //   SF_VIEWS      comma list of view names to render (default all)
-//   SF_MOTION_SECONDS  optional second capture after this simulated duration
 
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
@@ -19,11 +18,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const OUT = path.resolve(ROOT, process.env.SF_PROBE_OUT ?? ".data/fog-probe");
+const OUT = path.resolve(ROOT, process.env.SF_PROBE_OUT ?? ".data/corona-summit-probe");
 const SERVER_URL = process.env.SF_PROBE_URL ?? "http://127.0.0.1:5190";
 const TIME = Number(process.env.SF_TIME ?? 13.5);
-const FOG = process.env.SF_FOG ?? "";
-const MOTION_SECONDS = Math.max(0, Number(process.env.SF_MOTION_SECONDS ?? 0));
 const ONLY = (process.env.SF_VIEWS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 const W = 1280, H = 720;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -31,22 +28,17 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // viewpoints: [name, x, z, facing(rad), backDist, upHeight].
 // world frame: +x=east, -x=west, -z=north, +z=south.
 // facing: dx=sin(f), dz=cos(f) — the eye is pulled `back` behind the target.
-const E = Math.PI / 2, N = Math.PI, S = 0, NE = 2.36, SE = 0.79;
 const VIEWS = [
-  // Ocean Beach / outer Sunset coast, looking east into the city — must fog out.
-  ["oceanbeach_east", -3500, 1400, 1.95, 60, 55],
-  // Sunset district valley, low, looking north up toward the Presidio/Gate.
-  ["sunset_valley", -2600, 1200, N, 45, 22],
-  // Twin Peaks overlook (high) looking north over the fogged basin toward downtown.
-  ["twinpeaks_north", -560, 4060, 2.2, 130, 120],
-  // Golden Gate bridge deck looking south over the Presidio.
-  ["gg_presidio", -2982, -2600, 0.4, 120, 70],
-  // Marin headlands (north) looking south at the Gate + city behind fog.
-  ["marin_south", -2760, -4200, 0.15, 200, 130],
-  // Downtown looking west — near streets clear, hills/west melting into haze.
-  ["downtown_west", 3400, 100, 4.6, 90, 60],
-  // Coit Tower hill looking west/southwest across the city toward the fog wall.
-  ["coit_westward", 3366, -1405, 4.0, 120, 90]
+  // The cinematic: from the platform SW corner, past the main crag, downtown behind.
+  ["classic_ne", 412, 2748, 2.3, 22, 6],
+  // Straight-on portrait of the main crag's south face from the platform.
+  ["crag_portrait", 412, 2748, Math.PI, 10, 2.6],
+  // Along the bedding spine: NW mass in front, main crag behind.
+  ["spine_se", 403.5, 2740.5, 0.79, 16, 5],
+  // Wide aerial of the whole summit treatment.
+  ["platform_wide", 412, 2760, 2.0, 34, 14],
+  // Walker's reveal arriving from the south approach.
+  ["south_arrival", 408, 2775, Math.PI, 20, 3]
 ];
 
 async function isFile(p) { try { return existsSync(p); } catch { return false; } }
@@ -111,22 +103,6 @@ async function ev(c, expr) {
 const frame = (dt) => `(async()=>{window.__sf.tick(${dt});await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));return true;})()`;
 async function tick(c, dt) { await ev(c, frame(dt)); }
 async function settle(c, n) { for (let i = 0; i < n; i++) { await ev(c, frame(0)); await sleep(60); } }
-async function settleWorld(c) {
-  let idleFrames = 0;
-  for (let i = 0; i < 240; i++) {
-    // A small real simulation step is required: some citygen follow-up batches
-    // intentionally drain from update(), not from render-only dt=0 frames.
-    await tick(c, 1 / 30);
-    const [cityReady, tileBusy, pending, waiting] = await ev(c,
-      `[!!window.__sf.citygenRing.current,window.__sf.tiles.busy,window.__sf.scheduler.pending,window.__sf.scheduler.waiting]`);
-    idleFrames = cityReady && tileBusy === 0 && pending - waiting <= 0 ? idleFrames + 1 : 0;
-    // Require a minimum drain window as citygen can enqueue a follow-up batch
-    // immediately after the tile ring itself reports idle.
-    if (i >= 60 && idleFrames >= 20) return;
-    await sleep(50);
-  }
-  throw new Error("world streaming never reached a stable idle state");
-}
 async function teleport(c, x, z, facing) {
   await ev(c, `(()=>{const m=window.__sf.map,p=window.__sf.player;const y=m.groundHeight(${x},${z});p.teleportTo({x:${x},y:y+1.5,z:${z},facing:${facing},mode:'walk'});return true;})()`);
 }
@@ -144,6 +120,36 @@ async function settleCamera(c, eye) {
     await sleep(50);
   }
   throw new Error("free camera never acquired the render pose");
+}
+
+async function checkSummitAssets(c) {
+  const stats = await ev(c, `(()=>{
+    const scene = window.__sf.scene;
+    const names = ["corona_summit_chert_crags", "corona_summit_platform", "corona_summit_scree"];
+    const out = {};
+    for (const n of names) {
+      const m = scene.getObjectByName(n);
+      out[n] = m ? (m.geometry.getAttribute("position")?.count ?? 0) : -1;
+    }
+    const scree = scene.getObjectByName("corona_summit_scree");
+    out.screeCount = scree ? scree.count : -1;
+    return out;
+  })()`);
+  console.log("[probe] summit assets:", JSON.stringify(stats));
+  for (const [k, v] of Object.entries(stats)) {
+    if (v === -1) throw new Error(`missing summit object: ${k}`);
+    if (v === 0) throw new Error(`empty geometry: ${k}`);
+  }
+  // Hero crag collider: a level ray from the platform toward the main crag must
+  // hit the query world well before the crag centre (i.e. the box is there).
+  const ray = await ev(c, `(()=>{
+    const m = window.__sf.map; const T = window.__sf.THREE;
+    const gy = m.groundTop(412, 2756);
+    const hit = window.__sf.physics.raycastWorld(new T.Vector3(412, gy + 1.2, 2756), new T.Vector3(0, 0, -1), 12);
+    return hit ? { d: hit.point.distanceTo(new T.Vector3(412, gy + 1.2, 2756)), kind: hit.kind } : null;
+  })()`);
+  console.log("[probe] hero collider ray:", JSON.stringify(ray));
+  if (!ray || ray.d > 8.5) throw new Error(`hero crag collider missing or too far: ${JSON.stringify(ray)}`);
 }
 
 async function main() {
@@ -191,15 +197,10 @@ async function main() {
   if (!ready) throw new Error("__sf never ready (see [page-exception]/[page-error] above)");
   console.log(`[probe] __sf ready in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
   await ev(c, `window.__sfManual&&window.__sfManual(true)`); // freeze wall clock
-
-  // stop the day/night cycle and pin the time so screenshots are comparable
   await ev(c, `(()=>{const s=window.__sf.sky;s.cycleEnabled=false;s.setTimeOfDay(${TIME});return true;})()`);
-  // apply fog param overrides live
-  if (FOG) {
-    await ev(c, `(()=>{const v=window.__sf.WORLD_TUNING.values;Object.assign(v,${FOG});window.__sf.sky.applyFogParams();return true;})()`);
-    console.log("[probe] fog overrides:", FOG);
-  }
   await settle(c, 12);
+
+  await checkSummitAssets(c);
 
   let consecutiveFails = 0;
   let failedViews = 0;
@@ -208,25 +209,15 @@ async function main() {
     try {
       await teleport(c, x, z, facing);
       await settle(c, 16); // stream tiles + colliders + hero foliage
+      await teleport(c, 340, 2840, facing); // park the avatar downslope, out of frame
+      await settle(c, 2);
       const eye = await freeCam(c, x, z, facing, back, up);
-      await settleCamera(c, eye); // also waits out any covered late-warmup frames
-      // keep time pinned (settle ticks with dt=0 don't advance, but be safe)
+      await settleCamera(c, eye);
       await ev(c, `window.__sf.sky.setTimeOfDay(${TIME})`);
-      for (let i = 0; i < 8; i++) await tick(c, 1 / 30); // let fog drift settle a bit
-      if (MOTION_SECONDS > 0) await settleWorld(c); // finish streaming before the timed A/B pair
-      const shot = await c.send("Page.captureScreenshot", { format: "jpeg", quality: 88, fromSurface: true });
+      for (let i = 0; i < 8; i++) await tick(c, 1 / 30);
+      const shot = await c.send("Page.captureScreenshot", { format: "jpeg", quality: 90, fromSurface: true });
       writeFileSync(path.join(OUT, `${name}.jpg`), Buffer.from(shot.data, "base64"));
       console.log(`[probe] shot ${name}`);
-      if (MOTION_SECONDS > 0) {
-        // Advance a deterministic 30 fps interval. The fog reads the app's
-        // elapsed seconds, so this measures its true motion without letting a
-        // chase/cinematic controller contaminate the fixed-camera comparison.
-        const motionFrames = Math.max(1, Math.round(MOTION_SECONDS * 30));
-        for (let i = 0; i < motionFrames; i++) await tick(c, 1 / 30);
-        const moved = await c.send("Page.captureScreenshot", { format: "jpeg", quality: 88, fromSurface: true });
-        writeFileSync(path.join(OUT, `${name}_motion.jpg`), Buffer.from(moved.data, "base64"));
-        console.log(`[probe] shot ${name} +${MOTION_SECONDS}s`);
-      }
       consecutiveFails = 0;
     } catch (e) {
       failedViews++;
@@ -236,7 +227,7 @@ async function main() {
   }
   console.log(`[probe] screenshots in ${OUT}`);
   cleanup();
-  if (failedViews > 0) throw new Error(`${failedViews} fog view(s) failed`);
+  if (failedViews > 0) throw new Error(`${failedViews} summit view(s) failed`);
   process.exit(0);
 }
 main().catch((e) => { cleanup(); console.error("[probe] FAIL", e); process.exit(1); });

@@ -1,4 +1,5 @@
 import * as THREE from "three/webgpu";
+import { cos, float, floor, fract, length, sin, smoothstep, texture, uniform, uv, vec2, vec3 } from "three/tsl";
 import { LIGHT_SCALE } from "../../config";
 import { lightAnchor, type LightAnchorSpec } from "../../player/lightPool";
 import {
@@ -6,6 +7,7 @@ import {
   BOARD_GLOW_COLORS,
   normalizeBoardConfig,
   type BoardConfig,
+  type BoardFx,
   type BoardShape
 } from "./config";
 import { paintBoardSurface } from "./surfaceTexture";
@@ -170,20 +172,97 @@ function surfacePaintKey(config: BoardConfig) {
 type BoardSurfaceState = {
   canvas: HTMLCanvasElement;
   texture: THREE.CanvasTexture;
-  material: THREE.MeshLambertMaterial;
   paintKey: string;
-  flow: number;
-  reaction: number;
-  phase: number;
-  air: number;
-  airTime: number;
-  minVerticalSpeed: number;
-  wasGrounded: boolean;
-  impact: number;
-  impactAge: number;
-  visualImpact: number;
+  flow: number; // 0..1 tempo of every surface motion
+  fx: number; // 0..1 strength of the chosen effect
+  fxKind: BoardFx;
+  phase: number; // seed-derived offset so identical boards don't sync up
+  clock: number; // accumulated flow-scaled animation time (edits never snap it)
+  scroll: number; // accumulated artwork travel along the deck
+  uPhase: ReturnType<typeof uniform>;
+  uScroll: ReturnType<typeof uniform>;
+  uFlow: ReturnType<typeof uniform>;
+  uFx: ReturnType<typeof uniform>; // vec3 weights: x vortex, y ripple, z glitch
+  uEmissive: ReturnType<typeof uniform>;
   reducedMotion: boolean;
 };
+
+/** One-hot the chosen effect into the shared weight uniform (all three live in
+ *  one program — switching kinds is a uniform flip, never a shader rebuild). */
+function applyFxWeights(state: BoardSurfaceState) {
+  const s = state.reducedMotion ? 0 : state.fx;
+  (state.uFx.value as THREE.Vector3).set(
+    state.fxKind === "vortex" ? s : 0,
+    state.fxKind === "ripple" ? s : 0,
+    state.fxKind === "glitch" ? s : 0
+  );
+}
+
+/**
+ * The deck artwork's living skin: one Lambert node material that samples the
+ * painted canvas through a warped, travelling UV. Flow scrolls + sways the art
+ * (obviously, at full tilt); the chosen effect bends the lookup — a swirling
+ * vortex, radial shockwave ripples, or scanline glitch tears with RGB split.
+ * All three are computed branchlessly and blended by weight so effect strength
+ * 0 is a perfect identity (never If(): see the shader-branch pixel hazard).
+ */
+function buildSurfaceMaterial(
+  map: THREE.CanvasTexture,
+  s: Pick<BoardSurfaceState, "uPhase" | "uScroll" | "uFlow" | "uFx" | "uEmissive">
+) {
+  const material = new THREE.MeshLambertNodeMaterial();
+  const phase = s.uPhase as unknown as ReturnType<typeof float>;
+  const flow = s.uFlow as unknown as ReturnType<typeof float>;
+  const weights = s.uFx as unknown as ReturnType<typeof vec3>;
+
+  // centered, aspect-true frame (art is 1:2, board length runs along v),
+  // pre-rotated by the flow wobble so the whole skin sways when animated
+  const wob = sin(phase.mul(0.61)).mul(flow).mul(0.1);
+  const cw = cos(wob);
+  const sw = sin(wob);
+  const p0 = uv().sub(0.5).mul(vec2(1, 2));
+  const p = vec2(p0.x.mul(cw).sub(p0.y.mul(sw)), p0.x.mul(sw).add(p0.y.mul(cw)));
+  const r = length(p);
+  const fall = float(1).sub(smoothstep(0.08, 1.15, r)); // effects live near the deck centre
+
+  // vortex — twist angle grows with strength and churns with the clock
+  const twist = fall.mul(weights.x).mul(float(2.6).add(sin(phase.mul(0.8)).mul(0.9)));
+  const ct = cos(twist);
+  const st = sin(twist);
+  const swirled = vec2(p.x.mul(ct).sub(p.y.mul(st)), p.x.mul(st).add(p.y.mul(ct)));
+
+  // ripple — expanding rings bend the art radially, crests racing outward
+  const wave = sin(r.mul(16).sub(phase.mul(3.4)));
+  const radial = p.div(r.max(0.002)).mul(wave).mul(fall).mul(weights.y).mul(0.16);
+
+  const warped = swirled.add(radial).mul(vec2(1, 0.5)).add(0.5);
+
+  // glitch — horizontal band tears that re-deal with the clock
+  const tick = floor(phase.mul(2.3));
+  const band = floor(warped.y.mul(15).add(tick.mul(3)));
+  const jolt = fract(sin(band.mul(127.1).add(tick.mul(311.7))).mul(43758.547));
+  const tear = jolt.sub(0.5).mul(smoothstep(0.35, 0.95, jolt)).mul(weights.z).mul(0.42);
+
+  // flow's travelling motion: artwork streams down the deck + gentle sideways sway
+  const sway = sin(phase.mul(0.9)).mul(flow).mul(0.05);
+  const suv = warped.add(vec2(tear.add(sway), (s.uScroll as unknown as ReturnType<typeof float>).negate()));
+
+  // glitch RGB split: side samples collapse onto the centre one at weight 0
+  const split = vec2(weights.z.mul(0.018).mul(float(0.7).add(sin(phase.mul(4.7)).mul(0.3))), 0);
+  const art = vec3(
+    texture(map, suv.add(split)).r,
+    texture(map, suv).g,
+    texture(map, suv.sub(split)).b
+  );
+  material.colorNode = art;
+  // faint self-lit copy keeps the artwork legible on the underside while
+  // Lambert still describes the bevel and sidewalls. (emissiveNode works on
+  // every NodeMaterial at runtime but is only TYPED on MeshStandardNodeMaterial.)
+  (material as unknown as { emissiveNode: unknown }).emissiveNode = art.mul(
+    s.uEmissive as unknown as ReturnType<typeof float>
+  );
+  return material;
+}
 
 export type BoardAnim = {
   spinners: { obj: THREE.Object3D; axis: "y" | "z"; rate: number }[];
@@ -219,7 +298,7 @@ export function buildBoardMesh(config?: BoardConfig): THREE.Group {
   const outline = outlinePoints(p);
 
   // One authored image is the actual closed shell material, rather than an
-  // inset sticker on top. Texture transforms are updated in animateBoard;
+  // inset sticker on top. Motion happens entirely in the shader via uniforms;
   // canvas pixels are uploaded only when the editor changes paint controls.
   const surfaceCanvas = document.createElement("canvas");
   surfaceCanvas.width = 128;
@@ -230,18 +309,14 @@ export function buildBoardMesh(config?: BoardConfig): THREE.Group {
   surfaceTexture.anisotropy = 4;
   surfaceTexture.wrapS = THREE.RepeatWrapping;
   surfaceTexture.wrapT = THREE.RepeatWrapping;
-  surfaceTexture.center.set(0.5, 0.5);
-  const surfaceMat = mat(
-    new THREE.MeshLambertMaterial({
-      color: 0xffffff,
-      map: surfaceTexture,
-      // A faint self-lit copy keeps the artwork legible on the underside while
-      // still letting Lambert shading describe the bevel and sidewalls.
-      emissive: 0xffffff,
-      emissiveMap: surfaceTexture,
-      emissiveIntensity: 0.06
-    })
-  );
+  const surfaceUniforms = {
+    uPhase: uniform(0),
+    uScroll: uniform(0),
+    uFlow: uniform(0),
+    uFx: uniform(new THREE.Vector3()),
+    uEmissive: uniform(0.06)
+  };
+  const surfaceMat = mat(buildSurfaceMaterial(surfaceTexture, surfaceUniforms));
 
   // --- deck: bevelled extrude of the silhouette, then bend the kicks in ---
   const shape = new THREE.Shape(outline);
@@ -396,21 +471,19 @@ export function buildBoardMesh(config?: BoardConfig): THREE.Group {
   const surfaceState: BoardSurfaceState = {
     canvas: surfaceCanvas,
     texture: surfaceTexture,
-    material: surfaceMat,
     paintKey: surfacePaintKey(cfg),
     flow: cfg.surfaceFlow / 100,
-    reaction: cfg.surfaceReaction / 100,
+    fx: cfg.surfaceFx / 100,
+    fxKind: cfg.surfaceFxKind,
     phase: (cfg.surfaceSeed / 65536) * Math.PI * 2,
-    air: 0,
-    airTime: 0,
-    minVerticalSpeed: 0,
-    wasGrounded: true,
-    impact: 0,
-    impactAge: 0,
-    visualImpact: 0,
+    clock: 0,
+    scroll: 0,
+    ...surfaceUniforms,
     reducedMotion:
       typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches
   };
+  applyFxWeights(surfaceState);
+  surfaceState.uPhase.value = surfaceState.phase;
   const anim: BoardAnim = { spinners, pulseMat, pulseBase, lightSpec, lightBase: 10, surface: surfaceState };
   g.userData.boardAnim = anim;
   g.userData.boardSurface = surfaceState;
@@ -423,7 +496,8 @@ export function buildBoardMesh(config?: BoardConfig): THREE.Group {
   return g;
 }
 
-/** Update a live editor preview; motion-only edits avoid a canvas upload. */
+/** Update a live editor preview; motion/effect edits avoid a canvas upload
+ *  entirely (uniform flips), paint edits repaint + re-upload once. */
 export function updateBoardSurface(board: THREE.Group, config: BoardConfig) {
   const state = board.userData.boardSurface as BoardSurfaceState | undefined;
   if (!state) return;
@@ -435,24 +509,19 @@ export function updateBoardSurface(board: THREE.Group, config: BoardConfig) {
     state.paintKey = paintKey;
   }
   state.flow = cfg.surfaceFlow / 100;
-  state.reaction = cfg.surfaceReaction / 100;
+  state.fx = cfg.surfaceFx / 100;
+  state.fxKind = cfg.surfaceFxKind;
   state.phase = (cfg.surfaceSeed / 65536) * Math.PI * 2;
+  applyFxWeights(state);
 }
 
 /**
- * Per-frame board life. Art moves by texture uniforms only: there are no canvas
+ * Per-frame board life. Art moves by shader uniforms only: there are no canvas
  * repaints, texture uploads, material swaps, or vertex changes while riding.
+ * Flow is the single tempo knob — it drives how fast the artwork streams,
+ * sways, and how quickly the chosen deck effect churns.
  */
-export function animateBoard(
-  board: THREE.Group,
-  dt: number,
-  t: number,
-  speed: number,
-  grounded = true,
-  verticalSpeed = 0,
-  landingImpact = 0,
-  boosting = false
-) {
+export function animateBoard(board: THREE.Group, dt: number, t: number, speed: number, boosting = false) {
   const anim = board.userData.boardAnim as BoardAnim | undefined;
   if (!anim) return;
   const step = THREE.MathUtils.clamp(dt, 0, 0.05);
@@ -463,70 +532,19 @@ export function animateBoard(
   }
 
   const surface = anim.surface;
-  const motion = surface.reducedMotion ? 0 : surface.flow;
-  const reaction = surface.reducedMotion ? 0 : surface.reaction;
-  const safeVy = Number.isFinite(verticalSpeed) ? verticalSpeed : 0;
-  const airTarget = grounded ? 0 : 1;
-  const airRate = grounded ? 8.5 : 4.5;
-  surface.air += (airTarget - surface.air) * (1 - Math.exp(-step * airRate));
-
-  // Remotes do not transmit grounded state, so keep a conservative fallback
-  // impact detector alongside the exact one-shot local controller impulse.
-  let inferredImpact = 0;
-  if (!grounded) {
-    if (surface.wasGrounded) {
-      surface.airTime = 0;
-      surface.minVerticalSpeed = Math.min(0, safeVy);
-    }
-    surface.airTime += step;
-    surface.minVerticalSpeed = Math.min(surface.minVerticalSpeed, safeVy);
-  } else {
-    if (surface.wasGrounded === false && surface.airTime >= 0.08 && surface.minVerticalSpeed <= -3) {
-      inferredImpact = THREE.MathUtils.clamp((-surface.minVerticalSpeed - 3) / 21, 0, 1);
-    }
-    surface.airTime = 0;
-    surface.minVerticalSpeed = 0;
-  }
-  surface.wasGrounded = grounded;
-
-  const trigger = Math.max(THREE.MathUtils.clamp(landingImpact, 0, 1), inferredImpact);
-  if (trigger > 0.001) {
-    surface.impact = Math.max(surface.visualImpact, trigger);
-    surface.impactAge = 0;
-  } else if (surface.impact > 0) {
-    surface.impactAge += step;
-  }
-  const landing =
-    surface.impact *
-    Math.exp(-surface.impactAge * 7.2) *
-    (0.35 + 0.65 * (1 - Math.exp(-surface.impactAge * 28)));
-  surface.visualImpact = landing;
-  if (landing < 0.0005 && surface.impactAge > 0.4) {
-    surface.impact = 0;
-    surface.impactAge = 0;
-    surface.visualImpact = 0;
-  }
-
-  const phase = t * (0.42 + motion * 1.15) + surface.phase;
-  const airDrift = surface.air * reaction;
-  const landingReact = landing * reaction;
-  const boostGain = boosting ? 1.22 : 1;
-  const drift = motion * (0.0025 + norm * 0.0015 + airDrift * 0.004) * boostGain;
-  surface.texture.offset.set(
-    Math.sin(phase) * drift + Math.sin(phase * 2.7) * landingReact * 0.003,
-    Math.cos(phase * 0.73) * drift * 0.78 + Math.cos(phase * 3.1) * landingReact * 0.002
-  );
-  surface.texture.rotation =
-    Math.sin(phase * 0.61) * motion * 0.008 + Math.sin(phase * 3.8) * landingReact * 0.012;
-  const airStretch = airDrift * 0.006;
-  const landingZoom = landingReact * 0.014;
-  surface.texture.repeat.set(1 + airStretch - landingZoom, 1 - airStretch * 0.45 - landingZoom);
-  surface.texture.updateMatrix();
-  surface.material.emissiveIntensity =
-    0.06 + airDrift * 0.08 + landingReact * 0.28 + (boosting ? motion * 0.035 : 0);
+  const flow = surface.reducedMotion ? 0 : surface.flow;
+  const fx = surface.reducedMotion ? 0 : surface.fx;
+  const boostGain = boosting ? 1.35 : 1;
+  // clocks accumulate (instead of scaling absolute time) so dragging the flow
+  // pad retunes the tempo live without teleporting the pattern
+  surface.clock += step * (0.22 + flow * 2.6) * boostGain;
+  surface.scroll = (surface.scroll + step * flow * (0.05 + flow * 0.17 + norm * 0.06) * boostGain) % 1;
+  surface.uPhase.value = surface.phase + surface.clock;
+  surface.uScroll.value = surface.scroll;
+  surface.uFlow.value = flow;
+  surface.uEmissive.value = 0.06 + fx * 0.05 + (boosting ? flow * 0.05 : 0);
 
   const breathe = 0.82 + 0.18 * Math.sin(t * 2.4) + 0.06 * Math.sin(t * 11) * norm;
-  const pulse = breathe + landingReact * 0.12;
-  anim.pulseMat.color.copy(anim.pulseBase).multiplyScalar(pulse);
-  anim.lightSpec.intensity = anim.lightBase * (0.88 + 0.24 * (pulse - 0.82));
+  anim.pulseMat.color.copy(anim.pulseBase).multiplyScalar(breathe);
+  anim.lightSpec.intensity = anim.lightBase * (0.88 + 0.24 * (breathe - 0.82));
 }

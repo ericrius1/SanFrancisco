@@ -158,7 +158,7 @@ const CONFIGS = [
     cfg: {
       shape: "classic", fin: "none", deck: 0, trim: 5, glow: 0,
       surface: "aurora", surfaceScale: 24, surfaceWarp: 68, surfaceSeed: 101,
-      surfaceFlow: 0, surfaceReaction: 0,
+      surfaceFlow: 0, surfaceFx: 0, surfaceFxKind: "vortex",
       hum: "hum", pitch: 0, soundTone: 45, soundMotion: 35, soundThrust: 50, soundAir: 12
     }
   },
@@ -167,7 +167,7 @@ const CONFIGS = [
     cfg: {
       shape: "dart", fin: "spoiler", deck: 1, trim: 3, glow: 4,
       surface: "topo", surfaceScale: 70, surfaceWarp: 18, surfaceSeed: 202,
-      surfaceFlow: 35, surfaceReaction: 48,
+      surfaceFlow: 35, surfaceFx: 48, surfaceFxKind: "glitch",
       hum: "retro", pitch: 3, soundTone: 80, soundMotion: 72, soundThrust: 82, soundAir: 46
     }
   },
@@ -176,7 +176,7 @@ const CONFIGS = [
     cfg: {
       shape: "manta", fin: "halo", deck: 4, trim: 5, glow: 3,
       surface: "terrazzo", surfaceScale: 48, surfaceWarp: 88, surfaceSeed: 303,
-      surfaceFlow: 58, surfaceReaction: 82,
+      surfaceFlow: 58, surfaceFx: 82, surfaceFxKind: "ripple",
       hum: "choir", pitch: 1, soundTone: 32, soundMotion: 64, soundThrust: 32, soundAir: 66
     }
   },
@@ -185,7 +185,7 @@ const CONFIGS = [
     cfg: {
       shape: "saucer", fin: "twin", deck: 5, trim: 6, glow: 2,
       surface: "circuit", surfaceScale: 76, surfaceWarp: 42, surfaceSeed: 404,
-      surfaceFlow: 42, surfaceReaction: 64,
+      surfaceFlow: 42, surfaceFx: 64, surfaceFxKind: "glitch",
       hum: "crystal", pitch: 4, soundTone: 68, soundMotion: 82, soundThrust: 70, soundAir: 80
     }
   },
@@ -194,7 +194,7 @@ const CONFIGS = [
     cfg: {
       shape: "twintip", fin: "halo", deck: 6, trim: 1, glow: 7,
       surface: "plasma", surfaceScale: 56, surfaceWarp: 76, surfaceSeed: 505,
-      surfaceFlow: 88, surfaceReaction: 94,
+      surfaceFlow: 88, surfaceFx: 94, surfaceFxKind: "vortex",
       hum: "deep", pitch: 2, soundTone: 58, soundMotion: 90, soundThrust: 58, soundAir: 92
     }
   }

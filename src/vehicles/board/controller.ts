@@ -9,14 +9,6 @@ const JUMP_BUFFER_TIME = 0.26;
 const COYOTE_TIME = 0.24;
 const JUMP_LOCKOUT_TIME = 0.18;
 const RELANDED_MAX_VY = 1.2;
-// Visual motion uses the controller's existing outer/inner footing bands as
-// hysteresis: leave at the outer edge, land at the spring's inner edge. This
-// keeps the deck art from flickering on bobbing water or slope feed-forward.
-const VISUAL_AIR_HEIGHT = 1.5;
-const VISUAL_LAND_HEIGHT = 0.9;
-const VISUAL_MIN_AIR_TIME = 0.08;
-const VISUAL_MIN_LANDING_SPEED = 3;
-const VISUAL_FULL_LANDING_SPEED = 24;
 
 const V = {
   fwd: new THREE.Vector3(),
@@ -45,15 +37,10 @@ export class BoardController implements ModeController {
   // from the render loop allocates nothing and cannot affect body physics.
   horizontalSpeed = 0;
   boosting = false;
-  visualGrounded = true;
   #rest = 0; // seconds spent resting on a collider the heightmap can't see
   #jumpBuf = 0; // jump buffer: seconds a Space press stays pending
   #coyote = 0; // seconds after losing footing an ollie still fires
   #jumping = 0; // post-ollie lockout so the hover spring doesn't eat the launch
-  #landingArmed = false; // first mode-entry settle must not look like a landing
-  #visualAirTime = 0;
-  #visualMinVy = 0;
-  #landingImpact = 0; // max-latched across fixed steps until one render consumes it
 
   spawnBody(ctx: PlayerCtx, facing: number): number {
     const p = ctx.position;
@@ -73,15 +60,10 @@ export class BoardController implements ModeController {
     this.grounded = true;
     this.horizontalSpeed = 0;
     this.boosting = false;
-    this.visualGrounded = true;
     this.#rest = 0;
     this.#jumpBuf = 0;
     this.#coyote = 0;
     this.#jumping = 0;
-    this.#landingArmed = false;
-    this.#visualAirTime = 0;
-    this.#visualMinVy = 0;
-    this.#landingImpact = 0;
     return p.y + 1.0;
   }
 
@@ -98,13 +80,6 @@ export class BoardController implements ModeController {
    * so high-refresh displays can't drop the press between physics steps). */
   requestJump() {
     this.#jumpBuf = JUMP_BUFFER_TIME;
-  }
-
-  /** One-shot normalized landing strength for the render loop. */
-  consumeLandingImpact(): number {
-    const impact = this.#landingImpact;
-    this.#landingImpact = 0;
-    return impact;
   }
 
   update(ctx: PlayerCtx, dt: number, input: Input, frame: ModeFrame) {
@@ -211,44 +186,6 @@ export class BoardController implements ModeController {
       vy -= tb.fallGravity * dt; // hand-integrated fall (gravityScale is 0)
     }
 
-    // Cosmetic airborne/landing state. It deliberately runs after jump/spring
-    // selection so an ollie becomes visually airborne in the launch step, while
-    // a landing remembers the fastest downward step even if the solver or spring
-    // has already softened the current velocity. No body state is written here.
-    const visualSupported =
-      (heightAbove < VISUAL_LAND_HEIGHT || onCollider) && this.#jumping <= 0;
-    const visualTakeoff =
-      this.#jumping > 0 || (!onCollider && heightAbove >= VISUAL_AIR_HEIGHT);
-    if (this.visualGrounded) {
-      if (visualSupported) this.#landingArmed = true;
-      if (visualTakeoff) {
-        this.visualGrounded = false;
-        this.#visualAirTime = dt;
-        this.#visualMinVy = Math.min(0, v.linear[1], vy);
-      }
-    } else {
-      this.#visualAirTime += dt;
-      this.#visualMinVy = Math.min(this.#visualMinVy, v.linear[1], vy);
-      if (visualSupported) {
-        if (
-          this.#landingArmed &&
-          this.#visualAirTime >= VISUAL_MIN_AIR_TIME &&
-          this.#visualMinVy <= -VISUAL_MIN_LANDING_SPEED
-        ) {
-          const impact = THREE.MathUtils.clamp(
-            (-this.#visualMinVy - VISUAL_MIN_LANDING_SPEED) /
-              (VISUAL_FULL_LANDING_SPEED - VISUAL_MIN_LANDING_SPEED),
-            0,
-            1
-          );
-          this.#landingImpact = Math.max(this.#landingImpact, impact);
-        }
-        this.visualGrounded = true;
-        this.#landingArmed = true;
-        this.#visualAirTime = 0;
-        this.#visualMinVy = 0;
-      }
-    }
     w.setBodyVelocity(ctx.body, [nvx, vy, nvz], [0, 0, 0]);
 
     // attitude is code-owned: yaw from carving, lean into the turn, nose with the
