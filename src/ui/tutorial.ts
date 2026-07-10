@@ -1,14 +1,13 @@
 import type { PlayerMode } from "../player/types"
-import { PIER_ENTRANCE, DOME_WORLD, insidePier } from "../gameplay/pierLayout"
 
 /**
  * Interactive tutorial: a chaptered checklist that watches real play instead
  * of narrating over it. The "Tutorial" button (top-right, under Share) is
  * always on screen outside immersive mode; clicking it walks a newcomer from
- * WASD through stepping inside a building, the vehicle roster, the map/teleport
- * flow and a field trip into the Exploratorium. main.ts feeds it a thin context of
- * getters plus one-shot events (note("teleport") etc.) — the tutorial never
- * reaches into game objects itself.
+ * WASD through stepping inside a building, the vehicle roster, and the
+ * map/teleport flow. main.ts feeds it a thin context of getters plus one-shot
+ * events (note("teleport") etc.) — the tutorial never reaches into game objects
+ * itself.
  */
 
 export interface TutorialCtx {
@@ -133,32 +132,6 @@ const CHAPTERS: Chapter[] = [
         check: (_c, _dt, _st, ev) => (ev.get("teleport") ?? 0) >= 1
       }
     ]
-  },
-  {
-    title: "The Exploratorium",
-    onEnter: (c) => {
-      c.teleport({ x: PIER_ENTRANCE.x, y: PIER_ENTRANCE.y, z: PIER_ENTRANCE.z, facing: PIER_ENTRANCE.facing, mode: "walk" })
-      c.message("Field trip — Pier 15, the Exploratorium", 3.5)
-    },
-    steps: [
-      {
-        keys: ["W"],
-        action: "Hold",
-        text: "to head through the front doors",
-        check: (c) => c.mode() === "walk" && insidePier(c.pos().x, c.pos().z)
-      },
-      {
-        text: "walk the hall to the domed theater at the far end",
-        hint: "past the sand tables and the water room",
-        check: (c) => {
-          const p = c.pos()
-          return Math.hypot(p.x - DOME_WORLD.x, p.z - DOME_WORLD.z) < 11
-        }
-      },
-      { keys: ["E"], text: "to sit down at the piano", check: (_c, _dt, _st, ev) => (ev.get("piano") ?? 0) >= 1 },
-      { keys: ["1–8"], text: "to play three notes", check: (_c, _dt, _st, ev) => (ev.get("note") ?? 0) / 3 },
-      { keys: ["B"], action: "Hold", text: "for a fireworks finale", check: (c, dt, st) => (st.n += c.down("KeyB") ? dt : 0) / 0.6 }
-    ]
   }
 ]
 
@@ -259,7 +232,7 @@ export class Tutorial {
     }
   }
 
-  /** One-shot gameplay events from main.ts: "teleport", "piano", "note". */
+  /** One-shot gameplay events from main.ts, e.g. "teleport". */
   note(kind: string) {
     if (this.#active) this.#events.set(kind, (this.#events.get(kind) ?? 0) + 1)
   }

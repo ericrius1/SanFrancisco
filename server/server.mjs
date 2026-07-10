@@ -372,12 +372,6 @@ wss.on("connection", (ws) => {
       if (msg.d.every((r) => Array.isArray(r) && r.length === 9 && r.every((n) => typeof n === "number" && Number.isFinite(n)))) {
         broadcast({ t: "fw", id, d: msg.d }, id);
       }
-    } else if (msg.t === "note" && Array.isArray(msg.d) && msg.d.length === 2) {
-      // museum instrument note: [instrument, key] — pure relay, every client
-      // renders the flash/dome ripple and synthesizes the tone locally
-      if (msg.d.every((n) => Number.isInteger(n) && n >= 0 && n < 16)) {
-        broadcast({ t: "note", id, d: msg.d }, id);
-      }
     } else if (msg.t === "rtc" && typeof msg.to === "number") {
       // voice-chat signaling (SDP offers/answers + ICE candidates): targeted
       // relay to one peer, sender id stamped server-side so it can't be forged

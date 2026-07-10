@@ -94,20 +94,7 @@ export const WORLD_TUNING = tunables("world", {
 
 /** Cosmetic vegetation visibility, bound in the "/" panel for performance checks. */
 export const FOLIAGE_TUNING = tunables("foliage", {
-  visible: { v: true, label: "trees / grass visible" }
-});
-
-/**
- * Horse herd (Botanical Garden RL herd) master switch, bound at the TOP of the
- * "/" panel. Off by default: the whole herd — instanced meshes, course props
- * (cones/hurdles), and brain-lattice overlays — is hidden, and its per-frame
- * work (sim step, pose sync, brain-overlay update) is skipped entirely via
- * early returns in horseHerd.ts prePhysics()/update(). `overlays` only matters
- * while `enabled` is on — it toggles just the floating NN lattices.
- */
-export const HORSE_TUNING = tunables("horses", {
-  enabled: { v: false, label: "horses" },
-  overlays: { v: true, label: "horse NN overlays" }
+  visible: { v: true, label: "foliage (trees/grass/flowers)" }
 });
 
 /**

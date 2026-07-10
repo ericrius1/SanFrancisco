@@ -8,7 +8,6 @@ import {
   FOLIAGE_TUNING,
   GRASS_TUNING,
   CITYGEN_TUNING,
-  HORSE_TUNING,
   RENDER_TUNING,
   WORLD_TUNING
 } from "../config";
@@ -285,11 +284,12 @@ export class DebugPanel {
     const pane = new Pane({ container: root, title: "tuning — / to close" });
     this.#pane = pane;
 
-    // Horse herd master switch, right at the top: off by default, the whole RL
-    // herd (meshes + course props + brain lattices) stays hidden and its
-    // per-frame work is skipped entirely (see horseHerd.ts prePhysics/update
-    // early-returns). "horse NN overlays" only matters while "horses" is on.
-    HORSE_TUNING.bind(pane, { keys: ["enabled", "overlays"] });
+    // MASTER foliage switch — the very first control in the panel. One checkbox
+    // hides AND stops per-frame work for the ENTIRE vegetation system (all trees,
+    // grass, flowers, shrubs, everywhere). Off = invisible + near-zero cost.
+    FOLIAGE_TUNING.bind(pane, {
+      onChange: (_key, value) => this.#setFoliageVisible(Boolean(value))
+    });
 
     // basics live at the root — the handful of things touched every session;
     // everything else tucks into the collapsed "advanced" folder below.
@@ -407,10 +407,8 @@ export class DebugPanel {
       }
     });
 
+    // foliage detail knobs (the master on/off lives at the very top of the pane).
     const foliage = advanced.addFolder({ title: "foliage" });
-    FOLIAGE_TUNING.bind(foliage, {
-      onChange: (_key, value) => this.#setFoliageVisible(Boolean(value))
-    });
     // Wildflower ring: density + clump↔scatter shaping. The ring reads these live on
     // its next re-scatter; force one now (on slider RELEASE only, `last`) so the edit
     // shows without waiting for the player to walk.

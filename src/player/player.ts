@@ -421,7 +421,7 @@ export class Player {
     this.driveSpec = spec ?? DEFAULT_DRIVE_SPEC;
   }
 
-  /** Swap the drone mesh (Quidditch broom, etc.). Null restores the stock drone. */
+  /** Swap the drone mesh for a custom flyer. Null restores the stock drone. */
   setDroneStyle(mesh: THREE.Group | null) {
     const next = mesh ?? this.#defaultDroneMesh;
     if (next === this.meshes.drone) return;
@@ -443,7 +443,7 @@ export class Player {
     if (this.mode === "drone") this.#lightPool.claim(next);
   }
 
-  /** Restore the stock camera drone after a Quidditch broom ride. */
+  /** Restore the stock camera drone after a custom flyer style. */
   clearDroneStyle() {
     if (this.meshes.drone !== this.#defaultDroneMesh) this.setDroneStyle(null);
   }

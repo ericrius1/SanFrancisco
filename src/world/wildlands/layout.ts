@@ -62,8 +62,6 @@ export function wildRegionAt(x: number, z: number): WildRegion | null {
 // --- keep-out zones (existing world content owns these) --------------------------
 
 const AVOID: readonly { x: number; z: number; r: number; label: string }[] = [
-  { x: -3431, z: 2322, r: 150, label: "quidditch pitch" },
-  { x: -5250, z: 2380, r: 100, label: "horse platform" },
   { x: -388, z: -1426, r: 80, label: "palace of fine arts" },
   { x: -3150, z: -5100, r: 70, label: "gg bridge marin landing" },
   { x: -2900, z: -2260, r: 90, label: "gg bridge presidio anchorage" }

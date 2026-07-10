@@ -32,7 +32,7 @@ const STOPS = [
   { name: "downtown FiDi (dense towers)", x: 4117, z: 200, facing: Math.PI, mode: "walk" },
   { name: "golden gate deck (spawn)", spawn: "goldenGate" },
   { name: "residential marina", x: -700, z: -2380, facing: 0.6, mode: "walk" },
-  { name: "botanical meadow (horses+grass)", x: -2260, z: 2450, facing: 2.4, mode: "walk" },
+  { name: "botanical meadow (grass)", x: -2260, z: 2450, facing: 2.4, mode: "walk" },
   { name: "embarcadero pier (water+city)", x: 3900, z: -1100, facing: -2.2, mode: "walk" }
 ];
 

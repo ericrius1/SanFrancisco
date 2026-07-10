@@ -19,8 +19,6 @@ import { WILD_REGIONS } from "../world/wildlands/layout";
 
 export type MapSelf = { x: number; z: number; fx: number; fz: number; hue: number };
 export type MapRemote = { id: number; name: string; hue: number; x: number; z: number; mode: PlayerMode };
-// Live debug/training overlay points, fetched fresh each big-map draw.
-export type MapDebugHorse = { x: number; z: number; fallen: boolean };
 export type MapLayerId = "art" | "science" | "music";
 export type MapLayerPoint = { id: string; layer: MapLayerId; title: string; x: number; z: number };
 
@@ -68,9 +66,7 @@ const LANDMARK_LABELS: Record<string, string> = {
   ferry: "Ferry Building",
   alcatraz: "Alcatraz",
   sutro: "Sutro Tower",
-    palaceFineArts: "Palace of Fine Arts",
-    exploratorium: "Exploratorium",
-    quidditchPitch: "Quidditch Pitch"
+    palaceFineArts: "Palace of Fine Arts"
 };
 
 type MapLayerDefinition = {
@@ -146,9 +142,6 @@ export class Minimap {
   #map: WorldMap;
   #getSelf: () => MapSelf;
   #getRemotes: () => MapRemote[];
-  // Optional live getter for the big-map Training/Debug overlay (may be absent).
-  #getDebugHorses?: () => MapDebugHorse[];
-  #debugLayerOn = false;
 
   #world!: HTMLCanvasElement; // pre-rendered terrain, 1 grid cell = 1 px
   #mini!: HTMLCanvasElement;
@@ -205,13 +198,11 @@ export class Minimap {
   constructor(
     map: WorldMap,
     getSelf: () => MapSelf,
-    getRemotes: () => MapRemote[],
-    getDebugHorses?: () => MapDebugHorse[]
+    getRemotes: () => MapRemote[]
   ) {
     this.#map = map;
     this.#getSelf = getSelf;
     this.#getRemotes = getRemotes;
-    this.#getDebugHorses = getDebugHorses;
     this.#paintWorld();
     this.#landmarks = Object.entries(this.#map.meta.landmarks).map(([key, pos]) => ({
       x: pos.x,
@@ -1226,32 +1217,6 @@ export class Minimap {
     inner.appendChild(canvas);
     inner.appendChild(action);
     inner.appendChild(hint);
-    // Big-map-only "Training" overlay toggle: live horse dots. Lives here (not on
-    // the minimap) and defaults off. Only shown when a live getter is wired in.
-    if (this.#getDebugHorses) {
-      const debug = document.createElement("div");
-      debug.className = "bigmap-debug";
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "bigmap-debug-btn";
-      btn.setAttribute("aria-pressed", String(this.#debugLayerOn));
-      btn.classList.toggle("on", this.#debugLayerOn);
-      btn.textContent = "Training layer";
-      btn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        this.#debugLayerOn = !this.#debugLayerOn;
-        btn.classList.toggle("on", this.#debugLayerOn);
-        btn.setAttribute("aria-pressed", String(this.#debugLayerOn));
-        this.#drawBig();
-      });
-      const legend = document.createElement("div");
-      legend.className = "bigmap-debug-legend";
-      legend.innerHTML =
-        `<span class="bigmap-debug-key"><span class="bigmap-debug-dot" style="--c:#ffb454"></span>horses</span>`;
-      debug.appendChild(btn);
-      debug.appendChild(legend);
-      inner.appendChild(debug);
-    }
     wrap.appendChild(inner);
     document.body.appendChild(wrap);
     // click outside the map closes; the canvas itself owns selection/pan/zoom
@@ -1487,7 +1452,6 @@ export class Minimap {
     ctx.textBaseline = "alphabetic";
 
     if (LAYERS_ENABLED) this.#drawBigPlaces(ctx, px, pz, canvas.width, canvas.height);
-    if (this.#debugLayerOn) this.#drawBigDebug(ctx, px, pz, canvas.width, canvas.height);
 
     // remote players with name labels (canvas text — no HTML injection path)
     this.#hits = [];
@@ -1553,34 +1517,6 @@ export class Minimap {
         this.#bigPlaceHits.push([x, y, place]);
         if (selected) this.#placeLabel(ctx, x, y, `${layer.label}: ${place.title}`, layer.color, width, height);
       }
-    }
-  }
-
-  /** Live Training/Debug overlay: every horse (orange, red if fallen) as a small
-   * dot. Positions are fetched fresh here so they animate. */
-  #drawBigDebug(
-    ctx: CanvasRenderingContext2D,
-    px: (x: number) => number,
-    pz: (z: number) => number,
-    width: number,
-    height: number
-  ) {
-    const dpr = this.#dpr;
-    const margin = 16 * dpr;
-    const vis = (x: number, y: number) => x >= -margin && y >= -margin && x <= width + margin && y <= height + margin;
-    const spot = (x: number, y: number, rad: number, fill: string) => {
-      ctx.beginPath();
-      ctx.arc(x, y, rad, 0, Math.PI * 2);
-      ctx.fillStyle = fill;
-      ctx.fill();
-      ctx.lineWidth = 1.2 * dpr;
-      ctx.strokeStyle = "rgba(6,14,20,0.85)";
-      ctx.stroke();
-    };
-    for (const h of this.#getDebugHorses?.() ?? []) {
-      const x = px(h.x);
-      const y = pz(h.z);
-      if (vis(x, y)) spot(x, y, 3.6 * dpr, h.fallen ? "#ff5a5a" : "#ffb454");
     }
   }
 

@@ -17,7 +17,7 @@ const W = Number(process.env.SF_W ?? 2560), H = Number(process.env.SF_H ?? 1600)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const STOPS = [
-  { name: "downtown", x: 4117, z: 200, facing: Math.PI, mode: "walk" },
+  { name: "downtown", x: 4260, z: 420, facing: -2.4, mode: "walk" },
   { name: "meadow", x: -2260, z: 2450, facing: 2.4, mode: "walk" }
 ];
 

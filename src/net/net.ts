@@ -176,8 +176,6 @@ export class Net {
   onRtc: (from: number, payload: unknown) => void = () => {}; // voice signaling (src/net/voice.ts)
   /** Someone else fired a paintball: origin, velocity, 24-bit rgb. */
   onPaint: (id: number, x: number, y: number, z: number, vx: number, vy: number, vz: number, rgb: number) => void = () => {};
-  /** Someone else played a museum instrument: (instrument, key). */
-  onNote: (id: number, instrument: number, key: number) => void = () => {};
   /** Someone else launched fireworks: rows [ox,oy,oz,tx,ty,tz,T,pal,size]
    * (replayed locally by fireworks.launchRemote). */
   onFireworks: (id: number, rockets: number[][]) => void = () => {};
@@ -331,14 +329,6 @@ export class Net {
         }
         break;
       }
-      case "note": {
-        const id = msg.id as number;
-        const d = msg.d as number[];
-        if (id !== this.selfId && this.roster.has(id) && Array.isArray(d) && d.length === 2) {
-          this.onNote(id, d[0], d[1]);
-        }
-        break;
-      }
       case "fw": {
         const id = msg.id as number;
         const d = msg.d as number[][];
@@ -381,12 +371,6 @@ export class Net {
     for (let i = 0; i < rockets.length; i += 64) {
       this.#ws.send(JSON.stringify({ t: "fw", d: rockets.slice(i, i + 64) }));
     }
-  }
-
-  /** Broadcast one museum instrument note (instrument index, key index). */
-  sendNote(instrument: number, key: number) {
-    if (this.#ws?.readyState !== WebSocket.OPEN || !this.selfId) return;
-    this.#ws.send(JSON.stringify({ t: "note", d: [instrument, key] }));
   }
 
   /** Broadcast one chat line (server sanitizes + stamps name; no persistence). */

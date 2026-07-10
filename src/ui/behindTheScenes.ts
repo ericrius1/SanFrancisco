@@ -290,26 +290,6 @@ const TAB_LIFE = `
 
 const TAB_PLAY = `
   <section>
-    <h3><span class="bts-ic">✨</span> GPU particle worlds</h3>
-    <p>Inside the Pier 15 Exploratorium, the sand tables, water tanks and star fields are real
-    <strong>particle simulations running entirely on the GPU</strong> — tens of thousands of grains,
-    each pushed by its neighbours. The hard part of any neighbour simulation is answering "who is near
-    me?" without every particle testing every other particle (which would be hopeless at these counts).
-    The answer here is a <strong>counting-sort spatial grid</strong>, rebuilt from scratch every
-    substep:</p>
-    <p>First a compute pass histograms particles into grid cells with atomic adds (<code>atomicAdd</code>).
-    A <strong>Hillis-Steele prefix-sum scan</strong> — a parallel running total in <code>ceil(log₂n)</code>
-    ping-pong passes — turns those counts into per-cell start offsets. A scatter pass writes each
-    particle into its sorted slot. Then a single force kernel walks only the <strong>3×3 neighbouring
-    cells</strong> around each particle to accumulate pressure and collisions. The whole sim lives in a
-    flat 2D frame (a wall tank, a table disc) and is projected into the world by an origin plus two
-    axes — and it's room-gated, so it costs literally nothing while nobody is in the room to watch it.</p>
-    <p class="bts-aside">This is the same family of techniques behind fast GPU fluids and sand
-    everywhere — a spatial hash so each particle only ever looks at its immediate neighbourhood — running
-    live in a browser tab, on a museum exhibit you can walk up to.</p>
-  </section>
-
-  <section>
     <h3><span class="bts-ic">🖌️</span> Paint that sticks</h3>
     <p>The spray can and the paintballs share one <strong>procedural splat shader</strong>. There's no
     texture: for each blob, noise pushes the rim in and out so no two splats share a silhouette, a
@@ -406,11 +386,10 @@ const TAB_PLAY = `
     <h3><span class="bts-ic">🎓</span> Learning by doing</h3>
     <p>Newcomers get an interactive tutorial that <strong>watches real play</strong> instead of
     narrating over it. It's a chaptered checklist — first steps, stepping inside a building, the vehicle
-    roster, the map and teleport, a field trip into the Exploratorium — and each step completes only when
-    you actually do the thing: it measures how far you've walked, how high you've flown, which mode you're
-    in, which notes you played on the museum's piano. The game hands it a thin stream of read-only
-    signals and one-shot events, and the tutorial never reaches in to fake progress — so finishing it
-    means you can genuinely play, not that you clicked "next" five times.</p>
+    roster, the map and teleport — and each step completes only when you actually do the thing: it
+    measures how far you've walked, how high you've flown, which mode you're in. The game hands it a thin
+    stream of read-only signals and one-shot events, and the tutorial never reaches in to fake progress —
+    so finishing it means you can genuinely play, not that you clicked "next" five times.</p>
   </section>
 
   <section>
