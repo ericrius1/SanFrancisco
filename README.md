@@ -61,7 +61,7 @@ Press `Shift`+`1`–`7` to switch how you get around. Each one has its own feel:
 | `W A S D` | Move / drive / steer (depends on the mode) |
 | `Shift` | Run / boost |
 | `Space` | Jump / drift / ollie / flap (depends on the mode) |
-| `E` | Hop into or out of a nearby car |
+| `E` | Mount or dismount a nearby ride (boats, forest animals) |
 | `1`–`9` | Teleport to the numbered player next to you |
 | `M` | **Full-city map** — drag/scroll to pan/zoom, click a spot, press Teleport |
 | Left click | Use the current tool: spray paint · bubbles · chimes · **rope** · **grab** (arrow keys cycle the toolbar while the UI is showing) |
@@ -80,8 +80,8 @@ toolbar (cycle it with the arrow keys while the UI is up):
 
 - **Spray paint / bubbles / chimes** — cosmetic toys. Tag walls, blow bubbles,
   ring chimes off the ground.
-- **Rope** — tie any two things together: toys, traffic, ragdolls, walls, the
-  ground. Tie a crate to a bus. You know you want to.
+- **Rope** — tie any two things together: toys, ragdolls, walls, the
+  ground. Tie a crate to your own car. You know you want to.
 - **Grab** — a tractor beam. Hold to carry something, flick to throw it.
 
 ---
@@ -108,8 +108,7 @@ Nothing here is required — it's a list of things people tend to find fun.
 - **Chase the light.** Hold `Z` and drag to scrub the time of day. Sunset over
   the bridge, then the city at night with the tower beacons and Bay Bridge
   lights lit.
-- **Rope something ridiculous.** Tie a crate to a bus. Tie a ragdoll to a car.
-  Grab it, throw it.
+- **Rope something ridiculous.** Tie a ragdoll to your car. Grab it, throw it.
 - **Bring a friend.** Send them your local URL (or the live link). The minimap
   top-left shows everyone as colored dots; the nearest nine also get numbered
   indicators in the main view — press that number to teleport straight to them.
@@ -144,7 +143,7 @@ Everyone shares one world. No accounts, no login — connect and you're in.
   animation driven by their reported speed, and *no* extra lights (light-count
   changes rebuild every GPU pipeline in this renderer; emissive materials do
   the glowing instead).
-- **What is not synced:** building destruction, debris, traffic, fireworks and
+- **What is not synced:** building destruction, debris, fireworks and
   paint stay local to each client (every player has their own copy of the
   city). Syncing world state across Box3D instances is a much bigger project.
 
