@@ -1,36 +1,53 @@
 import * as THREE from "three/webgpu";
 import {
+  NodeUpdateType,
   pass,
   mrt,
   normalViewGeometry,
   packNormalToRGB
 } from "three/tsl";
-import { createPostFx, applyPostFxParams, POSTFX_TUNING, POSTFX_TOGGLES } from "./postfx";
+import {
+  createPostFx,
+  applyPostFxParams,
+  getPostFxVariantMask,
+  POSTFX_TUNING,
+  POSTFX_VARIANT_MASKS
+} from "./postfx";
 
+type SceneSamples = 0 | 4;
 type RuntimePassOptions = { options: { samples?: number } };
+type WarmableRenderPipeline = THREE.RenderPipeline & {
+  _update: () => void;
+  _quadMesh: THREE.QuadMesh;
+};
+type QueueBackedRenderer = THREE.WebGPURenderer & {
+  backend: { device?: { queue: { onSubmittedWorkDone(): Promise<unknown> } } };
+};
+
 const OUTLINE_PREPASS_SCALE = 0.5;
+const INK_VARIANT_MASK = 1;
+
+/** WebGPU supports one effective sample or 4x MSAA; all other values are 1x. */
+const effectiveSceneSamples = (value: unknown): SceneSamples => Number(value) >= 4 ? 4 : 0;
 
 /**
  * WebGPU render graph: a scene pass owns color/MSAA, and a lightweight
- * normal+depth prepass is referenced only when ink outlines are enabled.
- * With all stylized effects off, the pipeline outputs the scene pass directly
- * and lets RenderPipeline apply tone mapping/color space conversion.
+ * normal+depth prepass is referenced only by ink-outline variants. Each of the
+ * eight post-FX combinations owns a persistent RenderPipeline/material while
+ * sharing these two pass targets, so toggles select an already-built graph
+ * without discarding the previous fullscreen GPU pipeline.
  */
 export function createRenderPipeline(
   renderer: THREE.WebGPURenderer,
   scene: THREE.Scene,
   camera: THREE.Camera
 ) {
-  const pipeline = new THREE.RenderPipeline(renderer);
-
   // cheap outline prepass: view-space normals (packed to 8-bit) + depth, opaque only.
   // Geometry normals, not material normals: normalView pulls in each material's
   // normalNode chain (the facade's brick-bump fractal noise), re-running it over
   // the frame just to feed edge detection that does not need material-scale
   // bumps. The vertex normal is free and visually identical here.
-  // samples: 0 — the canvas is non-MSAA (see main.ts), so PassNode would
-  // otherwise inherit whatever the renderer reports; multisampling this target
-  // is pure raster/bandwidth waste for an outline lookup.
+  // samples: 0 — multisampling this half-resolution lookup is pure bandwidth.
   const prePass = pass(scene, camera, { samples: 0 });
   prePass.transparent = false;
   prePass.setResolutionScale(OUTLINE_PREPASS_SCALE);
@@ -39,52 +56,216 @@ export function createRenderPipeline(
 
   const prePassDepth = prePass.getTextureNode("depth");
 
-  const clampSceneSamples = () => Math.max(0, Math.min(4, Math.round(POSTFX_TUNING.values.sceneSamples as number)));
-  let activeSceneSamples = clampSceneSamples();
+  let activeSceneSamples = effectiveSceneSamples(POSTFX_TUNING.values.sceneSamples);
+  // Normalize a stale persisted 1/2/3 before Tweakpane binds to this object.
+  POSTFX_TUNING.values.sceneSamples = activeSceneSamples;
 
-  // lit scene pass. samples: this is where the image's geometry AA actually
-  // happens now that the canvas itself is single-sampled (main.ts)
+  // Lit scene pass. This is where geometry AA happens; the canvas stays 1x.
   const scenePass = pass(scene, camera, { samples: activeSceneSamples });
   const sceneColor = scenePass.getTextureNode();
+  const runtimeScenePass = scenePass as typeof scenePass & RuntimePassOptions;
+  const setScenePassSamples = (samples: SceneSamples) => {
+    runtimeScenePass.options.samples = samples;
+    scenePass.renderTarget.samples = samples;
+  };
 
-  // stylized post effects (postfx.ts) sit after tone mapping. They disable the
-  // pipeline's automatic output transform and apply renderOutput inside their
-  // custom shader; the default no-effect path keeps the automatic transform.
+  // Stylized effects apply renderOutput inside their custom shaders. The zero
+  // mask uses RenderPipeline's automatic output transform instead.
   const postfx = createPostFx({
     sceneTex: sceneColor,
     normalTex: prePass.getTextureNode(),
     depthTex: prePassDepth,
     camera
   });
-  const applyPostQuality = () => {
-    const sceneSamples = clampSceneSamples();
-    if (sceneSamples === activeSceneSamples) return;
 
-    activeSceneSamples = sceneSamples;
-    (scenePass as typeof scenePass & RuntimePassOptions).options.samples = sceneSamples;
-    scenePass.renderTarget.samples = sceneSamples;
-    pipeline.needsUpdate = true;
+  const variants = new Map<number, THREE.RenderPipeline>();
+  const getVariantPipeline = (requestedMask: number) => {
+    const mask = requestedMask & 7;
+    let variant = variants.get(mask);
+    if (variant !== undefined) return variant;
+
+    variant = new THREE.RenderPipeline(renderer);
+    if (mask === 0) {
+      variant.outputColorTransform = true;
+      variant.outputNode = sceneColor;
+    } else {
+      variant.outputColorTransform = false;
+      variant.outputNode = postfx.get(mask);
+    }
+    variants.set(mask, variant);
+    return variant;
   };
+
+  let activeVariantMask = getPostFxVariantMask();
+  let activePipeline = getVariantPipeline(activeVariantMask);
+
+  const applyPostQuality = () => {
+    const samples = effectiveSceneSamples(POSTFX_TUNING.values.sceneSamples);
+    POSTFX_TUNING.values.sceneSamples = samples;
+    if (samples === activeSceneSamples) return;
+
+    activeSceneSamples = samples;
+    setScenePassSamples(samples);
+    // The scene target/pipelines necessarily change sample count. The separate
+    // fullscreen output material does not, so none of the variants is dirtied.
+  };
+
   const applyPostFx = () => {
     applyPostFxParams();
     applyPostQuality();
-    if (POSTFX_TOGGLES.some((key) => Boolean(POSTFX_TUNING.values[key]))) {
-      pipeline.outputColorTransform = false;
-      pipeline.outputNode = postfx.build();
-    } else {
-      pipeline.outputColorTransform = true;
-      pipeline.outputNode = sceneColor;
-    }
-    pipeline.needsUpdate = true;
+    const mask = getPostFxVariantMask();
+    if (mask === activeVariantMask) return;
+
+    activeVariantMask = mask;
+    activePipeline = getVariantPipeline(mask);
   };
+
+  /**
+   * PassNode.compileAsync does not restore its render state if compilation
+   * rejects, so put a defensive boundary around the Three r185 API.
+   */
+  const compilePass = async (node: typeof scenePass) => {
+    const renderTarget = renderer.getRenderTarget();
+    const activeCubeFace = renderer.getActiveCubeFace();
+    const activeMipmapLevel = renderer.getActiveMipmapLevel();
+    const renderMRT = renderer.getMRT();
+    const renderOpaque = renderer.opaque;
+    const renderTransparent = renderer.transparent;
+    try {
+      renderer.opaque = node.opaque;
+      renderer.transparent = node.transparent;
+      await node.compileAsync(renderer);
+    } finally {
+      renderer.setRenderTarget(renderTarget, activeCubeFace, activeMipmapLevel);
+      renderer.setMRT(renderMRT);
+      renderer.opaque = renderOpaque;
+      renderer.transparent = renderTransparent;
+    }
+  };
+
+  /**
+   * Compile all persistent fullscreen materials in one traversal. RenderPipeline
+   * has no public compile method in r185, so this narrowly adapts its quad after
+   * asking the pipeline to configure it. Keeping this adapter here makes the
+   * returned warmup API independent of Three's private shape.
+   */
+  const compilePostFxVariants = async () => {
+    const quads = POSTFX_VARIANT_MASKS.map((mask) => {
+      const internal = getVariantPipeline(mask) as WarmableRenderPipeline;
+      internal._update();
+      return internal._quadMesh;
+    });
+    const group = new THREE.Group();
+    group.add(...quads);
+
+    const renderTarget = renderer.getRenderTarget();
+    const activeCubeFace = renderer.getActiveCubeFace();
+    const activeMipmapLevel = renderer.getActiveMipmapLevel();
+    const renderMRT = renderer.getMRT();
+    const toneMapping = renderer.toneMapping;
+    const outputColorSpace = renderer.outputColorSpace;
+    const xrEnabled = renderer.xr.enabled;
+
+    try {
+      // Match RenderPipeline.render() so the compiled target/cache key is the
+      // one used by live fullscreen draws, not the renderer's output-conversion
+      // framebuffer.
+      renderer.toneMapping = THREE.NoToneMapping;
+      renderer.outputColorSpace = THREE.ColorManagement.workingColorSpace;
+      renderer.xr.enabled = false;
+      await renderer.compileAsync(group, quads[0].camera);
+    } finally {
+      renderer.setRenderTarget(renderTarget, activeCubeFace, activeMipmapLevel);
+      renderer.setMRT(renderMRT);
+      renderer.toneMapping = toneMapping;
+      renderer.outputColorSpace = outputColorSpace;
+      renderer.xr.enabled = xrEnabled;
+      group.remove(...quads);
+    }
+  };
+
+  /**
+   * Precompile both effective scene sample modes and all post-FX variants.
+   * This intentionally renders covered warmup frames so BundleGroups are also
+   * recorded for 1x, 4x, and the ink MRT context. It mutates one shared scene
+   * target sequentially and restores the selected mode last, so it does not
+   * retain duplicate full-resolution MSAA targets.
+   *
+   * Calls are coalesced only while running; invoking warmup again revisits the
+   * scene so materials added by deferred world modules are compiled too. Call
+   * it while the loading cover is visible and no animation render is running.
+   */
+  let warmupInFlight: Promise<void> | null = null;
+  const warmupOnce = async () => {
+    const sceneUpdateType = scenePass.updateBeforeType;
+    const prePassUpdateType = prePass.updateBeforeType;
+    const renderTarget = renderer.getRenderTarget();
+    const activeCubeFace = renderer.getActiveCubeFace();
+    const activeMipmapLevel = renderer.getActiveMipmapLevel();
+    const renderMRT = renderer.getMRT();
+
+    // Several warmup renders may happen before the animation loop advances its
+    // frame token. Render-scoped updates guarantee that each requested sample
+    // mode actually executes its pass and records its own BundleGroups.
+    scenePass.updateBeforeType = NodeUpdateType.RENDER;
+    prePass.updateBeforeType = NodeUpdateType.RENDER;
+    try {
+      await compilePass(prePass);
+
+      const selectedAtStart = activeSceneSamples;
+      const sampleOrder: SceneSamples[] = selectedAtStart === 0 ? [4, 0] : [0, 4];
+      for (const samples of sampleOrder) {
+        setScenePassSamples(samples);
+        await compilePass(scenePass);
+        // compileAsync does not record BundleGroups. A covered render does so
+        // without retaining a second target when the next mode replaces it.
+        activePipeline.render();
+      }
+
+      await compilePostFxVariants();
+
+      // Explicitly visit an ink pipeline on every call: deferred BundleGroup
+      // contents need recording in the normal/depth MRT even after the quad's GPU
+      // program was already warm. Finish with the selected look on the canvas.
+      setScenePassSamples(activeSceneSamples);
+      const inkPipeline = getVariantPipeline(INK_VARIANT_MASK);
+      inkPipeline.render();
+      if (inkPipeline !== activePipeline) activePipeline.render();
+    } finally {
+      setScenePassSamples(activeSceneSamples);
+      scenePass.updateBeforeType = sceneUpdateType;
+      prePass.updateBeforeType = prePassUpdateType;
+      renderer.setRenderTarget(renderTarget, activeCubeFace, activeMipmapLevel);
+      renderer.setMRT(renderMRT);
+    }
+
+    // compileAsync/render() can resolve after command submission while the GPU
+    // still has seconds of warmup work queued. Keep the loading cover's promise
+    // pending until that work is genuinely complete; otherwise the first live
+    // toggle inherits the tail of the warmup queue and looks falsely slow.
+    await (renderer as QueueBackedRenderer).backend.device?.queue.onSubmittedWorkDone();
+  };
+  const warmup = () => {
+    if (warmupInFlight !== null) return warmupInFlight;
+    warmupInFlight = warmupOnce().finally(() => {
+      warmupInFlight = null;
+    });
+    return warmupInFlight;
+  };
+
   applyPostFx();
 
   return {
-    render: () => pipeline.render(),
-    pipeline,
-    /** Apply live scene AA quality changes from the "/" panel or render preset. */
+    render: () => activePipeline.render(),
+    /** The currently selected persistent fullscreen pipeline. */
+    get pipeline() {
+      return activePipeline;
+    },
+    /** Apply live scene AA changes without rebuilding the output material. */
     applyPostQuality,
-    /** Rebuild the output shader after a post-fx toggle change ("/" panel). */
-    applyPostFx
+    /** Select the cached post-FX graph after a toggle change. */
+    applyPostFx,
+    /** Precompile scene/sample/effect variants; safe to repeat after new loads. */
+    warmup
   };
 }

@@ -21,6 +21,7 @@ import { VOICE_TUNING } from "../net/voice";
 import { NATURE_AUDIO_TUNING } from "../audio";
 import type { Fireworks } from "../fx/fireworks";
 import type { TileStreamer } from "../world/tiles";
+import { withTweakBindingEventsSuppressed } from "../core/persist";
 
 type WireframeMaterial = THREE.Material & { wireframe: boolean };
 
@@ -107,6 +108,8 @@ export class DebugPanel {
   #wireframeActive = false;
   // pane bindings must not round-trip into sky.timeOfDay while the cycle runs
   #lightingView: Record<string, unknown> | null = null;
+  #lightingBindings: { refresh(): void }[] = [];
+  #monitorBindings: { refresh(): void }[] = [];
   #syncingFromSky = false;
   #syncingPane = false;
 
@@ -179,9 +182,15 @@ export class DebugPanel {
       this.#lightingView.nightBrightness = this.#sky.nightBrightness;
     }
     this.#syncingPane = true;
-    this.#pane.refresh();
-    this.#syncingPane = false;
-    this.#syncingFromSky = false;
+    try {
+      withTweakBindingEventsSuppressed(() => {
+        for (const binding of this.#lightingBindings) binding.refresh();
+        for (const binding of this.#monitorBindings) binding.refresh();
+      });
+    } finally {
+      this.#syncingPane = false;
+      this.#syncingFromSky = false;
+    }
   }
 
   /** Re-read every binding now — call after "." resets values behind the pane's back. */
@@ -197,9 +206,12 @@ export class DebugPanel {
       this.#lightingView.nightBrightness = this.#sky.nightBrightness;
     }
     this.#syncingPane = true;
-    this.#pane?.refresh();
-    this.#syncingPane = false;
-    this.#syncingFromSky = false;
+    try {
+      withTweakBindingEventsSuppressed(() => this.#pane?.refresh());
+    } finally {
+      this.#syncingPane = false;
+      this.#syncingFromSky = false;
+    }
   }
 
   #applyWireframe(on: boolean, force = false) {
@@ -300,12 +312,12 @@ export class DebugPanel {
     // forceScan makes it take effect now instead of on the next 30-frame scan.
     WORLD_TUNING.bind(pane, {
       keys: ["radius"],
-      onChange: (key, value) => {
+      onChange: (key, value, last) => {
         if (key !== "radius") return;
         CONFIG.tileLoadRadius = value as number;
         CONFIG.tileUnloadRadius = (value as number) + 400;
-        this.#tiles?.forceScan();
         this.#sky.applyFogParams();
+        if (last) this.#tiles?.forceScan();
       }
     });
 
@@ -346,7 +358,7 @@ export class DebugPanel {
         return;
       }
     };
-    SKY_TUNING.bind(pane, {
+    this.#lightingBindings = SKY_TUNING.bind(pane, {
       target: lightingView,
       keys: ["timeOfDay", "realTime", "cycleEnabled", "cycleDuration", "nightBrightness"],
       onChange: onSkyChange
@@ -358,13 +370,16 @@ export class DebugPanel {
       onChange: () => this.#sky.applyFogParams()
     });
 
-    // stylized post effects: toggles rebuild the output shader (one quad
-    // recompile), sliders are live uniforms — see render/postfx.ts
+    // Stylized post effects: toggles select retained shader variants; sliders
+    // are live uniforms — see render/postfx.ts.
     const postfx = pane.addFolder({ title: "post fx", expanded: false });
     POSTFX_TUNING.bind(postfx, {
-      onChange: (key) => {
+      onChange: (key, _value, last) => {
+        if (this.#syncingPane) return;
         if ((POSTFX_TOGGLES as readonly string[]).includes(key)) this.#postfx?.applyPostFx();
-        else if ((POSTFX_QUALITY_KEYS as readonly string[]).includes(key)) this.#postfx?.applyPostQuality();
+        else if ((POSTFX_QUALITY_KEYS as readonly string[]).includes(key)) {
+          if (last) this.#postfx?.applyPostQuality();
+        }
         else applyPostFxParams();
       }
     });
@@ -461,7 +476,7 @@ export class DebugPanel {
     this.#moveFolders = addMovementTuning(advanced);
 
     // fireworks bindings read/write the params object the sim consumes each frame
-    this.#fireworks?.addTuning(advanced);
+    this.#monitorBindings = this.#fireworks?.addTuning(advanced) ?? [];
 
     // Full GPU profiler (three.js Inspector: FPS/CPU/GPU graph, timing, memory).
     // Heavy — per-frame GPU timestamp queries + canvas redraw — so it's OFF by

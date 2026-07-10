@@ -3,24 +3,79 @@ import { BodyType } from "../../core/physics";
 import type { Input } from "../../core/input";
 import type { ModeController, ModeFrame, PlayerCtx } from "../../player/types";
 import { enterOnLand } from "../shared";
+import {
+  CarJumpState,
+  smoothstep01,
+  stepAirAttitude,
+  type AirAttitudeParams,
+  type JumpSample,
+  type JumpStateParams,
+  type MutableVec3
+} from "./jumpPhysics";
 import { CAR_TUNING } from "./tuning";
 
 const V = {
-  tmp: new THREE.Vector3(),
   tmp2: new THREE.Vector3(),
   fwd: new THREE.Vector3(),
   right: new THREE.Vector3(),
+  surface: new THREE.Vector3(),
+  airTarget: new THREE.Vector3(),
   up: new THREE.Vector3(0, 1, 0),
   qa: new THREE.Quaternion(),
-  qb: new THREE.Quaternion()
+  qb: new THREE.Quaternion(),
+  upTuple: [0, 1, 0] as MutableVec3,
+  targetTuple: [0, 1, 0] as MutableVec3,
+  airAngular: [0, 0, 0] as MutableVec3
 };
 
 export class CarController implements ModeController {
   readonly spawnLift = 0.8;
   steerVis = 0; // smoothed steer input, read by the driver-arm/wheel animation
 
-  spawnBody(ctx: PlayerCtx, _facing: number): number {
+  #jump = new CarJumpState();
+  #groundNormal = new THREE.Vector3(0, 1, 0);
+  #groundBlend = 1;
+  #supportClearance = 0;
+  #jumpSample: JumpSample = {
+    supportClearance: 0,
+    verticalSpeed: 0,
+    yaw: 0
+  };
+  #jumpParams: JumpStateParams = {
+    takeoffClearance: 0,
+    takeoffMinVerticalSpeed: 0,
+    minimumAirTime: 0,
+    landingClearance: 0,
+    landingMaxVerticalSpeed: 0,
+    landingMaxFallSpeed: 0,
+    landingConfirmSteps: 0
+  };
+  #airParams: AirAttitudeParams = {
+    kp: 0,
+    kd: 0,
+    maxAcceleration: 0,
+    yawDamping: 0,
+    yawAcceleration: 0
+  };
+
+  /** Read-only runtime state for the existing window.__sf diagnostics surface. */
+  get jumpDebug() {
+    return {
+      airborne: this.#jump.airborne,
+      airTime: this.#jump.airTime,
+      supportClearance: this.#supportClearance,
+      landingSteps: this.#jump.landingSteps,
+      readyForTakeoff: this.#jump.readyForTakeoff
+    };
+  }
+
+  spawnBody(ctx: PlayerCtx, facing: number): number {
     const p = ctx.position;
+    this.steerVis = 0;
+    this.#jump.reset(facing);
+    this.#groundBlend = 1;
+    this.#supportClearance = 0;
+    this.#sampleGroundNormal(ctx, p.x, p.z, this.#groundNormal);
     // box stops at the rocker panels (y half 0.45, not 0.6): the ride spring
     // holds the centre at ground+0.85, so a taller box left only 0.25 m of
     // floor clearance — any carpet/heightmap mismatch buried it in the road
@@ -30,7 +85,7 @@ export class CarController implements ModeController {
       halfExtents: ctx.driveSpec.halfExtents,
       density: 133, // keeps the old box's mass despite the thinner profile
       friction: 0.35,
-      restitution: 0.1
+      restitution: 0.04
     });
     return p.y + 0.8;
   }
@@ -53,23 +108,37 @@ export class CarController implements ModeController {
     return ctx.map.rideGround(x, z, ctx.position.y);
   }
 
+  #sampleGroundNormal(ctx: PlayerCtx, x: number, z: number, out: THREE.Vector3): THREE.Vector3 {
+    const e = 2.5;
+    return out.set(
+      this.#ground(ctx, x - e, z) - this.#ground(ctx, x + e, z),
+      2 * e,
+      this.#ground(ctx, x, z - e) - this.#ground(ctx, x, z + e)
+    ).normalize();
+  }
+
   update(ctx: PlayerCtx, dt: number, input: Input, frame: ModeFrame) {
     const w = ctx.physics.world;
     const v = frame.v;
     const q = ctx.quaternion;
     const fwd = V.fwd.set(0, 0, -1).applyQuaternion(q);
     fwd.y = 0;
-    fwd.normalize();
+    const fwdLen = fwd.length();
+    let yaw: number;
+    if (fwdLen > 1e-4) {
+      fwd.multiplyScalar(1 / fwdLen);
+      yaw = Math.atan2(-fwd.x, -fwd.z);
+    } else {
+      // Near vertical, the flattened nose has no stable heading. Keep the yaw
+      // latched at takeoff instead of letting numerical noise flip it by π.
+      yaw = this.#jump.airborne ? this.#jump.launchYaw : ctx.heading - Math.PI;
+      fwd.set(-Math.sin(yaw), 0, -Math.cos(yaw));
+    }
     const right = V.right.set(1, 0, 0).applyQuaternion(q);
     right.y = 0;
-    right.normalize();
-    const up = V.tmp2.set(0, 1, 0).applyQuaternion(q);
-
-    const ground = this.#ground(ctx, ctx.position.x, ctx.position.z);
-    // wide band: a car perched on a curb or wall lip (~2m up) must keep throttle
-    // and its down-spring, or it strands in a no-control limbo — beyond it (roofs,
-    // big jumps) physics owns the fall until we're near street level again
-    const grounded = ctx.position.y - ground < 3.0 && up.y > 0.35;
+    if (right.lengthSq() > 1e-8) right.normalize();
+    else right.set(Math.cos(yaw), 0, -Math.sin(yaw));
+    const up = V.tmp2.set(0, 1, 0).applyQuaternion(q).normalize();
 
     const throttle = input.axis("KeyS", "KeyW");
     const steer = input.axis("KeyD", "KeyA");
@@ -79,97 +148,49 @@ export class CarController implements ModeController {
 
     const td = CAR_TUNING.values;
     const spec = ctx.driveSpec;
+    const ground = this.#ground(ctx, ctx.position.x, ctx.position.z);
     const fwdSpeed = ctx.velocity.dot(fwd);
     const maxSpeed = (boost ? td.boostMaxSpeed : td.maxSpeed) * spec.maxFactor;
 
-    if (grounded) {
-      // longitudinal: accelerate toward a target speed, hard-capped. The target
-      // builds from *current* speed, so a blocked car (nose against a wall) would
-      // otherwise only ever ask for fwdSpeed+accel·dt ≈ 0.3 m/s and stay wedged
-      // forever — floor the request at a grind speed so it keeps pushing off a curb.
-      let targetSpeed = fwdSpeed;
-      if (throttle > 0) {
-        targetSpeed = Math.min(
-          maxSpeed,
-          Math.max(fwdSpeed + (boost ? td.boostAccel : td.accel) * spec.accelFactor * dt, td.grindSpeed)
-        );
-      } else if (throttle < 0) {
-        targetSpeed = Math.max(-td.reverseMax, fwdSpeed - td.reverseAccel * dt);
-        if (fwdSpeed < 0.5) targetSpeed = Math.min(targetSpeed, -td.reverseGrind);
-      } else targetSpeed = fwdSpeed * (1 - td.coastDrag * dt);
-
-      // lateral grip: kill most sideways velocity (less when drifting)
-      const latSpeed = ctx.velocity.dot(right);
-      const keepLat = handbrake ? td.driftLat : td.gripLat;
-
-      const newVx = fwd.x * targetSpeed + right.x * latSpeed * keepLat;
-      const newVz = fwd.z * targetSpeed + right.z * latSpeed * keepLat;
-
-      // vertical: ride the terrain on a height spring instead of preserving raw
-      // fall velocity (prevents high-speed tunneling) while still letting ramps
-      // fling us into the air. The anti-snag move is looking a whole box-length
-      // ahead: the collider reaches ~2.3 m past centre, so a rise the *nose* is
-      // already climbing must lift the spring NOW — otherwise the leading bottom
-      // edge digs into the carpet slab ahead and the solver eats all forward
-      // speed. That is the "stuck on a normal slope, hitting an invisible snag"
-      // report: the old feedforward only peeked newV·dt (~0.3 m) in front.
-      const travel = Math.sign(fwdSpeed) || (throttle > 0 ? 1 : throttle < 0 ? -1 : 1);
-      const nose = spec.halfExtents[2] + 0.6; // front-bumper reach + margin
-      const ahead = this.#ground(
-        ctx,
-        ctx.position.x + fwd.x * nose * travel + newVx * dt,
-        ctx.position.z + fwd.z * nose * travel + newVz * dt
+    // Compute the ground-control request before deciding the phase. The same
+    // nose probe defines the suspension target used for takeoff clearance, so a
+    // car whose front axle is still climbing a ramp cannot be declared airborne.
+    let targetSpeed = fwdSpeed;
+    if (throttle > 0) {
+      targetSpeed = Math.min(
+        maxSpeed,
+        Math.max(fwdSpeed + (boost ? td.boostAccel : td.accel) * spec.accelFactor * dt, td.grindSpeed)
       );
-      const rise = ahead - ground;
-      const rideY = Math.max(ground, ahead) + spec.rideHeight; // float over the rise
-      let vy = v.linear[1];
-      if (ctx.position.y > rideY + 0.5) {
-        // airborne off a ramp/crest: keep our velocity and let gravity arc us
-        // back down. Clamping upward speed to 0 here is what used to kill every
-        // jump before the car could ever leave the ground.
-        vy = v.linear[1];
-      } else {
-        // feedforward the climb rate (grade · ground speed) so the spring only
-        // trims residual error…
-        const horiz = Math.max(Math.abs(fwdSpeed), 2);
-        const slopeRate = THREE.MathUtils.clamp((rise / nose) * horiz, -14, 40);
-        vy = (rideY - ctx.position.y) * td.rideSpring + slopeRate;
-        // …then a stuck-guard: pinned against a terrain lip while still asking
-        // for real speed → add lift to hop over it. Gated on the ground actually
-        // rising, so it bulldozes hills but never crawls up a building wall.
-        // Threshold is grindSpeed-aware: when blocked, targetSpeed floors at
-        // td.grindSpeed (3.5), so the old `targetSpeed > 4` could never be true
-        // and this guard was dead code — every lip-block was permanent.
-        if (throttle > 0 && rise > 0.3 && Math.abs(fwdSpeed) < 3 && targetSpeed >= td.grindSpeed - 0.01) {
-          vy = Math.max(vy, rise * 5 + 4);
-        }
-      }
+    } else if (throttle < 0) {
+      targetSpeed = Math.max(-td.reverseMax, fwdSpeed - td.reverseAccel * dt);
+      if (fwdSpeed < 0.5) targetSpeed = Math.min(targetSpeed, -td.reverseGrind);
+    } else targetSpeed = fwdSpeed * (1 - td.coastDrag * dt);
 
-      // steering yaw, scaled by speed and capped
-      const dir = fwdSpeed >= -0.4 ? 1 : -1;
-      const grip = Math.min(Math.abs(fwdSpeed) / 6, 1);
-      const steerRate = steer * dir * grip * (handbrake ? td.driftSteerRate : td.steerRate) * spec.steerFactor;
+    const latSpeed = ctx.velocity.dot(right);
+    const keepLat = handbrake ? td.driftLat : td.gripLat;
+    const newVx = fwd.x * targetSpeed + right.x * latSpeed * keepLat;
+    const newVz = fwd.z * targetSpeed + right.z * latSpeed * keepLat;
+    const travel = Math.sign(fwdSpeed) || (throttle > 0 ? 1 : throttle < 0 ? -1 : 1);
+    const nose = spec.halfExtents[2] + 0.6;
+    const ahead = this.#ground(
+      ctx,
+      ctx.position.x + fwd.x * nose * travel + newVx * dt,
+      ctx.position.z + fwd.z * nose * travel + newVz * dt
+    );
+    const rise = ahead - ground;
+    const rideY = Math.max(ground, ahead) + spec.rideHeight;
+    this.#supportClearance = ctx.position.y - rideY;
 
-      // pitch/roll chase the road plane (yaw stays steering-owned). Without this
-      // the car sat horizontal on every hill — nose clipping into the climb — and
-      // contact impulses could leave it permanently tilted on a buried corner.
-      const e = 2.5;
-      const n = V.tmp.set(
-        this.#ground(ctx, ctx.position.x - e, ctx.position.z) - this.#ground(ctx, ctx.position.x + e, ctx.position.z),
-        2 * e,
-        this.#ground(ctx, ctx.position.x, ctx.position.z - e) - this.#ground(ctx, ctx.position.x, ctx.position.z + e)
-      ).normalize();
-      const yaw = Math.atan2(-fwd.x, -fwd.z);
-      V.qa.setFromAxisAngle(V.up, yaw);
-      V.qb.setFromUnitVectors(V.up, n).multiply(V.qa); // desired = tilt ∘ yaw
-      // error rotation current→desired; small-angle: ω ≈ 2·(x,z)·gain
-      V.qa.copy(q).invert().premultiply(V.qb);
-      const flip = V.qa.w < 0 ? -1 : 1;
-      const wx = THREE.MathUtils.clamp(V.qa.x * flip * 2 * 8, -6, 6);
-      const wz = THREE.MathUtils.clamp(V.qa.z * flip * 2 * 8, -6, 6);
-      w.setBodyVelocity(ctx.body, [newVx, vy, newVz], [wx, steerRate, wz]);
-    } else if (up.y < 0.2 && ctx.speed < 2.5) {
-      // flipped and stopped: self-right, nose kept the way we were driving
+    // Filter the road plane while supported and while approaching a landing. A
+    // ramp-edge sample may change instantly; the chassis attitude never should.
+    this.#sampleGroundNormal(ctx, ctx.position.x, ctx.position.z, V.surface);
+    const normalFollow = 1 - Math.exp(-td.groundNormalResponse * dt);
+    this.#groundNormal.lerp(V.surface, normalFollow).normalize();
+
+    // Preserve the old wide near-ground band only for anti-snag/self-right
+    // behavior. It no longer means the tyres are supported.
+    const nearGround = ctx.position.y - ground < 3.0;
+    if (up.y < 0.2 && ctx.speed < 2.5) {
       const face = ctx.heading - Math.PI;
       const t2 = w.getBodyTransform(ctx.body);
       w.setBodyTransform(ctx.body, [t2.position[0], t2.position[1] + 1.6, t2.position[2]], [
@@ -179,32 +200,125 @@ export class CarController implements ModeController {
         Math.cos(face / 2)
       ]);
       w.setBodyVelocity(ctx.body, [0, 0, 0], [0, 0, 0]);
-    } else {
-      // airborne off a ramp/hill: gravity still owns the linear arc (pass the
-      // velocity straight back), but stabilise the spin so a clean jump lands
-      // flat instead of tumbling. Damp whatever rotation the ramp edge kicked
-      // in and gently level toward upright — nose kept at our launch heading
-      // (from ctx.heading, robust when fwd goes near-vertical mid-tumble).
-      // Soft + capped on purpose: an ordinary ramp settles level before it
-      // touches down, but a wild, angled launch out-spins the fix and still
-      // flips — you have to go really crazy to lose it.
-      const yaw = ctx.heading - Math.PI;
-      V.qb.setFromAxisAngle(V.up, yaw); // desired = level car at our heading
-      V.qa.copy(q).invert().premultiply(V.qb); // error rotation current→upright
-      const flip = V.qa.w < 0 ? -1 : 1;
-      const g = td.airLevel;
-      const cap = td.airLevelCap;
-      const damp = Math.max(0, 1 - td.airDamp * dt); // per-step spin decay
-      const wv = v.angular;
-      const lx = THREE.MathUtils.clamp(V.qa.x * flip * g, -cap, cap);
-      const ly = THREE.MathUtils.clamp(V.qa.y * flip * g, -cap, cap);
-      const lz = THREE.MathUtils.clamp(V.qa.z * flip * g, -cap, cap);
-      w.setBodyVelocity(ctx.body, [v.linear[0], v.linear[1], v.linear[2]], [
-        wv[0] * damp + lx,
-        wv[1] * damp + ly,
-        wv[2] * damp + lz
-      ]);
+      this.#jump.reset(face);
+      this.#groundBlend = 1;
+      return;
     }
-    ctx.heading = Math.atan2(-fwd.x, -fwd.z) + Math.PI;
+
+    const jp = this.#jumpParams;
+    jp.takeoffClearance = td.takeoffClearance;
+    jp.takeoffMinVerticalSpeed = td.takeoffMinVerticalSpeed;
+    jp.minimumAirTime = td.minimumAirTime;
+    jp.landingClearance = td.landingClearance;
+    jp.landingMaxVerticalSpeed = td.landingMaxVerticalSpeed;
+    jp.landingMaxFallSpeed = td.landingMaxFallSpeed;
+    jp.landingConfirmSteps = td.landingConfirmSteps;
+    const js = this.#jumpSample;
+    js.supportClearance = this.#supportClearance;
+    js.verticalSpeed = v.linear[1];
+    js.yaw = yaw;
+    const transition = this.#jump.update(js, dt, jp);
+    if (transition !== "none") this.#groundBlend = 0;
+
+    const grounded = !this.#jump.airborne && nearGround && up.y > 0.35;
+    if (grounded) {
+      // Smoothly hand authority back from the contact solver/air assist. This
+      // keeps touchdown momentum, then restores road grip and suspension over
+      // roughly a quarter-second instead of snapping all six velocity channels.
+      this.#groundBlend +=
+        (1 - this.#groundBlend) * (1 - Math.exp(-td.landingBlendRate * dt));
+      const blend = this.#groundBlend;
+
+      let requestedVy = v.linear[1];
+      if (ctx.position.y <= rideY + td.takeoffClearance) {
+        const horiz = Math.max(Math.abs(fwdSpeed), 2);
+        const slopeRate = THREE.MathUtils.clamp((rise / nose) * horiz, -14, 40);
+        requestedVy = (rideY - ctx.position.y) * td.rideSpring + slopeRate;
+        // Pinned against a terrain lip while still asking for real speed: add a
+        // small hop. This remains ground-only and cannot fire during a jump.
+        if (
+          throttle > 0 &&
+          rise > 0.3 &&
+          Math.abs(fwdSpeed) < 3 &&
+          targetSpeed >= td.grindSpeed - 0.01
+        ) {
+          requestedVy = Math.max(requestedVy, rise * 5 + 4);
+        }
+      }
+
+      const dir = fwdSpeed >= -0.4 ? 1 : -1;
+      const grip = Math.min(Math.abs(fwdSpeed) / 6, 1);
+      const steerRate =
+        steer *
+        dir *
+        grip *
+        (handbrake ? td.driftSteerRate : td.steerRate) *
+        spec.steerFactor;
+
+      V.qa.setFromAxisAngle(V.up, yaw);
+      V.qb.setFromUnitVectors(V.up, this.#groundNormal).multiply(V.qa);
+      V.qa.copy(q).invert().premultiply(V.qb);
+      const flip = V.qa.w < 0 ? -1 : 1;
+      const wx = THREE.MathUtils.clamp(V.qa.x * flip * 2 * 8, -6, 6);
+      const wz = THREE.MathUtils.clamp(V.qa.z * flip * 2 * 8, -6, 6);
+      w.setBodyVelocity(
+        ctx.body,
+        [
+          THREE.MathUtils.lerp(v.linear[0], newVx, blend),
+          THREE.MathUtils.lerp(v.linear[1], requestedVy, blend),
+          THREE.MathUtils.lerp(v.linear[2], newVz, blend)
+        ],
+        [
+          THREE.MathUtils.lerp(v.angular[0], wx, blend),
+          THREE.MathUtils.lerp(v.angular[1], steerRate, blend),
+          THREE.MathUtils.lerp(v.angular[2], wz, blend)
+        ]
+      );
+    } else {
+      // The phase is latched even if the car rolls past the upright threshold.
+      // Linear momentum remains purely ballistic; only attitude gets an arcade
+      // assist, after a brief hold that lets the ramp's nose-up launch read.
+      this.#jump.forceAir(yaw);
+      const fade = smoothstep01(
+        (this.#jump.airTime - td.airHold) / Math.max(td.airBlendTime, 1e-4)
+      );
+      const landingHeight = smoothstep01(
+        (td.landingAssistHeight - this.#supportClearance) /
+          Math.max(td.landingAssistHeight, 1e-4)
+      );
+      const landingDescent = smoothstep01(
+        -v.linear[1] / Math.max(td.landingAssistDescentSpeed, 1e-4)
+      );
+      const landing = landingHeight * landingDescent;
+      V.airTarget.copy(V.up).lerp(this.#groundNormal, landing).normalize();
+      V.upTuple[0] = up.x;
+      V.upTuple[1] = up.y;
+      V.upTuple[2] = up.z;
+      V.targetTuple[0] = V.airTarget.x;
+      V.targetTuple[1] = V.airTarget.y;
+      V.targetTuple[2] = V.airTarget.z;
+      const ap = this.#airParams;
+      ap.kp = td.airKp;
+      ap.kd = td.airKd;
+      ap.maxAcceleration = td.airMaxAcceleration;
+      ap.yawDamping = td.airYawDamping;
+      ap.yawAcceleration = td.airYawAcceleration;
+      stepAirAttitude(
+        V.upTuple,
+        V.targetTuple,
+        v.angular,
+        steer,
+        Math.max(fade, landing),
+        dt,
+        ap,
+        V.airAngular
+      );
+      w.setBodyVelocity(
+        ctx.body,
+        [v.linear[0], v.linear[1], v.linear[2]],
+        V.airAngular
+      );
+    }
+    ctx.heading = yaw + Math.PI;
   }
 }

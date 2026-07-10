@@ -822,7 +822,8 @@ export class Fireworks {
     const f = pane.addFolder({ title: "fireworks (F)" });
     FIREWORKS_TUNING.bind(f);
     AUDIO_TUNING.bind(f);
-    f.addBinding(this.stats, "alive", { readonly: true, format: (v: number) => `${Math.round(v)}`, label: "≈alive" });
-    f.addBinding(this.stats, "queuedCmds", { readonly: true, format: (v: number) => `${Math.round(v)}`, label: "queued cmds" });
+    const alive = f.addBinding(this.stats, "alive", { readonly: true, format: (v: number) => `${Math.round(v)}`, label: "≈alive" });
+    const queued = f.addBinding(this.stats, "queuedCmds", { readonly: true, format: (v: number) => `${Math.round(v)}`, label: "queued cmds" });
+    return [alive, queued];
   }
 }

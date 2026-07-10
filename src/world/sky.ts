@@ -182,11 +182,16 @@ const FOG_NOISE_SPEED = 0.2
 const FOG_NOISE_CENTER = 0.7
 const FOG_TOP_VARIATION = 22 // metres, exactly the r185 reference amplitude
 const FOG_EXTINCTION_LENGTH = 160 // metres at unit density (Beer-Lambert mean free path)
-const FOG_DENSITY_MIN = 0.82 // moving pockets, centred on the reference density
-const FOG_DENSITY_MAX = 1.18
+// SF's broad flat districts do not intersect the noisy ceiling as often as the
+// reference's mountain terrain. A symmetric, mean-preserving density swing makes
+// the same octaves read as rolling pockets over streets and water.
+const FOG_DENSITY_MIN = 0.6
+const FOG_DENSITY_MAX = 1.4
 const FOG_EDGE_START = 0.88 // narrow streamed-geometry cull fade
 const FOG_EDGE_END = 0.98
 const FOG_SKY_BLEND_HEIGHT = 0.08 // match the visible horizon over its lowest ~5°
+const FOG_GOLD_LIGHT = 0.48 // neutral dusk fog: dimmer, never orange/grey
+const FOG_NIGHT_LIGHT = 0.12 // moonlit bank without a daylight-white night seam
 
 /**
  * A custom analytic sky driving both the backdrop and the image-based lighting.
@@ -218,7 +223,6 @@ export class Sky {
   cycleEnabled: boolean = SKY_TUNING.values.cycleEnabled // fast demo cycle; off unless opted in
   cycleDuration = SKY_TUNING.values.cycleDuration
 
-  #scene: THREE.Scene
   #sunVec = new THREE.Vector3() // true sun direction (may point below the horizon)
   // Calendar day the scrubbed/cycled hour is evaluated against. Real-time mode
   // refreshes this every frame; manual mode keeps the SF date from the last
@@ -239,8 +243,13 @@ export class Sky {
   #uFogBank = uniform(WORLD_TUNING.values.fogBank)
   #uFogNoise = uniform(WORLD_TUNING.values.fogNoise)
   #uFogDrift = uniform(WORLD_TUNING.values.fogDrift)
+  // Explicit elapsed-time uniform: the same seconds and octave speeds as the
+  // reference, but deterministic for fixed-step captures and frozen with P.
+  #uFogTime = uniform(0)
+  #uFogLight = uniform(1)
   #uFogEdgeStart = uniform(WORLD_TUNING.values.radius * FOG_EDGE_START)
   #uFogEdgeEnd = uniform(WORLD_TUNING.values.radius * FOG_EDGE_END)
+  #uFogEnabled = uniform(WORLD_TUNING.values.fogEnabled ? 1 : 0)
   #uFogBackdrop = uniform(WORLD_TUNING.values.fogEnabled ? 1 : 0)
   #fogNode: N | null = null
 
@@ -268,7 +277,6 @@ export class Sky {
   #lastShadowCam = new THREE.Vector3()
 
   constructor(scene: THREE.Scene) {
-    this.#scene = scene
     scene.environmentIntensity = 0.075 // a hint of sky in the reflections; the diffuse fill is the hemi's job
 
     this.mesh = new THREE.Mesh(
@@ -348,6 +356,7 @@ export class Sky {
 
     this.#fogNode = this.#buildFogNode()
     scene.fog = null
+    scene.fogNode = this.#fogNode
     this.applyFogParams()
 
     this.followRealTime()
@@ -369,6 +378,7 @@ export class Sky {
     const uSun = this.#uSun as N
     const uLift = this.#uNightLift as N
     const uFogBackdrop = this.#uFogBackdrop as N
+    const fogColor = color(FOG_COLOR).mul(this.#uFogLight as N)
     return Fn(() => {
       const mu = dot(d, uSun)
       const el = uSun.y // sun elevation, sin-scaled
@@ -471,7 +481,7 @@ export class Sky {
           float(0),
           d.y.max(0)
         ).mul(uFogBackdrop)
-        return mix(radiance as N, color(FOG_COLOR) as N, horizonFog as N) as N
+        return mix(radiance as N, fogColor as N, horizonFog as N) as N
       }
 
       return radiance
@@ -503,7 +513,7 @@ export class Sky {
 
     // Exact reference spatial octaves and timing. At the default 1× motion this
     // evolves at the same restrained pace as the supplied official-example video.
-    const nTime = time.mul(this.#uFogDrift as N)
+    const nTime = (this.#uFogTime as N).mul(this.#uFogDrift as N)
     const noiseA = triNoise3D(
       (positionWorld as N).mul(FOG_NOISE_SCALE_A),
       FOG_NOISE_SPEED,
@@ -583,7 +593,10 @@ export class Sky {
     // Keep the official reference colour in color-managed form. It reads milky
     // white under ACES and now agrees with the visible horizon instead of resolving
     // to the old #4d5358 charcoal attractor.
-    return tslFog(color(FOG_COLOR), clear.oneMinus())
+    return tslFog(
+      color(FOG_COLOR).mul(this.#uFogLight as N),
+      clear.oneMinus().mul(this.#uFogEnabled as N)
+    )
   }
 
   applyFogParams() {
@@ -599,9 +612,8 @@ export class Sky {
     this.#uFogDrift.value = v.fogDrift
     this.#uFogEdgeStart.value = v.radius * FOG_EDGE_START
     this.#uFogEdgeEnd.value = v.radius * FOG_EDGE_END
+    this.#uFogEnabled.value = v.fogEnabled ? 1 : 0
     this.#uFogBackdrop.value = v.fogEnabled ? 1 : 0
-    this.#scene.fog = null
-    this.#scene.fogNode = v.fogEnabled ? this.#fogNode : null
   }
 
   /** Environment radiance for the IBL: no point features, roughness-softened. */
@@ -699,6 +711,13 @@ export class Sky {
     // exposure re-anchor factor; the day terms are the live day-grade sliders.
     const nb = this.#nightLift
     const lowSunLift = 1 + (nb - 1) * lowSunW
+    // Keep the official fog hue neutral at every hour. Only incident-light
+    // energy falls with the sun, and the dome uses this same value so fully
+    // fogged geometry has no horizon seam. Midday remains the exact reference.
+    this.#uFogLight.value =
+      dayW +
+      FOG_GOLD_LIGHT * goldW * lowSunLift +
+      FOG_NIGHT_LIGHT * nightW * lowSunLift
     const sinEl = Math.sin(THREE.MathUtils.degToRad(elevation))
     if (elevation > -2) {
       const transmittance = Math.sqrt(Math.max(sinEl, 0))
@@ -760,6 +779,7 @@ export class Sky {
 
   /** Advance the cycle, keep the dome centred and the key light anchored ahead. */
   update(elapsed: number, cameraPos: THREE.Vector3) {
+    this.#uFogTime.value = elapsed
     const dt =
       this.#lastElapsed < 0 ? 0 : Math.min(elapsed - this.#lastElapsed, 0.1)
     this.#lastElapsed = elapsed

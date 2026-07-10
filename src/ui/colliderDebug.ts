@@ -35,15 +35,23 @@ export class ColliderDebug {
   #line: THREE.LineSegments;
   #pos: Float32Array;
   #col: Float32Array;
-  #cap = 0; // capacity in boxes
+  #cap: number; // capacity in boxes
+  #cx = new Float64Array(8);
+  #cy = new Float64Array(8);
+  #cz = new Float64Array(8);
   visible = false;
 
   constructor(scene: THREE.Object3D) {
+    // The active broadphase is capped below this in normal play. Reserving the
+    // modest debug buffer up front avoids a geometry/vertex-layout mutation on
+    // the first checkbox click; #grow remains as a safety valve for dense scenes.
+    this.#cap = 1024;
+    this.#pos = new Float32Array(this.#cap * VERTS_PER_BOX * 3);
+    this.#col = new Float32Array(this.#cap * VERTS_PER_BOX * 3);
     const geo = new THREE.BufferGeometry();
-    this.#pos = new Float32Array(0);
-    this.#col = new Float32Array(0);
     geo.setAttribute("position", new THREE.BufferAttribute(this.#pos, 3));
     geo.setAttribute("color", new THREE.BufferAttribute(this.#col, 3));
+    geo.setDrawRange(0, 0);
     const mat = new THREE.LineBasicNodeMaterial({
       vertexColors: true,
       transparent: true,
@@ -82,7 +90,7 @@ export class ColliderDebug {
     const pos = this.#pos;
     const col = this.#col;
     // precompute the 8 world corners of each box, then stream its 12 edges
-    const cx = new Float64Array(8), cy = new Float64Array(8), cz = new Float64Array(8);
+    const cx = this.#cx, cy = this.#cy, cz = this.#cz;
     let o = 0;
     for (const bx of boxes) {
       const cos = Math.cos(bx.yaw), sin = Math.sin(bx.yaw);

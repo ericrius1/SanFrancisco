@@ -13,11 +13,12 @@ import {
 } from "./layout";
 
 const DETAIL_RANGE = 1450;
-const ACTIVITY_RANGE = 700;
+const ACTIVITY_RANGE = 420;
 const HILL_RX = 118;
 const HILL_RZ = 126;
 const HILL_STEP = 4;
-const DOG_SURFACE_LIFT = 0.18;
+const DOG_SURFACE_LIFT = 0.04;
+const DOG_QUERY_LIFT = 0.14;
 const CORONA_GROUND_LIFT = 0.38;
 const preparedMaps = new WeakSet<WorldMap>();
 
@@ -120,7 +121,8 @@ export function prepareCoronaHeightsGround(map: WorldMap) {
       const q = ((x - cx) / HILL_RX) ** 2 + ((z - cz) / HILL_RZ) ** 2;
       if (q >= 1.12) continue;
       const feather = 1 - smooth01((q - 0.9) / 0.22);
-      map.groundTops[gz * width + gx] += CORONA_GROUND_LIFT * feather;
+      map.groundTops[gz * width + gx] +=
+        CORONA_GROUND_LIFT * feather + (pointInPolygon(x, z, CORONA_DOG_PARK) ? DOG_QUERY_LIFT : 0);
     }
   }
 }
@@ -441,9 +443,9 @@ function makeRockField(map: WorldMap, physics: Physics) {
     if (size > 1.4) {
       const visibleHeight = Math.max(0.36, sy - size * 0.34);
       const cy = y + visibleHeight * 0.46;
-      const hx = sx * 0.74;
+      const hx = sx * 0.84;
       const hy = visibleHeight * 0.46;
-      const hz = sz * 0.74;
+      const hz = sz * 0.84;
       const body = physics.world.createBox({
         type: BodyType.Static,
         position: [x, cy, z],
@@ -664,7 +666,7 @@ function polygonSurface(map: WorldMap, polygon: readonly CoronaXZ[]) {
   const maxX = Math.ceil(Math.max(...polygon.map((p) => p[0]))) + 1;
   const minZ = Math.floor(Math.min(...polygon.map((p) => p[1]))) - 1;
   const maxZ = Math.ceil(Math.max(...polygon.map((p) => p[1]))) + 1;
-  const step = 1.8;
+  const step = 0.8;
   const nx = Math.ceil((maxX - minX) / step) + 1;
   const nz = Math.ceil((maxZ - minZ) / step) + 1;
   const positions = new Float32Array(nx * nz * 3);
@@ -1087,7 +1089,9 @@ function moveDog(map: WorldMap, dog: ParkDog, tx: number, tz: number, dt: number
     vz = (dz / d) * step;
     dog.x += vx;
     dog.z += vz;
-    dog.heading = Math.atan2(-vx, -vz);
+    const targetHeading = Math.atan2(-vx, -vz);
+    const turn = Math.atan2(Math.sin(targetHeading - dog.heading), Math.cos(targetHeading - dog.heading));
+    dog.heading += turn * (1 - Math.exp(-Math.min(dt, 0.08) * 10));
   }
   dog.speed = dt > 1e-4 ? step / dt : 0;
   dog.stride += step * 4.6;
@@ -1107,7 +1111,7 @@ function moveDog(map: WorldMap, dog: ParkDog, tx: number, tz: number, dt: number
 function fetchTarget(phase: number, owner: CoronaXZ, landing: CoronaXZ, waiting: CoronaXZ) {
   if (phase < 0.12) return waiting;
   if (phase < 0.54) return landing;
-  if (phase < 0.94) return owner;
+  if (phase < 0.96) return owner;
   return waiting;
 }
 
@@ -1134,6 +1138,7 @@ export class CoronaHeightsPark {
   #ball: THREE.Mesh;
   #frisbee: THREE.Mesh;
   #mouth = new THREE.Vector3();
+  #propTarget = new THREE.Vector3();
 
   constructor(map: WorldMap, physics: Physics) {
     this.#map = map;
@@ -1222,19 +1227,27 @@ export class CoronaHeightsPark {
 
   #updateBall(phase: number, owner: CoronaXZ, landing: CoronaXZ, dog: ParkDog) {
     const ownerY = this.#map.groundTop(owner[0], owner[1]) + DOG_SURFACE_LIFT + 1.58;
+    const landingY = this.#map.groundTop(landing[0], landing[1]) + DOG_SURFACE_LIFT + 0.17;
     if (phase < 0.14) {
       this.#ball.position.set(owner[0] - 0.35, ownerY, owner[1] - 0.45);
     } else if (phase < 0.34) {
       const t = (phase - 0.14) / 0.2;
       this.#ball.position.set(
         lerp(owner[0], landing[0], t),
-        lerp(ownerY, this.#map.groundTop(landing[0], landing[1]) + DOG_SURFACE_LIFT + 0.17, t) + Math.sin(t * Math.PI) * 5.2,
+        lerp(ownerY, landingY, t) + Math.sin(t * Math.PI) * 5.2,
         lerp(owner[1], landing[1], t)
       );
-    } else if (phase < 0.54) {
-      this.#ball.position.set(landing[0], this.#map.groundTop(landing[0], landing[1]) + DOG_SURFACE_LIFT + 0.17, landing[1]);
-    } else if (phase < 0.94) {
+    } else if (phase < 0.5) {
+      this.#ball.position.set(landing[0], landingY, landing[1]);
+    } else if (phase < 0.56) {
+      const t = smooth01((phase - 0.5) / 0.06);
+      this.#ball.position.set(landing[0], landingY, landing[1]).lerp(dogMouth(dog, this.#mouth), t);
+    } else if (phase < 0.9) {
       this.#ball.position.copy(dogMouth(dog, this.#mouth));
+    } else if (phase < 0.96) {
+      const t = smooth01((phase - 0.9) / 0.06);
+      this.#propTarget.set(owner[0] - 0.35, ownerY, owner[1] - 0.45);
+      this.#ball.position.copy(dogMouth(dog, this.#mouth)).lerp(this.#propTarget, t);
     } else {
       this.#ball.position.set(owner[0] - 0.35, ownerY, owner[1] - 0.45);
     }
@@ -1242,19 +1255,27 @@ export class CoronaHeightsPark {
 
   #updateFrisbee(phase: number, owner: CoronaXZ, landing: CoronaXZ, dog: ParkDog, elapsed: number) {
     const ownerY = this.#map.groundTop(owner[0], owner[1]) + DOG_SURFACE_LIFT + 1.64;
+    const landingY = this.#map.groundTop(landing[0], landing[1]) + DOG_SURFACE_LIFT + 0.24;
     if (phase < 0.13) {
       this.#frisbee.position.set(owner[0] + 0.35, ownerY, owner[1] + 0.3);
     } else if (phase < 0.34) {
       const t = (phase - 0.13) / 0.21;
       this.#frisbee.position.set(
         lerp(owner[0], landing[0], t),
-        lerp(ownerY, this.#map.groundTop(landing[0], landing[1]) + DOG_SURFACE_LIFT + 0.28, t) + Math.sin(t * Math.PI) * 3.6,
+        lerp(ownerY, landingY, t) + Math.sin(t * Math.PI) * 3.6,
         lerp(owner[1], landing[1], t)
       );
-    } else if (phase < 0.54) {
-      this.#frisbee.position.set(landing[0], this.#map.groundTop(landing[0], landing[1]) + DOG_SURFACE_LIFT + 0.24, landing[1]);
-    } else if (phase < 0.94) {
+    } else if (phase < 0.5) {
+      this.#frisbee.position.set(landing[0], landingY, landing[1]);
+    } else if (phase < 0.56) {
+      const t = smooth01((phase - 0.5) / 0.06);
+      this.#frisbee.position.set(landing[0], landingY, landing[1]).lerp(dogMouth(dog, this.#mouth), t);
+    } else if (phase < 0.9) {
       this.#frisbee.position.copy(dogMouth(dog, this.#mouth));
+    } else if (phase < 0.96) {
+      const t = smooth01((phase - 0.9) / 0.06);
+      this.#propTarget.set(owner[0] + 0.35, ownerY, owner[1] + 0.3);
+      this.#frisbee.position.copy(dogMouth(dog, this.#mouth)).lerp(this.#propTarget, t);
     } else {
       this.#frisbee.position.set(owner[0] + 0.35, ownerY, owner[1] + 0.3);
     }

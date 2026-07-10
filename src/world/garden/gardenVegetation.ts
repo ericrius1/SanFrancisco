@@ -26,6 +26,8 @@ import { buildSeedTreeGarden, SEED_TREE_DESIGNS } from "./seedTreeGarden";
 
 export type GardenVegetation = {
   group: THREE.Group;
+  /** Resolves once the asynchronous SeedThree tree group has been attached. */
+  ready: Promise<void>;
   /** hidden trunk+canopy proxy mesh for the surface raycaster (BVH) */
   proxy: THREE.Mesh;
   grass: BotanicalGrassController;
@@ -234,7 +236,7 @@ export function createGardenVegetation(map: GardenTerrain): GardenVegetation {
   // colliders/proxy below come from the full layout list and are live
   // immediately. The near/far LOD rebin self-drives via onBeforeRender inside
   // buildSeedTreeGarden — nothing to tick from here.
-  buildSeedTreeGarden(trees)
+  const ready = buildSeedTreeGarden(trees)
     .then((st) => {
       group.add(st.group);
       console.log(
@@ -264,6 +266,7 @@ export function createGardenVegetation(map: GardenTerrain): GardenVegetation {
 
   return {
     group,
+    ready,
     proxy,
     grass,
     colliders: buildGardenTreeColliders(trees),

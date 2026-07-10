@@ -117,6 +117,7 @@ export class GolfUI {
   /** Swing context (near your ball): club rail + force meter. */
   showSwing(on: boolean) {
     this.#swing.classList.toggle("show", on);
+    document.querySelector("#hud")?.classList.toggle("golf-context", on);
   }
 
   setClubs(clubs: Club[], active: number) {

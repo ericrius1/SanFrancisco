@@ -46,6 +46,8 @@ export type SeedForestOptions = {
 
 export type SeedForest = {
   group: THREE.Group;
+  /** Resolves after every design and far-tier chunk has been added to `group`. */
+  ready: Promise<void>;
   /** call once per frame with the view position — drives chunk distance culling */
   update(focus: { x: number; z: number }): void;
   stats: { designs: number; instances: number; chunks: number; farTriangles: number; nearActive(): number };
@@ -263,7 +265,7 @@ export function createSeedForest(
   // Async build: grow every design (grow-once cache), then build chunk far sets.
   // Slots render nothing until their design's template resolves — trees stream
   // in a species at a time, same as the garden.
-  (async () => {
+  const ready = (async () => {
     for (let d = 0; d < designs.length; d++) {
       try {
         templates[d] = await growTemplate(designs[d]);
@@ -433,6 +435,7 @@ export function createSeedForest(
 
   return {
     group,
+    ready,
     update(focus) {
       applyDistanceCull(focus.x, focus.z);
     },

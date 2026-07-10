@@ -396,6 +396,11 @@ export class Player {
     if (this.mode === "walk") this.#modes.walk.requestJump();
   }
 
+  /** Air/landing state for probes and the window.__sf diagnostics surface. */
+  get driveJumpState() {
+    return this.#modes.drive.jumpDebug;
+  }
+
   /** Gameplay-owned golfer pose; the normal walk/idle animator resumes when off. */
   setGolfPose(active: boolean, swing = 0) {
     this.#golfPose.active = active && this.mode === "walk";

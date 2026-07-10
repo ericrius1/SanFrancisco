@@ -22,6 +22,7 @@ export class AvatarSelector {
   #panel: HTMLElement;
   #traitsBody: HTMLElement;
   #nameInput!: HTMLInputElement;
+  #nameBadge: HTMLDivElement;
   #toggle: HTMLButtonElement;
   #traits: AvatarTraits;
   #onChange: (traits: AvatarTraits) => void;
@@ -45,12 +46,20 @@ export class AvatarSelector {
     this.#toggle = document.createElement("button");
     this.#toggle.className = "avatar-toggle";
     this.#toggle.type = "button";
-    this.#toggle.title = "Avatar";
+    this.#toggle.setAttribute("aria-controls", "avatar-editor");
+    this.#toggle.setAttribute("aria-expanded", "false");
     this.#toggle.addEventListener("click", () => this.setOpen(!this.#open));
     this.#root.appendChild(this.#toggle);
 
+    this.#nameBadge = document.createElement("div");
+    this.#nameBadge.className = "player-name-chip";
+    this.#nameBadge.dataset.playerName = "";
+    this.#nameBadge.setAttribute("aria-label", "Current player name");
+    this.#root.appendChild(this.#nameBadge);
+
     this.#panel = document.createElement("div");
     this.#panel.className = "avatar-panel";
+    this.#panel.id = "avatar-editor";
     // Name row is persistent (built once) so editing a trait — which rebuilds
     // the swatch/button grid — never blows away the field mid-type.
     this.#panel.appendChild(this.#buildNameRow(initialName));
@@ -60,6 +69,7 @@ export class AvatarSelector {
     this.#root.appendChild(this.#panel);
 
     hud.appendChild(this.#root);
+    this.setName(initialName);
     this.#render();
   }
 
@@ -101,6 +111,7 @@ export class AvatarSelector {
   setOpen(open: boolean) {
     this.#open = open;
     this.#root.classList.toggle("open", open);
+    this.#toggle.setAttribute("aria-expanded", String(open));
   }
 
   /** Reflect an externally-assigned avatar (e.g. the server's per-id seed once
@@ -113,6 +124,11 @@ export class AvatarSelector {
   /** Reflect the current (possibly normalized) name without firing onRename. */
   setName(name: string) {
     this.#nameInput.value = name;
+    const displayName = name.trim() || "Player";
+    this.#nameBadge.textContent = displayName;
+    this.#nameBadge.title = `You are ${displayName}`;
+    this.#toggle.title = `Edit avatar and name (${displayName})`;
+    this.#toggle.setAttribute("aria-label", `Edit avatar and name for ${displayName}`);
   }
 
   #set(next: Partial<AvatarTraits>) {

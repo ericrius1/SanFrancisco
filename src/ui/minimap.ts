@@ -17,7 +17,7 @@ import { WILD_REGIONS } from "../world/wildlands/layout";
  * can be panned/zoomed and uses the same select-then-teleport flow.
  */
 
-export type MapSelf = { x: number; z: number; fx: number; fz: number; hue: number };
+export type MapSelf = { name: string; x: number; z: number; fx: number; fz: number; hue: number };
 export type MapRemote = { id: number; name: string; hue: number; x: number; z: number; mode: PlayerMode };
 export type MapLayerId = "art" | "science" | "music";
 export type MapLayerPoint = { id: string; layer: MapLayerId; title: string; x: number; z: number };
@@ -152,6 +152,7 @@ export class Minimap {
   #selected: MiniSelection | null = null;
   #big: HTMLCanvasElement | null = null;
   #bigWrap: HTMLDivElement | null = null;
+  #bigRecenter: HTMLButtonElement | null = null;
   #bigTeleWrap: HTMLDivElement | null = null;
   #bigTeleName: HTMLSpanElement | null = null;
   #dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -570,18 +571,17 @@ export class Minimap {
     return Math.min(Math.max(BIG_MIN_SPAN, span), this.#bigMaxSpan());
   }
 
-  #clampBigCenter(center: { x: number; z: number }, span = this.#bigSpan) {
+  #clampBigCenter(center: { x: number; z: number }) {
     const g = this.#map.meta.grid;
-    const spanX = this.#clampBigSpan(span);
-    const spanZ = spanX / this.#bigAspect();
-    const halfX = spanX / 2;
-    const halfZ = spanZ / 2;
     const worldW = g.width * g.cellSize;
     const worldH = g.height * g.cellSize;
-    const minX = g.minX + Math.min(halfX, worldW / 2);
-    const maxX = g.minX + worldW - Math.min(halfX, worldW / 2);
-    const minZ = g.minZ + Math.min(halfZ, worldH / 2);
-    const maxZ = g.minZ + worldH - Math.min(halfZ, worldH / 2);
+    // The viewport center may reach the world edge. This intentionally allows
+    // some off-map backdrop around edge locations, which keeps an exact player
+    // center from snapping inward on the first drag or wheel interaction.
+    const minX = g.minX;
+    const maxX = g.minX + worldW;
+    const minZ = g.minZ;
+    const maxZ = g.minZ + worldH;
     return {
       x: Math.min(maxX, Math.max(minX, center.x)),
       z: Math.min(maxZ, Math.max(minZ, center.z))
@@ -591,7 +591,11 @@ export class Minimap {
   #bigView() {
     const spanX = this.#clampBigSpan(this.#bigSpan || this.#bigMaxSpan());
     this.#bigSpan = spanX;
-    const center = this.#clampBigCenter(this.#bigCenter ?? this.#mapCenter(), spanX);
+    // Keep explicitly requested centers exact. User-driven pan/zoom assignments
+    // are clamped at the interaction sites, but opening/recentering near a world
+    // edge may intentionally reveal a little off-map backdrop so the player can
+    // remain mathematically centered.
+    const center = this.#bigCenter ?? this.#mapCenter();
     this.#bigCenter = center;
     return { center, spanX, spanZ: spanX / this.#bigAspect() };
   }
@@ -1169,14 +1173,20 @@ export class Minimap {
 
   /* --------------------------------------------------- expanded map */
 
+  #centerBigOnSelf(resetZoom = false) {
+    const self = this.#getSelf();
+    this.#bigCenter = { x: self.x, z: self.z };
+    if (resetZoom) {
+      const maxSpan = this.#bigMaxSpan();
+      this.#bigSpan = (maxSpan + BIG_MIN_SPAN) / 2;
+    }
+  }
+
   setExpanded(on: boolean) {
     if (on === this.expanded) return;
     this.expanded = on;
     if (on) {
-      const self = this.#getSelf();
-      this.#bigCenter = { x: self.x, z: self.z };
-      const maxSpan = this.#bigMaxSpan();
-      this.#bigSpan = (maxSpan + BIG_MIN_SPAN) / 2;
+      this.#centerBigOnSelf(true);
       if (!this.#bigWrap) this.#buildBig();
       this.#bigWrap!.style.display = "flex";
       this.#drawBig();
@@ -1184,6 +1194,20 @@ export class Minimap {
       this.#bigWrap.style.display = "none";
     }
     this.onExpandChange(on);
+  }
+
+  /** Read-only diagnostics used by browser probes and the existing __sf hook. */
+  debugState() {
+    const self = this.#getSelf();
+    const { center, spanX, spanZ } = this.#bigView();
+    return {
+      expanded: this.expanded,
+      center: { ...center },
+      self: { x: self.x, z: self.z, name: self.name },
+      spanX,
+      spanZ,
+      centered: Math.hypot(center.x - self.x, center.z - self.z) < 0.5
+    };
   }
 
   /** Demo/capture hook: open the full map centered on a named landmark and
@@ -1205,8 +1229,28 @@ export class Minimap {
     wrap.className = "bigmap";
     const inner = document.createElement("div");
     inner.className = "bigmap-inner";
+    const mapFrame = document.createElement("div");
+    mapFrame.className = "bigmap-frame";
     const canvas = document.createElement("canvas");
+    canvas.dataset.bigMap = "";
     canvas.title = "Drag to pan · scroll to zoom · click to select";
+    const recenter = document.createElement("button");
+    recenter.type = "button";
+    recenter.className = "bigmap-recenter";
+    recenter.dataset.mapRecenter = "";
+    recenter.title = "Recenter on your position";
+    recenter.setAttribute("aria-label", "Recenter map on your position");
+    recenter.innerHTML =
+      `<svg viewBox="0 0 24 24" aria-hidden="true">` +
+      `<circle cx="12" cy="12" r="4"></circle>` +
+      `<path d="M12 2v3M12 19v3M2 12h3M19 12h3"></path>` +
+      `<circle cx="12" cy="12" r="8.25"></circle>` +
+      `</svg>`;
+    recenter.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.#centerBigOnSelf();
+      this.#drawBig();
+    });
     const hint = document.createElement("div");
     hint.className = "bigmap-hint";
     hint.textContent = "Select a destination";
@@ -1229,7 +1273,8 @@ export class Minimap {
     });
     action.appendChild(targetName);
     action.appendChild(teleportBtn);
-    inner.appendChild(canvas);
+    mapFrame.append(canvas, recenter);
+    inner.appendChild(mapFrame);
     inner.appendChild(action);
     inner.appendChild(hint);
     wrap.appendChild(inner);
@@ -1263,13 +1308,10 @@ export class Minimap {
         if (nextSpan === this.#bigSpan) return;
 
         this.#bigSpan = nextSpan;
-        this.#bigCenter = this.#clampBigCenter(
-          {
-            x: worldX - nx * this.#bigSpan,
-            z: worldZ - ny * (this.#bigSpan / this.#bigAspect())
-          },
-          this.#bigSpan
-        );
+        this.#bigCenter = this.#clampBigCenter({
+          x: worldX - nx * this.#bigSpan,
+          z: worldZ - ny * (this.#bigSpan / this.#bigAspect())
+        });
         this.#drawBig();
       },
       { passive: false }
@@ -1322,6 +1364,7 @@ export class Minimap {
     canvas.addEventListener("pointercancel", endDrag);
     this.#big = canvas;
     this.#bigWrap = wrap;
+    this.#bigRecenter = recenter;
     this.#bigTeleWrap = action;
     this.#bigTeleName = targetName;
   }
@@ -1385,6 +1428,12 @@ export class Minimap {
     }
 
     const pos = this.#bigScreenToWorld(canvas, mx, my);
+    const grid = this.#map.meta.grid;
+    const maxX = grid.minX + grid.width * grid.cellSize;
+    const maxZ = grid.minZ + grid.height * grid.cellSize;
+    // Edge-centered views can show a little backdrop beyond the finite world.
+    // Keep that margin inert so it can never become an out-of-bounds teleport.
+    if (pos.x < grid.minX || pos.x > maxX || pos.z < grid.minZ || pos.z > maxZ) return;
     this.#selectedPlaceId = null;
     this.#selected = { kind: "fixed", x: pos.x, z: pos.z, name: GROUND_TARGET_NAME };
     this.update();
@@ -1409,8 +1458,15 @@ export class Minimap {
     const ctx = canvas.getContext("2d")!;
     ctx.imageSmoothingEnabled = true;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#102a39";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     const { center, spanX, spanZ } = this.#bigView();
+    const self = this.#getSelf();
+    this.#bigRecenter?.classList.toggle(
+      "centered",
+      Math.hypot(center.x - self.x, center.z - self.z) < 0.5
+    );
     const cell = this.#map.meta.grid.cellSize;
     ctx.drawImage(
       this.#world,
@@ -1486,7 +1542,6 @@ export class Minimap {
     }
 
     // self wedge
-    const self = this.#getSelf();
     const selfX = px(self.x);
     const selfY = pz(self.z);
     if (visible(selfX, selfY)) {
@@ -1505,10 +1560,60 @@ export class Minimap {
       ctx.stroke();
       ctx.fill();
       ctx.restore();
+      this.#drawSelfLabel(ctx, selfX, selfY, self.name, self.hue, canvas.width, canvas.height);
     }
 
     this.#drawBigSelection(ctx, px, pz, canvas.width, canvas.height);
     this.#syncTeleport(this.#resolveSelected());
+  }
+
+  #drawSelfLabel(
+    ctx: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    name: string,
+    hue: number,
+    width: number,
+    height: number
+  ) {
+    const dpr = this.#dpr;
+    const safeName = name.trim() || "Player";
+    ctx.save();
+    ctx.font = `700 ${11.5 * dpr}px ${MAP_FONT}`;
+    ctx.textBaseline = "middle";
+    const maxTextWidth = Math.max(54 * dpr, Math.min(190 * dpr, width - 30 * dpr));
+    const fullLabel = `You · ${safeName}`;
+    const label = this.#fitCanvasText(ctx, fullLabel, maxTextWidth);
+    const padX = 7 * dpr;
+    const boxW = ctx.measureText(label).width + padX * 2;
+    const boxH = 20 * dpr;
+    let bx = x + 11 * dpr;
+    if (bx + boxW > width - 5 * dpr) bx = x - boxW - 11 * dpr;
+    bx = Math.min(width - boxW - 5 * dpr, Math.max(5 * dpr, bx));
+    const by = Math.min(height - boxH - 5 * dpr, Math.max(5 * dpr, y - boxH / 2));
+    ctx.beginPath();
+    ctx.roundRect(bx, by, boxW, boxH, 8 * dpr);
+    ctx.fillStyle = "rgba(6,14,20,0.82)";
+    ctx.fill();
+    ctx.strokeStyle = `hsl(${hue} 78% 62% / 0.72)`;
+    ctx.lineWidth = dpr;
+    ctx.stroke();
+    ctx.fillStyle = `hsl(${hue} 82% 76%)`;
+    ctx.fillText(label, bx + padX, by + boxH / 2);
+    ctx.restore();
+  }
+
+  #fitCanvasText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number) {
+    if (ctx.measureText(text).width <= maxWidth) return text;
+    const ellipsis = "…";
+    let low = 0;
+    let high = text.length;
+    while (low < high) {
+      const mid = Math.ceil((low + high) / 2);
+      if (ctx.measureText(text.slice(0, mid) + ellipsis).width <= maxWidth) low = mid;
+      else high = mid - 1;
+    }
+    return text.slice(0, low) + ellipsis;
   }
 
   #drawBigPlaces(

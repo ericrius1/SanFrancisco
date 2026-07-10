@@ -9,8 +9,18 @@ import type { PlayerMode } from "../player/types";
 
 const TWEAKS_KEY = "sf-tweaks";
 const TWEAKS_SCHEMA_KEY = "sf-tweaks-schema";
-const TWEAKS_SCHEMA = "2026-07-official-fog-r185-2"; // reset the incompatible charcoal-fog settings/scale
+// One current schema only: reset the removed car-jump controls and stale
+// scene-AA values (1/2/3 were all effectively single-sample in Three r185).
+const TWEAKS_SCHEMA = "2026-07-smooth-car-jump-stable-render-variants-r185";
 const PLAYER_KEY = "sf-player";
+
+const IDLE_FLUSH_TIMEOUT_MS = 1000;
+const FALLBACK_FLUSH_DELAY_MS = 100;
+
+type IdleWindow = Window & {
+  requestIdleCallback?: (callback: IdleRequestCallback, options?: IdleRequestOptions) => number;
+  cancelIdleCallback?: (handle: number) => void;
+};
 
 const saved: Record<string, unknown> = (() => {
   try {
@@ -30,10 +40,87 @@ export function tweakDefault<T>(path: string, def: T): T {
   return path in saved ? (saved[path] as T) : def;
 }
 
+let tweakPersistenceDirty = false;
+let scheduledFlush: { kind: "idle" | "timeout"; handle: number } | null = null;
+let bindingEventSuppressionDepth = 0;
+
+function cancelScheduledTweakFlush() {
+  if (!scheduledFlush || typeof window === "undefined") return;
+  if (scheduledFlush.kind === "idle") {
+    (window as IdleWindow).cancelIdleCallback?.(scheduledFlush.handle);
+  } else {
+    window.clearTimeout(scheduledFlush.handle);
+  }
+  scheduledFlush = null;
+}
+
+/** Write all queued tweak changes now. Page lifecycle handlers call this before suspension. */
+export function flushTweakPersistence() {
+  cancelScheduledTweakFlush();
+  if (!tweakPersistenceDirty) return;
+  try {
+    localStorage.setItem(TWEAKS_SCHEMA_KEY, TWEAKS_SCHEMA);
+    localStorage.setItem(TWEAKS_KEY, JSON.stringify(saved));
+    tweakPersistenceDirty = false;
+  } catch {
+    // Storage can be unavailable (privacy mode/quota). Leave the dirty flag set
+    // so a later explicit change or lifecycle flush gets another chance.
+  }
+}
+
+function scheduleTweakFlush() {
+  if (!tweakPersistenceDirty || scheduledFlush || typeof window === "undefined") return;
+  const idleWindow = window as IdleWindow;
+  if (idleWindow.requestIdleCallback) {
+    scheduledFlush = {
+      kind: "idle",
+      handle: idleWindow.requestIdleCallback(
+        () => {
+          scheduledFlush = null;
+          flushTweakPersistence();
+        },
+        { timeout: IDLE_FLUSH_TIMEOUT_MS }
+      )
+    };
+    return;
+  }
+  scheduledFlush = {
+    kind: "timeout",
+    handle: window.setTimeout(() => {
+      scheduledFlush = null;
+      flushTweakPersistence();
+    }, FALLBACK_FLUSH_DELAY_MS)
+  };
+}
+
 export function saveTweak(path: string, value: unknown) {
   saved[path] = value;
-  localStorage.setItem(TWEAKS_SCHEMA_KEY, TWEAKS_SCHEMA);
-  localStorage.setItem(TWEAKS_KEY, JSON.stringify(saved));
+  tweakPersistenceDirty = true;
+  scheduleTweakFlush();
+}
+
+/**
+ * Ignore generic binding events emitted synchronously by a programmatic pane
+ * refresh. Callers have already updated the live state and re-apply any needed
+ * side effects explicitly; running change hooks here would duplicate expensive
+ * work such as shader rebuilds and vegetation rescattering.
+ */
+export function withTweakBindingEventsSuppressed<T>(callback: () => T): T {
+  bindingEventSuppressionDepth += 1;
+  try {
+    return callback();
+  } finally {
+    bindingEventSuppressionDepth -= 1;
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("pagehide", flushTweakPersistence);
+}
+if (typeof document !== "undefined") {
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") flushTweakPersistence();
+  });
 }
 
 /** One tunable value: the default plus its tweakpane options, all on one line. */
@@ -49,6 +136,7 @@ type TunableSpec = {
 };
 
 type Values<S extends Record<string, TunableSpec>> = { [K in keyof S]: S[K]["v"] };
+type RefreshableBinding = { refresh(): void };
 
 // every tunables() group, so resetAllTweaks can restore the inline defaults
 const groups: { spec: Record<string, TunableSpec>; values: Record<string, TunableValue> }[] = [];
@@ -56,8 +144,9 @@ const groups: { spec: Record<string, TunableSpec>; values: Record<string, Tunabl
 /**
  * A persisted tunable group. `values` is the live object gameplay code reads
  * (seeded from localStorage, falling back to the inline `v` defaults); `bind`
- * adds one tweakpane control per entry and persists every change. Entries with
- * only a `v` (no range/label) are plain tuned constants — no control.
+ * adds one tweakpane control per entry and persists each committed change.
+ * Continuous controls stay live while dragging but persist on release.
+ * Entries with only a `v` (no range/label) are plain tuned constants — no control.
  */
 export function tunables<S extends Record<string, TunableSpec>>(path: string, spec: S) {
   const values = {} as Values<S>;
@@ -68,7 +157,8 @@ export function tunables<S extends Record<string, TunableSpec>>(path: string, sp
     /**
      * `target` defaults to `values`; pass another object (e.g. a class instance
      * with matching fields) when the live state lives elsewhere. `onChange`
-     * runs after the write + persist, for side effects (uniforms, forceScan…).
+     * runs after every live write, for side effects (uniforms, forceScan…).
+     * Persistence is queued only for the final event and flushed in an idle turn.
      * `keys` limits which entries get controls, so one group can split across
      * folders (basic vs advanced).
      */
@@ -81,17 +171,23 @@ export function tunables<S extends Record<string, TunableSpec>>(path: string, sp
       }
     ) {
       const target = hooks?.target ?? values;
+      const bindings: RefreshableBinding[] = [];
       for (const k in spec) {
         if (hooks?.keys && !hooks.keys.includes(k)) continue;
         const { v, ...opts } = spec[k];
         void v;
         if (Object.keys(opts).length === 0) continue; // tuned constant, no control
-        folder.addBinding(target, k, opts).on("change", (ev) => {
+        const binding = folder.addBinding(target, k, opts);
+        binding.on("change", (ev) => {
+          if (bindingEventSuppressionDepth > 0) return;
           (values as Record<string, unknown>)[k] = ev.value;
-          saveTweak(`${path}.${k}`, ev.value);
-          hooks?.onChange?.(k, ev.value as TunableValue, ev.last ?? true);
+          const last = ev.last ?? true;
+          if (last) saveTweak(`${path}.${k}`, ev.value);
+          hooks?.onChange?.(k, ev.value as TunableValue, last);
         });
+        bindings.push(binding);
       }
+      return bindings;
     }
   };
 }
@@ -104,6 +200,8 @@ export function tunables<S extends Record<string, TunableSpec>>(path: string, sp
  * re-apply; see the Period handler in main.ts.
  */
 export function resetAllTweaks() {
+  cancelScheduledTweakFlush();
+  tweakPersistenceDirty = false;
   for (const k in saved) delete saved[k];
   localStorage.removeItem(TWEAKS_KEY);
   localStorage.setItem(TWEAKS_SCHEMA_KEY, TWEAKS_SCHEMA);

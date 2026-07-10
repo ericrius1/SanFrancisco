@@ -36,20 +36,18 @@ import { tunables } from "../core/persist";
  *
  * Everything runs AFTER tone mapping (the pipeline hands us display-referred
  * sRGB via renderOutput), so quantize/grain/vignette work on the 0..1 image
- * the eye actually sees. Toggles specialize the output shader (rebuild via
- * applyPostFx — a single fullscreen quad recompile); sliders are uniforms and
- * live-update for free. No If() anywhere: build-time JS branches only, so the
- * mx_noise branch-corruption hazard never applies.
+ * the eye actually sees. Toggles select one of eight cached shader graphs;
+ * sliders are uniforms and live-update for free. No If() anywhere: build-time
+ * JS branches only, so the mx_noise branch-corruption hazard never applies.
  */
 export const POSTFX_TUNING = tunables("postfx", {
   sceneSamples: {
-    // universal render mode fixes scene MSAA at 2 (the old presets used 0/2/4).
-    // 2 is the measured sweet spot — clear edge cleanup over 0 at a fraction of
-    // 4's resolve cost. Kept as a dev knob here for A/B profiling.
-    v: 2,
-    min: 0,
-    max: 4,
-    step: 1,
+    // WebGPU exposes only single-sample or 4x MSAA. Three maps 1/2/3 to one
+    // sample, so presenting those values only caused expensive no-op churn.
+    // The old default was 2, which was single-sample in practice; 0 preserves
+    // that rendered baseline while describing it honestly.
+    v: 0,
+    options: { Off: 0, "4×": 4 },
     label: "scene AA samples"
   },
   ink: { v: false, label: "ink & wash" },
@@ -67,6 +65,20 @@ export const POSTFX_TUNING = tunables("postfx", {
 /** The keys that change the shader itself (everything else is a live uniform). */
 export const POSTFX_TOGGLES = ["ink", "dream", "retro"] as const;
 export const POSTFX_QUALITY_KEYS = ["sceneSamples"] as const;
+
+const POSTFX_INK = 1 << 0;
+const POSTFX_DREAM = 1 << 1;
+const POSTFX_RETRO = 1 << 2;
+const POSTFX_ALL = POSTFX_INK | POSTFX_DREAM | POSTFX_RETRO;
+
+/** All specialized graph variants, ordered by their ink/dream/retro bit mask. */
+export const POSTFX_VARIANT_MASKS = [0, 1, 2, 3, 4, 5, 6, 7] as const;
+
+/** Return the cached-variant mask selected by the live tweak values. */
+export function getPostFxVariantMask() {
+  const v = POSTFX_TUNING.values;
+  return (v.ink ? POSTFX_INK : 0) | (v.dream ? POSTFX_DREAM : 0) | (v.retro ? POSTFX_RETRO : 0);
+}
 
 const U = {
   inkStrength: uniform(POSTFX_TUNING.values.inkStrength),
@@ -119,20 +131,24 @@ export function createPostFx(deps: {
   const normalAt = (uv: any) => unpackRGBToNormal(normalTex.sample(uv)).normalize();
   const viewZAt = (uv: any) => getViewPosition(uv, depthTex.sample(uv).r, projInv).z;
 
-  /** Build the output node for the current toggle set (call on toggle change). */
-  const build = () => {
-    const on = POSTFX_TUNING.values;
+  const variants = new Map<number, any>();
+
+  /** Build one immutable specialization. The public getter retains the result. */
+  const build = (mask: number) => {
+    const ink = (mask & POSTFX_INK) !== 0;
+    const dream = (mask & POSTFX_DREAM) !== 0;
+    const retro = (mask & POSTFX_RETRO) !== 0;
 
     return Fn(() => {
       // retro quantizes the sample position onto a virtual pixel grid; every
       // later stage reads through the same uv so the effects stay coherent
       const grid = screenSize.div(U.retroPixel);
       const cell = screenUV.mul(grid).floor();
-      const uv = on.retro ? cell.add(0.5).div(grid) : screenUV;
+      const uv = retro ? cell.add(0.5).div(grid) : screenUV;
 
       // ---- linear-light stage: scene taps (+ dream's halation & fringe)
       let lin: any;
-      if (on.dream) {
+      if (dream) {
         // radial color fringe: R/B pulled apart along the from-center axis
         const off = screenUV.sub(0.5).mul(U.dreamFringe.mul(0.0035));
         const center = sceneTex.sample(uv);
@@ -153,7 +169,7 @@ export function createPostFx(deps: {
       const c = renderOutput(vec4(lin, 1)).rgb.toVar();
 
       // ---- ink & wash: outlines where the prepass normals/depth jump
-      if (on.ink) {
+      if (ink) {
         const w = U.inkWidth.div(screenSize);
         const ox = vec2(w.x, 0);
         const oy = vec2(0, w.y);
@@ -181,7 +197,7 @@ export function createPostFx(deps: {
       }
 
       // ---- dream haze grade: pastel lift, gentle vignette, living grain
-      if (on.dream) {
+      if (dream) {
         const a = U.dreamAmount;
         c.assign(mix(c, c.mul(vec3(1.05, 0.97, 0.92)).add(vec3(0.05, 0.045, 0.085)), a));
         c.assign(saturation(c, float(1).sub(a.mul(0.2))));
@@ -191,7 +207,7 @@ export function createPostFx(deps: {
       }
 
       // ---- retro crt: dithered quantize on the virtual grid + scanlines
-      if (on.retro) {
+      if (retro) {
         c.assign(saturation(c, 1.12)); // small candy pop before the palette snaps
         const levels = U.retroLevels.sub(1).max(1);
         // 0.7 dither span: full-strength Bayer turns flat lawns into rainbow
@@ -205,5 +221,16 @@ export function createPostFx(deps: {
     })();
   };
 
-  return { build };
+  /** Return a stable node graph for a toggle mask, building it only once. */
+  const get = (requestedMask = getPostFxVariantMask()) => {
+    const mask = requestedMask & POSTFX_ALL;
+    let variant = variants.get(mask);
+    if (variant === undefined) {
+      variant = build(mask);
+      variants.set(mask, variant);
+    }
+    return variant;
+  };
+
+  return { get };
 }

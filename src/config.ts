@@ -21,9 +21,10 @@ export const LIGHT_SCALE = (100 / 6) * EXPOSURE_REBASE
  * session runs. Replaces the old three-tier quality preset system (performance /
  * balanced / high) and its separate shadow-quality tiers, both removed 2026-07 —
  * there is no user-facing quality switch any more. The two other universal-mode
- * values live with the systems they configure: scene MSAA = 2 in
- * POSTFX_TUNING.sceneSamples (render/postfx.ts) and the always-on CSM shadow
- * config as named constants near the setup in world/sky.ts.
+ * values live with the systems they configure: scene AA (single-sample by
+ * default, optional 4x MSAA for profiling) in POSTFX_TUNING.sceneSamples
+ * (render/postfx.ts), and the always-on CSM shadow config as named constants
+ * near the setup in world/sky.ts.
  */
 export const RENDER_MODE = {
   // drawing-buffer cap on devicePixelRatio. The scene is fragment-bound: retina

@@ -139,9 +139,8 @@ async function boot() {
   // beyond a kilometre, so distant near-coplanar facades shimmer. Reversed float
   // depth keeps precision effectively uniform out to the far plane.
   // antialias stays OFF at the canvas: every pixel routes through the post
-  // pipeline, so edge AA comes from the scene pass's own 4x target
-  // (pipeline.ts) — a multisampled canvas would only buy a 4x resolve of the
-  // final fullscreen quad
+  // pipeline, whose scene pass can switch between one sample and 4x MSAA.
+  // Multisampling the canvas would only resolve the final fullscreen quad.
   const renderer = new THREE.WebGPURenderer({ antialias: false, reversedDepthBuffer: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, RENDER_MODE.pixelRatioCap));
   renderer.setSize(window.innerWidth, window.innerHeight);
@@ -350,8 +349,19 @@ async function boot() {
   // footprint inside Golden Gate Park. Trees stream in async; grass is live now.
   // garden, wildlands are deferred — constructed after progress(100)
   // so they don't block first paint. Nullable refs; update calls are guarded.
-  let garden: { group: THREE.Group; update: (dt: number, pos: THREE.Vector3, d: GrassDisplacer[]) => void } | null = null;
-  let wildlands: { groups: THREE.Group[]; flowers: { refresh: () => void }; grass: { refresh: () => void }; update: (pos: THREE.Vector3, cam: THREE.Vector3) => void } | null = null;
+  let garden: {
+    group: THREE.Group;
+    ready: Promise<void>;
+    setVisible: (visible: boolean, focus: { x: number; z: number }) => void;
+    update: (dt: number, pos: THREE.Vector3, d: GrassDisplacer[]) => void;
+  } | null = null;
+  let wildlands: {
+    groups: THREE.Group[];
+    ready: Promise<void>;
+    flowers: { refresh: () => void };
+    grass: { refresh: () => void };
+    update: (pos: THREE.Vector3, cam: THREE.Vector3) => void;
+  } | null = null;
   let coronaHeights: CoronaHeightsPark | null = null;
   let windGustValue: (() => number) | null = null;
   let advanceWind: ((dt: number) => void) | null = null;
@@ -363,7 +373,7 @@ async function boot() {
   let foliageOn = Boolean(FOLIAGE_TUNING.values.visible);
   const setFoliageVisible = (visible: boolean) => {
     foliageOn = visible;
-    if (garden) garden.group.visible = visible;
+    garden?.setVisible(visible, player.position);
     if (wildlands) for (const g of wildlands.groups) g.visible = visible;
     coronaHeights?.setFoliageVisible(visible);
   };
@@ -545,6 +555,7 @@ async function boot() {
     }
   );
   net.onWelcome = () => {
+    avatarSelector.setName(net.name); // server may canonicalize a duplicate/invalid name
     if (customized) {
       net.setAvatar(avatarTraits); // re-assert my chosen look after a (re)connect
     } else {
@@ -683,7 +694,7 @@ async function boot() {
     () => {
       // facing from the active mesh (front is local -Z on every embodiment)
       mapFwd.set(0, 0, -1).applyQuaternion(player.meshes[player.mode].quaternion);
-      return { x: player.position.x, z: player.position.z, fx: mapFwd.x, fz: mapFwd.z, hue: net.selfHue };
+      return { name: net.name, x: player.position.x, z: player.position.z, fx: mapFwd.x, fz: mapFwd.z, hue: net.selfHue };
     },
     () => remotes.positions()
   );
@@ -1112,6 +1123,15 @@ async function boot() {
   // Culling is off so meshes parked at the origin still draw.
   progress(88, "warming up the vehicles");
   sky.update(0, camera.position);
+  // The small debug overlays are normally hidden, which used to leave their
+  // line/standard-material pipelines cold until the first checkbox click.
+  // Show one representative collider and the grey cards only under the opaque
+  // boot cover, then restore the persisted visibility after the warm render.
+  const warmColliderDebug = Boolean(RENDER_TUNING.values.colliderDebug);
+  const warmGreyCards = Boolean(RENDER_TUNING.values.greyCards);
+  colliderDebug.setVisible(true);
+  colliderDebug.sync([{ x: player.position.x, y: player.position.y, z: player.position.z, hx: 1, hy: 1, hz: 1, yaw: 0, r: 1, g: 0.2, b: 0.2 }]);
+  calibrationChart.sync(camera, true);
   pipeline.render();
   player.warmup("all");
   fx.prewarm(); // compiles both sprite blend pipelines before gameplay
@@ -1127,7 +1147,10 @@ async function boot() {
       }
     });
   }
-  pipeline.render();
+  progress(90, "warming render paths");
+  await pipeline.warmup();
+  colliderDebug.setVisible(warmColliderDebug);
+  calibrationChart.sync(camera, warmGreyCards);
   // one rAF flush is enough for the compile submit; no fixed 350ms wait
   await new Promise<void>((r) => requestAnimationFrame(() => r()));
   for (const o of unculled) o.frustumCulled = true;
@@ -1150,6 +1173,9 @@ async function boot() {
   // the scheduler has fully drained.
   progress(92, "growing the parks");
   let modulesReady = false;
+  let deferredModulesSettled = false;
+  let lateRenderWarmupActive = false;
+  let lateRenderWarmupRequestedAt = 0;
   void (async () => {
     // Forest + Creatures: ambient wildlife and rideable animals
     const [forestMod, creaturesMod] = await Promise.all([
@@ -1178,7 +1204,7 @@ async function boot() {
     advanceWind = gardenMod.updateWindGusts; // keep the wind envelope live when foliage is toggled off
     const _garden = gardenMod.createBotanicalGarden(map);
     scene.add(_garden.group);
-    _garden.group.visible = FOLIAGE_TUNING.values.visible;
+    _garden.setVisible(Boolean(FOLIAGE_TUNING.values.visible), player.position);
     garden = _garden;
     const _wildlands = wildlandsMod.createWildlands(
       map,
@@ -1188,11 +1214,8 @@ async function boot() {
             // its own smooth rough/fairway/green materials own that footprint.
             groundcover: (x: number, z: number) => loadedGolfCourse!.contains(x, z, 1.2),
             // Keep the real wooded rough character, but never procedural-tree a
-            // tee, fairway, green, bunker or cart path.
-            trees: (x: number, z: number) => {
-              const kind = loadedGolfCourse!.surfaceAt(x, z).kind;
-              return kind !== "rough" && kind !== "out";
-            }
+            // play surface or the smooth graded apron around greens/tee pads.
+            trees: (x: number, z: number) => loadedGolfCourse!.clearsProceduralTrees(x, z)
           }
         : undefined
     );
@@ -1202,6 +1225,11 @@ async function boot() {
     // live objects in so probes/console can reach the garden + wildlands groups.
     const sfHooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
     if (sfHooks) Object.assign(sfHooks, { garden: _garden, wildlands: _wildlands });
+
+    // Both systems add SeedThree renderables after their synchronous wrapper
+    // exists. Keep the cover's render-variant warmup behind that true material
+    // boundary; scheduler-idle alone cannot observe these async growth chains.
+    await Promise.all([_garden.ready, _wildlands.ready]);
 
     // CityGen: procedural building ring + demo. Awaited (not fire-and-forget)
     // so modulesReady only flips once the ring exists — its cell builds land in
@@ -1242,7 +1270,13 @@ async function boot() {
     }
   })()
     .catch((err) => console.warn("[sf] deferred module load failed:", err))
-    .finally(() => { modulesReady = true; }); // a failed chunk never wedges the cover
+    .finally(() => {
+      // The animation loop owns the renderer, so it starts the second warmup at
+      // a frame boundary after deferred construction/scheduler work has settled.
+      // A failed chunk still reaches this path and cannot wedge the cover.
+      deferredModulesSettled = true;
+      lateRenderWarmupRequestedAt = performance.now();
+    });
 
   // ------------------------------------------------------- settle gate
   // Hold the opaque cover until the world stops moving. Everything above
@@ -1467,6 +1501,13 @@ async function boot() {
   const tick = (forcedDt?: number) => {
     timer.update();
     const frameDt = forcedDt ?? Math.min(timer.getDelta(), 0.09);
+
+    // pipeline.warmup() records covered frames asynchronously. Do not let the
+    // regular animation loop touch the renderer until that exclusive work ends.
+    if (lateRenderWarmupActive) {
+      input.endFrame();
+      return;
+    }
 
     // gamepad first so its synthetic key codes exist for every consumer below
     input.pollPad(frameDt);
@@ -2137,6 +2178,30 @@ async function boot() {
     // to 24 ms/frame and the settle gate re-checks after every drain.
     tracer.begin("sched");
     scheduler.run(revealed ? (frameDt < 1 / 55 ? 3 : frameDt < 1 / 35 ? 1.5 : 0.8) : 24);
+
+    // Revisit every retained AA/post-FX variant once the deferred world has
+    // stopped adding meshes. The timeout keeps the existing 15 s reveal escape
+    // hatch useful if a background job never becomes completely idle.
+    const settleBacklog = Math.max(0, scheduler.pending - scheduler.waiting);
+    const deferredWorldIdle = settleBacklog === 0 && tiles.busy === 0 && auxPending === 0;
+    const lateWarmupTimedOut = performance.now() - lateRenderWarmupRequestedAt > 12000;
+    if (
+      deferredModulesSettled &&
+      !modulesReady &&
+      (deferredWorldIdle || lateWarmupTimedOut)
+    ) {
+      lateRenderWarmupActive = true;
+      progress(Math.max(settlePct, 99), "warming render paths");
+      tracer.end("sched");
+      input.endFrame();
+      void pipeline.warmup()
+        .catch((err) => console.warn("[sf] deferred render warmup failed:", err))
+        .finally(() => {
+          lateRenderWarmupActive = false;
+          modulesReady = true;
+        });
+      return;
+    }
     settleTick();
     tracer.end("sched");
 
@@ -2250,7 +2315,7 @@ async function boot() {
       },
       setPostFx: (values: Record<string, number | boolean>) => {
         Object.assign(POSTFX_TUNING.values, values);
-        pipeline.applyPostFx(); // rebuild the chain for the toggles + push uniforms
+        pipeline.applyPostFx(); // select the retained toggle variant + push uniforms
       },
       launchBoatFireworks: (forward: THREE.Vector3) => {
         boatLaunchers?.fireAll({

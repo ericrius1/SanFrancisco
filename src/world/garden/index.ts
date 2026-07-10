@@ -56,6 +56,10 @@ const GARDEN_GATE = (() => {
 export type BotanicalGarden = {
   /** Add to your scene. Trees stream in asynchronously; grass is live at once. */
   group: THREE.Group;
+  /** Resolves after the asynchronous SeedThree trees are attached. */
+  ready: Promise<void>;
+  /** Combine the master foliage switch with the garden's distance gate. */
+  setVisible(visible: boolean, focus: { x: number; z: number }): void;
   /** Hidden trunk+canopy proxy mesh — register it with a surface raycaster if
    *  you want to stand/click on the garden trees. Optional. */
   proxy: THREE.Mesh;
@@ -83,8 +87,23 @@ export function createBotanicalGarden(map: GardenTerrain): BotanicalGarden {
   // write group.visible when CROSSING a threshold — an external foliage on/off
   // toggle (host debug panel) then still wins while the player is in range.
   let gatedOut = false;
+  let enabled = true;
+  const updateGate = (focus: { x: number; z: number }) => {
+    const edge = Math.hypot(focus.x - GARDEN_GATE.cx, focus.z - GARDEN_GATE.cz) - GARDEN_GATE.radius;
+    if (!gatedOut && edge > GARDEN_GATE.hideDist) gatedOut = true;
+    else if (gatedOut && edge < GARDEN_GATE.showDist) gatedOut = false;
+  };
+  const applyVisibility = () => {
+    veg.group.visible = enabled && !gatedOut;
+  };
   return {
     group: veg.group,
+    ready: veg.ready,
+    setVisible(visible, focus) {
+      enabled = visible;
+      updateGate(focus);
+      applyVisibility();
+    },
     proxy: veg.proxy,
     grass: veg.grass,
     colliders: veg.colliders,
@@ -103,15 +122,9 @@ export function createBotanicalGarden(map: GardenTerrain): BotanicalGarden {
       // (its driver meshes no longer render, so onBeforeRender stops firing); the
       // rebin resumes cleanly on re-entry off the live camera. Skip the
       // garden-only near-grass resample while out of range.
-      const edge = Math.hypot(focus.x - GARDEN_GATE.cx, focus.z - GARDEN_GATE.cz) - GARDEN_GATE.radius;
-      if (!gatedOut && edge > GARDEN_GATE.hideDist) {
-        gatedOut = true;
-        veg.group.visible = false;
-      } else if (gatedOut && edge < GARDEN_GATE.showDist) {
-        gatedOut = false;
-        veg.group.visible = true;
-      }
-      if (gatedOut) return;
+      updateGate(focus);
+      applyVisibility();
+      if (!enabled || gatedOut) return;
 
       veg.grass.updateFocus(focus);
     }

@@ -112,6 +112,7 @@ type PathSegment = { x1: number; z1: number; x2: number; z2: number; aabb: AABB 
 const PATH_HALF_WIDTH = 1.1; // must match course.ts's 2.2 m cart-path ribbon
 const COURSE_SMOOTH_RADIUS = 5; // soften the coarse DEM without erasing real grades
 const COURSE_EDGE_BLEND = 12; // meet the surrounding collision terrain without a step
+const MAX_GOLF_FILL = 0.75; // never build a multi-metre mound over coarse DEM cells
 
 export class GolfCourse {
   data: GolfData;
@@ -301,7 +302,7 @@ export class GolfCourse {
       for (const [, , terrain] of pts) residual = Math.max(residual, Math.abs(y - terrain));
       // Tee pads stay dead level; the height difference is paid back in the
       // surrounding rough, not as a steep ramp across the teeing surface.
-      return { ax: 0, az: 0, c: y, blend: Math.min(18, Math.max(4, residual / 0.07)) };
+      return { ax: 0, az: 0, c: y, blend: Math.min(28, Math.max(5, residual / 0.06)) };
     });
   }
 
@@ -397,6 +398,24 @@ export class GolfCourse {
     return { kind: "rough", idx: -1 };
   }
 
+  /** Tree exclusion for authored play surfaces plus the graded apron around
+   *  fitted greens/tees. Rough woodland remains everywhere else. */
+  clearsProceduralTrees(x: number, z: number): boolean {
+    if (!this.contains(x, z)) return false;
+    const kind = this.surfaceAt(x, z).kind;
+    if (kind !== "rough") return true;
+    const list = this.#featuresAt(x, z);
+    if (!list) return false;
+    for (const f of list) {
+      if (f.kind !== "green" && f.kind !== "tee") continue;
+      if (x < f.aabb.minX || x > f.aabb.maxX || z < f.aabb.minZ || z > f.aabb.maxZ) continue;
+      const poly = this.polyOf(f.kind, f.idx);
+      const flat = f.kind === "green" ? this.#greenFlat[f.idx] : this.#teeFlat[f.idx];
+      if (pointInPoly(x, z, poly) || distToRing(x, z, poly.o) < flat.blend) return true;
+    }
+    return false;
+  }
+
   /** Golf-aware ground: draped lawn + GOLF_LIFT, with greens/tees eased onto
    *  their fitted planes. This is what the course meshes AND the ball share. */
   ground(x: number, z: number, knownBase?: number): number {
@@ -409,10 +428,9 @@ export class GolfCourse {
     const terrain = this.#smoothedTerrain(x, z) + GOLF_LIFT;
     const list = this.#featuresAt(x, z);
     let target = terrain;
-    let insidePlanes = 0;
-    let insideCount = 0;
-    let outerPlanes = 0;
-    let outerWeight = 0;
+    let weightedPlanes = 0;
+    let weightSum = 0;
+    let maxStrength = 0;
     if (list) {
       for (const f of list) {
         if (f.kind !== "green" && f.kind !== "tee") continue;
@@ -423,31 +441,29 @@ export class GolfCourse {
         const d = distToRing(x, z, poly.o);
         if (!inside && d >= flat.blend) continue;
         const plane = flat.ax * x + flat.az * z + flat.c + GOLF_LIFT;
-        if (inside) {
-          insidePlanes += plane;
-          insideCount++;
-        } else {
-          const u = 1 - d / flat.blend;
-          const strength = u * u * (3 - 2 * u);
-          outerPlanes += plane * strength;
-          outerWeight += strength;
-        }
+        const u = inside ? 1 : 1 - d / flat.blend;
+        const strength = u * u * (3 - 2 * u);
+        weightedPlanes += plane * strength;
+        weightSum += strength;
+        maxStrength = Math.max(maxStrength, strength);
       }
     }
-    if (insideCount > 0) {
-      target = insidePlanes / insideCount;
-    } else if (outerWeight > 0) {
-      const plane = outerPlanes / outerWeight;
-      target = terrain + (plane - terrain) * Math.min(1, outerWeight);
+    if (weightSum > 0) {
+      // Nearby colored tee pads often have overlapping transition bands. Their
+      // normalized plane blend stays continuous; the strongest individual
+      // influence controls the fade so overlaps cannot add into a raised hump.
+      const plane = weightedPlanes / weightSum;
+      target = terrain + (plane - terrain) * maxStrength;
     }
     // Fade the low-pass turf sheet into the baked terrain at the course fence.
     // Without this band, smoothing a steep boundary could create a collision
     // lip even though the interior itself is perfectly rollable.
     const edgeT = Math.min(1, distToRing(x, z, this.data.boundary) / COURSE_EDGE_BLEND);
     const edgeEase = edgeT * edgeT * (3 - 2 * edgeT);
-    // Never let the overlay dip under the baked terrain, which would expose
-    // z-fighting or leave the playable sheet visually occluded on local peaks.
-    target = Math.max(target, base + 0.025);
+    // Stay visibly above the baked terrain, but cap fill where a tiny OSM tee
+    // crosses multiple coarse DEM cells. That keeps one anomalous high corner
+    // from grading a multi-metre artificial mound through the surrounding rough.
+    target = Math.min(base + MAX_GOLF_FILL, Math.max(target, base + 0.025));
     return base + (target - base) * edgeEase;
   }
 

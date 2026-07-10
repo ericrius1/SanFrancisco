@@ -776,6 +776,16 @@
       #hud .golf-swing.show {
         opacity: 1;
       }
+      /* At address the club rail owns the bottom-center controls. The ordinary
+         travel toolbar/help are both irrelevant and visually overlap the force
+         meter, so tuck them away until the shot is released or the player
+         walks away from the ball. */
+      #hud.golf-context .toolbar,
+      #hud.golf-context .satchel,
+      #hud.golf-context .help {
+        opacity: 0;
+        pointer-events: none;
+      }
       #hud .golf-clubs {
         display: flex;
         gap: 6px;
@@ -888,8 +898,8 @@
       }
       #hud .avatar-ui {
         position: absolute;
-        right: 20px;
-        top: 16px;
+        right: max(20px, env(safe-area-inset-right));
+        top: max(16px, env(safe-area-inset-top));
         display: flex;
         flex-direction: column;
         align-items: flex-end;
@@ -902,8 +912,8 @@
          panel (z-index above) slides over it */
       #hud .share-ui {
         position: absolute;
-        right: 20px;
-        top: 70px;
+        right: max(20px, env(safe-area-inset-right));
+        top: max(100px, calc(env(safe-area-inset-top) + 84px));
         z-index: var(--z-hud-base);
         pointer-events: auto;
         user-select: none;
@@ -946,8 +956,8 @@
       /* tutorial button — under Share; fades with Tab like the rest of the UI */
       #hud .tutorial-ui {
         position: absolute;
-        right: 20px;
-        top: 116px;
+        right: max(20px, env(safe-area-inset-right));
+        top: max(146px, calc(env(safe-area-inset-top) + 130px));
         z-index: var(--z-hud-base);
         pointer-events: auto;
         user-select: none;
@@ -1148,8 +1158,8 @@
       /* "Behind the scenes" button + X/GitHub icon row — parked under Tutorial */
       #hud .links-ui {
         position: absolute;
-        right: 20px;
-        top: 162px;
+        right: max(20px, env(safe-area-inset-right));
+        top: max(192px, calc(env(safe-area-inset-top) + 176px));
         z-index: var(--z-hud-base);
         display: flex;
         flex-direction: column;
@@ -1879,6 +1889,25 @@
         transform: translateY(-1px);
         background: rgba(15, 33, 47, 0.85);
       }
+      #hud .player-name-chip {
+        box-sizing: border-box;
+        max-width: min(190px, calc(100vw - 120px));
+        height: 24px;
+        padding: 0 9px;
+        display: block;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        border-radius: var(--r-pill);
+        border: 1px solid var(--hairline-2);
+        background: rgba(10, 24, 36, 0.76);
+        color: var(--text-soft);
+        box-shadow: var(--edge-hi), var(--shadow-sm);
+        backdrop-filter: blur(var(--blur));
+        font: 650 11.5px/22px var(--font);
+        letter-spacing: 0.01em;
+        text-shadow: 0 1px 3px rgba(0, 10, 20, 0.8);
+      }
       #hud .avatar-head {
         position: absolute;
         left: 15px;
@@ -1907,6 +1936,7 @@
         border: 1px solid rgba(255, 255, 255, 0.7);
       }
       #hud .avatar-panel {
+        box-sizing: border-box;
         display: none;
         width: min(330px, calc(100vw - 32px));
         max-height: min(74vh, 560px);
@@ -2053,7 +2083,7 @@
       /* hoverboard garage — docked left of the avatar toggle, shares its
          recipes (root carries both avatar-ui and board-ui classes) */
       #hud .board-ui {
-        right: 74px;
+        right: max(74px, calc(env(safe-area-inset-right) + 74px));
       }
       #hud .board-toggle .board-ic-deck {
         position: absolute;
@@ -2521,8 +2551,8 @@
       }
       #hud .minimap {
         position: absolute;
-        top: 16px;
-        left: 20px;
+        top: max(16px, env(safe-area-inset-top));
+        left: max(20px, env(safe-area-inset-left));
         display: flex;
         flex-direction: column;
         gap: 8px;
@@ -2725,6 +2755,9 @@
         align-items: center;
         gap: 10px;
       }
+      .bigmap-frame {
+        position: relative;
+      }
       .bigmap canvas {
         border-radius: 14px;
         cursor: grab;
@@ -2734,6 +2767,57 @@
       }
       .bigmap canvas.dragging {
         cursor: grabbing;
+      }
+      .bigmap-recenter {
+        box-sizing: border-box;
+        position: absolute;
+        top: 50%;
+        right: -22px;
+        z-index: 1;
+        width: 44px;
+        height: 44px;
+        padding: 0;
+        display: grid;
+        place-items: center;
+        cursor: pointer;
+        transform: translateY(-50%);
+        border-radius: 50%;
+        border: 1px solid rgba(190, 225, 240, 0.34);
+        background: rgba(10, 24, 36, 0.94);
+        color: var(--text-soft);
+        box-shadow: var(--edge-hi), 0 8px 24px rgba(0, 0, 0, 0.42);
+        backdrop-filter: blur(var(--blur));
+        transition:
+          border-color var(--dur) var(--ease),
+          color var(--dur) var(--ease),
+          background var(--dur) var(--ease),
+          transform 0.12s var(--ease);
+      }
+      .bigmap-recenter svg {
+        width: 22px;
+        height: 22px;
+        overflow: visible;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.75;
+        stroke-linecap: round;
+      }
+      .bigmap-recenter svg circle:first-child {
+        fill: currentColor;
+        stroke: none;
+      }
+      .bigmap-recenter:hover {
+        border-color: var(--accent);
+        color: var(--accent-strong);
+        background: rgba(15, 35, 47, 0.98);
+        transform: translateY(-50%) scale(1.04);
+      }
+      .bigmap-recenter:active {
+        transform: translateY(-50%) scale(0.97);
+      }
+      .bigmap-recenter.centered {
+        border-color: rgba(111, 215, 196, 0.68);
+        color: var(--accent-strong);
       }
       .bigmap-action {
         min-width: min(420px, calc(100vw - 48px));
@@ -2783,6 +2867,43 @@
         font-size: 12px;
         opacity: 0.85;
         text-shadow: 0 1px 3px rgba(0, 10, 20, 0.8);
+      }
+      @media (max-width: 480px) {
+        /* Leave a real identity lane to the right of the map on phones. The
+           canvas keeps its full backing resolution; only its CSS size shrinks. */
+        #hud .minimap {
+          left: max(10px, env(safe-area-inset-left));
+          width: 188px;
+        }
+        #hud .minimap canvas {
+          width: 188px !important;
+          height: 188px !important;
+        }
+        #hud .player-name-chip {
+          max-width: min(
+            160px,
+            calc(
+              100vw - 196px - max(10px, env(safe-area-inset-left)) -
+                max(20px, env(safe-area-inset-right))
+            )
+          );
+        }
+        #hud .share-ui,
+        #hud .tutorial-ui,
+        #hud .links-ui {
+          right: max(10px, env(safe-area-inset-right));
+        }
+        #hud .links-ui {
+          top: max(214px, calc(env(safe-area-inset-top) + 198px));
+        }
+        /* Keep the board and avatar buttons separated; let only the wide board
+           panel reach back to the phone edge when it opens. */
+        #hud .board-ui {
+          right: max(74px, calc(env(safe-area-inset-right) + 74px));
+        }
+        #hud .board-ui .board-panel {
+          margin-right: -66px;
+        }
       }
       #loading {
         position: fixed;

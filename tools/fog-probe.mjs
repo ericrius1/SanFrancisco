@@ -10,6 +10,7 @@
 //   SF_TIME       time of day hours (default 13.5; also try 17.8 golden hour)
 //   SF_FOG        JSON of WORLD_TUNING fog overrides, e.g. '{"fog":0.0007,"fogBank":2}'
 //   SF_VIEWS      comma list of view names to render (default all)
+//   SF_MOTION_SECONDS  optional second capture after this simulated duration
 
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
@@ -22,6 +23,7 @@ const OUT = path.resolve(ROOT, process.env.SF_PROBE_OUT ?? ".data/fog-probe");
 const SERVER_URL = process.env.SF_PROBE_URL ?? "http://127.0.0.1:5190";
 const TIME = Number(process.env.SF_TIME ?? 13.5);
 const FOG = process.env.SF_FOG ?? "";
+const MOTION_SECONDS = Math.max(0, Number(process.env.SF_MOTION_SECONDS ?? 0));
 const ONLY = (process.env.SF_VIEWS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 const W = 1280, H = 720;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -98,14 +100,39 @@ async function ev(c, expr) {
 const frame = (dt) => `(async()=>{window.__sf.tick(${dt});await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));return true;})()`;
 async function tick(c, dt) { await ev(c, frame(dt)); }
 async function settle(c, n) { for (let i = 0; i < n; i++) { await ev(c, frame(0)); await sleep(60); } }
+async function settleWorld(c) {
+  let idleFrames = 0;
+  for (let i = 0; i < 240; i++) {
+    // A small real simulation step is required: some citygen follow-up batches
+    // intentionally drain from update(), not from render-only dt=0 frames.
+    await tick(c, 1 / 30);
+    const [cityReady, tileBusy, pending, waiting] = await ev(c,
+      `[!!window.__sf.citygenRing.current,window.__sf.tiles.busy,window.__sf.scheduler.pending,window.__sf.scheduler.waiting]`);
+    idleFrames = cityReady && tileBusy === 0 && pending - waiting <= 0 ? idleFrames + 1 : 0;
+    // Require a minimum drain window as citygen can enqueue a follow-up batch
+    // immediately after the tile ring itself reports idle.
+    if (i >= 60 && idleFrames >= 20) return;
+    await sleep(50);
+  }
+  throw new Error("world streaming never reached a stable idle state");
+}
 async function teleport(c, x, z, facing) {
   await ev(c, `(()=>{const m=window.__sf.map,p=window.__sf.player;const y=m.groundHeight(${x},${z});p.teleportTo({x:${x},y:y+1.5,z:${z},facing:${facing},mode:'walk'});return true;})()`);
 }
 async function freeCam(c, x, z, facing, back, up) {
-  await ev(c, `(()=>{const m=window.__sf.map;const gy=m.groundHeight(${x},${z});
+  return ev(c, `(()=>{const m=window.__sf.map;const gy=m.groundHeight(${x},${z});
     const dx=Math.sin(${facing}),dz=Math.cos(${facing});
     const eye=[${x}-dx*${back}, gy+${up}, ${z}-dz*${back}];
-    window.__sfFreeCam(eye,[${x}+dx*60, gy+${Math.max(4, up * 0.35)}, ${z}+dz*60]);return true;})()`);
+    window.__sfFreeCam(eye,[${x}+dx*60, gy+${Math.max(4, up * 0.35)}, ${z}+dz*60]);return eye;})()`);
+}
+async function settleCamera(c, eye) {
+  for (let i = 0; i < 180; i++) {
+    await tick(c, 0);
+    const p = await ev(c, `[window.__sf.camera.position.x,window.__sf.camera.position.y,window.__sf.camera.position.z]`);
+    if (Math.hypot(p[0] - eye[0], p[1] - eye[1], p[2] - eye[2]) < 0.05) return;
+    await sleep(50);
+  }
+  throw new Error("free camera never acquired the render pose");
 }
 
 async function main() {
@@ -166,13 +193,29 @@ async function main() {
     try {
       await teleport(c, x, z, facing);
       await settle(c, 16); // stream tiles + colliders + hero foliage
-      await freeCam(c, x, z, facing, back, up);
+      const eye = await freeCam(c, x, z, facing, back, up);
+      await settleCamera(c, eye); // also waits out any covered late-warmup frames
       // keep time pinned (settle ticks with dt=0 don't advance, but be safe)
       await ev(c, `window.__sf.sky.setTimeOfDay(${TIME})`);
       for (let i = 0; i < 8; i++) await tick(c, 1 / 30); // let fog drift settle a bit
+      if (MOTION_SECONDS > 0) await settleWorld(c); // finish streaming before the timed A/B pair
       const shot = await c.send("Page.captureScreenshot", { format: "jpeg", quality: 88, fromSurface: true });
       writeFileSync(path.join(OUT, `${name}.jpg`), Buffer.from(shot.data, "base64"));
       console.log(`[probe] shot ${name}`);
+      if (MOTION_SECONDS > 0) {
+        // Advance a deterministic 30 fps interval. The fog reads the app's
+        // elapsed seconds, so this measures its true motion without letting a
+        // chase/cinematic controller contaminate the fixed-camera comparison.
+        const motionFrames = Math.max(1, Math.round(MOTION_SECONDS * 30));
+        for (let i = 0; i < motionFrames; i++) await tick(c, 1 / 30);
+        const movedEye = await freeCam(c, x, z, facing, back, up);
+        await settleCamera(c, movedEye);
+        await ev(c, `window.__sf.sky.setTimeOfDay(${TIME})`);
+        for (let i = 0; i < 4; i++) await tick(c, 1 / 30);
+        const moved = await c.send("Page.captureScreenshot", { format: "jpeg", quality: 88, fromSurface: true });
+        writeFileSync(path.join(OUT, `${name}_motion.jpg`), Buffer.from(moved.data, "base64"));
+        console.log(`[probe] shot ${name} +${MOTION_SECONDS}s`);
+      }
       fails = 0;
     } catch (e) {
       console.log(`[view-fail] ${name}: ${String(e).slice(0, 140)}`);

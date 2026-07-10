@@ -24,6 +24,8 @@ export type Wildlands = {
   trees: SeedForest;
   flowers: FlowerRing;
   grass: WildGrass;
+  /** Resolves after the asynchronous SeedForest designs/chunks are attached. */
+  ready: Promise<void>;
   /** add all layer groups to the scene */
   groups: THREE.Group[];
   /**
@@ -69,6 +71,7 @@ export function createWildlands(map: GardenTerrain, exclusions: WildlandsExclusi
     trees,
     flowers,
     grass,
+    ready: trees.ready,
     groups: [trees.group, flowers.group, grass.group],
     update(ringFocus, cullFocus = ringFocus) {
       trees.update(cullFocus); // distance-cull to what the camera sees
