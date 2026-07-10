@@ -448,20 +448,28 @@ async function main() {
     sf.remotes.sample(999,{t:t+400,mode:'board',x:p.x+5,y:p.y,z:p.z+2,qx:0,qy:0,qz:0,qw:1,speed:6});
     await tick(30);
     const a=sf.remotes.avatars.get(999);
-    const before={ embodied:a.mode==='board', keyA:a.boardKey, body:!!a.bodies.board };
+    const before={
+      embodied:a.mode==='board',keyA:a.boardKey,body:!!a.bodies.board,
+      shell:a.bodies.board?.getObjectByName('board-surface-shell')?.name??null
+    };
     const oldBody=a.bodies.board;
     sf.remotes.updateBoard({id:999,name:'Probe Pal',hue:120,board:cfgB});
     await tick(10);
-    const after={ keyB:a.boardKey, rebuilt: a.bodies.board!==oldBody && !!a.bodies.board, embodied:a.mode==='board' };
+    const after={
+      keyB:a.boardKey,rebuilt:a.bodies.board!==oldBody&&!!a.bodies.board,embodied:a.mode==='board',
+      shell:a.bodies.board?.getObjectByName('board-surface-shell')?.name??null
+    };
     const p2=sf.player.renderPosition;
     window.__sfFreeCam([p2.x+3.4,p2.y+1.7,p2.z-4.2],[p2.x+2.2,p2.y+0.4,p2.z+1.0]);
     await tick(4);
     return { before, after };
   })()`);
+  assertProbe(results.remote.before.embodied && results.remote.before.shell === "board-surface-shell", "remote v3 board did not embody wrapped shell");
+  assertProbe(results.remote.after.rebuilt && results.remote.after.shell === "board-surface-shell", "remote v3 board did not rebuild wrapped shell");
   results.shots.push(await shot(c, "board-remote.png"));
   await ev(c, `(async()=>{ ${P} sf.remotes.remove(999); window.__sfFreeCam(null); await tick(5); return true; })()`);
 
-  // ---- 3. garage panel UI ----
+  // ---- 4. garage panel UI ----
   // ?autostart skips the gate but never runs startGame, so the HUD (and the
   // garage button) stays hidden — submit the name form for real (the
   // remembered tutorial-screenshot gotcha), then click the toggle.
@@ -477,53 +485,97 @@ async function main() {
     const panel=document.querySelector('.board-panel');
     const rows=panel?panel.querySelectorAll('.avatar-row').length:0;
     const swatches=panel?panel.querySelectorAll('.avatar-swatch').length:0;
-    const pads=panel?[...panel.querySelectorAll('.board-xy-pad')]:[];
-    const canvases=panel?panel.querySelectorAll('.board-xy-canvas').length:0;
+    const kinds=['surface','finish','life','sound'];
+    const labs=Object.fromEntries(kinds.map(kind=>{
+      const lab=panel?.querySelector('.board-lab-'+kind);
+      return [kind,{lab:!!lab,pad:!!lab?.querySelector('.board-xy-pad'),canvas:!!lab?.querySelector('.board-xy-canvas')}];
+    }));
+    const pads=panel?.querySelectorAll('.board-xy-pad').length??0;
+    const canvases=panel?.querySelectorAll('.board-xy-canvas').length??0;
     const rerolls=panel?panel.querySelectorAll('.board-lab-reroll').length:0;
-    const rect=(el)=>{ const r=el?.getBoundingClientRect(); return r?{left:r.left,top:r.top,width:r.width,height:r.height}:null; };
     const open=document.querySelector('.board-ui').classList.contains('open');
     return {
       toggle:true, open, rows, swatches, mode:sf.player.mode,
-      structure:{pads:pads.length,canvases,rerolls,complete:pads.length===2&&canvases===2&&rerolls===1},
-      rects:{surface:rect(pads[0]),sound:rect(pads[1])},
+      structure:{pads,canvases,rerolls,labs,complete:pads===4&&canvases===4&&rerolls===1&&Object.values(labs).every(v=>v.lab&&v.pad&&v.canvas)},
+      rects:{},
       before:{readouts:[...panel.querySelectorAll('.board-lab-readout')].map(x=>x.value)}
     };
   })()`);
-  if (results.ui.rects?.surface && results.ui.rects?.sound) {
-    // End coordinates intentionally land in different quadrants, making it
-    // obvious that both X and Y values changed and committed through pointerup.
-    await dragPad(c, results.ui.rects.surface, [0.18, 0.76], [0.82, 0.18]);
-    await dragPad(c, results.ui.rects.sound, [0.76, 0.2], [0.22, 0.72]);
-    await sleep(80);
-    results.ui.afterDrag = await ev(c, `(()=>{
-      const panel=document.querySelector('.board-panel');
-      const saved=JSON.parse(localStorage.getItem('sf-board-v2')||'null');
-      return {
-        readouts:[...panel.querySelectorAll('.board-lab-readout')].map(x=>x.value),
-        saved:saved?{surfaceScale:saved.surfaceScale,surfaceWarp:saved.surfaceWarp,soundTone:saved.soundTone,soundMotion:saved.soundMotion}:null,
-        committed:!!saved&&saved.surfaceScale===82&&saved.surfaceWarp===82&&saved.soundTone===22&&saved.soundMotion===28,
-        boardStyle:window.__sf.vehicleAudio.debugState.boardStyle
-      };
-    })()`);
-    results.ui.reroll = await ev(c, `(()=>{
-      const before=JSON.parse(localStorage.getItem('sf-board-v2')||'null')?.surfaceSeed??null;
-      let button=document.querySelector('.board-lab-reroll');
-      if(!button) return {clicked:false,before,after:before,changed:false};
-      button.click();
-      let after=JSON.parse(localStorage.getItem('sf-board-v2')||'null')?.surfaceSeed??null;
-      let attempts=1;
-      if(after===before){
-        button=document.querySelector('.board-lab-reroll');
-        button?.click(); attempts++;
-        after=JSON.parse(localStorage.getItem('sf-board-v2')||'null')?.surfaceSeed??null;
-      }
-      return {clicked:true,before,after,attempts,changed:before!==after};
-    })()`);
+  assertProbe(results.ui.toggle && results.ui.open && results.ui.structure.complete, "four named board labs were not built");
+
+  // End coordinates intentionally land in distinct quadrants. Y is inverted by
+  // the pad, so the expected committed values are noted beside each endpoint.
+  const padDrags = [
+    ["surface", [0.18, 0.76], [0.82, 0.18]], // scale 82, warp 82
+    ["finish", [0.74, 0.16], [0.64, 0.27]],  // contrast 64, amount 73
+    ["life", [0.68, 0.68], [0.37, 0.14]],    // flow 37, reaction 86
+    ["sound", [0.76, 0.2], [0.22, 0.72]]    // tone 22, motion 28
+  ];
+  for (const [kind, from, to] of padDrags) {
+    const rect = await revealPad(c, kind);
+    assertProbe(rect && rect.width > 20 && rect.height > 20, `${kind} pad is not reachable`);
+    results.ui.rects[kind] = rect;
+    await dragPad(c, rect, from, to);
   }
-  results.shots.push(await shot(c, "board-panel.png"));
+  await sleep(80);
+  results.ui.afterDrag = await ev(c, `(()=>{
+    const panel=document.querySelector('.board-panel');
+    const saved=JSON.parse(localStorage.getItem('sf-board-v3')||'null');
+    const picked=saved?{
+      surfaceScale:saved.surfaceScale,surfaceWarp:saved.surfaceWarp,
+      surfaceContrast:saved.surfaceContrast,surfaceEffectAmount:saved.surfaceEffectAmount,
+      surfaceFlow:saved.surfaceFlow,surfaceReaction:saved.surfaceReaction,
+      soundTone:saved.soundTone,soundMotion:saved.soundMotion
+    }:null;
+    return {
+      readouts:[...panel.querySelectorAll('.board-lab-readout')].map(x=>x.value),
+      saved:picked,
+      committed:!!saved&&saved.surfaceScale===82&&saved.surfaceWarp===82&&
+        saved.surfaceContrast===64&&saved.surfaceEffectAmount===73&&
+        saved.surfaceFlow===37&&saved.surfaceReaction===86&&
+        saved.soundTone===22&&saved.soundMotion===28,
+      boardStyle:window.__sf.vehicleAudio.debugState.boardStyle
+    };
+  })()`);
+  assertProbe(results.ui.afterDrag.committed, `v3 pad commit mismatch: ${JSON.stringify(results.ui.afterDrag.saved)}`);
+
+  results.ui.reroll = await ev(c, `(()=>{
+    const before=JSON.parse(localStorage.getItem('sf-board-v3')||'null')?.surfaceSeed??null;
+    let button=document.querySelector('.board-lab-reroll');
+    if(!button) return {clicked:false,before,after:before,changed:false};
+    button.click();
+    let after=JSON.parse(localStorage.getItem('sf-board-v3')||'null')?.surfaceSeed??null;
+    let attempts=1;
+    if(after===before){
+      button=document.querySelector('.board-lab-reroll');
+      button?.click(); attempts++;
+      after=JSON.parse(localStorage.getItem('sf-board-v3')||'null')?.surfaceSeed??null;
+    }
+    return {clicked:true,before,after,attempts,changed:before!==after};
+  })()`);
+  assertProbe(results.ui.reroll.changed, "v3 reroll did not persist a new surface seed");
+
+  results.ui.desktop = await measurePanel(c);
+  assertProbe(results.ui.desktop.fitsViewport && results.ui.desktop.scrollReady && results.ui.desktop.allPadsReachable && results.ui.desktop.lastReachable, "desktop board panel is clipped or unreachable");
+  await ev(c, `(()=>{ const p=document.querySelector('.board-panel'); if(p)p.scrollTop=0; return true; })()`);
+  results.shots.push(await shot(c, "board-panel-desktop.png"));
+
+  // Real short-phone viewport: panel must fit the viewport, become scrollable,
+  // and expose every pad plus the final surprise-me control after scrolling.
+  await c.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 667, deviceScaleFactor: 1, mobile: true });
+  await sleep(80);
+  await ev(c, `(()=>{ const p=document.querySelector('.board-panel'); if(p)p.scrollTop=0; return true; })()`);
+  results.shots.push(await shot(c, "board-panel-mobile-top.png"));
+  results.ui.mobile = await measurePanel(c);
+  assertProbe(results.ui.mobile.viewport[0] === 390 && results.ui.mobile.viewport[1] === 667, "mobile viewport override did not apply");
+  assertProbe(results.ui.mobile.fitsViewport && results.ui.mobile.scrollable && results.ui.mobile.scrollReady, "390x667 panel does not fit/scroll");
+  assertProbe(results.ui.mobile.allPadsReachable && results.ui.mobile.lastReachable, "390x667 panel controls are not reachable");
+  results.shots.push(await shot(c, "board-panel-mobile-bottom.png"));
+  await c.send("Emulation.setDeviceMetricsOverride", { width: W, height: H, deviceScaleFactor: 1, mobile: false });
+  await sleep(50);
   await ev(c, `(async()=>{ document.querySelector('.board-toggle').click(); return true; })()`);
 
-  // ---- 4. hum re-voice + preview swell ----
+  // ---- 5. hum re-voice + preview swell ----
   results.audio = await ev(c, `(async()=>{ ${P}
     sf.player.trySwitch('walk'); await tick(10); // not riding: preview path, not live hum
     sf.vehicleAudio.setBoardStyle({hum:'crystal',pitch:2,soundTone:84,soundMotion:76});

@@ -396,7 +396,7 @@ function facadeSurface(opts: {
  * The shared skyscraper-facade material for a tile's buildings. Storeys and window
  * columns grow procedurally from world position; each building's base height (from
  * the alive texture) anchors its storefront and floor lines to its own street level.
- * Dead buildings sink via the alive flag.
+ * Suppressed buildings are clipped via the alive flag.
  */
 export function createFacadeMaterial(aliveTex: THREE.DataTexture, texWidth: number): THREE.MeshStandardNodeMaterial {
   const mat = new THREE.MeshStandardNodeMaterial();
@@ -407,18 +407,27 @@ export function createFacadeMaterial(aliveTex: THREE.DataTexture, texWidth: numb
 
   const info = texture(aliveTex, vec2(bid.add(0.5).div(uAliveW), 0.5));
 
-  // suppression: sink dead (suppressed) buildings far below ground. The same node adds a
-  // deterministic per-building nudge (±3cm in XZ): raw OSM leaves duplicate
+  // Suppressed buildings used to be hidden by moving their vertices 900 m down.
+  // That left a complete second city under the playable world, still inside the
+  // camera's 24 km far plane. A material mask removes those fragments (including
+  // from shadow passes). Both R=0 (mesh and collider off) and R=1/255 (mesh off,
+  // collider kept) stay below this threshold.
+  mat.maskNode = info.r.greaterThan(0.5);
+
+  // Deterministic per-building nudge (±3cm in XZ): raw OSM leaves duplicate
   // footprints (way + multipolygon twins) and shared party walls exactly
   // coplanar, and two coincident facades with different _bid z-fight as a
   // flickering patchwork of each other's windows — the nudge gives every
   // building its own plane
-  const dead = step(info.r, 0.5);
   const nudge = vec3(hash(bid.add(311)).sub(0.5).mul(0.06), 0, hash(bid.add(577)).sub(0.5).mul(0.06));
-  // the offset is in meters, but quantized tiles store positions normalized to
+  // The mask is the visibility source of truth. Also move suppressed vertices
+  // far beyond the camera range so the rasterizer rejects their triangles before
+  // fragment work; unlike the old 900 m sink, this can never form a visible city.
+  const suppressed = step(info.r, 0.5);
+  // The offset is in meters, but quantized tiles store positions normalized to
   // [-1,1] with the dequantization scale baked into the node transform — a
   // local-space add would be amplified by that scale (~420x), so divide it out
-  const offsetMeters = nudge.sub(vec3(0, dead.mul(900), 0));
+  const offsetMeters = nudge.sub(vec3(0, suppressed.mul(1_000_000), 0));
   mat.positionNode = positionLocal.add(offsetMeters.div(modelScale));
 
   // the XZ nudge has a directional blind spot: when a pair's nudge delta runs

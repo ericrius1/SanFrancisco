@@ -32,7 +32,10 @@ let sharedMat: THREE.MeshStandardNodeMaterial | null = null;
  *  building reads as the same colour, not a dark olive silhouette. */
 export function lodMaterial(): THREE.MeshStandardNodeMaterial {
   if (sharedMat) return sharedMat;
-  const m = new THREE.MeshStandardNodeMaterial({ roughness: 0.92, metalness: 0, side: THREE.DoubleSide });
+  // This is an exterior shell. Keeping it front-sided prevents its gray roof
+  // caps from reading as a second, primitive city when the camera clips below
+  // the world or enters a detailed building drawn just outside this LOD prism.
+  const m = new THREE.MeshStandardNodeMaterial({ roughness: 0.92, metalness: 0, side: THREE.FrontSide });
   m.envMapIntensity = 5.5;
   const body = attribute("color", "vec3") as unknown as ReturnType<typeof color>;
   const isRoof = step(0.5, normalWorld.y.abs());
@@ -105,7 +108,9 @@ export function appendPrism(spec: BuildingSpec, out: PrismArrays, conform?: Pris
       [x0, y0, z0, 0, 0], [x1, y0, z1, u1, 0], [x1, y1, z1, u1, v1], [x0, y1, z0, 0, v1],
     ];
     for (const [px, py, pz, uu, vv] of c) { pos.push(px, py, pz); nor.push(nx, 0, nz); uvs.push(uu, vv); col.push(br, bg, bb); }
-    idx.push(v0, v0 + 1, v0 + 2, v0, v0 + 2, v0 + 3);
+    // Outward winding must agree with (nx, nz). The previous inward order only
+    // worked because the LOD material rendered both sides, exposing its interior.
+    idx.push(v0, v0 + 2, v0 + 1, v0, v0 + 3, v0 + 2);
     v0 += 4;
   };
 
@@ -126,7 +131,9 @@ export function appendPrism(spec: BuildingSpec, out: PrismArrays, conform?: Pris
   const tris = triangulate(poly);
   const roofStart = pos.length / 3;
   for (const [px, pz] of poly) { pos.push(px, top, pz); nor.push(0, 1, 0); uvs.push(0, 0); col.push(rr, rg, rb); }
-  for (let t = 0; t + 2 < tris.length; t += 3) idx.push(roofStart + tris[t], roofStart + tris[t + 1], roofStart + tris[t + 2]);
+  // Footprints are CCW in XZ, which is downward-facing in Three's X/Y/Z basis;
+  // reverse each cap triangle so its geometric front faces +Y like its normal.
+  for (let t = 0; t + 2 < tris.length; t += 3) idx.push(roofStart + tris[t], roofStart + tris[t + 2], roofStart + tris[t + 1]);
 }
 
 /** Build a THREE geometry from accumulated arrays sharing the LOD material. */

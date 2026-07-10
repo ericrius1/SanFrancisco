@@ -235,9 +235,11 @@ export function buildBoardMesh(config?: BoardConfig): THREE.Group {
     new THREE.MeshLambertMaterial({
       color: 0xffffff,
       map: surfaceTexture,
-      emissive: 0x151515,
+      // A faint self-lit copy keeps the artwork legible on the underside while
+      // still letting Lambert shading describe the bevel and sidewalls.
+      emissive: 0xffffff,
       emissiveMap: surfaceTexture,
-      emissiveIntensity: 0.18
+      emissiveIntensity: 0.06
     })
   );
 
@@ -521,7 +523,7 @@ export function animateBoard(
   surface.texture.repeat.set(1 + airStretch - landingZoom, 1 - airStretch * 0.45 - landingZoom);
   surface.texture.updateMatrix();
   surface.material.emissiveIntensity =
-    0.18 + airDrift * 0.08 + landingReact * 0.28 + (boosting ? motion * 0.035 : 0);
+    0.06 + airDrift * 0.08 + landingReact * 0.28 + (boosting ? motion * 0.035 : 0);
 
   const breathe = 0.82 + 0.18 * Math.sin(t * 2.4) + 0.06 * Math.sin(t * 11) * norm;
   const pulse = breathe + landingReact * 0.12;

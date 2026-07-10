@@ -174,6 +174,16 @@ export function runDemo(name: string, ctx: Ctx) {
       break;
     }
 
+    case "undercity":
+      // Temporary visual-regression route used while fixing suppressed city
+      // geometry; raw tp() intentionally bypasses teleportTo's ground clamp.
+      at(200, () => {
+        tp(4000, -850, 0, 0);
+        switchMode("board");
+        chase.zoom = 1.2;
+      });
+      break;
+
     case "reel": {
       // 25-second showcase reel: five 5-second clips, each a different vehicle
       // in a different part of the city. Every clip is a hard cut (teleport +
