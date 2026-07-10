@@ -37,6 +37,7 @@ import {
   normalize,
 } from "three/tsl";
 import { LIGHT_SCALE } from "../../../config";
+import { WINDOW_GLOW_W } from "../../facade";
 
 // TSL node generics fight composition; `any` is the idiom used across this app's
 // node-material code (see facade.ts).
@@ -135,12 +136,12 @@ export function makeParallaxGlass(
   const surface = mix(flatGlass, skyCol, fresnel.mul(0.5));
 
   // --- night emissive: lit panes glow warm -------------------------------------
-  // Constant scale — ACES at play exposure crushes it to nothing by day, so the
-  // glow only reads after dusk (sky drives day/night purely through exposure). A
-  // hard grazing cutoff kills sub-pixel emissive shimmer on near-edge-on facades.
+  // Gated by the sky's twilight weight (WINDOW_GLOW_W) so the glow only reads
+  // after dusk — same gate as the baked facades. A hard grazing cutoff kills
+  // sub-pixel emissive shimmer on near-edge-on facades.
   const EMIT = 2.0 * LIGHT_SCALE; // matches the baked city's window-glow scale
   const glowGraze = smoothstep(0.01, 0.06, facing);
-  const emissive = lightCol.mul(lit).mul(EMIT).mul(glowGraze);
+  const emissive = lightCol.mul(lit).mul(EMIT).mul(glowGraze).mul(WINDOW_GLOW_W);
 
   mat.colorNode = surface;
   mat.emissiveNode = emissive;

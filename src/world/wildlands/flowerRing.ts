@@ -39,7 +39,7 @@ import { DISPLACERS, MAX_DISPLACERS } from "../groundcover/displacers";
 import { hash2, smoothstep, worleyClump } from "../groundcover/scatter";
 import { flowerDriftAt, grassyGround, nearAnyWildRegion, wildRegionAt } from "./layout";
 import type { GardenTerrain } from "../garden/layout";
-import { FLOWER_TUNING } from "../../config";
+import { EXPOSURE_REBASE, FLOWER_TUNING } from "../../config";
 
 type N = any;
 
@@ -287,7 +287,8 @@ function flowerMaterial(): THREE.MeshSSSNodeMaterial {
   // Emissive keeps blooms luminous (a colour wash even in shade) with a brighter rim
   // edge — the reference blooms read self-lit, not lit only by where the sun happens
   // to hit them. Combined with the sky-biased normals + SSS this glows without going flat.
-  mat.emissiveNode = petalCol.mul(rim.mul(0.5).add(0.42)).mul(headMask);
+  // authored at the reference exposure — rebased (config.EXPOSURE_REBASE)
+  mat.emissiveNode = petalCol.mul(rim.mul(0.5).add(0.42)).mul(headMask).mul(EXPOSURE_REBASE);
 
   // Translucency: petals let colour through when back-lit; stems stay opaque green.
   mat.thicknessColorNode = petalCol.mul(0.9).mul(headMask);

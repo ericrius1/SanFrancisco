@@ -1,4 +1,5 @@
 import * as THREE from "three/webgpu";
+import { EXPOSURE_REBASE } from "../config";
 import { waterHeight, type WorldMap } from "./heightmap";
 import { hash2 } from "./groundcover/scatter";
 
@@ -48,7 +49,7 @@ export class SeaPillars {
       metalness: 0,
       // faint self-glow so the spires stay legible in the murk without lighting cost
       emissive: new THREE.Color(0x0c2f30),
-      emissiveIntensity: 0.45,
+      emissiveIntensity: 0.45 * EXPOSURE_REBASE, // authored at the reference exposure (config.EXPOSURE_REBASE)
       flatShading: true
     });
 

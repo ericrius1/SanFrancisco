@@ -10,6 +10,7 @@ import {
 } from "three/tsl";
 import type { BuildingSpec } from "../core/types";
 import { EXPOSURE_REBASE } from "../../../config";
+import { WINDOW_GLOW_W } from "../../facade";
 import { ensureCCW, triangulate } from "../core/footprint";
 import { bodyColour } from "../render";
 import { specFor } from "../theme/archetypes";
@@ -42,7 +43,8 @@ export function lodMaterial(): THREE.MeshStandardNodeMaterial {
   const winMask = inU.mul(inV).mul(float(1).sub(isRoof));
   m.colorNode = mix(body, color(new THREE.Color(0x1b1f27)), winMask);
   const cellId = tslFloor(u).add(tslFloor(v).mul(31.0));
-  const litWin = winMask.mul(step(0.7, hash(cellId))).mul(color(new THREE.Color(0xffdca0))).mul(0.7 * EXPOSURE_REBASE);
+  // lit windows gate on the sky's twilight weight, same as the near facades
+  const litWin = winMask.mul(step(0.7, hash(cellId))).mul(color(new THREE.Color(0xffdca0))).mul(0.7 * EXPOSURE_REBASE).mul(WINDOW_GLOW_W);
   // faint self-lit body tint on the SOLID wall only (not the glass) so shaded
   // façades don't read near-black — the near mesh's wall material does the same.
   const bodyTint = body.mul(BODY_EMISSIVE).mul(float(1).sub(winMask));

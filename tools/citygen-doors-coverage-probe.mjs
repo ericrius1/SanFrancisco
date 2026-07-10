@@ -108,7 +108,7 @@ window.__cov = (near) => {
     }
     return true;
   };
-  const gapNotForeign = (d)=>{
+  const gapState = (d)=>{
     // exact-match signature: collider.ts builds jamb/full walls at EXACTLY
     // y=midY, hy=halfH from these same spec numbers — a party-wall neighbour a
     // mere 0.5 m taller must still read as foreign, so the tolerance is tight.
@@ -116,20 +116,27 @@ window.__cov = (near) => {
     const ownWall = (b)=> Math.abs(b.y-midY)<0.05 && Math.abs(b.hy-halfH)<0.05 && b.hz<=0.4;
     const nearBoxes = walls.filter(b => b.x>d.bb.minx-1.5 && b.x<d.bb.maxx+1.5 && b.z>d.bb.minz-1.5 && b.z<d.bb.maxz+1.5);
     const inx=d.inward[0], inz=d.inward[2], ax=d.along[0], az=d.along[2];
+    let foreign=false, own=false;
     for (const off of [0, d.halfW*0.5, -d.halfW*0.5]) {
       const ox=d.center[0]+ax*off-inx*1.2, oz=d.center[2]+az*off-inz*1.2;
       for (const yy of [d.sill+0.5, d.sill+1.4])
-        for (const b of nearBoxes) if (rayBox(ox, oz, inx, inz, yy, b, 2.0) && !ownWall(b)) return false;
+        for (const b of nearBoxes) if (rayBox(ox, oz, inx, inz, yy, b, 2.0)) { if (ownWall(b)) own=true; else foreign=true; }
     }
-    return true;
+    return { foreign, own };
   };
+  // candidate = closed door whose OWN solid wall is LIVE across the doorway (a
+  // building whose walls were anti-wedge-DEFERRED — the player stood in its BB
+  // when it materialized — has no wall at all: nothing to assert against, and
+  // toggleDoor rightly refuses with "blocked" until the player clears the lot),
+  // and with no FOREIGN wall across it (overlap/party-wall — see gapState).
+  const gapTestable = (d)=>{ const g = gapState(d); return g.own && !g.foreign; };
   // NEW contract: doors start CLOSED — candidates are picked closed and the
   // probe opens them itself (KeyE / toggleDoor). Walk tests still need a
   // street-reachable door (rise within the stoop cap — a >3 m cliff-front door
   // legitimately has no ramp).
   const reach = new Map(withRise.map(x=>[x.d, x.rise]));
-  const nearWalk = walkable.filter(d=>sideRoom(d) && frontClear(d) && gapNotForeign(d) && reach.get(d) <= 2.9).sort((a,b)=>d2(a)-d2(b));
-  const bigStoop = withRise.filter(x=>sideRoom(x.d) && frontClear(x.d) && gapNotForeign(x.d) && x.rise >= 0.5 && x.rise <= 2.9).sort((a,b)=>b.rise-a.rise);
+  const nearWalk = walkable.filter(d=>sideRoom(d) && frontClear(d) && gapTestable(d) && reach.get(d) <= 2.9).sort((a,b)=>d2(a)-d2(b));
+  const bigStoop = withRise.filter(x=>sideRoom(x.d) && frontClear(x.d) && gapTestable(x.d) && x.rise >= 0.5 && x.rise <= 2.9).sort((a,b)=>b.rise-a.rise);
   const deco = (d) => { const x = withRise.find(w => w.d === d); return { ...d, _rise: x.rise, _fg: x.fg }; };
   return {
     ok:true, total:dets.length, doored:doors.length, walkable:walkable.length,

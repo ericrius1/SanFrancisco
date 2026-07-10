@@ -144,7 +144,7 @@ async function boot() {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, RENDER_MODE.pixelRatioCap));
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = RENDER_TUNING.values.exposure; // reference grading: physical sun (~100) + low exposure
+  renderer.toneMappingExposure = RENDER_TUNING.values.exposure; // anchored at 1.0; the DAY grade lives in sky.ts (sunDay/hemiDay)
   renderer.shadowMap.enabled = true; // universal render mode: CSM shadows always on (see world/sky.ts)
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   app.appendChild(renderer.domElement);

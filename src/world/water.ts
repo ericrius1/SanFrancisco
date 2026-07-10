@@ -22,7 +22,7 @@ import {
 } from "three/tsl";
 import { PALACE_LAGOON, palaceLagoonMask, waterHeight, type WorldMap } from "./heightmap";
 import { bumpNormal, chopZoneMask, swellBase, swellChop } from "./tslUtil";
-import { LIGHT_SCALE } from "../config";
+import { EXPOSURE_REBASE, LIGHT_SCALE } from "../config";
 
 const PALACE_LAGOON_SEGMENTS = 112;
 const PALACE_LAGOON_RINGS = 18;
@@ -320,7 +320,8 @@ export class Water {
         .mul(0.5)
         .add(0.5);
       const bright = clamp(win.add(rip.mul(0.14)), 0, 1); // ripple shimmers across the whole lid
-      undMat.colorNode = mix(color(0x0b5265), color(0xd8fbff), bright);
+      // authored at the reference exposure — rebased (config.EXPOSURE_REBASE)
+      undMat.colorNode = mix(color(0x0b5265), color(0xd8fbff), bright).mul(EXPOSURE_REBASE);
       // Feather by horizontal distance (NOT uv — this plane's uv isn't 0..1 after
       // the rotate, and a uv rim silently zeroed the whole opacity). distFade
       // melts the far rim into the marine fog; the window stays a touch clearer.

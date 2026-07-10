@@ -27,6 +27,7 @@ import {
   vec3
 } from "three/tsl"
 import { CROWN_INTENSITY } from "./salesforceCrown"
+import { WINDOW_GLOW_W } from "./facade"
 import { BAY_LIGHTS_INTENSITY } from "./bayLights"
 import { GOLDEN_GATE_LIGHTS_INTENSITY } from "./goldenGateLights"
 import { SUTRO_LIGHTS_INTENSITY } from "./sutroTower"
@@ -761,6 +762,9 @@ export class Sky {
     // Fake street-lamp pools: dark by day, warm pools fading in through twilight
     // so the night streets read instead of going pitch black. (No real lights.)
     STREET_LAMPS_INTENSITY.value = LIGHT_SCALE * 2.2 * goldenGateTwilightW
+    // lit building windows (baked facades + citygen glass + far LOD): dark by
+    // day, on through the same twilight ramp as the lamps
+    WINDOW_GLOW_W.value = goldenGateTwilightW
     // Sutro's aviation beacons: faint red by day, blazing after dark
     SUTRO_LIGHTS_INTENSITY.value =
       LIGHT_SCALE * (0.12 * dayW + 0.9 * goldW + 1.9 * nightW)

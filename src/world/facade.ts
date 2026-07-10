@@ -36,6 +36,14 @@ import {
 import { bumpNormal } from "./tslUtil";
 import { LIGHT_SCALE } from "../config";
 
+/** Sky-driven lit-window weight: 0 in daylight → 1 after dusk, written every
+ * frame by Sky#applySun (same twilight curve as the street lamps). Window
+ * emissives — here, the citygen parallax glass and the far LOD — multiply by
+ * this so lit panes only read after dark. Historically the glow was constant
+ * and daylight "crushed" it via the old +2-stop ACES shoulder grade; the 2026-07
+ * day re-grade removed that crush, so the gate is now explicit. */
+export const WINDOW_GLOW_W = uniform(0);
+
 /* ------------------------------------------------------------------ palettes */
 
 // terrain-bake palette: matches tools/blender_city.py PALETTES (vertex colours)
@@ -362,15 +370,15 @@ function facadeSurface(opts: {
   const glassRough = float(0.16).add(fresnel.mul(0.4));
   const roughness = mix(mix(stoneRough, float(0.6), fascia.add(bulkhead).clamp(0, 1)), glassRough, pane);
 
-  // lit panes emit a warm glow. Constant scale — ACES at play exposure crushes it
-  // to near-black in daylight, so the glow only reads after dusk (sky drives day/
-  // night purely through exposure, same as the landmark emissives). Shops glow a
-  // touch brighter. A hard grazing cutoff kills sub-pixel emissive shimmer on
-  // near-edge-on facades.
+  // lit panes emit a warm glow, gated by the sky's twilight weight so it only
+  // reads after dusk (WINDOW_GLOW_W — daylight used to crush it via the old
+  // ACES shoulder grade; the gate is explicit since the 2026-07 day re-grade).
+  // Shops glow a touch brighter. A hard grazing cutoff kills sub-pixel emissive
+  // shimmer on near-edge-on facades.
   const emitScale = mix(float(2.0 * LIGHT_SCALE), float(2.2 * LIGHT_SCALE), isShop);
   const glowGraze = smoothstep(0.01, 0.06, facing);
   const emissive = litWindows
-    ? lightCol.mul(lit).mul(pane).mul(emitScale).mul(glowGraze)
+    ? lightCol.mul(lit).mul(pane).mul(emitScale).mul(glowGraze).mul(WINDOW_GLOW_W)
     : color(0x000000);
 
   return {
