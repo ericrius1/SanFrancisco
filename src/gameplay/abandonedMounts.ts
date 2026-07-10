@@ -269,7 +269,6 @@ export class AbandonedMounts {
       pose.angular[1],
       pose.angular[2]
     ]);
-    this.#physics.registerVehicle(handle);
 
     const item: AbandonedMount = { mode, spec, handle, mesh, age: 0, persistent: opts?.persistent };
     if (mode === "plane") {
@@ -566,7 +565,6 @@ export class AbandonedMounts {
   #remove(index: number) {
     const item = this.#items[index];
     this.#items.splice(index, 1);
-    this.#physics.unregisterVehicle(item.handle);
     this.#physics.world.destroyBody(item.handle);
     item.mesh.removeFromParent();
     disposeObject(item.mesh);

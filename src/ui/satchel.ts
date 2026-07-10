@@ -1,23 +1,21 @@
 /**
  * The satchel: a little scoreboard pinned to the right edge counting what
- * you've looted and hunted — coins and gems from chests, plus crabs caught
- * around town. Rows appear once the first of their kind lands, and pop when
- * the count ticks. Pure DOM inside #hud .br-stack (above
- * the help panel; pointer-events stay off — nothing here is clickable).
+ * you've hunted — crabs caught around town. Rows appear once the first of
+ * their kind lands, and pop when the count ticks. Pure DOM inside
+ * #hud .br-stack (above the help panel; pointer-events stay off — nothing
+ * here is clickable).
  */
 
-export type SatchelKind = "coin" | "gem" | "crab";
+export type SatchelKind = "crab";
 
 const META: Record<SatchelKind, { icon: string; label: string }> = {
-  coin: { icon: "🪙", label: "coins" },
-  gem: { icon: "💎", label: "gems" },
   crab: { icon: "🦀", label: "crabs" }
 };
 
-const ORDER: SatchelKind[] = ["coin", "gem", "crab"];
+const ORDER: SatchelKind[] = ["crab"];
 
 export class Satchel {
-  counts: Record<SatchelKind, number> = { coin: 0, gem: 0, crab: 0 };
+  counts: Record<SatchelKind, number> = { crab: 0 };
 
   #root: HTMLElement;
   #rows = new Map<SatchelKind, { row: HTMLElement; num: HTMLElement }>();

@@ -45,7 +45,7 @@ type Particle = {
   drag: number;
 };
 
-// enough for a handful of simultaneous explosions plus a fracture cascade;
+// dust drives the impact puff; the other kinds are kept as a shared warm pool so
 // past that the oldest particle of the same kind gets recycled early
 const POOL: Record<Kind, number> = { flash: 8, fire: 8, smoke: 56, dust: 48 };
 
@@ -90,7 +90,7 @@ export class FX {
 
     // fixed pool, built once: per-sprite material clones (opacity animates per
     // particle) so gameplay never creates or disposes materials — a fresh material
-    // mid-run means a WebGPU pipeline compile hitch on the first explosion.
+    // mid-run means a WebGPU pipeline compile hitch on the first puff.
     // Culling stays off: idle sprites are invisible anyway, and it keeps the boot
     // prewarm independent of where the camera points.
     for (const kind of Object.keys(POOL) as Kind[]) {
@@ -142,46 +142,6 @@ export class FX {
     (p.sprite.material as THREE.SpriteMaterial).opacity = 1;
     this.#particles.push(p);
     return p;
-  }
-
-  explosion(pos: THREE.Vector3, radius: number) {
-    this.#spawn("flash", pos, radius * 1.6, 0, 0, 0, 0.16, 26);
-    this.#spawn("fire", pos, radius * 0.8, 0, 2.4, 0, 0.5, 18);
-    for (let i = 0; i < 7; i++) {
-      const a = Math.random() * Math.PI * 2;
-      const r = Math.random() * radius * 0.5;
-      scratch.set(pos.x + Math.cos(a) * r, pos.y + Math.random() * 2, pos.z + Math.sin(a) * r);
-      this.#spawn(
-        "smoke",
-        scratch,
-        radius * (0.5 + Math.random() * 0.4),
-        (Math.random() - 0.5) * 3,
-        3.5 + Math.random() * 3,
-        (Math.random() - 0.5) * 3,
-        2.2 + Math.random() * 1.2,
-        3.5,
-        0.92
-      );
-    }
-  }
-
-  fractureDust(pos: THREE.Vector3, volume: number) {
-    const s = Math.min(3, 0.8 + volume / 6000);
-    for (let i = 0; i < 6; i++) {
-      const a = (i / 6) * Math.PI * 2 + Math.random();
-      scratch.set(pos.x + Math.cos(a) * 3, pos.y + 0.5 + Math.random() * 2, pos.z + Math.sin(a) * 3);
-      this.#spawn(
-        "dust",
-        scratch,
-        4 * s + Math.random() * 3,
-        Math.cos(a) * 4.5,
-        1.6 + Math.random() * 1.6,
-        Math.sin(a) * 4.5,
-        1.8 + Math.random(),
-        4.2,
-        0.9
-      );
-    }
   }
 
   impactPuff(pos: THREE.Vector3) {

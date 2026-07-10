@@ -208,8 +208,8 @@ export class TileStreamer {
   landmarks: THREE.Object3D | null = null;
   onTileColliders: (key: string, colliders: BuildingCollider[]) => void = () => {};
   onTileUnload: (key: string) => void = () => {};
-  // fired when a building's SOLID state flips at runtime (full suppress / revive /
-  // fracture) so the physics query world can add or drop its collider. Mesh-only
+  // fired when a building's SOLID state flips at runtime (full suppress / revive)
+  // so the physics query world can add or drop its collider. Mesh-only
   // suppression keeps the collider, so it does NOT fire this.
   onBuildingAlive: (key: string, index: number, alive: boolean) => void = () => {};
 
@@ -600,8 +600,8 @@ export class TileStreamer {
       group.clear();
       // static tile content renders as one WebGPU render bundle: ~40 per-building
       // draws per tile collapse to a cached command buffer, so per-frame encode
-      // cost stops scaling with building count. Building hide/show (citygen swap,
-      // destruction) rides the alive TEXTURE, never mesh structure, so the bundle
+      // cost stops scaling with building count. Building hide/show (citygen swap)
+      // rides the alive TEXTURE, never mesh structure, so the bundle
       // only re-records while the tile is still attaching parts.
       const bundle = new THREE.BundleGroup();
       bundle.name = `tile_${key}`;
@@ -713,7 +713,7 @@ export class TileStreamer {
 
   // buildings permanently replaced by custom layers (the Exploratorium builds
   // its own Pier 15 shed): mesh dies via the alive flag the moment the tile
-  // lands, and physics skips them through the same isAlive gate fractures use
+  // lands, and physics skips them through the same isAlive gate suppression uses
   #suppressed = new Set<string>();
   // mesh hidden but COLLIDER kept alive (alive flag = 1, not 0). Used by the
   // CityGen ring so its own LOD/detail render in place of the baked mesh while the
@@ -755,8 +755,7 @@ export class TileStreamer {
   /** Undo suppressBuilding — restores the baked mesh + colliders. Used by the
    *  generated-building ring: an OSM building is suppressed only while its
    *  generated replacement is streamed in, and revived when the ring unloads it
-   *  so the distant baked city has no holes. (Alive sentinel is 255; a building
-   *  that was independently fractured stays down — killBuilding also writes 0.) */
+   *  so the distant baked city has no holes. (Alive sentinel is 255.) */
   unsuppressBuilding(key: string, index: number) {
     this.#suppressed.delete(`${key}:${index}`);
     const tile = this.loaded.get(key);
@@ -767,27 +766,14 @@ export class TileStreamer {
     this.onBuildingAlive(key, index, true);
   }
 
-  /** Marks a building dead (collapses its mesh). Returns its collider if known. */
-  killBuilding(key: string, index: number): BuildingCollider | null {
-    const tile = this.loaded.get(key);
-    if (!tile || !tile.slot) return null;
-    if (index < 0 || index * 4 >= tile.slot.data.length) return null;
-    if (tile.slot.data[index * 4] === 0) return null;
-    tile.slot.data[index * 4] = 0;
-    tile.slot.tex.needsUpdate = true;
-    this.onBuildingAlive(key, index, false);
-    return tile.colliders?.find((c) => c.i === index) ?? null;
-  }
-
   isAlive(key: string, index: number): boolean {
     const tile = this.loaded.get(key);
     if (!tile) return false;
     // landmark collider boxes ride in the tile files with i beyond the OSM
-    // building count (bake-colliders LM_BASE): always alive, never
-    // fracturable (killBuilding's range guard already returns null for them)
+    // building count (bake-colliders LM_BASE): always alive
     if (index >= (this.manifest.tiles[key]?.b ?? 0)) return true;
     // alive flag: 255 = visible+solid, 1 = mesh-hidden but collider kept (CityGen
-    // LOD tier), 0 = dead (fractured / fully suppressed). Non-zero = collidable.
+    // LOD tier), 0 = dead (fully suppressed). Non-zero = collidable.
     return !!tile.slot && tile.slot.data[index * 4] !== 0;
   }
 }

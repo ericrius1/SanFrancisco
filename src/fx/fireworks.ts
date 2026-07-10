@@ -583,21 +583,6 @@ export class Fireworks {
     }
   }
 
-  /** A short celebratory volley straight off a point (loot chests, wins). */
-  launchCelebration(x: number, y: number, z: number, count = 3) {
-    const trailN = Math.round(THREE.MathUtils.clamp(this.params.trail, 0, MAX_TRAIL));
-    for (let i = 0; i < count; i++) {
-      const T = 1.1 + Math.random() * 0.5;
-      const target = {
-        x: x + (Math.random() - 0.5) * 24,
-        y: y + 40 + Math.random() * 28,
-        z: z + (Math.random() - 0.5) * 24
-      };
-      const palette = Math.floor(Math.random() * PALETTES.length);
-      this.#queueLaunch({ x, y: y + 0.5, z }, target, T, palette, trailN, this.params.sparkSize * 0.85);
-    }
-  }
-
   /**
    * Launch one shell from `origin` that bursts at `target` after `flightTime`
    * seconds — the public seam mounted launchers use to fire their own arcs (the

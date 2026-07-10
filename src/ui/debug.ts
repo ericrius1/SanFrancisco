@@ -3,7 +3,6 @@ import type { BladeApi, FolderApi } from "tweakpane";
 import type * as THREE from "three/webgpu";
 import {
   CONFIG,
-  DEBRIS_TUNING,
   FLOWER_TUNING,
   FOLIAGE_TUNING,
   GRASS_TUNING,
@@ -13,7 +12,6 @@ import {
 } from "../config";
 import { addMovementTuning } from "../player/tuning";
 import type { PlayerMode } from "../player/types";
-import { DEBRIS_LIGHTS } from "../world/facade";
 import { CROWN_SLIDERS, CROWN_TUNING } from "../world/salesforceCrown";
 import { BAY_LIGHTS_SLIDERS, BAY_LIGHTS_TUNING } from "../world/bayLights";
 import { GOLDEN_GATE_LIGHTS_SLIDERS, GOLDEN_GATE_LIGHTS_TUNING } from "../world/goldenGateLights";
@@ -434,14 +432,6 @@ export class DebugPanel {
     // and the near-detail / far-chunk band move.
     const citygenF = advanced.addFolder({ title: "buildings (citygen)", expanded: false });
     CITYGEN_TUNING.bind(citygenF, { onChange: () => {} });
-
-    // debris window lights: hold fully lit, then flicker out; each chunk delays its
-    // fade by a random slice of `spread` so a collapse dies out non-uniformly.
-    // bind() persists edits; onChange pushes them into the live uniforms
-    const debris = advanced.addFolder({ title: "debris lights" });
-    DEBRIS_TUNING.bind(debris, {
-      onChange: (key, value) => (DEBRIS_LIGHTS[key].value = value as number)
-    });
 
     // Salesforce crown projection. Brightness is a multiplier on the sky-driven
     // CROWN_INTENSITY, which is rewritten every frame.

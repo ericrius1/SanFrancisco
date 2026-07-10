@@ -31,22 +31,10 @@ import {
   dot,
   normalize,
   mx_noise_float,
-  mx_fractal_noise_float,
-  instancedBufferAttribute
+  mx_fractal_noise_float
 } from "three/tsl";
 import { bumpNormal } from "./tslUtil";
-import { DEBRIS_TUNING, LIGHT_SCALE } from "../config";
-
-/* ----------------------------------------------------- debris light timing */
-
-// shared uniforms driving how chunk window-lights die after a fracture; the "/"
-// debug panel writes these live. hold = seconds fully lit, flicker = seconds of
-// stutter-and-fade, spread = per-chunk random extra delay before the fade starts
-export const DEBRIS_LIGHTS = {
-  hold: uniform(DEBRIS_TUNING.values.hold),
-  flicker: uniform(DEBRIS_TUNING.values.flicker),
-  spread: uniform(DEBRIS_TUNING.values.spread)
-};
+import { LIGHT_SCALE } from "../config";
 
 /* ------------------------------------------------------------------ palettes */
 
@@ -89,7 +77,7 @@ export const TOPH_SCALE = 1.5;
 
 /**
  * three's TSL hash(): PCG (pcg-random.org via shadertoy XlGcRh). Bit-exact JS twin,
- * so debris chunks can be tinted the same colour the facade shader derived.
+ * so a CPU caller can derive the same per-building colour the facade shader does.
  */
 export function pcgHash(i: number): number {
   const state = (Math.imul(i >>> 0, 747796405) + 2891336453) >>> 0;
@@ -124,10 +112,11 @@ function facadeSurface(opts: {
   baseY: N; // building base height (world Y where it meets the street)
   topRel?: N; // roof height above baseY in metres (omit = never mask rows)
   litWindows: boolean; // lit panes + emissive glow
-  litScale?: N; // 0..1 multiplier on the lit mask (debris fades its lights out)
-  // pattern frame: debris passes its frozen spawn-pose position/normal here so the
-  // facade stays glued to a tumbling chunk instead of re-deriving from live world
-  // space (which reads as the pattern scrolling and lights flickering as it spins)
+  litScale?: N; // 0..1 multiplier on the lit mask (fade the windows out)
+  // pattern frame: a caller can pass a frozen spawn-pose position/normal so the
+  // facade stays glued to a moving piece instead of re-deriving from live world
+  // space (which reads as the pattern scrolling as it moves). Unused by the
+  // in-place building material; kept so the surface stays reusable.
   frame?: { pos: N; nrm: N };
 }) {
   const { baseTone, bid, baseY, litWindows } = opts;
@@ -410,7 +399,7 @@ export function createFacadeMaterial(aliveTex: THREE.DataTexture, texWidth: numb
 
   const info = texture(aliveTex, vec2(bid.add(0.5).div(uAliveW), 0.5));
 
-  // destruction: sink dead buildings far below ground. The same node adds a
+  // suppression: sink dead (suppressed) buildings far below ground. The same node adds a
   // deterministic per-building nudge (±3cm in XZ): raw OSM leaves duplicate
   // footprints (way + multipolygon twins) and shared party walls exactly
   // coplanar, and two coincident facades with different _bid z-fight as a
@@ -449,101 +438,6 @@ export function createFacadeMaterial(aliveTex: THREE.DataTexture, texWidth: numb
   const baseTone = varying(mix(vColor, palette, 0.72).mul(hash(bid.add(223)).mul(0.16).add(0.9)) as N) as N;
 
   const nodes = facadeSurface({ baseTone, bid, baseY, topRel, litWindows: true });
-  mat.colorNode = nodes.colorNode;
-  mat.roughnessNode = nodes.roughnessNode;
-  mat.metalnessNode = nodes.metalnessNode;
-  mat.emissiveNode = nodes.emissiveNode;
-  mat.normalNode = nodes.normalNode;
-  mat.envMapIntensity = 1.0;
-  return mat;
-}
-
-/**
- * Debris chunks keep the full facade look — masonry, window grid and lit panes —
- * matching the parent building exactly at the moment of fracture. The pattern is
- * evaluated in each chunk's FROZEN spawn pose (per-instance spawn centre + yaw,
- * applied to the geometry-local position), so it stays glued to the piece while
- * it tumbles instead of scrolling/flickering with its live world transform.
- *
- * The window lights survive the fracture: each chunk keeps its panes glowing for
- * DEBRIS_LIGHTS.hold seconds (plus a per-chunk random slice of .spread, so a
- * collapse dies out over a second or two instead of all at once), then stutters
- * dark over .flicker seconds — dropouts get denser as the envelope decays, like
- * mains power dying.
- *
- * Instanced attributes:
- *   tone  vec4 — rgb = buildingTone, w = parent baseY
- *   info  vec4 — x = parent bid, yzw = chunk half extents
- *   spawn vec4 — xyz = spawn centre, w = building yaw
- *   anim  vec2 — x = age (s since fracture), y = per-chunk random seed 0..1
- */
-export function createDebrisMaterial(
-  toneAttr: THREE.InstancedBufferAttribute,
-  infoAttr: THREE.InstancedBufferAttribute,
-  spawnAttr: THREE.InstancedBufferAttribute,
-  animAttr: THREE.InstancedBufferAttribute
-): THREE.MeshStandardNodeMaterial {
-  const mat = new THREE.MeshStandardNodeMaterial();
-
-  const tone = instancedBufferAttribute(toneAttr) as unknown as N;
-  const info = instancedBufferAttribute(infoAttr) as unknown as N;
-  const spawn = instancedBufferAttribute(spawnAttr) as unknown as N;
-  const anim = instancedBufferAttribute(animAttr) as unknown as N;
-
-  const baseTone = varying(tone.xyz);
-  const baseY = varying(tone.w);
-  const bid = varying(info.x);
-
-  // frozen frame: geometry-local (unit box ±1) scaled by the chunk's half extents,
-  // rotated by the parent building's yaw, offset to the spawn centre — the world
-  // pose the piece had inside the intact facade
-  // read the RAW vertex buffers: three's instancing assigns the instance-transformed
-  // result into positionLocal/normalLocal, so those vars hold live world-space values
-  // here — reading them would re-introduce the motion we're freezing out
-  const pl = attribute("position", "vec3") as unknown as N;
-  const nl = attribute("normal", "vec3") as unknown as N;
-  const cosY = spawn.w.cos();
-  const sinY = spawn.w.sin();
-  const lx = pl.x.mul(info.y);
-  const ly = pl.y.mul(info.z);
-  const lz = pl.z.mul(info.w);
-  const frozenPos = varying(
-    vec3(
-      spawn.x.add(lx.mul(cosY)).add(lz.mul(sinY)),
-      spawn.y.add(ly),
-      spawn.z.add(lx.mul(sinY).negate()).add(lz.mul(cosY))
-    ) as N
-  ) as N;
-  const frozenNrm = varying(
-    vec3(
-      nl.x.mul(cosY).add(nl.z.mul(sinY)),
-      nl.y,
-      nl.x.mul(sinY).negate().add(nl.z.mul(cosY))
-    ) as N
-  ) as N;
-
-  // lights-out timeline, all in seconds since the fracture. Uniform-driven so the
-  // "/" panel retunes chunks already in the air. Whole thing is per-instance
-  // constant, so it runs once in the vertex stage (varying)
-  const age = anim.x;
-  const seed = anim.y;
-  const fadeStart = DEBRIS_LIGHTS.hold.add(seed.mul(DEBRIS_LIGHTS.spread));
-  const t = age.sub(fadeStart); // <0 while still fully lit
-  const envelope = t.div(DEBRIS_LIGHTS.flicker.max(0.05)).oneMinus().clamp(0, 1);
-  // stutter: ~24 Hz per-chunk coin flips whose pass chance tracks the envelope, so
-  // dropouts start sparse and end total (threshold >1 before the fade = always on).
-  // +4096 keeps the hash input positive for t < 0
-  const stutter = step(hash(floor(t.mul(24)).add(seed.mul(917)).add(4096)), envelope.mul(1.25));
-  const litScale = varying(envelope.mul(stutter)) as N;
-
-  const nodes = facadeSurface({
-    baseTone,
-    bid,
-    baseY,
-    litWindows: true,
-    litScale,
-    frame: { pos: frozenPos, nrm: frozenNrm }
-  });
   mat.colorNode = nodes.colorNode;
   mat.roughnessNode = nodes.roughnessNode;
   mat.metalnessNode = nodes.metalnessNode;

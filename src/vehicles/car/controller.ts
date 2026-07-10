@@ -63,7 +63,7 @@ export class CarController implements ModeController {
     const up = V.tmp2.set(0, 1, 0).applyQuaternion(q);
 
     const ground = this.#ground(ctx, ctx.position.x, ctx.position.z);
-    // wide band: a car perched on rubble or a wall lip (~2m up) must keep throttle
+    // wide band: a car perched on a curb or wall lip (~2m up) must keep throttle
     // and its down-spring, or it strands in a no-control limbo — beyond it (roofs,
     // big jumps) physics owns the fall until we're near street level again
     const grounded = ctx.position.y - ground < 3.0 && up.y > 0.35;
@@ -81,9 +81,9 @@ export class CarController implements ModeController {
 
     if (grounded) {
       // longitudinal: accelerate toward a target speed, hard-capped. The target
-      // builds from *current* speed, so a blocked car (nose against rubble) would
+      // builds from *current* speed, so a blocked car (nose against a wall) would
       // otherwise only ever ask for fwdSpeed+accel·dt ≈ 0.3 m/s and stay wedged
-      // forever — floor the request at a grind speed so it bulldozes light debris.
+      // forever — floor the request at a grind speed so it keeps pushing off a curb.
       let targetSpeed = fwdSpeed;
       if (throttle > 0) {
         targetSpeed = Math.min(

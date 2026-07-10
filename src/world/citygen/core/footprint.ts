@@ -44,6 +44,42 @@ export function streetEdgeIndex(poly: Vec2[]): number {
   return best;
 }
 
+/** Even-odd point-in-polygon test (winding-independent). [x,z] in the poly frame. */
+export function pointInPoly(poly: readonly Vec2[], x: number, z: number): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i][0], zi = poly[i][1];
+    const xj = poly[j][0], zj = poly[j][1];
+    // ray from the point along +x crosses this edge?
+    if ((zi > z) !== (zj > z) && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+/** Shortest distance from (x,z) to the polygon boundary (nearest point on any edge). */
+export function distToPolyEdge(poly: readonly Vec2[], x: number, z: number): number {
+  let best = Infinity;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const ax = poly[j][0], az = poly[j][1];
+    const dx = poly[i][0] - ax, dz = poly[i][1] - az;
+    const len2 = dx * dx + dz * dz || 1e-9;
+    let t = ((x - ax) * dx + (z - az) * dz) / len2;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    const cx = ax + t * dx, cz = az + t * dz;
+    const d = Math.hypot(x - cx, z - cz);
+    if (d < best) best = d;
+  }
+  return best;
+}
+
+/** Signed distance from (x,z) to the polygon: POSITIVE inside, NEGATIVE outside
+ *  (metres to the nearest edge either way). Drives the spawn/interior gate: a point
+ *  is "inside" for gating when this is ≥ −dilate (dilate ≈ a doorway threshold). */
+export function signedDistToPoly(poly: readonly Vec2[], x: number, z: number): number {
+  const d = distToPolyEdge(poly, x, z);
+  return pointInPoly(poly, x, z) ? d : -d;
+}
+
 /**
  * Ear-clipping triangulation of a simple polygon (handles the concave L/T/U
  * footprints common in SF — a centroid fan would produce inverted triangles on

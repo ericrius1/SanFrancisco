@@ -1,5 +1,5 @@
 // URL-driven autopilot for automated verification:
-// /?demo=drive|plane|boat|drone|shoot|tower|rampage|reel|reel2
+// /?demo=drive|plane|boat|drone|tower|rampage|reel|reel2
 import type { Input } from "../core/input";
 import type { Player } from "../player/player";
 import type { PlayerMode } from "../player/types";
@@ -158,25 +158,6 @@ export function runDemo(name: string, ctx: Ctx) {
       });
       break;
 
-    case "shoot":
-      at(200, () => {
-        tp(4180, 6, 150, 0.4);
-        chase.yaw = 2.4;
-        chase.pitch = 0.18;
-      });
-      at(1200, () => {
-        // fire straight at the block across the street
-        const dir = new THREE.Vector3();
-        chase.aimDir(dir);
-        physics.fireProjectile(player.aimOrigin.clone().addScaledVector(dir, 3), dir);
-      });
-      at(2400, () => {
-        const dir = new THREE.Vector3();
-        chase.aimDir(dir);
-        physics.fireProjectile(player.aimOrigin.clone().addScaledVector(dir, 3), dir);
-      });
-      break;
-
     case "tower": {
       const hold = () => {
         tp(4117, 273, 33, 0);
@@ -192,16 +173,6 @@ export function runDemo(name: string, ctx: Ctx) {
       at(7000, () => clearInterval(id));
       break;
     }
-
-    case "explode":
-      at(400, () => {
-        tp(4180, 6, 150, 0.4);
-        chase.yaw = 2.0;
-        chase.pitch = 0.35;
-        chase.zoom = 1.6;
-      });
-      at(1500, () => physics.explode(new THREE.Vector3(4120, 12, 90), 16));
-      break;
 
     case "reel": {
       // 25-second showcase reel: five 5-second clips, each a different vehicle

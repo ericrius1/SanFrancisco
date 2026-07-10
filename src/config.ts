@@ -155,17 +155,6 @@ export const GRASS_TUNING = tunables("grass", {
 });
 
 /**
- * Window lights on falling chunks: stay lit for `hold` seconds, then flicker out
- * over `flicker` seconds; each chunk starts its fade at hold + rand * spread so a
- * collapse never blacks out in one frame. Bound in the "/" panel's debris folder.
- */
-export const DEBRIS_TUNING = tunables("debrisLights", {
-  hold: { v: 2.5, min: 0, max: 8, step: 0.1, label: "lit time (s)" },
-  flicker: { v: 1.2, min: 0.1, max: 4, step: 0.05, label: "flicker-out (s)" },
-  spread: { v: 1.5, min: 0, max: 4, step: 0.1, label: "fade spread (s)" }
-});
-
-/**
  * Where and how a fresh session starts. Editable in the Tab panel (persisted);
  */
 export const START_DEFAULTS = { spawn: "goldenGate", mode: "board" as PlayerMode };
@@ -197,26 +186,6 @@ export const CONFIG = {
   // wake when their footprint is fully carpeted (see props.ts)
   carpetSize: 21,
   carpetCell: 8,
-
-  // destruction: ordinary crashes chip the facade; a building only comes down to
-  // real energy. Impact energy is ½·m·approach² in kJ, so grazing scrapes stay
-  // cheap no matter how fast the vehicle is moving.
-  chipSpeed: 6, // m/s approach speed before a crash can mark the facade at all
-  chipEnergy: 90, // kJ a hit must carry to knock chips off — above anything the walk/board
-  // body can deliver (boosted board tops out ~67 kJ), so only vehicle-mass crashes scar masonry
-  crashBoomEnergy: 1500, // kJ that reads as a bomb — the crash detonates (full-speed plane dive)
-  buildingHpBase: 500, // kJ of cumulative structural damage even a shed shrugs off
-  buildingHpPerM3: 3, // extra strength per m³, so towers are effectively immortal to ramming
-  damageFloor: 200, // kJ an impact must exceed to count as structural, not cosmetic
-  maxDebris: 960,
-  debrisLifetime: 14,
-  projectileSpeed: 95,
-  projectileRadius: 0.45,
-  explosionRadius: 13,
-  explosionImpulse: 30,
-  // kJ-equivalent a tracer burst drives into the facade it hits — sizes the
-  // chip spray. Projectile damage is always cosmetic: a scar, never collapse
-  projectileChip: 160,
 
   // water
   seaLevel: 0.0,

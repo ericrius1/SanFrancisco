@@ -30,6 +30,7 @@ export class BoardController implements ModeController {
   // carve yaw (raw body yaw) + visual lean, read by the rider-pose animation
   yaw = 0;
   lean = 0;
+  pitch = 0; // smoothed deck pitch (euler.x): +ve = nose up
   grounded = true;
   #rest = 0; // seconds spent resting on a collider the heightmap can't see
   #jumpBuf = 0; // jump buffer: seconds a Space press stays pending
@@ -50,6 +51,7 @@ export class BoardController implements ModeController {
     w.setBodyGravityScale(ctx.body, 0); // vertical is hover-spring-owned
     this.yaw = facing;
     this.lean = 0;
+    this.pitch = 0;
     this.#rest = 0;
     this.#jumpBuf = 0;
     this.#coyote = 0;
@@ -146,31 +148,50 @@ export class BoardController implements ModeController {
       this.#rest = 0;
       this.#jumping = JUMP_LOCKOUT_TIME;
     } else if (grounded) {
+      // anti-snag look-ahead (car-parity, mirrors car/controller.ts): sample the
+      // ride surface a full nose length ahead so the hover spring lifts the deck
+      // BEFORE the leading edge reaches a rise — otherwise the front of the 2.3 m
+      // collider digs into the carpet slab ahead and the solver eats all forward
+      // speed (the "noses down uphill and wedges" report). The old peek was only
+      // nvx·dt (~0.3 m) in front, far short of the box's 1.15 m reach.
+      const travel = Math.sign(fwdSpeed) || (throttle > 0 ? 1 : throttle < 0 ? -1 : 1);
+      const nose = 1.15 + 0.6; // front-edge reach (box half-length) + margin
+      const ax = ctx.position.x + fwd.x * nose * travel + nvx * dt;
+      const az = ctx.position.z + fwd.z * nose * travel + nvz * dt;
       const ahead = Math.max(
-        ctx.map.rideGround(ctx.position.x + nvx * dt, ctx.position.z + nvz * dt, ctx.position.y),
-        waterHeight(ctx.position.x + nvx * dt, ctx.position.z + nvz * dt, ctx.time)
+        ctx.map.rideGround(ax, az, ctx.position.y),
+        waterHeight(ax, az, ctx.time)
       );
-      const slopeRate = THREE.MathUtils.clamp((ahead - surface) / dt, -14, 28);
+      // climb-rate feedforward = grade · horizontal speed (car-parity), so the
+      // spring only trims residual error rather than being slammed at rise/dt.
+      const horiz = Math.max(Math.abs(fwdSpeed), 2);
+      const slopeRate = THREE.MathUtils.clamp(((ahead - surface) / nose) * horiz, -14, 28);
+      const rideYnose = Math.max(surface, ahead) + tb.hover + bob; // float over the rise
       // clamp the spring: a board wedged far below its ride height (collider
       // gap, overhang) must climb out, not get slammed at error·9 m/s
-      vy = THREE.MathUtils.clamp((rideY - ctx.position.y) * 9, -12, 18) + slopeRate;
+      vy = THREE.MathUtils.clamp((rideYnose - ctx.position.y) * 9, -12, 18) + slopeRate;
     } else {
       vy -= tb.fallGravity * dt; // hand-integrated fall (gravityScale is 0)
     }
     w.setBodyVelocity(ctx.body, [nvx, vy, nvz], [0, 0, 0]);
 
-    // attitude is code-owned: yaw from carving, lean into the turn, nose with the slope
+    // attitude is code-owned: yaw from carving, lean into the turn, nose with the
+    // slope. The grounded sign lifts the nose UP going uphill: a -Z-forward deck
+    // needs +euler.x to raise the nose, so target = +atan2(front-back) (the old
+    // code negated this and buried the nose into the hill). Smoothed so carpet
+    // refinement + grounded↔air transitions don't pop.
     const lean = THREE.MathUtils.clamp(steerRate * tb.carveLean, -0.85, 0.85);
     this.lean += (lean - this.lean) * Math.min(1, dt * 7);
     const e = 2.0;
-    const slopePitch = grounded
+    const targetPitch = grounded
       ? Math.atan2(
           ctx.map.rideGround(ctx.position.x + fwd.x * e, ctx.position.z + fwd.z * e, ctx.position.y) -
             ctx.map.rideGround(ctx.position.x - fwd.x * e, ctx.position.z - fwd.z * e, ctx.position.y),
           2 * e
-        ) * 0.6
-      : THREE.MathUtils.clamp(-vy * 0.02, -0.3, 0.3);
-    const q = ctx.quaternion.setFromEuler(V.euler.set(-slopePitch, this.yaw, this.lean, "YXZ"));
+        ) * 0.8
+      : THREE.MathUtils.clamp(vy * 0.02, -0.3, 0.3);
+    this.pitch += (targetPitch - this.pitch) * Math.min(1, dt * 8);
+    const q = ctx.quaternion.setFromEuler(V.euler.set(this.pitch, this.yaw, this.lean, "YXZ"));
     w.setBodyTransform(ctx.body, [ctx.position.x, ctx.position.y, ctx.position.z], [q.x, q.y, q.z, q.w]);
     ctx.heading = this.yaw + Math.PI;
   }

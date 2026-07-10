@@ -27,7 +27,7 @@ import { avatarFromSeed, isDefaultAvatar, normalizeAvatarTraits, type AvatarTrai
  *   ← {t:"chat", id, name, text}        relayed to everyone else
  *
  * Movement is client-authoritative by design: each browser runs its own
- * box3d world (destruction and all), so the server can only ever relay
+ * box3d world, so the server can only ever relay
  * poses. Fine for a co-op sandbox — there is nothing competitive to cheat at.
  */
 

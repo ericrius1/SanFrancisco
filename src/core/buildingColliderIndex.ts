@@ -10,9 +10,9 @@
 // a coarse wide grid around EVERY collider anchor, independent of what's visually
 // loaded. It reuses the existing colliderWorker so the fetch + JSON parse + trig
 // patch stay off the main thread. Physics merges its tiles with the visual ones
-// (visual copy wins where both exist, so demolition/suppression state is honoured
+// (visual copy wins where both exist, so suppression state is honoured
 // wherever the player can actually see the building; a building only ever streams
-// here for regions no one is looking at, where nothing can be demolished).
+// here for regions no one is looking at, where nothing can be suppressed).
 
 import type { BuildingCollider } from "../world/tiles";
 

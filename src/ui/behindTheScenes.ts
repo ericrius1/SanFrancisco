@@ -29,8 +29,8 @@ const TAB_WORLD = `
   <section>
     <p class="bts-lede">An open-world San Francisco you can walk, drive, fly, sail, skate and soar
     through — with friends, in a browser tab. It's rebuilt from real OpenStreetMap building and road
-    data and USGS elevation, given rigid-body physics so you can ram buildings over, shoot them and
-    blow them up, and floated on a custom Caribbean-green bay. No installs, no accounts, no plugins:
+    data and USGS elevation, given rigid-body physics so cars, boats and bodies all collide and the
+    solid buildings bump you to a stop, and floated on a custom Caribbean-green bay. No installs, no accounts, no plugins:
     open a URL and you're standing on the Embarcadero. What follows is the whole magic trick, pulled
     apart — how the city gets built, how it's made to look and move, and how it becomes a place you
     can actually play in with other people. It's a lot of moving parts for a browser tab — a physics
@@ -205,19 +205,17 @@ const TAB_LIFE = `
   </section>
 
   <section>
-    <h3><span class="bts-ic">💥</span> Physics — Box3D, in your browser</h3>
-    <p>Collisions, destruction and every vehicle run on <strong>Box3D</strong>, Erin Catto's rigid-body
+    <h3><span class="bts-ic">🧱</span> Physics — Box3D, in your browser</h3>
+    <p>Collisions and every vehicle run on <strong>Box3D</strong>, Erin Catto's rigid-body
     engine, compiled to WebAssembly. Each browser runs its <em>own</em> physics world. Simulating a
     whole city of bodies would be hopeless, so it's an illusion tuned around you: a moving
     <strong>"carpet"</strong> of static ground boxes follows you (sampled live from the heightmap and
     bridge decks), and nearby buildings materialize static box bodies as you approach and release them
     as you leave.</p>
-    <p>Destruction stays cheap thanks to one trick baked into the geometry: every building vertex
-    carries its building id, so when a wall takes a hard enough hit the runtime can collapse just
-    <em>that</em> building's triangles into dynamic debris without re-uploading the tile. Fracture is
-    energy-gated — a gentle bump won't shatter anything, a speeding bus will — and explosions are Box3D
-    radial impulses. The rope and grab tools are Box3D joints too: rope ties any two bodies together
-    (tie a crate to a bus, you know you want to), and grab is a tractor beam that carries and flings.</p>
+    <p>The buildings are immovable and indestructible: run a bus into a wall and the contact solver
+    simply stops you dead — no dents, no debris, just a solid city. The rope and grab tools are Box3D
+    joints: rope ties any two bodies together (tie a crate to a bus, you know you want to), and grab is
+    a tractor beam that carries and flings.</p>
     <p class="bts-links-inline">
       ${a(BOX3D_URL, "Box3D (Erin Catto)")}
       ${a(BOX3D_WASM_DEMO, "Box3D → WASM live demo")}
@@ -330,12 +328,9 @@ const TAB_PLAY = `
 
   <section>
     <h3><span class="bts-ic">🎪</span> A world full of toys</h3>
-    <p>The city is stitched with little systems that reward wandering. Golden treasure chests conjure
-    themselves on open ground under a light beacon you can spot a block away; walk up and one pops open
-    on its own, spraying a fountain of coins and gems that magnet onto you and count into your satchel
-    (a lucky few throw a fireworks salvo on top). Crabs skitter along the waterline as one instanced
-    mesh with its wiggle done in the vertex shader, so the CPU only steers; catch one and it poofs a
-    sparkle ring and respawns somewhere fresh.
+    <p>The city is stitched with little systems that reward wandering. Crabs skitter along the waterline
+    as one instanced mesh with its wiggle done in the vertex shader, so the CPU only steers; catch one and
+    it poofs a sparkle ring, counts into your satchel, and respawns somewhere fresh.
     Blow soap bubbles and they drift off on a breeze with real thin-film iridescence — the colours are
     the viewing angle, not a texture — and burst against a wall, the water, or just old age.</p>
     <p>The wildlife is rideable: up in the Marin redwoods, walk up to a bear or raccoon and mount it with
@@ -404,9 +399,9 @@ const TAB_PLAY = `
     skating into walls.</p>
     <p>Remote players show up as full embodiments — walker, sports car, plane, sailboat, drone,
     hoverboard with rider, phoenix — with name tags and walk/ride animation driven by their reported
-    speed. What <em>isn't</em> synced is just as deliberate: building destruction, fireworks and
+    speed. What <em>isn't</em> synced is just as deliberate: fireworks and
     paint all stay local, because everyone runs their own copy of the city. That's exactly why you can
-    knock a block flat without ruining anyone else's skyline. The relay itself is almost aggressively
+    tag a wall without ever touching anyone else's view of it. The relay itself is almost aggressively
     boring by design: no database, everything in memory, a 15-second heartbeat to drop dead sockets,
     per-message size and rate caps, and clients that reconnect on their own with backoff. Restarting it
     is invisible — your position lives in your browser, not on the server — so there's nothing to migrate

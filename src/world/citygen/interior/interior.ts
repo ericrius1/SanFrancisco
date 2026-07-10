@@ -14,9 +14,9 @@
 //
 // Determinism: all variation from spec.seed via mulberry32 (rng). Emissive-only
 // lighting (no THREE lights — the app has a fixed LightPool), so every room reads.
-import type { BuildingSpec, ColliderBox, Panel } from "../core/types";
+import type { BuildingSpec, ColliderBox, Panel, Vec2 } from "../core/types";
 import { PanelBuilder } from "../core/facade";
-import { ensureCCW, triangulate } from "../core/footprint";
+import { ensureCCW, triangulate, centroid, streetEdgeIndex, pointInPoly, distToPolyEdge } from "../core/footprint";
 import { rng } from "../core/rng";
 import { FLOOR_H, MAX_FLOORS, INSET, bboxOf, inset, rectArea, rectMinDim, type Rect } from "./common";
 import { partition, buildWalls, deck, polyGroundSlab } from "./rooms";
@@ -57,6 +57,49 @@ function daylight(out: PanelBuilder, poly: readonly (readonly [number, number])[
   }
 }
 
+/**
+ * Largest axis-aligned rectangle that fits INSIDE a (local-frame) footprint polygon.
+ * Rasterises the bbox into an N×N inside/outside grid (cell centres tested against
+ * the poly) and runs the classic "maximal rectangle in a binary matrix" scan. The
+ * footprint is already rotated so its street edge is axis-aligned, so this rect is
+ * well-oriented for the room plan. Returns null for a degenerate lot (caller falls
+ * back to the bbox). O(N²) + N² point-in-poly — trivial for a lazily-built interior.
+ */
+function inscribedRect(poly: readonly Vec2[], bb: Rect, N = 48): Rect | null {
+  const W = bb.x1 - bb.x0, H = bb.z1 - bb.z0;
+  if (W <= 0.5 || H <= 0.5) return null;
+  const cw = W / N, ch = H / N;
+  const inside: Uint8Array[] = [];
+  for (let r = 0; r < N; r++) {
+    const row = new Uint8Array(N);
+    const z = bb.z0 + (r + 0.5) * ch;
+    for (let c = 0; c < N; c++) row[c] = pointInPoly(poly, bb.x0 + (c + 0.5) * cw, z) ? 1 : 0;
+    inside.push(row);
+  }
+  const h = new Int32Array(N);
+  let best: { c0: number; c1: number; r0: number; r1: number } | null = null, bestA = 0;
+  const st: number[] = [];
+  for (let r = 0; r < N; r++) {
+    for (let c = 0; c < N; c++) h[c] = inside[r][c] ? h[c] + 1 : 0;
+    st.length = 0;
+    for (let c = 0; c <= N; c++) {
+      const cur = c < N ? h[c] : 0;
+      while (st.length && h[st[st.length - 1]] >= cur) {
+        const height = h[st.pop()!];
+        const left = st.length ? st[st.length - 1] + 1 : 0;
+        const a = height * (c - left);
+        if (a > bestA) { bestA = a; best = { c0: left, c1: c - 1, r0: r - height + 1, r1: r }; }
+      }
+      st.push(c);
+    }
+  }
+  if (!best) return null;
+  return {
+    x0: bb.x0 + best.c0 * cw, x1: bb.x0 + (best.c1 + 1) * cw,
+    z0: bb.z0 + best.r0 * ch, z1: bb.z0 + (best.r1 + 1) * ch,
+  };
+}
+
 /** index of the roomiest cell (best chance of fitting the stair). */
 function roomiest(rooms: Rect[]): number {
   let best = 0, bestV = -1;
@@ -68,10 +111,35 @@ function roomiest(rooms: Rect[]): number {
 }
 
 export function buildInterior(spec: BuildingSpec, zone: InteriorZone = "residential"): BuiltInterior {
-  const poly = ensureCCW(spec.poly);
+  // Lay the whole interior out in the FOOTPRINT'S LOCAL FRAME. SF lots are rotated
+  // ~30–45° off the world axes, so an axis-aligned-bbox layout (what this used to
+  // do) puts slabs/rooms/stairs/furniture metres OUTSIDE the real walls. We rotate
+  // the footprint so its street (longest) edge is axis-aligned, run the unchanged
+  // rect-based planner in that frame, then rotate every emitted vertex + collider
+  // back to world. The rotation matches box3d's yaw convention (a box yawed by θ
+  // has its +X extent along world (cosθ, sinθ)), so the collider boxes stay glued
+  // to the mesh — see the yaw handling in the post-transform below.
+  const world = ensureCCW(spec.poly);
+  const [ctrX, ctrZ] = centroid(world);
+  const si = streetEdgeIndex(world);
+  const s0 = world[si], s1 = world[(si + 1) % world.length];
+  const theta = Math.atan2(s1[1] - s0[1], s1[0] - s0[0]); // world angle of the street edge
+  const cosT = Math.cos(theta), sinT = Math.sin(theta);
+  // world → local: rotate by −θ about the centroid (inverse of the local→world below)
+  const poly: Vec2[] = world.map(([x, z]) => {
+    const dx = x - ctrX, dz = z - ctrZ;
+    return [ctrX + dx * cosT + dz * sinT, ctrZ - dx * sinT + dz * cosT] as Vec2;
+  });
   const tris = triangulate(poly);
   const bb = bboxOf(poly);
-  const area = inset(bb, INSET);
+  const bbArea = inset(bb, INSET);
+  // Rooms/slabs/furniture lay out on the largest rectangle INSIDE the (aligned) lot,
+  // not its bounding box: SF lots are mostly parallelograms/trapezoids, and a bbox
+  // rect can't fit inside those — its corners poke through the walls (the ~85%-poke
+  // residual a plain local-frame bbox still leaves). The inscribed rect fits by
+  // construction, dropping protrusion to well under 1 %. Ground slab stays faithful
+  // to the full footprint (below); this only bounds the walk-in room plan.
+  const area = inset(inscribedRect(poly, bb) ?? bb, INSET);
   const base = spec.base;
   const nFloors = Math.max(1, Math.min(MAX_FLOORS, Math.round((spec.top - base) / FLOOR_H)));
 
@@ -108,7 +176,7 @@ export function buildInterior(spec: BuildingSpec, zone: InteriorZone = "resident
 
     // floor slab: faithful footprint on the ground, inset-bbox ring (with the
     // stairwell hole) on floors above
-    if (k === 0) polyGroundSlab(out, cols, poly, tris, fY, area);
+    if (k === 0) polyGroundSlab(out, cols, poly, tris, fY, bbArea);
     else deck(out, cols, "int.floor", area, hole, fY, true);
 
     // ceiling: under each upper floor with the stairwell open; a plain cap on top
@@ -143,5 +211,72 @@ export function buildInterior(spec: BuildingSpec, zone: InteriorZone = "resident
     }
   }
 
-  return { panels: out.panels(), colliders: cols, floors: nFloors };
+  const panels = out.panels();
+
+  // ---- rotate the local-frame layout back into world space -------------------
+  if (Math.abs(theta) > 1e-6) {
+    // vertices + normals: local → world = rotate by +θ about the centroid
+    for (const p of panels) {
+      const pos = p.positions, nrm = p.normals;
+      for (let k = 0; k < pos.length; k += 3) {
+        const dx = pos[k] - ctrX, dz = pos[k + 2] - ctrZ;
+        pos[k] = ctrX + dx * cosT - dz * sinT;
+        pos[k + 2] = ctrZ + dx * sinT + dz * cosT;
+        const nx = nrm[k], nz = nrm[k + 2];
+        nrm[k] = nx * cosT - nz * sinT;
+        nrm[k + 2] = nx * sinT + nz * cosT;
+      }
+    }
+    // colliders: rotate each centre, and orient the box. Plain boxes (yaw 0) become
+    // yaw θ; tilted stair ramps (a `quat`) get the θ yaw composed onto their tilt.
+    const qy: Quat = [0, Math.sin(theta / 2), 0, Math.cos(theta / 2)];
+    for (const c of cols) {
+      const dx = c.x - ctrX, dz = c.z - ctrZ;
+      c.x = ctrX + dx * cosT - dz * sinT;
+      c.z = ctrZ + dx * sinT + dz * cosT;
+      if (c.quat) c.quat = qmul(qy, c.quat);
+      else c.yaw += theta;
+    }
+  }
+
+  clipCheck(spec, world, cols);
+  return { panels, colliders: cols, floors: nFloors };
+}
+
+type Quat = readonly [number, number, number, number];
+/** Hamilton product a⊗b (world-outer a, local-inner b) — pure, no THREE in core. */
+function qmul(a: Quat, b: Quat): Quat {
+  const [ax, ay, az, aw] = a, [bx, by, bz, bw] = b;
+  return [
+    aw * bx + ax * bw + ay * bz - az * by,
+    aw * by - ax * bz + ay * bw + az * bx,
+    aw * bz + ax * by - ay * bx + az * bw,
+    aw * bw - ax * bx - ay * by - az * bz,
+  ];
+}
+
+// Dev clip check: after the world rotation, sample a few interior collider centres
+// against the real footprint. A tight rect-in-local layout should stay inside; a
+// degenerate concave lot (a thin L/T notch) can still poke, which is acceptable if
+// rare. Warn at most once per building id so a repeatedly re-entered interior stays
+// quiet, and surface the running out-of-footprint rate on a dev global.
+const clipWarned = new Set<number>();
+const clipStat = { checked: 0, poked: 0 };
+function clipCheck(spec: BuildingSpec, worldPoly: Vec2[], cols: ColliderBox[]): void {
+  let outside = 0, n = 0;
+  for (let i = 0; i < cols.length; i += Math.max(1, Math.ceil(cols.length / 24))) {
+    const c = cols[i];
+    n++;
+    if (!pointInPoly(worldPoly, c.x, c.z) && distToPolyEdge(worldPoly, c.x, c.z) > 0.75) outside++;
+  }
+  clipStat.checked++;
+  if (outside > 0) {
+    clipStat.poked++;
+    if (!clipWarned.has(spec.id)) {
+      clipWarned.add(spec.id);
+      // eslint-disable-next-line no-console
+      console.warn(`[citygen interior] building ${spec.id} (${spec.archetype}): ${outside}/${n} sampled colliders outside footprint`);
+    }
+  }
+  (globalThis as { __sfInteriorClip?: typeof clipStat }).__sfInteriorClip = clipStat;
 }

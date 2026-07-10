@@ -10,10 +10,10 @@
 // for per-edge walk-in walls + a door, and the lazy interior gates on being inside.
 //
 // Everything is STATIC: world-space geometry, matrixAutoUpdate off, Static bodies.
-// Nothing here is destructible (only the baked layer is, and we hide that).
+// Nothing is destructible — buildings don't break; a crash just stops you.
 import type * as THREE from "three/webgpu";
 import { buildingColliders, doorMetrics, doorEligible } from "../core/collider";
-import { ensureCCW, streetEdgeIndex, edgeOutwardNormal } from "../core/footprint";
+import { ensureCCW, streetEdgeIndex, edgeOutwardNormal, signedDistToPoly } from "../core/footprint";
 import { buildBuilding, buildInterior } from "../render";
 import { buildChunkLOD, type ChunkLOD } from "../render/chunkLod";
 import { buildCityGenMaterials } from "../theme/materials";
@@ -58,11 +58,10 @@ interface PhysWorld {
 // Optional host hook (SF's Physics facade provides it): mirror each wall/interior
 // box into the physics query world so raycasts (paint / world cursor / aim reticle)
 // see it — our bodies live on the STEPPED world, invisible to raycastWorld's #solids
-// cast. Keyed by the stepped-body handle so removal stays exact; a `tag` on a wall
-// box routes a vehicle crash into it to the cosmetic chip path. Optional so the
+// cast. Keyed by the stepped-body handle so removal stays exact. Optional so the
 // module stays portable to a host without a query world.
 interface QuerySolidHost {
-  addQuerySolid(id: number, box: { x: number; y: number; z: number; hx: number; hy: number; hz: number; yaw?: number; quat?: readonly [number, number, number, number] }, tag?: { key: string; i: number }): void;
+  addQuerySolid(id: number, box: { x: number; y: number; z: number; hx: number; hy: number; hz: number; yaw?: number; quat?: readonly [number, number, number, number] }): void;
   removeQuerySolid(id: number): void;
 }
 interface Tiles {
@@ -202,16 +201,16 @@ export async function createCityGenRing(
   const building: CellState[] = []; // cells still merging their chunk
   let accum = 0;
 
-  // `tag` (a wall's baked key:index) is passed for walls so a crash chips them;
-  // omitted for interiors (nothing rams them). Every box is mirrored into the query
-  // world regardless, so raycasts hit walls AND interior geometry.
-  const addBody = (c: { x: number; y: number; z: number; hx: number; hy: number; hz: number; yaw: number; quat?: readonly [number, number, number, number] }, tag?: { key: string; i: number }): number => {
+  // Every box is mirrored into the query world (walls AND interior geometry) so
+  // raycasts (paint / world cursor / aim reticle) hit citygen geometry exactly
+  // where the baked twin has been suppressed.
+  const addBody = (c: { x: number; y: number; z: number; hx: number; hy: number; hz: number; yaw: number; quat?: readonly [number, number, number, number] }): number => {
     const h = ctx.physics.world.createBox({ type: 0, position: [c.x, c.y, c.z], halfExtents: [c.hx, c.hy, c.hz], friction: 0.8 });
     const q: [number, number, number, number] = c.quat
       ? [c.quat[0], c.quat[1], c.quat[2], c.quat[3]]
       : [0, Math.sin(c.yaw / 2), 0, Math.cos(c.yaw / 2)];
     ctx.physics.world.setBodyTransform(h, [c.x, c.y, c.z], q);
-    ctx.physics.addQuerySolid?.(h, c, tag); // mirror into the raycast query world
+    ctx.physics.addQuerySolid?.(h, c); // mirror into the raycast query world
     return h;
   };
   const clearBodies = (e: Entry) => { for (const h of e.bodies) { ctx.physics.removeQuerySolid?.(h); ctx.physics.world.destroyBody(h); } e.bodies.length = 0; e.wallBoxes = []; };
@@ -233,7 +232,7 @@ export async function createCityGenRing(
     ctx.tiles.suppressBuilding(e.key, e.i); // baked mesh + loose collider off (R=0)
     // buildingColliders directly (not generate): colliders only, no throwaway mesh
     const { boxes } = buildingColliders(e as BuildingSpec, false); // SOLID (no door yet)
-    for (const c of boxes) e.bodies.push(addBody(c, { key: e.key, i: e.i }));
+    for (const c of boxes) e.bodies.push(addBody(c));
     e.wallBoxes = boxes;
     e.state = "coll";
   };
@@ -261,7 +260,7 @@ export async function createCityGenRing(
     if (!(e.state === "coll" && e.bodies.length)) {
       clearBodies(e);
       const { boxes } = buildingColliders(e as BuildingSpec, false); // SOLID, no door
-      for (const c of boxes) e.bodies.push(addBody(c, { key: e.key, i: e.i }));
+      for (const c of boxes) e.bodies.push(addBody(c));
       e.wallBoxes = boxes;
     }
     e.doorPending = true;
@@ -274,7 +273,7 @@ export async function createCityGenRing(
     e.doorPending = false;
     clearBodies(e);
     const { boxes } = buildingColliders(e as BuildingSpec, true); // door gap cut
-    for (const c of boxes) e.bodies.push(addBody(c, { key: e.key, i: e.i }));
+    for (const c of boxes) e.bodies.push(addBody(c));
     e.wallBoxes = boxes;
   };
   const dropDetail = (e: Entry) => {
@@ -298,8 +297,24 @@ export async function createCityGenRing(
   };
 
   let insideBuilding = false; // set each frame by gateInterior; drives the indoor camera
+  // Precise footprint gate. The world AABB is a broad-phase reject only (it's a
+  // superset of the real ring — for a lot rotated ~30–45° it overshoots the walls
+  // by metres, which is exactly why brushing the sidewalk used to flash an interior
+  // in mid-air). Inside the AABB we test the REAL polygon: build/stay-inside within
+  // GATE_DILATE of a wall (so a doorway counts), dispose only past GATE_DISPOSE
+  // outside (hysteresis → no rebuild flash when you skim a wall).
+  const GATE_DILATE = 0.75;   // inside OR within 0.75 m of an edge = "inside" (doorway)
+  const GATE_DISPOSE = 3.0;   // dispose only when clearly outside the footprint
   const gateInterior = (e: Entry, p: THREE.Vector3) => {
-    const inside = e.state === "detail" && p.x > e.bb.minx - 1.2 && p.x < e.bb.maxx + 1.2 && p.z > e.bb.minz - 1.2 && p.z < e.bb.maxz + 1.2 && p.y > e.base - 1.5 && p.y < e.top + 1.0;
+    if (e.state !== "detail") return; // only faded-in detail buildings have interiors
+    // broad-phase: outside the (inflated) AABB by a clear margin → definitely out
+    if (p.x < e.bb.minx - 4 || p.x > e.bb.maxx + 4 || p.z < e.bb.minz - 4 || p.z > e.bb.maxz + 4) {
+      if (e.interior) disposeInterior(e);
+      return;
+    }
+    const inY = p.y > e.base - 1.5 && p.y < e.top + 1.0;
+    const d = signedDistToPoly(e.poly, p.x, p.z); // + inside, − outside (metres)
+    const inside = inY && d >= -GATE_DILATE;
     if (inside) insideBuilding = true;
     if (inside && !e.interior && e.bodies.length) {
       const it = buildInterior(e as BuildingSpec, materials);
@@ -307,9 +322,8 @@ export async function createCityGenRing(
       for (const c of it.colliders) e.intBodies.push(addBody(c));
       e.intBoxes = it.colliders;
       e.interior = it;
-    } else if (!inside && e.interior) {
-      const clear = p.x < e.bb.minx - 4 || p.x > e.bb.maxx + 4 || p.z < e.bb.minz - 4 || p.z > e.bb.maxz + 4;
-      if (clear) disposeInterior(e);
+    } else if (e.interior && d < -GATE_DISPOSE) {
+      disposeInterior(e);
     }
   };
 

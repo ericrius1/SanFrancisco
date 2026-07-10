@@ -23,9 +23,11 @@ const height = decodeHeightmapBuffer(hmBuf.buffer, meta);
 if (height.length !== expect) throw new Error(`heightmap ${height.length} != grid ${expect}`);
 
 const { tiles } = JSON.parse(await readFile(CITY));
-const greenLists = Object.values(tiles).map((t) => t.green || []);
+const tileVals = Object.values(tiles);
+const greenLists = tileVals.map((t) => t.green || []);
+const roadLists = tileVals.map((t) => t.roads || []);
 
-const top = computeGroundTop(grid, height, greenLists);
+const top = computeGroundTop(grid, height, greenLists, roadLists);
 
 // write sparse delta instead of full float32 groundtop
 const deltaBuf = encodeGroundTopDelta(height, top);
@@ -40,5 +42,5 @@ for (let i = 0; i < top.length; i++) {
 }
 console.log(
   `[groundtop] wrote groundtop-delta.bin ${(deltaBuf.byteLength / 1e3).toFixed(1)}KB (was ${(top.buffer.byteLength / 1e6).toFixed(1)}MB float32); ` +
-    `raised ${raised} park cells (${((100 * raised) / top.length).toFixed(1)}%), max lift ${maxLift.toFixed(3)}m`
+    `raised ${raised} ground cells park+road (${((100 * raised) / top.length).toFixed(1)}%), max lift ${maxLift.toFixed(3)}m`
 );

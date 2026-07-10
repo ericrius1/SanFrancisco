@@ -698,10 +698,15 @@ async function main() {
   await writeFile(new URL("heightmap.bin", PUB), Buffer.from(heightI16.buffer));
   await writeFile(new URL("surface.bin", PUB), Buffer.from(surface.buffer));
 
-  // rendered top-ground surface (base terrain + draped park lawns) as a sparse
-  // delta — only park cells differ from base terrain (~1–2 MB vs 13 MB float32).
-  // See groundtop-lib.mjs + terrain-codec.mjs.
-  const groundTop = computeGroundTop(GRID, height, [...tiles.values()].map((t) => t.green || []));
+  // rendered top-ground surface (base terrain + draped park lawns + road ribbons)
+  // as a sparse delta — only park/road cells differ from base terrain (a few MB vs
+  // 13 MB float32). See groundtop-lib.mjs + terrain-codec.mjs.
+  const groundTop = computeGroundTop(
+    GRID,
+    height,
+    [...tiles.values()].map((t) => t.green || []),
+    [...tiles.values()].map((t) => t.roads || [])
+  );
   const groundTopDelta = encodeGroundTopDelta(height, groundTop);
   await writeFile(new URL("groundtop-delta.bin", PUB), groundTopDelta);
   console.log(`[prep] heightmap: ${(height.buffer.byteLength / 1e6).toFixed(1)}MB float32 → ${(heightI16.byteLength / 1e6).toFixed(1)}MB int16`);

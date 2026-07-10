@@ -21,9 +21,7 @@ import type {
   b3Quat,
   b3Vec3,
   b3BodyType,
-  b3QueryFilter,
-  EventsBuffer,
-  ContactHitEvent as B3ContactHitEvent
+  b3QueryFilter
 } from "box3d.js";
 
 // 64-bit "all categories" mask — the default query reach when a cast doesn't
@@ -107,14 +105,6 @@ export type CapsuleShape = {
 export type HumanRagdoll = { human: number; bones: number[] };
 export type HumanOptions = { frictionTorque?: number; hertz?: number; dampingRatio?: number };
 
-export type ContactHitEvent = {
-  bodyA: number;
-  bodyB: number;
-  point: [number, number, number];
-  normal: [number, number, number];
-  approachSpeed: number;
-};
-
 /** Floats per body in a TransformBatch read: px py pz qx qy qz qw awake. */
 export const TRANSFORM_STRIDE = 8;
 
@@ -190,9 +180,6 @@ export class PhysicsWorld {
   #next = 1;
   #humanGroup = 0;
 
-  #events: EventsBuffer;
-  #hitScratch: B3ContactHitEvent;
-
   // reused scratch for castRayClosest — one query filter + two vec3s, mutated
   // per call so casting many rays a frame allocates nothing on our side
   #queryFilter?: b3QueryFilter;
@@ -207,8 +194,6 @@ export class PhysicsWorld {
       module.b3BodyType.b3_kinematicBody,
       module.b3BodyType.b3_dynamicBody
     ];
-    this.#events = module.createEventsBuffer();
-    this.#hitScratch = module.createContactHitEvent();
   }
 
   // -- handle bookkeeping ---------------------------------------------------
@@ -518,40 +503,9 @@ export class PhysicsWorld {
     this.#m.b3Body_SetGravityScale(id, scale);
   }
 
-  // -- hit events -----------------------------------------------------------
-
-  setHitEventThreshold(value: number): void {
-    this.#m.b3World_SetHitEventThreshold(this.#world, value);
-  }
-
-  setBodyHitEvents(bodyHandle: number, enabled: boolean): void {
-    const id = this.#body(bodyHandle);
-    if (!id) return;
-    this.#m.b3Body_EnableHitEvents(id, enabled);
-  }
-
   #handleForShapeBody(shapeId: b3ShapeId): number {
     const body = this.#m.b3Shape_GetBody(shapeId);
     return this.#keyToHandle.get(bodyKey(body)) ?? 0;
-  }
-
-  readHitEvents(maxEvents = 64): ContactHitEvent[] {
-    const m = this.#m;
-    m.getEvents(this.#events, this.#world);
-    const total = m.getNumContactHitEvents(this.#events);
-    const count = Math.min(total, maxEvents);
-    const events: ContactHitEvent[] = [];
-    for (let i = 0; i < count; i++) {
-      const hit = m.getContactHitEventAt(this.#hitScratch, this.#events, i);
-      events.push({
-        bodyA: this.#handleForShapeBody(hit.shapeIdA),
-        bodyB: this.#handleForShapeBody(hit.shapeIdB),
-        point: [hit.point.x, hit.point.y, hit.point.z],
-        normal: [hit.normal.x, hit.normal.y, hit.normal.z],
-        approachSpeed: hit.approachSpeed
-      });
-    }
-    return events;
   }
 
   // -- capsule readback -----------------------------------------------------
@@ -743,7 +697,6 @@ export class PhysicsWorld {
   // ragdoll helpers above suffice. Omitted deliberately.
 
   dispose(): void {
-    this.#m.destroyEventsBuffer(this.#events);
     this.#m.b3DestroyWorld(this.#world);
     this.#bodies.clear();
     this.#joints.clear();

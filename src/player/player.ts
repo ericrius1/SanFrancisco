@@ -213,7 +213,6 @@ export class Player {
 
   #destroyBody() {
     if (this.body) {
-      this.physics.unregisterVehicle(this.body);
       this.physics.world.destroyBody(this.body);
       this.body = 0;
     }
@@ -245,7 +244,6 @@ export class Player {
     this.renderQuaternion.copy(this.quaternion);
     // keep the storage convention from the first frame, not just after an update
     this.heading = facing + Math.PI;
-    this.physics.registerVehicle(this.body);
     for (const [k, m] of Object.entries(this.meshes)) {
       setEmbodimentVisible(m, k === mode);
     }

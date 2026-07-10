@@ -2,9 +2,9 @@
 
 An open-world San Francisco you can **walk, drive, fly, sail, skate and soar**
 through — with friends. It's rebuilt from real OpenStreetMap building/road data
-and USGS elevation, and everything is a rigid body: you can ram buildings over,
-shoot them, and blow them up. The bay is a custom water shader — calm, clear,
-Caribbean-green.
+and USGS elevation, and everything is a rigid body: cars, boats and bodies all
+collide, and the buildings are solid — you bump and stop against them. The bay is
+a custom water shader — calm, clear, Caribbean-green.
 
 There's no goal and nothing to win. It's a city-sized sandbox. Show up, pick a
 way to move, and go poke at things.
@@ -94,15 +94,11 @@ Nothing here is required — it's a list of things people tend to find fun.
   above the fog. The whole city is here — Golden Gate, the Bay Bridge,
   Transamerica, Salesforce Tower, Coit Tower, the Ferry Building, Sutro Tower,
   the Palace of Fine Arts, Alcatraz — and it's easiest to orient from the air.
-- **Wreck a block.** In the car, drive *through* buildings. They have real
-  colliders and fracture into debris. `B` for fireworks, or use the tools to
-  blow things up.
-- **Chase the treasure.** Golden chests conjure themselves around you under
-  light beacons. Walk up and they burst open in a fountain of coins and gems —
-  the satchel bottom-right keeps score, and a lucky chest fires a firework
-  salvo.
+- **Carve the hills.** In the car, chase the grades and drift the intersections.
+  The whole city is solid — buildings have real colliders, so you bump and stop
+  against them. `B` for fireworks, or use the tools to paint, chime and splash.
 - **Hunt the critters.** Crabs scuttle along the waterfront. Pounce close to
-  catch them.
+  catch them — the satchel bottom-right keeps score.
 - **Sail the bay.** Take the boat (`Shift`+`4`) out past the promenade — the
   water actually heaves and the boat trims bow-up as it climbs the swell.
 - **Chase the light.** Hold `Z` and drag to scrub the time of day. Sunset over
@@ -143,9 +139,9 @@ Everyone shares one world. No accounts, no login — connect and you're in.
   animation driven by their reported speed, and *no* extra lights (light-count
   changes rebuild every GPU pipeline in this renderer; emissive materials do
   the glowing instead).
-- **What is not synced:** building destruction, debris, fireworks and
-  paint stay local to each client (every player has their own copy of the
-  city). Syncing world state across Box3D instances is a much bigger project.
+- **What is not synced:** fireworks and paint stay local to each client (every
+  player has their own copy of the city). Syncing world state across Box3D
+  instances is a much bigger project.
 
 Protocol details live at the top of `server/server.mjs` and `src/net/net.ts`.
 
@@ -169,8 +165,8 @@ Protocol details live at the top of `server/server.mjs` and `src/net/net.ts`.
   buckets everything into 800 m streaming tiles.
 - **`src/world/tiles.ts`** streams GLB tiles + JSON colliders in/out by player distance.
 - **`src/core/physics.ts`** runs Box3D: a moving "carpet" of static ground boxes follows the
-  player (sampling the heightmap + bridge decks), nearby buildings get static box bodies,
-  and hit events drive fracture into dynamic debris. Explosions use Box3D's radial impulse.
+  player (sampling the heightmap + bridge decks), and nearby buildings get static box bodies,
+  so a crash is resolved entirely by the contact solver — it just stops you.
 - **`src/player/`** + **`src/vehicles/`** implement the seven embodiments (one
   `ModeController` per folder) on capped-speed arcade physics.
 - **`src/world/water.ts`** is the bay shader: depth-based turquoise gradient from a bay-floor
@@ -365,8 +361,9 @@ Blender actually re-exported. `--force` redoes everything.
 Two things are deliberately left alone:
 
 - **`_BID` stays exact float32.** Buildings carry a per-vertex building-id
-  attribute so the runtime can collapse a single building's mesh when it's
-  destroyed without re-uploading geometry. Quantizing those ids would round
+  attribute so the facade shader can tint and light each building independently
+  and the runtime can hide a single building (the citygen swap) via the alive
+  texture without re-uploading geometry. Quantizing those ids would round
   neighbors into each other; only POSITION/NORMAL/COLOR are quantized.
 - **`landmarks.glb` skips quantization entirely** (meshopt-only). The Salesforce
   Tower crown material reads its mesh's bounding box in world meters to place the

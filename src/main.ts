@@ -1,7 +1,7 @@
 import * as THREE from "three/webgpu";
 import { Inspector } from "three/addons/inspector/Inspector.js";
 import CameraControls from "camera-controls";
-import { CONFIG, DEBRIS_TUNING, FLOWER_TUNING, FOLIAGE_TUNING, RENDER_MODE, RENDER_TUNING, START, START_DEFAULTS, WORLD_TUNING } from "./config";
+import { CONFIG, FLOWER_TUNING, FOLIAGE_TUNING, RENDER_MODE, RENDER_TUNING, START, START_DEFAULTS, WORLD_TUNING } from "./config";
 import { loadPlayerState, resetAllTweaks, savePlayerState } from "./core/persist";
 import { Input } from "./core/input";
 import { WorldMap, waterHeight } from "./world/heightmap";
@@ -14,7 +14,6 @@ import { createRoadMarkings } from "./world/roadMarkings";
 import { RoadGraph } from "./world/traffic/roadGraph";
 import { TrafficLightView } from "./world/traffic/trafficLights";
 import { Physics } from "./core/physics";
-import { createDebrisMaterial, DEBRIS_LIGHTS } from "./world/facade";
 import { updateCrownDisplay, resetCrownTweaks } from "./world/salesforceCrown";
 import { createBayLights, updateBayLights, resetBayLightsTweaks } from "./world/bayLights";
 import { createGoldenGateLights, updateGoldenGateLights, resetGoldenGateLightsTweaks } from "./world/goldenGateLights";
@@ -25,8 +24,6 @@ import { Player } from "./player/player";
 import type { PlayerMode } from "./player/types";
 import { ChaseCamera } from "./core/camera";
 import { FX } from "./fx/fx";
-import { ProjectileTracers } from "./fx/projectile";
-import { Shockwaves } from "./fx/shockwave";
 import { BoardWake, WakeRipples } from "./fx/wake";
 import { BirdTrails } from "./fx/birdTrail";
 import { WaterSplashes } from "./fx/splash";
@@ -51,7 +48,6 @@ import type { Forest, AnimalKind } from "./gameplay/forest";
 import type { GrassDisplacer } from "./world/garden";
 import type { CityGenRing, ColliderBox } from "./world/citygen";
 import { Islands } from "./gameplay/islands";
-import { Loot } from "./gameplay/loot";
 import { Hunt } from "./gameplay/hunt";
 import { Ropes, Grabber, type PickCandidate } from "./gameplay/ropes";
 import { Satchel } from "./ui/satchel";
@@ -176,7 +172,6 @@ async function boot() {
   const hud = new HUD();
   const modeDiscovery = new ModeDiscovery();
   const fx = new FX(scene);
-  const shockwaves = new Shockwaves(scene);
   const wake = new WakeRipples(scene);
   const boardWake = new BoardWake(scene, map, wake);
   const splashes = new WaterSplashes(scene, wake, map);
@@ -353,14 +348,9 @@ async function boot() {
   let citygen: { update?: (dt: number) => void; [k: string]: unknown } | null = null;
   const citygenRing: { current: CityGenRing | null } = { current: null };
 
-  // the Fortnite-ish layer: treasure chests raining coins, crabs to hunt,
-  // and the Garry's-Mod rope/grab click-tools (loot.ts / hunt.ts / ropes.ts)
+  // crabs to hunt plus the Garry's-Mod rope/grab click-tools
+  // (hunt.ts / ropes.ts)
   const satchel = new Satchel();
-  const loot = new Loot(physics, map, scene);
-  loot.onCollect = (kind, n) => satchel.add(kind, n);
-  loot.onOpen = () => hud.message("Treasure! Grab the coins", 2.2);
-  loot.onFireworks = (x, y, z) => fireworks.launchCelebration(x, y, z);
-  loot.onSmash = (x, y, z) => fx.impactPuff(new THREE.Vector3(x, y, z));
   const hunt = new Hunt(map, scene);
   hunt.onCatch = (kind) => {
     satchel.add(kind);
@@ -434,23 +424,6 @@ async function boot() {
     }
   };
   document.querySelector<HTMLButtonElement>("[data-ui-restore]")!.addEventListener("click", showUi);
-
-  physics.onExplosion = (pos, radius) => {
-    fx.explosion(pos, radius);
-    shockwaves.spawn(pos, radius);
-    const d = pos.distanceTo(player.position);
-    chase.shake(Math.max(0, 1.1 - d / 60));
-  };
-  physics.onFracture = (pos, vol, height) => {
-    // dust plume up the building's height as it comes down
-    fx.fractureDust(pos, vol);
-    if (height > 12) fx.fractureDust(new THREE.Vector3(pos.x, pos.y + height * 0.45, pos.z), vol * 0.7);
-    if (height > 30) fx.fractureDust(new THREE.Vector3(pos.x, pos.y + height * 0.85, pos.z), vol * 0.5);
-  };
-  physics.onHardImpact = (pos, speed) => {
-    fx.impactPuff(pos);
-    chase.shake(Math.min(0.7, speed / 40));
-  };
 
   hud.setMode(player.mode);
 
@@ -968,29 +941,6 @@ async function boot() {
   let btsReading = false;
   // BehindTheScenes is constructed after progress(100) in the deferred loader
 
-  // debris instancing: chunks keep the facade look. Per-instance attributes carry
-  // the building tone/baseY, the parent bid + chunk half extents, and the frozen
-  // spawn pose (centre + yaw) the shader evaluates the facade pattern in.
-  const debrisGeo = new THREE.BoxGeometry(2, 2, 2);
-  const debrisTone = new THREE.InstancedBufferAttribute(new Float32Array(CONFIG.maxDebris * 4), 4);
-  debrisTone.setUsage(THREE.DynamicDrawUsage);
-  const debrisInfo = new THREE.InstancedBufferAttribute(new Float32Array(CONFIG.maxDebris * 4), 4);
-  debrisInfo.setUsage(THREE.DynamicDrawUsage);
-  const debrisSpawn = new THREE.InstancedBufferAttribute(new Float32Array(CONFIG.maxDebris * 4), 4);
-  debrisSpawn.setUsage(THREE.DynamicDrawUsage);
-  const debrisAnim = new THREE.InstancedBufferAttribute(new Float32Array(CONFIG.maxDebris * 2), 2);
-  debrisAnim.setUsage(THREE.DynamicDrawUsage);
-  const debrisMat = createDebrisMaterial(debrisTone, debrisInfo, debrisSpawn, debrisAnim);
-  const debrisMesh = new THREE.InstancedMesh(debrisGeo, debrisMat, CONFIG.maxDebris);
-  debrisMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-  debrisMesh.count = 0;
-  debrisMesh.frustumCulled = false;
-  debrisMesh.castShadow = true;
-  scene.add(debrisMesh);
-
-  // projectile tracers: instanced TSL energy orbs (fx/projectile.ts)
-  const tracers = new ProjectileTracers(scene);
-
   // collider x-ray overlay (debug: "/" → collider x-ray). Off unless toggled;
   // the tick gathers active colliders and drives it. Scratch arrays reused so an
   // enabled overlay allocates nothing per frame.
@@ -1017,10 +967,6 @@ async function boot() {
     colliderDebug.sync(colliderBoxes);
   };
 
-  const mat4 = new THREE.Matrix4();
-  const quat = new THREE.Quaternion();
-  const pos = new THREE.Vector3();
-  const scl = new THREE.Vector3();
   const aim = new THREE.Vector3();
   const rayOrigin = new THREE.Vector3(); // aimOrigin returns a shared tmp — keep our own copy
   // The interaction ray. Normally it's the centre-screen aim; while the free
@@ -1568,9 +1514,6 @@ async function boot() {
       setFoliageVisible(FOLIAGE_TUNING.values.visible);
       tiles.forceScan();
       sky.applyFogParams();
-      DEBRIS_LIGHTS.hold.value = DEBRIS_TUNING.values.hold;
-      DEBRIS_LIGHTS.flicker.value = DEBRIS_TUNING.values.flicker;
-      DEBRIS_LIGHTS.spread.value = DEBRIS_TUNING.values.spread;
       pipeline.applyPostFx(); // toggles back off + sliders back to defaults
       sky.cycleEnabled = SKY_TUNING.values.cycleEnabled;
       sky.cycleDuration = SKY_TUNING.values.cycleDuration;
@@ -1796,14 +1739,6 @@ async function boot() {
     if (currentAnimal) forest?.setRiddenSpeed(player.speed);
     islands.update(elapsed);
     citygenRing.current?.update(player.position, frameDt);
-    loot.update(
-      frameDt,
-      player.position,
-      elapsed,
-      player.mode,
-      player.speed,
-      player.mode === "drive" ? player.driveSpec.halfExtents : undefined
-    );
     if (!highUp) hunt.update(frameDt, elapsed, player.position);
     ropes.update(frameDt, player.position, elapsed);
     if (grabber.holding) {
@@ -1840,7 +1775,6 @@ async function boot() {
     underwater.update(camera, elapsed);
     seaPillars.update(player.renderPosition, elapsed);
     fx.update(frameDt);
-    shockwaves.update(frameDt);
     bubbles.update(frameDt, elapsed);
     chimes.update(frameDt);
     wake.update(frameDt, elapsed, player);
@@ -1944,55 +1878,6 @@ async function boot() {
       saveSession();
     }
 
-    // debris sync
-    const data = physics.debrisTransforms();
-    if (data) {
-      const n = physics.debris.length;
-      debrisMesh.count = n;
-      const toneArr = debrisTone.array as Float32Array;
-      const infoArr = debrisInfo.array as Float32Array;
-      const spawnArr = debrisSpawn.array as Float32Array;
-      const animArr = debrisAnim.array as Float32Array;
-      const sinkSpan = 2.8;
-      const sinkStart = CONFIG.debrisLifetime - sinkSpan;
-      for (let i = 0; i < n; i++) {
-        const o = i * 8;
-        const d = physics.debris[i];
-        // rubble settles, then sinks into the ground instead of shrinking away
-        const sinkT = d.age > sinkStart ? (d.age - sinkStart) / sinkSpan : 0;
-        const yOff = sinkT * sinkT * (d.hy * 2 + 0.8);
-        pos.set(data[o], data[o + 1] - yOff, data[o + 2]);
-        quat.set(data[o + 3], data[o + 4], data[o + 5], data[o + 6]);
-        scl.set(d.hx, d.hy, d.hz);
-        mat4.compose(pos, quat, scl);
-        debrisMesh.setMatrixAt(i, mat4);
-        toneArr[i * 4] = d.color.r;
-        toneArr[i * 4 + 1] = d.color.g;
-        toneArr[i * 4 + 2] = d.color.b;
-        toneArr[i * 4 + 3] = d.baseY;
-        infoArr[i * 4] = d.bid;
-        infoArr[i * 4 + 1] = d.hx;
-        infoArr[i * 4 + 2] = d.hy;
-        infoArr[i * 4 + 3] = d.hz;
-        spawnArr[i * 4] = d.sx;
-        spawnArr[i * 4 + 1] = d.sy;
-        spawnArr[i * 4 + 2] = d.sz;
-        spawnArr[i * 4 + 3] = d.yaw;
-        animArr[i * 2] = d.age;
-        animArr[i * 2 + 1] = d.seed;
-      }
-      debrisMesh.instanceMatrix.needsUpdate = true;
-      debrisTone.needsUpdate = true;
-      debrisInfo.needsUpdate = true;
-      debrisSpawn.needsUpdate = true;
-      debrisAnim.needsUpdate = true;
-    } else {
-      debrisMesh.count = 0;
-    }
-
-    // projectile sync: pose + stretch each tracer along its velocity
-    tracers.sync(physics);
-
     syncColliderDebug(); // debug x-ray of active colliders (no-op unless toggled)
 
     input.endFrame();
@@ -2056,7 +1941,7 @@ async function boot() {
 
   const exposeDebugHooks = () => {
     Object.assign(window as never, {
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, creatures, forest, garden, wildlands, splashes, vehicleAudio, swimAudio, nature, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, rocketRiders, boatLaunchers, goldenGateLights, teleportToTarget, trafficLights, citygen, citygenRing, worldCursor, worldQueries, underwater, seaPillars, water, roadMarkings, colliderDebug, FOLIAGE_TUNING, setFoliageVisible }
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, splashes, vehicleAudio, swimAudio, nature, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, rocketRiders, boatLaunchers, goldenGateLights, teleportToTarget, trafficLights, citygen, citygenRing, worldCursor, worldQueries, underwater, seaPillars, water, roadMarkings, colliderDebug, FOLIAGE_TUNING, setFoliageVisible }
     });
   };
   if (import.meta.env.DEV || new URLSearchParams(location.search).has("profile")) {
