@@ -16,6 +16,21 @@ const OFFSETS: Record<PlayerMode, { back: number; up: number; look: number }> =
     bird: { back: 15, up: 3.1, look: 0.55 }
   }
 
+// Build the outdoor and indoor rigs independently, then blend the complete
+// poses. Keeping these values together makes the transition easy to tune without
+// letting chase-camera zoom or framing leak into the first-person endpoint.
+const VIEW = {
+  outdoorPitchMin: -0.62,
+  outdoorPitchMax: 1.2,
+  firstPersonPitchMin: -1.45,
+  firstPersonPitchMax: 1.45,
+  eyeHeight: 0.8,
+  transitionRate: 7,
+  firstPersonFollow: 48
+} as const
+
+const smoothstep = (t: number) => t * t * (3 - 2 * t)
+
 /**
  * Pointer-lock chase camera. The mouse owns yaw/pitch (no orbit button) and
  * the camera never recenters on its own.
@@ -26,14 +41,21 @@ export class ChaseCamera {
   pitch = 0.3
   zoom = 1
   shakeAmount = 0
-  /** set true while the player is inside a building — pulls the boom in to near
-   *  first-person so the third-person camera doesn't sit outside the wall showing
-   *  the façade (there's no camera-collision; this is the interior handling). */
+  /** Set true while the player is inside a building. The camera blends to a
+   *  zoom-independent eye pose with true yaw/pitch orientation. */
   indoor = false
   #indoor = 0 // smoothed 0..1
 
   #pos = new THREE.Vector3()
+  #chasePos = new THREE.Vector3()
+  #eyePos = new THREE.Vector3()
   #target = new THREE.Vector3()
+  #orbitQuat = new THREE.Quaternion()
+  #firstPersonQuat = new THREE.Quaternion()
+  #lookMatrix = new THREE.Matrix4()
+  #firstPersonEuler = new THREE.Euler(0, 0, 0, "YXZ")
+  #up = new THREE.Vector3(0, 1, 0)
+  #firstPersonAvatarHidden = false
   #map: WorldMap
 
   constructor(camera: THREE.PerspectiveCamera, map: WorldMap) {
@@ -45,7 +67,32 @@ export class ChaseCamera {
     this.shakeAmount = Math.min(1.6, this.shakeAmount + amount)
   }
 
+  /** Eased first-person contribution, used by interaction rays and diagnostics. */
+  get firstPersonBlend(): number {
+    return smoothstep(this.#indoor)
+  }
+
+  /** Blend the avatar's third-person muzzle into the actual eye in first person. */
+  viewOrigin(out: THREE.Vector3, player: Player): THREE.Vector3 {
+    out.copy(player.aimOrigin)
+    return out.lerp(this.camera.position, this.firstPersonBlend)
+  }
+
   update(dt: number, player: Player, input: Input) {
+    const indoorTarget = this.indoor && player.mode === "walk" ? 1 : 0
+    this.#indoor +=
+      (indoorTarget - this.#indoor) *
+      (1 - Math.exp(-Math.min(dt, 0.1) * VIEW.transitionRate))
+    const firstPersonBlend = this.firstPersonBlend
+    // Hide late on entry, after the avatar nearly fills the frame, and restore
+    // farther back on exit. The hysteresis avoids both clipped self-geometry and
+    // a visible on/off flutter around the threshold.
+    if (player.mode !== "walk" || firstPersonBlend < 0.5)
+      this.#firstPersonAvatarHidden = false
+    else if (firstPersonBlend > 0.9)
+      this.#firstPersonAvatarHidden = true
+    player.setFirstPersonView(this.#firstPersonAvatarHidden)
+
     if (player.mode === "plane") {
       // The mouse *flies the plane* (steerFly), so the camera must ride behind
       // the nose rather than orbit off the same mouse — integrating both at
@@ -66,10 +113,23 @@ export class ChaseCamera {
       this.pitch += (targetPitch - this.pitch) * follow
     } else {
       this.yaw -= input.mouseDX * 0.0032
+      // Orbit mode keeps framing-safe limits. The range widens almost to vertical
+      // as first person takes over, then contracts with the same smooth blend on
+      // exit so an extreme indoor pitch never snaps back in one frame.
+      const pitchMin = THREE.MathUtils.lerp(
+        VIEW.outdoorPitchMin,
+        VIEW.firstPersonPitchMin,
+        firstPersonBlend
+      )
+      const pitchMax = THREE.MathUtils.lerp(
+        VIEW.outdoorPitchMax,
+        VIEW.firstPersonPitchMax,
+        firstPersonBlend
+      )
       this.pitch = THREE.MathUtils.clamp(
         this.pitch + input.mouseDY * 0.0026,
-        -0.62,
-        1.2
+        pitchMin,
+        pitchMax
       )
     }
     this.zoom = THREE.MathUtils.clamp(
@@ -79,14 +139,9 @@ export class ChaseCamera {
     )
 
     const o = OFFSETS[player.mode]
-    // pull the boom in toward first-person while indoors (walk mode only), smoothed
-    const indoorTarget = this.indoor && player.mode === "walk" ? 1 : 0
-    this.#indoor += (indoorTarget - this.#indoor) * (1 - Math.exp(-dt * 8))
-    const boomScale = 1 - this.#indoor * 0.82 // 6.5 m → ~1.2 m boom
-    const upScale = 1 - this.#indoor * 0.5 // sit nearer eye height inside
-    const backBase = o.back * this.zoom * boomScale
+    const backBase = o.back * this.zoom
     let back = backBase
-    let up = o.up * this.zoom * upScale
+    let up = o.up * this.zoom
     // bigger phoenix needs more boom; tuck/stoop adds a little more so the mount
     // stays in frame instead of filling the viewport at triple speed
     if (player.mode === "bird") {
@@ -102,14 +157,14 @@ export class ChaseCamera {
     const cz = anchor.z + Math.cos(this.yaw) * Math.cos(this.pitch) * back
     const cy = anchor.y + up + Math.sin(this.pitch) * back
 
-    this.#pos.set(cx, cy, cz)
+    this.#chasePos.set(cx, cy, cz)
 
     // keep above the terrain/seabed only — NOT above sea level. Clamping to y=0
     // used to pin the camera on the surface, so diving or a sinking car left the
     // view locked overhead. Following down to the bay floor lets the shot stay on
     // the player underwater; the seabed clamp still stops it clipping through.
     const floor = this.#map.effectiveGround(cx, cz) + 0.7
-    if (this.#pos.y < floor) this.#pos.y = floor
+    if (this.#chasePos.y < floor) this.#chasePos.y = floor
 
     // When you're swimming BELOW the surface, duck the camera under with you.
     // The `up` offset otherwise keeps the eye above the waterline on a shallow
@@ -122,9 +177,15 @@ export class ChaseCamera {
       // threshold sits well below the surface-swim rest (~0.8 m down) so bobbing
       // at the top keeps the eye above water; only a committed dive ducks it under
       if (anchor.y < waterY - 1.6 && seabed < waterY - 2.5) {
-        this.#pos.y = Math.min(this.#pos.y, waterY - 0.8)
+        this.#chasePos.y = Math.min(this.#chasePos.y, waterY - 0.8)
       }
     }
+
+    // The walk rig's eyes are ~0.78 m above the capsule centre. This endpoint is
+    // fixed to that eye line and deliberately ignores chase zoom; the local walk
+    // embodiment is hidden near the end of the blend to prevent self-clipping.
+    this.#eyePos.set(anchor.x, anchor.y + VIEW.eyeHeight, anchor.z)
+    this.#pos.lerpVectors(this.#chasePos, this.#eyePos, firstPersonBlend)
 
     // critically-damped-ish follow; flying gets a floatier tail, the drone a
     // slightly loose one so swoops read as motion instead of a rigid rig
@@ -140,6 +201,10 @@ export class ChaseCamera {
     // the boost pulls the camera along instead of away (~5m at full stoop).
     if (player.mode === "bird")
       stiff = THREE.MathUtils.clamp(player.speed * 0.2, 7.5, 17)
+    // A chase camera should trail; an FPS eye should not. The desired pose above
+    // already transitions smoothly, so tightening follow here removes run/stair
+    // lag without making the handoff snap.
+    stiff = THREE.MathUtils.lerp(stiff, VIEW.firstPersonFollow, firstPersonBlend)
     // clamp the smoothing step. A tile-upload spike inflates the *next* frame's
     // dt, and an uncapped 1-exp(-dt*stiff) then snaps the camera a large fraction
     // of the way to target in that one frame — the visible "hitch" as chunks
@@ -166,7 +231,19 @@ export class ChaseCamera {
       this.shakeAmount *= Math.exp(-dt * 6)
     }
 
-    this.camera.lookAt(this.#target)
+    // Build complete rotations for both rigs. Orbit preserves the original
+    // look-at framing; FPS uses the same canonical yaw/pitch as lookDir(), so the
+    // rendered centre ray, movement heading and tools all agree. Nothing calls
+    // lookAt after this slerp, leaving one clear owner of the final orientation.
+    this.#lookMatrix.lookAt(this.camera.position, this.#target, this.#up)
+    this.#orbitQuat.setFromRotationMatrix(this.#lookMatrix)
+    this.#firstPersonEuler.set(-this.pitch, this.yaw, 0, "YXZ")
+    this.#firstPersonQuat.setFromEuler(this.#firstPersonEuler)
+    this.camera.quaternion.slerpQuaternions(
+      this.#orbitQuat,
+      this.#firstPersonQuat,
+      firstPersonBlend
+    )
   }
 
   /** True view direction — no shot bias. Drives drone movement so level look = level flight. */

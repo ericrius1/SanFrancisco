@@ -61,10 +61,10 @@ Press `Shift`+`1`–`7` to switch how you get around. Each one has its own feel:
 | `W A S D` | Move / drive / steer (depends on the mode) |
 | `Shift` | Run / boost |
 | `Space` | Jump / drift / ollie / flap (depends on the mode) |
-| `E` | Mount or dismount a nearby ride (boats, forest animals) |
+| `E` | Mount/dismount a nearby ride, or start golf from a glowing tee |
 | `1`–`9` | Teleport to the numbered player next to you |
 | `M` | **Full-city map** — drag/scroll to pan/zoom, click a spot, press Teleport |
-| Left click | Use the current tool: spray paint · bubbles · chimes · **rope** · **grab** (arrow keys cycle the toolbar while the UI is showing) |
+| Left click | Use the current tool; near your golf ball, hold to draw back and release to swing |
 | `B` | Fireworks |
 | `Z` (hold) | Scrub the time of day with the trackpad |
 | `R` | Respawn |
@@ -105,6 +105,10 @@ Nothing here is required — it's a list of things people tend to find fun.
   the bridge, then the city at night with the tower beacons and Bay Bridge
   lights lit.
 - **Rope something ridiculous.** Tie a ragdoll to your car. Grab it, throw it.
+- **Play Presidio Golf.** Open the map (`M`) and teleport to
+  **Presidio Golf · Hole 1**, or stumble onto any glowing tee. Press `E` to
+  begin from that hole. Walk to the ball, aim with the camera, pick clubs with
+  `1`–`9`, then hold and release left click. Press `G` twice to abandon a round.
 - **Bring a friend.** Send them your local URL (or the live link). The minimap
   top-left shows everyone as colored dots; the nearest nine also get numbered
   indicators in the main view — press that number to teleport straight to them.
@@ -139,6 +143,10 @@ Everyone shares one world. No accounts, no login — connect and you're in.
   animation driven by their reported speed, and *no* extra lights (light-count
   changes rebuild every GPU pipeline in this renderer; emissive materials do
   the glowing instead).
+- **Golf is shared.** Friends see each other's balls, swing/rest state, hole
+  results, and running score. The striking player's deterministic ball simulation
+  remains authoritative; the relay caches canonical state for late joins and
+  reconnects.
 - **What is not synced:** fireworks and paint stay local to each client (every
   player has their own copy of the city). Syncing world state across Box3D
   instances is a much bigger project.
@@ -171,6 +179,10 @@ Protocol details live at the top of `server/server.mjs` and `src/net/net.ts`.
   `ModeController` per folder) on capped-speed arcade physics.
 - **`src/world/water.ts`** is the bay shader: depth-based turquoise gradient from a bay-floor
   texture, gentle Gerstner-ish swell, fresnel sky reflection, sun sparkle, and shore foam.
+- **`src/gameplay/golf/`** turns current OSM course geometry and the official
+  Presidio scorecard into 18 playable holes with shared ball/score state. Source
+  provenance and open-data licenses are recorded in
+  `feature-research/presidio-golf/sources.md`.
 - **`server/server.mjs`** + **`src/net/`** are the multiplayer layer: a JSON
   snapshot relay over one WebSocket, remote-avatar interpolation, and the
   minimap/full-map UI (`src/ui/minimap.ts`).

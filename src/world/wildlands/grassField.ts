@@ -42,7 +42,7 @@ export type WildGrass = {
   stats: { count: number };
 };
 
-export function createWildGrass(map: GardenTerrain): WildGrass {
+export function createWildGrass(map: GardenTerrain, excluded?: (x: number, z: number) => boolean): WildGrass {
   const group = new THREE.Group();
   group.name = "wildlands_grass";
   const material = createGrassMaterial(); // SHARED garden SSS material
@@ -64,7 +64,7 @@ export function createWildGrass(map: GardenTerrain): WildGrass {
   // Grass grows exactly where the shared ground-cover gate allows — the same
   // predicate the flower ring uses, so blooms always sit IN the grass (and both
   // skip water, wrong surfaces, the botanical garden's turf, and steep faces).
-  const plantable = (x: number, z: number) => grassyGround(map, x, z);
+  const plantable = (x: number, z: number) => !excluded?.(x, z) && grassyGround(map, x, z);
 
   function resample(fx: number, fz: number) {
     // live tuning: density scales the count, patchiness blends even↔clumpy.

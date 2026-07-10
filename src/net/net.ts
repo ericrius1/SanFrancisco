@@ -26,7 +26,7 @@ import { boardFromSeed, isDefaultBoard, normalizeBoardConfig, type BoardConfig }
  *   ← {t:"fw", id, d}                   relayed to everyone else
  *   → {t:"chat", text}                  ephemeral text chat (no persistence)
  *   ← {t:"chat", id, name, text}        relayed to everyone else
- *   → {t:"golf", k, d?|h?|p?|s?|r?}     golf events (swing/ball snap/rest/score/quit)
+ *   → {t:"golf", k, d?|h?|p?|s?|r?}     golf events + cached state for late joins
  *   ← {t:"golf", id, ...}               relayed to everyone else (owner-simulated ball)
  *
  * Movement is client-authoritative by design: each browser runs its own
@@ -37,7 +37,8 @@ import { boardFromSeed, isDefaultBoard, normalizeBoardConfig, type BoardConfig }
 /** Wire order for modes — index into this array is what goes over the socket. */
 export const NET_MODES: PlayerMode[] = ["walk", "drive", "plane", "boat", "drone", "board", "bird"];
 
-export type RemoteInfo = { id: number; name: string; hue: number; avatar?: AvatarTraits; board?: BoardConfig };
+export type RemoteGolfState = { d: number[]; h: number; p: number; s: number; r: number };
+export type RemoteInfo = { id: number; name: string; hue: number; avatar?: AvatarTraits; board?: BoardConfig; golf?: RemoteGolfState | null };
 
 /** One interpolation sample for a remote player, timestamped in local ms. */
 export type NetSample = {
@@ -191,6 +192,8 @@ export class Net {
   status: NetStatus = "connecting";
   /** Roster of everyone else, kept in lockstep with server join/leave. */
   readonly roster = new Map<number, RemoteInfo>();
+  /** Latest server-cached canonical state for late-loaded golf and reconnects. */
+  readonly golfStates = new Map<number, RemoteGolfState>();
 
   onRoster: () => void = () => {}; // any join/leave/rename (rebuild lists)
   onWelcome: () => void = () => {}; // assigned id + roster hydrated — push saved avatar
@@ -257,6 +260,7 @@ export class Net {
         }
         this.onRoster();
       }
+      this.golfStates.clear();
       if (this.status !== "full") this.#setStatus("offline");
       this.#scheduleRetry();
     };
@@ -289,6 +293,7 @@ export class Net {
         this.name = msg.name as string; // server-sanitized
         for (const p of msg.players as RemoteInfo[]) {
           this.roster.set(p.id, { ...p, avatar: rosterAvatar(p.id, p.avatar), board: rosterBoard(p.id, p.board) });
+          if (p.golf) this.golfStates.set(p.id, p.golf);
         }
         this.#setStatus("online");
         this.onRoster();
@@ -307,6 +312,7 @@ export class Net {
         break;
       }
       case "leave": {
+        this.golfStates.delete(msg.id as number);
         this.roster.delete(msg.id as number);
         this.onLeave(msg.id as number);
         this.onRoster();
@@ -384,7 +390,21 @@ export class Net {
       }
       case "golf": {
         const id = msg.id as number;
-        if (id !== this.selfId && this.roster.has(id) && typeof msg.k === "string") this.onGolf(id, msg);
+        if (id !== this.selfId && this.roster.has(id) && typeof msg.k === "string") {
+          if (
+            msg.k === "state" &&
+            Array.isArray(msg.d) &&
+            typeof msg.h === "number" &&
+            typeof msg.p === "number" &&
+            typeof msg.s === "number" &&
+            typeof msg.r === "number"
+          ) {
+            this.golfStates.set(id, { d: msg.d as number[], h: msg.h, p: msg.p, s: msg.s, r: msg.r });
+          } else if (msg.k === "quit") {
+            this.golfStates.delete(id);
+          }
+          this.onGolf(id, msg);
+        }
         break;
       }
     }
@@ -420,6 +440,14 @@ export class Net {
   sendGolf(msg: Record<string, unknown>) {
     if (this.#ws?.readyState !== WebSocket.OPEN || !this.selfId) return;
     this.#ws.send(JSON.stringify({ t: "golf", ...msg }));
+  }
+
+  /** Replay cached peer state after the deferred golf module becomes available. */
+  replayGolf() {
+    for (const [id, state] of this.golfStates) {
+      if (!this.roster.has(id)) continue;
+      this.onGolf(id, { t: "golf", id, k: "state", ...state });
+    }
   }
 
   /** Broadcast one chat line (server sanitizes + stamps name; no persistence). */

@@ -1,14 +1,14 @@
 // Headless hoverboard-customizer probe. Boots the real app (own vite, WebGPU/
 // metal), rides the board on a known Castro street anchor, then:
-//   1. swaps through all v3 procedural configs via player.setBoardConfig,
+//   1. swaps through all v4 procedural configs via player.setBoardConfig,
 //      verifies one fully-wrapped shell, and captures every side of the artwork,
 //   2. spawns a fake remote rider with a custom board and re-customizes it
 //      (exercises remotes.updateBoard's dispose/rebuild path),
 //   3. proves flow/air/landing animation changes texture uniforms without uploads,
-//   4. opens the garage panel, drives all four named XY pads through Chrome input,
-//      and checks desktop/mobile scroll reachability,
-//   5. re-voices the hum + macro controls and samples vehicleAudio.debugState
-//      to prove the selected style sticks while the voice swells and decays.
+//   4. opens the simplified two-visual/two-audio garage, drives all four named
+//      XY pads through Chrome input, and checks desktop/mobile reachability,
+//   5. compares quiet/gliding and punchy/airy synth macros through the real
+//      vehicleAudio graph, proving the second audio instrument is material.
 //   node tools/board-style-probe.mjs
 // Env: SF_PROBE_URL (own vite; NOT 5179), SF_PROBE_OUT (default .data/board-style)
 import { spawn } from "node:child_process";
@@ -119,7 +119,7 @@ async function measurePanel(c) {
   return ev(c, `(async()=>{
     const panel=document.querySelector('.board-panel');
     if(!panel) return {exists:false};
-    const kinds=['surface','finish','life','sound'];
+    const kinds=['surface','motion','sound','thrust'];
     panel.scrollTop=0;
     await new Promise(r=>requestAnimationFrame(r));
     const pr=panel.getBoundingClientRect();
@@ -158,9 +158,8 @@ const CONFIGS = [
     cfg: {
       shape: "classic", fin: "none", deck: 0, trim: 5, glow: 0,
       surface: "aurora", surfaceScale: 24, surfaceWarp: 68, surfaceSeed: 101,
-      surfaceContrast: 38, surfaceEffect: "clean", surfaceEffectAmount: 0,
       surfaceFlow: 0, surfaceReaction: 0,
-      hum: "hum", pitch: 0, soundTone: 45, soundMotion: 35
+      hum: "hum", pitch: 0, soundTone: 45, soundMotion: 35, soundThrust: 50, soundAir: 12
     }
   },
   {
@@ -168,9 +167,8 @@ const CONFIGS = [
     cfg: {
       shape: "dart", fin: "spoiler", deck: 1, trim: 3, glow: 4,
       surface: "topo", surfaceScale: 70, surfaceWarp: 18, surfaceSeed: 202,
-      surfaceContrast: 76, surfaceEffect: "grain", surfaceEffectAmount: 44,
       surfaceFlow: 35, surfaceReaction: 48,
-      hum: "retro", pitch: 3, soundTone: 80, soundMotion: 72
+      hum: "retro", pitch: 3, soundTone: 80, soundMotion: 72, soundThrust: 82, soundAir: 46
     }
   },
   {
@@ -178,9 +176,8 @@ const CONFIGS = [
     cfg: {
       shape: "manta", fin: "halo", deck: 4, trim: 5, glow: 3,
       surface: "terrazzo", surfaceScale: 48, surfaceWarp: 88, surfaceSeed: 303,
-      surfaceContrast: 62, surfaceEffect: "prism", surfaceEffectAmount: 72,
       surfaceFlow: 58, surfaceReaction: 82,
-      hum: "choir", pitch: 1, soundTone: 32, soundMotion: 64
+      hum: "choir", pitch: 1, soundTone: 32, soundMotion: 64, soundThrust: 32, soundAir: 66
     }
   },
   {
@@ -188,9 +185,8 @@ const CONFIGS = [
     cfg: {
       shape: "saucer", fin: "twin", deck: 5, trim: 6, glow: 2,
       surface: "circuit", surfaceScale: 76, surfaceWarp: 42, surfaceSeed: 404,
-      surfaceContrast: 88, surfaceEffect: "scanlines", surfaceEffectAmount: 66,
       surfaceFlow: 42, surfaceReaction: 64,
-      hum: "crystal", pitch: 4, soundTone: 68, soundMotion: 82
+      hum: "crystal", pitch: 4, soundTone: 68, soundMotion: 82, soundThrust: 70, soundAir: 80
     }
   },
   {
@@ -198,9 +194,8 @@ const CONFIGS = [
     cfg: {
       shape: "twintip", fin: "halo", deck: 6, trim: 1, glow: 7,
       surface: "plasma", surfaceScale: 56, surfaceWarp: 76, surfaceSeed: 505,
-      surfaceContrast: 92, surfaceEffect: "grain", surfaceEffectAmount: 55,
       surfaceFlow: 88, surfaceReaction: 94,
-      hum: "deep", pitch: 2, soundTone: 58, soundMotion: 90
+      hum: "deep", pitch: 2, soundTone: 58, soundMotion: 90, soundThrust: 58, soundAir: 92
     }
   }
 ];
@@ -352,7 +347,7 @@ async function main() {
     results.boards.push({ name, ...r });
     results.shots.push(await shot(c, `board-${name}.png`));
   }
-  assertProbe(results.boards.length === 5 && results.boards.every((b) => b.hasAnim), "not all five v3 presets built");
+  assertProbe(results.boards.length === 5 && results.boards.every((b) => b.hasAnim), "not all five v4 presets built");
 
   // Wrapped-shell proof: one named mesh, one mapped material, projected finite
   // UVs, and normals facing both directions on every axis. Hide the shared rider
@@ -485,31 +480,33 @@ async function main() {
     const panel=document.querySelector('.board-panel');
     const rows=panel?panel.querySelectorAll('.avatar-row').length:0;
     const swatches=panel?panel.querySelectorAll('.avatar-swatch').length:0;
-    const kinds=['surface','finish','life','sound'];
+    const kinds=['surface','motion','sound','thrust'];
     const labs=Object.fromEntries(kinds.map(kind=>{
       const lab=panel?.querySelector('.board-lab-'+kind);
       return [kind,{lab:!!lab,pad:!!lab?.querySelector('.board-xy-pad'),canvas:!!lab?.querySelector('.board-xy-canvas')}];
     }));
+    const rowLabels=panel?[...panel.querySelectorAll('.avatar-row>.avatar-label')].map(x=>x.textContent?.trim().toLowerCase()):[];
+    const finishAbsent=!panel?.querySelector('.board-lab-finish')&&!rowLabels.includes('finish');
     const pads=panel?.querySelectorAll('.board-xy-pad').length??0;
     const canvases=panel?.querySelectorAll('.board-xy-canvas').length??0;
     const rerolls=panel?panel.querySelectorAll('.board-lab-reroll').length:0;
     const open=document.querySelector('.board-ui').classList.contains('open');
     return {
       toggle:true, open, rows, swatches, mode:sf.player.mode,
-      structure:{pads,canvases,rerolls,labs,complete:pads===4&&canvases===4&&rerolls===1&&Object.values(labs).every(v=>v.lab&&v.pad&&v.canvas)},
+      structure:{pads,canvases,rerolls,labs,rowLabels,finishAbsent,complete:pads===4&&canvases===4&&rerolls===1&&finishAbsent&&Object.values(labs).every(v=>v.lab&&v.pad&&v.canvas)},
       rects:{},
       before:{readouts:[...panel.querySelectorAll('.board-lab-readout')].map(x=>x.value)}
     };
   })()`);
-  assertProbe(results.ui.toggle && results.ui.open && results.ui.structure.complete, "four named board labs were not built");
+  assertProbe(results.ui.toggle && results.ui.open && results.ui.structure.complete, "simplified four-lab board UI is incomplete or Finish still exists");
 
   // End coordinates intentionally land in distinct quadrants. Y is inverted by
   // the pad, so the expected committed values are noted beside each endpoint.
   const padDrags = [
     ["surface", [0.18, 0.76], [0.82, 0.18]], // scale 82, warp 82
-    ["finish", [0.74, 0.16], [0.64, 0.27]],  // contrast 64, amount 73
-    ["life", [0.68, 0.68], [0.37, 0.14]],    // flow 37, reaction 86
-    ["sound", [0.76, 0.2], [0.22, 0.72]]    // tone 22, motion 28
+    ["motion", [0.68, 0.68], [0.37, 0.14]],  // flow 37, reaction 86
+    ["sound", [0.76, 0.2], [0.22, 0.72]],    // tone 22, motion 28
+    ["thrust", [0.14, 0.82], [0.74, 0.31]]   // thrust 74, air 69
   ];
   for (const [kind, from, to] of padDrags) {
     const rect = await revealPad(c, kind);
@@ -520,43 +517,45 @@ async function main() {
   await sleep(80);
   results.ui.afterDrag = await ev(c, `(()=>{
     const panel=document.querySelector('.board-panel');
-    const saved=JSON.parse(localStorage.getItem('sf-board-v3')||'null');
+    const saved=JSON.parse(localStorage.getItem('sf-board-v4')||'null');
     const picked=saved?{
       surfaceScale:saved.surfaceScale,surfaceWarp:saved.surfaceWarp,
-      surfaceContrast:saved.surfaceContrast,surfaceEffectAmount:saved.surfaceEffectAmount,
       surfaceFlow:saved.surfaceFlow,surfaceReaction:saved.surfaceReaction,
-      soundTone:saved.soundTone,soundMotion:saved.soundMotion
+      soundTone:saved.soundTone,soundMotion:saved.soundMotion,
+      soundThrust:saved.soundThrust,soundAir:saved.soundAir
     }:null;
     return {
       readouts:[...panel.querySelectorAll('.board-lab-readout')].map(x=>x.value),
       saved:picked,
       committed:!!saved&&saved.surfaceScale===82&&saved.surfaceWarp===82&&
-        saved.surfaceContrast===64&&saved.surfaceEffectAmount===73&&
         saved.surfaceFlow===37&&saved.surfaceReaction===86&&
-        saved.soundTone===22&&saved.soundMotion===28,
+        saved.soundTone===22&&saved.soundMotion===28&&
+        saved.soundThrust===74&&saved.soundAir===69,
       boardStyle:window.__sf.vehicleAudio.debugState.boardStyle
     };
   })()`);
-  assertProbe(results.ui.afterDrag.committed, `v3 pad commit mismatch: ${JSON.stringify(results.ui.afterDrag.saved)}`);
+  assertProbe(results.ui.afterDrag.committed, `v4 pad commit mismatch: ${JSON.stringify(results.ui.afterDrag.saved)}`);
 
   results.ui.reroll = await ev(c, `(()=>{
-    const before=JSON.parse(localStorage.getItem('sf-board-v3')||'null')?.surfaceSeed??null;
+    const before=JSON.parse(localStorage.getItem('sf-board-v4')||'null')?.surfaceSeed??null;
     let button=document.querySelector('.board-lab-reroll');
     if(!button) return {clicked:false,before,after:before,changed:false};
     button.click();
-    let after=JSON.parse(localStorage.getItem('sf-board-v3')||'null')?.surfaceSeed??null;
+    let after=JSON.parse(localStorage.getItem('sf-board-v4')||'null')?.surfaceSeed??null;
     let attempts=1;
     if(after===before){
       button=document.querySelector('.board-lab-reroll');
       button?.click(); attempts++;
-      after=JSON.parse(localStorage.getItem('sf-board-v3')||'null')?.surfaceSeed??null;
+      after=JSON.parse(localStorage.getItem('sf-board-v4')||'null')?.surfaceSeed??null;
     }
     return {clicked:true,before,after,attempts,changed:before!==after};
   })()`);
-  assertProbe(results.ui.reroll.changed, "v3 reroll did not persist a new surface seed");
+  assertProbe(results.ui.reroll.changed, "v4 reroll did not persist a new surface seed");
 
   results.ui.desktop = await measurePanel(c);
   assertProbe(results.ui.desktop.fitsViewport && results.ui.desktop.scrollReady && results.ui.desktop.allPadsReachable && results.ui.desktop.lastReachable, "desktop board panel is clipped or unreachable");
+  await revealPad(c, "thrust");
+  results.shots.push(await shot(c, "board-panel-audio.png"));
   await ev(c, `(()=>{ const p=document.querySelector('.board-panel'); if(p)p.scrollTop=0; return true; })()`);
   results.shots.push(await shot(c, "board-panel-desktop.png"));
 

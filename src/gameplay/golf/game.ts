@@ -7,16 +7,16 @@ import type { Physics } from "../../core/physics";
 import type { HUD } from "../../ui/hud";
 import type { Player } from "../../player/player";
 import type { WorldMap } from "../../world/heightmap";
-import { CLUBS, GolfBall, lieFactor, type Club } from "./ball";
+import { BALL_RADIUS, CLUBS, GolfBall, estimatedCarry, suggestedClubIndex, type Club } from "./ball";
 import { GolfCourse, type GolfSurface } from "./data";
 import { GolfCourseView } from "./course";
-import { GolfUI, standingLabel, totalLabel } from "./ui";
+import { GolfUI, standingLabel, totalLabel, type GolfHoleScore, type GolfPeerScore } from "./ui";
 
 type N = any;
 
 /**
  * The golf round: stumble on a glowing tee box on foot, press E, play real
- * holes. Hold LMB to draw the swing back (the radial meter ping-pongs),
+ * holes. Hold LMB to draw the swing back (the radial meter fills),
  * release to rip it. Walk (or drive!) to wherever the ball rests, hit again,
  * hole out, next tee lights up. Everyone plays their own ball — remote
  * players' balls fly here from owner-simulated snapshots.
@@ -24,7 +24,7 @@ type N = any;
 
 const TEE_ZONE = 8; // "press E" radius around a tee spot
 const SWING_ZONE = 4.2; // how close to the resting ball before you can swing
-const CHARGE_TIME = 1.15; // seconds, 0 → full draw (then ping-pong back)
+const CHARGE_TIME = 1.15; // seconds, 0 → full draw (then holds at full power)
 const SNAP_HZ = 8;
 
 export type GolfNetMsg =
@@ -32,6 +32,7 @@ export type GolfNetMsg =
   | { k: "b"; d: number[] }
   | { k: "rest"; d: number[] }
   | { k: "score"; h: number; p: number; s: number; r: number } // r = round delta ("t" is the wire's type key)
+  | { k: "state"; d: number[]; h: number; p: number; s: number; r: number }
   | { k: "quit" };
 
 type Ctx = {
@@ -63,10 +64,12 @@ export class GolfGame {
   #strokes = 0; // strokes already taken this hole
   #totalDelta = 0;
   #holesDone = 0;
+  #holeScores: GolfHoleScore[] = [];
   #phase: Phase = "toTee";
   #clubIdx = 0;
   #charge = 0;
-  #chargeDir = 1;
+  #swingAnim = -1;
+  #swingFrom = -1;
   #preShot = new THREE.Vector3();
   #pin = new THREE.Vector3();
   #teeSpot = new THREE.Vector3();
@@ -82,7 +85,10 @@ export class GolfGame {
   #camEye = new THREE.Vector3();
   #wantCamYaw: number | null = null;
   #quitArmedAt = -Infinity;
+  #summaryUntil = 0;
+  #roundComplete = false;
   #remote = new Map<number, RemoteBall>();
+  #remoteScores = new Map<number, GolfPeerScore>();
   #tmp = new THREE.Vector3();
   #tmp2 = new THREE.Vector3();
 
@@ -93,7 +99,7 @@ export class GolfGame {
     this.#ball = new GolfBall(course, map, physics);
     this.#ball.onEvent = (e) => this.#onBallEvent(e);
 
-    this.#ballGeo = new THREE.SphereGeometry(0.14, 14, 10);
+    this.#ballGeo = new THREE.SphereGeometry(BALL_RADIUS, 14, 10);
     this.#ballMat = new THREE.MeshStandardNodeMaterial();
     this.#ballMat.colorNode = (color(0xffffff) as N).mul(LIGHT_SCALE * 0.95);
     this.#ballMat.roughnessNode = float(0.4);
@@ -158,9 +164,13 @@ export class GolfGame {
 
   #startRound(holeIdx: number, hud: HUD) {
     this.active = true;
+    this.#roundComplete = false;
+    this.#summaryUntil = 0;
     this.#holeIdx = holeIdx;
     this.#totalDelta = 0;
     this.#holesDone = 0;
+    this.#holeScores.length = 0;
+    this.#teePromptShown = false;
     this.#beginHole(hud, true);
     this.#ui.setVisible(true);
   }
@@ -171,7 +181,7 @@ export class GolfGame {
     this.#course.pin(this.#holeIdx, this.#pin);
     this.#course.teeSpot(this.#holeIdx, this.#teeSpot);
     this.#view.setActiveTee(this.#holeIdx);
-    this.#ui.setHole(h.ref, h.par, h.len);
+    this.#ui.setHole(h.ref, h.par, h.len, h.yardages?.black);
     this.#ui.setScore(0, this.#totalDelta, this.#holesDone);
     if (teeNow) this.#teeUp(hud);
     else {
@@ -184,18 +194,20 @@ export class GolfGame {
 
   #teeUp(hud: HUD) {
     const h = this.#course.holes[this.#holeIdx];
-    this.#ball.place(this.#teeSpot.x, this.#teeSpot.y + 0.02, this.#teeSpot.z);
+    this.#ball.place(this.#teeSpot.x, this.#teeSpot.y + BALL_RADIUS, this.#teeSpot.z);
     this.#ballMesh.visible = true;
     this.#syncBallMesh();
     this.#phase = "toBall";
     // swing the camera to face down the hole line (view dir = -(sin,cos) of yaw)
     this.#wantCamYaw = this.#course.teeAim(this.#holeIdx) + Math.PI;
     this.#autoClub();
+    this.#publishState(true, false);
     hud.message(`Hole ${h.ref} · Par ${h.par} · ${h.len}m — walk to the ball, hold click to swing`, 3.2);
   }
 
   #endRound(hud: HUD, quiet = false) {
     this.active = false;
+    this.#roundComplete = false;
     this.#ballMesh.visible = false;
     this.#beacon.visible = false;
     this.#aimArrow.visible = false;
@@ -211,22 +223,50 @@ export class GolfGame {
     this.onNet({ k: "quit" });
   }
 
+  #finishRound(hud: HUD) {
+    this.active = false;
+    this.#roundComplete = true;
+    this.#summaryUntil = performance.now() + 9000;
+    this.#ballMesh.visible = false;
+    this.#beacon.visible = false;
+    this.#aimArrow.visible = false;
+    this.#view.setActiveTee(-1);
+    this.#ui.setComplete(this.#totalDelta, this.#holeScores);
+    hud.message(`Round complete — ${totalLabel(this.#totalDelta)} through 18 ⛳`, 6);
+  }
+
+  /** Canonical late-join/reconnect snapshot. Event packets still make swings
+   *  immediate; this state packet owns ball visibility plus the shared card. */
+  #publishState(visible: boolean, moving: boolean) {
+    const h = this.#course.holes[this.#holeIdx];
+    const p = this.#ball.pos;
+    this.onNet({
+      k: "state",
+      d: [
+        Math.round(p.x * 100) / 100,
+        Math.round(p.y * 100) / 100,
+        Math.round(p.z * 100) / 100,
+        visible ? 1 : 0,
+        moving ? 1 : 0
+      ],
+      h: h.ref,
+      p: h.par,
+      s: this.#strokes,
+      r: this.#totalDelta
+    });
+  }
+
+  /** Re-assert local golf state after a socket reconnect. */
+  syncNetState() {
+    if (this.active) this.#publishState(this.#ballMesh.visible, this.#ball.moving);
+    else if (this.#roundComplete) this.#publishState(false, false);
+  }
+
   #autoClub() {
     const p = this.#ball.pos;
     const dist = Math.hypot(p.x - this.#pin.x, p.z - this.#pin.z);
     const lie = this.#course.surfaceAt(p.x, p.z).kind;
-    let idx: number;
-    if (lie === "green") idx = CLUBS.length - 1; // putter
-    else if (lie === "bunker") idx = CLUBS.findIndex((c) => c.id === "sand");
-    else if (dist < 30) idx = CLUBS.findIndex((c) => c.id === "wedge");
-    else {
-      idx = 0;
-      for (let i = CLUBS.length - 2; i >= 0; i--) {
-        if (CLUBS[i].carry >= dist * 1.02) idx = i;
-      }
-      if (CLUBS[idx].carry < dist) idx = 0;
-    }
-    this.#clubIdx = Math.max(0, idx);
+    this.#clubIdx = suggestedClubIndex(dist, lie);
     this.#ui.setClubs(CLUBS, this.#clubIdx);
   }
 
@@ -253,6 +293,7 @@ export class GolfGame {
       this.#ball.place(this.#preShot.x, this.#preShot.y, this.#preShot.z);
       this.#syncBallMesh();
       this.onNet({ k: "rest", d: [this.#preShot.x, this.#preShot.y, this.#preShot.z] });
+      this.#publishState(true, false);
       hud.message(`Splash! One-stroke penalty — playing ${this.#strokes + 1} from the drop`, 3);
       this.#phase = "toBall";
       this.#ui.setScore(this.#strokes, this.#totalDelta, this.#holesDone);
@@ -263,11 +304,18 @@ export class GolfGame {
     if (e.kind === "holed") {
       const h = this.#course.holes[this.#holeIdx];
       const label = standingLabel(this.#strokes, h.par);
+      const nextTotal = this.#totalDelta + (this.#strokes - h.par);
       this.onImpact(this.#ball.pos);
-      this.onNet({ k: "score", h: h.ref, p: h.par, s: this.#strokes, r: this.#totalDelta + (this.#strokes - h.par) });
+      this.onNet({ k: "score", h: h.ref, p: h.par, s: this.#strokes, r: nextTotal });
       hud.message(`${label} — holed in ${this.#strokes} on the par ${h.par} 🏌️`, 3.6);
-      this.#totalDelta += this.#strokes - h.par;
+      this.#totalDelta = nextTotal;
       this.#holesDone += 1;
+      this.#holeScores.push({ hole: h.ref, par: h.par, strokes: this.#strokes });
+      this.#publishState(false, false);
+      if (this.#holesDone >= this.#course.holes.length) {
+        this.#finishRound(hud);
+        return;
+      }
       this.#holeIdx = (this.#holeIdx + 1) % this.#course.holes.length;
       this.#beginHole(hud, false);
       return;
@@ -277,6 +325,18 @@ export class GolfGame {
       const p = this.#ball.pos;
       const dist = Math.hypot(p.x - this.#pin.x, p.z - this.#pin.z);
       const surf = e.surface ?? "rough";
+      if (surf === "out") {
+        this.#strokes += 1; // stroke-and-distance penalty
+        this.#ball.place(this.#preShot.x, this.#preShot.y, this.#preShot.z);
+        this.#syncBallMesh();
+        this.onNet({ k: "rest", d: [this.#preShot.x, this.#preShot.y, this.#preShot.z] });
+        this.#publishState(true, false);
+        hud.message(`Out of bounds — one-stroke penalty, playing ${this.#strokes + 1} from the previous lie`, 3.2);
+        this.#phase = "toBall";
+        this.#ui.setScore(this.#strokes, this.#totalDelta, this.#holesDone);
+        this.#autoClub();
+        return;
+      }
       const where =
         surf === "green"
           ? "on the green"
@@ -290,6 +350,7 @@ export class GolfGame {
                   ? "on the cart path"
                   : "in the rough";
       this.onNet({ k: "rest", d: [p.x, p.y, p.z] });
+      this.#publishState(true, false);
       hud.message(`${Math.round(dist)}m to the pin — ${where}`, 2.6);
       this.#phase = "toBall";
       this.#autoClub();
@@ -303,6 +364,18 @@ export class GolfGame {
     this.#updateRemotes(dt);
 
     const { player, input, hud, chase } = ctx;
+    if (this.#swingAnim >= 0) {
+      this.#swingAnim += dt;
+      const t = Math.min(1, this.#swingAnim / 0.46);
+      const ease = 1 - Math.pow(1 - t, 3);
+      player.setGolfPose(true, THREE.MathUtils.lerp(this.#swingFrom, 1, ease));
+      if (this.#swingAnim >= 0.72) {
+        this.#swingAnim = -1;
+        player.setGolfPose(false);
+      }
+    } else {
+      player.setGolfPose(false);
+    }
     const onFoot = player.mode === "walk";
     const px = player.renderPosition.x;
     const pz = player.renderPosition.z;
@@ -310,12 +383,16 @@ export class GolfGame {
     // ---- not playing: nudge at any glowing tee (E itself is handled by
     // main.ts's E-chain via tryStartAtTee, so golf wins over "hop on a ride")
     if (!this.active) {
+      if (this.#summaryUntil > 0 && performance.now() >= this.#summaryUntil) {
+        this.#summaryUntil = 0;
+        this.#ui.setVisible(false);
+      }
       if (onFoot) {
         const near = this.#course.nearestTee(px, pz, TEE_ZONE);
         if (near >= 0) {
           const h = this.#course.holes[near];
           if (!this.#teePromptShown) {
-            hud.message(`E — play golf · Hole ${h.ref} · Par ${h.par} · ${h.len}m`, 2.4);
+            hud.message(`Press E to start · Hole ${h.ref} · Par ${h.par} · ${h.len}m`, 2.4);
             this.#teePromptShown = true;
           }
         } else this.#teePromptShown = false;
@@ -387,6 +464,7 @@ export class GolfGame {
     // aim line follows the camera. chase.yaw is the boom side — the view
     // direction is -(sin,cos)(yaw), i.e. heading yaw+π in ball.strike's terms
     const aimYaw = chase.yaw + Math.PI;
+    player.heading = aimYaw;
     this.#aimArrow.visible = true;
     this.#aimArrow.position.set(ballP.x, ballP.y + 0.02, ballP.z);
     this.#aimArrow.rotation.set(0, chase.yaw, 0);
@@ -397,35 +475,38 @@ export class GolfGame {
       if (input.firing && !input.freeCursor) {
         this.#phase = "charge";
         this.#charge = 0;
-        this.#chargeDir = 1;
       }
     }
 
     if (this.#phase === "charge") {
       if (input.firing) {
-        this.#charge += (dt / CHARGE_TIME) * this.#chargeDir;
-        if (this.#charge >= 1) {
-          this.#charge = 1;
-          this.#chargeDir = -1;
-        } else if (this.#charge <= 0 && this.#chargeDir < 0) {
-          this.#charge = 0;
-          this.#chargeDir = 1;
-        }
+        // Monotonic charge: holding longer can only add force; full draw holds.
+        this.#charge = Math.min(1, this.#charge + dt / CHARGE_TIME);
       } else {
-        // release — swing!
-        this.#swing(aimYaw, Math.max(this.#charge, 0.06), lie);
-        return;
+        // Losing focus/pointer lock cancels instead of firing an accidental shot.
+        const cancelled = input.device === "kb" && (!input.locked || !document.hasFocus());
+        if (cancelled) {
+          this.#phase = "aim";
+          this.#charge = 0;
+        } else {
+          // release — swing!
+          this.#swing(aimYaw, Math.max(this.#charge, 0.06), lie);
+          return;
+        }
       }
     }
 
-    const est = this.club.id === "putter" ? this.#charge * 30 : this.club.carry * this.#charge * lieFactor(lie, this.club);
+    const est = estimatedCarry(this.club, this.#charge, lie);
     this.#ui.setCharge(this.#charge, est, this.#phase === "charge");
+    if (this.#swingAnim < 0) player.setGolfPose(true, -this.#charge);
   }
 
   #swing(aimYaw: number, power: number, lie: GolfSurface) {
     this.#strokes += 1;
     this.#preShot.copy(this.#ball.pos);
     this.#ball.strike(this.club, aimYaw, power, lie, this.#pin);
+    this.#swingFrom = -power;
+    this.#swingAnim = 0;
     this.#phase = "flight";
     this.#camEye.copy(this.#ball.pos).addScaledVector(this.#tmp.set(Math.sin(aimYaw), 0, Math.cos(aimYaw)), -3.5);
     this.#camEye.y = this.#ball.pos.y + 2.2;
@@ -434,6 +515,7 @@ export class GolfGame {
     this.#aimArrow.visible = false;
     const v = this.#ball.vel;
     this.onNet({ k: "swing", d: [this.#ball.pos.x, this.#ball.pos.y, this.#ball.pos.z, v.x, v.y, v.z] });
+    this.#publishState(true, true);
   }
 
   /** Flight camera: true = golf owns the camera this frame (main skips chase). */
@@ -462,8 +544,7 @@ export class GolfGame {
     const now = performance.now();
     if (now < this.#snapAt) return;
     this.#snapAt = now + 1000 / SNAP_HZ;
-    const p = this.#ball.pos;
-    this.onNet({ k: "b", d: [Math.round(p.x * 100) / 100, Math.round(p.y * 100) / 100, Math.round(p.z * 100) / 100] });
+    this.#publishState(true, true);
   }
 
   // ------------------------------------------------------------- remotes
@@ -501,8 +582,27 @@ export class GolfGame {
     r.moving = false;
   }
 
-  remoteScore(name: string, h: number, p: number, s: number, hud: HUD) {
+  remoteScore(id: number, name: string, h: number, p: number, s: number, r: number, hud: HUD) {
+    this.#remoteScores.set(id, { name, hole: h, strokes: s, total: r });
+    this.#syncPeerScores();
     hud.message(`${name}: ${standingLabel(s, p)} on hole ${h} ⛳`, 3);
+  }
+
+  remoteState(id: number, name: string, d: number[], h: number, s: number, r: number) {
+    const ball = this.#remoteBall(id);
+    const visible = d[3] === 1;
+    ball.mesh.visible = visible;
+    if (visible) {
+      ball.target.set(d[0], d[1], d[2]);
+      if (!Number.isFinite(ball.mesh.position.x) || ball.mesh.position.lengthSq() === 0) ball.mesh.position.copy(ball.target);
+      ball.moving = d[4] === 1;
+    }
+    this.#remoteScores.set(id, { name, hole: h, strokes: s, total: r });
+    this.#syncPeerScores();
+  }
+
+  #syncPeerScores() {
+    this.#ui.setPeers([...this.#remoteScores.values()]);
   }
 
   /** One inbound relayed golf message from player `id` (already not-self). */
@@ -519,8 +619,17 @@ export class GolfGame {
         if (d.length === 3) this.remoteRest(id, d);
         break;
       case "score":
-        if (typeof msg.h === "number" && typeof msg.p === "number" && typeof msg.s === "number")
-          this.remoteScore(name, msg.h, msg.p, msg.s, hud);
+        if (typeof msg.h === "number" && typeof msg.p === "number" && typeof msg.s === "number" && typeof msg.r === "number")
+          this.remoteScore(id, name, msg.h, msg.p, msg.s, msg.r, hud);
+        break;
+      case "state":
+        if (
+          d.length === 5 &&
+          typeof msg.h === "number" &&
+          typeof msg.s === "number" &&
+          typeof msg.r === "number"
+        )
+          this.remoteState(id, name, d, msg.h, msg.s, msg.r);
         break;
       case "quit":
         this.removeRemote(id);
@@ -534,6 +643,8 @@ export class GolfGame {
       r.mesh.removeFromParent();
       this.#remote.delete(id);
     }
+    this.#remoteScores.delete(id);
+    this.#syncPeerScores();
   }
 
   #updateRemotes(dt: number) {

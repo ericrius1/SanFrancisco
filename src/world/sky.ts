@@ -4,6 +4,7 @@ import {
   Fn,
   abs,
   cameraPosition,
+  color,
   densityFogFactor,
   dot,
   float,
@@ -12,7 +13,6 @@ import {
   fract,
   hash,
   mix,
-  mx_noise_float,
   normalize,
   positionLocal,
   positionWorld,
@@ -166,25 +166,25 @@ const PALETTE = {
 }
 
 // ---------------------------------------------------------------------------
-// Fog constants. The five expressive controls (height, density, billow, drift,
-// haze) live in WORLD_TUNING; everything below is fixed shape/calibration.
+// Fog constants. The five expressive controls (height, density, billow, motion,
+// haze) live in WORLD_TUNING; everything below is the fixed r185 reference shape
+// plus the two accommodations a streamed open world needs: path accumulation for
+// a playable camera inside the layer, and a very short fade at the cull edge.
 // ---------------------------------------------------------------------------
-// Fog colour: plain white, the reference from three's webgpu_custom_fog example.
-// No phase tint, no sun-glow, no mixing — colour treatment may return later.
-const FOG_COLOR = new THREE.Color(0xd0dee7)
-const FOG_BASE = -30 // bank floor, world-Y m (fills everything below)
-const FOG_SOFTNESS = 45 // top-edge softness the billow noise modulates, m
-const FOG_NOISE_SCALE = 0.0026 // billow feature size, 1/m
-const FOG_NEAR_FADE = 60 // clear bubble around the camera, m
-// marine-field density multipliers: coast/Gate get PEAK× bank density, the
-// sheltered east FLOOR×.
-const FOG_MARINE_FLOOR = 0.3
-const FOG_MARINE_PEAK = 1.05
-// far horizon veil — the unified far-cull. Hand-tuned at DRAW_BASELINE
-// (applyFogParams rescales start/softness with the draw-distance slider).
-const FOG_HORIZON = 1.0
-const FOG_HORIZON_START = 600
-const FOG_HORIZON_SOFTNESS = 550
+// This is the official example's pale near-white in working colour space. It is
+// intentionally passed through `color()` directly: multiplying it by the scene's
+// exposure-rebase constant was the bug that made the old bank charcoal grey.
+const FOG_COLOR = 0xd0dee7
+const FOG_BASE = -20 // official bank floor, in world metres
+const FOG_NOISE_SCALE_A = 0.005 // ~200 m macro billows
+const FOG_NOISE_SCALE_B = 0.01 // ~100 m secondary wisps
+const FOG_NOISE_SPEED = 0.2
+const FOG_NOISE_CENTER = 0.7
+const FOG_TOP_VARIATION = 22 // metres, exactly the r185 reference amplitude
+const FOG_PATH_LENGTH = 80 // metres; Beer-Lambert accumulation inside the bank
+const FOG_EDGE_START = 0.88 // narrow streamed-geometry cull fade
+const FOG_EDGE_END = 0.98
+const FOG_SKY_BLEND_HEIGHT = 0.08 // match the visible horizon over its lowest ~5°
 
 /**
  * A custom analytic sky driving both the backdrop and the image-based lighting.
@@ -230,15 +230,16 @@ export class Sky {
   #uSun = uniform(new THREE.Vector3(0, 1, 0))
   #uNightLift = uniform(SKY_TUNING.values.nightBrightness)
   // the five fog controls (uniforms so the "/" panel edits land live); the rest
-  // of the fog shape is the FOG_* constants above. Density + horizon start/softness
-  // are draw-distance-scaled in applyFogParams, hence uniforms too.
+  // of the fog shape is the FOG_* constants above. Haze and the narrow cull-edge
+  // fade are draw-distance-scaled in applyFogParams.
   #uFogDensity = uniform(WORLD_TUNING.values.fog)
   #uFogTop = uniform(WORLD_TUNING.values.fogTop)
   #uFogBank = uniform(WORLD_TUNING.values.fogBank)
   #uFogNoise = uniform(WORLD_TUNING.values.fogNoise)
   #uFogDrift = uniform(WORLD_TUNING.values.fogDrift)
-  #uFogHorizonStart = uniform(FOG_HORIZON_START)
-  #uFogHorizonSoftness = uniform(FOG_HORIZON_SOFTNESS)
+  #uFogEdgeStart = uniform(WORLD_TUNING.values.radius * FOG_EDGE_START)
+  #uFogEdgeEnd = uniform(WORLD_TUNING.values.radius * FOG_EDGE_END)
+  #uFogBackdrop = uniform(WORLD_TUNING.values.fogEnabled ? 1 : 0)
   #fogNode: N | null = null
 
   // night-only brightness multiplier (the "/" panel's night brightness slider);
@@ -362,9 +363,10 @@ export class Sky {
    * Output counters the reference exposure (SKY_DOME_BOOST) so authored 0..1
    * colours read as authored.
    */
-  #skyRadiance(d: N, opts: { pointFeatures: boolean; soften?: N }): N {
+  #skyRadiance(d: N, opts: { pointFeatures: boolean; soften?: N; fogBackdrop?: boolean }): N {
     const uSun = this.#uSun as N
     const uLift = this.#uNightLift as N
+    const uFogBackdrop = this.#uFogBackdrop as N
     return Fn(() => {
       const mu = dot(d, uSun)
       const el = uSun.y // sun elevation, sin-scaled
@@ -457,7 +459,20 @@ export class Sky {
         return mix(sky, mean, saturate(opts.soften).mul(0.8)).mul(SKY_DOME_BOOST)
       }
 
-      return sky.mul(SKY_DOME_BOOST)
+      const radiance = sky.mul(SKY_DOME_BOOST)
+      if (opts.fogBackdrop) {
+        // The r185 example makes its visible horizon exactly the fog colour. Keep
+        // the authored SF sky everywhere except its lowest few degrees, where a
+        // matching backdrop lets fogged geometry disappear without a colour seam.
+        const horizonFog = smoothstep(
+          float(FOG_SKY_BLEND_HEIGHT),
+          float(0),
+          d.y.max(0)
+        ).mul(uFogBackdrop)
+        return mix(radiance as N, color(FOG_COLOR) as N, horizonFog as N) as N
+      }
+
+      return radiance
     })()
   }
 
@@ -469,149 +484,91 @@ export class Sky {
     })
     // view direction (dome centred on camera)
     mat.colorNode = this.#skyRadiance(normalize(positionLocal) as N, {
-      pointFeatures: true
+      pointFeatures: true,
+      fogBackdrop: true
     })
     return mat
   }
 
-  /**
-   * The marine-layer density field over the city, 0..1 in world XZ. San Francisco's
-   * fog is a Pacific marine layer: it's a wall at Ocean Beach / the Sunset, floods
-   * in through the Golden Gate over the Presidio, and thins out over downtown and
-   * the sheltered east bay. `westness` is a smooth W→E ramp; a Gaussian lobe at the
-   * Gate draws the bank inland; a very-large-scale slow noise advects the whole
-   * front east and west so the edge "rolls" over minutes, not seconds. Pure ALU,
-   * evaluated per fragment at its own world position, so distant western geometry
-   * genuinely reads foggier than distant eastern geometry.
-   */
-  #marineField(): N {
-    const px = (positionWorld as N).x
-    const pz = (positionWorld as N).z
-    // W→E ramp: full fog west of x≈-3200 (Ocean Beach / outer Sunset), clear by
-    // x≈+1700 (downtown / FiDi).
-    const westness = smoothstep(float(1700), float(-3200), px)
-    // Golden Gate inflow lobe (bridge ≈ (-2982,-2798)); reaches the Presidio + the
-    // northern waterfront so that corridor stays socked in even a bit east.
-    const gx = px.sub(-2982).mul(1 / 2700)
-    const gz = pz.sub(-2798).mul(1 / 2400)
-    const gate = gx.mul(gx).add(gz.mul(gz)).negate().exp()
-    const stable = westness.max(gate.mul(0.9))
-    // slow, very-large-scale advection (~3 km features) so the front breathes
-    const roll = mx_noise_float(
-      vec3(px, float(0), pz)
-        .mul(0.00034)
-        .add((vec3(1, 0, 0.35) as N).mul(time.mul((this.#uFogDrift as N).mul(0.5))))
-    )
-      .mul(0.5)
-      .add(0.5)
-    return saturate(stable.mul(mix(float(0.82), float(1.18), roll)).add(roll.sub(0.5).mul(0.22)))
-  }
-
-  // Structure follows three's `webgpu_custom_fog` example (a ground-hugging band
-  // with a noise-wobbled top, unioned with distance haze) but adds the SF marine
-  // field so density varies by region, and keeps a near-fade. Fog colour is plain
-  // white (FOG_COLOR) — no mixing.
+  // Three r185's `webgpu_custom_fog` graph, scaled in metres for San Francisco.
+  // The old regional mask, broad clear bubble, and 600–1150 m horizon blanket are
+  // deliberately gone: they overwhelmed the reference billows and made a flat wall.
   #buildFogNode(): N {
     const dist = cameraPosition.sub(positionWorld).length()
     const base = float(FOG_BASE) as N
     const y = (positionWorld as N).y
 
-    // marine field → per-region density multipliers (coast/Gate thick, east thin)
-    const region = this.#marineField()
-    const bankScale = mix(float(FOG_MARINE_FLOOR), float(FOG_MARINE_PEAK), region)
-    // the distance haze leans coastal (coast fogs sooner) but never below 1× —
-    // downtown must still fog out at long range so distant geometry densifies
-    // everywhere, not just at the coast.
-    const distScale = mix(float(1), float(1.4), region)
-
-    // animated two-octave volumetric noise (three's built-in fog noise) churns the
-    // top of the bank so the marine layer boils and drifts rather than sitting as a
-    // flat lid. The drift knob feeds triNoise3D's time so it's one control.
-    const nScale = float(FOG_NOISE_SCALE) as N
-    const nTime = time.mul((this.#uFogDrift as N).mul(6))
-    const noiseA = triNoise3D((positionWorld as N).mul(nScale), 0.2, nTime)
+    // Exact reference spatial octaves and timing. At the default 1× motion this
+    // evolves at the same restrained pace as the supplied official-example video.
+    const nTime = time.mul(this.#uFogDrift as N)
+    const noiseA = triNoise3D(
+      (positionWorld as N).mul(FOG_NOISE_SCALE_A),
+      FOG_NOISE_SPEED,
+      nTime
+    )
     const noiseB = triNoise3D(
-      (positionWorld as N).mul(nScale.mul(2.1)).add(vec3(11.3, 0, 7.7)),
-      0.2,
-      nTime.mul(1.25)
+      (positionWorld as N).mul(FOG_NOISE_SCALE_B),
+      FOG_NOISE_SPEED,
+      nTime.mul(1.2)
     )
     const fogNoise = noiseA.add(noiseB)
 
-    // ground-hugging band: solid from FOG_BASE up, fading out through a noisy top
-    // (one-sided — real marine layer fills everything below, no bottom cutoff). The
-    // noise raises/lowers the top edge (scaled by edge softness) into drifting wisps.
+    // The official noisy ceiling: a fixed-altitude marine bank whose upper edge
+    // continually reforms into 100–200 m billows while hills and towers rise clear.
     const top = (this.#uFogTop as N)
       .add(
         fogNoise
-          .sub(0.7)
-          .mul(FOG_SOFTNESS * 0.6)
-          .mul(this.#uFogNoise as N) // "billow" slider: 0 = flat lid, 1 = full wisps
+          .sub(FOG_NOISE_CENTER)
+          .mul(FOG_TOP_VARIATION)
+          .mul(this.#uFogNoise as N)
       )
       .max(base.add(1))
-    const groundRamp = top.sub(y).div(top.sub(base)).saturate()
-    // near-fade so the first ~60 m around the camera stay clear — the player is
-    // never whited out in their own valley — then the bank builds in over ~250 m so
-    // you're not walled into dense fog the moment you leave the clear bubble.
-    const nearFade = smoothstep(
-      float(FOG_NEAR_FADE) as N,
-      float(FOG_NEAR_FADE + 250) as N,
-      dist
-    )
-    const bankFog = groundRamp
-      .mul(nearFade)
-      .mul((this.#uFogBank as N).mul(bankScale))
-      .saturate()
+    const groundFogArea = top.sub(y).div(top.sub(base)).saturate().mul(0.98)
 
-    // exp² distance haze (three's densityFogFactor, view-Z based) — the draw-distance
-    // lever. The coast fogs a little sooner (distScale ≥ 1) but downtown is never
-    // thinned below the global base, so distant geometry densifies everywhere.
-    const distHaze = densityFogFactor((this.#uFogDensity as N).mul(distScale))
-    // far horizon veil: a GLOBAL blanket over the last stretch to the tile edge,
-    // region-independent so the whole draw distance melts into the sky evenly (you
-    // can't see downtown from Ocean Beach, and the radius can sit low). This is the
-    // unified far-cull — not a separate grey height fog.
-    const horizonVeil = smoothstep(
-      this.#uFogHorizonStart as N,
-      (this.#uFogHorizonStart as N).add((this.#uFogHorizonSoftness as N).max(1)),
-      dist
-    ).mul(FOG_HORIZON)
+    // Unlike the reference's elevated spectator camera, gameplay can stand inside
+    // the bank. Accumulate extinction continuously along the sight line instead of
+    // carving a spherical clear bubble with a visible outer wall.
+    const pathAccumulation = dist
+      .div(FOG_PATH_LENGTH)
+      .mul(this.#uFogBank as N)
+      .negate()
+      .exp()
+      .oneMinus()
+    const bankFog = groundFogArea.mul(pathAccumulation)
 
-    // union-composite (probabilistic OR) instead of adding: 1 - ∏(1 - layer). Two
-    // moderate layers no longer sum into muddy over-fog in the mid-range, yet where
-    // any layer is near-opaque (the far edge) the union still slams shut.
+    // The reference exp² distance haze supplies the broad atmospheric falloff.
+    const distHaze = densityFogFactor(this.#uFogDensity as N)
+    // Streaming still needs guaranteed opacity before geometry disappears, but
+    // confine it to the final 12–2% of the draw radius instead of half the city.
+    const edgeFade = smoothstep(this.#uFogEdgeStart as N, this.#uFogEdgeEnd as N, dist)
+
+    // Probabilistic union, identical to the reference for bank + haze and extended
+    // by only the narrow cull fade: 1 - (1-bank)(1-haze)(1-edge).
     const clear = bankFog
       .oneMinus()
       .mul(distHaze.oneMinus())
-      .mul(horizonVeil.oneMinus())
-    // clamp near 1.0 (was 0.985) so the far veil genuinely closes — distant emissive
-    // landmarks (bridge lights, Sutro beacons, FiDi) no longer punch through a residual
-    // gap; the last stretch to the tile edge goes fully opaque.
-    const total = clear.oneMinus().clamp(0, 0.997)
+      .mul(edgeFade.oneMinus())
 
-    // fog colour is authored against the reference exposure like everything
-    // unlit — rebased so it renders identically at the 1.0 anchor
-    return tslFog(
-      vec3(FOG_COLOR.r, FOG_COLOR.g, FOG_COLOR.b).mul(EXPOSURE_REBASE) as N,
-      total as N
-    )
+    // Keep the official reference colour in color-managed form. It reads milky
+    // white under ACES and now agrees with the visible horizon instead of resolving
+    // to the old #4d5358 charcoal attractor.
+    return tslFog(color(FOG_COLOR), clear.oneMinus())
   }
 
   applyFogParams() {
     const v = WORLD_TUNING.values
-    // The distance components (exp² haze + horizon veil) are hand-tuned at
-    // DRAW_BASELINE so the veil closes just inside the tile edge. Scale them by
-    // the master draw-distance slider so the visibility edge tracks it: veil
-    // start/softness stretch with k, haze density shrinks by 1/k (exp² fog —
-    // constant d·density keeps the same opacity at the scaled distance). The
-    // ground marine layer (base/top/bank/…) is height-based and stays put.
+    // Preserve the same haze curve as draw distance changes (constant d·density),
+    // while the cull fade remains pinned to the final slice of the streamed radius.
+    // The height bank stays in physical metres.
     const k = v.radius / DRAW_BASELINE
     this.#uFogDensity.value = v.fog / k
     this.#uFogTop.value = v.fogTop
     this.#uFogBank.value = v.fogBank
     this.#uFogNoise.value = v.fogNoise
     this.#uFogDrift.value = v.fogDrift
-    this.#uFogHorizonStart.value = FOG_HORIZON_START * k
-    this.#uFogHorizonSoftness.value = FOG_HORIZON_SOFTNESS * k
+    this.#uFogEdgeStart.value = v.radius * FOG_EDGE_START
+    this.#uFogEdgeEnd.value = v.radius * FOG_EDGE_END
+    this.#uFogBackdrop.value = v.fogEnabled ? 1 : 0
     this.#scene.fog = null
     this.#scene.fogNode = v.fogEnabled ? this.#fogNode : null
   }

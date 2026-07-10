@@ -2,6 +2,10 @@ node_modules/
 /dist/
 .data/
 data/raw/
+!data/raw/
+data/raw/*
+!data/raw/golf-presidio.json
+!data/raw/golf-presidio-rels.json
 data/city/
 .DS_Store
 *.blend1

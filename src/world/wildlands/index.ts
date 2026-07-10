@@ -38,8 +38,15 @@ export type Wildlands = {
   stats: { trees: number; flowers: number; treeChunks: number };
 };
 
-export function createWildlands(map: GardenTerrain): Wildlands {
-  const treeSlots: WildTree[] = collectWildTrees(map);
+export type WildlandsExclusions = {
+  /** Keep animated blades and flowers off authored play surfaces. */
+  groundcover?: (x: number, z: number) => boolean;
+  /** Keep procedural trees off tees/fairways/greens while retaining rough trees. */
+  trees?: (x: number, z: number) => boolean;
+};
+
+export function createWildlands(map: GardenTerrain, exclusions: WildlandsExclusions = {}): Wildlands {
+  const treeSlots: WildTree[] = collectWildTrees(map, exclusions.trees);
 
   const trees = createSeedForest(WILD_TREE_DESIGNS, treeSlots, {
     name: "wildlands_trees",
@@ -55,8 +62,8 @@ export function createWildlands(map: GardenTerrain): Wildlands {
     nearExitRadius: 110,
     nearMax: 46
   });
-  const flowers = createFlowerRing(map); // player-following ring, like the grass
-  const grass = createWildGrass(map); // player-following ring; free off green (grows in city parks too)
+  const flowers = createFlowerRing(map, exclusions.groundcover); // player-following ring, like the grass
+  const grass = createWildGrass(map, exclusions.groundcover); // player-following ring; free off green (grows in city parks too)
 
   return {
     trees,

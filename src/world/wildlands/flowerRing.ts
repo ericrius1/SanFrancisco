@@ -358,7 +358,7 @@ export type FlowerRing = {
   stats: { count: number };
 };
 
-export function createFlowerRing(map: GardenTerrain): FlowerRing {
+export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: number) => boolean): FlowerRing {
   const group = new THREE.Group();
   group.name = "wildlands_flowers";
   const material = flowerMaterial();
@@ -458,7 +458,7 @@ export function createFlowerRing(map: GardenTerrain): FlowerRing {
         if (hash2(gx, gz, 23) > keep) continue;
 
         // expensive ground test only for cells that survived the keep roll
-        if (!grassyGround(map, px, pz)) continue;
+        if (excluded?.(px, pz) || !grassyGround(map, px, pz)) continue;
 
         const region = wildRegionAt(px, pz);
         const pal = (region && REGION_FLOWERS[region.id]) || DEFAULT_PAL;

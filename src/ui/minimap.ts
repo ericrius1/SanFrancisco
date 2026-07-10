@@ -66,7 +66,8 @@ const LANDMARK_LABELS: Record<string, string> = {
   ferry: "Ferry Building",
   alcatraz: "Alcatraz",
   sutro: "Sutro Tower",
-    palaceFineArts: "Palace of Fine Arts"
+  palaceFineArts: "Palace of Fine Arts",
+  coronaHeights: "Corona Heights Park"
 };
 
 type MapLayerDefinition = {
@@ -258,6 +259,20 @@ export class Minimap {
     }));
     this.#bigSpan = this.#bigMaxSpan();
     this.#buildMini();
+  }
+
+  /** Add an asynchronously loaded world feature (golf, future activities) to
+   *  both map views without duplicating its coordinates in static metadata. */
+  addLandmark(x: number, z: number, name: string) {
+    if (!Number.isFinite(x) || !Number.isFinite(z) || !name) return;
+    const existing = this.#landmarks.find((l) => l.name === name);
+    if (existing) {
+      existing.x = x;
+      existing.z = z;
+    } else {
+      this.#landmarks.push({ x, z, name });
+    }
+    this.update();
   }
 
   /* ------------------------------------------------ terrain backdrop */

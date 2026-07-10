@@ -731,7 +731,11 @@ async function main() {
       ferry: { x: 4425, z: -608 },
       alcatraz: { x: 1848, z: -4058 },
       sutro: { x: -782, z: 3846 },
-      palaceFineArts: { x: -388, z: -1426 }
+      palaceFineArts: { x: -388, z: -1426 },
+      // Highest rendered DEM sample inside Corona Heights Park. Keeping the pin
+      // on the shipped terrain maximum makes the generic map teleport land at
+      // the summit without a special altitude path.
+      coronaHeights: { x: 408, z: 2760 }
     },
     spawns: {
       // Telegraph Hill just NE of Coit Tower, facing the bay into the sunset arc

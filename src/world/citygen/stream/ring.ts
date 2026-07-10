@@ -684,7 +684,10 @@ export async function createCityGenRing(
     }
   };
 
-  let insideBuilding = false; // set each frame by gateInterior; drives the indoor camera
+  // Retain the specific building that owns the indoor camera. Entry uses the
+  // tight doorway threshold; exit gets a wider threshold so tiny signed-distance
+  // changes at a door cannot repeatedly reverse a camera transition.
+  let insideBuilding: Entry | null = null;
   // Precise footprint gate. The world AABB is a broad-phase reject only (it's a
   // superset of the real ring — for a lot rotated ~30–45° it overshoots the walls
   // by metres, which is exactly why brushing the sidewalk used to flash an interior
@@ -692,8 +695,9 @@ export async function createCityGenRing(
   // GATE_DILATE of a wall (so a doorway counts), dispose only past GATE_DISPOSE
   // outside (hysteresis → no rebuild flash when you skim a wall).
   const GATE_DILATE = 0.75;   // inside OR within 0.75 m of an edge = "inside" (doorway)
+  const CAMERA_EXIT = 1.4;    // stay in FPS until clearly through the doorway
   const GATE_DISPOSE = 3.0;   // dispose only when clearly outside the footprint
-  const gateInterior = (e: Entry, p: THREE.Vector3) => {
+  const gateInterior = (e: Entry, p: THREE.Vector3, wasCameraInside: boolean) => {
     if (e.state !== "detail") return; // only faded-in detail buildings have interiors
     // broad-phase: outside the (inflated) AABB by a clear margin → definitely out
     if (p.x < e.bb.minx - 4 || p.x > e.bb.maxx + 4 || p.z < e.bb.minz - 4 || p.z > e.bb.maxz + 4) {
@@ -703,7 +707,8 @@ export async function createCityGenRing(
     const inY = p.y > e.base - 1.5 && p.y < e.top + 1.0;
     const d = signedDistToPoly(e.poly, p.x, p.z); // + inside, − outside (metres)
     const inside = inY && d >= -GATE_DILATE;
-    if (inside) insideBuilding = true;
+    const cameraInside = inY && d >= -(wasCameraInside ? CAMERA_EXIT : GATE_DILATE);
+    if (cameraInside) insideBuilding = e;
     if (inside && !e.interior && e.bodies.length) {
       const it = buildInterior(e as BuildingSpec, materials);
       ctx.scene.add(it.group);
@@ -794,8 +799,9 @@ export async function createCityGenRing(
       lastPlayer.copy(playerPos); // read by queued coll jobs (anti-wedge) + stale-build check
       if (!warmupStarted) startWarmup(playerPos); // one-shot pipeline warmup rig
       // per-frame: interior gate + detail crossfade + chunk merging
-      insideBuilding = false;
-      for (const cell of loaded.values()) for (const e of cell.entries) gateInterior(e, playerPos);
+      const previousInside = insideBuilding;
+      insideBuilding = null;
+      for (const cell of loaded.values()) for (const e of cell.entries) gateInterior(e, playerPos, e === previousInside);
       advanceFades(dt);
       advanceDoors(dt);
       if (building.length) {
@@ -926,7 +932,7 @@ export async function createCityGenRing(
       for (const cell of loaded.values()) { buildings += cell.entries.length; for (const e of cell.entries) { if (e.detail) detail++; if (e.interior) interiors++; } }
       return { total, cells: loaded.size, buildings, detail, interiors };
     },
-    isPlayerInside() { return insideBuilding; },
+    isPlayerInside() { return insideBuilding !== null; },
     debugBuildings() {
       const out: { cx: number; cz: number; base: number; top: number; interior: boolean; bb: { minx: number; maxx: number; minz: number; maxz: number } }[] = [];
       for (const cell of loaded.values()) for (const e of cell.entries) if (e.detail) out.push({ cx: e.cx, cz: e.cz, base: e.base, top: e.top, interior: !!e.interior, bb: { ...e.bb } });

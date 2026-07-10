@@ -36,14 +36,24 @@ const approach = (cur: number, target: number, dt: number, rate: number) =>
 const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
 
 /**
- * What the hoverboard customizer can voice. The two 0..100 macros are neutral
- * at 50 so older authored stacks keep their original character by default.
+ * What the hoverboard customizer can voice. Tone/motion shape the oscillator
+ * stack; thrust/air shape how that voice responds to riding. Thrust is neutral
+ * at 50 so the authored stacks preserve their original speed response.
  */
 export type BoardVoiceStyle = {
   hum: BoardHum;
   pitch: number;
   soundTone: number;
   soundMotion: number;
+  soundThrust: number;
+  soundAir: number;
+};
+
+type BoardRuntimeState = {
+  response: number;
+  detuneCents: number;
+  cutoffHz: number;
+  airGain: number;
 };
 
 // Each hum character is a 6-slot partial stack (type, freq multiple of the
@@ -133,6 +143,9 @@ const BOARD_STACKS: Record<BoardHum, BoardStack> = {
 };
 
 const BOARD_PREVIEW_DUR = 1.9; // seconds of swell when auditioning in the customizer
+// Reapplied styles during a drag hold the audition near its crest instead of
+// restarting its attack on every pointermove.
+const BOARD_PREVIEW_HOLD = 0.68;
 
 export class VehicleAudio {
   #ctx: AudioContext | null = null;
@@ -140,7 +153,15 @@ export class VehicleAudio {
   #noise!: AudioBuffer;
   #voices: Voice[] = [];
   #masterLevel = 0;
-  #boardStyle: BoardVoiceStyle = { hum: "hum", pitch: 0, soundTone: 50, soundMotion: 50 };
+  #boardStyle: BoardVoiceStyle = {
+    hum: "hum",
+    pitch: 0,
+    soundTone: 50,
+    soundMotion: 50,
+    soundThrust: 50,
+    soundAir: 30
+  };
+  #boardRuntime: BoardRuntimeState = { response: 0, detuneCents: 0, cutoffHz: 300, airGain: 0 };
   #applyBoardStyle: (() => void) | null = null; // bound once the voice exists
   #previewT: number | null = null; // seconds into a customizer audition swell
 
@@ -165,6 +186,7 @@ export class VehicleAudio {
       ctx: this.#ctx?.state ?? "none",
       master: this.#masterLevel,
       boardStyle: { ...this.#boardStyle },
+      boardRuntime: { ...this.#boardRuntime },
       voices: this.#voices.map((v) => ({ mode: v.mode, level: v.level }))
     };
   }
@@ -174,17 +196,20 @@ export class VehicleAudio {
    * applied immediately if the audio graph exists, or on first unlock.
    */
   setBoardStyle(style: BoardVoiceStyle) {
-    const macro = (value: number) =>
-      Number.isFinite(value) ? Math.round(clamp01(value / 100) * 100) : 50;
+    const macro = (value: number, fallback = 50) =>
+      Number.isFinite(value) ? Math.round(clamp01(value / 100) * 100) : fallback;
     this.#boardStyle = {
       hum: BOARD_STACKS[style.hum] ? style.hum : "hum",
       pitch: Number.isFinite(style.pitch)
         ? Math.min(BOARD_PITCHES.length - 1, Math.max(0, Math.round(style.pitch)))
         : 0,
       soundTone: macro(style.soundTone),
-      soundMotion: macro(style.soundMotion)
+      soundMotion: macro(style.soundMotion),
+      soundThrust: macro(style.soundThrust),
+      soundAir: macro(style.soundAir, 30)
     };
     this.#applyBoardStyle?.();
+    if (this.#previewT !== null) this.#previewT = Math.min(this.#previewT, BOARD_PREVIEW_HOLD);
   }
 
   /**
@@ -343,6 +368,11 @@ export class VehicleAudio {
     filter.Q.value = 0.9;
     filter.connect(out);
 
+    // A single gentle air stream shares the board voice output. It stays in the
+    // graph for the life of the AudioContext; the air macro only moves its
+    // smoothed band-pass and gain, so live edits never rebuild or click.
+    const air = this.#noiseInto(ctx, "bandpass", 620, 0.55, 0, out);
+
     // six generic slots; #applyBoardStyle re-voices them from BOARD_STACKS
     const slots = Array.from({ length: 6 }, () => {
       const o = ctx.createOscillator();
@@ -364,7 +394,16 @@ export class VehicleAudio {
     filterLfo.start();
     for (const s of slots) this.#lfo(ctx, 0.23, 4, s.o.detune); // faint organic pitch drift
 
-    const state = { detune: 0, cutoff: 300, baseCutoff: 300, base: BOARD_STACKS.hum };
+    const state = {
+      detune: 0,
+      cutoff: 300,
+      baseCutoff: 300,
+      airGain: 0,
+      airHz: 620,
+      thrust: 0.5,
+      airMix: 0.3,
+      base: BOARD_STACKS.hum
+    };
     const smooth = (param: AudioParam, value: number, timeConstant = 0.035) => {
       const now = ctx.currentTime;
       param.cancelScheduledValues(now);
@@ -375,6 +414,8 @@ export class VehicleAudio {
       const root = (BOARD_PITCHES[this.#boardStyle.pitch] ?? BOARD_PITCHES[0]).hz;
       const tone = this.#boardStyle.soundTone / 100;
       const motion = this.#boardStyle.soundMotion / 100;
+      state.thrust = this.#boardStyle.soundThrust / 100;
+      state.airMix = this.#boardStyle.soundAir / 100;
       // Neutral at 50: tone spans roughly 0.6×–1.7× cutoff and
       // 0.45×–1.55× upper-partial energy without changing wave types.
       const cutoffScale = Math.pow(2, (tone - 0.5) * 1.5);
@@ -402,12 +443,41 @@ export class VehicleAudio {
       level: 0,
       drive: (sig, dt) => {
         const norm = clamp01(sig.speed / 40);
-        // +4 semitones flat out, +1 more on boost — audible lift, never a whine
-        state.detune = approach(state.detune, norm * 400 + (sig.boost ? 110 : 0), dt, 4);
-        state.cutoff = approach(state.cutoff, (sig.grounded ? state.baseCutoff : state.baseCutoff * 0.75) + 480 * norm, dt, 7);
+        const response = Math.pow(norm, 1.45 - state.thrust * 0.9);
+        // At thrust=.5 these reduce exactly to the original 400-cent pitch
+        // rise, 110-cent boost kick and 480 Hz speed-driven filter lift.
+        const targetDetune = response * (180 + 440 * state.thrust) + (sig.boost ? 50 + 120 * state.thrust : 0);
+        const targetCutoff =
+          (sig.grounded ? state.baseCutoff : state.baseCutoff * 0.75) + response * (180 + 600 * state.thrust);
+        state.detune = approach(state.detune, targetDetune, dt, 4);
+        state.cutoff = approach(state.cutoff, targetCutoff, dt, 7);
+
+        const airTarget = Math.min(
+          0.07,
+          (0.002 + 0.055 * Math.pow(state.airMix, 1.6)) *
+            (0.22 + 0.78 * response) *
+            (sig.grounded ? 1 : 1.22) *
+            (sig.boost ? 1.15 : 1)
+        );
+        const airHzTarget = 420 + 650 * state.airMix + 450 * response;
+        state.airGain = approach(state.airGain, airTarget, dt, 8);
+        state.airHz = approach(state.airHz, airHzTarget, dt, 8);
+
         for (const s of slots) s.o.detune.value = state.detune;
         filter.frequency.value = state.cutoff;
-        return (sig.grounded ? 0.2 + 0.4 * norm : 0.13 + 0.24 * norm) * state.base.level;
+        air.gain.gain.value = state.airGain;
+        air.filter.frequency.value = state.airHz;
+        this.#boardRuntime.response = response;
+        this.#boardRuntime.detuneCents = state.detune;
+        this.#boardRuntime.cutoffHz = state.cutoff;
+        this.#boardRuntime.airGain = state.airGain;
+
+        // Neutral thrust=.5 also preserves the former .4 grounded and .24
+        // airborne speed-level slopes; the voice's outer gain smooths the result.
+        const speedLevel = sig.grounded
+          ? 0.25 + 0.3 * state.thrust
+          : 0.15 + 0.18 * state.thrust;
+        return ((sig.grounded ? 0.2 : 0.13) + response * speedLevel) * state.base.level;
       }
     };
   }

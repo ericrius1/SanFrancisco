@@ -57,12 +57,10 @@ export const RENDER_TUNING = tunables("render", {
 })
 
 /**
- * The distance-fog bank below (haze + horizon veil) is hand-tuned at THIS draw
- * distance: the veil closes to full opacity by ~1150 m so a 1200 m tile radius
- * culls with zero pop — the fog IS the far cull. Sky.applyFogParams scales the
- * distance components (haze density, horizon start/softness) by
- * radius / DRAW_BASELINE, so the whole visibility edge tracks the one
- * draw-distance slider; the fog folder's values stay calibrated to 1200.
+ * The official-example distance haze is calibrated at this draw distance.
+ * Sky.applyFogParams scales its density by radius / DRAW_BASELINE and keeps a
+ * narrow white edge fade over only the final 12% of the streamed radius, so
+ * geometry culls invisibly without turning the whole middle distance into a wall.
  */
 export const DRAW_BASELINE = 1200
 
@@ -79,35 +77,32 @@ export const WORLD_TUNING = tunables("world", {
     label: "draw distance (m)"
   },
   fogEnabled: { v: true, label: "custom fog" },
-  // The five fog controls. Fog colour is plain white (three's webgpu_custom_fog
-  // reference); everything else — bank base height, edge softness, billow scale,
-  // near fade, marine-field shape, horizon-veil calibration — is a fixed constant
-  // in sky.ts (see FOG_* there).
+  // The five fog controls. Shape, colour, octave scales, path accumulation and
+  // cull-edge calibration live together in sky.ts beside the r185 reference graph.
   //
-  // height: top of the ground-hugging marine layer, world-Y metres. Kept below the
-  // elevated Golden Gate deck (y≈67) so the bank doesn't bury it.
-  fogTop: { v: 130, min: -20, max: 420, step: 1, label: "height (m)" },
-  // density: opacity of the pooled bank. ~1 reads as a translucent veil — from the
-  // GG deck you can still see the bay below rather than a grey wall.
-  fogBank: { v: 1.05, min: 0, max: 3, step: 0.05, label: "density" },
-  // billow: 0 = flat lid, 1 = full churning wisps along the bank's top edge.
-  fogNoise: { v: 0.72, min: 0, max: 1, step: 0.02, label: "billow" },
-  // drift: how fast the whole layer rolls and boils (feeds the noise + the
-  // marine-front advection).
+  // Top of the marine layer in world metres. The 105 m default socks in low
+  // districts while Twin Peaks, Sutro and the bridge towers emerge above it.
+  fogTop: { v: 105, min: -20, max: 320, step: 1, label: "height (m)" },
+  // Beer-Lambert path density inside the layer; 1 is the authored reference.
+  fogBank: { v: 1, min: 0, max: 2, step: 0.02, label: "density" },
+  // 1 = the official 22 m noisy-ceiling variation; 0 = a flat bank.
+  fogNoise: { v: 1, min: 0, max: 1.5, step: 0.02, label: "billow" },
+  // 1 = official r185 motion; lower values make the world-anchored billows evolve
+  // more slowly without turning them into a coherently scrolling texture.
   fogDrift: {
-    v: 0.03,
+    v: 1,
     min: 0,
-    max: 0.12,
-    step: 0.001,
-    format: (v: number) => v.toFixed(3),
-    label: "drift"
+    max: 2,
+    step: 0.01,
+    format: (v: number) => v.toFixed(2),
+    label: "motion"
   },
-  // haze: exp² distance fog that slams shut far out so the draw edge melts into
-  // the sky. This is the draw-distance lever.
+  // The official exp² distance haze; the separate fixed edge fade hides only the
+  // final streamed slice and is intentionally not an artistic control.
   fog: {
-    v: 0.0011,
+    v: 0.0012,
     min: 0,
-    max: 0.002,
+    max: 0.0025,
     step: 0.00001,
     format: (v: number) => v.toFixed(5),
     label: "haze"

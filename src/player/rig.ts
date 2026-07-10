@@ -71,7 +71,10 @@ export type RigAvatarState = {
 const DEFAULT_RIG_AVATAR = avatarFromSeed("local-default");
 
 const STATIC_MAT = {
-  sole: new THREE.MeshLambertMaterial({ color: 0x1b1d22 })
+  sole: new THREE.MeshLambertMaterial({ color: 0x1b1d22 }),
+  clubGrip: new THREE.MeshLambertMaterial({ color: 0x263137 }),
+  clubShaft: new THREE.MeshLambertMaterial({ color: 0xa9b8be }),
+  clubHead: new THREE.MeshLambertMaterial({ color: 0x5c6d73 })
 };
 
 // tiny geometry cache — three rigs share every box size they have in common
@@ -331,6 +334,29 @@ export function buildSteeringWheel(): { group: THREE.Group; spin: THREE.Group } 
   return { group, spin };
 }
 
+/** Lightweight club prop pivoted at the golfer's joined hands. The Player owns
+ *  one persistent instance so a swing never creates render objects mid-frame. */
+export function buildGolfClub(): THREE.Group {
+  const group = new THREE.Group();
+  group.name = "golf-club";
+  group.position.set(0, -0.03, -0.22);
+  group.rotation.order = "YXZ";
+
+  const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.021, 0.22, 7), STATIC_MAT.clubGrip);
+  grip.position.y = -0.1;
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.017, 0.76, 7), STATIC_MAT.clubShaft);
+  shaft.position.y = -0.59;
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.075, 0.095), STATIC_MAT.clubHead);
+  head.position.set(0.075, -0.98, 0);
+  head.rotation.z = -0.12;
+  for (const mesh of [grip, shaft, head]) {
+    mesh.castShadow = true;
+    group.add(mesh);
+  }
+  group.visible = false;
+  return group;
+}
+
 /* ------------------------------------------------------------------- poses */
 
 function set(g: THREE.Group, x: number, y: number, z: number) {
@@ -370,6 +396,27 @@ export function poseWalk(r: Rig, t: number, run: number) {
   set(r.armR, sL * swing * 0.8, 0, -0.06);
   set(r.foreL, 0.25 + run * 0.55 + Math.max(0, sR) * 0.2, 0, 0);
   set(r.foreR, 0.25 + run * 0.55 + Math.max(0, sL) * 0.2, 0, 0);
+}
+
+/** Golf address/swing pose. `swing` runs -1 (full backswing), through 0
+ *  (impact/address), to +1 (follow-through). */
+export function poseGolf(r: Rig, swing: number) {
+  const s = THREE.MathUtils.clamp(swing, -1, 1);
+  const turn = s * 0.5;
+  r.hips.position.y = -0.055;
+  set(r.hips, 0, turn * 0.28, 0);
+  set(r.torso, 0.22, turn, -s * 0.08);
+  set(r.head, -0.13, -turn * 0.42, s * 0.035); // eyes stay down through impact
+  set(r.legL, 0.15, 0, 0.12);
+  set(r.legR, 0.12, 0, -0.12);
+  set(r.shinL, -0.22, 0, 0);
+  set(r.shinR, -0.18, 0, 0);
+  // Joined hands travel together across the chest; the independent club prop
+  // uses the same scalar for its larger, readable arc.
+  set(r.armL, 0.78 - s * 0.18, -0.22 + s * 0.28, 0.42 + s * 0.2);
+  set(r.armR, 0.83 + s * 0.12, 0.2 + s * 0.25, -0.38 + s * 0.18);
+  set(r.foreL, 0.58 - s * 0.16, 0, -0.08);
+  set(r.foreR, 0.55 + s * 0.12, 0, 0.08);
 }
 
 /** Airborne (jump/fall): asymmetric tuck with arms flung out. */

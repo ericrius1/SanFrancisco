@@ -75,7 +75,7 @@ export class Input {
   #padAxes = new Map<string, number>();
   #padFireHeld = false;
   #triggerRoute: "plane" | "bird" | "drone" | null = null; // plane: ↑/↓ throttle; bird/drone: Q/U vertical or twirl
-  #invertLookY = false; // walk + fly/drone/bird + boat: right-stick pitch opposite mouse convention
+  #invertLookY = false; // flight/boat modes keep their authored inverted-stick convention
 
   constructor(el: HTMLElement) {
     this.#el = el;
@@ -189,12 +189,11 @@ export class Input {
     this.onDeviceChange(device);
   }
 
-  /** Per-mode pad routing: fly → ↑/↓ throttle, bird → Q/E twirl, drone → Q/U vertical; walk + flying + boat modes invert right-stick pitch. */
+  /** Per-mode pad routing: fly → ↑/↓ throttle, bird → Q/E twirl, drone → Q/U vertical; vehicle/flight modes retain their authored right-stick pitch. */
   setMode(mode: PlayerMode) {
     this.#triggerRoute =
       mode === "plane" ? "plane" : mode === "bird" ? "bird" : mode === "drone" ? "drone" : null;
     this.#invertLookY =
-      mode === "walk" ||
       mode === "plane" ||
       mode === "drone" ||
       mode === "bird" ||

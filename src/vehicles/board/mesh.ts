@@ -164,7 +164,7 @@ function projectShellUV(geometry: THREE.BufferGeometry) {
 }
 
 function surfacePaintKey(config: BoardConfig) {
-  return `${config.deck}|${config.trim}|${config.surface}|${config.surfaceScale}|${config.surfaceWarp}|${config.surfaceSeed}|${config.surfaceContrast}|${config.surfaceEffect}|${config.surfaceEffectAmount}`;
+  return `${config.deck}|${config.trim}|${config.glow}|${config.surface}|${config.surfaceScale}|${config.surfaceWarp}|${config.surfaceSeed}`;
 }
 
 type BoardSurfaceState = {

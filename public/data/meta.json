@@ -145,6 +145,10 @@
     "palaceFineArts": {
       "x": -388,
       "z": -1426
+    },
+    "coronaHeights": {
+      "x": 408,
+      "z": 2760
     }
   },
   "spawns": {

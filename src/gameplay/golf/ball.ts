@@ -42,7 +42,8 @@ export const CLUBS: Club[] = [
   { id: "iron9", label: "9 Iron", short: "9i", speed: 34.5, loft: 0.7, carry: 105, bite: 0.55 },
   { id: "wedge", label: "P Wedge", short: "PW", speed: 29.1, loft: 0.91, carry: 75, bite: 0.7 },
   { id: "sand", label: "S Wedge", short: "SW", speed: 25.5, loft: 1.01, carry: 55, bite: 0.8 },
-  { id: "putter", label: "Putter", short: "PT", speed: 13.5, loft: 0, carry: 40, bite: 0 }
+  // Rolling distance on a flat green is v²/(2µ): 6.63 m/s at µ=.55 ≈ 40 m.
+  { id: "putter", label: "Putter", short: "PT", speed: 6.63, loft: 0, carry: 40, bite: 0 }
 ];
 
 /** Strike quality multiplier when swinging OFF the short stuff. */
@@ -50,6 +51,26 @@ export function lieFactor(kind: GolfSurface, club: Club): number {
   if (kind === "bunker") return club.id === "sand" ? 0.85 : 0.4;
   if (kind === "rough" || kind === "out") return club.id === "sand" || club.id === "wedge" ? 0.85 : 0.65;
   return 1;
+}
+
+/** Flat-ground distance estimate for the radial HUD. Calibrated lofted shots
+ *  follow power^~1.75 under this integrator's quadratic drag; a rolling putt
+ *  follows the exact v² relationship. */
+export function estimatedCarry(club: Club, power: number, lie: GolfSurface): number {
+  const effectivePower = THREE.MathUtils.clamp(power * lieFactor(lie, club), 0, 1);
+  return club.carry * Math.pow(effectivePower, club.id === "putter" ? 2 : 1.75);
+}
+
+/** Auto-caddie: specialized short-game clubs first, otherwise the shortest
+ *  normal club whose advertised carry clears the pin by a small safety margin. */
+export function suggestedClubIndex(distance: number, lie: GolfSurface): number {
+  if (lie === "green") return CLUBS.length - 1;
+  if (lie === "bunker") return CLUBS.findIndex((c) => c.id === "sand");
+  if (distance < 30) return CLUBS.findIndex((c) => c.id === "wedge");
+  for (let i = CLUBS.length - 3; i >= 0; i--) {
+    if (CLUBS[i].carry >= distance * 1.02) return i;
+  }
+  return 0;
 }
 
 type SurfaceParams = { restitution: number; grip: number; mu: number };

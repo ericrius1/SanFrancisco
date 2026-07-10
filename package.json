@@ -16,6 +16,7 @@
     "server": "node server/server.mjs",
     "start": "node server/server.mjs",
     "audit:traffic": "node --experimental-strip-types tools/audit-traffic-system.mjs",
+    "test:golf": "node --experimental-strip-types tools/golf-logic-probe.mjs",
     "fetch:osm": "node tools/fetch-osm.mjs",
     "fetch:terrain": "node tools/fetch-terrain.mjs",
     "prepare:city": "node tools/prepare-city.mjs",

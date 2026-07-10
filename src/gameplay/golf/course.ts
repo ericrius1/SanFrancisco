@@ -25,15 +25,16 @@ type N = any;
 
 /**
  * Presidio Golf Course, rendered: terrain-draped overlay meshes for fairways /
- * greens / tees / bunkers / cart paths (the generic park lawn underneath stays
- * — it plays the rough), 18 pins with waving flags and cups, and an aurora
+ * greens / tees / bunkers / cart paths over a dedicated full-footprint rough
+ * sheet, 18 pins with waving flags and cups, and an aurora
  * shimmer over every tee box so the course reads as "playable" from a passing
  * car. One merged mesh per surface kind + 3 instanced pin parts + 2 instanced
- * glow parts — 10 draw calls for the whole course.
+ * glow parts — 11 draw calls for the whole course.
  */
 
-const SURF_STYLE: Record<Exclude<GolfSurface, "rough" | "out">, { maxEdge: number; offset: number }> = {
-  fairway: { maxEdge: 7, offset: -1 },
+const SURF_STYLE: Record<Exclude<GolfSurface, "out">, { maxEdge: number; offset: number }> = {
+  rough: { maxEdge: 7, offset: 0 },
+  fairway: { maxEdge: 5, offset: -1 },
   path: { maxEdge: 4, offset: -2 },
   bunker: { maxEdge: 3, offset: -3 },
   green: { maxEdge: 2.5, offset: -4 },
@@ -207,6 +208,26 @@ function grassMaterial(a: number, b: number, opts: { rings?: boolean; stripes?: 
   return mat;
 }
 
+/** Dense-looking course rough without blade geometry: broad colour mottling,
+ *  short-fibre grain and a stronger normal make it read thicker/darker than the
+ *  mown fairway while remaining a smooth, reliable rolling surface. */
+function roughMaterial(offset: number) {
+  const mat = new THREE.MeshStandardNodeMaterial();
+  const p = positionWorld;
+  const broad = mx_fractal_noise_float(p.mul(0.055), 4).mul(0.5).add(0.5);
+  const fibre = mx_noise_float(vec3((p.x as N).mul(1.7), (p.y as N).mul(0.4), (p.z as N).mul(2.3)))
+    .mul(0.5)
+    .add(0.5);
+  mat.colorNode = mix(color(0x3e6638), color(0x66834a), broad).mul(fibre.mul(0.13).add(0.9));
+  mat.roughnessNode = float(1);
+  mat.normalNode = bumpNormal(fibre.mul(0.014));
+  mat.envMapIntensity = 0.22;
+  mat.polygonOffset = true;
+  mat.polygonOffsetFactor = offset;
+  mat.polygonOffsetUnits = offset;
+  return mat;
+}
+
 function sandMaterial(offset: number) {
   const mat = new THREE.MeshStandardNodeMaterial();
   const p = positionWorld;
@@ -250,8 +271,9 @@ export class GolfCourseView {
     this.#activeTee = uniform(-1);
     this.#flagTime = uniform(0);
 
-    const add = (geo: THREE.BufferGeometry, mat: THREE.Material) => {
+    const add = (name: string, geo: THREE.BufferGeometry, mat: THREE.Material) => {
       const mesh = new THREE.Mesh(geo, mat);
+      mesh.name = `golf-${name}`;
       mesh.receiveShadow = true;
       mesh.matrixAutoUpdate = false;
       this.group.add(mesh);
@@ -260,16 +282,24 @@ export class GolfCourseView {
 
     const d = course.data;
     add(
-      buildSurfaceGeometry(d.fairways.concat(d.rough), SURF_STYLE.fairway.maxEdge, course, false),
+      "rough",
+      buildSurfaceGeometry([{ o: d.boundary, i: [] }], SURF_STYLE.rough.maxEdge, course, false),
+      roughMaterial(SURF_STYLE.rough.offset)
+    );
+    add(
+      "fairways",
+      buildSurfaceGeometry(d.fairways, SURF_STYLE.fairway.maxEdge, course, false),
       grassMaterial(0x74a458, 0x93ba64, { stripes: true, offset: SURF_STYLE.fairway.offset })
     );
-    add(buildRibbonGeometry(d.paths, 2.2, course), pathMaterial(SURF_STYLE.path.offset));
-    add(buildSurfaceGeometry(d.bunkers, SURF_STYLE.bunker.maxEdge, course, false), sandMaterial(SURF_STYLE.bunker.offset));
+    add("paths", buildRibbonGeometry(d.paths, 2.2, course), pathMaterial(SURF_STYLE.path.offset));
+    add("bunkers", buildSurfaceGeometry(d.bunkers, SURF_STYLE.bunker.maxEdge, course, false), sandMaterial(SURF_STYLE.bunker.offset));
     add(
+      "greens",
       buildSurfaceGeometry(d.greens, SURF_STYLE.green.maxEdge, course, true),
       grassMaterial(0x8cbd66, 0xa8d174, { rings: true, offset: SURF_STYLE.green.offset })
     );
     add(
+      "tees",
       buildSurfaceGeometry(d.tees, SURF_STYLE.tee.maxEdge, course, false),
       grassMaterial(0x7cae5c, 0x92c268, { offset: SURF_STYLE.tee.offset })
     );
@@ -351,7 +381,9 @@ export class GolfCourseView {
     const t = this.#time as unknown as N;
     const active = this.#activeTee as unknown as N;
     // active hole's tee burns brighter; -1 = free-roam, everything simmers
-    const boost = smoothstep(float(0.5), float(0.45), seed.sub(active).abs()).mul(1.1).add(0.75);
+    // WGSL smoothstep requires edge0 < edge1; invert a legal step rather than
+    // relying on the undefined reversed-edge form.
+    const boost = smoothstep(float(0.45), float(0.5), seed.sub(active).abs()).oneMinus().mul(1.1).add(0.75);
 
     // — aurora curtain: open cylinder, vertical fade, scrolling bands, fresnel rim
     const curtainGeo = new THREE.CylinderGeometry(4.4, 4.9, 5.2, 28, 1, true);

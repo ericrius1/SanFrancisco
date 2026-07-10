@@ -442,13 +442,14 @@ export type WildTree = { x: number; y: number; z: number; yaw: number; scale: nu
 const TREE_CELL = 8;
 const TREE_MIN_SPACING = 5.5;
 
-export function collectWildTrees(map: GardenTerrain): WildTree[] {
+export function collectWildTrees(map: GardenTerrain, excluded?: (x: number, z: number) => boolean): WildTree[] {
   const trees: WildTree[] = [];
   // spatial hash for min spacing across overlapping features
   const taken = new Set<string>();
   const takenKey = (x: number, z: number) => `${Math.round(x / TREE_MIN_SPACING)}:${Math.round(z / TREE_MIN_SPACING)}`;
 
   const push = (x: number, z: number, species: number, sBoost: number, salt: number, gx: number, gz: number) => {
+    if (excluded?.(x, z)) return false;
     const region = wildRegionAt(x, z);
     if (!region || !plantable(map, region, x, z)) return false;
     if (inFlowerMeadow(x, z) || inMeadow(x, z)) return false;

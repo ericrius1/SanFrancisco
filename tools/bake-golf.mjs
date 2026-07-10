@@ -47,8 +47,23 @@ function centroid(r) {
 
 const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
 
+// Presidio Golf Course scorecard, March 2026. Geometry still comes from OSM;
+// these are the authoritative current par/yardage/men's-handicap facts.
+const OFFICIAL = {
+  par: [4, 5, 4, 3, 4, 4, 3, 4, 5, 5, 4, 4, 3, 4, 3, 4, 4, 5],
+  hcp: [7, 15, 1, 17, 13, 3, 5, 9, 11, 10, 4, 2, 12, 14, 16, 8, 6, 18],
+  black: [372, 472, 385, 130, 307, 388, 219, 378, 524, 501, 418, 453, 180, 344, 171, 382, 350, 506],
+  white: [349, 435, 365, 118, 298, 361, 184, 356, 493, 486, 387, 442, 169, 326, 147, 364, 343, 480],
+  blue: [339, 411, 348, 108, 289, 347, 175, 348, 440, 469, 373, 368, 156, 304, 133, 338, 335, 465],
+  red: [319, 350, 300, 86, 256, 295, 145, 269, 371, 391, 298, 282, 120, 295, 129, 276, 281, 413]
+};
+
 const out = {
   name: "Presidio Golf Course",
+  sources: {
+    geometry: "OpenStreetMap contributors (ODbL), Overpass snapshot 2026-07-10",
+    scorecard: "Presidio Golf Course scorecard, March 2026"
+  },
   holes: [],
   greens: [],
   tees: [],
@@ -144,12 +159,18 @@ for (const h of holesRaw) {
   for (let i = 0; i < h.line.length - 1; i++) len += dist(h.line[i], h.line[i + 1]);
   out.holes.push({
     ref: h.ref,
-    par: h.par,
-    hcp: h.hcp,
+    par: OFFICIAL.par[h.ref - 1] ?? h.par,
+    hcp: OFFICIAL.hcp[h.ref - 1] ?? h.hcp,
     line: h.line,
     tee,
     green,
     len: Math.round(len),
+    yardages: {
+      black: OFFICIAL.black[h.ref - 1],
+      white: OFFICIAL.white[h.ref - 1],
+      blue: OFFICIAL.blue[h.ref - 1],
+      red: OFFICIAL.red[h.ref - 1]
+    },
     teeXZ: centroid(out.tees[tee].o).map(q),
     pinXZ: end
   });

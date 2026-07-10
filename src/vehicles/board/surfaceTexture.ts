@@ -463,22 +463,39 @@ function paintCircuit(
   }
 }
 
+type SurfaceFinish = {
+  contrast: number;
+  effect: "clean" | "grain" | "scanlines" | "prism";
+  amount: number;
+};
+
+/** Authored finishing is part of each texture preset, not another user-facing
+ *  layer. Values stay deliberately subtle so scale/warp remain the obvious
+ *  visual controls while every preset still gets a distinct material feel. */
+const SURFACE_FINISH: Record<BoardConfig["surface"], SurfaceFinish> = {
+  aurora: { contrast: 0.55, effect: "grain", amount: 0.18 },
+  topo: { contrast: 0.54, effect: "clean", amount: 0 },
+  terrazzo: { contrast: 0.56, effect: "grain", amount: 0.14 },
+  circuit: { contrast: 0.62, effect: "scanlines", amount: 0.2 },
+  plasma: { contrast: 0.58, effect: "prism", amount: 0.18 }
+};
+
 /**
- * One deterministic post stack shared by every preset. Contrast is always
- * available; the selected finish adds at most one overlay. This only runs when
- * the caller asks for a repaint, never from the board's animation loop.
+ * One deterministic post stack shared by every preset. This only runs when the
+ * caller asks for a repaint, never from the board's animation loop.
  */
 function applySurfaceFinish(
   canvas: HTMLCanvasElement,
   ctx: CanvasRenderingContext2D,
   p: Palette,
-  config: BoardConfig,
+  surface: BoardConfig["surface"],
   seed: number
 ) {
   const { width: w, height: h } = canvas;
   const image = ctx.getImageData(0, 0, w, h);
   const data = image.data;
-  const contrast = clamp01(config.surfaceContrast / 100);
+  const finish = SURFACE_FINISH[surface];
+  const contrast = finish.contrast;
   const contrastGain = contrast < 0.5
     ? lerp(0.55, 1, contrast * 2)
     : lerp(1, 1.8, (contrast - 0.5) * 2);
@@ -497,8 +514,8 @@ function applySurfaceFinish(
     }
   }
 
-  const amount = clamp01(config.surfaceEffectAmount / 100);
-  if (amount > 0 && config.surfaceEffect === "grain") {
+  const amount = finish.amount;
+  if (amount > 0 && finish.effect === "grain") {
     const grainSeed = seed ^ 0x2d8f31a7;
     for (let y = 0, i = 0; y < h; y++) {
       for (let x = 0; x < w; x++, i += 4) {
@@ -510,7 +527,7 @@ function applySurfaceFinish(
         data[i + 2] += grain;
       }
     }
-  } else if (amount > 0 && config.surfaceEffect === "scanlines") {
+  } else if (amount > 0 && finish.effect === "scanlines") {
     const spacing = lerp(8, 3.2, amount);
     const phase = hash2(13, 61, seed ^ 0x9e3779b9) * spacing;
     for (let y = 0, i = 0; y < h; y++) {
@@ -523,7 +540,7 @@ function applySurfaceFinish(
         data[i + 2] = lerp(lerp(data[i + 2], p.deep[2], dark), p.glowLift[2], shine);
       }
     }
-  } else if (amount > 0 && config.surfaceEffect === "prism") {
+  } else if (amount > 0 && finish.effect === "prism") {
     // Work from a frozen, already-contrasted source so neighbouring reads do not
     // feed back into later pixels. Clamp at the edges: board textures are not
     // required to tile, and a wrapped seam would be much more conspicuous.
@@ -583,7 +600,7 @@ export function paintBoardSurface(canvas: HTMLCanvasElement, config: BoardConfig
     paintAurora(canvas, ctx, p, scale, warp, seed);
   }
 
-  applySurfaceFinish(canvas, ctx, p, config, seed);
+  applySurfaceFinish(canvas, ctx, p, config.surface, seed);
 
   ctx.restore();
 }

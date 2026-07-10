@@ -23,6 +23,7 @@ import { createBayLights, updateBayLights, resetBayLightsTweaks } from "./world/
 import { createGoldenGateLights, updateGoldenGateLights, resetGoldenGateLightsTweaks } from "./world/goldenGateLights";
 import { createPalaceColonnade, PALACE_RING_BUILDINGS } from "./world/palaceColonnade";
 import { createSutroTower, updateSutroTower, resetSutroLightsTweaks } from "./world/sutroTower";
+import { CoronaHeightsPark } from "./world/coronaHeights";
 import { findOpenSpawn } from "./world/spawn";
 import { Player } from "./player/player";
 import type { PlayerMode } from "./player/types";
@@ -350,6 +351,7 @@ async function boot() {
   // so they don't block first paint. Nullable refs; update calls are guarded.
   let garden: { group: THREE.Group; update: (dt: number, pos: THREE.Vector3, d: GrassDisplacer[]) => void } | null = null;
   let wildlands: { groups: THREE.Group[]; flowers: { refresh: () => void }; grass: { refresh: () => void }; update: (pos: THREE.Vector3, cam: THREE.Vector3) => void } | null = null;
+  let coronaHeights: CoronaHeightsPark | null = null;
   let windGustValue: (() => number) | null = null;
   let advanceWind: ((dt: number) => void) | null = null;
   const gardenDisplacer: GrassDisplacer = { x: 0, z: 0, radius: 1.6, strength: 1 };
@@ -362,6 +364,7 @@ async function boot() {
     foliageOn = visible;
     if (garden) garden.group.visible = visible;
     if (wildlands) for (const g of wildlands.groups) g.visible = visible;
+    coronaHeights?.setFoliageVisible(visible);
   };
   const islands = new Islands(physics, map, scene);
 
@@ -410,6 +413,9 @@ async function boot() {
   scene.add(createPalaceColonnade(map));
   const sutroTower = createSutroTower(map);
   scene.add(sutroTower);
+  coronaHeights = new CoronaHeightsPark(map, physics);
+  coronaHeights.setFoliageVisible(foliageOn);
+  scene.add(coronaHeights.group);
   let currentAnimal: AnimalKind | null = null;
   let ridePromptShown = false;
   let doorPromptShown = false;
@@ -434,6 +440,7 @@ async function boot() {
     input.suspended = on;
     orbit.enabled = on;
     if (on) {
+      player.setFirstPersonView(false); // orbit should always show the local avatar
       input.releaseLock();
       orbit.setLookAt(
         camera.position.x,
@@ -553,6 +560,8 @@ async function boot() {
       applyBoardConfig(seeded);
       boardSelector.setConfig(seeded);
     }
+    golf?.syncNetState();
+    net.replayGolf();
   };
   const remotes = new RemotePlayers(scene);
   const syncRoster = () => {
@@ -1064,7 +1073,7 @@ async function boot() {
       dir.set(input.mouseNDCx, input.mouseNDCy, 0.5).unproject(camera).sub(camera.position).normalize();
     } else {
       chase.lookDir(dir);
-      origin.copy(player.aimOrigin);
+      chase.viewOrigin(origin, player);
     }
   };
   const cursorPos = new THREE.Vector3(); // where the world cursor rests this frame
@@ -1151,17 +1160,41 @@ async function boot() {
     forest = new forestMod.Forest(map, scene);
 
     // Garden + Wildlands: botanical garden grass + designed SeedThree groves
-    const [gardenMod, wildlandsMod] = await Promise.all([
+    const [gardenMod, wildlandsMod, golfMod] = await Promise.all([
       import("./world/garden"),
-      import("./world/wildlands")
+      import("./world/wildlands"),
+      import("./gameplay/golf")
     ]);
+    let loadedGolfCourse: import("./gameplay/golf").GolfCourse | null = null;
+    try {
+      loadedGolfCourse = await golfMod.loadGolfCourse(map);
+    } catch (err) {
+      // Golf data is optional to world boot: vegetation and the city still load
+      // if a deploy is missing golf.json.
+      console.warn("[golf] course unavailable:", err);
+    }
     windGustValue = gardenMod.windGustValue;
     advanceWind = gardenMod.updateWindGusts; // keep the wind envelope live when foliage is toggled off
     const _garden = gardenMod.createBotanicalGarden(map);
     scene.add(_garden.group);
     _garden.group.visible = FOLIAGE_TUNING.values.visible;
     garden = _garden;
-    const _wildlands = wildlandsMod.createWildlands(map);
+    const _wildlands = wildlandsMod.createWildlands(
+      map,
+      loadedGolfCourse
+        ? {
+            // No animated blade clusters or flowers anywhere inside the course;
+            // its own smooth rough/fairway/green materials own that footprint.
+            groundcover: (x: number, z: number) => loadedGolfCourse!.contains(x, z, 1.2),
+            // Keep the real wooded rough character, but never procedural-tree a
+            // tee, fairway, green, bunker or cart path.
+            trees: (x: number, z: number) => {
+              const kind = loadedGolfCourse!.surfaceAt(x, z).kind;
+              return kind !== "rough" && kind !== "out";
+            }
+          }
+        : undefined
+    );
     for (const g of _wildlands.groups) { g.visible = FOLIAGE_TUNING.values.visible; scene.add(g); }
     wildlands = _wildlands;
     // __sf snapshots these refs at expose time (they were null then) — patch the
@@ -1192,17 +1225,19 @@ async function boot() {
     // Presidio Golf Course: greens/bunkers/tees over the real OSM layout, the
     // full multiplayer round loop. Own try — a bad golf.json must not take the
     // forest/citygen down with it.
-    try {
-      const { createGolf } = await import("./gameplay/golf");
-      const g = await createGolf(map, physics, scene);
+    if (loadedGolfCourse) {
+      const g = await golfMod.createGolf(map, physics, scene, loadedGolfCourse);
       g.onNet = (m) => net.sendGolf(m);
       g.onImpact = (p) => fx.impactPuff(p);
       golf = g;
+      const first = loadedGolfCourse.holes.find((h) => h.ref === 1) ?? loadedGolfCourse.holes[0];
+      if (first) minimap.addLandmark(first.teeXZ[0], first.teeXZ[1], "Presidio Golf · Hole 1");
       // same late-patch as garden/wildlands: __sf snapshotted golf as null
       const hooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
       if (hooks) Object.assign(hooks, { golf: g });
-    } catch (err) {
-      console.warn("[golf] course unavailable:", err);
+      // Welcome can arrive before this deferred module; hydrate any canonical
+      // peer golf states that Net retained in the meantime.
+      net.replayGolf();
     }
   })()
     .catch((err) => console.warn("[sf] deferred module load failed:", err))
@@ -1551,6 +1586,10 @@ async function boot() {
       const altitude = player.position.y - map.groundHeight(player.position.x, player.position.z);
       highUp = highUp ? altitude > 110 : altitude > 150;
       tiles.update(player.position.x, player.position.z, highUp);
+      // Live-player pause still allows walking. Keep the generated-building gate
+      // and streaming focus current so crossing a doorway cannot leave the camera
+      // stuck in the previous indoor/outdoor mode.
+      citygenRing.current?.update(player.position, frameDt);
       if (cameraMode) orbit.update(frameDt);
       else { chase.indoor = citygenRing.current?.isPlayerInside() ?? false; chase.update(frameDt, player, input); }
       // keep the vehicle hum, ambience and social presence alive like full pause
@@ -1766,20 +1805,20 @@ async function boot() {
       if (fireCooldown <= 0) {
         chase.lookDir(aim);
         fireCooldown = 0.13;
-        rayOrigin.copy(player.aimOrigin);
+        chase.viewOrigin(rayOrigin, player);
         forest?.fireGummy(rayOrigin, aim, player.velocity);
       }
     } else if (tool === "rope") {
       // rope tool: click one end, click the other — ropes.ts narrates each step
       if (input.firePressed && !input.suspended) {
         chase.lookDir(aim);
-        rayOrigin.copy(player.aimOrigin);
+        chase.viewOrigin(rayOrigin, player);
         hud.message(ropes.toolClick(rayOrigin, aim, gatherPickables()), 2.4);
       }
     } else if (tool === "grab") {
       // grab tool: hold to tractor-beam something, release to drop/throw
       chase.lookDir(aim);
-      rayOrigin.copy(player.aimOrigin);
+      chase.viewOrigin(rayOrigin, player);
       if (input.firing && !grabber.holding && fireCooldown <= 0) {
         if (!grabber.tryGrab(rayOrigin, aim, gatherPickables())) fireCooldown = 0.2; // re-probe 5×/s while held on air
       } else if (!input.firing && grabber.holding) {
@@ -1787,7 +1826,7 @@ async function boot() {
       }
     } else if (input.firing) {
       chase.lookDir(aim);
-      rayOrigin.copy(player.aimOrigin);
+      chase.viewOrigin(rayOrigin, player);
       if (tool === "spray" && fireCooldown <= 0) {
         // paintballs: visible ballistic shots that splat wherever they land —
         // walls via graffiti.burst, vehicles/players via paintSkins. The shot
@@ -1897,6 +1936,7 @@ async function boot() {
     if (player.mode === "speedboat") boatLaunchers?.update(frameDt); // guitarist jam + rocket reload
     creatures?.update(elapsed, camera.position); // gulls live at altitude — never gated
     forest?.update(frameDt, camera.position);
+    coronaHeights.update(frameDt, elapsed, camera.position);
     // MASTER foliage gate: when the "/" panel's foliage switch is OFF, every
     // vegetation group is already hidden (setFoliageVisible) — skip all its
     // per-frame work too so it costs near zero. We STILL advance the shared wind
@@ -1935,7 +1975,7 @@ async function boot() {
     if (grabber.holding) {
       // the carry servo chases a point in front of the live camera every frame
       chase.lookDir(aim);
-      grabber.update(rayOrigin.copy(player.aimOrigin), aim);
+      grabber.update(chase.viewOrigin(rayOrigin, player), aim);
     }
 
     // "hop in" nudge when standing near a ride (friend → wildlife)
@@ -2175,7 +2215,7 @@ async function boot() {
 
   const exposeDebugHooks = () => {
     Object.assign(window as never, {
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, splashes, vehicleAudio, swimAudio, nature, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, rocketRiders, boatLaunchers, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, underwater, seaPillars, water, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, setFoliageVisible }
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, coronaHeights, splashes, vehicleAudio, swimAudio, nature, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, rocketRiders, boatLaunchers, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, underwater, seaPillars, water, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, setFoliageVisible }
     });
   };
   if (import.meta.env.DEV || new URLSearchParams(location.search).has("profile")) {

@@ -716,6 +716,8 @@
         top: 14px;
         transform: translateX(-50%) translateY(-8px);
         display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
         align-items: baseline;
         gap: 12px;
         padding: 7px 14px;
@@ -742,6 +744,21 @@
         font: 600 13px var(--font);
         color: rgba(233, 244, 250, 0.92);
         font-variant-numeric: tabular-nums;
+      }
+      #hud .golf-card .gc-peers {
+        display: none;
+        flex: 1 0 100%;
+        max-width: min(640px, calc(100vw - 40px));
+        overflow: hidden;
+        color: rgba(174, 222, 218, 0.78);
+        font: 650 10px var(--font);
+        font-variant-numeric: tabular-nums;
+        text-align: center;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      #hud .golf-card .gc-peers.show {
+        display: block;
       }
       #hud .golf-swing {
         position: absolute;
@@ -824,6 +841,44 @@
       }
       #hud .golf-meter.charging .gm-inner {
         border-color: var(--accent-strong);
+      }
+      @media (max-width: 700px) {
+        #hud .golf-card {
+          top: max(8px, env(safe-area-inset-top));
+          width: min(360px, calc(100vw - 24px));
+          gap: 4px 10px;
+          padding: 6px 10px;
+        }
+        #hud .golf-card .gc-hole {
+          font-size: 12px;
+        }
+        #hud .golf-card .gc-score {
+          font-size: 11px;
+        }
+        #hud .golf-swing {
+          bottom: max(72px, calc(env(safe-area-inset-bottom) + 58px));
+          width: calc(100vw - 18px);
+          gap: 8px;
+        }
+        #hud .golf-clubs {
+          width: 100%;
+          flex-wrap: wrap;
+          justify-content: center;
+          gap: 4px;
+        }
+        #hud .golf-clubs .gclub {
+          min-width: 34px;
+          justify-content: center;
+          padding: 3px 5px;
+          font-size: 10px;
+        }
+        #hud .golf-meter {
+          width: 84px;
+          height: 84px;
+        }
+        #hud .golf-meter .gm-inner {
+          inset: 12px;
+        }
       }
       /* Tab's UI-hide covers golf too (defined after .show so it wins) */
       #hud.faded .golf-card,
@@ -2075,11 +2130,14 @@
       #hud .board-labs {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
+        align-items: stretch;
         gap: 7px;
         margin: 3px 0 2px;
       }
       #hud .board-lab {
         min-width: 0;
+        display: flex;
+        flex-direction: column;
         padding: 7px;
         border-radius: 9px;
         border: 1px solid rgba(143, 222, 228, 0.18);
@@ -2118,8 +2176,15 @@
         letter-spacing: 0;
         text-align: right;
       }
+      #hud .board-lab-tools {
+        flex: 0 0 auto;
+        display: flex;
+        align-items: flex-start;
+        gap: 5px;
+      }
       #hud .board-xy-pad {
         position: relative;
+        flex: 0 0 96px;
         height: 96px;
         overflow: hidden;
         cursor: crosshair;
@@ -2153,8 +2218,7 @@
         opacity: 0.88;
       }
       #hud .board-lab-surface .board-xy-canvas,
-      #hud .board-lab-finish .board-xy-canvas,
-      #hud .board-lab-life .board-xy-canvas {
+      #hud .board-lab-motion .board-xy-canvas {
         filter: saturate(1.12) contrast(1.04) brightness(0.83);
       }
       #hud .board-xy-grid {
@@ -2220,17 +2284,16 @@
         top: 5px;
       }
       #hud .board-lab-reroll {
-        width: 100%;
-        min-height: 27px;
-        margin-top: 6px;
+        flex: 0 0 auto;
+        width: 25px;
+        height: 25px;
+        padding: 0;
         cursor: pointer;
         border: 1px solid rgba(113, 226, 216, 0.2);
         border-radius: 6px;
         background: rgba(14, 44, 53, 0.72);
         color: rgba(220, 251, 246, 0.78);
-        font: 750 9px var(--font);
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
+        font: 750 15px/1 var(--font);
       }
       #hud .board-lab-reroll:hover,
       #hud .board-lab-reroll:focus-visible {
@@ -2248,10 +2311,16 @@
           scroll-padding-block: 10px;
         }
         #hud .board-xy-pad {
+          flex-basis: 90px;
           height: 90px;
         }
         #hud .board-panel-head > small {
           display: none;
+        }
+      }
+      @media (max-width: 339px) {
+        #hud .board-labs {
+          grid-template-columns: minmax(0, 1fr);
         }
       }
       #hud .chat {

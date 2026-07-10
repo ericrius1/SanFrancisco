@@ -44,7 +44,13 @@ await esbuild.build({
           // esbuild copies the stub into an ESM namespace via __copyProps, which
           // reads ownKeys(). Advertise the THREE members our path constructs so
           // \`new THREE.Color()\` etc. resolve to a newable node (not undefined).
-          const KEYS = ["Color","BufferGeometry","BufferAttribute","Mesh","Group","Matrix4","MeshStandardNodeMaterial","DoubleSide"];
+          const KEYS = [
+            "Color","BufferGeometry","BufferAttribute","Mesh","Group","Matrix4","MeshStandardNodeMaterial","DoubleSide","FrontSide",
+            "attribute","positionLocal","positionWorld","positionView","cameraProjectionMatrix","modelScale","normalWorldGeometry",
+            "normalWorld","cameraPosition","materialColor","uv","float","vec2","vec3","vec4","color","mix","step","smoothstep",
+            "fract","floor","abs","hash","texture","uniform","uint","select","varying","fwidth","mod","Fn","dot","normalize",
+            "mx_noise_float","mx_fractal_noise_float"
+          ];
           module.exports = new Proxy({}, {
             get: () => node,
             ownKeys: () => KEYS,
@@ -101,6 +107,23 @@ for (const arch of ["victorian", "edwardian", "marina", "downtown", "soma"]) {
   let lodMinY = Infinity, lodMaxY = -Infinity;
   for (let k = 1; k < arr.pos.length; k += 3) { lodMinY = Math.min(lodMinY, arr.pos[k]); lodMaxY = Math.max(lodMaxY, arr.pos[k]); }
   check(lodMinY <= 0.01 && lodMaxY >= 14.99, `${arch}: LOD prism spans base→top`, `[${lodMinY.toFixed(2)}, ${lodMaxY.toFixed(2)}]`);
+
+  // FrontSide is safe only when every triangle's geometric winding agrees with
+  // the authored outward/+Y normal. This guards against exposing the shell from
+  // underneath again by papering an inward mesh over with DoubleSide.
+  let minFacing = Infinity, orientedTris = 0;
+  for (let k = 0; k + 2 < arr.idx.length; k += 3) {
+    const ia = arr.idx[k], ib = arr.idx[k + 1], ic = arr.idx[k + 2];
+    const ax = arr.pos[ia * 3], ay = arr.pos[ia * 3 + 1], az = arr.pos[ia * 3 + 2];
+    const abx = arr.pos[ib * 3] - ax, aby = arr.pos[ib * 3 + 1] - ay, abz = arr.pos[ib * 3 + 2] - az;
+    const acx = arr.pos[ic * 3] - ax, acy = arr.pos[ic * 3 + 1] - ay, acz = arr.pos[ic * 3 + 2] - az;
+    const cx = aby * acz - abz * acy;
+    const cy = abz * acx - abx * acz;
+    const cz = abx * acy - aby * acx;
+    const facing = cx * arr.nor[ia * 3] + cy * arr.nor[ia * 3 + 1] + cz * arr.nor[ia * 3 + 2];
+    if (Math.abs(facing) > 1e-8) { minFacing = Math.min(minFacing, facing); orientedTris++; }
+  }
+  check(orientedTris > 0 && minFacing > 0, `${arch}: LOD winding faces outward`, `minDot=${minFacing.toFixed(2)}`);
 }
 
 // FLAT lot (grade=base): unchanged — windows reach the normal low sill.

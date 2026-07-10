@@ -22,12 +22,14 @@ export type GolfHole = {
   tee: number;
   green: number;
   len: number;
+  yardages: { black: number; white: number; blue: number; red: number };
   teeXZ: [number, number];
   pinXZ: [number, number];
 };
 
 export type GolfData = {
   name: string;
+  sources?: { geometry: string; scorecard: string };
   holes: GolfHole[];
   greens: GolfPoly[];
   tees: GolfPoly[];
@@ -105,6 +107,10 @@ export function distToRing(x: number, z: number, r: [number, number][]): number 
 const KIND_PRIORITY: GolfSurface[] = ["tee", "green", "bunker", "path", "fairway", "rough"];
 
 type Indexed = { kind: GolfSurface; idx: number; aabb: AABB };
+type PathSegment = { x1: number; z1: number; x2: number; z2: number; aabb: AABB };
+
+const PATH_HALF_WIDTH = 1.1; // must match course.ts's 2.2 m cart-path ribbon
+const COURSE_SMOOTH_RADIUS = 5; // soften the coarse DEM without erasing real grades
 
 export class GolfCourse {
   data: GolfData;
@@ -115,6 +121,7 @@ export class GolfCourse {
   #features: Indexed[] = [];
   #greenFlat: Flatten[] = [];
   #teeFlat: Flatten[] = [];
+  #pathSegments: PathSegment[] = [];
   // coarse lookup grid over the course AABB: cell → feature indices, priority-sorted
   #grid: Int32Array = new Int32Array(0);
   #gridLists: Indexed[][] = [];
@@ -136,6 +143,25 @@ export class GolfCourse {
     push("bunker", data.bunkers, 1);
     push("fairway", data.fairways, 1);
     push("rough", data.rough, 1);
+
+    for (const line of data.paths) {
+      for (let i = 0; i < line.length - 1; i++) {
+        const [x1, z1] = line[i];
+        const [x2, z2] = line[i + 1];
+        this.#pathSegments.push({
+          x1,
+          z1,
+          x2,
+          z2,
+          aabb: {
+            minX: Math.min(x1, x2) - PATH_HALF_WIDTH,
+            minZ: Math.min(z1, z2) - PATH_HALF_WIDTH,
+            maxX: Math.max(x1, x2) + PATH_HALF_WIDTH,
+            maxZ: Math.max(z1, z2) + PATH_HALF_WIDTH
+          }
+        });
+      }
+    }
 
     this.#buildGrid();
     this.#fitGreens();
@@ -177,12 +203,12 @@ export class GolfCourse {
       const pts: [number, number, number][] = [];
       for (let z = bb.minZ; z <= bb.maxZ; z += 3) {
         for (let x = bb.minX; x <= bb.maxX; x += 3) {
-          if (pointInPoly(x, z, p)) pts.push([x, z, this.#map.effectiveGround(x, z)]);
+          if (pointInPoly(x, z, p)) pts.push([x, z, this.#smoothedTerrain(x, z)]);
         }
       }
       if (pts.length < 4) {
         const [cx, cz] = p.o[0];
-        return { ax: 0, az: 0, c: this.#map.effectiveGround(cx, cz), blend: 2.5 };
+        return { ax: 0, az: 0, c: this.#smoothedTerrain(cx, cz), blend: 2.5 };
       }
       // normal equations for y = ax*x + az*z + c, centered for conditioning
       let mx = 0;
@@ -236,7 +262,7 @@ export class GolfCourse {
       let n = 0;
       let sum = 0;
       for (const [x, z] of p.o) {
-        const h = this.#map.effectiveGround(x, z);
+        const h = this.#smoothedTerrain(x, z);
         top = Math.max(top, h);
         sum += h;
         n++;
@@ -253,6 +279,47 @@ export class GolfCourse {
     const gy = Math.floor((z - b.minZ) / this.#cell);
     const li = this.#grid[gy * this.#gw + gx];
     return li >= 0 ? this.#gridLists[li] : null;
+  }
+
+  #onPath(x: number, z: number): boolean {
+    const rr = PATH_HALF_WIDTH * PATH_HALF_WIDTH;
+    for (const s of this.#pathSegments) {
+      const b = s.aabb;
+      if (x < b.minX || x > b.maxX || z < b.minZ || z > b.maxZ) continue;
+      const dx = s.x2 - s.x1;
+      const dz = s.z2 - s.z1;
+      const ll = dx * dx + dz * dz;
+      let t = ll > 1e-9 ? ((x - s.x1) * dx + (z - s.z1) * dz) / ll : 0;
+      t = Math.min(1, Math.max(0, t));
+      const px = s.x1 + dx * t;
+      const pz = s.z1 + dz * t;
+      const ox = x - px;
+      const oz = z - pz;
+      if (ox * ox + oz * oz <= rr) return true;
+    }
+    return false;
+  }
+
+  /** Course footprint query shared with world vegetation. `margin` also clears
+   *  clusters whose centre is just outside but whose blades would spill in. */
+  contains(x: number, z: number, margin = 0): boolean {
+    const b = this.boundaryAABB;
+    if (x < b.minX - margin || x > b.maxX + margin || z < b.minZ - margin || z > b.maxZ + margin) return false;
+    return pointInRing(x, z, this.data.boundary) || (margin > 0 && distToRing(x, z, this.data.boundary) <= margin);
+  }
+
+  /** Five-tap low-pass over the bilinear rendered ground. The 5 m kernel removes
+   *  visible DEM facets under long fairways while retaining the course's hills. */
+  #smoothedTerrain(x: number, z: number): number {
+    const r = COURSE_SMOOTH_RADIUS;
+    return (
+      this.#map.groundTop(x, z) * 0.5 +
+      (this.#map.groundTop(x - r, z) +
+        this.#map.groundTop(x + r, z) +
+        this.#map.groundTop(x, z - r) +
+        this.#map.groundTop(x, z + r)) *
+        0.125
+    );
   }
 
   polyOf(kind: GolfSurface, idx: number): GolfPoly {
@@ -274,7 +341,19 @@ export class GolfCourse {
   surfaceAt(x: number, z: number): { kind: GolfSurface; idx: number } {
     const list = this.#featuresAt(x, z);
     if (list) {
+      // Short-game surfaces win over a crossing cart path.
       for (const f of list) {
+        if (f.kind === "fairway" || f.kind === "rough") continue;
+        if (x < f.aabb.minX || x > f.aabb.maxX || z < f.aabb.minZ || z > f.aabb.maxZ) continue;
+        if (pointInPoly(x, z, this.polyOf(f.kind, f.idx))) return { kind: f.kind, idx: f.idx };
+      }
+    }
+    // Paths have their own segment index rather than polygon-grid entries, so
+    // this check must also run in course cells with no other authored feature.
+    if (this.#onPath(x, z)) return { kind: "path", idx: -1 };
+    if (list) {
+      for (const f of list) {
+        if (f.kind !== "fairway" && f.kind !== "rough") continue;
         if (x < f.aabb.minX || x > f.aabb.maxX || z < f.aabb.minZ || z > f.aabb.maxZ) continue;
         if (pointInPoly(x, z, this.polyOf(f.kind, f.idx))) return { kind: f.kind, idx: f.idx };
       }
@@ -286,7 +365,11 @@ export class GolfCourse {
   /** Golf-aware ground: draped lawn + GOLF_LIFT, with greens/tees eased onto
    *  their fitted planes. This is what the course meshes AND the ball share. */
   ground(x: number, z: number): number {
-    const terrain = this.#map.effectiveGround(x, z) + GOLF_LIFT;
+    // Only the authored course rides the lifted, smoothed turf sheet. A sliced
+    // ball outside the fence returns to the normal world ground instead of
+    // floating GOLF_LIFT metres above it.
+    const onCourse = this.contains(x, z);
+    const terrain = onCourse ? this.#smoothedTerrain(x, z) + GOLF_LIFT : this.#map.effectiveGround(x, z);
     const list = this.#featuresAt(x, z);
     if (!list) return terrain;
     for (const f of list) {
@@ -322,10 +405,10 @@ export class GolfCourse {
     return out;
   }
 
-  /** Primary tee spot for a hole — the OSM hole-line start, seated on the pad. */
+  /** Primary tee spot for a hole — centroid of its associated OSM tee pad. */
   teeSpot(holeIdx: number, out: THREE.Vector3): THREE.Vector3 {
     const h = this.holes[holeIdx];
-    const [x, z] = h.line[0];
+    const [x, z] = h.teeXZ;
     out.set(x, this.ground(x, z), z);
     return out;
   }
@@ -343,7 +426,7 @@ export class GolfCourse {
     let best = -1;
     let bd = maxDist * maxDist;
     for (let i = 0; i < this.holes.length; i++) {
-      const [tx, tz] = this.holes[i].line[0];
+      const [tx, tz] = this.holes[i].teeXZ;
       const d = (tx - x) * (tx - x) + (tz - z) * (tz - z);
       if (d < bd) {
         bd = d;

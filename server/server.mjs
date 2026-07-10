@@ -174,7 +174,7 @@ const server = http.createServer(async (req, res) => {
 const wss = new WebSocketServer({ server, path: "/ws", maxPayload: MSG_MAX_BYTES });
 
 let nextId = 1;
-/** id -> { ws, id, name, hue, alive, budget, lastState, state: [mode,x,y,z,qx,qy,qz,qw,speed] | null } */
+/** id -> player presence plus latest reconnect-safe golf state (if any). */
 const players = new Map();
 
 const ADJ = [
@@ -225,7 +225,6 @@ const COLOR_COUNT = 8;
 const BOARD_SHAPES = ["classic", "dart", "manta", "saucer", "twintip"];
 const BOARD_FINS = ["none", "twin", "spoiler", "halo"];
 const BOARD_SURFACES = ["aurora", "topo", "terrazzo", "circuit", "plasma"];
-const BOARD_SURFACE_EFFECTS = ["clean", "grain", "scanlines", "prism"];
 const BOARD_HUMS = ["hum", "crystal", "deep", "choir", "retro"];
 const BOARD_DECK_COUNT = 8;
 const BOARD_GLOW_COUNT = 8;
@@ -309,15 +308,14 @@ const DEFAULT_BOARD = {
   surfaceScale: 52,
   surfaceWarp: 58,
   surfaceSeed: 1847,
-  surfaceContrast: 58,
-  surfaceEffect: "grain",
-  surfaceEffectAmount: 28,
   surfaceFlow: 24,
   surfaceReaction: 52,
   hum: "hum",
   pitch: 0,
   soundTone: 50,
-  soundMotion: 50
+  soundMotion: 50,
+  soundThrust: 50,
+  soundAir: 30
 };
 
 // identical algorithm + draw order to boardFromSeed in src/vehicles/board/config.ts
@@ -336,20 +334,19 @@ const boardFromSeed = (seed) => {
     surfaceScale: 22 + Math.floor(roll() * 67),
     surfaceWarp: 18 + Math.floor(roll() * 73),
     surfaceSeed: Math.floor(roll() * 65536),
-    surfaceContrast: 28 + Math.floor(roll() * 61),
-    surfaceEffect: pick(BOARD_SURFACE_EFFECTS, roll),
-    surfaceEffectAmount: 15 + Math.floor(roll() * 76),
     surfaceFlow: Math.floor(roll() * 66),
     surfaceReaction: 20 + Math.floor(roll() * 71),
     hum: pick(BOARD_HUMS, roll),
     pitch: Math.floor(roll() * BOARD_PITCH_COUNT) % BOARD_PITCH_COUNT,
     soundTone: 20 + Math.floor(roll() * 66),
-    soundMotion: 12 + Math.floor(roll() * 77)
+    soundMotion: 12 + Math.floor(roll() * 77),
+    soundThrust: 20 + Math.floor(roll() * 66),
+    soundAir: 10 + Math.floor(roll() * 71)
   };
 };
 
 const boardKey = (b) =>
-  `${b.shape}|${b.fin}|${b.deck}|${b.trim}|${b.glow}|${b.surface}|${b.surfaceScale}|${b.surfaceWarp}|${b.surfaceSeed}|${b.surfaceContrast}|${b.surfaceEffect}|${b.surfaceEffectAmount}|${b.surfaceFlow}|${b.surfaceReaction}|${b.hum}|${b.pitch}|${b.soundTone}|${b.soundMotion}`;
+  `${b.shape}|${b.fin}|${b.deck}|${b.trim}|${b.glow}|${b.surface}|${b.surfaceScale}|${b.surfaceWarp}|${b.surfaceSeed}|${b.surfaceFlow}|${b.surfaceReaction}|${b.hum}|${b.pitch}|${b.soundTone}|${b.soundMotion}|${b.soundThrust}|${b.soundAir}`;
 
 const isDefaultBoard = (b) => boardKey(b) === boardKey(DEFAULT_BOARD);
 
@@ -365,15 +362,14 @@ const sanitizeBoard = (raw) => {
     surfaceScale: intRange(raw.surfaceScale, 101, DEFAULT_BOARD.surfaceScale),
     surfaceWarp: intRange(raw.surfaceWarp, 101, DEFAULT_BOARD.surfaceWarp),
     surfaceSeed: intRange(raw.surfaceSeed, 65536, DEFAULT_BOARD.surfaceSeed),
-    surfaceContrast: intRange(raw.surfaceContrast, 101, DEFAULT_BOARD.surfaceContrast),
-    surfaceEffect: oneOf(raw.surfaceEffect, BOARD_SURFACE_EFFECTS, DEFAULT_BOARD.surfaceEffect),
-    surfaceEffectAmount: intRange(raw.surfaceEffectAmount, 101, DEFAULT_BOARD.surfaceEffectAmount),
     surfaceFlow: intRange(raw.surfaceFlow, 101, DEFAULT_BOARD.surfaceFlow),
     surfaceReaction: intRange(raw.surfaceReaction, 101, DEFAULT_BOARD.surfaceReaction),
     hum: oneOf(raw.hum, BOARD_HUMS, DEFAULT_BOARD.hum),
     pitch: intRange(raw.pitch, BOARD_PITCH_COUNT, DEFAULT_BOARD.pitch),
     soundTone: intRange(raw.soundTone, 101, DEFAULT_BOARD.soundTone),
-    soundMotion: intRange(raw.soundMotion, 101, DEFAULT_BOARD.soundMotion)
+    soundMotion: intRange(raw.soundMotion, 101, DEFAULT_BOARD.soundMotion),
+    soundThrust: intRange(raw.soundThrust, 101, DEFAULT_BOARD.soundThrust),
+    soundAir: intRange(raw.soundAir, 101, DEFAULT_BOARD.soundAir)
   };
 };
 
@@ -386,6 +382,47 @@ const broadcast = (obj, exceptId = 0) => {
   for (const p of players.values()) {
     if (p.id !== exceptId && p.ws.readyState === p.ws.OPEN) p.ws.send(msg);
   }
+};
+
+const finite = (n, limit = 20000) => typeof n === "number" && Number.isFinite(n) && Math.abs(n) <= limit;
+const intBetween = (n, lo, hi) => Number.isInteger(n) && n >= lo && n <= hi;
+const golfPosition = (d, length) =>
+  Array.isArray(d) &&
+  d.length === length &&
+  finite(d[0]) &&
+  finite(d[1], 5000) &&
+  finite(d[2]) &&
+  d.every((n) => typeof n === "number" && Number.isFinite(n));
+
+/** Shape-specific validation prevents arbitrary golf keys/fields becoming a
+ *  server-reflected protocol. Scores remain deliberately owner-authoritative. */
+const sanitizeGolf = (msg, id) => {
+  const out = { t: "golf", id, k: msg.k };
+  if (msg.k === "swing") {
+    if (!golfPosition(msg.d, 6) || !msg.d.slice(3).every((n) => finite(n, 200))) return null;
+    out.d = msg.d;
+  } else if (msg.k === "b" || msg.k === "rest") {
+    if (!golfPosition(msg.d, 3)) return null;
+    out.d = msg.d;
+  } else if (msg.k === "score") {
+    if (!intBetween(msg.h, 1, 18) || !intBetween(msg.p, 3, 5) || !intBetween(msg.s, 1, 99) || !intBetween(msg.r, -200, 300)) return null;
+    Object.assign(out, { h: msg.h, p: msg.p, s: msg.s, r: msg.r });
+  } else if (msg.k === "state") {
+    if (
+      !golfPosition(msg.d, 5) ||
+      !intBetween(msg.d[3], 0, 1) ||
+      !intBetween(msg.d[4], 0, 1) ||
+      !intBetween(msg.h, 1, 18) ||
+      !intBetween(msg.p, 3, 5) ||
+      !intBetween(msg.s, 0, 99) ||
+      !intBetween(msg.r, -200, 300)
+    )
+      return null;
+    Object.assign(out, { d: msg.d, h: msg.h, p: msg.p, s: msg.s, r: msg.r });
+  } else if (msg.k !== "quit") {
+    return null;
+  }
+  return out;
 };
 
 wss.on("connection", (ws) => {
@@ -406,7 +443,8 @@ wss.on("connection", (ws) => {
     alive: true,
     budget: MSG_BUDGET_PER_SEC,
     lastState: Date.now(),
-    state: null
+    state: null,
+    golf: null
   };
   players.set(id, p);
 
@@ -433,7 +471,7 @@ wss.on("connection", (ws) => {
         name: p.name,
         players: [...players.values()]
           .filter((o) => o.id !== id)
-          .map((o) => ({ id: o.id, name: o.name, hue: o.hue, avatar: o.avatar, board: o.board }))
+          .map((o) => ({ id: o.id, name: o.name, hue: o.hue, avatar: o.avatar, board: o.board, golf: o.golf }))
       });
       broadcast({ t: "join", id, name: p.name, hue: p.hue, avatar: p.avatar, board: p.board }, id);
       console.log(`[sf-server] join #${id} "${p.name}" (${players.size} online)`);
@@ -469,21 +507,11 @@ wss.on("connection", (ws) => {
       if (msg.d.every((r) => Array.isArray(r) && r.length === 9 && r.every((n) => typeof n === "number" && Number.isFinite(n)))) {
         broadcast({ t: "fw", id, d: msg.d }, id);
       }
-    } else if (msg.t === "golf" && typeof msg.k === "string" && msg.k.length <= 8) {
-      // golf events: swing / ball snapshot / rest / score / quit. The owner's
-      // client simulates its own ball; this is a pure relay of whitelisted
-      // fields (d = up to 8 finite numbers, h/p/s/r = finite numbers).
-      const d = msg.d;
-      const dOk =
-        d === undefined ||
-        (Array.isArray(d) && d.length <= 8 && d.every((n) => typeof n === "number" && Number.isFinite(n)));
-      const numsOk = ["h", "p", "s", "r"].every(
-        (key) => msg[key] === undefined || (typeof msg[key] === "number" && Number.isFinite(msg[key]))
-      );
-      if (dOk && numsOk) {
-        const out = { t: "golf", id, k: msg.k };
-        if (d !== undefined) out.d = d;
-        for (const key of ["h", "p", "s", "r"]) if (msg[key] !== undefined) out[key] = msg[key];
+    } else if (msg.t === "golf" && typeof msg.k === "string") {
+      const out = sanitizeGolf(msg, id);
+      if (out) {
+        if (out.k === "state") p.golf = { d: out.d, h: out.h, p: out.p, s: out.s, r: out.r };
+        else if (out.k === "quit") p.golf = null;
         broadcast(out, id);
       }
     } else if (msg.t === "rtc" && typeof msg.to === "number") {

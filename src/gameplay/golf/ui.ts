@@ -27,10 +27,14 @@ export function totalLabel(delta: number): string {
   return delta === 0 ? "E" : delta > 0 ? `+${delta}` : `${delta}`;
 }
 
+export type GolfPeerScore = { name: string; hole: number; strokes: number; total: number };
+export type GolfHoleScore = { hole: number; par: number; strokes: number };
+
 export class GolfUI {
   #root: HTMLElement;
   #hole: HTMLElement;
   #score: HTMLElement;
+  #peers: HTMLElement;
   #swing: HTMLElement;
   #clubs: HTMLElement;
   #meter: HTMLElement;
@@ -48,7 +52,9 @@ export class GolfUI {
     this.#hole.className = "gc-hole";
     this.#score = document.createElement("div");
     this.#score.className = "gc-score";
-    this.#root.append(this.#hole, this.#score);
+    this.#peers = document.createElement("div");
+    this.#peers.className = "gc-peers";
+    this.#root.append(this.#hole, this.#score, this.#peers);
     hud.appendChild(this.#root);
 
     this.#swing = document.createElement("div");
@@ -77,12 +83,35 @@ export class GolfUI {
     if (!on) this.showSwing(false);
   }
 
-  setHole(ref: number, par: number, len: number) {
-    this.#hole.textContent = `⛳ Hole ${ref} · Par ${par} · ${len}m`;
+  setHole(ref: number, par: number, len: number, blackYards?: number) {
+    this.#root.title = "";
+    this.#hole.textContent = `⛳ Hole ${ref} · Par ${par} · ${len}m${blackYards ? ` · ${blackYards}yd black` : ""}`;
   }
 
   setScore(strokes: number, totalDelta: number, holesDone: number) {
-    this.#score.textContent = `Stroke ${strokes + 1} · Round ${totalLabel(totalDelta)} thru ${holesDone}`;
+    this.#score.textContent = `${strokes} shot${strokes === 1 ? "" : "s"} · Round ${totalLabel(totalDelta)} thru ${holesDone}`;
+  }
+
+  setComplete(totalDelta: number, scores: GolfHoleScore[]) {
+    this.#hole.textContent = "⛳ Round complete";
+    this.#score.textContent = `${totalLabel(totalDelta)} · ${scores.length} holes`;
+    this.#root.title = scores
+      .map((s) => `Hole ${s.hole}: ${s.strokes} (${standingLabel(s.strokes, s.par)})`)
+      .join(" · ");
+    this.setVisible(true);
+    this.showSwing(false);
+  }
+
+  setPeers(peers: GolfPeerScore[]) {
+    const ordered = [...peers].sort((a, b) => a.total - b.total || a.name.localeCompare(b.name));
+    this.#peers.textContent = ordered
+      .slice(0, 4)
+      .map((p) => `${p.name} H${p.hole} ${totalLabel(p.total)}`)
+      .join("  ·  ");
+    this.#peers.title = ordered
+      .map((p) => `${p.name}: hole ${p.hole}, ${p.strokes} shots, ${totalLabel(p.total)} total`)
+      .join("\n");
+    this.#peers.classList.toggle("show", ordered.length > 0);
   }
 
   /** Swing context (near your ball): club rail + force meter. */
@@ -106,7 +135,7 @@ export class GolfUI {
     this.#carry.textContent = c.id === "putter" ? "roll" : `${c.carry}m`;
   }
 
-  /** Force meter: charge 0..1 (ping-pong handled by caller), est carry meters. */
+  /** Force meter: monotonic charge 0..1, estimated carry metres. */
   setCharge(t: number, carry: number, charging: boolean) {
     const pct = Math.round(t * 100);
     this.#fill.style.background = `conic-gradient(var(--accent-strong) ${pct * 3.6}deg, var(--accent-soft) ${pct * 3.6}deg)`;

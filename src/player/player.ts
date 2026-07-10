@@ -5,11 +5,13 @@ import type { Input } from "../core/input";
 import type { SavedPlayer } from "../core/persist";
 import {
   applyAvatarToRig,
+  buildGolfClub,
   buildRig,
   buildSteeringWheel,
   poseAir,
   poseDrive,
   poseIdle,
+  poseGolf,
   poseRide,
   poseSwim,
   poseWalk,
@@ -98,6 +100,8 @@ export class Player {
   // character rigs: one per embodiment (walker, board rider, car driver).
   // Poses are written every rendered frame in #animate.
   #walkRig: Rig;
+  #golfClub: THREE.Group;
+  #golfPose = { active: false, swing: 0 };
   #riderRig: Rig;
   #driverRig: Rig;
   #wheel: { group: THREE.Group; spin: THREE.Group };
@@ -108,6 +112,7 @@ export class Player {
   #pilotRig: Rig; // plane crew: open cockpit, hands on the built-in yoke
   #planeAnim: PlaneAnim;
   #avatar: AvatarTraits;
+  #firstPersonView = false;
   #hasWheel = false;
   #animT = 0; // free-running clock for idle sway/bob
   #strideT = 0; // stride/stroke phase, advanced by speed
@@ -138,6 +143,8 @@ export class Player {
     this.#walkRig = buildRig(this.#avatar);
     const walkGroup = new THREE.Group();
     walkGroup.add(this.#walkRig.group); // rig origin already sits at the capsule centre
+    this.#golfClub = buildGolfClub();
+    walkGroup.add(this.#golfClub);
     this.meshes = {
       walk: walkGroup,
       drive: buildCarMesh(),
@@ -212,6 +219,13 @@ export class Player {
     applyAvatarToRig(this.#pilotRig, this.#avatar);
   }
 
+  /** Hide only the local walk embodiment once the camera reaches the FPS eye. */
+  setFirstPersonView(active: boolean) {
+    if (this.#firstPersonView === active) return;
+    this.#firstPersonView = active;
+    this.meshes.walk.visible = !active;
+  }
+
   #destroyBody() {
     if (this.body) {
       this.physics.world.destroyBody(this.body);
@@ -228,6 +242,9 @@ export class Player {
   #spawnBody(mode: PlayerMode, facing = this.heading - Math.PI) {
     const w = this.physics.world;
     const p = this.position;
+    // A mode switch can bypass the chase camera for a frame (cinematics/orbit).
+    // Never carry the local-only FPS visibility override into another embodiment.
+    if (mode !== "walk") this.setFirstPersonView(false);
     this.#destroyBody();
     this.riding = false; // any body spawn ends a passenger ride
     this.mode = mode;
@@ -377,6 +394,18 @@ export class Player {
 
   requestWalkJump() {
     if (this.mode === "walk") this.#modes.walk.requestJump();
+  }
+
+  /** Gameplay-owned golfer pose; the normal walk/idle animator resumes when off. */
+  setGolfPose(active: boolean, swing = 0) {
+    this.#golfPose.active = active && this.mode === "walk";
+    this.#golfPose.swing = THREE.MathUtils.clamp(swing, -1, 1);
+    this.#golfClub.visible = this.#golfPose.active;
+    if (this.#golfPose.active) {
+      // Address is nearly vertical; backswing rises behind the trail shoulder,
+      // release cuts through impact into a high follow-through.
+      this.#golfClub.rotation.set(-0.08, -0.04, -0.16 - this.#golfPose.swing * 2.05);
+    }
   }
 
   /** Board airborne state — the hoverboard hum softens in the air. */
@@ -546,7 +575,9 @@ export class Player {
     if (this.mode === "walk") {
       const r = this.#walkRig;
       const walk = this.#modes.walk;
-      if (walk.swimming) {
+      if (this.#golfPose.active && walk.grounded && !walk.swimming) {
+        poseGolf(r, this.#golfPose.swing);
+      } else if (walk.swimming) {
         this.#strideT += dt * 3.4;
         poseSwim(r, this.#strideT);
       } else if (!walk.grounded) {

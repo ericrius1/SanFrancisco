@@ -5,7 +5,6 @@ import {
   BOARD_HUMS,
   BOARD_PITCHES,
   BOARD_SHAPES,
-  BOARD_SURFACE_EFFECTS,
   BOARD_SURFACES,
   normalizeBoardConfig,
   randomBoardConfig,
@@ -14,22 +13,24 @@ import {
 import { paintBoardSurface } from "../vehicles/board/surfaceTexture";
 
 type PreviewKind = "surface" | "sound";
-type LabKind = "surface" | "finish" | "life" | "sound";
+type LabKind = "surface" | "motion" | "sound" | "thrust";
 type PadKey =
   | "surfaceScale"
   | "surfaceWarp"
-  | "surfaceContrast"
-  | "surfaceEffectAmount"
   | "surfaceFlow"
   | "surfaceReaction"
   | "soundTone"
-  | "soundMotion";
+  | "soundMotion"
+  | "soundThrust"
+  | "soundAir";
+
+const isAudioLab = (kind: LabKind) => kind === "sound" || kind === "thrust";
 
 /**
- * The hoverboard garage is a tiny instrument, not just a preset list. Four XY
- * pads preview the procedural deck, finish, reactive motion, and live synth
- * macros while held, then commit once on release so persistence, mesh rebuilds,
- * and net sync stay calm.
+ * The hoverboard garage is a tiny instrument, not just a preset list. Two
+ * visual pads shape the deck + its motion, and two audio pads shape the voice
+ * + thrust. Moves preview while held, then commit once on release so
+ * persistence, mesh rebuilds, and net sync stay calm.
  */
 export class BoardSelector {
   #root: HTMLElement;
@@ -41,8 +42,9 @@ export class BoardSelector {
   #onSoundEdit: () => void;
   #onOpen: () => void;
   #open = false;
-  #soundCanvas: HTMLCanvasElement | null = null;
-  #waveFrame = 0;
+  #previewCanvases = new Map<LabKind, HTMLCanvasElement>();
+  #surfaceSource = document.createElement("canvas");
+  #previewFrame = 0;
 
   constructor(
     initial: BoardConfig,
@@ -56,6 +58,8 @@ export class BoardSelector {
     this.#onPreview = onPreview;
     this.#onSoundEdit = onSoundEdit;
     this.#onOpen = onOpen;
+    this.#surfaceSource.width = 256;
+    this.#surfaceSource.height = 160;
 
     const hud = document.getElementById("hud")!;
     this.#root = document.createElement("div");
@@ -83,10 +87,10 @@ export class BoardSelector {
     this.#toggle.setAttribute("aria-expanded", String(open));
     if (open) {
       this.#onOpen();
-      this.#animateSoundPad();
-    } else if (this.#waveFrame) {
-      cancelAnimationFrame(this.#waveFrame);
-      this.#waveFrame = 0;
+      this.#startPreviewLoop();
+    } else if (this.#previewFrame) {
+      cancelAnimationFrame(this.#previewFrame);
+      this.#previewFrame = 0;
     }
   }
 
@@ -103,7 +107,7 @@ export class BoardSelector {
     if (sound) this.#onSoundEdit();
   }
 
-  #button<K extends "shape" | "fin" | "surface" | "surfaceEffect" | "hum">(
+  #button<K extends "shape" | "fin" | "surface" | "hum">(
     key: K,
     id: BoardConfig[K],
     label: string,
@@ -152,7 +156,8 @@ export class BoardSelector {
     xKey: PadKey,
     yKey: PadKey,
     xLabels: [string, string],
-    yLabels: [string, string]
+    yLabels: [string, string],
+    action?: { label: string; title: string; run: () => void }
   ) {
     const lab = document.createElement("section");
     lab.className = `board-lab board-lab-${kind}`;
@@ -169,7 +174,20 @@ export class BoardSelector {
     heading.append(name, sub);
     const readout = document.createElement("output");
     readout.className = "board-lab-readout";
-    head.append(heading, readout);
+    const tools = document.createElement("div");
+    tools.className = "board-lab-tools";
+    tools.appendChild(readout);
+    if (action) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "board-lab-reroll";
+      button.textContent = action.label;
+      button.title = action.title;
+      button.setAttribute("aria-label", action.title);
+      button.addEventListener("click", action.run);
+      tools.appendChild(button);
+    }
+    head.append(heading, tools);
 
     const pad = document.createElement("div");
     pad.className = "board-xy-pad";
@@ -201,7 +219,7 @@ export class BoardSelector {
     pad.append(canvas, grid, puck, x0, x1, y0, y1);
     lab.append(head, pad);
 
-    if (kind === "sound") this.#soundCanvas = canvas;
+    this.#previewCanvases.set(kind, canvas);
 
     const draw = () => {
       const x = this.#config[xKey];
@@ -212,7 +230,6 @@ export class BoardSelector {
       const valueText = `${xLabels[0]} ${100 - x}%, ${xLabels[1]} ${x}%; ${yLabels[0]} ${100 - y}%, ${yLabels[1]} ${y}%`;
       readout.setAttribute("aria-label", `${title}: ${valueText}`);
       pad.setAttribute("aria-valuetext", valueText);
-      if (kind !== "sound") paintBoardSurface(canvas, this.#config);
     };
 
     const apply = (x: number, y: number, preview = true) => {
@@ -222,7 +239,9 @@ export class BoardSelector {
         [yKey]: Math.round(Math.max(0, Math.min(100, y)))
       });
       draw();
-      if (preview) this.#onPreview({ ...this.#config }, kind === "sound" ? "sound" : "surface");
+      if (kind === "surface") this.#paintVisualPreviews();
+      else if (kind === "motion") this.#drawMotionPreview(performance.now());
+      if (preview) this.#onPreview({ ...this.#config }, isAudioLab(kind) ? "sound" : "surface");
     };
 
     const point = (e: PointerEvent) => {
@@ -269,7 +288,7 @@ export class BoardSelector {
       pointer = e.pointerId;
       pad.setPointerCapture(e.pointerId);
       pad.classList.add("dragging");
-      if (kind === "sound") this.#onSoundEdit();
+      if (isAudioLab(kind)) this.#onSoundEdit();
       queue(point(e));
     });
     pad.addEventListener("pointermove", (e) => {
@@ -290,7 +309,7 @@ export class BoardSelector {
       else return;
       e.preventDefault();
       e.stopPropagation();
-      if (kind === "sound") this.#onSoundEdit();
+      if (isAudioLab(kind)) this.#onSoundEdit();
       apply(x, y);
       this.#onChange({ ...this.#config });
     });
@@ -299,42 +318,144 @@ export class BoardSelector {
     return lab;
   }
 
-  #animateSoundPad() {
-    if (!this.#open || this.#waveFrame) return;
-    const animate = (time: number) => {
-      this.#waveFrame = 0;
-      const canvas = this.#soundCanvas;
-      if (!this.#open || !canvas?.isConnected) return;
-      const ctx = canvas.getContext("2d");
-      if (ctx) {
-        const w = canvas.width;
-        const h = canvas.height;
-        const tone = this.#config.soundTone / 100;
-        const motion = this.#config.soundMotion / 100;
-        const bg = ctx.createLinearGradient(0, 0, w, h);
-        bg.addColorStop(0, "#091724");
-        bg.addColorStop(1, "#153a3d");
-        ctx.fillStyle = bg;
-        ctx.fillRect(0, 0, w, h);
-        const phase = time * (0.00035 + motion * 0.0024);
-        for (let band = 0; band < 3; band++) {
-          ctx.beginPath();
-          for (let x = 0; x <= w; x += 3) {
-            const u = x / w;
-            const wave = Math.sin(u * Math.PI * (2.4 + tone * 5 + band) + phase * (band + 1));
-            const shimmer = Math.sin(u * Math.PI * 13 - phase * 1.7) * motion * 0.18;
-            const y = h * (0.28 + band * 0.23) + (wave + shimmer) * (9 + motion * 12);
-            if (x === 0) ctx.moveTo(x, y);
-            else ctx.lineTo(x, y);
-          }
-          ctx.strokeStyle = band === 1 ? "rgba(106,255,218,.78)" : "rgba(113,203,255,.38)";
-          ctx.lineWidth = band === 1 ? 2.4 : 1.4;
-          ctx.stroke();
-        }
+  #paintVisualPreviews() {
+    paintBoardSurface(this.#surfaceSource, this.#config);
+    const deck = this.#previewCanvases.get("surface");
+    const ctx = deck?.getContext("2d");
+    if (deck && ctx) {
+      ctx.clearRect(0, 0, deck.width, deck.height);
+      ctx.drawImage(this.#surfaceSource, 0, 0, deck.width, deck.height);
+    }
+    this.#drawMotionPreview(performance.now());
+  }
+
+  #drawMotionPreview(time: number) {
+    const canvas = this.#previewCanvases.get("motion");
+    const ctx = canvas?.getContext("2d");
+    if (!canvas || !ctx) return;
+    const w = canvas.width;
+    const h = canvas.height;
+    const flow = this.#config.surfaceFlow / 100;
+    const reaction = this.#config.surfaceReaction / 100;
+    const cycle = (time % 2500) / 2500;
+    const impact = Math.sin(Math.min(1, cycle * 10) * Math.PI * 0.5) * Math.exp(-cycle * 8) * reaction;
+    const drift = (time * 0.018 * flow) % w;
+    const floatY = Math.sin(time * 0.0017) * flow * 2.8 - impact * 3.5;
+
+    ctx.fillStyle = "#07131d";
+    ctx.fillRect(0, 0, w, h);
+    ctx.save();
+    ctx.translate(w * 0.5, h * 0.5 + floatY);
+    ctx.rotate(Math.sin(time * 0.0011) * flow * 0.012);
+    ctx.scale(1 + impact * 0.035, 1 - impact * 0.05);
+    ctx.translate(-w * 0.5, -h * 0.5);
+    for (let x = -w - drift; x < w * 2; x += w) {
+      ctx.drawImage(this.#surfaceSource, x, 0, w, h);
+    }
+    ctx.restore();
+
+    if (impact > 0.005) {
+      ctx.save();
+      ctx.globalCompositeOperation = "screen";
+      ctx.strokeStyle = `rgba(121,255,220,${Math.min(0.72, impact * 0.9)})`;
+      ctx.lineWidth = 2 + impact * 3;
+      ctx.beginPath();
+      ctx.ellipse(w * 0.5, h * 0.75, w * (0.12 + cycle * 0.55), h * (0.025 + cycle * 0.12), 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  #drawVoicePreview(time: number) {
+    const canvas = this.#previewCanvases.get("sound");
+    const ctx = canvas?.getContext("2d");
+    if (!canvas || !ctx) return;
+    const w = canvas.width;
+    const h = canvas.height;
+    const tone = this.#config.soundTone / 100;
+    const motion = this.#config.soundMotion / 100;
+    const bg = ctx.createLinearGradient(0, 0, w, h);
+    bg.addColorStop(0, "#091724");
+    bg.addColorStop(1, "#153a3d");
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, w, h);
+    const phase = time * (0.00035 + motion * 0.0024);
+    for (let band = 0; band < 3; band++) {
+      ctx.beginPath();
+      for (let x = 0; x <= w; x += 3) {
+        const u = x / w;
+        const wave = Math.sin(u * Math.PI * (2.4 + tone * 5 + band) + phase * (band + 1));
+        const shimmer = Math.sin(u * Math.PI * 13 - phase * 1.7) * motion * 0.18;
+        const y = h * (0.28 + band * 0.23) + (wave + shimmer) * (9 + motion * 12);
+        if (x === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
       }
-      this.#waveFrame = requestAnimationFrame(animate);
+      ctx.strokeStyle = band === 1 ? "rgba(106,255,218,.78)" : "rgba(113,203,255,.38)";
+      ctx.lineWidth = band === 1 ? 2.4 : 1.4;
+      ctx.stroke();
+    }
+  }
+
+  #drawThrustPreview(time: number) {
+    const canvas = this.#previewCanvases.get("thrust");
+    const ctx = canvas?.getContext("2d");
+    if (!canvas || !ctx) return;
+    const w = canvas.width;
+    const h = canvas.height;
+    const thrust = this.#config.soundThrust / 100;
+    const air = this.#config.soundAir / 100;
+    const bg = ctx.createLinearGradient(0, 0, w, h);
+    bg.addColorStop(0, "#071722");
+    bg.addColorStop(0.62, "#0d2932");
+    bg.addColorStop(1, "#17423f");
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, w, h);
+
+    const speed = 0.018 + thrust * 0.075;
+    for (let band = 0; band < 7; band++) {
+      const baseY = h * (0.17 + band * 0.11);
+      const phase = time * speed + band * 37;
+      ctx.beginPath();
+      for (let x = -12; x <= w + 12; x += 4) {
+        const u = x / w;
+        const flutter = Math.sin(u * Math.PI * (2.2 + band * 0.24) - phase * 0.035) * (2 + air * 10);
+        const wake = Math.sin(u * Math.PI * 10 + phase * 0.08) * air * 2.5;
+        const y = baseY + flutter + wake;
+        if (x === -12) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = band === 3
+        ? `rgba(116,255,216,${0.58 + thrust * 0.28})`
+        : `rgba(112,206,255,${0.13 + air * 0.16})`;
+      ctx.lineWidth = band === 3 ? 2.5 + thrust * 1.2 : 1 + air;
+      ctx.stroke();
+    }
+
+    ctx.save();
+    ctx.globalCompositeOperation = "screen";
+    for (let i = 0; i < 10; i++) {
+      const x = ((i * 31 + time * (0.018 + thrust * 0.065)) % (w + 30)) - 15;
+      const y = h * (0.2 + ((i * 47) % 61) / 100) + Math.sin(time * 0.002 + i) * air * 7;
+      const radius = 0.8 + air * 1.7;
+      ctx.fillStyle = `rgba(151,255,231,${0.12 + air * 0.35})`;
+      ctx.beginPath();
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  #startPreviewLoop() {
+    if (!this.#open || this.#previewFrame) return;
+    const animate = (time: number) => {
+      this.#previewFrame = 0;
+      if (!this.#open) return;
+      this.#drawMotionPreview(time);
+      this.#drawVoicePreview(time);
+      this.#drawThrustPreview(time);
+      this.#previewFrame = requestAnimationFrame(animate);
     };
-    this.#waveFrame = requestAnimationFrame(animate);
+    this.#previewFrame = requestAnimationFrame(animate);
   }
 
   #render() {
@@ -347,7 +468,7 @@ export class BoardSelector {
       `<span class="board-ic-rail" style="background:${glowHex};box-shadow:0 0 7px ${glowHex}"></span>`;
 
     this.#panel.innerHTML = "";
-    this.#soundCanvas = null;
+    this.#previewCanvases.clear();
     const header = document.createElement("header");
     header.className = "board-panel-head";
     header.innerHTML = `<span>BOARD LAB</span><small>shape it · skin it · voice it</small>`;
@@ -376,10 +497,6 @@ export class BoardSelector {
       this.#row(
         "texture",
         BOARD_SURFACES.map((s) => this.#button("surface", s.id, s.label))
-      ),
-      this.#row(
-        "finish",
-        BOARD_SURFACE_EFFECTS.map((effect) => this.#button("surfaceEffect", effect.id, effect.label))
       )
     );
 
@@ -388,47 +505,45 @@ export class BoardSelector {
     const surfaceLab = this.#xyLab(
       "surface",
       "DECK / 01",
-      "grain × turbulence",
+      "scale × warp",
       "surfaceScale",
       "surfaceWarp",
-      ["macro", "micro"],
-      ["calm", "wild"]
+      ["broad", "fine"],
+      ["smooth", "wild"],
+      {
+        label: "↻",
+        title: "Reroll the texture field",
+        run: () => this.#set({ surfaceSeed: Math.floor(Math.random() * 65536) })
+      }
     );
-    const reroll = document.createElement("button");
-    reroll.type = "button";
-    reroll.className = "board-lab-reroll";
-    reroll.textContent = "↻ new field";
-    reroll.title = "Reroll the texture field";
-    reroll.addEventListener("click", () => this.#set({ surfaceSeed: Math.floor(Math.random() * 65536) }));
-    surfaceLab.appendChild(reroll);
     labs.append(
       surfaceLab,
       this.#xyLab(
-        "finish",
-        "FINISH / 02",
-        "contrast × effect amount",
-        "surfaceContrast",
-        "surfaceEffectAmount",
-        ["soft", "punch"],
-        ["subtle", "full"]
-      ),
-      this.#xyLab(
-        "life",
-        "LIFE / 03",
+        "motion",
+        "MOTION / 02",
         "flow × reaction",
         "surfaceFlow",
         "surfaceReaction",
         ["still", "flow"],
-        ["calm", "react"]
+        ["subtle", "react"]
       ),
       this.#xyLab(
         "sound",
-        "VOICE / 04",
-        "tone × LFO motion",
+        "VOICE / 03",
+        "tone × LFO",
         "soundTone",
         "soundMotion",
         ["warm", "glass"],
         ["still", "flutter"]
+      ),
+      this.#xyLab(
+        "thrust",
+        "THRUST / 04",
+        "thrust × air",
+        "soundThrust",
+        "soundAir",
+        ["glide", "punch"],
+        ["pure", "airy"]
       )
     );
     this.#panel.append(labs);
@@ -458,6 +573,10 @@ export class BoardSelector {
     random.textContent = "surprise me";
     random.addEventListener("click", () => this.#set(randomBoardConfig(), true));
     this.#panel.appendChild(random);
-    if (this.#open) this.#animateSoundPad();
+    this.#paintVisualPreviews();
+    const now = performance.now();
+    this.#drawVoicePreview(now);
+    this.#drawThrustPreview(now);
+    if (this.#open) this.#startPreviewLoop();
   }
 }
