@@ -1,4 +1,5 @@
 import * as THREE from "three/webgpu";
+import { attribute } from "three/tsl";
 import { LIGHT_SCALE } from "../../config";
 import type { Physics } from "../../core/physics";
 import { BodyType } from "../../core/box3dWorld";
@@ -7,18 +8,23 @@ import { GARDEN_MEADOW, gardenSurfaceHeight } from "../../world/garden/layout";
 import { BrainOverlay } from "../aiCars/brainOverlay";
 import type { InspectableBrain } from "../../ui/brainPanel/types";
 
+type N = any; // TSL node (loosely typed, matching the repo's fx/* convention)
 type Gait = "walk" | "trot" | "gallop";
 type PolicyDef = { sizes: number[]; weights: number[]; meta?: Record<string, unknown> };
 type ObstacleKind = "cone" | "hurdle";
 type Obstacle = { x: number; z: number; y: number; radius: number; height: number; kind: ObstacleKind; mesh: THREE.Object3D };
 type LegRig = {
-  upper: THREE.Mesh;
-  lower: THREE.Mesh;
-  knee: THREE.Mesh;
-  hoof: THREE.Mesh;
+  upper: THREE.Object3D;
+  lower: THREE.Object3D;
+  knee: THREE.Object3D;
+  hoof: THREE.Object3D;
   side: number;
   fore: number;
 };
+/** One instanced body-part slot: the scratch Object3D whose world matrix is
+ * copied into `mesh` at `slot` each synced frame. */
+type InstPart = { mesh: THREE.InstancedMesh; obj: THREE.Object3D; slot: number };
+type Role = { mesh: THREE.InstancedMesh; tintArr?: Float32Array };
 type HorseVariant = {
   scale: number;
   coat: number;
@@ -34,8 +40,8 @@ type HorseState = {
   group: THREE.Group;
   body: THREE.Group;
   legs: LegRig[];
-  mane: THREE.Mesh[];
-  tail: THREE.Mesh[];
+  mane: THREE.Object3D[];
+  tail: THREE.Object3D[];
   variant: HorseVariant;
   phase: number;
   x: number;
@@ -205,7 +211,7 @@ function mat(color: number, roughness = 0.72, emissive = 0.015): THREE.MeshStand
     emissiveIntensity: emissive * LIGHT_SCALE
   });
 }
-function putCylinderBetween(cyl: THREE.Mesh, a: THREE.Vector3, b: THREE.Vector3): void {
+function putCylinderBetween(cyl: THREE.Object3D, a: THREE.Vector3, b: THREE.Vector3): void {
   const mid = cyl.position;
   mid.copy(a).add(b).multiplyScalar(0.5);
   const d = b.clone().sub(a);
@@ -237,10 +243,26 @@ export class HorseHerd {
   #inspectableCache: (InspectableBrain | null)[] = []; // one InspectableBrain per horse index, built once and reused
   #inspectableOut: InspectableBrain[] = []; // reused output array for inspectables() (length reset each call)
 
+  // Instanced rendering: every horse is a CPU-only scratch Object3D skeleton
+  // (never added to the scene). Each frame we refresh those skeletons with the
+  // SAME #poseHorse math, then copy each part's world matrix into one
+  // InstancedMesh per body-part type — collapsing ~20 draws/horse to ~1 draw
+  // per part-type. #instRoot (named, so the census attributes it cleanly) parents
+  // every part mesh so one .visible flag gates the whole herd.
+  #instRoot = new THREE.Group();
+  #roles = new Map<string, Role>(); // part-type name → its InstancedMesh (+ per-instance tint buffer)
+  #instMeshes: THREE.InstancedMesh[] = []; // all part meshes, for one-shot needsUpdate/visibility
+  #instParts: InstPart[] = []; // every live (scratch-obj → mesh slot) mapping, walked each synced frame
+  #tintAttrs: THREE.InstancedBufferAttribute[] = []; // per-instance colour buffers, uploaded once after spawn
+  #needsInstanceResync = true; // force one matrix sync when the herd (re)appears while frozen
+
   constructor(physics: Physics, map: WorldMap, scene: THREE.Scene) {
     this.#world = physics.world;
     this.#map = map;
     this.#scene = scene;
+    this.#instRoot.name = "HorseHerdInstanced";
+    scene.add(this.#instRoot);
+    this.#buildInstanced(); // roles must exist before #spawnHerd registers parts
     this.#buildCourse();
     this.#spawnHerd();
     this.#ready = true;
@@ -419,6 +441,122 @@ export class HorseHerd {
     return gardenSurfaceHeight(this.#map, CENTER.x + x, CENTER.z + z);
   }
 
+  /**
+   * A lit body-part material whose per-instance colour drives BOTH the albedo and
+   * the faint self-glow, reproducing the old per-horse `mat()` exactly: emissive =
+   * colour × 0.16 × emissiveParam × LIGHT_SCALE. The colour comes from a `tint`
+   * instanced attribute each part geometry carries, so one material is shared
+   * across every part-type in a family (same trick as fx/paintball's splat skins).
+   */
+  #tintMat(roughness: number, emissiveParam: number): THREE.MeshStandardNodeMaterial {
+    const m = new THREE.MeshStandardNodeMaterial({ roughness, metalness: 0.03 });
+    const tint = attribute("tint", "vec3") as N;
+    m.colorNode = tint;
+    m.emissiveNode = tint.mul(0.16 * emissiveParam * LIGHT_SCALE);
+    return m;
+  }
+
+  /** Register one instanced part-type: `perHorse` slots per horse (COUNT×perHorse
+   * total). `tinted` roles get a per-instance colour buffer; constant-colour roles
+   * (hoof/eye/blaze/…) skip it and use the material colour. */
+  #makeRole(name: string, geo: THREE.BufferGeometry, material: THREE.Material, perHorse: number, cast: boolean, tinted: boolean): void {
+    const count = COUNT * perHorse;
+    let tintArr: Float32Array | undefined;
+    if (tinted) {
+      tintArr = new Float32Array(count * 3);
+      const attr = new THREE.InstancedBufferAttribute(tintArr, 3);
+      geo.setAttribute("tint", attr);
+      this.#tintAttrs.push(attr);
+    }
+    const m = new THREE.InstancedMesh(geo, material, count);
+    m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    m.frustumCulled = false; // one shared herd bound; the MESH_HIDE_RANGE gate culls the set
+    m.castShadow = cast;
+    m.receiveShadow = true;
+    m.count = count;
+    this.#instRoot.add(m);
+    this.#instMeshes.push(m);
+    this.#roles.set(name, { mesh: m, tintArr });
+  }
+
+  /**
+   * One InstancedMesh per distinct body-part geometry+material. Geometries match
+   * the old per-horse meshes exactly; where size used to live in the geometry and
+   * would otherwise need N geometries (mane height, patch radius) it is folded into
+   * the scratch part's scale, which the instance matrix carries — pixel-identical.
+   * Tail segments keep 5 distinct geometries (their taper can't fold into a scale).
+   */
+  #buildInstanced(): void {
+    const matCoat = this.#tintMat(0.74, 0.015); // torso/chest/rump/neck/head/legs
+    const matDark = this.#tintMat(0.88, 0.01); // mane/ears/tail (variant.mane colour)
+    const matMuzzle = this.#tintMat(0.78, 0.01);
+    const matTack = this.#tintMat(0.5, 0.008); // saddle/girth/straps/blanket trim
+    const matBlanket = this.#tintMat(0.45, 0.02);
+    const matBlaze = mat(0xf2e3c4, 0.72, 0.01); // blaze + patches (constant cream)
+    const matHoof = mat(0x11100e, 0.6, 0.006);
+    const matEye = new THREE.MeshBasicMaterial({ color: 0xffefb0 });
+    matEye.toneMapped = false;
+    const matNostril = new THREE.MeshBasicMaterial({ color: 0x090807 });
+
+    this.#makeRole("torso", new THREE.CapsuleGeometry(0.42, 1.65, 8, 14), matCoat, 1, true, true);
+    this.#makeRole("chest", new THREE.SphereGeometry(0.45, 16, 12), matCoat, 1, true, true);
+    this.#makeRole("rump", new THREE.SphereGeometry(0.47, 16, 12), matCoat, 1, true, true);
+    this.#makeRole("neck", new THREE.CylinderGeometry(0.18, 0.26, 0.9, 12), matCoat, 1, true, true);
+    this.#makeRole("head", new THREE.BoxGeometry(0.62, 0.34, 0.36), matCoat, 1, true, true);
+    this.#makeRole("legUpper", new THREE.CylinderGeometry(0.09, 0.105, 1, 10), matCoat, 4, true, true);
+    this.#makeRole("legLower", new THREE.CylinderGeometry(0.07, 0.085, 1, 10), matCoat, 4, true, true);
+    this.#makeRole("legKnee", new THREE.SphereGeometry(0.12, 10, 8), matCoat, 4, true, true);
+    this.#makeRole("legHoof", new THREE.BoxGeometry(0.24, 0.11, 0.17), matHoof, 4, true, false);
+    this.#makeRole("muzzle", new THREE.BoxGeometry(0.3, 0.22, 0.31), matMuzzle, 1, true, true);
+    this.#makeRole("ear", new THREE.ConeGeometry(0.08, 0.24, 6), matDark, 2, true, true);
+    this.#makeRole("mane", new THREE.BoxGeometry(0.08, 1, 0.08), matDark, 7, true, true); // height folded into scale.y
+    for (let i = 0; i < 5; i++) {
+      this.#makeRole(`tail${i}`, new THREE.CylinderGeometry(0.075 - i * 0.008, 0.095 - i * 0.009, 0.42, 8), matDark, 1, true, true);
+    }
+    this.#makeRole("blanket", new THREE.BoxGeometry(1.04, 0.08, 0.84), matBlanket, 1, true, true);
+    this.#makeRole("blanketTrim", new THREE.BoxGeometry(1.08, 0.09, 0.06), matTack, 2, true, true);
+    this.#makeRole("saddle", new THREE.BoxGeometry(0.82, 0.12, 0.68), matTack, 1, true, true);
+    this.#makeRole("girth", new THREE.BoxGeometry(0.12, 0.12, 0.94), matTack, 1, true, true);
+    this.#makeRole("breastCollar", new THREE.BoxGeometry(0.08, 0.08, 0.82), matTack, 1, true, true);
+    this.#makeRole("noseband", new THREE.BoxGeometry(0.05, 0.055, 0.42), matTack, 1, true, true);
+    this.#makeRole("browband", new THREE.BoxGeometry(0.07, 0.055, 0.46), matTack, 1, true, true);
+    this.#makeRole("blaze", new THREE.BoxGeometry(0.045, 0.24, 0.025), matBlaze, 1, false, false);
+    this.#makeRole("patch", new THREE.SphereGeometry(1, 10, 8), matBlaze, 3, true, false); // radius folded into scale
+    this.#makeRole("eye", new THREE.SphereGeometry(0.035, 8, 6), matEye, 2, false, false);
+    this.#makeRole("nostril", new THREE.SphereGeometry(0.018, 6, 5), matNostril, 2, false, false);
+  }
+
+  /** Create a scratch Object3D for one body part, bind it to its instanced slot,
+   * and stamp its per-instance colour. The caller sets the local transform exactly
+   * as the old #buildHorse did; the instance matrix is that transform composed up
+   * the scratch hierarchy each synced frame. */
+  #part(role: string, slot: number, tint?: THREE.Color): THREE.Object3D {
+    const o = new THREE.Object3D();
+    const r = this.#roles.get(role)!;
+    this.#instParts.push({ mesh: r.mesh, obj: o, slot });
+    if (tint && r.tintArr) {
+      const b = slot * 3;
+      r.tintArr[b] = tint.r;
+      r.tintArr[b + 1] = tint.g;
+      r.tintArr[b + 2] = tint.b;
+    }
+    return o;
+  }
+
+  /** Refresh every horse's scratch skeleton, then copy each part's world matrix
+   * into its instanced slot. Called only while the sim is active (poses moving) or
+   * once when the herd reappears frozen — otherwise the last matrices persist, so
+   * distant horses stand exactly where they froze at zero CPU cost. */
+  #syncInstances(): void {
+    for (const h of this.#horses) h.group.updateMatrixWorld(true);
+    const parts = this.#instParts;
+    for (let i = 0; i < parts.length; i++) {
+      const p = parts[i];
+      p.mesh.setMatrixAt(p.slot, p.obj.matrixWorld);
+    }
+    for (const m of this.#instMeshes) m.instanceMatrix.needsUpdate = true;
+  }
+
   #buildCourse(): void {
     const coneMat = mat(0xf36c37, 0.62, 0.012);
     const coneStripeMat = mat(0xf5d7a4, 0.6, 0.012);
@@ -492,14 +630,14 @@ export class HorseHerd {
       const r = gait === "gallop" ? 46 + (i % 2) * 2.5 : gait === "trot" ? 35 + (i % 3) * 2.2 : 22 + (i % 4) * 2.6;
       const a = gait === "gallop" ? hurdleAngles[i % hurdleAngles.length] - 0.11 - (i % 2) * 0.04 : (i / COUNT) * Math.PI * 2;
       const variant = this.#variant(i);
-      const group = this.#buildHorse(variant);
+      const group = this.#buildHorse(variant, i);
       const body = group.userData.body as THREE.Group;
       const h: HorseState = {
         group,
         body,
         legs: group.userData.legs as LegRig[],
-        mane: group.userData.mane as THREE.Mesh[],
-        tail: group.userData.tail as THREE.Mesh[],
+        mane: group.userData.mane as THREE.Object3D[],
+        tail: group.userData.tail as THREE.Object3D[],
         variant,
         phase: rand01(i, 11),
         x: Math.cos(a) * r,
@@ -526,9 +664,13 @@ export class HorseHerd {
         layerSnap: []
       };
       this.#horses.push(h);
-      this.#scene.add(group);
+      // The root stays a CPU-only scratch skeleton (never scene-added): its
+      // meshes are drawn instanced, not directly.
       this.#poseHorse(h, gait === "gallop" ? 2.1 : gait === "trot" ? 1.55 : 0.9, gait === "gallop" ? 1 : 0.65, h.action, null);
     }
+    // per-instance colours are static — upload once now that every slot is filled
+    for (const a of this.#tintAttrs) a.needsUpdate = true;
+    this.#syncInstances(); // seed the instance matrices with the spawn pose
   }
 
   #variant(i: number): HorseVariant {
@@ -545,133 +687,140 @@ export class HorseHerd {
     };
   }
 
-  #buildHorse(variant: HorseVariant): THREE.Group {
+  /**
+   * Build one horse as a CPU-only scratch skeleton (root → body → parts). The
+   * body-relative transforms are IDENTICAL to the pre-instancing version; each
+   * leaf is a bare Object3D registered to its instanced part-type via #part, so
+   * #poseHorse keeps writing the same transforms and the instance matrices track
+   * them. `index` places this horse's slots in every part-type's buffer.
+   */
+  #buildHorse(variant: HorseVariant, index: number): THREE.Group {
     const root = new THREE.Group();
     const body = new THREE.Group();
     root.add(body);
 
-    const coat = mat(variant.coat, 0.74, 0.015);
-    const dark = mat(variant.mane, 0.88, 0.01);
-    const hoofMat = mat(0x11100e, 0.6, 0.006);
-    const sockMat = mat(0xe6d1b7, 0.68, 0.01);
-    const muzzleMat = mat(variant.muzzle, 0.78, 0.01);
-    const tackMat = mat(variant.harness, 0.5, 0.008);
-    const blanketMat = mat(variant.blanket, 0.45, 0.02);
-    const blazeMat = mat(0xf2e3c4, 0.72, 0.01);
+    const coatCol = new THREE.Color(variant.coat);
+    const darkCol = new THREE.Color(variant.mane);
+    const muzzleCol = new THREE.Color(variant.muzzle);
+    const tackCol = new THREE.Color(variant.harness);
+    const blanketCol = new THREE.Color(variant.blanket);
+    const sockCol = new THREE.Color(0xe6d1b7);
 
-    const torso = mesh(new THREE.CapsuleGeometry(0.42, 1.65, 8, 14), coat);
+    const torso = this.#part("torso", index, coatCol);
     torso.rotation.z = Math.PI / 2;
     torso.scale.set(1.12, 1, 0.78);
     torso.position.y = 1.42;
     body.add(torso);
 
-    const chest = mesh(new THREE.SphereGeometry(0.45, 16, 12), coat);
+    const chest = this.#part("chest", index, coatCol);
     chest.scale.set(0.82, 1.0, 0.8);
     chest.position.set(0.88, 1.43, 0);
     body.add(chest);
 
-    const rump = mesh(new THREE.SphereGeometry(0.47, 16, 12), coat);
+    const rump = this.#part("rump", index, coatCol);
     rump.scale.set(0.9, 0.92, 0.82);
     rump.position.set(-1.0, 1.4, 0);
     body.add(rump);
 
     for (let i = 0; i < variant.patches; i++) {
-      const patch = mesh(new THREE.SphereGeometry(0.18 + rand01(i, variant.coat) * 0.08, 10, 8), blazeMat);
-      patch.scale.set(1.0, 0.12, 0.75);
+      // radius used to live in the geometry; fold it into the scale (unit sphere)
+      const r = 0.18 + rand01(i, variant.coat) * 0.08;
+      const patch = this.#part("patch", index * 3 + i);
+      patch.scale.set(r, r * 0.12, r * 0.75);
       patch.position.set(-0.65 + i * 0.48, 1.55 + rand01(i, 20) * 0.12, (i % 2 ? -1 : 1) * 0.39);
       patch.rotation.x = Math.PI / 2;
       body.add(patch);
     }
 
-    const neck = mesh(new THREE.CylinderGeometry(0.18, 0.26, 0.9, 12), coat);
+    const neck = this.#part("neck", index, coatCol);
     neck.position.set(1.18, 1.92, 0);
     neck.rotation.z = -0.62;
     body.add(neck);
 
-    const head = mesh(new THREE.BoxGeometry(0.62, 0.34, 0.36), coat);
+    const head = this.#part("head", index, coatCol);
     head.position.set(1.72, 2.16, 0);
     head.rotation.z = -0.16;
     body.add(head);
 
-    const muzzle = mesh(new THREE.BoxGeometry(0.3, 0.22, 0.31), muzzleMat);
+    const muzzle = this.#part("muzzle", index, muzzleCol);
     muzzle.position.set(2.05, 2.08, 0);
     body.add(muzzle);
 
     if (variant.blaze) {
-      const blaze = mesh(new THREE.BoxGeometry(0.045, 0.24, 0.025), blazeMat, false);
+      const blaze = this.#part("blaze", index);
       blaze.position.set(1.98, 2.22, 0);
       blaze.rotation.z = -0.12;
       body.add(blaze);
     }
 
-    const eyeMat = new THREE.MeshBasicMaterial({ color: 0xffefb0 });
-    eyeMat.toneMapped = false;
+    let zi = 0;
     for (const z of [-0.19, 0.19]) {
-      const eye = mesh(new THREE.SphereGeometry(0.035, 8, 6), eyeMat, false);
+      const eye = this.#part("eye", index * 2 + zi);
       eye.position.set(1.92, 2.22, z);
       body.add(eye);
-      const nostril = mesh(new THREE.SphereGeometry(0.018, 6, 5), new THREE.MeshBasicMaterial({ color: 0x090807 }), false);
+      const nostril = this.#part("nostril", index * 2 + zi);
       nostril.position.set(2.18, 2.1, z * 0.52);
       body.add(nostril);
-      const ear = mesh(new THREE.ConeGeometry(0.08, 0.24, 6), dark);
+      const ear = this.#part("ear", index * 2 + zi, darkCol);
       ear.position.set(1.55, 2.43, z * 0.62);
       ear.rotation.z = -0.2;
       body.add(ear);
+      zi++;
     }
 
-    const mane: THREE.Mesh[] = [];
+    const mane: THREE.Object3D[] = [];
     for (let i = 0; i < 7; i++) {
-      const m = mesh(new THREE.BoxGeometry(0.08, 0.22 + i * 0.01, 0.08), dark);
+      // height used to live in the geometry; fold it into scale.y (unit box)
+      const m = this.#part("mane", index * 7 + i, darkCol);
+      m.scale.y = 0.22 + i * 0.01;
       m.position.set(1.13 - i * 0.12, 2.08 - i * 0.06, 0);
       m.rotation.z = -0.35;
       body.add(m);
       mane.push(m);
     }
 
-    const tail: THREE.Mesh[] = [];
+    const tail: THREE.Object3D[] = [];
     for (let i = 0; i < 5; i++) {
-      const t = mesh(new THREE.CylinderGeometry(0.075 - i * 0.008, 0.095 - i * 0.009, 0.42, 8), dark);
+      const t = this.#part(`tail${i}`, index, darkCol);
       t.position.set(-1.5 - i * 0.08, 1.34 - i * 0.11, 0);
       t.rotation.z = 0.75 + i * 0.12;
       body.add(t);
       tail.push(t);
     }
 
-    const blanket = mesh(new THREE.BoxGeometry(1.04, 0.08, 0.84), blanketMat);
+    const blanket = this.#part("blanket", index, blanketCol);
     blanket.position.set(-0.1, 1.76, 0);
     body.add(blanket);
-    const blanketTrim = mesh(new THREE.BoxGeometry(1.08, 0.09, 0.06), tackMat);
-    blanketTrim.position.set(-0.1, 1.8, 0.45);
-    body.add(blanketTrim.clone(), blanketTrim);
-    blanketTrim.position.z = -0.45;
-    const saddle = mesh(new THREE.BoxGeometry(0.82, 0.12, 0.68), tackMat);
+    const trimA = this.#part("blanketTrim", index * 2 + 0, tackCol);
+    trimA.position.set(-0.1, 1.8, 0.45);
+    body.add(trimA);
+    const trimB = this.#part("blanketTrim", index * 2 + 1, tackCol);
+    trimB.position.set(-0.1, 1.8, -0.45);
+    body.add(trimB);
+    const saddle = this.#part("saddle", index, tackCol);
     saddle.position.set(-0.1, 1.85, 0);
     body.add(saddle);
-    const girth = mesh(new THREE.BoxGeometry(0.12, 0.12, 0.94), tackMat);
+    const girth = this.#part("girth", index, tackCol);
     girth.position.set(-0.02, 1.55, 0);
     body.add(girth);
-    const breastCollar = mesh(new THREE.BoxGeometry(0.08, 0.08, 0.82), tackMat);
+    const breastCollar = this.#part("breastCollar", index, tackCol);
     breastCollar.position.set(0.72, 1.55, 0);
     body.add(breastCollar);
-    const noseband = mesh(new THREE.BoxGeometry(0.05, 0.055, 0.42), tackMat);
+    const noseband = this.#part("noseband", index, tackCol);
     noseband.position.set(1.98, 2.13, 0);
     body.add(noseband);
-    const browband = mesh(new THREE.BoxGeometry(0.07, 0.055, 0.46), tackMat);
+    const browband = this.#part("browband", index, tackCol);
     browband.position.set(1.68, 2.32, 0);
     body.add(browband);
 
     const legs: LegRig[] = [];
-    const upperGeo = new THREE.CylinderGeometry(0.09, 0.105, 1, 10);
-    const lowerGeo = new THREE.CylinderGeometry(0.07, 0.085, 1, 10);
-    const jointGeo = new THREE.SphereGeometry(0.12, 10, 8);
-    const hoofGeo = new THREE.BoxGeometry(0.24, 0.11, 0.17);
     const hips: [number, number][] = [[0.82, -0.32], [0.82, 0.32], [-0.78, -0.32], [-0.78, 0.32]];
     for (let i = 0; i < hips.length; i++) {
       const [x, z] = hips[i];
-      const upper = mesh(upperGeo, coat);
-      const lower = mesh(lowerGeo, (variant.sockMask & (1 << i)) ? sockMat : coat);
-      const knee = mesh(jointGeo, coat);
-      const hoof = mesh(hoofGeo, hoofMat);
+      const upper = this.#part("legUpper", index * 4 + i, coatCol);
+      const lower = this.#part("legLower", index * 4 + i, (variant.sockMask & (1 << i)) ? sockCol : coatCol);
+      const knee = this.#part("legKnee", index * 4 + i, coatCol);
+      const hoof = this.#part("legHoof", index * 4 + i);
       body.add(upper, lower, knee, hoof);
       legs.push({ upper, lower, knee, hoof, side: z < 0 ? -1 : 1, fore: x > 0 ? 1 : -1 });
     }
@@ -711,6 +860,15 @@ export class HorseHerd {
     if (this.#meshesShown && camDist2 > MESH_HIDE_RANGE * MESH_HIDE_RANGE) this.#setHerdVisible(false);
     else if (!this.#meshesShown && camDist2 < MESH_SHOW_RANGE * MESH_SHOW_RANGE) this.#setHerdVisible(true);
 
+    // Push the freshly-posed scratch skeletons into the instanced part meshes.
+    // While active the sim moves every frame; once frozen (past SIM_RANGE) we stop
+    // rewriting matrices — they persist, so a distant herd stands still for free —
+    // except for the one sync that seeds the pose when it reappears frozen.
+    if (this.#meshesShown && (this.#active || this.#needsInstanceResync)) {
+      this.#syncInstances();
+      this.#needsInstanceResync = false;
+    }
+
     const overlay = this.#overlay;
     if (!overlay) return;
     if (!this.#active || !this.#overlaysOn) {
@@ -728,11 +886,14 @@ export class HorseHerd {
     }
   }
 
-  /** Show/hide every horse + course prop in one shot (distance mesh gate). */
+  /** Show/hide the whole instanced herd + course props in one shot (distance mesh
+   * gate). #instRoot parents every part mesh, so one flag hides them all. On show
+   * we force a resync so a herd that froze off-range reappears in its frozen pose. */
   #setHerdVisible(visible: boolean): void {
     this.#meshesShown = visible;
-    for (const h of this.#horses) h.group.visible = visible;
+    this.#instRoot.visible = visible;
     for (const o of this.#obstacles) o.mesh.visible = visible;
+    if (visible) this.#needsInstanceResync = true;
   }
 
   /** World position of a horse's floating lattice: above its head. */
