@@ -13,6 +13,7 @@ import { TileStreamer } from "./world/tiles";
 import { createRoadMarkings } from "./world/roadMarkings";
 import { RoadGraph } from "./world/traffic/roadGraph";
 import { TrafficLightView } from "./world/traffic/trafficLights";
+import { StreetLamps } from "./world/streetLamps";
 import { Physics } from "./core/physics";
 import { updateCrownDisplay, resetCrownTweaks } from "./world/salesforceCrown";
 import { createBayLights, updateBayLights, resetBayLightsTweaks } from "./world/bayLights";
@@ -261,9 +262,14 @@ async function boot() {
   // and their state machine cycles (see world/traffic/). Failures leave the city
   // without signals but never block boot.
   let trafficLights: TrafficLightView | null = null;
+  let streetLamps: StreetLamps | null = null;
   void RoadGraph.load()
     .then((roads) => {
       trafficLights = new TrafficLightView(scene, map, roads);
+      // fake night-street lighting: reuse the just-loaded graph (no second fetch)
+      streetLamps = new StreetLamps(scene, map, roads);
+      const sfHooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
+      if (sfHooks) Object.assign(sfHooks, { streetLamps });
     })
     .catch((err: unknown) => console.warn("[traffic] signals unavailable", err));
   let creatures: Creatures | null = null;
@@ -1702,6 +1708,7 @@ async function boot() {
     // high over the city streams buildings only — no park lawns / trees uploaded
     tiles.update(player.position.x, player.position.z, highUp);
     trafficLights?.update(player.position, performance.now() / 1000);
+    streetLamps?.update(player.position);
     abandonedMounts.update(frameDt, player.position);
     rocketRiders.update(frameDt, player.position); // the launched guitarists live their own lives
     if (player.mode === "speedboat") boatLaunchers?.update(frameDt); // guitarist jam + rocket reload
@@ -1941,7 +1948,7 @@ async function boot() {
 
   const exposeDebugHooks = () => {
     Object.assign(window as never, {
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, splashes, vehicleAudio, swimAudio, nature, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, rocketRiders, boatLaunchers, goldenGateLights, teleportToTarget, trafficLights, citygen, citygenRing, worldCursor, worldQueries, underwater, seaPillars, water, roadMarkings, colliderDebug, FOLIAGE_TUNING, setFoliageVisible }
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, splashes, vehicleAudio, swimAudio, nature, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, rocketRiders, boatLaunchers, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, underwater, seaPillars, water, roadMarkings, colliderDebug, FOLIAGE_TUNING, setFoliageVisible }
     });
   };
   if (import.meta.env.DEV || new URLSearchParams(location.search).has("profile")) {

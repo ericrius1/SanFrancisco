@@ -2,7 +2,7 @@
  * Pause control (bottom-center): appears only while the game is paused and the
  * UI is visible (hidden in immersive mode, since it lives under #hud). Pausing
  * freezes the whole world but leaves the player live — you keep walking/driving/
- * flying so you can stroll up to a training car and click its brain. This toggle
+ * flying so you can walk around while the world holds still. This toggle
  * flips the "also freeze the player" bit, for a dead-still screenshot.
  */
 export class PauseToggle {

@@ -162,6 +162,11 @@
         border: 1px solid var(--hairline);
         box-shadow: var(--shadow-sm), var(--edge-hi);
         backdrop-filter: blur(var(--blur));
+        /* bottom-anchored panel grows upward — cap it so short viewports scroll
+           inside the panel instead of pushing rows off the top of the screen */
+        max-height: calc(100dvh - 58px);
+        overflow-y: auto;
+        overscroll-behavior: contain;
       }
       /* movement grid + global shortcuts, side by side */
       #hud .help .cols {

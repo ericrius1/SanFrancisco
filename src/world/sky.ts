@@ -30,6 +30,7 @@ import { CROWN_INTENSITY } from "./salesforceCrown"
 import { BAY_LIGHTS_INTENSITY } from "./bayLights"
 import { GOLDEN_GATE_LIGHTS_INTENSITY } from "./goldenGateLights"
 import { SUTRO_LIGHTS_INTENSITY } from "./sutroTower"
+import { STREET_LAMPS_INTENSITY } from "./streetLamps"
 import { LIGHT_SCALE, WORLD_TUNING } from "../config"
 import { tunables } from "../core/persist"
 import {
@@ -793,6 +794,9 @@ export class Sky {
     // evening twilight and fading back out as the sun returns.
     const goldenGateTwilightW = smooth01(0.5, 7.5, -elevation)
     GOLDEN_GATE_LIGHTS_INTENSITY.value = LIGHT_SCALE * 3.0 * goldenGateTwilightW
+    // Fake street-lamp pools: dark by day, warm pools fading in through twilight
+    // so the night streets read instead of going pitch black. (No real lights.)
+    STREET_LAMPS_INTENSITY.value = LIGHT_SCALE * 2.2 * goldenGateTwilightW
     // Sutro's aviation beacons: faint red by day, blazing after dark
     SUTRO_LIGHTS_INTENSITY.value =
       LIGHT_SCALE * (0.12 * dayW + 0.9 * goldW + 1.9 * nightW)

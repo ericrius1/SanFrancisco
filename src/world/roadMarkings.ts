@@ -31,9 +31,25 @@ const WHITE_W = 0.52;
 const YELLOW_W = 0.62;
 // Re-drape long strips: sampling ground only at a strip's endpoints lets it
 // float above convex hills or sink into valleys (the yellow centre line runs a
-// whole OSM polyline segment, often tens of metres). Subdivide so every node
-// re-samples effectiveGround and the quad hugs the terrain-conformed road.
-const DRAPE_STEP_M = 2.5;
+// whole OSM polyline segment, often tens of metres). We PROBE the draped centre
+// line finely (PROBE_STEP_M) but only KEEP a node where a straight chord across
+// the terrain would drift from the ground by more than DRAPE_TOL_M — so flat
+// streets collapse back to two nodes (one quad) while hills keep exactly the
+// density the slope demands. Uniform 2.5m subdivision on every strip ballooned
+// markings to ~1M tris for no visual gain.
+//
+// Probe step is decoupled from the (former, uniform) 2.5m emit step on purpose:
+// a coarse 2.5m probe steps clean over sub-2.5m ground undulations (SF streets
+// carry ~10cm bumps between hydro-flattened samples), leaving the chord to miss
+// them. Probing at ~1.5m lets the greedy actually SEE those bends and drop a
+// node on them, so the adaptive strip is flusher than the old dense one while
+// still collapsing the long flat runs that dominate the triangle bill.
+const PROBE_STEP_M = 1.0;
+// Longitudinal chord tolerance for the adaptive keep-test: insert an interior
+// node once the piecewise-linear reconstruction of the draped centre line would
+// err past this. Kept well under the decal's own 2.5cm lift so the marking never
+// visibly lifts off or sinks into a slope.
+const DRAPE_TOL_M = 0.045;
 
 function makeMarkingMaterial(colorHex: number, opacity: number): THREE.MeshBasicNodeMaterial {
   const mat = new THREE.MeshBasicNodeMaterial({
@@ -79,39 +95,63 @@ function pushStrip(
   const wx = nx * width * 0.5;
   const wz = nz * width * 0.5;
 
-  // Walk the offset centre line, re-sampling the road height at each node so the
-  // ribbon conforms to sloped/curved streets instead of chording across them.
-  // Both the left and right edge of every node are draped independently, so the
-  // strip also follows the street's cross-camber and each corner sits exactly
-  // LIFT_M above the road it covers (a single centre sample would let the edges
-  // float or dip a few cm on a canted street).
-  const steps = Math.max(1, Math.ceil(len / DRAPE_STEP_M));
-  const cx = ax + nx * offset;
-  const cz = az + nz * offset;
-  let plx = cx - wx, plz = cz - wz;
-  let prx = cx + wx, prz = cz + wz;
-  let ply = map.effectiveGround(plx, plz) + LIFT_M;
-  let pry = map.effectiveGround(prx, prz) + LIFT_M;
-  for (let s = 1; s <= steps; s++) {
-    const t = s / steps;
+  // Probe the offset centre line at PROBE_STEP_M resolution, then greedily keep
+  // only the nodes the terrain actually needs: a node survives when a straight
+  // chord from the previous kept node would miss the draped ground by more than
+  // DRAPE_TOL_M at some sample in between (a Douglas-Peucker-style walk along the
+  // strip). Flat streets keep just the two endpoints; hills keep their bends.
+  const fine = Math.max(1, Math.ceil(len / PROBE_STEP_M));
+  // Draped centre-line height at each fine probe — the curvature signal that
+  // drives subdivision. (Edges are re-draped per kept node below for camber.)
+  const h = new Float64Array(fine + 1);
+  for (let k = 0; k <= fine; k++) {
+    const t = k / fine;
+    h[k] = map.effectiveGround(ax + dx * t + nx * offset, az + dz * t + nz * offset);
+  }
+  // Greedy chord simplification over the fine probes → indices to keep.
+  const keep: number[] = [0];
+  let anchor = 0;
+  let cand = 2;
+  while (cand <= fine) {
+    let ok = true;
+    const h0 = h[anchor];
+    const slope = (h[cand] - h0) / (cand - anchor);
+    for (let j = anchor + 1; j < cand; j++) {
+      if (Math.abs(h0 + slope * (j - anchor) - h[j]) > DRAPE_TOL_M) { ok = false; break; }
+    }
+    if (ok) {
+      cand++;
+    } else {
+      keep.push(cand - 1);
+      anchor = cand - 1;
+      cand = anchor + 2;
+    }
+  }
+  if (keep[keep.length - 1] !== fine) keep.push(fine);
+
+  // Emit one quad per kept span. Both edges of every kept node are draped
+  // independently, so the strip still follows the street's cross-camber and each
+  // corner sits exactly LIFT_M above the road it covers.
+  const nodeAt = (idx: number) => {
+    const t = idx / fine;
     const ncx = ax + dx * t + nx * offset;
     const ncz = az + dz * t + nz * offset;
-    const qlx = ncx - wx, qlz = ncz - wz;
-    const qrx = ncx + wx, qrz = ncz + wz;
-    const qly = map.effectiveGround(qlx, qlz) + LIFT_M;
-    const qry = map.effectiveGround(qrx, qrz) + LIFT_M;
-
+    const lx = ncx - wx, lz = ncz - wz;
+    const rx = ncx + wx, rz = ncz + wz;
+    return { lx, lz, ly: map.effectiveGround(lx, lz) + LIFT_M, rx, rz, ry: map.effectiveGround(rx, rz) + LIFT_M };
+  };
+  let prev = nodeAt(keep[0]);
+  for (let n = 1; n < keep.length; n++) {
+    const cur = nodeAt(keep[n]);
     out.push(
-      plx, ply, plz,
-      qlx, qly, qlz,
-      qrx, qry, qrz,
-      plx, ply, plz,
-      qrx, qry, qrz,
-      prx, pry, prz
+      prev.lx, prev.ly, prev.lz,
+      cur.lx, cur.ly, cur.lz,
+      cur.rx, cur.ry, cur.rz,
+      prev.lx, prev.ly, prev.lz,
+      cur.rx, cur.ry, cur.rz,
+      prev.rx, prev.ry, prev.rz
     );
-
-    plx = qlx; plz = qlz; ply = qly;
-    prx = qrx; prz = qrz; pry = qry;
+    prev = cur;
   }
 }
 
