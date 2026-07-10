@@ -2,7 +2,8 @@
 // flat roof with a low tile cornice, an arched garage under a big bow/picture
 // window, arched upper windows. Reuses the shared façade kit.
 import { floorBands, aboveGrade, type FacadeDecorator, type Vec3 } from "../core/facade";
-import { gp, beltCourse, cornice, windowGrid, garageDoor, faceWindow, frontDoor } from "./facadeKit";
+import { gp, beltCourse, cornice, windowGrid, garageDoor, faceWindow, frontDoor, wallWithDoorway } from "./facadeKit";
+import { doorEligible } from "../core/collider";
 
 export const marinaFacade: FacadeDecorator = (e, out) => {
   const arch = e.arch;
@@ -12,12 +13,12 @@ export const marinaFacade: FacadeDecorator = (e, out) => {
   const n3: Vec3 = [e.normal[0], 0, e.normal[1]];
   const bands = floorBands(e);
   const groundTopY = bands[0]?.y1 ?? e.base + arch.floorH;
-  const g0 = gp(e, 0), g1 = gp(e, 1);
 
-  // smooth stucco wall, full height (one tone — no clapboard)
-  out.quad(wall, [g0[0], e.base, g0[2]], [g1[0], e.base, g1[2]], [g1[0], e.top, g1[2]], [g0[0], e.top, g0[2]], n3);
+  // smooth stucco wall, full height (one tone — no clapboard) — cut open at the
+  // doorway so the collider's walk-through gap isn't backed by a solid quad
+  wallWithDoorway(out, e, wall, e.base, e.top, n3);
 
-  if (e.isStreet) {
+  if (doorEligible(e)) {
     garageDoor(out, e, e.base, groundTopY, { door: "citygen.door", trim }, true); // arched garage
     frontDoor(out, e, { door: "citygen.door", trim }); // person door beside the garage (aligned to the gap)
     // big bow / picture window over the garage (first upper floor)

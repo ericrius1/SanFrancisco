@@ -151,6 +151,12 @@ function sampleGrassEntries(map: GardenTerrain, trees: GardenTree[], options: Gr
         const d = Math.hypot(px - options.focus.x, pz - options.focus.z);
         if (d > options.focus.radius) continue;
         focusWeight = 1 - smoothstep(options.focus.radius * 0.58, options.focus.radius, d);
+        // Radial density taper (code, not a knob): the detail ring's job is
+        // eye-level density right around the player — full density to ~25% of
+        // the radius, easing to ~24% by ~78% where foreshortening + the base
+        // layer carry the read. Cuts the ring's instance count ~2.7× with no
+        // visible thinning at the feet.
+        focusWeight *= 1 - 0.76 * smoothstep(options.focus.radius * 0.25, options.focus.radius * 0.78, d);
         if (focusWeight <= 0.02) continue;
       }
 
@@ -234,7 +240,7 @@ export class BotanicalGrassController extends THREE.Group {
   #tallGeometryNear = createBladeClusterGeometry({ blades: 8, segments: 4, width: 0.095, radius: 0.48, curvature: 0.4 });
   #baseGroup = new THREE.Group();
   #detailGroup = new THREE.Group();
-  #baseChunks: { mesh: THREE.InstancedMesh; cx: number; cz: number }[] = [];
+  #baseChunks: { mesh: THREE.InstancedMesh; cx: number; cz: number; full: number }[] = [];
   #detailLow: THREE.InstancedMesh | null = null;
   #detailTall: THREE.InstancedMesh | null = null;
   #focus: GrassFocus | null = null;
@@ -281,9 +287,22 @@ export class BotanicalGrassController extends THREE.Group {
 
     // Distance-cull whole base chunks (the shader fade collapses blades near
     // the view distance anyway, so hidden chunks were already invisible).
+    // Visible chunks additionally GRADE their instance count by distance:
+    // each chunk's entries were hash-shuffled at build, so drawing a count
+    // prefix is a spatially uniform thinning — full density near the player,
+    // ~half past ~190 m where clumps are a few pixels tall. mesh.count is a
+    // free draw-range knob (no buffer uploads).
     const chunkCutoff = Math.max(80, Number(values.baseViewDistance)) + 34;
     for (const chunk of this.#baseChunks) {
-      chunk.mesh.visible = Math.hypot(chunk.cx - focus.x, chunk.cz - focus.z) < chunkCutoff;
+      const d = Math.hypot(chunk.cx - focus.x, chunk.cz - focus.z);
+      chunk.mesh.visible = d < chunkCutoff;
+      if (chunk.mesh.visible) {
+        // near: under the detail ring the base is outnumbered ~20:1 — thin it
+        // far: past ~190 m clumps are a few pixels tall — halve them
+        const nearUnderlap = 1 - 0.34 * (1 - smoothstep(30, 60, d));
+        const farThin = 1 - 0.55 * smoothstep(110, 190, d);
+        chunk.mesh.count = Math.max(1, Math.round(chunk.full * nearUnderlap * farThin));
+      }
     }
     if (values.nearRadius <= 0 || values.nearDensity <= 0 || !inBotanicalGarden(focus.x, focus.z, values.nearRadius)) {
       if (this.stats.detailLow || this.stats.detailTall) {
@@ -344,6 +363,13 @@ export class BotanicalGrassController extends THREE.Group {
       else chunks.set(key, [entry]);
     }
     for (const [key, list] of chunks) {
+      // Hash-shuffle so any count-prefix of the instance buffer is a spatially
+      // uniform subset of the chunk — updateFocus thins far chunks by count.
+      list.sort((a, b) => {
+        const ha = Math.abs(Math.sin(a.x * 12.9898 + a.z * 78.233) * 43758.5453) % 1;
+        const hb = Math.abs(Math.sin(b.x * 12.9898 + b.z * 78.233) * 43758.5453) % 1;
+        return ha - hb;
+      });
       const mesh = createGrassMesh(
         `sfbg_base_${tier}_grass_${key}`,
         list.length,
@@ -373,7 +399,7 @@ export class BotanicalGrassController extends THREE.Group {
       mesh.geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(cx, cy, cz), radius);
       mesh.frustumCulled = true;
       this.#baseGroup.add(mesh);
-      this.#baseChunks.push({ mesh, cx, cz });
+      this.#baseChunks.push({ mesh, cx, cz, full: list.length });
     }
   }
 

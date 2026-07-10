@@ -9,6 +9,92 @@
       href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌉</text></svg>"
     />
     <style>
+
+      /* ============================================================
+         DESIGN TOKENS — one cohesive glassmorphism system.
+         Self-hosted font (offline; no CDN), semantic colors, radii,
+         elevation, motion, and a single z-index scale. Migrate values
+         here rather than sprinkling literals.
+         ============================================================ */
+      @font-face {
+        font-family: "InterVariable";
+        font-style: normal;
+        font-weight: 100 900;
+        font-display: swap;
+        src: url("/fonts/InterVariable.woff2") format("woff2");
+      }
+      :root {
+        /* type */
+        --font: "InterVariable", Inter, -apple-system, "SF Pro Text",
+          "Segoe UI", Roboto, sans-serif;
+        --font-mono: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, monospace;
+
+        /* accent — teal → mint */
+        --accent: #6fd7c4;
+        --accent-strong: #9ef2df;
+        --accent-line: rgba(111, 215, 196, 0.42);
+        --accent-soft: rgba(111, 215, 196, 0.16);
+        --accent-glow: rgba(111, 215, 196, 0.6);
+        --on-accent: #06202c;
+
+        /* text ramp (bright → muted) */
+        --text: #eaf4f8;
+        --text-soft: #dceff5;
+        --text-dim: #bcd9e6;
+        --text-mut: #9fc6d6;
+
+        /* status */
+        --danger: #f07f72;
+        --danger-strong: #ffb0a6;
+        --warn: #f2b96f;
+        --warn-strong: #ffdca8;
+
+        /* translucent navy glass surfaces */
+        --surface: rgba(10, 24, 36, 0.55);
+        --surface-strong: rgba(10, 24, 36, 0.72);
+        --surface-raised: rgba(18, 40, 56, 0.6);
+        --surface-sunken: rgba(6, 16, 25, 0.6);
+        --scrim: rgba(4, 10, 16, 0.5);
+
+        /* hairlines */
+        --hairline: rgba(190, 225, 240, 0.14);
+        --hairline-2: rgba(190, 225, 240, 0.22);
+        --hairline-strong: rgba(190, 225, 240, 0.35);
+
+        /* radii */
+        --r-xs: 4px;
+        --r-sm: 7px;
+        --r-md: 10px;
+        --r-lg: 12px;
+        --r-xl: 16px;
+        --r-pill: 999px;
+
+        /* elevation + glass */
+        --shadow-sm: 0 6px 18px rgba(0, 6, 12, 0.28);
+        --shadow-md: 0 10px 28px rgba(0, 6, 12, 0.3);
+        --shadow-lg: 0 24px 70px rgba(0, 4, 10, 0.6);
+        --edge-hi: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+        --blur: 6px;
+        --blur-strong: 8px;
+
+        /* motion — brief, ease-out for state changes */
+        --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+        --dur: 0.18s;
+        --dur-slow: 0.32s;
+
+        /* z-index scale — single source of truth, wide gaps.
+           --z-debug mirrors src/ui/debug.ts (owned by another pass). */
+        --z-underwater: 1;
+        --z-hud-base: 1;
+        --z-hud-raised: 2;
+        --z-hud-top: 3;
+        --z-panel: 8;
+        --z-loading: 20;
+        --z-map: 30;
+        --z-debug: 40;
+        --z-overlay: 50;
+        --z-modal: 60;
+      }
       html,
       body {
         margin: 0;
@@ -34,9 +120,27 @@
         position: fixed;
         inset: 0;
         pointer-events: none;
-        font-family: "Avenir Next", "Helvetica Neue", sans-serif;
-        color: #eaf4f8;
+        font-family: var(--font);
+        color: var(--text);
         text-shadow: 0 1px 3px rgba(0, 10, 20, 0.8);
+      }
+      /* one keyboard-focus recipe for every interactive control in the UI */
+      #hud button:focus-visible,
+      #hud input:focus-visible,
+      #hud [tabindex]:focus-visible,
+      .bigmap button:focus-visible {
+        outline: 2px solid var(--accent-strong);
+        outline-offset: 2px;
+      }
+      /* honor reduced-motion: keep state changes instant, drop the flourishes */
+      @media (prefers-reduced-motion: reduce) {
+        #hud *,
+        #loading *,
+        .bigmap * {
+          animation-duration: 0.001ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 0.001ms !important;
+        }
       }
       #hud .br-stack {
         position: absolute;
@@ -51,12 +155,13 @@
       #hud .help {
         max-width: 420px;
         font-size: 12px;
-        opacity: 0.9;
-        padding: 11px 13px;
-        border-radius: 10px;
-        background: rgba(10, 24, 36, 0.55);
-        border: 1px solid rgba(190, 225, 240, 0.14);
-        backdrop-filter: blur(6px);
+        opacity: 0.92;
+        padding: 12px 14px;
+        border-radius: var(--r-md);
+        background: var(--surface);
+        border: 1px solid var(--hairline);
+        box-shadow: var(--shadow-sm), var(--edge-hi);
+        backdrop-filter: blur(var(--blur));
       }
       /* movement grid + global shortcuts, side by side */
       #hud .help .cols {
@@ -66,14 +171,14 @@
       }
       #hud .help .extras {
         padding-left: 15px;
-        border-left: 1px solid rgba(190, 225, 240, 0.14);
+        border-left: 1px solid var(--hairline);
         opacity: 0.72;
       }
       #hud .place-history {
         position: absolute;
         top: 16px;
         left: 272px;
-        z-index: 2;
+        z-index: var(--z-hud-raised);
         display: inline-flex;
         gap: 7px;
         pointer-events: auto;
@@ -90,13 +195,11 @@
         gap: 7px;
         padding: 0 11px;
         border-radius: 10px;
-        background: rgba(10, 24, 36, 0.72);
+        background: var(--surface-strong);
         border: 1px solid rgba(111, 215, 196, 0.42);
-        color: #9ef2df;
+        color: var(--accent-strong);
         font:
-          800 11px "Avenir Next",
-          "Helvetica Neue",
-          sans-serif;
+          800 11px var(--font);
         letter-spacing: 0.02em;
         box-shadow:
           inset 0 1px 0 rgba(255, 255, 255, 0.06),
@@ -110,15 +213,15 @@
           opacity 0.15s;
       }
       #hud .place-history .history-btn:not(:disabled):hover {
-        border-color: #9ef2df;
-        color: #eaf4f8;
+        border-color: var(--accent-strong);
+        color: var(--text);
         background: rgba(22, 64, 70, 0.62);
         transform: translateY(-1px);
       }
       #hud .place-history .history-btn:disabled {
         cursor: default;
         opacity: 0.38;
-        color: #bcd9e6;
+        color: var(--text-dim);
         border-color: rgba(190, 225, 240, 0.2);
       }
       #hud .place-history .history-btn .hist-main {
@@ -196,8 +299,11 @@
       #hud .help .grid {
         display: grid;
         grid-template-columns: max-content 1fr;
-        gap: 4px 9px;
+        gap: 5px 11px;
         align-items: center;
+      }
+      #hud .help .grid .lbl {
+        color: var(--text-dim);
       }
       #hud .help .grid .keys {
         display: flex;
@@ -208,15 +314,22 @@
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        min-width: 10px;
-        height: 17px;
+        min-width: 18px;
+        height: 18px;
         padding: 0 5px;
-        border-radius: 4px;
-        background: rgba(18, 40, 56, 0.6);
-        border: 1px solid rgba(190, 225, 240, 0.35);
-        box-shadow: 0 1px 0 rgba(190, 225, 240, 0.16);
+        border-radius: var(--r-xs);
+        background: linear-gradient(
+          180deg,
+          rgba(30, 54, 72, 0.85),
+          var(--surface-raised)
+        );
+        border: 1px solid var(--hairline-strong);
+        box-shadow:
+          inset 0 1px 0 rgba(255, 255, 255, 0.1),
+          0 1px 1px rgba(0, 6, 12, 0.35);
+        color: var(--text);
         font-size: 10.5px;
-        font-weight: 600;
+        font-weight: 700;
         letter-spacing: 0.02em;
         line-height: 1;
       }
@@ -258,13 +371,32 @@
         opacity: 0.72;
         font-size: 11px;
       }
+      /* center event toast — a restrained glass banner that rises + fades on
+         each message (hud.ts toggles .show); readable over bright or dark scenes */
       #hud .center {
         position: absolute;
         left: 50%;
         top: 50%;
-        transform: translate(-50%, -50%);
-        font-size: 18px;
-        opacity: 0.9;
+        max-width: min(680px, 82vw);
+        padding: 9px 18px;
+        border-radius: var(--r-lg);
+        background: rgba(9, 22, 34, 0.62);
+        border: 1px solid var(--hairline-2);
+        box-shadow: var(--shadow-md), var(--edge-hi);
+        backdrop-filter: blur(var(--blur));
+        font-size: 16px;
+        font-weight: 600;
+        line-height: 1.35;
+        text-align: center;
+        opacity: 0;
+        transform: translate(-50%, -50%) translateY(9px);
+        transition:
+          opacity 0.2s var(--ease),
+          transform 0.2s var(--ease);
+      }
+      #hud .center.show {
+        opacity: 1;
+        transform: translate(-50%, -50%) translateY(0);
       }
       #hud .player-locator {
         position: absolute;
@@ -292,7 +424,7 @@
           0 8px 20px rgba(0, 6, 12, 0.28),
           inset 0 1px 0 rgba(255, 255, 255, 0.06);
         backdrop-filter: blur(5px);
-        color: #eaf4f8;
+        color: var(--text);
       }
       #hud .player-locator-marker.edge {
         transform: translate(-50%, -50%);
@@ -310,9 +442,7 @@
         background: hsl(var(--hue), 78%, 58%);
         color: #06131a;
         font:
-          800 12px "Avenir Next",
-          "Helvetica Neue",
-          sans-serif;
+          800 12px var(--font);
         text-shadow: none;
       }
       #hud .player-locator-marker .pl-body {
@@ -325,25 +455,21 @@
         text-overflow: ellipsis;
         white-space: nowrap;
         font:
-          800 11.5px "Avenir Next",
-          "Helvetica Neue",
-          sans-serif;
+          800 11.5px var(--font);
       }
       #hud .player-locator-marker .pl-distance {
-        color: #bcd9e6;
+        color: var(--text-dim);
         opacity: 0.86;
-        font:
-          700 10px "Avenir Next",
-          "Helvetica Neue",
-          sans-serif;
+        font: 700 10px var(--font);
+        font-variant-numeric: tabular-nums;
       }
       #hud .player-locator-marker .pl-arrow {
         display: none;
         flex: 0 0 9px;
         width: 9px;
         height: 9px;
-        border-top: 2px solid #eaf4f8;
-        border-right: 2px solid #eaf4f8;
+        border-top: 2px solid var(--text);
+        border-right: 2px solid var(--text);
         transform: rotate(var(--angle));
         opacity: 0.86;
       }
@@ -374,10 +500,11 @@
         width: max-content;
         max-width: 100%;
         padding: 6px 8px;
-        border-radius: 10px;
-        background: rgba(10, 24, 36, 0.55);
-        border: 1px solid rgba(190, 225, 240, 0.14);
-        backdrop-filter: blur(6px);
+        border-radius: var(--r-md);
+        background: var(--surface);
+        border: 1px solid var(--hairline);
+        box-shadow: var(--shadow-sm), var(--edge-hi);
+        backdrop-filter: blur(var(--blur));
       }
       #hud .toolbar .vehicles {
         flex-wrap: nowrap;
@@ -388,21 +515,20 @@
         display: inline-flex;
         align-items: center;
         gap: 6px;
-        min-height: 29px;
+        min-height: 30px;
         padding: 4px 10px;
-        border-radius: 7px;
+        border-radius: var(--r-sm);
         cursor: pointer;
-        background: rgba(18, 40, 56, 0.6);
-        border: 1px solid rgba(190, 225, 240, 0.25);
-        color: #eaf4f8;
-        font:
-          600 11.5px "Avenir Next",
-          "Helvetica Neue",
-          sans-serif;
+        background: var(--surface-raised);
+        border: 1px solid var(--hairline-2);
+        color: var(--text);
+        font: 600 11.5px var(--font);
         letter-spacing: 0.02em;
         transition:
-          border-color 0.15s,
-          color 0.15s;
+          border-color var(--dur) var(--ease),
+          color var(--dur) var(--ease),
+          background var(--dur) var(--ease),
+          transform 0.12s var(--ease);
       }
       #hud .toolbar .vehicle {
         gap: 5px;
@@ -425,17 +551,15 @@
         align-items: center;
         justify-content: center;
         gap: 1px;
-        min-width: 14px;
+        min-width: 15px;
         height: 16px;
         padding: 0 4px;
-        border-radius: 4px;
-        background: rgba(7, 18, 28, 0.68);
-        border: 1px solid rgba(190, 225, 240, 0.28);
-        color: #bcd9e6;
-        font:
-          700 9px "Avenir Next",
-          "Helvetica Neue",
-          sans-serif;
+        border-radius: var(--r-xs);
+        background: var(--surface-sunken);
+        border: 1px solid var(--hairline-2);
+        color: var(--text-dim);
+        font: 700 9px var(--font);
+        font-variant-numeric: tabular-nums;
         line-height: 1;
         text-shadow: none;
       }
@@ -445,18 +569,25 @@
         line-height: 1;
       }
       #hud .toolbar .tool:hover {
-        border-color: rgba(190, 225, 240, 0.55);
+        border-color: var(--hairline-strong);
+        background: rgba(26, 52, 70, 0.72);
+        transform: translateY(-1px);
+      }
+      #hud .toolbar .tool:active {
+        transform: translateY(0);
       }
       #hud .toolbar .tool.on {
-        border-color: #6fd7c4;
-        color: #9ef2df;
+        border-color: var(--accent);
+        color: var(--accent-strong);
+        background: rgba(22, 64, 70, 0.6);
       }
       #hud .toolbar .tool.on .num {
-        border-color: rgba(111, 215, 196, 0.62);
-        color: #9ef2df;
+        border-color: var(--accent-line);
+        color: var(--accent-strong);
       }
+      /* keyboard-cursor ring: which chip the arrow keys / number row will act on */
       #hud .toolbar .tool.kbd {
-        box-shadow: 0 0 0 2px rgba(111, 215, 196, 0.55);
+        box-shadow: 0 0 0 2px var(--accent-glow);
       }
       #hud .toolbar .hint {
         display: inline-flex;
@@ -469,17 +600,14 @@
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        min-width: 10px;
+        min-width: 15px;
         height: 15px;
         padding: 0 4px;
-        border-radius: 4px;
-        background: rgba(18, 40, 56, 0.6);
-        border: 1px solid rgba(190, 225, 240, 0.3);
-        color: #bcd9e6;
-        font:
-          600 9px "Avenir Next",
-          "Helvetica Neue",
-          sans-serif;
+        border-radius: var(--r-xs);
+        background: var(--surface-raised);
+        border: 1px solid var(--hairline-strong);
+        color: var(--text-dim);
+        font: 600 9px var(--font);
         box-shadow: 0 1px 0 rgba(190, 225, 240, 0.12);
         line-height: 1;
       }
@@ -489,10 +617,10 @@
         border-radius: 50%;
         cursor: pointer;
         padding: 0;
-        border: 2px solid rgba(190, 225, 240, 0.25);
+        border: 2px solid var(--hairline-2);
         transition:
-          transform 0.12s,
-          border-color 0.15s;
+          transform 0.12s var(--ease),
+          border-color var(--dur) var(--ease);
       }
       #hud .toolbar .swatch:hover {
         transform: scale(1.18);
@@ -546,15 +674,14 @@
         align-items: center;
         gap: 7px;
         padding: 4px 10px;
-        border-radius: 9px;
-        background: rgba(10, 24, 36, 0.55);
-        border: 1px solid rgba(190, 225, 240, 0.14);
-        backdrop-filter: blur(6px);
+        border-radius: var(--r-sm);
+        background: var(--surface);
+        border: 1px solid var(--hairline);
+        box-shadow: var(--shadow-sm), var(--edge-hi);
+        backdrop-filter: blur(var(--blur));
         color: #ffe9ae;
-        font:
-          700 13px "Avenir Next",
-          "Helvetica Neue",
-          sans-serif;
+        font: 700 13px var(--font);
+        font-variant-numeric: tabular-nums;
       }
       #hud .satchel .sic {
         font-size: 15px;
@@ -585,7 +712,7 @@
         gap: 8px;
         pointer-events: auto;
         user-select: none;
-        z-index: 2;
+        z-index: var(--z-hud-raised);
       }
       /* invite link button — sits under the avatar toggle; the open avatar
          panel (z-index above) slides over it */
@@ -593,10 +720,11 @@
         position: absolute;
         right: 20px;
         top: 70px;
-        z-index: 1;
+        z-index: var(--z-hud-base);
         pointer-events: auto;
         user-select: none;
       }
+      /* shared glass-button recipe — Share, Tutorial, Pause reuse this class */
       #hud .share-btn {
         display: inline-flex;
         align-items: center;
@@ -604,29 +732,28 @@
         height: 34px;
         padding: 0 12px;
         cursor: pointer;
-        border-radius: 10px;
-        border: 1px solid rgba(190, 225, 240, 0.22);
-        background: rgba(10, 24, 36, 0.62);
-        color: #dceff5;
-        font:
-          600 11.5px "Avenir Next",
-          "Helvetica Neue",
-          sans-serif;
+        border-radius: var(--r-md);
+        border: 1px solid var(--hairline-2);
+        background: var(--surface-strong);
+        color: var(--text-soft);
+        font: 600 11.5px var(--font);
         letter-spacing: 0.02em;
-        box-shadow:
-          inset 0 1px 0 rgba(255, 255, 255, 0.06),
-          0 6px 18px rgba(0, 6, 12, 0.28);
-        backdrop-filter: blur(6px);
+        box-shadow: var(--edge-hi), var(--shadow-sm);
+        backdrop-filter: blur(var(--blur));
         transition:
-          border-color 0.15s,
-          transform 0.12s,
-          background 0.15s;
+          border-color var(--dur) var(--ease),
+          color var(--dur) var(--ease),
+          transform 0.12s var(--ease),
+          background var(--dur) var(--ease);
       }
       #hud .share-btn:hover {
-        border-color: #6fd7c4;
-        color: #9ef2df;
+        border-color: var(--accent);
+        color: var(--accent-strong);
         transform: translateY(-1px);
-        background: rgba(15, 33, 47, 0.82);
+        background: rgba(15, 33, 47, 0.85);
+      }
+      #hud .share-btn:active {
+        transform: translateY(0);
       }
       #hud .share-btn .ic {
         font-size: 14px;
@@ -637,7 +764,7 @@
         position: absolute;
         right: 20px;
         top: 116px;
-        z-index: 1;
+        z-index: var(--z-hud-base);
         pointer-events: auto;
         user-select: none;
       }
@@ -655,7 +782,7 @@
           box-shadow:
             inset 0 1px 0 rgba(255, 255, 255, 0.06),
             0 0 16px rgba(111, 215, 196, 0.65);
-          border-color: #6fd7c4;
+          border-color: var(--accent);
         }
       }
       /* pause control — bottom center, only while paused (reuses .share-btn) */
@@ -664,7 +791,7 @@
         bottom: 26px;
         left: 50%;
         transform: translateX(-50%);
-        z-index: 2;
+        z-index: var(--z-hud-raised);
         pointer-events: auto;
         user-select: none;
       }
@@ -687,7 +814,7 @@
         width: min(440px, calc(100vw - 300px));
         padding: 10px 13px 8px;
         border-radius: 12px;
-        background: rgba(10, 24, 36, 0.72);
+        background: var(--surface-strong);
         border: 1px solid rgba(190, 225, 240, 0.2);
         box-shadow:
           0 10px 28px rgba(0, 6, 12, 0.3),
@@ -705,16 +832,14 @@
         align-items: baseline;
         margin-bottom: 7px;
         font:
-          700 10px "Avenir Next",
-          "Helvetica Neue",
-          sans-serif;
+          700 10px var(--font);
         letter-spacing: 0.07em;
         text-transform: uppercase;
-        color: #9ef2df;
+        color: var(--accent-strong);
         opacity: 0.85;
       }
       #hud .tutorial-panel .tut-prog {
-        color: #bcd9e6;
+        color: var(--text-dim);
         opacity: 0.8;
         text-transform: none;
         letter-spacing: 0.02em;
@@ -728,7 +853,7 @@
         line-height: 1.2;
       }
       #hud .tutorial-panel .tut-action {
-        color: #9ef2df;
+        color: var(--accent-strong);
         font-size: 11px;
         font-weight: 800;
         letter-spacing: 0.07em;
@@ -760,7 +885,7 @@
       }
       #hud .tutorial-panel .tut-check {
         margin-left: auto;
-        color: #9ef2df;
+        color: var(--accent-strong);
         font-size: 16px;
         font-weight: 800;
         opacity: 0;
@@ -774,7 +899,7 @@
         transform: scale(1);
       }
       #hud .tutorial-panel .tut-obj.done .tut-text {
-        color: #9ef2df;
+        color: var(--accent-strong);
       }
       #hud .tutorial-panel .tut-bar {
         height: 3px;
@@ -786,7 +911,7 @@
       #hud .tutorial-panel .tut-fill {
         height: 100%;
         width: 0%;
-        background: #6fd7c4;
+        background: var(--accent);
         transition: width 0.2s ease;
       }
       #hud .tutorial-panel .tut-hint {
@@ -813,7 +938,7 @@
         background: rgba(190, 225, 240, 0.22);
       }
       #hud .tutorial-panel .tut-dot.on {
-        background: #6fd7c4;
+        background: var(--accent);
         box-shadow: 0 0 7px rgba(111, 215, 196, 0.6);
       }
       #hud .tutorial-panel .tut-skip,
@@ -823,11 +948,9 @@
         border-radius: 6px;
         background: rgba(18, 40, 56, 0.5);
         border: 1px solid rgba(190, 225, 240, 0.2);
-        color: #bcd9e6;
+        color: var(--text-dim);
         font:
-          600 10.5px "Avenir Next",
-          "Helvetica Neue",
-          sans-serif;
+          600 10.5px var(--font);
         letter-spacing: 0.02em;
         transition:
           border-color 0.15s,
@@ -836,14 +959,14 @@
       #hud .tutorial-panel .tut-skip:hover,
       #hud .tutorial-panel .tut-exit:hover {
         border-color: rgba(190, 225, 240, 0.5);
-        color: #eaf4f8;
+        color: var(--text);
       }
       /* "Behind the scenes" button + X/GitHub icon row — parked under Tutorial */
       #hud .links-ui {
         position: absolute;
         right: 20px;
         top: 162px;
-        z-index: 1;
+        z-index: var(--z-hud-base);
         display: flex;
         flex-direction: column;
         align-items: flex-end;
@@ -862,19 +985,17 @@
         width: 34px;
         height: 34px;
         cursor: pointer;
-        border-radius: 10px;
-        border: 1px solid rgba(190, 225, 240, 0.22);
-        background: rgba(10, 24, 36, 0.62);
-        color: #dceff5;
-        box-shadow:
-          inset 0 1px 0 rgba(255, 255, 255, 0.06),
-          0 6px 18px rgba(0, 6, 12, 0.28);
-        backdrop-filter: blur(6px);
+        border-radius: var(--r-md);
+        border: 1px solid var(--hairline-2);
+        background: var(--surface-strong);
+        color: var(--text-soft);
+        box-shadow: var(--edge-hi), var(--shadow-sm);
+        backdrop-filter: blur(var(--blur));
         transition:
-          border-color 0.15s,
-          color 0.15s,
-          transform 0.12s,
-          background 0.15s;
+          border-color var(--dur) var(--ease),
+          color var(--dur) var(--ease),
+          transform 0.12s var(--ease),
+          background var(--dur) var(--ease);
       }
       #hud .social-btn svg {
         width: 16px;
@@ -883,17 +1004,20 @@
         display: block;
       }
       #hud .social-btn:hover {
-        border-color: #6fd7c4;
-        color: #9ef2df;
+        border-color: var(--accent);
+        color: var(--accent-strong);
         transform: translateY(-1px);
-        background: rgba(15, 33, 47, 0.82);
+        background: rgba(15, 33, 47, 0.85);
+      }
+      #hud .social-btn:active {
+        transform: translateY(0);
       }
 
       /* full-screen reading overlay opened by "Behind the scenes" */
       #hud .bts-overlay {
         position: fixed;
         inset: 0;
-        z-index: 40;
+        z-index: var(--z-overlay);
         display: none;
         align-items: center;
         justify-content: center;
@@ -931,11 +1055,9 @@
         box-shadow:
           0 24px 70px rgba(0, 4, 10, 0.6),
           inset 0 1px 0 rgba(255, 255, 255, 0.05);
-        color: #dceff5;
+        color: var(--text-soft);
         font:
-          400 14px/1.62 "Avenir Next",
-          "Helvetica Neue",
-          sans-serif;
+          400 14px/1.62 var(--font);
       }
       #hud .bts-close {
         position: absolute;
@@ -948,7 +1070,7 @@
         border-radius: 8px;
         border: 1px solid rgba(190, 225, 240, 0.22);
         background: rgba(10, 24, 36, 0.6);
-        color: #dceff5;
+        color: var(--text-soft);
         font-size: 15px;
         line-height: 1;
         transition:
@@ -956,8 +1078,8 @@
           color 0.15s;
       }
       #hud .bts-close:hover {
-        border-color: #6fd7c4;
-        color: #9ef2df;
+        border-color: var(--accent);
+        color: var(--accent-strong);
       }
       #hud .bts-head {
         padding: 26px 30px 20px;
@@ -974,7 +1096,7 @@
       #hud .bts-subtitle {
         margin-top: 4px;
         font-size: 13px;
-        color: #9fc6d6;
+        color: var(--text-mut);
       }
       #hud .bts-socials {
         display: inline-flex;
@@ -992,11 +1114,9 @@
         border-radius: 10px;
         border: 1px solid rgba(111, 215, 196, 0.4);
         background: rgba(22, 64, 70, 0.5);
-        color: #9ef2df;
+        color: var(--accent-strong);
         font:
-          700 12px "Avenir Next",
-          "Helvetica Neue",
-          sans-serif;
+          700 12px var(--font);
         letter-spacing: 0.01em;
         box-shadow:
           inset 0 1px 0 rgba(255, 255, 255, 0.06),
@@ -1009,7 +1129,7 @@
           background 0.15s;
       }
       #hud .bts-share:hover {
-        border-color: #6fd7c4;
+        border-color: var(--accent);
         background: rgba(28, 78, 84, 0.62);
         transform: translateY(-1px);
       }
@@ -1040,7 +1160,7 @@
         font-weight: 800;
         letter-spacing: 0.18em;
         text-transform: uppercase;
-        color: #6fd7c4;
+        color: var(--accent);
       }
       #hud .bts-body .bts-act::after {
         content: "";
@@ -1073,7 +1193,7 @@
         font-size: 15px;
         font-weight: 800;
         letter-spacing: 0.01em;
-        color: #9ef2df;
+        color: var(--accent-strong);
       }
       #hud .bts-body .bts-ic {
         font-size: 17px;
@@ -1141,8 +1261,8 @@
         color: #cfe6ee;
       }
       #hud .bts-chips a:hover {
-        border-color: #6fd7c4;
-        color: #9ef2df;
+        border-color: var(--accent);
+        color: var(--accent-strong);
       }
 
       /* ---- tabbed chapters ---- */
@@ -1170,11 +1290,9 @@
         border: none;
         border-bottom: 2px solid transparent;
         background: none;
-        color: #9fc6d6;
+        color: var(--text-mut);
         font:
-          600 13px "Avenir Next",
-          "Helvetica Neue",
-          sans-serif;
+          600 13px var(--font);
         transition:
           color 0.15s,
           border-color 0.15s;
@@ -1187,8 +1305,8 @@
         color: #cfe6ee;
       }
       #hud .bts-tab.active {
-        color: #9ef2df;
-        border-bottom-color: #6fd7c4;
+        color: var(--accent-strong);
+        border-bottom-color: var(--accent);
       }
       #hud .bts-pane {
         display: none;
@@ -1258,21 +1376,19 @@
       #hud .ss-t {
         fill: #cfe6ee;
         font:
-          600 10px "Avenir Next",
-          "Helvetica Neue",
-          sans-serif;
+          600 10px var(--font);
       }
       #hud .ss-tc {
         text-anchor: middle;
       }
       #hud .ss-lbl {
-        fill: #9ef2df;
+        fill: var(--accent-strong);
         font-weight: 800;
         font-size: 10px;
         letter-spacing: 0.03em;
       }
       #hud .ss-sub {
-        fill: #9fc6d6;
+        fill: var(--text-mut);
         font-size: 9px;
       }
       #hud .scrolly-steps {
@@ -1313,7 +1429,7 @@
         opacity: 1;
         transform: none;
         color: #dcecf2;
-        border-left-color: #6fd7c4;
+        border-left-color: var(--accent);
         box-shadow: 0 8px 24px rgba(0, 6, 12, 0.3);
       }
       #hud .bts-daygraphic {
@@ -1321,7 +1437,7 @@
         padding: 10px 6px;
         height: 220px;
         border-radius: 14px;
-        border: 1px solid rgba(190, 225, 240, 0.14);
+        border: 1px solid var(--hairline);
         background: linear-gradient(
           180deg,
           rgba(10, 26, 39, 0.9),
@@ -1357,7 +1473,7 @@
         font-size: 13px;
         font-weight: 800;
         letter-spacing: 0.01em;
-        color: #9ef2df;
+        color: var(--accent-strong);
       }
       #hud .ss-toy-ic {
         font-size: 15px;
@@ -1389,11 +1505,9 @@
         border-radius: 9px;
         border: 1px solid rgba(190, 225, 240, 0.16);
         background: rgba(14, 32, 46, 0.6);
-        color: #9fc6d6;
+        color: var(--text-mut);
         font:
-          700 12px "Avenir Next",
-          "Helvetica Neue",
-          sans-serif;
+          700 12px var(--font);
         transition:
           color 0.15s,
           border-color 0.15s,
@@ -1405,8 +1519,8 @@
       }
       #hud .ss-mtab.active {
         color: #08202e;
-        border-color: #6fd7c4;
-        background: linear-gradient(180deg, #9ef2df, #6fd7c4);
+        border-color: var(--accent);
+        background: linear-gradient(180deg, var(--accent-strong), var(--accent));
       }
       #hud .ss-mtinfo {
         min-height: 44px;
@@ -1436,9 +1550,7 @@
         background: rgba(14, 32, 46, 0.66);
         color: #a9cbd7;
         font:
-          700 12px "Avenir Next",
-          "Helvetica Neue",
-          sans-serif;
+          700 12px var(--font);
         transition:
           color 0.15s,
           border-color 0.15s,
@@ -1451,13 +1563,13 @@
       }
       #hud .ss-btn.active {
         color: #08202e;
-        border-color: #6fd7c4;
-        background: linear-gradient(180deg, #b7f6e8, #6fd7c4);
+        border-color: var(--accent);
+        background: linear-gradient(180deg, #b7f6e8, var(--accent));
         box-shadow: 0 4px 14px rgba(111, 215, 196, 0.28);
       }
       #hud .ss-btn-primary {
         color: #06202c;
-        border-color: #6fd7c4;
+        border-color: var(--accent);
         background: linear-gradient(180deg, #a6f0df, #57c7b0);
         box-shadow: 0 6px 18px rgba(87, 199, 176, 0.32);
       }
@@ -1498,7 +1610,7 @@
         border-radius: 50%;
         cursor: pointer;
         background: #eafff9;
-        border: 2px solid #6fd7c4;
+        border: 2px solid var(--accent);
         box-shadow: 0 2px 8px rgba(0, 8, 14, 0.5);
       }
       #hud .ss-slider::-moz-range-thumb {
@@ -1507,7 +1619,7 @@
         border-radius: 50%;
         cursor: pointer;
         background: #eafff9;
-        border: 2px solid #6fd7c4;
+        border: 2px solid var(--accent);
       }
       #hud .ss-readout {
         font-size: 11.5px;
@@ -1522,7 +1634,7 @@
         position: absolute;
         bottom: 16px;
         right: 20px;
-        z-index: 3;
+        z-index: var(--z-hud-top);
         pointer-events: none;
         opacity: 0;
         width: 34px;
@@ -1532,19 +1644,17 @@
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        border-radius: 10px;
-        border: 1px solid rgba(190, 225, 240, 0.22);
-        background: rgba(10, 24, 36, 0.62);
-        color: #dceff5;
-        box-shadow:
-          inset 0 1px 0 rgba(255, 255, 255, 0.06),
-          0 6px 18px rgba(0, 6, 12, 0.28);
-        backdrop-filter: blur(6px);
+        border-radius: var(--r-md);
+        border: 1px solid var(--hairline-2);
+        background: var(--surface-strong);
+        color: var(--text-soft);
+        box-shadow: var(--edge-hi), var(--shadow-sm);
+        backdrop-filter: blur(var(--blur));
         transition:
           opacity 0.35s ease,
-          border-color 0.15s,
-          color 0.15s,
-          transform 0.12s;
+          border-color var(--dur) var(--ease),
+          color var(--dur) var(--ease),
+          transform 0.12s var(--ease);
       }
       #hud.faded .ui-restore {
         opacity: 0.88;
@@ -1552,10 +1662,10 @@
       }
       #hud .ui-restore:hover {
         opacity: 1;
-        border-color: #6fd7c4;
-        color: #9ef2df;
+        border-color: var(--accent);
+        color: var(--accent-strong);
         transform: translateY(-1px);
-        background: rgba(15, 33, 47, 0.82);
+        background: rgba(15, 33, 47, 0.85);
       }
       #hud .ui-restore .ic {
         font-size: 15px;
@@ -1569,23 +1679,21 @@
         position: relative;
         display: grid;
         place-items: center;
-        border-radius: 12px;
-        border: 1px solid rgba(190, 225, 240, 0.22);
-        background: rgba(10, 24, 36, 0.62);
-        box-shadow:
-          inset 0 1px 0 rgba(255, 255, 255, 0.06),
-          0 6px 18px rgba(0, 6, 12, 0.28);
-        backdrop-filter: blur(6px);
+        border-radius: var(--r-lg);
+        border: 1px solid var(--hairline-2);
+        background: var(--surface-strong);
+        box-shadow: var(--edge-hi), var(--shadow-sm);
+        backdrop-filter: blur(var(--blur));
         transition:
-          border-color 0.15s,
-          transform 0.12s,
-          background 0.15s;
+          border-color var(--dur) var(--ease),
+          transform 0.12s var(--ease),
+          background var(--dur) var(--ease);
       }
       #hud .avatar-toggle:hover,
       #hud .avatar-ui.open .avatar-toggle {
-        border-color: #6fd7c4;
+        border-color: var(--accent);
         transform: translateY(-1px);
-        background: rgba(15, 33, 47, 0.82);
+        background: rgba(15, 33, 47, 0.85);
       }
       #hud .avatar-head {
         position: absolute;
@@ -1647,11 +1755,9 @@
       }
       #hud .avatar-label {
         padding-top: 7px;
-        color: #bcd9e6;
+        color: var(--text-dim);
         font:
-          700 10.5px "Avenir Next",
-          "Helvetica Neue",
-          sans-serif;
+          700 10.5px var(--font);
         letter-spacing: 0.06em;
         text-transform: uppercase;
         opacity: 0.78;
@@ -1672,9 +1778,7 @@
         background: rgba(6, 16, 25, 0.55);
         color: #eaf6fa;
         font:
-          700 12px "Avenir Next",
-          "Helvetica Neue",
-          sans-serif;
+          700 12px var(--font);
         outline: none;
         transition:
           border-color 0.15s,
@@ -1684,7 +1788,7 @@
         color: rgba(220, 239, 245, 0.4);
       }
       #hud .avatar-name-input:focus {
-        border-color: #6fd7c4;
+        border-color: var(--accent);
         background: rgba(10, 24, 36, 0.7);
       }
       #hud .avatar-name-roll {
@@ -1714,11 +1818,9 @@
         border-radius: 7px;
         border: 1px solid rgba(190, 225, 240, 0.2);
         background: rgba(18, 40, 56, 0.58);
-        color: #dceff5;
+        color: var(--text-soft);
         font:
-          700 11px "Avenir Next",
-          "Helvetica Neue",
-          sans-serif;
+          700 11px var(--font);
         letter-spacing: 0;
         transition:
           border-color 0.15s,
@@ -1732,8 +1834,8 @@
         transform: translateY(-1px);
       }
       #hud .avatar-choice.on {
-        border-color: #6fd7c4;
-        color: #9ef2df;
+        border-color: var(--accent);
+        color: var(--accent-strong);
         background: rgba(22, 64, 70, 0.62);
       }
       #hud .avatar-swatch {
@@ -1758,8 +1860,8 @@
       #hud .avatar-random {
         justify-self: end;
         margin-top: 2px;
-        background: #6fd7c4;
-        border-color: #6fd7c4;
+        background: var(--accent);
+        border-color: var(--accent);
         color: #062018;
         text-transform: uppercase;
         letter-spacing: 0.05em;
@@ -1774,7 +1876,7 @@
         gap: 6px;
         padding: 8px 10px 10px;
         border-radius: 10px;
-        background: rgba(10, 24, 36, 0.72);
+        background: var(--surface-strong);
         border: 1px solid rgba(111, 215, 196, 0.28);
         box-shadow:
           0 0 0 1px rgba(111, 215, 196, 0.06) inset,
@@ -1790,18 +1892,14 @@
       }
       #hud .chat-tag {
         font:
-          700 10px "Avenir Next",
-          "Helvetica Neue",
-          sans-serif;
+          700 10px var(--font);
         letter-spacing: 0.14em;
         text-transform: uppercase;
-        color: #6fd7c4;
+        color: var(--accent);
       }
       #hud .chat-hint {
         font:
-          600 10px "Avenir Next",
-          "Helvetica Neue",
-          sans-serif;
+          600 10px var(--font);
         letter-spacing: 0.04em;
         color: rgba(188, 217, 230, 0.55);
         border: 1px solid rgba(190, 225, 240, 0.2);
@@ -1819,14 +1917,12 @@
       }
       #hud .chat-msg {
         font:
-          500 12px/1.35 "Avenir Next",
-          "Helvetica Neue",
-          sans-serif;
-        color: #eaf4f8;
+          500 12px/1.35 var(--font);
+        color: var(--text);
         word-break: break-word;
       }
       #hud .chat-who {
-        color: #9ef2df;
+        color: var(--accent-strong);
         font-weight: 700;
         margin-right: 6px;
       }
@@ -1834,10 +1930,10 @@
         content: ":";
       }
       #hud .chat-msg.self .chat-who {
-        color: #6fd7c4;
+        color: var(--accent);
       }
       #hud .chat-body {
-        color: #dceff5;
+        color: var(--text-soft);
       }
       #hud .chat-input {
         width: 100%;
@@ -1849,15 +1945,13 @@
         color: #eaf6fa;
         outline: none;
         font:
-          500 12.5px "Avenir Next",
-          "Helvetica Neue",
-          sans-serif;
+          500 12.5px var(--font);
       }
       #hud .chat-input::placeholder {
         color: rgba(188, 217, 230, 0.45);
       }
       #hud .chat-input:focus {
-        border-color: #6fd7c4;
+        border-color: var(--accent);
         box-shadow: 0 0 0 1px rgba(111, 215, 196, 0.25);
       }
       #hud .audio {
@@ -1870,8 +1964,8 @@
         gap: 6px;
         padding: 6px 10px;
         border-radius: 10px;
-        background: rgba(10, 24, 36, 0.55);
-        border: 1px solid rgba(190, 225, 240, 0.14);
+        background: var(--surface);
+        border: 1px solid var(--hairline);
         backdrop-filter: blur(6px);
         pointer-events: auto;
       }
@@ -1897,9 +1991,7 @@
       #hud .audio-lbl {
         flex: 0 0 34px;
         font:
-          600 10px "Avenir Next",
-          "Helvetica Neue",
-          sans-serif;
+          600 10px var(--font);
         letter-spacing: 0.04em;
         text-transform: uppercase;
         color: rgba(188, 217, 230, 0.72);
@@ -1921,11 +2013,9 @@
         cursor: pointer;
         background: rgba(18, 40, 56, 0.6);
         border: 1px solid rgba(190, 225, 240, 0.25);
-        color: #bcd9e6;
+        color: var(--text-dim);
         font:
-          600 11.5px "Avenir Next",
-          "Helvetica Neue",
-          sans-serif;
+          600 11.5px var(--font);
         letter-spacing: 0.02em;
         transition:
           border-color 0.15s,
@@ -1939,8 +2029,8 @@
         border-color: rgba(190, 225, 240, 0.55);
       }
       #hud .audio .mic-btn.on {
-        border-color: #6fd7c4;
-        color: #9ef2df;
+        border-color: var(--accent);
+        color: var(--accent-strong);
       }
       #hud .audio input[type="range"] {
         -webkit-appearance: none;
@@ -1960,13 +2050,13 @@
         width: 11px;
         height: 11px;
         border-radius: 50%;
-        background: #6fd7c4;
+        background: var(--accent);
       }
       #hud .audio input[type="range"]::-moz-range-thumb {
         width: 11px;
         height: 11px;
         border-radius: 50%;
-        background: #6fd7c4;
+        background: var(--accent);
         border: none;
       }
       #hud .audio input[type="range"].off {
@@ -1985,12 +2075,12 @@
       }
       #hud .minimap .mm-card {
         position: relative;
-        border-radius: 18px;
+        border-radius: var(--r-xl);
         overflow: hidden;
-        border: 1px solid rgba(225, 235, 243, 0.28);
-        background: rgba(10, 24, 36, 0.68);
+        border: 1px solid var(--hairline-strong);
+        background: var(--surface-strong);
         box-shadow:
-          0 5px 24px rgba(0, 6, 12, 0.38),
+          var(--shadow-md),
           inset 0 0 0 1px rgba(255, 255, 255, 0.04);
         cursor: grab;
         touch-action: none;
@@ -2011,14 +2101,14 @@
         justify-content: center;
         padding: 6px 10px;
         pointer-events: none;
-        border-radius: 999px;
+        border-radius: var(--r-pill);
         font-size: 10.5px;
         font-weight: 600;
         letter-spacing: 0;
         text-transform: uppercase;
-        color: #edf7fb;
+        color: var(--text);
         background: rgba(12, 19, 27, 0.82);
-        border: 1px solid rgba(225, 235, 243, 0.18);
+        border: 1px solid var(--hairline-2);
         box-shadow: 0 8px 18px rgba(0, 0, 0, 0.26);
       }
       #hud .minimap .mm-count-dot {
@@ -2042,24 +2132,27 @@
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        border-radius: 10px;
-        color: #eaf4f8;
+        border-radius: var(--r-md);
+        color: var(--text);
         background: rgba(12, 19, 27, 0.82);
-        border: 1px solid rgba(225, 235, 243, 0.28);
-        box-shadow: 0 8px 18px rgba(0, 0, 0, 0.26);
+        border: 1px solid var(--hairline-strong);
+        box-shadow: var(--edge-hi), 0 8px 18px rgba(0, 0, 0, 0.26);
         font-size: 18px;
         line-height: 1;
         font-weight: 700;
         transition:
-          border-color 0.15s,
-          background 0.15s,
-          transform 0.12s;
+          border-color var(--dur) var(--ease),
+          background var(--dur) var(--ease),
+          transform 0.12s var(--ease);
       }
       #hud .minimap .mm-expand:hover {
-        border-color: #6fd7c4;
-        color: #9ef2df;
+        border-color: var(--accent);
+        color: var(--accent-strong);
         transform: translateY(-1px);
         background: rgba(16, 30, 42, 0.9);
+      }
+      #hud .minimap .mm-expand:active {
+        transform: translateY(0);
       }
       #hud .minimap .mm-teleport {
         display: flex;
@@ -2067,8 +2160,8 @@
         gap: 8px;
         padding: 6px 8px 6px 11px;
         border-radius: 12px;
-        background: rgba(10, 24, 36, 0.72);
-        border: 1px solid rgba(225, 235, 243, 0.2);
+        background: var(--surface-strong);
+        border: 1px solid var(--hairline-2);
         box-shadow:
           inset 0 1px 0 rgba(255, 255, 255, 0.06),
           0 5px 14px rgba(0, 0, 0, 0.22);
@@ -2080,10 +2173,8 @@
         text-overflow: ellipsis;
         white-space: nowrap;
         font:
-          600 12px "Avenir Next",
-          "Helvetica Neue",
-          sans-serif;
-        color: #eaf4f8;
+          600 12px var(--font);
+        color: var(--text);
       }
       #hud .minimap .mm-teleport-btn {
         flex: 0 0 auto;
@@ -2091,12 +2182,10 @@
         padding: 5px 12px;
         border-radius: 8px;
         color: #062018;
-        background: #6fd7c4;
-        border: 1px solid #6fd7c4;
+        background: var(--accent);
+        border: 1px solid var(--accent);
         font:
-          700 11.5px "Avenir Next",
-          "Helvetica Neue",
-          sans-serif;
+          700 11.5px var(--font);
         letter-spacing: 0.02em;
         transition:
           filter 0.15s,
@@ -2121,7 +2210,7 @@
         gap: 6px;
         border-radius: 12px;
         cursor: pointer;
-        border: 1px solid rgba(225, 235, 243, 0.18);
+        border: 1px solid var(--hairline-2);
         background: linear-gradient(
           180deg,
           rgba(56, 59, 72, 0.86),
@@ -2129,9 +2218,7 @@
         );
         color: #f0f4f7;
         font:
-          700 12.5px "Avenir Next",
-          "Helvetica Neue",
-          sans-serif;
+          700 12.5px var(--font);
         text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
         box-shadow:
           inset 0 1px 0 rgba(255, 255, 255, 0.08),
@@ -2167,13 +2254,13 @@
       .bigmap {
         position: fixed;
         inset: 0;
-        z-index: 30;
+        z-index: var(--z-map);
         display: flex;
         align-items: center;
         justify-content: center;
         background: rgba(4, 10, 16, 0.55);
         backdrop-filter: blur(3px);
-        font-family: "Avenir Next", "Helvetica Neue", sans-serif;
+        font-family: var(--font);
       }
       .bigmap-inner {
         display: flex;
@@ -2200,7 +2287,7 @@
         padding: 8px 9px 8px 12px;
         border-radius: 12px;
         background: rgba(10, 24, 36, 0.82);
-        border: 1px solid rgba(225, 235, 243, 0.24);
+        border: 1px solid var(--hairline-strong);
         box-shadow:
           inset 0 1px 0 rgba(255, 255, 255, 0.06),
           0 10px 28px rgba(0, 0, 0, 0.28);
@@ -2211,11 +2298,9 @@
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
-        color: #eaf4f8;
+        color: var(--text);
         font:
-          700 13px "Avenir Next",
-          "Helvetica Neue",
-          sans-serif;
+          700 13px var(--font);
       }
       .bigmap-teleport-btn {
         flex: 0 0 auto;
@@ -2223,12 +2308,10 @@
         padding: 7px 14px;
         border-radius: 8px;
         color: #062018;
-        background: #6fd7c4;
-        border: 1px solid #6fd7c4;
+        background: var(--accent);
+        border: 1px solid var(--accent);
         font:
-          800 12px "Avenir Next",
-          "Helvetica Neue",
-          sans-serif;
+          800 12px var(--font);
         letter-spacing: 0.02em;
         transition:
           filter 0.15s,
@@ -2239,69 +2322,10 @@
         transform: translateY(-1px);
       }
       .bigmap-hint {
-        color: #bcd9e6;
+        color: var(--text-dim);
         font-size: 12px;
         opacity: 0.85;
         text-shadow: 0 1px 3px rgba(0, 10, 20, 0.8);
-      }
-      .bigmap-debug {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-      }
-      .bigmap-debug-btn {
-        cursor: pointer;
-        padding: 7px 13px;
-        border-radius: 10px;
-        color: #eaf4f8;
-        background: linear-gradient(
-          180deg,
-          rgba(56, 59, 72, 0.86),
-          rgba(35, 38, 48, 0.9)
-        );
-        border: 1px solid rgba(225, 235, 243, 0.18);
-        font:
-          800 12px "Avenir Next",
-          "Helvetica Neue",
-          sans-serif;
-        letter-spacing: 0.02em;
-        opacity: 0.62;
-        filter: saturate(0.6);
-        transition:
-          border-color 0.15s,
-          opacity 0.15s,
-          filter 0.15s,
-          transform 0.12s;
-      }
-      .bigmap-debug-btn:hover {
-        border-color: rgba(225, 235, 243, 0.42);
-        transform: translateY(-1px);
-      }
-      .bigmap-debug-btn.on {
-        opacity: 1;
-        filter: none;
-        border-color: rgba(79, 209, 255, 0.6);
-        box-shadow: 0 0 12px rgba(79, 209, 255, 0.35);
-      }
-      .bigmap-debug-legend {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        color: #bcd9e6;
-        font-size: 11.5px;
-        opacity: 0.85;
-      }
-      .bigmap-debug-key {
-        display: inline-flex;
-        align-items: center;
-        gap: 5px;
-      }
-      .bigmap-debug-dot {
-        width: 9px;
-        height: 9px;
-        border-radius: 50%;
-        background: var(--c);
-        box-shadow: 0 0 8px var(--c);
       }
       #loading {
         position: fixed;
@@ -2311,12 +2335,19 @@
         align-items: center;
         justify-content: center;
         gap: 14px;
-        background: rgba(8, 20, 34, 0.62);
+        /* soft central glow over the tint focuses the eye on the name form */
+        background:
+          radial-gradient(
+            120% 85% at 50% 42%,
+            rgba(24, 52, 74, 0.5),
+            rgba(8, 20, 34, 0) 60%
+          ),
+          rgba(8, 20, 34, 0.62);
         backdrop-filter: blur(2px) saturate(0.7);
-        color: #cfe8f2;
-        font-family: "Avenir Next", "Helvetica Neue", sans-serif;
+        color: var(--text-soft);
+        font-family: var(--font);
         transition: opacity 0.6s ease;
-        z-index: 10;
+        z-index: var(--z-loading);
       }
       /* keep the HUD (center messages, minimap) out of sight behind the start
          gate — otherwise "Online as …" bleeds through the translucent tint */
@@ -2341,25 +2372,50 @@
         opacity: 0;
       }
       #loading h1 {
-        font-size: 22px;
-        letter-spacing: 0.3em;
-        font-weight: 500;
-        margin: 0;
+        margin: 0 0 2px;
+        font-size: clamp(24px, 4.4vw, 34px);
+        letter-spacing: 0.34em;
+        /* optical: uppercase tracking pushes the last glyph right, so pull it
+           back with an equal indent to keep the title centered */
+        text-indent: 0.34em;
+        font-weight: 600;
         text-transform: uppercase;
-        text-shadow: 0 2px 12px rgba(0, 8, 14, 0.75);
+        color: var(--text);
+        text-shadow: 0 2px 18px rgba(0, 8, 14, 0.75);
+      }
+      /* slim accent rule under the title — a premium anchor, hidden once ready
+         so it doesn't linger over the form */
+      #loading h1::after {
+        content: "";
+        display: block;
+        width: 46px;
+        height: 2px;
+        margin: 12px auto 0;
+        border-radius: var(--r-pill);
+        background: linear-gradient(90deg, transparent, var(--accent), transparent);
+        opacity: 0.9;
+        transition: opacity 0.5s ease;
+      }
+      #loading.ready h1::after {
+        opacity: 0;
       }
       #loading .bar {
         width: 260px;
-        height: 3px;
-        background: rgba(255, 255, 255, 0.15);
-        border-radius: 2px;
+        height: 4px;
+        background: rgba(255, 255, 255, 0.12);
+        border-radius: var(--r-pill);
         overflow: hidden;
       }
       #loading .bar > div {
         height: 100%;
         width: 0%;
-        background: #6fd7c4;
-        transition: width 0.3s ease;
+        border-radius: inherit;
+        background: linear-gradient(90deg, var(--accent), var(--accent-strong));
+        box-shadow: 0 0 12px var(--accent-glow);
+        transition: width 0.3s var(--ease);
+      }
+      #loading [data-loading-label] {
+        font-variant-numeric: tabular-nums;
       }
       #loading.done {
         opacity: 0;
@@ -2369,10 +2425,10 @@
          in; the Start button stays disabled until load completes (.ready) */
       #loading .start-form {
         display: flex;
-        margin-top: 4px;
+        margin-top: 6px;
         gap: 10px;
         align-items: center;
-        animation: startin 0.35s ease;
+        animation: startin 0.35s var(--ease);
       }
       #loading.ready .bar,
       #loading.ready [data-loading-label] {
@@ -2386,64 +2442,83 @@
       }
       #loading .start-form input {
         width: 210px;
-        padding: 9px 12px;
-        border-radius: 8px;
+        height: 40px;
+        box-sizing: border-box;
+        padding: 0 14px;
+        border-radius: var(--r-md);
         outline: none;
-        background: rgba(10, 24, 36, 0.6);
-        color: #eaf4f8;
-        border: 1px solid rgba(190, 225, 240, 0.28);
-        font:
-          500 14px "Avenir Next",
-          "Helvetica Neue",
-          sans-serif;
+        background: var(--surface-sunken);
+        color: var(--text);
+        border: 1px solid var(--hairline-strong);
+        font: 600 14px var(--font);
         letter-spacing: 0.02em;
         text-align: center;
-        transition: border-color 0.15s;
+        transition:
+          border-color var(--dur) var(--ease),
+          box-shadow var(--dur) var(--ease),
+          background var(--dur) var(--ease);
       }
       #loading .start-form input:focus {
-        border-color: #6fd7c4;
+        border-color: var(--accent);
+        background: var(--surface-strong);
+        box-shadow: 0 0 0 3px var(--accent-soft);
       }
       #loading .start-form input::placeholder {
         color: rgba(234, 244, 248, 0.38);
       }
       #loading .start-form button {
-        padding: 9px 22px;
-        border-radius: 8px;
+        height: 40px;
+        padding: 0 24px;
+        border-radius: var(--r-md);
         cursor: pointer;
-        background: #6fd7c4;
-        color: #0b1520;
+        background: linear-gradient(180deg, var(--accent-strong), var(--accent));
+        color: var(--on-accent);
         border: none;
-        font:
-          600 14px "Avenir Next",
-          "Helvetica Neue",
-          sans-serif;
-        letter-spacing: 0.06em;
+        font: 700 13px var(--font);
+        letter-spacing: 0.1em;
         text-transform: uppercase;
+        box-shadow:
+          var(--edge-hi),
+          0 6px 18px rgba(87, 199, 176, 0.32);
         transition:
-          transform 0.12s,
-          background 0.15s;
+          transform 0.12s var(--ease),
+          filter var(--dur) var(--ease),
+          box-shadow var(--dur) var(--ease);
       }
       #loading .start-form button:hover:not(:disabled) {
-        background: #8ceedd;
+        filter: brightness(1.06);
         transform: translateY(-1px);
+        box-shadow:
+          var(--edge-hi),
+          0 8px 22px rgba(87, 199, 176, 0.42);
+      }
+      #loading .start-form button:active:not(:disabled) {
+        transform: translateY(0);
+      }
+      #loading .start-form button:focus-visible {
+        outline: 2px solid var(--accent-strong);
+        outline-offset: 3px;
       }
       #loading .start-form button:disabled {
-        background: rgba(111, 215, 196, 0.3);
-        color: rgba(11, 21, 32, 0.6);
+        background: rgba(111, 215, 196, 0.22);
+        color: rgba(11, 21, 32, 0.55);
+        box-shadow: none;
         cursor: default;
       }
       #loading .start-hint {
         font-size: 11px;
-        opacity: 0.7;
+        color: var(--text-dim);
+        opacity: 0.75;
         text-shadow: 0 1px 4px rgba(0, 8, 14, 0.8);
       }
       #loading .controls-hint {
-        margin-top: 16px;
+        margin-top: 18px;
         display: flex;
         flex-direction: column;
-        gap: 7px;
+        gap: 8px;
         align-items: center;
         font-size: 12px;
+        color: var(--text-dim);
         opacity: 0.9;
         text-shadow: 0 1px 4px rgba(0, 8, 14, 0.8);
       }
@@ -2459,10 +2534,11 @@
         min-width: 10px;
         height: 18px;
         padding: 0 6px;
-        border-radius: 4px;
-        background: rgba(18, 40, 56, 0.6);
-        border: 1px solid rgba(190, 225, 240, 0.35);
+        border-radius: var(--r-xs);
+        background: var(--surface-raised);
+        border: 1px solid var(--hairline-strong);
         box-shadow: 0 1px 0 rgba(190, 225, 240, 0.16);
+        color: var(--text);
         font-size: 10.5px;
         font-weight: 600;
         letter-spacing: 0.02em;

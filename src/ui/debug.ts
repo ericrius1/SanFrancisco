@@ -8,16 +8,12 @@ import {
   FOLIAGE_TUNING,
   GRASS_TUNING,
   CITYGEN_TUNING,
-  RENDER_QUALITY_PRESETS,
   RENDER_TUNING,
-  WORLD_TUNING,
-  type RenderQualityPreset,
-  type ShadowQuality
+  WORLD_TUNING
 } from "../config";
-import { saveTweak } from "../core/persist";
 import { addMovementTuning } from "../player/tuning";
 import type { PlayerMode } from "../player/types";
-import { DEBRIS_LIGHTS, WINDOW_GLOW } from "../world/facade";
+import { DEBRIS_LIGHTS } from "../world/facade";
 import { CROWN_SLIDERS, CROWN_TUNING } from "../world/salesforceCrown";
 import { BAY_LIGHTS_SLIDERS, BAY_LIGHTS_TUNING } from "../world/bayLights";
 import { GOLDEN_GATE_LIGHTS_SLIDERS, GOLDEN_GATE_LIGHTS_TUNING } from "../world/goldenGateLights";
@@ -251,37 +247,6 @@ export class DebugPanel {
     });
   }
 
-  #applyShadowQuality(value: unknown) {
-    const quality = value as ShadowQuality;
-    this.#renderer.shadowMap.enabled = quality !== "off";
-    this.#sky.setShadowQuality(quality);
-  }
-
-  #setRenderValue(key: keyof typeof RENDER_TUNING.values, value: unknown) {
-    (RENDER_TUNING.values as Record<string, unknown>)[key] = value;
-    saveTweak(`render.${key}`, value);
-  }
-
-  #setPostValue(key: keyof typeof POSTFX_TUNING.values, value: unknown) {
-    (POSTFX_TUNING.values as Record<string, unknown>)[key] = value;
-    saveTweak(`postfx.${key}`, value);
-  }
-
-  #applyRenderPreset(value: unknown) {
-    const preset = RENDER_QUALITY_PRESETS[value as RenderQualityPreset] ?? RENDER_QUALITY_PRESETS.balanced;
-    this.#setRenderValue("maxPixelRatio", preset.maxPixelRatio);
-    this.#setRenderValue("shadowQuality", preset.shadowQuality);
-    this.#setPostValue("sceneSamples", preset.sceneSamples);
-
-    this.#renderer.setPixelRatio(Math.min(window.devicePixelRatio, preset.maxPixelRatio));
-    this.#renderer.setSize(window.innerWidth, window.innerHeight);
-    this.#applyShadowQuality(preset.shadowQuality);
-    this.#postfx?.applyPostQuality();
-    this.#syncingPane = true;
-    this.#pane?.refresh();
-    this.#syncingPane = false;
-  }
-
   #build() {
     const root = document.createElement("div");
     root.style.cssText =
@@ -318,6 +283,13 @@ export class DebugPanel {
 
     const pane = new Pane({ container: root, title: "tuning — / to close" });
     this.#pane = pane;
+
+    // MASTER foliage switch — the very first control in the panel. One checkbox
+    // hides AND stops per-frame work for the ENTIRE vegetation system (all trees,
+    // grass, flowers, shrubs, everywhere). Off = invisible + near-zero cost.
+    FOLIAGE_TUNING.bind(pane, {
+      onChange: (_key, value) => this.#setFoliageVisible(Boolean(value))
+    });
 
     // basics live at the root — the handful of things touched every session;
     // everything else tucks into the collapsed "advanced" folder below.
@@ -361,10 +333,6 @@ export class DebugPanel {
       keys: ["timeOfDay", "realTime", "cycleEnabled", "cycleDuration", "nightBrightness"],
       onChange: onSkyChange
     });
-    RENDER_TUNING.bind(pane, {
-      keys: ["renderQuality"],
-      onChange: (_key, value) => this.#applyRenderPreset(value)
-    });
 
     const fog = pane.addFolder({ title: "fog" });
     WORLD_TUNING.bind(fog, {
@@ -405,27 +373,15 @@ export class DebugPanel {
 
     const lighting = advanced.addFolder({ title: "lighting" });
     RENDER_TUNING.bind(lighting, {
-      keys: ["exposure", "maxPixelRatio", "farWindowGlow"],
+      keys: ["exposure"],
       onChange: (key, value) => {
         if (key === "exposure") {
           this.#renderer.toneMappingExposure = value as number;
-        } else if (key === "maxPixelRatio") {
-          this.#renderer.setPixelRatio(Math.min(window.devicePixelRatio, value as number));
-          this.#renderer.setSize(window.innerWidth, window.innerHeight);
-        } else if (key === "farWindowGlow") {
-          WINDOW_GLOW.far.value = value ? 1 : 0;
         }
       }
     });
 
     const render = advanced.addFolder({ title: "render" });
-    RENDER_TUNING.bind(render, {
-      keys: ["shadowQuality"],
-      onChange: (key, value) => {
-        if (this.#syncingPane) return;
-        if (key === "shadowQuality") this.#applyShadowQuality(value);
-      }
-    });
     RENDER_TUNING.bind(render, {
       keys: ["wireframe"],
       onChange: (_key, value) => {
@@ -451,10 +407,8 @@ export class DebugPanel {
       }
     });
 
+    // foliage detail knobs (the master on/off lives at the very top of the pane).
     const foliage = advanced.addFolder({ title: "foliage" });
-    FOLIAGE_TUNING.bind(foliage, {
-      onChange: (_key, value) => this.#setFoliageVisible(Boolean(value))
-    });
     // Wildflower ring: density + clump↔scatter shaping. The ring reads these live on
     // its next re-scatter; force one now (on slider RELEASE only, `last`) so the edit
     // shows without waiting for the player to walk.

@@ -239,7 +239,8 @@ const TAB_LIFE = `
     iridescent sheen and glows faintly at dusk. The camera drone is the pure free-flight rig the
     phoenix borrows its controls from — mouse aims, W flies straight along that aim, four rotors spin in
     the shader with green-front / red-rear nav lights on the tips. And the same "become a vehicle"
-    plumbing is what lets you press E to commandeer a passing car — or, up in the hills, a bear.</p>
+    plumbing is what lets you press E to ride along in a friend's car, hop on a bear up in the hills,
+    or take the wheel of a boat drifting in the bay.</p>
   </section>
 
   <section>
@@ -289,26 +290,6 @@ const TAB_LIFE = `
 
 const TAB_PLAY = `
   <section>
-    <h3><span class="bts-ic">✨</span> GPU particle worlds</h3>
-    <p>Inside the Pier 15 Exploratorium, the sand tables, water tanks and star fields are real
-    <strong>particle simulations running entirely on the GPU</strong> — tens of thousands of grains,
-    each pushed by its neighbours. The hard part of any neighbour simulation is answering "who is near
-    me?" without every particle testing every other particle (which would be hopeless at these counts).
-    The answer here is a <strong>counting-sort spatial grid</strong>, rebuilt from scratch every
-    substep:</p>
-    <p>First a compute pass histograms particles into grid cells with atomic adds (<code>atomicAdd</code>).
-    A <strong>Hillis-Steele prefix-sum scan</strong> — a parallel running total in <code>ceil(log₂n)</code>
-    ping-pong passes — turns those counts into per-cell start offsets. A scatter pass writes each
-    particle into its sorted slot. Then a single force kernel walks only the <strong>3×3 neighbouring
-    cells</strong> around each particle to accumulate pressure and collisions. The whole sim lives in a
-    flat 2D frame (a wall tank, a table disc) and is projected into the world by an origin plus two
-    axes — and it's room-gated, so it costs literally nothing while nobody is in the room to watch it.</p>
-    <p class="bts-aside">This is the same family of techniques behind fast GPU fluids and sand
-    everywhere — a spatial hash so each particle only ever looks at its immediate neighbourhood — running
-    live in a browser tab, on a museum exhibit you can walk up to.</p>
-  </section>
-
-  <section>
     <h3><span class="bts-ic">🖌️</span> Paint that sticks</h3>
     <p>The spray can and the paintballs share one <strong>procedural splat shader</strong>. There's no
     texture: for each blob, noise pushes the rim in and out so no two splats share a silhouette, a
@@ -318,7 +299,7 @@ const TAB_PLAY = `
     from z-fighting the wall.</p>
     <p><strong>Paintballs</strong> actually fly: they're kinematic blobs (no physics body), integrated
     ballistically and swept each step with a raycast against buildings and terrain — plus the moving
-    cars and players you're aiming at. A wall hit spawns a graffiti burst; a hit on a vehicle or player
+    players and vehicles you're aiming at. A wall hit spawns a graffiti burst; a hit on a vehicle or player
     sticks a splat <em>to their mesh</em> via a paint-skin layer that rides the moving object (capped,
     oldest overwritten). Over the network a shot is just origin + velocity + colour, so every client
     re-simulates it and the paint lands exactly where <em>that</em> client sees the wall.</p>
@@ -357,11 +338,9 @@ const TAB_PLAY = `
     sparkle ring and respawns somewhere fresh.
     Blow soap bubbles and they drift off on a breeze with real thin-film iridescence — the colours are
     the viewing angle, not a texture — and burst against a wall, the water, or just old age.</p>
-    <p>The traffic is real: sedans, taxis, a Muni bus, a cable car — each a dynamic body you can ram or
-    ride (press E and it's yours). There's no road-network data, so they <strong>navigate by feel</strong>,
-    probing the building-collider field ahead and steering toward open air, which reads surprisingly
-    like real city traffic on the SF grid. Up in the Marin redwoods the wildlife is rideable — walk up to a
-    bear or raccoon and mount it with the same plumbing that commandeers a car. Gulls wheel over the
+    <p>The wildlife is rideable: up in the Marin redwoods, walk up to a bear or raccoon and mount it with
+    the same "become a vehicle" plumbing your own car uses, and boats drift out in the bay waiting for you
+    to take the wheel. Gulls wheel over the
     landmarks in one draw call, and something big and green circles Alcatraz, surfacing every so often.
     And the fireworks are <strong>entirely GPU-driven</strong>: the whole particle population lives in
     storage buffers integrated by one compute pass, and the CPU only decides when and where — so a burst
@@ -407,11 +386,10 @@ const TAB_PLAY = `
     <h3><span class="bts-ic">🎓</span> Learning by doing</h3>
     <p>Newcomers get an interactive tutorial that <strong>watches real play</strong> instead of
     narrating over it. It's a chaptered checklist — first steps, stepping inside a building, the vehicle
-    roster, the map and teleport, a field trip into the Exploratorium — and each step completes only when
-    you actually do the thing: it measures how far you've walked, how high you've flown, which mode you're
-    in, which notes you played on the museum's piano. The game hands it a thin stream of read-only
-    signals and one-shot events, and the tutorial never reaches in to fake progress — so finishing it
-    means you can genuinely play, not that you clicked "next" five times.</p>
+    roster, the map and teleport — and each step completes only when you actually do the thing: it
+    measures how far you've walked, how high you've flown, which mode you're in. The game hands it a thin
+    stream of read-only signals and one-shot events, and the tutorial never reaches in to fake progress —
+    so finishing it means you can genuinely play, not that you clicked "next" five times.</p>
   </section>
 
   <section>
@@ -426,7 +404,7 @@ const TAB_PLAY = `
     skating into walls.</p>
     <p>Remote players show up as full embodiments — walker, sports car, plane, sailboat, drone,
     hoverboard with rider, phoenix — with name tags and walk/ride animation driven by their reported
-    speed. What <em>isn't</em> synced is just as deliberate: building destruction, traffic, fireworks and
+    speed. What <em>isn't</em> synced is just as deliberate: building destruction, fireworks and
     paint all stay local, because everyone runs their own copy of the city. That's exactly why you can
     knock a block flat without ruining anyone else's skyline. The relay itself is almost aggressively
     boring by design: no database, everything in memory, a 15-second heartbeat to drop dead sockets,

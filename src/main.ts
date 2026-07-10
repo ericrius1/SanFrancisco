@@ -1,7 +1,7 @@
 import * as THREE from "three/webgpu";
 import { Inspector } from "three/addons/inspector/Inspector.js";
 import CameraControls from "camera-controls";
-import { CONFIG, DEBRIS_TUNING, FLOWER_TUNING, FOLIAGE_TUNING, RENDER_TUNING, START, START_DEFAULTS, WORLD_TUNING, type ShadowQuality } from "./config";
+import { CONFIG, DEBRIS_TUNING, FLOWER_TUNING, FOLIAGE_TUNING, RENDER_MODE, RENDER_TUNING, START, START_DEFAULTS, WORLD_TUNING } from "./config";
 import { loadPlayerState, resetAllTweaks, savePlayerState } from "./core/persist";
 import { Input } from "./core/input";
 import { WorldMap, waterHeight } from "./world/heightmap";
@@ -11,8 +11,10 @@ import { UnderwaterOverlay } from "./fx/underwater";
 import { SeaPillars } from "./world/seaPillars";
 import { TileStreamer } from "./world/tiles";
 import { createRoadMarkings } from "./world/roadMarkings";
+import { RoadGraph } from "./world/traffic/roadGraph";
+import { TrafficLightView } from "./world/traffic/trafficLights";
 import { Physics } from "./core/physics";
-import { createDebrisMaterial, DEBRIS_LIGHTS, WINDOW_GLOW } from "./world/facade";
+import { createDebrisMaterial, DEBRIS_LIGHTS } from "./world/facade";
 import { updateCrownDisplay, resetCrownTweaks } from "./world/salesforceCrown";
 import { createBayLights, updateBayLights, resetBayLightsTweaks } from "./world/bayLights";
 import { createGoldenGateLights, updateGoldenGateLights, resetGoldenGateLightsTweaks } from "./world/goldenGateLights";
@@ -40,30 +42,17 @@ import { AvatarSelector } from "./ui/avatarSelector";
 import { AudioControls } from "./ui/audioControls";
 import { Chat } from "./ui/chat";
 import { VehicleAudio } from "./fx/vehicleAudio";
-import { AiCarCabinAudio } from "./fx/aiCarCabinAudio";
 import { SwimAudio } from "./fx/swimAudio";
 import { createNatureSoundscape } from "./audio";
-import { Traffic, DRIVE_PROFILES, type VehicleClass } from "./gameplay/traffic";
 import { AbandonedMounts } from "./gameplay/abandonedMounts";
-import { AiCars } from "./gameplay/aiCars/index.ts";
 import { RocketRiders, type LauncherRig } from "./gameplay/launchers";
-import { Flyover } from "./gameplay/flyover";
-import { BridgeParade } from "./gameplay/bridgeParade";
 import type { Creatures } from "./gameplay/creatures";
-import type { HorseHerd } from "./gameplay/horse/horseHerd";
-import type { BrainPanel } from "./ui/brainPanel/index.ts";
-import type { InspectableBrain } from "./ui/brainPanel/types.ts";
 import type { Forest, AnimalKind } from "./gameplay/forest";
 import type { GrassDisplacer } from "./world/garden";
 import type { CityGenRing, ColliderBox } from "./world/citygen";
 import { Islands } from "./gameplay/islands";
-import type { Exploratorium } from "./gameplay/exploratorium";
 import { Loot } from "./gameplay/loot";
 import { Hunt } from "./gameplay/hunt";
-import type { Quidditch, QuidditchRole, QuidditchTeam } from "./gameplay/quidditch";
-import type { QuidditchHUD, QuidditchStartMode } from "./ui/quidditchHud";
-// QUIDDITCH_PITCH coordinates inlined — avoids a static import on the chunk
-const QUIDDITCH_PITCH_X = -3431, QUIDDITCH_PITCH_Z = 2322, QUIDDITCH_PITCH_NAME = "Quidditch Pitch";
 import { Ropes, Grabber, type PickCandidate } from "./gameplay/ropes";
 import { Satchel } from "./ui/satchel";
 import { HUD } from "./ui/hud";
@@ -73,6 +62,7 @@ import { PauseToggle } from "./ui/pauseToggle";
 import { parseReadLink, openReadLink } from "./ui/deepLinks";
 import { Tutorial } from "./ui/tutorial";
 import { createRenderPipeline } from "./render/pipeline";
+import { createDynamicResolution } from "./render/dynamicRes";
 import { POSTFX_TUNING } from "./render/postfx";
 import { DebugPanel } from "./ui/debug";
 import { ColliderDebug, type DebugBox } from "./ui/colliderDebug";
@@ -147,11 +137,11 @@ async function boot() {
   // (pipeline.ts) — a multisampled canvas would only buy a 4x resolve of the
   // final fullscreen quad
   const renderer = new THREE.WebGPURenderer({ antialias: false, reversedDepthBuffer: true });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, RENDER_TUNING.values.maxPixelRatio));
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, RENDER_MODE.pixelRatioCap));
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = RENDER_TUNING.values.exposure; // reference grading: physical sun (~100) + low exposure
-  renderer.shadowMap.enabled = RENDER_TUNING.values.shadowQuality !== "off";
+  renderer.shadowMap.enabled = true; // universal render mode: CSM shadows always on (see world/sky.ts)
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   app.appendChild(renderer.domElement);
   await renderer.init();
@@ -226,7 +216,6 @@ async function boot() {
 
   // procedural vehicle hum + the HUD's master volume/mute widget (bottom-left)
   const vehicleAudio = new VehicleAudio();
-  const aiCarCabinAudio = new AiCarCabinAudio();
   const swimAudio = new SwimAudio();
   const audioControls = new AudioControls();
   // procedural, layered nature soundscape (Botanical Garden / GG Park / Presidio
@@ -272,18 +261,16 @@ async function boot() {
     hud.setDevice("kb");
   });
 
-  // the playground layer: ambient traffic you can commandeer with E, and the
-  // local wildlife
-  const traffic = new Traffic(physics, map, scene);
-  // AI cars: a self-training neuro-evolution fleet driving the streets, each with
-  // a floating brain lattice. Async init loads the road graph off the boot path.
-  const aiCars = new AiCars(physics, map, scene, () => camera);
-  void aiCars.ready();
-  // building static bodies + the citywide collider index materialise around every
-  // AI car (not just the human), so cars collide with walls instead of clipping.
-  physics.setColliderAnchors(() => aiCars.anchorPositions());
-  // stable anchor array (player.position is mutated in place) — no per-frame alloc
-  const aiCarAnchors = [player.position];
+  // Traffic lights: procedural signals along the road graph. The road graph
+  // loads off the boot path; once it's ready the light rigs pool into the scene
+  // and their state machine cycles (see world/traffic/). Failures leave the city
+  // without signals but never block boot.
+  let trafficLights: TrafficLightView | null = null;
+  void RoadGraph.load()
+    .then((roads) => {
+      trafficLights = new TrafficLightView(scene, map, roads);
+    })
+    .catch((err: unknown) => console.warn("[traffic] signals unavailable", err));
   let creatures: Creatures | null = null;
   let forest: Forest | null = null;
   // ANIMALS record — populated by the deferred forest module load
@@ -292,9 +279,6 @@ async function boot() {
   const abandonedMounts = new AbandonedMounts(physics, map, scene);
   let cameraMode = false;
   const rocketRiders = new RocketRiders(scene, map);
-  // "-" spectacle: planes + phoenixes overhead, boats under the Golden Gate
-  const flyover = new Flyover(scene);
-  const bridgeParade = new BridgeParade(scene, map);
   // scatter boardable boats around the bay — walk/swim up + E to drive one off.
   // persistent: they wait at their spot no matter how far you roam.
   const scatterBoat = (mode: "boat" | "speedboat", x: number, z: number, heading: number) => {
@@ -339,58 +323,32 @@ async function boot() {
   // San Francisco Botanical Garden — self-contained module (src/world/garden):
   // SeedThree trees + procedural blade grass + shrubs/flora at the real SFBG
   // footprint inside Golden Gate Park. Trees stream in async; grass is live now.
-  // garden, wildlands, horses are deferred — constructed after progress(100)
+  // garden, wildlands are deferred — constructed after progress(100)
   // so they don't block first paint. Nullable refs; update calls are guarded.
   let garden: { group: THREE.Group; update: (dt: number, pos: THREE.Vector3, d: GrassDisplacer[]) => void } | null = null;
   let wildlands: { groups: THREE.Group[]; flowers: { refresh: () => void }; grass: { refresh: () => void }; update: (pos: THREE.Vector3, cam: THREE.Vector3) => void } | null = null;
   let windGustValue: (() => number) | null = null;
+  let advanceWind: ((dt: number) => void) | null = null;
   const gardenDisplacer: GrassDisplacer = { x: 0, z: 0, radius: 1.6, strength: 1 };
   const gardenDisplacers = [gardenDisplacer];
+  // Master foliage switch (bound at the top of the "/" panel). When off, every
+  // vegetation group is hidden AND its per-frame update is skipped in the loop
+  // below — see the `foliageOn` gate around garden/wildlands update.
+  let foliageOn = Boolean(FOLIAGE_TUNING.values.visible);
   const setFoliageVisible = (visible: boolean) => {
+    foliageOn = visible;
     if (garden) garden.group.visible = visible;
     if (wildlands) for (const g of wildlands.groups) g.visible = visible;
   };
-  let horses: HorseHerd | null = null;
   const islands = new Islands(physics, map, scene);
-
-  // brainPanel is deferred — dynamic import after progress(100)
-  let brainPanel: BrainPanel | null = null;
-  const inspectableBrains = (): InspectableBrain[] => [...aiCars.inspectables(), ...(horses?.inspectables() ?? [])];
-  const brainPickPos = new THREE.Vector3();
-  const pickBrain = (origin: THREE.Vector3, dir: THREE.Vector3): InspectableBrain | null => {
-    let best: InspectableBrain | null = null;
-    let bestT = Infinity;
-    for (const b of inspectableBrains()) {
-      b.getWorldPos(brainPickPos);
-      const ox = brainPickPos.x - origin.x;
-      const oy = brainPickPos.y - origin.y;
-      const oz = brainPickPos.z - origin.z;
-      const t = ox * dir.x + oy * dir.y + oz * dir.z; // dir is unit-length (chase.lookDir)
-      if (t < 0 || t > 200 || t >= bestT) continue;
-      const dx = origin.x + dir.x * t - brainPickPos.x;
-      const dy = origin.y + dir.y * t - brainPickPos.y;
-      const dz = origin.z + dir.z * t - brainPickPos.z;
-      if (dx * dx + dy * dy + dz * dz <= b.pickRadius * b.pickRadius) {
-        bestT = t;
-        best = b;
-      }
-    }
-    return best;
-  };
-  let lastHoverBrain: string | null = null;
-
-  // Exploratorium, citygen ring/demo, quidditch, BehindTheScenes are all deferred
-  let exploratorium: Exploratorium | null = null;
-  let WATER_VIEW: { x: number; z: number; facing: number } | null = null;
 
   // Decoupled world-query service: every "what does this ray hit" caller (paint,
   // the in-world cursor, future systems) goes through here. Backed by box3d's
   // broadphase cast over a dedicated query world of entity proxies, raced against
-  // the static-world caster + the museum's interior surfaces.
+  // the static-world caster.
   const worldQueries = new WorldQueries(physics);
-  // setSurfaceRay is called again in the deferred loader once exploratorium loads
 
-  // citygen (demo + ring) and quidditch are deferred — populated by the loader
+  // citygen (demo + ring) are deferred — populated by the loader
   // after progress(100); citygenRing uses the existing nullable-current pattern
   let citygen: { update?: (dt: number) => void; [k: string]: unknown } | null = null;
   const citygenRing: { current: CityGenRing | null } = { current: null };
@@ -408,28 +366,13 @@ async function boot() {
     satchel.add(kind);
     hud.message("Crab caught!", 1.1);
   };
-  let quidditch: Quidditch | null = null;
-  let quidHud: QuidditchHUD | null = null;
   const ropes = new Ropes(physics, scene);
   const grabber = new Grabber(physics, scene);
   grabberRef = grabber;
-  // bodies owned by traffic can vanish (cars despawn or get commandeered) —
-  // ropes and the grab beam must let go BEFORE the destroy
-  const releaseBody = (h: number) => {
-    ropes.severBody(h);
-    grabber.dropIf(h);
-  };
-  traffic.onWillRemoveBody = releaseBody;
-  aiCars.onWillRemoveBody = releaseBody;
+  // No ambient vehicles anymore, so the rope/grab tools have no extra spherical
+  // candidates to offer — they still reach the static world directly.
   const pickables: PickCandidate[] = [];
-  const gatherPickables = () => {
-    pickables.length = 0;
-    for (const v of traffic.vehicles) {
-      const he = DRIVE_PROFILES[v.cls].halfExtents;
-      pickables.push({ handle: v.handle, x: v.pos.x, y: v.pos.y, z: v.pos.z, r: Math.hypot(he[0], he[1], he[2]) + 0.5 });
-    }
-    return pickables;
-  };
+  const gatherPickables = () => pickables;
 
   const bayLights = createBayLights(map);
   if (bayLights) scene.add(bayLights);
@@ -441,32 +384,7 @@ async function boot() {
   scene.add(createPalaceColonnade(map));
   const sutroTower = createSutroTower(map);
   scene.add(sutroTower);
-  let currentRide: VehicleClass | null = null;
   let currentAnimal: AnimalKind | null = null;
-  let currentQuidditch: { team: "red" | "blue"; role: QuidditchRole } | null = null;
-  // Take over a specific open broom (from the role picker). Mounts the drone
-  // with the team-tinted broom and drops the player onto that flyer's spot.
-  function joinQuidditchRole(team: QuidditchTeam, role: QuidditchRole, startMode: QuidditchStartMode = "play") {
-    if (!quidditch || !quidHud) { hud.message("Quidditch is still loading…", 2); return; }
-    const _q = quidditch, _qh = quidHud; // narrow for TypeScript after the guard
-    const info = _q.joinAs(team, role, player.position);
-    if (!info) {
-      hud.message("That position was just taken — try another", 2);
-      return;
-    }
-    currentQuidditch = { team: info.team, role: info.role };
-    player.setDroneStyle(_q.buildRiddenMesh(info.team));
-    player.position.set(info.x, info.y, info.z);
-    player.heading = info.heading;
-    player.velocity.set(info.vx, info.vy, info.vz);
-    player.trySwitch("drone");
-    _qh.setRole(info.label);
-    if (startMode === "tutorial") _qh.startTutorial(info.label, info.role);
-    else _qh.stopTutorial();
-    const verb = role === "Beater" ? "swat Bludgers" : role === "Seeker" ? "catch the Snitch" : role === "Keeper" ? "guard the hoops" : "sling the Quaffle";
-    hud.message(startMode === "tutorial" ? `Tutorial started — ${verb}` : `You're the ${info.label} — ${verb}! E to dismount`, 3.4);
-  }
-  let currentPaint: number | undefined; // commandeered car's paint, so invites clone the exact look
   let ridePromptShown = false;
   // way high above the ground (plane/drone cruising), ground flora and critters
   // are subpixel — their systems pause. Hysteresis so hill flanks don't flicker it.
@@ -539,6 +457,22 @@ async function boot() {
   // post-processing: scene pass AA + optional stylized screen effects
   const pipeline = createRenderPipeline(renderer, scene, camera);
 
+  // Dynamic-resolution governor: watches the real rAF cadence and steps the
+  // drawing-buffer pixel ratio between RENDER_MODE.minPixelRatio and the boot
+  // ceiling — min(devicePixelRatio, RENDER_MODE.pixelRatioCap) — to hold the
+  // frame budget on weaker GPUs. The apply path is exactly what boot + resize
+  // do (setPixelRatio + setSize); the WebGPU pass targets re-derive from the
+  // drawing-buffer on the next render, so nothing else needs a resize hook.
+  // Starts at the ceiling boot already applied above.
+  const applyPixelRatio = (ratio: number) => {
+    renderer.setPixelRatio(ratio);
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  };
+  const dynRes = createDynamicResolution({
+    apply: applyPixelRatio,
+    readRatio: () => renderer.getPixelRatio()
+  });
+
   // ---- multiplayer: presence relay (src/net/net.ts) + remote avatars +
   // minimap. Drop-in social layer: movement stays client-authoritative, the
   // server only relays poses, and losing the socket never breaks single-player.
@@ -595,10 +529,6 @@ async function boot() {
   // someone else's paintball: same ballistic sim, their color, splats locally
   net.onPaint = (id, x, y, z, vx, vy, vz, rgb) => paintballs.spawn(x, y, z, vx, vy, vz, remotePaint.set(rgb), id);
   const remotePaint = new THREE.Color();
-  // museum jam session: my notes go out, friends' notes play the same
-  // flash + dome ripple here (audible only if I'm actually at the theater)
-  // exploratorium.onNote is wired in the deferred loader once the module loads
-  net.onNote = (_id, inst, key) => exploratorium?.remoteNote(inst, key);
   // shared skies: my rocket launches go out, friends' volleys replay here
   fireworks.onVolley = (rockets) => net.sendFireworks(rockets);
   net.onFireworks = (_id, rockets) => fireworks.launchRemote(rockets);
@@ -622,38 +552,18 @@ async function boot() {
       hud.message("Click to capture the mouse · Esc releases it", 2.8);
     }
   };
-  // AI cars: only the lowest-id client trains + broadcasts; everyone else renders
-  // the fleet as interpolated ghosts. The leader anchors spawning around remotes
-  // too, so cars stay near whoever is online.
-  aiCars.attachNet(net, () => remotes.positions());
-
   // passenger seat support: remotes resolves "riding MY car" through this
   remotes.localDriveMesh = () => (player.mode === "drive" && !player.riding ? player.meshes.drive : null);
 
-  // riding shotgun: either a friend's car (remote player id) or a self-driving
-  // AI training car (fleet id). Pose glue runs each frame; every mode change,
-  // respawn or teleport goes through leaveRide first.
+  // riding shotgun in a friend's car (remote player id). Pose glue runs each
+  // frame; every mode change, respawn or teleport goes through leaveRide first.
   let passengerOf: number | null = null;
-  let aiCarPassengerOf: number | null = null;
   const ridePos = new THREE.Vector3();
   const rideQuat = new THREE.Quaternion();
   const leaveRide = () => {
-    if (passengerOf === null && aiCarPassengerOf === null) return;
+    if (passengerOf === null) return;
     passengerOf = null;
-    aiCarPassengerOf = null;
-    aiCars.forceOverlay(null);
     player.endRide();
-  };
-  /** Board an AI training car as a passenger (self-driving — no human driver). */
-  const boardAiCar = (carId: number, label?: string) => {
-    leaveRide();
-    dropCurrentDriveMount();
-    if (player.mode !== "walk") player.trySwitch("walk");
-    aiCarPassengerOf = carId;
-    aiCars.forceOverlay(carId);
-    player.startRide();
-    if (aiCars.ridePose(carId, ridePos, rideQuat)) player.setRidePose(ridePos, rideQuat, 0);
-    hud.message(label ?? `Riding AI car ${carId + 1} — E to hop out`, 2.8);
   };
 
   // proximity voice chat: P2P audio spatialised onto the remote avatars,
@@ -716,10 +626,7 @@ async function boot() {
       mapFwd.set(0, 0, -1).applyQuaternion(player.meshes[player.mode].quaternion);
       return { x: player.position.x, z: player.position.z, fx: mapFwd.x, fz: mapFwd.z, hue: net.selfHue };
     },
-    () => remotes.positions(),
-    // live Training/Debug overlay getters (big map only): AI cars + horse herd
-    () => (aiCars.debugCars() ?? []).map((c) => ({ id: c.id, x: c.x, z: c.z })),
-    () => (horses?.debugStates() ?? []).map((h) => ({ x: h.wx, z: h.wz, fallen: h.fallen }))
+    () => remotes.positions()
   );
   const playerLocator = new PlayerLocator();
   type ReleaseMotion = {
@@ -744,7 +651,6 @@ async function boot() {
     };
   };
   const exitClearance = (mode: PlayerMode) => {
-    if (mode === "drive" && currentRide) return Math.max(2.8, DRIVE_PROFILES[currentRide].halfExtents[0] + 1.7);
     if (mode === "drive" && currentAnimal) return currentAnimal === "bear" ? 3.0 : 2.4;
     if (mode === "plane" || mode === "boat") return 6.5;
     if (mode === "drone" || mode === "board" || mode === "bird") return 2.8;
@@ -752,52 +658,19 @@ async function boot() {
   };
   const dropCurrentDriveMount = (motion = readPlayerMotion()) => {
     let dropped = false;
-    if (currentRide) {
-      const mount = player.meshes.drive.position;
-      traffic.releaseVehicle(currentRide, mount.x, mount.z, player.heading - Math.PI, {
-        paint: currentPaint,
-        y: mount.y,
-        linear: motion.linear,
-        angular: motion.angular
-      });
-      currentRide = null;
-      currentPaint = undefined;
-      player.setDriveStyle(null);
-      dropped = true;
-    }
     if (currentAnimal && forest) {
       const mount = player.meshes.drive.position;
       forest.dropAnimal(currentAnimal, mount.x, mount.z, player.heading - Math.PI, { speed: motion.horizontalSpeed });
       currentAnimal = null;
-      currentPaint = undefined;
       player.setDriveStyle(null);
-      dropped = true;
-    }
-    if (currentQuidditch && quidditch) {
-      const _qd = quidditch; // narrowed ref for TypeScript
-      _qd.dropFlyer(
-        currentQuidditch.team,
-        currentQuidditch.role,
-        player.position.x,
-        player.position.y,
-        player.position.z,
-        player.heading - Math.PI,
-        { vx: motion.linear[0], vy: motion.linear[1], vz: motion.linear[2] }
-      );
-      currentQuidditch = null;
-      player.clearDroneStyle();
-      quidHud?.setRole(null);
-      quidHud?.stopTutorial();
       dropped = true;
     }
     return dropped;
   };
   /** E (or pad B): leave any vehicle, creature, or passenger seat for on-foot. */
   const exitToWalk = () => {
-    if (passengerOf !== null || aiCarPassengerOf !== null) {
+    if (passengerOf !== null) {
       passengerOf = null;
-      aiCarPassengerOf = null;
-      aiCars.forceOverlay(null);
       player.position.x += Math.cos(player.heading) * 2.4;
       player.position.z -= Math.sin(player.heading) * 2.4;
       player.endRide();
@@ -917,9 +790,9 @@ async function boot() {
     }
     beginPlaceNavigation("Previous place");
     leaveRide(); // a mode key while riding shotgun hops out first
-    if ((currentRide || currentAnimal || currentQuidditch) && mode !== "drive" && mode !== "drone") dropCurrentDriveMount();
-    if (mode === "drive" && !currentRide && !currentAnimal) player.setDriveStyle(null);
-    if (mode === "drone" && !currentQuidditch) player.clearDroneStyle();
+    if (currentAnimal && mode !== "drive" && mode !== "drone") dropCurrentDriveMount();
+    if (mode === "drive" && !currentAnimal) player.setDriveStyle(null);
+    if (mode === "drone") player.clearDroneStyle();
     // Always spawn a fresh mount — any one you left behind keeps living its own
     // life (the phoenix flies on, the plane lies where it crashed).
     player.trySwitch(mode);
@@ -928,16 +801,8 @@ async function boot() {
   switchModeFromToolbar = switchMode;
   hud.onHistoryBack = () => applyPlaceHistory(-1);
   hud.onHistoryForward = () => applyPlaceHistory(1);
-  const teleportToTarget = (x: number, z: number, toName?: string, playerId?: number, aiCarId?: number) => {
+  const teleportToTarget = (x: number, z: number, toName?: string, playerId?: number) => {
     void (async () => {
-      // AI training car: board as a passenger in the self-driving cabin
-      if (aiCarId !== undefined) {
-        beginPlaceNavigation("Previous place");
-        boardAiCar(aiCarId, toName ? `${toName} — E to hop out` : undefined);
-        finishPlaceNavigation(toName ?? "AI car");
-        tutorial.note("teleport");
-        return;
-      }
       const t = playerId !== undefined ? remotes.stateOf(playerId) : null;
       if (playerId !== undefined && !t) {
         hud.message(`${toName ?? "Player"} is no longer available`, 2.2);
@@ -959,14 +824,6 @@ async function boot() {
       if (t) {
         if (t.mode !== "drive") dropCurrentDriveMount();
         player.teleportTo({ x: tx - (dx / d) * back, y: t.y, z: tz - (dz / d) * back, facing: heading, mode: t.mode });
-      } else if (toName === "Exploratorium") {
-        // land inside, in front of the Water Works wave-tank screen, facing it
-        if (WATER_VIEW) player.respawn({ x: WATER_VIEW.x, z: WATER_VIEW.z, heading: WATER_VIEW.facing });
-      } else if (toName === QUIDDITCH_PITCH_NAME) {
-        dropCurrentDriveMount();
-        if (player.mode !== "walk") player.trySwitch("walk");
-        quidHud?.stopTutorial();
-        player.respawn({ x: QUIDDITCH_PITCH_X, z: QUIDDITCH_PITCH_Z, heading: -Math.PI / 2 });
       } else {
         const want = { x: tx, z: tz, heading };
         const open = await findOpenSpawn(map, tiles.manifest, want);
@@ -981,8 +838,6 @@ async function boot() {
     })();
   };
   minimap.onTeleport = teleportToTarget;
-  // KeyN cycles the camera through the AI-car fleet so you can watch them drive.
-  let carViewIdx = -1;
   minimap.onPlaceClick = (place) => {
     const layer = place.layer[0].toUpperCase() + place.layer.slice(1);
     hud.message(`${layer}: ${place.title}`, 2.4);
@@ -994,9 +849,9 @@ async function boot() {
   };
 
   // interactive tutorial (ui/tutorial.ts): the 🎓 button under Share starts a
-  // chaptered walkthrough — movement, entering buildings, vehicles, the map, and a field
-  // trip into the Exploratorium. It only reads through this thin context;
-  // one-shot events (teleports, piano notes) arrive via tutorial.note().
+  // chaptered walkthrough — movement, entering buildings, vehicles, and the map.
+  // It only reads through this thin context; one-shot events (teleports) arrive
+  // via tutorial.note().
   const tutorial = new Tutorial({
     mode: () => player.mode,
     pos: () => player.position,
@@ -1031,9 +886,9 @@ async function boot() {
   );
   debugPanel.setMode(player.mode);
 
-  // ?j=x,y,z,facing,mode[,ride[,paint]] — invite links from the Share button.
+  // ?j=x,y,z,facing,mode[,animal] — invite links from the Share button.
   // A friend opening one spawns right where the sharer stood, in the same kind
-  // of vehicle (commandeered taxi/bus/cable car and ridden animals included).
+  // of vehicle (a ridden animal included).
   const invite = (() => {
     const q = new URLSearchParams(location.search);
     const raw = q.get("j");
@@ -1045,10 +900,8 @@ async function boot() {
     const facing = Number(p[3]);
     const mode = ALL_MODES.find((m) => m === p[4]);
     if (![x, y, z, facing].every(Number.isFinite) || !mode) return null;
-    const ride = p[5] && p[5] in DRIVE_PROFILES ? (p[5] as VehicleClass) : null;
     const animal = p[5] && ANIMALS && p[5] in ANIMALS ? (p[5] as AnimalKind) : null;
-    const paint = p[6] ? parseInt(p[6], 16) : NaN;
-    return { x, y, z, facing, mode, ride, animal, paint: Number.isFinite(paint) ? paint : undefined, from: q.get("via") };
+    return { x, y, z, facing, mode, animal, from: q.get("via") };
   })();
 
   // resume last session: position, heading and vehicle survive a refresh
@@ -1064,12 +917,7 @@ async function boot() {
   }
   if (invite) {
     let mode = invite.mode;
-    if (invite.ride) {
-      currentRide = invite.ride;
-      currentPaint = invite.paint;
-      player.setDriveStyle(traffic.buildMesh(invite.ride, invite.paint), DRIVE_PROFILES[invite.ride]);
-      mode = "drive";
-    } else if (invite.animal) {
+    if (invite.animal) {
       currentAnimal = invite.animal;
       if (forest && ANIMALS && invite.animal) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1096,7 +944,7 @@ async function boot() {
   }
 
   // Share button (top-right): copy an invite link that reproduces where I am
-  // right now — position, facing, mode, and the exact ride if I'm in one
+  // right now — position, facing, mode, and the ridden animal if I'm on one
   const buildShareUrl = () => {
     const facing = player.heading - Math.PI; // player.heading stores facing+π
     const parts = [
@@ -1106,10 +954,7 @@ async function boot() {
       facing.toFixed(2),
       player.riding ? "walk" : player.mode // a passenger's friend joins on foot beside the car
     ];
-    if (!player.riding && player.mode === "drive") {
-      if (currentAnimal) parts.push(currentAnimal);
-      else if (currentRide) parts.push(currentRide, (currentPaint ?? 0).toString(16));
-    }
+    if (!player.riding && player.mode === "drive" && currentAnimal) parts.push(currentAnimal);
     return `${location.origin}${location.pathname}?j=${parts.join(",")}&via=${encodeURIComponent(net.name)}`;
   };
   new ShareButton(buildShareUrl, (ok) =>
@@ -1305,6 +1150,7 @@ async function boot() {
       import("./world/wildlands")
     ]);
     windGustValue = gardenMod.windGustValue;
+    advanceWind = gardenMod.updateWindGusts; // keep the wind envelope live when foliage is toggled off
     const _garden = gardenMod.createBotanicalGarden(map);
     scene.add(_garden.group);
     _garden.group.visible = FOLIAGE_TUNING.values.visible;
@@ -1312,29 +1158,10 @@ async function boot() {
     const _wildlands = wildlandsMod.createWildlands(map);
     for (const g of _wildlands.groups) { g.visible = FOLIAGE_TUNING.values.visible; scene.add(g); }
     wildlands = _wildlands;
-
-    // HorseHerd: RL ragdoll horses in the Botanical Garden meadow
-    const { HorseHerd: HorseHerdCls } = await import("./gameplay/horse/horseHerd");
-    horses = new HorseHerdCls(physics, map, scene);
-
-    // BrainPanel: AI brain inspector overlay
-    const { BrainPanel: BrainPanelCls } = await import("./ui/brainPanel/index.ts");
-    brainPanel = new BrainPanelCls(
-      () => input.releaseLock(),
-      () => { if (!cameraMode) input.requestLock(); }
-    );
-
-    // Exploratorium: Pier 15 museum + dome show
-    const { Exploratorium: ExploratoriumCls, WATER_VIEW: wv } = await import("./gameplay/exploratorium");
-    WATER_VIEW = wv;
-    const _exp = new ExploratoriumCls(renderer, physics, map, scene, tiles);
-    _exp.onMessage = (m, s) => hud.message(m, s);
-    _exp.onNote = (inst: number, key: number) => {
-      net.sendNote(inst, key);
-      tutorial.note("note");
-    };
-    worldQueries.setSurfaceRay((o, d, m) => _exp.raycast(o, d, m));
-    exploratorium = _exp;
+    // __sf snapshots these refs at expose time (they were null then) — patch the
+    // live objects in so probes/console can reach the garden + wildlands groups.
+    const sfHooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
+    if (sfHooks) Object.assign(sfHooks, { garden: _garden, wildlands: _wildlands });
 
     // CityGen: procedural building ring + demo
     const [citygenMod, citygenDemoMod] = await Promise.all([
@@ -1343,44 +1170,6 @@ async function boot() {
     ]);
     citygen = citygenDemoMod.createCityGenDemo({ scene, map }) as NonNullable<typeof citygen>;
     citygenMod.createCityGenRing({}, { scene, physics, map, tiles }).then((r) => { citygenRing.current = r; });
-
-    // Quidditch + HUD + audio
-    const [quidMod, quidHudMod, quidAudioMod] = await Promise.all([
-      import("./gameplay/quidditch"),
-      import("./ui/quidditchHud"),
-      import("./fx/quidditchAudio")
-    ]);
-    const _quid = new quidMod.Quidditch(map, scene);
-    const _quidHud = new quidHudMod.QuidditchHUD();
-    const _quidAudio = new quidAudioMod.QuidditchAudio();
-    _quid.onMessage = (m, s) => hud.message(m, s);
-    _quid.onActiveChange = (on) => _quidHud.setActive(on);
-    _quid.onWhistle = () => _quidAudio.whistle();
-    _quid.onScore = (team, red, blue, x, y, z) => {
-      _quidHud.setScores(red, blue);
-      _quidHud.flashGoal(team);
-      _quidHud.noteTutorial("score");
-      fireworks.launchCelebration(x, y, z, 2);
-      chase.shake(0.08);
-    };
-    _quid.onSnitchCaught = (team, red, blue) => {
-      _quidAudio.snitch();
-      _quidHud.setScores(red, blue);
-      _quidHud.setSnitch(true, team);
-      _quidHud.noteTutorial("snitch");
-      fireworks.launchCelebration(QUIDDITCH_PITCH_X, map.effectiveGround(QUIDDITCH_PITCH_X, QUIDDITCH_PITCH_Z) + 40, QUIDDITCH_PITCH_Z);
-      chase.shake(0.16);
-    };
-    _quid.onBludgerHit = (_x, _y, _z, hitPlayer) => {
-      _quidAudio.bludger();
-      if (hitPlayer) chase.shake(0.22);
-    };
-    _quidHud.onPickRole = (team: QuidditchTeam, role: QuidditchRole, mode: QuidditchStartMode) => joinQuidditchRole(team, role, mode);
-    _quidHud.onCloseModal = () => {
-      if (!input.suspended && document.body.classList.contains("started")) input.requestLock();
-    };
-    quidditch = _quid;
-    quidHud = _quidHud;
 
     // BehindTheScenes: the "how it was made" reading overlay
     const { BehindTheScenes } = await import("./ui/behindTheScenes");
@@ -1411,8 +1200,8 @@ async function boot() {
   let elapsed = 0;
   let paused = false;
   // When paused, the world sim freezes but the player stays live by default
-  // (walk/drive/fly on) so you can approach a training car and click its brain.
-  // The pause toggle flips this to freeze the player too, for a still shot.
+  // (walk/drive/fly on) so you can keep roaming the frozen city. The pause
+  // toggle flips this to freeze the player too, for a still shot.
   let freezePlayer = false;
   let immersive = false;
   // Z (hold): scrub the time of day with the trackpad — cursor drag or
@@ -1583,17 +1372,15 @@ async function boot() {
       hud.setFaded(!uiOpen);
     }
     // M (or clicking the minimap): the full city map — players, teleports.
-    // Works while paused; Esc also closes it. (The brain inspector owns Esc while open.)
-    if (!brainPanel?.isOpen && (input.pressed("KeyM") || (minimap.expanded && input.pressed("Escape")))) {
+    // Works while paused; Esc also closes it.
+    if (input.pressed("KeyM") || (minimap.expanded && input.pressed("Escape"))) {
       minimap.setExpanded(!minimap.expanded);
     }
 
-    // Full freeze: the brain inspector, or a pause with "freeze player" armed.
-    // Everything holds — sim, player, fx, vehicles — while a DOM panel (or a
-    // clean screenshot) floats on top.
-    if ((paused && freezePlayer) || brainPanel?.isOpen) {
+    // Full freeze: a pause with "freeze player" armed. Everything holds — sim,
+    // player, fx, vehicles — while a clean screenshot floats on top.
+    if (paused && freezePlayer) {
       vehicleAudio.update(frameDt, null); // fade the hum out while frozen
-      aiCarCabinAudio.update(frameDt, aiCarPassengerOf !== null ? { active: true, speed: 0 } : null);
       swimAudio.update(frameDt, null);
       // ambience keeps breathing while frozen — it's a chill/social feature
       nature.update(frameDt, {
@@ -1606,10 +1393,8 @@ async function boot() {
       net.sendState(player.mode, player.meshes[player.mode].position, player.meshes[player.mode].quaternion, 0, passengerOf ?? 0);
       remotes.selfId = net.selfId;
       remotes.update(frameDt);
-      // stay glued to a friend's car or an AI training car while frozen
+      // stay glued to a friend's car while frozen
       if (passengerOf !== null && remotes.ridePose(passengerOf, ridePos, rideQuat)) {
-        player.setRidePose(ridePos, rideQuat, frameDt);
-      } else if (aiCarPassengerOf !== null && aiCars.ridePose(aiCarPassengerOf, ridePos, rideQuat)) {
         player.setRidePose(ridePos, rideQuat, frameDt);
       }
       voice.update(camera); // keep talking while paused — it's a social feature
@@ -1621,11 +1406,10 @@ async function boot() {
     }
 
     // World frozen, player live: the default pause. The whole city sim holds
-    // (traffic, AI cars, horses, sky, water, fx never tick) but the player keeps
-    // moving — walk, drive, fly — so you can roll up to a training car and click
-    // its brain. We run ONLY the player's own step + camera + tile streaming +
-    // brain-pick. The player's dynamic body still steps physics; kinematic AI-car
-    // bodies get no prePhysics and so stay put.
+    // (sky, water, fx never tick) but the player keeps moving — walk, drive,
+    // fly — so you can keep roaming the frozen city. We run ONLY the player's own
+    // step + camera + tile streaming. The player's dynamic body still steps
+    // physics.
     if (paused) {
       accumulator += frameDt; // no elapsed++ — the world clock stays frozen
       if (player.mode === "plane") player.steerFly(input, frameDt);
@@ -1642,11 +1426,9 @@ async function boot() {
       if (steps === 3) accumulator = 0;
       remotes.selfId = net.selfId;
       remotes.update(frameDt);
-      // riding shotgun with a friend or AI car keeps you glued; otherwise
-      // settle the render transform between physics states like a live frame
+      // riding shotgun with a friend keeps you glued; otherwise settle the render
+      // transform between physics states like a live frame
       if (passengerOf !== null && remotes.ridePose(passengerOf, ridePos, rideQuat)) {
-        player.setRidePose(ridePos, rideQuat, frameDt);
-      } else if (aiCarPassengerOf !== null && aiCars.ridePose(aiCarPassengerOf, ridePos, rideQuat)) {
         player.setRidePose(ridePos, rideQuat, frameDt);
       } else {
         player.afterSteps(steps, accumulator / physics.world.fixedTimeStep);
@@ -1655,13 +1437,6 @@ async function boot() {
       const altitude = player.position.y - map.groundHeight(player.position.x, player.position.z);
       highUp = highUp ? altitude > 110 : altitude > 150;
       tiles.update(player.position.x, player.position.z, highUp);
-      // a click on an AI entity's floating lattice opens the brain inspector —
-      // the whole point of pause-and-approach (it then fully freezes behind it)
-      if (input.firePressed && !input.suspended) {
-        aimRay(rayOrigin, aim);
-        const hit = pickBrain(rayOrigin, aim);
-        if (hit) brainPanel?.open(hit);
-      }
       if (cameraMode) orbit.update(frameDt);
       else { chase.indoor = citygenRing.current?.isPlayerInside() ?? false; chase.update(frameDt, player, input); }
       // keep the vehicle hum, ambience and social presence alive like full pause
@@ -1672,10 +1447,6 @@ async function boot() {
         boost: input.down("ShiftLeft"),
         grounded: player.mode !== "board" || player.boardGrounded
       });
-      aiCarCabinAudio.update(
-        frameDt,
-        aiCarPassengerOf !== null ? { active: true, speed: player.speed } : null
-      );
       swimAudio.update(frameDt, {
         swimming: player.swimming,
         speed: Math.hypot(player.velocity.x, player.velocity.z),
@@ -1705,27 +1476,24 @@ async function boot() {
     const numberPressed = (i: number) => input.pressed(`Digit${i}`) || input.pressed(`Numpad${i}`);
     const ctrlNumberPress = (i: number) => input.ctrlPressed(`Digit${i}`) || input.ctrlPressed(`Numpad${i}`);
     const shiftedNumberPress = (i: number) => input.shiftedPress(`Digit${i}`) || input.shiftedPress(`Numpad${i}`);
-    // seated at the piano the digits play notes (handlePianoInput below) — the
-    // mode/tool switcher stands down so hitting "3" plays the instrument instead
-    if (!exploratorium?.pianoBusy && !exploratorium?.plaqueOpen)
-      for (let i = 1; i <= 9; i++) {
-        if (!numberPressed(i)) continue;
-        if (ctrlNumberPress(i)) {
-          const nextTool = TOOL_ORDER[i - 1];
-          if (nextTool) setTool(nextTool);
-          continue;
-        }
-        // Snapshot Shift from the digit's keydown event; a stale held-key entry
-        // should never turn a plain number press into a player-slot teleport.
-        if (shiftedNumberPress(i)) {
-          const target = playerLocator.targetForDigit(i);
-          if (target) teleportToTarget(target.x, target.z, target.name, target.id);
-          else hud.message(`No player in slot ${i}`, 1.9);
-          continue;
-        }
-        const nextMode = MENU_MODES[i - 1];
-        if (nextMode) switchMode(nextMode);
+    for (let i = 1; i <= 9; i++) {
+      if (!numberPressed(i)) continue;
+      if (ctrlNumberPress(i)) {
+        const nextTool = TOOL_ORDER[i - 1];
+        if (nextTool) setTool(nextTool);
+        continue;
       }
+      // Snapshot Shift from the digit's keydown event; a stale held-key entry
+      // should never turn a plain number press into a player-slot teleport.
+      if (shiftedNumberPress(i)) {
+        const target = playerLocator.targetForDigit(i);
+        if (target) teleportToTarget(target.x, target.z, target.name, target.id);
+        else hud.message(`No player in slot ${i}`, 1.9);
+        continue;
+      }
+      const nextMode = MENU_MODES[i - 1];
+      if (nextMode) switchMode(nextMode);
+    }
     const keyboardCycle =
       ((input.pressed("ArrowRight") && !input.altPressed("ArrowRight")) || (input.pressed("ArrowDown") && !input.altPressed("ArrowDown")) ? 1 : 0) -
       ((input.pressed("ArrowLeft") && !input.altPressed("ArrowLeft")) || (input.pressed("ArrowUp") && !input.altPressed("ArrowUp")) ? 1 : 0);
@@ -1740,27 +1508,15 @@ async function boot() {
     if (input.altPressed("ArrowLeft")) applyPlaceHistory(-1);
     if (input.altPressed("ArrowRight")) applyPlaceHistory(1);
 
-    // E: Exploratorium piano, then exit any vehicle/creature, or on foot hop
-    // into the nearest car (a friend's passenger seat wins over parked traffic)
-    if (input.pressed("KeyE") && exploratorium?.tryInteract()) {
-      // consumed E inside the museum: seated at the dome piano, or opened/closed
-      // a plaque — only the piano advances the tutorial
-      if (exploratorium?.pianoBusy) tutorial.note("piano");
-    } else if (input.pressed("KeyE") && !exitToWalk()) {
+    // E: exit any vehicle/creature, or on foot hop into the nearest ride (a
+    // friend's passenger seat, a rideable animal, or a mount you left behind)
+    if (input.pressed("KeyE") && !exitToWalk()) {
         const drv = remotes.nearestDriver(player.position, 5.5);
-        // standing in the pitch's join circle: open the position picker instead
-        // of auto-assigning, so you can choose Seeker / Beater / Chaser / Keeper
-        const wantQuid = !drv && !currentQuidditch && quidditch?.inJoinZoneAt(player.position);
-        const animal = drv || wantQuid ? null : forest?.nearest(player.position, 5);
-        const aiCar = drv || wantQuid || animal ? null : aiCars.nearestCar(player.position, 5.5);
+        const animal = drv ? null : forest?.nearest(player.position, 5);
         if (drv) {
           passengerOf = drv.id;
           player.startRide();
           hud.message(`Riding with ${drv.name} — E to hop out`, 2.6);
-        } else if (wantQuid) {
-          const open = quidditch?.openRoles() ?? [];
-          if (open.length) quidHud?.showStart(open);
-          else hud.message("Every broom is taken right now", 2);
         } else if (animal && forest && ANIMALS) {
           const info = forest.consume(animal);
           currentAnimal = info.kind;
@@ -1772,32 +1528,19 @@ async function boot() {
             info.kind === "raccoon" ? "You're riding the raccoon! Left click — gummy bears" : "You're riding the bear!",
             3
           );
-        } else if (aiCar) {
-          boardAiCar(aiCar.id);
         } else {
           // re-board a vehicle/creature you left behind — walk up, press E,
-          // just like a parked car (the phoenix, a crashed plane, a hoverboard…)
+          // just like a parked mount (the phoenix, a crashed plane, a hoverboard…)
           const mount = abandonedMounts.boardNearest(player.position.x, player.position.z, 5.5);
-          const v = mount ? null : traffic.nearest(player.position, 5.5);
           if (mount) {
             if (mount.mode === "drive") player.setDriveStyle(null);
             player.position.set(mount.x, mount.y, mount.z);
             player.heading = mount.heading;
             player.trySwitch(mount.mode);
             hud.message("Back on board — E to hop off", 2.4);
-          } else if (v) {
-            const info = traffic.consume(v);
-            currentRide = info.cls;
-            currentPaint = info.paint;
-            player.setDriveStyle(traffic.buildMesh(info.cls, info.paint), DRIVE_PROFILES[info.cls]);
-            player.position.set(info.x, player.position.y, info.z);
-            player.heading = info.heading + Math.PI; // storage convention is facing+π
-            player.trySwitch("drive");
-            hud.message(`You're driving the ${DRIVE_PROFILES[info.cls].label}!`, 2.6);
           }
         }
     }
-    exploratorium?.handlePianoInput((c) => input.pressed(c));
 
     if (input.pressed("KeyR")) {
       leaveRide();
@@ -1815,12 +1558,11 @@ async function boot() {
       resetSutroLightsTweaks();
       START.spawn = START_DEFAULTS.spawn;
       START.mode = START_DEFAULTS.mode;
-      // re-apply the side effects the pane's onChange handlers normally push
+      // re-apply the side effects the pane's onChange handlers normally push.
+      // Pixel ratio + shadows are no longer tweakable (universal render mode);
+      // the reset just re-asserts the dynamic-res governor's ceiling.
       renderer.toneMappingExposure = RENDER_TUNING.values.exposure;
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio, RENDER_TUNING.values.maxPixelRatio));
-      renderer.setSize(window.innerWidth, window.innerHeight);
-      renderer.shadowMap.enabled = RENDER_TUNING.values.shadowQuality !== "off";
-      sky.setShadowQuality(RENDER_TUNING.values.shadowQuality as ShadowQuality);
+      dynRes.syncToCap();
       CONFIG.tileLoadRadius = WORLD_TUNING.values.radius;
       CONFIG.tileUnloadRadius = WORLD_TUNING.values.radius + 400;
       setFoliageVisible(FOLIAGE_TUNING.values.visible);
@@ -1829,7 +1571,6 @@ async function boot() {
       DEBRIS_LIGHTS.hold.value = DEBRIS_TUNING.values.hold;
       DEBRIS_LIGHTS.flicker.value = DEBRIS_TUNING.values.flicker;
       DEBRIS_LIGHTS.spread.value = DEBRIS_TUNING.values.spread;
-      WINDOW_GLOW.far.value = RENDER_TUNING.values.farWindowGlow ? 1 : 0;
       pipeline.applyPostFx(); // toggles back off + sliders back to defaults
       sky.cycleEnabled = SKY_TUNING.values.cycleEnabled;
       sky.cycleDuration = SKY_TUNING.values.cycleDuration;
@@ -1847,30 +1588,10 @@ async function boot() {
       chat.focus();
       input.releaseLock();
     }
-    // N: hop into the next AI car as a passenger (cycles the whole fleet)
-    if (input.pressed("KeyN")) {
-      const cars = aiCars.debugCars();
-      if (cars.length) {
-        carViewIdx = (carViewIdx + 1) % cars.length;
-        const c = cars[carViewIdx];
-        teleportToTarget(c.x, c.z, `▶ AI car ${carViewIdx + 1}/${cars.length}`, undefined, c.id);
-      }
-    }
     // F: fullscreen (keydown grants the transient activation this needs)
     if (input.pressed("KeyF")) {
       if (document.fullscreenElement) void document.exitFullscreen();
       else void document.documentElement.requestFullscreen().catch(() => hud.message("Fullscreen blocked by browser"));
-    }
-    // "-" : a flyover of planes + phoenixes streaks over the way you're facing;
-    // from the bridge, a flotilla of boats sails through underneath it too
-    if (input.pressed("Minus") || input.pressed("NumpadSubtract")) {
-      const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(player.meshes[player.mode].quaternion);
-      fwd.y = 0;
-      if (fwd.lengthSq() < 1e-4) fwd.set(Math.sin(player.heading - Math.PI), 0, -Math.cos(player.heading - Math.PI));
-      fwd.normalize();
-      flyover.trigger(player.renderPosition, fwd);
-      const underBridge = bridgeParade.trigger(player.renderPosition, fwd);
-      hud.message(underBridge ? "Flyover! 🛩️🔥🦅  — boats under the bridge ⛵️" : "Flyover! 🛩️🔥🦅", 2.4);
     }
     updateCrownDisplay(frameDt);
     updateBayLights(frameDt);
@@ -1883,49 +1604,9 @@ async function boot() {
     // whatever the center-screen ray lands on, bubbles ride the wand, chimes ring
     // the struck surface (pitch keyed to strike height)
     fireCooldown -= frameDt;
-    // Brain inspector: a fresh click while aiming at an AI entity's floating
-    // lattice opens the inspector (and consumes the click — no tool fires).
-    let brainOpened = false;
-    if (input.firePressed && !input.suspended) {
-      aimRay(rayOrigin, aim);
-      const hit = pickBrain(rayOrigin, aim);
-      if (hit) {
-        brainPanel?.open(hit);
-        brainOpened = true;
-      }
-    }
-    if (brainOpened) {
-      // consumed — the world is now frozen behind the panel
-    } else if (input.freeCursor) {
-      // free cursor out: clicks only inspect brains / reach UI panels — the
-      // spray/chime/grab tools stand down so pointing around never fires them
-    } else if (
-      !input.suspended &&
-      input.firePressed &&
-      fireCooldown <= 0 &&
-      currentQuidditch?.role === "Beater" &&
-      quidditch?.active
-    ) {
-      // Beater: swing the bat at the nearest bludger along the aim ray
-      chase.lookDir(aim);
-      if (quidditch?.swingBat(player.aimOrigin, aim)) {
-        quidHud?.noteTutorial("action");
-        fireCooldown = 0.34;
-        chase.shake(0.12);
-      }
-    } else if (
-      !input.suspended &&
-      input.firePressed &&
-      fireCooldown <= 0 &&
-      quidditch?.canThrow(player.position)
-    ) {
-      chase.lookDir(aim);
-      rayOrigin.copy(player.aimOrigin);
-      if (quidditch?.throwQuaffle(rayOrigin, aim, player.velocity)) {
-        quidHud?.noteTutorial("action");
-        fireCooldown = 0.28;
-        chase.shake(0.07);
-      }
+    if (input.freeCursor) {
+      // free cursor out: clicks only reach UI panels — the spray/chime/grab
+      // tools stand down so pointing around never fires them
     } else if (player.mode === "drone") {
       if (!input.suspended && input.firePressed && fireCooldown <= 0) {
         chase.lookDir(aim);
@@ -1960,13 +1641,6 @@ async function boot() {
         rayOrigin.copy(player.aimOrigin);
         forest?.fireGummy(rayOrigin, aim, player.velocity);
       }
-    } else if (
-      (input.firing || input.firePressed) &&
-      !input.suspended &&
-      (chase.lookDir(aim), rayOrigin.copy(player.aimOrigin), exploratorium?.handleFire(rayOrigin, aim, input.firePressed, input.firing))
-    ) {
-      // inside the Exploratorium and aiming at an exhibit: the museum consumed
-      // the click (piano key, tank stir, pool poke) — click-tools stand down
     } else if (tool === "rope") {
       // rope tool: click one end, click the other — ropes.ts narrates each step
       if (input.firePressed && !input.suspended) {
@@ -2054,9 +1728,6 @@ async function boot() {
     let steps = 0;
     while (accumulator >= physics.world.fixedTimeStep && steps < 3) {
       player.update(physics.world.fixedTimeStep, input, chase.yaw, aim);
-      traffic.prePhysics(physics.world.fixedTimeStep, player.position);
-      aiCars.prePhysics(physics.world.fixedTimeStep, aiCarAnchors);
-      horses?.prePhysics(physics.world.fixedTimeStep, player.position);
       abandonedMounts.prePhysics(physics.world.fixedTimeStep);
       physics.step(physics.world.fixedTimeStep, player.position);
       accumulator -= physics.world.fixedTimeStep;
@@ -2077,15 +1748,6 @@ async function boot() {
         player.endRide();
         hud.message("Your ride ended", 2.2);
       }
-    } else if (aiCarPassengerOf !== null) {
-      if (aiCars.ridePose(aiCarPassengerOf, ridePos, rideQuat)) {
-        player.setRidePose(ridePos, rideQuat, frameDt);
-      } else {
-        aiCarPassengerOf = null;
-        aiCars.forceOverlay(null);
-        player.endRide();
-        hud.message("Your ride ended", 2.2);
-      }
     } else {
       // interpolate the render transform between the last two physics states so
       // 120 Hz frames don't see a 60 Hz stutter
@@ -2096,27 +1758,32 @@ async function boot() {
     highUp = highUp ? altitude > 110 : altitude > 150;
     // high over the city streams buildings only — no park lawns / trees uploaded
     tiles.update(player.position.x, player.position.z, highUp);
-    traffic.update(player.position, frameDt);
-    aiCars.update(frameDt, player.position, highUp);
+    trafficLights?.update(player.position, performance.now() / 1000);
     abandonedMounts.update(frameDt, player.position);
-    flyover.update(frameDt); // planes + phoenixes streaking over on "-"
-    bridgeParade.update(frameDt); // boats crossing under the Golden Gate on "-"
     rocketRiders.update(frameDt, player.position); // the launched guitarists live their own lives
     if (player.mode === "speedboat") boatLaunchers?.update(frameDt); // guitarist jam + rocket reload
     creatures?.update(elapsed, camera.position); // gulls live at altitude — never gated
-    horses?.update(frameDt, camera); // RL horse herd in the Botanical Garden meadow (self-gated)
     forest?.update(frameDt, camera.position);
-    // garden: advance wind, move the near-grass detail ring to the player, and
-    // flatten grass under them. Cheap when the player is nowhere near the garden
-    // (updateFocus distance-culls base chunks and skips the near ring).
-    gardenDisplacer.x = player.renderPosition.x;
-    gardenDisplacer.z = player.renderPosition.z;
-    garden?.update(frameDt, player.renderPosition, gardenDisplacers);
-    // wildlands: the grass + flower rings follow the PLAYER (like the garden ring
-    // above) so they stay put when you just look around — the chase camera orbits
-    // the player, and anchoring the rings to it slid the whole field around you.
-    // Tree distance-culling still follows the camera so off-screen groves drop.
-    wildlands?.update(player.renderPosition, camera.position);
+    // MASTER foliage gate: when the "/" panel's foliage switch is OFF, every
+    // vegetation group is already hidden (setFoliageVisible) — skip all its
+    // per-frame work too so it costs near zero. We STILL advance the shared wind
+    // envelope (cheap CPU math, no rendering) because the nature soundscape below
+    // reads its gust value for wind audio.
+    if (foliageOn) {
+      // garden: advance wind, move the near-grass detail ring to the player, and
+      // flatten grass under them. Cheap when the player is nowhere near the garden
+      // (updateFocus distance-culls base chunks and skips the near ring).
+      gardenDisplacer.x = player.renderPosition.x;
+      gardenDisplacer.z = player.renderPosition.z;
+      garden?.update(frameDt, player.renderPosition, gardenDisplacers);
+      // wildlands: the grass + flower rings follow the PLAYER (like the garden ring
+      // above) so they stay put when you just look around — the chase camera orbits
+      // the player, and anchoring the rings to it slid the whole field around you.
+      // Tree distance-culling still follows the camera so off-screen groves drop.
+      wildlands?.update(player.renderPosition, camera.position);
+    } else {
+      advanceWind?.(frameDt); // foliage hidden: keep only the wind gust envelope ticking for nature audio
+    }
     // nature soundscape rides the same gust envelope garden.update just advanced,
     // and reads the sky clock for dawn choruses / night owls. Cheap out in the
     // city (suspends), so it's safe to tick unconditionally.
@@ -2128,43 +1795,7 @@ async function boot() {
     });
     if (currentAnimal) forest?.setRiddenSpeed(player.speed);
     islands.update(elapsed);
-    exploratorium?.update(frameDt, elapsed, player.position);
     citygenRing.current?.update(player.position, frameDt);
-    quidditch?.update(frameDt, player.position, elapsed);
-    // Flew past the activate radius while on a broom — Quidditch already parked
-    // the match/AI; clear the local mount so the broom doesn't linger city-wide.
-    if (currentQuidditch && quidditch && !quidditch.active) {
-      currentQuidditch = null;
-      player.clearDroneStyle();
-      quidHud?.setRole(null);
-      quidHud?.stopTutorial();
-      if (player.mode === "drone") player.trySwitch("walk");
-      hud.message("Left the Quidditch pitch", 2.2);
-    }
-    if (quidditch?.active) {
-      const qs = quidditch.scores;
-      quidHud?.setScores(qs.red, qs.blue);
-      if (quidditch.matchState === "playing") quidHud?.setSnitch(false);
-      // a bludger tagged the human rider: shove them and rattle the camera
-      if (currentQuidditch) {
-        const kick = quidditch.takeBludgerKick();
-        if (kick) {
-          player.velocity.x += kick.x;
-          player.velocity.y += kick.y;
-          player.velocity.z += kick.z;
-          chase.shake(0.2);
-          hud.message("Bludger! You're knocked off course", 1.4);
-        }
-      }
-    }
-    quidHud?.update(frameDt, {
-      riding: currentQuidditch !== null,
-      role: currentQuidditch?.role ?? null,
-      x: player.position.x,
-      y: player.position.y,
-      z: player.position.z,
-      speed: player.speed
-    });
     loot.update(
       frameDt,
       player.position,
@@ -2181,29 +1812,18 @@ async function boot() {
       grabber.update(rayOrigin.copy(player.aimOrigin), aim);
     }
 
-    // "hop in" nudge when standing near a vehicle (friend → AI car → wildlife → traffic)
-    if (player.mode === "walk" && passengerOf === null && aiCarPassengerOf === null) {
+    // "hop in" nudge when standing near a ride (friend → wildlife)
+    if (player.mode === "walk" && passengerOf === null) {
       const drv = remotes.nearestDriver(player.position, 5.5);
-      const quidLabel = drv || currentQuidditch ? null : quidditch?.joinLabel();
-      const nearAnimal = drv || quidLabel ? null : forest?.nearest(player.position, 5);
-      const nearAi = drv || quidLabel || nearAnimal ? null : aiCars.nearestCar(player.position, 5.5);
-      const near = drv || quidLabel || nearAnimal || nearAi ? null : traffic.nearest(player.position, 5.5);
-      if ((drv || quidLabel || nearAnimal || nearAi || near) && !ridePromptShown) {
+      const nearAnimal = drv ? null : forest?.nearest(player.position, 5);
+      if ((drv || nearAnimal) && !ridePromptShown) {
         hud.message(
-          drv
-            ? `E — ride with ${drv.name}`
-            : quidLabel
-              ? `E — start Quidditch`
-              : nearAnimal
-                ? `E — ride the ${nearAnimal.label}`
-                : nearAi
-                  ? `E — ride AI car ${nearAi.id + 1}`
-                  : `E — hop in the ${DRIVE_PROFILES[near!.cls].label}`,
+          drv ? `E — ride with ${drv.name}` : `E — ride the ${nearAnimal!.label}`,
           1.8
         );
         ridePromptShown = true;
       }
-      if (!drv && !quidLabel && !nearAnimal && !nearAi && !near) ridePromptShown = false;
+      if (!drv && !nearAnimal) ridePromptShown = false;
     } else {
       ridePromptShown = false;
     }
@@ -2234,10 +1854,6 @@ async function boot() {
       boost: input.down("ShiftLeft"),
       grounded: player.mode !== "board" || player.boardGrounded
     });
-    aiCarCabinAudio.update(
-      frameDt,
-      aiCarPassengerOf !== null ? { active: true, speed: player.speed } : null
-    );
     swimAudio.update(frameDt, {
       swimming: player.swimming,
       speed: Math.hypot(player.velocity.x, player.velocity.z),
@@ -2261,20 +1877,10 @@ async function boot() {
     minimap.update();
     playerLocator.update(camera, player.position, remotes.locatorTargets());
 
-    // Sync the raycastable-entity proxies once, after everyone is posed: traffic,
-    // remote avatars, and me (id = net.selfId, tagged self so the cursor skips it
-    // but remote paint still lands). paintballs + cursor then just query.
+    // Sync the raycastable-entity proxies once, after everyone is posed: remote
+    // avatars and me (id = net.selfId, tagged self so the cursor skips it but
+    // remote paint still lands). paintballs + cursor then just query.
     entityProxies.begin();
-    for (const v of traffic.vehicles) {
-      const big = v.cls === "bus" || v.cls === "cable";
-      entityProxies.put(
-        v,
-        { id: -1, kind: "vehicle", object: v.mesh, shape: { form: "sphere", radius: big ? 3.6 : 2.1 } },
-        v.mesh.position.x,
-        v.mesh.position.y + (big ? 1.5 : 0.7),
-        v.mesh.position.z
-      );
-    }
     for (const a of remotes.avatars.values()) {
       const body = a.mode ? a.bodies[a.mode] : undefined;
       if (!body || !a.root.visible) continue;
@@ -2304,37 +1910,25 @@ async function boot() {
 
     // The in-world cursor: a glowing orb that rests where you're pointing. It
     // sits centre-screen while the mouse is captured (a soft aim reticle too),
-    // and rides the free mouse ray while Command is held. It swells, warms and
-    // sheds a swirl of particles when it lands on something inspectable (an AI
-    // entity's floating brain lattice) — so you can see it's clickable. Runs
-    // after the entity proxies are synced so its depth is world-aware: a hovered
-    // bus/car/avatar lifts it onto their near face instead of letting the ray
-    // punch through to the ground behind.
+    // and rides the free mouse ray while Command is held. Runs after the entity
+    // proxies are synced so its depth is world-aware: a hovered bus/car/avatar
+    // lifts it onto their near face instead of letting the ray punch through to
+    // the ground behind.
     {
       const cursorLive =
         document.body.classList.contains("started") &&
-        !brainPanel?.isOpen &&
         !cameraMode &&
         !input.suspended &&
         !cineHook &&
         !(paused && freezePlayer);
       if (cursorLive) {
         aimRay(rayOrigin, aim);
-        const hoverBrain = pickBrain(rayOrigin, aim);
-        if (hoverBrain) {
-          hoverBrain.getWorldPos(cursorPos);
-          if (!input.firePressed && hoverBrain.id !== lastHoverBrain)
-            hud.message(`Click to inspect ${hoverBrain.label}'s brain`, 1.5);
-          lastHoverBrain = hoverBrain.id;
-        } else {
-          lastHoverBrain = null;
-          // rest on the nearest thing the ray meets — entity, building, terrain
-          // or water (never my own body) — for honest depth; else float ahead
-          const hit = worldQueries.raycast(rayOrigin, aim, 60, { ignoreSelf: true });
-          if (hit) cursorPos.copy(hit.point);
-          else cursorPos.copy(rayOrigin).addScaledVector(aim, 22);
-        }
-        worldCursor.update(frameDt, camera, cursorPos, hoverBrain ? 1 : 0, true);
+        // rest on the nearest thing the ray meets — entity, building, terrain
+        // or water (never my own body) — for honest depth; else float ahead
+        const hit = worldQueries.raycast(rayOrigin, aim, 60, { ignoreSelf: true });
+        if (hit) cursorPos.copy(hit.point);
+        else cursorPos.copy(rayOrigin).addScaledVector(aim, 22);
+        worldCursor.update(frameDt, camera, cursorPos, 0, true);
       } else {
         worldCursor.update(frameDt, camera, cursorPos, 0, false);
       }
@@ -2412,9 +2006,12 @@ async function boot() {
   let lastLoop = performance.now();
   let manualDrive = false; // frame-by-frame capture drives tick(dt) itself
   const loopFn = () => {
-    if (throttleRaf && performance.now() - lastLoop < 50) return;
-    lastLoop = performance.now();
+    const now = performance.now();
+    if (throttleRaf && now - lastLoop < 50) return;
+    const frameMs = now - lastLoop; // true rAF-to-rAF cadence, incl. render
+    lastLoop = now;
     tick();
+    dynRes.sample(frameMs); // step pixel ratio to hold the frame budget
   };
   renderer.setAnimationLoop(loopFn);
   // Deterministic capture: stop the wall-clock loop (and the hidden-tab fallback
@@ -2449,6 +2046,9 @@ async function boot() {
   window.addEventListener("resize", () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
+    // Keep the governor's CURRENT ratio across resize/fullscreen — not the cap —
+    // so a size change doesn't silently undo an active down-step.
+    renderer.setPixelRatio(dynRes.ratio);
     renderer.setSize(window.innerWidth, window.innerHeight);
   });
 
@@ -2456,7 +2056,7 @@ async function boot() {
 
   const exposeDebugHooks = () => {
     Object.assign(window as never, {
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, exploratorium, traffic, creatures, forest, garden, wildlands, splashes, vehicleAudio, aiCarCabinAudio, swimAudio, nature, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, quidditch, quidHud, rocketRiders, boatLaunchers, goldenGateLights, flyover, bridgeParade, teleportToTarget, aiCars, horses, citygen, citygenRing, brainPanel, inspectableBrains, worldCursor, worldQueries, underwater, seaPillars, water, roadMarkings, colliderDebug }
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, DEBRIS_LIGHTS, CONFIG, THREE, tick, creatures, forest, garden, wildlands, splashes, vehicleAudio, swimAudio, nature, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, loot, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, rocketRiders, boatLaunchers, goldenGateLights, teleportToTarget, trafficLights, citygen, citygenRing, worldCursor, worldQueries, underwater, seaPillars, water, roadMarkings, colliderDebug, FOLIAGE_TUNING, setFoliageVisible }
     });
   };
   if (import.meta.env.DEV || new URLSearchParams(location.search).has("profile")) {
@@ -2499,8 +2099,7 @@ async function boot() {
           forward,
           hostVelocity: player.velocity
         });
-      },
-      flyover
+      }
     };
     (window as never as { __demo: (n: string) => void }).__demo = (n: string) => {
       void import("./dev/demo").then(({ runDemo }) => runDemo(n, demoCtx));

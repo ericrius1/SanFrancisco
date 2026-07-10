@@ -13,7 +13,7 @@ export type Cockpit = {
 };
 
 /** Body + handling of whatever the player is currently driving (default sports
- * car, or a commandeered taxi/bus/cable car — factors scale the drive tunables). */
+ * car, or a ridden animal — factors scale the drive tunables). */
 export type DriveSpec = {
   halfExtents: [number, number, number];
   rideHeight: number;

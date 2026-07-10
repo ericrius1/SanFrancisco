@@ -2,7 +2,8 @@
 // storefront (bulkhead + glazing + signband + fabric awning), regular upper
 // window grid with string courses, a flat parapet cap.
 import { floorBands, type FacadeDecorator, type Vec3 } from "../core/facade";
-import { gp, beltCourse, cornice, windowGrid, storefront, cornerBoards, frontDoor } from "./facadeKit";
+import { gp, beltCourse, cornice, windowGrid, storefront, cornerBoards, frontDoor, wallWithDoorway } from "./facadeKit";
+import { doorEligible } from "../core/collider";
 import { largeCommercialFacade } from "./largeCommercial";
 
 export const downtownFacade: FacadeDecorator = (e, out, rng) => {
@@ -27,12 +28,13 @@ export const downtownFacade: FacadeDecorator = (e, out, rng) => {
   const groundTopY = bands[0]?.y1 ?? e.base + arch.floorH;
   const g0 = gp(e, 0), g1 = gp(e, 1);
 
-  // masonry wall (ground band a touch darker)
-  out.quad(baseMat, [g0[0], e.base, g0[2]], [g1[0], e.base, g1[2]], [g1[0], groundTopY, g1[2]], [g0[0], groundTopY, g0[2]], n3);
+  // masonry wall (ground band a touch darker); the ground band is cut open at the
+  // doorway so the collider's walk-through gap has no solid quad behind it
+  wallWithDoorway(out, e, baseMat, e.base, groundTopY, n3);
   out.quad(wall, [g0[0], groundTopY, g0[2]], [g1[0], groundTopY, g1[2]], [g1[0], e.top, g1[2]], [g0[0], e.top, g0[2]], n3);
 
   // ground floor: storefront on the street face + a clear entrance door
-  if (e.isStreet && e.length > 2.4) {
+  if (doorEligible(e)) {
     storefront(out, e, e.base, groundTopY, { glass, trim, awn: "citygen.awn", sign: "citygen.sign" });
     frontDoor(out, e, { door: "citygen.door", trim });
   }

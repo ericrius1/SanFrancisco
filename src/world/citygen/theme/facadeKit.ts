@@ -5,7 +5,7 @@
 import {
   type FacadeEdge, type Vec3, PanelBuilder, pointOnWall, floorBands, bayCount, aboveGrade,
 } from "../core/facade";
-import { doorMetrics } from "../core/collider";
+import { doorMetrics, doorEligible } from "../core/collider";
 
 // ---- vector helpers ---------------------------------------------------------
 export const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -17,6 +17,37 @@ export const UP: Vec3 = [0, 1, 0];
 export const gp = (e: FacadeEdge, t: number): Vec3 => pointOnWall(e, t, 0);
 
 export interface WinMats { frame: string; glass: string; trim: string }
+
+/**
+ * Street-edge backdrop wall with a REAL doorway HOLE cut where the collider leaves
+ * its walk-through gap. The single quad is replaced by a left jamb wall, a right
+ * jamb wall and a header over the opening (plus a solid skirt below grade on a
+ * hillside); the door column itself is left OPEN, so no wall quad covers the
+ * collider gap — you walk straight through. Reads core's doorMetrics/doorEligible,
+ * so the hole ⟺ the collider gap ⟺ the visible leaf drawn by frontDoor/stoopAndDoor.
+ * Only the flat backdrop is cut here — windows/trim/door are proud geometry authored
+ * separately, so the door leaf still occludes the LOD prism behind the hole and the
+ * upper-floor window layout is untouched. Falls back to one solid quad on any edge
+ * that takes no door.
+ */
+export function wallWithDoorway(out: PanelBuilder, e: FacadeEdge, mat: string, yBottom: number, yTop: number, n: Vec3): void {
+  const seg = (t0: number, t1: number, y0: number, y1: number): void => {
+    const a = gp(e, t0), b = gp(e, t1);
+    out.quad(mat, [a[0], y0, a[2]], [b[0], y0, b[2]], [b[0], y1, b[2]], [a[0], y1, a[2]], n);
+  };
+  if (!doorEligible(e)) { seg(0, 1, yBottom, yTop); return; }
+  const { tc, halfW, head } = doorMetrics(e.length, e.base, e.top);
+  const dCenter = tc * e.length;
+  const fL = Math.max(0, (dCenter - halfW) / e.length);   // opening left fraction
+  const fR = Math.min(1, (dCenter + halfW) / e.length);   // opening right fraction
+  const holeBase = Math.max(yBottom, e.grade);            // buried skirt stays solid
+  const holeTop = Math.min(yTop, e.base + head);          // door head = walk-through clearance
+  if (holeTop - holeBase < 0.6 || fR - fL < 0.001) { seg(0, 1, yBottom, yTop); return; }
+  if (holeBase - yBottom > 0.001) seg(fL, fR, yBottom, holeBase); // skirt under the opening
+  if (fL > 0.001) seg(0, fL, yBottom, yTop);              // left jamb wall
+  if (fR < 0.999) seg(fR, 1, yBottom, yTop);              // right jamb wall
+  if (yTop - holeTop > 0.02) seg(fL, fR, holeTop, yTop);  // header over the opening
+}
 
 /**
  * A framed, divided-lite window on a face (ground points a→b, y0..y1, outward n).
@@ -54,7 +85,7 @@ export function faceWindow(out: PanelBuilder, a: Vec3, b: Vec3, y0: number, y1: 
  * a dark opening, a door leaf swung ajar, a white frame + threshold step.
  */
 export function frontDoor(out: PanelBuilder, e: FacadeEdge, m: { door: string; trim: string }): void {
-  if (e.length <= 2.2) return;
+  if (!doorEligible(e)) return;
   const { tc, halfW, head } = doorMetrics(e.length, e.base, e.top);
   const n: Vec3 = [e.normal[0], 0, e.normal[1]];
   const along = unit(sub(gp(e, 1), gp(e, 0)));

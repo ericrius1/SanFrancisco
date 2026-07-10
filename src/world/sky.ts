@@ -30,7 +30,7 @@ import { CROWN_INTENSITY } from "./salesforceCrown"
 import { BAY_LIGHTS_INTENSITY } from "./bayLights"
 import { GOLDEN_GATE_LIGHTS_INTENSITY } from "./goldenGateLights"
 import { SUTRO_LIGHTS_INTENSITY } from "./sutroTower"
-import { LIGHT_SCALE, RENDER_TUNING, SHADOW_QUALITY, WORLD_TUNING, type ShadowQuality } from "../config"
+import { LIGHT_SCALE, WORLD_TUNING } from "../config"
 import { tunables } from "../core/persist"
 import {
   sanFranciscoCivilNow,
@@ -78,6 +78,33 @@ export const SKY_TUNING = tunables("sky", {
 // reference and read it every frame.
 export const SUN_DIR = new THREE.Vector3(-0.52, 0.42, -0.28).normalize()
 const WARM_SUN = new THREE.Color(0xfff4e8) // midday sun tint, lerped toward as it climbs
+
+// Universal render-mode shadow config — the fixed values #applyShadowConfig
+// pushes onto the sun + every CSM cascade. This is the old "high" tier, now the
+// only tier: cascaded shadow maps are always on (the retired off/low/high
+// presets are gone).
+//
+// Tuned for cost: TWO cascades, not three. Each cascade re-renders every
+// shadow-casting mesh in its slice into a depth map, so the cascade COUNT is the
+// dominant shadow lever (draw/vertex bound). A tight near cascade (0..40 m at
+// 2048 → ~3 cm texels) carries every contact you actually read — the player, the
+// GG suspender-cable shadows on the deck, near street furniture — and one coarse
+// far cascade (40..350 m at 1024) covers the block beyond. maxFar drops 600→350
+// because the marine fog closes the draw distance well before then and shadow
+// detail past ~350 m is sub-pixel anyway; that also shrinks the far cascade's
+// frustum so it holds fewer casters. lightMargin 400 m still catches tall up-light
+// casters (towers) at grazing angles. normalBias grows on the coarser far cascade
+// (its texels are ~10× the near one) to kill acne without peter-panning contact.
+const SHADOW_CASCADES = 2
+const SHADOW_NEAR_SPLIT = 40 // metres; cascade 0 hugs the player out to here
+const SHADOW_MAP_SIZE = 2048 // near cascade — the crisp one
+// per-cascade map size; the far cascade is half-res — its texels already span
+// ~0.5 m across 40..350 m and are seen through haze, so 1024 is indistinguishable
+// from 2048 there while costing a quarter of the depth writes + memory.
+const SHADOW_MAP_SIZES = [2048, 1024] as const
+const SHADOW_MAX_FAR = 350
+const SHADOW_LIGHT_MARGIN = 400
+const SHADOW_NORMAL_BIAS = [0.25, 2.0] as const
 
 // TSL node generics fight composition; any is the idiom here (see facade.ts)
 type N = any
@@ -254,24 +281,24 @@ export class Sky {
 
     this.sun = new THREE.DirectionalLight(0xfff2e0, 100)
     this.sun.castShadow = true
-    this.sun.shadow.mapSize.set(2048, 2048)
+    this.sun.shadow.mapSize.set(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE)
     const cam = this.sun.shadow.camera
     cam.near = 0.5
     cam.far = 1400
     this.sun.shadow.bias = -0.0002 // CSM scales this ×(cascade index + 1)
-    this.sun.shadow.normalBias = 0.25 // near-cascade value; coarser cascades bumped in update()
+    this.sun.shadow.normalBias = SHADOW_NORMAL_BIAS[0] // near-cascade value; coarser cascades bumped in update()
     scene.add(this.sun)
     scene.add(this.sun.target)
 
-    // Cascaded shadow maps: one tight cascade hugging the player (~4cm texels —
-    // the old single 440m map was ~11cm), a mid cascade for the block around,
-    // and a coarse far cascade out to 600m. Each cascade texel-snaps its own
-    // frustum every frame, which kills the shimmer the single sliding map had,
-    // and `fade` cross-blends the seams. The ortho left/right/top/bottom above
-    // are irrelevant — the node refits each cascade from the view frustum.
+    // Cascaded shadow maps: one tight cascade hugging the player (~3cm texels —
+    // the old single 440m map was ~11cm) and one coarse far cascade out to
+    // SHADOW_MAX_FAR. Each cascade texel-snaps its own frustum every frame, which
+    // kills the shimmer the single sliding map had, and `fade` cross-blends the
+    // seam. The ortho left/right/top/bottom above are irrelevant — the node
+    // refits each cascade from the view frustum.
     this.#csm = new CSMShadowNode(this.sun, {
-      cascades: 3,
-      maxFar: 600,
+      cascades: SHADOW_CASCADES,
+      maxFar: SHADOW_MAX_FAR,
       mode: "custom",
       customSplitsCallback: (
         _amount: number,
@@ -279,13 +306,14 @@ export class Sky {
         far: number,
         target: number[]
       ) => {
-        target.push(35 / far, 150 / far, 1)
+        // cascade 0 = near..SHADOW_NEAR_SPLIT, cascade 1 = split..far
+        target.push(SHADOW_NEAR_SPLIT / far, 1)
       },
-      lightMargin: 400 // catch tall up-light casters (towers) at grazing dusk angles
+      lightMargin: SHADOW_LIGHT_MARGIN // catch tall up-light casters (towers) at grazing dusk angles
     })
     this.#csm.fade = true
     ;(this.sun.shadow as any).shadowNode = this.#csm
-    this.setShadowQuality(RENDER_TUNING.values.shadowQuality as ShadowQuality)
+    this.#applyShadowConfig()
 
     // warm ground-bounce fill: stands in for light-probe GI. Intensity and colour
     // follow the phase of day in #applySun
@@ -614,20 +642,28 @@ export class Sky {
     this.#applySun()
   }
 
-  setShadowQuality(quality: ShadowQuality) {
-    const q = SHADOW_QUALITY[quality] ?? SHADOW_QUALITY.low
-    const mapSize = Math.max(1, q.mapSize)
-    this.sun.castShadow = q.enabled
-    this.sun.shadow.mapSize.set(mapSize, mapSize)
+  /**
+   * Push the fixed universal-mode shadow config (the SHADOW_* constants above)
+   * onto the sun + every CSM cascade light. Called once from the constructor and
+   * again as a one-shot in update() the frame the CSM node finishes building its
+   * per-cascade lights — they don't exist yet at construct time, so their
+   * mapSize/normalBias need a second pass. Shadows are always on now; the old
+   * off/low/high tiers (and the runtime setShadowQuality switch) are gone.
+   */
+  #applyShadowConfig() {
+    this.sun.castShadow = true
+    this.sun.shadow.mapSize.set(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE)
     this.sun.shadow.needsUpdate = true
-    this.#csm.maxFar = Math.max(1, q.maxFar)
-    this.#csm.lightMargin = q.lightMargin
+    this.#csm.maxFar = SHADOW_MAX_FAR
+    this.#csm.lightMargin = SHADOW_LIGHT_MARGIN
     for (let i = 0; i < this.#csm.lights.length; i++) {
       const l = this.#csm.lights[i]
-      l.castShadow = q.enabled
+      l.castShadow = true
       if (l.shadow) {
-        l.shadow.mapSize.set(mapSize, mapSize)
-        l.shadow.normalBias = q.normalBias[i] ?? q.normalBias[q.normalBias.length - 1]
+        // per-cascade map size: near cascade stays 2048, far cascade halves
+        const size = SHADOW_MAP_SIZES[i] ?? SHADOW_MAP_SIZES[SHADOW_MAP_SIZES.length - 1]
+        l.shadow.mapSize.set(size, size)
+        l.shadow.normalBias = SHADOW_NORMAL_BIAS[i] ?? SHADOW_NORMAL_BIAS[SHADOW_NORMAL_BIAS.length - 1]
         l.shadow.needsUpdate = true
       }
     }
@@ -758,9 +794,9 @@ export class Sky {
       // larger normal bias (texel size grows roughly 4-5x per cascade)
       if (!this.#csmTuned) {
         this.#csmTuned = true
-        this.setShadowQuality(RENDER_TUNING.values.shadowQuality as ShadowQuality)
+        this.#applyShadowConfig()
       }
-      // Shadow-render throttle: re-rendering all city geometry into the 3
+      // Shadow-render throttle: re-rendering all city geometry into the
       // cascades EVERY frame was the single biggest cost in the frame (profiled
       // 4–7 ms, > half the frame in the city). The sun is near-static and the
       // world is static — only the camera moves and shadows are low-frequency —
@@ -768,6 +804,14 @@ export class Sky {
       // the last depth maps; we must NOT refit on them, or the moved cascade
       // projection would sample the stale texture and shadows would slide. A big
       // camera jump (teleport) forces an immediate update so shadows never blank.
+      //
+      // On top of that, the coarse FAR cascade (40–350 m) re-renders only every
+      // OTHER render frame — a quarter of all frames. Far shadows sit through the
+      // marine haze, so a 15 Hz refresh is invisible, and skipping it removes ~half
+      // the far cascade's amortized encode. The near cascade (contact shadows the
+      // player scrutinises) still refreshes on every render frame, and we only ever
+      // call updateFrustums on render frames, so the no-slide invariant that
+      // protects the near cascade is unchanged.
       if (!this.#shadowAutoDisabled) {
         this.#shadowAutoDisabled = true
         for (const l of this.#csm.lights) if (l.shadow) l.shadow.autoUpdate = false
@@ -777,7 +821,13 @@ export class Sky {
       if (this.#shadowFrame % 2 === 0 || jump) {
         this.#lastShadowCam.copy(cameraPos)
         this.#csm.updateFrustums() // tracks aspect/fov changes (resize, speed kicks)
-        for (const l of this.#csm.lights) if (l.shadow) l.shadow.needsUpdate = true
+        const refreshFar = this.#shadowFrame % 4 === 0 || jump
+        const lights = this.#csm.lights
+        for (let i = 0; i < lights.length; i++) {
+          const l = lights[i]
+          // cascade 0 = the near/contact cascade (always); the rest are far (staggered)
+          if (l.shadow && (i === 0 || refreshFar)) l.shadow.needsUpdate = true
+        }
       }
     }
   }

@@ -24,7 +24,8 @@ import {
   type FacadeEdge, type Vec3, type PanelBuilder,
 } from "../core/facade";
 import type { Rng } from "../core/rng";
-import { sub, len, unit, lerp, UP, gp, beltCourse, cornice, faceWindow, type WinMats } from "./facadeKit";
+import { sub, len, unit, lerp, UP, gp, beltCourse, cornice, faceWindow, frontDoor, wallWithDoorway, type WinMats } from "./facadeKit";
+import { doorEligible } from "../core/collider";
 
 // Relief depths (metres proud of the flat wall). Piers stand deepest, then the
 // spandrel bands, then the window frame/glass — so a window sits in a genuine
@@ -117,8 +118,10 @@ export function largeCommercialFacade(e: FacadeEdge, out: PanelBuilder, _rng: Rn
   baseTopY = clamp(baseTopY, base + Math.min(H * 0.5, arch.floorH * 0.9), base + H * 0.42);
 
   // ---- backdrop wall (stone base tone below, body colour above) ------------
+  // the stone base is cut open at the entrance so the collider's walk-through gap
+  // isn't backed by a solid quad (the grand portal geometry occludes the prism).
   const g0 = gp(e, 0), g1 = gp(e, 1);
-  out.quad(stone, [g0[0], base, g0[2]], [g1[0], base, g1[2]], [g1[0], baseTopY, g1[2]], [g0[0], baseTopY, g0[2]], n3);
+  wallWithDoorway(out, e, stone, base, baseTopY, n3);
   out.quad(wall, [g0[0], baseTopY, g0[2]], [g1[0], baseTopY, g1[2]], [g1[0], top, g1[2]], [g0[0], top, g0[2]], n3);
 
   // water-table string course capping the stone base
@@ -128,8 +131,12 @@ export function largeCommercialFacade(e: FacadeEdge, out: PanelBuilder, _rng: Rn
   const cols = bayCount(e, COL_W);
   const baseWinY0 = aboveGrade(e, base + 0.9);
   const baseWinY1 = baseTopY - 0.7;
-  if (e.isStreet && e.length > 6) {
-    grandEntrance(out, e, base, baseTopY - 0.55, { stone, door: "citygen.door", glass });
+  if (doorEligible(e)) {
+    // wide lots get the grand double-height portal; a narrow street edge (2.2–6 m),
+    // which grandEntrance handles poorly, gets a plain frontDoor instead — so the
+    // collider's walk-through gap always has a matching visible doorway.
+    if (e.length > 6) grandEntrance(out, e, base, baseTopY - 0.55, { stone, door: "citygen.door", glass });
+    else frontDoor(out, e, { door: "citygen.door", trim });
     // tall shopfront-scale windows in the outer bays, clear of the central portal
     for (let c = 0; c < cols; c++) {
       const t = (c + 0.5) / cols;
@@ -137,7 +144,7 @@ export function largeCommercialFacade(e: FacadeEdge, out: PanelBuilder, _rng: Rn
       faceWindow(out, gp(e, (c + 0.2) / cols), gp(e, (c + 0.8) / cols), baseWinY0, baseWinY1, n3, wm);
     }
   } else {
-    // non-street base: an even arcade of tall windows
+    // non-street / too-short base: an even arcade of tall windows
     for (let c = 0; c < cols; c++) {
       faceWindow(out, gp(e, (c + 0.2) / cols), gp(e, (c + 0.8) / cols), baseWinY0, baseWinY1, n3, wm);
     }

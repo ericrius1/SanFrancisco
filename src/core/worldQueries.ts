@@ -14,9 +14,8 @@ import type { Physics } from "./physics";
  * box3d's own broadphase-accelerated `castRayClosest` ("Cast Ray"). Moving a
  * proxy updates its broadphase AABB immediately, so the un-stepped world still
  * answers correctly. Static world (buildings/terrain/water) stays in the proven
- * hand-rolled `physics.raycastWorld` and is *raced* here, plus an optional
- * surface ray (the Exploratorium's interiors) — so one `raycast()` covers
- * everything the caller could point at.
+ * hand-rolled `physics.raycastWorld` and is *raced* here — so one `raycast()`
+ * covers everything the caller could point at.
  *
  * Grass/flowers are deliberately never registered.
  */
@@ -71,12 +70,6 @@ export type RaycastOpts = {
   ignoreId?: number;
 };
 
-export type SurfaceRay = (
-  origin: THREE.Vector3,
-  dir: THREE.Vector3,
-  maxDist: number
-) => { point: THREE.Vector3; normal: THREE.Vector3 } | null;
-
 // Query category bits: bit0 = ordinary world entity, bit1 = the local self
 // proxy. Casts pick a mask to include/exclude self without touching the entity
 // list (see MASK_* below).
@@ -91,7 +84,6 @@ export class WorldQueries {
   #physics: Physics;
   #q: PhysicsWorld; // dedicated query world — created here, never stepped
   #records = new Map<number, ProxyRecord>(); // body handle -> entity record
-  #surfaceRay: SurfaceRay | null = null;
 
   // reused scratch so hot loops (paintballs) allocate nothing
   #hit: QueryHit = {
@@ -107,11 +99,6 @@ export class WorldQueries {
   constructor(physics: Physics) {
     this.#physics = physics;
     this.#q = physics.box3d.createWorld([0, 0, 0]); // no gravity; never stepped
-  }
-
-  /** Register the Exploratorium's interior surface ray so it's raced too. */
-  setSurfaceRay(fn: SurfaceRay | null): void {
-    this.#surfaceRay = fn;
   }
 
   // -- proxy lifecycle ------------------------------------------------------
@@ -162,8 +149,8 @@ export class WorldQueries {
 
   /**
    * Closest hit along the unit `dir` for up to `maxDist`, racing the entity
-   * proxy world, the static world (buildings/terrain/water) and the museum
-   * surface ray. Returns a reused QueryHit (copy before the next call) or null.
+   * proxy world against the static world (buildings/terrain/water). Returns a
+   * reused QueryHit (copy before the next call) or null.
    */
   raycast(origin: THREE.Vector3, dir: THREE.Vector3, maxDist: number, opts?: RaycastOpts): QueryHit | null {
     let best = Infinity;
@@ -197,22 +184,6 @@ export class WorldQueries {
         hit.normal.copy(wHit.normal);
         hit.distance = t;
         hit.kind = wHit.kind === "water" ? "water" : wHit.kind === "building" ? "building" : "terrain";
-        hit.entityId = -1;
-        hit.object = null;
-      }
-    }
-
-    // 3) custom interior surfaces (Exploratorium)
-    const sHit = this.#surfaceRay?.(origin, dir, maxDist);
-    if (sHit) {
-      const t = origin.distanceTo(sHit.point);
-      if (t < best) {
-        best = t;
-        found = true;
-        hit.point.copy(sHit.point);
-        hit.normal.copy(sHit.normal);
-        hit.distance = t;
-        hit.kind = "building";
         hit.entityId = -1;
         hit.object = null;
       }

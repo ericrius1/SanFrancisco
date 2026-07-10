@@ -12,8 +12,8 @@
 // Everything is STATIC: world-space geometry, matrixAutoUpdate off, Static bodies.
 // Nothing here is destructible (only the baked layer is, and we hide that).
 import type * as THREE from "three/webgpu";
-import { generate } from "../index";
-import { buildingColliders } from "../core/collider";
+import { buildingColliders, doorMetrics, doorEligible } from "../core/collider";
+import { ensureCCW, streetEdgeIndex, edgeOutwardNormal } from "../core/footprint";
 import { buildBuilding, buildInterior } from "../render";
 import { buildChunkLOD, type ChunkLOD } from "../render/chunkLod";
 import { buildCityGenMaterials } from "../theme/materials";
@@ -25,15 +25,28 @@ const READY = new Set(["victorian", "edwardian", "marina", "downtown", "soma"]);
 // Live-tunable streaming params (CITYGEN_TUNING, "/" panel). Read fresh each scan.
 const CT = CITYGEN_TUNING.values;
 const DETAIL_EXIT_MARGIN = 25; // detail fades back to the chunk prism this far past detailRadius
-const DETAIL_BUDGET = 1; // detail MESH builds per scan (expensive)
+// detail MESH builds per scan — buildBuilding() is the expensive synchronous call here.
+// Adaptive on frame headroom (gauged off dt, the delta update() was just called with) so
+// rounding a corner into a dense block backfills faster instead of visibly sharpening one
+// building at a time, but only triples the worst-case per-scan cost when the frame can
+// afford it. No smoothing/history: a slow frame caps it back down on the very next scan.
+const DETAIL_BUDGET_FAST = 3; // dt < 1/50s (running >50fps): plenty of headroom
+const DETAIL_BUDGET_MED = 2;  // dt < 1/30s (running >30fps): some headroom
+const DETAIL_BUDGET_SLOW = 1; // else: frame is tight, stay conservative
 // Exact-collider tier: tight radius (you can only ever TOUCH a building a few
 // metres away — a wider band would just spawn hundreds of idle static walls).
-// 55 m + a 12/scan nearest-first fill beats the fastest approach to the ~3 m
-// touch range before the loose baked box is ever hit. Own radius, NOT detailR
-// (which is 150 m for the mesh and would over-spawn).
-const COLLIDER_R = 55;
-const COLLIDER_EXIT = 75; // hysteresis: drop back to baked only past here
-const COLLIDER_BUDGET = 12; // exact-collider swaps per scan (cheap: no mesh) — nearest first
+// 90 m + a 20/scan nearest-first fill beats even a fast approach (boost/board downhill)
+// to the ~3 m touch range before the ~2m-oversized loose baked box is ever hit — the
+// prior 55m/12 could lose that race under speed (audit R3). These are cheap physics
+// boxes (near-free for box3d's static broadphase) and citygen-owned — addBody() below
+// calls physics.world.createBox() directly and isn't tracked against, or gated by,
+// CONFIG.maxActiveBuildingBodies (that 700 cap lives entirely in physics.ts's own
+// #buildingBodies bookkeeping for baked-tile OBBs) — so the wider ring/budget costs
+// effectively nothing extra. Own radius, NOT detailR (which is 150 m for the mesh and
+// would over-spawn).
+const COLLIDER_R = 90;
+const COLLIDER_EXIT = 115; // hysteresis: drop back to baked only past here
+const COLLIDER_BUDGET = 20; // exact-collider swaps per scan (cheap: no mesh) — nearest first
 const CHUNK_BUDGET = 260;// buildings merged into chunk geometry per frame (no hitch)
 const SCAN_EVERY = 0.15;
 
@@ -41,6 +54,16 @@ interface PhysWorld {
   createBox(o: { type: number; position: readonly [number, number, number]; halfExtents: readonly [number, number, number]; friction?: number }): number;
   setBodyTransform(h: number, p: readonly [number, number, number], q: readonly [number, number, number, number]): void;
   destroyBody(h: number): void;
+}
+// Optional host hook (SF's Physics facade provides it): mirror each wall/interior
+// box into the physics query world so raycasts (paint / world cursor / aim reticle)
+// see it — our bodies live on the STEPPED world, invisible to raycastWorld's #solids
+// cast. Keyed by the stepped-body handle so removal stays exact; a `tag` on a wall
+// box routes a vehicle crash into it to the cosmetic chip path. Optional so the
+// module stays portable to a host without a query world.
+interface QuerySolidHost {
+  addQuerySolid(id: number, box: { x: number; y: number; z: number; hx: number; hy: number; hz: number; yaw?: number; quat?: readonly [number, number, number, number] }, tag?: { key: string; i: number }): void;
+  removeQuerySolid(id: number): void;
 }
 interface Tiles {
   suppressBuilding(key: string, index: number): void;
@@ -68,6 +91,11 @@ interface Entry extends BuildingSpec {
   //          still the prism (the pretty grammar mesh is budgeted separately).
   // detail = closest-N: exact-poly walls WITH a door + full grammar mesh + interior.
   state: "lod" | "coll" | "detail";
+  // detail tier: SOLID walls are live but the door gap is not cut yet — the swap to
+  // door-gapped walls waits until the detail mesh has fully faded in, so there's
+  // never an open collider gap in front of a still-transparent doorway (R6). Cleared
+  // by openDoorway() at fade end.
+  doorPending: boolean;
 }
 
 interface CellState { key: string; ix: number; iz: number; entries: Entry[]; chunk: ChunkLOD | null; phase: "building" | "ready"; }
@@ -107,6 +135,23 @@ interface GridData {
   cells: Record<string, (BuildingSpec & { i: number })[]>;
 }
 
+/** One faded-in detail building's street door, in world space — enough for a probe
+ *  to raycast the opening and push a body through it. Matches the collider gap and
+ *  the visible doorway exactly (all read core's doorMetrics/doorEligible). */
+export interface CityGenDoorProbe {
+  archetype: string;
+  /** door centre on the street edge, at the grade line (world x,y,z) */
+  center: [number, number, number];
+  /** unit vector pointing INTO the building (−outward normal) */
+  inward: [number, number, number];
+  /** unit vector along the street edge (p0→p1) */
+  along: [number, number, number];
+  /** metres from p0 to the door centre along the edge (for on-wall side tests) */
+  dcenter: number;
+  halfW: number; head: number; base: number; grade: number; top: number; length: number;
+  bb: { minx: number; maxx: number; minz: number; maxz: number };
+}
+
 export interface CityGenRing {
   count: number;
   update(playerPos: THREE.Vector3, dt: number): void;
@@ -117,6 +162,8 @@ export interface CityGenRing {
   debugBuildings(): { cx: number; cz: number; base: number; top: number; interior: boolean; bb: { minx: number; maxx: number; minz: number; maxz: number } }[];
   /** DEBUG: live walk-in wall + interior collider OBBs for the "/" x-ray overlay. */
   debugColliders(walls: ColliderBox[], interiors: ColliderBox[]): void;
+  /** DEBUG/probe: world-space door frames for every faded-in detail building. */
+  debugDoors(): CityGenDoorProbe[];
 }
 
 async function fetchGrid(url: string): Promise<GridData | null> {
@@ -126,7 +173,7 @@ async function fetchGrid(url: string): Promise<GridData | null> {
 
 export async function createCityGenRing(
   opts: { url?: string },
-  ctx: { scene: THREE.Object3D; physics: { world: PhysWorld }; map: { groundHeight(x: number, z: number): number }; tiles: Tiles },
+  ctx: { scene: THREE.Object3D; physics: { world: PhysWorld } & Partial<QuerySolidHost>; map: { groundHeight(x: number, z: number): number }; tiles: Tiles },
 ): Promise<CityGenRing> {
   const url = opts.url ?? "/citygen/buildings.json";
   const grid = await fetchGrid(url);
@@ -142,7 +189,8 @@ export async function createCityGenRing(
         const grade = footprintGrade(b.poly, b.base, b.top, ctx.map);
         return { ...b, grade, key, cx: g.cx, cz: g.cz, bb: { minx: g.minx, maxx: g.maxx, minz: g.minz, maxz: g.maxz },
           detail: null, fade: 0, fadeDir: 0, bodies: [] as number[], wallBoxes: [] as ColliderBox[],
-          interior: null, intBodies: [] as number[], intBoxes: [] as ColliderBox[], state: "lod" as const } as Entry;
+          interior: null, intBodies: [] as number[], intBoxes: [] as ColliderBox[],
+          state: "lod" as const, doorPending: false } as Entry;
       });
       if (entries.length) { cellEntries.set(key, entries); total += entries.length; }
     }
@@ -154,18 +202,22 @@ export async function createCityGenRing(
   const building: CellState[] = []; // cells still merging their chunk
   let accum = 0;
 
-  const addBody = (c: { x: number; y: number; z: number; hx: number; hy: number; hz: number; yaw: number; quat?: readonly [number, number, number, number] }): number => {
+  // `tag` (a wall's baked key:index) is passed for walls so a crash chips them;
+  // omitted for interiors (nothing rams them). Every box is mirrored into the query
+  // world regardless, so raycasts hit walls AND interior geometry.
+  const addBody = (c: { x: number; y: number; z: number; hx: number; hy: number; hz: number; yaw: number; quat?: readonly [number, number, number, number] }, tag?: { key: string; i: number }): number => {
     const h = ctx.physics.world.createBox({ type: 0, position: [c.x, c.y, c.z], halfExtents: [c.hx, c.hy, c.hz], friction: 0.8 });
     const q: [number, number, number, number] = c.quat
       ? [c.quat[0], c.quat[1], c.quat[2], c.quat[3]]
       : [0, Math.sin(c.yaw / 2), 0, Math.cos(c.yaw / 2)];
     ctx.physics.world.setBodyTransform(h, [c.x, c.y, c.z], q);
+    ctx.physics.addQuerySolid?.(h, c, tag); // mirror into the raycast query world
     return h;
   };
-  const clearBodies = (e: Entry) => { for (const h of e.bodies) ctx.physics.world.destroyBody(h); e.bodies.length = 0; e.wallBoxes = []; };
+  const clearBodies = (e: Entry) => { for (const h of e.bodies) { ctx.physics.removeQuerySolid?.(h); ctx.physics.world.destroyBody(h); } e.bodies.length = 0; e.wallBoxes = []; };
   const disposeInterior = (e: Entry) => {
     if (e.interior) { ctx.scene.remove(e.interior.group); e.interior.dispose(); e.interior = null; }
-    for (const h of e.intBodies) ctx.physics.world.destroyBody(h);
+    for (const h of e.intBodies) { ctx.physics.removeQuerySolid?.(h); ctx.physics.world.destroyBody(h); }
     e.intBodies.length = 0;
     e.intBoxes = [];
   };
@@ -181,7 +233,7 @@ export async function createCityGenRing(
     ctx.tiles.suppressBuilding(e.key, e.i); // baked mesh + loose collider off (R=0)
     // buildingColliders directly (not generate): colliders only, no throwaway mesh
     const { boxes } = buildingColliders(e as BuildingSpec, false); // SOLID (no door yet)
-    for (const c of boxes) e.bodies.push(addBody(c));
+    for (const c of boxes) e.bodies.push(addBody(c, { key: e.key, i: e.i }));
     e.wallBoxes = boxes;
     e.state = "coll";
   };
@@ -200,14 +252,30 @@ export async function createCityGenRing(
     b.setOpacity(0);
     ctx.scene.add(b.group);
     e.detail = b; e.fade = 0; e.fadeDir = 1;
-    // upgrade from "coll": its SOLID walls are re-cut with the walk-in door below.
-    clearBodies(e);
+    ctx.tiles.suppressBuilding(e.key, e.i); // baked mesh + loose collider fully off
+    // R6: DON'T open the door gap yet — the detail mesh (with its doorway hole) is
+    // still transparent, and the chunk prism behind it is solid, so an open gap now
+    // would be a walk-through in front of a solid-looking face. Keep SOLID walls up;
+    // openDoorway() swaps in the door-gapped walls once the mesh has fully faded in.
+    // Reuse the "coll" solid walls if we came from there; build them from "lod".
+    if (!(e.state === "coll" && e.bodies.length)) {
+      clearBodies(e);
+      const { boxes } = buildingColliders(e as BuildingSpec, false); // SOLID, no door
+      for (const c of boxes) e.bodies.push(addBody(c, { key: e.key, i: e.i }));
+      e.wallBoxes = boxes;
+    }
+    e.doorPending = true;
     e.state = "detail";
-    // baked mesh+collider fully off; add per-edge walk-in walls + door
-    ctx.tiles.suppressBuilding(e.key, e.i);
-    const { colliders } = generate(e as BuildingSpec, true);
-    for (const c of colliders) e.bodies.push(addBody(c));
-    e.wallBoxes = colliders;
+  };
+  // swap the solid street wall for the door-gapped one — called when the detail mesh
+  // is fully opaque, so the visible doorway and the walk-through gap appear together.
+  const openDoorway = (e: Entry) => {
+    if (!e.doorPending) return;
+    e.doorPending = false;
+    clearBodies(e);
+    const { boxes } = buildingColliders(e as BuildingSpec, true); // door gap cut
+    for (const c of boxes) e.bodies.push(addBody(c, { key: e.key, i: e.i }));
+    e.wallBoxes = boxes;
   };
   const dropDetail = (e: Entry) => {
     disposeInterior(e);
@@ -217,13 +285,13 @@ export async function createCityGenRing(
     // If still within collider range the next scan re-swaps it to a tight "coll".
     ctx.tiles.unsuppressBuilding(e.key, e.i);
     ctx.tiles.suppressBuildingMesh(e.key, e.i);
-    e.state = "lod"; e.fade = 0; e.fadeDir = 0;
+    e.state = "lod"; e.fade = 0; e.fadeDir = 0; e.doorPending = false;
   };
   const advanceFades = (dt: number) => {
     for (const cell of loaded.values()) for (const e of cell.entries) {
       if (!e.detail || e.fadeDir === 0) continue;
       e.fade += e.fadeDir * (dt / CT.fadeTime);
-      if (e.fadeDir > 0 && e.fade >= 1) { e.fade = 1; e.fadeDir = 0; e.detail.setOpacity(1); }
+      if (e.fadeDir > 0 && e.fade >= 1) { e.fade = 1; e.fadeDir = 0; e.detail.setOpacity(1); openDoorway(e); }
       else if (e.fadeDir < 0 && e.fade <= 0) dropDetail(e);
       else e.detail.setOpacity(e.fade);
     }
@@ -301,6 +369,10 @@ export async function createCityGenRing(
       const detailExit = detailR + DETAIL_EXIT_MARGIN, detailExit2 = detailExit * detailExit;
       const maxDetail = CT.maxDetail;
       const collR2 = COLLIDER_R * COLLIDER_R, collExit2 = COLLIDER_EXIT * COLLIDER_EXIT;
+      // headroom check for the detail budget below — dt is this frame's delta (update()
+      // receives it fresh each call), so a hitch this frame caps the next scan right back
+      // down; no rolling average kept.
+      const detailBudget = dt < 1 / 50 ? DETAIL_BUDGET_FAST : dt < 1 / 30 ? DETAIL_BUDGET_MED : DETAIL_BUDGET_SLOW;
 
       // unload cells beyond the ring
       for (const cell of [...loaded.values()]) {
@@ -373,7 +445,7 @@ export async function createCityGenRing(
       for (const cell of loaded.values()) {
         for (const e of cell.entries) if (e.detail && e.fadeDir >= 0) detailCount++;
       }
-      let db = DETAIL_BUDGET;
+      let db = detailBudget;
       for (const [e] of ranked) {
         if (db <= 0 || detailCount >= maxDetail) break;
         if (!keep.has(e) || e.detail) continue;
@@ -403,6 +475,34 @@ export async function createCityGenRing(
         for (const c of e.wallBoxes) walls.push(c);
         for (const c of e.intBoxes) interiors.push(c);
       }
+    },
+    debugDoors() {
+      const out: CityGenDoorProbe[] = [];
+      for (const cell of loaded.values()) for (const e of cell.entries) {
+        if (!e.detail) continue;
+        const poly = ensureCCW(e.poly);
+        const si = streetEdgeIndex(poly);
+        const p0 = poly[si], p1 = poly[(si + 1) % poly.length];
+        const dx = p1[0] - p0[0], dz = p1[1] - p0[1];
+        const length = Math.hypot(dx, dz);
+        const grade = e.grade ?? e.base;
+        if (!doorEligible({ isStreet: true, length, base: e.base, top: e.top, grade })) continue;
+        const ux = dx / length, uz = dz / length;
+        const nrm = edgeOutwardNormal(p0, p1);     // unit outward (x,z)
+        const { tc, halfW, head } = doorMetrics(length, e.base, e.top);
+        const dC = tc * length;                    // metres from p0 to door centre
+        const y = Math.max(e.base, grade);
+        out.push({
+          archetype: e.archetype,
+          center: [p0[0] + ux * dC, y, p0[1] + uz * dC],
+          inward: [-nrm[0], 0, -nrm[1]],
+          along: [ux, 0, uz],
+          dcenter: dC,
+          halfW, head, base: e.base, grade, top: e.top, length,
+          bb: { ...e.bb },
+        });
+      }
+      return out;
     },
   };
 }

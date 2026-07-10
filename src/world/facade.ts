@@ -27,7 +27,6 @@ import {
   varying,
   fwidth,
   mod,
-  If,
   Fn,
   dot,
   normalize,
@@ -36,7 +35,7 @@ import {
   instancedBufferAttribute
 } from "three/tsl";
 import { bumpNormal } from "./tslUtil";
-import { DEBRIS_TUNING, LIGHT_SCALE, RENDER_TUNING } from "../config";
+import { DEBRIS_TUNING, LIGHT_SCALE } from "../config";
 
 /* ----------------------------------------------------- debris light timing */
 
@@ -47,17 +46,6 @@ export const DEBRIS_LIGHTS = {
   hold: uniform(DEBRIS_TUNING.values.hold),
   flicker: uniform(DEBRIS_TUNING.values.flicker),
   spread: uniform(DEBRIS_TUNING.values.spread)
-};
-
-// Far-window glow mode, driven by the "/" panel's "far window lights" toggle
-// (RENDER_TUNING.farWindowGlow). 1 = lit panes beyond the interior-raymarch
-// range glow at full room brightness (whole skyline lit at dusk); 0 = the old
-// 0.55·LIGHT_SCALE "dusk sparkle", which ACES at play exposure crushes to
-// near-black — window lights then visibly draw in around the camera as the
-// interior range (340–520 m) sweeps the city. Uniform-driven so toggling never
-// recompiles a pipeline.
-export const WINDOW_GLOW = {
-  far: uniform(RENDER_TUNING.values.farWindowGlow ? 1 : 0)
 };
 
 /* ------------------------------------------------------------------ palettes */
@@ -135,7 +123,6 @@ function facadeSurface(opts: {
   bid: N; // per-building id (float node)
   baseY: N; // building base height (world Y where it meets the street)
   topRel?: N; // roof height above baseY in metres (omit = never mask rows)
-  interiors: boolean; // raymarched rooms behind the glass (off for debris)
   litWindows: boolean; // lit panes + emissive glow
   litScale?: N; // 0..1 multiplier on the lit mask (debris fades its lights out)
   // pattern frame: debris passes its frozen spawn-pose position/normal here so the
@@ -143,7 +130,7 @@ function facadeSurface(opts: {
   // space (which reads as the pattern scrolling and lights flickering as it spins)
   frame?: { pos: N; nrm: N };
 }) {
-  const { baseTone, bid, baseY, interiors, litWindows } = opts;
+  const { baseTone, bid, baseY, litWindows } = opts;
 
   const p = opts.frame ? opts.frame.pos : positionWorld;
   const dist = positionWorld.distance(cameraPosition); // LOD by real distance, always
@@ -184,8 +171,7 @@ function facadeSurface(opts: {
   // outputs for the pixels that SKIP the branch (measured: far lit windows
   // died wholesale past the 300 m gate — the "lights draw in around the
   // camera" bug; branch removed → far skyline back to baseline pixel-for-
-  // pixel). The interior raymarch below gets away with its If because its body
-  // is pure ALU; these blocks pull in the mx_noise library and that combo
+  // pixel). These blocks pull in the mx_noise library and that combo
   // miscompiles on the WGSL→Metal path. So the fade is a plain multiplier:
   // the noise always runs, and wFade only steers the blend to the flat
   // fallback. Values still route through Fn IIFEs with call-site arguments —
@@ -331,170 +317,21 @@ function facadeSurface(opts: {
   const coolLight = mix(color(0xdfe8ff), color(0x9fb6ff), cellHash(cellKey, 5));
   const lightCol = select(cellHash(cellKey, 6).greaterThan(0.88), coolLight, warmLight);
 
-  /* --- interior mapping (reference technique, procedural room per cell) ------- */
+  /* --- simple glazing (flat panes, no fake interior) ------------------------- */
 
-  // grimy glazing film: dust streaks down the facade + dirt pooled at each sill.
-  // NOT distance-gated like the masonry block: dustStreak/glassMottle feed the
-  // lit-window emissive (grime scales the room glow), so gating them made every
-  // lit pane brighten and flatten as the 300 m ring swept past — a glaring
-  // draw-in at dusk. Three noise evals is a price worth paying here.
-  const filmNoise = mx_fractal_noise_float(vec3(p.x.mul(1.3), p.y.mul(0.06), p.z.mul(1.3)), 2);
-  const dustStreak = smoothstep(-0.15, 0.5, filmNoise).mul(0.45);
-  const paneV = fRow.sub(0.24).div(0.56).clamp(0, 1); // 0 at the sill, 1 at the head
-  const pooled = smoothstep(0.32, 0.0, paneV).mul(0.4);
-  const glassMottle = mx_noise_float(p.mul(0.3)).mul(0.5).add(0.5);
-  const dirtyGlass = mix(color(0x13161a), color(0x232b31), glassMottle);
-  const grime = float(0.6).add(dustStreak).add(pooled).clamp(0, 0.95);
-  const shopFilm = float(0.14).add(dustStreak.mul(0.22));
-
-  // grazing views turn the interior slab into long shards that slide wildly with
-  // any camera move (dir.z is clamped below, so the parallax divides by ~0.02) —
-  // and real glass mirrors out at grazing incidence anyway. Fade the rooms to
-  // dirty glass + flat far-glow as the view ray approaches the facade plane.
+  // Windows are flat glass now — no interior raymarch. A fixed dark tint reads as
+  // glass, lifted toward a cool sky sheen at grazing angles by a cheap fresnel
+  // (~(1-facing)^3, no pow/noise), and at night the ~lit panes carry a warm
+  // emissive. `facing` is 1 head-on, →0 at grazing; the sheen, the grazing
+  // roughness and the emissive cutoff all ride it.
   const facing = dot(normalize(p.sub(cameraPosition)), n).negate();
-  const grazeFade = smoothstep(0.05, 0.22, facing);
-  // separate, harder cutoff for the flat pane glow: below ~3° the panes are
-  // sub-pixel slivers and any emissive just reads as aliasing shimmer
-  const glowGraze = smoothstep(0.005, 0.05, facing);
-  const interiorOn = interiors ? smoothstep(520.0, 340.0, dist).mul(pane).mul(grazeFade) : float(0);
+  const inv = facing.oneMinus().clamp(0, 1);
+  const fresnel = inv.mul(inv).mul(inv);
 
-  // the raymarch runs behind a branch (skipped for far / non-pane fragments), which
-  // TSL only allows inside a Fn body — so the whole interior is an IIFE node
-  const room: N = !interiors
-    ? vec4(dirtyGlass, 0)
-    : Fn(() => {
-    const roomOut = vec4(dirtyGlass, 0).toVar();
-    If(interiorOn.greaterThan(0.004), () => {
-      // room frame: u across the face, v up, depth into the wall
-      const uAxis = normalize(vec3(n.z, 0, n.x.negate()));
-      const rd = normalize(p.sub(cameraPosition));
-      // grazing views push dot(rd, n) to 0 and the slab division explodes into
-      // inf/NaN sparkle along wall silhouettes — keep a minimum inward slope
-      const dir = vec3(dot(rd, uAxis), rd.y, dot(rd, n).negate().max(0.02));
-
-      // shops get a taller, deeper room anchored to the storefront glazing
-      const roomH = mix(float(2.9), float(3.3), isShop);
-      const offU = fCol.sub(0.5).mul(COL_W);
-      const offVUpper = fRow.sub(0.5).mul(FLOOR_H);
-      const offVShop = rel.sub(2.0);
-      const offV = mix(offVUpper, offVShop, isShop);
-      const origin = vec3(offU, offV, 0);
-
-      const setback = float(0.1);
-      const depth = roomH.mul(1.55);
-      const boxMax = vec3(float(COL_W / 2), roomH.mul(0.5), setback.add(depth));
-      const boxMin = vec3(float(-COL_W / 2), roomH.mul(-0.5), setback);
-
-      // slab method: the far plane the ray exits through
-      const tFar = boxMin.sub(origin).div(dir).max(boxMax.sub(origin).div(dir));
-      const t = tFar.x.min(tFar.y).min(tFar.z);
-      const hit = origin.add(dir.mul(t));
-      const q = hit.sub(boxMin).div(boxMax.sub(boxMin)).toVar();
-
-      const onBack = q.z.greaterThan(0.998);
-      const onCeil = q.y.greaterThan(0.998);
-      const onFloor = q.y.lessThan(0.002);
-
-      const seed = cellHash(cellKey, 11);
-      const seed2 = cellHash(cellKey, 12);
-      const rect = (ax: N, ay: N, cx: N, cy: N, hw: N, hh: N): N =>
-        smoothstep(hw.add(0.006), hw.sub(0.006), ax.sub(cx).abs()).mul(smoothstep(hh.add(0.006), hh.sub(0.006), ay.sub(cy).abs()));
-      const falloffAt = (z: N): N => mix(float(1.0), float(0.42), z.sub(setback).div(depth).clamp(0, 1));
-
-      // shell: muted plaster walls with a skirting, boards + rug, lit ceiling lamp
-      let wall: N = mix(color(0x9a8b73), color(0x6f7a82), seed);
-      wall = mix(wall, color(0xb9ad97), seed2.mul(0.6));
-      const wallCol = mix(wall, wall.mul(0.5), smoothstep(0.05, 0.04, q.y));
-
-      const seam = step(0.94, fract(q.x.mul(6)));
-      const boards = mix(color(0x4a3320), color(0x6a4c30), seed).mul(seam.mul(0.3).oneMinus());
-      const rug = mix(color(0x7a3b32), color(0x3a5760), seed2);
-      const floorCol = mix(boards, rug, rect(q.x, q.z, float(0.5), float(0.62), float(0.3), float(0.26)).mul(0.9));
-
-      const lamp = smoothstep(0.16, 0.13, vec2(q.x.sub(0.5), q.z.sub(0.5)).length());
-      const ceilCol = mix(mix(wall, color(0xffffff), 0.5), lightCol.mul(mix(float(1.0), float(4.5), lit)), lamp);
-
-      const doorX = mix(float(0.22), float(0.78), seed);
-      const door = mix(color(0x5a4631), color(0x39383c), step(0.5, seed2));
-      const picX = select(doorX.lessThan(0.5), mix(float(0.68), float(0.82), seed2), mix(float(0.18), float(0.32), seed2));
-      const picCol = mix(color(0x2c3a4a), color(0x7a5a3a), cellHash(cellKey, 13));
-      let backCol: N = mix(wallCol, door, rect(q.x, q.y, doorX, float(0.33), float(0.085), float(0.35)));
-      backCol = mix(backCol, color(0x141210), rect(q.x, q.y, picX, float(0.56), float(0.075), float(0.085)));
-      backCol = mix(backCol, picCol, rect(q.x, q.y, picX, float(0.56), float(0.055), float(0.065)));
-
-      const shellCol = select(onBack, backCol, select(onCeil, ceilCol, select(onFloor, floorCol, wallCol)));
-
-      // soft corner AO so the box doesn't read flat-lit
-      const aoEdge = (a: N): N => smoothstep(0, 0.15, a).mul(smoothstep(0, 0.15, a.oneMinus()));
-      const edgeAO = select(onBack, aoEdge(q.x).mul(aoEdge(q.y)), select(onFloor.or(onCeil), aoEdge(q.x).mul(aoEdge(q.z)), aoEdge(q.y).mul(aoEdge(q.z))));
-      const shellAO = mix(float(0.72), float(1.0), edgeAO);
-
-      const bestT = t.toVar();
-      const bestCol = shellCol.mul(shellAO).mul(falloffAt(hit.z)).toVar();
-      const bestEmit = float(1).toVar();
-
-      const boxHit = (bMin: N, bMax: N) => {
-        const ta = bMin.sub(origin).div(dir);
-        const tb = bMax.sub(origin).div(dir);
-        const lo = ta.min(tb);
-        const hi = ta.max(tb);
-        const tN = lo.x.max(lo.y).max(lo.z);
-        const ph = origin.add(dir.mul(tN));
-        return { tN, p: ph, hit: hi.x.min(hi.y).min(hi.z).greaterThan(tN).and(tN.greaterThan(0)), qb: ph.sub(bMin).div(bMax.sub(bMin)) };
-      };
-      const consider = (h: N, tN: N, c: N, emit = 1) => {
-        const nearHit = h.and(tN.lessThan(bestT));
-        bestCol.assign(select(nearHit, c, bestCol));
-        bestEmit.assign(select(nearHit, float(emit), bestEmit));
-        bestT.assign(select(nearHit, tN, bestT));
-      };
-
-      const halfU = boxMax.x;
-      const floorY = boxMin.y;
-      const ceilY = boxMax.y;
-      const backZ = boxMax.z;
-      const midZ = setback.add(depth.mul(0.5));
-
-      // a low table near the middle, its top catching the light
-      const tCx = mix(float(-0.6), float(0.6), seed);
-      const tCz = midZ.add(mix(float(-0.4), float(0.5), seed2));
-      const tbl = boxHit(vec3(tCx.sub(0.6), floorY, tCz.sub(0.35)), vec3(tCx.add(0.6), floorY.add(0.42), tCz.add(0.35)));
-      const tblCol = mix(color(0x4a3526), color(0x6b4a30), seed2).mul(select(tbl.qb.y.greaterThan(0.94), float(1.25), float(0.8)));
-      consider(tbl.hit, tbl.tN, tblCol.mul(falloffAt(tbl.p.z)));
-
-      // a wide low sofa against the back wall
-      const sofaCx = mix(halfU.mul(-0.3), halfU.mul(0.3), seed2);
-      const sofa = boxHit(vec3(sofaCx.sub(1.1), floorY, backZ.sub(0.95)), vec3(sofaCx.add(1.1), floorY.add(mix(float(0.8), float(0.9), seed)), backZ.sub(0.1)));
-      const sofaCol = mix(color(0x5a4a3a), color(0x42566a), seed).mul(select(sofa.qb.y.greaterThan(0.9), float(1.12), float(0.85)));
-      consider(sofa.hit, sofa.tN, sofaCol.mul(falloffAt(sofa.p.z)));
-
-      // curtains just inside the glass, drawn part-way from each side
-      const swatch = (a: number, b: number): N => mix(color(a), color(b), seed2);
-      const pick = cellHash(cellKey, 14).mul(6);
-      let fabric: N = swatch(0xcabfa6, 0xd8cdb8);
-      fabric = select(pick.greaterThan(1), swatch(0x8a7a64, 0x9b8c72), fabric);
-      fabric = select(pick.greaterThan(2), swatch(0x706a64, 0x837d76), fabric);
-      fabric = select(pick.greaterThan(3), swatch(0x5f7079, 0x6f818b), fabric);
-      fabric = select(pick.greaterThan(4), swatch(0x6c7558, 0x79835f), fabric);
-      fabric = select(pick.greaterThan(5), swatch(0x8c5a44, 0x9a6a52), fabric);
-      const drape = (bMin: N, bMax: N, gate: N) => {
-        const h = boxHit(bMin, bMax);
-        const pleat = fabric.mul(mix(float(0.78), float(1.12), fract(h.p.x.mul(2.5))));
-        consider(h.hit.and(gate), h.tN, pleat.mul(falloffAt(h.p.z)), 0.2);
-      };
-      const cz1 = setback.add(0.12);
-      const sL = smoothstep(0.3, 1.0, seed);
-      const sR = smoothstep(0.3, 1.0, seed2);
-      const lw = halfU.mul(sL.mul(sL));
-      const rw = halfU.mul(sR.mul(sR));
-      drape(vec3(halfU.negate(), floorY, setback), vec3(halfU.negate().add(lw), ceilY, cz1), lw.greaterThan(0.05));
-      drape(vec3(halfU.sub(rw), floorY, setback), vec3(halfU, ceilY, cz1), rw.greaterThan(0.05));
-
-      const warmth = mix(vec3(1, 1, 1), lightCol, lit.mul(0.85));
-      roomOut.assign(vec4(bestCol.mul(warmth).mul(mix(float(1.0), float(1.3), lit)), lit.mul(bestEmit)));
-    });
-    return roomOut;
-  })();
+  // dark glass; shops read a touch lighter/cleaner than the residential panes
+  const glassTint = select(isShop.greaterThan(0.5), color(0x20262b), color(0x181d22));
+  const skySheen = color(0x9db6d2);
+  const glazing = mix(glassTint, skySheen, fresnel.mul(0.4));
 
   /* --- compose the surface ----------------------------------------------------- */
 
@@ -508,12 +345,6 @@ function facadeSurface(opts: {
   const frameColor = baseTone.mul(0.55);
   const courseColor = mix(baseTone, color(0xffffff), 0.2).mul(float(1).add(tone));
   const storeColor = mix(baseTone.mul(0.3), color(0x24201c), 0.5);
-
-  // glazing: the room shows through a dusty film; shops read far cleaner
-  const glassTint = select(isShop.greaterThan(0.5), color(0xccd4cf), color(0xb6c6bf));
-  const glassFilm = mix(grime, shopFilm, isShop);
-  const roomVisible = mix(dirtyGlass, room.xyz.mul(glassTint), grazeFade);
-  const glazing = mix(roomVisible, dirtyGlass, glassFilm);
 
   let surface: N = stone;
   surface = mixN(surface, courseColor, course6);
@@ -538,19 +369,19 @@ function facadeSurface(opts: {
     .mul(reliefFade);
 
   // rougher at grazing: kills the razor-thin white env-glints that slide along
-  // near-edge-on facades (the dust film diffuses grazing reflections anyway)
-  const glassRough = float(0.16).add(pooled.mul(0.45)).add(dustStreak.mul(0.2)).add(grazeFade.oneMinus().mul(0.4));
+  // near-edge-on facades
+  const glassRough = float(0.16).add(fresnel.mul(0.4));
   const roughness = mix(mix(stoneRough, float(0.6), fascia.add(bulkhead).clamp(0, 1)), glassRough, pane);
 
-  // beyond the interior range lit panes carry a flat warm glow. WINDOW_GLOW.far
-  // ("far window lights" in the "/" panel) picks its strength: 0 = the original
-  // 0.55 dusk sparkle, 1 = boosted toward the room-emissive average so the far
-  // skyline reads as bright as the near blocks. Uniform-driven — no recompile.
-  const farGlow = mix(float(0.55 * LIGHT_SCALE), float(1.35 * LIGHT_SCALE), WINDOW_GLOW.far as N);
+  // lit panes emit a warm glow. Constant scale — ACES at play exposure crushes it
+  // to near-black in daylight, so the glow only reads after dusk (sky drives day/
+  // night purely through exposure, same as the landmark emissives). Shops glow a
+  // touch brighter. A hard grazing cutoff kills sub-pixel emissive shimmer on
+  // near-edge-on facades.
+  const emitScale = mix(float(2.0 * LIGHT_SCALE), float(2.2 * LIGHT_SCALE), isShop);
+  const glowGraze = smoothstep(0.01, 0.06, facing);
   const emissive = litWindows
-    ? room.xyz.mul(room.w).mul(pane).mul(grazeFade).mul(mix(float(2.2 * LIGHT_SCALE).mul(grime.mul(0.6).oneMinus()), float(2.0 * LIGHT_SCALE), isShop)).add(
-        lightCol.mul(lit).mul(pane).mul(interiorOn.oneMinus()).mul(farGlow).mul(glowGraze)
-      )
+    ? lightCol.mul(lit).mul(pane).mul(emitScale).mul(glowGraze)
     : color(0x000000);
 
   return {
@@ -617,7 +448,7 @@ export function createFacadeMaterial(aliveTex: THREE.DataTexture, texWidth: numb
   }
   const baseTone = varying(mix(vColor, palette, 0.72).mul(hash(bid.add(223)).mul(0.16).add(0.9)) as N) as N;
 
-  const nodes = facadeSurface({ baseTone, bid, baseY, topRel, interiors: true, litWindows: true });
+  const nodes = facadeSurface({ baseTone, bid, baseY, topRel, litWindows: true });
   mat.colorNode = nodes.colorNode;
   mat.roughnessNode = nodes.roughnessNode;
   mat.metalnessNode = nodes.metalnessNode;
@@ -709,7 +540,6 @@ export function createDebrisMaterial(
     baseTone,
     bid,
     baseY,
-    interiors: false,
     litWindows: true,
     litScale,
     frame: { pos: frozenPos, nrm: frozenNrm }

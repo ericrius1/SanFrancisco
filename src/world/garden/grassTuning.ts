@@ -7,10 +7,10 @@ import { windSpeed, windStrength } from "../../../vendor/SeedThree/src/core/wind
 import { tunables } from "../../core/persist";
 
 export const GRASS_TUNING = tunables("grass", {
-  spacing: { v: 1.05, min: 0.75, max: 4.5, step: 0.05, label: "base spacing (m)" },
+  spacing: { v: 1.32, min: 0.75, max: 4.5, step: 0.05, label: "base spacing (m)" },
   nearSpacing: { v: 0.36, min: 0.24, max: 1.8, step: 0.02, label: "near spacing (m)" },
-  nearRadius: { v: 80, min: 0, max: 180, step: 2, label: "near detail radius (m)" },
-  baseViewDistance: { v: 260, min: 80, max: 600, step: 10, label: "base view distance (m)" },
+  nearRadius: { v: 64, min: 0, max: 180, step: 2, label: "near detail radius (m)" },
+  baseViewDistance: { v: 195, min: 80, max: 600, step: 10, label: "base view distance (m)" },
   nearDensity: { v: 1, min: 0, max: 1, step: 0.01, label: "near detail density" },
   nearRebuildStep: { v: 10, min: 2, max: 30, step: 1, label: "near rebuild step (m)" },
   meadowKeep: { v: 0.96, min: 0, max: 1, step: 0.01, label: "meadow density" },

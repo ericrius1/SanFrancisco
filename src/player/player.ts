@@ -112,7 +112,7 @@ export class Player {
   #animT = 0; // free-running clock for idle sway/bob
   #strideT = 0; // stride/stroke phase, advanced by speed
 
-  // what the player is currently driving; swapped when commandeering traffic
+  // what the player is currently driving; swapped when mounting a ridden animal
   driveSpec: DriveSpec = DEFAULT_DRIVE_SPEC;
   swimEnter = false;
   #defaultDriveMesh!: THREE.Group;
@@ -402,9 +402,9 @@ export class Player {
   }
 
   /**
-   * Swap what "drive" means: the mesh (a commandeered taxi/bus/cable car from
-   * traffic, or null for the default sports car) and the matching body/handling
-   * spec. Takes effect on the next drive body spawn.
+   * Swap what "drive" means: the mesh (a ridden animal from the forest, or null
+   * for the default sports car) and the matching body/handling spec. Takes effect
+   * on the next drive body spawn.
    */
   setDriveStyle(mesh: THREE.Group | null, spec?: DriveSpec) {
     const next = mesh ?? this.#defaultDriveMesh;
@@ -421,7 +421,7 @@ export class Player {
     this.driveSpec = spec ?? DEFAULT_DRIVE_SPEC;
   }
 
-  /** Swap the drone mesh (Quidditch broom, etc.). Null restores the stock drone. */
+  /** Swap the drone mesh for a custom flyer. Null restores the stock drone. */
   setDroneStyle(mesh: THREE.Group | null) {
     const next = mesh ?? this.#defaultDroneMesh;
     if (next === this.meshes.drone) return;
@@ -443,7 +443,7 @@ export class Player {
     if (this.mode === "drone") this.#lightPool.claim(next);
   }
 
-  /** Restore the stock camera drone after a Quidditch broom ride. */
+  /** Restore the stock camera drone after a custom flyer style. */
   clearDroneStyle() {
     if (this.meshes.drone !== this.#defaultDroneMesh) this.setDroneStyle(null);
   }

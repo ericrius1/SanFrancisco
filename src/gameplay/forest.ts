@@ -12,7 +12,7 @@ type N = any;
  * hills kinematically (one InstancedMesh per species, legs animated in the
  * shader from the instance id — same trick as the gull flap), and walking up
  * to one with E mounts it: the herd instance is consumed and "drive" mode gets
- * the animal's mesh and handling, exactly like commandeering traffic. The
+ * the animal's mesh and handling via the shared setDriveStyle swap. The
  * raccoon packs a gummy-bear launcher (instanced candy pool, CPU ballistics —
  * cosmetic only, no physics bodies anywhere in this file).
  */
