@@ -96,6 +96,18 @@ function distanceToTrails(x: number, z: number) {
   return best;
 }
 
+/** Extra height the platform skin holds above WorldMap.groundTop at (x,z).
+ * 0 outside the platform. Single source of truth so the trail ribbons, step
+ * ties and scree can ride ON the dirt instead of drowning under it — the skin
+ * must sit well proud of the baked park lawn, whose CDT drape can exceed the
+ * bilinear ground query by 20+ cm on the summit folds. */
+export function summitPlatformLift(x: number, z: number) {
+  const p = SUMMIT_PLATFORM;
+  const q = ((x - p.x) / p.rx) ** 2 + ((z - p.z) / p.rz) ** 2;
+  if (q >= 1) return 0;
+  return 0.1 + 0.18 * (1 - smoothEdge(q));
+}
+
 /** True where the summit treatment owns the ground: existing scatter systems
  * (grass tufts, wildflowers, the mid-slope dodecahedron rocks) call this to
  * stay off the bare platform and out of every crag's footprint. */
@@ -410,9 +422,7 @@ function makePlatformSkin(map: WorldMap) {
       const q = ((x - px) / rx) ** 2 + ((z - pz) / rz) ** 2;
       inside[i] = q < 1 + (hash(gx, gz, 7) - 0.5) * 0.08 ? 1 : 0;
       positions[i * 3] = x;
-      // Well above the coarse hill skin (+0.08): its bilinear-vs-CDT drift can
-      // exceed a few cm on the summit folds and poke green through the dirt.
-      positions[i * 3 + 1] = map.groundTop(x, z) + 0.15;
+      positions[i * 3 + 1] = map.groundTop(x, z) + Math.max(0.1, summitPlatformLift(x, z));
       positions[i * 3 + 2] = z;
       const grain = valueNoise(x, z, 3.2, 211);
       const mottle = valueNoise(x, z, 6.5, 219);
@@ -513,14 +523,19 @@ function makeScree(map: WorldMap) {
     const src = sources[Math.floor(hash(i, 1, 301) * sources.length) % sources.length];
     const a = hash(i, 2, 307) * Math.PI * 2;
     // Talus density decays away from the crag base.
-    const r = src.length * 0.42 + Math.pow(hash(i, 3, 311), 1.6) * 7.5;
+    const r = src.length * 0.42 + Math.pow(hash(i, 3, 311), 1.6) * 5.5;
     const x = src.x + Math.cos(a) * r;
     const z = src.z + Math.sin(a) * r * 0.9;
     if (distanceToTrails(x, z) < 1.9) continue;
+    // Talus belongs on the bare dirt and around the crag feet — scattering it
+    // out onto the grass flanks reads as red confetti.
+    const lift = summitPlatformLift(x, z);
+    const nearFoot = Math.hypot(x - src.x, z - src.z) < src.length * 0.42 + 3.5;
+    if (lift === 0 && !nearFoot) continue;
     const y = map.groundTop(x, z);
     if (y < 132) continue;
     const size = 0.09 + Math.pow(hash(i, 5, 313), 2.2) * 0.55;
-    dummy.position.set(x, y + size * 0.06, z);
+    dummy.position.set(x, y + lift + size * 0.06, z);
     dummy.rotation.set((hash(i, 7) - 0.5) * 0.4, hash(i, 11) * Math.PI * 2, (hash(i, 13) - 0.5) * 0.4);
     dummy.scale.set(size * (0.8 + hash(i, 17) * 0.7), size * (0.5 + hash(i, 19) * 0.6), size * (0.8 + hash(i, 23) * 0.7));
     dummy.updateMatrix();

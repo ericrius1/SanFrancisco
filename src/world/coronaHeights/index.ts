@@ -12,7 +12,7 @@ import {
   type CoronaTrail,
   type CoronaXZ
 } from "./layout";
-import { makeSummitCrags, summitKeepOut } from "./summitCrags";
+import { makeSummitCrags, summitKeepOut, summitPlatformLift } from "./summitCrags";
 
 const DETAIL_RANGE = 1450;
 const ACTIVITY_RANGE = 420;
@@ -233,7 +233,9 @@ function makeHillSkin(map: WorldMap) {
       const q = ((x - cx) / HILL_RX) ** 2 + ((z - cz) / HILL_RZ) ** 2;
       const edge = 1.08 + (hash2(gx, gz, 9) - 0.5) * 0.035;
       inside[i] = q < edge && !pointInPolygon(x, z, CORONA_DOG_PARK) ? 1 : 0;
-      const y = map.groundTop(x, z) + 0.08;
+      // 0.13: proud of the baked park lawn's CDT drape (which can exceed the
+      // bilinear query by 20+ cm on folds) while staying under the trail ribbons.
+      const y = map.groundTop(x, z) + 0.13;
       positions[i * 3] = x;
       positions[i * 3 + 1] = y;
       positions[i * 3 + 2] = z;
@@ -378,7 +380,10 @@ function makeTrailRibbon(map: WorldMap, trail: CoronaTrail, material: THREE.Mate
     for (const side of [-1, 1]) {
       const x = p.x + nx * half * side;
       const z = p.z + nz * half * side;
-      positions.push(x, map.groundTop(x, z) + 0.165, z);
+      // Where a trail crosses the raised summit platform it must ride on top
+      // of that dirt skin, not drown beneath it.
+      const lift = summitPlatformLift(x, z);
+      positions.push(x, map.groundTop(x, z) + 0.165 + Math.max(0, lift + 0.08 - 0.165), z);
       const shade = 0.86 + hash2(i, side, trail.name.length) * 0.18;
       colors.push(shade, shade, shade);
     }
@@ -407,7 +412,8 @@ function makeStepTies(map: WorldMap, trail: CoronaTrail, material: THREE.Materia
   samples.forEach((p, i) => {
     const nx = -p.tz;
     const nz = p.tx;
-    dummy.position.set(p.x, map.groundTop(p.x, p.z) + 0.19, p.z);
+    const tieLift = summitPlatformLift(p.x, p.z);
+    dummy.position.set(p.x, map.groundTop(p.x, p.z) + 0.19 + Math.max(0, tieLift + 0.1 - 0.19), p.z);
     dummy.rotation.set(0, Math.atan2(-nz, nx), 0);
     dummy.scale.set(trail.width + 0.25, 0.16, 0.24);
     dummy.updateMatrix();
@@ -1275,81 +1281,434 @@ export class CoronaHeightsPark {
     this.activity.visible = distance < ACTIVITY_RANGE;
     if (!this.activity.visible) return;
 
-    const ballPhase = ((elapsed + 0.35) % 6.2) / 6.2;
-    const frisbeePhase = ((elapsed + 2.1) % 6.35) / 6.35;
-    placeOwner(this.#map, this.owners[0], elapsed, ballPhase);
-    placeOwner(this.#map, this.owners[1], elapsed, frisbeePhase);
-    placeOwner(this.#map, this.owners[2], elapsed, 0);
+    this.#updateBallFetch(dt, elapsed);
+    this.#updateFrisbeeFetch(dt, elapsed);
+    this.#updateWander(this.#wander[0], this.dogs[2], this.dogs[3], dt, elapsed);
+    this.#updateWander(this.#wander[1], this.dogs[3], this.dogs[2], dt, elapsed);
 
-    const ballOwner: CoronaXZ = [this.owners[0].x, this.owners[0].z];
-    const frisbeeOwner: CoronaXZ = [this.owners[1].x, this.owners[1].z];
-    const ballLanding: CoronaXZ = [366, 2708];
-    const frisbeeLanding: CoronaXZ = [378, 2700];
-    const ballTarget = fetchTarget(ballPhase, ballOwner, ballLanding, [349, 2714]);
-    const frisbeeTarget = fetchTarget(frisbeePhase, frisbeeOwner, frisbeeLanding, [393, 2691]);
-    moveDog(this.#map, this.dogs[0], ballTarget[0], ballTarget[1], dt);
-    moveDog(this.#map, this.dogs[1], frisbeeTarget[0], frisbeeTarget[1], dt);
-    moveDog(this.#map, this.dogs[2], 370 + Math.cos(elapsed * 0.72) * 17, 2701 + Math.sin(elapsed * 0.72) * 9, dt);
-    moveDog(this.#map, this.dogs[3], 374 + Math.sin(elapsed * 0.88) * 15, 2701 + Math.sin(elapsed * 1.76) * 7.2, dt);
-
-    this.#updateBall(ballPhase, ballOwner, ballLanding, this.dogs[0]);
-    this.#updateFrisbee(frisbeePhase, frisbeeOwner, frisbeeLanding, this.dogs[1], elapsed);
+    // owners pose after the dogs move so gaze tracking uses fresh positions
+    ownerPose(this.#map, this.owners[0], this.dogs[0], elapsed, dt);
+    ownerPose(this.#map, this.owners[1], this.dogs[1], elapsed, dt);
+    const watcher = this.owners[2];
+    let watched = this.dogs[0];
+    let best = Infinity;
+    for (let i = 0; i < this.dogs.length; i++) {
+      const dog = this.dogs[i];
+      const d = (dog.x - watcher.x) ** 2 + (dog.z - watcher.z) ** 2;
+      if (d < best) {
+        best = d;
+        watched = dog;
+      }
+    }
+    ownerPose(this.#map, watcher, watched, elapsed, dt);
   }
 
-  #updateBall(phase: number, owner: CoronaXZ, landing: CoronaXZ, dog: ParkDog) {
-    const ownerY = this.#map.groundTop(owner[0], owner[1]) + DOG_SURFACE_LIFT + 1.58;
-    const landingY = this.#map.groundTop(landing[0], landing[1]) + DOG_SURFACE_LIFT + 0.17;
-    if (phase < 0.14) {
-      this.#ball.position.set(owner[0] - 0.35, ownerY, owner[1] - 0.45);
-    } else if (phase < 0.34) {
-      const t = (phase - 0.14) / 0.2;
-      this.#ball.position.set(
-        lerp(owner[0], landing[0], t),
-        lerp(ownerY, landingY, t) + Math.sin(t * Math.PI) * 5.2,
-        lerp(owner[1], landing[1], t)
-      );
-    } else if (phase < 0.5) {
-      this.#ball.position.set(landing[0], landingY, landing[1]);
-    } else if (phase < 0.56) {
-      const t = smooth01((phase - 0.5) / 0.06);
-      this.#ball.position.set(landing[0], landingY, landing[1]).lerp(dogMouth(dog, this.#mouth), t);
-    } else if (phase < 0.9) {
-      this.#ball.position.copy(dogMouth(dog, this.#mouth));
-    } else if (phase < 0.96) {
-      const t = smooth01((phase - 0.9) / 0.06);
-      this.#propTarget.set(owner[0] - 0.35, ownerY, owner[1] - 0.45);
-      this.#ball.position.copy(dogMouth(dog, this.#mouth)).lerp(this.#propTarget, t);
+  #handPos(owner: ParkOwner, windup: number, out: THREE.Vector3) {
+    const lx = 0.35;
+    const ly = 1.22 + 0.42 * windup;
+    const lz = -0.22 + 0.62 * windup;
+    const sin = Math.sin(owner.yaw);
+    const cos = Math.cos(owner.yaw);
+    out.set(
+      owner.x + lx * cos + lz * sin,
+      this.#map.groundTop(owner.x, owner.z) + DOG_SURFACE_LIFT + ly,
+      owner.z - lx * sin + lz * cos
+    );
+    return out;
+  }
+
+  /** Rejection-sample a landing point whose 2.2 m surroundings stay inside the
+   * park polygon, biased toward the interior; falls back to the centre. */
+  #pickThrowTarget(owner: ParkOwner, minDist: number, maxDist: number) {
+    const baseA = Math.atan2(371 - owner.x, 2702 - owner.z);
+    for (let i = 0; i < 16; i++) {
+      const a = baseA + (Math.random() - 0.5) * 1.1;
+      const dist = minDist + Math.random() * (maxDist - minDist);
+      const x = owner.x + Math.sin(a) * dist;
+      const z = owner.z + Math.cos(a) * dist;
+      if (throwTargetClear(x, z)) {
+        this.#throwX = x;
+        this.#throwZ = z;
+        return;
+      }
+    }
+    this.#throwX = 371;
+    this.#throwZ = 2702;
+  }
+
+  #fenceClearance(x: number, z: number) {
+    let best = Infinity;
+    for (let i = 0; i < this.#segs.length; i++) {
+      const seg = this.#segs[i];
+      const ex = seg.bx - seg.ax;
+      const ez = seg.bz - seg.az;
+      const t = clamp01(((x - seg.ax) * ex + (z - seg.az) * ez) / (ex * ex + ez * ez));
+      best = Math.min(best, Math.hypot(x - (seg.ax + ex * t), z - (seg.az + ez * t)));
+    }
+    return best;
+  }
+
+  #updateBallFetch(dt: number, elapsed: number) {
+    const owner = this.owners[0];
+    const dog = this.dogs[0];
+    const ball = this.#ball;
+    if (this.#ballPhase === "held" || this.#ballPhase === "windup") {
+      const w = this.#ballPhase === "windup" ? throwWindup(Math.min(owner.throwAnim, THROW_RELEASE)) : 0;
+      ball.position.copy(this.#handPos(owner, w, this.#propTarget));
+      if (this.#ballPhase === "held") {
+        this.#ballTimer -= dt;
+        if (this.#ballTimer <= 0 && this.#ballFetch === "wait") {
+          this.#ballPhase = "windup";
+          owner.throwAnim = 0;
+        }
+      } else if (owner.throwAnim >= THROW_RELEASE) {
+        this.#launchBall(owner, elapsed);
+      }
+    } else if (this.#ballPhase === "free") {
+      this.#stepBall(dt);
     } else {
-      this.#ball.position.set(owner[0] - 0.35, ownerY, owner[1] - 0.45);
+      ball.position.copy(dogMouth(dog, this.#mouth));
+    }
+
+    switch (this.#ballFetch) {
+      case "wait":
+        dogWait(this.#map, dog, owner.x, owner.z, this.owners, elapsed, dt);
+        break;
+      case "react":
+        this.#ballReact -= dt;
+        dogWait(this.#map, dog, ball.position.x, ball.position.z, this.owners, elapsed, dt);
+        if (this.#ballReact <= 0) this.#ballFetch = "chase";
+        break;
+      case "chase": {
+        moveDog(this.#map, dog, ball.position.x, ball.position.z, dogSprint(dog.style), this.owners, dt);
+        const d = Math.hypot(ball.position.x - dog.x, ball.position.z - dog.z);
+        const ballSpeed = Math.hypot(this.#ballVX, this.#ballVZ);
+        // the wide-radius fallback covers a ball resting inside an owner's clearance ring
+        const pickup =
+          this.#ballGrounded && ((ballSpeed < 2.4 && d < 0.55) || (ballSpeed < 0.05 && d < 1));
+        if (this.#ballPhase === "free" && pickup) {
+          this.#ballPhase = "carried";
+          this.#ballFetch = "return";
+        }
+        break;
+      }
+      case "return": {
+        const dx = dog.x - owner.x;
+        const dz = dog.z - owner.z;
+        const d = Math.hypot(dx, dz) || 1;
+        // stop short on the dog's side of the owner rather than running them over
+        moveDog(this.#map, dog, owner.x + (dx / d) * 1.1, owner.z + (dz / d) * 1.1, dogSprint(dog.style) * 0.55, this.owners, dt);
+        if (d < 1.45 && dog.speed < 0.9) {
+          this.#ballPhase = "held";
+          this.#ballTimer = 1.5 + Math.random() * 1.5;
+          this.#ballFetch = "wait";
+          owner.greetTimer = 1.1;
+        }
+        break;
+      }
     }
   }
 
-  #updateFrisbee(phase: number, owner: CoronaXZ, landing: CoronaXZ, dog: ParkDog, elapsed: number) {
-    const ownerY = this.#map.groundTop(owner[0], owner[1]) + DOG_SURFACE_LIFT + 1.64;
-    const landingY = this.#map.groundTop(landing[0], landing[1]) + DOG_SURFACE_LIFT + 0.24;
-    if (phase < 0.13) {
-      this.#frisbee.position.set(owner[0] + 0.35, ownerY, owner[1] + 0.3);
-    } else if (phase < 0.34) {
-      const t = (phase - 0.13) / 0.21;
-      this.#frisbee.position.set(
-        lerp(owner[0], landing[0], t),
-        lerp(ownerY, landingY, t) + Math.sin(t * Math.PI) * 3.6,
-        lerp(owner[1], landing[1], t)
-      );
-    } else if (phase < 0.5) {
-      this.#frisbee.position.set(landing[0], landingY, landing[1]);
-    } else if (phase < 0.56) {
-      const t = smooth01((phase - 0.5) / 0.06);
-      this.#frisbee.position.set(landing[0], landingY, landing[1]).lerp(dogMouth(dog, this.#mouth), t);
-    } else if (phase < 0.9) {
-      this.#frisbee.position.copy(dogMouth(dog, this.#mouth));
-    } else if (phase < 0.96) {
-      const t = smooth01((phase - 0.9) / 0.06);
-      this.#propTarget.set(owner[0] + 0.35, ownerY, owner[1] + 0.3);
-      this.#frisbee.position.copy(dogMouth(dog, this.#mouth)).lerp(this.#propTarget, t);
-    } else {
-      this.#frisbee.position.set(owner[0] + 0.35, ownerY, owner[1] + 0.3);
+  #launchBall(owner: ParkOwner, elapsed: number) {
+    const ball = this.#ball;
+    this.#pickThrowTarget(owner, 9, 22);
+    const flight = 1 + Math.random() * 0.4;
+    const ty = this.#map.groundTop(this.#throwX, this.#throwZ) + DOG_SURFACE_LIFT + BALL_R;
+    this.#ballVX = (this.#throwX - ball.position.x) / flight;
+    this.#ballVZ = (this.#throwZ - ball.position.z) / flight;
+    this.#ballVY = (ty - ball.position.y) / flight + 4.9 * flight;
+    this.#ballGrounded = false;
+    this.#ballPhase = "free";
+    this.#ballFetch = "react";
+    this.#ballReact = 0.2 + Math.random() * 0.2; // dogs read the throw first
+    this.lastThrowAt = elapsed;
+  }
+
+  /** Ballistic flight, restitution bounces, then woodchip rolling with terrain
+   * downhill drift. Substepped so a frame hitch can't tunnel through the fence:
+   * 1/90 keeps the fastest throw (≤22 m/s) under one ball radius per step. */
+  #stepBall(dt: number) {
+    const ball = this.#ball;
+    let remaining = Math.min(dt, 0.1);
+    while (remaining > 1e-5) {
+      const h = Math.min(remaining, 1 / 90);
+      remaining -= h;
+      const px = ball.position.x;
+      const pz = ball.position.z;
+      if (!this.#ballGrounded) {
+        this.#ballVY -= 9.8 * h;
+        ball.position.x += this.#ballVX * h;
+        ball.position.y += this.#ballVY * h;
+        ball.position.z += this.#ballVZ * h;
+        const gy = this.#map.groundTop(ball.position.x, ball.position.z) + DOG_SURFACE_LIFT + BALL_R;
+        if (ball.position.y <= gy && this.#ballVY < 0) {
+          ball.position.y = gy;
+          this.#ballVY = -this.#ballVY * 0.55;
+          this.#ballVX *= 0.85;
+          this.#ballVZ *= 0.85;
+          if (this.#ballVY < 1.5) {
+            this.#ballVY = 0;
+            this.#ballGrounded = true;
+          }
+        }
+      } else {
+        const speed = Math.hypot(this.#ballVX, this.#ballVZ);
+        if (speed > 1e-4) {
+          const k = Math.max(0, speed - 1.6 * h) / speed; // woodchip friction
+          this.#ballVX *= k;
+          this.#ballVZ *= k;
+        }
+        const gx =
+          (this.#map.groundTop(ball.position.x + 0.6, ball.position.z) -
+            this.#map.groundTop(ball.position.x - 0.6, ball.position.z)) /
+          1.2;
+        const gz =
+          (this.#map.groundTop(ball.position.x, ball.position.z + 0.6) -
+            this.#map.groundTop(ball.position.x, ball.position.z - 0.6)) /
+          1.2;
+        this.#ballVX -= 4.9 * gx * h;
+        this.#ballVZ -= 4.9 * gz * h;
+        ball.position.x += this.#ballVX * h;
+        ball.position.z += this.#ballVZ * h;
+        ball.position.y = this.#map.groundTop(ball.position.x, ball.position.z) + DOG_SURFACE_LIFT + BALL_R;
+      }
+      this.#collideBallFence();
+      const dx = ball.position.x - px;
+      const dz = ball.position.z - pz;
+      const travelled = Math.hypot(dx, dz);
+      if (travelled > 1e-6) {
+        // visible roll: spin about the axis perpendicular to travel
+        this.#spinAxis.set(-dz / travelled, 0, dx / travelled);
+        ball.rotateOnWorldAxis(this.#spinAxis, (travelled / BALL_R) * (this.#ballGrounded ? 1 : 0.35));
+      }
     }
-    this.#frisbee.rotation.set(0.25 + Math.sin(elapsed * 2.7) * 0.1, elapsed * 9.5, 0.18);
+  }
+
+  #collideBallFence() {
+    const ball = this.#ball;
+    if (ball.position.y > this.#fenceTopMax) return;
+    const rad = BALL_R + FENCE_PAD;
+    // two sequential passes settle corner hits without a solver
+    for (let iter = 0; iter < 2; iter++) {
+      let hit = false;
+      for (let i = 0; i < this.#segs.length; i++) {
+        if (ball.position.y > this.#segTop[i]) continue;
+        const seg = this.#segs[i];
+        const ex = seg.bx - seg.ax;
+        const ez = seg.bz - seg.az;
+        const t = clamp01(((ball.position.x - seg.ax) * ex + (ball.position.z - seg.az) * ez) / (ex * ex + ez * ez));
+        const cx = seg.ax + ex * t;
+        const cz = seg.az + ez * t;
+        let nx = ball.position.x - cx;
+        let nz = ball.position.z - cz;
+        const d = Math.hypot(nx, nz);
+        if (d >= rad) continue;
+        if (d > 1e-4 && nx * seg.nx + nz * seg.nz > 0) {
+          nx /= d;
+          nz /= d;
+        } else {
+          // tunnelled past the line: recover along the inward normal
+          nx = seg.nx;
+          nz = seg.nz;
+        }
+        ball.position.x = cx + nx * rad;
+        ball.position.z = cz + nz * rad;
+        const vn = this.#ballVX * nx + this.#ballVZ * nz;
+        if (vn < 0) {
+          this.#ballVX -= 1.6 * vn * nx;
+          this.#ballVZ -= 1.6 * vn * nz;
+        }
+        hit = true;
+      }
+      if (!hit) break;
+    }
+  }
+
+  #updateFrisbeeFetch(dt: number, elapsed: number) {
+    const owner = this.owners[1];
+    const dog = this.dogs[1];
+    const f = this.#frisbee;
+    switch (this.#friPhase) {
+      case "held":
+      case "windup": {
+        const w = this.#friPhase === "windup" ? throwWindup(Math.min(owner.throwAnim, THROW_RELEASE)) : 0;
+        f.position.copy(this.#handPos(owner, w, this.#propTarget));
+        f.rotation.set(0.35 + w * 0.3, owner.yaw, 0.3);
+        if (this.#friPhase === "held") {
+          this.#friTimer -= dt;
+          if (this.#friTimer <= 0 && this.#friFetch === "wait") {
+            this.#friPhase = "windup";
+            owner.throwAnim = 0;
+          }
+        } else if (owner.throwAnim >= THROW_RELEASE) {
+          this.#launchFrisbee(owner, elapsed);
+        }
+        break;
+      }
+      case "glide": {
+        this.#friTimer += dt;
+        const s = Math.min(1, this.#friTimer / this.#friDur);
+        const bow = Math.sin(Math.PI * s);
+        f.position.set(
+          lerp(this.#friFromX, this.#friToX, s) + this.#friPerpX * this.#friCurve * bow,
+          lerp(this.#friFromY, this.#friToY, s) + bow * this.#friLift,
+          lerp(this.#friFromZ, this.#friToZ, s) + this.#friPerpZ * this.#friCurve * bow
+        );
+        this.#friSpin += dt * 14;
+        f.rotation.set(0.22 * (1 - s * 0.5), this.#friSpin, this.#friCurve * 0.12 * bow);
+        if (s >= 1) {
+          this.#friPhase = "settle";
+          this.#friTimer = 0;
+        }
+        break;
+      }
+      case "settle": {
+        // wobble-settle: rock and ring down instead of a hard stop
+        this.#friTimer += dt;
+        const p = Math.min(1, this.#friTimer / 0.55);
+        const decay = (1 - p) * (1 - p);
+        this.#friSpin += dt * 14 * decay;
+        f.position.set(this.#friToX, this.#friToY + Math.abs(Math.sin(p * 9)) * 0.1 * decay, this.#friToZ);
+        f.rotation.set(0.12 * decay + 0.02, this.#friSpin, Math.sin(p * 22) * 0.35 * decay);
+        if (p >= 1) this.#friPhase = "rest";
+        break;
+      }
+      case "rest":
+        f.position.set(this.#friToX, this.#friToY, this.#friToZ);
+        f.rotation.set(0.02, this.#friSpin, 0);
+        break;
+      case "carried":
+        f.position.copy(dogMouth(dog, this.#mouth));
+        f.rotation.set(0.5, dog.heading, 0);
+        break;
+    }
+
+    switch (this.#friFetch) {
+      case "wait":
+        dogWait(this.#map, dog, owner.x, owner.z, this.owners, elapsed, dt);
+        break;
+      case "react":
+        this.#friReact -= dt;
+        dogWait(this.#map, dog, f.position.x, f.position.z, this.owners, elapsed, dt);
+        if (this.#friReact <= 0) this.#friFetch = "chase";
+        break;
+      case "chase": {
+        moveDog(this.#map, dog, f.position.x, f.position.z, dogSprint(dog.style), this.owners, dt);
+        const d = Math.hypot(f.position.x - dog.x, f.position.z - dog.z);
+        const catchable =
+          this.#friPhase === "rest" ||
+          this.#friPhase === "settle" ||
+          (this.#friPhase === "glide" && f.position.y - this.#map.groundTop(dog.x, dog.z) < 1.2);
+        if (catchable && (d < 0.7 || (this.#friPhase === "rest" && d < 1))) {
+          this.#friPhase = "carried";
+          this.#friFetch = "return";
+        }
+        break;
+      }
+      case "return": {
+        const dx = dog.x - owner.x;
+        const dz = dog.z - owner.z;
+        const d = Math.hypot(dx, dz) || 1;
+        moveDog(this.#map, dog, owner.x + (dx / d) * 1.1, owner.z + (dz / d) * 1.1, dogSprint(dog.style) * 0.55, this.owners, dt);
+        if (d < 1.45 && dog.speed < 0.9) {
+          this.#friPhase = "held";
+          this.#friTimer = 2.5 + Math.random() * 1.8;
+          this.#friFetch = "wait";
+          owner.greetTimer = 1.1;
+        }
+        break;
+      }
+    }
+  }
+
+  #launchFrisbee(owner: ParkOwner, elapsed: number) {
+    const f = this.#frisbee;
+    this.#pickThrowTarget(owner, 9, 20);
+    this.#friFromX = f.position.x;
+    this.#friFromY = f.position.y;
+    this.#friFromZ = f.position.z;
+    this.#friToX = this.#throwX;
+    this.#friToZ = this.#throwZ;
+    this.#friToY = this.#map.groundTop(this.#throwX, this.#throwZ) + DOG_SURFACE_LIFT + 0.06;
+    const dirX = this.#friToX - this.#friFromX;
+    const dirZ = this.#friToZ - this.#friFromZ;
+    const inv = 1 / (Math.hypot(dirX, dirZ) || 1);
+    this.#friPerpX = -dirZ * inv;
+    this.#friPerpZ = dirX * inv;
+    this.#friDur = 1.3 + Math.random() * 0.6;
+    this.#friLift = 2.2 + Math.random() * 1.4;
+    this.#friCurve = (Math.random() - 0.5) * 7;
+    this.#friPhase = "glide";
+    this.#friTimer = 0;
+    this.#friFetch = "react";
+    this.#friReact = 0.25 + Math.random() * 0.15;
+    this.lastThrowAt = elapsed;
+  }
+
+  #updateWander(state: WanderState, dog: ParkDog, other: ParkDog, dt: number, elapsed: number) {
+    switch (state.mode) {
+      case "roam":
+        moveDog(this.#map, dog, state.tx, state.tz, dogTrot(dog.style), this.owners, dt);
+        if (Math.hypot(state.tx - dog.x, state.tz - dog.z) < 0.7) {
+          state.mode = "sniff";
+          state.dur = 1 + Math.random() * 3;
+          state.timer = state.dur;
+        }
+        break;
+      case "sniff": {
+        moveDog(this.#map, dog, dog.x, dog.z, 0, this.owners, dt);
+        const p = 1 - state.timer / state.dur;
+        const dip = smooth01(p * 5) * (1 - smooth01((p - 0.82) / 0.18));
+        dog.head.rotation.x = -0.62 * dip + Math.sin(elapsed * 7) * 0.06 * dip;
+        dog.tail.rotation.y = Math.sin(elapsed * 2.1) * 0.3;
+        state.timer -= dt;
+        if (state.timer <= 0) {
+          if (Math.random() < 0.3) {
+            state.mode = "chase";
+            state.timer = 2.2 + Math.random() * 1.8;
+          } else {
+            this.#pickWanderPoint(state, dog);
+            state.mode = "roam";
+          }
+        }
+        break;
+      }
+      case "chase": {
+        // play burst: run at the other wander dog, break off once caught
+        const dx = dog.x - other.x;
+        const dz = dog.z - other.z;
+        const d = Math.hypot(dx, dz) || 1;
+        moveDog(
+          this.#map,
+          dog,
+          other.x + (dx / d) * 0.9,
+          other.z + (dz / d) * 0.9,
+          Math.min(3.9, dogSprint(dog.style) * 0.85),
+          this.owners,
+          dt
+        );
+        state.timer -= dt;
+        if (state.timer <= 0 || d < 1.1) {
+          this.#pickWanderPoint(state, dog);
+          state.mode = "roam";
+        }
+        break;
+      }
+    }
+  }
+
+  #pickWanderPoint(state: WanderState, dog: ParkDog) {
+    for (let i = 0; i < 12; i++) {
+      const x = 326 + Math.random() * 85;
+      const z = 2679 + Math.random() * 52;
+      if (!pointInPolygon(x, z, CORONA_DOG_PARK)) continue;
+      if (this.#fenceClearance(x, z) < 1.5) continue;
+      if (Math.hypot(x - dog.x, z - dog.z) < 3) continue;
+      state.tx = x;
+      state.tz = z;
+      return;
+    }
+    state.tx = 371;
+    state.tz = 2702;
   }
 }
