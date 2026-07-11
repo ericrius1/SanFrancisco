@@ -276,8 +276,9 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
     return m;
   };
 
-  // crown cap — slightly taller/softer than the stock flat lid
-  hairMesh(rig.head, box(0.3, 0.1, 0.3), hairMat, 0, 0.34, 0.01);
+  // crown cap — slightly taller/softer than the stock flat lid, pushed back so
+  // it meets the occipital cover (no bare scalp from behind)
+  hairMesh(rig.head, box(0.3, 0.1, 0.32), hairMat, 0, 0.34, 0.02);
   // layered bangs across the brow (asymmetric lengths so it isn't a ruler cut)
   const fringeL = hairMesh(rig.head, box(0.11, 0.13, 0.055), hairHiMat, -0.09, 0.255, -0.145);
   fringeL.rotation.z = 0.2;
@@ -301,11 +302,15 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
   // temple/side volume so the head isn't a bare cylinder behind the bangs
   hairMesh(rig.head, box(0.07, 0.26, 0.12), hairLowMat, -0.16, 0.16, 0.04);
   hairMesh(rig.head, box(0.07, 0.28, 0.12), hairMat, 0.16, 0.14, 0.04);
+  // occipital bridge — covers the back of the head so the fall joins the crown
+  // instead of floating off a bare scalp gap
+  hairMesh(rig.head, box(0.28, 0.2, 0.1), hairMat, 0, 0.24, 0.125);
+  hairMesh(rig.head, box(0.24, 0.14, 0.08), hairLowMat, 0, 0.14, 0.145);
 
-  // back fall — longer overlapping slats, pivoted at the nape for wind sway
+  // back fall — longer overlapping slats, pivoted under the occipital cover
   const slatGeo = box(0.11, 0.44, 0.05);
   const hairFall = new THREE.Group();
-  hairFall.position.set(0, 0.06, 0.14); // nape, at the back of the head block
+  hairFall.position.set(0, 0.16, 0.155); // under the nape fill, continuous with crown
   rig.head.add(hairFall);
   const slats: THREE.Mesh[] = [];
   const slatBaseZ: number[] = [];

@@ -114,7 +114,7 @@ async function main() {
 
   const chrome = await findChrome();
   const port = await freePort();
-  const profile = path.join(OUT, "chrome");
+  const profile = path.join(OUT, `chrome-${Date.now()}`);
   // HEADED: headless=new rejects requestPointerLock outright (WrongDocumentError),
   // so this probe runs a real (offscreen-positioned) window. It self-kills at exit.
   chromeProc = spawn(chrome, [
@@ -158,7 +158,16 @@ async function main() {
   const t0 = Date.now();
   let ready = false, lastErr = null;
   while (Date.now() - t0 < 150000) { try { if (await ev(c, `!!(window.__sf&&window.__sf.input&&window.__sf.minimap&&window.__sf.player)`)) { ready = true; break; } } catch (e) { lastErr = e; } await sleep(600); }
-  if (!ready && lastErr) console.log("[probe] last eval error:", String(lastErr).slice(0, 300));
+  if (!ready) {
+    if (lastErr) console.log("[probe] last eval error:", String(lastErr).slice(0, 300));
+    try {
+      const shot = await c.send("Page.captureScreenshot", { format: "png" });
+      const { writeFileSync } = await import("node:fs");
+      writeFileSync(path.join(OUT, "stall.png"), Buffer.from(shot.data, "base64"));
+      console.log("[probe] stall screenshot:", path.join(OUT, "stall.png"));
+      console.log("[probe] page url:", await ev(c, "location.href"), "readyState:", await ev(c, "document.readyState"));
+    } catch (e) { console.log("[probe] stall diag failed:", String(e).slice(0, 200)); }
+  }
   if (!ready) throw new Error("__sf never ready");
   console.log(`[probe] __sf ready in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
 

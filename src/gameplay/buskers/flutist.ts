@@ -10,8 +10,8 @@ const HAIR_BROWN = 0x8f5e30;
 /**
  * The flutist — viewer's RIGHT seat. Eyes down, lost in it.
  *
- * A deep-navy alpaca-knit figure with shaggy light-brown hair (no hat/hood),
- * round black teashades, a reddish cedar Native American flute
+ * A deep-navy alpaca-knit figure with shorter light-brown hair (no hat/hood,
+ * no ponytail), round black teashades, a reddish cedar Native American flute
  * (end-blown, carved bird block + buckskin tie) held out front-and-down, and
  * legs dangling over the edge. His part (SONG.flute) doesn't enter until bar 9:
  * through the handpan/uke intro he sits with the flute low across his lap,
@@ -104,7 +104,7 @@ export const buildFlutist: MusicianBuilder = (audio, part) => {
   rig.avatar.materials.hair.color.set(HAIR_BROWN);
   rig.avatar.torsoBlock.scale.set(1.04, 1.02, 1.04);
   for (const sleeve of rig.avatar.armBlocks) sleeve.scale.set(1.055, 1, 1.055);
-  // stock long-hair is replaced by the shaggy custom cut below
+  // stock long-hair is replaced by the shorter custom cut below
   for (const h of rig.avatar.hair.long) h.visible = false;
   rig.group.position.y = 0.11; // seat of the pants on the deck top
   const group = new THREE.Group();
@@ -207,9 +207,8 @@ export const buildFlutist: MusicianBuilder = (audio, part) => {
     temple.rotation.y = side * 0.12;
   }
 
-  /* ---- shaggy longer light-brown hair (no hat/hood): uneven crown + bangs,
-     side locks past the jaw, and a multi-slat fall down the back that sways
-     with the wind ---- */
+  /* ---- shorter light-brown cut (no hat/hood, no ponytail): uneven crown +
+     bangs, cropped sides, and a short occipital cover over the back ---- */
   const hairMat = rig.avatar.materials.hair;
   const hairLowMat = new THREE.MeshLambertMaterial({ color: 0x7c5228 });
   ownMats.push(hairLowMat);
@@ -221,30 +220,12 @@ export const buildFlutist: MusicianBuilder = (audio, part) => {
   mesh(rig.head, geo(0.1, 0.16, 0.055), hairMat, 0.02, 0.24, -0.145);
   const fringeR = mesh(rig.head, geo(0.11, 0.13, 0.06), hairMat, 0.11, 0.27, -0.138);
   fringeR.rotation.z = -0.22;
-  // side locks hanging past the jaw
-  mesh(rig.head, geo(0.07, 0.28, 0.1), hairMat, -0.16, 0.12, 0.02);
-  mesh(rig.head, geo(0.07, 0.3, 0.1), hairLowMat, 0.16, 0.1, 0.02);
-  // back fall — three overlapping slats, pivoted at the nape for wind sway
-  const hairFall = new THREE.Group();
-  hairFall.position.set(0, 0.08, 0.14);
-  rig.head.add(hairFall);
-  const slatGeo = geo(0.12, 0.36, 0.055);
-  const slats: THREE.Mesh[] = [];
-  const slatBaseZ: number[] = [];
-  const slatMats = [hairLowMat, hairMat, hairLowMat] as const;
-  for (let i = 0; i < 3; i++) {
-    const s = new THREE.Mesh(slatGeo, slatMats[i]);
-    s.position.set((i - 1) * 0.08, -0.16, 0.008 + Math.abs(i - 1) * 0.01);
-    const baseZ = (i - 1) * 0.14;
-    s.rotation.z = baseZ;
-    s.castShadow = true;
-    hairFall.add(s);
-    slats.push(s);
-    slatBaseZ.push(baseZ);
-  }
-  // one extra longer central lock for the shaggy silhouette
-  const longLock = mesh(hairFall, geo(0.1, 0.42, 0.05), hairMat, 0.02, -0.2, 0.02);
-  longLock.rotation.z = 0.06;
+  // cropped side volume (no long jaw locks / ponytail)
+  mesh(rig.head, geo(0.07, 0.16, 0.12), hairMat, -0.16, 0.2, 0.02);
+  mesh(rig.head, geo(0.07, 0.18, 0.12), hairLowMat, 0.16, 0.18, 0.02);
+  // short back cover — sits on the occiput, no dangling fall
+  mesh(rig.head, geo(0.26, 0.14, 0.1), hairMat, 0, 0.24, 0.125);
+  mesh(rig.head, geo(0.22, 0.1, 0.08), hairLowMat, 0, 0.16, 0.14);
 
   /* ---- Native American cedar flute (parented to the head → stays at lips).
      Mouthpiece at the group origin; the reddish-wood body runs along local -Z
@@ -629,15 +610,8 @@ export const buildFlutist: MusicianBuilder = (audio, part) => {
     setRigClasp(rig, "L", clasp);
     setRigClasp(rig, "R", clasp);
 
-    // ---- hair: shaggy fall sways with the wind ----
-    const hairAmp = 0.04 + wind * 0.22;
-    hairFall.rotation.x = 0.04 + Math.sin(t * 1.4 + 0.4) * hairAmp * 0.45;
-    hairFall.rotation.z = Math.sin(t * 1.8 + 1.0) * hairAmp;
-    hairFall.rotation.y = Math.sin(t * 1.1) * hairAmp * 0.35;
-    for (let i = 0; i < slats.length; i++) {
-      slats[i].rotation.z = slatBaseZ[i] + Math.sin(t * 2.1 + i * 1.2) * hairAmp * 0.45;
-    }
-    longLock.rotation.z = 0.06 + Math.sin(t * 1.7 + 2.2) * hairAmp * 0.5;
+    // ---- hair: short fringe drifts a little in the wind ----
+    const hairAmp = 0.03 + wind * 0.14;
     fringeL.rotation.z = 0.18 + Math.sin(t * 2.4 + 0.5) * hairAmp * 0.25;
     fringeR.rotation.z = -0.22 + Math.sin(t * 2.2 + 1.8) * hairAmp * 0.25;
   };

@@ -189,6 +189,12 @@ export const buildUkulelist: MusicianBuilder = (audio, part): Musician => {
   box(rig.torso, fleeceRust, 0.026, 0.15, 0.035, 0, 0.337, -0.151); // quarter zip / placket
   box(rig.torso, fleeceRust, 0.09, 0.022, 0.035, -0.135, 0.263, -0.151); // chest-pocket tab
 
+  // stock short hair is only a flat top lid — add a little length over the
+  // back of the head so it doesn't end in a hard scalp cliff from behind
+  const hairMat = rig.avatar.materials.hair;
+  box(rig.head, hairMat, 0.27, 0.12, 0.1, 0, 0.26, 0.12);
+  box(rig.head, hairMat, 0.24, 0.09, 0.08, 0, 0.19, 0.14);
+
   // full ginger beard — chunky boxes framing jaw and chin over the face front
   // (face is -Z; head block is a 0.26 cube centred at head-local y 0.2)
   const beardMat = mat(GINGER_BEARD);
