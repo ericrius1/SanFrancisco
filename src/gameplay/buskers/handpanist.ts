@@ -8,7 +8,7 @@ import type { MusicianBuilder, NoteEvent, TrioClock } from "./types";
 /**
  * The handpan girl — centre seat, leader of the trio. Long dirty-blonde hair
  * with bangs and face-framing front locks, a soft feminine silhouette (narrow
- * tapered arms, slight bust), charcoal cat-eye sunglasses, bare arms, and the
+ * tapered arms, slight bust), oversized rounded black fashion sunglasses, bare arms, and the
  * classic bronze UFO lens resting on her lap over the dangling legs. She opens
  * the song and counts the loop back in with four clear nods.
  *
@@ -99,8 +99,8 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
   rig.avatar.headBlock.position.z = -0.02;
 
   // The stock shades are a single rectangular visor. Hide only this rig's bar
-  // (its material is per-rig), then layer inset smoke lenses over angular black
-  // silhouettes to make oversized cat-eye frames with no metallic/gold rim.
+  // (its material is per-rig), then build oversized rounded fashion shades —
+  // soft ovals with a gentle upsweep, ink-black, girl-like and stylish.
   const stockShades = rig.head.children.find(
     (child) => child instanceof THREE.Mesh && child.material === rig.avatar.materials.visor
   );
@@ -114,6 +114,25 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
   const hairHiMat = new THREE.MeshLambertMaterial({ color: 0xead8ad });
   ownedMats.push(frameMat, lensMat, lipMat, hairLowMat, hairHiMat);
 
+  // Rounded oval silhouette via a sampled ellipse with a soft outer upsweep
+  // (oversized fashion / soft cat-eye — not thin rectangles).
+  const ovalPoints = (rx: number, ry: number, cx: number, cy: number, upsweep: number) => {
+    const pts: [number, number][] = [];
+    const n = 20;
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2; // 0 = +X (outer)
+      let x = cx + Math.cos(a) * rx;
+      let y = cy + Math.sin(a) * ry;
+      // lift the outer-upper quadrant for a feminine wing
+      if (a > -0.15 && a < 1.35) {
+        const t = Math.sin(((a + 0.15) / 1.5) * Math.PI);
+        y += upsweep * t * t;
+        x += upsweep * 0.35 * t;
+      }
+      pts.push([x, y]);
+    }
+    return pts;
+  };
   const polygonGeo = (points: readonly (readonly [number, number])[]) => {
     const shape = new THREE.Shape();
     shape.moveTo(points[0][0], points[0][1]);
@@ -125,42 +144,33 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
   };
   const mirror = (points: readonly (readonly [number, number])[]) =>
     points.map(([x, y]) => [-x, y] as const).reverse();
-  const framePoints = [
-    [0.014, 0.263],
-    [0.134, 0.28],
-    [0.122, 0.2],
-    [0.016, 0.207]
-  ] as const;
-  const lensPoints = [
-    [0.023, 0.255],
-    [0.121, 0.268],
-    [0.111, 0.212],
-    [0.024, 0.216]
-  ] as const;
+
+  // Large soft ovals — ~2× the old thin bar's height, clearly oversized
+  const framePts = ovalPoints(0.078, 0.07, 0.088, 0.218, 0.018);
+  const lensPts = ovalPoints(0.066, 0.058, 0.088, 0.218, 0.014);
   for (const side of [1, -1] as const) {
-    const frame = new THREE.Mesh(polygonGeo(side === 1 ? framePoints : mirror(framePoints)), frameMat);
+    const frame = new THREE.Mesh(polygonGeo(side === 1 ? framePts : mirror(framePts)), frameMat);
     frame.position.z = -0.154;
     rig.head.add(frame);
-    const lens = new THREE.Mesh(polygonGeo(side === 1 ? lensPoints : mirror(lensPoints)), lensMat);
+    const lens = new THREE.Mesh(polygonGeo(side === 1 ? lensPts : mirror(lensPts)), lensMat);
     lens.position.z = -0.157;
     rig.head.add(lens);
   }
-  const bridgeGeo = new THREE.BoxGeometry(0.038, 0.012, 0.012);
-  const wingGeo = new THREE.BoxGeometry(0.026, 0.014, 0.02);
-  ownedGeos.push(bridgeGeo, wingGeo);
+  const bridgeGeo = new THREE.BoxGeometry(0.032, 0.014, 0.014);
+  const templeGeo = new THREE.BoxGeometry(0.018, 0.016, 0.1);
+  ownedGeos.push(bridgeGeo, templeGeo);
   const bridge = new THREE.Mesh(bridgeGeo, frameMat);
-  bridge.position.set(0, 0.235, -0.155);
+  bridge.position.set(0, 0.222, -0.155);
   rig.head.add(bridge);
   for (const side of [1, -1] as const) {
-    const wing = new THREE.Mesh(wingGeo, frameMat);
-    wing.position.set(side * 0.133, 0.258, -0.137);
-    wing.rotation.z = side * 0.18;
-    rig.head.add(wing);
+    const temple = new THREE.Mesh(templeGeo, frameMat);
+    temple.position.set(side * 0.155, 0.23, -0.09);
+    temple.rotation.y = side * 0.14;
+    temple.rotation.z = side * 0.08;
+    rig.head.add(temple);
   }
 
-  // ---- jewelled rim: tiny rhinestones seated on the TOP EDGE of each cat-eye
-  // frame (not floating mid-lens). MeshStandard gives sharp speculars; a faint
-  // emissive keeps them sparkling even in shade.
+  // ---- jewelled rim: rhinestones along the TOP arc of each oversized oval
   const gemMat = new THREE.MeshStandardMaterial({
     color: 0xffffff,
     metalness: 0.5,
@@ -170,26 +180,20 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
   });
   ownedMats.push(gemMat);
   const gemGeo = new THREE.OctahedronGeometry(0.0075, 0);
-  const tipGemGeo = new THREE.OctahedronGeometry(0.01, 0);
+  const tipGemGeo = new THREE.OctahedronGeometry(0.011, 0);
   ownedGeos.push(gemGeo, tipGemGeo);
-  // y sits just above the frame's top edge so gems read as rim studs
-  const studs: readonly (readonly [number, number, number])[] = [
-    [0.038, 0.272, 0.02],
-    [0.066, 0.278, 0.35],
-    [0.096, 0.284, -0.25],
-    [0.122, 0.289, 0.15]
-  ];
+  // sample the upper rim (outer half) so gems sit on the frame, not the lens
+  const studAngles = [-0.15, 0.25, 0.65, 1.05] as const;
   for (const side of [1, -1] as const) {
-    for (const [x, y, spin] of studs) {
-      const gem = new THREE.Mesh(gemGeo, gemMat);
-      gem.position.set(side * x, y, -0.151); // proud of the frame face (-0.154)
-      gem.rotation.set(spin, side * 0.5, side * 0.4);
+    for (const [i, a] of studAngles.entries()) {
+      const t = Math.sin(((a + 0.15) / 1.5) * Math.PI);
+      const x = 0.088 + Math.cos(a) * 0.078 + 0.018 * 0.35 * t;
+      const y = 0.218 + Math.sin(a) * 0.07 + 0.018 * t * t + 0.006;
+      const gem = new THREE.Mesh(i === studAngles.length - 1 ? tipGemGeo : gemGeo, gemMat);
+      gem.position.set(side * x, y, -0.151);
+      gem.rotation.set(0.3 * i, side * 0.5, side * 0.35);
       rig.head.add(gem);
     }
-    const tip = new THREE.Mesh(tipGemGeo, gemMat);
-    tip.position.set(side * 0.138, 0.292, -0.15);
-    tip.rotation.set(0.2, side * 0.6, side * 0.5);
-    rig.head.add(tip);
   }
 
   // A tiny two-stroke smile helps the tapered face read at gameplay distance
@@ -281,11 +285,11 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
   // it meets the occipital cover (no bare scalp from behind)
   hairMesh(rig.head, box(0.3, 0.1, 0.32), hairMat, 0, 0.34, 0.02);
   // thin bang wisps above the frames — not slabs over the lenses
-  const fringeL = hairMesh(rig.head, box(0.032, 0.055, 0.038), hairHiMat, -0.075, 0.318, -0.148);
+  const fringeL = hairMesh(rig.head, box(0.032, 0.05, 0.038), hairHiMat, -0.075, 0.335, -0.148);
   fringeL.rotation.z = 0.18;
-  const fringeC = hairMesh(rig.head, box(0.028, 0.05, 0.036), hairMat, 0.015, 0.322, -0.15);
+  const fringeC = hairMesh(rig.head, box(0.028, 0.045, 0.036), hairMat, 0.015, 0.338, -0.15);
   fringeC.rotation.z = -0.06;
-  const fringeR = hairMesh(rig.head, box(0.032, 0.052, 0.038), hairHiMat, 0.085, 0.32, -0.147);
+  const fringeR = hairMesh(rig.head, box(0.032, 0.048, 0.038), hairHiMat, 0.085, 0.336, -0.147);
   fringeR.rotation.z = -0.2;
   // face-framing locks kept outboard of the cat-eyes so shades stay clear
   const sideFrontL = hairMesh(rig.head, box(0.055, 0.36, 0.07), hairMat, -0.175, 0.08, -0.04);
@@ -598,6 +602,7 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
 
   // ---- audio: one self-cleaning struck-handpan voice per note
   let noiseBuf: AudioBuffer | null = null; // shared mallet-noise source, lazy
+  const live = new Set<() => void>();
   const schedule = (events: NoteEvent[], atTime: (beat: number) => number) => {
     const ctx = audio.ctx;
     const out = audio.out;
@@ -639,20 +644,19 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
         gains.push(pg);
         oscs.push(osc);
       }
-      oscs[0].onended = () => {
-        for (const o of oscs) o.disconnect();
-        for (const g of gains) g.disconnect();
-      };
 
+      let noise: AudioBufferSourceNode | null = null;
+      let bp: BiquadFilterNode | null = null;
+      let tg: GainNode | null = null;
       if (e.vel > 0.6) {
         // soft mallet "tak": 25 ms bandpass noise blip
-        const noise = ctx.createBufferSource();
+        noise = ctx.createBufferSource();
         noise.buffer = noiseBuf;
-        const bp = ctx.createBiquadFilter();
+        bp = ctx.createBiquadFilter();
         bp.type = "bandpass";
         bp.frequency.value = 900;
         bp.Q.value = 4;
-        const tg = ctx.createGain();
+        tg = ctx.createGain();
         tg.gain.setValueAtTime(0.05 * e.vel, t0);
         tg.gain.exponentialRampToValueAtTime(4e-4, t0 + 0.025);
         tg.gain.linearRampToValueAtTime(0, t0 + 0.032);
@@ -661,12 +665,33 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
         tg.connect(out);
         noise.start(start);
         noise.stop(t0 + 0.06);
-        noise.onended = () => {
-          noise.disconnect();
-          bp.disconnect();
-          tg.disconnect();
-        };
       }
+
+      const cleanup = () => {
+        live.delete(cleanup);
+        oscs[0].onended = null;
+        for (const o of oscs) {
+          try {
+            o.stop();
+          } catch {
+            /* already stopped */
+          }
+          o.disconnect();
+        }
+        for (const g of gains) g.disconnect();
+        if (noise) {
+          try {
+            noise.stop();
+          } catch {
+            /* already stopped */
+          }
+          noise.disconnect();
+          bp?.disconnect();
+          tg?.disconnect();
+        }
+      };
+      live.add(cleanup);
+      oscs[0].onended = cleanup;
     }
   };
 
@@ -678,7 +703,13 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
       bindPart(next);
       prevCurrent = null;
     },
+    cutAudio() {
+      for (const cleanup of [...live]) cleanup();
+      live.clear();
+    },
     dispose() {
+      for (const cleanup of [...live]) cleanup();
+      live.clear();
       group.parent?.remove(group);
       for (const g of ownedGeos) g.dispose(); // face + styling + pan + strands —
       for (const m of ownedMats) m.dispose(); // never the rig's shared cache

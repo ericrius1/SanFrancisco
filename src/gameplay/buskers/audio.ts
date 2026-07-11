@@ -52,7 +52,18 @@ export class TrioAudio {
     this.#holdSilent = on;
     const ctx = this.#ctx;
     const master = this.#master;
-    if (ctx && master) setParam(master.gain, on ? 0 : effectsAudioLevel(), ctx.currentTime);
+    if (!ctx || !master) return;
+    const t = ctx.currentTime;
+    // Immediate cut — setTargetAtTime alone left audible tails through the Q gap.
+    master.gain.cancelScheduledValues(t);
+    master.gain.setValueAtTime(on ? 0 : effectsAudioLevel(), t);
+    // Gate the wet bus too so the convolver can't spit a leftover hall into the
+    // unmute that starts the next song.
+    const reverbIn = this.#reverbIn;
+    if (reverbIn) {
+      reverbIn.gain.cancelScheduledValues(t);
+      reverbIn.gain.setValueAtTime(on ? 0 : 1, t);
+    }
   }
 
   constructor() {
@@ -161,7 +172,11 @@ export class TrioAudio {
     if (ctx.state !== "running") return;
 
     const t = ctx.currentTime;
-    setParam(master.gain, this.#holdSilent ? 0 : effectsAudioLevel(), t);
+    if (this.#holdSilent) {
+      master.gain.setValueAtTime(0, t);
+    } else {
+      setParam(master.gain, effectsAudioLevel(), t);
+    }
 
     camera.getWorldPosition(_pos);
     camera.getWorldDirection(_fwd);

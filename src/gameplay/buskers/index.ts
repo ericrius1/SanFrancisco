@@ -69,6 +69,8 @@ export class BuskerTrio {
   #phaseTime = 0;
   #elapsed = 0;
   #anchor = 0; // AudioContext time that maps to song beat 0
+  /** Wall-clock silence before the next downbeat (Q cycle / film cue). */
+  #silenceRemaining = 0;
   #songIdx = 0;
   #song = SONGS[0];
   #songSeconds = SONGS[0].beats * SEC_PER_BEAT;
@@ -124,8 +126,8 @@ export class BuskerTrio {
 
   /**
    * Q: advance to the next song in the songbook and cue it up —
-   * `leadInSeconds` of silent count-in before the downbeat. Mid-song tails
-   * are muted so the new tune starts clean. Returns the new song's name.
+   * `leadInSeconds` of hard silence before the downbeat. Mid-song tails are
+   * cut so the new tune starts clean. Returns the new song's name.
    */
   cycleSong(leadInSeconds = 2): string {
     this.#songIdx = (this.#songIdx + 1) % SONGS.length;
@@ -137,14 +139,22 @@ export class BuskerTrio {
   }
 
   /**
-   * Film cue: jump to the silent count-in, `leadInSeconds` before the first
-   * note. Does not move the player or the perch — transport only. Mutes any
-   * mid-song tails until playing resumes.
+   * Film cue: `leadInSeconds` of silence, then the downbeat. Does not move
+   * the player or the perch — transport only. Cuts any mid-song tails so the
+   * gap is actually silent (not just a muted count-in with ringing voices).
    */
   cueShow(leadInSeconds = 2) {
     this.#audio.holdSilent(true);
-    this.#enterPhase("countin");
-    this.#phaseTime = Math.max(0, COUNTIN_SECONDS - Math.max(0, leadInSeconds));
+    for (const musician of this.#musicians.values()) musician.cutAudio();
+    const gap = Math.max(0, leadInSeconds);
+    if (gap <= 0) {
+      this.#silenceRemaining = 0;
+      this.#enterPhase("playing");
+      return;
+    }
+    // Rest pose during the gap so it reads as a pause, not a rushed count-in.
+    this.#silenceRemaining = gap;
+    this.#enterPhase("rest");
   }
 
   /** Debug/probe helper: jump the transport to an arbitrary song beat. */
@@ -184,7 +194,13 @@ export class BuskerTrio {
       if (Math.abs(audioPhase - this.#phaseTime) > 0.25) this.#anchor = ctx.currentTime - this.#phaseTime;
       else this.#phaseTime = audioPhase;
     }
-    if (this.#phase === "playing" && this.#phaseTime >= this.#songSeconds) this.#enterPhase("rest");
+    if (this.#silenceRemaining > 0) {
+      this.#silenceRemaining -= dt;
+      if (this.#silenceRemaining <= 0) {
+        this.#silenceRemaining = 0;
+        this.#enterPhase("playing");
+      }
+    } else if (this.#phase === "playing" && this.#phaseTime >= this.#songSeconds) this.#enterPhase("rest");
     else if (this.#phase === "rest" && this.#phaseTime >= REST_SECONDS) this.#enterPhase("countin");
     else if (this.#phase === "countin" && this.#phaseTime >= COUNTIN_SECONDS) this.#enterPhase("playing");
 

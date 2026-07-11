@@ -471,7 +471,24 @@ export const buildFlutist: MusicianBuilder = (audio, part) => {
       const cleanup = () => {
         activeVoices.delete(cleanup);
         oscFund.onended = null;
-        for (const o of oscs) o.disconnect();
+        for (const o of oscs) {
+          try {
+            o.stop();
+          } catch {
+            /* already stopped */
+          }
+          o.disconnect();
+        }
+        try {
+          lfo.stop();
+        } catch {
+          /* already stopped */
+        }
+        try {
+          noise.stop();
+        } catch {
+          /* already stopped */
+        }
         for (const g of partGains) g.disconnect();
         body.disconnect();
         bodyG.disconnect();
@@ -624,6 +641,10 @@ export const buildFlutist: MusicianBuilder = (audio, part) => {
     setPart(next) {
       cursor = new NoteCursor(next);
       prevNote = null;
+    },
+    cutAudio() {
+      for (const stop of Array.from(activeVoices)) stop();
+      activeVoices.clear();
     },
     dispose() {
       for (const stop of Array.from(activeVoices)) stop();

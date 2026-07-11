@@ -101,6 +101,11 @@ export interface Musician {
    * choreography maps) so the next pass animates the new score.
    */
   setPart(part: NoteEvent[]): void;
+  /**
+   * Hard-stop any ringing or lookahead-scheduled voices. Used when Q cycles
+   * the songbook so mid-song tails can't bleed into the silent gap.
+   */
+  cutAudio(): void;
   /** Remove/disconnect everything this musician created. Do NOT dispose
    * geometries from player/rig.ts's shared cache. */
   dispose(): void;

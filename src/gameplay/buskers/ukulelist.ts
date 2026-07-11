@@ -117,6 +117,16 @@ function pluck(
   o2.stop(end);
   const cleanup = () => {
     live.delete(cleanup);
+    try {
+      o1.stop();
+    } catch {
+      /* already stopped */
+    }
+    try {
+      o2.stop();
+    } catch {
+      /* already stopped */
+    }
     o1.disconnect();
     o2.disconnect();
     lp.disconnect();
@@ -421,6 +431,10 @@ export const buildUkulelist: MusicianBuilder = (audio, part): Musician => {
           pluck(ctx, out, ev.midis[i], base + i * stagger, peak, decay, live);
         }
       }
+    },
+    cutAudio() {
+      for (const cleanup of [...live]) cleanup();
+      live.clear();
     },
     dispose() {
       for (const cleanup of [...live]) cleanup();

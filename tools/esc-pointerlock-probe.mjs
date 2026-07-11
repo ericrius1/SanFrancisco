@@ -190,9 +190,20 @@ async function main() {
   console.log("[probe] game entered");
   await sleep(1500);
 
+  // Headed CDP lock is focus-sensitive — front + retry a few times before giving up.
+  const lockViaClick = async () => {
+    let st = { el: false, locked: false };
+    for (let i = 0; i < 5 && !st.el; i++) {
+      await c.send("Page.bringToFront");
+      await click(c, W / 2, H / 2);
+      st = await waitLock(c, true, 2000);
+      if (!st.el) { await pressEscape(c); await sleep(400); }
+    }
+    return st;
+  };
+
   // ---- control: trusted click locks the pointer (proves lock works headless)
-  await click(c, W / 2, H / 2);
-  let s = await waitLock(c, true);
+  let s = await lockViaClick();
   push("control-click-locks", s.el && s.locked, `after canvas click: pointerLockElement=${s.el} input.locked=${s.locked}`);
   if (!s.el) {
     const diag = await evGesture(c, `(async()=>{try{await (document.querySelector('canvas')||document.body).requestPointerLock();return "granted:"+!!document.pointerLockElement;}catch(e){return "rejected:"+e.name+":"+e.message;}})()`);
@@ -206,19 +217,21 @@ async function main() {
     if (!s.el) return finish();
   }
 
-  // ---- A. late-grant race: exit + request (grant in flight) + releaseLock →
-  // must settle UNLOCKED. First a control: exit+request alone re-locks.
-  console.log("[probe] test A: late-grant race");
+  // ---- A. ISOLATION: bare exitPointerLock() then sample. Proves whether the app
+  // re-locks on its own (which would explain "Esc sometimes doesn't unlock").
+  console.log("[probe] test A: bare exitPointerLock isolation");
   try {
-    // real Esc first to clear any grant, re-lock via trusted click, then race.
     await pressEscape(c); await sleep(400);
     await click(c, W / 2, H / 2); await waitLock(c, true);
-    // requestLock (grant in flight) immediately cancelled by releaseLock.
-    await ev(c, `(()=>{window.__sf.input.requestLock();window.__sf.input.releaseLock();return true;})()`);
-    await sleep(1500); // let any stale grant land and be dropped
+    // install a pointerlockchange tracer to see every transition
+    await ev(c, `(()=>{window.__lc=[];document.addEventListener('pointerlockchange',()=>window.__lc.push(!!document.pointerLockElement),{once:false});return true;})()`);
+    await ev(c, `(()=>{document.exitPointerLock();return true;})()`);
+    const samples = [];
+    for (const ms of [0, 150, 400, 900, 1600]) { await sleep(ms === 0 ? 30 : ms - (samples.length ? [0,150,400,900,1600][samples.length-1] : 0)); samples.push((await ev(c, lockState)).el); }
+    const trace = await ev(c, `window.__lc`);
     s = await ev(c, lockState);
-    push("A-late-grant-dropped", !s.el && !s.locked, `request+release settles unlocked: el=${s.el} locked=${s.locked}`);
-  } catch (e) { push("A-late-grant-dropped", false, `errored: ${String(e).slice(0, 120)}`); }
+    push("A-bare-exit-stays-unlocked", !s.el && !s.locked, `bare exitPointerLock: final el=${s.el} locked=${s.locked}; samples=[${samples}]; lockchange-trace=[${trace}]`);
+  } catch (e) { push("A-bare-exit-stays-unlocked", false, `errored: ${String(e).slice(0, 120)}`); }
 
   // ---- B. stale free cursor + Escape must stay unlocked (no heal-and-relock)
   console.log("[probe] test B: stale free cursor + Esc");
@@ -236,17 +249,20 @@ async function main() {
   // ---- C. overlay open + locked: one Esc closes the overlay AND unlocks
   console.log("[probe] test C: overlay + Esc unlocks");
   try {
-    await click(c, W / 2, H / 2); // re-lock (trusted gesture)
-    s = await waitLock(c, true);
+    s = await lockViaClick(); // re-lock (trusted gesture, retried)
     if (!s.el) { push("C-esc-overlay-unlocks", false, "could not re-lock for overlay test"); }
     else {
+      await ev(c, `(()=>{window.__lc2=[];window.__lch=()=>window.__lc2.push((document.pointerLockElement?'L':'U'));document.addEventListener('pointerlockchange',window.__lch);return true;})()`);
       await ev(c, `(()=>{window.__sf.minimap.setExpanded(true);return true;})()`);
+      const afterOpen = await ev(c, lockState);
       await sleep(200);
       await pressEscape(c);
       await sleep(1200);
       const exp = await ev(c, `window.__sf.minimap.expanded`);
+      const trace = await ev(c, `window.__lc2`);
+      await ev(c, `document.removeEventListener('pointerlockchange',window.__lch)`);
       s = await ev(c, lockState);
-      push("C-esc-overlay-unlocks", !exp && !s.el && !s.locked, `after one Esc: minimap.expanded=${exp} el=${s.el} locked=${s.locked}`);
+      push("C-esc-overlay-unlocks", !exp && !s.el && !s.locked, `open→el=${afterOpen.el}; after Esc: expanded=${exp} el=${s.el} locked=${s.locked}; trace=[${trace}]`);
     }
   } catch (e) { push("C-esc-overlay-unlocks", false, `errored: ${String(e).slice(0, 120)}`); }
 
