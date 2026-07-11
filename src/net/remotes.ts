@@ -134,6 +134,7 @@ export class RemotePlayers {
   #scene: THREE.Scene;
   #protos: Partial<Record<PlayerMode, THREE.Group>> = {};
   #passengerSeat = new THREE.Vector3(0.42, 0.55, 0.66); // driver seat mirrored across x
+  #tagsVisible = true;
 
   constructor(scene: THREE.Scene) {
     this.#scene = scene;
@@ -251,11 +252,19 @@ export class RemotePlayers {
     if (a) a.tag.material.color.set(on ? 0x8cffa4 : 0xffffff);
   }
 
+  /** Immersive mode: hide every name tag (world sprites, not HUD). */
+  setTagsVisible(on: boolean) {
+    if (this.#tagsVisible === on) return;
+    this.#tagsVisible = on;
+    for (const a of this.avatars.values()) a.tag.visible = on;
+  }
+
   add(info: RemoteInfo) {
     if (this.avatars.has(info.id)) return;
     const root = new THREE.Group();
     root.visible = false; // until the first snapshot places it
     const tag = makeTag(info.name, info.hue);
+    tag.visible = this.#tagsVisible;
     tag.position.y = TAG_Y.walk;
     root.add(tag);
     this.#scene.add(root);
@@ -290,6 +299,7 @@ export class RemotePlayers {
     a.tag.material.map?.dispose();
     a.tag.material.dispose();
     a.tag = makeTag(info.name, info.hue);
+    a.tag.visible = this.#tagsVisible;
     a.tag.position.y = y;
     a.root.add(a.tag);
   }

@@ -1,8 +1,9 @@
 import type { BuskerId, NoteEvent } from "./types";
 
 /**
- * The trio's songbook — two authored songs sharing one harmonic vocabulary,
- * cycled with Q (BuskerTrio.cycleSong).
+ * The trio's songbook — authored songs sharing one harmonic vocabulary,
+ * cycled with Q (BuskerTrio.cycleSong). Live playlist is Fog Rolls Home only;
+ * Corona Wind stays authored below but is not in SONGS for now.
  *
  * 1. "Fog Rolls Home" — a shorter, brighter folk tune with real verse/chorus
  *    form. The ukulele opens jamming on driving eighths, the handpan falls in
@@ -22,8 +23,8 @@ import type { BuskerId, NoteEvent } from "./types";
  *      bars 25-28   reprise verse — everyone driving, flute ends on a held E5
  *      bar   29     landing — one long D minor, rung out together
  *
- * 2. "Corona Wind" — warm folk riff in D minor. Handpan states the pulse
- *    alone, ukulele joins, flute carries the tune. Cycle Dm | Bb | F | C.
+ * 2. "Corona Wind" (disabled) — warm folk riff in D minor. Handpan states the
+ *    pulse alone, ukulele joins, flute carries the tune. Cycle Dm | Bb | F | C.
  *
  *      bars  1-4    handpan alone — sparse ostinato states the pulse
  *      bars  5-8    ukulele joins — calypso strum carries the harmony
@@ -424,9 +425,11 @@ const FOG_ROLLS_HOME: TrioSong = {
 
 /* ----------------------------------------------------------------- songs */
 
-export const SONGS: readonly TrioSong[] = [FOG_ROLLS_HOME, CORONA_WIND];
+// Corona Wind stays authored above; drop it back into this array to re-enable.
+export const SONGS: readonly TrioSong[] = [FOG_ROLLS_HOME];
 
-// The transport relies on each part being onset-sorted.
-for (const song of SONGS) {
+// The transport relies on each part being onset-sorted. Sort Corona Wind too
+// so re-enabling it is a one-line change.
+for (const song of [FOG_ROLLS_HOME, CORONA_WIND]) {
   for (const part of Object.values(song.parts)) part.sort((a, b) => a.beat - b.beat);
 }

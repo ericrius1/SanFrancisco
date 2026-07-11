@@ -11,8 +11,8 @@
 //   SF_PROBE_URL  existing vite (default http://127.0.0.1:5191)
 //   SF_TIME       time of day hours (default 15.0)
 //   SF_VIEWS      comma list of view names (default all)
-//   SF_SONG       songbook index (default 0 = Corona Wind; 1 = Fog Rolls
-//                 Home — cycles via cycleSong() and uses that song's views)
+//   SF_SONG       songbook index (default 0 = Fog Rolls Home; Corona Wind
+//                 is authored but not in the live songbook)
 
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";

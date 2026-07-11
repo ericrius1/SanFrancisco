@@ -360,7 +360,9 @@ export class Sky {
     scene.fogNode = this.#fogNode
     this.applyFogParams()
 
-    this.followRealTime()
+    // Prefer a persisted fast cycle over the wall clock; otherwise mirror SF time.
+    if (this.cycleEnabled) this.realTime = false
+    else this.followRealTime()
   }
 
   /**

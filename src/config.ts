@@ -57,6 +57,12 @@ export const RENDER_TUNING = tunables("render", {
   colliderDebug: { v: false, label: "collider x-ray" }
 })
 
+/** Free-orbit camera (C mode). Bound under advanced → camera in the "/" panel. */
+export const CAMERA_TUNING = tunables("camera", {
+  // O in camera mode: smooth 180° azimuth flip around the current look target.
+  orbitFlipSec: { v: 3, min: 0.4, max: 12, step: 0.1, label: "180° orbit (s)" }
+})
+
 /** The committed heightfield is 15.1 × 13.9 km (20.5 km corner-to-corner).
  * A 21 km radius therefore covers the complete sandbox from even the most
  * distant corner while staying below the camera's 24 km far plane. */

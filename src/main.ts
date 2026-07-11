@@ -2,7 +2,7 @@ import * as THREE from "three/webgpu";
 import { Inspector } from "three/addons/inspector/Inspector.js";
 import Stats from "three/addons/libs/stats.module.js";
 import CameraControls from "camera-controls";
-import { CONFIG, FLOWER_TUNING, FOLIAGE_TUNING, RENDER_MODE, RENDER_TUNING, START, START_DEFAULTS, WORLD_TUNING } from "./config";
+import { CAMERA_TUNING, CONFIG, FLOWER_TUNING, FOLIAGE_TUNING, RENDER_MODE, RENDER_TUNING, START, START_DEFAULTS, WORLD_TUNING } from "./config";
 import { loadPlayerState, resetAllTweaks, savePlayerState } from "./core/persist";
 import { Input } from "./core/input";
 import { tracer } from "./core/hitchTracer";
@@ -604,6 +604,8 @@ async function boot() {
   orbit.smoothTime = 0.12;
   orbit.draggingSmoothTime = 0.08;
   orbit.maxDistance = 1200;
+  // O in camera mode: smoothstepped 180° azimuth flip around the current target
+  let orbitFlip: { t: number; duration: number; startAz: number; delta: number } | null = null;
 
   const setCameraMode = (on: boolean) => {
     cameraMode = on;
@@ -621,8 +623,9 @@ async function boot() {
         player.position.z,
         false
       );
-      hud.message("Camera mode — drag to orbit, C to return", 3);
+      hud.message("Camera mode — drag to orbit, O for 180°, C to return", 3);
     } else {
+      orbitFlip = null;
       hud.message("");
       input.requestLock();
     }
@@ -2125,6 +2128,8 @@ async function boot() {
       if (immersive) {
         immersive = false;
         hud.setHidden(false);
+        remotes.setTagsVisible(true);
+        refreshPauseToggle();
       }
       setDebugUI(!debugOn);
     }
@@ -2132,6 +2137,7 @@ async function boot() {
     if (input.pressed("KeyI")) {
       immersive = !immersive;
       hud.setHidden(immersive);
+      remotes.setTagsVisible(!immersive);
       if (immersive) {
         debugWasOn = debugOn;
         setDebugUI(false);
@@ -2409,6 +2415,11 @@ async function boot() {
       hud.message("Tweaks back to source defaults", 3);
     }
     if (input.pressed("KeyC")) setCameraMode(!cameraMode);
+    // O: 180° orbit flip around the current look target (camera mode only)
+    if (cameraMode && input.pressed("KeyO")) {
+      const duration = Math.max(0.05, CAMERA_TUNING.values.orbitFlipSec);
+      orbitFlip = { t: 0, duration, startAz: orbit.azimuthAngle, delta: Math.PI };
+    }
     // V: voice chat mic on/off (same as the HUD mic button)
     if (input.pressed("KeyV")) toggleMic();
     // T: focus the text chat field (releases pointer lock so you can type)
@@ -2520,7 +2531,15 @@ async function boot() {
     // the view holds still while the light sweeps. Uses holding() so it still
     // works in camera-orbit mode (where input is otherwise suspended).
     const scrubHeld = input.holding("KeyZ");
-    if (cameraMode) orbit.enabled = !scrubHeld; // don't let orbit eat the drag/wheel
+    const flipping = orbitFlip !== null;
+    if (cameraMode) orbit.enabled = !scrubHeld && !flipping; // don't let orbit eat the drag/wheel
+    if (orbitFlip) {
+      orbitFlip.t += frameDt;
+      const u = Math.min(1, orbitFlip.t / orbitFlip.duration);
+      const eased = u * u * (3 - 2 * u); // smoothstep — zero angular velocity at ends
+      orbit.azimuthAngle = orbitFlip.startAz + orbitFlip.delta * eased;
+      if (u >= 1) orbitFlip = null;
+    }
     if (scrubHeld && !timeScrub) timeScrub = { target: sky.timeOfDay, wasCycling: sky.cycleEnabled };
     if (timeScrub) {
       if (scrubHeld) {

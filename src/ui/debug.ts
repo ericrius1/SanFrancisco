@@ -2,6 +2,7 @@ import { Pane } from "tweakpane";
 import type { BladeApi, FolderApi } from "tweakpane";
 import type * as THREE from "three/webgpu";
 import {
+  CAMERA_TUNING,
   CONFIG,
   FLOWER_TUNING,
   FOLIAGE_TUNING,
@@ -23,7 +24,7 @@ import { TEE_BEACON_TUNING } from "../gameplay/golf/tuning";
 import { auditSceneTransparency } from "../render/transparency";
 import type { Fireworks } from "../fx/fireworks";
 import type { TileStreamer } from "../world/tiles";
-import { withTweakBindingEventsSuppressed } from "../core/persist";
+import { withTweakBindingEventsSuppressed, saveTweak } from "../core/persist";
 import { BUSKER_FIREFLY_TUNING } from "../gameplay/buskers/fireflies";
 
 type WireframeMaterial = THREE.Material & { wireframe: boolean };
@@ -169,6 +170,18 @@ export class DebugPanel {
     }
   }
 
+  /** Push lightingView → checkbox/slider chrome without re-entering onChange. */
+  #refreshLightingBindings() {
+    this.#syncingPane = true;
+    try {
+      withTweakBindingEventsSuppressed(() => {
+        for (const binding of this.#lightingBindings) binding.refresh();
+      });
+    } finally {
+      this.#syncingPane = false;
+    }
+  }
+
   /** Keep the pane in sync with the running day/night cycle (call per frame; throttled). */
   refresh() {
     if (RENDER_TUNING.values.wireframe) this.#applyWireframe(true);
@@ -264,6 +277,17 @@ export class DebugPanel {
   }
 
   #build() {
+    // Tweakpane checkboxes put an SVG checkmark mark over a zero-size <input>.
+    // Clicks on that SVG do not activate the <label> (SVG hit-testing quirk), so
+    // the visible box looks dead — especially when unchecked (invisible path
+    // still captures the pointer). Let clicks fall through to the label/wrap.
+    if (!document.getElementById("sf-tp-checkbox-fix")) {
+      const style = document.createElement("style");
+      style.id = "sf-tp-checkbox-fix";
+      style.textContent = ".tp-ckbv_w svg{pointer-events:none}";
+      document.head.appendChild(style);
+    }
+
     const root = document.createElement("div");
     root.style.cssText =
       "position:fixed;top:12px;right:12px;z-index:40;width:300px;max-height:calc(100vh - 24px);overflow:auto;overscroll-behavior:contain";
@@ -335,21 +359,41 @@ export class DebugPanel {
       nightBrightness: this.#sky.nightBrightness
     };
     this.#lightingView = lightingView;
-    const onSkyChange = (key: string, value: unknown, last: boolean) => {
+    const onSkyChange = (key: string, value: unknown, _last: boolean) => {
+      if (this.#syncingFromSky) return;
       if (key === "timeOfDay") {
-        if (this.#syncingFromSky) return;
         this.#sky.setTimeOfDay(value as number); // clears realTime — a manual pin
+        lightingView.realTime = false;
+        SKY_TUNING.values.realTime = false;
+        saveTweak("sky.realTime", false);
+        this.#refreshLightingBindings();
         return;
       }
       if (key === "realTime") {
-        if (this.#syncingFromSky) return;
-        if (value) this.#sky.followRealTime();
-        else this.#sky.realTime = false;
+        if (value) {
+          this.#sky.followRealTime();
+          // real-time mode wins over the demo cycle — keep the pane honest
+          this.#sky.cycleEnabled = false;
+          lightingView.cycleEnabled = false;
+          SKY_TUNING.values.cycleEnabled = false;
+          saveTweak("sky.cycleEnabled", false);
+        } else {
+          this.#sky.realTime = false;
+        }
+        this.#refreshLightingBindings();
         return;
       }
       if (key === "cycleEnabled") {
         this.#sky.cycleEnabled = value as boolean;
-        if (value) this.#sky.realTime = false; // the cycle can't run while tracking real time
+        if (value) {
+          // cycle can't run while tracking real time — drop it immediately so
+          // the next refresh doesn't snap the checkbox back off
+          this.#sky.realTime = false;
+          lightingView.realTime = false;
+          SKY_TUNING.values.realTime = false;
+          saveTweak("sky.realTime", false);
+        }
+        this.#refreshLightingBindings();
         return;
       }
       if (key === "cycleDuration") {
@@ -425,6 +469,10 @@ export class DebugPanel {
     // collider x-ray: persisted toggle only — main's tick polls the live value
     // each frame, gathers active colliders and drives the overlay.
     RENDER_TUNING.bind(render, { keys: ["colliderDebug"] });
+
+    // free-orbit camera (C): duration of the O-key 180° flip around the target
+    const cameraF = advanced.addFolder({ title: "camera" });
+    CAMERA_TUNING.bind(cameraF);
 
     // foliage detail knobs (the master on/off lives at the very top of the pane).
     const foliage = advanced.addFolder({ title: "foliage" });
