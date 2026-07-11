@@ -71,9 +71,9 @@ export class GolfGame {
   #scene: THREE.Scene;
 
   // golf cart: a parked cart waits at the first tee; press E beside it to hop
-  // in and drive it (reusing the car controller via setDriveStyle). Bags on the
-  // rear deck track occupancy — driver's bag always, passenger's when someone
-  // rides shotgun (main.ts can bump the count via setCartOccupants).
+  // in and drive it (reusing the car controller via setDriveStyle). During a
+  // round its bags stay with the cart even while the golfers are out taking a
+  // shot; aboard, the count still mirrors the driver/passenger party.
   #parkedCart: THREE.Group | null = null;
   #driveCart: THREE.Group | null = null;
   #cartBoarded = false;
@@ -205,6 +205,7 @@ export class GolfGame {
     const x = tx + Math.cos(aim) * 5 + 3;
     const z = tz - Math.sin(aim) * 5 + 3;
     const cart = buildGolfCartMesh();
+    cart.name = "golf-cart-parked";
     cart.position.set(x, this.#map.effectiveGround(x, z) + 0.55, z);
     cart.rotation.y = aim + Math.PI;
     setCartBags(cart, 0);
@@ -217,10 +218,17 @@ export class GolfGame {
     return this.#parkedCart && this.#parkedCart.visible ? this.#parkedCart.position : null;
   }
 
-  /** Number of people aboard the cart (1 driver, 2 with a passenger). main.ts's
-   *  passenger wiring can call this so the second golf bag appears on the deck. */
+  /** Number of golfers assigned to the cart (1 solo, 2 with a passenger).
+   *  Their bags remain assigned while they are on foot during the round. */
   setCartOccupants(n: number) {
     this.#cartOccupants = Math.max(1, Math.min(2, n));
+    this.#syncCartBags();
+  }
+
+  /** A bag represents a golfer's round, not whether they happen to occupy the
+   *  seat this frame. Keep it on the parked cart while they walk to the ball. */
+  #syncCartBags() {
+    if (this.#parkedCart) setCartBags(this.#parkedCart, this.active ? this.#cartOccupants : 0);
     if (this.#driveCart) setCartBags(this.#driveCart, this.#cartOccupants);
   }
 
@@ -231,6 +239,7 @@ export class GolfGame {
     if (Math.hypot(p.x - cp.x, p.z - cp.z) > 3.6) return false;
     // swap the player's drive embodiment to the cart + its lighter, tippier spec
     this.#driveCart = buildGolfCartMesh();
+    this.#driveCart.name = "golf-cart-active";
     this.#cartOccupants = 1;
     setCartBags(this.#driveCart, this.#cartOccupants);
     player.setDriveStyle(this.#driveCart, GOLF_CART_SPEC);
@@ -256,7 +265,7 @@ export class GolfGame {
         const p = player.renderPosition;
         this.#parkedCart.position.set(p.x, this.#map.effectiveGround(p.x, p.z) + 0.55, p.z);
         this.#parkedCart.rotation.y = player.heading;
-        setCartBags(this.#parkedCart, 0);
+        this.#syncCartBags();
         this.#parkedCart.visible = true;
       }
       return;
@@ -291,6 +300,7 @@ export class GolfGame {
     this.#holeScores.length = 0;
     this.#charge = 0;
     this.#teePromptShown = false;
+    this.#syncCartBags();
     this.#beginHole(hud, true);
     this.#ui.setVisible(true);
   }
@@ -329,6 +339,7 @@ export class GolfGame {
   #endRound(hud: HUD, quiet = false) {
     this.active = false;
     this.#roundComplete = false;
+    this.#syncCartBags();
     this.#pendingStrike = null; // a quit mid-downswing must not still launch the ball
     this.#ballMesh.visible = false;
     this.#beacon.visible = false;
@@ -349,6 +360,7 @@ export class GolfGame {
   #finishRound(hud: HUD) {
     this.active = false;
     this.#roundComplete = true;
+    this.#syncCartBags();
     this.#summaryUntil = performance.now() + 9000;
     this.#ballMesh.visible = false;
     this.#beacon.visible = false;
