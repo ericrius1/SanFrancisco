@@ -46,8 +46,8 @@ export const SUMMIT_CRAGS: readonly CragSpec[] = [
   { x: 432, z: 2764, yaw: 0.92, length: 5.4, height: 2.6, beds: 6, seed: 103 },
   { x: 396, z: 2769, yaw: -0.74, length: 4.4, height: 2.1, beds: 5, seed: 104 },
   // Sittable perch blocks on the platform's south rim, facing downtown.
-  { x: 405.5, z: 2765.5, yaw: -0.4, length: 2.3, height: 0.85, beds: 3, seed: 105, flatTop: true, decorative: true },
-  { x: 417.5, z: 2765.8, yaw: 0.2, length: 2.6, height: 0.95, beds: 3, seed: 106, flatTop: true, decorative: true }
+  { x: 405.5, z: 2765.5, yaw: -0.4, length: 3.1, height: 0.75, beds: 4, seed: 105, flatTop: true, decorative: true },
+  { x: 417.5, z: 2765.8, yaw: 0.2, length: 3.3, height: 0.85, beds: 4, seed: 106, flatTop: true, decorative: true }
 ] as const;
 
 /** Low decorative spurs continuing the bedding spine between/beyond the heroes. */
@@ -105,7 +105,7 @@ export function summitPlatformLift(x: number, z: number) {
   const p = SUMMIT_PLATFORM;
   const q = ((x - p.x) / p.rx) ** 2 + ((z - p.z) / p.rz) ** 2;
   if (q >= 1) return 0;
-  return 0.1 + 0.18 * (1 - smoothEdge(q));
+  return 0.18 + 0.14 * (1 - smoothEdge(q));
 }
 
 /** True where the summit treatment owns the ground: existing scatter systems
@@ -129,7 +129,7 @@ export function summitKeepOut(x: number, z: number, margin = 0) {
 const BED_RUST = new THREE.Color(0xa85f45);
 const BED_MAROON = new THREE.Color(0x8a4a3a);
 const BED_PALE = new THREE.Color(0xb37a58);
-const TOP_WEATHER = new THREE.Color(0xc9a071);
+const TOP_WEATHER = new THREE.Color(0xd2ab7a);
 const CREVICE = new THREE.Color(0x6b3f33);
 const LICHEN = new THREE.Color(0x9aa678);
 const SKIRT_DUST = new THREE.Color(0xb08a63);
@@ -149,7 +149,7 @@ function appendCrag(map: WorldMap, spec: CragSpec, positions: number[], colors: 
   // below stays consistent with the stacking order.
   const snx = -Math.sin(spec.yaw);
   const snz = Math.cos(spec.yaw);
-  const tilt = 0.16 + hash(s, 1) * 0.2; // 9°–20° off vertical, all beds share it
+  const tilt = 0.2 + hash(s, 1) * 0.18; // 11°–22° off vertical, all beds share it
 
   const K = spec.beds;
   const color = new THREE.Color();
@@ -218,6 +218,19 @@ function appendCrag(map: WorldMap, spec: CragSpec, positions: number[], colors: 
       { h, taper: tipTaper, skew: tipSkew, li: 3 }
     ];
     const stations = [-1, 0, 1];
+    // Per-station heights for the two upper rings: the top edge saws up and
+    // down along strike (per-station, not per-bed) so the crest reads jagged
+    // even face-on to the broad wall. The mid ring stays safely below the tip.
+    const hvGrid: number[][] = levels.map(() => [0, 0, 0]);
+    for (let si = 0; si < 3; si++) {
+      const flat = k === flatBed;
+      const tip = flat ? levels[3].h : levels[3].h * (0.66 + hash(s, 51, k * 5 + si) * 0.5);
+      const mid2 = Math.min(flat ? levels[2].h : levels[2].h * (0.84 + hash(s, 52, k * 5 + si) * 0.32), tip * 0.82);
+      hvGrid[0][si] = levels[0].h;
+      hvGrid[1][si] = Math.min(levels[1].h, mid2 * 0.7);
+      hvGrid[2][si] = mid2;
+      hvGrid[3][si] = tip;
+    }
     // corner[level][station][sn] = Vec3
     const corner: Vec3[][][] = [];
     for (const lv of levels) {
@@ -235,11 +248,12 @@ function appendCrag(map: WorldMap, spec: CragSpec, positions: number[], colors: 
           const jz = (hash(s, 47 + li, salt) - 0.5) * 2 * jAmp;
           // Mid stations bulge/pinch across the bed thickness (fracture relief).
           const bump = si === 1 && li > 0 && li < 3 ? (hash(s, 49 + li, salt) - 0.4) * t * 0.55 : 0;
+          const hv = hvGrid[li][si];
           const along = su * (L / 2) * lv.taper + cu + lv.skew;
           rowN.push({
-            x: cxw + ux * along + vx * lv.h + nrx * ((sn * t) / 2 + sn * bump) + jx,
-            y: gy + vy * lv.h + jy,
-            z: czw + uz * along + vz * lv.h + nrz * ((sn * t) / 2 + sn * bump) + jz
+            x: cxw + ux * along + vx * hv + nrx * ((sn * t) / 2 + sn * bump) + jx,
+            y: gy + vy * hv + jy,
+            z: czw + uz * along + vz * hv + nrz * ((sn * t) / 2 + sn * bump) + jz
           });
         }
         rowU.push(rowN);
@@ -280,8 +294,11 @@ function appendCrag(map: WorldMap, spec: CragSpec, positions: number[], colors: 
       if (interior) color.lerp(CREVICE, 0.32 * (1 - hRel * 0.45));
       // Weather-bleached patches on any exposed wall — chert pales unevenly.
       if (!interior) color.lerp(BED_PALE, hash(s, 69, k * 31 + quadIdx) * 0.3);
-      // Sun-weathered tan on up-facing facets.
-      if (fny > 0.35) color.lerp(TOP_WEATHER, clamp01((fny - 0.35) / 0.65) * (0.45 + hash(s, 71, k * 37 + quadIdx) * 0.3));
+      // Strike-end fracture faces stay in the dark maroon family.
+      const endDot = Math.abs(fnx * ux + fnz * uz);
+      if (endDot > 0.72 && !interior) color.lerp(BED_MAROON, 0.4);
+      // Sun-weathered tan on up-facing facets — the lightest surfaces on the rock.
+      if (fny > 0.35) color.lerp(TOP_WEATHER, clamp01((fny - 0.35) / 0.65) * (0.55 + hash(s, 71, k * 37 + quadIdx) * 0.3));
       // Sparse sage lichen on exposed upper WALL facets — never on the sittable
       // tip caps (they read as green carpets from above).
       const isCap = fny > 0.8;
@@ -337,7 +354,12 @@ function makeCragMesh(map: WorldMap) {
     vertexColors: true,
     roughness: 0.93,
     metalness: 0,
-    flatShading: true
+    flatShading: true,
+    // Sky-bounce stand-in: keeps shade-side facets reading as dark maroon rock
+    // instead of black voids (the crag's albedo is dark enough that the scene
+    // hemisphere light alone can't hold them).
+    emissive: 0x241310,
+    emissiveIntensity: 1
   });
   const mesh = new THREE.Mesh(geometry, material);
   mesh.name = "corona_summit_chert_crags";
@@ -420,18 +442,23 @@ function makePlatformSkin(map: WorldMap) {
       const x = px - rx + gx * step;
       const i = gz * nx + gx;
       const q = ((x - px) / rx) ** 2 + ((z - pz) / rz) ** 2;
-      inside[i] = q < 1 + (hash(gx, gz, 7) - 0.5) * 0.08 ? 1 : 0;
+      // Smooth-noise rim (not per-cell hash): a wandering organic boundary with
+      // no axis-aligned stair-steps and no dropped-cell holes for the baked
+      // lawn to poke through.
+      inside[i] = q < 1 + (valueNoise(x, z, 5.5, 227) - 0.5) * 0.2 ? 1 : 0;
       positions[i * 3] = x;
-      positions[i * 3 + 1] = map.groundTop(x, z) + Math.max(0.1, summitPlatformLift(x, z));
+      positions[i * 3 + 1] = map.groundTop(x, z) + Math.max(0.18, summitPlatformLift(x, z));
       positions[i * 3 + 2] = z;
       const grain = valueNoise(x, z, 3.2, 211);
-      const mottle = valueNoise(x, z, 6.5, 219);
+      const mottle = valueNoise(x, z, 4.2, 219);
       const fine = valueNoise(x, z, 1.7, 223);
-      const cragRing = clamp01(1 - nearestCragDistance(x, z) / 7);
-      color.copy(hardpan).offsetHSL(0, 0, (grain - 0.5) * 0.09);
-      color.lerp(gravel, clamp01(mottle - 0.35) * 0.55);
-      color.lerp(pinkDust, cragRing * (0.45 + grain * 0.25));
-      if (fine > 0.62) color.lerp(gravel, 0.4); // gravel speckle
+      const cragRing = clamp01(1 - nearestCragDistance(x, z) / 5);
+      color.copy(hardpan).offsetHSL(0, 0, (grain - 0.5) * 0.11);
+      // Mid-scale (2–5 m) trampled-dust patches, hue as well as value.
+      color.lerp(pinkDust, clamp01(mottle - 0.3) * 0.65);
+      color.lerp(gravel, clamp01(0.45 - mottle) * 0.5);
+      color.lerp(pinkDust, cragRing * (0.5 + grain * 0.25));
+      if (fine > 0.6) color.lerp(gravel, 0.45); // gravel speckle
       color.lerp(dryGrass, smoothEdge(q) * 0.9);
       colors[i * 3] = color.r;
       colors[i * 3 + 1] = color.g;
@@ -534,8 +561,11 @@ function makeScree(map: WorldMap) {
     if (lift === 0 && !nearFoot) continue;
     const y = map.groundTop(x, z);
     if (y < 132) continue;
-    const size = 0.09 + Math.pow(hash(i, 5, 313), 2.2) * 0.55;
-    dummy.position.set(x, y + lift + size * 0.06, z);
+    // Bigger blocks shed close to the crag foot, crumbs further out; every
+    // shard sits slightly sunk so no dark underside edge floats over the dirt.
+    const away = clamp01((Math.hypot(x - src.x, z - src.z) - src.length * 0.42) / 5.5);
+    const size = (0.09 + Math.pow(hash(i, 5, 313), 2.2) * 0.55) * (1.25 - away * 0.75);
+    dummy.position.set(x, y + lift - size * 0.06, z);
     dummy.rotation.set((hash(i, 7) - 0.5) * 0.4, hash(i, 11) * Math.PI * 2, (hash(i, 13) - 0.5) * 0.4);
     dummy.scale.set(size * (0.8 + hash(i, 17) * 0.7), size * (0.5 + hash(i, 19) * 0.6), size * (0.8 + hash(i, 23) * 0.7));
     dummy.updateMatrix();
