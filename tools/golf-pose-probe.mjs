@@ -197,6 +197,15 @@ async function main() {
   // let the teleported capsule finish falling AND the aim/address stance ease in
   await ticks(c, 150, 1 / 60);
   await measure(c, "settled-address");
+  const parkedRoundBags = await ev(c, `(()=>{
+    const cart = window.__sf.scene.getObjectByName('golf-cart-parked');
+    if (!cart?.visible) return 0;
+    let bags = 0;
+    cart.traverse(o => { if (o.visible && o.name?.startsWith('golfbag')) bags++; });
+    return bags;
+  })()`);
+  if (parkedRoundBags < 1) throw new Error("active golfer's parked cart lost its bag");
+  console.log("[cart-bags] parked during round:", parkedRoundBags);
 
   // SWEEP (one boot): hold FULL BACKSWING (charge saturated → s≈-1), sweep the
   // club raise + side-arc, read where the head lands vs the ball. A good top of
@@ -231,6 +240,19 @@ async function main() {
   })()`);
   console.log("[guide]", JSON.stringify(gstate));
   await view(c, "wide_aim");
+  // Isolate the active tee beacon from a stable exterior angle so its blue
+  // web structure remains easy to compare across shader/tone-map changes.
+  await ev(c, `(()=>{
+    const s=window.__sf, b=window.__golfBall.pos;
+    window.__sfFreeCam([b.x+12,b.y+7,b.z+12],[b.x,b.y+4,b.z]);
+    return true;
+  })()`);
+  await tick(c, 0);
+  {
+    const shot = await c.send("Page.captureScreenshot", { format: "jpeg", quality: 90, fromSurface: true });
+    writeFileSync(path.join(OUT, "beacon_web.jpg"), Buffer.from(shot.data, "base64"));
+    console.log("[probe] shot beacon_web");
+  }
 
   // --- cart boarding: teleport onto the parked cart, press E, confirm we drive it
   const board = await ev(c, `(()=>{
@@ -276,8 +298,26 @@ async function main() {
   })()`);
   await ev(c, `(window.__sf.player.trySwitch('walk'), true)`);
   await ticks(c, 30, 1 / 60);
-  const reparked = await ev(c, `(()=>{ const g=window.__golfGame; return { mode: window.__sf.player.mode, cartParked: !!g.parkedCartPosition }; })()`);
+  const reparked = await ev(c, `(()=>{
+    const s=window.__sf, g=window.__golfGame, cart=s.scene.getObjectByName('golf-cart-parked');
+    let bags=0;
+    cart?.traverse(o=>{ if(o.visible && o.name?.startsWith('golfbag')) bags++; });
+    return { mode:s.player.mode, cartParked:!!g.parkedCartPosition && !!cart?.visible, bagsVisible:bags };
+  })()`);
+  if (!reparked.cartParked || reparked.bagsVisible < 1) throw new Error("cart or bag disappeared after golfer exited");
   console.log("[cart-board] twoBags:", twoBags, "afterExit:", JSON.stringify(reparked));
+  await ev(c, `(()=>{
+    const s=window.__sf, cart=s.scene.getObjectByName('golf-cart-parked'), p=new s.THREE.Vector3();
+    cart.getWorldPosition(p);
+    window.__sfFreeCam([p.x+5,p.y+3,p.z-4.5],[p.x,p.y+0.6,p.z]);
+    return true;
+  })()`);
+  await tick(c, 0);
+  {
+    const shot = await c.send("Page.captureScreenshot", { format: "jpeg", quality: 90, fromSurface: true });
+    writeFileSync(path.join(OUT, "cart_reparked.jpg"), Buffer.from(shot.data, "base64"));
+    console.log("[probe] shot cart_reparked");
+  }
 
   // --- teleport-leaves-golf: a big jump must end the round + hide the guide
   const activeBefore = await ev(c, "window.__golfGame.active");

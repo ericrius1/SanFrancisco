@@ -31,8 +31,8 @@ type N = any;
 /**
  * Presidio Golf Course, rendered: terrain-draped overlay meshes for fairways /
  * greens / tees / bunkers / cart paths over a dedicated full-footprint rough
- * sheet, 18 pins with waving flags and cups, and an aurora
- * shimmer over every tee box so the course reads as "playable" from a passing
+ * sheet, 18 pins with waving flags and cups, and a luminous blue web cage
+ * over every tee box so the course reads as "playable" from a passing
  * car. One merged mesh per surface kind + 3 instanced pin parts + 2 instanced
  * glow parts — 11 draw calls for the whole course.
  */
@@ -375,8 +375,8 @@ export class GolfCourseView {
     }
   }
 
-  /** Aurora curtain + ground halo over each hole's tee box: fresnel-edged,
-   *  hue-drifting, noise-banded shimmer that says "walk up and press E". */
+  /** Blue spider-web cage + ground halo over each tee box: luminous vertical
+   *  spokes and sagging cross-strands that say "walk up and press E". */
   #buildTeeGlow(course: GolfCourse) {
     const n = course.holes.length;
     const tee = new THREE.Vector3();
@@ -395,47 +395,50 @@ export class GolfCourseView {
     // at a clearly-visible base. WGSL smoothstep requires edge0 < edge1; invert a
     // legal step rather than relying on the undefined reversed-edge form.
     const isActive = smoothstep(float(0.45), float(0.5), seed.sub(active).abs()).oneMinus(); // 1 on the active tee
-    const boost = isActive.mul(1.05).add(1.0); // ~2.05 active, 1.0 idle (was 1.85 / 0.75)
+    const boost = isActive.mul(0.85).add(1.0); // ~1.85 active, 1.0 idle
 
-    // — aurora curtain: open cylinder, vertical fade, scrolling bands, fresnel rim.
-    // Taller + wider than before so the shimmer is unmistakable from a fairway away.
-    const curtainGeo = new THREE.CylinderGeometry(4.8, 5.4, 7.5, 28, 1, true);
-    curtainGeo.translate(0, 3.75, 0);
+    // — web cage: an open cylinder whose UVs draw fine upright spokes connected
+    // by bowed cross-strands. A broad low-alpha copy around each thread supplies
+    // the glow without relying on a post-process bloom pass.
+    const curtainGeo = new THREE.CylinderGeometry(4.8, 5.5, 8.4, 42, 1, true);
+    curtainGeo.translate(0, 4.2, 0);
     const curtain = new THREE.MeshBasicNodeMaterial();
-    const vfade = (uv().y as N).oneMinus().pow(1.6); // bright at the grass, gone at the top
-    // Keep only a trace of face-on coverage. Most of the signal lives on the
-    // Fresnel rim, so the volume reads clearly without becoming a tinted wall.
-    const fresnel = fresnelCoverage(fresnelPower, 0.06) as N;
-    const bands = mx_fractal_noise_float(
-      vec3((uv().x as N).mul(9).add(seed.mul(3.7)), (uv().y as N).mul(2.4).sub(t.mul(0.35)), t.mul(0.13)),
-      2
-    )
-      .mul(0.5)
-      .add(0.5);
-    const hueA = vec3(0.35, 0.95, 0.78); // teal
-    const hueB = vec3(0.55, 0.65, 1.0); // violet-blue
-    const hueC = vec3(0.5, 1.0, 0.55); // green
-    const huePhase = t.mul(0.21).add(seed.mul(1.3)).sin().mul(0.5).add(0.5);
-    const auroraCol = mix(mix(hueA, hueB, huePhase), hueC, bands.mul(0.45));
-    curtain.colorNode = auroraCol.mul(bands.mul(0.9).add(0.35)).mul(LIGHT_SCALE * 1.15);
-    const pulse = t.mul(1.7).add(seed.mul(2.1)).sin().mul(0.12).add(0.9);
+    const webU = uv().x as N;
+    const webV = uv().y as N;
+    const vfade = webV.oneMinus().pow(0.7).mul(0.62).add(0.38);
+    const fresnel = fresnelCoverage(fresnelPower, 0.18) as N;
+    const spokeCell = webU.mul(14).fract();
+    const spokeDist = spokeCell.sub(0.5).abs();
+    const spokeCore = smoothstep(float(0.015), float(0.055), spokeDist).oneMinus();
+    const spokeGlow = smoothstep(float(0.025), float(0.16), spokeDist).oneMinus();
+    // Each connector droops between adjacent uprights, like a strand pulled
+    // taut at the spokes. The entire web drifts upward very slowly.
+    const strandSag = spokeCell.mul(Math.PI).sin().mul(0.24);
+    const strandPhase = webV.mul(7).add(strandSag).sub(t.mul(0.08));
+    const strandDist = strandPhase.fract().sub(0.5).abs();
+    const strandCore = smoothstep(float(0.02), float(0.07), strandDist).oneMinus();
+    const strandGlow = smoothstep(float(0.035), float(0.18), strandDist).oneMinus();
+    const webCore = spokeCore.max(strandCore);
+    const webGlow = spokeGlow.max(strandGlow);
+    const pulse = t.mul(1.6).add(seed.mul(2.1)).sin().mul(0.1).add(0.92);
+    const blue = mix(vec3(0.003, 0.035, 0.65), vec3(0.01, 0.27, 1.0), webCore);
+    curtain.colorNode = blue.mul(webCore.mul(0.48).add(0.52)).mul(LIGHT_SCALE * 0.8);
     curtain.opacityNode = clampCoverage(
       vfade
-        .mul(fresnel)
-        .mul(bands.mul(0.6).add(0.4))
+        .mul(fresnel.mul(0.45).add(0.55))
+        .mul(webCore.mul(0.6).add(webGlow.mul(0.28)))
         .mul(pulse)
         .mul(boost)
         .mul(alpha)
     );
-    // Hashed coverage stays in the opaque pass and writes depth. Scene objects
-    // behind the near wall (especially the avatar) therefore show through the
-    // discarded holes instead of being flattened by an additive color wash.
-    applyMaterialPolicy(curtain, "hashedCoverage");
+    // Normal alpha keeps the electric-blue core saturated against bright sky
+    // and grass; the broad low-coverage strands still read as a soft glow.
+    applyMaterialPolicy(curtain, "alphaSurface");
     curtain.side = THREE.DoubleSide;
     curtain.fog = true;
     const curtains = new THREE.InstancedMesh(curtainGeo, curtain, n);
     curtains.name = "golf-tee-curtains";
-    tagTransparency(curtains, { profile: "hashedCoverage", ink: false });
+    tagTransparency(curtains, { profile: "alphaSurface", ink: false });
 
     // — ground halo ring
     const haloGeo = new THREE.RingGeometry(3.4, 5.1, 36);
@@ -445,8 +448,8 @@ export class GolfCourseView {
     // RingGeometry UVs are planar — recover the radius from local position for
     // a soft band peaking mid-ring
     const rad = (positionLocal as N).xz.length().sub(3.4).div(1.7).sub(0.5).abs().mul(2).oneMinus().max(0).pow(1.8);
-    halo.colorNode = auroraCol.mul(LIGHT_SCALE * 1.35);
-    halo.opacityNode = rad.mul(pulse).mul(boost).mul(0.8);
+    halo.colorNode = mix(vec3(0.003, 0.045, 0.65), vec3(0.012, 0.3, 1.0), rad).mul(LIGHT_SCALE * 0.86);
+    halo.opacityNode = rad.mul(pulse).mul(boost).mul(alpha).mul(1.15);
     applyMaterialPolicy(halo, "additiveWorld");
     halo.fog = true;
     const halos = new THREE.InstancedMesh(haloGeo, halo, n);
@@ -455,27 +458,27 @@ export class GolfCourseView {
 
     // — sky beam: a tall soft shaft over ONLY the active tee, the long-range
     // "the hole you're playing is over here" cue. Idle tees show none of it.
-    const beamGeo = new THREE.CylinderGeometry(0.7, 1.35, 30, 18, 1, true);
-    beamGeo.translate(0, 15, 0);
+    const beamGeo = new THREE.CylinderGeometry(0.8, 1.55, 34, 20, 1, true);
+    beamGeo.translate(0, 17, 0);
     const beam = new THREE.MeshBasicNodeMaterial();
     const bFade = (uv().y as N).oneMinus().pow(1.5); // solid at the grass, feathering to nothing up high
     const bFres = fresnelCoverage(fresnelPower, 0.06) as N;
     const bPulse = t.mul(2.3).add(seed.mul(1.1)).sin().mul(0.18).add(0.82);
-    beam.colorNode = mix(vec3(0.55, 1.0, 0.72), vec3(0.6, 0.8, 1.0), (uv().y as N)).mul(LIGHT_SCALE * 1.5);
+    beam.colorNode = mix(vec3(0.003, 0.055, 0.7), vec3(0.012, 0.32, 1.0), (uv().y as N)).mul(LIGHT_SCALE * 0.88);
     beam.opacityNode = clampCoverage(
       bFade
         .mul(bFres)
         .mul(bPulse)
         .mul(isActive)
         .mul(alpha)
-        .mul(0.8)
+        .mul(0.82)
     ); // isActive gate → only the current tee
-    applyMaterialPolicy(beam, "hashedCoverage");
+    applyMaterialPolicy(beam, "alphaSurface");
     beam.side = THREE.DoubleSide;
     beam.fog = true;
     const beams = new THREE.InstancedMesh(beamGeo, beam, n);
     beams.name = "golf-tee-active-beams";
-    tagTransparency(beams, { profile: "hashedCoverage", ink: false });
+    tagTransparency(beams, { profile: "alphaSurface", ink: false });
 
     for (let i = 0; i < n; i++) {
       course.teeSpot(i, tee);
