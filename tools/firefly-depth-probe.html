@@ -123,7 +123,14 @@
           return [Math.round((p.x * 0.5 + 0.5) * W), Math.round((p.y * 0.5 + 0.5) * H)];
         };
         const sample = (x, y) => {
-          const i = (y * W + x) * 4; // readback rows are bottom-up = same as NDC y
+          // `project` returns a bottom-up pixel Y (NDC +1 = top = y=H), but three's
+          // WebGPU `readRenderTargetPixelsAsync` hands back rows TOP-DOWN (row 0 =
+          // top). Flip to index the readback correctly. Without this, only the
+          // off-center `front-of-wall` case mis-samples (it reads the mirrored row,
+          // which lands on the wall) — the screen-centered cases are flip-invariant,
+          // so the bug masqueraded as an isolated, flaky "front-of-wall MISSING".
+          const row = H - 1 - y;
+          const i = (row * W + x) * 4;
           return [buf[i], buf[i + 1], buf[i + 2]];
         };
 
