@@ -133,6 +133,11 @@ export class BuskerFireflies {
     const sizeGain = BUSKER_FIREFLY_TUNING.values.glowSize;
 
     this.group.visible = twilight > 0.001;
+    if (!this.group.visible) {
+      // daylight / out of range: nothing renders, skip the swarm math
+      if (this.#light.intensity !== 0) this.#light.intensity = 0;
+      return;
+    }
 
     let cx = 0;
     let cy = 0;

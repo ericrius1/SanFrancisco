@@ -97,6 +97,22 @@ function fadeCloneOf(settled: THREE.Material): THREE.Material {
   return f;
 }
 
+/** Pooled fade clones: a fading building BORROWS a dithered clone per settled
+ *  material and returns it on settle/dispose. Without the pool every streamed
+ *  building cloned fresh materials — a TSL node-graph build per clone, running
+ *  for as long as the player roams. Pool size plateaus at the peak number of
+ *  concurrently-fading (building × material) pairs; clones are never disposed. */
+const fadeClonePool = new Map<THREE.Material, THREE.Material[]>();
+function acquireFadeClone(settled: THREE.Material): THREE.Material {
+  return fadeClonePool.get(settled)?.pop() ?? fadeCloneOf(settled);
+}
+function releaseFadeClone(settled: THREE.Material, clone: THREE.Material) {
+  let free = fadeClonePool.get(settled);
+  if (!free) fadeClonePool.set(settled, (free = []));
+  clone.opacity = 0.02;
+  free.push(clone);
+}
+
 /** Representative material set for boot warmup: one settled + one fade-clone per
  *  distinct pipeline (wall kinds, glass zones, one shared standard). Rendering a
  *  tiny hidden mesh per entry compiles every pipeline a streamed building will
@@ -138,8 +154,9 @@ export function assembleBuilding(spec: BuildingSpec, meshes: MeshData[], mats: R
   const group = new THREE.BundleGroup();
   group.name = "cityGenBuilding";
   const geoms: THREE.BufferGeometry[] = [];
-  const parts: { mesh: THREE.Mesh; settled: THREE.Material; fade: THREE.Material }[] = [];
-  const fadeClones = new Map<THREE.Material, THREE.Material>(); // settled → this building's clone
+  const parts: { mesh: THREE.Mesh; settled: THREE.Material }[] = [];
+  // settled → clone this building is currently borrowing from the pool
+  let borrowed: Map<THREE.Material, THREE.Material> | null = new Map();
   let triangles = 0;
   for (const md of meshes) {
     const g = new THREE.BufferGeometry();
@@ -151,8 +168,8 @@ export function assembleBuilding(spec: BuildingSpec, meshes: MeshData[], mats: R
     geoms.push(g);
     triangles += md.indices.length / 3;
     const settled = settledOf(md.materialId);
-    let fade = fadeClones.get(settled);
-    if (!fade) { fade = fadeCloneOf(settled); fadeClones.set(settled, fade); }
+    let fade = borrowed.get(settled);
+    if (!fade) { fade = acquireFadeClone(settled); borrowed.set(settled, fade); }
     const mesh = new THREE.Mesh(g, fade); // born fading (ring fades every build in)
     mesh.name = md.materialId; // lets probes tell a wall/base panel from door/glass
     mesh.castShadow = true;
@@ -162,7 +179,7 @@ export function assembleBuilding(spec: BuildingSpec, meshes: MeshData[], mats: R
     // the whole (near-player) building is distance-managed by the streaming ring.
     mesh.frustumCulled = false;
     group.add(mesh);
-    parts.push({ mesh, settled, fade });
+    parts.push({ mesh, settled });
   }
   // Sit the detail mesh a hair PROUD of its chunk-LOD prism (same footprint) so it
   // wins the depth test everywhere they overlap — no z-fighting. Geometric (the
@@ -184,7 +201,12 @@ export function assembleBuilding(spec: BuildingSpec, meshes: MeshData[], mats: R
       .multiply(new THREE.Matrix4().makeTranslation(-cx, -b, -cz));
     group.matrixWorldNeedsUpdate = true;
   }
-  let onFadeMats = true; // meshes start on their fade clones
+  let onFadeMats = true; // meshes start on their borrowed fade clones
+  const returnClones = () => {
+    if (!borrowed) return;
+    for (const [settled, clone] of borrowed) releaseFadeClone(settled, clone);
+    borrowed = null;
+  };
   return {
     group, triangles,
     setOpacity(o: number) {
@@ -192,18 +214,26 @@ export function assembleBuilding(spec: BuildingSpec, meshes: MeshData[], mats: R
       if (fading !== onFadeMats) {
         // crossing the settle boundary (either direction) swaps material pointers
         // — the ONLY re-record a fade ever causes
-        for (const p of parts) p.mesh.material = fading ? p.fade : p.settled;
+        if (fading && !borrowed) {
+          borrowed = new Map();
+          for (const p of parts) {
+            let f = borrowed.get(p.settled);
+            if (!f) { f = acquireFadeClone(p.settled); borrowed.set(p.settled, f); }
+          }
+        }
+        for (const p of parts) p.mesh.material = fading ? borrowed!.get(p.settled)! : p.settled;
         onFadeMats = fading;
+        if (!fading) returnClones(); // settled: clones go back to the pool
         group.needsUpdate = true;
       }
-      if (fading) {
+      if (fading && borrowed) {
         const oo = Math.max(0.02, o);
-        for (const f of fadeClones.values()) f.opacity = oo; // uniform write only
+        for (const f of borrowed.values()) f.opacity = oo; // uniform write only
       }
     },
     dispose() {
       for (const g of geoms) g.dispose();
-      for (const f of fadeClones.values()) f.dispose(); // settled materials are SHARED — never disposed here
+      returnClones(); // pooled clones outlive the building — never disposed
       group.clear();
     },
   };

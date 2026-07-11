@@ -703,6 +703,11 @@ export class GoldenGateTennisSite {
 
   addTo(scene: THREE.Scene): this {
     scene.add(this.group);
+    // Fully static site: world matrices computed once, subtree leaves the
+    // scene's per-frame matrix pass. Anything later parented under this group
+    // would need a manual updateMatrixWorld(true).
+    this.group.updateMatrixWorld(true);
+    this.group.matrixWorldAutoUpdate = false;
     return this;
   }
 

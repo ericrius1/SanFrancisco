@@ -30,6 +30,14 @@ import { BuskerFireflies } from "./fireflies";
 
 const LOOKAHEAD_SECONDS = 0.4; // audio scheduling horizon
 const ANIM_RADIUS = 200; // beyond this, skip musician animation updates
+// Render gate with hysteresis (no boundary flicker). The transport and audio
+// keep running while hidden — the show goes on unheard, exactly as before.
+const SHOW_RADIUS = 240;
+const HIDE_RADIUS = 270;
+// Parts smaller than this never shadow-cast: a gem/string/fret cast is
+// invisible at CSM resolution, but each casting mesh re-encodes into every
+// shadow cascade every shadow frame.
+const CASTER_MIN_VOLUME = 1.5e-3; // m³
 const COUNTIN_SECONDS = COUNTIN_BEATS * SEC_PER_BEAT;
 
 // Seats along the front (-Z) edge. A viewer standing in front of the rock
@@ -97,6 +105,10 @@ export class BuskerTrio {
     }
 
     this.setPlacement(opts.x, opts.z, opts.yaw ?? 0);
+    applyShadowDiet(this.group);
+    // Prune the ~280-node subtree from the scene's per-frame matrix pass;
+    // update() refreshes it manually while the trio is on-screen and animating.
+    this.group.matrixWorldAutoUpdate = false;
   }
 
   /** Move the whole act (perch rock, trio, collider, sound sources) and re-seat
@@ -106,7 +118,7 @@ export class BuskerTrio {
     const y = this.#groundHeight(x, z);
     this.group.position.set(x, y, z);
     this.group.rotation.y = yaw;
-    this.group.updateMatrixWorld(true);
+    this.#refreshMatrices();
     this.#perch.setColliderTransform(x, y, z, yaw);
     for (const [id, local] of this.#seatLocal) {
       this.#tmp.copy(local).applyMatrix4(this.group.matrixWorld);
@@ -230,9 +242,15 @@ export class BuskerTrio {
       }
     }
 
-    // ---- animation ----
-    if (dist < ANIM_RADIUS) {
+    // ---- render gate + animation ----
+    if (this.group.visible) {
+      if (dist > HIDE_RADIUS) this.group.visible = false;
+    } else if (dist < SHOW_RADIUS) {
+      this.group.visible = true;
+    }
+    if (this.group.visible && dist < ANIM_RADIUS) {
       for (const musician of this.#musicians.values()) musician.update(dt, clock);
+      this.#refreshMatrices();
     }
   }
 
@@ -243,6 +261,14 @@ export class BuskerTrio {
     this.#perch.dispose();
     this.#audio.dispose();
     this.group.parent?.remove(this.group);
+  }
+
+  /** The root sits outside the scene's auto matrix pass (matrixWorldAutoUpdate
+   * false) — force one subtree refresh through the disabled flag. */
+  #refreshMatrices() {
+    this.group.matrixWorldAutoUpdate = true;
+    this.group.updateMatrixWorld(true);
+    this.group.matrixWorldAutoUpdate = false;
   }
 
   #enterPhase(phase: TrioPhase) {
@@ -269,6 +295,24 @@ function makeSilentTap() {
     out: null as unknown as GainNode,
     reverb: null as unknown as GainNode
   };
+}
+
+/** Size-based caster diet: only chunky parts shadow-cast. Volume-thresholded
+ * rather than name-matched so new outfit/instrument detail stays dieted. */
+function applyShadowDiet(root: THREE.Object3D) {
+  const size = new THREE.Vector3();
+  const scale = new THREE.Vector3();
+  root.updateMatrixWorld(true);
+  root.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    if (!mesh.isMesh || !mesh.castShadow) return;
+    const geo = mesh.geometry;
+    if (!geo.boundingBox) geo.computeBoundingBox();
+    geo.boundingBox!.getSize(size);
+    mesh.getWorldScale(scale);
+    const volume = Math.abs(size.x * scale.x) * Math.abs(size.y * scale.y) * Math.abs(size.z * scale.z);
+    if (volume < CASTER_MIN_VOLUME) mesh.castShadow = false;
+  });
 }
 
 export function createBuskerTrio(opts: BuskerTrioOptions): BuskerTrio {

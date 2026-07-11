@@ -583,6 +583,8 @@ async function boot() {
   let currentAnimal: AnimalKind | null = null;
   let ridePromptShown = false;
   let doorPromptShown = false;
+  let doorScanCountdown = 0;
+  let doorScanHit: ReturnType<CityGenRing["nearestDoor"]> = null;
   // way high above the ground (plane/drone cruising), ground flora and critters
   // are subpixel — their systems pause. Hysteresis so hill flanks don't flicker it.
   let highUp = false;
@@ -2265,7 +2267,7 @@ async function boot() {
       remotes.update(frameDt);
       hidePickleballRemoteAvatars();
       // personal space: standing inside another avatar shimmers like z-fighting
-      player.separateFromAvatars(remotes.positions().filter((r) => r.mode === "walk"), frameDt);
+      player.separateFromAvatars(remotes.walkingPositions(), frameDt);
       // riding shotgun with a friend keeps you glued; otherwise settle the render
       // transform between physics states like a live frame
       if (passengerOf !== null && remotes.ridePose(passengerOf, ridePos, rideQuat)) {
@@ -2614,7 +2616,7 @@ async function boot() {
     remotes.update(frameDt);
     hidePickleballRemoteAvatars();
     // personal space: standing inside another avatar shimmers like z-fighting
-    player.separateFromAvatars(remotes.positions().filter((r) => r.mode === "walk"), frameDt);
+    player.separateFromAvatars(remotes.walkingPositions(), frameDt);
     if (passengerOf !== null) {
       if (remotes.ridePose(passengerOf, ridePos, rideQuat)) {
         player.setRidePose(ridePos, rideQuat, frameDt);
@@ -2718,8 +2720,12 @@ async function boot() {
       if (!drv && !nearAnimal) ridePromptShown = false;
       // "open the door" nudge — same one-shot pattern; the ride prompt wins
       // when both are in range. nearestDoor is alloc-light but not free, so
-      // it runs at most once per frame and only on foot.
-      const door = citygenRing.current?.nearestDoor(player.position) ?? null;
+      // it runs every 6th frame (prompt latency ~0.1 s) and only on foot.
+      if (--doorScanCountdown <= 0) {
+        doorScanCountdown = 6;
+        doorScanHit = citygenRing.current?.nearestDoor(player.position) ?? null;
+      }
+      const door = doorScanHit;
       const nearClosedDoor = !!door && !door.open && door.dist < 3.2;
       if (nearClosedDoor && !drv && !nearAnimal && !doorPromptShown) {
         hud.message("E — open the door", 1.8);
