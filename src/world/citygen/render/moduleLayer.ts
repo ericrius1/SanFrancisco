@@ -206,7 +206,10 @@ function makeBucket(kind: number, bucketId: string, material: THREE.Material, sc
   geo.instanceCount = 0;
   const mesh = new THREE.Mesh(geo, material);
   mesh.name = `cityGenModules.${kind}.${bucketId === BUCKET_GLASS ? "glass" : "trim"}`;
-  mesh.castShadow = true;
+  // Windows sit ON the walls, which already cast — their own shadow term is
+  // invisible, but with frustumCulled=false every instance would re-render
+  // into every CSM cascade (measured: the GPU wall that capped the detail ring).
+  mesh.castShadow = false;
   mesh.receiveShadow = true;
   // instances span the whole detail ring; a lazily-computed bounding sphere
   // would mis-cull (the app-wide stale-bounds gotcha) — draw unconditionally.

@@ -47,6 +47,17 @@ const DETAIL_BUDGET_SLOW = 1; // else: frame is tight, stay conservative
 // #buildingBodies bookkeeping for baked-tile OBBs) — so the wider ring/budget costs
 // effectively nothing extra. Own radius, NOT detailR (which is 150 m for the mesh and
 // would over-spawn).
+// Detail buildings cast shadows only inside this radius (+30 m exit hysteresis).
+// The far CSM cascade ends at 350 m and reads through marine haze well before
+// that; casters past ~220 m cost full cascade re-renders for invisible shadows.
+const SHADOW_CAST_R = 220;
+// Facade-area admission budget (Σ perimeter·storeys over the kept detail set).
+// maxDetail counts BUILDINGS, but a large-commercial tower costs ~8-10x a
+// victorian rowhouse in baked wall/pier triangles — downtown at a 250-building
+// cap measured 2x the frame cost of a residential district. Weighing admission
+// by facade area keeps rowhouse districts at the full count while downtown
+// admits the nearest ~50-80 towers. Occupied buildings always stay.
+const DETAIL_COST_BUDGET = 55_000;
 const COLLIDER_R = 90;
 const COLLIDER_EXIT = 115; // hysteresis: drop back to baked only past here
 const COLLIDER_BUDGET = 20; // exact-collider swaps per scan (cheap: no mesh) — nearest first
@@ -99,7 +110,13 @@ interface Tiles {
 // here and drains under the host's per-frame ms budget. Without a host
 // scheduler the module stays portable: work runs immediately (old behaviour).
 type ScheduleFn = (lane: "physics" | "build" | "upload" | "background", job: () => void | "again") => void;
-interface BuiltGroup { group: THREE.Group; setOpacity(o: number): void; dispose(): void; }
+interface BuiltGroup {
+  group: THREE.Group;
+  setOpacity(o: number): void;
+  setCastShadow(cast: boolean): void;
+  setGlassHidden(hidden: boolean): void;
+  dispose(): void;
+}
 
 interface Entry extends BuildingSpec {
   key: string;
@@ -130,6 +147,8 @@ interface Entry extends BuildingSpec {
   // a grammar-build request is in flight on the worker (counts against the
   // detail cap; cleared on assemble, displacement is handled by normal eviction)
   pendingBuild: boolean;
+  /** facade-area admission cost (perimeter · storeys), computed lazily */
+  cost?: number;
 }
 
 /** Per-door runtime: world-space metrics cached ONCE per entry (the footprint is
@@ -1170,12 +1189,39 @@ export async function createCityGenRing(
       // Occupancy/reveal safety outranks the nearest-N cap. This prevents a large
       // building (centroid far from its doorway) from fading around its player.
       for (const [e] of haveDetail) if (playerOccupiesDetail(e)) keep.add(e);
+      const costOf = (e: Entry): number => {
+        if (e.cost === undefined) {
+          let per = 0;
+          for (let k = 0; k < e.poly.length; k++) {
+            const [x0, z0] = e.poly[k], [x1, z1] = e.poly[(k + 1) % e.poly.length];
+            per += Math.hypot(x1 - x0, z1 - z0);
+          }
+          e.cost = per * Math.max(1, (e.top - (e.grade ?? e.base)) / 3.5);
+        }
+        return e.cost;
+      };
+      let costLeft = DETAIL_COST_BUDGET;
       for (const [e, d2] of ranked) {
-        if (keep.has(e)) continue;
+        if (keep.has(e)) { costLeft -= costOf(e); continue; }
         if (keep.size >= maxDetail) break;
         if (d2 > detailExit2) continue;
         if (d2 > detailR2 && !e.detail) continue; // candidates need the entry band
+        const c = costOf(e);
+        if (c > costLeft) continue; // facade-area budget spent — skip the big ones, keep filling with small
+        costLeft -= c;
         keep.add(e);
+      }
+      // Shadow-caster diet: bundle children are frustumCulled=false, so every
+      // detail building would re-render into every CSM cascade — beyond the far
+      // cascade's readable range that's pure GPU burn (measured: the wall that
+      // capped the detail ring at a few hundred buildings). Gate per building
+      // with hysteresis; each flip is one cheap bundle re-record.
+      const shadowR2 = SHADOW_CAST_R * SHADOW_CAST_R;
+      const shadowExit2 = (SHADOW_CAST_R + 30) * (SHADOW_CAST_R + 30);
+      for (const [e, d2] of haveDetail) {
+        if (!e.detail) continue;
+        if (d2 < shadowR2) e.detail.setCastShadow(true);
+        else if (d2 > shadowExit2) e.detail.setCastShadow(false);
       }
       // Drive fade direction from keep membership (not a separate distance hysteresis
       // that would fight eviction and flicker opacity every scan).

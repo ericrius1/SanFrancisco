@@ -144,15 +144,19 @@ export const FOLIAGE_TUNING = tunables("foliage", {
  * from the master draw-distance slider (CONFIG.tileLoadRadius) each scan.
  */
 export const CITYGEN_TUNING = tunables("citygen", {
+  // Defaults raised ~6x (150/40 → 400/250) after the kit-of-parts window
+  // instancing + shadow-caster diet: draw count no longer scales with detail
+  // buildings (encode stays ~1 ms), so the budget is GPU triangles/overdraw.
+  // Sliders go far higher for beefy machines; ~700/500 measured tolerable.
   detailRadius: {
-    v: 150,
+    v: 400,
     min: 40,
     max: 7000,
     step: 5,
     label: "detail distance (m)"
   },
   maxDetail: {
-    v: 40,
+    v: 250,
     min: 4,
     max: 4000,
     step: 2,

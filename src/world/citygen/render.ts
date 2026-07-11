@@ -52,6 +52,18 @@ export interface BuiltBuilding {
   triangles: number;
   /** crossfade: o<1 → dithered (alphaHash) transparent at opacity o; o>=1 → opaque */
   setOpacity(o: number): void;
+  /** kit-of-parts window records this building registered with the instanced
+   *  module layer (world-space, pre-proud-transform) — the interior look-out
+   *  feature reads these to place real openings/live panes. Empty when the
+   *  layer was unavailable (instances were baked instead). */
+  windows: readonly ModuleInstance[];
+  /** dither this building's instanced glass fully away (real panes take over
+   *  while the player is inside); no-op on the baked fallback */
+  setGlassHidden(hidden: boolean): void;
+  /** distance-gated shadow casting: with frustumCulled=false bundle children,
+   *  every detail building renders into every CSM cascade — the ring turns far
+   *  ones off (one bundle re-record per band crossing, ~free). */
+  setCastShadow(cast: boolean): void;
   dispose(): void;
 }
 
@@ -292,8 +304,17 @@ function assembleBuildingMeshes(
     for (const [settled, clone] of borrowed) releaseFadeClone(settled, clone);
     borrowed = null;
   };
+  let castingShadow = true;
   return {
     group, triangles,
+    windows: moduleHandle && modules ? modules.instances : [],
+    setGlassHidden(hidden: boolean) { moduleHandle?.setGlassHidden(hidden); },
+    setCastShadow(cast: boolean) {
+      if (cast === castingShadow) return;
+      castingShadow = cast;
+      for (const p of parts) p.mesh.castShadow = cast;
+      group.needsUpdate = true;
+    },
     setOpacity(o: number) {
       moduleHandle?.setFade(o); // instanced windows dither in step (one texel write)
       const fading = o < 0.999;
