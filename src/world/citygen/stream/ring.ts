@@ -18,6 +18,7 @@ import { ensureCCW, streetEdgeIndex, edgeOutwardNormal, pointInPoly, signedDistT
 import { buildBuilding, buildInterior, assembleBuilding, warmupMaterials } from "../render";
 import { buildChunkLOD, type ChunkLOD } from "../render/chunkLod";
 import { createModuleLayer } from "../render/moduleLayer";
+import { createShellBatchLayer } from "../render/shellBatch";
 import { lodMaterial } from "../render/lod";
 import { buildCityGenMaterials } from "../theme/materials";
 import type { BuildingSpec, ColliderBox, MeshData, ModuleInstance } from "../core/types";
@@ -115,6 +116,7 @@ interface BuiltGroup {
   setOpacity(o: number): void;
   setCastShadow(cast: boolean): void;
   setGlassHidden(hidden: boolean): void;
+  setDoorLeavesVisible(vis: boolean): void;
   dispose(): void;
 }
 
@@ -285,6 +287,12 @@ export async function createCityGenRing(
   // instanced kit-of-parts windows: every detail building's panes/frames draw
   // as a handful of city-wide instanced meshes (see render/moduleLayer.ts)
   const moduleLayer = createModuleLayer(ctx.scene);
+  // batched building SHELLS: walls/roof/trim/stoop/doors of every detail building
+  // draw as ~a dozen city-wide BatchedMesh draws (was ~2384 bundle sub-draws), and
+  // frustum-cull per instance (see render/shellBatch.ts). Sized off the detail cap.
+  const shellBatch = createShellBatchLayer(ctx.scene, {
+    capacity: Math.max(768, Math.ceil(CT.maxDetail * 1.5)),
+  });
   // no host scheduler → run deferred work immediately (portable fallback)
   const schedule: ScheduleFn = ctx.schedule ?? ((_lane, job) => { let v = job(); let guard = 0; while (v === "again" && guard++ < 10000) v = job(); });
 
@@ -595,7 +603,7 @@ export async function createCityGenRing(
         const sdx = e.cx - lastPlayer.x, sdz = e.cz - lastPlayer.z;
         const staleR = CT.detailRadius + 40;
         if (sdx * sdx + sdz * sdz > staleR * staleR) return;
-        finishDetail(e, assembleBuilding(e as BuildingSpec, { meshes, instances, matTable }, materials, moduleLayer));
+        finishDetail(e, assembleBuilding(e as BuildingSpec, { meshes, instances, matTable }, materials, moduleLayer, shellBatch));
       });
     };
     buildWorker.onerror = (err) => {
@@ -620,7 +628,7 @@ export async function createCityGenRing(
     // (openDoorway → appendStoop) both read this same number, so steps ⟺ ramp.
     if (e.frontGround === undefined) e.frontGround = frontGroundFor(e);
     if (!buildWorker) {
-      finishDetail(e, buildBuilding(e as BuildingSpec, materials, moduleLayer)); // sync fallback
+      finishDetail(e, buildBuilding(e as BuildingSpec, materials, moduleLayer, shellBatch)); // sync fallback
       return;
     }
     e.pendingBuild = true;
@@ -756,20 +764,16 @@ export async function createCityGenRing(
   // swing is the NEGATIVE delta: rotation.y = baseYaw − swing (verified with edge
   // u=+X → street at −Z: baseYaw 0, swing π/2 points the leaf at +Z = inward).
   const spawnLeaf = (e: Entry, rt: DoorRt) => {
-    const bundle = e.detail!.group as THREE.BundleGroup;
-    let baked: THREE.Mesh | null = null, back: THREE.Mesh | null = null;
-    for (const ch of bundle.children) {
-      if (ch.name === "citygen.doorleaf") baked = ch as THREE.Mesh;
-      else if (ch.name === "citygen.doorback") back = ch as THREE.Mesh;
-    }
-    if (baked) baked.visible = false;
-    if (back) back.visible = false;
-    if (baked || back) bundle.needsUpdate = true;
-    rt.bakedLeaf = baked;
-    rt.bakedBack = back;
-    // SAME shared material instance as the baked leaf (settled at fade≥1) → no new
+    const bundle = e.detail!.group;
+    // Hide the baked leaf/back (batched shell OR bundle fallback handle this) while
+    // the dynamic swinging leaf is up. rt.bakedLeaf flags that they're hidden so a
+    // close restores them; the actual meshes live in the shell/batch, not here.
+    e.detail!.setDoorLeavesVisible(false);
+    rt.bakedLeaf = e.detail! as unknown as THREE.Mesh; // sentinel: leaves are hidden
+    rt.bakedBack = null;
+    // SHARED door material (no per-building baked leaf to copy from now) → no new
     // pipeline, and it must never be disposed with the leaf
-    const leafMat = (baked?.material as THREE.Material | undefined) ?? materials["citygen.doorleaf"] ?? materials["citygen.door"];
+    const leafMat = materials["citygen.doorleaf"] ?? materials["citygen.door"];
     const panelMat = materials["citygen.door.panel"] ?? leafMat;
     const hardwareMat = materials["citygen.door.hardware"] ?? materials["int.frame"] ?? leafMat;
     const leaf = new THREE.Group();
@@ -837,11 +841,7 @@ export async function createCityGenRing(
   // passable gap while an occupant delays solidification.
   const restoreClosedVisual = (e: Entry, rt: DoorRt) => {
     e.doorPending = true;
-    if (e.detail) {
-      if (rt.bakedLeaf) rt.bakedLeaf.visible = true;
-      if (rt.bakedBack) rt.bakedBack.visible = true;
-      if (rt.bakedLeaf || rt.bakedBack) (e.detail.group as THREE.BundleGroup).needsUpdate = true;
-    }
+    if (e.detail && rt.bakedLeaf) { e.detail.setDoorLeavesVisible(true); rt.bakedLeaf = null; rt.bakedBack = null; }
     disposeLeaf(rt);
   };
   // Leaf reached the frame: request solid walls, then restore the baked closed
@@ -867,8 +867,8 @@ export async function createCityGenRing(
     const rt = e.door;
     if (!rt) return;
     disposeLeaf(rt);
-    if (rt.bakedLeaf) { rt.bakedLeaf.visible = true; rt.bakedLeaf = null; } // group is being disposed; restore for tidiness
-    if (rt.bakedBack) { rt.bakedBack.visible = true; rt.bakedBack = null; }
+    if (rt.bakedLeaf) { e.detail?.setDoorLeavesVisible(true); rt.bakedLeaf = null; rt.bakedBack = null; } // detail being dropped; restore for tidiness
+
     rt.swing = 0; rt.from = 0; rt.to = 0; rt.t = 1;
     rt.animating = false;
     rt.needSolid = false;
@@ -1297,6 +1297,7 @@ export async function createCityGenRing(
       pendingBuilds.clear();
       for (const cell of [...loaded.values()]) unloadCell(cell); // → dropDetail → resetDoorRt per entry
       moduleLayer.dispose();
+      shellBatch.dispose();
       loaded.clear();
       building.length = 0;
       activeDoors.length = 0;

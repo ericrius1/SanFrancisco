@@ -15,6 +15,7 @@ import { mergePanels } from "./core/mesh";
 import { buildInterior as buildInteriorParts } from "./interior/interior";
 import type { ColliderBox, MeshData, ModuleInstance } from "./core/types";
 import type { ModuleLayer } from "./render/moduleLayer";
+import type { ShellBatchLayer, ShellHandle } from "./render/shellBatch";
 
 // SF "painted lady" body colours — mid-saturated so the bright white trim reads
 // as the classic Victorian contrast (bodies vary building-to-building).
@@ -47,6 +48,27 @@ export function bodyColour(seed: number, archetype = "victorian"): number {
   return pal[Math.floor(r() * pal.length) % pal.length];
 }
 
+/** The PROUD transform: sit the detail mesh a hair above its chunk-LOD prism (same
+ *  footprint) so it wins the depth test everywhere they overlap — no z-fight (the
+ *  app is reversed-z, where coincident surfaces are separated spatially, not with
+ *  polygonOffset). Scale ~0.6% about the base centroid + a deterministic ±3 cm XZ
+ *  nudge so two adjacent rowhouses sharing a coplanar party wall don't z-fight each
+ *  other. Colliders stay at the true footprint, so collision is unchanged. Shared
+ *  by the bundle mesh, the batched shell, and the instanced window layer so all
+ *  three ride the exact same offset. */
+export function proudMatrix(spec: BuildingSpec): THREE.Matrix4 {
+  let cx = 0, cz = 0;
+  for (const [px, pz] of spec.poly) { cx += px; cz += pz; }
+  cx /= spec.poly.length; cz /= spec.poly.length;
+  const s = 1.006, sy = 1.004, b = spec.base;
+  const rnd = rng(spec.seed, 71);
+  const nx = (rnd() - 0.5) * 0.06, nz = (rnd() - 0.5) * 0.06;
+  return new THREE.Matrix4()
+    .makeTranslation(cx + nx, b, cz + nz)
+    .multiply(new THREE.Matrix4().makeScale(s, sy, s))
+    .multiply(new THREE.Matrix4().makeTranslation(-cx, -b, -cz));
+}
+
 export interface BuiltBuilding {
   group: THREE.Group;
   triangles: number;
@@ -60,6 +82,10 @@ export interface BuiltBuilding {
   /** dither this building's instanced glass fully away (real panes take over
    *  while the player is inside); no-op on the baked fallback */
   setGlassHidden(hidden: boolean): void;
+  /** show/hide the baked door leaf+back (the player-operated door swaps in a
+   *  dynamic swinging leaf while these are hidden). Works on both the batched
+   *  shell and the per-building bundle fallback. */
+  setDoorLeavesVisible(vis: boolean): void;
   /** distance-gated shadow casting: with frustumCulled=false bundle children,
    *  every detail building renders into every CSM cascade — the ring turns far
    *  ones off (one bundle re-record per band crossing, ~free). */
@@ -182,6 +208,7 @@ export function assembleBuilding(
   gen: { meshes: MeshData[]; instances?: ModuleInstance[]; matTable?: string[] },
   mats: Record<string, THREE.Material>,
   moduleLayer?: ModuleLayer | null,
+  shellBatch?: ShellBatchLayer | null,
 ): BuiltBuilding {
   let meshes = gen.meshes;
   const instances = gen.instances ?? [];
@@ -189,7 +216,7 @@ export function assembleBuilding(
   if (instances.length && !moduleLayer) {
     meshes = meshes.concat(mergePanels(expandModuleInstances(instances, matTable)));
   }
-  return assembleBuildingMeshes(spec, meshes, mats, moduleLayer && instances.length ? { moduleLayer, instances, matTable } : null);
+  return assembleBuildingMeshes(spec, meshes, mats, moduleLayer && instances.length ? { moduleLayer, instances, matTable } : null, shellBatch ?? null);
 }
 
 function assembleBuildingMeshes(
@@ -197,26 +224,70 @@ function assembleBuildingMeshes(
   meshes: MeshData[],
   mats: Record<string, THREE.Material>,
   modules: { moduleLayer: ModuleLayer; instances: ModuleInstance[]; matTable: string[] } | null,
+  shellBatch: ShellBatchLayer | null = null,
 ): BuiltBuilding {
   const settledOf = (id: string): THREE.Material => {
     if (id.startsWith("wall.")) return settledWall(spec);
     if (id === "glass") return zoneGlass(spec.archetype);
     return mats[id] ?? settledWall(spec);
   };
-  // Each faded-in detail building draws as ONE WebGPU render bundle — a downtown
-  // block can hold dozens of detail buildings, ~9 per-panel draws each, so
-  // collapsing every settled building to a cached command buffer takes those
-  // hundreds of draws off the per-frame encode (main AND shadow passes). Same
-  // pattern as the baked tiles (world/tiles.ts): a real bundle for its whole life
-  // (never toggling isBundleGroup — that flip mid-session corrupts the shadow
-  // pass's bundle state). The bundle re-records exactly TWICE per fade direction:
-  // once when meshes swap onto their fade clones, once when they settle back onto
-  // the shared opaque materials — the fade frames in between write one opacity
-  // uniform per material and re-record nothing.
+  const proud = proudMatrix(spec);
+  const wallKind = WALL_KIND[spec.archetype] ?? "smooth";
+  const tint = new THREE.Color(bodyColour(spec.seed, spec.archetype));
+
+  // ===== BATCHED SHELL PATH (default) =========================================
+  // walls/roof/trim/stoop/doors go into the shared BatchedMesh layer — one GPU
+  // draw per material citywide instead of one bundle-replay per building — and
+  // fade/tint ride a per-instance texel (no material clones). Windows still go to
+  // the instanced module layer; both fade from the single setOpacity call below so
+  // they stay in lockstep. Falls through to the bundle path only if a batch is full.
+  if (shellBatch) {
+    const shellHandle = shellBatch.addBuilding(meshes, { matrix: proud, wallKind, tint, mats });
+    if (shellHandle) {
+      let triangles = 0;
+      for (const md of meshes) triangles += md.indices.length / 3;
+      // empty placeholder group: the ring still scene-adds e.detail.group and the
+      // door subsystem reads its (proud) matrix to scale the dynamic leaf.
+      const group = new THREE.Group();
+      group.name = "cityGenBuilding";
+      group.matrixAutoUpdate = false;
+      group.matrix.copy(proud);
+      group.matrixWorldNeedsUpdate = true;
+      const moduleHandle = modules
+        ? modules.moduleLayer.addBuilding(modules.instances, modules.matTable, {
+            matrix: proud, zone: ARCH_ZONE[spec.archetype] ?? "residential", seed: spec.seed,
+          })
+        : null;
+      // window slot texture exhausted → bake the panes into the batch too
+      let winHandle: ShellHandle | null = null;
+      if (modules && !moduleHandle) {
+        const expanded = mergePanels(expandModuleInstances(modules.instances, modules.matTable));
+        winHandle = shellBatch.addBuilding(expanded, { matrix: proud, wallKind, tint, mats });
+        for (const md of expanded) triangles += md.indices.length / 3;
+      }
+      return {
+        group, triangles,
+        windows: moduleHandle && modules ? modules.instances : [],
+        setGlassHidden(hidden: boolean) { moduleHandle?.setGlassHidden(hidden); },
+        setDoorLeavesVisible(vis: boolean) { shellHandle.setDoorLeavesVisible(vis); },
+        setCastShadow(cast: boolean) { shellHandle.setCastShadow(cast); winHandle?.setCastShadow(cast); },
+        setOpacity(o: number) { moduleHandle?.setFade(o); shellHandle.setFade(o); winHandle?.setFade(o); },
+        dispose() { moduleHandle?.free(); shellHandle.free(); winHandle?.free(); group.clear(); },
+      };
+    }
+    // batch full → fall through to the per-building bundle below (bounded fallback)
+  }
+
+  // ===== BUNDLE FALLBACK PATH =================================================
+  // Each faded-in detail building draws as ONE WebGPU render bundle — kept as the
+  // fallback when the shell batch is unavailable or full. The bundle re-records
+  // exactly TWICE per fade direction (swap onto fade clones, settle back onto the
+  // shared opaque materials); the fade frames between write one opacity uniform.
   const group = new THREE.BundleGroup();
   group.name = "cityGenBuilding";
   const geoms: THREE.BufferGeometry[] = [];
   const parts: { mesh: THREE.Mesh; settled: THREE.Material }[] = [];
+  const doorMeshes: THREE.Mesh[] = []; // baked door leaf/back — toggled on open
   // settled → clone this building is currently borrowing from the pool
   let borrowed: Map<THREE.Material, THREE.Material> | null = new Map();
   let triangles = 0;
@@ -236,37 +307,16 @@ function assembleBuildingMeshes(
     mesh.name = md.materialId; // lets probes tell a wall/base panel from door/glass
     mesh.castShadow = true;
     mesh.receiveShadow = true;
-    // a bundle records each child's draw once, so per-child frustum culling would
-    // freeze whatever the record-time camera saw — children draw unconditionally,
-    // the whole (near-player) building is distance-managed by the streaming ring.
     mesh.frustumCulled = false;
     group.add(mesh);
     parts.push({ mesh, settled });
+    if (md.materialId === "citygen.doorleaf" || md.materialId === "citygen.doorback") doorMeshes.push(mesh);
   }
-  // Sit the detail mesh a hair PROUD of its chunk-LOD prism (same footprint) so it
-  // wins the depth test everywhere they overlap — no z-fighting. Geometric (the
-  // app is reversed-z, where the codebase separates coincident surfaces spatially
-  // rather than with polygonOffset). Scale ~0.6% about the base centroid; colliders
-  // stay at the true footprint, so collision is unchanged.
-  {
-    let cx = 0, cz = 0; for (const [px, pz] of spec.poly) { cx += px; cz += pz; }
-    cx /= spec.poly.length; cz /= spec.poly.length;
-    const s = 1.006, sy = 1.004, b = spec.base;
-    // + a deterministic ±3 cm XZ nudge (as facade.ts does) so two adjacent
-    // rowhouses that share a coplanar party wall don't z-fight against each other.
-    const rnd = rng(spec.seed, 71);
-    const nx = (rnd() - 0.5) * 0.06, nz = (rnd() - 0.5) * 0.06;
-    group.matrixAutoUpdate = false;
-    group.matrix
-      .makeTranslation(cx + nx, b, cz + nz)
-      .multiply(new THREE.Matrix4().makeScale(s, sy, s))
-      .multiply(new THREE.Matrix4().makeTranslation(-cx, -b, -cz));
-    group.matrixWorldNeedsUpdate = true;
-  }
+  group.matrixAutoUpdate = false;
+  group.matrix.copy(proud);
+  group.matrixWorldNeedsUpdate = true;
   // kit-of-parts windows → the instanced module layer, under the SAME proud
-  // transform as the bundle (or the panes would sink into the scaled walls).
-  // Its fade slot is driven from setOpacity below, so windows dither in step
-  // with the building's clone-fade parts.
+  // transform. Its fade slot is driven from setOpacity below.
   const moduleHandle = modules
     ? modules.moduleLayer.addBuilding(modules.instances, modules.matTable, {
         matrix: group.matrix,
@@ -309,6 +359,11 @@ function assembleBuildingMeshes(
     group, triangles,
     windows: moduleHandle && modules ? modules.instances : [],
     setGlassHidden(hidden: boolean) { moduleHandle?.setGlassHidden(hidden); },
+    setDoorLeavesVisible(vis: boolean) {
+      let changed = false;
+      for (const m of doorMeshes) if (m.visible !== vis) { m.visible = vis; changed = true; }
+      if (changed) group.needsUpdate = true;
+    },
     setCastShadow(cast: boolean) {
       if (cast === castingShadow) return;
       castingShadow = cast;
@@ -350,9 +405,9 @@ function assembleBuildingMeshes(
 /** Build ONE building's meshes into a fresh group (synchronous path: generate()
  *  runs here on the main thread — the streaming ring prefers the worker +
  *  assembleBuilding; demos/tests and the no-worker fallback use this). */
-export function buildBuilding(spec: BuildingSpec, mats: Record<string, THREE.Material>, moduleLayer?: ModuleLayer | null): BuiltBuilding {
+export function buildBuilding(spec: BuildingSpec, mats: Record<string, THREE.Material>, moduleLayer?: ModuleLayer | null, shellBatch?: ShellBatchLayer | null): BuiltBuilding {
   const gen = generate(spec);
-  return assembleBuilding(spec, gen, mats, moduleLayer);
+  return assembleBuilding(spec, gen, mats, moduleLayer, shellBatch);
 }
 
 /** Build a building's INTERIOR meshes + colliders (lazy: only when entered).

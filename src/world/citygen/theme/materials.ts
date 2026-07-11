@@ -45,11 +45,20 @@ function standard(col: number, roughness: number, opts: { metalness?: number; em
  *     kind (per pass), reused city-wide, instead of a compile per building;
  *   • re-colouring is `m.color.set(hex)` — a uniform write, nothing rebuilds.
  */
-type WallNodes = { color: THREE.MeshStandardNodeMaterial["colorNode"]; emissive: THREE.MeshStandardNodeMaterial["emissiveNode"] };
-const wallNodeCache = new Map<WallKind, WallNodes>();
-function wallNodes(kind: WallKind): WallNodes {
-  let g = wallNodeCache.get(kind);
-  if (g) return g;
+// Self-lit body tint factor — the batched shell layer reuses this so a batched
+// wall reads identically to a per-material one (both multiply the pattern by it).
+export const WALL_EMISSIVE = 0.3 * EXPOSURE_REBASE;
+
+// GRAYSCALE surface pattern per wall kind (no body colour) — a pure function of
+// the wall UV/world position. Both the per-material wall (× material.color) and
+// the batched-shell wall (× per-instance tint) multiply THIS by their colour, so
+// the surface texture is defined once and stays in sync across both paths.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const wallPatternCache = new Map<WallKind, any>();
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function wallPattern(kind: WallKind): any {
+  let p = wallPatternCache.get(kind);
+  if (p) return p;
   // uv() is metric (metres / UV_SCALE) from each wall quad's corner — good for
   // surface patterns. positionWorld drives large-scale weathering mottle.
   const uy = uv().y.mul(UV_SCALE), ux = uv().x.mul(UV_SCALE); // metres up / along
@@ -75,9 +84,19 @@ function wallNodes(kind: WallKind): WallNodes {
     pattern = mx_noise_float(positionWorld.mul(2.2)).mul(0.06).add(1);
   }
   const mottle = mx_noise_float(positionWorld.mul(0.12)).mul(0.04).add(1);
-  const tinted = materialColor.mul(pattern).mul(mottle);
+  p = pattern.mul(mottle);
+  wallPatternCache.set(kind, p);
+  return p;
+}
+
+type WallNodes = { color: THREE.MeshStandardNodeMaterial["colorNode"]; emissive: THREE.MeshStandardNodeMaterial["emissiveNode"] };
+const wallNodeCache = new Map<WallKind, WallNodes>();
+function wallNodes(kind: WallKind): WallNodes {
+  let g = wallNodeCache.get(kind);
+  if (g) return g;
+  const tinted = materialColor.mul(wallPattern(kind));
   // self-lit body tint (the world's ambient is near-zero) so shaded façades read.
-  g = { color: tinted as WallNodes["color"], emissive: tinted.mul(float(0.3 * EXPOSURE_REBASE)) as WallNodes["emissive"] };
+  g = { color: tinted as WallNodes["color"], emissive: tinted.mul(float(WALL_EMISSIVE)) as WallNodes["emissive"] };
   wallNodeCache.set(kind, g);
   return g;
 }

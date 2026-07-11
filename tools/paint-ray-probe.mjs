@@ -52,10 +52,10 @@ const SETUP = `(() => {
     const out = [];
     for (const h of caster.intersectObjects(targetsOf(), true)) {
       if (h.object.visible === false) continue;
-      if (h.object.name === "cityGenChunkLOD") {
-        const vis = h.object.geometry.getAttribute("lodVisibility");
-        if (h.face && vis && vis.getX(h.face.a) < 0.5) continue; // hidden prism
-      }
+      // NOTE: hidden prism ranges (lodVisibility<0.5) are COUNTED as surfaces now —
+      // they stand for a settled detail building whose wall lives in the batched
+      // shell layer (not a raycastable mesh) ~0.6% proud of this coplanar prism.
+      // (Was skipped when detail walls were raycastable cityGenBuilding meshes.)
       out.push(Math.round(h.distance * 1000) / 1000);
     }
     return out;
@@ -159,7 +159,9 @@ async function main() {
     for (const w of rep.walls) {
       const r = w.refined;
       const okKind = r && r.kind === "building";
-      const okVis = w.visNearRefined !== null && w.visNearRefined <= 0.5;
+      // 1.0m (was 0.5m): the refiner now targets the coplanar prism (true footprint);
+      // the visible batched wall sits ~0.6% proud, an offset a grazing ray amplifies.
+      const okVis = w.visNearRefined !== null && w.visNearRefined <= 1.0;
       const ok = okKind && okVis;
       if (ok) wallPass++;
       console.log(`  bearing ${String(w.deg).padStart(5)}°  loose ${w.loose.dist.toFixed(2)}m -> refined ${r ? r.dist.toFixed(2) + "m" : "MISS"} (Δ ${r ? (r.dist - w.loose.dist).toFixed(2) : "-"}m)  visΔ ${w.visNearRefined === null ? "-" : w.visNearRefined.toFixed(3)}m  ${ok ? "OK" : "BAD"}`);

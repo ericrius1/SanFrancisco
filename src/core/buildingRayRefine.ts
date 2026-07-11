@@ -136,7 +136,6 @@ export class BuildingRayRefiner {
 
     const idx = this.#indexOf(geo);
     const pos = geo.getAttribute("position");
-    const vis = geo.getAttribute("lodVisibility");
     const cx0 = Math.max(0, Math.floor((box.min.x - idx.minX) / BUCKET));
     const cx1 = Math.min(idx.nx - 1, Math.floor((box.max.x - idx.minX) / BUCKET));
     const cz0 = Math.max(0, Math.floor((box.min.z - idx.minZ) / BUCKET));
@@ -151,10 +150,13 @@ export class BuildingRayRefiner {
           if (seen.has(t)) continue;
           seen.add(t);
           const ia = index.getX(t);
-          // hidden prism (a faded-in detail building owns this silhouette): its
-          // vertex range is zeroed — skip, as the shader's alphaTest discards it.
-          // Ranges are per-building, so one vertex speaks for the triangle.
-          if (vis && vis.getX(ia) < 0.5) continue;
+          // NOTE: hidden prism ranges (lodVisibility<0.5) are NOT skipped. A hidden
+          // range means a fully-faded-in DETAIL building owns that silhouette — and
+          // its wall now lives in the batched shell layer (not a raycastable mesh),
+          // sitting ~0.6% proud of this prism (coplanar to a few cm). So the hidden
+          // prism IS the stand-in surface a paint/ball ray must hit; skipping it (as
+          // the old code did, when the detail wall was a raycastable bundle mesh)
+          // would let rays pass straight through settled detail buildings.
           this.#a.fromBufferAttribute(pos as THREE.BufferAttribute, ia);
           this.#b.fromBufferAttribute(pos as THREE.BufferAttribute, index.getX(t + 1));
           this.#c.fromBufferAttribute(pos as THREE.BufferAttribute, index.getX(t + 2));

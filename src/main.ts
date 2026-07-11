@@ -1,4 +1,5 @@
 import * as THREE from "three/webgpu";
+import * as TSL from "three/tsl";
 import { Inspector } from "three/addons/inspector/Inspector.js";
 import Stats from "three/addons/libs/stats.module.js";
 import CameraControls from "camera-controls";
@@ -3018,6 +3019,7 @@ async function boot() {
       // screenshots would capture a stale boot-pose frame no matter what the
       // camera was set to.
       __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, goldenGateTennis, pickleball, coronaHeights, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, rocketRiders, boatLaunchers, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector,
+        TSL,
         renderIdle: () => modulesReady && !lateRenderWarmupActive }
     });
   };
