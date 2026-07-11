@@ -70,16 +70,26 @@ function wallPlaces(cell: Rect, length: number, depth: number): WallPlace[] {
   const cx = rectCX(cell), cz = rectCZ(cell);
   const alongX = Math.min(length, rectW(cell) - 0.18);
   const alongZ = Math.min(length, rectD(cell) - 0.18);
-  return [
-    { side: "north", axis: "x", cx, cz: cell.z0 + depth / 2, length: alongX, depth,
-      foot: rectAround(cx, cell.z0 + depth / 2, alongX, depth), inward: [0, 1] },
-    { side: "south", axis: "x", cx, cz: cell.z1 - depth / 2, length: alongX, depth,
-      foot: rectAround(cx, cell.z1 - depth / 2, alongX, depth), inward: [0, -1] },
-    { side: "west", axis: "z", cx: cell.x0 + depth / 2, cz, length: alongZ, depth,
-      foot: rectAround(cell.x0 + depth / 2, cz, depth, alongZ), inward: [1, 0] },
-    { side: "east", axis: "z", cx: cell.x1 - depth / 2, cz, length: alongZ, depth,
-      foot: rectAround(cell.x1 - depth / 2, cz, depth, alongZ), inward: [-1, 0] },
-  ];
+  const out: WallPlace[] = [];
+  // Try several realistic bays along each wall. The old centre-only candidates
+  // repeatedly landed on a window or circulation strip, leaving large lofts
+  // empty even though metres of clear perimeter remained.
+  const offsets = [0, -0.75, -0.25, 0.25, 0.75];
+  const maxX = Math.max(0, rectW(cell) / 2 - alongX / 2 - 0.09);
+  const maxZ = Math.max(0, rectD(cell) / 2 - alongZ / 2 - 0.09);
+  for (const f of offsets) {
+    const px = cx + f * maxX;
+    out.push({ side: "north", axis: "x", cx: px, cz: cell.z0 + depth / 2, length: alongX, depth,
+      foot: rectAround(px, cell.z0 + depth / 2, alongX, depth), inward: [0, 1] });
+    out.push({ side: "south", axis: "x", cx: px, cz: cell.z1 - depth / 2, length: alongX, depth,
+      foot: rectAround(px, cell.z1 - depth / 2, alongX, depth), inward: [0, -1] });
+    const pz = cz + f * maxZ;
+    out.push({ side: "west", axis: "z", cx: cell.x0 + depth / 2, cz: pz, length: alongZ, depth,
+      foot: rectAround(cell.x0 + depth / 2, pz, depth, alongZ), inward: [1, 0] });
+    out.push({ side: "east", axis: "z", cx: cell.x1 - depth / 2, cz: pz, length: alongZ, depth,
+      foot: rectAround(cell.x1 - depth / 2, pz, depth, alongZ), inward: [-1, 0] });
+  }
+  return out;
 }
 
 /**
@@ -323,12 +333,16 @@ export function furnish(
   // location that would float across an opening.
   const artCount = style.tier === 2 ? 3 : style.tier === 1 ? 2 : 1;
   const artWidth = Math.min(1.45, 0.78 * style.artScale);
-  const candidates: { spot: ArtSpot; foot: Rect }[] = [
-    { spot: { x: cell.x0 + 0.055, z: cz, normal: [1, 0, 0] }, foot: rectAround(cell.x0 + 0.08, cz, 0.16, artWidth) },
-    { spot: { x: cell.x1 - 0.055, z: cz, normal: [-1, 0, 0] }, foot: rectAround(cell.x1 - 0.08, cz, 0.16, artWidth) },
-    { spot: { x: cx, z: cell.z0 + 0.055, normal: [0, 0, 1] }, foot: rectAround(cx, cell.z0 + 0.08, artWidth, 0.16) },
-    { spot: { x: cx, z: cell.z1 - 0.055, normal: [0, 0, -1] }, foot: rectAround(cx, cell.z1 - 0.08, artWidth, 0.16) },
-  ];
+  const candidates: { spot: ArtSpot; foot: Rect }[] = [];
+  for (const t of [0.25, 0.5, 0.75]) {
+    const ax = cell.x0 + rectW(cell) * t, az = cell.z0 + rectD(cell) * t;
+    candidates.push(
+      { spot: { x: cell.x0 + 0.055, z: az, normal: [1, 0, 0] }, foot: rectAround(cell.x0 + 0.08, az, 0.16, artWidth) },
+      { spot: { x: cell.x1 - 0.055, z: az, normal: [-1, 0, 0] }, foot: rectAround(cell.x1 - 0.08, az, 0.16, artWidth) },
+      { spot: { x: ax, z: cell.z0 + 0.055, normal: [0, 0, 1] }, foot: rectAround(ax, cell.z0 + 0.08, artWidth, 0.16) },
+      { spot: { x: ax, z: cell.z1 - 0.055, normal: [0, 0, -1] }, foot: rectAround(ax, cell.z1 - 0.08, artWidth, 0.16) },
+    );
+  }
   let hung = 0;
   for (const c of shuffled(candidates, r)) {
     if (hung >= artCount || blocked.some((b) => overlaps(c.foot, b))) continue;

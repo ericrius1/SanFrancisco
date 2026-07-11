@@ -45,11 +45,12 @@ export class BoatController implements ModeController {
       ctx.position.y = waterHeight(ctx.position.x, ctx.position.z, ctx.time) + 0.5;
       return;
     }
-    // first hop from land — launch on the bay
-    const bay = ctx.map.meta.spawns.bay;
-    const y = waterHeight(bay.x, bay.z, ctx.time) + 0.5;
-    ctx.position.set(bay.x, y, bay.z);
-    return bay.heading;
+    // same-spot mode switch: stay put (beached) — don't yank downtown walkers
+    // out to the bay spawn on their first boat keypress
+    ctx.position.y = Math.max(
+      ctx.position.y,
+      ctx.map.effectiveGround(ctx.position.x, ctx.position.z) + 0.8
+    );
   }
 
   update(ctx: PlayerCtx, dt: number, input: Input, frame: ModeFrame) {

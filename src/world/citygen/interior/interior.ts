@@ -121,8 +121,14 @@ export function buildInterior(spec: BuildingSpec, zone: InteriorZone = "resident
   // to the full footprint (below); this only bounds the walk-in room plan.
   const area = inset(inscribedRect(poly, bb) ?? bb, INSET);
   const base = spec.base;
-  const storeyH = specFor(spec.archetype).floorH;
-  const requestedFloors = Math.max(1, Math.min(MAX_FLOORS, Math.round((spec.top - base) / storeyH)));
+  const nominalStoreyH = specFor(spec.archetype).floorH;
+  const totalFloors = Math.max(1, Math.round((spec.top - base) / nominalStoreyH));
+  const requestedFloors = Math.min(MAX_FLOORS, totalFloors);
+  // For homes/low-rise buildings, distribute the real visible height exactly
+  // across the same rounded floor count as the facade. This closes the stale
+  // 20–60 cm perimeter gap that exposed exterior cornices at interior ceilings.
+  // Tall buildings still furnish only four nominal-height lower storeys.
+  const storeyH = totalFloors <= MAX_FLOORS ? (spec.top - base) / totalFloors : nominalStoreyH;
   const style = interiorStyle(spec, zone, rectArea(area));
 
   const out = new PanelBuilder();
@@ -237,7 +243,10 @@ export function buildInterior(spec: BuildingSpec, zone: InteriorZone = "resident
     const shell = dressInteriorShell(out, poly, fY, storeyH, style, k === 0 ? frontOpening : null);
 
     // partition walls (skip on open plans), then the stair up to the next floor
-    if (!openFloor) buildWalls(out, cols, walls, fY, style.trim, style.wall, Math.min(storeyH - 0.16, style.family === "industrial" ? 3.45 : 3.05));
+    // Partitions meet the ceiling underside. The old 3.05 m aesthetic cap left a
+    // conspicuous floating strip above door headers on taller Edwardian/loft
+    // storeys, making adjoining rooms read as unfinished set pieces.
+    if (!openFloor) buildWalls(out, cols, walls, fY, style.trim, style.wall, storeyH - 0.07);
     if (stair && k < nFloors - 1) buildStair(out, cols, stair.region, stair.runAxis, fY, storeyH);
 
     // ---- circulation first, furniture second ---------------------------------

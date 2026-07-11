@@ -76,7 +76,8 @@ export interface ModeController {
    * session refresh doesn't creep the player upward. */
   readonly spawnLift: number;
   /** Adjust entry position when switching INTO this mode (altitude pushes,
-   * shore hops, the boat's bay teleport). May return a facing override. */
+   * shore hops). Keeps the previous mode's XZ — aerial modes only raise Y.
+   * May return a facing override. */
   enter?(ctx: PlayerCtx): number | void;
   /** One fixed physics step of control. */
   update(ctx: PlayerCtx, dt: number, input: Input, frame: ModeFrame): void;

@@ -6,6 +6,7 @@ import type { ModeController, ModeFrame, PlayerCtx } from "../../player/types";
 import { poseBone, type BirdRig } from "./mesh";
 import { featherWind } from "./feathers";
 import { BIRD_TUNING } from "./tuning";
+import { TYPICAL_TREE_HEIGHT } from "../shared";
 
 const V = {
   tmp: new THREE.Vector3(),
@@ -73,13 +74,12 @@ export class BirdController implements ModeController {
   }
 
   enter(ctx: PlayerCtx) {
-    // launch clear of the local rooftops — lower than the plane, birds live in
-    // the canyons — and never underwater (effectiveGround over the bay is the
-    // bay floor)
+    // same XZ; phoenix climbs above the plane's cruise band (and clear of water)
     const roof = ctx.physics.highestBuildingTop(ctx.position.x, ctx.position.z, 80);
     const ground = ctx.map.effectiveGround(ctx.position.x, ctx.position.z);
     const water = ctx.map.isWater(ctx.position.x, ctx.position.z) ? 12 : -Infinity;
-    ctx.position.y = Math.max(ctx.position.y, roof + 8, ground + 16, water);
+    const cruise = ground + TYPICAL_TREE_HEIGHT * 2 + 45;
+    ctx.position.y = Math.max(ctx.position.y, cruise, roof + 45, water);
   }
 
   update(ctx: PlayerCtx, dt: number, input: Input, frame: ModeFrame) {

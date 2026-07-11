@@ -2,6 +2,7 @@ import * as THREE from "three/webgpu";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { float, instancedArray, instanceIndex, saturate, sin, uniform, uv, vec2, vec3, vec4, vertexStage } from "three/tsl";
 import { tunables } from "../core/persist";
+import { applyMaterialPolicy, RenderBand, tagTransparency } from "../render/transparency";
 import type { WorldMap } from "./heightmap";
 
 // TSL node generics fight composition; any is the idiom here (see facade.ts)
@@ -298,15 +299,13 @@ function buildBeacons(g: number, mastTops: THREE.Vector3[]): THREE.Sprite {
     col.mul(0.5).mul(SUTRO_LIGHTS_INTENSITY).mul(SUTRO_LIGHTS_TUNING.brightness),
     1
   );
-  material.blending = THREE.AdditiveBlending;
-  material.transparent = true;
-  material.depthWrite = false;
+  applyMaterialPolicy(material, "additiveWorld");
   material.fog = false;
 
   const sprite = new THREE.Sprite(material);
   sprite.count = count;
   sprite.frustumCulled = false;
-  sprite.renderOrder = 90;
+  tagTransparency(sprite, { profile: "additiveWorld", renderBand: RenderBand.WORLD_ADDITIVE });
   sprite.name = "sutro_beacons";
   return sprite;
 }

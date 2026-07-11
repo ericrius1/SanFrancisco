@@ -1,5 +1,6 @@
 import * as THREE from "three/webgpu";
 import { EXPOSURE_REBASE } from "../config";
+import { applyMaterialPolicy, RenderBand, tagTransparency } from "../render/transparency";
 import type { WorldMap } from "./heightmap";
 
 type RoadsJson = {
@@ -53,13 +54,11 @@ const PROBE_STEP_M = 1.0;
 const DRAPE_TOL_M = 0.045;
 
 function makeMarkingMaterial(colorHex: number, opacity: number): THREE.MeshBasicNodeMaterial {
-  const mat = new THREE.MeshBasicNodeMaterial({
+  const mat = applyMaterialPolicy(new THREE.MeshBasicNodeMaterial({
     color: colorHex,
-    depthWrite: false,
     opacity,
     side: THREE.DoubleSide
-  });
-  mat.transparent = true;
+  }), "alphaSurface");
   mat.toneMapped = false;
   // True decal: bias the depth test toward the camera so the marking wins
   // against the coincident road surface without any physical lift, and never
@@ -255,7 +254,7 @@ function meshFromPositions(name: string, positions: number[], mat: THREE.Materia
   const mesh = new THREE.Mesh(geo, mat);
   mesh.name = name;
   // Draw after the road surface (renderOrder 0) so the decal composites on top.
-  mesh.renderOrder = 20;
+  tagTransparency(mesh, { profile: "alphaSurface", renderBand: RenderBand.DECALS });
   mesh.frustumCulled = true;
   // Paint should take the road's shadow but never cast one of its own. (The
   // MeshBasicNodeMaterial does not sample lighting, so receiveShadow is intent

@@ -165,8 +165,11 @@ const apertureGrades = [
   { top: 12, grade: 3.6 },
   { top: 16, grade: 7.2 },
   { top: 30, grade: 12 },
+  { top: 30, grade: 20 },
+  { top: 30, grade: 25 },
+  { top: 30, grade: 27 },
 ];
-for (const archetype of archetypes) for (const length of [4.5, 6, 9, 16]) for (const elevation of apertureGrades) {
+for (const archetype of archetypes) for (const length of [4.5, 6, 6.1, 9, 16]) for (const elevation of apertureGrades) {
   const spec = {
     i: 0, id: 900000 + apertureCases, seed: 1200 + apertureCases,
     poly: [[0, 0], [length, 0], [length, 9], [0, 9]],

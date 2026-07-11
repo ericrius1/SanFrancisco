@@ -20,6 +20,7 @@ import { POSTFX_TUNING, POSTFX_TOGGLES, POSTFX_QUALITY_KEYS, applyPostFxParams }
 import { VOICE_TUNING } from "../net/voice";
 import { NATURE_AUDIO_TUNING } from "../audio";
 import { TEE_BEACON_TUNING } from "../gameplay/golf/tuning";
+import { auditSceneTransparency } from "../render/transparency";
 import type { Fireworks } from "../fx/fireworks";
 import type { TileStreamer } from "../world/tiles";
 import { withTweakBindingEventsSuppressed } from "../core/persist";
@@ -469,6 +470,43 @@ export class DebugPanel {
     // frame, so both the coverage and Fresnel rim can be judged in place.
     const golfBeacons = advanced.addFolder({ title: "golf tee beacons" });
     TEE_BEACON_TUNING.bind(golfBeacons);
+
+    // Policy adoption is inspected from the live scene because deferred world
+    // modules and imported assets do not all exist at boot. This remains an
+    // explicit scan so opening the pane never turns a full traversal into a
+    // recurring frame cost.
+    const transparency = advanced.addFolder({ title: "transparency" });
+    const transparencyStats = {
+      tagged: 0,
+      untagged: 0,
+      hashed: 0,
+      blended: 0,
+      warnings: 0
+    };
+    const transparencyBindings = [
+      transparency.addBinding(transparencyStats, "tagged", { readonly: true }),
+      transparency.addBinding(transparencyStats, "untagged", { readonly: true }),
+      transparency.addBinding(transparencyStats, "hashed", { readonly: true }),
+      transparency.addBinding(transparencyStats, "blended", { readonly: true }),
+      transparency.addBinding(transparencyStats, "warnings", { readonly: true })
+    ];
+    const scanTransparency = (log: boolean) => {
+      if (!this.#scene) return;
+      const report = auditSceneTransparency(this.#scene);
+      transparencyStats.tagged = report.counts.taggedObjects;
+      transparencyStats.untagged = report.counts.untaggedTransparentMaterials + report.counts.untaggedHashedMaterials;
+      transparencyStats.hashed = report.counts.hashedMaterials;
+      transparencyStats.blended = report.counts.transparentMaterials;
+      transparencyStats.warnings = report.counts.warningCount;
+      for (const binding of transparencyBindings) binding.refresh();
+      if (log) {
+        console.info("[transparency] scene audit", report.counts);
+        if (report.warnings.length > 0) console.table(report.warnings);
+      }
+    };
+    const scanTransparencyButton = transparency.addButton({ title: "scan scene", label: "audit" });
+    scanTransparencyButton.on("click", () => scanTransparency(true));
+    scanTransparency(false);
 
     // proximity voice chat: Voice.update polls these live every frame, so
     // plain persisted bindings are enough — no onChange side effects

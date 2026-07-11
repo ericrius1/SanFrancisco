@@ -2,6 +2,7 @@ import * as THREE from "three/webgpu";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { color, mix, saturate, uniform, uv } from "three/tsl";
 import { LIGHT_SCALE } from "../config";
+import { applyMaterialPolicy, RenderBand, tagTransparency } from "../render/transparency";
 import type { WorldMap } from "./heightmap";
 import type { RoadGraph } from "./traffic/roadGraph";
 
@@ -228,16 +229,15 @@ export class StreetLamps {
     const d = uv().sub(0.5).length().mul(2); // 0 at centre → 1 at rim
     const falloff = saturate(d).oneMinus().pow(2) as N;
     discMat.colorNode = color(0xffb866).mul(falloff).mul(STREET_LAMPS_INTENSITY) as N;
-    discMat.transparent = true;
-    discMat.depthWrite = false;
+    applyMaterialPolicy(discMat, "additiveWorld");
     discMat.toneMapped = false;
     discMat.fog = false;
-    discMat.blending = THREE.AdditiveBlending;
     discMat.polygonOffset = true;
     discMat.polygonOffsetFactor = -2;
     discMat.polygonOffsetUnits = -2;
     this.#discs = new THREE.InstancedMesh(discGeo, discMat, CAP);
-    this.#discs.renderOrder = 21; // after road markings (20), still additive on top
+    // after road markings, still additive on top
+    tagTransparency(this.#discs, { profile: "additiveWorld", renderBand: RenderBand.DECAL_ADDITIVE });
 
     // c. BULBS — small box under the head: dark glass by day, warm glow at night
     const bulbGeo = new THREE.BoxGeometry(0.22, 0.16, 0.28);

@@ -1,5 +1,8 @@
 import type { PlayerCtx } from "../player/types";
 
+/** Typical tall park/street canopy (m). Plane/phoenix launches clear ~2× this. */
+export const TYPICAL_TREE_HEIGHT = 28;
+
 /** Nearest dry ground, scanning outward in rings from the player. */
 export function findLand(ctx: PlayerCtx): { x: number; z: number } | null {
   for (let r = 10; r <= 300; r += 20) {

@@ -202,10 +202,23 @@ export function windowGrid(out: PanelBuilder, e: FacadeEdge, m: WinMats, bandY0:
 
 /** horizontal projecting belt/string course across the whole edge at height y */
 export function beltCourse(out: PanelBuilder, e: FacadeEdge, y: number, mat: string, depth = 0.06, h = 0.07): void {
-  const a = gp(e, 0), b = gp(e, 1);
-  const along = unit(sub([b[0], y, b[2]], [a[0], y, a[2]]));
-  out.box(mat, [(a[0] + b[0]) / 2 + e.normal[0] * depth * 0.5, y, (a[2] + b[2]) / 2 + e.normal[1] * depth * 0.5],
-    [e.length / 2, h, depth], along, UP, [e.normal[0], 0, e.normal[1]], true);
+  const emit = (t0: number, t1: number) => {
+    if ((t1 - t0) * e.length < 0.08) return;
+    const a = gp(e, t0), b = gp(e, t1);
+    const along = unit(sub([b[0], y, b[2]], [a[0], y, a[2]]));
+    out.box(mat, [(a[0] + b[0]) / 2 + e.normal[0] * depth * 0.5, y, (a[2] + b[2]) / 2 + e.normal[1] * depth * 0.5],
+      [(t1 - t0) * e.length / 2, h, depth], along, UP, [e.normal[0], 0, e.normal[1]], true);
+  };
+  if (doorEligible(e)) {
+    const dm = doorMetrics(e.length, e.base, e.top, e.grade);
+    if (y + h > dm.sill && y - h < dm.openTop) {
+      const pad = 0.1 / e.length;
+      emit(0, Math.max(0, dm.tc - dm.halfW / e.length - pad));
+      emit(Math.min(1, dm.tc + dm.halfW / e.length + pad), 1);
+      return;
+    }
+  }
+  emit(0, 1);
 }
 
 /** cornice at the roofline. style: "bracketed" (Victorian corbels+dentils),

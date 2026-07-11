@@ -26,6 +26,7 @@ import {
 import type { FolderApi, Pane } from "tweakpane";
 import { LIGHT_SCALE } from "../config";
 import { tunables } from "../core/persist";
+import { applyMaterialPolicy, RenderBand, tagTransparency } from "../render/transparency";
 import type { WorldMap } from "../world/heightmap";
 import { AUDIO_TUNING, FireworksAudio } from "./fireworksAudio";
 
@@ -452,14 +453,12 @@ export class Fireworks {
     const soft = saturate(d.oneMinus()).pow(2.4);
     const core = saturate(d.mul(1.6).oneMinus()).pow(5).mul(2.5);
     material.colorNode = vec4(packed.xyz.mul(soft.add(core)), 1);
-    material.blending = THREE.AdditiveBlending;
-    material.transparent = true;
-    material.depthWrite = false;
+    applyMaterialPolicy(material, "additiveWorld");
 
     const sprite = new THREE.Sprite(material);
     sprite.count = 0;
     sprite.frustumCulled = false;
-    sprite.renderOrder = 100;
+    tagTransparency(sprite, { profile: "additiveWorld", renderBand: RenderBand.PARTICLES });
     sprite.visible = false;
     return sprite;
   }

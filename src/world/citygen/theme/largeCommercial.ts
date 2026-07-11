@@ -59,8 +59,21 @@ function pier(out: PanelBuilder, e: FacadeEdge, t: number, y0: number, y1: numbe
   const p = gp(e, clamp(t, 0.004, 0.996));
   const along = unit(sub(gp(e, 1), gp(e, 0)));
   const n3: Vec3 = [e.normal[0], 0, e.normal[1]];
-  out.box(mat, [p[0] + n3[0] * proj * 0.5, (y0 + y1) / 2, p[2] + n3[2] * proj * 0.5],
-    [halfW, (y1 - y0) / 2, proj], along, UP, n3, true);
+  const emit = (a: number, b: number) => {
+    if (b - a < 0.08) return;
+    out.box(mat, [p[0] + n3[0] * proj * 0.5, (a + b) / 2, p[2] + n3[2] * proj * 0.5],
+      [halfW, (b - a) / 2, proj], along, UP, n3, true);
+  };
+  if (doorEligible(e)) {
+    const dm = doorMetrics(e.length, e.base, e.top, e.grade);
+    const d = Math.abs(t * e.length - dm.tc * e.length);
+    if (d < dm.halfW + halfW + 0.1 && y1 > dm.sill && y0 < dm.openTop) {
+      emit(y0, Math.min(y1, dm.sill));
+      emit(Math.max(y0, dm.openTop), y1);
+      return;
+    }
+  }
+  emit(y0, y1);
 }
 
 /** Grand double-height entrance on the street base: a dark portal (proud so it
@@ -71,7 +84,7 @@ function grandEntrance(out: PanelBuilder, e: FacadeEdge, base: number, topY: num
   const dm = doorMetrics(e.length, e.base, e.top, e.grade);
   const y0 = dm.sill; // raised entry floor (= interior grade)
   if (topY - y0 < 2.0 || e.length < 3) return; // callers gate on this too (R2) — kept as a safety net
-  const halfW = Math.min(2.2, e.length * 0.13);
+  const halfW = Math.min(2.2, Math.max(dm.halfW + 0.48, e.length * 0.13));
   const tc = e.length > 6 ? 0.24 : 0.5; // MATCH core/collider.ts doorway centre
   const along = unit(sub(gp(e, 1), gp(e, 0)));
   const n3: Vec3 = [e.normal[0], 0, e.normal[1]];
@@ -156,8 +169,8 @@ export function largeCommercialFacade(e: FacadeEdge, out: PanelBuilder, _rng: Rn
     // push the sill nearly to the base cap) — grandEntrance would bail and leave
     // an operable-but-invisible door on bare stone (R2), so fall back to frontDoor.
     const portalTop = baseTopY - 0.55;
-    const sill = doorMetrics(e.length, e.base, e.top, e.grade).sill;
-    if (e.length > 6 && portalTop - sill >= 2.0) grandEntrance(out, e, base, portalTop, { stone, glass });
+    const dm = doorMetrics(e.length, e.base, e.top, e.grade);
+    if (e.length > 6 && portalTop >= dm.openTop + 0.25) grandEntrance(out, e, base, portalTop, { stone, glass });
     else frontDoor(out, e, { door: "citygen.door", trim });
     frontStoop(out, e, stone); // walkable-looking stone steps up to the raised entry
     // tall shopfront-scale windows in the outer bays, clear of the central portal

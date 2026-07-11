@@ -60,6 +60,11 @@ import type { CityGenRing, ColliderBox } from "./world/citygen";
 import { Islands } from "./gameplay/islands";
 import { Hunt } from "./gameplay/hunt";
 import { FetchBall } from "./gameplay/fetchBall";
+import {
+  createPickleball,
+  type PickleballInputIntent,
+  type PickleballSide
+} from "./gameplay/pickleball";
 import { Satchel } from "./ui/satchel";
 import { HUD } from "./ui/hud";
 import { ShareButton } from "./ui/share";
@@ -373,6 +378,7 @@ async function boot() {
     update: (pos: THREE.Vector3, cam: THREE.Vector3) => void;
   } | null = null;
   let goldenGateTennis: ReturnType<typeof createGoldenGateTennisSite> | null = null;
+  let pickleball: ReturnType<typeof createPickleball> | null = null;
   let coronaHeights: CoronaHeightsPark | null = null;
   let windGustValue: (() => number) | null = null;
   let advanceWind: ((dt: number) => void) | null = null;
@@ -463,6 +469,31 @@ async function boot() {
     goldenGateTennis.setFoliageVisible(foliageOn);
   } catch (err) {
     console.warn("[boot] Goldman Tennis Center unavailable:", err);
+  }
+  try {
+    const anchor = goldenGateTennis?.gameplayAnchor;
+    if (anchor) {
+      pickleball = createPickleball({
+        origin: { x: anchor.x, y: anchor.y, z: anchor.z },
+        yaw: anchor.yaw,
+        authoritative: true,
+        seed: 1402
+      });
+      scene.add(pickleball.root);
+      pickleball.onEvent = (event) => {
+        if (event.kind === "paddle") {
+          fx.impactPuff(event.worldPosition);
+        } else if (event.kind === "point") {
+          const score = `${event.score[0]}–${event.score[1]}`;
+          const result = event.scoringSide === null ? "side out" : "point";
+          hud.message(`${event.winner === 0 ? "Near" : "Far"} side ${result} · ${score}`, 2.2);
+        } else if (event.kind === "game") {
+          hud.message(`${event.winner === 0 ? "Near" : "Far"} side wins · ${event.score[0]}–${event.score[1]}`, 4);
+        }
+      };
+    }
+  } catch (err) {
+    console.warn("[boot] pickleball game unavailable:", err);
   }
   try {
     coronaHeights = new CoronaHeightsPark(map, physics);
@@ -588,6 +619,83 @@ async function boot() {
   // lets the server keep its per-id seed (server.mjs), so un-customized players
   // stay distinct instead of all sending the same saved blob.
   const net = new Net(suggestedName, savedAvatar ?? undefined, savedBoard ?? undefined);
+  let pendingPickleballClaim: PickleballSide | null = null;
+  let pendingPickleballRelease: PickleballSide | null = null;
+  let pickleballNetSendAt = 0;
+  let pickleballSwingQueued = false;
+  let pickleballPromptSide: PickleballSide | null = null;
+  let pickleballInput: PickleballInputIntent = {};
+  const pickleballOwnerName = (id: number): string | null => {
+    if (!id) return null;
+    if (id === net.selfId) return net.name;
+    return net.roster.get(id)?.name ?? `Player ${id}`;
+  };
+  const syncPickleballSlots = (slots: readonly [number, number] = net.pickleballSlots, authorityId = net.pickleballAuthority) => {
+    if (!pickleball) return;
+    pickleball.setSlotOwner(0, pickleballOwnerName(slots[0]));
+    pickleball.setSlotOwner(1, pickleballOwnerName(slots[1]));
+    // With no human claimant, every browser may run the same ambient AI rally.
+    // Once a slot is claimed, only the relay-selected client advances physics.
+    pickleball.setAuthoritative(authorityId === 0 || authorityId === net.selfId);
+  };
+  const requestPickleballSide = (side: PickleballSide) => {
+    if (!pickleball || pendingPickleballClaim !== null || pickleball.localSide !== null) return;
+    if (net.status === "online" && net.selfId) {
+      pendingPickleballClaim = side;
+      net.claimPickleball(side);
+      hud.message("Claiming pickleball side…", 1.4);
+    } else if (pickleball.enterSide(side, net.name)) {
+      hud.message("You’re playing · WASD move · click/Space swings · E leaves", 3.4);
+    }
+  };
+  const releasePickleballSide = (): boolean => {
+    const side = pickleball?.localSide;
+    if (side === null || side === undefined || !pickleball) return false;
+    if (net.status === "online" && net.selfId && net.pickleballSlots[side] === net.selfId) {
+      if (pendingPickleballRelease === null) {
+        pendingPickleballRelease = side;
+        net.releasePickleball(side);
+      }
+    } else {
+      pickleball.exitSide(side);
+      hud.message("Back to exploring", 1.8);
+    }
+    return true;
+  };
+  net.onPickleballSlots = (slots, authorityId) => syncPickleballSlots(slots, authorityId);
+  net.onPickleballClaim = (side, ownerId, ok) => {
+    if (ok && ownerId === net.selfId) {
+      pendingPickleballClaim = null;
+      pickleball?.enterSide(side, net.name);
+      hud.message("You’re playing · WASD move · click/Space swings · E leaves", 3.4);
+    } else if (!ok && pendingPickleballClaim === side) {
+      pendingPickleballClaim = null;
+      hud.message(`${pickleballOwnerName(ownerId) ?? "Another player"} already has that side`, 2.6);
+    }
+  };
+  net.onPickleballRelease = (side, ownerId, ok) => {
+    if (ok && (ownerId === net.selfId || pendingPickleballRelease === side)) {
+      pendingPickleballRelease = null;
+      pickleball?.exitSide(side);
+      hud.message("Back to exploring", 1.8);
+    } else if (!ok && pendingPickleballRelease === side) {
+      pendingPickleballRelease = null;
+    }
+  };
+  net.onPickleballState = (ownerId, state) => {
+    if (ownerId !== net.selfId) pickleball?.applyState(state);
+  };
+  net.onPickleballInput = (side, _ownerId, d) => {
+    pickleball?.setRemoteInput(side, {
+      moveX: d[0] ?? 0,
+      moveZ: d[1] ?? 0,
+      swing: (d[2] ?? 0) > 0.5,
+      sprint: (d[3] ?? 0) > 0.5,
+      aimX: d[4] ?? 0,
+      aimZ: d[5] ?? 0
+    });
+  };
+  syncPickleballSlots();
   const avatarSelector = new AvatarSelector(
     avatarTraits,
     net.name,
@@ -654,6 +762,14 @@ async function boot() {
     }
     golf?.syncNetState();
     net.replayGolf();
+    syncPickleballSlots();
+    net.replayPickleball();
+    // An offline takeover remains playable. On reconnect, ask the relay to
+    // reserve that same side; a conflicting owner will reject it cleanly.
+    if (pickleball?.localSide !== null && pickleball?.localSide !== undefined) {
+      pendingPickleballClaim = pickleball.localSide;
+      net.claimPickleball(pickleball.localSide);
+    }
   };
   const remotes = new RemotePlayers(scene);
   const syncRoster = () => {
@@ -666,6 +782,7 @@ async function boot() {
         remotes.updateBoard(info);
       }
     }
+    syncPickleballSlots();
   };
   net.onRoster = syncRoster;
   net.onLeave = (id) => {
@@ -874,6 +991,8 @@ async function boot() {
       chase.yaw = saved.heading + Math.PI;
       return;
     }
+    // First visit this session: stay at the current XZ (enter() only adjusts
+    // altitude — hand-launch drone, tree-clearance plane/phoenix, etc.).
     player.trySwitch(mode);
   };
   /** E (or pad B): leave any vehicle, creature, or passenger seat for on-foot. */
@@ -1891,13 +2010,17 @@ async function boot() {
     // physics.
     if (paused) {
       accumulator += frameDt; // no elapsed++ — the world clock stays frozen
+      const playingPickleballWhilePaused = pickleball?.localSide !== null && pickleball?.localSide !== undefined;
       if (player.mode === "plane") player.steerFly(input, frameDt);
-      if (!input.suspended && player.mode === "board" && input.pressed("Space")) player.requestBoardJump();
-      if (!input.suspended && player.mode === "walk" && input.pressed("Space")) player.requestWalkJump();
+      if (!playingPickleballWhilePaused && !input.suspended && player.mode === "board" && input.pressed("Space")) player.requestBoardJump();
+      if (!playingPickleballWhilePaused && !input.suspended && player.mode === "walk" && input.pressed("Space")) player.requestWalkJump();
       chase.lookDir(aim);
       let steps = 0;
       while (accumulator >= physics.world.fixedTimeStep && steps < 3) {
+        const wasSuspended = input.suspended;
+        if (playingPickleballWhilePaused) input.suspended = true;
         player.update(physics.world.fixedTimeStep, input, chase.yaw, aim);
+        input.suspended = wasSuspended;
         physics.step(physics.world.fixedTimeStep, player.position);
         accumulator -= physics.world.fixedTimeStep;
         steps++;
@@ -1956,6 +2079,7 @@ async function boot() {
 
     elapsed += frameDt;
     accumulator += frameDt;
+    const playingPickleball = pickleball?.localSide !== null && pickleball?.localSide !== undefined;
 
     // Plain number keys switch travel modes; Ctrl+number picks click-tools;
     // Shift+number still teleports to player slots.
@@ -1964,6 +2088,7 @@ async function boot() {
     const shiftedNumberPress = (i: number) => input.shiftedPress(`Digit${i}`) || input.shiftedPress(`Numpad${i}`);
     for (let i = 1; i <= 9; i++) {
       if (!numberPressed(i)) continue;
+      if (playingPickleball) break;
       if (golf?.capturesDigits) break; // golf swing UI owns the number row (club picks)
       if (ctrlNumberPress(i)) {
         const nextTool = TOOL_ORDER[i - 1];
@@ -1985,20 +2110,59 @@ async function boot() {
       ((input.pressed("ArrowRight") && !input.altPressed("ArrowRight")) || (input.pressed("ArrowDown") && !input.altPressed("ArrowDown")) ? 1 : 0) -
       ((input.pressed("ArrowLeft") && !input.altPressed("ArrowLeft")) || (input.pressed("ArrowUp") && !input.altPressed("ArrowUp")) ? 1 : 0);
     const cycle = keyboardCycle + (input.pressed("PadModeNext") ? 1 : 0) - (input.pressed("PadModePrev") ? 1 : 0);
-    if (cycle) {
+    if (cycle && !playingPickleball) {
       const cycleOrder = MENU_MODES;
       const idx = cycleOrder.indexOf(player.mode);
       const from = idx >= 0 ? idx : 0;
       const step = cycle < 0 ? -1 : 1;
       if (cycleOrder.length) switchMode(cycleOrder[(from + step + cycleOrder.length) % cycleOrder.length]);
     }
-    if (input.altPressed("ArrowLeft")) applyPlaceHistory(-1);
-    if (input.altPressed("ArrowRight")) applyPlaceHistory(1);
+    if (!playingPickleball && input.altPressed("ArrowLeft")) applyPlaceHistory(-1);
+    if (!playingPickleball && input.altPressed("ArrowRight")) applyPlaceHistory(1);
+
+    // The court owns WASD/click/Space while a side is claimed. When exploring,
+    // the same update supplies a proximity prompt and turns E into a takeover.
+    let pickleballEConsumed = false;
+    if (pickleball) {
+      const side = pickleball.localSide;
+      const moveX = input.axis("KeyA", "KeyD");
+      const moveTowardNet = input.axis("KeyS", "KeyW");
+      const swing = input.firePressed || input.pressed("Space");
+      pickleballInput = {
+        moveX,
+        moveZ: moveTowardNet * (side === 1 ? -1 : 1),
+        swing,
+        sprint: input.down("ShiftLeft") || input.down("ShiftRight"),
+        aimX: moveX,
+        aimZ: input.down("KeyS") ? -0.35 : input.down("KeyW") ? 0.78 : 0.42,
+        interact: input.pressed("KeyE"),
+        exit: input.pressed("KeyE")
+      };
+      if (swing) pickleballSwingQueued = true;
+      const frame = pickleball.update(frameDt, elapsed, player.position, pickleballInput);
+      if (frame.requestedRelease !== null) {
+        pickleballEConsumed = releasePickleballSide();
+      } else if (frame.requestedSide !== null) {
+        pickleballEConsumed = true;
+        requestPickleballSide(frame.requestedSide);
+      } else if (input.pressed("KeyE") && frame.interaction) {
+        pickleballEConsumed = true;
+        hud.message(frame.interaction.prompt, 2);
+      }
+      if (pickleball.localSide === null && frame.interaction?.available) {
+        if (pickleballPromptSide !== frame.interaction.side) {
+          pickleballPromptSide = frame.interaction.side;
+          hud.message(frame.interaction.prompt, 2.2);
+        }
+      } else {
+        pickleballPromptSide = null;
+      }
+    }
 
     // E: exit any vehicle/creature, pick up a thrown tennis ball, or on foot
     // hop into the nearest ride (a friend's passenger seat, a rideable animal,
     // or a mount you left behind)
-    if (input.pressed("KeyE") && !exitToWalk() && !golf?.tryStartAtTee(player, hud)) {
+    if (!pickleballEConsumed && input.pressed("KeyE") && !exitToWalk() && !golf?.tryStartAtTee(player, hud)) {
       if (!fetchBall?.tryPickup(player.position)) {
         const drv = remotes.nearestDriver(player.position, 5.5);
         const animal = drv ? null : forest?.nearest(player.position, 5);
@@ -2043,6 +2207,7 @@ async function boot() {
     }
 
     if (input.pressed("KeyR")) {
+      releasePickleballSide();
       leaveRide();
       player.respawn(spawn);
       hud.message("Back at the start");
@@ -2104,6 +2269,9 @@ async function boot() {
     if (input.freeCursor) {
       // free cursor out: clicks only reach UI panels — the ball/spray/bubble
       // tools stand down so pointing around never fires them
+    } else if (playingPickleball) {
+      // Pickleball consumes click as a paddle swing; do not also fire the
+      // selected city tool or a vehicle weapon.
     } else if (golf?.capturesFire) {
       // golf swing context: the held mouse is the power meter (gameplay/golf
       // reads input.firing itself) — every click-tool stands down
@@ -2212,14 +2380,17 @@ async function boot() {
     // Latch hoverboard ollies at render-frame rate. On high-refresh displays a
     // frame can render without a fixed physics step, so `pressed()` would be gone
     // before #updateBoard saw it.
-    if (!input.suspended && player.mode === "board" && input.pressed("Space")) player.requestBoardJump();
-    if (!input.suspended && player.mode === "walk" && input.pressed("Space")) player.requestWalkJump();
+    if (!playingPickleball && !input.suspended && player.mode === "board" && input.pressed("Space")) player.requestBoardJump();
+    if (!playingPickleball && !input.suspended && player.mode === "walk" && input.pressed("Space")) player.requestWalkJump();
 
     chase.lookDir(aim); // drone moves along the true view direction (no shot bias)
     tracer.begin("physics");
     let steps = 0;
     while (accumulator >= physics.world.fixedTimeStep && steps < 3) {
+      const wasSuspended = input.suspended;
+      if (playingPickleball) input.suspended = true;
       player.update(physics.world.fixedTimeStep, input, chase.yaw, aim);
+      input.suspended = wasSuspended;
       abandonedMounts.prePhysics(physics.world.fixedTimeStep);
       physics.step(physics.world.fixedTimeStep, player.position);
       accumulator -= physics.world.fixedTimeStep;
@@ -2392,6 +2563,23 @@ async function boot() {
     // ride id lets viewers glue me into my driver's car), redraw the minimap.
     // remotes.update already ran before the passenger glue above.
     net.sendState(player.mode, player.meshes[player.mode].position, player.meshes[player.mode].quaternion, player.speed, passengerOf ?? 0);
+    if (pickleball && elapsed >= pickleballNetSendAt && net.status === "online") {
+      pickleballNetSendAt = elapsed + 1 / 12;
+      const side = pickleball.localSide;
+      if (net.pickleballAuthority === net.selfId) {
+        net.sendPickleballState(pickleball.serializeState());
+      } else if (side !== null && net.pickleballSlots[side] === net.selfId) {
+        net.sendPickleballInput(side, [
+          pickleballInput.moveX ?? 0,
+          pickleballInput.moveZ ?? 0,
+          pickleballSwingQueued ? 1 : 0,
+          pickleballInput.sprint ? 1 : 0,
+          pickleballInput.aimX ?? 0,
+          pickleballInput.aimZ ?? 0
+        ]);
+      }
+      pickleballSwingQueued = false;
+    }
     voice.update(camera); // listener follows the camera, voices follow the avatars
     minimap.update();
     playerLocator.update(camera, player.position, remotes.locatorTargets());
@@ -2580,7 +2768,7 @@ async function boot() {
 
   const exposeDebugHooks = () => {
     Object.assign(window as never, {
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, coronaHeights, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, rocketRiders, boatLaunchers, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, underwater, seaPillars, water, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, setFoliageVisible, buskers }
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, goldenGateTennis, pickleball, coronaHeights, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, rocketRiders, boatLaunchers, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, underwater, seaPillars, water, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, setFoliageVisible, buskers }
     });
   };
   if (import.meta.env.DEV || new URLSearchParams(location.search).has("profile")) {

@@ -28,7 +28,7 @@ export function dressInteriorShell(
   opening: FrontOpening | null,
 ): ShellDressing {
   const windowKeepouts: Rect[] = [];
-  const top = floorY + Math.min(storeyH - 0.12, Math.max(WALL_H + 0.35, 3.05));
+  const top = floorY + Math.max(1.3, storeyH - 0.12);
   const liningOff = 0.105;
   const UP: Vec3 = [0, 1, 0];
 

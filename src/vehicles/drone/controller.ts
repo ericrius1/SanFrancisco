@@ -53,10 +53,10 @@ export class DroneController implements ModeController {
   }
 
   enter(ctx: PlayerCtx) {
-    // hover above nearby rooftops so entering from street level doesn't bury us in geometry
-    const roof = ctx.physics.highestBuildingTop(ctx.position.x, ctx.position.z, 150);
+    // hand-launch: same XZ, just above outstretched arms (keep altitude if
+    // already airborne from another mode)
     const ground = ctx.map.effectiveGround(ctx.position.x, ctx.position.z);
-    ctx.position.y = Math.max(ctx.position.y, roof + 12, ground + 25);
+    ctx.position.y = Math.max(ctx.position.y + 1.4, ground + 2.6);
   }
 
   update(ctx: PlayerCtx, dt: number, input: Input, frame: ModeFrame) {

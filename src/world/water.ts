@@ -23,6 +23,7 @@ import {
 import { PALACE_LAGOON, palaceLagoonMask, waterHeight, type WorldMap } from "./heightmap";
 import { bumpNormal, chopZoneMask, swellBase, swellChop } from "./tslUtil";
 import { EXPOSURE_REBASE, LIGHT_SCALE } from "../config";
+import { applyMaterialPolicy, RenderBand, tagTransparency } from "../render/transparency";
 
 const PALACE_LAGOON_SEGMENTS = 112;
 const PALACE_LAGOON_RINGS = 18;
@@ -88,12 +89,10 @@ export class Water {
       // roughness gradient + emissive spark below — a headless A/B at sunset was
       // pixel-indistinguishable. The env-mapped Fresnel sky reflection still
       // falls out of Standard for free.
-      const mat = new THREE.MeshStandardNodeMaterial({
-        transparent: true,
-        depthWrite: false,
+      const mat = applyMaterialPolicy(new THREE.MeshStandardNodeMaterial({
         roughness: 0.48,
         metalness: 0
-      });
+      }), "alphaSurface");
 
       const t = this.#uTime;
 
@@ -214,15 +213,13 @@ export class Water {
     };
 
     const makePalaceLagoonMaterial = () => {
-      const mat = new THREE.MeshPhysicalNodeMaterial({
-        transparent: true,
-        depthWrite: false,
+      const mat = applyMaterialPolicy(new THREE.MeshPhysicalNodeMaterial({
         roughness: 0.5,
         metalness: 0,
         ior: 1.33,
         specularIntensity: 0.22,
         side: THREE.DoubleSide
-      });
+      }), "alphaSurface");
 
       const t = this.#uTime;
       const edgeUv = uv().sub(vec2(0.5, 0.5)).mul(2).toVar();
@@ -278,14 +275,14 @@ export class Water {
     farGeo.rotateX(-Math.PI / 2);
     this.far = new THREE.Mesh(farGeo, makeMaterial(0, true));
     this.far.position.set(g.minX + (g.width * g.cellSize) / 2, 0, g.minZ + (g.height * g.cellSize) / 2);
-    this.far.renderOrder = 10;
+    tagTransparency(this.far, { profile: "alphaSurface", renderBand: RenderBand.WATER_SURFACE });
     this.far.frustumCulled = false;
 
     // near patch: displaced vertices for a gentle bob around the player
     const nearGeo = new THREE.PlaneGeometry(NEAR_PATCH_SIZE, NEAR_PATCH_SIZE, NEAR_PATCH_SEGMENTS, NEAR_PATCH_SEGMENTS);
     nearGeo.rotateX(-Math.PI / 2);
     this.near = new THREE.Mesh(nearGeo, makeMaterial(1, false));
-    this.near.renderOrder = 11;
+    tagTransparency(this.near, { profile: "alphaSurface", renderBand: RenderBand.WATER_NEAR });
     this.near.position.y = 0.02;
     this.near.frustumCulled = false;
 
@@ -334,13 +331,16 @@ export class Water {
     undGeo.rotateX(Math.PI / 2); // face DOWN (−y) → visible only from below
     this.underside = new THREE.Mesh(undGeo, undMat);
     this.underside.frustumCulled = false;
+    // Intentional legacy exception: this depth-test-free submerged backdrop is
+    // not one of the compositing profiles yet. Keep its audited raw assignment
+    // until that specialized profile is introduced deliberately.
     this.underside.renderOrder = 9;
     this.underside.visible = false;
     this.underside.position.y = -0.05;
 
     this.palaceLagoon = new THREE.Mesh(createPalaceLagoonGeometry(map), makePalaceLagoonMaterial());
     this.palaceLagoon.name = "palace_fine_arts_lagoon";
-    this.palaceLagoon.renderOrder = 10.5;
+    tagTransparency(this.palaceLagoon, { profile: "alphaSurface", renderBand: RenderBand.WATER_OVERLAY });
 
     scene.add(this.far, this.near, this.palaceLagoon, this.underside);
   }

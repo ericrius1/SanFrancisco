@@ -16,6 +16,7 @@ import {
 } from "three/tsl";
 import { LIGHT_SCALE } from "../config";
 import { tunables } from "../core/persist";
+import { applyMaterialPolicy, RenderBand, tagTransparency } from "../render/transparency";
 import type { WorldMap } from "./heightmap";
 
 // TSL node generics fight composition; any is the idiom here (see facade.ts)
@@ -272,14 +273,12 @@ export function createBayLights(map: WorldMap): THREE.Sprite | null {
       .mul(BAY_LIGHTS_TUNING.brightness),
     1
   );
-  material.blending = THREE.AdditiveBlending;
-  material.transparent = true;
-  material.depthWrite = false;
+  applyMaterialPolicy(material, "additiveWorld");
   material.fog = false;
 
   const sprite = new THREE.Sprite(material);
   sprite.count = count;
   sprite.frustumCulled = false;
-  sprite.renderOrder = 90;
+  tagTransparency(sprite, { profile: "additiveWorld", renderBand: RenderBand.WORLD_ADDITIVE });
   return sprite;
 }

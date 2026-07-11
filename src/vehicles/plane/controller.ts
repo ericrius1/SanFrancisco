@@ -3,6 +3,7 @@ import { BodyType } from "../../core/physics";
 import type { Input } from "../../core/input";
 import type { ModeController, PlayerCtx } from "../../player/types";
 import { PLANE_TUNING } from "./tuning";
+import { TYPICAL_TREE_HEIGHT } from "../shared";
 
 const V = {
   tmp: new THREE.Vector3(),
@@ -45,11 +46,12 @@ export class FlyController implements ModeController {
   }
 
   enter(ctx: PlayerCtx) {
-    // take off above the skyline, not in a canyon between towers; the radius
-    // covers the first few seconds of forward flight at spawn speed
+    // same XZ as the previous mode; climb to ~2× tree height (+ a little) and
+    // clear the local skyline so the first seconds of flight aren't a canyon
     const roof = ctx.physics.highestBuildingTop(ctx.position.x, ctx.position.z, 150);
     const ground = ctx.map.effectiveGround(ctx.position.x, ctx.position.z);
-    ctx.position.y = Math.max(ctx.position.y, roof + 20, ground + 40);
+    const cruise = ground + TYPICAL_TREE_HEIGHT * 2 + 12;
+    ctx.position.y = Math.max(ctx.position.y, cruise, roof + 25);
   }
 
   /**

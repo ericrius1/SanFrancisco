@@ -9,9 +9,9 @@ import type { PlayerMode } from "../player/types";
 
 const TWEAKS_KEY = "sf-tweaks";
 const TWEAKS_SCHEMA_KEY = "sf-tweaks-schema";
-// One current schema only: the tee-beacon pane now owns hashed-alpha/Fresnel
-// controls, so discard stored values from the previous pane shape.
-const TWEAKS_SCHEMA = "2026-07-tee-beacon-alpha-hash-fresnel";
+// One current schema only: transparency policy diagnostics and the board's
+// independently tunable plume/light controls changed the pane shape.
+const TWEAKS_SCHEMA = "2026-07-transparency-policy-board-effects";
 const PLAYER_KEY = "sf-player";
 
 const IDLE_FLUSH_TIMEOUT_MS = 1000;
