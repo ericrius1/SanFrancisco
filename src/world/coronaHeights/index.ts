@@ -1,4 +1,5 @@
 import * as THREE from "three/webgpu";
+import { LIGHT_SCALE } from "../../config";
 import { BodyType, type Physics } from "../../core/physics";
 import { avatarFromSeed } from "../../player/avatar";
 import { buildRig, poseIdle, rigHandWorld, setRigClasp, type Rig } from "../../player/rig";
@@ -35,6 +36,7 @@ const preparedMaps = new WeakSet<WorldMap>();
 type TrailSample = { x: number; z: number; tx: number; tz: number };
 type OwnerAction = "watch" | "ball" | "frisbee";
 type FetchStage = "wait" | "react" | "chase" | "return";
+export type DogFetchAudioCue = "chase" | "catch" | "return";
 
 type ParkOwner = {
   action: OwnerAction;
@@ -822,24 +824,172 @@ function makeBench(map: WorldMap, x: number, z: number, yaw: number, lift = 0) {
   return group;
 }
 
-function signTexture(title: string, subtitle: string) {
+/** Solar-punk dog-park face: sunburst + running dog mark, soft brass type. */
+function dogParkSignTexture() {
   const canvas = document.createElement("canvas");
-  canvas.width = 768;
-  canvas.height = 384;
+  canvas.width = 1024;
+  canvas.height = 640;
   const ctx = canvas.getContext("2d")!;
-  ctx.fillStyle = "#173b31";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.strokeStyle = "#e6dfc9";
-  ctx.lineWidth = 18;
-  ctx.strokeRect(22, 22, canvas.width - 44, canvas.height - 44);
-  ctx.fillStyle = "#f4edda";
+  const W = canvas.width;
+  const H = canvas.height;
+
+  const bg = ctx.createLinearGradient(0, 0, W * 0.2, H);
+  bg.addColorStop(0, "#0c2a26");
+  bg.addColorStop(0.55, "#143f36");
+  bg.addColorStop(1, "#1a4a3c");
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  // Faint PV-cell grid in the upper field — solar-punk texture, not loud.
+  ctx.save();
+  ctx.globalAlpha = 0.12;
+  ctx.strokeStyle = "#3d9483";
+  ctx.lineWidth = 2;
+  for (let x = 48; x < W - 48; x += 56) {
+    ctx.beginPath();
+    ctx.moveTo(x, 40);
+    ctx.lineTo(x, H - 40);
+    ctx.stroke();
+  }
+  for (let y = 48; y < H - 48; y += 40) {
+    ctx.beginPath();
+    ctx.moveTo(40, y);
+    ctx.lineTo(W - 40, y);
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  // Brass outer frame + verdigris inner rule.
+  ctx.strokeStyle = "#c9973f";
+  ctx.lineWidth = 14;
+  ctx.strokeRect(28, 28, W - 56, H - 56);
+  ctx.strokeStyle = "#3d9483";
+  ctx.lineWidth = 4;
+  ctx.strokeRect(48, 48, W - 96, H - 96);
+
+  // Corner leaf / sprocket accents.
+  const corner = (x: number, y: number, sx: number, sy: number) => {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(sx, sy);
+    ctx.fillStyle = "#a95f33";
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(54, 0);
+    ctx.quadraticCurveTo(38, 18, 22, 22);
+    ctx.quadraticCurveTo(18, 38, 0, 54);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = "#3d9483";
+    ctx.beginPath();
+    ctx.ellipse(18, 18, 10, 16, -0.6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  };
+  corner(56, 56, 1, 1);
+  corner(W - 56, 56, -1, 1);
+  corner(56, H - 56, 1, -1);
+  corner(W - 56, H - 56, -1, -1);
+
+  // Sunburst behind the dog.
+  const cx = W * 0.5;
+  const cy = H * 0.46;
+  const sun = ctx.createRadialGradient(cx, cy, 10, cx, cy, 210);
+  sun.addColorStop(0, "rgba(232, 196, 96, 0.55)");
+  sun.addColorStop(0.35, "rgba(201, 151, 63, 0.28)");
+  sun.addColorStop(1, "rgba(61, 148, 131, 0)");
+  ctx.fillStyle = sun;
+  ctx.beginPath();
+  ctx.arc(cx, cy, 210, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.strokeStyle = "rgba(201, 151, 63, 0.45)";
+  ctx.lineWidth = 3;
+  for (let i = 0; i < 16; i++) {
+    const a = (i / 16) * Math.PI * 2;
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(a) * 72, Math.sin(a) * 72);
+    ctx.lineTo(Math.cos(a) * 168, Math.sin(a) * 168);
+    ctx.stroke();
+  }
+  ctx.fillStyle = "#e0b85a";
+  ctx.beginPath();
+  ctx.arc(0, 0, 58, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#f0d48a";
+  ctx.beginPath();
+  ctx.arc(-10, -10, 22, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  // Running dog silhouette (facing right), soft ivory — not pure white so bloom stays tame.
+  ctx.save();
+  ctx.translate(cx - 10, cy + 18);
+  ctx.fillStyle = "#d4c9a8";
+  ctx.beginPath();
+  // torso
+  ctx.moveTo(-90, -8);
+  ctx.bezierCurveTo(-70, -48, 20, -52, 70, -18);
+  ctx.bezierCurveTo(95, -4, 88, 28, 55, 32);
+  ctx.bezierCurveTo(20, 38, -40, 36, -78, 18);
+  ctx.bezierCurveTo(-100, 8, -105, 8, -90, -8);
+  ctx.closePath();
+  ctx.fill();
+  // head + snout
+  ctx.beginPath();
+  ctx.moveTo(55, -28);
+  ctx.bezierCurveTo(70, -55, 110, -48, 128, -22);
+  ctx.bezierCurveTo(138, -8, 132, 6, 112, 8);
+  ctx.bezierCurveTo(95, 10, 78, 2, 68, -8);
+  ctx.closePath();
+  ctx.fill();
+  // ear
+  ctx.beginPath();
+  ctx.moveTo(72, -42);
+  ctx.quadraticCurveTo(58, -78, 48, -44);
+  ctx.quadraticCurveTo(58, -38, 72, -42);
+  ctx.closePath();
+  ctx.fill();
+  // legs
+  ctx.fillRect(-62, 22, 16, 48);
+  ctx.fillRect(-28, 26, 15, 46);
+  ctx.fillRect(8, 24, 15, 48);
+  ctx.fillRect(38, 20, 14, 50);
+  // paws
+  for (const px of [-62, -28, 8, 38]) {
+    ctx.beginPath();
+    ctx.ellipse(px + 8, 72, 12, 6, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // tail arc
+  ctx.lineWidth = 14;
+  ctx.lineCap = "round";
+  ctx.strokeStyle = "#d4c9a8";
+  ctx.beginPath();
+  ctx.moveTo(-88, -6);
+  ctx.quadraticCurveTo(-130, -40, -118, -78);
+  ctx.stroke();
+  // collar gem (verdigris)
+  ctx.fillStyle = "#3d9483";
+  ctx.beginPath();
+  ctx.arc(78, -6, 7, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  // Title band — secondary to the mark.
+  ctx.fillStyle = "#c9b88a";
   ctx.textAlign = "center";
-  ctx.font = "700 70px system-ui, sans-serif";
-  ctx.fillText(title, canvas.width / 2, 150);
-  ctx.font = "600 48px system-ui, sans-serif";
-  ctx.fillText(subtitle, canvas.width / 2, 235);
-  ctx.font = "500 28px system-ui, sans-serif";
-  ctx.fillText("OFF-LEASH · 5 AM–MIDNIGHT", canvas.width / 2, 305);
+  ctx.font = "700 42px system-ui, sans-serif";
+  ctx.fillText("CORONA HEIGHTS", W / 2, 108);
+  ctx.fillStyle = "#3d9483";
+  ctx.font = "600 28px system-ui, sans-serif";
+  ctx.fillText("DOG PLAY AREA", W / 2, H - 78);
+  ctx.fillStyle = "#a8956e";
+  ctx.font = "500 22px system-ui, sans-serif";
+  ctx.fillText("OFF-LEASH  ·  5 AM–MIDNIGHT", W / 2, H - 46);
+
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.anisotropy = 4;
@@ -849,18 +999,39 @@ function signTexture(title: string, subtitle: string) {
 function makeDogParkSign(map: WorldMap) {
   const group = new THREE.Group();
   group.name = "corona_dog_park_sign";
-  const post = new THREE.MeshStandardMaterial({ color: 0x4f493d, roughness: 0.95 });
-  const board = new THREE.Mesh(new THREE.BoxGeometry(2.7, 1.35, 0.12), new THREE.MeshStandardMaterial({ color: 0x173b31, roughness: 0.82 }));
-  const face = new THREE.Mesh(
-    new THREE.PlaneGeometry(2.58, 1.23),
-    new THREE.MeshBasicMaterial({ map: signTexture("CORONA HEIGHTS", "DOG PLAY AREA") })
-  );
-  // Flush with the board edges (±1.35) so posts don't cover the side lettering.
-  addBox(group, post, [0.14, 2.2, 0.14], [-1.28, 1.1, 0]);
-  addBox(group, post, [0.14, 2.2, 0.14], [1.28, 1.1, 0]);
-  board.position.y = 1.65;
+  // Fence top ≈ 1.45 m — board bottom clears it; posts sit on the outer edges.
+  const boardW = 3.6;
+  const boardH = 2.05;
+  const boardY = 2.72;
+  const postX = boardW * 0.5 - 0.07;
+  const postH = 3.55;
+  const wood = new THREE.MeshStandardMaterial({ color: 0x5a4a38, roughness: 0.92 });
+  const brass = new THREE.MeshStandardMaterial({ color: 0xb8893f, metalness: 0.55, roughness: 0.42 });
+  const boardMat = new THREE.MeshStandardMaterial({ color: 0x143f36, roughness: 0.82 });
+  const tex = dogParkSignTexture();
+  // Lit + mild emissive (not MeshBasic) so night glow stays soft instead of blooming out.
+  const faceMat = new THREE.MeshStandardMaterial({
+    map: tex,
+    emissiveMap: tex,
+    emissive: new THREE.Color(0xffffff),
+    emissiveIntensity: 0.09 * LIGHT_SCALE,
+    roughness: 0.78,
+    metalness: 0.04
+  });
+
+  addBox(group, wood, [0.16, postH, 0.16], [-postX, postH * 0.5, 0]);
+  addBox(group, wood, [0.16, postH, 0.16], [postX, postH * 0.5, 0]);
+  addBox(group, brass, [0.22, 0.08, 0.22], [-postX, postH + 0.02, 0]);
+  addBox(group, brass, [0.22, 0.08, 0.22], [postX, postH + 0.02, 0]);
+  // Crossbar under the board + slim solar strip on top.
+  addBox(group, wood, [boardW - 0.2, 0.1, 0.1], [0, boardY - boardH * 0.5 - 0.08, 0]);
+  addBox(group, brass, [boardW * 0.72, 0.05, 0.14], [0, boardY + boardH * 0.5 + 0.04, -0.02]);
+
+  const board = new THREE.Mesh(new THREE.BoxGeometry(boardW, boardH, 0.14), boardMat);
+  board.position.y = boardY;
   board.castShadow = true;
-  face.position.set(0, 1.65, -0.066);
+  const face = new THREE.Mesh(new THREE.PlaneGeometry(boardW - 0.16, boardH - 0.16), faceMat);
+  face.position.set(0, boardY, -0.078);
   face.rotation.y = Math.PI;
   group.add(board, face);
   group.position.set(
@@ -1245,6 +1416,7 @@ export class CoronaHeightsPark {
   readonly owners: ParkOwner[];
   readonly stats: CoronaHeightsStats;
   readonly summit = CORONA_HEIGHTS_SUMMIT;
+  onDogAudioCue: ((dog: ParkDog, cue: DogFetchAudioCue) => void) | null = null;
 
   /** Elapsed-time stamp of the latest ball/frisbee release (audio hook). */
   lastThrowAt = -Infinity;
@@ -1505,6 +1677,7 @@ export class CoronaHeightsPark {
         if (this.#ballPhase === "free" && pickup) {
           this.#ballPhase = "carried";
           this.#ballFetch = "return";
+          this.cueDogAudio(dog, "catch");
         }
         break;
       }
@@ -1520,6 +1693,7 @@ export class CoronaHeightsPark {
           this.#ballPhase = "receive";
           this.#receiveTimer = RECEIVE_TIME;
           this.#ballFetch = "wait";
+          this.cueDogAudio(dog, "return");
         }
         break;
       }
@@ -1543,6 +1717,7 @@ export class CoronaHeightsPark {
     this.#ballPhase = "free";
     this.#ballFetch = "react";
     this.#ballReact = 0.2 + Math.random() * 0.2; // dogs read the throw first
+    this.cueDogAudio(this.dogs[0], "chase");
     this.lastThrowAt = elapsed;
   }
 
@@ -1660,6 +1835,7 @@ export class CoronaHeightsPark {
         if (catchable && (d < 0.7 || (this.#friPhase === "rest" && d < 1))) {
           this.#friPhase = "carried";
           this.#friFetch = "return";
+          this.cueDogAudio(dog, "catch");
         }
         break;
       }
@@ -1673,6 +1849,7 @@ export class CoronaHeightsPark {
           this.#friTimer = 2.5 + Math.random() * 1.8;
           this.#friFetch = "wait";
           owner.greetTimer = 1.1;
+          this.cueDogAudio(dog, "return");
         }
         break;
       }
@@ -1703,6 +1880,7 @@ export class CoronaHeightsPark {
     this.#friTimer = 0;
     this.#friFetch = "react";
     this.#friReact = 0.25 + Math.random() * 0.15;
+    this.cueDogAudio(this.dogs[1], "chase");
     this.lastThrowAt = elapsed;
   }
 
@@ -1815,6 +1993,12 @@ export class CoronaHeightsPark {
   /** Steer a dog toward a target with the shared locomotion feel. */
   steerDog(dog: ParkDog, tx: number, tz: number, gait: number, dt: number): void {
     moveDog(this.#map, dog, tx, tz, gait, this.owners, dt);
+  }
+
+  /** Forward a semantic fetch moment to the optional audio layer. World/gameplay
+   * code stays sound-engine agnostic; future parks can expose the same contract. */
+  cueDogAudio(dog: ParkDog, cue: DogFetchAudioCue): void {
+    this.onDogAudioCue?.(dog, cue);
   }
 
   /** Stop-short, face and wag at a point (the returned-ball waiting idle). */

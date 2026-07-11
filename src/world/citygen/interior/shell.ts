@@ -75,6 +75,13 @@ export function dressInteriorShell(
     }
     trimSpan(0, 1, top - 0.055, style.tier === 2 ? 0.085 : 0.055, 0.035);
     if (style.tier === 2) trimSpan(0, 1, floorY + 1.02, 0.035, 0.03); // restrained picture rail / wainscot cap
+    // Shallow polygon returns are real SF bay/notch geometry, but seen edge-on
+    // they otherwise read as an accidental dark seam. Slim full-height corner
+    // casing turns that grazing face into an intentional pilaster detail.
+    if (style.family !== "industrial" && L < 2.2) {
+      const midY = (floorY + top) / 2, halfH = (top - floorY) / 2;
+      for (const t of [0, 1]) out.box(style.trim, at(t, midY, liningOff + 0.045), [0.05, halfH, 0.045], along, UP, normal, false);
+    }
 
     if (L < 1.9) continue;
     const nWin = Math.max(1, Math.floor(L / style.windowSpacing));

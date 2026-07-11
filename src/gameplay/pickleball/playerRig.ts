@@ -62,8 +62,10 @@ export class PickleballPlayerRig {
 
     this.#armL.rotation.set(-stride * 0.55 - 0.12, 0, 0.08);
     this.#foreL.rotation.set(-0.3, 0, 0);
-    this.#armR.rotation.set(stride * 0.35 - 0.24, -0.08, -0.13);
-    this.#foreR.rotation.set(-0.55, 0.08, -0.03);
+    // Positive X brings the paddle toward visual forward (-Z); the previous
+    // negative bend parked the whole stroke behind the athlete.
+    this.#armR.rotation.set(stride * 0.35 + 0.24, -0.08, -0.13);
+    this.#foreR.rotation.set(0.55, 0.08, -0.03);
 
     if (state.swingTime >= 0 && state.swingTime <= T.swingDuration) {
       const p = THREE.MathUtils.clamp(state.swingTime / T.swingDuration, 0, 1);
@@ -75,10 +77,10 @@ export class PickleballPlayerRig {
       // Compact forehand: coil, accelerate across the body, finish high.
       this.#torso.rotation.y = -0.32 * wind + 0.68 * stroke;
       this.#torso.rotation.x += 0.08 * stroke;
-      this.#armR.rotation.x = THREE.MathUtils.lerp(-0.22, -1.18, drive) + settle * 0.42;
+      this.#armR.rotation.x = THREE.MathUtils.lerp(0.22, 1.18, drive) - settle * 0.42;
       this.#armR.rotation.y = -0.18 - 0.78 * wind + 1.65 * stroke;
       this.#armR.rotation.z = -0.26 - 0.42 * drive;
-      this.#foreR.rotation.x = -0.78 + 0.52 * drive;
+      this.#foreR.rotation.x = 0.78 - 0.52 * drive;
       this.#foreR.rotation.y = -0.18 + 0.62 * stroke;
       this.#head.rotation.y -= 0.12 * wind - 0.24 * stroke;
     }

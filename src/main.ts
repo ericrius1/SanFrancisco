@@ -531,6 +531,9 @@ async function boot() {
   // the nature soundscape's context/bus so HUD volume/mute and the corona
   // region fade all apply. Idles to a single distance check away from the park.
   const dogParkAudio = new DogParkAudio(nature, () => coronaHeights?.dogs ?? []);
+  if (coronaHeights) {
+    coronaHeights.onDogAudioCue = (dog, cue) => dogParkAudio.cue(dog, cue);
+  }
   // Busker trio right on the Corona Heights summit crown (the flat top the
   // player stands on) so a 360 orbit clears the hill on every side and takes in
   // Sutro, Buena Vista and the whole city. Same ESE facing. Grounds to
@@ -695,6 +698,18 @@ async function boot() {
       finishPickleballExit(side);
       hud.message("Back to exploring", 1.8);
     }
+    return true;
+  };
+  const releasePickleballForNavigation = (): boolean => {
+    const side = pickleball?.localSide;
+    if (side === null || side === undefined || !pickleball) return false;
+    if (net.status === "online" && net.selfId && net.pickleballSlots[side] === net.selfId) {
+      pendingPickleballRelease = side;
+      net.releasePickleball(side);
+    }
+    // Navigation is immediate locally; the relay acknowledgement only frees
+    // the server slot and must not pull a respawn/teleport back to the court.
+    finishPickleballExit(side);
     return true;
   };
   net.onPickleballSlots = (slots, authorityId) => syncPickleballSlots(slots, authorityId);
@@ -1139,6 +1154,7 @@ async function boot() {
       updatePlaceHistoryHud();
       return;
     }
+    releasePickleballForNavigation();
     if (placeHistoryIndex >= 0) placeHistory[placeHistoryIndex] = capturePlace(placeHistory[placeHistoryIndex].label);
     const spot = placeHistory[nextIndex];
     exitToWalk();
@@ -1153,6 +1169,7 @@ async function boot() {
   };
   const switchMode = (mode: PlayerMode) => {
     if (mode === player.mode) return;
+    releasePickleballForNavigation();
     // Switching to walk = hop off wherever you are, same as pressing E
     // (steps off the gunwale into the water when leaving a boat, etc.)
     if (mode === "walk") {
@@ -1173,6 +1190,7 @@ async function boot() {
   hud.onHistoryBack = () => applyPlaceHistory(-1);
   hud.onHistoryForward = () => applyPlaceHistory(1);
   const teleportToTarget = (x: number, z: number, toName?: string, playerId?: number) => {
+    releasePickleballForNavigation();
     void (async () => {
       const t = playerId !== undefined ? remotes.stateOf(playerId) : null;
       if (playerId !== undefined && !t) {
@@ -1943,6 +1961,101 @@ async function boot() {
   // player pose AND the camera for a scripted shot (see dev/demo.ts "ggboat").
   let cineHook: ((dt: number) => void) | null = null;
 
+  let pickleballAnimationTime = 0;
+  const updatePickleballGameplay = (dt: number): boolean => {
+    if (!pickleball) return false;
+    pickleballAnimationTime += dt;
+    const side = pickleball.localSide;
+    const moveX = input.axis("KeyA", "KeyD");
+    const moveTowardNet = input.axis("KeyS", "KeyW");
+    const swing = input.firePressed || input.pressed("Space");
+    pickleballInput = {
+      moveX,
+      moveZ: moveTowardNet * (side === 1 ? -1 : 1),
+      swing,
+      sprint: input.down("ShiftLeft") || input.down("ShiftRight"),
+      aimX: moveX,
+      aimZ: input.down("KeyS") ? -0.35 : input.down("KeyW") ? 0.78 : 0.42,
+      interact: input.pressed("KeyE"),
+      exit: input.pressed("KeyE")
+    };
+    if (swing) pickleballSwingQueued = true;
+    const frame = pickleball.update(dt, pickleballAnimationTime, player.position, pickleballInput);
+    pickleballLocalPose = frame.localPose;
+    let eConsumed = false;
+    if (frame.requestedRelease !== null) {
+      eConsumed = releasePickleballSide();
+    } else if (frame.requestedSide !== null) {
+      eConsumed = true;
+      requestPickleballSide(frame.requestedSide);
+    } else if (input.pressed("KeyE") && frame.interaction) {
+      eConsumed = true;
+      hud.message(frame.interaction.prompt, 2);
+    }
+    if (pickleball.localSide === null && frame.interaction?.available) {
+      if (pickleballPromptSide !== frame.interaction.side) {
+        pickleballPromptSide = frame.interaction.side;
+        hud.message(frame.interaction.prompt, 2.2);
+      }
+    } else {
+      pickleballPromptSide = null;
+    }
+    return eConsumed;
+  };
+  const applyPickleballPlayerPose = () => {
+    const pose = pickleballLocalPose;
+    if (!pose) return;
+    const y = pose.worldPosition.y + 0.58;
+    player.position.set(pose.worldPosition.x, y, pose.worldPosition.z);
+    player.renderPosition.copy(player.position);
+    player.heading = pose.worldHeading + Math.PI;
+    player.velocity.set(0, 0, 0);
+    pickleballNetQuaternion.setFromAxisAngle(pickleballUp, pose.worldHeading);
+    player.quaternion.copy(pickleballNetQuaternion);
+    player.renderQuaternion.copy(pickleballNetQuaternion);
+    const mesh = player.meshes.walk;
+    mesh.position.copy(player.renderPosition);
+    mesh.quaternion.copy(pickleballNetQuaternion);
+    player.setExternalEmbodimentHidden(true);
+  };
+  const hidePickleballRemoteAvatars = () => {
+    for (const ownerId of net.pickleballSlots) {
+      if (ownerId && ownerId !== net.selfId) {
+        const remote = remotes.avatars.get(ownerId);
+        if (remote) remote.root.visible = false;
+      }
+    }
+  };
+  const sendLocalPresence = (speed = player.speed) => {
+    if (pickleballLocalPose) {
+      pickleballNetPosition.copy(player.renderPosition);
+      pickleballNetQuaternion.setFromAxisAngle(pickleballUp, pickleballLocalPose.worldHeading);
+      net.sendState("walk", pickleballNetPosition, pickleballNetQuaternion, 0, 0);
+    } else {
+      net.sendState(player.mode, player.meshes[player.mode].position, player.meshes[player.mode].quaternion, speed, passengerOf ?? 0);
+    }
+  };
+  const sendPickleballNetwork = () => {
+    if (!pickleball || net.status !== "online") return;
+    const now = performance.now() / 1000;
+    if (now < pickleballNetSendAt) return;
+    pickleballNetSendAt = now + 1 / 12;
+    const side = pickleball.localSide;
+    if (net.pickleballAuthority === net.selfId) {
+      net.sendPickleballState(pickleball.serializeState());
+    } else if (side !== null && net.pickleballSlots[side] === net.selfId) {
+      net.sendPickleballInput(side, [
+        pickleballInput.moveX ?? 0,
+        pickleballInput.moveZ ?? 0,
+        pickleballSwingQueued ? 1 : 0,
+        pickleballInput.sprint ? 1 : 0,
+        pickleballInput.aimX ?? 0,
+        pickleballInput.aimZ ?? 0
+      ]);
+    }
+    pickleballSwingQueued = false;
+  };
+
   const tick = (forcedDt?: number) => {
     timer.update();
     const frameDt = forcedDt ?? Math.min(timer.getDelta(), 0.09);
@@ -2016,8 +2129,16 @@ async function boot() {
       if (closing && !cameraMode) input.requestLock();
     }
 
+    // The shared court keeps advancing even while the rest of the world is
+    // paused, so a remote opponent never loses the match when authority opens
+    // photo/pause controls.
+    const pickleballEConsumed = updatePickleballGameplay(frameDt);
+    const playingPickleball = pickleball?.localSide !== null && pickleball?.localSide !== undefined;
+    applyPickleballPlayerPose();
+
     // Full freeze: a pause with "freeze player" armed. Everything holds — sim,
     // player, fx, vehicles — while a clean screenshot floats on top.
+    dogParkAudio.setPaused(paused);
     if (paused && freezePlayer) {
       vehicleAudio.update(frameDt, null); // fade the hum out while frozen
       swimAudio.update(frameDt, null);
@@ -2120,7 +2241,6 @@ async function boot() {
 
     elapsed += frameDt;
     accumulator += frameDt;
-    const playingPickleball = pickleball?.localSide !== null && pickleball?.localSide !== undefined;
 
     // Plain number keys switch travel modes; Ctrl+number picks click-tools;
     // Shift+number still teleports to player slots.
@@ -2160,46 +2280,6 @@ async function boot() {
     }
     if (!playingPickleball && input.altPressed("ArrowLeft")) applyPlaceHistory(-1);
     if (!playingPickleball && input.altPressed("ArrowRight")) applyPlaceHistory(1);
-
-    // The court owns WASD/click/Space while a side is claimed. When exploring,
-    // the same update supplies a proximity prompt and turns E into a takeover.
-    let pickleballEConsumed = false;
-    if (pickleball) {
-      const side = pickleball.localSide;
-      const moveX = input.axis("KeyA", "KeyD");
-      const moveTowardNet = input.axis("KeyS", "KeyW");
-      const swing = input.firePressed || input.pressed("Space");
-      pickleballInput = {
-        moveX,
-        moveZ: moveTowardNet * (side === 1 ? -1 : 1),
-        swing,
-        sprint: input.down("ShiftLeft") || input.down("ShiftRight"),
-        aimX: moveX,
-        aimZ: input.down("KeyS") ? -0.35 : input.down("KeyW") ? 0.78 : 0.42,
-        interact: input.pressed("KeyE"),
-        exit: input.pressed("KeyE")
-      };
-      if (swing) pickleballSwingQueued = true;
-      const frame = pickleball.update(frameDt, elapsed, player.position, pickleballInput);
-      pickleballLocalPose = frame.localPose;
-      if (frame.requestedRelease !== null) {
-        pickleballEConsumed = releasePickleballSide();
-      } else if (frame.requestedSide !== null) {
-        pickleballEConsumed = true;
-        requestPickleballSide(frame.requestedSide);
-      } else if (input.pressed("KeyE") && frame.interaction) {
-        pickleballEConsumed = true;
-        hud.message(frame.interaction.prompt, 2);
-      }
-      if (pickleball.localSide === null && frame.interaction?.available) {
-        if (pickleballPromptSide !== frame.interaction.side) {
-          pickleballPromptSide = frame.interaction.side;
-          hud.message(frame.interaction.prompt, 2.2);
-        }
-      } else {
-        pickleballPromptSide = null;
-      }
-    }
 
     // E: exit any vehicle/creature, pick up a thrown tennis ball, or on foot
     // hop into the nearest ride (a friend's passenger seat, a rideable animal,
@@ -2249,7 +2329,7 @@ async function boot() {
     }
 
     if (input.pressed("KeyR")) {
-      releasePickleballSide();
+      releasePickleballForNavigation();
       leaveRide();
       player.respawn(spawn);
       hud.message("Back at the start");

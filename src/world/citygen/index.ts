@@ -47,7 +47,7 @@ export interface CityGen {
 export interface CityGenCtx {
   scene: THREE.Object3D;
   physics: { world: unknown };
-  map: { groundHeight(x: number, z: number): number };
+  map: { groundHeight(x: number, z: number): number; surfaceType?(x: number, z: number): number };
   tiles: { suppressBuilding(key: string, i: number): void; unsuppressBuilding(key: string, i: number): void };
 }
 

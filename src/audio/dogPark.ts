@@ -1,53 +1,59 @@
-// Dog-park sound layer — barks and paw-patter for the Corona Heights dogs.
+// Spatial dog sounds for Corona Heights today and any future city dog areas.
 //
-// A small sibling of the nature soundscape that rides the SAME AudioContext and
-// master bus (via NatureSoundscape.voiceBus), so HUD volume/mute, the region
-// presence fade and the out-of-region context suspend all apply for free.
-// Unlike the engine's ambient voices these sounds come from the actual park
-// dogs: each dog gets ONE persistent PannerNode that follows it, barks are
-// one-shot dogYip/dogWoof synths (voices.ts) drawn into that panner, and the
-// scamper is a looped-noise patter chain gated by the dog's speed. The whole
-// layer parks itself — zero audio work, just one distance check — whenever the
-// player is more than ~45 m from the park.
+// The layer rides NatureSoundscape's AudioContext and effects bus, so the HUD
+// volume/mute control, browser gesture unlock, visibility handling and limiter
+// remain the single source of truth. Dogs supply exact chase/catch/return cues;
+// this module decides whether to voice them, enforces per-dog and park-wide
+// cooldowns, and varies the procedural voice. Quiet speed-gated paw patter fills
+// in movement without turning the dog park into a looped ambience track.
 
 import { smoothstep } from "./regions";
-import { VOICE_LIB } from "./voices";
+import { VOICE_LIB, type NatureVoiceKind } from "./voices";
 import { NATURE_AUDIO_TUNING, type NatureSoundscape } from "./natureSoundscape";
 
-/** Structural mirror of CoronaHeightsPark's public dog entries — kept local so
- *  this layer never imports world code (audio stays a leaf module). */
+/** Structural mirror of a world dog's public audio-facing fields. Keeping this
+ * local lets future parks feed the layer without importing Corona world code. */
 export type DogParkDog = {
   x: number;
   z: number;
-  heading: number;
-  stride: number;
   speed: number;
   style: { scale: number; name: string };
   group: { position: { x: number; y: number; z: number } };
 };
 
+export type DogAudioCue = "chase" | "catch" | "return";
+
 type NatureVoiceIO = NonNullable<ReturnType<NatureSoundscape["voiceBus"]>>;
 
 type DogRig = {
   panner: PannerNode;
-  send: GainNode; // reverb tap
+  send: GainNode;
   patterFilter: BiquadFilterNode;
-  patterTick: GainNode; // per-footfall envelope
-  patterLevel: GainNode; // speed × distance gate
+  patterTick: GainNode;
+  patterLevel: GainNode;
   patterSrc: AudioBufferSourceNode | null;
   tickPhase: number;
-  barkTimer: number;
-  wasSprinting: boolean;
+  vocalCooldown: number;
+  pendingCue: DogAudioCue | null;
 };
 
-const PARK_X = 368;
-const PARK_Z = 2703;
-const WAKE_RADIUS = 45; // master gate: silent (and idle) beyond this
-const SCAMPER_RADIUS = 30;
-const SPRINT_SPEED = 4.5; // upward crossing = "chase started" bark spike
-const LAYER_GAIN = 0.85;
-const PATTER_LEVEL = 0.11; // quiet — the patter sits UNDER the wind/bird bed
-const REVERB_CHARACTER = 0.5; // matches the corona region's open-hilltop space
+/** Audio behavior lives together here so density/volume changes stay coherent. */
+const DOG_AUDIO = {
+  wakeRadius: 38,
+  scamperRadius: 23,
+  layerGain: 0.55,
+  patterLevel: 0.055,
+  globalVocalGap: 4.25,
+  dogVocalGapMin: 7,
+  dogVocalGapMax: 12,
+  cueChance: {
+    chase: 0.22,
+    catch: 0.48,
+    return: 0.25
+  } satisfies Record<DogAudioCue, number>,
+  reverbCharacter: 0.42
+} as const;
+
 const EPS = 0.0001;
 
 export class DogParkAudio {
@@ -55,112 +61,130 @@ export class DogParkAudio {
   #dogs: () => readonly DogParkDog[];
   #io: NatureVoiceIO | null = null;
   #layer: GainNode | null = null;
-  #rigs: DogRig[] = [];
+  #rigs = new Map<DogParkDog, DogRig>();
+  #pendingCues = new WeakMap<DogParkDog, DogAudioCue>();
   #awake = false;
+  #paused = false;
+  #globalVocalCooldown = 0;
 
   constructor(nature: NatureSoundscape, dogs: () => readonly DogParkDog[]) {
     this.#nature = nature;
     this.#dogs = dogs;
   }
 
+  /** Queue an exact gameplay moment. Cues are intentionally lossy: if several
+   * dogs finish together, the shared cooldown keeps only a tasteful response. */
+  cue(dog: DogParkDog, cue: DogAudioCue): void {
+    const rig = this.#rigs.get(dog);
+    if (rig) rig.pendingCue = cue;
+    else this.#pendingCues.set(dog, cue);
+  }
+
+  /** Freeze/pause hook: stops looped patter instead of leaving the last running
+   * speed audible while the simulation is held. */
+  setPaused(paused: boolean): void {
+    if (this.#paused === paused) return;
+    this.#paused = paused;
+    if (paused) this.#sleep();
+  }
+
   update(dt: number, playerPos: { x: number; y: number; z: number }): void {
-    const centerDist = Math.hypot(playerPos.x - PARK_X, playerPos.z - PARK_Z);
+    if (this.#paused) return;
     const dogs = this.#dogs();
     if (dogs.length === 0) {
       this.#sleep();
       return;
     }
-    // Keep the layer awake if the park is near OR any single dog is — an adopted
-    // pet trotting at heel stays audible even when its home hill is silent.
+
     let nearestDogDist = Infinity;
     for (const dog of dogs) {
       const d = Math.hypot(dog.x - playerPos.x, dog.z - playerPos.z);
       if (d < nearestDogDist) nearestDogDist = d;
     }
-    if (centerDist > WAKE_RADIUS && nearestDogDist > WAKE_RADIUS) {
+    if (nearestDogDist > DOG_AUDIO.wakeRadius) {
       this.#sleep();
       return;
     }
-    // We WANT to play. Ask nature to keep the shared ctx alive even when the
-    // player has left every nature region (pet at heel in the city) — otherwise
-    // nature suspends the ctx and this layer goes silent. Requested BEFORE the
-    // suspended-ctx bail: nature.update runs earlier in the frame, so the resume
-    // it triggers lands next frame (one silent frame at most).
+
+    // A nearby adopted pet can be outside every nature region. Ask the shared
+    // soundscape to keep only its effects-scaled always bus awake.
     this.#nature.setExternalAwake(true);
     const io = (this.#io ??= this.#nature.voiceBus());
-    if (!io || io.ctx.state !== "running") return; // nature resumes next frame
+    if (!io || io.ctx.state !== "running") return;
     this.#wake(io, dogs);
+
     const now = io.ctx.currentTime;
-    // soft master gate: the layer breathes in over the last dozen metres, driven
-    // by whichever is closer — the park itself or the nearest (possibly pet) dog
-    const proximity = Math.min(centerDist, nearestDogDist);
+    this.#globalVocalCooldown = Math.max(0, this.#globalVocalCooldown - dt);
     this.#layer!.gain.setTargetAtTime(
-      LAYER_GAIN * smoothstep(WAKE_RADIUS, WAKE_RADIUS - 12, proximity),
+      DOG_AUDIO.layerGain * smoothstep(DOG_AUDIO.wakeRadius, DOG_AUDIO.wakeRadius - 11, nearestDogDist),
       now,
       0.2
     );
 
-    for (let i = 0; i < this.#rigs.length && i < dogs.length; i++) {
-      const dog = dogs[i];
-      const rig = this.#rigs[i];
+    for (const dog of dogs) {
+      const rig = this.#rigs.get(dog);
+      if (!rig) continue;
+      rig.vocalCooldown = Math.max(0, rig.vocalCooldown - dt);
       movePanner(rig.panner, io.ctx, dog.x, dog.group.position.y + 0.3 * dog.style.scale, dog.z);
 
-      // ---- scamper: footfall ticks gated by speed and proximity ------------
       const dogDist = Math.hypot(dog.x - playerPos.x, dog.z - playerPos.z);
       const patter =
-        smoothstep(2.5, 4.2, dog.speed) * smoothstep(SCAMPER_RADIUS, SCAMPER_RADIUS * 0.6, dogDist);
-      rig.patterLevel.gain.setTargetAtTime(patter * PATTER_LEVEL, now, 0.09);
+        smoothstep(2.5, 4.2, dog.speed) *
+        smoothstep(DOG_AUDIO.scamperRadius, DOG_AUDIO.scamperRadius * 0.58, dogDist);
+      rig.patterLevel.gain.setTargetAtTime(patter * DOG_AUDIO.patterLevel, now, 0.09);
       if (patter > 0.02) {
-        // tick rate rides speed; small dogs patter faster (shorter legs)
         rig.tickPhase -= dt * Math.min(13, (dog.speed * 2.2) / dog.style.scale);
         if (rig.tickPhase <= 0) {
-          rig.tickPhase = 1 + Math.random() * 0.25; // jitter — dogs never phase-lock
+          rig.tickPhase = 1 + Math.random() * 0.25;
           const g = rig.patterTick.gain;
           g.cancelScheduledValues(now);
-          g.setValueAtTime(0.5 + Math.random() * 0.5, now);
-          g.exponentialRampToValueAtTime(EPS, now + 0.05);
+          g.setValueAtTime(0.42 + Math.random() * 0.38, now);
+          g.exponentialRampToValueAtTime(EPS, now + 0.045);
         }
       }
 
-      // ---- barks: cooldown-gated, spiking when a chase starts --------------
-      // Per-dog proximity gate: while the layer is held awake for a nearby pet,
-      // a distant park dog's chase spike shouldn't yip across the whole hill.
-      const audible = dogDist < WAKE_RADIUS;
-      const sprinting = dog.speed > SPRINT_SPEED;
-      const chaseStart = sprinting && !rig.wasSprinting;
-      rig.wasSprinting = sprinting;
-      rig.barkTimer -= dt;
-      if (audible && chaseStart && rig.barkTimer <= 1.5 && Math.random() < 0.85) {
-        this.#bark(io, rig, dog, now);
-      } else if (rig.barkTimer <= 0) {
-        // idle excitement: an occasional yip while waiting on a throw
-        if (audible && dog.speed < 1.2 && Math.random() < 0.3) this.#bark(io, rig, dog, now);
-        else rig.barkTimer = 0.8 + Math.random() * 1.4; // re-roll soon
+      const cue = rig.pendingCue;
+      rig.pendingCue = null;
+      if (
+        cue &&
+        dogDist < DOG_AUDIO.wakeRadius &&
+        rig.vocalCooldown <= 0 &&
+        this.#globalVocalCooldown <= 0 &&
+        Math.random() < DOG_AUDIO.cueChance[cue]
+      ) {
+        this.#vocalize(io, rig, dog, cue, now);
       }
     }
   }
 
   dispose(): void {
     this.#sleep();
-    for (const rig of this.#rigs) {
-      try {
-        rig.panner.disconnect();
-        rig.send.disconnect();
-      } catch {
-        /* already gone */
-      }
-    }
-    this.#rigs.length = 0;
+    for (const rig of this.#rigs.values()) this.#disposeRig(rig);
+    this.#rigs.clear();
     this.#layer?.disconnect();
     this.#layer = null;
   }
 
-  /* --------------------------------------------------------------- guts */
+  #vocalize(
+    io: NatureVoiceIO,
+    rig: DogRig,
+    dog: DogParkDog,
+    cue: DogAudioCue,
+    now: number
+  ): void {
+    this.#globalVocalCooldown = DOG_AUDIO.globalVocalGap + Math.random() * 1.5;
+    rig.vocalCooldown =
+      DOG_AUDIO.dogVocalGapMin +
+      Math.random() * (DOG_AUDIO.dogVocalGapMax - DOG_AUDIO.dogVocalGapMin);
 
-  #bark(io: NatureVoiceIO, rig: DogRig, dog: DogParkDog, now: number): void {
-    rig.barkTimer = 4 + Math.random() * 6;
-    const level = Number(NATURE_AUDIO_TUNING.values.voices) * (0.5 + Math.random() * 0.22);
-    VOICE_LIB[dog.style.scale < 0.9 ? "dogYip" : "dogWoof"]({
+    // Fetch completion often gets a soft breathy huff instead of another bark.
+    // Chases read best with a bark; small dogs favor the brighter yip.
+    const huffChance = cue === "return" ? 0.72 : cue === "catch" ? 0.34 : 0;
+    const kind: NatureVoiceKind =
+      Math.random() < huffChance ? "dogHuff" : dog.style.scale < 0.9 ? "dogYip" : "dogWoof";
+    const base = kind === "dogHuff" ? 0.2 + Math.random() * 0.06 : 0.27 + Math.random() * 0.09;
+    const level = Number(NATURE_AUDIO_TUNING.values.voices) * base;
+    VOICE_LIB[kind]({
       ctx: io.ctx,
       out: rig.panner,
       t0: now + 0.02,
@@ -171,53 +195,61 @@ export class DogParkAudio {
   }
 
   #wake(io: NatureVoiceIO, dogs: readonly DogParkDog[]): void {
-    if (this.#awake) return;
-    this.#awake = true;
     const ctx = io.ctx;
     if (!this.#layer) {
       this.#layer = ctx.createGain();
       this.#layer.gain.value = 0;
-      // Route through nature's presence-INDEPENDENT tap (not io.bus, which nature
-      // fades to 0 and suspends out of region) so a pet at heel stays audible in
-      // the city. This layer runs its own proximity gate below, and the tap is
-      // still HUD master/mute scaled, so nothing plays uninvited.
       this.#layer.connect(io.alwaysBus);
     }
-    if (this.#rigs.length === 0) {
-      for (const dog of dogs) this.#rigs.push(this.#makeRig(io, this.#layer, dog));
+    this.#syncRigs(io, dogs);
+    if (this.#awake) return;
+    this.#awake = true;
+    for (const rig of this.#rigs.values()) this.#startPatter(io, rig);
+  }
+
+  #syncRigs(io: NatureVoiceIO, dogs: readonly DogParkDog[]): void {
+    const live = new Set(dogs);
+    for (const [dog, rig] of this.#rigs) {
+      if (live.has(dog)) continue;
+      this.#disposeRig(rig);
+      this.#rigs.delete(dog);
     }
-    for (const rig of this.#rigs) {
-      // buffer sources can't restart — recreate on wake, like the wind synth
-      const src = ctx.createBufferSource();
-      src.buffer = io.noise;
-      src.loop = true;
-      src.connect(rig.patterFilter);
-      src.start(0, Math.random() * 1.5);
-      rig.patterSrc = src;
+    for (const dog of dogs) {
+      if (this.#rigs.has(dog)) continue;
+      const rig = this.#makeRig(io, this.#layer!, dog);
+      rig.pendingCue = this.#pendingCues.get(dog) ?? null;
+      this.#pendingCues.delete(dog);
+      this.#rigs.set(dog, rig);
+      if (this.#awake) this.#startPatter(io, rig);
     }
   }
 
-  /** Park the layer AND release nature's keep-alive, so nature can suspend the
-   *  shared ctx again once no dog audio is wanted. */
+  #startPatter(io: NatureVoiceIO, rig: DogRig): void {
+    if (rig.patterSrc) return;
+    const src = io.ctx.createBufferSource();
+    src.buffer = io.noise;
+    src.loop = true;
+    src.connect(rig.patterFilter);
+    src.start(0, Math.random() * 1.5);
+    rig.patterSrc = src;
+  }
+
   #sleep(): void {
     this.#nature.setExternalAwake(false);
-    this.#park();
-  }
-
-  #park(): void {
+    this.#pendingCues = new WeakMap<DogParkDog, DogAudioCue>();
+    for (const rig of this.#rigs.values()) rig.pendingCue = null;
     if (!this.#awake) return;
     this.#awake = false;
     const io = this.#io;
     if (!io) return;
-    this.#layer?.gain.setTargetAtTime(0, io.ctx.currentTime, 0.15);
-    for (const rig of this.#rigs) {
+    this.#layer?.gain.setTargetAtTime(0, io.ctx.currentTime, 0.12);
+    for (const rig of this.#rigs.values()) {
       if (rig.patterSrc) {
         rig.patterSrc.stop();
         rig.patterSrc.disconnect();
         rig.patterSrc = null;
       }
       rig.patterLevel.gain.value = 0;
-      rig.wasSprinting = false;
     }
   }
 
@@ -226,15 +258,15 @@ export class DogParkAudio {
     const panner = ctx.createPanner();
     panner.panningModel = "HRTF";
     panner.distanceModel = "inverse";
-    panner.refDistance = 6;
-    panner.rolloffFactor = 1.1;
-    panner.maxDistance = 90;
+    panner.refDistance = 4;
+    panner.rolloffFactor = 1.35;
+    panner.maxDistance = 60;
     panner.connect(layer);
+
     const send = ctx.createGain();
-    send.gain.value = REVERB_CHARACTER * Number(NATURE_AUDIO_TUNING.values.reverb);
+    send.gain.value = DOG_AUDIO.reverbCharacter * Number(NATURE_AUDIO_TUNING.values.reverb);
     panner.connect(send).connect(io.reverbSend);
-    // paw-patter chain: looped noise → bandpass → per-tick envelope → gate.
-    // The band centre scales with the dog: small paws tick brighter.
+
     const patterFilter = ctx.createBiquadFilter();
     patterFilter.type = "bandpass";
     patterFilter.frequency.value = 1150 / dog.style.scale;
@@ -244,7 +276,7 @@ export class DogParkAudio {
     const patterLevel = ctx.createGain();
     patterLevel.gain.value = 0;
     patterFilter.connect(patterTick).connect(patterLevel).connect(panner);
-    movePanner(panner, ctx, dog.x, dog.group.position.y, dog.z, 0); // tc 0 = jump
+    movePanner(panner, ctx, dog.x, dog.group.position.y, dog.z, 0);
     return {
       panner,
       send,
@@ -253,20 +285,43 @@ export class DogParkAudio {
       patterLevel,
       patterSrc: null,
       tickPhase: Math.random(),
-      barkTimer: 2 + Math.random() * 6,
-      wasSprinting: false
+      vocalCooldown: Math.random() * 3,
+      pendingCue: null
     };
+  }
+
+  #disposeRig(rig: DogRig): void {
+    if (rig.patterSrc) {
+      try {
+        rig.patterSrc.stop();
+      } catch {
+        // Source may already have ended during context teardown.
+      }
+      rig.patterSrc.disconnect();
+      rig.patterSrc = null;
+    }
+    rig.patterFilter.disconnect();
+    rig.patterTick.disconnect();
+    rig.patterLevel.disconnect();
+    rig.panner.disconnect();
+    rig.send.disconnect();
   }
 }
 
-function movePanner(p: PannerNode, ctx: AudioContext, x: number, y: number, z: number, tc = 0.06): void {
+function movePanner(
+  p: PannerNode,
+  ctx: AudioContext,
+  x: number,
+  y: number,
+  z: number,
+  tc = 0.035
+): void {
+  const now = ctx.currentTime;
   if (p.positionX) {
-    const t = ctx.currentTime;
-    p.positionX.setTargetAtTime(x, t, tc);
-    p.positionY.setTargetAtTime(y, t, tc);
-    p.positionZ.setTargetAtTime(z, t, tc);
+    p.positionX.setTargetAtTime(x, now, tc);
+    p.positionY.setTargetAtTime(y, now, tc);
+    p.positionZ.setTargetAtTime(z, now, tc);
   } else {
-    // deprecated Safari path
-    (p as unknown as { setPosition(x: number, y: number, z: number): void }).setPosition(x, y, z);
+    p.setPosition(x, y, z);
   }
 }

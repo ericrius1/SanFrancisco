@@ -22,6 +22,8 @@ export type Meta = {
   landmarks: Record<string, { x: number; z: number }>;
 };
 
+export type GroundTopOverlay = (x: number, z: number, base: number) => number;
+
 /** Consume a boot-critical download the inline <head> prefetch already started
  * (window.__sfPrefetch). Falls back to a fresh fetch when the prefetch is
  * missing (script not present / HMR), rejected, or its body was already read. */
@@ -66,7 +68,7 @@ export class WorldMap {
   surface!: Uint8Array;
   groundRevision = 0;
   #bridgeBounds?: { minX: number; maxX: number; minZ: number; maxZ: number }[];
-  #groundTopOverlay?: (x: number, z: number, base: number) => number;
+  #groundTopOverlay?: GroundTopOverlay;
 
   static async load(): Promise<WorldMap> {
     const map = new WorldMap();
@@ -148,8 +150,15 @@ export class WorldMap {
   /** Install the single current runtime ground sheet. Its result is shared by
    *  rendering helpers, player/vehicle grounding, the physics carpet and world
    *  raycasts, so authored surfaces cannot visually diverge from collision. */
-  setGroundTopOverlay(overlay?: (x: number, z: number, base: number) => number) {
+  setGroundTopOverlay(overlay?: GroundTopOverlay) {
     this.#groundTopOverlay = overlay;
+    this.groundRevision++;
+  }
+
+  /** Clear an overlay only if it is still the caller's current installation. */
+  clearGroundTopOverlay(overlay: GroundTopOverlay) {
+    if (this.#groundTopOverlay !== overlay) return;
+    this.#groundTopOverlay = undefined;
     this.groundRevision++;
   }
 

@@ -109,10 +109,12 @@ export function furnish(
   out: PanelBuilder, cols: ColliderBox[], stair: Rect | null,
   role: Role, cell: Rect, floorY: number, roomHeight: number, r: Rng,
   keepouts: readonly Rect[], style: InteriorStyle, entryFocus: EntryFocus | null = null,
+  artKeepouts: readonly Rect[] = [],
 ): PlacedProp[] {
   const inner = inset(cell, 0.30);
   const cx = rectCX(inner), cz = rectCZ(inner);
   const w = rectW(inner), d = rectD(inner);
+  const roomArea = w * d;
   const clampX = (x: number) => Math.min(inner.x1 - 0.08, Math.max(inner.x0 + 0.08, x));
   const clampZ = (z: number) => Math.min(inner.z1 - 0.08, Math.max(inner.z0 + 0.08, z));
   // Compose the first room around what a player sees after walking in. The
@@ -362,6 +364,10 @@ export function furnish(
 
   ceilingLight();
   if (["parlor", "dining", "bedroom", "office", "loft", "retail", "hall"].includes(role)) rug();
+  // A large open loft needs more than the same single rug budget as a compact
+  // bedroom. Keep a second zone deeper in the plan, away from the arrival rug.
+  if (role === "loft" && roomArea > 150 && (!focus || Math.hypot(cx - focus.x, cz - focus.z) > 2.2))
+    rug(cx, cz, Math.min(4.6, w * 0.48), Math.min(3.0, d * 0.38));
 
   switch (role) {
     case "parlor": sofa(); lowTable(); bookcase(); if (style.tier >= 1) plant(); break;
@@ -372,16 +378,21 @@ export function furnish(
     case "bath": counter("vanity", 1.25, "int.ceramic"); bathFixture(); break;
     case "retail": counter("service-counter", 2.6); bookcase(); bookcase(); if (style.tier >= 1) plant(); break;
     case "office": diningSet(true); bookcase(); if (style.tier >= 1) plant(); break;
-    case "loft": diningSet(true); sofa(); bookcase(); plant(); break;
+    case "loft":
+      diningSet(true); sofa(); lowTable(); bookcase(); plant();
+      if (roomArea > 105) { sofa(); bookcase(); consoleTable("studio-table"); plant(); }
+      if (roomArea > 210) { diningSet(); bookcase(); plant(); }
+      break;
     case "stair": consoleTable(); if (style.tier >= 1) plant(); break;
   }
 
-  // Art is selected after furniture; portal/circulation strips reject any wall
-  // location that would float across an opening.
-  const artCount = style.tier === 2 ? 3 : style.tier === 1 ? 2 : 1;
+  // Art is selected after furniture. A dedicated wall-opening list rejects
+  // windows/doors/portals without treating the walkable floor below as blank wall.
+  const artCount = (style.tier === 2 ? 3 : style.tier === 1 ? 2 : 1)
+    + (role === "loft" && roomArea > 180 ? 2 : role === "loft" && roomArea > 100 ? 1 : 0);
   const artWidth = Math.min(1.45, 0.78 * style.artScale);
   const candidates: { spot: ArtSpot; foot: Rect }[] = [];
-  for (const t of [0.25, 0.5, 0.75]) {
+  for (const t of [0.15, 0.3, 0.45, 0.6, 0.75, 0.9]) {
     const ax = cell.x0 + rectW(cell) * t, az = cell.z0 + rectD(cell) * t;
     candidates.push(
       { spot: { x: cell.x0 + 0.055, z: az, normal: [1, 0, 0] }, foot: rectAround(cell.x0 + 0.08, az, 0.16, artWidth) },
@@ -392,10 +403,27 @@ export function furnish(
   }
   let hung = 0;
   const orderedArt = shuffled(candidates, r);
-  if (focus) orderedArt.sort((a, b) =>
-    Math.hypot(a.spot.x - focus.x, a.spot.z - focus.z) - Math.hypot(b.spot.x - focus.x, b.spot.z - focus.z));
+  if (focus && entryFocus) {
+    // Rank pictures by the actual arrival cone, not merely proximity. A nearby
+    // side-wall picture can be 80° off camera while a slightly farther one is a
+    // perfect focal piece. Also prefer a face whose normal points back toward
+    // the entrant, so the coloured field—not its paper-thin edge—is what reads.
+    const viewScore = (c: { spot: ArtSpot }) => {
+      const vx = c.spot.x - entryFocus.point[0], vz = c.spot.z - entryFocus.point[1];
+      const forward = vx * entryFocus.inward[0] + vz * entryFocus.inward[1];
+      const lateral = Math.abs(vx * -entryFocus.inward[1] + vz * entryFocus.inward[0]);
+      const angle = Math.atan2(lateral, Math.max(0.05, forward));
+      const toEyeX = entryFocus.point[0] - c.spot.x, toEyeZ = entryFocus.point[1] - c.spot.z;
+      const face = c.spot.normal[0] * toEyeX + c.spot.normal[2] * toEyeZ;
+      return (forward <= 0.35 ? 100 : 0) + (face <= 0.05 ? 20 : 0) + angle * 12 + Math.hypot(vx, vz) * 0.025;
+    };
+    orderedArt.sort((a, b) => viewScore(a) - viewScore(b));
+  }
   for (const c of orderedArt) {
-    if (hung >= artCount || blocked.some((b) => overlaps(c.foot, b))) continue;
+    // Pictures have no collider, so a floor circulation strip should not veto
+    // them. Only real wall openings—windows, portals and the front door—belong
+    // in this separate blocker list.
+    if (hung >= artCount || artKeepouts.some((b) => overlaps(c.foot, b))) continue;
     hangArt(out, c.spot, r, floorY, style.artScale);
     hung++;
   }

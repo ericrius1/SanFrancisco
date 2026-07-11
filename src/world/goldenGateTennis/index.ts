@@ -1,6 +1,6 @@
 import * as THREE from "three/webgpu";
 import { BodyType, type Physics } from "../../core/physics";
-import type { WorldMap } from "../heightmap";
+import type { GroundTopOverlay, WorldMap } from "../heightmap";
 import {
   DEFAULT_GAMEPLAY_COURT_REF,
   GOLDMAN_CLUBHOUSE_OUTLINE,
@@ -91,7 +91,7 @@ function courtLocal(court: GoldmanCourtSpec, x: number, z: number): { lateral: n
 
 /** Physics/player grounding that exactly matches the visible terraced pads. */
 function installCourtGrounding(map: WorldMap, grades: ReadonlyMap<GoldmanCourtRef, number>) {
-  map.setGroundTopOverlay((x, z, base) => {
+  const overlay: GroundTopOverlay = (x, z, base) => {
     for (const court of GOLDMAN_COURTS) {
       const local = courtLocal(court, x, z);
       if (Math.abs(local.lateral) > court.padWidth / 2 || Math.abs(local.along) > court.padLength / 2) continue;
@@ -101,7 +101,9 @@ function installCourtGrounding(map: WorldMap, grades: ReadonlyMap<GoldmanCourtRe
       return grade + (onPaint ? COURT_SURFACE_LIFT : COURT_PAD_TOP);
     }
     return base;
-  });
+  };
+  map.setGroundTopOverlay(overlay);
+  return overlay;
 }
 
 function composeBoxMatrix(
@@ -383,6 +385,13 @@ function degToRad(degrees: number) {
 
 type FenceRun = { points: readonly GoldmanXZ[]; closed: boolean };
 
+function isFenceOpening(x: number, z: number): boolean {
+  if (x < -1354 && z > 2160 && z < 2232) return true; // clubhouse/main west entrance
+  if (Math.hypot(x + 1328.34, z - 2267.42) < 2.7) return true; // central-spine south gate
+  if (Math.hypot(x + 1294.97, z - 2130.5) < 2.35) return true; // north mini-court approach
+  return false;
+}
+
 function makeFences(map: WorldMap, runs: readonly FenceRun[]) {
   const cells: { x: number; y: number; z: number; yaw: number; length: number }[] = [];
   const posts: { x: number; y: number; z: number }[] = [];
@@ -397,7 +406,7 @@ function makeFences(map: WorldMap, runs: readonly FenceRun[]) {
       const x = (a[0] + b[0]) / 2;
       const z = (a[1] + b[1]) / 2;
       // The clubhouse itself completes the west perimeter; do not fence through it.
-      if (x < -1354 && z > 2160 && z < 2232) continue;
+      if (isFenceOpening(x, z)) continue;
       const ground = map.groundTop(x, z);
       cells.push({ x, y: ground + FENCE_HEIGHT / 2, z, yaw: -Math.atan2(dz, dx), length: Math.hypot(dx, dz) });
       posts.push({ x: a[0], y: map.groundTop(a[0], a[1]) + FENCE_HEIGHT / 2, z: a[1] });
@@ -477,7 +486,7 @@ function registerSiteColliders(
       const dz = b[1] - a[1];
       const x = (a[0] + b[0]) / 2;
       const z = (a[1] + b[1]) / 2;
-      if (x < -1354 && z > 2160 && z < 2232) continue; // clubhouse/entry opening
+      if (isFenceOpening(x, z)) continue;
       registerStaticBox(physics, bodies, {
         x,
         y: map.groundTop(x, z) + FENCE_HEIGHT / 2,
@@ -618,10 +627,13 @@ export class GoldenGateTennisSite {
   readonly reservedCourtRef: GoldmanPickleballCourtRef | null;
   #physics?: Physics;
   #bodies: number[] = [];
+  #map: WorldMap;
+  #groundOverlay?: GroundTopOverlay;
 
   constructor(map: WorldMap, options: GoldenGateTennisSiteOptions = {}) {
     this.group.name = "goldman_tennis_center";
     this.vegetation.name = "goldman_tennis_vegetation";
+    this.#map = map;
     this.reservedCourtRef = options.reservedCourtRef === undefined ? DEFAULT_GAMEPLAY_COURT_REF : options.reservedCourtRef;
     this.#physics = options.physics;
 
@@ -664,8 +676,19 @@ export class GoldenGateTennisSite {
 
     if (options.includeTrees !== false) this.vegetation.add(...makeTrees(map));
     this.group.add(this.vegetation);
-    installCourtGrounding(map, grades);
-    if (this.#physics) registerSiteColliders(map, this.#physics, anchors, this.#bodies);
+    if (this.#physics) {
+      try {
+        registerSiteColliders(map, this.#physics, anchors, this.#bodies);
+      } catch (error) {
+        for (const body of this.#bodies) {
+          this.#physics.removeQuerySolid(body);
+          this.#physics.world.destroyBody(body);
+        }
+        this.#bodies.length = 0;
+        throw error;
+      }
+    }
+    this.#groundOverlay = installCourtGrounding(map, grades);
   }
 
   getCourtAnchor(ref: GoldmanCourtRef): GoldmanCourtAnchor {
@@ -701,6 +724,8 @@ export class GoldenGateTennisSite {
       }
       this.#bodies.length = 0;
     }
+    if (this.#groundOverlay) this.#map.clearGroundTopOverlay(this.#groundOverlay);
+    this.#groundOverlay = undefined;
     this.group.removeFromParent();
   }
 }

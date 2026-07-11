@@ -26,7 +26,8 @@ export type NatureVoiceKind =
   | "bee"
   | "foghorn"
   | "dogYip"
-  | "dogWoof";
+  | "dogWoof"
+  | "dogHuff";
 
 export type VoiceCtx = {
   ctx: AudioContext;
@@ -428,40 +429,69 @@ const foghorn: VoiceFn = (v) => {
   return dur;
 };
 
-// Small-dog yip: a piercing short note with a fast pitch drop plus a bandpass
-// rasp, occasionally doubled. NOT in any region palette — barks come from the
+// Small-dog yip: a bright short note with a fast pitch drop plus a bandpass
+// rasp, only very rarely doubled. NOT in any region palette — barks come from the
 // actual park dogs (audio/dogPark.ts), never from random ambience.
 const dogYip: VoiceFn = (v) => {
-  const n = v.rng() < 0.3 ? 2 : 1;
+  const n = v.rng() < 0.1 ? 2 : 1;
   let t = v.t0;
   let end = t;
   for (let i = 0; i < n; i++) {
     const dur = rand(v.rng, 0.06, 0.1);
     const f0 = rand(v.rng, 620, 900);
-    note(v, { t, dur, f0, f1: f0 * rand(v.rng, 0.55, 0.68), type: "sawtooth", gain: 0.24, attack: 0.006 });
-    band(v, { t, dur: dur * 0.85, f0: f0 * 2.2, f1: f0 * 1.3, q: 2.2, gain: 0.14, attack: 0.005 });
+    note(v, { t, dur, f0, f1: f0 * rand(v.rng, 0.55, 0.68), type: "triangle", gain: 0.21, attack: 0.006 });
+    band(v, { t, dur: dur * 0.85, f0: f0 * 2.2, f1: f0 * 1.3, q: 1.8, gain: 0.13, attack: 0.005 });
     end = t + dur;
     t += rand(v.rng, 0.12, 0.18);
   }
   return end - v.t0;
 };
 
-// Mid-dog woof: lower and breathier chest bark, often a doubled "ruff-ruff".
+// Mid-dog woof: lower and breathier chest bark, usually a single "ruff".
 // Palette-excluded like dogYip — emitted only by the dog-park layer.
 const dogWoof: VoiceFn = (v) => {
-  const n = v.rng() < 0.55 ? 2 : 1;
+  const n = v.rng() < 0.14 ? 2 : 1;
   let t = v.t0;
   let end = t;
   for (let i = 0; i < n; i++) {
     const dur = rand(v.rng, 0.09, 0.13);
     const f0 = rand(v.rng, 250, 400);
-    note(v, { t, dur, f0: f0 * 1.15, f1: f0 * 0.72, type: "sawtooth", gain: 0.28, attack: 0.008 });
+    note(v, { t, dur, f0: f0 * 1.15, f1: f0 * 0.72, type: "triangle", gain: 0.25, attack: 0.008 });
     // breathy body: a broad low noise band riding the same envelope
     band(v, { t, dur, f0: f0 * 3.2, f1: f0 * 2.0, q: 1.1, gain: 0.18, attack: 0.008 });
     end = t + dur;
     t += rand(v.rng, 0.12, 0.18);
   }
   return end - v.t0;
+};
+
+// Soft close-range huff/snuffle for catches and completed returns. It adds a
+// second, less attention-grabbing dog sound so every fetch does not demand a
+// bark. Kept out of nature palettes and spatialized on the actual dog.
+const dogHuff: VoiceFn = (v) => {
+  const t = v.t0;
+  const dur = rand(v.rng, 0.16, 0.25);
+  band(v, {
+    t,
+    dur,
+    f0: rand(v.rng, 520, 760),
+    f1: rand(v.rng, 260, 410),
+    q: 0.72,
+    gain: 0.24,
+    attack: rand(v.rng, 0.015, 0.03)
+  });
+  if (v.rng() < 0.35) {
+    band(v, {
+      t: t + dur * 0.38,
+      dur: dur * 0.62,
+      f0: rand(v.rng, 360, 520),
+      f1: rand(v.rng, 220, 330),
+      q: 0.65,
+      gain: 0.12,
+      attack: 0.018
+    });
+  }
+  return dur;
 };
 
 export const VOICE_LIB: Record<NatureVoiceKind, VoiceFn> = {
@@ -480,7 +510,8 @@ export const VOICE_LIB: Record<NatureVoiceKind, VoiceFn> = {
   bee,
   foghorn,
   dogYip,
-  dogWoof
+  dogWoof,
+  dogHuff
 };
 
 /** Voices that make sense as a call-and-response "answer" from a second bird. */

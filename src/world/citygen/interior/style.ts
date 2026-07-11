@@ -65,6 +65,8 @@ export function interiorStyle(spec: BuildingSpec, use: InteriorUse, area: number
     windowSpacing: family === "industrial" ? 3.7 : tier === 2 ? 3.2 : 2.8,
     artScale: 1 + tier * 0.25,
     curtains: family !== "industrial" && tier >= 1,
-    chandelier: tier >= 1 && family !== "industrial",
+    // Even a compact Victorian/Edwardian gets a modest four-arm fixture; grand
+    // homes and refined urban/coastal rooms keep the larger tiered treatment.
+    chandelier: family === "victorian" || (tier >= 1 && family !== "industrial"),
   };
 }

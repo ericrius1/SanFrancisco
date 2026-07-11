@@ -252,7 +252,7 @@ async function fetchGrid(url: string): Promise<GridData | null> {
 
 export async function createCityGenRing(
   opts: { url?: string },
-  ctx: { scene: THREE.Object3D; physics: { world: PhysWorld } & Partial<QuerySolidHost>; map: { groundHeight(x: number, z: number): number }; tiles: Tiles; schedule?: ScheduleFn },
+  ctx: { scene: THREE.Object3D; physics: { world: PhysWorld } & Partial<QuerySolidHost>; map: { groundHeight(x: number, z: number): number; surfaceType?(x: number, z: number): number }; tiles: Tiles; schedule?: ScheduleFn },
 ): Promise<CityGenRing> {
   const url = opts.url ?? "/citygen/buildings.json";
   const grid = await fetchGrid(url);
@@ -358,7 +358,33 @@ export async function createCityGenRing(
           clearance += 1 << (distances.length - s);
         }
       }
-      const score = clearance * 10000 + length;
+      // Equal-clearance candidates should face a real street, not merely the
+      // marginally longer side/rear yard. surface.bin is intentionally coarse,
+      // so road evidence is a bounded tiebreak: march a full capsule corridor,
+      // accept road only across all three lanes, and stop if any lane meets a
+      // neighbour first. This distinguishes a legitimate building across the
+      // street (road comes first) from a courtyard/alley ending at another wall.
+      let roadDistance = Infinity;
+      if (clearance === 14 && ctx.map.surfaceType) {
+        roadScan: for (let d = 1.5; d <= 16; d += 1) {
+          for (const lateral of laterals) {
+            const x = cx + nrm[0] * d + ux * lateral, z = cz + nrm[1] * d + uz * lateral;
+            if (sampleBlockedByNeighbor(e, x, z)) break roadScan;
+          }
+          let allRoad = true;
+          for (const lateral of laterals) {
+            const x = cx + nrm[0] * d + ux * lateral, z = cz + nrm[1] * d + uz * lateral;
+            if (ctx.map.surfaceType(x, z) !== 4) { allRoad = false; break; }
+          }
+          if (allRoad) { roadDistance = d; break; }
+        }
+      }
+      // 1,025–1,375 points: enough that any qualified road edge beats the
+      // longest real dataset edge at equal clearance, but far below the 20,000
+      // gap between adjacent clearance levels. The gentle distance term avoids
+      // pretending the 8 m surface raster has sub-cell precision.
+      const roadBonus = Number.isFinite(roadDistance) ? 1000 + 25 * (16.5 - roadDistance) : 0;
+      const score = clearance * 10000 + roadBonus + length;
       if (score > bestScore) { bestScore = score; best = i; bestClearance = clearance; }
     }
     return { edge: best, doorAllowed: bestScore > -Infinity && bestClearance === 14 };

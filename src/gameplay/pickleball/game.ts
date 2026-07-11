@@ -36,7 +36,10 @@ const FAULTS: readonly PickleballFault[] = [
 const SNAPSHOT_VERSION = 1;
 const PLAYER_FOOT_LIFT = 0.32;
 const PLAYER_X_LIMIT = C.halfWidth - 0.3;
-const PLAYER_BASELINE_Z = C.halfLength - 0.82;
+// Athletes receive from behind the painted baseline. Keeping this real spacing
+// also gives a legal serve time to rise after its mandatory first bounce before
+// the procedural swing reaches contact.
+const PLAYER_BASELINE_Z = C.halfLength + 0.72;
 const PLAYER_Z_MARGIN = 1.15;
 const tmpForward = new THREE.Vector3();
 const tmpQuat = new THREE.Quaternion();
@@ -451,6 +454,10 @@ export class PickleballGame {
       const ball = this.ballPhysics.position;
       const velocity = this.ballPhysics.velocity;
       const approaching = side === 0 ? velocity.z < -0.1 : velocity.z > 0.1;
+      const receiver = otherSide(this.#server);
+      const legalReturn =
+        this.#lastHitter !== side &&
+        (side === receiver ? this.#twoBounceStage >= 1 : this.#twoBounceStage >= 2);
       const paddleLine = player.position.z + (side === 0 ? 0.34 : -0.34);
       const interceptSeconds = approaching
         ? THREE.MathUtils.clamp((paddleLine - ball.z) / velocity.z, 0, 0.55)
@@ -458,15 +465,16 @@ export class PickleballGame {
       const movementLead = THREE.MathUtils.clamp(interceptSeconds || 0.2, 0.12, 0.36);
       const predictedX = ball.x + velocity.x * movementLead;
       const predictedZ = ball.z + velocity.z * movementLead;
-      targetX = THREE.MathUtils.clamp(predictedX, -PLAYER_X_LIMIT, PLAYER_X_LIMIT);
-      targetZ = side === 0
-        ? THREE.MathUtils.clamp(predictedZ - 0.52, -PLAYER_BASELINE_Z - 0.6, -0.7)
-        : THREE.MathUtils.clamp(predictedZ + 0.52, 0.7, PLAYER_BASELINE_Z + 0.6);
+      // Hold behind the baseline until the mandatory bounce makes a return
+      // legal; lateral anticipation is still allowed so diagonal serves are
+      // reachable without stepping into the court early.
+      if (approaching) targetX = THREE.MathUtils.clamp(predictedX, -PLAYER_X_LIMIT, PLAYER_X_LIMIT);
+      if (legalReturn) {
+        targetZ = side === 0
+          ? THREE.MathUtils.clamp(predictedZ - 0.52, -PLAYER_BASELINE_Z - 0.6, -0.7)
+          : THREE.MathUtils.clamp(predictedZ + 0.52, 0.7, PLAYER_BASELINE_Z + 0.6);
+      }
       const onSide = side === 0 ? ball.z < 0.35 : ball.z > -0.35;
-      const receiver = otherSide(this.#server);
-      const legalReturn =
-        this.#lastHitter !== side &&
-        (side === receiver ? this.#twoBounceStage >= 1 : this.#twoBounceStage >= 2);
       const contactTime = approaching ? (paddleLine - ball.z) / velocity.z : Infinity;
       const contactX = ball.x + velocity.x * contactTime;
       const contactY = ball.y + velocity.y * contactTime - 0.5 * T.gravity * contactTime * contactTime;

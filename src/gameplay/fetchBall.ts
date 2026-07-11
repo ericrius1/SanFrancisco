@@ -392,6 +392,7 @@ export class FetchBall {
       }
       if (this.#dog && this.#dog.controller === "player") {
         this.#dogPhase = { kind: "chasing", ball, dog: this.#dog, reactTimer: 0.25 };
+        park.cueDogAudio(this.#dog, "chase");
         return;
       }
     }
@@ -420,6 +421,7 @@ export class FetchBall {
     if (ball.state.grounded && speed < PICKUP_SPEED && d < PICKUP_RANGE) {
       park.setDogJaw(dog, 1);
       this.#dogPhase = { kind: "returning", ball, dog };
+      park.cueDogAudio(dog, "catch");
     }
   }
 
@@ -440,7 +442,10 @@ export class FetchBall {
     const dz = dog.z - playerPos.z;
     const d = Math.hypot(dx, dz) || 1;
     park.steerDog(dog, playerPos.x + (dx / d) * 1.2, playerPos.z + (dz / d) * 1.2, park.dogSprintSpeed(dog) * 0.55, dt);
-    if (d < 1.9 && dog.speed < 0.9) this.#dogPhase = { kind: "waiting", ball, dog };
+    if (d < 1.9 && dog.speed < 0.9) {
+      this.#dogPhase = { kind: "waiting", ball, dog };
+      park.cueDogAudio(dog, "return");
+    }
   }
 
   #updateWaiting(dt: number, elapsed: number, playerPos: THREE.Vector3, park: CoronaHeightsPark | null): void {

@@ -145,6 +145,7 @@ export function buildInterior(spec: BuildingSpec, zone: InteriorZone = "resident
   // the post-entry camera and makes a navigable home feel blocked.
   let entryVista: Rect | null = null;
   let entry: EntryAccess | null = null;
+  let entryInward: readonly [number, number] | null = null;
   let frontOpening: FrontOpening | null = null;
   {
     const s0L = poly[si], s1L = poly[(si + 1) % poly.length];
@@ -155,6 +156,7 @@ export function buildInterior(spec: BuildingSpec, zone: InteriorZone = "resident
       // The local street edge is x-aligned and the ring is CCW, so its left
       // normal—not the possibly-outside vertex centroid—defines the lot interior.
       const inZ = (s1L[0] - s0L[0]) / eLen >= 0 ? 1 : -1;
+      entryInward = [0, inZ];
       const hw = Math.max(0.9, halfW + 0.6), depth = 2.4;
       doorClear = { x0: dX - hw, x1: dX + hw, z0: Math.min(dZ, dZ + inZ * depth), z1: Math.max(dZ, dZ + inZ * depth) };
       const vistaHalf = 0.68, vistaDepth = 7.0;
@@ -265,6 +267,8 @@ export function buildInterior(spec: BuildingSpec, zone: InteriorZone = "resident
         out, cols, stair ? stair.region : null,
         zone === "commercial" ? "retail" : "loft", area, fY, storeyH, rf,
         [...circulation.byRoom[0], ...entryKeepouts, ...shell.windowKeepouts], style,
+        k === 0 && entry && entryInward ? { point: entry.point, inward: entryInward } : null,
+        [...shell.windowKeepouts, ...(k === 0 && doorClear ? [doorClear] : [])],
       );
     } else {
       const circulation = planCirculation(
@@ -279,6 +283,12 @@ export function buildInterior(spec: BuildingSpec, zone: InteriorZone = "resident
         furnish(
           out, cols, stair ? stair.region : null, role, rooms[i], fY, storeyH, rf,
           [...circulation.byRoom[i], ...entryKeepouts, ...shell.windowKeepouts], style,
+          k === 0 && i === entryRoom && entry && entryInward ? { point: entry.point, inward: entryInward } : null,
+          [
+            ...shell.windowKeepouts,
+            ...portals.filter((p) => p.a === i || p.b === i).map((p) => p.keepout),
+            ...(k === 0 && i === entryRoom && doorClear ? [doorClear] : []),
+          ],
         );
       }
     }

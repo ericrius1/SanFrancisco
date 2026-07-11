@@ -73,7 +73,7 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
   rig.avatar.materials.shoe.color.set(0x1a1f29);
   rig.avatar.materials.sole.color.set(0x050608);
   rig.avatar.materials.trim.color.set(0x2b3341); // cool slate tee inset, matching the eyewear
-  rig.avatar.materials.hair.color.set(0xc2a673); // beige dirty blonde, not auburn/brown
+  rig.avatar.materials.hair.color.set(0xd2b57f); // beige dirty blonde, not auburn/brown
   rig.group.position.y = SEAT_RIG_Y;
   // Give the upper arms a clean shoulder seam. The forearms do the inward
   // reaching; the upper-arm boxes no longer have to pass through the torso.
@@ -102,8 +102,8 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
   const frameMat = new THREE.MeshLambertMaterial({ color: 0x10151d, side: THREE.DoubleSide });
   const lensMat = new THREE.MeshLambertMaterial({ color: 0x2a3443, side: THREE.DoubleSide });
   const lipMat = new THREE.MeshLambertMaterial({ color: 0xa85f68 });
-  const hairLowMat = new THREE.MeshLambertMaterial({ color: 0x8b704f });
-  const hairHiMat = new THREE.MeshLambertMaterial({ color: 0xddc995 });
+  const hairLowMat = new THREE.MeshLambertMaterial({ color: 0xaa895f });
+  const hairHiMat = new THREE.MeshLambertMaterial({ color: 0xead8ad });
   ownedMats.push(frameMat, lensMat, lipMat, hairLowMat, hairHiMat);
 
   const polygonGeo = (points: readonly (readonly [number, number])[]) => {

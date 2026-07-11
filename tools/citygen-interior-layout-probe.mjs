@@ -94,6 +94,11 @@ for (let seed = 1; seed <= 1200; seed++) {
       new PanelBuilder(), colliders, stair?.region ?? null,
       roles[(seed + room) % roles.length], layout.rooms[room], 0, 3.4, rng(seed, 300 + room),
       circulation.byRoom[room], style,
+      room === entryRoom ? { point: entryAccess.point, inward: [0, 1] } : null,
+      [
+        ...layout.portals.filter((p) => p.a === room || p.b === room).map((p) => p.keepout),
+        ...(room === entryRoom ? [entryAccess.keepout] : []),
+      ],
     );
     for (let i = 0; i < props.length; i++) {
       const prop = props[i];
