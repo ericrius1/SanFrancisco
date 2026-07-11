@@ -114,6 +114,17 @@ export class BuskerTrio {
     this.#enterPhase("playing");
   }
 
+  /**
+   * Film cue: jump to the silent count-in, `leadInSeconds` before the first
+   * note. Does not move the player or the perch — transport only. Mutes any
+   * mid-song tails until playing resumes.
+   */
+  cueShow(leadInSeconds = 1) {
+    this.#audio.holdSilent(true);
+    this.#enterPhase("countin");
+    this.#phaseTime = Math.max(0, COUNTIN_SECONDS - Math.max(0, leadInSeconds));
+  }
+
   /** Debug/probe helper: jump the transport to an arbitrary song beat. */
   seek(beat: number) {
     this.#enterPhase("playing");
@@ -200,6 +211,7 @@ export class BuskerTrio {
     this.#phase = phase;
     this.#phaseTime = 0;
     if (phase === "playing") {
+      this.#audio.holdSilent(false);
       this.#schedIdx = { ukulele: 0, handpan: 0, flute: 0 };
       const ctx = this.#audio.ctx;
       // +60 ms of slack so beat-0 voices are never scheduled in the past

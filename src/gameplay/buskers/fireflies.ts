@@ -20,8 +20,11 @@ export const BUSKER_FIREFLY_TUNING = tunables("busker.fireflies", {
 
 const TAU = Math.PI * 2;
 const ACTIVE_RANGE = 90;
-const LIGHT_INTENSITY = 20;
-const LIGHT_DISTANCE = 4.6;
+const LIGHT_INTENSITY = 9;
+const LIGHT_DISTANCE = 5.2;
+// Key sits in front of the trio (camera side), slightly camera-left and above
+// the swarm — soft face fill without sitting inside the insects.
+const LIGHT_OFFSET = { x: 0.65, y: 0.4, z: -1.35 };
 const TWILIGHT_START_ELEVATION = 7;
 const TWILIGHT_FULL_ELEVATION = -2;
 
@@ -63,10 +66,10 @@ function makeGlowTexture(): THREE.CanvasTexture {
   canvas.width = canvas.height = 64;
   const ctx = canvas.getContext("2d")!;
   const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 31);
-  gradient.addColorStop(0, "rgba(255,255,225,1)");
-  gradient.addColorStop(0.1, "rgba(250,255,150,0.98)");
-  gradient.addColorStop(0.3, "rgba(225,255,100,0.42)");
-  gradient.addColorStop(1, "rgba(190,235,65,0)");
+  gradient.addColorStop(0, "rgba(255,236,200,1)");
+  gradient.addColorStop(0.12, "rgba(255,180,70,0.95)");
+  gradient.addColorStop(0.35, "rgba(255,120,35,0.38)");
+  gradient.addColorStop(1, "rgba(220,80,20,0)");
   ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, 64, 64);
   const texture = new THREE.CanvasTexture(canvas);
@@ -89,7 +92,7 @@ export class BuskerFireflies {
     for (let i = 0; i < LAYOUT.length; i++) {
       const material = new THREE.SpriteMaterial({
         map: this.#texture,
-        color: new THREE.Color(0xf0ff91).multiplyScalar(LIGHT_SCALE * 0.82),
+        color: new THREE.Color(0xffb45c).multiplyScalar(LIGHT_SCALE * 0.72),
         opacity: 0
       });
       applyMaterialPolicy(material, "additiveWorld");
@@ -108,12 +111,12 @@ export class BuskerFireflies {
       this.#materials.push(material);
     }
 
-    // One warm, shadowless fill — tracks the swarm centroid so faces and
-    // instruments stay lit without a second WebGPU point light.
-    this.#light = new THREE.PointLight(0xffdf79, 0, LIGHT_DISTANCE, 2);
+    // One warm, shadowless fill — follows the swarm with a fixed key offset
+    // so it stays in front of the faces rather than inside the insects.
+    this.#light = new THREE.PointLight(0xff8f3a, 0, LIGHT_DISTANCE, 2);
     this.#light.name = "busker-firefly-fill";
     this.#light.castShadow = false;
-    this.#light.position.set(0, 1.9, -1.55);
+    this.#light.position.set(LIGHT_OFFSET.x, 1.9 + LIGHT_OFFSET.y, -1.55 + LIGHT_OFFSET.z);
     this.group.add(this.#light);
   }
 
@@ -158,7 +161,11 @@ export class BuskerFireflies {
 
     const n = LAYOUT.length;
     const lightGain = twilight * BUSKER_FIREFLY_TUNING.values.brightness;
-    this.#light.position.set(cx / n, cy / n, cz / n);
+    this.#light.position.set(
+      cx / n + LIGHT_OFFSET.x,
+      cy / n + LIGHT_OFFSET.y,
+      cz / n + LIGHT_OFFSET.z
+    );
     this.#light.intensity =
       LIGHT_INTENSITY * lightGain * (1 + Math.sin(this.#elapsed * 0.51) * pulseDepth);
   }

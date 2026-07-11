@@ -20,6 +20,8 @@ export type DriveSpec = {
   maxFactor: number;
   accelFactor: number;
   steerFactor: number;
+  /** Drive-mode vehicle voice. Default combustion engine; electric = EV whine. */
+  voice?: "engine" | "electric";
 };
 
 export const DEFAULT_DRIVE_SPEC: DriveSpec = {

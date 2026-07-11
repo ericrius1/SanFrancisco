@@ -139,19 +139,24 @@ export function applyAvatarToRig(rig: Rig, avatar: AvatarTraits) {
   const accent = CLOTHING_COLORS[avatar.accent].color;
   const skin = SKIN_TONES[avatar.skin].color;
   const hair = HAIR_COLORS[(avatar.skin + avatar.color + avatar.accent) % HAIR_COLORS.length];
+  const dress = avatar.outfit === "dress";
 
   const primaryColor = new THREE.Color(primary);
   const skinColor = new THREE.Color(skin);
   const brightAccent = color(accent, 1.35);
+  // tee stays short-sleeve (bare arms below the shoulder caps); dress gets
+  // long sleeves in the dress color so she doesn't read as a sleeveless guy
   const sleeveColor =
-    avatar.outfit === "tee" || avatar.outfit === "dress"
+    avatar.outfit === "tee"
       ? skinColor
-      : avatar.outfit === "overalls"
-        ? brightAccent
-        : color(primary, 0.82);
+      : dress
+        ? color(primary, 0.9)
+        : avatar.outfit === "overalls"
+          ? brightAccent
+          : color(primary, 0.82);
   const torsoColor = avatar.outfit === "overalls" ? brightAccent : primaryColor;
   const pantsColor =
-    avatar.outfit === "overalls" ? color(primary, 0.58) : avatar.outfit === "dress" ? new THREE.Color(0x20242b) : new THREE.Color(0x30343c);
+    avatar.outfit === "overalls" ? color(primary, 0.58) : dress ? new THREE.Color(0x20242b) : new THREE.Color(0x30343c);
 
   s.materials.jacket.color.copy(torsoColor);
   s.materials.sleeve.color.copy(sleeveColor);
@@ -170,11 +175,29 @@ export function applyAvatarToRig(rig: Rig, avatar: AvatarTraits) {
   setVisible(s.hats[avatar.hat], true);
   setVisible(s.outfits[avatar.outfit], true);
 
-  s.torsoBlock.scale.set(avatar.outfit === "dress" ? 0.96 : 1, 1, 1);
-  s.hipBlock.scale.set(avatar.outfit === "dress" ? 1.08 : 1.02, 1, 1);
-  s.headBlock.scale.setScalar(1);
-  for (const arm of s.armBlocks) arm.scale.set(1, 1, 1);
-  for (const leg of s.legBlocks) leg.scale.set(avatar.outfit === "dress" ? 0.94 : 1, 1, 1);
+  // dress: hourglass + skinny covered arms so the silhouette reads feminine
+  // instead of the stock chunky block proportions
+  if (dress) {
+    s.torsoBlock.scale.set(0.84, 1, 0.92);
+    s.hipBlock.scale.set(1.22, 1.04, 1.1);
+    s.headBlock.scale.setScalar(0.9);
+    for (const arm of s.armBlocks) arm.scale.set(0.62, 1, 0.62);
+    for (const leg of s.legBlocks) leg.scale.set(0.86, 1, 0.88);
+    rig.armL.position.x = 0.235;
+    rig.armR.position.x = -0.235;
+    rig.handL.scale.setScalar(0.8);
+    rig.handR.scale.setScalar(0.8);
+  } else {
+    s.torsoBlock.scale.set(1, 1, 1);
+    s.hipBlock.scale.set(1.02, 1, 1);
+    s.headBlock.scale.setScalar(1);
+    for (const arm of s.armBlocks) arm.scale.set(1, 1, 1);
+    for (const leg of s.legBlocks) leg.scale.set(1, 1, 1);
+    rig.armL.position.x = 0.28;
+    rig.armR.position.x = -0.28;
+    rig.handL.scale.setScalar(1);
+    rig.handR.scale.setScalar(1);
+  }
 }
 
 export function buildRig(avatar: AvatarTraits = DEFAULT_RIG_AVATAR): Rig {

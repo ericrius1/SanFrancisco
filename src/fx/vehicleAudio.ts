@@ -20,12 +20,16 @@ export type VehicleSignals = {
   vspeed: number; // vertical m/s, signed
   boost: boolean;
   grounded: boolean; // board only — everything else passes true
+  /** When mode is drive: combustion car vs electric cart (etc). */
+  driveVoice?: "engine" | "electric";
 };
 
 type Voice = {
   mode: PlayerMode;
   gain: GainNode; // starts silent; update() drives it every frame
   level: number; // JS-side smoothed value mirrored into gain.gain
+  /** Extra gate when several voices share a PlayerMode (drive engine vs EV). */
+  when?: (sig: VehicleSignals) => boolean;
   /** Steer freqs/filters for this frame, return the target loudness. */
   drive(sig: VehicleSignals, dt: number): number;
 };
@@ -261,7 +265,8 @@ export class VehicleAudio {
     this.#masterLevel = approach(this.#masterLevel, targetMaster, dt, 6);
     this.#master.gain.value = this.#masterLevel;
     for (const v of this.#voices) {
-      let target = sig && sig.mode === v.mode ? v.drive(sig, dt) : 0;
+      const active = !!(sig && sig.mode === v.mode && (!v.when || v.when(sig)));
+      let target = active ? v.drive(sig!, dt) : 0;
       // The extra trim makes previewBoard read as an audition even when the
       // player is already moving faster than the synthetic preview signal.
       if (v.mode === "board") target = Math.min(1, target + boardPreviewEnv * 0.16);
@@ -297,6 +302,7 @@ export class VehicleAudio {
     this.#voices = [
       this.#buildBoard(ctx),
       this.#buildCar(ctx),
+      this.#buildElectricCart(ctx),
       this.#buildPlane(ctx),
       this.#buildBoat(ctx),
       this.#buildDrone(ctx),
@@ -497,6 +503,7 @@ export class VehicleAudio {
     const s = { rpm: 44 };
     return {
       mode: "drive",
+      when: (sig) => sig.driveVoice !== "electric",
       gain: out,
       level: 0,
       drive: (sig, dt) => {
@@ -507,6 +514,46 @@ export class VehicleAudio {
         engineLp.frequency.value = 260 + 300 * norm;
         road.gain.gain.value = 0.3 * norm;
         return 0.16 + 0.38 * norm + (sig.boost ? 0.05 : 0);
+      }
+    };
+  }
+
+  /**
+   * Electric golf cart: quiet idle hum + a rising motor whine (no combustion
+   * rumble). Soft tire hiss on the path; pitch climbs with speed like a small EV.
+   */
+  #buildElectricCart(ctx: AudioContext): Voice {
+    const out = this.#out(ctx);
+    const motorLp = ctx.createBiquadFilter();
+    motorLp.type = "lowpass";
+    motorLp.frequency.value = 900;
+    motorLp.Q.value = 0.85;
+    motorLp.connect(out);
+    // Controllers + inverter idle: soft low sine, always faintly present aboard.
+    const idle = this.#oscInto(ctx, "sine", 72, 0.22, motorLp);
+    // Motor whine: triangle fundamental + a faint fifth for that EV sheen.
+    const whine = this.#oscInto(ctx, "triangle", 180, 0.34, motorLp);
+    const sheen = this.#oscInto(ctx, "sine", 270, 0.12, motorLp);
+    const tires = this.#noiseInto(ctx, "bandpass", 520, 0.7, 0, out);
+
+    const s = { hz: 180 };
+    return {
+      mode: "drive",
+      when: (sig) => sig.driveVoice === "electric",
+      gain: out,
+      level: 0,
+      drive: (sig, dt) => {
+        // Cart tops out ~half car speed, so normalize against ~25 m/s.
+        const norm = clamp01(sig.speed / 25);
+        s.hz = approach(s.hz, 160 + 420 * norm + (sig.boost ? 40 : 0), dt, 4.5);
+        idle.frequency.value = 68 + 18 * norm;
+        whine.frequency.value = s.hz;
+        sheen.frequency.value = s.hz * 1.5;
+        motorLp.frequency.value = 700 + 900 * norm;
+        tires.filter.frequency.value = 480 + 420 * norm;
+        tires.gain.gain.value = 0.04 + 0.22 * norm;
+        // Quiet at rest (just the controller hum), then a clear whine under way.
+        return 0.08 + 0.34 * norm + (sig.boost ? 0.04 : 0);
       }
     };
   }

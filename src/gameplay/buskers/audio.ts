@@ -35,6 +35,8 @@ export class TrioAudio {
   #channels = new Map<BuskerId, { gain: GainNode; panner: PannerNode; reverb: GainNode }>();
   #retryAt = 0;
   #wantSuspend = false;
+  /** Force master gain to 0 (film cue: kill mid-song tails before the next pass). */
+  #holdSilent = false;
 
   /** Null when Web Audio is unavailable (headless test contexts). */
   get ctx(): AudioContext | null {
@@ -43,6 +45,14 @@ export class TrioAudio {
 
   get running(): boolean {
     return this.#ctx?.state === "running";
+  }
+
+  /** Mute the trio until the next playing phase (or an explicit clear). */
+  holdSilent(on: boolean) {
+    this.#holdSilent = on;
+    const ctx = this.#ctx;
+    const master = this.#master;
+    if (ctx && master) setParam(master.gain, on ? 0 : effectsAudioLevel(), ctx.currentTime);
   }
 
   constructor() {
@@ -151,7 +161,7 @@ export class TrioAudio {
     if (ctx.state !== "running") return;
 
     const t = ctx.currentTime;
-    setParam(master.gain, effectsAudioLevel(), t);
+    setParam(master.gain, this.#holdSilent ? 0 : effectsAudioLevel(), t);
 
     camera.getWorldPosition(_pos);
     camera.getWorldDirection(_fwd);

@@ -1,9 +1,10 @@
 // Player fetch-ball tool + the whole dog-fetch/pet loop.
 //
-// Hold-to-throw: the tennis ball only appears in hand while winding up. Hold
-// longer to cock further back and throw harder; aim is sampled on release.
-// After the ball leaves the hand, hands stay empty until the next hold — so a
-// dog can bring a thrown ball back and the player takes it with E.
+// Hold-to-throw: hold the pointer ≥1s to spot the ball in hand, then keep
+// holding to wind up (full power at +1.5s, i.e. 2.5s total). Release early
+// during the spot window cancels; aim is sampled on release. After the ball
+// leaves the hand, hands stay empty until the next hold — so a dog can bring
+// a thrown ball back and the player takes it with E.
 //
 // Free kinematic balls fly/bounce/roll via the shared ballSim. The player-side
 // fetch state machine (throw → a free dog chases, bites, carries it back and
@@ -32,9 +33,10 @@ import {
 const BALL_R = 0.16; // matches the park's tennis ball
 const DOG_SURFACE_LIFT = 0.04; // woodchip lift inside the park; 0 on open terrain
 const FENCE_TOP_LIFT = 1.55; // fence height added over ground for the rebound cap
-const THROW_SPEED_MIN = 7; // m/s at a tap
+const THROW_SPEED_MIN = 7; // m/s at the moment the ball spots (start of windup)
 const THROW_SPEED_MAX = 22; // m/s at full windup (under the ~22 m/s anti-tunnel ceiling)
-const CHARGE_TIME = 0.9; // seconds of hold to reach full power
+const SPOT_TIME = 1.0; // seconds of hold before the ball appears in hand
+const WINDUP_TIME = 1.5; // seconds of windup after spot to reach max power (2.5s total)
 const WINDUP_T = 0.4; // throw-anim t at full cock-back (matches Player.#applyThrowSwing)
 const LAUNCH_T = 0.5; // throw-anim t when the ball leaves the hand (mid-whip)
 const RELEASE_DURATION = 0.36; // seconds to play windup→follow-through after release
@@ -97,10 +99,11 @@ export class FetchBall {
   #dog: ParkDog | null = null; // the fetching dog (claimed) — becomes a pet on adoption
   #pets: ParkDog[] = []; // adopted followers
 
-  // hold-to-throw: ball only shows while charging / releasing / after an E pickup
+  // hold-to-throw: ball only shows after the spot window / while releasing / after E pickup
   #held = false;
   #throwPhase: ThrowPhase = "idle";
-  #charge = 0; // 0..1 windup power while charging
+  #holdElapsed = 0; // seconds the pointer has been held this charge
+  #charge = 0; // 0..1 windup power (0 at spot, 1 after WINDUP_TIME)
   #throwAnimT = 0; // 0..1 arm-swing parameter fed to the player view
   #releaseElapsed = 0; // seconds since mouse-up
   #releaseStartT = 0; // anim t at the moment of release
@@ -145,9 +148,9 @@ export class FetchBall {
   }
 
   /**
-   * Drive hold-to-throw while the ball tool is selected. `firing` is the Space /
-   * pad-X fire level; `aim` is the view direction (sampled on release). Pass
-   * `cancelled` when focus drops mid-charge so we don't accidental-toss.
+   * Drive hold-to-throw while the ball tool is selected. `firing` is the mouse /
+   * pad fire level; `aim` is the view direction (sampled on release). Pass
+   * `cancelled` when pointer lock drops mid-charge so we don't accidental-toss.
    */
   driveThrow(dt: number, firing: boolean, aim: THREE.Vector3, cancelled = false): void {
     if (!this.#active) return;
@@ -163,17 +166,20 @@ export class FetchBall {
         return;
       }
       if (firing) {
-        this.#charge = Math.min(1, this.#charge + dt / CHARGE_TIME);
-        this.#throwAnimT = this.#charge * WINDUP_T;
-        this.#deps.playerView.setThrowAnim(this.#throwAnimT);
+        this.#holdElapsed += dt;
+        this.#syncChargeFromHold();
         return;
       }
-      // Mouse up — lock aim + power and whip forward.
+      // Mouse up before the ball spots — cancel, no throw.
+      if (this.#holdElapsed < SPOT_TIME && !this.#hadHeldBeforeCharge) {
+        this.#cancelCharge();
+        return;
+      }
+      // Spotted (or already held from pickup) — lock aim + power and whip forward.
       this.#aim.copy(aim);
       if (this.#aim.lengthSq() < 1e-6) this.#aim.set(0, 0.12, -1);
       this.#aim.normalize();
-      const power = Math.max(this.#charge, 0.08);
-      this.#throwSpeed = THREE.MathUtils.lerp(THROW_SPEED_MIN, THROW_SPEED_MAX, power);
+      this.#throwSpeed = THREE.MathUtils.lerp(THROW_SPEED_MIN, THROW_SPEED_MAX, this.#charge);
       this.#releaseStartT = this.#throwAnimT;
       this.#releaseElapsed = 0;
       this.#throwPhase = "releasing";
@@ -183,13 +189,32 @@ export class FetchBall {
     // idle
     if (firing && !cancelled) {
       this.#hadHeldBeforeCharge = this.#held;
-      this.#held = true;
       this.#charge = 0;
       this.#throwAnimT = 0;
+      // Already clasping a picked-up ball — skip the spot wait and wind up now.
+      this.#holdElapsed = this.#hadHeldBeforeCharge ? SPOT_TIME : 0;
       this.#throwPhase = "charging";
-      this.#deps.playerView.setBallHeld(true);
-      this.#deps.playerView.setThrowAnim(0);
+      this.#holdElapsed += dt;
+      this.#syncChargeFromHold();
     }
+  }
+
+  /** Advance spot → windup visuals from `#holdElapsed`. */
+  #syncChargeFromHold(): void {
+    if (this.#holdElapsed < SPOT_TIME && !this.#hadHeldBeforeCharge) {
+      this.#charge = 0;
+      this.#throwAnimT = 0;
+      this.#held = false;
+      this.#deps.playerView.setBallHeld(false);
+      this.#deps.playerView.setThrowAnim(0);
+      return;
+    }
+    const windup = Math.max(0, this.#holdElapsed - SPOT_TIME);
+    this.#charge = Math.min(1, windup / WINDUP_TIME);
+    this.#throwAnimT = this.#charge * WINDUP_T;
+    this.#held = true;
+    this.#deps.playerView.setBallHeld(true);
+    this.#deps.playerView.setThrowAnim(this.#throwAnimT);
   }
 
   /**
@@ -261,9 +286,9 @@ export class FetchBall {
     this.#syncGlow();
   }
 
-  /** Space/X-row verb — hold to wind up; pickup is on E. */
+  /** Click-row verb — hold ≥1s to spot, then wind up; pickup is on E. */
   verb(): string {
-    return "hold to throw";
+    return "hold 1s to throw";
   }
 
   /** True when E would pick something up right now (dog handoff or free ball). */
@@ -276,9 +301,13 @@ export class FetchBall {
     return this.#nearestPickupBall(this.#lastPlayer) !== null;
   }
 
-  /** 0..1 while charging/releasing (for chase zoom); −1 when idle. */
+  /** 0..1 while winding up / releasing (for chase zoom); −1 when idle or spotting. */
   throwProgress(): number {
-    if (this.#throwPhase === "charging") return this.#charge;
+    if (this.#throwPhase === "charging") {
+      // Don't pull the camera in during the spot wait — only once windup starts.
+      if (this.#holdElapsed < SPOT_TIME && !this.#hadHeldBeforeCharge) return -1;
+      return this.#charge;
+    }
     if (this.#throwPhase === "releasing") {
       return Math.min(1, this.#releaseElapsed / RELEASE_DURATION);
     }
@@ -354,6 +383,7 @@ export class FetchBall {
     // Don't cancel mid-release — the ball is already committed to leave the hand.
     if (this.#throwPhase === "releasing") return;
     this.#throwPhase = "idle";
+    this.#holdElapsed = 0;
     this.#charge = 0;
     this.#throwAnimT = 0;
     this.#held = this.#hadHeldBeforeCharge;

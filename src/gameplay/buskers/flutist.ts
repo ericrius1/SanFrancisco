@@ -1,14 +1,18 @@
 import * as THREE from "three/webgpu";
+import { LIGHT_SCALE } from "../../config";
 import { buildRig, setRigClasp } from "../../player/rig";
 import { applyArmPose, dampArmPose, mixArmPose, solveArmPose, type ArmPose } from "./armIk";
 import { SEC_PER_BEAT } from "./song";
 import { midiHz, NoteCursor, type MusicianBuilder, type NoteEvent, type TrioClock } from "./types";
 
+/** Light warm brown — must stay readable inside the raised hood's shadow. */
+const HAIR_BROWN = 0xd8b07a;
+
 /**
  * The flutist — viewer's RIGHT seat. Hood up, eyes down, lost in it.
  *
- * A deep-navy alpaca-knit figure (the only hooded one of the trio, brown fringe
- * peeking out) with a raised hood built from boxes parented to the head, a
+ * A deep-navy alpaca-knit figure (the only hooded one of the trio, light-brown
+ * fringe peeking out) with a raised hood built from boxes parented to the head, a
  * reddish cedar Native American flute (end-blown, carved bird block + buckskin
  * tie) held out front-and-down, and legs dangling over the edge. His part
  * (SONG.flute) doesn't enter until bar 9: through the handpan/uke intro he sits
@@ -101,9 +105,6 @@ export const buildFlutist: MusicianBuilder = (audio, part) => {
   rig.avatar.materials.trim.color.set(0x27323c);
   rig.avatar.torsoBlock.scale.set(1.04, 1.02, 1.04);
   for (const sleeve of rig.avatar.armBlocks) sleeve.scale.set(1.055, 1, 1.055);
-  // lighter warm brown so it still reads brown in the hood's shadow (the
-  // darker 0x63431e looked black next to the graphite shell)
-  rig.avatar.materials.hair.color.set(0x9a6430);
   // hide the default short-hair cap — under the raised hood it reads as a
   // black helmet; only the fringe / sideburns / nape lock below should show
   for (const h of rig.avatar.hair.short) h.visible = false;
@@ -189,16 +190,25 @@ export const buildFlutist: MusicianBuilder = (audio, part) => {
   const hoodCheekL = mesh(rig.head, cheekGeo, hoodMat, 0.155, 0.19, 0.01);
   const hoodCheekR = mesh(rig.head, cheekGeo, hoodMat, -0.155, 0.19, 0.01);
 
-  /* ---- shaggy brown fringe under the hood: uneven brow fringe, sideburns
-     past the ears, and a longer lock at the nape (short-hair cap is hidden) ---- */
-  const hairMat = rig.avatar.materials.hair; // shared — never disposed here
-  const fringeL = mesh(rig.head, geo(0.1, 0.17, 0.05), hairMat, -0.08, 0.25, -0.125);
+  /* ---- shaggy light-brown fringe under the hood: uneven brow fringe, sideburns
+     past the ears, and a longer lock at the nape (short-hair cap is hidden).
+     Own material + mild emissive — albedo alone still crushed to black in the
+     hood cavity (0x63431e and 0x9a6430 both failed that test). Fringe sits
+     forward in the hood opening so it catches light. ---- */
+  const hairMat = new THREE.MeshLambertMaterial({
+    color: HAIR_BROWN,
+    emissive: new THREE.Color(HAIR_BROWN),
+    emissiveIntensity: 0.1 * LIGHT_SCALE
+  });
+  ownMats.push(hairMat);
+  rig.avatar.materials.hair.color.set(HAIR_BROWN);
+  const fringeL = mesh(rig.head, geo(0.11, 0.18, 0.055), hairMat, -0.08, 0.24, -0.148);
   fringeL.rotation.z = 0.12;
-  mesh(rig.head, geo(0.09, 0.2, 0.05), hairMat, 0.01, 0.23, -0.132);
-  const fringeR = mesh(rig.head, geo(0.09, 0.16, 0.05), hairMat, 0.1, 0.26, -0.125);
+  mesh(rig.head, geo(0.1, 0.2, 0.055), hairMat, 0.01, 0.22, -0.152);
+  const fringeR = mesh(rig.head, geo(0.1, 0.17, 0.055), hairMat, 0.1, 0.25, -0.148);
   fringeR.rotation.z = -0.14;
-  mesh(rig.head, geo(0.05, 0.22, 0.13), hairMat, -0.125, 0.11, -0.03); // sideburn L
-  mesh(rig.head, geo(0.05, 0.2, 0.13), hairMat, 0.125, 0.13, -0.03); // sideburn R
+  mesh(rig.head, geo(0.055, 0.24, 0.12), hairMat, -0.118, 0.1, -0.06); // sideburn L
+  mesh(rig.head, geo(0.055, 0.22, 0.12), hairMat, 0.118, 0.12, -0.06); // sideburn R
   const napeLock = mesh(rig.head, geo(0.22, 0.22, 0.05), hairMat, 0, 0.02, 0.12); // long lock at the back
   napeLock.rotation.x = -0.1;
 

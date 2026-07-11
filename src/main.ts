@@ -72,6 +72,7 @@ import {
 import { Satchel } from "./ui/satchel";
 import { HUD } from "./ui/hud";
 import { ShareButton } from "./ui/share";
+import { BuskerCueButton } from "./ui/buskerCue";
 import { PauseToggle } from "./ui/pauseToggle";
 // BehindTheScenes is deferred (dynamic import after start is ready)
 import { parseReadLink, openReadLink } from "./ui/deepLinks";
@@ -210,7 +211,7 @@ async function boot() {
   const splashes = new WaterSplashes(scene, wake, map);
   const fireworks = new Fireworks(renderer, scene, map);
 
-  // Space / pad-X toys — the toolbar swaps between them (arrow keys while UI is open)
+  // left-click toys — the toolbar swaps between them (arrow keys while UI is open)
   const graffiti = new Graffiti(scene);
   const paintballs = new Paintballs(scene);
   const paintSkins = new PaintSkins();
@@ -260,6 +261,14 @@ async function boot() {
   const spawnPoint = resolveSpawnPoint(START.spawn) ?? resolveSpawnPoint(START_DEFAULTS.spawn);
   const startAt = spawnPoint ?? map.meta.spawns[START.spawn] ?? map.meta.spawns[START_DEFAULTS.spawn];
   const spawn = await findOpenSpawn(map, tiles.manifest, startAt);
+  // Lean-boot spawns cap the draw radius while the cover is up: only the near
+  // district (tiles + citygen cells, both keyed off CONFIG.tileLoadRadius) gates
+  // the reveal. The first covered tile scan runs after this, so the cap takes
+  // effect before anything streams; revealWorld restores the full radius.
+  const fullTileRadius = CONFIG.tileLoadRadius;
+  if (spawnPoint?.bootTileRadius) {
+    CONFIG.tileLoadRadius = Math.min(fullTileRadius, spawnPoint.bootTileRadius);
+  }
   // Avatar identity: a saved avatar means the player chose one in the editor;
   // otherwise leave it to the server's per-id seed (adopted on welcome below) so
   // every player — every browser tab included — looks distinct. randomAvatarTraits
@@ -697,7 +706,7 @@ async function boot() {
       net.claimPickleball(side);
       hud.message("Claiming pickleball side…", 1.4);
     } else if (enterPickleballSide(side)) {
-      hud.message("You’re playing · WASD move · Space swings · E leaves", 3.4);
+      hud.message("You’re playing · WASD move · click/Space swings · E leaves", 3.4);
     }
   };
   const releasePickleballSide = (): boolean => {
@@ -731,7 +740,7 @@ async function boot() {
     if (ok && ownerId === net.selfId) {
       pendingPickleballClaim = null;
       enterPickleballSide(side);
-      hud.message("You’re playing · WASD move · Space swings · E leaves", 3.4);
+      hud.message("You’re playing · WASD move · click/Space swings · E leaves", 3.4);
     } else if (!ok && pendingPickleballClaim === side) {
       pendingPickleballClaim = null;
       if (pickleball?.localSide === side) finishPickleballExit(side);
@@ -1420,6 +1429,10 @@ async function boot() {
   new ShareButton(buildShareUrl, (ok) =>
     hud.message(ok ? "Invite link copied — send it to a friend" : "Couldn't copy the link", 3.2)
   );
+  new BuskerCueButton(() => {
+    buskers.cueShow(1);
+    hud.message("Show cued — playing in 1s", 2.2);
+  });
 
   // "Behind the scenes" overlay + X/GitHub links (top-right, under Tutorial).
   // Free the pointer lock while it's open so the cursor can reach the links.
@@ -1782,6 +1795,9 @@ async function boot() {
     if (revealed) return;
     revealed = true;
     resolveRevealed(); // release any region-deferred park builds
+    // Restore the full draw distance now that the near district gated the cover;
+    // the rest of the city streams in from here (tiles + citygen both re-expand).
+    CONFIG.tileLoadRadius = fullTileRadius;
     progress(100, "ready");
     startReady = true;
     startButton.disabled = false;
@@ -2267,7 +2283,8 @@ async function boot() {
         speed: player.speed,
         vspeed: player.velocity.y,
         boost: input.down("ShiftLeft"),
-        grounded: player.mode !== "board" || player.boardGrounded
+        grounded: player.mode !== "board" || player.boardGrounded,
+        driveVoice: player.driveSpec.voice ?? "engine"
       });
       swimAudio.update(frameDt, {
         swimming: player.swimming,
@@ -2355,7 +2372,7 @@ async function boot() {
           player.heading = info.heading + Math.PI; // storage convention is facing+π
           player.trySwitch("drive");
           hud.message(
-            info.kind === "raccoon" ? "You're riding the raccoon! Space — gummy bears" : "You're riding the bear!",
+            info.kind === "raccoon" ? "You're riding the raccoon! Left click — gummy bears" : "You're riding the bear!",
             3
           );
         } else {
@@ -2439,17 +2456,18 @@ async function boot() {
     // sprite set resident and just advance its blink clock every frame.
     updateSutroTower(frameDt);
 
-    // Space / pad-X tools, all along the true view direction: the ball launches
+    // left-click tools, all along the true view direction: the ball launches
     // from the hand, paint sticks to whatever the center-screen ray lands on,
     // bubbles ride the wand
     fireCooldown -= frameDt;
     if (input.freeCursor) {
-      // free cursor out: pointing around never fires tools
+      // free cursor out: clicks only reach UI panels — the ball/spray/bubble
+      // tools stand down so pointing around never fires them
     } else if (playingPickleball) {
-      // Pickleball consumes Space/click as a paddle swing; do not also fire the
+      // Pickleball consumes click as a paddle swing; do not also fire the
       // selected city tool or a vehicle weapon.
     } else if (golf?.capturesFire) {
-      // golf swing context: held Space is the power meter (gameplay/golf
+      // golf swing context: the held mouse is the power meter (gameplay/golf
       // reads input.firing itself) — every click-tool stands down
     } else if (player.mode === "drone") {
       if (!input.suspended && input.firePressed && fireCooldown <= 0) {
@@ -2486,12 +2504,12 @@ async function boot() {
         forest?.fireGummy(rayOrigin, aim, player.velocity);
       }
     } else if (tool === "ball") {
-      // Hold to wind up (ball appears in hand); release to throw along the view.
+      // Hold ≥1s to spot the ball in hand, then wind up; release to throw.
       // Hands stay empty afterward — pick thrown balls back up with E.
       if (fetchBall) {
         chase.interactionDir(aim, player);
         const cancelled =
-          input.suspended || (input.device === "kb" && !document.hasFocus());
+          input.suspended || (input.device === "kb" && (!input.locked || !document.hasFocus()));
         fetchBall.driveThrow(frameDt, input.firing && !input.suspended, aim, cancelled);
       }
     } else if (input.firing) {
@@ -2616,7 +2634,7 @@ async function boot() {
     coronaHeights?.update(frameDt, elapsed, camera.position);
     // Ball fetch loop + pet follow run every frame, tool-agnostic, so a thrown
     // ball keeps bouncing and a returning/adopted dog keeps moving even after
-    // switching tools. verb() keeps the HUD Space/X row in sync with hold-to-throw.
+    // switching tools. verb() keeps the HUD Click row in sync with hold-to-throw.
     fetchBall?.update(frameDt, elapsed, player.position);
     if (tool === "ball" && fetchBall) hud.setToolVerb(fetchBall.verb());
     // brief over-the-shoulder pull-in during a throw, then ease back. Set before
@@ -2724,7 +2742,8 @@ async function boot() {
       speed: player.speed,
       vspeed: player.velocity.y,
       boost: input.down("ShiftLeft"),
-      grounded: player.mode !== "board" || player.boardGrounded
+      grounded: player.mode !== "board" || player.boardGrounded,
+      driveVoice: player.driveSpec.voice ?? "engine"
     });
     swimAudio.update(frameDt, {
       swimming: player.swimming,
