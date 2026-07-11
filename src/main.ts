@@ -2434,7 +2434,8 @@ async function boot() {
     // O: 180° orbit flip around the current look target (camera mode only)
     if (cameraMode && input.pressed("KeyO")) {
       const duration = Math.max(0.05, CAMERA_TUNING.values.orbitFlipSec);
-      orbitFlip = { t: 0, duration, startAz: orbit.azimuthAngle, delta: Math.PI };
+      const delta = CAMERA_TUNING.values.orbitFlipCCW ? Math.PI : -Math.PI;
+      orbitFlip = { t: 0, duration, startAz: orbit.azimuthAngle, delta };
     }
     // V: voice chat mic on/off (same as the HUD mic button)
     if (input.pressed("KeyV")) toggleMic();

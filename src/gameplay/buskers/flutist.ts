@@ -246,7 +246,8 @@ export const buildFlutist: MusicianBuilder = (audio, part) => {
   rig.head.add(flute);
 
   const FLEN = 0.5; // full length; mouth at z≈+0.03, foot at z≈-0.47
-  const tubeGeo = new THREE.CylinderGeometry(0.017, 0.0185, FLEN, 12);
+  // openEnded: mouthpiece + foot cover the ends; closed caps z-fight those faces
+  const tubeGeo = new THREE.CylinderGeometry(0.017, 0.0185, FLEN, 12, 1, true);
   ownGeos.push(tubeGeo);
   const tube = new THREE.Mesh(tubeGeo, cedar);
   tube.rotation.x = Math.PI / 2; // cylinder (local Y) → lies along local Z
@@ -280,8 +281,8 @@ export const buildFlutist: MusicianBuilder = (audio, part) => {
     h.position.set(0, 0.017, -0.2 - i * 0.045);
     flute.add(h);
   }
-  // dark carved foot inlay
-  mesh(flute, geo(0.041, 0.041, 0.05), cedarDark, 0, 0, -0.445);
+  // dark carved foot — sits past the open tube end so faces never coplanar
+  mesh(flute, geo(0.041, 0.041, 0.05), cedarDark, 0, 0, -0.455);
 
   // Named, transform-only contact points. They travel along the tone-hole rows
   // with the damped fingering value, giving QA an exact hand/contact reference.

@@ -58,22 +58,19 @@ const VIEWS = [
   { name: "gg_background", focus: "group", dist: -2, lateral: 8, up: 4.5, targetUp: 3.2, seekBeat: 30.0 }
 ];
 
-// "Fog Rolls Home" (SF_SONG=1) — the folk tune's own musical moments:
-// staggered entrances (uke bar 1 → handpan bar 2 → flute bar 4), the
-// bar-7 fill run, the chorus lift, the picked turn, and the landing.
+// "Fog Rolls Home" (SF_SONG=1) — a 7-bar refrain (~22s): staggered entrances
+// (uke bar 1 → handpan bar 2 → flute bar 3), the flute motif, the bar-6 fill
+// run into the landing everyone rings out together.
 // Damped animation scalars (flute lift, hand hovers) need wall-clock to
 // converge after a cold seek, so each moment seeks a little early and
 // advances real seconds into the beat it wants to catch.
 const FOG_VIEWS = [
   { name: "fog_uke_jam_solo", focus: "ukulele", dist: 2.6, lateral: 0.7, up: 0.6, targetUp: 0.45, seekBeat: 2.05 },
-  { name: "fog_solo_wide", focus: "group", dist: 6.5, lateral: 0.8, up: 1.5, targetUp: 0.9, seekBeat: 3.02 },
   { name: "fog_pan_entrance", focus: "handpan", dist: 2.4, lateral: -0.6, up: 0.6, targetUp: 0.4, seekBeat: 4.5, afterSeconds: 1 },
-  { name: "fog_flute_verse", focus: "flute", dist: 2.4, lateral: -0.75, up: 0.6, targetUp: 0.5, seekBeat: 12.0, afterSeconds: 2 },
-  { name: "fog_fill_run", focus: "handpan", dist: 2.4, lateral: -0.6, up: 0.6, targetUp: 0.4, seekBeat: 26.5, afterSeconds: 1 },
-  { name: "fog_chorus_wide", focus: "group", dist: 7.5, lateral: 0.8, up: 1.6, targetUp: 0.9, seekBeat: 31.5, afterSeconds: 2 },
-  { name: "fog_turn_pick", focus: "group", dist: 5.4, lateral: -0.8, up: 1.3, targetUp: 0.9, seekBeat: 46.5, afterSeconds: 2.5 },
-  { name: "fog_reprise_wide", focus: "group", dist: 7.5, lateral: -0.9, up: 1.6, targetUp: 0.9, seekBeat: 63.5, afterSeconds: 2 },
-  { name: "fog_landing", focus: "group", dist: 4.8, lateral: 0.6, up: 1.2, targetUp: 0.9, seekBeat: 74, afterSeconds: 2 }
+  { name: "fog_flute_motif", focus: "flute", dist: 2.4, lateral: -0.75, up: 0.6, targetUp: 0.5, seekBeat: 8.5, afterSeconds: 2 },
+  { name: "fog_full_wide", focus: "group", dist: 6.5, lateral: 0.8, up: 1.5, targetUp: 0.9, seekBeat: 14.0, afterSeconds: 2 },
+  { name: "fog_fill_run", focus: "handpan", dist: 2.4, lateral: -0.6, up: 0.6, targetUp: 0.4, seekBeat: 22.5, afterSeconds: 1 },
+  { name: "fog_landing", focus: "group", dist: 4.8, lateral: 0.6, up: 1.2, targetUp: 0.9, seekBeat: 22, afterSeconds: 2 }
 ];
 
 async function isFile(p) { try { return existsSync(p); } catch { return false; } }

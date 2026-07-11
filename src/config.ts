@@ -60,7 +60,9 @@ export const RENDER_TUNING = tunables("render", {
 /** Free-orbit camera (C mode). Bound under advanced → camera in the "/" panel. */
 export const CAMERA_TUNING = tunables("camera", {
   // O in camera mode: smooth 180° azimuth flip around the current look target.
-  orbitFlipSec: { v: 3, min: 0.4, max: 12, step: 0.1, label: "180° orbit (s)" }
+  orbitFlipSec: { v: 5.5, min: 0.4, max: 12, step: 0.1, label: "180° orbit (s)" },
+  // false = clockwise (default); true = counter-clockwise
+  orbitFlipCCW: { v: false, label: "orbit CCW" }
 })
 
 /** The committed heightfield is 15.1 × 13.9 km (20.5 km corner-to-corner).
