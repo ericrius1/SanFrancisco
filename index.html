@@ -298,6 +298,11 @@
       #hud.faded .links-ui {
         pointer-events: none;
       }
+      /* Hard per-panel hide (hud.setPanelHidden / hud.soloPanel) — beats every
+         panel's own open/show state; used for captures + debug. */
+      #hud .panel-hidden {
+        display: none !important;
+      }
       #hud .help.swap {
         animation: hudswap 0.28s ease;
       }
