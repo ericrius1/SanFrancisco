@@ -311,6 +311,24 @@ async function tick(cdp, dt) {
   await evaluate(cdp, frameExpression(dt));
 }
 
+async function seekTransport(cdp, beat) {
+  // Debug hooks can become available a few frames before the renderer's late
+  // warmup releases tick(). Re-seek until one real zero-dt simulation frame has
+  // published the requested transport state; otherwise the first captured
+  // frame can still contain the boot/count-in clock.
+  for (let attempt = 0; attempt < 40; attempt++) {
+    await evaluate(cdp, `window.__sf.buskers.seek(${beat}); true`);
+    await tick(cdp, 0);
+    const clock = await evaluate(
+      cdp,
+      `(()=>{const b=window.__sf.buskers.clock;return {phase:b.phase,beat:b.beat,songTime:b.songTime};})()`
+    );
+    if (clock.phase === "playing" && Math.abs(clock.beat - beat) < 0.02) return clock;
+    await sleep(50);
+  }
+  throw new Error(`transport did not settle at beat ${beat}`);
+}
+
 async function settle(cdp, iterations, gapMs = 55) {
   for (let i = 0; i < iterations; i++) {
     await tick(cdp, 0);
@@ -538,8 +556,7 @@ async function main() {
       await sleep(20);
     }
     await settle(cdp, 4, 35);
-    await evaluate(cdp, `window.__sf.buskers.seek(${clip.startBeat}); true`);
-    await tick(cdp, 0);
+    await seekTransport(cdp, clip.startBeat);
 
     const samples = [];
     console.log(`[motion] ${clip.id}: ${FRAME_COUNT} frames from beat ${clip.startBeat}`);
@@ -602,6 +619,10 @@ process.once("SIGTERM", () => {
 });
 
 main()
+  .then(() => {
+    cleanup();
+    process.exit(0);
+  })
   .catch(async (error) => {
     manifest.status = "failed";
     manifest.finishedAt = new Date().toISOString();
@@ -614,6 +635,6 @@ main()
       }
     }
     console.error("[motion] FAIL", error);
-    process.exitCode = 1;
-  })
-  .finally(cleanup);
+    cleanup();
+    process.exit(1);
+  });

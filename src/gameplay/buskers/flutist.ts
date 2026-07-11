@@ -37,8 +37,8 @@ import { midiHz, NoteCursor, type MusicianBuilder, type NoteEvent, type TrioCloc
 const LIP_POS = new THREE.Vector3(0.0, 0.075, -0.135);
 const LIP_QUAT = new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.63, 0.02, 0));
 // flute lowered across the lap, in TORSO space (head origin sits at torso
-// (0, 0.46, 0); lap point ≈ torso (0, -0.08, -0.24)); rolled so the long body
-// lies across the thighs pointing to his right.
+// (0, 0.46, 0); mouth end ≈ torso (+0.2, -0.06, -0.22)); rolled so the
+// long body crosses both thighs toward his right hand.
 const LAP_OFFSET = new THREE.Vector3(0.2, -0.52, -0.22);
 const LAP_QUAT_T = new THREE.Quaternion().setFromEuler(new THREE.Euler(0.1, 1.25, 0.12));
 

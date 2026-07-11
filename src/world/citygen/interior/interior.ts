@@ -20,8 +20,8 @@ import { ensureCCW, triangulate, centroid, streetEdgeIndex, pointInPoly, distToP
 import { doorMetrics } from "../core/collider";
 import { rng } from "../core/rng";
 import { specFor } from "../theme/archetypes";
-import { MAX_FLOORS, INSET, bboxOf, inset, rectArea, rectMinDim, type Rect } from "./common";
-import { partition, buildWalls, deck, planCirculation, polyGroundSlab, type EntryAccess, type Portal, type Wall } from "./rooms";
+import { MAX_FLOORS, INSET, bboxOf, inset, rectArea, rectCX, rectCZ, rectMinDim, type Rect } from "./common";
+import { partition, buildWalls, deck, planCirculation, polyGroundSlab, type EntryAccess } from "./rooms";
 import { planStair, buildStair, stairFits, type StairPlan } from "./stairs";
 import { furnish, type Role } from "./props";
 import { dressInteriorShell, type FrontOpening } from "./shell";
@@ -80,11 +80,11 @@ function inscribedRect(poly: readonly Vec2[], bb: Rect, N = 48): Rect | null {
   };
 }
 
-/** index of the roomiest cell (best chance of fitting the stair). */
-function roomiest(rooms: Rect[]): number {
+/** index of the roomiest cell, preferring not to consume the entrance room. */
+function roomiest(rooms: Rect[], avoid = -1): number {
   let best = 0, bestV = -1;
   for (let i = 0; i < rooms.length; i++) {
-    const v = rectMinDim(rooms[i]);
+    const v = rectMinDim(rooms[i]) - (i === avoid && rooms.length > 1 ? 1000 : 0);
     if (v > bestV) { bestV = v; best = i; }
   }
   return best;
@@ -121,7 +121,9 @@ export function buildInterior(spec: BuildingSpec, zone: InteriorZone = "resident
   // to the full footprint (below); this only bounds the walk-in room plan.
   const area = inset(inscribedRect(poly, bb) ?? bb, INSET);
   const base = spec.base;
-  const nFloors = Math.max(1, Math.min(MAX_FLOORS, Math.round((spec.top - base) / FLOOR_H)));
+  const storeyH = specFor(spec.archetype).floorH;
+  const requestedFloors = Math.max(1, Math.min(MAX_FLOORS, Math.round((spec.top - base) / storeyH)));
+  const style = interiorStyle(spec, zone, rectArea(area));
 
   const out = new PanelBuilder();
   const cols: ColliderBox[] = [];
@@ -132,80 +134,126 @@ export function buildInterior(spec: BuildingSpec, zone: InteriorZone = "resident
   // rect just inside the doorway clear of the stair + furniture, or a sofa/flight
   // parked against the entrance blocks the walk-in the doorway contract promises.
   let doorClear: Rect | null = null;
+  let entry: EntryAccess | null = null;
+  let frontOpening: FrontOpening | null = null;
   {
     const s0L = poly[si], s1L = poly[(si + 1) % poly.length];
     const eLen = Math.hypot(s1L[0] - s0L[0], s1L[1] - s0L[1]);
     if (eLen > 2.2) {
-      const { tc, halfW } = doorMetrics(eLen, spec.base, spec.top, spec.grade ?? spec.base);
+      const { tc, halfW, sill, openTop } = doorMetrics(eLen, spec.base, spec.top, spec.grade ?? spec.base);
       const dX = s0L[0] + (s1L[0] - s0L[0]) * tc, dZ = s0L[1] + (s1L[1] - s0L[1]) * tc;
       const inZ = ctrZ > dZ ? 1 : -1;            // toward the lot interior (edge is x-aligned)
-      const hw = halfW + 0.55, depth = 2.0;      // doorway span + a clear path inward
+      const hw = Math.max(0.9, halfW + 0.6), depth = 2.4;
       doorClear = { x0: dX - hw, x1: dX + hw, z0: Math.min(dZ, dZ + inZ * depth), z1: Math.max(dZ, dZ + inZ * depth) };
+      entry = { point: [dX, dZ + inZ * 1.55], keepout: doorClear };
+      frontOpening = { edge: si, tc, halfW, y0: sill, y1: openTop };
     }
   }
 
   // ---- one shared partition, reused on every floor so walls + the stairwell
   //      stack (realistic, and keeps the stair footprint clear on each storey) --
-  // fewer, bigger rooms (each ~35 m²) so the plan feels roomy at player scale
-  const target = zone === "loft" ? 1 : Math.max(1, Math.min(3, Math.round(rectArea(area) / 35)));
-  let { rooms, walls } = partition(area, target, rng(spec.seed, 101));
-  let stairIdx = roomiest(rooms);
+  // fewer, bigger rooms (~45 m²) keep the paths readable at player scale.
+  const target = zone === "loft" ? 1 : Math.max(1, Math.min(3, Math.round(rectArea(area) / 45)));
+  let { rooms, walls, portals } = partition(area, target, rng(spec.seed, 101));
+  let entryRoom = planCirculation(rooms, portals, entry, null).entryRoom;
+  let stairIdx = roomiest(rooms, entryRoom);
 
   // ---- reserve a staircase (multi-storey only); fall back to one open room if
   //      the roomiest cell can't hold it, so tiny lots still get a usable stair --
   let stair: StairPlan | null = null;
-  if (nFloors > 1) {
+  if (requestedFloors > 1) {
     if (!stairFits(rooms[stairIdx])) {
-      ({ rooms, walls } = partition(area, 1, rng(spec.seed, 102)));
+      const anyFit = rooms.findIndex((room, i) => i !== entryRoom && stairFits(room));
+      if (anyFit >= 0) stairIdx = anyFit;
+    }
+    if (!stairFits(rooms[stairIdx])) {
+      ({ rooms, walls, portals } = partition(area, 1, rng(spec.seed, 102)));
+      entryRoom = planCirculation(rooms, portals, entry, null).entryRoom;
       stairIdx = 0;
     }
     if (stairFits(rooms[stairIdx])) stair = planStair(rooms[stairIdx], doorClear);
   }
+  // Never advertise unreachable upper storeys on the very rare footprint that
+  // cannot hold the compact stair plus its 1.2 m landing.
+  const nFloors = requestedFloors > 1 && !stair ? 1 : requestedFloors;
   const hole: Rect | null = stair ? stair.hole : null;
 
-  // bath goes in the last non-stair cell on residential upper floors (stacked)
+  // Bath uses the smallest non-stair cell; principal rooms retain the generous bays.
   let bathIdx = -1;
-  for (let i = rooms.length - 1; i >= 0; i--) if (!(stair && i === stairIdx)) { bathIdx = i; break; }
+  let bathArea = Infinity;
+  for (let i = 0; i < (rooms.length > 1 ? rooms.length : 0); i++) {
+    if (stair && i === stairIdx && rooms.length > 1) continue;
+    const a = rectArea(rooms[i]);
+    if (a < bathArea) { bathArea = a; bathIdx = i; }
+  }
+
+  // Ground-floor residential jobs follow distance from the actual front door:
+  // welcoming parlor first, kitchen at the back, dining/hall between.
+  const groundRoles: Role[] = rooms.map(() => "hall");
+  if (zone === "residential" && rooms.length) {
+    const er = entryRoom >= 0 ? entryRoom : 0;
+    groundRoles[er] = "parlor";
+    const ep = entry?.point ?? [rectCX(rooms[er]), rectCZ(rooms[er])];
+    const order = rooms.map((room, i) => ({
+      i,
+      d2: (rectCX(room) - ep[0]) ** 2 + (rectCZ(room) - ep[1]) ** 2,
+    })).sort((a, b) => a.d2 - b.d2);
+    const far = order[order.length - 1]?.i ?? er;
+    if (far !== er) groundRoles[far] = "kitchen";
+    for (const q of order) if (q.i !== er && q.i !== far) { groundRoles[q.i] = "dining"; break; }
+  }
 
   for (let k = 0; k < nFloors; k++) {
-    const fY = base + k * FLOOR_H;                       // this storey's floor surface
+    const fY = base + k * storeyH;                       // this storey's floor surface
     const rf = rng(spec.seed, 300 + k);                  // per-floor furniture stream
     const openFloor = zone === "loft" || (zone === "commercial" && k === 0);
 
     // floor slab: faithful footprint on the ground, inset-bbox ring (with the
     // stairwell hole) on floors above
-    if (k === 0) polyGroundSlab(out, cols, poly, tris, fY, bbArea);
-    else deck(out, cols, "int.floor", area, hole, fY, true);
+    if (k === 0) polyGroundSlab(out, cols, poly, tris, fY, bbArea, style.floor);
+    else deck(out, cols, style.floor, area, hole, fY, true);
 
     // ceiling: under each upper floor with the stairwell open; a plain cap on top
-    if (k < nFloors - 1) deck(out, null, "int.ceil", area, hole, base + (k + 1) * FLOOR_H - 0.06, false);
-    else deck(out, null, "int.ceil", area, null, Math.min(spec.top - 0.12, fY + FLOOR_H - 0.06), false);
+    if (k < nFloors - 1) deck(out, null, "int.ceil", area, hole, base + (k + 1) * storeyH - 0.06, false);
+    else deck(out, null, "int.ceil", area, null, Math.min(spec.top - 0.12, fY + storeyH - 0.06), false);
 
-    // window daylight along the perimeter so rooms read as lit
-    daylight(out, poly, (bb.x0 + bb.x1) / 2, (bb.z0 + bb.z1) / 2, fY);
+    // Interior plaster hides the exterior's DoubleSide brick/clapboard; window
+    // frames, curtains and daylight are one coherent dressing pass. Ground floor
+    // keeps the real front-door span completely open.
+    const shell = dressInteriorShell(out, poly, fY, storeyH, style, k === 0 ? frontOpening : null);
 
     // partition walls (skip on open plans), then the stair up to the next floor
-    if (!openFloor) buildWalls(out, cols, walls, fY);
-    if (stair && k < nFloors - 1) buildStair(out, cols, stair.region, stair.runAxis, fY);
+    if (!openFloor) buildWalls(out, cols, walls, fY, style.trim, style.wall, Math.min(storeyH - 0.16, style.family === "industrial" ? 3.45 : 3.05));
+    if (stair && k < nFloors - 1) buildStair(out, cols, stair.region, stair.runAxis, fY, storeyH);
 
-    // ---- furniture + art (ground floor keeps the entrance zone clear) ---------
-    const avoid = k === 0 ? doorClear : null;
+    // ---- circulation first, furniture second ---------------------------------
+    // Open retail/loft floors are one room; partitioned floors use their explicit
+    // room graph. Every portal, entrance and stair access is connected to a hub by
+    // 1.2 m keepout strips before a single prop is admitted.
     if (openFloor) {
-      furnish(out, cols, stair ? stair.region : null, zone === "commercial" ? "retail" : "loft", area, fY, rf, avoid);
+      const circulation = planCirculation(
+        [area], [], k === 0 ? entry : null,
+        stair ? { room: 0, point: stair.accessPoint, keepout: stair.approach } : null,
+      );
+      furnish(
+        out, cols, stair ? stair.region : null,
+        zone === "commercial" ? "retail" : "loft", area, fY, rf,
+        [...circulation.byRoom[0], ...shell.windowKeepouts], style,
+      );
     } else {
-      let parlorDone = false, kitchenDone = false;
+      const circulation = planCirculation(
+        rooms, portals, k === 0 ? entry : null,
+        stair ? { room: stairIdx, point: stair.accessPoint, keepout: stair.approach } : null,
+      );
       for (let i = 0; i < rooms.length; i++) {
         let role: Role;
-        if (stair && i === stairIdx) role = "stair";
-        else if (zone === "commercial") role = "office";
-        else if (k === 0) {
-          if (!parlorDone) { role = "parlor"; parlorDone = true; }
-          else if (!kitchenDone) { role = "kitchen"; kitchenDone = true; }
-          else role = "hall";
-        } else {
-          role = i === bathIdx ? "bath" : "bedroom";
-        }
-        furnish(out, cols, stair ? stair.region : null, role, rooms[i], fY, rf, avoid);
+        if (zone === "commercial") role = "office";
+        else if (k === 0) role = groundRoles[i];
+        else role = i === bathIdx ? "bath" : "bedroom";
+        furnish(
+          out, cols, stair ? stair.region : null, role, rooms[i], fY, rf,
+          [...circulation.byRoom[i], ...shell.windowKeepouts], style,
+        );
       }
     }
   }

@@ -3,7 +3,7 @@ import { Inspector } from "three/addons/inspector/Inspector.js";
 import Stats from "three/addons/libs/stats.module.js";
 import CameraControls from "camera-controls";
 import { CONFIG, FLOWER_TUNING, FOLIAGE_TUNING, RENDER_MODE, RENDER_TUNING, START, START_DEFAULTS, WORLD_TUNING } from "./config";
-import { loadPlayerState, resetAllTweaks, savePlayerState } from "./core/persist";
+import { loadPlayerState, resetAllTweaks, savePlayerState, type SavedPlayer } from "./core/persist";
 import { Input } from "./core/input";
 import { tracer } from "./core/hitchTracer";
 import { createFrameScheduler } from "./core/frameBudget";
@@ -811,6 +811,47 @@ async function boot() {
     }
     return dropped;
   };
+  // Per-mode pose memory: switching car → plane → car returns you to where the
+  // car was, instead of spawning a fresh one under the plane. Walk (key 1 / E)
+  // still hops off in place; only vehicle↔vehicle (and resume after hop-off)
+  // use this cache.
+  const modeMemory = new Map<PlayerMode, SavedPlayer>();
+  const rememberCurrentMode = () => {
+    if (player.riding) return;
+    modeMemory.set(player.mode, {
+      mode: player.mode,
+      x: player.position.x,
+      y: player.position.y,
+      z: player.position.z,
+      heading: player.heading
+    });
+  };
+  /** Resume a previously used mode at its last pose (or reclaim a parked mount). */
+  const resumeMode = (mode: PlayerMode) => {
+    const saved = modeMemory.get(mode);
+    if (mode !== "walk") {
+      const reclaimed = abandonedMounts.reclaimMode(mode, saved ? { x: saved.x, z: saved.z } : undefined);
+      if (reclaimed) {
+        const pose: SavedPlayer = {
+          mode: reclaimed.mode,
+          x: reclaimed.x,
+          y: reclaimed.y,
+          z: reclaimed.z,
+          heading: reclaimed.heading
+        };
+        modeMemory.set(mode, pose);
+        player.restoreState(pose);
+        chase.yaw = pose.heading + Math.PI;
+        return;
+      }
+    }
+    if (saved) {
+      player.restoreState(saved);
+      chase.yaw = saved.heading + Math.PI;
+      return;
+    }
+    player.trySwitch(mode);
+  };
   /** E (or pad B): leave any vehicle, creature, or passenger seat for on-foot. */
   const exitToWalk = () => {
     if (passengerOf !== null) {
@@ -822,6 +863,7 @@ async function boot() {
       return true;
     }
     if (player.mode === "walk") return false;
+    rememberCurrentMode();
     const exitMode = player.mode;
     const clearance = exitClearance(exitMode);
     const motion = readPlayerMotion();
@@ -919,6 +961,7 @@ async function boot() {
     if (spot.mode === "drive") player.setDriveStyle(null);
     if (spot.mode === "drone") player.clearDroneStyle();
     player.restoreState({ mode: spot.mode, x: spot.x, y: spot.y, z: spot.z, heading: spot.heading });
+    modeMemory.set(spot.mode, { mode: spot.mode, x: spot.x, y: spot.y, z: spot.z, heading: spot.heading });
     chase.yaw = spot.heading + Math.PI;
     placeHistoryIndex = nextIndex;
     updatePlaceHistoryHud();
@@ -934,12 +977,12 @@ async function boot() {
     }
     beginPlaceNavigation("Previous place");
     leaveRide(); // a mode key while riding shotgun hops out first
+    rememberCurrentMode();
     if (currentAnimal && mode !== "drive" && mode !== "drone") dropCurrentDriveMount();
     if (mode === "drive" && !currentAnimal) player.setDriveStyle(null);
     if (mode === "drone") player.clearDroneStyle();
-    // Always spawn a fresh mount — any one you left behind keeps living its own
-    // life (the phoenix flies on, the plane lies where it crashed).
-    player.trySwitch(mode);
+    // Resume this mode where you left it (first visit still spawns underfoot).
+    resumeMode(mode);
     finishPlaceNavigation(`${mode} place`);
   };
   switchModeFromToolbar = switchMode;
@@ -1109,6 +1152,7 @@ async function boot() {
   const resumed = invite ? null : loadPlayerState();
   if (resumed) {
     player.restoreState(resumed);
+    modeMemory.set(resumed.mode, resumed);
     modeDiscovery.discover(resumed.mode);
     chase.yaw = resumed.heading + Math.PI;
     camera.position.set(resumed.x + 20, resumed.y + 30, resumed.z + 20);
