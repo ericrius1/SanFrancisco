@@ -156,6 +156,23 @@ async function main() {
     await ev(c, `(() => { window.__sf.input.locked = true; window.__sf.input.fireHeld = true; return true; })()`);
     await sleep(500);
     console.log("[probe] charging:", JSON.stringify(await ev(c, SNAP)));
+    // per-frame recorder on the real ball instance (dev hook)
+    await ev(c, `(() => {
+      const rec = [];
+      window.__rec = rec;
+      const b = window.__golfBall;
+      const step = () => {
+        rec.push({
+          t: Math.round(performance.now()),
+          ph: b.phase,
+          p: [b.pos.x, b.pos.y, b.pos.z].map((n) => Number((n).toPrecision(6))),
+          v: [b.vel.x, b.vel.y, b.vel.z].map((n) => Number((n).toPrecision(6)))
+        });
+        if (rec.length < 400) requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+      return true;
+    })()`);
     await ev(c, `(() => { window.__sf.input.fireHeld = false; return true; })()`);
 
     // watch the flight, sampling ball mesh (radius 0.055 sphere) vs camera
@@ -167,17 +184,18 @@ async function main() {
       });
       return !!window.__ballMesh;
     })()`);
-    for (let i = 0; i < 25; i++) {
-      await sleep(120);
-      const s = await ev(c, `(() => {
-        const s = window.__sf;
-        const c = s.camera.position;
-        const b = window.__ballMesh ? window.__ballMesh.position : null;
-        const r = (v) => [v.x, v.y, v.z].map((n) => Number.isFinite(n) ? Math.round(n * 100) / 100 : String(n));
-        return { cam: r(c), ball: b ? r(b) : null };
-      })()`);
-      console.log(`[probe] t+${((i + 1) * 0.12).toFixed(2)}s`, JSON.stringify(s));
+    await sleep(2500);
+    const rec = await ev(c, "window.__rec ?? []");
+    // print the first 60 frames + around any explosion onset (|p| jump > 10x)
+    let onset = -1;
+    for (let i = 1; i < rec.length; i++) {
+      const a = Math.hypot(...rec[i - 1].p), b = Math.hypot(...rec[i].p);
+      if (b > Math.max(10 * a, 1e5)) { onset = i; break; }
     }
+    console.log(`[probe] recorded ${rec.length} frames, explosion onset at frame ${onset}`);
+    const show = (i) => rec[i] && console.log(`  f${i} t=${rec[i].t} ${rec[i].ph} p=${JSON.stringify(rec[i].p)} v=${JSON.stringify(rec[i].v)}`);
+    for (let i = 0; i < Math.min(40, rec.length); i++) show(i);
+    if (onset > 40) for (let i = onset - 6; i < Math.min(onset + 6, rec.length); i++) show(i);
     console.log(`[probe] errors (${errors.length}):`);
     for (const e of errors.slice(0, 20)) console.log("  ", e);
     c.close();

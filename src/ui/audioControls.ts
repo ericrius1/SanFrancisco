@@ -26,7 +26,8 @@ export class AudioControls {
 
     this.#btn = document.createElement("button");
     this.#btn.className = "mute";
-    this.#btn.title = "sound on/off";
+    this.#btn.type = "button";
+    this.#btn.setAttribute("aria-label", "Mute");
     this.#btn.addEventListener("click", () => {
       AUDIO_PREFS.enabled = !AUDIO_PREFS.enabled;
       saveAudioPrefs();
@@ -105,9 +106,14 @@ export class AudioControls {
   #refresh() {
     const fxOn = AUDIO_PREFS.enabled && AUDIO_PREFS.effectsVolume > 0;
     const voiceOn = AUDIO_PREFS.enabled && AUDIO_PREFS.voiceVolume > 0;
-    const anyOn = AUDIO_PREFS.enabled && (AUDIO_PREFS.effectsVolume > 0 || AUDIO_PREFS.voiceVolume > 0);
+    const muted = !AUDIO_PREFS.enabled;
+    const anyOn = !muted && (AUDIO_PREFS.effectsVolume > 0 || AUDIO_PREFS.voiceVolume > 0);
     const peak = Math.max(AUDIO_PREFS.effectsVolume, AUDIO_PREFS.voiceVolume);
-    this.#btn.textContent = !anyOn ? "🔇" : peak > 0.5 ? "🔊" : "🔉";
+    this.#btn.textContent = muted || !anyOn ? "🔇" : peak > 0.5 ? "🔊" : "🔉";
+    this.#btn.title = muted ? "Unmute" : "Mute";
+    this.#btn.setAttribute("aria-label", muted ? "Unmute" : "Mute");
+    this.#btn.setAttribute("aria-pressed", muted ? "true" : "false");
+    this.#btn.classList.toggle("off", muted);
     this.#effectsSlider.value = String(Math.round(AUDIO_PREFS.effectsVolume * 100));
     this.#voiceSlider.value = String(Math.round(AUDIO_PREFS.voiceVolume * 100));
     this.#effectsSlider.classList.toggle("off", !fxOn);

@@ -54,6 +54,7 @@ const MIME = {
   ".wasm": "application/wasm",
   ".png": "image/png",
   ".jpg": "image/jpeg",
+  ".webp": "image/webp",
   ".svg": "image/svg+xml",
   ".ico": "image/x-icon",
   ".woff2": "font/woff2"
@@ -67,7 +68,7 @@ const weakEtag = (st) => `W/"${st.size.toString(16)}-${Math.trunc(st.mtimeMs).to
 const cacheControlFor = (urlPath) => {
   if (urlPath.startsWith("/assets/")) return "public, max-age=31536000, immutable";
   if (WORLD_ASSET_PREFIXES.some((prefix) => urlPath.startsWith(prefix))) {
-    return "public, max-age=3600, stale-while-revalidate=604800";
+    return "public, max-age=86400, stale-while-revalidate=2592000";
   }
   return "no-cache";
 };
@@ -245,6 +246,8 @@ const sanitizeName = (raw) => {
 
 const oneOf = (value, options, fallback) => (options.includes(value) ? value : fallback);
 const intRange = (value, max, fallback) => (Number.isInteger(value) && value >= 0 && value < max ? value : fallback);
+// custom paint slot: anything that isn't a valid 0xRRGGBB means "no custom"
+const hexOrNull = (value) => (Number.isInteger(value) && value >= 0 && value <= 0xffffff ? value : null);
 const DEFAULT_AVATAR = { skin: 1, hair: "short", hat: "cap", outfit: "jacket", color: 0, accent: 3 };
 
 const hashSeed = (seed) => {
@@ -305,6 +308,9 @@ const DEFAULT_BOARD = {
   deck: 0,
   trim: 5,
   glow: 0,
+  deckHex: null,
+  trimHex: null,
+  glowHex: null,
   surface: "aurora",
   surfaceScale: 52,
   surfaceWarp: 58,
@@ -312,6 +318,11 @@ const DEFAULT_BOARD = {
   surfaceFlow: 24,
   surfaceFx: 45,
   surfaceFxKind: "vortex",
+  plumeReach: 45,
+  plumeShimmer: 50,
+  plumeSparks: true,
+  plumeGlow: 0,
+  plumeHex: null,
   hum: "hum",
   pitch: 0,
   soundTone: 50,
@@ -346,12 +357,21 @@ const boardFromSeed = (seed) => {
     soundAir: 10 + Math.floor(roll() * 71),
     // appended AFTER the audio draws — keeps every earlier field's roll identical
     // to the client's config.ts (draw order = wire contract, change both)
-    surfaceFxKind: pick(BOARD_FX, roll)
+    surfaceFxKind: pick(BOARD_FX, roll),
+    plumeReach: 25 + Math.floor(roll() * 61),
+    plumeShimmer: 20 + Math.floor(roll() * 66),
+    plumeGlow: Math.floor(roll() * BOARD_GLOW_COUNT) % BOARD_GLOW_COUNT,
+    plumeSparks: roll() > 0.35,
+    // custom paint is an explicit player act — seeds never produce it
+    deckHex: null,
+    trimHex: null,
+    glowHex: null,
+    plumeHex: null
   };
 };
 
 const boardKey = (b) =>
-  `${b.shape}|${b.fin}|${b.deck}|${b.trim}|${b.glow}|${b.surface}|${b.surfaceScale}|${b.surfaceWarp}|${b.surfaceSeed}|${b.surfaceFlow}|${b.surfaceFx}|${b.surfaceFxKind}|${b.hum}|${b.pitch}|${b.soundTone}|${b.soundMotion}|${b.soundThrust}|${b.soundAir}`;
+  `${b.shape}|${b.fin}|${b.deck}|${b.trim}|${b.glow}|${b.deckHex}|${b.trimHex}|${b.glowHex}|${b.surface}|${b.surfaceScale}|${b.surfaceWarp}|${b.surfaceSeed}|${b.surfaceFlow}|${b.surfaceFx}|${b.surfaceFxKind}|${b.plumeReach}|${b.plumeShimmer}|${b.plumeSparks}|${b.plumeGlow}|${b.plumeHex}|${b.hum}|${b.pitch}|${b.soundTone}|${b.soundMotion}|${b.soundThrust}|${b.soundAir}`;
 
 const isDefaultBoard = (b) => boardKey(b) === boardKey(DEFAULT_BOARD);
 
@@ -363,6 +383,9 @@ const sanitizeBoard = (raw) => {
     deck: intRange(raw.deck, BOARD_DECK_COUNT, DEFAULT_BOARD.deck),
     trim: intRange(raw.trim, BOARD_DECK_COUNT, DEFAULT_BOARD.trim),
     glow: intRange(raw.glow, BOARD_GLOW_COUNT, DEFAULT_BOARD.glow),
+    deckHex: hexOrNull(raw.deckHex),
+    trimHex: hexOrNull(raw.trimHex),
+    glowHex: hexOrNull(raw.glowHex),
     surface: oneOf(raw.surface, BOARD_SURFACES, DEFAULT_BOARD.surface),
     surfaceScale: intRange(raw.surfaceScale, 101, DEFAULT_BOARD.surfaceScale),
     surfaceWarp: intRange(raw.surfaceWarp, 101, DEFAULT_BOARD.surfaceWarp),
@@ -370,6 +393,11 @@ const sanitizeBoard = (raw) => {
     surfaceFlow: intRange(raw.surfaceFlow, 101, DEFAULT_BOARD.surfaceFlow),
     surfaceFx: intRange(raw.surfaceFx, 101, DEFAULT_BOARD.surfaceFx),
     surfaceFxKind: oneOf(raw.surfaceFxKind, BOARD_FX, DEFAULT_BOARD.surfaceFxKind),
+    plumeReach: intRange(raw.plumeReach, 101, DEFAULT_BOARD.plumeReach),
+    plumeShimmer: intRange(raw.plumeShimmer, 101, DEFAULT_BOARD.plumeShimmer),
+    plumeSparks: typeof raw.plumeSparks === "boolean" ? raw.plumeSparks : DEFAULT_BOARD.plumeSparks,
+    plumeGlow: intRange(raw.plumeGlow, BOARD_GLOW_COUNT, DEFAULT_BOARD.plumeGlow),
+    plumeHex: hexOrNull(raw.plumeHex),
     hum: oneOf(raw.hum, BOARD_HUMS, DEFAULT_BOARD.hum),
     pitch: intRange(raw.pitch, BOARD_PITCH_COUNT, DEFAULT_BOARD.pitch),
     soundTone: intRange(raw.soundTone, 101, DEFAULT_BOARD.soundTone),

@@ -1,16 +1,18 @@
 import * as THREE from "three/webgpu";
-import { cos, float, floor, fract, length, sin, smoothstep, texture, uniform, uv, vec2, vec3 } from "three/tsl";
+import { cos, float, floor, fract, length, mix, sin, smoothstep, texture, uniform, uv, vec2, vec3 } from "three/tsl";
 import { LIGHT_SCALE } from "../../config";
 import { lightAnchor, type LightAnchorSpec } from "../../player/lightPool";
 import {
-  BOARD_DECK_COLORS,
-  BOARD_GLOW_COLORS,
+  boardGlowHex,
+  boardPlumeHex,
+  boardTrimHex,
   normalizeBoardConfig,
   type BoardConfig,
   type BoardFx,
   type BoardShape
 } from "./config";
 import { paintBoardSurface } from "./surfaceTexture";
+import { HALO_TUNING } from "./tuning";
 
 /**
  * Hoverboard, front is local -Z. The deck is a real silhouette now — a closed
@@ -166,7 +168,10 @@ function projectShellUV(geometry: THREE.BufferGeometry) {
 }
 
 function surfacePaintKey(config: BoardConfig) {
-  return `${config.deck}|${config.trim}|${config.glow}|${config.surface}|${config.surfaceScale}|${config.surfaceWarp}|${config.surfaceSeed}`;
+  return (
+    `${config.deck}|${config.trim}|${config.glow}|${config.deckHex}|${config.trimHex}|${config.glowHex}|` +
+    `${config.surface}|${config.surfaceScale}|${config.surfaceWarp}|${config.surfaceSeed}`
+  );
 }
 
 type BoardSurfaceState = {
@@ -264,6 +269,71 @@ function buildSurfaceMaterial(
   return material;
 }
 
+type PlumeUniforms = {
+  uPlumeTime: ReturnType<typeof uniform>;
+  uPlumeStrength: ReturnType<typeof uniform>;
+  uPlumeShimmer: ReturnType<typeof uniform>;
+  uPlumeColor: ReturnType<typeof uniform>; // THREE.Color, raw config hex (LIGHT_SCALE applied in-shader)
+};
+
+/**
+ * Thruster energy shell: an open taper below each pod wearing one shared
+ * additive node material — soft magic emanation, not jet fire. Bands scroll
+ * down the shell (cylinder v runs 1 at the pod → 0 at the tip) with a sideways
+ * wobble; shimmer scales both the wobble and the band contrast, so 0 is a calm
+ * steady glow. Everything is mix/multiply — fades never branch (If() + noise
+ * corrupts skipped pixels), and weight 0 stays a perfect identity.
+ */
+function buildPlumeMaterial(u: PlumeUniforms) {
+  const material = new THREE.MeshBasicNodeMaterial({
+    side: THREE.DoubleSide,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  });
+  const time = u.uPlumeTime as unknown as ReturnType<typeof float>;
+  const strength = u.uPlumeStrength as unknown as ReturnType<typeof float>;
+  const shimmer = u.uPlumeShimmer as unknown as ReturnType<typeof float>;
+  const tint = u.uPlumeColor as unknown as ReturnType<typeof vec3>;
+  const vuv = uv();
+  // hot near-white core where the plume meets the pod, config color below
+  material.colorNode = mix(tint, vec3(1, 1, 1), vuv.y.mul(vuv.y).mul(0.7)).mul(LIGHT_SCALE);
+  // scrolling energy bands, wobbled around the shell so the flow looks alive.
+  // uv.x wraps the cylinder — the wobble frequency is a whole number of turns
+  // so the seam stays continuous.
+  const wobble = sin(vuv.x.mul(Math.PI * 4).add(time)).mul(shimmer).mul(2.2);
+  const bands = sin(vuv.y.mul(14).sub(time.mul(5)).add(wobble)).mul(0.5).add(0.5);
+  const banded = mix(float(1), bands, float(0.3).add(shimmer.mul(0.55)));
+  const fade = smoothstep(0.0, 0.45, vuv.y); // dissolves toward the tip
+  material.opacityNode = banded.mul(fade).mul(strength);
+  return material;
+}
+
+/** Comet state for halo fins. All look parameters live in HALO_TUNING (read
+ *  per frame), so only the integrated motion state is kept here. */
+type BoardHalo = {
+  orbs: THREE.Mesh[]; // MAX_HALO_ORBS children of the ring-centre group
+  mats: THREE.MeshBasicMaterial[]; // per-orb, additive, recolored per frame
+  theta: number; // comet head angle on the ring
+  spread: number; // current tail arc, eased toward the speed-scaled target
+};
+
+type BoardPlume = PlumeUniforms & {
+  cones: THREE.Mesh[]; // one shell per pod; scale.y is the eased length
+  motes: { mesh: THREE.Mesh; phase: number }[]; // spark motes, 3 per pod
+  moteMat: THREE.MeshBasicMaterial;
+  reach: number; // 0..1 from config
+  shimmer: number; // 0..1 from config
+  sparks: boolean;
+  length: number; // current eased shell length (m)
+};
+
+const MAX_HALO_ORBS = 12;
+const HALO_RADIUS = 0.16;
+const HALO_HEAD_RADIUS = 0.034;
+const PLUME_MIN_LEN = 0.08;
+const PLUME_MAX_LEN = 0.4;
+
 export type BoardAnim = {
   spinners: { obj: THREE.Object3D; axis: "y" | "z"; rate: number }[];
   pulseMat: THREE.MeshBasicMaterial;
@@ -271,13 +341,17 @@ export type BoardAnim = {
   lightSpec: LightAnchorSpec;
   lightBase: number;
   surface: BoardSurfaceState;
+  halo?: BoardHalo; // only halo-fin boards carry a comet
+  plume: BoardPlume;
 };
 
 export function buildBoardMesh(config?: BoardConfig): THREE.Group {
   const cfg = normalizeBoardConfig(config ?? {});
   const p = PROFILES[cfg.shape];
-  const trimColor = BOARD_DECK_COLORS[cfg.trim].color;
-  const glowColor = BOARD_GLOW_COLORS[cfg.glow].color;
+  // resolved through config.ts helpers so custom paint overrides land on the
+  // trim/glow hardware exactly like they do on the painted surface
+  const trimColor = boardTrimHex(cfg);
+  const glowColor = boardGlowHex(cfg);
 
   const g = new THREE.Group();
   const geos: THREE.BufferGeometry[] = [];
@@ -371,12 +445,36 @@ export function buildBoardMesh(config?: BoardConfig): THREE.Group {
   underglow.name = "board-underglow-ring";
   g.add(underglow);
 
-  // --- thruster pods: dark casing, glow intake ring, spinning turbine ---
+  // --- thruster pods: dark casing, glow intake ring, spinning turbine,
+  // and an energy plume shell + spark motes hanging below each pod ---
   const spinners: BoardAnim["spinners"] = [];
   const podGeo = geo(new THREE.CylinderGeometry(0.09, 0.115, 0.075, 12, 1, true));
   const ringGeo = geo(new THREE.TorusGeometry(0.1, 0.011, 6, 20));
   ringGeo.rotateX(Math.PI / 2);
   const bladeGeo = geo(new THREE.BoxGeometry(0.15, 0.006, 0.03));
+  // unit-length open shell; top sits at local y=0 so scale.y grows it downward
+  const plumeGeo = geo(new THREE.CylinderGeometry(0.07, 0.03, 1, 12, 1, true));
+  plumeGeo.translate(0, -0.5, 0);
+  const moteGeo = geo(new THREE.SphereGeometry(0.016, 6, 5));
+  const plumeHexNow = boardPlumeHex(cfg);
+  const plumeUniforms: PlumeUniforms = {
+    uPlumeTime: uniform(0),
+    uPlumeStrength: uniform(0),
+    uPlumeShimmer: uniform(cfg.plumeShimmer / 100),
+    uPlumeColor: uniform(new THREE.Color(plumeHexNow))
+  };
+  const plumeMat = mat(buildPlumeMaterial(plumeUniforms)); // ONE material, both pods
+  const moteMat = mat(
+    new THREE.MeshBasicMaterial({
+      color: new THREE.Color(plumeHexNow).multiplyScalar(LIGHT_SCALE),
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending
+    })
+  );
+  const plumeCones: THREE.Mesh[] = [];
+  const plumeMotes: BoardPlume["motes"] = [];
+  const plumeLen0 = PLUME_MIN_LEN + (cfg.plumeReach / 100) * (PLUME_MAX_LEN - PLUME_MIN_LEN);
   for (const pz of [-0.5, 0.5]) {
     const y = kickLift(p, pz);
     const casing = new THREE.Mesh(podGeo, darkMat);
@@ -395,7 +493,34 @@ export function buildBoardMesh(config?: BoardConfig): THREE.Group {
     }
     g.add(turbine);
     spinners.push({ obj: turbine, axis: "y", rate: pz < 0 ? 9 : -9 }); // counter-rotating pair
+    // the emanation hangs from a group at the pod mouth; motes position
+    // themselves in its local space so animateBoard never touches world math
+    const plumeRoot = new THREE.Group();
+    plumeRoot.position.set(0, y - 0.135, pz);
+    const cone = new THREE.Mesh(plumeGeo, plumeMat);
+    cone.scale.y = plumeLen0;
+    plumeRoot.add(cone);
+    plumeCones.push(cone);
+    for (let k = 0; k < 3; k++) {
+      const mote = new THREE.Mesh(moteGeo, moteMat);
+      const phase = (pz < 0 ? 0 : Math.PI) + k * 2.1;
+      mote.position.set(Math.cos(phase) * 0.05, -((k + 0.5) / 3) * plumeLen0, Math.sin(phase) * 0.05);
+      mote.visible = cfg.plumeSparks;
+      plumeRoot.add(mote);
+      plumeMotes.push({ mesh: mote, phase });
+    }
+    g.add(plumeRoot);
   }
+  const plume: BoardPlume = {
+    ...plumeUniforms,
+    cones: plumeCones,
+    motes: plumeMotes,
+    moteMat,
+    reach: cfg.plumeReach / 100,
+    shimmer: cfg.plumeShimmer / 100,
+    sparks: cfg.plumeSparks,
+    length: plumeLen0
+  };
 
   // --- direction identity: warm-white nose orb + red tail bar ---
   const noseZ = -(p.halfL - 0.07);
@@ -412,6 +537,7 @@ export function buildBoardMesh(config?: BoardConfig): THREE.Group {
   g.add(bar);
 
   // --- tail furniture ---
+  let halo: BoardHalo | undefined;
   if (cfg.fin === "twin") {
     const finGeo = geo(new THREE.BoxGeometry(0.018, 0.16, 0.22));
     const tipGeo = geo(new THREE.BoxGeometry(0.02, 0.02, 0.12));
@@ -445,19 +571,35 @@ export function buildBoardMesh(config?: BoardConfig): THREE.Group {
     strip.rotation.x = -0.18;
     g.add(strip);
   } else if (cfg.fin === "halo") {
-    // an energy ring the board perpetually flies through, with a spark orbiting it
+    // an energy ring the board perpetually flies through, with a comet riding
+    // it: a chain of additive orbs that whips through the sides, stalls at the
+    // top/bottom, and collapses there into a concentric glowing stack. All
+    // motion + look live in HALO_TUNING (animateBoard reads it per frame).
     const fz = p.halfL - 0.02;
     const fy = kickLift(p, fz) + 0.17;
-    const halo = new THREE.Mesh(geo(new THREE.TorusGeometry(0.16, 0.016, 6, 28)), glowMat);
-    halo.position.set(0, fy, fz);
-    g.add(halo);
-    const orbit = new THREE.Group();
-    orbit.position.set(0, fy, fz);
-    const spark = new THREE.Mesh(geo(new THREE.SphereGeometry(0.028, 8, 6)), glowNose);
-    spark.position.set(0.16, 0, 0);
-    orbit.add(spark);
-    g.add(orbit);
-    spinners.push({ obj: orbit, axis: "z", rate: 3.2 });
+    const ring = new THREE.Mesh(geo(new THREE.TorusGeometry(HALO_RADIUS, 0.016, 6, 28)), glowMat);
+    ring.position.set(0, fy, fz);
+    g.add(ring);
+    const comet = new THREE.Group();
+    comet.position.set(0, fy, fz);
+    // one unit sphere serves every orb; scale.setScalar is the radius knob.
+    // Per-orb additive materials so overlapping orbs ADD light when stacked.
+    const cometOrbGeo = geo(new THREE.SphereGeometry(1, 8, 6));
+    const orbs: THREE.Mesh[] = [];
+    const orbMats: THREE.MeshBasicMaterial[] = [];
+    for (let i = 0; i < MAX_HALO_ORBS; i++) {
+      const orbMat = mat(
+        new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, blending: THREE.AdditiveBlending })
+      );
+      const cometOrb = new THREE.Mesh(cometOrbGeo, orbMat);
+      cometOrb.scale.setScalar(HALO_HEAD_RADIUS);
+      cometOrb.position.set(HALO_RADIUS, 0, 0);
+      comet.add(cometOrb);
+      orbs.push(cometOrb);
+      orbMats.push(orbMat);
+    }
+    g.add(comet);
+    halo = { orbs, mats: orbMats, theta: 0, spread: 0 };
   }
 
   // --- light (shared LightPool anchors — never real Light objects here) ---
@@ -484,7 +626,7 @@ export function buildBoardMesh(config?: BoardConfig): THREE.Group {
   };
   applyFxWeights(surfaceState);
   surfaceState.uPhase.value = surfaceState.phase;
-  const anim: BoardAnim = { spinners, pulseMat, pulseBase, lightSpec, lightBase: 10, surface: surfaceState };
+  const anim: BoardAnim = { spinners, pulseMat, pulseBase, lightSpec, lightBase: 10, surface: surfaceState, halo, plume };
   g.userData.boardAnim = anim;
   g.userData.boardSurface = surfaceState;
   g.userData.dispose = () => {
@@ -513,6 +655,20 @@ export function updateBoardSurface(board: THREE.Group, config: BoardConfig) {
   state.fxKind = cfg.surfaceFxKind;
   state.phase = (cfg.surfaceSeed / 65536) * Math.PI * 2;
   applyFxWeights(state);
+  // thruster plume knobs preview live too — uniform/visibility flips only,
+  // never a rebuild (reach reshapes the shells via the eased scale next frame)
+  const anim = board.userData.boardAnim as BoardAnim | undefined;
+  if (anim) {
+    const plume = anim.plume;
+    plume.reach = cfg.plumeReach / 100;
+    plume.shimmer = cfg.plumeShimmer / 100;
+    plume.sparks = cfg.plumeSparks;
+    plume.uPlumeShimmer.value = plume.shimmer;
+    const hex = boardPlumeHex(cfg);
+    (plume.uPlumeColor.value as THREE.Color).set(hex);
+    plume.moteMat.color.set(hex).multiplyScalar(LIGHT_SCALE);
+    for (const mote of plume.motes) mote.mesh.visible = plume.sparks;
+  }
 }
 
 /**
@@ -547,4 +703,64 @@ export function animateBoard(board: THREE.Group, dt: number, t: number, speed: n
   const breathe = 0.82 + 0.18 * Math.sin(t * 2.4) + 0.06 * Math.sin(t * 11) * norm;
   anim.pulseMat.color.copy(anim.pulseBase).multiplyScalar(breathe);
   anim.lightSpec.intensity = anim.lightBase * (0.88 + 0.24 * (breathe - 0.82));
+
+  // --- thruster plumes: uniforms + transforms only, shared by both pods ---
+  const plume = anim.plume;
+  // reducedMotion freezes the flow but keeps the static soft glow standing
+  if (!surface.reducedMotion) {
+    plume.uPlumeTime.value = (plume.uPlumeTime.value as number) + step * (0.8 + plume.shimmer * 2.2 + norm * 0.8);
+  }
+  plume.uPlumeStrength.value = (0.28 + plume.reach * 0.22) * (boosting ? 1.4 : 1);
+  const targetLen =
+    PLUME_MIN_LEN + plume.reach * (PLUME_MAX_LEN - PLUME_MIN_LEN) + norm * 0.08 + (boosting ? 0.05 : 0);
+  plume.length += (targetLen - plume.length) * Math.min(1, dt * 6);
+  for (const cone of plume.cones) cone.scale.y = plume.length;
+  if (plume.sparks && !surface.reducedMotion) {
+    // motes spiral lazily down the plume, wrap back to the pod mouth, and
+    // pulse — cheap CPU transforms on six tiny spheres
+    for (const mote of plume.motes) {
+      const cyc = (t * 0.45 + mote.phase * 0.161) % 1;
+      const ang = t * 1.4 + mote.phase;
+      const r = 0.05 + 0.015 * Math.sin(t * 2.1 + mote.phase * 2);
+      mote.mesh.position.set(Math.cos(ang) * r, -cyc * plume.length, Math.sin(ang) * r);
+      mote.mesh.scale.setScalar(1 + 0.35 * Math.sin(t * 6 + mote.phase * 3));
+    }
+  }
+
+  // --- halo comet: eased orbit + tail that stretches through the fast sides
+  // and collapses into a concentric stack at the slow poles. Reads live
+  // HALO_TUNING so every slider (count included) lands without a rebuild. ---
+  const halo = anim.halo;
+  if (halo) {
+    const hv = HALO_TUNING.values;
+    const count = Math.max(2, Math.min(MAX_HALO_ORBS, Math.round(hv.count)));
+    // ring plane is local x/y: sin(theta) is height, so sin² stalls top+bottom
+    const sinT = Math.sin(halo.theta);
+    const omega = hv.orbitSpeed * (1 - hv.slowdown * sinT * sinT);
+    halo.theta = (halo.theta + step * omega * (1 + norm * 0.6)) % (Math.PI * 2);
+    // tail arc chases the speed ratio: long through the whip, tight at the stall
+    const targetSpread = hv.tailSpread * (omega / Math.max(1e-4, hv.orbitSpeed));
+    halo.spread += (targetSpread - halo.spread) * Math.min(1, dt * hv.collapse);
+    for (let i = 0; i < halo.orbs.length; i++) {
+      const orb = halo.orbs[i];
+      orb.visible = i < count;
+      if (!orb.visible) continue;
+      const a = halo.theta - (i * halo.spread) / count;
+      orb.position.set(Math.cos(a) * HALO_RADIUS, Math.sin(a) * HALO_RADIUS, 0);
+      const pulse = 1 + 0.12 * Math.sin(t * 5.2 + i * 1.7);
+      orb.scale.setScalar(HALO_HEAD_RADIUS * Math.pow(hv.taper, i) * pulse);
+      // dark blue head → caribbean glow → near-white tip; the tip is smallest
+      // AND brightest, so the collapsed stack reads as light shining from
+      // inside a dark sphere. ≤12 setHSL calls — trivial per frame.
+      const f = count > 1 ? i / (count - 1) : 1;
+      const white = f * f * hv.whiten;
+      const orbMat = halo.mats[i];
+      orbMat.color.setHSL(
+        THREE.MathUtils.lerp(hv.hueDeep, hv.hueGlow, f) / 360,
+        hv.sat * (1 - white),
+        0.32 + white * 0.6
+      );
+      orbMat.color.multiplyScalar(LIGHT_SCALE * (0.7 + f * f * 1.6));
+    }
+  }
 }

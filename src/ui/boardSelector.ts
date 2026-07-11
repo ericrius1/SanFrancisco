@@ -7,6 +7,10 @@ import {
   BOARD_PITCHES,
   BOARD_SHAPES,
   BOARD_SURFACES,
+  boardDeckHex,
+  boardGlowHex,
+  boardPlumeHex,
+  boardTrimHex,
   normalizeBoardConfig,
   randomBoardConfig,
   type BoardConfig
@@ -14,12 +18,14 @@ import {
 import { paintBoardSurface } from "../vehicles/board/surfaceTexture";
 
 type PreviewKind = "surface" | "sound";
-type LabKind = "surface" | "motion" | "sound" | "thrust";
+type LabKind = "surface" | "motion" | "plume" | "sound" | "thrust";
 type PadKey =
   | "surfaceScale"
   | "surfaceWarp"
   | "surfaceFlow"
   | "surfaceFx"
+  | "plumeReach"
+  | "plumeShimmer"
   | "soundTone"
   | "soundMotion"
   | "soundThrust"
@@ -27,11 +33,71 @@ type PadKey =
 
 const isAudioLab = (kind: LabKind) => kind === "sound" || kind === "thrust";
 
+// Every paintable slot: which palette index it rides, which custom-hex field
+// overrides it, and which palette its swatch row draws from. The rainbow
+// swatch + inline picker are generic over this table.
+const COLOR_ROWS = {
+  deck: { indexKey: "deck", hexKey: "deckHex", palette: BOARD_DECK_COLORS, resolve: boardDeckHex },
+  trim: { indexKey: "trim", hexKey: "trimHex", palette: BOARD_DECK_COLORS, resolve: boardTrimHex },
+  glow: { indexKey: "glow", hexKey: "glowHex", palette: BOARD_GLOW_COLORS, resolve: boardGlowHex },
+  plume: { indexKey: "plumeGlow", hexKey: "plumeHex", palette: BOARD_GLOW_COLORS, resolve: boardPlumeHex }
+} as const;
+type ColorRow = keyof typeof COLOR_ROWS;
+
+// The inline picker's fixed color space: x sweeps hue, y sweeps lightness
+// between these rails, saturation stays put — every reachable color is usable.
+const PICKER_SAT = 0.85;
+const PICKER_LIGHT_TOP = 0.92;
+const PICKER_LIGHT_BOTTOM = 0.18;
+
+const hexString = (n: number) => `#${n.toString(16).padStart(6, "0")}`;
+
+function hslChannel(p: number, q: number, t: number) {
+  if (t < 0) t += 1;
+  if (t > 1) t -= 1;
+  if (t < 1 / 6) return p + (q - p) * 6 * t;
+  if (t < 1 / 2) return q;
+  if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+  return p;
+}
+
+function hslToHex(h: number, s: number, l: number): number {
+  const hue = (((h % 360) + 360) % 360) / 360;
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  const r = Math.round(hslChannel(p, q, hue + 1 / 3) * 255);
+  const g = Math.round(hslChannel(p, q, hue) * 255);
+  const b = Math.round(hslChannel(p, q, hue - 1 / 3) * 255);
+  return (r << 16) | (g << 8) | b;
+}
+
+/** Just enough of the inverse to place the picker crosshair on a saved hex. */
+function hexToHueLight(hex: number): { hue: number; light: number } {
+  const r = ((hex >> 16) & 255) / 255;
+  const g = ((hex >> 8) & 255) / 255;
+  const b = (hex & 255) / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const light = (max + min) / 2;
+  const d = max - min;
+  let hue = 0;
+  if (d > 0) {
+    if (max === r) hue = ((g - b) / d) % 6;
+    else if (max === g) hue = (b - r) / d + 2;
+    else hue = (r - g) / d + 4;
+    hue *= 60;
+    if (hue < 0) hue += 360;
+  }
+  return { hue, light };
+}
+
 /**
- * The hoverboard garage is a tiny instrument, not just a preset list. Two
- * visual pads shape the deck + its motion, and two audio pads shape the voice
- * + thrust. Moves preview while held, then commit once on release so
- * persistence, mesh rebuilds, and net sync stay calm.
+ * The hoverboard garage is a tiny instrument, not just a preset list. Three
+ * visual pads shape the deck, its motion, and the thruster plume; two audio
+ * pads shape the voice + thrust. Every paintable slot also takes a fully
+ * custom color via an inline hue×lightness picker. Moves preview while held,
+ * then commit once on release so persistence, mesh rebuilds, and net sync
+ * stay calm.
  */
 export class BoardSelector {
   #root: HTMLElement;
@@ -47,6 +113,7 @@ export class BoardSelector {
   #surfaceSource = document.createElement("canvas");
   #previewFrame = 0;
   #fxOpen = false; // effect drawer survives re-renders (chip clicks rebuild the panel)
+  #pickerOpen: ColorRow | null = null; // one custom-color picker at a time; survives re-renders
 
   constructor(
     initial: BoardConfig,
@@ -124,18 +191,128 @@ export class BoardSelector {
     return b;
   }
 
-  #swatch(key: "deck" | "trim" | "glow", index: number, color: number, label: string) {
+  #swatch(row: ColorRow, index: number, color: number, label: string) {
+    const { indexKey, hexKey } = COLOR_ROWS[row];
     const b = document.createElement("button");
     b.type = "button";
     b.className = "avatar-swatch";
     b.title = label;
-    b.setAttribute("aria-label", `${key}: ${label}`);
-    const hex = `#${color.toString(16).padStart(6, "0")}`;
+    b.setAttribute("aria-label", `${row}: ${label}`);
+    const hex = hexString(color);
     b.style.background = hex;
-    if (key === "glow") b.style.boxShadow = `0 0 8px ${hex}, inset 0 -4px 0 rgba(0, 0, 0, 0.14)`;
-    b.classList.toggle("on", this.#config[key] === index);
-    b.addEventListener("click", () => this.#set({ [key]: index } as Partial<BoardConfig>));
+    if (row === "glow" || row === "plume") b.style.boxShadow = `0 0 8px ${hex}, inset 0 -4px 0 rgba(0, 0, 0, 0.14)`;
+    b.classList.toggle("on", this.#config[indexKey] === index && this.#config[hexKey] === null);
+    // a palette pick always clears the custom paint — the swatch wins again
+    b.addEventListener("click", () => this.#set({ [indexKey]: index, [hexKey]: null } as Partial<BoardConfig>));
     return b;
+  }
+
+  /** The 9th swatch on every color row: rainbow chip that slides the inline
+   *  hue×lightness picker open under the row. Lit while custom paint is live. */
+  #customSwatch(row: ColorRow) {
+    const { hexKey } = COLOR_ROWS[row];
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "avatar-swatch board-swatch-custom";
+    b.title = "custom color";
+    b.setAttribute("aria-label", `${row}: custom color`);
+    b.classList.toggle("on", this.#config[hexKey] !== null);
+    b.setAttribute("aria-expanded", String(this.#pickerOpen === row));
+    b.addEventListener("click", () => {
+      this.#pickerOpen = this.#pickerOpen === row ? null : row;
+      this.#render(); // no config edit — the field survives the rebuild
+    });
+    return b;
+  }
+
+  /** Inline hue×lightness canvas picker. Drags preview live like the XY pads;
+   *  release commits through #set so persistence/net see one edit. */
+  #colorPicker(row: ColorRow) {
+    const { hexKey, resolve } = COLOR_ROWS[row];
+    const drawer = document.createElement("div");
+    drawer.className = `board-color-picker board-color-picker-${row}`;
+    const open = this.#pickerOpen === row;
+    drawer.classList.toggle("picker-open", open);
+
+    const canvas = document.createElement("canvas");
+    canvas.className = "board-picker-canvas";
+    canvas.width = 240;
+    canvas.height = 90;
+    const readout = document.createElement("output");
+    readout.className = "board-picker-hex";
+    drawer.append(canvas, readout);
+    if (!open) return drawer; // painted lazily: closed drawers stay blank
+
+    const ctx = canvas.getContext("2d")!;
+    const w = canvas.width;
+    const h = canvas.height;
+    // paint the field once per open; crosshair redraws restore from this
+    const base = ctx.createImageData(w, h);
+    for (let y = 0; y < h; y++) {
+      const light = PICKER_LIGHT_TOP - (y / (h - 1)) * (PICKER_LIGHT_TOP - PICKER_LIGHT_BOTTOM);
+      for (let x = 0; x < w; x++) {
+        const hex = hslToHex((x / (w - 1)) * 360, PICKER_SAT, light);
+        const i = (y * w + x) * 4;
+        base.data[i] = (hex >> 16) & 255;
+        base.data[i + 1] = (hex >> 8) & 255;
+        base.data[i + 2] = hex & 255;
+        base.data[i + 3] = 255;
+      }
+    }
+
+    const draw = (hex: number | null) => {
+      ctx.putImageData(base, 0, 0);
+      readout.value = hexString(hex ?? resolve(this.#config));
+      if (hex === null) return; // no custom paint yet — field only, no crosshair
+      const { hue, light } = hexToHueLight(hex);
+      const cx = (hue / 360) * (w - 1);
+      const clamped = Math.max(PICKER_LIGHT_BOTTOM, Math.min(PICKER_LIGHT_TOP, light));
+      const cy = ((PICKER_LIGHT_TOP - clamped) / (PICKER_LIGHT_TOP - PICKER_LIGHT_BOTTOM)) * (h - 1);
+      ctx.beginPath();
+      ctx.arc(cx, cy, 5.5, 0, Math.PI * 2);
+      ctx.strokeStyle = "rgba(6, 16, 22, 0.9)";
+      ctx.lineWidth = 3.4;
+      ctx.stroke();
+      ctx.strokeStyle = "#f4fffb";
+      ctx.lineWidth = 1.7;
+      ctx.stroke();
+    };
+
+    const pick = (e: PointerEvent) => {
+      const r = canvas.getBoundingClientRect();
+      const u = Math.max(0, Math.min(1, (e.clientX - r.left) / Math.max(1, r.width)));
+      const v = Math.max(0, Math.min(1, (e.clientY - r.top) / Math.max(1, r.height)));
+      return hslToHex(u * 360, PICKER_SAT, PICKER_LIGHT_TOP - v * (PICKER_LIGHT_TOP - PICKER_LIGHT_BOTTOM));
+    };
+
+    let pointer = -1;
+    let held: number | null = null;
+    canvas.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      pointer = e.pointerId;
+      canvas.setPointerCapture(e.pointerId);
+      held = pick(e);
+      draw(held);
+      this.#onPreview({ ...this.#config, [hexKey]: held }, "surface");
+    });
+    canvas.addEventListener("pointermove", (e) => {
+      if (e.pointerId !== pointer) return;
+      held = pick(e);
+      draw(held);
+      this.#onPreview({ ...this.#config, [hexKey]: held }, "surface");
+    });
+    const finish = (e: PointerEvent) => {
+      if (e.pointerId !== pointer) return;
+      pointer = -1;
+      if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
+      if (held !== null) this.#set({ [hexKey]: held } as Partial<BoardConfig>);
+      held = null;
+    };
+    canvas.addEventListener("pointerup", finish);
+    canvas.addEventListener("pointercancel", finish);
+
+    draw(this.#config[hexKey]);
+    return drawer;
   }
 
   #row(label: string, children: HTMLElement[]) {
@@ -243,6 +420,7 @@ export class BoardSelector {
       draw();
       if (kind === "surface") this.#paintVisualPreviews();
       else if (kind === "motion") this.#drawMotionPreview(performance.now());
+      else if (kind === "plume") this.#drawPlumePreview(performance.now());
       if (preview) this.#onPreview({ ...this.#config }, isAudioLab(kind) ? "sound" : "surface");
     };
 
@@ -462,6 +640,81 @@ export class BoardSelector {
     }
   }
 
+  /** Thruster energy sketch: two pods breathing soft wisps upward. Reach sets
+   *  how far they climb, shimmer how hard they fizz, sparks add motes. Always
+   *  animated — even a calm wisp must drift so the pad reads live. */
+  #drawPlumePreview(time: number) {
+    const canvas = this.#previewCanvases.get("plume");
+    const ctx = canvas?.getContext("2d");
+    if (!canvas || !ctx) return;
+    const w = canvas.width;
+    const h = canvas.height;
+    const reach = this.#config.plumeReach / 100;
+    const shimmer = this.#config.plumeShimmer / 100;
+    const tint = boardPlumeHex(this.#config);
+    const r = (tint >> 16) & 255;
+    const g = (tint >> 8) & 255;
+    const b = tint & 255;
+
+    const bg = ctx.createLinearGradient(0, 0, 0, h);
+    bg.addColorStop(0, "#050f18");
+    bg.addColorStop(1, "#0b1e28");
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, w, h);
+
+    const pods = [w * 0.32, w * 0.68];
+    const baseY = h * 0.85;
+    const len = h * (0.14 + reach * 0.64);
+    ctx.save();
+    ctx.globalCompositeOperation = "screen";
+    for (let p = 0; p < pods.length; p++) {
+      const px = pods[p];
+      // pod nub + hot core glow
+      ctx.fillStyle = `rgba(${r},${g},${b},0.9)`;
+      ctx.beginPath();
+      ctx.ellipse(px, baseY, 8, 3, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = `rgba(${r},${g},${b},${0.1 + reach * 0.1})`;
+      ctx.beginPath();
+      ctx.ellipse(px, baseY - len * 0.4, 9 + shimmer * 4, len * 0.55 + 3, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // energy wisps — the breathing term keeps them alive at any setting
+      for (let s = 0; s < 4; s++) {
+        const seed = p * 4 + s;
+        const sway = 1.5 + shimmer * 7.5;
+        const speed = 0.0016 + shimmer * 0.0042;
+        const breathe = 0.6 + 0.4 * Math.abs(Math.sin(seed * 2.3 + time * 0.0009));
+        ctx.strokeStyle = `rgba(${r},${g},${b},${0.16 + 0.5 / (1 + s)})`;
+        ctx.lineWidth = s === 0 ? 2.6 : 1.3;
+        ctx.beginPath();
+        for (let i = 0; i <= 18; i++) {
+          const u = i / 18;
+          const y = baseY - 2 - u * len * breathe;
+          const wob =
+            Math.sin(u * (3 + shimmer * 9) + time * speed * (1 + seed * 0.13) + seed * 5.1) * sway * u +
+            Math.sin(time * 0.0011 + seed) * 1.3 * u;
+          const x = px + (s - 1.5) * (1.4 + shimmer * 2.2) * u + wob;
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      }
+      // orbiting spark motes riding the column
+      if (this.#config.plumeSparks) {
+        for (let i = 0; i < 5; i++) {
+          const cycle = (time * (0.00022 + shimmer * 0.0005) + i / 5 + p * 0.5) % 1;
+          const y = baseY - 4 - cycle * len;
+          const x = px + Math.sin(cycle * Math.PI * (2 + shimmer * 6) + i * 2.7 + p) * (3 + shimmer * 8);
+          ctx.fillStyle = `rgba(255,255,255,${(1 - cycle) * 0.65})`;
+          ctx.beginPath();
+          ctx.arc(x, y, 1 + (1 - cycle) * 1.2, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+    }
+    ctx.restore();
+  }
+
   #drawVoicePreview(time: number) {
     const canvas = this.#previewCanvases.get("sound");
     const ctx = canvas?.getContext("2d");
@@ -547,6 +800,7 @@ export class BoardSelector {
       this.#previewFrame = 0;
       if (!this.#open) return;
       this.#drawMotionPreview(time);
+      this.#drawPlumePreview(time);
       this.#drawVoicePreview(time);
       this.#drawThrustPreview(time);
       this.#previewFrame = requestAnimationFrame(animate);
@@ -554,11 +808,64 @@ export class BoardSelector {
     this.#previewFrame = requestAnimationFrame(animate);
   }
 
+  /** One color row (8 palette swatches + rainbow custom) with its slide-open
+   *  picker parked directly underneath. */
+  #colorRow(label: string, row: ColorRow): HTMLElement[] {
+    const { palette } = COLOR_ROWS[row];
+    return [
+      this.#row(label, [
+        ...palette.map((c, i) => this.#swatch(row, i, c.color, c.label)),
+        this.#customSwatch(row)
+      ]),
+      this.#colorPicker(row)
+    ];
+  }
+
+  /** PLUME / 05: the thruster-energy lab. Full-width — the XY pad rides the
+   *  left, sparks toggle + plume color swatches stack on the right, and the
+   *  custom picker slides open across the bottom. */
+  #plumeLab() {
+    const lab = this.#xyLab(
+      "plume",
+      "PLUME / 05",
+      "reach × shimmer",
+      "plumeReach",
+      "plumeShimmer",
+      ["wisp", "beam"],
+      ["calm", "fizz"]
+    );
+
+    // re-park the pad beside a controls column instead of under the head
+    const pad = lab.querySelector<HTMLElement>(".board-xy-pad")!;
+    const body = document.createElement("div");
+    body.className = "board-plume-body";
+    const side = document.createElement("div");
+    side.className = "board-plume-side";
+
+    const sparks = document.createElement("button");
+    sparks.type = "button";
+    sparks.className = "avatar-choice board-plume-sparks";
+    sparks.textContent = "sparks";
+    sparks.title = "Orbiting spark motes under the pods";
+    sparks.classList.toggle("on", this.#config.plumeSparks);
+    sparks.addEventListener("click", () => this.#set({ plumeSparks: !this.#config.plumeSparks }));
+
+    const swatches = document.createElement("div");
+    swatches.className = "board-plume-swatches";
+    for (let i = 0; i < BOARD_GLOW_COLORS.length; i++) {
+      swatches.appendChild(this.#swatch("plume", i, BOARD_GLOW_COLORS[i].color, BOARD_GLOW_COLORS[i].label));
+    }
+    swatches.appendChild(this.#customSwatch("plume"));
+
+    side.append(sparks, swatches);
+    body.append(pad, side);
+    lab.append(body, this.#colorPicker("plume"));
+    return lab;
+  }
+
   #render() {
-    const deck = BOARD_DECK_COLORS[this.#config.deck].color;
-    const glow = BOARD_GLOW_COLORS[this.#config.glow].color;
-    const deckHex = `#${deck.toString(16).padStart(6, "0")}`;
-    const glowHex = `#${glow.toString(16).padStart(6, "0")}`;
+    const deckHex = hexString(boardDeckHex(this.#config));
+    const glowHex = hexString(boardGlowHex(this.#config));
     this.#toggle.innerHTML =
       `<span class="board-ic-deck" style="background:${deckHex}"></span>` +
       `<span class="board-ic-rail" style="background:${glowHex};box-shadow:0 0 7px ${glowHex}"></span>`;
@@ -574,18 +881,9 @@ export class BoardSelector {
         "shape",
         BOARD_SHAPES.map((s) => this.#button("shape", s.id, s.label))
       ),
-      this.#row(
-        "deck",
-        BOARD_DECK_COLORS.map((c, i) => this.#swatch("deck", i, c.color, c.label))
-      ),
-      this.#row(
-        "ink",
-        BOARD_DECK_COLORS.map((c, i) => this.#swatch("trim", i, c.color, c.label))
-      ),
-      this.#row(
-        "glow",
-        BOARD_GLOW_COLORS.map((c, i) => this.#swatch("glow", i, c.color, c.label))
-      ),
+      ...this.#colorRow("deck", "deck"),
+      ...this.#colorRow("ink", "trim"),
+      ...this.#colorRow("glow", "glow"),
       this.#row(
         "fins",
         BOARD_FINS.map((f) => this.#button("fin", f.id, f.label))
@@ -642,7 +940,8 @@ export class BoardSelector {
         "soundAir",
         ["glide", "punch"],
         ["pure", "airy"]
-      )
+      ),
+      this.#plumeLab()
     );
     this.#panel.append(labs);
 
@@ -673,6 +972,7 @@ export class BoardSelector {
     this.#panel.appendChild(random);
     this.#paintVisualPreviews();
     const now = performance.now();
+    this.#drawPlumePreview(now);
     this.#drawVoicePreview(now);
     this.#drawThrustPreview(now);
     if (this.#open) this.#startPreviewLoop();

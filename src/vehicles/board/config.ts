@@ -19,6 +19,12 @@ export type BoardConfig = {
   deck: number; // index into BOARD_DECK_COLORS
   trim: number; // index into BOARD_DECK_COLORS (surface ink, edge guard, fins)
   glow: number; // index into BOARD_GLOW_COLORS (rails, underglow, thrusters, light)
+  // Custom paint: a non-null 0xRRGGBB overrides the palette index above. The
+  // index is still kept (and normalized) so clearing a custom color falls back
+  // to a sane swatch. Resolve through boardDeckHex/boardTrimHex/boardGlowHex.
+  deckHex: number | null;
+  trimHex: number | null;
+  glowHex: number | null;
   surface: BoardSurface;
   surfaceScale: number; // 0..100: broad pools -> fine detail
   surfaceWarp: number; // 0..100: ordered -> turbulent
@@ -26,6 +32,11 @@ export type BoardConfig = {
   surfaceFlow: number; // 0..100: still -> animated (tempo of every surface motion)
   surfaceFx: number; // 0..100: strength of the chosen deck effect
   surfaceFxKind: BoardFx; // which post effect warps the artwork
+  plumeReach: number; // 0..100: thruster energy wisp -> long beam
+  plumeShimmer: number; // 0..100: calm glow -> fizzing swirl
+  plumeSparks: boolean; // orbiting spark motes under the pods
+  plumeGlow: number; // index into BOARD_GLOW_COLORS for the plume
+  plumeHex: number | null; // custom plume color override
   hum: BoardHum; // synth voicing (fx/vehicleAudio.ts)
   pitch: number; // index into BOARD_PITCHES
   soundTone: number; // 0..100: warm -> glassy
@@ -36,7 +47,7 @@ export type BoardConfig = {
 
 // One current schema only. Earlier saved boards are deliberately left behind;
 // the simplified visual + expanded audio model starts clean instead of migrating.
-export const BOARD_STORAGE_KEY = "sf-board-v5";
+export const BOARD_STORAGE_KEY = "sf-board-v6";
 
 export const BOARD_SHAPES: { id: BoardShape; label: string }[] = [
   { id: "classic", label: "classic" },
@@ -113,6 +124,9 @@ const DEFAULT_BOARD: BoardConfig = {
   deck: 0,
   trim: 5,
   glow: 0,
+  deckHex: null,
+  trimHex: null,
+  glowHex: null,
   surface: "aurora",
   surfaceScale: 52,
   surfaceWarp: 58,
@@ -120,6 +134,11 @@ const DEFAULT_BOARD: BoardConfig = {
   surfaceFlow: 24,
   surfaceFx: 45,
   surfaceFxKind: "vortex",
+  plumeReach: 45,
+  plumeShimmer: 50,
+  plumeSparks: true,
+  plumeGlow: 0,
+  plumeHex: null,
   hum: "hum",
   pitch: 0,
   soundTone: 50,
@@ -142,6 +161,15 @@ function oneOf<T extends string>(value: unknown, options: readonly T[], fallback
   return typeof value === "string" && (options as readonly string[]).includes(value) ? (value as T) : fallback;
 }
 
+/** Custom paint slot: any junk that isn't a valid 0xRRGGBB means "no custom". */
+function hexOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 0xffffff ? value : null;
+}
+
+function bool(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
+}
+
 export function normalizeBoardConfig(raw: unknown): BoardConfig {
   const v = (raw ?? {}) as Partial<BoardConfig>;
   return {
@@ -150,6 +178,9 @@ export function normalizeBoardConfig(raw: unknown): BoardConfig {
     deck: int(v.deck, BOARD_DECK_COLORS.length, DEFAULT_BOARD.deck),
     trim: int(v.trim, BOARD_DECK_COLORS.length, DEFAULT_BOARD.trim),
     glow: int(v.glow, BOARD_GLOW_COLORS.length, DEFAULT_BOARD.glow),
+    deckHex: hexOrNull(v.deckHex),
+    trimHex: hexOrNull(v.trimHex),
+    glowHex: hexOrNull(v.glowHex),
     surface: oneOf(v.surface, SURFACES, DEFAULT_BOARD.surface),
     surfaceScale: int(v.surfaceScale, 101, DEFAULT_BOARD.surfaceScale),
     surfaceWarp: int(v.surfaceWarp, 101, DEFAULT_BOARD.surfaceWarp),
@@ -157,6 +188,11 @@ export function normalizeBoardConfig(raw: unknown): BoardConfig {
     surfaceFlow: int(v.surfaceFlow, 101, DEFAULT_BOARD.surfaceFlow),
     surfaceFx: int(v.surfaceFx, 101, DEFAULT_BOARD.surfaceFx),
     surfaceFxKind: oneOf(v.surfaceFxKind, FX, DEFAULT_BOARD.surfaceFxKind),
+    plumeReach: int(v.plumeReach, 101, DEFAULT_BOARD.plumeReach),
+    plumeShimmer: int(v.plumeShimmer, 101, DEFAULT_BOARD.plumeShimmer),
+    plumeSparks: bool(v.plumeSparks, DEFAULT_BOARD.plumeSparks),
+    plumeGlow: int(v.plumeGlow, BOARD_GLOW_COLORS.length, DEFAULT_BOARD.plumeGlow),
+    plumeHex: hexOrNull(v.plumeHex),
     hum: oneOf(v.hum, HUMS, DEFAULT_BOARD.hum),
     pitch: int(v.pitch, BOARD_PITCHES.length, DEFAULT_BOARD.pitch),
     soundTone: int(v.soundTone, 101, DEFAULT_BOARD.soundTone),
@@ -217,8 +253,18 @@ export function boardFromSeed(seed: string | number): BoardConfig {
     soundThrust: 20 + Math.floor(roll() * 66),
     soundAir: 10 + Math.floor(roll() * 71),
     // appended AFTER the audio draws so every earlier field keeps the exact
-    // roll it had before effects existed (draw order = wire contract)
-    surfaceFxKind: pick(FX, roll)
+    // roll it had before effects existed (draw order = wire contract). New
+    // rolls always go at the END, in the order they shipped.
+    surfaceFxKind: pick(FX, roll),
+    plumeReach: 25 + Math.floor(roll() * 61),
+    plumeShimmer: 20 + Math.floor(roll() * 66),
+    plumeGlow: Math.floor(roll() * BOARD_GLOW_COLORS.length) % BOARD_GLOW_COLORS.length,
+    plumeSparks: roll() > 0.35,
+    // custom paint is an explicit player act — seeds never produce it
+    deckHex: null,
+    trimHex: null,
+    glowHex: null,
+    plumeHex: null
   };
 }
 
@@ -234,7 +280,30 @@ export function boardKey(config: BoardConfig): string {
 /** Mesh-relevant identity. Audio edits never need geometry/material rebuilds. */
 export function boardVisualKey(config: BoardConfig): string {
   const c = normalizeBoardConfig(config);
-  return `${c.shape}|${c.fin}|${c.deck}|${c.trim}|${c.glow}|${c.surface}|${c.surfaceScale}|${c.surfaceWarp}|${c.surfaceSeed}|${c.surfaceFlow}|${c.surfaceFx}|${c.surfaceFxKind}`;
+  return (
+    `${c.shape}|${c.fin}|${c.deck}|${c.trim}|${c.glow}|${c.deckHex}|${c.trimHex}|${c.glowHex}|` +
+    `${c.surface}|${c.surfaceScale}|${c.surfaceWarp}|${c.surfaceSeed}|${c.surfaceFlow}|${c.surfaceFx}|${c.surfaceFxKind}|` +
+    `${c.plumeReach}|${c.plumeShimmer}|${c.plumeSparks}|${c.plumeGlow}|${c.plumeHex}`
+  );
+}
+
+// ---- color resolution: every consumer (mesh, surface painter, UI previews)
+// goes through these so custom paint wins everywhere at once ----
+
+export function boardDeckHex(config: BoardConfig): number {
+  return config.deckHex ?? BOARD_DECK_COLORS[config.deck]?.color ?? BOARD_DECK_COLORS[0].color;
+}
+
+export function boardTrimHex(config: BoardConfig): number {
+  return config.trimHex ?? BOARD_DECK_COLORS[config.trim]?.color ?? BOARD_DECK_COLORS[0].color;
+}
+
+export function boardGlowHex(config: BoardConfig): number {
+  return config.glowHex ?? BOARD_GLOW_COLORS[config.glow]?.color ?? BOARD_GLOW_COLORS[0].color;
+}
+
+export function boardPlumeHex(config: BoardConfig): number {
+  return config.plumeHex ?? BOARD_GLOW_COLORS[config.plumeGlow]?.color ?? BOARD_GLOW_COLORS[0].color;
 }
 
 export function isDefaultBoard(config: BoardConfig): boolean {

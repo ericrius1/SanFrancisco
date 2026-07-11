@@ -10,6 +10,7 @@ import type { WorldMap } from "../../world/heightmap";
 import { BALL_RADIUS, CLUBS, GolfBall, estimatedCarry, suggestedClubIndex, type Club } from "./ball";
 import { GolfCourse, type GolfSurface } from "./data";
 import { GolfCourseView } from "./course";
+import { GolfAudio } from "./audio";
 import { GolfUI, standingLabel, totalLabel, type GolfHoleScore, type GolfPeerScore } from "./ui";
 
 type N = any;
@@ -98,6 +99,8 @@ export class GolfGame {
     this.#view = new GolfCourseView(course, map, scene);
     this.#ball = new GolfBall(course, map, physics);
     this.#ball.onEvent = (e) => this.#onBallEvent(e);
+
+    if (import.meta.env.DEV) Object.assign(window as object, { __golfGame: this, __golfBall: this.#ball });
 
     this.#ballGeo = new THREE.SphereGeometry(BALL_RADIUS, 14, 10);
     this.#ballMat = new THREE.MeshStandardNodeMaterial();

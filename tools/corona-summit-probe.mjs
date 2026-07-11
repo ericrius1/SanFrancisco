@@ -38,7 +38,10 @@ const VIEWS = [
   // Wide aerial of the whole summit treatment.
   ["platform_wide", 412, 2760, 2.0, 34, 14],
   // Walker's reveal arriving from the south approach.
-  ["south_arrival", 408, 2775, Math.PI, 20, 3]
+  ["south_arrival", 408, 2775, Math.PI, 20, 3],
+  // Avatar left standing on the sittable perch block — proves walk-surface /
+  // dirt-skin parity (no shin-deep feet) for the cinematic staging.
+  ["perch_sitter", 405.5, 2765.5, 2.6, 9, 2.2]
 ];
 
 async function isFile(p) { try { return existsSync(p); } catch { return false; } }
@@ -219,8 +222,10 @@ async function main() {
   const shoot = async (name, x, z, facing, back, up) => {
     await teleport(c, x, z, facing);
     await settle(c, 16); // stream tiles + colliders + hero foliage
-    await teleport(c, 340, 2840, facing); // park the avatar downslope, out of frame
-    await settle(c, 2);
+    if (name !== "perch_sitter") {
+      await teleport(c, 340, 2840, facing); // park the avatar downslope, out of frame
+      await settle(c, 2);
+    }
     const eye = await freeCam(c, x, z, facing, back, up);
     await settleCamera(c, eye);
     await ev(c, `window.__sf.sky.setTimeOfDay(${TIME})`);

@@ -133,6 +133,7 @@ export class GolfBall {
   #pin = new THREE.Vector3();
   #n = new THREE.Vector3();
   #tmp = new THREE.Vector3();
+  #step = new THREE.Vector3();
   #dir = new THREE.Vector3();
   #bite = 0;
   #bounces = 0;
@@ -191,7 +192,9 @@ export class GolfBall {
     v.multiplyScalar(k);
     v.y -= GRAVITY * h;
 
-    const step = this.#tmp.copy(v).multiplyScalar(h);
+    // NOTE: step must not alias #tmp — `next` below is built in #tmp and adds
+    // step to it (aliasing turned every substep into pos ≈ 2·pos: fly-away NaN).
+    const step = this.#step.copy(v).multiplyScalar(h);
     const stepLen = step.length();
     // buildings/bridges first (clubhouse, anyone slicing onto Doyle Drive)
     if (stepLen > 1e-6 && this.#airTime > 0.06) {

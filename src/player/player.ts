@@ -31,7 +31,8 @@ import { buildBirdMesh, BirdController } from "../vehicles/bird";
 const V = {
   tmp: new THREE.Vector3(),
   tmp2: new THREE.Vector3(),
-  up: new THREE.Vector3(0, 1, 0)
+  up: new THREE.Vector3(0, 1, 0),
+  quat: new THREE.Quaternion()
 };
 
 /**
@@ -101,7 +102,11 @@ export class Player {
   // Poses are written every rendered frame in #animate.
   #walkRig: Rig;
   #golfClub: THREE.Group;
+  #clubPivot: THREE.Group; // chest-mounted swing pivot the club hangs from
   #golfPose = { active: false, swing: 0 };
+  #golfAddress = new THREE.Vector3(); // world spot the stance eases toward
+  #golfAddressSet = false;
+  #golfMeshShift = new THREE.Vector3(); // eased rig-root offset (walk-mesh local)
   #riderRig: Rig;
   #driverRig: Rig;
   #wheel: { group: THREE.Group; spin: THREE.Group };
@@ -143,8 +148,13 @@ export class Player {
     this.#walkRig = buildRig(this.#avatar);
     const walkGroup = new THREE.Group();
     walkGroup.add(this.#walkRig.group); // rig origin already sits at the capsule centre
+    // the club hangs from a chest pivot so it travels with the shoulder turn;
+    // setGolfPose swings the pivot, poseGolf brings the hands to the grip
+    this.#clubPivot = new THREE.Group();
+    this.#clubPivot.position.set(0, 0.04, -0.2);
+    this.#walkRig.torso.add(this.#clubPivot);
     this.#golfClub = buildGolfClub();
-    walkGroup.add(this.#golfClub);
+    this.#clubPivot.add(this.#golfClub);
     this.meshes = {
       walk: walkGroup,
       drive: buildCarMesh(),
@@ -407,10 +417,19 @@ export class Player {
     this.#golfPose.swing = THREE.MathUtils.clamp(swing, -1, 1);
     this.#golfClub.visible = this.#golfPose.active;
     if (this.#golfPose.active) {
-      // Address is nearly vertical; backswing rises behind the trail shoulder,
-      // release cuts through impact into a high follow-through.
-      this.#golfClub.rotation.set(-0.08, -0.04, -0.16 - this.#golfPose.swing * 2.05);
+      const s = this.#golfPose.swing;
+      // The pivot's local Z-arc sweeps the shaft trail-side up (backswing,
+      // s<0) through impact to a high lead-side finish; the X tilt leans the
+      // whole swing plane toward the ball and relaxes toward the extremes.
+      this.#clubPivot.rotation.set(0.52 - Math.abs(s) * 0.34, s * 0.22, -s * 2.15);
     }
+  }
+
+  /** While golfing: world point the stance should occupy (beside the ball).
+   *  The rig root eases toward it — the physics capsule never moves. */
+  setGolfAddress(target: THREE.Vector3 | null) {
+    if (target) this.#golfAddress.copy(target);
+    this.#golfAddressSet = !!target;
   }
 
   /** Board airborne state — the hoverboard hum softens in the air. */
@@ -580,7 +599,20 @@ export class Player {
     if (this.mode === "walk") {
       const r = this.#walkRig;
       const walk = this.#modes.walk;
-      if (this.#golfPose.active && walk.grounded && !walk.swimming) {
+      const golfing = this.#golfPose.active && walk.grounded && !walk.swimming;
+      // golf stance shift: the rig root (not the capsule) eases sideways to
+      // stand beside the ball, and eases home again when the pose drops
+      if (golfing && this.#golfAddressSet) {
+        V.tmp.copy(this.#golfAddress).sub(this.renderPosition);
+        V.tmp.y = 0;
+        V.tmp.applyQuaternion(V.quat.copy(this.meshes.walk.quaternion).invert());
+        if (V.tmp.lengthSq() > 2.6 * 2.6) V.tmp.setLength(2.6);
+      } else {
+        V.tmp.set(0, 0, 0);
+      }
+      this.#golfMeshShift.lerp(V.tmp, 1 - Math.exp(-dt * 9));
+      r.group.position.set(this.#golfMeshShift.x, 0, this.#golfMeshShift.z);
+      if (golfing) {
         poseGolf(r, this.#golfPose.swing);
       } else if (walk.swimming) {
         this.#strideT += dt * 3.4;

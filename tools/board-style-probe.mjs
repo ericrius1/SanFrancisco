@@ -159,6 +159,8 @@ const CONFIGS = [
       shape: "classic", fin: "none", deck: 0, trim: 5, glow: 0,
       surface: "aurora", surfaceScale: 24, surfaceWarp: 68, surfaceSeed: 101,
       surfaceFlow: 0, surfaceFx: 0, surfaceFxKind: "vortex",
+      plumeReach: 0, plumeShimmer: 0, plumeSparks: false, plumeGlow: 0, plumeHex: null,
+      deckHex: null, trimHex: null, glowHex: null,
       hum: "hum", pitch: 0, soundTone: 45, soundMotion: 35, soundThrust: 50, soundAir: 12
     }
   },
@@ -168,6 +170,8 @@ const CONFIGS = [
       shape: "dart", fin: "spoiler", deck: 1, trim: 3, glow: 4,
       surface: "topo", surfaceScale: 70, surfaceWarp: 18, surfaceSeed: 202,
       surfaceFlow: 35, surfaceFx: 48, surfaceFxKind: "glitch",
+      plumeReach: 62, plumeShimmer: 40, plumeSparks: true, plumeGlow: 4, plumeHex: null,
+      deckHex: 0x2f6b4f, trimHex: null, glowHex: null,
       hum: "retro", pitch: 3, soundTone: 80, soundMotion: 72, soundThrust: 82, soundAir: 46
     }
   },
@@ -177,6 +181,8 @@ const CONFIGS = [
       shape: "manta", fin: "halo", deck: 4, trim: 5, glow: 3,
       surface: "terrazzo", surfaceScale: 48, surfaceWarp: 88, surfaceSeed: 303,
       surfaceFlow: 58, surfaceFx: 82, surfaceFxKind: "ripple",
+      plumeReach: 88, plumeShimmer: 90, plumeSparks: true, plumeGlow: 2, plumeHex: 0x9b30ff,
+      deckHex: null, trimHex: null, glowHex: 0xff9420,
       hum: "choir", pitch: 1, soundTone: 32, soundMotion: 64, soundThrust: 32, soundAir: 66
     }
   },
@@ -186,6 +192,8 @@ const CONFIGS = [
       shape: "saucer", fin: "twin", deck: 5, trim: 6, glow: 2,
       surface: "circuit", surfaceScale: 76, surfaceWarp: 42, surfaceSeed: 404,
       surfaceFlow: 42, surfaceFx: 64, surfaceFxKind: "glitch",
+      plumeReach: 30, plumeShimmer: 74, plumeSparks: false, plumeGlow: 6, plumeHex: null,
+      deckHex: null, trimHex: 0x101820, glowHex: null,
       hum: "crystal", pitch: 4, soundTone: 68, soundMotion: 82, soundThrust: 70, soundAir: 80
     }
   },
@@ -195,6 +203,8 @@ const CONFIGS = [
       shape: "twintip", fin: "halo", deck: 6, trim: 1, glow: 7,
       surface: "plasma", surfaceScale: 56, surfaceWarp: 76, surfaceSeed: 505,
       surfaceFlow: 88, surfaceFx: 94, surfaceFxKind: "vortex",
+      plumeReach: 96, plumeShimmer: 96, plumeSparks: true, plumeGlow: 7, plumeHex: null,
+      deckHex: null, trimHex: null, glowHex: null,
       hum: "deep", pitch: 2, soundTone: 58, soundMotion: 90, soundThrust: 58, soundAir: 92
     }
   }
@@ -534,7 +544,7 @@ async function main() {
   await sleep(80);
   results.ui.afterDrag = await ev(c, `(()=>{
     const panel=document.querySelector('.board-panel');
-    const saved=JSON.parse(localStorage.getItem('sf-board-v5')||'null');
+    const saved=JSON.parse(localStorage.getItem('sf-board-v6')||'null');
     const picked=saved?{
       surfaceScale:saved.surfaceScale,surfaceWarp:saved.surfaceWarp,
       surfaceFlow:saved.surfaceFlow,surfaceFx:saved.surfaceFx,
@@ -554,16 +564,16 @@ async function main() {
   assertProbe(results.ui.afterDrag.committed, `v5 pad commit mismatch: ${JSON.stringify(results.ui.afterDrag.saved)}`);
 
   results.ui.reroll = await ev(c, `(()=>{
-    const before=JSON.parse(localStorage.getItem('sf-board-v5')||'null')?.surfaceSeed??null;
+    const before=JSON.parse(localStorage.getItem('sf-board-v6')||'null')?.surfaceSeed??null;
     let button=document.querySelector('.board-lab-reroll');
     if(!button) return {clicked:false,before,after:before,changed:false};
     button.click();
-    let after=JSON.parse(localStorage.getItem('sf-board-v5')||'null')?.surfaceSeed??null;
+    let after=JSON.parse(localStorage.getItem('sf-board-v6')||'null')?.surfaceSeed??null;
     let attempts=1;
     if(after===before){
       button=document.querySelector('.board-lab-reroll');
       button?.click(); attempts++;
-      after=JSON.parse(localStorage.getItem('sf-board-v5')||'null')?.surfaceSeed??null;
+      after=JSON.parse(localStorage.getItem('sf-board-v6')||'null')?.surfaceSeed??null;
     }
     return {clicked:true,before,after,attempts,changed:before!==after};
   })()`);
@@ -588,7 +598,7 @@ async function main() {
     const labels=chips.map(x=>x.textContent.trim());
     chips.find(x=>x.textContent.trim()==='ripple')?.click();
     await tick(3);
-    const saved=JSON.parse(localStorage.getItem('sf-board-v5')||'null');
+    const saved=JSON.parse(localStorage.getItem('sf-board-v6')||'null');
     const lab2=document.querySelector('.board-lab-motion'); // panel re-rendered
     const stillOpen=lab2.classList.contains('fx-open');
     const onChip=[...lab2.querySelectorAll('.board-fx-chips .avatar-choice')].find(x=>x.classList.contains('on'))?.textContent.trim();

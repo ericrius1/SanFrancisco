@@ -334,22 +334,29 @@ export function buildSteeringWheel(): { group: THREE.Group; spin: THREE.Group } 
   return { group, spin };
 }
 
-/** Lightweight club prop pivoted at the golfer's joined hands. The Player owns
- *  one persistent instance so a swing never creates render objects mid-frame. */
+/** Lightweight club prop. Origin = the TOP of the grip (where the joined hands
+ *  hold it), shaft hanging down local -Y. In the golfer's address frame the
+ *  ball is in front (local -Z) and the target is to the lead side (local -X),
+ *  so the head's toe points -Z (away from the golfer) and its face plate looks
+ *  -X (down the line). The Player parents one persistent instance under an
+ *  animated chest pivot so the club actually travels with the hands. */
 export function buildGolfClub(): THREE.Group {
   const group = new THREE.Group();
   group.name = "golf-club";
-  group.position.set(0, -0.03, -0.22);
-  group.rotation.order = "YXZ";
 
-  const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.021, 0.22, 7), STATIC_MAT.clubGrip);
-  grip.position.y = -0.1;
-  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.017, 0.6, 7), STATIC_MAT.clubShaft);
-  shaft.position.y = -0.51;
-  const head = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.075, 0.095), STATIC_MAT.clubHead);
-  head.position.set(0.075, -0.82, 0);
-  head.rotation.z = -0.12;
-  for (const mesh of [grip, shaft, head]) {
+  const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.026, 0.022, 0.24, 7), STATIC_MAT.clubGrip);
+  grip.position.y = -0.11;
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.017, 0.58, 7), STATIC_MAT.clubShaft);
+  shaft.position.y = -0.52;
+  // head: heel at the shaft, toe reaching -Z; a brighter face plate on the -X
+  // (target) side reads as "this is the side that hits the ball"
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.085, 0.08, 0.22), STATIC_MAT.clubHead);
+  head.position.set(-0.005, -0.835, -0.06);
+  const face = new THREE.Mesh(new THREE.BoxGeometry(0.014, 0.07, 0.2), STATIC_MAT.clubShaft);
+  face.position.set(-0.052, -0.835, -0.06);
+  const sole = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.02, 0.23), STATIC_MAT.sole);
+  sole.position.set(-0.005, -0.882, -0.06);
+  for (const mesh of [grip, shaft, head, face, sole]) {
     mesh.castShadow = true;
     group.add(mesh);
   }
@@ -399,24 +406,47 @@ export function poseWalk(r: Rig, t: number, run: number) {
 }
 
 /** Golf address/swing pose. `swing` runs -1 (full backswing), through 0
- *  (impact/address), to +1 (follow-through). */
+ *  (impact/address), to +1 (follow-through).
+ *
+ *  Address frame: the golfer FACES the ball (local -Z) and the target line
+ *  runs to their lead side (local -X); the trail side is +X. The caller aligns
+ *  the whole avatar to that frame (heading = aimYaw - π/2). Weight loads the
+ *  trail foot going back and drives onto the lead foot through impact — the
+ *  body moves, not just the arms. armL is the +X (trail) arm. */
 export function poseGolf(r: Rig, swing: number) {
   const s = THREE.MathUtils.clamp(swing, -1, 1);
-  const turn = s * 0.5;
-  r.hips.position.y = -0.055;
-  set(r.hips, 0, turn * 0.28, 0);
-  set(r.torso, 0.22, turn, -s * 0.08);
-  set(r.head, -0.13, -turn * 0.42, s * 0.035); // eyes stay down through impact
-  set(r.legL, 0.15, 0, 0.12);
-  set(r.legR, 0.12, 0, -0.12);
-  set(r.shinL, -0.22, 0, 0);
-  set(r.shinR, -0.18, 0, 0);
-  // Joined hands travel together across the chest; the independent club prop
-  // uses the same scalar for its larger, readable arc.
-  set(r.armL, 0.78 - s * 0.18, -0.22 + s * 0.28, 0.42 + s * 0.2);
-  set(r.armR, 0.83 + s * 0.12, 0.2 + s * 0.25, -0.38 + s * 0.18);
-  set(r.foreL, 0.58 - s * 0.16, 0, -0.08);
-  set(r.foreR, 0.55 + s * 0.12, 0, 0.08);
+  const back = Math.max(0, -s); // 0..1 into the backswing
+  const thru = Math.max(0, s); // 0..1 into the follow-through
+  // keyframe helper: address → top-of-backswing (b) or finish (f)
+  const L = (addr: number, b: number, f: number) =>
+    s < 0 ? THREE.MathUtils.lerp(addr, b, back) : THREE.MathUtils.lerp(addr, f, thru);
+
+  const shoulders = s * 0.95; // - = chest toward +X (trail), + = open to target
+  const hipTurn = s * 0.4 + thru * 0.28;
+
+  // weight shift: trail foot at the top, hard onto the lead foot at the finish
+  r.hips.position.x = -s * 0.06 - thru * 0.07;
+  r.hips.position.y = -0.07 - back * 0.02 + thru * 0.025;
+  r.hips.position.z = 0.05 - thru * 0.04; // butt back at address, tall finish
+  set(r.hips, 0, hipTurn, 0);
+  // spine hinged toward the ball, side-bending with the turn, rising to finish
+  set(r.torso, 0.42 - thru * 0.3, shoulders, s * 0.1);
+  // eyes stay down on the ball until well after impact, then chase the shot
+  set(r.head, -0.26 + thru * 0.14, -shoulders * 0.72 + thru * 0.55, -s * 0.05);
+
+  // stance splayed, knees soft; the trail leg releases (knee in, heel up) as
+  // the hips clear through the finish
+  set(r.legL, L(0.06, 0.02, -0.5), 0, 0.14 - thru * 0.18);
+  set(r.legR, L(0.06, 0.1, 0.12), 0, -0.14 + back * 0.06);
+  set(r.shinL, L(-0.16, -0.12, -0.75), 0, 0);
+  set(r.shinR, L(-0.16, -0.22, -0.06), 0, 0);
+
+  // joined hands ride the club: the lead arm (-X side, armR) stays long while
+  // the trail arm folds at the top — mirrored through the finish
+  set(r.armL, L(0.55, 0.18, 0.5), L(0, -0.15, 0.1), L(-0.5, -0.12, -1.1));
+  set(r.armR, L(0.55, 0.5, 0.18), L(0, -0.1, 0.15), L(0.5, 1.1, 0.12));
+  set(r.foreL, L(0.35, 0.95, 0.12), 0, 0);
+  set(r.foreR, L(0.35, 0.12, 0.95), 0, 0);
 }
 
 /** Airborne (jump/fall): asymmetric tuck with arms flung out. */

@@ -61,7 +61,7 @@ export default defineConfig({
   },
   optimizeDeps: {
     exclude: ["box3d-wasm"],
-    include: ["camera-controls"]
+    include: ["camera-controls", "three/webgpu", "three/tsl", "lil-gui", "tweakpane"]
   },
   worker: {
     format: "es"
@@ -69,6 +69,10 @@ export default defineConfig({
   server: {
     port: 5179,
     hmr: HMR_ENABLED,
+    // pre-transform the module graph on boot instead of paying it on first page load
+    warmup: {
+      clientFiles: ["./src/**/*.ts"]
+    },
     // same-origin app services in every environment: dev proxies to the local
     // relay, prod serves everything from the same Node process as the static files
     proxy: {

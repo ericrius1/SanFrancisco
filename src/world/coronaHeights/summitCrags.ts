@@ -59,7 +59,12 @@ const SPINE_OUTCROPS: readonly CragSpec[] = [
   { x: 391, z: 2762, yaw: -0.7, length: 2.1, height: 0.75, beds: 3, seed: 205, decorative: true },
   { x: 401, z: 2775.5, yaw: -0.35, length: 1.9, height: 0.6, beds: 3, seed: 206, decorative: true },
   { x: 421.5, z: 2745.5, yaw: -0.48, length: 2.4, height: 0.95, beds: 3, seed: 207, decorative: true },
-  { x: 437.5, z: 2770, yaw: 0.85, length: 2.3, height: 0.8, beds: 3, seed: 208, decorative: true }
+  { x: 437.5, z: 2770, yaw: 0.85, length: 2.3, height: 0.8, beds: 3, seed: 208, decorative: true },
+  // Low knuckles breaking through the platform dirt itself (clear of the peak
+  // trail) — the real summit pad is rock-crowned, not a clean dune.
+  { x: 409, z: 2757, yaw: -0.5, length: 1.6, height: 0.42, beds: 2, seed: 209, decorative: true },
+  { x: 414.5, z: 2763.5, yaw: -0.45, length: 1.8, height: 0.5, beds: 2, seed: 210, decorative: true },
+  { x: 404, z: 2762.5, yaw: -0.6, length: 1.4, height: 0.34, beds: 2, seed: 211, decorative: true }
 ] as const;
 
 function fract(v: number) {
@@ -154,6 +159,7 @@ function appendCrag(map: WorldMap, spec: CragSpec, positions: number[], colors: 
   const K = spec.beds;
   const color = new THREE.Color();
   const base = new THREE.Color();
+  const vcol = new THREE.Color();
   const hsl = { h: 0, s: 0, l: 0 };
 
   // Cumulative bed offsets along the bed normal, centred on the spec origin.
@@ -312,9 +318,14 @@ function appendCrag(map: WorldMap, spec: CragSpec, positions: number[], colors: 
       // Albedo floor: shade-side facets should read as dim rust under sky
       // ambient, never as black holes. Crevices may sit a touch lower.
       color.getHSL(hsl);
-      const floor = interior ? 0.24 : 0.3;
+      const floor = interior ? 0.26 : 0.33;
       if (hsl.l < floor) color.offsetHSL(0, 0, floor - hsl.l);
-      for (let vtx = 0; vtx < 3; vtx++) colors.push(color.r, color.g, color.b);
+      // Per-vertex lightness jitter → a soft gradient across each facet, so the
+      // big broad-wall faces don't read as flat paint chips.
+      for (let vtx = 0; vtx < 3; vtx++) {
+        vcol.copy(color).offsetHSL(0, 0, (hash(s, 83, quadIdx * 9 + vtx * 3 + k) - 0.5) * 0.07);
+        colors.push(vcol.r, vcol.g, vcol.b);
+      }
     };
 
     const quad = (a: Vec3, b: Vec3, c: Vec3, d: Vec3) => {
@@ -358,7 +369,7 @@ function makeCragMesh(map: WorldMap) {
     // Sky-bounce stand-in: keeps shade-side facets reading as dark maroon rock
     // instead of black voids (the crag's albedo is dark enough that the scene
     // hemisphere light alone can't hold them).
-    emissive: 0x241310,
+    emissive: 0x2d1a14,
     emissiveIntensity: 1
   });
   const mesh = new THREE.Mesh(geometry, material);
@@ -425,7 +436,7 @@ function nearestCragDistance(x: number, z: number) {
  * the rim. Sits above the coarse hill skin, below the trail ribbons. */
 function makePlatformSkin(map: WorldMap) {
   const { x: px, z: pz, rx, rz } = SUMMIT_PLATFORM;
-  const step = 1.1;
+  const step = 0.8;
   const nx = Math.ceil((rx * 2) / step) + 1;
   const nz = Math.ceil((rz * 2) / step) + 1;
   const positions = new Float32Array(nx * nz * 3);
@@ -434,7 +445,9 @@ function makePlatformSkin(map: WorldMap) {
   const hardpan = new THREE.Color(0xb08a63);
   const pinkDust = new THREE.Color(0xa06a4c);
   const gravel = new THREE.Color(0x7f5f45);
-  const dryGrass = new THREE.Color(0x8b833f);
+  // Rim target ≈ the hill skin's blended olive at the summit, so the pad's
+  // last ring dissolves into the grass instead of stepping tan→green.
+  const dryGrass = new THREE.Color(0x6f753f);
   const color = new THREE.Color();
   for (let gz = 0; gz < nz; gz++) {
     const z = pz - rz + gz * step;
@@ -447,11 +460,18 @@ function makePlatformSkin(map: WorldMap) {
       // lawn to poke through.
       inside[i] = q < 1 + (valueNoise(x, z, 5.5, 227) - 0.5) * 0.2 ? 1 : 0;
       positions[i * 3] = x;
-      positions[i * 3 + 1] = map.groundTop(x, z) + Math.max(0.18, summitPlatformLift(x, z));
+      // groundTop already carries summitPlatformLift (baked into the query
+      // carpet by prepareCoronaHeightsGround) — this skin floats just above the
+      // walk surface so avatars stand ON the dirt, and its rim tucks under the
+      // hill skin, which ducks the same lift.
+      positions[i * 3 + 1] = map.groundTop(x, z) + 0.05;
       positions[i * 3 + 2] = z;
-      const grain = valueNoise(x, z, 3.2, 211);
-      const mottle = valueNoise(x, z, 4.2, 219);
-      const fine = valueNoise(x, z, 1.7, 223);
+      // Per-vertex dither on every noise threshold: mottle boundaries must
+      // crumble at grain scale, not step along the mesh triangles.
+      const dither = (hash(gx, gz, 233) - 0.5) * 0.14;
+      const grain = valueNoise(x, z, 3.2, 211) + dither * 0.5;
+      const mottle = valueNoise(x, z, 4.2, 219) + dither;
+      const fine = valueNoise(x, z, 1.7, 223) + dither;
       const cragRing = clamp01(1 - nearestCragDistance(x, z) / 5);
       color.copy(hardpan).offsetHSL(0, 0, (grain - 0.5) * 0.11);
       // Mid-scale (2–5 m) trampled-dust patches, hue as well as value.
@@ -459,7 +479,7 @@ function makePlatformSkin(map: WorldMap) {
       color.lerp(gravel, clamp01(0.45 - mottle) * 0.5);
       color.lerp(pinkDust, cragRing * (0.5 + grain * 0.25));
       if (fine > 0.6) color.lerp(gravel, 0.45); // gravel speckle
-      color.lerp(dryGrass, smoothEdge(q) * 0.9);
+      color.lerp(dryGrass, smoothEdge(q + dither * 0.3) * 0.9);
       colors[i * 3] = color.r;
       colors[i * 3 + 1] = color.g;
       colors[i * 3 + 2] = color.b;
@@ -538,7 +558,16 @@ function makeScree(map: WorldMap) {
   const capacity = 300;
   const mesh = new THREE.InstancedMesh(
     makeShardGeometry(),
-    new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.96, metalness: 0, flatShading: true }),
+    // Same sky-bounce emissive as the crags: an unlit shard face must read as
+    // dark rock, never as a black hole punched in the dirt.
+    new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.96,
+      metalness: 0,
+      flatShading: true,
+      emissive: 0x2d1a14,
+      emissiveIntensity: 1
+    }),
     capacity
   );
   mesh.name = "corona_summit_scree";
@@ -565,14 +594,18 @@ function makeScree(map: WorldMap) {
     // shard sits slightly sunk so no dark underside edge floats over the dirt.
     const away = clamp01((Math.hypot(x - src.x, z - src.z) - src.length * 0.42) / 5.5);
     const size = (0.09 + Math.pow(hash(i, 5, 313), 2.2) * 0.55) * (1.25 - away * 0.75);
-    dummy.position.set(x, y + lift - size * 0.06, z);
-    dummy.rotation.set((hash(i, 7) - 0.5) * 0.4, hash(i, 11) * Math.PI * 2, (hash(i, 13) - 0.5) * 0.4);
-    dummy.scale.set(size * (0.8 + hash(i, 17) * 0.7), size * (0.5 + hash(i, 19) * 0.6), size * (0.8 + hash(i, 23) * 0.7));
+    // Sunk to bury the dark underside; flat-ish and lightly tilted so a lit top
+    // face always shows.
+    dummy.position.set(x, y - size * 0.14, z); // groundTop already includes the platform lift
+    dummy.rotation.set((hash(i, 7) - 0.5) * 0.28, hash(i, 11) * Math.PI * 2, (hash(i, 13) - 0.5) * 0.28);
+    dummy.scale.set(size * (0.8 + hash(i, 17) * 0.7), size * (0.4 + hash(i, 19) * 0.45), size * (0.8 + hash(i, 23) * 0.7));
     dummy.updateMatrix();
     mesh.setMatrixAt(count, dummy.matrix);
+    // Skew light: mostly rust / weathered-tan chips; deep maroon stays rare so
+    // shards never read as shadow holes.
     const pick = hash(i, 29);
-    color.copy(pick < 0.42 ? BED_RUST : pick < 0.72 ? BED_MAROON : pick < 0.9 ? TOP_WEATHER : SKIRT_DUST);
-    color.offsetHSL(0, 0, (hash(i, 31) - 0.5) * 0.12);
+    color.copy(pick < 0.4 ? BED_RUST : pick < 0.62 ? TOP_WEATHER : pick < 0.82 ? BED_PALE : pick < 0.92 ? SKIRT_DUST : BED_MAROON);
+    color.offsetHSL(0, 0, (hash(i, 31) - 0.4) * 0.14);
     mesh.setColorAt(count, color);
     count++;
   }

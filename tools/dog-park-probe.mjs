@@ -60,14 +60,16 @@ function distToPolygonEdge(x, z, polygon) {
 // screenshots: [name, x, z, facing(rad), backDist, upHeight] — freeCam pulls the
 // eye `back` behind the target along facing (dx=sin f, dz=cos f).
 const VIEWS = [
-  // Standing outside the north fence line, looking SW along the run of panels.
-  ["fence_closeup", 362, 2691, -0.9, 10, 1.6],
+  // Standing just outside the sunlit south fence run, looking NE along the
+  // panels so plank grain, posts and caps read at close range.
+  ["fence_closeup", 376, 2711, 2.16, 12, 1.55],
   // Elevated overview from NW (downslope) with the whole dog run + hill behind.
   ["park_wide", 368, 2704, 0.822, 38, 22],
   // The ball owner's corner — shot is taken once the golden is back at heel.
   ["fetch_moment", 344, 2714, -0.91, 11.4, 1.8],
-  // Gate + sign corner from outside the southwest entrance.
-  ["gate_sign", 326, 2728.5, 2.174, 9.7, 1.7]
+  // Gate + sign corner from inside the park, where the painted sign face and
+  // the cross-braced gate leaf both point.
+  ["gate_sign", 326.5, 2728, -0.83, 8, 1.7]
 ];
 
 async function isFile(p) { try { return existsSync(p); } catch { return false; } }
@@ -150,6 +152,28 @@ async function settleCamera(c, eye) {
   }
   throw new Error("free camera never acquired the render pose");
 }
+/** The deferred render warmup (pipeline.warmup) makes every tick early-return
+ * for several REAL seconds once the streamed world settles — sim, camera and
+ * cineHook all freeze. Use the park's own visibility gate as a heartbeat: the
+ * live world update rewrites coronaHeights.group.visible every frame, so a
+ * cleared flag that comes back true proves the full sim path ran. Needs the
+ * camera already near the park. Sleeps let the async warmup actually finish. */
+async function waitWorldLive(c, label) {
+  for (let i = 0; i < 200; i++) {
+    const live = await ev(c, `(()=>{
+      const ch = window.__sf.coronaHeights;
+      ch.group.visible = false;
+      window.__sf.tick(${DT});
+      return ch.group.visible;
+    })()`);
+    if (live) {
+      if (i > 0) console.log(`[probe] world live for ${label} after ${(i * 0.3).toFixed(1)}s`);
+      return;
+    }
+    await sleep(300);
+  }
+  throw new Error(`world never went live (${label}) — render warmup stuck?`);
+}
 
 /* ------------------------------------------------------ part A: behavior */
 
@@ -172,9 +196,15 @@ async function checkFence(c) {
 async function sampleBehavior(c) {
   const chunks = Math.round(SIM_SECONDS / DT / 30);
   const samples = [];
+  let retries = 0;
   for (let i = 0; i < chunks; i++) {
+    // heartbeat ticks bracket each chunk — a chunk that starts or ends with the
+    // loop warmup-frozen is discarded and retried once the world is live again
     const part = await ev(c, `(()=>{
       const sf = window.__sf, ch = sf.coronaHeights;
+      ch.group.visible = false;
+      sf.tick(${DT});
+      if (!ch.group.visible) return null;
       const ball = sf.scene.getObjectByName("corona_tennis_ball");
       const out = [];
       for (let k = 0; k < 30; k++) {
@@ -188,8 +218,17 @@ async function sampleBehavior(c) {
           }
         });
       }
-      return out;
+      ch.group.visible = false;
+      sf.tick(${DT});
+      return ch.group.visible ? out : null;
     })()`);
+    if (!part) {
+      if (++retries > 6) throw new Error("behavior sampling kept hitting a frozen world");
+      console.log(`\n[probe] chunk ${i} frozen (render warmup) — waiting for the world`);
+      await waitWorldLive(c, `chunk ${i}`);
+      i--;
+      continue;
+    }
     samples.push(...part);
     process.stdout.write(`\r[probe] simulated ${((i + 1) * 30 * DT).toFixed(0)}s / ${SIM_SECONDS}s`);
   }
@@ -347,7 +386,9 @@ async function main() {
   await teleport(c, 368, 2703, 2.3);
   await settle(c, 16);
   const eyeA = await freeCam(c, 368, 2703, 2.3, 20, 8);
+  await waitWorldLive(c, "part A");
   await settleCamera(c, eyeA);
+  await waitWorldLive(c, "part A post-settle"); // warmup can also fire mid-settle
   const gateTicks = await ev(c, `(()=>{
     const sf = window.__sf;
     for (let i = 0; i < 300; i++) {
@@ -379,12 +420,13 @@ async function main() {
 
   const shotPaths = [];
   const shoot = async (name, x, z, facing, back, up) => {
+    await waitWorldLive(c, name); // camera is still pinned near the park here
     if (name === "fetch_moment") {
       // run the sim until the golden is back at the ball owner's heel so the
       // pair reads as a pair (bounded — falls through to whatever pose exists)
       const heel = await ev(c, `(()=>{
         const sf = window.__sf, ch = sf.coronaHeights;
-        for (let i = 0; i < 600; i++) {
+        for (let i = 0; i < 900; i++) {
           sf.tick(${DT});
           const d = ch.dogs[0], o = ch.owners[0].rig.group.position;
           if (Math.hypot(d.x - o.x, d.z - o.z) < 4) return i;

@@ -3,6 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script>
+      // Boot-critical data starts downloading before the module graph parses (main.ts consumes via __sfPrefetch).
+      window.__sfPrefetch = Object.fromEntries(
+        ["/data/meta.json","/data/heightmap.bin","/data/surface.bin","/data/groundtop-delta.bin","/data/manifest.json"].map((u) => [u, fetch(u)])
+      );
+    </script>
     <title>San Francisco</title>
     <link
       rel="icon"
@@ -2376,6 +2382,104 @@
       #hud .board-fx-chips .avatar-choice {
         flex: 1 1 0;
       }
+      /* the 9th swatch on every color row — rainbow chip for custom paint */
+      #hud .board-swatch-custom {
+        position: relative;
+        background: conic-gradient(
+          from 0deg,
+          #ff5a4d,
+          #ffc23d,
+          #8dff4f,
+          #3dffc0,
+          #54f0ff,
+          #7a6bff,
+          #ff4fd8,
+          #ff5a4d
+        );
+      }
+      #hud .board-swatch-custom.on {
+        border-color: #ffffff;
+        transform: scale(1.08);
+        box-shadow:
+          0 0 0 2px rgba(110, 255, 218, 0.32),
+          inset 0 -4px 0 rgba(0, 0, 0, 0.14);
+      }
+      #hud .board-swatch-custom.on::after {
+        content: "✓";
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        color: #ffffff;
+        font: 800 11px/1 var(--font);
+        text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+      }
+      /* inline hue×lightness picker — slides open under its color row like
+         the motion lab's effect drawer */
+      #hud .board-color-picker {
+        overflow: hidden;
+        max-height: 0;
+        margin-top: 0;
+        opacity: 0;
+        transition:
+          max-height 0.22s ease,
+          opacity 0.18s ease,
+          margin-top 0.22s ease;
+      }
+      #hud .board-color-picker.picker-open {
+        max-height: 130px;
+        margin-top: 2px;
+        opacity: 1;
+      }
+      #hud .board-picker-canvas {
+        display: block;
+        width: 100%;
+        height: 90px;
+        cursor: crosshair;
+        touch-action: none;
+        user-select: none;
+        border-radius: 7px;
+        border: 1px solid rgba(152, 231, 228, 0.23);
+        box-shadow:
+          inset 0 0 18px rgba(0, 5, 10, 0.18),
+          0 0 0 1px rgba(0, 0, 0, 0.24);
+      }
+      #hud .board-picker-hex {
+        display: block;
+        margin-top: 3px;
+        color: #76f5d3;
+        font: 750 9px ui-monospace, SFMono-Regular, Menlo, monospace;
+        text-align: right;
+      }
+      /* PLUME / 05 spans both grid columns: pad left, energy controls right */
+      #hud .board-lab-plume {
+        grid-column: 1 / -1;
+      }
+      #hud .board-plume-body {
+        display: flex;
+        align-items: stretch;
+        gap: 7px;
+      }
+      #hud .board-lab-plume .board-xy-pad {
+        flex: 1 1 55%;
+        min-width: 0;
+      }
+      #hud .board-plume-side {
+        flex: 1 1 45%;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 6px;
+      }
+      #hud .board-plume-sparks {
+        align-self: stretch;
+      }
+      #hud .board-plume-swatches {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+      }
       @media (max-width: 480px) {
         #hud .board-ui {
           right: 8px;
@@ -2397,6 +2501,17 @@
       @media (max-width: 339px) {
         #hud .board-labs {
           grid-template-columns: minmax(0, 1fr);
+        }
+        #hud .board-plume-body {
+          flex-direction: column;
+        }
+        #hud .board-lab-plume .board-xy-pad,
+        #hud .board-plume-side {
+          flex: 0 0 auto;
+          width: 100%;
+        }
+        #hud .board-lab-plume .board-xy-pad {
+          height: 90px;
         }
       }
       #hud .chat {
@@ -2530,12 +2645,32 @@
         color: rgba(188, 217, 230, 0.72);
       }
       #hud .audio .mute {
-        background: none;
-        border: none;
+        flex: 0 0 auto;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 30px;
+        height: 30px;
+        padding: 0;
+        border-radius: 7px;
         cursor: pointer;
         font-size: 15px;
         line-height: 1;
-        padding: 0;
+        background: rgba(18, 40, 56, 0.6);
+        border: 1px solid rgba(190, 225, 240, 0.25);
+        color: var(--text-dim);
+        transition:
+          border-color 0.15s,
+          color 0.15s,
+          opacity 0.15s;
+      }
+      #hud .audio .mute:hover {
+        border-color: rgba(190, 225, 240, 0.55);
+        color: var(--accent-strong);
+      }
+      #hud .audio .mute.off {
+        border-color: rgba(190, 225, 240, 0.4);
+        color: var(--accent);
       }
       #hud .audio .mic-btn {
         display: inline-flex;

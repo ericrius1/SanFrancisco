@@ -1,8 +1,4 @@
-import {
-  BOARD_DECK_COLORS,
-  BOARD_GLOW_COLORS,
-  type BoardConfig
-} from "./config";
+import { boardDeckHex, boardGlowHex, boardTrimHex, type BoardConfig } from "./config";
 
 type RGB = readonly [number, number, number];
 
@@ -49,9 +45,9 @@ function css(c: RGB, alpha = 1) {
 }
 
 function palette(config: BoardConfig): Palette {
-  const base = fromHex(BOARD_DECK_COLORS[config.deck]?.color ?? BOARD_DECK_COLORS[0].color);
-  const trim = fromHex(BOARD_DECK_COLORS[config.trim]?.color ?? BOARD_DECK_COLORS[0].color);
-  const glow = fromHex(BOARD_GLOW_COLORS[config.glow]?.color ?? BOARD_GLOW_COLORS[0].color);
+  const base = fromHex(boardDeckHex(config));
+  const trim = fromHex(boardTrimHex(config));
+  const glow = fromHex(boardGlowHex(config));
   return {
     base,
     deep: mix(base, INK, 0.28),

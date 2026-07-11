@@ -78,6 +78,48 @@ const AVOID: readonly { x: number; z: number; r: number; label: string }[] = [
   { x: -2900, z: -2260, r: 90, label: "gg bridge presidio anchorage" }
 ] as const;
 
+// Corridor keep-outs along bridge decks (meta.json bridges polylines). The GG
+// bridge's Presidio approach viaduct and Marin landing both cross tree regions;
+// without this, groves grow straight through the roadway. Half-width = deck
+// width/2 (12) + margin, so trees LINE the bridge but never stand on it.
+const AVOID_CORRIDORS: readonly {
+  pts: readonly (readonly [number, number])[];
+  r: number;
+  label: string;
+}[] = [
+  {
+    pts: [
+      [-2882, -1500],
+      [-2947, -2289],
+      [-3017, -3306],
+      [-3110, -4640],
+      [-3150, -5100],
+      // marin approach continues past the landing into the headland road cut
+      [-3190, -5420]
+    ],
+    r: 20,
+    label: "golden gate bridge deck"
+  }
+] as const;
+
+function distToSegment(x: number, z: number, ax: number, az: number, bx: number, bz: number): number {
+  const dx = bx - ax;
+  const dz = bz - az;
+  const t = Math.min(1, Math.max(0, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz)));
+  return Math.hypot(x - (ax + dx * t), z - (az + dz * t));
+}
+
+function inAvoidCorridor(x: number, z: number, pad = 0): boolean {
+  for (const c of AVOID_CORRIDORS) {
+    for (let i = 0; i + 1 < c.pts.length; i++) {
+      const [ax, az] = c.pts[i];
+      const [bx, bz] = c.pts[i + 1];
+      if (distToSegment(x, z, ax, az, bx, bz) < c.r + pad) return true;
+    }
+  }
+  return false;
+}
+
 function inAvoid(x: number, z: number, pad = 0): boolean {
   if (
     x >= BOTANICAL_GARDEN_BOUNDS.minX - 14 - pad &&
@@ -90,7 +132,7 @@ function inAvoid(x: number, z: number, pad = 0): boolean {
   for (const a of AVOID) {
     if (Math.hypot(x - a.x, z - a.z) < a.r + pad) return true;
   }
-  return false;
+  return inAvoidCorridor(x, z, pad);
 }
 
 // --- deterministic noise (same recipe as the garden) ------------------------------

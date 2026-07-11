@@ -149,8 +149,13 @@ export function prepareCoronaHeightsGround(map: WorldMap) {
       const q = ((x - cx) / HILL_RX) ** 2 + ((z - cz) / HILL_RZ) ** 2;
       if (q >= 1.12) continue;
       const feather = 1 - smooth01((q - 0.9) / 0.22);
+      // The summit platform lift is part of the WALK surface, not a floating
+      // skin: bake it into the query carpet so avatars stand on the dirt pad
+      // (and on anything placed at groundTop on it) instead of shin-deep in it.
       map.groundTops[gz * width + gx] +=
-        CORONA_GROUND_LIFT * feather + (pointInPolygon(x, z, CORONA_DOG_PARK) ? DOG_QUERY_LIFT : 0);
+        CORONA_GROUND_LIFT * feather +
+        summitPlatformLift(x, z) +
+        (pointInPolygon(x, z, CORONA_DOG_PARK) ? DOG_QUERY_LIFT : 0);
     }
   }
 }
@@ -234,8 +239,12 @@ function makeHillSkin(map: WorldMap) {
       const edge = 1.08 + (hash2(gx, gz, 9) - 0.5) * 0.035;
       inside[i] = q < edge && !pointInPolygon(x, z, CORONA_DOG_PARK) ? 1 : 0;
       // 0.13: proud of the baked park lawn's CDT drape (which can exceed the
-      // bilinear query by 20+ cm on folds) while staying under the trail ribbons.
-      const y = map.groundTop(x, z) + 0.13;
+      // bilinear query by 20+ cm on folds) while staying under the trail
+      // ribbons. Inside the summit platform the skin ducks BELOW the walk
+      // surface (whose groundTop already carries the platform lift) so the
+      // dedicated dirt pad owns that ground.
+      const duck = summitPlatformLift(x, z);
+      const y = map.groundTop(x, z) + 0.13 - (duck > 0 ? Math.min(0.22, duck + 0.02) : 0);
       positions[i * 3] = x;
       positions[i * 3 + 1] = y;
       positions[i * 3 + 2] = z;
@@ -380,10 +389,7 @@ function makeTrailRibbon(map: WorldMap, trail: CoronaTrail, material: THREE.Mate
     for (const side of [-1, 1]) {
       const x = p.x + nx * half * side;
       const z = p.z + nz * half * side;
-      // Where a trail crosses the raised summit platform it must ride on top
-      // of that dirt skin, not drown beneath it.
-      const lift = summitPlatformLift(x, z);
-      positions.push(x, map.groundTop(x, z) + 0.165 + Math.max(0, lift + 0.08 - 0.165), z);
+      positions.push(x, map.groundTop(x, z) + 0.165, z);
       const shade = 0.86 + hash2(i, side, trail.name.length) * 0.18;
       colors.push(shade, shade, shade);
     }
@@ -412,8 +418,7 @@ function makeStepTies(map: WorldMap, trail: CoronaTrail, material: THREE.Materia
   samples.forEach((p, i) => {
     const nx = -p.tz;
     const nz = p.tx;
-    const tieLift = summitPlatformLift(p.x, p.z);
-    dummy.position.set(p.x, map.groundTop(p.x, p.z) + 0.19 + Math.max(0, tieLift + 0.1 - 0.19), p.z);
+    dummy.position.set(p.x, map.groundTop(p.x, p.z) + 0.19, p.z);
     dummy.rotation.set(0, Math.atan2(-nz, nx), 0);
     dummy.scale.set(trail.width + 0.25, 0.16, 0.24);
     dummy.updateMatrix();
