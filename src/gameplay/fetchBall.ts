@@ -28,6 +28,11 @@ const THROW_RELEASE_T = 0.24; // seconds into the swing when the ball leaves the
 const TAKE_FROM_DOG_RANGE = 2.0; // click-to-take reach while a dog waits
 const TAKE_RESTING_RANGE = 1.5; // click-to-take reach for a ball at rest, no dog
 const ABANDON_RANGE = 60; // a claimed (un-adopted) dog gives up if the player strays this far
+// Centroid of CORONA_DOG_PARK (layout.ts) — used to tell "just outside the fence
+// for a handoff" from "dragged well out of the run" during a committed fetch.
+const PARK_CX = 373;
+const PARK_CZ = 2704;
+const LEASH_MARGIN = 8; // a fetching dog this far outside the run = abandon back to wander
 const PET_TRAIL = 1.8; // pet trots this far behind the player
 const PICKUP_SPEED = 2.4; // dog grabs once the ball has slowed to this
 const PICKUP_RANGE = 0.55;
@@ -130,7 +135,16 @@ export class FetchBall {
       this.#aim.normalize();
       this.#throwPending = true;
       this.#throwAnimT = 0;
+      return;
     }
+    // Recall a stranded FREE ball back to the hand: a ball that rolled out of
+    // reach (never rested on a slope, or landed unreachable inside the enclosed
+    // run when no free dog could fetch it) would otherwise leave the tool dead —
+    // click() no-ops in every non-"held" phase and #take only fires in range.
+    // Only "flying" (a loose ball) is recalled; an in-progress fetch
+    // (dogChasing/dogReturning/dogWaiting) is never disturbed, and #dog stays
+    // claimed so a heeling reused dog keeps its adoption progress.
+    if (this.#phase === "flying" && !this.#throwPending) this.#rearm();
   }
 
   update(dt: number, elapsed: number, playerPos: THREE.Vector3): void {
@@ -178,7 +192,13 @@ export class FetchBall {
   }
 
   verb(): string {
-    return this.wantsTake() ? "take the ball back" : "throw the ball";
+    if (this.wantsTake()) return "take the ball back";
+    if (this.#phase === "held") return "throw the ball";
+    // A loose ball can be recalled to hand (see click()); the dog carrying or
+    // waiting-with the ball can't be thrown, so don't advertise a dead click.
+    if (this.#phase === "flying") return "call the ball back";
+    if (this.#phase === "dogWaiting") return "get closer to take the ball";
+    return "wait for the dog"; // dogChasing / dogReturning
   }
 
   wantsTake(): boolean {
@@ -290,6 +310,7 @@ export class FetchBall {
       this.#phase = "flying";
       return;
     }
+    if (this.#maybeAbandon(park)) return;
     const bx = this.#state.x;
     const bz = this.#state.z;
     if (this.#reactTimer > 0) {
@@ -313,6 +334,7 @@ export class FetchBall {
       this.#phase = "flying";
       return;
     }
+    if (this.#maybeAbandon(park)) return;
     // ball rides the mouth
     park.dogMouthWorld(dog, this.#tmp);
     this.#ball.position.copy(this.#tmp);
@@ -331,6 +353,7 @@ export class FetchBall {
       this.#phase = "flying";
       return;
     }
+    if (this.#maybeAbandon(park)) return;
     park.dogMouthWorld(dog, this.#tmp);
     this.#ball.position.copy(this.#tmp);
     this.#ball.visible = true;
@@ -353,11 +376,39 @@ export class FetchBall {
       }
       // else: keep the dog claimed so the SAME dog runs the next fetch cycle.
     }
+    this.#rearm();
+  }
+
+  /** Put the ball back in the player's hand (from a take or a recall). Leaves
+   *  this.#dog untouched so a heeling reused dog stays claimed. */
+  #rearm(): void {
     this.#ball.visible = false;
     this.#state.vx = this.#state.vy = this.#state.vz = 0;
     this.#state.grounded = false;
     this.#phase = "held";
     this.#deps.playerView.setBallHeld(this.#active);
+  }
+
+  /** Leash for a committed fetch: if the claimed dog has been dragged well out
+   *  of the fenced run (the player walking off mid-return would otherwise pull
+   *  it through the fence and across the map, never re-settling), hand it back
+   *  to the wander pool and re-arm the ball. Keyed on the DOG's position, not
+   *  the player-to-dog gap (which stays ~1.2 m forever during a return), and
+   *  with a generous margin so a legit fence-line handoff is never abandoned.
+   *  Returns true when it abandoned (caller should stop touching the dog). */
+  #maybeAbandon(park: CoronaHeightsPark): boolean {
+    const dog = this.#dog;
+    if (!dog || dog.controller !== "player") return false;
+    if (park.isInsidePark(dog.x, dog.z)) return false; // still in the run
+    // Just outside for a handoff? A step toward the run's centre lands inside.
+    const dx = PARK_CX - dog.x;
+    const dz = PARK_CZ - dog.z;
+    const d = Math.hypot(dx, dz) || 1;
+    if (park.isInsidePark(dog.x + (dx / d) * LEASH_MARGIN, dog.z + (dz / d) * LEASH_MARGIN)) return false;
+    park.releaseDog(dog);
+    this.#dog = null;
+    this.#rearm();
+    return true;
   }
 }
 

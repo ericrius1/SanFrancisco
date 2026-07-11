@@ -23,6 +23,7 @@ import { createBayLights, updateBayLights, resetBayLightsTweaks } from "./world/
 import { createGoldenGateLights, updateGoldenGateLights, resetGoldenGateLightsTweaks } from "./world/goldenGateLights";
 import { createPalaceColonnade, PALACE_RING_BUILDINGS } from "./world/palaceColonnade";
 import { createSutroTower, updateSutroTower, resetSutroLightsTweaks } from "./world/sutroTower";
+import { createGoldenGateTennisSite, GOLDMAN_SUPPRESSED_BUILDINGS } from "./world/goldenGateTennis";
 import { CoronaHeightsPark, prepareCoronaHeightsGround } from "./world/coronaHeights";
 import { createBuskerTrio } from "./gameplay/buskers";
 import { findOpenSpawn } from "./world/spawn";
@@ -371,6 +372,7 @@ async function boot() {
     grass: { refresh: () => void };
     update: (pos: THREE.Vector3, cam: THREE.Vector3) => void;
   } | null = null;
+  let goldenGateTennis: ReturnType<typeof createGoldenGateTennisSite> | null = null;
   let coronaHeights: CoronaHeightsPark | null = null;
   let windGustValue: (() => number) | null = null;
   let advanceWind: ((dt: number) => void) | null = null;
@@ -384,6 +386,7 @@ async function boot() {
     foliageOn = visible;
     garden?.setVisible(visible, player.position);
     if (wildlands) for (const g of wildlands.groups) g.visible = visible;
+    goldenGateTennis?.setFoliageVisible(visible);
     coronaHeights?.setFoliageVisible(visible);
   };
   const islands = new Islands(physics, map, scene);
@@ -450,6 +453,18 @@ async function boot() {
     console.warn("[boot] sutro tower unavailable:", err);
   }
   try {
+    // Replace the generic extruded OSM clubhouse mesh but retain its accurate
+    // baked collider. The authored site owns all 16 tennis courts, the five
+    // current pickleball/mini courts, circulation, fencing, and hill-edge trees.
+    for (const building of GOLDMAN_SUPPRESSED_BUILDINGS) {
+      tiles.suppressBuildingMesh(building.key, building.index);
+    }
+    goldenGateTennis = createGoldenGateTennisSite(map).addTo(scene);
+    goldenGateTennis.setFoliageVisible(foliageOn);
+  } catch (err) {
+    console.warn("[boot] Goldman Tennis Center unavailable:", err);
+  }
+  try {
     coronaHeights = new CoronaHeightsPark(map, physics);
     coronaHeights.setFoliageVisible(foliageOn);
     scene.add(coronaHeights.group);
@@ -477,15 +492,15 @@ async function boot() {
   // the nature soundscape's context/bus so HUD volume/mute and the corona
   // region fade all apply. Idles to a single distance check away from the park.
   const dogParkAudio = new DogParkAudio(nature, () => coronaHeights?.dogs ?? []);
-  // Busker trio perched on the Corona Heights summit's SE shoulder, out on the
-  // open dirt at the rim where the hill drops toward the city — Sutro Tower at
-  // their backs, facing ESE so their gaze splits downtown (NE) and the Mission
-  // (SE). The module is placeless by design; move it with
-  // buskers.setPlacement(x, z, yaw) (it re-grounds itself).
+  // Busker trio perched on the NW high ground by the Hole 18 tee (Lincoln Park
+  // bluff), facing ESE so the whole city sweeps out in front of them — Sutro
+  // Tower and Buena Vista both fall in frame for the 360. The module is
+  // placeless by design; move it with buskers.setPlacement(x, z, yaw) (it
+  // re-grounds itself).
   const buskers = createBuskerTrio({
-    x: 424,
-    z: 2784, // out past the summit's step-tie trails, on the open SE slope over the drop
-    yaw: -1.72, // rock faces ESE (+X, slight +Z), out over downtown and the Mission
+    x: -1762,
+    z: -348, // Hole 18 tee bluff, high ground over the NW city edge
+    yaw: -1.72, // unchanged facing (ESE) — city + Sutro + Buena Vista out in front
     groundHeight: (x, z) => map.groundHeight(x, z),
     physics
   });

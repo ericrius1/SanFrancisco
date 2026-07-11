@@ -330,10 +330,18 @@ export async function createCityGenRing(
       // neighbour proves a party wall. Farther samples favour the street over a
       // narrow side/rear alley while edge length keeps the result deterministic.
       const distances = [0.35, 0.8, 1.5] as const;
+      const laterals = [-0.42, 0, 0.42] as const; // full player-capsule corridor, not a zero-width ray
       let clearance = 0, nearClear = false;
       for (let s = 0; s < distances.length; s++) {
         const d = distances[s];
-        if (!sampleBlockedByNeighbor(e, cx + nrm[0] * d, cz + nrm[1] * d)) {
+        let depthClear = true;
+        for (const lateral of laterals) {
+          if (sampleBlockedByNeighbor(e, cx + nrm[0] * d + ux * lateral, cz + nrm[1] * d + uz * lateral)) {
+            depthClear = false;
+            break;
+          }
+        }
+        if (depthClear) {
           clearance += 1 << (distances.length - s);
           if (s === 0) nearClear = true;
         }
@@ -719,8 +727,8 @@ export async function createCityGenRing(
     boxPart("citygen.door.panel.upper", panelMat, panelX, y0 + rt.h * 0.68, 0, panelW, panelH, panelD);
     boxPart("citygen.door.panel.lower", panelMat, panelX, y0 + rt.h * 0.29, 0, panelW, panelH, panelD);
     const handleX = rt.w * 0.83, handleY = y0 + rt.h * 0.51;
-    boxPart("citygen.door.hardware.plate", hardwareMat, handleX, handleY, 0, 0.07, 0.18, DOOR_LEAF_T + 0.035);
-    const knobR = 0.055;
+    boxPart("citygen.door.hardware.plate", hardwareMat, handleX, handleY, 0, 0.095, 0.22, DOOR_LEAF_T + 0.04);
+    const knobR = 0.07;
     for (const side of [-1, 1]) {
       const knob = new THREE.Mesh(doorKnobGeo, hardwareMat);
       knob.name = side < 0 ? "citygen.door.hardware.outer" : "citygen.door.hardware.inner";
@@ -812,6 +820,7 @@ export async function createCityGenRing(
   };
 
   const dropDetail = (e: Entry) => {
+    loaded.get(e.key)?.chunk?.setBuildingVisible(e.i, true);
     resetDoorRt(e); // dynamic leaf + door bookkeeping first (leaf must not outlive the mesh)
     disposeInterior(e);
     if (e.detail) { ctx.scene.remove(e.detail.group); e.detail.dispose(); e.detail = null; }
@@ -833,7 +842,12 @@ export async function createCityGenRing(
       if (e.fadeDir < 0 && (!e.doorPending || e.door?.leaf)) closeDoorNow(e);
       e.fade += e.fadeDir * (dt / CT.fadeTime);
       // at fade end the door stays CLOSED (solid walls) — the player opens it with E
-      if (e.fadeDir > 0 && e.fade >= 1) { e.fade = 1; e.fadeDir = 0; e.detail.setOpacity(1); }
+      if (e.fadeDir > 0 && e.fade >= 1) {
+        e.fade = 1; e.fadeDir = 0; e.detail.setOpacity(1);
+        // The detailed shell is now fully opaque and owns this silhouette. Hide
+        // only its merged LOD prism so real door/window holes reveal the room.
+        loaded.get(e.key)?.chunk?.setBuildingVisible(e.i, false);
+      }
       else if (e.fadeDir < 0 && e.fade <= 0) dropDetail(e);
       else e.detail.setOpacity(e.fade);
     }
@@ -1113,6 +1127,9 @@ export async function createCityGenRing(
         } else if (d2 > detailExit2) {
           dropDetail(e); // past hard exit — free the slot now
         } else if (e.fadeDir >= 0) {
+          // Restore the prism BEFORE detail opacity starts falling, preserving
+          // the no-hole crossfade contract on eviction.
+          loaded.get(e.key)?.chunk?.setBuildingVisible(e.i, true);
           e.fadeDir = -1; // displaced by nearer / over cap — crossfade out
         }
       }

@@ -37,6 +37,12 @@ export function lodMaterial(): THREE.MeshStandardNodeMaterial {
   // the world or enters a detailed building drawn just outside this LOD prism.
   const m = new THREE.MeshStandardNodeMaterial({ roughness: 0.92, metalness: 0, side: THREE.FrontSide });
   m.envMapIntensity = 5.5;
+  // A merged chunk remains one draw call, but detailed buildings must be able to
+  // punch their own prism away—otherwise its solid wall sits directly behind an
+  // operable doorway. Per-vertex visibility + alpha test gives the streamer that
+  // selective discard without rebuilding indices or splitting the chunk.
+  m.opacityNode = attribute("lodVisibility", "float");
+  m.alphaTest = 0.5;
   const body = attribute("color", "vec3") as unknown as ReturnType<typeof color>;
   const isRoof = step(0.5, normalWorld.y.abs());
   const u = uv().x, v = uv().y;              // already in window-cell units
@@ -56,8 +62,8 @@ export function lodMaterial(): THREE.MeshStandardNodeMaterial {
   return m;
 }
 
-export interface PrismArrays { pos: number[]; nor: number[]; uvs: number[]; col: number[]; idx: number[]; }
-export function emptyArrays(): PrismArrays { return { pos: [], nor: [], uvs: [], col: [], idx: [] }; }
+export interface PrismArrays { pos: number[]; nor: number[]; uvs: number[]; col: number[]; vis: number[]; idx: number[]; }
+export function emptyArrays(): PrismArrays { return { pos: [], nor: [], uvs: [], col: [], vis: [], idx: [] }; }
 
 /** sRGB hex → LINEAR rgb (THREE colour management) so the LOD's per-vertex body
  *  colour matches the near mesh, whose MeshStandardMaterial decodes the same hex
@@ -101,13 +107,13 @@ export function appendPrism(spec: BuildingSpec, out: PrismArrays, conform?: Pris
   const rr = 0.28 + br * 0.10, rg = 0.27 + bg * 0.10, rb = 0.25 + bb * 0.10;
   const floorH = specFor(spec.archetype).floorH;
   const winFloors = Math.max(1, Math.round((top - grade) / floorH)); // storeys above grade
-  const { pos, nor, uvs, col, idx } = out;
+  const { pos, nor, uvs, col, vis, idx } = out;
   let v0 = pos.length / 3;
   const pushQuad = (x0: number, z0: number, y0: number, x1: number, z1: number, y1: number, nx: number, nz: number, u1: number, v1: number): void => {
     const c: [number, number, number, number, number][] = [
       [x0, y0, z0, 0, 0], [x1, y0, z1, u1, 0], [x1, y1, z1, u1, v1], [x0, y1, z0, 0, v1],
     ];
-    for (const [px, py, pz, uu, vv] of c) { pos.push(px, py, pz); nor.push(nx, 0, nz); uvs.push(uu, vv); col.push(br, bg, bb); }
+    for (const [px, py, pz, uu, vv] of c) { pos.push(px, py, pz); nor.push(nx, 0, nz); uvs.push(uu, vv); col.push(br, bg, bb); vis.push(1); }
     // Outward winding must agree with (nx, nz). The previous inward order only
     // worked because the LOD material rendered both sides, exposing its interior.
     idx.push(v0, v0 + 2, v0 + 1, v0, v0 + 3, v0 + 2);
@@ -130,7 +136,7 @@ export function appendPrism(spec: BuildingSpec, out: PrismArrays, conform?: Pris
   }
   const tris = triangulate(poly);
   const roofStart = pos.length / 3;
-  for (const [px, pz] of poly) { pos.push(px, top, pz); nor.push(0, 1, 0); uvs.push(0, 0); col.push(rr, rg, rb); }
+  for (const [px, pz] of poly) { pos.push(px, top, pz); nor.push(0, 1, 0); uvs.push(0, 0); col.push(rr, rg, rb); vis.push(1); }
   // Footprints are CCW in XZ, which is downward-facing in Three's X/Y/Z basis;
   // reverse each cap triangle so its geometric front faces +Y like its normal.
   for (let t = 0; t + 2 < tris.length; t += 3) idx.push(roofStart + tris[t], roofStart + tris[t + 2], roofStart + tris[t + 1]);
@@ -143,6 +149,7 @@ export function geometryFrom(a: PrismArrays): THREE.BufferGeometry {
   g.setAttribute("normal", new THREE.BufferAttribute(new Float32Array(a.nor), 3));
   g.setAttribute("uv", new THREE.BufferAttribute(new Float32Array(a.uvs), 2));
   g.setAttribute("color", new THREE.BufferAttribute(new Float32Array(a.col), 3));
+  g.setAttribute("lodVisibility", new THREE.BufferAttribute(new Float32Array(a.vis), 1));
   g.setIndex(a.idx.length > 65535 ? new THREE.BufferAttribute(new Uint32Array(a.idx), 1) : a.idx);
   g.computeBoundingSphere();
   return g;

@@ -30,6 +30,9 @@ const SWING_ZONE = 2.6; // how close to the resting ball before you can swing (s
 const CHARGE_TIME = 1.15; // seconds, 0 → full draw (then holds at full power)
 const SWING_TIME = 0.46; // downswing seconds (release → full follow-through)
 const SNAP_HZ = 8;
+// Once a roller is this slow, less than ~0.45 m remains on a flat green.
+// Hand the camera back early so the golfer is framed before the next walk.
+const BALL_CAM_RETURN_SPEED = 0.7;
 
 export type GolfNetMsg =
   | { k: "swing"; d: number[] }
@@ -74,6 +77,8 @@ export class GolfGame {
   #driveCart: THREE.Group | null = null;
   #cartBoarded = false;
   #cartOccupants = 1;
+  #lastTrackX = NaN; // last frame's player XZ — a big jump = a teleport
+  #lastTrackZ = NaN;
 
   #holeIdx = 0;
   #strokes = 0; // strokes already taken this hole
@@ -100,6 +105,7 @@ export class GolfGame {
   #teePromptShown = false;
   #snapAt = 0;
   #camEye = new THREE.Vector3();
+  #ballCamActive = false;
   #wantCamYaw: number | null = null;
   #quitArmedAt = -Infinity;
   #summaryUntil = 0;
@@ -275,6 +281,7 @@ export class GolfGame {
   #startRound(holeIdx: number, hud: HUD) {
     this.active = true;
     this.#roundComplete = false;
+    this.#lastTrackX = NaN; // don't read a start-frame teleport as "leaving"
     this.#summaryUntil = 0;
     this.#holeIdx = holeIdx;
     this.#totalDelta = 0;
@@ -324,6 +331,7 @@ export class GolfGame {
     this.#ballMesh.visible = false;
     this.#beacon.visible = false;
     this.#aimArrow.visible = false;
+    this.#guide.hideNow(); // never let the pointer linger after you leave
     this.#view.setActiveTee(-1);
     this.#ui.setVisible(false);
     if (!quiet) {
@@ -489,7 +497,10 @@ export class GolfGame {
       }
       // swing / flight: no pointer (the shot has the stage)
     }
-    this.#guide.update(dt, player.renderPosition, target, target !== null && player.mode === "walk", elapsed, hideWithin);
+    // only ever show it on foot, while a round is live, and inside the course
+    const p = player.renderPosition;
+    const show = target !== null && player.mode === "walk" && this.#course.contains(p.x, p.z, 30);
+    this.#guide.update(dt, p, target, show, elapsed, hideWithin);
   }
 
   // ------------------------------------------------------------- per frame
@@ -518,6 +529,15 @@ export class GolfGame {
     const onFoot = player.mode === "walk";
     const px = player.renderPosition.x;
     const pz = player.renderPosition.z;
+
+    // Teleporting (a big single-frame jump) or leaving the course footprint
+    // auto-ends the round, so the guide/beacon never follow you across the city.
+    if (this.active) {
+      const jumped = Number.isFinite(this.#lastTrackX) && Math.hypot(px - this.#lastTrackX, pz - this.#lastTrackZ) > 35;
+      if (jumped || !this.#course.contains(px, pz, 120)) this.#endRound(hud);
+    }
+    this.#lastTrackX = px;
+    this.#lastTrackZ = pz;
 
     this.#updateCart(player);
 
@@ -686,6 +706,7 @@ export class GolfGame {
     this.#ball.strike(this.club, hit.yaw, hit.power, hit.lie, this.#pin);
     this.#audio.thwack(hit.power, this.club.id === "putter");
     this.#phase = "flight";
+    this.#ballCamActive = true;
     this.#camEye.copy(this.#ball.pos).addScaledVector(this.#tmp.set(Math.sin(hit.yaw), 0, Math.cos(hit.yaw)), -3.5);
     this.#camEye.y = this.#ball.pos.y + 2.2;
     this.#ui.setScore(this.#strokes, this.#totalDelta, this.#holesDone);
@@ -696,7 +717,20 @@ export class GolfGame {
 
   /** Flight camera: true = golf owns the camera this frame (main skips chase). */
   updateBallCam(dt: number, camera: THREE.PerspectiveCamera): boolean {
-    if (!this.active || this.#phase !== "flight") return false;
+    if (!this.active || this.#phase !== "flight" || !this.#ballCamActive) return false;
+
+    // The ball can creep indefinitely on a slope, so camera ownership cannot
+    // wait for the simulation's exact rest event. Release once a ground roll is
+    // nearly spent, and latch the release for this shot so a downhill nudge
+    // cannot yank the view away from the player again.
+    const nearlyStopped =
+      this.#ball.phase === "roll" &&
+      this.#ball.vel.lengthSq() <= BALL_CAM_RETURN_SPEED * BALL_CAM_RETURN_SPEED;
+    if (!this.#ball.moving || nearlyStopped) {
+      this.#ballCamActive = false;
+      return false;
+    }
+
     const b = this.#ball.pos;
     // chase eye: hang back along the ball's ground track, ease everything
     const d = this.#tmp.copy(b).sub(this.#camEye);

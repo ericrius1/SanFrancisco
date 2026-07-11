@@ -71,11 +71,12 @@ function gridLines(a: number, b: number, n: number, r: Rng): number[] {
 }
 
 /** a doorway centre + width for a shared edge spanning s0..s1. */
-function doorway(s0: number, s1: number, r: Rng): { c: number; w: number } {
+function doorway(s0: number, s1: number, r: Rng, preferred?: number): { c: number; w: number } {
   const span = s1 - s0;
   const w = Math.min(DOOR_W, Math.max(0.7, span - 0.4));
   const lo = s0 + 0.2 + w / 2, hi = s1 - 0.2 - w / 2;
-  const c = hi <= lo ? (s0 + s1) / 2 : lo + r() * (hi - lo);
+  const c = hi <= lo ? (s0 + s1) / 2
+    : preferred === undefined ? lo + r() * (hi - lo) : Math.max(lo, Math.min(hi, preferred));
   return { c, w };
 }
 
@@ -85,7 +86,7 @@ function doorway(s0: number, s1: number, r: Rng): { c: number; w: number } {
  * each already carrying a doorway). `target` is clamped so no room is thinner
  * than MIN_ROOM.
  */
-export function partition(area: Rect, target: number, r: Rng): { rooms: Rect[]; walls: Wall[]; portals: Portal[] } {
+export function partition(area: Rect, target: number, r: Rng, entryVista?: Rect | null): { rooms: Rect[]; walls: Wall[]; portals: Portal[] } {
   const w = rectW(area), d = rectD(area);
   const maxCols = Math.max(1, Math.floor(w / MIN_ROOM));
   const maxRows = Math.max(1, Math.floor(d / MIN_ROOM));
@@ -105,14 +106,38 @@ export function partition(area: Rect, target: number, r: Rng): { rooms: Rect[]; 
   // vertical partitions (constant x) between columns, one segment per row
   for (let c = 1; c < cols; c++)
     for (let rr = 0; rr < rows; rr++) {
-      const dw = doorway(zs[rr], zs[rr + 1], r);
+      // A partition running lengthwise inside the front-door sightline would be
+      // a permanent wall beside/through the player's capsule. Treat that shared
+      // room edge as fully open; the rooms remain distinct furnishing zones.
+      const alongEntry = !!entryVista && xs[c] >= entryVista.x0 && xs[c] <= entryVista.x1
+        && zs[rr] < entryVista.z1 && zs[rr + 1] > entryVista.z0;
+      const dw = alongEntry
+        ? { c: (zs[rr] + zs[rr + 1]) / 2, w: zs[rr + 1] - zs[rr] }
+        : doorway(zs[rr], zs[rr + 1], r);
       walls.push({ axis: "z", line: xs[c], s0: zs[rr], s1: zs[rr + 1], door: dw.c, doorW: dw.w,
         a: (c - 1) * rows + rr, b: c * rows + rr });
     }
   // horizontal partitions (constant z) between rows, one segment per column
   for (let rr = 1; rr < rows; rr++)
     for (let c = 0; c < cols; c++) {
-      const dw = doorway(xs[c], xs[c + 1], r);
+      // Crossing partitions keep a normal 1.5 m portal, centred on the portion
+      // of the entry vista that actually meets this room span. This creates a
+      // readable sequence of aligned openings without turning every plan into a
+      // corridor.
+      const crossesEntry = !!entryVista && zs[rr] >= entryVista.z0 && zs[rr] <= entryVista.z1
+        && xs[c] < entryVista.x1 && xs[c + 1] > entryVista.x0;
+      const overlap0 = entryVista ? Math.max(xs[c], entryVista.x0) : 0;
+      const overlap1 = entryVista ? Math.min(xs[c + 1], entryVista.x1) : 0;
+      const preferred = crossesEntry ? (overlap0 + overlap1) / 2 : undefined;
+      let dw = doorway(xs[c], xs[c + 1], r, preferred);
+      if (preferred !== undefined) {
+        const clearL = dw.c - dw.w / 2, clearR = dw.c + dw.w / 2;
+        // Very short room spans can clamp the portal away from the desired axis,
+        // leaving a thin jamb inside the capsule's view. In that rare case a
+        // fully open shared edge is cleaner than a visibly off-centre doorway.
+        if (clearL > preferred - 0.38 || clearR < preferred + 0.38)
+          dw = { c: (xs[c] + xs[c + 1]) / 2, w: xs[c + 1] - xs[c] };
+      }
       walls.push({ axis: "x", line: zs[rr], s0: xs[c], s1: xs[c + 1], door: dw.c, doorW: dw.w,
         a: c * rows + rr - 1, b: c * rows + rr });
     }

@@ -198,7 +198,9 @@ export class PickleballBallPhysics {
       if (collision.t < 0.0001) remaining = Math.max(0, remaining - 0.0005);
     }
 
-    if (Math.abs(this.position.x) > C.apronWidth || Math.abs(this.position.z) > C.apronLength) this.stop();
+    if (Math.abs(this.position.x) > C.apronWidth * 0.5 + 0.5 || Math.abs(this.position.z) > C.apronLength * 0.5 + 0.5) {
+      this.stop();
+    }
   }
 
   #earliestCollision(
@@ -276,4 +278,3 @@ export class PickleballBallPhysics {
     if (speedSq > T.maxBallSpeed * T.maxBallSpeed) this.velocity.multiplyScalar(T.maxBallSpeed / Math.sqrt(speedSq));
   }
 }
-

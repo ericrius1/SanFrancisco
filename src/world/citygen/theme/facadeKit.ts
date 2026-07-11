@@ -144,6 +144,15 @@ export function frontDoor(out: PanelBuilder, e: FacadeEdge, m: { door: string; t
   const hinge = pt(-halfW, midY, 0.035);
   const lc: Vec3 = [hinge[0] + along[0] * leafW, midY, hinge[2] + along[2] * leafW];
   out.box("citygen.doorleaf", lc, [leafW, hH - 0.02, 0.03], along, UP, n, true);
+  // Relief is authored into the SAME runtime-owned bucket, so the closed and
+  // live leaves share a panelled silhouette and every piece hides atomically on
+  // handoff. Even with one wood material, proud faces catch enough light to read.
+  const leafAt = (x: number, yy: number, d: number): Vec3 => [
+    hinge[0] + along[0] * x + n[0] * d, yy, hinge[2] + along[2] * x + n[2] * d,
+  ];
+  for (const yy of [midY - hH * 0.42, midY + hH * 0.42])
+    out.box("citygen.doorleaf", leafAt(leafW * 0.92, yy, 0.052), [leafW * 0.56, hH * 0.22, 0.018], along, UP, n, true);
+  out.box("citygen.doorleaf", leafAt(leafW * 1.67, midY, 0.072), [0.045, 0.075, 0.035], along, UP, n, true);
   // white frame: jambs + lintel, proud
   out.box(m.trim, off(pt(-halfW, midY, 0), 0.05), [0.06, hH + 0.06, 0.07], along, UP, n, true);
   out.box(m.trim, off(pt(halfW, midY, 0), 0.05), [0.06, hH + 0.06, 0.07], along, UP, n, true);

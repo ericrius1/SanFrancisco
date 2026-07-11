@@ -165,7 +165,7 @@ export function buildInterior(spec: BuildingSpec, zone: InteriorZone = "resident
   //      stack (realistic, and keeps the stair footprint clear on each storey) --
   // fewer, bigger rooms (~45 m²) keep the paths readable at player scale.
   const target = zone === "loft" ? 1 : Math.max(1, Math.min(3, Math.round(rectArea(area) / 45)));
-  let { rooms, walls, portals } = partition(area, target, rng(spec.seed, 101));
+  let { rooms, walls, portals } = partition(area, target, rng(spec.seed, 101), entryVista);
   let entryRoom = planCirculation(rooms, portals, entry, null).entryRoom;
   let stairIdx = roomiest(rooms, entryRoom);
 
@@ -178,7 +178,7 @@ export function buildInterior(spec: BuildingSpec, zone: InteriorZone = "resident
       if (anyFit >= 0) stairIdx = anyFit;
     }
     if (!stairFits(rooms[stairIdx])) {
-      ({ rooms, walls, portals } = partition(area, 1, rng(spec.seed, 102)));
+      ({ rooms, walls, portals } = partition(area, 1, rng(spec.seed, 102), entryVista));
       entryRoom = planCirculation(rooms, portals, entry, null).entryRoom;
       stairIdx = 0;
     }

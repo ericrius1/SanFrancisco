@@ -279,6 +279,17 @@ async function main() {
   const reparked = await ev(c, `(()=>{ const g=window.__golfGame; return { mode: window.__sf.player.mode, cartParked: !!g.parkedCartPosition }; })()`);
   console.log("[cart-board] twoBags:", twoBags, "afterExit:", JSON.stringify(reparked));
 
+  // --- teleport-leaves-golf: a big jump must end the round + hide the guide
+  const activeBefore = await ev(c, "window.__golfGame.active");
+  await ev(c, `(()=>{ const s=window.__sf; s.player.teleportTo({ x: 0, y: s.map.effectiveGround(0,0)+1.5, z: 0, facing: 0, mode: "walk" }); return true; })()`);
+  await ticks(c, 12, 1 / 60);
+  const afterLeave = await ev(c, `(()=>{
+    const s=window.__sf, g=window.__golfGame;
+    let guideVis=false; s.scene.traverse(o=>{ if(o.name==='golf-guide') guideVis=o.visible; });
+    return { active: g.active, guideVisible: guideVis };
+  })()`);
+  console.log("[leave-golf] activeBefore:", activeBefore, "after:", JSON.stringify(afterLeave));
+
   // --- golf cart hero shots: spawn one beside the tee, frame it 3/4 front + rear
   const cart = await ev(c, `(()=>{
     const t = ${JSON.stringify(h1.teeXZ)};

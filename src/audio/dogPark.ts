@@ -67,7 +67,7 @@ export class DogParkAudio {
     const centerDist = Math.hypot(playerPos.x - PARK_X, playerPos.z - PARK_Z);
     const dogs = this.#dogs();
     if (dogs.length === 0) {
-      this.#park();
+      this.#sleep();
       return;
     }
     // Keep the layer awake if the park is near OR any single dog is — an adopted
@@ -78,11 +78,17 @@ export class DogParkAudio {
       if (d < nearestDogDist) nearestDogDist = d;
     }
     if (centerDist > WAKE_RADIUS && nearestDogDist > WAKE_RADIUS) {
-      this.#park();
+      this.#sleep();
       return;
     }
+    // We WANT to play. Ask nature to keep the shared ctx alive even when the
+    // player has left every nature region (pet at heel in the city) — otherwise
+    // nature suspends the ctx and this layer goes silent. Requested BEFORE the
+    // suspended-ctx bail: nature.update runs earlier in the frame, so the resume
+    // it triggers lands next frame (one silent frame at most).
+    this.#nature.setExternalAwake(true);
     const io = (this.#io ??= this.#nature.voiceBus());
-    if (!io || io.ctx.state !== "running") return; // nature owns unlock/suspend
+    if (!io || io.ctx.state !== "running") return; // nature resumes next frame
     this.#wake(io, dogs);
     const now = io.ctx.currentTime;
     // soft master gate: the layer breathes in over the last dozen metres, driven
@@ -135,7 +141,7 @@ export class DogParkAudio {
   }
 
   dispose(): void {
-    this.#park();
+    this.#sleep();
     for (const rig of this.#rigs) {
       try {
         rig.panner.disconnect();
@@ -171,7 +177,11 @@ export class DogParkAudio {
     if (!this.#layer) {
       this.#layer = ctx.createGain();
       this.#layer.gain.value = 0;
-      this.#layer.connect(io.bus);
+      // Route through nature's presence-INDEPENDENT tap (not io.bus, which nature
+      // fades to 0 and suspends out of region) so a pet at heel stays audible in
+      // the city. This layer runs its own proximity gate below, and the tap is
+      // still HUD master/mute scaled, so nothing plays uninvited.
+      this.#layer.connect(io.alwaysBus);
     }
     if (this.#rigs.length === 0) {
       for (const dog of dogs) this.#rigs.push(this.#makeRig(io, this.#layer, dog));
@@ -185,6 +195,13 @@ export class DogParkAudio {
       src.start(0, Math.random() * 1.5);
       rig.patterSrc = src;
     }
+  }
+
+  /** Park the layer AND release nature's keep-alive, so nature can suspend the
+   *  shared ctx again once no dog audio is wanted. */
+  #sleep(): void {
+    this.#nature.setExternalAwake(false);
+    this.#park();
   }
 
   #park(): void {

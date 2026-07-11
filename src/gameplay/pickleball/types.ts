@@ -2,6 +2,7 @@ import type * as THREE from "three/webgpu";
 
 /** Court-local side: 0 is the -Z (near) end, 1 is the +Z (far) end. */
 export type PickleballSide = 0 | 1;
+export type PickleballOwnerId = string | number;
 
 export type PickleballController = "ai" | "local" | "remote" | "replica";
 
@@ -92,7 +93,7 @@ export type PickleballDiagnostics = {
   ballPosition: readonly [number, number, number];
   ballVelocity: readonly [number, number, number];
   controllers: readonly [PickleballController, PickleballController];
-  owners: readonly [string | null, string | null];
+  owners: readonly [PickleballOwnerId | null, PickleballOwnerId | null];
   localSide: PickleballSide | null;
   lastFault: PickleballFault | null;
   collisionCounts: {
@@ -118,4 +119,3 @@ export type PickleballSnapshot = readonly number[];
 export function otherSide(side: PickleballSide): PickleballSide {
   return side === 0 ? 1 : 0;
 }
-

@@ -65,6 +65,8 @@ type ActiveVoice = { panner: PannerNode; send: GainNode; expires: number };
 export class NatureSoundscape {
   #ctx: AudioContext | null = null;
   #bus!: GainNode; // master volume/presence fade
+  #alwaysBus!: GainNode; // HUD-master/mute scaled, but NOT presence-faded or suspended
+  #externalAwake = false; // a sibling layer (pet at heel) needs the ctx kept alive
   #reverbSend!: GainNode;
   #convolver!: ConvolverNode;
   #noise!: AudioBuffer;
@@ -135,10 +137,21 @@ export class NatureSoundscape {
    *  context, the master bus (HUD volume/mute, region presence fades and the
    *  out-of-region suspend all ride along), the reverb send and the shared
    *  voice-noise buffer. Call once and cache — not per frame. */
-  voiceBus(): { ctx: AudioContext; bus: GainNode; reverbSend: GainNode; noise: AudioBuffer } | null {
+  voiceBus():
+    | { ctx: AudioContext; bus: GainNode; alwaysBus: GainNode; reverbSend: GainNode; noise: AudioBuffer }
+    | null {
     const ctx = this.#ensure();
     if (!ctx) return null;
-    return { ctx, bus: this.#bus, reverbSend: this.#reverbSend, noise: this.#noise };
+    return { ctx, bus: this.#bus, alwaysBus: this.#alwaysBus, reverbSend: this.#reverbSend, noise: this.#noise };
+  }
+
+  /** Sibling layers (the dog park's adopted pet) that must stay audible while the
+   *  player is far from every nature region call this each frame: it stops the
+   *  out-of-region context suspend (and resumes if already suspended) so the
+   *  presence-independent #alwaysBus keeps flowing. Cleared when the pet layer
+   *  parks itself. */
+  setExternalAwake(on: boolean): void {
+    this.#externalAwake = on;
   }
 
   update(
@@ -178,10 +191,24 @@ export class NatureSoundscape {
 
     // ---- master fade + park the whole graph when far from any region ------
     const targetMaster = allowed ? effects * Number(T.master) * this.#presence : 0;
+    const alwaysTarget = allowed ? effects * Number(T.master) : 0; // no presence term
     if (targetMaster <= 0.0001 && this.#masterLevel <= 0.001) {
+      // No region presence. Normally park the whole graph (zero city cost). But
+      // if a sibling layer (pet at heel) needs to stay audible, keep the ctx
+      // alive and drive only the presence-independent tap.
+      if (this.#externalAwake) {
+        if (ctx.state === "suspended") void ctx.resume();
+        if (ctx.state === "running") {
+          this.#bus.gain.value = 0;
+          this.#masterLevel = 0;
+          this.#alwaysBus.gain.setTargetAtTime(alwaysTarget, ctx.currentTime, 0.2);
+        }
+        return; // region layers stay silent; only #alwaysBus is live
+      }
       if (ctx.state === "running") {
         this.#bus.gain.value = 0;
         this.#masterLevel = 0;
+        this.#alwaysBus.gain.value = 0;
         void ctx.suspend();
       }
       return; // suspended: no per-frame cost out in the city
@@ -190,6 +217,7 @@ export class NatureSoundscape {
     if (ctx.state !== "running") return;
     this.#masterLevel = approach(this.#masterLevel, targetMaster, dt, 3.5);
     this.#bus.gain.value = this.#masterLevel;
+    this.#alwaysBus.gain.setTargetAtTime(alwaysTarget, ctx.currentTime, 0.2);
 
     const now = ctx.currentTime;
     const day = daylight(o.timeOfDay);
@@ -287,6 +315,15 @@ export class NatureSoundscape {
     this.#bus = ctx.createGain();
     this.#bus.gain.value = 0;
     this.#bus.connect(limiter);
+
+    // Presence-independent tap straight to the limiter: sibling layers (the dog
+    // park's pet at heel) route here so a pet trotting through the city — where
+    // region presence and thus #bus are 0 and the ctx would otherwise suspend —
+    // stays audible. Still scaled by HUD master/mute (set each update) so mute
+    // and the master slider silence it.
+    this.#alwaysBus = ctx.createGain();
+    this.#alwaysBus.gain.value = 0;
+    this.#alwaysBus.connect(limiter);
 
     // shared 2s white noise for voice synthesis
     const sr = ctx.sampleRate;

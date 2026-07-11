@@ -92,6 +92,13 @@ export class GolfGuide {
     this.#shown = false;
   }
 
+  /** Snap fully off this frame (no fade) — e.g. the round ended / you teleported. */
+  hideNow() {
+    this.#shown = false;
+    this.#vis = 0;
+    this.#group.visible = false;
+  }
+
   dispose() {
     this.#group.removeFromParent();
   }

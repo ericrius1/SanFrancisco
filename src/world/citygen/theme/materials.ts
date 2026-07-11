@@ -128,8 +128,8 @@ export function buildCityGenMaterials(): Record<string, THREE.Material> {
     "citygen.doorback": standard(0x171922, 0.9, { emissive: 0.05 }),
     // Small live-leaf accents. These stay shared city-wide; an animated door adds
     // only geometry, never a one-off material/pipeline.
-    "citygen.door.panel": standard(0x3d271f, 0.68, { emissive: 0.1 }),
-    "citygen.door.hardware": standard(0xc9a557, 0.28, { metalness: 0.78, emissive: 0.22 }),
+    "citygen.door.panel": standard(0x794b35, 0.68, { emissive: 0.14 }),
+    "citygen.door.hardware": standard(0xd8bd70, 0.28, { metalness: 0.78, emissive: 0.28 }),
     "citygen.room": standard(0x171922, 0.9, { emissive: 0.05 }),
     "citygen.awn": standard(0x8a3b34, 0.7, { emissive: 0.2 }),    // storefront awning
     "citygen.sign": standard(0x2c2f36, 0.6, { emissive: 0.28 }),  // shop signband
@@ -150,6 +150,8 @@ export function buildCityGenMaterials(): Record<string, THREE.Material> {
     "int.wall.cool": standard(0xbfc7cd, 0.92, { emissive: 0.55 }),
     "int.ceil": standard(0xefe7d6, 0.95, { emissive: 0.85 }),   // ceiling doubles as the room's fill light
     "int.window": standard(0xbcd6ea, 0.3, { emissive: 2.6 }),   // daylight behind an interior window (bright, so rooms aren't caves)
+    "int.window.haze": standard(0xd8c9ad, 0.62, { emissive: 1.35 }), // warm horizon layer in the stylized view
+    "int.window.city": standard(0x66747d, 0.82, { emissive: 0.62 }), // distant low-poly skyline silhouettes
     "int.trim": standard(0xece4d4, 0.6, { emissive: 0.4 }),     // baseboards / door casing
     "int.rug": standard(0x7a3b34, 0.9, { emissive: 0.38 }),     // area rug
     "int.metal": standard(0x8a8f96, 0.5, { metalness: 0.6, emissive: 0.3 }), // loft/industrial

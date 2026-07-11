@@ -14,6 +14,8 @@ export interface ChunkLOD {
   done: boolean;
   /** append up to `budget` more buildings; sets mesh + done when finished */
   pump(budget: number): void;
+  /** Selectively discard/restore one merged prism without splitting the draw. */
+  setBuildingVisible(index: number, visible: boolean): void;
   dispose(): void;
 }
 
@@ -32,6 +34,8 @@ export interface ChunkLODOptions {
 export function buildChunkLOD(specs: BuildingSpec[], opts?: ChunkLODOptions): ChunkLOD {
   const arr: PrismArrays = emptyArrays();
   const ground = opts?.groundHeight;
+  const vertexRanges = new Map<number, { start: number; count: number }>();
+  const hidden = new Set<number>();
   let cursor = 0;
   const chunk: ChunkLOD = {
     mesh: null,
@@ -41,9 +45,11 @@ export function buildChunkLOD(specs: BuildingSpec[], opts?: ChunkLODOptions): Ch
       const end = Math.min(specs.length, cursor + budget);
       for (; cursor < end; cursor++) {
         const s = specs[cursor];
+        const start = arr.pos.length / 3;
         // conform to live terrain when a sampler was provided; else legacy path
         if (ground) appendPrism(s, arr, footprintGrade(s.poly, s.base, s.top, ground));
         else appendPrism(s, arr);
+        vertexRanges.set(s.i, { start, count: arr.pos.length / 3 - start });
       }
       if (cursor >= specs.length) {
         const g = geometryFrom(arr);
@@ -54,10 +60,26 @@ export function buildChunkLOD(specs: BuildingSpec[], opts?: ChunkLODOptions): Ch
         mesh.frustumCulled = true;
         mesh.matrixAutoUpdate = false; // geometry is world-space
         chunk.mesh = mesh;
+        const visibility = g.getAttribute("lodVisibility") as THREE.BufferAttribute;
+        visibility.setUsage(THREE.DynamicDrawUsage);
+        for (const index of hidden) {
+          const range = vertexRanges.get(index);
+          if (range) (visibility.array as Float32Array).fill(0, range.start, range.start + range.count);
+        }
+        if (hidden.size) visibility.needsUpdate = true;
         chunk.done = true;
         // free the scratch arrays
-        arr.pos.length = arr.nor.length = arr.uvs.length = arr.col.length = arr.idx.length = 0;
+        arr.pos.length = arr.nor.length = arr.uvs.length = arr.col.length = arr.vis.length = arr.idx.length = 0;
       }
+    },
+    setBuildingVisible(index, visible) {
+      if (visible) hidden.delete(index); else hidden.add(index);
+      const range = vertexRanges.get(index);
+      const attr = chunk.mesh?.geometry.getAttribute("lodVisibility") as THREE.BufferAttribute | undefined;
+      if (!range || !attr) return;
+      (attr.array as Float32Array).fill(visible ? 1 : 0, range.start, range.start + range.count);
+      attr.addUpdateRange(range.start, range.count);
+      attr.needsUpdate = true;
     },
     dispose() {
       if (chunk.mesh) { chunk.mesh.geometry.dispose(); chunk.mesh = null; }

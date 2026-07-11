@@ -88,6 +88,19 @@ export function dressInteriorShell(
       if (isDoor && t1 > door0 - 0.08 && t0 < door1 + 0.08) continue;
       const proud = liningOff + 0.022;
       out.quad("int.window", at(t0, wy0, proud), at(t1, wy0, proud), at(t1, wy1, proud), at(t0, wy1, proud), normal);
+      // A tiny layered city view keeps these daylight panels from reading as
+      // flat blue rectangles. Haze and three varied silhouettes are visual-only
+      // quads a few millimetres forward, still cheap enough to merge per material.
+      const viewProud = proud + 0.012;
+      const horizon = wy0 + (wy1 - wy0) * 0.30;
+      out.quad("int.window.haze", at(t0, wy0, viewProud), at(t1, wy0, viewProud), at(t1, horizon, viewProud), at(t0, horizon, viewProud), normal);
+      for (let bi = 0; bi < 3; bi++) {
+        const slot0 = t0 + (t1 - t0) * (bi / 3 + 0.045);
+        const slot1 = t0 + (t1 - t0) * ((bi + 1) / 3 - 0.045);
+        const skylineH = (wy1 - wy0) * (0.12 + 0.055 * ((edge + wi + bi) % 3));
+        out.quad("int.window.city", at(slot0, wy0, viewProud + 0.006), at(slot1, wy0, viewProud + 0.006),
+          at(slot1, wy0 + skylineH, viewProud + 0.006), at(slot0, wy0 + skylineH, viewProud + 0.006), normal);
+      }
       const midY = (wy0 + wy1) / 2, halfH = (wy1 - wy0) / 2;
       const bar = (t: number, yy: number, ha: number, hu: number) => out.box(
         "int.trim", at(t, yy, proud + 0.035), [ha, hu, 0.035], along, UP, normal, false,

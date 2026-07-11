@@ -137,6 +137,13 @@ function stoopAndDoor(out: PanelBuilder, e: FacadeEdge, base: number, groundTopY
   const leafHalf = halfW * 0.96, dMid = (sill + openTop) / 2;
   const hinge = inw(dl, 0.055, dMid);
   out.box("citygen.doorleaf", [hinge[0] + along[0] * leafHalf, dMid, hinge[2] + along[2] * leafHalf], [leafHalf, (openTop - sill) / 2 - 0.02, 0.03], along, UP, n3, true);
+  const leafHH = (openTop - sill) / 2 - 0.02;
+  const leafAt = (x: number, yy: number, d: number): Vec3 => [
+    hinge[0] + along[0] * x + n3[0] * d, yy, hinge[2] + along[2] * x + n3[2] * d,
+  ];
+  for (const yy of [dMid - leafHH * 0.42, dMid + leafHH * 0.42])
+    out.box("citygen.doorleaf", leafAt(leafHalf * 0.92, yy, 0.052), [leafHalf * 0.56, leafHH * 0.22, 0.018], along, UP, n3, true);
+  out.box("citygen.doorleaf", leafAt(leafHalf * 1.67, dMid, 0.072), [0.045, 0.075, 0.035], along, UP, n3, true);
   // surround
   const cA = lerp(dl, dr, 0.5), midY = (doorBase + doorTop) / 2;
   out.box(m.trim, [cA[0] + n3[0] * 0.03, doorTop + 0.06, cA[2] + n3[2] * 0.03], [dw / 2 + 0.14, 0.1, 0.06], along, UP, n3, true);
