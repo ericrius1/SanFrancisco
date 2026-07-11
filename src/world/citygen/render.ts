@@ -82,6 +82,11 @@ export interface BuiltBuilding {
   /** dither this building's instanced glass fully away (real panes take over
    *  while the player is inside); no-op on the baked fallback */
   setGlassHidden(hidden: boolean): void;
+  /** hide/show this building's ENTIRE exterior shell (walls/roof/trim/stoop/
+   *  doors) — paired with setGlassHidden(true) and real window holes in the
+   *  interior shell, this is the "look out the window" trick: with the exterior
+   *  gone, the holes show the real city instead of a painted parallax pane. */
+  setShellHidden(hidden: boolean): void;
   /** show/hide the baked door leaf+back (the player-operated door swaps in a
    *  dynamic swinging leaf while these are hidden). Works on both the batched
    *  shell and the per-building bundle fallback. */
@@ -269,6 +274,7 @@ function assembleBuildingMeshes(
         group, triangles,
         windows: moduleHandle && modules ? modules.instances : [],
         setGlassHidden(hidden: boolean) { moduleHandle?.setGlassHidden(hidden); },
+        setShellHidden(hidden: boolean) { shellHandle.setShellHidden(hidden); winHandle?.setShellHidden(hidden); },
         setDoorLeavesVisible(vis: boolean) { shellHandle.setDoorLeavesVisible(vis); },
         setCastShadow(cast: boolean) { shellHandle.setCastShadow(cast); winHandle?.setCastShadow(cast); },
         setOpacity(o: number) { moduleHandle?.setFade(o); shellHandle.setFade(o); winHandle?.setFade(o); },
@@ -359,6 +365,11 @@ function assembleBuildingMeshes(
     group, triangles,
     windows: moduleHandle && modules ? modules.instances : [],
     setGlassHidden(hidden: boolean) { moduleHandle?.setGlassHidden(hidden); },
+    setShellHidden(hidden: boolean) {
+      if (group.visible === !hidden) return;
+      group.visible = !hidden;
+      group.needsUpdate = true;
+    },
     setDoorLeavesVisible(vis: boolean) {
       let changed = false;
       for (const m of doorMeshes) if (m.visible !== vis) { m.visible = vis; changed = true; }
@@ -415,13 +426,14 @@ export function buildBuilding(spec: BuildingSpec, mats: Record<string, THREE.Mat
 export function buildInterior(
   spec: BuildingSpec,
   mats: Record<string, THREE.Material>,
+  windows: readonly ModuleInstance[] = [],
 ): { group: THREE.Group; colliders: ColliderBox[]; dispose(): void } {
   // interior furnishing matches the parallax-window zone (home/shop/loft). Its
   // ground floor sits at the terrain GRADE (where you actually walk in the door),
   // not the low baked base — otherwise on a hill the floor buries below the entry.
   const gradeBase = (spec as { grade?: number }).grade ?? spec.base;
   const ispec = gradeBase !== spec.base ? { ...spec, base: gradeBase } : spec;
-  const { panels, colliders } = buildInteriorParts(ispec, ARCH_ZONE[spec.archetype] ?? "residential");
+  const { panels, colliders } = buildInteriorParts(ispec, ARCH_ZONE[spec.archetype] ?? "residential", windows);
   const merged = mergePanels(panels);
   const group = new THREE.Group();
   group.name = "cityGenInterior";

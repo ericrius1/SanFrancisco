@@ -42,6 +42,11 @@ export interface ShellHandle {
   setCastShadow(cast: boolean): void;
   /** show/hide the baked door leaf+back instances when the player opens the door */
   setDoorLeavesVisible(vis: boolean): void;
+  /** hide/show EVERY instance this building owns in the batch (walls/roof/trim/
+   *  stoop/doors) — the "look out the window" trick: while the player is inside,
+   *  the exterior shell vanishes entirely so the real city shows through the
+   *  interior's window holes instead of a painted parallax pane. */
+  setShellHidden(hidden: boolean): void;
   free(): void;
 }
 
@@ -223,6 +228,9 @@ export function createShellBatchLayer(
         },
         setDoorLeavesVisible(vis: boolean) {
           for (const p of placed) if (p.door) p.batch.mesh.setVisibleAt(p.inst, vis);
+        },
+        setShellHidden(hidden: boolean) {
+          for (const p of placed) p.batch.mesh.setVisibleAt(p.inst, !hidden);
         },
         free() {
           if (freed) return;

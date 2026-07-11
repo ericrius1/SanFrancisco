@@ -113,9 +113,15 @@ interface Tiles {
 type ScheduleFn = (lane: "physics" | "build" | "upload" | "background", job: () => void | "again") => void;
 interface BuiltGroup {
   group: THREE.Group;
+  /** kit-of-parts window records (world-space, pre-proud) — the interior
+   *  look-out feature aligns its wall holes to these. */
+  windows: readonly ModuleInstance[];
   setOpacity(o: number): void;
   setCastShadow(cast: boolean): void;
   setGlassHidden(hidden: boolean): void;
+  /** hide/show the whole exterior shell while the player is inside (see
+   *  render.ts BuiltBuilding.setShellHidden) */
+  setShellHidden(hidden: boolean): void;
   setDoorLeavesVisible(vis: boolean): void;
   dispose(): void;
 }
@@ -464,6 +470,9 @@ export async function createCityGenRing(
     for (const h of e.intBodies) { ctx.physics.removeQuerySolid?.(h); ctx.physics.world.destroyBody(h); }
     e.intBodies.length = 0;
     e.intBoxes = [];
+    // bring the exterior shell + instanced glass back now that nobody's inside
+    e.detail?.setShellHidden(false);
+    e.detail?.setGlassHidden(false);
   };
 
   // ---- collider tier (cheap, eager) ------------------------------------------
@@ -979,11 +988,16 @@ export async function createCityGenRing(
   const GATE_DISPOSE = 3.0;   // dispose only when clearly outside the footprint
   const ensureInterior = (e: Entry) => {
     if (e.interior || e.state !== "detail" || !e.bodies.length) return;
-    const it = buildInterior(e as BuildingSpec, materials);
+    const it = buildInterior(e as BuildingSpec, materials, e.detail?.windows ?? []);
     ctx.scene.add(it.group);
     for (const c of it.colliders) e.intBodies.push(addBody(c));
     e.intBoxes = it.colliders;
     e.interior = it;
+    // "look out the window": hide THIS building's exterior shell + instanced
+    // glass so the real city shows through the interior shell's real window
+    // holes instead of the painted parallax pane. Neighbours keep their shells.
+    e.detail?.setShellHidden(true);
+    e.detail?.setGlassHidden(true);
   };
   const gateInterior = (e: Entry, p: THREE.Vector3, wasCameraInside: boolean) => {
     if (e.state !== "detail") return; // only faded-in detail buildings have interiors
