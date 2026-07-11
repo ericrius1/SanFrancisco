@@ -5,7 +5,8 @@
 //  - Anyone can join, no accounts. The server assigns an id + a color hue.
 //  - Clients own their physics (box3d runs in each browser); the server mostly
 //    relays transforms. It does arbitrate the two pickleball player slots so
-//    two browsers cannot own one side, then relays each owner's snapshots.
+//    one browser owns at most one side, then relays the selected authority's
+//    snapshots and the other owner's input.
 //    This stays cheap and cheat-tolerant-by-design for a co-op sandbox.
 //  - Clients send state at ~12 Hz; the server rebroadcasts one batched
 //    snapshot per tick (12 Hz) with a server timestamp the clients use for
@@ -30,6 +31,7 @@ const NAME_MAX = 20;
 const CHAT_MAX = 200;
 const PICKLEBALL_SLOTS = 2;
 const PICKLEBALL_STATE_MAX = 96;
+const PICKLEBALL_INPUT_MAX = 16;
 const PICKLEBALL_VALUE_LIMIT = 1_000_000;
 const MSG_MAX_BYTES = 16384; // fits a WebRTC SDP offer (voice signaling); poses are ~100 B
 const MSG_BUDGET_PER_SEC = 80; // state at 12 Hz + several simultaneous RTC negotiations; flooders get cut
@@ -181,6 +183,13 @@ const wss = new WebSocketServer({ server, path: "/ws", maxPayload: MSG_MAX_BYTES
 let nextId = 1;
 /** id -> player presence plus latest reconnect-safe golf state (if any). */
 const players = new Map();
+/**
+ * Pickleball wire: clients claim/release slot 0|1, the owner of slot 0 (or
+ * slot 1 while 0 is empty) alone may publish bounded `state` arrays, and each
+ * owner may send bounded slot `input` arrays to that authority. Server output
+ * always stamps `id` and `authority`; `state` is cached for late joiners.
+ */
+const pickleball = { slots: Array(PICKLEBALL_SLOTS).fill(0), state: null };
 
 const ADJ = [
   "Foggy",
@@ -424,6 +433,27 @@ const broadcast = (obj, exceptId = 0) => {
 
 const finite = (n, limit = 20000) => typeof n === "number" && Number.isFinite(n) && Math.abs(n) <= limit;
 const intBetween = (n, lo, hi) => Number.isInteger(n) && n >= lo && n <= hi;
+const pickleballAuthority = () => pickleball.slots[0] || pickleball.slots[1] || 0;
+const pickleballNumbers = (d, maxLength) =>
+  Array.isArray(d) &&
+  d.length >= 1 &&
+  d.length <= maxLength &&
+  d.every((n) => finite(n, PICKLEBALL_VALUE_LIMIT))
+    ? d.slice()
+    : null;
+
+const refreshPickleballAuthority = () => {
+  const authority = pickleballAuthority();
+  if (pickleball.state && pickleball.state.id !== authority) pickleball.state = null;
+  return authority;
+};
+
+const pickleballWelcome = () => ({
+  slots: pickleball.slots.slice(),
+  authority: pickleballAuthority(),
+  state: pickleball.state ? { id: pickleball.state.id, d: pickleball.state.d.slice() } : null
+});
+
 const golfPosition = (d, length) =>
   Array.isArray(d) &&
   d.length === length &&
@@ -461,6 +491,15 @@ const sanitizeGolf = (msg, id) => {
     return null;
   }
   return out;
+};
+
+const releasePickleballOwner = (id) => {
+  for (let slot = 0; slot < PICKLEBALL_SLOTS; slot++) {
+    if (pickleball.slots[slot] !== id) continue;
+    pickleball.slots[slot] = 0;
+    const authority = refreshPickleballAuthority();
+    broadcast({ t: "pickle", k: "release", slot, id, ok: true, authority });
+  }
 };
 
 wss.on("connection", (ws) => {
@@ -509,7 +548,8 @@ wss.on("connection", (ws) => {
         name: p.name,
         players: [...players.values()]
           .filter((o) => o.id !== id)
-          .map((o) => ({ id: o.id, name: o.name, hue: o.hue, avatar: o.avatar, board: o.board, golf: o.golf }))
+          .map((o) => ({ id: o.id, name: o.name, hue: o.hue, avatar: o.avatar, board: o.board, golf: o.golf })),
+        pickle: pickleballWelcome()
       });
       broadcast({ t: "join", id, name: p.name, hue: p.hue, avatar: p.avatar, board: p.board }, id);
       console.log(`[sf-server] join #${id} "${p.name}" (${players.size} online)`);
@@ -545,6 +585,56 @@ wss.on("connection", (ws) => {
       if (msg.d.every((r) => Array.isArray(r) && r.length === 9 && r.every((n) => typeof n === "number" && Number.isFinite(n)))) {
         broadcast({ t: "fw", id, d: msg.d }, id);
       }
+    } else if (msg.t === "pickle" && typeof msg.k === "string") {
+      // Ownership is the one competitive invariant the relay enforces. The
+      // selected client still owns the full match simulation and physics.
+      if ((msg.k === "claim" || msg.k === "release") && intBetween(msg.slot, 0, PICKLEBALL_SLOTS - 1)) {
+        const slot = msg.slot;
+        const owner = pickleball.slots[slot];
+        if (msg.k === "claim") {
+          const otherSlot = slot === 0 ? 1 : 0;
+          if (owner === id) {
+            const authority = refreshPickleballAuthority();
+            broadcast({ t: "pickle", k: "claim", slot, id, ok: true, authority });
+          } else if (owner !== 0) {
+            send(ws, { t: "pickle", k: "claim", slot, id: owner, ok: false, authority: pickleballAuthority(), reason: "occupied" });
+          } else if (pickleball.slots[otherSlot] === id) {
+            send(ws, {
+              t: "pickle",
+              k: "claim",
+              slot,
+              id: 0,
+              ok: false,
+              authority: pickleballAuthority(),
+              reason: "already-owns-slot"
+            });
+          } else {
+            pickleball.slots[slot] = id;
+            const authority = refreshPickleballAuthority();
+            broadcast({ t: "pickle", k: "claim", slot, id, ok: true, authority });
+          }
+        } else if (owner === id) {
+          pickleball.slots[slot] = 0;
+          const authority = refreshPickleballAuthority();
+          broadcast({ t: "pickle", k: "release", slot, id, ok: true, authority });
+        } else {
+          send(ws, { t: "pickle", k: "release", slot, id: owner, ok: false, authority: pickleballAuthority() });
+        }
+      } else if (msg.k === "state") {
+        const d = pickleballNumbers(msg.d, PICKLEBALL_STATE_MAX);
+        const authority = pickleballAuthority();
+        if (d && authority === id) {
+          pickleball.state = { id, d };
+          broadcast({ t: "pickle", k: "state", id, authority, d }, id);
+        }
+      } else if (msg.k === "input" && intBetween(msg.slot, 0, PICKLEBALL_SLOTS - 1)) {
+        const d = pickleballNumbers(msg.d, PICKLEBALL_INPUT_MAX);
+        const authority = pickleballAuthority();
+        if (d && pickleball.slots[msg.slot] === id && authority && authority !== id) {
+          const target = players.get(authority);
+          if (target) send(target.ws, { t: "pickle", k: "input", slot: msg.slot, id, authority, d });
+        }
+      }
     } else if (msg.t === "golf" && typeof msg.k === "string") {
       const out = sanitizeGolf(msg, id);
       if (out) {
@@ -571,6 +661,7 @@ wss.on("connection", (ws) => {
   const drop = () => {
     if (!players.has(id)) return;
     players.delete(id);
+    releasePickleballOwner(id);
     broadcast({ t: "leave", id });
     console.log(`[sf-server] leave #${id} (${players.size} online)`);
   };

@@ -178,9 +178,24 @@ export const victorianFacade: FacadeDecorator = (e, out, rng) => {
   if (doorEligible(e)) {
     frontStoop(out, e, baseMat); // stone steps up to the raised stoop (downhill lots)
     stoopAndDoor(out, e, gBase, groundTopY, { base: baseMat, trim });
-    // a ground-floor bay/garden window on the other side of the door
-    const gw0 = gp(e, 0.62), gw1 = gp(e, 0.92);
-    faceWindow(out, gw0, gw1, aboveGrade(e, e.base + 0.7), groundTopY - 0.25, n3, wm);
+    // A ground-floor garden window fills the roomier side of the door. Its span
+    // is derived from the same doorway metrics instead of fixed fractions: on
+    // short resolved facades the door moves to centre, where the old .62–.92
+    // window crossed the live aperture and remained as passable glass.
+    const dm = doorMetrics(e.length, e.base, e.top, e.grade);
+    const gapPad = 0.16 / e.length;
+    const sides: [number, number][] = [
+      [0.08, dm.tc - dm.halfW / e.length - gapPad],
+      [dm.tc + dm.halfW / e.length + gapPad, 0.92],
+    ];
+    sides.sort((a, b) => (b[1] - b[0]) - (a[1] - a[0]));
+    const [side0, side1] = sides[0];
+    const sideW = side1 - side0;
+    if (sideW * e.length >= 0.7) {
+      const winW = Math.min(0.30, sideW * 0.78);
+      const wc = (side0 + side1) / 2;
+      faceWindow(out, gp(e, wc - winW / 2), gp(e, wc + winW / 2), aboveGrade(e, e.base + 0.7), groundTopY - 0.25, n3, wm);
+    }
   }
 
   // ---- upper floors ---------------------------------------------------------

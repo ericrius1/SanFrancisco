@@ -17,6 +17,10 @@ export { stairFits, planStair } from './src/world/citygen/interior/stairs.ts';
 export { furnish } from './src/world/citygen/interior/props.ts';
 export { interiorStyle } from './src/world/citygen/interior/style.ts';
 export { PanelBuilder } from './src/world/citygen/core/facade.ts';
+export { massBuilding } from './src/world/citygen/core/massing.ts';
+export { doorMetrics } from './src/world/citygen/core/collider.ts';
+export { specFor } from './src/world/citygen/theme/archetypes.ts';
+export { decoratorFor } from './src/world/citygen/theme/decorators.ts';
 export { rng } from './src/world/citygen/core/rng.ts';
 export { overlaps, expand, rectArea } from './src/world/citygen/interior/common.ts';
 `;
@@ -32,7 +36,8 @@ const bundled = await build({
 const prod = await import(`data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].text).toString("base64")}`);
 const {
   buildInterior, partition, planCirculation, stairFits, planStair, furnish,
-  interiorStyle, PanelBuilder, rng, overlaps, expand, rectArea,
+  interiorStyle, PanelBuilder, massBuilding, doorMetrics, specFor, decoratorFor,
+  rng, overlaps, expand, rectArea,
 } = prod;
 
 const failures = [];
@@ -149,6 +154,46 @@ for (const spec of samples) {
   tiers[interiorStyle(spec, zone, polygonArea(spec.poly)).tier]++;
 }
 
+// Open-door aperture sweep. Build every live grammar at short/medium/wide facade
+// lengths and reject any permanent triangle whose bounds cross the central clear
+// doorway volume. The two runtime-owned closed pieces are deliberately excluded:
+// citygen.doorleaf + citygen.doorback are hidden when the hinged leaf takes over.
+let apertureCases = 0;
+const apertureOffenders = [];
+for (const archetype of archetypes) for (const length of [4.5, 6, 9, 16]) {
+  const spec = {
+    i: 0, id: 900000 + apertureCases, seed: 1200 + apertureCases,
+    poly: [[0, 0], [length, 0], [length, 9], [0, 9]],
+    streetEdge: 0, doorAllowed: true,
+    base: 0, grade: 0, top: 10, archetype,
+  };
+  const mass = massBuilding(spec, specFor(archetype), decoratorFor(archetype));
+  const dm = doorMetrics(length, spec.base, spec.top, spec.grade);
+  const x0 = dm.tc * length - dm.halfW + 0.16;
+  const x1 = dm.tc * length + dm.halfW - 0.16;
+  const y0 = dm.sill + 0.22, y1 = dm.openTop - 0.22;
+  const offenders = new Set();
+  for (const panel of mass.panels) {
+    if (panel.materialId === "citygen.doorleaf" || panel.materialId === "citygen.doorback") continue;
+    for (let j = 0; j + 2 < panel.indices.length; j += 3) {
+      const ids = [panel.indices[j], panel.indices[j + 1], panel.indices[j + 2]];
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, minZ = Infinity, maxZ = -Infinity;
+      for (const id of ids) {
+        const x = panel.positions[id * 3], y = panel.positions[id * 3 + 1], z = panel.positions[id * 3 + 2];
+        minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+        minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+        minZ = Math.min(minZ, z); maxZ = Math.max(maxZ, z);
+      }
+      if (maxX > x0 && minX < x1 && maxY > y0 && minY < y1 && maxZ > -0.24 && minZ < 0.24) offenders.add(panel.materialId);
+    }
+  }
+  if (offenders.size) {
+    apertureOffenders.push({ archetype, length, materials: [...offenders].sort() });
+    fail(`${archetype} ${length}m: permanent doorway geometry ${[...offenders].sort().join(",")}`);
+  }
+  apertureCases++;
+}
+
 const report = {
   ok: failures.length === 0,
   synthetic: {
@@ -158,6 +203,7 @@ const report = {
     maxPropMetres: [Number(maxPropW.toFixed(2)), Number(maxPropD.toFixed(2))],
   },
   realBuildings: { samples: samples.length, deterministic, triangles, colliders, tiers },
+  doorApertures: { cases: apertureCases, offenders: apertureOffenders },
   failures,
 };
 console.log(JSON.stringify(report, null, 2));

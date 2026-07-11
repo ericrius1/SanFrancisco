@@ -19,6 +19,7 @@ import { SKY_TUNING, type Sky } from "../world/sky";
 import { POSTFX_TUNING, POSTFX_TOGGLES, POSTFX_QUALITY_KEYS, applyPostFxParams } from "../render/postfx";
 import { VOICE_TUNING } from "../net/voice";
 import { NATURE_AUDIO_TUNING } from "../audio";
+import { TEE_BEACON_TUNING } from "../gameplay/golf/tuning";
 import type { Fireworks } from "../fx/fireworks";
 import type { TileStreamer } from "../world/tiles";
 import { withTweakBindingEventsSuppressed } from "../core/persist";
@@ -463,6 +464,11 @@ export class DebugPanel {
     GOLDEN_GATE_LIGHTS_SLIDERS.bind(goldenGate, {
       onChange: (key, value) => (GOLDEN_GATE_LIGHTS_TUNING[key].value = value as number)
     });
+
+    // Alpha-hashed tee volumes poll these values into shader uniforms each
+    // frame, so both the coverage and Fresnel rim can be judged in place.
+    const golfBeacons = advanced.addFolder({ title: "golf tee beacons" });
+    TEE_BEACON_TUNING.bind(golfBeacons);
 
     // proximity voice chat: Voice.update polls these live every frame, so
     // plain persisted bindings are enough — no onChange side effects

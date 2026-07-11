@@ -9,9 +9,9 @@ import type { PlayerMode } from "../player/types";
 
 const TWEAKS_KEY = "sf-tweaks";
 const TWEAKS_SCHEMA_KEY = "sf-tweaks-schema";
-// One current schema only: reset the removed car-jump controls and stale
-// scene-AA values (1/2/3 were all effectively single-sample in Three r185).
-const TWEAKS_SCHEMA = "2026-07-smooth-car-jump-stable-render-variants-r185";
+// One current schema only: the tee-beacon pane now owns hashed-alpha/Fresnel
+// controls, so discard stored values from the previous pane shape.
+const TWEAKS_SCHEMA = "2026-07-tee-beacon-alpha-hash-fresnel";
 const PLAYER_KEY = "sf-player";
 
 const IDLE_FLUSH_TIMEOUT_MS = 1000;

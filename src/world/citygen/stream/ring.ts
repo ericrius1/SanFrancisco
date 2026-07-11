@@ -14,7 +14,7 @@
 // Nothing is destructible — buildings don't break; a crash just stops you.
 import * as THREE from "three/webgpu";
 import { buildingColliders, doorMetrics, doorEligible, stoopColliders } from "../core/collider";
-import { ensureCCW, streetEdgeIndex, edgeOutwardNormal, signedDistToPoly } from "../core/footprint";
+import { ensureCCW, streetEdgeIndex, edgeOutwardNormal, pointInPoly, signedDistToPoly } from "../core/footprint";
 import { buildBuilding, buildInterior, assembleBuilding, warmupMaterials } from "../render";
 import { buildChunkLOD, type ChunkLOD } from "../render/chunkLod";
 import { lodMaterial } from "../render/lod";
@@ -276,6 +276,73 @@ export async function createCityGenRing(
       if (entries.length) { cellEntries.set(key, entries); total += entries.length; }
     }
   }
+
+  // Resolve the entrance facade against the complete footprint set, including
+  // archetypes this ring does not currently render. The longest-edge fallback is
+  // usually a good facade guess, but attached SF homes commonly share that edge
+  // with their neighbour. Sampling a few metres outward rejects those party walls
+  // before one consistent edge is handed to massing, colliders, doors and rooms.
+  //
+  // Footprints are indexed into every 32 m bin their AABB touches once at boot;
+  // resolving a newly loaded entry is therefore local rather than O(city size).
+  type StreetNeighbor = BuildingSpec & { cellKey: string };
+  const STREET_BIN = 32;
+  const streetBins = new Map<string, StreetNeighbor[]>();
+  const streetBinKey = (ix: number, iz: number) => `${ix}_${iz}`;
+  if (grid) {
+    for (const [cellKey, list] of Object.entries(grid.cells)) for (const b of list) {
+      const bb = boundsOf(b.poly);
+      const neighbor = { ...b, cellKey } as StreetNeighbor;
+      const ix0 = Math.floor(bb.minx / STREET_BIN), ix1 = Math.floor(bb.maxx / STREET_BIN);
+      const iz0 = Math.floor(bb.minz / STREET_BIN), iz1 = Math.floor(bb.maxz / STREET_BIN);
+      for (let ix = ix0; ix <= ix1; ix++) for (let iz = iz0; iz <= iz1; iz++) {
+        const key = streetBinKey(ix, iz);
+        const bin = streetBins.get(key);
+        if (bin) bin.push(neighbor); else streetBins.set(key, [neighbor]);
+      }
+    }
+  }
+  const sampleBlockedByNeighbor = (e: Entry, x: number, z: number): boolean => {
+    const bin = streetBins.get(streetBinKey(Math.floor(x / STREET_BIN), Math.floor(z / STREET_BIN)));
+    if (!bin) return false;
+    for (const other of bin) {
+      if (other.cellKey === e.key && other.i === e.i) continue;
+      if (other.top <= e.base + 0.5 || e.top <= other.base + 0.5) continue;
+      if (pointInPoly(other.poly, x, z)) return true;
+    }
+    return false;
+  };
+  const chooseExposedStreetEdge = (e: Entry): { edge: number; doorAllowed: boolean } => {
+    const poly = ensureCCW(e.poly);
+    const grade = e.grade ?? e.base;
+    const fallback = streetEdgeIndex(poly);
+    let best = fallback, bestScore = -Infinity, bestNearClear = false;
+    for (let i = 0; i < poly.length; i++) {
+      const p0 = poly[i], p1 = poly[(i + 1) % poly.length];
+      const dx = p1[0] - p0[0], dz = p1[1] - p0[1];
+      const length = Math.hypot(dx, dz);
+      if (length < 0.3 || !doorEligible({ isStreet: true, length, base: e.base, top: e.top, grade })) continue;
+      const ux = dx / length, uz = dz / length;
+      const nrm = edgeOutwardNormal(p0, p1);
+      const { tc } = doorMetrics(length, e.base, e.top, grade);
+      const cx = p0[0] + ux * tc * length, cz = p0[1] + uz * tc * length;
+      // Near clearance has the largest weight: a sample immediately inside a
+      // neighbour proves a party wall. Farther samples favour the street over a
+      // narrow side/rear alley while edge length keeps the result deterministic.
+      const distances = [0.35, 0.8, 1.5] as const;
+      let clearance = 0, nearClear = false;
+      for (let s = 0; s < distances.length; s++) {
+        const d = distances[s];
+        if (!sampleBlockedByNeighbor(e, cx + nrm[0] * d, cz + nrm[1] * d)) {
+          clearance += 1 << (distances.length - s);
+          if (s === 0) nearClear = true;
+        }
+      }
+      const score = clearance * 10000 + length;
+      if (score > bestScore) { bestScore = score; best = i; bestNearClear = nearClear; }
+    }
+    return { edge: best, doorAllowed: bestScore > -Infinity && bestNearClear };
+  };
   const tile = grid?.tile ?? 800;
   const minX = grid?.minX ?? 0, minZ = grid?.minZ ?? 0;
 
@@ -463,6 +530,7 @@ export async function createCityGenRing(
   // must not (and cannot) cross the structured-clone boundary
   const specOf = (e: Entry): BuildingSpec => ({
     i: e.i, id: e.id, poly: e.poly, base: e.base, top: e.top,
+    streetEdge: e.streetEdge, doorAllowed: e.doorAllowed,
     grade: e.grade, frontGround: e.frontGround, h: e.h, archetype: e.archetype, seed: e.seed,
   });
   const requestDetail = (e: Entry) => {
@@ -487,13 +555,13 @@ export async function createCityGenRing(
   // undefined when the edge takes no door (collider skips the stoop).
   const frontGroundFor = (e: Entry): number | undefined => {
     const poly = ensureCCW(e.poly);
-    const si = streetEdgeIndex(poly);
+    const si = streetEdgeIndex(poly, e.streetEdge);
     const p0 = poly[si], p1 = poly[(si + 1) % poly.length];
     const dx = p1[0] - p0[0], dz = p1[1] - p0[1];
     const length = Math.hypot(dx, dz);
     if (length < 0.3) return undefined;
     const grade = e.grade ?? e.base;
-    if (!doorEligible({ isStreet: true, length, base: e.base, top: e.top, grade })) return undefined;
+    if (!doorEligible({ isStreet: true, doorAllowed: e.doorAllowed, length, base: e.base, top: e.top, grade })) return undefined;
     const ux = dx / length, uz = dz / length;
     const nrm = edgeOutwardNormal(p0, p1);           // unit outward (street side)
     const { tc, sill } = doorMetrics(length, e.base, e.top, grade);
@@ -543,12 +611,12 @@ export async function createCityGenRing(
   const doorRtOf = (e: Entry): DoorRt | null => {
     if (e.door !== undefined) return e.door;
     const poly = ensureCCW(e.poly);
-    const si = streetEdgeIndex(poly);
+    const si = streetEdgeIndex(poly, e.streetEdge);
     const p0 = poly[si], p1 = poly[(si + 1) % poly.length];
     const dx = p1[0] - p0[0], dz = p1[1] - p0[1];
     const length = Math.hypot(dx, dz);
     const grade = e.grade ?? e.base;
-    if (length < 0.3 || !doorEligible({ isStreet: true, length, base: e.base, top: e.top, grade })) {
+    if (length < 0.3 || !doorEligible({ isStreet: true, doorAllowed: e.doorAllowed, length, base: e.base, top: e.top, grade })) {
       e.door = null;
       return null;
     }
@@ -844,8 +912,15 @@ export async function createCityGenRing(
     }
     const inY = p.y > e.base - 1.5 && p.y < e.top + 1.0;
     const d = signedDistToPoly(e.poly, p.x, p.z); // + inside, − outside (metres)
-    const inside = inY && d >= -GATE_DILATE;
-    const cameraInside = inY && d >= -(wasCameraInside ? CAMERA_EXIT : GATE_DILATE);
+    // Negative signed-distance tolerance exists only at an OPEN doorway. A
+    // capsule stopped by the closed wall rests ~0.6 m outside—inside the old
+    // unconditional 0.75 m dilation—so merely walking into a shut door built the
+    // interior and flipped cameras. True polygon interior (d>=0) remains valid in
+    // every state; doorway/exit hysteresis belongs to this open entry only.
+    const entryMargin = openReveal ? GATE_DILATE : 0;
+    const cameraMargin = openReveal && wasCameraInside ? CAMERA_EXIT : entryMargin;
+    const inside = inY && d >= -entryMargin;
+    const cameraInside = inY && d >= -cameraMargin;
     if (cameraInside) insideBuilding = e;
     if (inside) ensureInterior(e);
     else if (e.interior && d < -GATE_DISPOSE) {
@@ -857,6 +932,11 @@ export async function createCityGenRing(
 
   // ---- cell load / unload -----------------------------------------------------
   const loadCell = (key: string, entries: Entry[]) => {
+    for (const e of entries) if (e.streetEdge === undefined) {
+      const resolved = chooseExposedStreetEdge(e);
+      e.streetEdge = resolved.edge;
+      e.doorAllowed = resolved.doorAllowed;
+    }
     const [ix, iz] = key.split("_").map(Number);
     const cell: CellState = { key, ix, iz, entries,
       // conform LOD chunk buildings to terrain (highest ground under each footprint
@@ -1105,12 +1185,12 @@ export async function createCityGenRing(
       for (const cell of loaded.values()) for (const e of cell.entries) {
         if (!e.detail) continue;
         const poly = ensureCCW(e.poly);
-        const si = streetEdgeIndex(poly);
+        const si = streetEdgeIndex(poly, e.streetEdge);
         const p0 = poly[si], p1 = poly[(si + 1) % poly.length];
         const dx = p1[0] - p0[0], dz = p1[1] - p0[1];
         const length = Math.hypot(dx, dz);
         const grade = e.grade ?? e.base;
-        if (!doorEligible({ isStreet: true, length, base: e.base, top: e.top, grade })) continue;
+        if (!doorEligible({ isStreet: true, doorAllowed: e.doorAllowed, length, base: e.base, top: e.top, grade })) continue;
         const ux = dx / length, uz = dz / length;
         const nrm = edgeOutwardNormal(p0, p1);     // unit outward (x,z)
         const { tc, halfW, sill, openTop } = doorMetrics(length, e.base, e.top, grade);

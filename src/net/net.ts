@@ -29,16 +29,16 @@ import { boardFromSeed, isDefaultBoard, normalizeBoardConfig, type BoardConfig }
  *   → {t:"golf", k, d?|h?|p?|s?|r?}     golf events + cached state for late joins
  *   ← {t:"golf", id, ...}               relayed to everyone else (owner-simulated ball)
  *   → {t:"pickle", k:"claim"|"release", slot:0|1}  court-side ownership request
- *   ← {t:"pickle", k:"claim"|"release", slot, id, ok} server-arbitrated result
+ *   ← {t:"pickle", k:"claim"|"release", slot, id, ok, authority} arbitration result
  *   → {t:"pickle", k:"state", d:number[]}            authority's match snapshot
- *   ← {t:"pickle", k:"state", id, d}                 authority-stamped relay
+ *   ← {t:"pickle", k:"state", id, authority, d}      authority-stamped relay
  *   → {t:"pickle", k:"input", slot, d:number[]}      owned-side controls
- *   ← {t:"pickle", k:"input", slot, id, d}           targeted relay to authority
+ *   ← {t:"pickle", k:"input", slot, id, authority, d} targeted relay to authority
  *   ← welcome.pickle={slots:[id,id],authority,state:{id,d}|null} late-join cache
  *
- * Movement is client-authoritative by design: each browser runs its own
- * box3d world, so the server can only ever relay
- * poses. Fine for a co-op sandbox — there is nothing competitive to cheat at.
+ * Movement and minigame physics are client-authoritative by design. For
+ * pickleball only, the relay reserves two sides and selects one full-match
+ * authority (side 0's owner, otherwise side 1's) to prevent snapshot races.
  */
 
 /** Wire order for modes — index into this array is what goes over the socket. */
@@ -616,11 +616,16 @@ export class Net {
     this.#ws.send(JSON.stringify({ t: "pickle", k: "release", slot }));
   }
 
-  /**
-   * Publish a compact match snapshot for an owned side. The number-array
-   * layout belongs to the gameplay module; the transport only bounds it.
-   */
-  sendPickleballState(slot: PickleballSlot, state: readonly number[]) {
+  /** Publish a compact full-match snapshot when this client is authority. */
+  sendPickleballState(state: readonly number[]) {
+    if (this.#ws?.readyState !== WebSocket.OPEN || !this.selfId || this.pickleballAuthority !== this.selfId) return;
+    const d = pickleballNumbers(state, PICKLEBALL_STATE_MAX);
+    if (!d) return;
+    this.#ws.send(JSON.stringify({ t: "pickle", k: "state", d }));
+  }
+
+  /** Send compact controls for a side this client owns to match authority. */
+  sendPickleballInput(slot: PickleballSlot, input: readonly number[]) {
     if (
       !isPickleballSlot(slot) ||
       this.#ws?.readyState !== WebSocket.OPEN ||
@@ -628,17 +633,16 @@ export class Net {
       this.pickleballSlots[slot] !== this.selfId
     )
       return;
-    const d = pickleballState(state);
+    const d = pickleballNumbers(input, PICKLEBALL_INPUT_MAX);
     if (!d) return;
-    this.#ws.send(JSON.stringify({ t: "pickle", k: "state", slot, d }));
+    this.#ws.send(JSON.stringify({ t: "pickle", k: "input", slot, d }));
   }
 
-  /** Replay server-cached side snapshots after lazy gameplay initialization. */
+  /** Replay the server-cached match snapshot after lazy gameplay initialization. */
   replayPickleball() {
-    for (const [slot, state] of this.pickleballStates) {
-      if (this.pickleballSlots[slot] !== state.id) continue;
-      this.onPickleballState(slot, state.id, state.d.slice());
-    }
+    const state = this.pickleballState;
+    if (!state || state.id !== this.pickleballAuthority) return;
+    this.onPickleballState(state.id, state.d.slice());
   }
 
   /** Broadcast one chat line (server sanitizes + stamps name; no persistence). */

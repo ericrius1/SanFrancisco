@@ -27,9 +27,6 @@ export function dressInteriorShell(
   style: InteriorStyle,
   opening: FrontOpening | null,
 ): ShellDressing {
-  let cx = 0, cz = 0;
-  for (const [x, z] of poly) { cx += x; cz += z; }
-  cx /= Math.max(1, poly.length); cz /= Math.max(1, poly.length);
   const windowKeepouts: Rect[] = [];
   const top = floorY + Math.min(storeyH - 0.12, Math.max(WALL_H + 0.35, 3.05));
   const liningOff = 0.105;
@@ -40,9 +37,11 @@ export function dressInteriorShell(
     const ex = x1 - x0, ez = z1 - z0, L = Math.hypot(ex, ez);
     if (L < 0.5) continue;
     const ux = ex / L, uz = ez / L;
-    let nx = -uz, nz = ux;
-    const mx = (x0 + x1) / 2, mz = (z0 + z1) / 2;
-    if ((cx - mx) * nx + (cz - mz) * nz < 0) { nx = -nx; nz = -nz; }
+    // buildInterior supplies an ensureCCW ring. Its left-hand edge normal is
+    // therefore always inward—even for concave lots whose arithmetic vertex
+    // centroid can sit outside an edge half-plane. A centroid-side flip here used
+    // to push lining, windows and keepouts through the exterior on those homes.
+    const nx = -uz, nz = ux;
     const along: Vec3 = [ux, 0, uz], normal: Vec3 = [nx, 0, nz];
     const at = (t: number, y: number, off = liningOff): Vec3 => [x0 + ex * t + nx * off, y, z0 + ez * t + nz * off];
 

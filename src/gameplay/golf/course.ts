@@ -20,6 +20,7 @@ import { LIGHT_SCALE } from "../../config";
 import { bumpNormal } from "../../world/tslUtil";
 import type { WorldMap } from "../../world/heightmap";
 import { GolfCourse, type GolfPoly, type GolfSurface } from "./data";
+import { TEE_BEACON_TUNING } from "./tuning";
 
 type N = any;
 
@@ -264,12 +265,16 @@ export class GolfCourseView {
   #time: ReturnType<typeof uniform>;
   #activeTee: ReturnType<typeof uniform>;
   #flagTime: ReturnType<typeof uniform>;
+  #teeAlpha: ReturnType<typeof uniform>;
+  #teeFresnelPower: ReturnType<typeof uniform>;
 
   constructor(course: GolfCourse, _map: WorldMap, scene: THREE.Scene) {
     this.group.name = "golf-course";
     this.#time = uniform(0);
     this.#activeTee = uniform(-1);
     this.#flagTime = uniform(0);
+    this.#teeAlpha = uniform(TEE_BEACON_TUNING.values.alpha);
+    this.#teeFresnelPower = uniform(TEE_BEACON_TUNING.values.fresnelPower);
 
     const add = (name: string, geo: THREE.BufferGeometry, mat: THREE.Material) => {
       const mesh = new THREE.Mesh(geo, mat);
@@ -380,6 +385,8 @@ export class GolfCourseView {
     const seed = instancedBufferAttribute(seeds) as unknown as N;
     const t = this.#time as unknown as N;
     const active = this.#activeTee as unknown as N;
+    const alpha = this.#teeAlpha as unknown as N;
+    const fresnelPower = this.#teeFresnelPower as unknown as N;
     // active hole's tee burns much brighter; -1 = free-roam, everything simmers
     // at a clearly-visible base. WGSL smoothstep requires edge0 < edge1; invert a
     // legal step rather than relying on the undefined reversed-edge form.
@@ -392,8 +399,10 @@ export class GolfCourseView {
     curtainGeo.translate(0, 3.75, 0);
     const curtain = new THREE.MeshBasicNodeMaterial();
     const vfade = (uv().y as N).oneMinus().pow(1.6); // bright at the grass, gone at the top
-    const facing = (normalView as N).normalize().dot((positionViewDirection as N).normalize()).abs();
-    const fresnel = facing.oneMinus().pow(2.2).mul(0.85).add(0.15);
+    const facing = (normalView as N).normalize().dot((positionViewDirection as N).normalize()).abs().clamp(0, 1);
+    // Keep only a trace of face-on coverage. Most of the signal lives on the
+    // Fresnel rim, so the volume reads clearly without becoming a tinted wall.
+    const fresnel = facing.oneMinus().pow(fresnelPower).mul(0.94).add(0.06);
     const bands = mx_fractal_noise_float(
       vec3((uv().x as N).mul(9).add(seed.mul(3.7)), (uv().y as N).mul(2.4).sub(t.mul(0.35)), t.mul(0.13)),
       2
@@ -407,10 +416,19 @@ export class GolfCourseView {
     const auroraCol = mix(mix(hueA, hueB, huePhase), hueC, bands.mul(0.45));
     curtain.colorNode = auroraCol.mul(bands.mul(0.9).add(0.35)).mul(LIGHT_SCALE * 1.15);
     const pulse = t.mul(1.7).add(seed.mul(2.1)).sin().mul(0.12).add(0.9);
-    curtain.opacityNode = vfade.mul(fresnel).mul(bands.mul(0.6).add(0.4)).mul(pulse).mul(boost).mul(0.4);
-    curtain.transparent = true;
-    curtain.blending = THREE.AdditiveBlending;
-    curtain.depthWrite = false;
+    curtain.opacityNode = vfade
+      .mul(fresnel)
+      .mul(bands.mul(0.6).add(0.4))
+      .mul(pulse)
+      .mul(boost)
+      .mul(alpha)
+      .clamp(0, 1);
+    // Hashed coverage stays in the opaque pass and writes depth. Scene objects
+    // behind the near wall (especially the avatar) therefore show through the
+    // discarded holes instead of being flattened by an additive color wash.
+    curtain.alphaHash = true;
+    curtain.transparent = false;
+    curtain.depthWrite = true;
     curtain.side = THREE.DoubleSide;
     curtain.fog = true;
     const curtains = new THREE.InstancedMesh(curtainGeo, curtain, n);
@@ -437,14 +455,20 @@ export class GolfCourseView {
     beamGeo.translate(0, 15, 0);
     const beam = new THREE.MeshBasicNodeMaterial();
     const bFade = (uv().y as N).oneMinus().pow(1.5); // solid at the grass, feathering to nothing up high
-    const bFacing = (normalView as N).normalize().dot((positionViewDirection as N).normalize()).abs();
-    const bFres = bFacing.oneMinus().pow(1.6).mul(0.7).add(0.3);
+    const bFacing = (normalView as N).normalize().dot((positionViewDirection as N).normalize()).abs().clamp(0, 1);
+    const bFres = bFacing.oneMinus().pow(fresnelPower).mul(0.94).add(0.06);
     const bPulse = t.mul(2.3).add(seed.mul(1.1)).sin().mul(0.18).add(0.82);
     beam.colorNode = mix(vec3(0.55, 1.0, 0.72), vec3(0.6, 0.8, 1.0), (uv().y as N)).mul(LIGHT_SCALE * 1.5);
-    beam.opacityNode = bFade.mul(bFres).mul(bPulse).mul(isActive).mul(0.32); // isActive gate → only the current tee
-    beam.transparent = true;
-    beam.blending = THREE.AdditiveBlending;
-    beam.depthWrite = false;
+    beam.opacityNode = bFade
+      .mul(bFres)
+      .mul(bPulse)
+      .mul(isActive)
+      .mul(alpha)
+      .mul(0.8)
+      .clamp(0, 1); // isActive gate → only the current tee
+    beam.alphaHash = true;
+    beam.transparent = false;
+    beam.depthWrite = true;
     beam.side = THREE.DoubleSide;
     beam.fog = true;
     const beams = new THREE.InstancedMesh(beamGeo, beam, n);
@@ -471,5 +495,7 @@ export class GolfCourseView {
   update(_dt: number, elapsed: number) {
     this.#time.value = elapsed;
     this.#flagTime.value = elapsed;
+    this.#teeAlpha.value = TEE_BEACON_TUNING.values.alpha;
+    this.#teeFresnelPower.value = TEE_BEACON_TUNING.values.fresnelPower;
   }
 }

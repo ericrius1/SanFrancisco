@@ -649,6 +649,7 @@ async function verifyDistrict(cdp, district) {
 
   const blockedWalk = await walkDrive(cdp, await startFor(cdp, door), door, 0.8, 180);
   addCheck(checks, "real walk is blocked by the closed door", !blockedWalk.reached && blockedWalk.depth <= -0.15, blockedWalk);
+  addCheck(checks, "closed-door approach does not enter camera mode or build an interior", !blockedWalk.inside && blockedWalk.interiors === 0, blockedWalk);
 
   await placeAtDoor(cdp, door, -1.5);
   const nearestBeforeKey = await evaluate(cdp, `(()=>{const d=${doorJson(door)},n=window.__sf.citygenRing.current.nearestDoor(window.__sf.player.position);return n?{id:n.id,dist:n.dist,same:Math.hypot(n.x-d.center[0],n.z-d.center[2])<0.05}:null;})()`);

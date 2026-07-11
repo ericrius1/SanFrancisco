@@ -28,6 +28,8 @@ export type CragSpec = {
   height: number;
   beds: number;
   seed: number;
+  /** Across-strike girth multiplier (>1 = beefier blade). Default 1. */
+  girth?: number;
   /** Force one central bed to keep a level, sittable top (cinematic perch). */
   flatTop?: boolean;
   /** Skip physics/query registration (purely decorative fragments). */
@@ -42,8 +44,8 @@ export const SUMMIT_PLATFORM = { x: 412, z: 2760, rx: 16, rz: 12 } as const;
  * southwest. All positions were checked against CORONA_TRAILS for clearance. */
 export const SUMMIT_CRAGS: readonly CragSpec[] = [
   { x: 412, z: 2748, yaw: -0.52, length: 7.4, height: 4.3, beds: 9, seed: 101, flatTop: true },
-  { x: 403.5, z: 2740.5, yaw: -0.62, length: 5.2, height: 3.1, beds: 7, seed: 102 },
-  { x: 432, z: 2764, yaw: 0.92, length: 5.4, height: 2.6, beds: 6, seed: 103 },
+  { x: 403.5, z: 2740.5, yaw: -0.62, length: 5.2, height: 3.1, beds: 7, seed: 102, girth: 1.3 },
+  { x: 432, z: 2764, yaw: 0.92, length: 5.4, height: 2.6, beds: 6, seed: 103, girth: 1.15 },
   { x: 396, z: 2769, yaw: -0.74, length: 4.4, height: 2.1, beds: 5, seed: 104 },
   // Sittable perch blocks on the platform's south rim, facing downtown.
   { x: 405.5, z: 2765.5, yaw: -0.4, length: 3.1, height: 0.75, beds: 4, seed: 105, flatTop: true, decorative: true },
@@ -165,8 +167,11 @@ function appendCrag(map: WorldMap, spec: CragSpec, positions: number[], colors: 
   // Cumulative bed offsets along the bed normal, centred on the spec origin.
   const thick: number[] = [];
   let total = 0;
+  // Girth tracks height as well as length so tall fins get a proportionate
+  // blade instead of reading as thin wafers from the side.
+  const girth = (spec.girth ?? 1) * (1.15 + 0.28 * Math.min(1, spec.height / 4));
   for (let k = 0; k < K; k++) {
-    const t = (0.26 + hash(s, 11, k) * 0.34) * Math.min(1, spec.length / 5);
+    const t = (0.26 + hash(s, 11, k) * 0.34) * Math.min(1, spec.length / 5) * girth;
     thick.push(t);
     total += t;
   }

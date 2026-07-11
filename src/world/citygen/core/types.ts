@@ -23,6 +23,10 @@ export interface BuildingSpec {
    *  streaming host supplies this after rejecting party-wall-facing candidates;
    *  pure/offline callers omit it and retain the longest-edge fallback. */
   streetEdge?: number;
+  /** False when every otherwise-eligible entrance edge opens immediately into a
+   *  neighbouring footprint. The building remains a solid decorated shell; no
+   *  fake operable door or collider gap is authored. */
+  doorAllowed?: boolean;
   /** world Y where the walls meet the ground (= LOWEST ground under the footprint;
    *  buildings dig into hills, so the wall skirt runs below grade on the uphill side) */
   base: number;

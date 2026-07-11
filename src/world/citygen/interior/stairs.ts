@@ -6,7 +6,7 @@
 // the two lanes sit side by side across it (up one, turn on the landing, up the other).
 import type { ColliderBox } from "../core/types";
 import { PanelBuilder, type Vec3 } from "../core/facade";
-import { addBox, CIRCULATION_W, FLOOR_H, containsRect, overlaps, rectAround, type Rect, rectW, rectD } from "./common";
+import { addBox, CIRCULATION_W, FLOOR_H, containsRect, rectAround, type Rect, rectW, rectD } from "./common";
 import type { Axis } from "./rooms";
 
 const N = 9;            // steps per flight → 18 per storey → rise 3.4/18 ≈ 0.189 m
@@ -38,10 +38,10 @@ export function stairFits(cell: Rect): boolean {
 }
 
 /** anchor the stair in a corner of `cell`, flights along the cell's long axis.
- *  `avoid` (the entrance keep-clear zone) rejects corners whose stair footprint
- *  would sit in front of the front door — first clear corner wins (fallback:
- *  the original first corner, so legacy layouts are unchanged when clear). */
-export function planStair(cell: Rect, avoid?: Rect | null): StairPlan {
+ *  `avoid` reserves both the broad threshold and deeper entry vista. A clear
+ *  corner wins; if a very small room offers none, choose the least-overlapping
+ *  candidate instead of blindly putting the first flight in front of the door. */
+export function planStair(cell: Rect, avoid?: Rect | readonly Rect[] | null): StairPlan {
   const runAxis: Axis = rectW(cell) >= rectD(cell) ? "x" : "z";
   const m = 0.25; // keep off the walls
   const [aw, cw] = runAxis === "x" ? [STAIR_ALONG, STAIR_CROSS] : [STAIR_CROSS, STAIR_ALONG];
@@ -62,7 +62,17 @@ export function planStair(cell: Rect, avoid?: Rect | null): StairPlan {
       : rectAround(point[0], point[1], STAIR_CROSS, CIRCULATION_W);
     if (containsRect(cell, region) && containsRect(cell, approach)) candidates.push({ region, approach, point });
   }
-  const picked = candidates.find((c) => !avoid || (!overlaps(c.region, avoid) && !overlaps(c.approach, avoid))) ?? candidates[0];
+  const avoids: readonly Rect[] = !avoid ? [] : Array.isArray(avoid) ? avoid : [avoid as Rect];
+  const overlapArea = (a: Rect, b: Rect): number => Math.max(0, Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0))
+    * Math.max(0, Math.min(a.z1, b.z1) - Math.max(a.z0, b.z0));
+  const penalty = (c: { region: Rect; approach: Rect }) => avoids.reduce(
+    (sum, a) => sum + overlapArea(c.region, a) * 2 + overlapArea(c.approach, a), 0,
+  );
+  let picked = candidates[0], pickedPenalty = picked ? penalty(picked) : Infinity;
+  for (let i = 1; i < candidates.length; i++) {
+    const p = penalty(candidates[i]);
+    if (p < pickedPenalty) { picked = candidates[i]; pickedPenalty = p; }
+  }
   // stairFits guarantees at least one candidate; retain a defensive centred fallback
   // for direct callers that skip it.
   const fallbackRegion: Rect = {

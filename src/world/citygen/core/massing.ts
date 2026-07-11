@@ -47,7 +47,7 @@ export function massBuilding(spec: BuildingSpec, arch: ArchetypeSpec, decorate: 
     const normal = edgeOutwardNormal(p0, p1);
     const edge: FacadeEdge = {
       p0, p1, base, top, grade, frontGround: spec.frontGround, floors, along, normal, length,
-      isStreet: i === streetI, arch,
+      isStreet: i === streetI, doorAllowed: spec.doorAllowed, arch,
     };
     // Seed salt per edge so each face varies but stays deterministic.
     decorate(edge, out, edgeRng(spec.seed, i));

@@ -43,6 +43,8 @@ export function doorMetrics(len: number, base: number, top: number, grade: numbe
  *  and the collider builds a matching literal per polygon edge. */
 export interface DoorEdge {
   isStreet: boolean;
+  /** Host-resolved party-wall veto; omitted means allowed. */
+  doorAllowed?: boolean;
   length: number;
   base: number;
   top: number;
@@ -58,7 +60,7 @@ export interface DoorEdge {
  *  essentially every real multi-storey building; only one buried within ~2 m of
  *  its own roofline stays a solid skirt.) */
 export function doorEligible(e: DoorEdge): boolean {
-  if (!e.isStreet || e.length <= 2.2) return false;
+  if (!e.isStreet || e.doorAllowed === false || e.length <= 2.2) return false;
   const { sill, openTop } = doorMetrics(e.length, e.base, e.top, e.grade ?? e.base);
   return openTop - sill >= 1.8;
 }
@@ -164,7 +166,7 @@ export function stoopColliders(spec: BuildingSpec, frontGround: number | undefin
   const p1 = poly[(streetI + 1) % poly.length];
   const dx = p1[0] - p0[0], dz = p1[1] - p0[1];
   const len = Math.hypot(dx, dz);
-  if (!doorEligible({ isStreet: true, length: len, base: spec.base, top: spec.top, grade: spec.grade })) return [];
+  if (!doorEligible({ isStreet: true, doorAllowed: spec.doorAllowed, length: len, base: spec.base, top: spec.top, grade: spec.grade })) return [];
   const { tc, halfW, sill } = doorMetrics(len, spec.base, spec.top, spec.grade ?? spec.base);
   const ux = dx / len, uz = dz / len;
   const d = tc * len;
@@ -197,7 +199,7 @@ export function buildingColliders(spec: BuildingSpec, withDoor = false, frontGro
     const yaw = Math.atan2(dz, dx);
     const ux = dx / len, uz = dz / len; // unit along edge
 
-    if (doorEligible({ isStreet: i === streetI, length: len, base, top, grade: spec.grade })) {
+    if (doorEligible({ isStreet: i === streetI, doorAllowed: spec.doorAllowed, length: len, base, top, grade: spec.grade })) {
       // doorway split: door centred (offset for wide lots), clear sill→openTop, with
       // a lintel above and a solid foundation skirt below.
       const { tc, halfW, sill, openTop } = doorMetrics(len, base, top, spec.grade ?? base);

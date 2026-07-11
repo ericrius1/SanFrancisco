@@ -143,10 +143,12 @@ export function buildInterior(spec: BuildingSpec, zone: InteriorZone = "resident
   {
     const s0L = poly[si], s1L = poly[(si + 1) % poly.length];
     const eLen = Math.hypot(s1L[0] - s0L[0], s1L[1] - s0L[1]);
-    if (eLen > 2.2) {
+    if (spec.doorAllowed !== false && eLen > 2.2) {
       const { tc, halfW, sill, openTop } = doorMetrics(eLen, spec.base, spec.top, spec.grade ?? spec.base);
       const dX = s0L[0] + (s1L[0] - s0L[0]) * tc, dZ = s0L[1] + (s1L[1] - s0L[1]) * tc;
-      const inZ = ctrZ > dZ ? 1 : -1;            // toward the lot interior (edge is x-aligned)
+      // The local street edge is x-aligned and the ring is CCW, so its left
+      // normal—not the possibly-outside vertex centroid—defines the lot interior.
+      const inZ = (s1L[0] - s0L[0]) / eLen >= 0 ? 1 : -1;
       const hw = Math.max(0.9, halfW + 0.6), depth = 2.4;
       doorClear = { x0: dX - hw, x1: dX + hw, z0: Math.min(dZ, dZ + inZ * depth), z1: Math.max(dZ, dZ + inZ * depth) };
       const vistaHalf = 0.68, vistaDepth = 7.0;
@@ -180,7 +182,10 @@ export function buildInterior(spec: BuildingSpec, zone: InteriorZone = "resident
       entryRoom = planCirculation(rooms, portals, entry, null).entryRoom;
       stairIdx = 0;
     }
-    if (stairFits(rooms[stairIdx])) stair = planStair(rooms[stairIdx], doorClear);
+    if (stairFits(rooms[stairIdx])) stair = planStair(
+      rooms[stairIdx],
+      [doorClear, entryVista].filter((r): r is Rect => r !== null),
+    );
   }
   // Never advertise unreachable upper storeys on the very rare footprint that
   // cannot hold the compact stair plus its 1.2 m landing.

@@ -33,6 +33,8 @@ export interface FacadeEdge {
   length: number;
   /** true = this face fronts the street (gets the full treatment) */
   isStreet: boolean;
+  /** false when the resolved face is still a party wall and must stay solid. */
+  doorAllowed?: boolean;
   /** the archetype spec (material ids, floorH, grammar params) for this building */
   arch: ArchetypeSpec;
 }
