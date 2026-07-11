@@ -8,6 +8,11 @@ import {
 } from "./physics";
 import { PickleballPlayerRig } from "./playerRig";
 import {
+  applyBallGlow,
+  PICKLE_BALL_COLOR,
+  prepareBallGlowMaterial
+} from "../../fx/ballGlow";
+import {
   otherSide,
   type PickleballController,
   type PickleballDiagnostics,
@@ -122,10 +127,11 @@ export class PickleballGame {
 
     this.#ballGeometry = new THREE.SphereGeometry(C.ballRadius, 14, 10);
     this.#ballMaterial = new THREE.MeshStandardNodeMaterial({
-      color: 0xd8ef3c,
+      color: PICKLE_BALL_COLOR,
       roughness: 0.72,
       metalness: 0
     });
+    prepareBallGlowMaterial(this.#ballMaterial, PICKLE_BALL_COLOR);
     this.#ballMesh = new THREE.Mesh(this.#ballGeometry, this.#ballMaterial);
     this.#ballMesh.name = "pickleball-ball";
     this.#ballMesh.castShadow = true;
@@ -716,6 +722,7 @@ export class PickleballGame {
       this.#ballMesh.rotation.y += this.ballPhysics.angularVelocity.y * dt;
       this.#ballMesh.rotation.z += this.ballPhysics.angularVelocity.z * dt;
     }
+    applyBallGlow(this.#ballMaterial, this.ballPhysics.active ? undefined : 0);
   }
 
   #localPose(side: PickleballSide): PickleballLocalPose {

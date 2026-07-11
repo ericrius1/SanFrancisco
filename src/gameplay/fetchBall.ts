@@ -25,13 +25,11 @@ import { dogParkFenceSegments } from "../world/coronaHeights/dogParkFence";
 import {
   applyBallGlow,
   BALL_GLOW_NIGHT,
-  createBallGlowLight,
   prepareBallGlowMaterial,
   TENNIS_BALL_COLOR
 } from "../fx/ballGlow";
 
 const BALL_R = 0.16; // matches the park's tennis ball
-const FREE_BALL_GLOW_LIGHTS = 4; // fixed pool — never add/remove lights at runtime
 const DOG_SURFACE_LIFT = 0.04; // woodchip lift inside the park; 0 on open terrain
 const FENCE_TOP_LIFT = 1.55; // fence height added over ground for the rebound cap
 const THROW_SPEED_MIN = 7; // m/s at a tap
@@ -118,7 +116,6 @@ export class FetchBall {
 
   #spinAxis = new THREE.Vector3();
   #tmp = new THREE.Vector3();
-  #glowLights: THREE.PointLight[] = [];
 
   constructor(deps: FetchBallDeps) {
     this.#deps = deps;
@@ -137,13 +134,6 @@ export class FetchBall {
     const groundTop = (x: number, z: number) => deps.map.groundTop(x, z);
     this.#ctxPark = { groundTop, lift: DOG_SURFACE_LIFT, radius: BALL_R, segs, segTop, fenceTopMax };
     this.#ctxOpen = { groundTop, lift: 0, radius: BALL_R };
-
-    // Fixed glow lights for free balls (scene light count must stay stable).
-    for (let i = 0; i < FREE_BALL_GLOW_LIGHTS; i++) {
-      const light = createBallGlowLight(`player-tennis-ball-glow-${i + 1}`);
-      deps.scene.add(light);
-      this.#glowLights.push(light);
-    }
   }
 
   setActive(active: boolean): void {
@@ -298,31 +288,13 @@ export class FetchBall {
   dispose(): void {
     for (const ball of this.#free) this.#disposeBall(ball);
     this.#free.length = 0;
-    for (const light of this.#glowLights) {
-      light.intensity = 0;
-      light.removeFromParent();
-    }
-    this.#glowLights.length = 0;
   }
 
   /* -------------------------------------------------------------- internals */
 
   #syncGlow(): void {
     const night = BALL_GLOW_NIGHT.value;
-    for (let i = 0; i < this.#glowLights.length; i++) {
-      const light = this.#glowLights[i];
-      const ball = this.#free[i];
-      if (!ball || night < 0.001) {
-        light.intensity = 0;
-        if (ball) applyBallGlow(ball.material, null, night);
-        continue;
-      }
-      light.position.copy(ball.mesh.position);
-      applyBallGlow(ball.material, light, night);
-    }
-    for (let i = this.#glowLights.length; i < this.#free.length; i++) {
-      applyBallGlow(this.#free[i].material, null, night);
-    }
+    for (const ball of this.#free) applyBallGlow(ball.material, night);
   }
 
   #advanceRelease(dt: number): void {

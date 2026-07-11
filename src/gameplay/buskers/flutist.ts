@@ -7,7 +7,7 @@ import { midiHz, NoteCursor, type MusicianBuilder, type NoteEvent, type TrioCloc
 /**
  * The flutist — viewer's RIGHT seat. Hood up, eyes down, lost in it.
  *
- * A graphite-hoodied figure (the only hooded one of the trio, brown fringe
+ * A deep-navy alpaca-knit figure (the only hooded one of the trio, brown fringe
  * peeking out) with a raised hood built from boxes parented to the head, a
  * reddish cedar Native American flute (end-blown, carved bird block + buckskin
  * tie) held out front-and-down, and legs dangling over the edge. His part
@@ -91,9 +91,16 @@ function set(g: THREE.Group, x: number, y: number, z: number) {
 /* --------------------------------------------------------------- builder */
 
 export const buildFlutist: MusicianBuilder = (audio, part) => {
-  // graphite hoodie / teal accent, hood built by hand below (hat "none" so
-  // a fringe peeks out under the hood shell)
+  // A deep-navy alpaca-knit hooded sweater. The hood remains hand-built below
+  // (hat "none" lets a fringe peek through), while restrained Andean bands are
+  // added as raised voxel-knit details on the chest and animated sleeves.
   const rig = buildRig({ skin: 2, hair: "short", hat: "none", outfit: "hoodie", color: 5, accent: 7 });
+  rig.avatar.materials.jacket.color.set(0x27323c);
+  rig.avatar.materials.sleeve.color.set(0x2d3842);
+  rig.avatar.materials.shirt.color.set(0xd7c6a3);
+  rig.avatar.materials.trim.color.set(0x27323c);
+  rig.avatar.torsoBlock.scale.set(1.04, 1.02, 1.04);
+  for (const sleeve of rig.avatar.armBlocks) sleeve.scale.set(1.055, 1, 1.055);
   // lighter warm brown so it still reads brown in the hood's shadow (the
   // darker 0x63431e looked black next to the graphite shell)
   rig.avatar.materials.hair.color.set(0x9a6430);
@@ -105,9 +112,9 @@ export const buildFlutist: MusicianBuilder = (audio, part) => {
   group.name = "busker-flutist";
   group.add(rig.group);
 
-  // the hoodie outfit ships a hood-down bump on the back of the neck; his
-  // hood is UP, so hide it (first mesh pushed to outfits.hoodie in rig.ts)
-  rig.avatar.outfits.hoodie[0].visible = false;
+  // Hide the stock hood-down bump, pocket and chest stripe; the raised hood and
+  // woven sweater detailing below replace all three.
+  for (const detail of rig.avatar.outfits.hoodie) detail.visible = false;
 
   const ownGeos: THREE.BufferGeometry[] = [];
   const ownMats: THREE.Material[] = [];
@@ -123,6 +130,53 @@ export const buildFlutist: MusicianBuilder = (audio, part) => {
     parent.add(m);
     return m;
   };
+
+  /* ---- alpaca knit: restrained cream/rust/teal stepped geometry ---- */
+  const knitCream = new THREE.MeshLambertMaterial({ color: 0xd7c6a3 });
+  const knitRust = new THREE.MeshLambertMaterial({ color: 0x985039 });
+  const knitTeal = new THREE.MeshLambertMaterial({ color: 0x416b66 });
+  const knitDark = new THREE.MeshLambertMaterial({ color: 0x1c252d });
+  ownMats.push(knitCream, knitRust, knitTeal, knitDark);
+
+  const torsoBand = geo(0.435, 0.024, 0.026);
+  mesh(rig.torso, torsoBand, knitCream, 0, 0.358, -0.143);
+  mesh(rig.torso, torsoBand, knitRust, 0, 0.322, -0.144);
+  mesh(rig.torso, torsoBand, knitTeal, 0, 0.154, -0.144);
+  mesh(rig.torso, torsoBand, knitCream, 0, 0.118, -0.143);
+
+  // Five compact stepped diamonds form the woven central motif. Alternating
+  // rust and teal centers keep it lively without turning rainbow-bright.
+  const motifBar = geo(0.044, 0.022, 0.028);
+  const motifCap = geo(0.024, 0.02, 0.028);
+  const motifCenter = geo(0.018, 0.014, 0.03);
+  for (let i = 0; i < 5; i++) {
+    const x = -0.17 + i * 0.085;
+    const accent = i % 2 === 0 ? knitRust : knitTeal;
+    mesh(rig.torso, motifBar, knitCream, x, 0.238, -0.144);
+    mesh(rig.torso, motifCap, knitCream, x, 0.267, -0.144);
+    mesh(rig.torso, motifCap, knitCream, x, 0.209, -0.144);
+    mesh(rig.torso, motifCenter, accent, x, 0.238, -0.16);
+  }
+
+  // Pattern wraps ride on the limb pivots, so the sweater stays continuous
+  // through every flute grip and lap-to-lips transition. Dark cuffs frame the
+  // exposed wrists exactly where the base sleeve ends.
+  const upperCream = geo(0.138, 0.036, 0.159);
+  const upperAccent = geo(0.138, 0.022, 0.159);
+  const foreCream = geo(0.117, 0.03, 0.138);
+  const foreAccent = geo(0.117, 0.02, 0.138);
+  const cuff = geo(0.119, 0.048, 0.141);
+  for (const arm of [rig.armL, rig.armR]) {
+    mesh(arm, upperCream, knitCream, 0, -0.105, 0);
+    mesh(arm, upperAccent, knitRust, 0, -0.155, 0);
+    mesh(arm, upperAccent, knitTeal, 0, -0.195, 0);
+  }
+  for (const fore of [rig.foreL, rig.foreR]) {
+    mesh(fore, foreCream, knitCream, 0, -0.045, 0);
+    mesh(fore, foreAccent, knitRust, 0, -0.082, 0);
+    mesh(fore, foreAccent, knitTeal, 0, -0.112, 0);
+    mesh(fore, cuff, knitDark, 0, -0.148, 0);
+  }
 
   /* ---- raised hood (children of rig.head so it turns with him) ---- */
   const hoodMat = rig.avatar.materials.jacket.clone();

@@ -25,7 +25,6 @@ import { WalkController, WALK_TUNING } from "./walk";
 import { LightPool } from "./lightPool";
 import {
   applyBallGlow,
-  createBallGlowLight,
   prepareBallGlowMaterial,
   TENNIS_BALL_COLOR
 } from "../fx/ballGlow";
@@ -124,7 +123,6 @@ export class Player {
   // re-shows every walk mesh on a mode return, so #ballHeld is the true owner).
   #ballProp: THREE.Mesh;
   #ballMaterial: THREE.MeshStandardMaterial;
-  #ballGlow: THREE.PointLight;
   #ballHeld = false;
   #throwT = 0; // 0 = idle; >0 drives an additive windup→release arm swing
   #riderRig: Rig;
@@ -179,10 +177,9 @@ export class Player {
     this.#clubPivot.add(this.#golfClub);
     // tennis ball nestled in the right mitt — rides the animated hand exactly, so
     // a throw launches it from wherever the hand is (no per-frame position math).
-    this.#ballProp = new THREE.Mesh(
-      new THREE.SphereGeometry(0.11, 12, 10),
-      new THREE.MeshLambertMaterial({ color: 0xb9ef31 })
-    );
+    this.#ballMaterial = new THREE.MeshStandardMaterial({ color: TENNIS_BALL_COLOR, roughness: 0.62 });
+    prepareBallGlowMaterial(this.#ballMaterial);
+    this.#ballProp = new THREE.Mesh(new THREE.SphereGeometry(0.11, 12, 10), this.#ballMaterial);
     this.#ballProp.position.set(0, -0.02, -0.05); // cupped in the curled fingers
     this.#ballProp.visible = false;
     this.#walkRig.handR.add(this.#ballProp);
@@ -689,6 +686,7 @@ export class Player {
   /** Per-frame character animation: pose whichever rig is embodied right now. */
   #animate(dt: number) {
     this.#animT += dt;
+    if (this.mode !== "walk") applyBallGlow(this.#ballMaterial, 0);
     if (this.mode === "walk") {
       const r = this.#walkRig;
       const walk = this.#modes.walk;
@@ -711,6 +709,7 @@ export class Player {
       setRigClasp(r, "L", golfing ? 1 : 0);
       setRigClasp(r, "R", golfing || this.#ballHeld ? 1 : 0);
       this.#ballProp.visible = this.#ballHeld;
+      applyBallGlow(this.#ballMaterial, this.#ballHeld ? undefined : 0);
       if (golfing) {
         poseGolf(r, this.#golfPose.swing);
       } else if (walk.swimming) {

@@ -63,7 +63,7 @@ export const RENDER_TUNING = tunables("render", {
  * narrow white edge fade over only the final 12% of the streamed radius, so
  * geometry culls invisibly without turning the whole middle distance into a wall.
  */
-export const DRAW_BASELINE = 33333
+export const DRAW_BASELINE = 77777
 
 /** Draw distance + fog, bound in the "/" panel. `radius` is the MASTER draw
  * distance: one top-level slider drives the tile streaming radii, rescales the
@@ -73,7 +73,7 @@ export const WORLD_TUNING = tunables("world", {
   radius: {
     v: DRAW_BASELINE,
     min: 50,
-    max: 77000,
+    max: 222000,
     step: 100,
     label: "draw distance (m)"
   },

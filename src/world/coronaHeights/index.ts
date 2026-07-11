@@ -8,7 +8,6 @@ import { stepBall, type BallSimCtx, type BallSimState } from "./ballSim";
 import { dogParkFenceSegments, makeDogParkFence, type FenceSegment2D } from "./dogParkFence";
 import {
   applyBallGlow,
-  createBallGlowLight,
   prepareBallGlowMaterial,
   TENNIS_BALL_COLOR
 } from "../../fx/ballGlow";
@@ -830,7 +829,7 @@ function makeBench(map: WorldMap, x: number, z: number, yaw: number, lift = 0) {
   return group;
 }
 
-/** Solar-punk dog-park face: sunburst + running dog mark, soft brass type. */
+/** Solar-punk dog-park face: big type, small dog badge in the corner. */
 function dogParkSignTexture() {
   const canvas = document.createElement("canvas");
   canvas.width = 1024;
@@ -897,104 +896,90 @@ function dogParkSignTexture() {
   corner(56, H - 56, 1, -1);
   corner(W - 56, H - 56, -1, -1);
 
-  // Sunburst behind the dog.
-  const cx = W * 0.5;
-  const cy = H * 0.46;
-  const sun = ctx.createRadialGradient(cx, cy, 10, cx, cy, 210);
-  sun.addColorStop(0, "rgba(232, 196, 96, 0.55)");
-  sun.addColorStop(0.35, "rgba(201, 151, 63, 0.28)");
+  // Small sunburst + dog badge, tucked lower-right so type owns the face.
+  const badgeX = W * 0.78;
+  const badgeY = H * 0.62;
+  const badgeScale = 0.38;
+  ctx.save();
+  ctx.translate(badgeX, badgeY);
+  ctx.scale(badgeScale, badgeScale);
+  const sun = ctx.createRadialGradient(0, 0, 8, 0, 0, 160);
+  sun.addColorStop(0, "rgba(232, 196, 96, 0.6)");
+  sun.addColorStop(0.4, "rgba(201, 151, 63, 0.28)");
   sun.addColorStop(1, "rgba(61, 148, 131, 0)");
   ctx.fillStyle = sun;
   ctx.beginPath();
-  ctx.arc(cx, cy, 210, 0, Math.PI * 2);
+  ctx.arc(0, 0, 160, 0, Math.PI * 2);
   ctx.fill();
-
-  ctx.save();
-  ctx.translate(cx, cy);
-  ctx.strokeStyle = "rgba(201, 151, 63, 0.45)";
-  ctx.lineWidth = 3;
-  for (let i = 0; i < 16; i++) {
-    const a = (i / 16) * Math.PI * 2;
+  ctx.strokeStyle = "rgba(201, 151, 63, 0.5)";
+  ctx.lineWidth = 4;
+  for (let i = 0; i < 12; i++) {
+    const a = (i / 12) * Math.PI * 2;
     ctx.beginPath();
-    ctx.moveTo(Math.cos(a) * 72, Math.sin(a) * 72);
-    ctx.lineTo(Math.cos(a) * 168, Math.sin(a) * 168);
+    ctx.moveTo(Math.cos(a) * 52, Math.sin(a) * 52);
+    ctx.lineTo(Math.cos(a) * 128, Math.sin(a) * 128);
     ctx.stroke();
   }
   ctx.fillStyle = "#e0b85a";
   ctx.beginPath();
-  ctx.arc(0, 0, 58, 0, Math.PI * 2);
+  ctx.arc(0, 0, 44, 0, Math.PI * 2);
   ctx.fill();
   ctx.fillStyle = "#f0d48a";
   ctx.beginPath();
-  ctx.arc(-10, -10, 22, 0, Math.PI * 2);
+  ctx.arc(-8, -8, 16, 0, Math.PI * 2);
   ctx.fill();
-  ctx.restore();
 
-  // Running dog silhouette (facing right), soft ivory — not pure white so bloom stays tame.
-  ctx.save();
-  ctx.translate(cx - 10, cy + 18);
+  ctx.translate(-8, 12);
   ctx.fillStyle = "#d4c9a8";
   ctx.beginPath();
-  // torso
-  ctx.moveTo(-90, -8);
-  ctx.bezierCurveTo(-70, -48, 20, -52, 70, -18);
-  ctx.bezierCurveTo(95, -4, 88, 28, 55, 32);
-  ctx.bezierCurveTo(20, 38, -40, 36, -78, 18);
-  ctx.bezierCurveTo(-100, 8, -105, 8, -90, -8);
+  ctx.moveTo(-70, -6);
+  ctx.bezierCurveTo(-55, -38, 15, -42, 55, -14);
+  ctx.bezierCurveTo(75, -2, 70, 22, 42, 26);
+  ctx.bezierCurveTo(15, 30, -30, 28, -60, 14);
+  ctx.bezierCurveTo(-78, 6, -82, 6, -70, -6);
   ctx.closePath();
   ctx.fill();
-  // head + snout
   ctx.beginPath();
-  ctx.moveTo(55, -28);
-  ctx.bezierCurveTo(70, -55, 110, -48, 128, -22);
-  ctx.bezierCurveTo(138, -8, 132, 6, 112, 8);
-  ctx.bezierCurveTo(95, 10, 78, 2, 68, -8);
+  ctx.moveTo(42, -22);
+  ctx.bezierCurveTo(54, -44, 86, -38, 100, -16);
+  ctx.bezierCurveTo(108, -4, 102, 6, 86, 8);
+  ctx.bezierCurveTo(72, 10, 58, 2, 50, -6);
   ctx.closePath();
   ctx.fill();
-  // ear
   ctx.beginPath();
-  ctx.moveTo(72, -42);
-  ctx.quadraticCurveTo(58, -78, 48, -44);
-  ctx.quadraticCurveTo(58, -38, 72, -42);
+  ctx.moveTo(56, -34);
+  ctx.quadraticCurveTo(44, -62, 36, -36);
+  ctx.quadraticCurveTo(44, -30, 56, -34);
   ctx.closePath();
   ctx.fill();
-  // legs
-  ctx.fillRect(-62, 22, 16, 48);
-  ctx.fillRect(-28, 26, 15, 46);
-  ctx.fillRect(8, 24, 15, 48);
-  ctx.fillRect(38, 20, 14, 50);
-  // paws
-  for (const px of [-62, -28, 8, 38]) {
-    ctx.beginPath();
-    ctx.ellipse(px + 8, 72, 12, 6, 0, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  // tail arc
-  ctx.lineWidth = 14;
+  ctx.fillRect(-48, 18, 12, 38);
+  ctx.fillRect(-22, 20, 11, 36);
+  ctx.fillRect(6, 18, 11, 38);
+  ctx.fillRect(30, 16, 11, 40);
+  ctx.lineWidth = 11;
   ctx.lineCap = "round";
   ctx.strokeStyle = "#d4c9a8";
   ctx.beginPath();
-  ctx.moveTo(-88, -6);
-  ctx.quadraticCurveTo(-130, -40, -118, -78);
+  ctx.moveTo(-68, -4);
+  ctx.quadraticCurveTo(-100, -30, -92, -60);
   ctx.stroke();
-  // collar gem (verdigris)
   ctx.fillStyle = "#3d9483";
   ctx.beginPath();
-  ctx.arc(78, -6, 7, 0, Math.PI * 2);
+  ctx.arc(60, -4, 6, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
 
-  // Title band — secondary to the mark.
-  ctx.fillStyle = "#c9b88a";
+  // Type-forward layout — title owns the board.
   ctx.textAlign = "center";
-  ctx.font = "700 42px system-ui, sans-serif";
-  ctx.fillText("CORONA HEIGHTS", W / 2, 108);
-  ctx.fillStyle = "#3d9483";
-  ctx.font = "600 28px system-ui, sans-serif";
-  ctx.fillText("DOG PLAY AREA", W / 2, H - 78);
-  ctx.fillStyle = "#a8956e";
-  ctx.font = "500 22px system-ui, sans-serif";
-  ctx.fillText("OFF-LEASH  ·  5 AM–MIDNIGHT", W / 2, H - 46);
+  ctx.fillStyle = "#e0d2a4";
+  ctx.font = "700 92px system-ui, sans-serif";
+  ctx.fillText("CORONA HEIGHTS", W / 2, 210);
+  ctx.fillStyle = "#5eb8a6";
+  ctx.font = "650 58px system-ui, sans-serif";
+  ctx.fillText("DOG PLAY AREA", W / 2, 300);
+  ctx.fillStyle = "#b8a67a";
+  ctx.font = "500 32px system-ui, sans-serif";
+  ctx.fillText("OFF-LEASH  ·  5 AM–MIDNIGHT", W * 0.42, H - 72);
 
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
@@ -1430,7 +1415,6 @@ export class CoronaHeightsPark {
   #map: WorldMap;
   #ball: THREE.Mesh;
   #ballMaterial: THREE.MeshStandardMaterial;
-  #ballGlow: THREE.PointLight;
   #frisbee: THREE.Mesh;
   #mouth = new THREE.Vector3();
   #propTarget = new THREE.Vector3();
@@ -1515,8 +1499,6 @@ export class CoronaHeightsPark {
     this.#ball = new THREE.Mesh(new THREE.SphereGeometry(0.16, 12, 8), this.#ballMaterial);
     this.#ball.name = "corona_tennis_ball";
     this.#ball.castShadow = true;
-    this.#ballGlow = createBallGlowLight("corona-tennis-ball-glow");
-    this.#ball.add(this.#ballGlow);
     this.#frisbee = new THREE.Mesh(
       new THREE.CylinderGeometry(0.3, 0.3, 0.055, 20),
       new THREE.MeshStandardMaterial({ color: 0xff654a, roughness: 0.68 })
@@ -1556,9 +1538,16 @@ export class CoronaHeightsPark {
   update(dt: number, elapsed: number, viewPos: { x: number; z: number }) {
     const distance = Math.hypot(viewPos.x - CORONA_HEIGHTS_SUMMIT.x, viewPos.z - CORONA_HEIGHTS_SUMMIT.z);
     this.group.visible = distance < DETAIL_RANGE;
-    if (!this.group.visible) return;
+    if (!this.group.visible) {
+      applyBallGlow(this.#ballMaterial, 0);
+      return;
+    }
     this.activity.visible = distance < ACTIVITY_RANGE;
-    if (!this.activity.visible) return;
+    if (!this.activity.visible) {
+      applyBallGlow(this.#ballMaterial, 0);
+      return;
+    }
+    applyBallGlow(this.#ballMaterial);
 
     this.#updateBallFetch(dt, elapsed);
     this.#updateFrisbeeFetch(dt, elapsed);

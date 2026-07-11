@@ -7,8 +7,8 @@ import type { Musician, MusicianBuilder, NoteEvent } from "./types";
 
 /**
  * The ukulele player — the trio's viewer-left seat. A ginger folk dude: full
- * chunky beard framing the jaw, bare-armed warm tee, uke slung low across the
- * chest with the neck cocked jauntily up toward his left. The strum forearm
+ * chunky beard framing the jaw, moss-green trail fleece, uke slung low across
+ * the chest with the neck cocked jauntily up toward his left. The strum forearm
  * swings sample-accurately with the score's "down"/"up" tags (winding up a
  * touch just before each stroke lands), the fret hand slides along the neck
  * when the chord changes, his head nods on the beat and one dangling foot
@@ -130,10 +130,17 @@ function pluck(
 
 export const buildUkulelist: MusicianBuilder = (audio, part): Musician => {
   /* ------------------------------------------------------------- figure */
-  // Ginger folk dude: no hood, short ginger hair, warm coral tee (bare skin
-  // sleeves come free with the tee outfit), gold trim.
-  const rig = buildRig({ skin: 0, hair: "short", hat: "none", outfit: "tee", color: 1, accent: 3 });
+  // Ginger folk dude in a mossy trail fleece: the jacket rig supplies cloth
+  // all the way to each wrist; its stock city pack/zip details are replaced
+  // below by a high collar, quarter zip, shoulder yoke and chest-pocket tab.
+  const rig = buildRig({ skin: 0, hair: "short", hat: "none", outfit: "jacket", color: 5, accent: 1 });
   rig.avatar.materials.hair.color.set(GINGER_HAIR);
+  rig.avatar.materials.jacket.color.set(0x3d4b35);
+  rig.avatar.materials.sleeve.color.set(0x35422f);
+  rig.avatar.materials.shirt.color.set(0xb9633d);
+  for (const detail of rig.avatar.outfits.jacket) detail.visible = false;
+  rig.avatar.torsoBlock.scale.set(1.025, 1.015, 1.025);
+  for (const sleeve of rig.avatar.armBlocks) sleeve.scale.set(1.045, 1, 1.045);
 
   // Seat wrapper: origin = seat point on the deck; rig group rides at hip
   // height so the seat of the pants meets the planks (hip block is 0.22 tall
@@ -172,6 +179,14 @@ export const buildUkulelist: MusicianBuilder = (audio, part): Musician => {
     parent.add(m);
     return m;
   };
+
+  /* ---- trail fleece: raised collar, darker shoulder yoke + rust hardware ---- */
+  const fleeceYoke = mat(0x46563c);
+  const fleeceRust = mat(0xb9633d);
+  box(rig.torso, fleeceYoke, 0.29, 0.09, 0.2, 0, 0.445, -0.02); // soft funnel collar
+  box(rig.torso, fleeceYoke, 0.445, 0.085, 0.025, 0, 0.382, -0.143); // reinforced shoulder yoke
+  box(rig.torso, fleeceRust, 0.026, 0.15, 0.035, 0, 0.337, -0.151); // quarter zip / placket
+  box(rig.torso, fleeceRust, 0.09, 0.022, 0.035, -0.135, 0.263, -0.151); // chest-pocket tab
 
   // full ginger beard — chunky boxes framing jaw and chin over the face front
   // (face is -Z; head block is a 0.26 cube centred at head-local y 0.2)

@@ -6,11 +6,13 @@ import { CONFIG, FLOWER_TUNING, FOLIAGE_TUNING, RENDER_MODE, RENDER_TUNING, STAR
 import { loadPlayerState, resetAllTweaks, savePlayerState, type SavedPlayer } from "./core/persist";
 import { Input } from "./core/input";
 import { tracer } from "./core/hitchTracer";
+import { bootMarkStart, bootMark, bootMarkSummary, persistBootHistory } from "./core/bootMarks";
 import { createFrameScheduler } from "./core/frameBudget";
 import { WorldMap, waterHeight } from "./world/heightmap";
 import { Sky, SKY_TUNING } from "./world/sky";
 import { Water } from "./world/water";
 import { UnderwaterOverlay } from "./fx/underwater";
+import { syncBallGlowNight } from "./fx/ballGlow";
 import { SeaPillars } from "./world/seaPillars";
 import { TileStreamer } from "./world/tiles";
 import { createRoadMarkings } from "./world/roadMarkings";
@@ -140,9 +142,11 @@ function progress(pct: number, label: string) {
 
 async function boot() {
   const bootT0 = performance.now();
+  bootMarkStart();
   progress(8, "reading the map");
   const map = await WorldMap.load();
   prepareCoronaHeightsGround(map);
+  bootMark("map");
 
   progress(18, "waking the gpu");
   // reversed-z: near 0.3 / far 24000 leaves classic depth with sub-metre steps
@@ -160,6 +164,7 @@ async function boot() {
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   app.appendChild(renderer.domElement);
   await renderer.init();
+  bootMark("gpu");
 
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(
@@ -177,6 +182,7 @@ async function boot() {
   progress(40, "streaming the city");
   const tiles = new TileStreamer(scene);
   await tiles.init(map);
+  bootMark("tiles");
   // off-boot-path loads (lane markings, the road graph's signals + lamps)
   // still don't block boot, but the settle gate holds the loading cover until
   // they land — success OR failure — so they never pop over the revealed city
@@ -191,6 +197,7 @@ async function boot() {
     .finally(() => auxPending--);
 
   const physics = await Physics.create(map, tiles);
+  bootMark("physics");
 
   progress(62, "waking up san francisco");
   const input = new Input(renderer.domElement);
@@ -1493,8 +1500,10 @@ async function boot() {
   // every mode-switch in play is compile-free from the first frame. Vehicle
   // lamps come from Player's fixed-size LightPool (always in the scene).
   // Culling is off so meshes parked at the origin still draw.
+  bootMark("world");
   progress(88, "warming up the vehicles");
   sky.update(0, camera.position);
+  syncBallGlowNight(sky.sunElevation);
   // The small debug overlays are normally hidden, which used to leave their
   // line/standard-material pipelines cold until the first checkbox click.
   // Show one representative collider and the grey cards only under the opaque
@@ -1521,6 +1530,7 @@ async function boot() {
   }
   progress(90, "warming render paths");
   await pipeline.warmup("boot");
+  bootMark("warmup");
   colliderDebug.setVisible(warmColliderDebug);
   calibrationChart.sync(camera, warmGreyCards);
   // one rAF flush is enough for the compile submit; no fixed 350ms wait
@@ -1773,10 +1783,13 @@ async function boot() {
     if (import.meta.env.PROD && "serviceWorker" in navigator) {
       void navigator.serviceWorker.register("/sw.js").catch(() => {});
     }
+    bootMark("reveal");
     console.info(
       `[boot] world ${reason} in ${((performance.now() - bootT0) / 1000).toFixed(1)}s` +
         ` (sched ${scheduler.pending}/${scheduler.waiting} waiting, tiles ${tiles.busy}, modules ${modulesReady}, aux ${auxPending})`
     );
+    console.info(`[boot] phases ${bootMarkSummary()}`);
+    persistBootHistory();
     if (autoStartSaved && startGame) {
       // no click to consume, so pointer lock has no gesture — startGame still
       // requests it (a no-op if the browser declines; first click re-locks)
@@ -2561,6 +2574,10 @@ async function boot() {
     if (player.mode === "speedboat") boatLaunchers?.update(frameDt); // guitarist jam + rocket reload
     creatures?.update(elapsed, camera.position); // gulls live at altitude — never gated
     forest?.update(frameDt, camera.position);
+    // Night ball glow amount from the current sun elevation (park / fetch / held /
+    // pickleball all read BALL_GLOW_NIGHT). Uses last sky.update's elevation —
+    // fine; elevation only moves with the clock.
+    syncBallGlowNight(sky.sunElevation);
     coronaHeights?.update(frameDt, elapsed, camera.position);
     // Ball fetch loop + pet follow run every frame, tool-agnostic, so a thrown
     // ball keeps bouncing and a returning/adopted dog keeps moving even after
