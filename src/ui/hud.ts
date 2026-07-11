@@ -168,6 +168,25 @@ function chips(tokens: string[], pad: boolean): string {
     .join("")
 }
 
+/** Named HUD panels for per-panel visibility control (setPanelHidden / soloPanel). */
+const PANELS: Record<string, string> = {
+  help: ".help",
+  toolbar: ".toolbar",
+  audio: ".audio",
+  chat: ".chat",
+  minimap: ".minimap",
+  history: ".place-history",
+  avatar: ".avatar-ui:not(.board-ui)",
+  board: ".board-ui",
+  satchel: ".satchel",
+  share: ".share-ui",
+  tutorial: ".tutorial-ui, .tutorial-panel",
+  links: ".links-ui",
+  locator: ".player-locator",
+  pause: ".pause-ui",
+  restore: ".ui-restore",
+}
+
 export class HUD {
   #root = document.getElementById("hud")!
   #help = document.querySelector<HTMLElement>('[data-hud="help"]')!
@@ -301,6 +320,28 @@ export class HUD {
   /** Fade the help panel + toolbar (center messages stay). CSS animates it. */
   setFaded(faded: boolean) {
     this.#root.classList.toggle("faded", faded)
+  }
+
+  /** Hide/show one named panel (see PANELS). Unlike Tab-fade this is a hard
+   *  display:none, independent of the faded state. */
+  setPanelHidden(name: string, hidden: boolean) {
+    const sel = PANELS[name]
+    if (!sel) return
+    for (const el of this.#root.querySelectorAll<HTMLElement>(sel)) {
+      el.classList.toggle("panel-hidden", hidden)
+    }
+  }
+
+  /** Show only the named panel, hiding every other registered one.
+   *  Pass null to restore everything. */
+  soloPanel(name: string | null) {
+    for (const key of Object.keys(PANELS)) {
+      this.setPanelHidden(key, name !== null && key !== name)
+    }
+  }
+
+  panelNames(): string[] {
+    return Object.keys(PANELS)
   }
 
   message(text: string, seconds = 2.6) {

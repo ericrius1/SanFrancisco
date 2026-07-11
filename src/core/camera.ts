@@ -26,7 +26,9 @@ const VIEW = {
   firstPersonPitchMax: 1.45,
   eyeHeight: 0.8,
   transitionRate: 7,
-  firstPersonFollow: 48
+  firstPersonFollow: 48,
+  // Wider indoor FOV reads as more room once the eye is inside the walls.
+  firstPersonFovBoost: 15
 } as const
 
 const smoothstep = (t: number) => t * t * (3 - 2 * t)
@@ -64,10 +66,12 @@ export class ChaseCamera {
   #externallyOwned = false
   #holdOrbitPose = false
   #lastMode: PlayerMode | null = null
+  #outdoorFov: number
   #map: WorldMap
 
   constructor(camera: THREE.PerspectiveCamera, map: WorldMap) {
     this.camera = camera
+    this.#outdoorFov = camera.fov
     this.#map = map
   }
 
@@ -101,6 +105,7 @@ export class ChaseCamera {
     this.#holdOrbitPose = false
     this.#firstPersonAvatarHidden = false
     player.setFirstPersonView(false)
+    this.#applyFov(0)
   }
 
   #resume(player: Player) {
@@ -133,6 +138,7 @@ export class ChaseCamera {
     // A vehicle switch must drop the active eye rig immediately. The stored
     // scalar may decay in the background so returning to walk remains smooth.
     const firstPersonBlend = player.mode === "walk" ? this.firstPersonBlend : 0
+    this.#applyFov(firstPersonBlend)
     // Hide late on entry, after the avatar nearly fills the frame, and restore
     // farther back on exit. The hysteresis avoids both clipped self-geometry and
     // a visible on/off flutter around the threshold.
@@ -334,6 +340,13 @@ export class ChaseCamera {
       this.#firstPersonQuat,
       firstPersonBlend
     )
+  }
+
+  #applyFov(blend: number) {
+    const fov = this.#outdoorFov + VIEW.firstPersonFovBoost * blend
+    if (Math.abs(this.camera.fov - fov) < 1e-4) return
+    this.camera.fov = fov
+    this.camera.updateProjectionMatrix()
   }
 
   /** True view direction — no shot bias. Drives drone movement so level look = level flight. */
