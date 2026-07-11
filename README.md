@@ -6,8 +6,9 @@ and USGS elevation, and everything is a rigid body: cars, boats and bodies all
 collide, and the buildings are solid — you bump and stop against them. The bay is
 a custom water shader — calm, clear, Caribbean-green.
 
-There's no goal and nothing to win. It's a city-sized sandbox. Show up, pick a
-way to move, and go poke at things.
+There's no goal and nothing to win. It's a city-sized sandbox with parks to
+wander, sports to play, and a few small worlds tucked inside the big one. Show
+up, pick a way to move, and go poke at things.
 
 > **Just want to play?** Jump to [Getting started](#getting-started) to run it
 > locally, then [How to play](#how-to-play) and [Things to try](#things-to-try).
@@ -27,11 +28,13 @@ process; the dev server proxies `/ws` to it. Open the URL, type a name (or keep
 the suggested one), and press Start. Open a second browser window to see
 multiplayer working locally.
 
-The world's assets are already committed to the repo (`public/data` for the
-heightmap/colliders/metadata, `public/tiles` for the GLB geometry), so there's
-nothing to build or download first — `npm install` and `npm run dev` is the
-whole setup. You only need the [asset pipeline](#asset-pipeline) if you want to
-change the map or regenerate geometry.
+Sessions default to the **Corona Heights** summit — scenic, cheap to boot, and
+a short walk from the dog park and the jammer trio. The world's assets are
+already committed to the repo (`public/data` for the heightmap/colliders/metadata,
+`public/tiles` for the GLB geometry), so there's nothing to build or download
+first — `npm install` and `npm run dev` is the whole setup. You only need the
+[asset pipeline](#asset-pipeline) if you want to change the map or regenerate
+geometry.
 
 ---
 
@@ -47,12 +50,12 @@ Press `Shift`+`1`–`7` to switch how you get around. Each one has its own feel:
 | | Mode | Notes |
 | --- | --- | --- |
 | `Shift`+`1` | **Walk** | Run with `Shift`, jump with `Space`. Climb anything you can reach. |
-| `Shift`+`2` | **Drive** | A sports car. `Space` drifts. Ram stuff — it breaks. |
+| `Shift`+`2` | **Drive** | A sports car. `Space` drifts. |
 | `Shift`+`3` | **Fly** | Free flight. Good for getting your bearings over the whole city. |
 | `Shift`+`4` | **Boat** | A sailboat on the bay. Heaves and pitches with the swell. |
 | `Shift`+`5` | **Drone** | Nimble hover; look straight down at the streets. |
 | `Shift`+`6` | **Board** | A hoverboard. `Space` ollies. |
-| `Shift`+`7` | **Bird** | A phoenix. `Space` flaps, `Q`/`E` twirl. Dive and soar. |
+| `Shift`+`7` | **Bird** | A phoenix. `Space` flaps. Dive and soar. |
 
 ### Controls
 
@@ -60,10 +63,11 @@ Press `Shift`+`1`–`7` to switch how you get around. Each one has its own feel:
 | --- | --- |
 | `W A S D` | Move / drive / steer (depends on the mode) |
 | `Shift` | Run / boost |
-| `Space` | Jump / drift / ollie / flap (depends on the mode) |
-| `E` | Mount/dismount a nearby ride, or start golf from a glowing tee |
-| `1`–`9` | Teleport to the numbered player next to you |
-| `M` | **Full-city map** — drag/scroll to pan/zoom, click a spot, press Teleport |
+| `Space` | Jump / drift / ollie / flap / pickleball swing (depends on the mode) |
+| `E` | Mount/dismount a nearby ride, pick up a returned fetch ball, start golf from a glowing tee, or claim/leave a pickleball side |
+| `Q` | Cycle the Corona Heights jammer trio to the next song |
+| `1`–`9` | Teleport to the numbered player next to you (or pick a golf club while playing) |
+| `M` | **Full-city map** — drag/scroll to pan/zoom, click a landmark or spot, press Teleport |
 | Left click | Use the current tool; near your golf ball, hold to draw back and release to swing |
 | `B` | Fireworks |
 | `Z` (hold) | Scrub the time of day with the trackpad |
@@ -72,17 +76,47 @@ Press `Shift`+`1`–`7` to switch how you get around. Each one has its own feel:
 | `C` | Orbit camera |
 | `I` | Immersive (hide the UI chrome) |
 | `Tab` | Fade the UI |
+| `/` | Live tuning panel (draw distance, fog, foliage, render) |
 
 ### The tools
 
 Left-click does something different depending on the tool selected in the
 toolbar (cycle it with the arrow keys while the UI is up):
 
-- **Spray paint / bubbles / chimes** — cosmetic toys. Tag walls, blow bubbles,
-  ring chimes off the ground.
-- **Rope** — tie any two things together: toys, ragdolls, walls, the
-  ground. Tie a crate to your own car. You know you want to.
-- **Grab** — a tractor beam. Hold to carry something, flick to throw it.
+- **Ball** — hold to spot a tennis ball, keep holding to wind up, release to throw.
+  At Corona Heights, free dogs chase, carry it back, and wait for you to take it
+  with `E`. Two full fetches adopt a dog as a pet.
+- **Paint** — sling paintballs. Hits stick to walls, vehicles, and players; friends
+  see your shots.
+- **Bubbles** — blow soap bubbles that drift on the breeze.
+
+---
+
+## Places worth visiting
+
+Open the map (`M`) and teleport, or just wander. A few of the denser spots:
+
+- **Corona Heights** — default spawn. Red-chert summit, downtown/Mission vista,
+  a dog park just below, and a **jammer trio** (ukulele, handpan, flute) perched
+  on a boulder. Stand nearby to hear them; press `Q` to cycle songs. Throw the
+  ball tool for the dogs.
+- **Botanical Garden** — San Francisco Botanical Garden in Golden Gate Park:
+  SeedThree trees, blade grass, shrubs, and a shared wind envelope. The nature
+  soundscape thickens here.
+- **Goldman Tennis & Pickleball** — Golden Gate Park courts. Walk up to a
+  pickleball athlete and press `E` to take a side (near/far). `WASD` moves,
+  click/`Space` swings, `E` again leaves. Online play is slot-arbitrated so two
+  friends can claim opposite sides.
+- **Presidio Golf** — full 18 playable holes on the real course footprint.
+  Teleport to **Presidio Golf · Hole 1**, or find any glowing tee and press `E`.
+  Aim with the camera, clubs with `1`–`9`, hold/release click to swing; `G`
+  twice abandons a round. Ball and score state are shared online.
+- **Wildlands** — SeedThree groves across Golden Gate Park, the Presidio, Marin
+  Headlands, Mount Sutro / Buena Vista, with player-following wildflower and
+  grass rings.
+- **Skyline landmarks** — Golden Gate, Bay Bridge, Transamerica, Salesforce
+  Tower, Coit Tower, the Ferry Building, Sutro Tower, the Palace of Fine Arts,
+  Alcatraz — plus floating balloon islands if you can reach them.
 
 ---
 
@@ -91,29 +125,27 @@ toolbar (cycle it with the arrow keys while the UI is up):
 Nothing here is required — it's a list of things people tend to find fun.
 
 - **Fly up first.** Switch to fly or bird (`Shift`+`3` / `Shift`+`7`) and get
-  above the fog. The whole city is here — Golden Gate, the Bay Bridge,
-  Transamerica, Salesforce Tower, Coit Tower, the Ferry Building, Sutro Tower,
-  the Palace of Fine Arts, Alcatraz — and it's easiest to orient from the air.
+  above the fog. The whole city is easiest to orient from the air.
+- **Hang with the jammers.** Spawn is already on Corona Heights — walk to the
+  boulder, listen, hit `Q` for another tune, then toss a ball for the dogs.
+- **Walk the Botanical Garden.** Map → **Botanical Garden**. Grass tramples under
+  you; trees stream in as you arrive.
+- **Play pickleball.** Map → **Goldman Tennis & Pickleball**, press `E` on an
+  open side. Bring a friend for a two-player rally.
+- **Play Presidio Golf.** Map → **Presidio Golf · Hole 1**. Walk the holes, or
+  share a round online — friends see your ball and score.
 - **Carve the hills.** In the car, chase the grades and drift the intersections.
-  The whole city is solid — buildings have real colliders, so you bump and stop
-  against them. `B` for fireworks, or use the tools to paint, chime and splash.
-- **Hunt the critters.** Crabs scuttle along the waterfront. Pounce close to
-  catch them — the satchel bottom-right keeps score.
+  Buildings have real colliders, so you bump and stop against them.
+- **Hunt the critters.** Crabs scuttle along the waterfront. Catch them — the
+  satchel bottom-right keeps score.
 - **Sail the bay.** Take the boat (`Shift`+`4`) out past the promenade — the
-  water actually heaves and the boat trims bow-up as it climbs the swell.
+  water heaves and the boat trims bow-up as it climbs the swell.
 - **Chase the light.** Hold `Z` and drag to scrub the time of day. Sunset over
-  the bridge, then the city at night with the tower beacons and Bay Bridge
-  lights lit.
-- **Rope something ridiculous.** Tie a ragdoll to your car. Grab it, throw it.
-- **Play Presidio Golf.** Open the map (`M`) and teleport to
-  **Presidio Golf · Hole 1**, or stumble onto any glowing tee. Press `E` to
-  begin from that hole. Walk to the ball, aim with the camera, pick clubs with
-  `1`–`9`, then hold and release left click. Press `G` twice to abandon a round.
+  the bridge, then night with tower beacons and Bay Bridge lights lit.
 - **Bring a friend.** Send them your local URL (or the live link). The minimap
-  top-left shows everyone as colored dots; the nearest nine also get numbered
-  indicators in the main view — press that number to teleport straight to them.
-  Dots pinned to the minimap rim are out of range; head toward them or press
-  `M` to find them on the map.
+  shows everyone as colored dots; the nearest nine get numbered indicators —
+  press that number to teleport. Dots on the minimap rim are out of range; press
+  `M` to find them.
 
 ---
 
@@ -143,13 +175,14 @@ Everyone shares one world. No accounts, no login — connect and you're in.
   animation driven by their reported speed, and *no* extra lights (light-count
   changes rebuild every GPU pipeline in this renderer; emissive materials do
   the glowing instead).
-- **Golf is shared.** Friends see each other's balls, swing/rest state, hole
-  results, and running score. The striking player's deterministic ball simulation
-  remains authoritative; the relay caches canonical state for late joins and
-  reconnects.
-- **What is not synced:** fireworks and paint stay local to each client (every
-  player has their own copy of the city). Syncing world state across Box3D
-  instances is a much bigger project.
+- **Shared toys.** Paintball shots and fireworks volleys relay so friends see
+  them. **Golf** shares balls, swings, hole results, and score (striker's sim is
+  authoritative; the relay caches state for late joins). **Pickleball** reserves
+  two sides, picks one match authority, and relays inputs/state so two players
+  can rally together.
+- **What stays local:** each client still runs its own Box3D city (buildings,
+  ground carpet, park props). Full world-state sync across instances is a much
+  bigger project.
 
 Protocol details live at the top of `server/server.mjs` and `src/net/net.ts`.
 
@@ -157,8 +190,10 @@ Protocol details live at the top of `server/server.mjs` and `src/net/net.ts`.
 
 ## What's under the hood
 
-- **Physics:** [box3d-wasm](https://github.com/ericrius1/box3d-wasm-test) (Box3D
-  compiled to WASM).
+- **Physics:** [box3d.js](https://github.com/isaac-mason/box3d.js) — Isaac Mason's
+  WebAssembly bindings for [Box3D](https://github.com/erincatto/box3d) (Erin
+  Catto's 3D rigid-body engine). The app imports `box3d.js/inline` through
+  `src/core/box3dWorld.ts`.
 - **Rendering:** three.js (WebGPU). City geometry is authored procedurally in
   Blender, exported as GLB tiles, then quantized + meshopt-compressed (~8x
   smaller) for streaming.
@@ -179,13 +214,15 @@ Protocol details live at the top of `server/server.mjs` and `src/net/net.ts`.
   `ModeController` per folder) on capped-speed arcade physics.
 - **`src/world/water.ts`** is the bay shader: depth-based turquoise gradient from a bay-floor
   texture, gentle Gerstner-ish swell, fresnel sky reflection, sun sparkle, and shore foam.
-- **`src/gameplay/golf/`** turns current OSM course geometry and the official
-  Presidio scorecard into 18 playable holes with shared ball/score state. Source
-  provenance and open-data licenses are recorded in
-  `feature-research/presidio-golf/sources.md`.
-- **`server/server.mjs`** + **`src/net/`** are the multiplayer layer: a JSON
-  snapshot relay over one WebSocket, remote-avatar interpolation, and the
-  minimap/full-map UI (`src/ui/minimap.ts`).
+- **`src/world/coronaHeights/`** + **`src/gameplay/buskers/`** — summit park, dog park,
+  fetch loop, and the jammer trio.
+- **`src/world/garden/`** — San Francisco Botanical Garden vegetation module.
+- **`src/world/goldenGateTennis/`** + **`src/gameplay/pickleball/`** — Goldman courts and
+  the shared pickleball game.
+- **`src/gameplay/golf/`** — Presidio Golf Club, 18 holes with shared ball/score state.
+- **`src/world/wildlands/`** — SeedThree foliage across GG Park / Presidio / Marin / Sutro.
+- **`server/server.mjs`** + **`src/net/`** — multiplayer relay, remote-avatar interpolation,
+  and the minimap/full-map UI (`src/ui/minimap.ts`).
 
 ---
 

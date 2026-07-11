@@ -14,8 +14,8 @@ import { registerShareable, buildReadUrl, copyText, type ShareableModal } from "
 const X_URL = "https://x.com/EricLevin77";
 const REPO_URL = "https://github.com/ericrius1/SanFrancisco";
 const BOX3D_URL = "https://github.com/erincatto/box3d";
-const BOX3D_WASM_DEMO = "https://box3d-wasm-test.vercel.app/";
-const BOX3D_WASM_REPO = "https://github.com/ericrius1/box3d-wasm-test";
+const BOX3D_JS_REPO = "https://github.com/isaac-mason/box3d.js";
+const BOX3D_JS_DOCS = "https://isaac-mason.github.io/box3d.js/";
 
 const X_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24h-6.66l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>`;
 const GH_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .5C5.37.5 0 5.78 0 12.29c0 5.2 3.438 9.61 8.205 11.17.6.11.82-.26.82-.577 0-.285-.01-1.04-.015-2.04-3.338.72-4.042-1.61-4.042-1.61-.546-1.385-1.332-1.755-1.332-1.755-1.09-.744.083-.729.083-.729 1.205.084 1.84 1.236 1.84 1.236 1.07 1.83 2.807 1.302 3.492.996.108-.775.418-1.303.762-1.603-2.665-.303-5.466-1.324-5.466-5.896 0-1.303.47-2.37 1.235-3.203-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.4 3-.405 1.02.005 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.833 1.23 1.9 1.23 3.203 0 4.583-2.805 5.59-5.475 5.887.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 21.896 24 17.49 24 12.29 24 5.78 18.627.5 12 .5z"/></svg>`;
@@ -216,8 +216,8 @@ const TAB_LIFE = `
     simply stops you dead — no dents, no debris, just a solid city.</p>
     <p class="bts-links-inline">
       ${a(BOX3D_URL, "Box3D (Erin Catto)")}
-      ${a(BOX3D_WASM_DEMO, "Box3D → WASM live demo")}
-      ${a(BOX3D_WASM_REPO, "Box3D WASM port repo")}
+      ${a(BOX3D_JS_REPO, "box3d.js (Isaac Mason)")}
+      ${a(BOX3D_JS_DOCS, "box3d.js docs & examples")}
     </p>
   </section>
 
@@ -395,9 +395,9 @@ const TAB_PLAY = `
     skating into walls.</p>
     <p>Remote players show up as full embodiments — walker, sports car, plane, sailboat, drone,
     hoverboard with rider, phoenix — with name tags and walk/ride animation driven by their reported
-    speed. What <em>isn't</em> synced is just as deliberate: fireworks and
-    paint all stay local, because everyone runs their own copy of the city. That's exactly why you can
-    tag a wall without ever touching anyone else's view of it. The relay itself is almost aggressively
+    speed. What <em>is</em> synced on purpose: paintball shots, fireworks volleys, Presidio golf
+    ball/score state, and Goldman pickleball sides. What stays local is the Box3D city itself —
+    every client still simulates its own buildings and ground carpet. The relay itself is almost aggressively
     boring by design: no database, everything in memory, a 15-second heartbeat to drop dead sockets,
     per-message size and rate caps, and clients that reconnect on their own with backoff. Restarting it
     is invisible — your position lives in your browser, not on the server — so there's nothing to migrate
@@ -414,7 +414,7 @@ const TAB_PLAY = `
     <div class="bts-chips">
       ${a(REPO_URL, "This project on GitHub")}
       ${a(BOX3D_URL, "Box3D")}
-      ${a(BOX3D_WASM_DEMO, "Box3D WASM demo")}
+      ${a(BOX3D_JS_REPO, "box3d.js")}
       ${a("https://threejs.org/", "three.js")}
       ${a("https://gltf-transform.dev/", "glTF-Transform")}
       ${a("https://meshoptimizer.org/", "meshoptimizer")}
