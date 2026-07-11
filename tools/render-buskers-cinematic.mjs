@@ -9,12 +9,15 @@
 //   only changes how long the capture takes, never smoothness. Frames stream to
 //   .data/buskers-cine/<take>/raw/frame_%05d.jpg.
 //
-//   Pass 2 (audio, realtime): a SECOND fresh Chrome (un-muted) plays the demo in
-//   real time and MediaRecorder taps __sf.buskers.captureStream() — the trio's
-//   final HRTF-mixed output. The music is positional (listener = orbiting camera)
-//   so it MUST run the real timeline; that's why it can't be baked frame-by-frame.
+//   Pass 2 (audio, DETERMINISTIC / offline): a SECOND Chrome loads the same demo
+//   page and calls window.__sfRenderTrioAudio(SECONDS) — an OfflineAudioContext
+//   render of the REAL trio graph (same synthesis, panners, "off the mountains"
+//   reverb, master gain, compressor) computed faster-than-realtime. No live
+//   MediaRecorder, so no GPU-stall hitches, async resume, or transport
+//   re-anchoring can drop a silent gap — the music is gapless and reproducible
+//   every run. The offline render returns a base64 WAV we pull over CDP.
 //
-//   Mux: ffmpeg stitches the JPEG sequence with audio.webm into an H.264 mp4.
+//   Mux: ffmpeg stitches the JPEG sequence with audio.wav into an H.264 mp4.
 //
 // One command:  node tools/render-buskers-cinematic.mjs
 //
@@ -24,7 +27,7 @@
 //   SF_JPEG_Q (92)   SF_FX_VOL (0.9  — seeded effects volume for a hot, clean take)
 //   SF_SKIP_AUDIO=1   video only, silent AAC track
 //   SF_SKIP_CAPTURE=1 reuse existing frames + audio, re-encode/remux only (seconds)
-//   SF_AUDIO_ONLY=1   re-record just the audio then remux (reuse existing frames)
+//   SF_AUDIO_ONLY=1   re-render just the (deterministic) audio then remux (reuse frames)
 //   SF_KEEP_FRAMES=1  never auto-wipe the raw frame dir (default already keeps them;
 //                     the tool only wipes when a fresh capture uses a new W/H/FPS/len)
 //   SF_CAPTURE_FROM / SF_CAPTURE_TO   partial re-shoot of a frame range [FROM,TO)
@@ -71,7 +74,7 @@ const DT = 1 / FPS;
 
 const WORK_DIR = path.join(ROOT, ".data", "buskers-cine", TAKE);
 const RAW_DIR = path.join(WORK_DIR, "raw");
-const AUDIO_FILE = path.join(WORK_DIR, "audio.webm");
+const AUDIO_FILE = path.join(WORK_DIR, "audio.wav");
 const META_FILE = path.join(WORK_DIR, "meta.json");
 const CHROME_PROFILE_V = path.join(WORK_DIR, "chrome-video");
 const CHROME_PROFILE_A = path.join(WORK_DIR, "chrome-audio");
@@ -425,103 +428,84 @@ async function capturePass(viteUrl) {
   }
 }
 
-// ── Pass 2: realtime live-audio capture ───────────────────────────────────────
+// ── Pass 2: deterministic offline-audio render ────────────────────────────────
 // Returns { rms, headRms } (overall RMS dB + RMS of the first 0.8s, for the
-// downbeat-alignment sanity check). Retries once with a hotter seed on silence.
+// downbeat-alignment sanity check). No realtime playback, no MediaRecorder — the
+// page renders the trio's music through an OfflineAudioContext and hands back a
+// base64 WAV. Gapless + reproducible by construction, so there is nothing to
+// retry: silence here means a wiring/gain bug, not a flaky capture.
 async function audioPass(viteUrl) {
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    const vol = attempt === 1 ? FX_VOL : 1.0;
-    log(`audio: realtime take (attempt ${attempt}, fx seed ${vol})`);
-    const { client } = await launchChrome({
-      profile: CHROME_PROFILE_A + attempt, // clean profile per attempt
-      width: 640,
-      height: 360,
-      extraFlags: ["--autoplay-policy=no-user-gesture-required"] // NB: NOT muted
-    });
-    try {
-      await seedAudioPrefs(client, vol);
-      const url = `${viteUrl}/?demo=buskers&hold=1&fullfps=1`;
-      await client.send("Page.navigate", { url });
-      await waitEv(
-        client,
-        "Boolean(window.__sfReelArmed && window.__sf && window.__sf.buskers && window.__sfStartShot)",
-        120000,
-        "reel arm (audio)"
-      );
+  const vol = FX_VOL;
+  log(`audio: deterministic offline render (fx seed ${vol})`);
+  const { client } = await launchChrome({
+    profile: CHROME_PROFILE_A,
+    width: 640,
+    height: 360,
+    extraFlags: ["--mute-audio"] // offline render never plays out loud
+  });
+  try {
+    await seedAudioPrefs(client, vol);
+    const url = `${viteUrl}/?demo=buskers&hold=1&fullfps=1`;
+    await client.send("Page.navigate", { url });
+    // The offline-render hook installs as soon as the buskers module evaluates
+    // (a static import in the app graph), so it does not depend on a full
+    // WebGPU boot completing.
+    await waitEv(
+      client,
+      "typeof window.__sfRenderTrioAudio === 'function'",
+      120000,
+      "offline audio hook"
+    );
 
-      // Fire-and-forget: start recorder, then start the timeline in the SAME
-      // eval so recorder t≈0 lines up with reel T=0; stop after SECONDS+0.4s.
-      const setup = `(()=>{
-        try{
-          const bk = window.__sf.buskers;
-          const stream = bk.captureStream ? bk.captureStream() : null;
-          if(!stream){ window.__sfAudioErr = "captureStream() returned null (no AudioContext?)"; return "no-stream"; }
-          window.__sfAudioTracks = stream.getAudioTracks().length;
-          window.__sfAudioDone = false; window.__sfAudioErr = "";
-          const chunks = [];
-          const rec = new MediaRecorder(stream, { mimeType: "audio/webm;codecs=opus", audioBitsPerSecond: 192000 });
-          rec.ondataavailable = e => { if(e.data && e.data.size) chunks.push(e.data); };
-          rec.onstop = () => {
-            const blob = new Blob(chunks, { type: "audio/webm" });
-            const fr = new FileReader();
-            fr.onloadend = () => { window.__sfAudioB64 = String(fr.result).split(",")[1] || ""; window.__sfAudioDone = true; };
-            fr.readAsDataURL(blob);
-          };
-          rec.start(250);
-          window.__sfStartShot();
-          setTimeout(() => { try{ rec.stop(); }catch(e){ window.__sfAudioErr = String(e); window.__sfAudioDone = true; } }, ${(SECONDS + 0.4) * 1000});
-          return "recording";
-        }catch(e){ window.__sfAudioErr = String(e); return "error"; }
-      })()`;
-      const status = await ev(client, setup, false);
-      if (status !== "recording") {
-        const err = await ev(client, "window.__sfAudioErr || 'unknown'");
-        throw new Error(`audio setup failed: ${err}`);
-      }
-      const tracks = await ev(client, "window.__sfAudioTracks ?? 0");
-      log(`  recording ${tracks} audio track(s); waiting ${SECONDS + 2}s…`);
+    // Kick off the render (fire-and-forget; it resolves faster than realtime).
+    const started = await ev(
+      client,
+      `(()=>{
+        window.__sfAudioB64 = ""; window.__sfAudioDone = false; window.__sfAudioErr = "";
+        Promise.resolve(window.__sfRenderTrioAudio(${SECONDS}))
+          .then(b64 => { window.__sfAudioB64 = b64 || ""; window.__sfAudioDone = true; })
+          .catch(e => { window.__sfAudioErr = String(e && e.message ? e.message : e); window.__sfAudioDone = true; });
+        return "rendering";
+      })()`,
+      false
+    );
+    if (started !== "rendering") throw new Error("failed to start offline audio render");
+    log(`  rendering ${SECONDS}s offline (faster than realtime)…`);
+    await waitEv(client, "window.__sfAudioDone === true", 120000, "offline audio done");
+    const err = await ev(client, "window.__sfAudioErr || ''");
+    if (err) throw new Error(`offline audio render failed: ${err}`);
 
-      // let the AudioContext resume (game auto-resumes when the cam is near) and
-      // the take run out, then wait for the FileReader to finish the base64.
-      await sleep((SECONDS + 2) * 1000);
-      await waitEv(client, "window.__sfAudioDone === true", 15000, "audio done");
-
-      // pull base64 in 1MB slices (returnByValue can choke on multi-MB strings)
-      const len = await ev(client, "window.__sfAudioB64 ? window.__sfAudioB64.length : 0");
-      if (!len) throw new Error("empty audio buffer");
-      const CH = 1 << 20;
-      let b64 = "";
-      for (let off = 0; off < len; off += CH) {
-        b64 += await ev(
-          client,
-          `window.__sfAudioB64.slice(${off},${off + CH})`
-        );
-      }
-      await writeFile(AUDIO_FILE, Buffer.from(b64, "base64"));
-      const kb = Math.round((await stat(AUDIO_FILE)).size / 1024);
-      log(`  wrote ${rel(AUDIO_FILE)} (${kb} KB)`);
-
-      // validate loudness — overall + first 0.8s (should be near-silent: downbeat T=1)
-      const rms = await measureRms(AUDIO_FILE);
-      const headRms = await measureRms(AUDIO_FILE, 0.8);
-      log(`  RMS overall ${fmtDb(rms)}   first-0.8s ${fmtDb(headRms)}`);
-      if (rms > -60) {
-        if (headRms > -35) {
-          log(
-            `  WARN: first 0.8s is loud (${fmtDb(headRms)}) — downbeat should be at T=1; possible misalignment`
-          );
-        }
-        return { rms, headRms };
-      }
-      log(`  essentially silent (${fmtDb(rms)}) — retrying with a hotter seed`);
-    } finally {
-      client.close();
+    // pull base64 in 1MB slices (returnByValue can choke on multi-MB strings)
+    const len = await ev(client, "window.__sfAudioB64 ? window.__sfAudioB64.length : 0");
+    if (!len) throw new Error("empty audio buffer");
+    const CH = 1 << 20;
+    let b64 = "";
+    for (let off = 0; off < len; off += CH) {
+      b64 += await ev(client, `window.__sfAudioB64.slice(${off},${off + CH})`);
     }
+    await writeFile(AUDIO_FILE, Buffer.from(b64, "base64"));
+    const kb = Math.round((await stat(AUDIO_FILE)).size / 1024);
+    log(`  wrote ${rel(AUDIO_FILE)} (${kb} KB)`);
+
+    // validate loudness — overall + first 0.8s (should be near-silent: downbeat at ~1.0s)
+    const rms = await measureRms(AUDIO_FILE);
+    const headRms = await measureRms(AUDIO_FILE, 0.8);
+    log(`  RMS overall ${fmtDb(rms)}   first-0.8s ${fmtDb(headRms)}`);
+    if (rms <= -60) {
+      throw new Error(
+        `offline audio render was silent (${fmtDb(rms)}) — check master gain / effectsAudioLevel ` +
+          "(src/gameplay/buskers/audio.ts + offlineRender.ts + core/audioSettings.ts)."
+      );
+    }
+    if (headRms > -35) {
+      log(
+        `  WARN: first 0.8s is loud (${fmtDb(headRms)}) — downbeat should be at ~1.0s; possible misalignment`
+      );
+    }
+    return { rms, headRms };
+  } finally {
+    client.close();
   }
-  throw new Error(
-    "audio take was silent after retries — AudioContext likely never resumed. " +
-      "Inspect src/gameplay/buskers/audio.ts + core/audioSettings.ts (effectsAudioLevel)."
-  );
 }
 
 function fmtDb(v) {
