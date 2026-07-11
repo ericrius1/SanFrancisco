@@ -131,6 +131,16 @@ export class NatureSoundscape {
     this.#ensure();
   }
 
+  /** Minimal handle for sibling ambient layers (the dog park): the shared
+   *  context, the master bus (HUD volume/mute, region presence fades and the
+   *  out-of-region suspend all ride along), the reverb send and the shared
+   *  voice-noise buffer. Call once and cache — not per frame. */
+  voiceBus(): { ctx: AudioContext; bus: GainNode; reverbSend: GainNode; noise: AudioBuffer } | null {
+    const ctx = this.#ensure();
+    if (!ctx) return null;
+    return { ctx, bus: this.#bus, reverbSend: this.#reverbSend, noise: this.#noise };
+  }
+
   update(
     dt: number,
     o: { playerPos: { x: number; y: number; z: number }; camera: THREE.Camera; gust: number; timeOfDay: number }
@@ -148,7 +158,10 @@ export class NatureSoundscape {
       const inf = regionInfluence(NATURE_REGIONS[i], o.playerPos.x, o.playerPos.z);
       this.#inf[i] = inf;
       presence = Math.max(presence, inf);
-      windBias += inf * NATURE_REGIONS[i].character.windBias;
+      // exposed hilltops: the wind term climbs with the listener's altitude
+      const wa = NATURE_REGIONS[i].windAltitude;
+      const lift = wa ? 1 + wa.boost * smooth(wa.y0, wa.y1, o.playerPos.y) : 1;
+      windBias += inf * NATURE_REGIONS[i].character.windBias * lift;
       fog += inf * NATURE_REGIONS[i].character.fog;
       infSum += inf;
     }

@@ -1,0 +1,217 @@
+import * as THREE from "three/webgpu";
+import type { Physics } from "../../core/physics";
+import { TrioAudio } from "./audio";
+import { buildPlatform, PLATFORM } from "./platform";
+import { COUNTIN_BEATS, REST_SECONDS, SEC_PER_BEAT, SONG, SONG_BEATS } from "./song";
+import type { BuskerId, Musician, MusicianBuilder, NoteEvent, TrioClock, TrioPhase } from "./types";
+import { buildFlutist } from "./flutist";
+import { buildHandpanist } from "./handpanist";
+import { buildUkulelist } from "./ukulelist";
+
+/**
+ * The busker trio: three musicians on a small wooden deck playing one song
+ * together (song.ts), resting in the wind between passes. Deliberately
+ * placeless — createBuskerTrio() drops it at any world position and
+ * setPlacement() moves it later (it re-grounds itself), so it can live on
+ * the Corona Heights summit today and be nudged when that hill's detail
+ * pass lands.
+ *
+ *   const trio = createBuskerTrio({ x, z, yaw, groundHeight, physics });
+ *   scene.add(trio.group);
+ *   // per frame: trio.update(dt, camera, gust)
+ *
+ * The transport is authoritative and always runs, so the performance
+ * continues (visually) even while the AudioContext is suspended out of
+ * earshot; audio re-syncs to the body language whenever you wander back.
+ */
+
+const LOOKAHEAD_SECONDS = 0.4; // audio scheduling horizon
+const ANIM_RADIUS = 200; // beyond this, skip musician animation updates
+const SONG_SECONDS = SONG_BEATS * SEC_PER_BEAT;
+const COUNTIN_SECONDS = COUNTIN_BEATS * SEC_PER_BEAT;
+
+// Seats along the front (-Z) edge. A viewer standing in front of the deck
+// sees: ukulele on their left, handpan girl in the middle, flute on their
+// right. The outer two angle slightly inward, toward each other.
+const SEATS: { id: BuskerId; x: number; yaw: number; build: MusicianBuilder }[] = [
+  { id: "ukulele", x: 1.02, yaw: 0.14, build: buildUkulelist },
+  { id: "handpan", x: 0, yaw: 0, build: buildHandpanist },
+  { id: "flute", x: -1.02, yaw: -0.14, build: buildFlutist }
+];
+const SEAT_Z = -PLATFORM.depth / 2 + 0.16; // hips just behind the front edge
+const VOICE_HEIGHT = 0.55; // sound source at chest height above the seat
+
+export type BuskerTrioOptions = {
+  x: number;
+  z: number;
+  /** deck yaw; the trio faces -Z rotated by this */
+  yaw?: number;
+  /** terrain sampler (map.groundHeight) — used on every (re)placement */
+  groundHeight: (x: number, z: number) => number;
+  physics?: Physics | null;
+};
+
+export class BuskerTrio {
+  readonly group = new THREE.Group();
+
+  #audio = new TrioAudio();
+  #platform: ReturnType<typeof buildPlatform>;
+  #musicians = new Map<BuskerId, Musician>();
+  #seatLocal = new Map<BuskerId, THREE.Vector3>();
+  #groundHeight: (x: number, z: number) => number;
+
+  #phase: TrioPhase = "countin";
+  #phaseTime = 0;
+  #elapsed = 0;
+  #anchor = 0; // AudioContext time that maps to song beat 0
+  #schedIdx: Record<BuskerId, number> = { ukulele: 0, handpan: 0, flute: 0 };
+  #clock: TrioClock = { phase: "countin", phaseTime: 0, songTime: 0, beat: 0, wind: 0.3 };
+  #tmp = new THREE.Vector3();
+
+  constructor(opts: BuskerTrioOptions) {
+    this.#groundHeight = opts.groundHeight;
+    this.#platform = buildPlatform(opts.physics ?? null);
+    this.group.add(this.#platform.group);
+
+    for (const seat of SEATS) {
+      const tap = this.#audio.channel(seat.id);
+      // Headless/audio-less contexts still get the full visual performance:
+      // hand the builder a dummy tap wired to nothing.
+      const musician = seat.build(tap ?? makeSilentTap(), SONG[seat.id]);
+      musician.group.position.set(seat.x, PLATFORM.top, SEAT_Z);
+      musician.group.rotation.y = seat.yaw;
+      this.group.add(musician.group);
+      this.#musicians.set(seat.id, musician);
+      this.#seatLocal.set(seat.id, new THREE.Vector3(seat.x, PLATFORM.top + VOICE_HEIGHT, SEAT_Z));
+    }
+
+    this.setPlacement(opts.x, opts.z, opts.yaw ?? 0);
+  }
+
+  /** Move the whole act (deck, trio, collider, sound sources) and re-seat it
+   * on the terrain. Safe to call at runtime — use it when Corona Heights'
+   * detail pass settles and the summit spot moves. */
+  setPlacement(x: number, z: number, yaw = this.group.rotation.y) {
+    const y = this.#groundHeight(x, z);
+    this.group.position.set(x, y, z);
+    this.group.rotation.y = yaw;
+    this.group.updateMatrixWorld(true);
+    this.#platform.setColliderTransform(x, y, z, yaw);
+    for (const [id, local] of this.#seatLocal) {
+      this.#tmp.copy(local).applyMatrix4(this.group.matrixWorld);
+      this.#audio.setChannelPosition(id, this.#tmp.x, this.#tmp.y, this.#tmp.z);
+    }
+  }
+
+  /** Debug helper: jump straight to the top of the song. */
+  restartSong() {
+    this.#enterPhase("playing");
+  }
+
+  /** Debug/probe helper: jump the transport to an arbitrary song beat. */
+  seek(beat: number) {
+    this.#enterPhase("playing");
+    this.#phaseTime = THREE.MathUtils.clamp(beat, 0, SONG_BEATS) * SEC_PER_BEAT;
+    const ctx = this.#audio.ctx;
+    if (ctx) this.#anchor = ctx.currentTime - this.#phaseTime;
+  }
+
+  /** World position of a musician's seat (probe cameras, effects). */
+  seatWorld(id: BuskerId, out = new THREE.Vector3()): THREE.Vector3 {
+    const local = this.#seatLocal.get(id);
+    this.group.updateMatrixWorld(true);
+    return local ? out.copy(local).applyMatrix4(this.group.matrixWorld) : out.copy(this.group.position);
+  }
+
+  get clock(): Readonly<TrioClock> {
+    return this.#clock;
+  }
+
+  update(dt: number, camera: THREE.Camera, gust = 0) {
+    dt = Math.min(dt, 0.1);
+    this.#elapsed += dt;
+
+    const dist = camera.getWorldPosition(this.#tmp).distanceTo(this.group.position);
+    this.#audio.update(camera, dist, this.#elapsed);
+
+    // ---- transport (always runs; the show goes on unheard) ----
+    this.#phaseTime += dt;
+    const ctx = this.#audio.ctx;
+    if (this.#phase === "playing" && ctx && this.#audio.running) {
+      // the audio clock is authoritative while it's running; a big gap means
+      // the context was suspended mid-song, so re-anchor instead of snapping
+      const audioPhase = ctx.currentTime - this.#anchor;
+      if (Math.abs(audioPhase - this.#phaseTime) > 0.25) this.#anchor = ctx.currentTime - this.#phaseTime;
+      else this.#phaseTime = audioPhase;
+    }
+    if (this.#phase === "playing" && this.#phaseTime >= SONG_SECONDS) this.#enterPhase("rest");
+    else if (this.#phase === "rest" && this.#phaseTime >= REST_SECONDS) this.#enterPhase("countin");
+    else if (this.#phase === "countin" && this.#phaseTime >= COUNTIN_SECONDS) this.#enterPhase("playing");
+
+    const clock = this.#clock;
+    clock.phase = this.#phase;
+    clock.phaseTime = this.#phaseTime;
+    clock.songTime = this.#phase === "playing" ? this.#phaseTime : SONG_SECONDS;
+    clock.beat = clock.songTime / SEC_PER_BEAT;
+    // never dead still: a slow breath under the shared foliage gust
+    clock.wind = THREE.MathUtils.clamp(0.18 + 0.12 * Math.sin(this.#elapsed * 0.31) + 0.85 * gust, 0, 1);
+
+    // ---- audio scheduling (lookahead window, once per event) ----
+    if (this.#phase === "playing" && this.#audio.running) {
+      const nowBeat = this.#phaseTime / SEC_PER_BEAT;
+      const horizon = Math.min(SONG_BEATS, (this.#phaseTime + LOOKAHEAD_SECONDS) / SEC_PER_BEAT);
+      const atTime = (beat: number) => this.#anchor + beat * SEC_PER_BEAT;
+      for (const [id, musician] of this.#musicians) {
+        const events = SONG[id];
+        let i = this.#schedIdx[id];
+        while (i < events.length && events[i].beat < nowBeat - 0.05) i++; // arrived mid-song: drop the past
+        let batch: NoteEvent[] | null = null;
+        while (i < events.length && events[i].beat <= horizon) {
+          (batch ??= []).push(events[i++]);
+        }
+        this.#schedIdx[id] = i;
+        if (batch) musician.schedule(batch, atTime);
+      }
+    }
+
+    // ---- animation ----
+    if (dist < ANIM_RADIUS) {
+      for (const musician of this.#musicians.values()) musician.update(dt, clock);
+    }
+  }
+
+  dispose() {
+    for (const musician of this.#musicians.values()) musician.dispose();
+    this.#musicians.clear();
+    this.#platform.dispose();
+    this.#audio.dispose();
+    this.group.parent?.remove(this.group);
+  }
+
+  #enterPhase(phase: TrioPhase) {
+    this.#phase = phase;
+    this.#phaseTime = 0;
+    if (phase === "playing") {
+      this.#schedIdx = { ukulele: 0, handpan: 0, flute: 0 };
+      const ctx = this.#audio.ctx;
+      // +60 ms of slack so beat-0 voices are never scheduled in the past
+      this.#anchor = (ctx ? ctx.currentTime : 0) + 0.06;
+    }
+  }
+}
+
+/** No-audio environments (tests, unsupported browsers): a detached context
+ * stand-in is impossible, so give musicians a tap whose scheduling is
+ * simply never invoked (TrioAudio.running stays false). */
+function makeSilentTap() {
+  return {
+    // schedule() is only called when the real context runs, so musicians
+    // never touch this in the audio-less case; the cast keeps builders simple.
+    ctx: null as unknown as AudioContext,
+    out: null as unknown as GainNode
+  };
+}
+
+export function createBuskerTrio(opts: BuskerTrioOptions): BuskerTrio {
+  return new BuskerTrio(opts);
+}

@@ -2335,10 +2335,21 @@
       }
       #hud .board-fx-toggle {
         width: auto;
-        padding: 0 7px;
-        font: 800 8px/23px var(--font);
-        letter-spacing: 0.08em;
+        height: 15px;
+        padding: 0 5px;
+        font: 800 7px/13px var(--font);
+        letter-spacing: 0.05em;
         text-transform: uppercase;
+        white-space: nowrap;
+      }
+      #hud .board-lab-motion .board-lab-readout {
+        min-width: 0;
+      }
+      #hud .board-lab-motion .board-lab-sub {
+        overflow: visible;
+        display: flex;
+        gap: 5px;
+        align-items: center;
       }
       #hud .board-lab-motion .board-lab-head {
         cursor: pointer;

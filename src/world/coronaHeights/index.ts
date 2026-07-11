@@ -3,6 +3,7 @@ import { BodyType, type Physics } from "../../core/physics";
 import { avatarFromSeed } from "../../player/avatar";
 import { buildRig, poseIdle, type Rig } from "../../player/rig";
 import type { WorldMap } from "../heightmap";
+import { dogParkFenceSegments, makeDogParkFence, type FenceSegment2D } from "./dogParkFence";
 import {
   CORONA_DOG_GATE,
   CORONA_DOG_PARK,
@@ -21,11 +22,18 @@ const HILL_STEP = 4;
 const DOG_SURFACE_LIFT = 0.04;
 const DOG_QUERY_LIFT = 0.14;
 const CORONA_GROUND_LIFT = 0.38;
+const DOG_ACCEL = 10;
+const DOG_ARRIVE = 2.5; // arrival slow-down radius so dogs ease in instead of teleport-stopping
+const OWNER_CLEARANCE = 0.85; // dogs never crowd inside this ring around a human
+const BALL_R = 0.16;
+const FENCE_PAD = 0.1; // fence rail half-thickness for ball rebounds
+const THROW_RELEASE = 0.3; // seconds into the throw animation when the prop leaves the hand
+const THROW_ANIM_LEN = 0.85;
 const preparedMaps = new WeakSet<WorldMap>();
 
-type FencePiece = { ax: number; az: number; bx: number; bz: number };
 type TrailSample = { x: number; z: number; tx: number; tz: number };
 type OwnerAction = "watch" | "ball" | "frisbee";
+type FetchStage = "wait" | "react" | "chase" | "return";
 
 type ParkOwner = {
   action: OwnerAction;
@@ -33,6 +41,25 @@ type ParkOwner = {
   x: number;
   z: number;
   facing: number;
+  seed: number;
+  // layered pose state — smoothed every frame, never snapped
+  yaw: number;
+  headYaw: number;
+  headPitch: number;
+  torsoYaw: number;
+  cheer: number;
+  cheerTimer: number;
+  greet: number;
+  greetTimer: number;
+  throwAnim: number; // seconds since windup start; >= THROW_ANIM_LEN means idle
+};
+
+type WanderState = {
+  mode: "roam" | "sniff" | "chase";
+  tx: number;
+  tz: number;
+  timer: number;
+  dur: number;
 };
 
 type DogStyle = {
@@ -744,137 +771,6 @@ function makeWoodchips(map: WorldMap) {
   return mesh;
 }
 
-function trimSegment(a: CoronaXZ, b: CoronaXZ, trimA: number, trimB: number): FencePiece | null {
-  const dx = b[0] - a[0];
-  const dz = b[1] - a[1];
-  const length = Math.hypot(dx, dz);
-  if (length <= trimA + trimB + 0.1) return null;
-  const ux = dx / length;
-  const uz = dz / length;
-  return { ax: a[0] + ux * trimA, az: a[1] + uz * trimA, bx: b[0] - ux * trimB, bz: b[1] - uz * trimB };
-}
-
-function fencePieces() {
-  const pieces: FencePiece[] = [];
-  for (let i = 0; i < CORONA_DOG_PARK.length; i++) {
-    const a = CORONA_DOG_PARK[i];
-    const b = CORONA_DOG_PARK[(i + 1) % CORONA_DOG_PARK.length];
-    const edge = trimSegment(a, b, i === 0 ? 1.1 : 0, i === CORONA_DOG_PARK.length - 1 ? 1.1 : 0);
-    if (!edge) continue;
-    const length = Math.hypot(edge.bx - edge.ax, edge.bz - edge.az);
-    const count = Math.max(1, Math.ceil(length / 4.5));
-    for (let k = 0; k < count; k++) {
-      const t0 = k / count;
-      const t1 = (k + 1) / count;
-      pieces.push({
-        ax: lerp(edge.ax, edge.bx, t0),
-        az: lerp(edge.az, edge.bz, t0),
-        bx: lerp(edge.ax, edge.bx, t1),
-        bz: lerp(edge.az, edge.bz, t1)
-      });
-    }
-  }
-  return pieces;
-}
-
-type FenceFrame = {
-  x: number;
-  y: number;
-  z: number;
-  y0: number;
-  y1: number;
-  length: number;
-  quat: readonly [number, number, number, number];
-};
-
-function fenceFrame(map: WorldMap, piece: FencePiece): FenceFrame {
-  const dx = piece.bx - piece.ax;
-  const dz = piece.bz - piece.az;
-  const y0 = map.groundTop(piece.ax, piece.az);
-  const y1 = map.groundTop(piece.bx, piece.bz);
-  const xAxis = new THREE.Vector3(dx, y1 - y0, dz).normalize();
-  const zAxis = new THREE.Vector3(-dz, 0, dx).normalize();
-  const yAxis = new THREE.Vector3().crossVectors(zAxis, xAxis).normalize();
-  const rotation = new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis);
-  const q = new THREE.Quaternion().setFromRotationMatrix(rotation);
-  return {
-    x: (piece.ax + piece.bx) / 2,
-    y: (y0 + y1) / 2,
-    z: (piece.az + piece.bz) / 2,
-    y0,
-    y1,
-    length: Math.hypot(dx, y1 - y0, dz),
-    quat: [q.x, q.y, q.z, q.w]
-  };
-}
-
-function registerFenceCollider(physics: Physics, frame: FenceFrame) {
-  const { x, z, length, quat } = frame;
-  const y = frame.y + 0.72;
-  const body = physics.world.createBox({
-    type: BodyType.Static,
-    position: [x, y, z],
-    halfExtents: [length / 2, 0.72, 0.09],
-    friction: 0.7
-  });
-  physics.world.setBodyTransform(body, [x, y, z], quat);
-  physics.addQuerySolid(body, { x, y, z, hx: length / 2, hy: 0.72, hz: 0.09, quat });
-}
-
-function makeFence(map: WorldMap, physics: Physics) {
-  const group = new THREE.Group();
-  group.name = "corona_dog_park_fence";
-  const pieces = fencePieces();
-  const steel = new THREE.MeshStandardMaterial({ color: 0x889293, metalness: 0.58, roughness: 0.48 });
-  const posts = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.055, 0.065, 1.42, 8), steel, pieces.length + 2);
-  const rails = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), steel, pieces.length * 2);
-  posts.name = "corona_dog_park_fence_posts";
-  rails.name = "corona_dog_park_fence_rails";
-  const dummy = new THREE.Object3D();
-  const postPoints: { x: number; z: number }[] = pieces.map((p) => ({ x: p.ax, z: p.az }));
-  const final = pieces[pieces.length - 1];
-  postPoints.push({ x: final.bx, z: final.bz });
-  postPoints.push({ x: CORONA_DOG_GATE[0], z: CORONA_DOG_GATE[1] });
-  postPoints.forEach((p, i) => {
-    dummy.position.set(p.x, map.groundTop(p.x, p.z) + 0.71, p.z);
-    dummy.rotation.set(0, 0, 0);
-    dummy.scale.set(1, i === postPoints.length - 1 ? 1.18 : 1, 1);
-    dummy.updateMatrix();
-    posts.setMatrixAt(i, dummy.matrix);
-  });
-  let railIndex = 0;
-  const wirePositions: number[] = [];
-  for (const piece of pieces) {
-    const frame = fenceFrame(map, piece);
-    for (const lift of [0.3, 1.15]) {
-      dummy.position.set(frame.x, frame.y + lift, frame.z);
-      dummy.quaternion.set(frame.quat[0], frame.quat[1], frame.quat[2], frame.quat[3]);
-      dummy.scale.set(frame.length, 0.035, 0.035);
-      dummy.updateMatrix();
-      rails.setMatrixAt(railIndex++, dummy.matrix);
-    }
-    for (const lift of [0.52, 0.76, 0.98]) {
-      wirePositions.push(piece.ax, frame.y0 + lift, piece.az, piece.bx, frame.y1 + lift, piece.bz);
-    }
-    wirePositions.push(piece.ax, frame.y0 + 0.28, piece.az, piece.bx, frame.y1 + 1.14, piece.bz);
-    registerFenceCollider(physics, frame);
-  }
-  posts.instanceMatrix.needsUpdate = true;
-  rails.instanceMatrix.needsUpdate = true;
-  posts.castShadow = rails.castShadow = true;
-  posts.receiveShadow = rails.receiveShadow = true;
-  posts.frustumCulled = rails.frustumCulled = false;
-  const wireGeometry = new THREE.BufferGeometry();
-  wireGeometry.setAttribute("position", new THREE.Float32BufferAttribute(wirePositions, 3));
-  const wire = new THREE.LineSegments(
-    wireGeometry,
-    new THREE.LineBasicMaterial({ color: 0x9ca5a5, transparent: true, opacity: 0.64 })
-  );
-  wire.name = "corona_dog_park_chainlink";
-  group.add(posts, rails, wire);
-  return group;
-}
-
 function addBox(
   parent: THREE.Object3D,
   material: THREE.Material,
@@ -959,7 +855,7 @@ function makeDogPark(map: WorldMap, physics: Physics) {
   group.name = "corona_heights_dog_park";
   group.add(polygonSurface(map, CORONA_DOG_PARK));
   group.add(makeWoodchips(map));
-  group.add(makeFence(map, physics));
+  group.add(makeDogParkFence(map, physics));
   group.add(makeDogParkSign(map));
   group.add(makeBench(map, 350.1, 2703.4, -0.68, DOG_SURFACE_LIFT));
   group.add(makeBench(map, 353.1, 2720.6, -1.02, DOG_SURFACE_LIFT));
@@ -1054,67 +950,190 @@ function makeOwner(map: WorldMap, action: OwnerAction, x: number, z: number, tx:
   const facing = ownerFacing(x, z, tx, tz);
   rig.group.position.set(x, map.groundTop(x, z) + DOG_SURFACE_LIFT + 0.93, z);
   rig.group.rotation.y = facing;
-  return { action, rig, x, z, facing } satisfies ParkOwner;
+  return {
+    action,
+    rig,
+    x,
+    z,
+    facing,
+    seed: hash2(x, z, 77),
+    yaw: facing,
+    headYaw: 0,
+    headPitch: 0,
+    torsoYaw: 0,
+    cheer: 0,
+    cheerTimer: 0,
+    greet: 0,
+    greetTimer: 0,
+    throwAnim: THROW_ANIM_LEN
+  } satisfies ParkOwner;
 }
 
-function throwArmPose(owner: ParkOwner, elapsed: number, phase: number) {
-  poseIdle(owner.rig, elapsed);
-  const windup = smooth01((phase - 0.02) / 0.1) * (1 - smooth01((phase - 0.12) / 0.08));
-  const release = smooth01((phase - 0.12) / 0.07) * (1 - smooth01((phase - 0.24) / 0.12));
-  owner.rig.armR.rotation.x += -0.9 * windup + 1.55 * release;
-  owner.rig.foreR.rotation.x = 0.25 + 0.75 * windup - 0.36 * release;
-  owner.rig.torso.rotation.y += 0.3 * windup - 0.42 * release;
-  owner.rig.head.rotation.y -= 0.18 * release;
+function throwWindup(p: number) {
+  return smooth01(p / 0.22) * (1 - smooth01((p - 0.26) / 0.09));
 }
 
-function placeOwner(map: WorldMap, owner: ParkOwner, elapsed: number, phase: number) {
-  owner.rig.group.position.set(owner.x, map.groundTop(owner.x, owner.z) + DOG_SURFACE_LIFT + 0.93, owner.z);
-  owner.rig.group.rotation.y = owner.facing;
-  if (owner.action === "watch") {
-    poseIdle(owner.rig, elapsed);
-    owner.rig.head.rotation.y += Math.sin(elapsed * 0.42) * 0.28;
-  } else {
-    throwArmPose(owner, elapsed, phase);
+/** Layered procedural pose: poseIdle base, then weight shift, dog tracking,
+ * cheer/greet cross-fades and the throw arm — all exponentially smoothed so
+ * nothing snaps and nothing repeats on a visible loop. */
+function ownerPose(map: WorldMap, owner: ParkOwner, dog: ParkDog, elapsed: number, dt: number) {
+  const rig = owner.rig;
+  const t = elapsed + owner.seed * 21.7;
+  poseIdle(rig, t);
+  const sway = Math.sin(t * 0.33);
+  rig.hips.position.x = sway * 0.03;
+  rig.hips.rotation.z = sway * 0.035;
+  rig.torso.rotation.z -= sway * 0.02;
+
+  // head leads toward the dog, torso follows a little, feet turn last
+  const desired = Math.atan2(-(dog.x - owner.x), -(dog.z - owner.z));
+  let delta = Math.atan2(Math.sin(desired - owner.yaw), Math.cos(desired - owner.yaw));
+  const excess = Math.max(0, Math.abs(delta) - 0.72);
+  if (excess > 1e-4) {
+    owner.yaw += Math.sign(delta) * excess * (1 - Math.exp(-dt * 1.8));
+    delta = Math.atan2(Math.sin(desired - owner.yaw), Math.cos(desired - owner.yaw));
+  }
+  const lookAround = owner.action === "watch" ? Math.sin(t * 0.17) * Math.sin(t * 0.043) * 0.5 : 0;
+  const dist = Math.hypot(dog.x - owner.x, dog.z - owner.z);
+  const ease = 1 - Math.exp(-dt * 5);
+  owner.headYaw += (THREE.MathUtils.clamp(delta + lookAround, -0.9, 0.9) - owner.headYaw) * ease;
+  owner.headPitch += (THREE.MathUtils.clamp(0.9 / Math.max(dist, 1.2), 0, 0.42) - owner.headPitch) * ease;
+  owner.torsoYaw += (THREE.MathUtils.clamp(delta * 0.35, -0.25, 0.25) - owner.torsoYaw) * ease;
+  rig.head.rotation.y += owner.headYaw;
+  rig.head.rotation.x += owner.headPitch;
+  rig.torso.rotation.y += owner.torsoYaw;
+
+  owner.cheerTimer = Math.max(0, owner.cheerTimer - dt);
+  owner.greetTimer = Math.max(0, owner.greetTimer - dt);
+  if (dog.speed > 4.6 && owner.cheerTimer <= 0 && owner.greetTimer <= 0 && Math.random() < dt * 0.5) {
+    owner.cheerTimer = 1.4 + Math.random() * 1.2;
+  }
+  const blend = 1 - Math.exp(-dt * 6);
+  owner.cheer += ((owner.cheerTimer > 0 ? 1 : 0) - owner.cheer) * blend;
+  owner.greet += ((owner.greetTimer > 0 ? 1 : 0) - owner.greet) * blend;
+  if (owner.cheer > 1e-3) {
+    rig.armL.rotation.z += 2.35 * owner.cheer;
+    rig.foreL.rotation.x += (0.35 + Math.sin(t * 9) * 0.3) * owner.cheer;
+    rig.hips.position.y += Math.abs(Math.sin(t * 6.5)) * 0.05 * owner.cheer;
+  }
+  if (owner.greet > 1e-3) {
+    rig.torso.rotation.x += 0.42 * owner.greet;
+    rig.head.rotation.x += 0.2 * owner.greet;
+    rig.armR.rotation.x += 0.6 * owner.greet;
+  }
+
+  if (owner.throwAnim < THROW_ANIM_LEN) {
+    owner.throwAnim += dt;
+    const p = owner.throwAnim;
+    const windup = throwWindup(p);
+    const release = smooth01((p - 0.26) / 0.08) * (1 - smooth01((p - 0.5) / 0.3));
+    rig.armR.rotation.x += -0.95 * windup + 1.55 * release;
+    rig.foreR.rotation.x += 0.75 * windup - 0.3 * release;
+    rig.torso.rotation.y += 0.32 * windup - 0.4 * release;
+    rig.head.rotation.y -= 0.15 * release;
+  }
+
+  rig.group.position.set(owner.x, map.groundTop(owner.x, owner.z) + DOG_SURFACE_LIFT + 0.93, owner.z);
+  rig.group.rotation.y = owner.yaw;
+}
+
+function dogSprint(style: DogStyle) {
+  // big dogs top out ~7.3 m/s, corgis ~4.9 — small dogs are no longer the fastest
+  return 4.7 + (style.scale - 0.8) * 8;
+}
+
+function dogTrot(style: DogStyle) {
+  return 2.1 + (style.scale - 0.8) * 1.6;
+}
+
+function keepClearOfOwners(dog: ParkDog, owners: ParkOwner[]) {
+  for (let i = 0; i < owners.length; i++) {
+    const owner = owners[i];
+    const dx = dog.x - owner.x;
+    const dz = dog.z - owner.z;
+    const d = Math.hypot(dx, dz);
+    if (d < OWNER_CLEARANCE && d > 1e-4) {
+      const push = (OWNER_CLEARANCE - d) / d;
+      dog.x += dx * push;
+      dog.z += dz * push;
+    }
   }
 }
 
-function moveDog(map: WorldMap, dog: ParkDog, tx: number, tz: number, dt: number) {
-  const dx = tx - dog.x;
-  const dz = tz - dog.z;
-  const d = Math.hypot(dx, dz);
-  const maxSpeed = 11.8 / dog.style.scale;
-  const step = Math.min(d, maxSpeed * Math.min(dt, 0.08));
-  let vx = 0;
-  let vz = 0;
-  if (d > 0.025) {
-    vx = (dx / d) * step;
-    vz = (dz / d) * step;
-    dog.x += vx;
-    dog.z += vz;
-    const targetHeading = Math.atan2(-vx, -vz);
-    const turn = Math.atan2(Math.sin(targetHeading - dog.heading), Math.cos(targetHeading - dog.heading));
-    dog.heading += turn * (1 - Math.exp(-Math.min(dt, 0.08) * 10));
-  }
-  dog.speed = dt > 1e-4 ? step / dt : 0;
-  dog.stride += step * 4.6;
+function dogGaitPose(map: WorldMap, dog: ParkDog, advance: number) {
+  dog.stride += advance * (3.4 / dog.style.scale);
   dog.group.position.set(dog.x, map.groundTop(dog.x, dog.z) + DOG_SURFACE_LIFT + 0.04, dog.z);
   dog.group.rotation.y = dog.heading;
-  dog.group.position.y += Math.abs(Math.sin(dog.stride * 0.5)) * Math.min(0.08, dog.speed * 0.012) * dog.style.scale;
-  const swing = Math.sin(dog.stride) * Math.min(0.85, dog.speed * 0.15);
+  dog.group.position.y += Math.abs(Math.sin(dog.stride * 0.5)) * Math.min(0.09, dog.speed * 0.016) * dog.style.scale;
+  const swing = Math.sin(dog.stride) * Math.min(0.9, dog.speed * 0.19);
   dog.legs[0].rotation.x = swing;
   dog.legs[1].rotation.x = -swing;
   dog.legs[2].rotation.x = -swing;
   dog.legs[3].rotation.x = swing;
-  dog.head.rotation.x = -0.05 + Math.sin(dog.stride * 2) * Math.min(0.08, dog.speed * 0.012);
+  dog.head.rotation.x = -0.05 + Math.sin(dog.stride * 2) * Math.min(0.08, dog.speed * 0.014);
   dog.tail.rotation.y = Math.sin(dog.stride * 0.72) * 0.72;
   dog.tail.rotation.x = 0.82 + Math.sin(dog.stride * 0.31) * 0.12;
 }
 
-function fetchTarget(phase: number, owner: CoronaXZ, landing: CoronaXZ, waiting: CoronaXZ) {
-  if (phase < 0.12) return waiting;
-  if (phase < 0.54) return landing;
-  if (phase < 0.96) return owner;
-  return waiting;
+/** Steer-and-integrate locomotion: speed accelerates toward the gait, eases
+ * off inside DOG_ARRIVE, and heading obeys a turn-rate limit so a sprinting
+ * dog carves an arc instead of rotating in place. */
+function moveDog(map: WorldMap, dog: ParkDog, tx: number, tz: number, gait: number, owners: ParkOwner[], dt: number) {
+  const step = Math.min(dt, 1 / 30);
+  const dx = tx - dog.x;
+  const dz = tz - dog.z;
+  const d = Math.hypot(dx, dz);
+  let desired = d < 0.08 ? 0 : Math.min(gait, gait * (d / DOG_ARRIVE));
+  if (d > 0.08) {
+    const targetHeading = Math.atan2(-dx, -dz);
+    const turn = Math.atan2(Math.sin(targetHeading - dog.heading), Math.cos(targetHeading - dog.heading));
+    const maxTurn = lerp(5, 1.9, clamp01(dog.speed / 7)) * step;
+    dog.heading += THREE.MathUtils.clamp(turn, -maxTurn, maxTurn);
+    // pointed the wrong way: slow to a tight pivot rather than overrun
+    if (Math.abs(turn) > 1.2) desired = Math.min(desired, 1.4);
+  }
+  dog.speed += THREE.MathUtils.clamp(desired - dog.speed, -12 * step, DOG_ACCEL * step);
+  const advance = dog.speed * step;
+  dog.x -= Math.sin(dog.heading) * advance;
+  dog.z -= Math.cos(dog.heading) * advance;
+  keepClearOfOwners(dog, owners);
+  dogGaitPose(map, dog, advance);
+}
+
+/** Waiting-for-the-throw idle: face the point of interest, wag hard, and every
+ * few seconds give a little anticipatory hop — anticipation reads as life. */
+function dogWait(map: WorldMap, dog: ParkDog, faceX: number, faceZ: number, owners: ParkOwner[], elapsed: number, dt: number) {
+  const step = Math.min(dt, 1 / 30);
+  dog.speed = Math.max(0, dog.speed - 12 * step);
+  const advance = dog.speed * step;
+  if (advance > 0) {
+    dog.x -= Math.sin(dog.heading) * advance;
+    dog.z -= Math.cos(dog.heading) * advance;
+  }
+  const desired = Math.atan2(-(faceX - dog.x), -(faceZ - dog.z));
+  const turn = Math.atan2(Math.sin(desired - dog.heading), Math.cos(desired - dog.heading));
+  dog.heading += THREE.MathUtils.clamp(turn, -3.4 * step, 3.4 * step);
+  keepClearOfOwners(dog, owners);
+  dogGaitPose(map, dog, advance);
+  const seed = dog.style.coat % 97;
+  const hopCycle = fract(elapsed * 0.31 + seed * 0.13);
+  const hop = hopCycle < 0.1 ? Math.sin((hopCycle / 0.1) * Math.PI) : 0;
+  dog.group.position.y += hop * 0.13 * dog.style.scale;
+  dog.legs[0].rotation.x = dog.legs[2].rotation.x = hop * 0.5;
+  dog.legs[1].rotation.x = dog.legs[3].rotation.x = -hop * 0.4;
+  dog.head.rotation.x = 0.22 + hop * 0.15; // gaze up at the human
+  dog.tail.rotation.y = Math.sin(elapsed * 11 + seed) * 0.95;
+  dog.tail.rotation.x = 0.6;
+}
+
+function throwTargetClear(x: number, z: number) {
+  return (
+    pointInPolygon(x, z, CORONA_DOG_PARK) &&
+    pointInPolygon(x + 2.2, z, CORONA_DOG_PARK) &&
+    pointInPolygon(x - 2.2, z, CORONA_DOG_PARK) &&
+    pointInPolygon(x, z + 2.2, CORONA_DOG_PARK) &&
+    pointInPolygon(x, z - 2.2, CORONA_DOG_PARK)
+  );
 }
 
 function dogMouth(dog: ParkDog, out: THREE.Vector3) {
@@ -1136,11 +1155,47 @@ export class CoronaHeightsPark {
   readonly stats: CoronaHeightsStats;
   readonly summit = CORONA_HEIGHTS_SUMMIT;
 
+  /** Elapsed-time stamp of the latest ball/frisbee release (audio hook). */
+  lastThrowAt = -Infinity;
+
   #map: WorldMap;
   #ball: THREE.Mesh;
   #frisbee: THREE.Mesh;
   #mouth = new THREE.Vector3();
   #propTarget = new THREE.Vector3();
+  #spinAxis = new THREE.Vector3();
+  #segs: FenceSegment2D[];
+  #segTop: Float64Array;
+  #fenceTopMax = -Infinity;
+  #wander: WanderState[];
+  #throwX = 0;
+  #throwZ = 0;
+  // ball: held-by-owner → windup → free flight/bounce/roll → carried back
+  #ballPhase: "held" | "windup" | "free" | "carried" = "held";
+  #ballTimer = 2.2;
+  #ballVX = 0;
+  #ballVY = 0;
+  #ballVZ = 0;
+  #ballGrounded = false;
+  #ballFetch: FetchStage = "wait";
+  #ballReact = 0;
+  // frisbee keeps a scripted glide (frisbees don't roll) with the same fetch treatment
+  #friPhase: "held" | "windup" | "glide" | "settle" | "rest" | "carried" = "held";
+  #friTimer = 4.2;
+  #friDur = 1.6;
+  #friLift = 3;
+  #friCurve = 0;
+  #friSpin = 0;
+  #friFromX = 0;
+  #friFromY = 0;
+  #friFromZ = 0;
+  #friToX = 0;
+  #friToY = 0;
+  #friToZ = 0;
+  #friPerpX = 0;
+  #friPerpZ = 0;
+  #friFetch: FetchStage = "wait";
+  #friReact = 0;
 
   constructor(map: WorldMap, physics: Physics) {
     this.#map = map;
@@ -1193,6 +1248,19 @@ export class CoronaHeightsPark {
     this.#frisbee.castShadow = true;
     this.activity.add(this.#ball, this.#frisbee);
     this.group.add(this.activity);
+
+    this.#segs = dogParkFenceSegments();
+    this.#segTop = new Float64Array(this.#segs.length);
+    for (let i = 0; i < this.#segs.length; i++) {
+      const seg = this.#segs[i];
+      const top = Math.max(map.groundTop(seg.ax, seg.az), map.groundTop(seg.bx, seg.bz)) + 1.55;
+      this.#segTop[i] = top;
+      this.#fenceTopMax = Math.max(this.#fenceTopMax, top);
+    }
+    this.#wander = [
+      { mode: "roam", tx: 366, tz: 2699, timer: 0, dur: 1 },
+      { mode: "roam", tx: 384, tz: 2696, timer: 0, dur: 1 }
+    ];
     this.stats = { dogs: this.dogs.length, owners: this.owners.length, summit: CORONA_HEIGHTS_SUMMIT };
   }
 

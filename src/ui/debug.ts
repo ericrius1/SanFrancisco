@@ -322,7 +322,7 @@ export class DebugPanel {
     });
 
     // basics live at the root — the handful of things touched every session;
-    // everything else tucks into the collapsed "advanced" folder below.
+    // buildings (citygen) sits here too; everything else tucks into "advanced".
     // proxy so tweakpane's slider step never quantizes the live cycle clock
     const lightingView = {
       timeOfDay: this.#sky.timeOfDay,
@@ -364,7 +364,14 @@ export class DebugPanel {
       onChange: onSkyChange
     });
 
-    const fog = pane.addFolder({ title: "fog" });
+    // procedural building DETAIL (src/world/citygen) — how many nearby buildings get
+    // the full grammar mesh. Reach comes from the top-level draw-distance slider.
+    // The ring reads these live each scan, so no onChange side-effect is needed —
+    // drag + watch the fps counter and the near-detail band move.
+    const citygenF = pane.addFolder({ title: "buildings (citygen)", expanded: true });
+    CITYGEN_TUNING.bind(citygenF, { onChange: () => {} });
+
+    const fog = pane.addFolder({ title: "fog", expanded: false });
     WORLD_TUNING.bind(fog, {
       keys: ["fogEnabled", "fogTop", "fogBank", "fogNoise", "fogDrift", "fog"],
       onChange: () => this.#sky.applyFogParams()
@@ -437,13 +444,6 @@ export class DebugPanel {
         if (last) this.#refreshGrass();
       }
     });
-
-    // procedural building DETAIL (src/world/citygen) — how many nearby buildings get
-    // the full grammar mesh. Reach comes from the top-level draw-distance slider.
-    // The ring reads these live each scan, so no onChange side-effect is needed —
-    // drag + watch the fps counter and the near-detail band move.
-    const citygenF = advanced.addFolder({ title: "buildings (citygen)", expanded: false });
-    CITYGEN_TUNING.bind(citygenF, { onChange: () => {} });
 
     // Salesforce crown projection. Brightness is a multiplier on the sky-driven
     // CROWN_INTENSITY, which is rewritten every frame.

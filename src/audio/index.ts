@@ -21,3 +21,5 @@ export { NatureSoundscape, NATURE_AUDIO_TUNING } from "./natureSoundscape";
 export { NATURE_REGIONS } from "./regions";
 export type { NatureRegionSpec, BedId, VoiceWeight } from "./regions";
 export type { NatureVoiceKind } from "./voices";
+export { DogParkAudio } from "./dogPark";
+export type { DogParkDog } from "./dogPark";

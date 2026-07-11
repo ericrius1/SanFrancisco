@@ -324,7 +324,9 @@ export class BoardSelector {
    *  effect button) is clicked. Chip clicks commit like any other edit. */
   #attachFxDrawer(lab: HTMLElement) {
     const head = lab.querySelector<HTMLElement>(".board-lab-head")!;
-    const tools = head.querySelector<HTMLElement>(".board-lab-tools")!;
+    // the toggle lives on the subtitle line — the header line has no room left
+    // beside the readout without wrapping the lab title
+    const sub = head.querySelector<HTMLElement>(".board-lab-sub")!;
     const current = BOARD_FX.find((f) => f.id === this.#config.surfaceFxKind) ?? BOARD_FX[0];
 
     const toggle = document.createElement("button");
@@ -338,7 +340,7 @@ export class BoardSelector {
       toggle.setAttribute("aria-expanded", String(open));
     };
     toggle.addEventListener("click", () => setOpen(!this.#fxOpen));
-    tools.appendChild(toggle);
+    sub.appendChild(toggle);
     head.addEventListener("click", (e) => {
       if ((e.target as HTMLElement).closest("button")) return; // the button handles itself
       setOpen(!this.#fxOpen);

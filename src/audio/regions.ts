@@ -38,6 +38,10 @@ export type NatureRegionSpec = {
     /** 0..1 reverberation (open canyon > enclosed garden). */
     reverb: number;
   };
+  /** Optional altitude lift for exposed hills: this region's wind-synth
+   *  contribution scales by 1 + boost·smoothstep(y0, y1, playerY), so climbing
+   *  toward the summit gets audibly windier. Omitted = flat (no change). */
+  windAltitude?: { y0: number; y1: number; boost: number };
 };
 
 const wild = (id: string): Rect => {
@@ -140,6 +144,30 @@ export const NATURE_REGIONS: NatureRegionSpec[] = [
     ],
     density: 9,
     character: { windBias: 0.9, fog: 0.35, reverb: 0.6 }
+  },
+  {
+    // Corona Heights — bare chaparral hilltop over the Castro: a quieter,
+    // windier echo of the parks below. Sparse dry-scrub birds by day, owls and
+    // crickets by night; the wind lifts noticeably toward the rocky summit.
+    id: "corona",
+    label: "Corona Heights",
+    bounds: { minX: 292, maxX: 524, minZ: 2644, maxZ: 2892 },
+    fade: 90,
+    beds: { forestBirds: 0.3, windGrass: 0.9, windTree: 0.3, nightCrickets: 0.6 },
+    day: [
+      { kind: "sparrow", w: 3 },
+      { kind: "songbird", w: 2 },
+      { kind: "hawk", w: 2 },
+      { kind: "crow", w: 2 },
+      { kind: "quail", w: 1 }
+    ],
+    night: [
+      { kind: "owl", w: 3 },
+      { kind: "cricketChirp", w: 3 }
+    ],
+    density: 8,
+    character: { windBias: 0.72, fog: 0.22, reverb: 0.5 },
+    windAltitude: { y0: 104, y1: 158, boost: 0.55 }
   }
 ];
 

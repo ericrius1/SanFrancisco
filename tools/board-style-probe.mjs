@@ -273,10 +273,10 @@ async function main() {
 
   const results = { shots: [], boards: [], texture: {}, animation: {}, remote: {}, audio: {}, ui: {}, errors: [] };
 
-  // ---- 1. texture-uniform animation contract ----
-  // Drive the real board animation function directly against the live mesh. The
-  // controller path is covered by board-fix-probe; here direct ticks make upload
-  // and one-shot envelope assertions deterministic and independent of terrain.
+  // ---- 1. shader-uniform animation contract ----
+  // Drive the real board animation function directly against the live mesh.
+  // Motion lives in shader uniforms now: flow must visibly stream the artwork,
+  // effect edits must flip weight uniforms, and nothing may re-upload pixels.
   results.animation = await ev(c, `(async()=>{ ${P}
     const {animateBoard}=await import('/src/vehicles/board/mesh.ts');
     const base=${JSON.stringify(CONFIGS[0].cfg)};
@@ -284,70 +284,53 @@ async function main() {
     const g=sf.player.meshes.board;
     const surface=g.userData.boardSurface;
     surface.reducedMotion=false;
-    const snap=()=>({
-      matrix:[...surface.texture.matrix.elements],
-      offset:[surface.texture.offset.x,surface.texture.offset.y],
-      repeat:[surface.texture.repeat.x,surface.texture.repeat.y],
-      rotation:surface.texture.rotation
-    });
-    const delta=(a,b)=>Math.max(...a.matrix.map((v,i)=>Math.abs(v-b.matrix[i])));
 
-    animateBoard(g,1/60,0,12,true,0,0,false);
+    animateBoard(g,1/60,0,12,false);
     const version0=surface.texture.version;
-    const staticA=snap();
-    for(let i=1;i<=60;i++) animateBoard(g,1/60,i/60,12,true,0,0,false);
-    const staticB=snap();
-    const staticDelta=delta(staticA,staticB);
+    for(let i=1;i<=60;i++) animateBoard(g,1/60,i/60,12,false);
+    const scrollStatic=surface.uScroll.value;
     const versionAfterStatic=surface.texture.version;
 
-    // Motion-only preview must update scalar state without repainting/uploading.
-    sf.player.previewBoardSurface({...base,surfaceFlow:82,surfaceReaction:91});
+    // Motion/effect preview must flip uniforms without repainting/uploading.
+    sf.player.previewBoardSurface({...base,surfaceFlow:82,surfaceFx:91});
     const versionAfterMotionEdit=surface.texture.version;
     const flowSet=surface.flow;
-    const reactionSet=surface.reaction;
-    const motionA=snap();
-    for(let i=1;i<=45;i++) animateBoard(g,1/60,2+i/60,18,true,0,0,false);
-    const motionB=snap();
-    const motionDelta=delta(motionA,motionB);
+    const fxSet=surface.fx;
+    const wv=surface.uFx.value;
+    const weightsVortex=[wv.x,wv.y,wv.z];
+    const phaseA=surface.uPhase.value;
+    for(let i=1;i<=45;i++) animateBoard(g,1/60,2+i/60,18,false);
+    const scrollDelta=Math.abs(surface.uScroll.value-scrollStatic);
+    const phaseDelta=surface.uPhase.value-phaseA;
+    const emissive=surface.uEmissive.value;
     const versionAfterMotion=surface.texture.version;
 
-    const airBefore=surface.air;
-    for(let i=0;i<30;i++) animateBoard(g,1/60,3+i/60,18,false,5,0,false);
-    const airAfter=surface.air;
-    // Establish a real downward history, then send exactly one explicit local
-    // landing impulse. The visual envelope may ease up before decaying, but it
-    // must form one contiguous pulse and return to zero.
-    for(let i=0;i<12;i++) animateBoard(g,1/60,3.5+i/60,18,false,-14,0,false);
-    let episodes=0,active=false,peak=0;
-    const pulse=[];
-    for(let i=0;i<150;i++){
-      animateBoard(g,1/60,3.7+i/60,18,true,0,i===0?0.8:0,false);
-      const value=surface.visualImpact;
-      pulse.push(value);
-      peak=Math.max(peak,value);
-      const next=value>0.001;
-      if(next&&!active) episodes++;
-      active=next;
-    }
-    const finalImpact=surface.visualImpact;
-    const versionFinal=surface.texture.version;
+    // Effect-kind switch is a pure weight flip — same texture, same program.
+    sf.player.previewBoardSurface({...base,surfaceFlow:82,surfaceFx:91,surfaceFxKind:'glitch'});
+    const wg=surface.uFx.value;
+    const weightsGlitch=[wg.x,wg.y,wg.z];
+    const versionAfterKind=surface.texture.version;
     return {
-      version0,versionAfterStatic,versionAfterMotionEdit,versionAfterMotion,versionFinal,
-      versionStable:version0===versionAfterStatic&&version0===versionAfterMotionEdit&&version0===versionAfterMotion&&version0===versionFinal,
-      staticDelta,motionDelta,flowSet,reactionSet,airBefore,airAfter,
-      episodes,peak,firstImpact:pulse[0],finalImpact,
-      flowZeroStatic:staticDelta<1e-9,
-      motionMovedWithoutUpload:motionDelta>1e-6&&versionAfterMotionEdit===versionAfterMotion
+      version0,versionAfterStatic,versionAfterMotionEdit,versionAfterMotion,versionAfterKind,
+      versionStable:version0===versionAfterStatic&&version0===versionAfterMotionEdit&&version0===versionAfterMotion&&version0===versionAfterKind,
+      scrollStatic,scrollDelta,phaseDelta,flowSet,fxSet,emissive,weightsVortex,weightsGlitch
     };
   })()`);
   assertProbe(results.animation.versionStable, "animation changed CanvasTexture.version (unexpected upload)");
-  assertProbe(results.animation.flowZeroStatic, `flow=0 moved texture matrix (${results.animation.staticDelta})`);
-  assertProbe(results.animation.motionMovedWithoutUpload, "flow/reaction did not move texture uniforms without upload");
+  assertProbe(results.animation.scrollStatic === 0, `flow=0 scrolled the artwork (${results.animation.scrollStatic})`);
   assertProbe(Math.abs(results.animation.flowSet - 0.82) < 1e-9, "flow preview did not reach 0.82");
-  assertProbe(Math.abs(results.animation.reactionSet - 0.91) < 1e-9, "reaction preview did not reach 0.91");
-  assertProbe(results.animation.airAfter > results.animation.airBefore + 0.5, "air response did not rise");
-  assertProbe(results.animation.episodes === 1, `landing envelope fired ${results.animation.episodes} times`);
-  assertProbe(results.animation.peak > 0.1 && results.animation.finalImpact < 0.001, "landing pulse did not peak and decay");
+  assertProbe(Math.abs(results.animation.fxSet - 0.91) < 1e-9, "effect preview did not reach 0.91");
+  assertProbe(results.animation.scrollDelta > 0.05, `flow=0.82 barely moved the artwork (${results.animation.scrollDelta})`);
+  assertProbe(results.animation.phaseDelta > 0.5, `effect clock barely advanced (${results.animation.phaseDelta})`);
+  assertProbe(results.animation.emissive > 0.09, "effect strength did not lift emissive");
+  assertProbe(
+    Math.abs(results.animation.weightsVortex[0] - 0.91) < 1e-9 && results.animation.weightsVortex[1] === 0 && results.animation.weightsVortex[2] === 0,
+    `vortex weights wrong: ${results.animation.weightsVortex}`
+  );
+  assertProbe(
+    results.animation.weightsGlitch[0] === 0 && results.animation.weightsGlitch[1] === 0 && Math.abs(results.animation.weightsGlitch[2] - 0.91) < 1e-9,
+    `glitch weight flip failed: ${results.animation.weightsGlitch}`
+  );
 
   // ---- 2. config swaps on the local player ----
   for (const { name, cfg } of CONFIGS) {
@@ -393,19 +376,19 @@ async function main() {
       if(z>.35)faces.pz++; if(z<-.35)faces.nz++;
     }
     const materials=Array.isArray(shell.material)?shell.material:[shell.material];
-    const mapped=materials.filter(m=>!!m.map);
+    const mapped=materials.filter(m=>!!m.colorNode);
     return {
       riderHidden:!!rider,hasSurface:true,shell:true,shellName:shell.name,
       canvas:[surface.canvas.width,surface.canvas.height],vertices:uv.count,
       materialCount:materials.length,mappedMaterialCount:mapped.length,
-      mapShared:mapped.length===1&&mapped[0].map===surface.texture,
+      mapShared:mapped.length===1,
       finiteUV,uvMin,uvMax,uvInRange:finiteUV&&uvMin>=-1e-6&&uvMax<=1+1e-6,
       normalFaces:faces,groups:shell.geometry.groups.length
     };
   })()`);
   const faces = results.texture.normalFaces ?? {};
   assertProbe(results.texture.shell && results.texture.shellName === "board-surface-shell", "named surface shell missing");
-  assertProbe(results.texture.materialCount === 1 && results.texture.mappedMaterialCount === 1 && results.texture.mapShared, "shell is not using one shared mapped material");
+  assertProbe(results.texture.materialCount === 1 && results.texture.mappedMaterialCount === 1 && results.texture.mapShared, "shell is not using one node-driven surface material");
   assertProbe(results.texture.uvInRange, `shell UVs invalid (${results.texture.uvMin}..${results.texture.uvMax})`);
   assertProbe([faces.px, faces.nx, faces.py, faces.ny, faces.pz, faces.nz].every((n) => n > 0), "shell normals do not cover both caps, nose/tail and sides");
 
@@ -538,7 +521,7 @@ async function main() {
   // the pad, so the expected committed values are noted beside each endpoint.
   const padDrags = [
     ["surface", [0.18, 0.76], [0.82, 0.18]], // scale 82, warp 82
-    ["motion", [0.68, 0.68], [0.37, 0.14]],  // flow 37, reaction 86
+    ["motion", [0.68, 0.68], [0.37, 0.14]],  // flow 37, effect 86
     ["sound", [0.76, 0.2], [0.22, 0.72]],    // tone 22, motion 28
     ["thrust", [0.14, 0.82], [0.74, 0.31]]   // thrust 74, air 69
   ];
@@ -551,10 +534,10 @@ async function main() {
   await sleep(80);
   results.ui.afterDrag = await ev(c, `(()=>{
     const panel=document.querySelector('.board-panel');
-    const saved=JSON.parse(localStorage.getItem('sf-board-v4')||'null');
+    const saved=JSON.parse(localStorage.getItem('sf-board-v5')||'null');
     const picked=saved?{
       surfaceScale:saved.surfaceScale,surfaceWarp:saved.surfaceWarp,
-      surfaceFlow:saved.surfaceFlow,surfaceReaction:saved.surfaceReaction,
+      surfaceFlow:saved.surfaceFlow,surfaceFx:saved.surfaceFx,
       soundTone:saved.soundTone,soundMotion:saved.soundMotion,
       soundThrust:saved.soundThrust,soundAir:saved.soundAir
     }:null;
@@ -562,29 +545,62 @@ async function main() {
       readouts:[...panel.querySelectorAll('.board-lab-readout')].map(x=>x.value),
       saved:picked,
       committed:!!saved&&saved.surfaceScale===82&&saved.surfaceWarp===82&&
-        saved.surfaceFlow===37&&saved.surfaceReaction===86&&
+        saved.surfaceFlow===37&&saved.surfaceFx===86&&
         saved.soundTone===22&&saved.soundMotion===28&&
         saved.soundThrust===74&&saved.soundAir===69,
       boardStyle:window.__sf.vehicleAudio.debugState.boardStyle
     };
   })()`);
-  assertProbe(results.ui.afterDrag.committed, `v4 pad commit mismatch: ${JSON.stringify(results.ui.afterDrag.saved)}`);
+  assertProbe(results.ui.afterDrag.committed, `v5 pad commit mismatch: ${JSON.stringify(results.ui.afterDrag.saved)}`);
 
   results.ui.reroll = await ev(c, `(()=>{
-    const before=JSON.parse(localStorage.getItem('sf-board-v4')||'null')?.surfaceSeed??null;
+    const before=JSON.parse(localStorage.getItem('sf-board-v5')||'null')?.surfaceSeed??null;
     let button=document.querySelector('.board-lab-reroll');
     if(!button) return {clicked:false,before,after:before,changed:false};
     button.click();
-    let after=JSON.parse(localStorage.getItem('sf-board-v4')||'null')?.surfaceSeed??null;
+    let after=JSON.parse(localStorage.getItem('sf-board-v5')||'null')?.surfaceSeed??null;
     let attempts=1;
     if(after===before){
       button=document.querySelector('.board-lab-reroll');
       button?.click(); attempts++;
-      after=JSON.parse(localStorage.getItem('sf-board-v4')||'null')?.surfaceSeed??null;
+      after=JSON.parse(localStorage.getItem('sf-board-v5')||'null')?.surfaceSeed??null;
     }
     return {clicked:true,before,after,attempts,changed:before!==after};
   })()`);
-  assertProbe(results.ui.reroll.changed, "v4 reroll did not persist a new surface seed");
+  assertProbe(results.ui.reroll.changed, "v5 reroll did not persist a new surface seed");
+
+  // The MOTION lab's effect drawer: header click slides it open, chips commit
+  // the effect kind, the drawer survives the re-render, weights hit the board.
+  await revealPad(c, "motion");
+  results.ui.fxDrawer = await ev(c, `(async()=>{ ${P}
+    const lab=document.querySelector('.board-lab-motion');
+    const head=lab?.querySelector('.board-lab-head');
+    const toggle=lab?.querySelector('.board-fx-toggle');
+    const drawer=lab?.querySelector('.board-fx-drawer');
+    if(!lab||!head||!toggle||!drawer) return {present:false};
+    const closedH=drawer.getBoundingClientRect().height;
+    head.click();
+    await tick(3);
+    await new Promise(r=>setTimeout(r,300));
+    const openNow=lab.classList.contains('fx-open');
+    const openH=drawer.getBoundingClientRect().height;
+    const chips=[...lab.querySelectorAll('.board-fx-chips .avatar-choice')];
+    const labels=chips.map(x=>x.textContent.trim());
+    chips.find(x=>x.textContent.trim()==='ripple')?.click();
+    await tick(3);
+    const saved=JSON.parse(localStorage.getItem('sf-board-v5')||'null');
+    const lab2=document.querySelector('.board-lab-motion'); // panel re-rendered
+    const stillOpen=lab2.classList.contains('fx-open');
+    const onChip=[...lab2.querySelectorAll('.board-fx-chips .avatar-choice')].find(x=>x.classList.contains('on'))?.textContent.trim();
+    const weights=sf.player.meshes.board.userData.boardSurface.uFx.value;
+    return {present:true,closedH,openNow,openH,labels,savedKind:saved?.surfaceFxKind??null,stillOpen,onChip,weights:[weights.x,weights.y,weights.z]};
+  })()`);
+  assertProbe(results.ui.fxDrawer.present && results.ui.fxDrawer.openNow && results.ui.fxDrawer.openH > results.ui.fxDrawer.closedH + 8, "fx drawer did not slide open on header click");
+  assertProbe(results.ui.fxDrawer.labels.join(",") === "vortex,ripple,glitch", `fx chips wrong: ${results.ui.fxDrawer.labels}`);
+  assertProbe(results.ui.fxDrawer.savedKind === "ripple" && results.ui.fxDrawer.stillOpen && results.ui.fxDrawer.onChip === "ripple", "fx chip click did not commit and keep the drawer open");
+  assertProbe(results.ui.fxDrawer.weights[1] > 0 && results.ui.fxDrawer.weights[0] === 0 && results.ui.fxDrawer.weights[2] === 0, `ripple weight not applied to the live board: ${results.ui.fxDrawer.weights}`);
+  results.shots.push(await shot(c, "board-fx-drawer.png"));
+  await ev(c, `(async()=>{ ${P} document.querySelector('.board-lab-motion .board-fx-toggle')?.click(); await tick(2); return true; })()`);
 
   results.ui.desktop = await measurePanel(c);
   assertProbe(results.ui.desktop.fitsViewport && results.ui.desktop.scrollReady && results.ui.desktop.allPadsReachable && results.ui.desktop.lastReachable, "desktop board panel is clipped or unreachable");

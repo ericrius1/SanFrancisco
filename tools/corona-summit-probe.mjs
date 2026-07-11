@@ -202,27 +202,48 @@ async function main() {
 
   await checkSummitAssets(c);
 
-  let consecutiveFails = 0;
+  // A concurrent editing session can push a Vite full-reload mid-run, dropping
+  // window.__sf until the app reboots. Re-arm the frozen clock and retry the
+  // view instead of aborting.
+  const rearm = async () => {
+    const t = Date.now();
+    while (Date.now() - t < 90000) {
+      try { if (await ev(c, `!!(window.__sf&&window.__sf.sky&&window.__sf.player)`)) break; } catch {}
+      await sleep(800);
+    }
+    await ev(c, `window.__sfManual&&window.__sfManual(true)`);
+    await ev(c, `(()=>{const s=window.__sf.sky;s.cycleEnabled=false;s.setTimeOfDay(${TIME});return true;})()`);
+    await settle(c, 8);
+  };
+
+  const shoot = async (name, x, z, facing, back, up) => {
+    await teleport(c, x, z, facing);
+    await settle(c, 16); // stream tiles + colliders + hero foliage
+    await teleport(c, 340, 2840, facing); // park the avatar downslope, out of frame
+    await settle(c, 2);
+    const eye = await freeCam(c, x, z, facing, back, up);
+    await settleCamera(c, eye);
+    await ev(c, `window.__sf.sky.setTimeOfDay(${TIME})`);
+    for (let i = 0; i < 8; i++) await tick(c, 1 / 30);
+    const shot = await c.send("Page.captureScreenshot", { format: "jpeg", quality: 90, fromSurface: true });
+    writeFileSync(path.join(OUT, `${name}.jpg`), Buffer.from(shot.data, "base64"));
+    console.log(`[probe] shot ${name}`);
+  };
+
   let failedViews = 0;
   for (const [name, x, z, facing, back, up] of VIEWS) {
     if (ONLY.length && !ONLY.includes(name)) continue;
     try {
-      await teleport(c, x, z, facing);
-      await settle(c, 16); // stream tiles + colliders + hero foliage
-      await teleport(c, 340, 2840, facing); // park the avatar downslope, out of frame
-      await settle(c, 2);
-      const eye = await freeCam(c, x, z, facing, back, up);
-      await settleCamera(c, eye);
-      await ev(c, `window.__sf.sky.setTimeOfDay(${TIME})`);
-      for (let i = 0; i < 8; i++) await tick(c, 1 / 30);
-      const shot = await c.send("Page.captureScreenshot", { format: "jpeg", quality: 90, fromSurface: true });
-      writeFileSync(path.join(OUT, `${name}.jpg`), Buffer.from(shot.data, "base64"));
-      console.log(`[probe] shot ${name}`);
-      consecutiveFails = 0;
+      await shoot(name, x, z, facing, back, up);
     } catch (e) {
-      failedViews++;
-      console.log(`[view-fail] ${name}: ${String(e).slice(0, 140)}`);
-      if (++consecutiveFails >= 2) { console.log("[probe] tab unstable, stopping early"); break; }
+      console.log(`[view-retry] ${name}: ${String(e).slice(0, 120)}`);
+      try {
+        await rearm();
+        await shoot(name, x, z, facing, back, up);
+      } catch (e2) {
+        failedViews++;
+        console.log(`[view-fail] ${name}: ${String(e2).slice(0, 140)}`);
+      }
     }
   }
   console.log(`[probe] screenshots in ${OUT}`);

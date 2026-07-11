@@ -24,6 +24,7 @@ import { createGoldenGateLights, updateGoldenGateLights, resetGoldenGateLightsTw
 import { createPalaceColonnade, PALACE_RING_BUILDINGS } from "./world/palaceColonnade";
 import { createSutroTower, updateSutroTower, resetSutroLightsTweaks } from "./world/sutroTower";
 import { CoronaHeightsPark, prepareCoronaHeightsGround } from "./world/coronaHeights";
+import { createBuskerTrio } from "./gameplay/buskers";
 import { findOpenSpawn } from "./world/spawn";
 import { Player } from "./player/player";
 import type { PlayerMode } from "./player/types";
@@ -46,7 +47,7 @@ import { AudioControls } from "./ui/audioControls";
 import { Chat } from "./ui/chat";
 import { VehicleAudio } from "./fx/vehicleAudio";
 import { SwimAudio } from "./fx/swimAudio";
-import { createNatureSoundscape } from "./audio";
+import { createNatureSoundscape, DogParkAudio } from "./audio";
 import { AbandonedMounts } from "./gameplay/abandonedMounts";
 import { RocketRiders, type LauncherRig } from "./gameplay/launchers";
 import type { Creatures } from "./gameplay/creatures";
@@ -427,6 +428,21 @@ async function boot() {
   coronaHeights = new CoronaHeightsPark(map, physics);
   coronaHeights.setFoliageVisible(foliageOn);
   scene.add(coronaHeights.group);
+  // Dog-park sound layer: barks + paw-patter from the actual park dogs, riding
+  // the nature soundscape's context/bus so HUD volume/mute and the corona
+  // region fade all apply. Idles to a single distance check away from the park.
+  const dogParkAudio = new DogParkAudio(nature, () => coronaHeights?.dogs ?? []);
+  // Busker trio on the Corona Heights summit shoulder. TEMPORARY placement —
+  // the module is placeless by design; once the summit detail pass settles,
+  // move it with buskers.setPlacement(x, z, yaw) (it re-grounds itself).
+  const buskers = createBuskerTrio({
+    x: 408,
+    z: 2738,
+    yaw: -Math.PI / 4, // deck faces northeast, out over the city
+    groundHeight: (x, z) => map.groundHeight(x, z),
+    physics
+  });
+  scene.add(buskers.group);
   let currentAnimal: AnimalKind | null = null;
   let ridePromptShown = false;
   let doorPromptShown = false;
@@ -1979,6 +1995,7 @@ async function boot() {
     creatures?.update(elapsed, camera.position); // gulls live at altitude — never gated
     forest?.update(frameDt, camera.position);
     coronaHeights.update(frameDt, elapsed, camera.position);
+    buskers.update(frameDt, camera, windGustValue?.() ?? 0);
     // MASTER foliage gate: when the "/" panel's foliage switch is OFF, every
     // vegetation group is already hidden (setFoliageVisible) — skip all its
     // per-frame work too so it costs near zero. We STILL advance the shared wind
@@ -2008,6 +2025,8 @@ async function boot() {
       gust: windGustValue?.() ?? 0,
       timeOfDay: sky.timeOfDay
     });
+    // live loop only: the dogs freeze during pause, so barking there would lie
+    dogParkAudio.update(frameDt, player.renderPosition);
     if (currentAnimal) forest?.setRiddenSpeed(player.speed);
     islands.update(elapsed);
     citygenRing.current?.update(player.position, frameDt);
@@ -2284,7 +2303,7 @@ async function boot() {
 
   const exposeDebugHooks = () => {
     Object.assign(window as never, {
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, coronaHeights, splashes, vehicleAudio, swimAudio, nature, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, rocketRiders, boatLaunchers, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, underwater, seaPillars, water, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, setFoliageVisible }
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, chimes, setTool, setColor, sky, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, coronaHeights, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, ropes, grabber, satchel, gatherPickables, buildShareUrl, tutorial, rocketRiders, boatLaunchers, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, underwater, seaPillars, water, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, setFoliageVisible, buskers }
     });
   };
   if (import.meta.env.DEV || new URLSearchParams(location.search).has("profile")) {

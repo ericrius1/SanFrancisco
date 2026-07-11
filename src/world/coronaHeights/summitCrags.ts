@@ -131,27 +131,18 @@ const SKIRT_DUST = new THREE.Color(0xb08a63);
  * the flat-shaded facets bulge and pinch instead of reading as boxes. */
 function appendCrag(map: WorldMap, spec: CragSpec, positions: number[], colors: number[]) {
   const s = spec.seed;
-  const ux = Math.cos(spec.yaw);
-  const uz = Math.sin(spec.yaw);
-  // Horizontal perpendicular; the dip vector leans the beds off vertical.
-  const wx = -uz;
-  const wz = ux;
+  // Spine normal (horizontal, perpendicular to the average strike): beds stack
+  // along this even though each bed's own basis fans a few degrees off it.
+  // Matches the +n side of each bed's u × v basis so the interior-face test
+  // below stays consistent with the stacking order.
+  const snx = -Math.sin(spec.yaw);
+  const snz = Math.cos(spec.yaw);
   const tilt = 0.16 + hash(s, 1) * 0.2; // 9°–20° off vertical, all beds share it
-  const vx = wx * Math.sin(tilt);
-  const vy = Math.cos(tilt);
-  const vz = wz * Math.sin(tilt);
-  // Bed normal = u × v with u = (ux, 0, uz), v = (vx, vy, vz).
-  const crx = -uz * vy;
-  const cry = uz * vx - ux * vz;
-  const crz = ux * vy;
-  const crl = Math.hypot(crx, cry, crz) || 1;
-  const nrx = crx / crl;
-  const nry = cry / crl;
-  const nrz = crz / crl;
 
   const K = spec.beds;
   const color = new THREE.Color();
   const base = new THREE.Color();
+  const hsl = { h: 0, s: 0, l: 0 };
 
   // Cumulative bed offsets along the bed normal, centred on the spec origin.
   const thick: number[] = [];
@@ -169,46 +160,74 @@ function appendCrag(map: WorldMap, spec: CragSpec, positions: number[], colors: 
     const t = thick[k];
     const off = walk + t / 2;
     walk += t;
+    // Each bed's strike fans a few degrees off the crag average so the fins
+    // splay and the silhouette changes with every viewing angle.
+    const yawK = spec.yaw + (hash(s, 9, k) - 0.5) * (k === flatBed ? 0.04 : 0.14);
+    const ux = Math.cos(yawK);
+    const uz = Math.sin(yawK);
+    const wx = -uz;
+    const wz = ux;
+    const vx = wx * Math.sin(tilt);
+    const vy = Math.cos(tilt);
+    const vz = wz * Math.sin(tilt);
+    // Bed normal = u × v with u = (ux, 0, uz), v = (vx, vy, vz).
+    const crx = -uz * vy;
+    const cry = uz * vx - ux * vz;
+    const crz = ux * vy;
+    const crl = Math.hypot(crx, cry, crz) || 1;
+    const nrx = crx / crl;
+    const nry = cry / crl;
+    const nrz = crz / crl;
     const sBed = K > 1 ? k / (K - 1) : 0.5;
     // Crest curve peaks slightly off-centre, each bed jags well below it — with
     // occasional deep notches so the skyline reads as separate fins, not a wall.
     const crest = spec.height * (0.5 + 0.5 * Math.sin(Math.PI * clamp01(0.12 + sBed * 0.76)));
     let h = crest * (0.5 + 0.5 * hash(s, 13, k));
-    if (hash(s, 14, k) < 0.2 && k !== flatBed) h *= 0.45;
+    if (hash(s, 14, k) < 0.28 && k !== flatBed) h *= 0.38;
     if (k === flatBed) h = spec.height;
     const L = spec.length * (0.58 + 0.42 * Math.sin(Math.PI * clamp01(0.1 + sBed * 0.8))) * (0.82 + hash(s, 17, k) * 0.34);
     const cu = (hash(s, 19, k) - 0.5) * spec.length * 0.3;
     const tipSkew = (hash(s, 23, k) - 0.5) * L * 0.42;
     const tipTaper = k === flatBed ? 0.86 : 0.35 + hash(s, 29, k) * 0.38;
     const midBulge = 0.98 + (hash(s, 31, k) - 0.35) * 0.24;
-    const cxw = spec.x + nrx * off;
-    const czw = spec.z + nrz * off;
+    const cxw = spec.x + snx * off;
+    const czw = spec.z + snz * off;
     const gy = map.groundTop(cxw, czw);
     const sink = 1.7;
 
-    // Three corner levels: base (buried), mid ring, tip.
+    // Four corner levels (buried base → two mid rings → tip) sampled at three
+    // stations along strike. Mid-station vertices bump in/out along the bed
+    // normal so the broad fracture walls break into light-catching facets
+    // instead of one flat unlit slab.
     const levels = [
-      { h: -sink, taper: 1.06, skew: 0 },
-      { h: Math.max(0.25, h * (0.5 + (hash(s, 37, k) - 0.5) * 0.18)), taper: midBulge, skew: tipSkew * 0.45 },
-      { h, taper: tipTaper, skew: tipSkew }
+      { h: -sink, taper: 1.06, skew: 0, li: 0 },
+      { h: Math.max(0.18, h * (0.32 + (hash(s, 36, k) - 0.5) * 0.14)), taper: midBulge, skew: tipSkew * 0.25, li: 1 },
+      { h: Math.max(0.3, h * (0.68 + (hash(s, 37, k) - 0.5) * 0.16)), taper: (midBulge + tipTaper) / 2, skew: tipSkew * 0.6, li: 2 },
+      { h, taper: tipTaper, skew: tipSkew, li: 3 }
     ];
-    // corner[level][su][sn] = Vec3
+    const stations = [-1, 0, 1];
+    // corner[level][station][sn] = Vec3
     const corner: Vec3[][][] = [];
-    for (let li = 0; li < 3; li++) {
-      const lv = levels[li];
+    for (const lv of levels) {
+      const li = lv.li;
       const rowU: Vec3[][] = [];
-      for (const su of [-1, 1]) {
+      for (let si = 0; si < stations.length; si++) {
+        const su = stations[si];
         const rowN: Vec3[] = [];
         for (const sn of [-1, 1]) {
-          const jAmp = li === 2 && k === flatBed ? 0.05 : 0.13 + 0.08 * Math.min(1, spec.height / 3);
-          const jx = (hash(s, 41 + li, k * 4 + su + sn * 2) - 0.5) * 2 * jAmp;
-          const jy = (hash(s, 43 + li, k * 4 + su + sn * 2) - 0.5) * 2 * jAmp * (li === 2 && k === flatBed ? 0.3 : 1);
-          const jz = (hash(s, 47 + li, k * 4 + su + sn * 2) - 0.5) * 2 * jAmp;
+          const flatTip = li === 3 && k === flatBed;
+          const jAmp = flatTip ? 0.05 : 0.12 + 0.07 * Math.min(1, spec.height / 3);
+          const salt = k * 24 + si * 8 + (su + 1) * 2 + (sn + 1) / 2;
+          const jx = (hash(s, 41 + li, salt) - 0.5) * 2 * jAmp;
+          const jy = (hash(s, 43 + li, salt) - 0.5) * 2 * jAmp * (flatTip ? 0.3 : 1);
+          const jz = (hash(s, 47 + li, salt) - 0.5) * 2 * jAmp;
+          // Mid stations bulge/pinch across the bed thickness (fracture relief).
+          const bump = si === 1 && li > 0 && li < 3 ? (hash(s, 49 + li, salt) - 0.4) * t * 0.55 : 0;
           const along = su * (L / 2) * lv.taper + cu + lv.skew;
           rowN.push({
-            x: cxw + ux * along + vx * lv.h + nrx * ((sn * t) / 2) + jx,
+            x: cxw + ux * along + vx * lv.h + nrx * ((sn * t) / 2 + sn * bump) + jx,
             y: gy + vy * lv.h + jy,
-            z: czw + uz * along + vz * lv.h + nrz * ((sn * t) / 2) + jz
+            z: czw + uz * along + vz * lv.h + nrz * ((sn * t) / 2 + sn * bump) + jz
           });
         }
         rowU.push(rowN);
@@ -221,7 +240,7 @@ function appendCrag(map: WorldMap, spec: CragSpec, positions: number[], colors: 
     base.copy(pick < 0.45 ? BED_RUST : pick < 0.8 ? BED_MAROON : BED_PALE);
     base.offsetHSL((hash(s, 59, k) - 0.5) * 0.02, (hash(s, 61, k) - 0.5) * 0.08, (hash(s, 67, k) - 0.5) * 0.06);
 
-    let triIdx = 0;
+    let quadIdx = 0;
     const pushTri = (a: Vec3, b: Vec3, c: Vec3) => {
       positions.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
       // Face normal for geologic colouring.
@@ -246,38 +265,50 @@ function appendCrag(map: WorldMap, spec: CragSpec, positions: number[], colors: 
       // keeps the crag from reading as one dark monolith).
       const bedDot = fnx * nrx + fny * nry + fnz * nrz;
       const interior = (bedDot > 0.6 && k < K - 1) || (bedDot < -0.6 && k > 0);
-      if (interior) color.lerp(CREVICE, 0.38 * (1 - hRel * 0.45));
+      if (interior) color.lerp(CREVICE, 0.32 * (1 - hRel * 0.45));
+      // Weather-bleached patches on any exposed wall — chert pales unevenly.
+      if (!interior) color.lerp(BED_PALE, hash(s, 69, k * 31 + quadIdx) * 0.3);
       // Sun-weathered tan on up-facing facets.
-      if (fny > 0.35) color.lerp(TOP_WEATHER, clamp01((fny - 0.35) / 0.65) * (0.45 + hash(s, 71, k * 37 + triIdx) * 0.3));
-      // Sparse sage lichen on exposed upper facets.
-      if (fny > 0.15 && hRel > 0.35 && hash(s, 73, k * 41 + triIdx) < 0.1) color.lerp(LICHEN, 0.38);
+      if (fny > 0.35) color.lerp(TOP_WEATHER, clamp01((fny - 0.35) / 0.65) * (0.45 + hash(s, 71, k * 37 + quadIdx) * 0.3));
+      // Sparse sage lichen on exposed upper WALL facets — never on the sittable
+      // tip caps (they read as green carpets from above).
+      const isCap = fny > 0.8;
+      if (!isCap && fny > 0.15 && hRel > 0.35 && hash(s, 73, k * 41 + quadIdx) < 0.1) color.lerp(LICHEN, 0.38);
       // Dust skirt where the rock meets the dirt.
       if (hRel < 0.2) color.lerp(SKIRT_DUST, (1 - hRel / 0.2) * 0.5);
-      // Stronger facet-to-facet mottling on the broad walls so big faces break up.
-      const mottle = Math.abs(bedDot) > 0.6 ? 0.12 : 0.07;
-      color.offsetHSL(0, 0, (hash(s, 79, k * 43 + triIdx) - 0.5) * mottle);
+      // Facet-to-facet mottling, strongest on the broad walls, keyed per quad so
+      // triangle pairs stay whole facets.
+      const mottle = Math.abs(bedDot) > 0.6 ? 0.13 : 0.08;
+      color.offsetHSL(0, 0, (hash(s, 79, k * 43 + quadIdx) - 0.5) * mottle);
+      // Albedo floor: shade-side facets should read as dim rust under sky
+      // ambient, never as black holes. Crevices may sit a touch lower.
+      color.getHSL(hsl);
+      const floor = interior ? 0.24 : 0.3;
+      if (hsl.l < floor) color.offsetHSL(0, 0, floor - hsl.l);
       for (let vtx = 0; vtx < 3; vtx++) colors.push(color.r, color.g, color.b);
-      triIdx++;
     };
 
-    // Side walls: two rows (base→mid, mid→tip) on the four sides of the slab.
     const quad = (a: Vec3, b: Vec3, c: Vec3, d: Vec3) => {
       pushTri(a, b, c);
       pushTri(a, c, d);
+      quadIdx++;
     };
-    for (let li = 0; li < 2; li++) {
-      const lo = corner[li];
-      const hi = corner[li + 1];
-      // ±n faces (the broad fracture walls facing neighbouring beds)
-      quad(lo[0][0], lo[1][0], hi[1][0], hi[0][0]);
-      quad(lo[1][1], lo[0][1], hi[0][1], hi[1][1]);
+    const P = (li: number, si: number, sn: number) => corner[li][si][(sn + 1) / 2];
+    for (let li = 0; li < 3; li++) {
+      // Broad fracture walls (±n), two facet columns per row.
+      for (let si = 0; si < 2; si++) {
+        quad(P(li, si, 1), P(li, si + 1, 1), P(li + 1, si + 1, 1), P(li + 1, si, 1));
+        quad(P(li, si + 1, -1), P(li, si, -1), P(li + 1, si, -1), P(li + 1, si + 1, -1));
+      }
       // ±u end faces
-      quad(lo[0][1], lo[0][0], hi[0][0], hi[0][1]);
-      quad(lo[1][0], lo[1][1], hi[1][1], hi[1][0]);
+      quad(P(li, 0, -1), P(li, 0, 1), P(li + 1, 0, 1), P(li + 1, 0, -1));
+      quad(P(li, 2, 1), P(li, 2, -1), P(li + 1, 2, -1), P(li + 1, 2, 1));
     }
-    // Tip cap + (buried) base cap.
-    quad(corner[2][0][0], corner[2][1][0], corner[2][1][1], corner[2][0][1]);
-    quad(corner[0][0][1], corner[0][1][1], corner[0][1][0], corner[0][0][0]);
+    // Tip cap + (buried) base cap, split along strike.
+    for (let si = 0; si < 2; si++) {
+      quad(P(3, si, 1), P(3, si + 1, 1), P(3, si + 1, -1), P(3, si, -1));
+      quad(P(0, si, -1), P(0, si + 1, -1), P(0, si + 1, 1), P(0, si, 1));
+    }
   }
 }
 
@@ -368,7 +399,7 @@ function makePlatformSkin(map: WorldMap) {
   const inside = new Uint8Array(nx * nz);
   const hardpan = new THREE.Color(0xb08a63);
   const pinkDust = new THREE.Color(0xa06a4c);
-  const gravel = new THREE.Color(0x8d6a4e);
+  const gravel = new THREE.Color(0x7f5f45);
   const dryGrass = new THREE.Color(0x8b833f);
   const color = new THREE.Color();
   for (let gz = 0; gz < nz; gz++) {

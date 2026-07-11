@@ -59,7 +59,12 @@ export type TrioClock = {
  * chain and the master (user-volume) gain — a musician only connects voices
  * to `out` and scales gains by NoteEvent.vel. NEVER create an AudioContext
  * (the app is near the browser's context budget) and never connect to
- * ctx.destination directly. */
+ * ctx.destination directly.
+ *
+ * IMPORTANT: only touch `ctx`/`out` inside schedule() — build any persistent
+ * synth state (noise buffers, shared filters) lazily on the first schedule()
+ * call. In audio-less environments (headless tests, unsupported browsers)
+ * these fields are null and schedule() is simply never invoked. */
 export type MusicianAudio = {
   ctx: AudioContext;
   out: GainNode;
