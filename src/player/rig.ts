@@ -142,18 +142,16 @@ export function applyAvatarToRig(rig: Rig, avatar: AvatarTraits) {
   const dress = avatar.outfit === "dress";
 
   const primaryColor = new THREE.Color(primary);
-  const skinColor = new THREE.Color(skin);
   const brightAccent = color(accent, 1.35);
-  // tee stays short-sleeve (bare arms below the shoulder caps); dress gets
-  // long sleeves in the dress color so she doesn't read as a sleeveless guy
+  // cloth to the wrist for every outfit. tee used to leave the arm blocks
+  // skin-toned under tiny shoulder caps, which read as bare beefy arms —
+  // cover them in the shirt color (handpanist forces skin back on after build).
   const sleeveColor =
-    avatar.outfit === "tee"
-      ? skinColor
-      : dress
-        ? color(primary, 0.9)
-        : avatar.outfit === "overalls"
-          ? brightAccent
-          : color(primary, 0.82);
+    avatar.outfit === "overalls"
+      ? brightAccent
+      : avatar.outfit === "tee" || dress
+        ? color(primary, dress ? 0.9 : 1)
+        : color(primary, 0.82);
   const torsoColor = avatar.outfit === "overalls" ? brightAccent : primaryColor;
   const pantsColor =
     avatar.outfit === "overalls" ? color(primary, 0.58) : dress ? new THREE.Color(0x20242b) : new THREE.Color(0x30343c);
@@ -175,8 +173,8 @@ export function applyAvatarToRig(rig: Rig, avatar: AvatarTraits) {
   setVisible(s.hats[avatar.hat], true);
   setVisible(s.outfits[avatar.outfit], true);
 
-  // dress: hourglass + skinny covered arms so the silhouette reads feminine
-  // instead of the stock chunky block proportions
+  // dress + overalls get a feminine silhouette; tee/jacket/hoodie keep stock bulk
+  // (tee arms are covered above, just not slimmed — guys wear tees too)
   if (dress) {
     s.torsoBlock.scale.set(0.84, 1, 0.92);
     s.hipBlock.scale.set(1.22, 1.04, 1.1);
@@ -187,6 +185,16 @@ export function applyAvatarToRig(rig: Rig, avatar: AvatarTraits) {
     rig.armR.position.x = -0.235;
     rig.handL.scale.setScalar(0.8);
     rig.handR.scale.setScalar(0.8);
+  } else if (avatar.outfit === "overalls") {
+    s.torsoBlock.scale.set(0.9, 1, 0.96);
+    s.hipBlock.scale.set(1.14, 1.02, 1.06);
+    s.headBlock.scale.setScalar(0.94);
+    for (const arm of s.armBlocks) arm.scale.set(0.7, 1, 0.7);
+    for (const leg of s.legBlocks) leg.scale.set(0.9, 1, 0.92);
+    rig.armL.position.x = 0.25;
+    rig.armR.position.x = -0.25;
+    rig.handL.scale.setScalar(0.86);
+    rig.handR.scale.setScalar(0.86);
   } else {
     s.torsoBlock.scale.set(1, 1, 1);
     s.hipBlock.scale.set(1.02, 1, 1);

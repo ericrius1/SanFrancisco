@@ -3,24 +3,26 @@ import { LIGHT_SCALE } from "../../config";
 import type { Cockpit, DriveSpec } from "../../player/types";
 
 /**
- * A stylized two-seat golf cart, built to ride the shared drive embodiment via
- * setDriveStyle (same mechanism as the ridden animals): swap in this mesh +
- * GOLF_CART_SPEC and the car controller drives it, just lighter, slower and
- * tippier so a hot corner can put it up on two wheels. Front is local -Z to
- * match CarController's forward.
+ * A stylized two-seat electric golf cart, built to ride the shared drive
+ * embodiment via setDriveStyle (same mechanism as the ridden animals): swap in
+ * this mesh + GOLF_CART_SPEC and the car controller drives it, just lighter,
+ * slower and tippier so a hot corner can put it up on two wheels. Front is
+ * local -Z to match CarController's forward. Voice is electric (EV whine), not
+ * the sports car's combustion purr.
  *
  * Two golf-bag props ride the rear deck, one per occupant: `setCartBags(mesh, n)`
  * shows the driver's bag at n≥1 and the passenger's at n≥2. The bags are plain
  * children so a network occupant-count update is a single visibility flip.
  */
 
-// short, narrow, low — a putt-putt runabout, not a sports car
+// short, narrow, low — a quiet battery runabout, not a sports car
 export const GOLF_CART_SPEC: DriveSpec = {
   halfExtents: [0.66, 0.42, 1.28],
   rideHeight: 0.52,
   maxFactor: 0.5, // ~half the sports car's top speed
   accelFactor: 0.72,
-  steerFactor: 1.4 // twitchy: lean it into a fast corner and it'll tip
+  steerFactor: 1.4, // twitchy: lean it into a fast corner and it'll tip
+  voice: "electric"
 };
 
 /** A single stylized golf bag: tube body, a hood, a stand leg, and a fan of
@@ -82,15 +84,33 @@ function buildGolfBag(bodyColor: number, accent: number): THREE.Group {
 // Front of the cart is local -Z (matches CarController's forward).
 export function buildGolfCartMesh(): THREE.Group {
   const g = new THREE.Group();
-  const bodyColor = 0xf2ede0; // cream body — the country-club classic
-  const roofColor = 0x2f7d54; // forest-green canopy
+  // Modern electric Club Car / EZ-GO cues: pearl body, navy canopy, cool LEDs,
+  // battery tray under the bench, charge port on the rear quarter.
+  const bodyColor = 0xf4f6f8; // pearl white
+  const roofColor = 0x1e3a5f; // navy canopy
   const paint = new THREE.MeshLambertMaterial({ color: bodyColor });
   const roof = new THREE.MeshLambertMaterial({ color: roofColor });
   const trim = new THREE.MeshLambertMaterial({ color: 0x2a2d33 });
-  const seatMat = new THREE.MeshLambertMaterial({ color: 0x3a6f4c });
-  const chrome = new THREE.MeshLambertMaterial({ color: 0xc8ccd2 });
-  const headlight = new THREE.MeshLambertMaterial({ color: 0xfff4c9, emissive: 0xffedb0, emissiveIntensity: 1.8 * LIGHT_SCALE });
-  const taillight = new THREE.MeshLambertMaterial({ color: 0xd41818, emissive: 0xff1a10, emissiveIntensity: 2.0 * LIGHT_SCALE });
+  const seatMat = new THREE.MeshLambertMaterial({ color: 0x2c3540 }); // charcoal vinyl
+  const chrome = new THREE.MeshLambertMaterial({ color: 0xb8bec6 });
+  const rubber = new THREE.MeshLambertMaterial({ color: 0x1a1c20 });
+  const battery = new THREE.MeshLambertMaterial({ color: 0x14161a });
+  const terminal = new THREE.MeshLambertMaterial({ color: 0xd4a017 });
+  const led = new THREE.MeshLambertMaterial({
+    color: 0xe8f4ff,
+    emissive: 0x9ecfff,
+    emissiveIntensity: 2.2 * LIGHT_SCALE
+  });
+  const accent = new THREE.MeshLambertMaterial({
+    color: 0x3a8fd4,
+    emissive: 0x1a6fb8,
+    emissiveIntensity: 1.4 * LIGHT_SCALE
+  });
+  const taillight = new THREE.MeshLambertMaterial({
+    color: 0xd41818,
+    emissive: 0xff1a10,
+    emissiveIntensity: 2.0 * LIGHT_SCALE
+  });
 
   const box = (mat: THREE.Material, w: number, h: number, d: number, x: number, y: number, z: number, rx = 0) => {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
@@ -104,14 +124,20 @@ export function buildGolfCartMesh(): THREE.Group {
   // floor pan + rocker sills
   box(paint, 1.28, 0.16, 2.5, 0, -0.16, 0);
   box(trim, 1.34, 0.08, 2.3, 0, -0.26, 0);
-  // rounded nose cowl (stacked boxes dropping toward the bumper)
+  // cool LED rocker strip — reads electric at a glance
+  box(accent, 1.2, 0.03, 0.06, 0, -0.22, -0.4);
+  box(accent, 1.2, 0.03, 0.06, 0, -0.22, 0.6);
+
+  // rounded nose cowl (stacked boxes dropping toward the bumper) — clean EV fascia
   box(paint, 1.24, 0.34, 0.7, 0, 0.02, -1.06);
   box(paint, 1.12, 0.24, 0.4, 0, 0.2, -0.86, 0.2);
-  box(trim, 1.24, 0.12, 0.16, 0, -0.14, -1.4); // front bumper
-  box(headlight, 0.24, 0.14, 0.08, -0.42, 0.02, -1.42);
-  box(headlight, 0.24, 0.14, 0.08, 0.42, 0.02, -1.42);
-  // little front basket / grille badge
-  box(chrome, 0.5, 0.02, 0.34, 0, 0.2, -1.02);
+  box(rubber, 1.24, 0.12, 0.16, 0, -0.14, -1.4); // soft front bumper
+  // horizontal LED headlight bars (not round gas-era lamps)
+  box(led, 0.36, 0.08, 0.06, -0.38, 0.04, -1.42);
+  box(led, 0.36, 0.08, 0.06, 0.38, 0.04, -1.42);
+  // flat badge plate (no chrome grille)
+  box(trim, 0.42, 0.1, 0.04, 0, 0.18, -1.38);
+  box(accent, 0.18, 0.04, 0.03, 0, 0.18, -1.4); // small "E" cue stripe
 
   // bench seat for two: one long cushion + split backrest
   box(seatMat, 1.16, 0.16, 0.62, 0, 0.16, 0.18);
@@ -122,8 +148,17 @@ export function buildGolfCartMesh(): THREE.Group {
   // hip bolster / grab bar between deck and seat
   box(chrome, 1.2, 0.04, 0.04, 0, 0.62, 0.58);
 
-  // dash + steering column (driver = left, local +X? front -Z → left is +X)
+  // battery tray under the bench — the classic electric-cart tell
+  box(battery, 1.0, 0.22, 0.5, 0, -0.02, 0.2);
+  box(terminal, 0.08, 0.04, 0.08, -0.32, 0.1, 0.05);
+  box(terminal, 0.08, 0.04, 0.08, -0.2, 0.1, 0.05);
+  box(chrome, 0.04, 0.02, 0.18, -0.26, 0.12, 0.05); // jumper strap
+
+  // dash + steering column (driver = left; front -Z → left is +X)
   box(trim, 1.16, 0.34, 0.14, 0, 0.34, -0.28);
+  // tiny charge / status LEDs on the dash
+  box(accent, 0.08, 0.03, 0.02, -0.4, 0.48, -0.22);
+  box(led, 0.08, 0.03, 0.02, -0.28, 0.48, -0.22);
   const column = box(trim, 0.06, 0.06, 0.44, 0.34, 0.42, -0.12, -0.7);
   void column;
   const wheel = new THREE.Mesh(new THREE.TorusGeometry(0.16, 0.025, 8, 18), trim);
@@ -151,7 +186,10 @@ export function buildGolfCartMesh(): THREE.Group {
   for (const bx of [-0.28, 0.28]) box(chrome, 0.03, 0.42, 0.03, bx, 0.6, 1.02); // upright bag rails
   box(chrome, 0.6, 0.03, 0.03, 0, 0.82, 1.02); // rail crossbar the bags lean on
   box(taillight, 1.0, 0.1, 0.08, 0, 0.28, 1.62);
-  box(trim, 1.24, 0.12, 0.16, 0, -0.14, 1.6); // rear bumper
+  box(rubber, 1.24, 0.12, 0.16, 0, -0.14, 1.6); // soft rear bumper
+  // charge port on the rear quarter (flap + blue inlet)
+  box(trim, 0.16, 0.14, 0.06, 0.52, 0.18, 1.58);
+  box(accent, 0.1, 0.08, 0.04, 0.52, 0.18, 1.6);
 
   // two golf bags on the deck, hidden until an occupant claims each seat
   const bagPos: [number, number][] = [

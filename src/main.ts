@@ -72,7 +72,6 @@ import {
 import { Satchel } from "./ui/satchel";
 import { HUD } from "./ui/hud";
 import { ShareButton } from "./ui/share";
-import { BuskerCueButton } from "./ui/buskerCue";
 import { PauseToggle } from "./ui/pauseToggle";
 // BehindTheScenes is deferred (dynamic import after start is ready)
 import { parseReadLink, openReadLink } from "./ui/deepLinks";
@@ -1429,10 +1428,6 @@ async function boot() {
   new ShareButton(buildShareUrl, (ok) =>
     hud.message(ok ? "Invite link copied — send it to a friend" : "Couldn't copy the link", 3.2)
   );
-  new BuskerCueButton(() => {
-    buskers.cueShow(1);
-    hud.message("Show cued — playing in 1s", 2.2);
-  });
 
   // "Behind the scenes" overlay + X/GitHub links (top-right, under Tutorial).
   // Free the pointer lock while it's open so the cursor can reach the links.
@@ -2405,6 +2400,12 @@ async function boot() {
       leaveRide();
       player.respawn(spawn);
       hud.message("Back at the start");
+    }
+
+    // Q: film cue — busker trio jumps to 1s before the first note (no teleport)
+    if (input.pressed("KeyQ")) {
+      buskers.cueShow(1);
+      hud.message("Show cued — playing in 1s", 2.2);
     }
 
     // ".": factory reset for tweaks — every tweakpane value back to its

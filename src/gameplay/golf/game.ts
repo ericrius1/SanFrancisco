@@ -239,7 +239,7 @@ export class GolfGame {
     player.trySwitch("drive");
     this.#parkedCart.visible = false; // it's now the thing you're driving
     this.#cartBoarded = true;
-    hud.message("Golf cart — drive to your ball, E to hop off ⛳", 3);
+    hud.message("Electric golf cart — drive to your ball, E to hop off ⛳", 3);
     return true;
   }
 

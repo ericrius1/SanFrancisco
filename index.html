@@ -267,7 +267,6 @@
       #hud .tutorial-ui,
       #hud .tutorial-panel,
       #hud .links-ui,
-      #hud .busker-cue-ui,
       #hud .player-locator {
         transition: opacity 0.35s ease;
       }
@@ -283,7 +282,6 @@
       #hud.faded .tutorial-ui,
       #hud.faded .tutorial-panel,
       #hud.faded .links-ui,
-      #hud.faded .busker-cue-ui,
       #hud.faded .player-locator {
         opacity: 0;
         transition: opacity 1s ease;
@@ -297,8 +295,7 @@
       #hud.faded .share-ui,
       #hud.faded .tutorial-ui,
       #hud.faded .tutorial-panel,
-      #hud.faded .links-ui,
-      #hud.faded .busker-cue-ui {
+      #hud.faded .links-ui {
         pointer-events: none;
       }
       #hud .help.swap {
@@ -1174,15 +1171,6 @@
         flex-direction: column;
         align-items: flex-end;
         gap: 8px;
-        pointer-events: auto;
-        user-select: none;
-      }
-      /* film cue — under the links stack; resets buskers to 1s before play */
-      #hud .busker-cue-ui {
-        position: absolute;
-        right: max(20px, env(safe-area-inset-right));
-        top: max(280px, calc(env(safe-area-inset-top) + 264px));
-        z-index: var(--z-hud-base);
         pointer-events: auto;
         user-select: none;
       }
@@ -3052,15 +3040,11 @@
         }
         #hud .share-ui,
         #hud .tutorial-ui,
-        #hud .links-ui,
-        #hud .busker-cue-ui {
+        #hud .links-ui {
           right: max(10px, env(safe-area-inset-right));
         }
         #hud .links-ui {
           top: max(214px, calc(env(safe-area-inset-top) + 198px));
-        }
-        #hud .busker-cue-ui {
-          top: max(302px, calc(env(safe-area-inset-top) + 286px));
         }
         /* Keep the board and avatar buttons separated; let only the wide board
            panel reach back to the phone edge when it opens. */

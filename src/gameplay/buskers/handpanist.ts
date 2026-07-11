@@ -68,6 +68,7 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
   // special case to the shared player-avatar palette.
   const rig = buildRig({ skin: 5, hair: "long", hat: "none", outfit: "tee", color: 5, accent: 3 });
   rig.avatar.materials.jacket.color.set(0x11141a); // black tee + sleeve caps
+  rig.avatar.materials.sleeve.color.copy(rig.avatar.materials.skin.color); // bare arms
   rig.avatar.materials.shirt.color.set(0x343b4b);
   rig.avatar.materials.pants.color.set(0x090b11);
   rig.avatar.materials.shoe.color.set(0x1a1f29);
