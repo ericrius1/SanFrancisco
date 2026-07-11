@@ -135,7 +135,8 @@ type TunableSpec = {
   format?: (v: number) => string;
 };
 
-type Values<S extends Record<string, TunableSpec>> = { [K in keyof S]: S[K]["v"] };
+type WidenTunable<T extends TunableValue> = T extends boolean ? boolean : T extends number ? number : string;
+type Values<S extends Record<string, TunableSpec>> = { [K in keyof S]: WidenTunable<S[K]["v"]> };
 type RefreshableBinding = { refresh(): void };
 
 // every tunables() group, so resetAllTweaks can restore the inline defaults
@@ -150,7 +151,7 @@ const groups: { spec: Record<string, TunableSpec>; values: Record<string, Tunabl
  */
 export function tunables<S extends Record<string, TunableSpec>>(path: string, spec: S) {
   const values = {} as Values<S>;
-  for (const k in spec) values[k] = tweakDefault(`${path}.${k}`, spec[k].v) as S[typeof k]["v"];
+  for (const k in spec) values[k] = tweakDefault(`${path}.${k}`, spec[k].v) as Values<S>[typeof k];
   groups.push({ spec, values });
   return {
     values,

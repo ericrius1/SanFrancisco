@@ -606,6 +606,8 @@ async function boot() {
   orbit.maxDistance = 1200;
   // O in camera mode: smoothstepped 180° azimuth flip around the current target
   let orbitFlip: { t: number; duration: number; startAz: number; delta: number } | null = null;
+  const orbitPickOrigin = new THREE.Vector3();
+  const orbitPickDir = new THREE.Vector3();
 
   const setCameraMode = (on: boolean) => {
     cameraMode = on;
@@ -623,13 +625,27 @@ async function boot() {
         player.position.z,
         false
       );
-      hud.message("Camera mode — drag to orbit, O for 180°, C to return", 3);
+      hud.message("Camera mode — drag to orbit, double-click to retarget, O for 180°, C to return", 3.5);
     } else {
       orbitFlip = null;
       hud.message("");
       input.requestLock();
     }
   };
+
+  // Double-click any surface in camera mode → that point becomes the new orbit target
+  // (camera stays put; orbit/dolly continue around the new look-at).
+  renderer.domElement.addEventListener("dblclick", (e) => {
+    if (!cameraMode || e.button !== 0) return;
+    const rect = renderer.domElement.getBoundingClientRect();
+    const ndcX = ((e.clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1;
+    const ndcY = -(((e.clientY - rect.top) / Math.max(1, rect.height)) * 2 - 1);
+    orbitPickOrigin.copy(camera.position);
+    orbitPickDir.set(ndcX, ndcY, 0.5).unproject(camera).sub(orbitPickOrigin).normalize();
+    const hit = worldQueries.raycast(orbitPickOrigin, orbitPickDir, 2500, { ignoreSelf: true });
+    if (!hit) return;
+    void orbit.setTarget(hit.point.x, hit.point.y, hit.point.z, true);
+  });
 
   // Tab toggles the user UI — HUD + start panel fade in/out; pointer lock is independent
   let uiOpen = true;
