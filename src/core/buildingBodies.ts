@@ -25,6 +25,10 @@ export interface ColliderOBB {
 /** A point that pulls building bodies into existence around it, with its reach. */
 export interface ColliderAnchor {
   x: number;
+  /** Optional world altitude. Candidate ranking is planar, but body creation can
+   * use this to distinguish an airborne rider over a roof from a body actually
+   * embedded inside the building volume. */
+  y?: number;
   z: number;
   r: number;
 }
@@ -53,6 +57,18 @@ export function obbContainsXZ(c: ColliderOBB, x: number, z: number, margin: numb
   const lx = dx * c.cosYaw - dz * c.sinYaw;
   const lz = dx * c.sinYaw + dz * c.cosYaw;
   return Math.abs(lx) < c.hx + margin && Math.abs(lz) < c.hz + margin;
+}
+
+/** Does an anchor overlap a building box closely enough that creating the box
+ * now could trap its dynamic body? Altitude-less anchors stay conservative;
+ * player anchors carry Y so flying over a roof is not mistaken for being inside. */
+export function anchorInsideCollider(
+  c: ColliderOBB & { y: number; hy: number },
+  a: ColliderAnchor,
+  margin: number
+): boolean {
+  if (!obbContainsXZ(c, a.x, a.z, margin)) return false;
+  return a.y === undefined || (a.y > c.y - c.hy - margin && a.y < c.y + c.hy + margin);
 }
 
 /**

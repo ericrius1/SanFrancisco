@@ -84,6 +84,17 @@ export interface ColliderBox {
   quat?: readonly [number, number, number, number];
 }
 
+/** Static triangle mesh collider in a local frame. CityGen uses this for thin,
+ * footprint-faithful roof slabs: a single bbox/OBB would bridge concave courts
+ * and create an invisible landing surface outside rotated lots. */
+export interface ColliderMesh {
+  /** World position of the local mesh origin. */
+  x: number; y: number; z: number;
+  /** Flat local-space xyz triples and triangle indices. */
+  vertices: number[];
+  indices: number[];
+}
+
 /** Per-archetype style parameters a theme pack supplies to the engine. */
 export interface ArchetypeSpec {
   /** metres per storey (drives floor count from real height) */

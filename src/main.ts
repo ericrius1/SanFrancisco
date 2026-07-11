@@ -59,7 +59,7 @@ import type { Creatures } from "./gameplay/creatures";
 import type { Forest, AnimalKind } from "./gameplay/forest";
 import type { GrassDisplacer } from "./world/garden";
 import { BOTANICAL_GARDEN_BOUNDS } from "./world/garden/layout";
-import type { CityGenRing, ColliderBox } from "./world/citygen";
+import type { CityGenRing, ColliderBox, ColliderMesh } from "./world/citygen";
 import { Islands } from "./gameplay/islands";
 import { Hunt } from "./gameplay/hunt";
 import { FetchBall } from "./gameplay/fetchBall";
@@ -81,7 +81,7 @@ import { createRenderPipeline } from "./render/pipeline";
 import { createDynamicResolution } from "./render/dynamicRes";
 import { POSTFX_TUNING } from "./render/postfx";
 import { DebugPanel } from "./ui/debug";
-import { ColliderDebug, type DebugBox } from "./ui/colliderDebug";
+import { ColliderDebug, type DebugBox, type DebugMesh } from "./ui/colliderDebug";
 import { CalibrationChart } from "./ui/calibrationChart";
 import { Net, makeFunName, hasChosenName, pickName } from "./net/net";
 import { RemotePlayers } from "./net/remotes";
@@ -1454,25 +1454,29 @@ async function boot() {
   // camera-locked row of known-albedo spheres for reading the tone grade.
   const calibrationChart = new CalibrationChart(scene);
   const colliderBoxes: DebugBox[] = [];
+  const colliderMeshes: DebugMesh[] = [];
   const dbgBaked: { x: number; y: number; z: number; hx: number; hy: number; hz: number; yaw: number; index: boolean }[] = [];
   const dbgWalls: ColliderBox[] = [];
   const dbgInteriors: ColliderBox[] = [];
+  const dbgRoofs: ColliderMesh[] = [];
   const syncColliderDebug = () => {
     const on = Boolean(RENDER_TUNING.values.colliderDebug);
     if (on !== colliderDebug.visible) colliderDebug.setVisible(on);
     if (!on) return;
     colliderBoxes.length = 0;
+    colliderMeshes.length = 0;
     physics.debugBuildingBodies(dbgBaked);
     for (const b of dbgBaked) {
       // red = baked visual-tile body, orange = citywide-index body
       colliderBoxes.push({ ...b, r: 1, g: b.index ? 0.55 : 0.12, b: 0.12 });
     }
     if (citygenRing.current) {
-      citygenRing.current.debugColliders(dbgWalls, dbgInteriors);
+      citygenRing.current.debugColliders(dbgWalls, dbgInteriors, dbgRoofs);
       for (const c of dbgWalls) colliderBoxes.push({ ...c, r: 0.15, g: 1, b: 0.3 });      // green = walk-in wall
       for (const c of dbgInteriors) colliderBoxes.push({ ...c, r: 0.25, g: 0.55, b: 1 }); // blue = interior
+      for (const c of dbgRoofs) colliderMeshes.push({ ...c, r: 0.15, g: 1, b: 0.3 });      // green = walk-in roof
     }
-    colliderDebug.sync(colliderBoxes);
+    colliderDebug.sync(colliderBoxes, colliderMeshes);
   };
 
   const aim = new THREE.Vector3();

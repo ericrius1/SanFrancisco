@@ -22,7 +22,7 @@ import type { BuildingSpec, ColliderBox, MeshData } from "./core/types";
 import { specFor, SF_THEME } from "./theme/archetypes";
 import { decoratorFor } from "./theme/decorators";
 
-export type { BuildingSpec, MeshData, ColliderBox } from "./core/types";
+export type { BuildingSpec, MeshData, ColliderBox, ColliderMesh } from "./core/types";
 export { SF_THEME, ARCHETYPE_SPECS, specFor } from "./theme/archetypes";
 export { createCityGenRing, type CityGenRing } from "./stream/ring";
 

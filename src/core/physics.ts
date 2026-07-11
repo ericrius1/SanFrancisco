@@ -26,7 +26,7 @@ import type { BuildingCollider, TileStreamer } from "../world/tiles";
 import { BuildingColliderIndex } from "./buildingColliderIndex";
 import {
   selectBodyCandidates,
-  obbContainsXZ,
+  anchorInsideCollider,
   anchorHold,
   type ColliderAnchor,
   type BodyTileSource
@@ -338,7 +338,7 @@ export class Physics {
   #gatherAnchors(playerPos: THREE.Vector3): ColliderAnchor[] {
     const out = this.#anchorList;
     out.length = 0;
-    out.push({ x: playerPos.x, z: playerPos.z, r: CONFIG.colliderRadius });
+    out.push({ x: playerPos.x, y: playerPos.y, z: playerPos.z, r: CONFIG.colliderRadius });
     return out;
   }
 
@@ -458,13 +458,15 @@ export class Physics {
       const { key, c } = cand;
       const id = `${key}:${c.i}:${c.s}`;
       if (this.#bodyByBuilding.has(id)) continue;
-      // never materialise a box around an anchor already inside its footprint:
+      // Never materialise a box around an anchor actually inside its 3D volume:
       // some OBBs overhang plazas, and a dynamic body spawned inside a static box
-      // gets pinned by the solver. Defer it — the next update creates it once the
-      // anchor steps out.
+      // gets pinned by the solver. This used to test XZ only, so an airborne board
+      // directly ABOVE a roof was misclassified as embedded and the roof body was
+      // deferred throughout the descent. Altitude-less auxiliary anchors retain
+      // the conservative old behavior.
       let insideAny = false;
       for (const a of anchors) {
-        if (obbContainsXZ(c, a.x, a.z, 2.5)) {
+        if (anchorInsideCollider(c, a, 2.5)) {
           insideAny = true;
           break;
         }
@@ -705,6 +707,24 @@ export class Physics {
     const existing = this.#querySolids.get(id);
     if (existing !== undefined) this.#solids.destroyBody(existing);
     this.#querySolids.set(id, this.#makeSolid(box.x, box.y, box.z, box.hx, box.hy, box.hz, box.yaw ?? 0, box.quat));
+  }
+
+  /** Register a static triangle mesh in the query world. CityGen roofs use the
+   * exact footprint mesh in both worlds so player contacts and paint/cursor rays
+   * agree even for rotated or concave buildings. */
+  addQueryMesh(
+    id: number,
+    mesh: { x: number; y: number; z: number; vertices: ArrayLike<number>; indices: ArrayLike<number> }
+  ): void {
+    const existing = this.#querySolids.get(id);
+    if (existing !== undefined) this.#solids.destroyBody(existing);
+    const handle = this.#solids.createStaticMesh({
+      position: [mesh.x, mesh.y, mesh.z],
+      vertices: mesh.vertices,
+      indices: mesh.indices,
+      friction: 0.8
+    });
+    this.#querySolids.set(id, handle);
   }
 
   /** Drop a previously registered extra query solid (no-op if the id is unknown). */
