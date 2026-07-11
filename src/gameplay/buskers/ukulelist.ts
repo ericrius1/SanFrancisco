@@ -138,6 +138,7 @@ export const buildUkulelist: MusicianBuilder = (audio, part): Musician => {
   rig.avatar.materials.jacket.color.set(0x3d4b35);
   rig.avatar.materials.sleeve.color.set(0x35422f);
   rig.avatar.materials.shirt.color.set(0xb9633d);
+  rig.avatar.materials.visor.color.set(0x0a0d12); // black bar shades
   for (const detail of rig.avatar.outfits.jacket) detail.visible = false;
   rig.avatar.torsoBlock.scale.set(1.025, 1.015, 1.025);
   for (const sleeve of rig.avatar.armBlocks) sleeve.scale.set(1.045, 1, 1.045);

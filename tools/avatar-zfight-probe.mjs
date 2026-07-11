@@ -220,7 +220,45 @@ async function main() {
   console.log(`[audit] meshes=${audit.meshCount} coplanarPairs=${audit.pairs.length}`);
   for (const p of audit.pairs) console.log("  pair:", JSON.stringify(p));
 
-  // live mode: real chase cam, real clock — the conditions from the bug video
+  // paint the avatar's back: overlapping splats of two colors on torso + pack,
+  // exactly what the paint tool leaves after a splat fight
+  const paint = await ev(c, `(async()=>{ ${P}
+    const skins = sf.paintSkins ?? sf.paint?.skins ?? null;
+    if (!skins) return { ok: false, keys: Object.keys(sf) };
+    const walk = sf.player.meshes.walk;
+    let torso = null, pack = null;
+    walk.traverse((o) => {
+      if (!o.isMesh) return;
+      const bb = o.geometry.boundingBox ?? (o.geometry.computeBoundingBox(), o.geometry.boundingBox);
+      const sx = bb.max.x - bb.min.x, sy = bb.max.y - bb.min.y, sz = bb.max.z - bb.min.z;
+      if (Math.abs(sx - 0.44) < 1e-3 && Math.abs(sy - 0.42) < 1e-3) torso = o;
+      if (Math.abs(sx - 0.34) < 1e-3 && Math.abs(sy - 0.34) < 1e-3 && Math.abs(sz - 0.14) < 1e-3) pack = o;
+    });
+    if (!torso || !pack) return { ok: false, torso: !!torso, pack: !!pack };
+    walk.updateWorldMatrix(true, true);
+    const V = sf.THREE.Vector3;
+    const back = new V(0, 0, 1).transformDirection(walk.matrixWorld); // avatar back = local +z
+    const packP = pack.getWorldPosition(new V()).addScaledVector(back, 0.07);
+    const torsoP = torso.getWorldPosition(new V()).addScaledVector(back, 0.13);
+    // two big overlapping splats, different colors, both on the back plane
+    skins.stamp(pack, packP, back, 0.92, 0.9, 0.85, 0.55);
+    skins.stamp(torso, torsoP.clone().add(new V(0.06, 0.05, 0)), back, 0.1, 0.1, 0.14, 0.55);
+    skins.stamp(pack, packP.clone().add(new V(-0.08, -0.12, 0)), back, 0.1, 0.1, 0.14, 0.5);
+    skins.stamp(torso, torsoP.clone().add(new V(0.1, -0.1, 0)), back, 0.92, 0.9, 0.85, 0.5);
+    await tick(5);
+    return { ok: true };
+  })()`);
+  console.log("[paint]", JSON.stringify(paint));
+
+  // live mode: real clock, free cam parked close behind the avatar (video framing)
+  await ev(c, `(async()=>{ ${P}
+    if (!${JSON.stringify(process.env.SF_PROBE_NIGHT === "1")}) sf.sky.setTimeOfDay(10.5); else sf.sky.setTimeOfDay(0.4);
+    const p = sf.player.renderPosition;
+    const yaw = sf.player.heading ?? 0;
+    const bx = Math.sin(yaw), bz = Math.cos(yaw);
+    window.__sfFreeCam([p.x - bx*1.9, p.y + 0.9, p.z - bz*1.9], [p.x, p.y + 0.45, p.z]);
+    return true;
+  })()`);
   await ev(c, `window.__sfManual&&window.__sfManual(false)`);
   await sleep(3000);
 
@@ -236,7 +274,12 @@ async function main() {
   const diffs = [];
   for (let i = 1; i < frames.length; i++) {
     const d = diffFrames(frames[i - 1], frames[i]);
-    diffs.push({ pair: `${i - 1}->${i}`, changed: d.changed, frac: +d.frac.toFixed(5) });
+    // bbox of changed pixels
+    let x0 = Infinity, y0 = Infinity, x1 = -1, y1 = -1;
+    for (let y = 0; y < frames[i].h; y++) for (let x = 0; x < frames[i].w; x++) {
+      if (d.mask[y * frames[i].w + x]) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+    }
+    diffs.push({ pair: `${i - 1}->${i}`, changed: d.changed, frac: +d.frac.toFixed(5), bbox: x1 >= 0 ? [x0, y0, x1, y1] : null });
   }
   console.log("[frame-diffs]", JSON.stringify(diffs));
   writeFileSync(path.join(OUT, "diffs.json"), JSON.stringify({ setup, diffs }, null, 2));

@@ -106,8 +106,8 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
   );
   if (stockShades) stockShades.visible = false;
 
-  const frameMat = new THREE.MeshLambertMaterial({ color: 0x0a0d12, side: THREE.DoubleSide });
-  const lensMat = new THREE.MeshLambertMaterial({ color: 0x090c12, side: THREE.DoubleSide });
+  const frameMat = new THREE.MeshLambertMaterial({ color: 0x05070c, side: THREE.DoubleSide });
+  const lensMat = new THREE.MeshLambertMaterial({ color: 0x030508, side: THREE.DoubleSide });
   const lipMat = new THREE.MeshLambertMaterial({ color: 0xa85f68 });
   const hairLowMat = new THREE.MeshLambertMaterial({ color: 0xaa895f });
   const hairHiMat = new THREE.MeshLambertMaterial({ color: 0xead8ad });
@@ -157,39 +157,36 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
     rig.head.add(wing);
   }
 
-  // ---- jewelled rim: a row of faceted rhinestone gems studding the upswept
-  // outer edge of each cat-eye, with a larger accent gem at the very wing tip.
-  // MeshStandard (unlike the Lambert everywhere else) gives sharp speculars so
-  // they throw glints as she moves; the faint emissive keeps them sparkling
-  // even in the shade so they never read as dead black beads.
+  // ---- jewelled rim: tiny rhinestones seated on the TOP EDGE of each cat-eye
+  // frame (not floating mid-lens). MeshStandard gives sharp speculars; a faint
+  // emissive keeps them sparkling even in shade.
   const gemMat = new THREE.MeshStandardMaterial({
     color: 0xffffff,
     metalness: 0.5,
     roughness: 0.05,
-    emissive: 0xbcd6ff, // icy diamond glint so they sparkle even in shade
+    emissive: 0xbcd6ff,
     emissiveIntensity: 0.95
   });
   ownedMats.push(gemMat);
-  const gemGeo = new THREE.OctahedronGeometry(0.014, 0);
-  const tipGemGeo = new THREE.OctahedronGeometry(0.019, 0);
+  const gemGeo = new THREE.OctahedronGeometry(0.0075, 0);
+  const tipGemGeo = new THREE.OctahedronGeometry(0.01, 0);
   ownedGeos.push(gemGeo, tipGemGeo);
-  // studs climb along the top rim from the bridge out to the cat-eye tip
+  // y sits just above the frame's top edge so gems read as rim studs
   const studs: readonly (readonly [number, number, number])[] = [
-    [0.04, 0.266, 0.02],
-    [0.066, 0.271, 0.35],
-    [0.093, 0.276, -0.25],
-    [0.118, 0.281, 0.15]
+    [0.038, 0.272, 0.02],
+    [0.066, 0.278, 0.35],
+    [0.096, 0.284, -0.25],
+    [0.122, 0.289, 0.15]
   ];
   for (const side of [1, -1] as const) {
     for (const [x, y, spin] of studs) {
       const gem = new THREE.Mesh(gemGeo, gemMat);
-      gem.position.set(side * x, y, -0.163);
+      gem.position.set(side * x, y, -0.151); // proud of the frame face (-0.154)
       gem.rotation.set(spin, side * 0.5, side * 0.4);
       rig.head.add(gem);
     }
-    // accent gem set into the swept wing tip
     const tip = new THREE.Mesh(tipGemGeo, gemMat);
-    tip.position.set(side * 0.134, 0.283, -0.155);
+    tip.position.set(side * 0.138, 0.292, -0.15);
     tip.rotation.set(0.2, side * 0.6, side * 0.5);
     rig.head.add(tip);
   }

@@ -2516,7 +2516,8 @@
       }
       #hud .chat {
         position: absolute;
-        bottom: 148px;
+        /* Sit above .audio (sliders + mute + mic ≈ 160px tall at bottom: 48). */
+        bottom: 220px;
         left: 20px;
         width: 280px;
         display: flex;

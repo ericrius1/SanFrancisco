@@ -2403,10 +2403,10 @@ async function boot() {
     }
 
     // Q: busker trio cycles to the next song in its songbook and cues it
-    // 1s before the first note (no teleport)
+    // 2s before the first note (no teleport)
     if (input.pressed("KeyQ")) {
-      const song = buskers.cycleSong(1);
-      hud.message(`♪ ${song} — playing in 1s`, 2.2);
+      const song = buskers.cycleSong(2);
+      hud.message(`♪ ${song} — playing in 2s`, 2.2);
     }
 
     // ".": factory reset for tweaks — every tweakpane value back to its

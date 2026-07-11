@@ -124,10 +124,10 @@ export class BuskerTrio {
 
   /**
    * Q: advance to the next song in the songbook and cue it up —
-   * `leadInSeconds` of count-in before the downbeat. Mid-song tails are
-   * muted so the new tune starts clean. Returns the new song's name.
+   * `leadInSeconds` of silent count-in before the downbeat. Mid-song tails
+   * are muted so the new tune starts clean. Returns the new song's name.
    */
-  cycleSong(leadInSeconds = 1): string {
+  cycleSong(leadInSeconds = 2): string {
     this.#songIdx = (this.#songIdx + 1) % SONGS.length;
     this.#song = SONGS[this.#songIdx];
     this.#songSeconds = this.#song.beats * SEC_PER_BEAT;
@@ -141,7 +141,7 @@ export class BuskerTrio {
    * note. Does not move the player or the perch — transport only. Mutes any
    * mid-song tails until playing resumes.
    */
-  cueShow(leadInSeconds = 1) {
+  cueShow(leadInSeconds = 2) {
     this.#audio.holdSilent(true);
     this.#enterPhase("countin");
     this.#phaseTime = Math.max(0, COUNTIN_SECONDS - Math.max(0, leadInSeconds));
