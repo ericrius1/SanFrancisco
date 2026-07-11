@@ -165,6 +165,13 @@ export class BuskerTrio {
     if (ctx) this.#anchor = ctx.currentTime - this.#phaseTime;
   }
 
+  /** Live MediaStream of the trio's final audio mix (master + reverb), for
+   * MediaRecorder capture in a realtime render pass. Null in audio-less
+   * contexts (headless tests). */
+  captureStream(): MediaStream | null {
+    return this.#audio.captureStream();
+  }
+
   /** World position of a musician's seat (probe cameras, effects). */
   seatWorld(id: BuskerId, out = new THREE.Vector3()): THREE.Vector3 {
     const local = this.#seatLocal.get(id);

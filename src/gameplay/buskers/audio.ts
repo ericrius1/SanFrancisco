@@ -30,8 +30,10 @@ function setParam(p: AudioParam | undefined, v: number, t: number) {
 export class TrioAudio {
   #ctx: AudioContext | null = null;
   #master: GainNode | null = null;
+  #comp: DynamicsCompressorNode | null = null; // final mix node (post master + reverb)
   #reverbIn: GainNode | null = null; // shared wet bus → convolver → master
   #convolver: ConvolverNode | null = null;
+  #captureDest: MediaStreamAudioDestinationNode | null = null;
   #channels = new Map<BuskerId, { gain: GainNode; panner: PannerNode; reverb: GainNode }>();
   #retryAt = 0;
   #wantSuspend = false;
@@ -45,6 +47,25 @@ export class TrioAudio {
 
   get running(): boolean {
     return this.#ctx?.state === "running";
+  }
+
+  /**
+   * A live MediaStream of the trio's FINAL mix — the compressor output, so it
+   * carries the master gain, the shared "off the mountains" reverb, everything.
+   * Lazily taps a MediaStreamAudioDestinationNode off the compressor (the tap
+   * is cached; the compressor keeps feeding ctx.destination unchanged). The
+   * render tool records this with MediaRecorder in a realtime pass. Null when
+   * Web Audio is unavailable (headless test contexts).
+   */
+  captureStream(): MediaStream | null {
+    const ctx = this.#ctx;
+    const comp = this.#comp;
+    if (!ctx || !comp) return null;
+    if (!this.#captureDest) {
+      this.#captureDest = ctx.createMediaStreamDestination();
+      comp.connect(this.#captureDest);
+    }
+    return this.#captureDest.stream;
   }
 
   /** Mute the trio until the next playing phase (or an explicit clear). */
@@ -81,6 +102,7 @@ export class TrioAudio {
     comp.release.value = 0.24;
     master.connect(comp).connect(ctx.destination);
     this.#master = master;
+    this.#comp = comp;
 
     // "off the mountains" reverb: a synthetic exponential-decay impulse (a
     // long, slightly bright hall — the summit air), shared by all three
@@ -211,11 +233,14 @@ export class TrioAudio {
     this.#channels.clear();
     this.#reverbIn?.disconnect();
     this.#convolver?.disconnect();
+    this.#captureDest?.disconnect();
     void this.#ctx?.close().catch(() => {});
     this.#ctx = null;
     this.#master = null;
+    this.#comp = null;
     this.#reverbIn = null;
     this.#convolver = null;
+    this.#captureDest = null;
   }
 }
 
