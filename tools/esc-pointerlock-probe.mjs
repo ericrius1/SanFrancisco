@@ -156,8 +156,9 @@ async function main() {
 
   console.log("[probe] waiting for __sf...");
   const t0 = Date.now();
-  let ready = false;
-  while (Date.now() - t0 < 150000) { try { if (await ev(c, `!!(window.__sf&&window.__sf.input&&window.__sf.minimap&&window.__sf.player)`)) { ready = true; break; } } catch {} await sleep(600); }
+  let ready = false, lastErr = null;
+  while (Date.now() - t0 < 150000) { try { if (await ev(c, `!!(window.__sf&&window.__sf.input&&window.__sf.minimap&&window.__sf.player)`)) { ready = true; break; } } catch (e) { lastErr = e; } await sleep(600); }
+  if (!ready && lastErr) console.log("[probe] last eval error:", String(lastErr).slice(0, 300));
   if (!ready) throw new Error("__sf never ready");
   console.log(`[probe] __sf ready in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
 

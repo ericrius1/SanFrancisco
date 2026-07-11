@@ -280,7 +280,7 @@ export const buildUkulelist: MusicianBuilder = (audio, part): Musician => {
   const fretRest: ArmPose = [0.55, 0.02, 0.12, 0.32, 0, 0];
 
   /* ---------------------------------------------------------- animation */
-  const cursor = new NoteCursor(part);
+  let cursor = new NoteCursor(part);
   let tLife = 3.7; // own continuous clock (phaseTime resets would pop the sines)
   let perform = 0; // eased playing-intensity: 1 in playing/countin, 0 in rest
   let sNow = 0; // -1..1 across the soundboard; down/up strokes traverse opposite ways
@@ -394,6 +394,9 @@ export const buildUkulelist: MusicianBuilder = (audio, part): Musician => {
   return {
     group,
     update,
+    setPart(next) {
+      cursor = new NoteCursor(next);
+    },
     schedule(events, atTime) {
       const { ctx, out } = audio;
       for (const ev of events) {

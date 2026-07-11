@@ -385,7 +385,7 @@ export const buildFlutist: MusicianBuilder = (audio, part) => {
 
   /* ------------------------------------------------------ animation state */
 
-  const cursor = new NoteCursor(part);
+  let cursor = new NoteCursor(part);
   let t = Math.random() * 20; // ambient time (never resets → no oscillator pops)
   let perform = 0; // 0 = resting, 1 = attentive/performing
   let lift = 0; // 0 = flute in lap, 1 = flute at lips
@@ -646,6 +646,10 @@ export const buildFlutist: MusicianBuilder = (audio, part) => {
     group,
     update,
     schedule,
+    setPart(next) {
+      cursor = new NoteCursor(next);
+      prevNote = null;
+    },
     dispose() {
       for (const stop of Array.from(activeVoices)) stop();
       activeVoices.clear();

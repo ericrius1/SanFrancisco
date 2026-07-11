@@ -426,22 +426,28 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
   // ---- per-event choreography: pitch → dimple. Side dimples belong to the
   // nearest hand; only the centre/ding targets alternate. This prevents the
   // conspicuous cross-body shoulder penetration of the old blind alternation.
-  const distinct = Array.from(new Set(part.map((e) => e.midis[0]))).sort((a, b) => a - b);
-  const dimpleOf = new Map<number, number>();
-  distinct.forEach((m, i) => dimpleOf.set(m, i % 7));
-  const animOf = new Map<NoteEvent, { hand: number; target: number }>();
-  let lastHand = 1;
-  for (const e of part) {
-    const ding = e.tag === "ding";
-    const target = ding ? 7 : (dimpleOf.get(e.midis[0]) ?? 0);
-    const x = targetX[target];
-    const hand = ding || Math.abs(x) < 0.035 ? (lastHand === 1 ? 0 : 1) : x > 0 ? 0 : 1;
-    lastHand = hand;
-    animOf.set(e, { hand, target });
-  }
+  // Rebuilt whenever the songbook cycles (setPart).
+  let animOf = new Map<NoteEvent, { hand: number; target: number }>();
+  let cursor = new NoteCursor(part);
+  const bindPart = (events: NoteEvent[]) => {
+    const distinct = Array.from(new Set(events.map((e) => e.midis[0]))).sort((a, b) => a - b);
+    const dimpleOf = new Map<number, number>();
+    distinct.forEach((m, i) => dimpleOf.set(m, i % 7));
+    animOf = new Map();
+    let lastHand = 1;
+    for (const e of events) {
+      const ding = e.tag === "ding";
+      const target = ding ? 7 : (dimpleOf.get(e.midis[0]) ?? 0);
+      const x = targetX[target];
+      const hand = ding || Math.abs(x) < 0.035 ? (lastHand === 1 ? 0 : 1) : x > 0 ? 0 : 1;
+      lastHand = hand;
+      animOf.set(e, { hand, target });
+    }
+    cursor = new NoteCursor(events);
+  };
+  bindPart(part);
 
   // ---- runtime state (module-temp reuse only; zero per-frame allocations)
-  const cursor = new NoteCursor(part);
   const handPose: ArmPose[] = [restPose[0].slice() as ArmPose, restPose[1].slice() as ArmPose];
   let perform = 0; // eased 0(rest)..1(playing/countin)
   let t = 0; // own accumulator (phaseTime resets at phase edges)
@@ -666,6 +672,10 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
     group,
     update,
     schedule,
+    setPart(next) {
+      bindPart(next);
+      prevCurrent = null;
+    },
     dispose() {
       group.parent?.remove(group);
       for (const g of ownedGeos) g.dispose(); // face + styling + pan + strands —

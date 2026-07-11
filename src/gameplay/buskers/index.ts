@@ -2,7 +2,7 @@ import * as THREE from "three/webgpu";
 import type { Physics } from "../../core/physics";
 import { TrioAudio } from "./audio";
 import { buildPerchRock, PERCH } from "./perchRock";
-import { COUNTIN_BEATS, REST_SECONDS, SEC_PER_BEAT, SONG, SONG_BEATS } from "./song";
+import { COUNTIN_BEATS, REST_SECONDS, SEC_PER_BEAT, SONGS } from "./song";
 import type { BuskerId, Musician, MusicianBuilder, NoteEvent, TrioClock, TrioPhase } from "./types";
 import { buildFlutist } from "./flutist";
 import { buildHandpanist } from "./handpanist";
@@ -11,7 +11,8 @@ import { BuskerFireflies } from "./fireflies";
 
 /**
  * The busker trio: three musicians perched on a flat-topped chert boulder
- * (perchRock.ts) playing one song together (song.ts), resting in the wind
+ * (perchRock.ts) playing through a small songbook together (song.ts) — the
+ * current song loops, Q cycles to the next one — resting in the wind
  * between passes. Deliberately placeless — createBuskerTrio() drops it at any
  * world position and
  * setPlacement() moves it later (it re-grounds itself), so it can live on
@@ -29,7 +30,6 @@ import { BuskerFireflies } from "./fireflies";
 
 const LOOKAHEAD_SECONDS = 0.4; // audio scheduling horizon
 const ANIM_RADIUS = 200; // beyond this, skip musician animation updates
-const SONG_SECONDS = SONG_BEATS * SEC_PER_BEAT;
 const COUNTIN_SECONDS = COUNTIN_BEATS * SEC_PER_BEAT;
 
 // Seats along the front (-Z) edge. A viewer standing in front of the rock
@@ -69,6 +69,9 @@ export class BuskerTrio {
   #phaseTime = 0;
   #elapsed = 0;
   #anchor = 0; // AudioContext time that maps to song beat 0
+  #songIdx = 0;
+  #song = SONGS[0];
+  #songSeconds = SONGS[0].beats * SEC_PER_BEAT;
   #schedIdx: Record<BuskerId, number> = { ukulele: 0, handpan: 0, flute: 0 };
   #clock: TrioClock = { phase: "countin", phaseTime: 0, songTime: 0, beat: 0, wind: 0.3 };
   #tmp = new THREE.Vector3();
@@ -83,7 +86,7 @@ export class BuskerTrio {
       const tap = this.#audio.channel(seat.id);
       // Headless/audio-less contexts still get the full visual performance:
       // hand the builder a dummy tap wired to nothing.
-      const musician = seat.build(tap ?? makeSilentTap(), SONG[seat.id]);
+      const musician = seat.build(tap ?? makeSilentTap(), this.#song.parts[seat.id]);
       musician.group.position.set(seat.x, PERCH.top, SEAT_Z);
       musician.group.rotation.y = seat.yaw;
       this.group.add(musician.group);
@@ -114,6 +117,25 @@ export class BuskerTrio {
     this.#enterPhase("playing");
   }
 
+  /** Name of the song the transport is currently cycling. */
+  get songName(): string {
+    return this.#song.name;
+  }
+
+  /**
+   * Q: advance to the next song in the songbook and cue it up —
+   * `leadInSeconds` of count-in before the downbeat. Mid-song tails are
+   * muted so the new tune starts clean. Returns the new song's name.
+   */
+  cycleSong(leadInSeconds = 1): string {
+    this.#songIdx = (this.#songIdx + 1) % SONGS.length;
+    this.#song = SONGS[this.#songIdx];
+    this.#songSeconds = this.#song.beats * SEC_PER_BEAT;
+    for (const [id, musician] of this.#musicians) musician.setPart(this.#song.parts[id]);
+    this.cueShow(leadInSeconds);
+    return this.#song.name;
+  }
+
   /**
    * Film cue: jump to the silent count-in, `leadInSeconds` before the first
    * note. Does not move the player or the perch — transport only. Mutes any
@@ -128,7 +150,7 @@ export class BuskerTrio {
   /** Debug/probe helper: jump the transport to an arbitrary song beat. */
   seek(beat: number) {
     this.#enterPhase("playing");
-    this.#phaseTime = THREE.MathUtils.clamp(beat, 0, SONG_BEATS) * SEC_PER_BEAT;
+    this.#phaseTime = THREE.MathUtils.clamp(beat, 0, this.#song.beats) * SEC_PER_BEAT;
     const ctx = this.#audio.ctx;
     if (ctx) this.#anchor = ctx.currentTime - this.#phaseTime;
   }
@@ -162,14 +184,14 @@ export class BuskerTrio {
       if (Math.abs(audioPhase - this.#phaseTime) > 0.25) this.#anchor = ctx.currentTime - this.#phaseTime;
       else this.#phaseTime = audioPhase;
     }
-    if (this.#phase === "playing" && this.#phaseTime >= SONG_SECONDS) this.#enterPhase("rest");
+    if (this.#phase === "playing" && this.#phaseTime >= this.#songSeconds) this.#enterPhase("rest");
     else if (this.#phase === "rest" && this.#phaseTime >= REST_SECONDS) this.#enterPhase("countin");
     else if (this.#phase === "countin" && this.#phaseTime >= COUNTIN_SECONDS) this.#enterPhase("playing");
 
     const clock = this.#clock;
     clock.phase = this.#phase;
     clock.phaseTime = this.#phaseTime;
-    clock.songTime = this.#phase === "playing" ? this.#phaseTime : SONG_SECONDS;
+    clock.songTime = this.#phase === "playing" ? this.#phaseTime : this.#songSeconds;
     clock.beat = clock.songTime / SEC_PER_BEAT;
     // never dead still: a slow breath under the shared foliage gust
     clock.wind = THREE.MathUtils.clamp(0.18 + 0.12 * Math.sin(this.#elapsed * 0.31) + 0.85 * gust, 0, 1);
@@ -177,10 +199,10 @@ export class BuskerTrio {
     // ---- audio scheduling (lookahead window, once per event) ----
     if (this.#phase === "playing" && this.#audio.running) {
       const nowBeat = this.#phaseTime / SEC_PER_BEAT;
-      const horizon = Math.min(SONG_BEATS, (this.#phaseTime + LOOKAHEAD_SECONDS) / SEC_PER_BEAT);
+      const horizon = Math.min(this.#song.beats, (this.#phaseTime + LOOKAHEAD_SECONDS) / SEC_PER_BEAT);
       const atTime = (beat: number) => this.#anchor + beat * SEC_PER_BEAT;
       for (const [id, musician] of this.#musicians) {
-        const events = SONG[id];
+        const events = this.#song.parts[id];
         let i = this.#schedIdx[id];
         while (i < events.length && events[i].beat < nowBeat - 0.05) i++; // arrived mid-song: drop the past
         let batch: NoteEvent[] | null = null;

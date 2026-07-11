@@ -95,6 +95,12 @@ export interface Musician {
    * and disconnect the voice's subgraph in an `onended` handler.
    */
   schedule(events: NoteEvent[], atTime: (beat: number) => number): void;
+  /**
+   * Swap in a different song's part (Q cycles the songbook). Called while the
+   * transport is outside "playing" — rebuild any part-derived state (cursors,
+   * choreography maps) so the next pass animates the new score.
+   */
+  setPart(part: NoteEvent[]): void;
   /** Remove/disconnect everything this musician created. Do NOT dispose
    * geometries from player/rig.ts's shared cache. */
   dispose(): void;
