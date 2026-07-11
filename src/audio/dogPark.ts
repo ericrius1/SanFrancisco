@@ -45,7 +45,7 @@ const DOG_AUDIO = {
   scamperRadius: 23,
   // Dog calls are gameplay SFX, not background wildlife. Keep enough headroom
   // for doubles, but make a single nearby bark unmistakable at default FX gain.
-  layerGain: 0.92,
+  layerGain: 1,
   patterLevel: 0.055,
   globalVocalGap: 3.4,
   dogVocalGapMin: 4.5,
@@ -264,7 +264,7 @@ export class DogParkAudio {
       Math.random() < huffChance ? "dogHuff" : dogVoiceForStyle(dog.style.name, dog.style.scale);
     // Do not multiply by the nature "wildlife calls" control: dog barks are
     // interaction SFX and already ride the user's effects volume + master mute.
-    const level = kind === "dogHuff" ? 0.38 + Math.random() * 0.08 : 0.72 + Math.random() * 0.12;
+    const level = kind === "dogHuff" ? 0.52 + Math.random() * 0.1 : 1 + Math.random() * 0.15;
     DOG_VOICE_LIB[kind]({
       ctx: io.ctx,
       out: rig.panner,
@@ -383,8 +383,8 @@ export class DogParkAudio {
     const panner = ctx.createPanner();
     panner.panningModel = "HRTF";
     panner.distanceModel = "inverse";
-    panner.refDistance = 7;
-    panner.rolloffFactor = 0.9;
+    panner.refDistance = 12;
+    panner.rolloffFactor = 0.65;
     panner.maxDistance = 60;
     panner.connect(layer);
 
