@@ -34,7 +34,8 @@ export function edgeOutwardNormal(p0: Vec2, p1: Vec2): Vec2 {
 /** index of the "street" edge — Phase 1 heuristic = the longest edge.
  *  TODO(Phase 5): make this road-network aware (edge whose outward normal points
  *  at the nearest open street) so entrances never face an alley. */
-export function streetEdgeIndex(poly: Vec2[]): number {
+export function streetEdgeIndex(poly: Vec2[], resolved?: number): number {
+  if (Number.isInteger(resolved) && resolved! >= 0 && resolved! < poly.length) return resolved!;
   let best = 0, bestLen = -1;
   for (let i = 0; i < poly.length; i++) {
     const p0 = poly[i], p1 = poly[(i + 1) % poly.length];

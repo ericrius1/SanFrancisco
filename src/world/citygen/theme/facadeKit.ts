@@ -219,8 +219,24 @@ export function storefront(out: PanelBuilder, e: FacadeEdge, y0: number, y1: num
   if (y1 - y0 < 1.2) return;  // ground floor fully buried on this (uphill) face → plain wall
   const bulk = y0 + 0.5, glassTop = y1 - 0.7;
   const cols = bayCount(e, 3.6);
+  // Storefront glazing used to span straight across the operable person door.
+  // The baked leaf hid it while closed, but opening revealed an intact window
+  // behind a passable collider gap. Cut every affected bay around the exact same
+  // doorMetrics interval used by the wall, leaf and collision system.
+  const dm = doorEligible(e) ? doorMetrics(e.length, e.base, e.top, e.grade) : null;
+  const doorT0 = dm ? dm.tc - (dm.halfW + 0.12) / e.length : -1;
+  const doorT1 = dm ? dm.tc + (dm.halfW + 0.12) / e.length : -1;
+  const pane = (t0: number, t1: number) => {
+    if ((t1 - t0) * e.length < 0.5) return;
+    faceWindow(out, gp(e, t0), gp(e, t1), bulk, glassTop, n, { frame: m.trim, glass: m.glass, trim: m.trim });
+  };
   for (let c = 0; c < cols; c++) {
-    faceWindow(out, gp(e, (c + 0.1) / cols), gp(e, (c + 0.9) / cols), bulk, glassTop, n, { frame: m.trim, glass: m.glass, trim: m.trim });
+    const t0 = (c + 0.1) / cols, t1 = (c + 0.9) / cols;
+    if (!dm || t1 <= doorT0 || t0 >= doorT1) pane(t0, t1);
+    else {
+      pane(t0, Math.min(t1, doorT0));
+      pane(Math.max(t0, doorT1), t1);
+    }
   }
   // signband
   out.box(m.sign, [(gp(e, 0)[0] + gp(e, 1)[0]) / 2 + n[0] * 0.06, glassTop + 0.35, (gp(e, 0)[2] + gp(e, 1)[2]) / 2 + n[1] * 0.06],
@@ -238,6 +254,11 @@ export function garageDoor(out: PanelBuilder, e: FacadeEdge, y0: number, y1: num
   y0 = Math.max(y0, sill); // sit the garage at the sill (grade) so it isn't sunk into the hill
   if (y1 - y0 < 1.2) return;
   const w = Math.min(3.0, e.length * 0.5), tc = e.length > 6 ? 0.72 : 0.5;
+  // A narrow Marina face cannot carry both a garage and the person door. Never
+  // draw a permanent garage slab behind the operable leaf; preserve the walk-in
+  // entrance and let the remaining facade read as stucco instead.
+  const person = doorMetrics(e.length, e.base, e.top, e.grade);
+  if (Math.abs(tc * e.length - person.tc * e.length) < w / 2 + person.halfW + 0.22) return;
   const dl = gp(e, tc - w / 2 / e.length), dr = gp(e, tc + w / 2 / e.length);
   const top = Math.min(y1 - 0.2, Math.max(y0 + 2.4, openTop));
   const cD = lerp(dl, dr, 0.5), midY = (y0 + 0.1 + top) / 2;

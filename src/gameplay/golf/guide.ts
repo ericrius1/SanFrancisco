@@ -37,12 +37,13 @@ export class GolfGuide {
     shape.closePath();
     const geo = new THREE.ShapeGeometry(shape);
 
+    // NOTE: depthTest stays ON. depthTest=false vanishes under this scene's
+    // reversed-z depth (same MeshBasicNodeMaterial gotcha as the underwater
+    // veil). Floating above the golfer, terrain rarely occludes it anyway.
     const arrowMat = new THREE.MeshBasicNodeMaterial();
     // teal, a touch brighter toward the tip so the point leads the eye
     const tipGlow = (positionLocal.y as N).mul(0.4).add(0.6).clamp(0, 1);
     arrowMat.colorNode = (color(0x25e6b4) as N).mul(LIGHT_SCALE * 0.62).mul(tipGlow);
-    arrowMat.depthTest = false;
-    arrowMat.depthWrite = false;
     arrowMat.side = THREE.DoubleSide;
     arrowMat.fog = false;
     const arrow = new THREE.Mesh(geo, arrowMat);
@@ -52,8 +53,6 @@ export class GolfGuide {
     // dark shell a hair bigger + behind → a clean outline on bright skies
     const shellMat = new THREE.MeshBasicNodeMaterial();
     shellMat.colorNode = color(0x06342b) as N;
-    shellMat.depthTest = false;
-    shellMat.depthWrite = false;
     shellMat.side = THREE.DoubleSide;
     shellMat.fog = false;
     const shell = new THREE.Mesh(geo, shellMat);

@@ -101,7 +101,7 @@ export function buildInterior(spec: BuildingSpec, zone: InteriorZone = "resident
   // to the mesh — see the yaw handling in the post-transform below.
   const world = ensureCCW(spec.poly);
   const [ctrX, ctrZ] = centroid(world);
-  const si = streetEdgeIndex(world);
+  const si = streetEdgeIndex(world, spec.streetEdge);
   const s0 = world[si], s1 = world[(si + 1) % world.length];
   const theta = Math.atan2(s1[1] - s0[1], s1[0] - s0[0]); // world angle of the street edge
   const cosT = Math.cos(theta), sinT = Math.sin(theta);
@@ -134,6 +134,10 @@ export function buildInterior(spec: BuildingSpec, zone: InteriorZone = "resident
   // rect just inside the doorway clear of the stair + furniture, or a sofa/flight
   // parked against the entrance blocks the walk-in the doorway contract promises.
   let doorClear: Rect | null = null;
+  // A narrower but deeper front-door sightline. Circulation may legitimately
+  // turn after the room hub, yet a sofa immediately beyond that turn still fills
+  // the post-entry camera and makes a navigable home feel blocked.
+  let entryVista: Rect | null = null;
   let entry: EntryAccess | null = null;
   let frontOpening: FrontOpening | null = null;
   {
@@ -145,6 +149,11 @@ export function buildInterior(spec: BuildingSpec, zone: InteriorZone = "resident
       const inZ = ctrZ > dZ ? 1 : -1;            // toward the lot interior (edge is x-aligned)
       const hw = Math.max(0.9, halfW + 0.6), depth = 2.4;
       doorClear = { x0: dX - hw, x1: dX + hw, z0: Math.min(dZ, dZ + inZ * depth), z1: Math.max(dZ, dZ + inZ * depth) };
+      const vistaHalf = 0.68, vistaDepth = 7.0;
+      entryVista = {
+        x0: dX - vistaHalf, x1: dX + vistaHalf,
+        z0: Math.min(dZ, dZ + inZ * vistaDepth), z1: Math.max(dZ, dZ + inZ * vistaDepth),
+      };
       entry = { point: [dX, dZ + inZ * 1.55], keepout: doorClear };
       frontOpening = { edge: si, tc, halfW, y0: sill, y1: openTop };
     }
@@ -230,6 +239,9 @@ export function buildInterior(spec: BuildingSpec, zone: InteriorZone = "resident
     // Open retail/loft floors are one room; partitioned floors use their explicit
     // room graph. Every portal, entrance and stair access is connected to a hub by
     // 1.2 m keepout strips before a single prop is admitted.
+    const entryKeepouts = k === 0
+      ? [doorClear, entryVista].filter((r): r is Rect => r !== null)
+      : [];
     if (openFloor) {
       const circulation = planCirculation(
         [area], [], k === 0 ? entry : null,
@@ -238,7 +250,7 @@ export function buildInterior(spec: BuildingSpec, zone: InteriorZone = "resident
       furnish(
         out, cols, stair ? stair.region : null,
         zone === "commercial" ? "retail" : "loft", area, fY, rf,
-        [...circulation.byRoom[0], ...shell.windowKeepouts], style,
+        [...circulation.byRoom[0], ...entryKeepouts, ...shell.windowKeepouts], style,
       );
     } else {
       const circulation = planCirculation(
@@ -252,7 +264,7 @@ export function buildInterior(spec: BuildingSpec, zone: InteriorZone = "resident
         else role = i === bathIdx ? "bath" : "bedroom";
         furnish(
           out, cols, stair ? stair.region : null, role, rooms[i], fY, rf,
-          [...circulation.byRoom[i], ...shell.windowKeepouts], style,
+          [...circulation.byRoom[i], ...entryKeepouts, ...shell.windowKeepouts], style,
         );
       }
     }

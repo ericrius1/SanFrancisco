@@ -1,7 +1,7 @@
 import * as THREE from "three/webgpu";
 import { BodyType, type Physics } from "../../core/physics";
 import { avatarFromSeed } from "../../player/avatar";
-import { buildRig, poseIdle, setRigClasp, type Rig } from "../../player/rig";
+import { buildRig, poseIdle, rigHandWorld, setRigClasp, type Rig } from "../../player/rig";
 import type { WorldMap } from "../heightmap";
 import { stepBall, type BallSimCtx, type BallSimState } from "./ballSim";
 import { dogParkFenceSegments, makeDogParkFence, type FenceSegment2D } from "./dogParkFence";
@@ -1401,19 +1401,13 @@ export class CoronaHeightsPark {
   }
 
   #handPos(owner: ParkOwner, windup: number, out: THREE.Vector3) {
-    const lx = 0.35;
-    // reach drops the hand and pushes it forward (-Z) to meet the dog's mouth,
-    // so the returned ball lands in the palm instead of floating by the shoulder
-    const ly = 1.22 + 0.42 * windup - 0.52 * owner.reach;
-    const lz = -0.22 + 0.62 * windup - 0.44 * owner.reach;
-    const sin = Math.sin(owner.yaw);
-    const cos = Math.cos(owner.yaw);
-    out.set(
-      owner.x + lx * cos + lz * sin,
-      this.#map.groundTop(owner.x, owner.z) + DOG_SURFACE_LIFT + ly,
-      owner.z - lx * sin + lz * cos
-    );
-    return out;
+    void windup; // pose (windup/reach/greet) already lives in the rig's right arm
+    // Track the actual animated right hand rather than a hand-authored point:
+    // ownerPose winds up, reaches down and clasps with the RIGHT arm, so the prop
+    // must ride handR to read as clasped-in-the-palm (never floating off to the
+    // side). getWorldPosition refreshes handR's world matrix from the last posed
+    // frame's joint rotations — a sub-frame lag that's invisible at hand speeds.
+    return rigHandWorld(owner.rig, "R", out);
   }
 
   /** Rejection-sample a landing point whose 2.2 m surroundings stay inside the

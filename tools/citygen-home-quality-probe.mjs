@@ -36,6 +36,14 @@ const W = Number(process.env.SF_W ?? 1600);
 const H = Number(process.env.SF_H ?? 1000);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function waitForExit(child, timeoutMs = 3_000) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, timeoutMs);
+    child.once("exit", () => { clearTimeout(timer); resolve(); });
+  });
+}
+
 const parseSpot = (raw, fallback) => {
   const parts = String(raw ?? fallback).split(",").map(Number);
   if (parts.length !== 2 || parts.some((v) => !Number.isFinite(v))) throw new Error(`bad spot "${raw}"; expected x,z`);
@@ -46,6 +54,11 @@ const DISTRICTS = [
   { label: "victorian", archetype: "victorian", spot: parseSpot(process.env.SF_SPOT_VIC, "900,2400") },
   { label: "soma", archetype: "soma", spot: parseSpot(process.env.SF_SPOT_SOMA, "1800,800") },
 ];
+if (process.env.SF_ALL_NEIGHBORHOODS === "1") DISTRICTS.push(
+  { label: "edwardian", archetype: "edwardian", spot: parseSpot(process.env.SF_SPOT_EDWARDIAN, "-374,2706") },
+  { label: "marina", archetype: "marina", spot: parseSpot(process.env.SF_SPOT_MARINA, "-3550,3438") },
+  { label: "downtown", archetype: "downtown", spot: parseSpot(process.env.SF_SPOT_DOWNTOWN, "2817,-1296") },
+);
 
 async function isFile(p) {
   try { await access(p); return true; } catch { return false; }
@@ -403,15 +416,30 @@ const HELPERS_SRC = `
     const p = transform.position;
     const eye = [p[0], p[1] + 0.68, p[2]];
     const target = [p[0] + door.inward[0] * 4.2, p[1] + 0.2, p[2] + door.inward[2] * 4.2];
-    const blockers = [];
+    const blockerMap = new Map();
     for (const depth of [0.5, 1, 1.5, 2, 2.5, 3, 3.5]) {
       const x = p[0] + door.inward[0] * depth;
       const z = p[2] + door.inward[2] * depth;
       for (let i = 0; i < local.length; i++) {
         const box = local[i];
-        if (pointInBox(x, p[1], z, box, 0.34) && !blockers.includes(i)) blockers.push(i);
+        if (!pointInBox(x, p[1], z, box, 0.34)) continue;
+        let record = blockerMap.get(i);
+        if (!record) {
+          record = {
+            index: i,
+            depths: [],
+            box: {
+              x: Number(box.x.toFixed(3)), y: Number(box.y.toFixed(3)), z: Number(box.z.toFixed(3)),
+              hx: Number(box.hx.toFixed(3)), hy: Number(box.hy.toFixed(3)), hz: Number(box.hz.toFixed(3)),
+              yaw: Number((box.yaw || 0).toFixed(4)), tilted: !!box.quat,
+            },
+          };
+          blockerMap.set(i, record);
+        }
+        record.depths.push(depth);
       }
     }
+    const blockers = [...blockerMap.values()];
     let bounds = null;
     if (local.length) {
       let minx = Infinity, maxx = -Infinity, minz = Infinity, maxz = -Infinity;
@@ -426,7 +454,7 @@ const HELPERS_SRC = `
     s.camera.position.set(eye[0], eye[1], eye[2]);
     s.camera.lookAt(target[0], target[1], target[2]);
     s.camera.updateMatrixWorld(true);
-    return { eye, target, interiorBoxes: local.length, forwardBlockers: blockers.length, bounds };
+    return { eye, target, interiorBoxes: local.length, forwardBlockers: blockers.length, blockers, bounds };
   };
 
   window.__homeDiagnostics = () => {
@@ -452,7 +480,11 @@ const HELPERS_SRC = `
       ring: s.citygenRing.current.stats(),
       renderer: {
         calls: render.calls ?? render.drawCalls ?? null,
-        triangles: render.triangles ?? null,
+        // Three's WebGPU renderer currently leaves this field at zero even in a
+        // scene with thousands of visible meshes; report it unavailable rather
+        // than presenting zero as a real geometry count.
+        triangles: Number.isFinite(render.triangles) && render.triangles > 0 ? render.triangles : null,
+        rawTriangles: render.triangles ?? null,
         points: render.points ?? null,
         lines: render.lines ?? null,
         memoryGeometries: memory.geometries ?? null,
@@ -465,6 +497,7 @@ const HELPERS_SRC = `
       },
       scene: { objects, visibleMeshes, uniqueGeometries: geometries.size, uniqueMaterials: materials.size },
       physics: { worlds, bakedBuildingBoxes: baked.length, citygenWallBoxes: walls.length, interiorBoxes: interiors.length },
+      interiorRoot: !!s.scene.getObjectByName("cityGenInterior"),
     };
   };
 })();`;
@@ -660,7 +693,7 @@ async function verifyDistrict(cdp, district) {
   addCheck(checks, "real walk enters through the open door", walkIn.reached && walkIn.depth >= 2.2 && walkIn.inside && walkIn.interiors >= 1, walkIn);
   await tickN(cdp, 10);
   const interiorFrame = await evaluate(cdp, `window.__homeFrameInterior(${doorJson(door)})`);
-  addCheck(checks, "interior foreground corridor is clear for 3.5 m", interiorFrame.interiorBoxes > 0 && interiorFrame.forwardBlockers === 0, interiorFrame);
+  addCheck(checks, "post-entry camera foreground is clear for 3.5 m", interiorFrame.interiorBoxes > 0 && interiorFrame.forwardBlockers === 0, interiorFrame);
   await renderOnly(cdp);
   screenshots.push(await screenshot(cdp, `${district.label}-interior.jpg`));
   const diagnostics = await evaluate(cdp, `window.__homeDiagnostics()`);
@@ -811,11 +844,17 @@ async function main() {
   } finally {
     try { cdp?.close(); } catch {}
     chrome?.kill("SIGTERM");
+    await waitForExit(chrome);
     if (dev) {
       try { process.kill(-dev.pid, "SIGTERM"); } catch { dev.kill("SIGTERM"); }
     }
-    await sleep(200);
-    await rm(profile, { recursive: true, force: true });
+    for (let attempt = 0; attempt < 6; attempt++) {
+      try { await rm(profile, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); break; }
+      catch (error) {
+        if (attempt === 5) console.warn(`[probe] could not remove temporary Chrome profile ${profile}: ${error.message}`);
+        else await sleep(250);
+      }
+    }
   }
   if (failed) process.exitCode = 1;
 }

@@ -23,8 +23,9 @@
 
 import type { SeedTreeDesignSpec } from "../seedForest/templates";
 import { BOTANICAL_GARDEN_BOUNDS, inBotanicalGarden, type GardenTerrain } from "../garden/layout";
+import { BUENA_VISTA_REGION, BUENA_VISTA_SUMMIT_CLEARING, inBuenaVistaPark } from "../buenaVista";
 
-export type WildRegionId = "ggpark" | "presidio" | "marin" | "twinpeaks";
+export type WildRegionId = "ggpark" | "presidio" | "marin" | "twinpeaks" | "buenavista";
 
 export type WildRegion = {
   id: WildRegionId;
@@ -49,7 +50,11 @@ export const WILD_REGIONS: readonly WildRegion[] = [
   // Central hills — Mount Sutro (dense eucalyptus cloud-forest), Mount Davidson
   // (forested), Twin Peaks (open grassy summit). plantClasses=[1] keeps the
   // canopy on the actual parkland, not the surrounding neighborhoods (class 0).
-  { id: "twinpeaks", minX: -1500, maxX: 350, minZ: 3150, maxZ: 4650, plantClasses: [1], minGround: -Infinity }
+  { id: "twinpeaks", minX: -1500, maxX: 350, minZ: 3150, maxZ: 4650, plantClasses: [1], minGround: -Infinity },
+  // Buena Vista Park — the wooded hill directly north of the Corona Heights
+  // buskers. Park-only planting follows its irregular OSM class-1 footprint;
+  // the authored summit meadow below preserves the real opening at the crown.
+  { id: "buenavista", ...BUENA_VISTA_REGION, plantClasses: [1], minGround: -Infinity }
 ] as const;
 
 export function wildRegionAt(x: number, z: number): WildRegion | null {
@@ -250,7 +255,15 @@ const GROVES: readonly Grove[] = [
   // Central hills — Mount Sutro cloud-forest (dense eucalyptus) + Mount Davidson
   { name: "sutro_cloud_forest", species: 3, cx: -782, cz: 3846, r: 205, density: 0.2 },
   { name: "sutro_fir_pocket", species: 0, cx: -1080, cz: 4160, r: 110, density: 0.16 },
-  { name: "mount_davidson", species: 3, cx: -320, cz: 4330, r: 170, density: 0.18 }
+  { name: "mount_davidson", species: 3, cx: -320, cz: 4330, r: 170, density: 0.18 },
+
+  // Buena Vista — interlocking oak/eucalyptus/cypress pockets build one dark
+  // canopy silhouette while retaining enough species variation to catch bands
+  // of sunset and mist differently during the orbit.
+  { name: "buena_vista_eucalyptus_north", species: 3, cx: 175, cz: 2265, r: 150, density: 0.28 },
+  { name: "buena_vista_oak_west", species: 2, cx: 105, cz: 2425, r: 135, density: 0.25 },
+  { name: "buena_vista_cypress_east", species: 1, cx: 355, cz: 2410, r: 145, density: 0.25 },
+  { name: "buena_vista_eucalyptus_south", species: 3, cx: 285, cz: 2560, r: 130, density: 0.26 }
 ] as const;
 
 const WINDROWS: readonly Windrow[] = [
@@ -369,7 +382,14 @@ const MEADOWS: readonly Meadow[] = [
   { name: "speedway_hellman", cx: -3760, cz: 2250, rx: 185, rz: 105 },
   { name: "lindley_marx", cx: -4330, cz: 2410, rx: 150, rz: 95 },
   { name: "big_rec_east", cx: -1520, cz: 2470, rx: 150, rz: 100 },
-  { name: "presidio_parade", cx: -1680, cz: -1050, rx: 165, rz: 115 }
+  { name: "presidio_parade", cx: -1680, cz: -1050, rx: 165, rz: 115 },
+  {
+    name: "buena_vista_summit",
+    cx: BUENA_VISTA_SUMMIT_CLEARING.x,
+    cz: BUENA_VISTA_SUMMIT_CLEARING.z,
+    rx: BUENA_VISTA_SUMMIT_CLEARING.radiusX,
+    rz: BUENA_VISTA_SUMMIT_CLEARING.radiusZ
+  }
 ] as const;
 
 function inMeadow(x: number, z: number): boolean {
@@ -408,6 +428,14 @@ const MATRIX: Partial<Record<WildRegionId, MatrixSpec>> = {
     density: 0.4,
     standThresh: 0.6,
     species: (zone) => (zone < 0.46 ? 3 : zone < 0.86 ? 1 : 0) // euc / cypress-leaning / fir
+  },
+  buenavista: {
+    // Compact, continuously wooded urban hill. The groves establish its mass;
+    // this matrix stitches them together into a canopy instead of isolated
+    // specimen dots. Oaks stay common around the summit opening.
+    density: 0.68,
+    standThresh: 0.26,
+    species: (zone) => (zone < 0.43 ? 3 : zone < 0.72 ? 2 : 1) // eucalyptus / oak / cypress
   }
 };
 const MATRIX_CELL = 11;
@@ -423,6 +451,7 @@ function slopeOk(map: GardenTerrain, x: number, z: number, maxDelta: number): bo
 
 function plantable(map: GardenTerrain, region: WildRegion, x: number, z: number): boolean {
   if (x < region.minX || x > region.maxX || z < region.minZ || z > region.maxZ) return false;
+  if (region.id === "buenavista" && !inBuenaVistaPark(x, z)) return false;
   if (map.isWater(x, z)) return false;
   if (!region.plantClasses.includes(map.surfaceType(x, z))) return false;
   if (map.groundHeight(x, z) < region.minGround) return false;

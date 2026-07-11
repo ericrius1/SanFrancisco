@@ -230,8 +230,75 @@ async function main() {
       children:g.children.length, arrowMeshVisible:arrowVis, mode:s.player.mode };
   })()`);
   console.log("[guide]", JSON.stringify(gstate));
-  await view(c, "over_debug");
   await view(c, "wide_aim");
+
+  // --- cart boarding: teleport onto the parked cart, press E, confirm we drive it
+  const board = await ev(c, `(()=>{
+    const s = window.__sf, g = window.__golfGame;
+    const cp = g.parkedCartPosition;
+    if (!cp) return { err: "no parked cart" };
+    const y = s.map.effectiveGround(cp.x, cp.z) + 1.2;
+    s.player.teleportTo({ x: cp.x + 1, y, z: cp.z, facing: 0, mode: "walk" });
+    return { cartPos: [cp.x, cp.z].map(n => Math.round(n*10)/10) };
+  })()`);
+  console.log("[cart-board] pre:", JSON.stringify(board));
+  await ticks(c, 90, 1 / 60); // settle onto the ground next to the cart
+  const boarded = await ev(c, `(()=>{
+    const s = window.__sf, g = window.__golfGame;
+    const ok = g.tryStartAtTee(s.player, s.hud);
+    return { consumed: ok, mode: s.player.mode };
+  })()`);
+  await ticks(c, 20, 1 / 60);
+  const drive = await ev(c, `(()=>{
+    const s = window.__sf;
+    // find the golf-bag props under the active drive mesh (0/1/2 visible)
+    let bags = 0; s.player.meshes.drive.traverse(o => { if (o.name && o.name.startsWith('golfbag') && o.visible) bags++; });
+    return { mode: s.player.mode, bagsVisible: bags };
+  })()`);
+  console.log("[cart-board] post:", JSON.stringify(boarded), "drive:", JSON.stringify(drive));
+  // frame the golfer sitting in the cart
+  await ev(c, `(()=>{
+    const s = window.__sf, p = s.player.renderPosition, T = s.THREE;
+    window.__sfFreeCam([p.x + 5, p.y + 3, p.z - 4.5], [p.x, p.y + 0.5, p.z]);
+    return true;
+  })()`);
+  await tick(c, 0);
+  {
+    const shot = await c.send("Page.captureScreenshot", { format: "jpeg", quality: 90, fromSurface: true });
+    writeFileSync(path.join(OUT, "cart_boarded.jpg"), Buffer.from(shot.data, "base64"));
+    console.log("[probe] shot cart_boarded");
+  }
+  // passenger joins → second bag; then hop off → cart re-parks
+  const twoBags = await ev(c, `(()=>{
+    window.__golfGame.setCartOccupants(2);
+    let bags = 0; window.__sf.player.meshes.drive.traverse(o => { if (o.name && o.name.startsWith('golfbag') && o.visible) bags++; });
+    return bags;
+  })()`);
+  await ev(c, `(window.__sf.player.trySwitch('walk'), true)`);
+  await ticks(c, 30, 1 / 60);
+  const reparked = await ev(c, `(()=>{ const g=window.__golfGame; return { mode: window.__sf.player.mode, cartParked: !!g.parkedCartPosition }; })()`);
+  console.log("[cart-board] twoBags:", twoBags, "afterExit:", JSON.stringify(reparked));
+
+  // --- golf cart hero shots: spawn one beside the tee, frame it 3/4 front + rear
+  const cart = await ev(c, `(()=>{
+    const t = ${JSON.stringify(h1.teeXZ)};
+    const m = window.__spawnGolfCart(t[0] + 5, t[1] + 3, 2);
+    window.__cart = m;
+    return { x: m.position.x, y: Math.round(m.position.y*100)/100, z: m.position.z };
+  })()`);
+  console.log("[cart]", JSON.stringify(cart));
+  for (const [tag, ex, ey, ez] of [["cart_front34", 4.5, 2.6, -4.5], ["cart_rear34", -3.8, 2.4, 4.8], ["cart_side", 6.2, 1.8, 0.5]]) {
+    await ev(c, `(()=>{
+      const m = window.__cart, T = window.__sf.THREE;
+      const c = m.position;
+      window.__sfFreeCam([c.x + ${ex}, c.y + ${ey}, c.z + ${ez}], [c.x, c.y + 0.4, c.z]);
+      return true;
+    })()`);
+    await tick(c, 0);
+    const shot = await c.send("Page.captureScreenshot", { format: "jpeg", quality: 90, fromSurface: true });
+    writeFileSync(path.join(OUT, `${tag}.jpg`), Buffer.from(shot.data, "base64"));
+    console.log(`[probe] shot ${tag}`);
+  }
 
   // --- address (tiny charge so the pose is live at s≈0)
   await ev(c, "(window.__sf.input.fireHeld = true, true)");

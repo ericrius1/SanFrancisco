@@ -159,7 +159,7 @@ function appendStoop(
 export function stoopColliders(spec: BuildingSpec, frontGround: number | undefined): ColliderBox[] {
   if (frontGround === undefined) return [];
   const poly = ensureCCW(spec.poly);
-  const streetI = streetEdgeIndex(poly);
+  const streetI = streetEdgeIndex(poly, spec.streetEdge);
   const p0 = poly[streetI];
   const p1 = poly[(streetI + 1) % poly.length];
   const dx = p1[0] - p0[0], dz = p1[1] - p0[1];
@@ -185,7 +185,7 @@ export function buildingColliders(spec: BuildingSpec, withDoor = false, frontGro
   const midY = (base + top) / 2;
   const halfH = Math.max(0.1, (top - base) / 2);
   const boxes: ColliderBox[] = [];
-  const streetI = withDoor ? streetEdgeIndex(poly) : -1;
+  const streetI = withDoor ? streetEdgeIndex(poly, spec.streetEdge) : -1;
   let door: DoorOpening | null = null;
 
   for (let i = 0; i < poly.length; i++) {

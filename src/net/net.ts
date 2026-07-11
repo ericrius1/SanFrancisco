@@ -28,6 +28,13 @@ import { boardFromSeed, isDefaultBoard, normalizeBoardConfig, type BoardConfig }
  *   ← {t:"chat", id, name, text}        relayed to everyone else
  *   → {t:"golf", k, d?|h?|p?|s?|r?}     golf events + cached state for late joins
  *   ← {t:"golf", id, ...}               relayed to everyone else (owner-simulated ball)
+ *   → {t:"pickle", k:"claim"|"release", slot:0|1}  court-side ownership request
+ *   ← {t:"pickle", k:"claim"|"release", slot, id, ok} server-arbitrated result
+ *   → {t:"pickle", k:"state", d:number[]}            authority's match snapshot
+ *   ← {t:"pickle", k:"state", id, d}                 authority-stamped relay
+ *   → {t:"pickle", k:"input", slot, d:number[]}      owned-side controls
+ *   ← {t:"pickle", k:"input", slot, id, d}           targeted relay to authority
+ *   ← welcome.pickle={slots:[id,id],authority,state:{id,d}|null} late-join cache
  *
  * Movement is client-authoritative by design: each browser runs its own
  * box3d world, so the server can only ever relay
@@ -38,6 +45,8 @@ import { boardFromSeed, isDefaultBoard, normalizeBoardConfig, type BoardConfig }
 export const NET_MODES: PlayerMode[] = ["walk", "drive", "plane", "boat", "drone", "board", "bird"];
 
 export type RemoteGolfState = { d: number[]; h: number; p: number; s: number; r: number };
+export type PickleballSlot = 0 | 1;
+export type RemotePickleballState = { id: number; d: number[] };
 export type RemoteInfo = { id: number; name: string; hue: number; avatar?: AvatarTraits; board?: BoardConfig; golf?: RemoteGolfState | null };
 
 /** One interpolation sample for a remote player, timestamped in local ms. */
@@ -64,6 +73,10 @@ const SEND_HZ = 12;
 const KEEPALIVE_MS = 2000; // resend an unchanged pose this often (server idle-timer food)
 const NAME_MAX = 20;
 const CHAT_MAX = 200;
+/** Mirrors the relay caps: compact numeric snapshots, never arbitrary JSON. */
+const PICKLEBALL_STATE_MAX = 96;
+const PICKLEBALL_INPUT_MAX = 16;
+const PICKLEBALL_VALUE_LIMIT = 1_000_000;
 const PLAYER_NAME_KEY = "sf.playerName";
 const PLAYER_NAME_KIND_KEY = "sf.playerNameKind";
 const LAST_GENERATED_NAME_KEY = "sf.lastGeneratedPlayerName";
@@ -106,6 +119,20 @@ const NOUN = [
   "Sea Star"
 ];
 const FUN_NAME_FALLBACK = /^[\p{N}\s._\-']+$/u;
+
+function isPickleballSlot(value: unknown): value is PickleballSlot {
+  return value === 0 || value === 1;
+}
+
+function pickleballOwner(value: unknown): number {
+  return Number.isInteger(value) && (value as number) >= 0 ? (value as number) : 0;
+}
+
+function pickleballNumbers(value: unknown, maxLength: number): number[] | null {
+  if (!Array.isArray(value) || value.length < 1 || value.length > maxLength) return null;
+  if (!value.every((n) => typeof n === "number" && Number.isFinite(n) && Math.abs(n) <= PICKLEBALL_VALUE_LIMIT)) return null;
+  return value.slice();
+}
 
 function cleanName(raw: string): string {
   return raw
@@ -194,6 +221,12 @@ export class Net {
   readonly roster = new Map<number, RemoteInfo>();
   /** Latest server-cached canonical state for late-loaded golf and reconnects. */
   readonly golfStates = new Map<number, RemoteGolfState>();
+  /** Server-arbitrated owner id for each pickleball side (0 means available). */
+  readonly pickleballSlots: [number, number] = [0, 0];
+  /** Deterministic full-match authority: side 0's owner, otherwise side 1's. */
+  pickleballAuthority = 0;
+  /** Latest validated full-match snapshot, cached for lazy/late initialization. */
+  pickleballState: RemotePickleballState | null = null;
 
   onRoster: () => void = () => {}; // any join/leave/rename (rebuild lists)
   onWelcome: () => void = () => {}; // assigned id + roster hydrated — push saved avatar
@@ -210,6 +243,16 @@ export class Net {
   onChat: (id: number, name: string, text: string) => void = () => {};
   /** relayed golf event from another player (k discriminates; see gameplay/golf) */
   onGolf: (id: number, msg: Record<string, unknown>) => void = () => {};
+  /** Any accepted ownership change or welcome hydration. The tuple is a copy. */
+  onPickleballSlots: (slots: readonly [number, number], authorityId: number) => void = () => {};
+  /** Claim acknowledgement. On failure ownerId is the player holding the slot. */
+  onPickleballClaim: (slot: PickleballSlot, ownerId: number, ok: boolean, authorityId: number) => void = () => {};
+  /** Release acknowledgement / disconnect cleanup. */
+  onPickleballRelease: (slot: PickleballSlot, ownerId: number, ok: boolean, authorityId: number) => void = () => {};
+  /** Valid full-match snapshot from the current server-arbitrated authority. */
+  onPickleballState: (ownerId: number, state: number[]) => void = () => {};
+  /** Bounded controls from a side owner, delivered only to the match authority. */
+  onPickleballInput: (slot: PickleballSlot, ownerId: number, input: number[]) => void = () => {};
 
   #ws: WebSocket | null = null;
   #url: string;
@@ -234,6 +277,73 @@ export class Net {
     this.#connect();
   }
 
+  #emitPickleballSlots() {
+    this.onPickleballSlots([this.pickleballSlots[0], this.pickleballSlots[1]], this.pickleballAuthority);
+  }
+
+  #refreshPickleballAuthority(advertised?: unknown) {
+    const derived = this.pickleballSlots[0] || this.pickleballSlots[1];
+    const announced = pickleballOwner(advertised);
+    const next = announced === derived ? announced : derived;
+    if (next !== this.pickleballAuthority || (this.pickleballState && this.pickleballState.id !== next)) {
+      this.pickleballState = null;
+    }
+    this.pickleballAuthority = next;
+  }
+
+  #dropPickleballOwner(ownerId: number, notify = true) {
+    for (const slot of [0, 1] as const) {
+      if (this.pickleballSlots[slot] !== ownerId) continue;
+      this.pickleballSlots[slot] = 0;
+      this.#refreshPickleballAuthority();
+      if (notify) this.onPickleballRelease(slot, ownerId, true, this.pickleballAuthority);
+      this.#emitPickleballSlots();
+    }
+  }
+
+  #resetPickleball(notify = true) {
+    if (!notify) {
+      this.pickleballSlots[0] = 0;
+      this.pickleballSlots[1] = 0;
+      this.pickleballAuthority = 0;
+      this.pickleballState = null;
+      return;
+    }
+    for (const slot of [0, 1] as const) {
+      const ownerId = this.pickleballSlots[slot];
+      if (!ownerId) continue;
+      this.pickleballSlots[slot] = 0;
+      this.#refreshPickleballAuthority();
+      this.onPickleballRelease(slot, ownerId, true, this.pickleballAuthority);
+      this.#emitPickleballSlots();
+    }
+    this.pickleballState = null;
+  }
+
+  #hydratePickleball(raw: unknown) {
+    this.#resetPickleball(false);
+    if (!raw || typeof raw !== "object") {
+      this.#emitPickleballSlots();
+      return;
+    }
+    const data = raw as { slots?: unknown; authority?: unknown; state?: unknown };
+    const slots = Array.isArray(data.slots) ? data.slots : [];
+    for (const slot of [0, 1] as const) {
+      const ownerId = pickleballOwner(slots[slot]);
+      this.pickleballSlots[slot] = ownerId === this.selfId || this.roster.has(ownerId) ? ownerId : 0;
+    }
+    this.#refreshPickleballAuthority(data.authority);
+    if (data.state && typeof data.state === "object") {
+      const entry = data.state as { id?: unknown; d?: unknown };
+      const ownerId = pickleballOwner(entry.id);
+      const state = pickleballNumbers(entry.d, PICKLEBALL_STATE_MAX);
+      if (state && ownerId > 0 && ownerId === this.pickleballAuthority) {
+        this.pickleballState = { id: ownerId, d: state };
+      }
+    }
+    this.#emitPickleballSlots();
+  }
+
   #connect() {
     if (this.#closed) return;
     this.#setStatus("connecting");
@@ -252,6 +362,7 @@ export class Net {
     ws.onmessage = (ev) => this.#handle(String(ev.data));
     ws.onclose = () => {
       this.#ws = null;
+      this.#resetPickleball();
       this.selfId = 0;
       if (this.roster.size) {
         for (const id of [...this.roster.keys()]) {
@@ -295,6 +406,7 @@ export class Net {
           this.roster.set(p.id, { ...p, avatar: rosterAvatar(p.id, p.avatar), board: rosterBoard(p.id, p.board) });
           if (p.golf) this.golfStates.set(p.id, p.golf);
         }
+        this.#hydratePickleball(msg.pickle);
         this.#setStatus("online");
         this.onRoster();
         this.onWelcome();
@@ -312,9 +424,11 @@ export class Net {
         break;
       }
       case "leave": {
-        this.golfStates.delete(msg.id as number);
-        this.roster.delete(msg.id as number);
-        this.onLeave(msg.id as number);
+        const id = msg.id as number;
+        this.golfStates.delete(id);
+        this.#dropPickleballOwner(id);
+        this.roster.delete(id);
+        this.onLeave(id);
         this.onRoster();
         break;
       }
@@ -407,6 +521,46 @@ export class Net {
         }
         break;
       }
+      case "pickle": {
+        if (typeof msg.k !== "string") break;
+        const ownerId = pickleballOwner(msg.id);
+        if (msg.k === "claim" && isPickleballSlot(msg.slot)) {
+          const slot = msg.slot;
+          const ok = msg.ok === true;
+          if (ok && ownerId > 0 && (ownerId === this.selfId || this.roster.has(ownerId))) {
+            this.pickleballSlots[slot] = ownerId;
+            this.#refreshPickleballAuthority(msg.authority);
+            this.#emitPickleballSlots();
+          }
+          this.onPickleballClaim(slot, ownerId, ok, this.pickleballAuthority);
+        } else if (msg.k === "release" && isPickleballSlot(msg.slot)) {
+          const slot = msg.slot;
+          const ok = msg.ok === true;
+          if (ok && this.pickleballSlots[slot] === ownerId) {
+            this.pickleballSlots[slot] = 0;
+            this.#refreshPickleballAuthority(msg.authority);
+            this.#emitPickleballSlots();
+          }
+          this.onPickleballRelease(slot, ownerId, ok, this.pickleballAuthority);
+        } else if (msg.k === "state") {
+          const state = pickleballNumbers(msg.d, PICKLEBALL_STATE_MAX);
+          if (!state || ownerId === 0 || ownerId !== this.pickleballAuthority || !this.roster.has(ownerId)) break;
+          this.pickleballState = { id: ownerId, d: state };
+          this.onPickleballState(ownerId, state.slice());
+        } else if (msg.k === "input" && isPickleballSlot(msg.slot)) {
+          const input = pickleballNumbers(msg.d, PICKLEBALL_INPUT_MAX);
+          if (
+            !input ||
+            ownerId === 0 ||
+            this.selfId !== this.pickleballAuthority ||
+            this.pickleballSlots[msg.slot] !== ownerId ||
+            !this.roster.has(ownerId)
+          )
+            break;
+          this.onPickleballInput(msg.slot, ownerId, input);
+        }
+        break;
+      }
     }
   }
 
@@ -447,6 +601,43 @@ export class Net {
     for (const [id, state] of this.golfStates) {
       if (!this.roster.has(id)) continue;
       this.onGolf(id, { t: "golf", id, k: "state", ...state });
+    }
+  }
+
+  /** Ask the relay to reserve one of the two court-side player slots. */
+  claimPickleball(slot: PickleballSlot) {
+    if (!isPickleballSlot(slot) || this.#ws?.readyState !== WebSocket.OPEN || !this.selfId) return;
+    this.#ws.send(JSON.stringify({ t: "pickle", k: "claim", slot }));
+  }
+
+  /** Release a court side. The relay ignores releases from non-owners. */
+  releasePickleball(slot: PickleballSlot) {
+    if (!isPickleballSlot(slot) || this.#ws?.readyState !== WebSocket.OPEN || !this.selfId) return;
+    this.#ws.send(JSON.stringify({ t: "pickle", k: "release", slot }));
+  }
+
+  /**
+   * Publish a compact match snapshot for an owned side. The number-array
+   * layout belongs to the gameplay module; the transport only bounds it.
+   */
+  sendPickleballState(slot: PickleballSlot, state: readonly number[]) {
+    if (
+      !isPickleballSlot(slot) ||
+      this.#ws?.readyState !== WebSocket.OPEN ||
+      !this.selfId ||
+      this.pickleballSlots[slot] !== this.selfId
+    )
+      return;
+    const d = pickleballState(state);
+    if (!d) return;
+    this.#ws.send(JSON.stringify({ t: "pickle", k: "state", slot, d }));
+  }
+
+  /** Replay server-cached side snapshots after lazy gameplay initialization. */
+  replayPickleball() {
+    for (const [slot, state] of this.pickleballStates) {
+      if (this.pickleballSlots[slot] !== state.id) continue;
+      this.onPickleballState(slot, state.id, state.d.slice());
     }
   }
 

@@ -32,6 +32,7 @@ import { BAY_LIGHTS_INTENSITY } from "./bayLights"
 import { GOLDEN_GATE_LIGHTS_INTENSITY } from "./goldenGateLights"
 import { SUTRO_LIGHTS_INTENSITY } from "./sutroTower"
 import { STREET_LAMPS_INTENSITY } from "./streetLamps"
+import { BUENA_VISTA_MIST, BUENA_VISTA_SUMMIT_CLEARING } from "./buenaVista"
 import { DRAW_BASELINE, EXPOSURE_REBASE, LIGHT_SCALE, WORLD_TUNING } from "../config"
 import { tunables } from "../core/persist"
 import {
@@ -526,6 +527,57 @@ export class Sky {
     )
     const fogNoise = noiseA.add(noiseB)
 
+    // A compact patch bank threaded through Buena Vista's canopy. This is a
+    // separate, bounded opacity term rather than a raised global bank ceiling:
+    // lifting the shared ceiling would make the entire 450 m camera ray opaque
+    // from Corona Heights. The rotated footprint follows the park's long axis,
+    // the existing two fog octaves leave clear gaps between wisps, and the
+    // summit carve keeps the opening readable during the high orbit.
+    const mistX = (positionWorld as N).x.sub(BUENA_VISTA_MIST.x)
+    const mistZ = (positionWorld as N).z.sub(BUENA_VISTA_MIST.z)
+    const mistCos = Math.cos(BUENA_VISTA_MIST.rotation)
+    const mistSin = Math.sin(BUENA_VISTA_MIST.rotation)
+    const mistAlong = mistX.mul(mistCos).add(mistZ.mul(mistSin))
+    const mistAcross = mistX.mul(-mistSin).add(mistZ.mul(mistCos))
+    const mistEllipse = pow(mistAlong.div(BUENA_VISTA_MIST.radiusAlong), 2).add(
+      pow(mistAcross.div(BUENA_VISTA_MIST.radiusAcross), 2)
+    )
+    const mistFootprint = smoothstep(float(1.08), float(0.72), mistEllipse)
+
+    const clearingX = (positionWorld as N).x
+      .sub(BUENA_VISTA_SUMMIT_CLEARING.x)
+      .div(BUENA_VISTA_SUMMIT_CLEARING.radiusX * 1.18)
+    const clearingZ = (positionWorld as N).z
+      .sub(BUENA_VISTA_SUMMIT_CLEARING.z)
+      .div(BUENA_VISTA_SUMMIT_CLEARING.radiusZ * 1.18)
+    const summitClearing = smoothstep(
+      float(1.08),
+      float(0.68),
+      pow(clearingX, 2).add(pow(clearingZ, 2))
+    )
+    const mistPockets = smoothstep(
+      float(0.27),
+      float(0.52),
+      mix(noiseA, noiseB, 0.38)
+    )
+    const mistHeight = smoothstep(
+      float(BUENA_VISTA_MIST.minY),
+      float(BUENA_VISTA_MIST.fullY),
+      y
+    ).mul(
+      smoothstep(
+        float(BUENA_VISTA_MIST.maxY),
+        float(BUENA_VISTA_MIST.fadeY),
+        y
+      )
+    )
+    const buenaVistaMist = mistFootprint
+      .mul(summitClearing.oneMinus())
+      .mul(mistHeight)
+      .mul(mistPockets)
+      .mul(smoothstep(float(24), float(210), dist))
+      .mul(BUENA_VISTA_MIST.strength)
+
     // The official noisy ceiling: a fixed-altitude marine bank whose upper edge
     // continually reforms into 100–200 m billows while hills and towers rise clear.
     const top = (this.#uFogTop as N)
@@ -589,6 +641,7 @@ export class Sky {
       .oneMinus()
       .mul(distHaze.oneMinus())
       .mul(edgeFade.oneMinus())
+      .mul(buenaVistaMist.oneMinus())
 
     // Keep the official reference colour in color-managed form. It reads milky
     // white under ACES and now agrees with the visible horizon instead of resolving

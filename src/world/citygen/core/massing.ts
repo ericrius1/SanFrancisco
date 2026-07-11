@@ -32,7 +32,7 @@ export function massBuilding(spec: BuildingSpec, arch: ArchetypeSpec, decorate: 
   const grade = Math.min(Math.max(spec.grade ?? base, base), top - 1.5);
   const height = Math.max(0.1, top - base);
   const floors = Math.max(1, Math.round(height / arch.floorH));
-  const streetI = streetEdgeIndex(poly);
+  const streetI = streetEdgeIndex(poly, spec.streetEdge);
 
   const out = new PanelBuilder();
 

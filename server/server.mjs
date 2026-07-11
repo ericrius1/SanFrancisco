@@ -3,13 +3,14 @@
 //
 // Design (matches the client in src/net/):
 //  - Anyone can join, no accounts. The server assigns an id + a color hue.
-//  - Clients own their physics (box3d runs in each browser); the server only
-//    relays transforms. That makes it cheap, cheat-tolerant-by-design (this is
-//    a co-op sandbox, nothing competitive to protect), and stateless.
+//  - Clients own their physics (box3d runs in each browser); the server mostly
+//    relays transforms. It does arbitrate the two pickleball player slots so
+//    two browsers cannot own one side, then relays each owner's snapshots.
+//    This stays cheap and cheat-tolerant-by-design for a co-op sandbox.
 //  - Clients send state at ~12 Hz; the server rebroadcasts one batched
 //    snapshot per tick (12 Hz) with a server timestamp the clients use for
 //    interpolation buffering.
-//  - In-memory only: restart = empty world, players just reconnect.
+//  - In-memory only: golf/pickleball late-join caches vanish on restart.
 //
 // Run: node server/server.mjs            (PORT / HOST env to override)
 // Prod: npm run build && node server/server.mjs  → serves dist/ + /ws
@@ -27,6 +28,9 @@ const MAX_PLAYERS = Number(process.env.MAX_PLAYERS || 40);
 const TICK_HZ = 12; // snapshot broadcast rate
 const NAME_MAX = 20;
 const CHAT_MAX = 200;
+const PICKLEBALL_SLOTS = 2;
+const PICKLEBALL_STATE_MAX = 96;
+const PICKLEBALL_VALUE_LIMIT = 1_000_000;
 const MSG_MAX_BYTES = 16384; // fits a WebRTC SDP offer (voice signaling); poses are ~100 B
 const MSG_BUDGET_PER_SEC = 80; // state at 12 Hz + several simultaneous RTC negotiations; flooders get cut
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // no state for 5 min → drop

@@ -12,6 +12,7 @@ import { GolfCourse, type GolfSurface } from "./data";
 import { GolfCourseView } from "./course";
 import { GolfAudio } from "./audio";
 import { GolfGuide } from "./guide";
+import { buildGolfCartMesh, setCartBags, GOLF_CART_SPEC } from "./cart";
 import { GolfUI, standingLabel, totalLabel, type GolfHoleScore, type GolfPeerScore } from "./ui";
 
 type N = any;
@@ -63,6 +64,16 @@ export class GolfGame {
   #ui = new GolfUI();
   #guide: GolfGuide;
   #map: WorldMap;
+  #scene: THREE.Scene;
+
+  // golf cart: a parked cart waits at the first tee; press E beside it to hop
+  // in and drive it (reusing the car controller via setDriveStyle). Bags on the
+  // rear deck track occupancy — driver's bag always, passenger's when someone
+  // rides shotgun (main.ts can bump the count via setCartOccupants).
+  #parkedCart: THREE.Group | null = null;
+  #driveCart: THREE.Group | null = null;
+  #cartBoarded = false;
+  #cartOccupants = 1;
 
   #holeIdx = 0;
   #strokes = 0; // strokes already taken this hole
@@ -101,12 +112,26 @@ export class GolfGame {
   constructor(course: GolfCourse, map: WorldMap, physics: Physics, scene: THREE.Scene) {
     this.#course = course;
     this.#map = map;
+    this.#scene = scene;
     this.#view = new GolfCourseView(course, map, scene);
     this.#guide = new GolfGuide(scene);
     this.#ball = new GolfBall(course, map, physics);
     this.#ball.onEvent = (e) => this.#onBallEvent(e);
+    this.#spawnParkedCart();
 
-    if (import.meta.env.DEV) Object.assign(window as object, { __golfGame: this, __golfBall: this.#ball });
+    if (import.meta.env.DEV) {
+      Object.assign(window as object, {
+        __golfGame: this,
+        __golfBall: this.#ball,
+        __spawnGolfCart: (x: number, z: number, occupants = 2) => {
+          const m = buildGolfCartMesh();
+          m.position.set(x, map.effectiveGround(x, z) + 0.55, z);
+          setCartBags(m, occupants);
+          scene.add(m);
+          return m;
+        }
+      });
+    }
 
     this.#ballGeo = new THREE.SphereGeometry(BALL_RADIUS, 14, 10);
     this.#ballMat = new THREE.MeshStandardNodeMaterial();
@@ -146,13 +171,89 @@ export class GolfGame {
   }
 
   /** main.ts E-chain, first in line: start a round when standing on a glowing
-   *  tee (returns true = E consumed, don't hop rides/open doors). */
+   *  tee, or hop into the parked golf cart if you're beside it (returns true =
+   *  E consumed, don't hop other rides / open doors). */
   tryStartAtTee(player: Player, hud: HUD): boolean {
-    if (this.active || player.mode !== "walk") return false;
-    const near = this.#course.nearestTee(player.renderPosition.x, player.renderPosition.z, TEE_ZONE);
-    if (near < 0) return false;
-    this.#startRound(near, hud);
+    if (player.mode !== "walk") return false;
+    if (!this.active) {
+      const near = this.#course.nearestTee(player.renderPosition.x, player.renderPosition.z, TEE_ZONE);
+      if (near >= 0) {
+        this.#startRound(near, hud);
+        return true;
+      }
+    }
+    // beside the cart? climb in and drive (works mid-round too — go find your ball)
+    return this.#tryBoardCart(player, hud);
+  }
+
+  // ------------------------------------------------------------- golf cart
+
+  #spawnParkedCart() {
+    const first = this.#course.holes.find((h) => h.ref === 1) ?? this.#course.holes[0];
+    if (!first) return;
+    // park it a few metres off the first tee, nose pointing down the hole
+    const [tx, tz] = first.teeXZ;
+    const aim = this.#course.teeAim(0);
+    const x = tx + Math.cos(aim) * 5 + 3;
+    const z = tz - Math.sin(aim) * 5 + 3;
+    const cart = buildGolfCartMesh();
+    cart.position.set(x, this.#map.effectiveGround(x, z) + 0.55, z);
+    cart.rotation.y = aim + Math.PI;
+    setCartBags(cart, 0);
+    this.#scene.add(cart);
+    this.#parkedCart = cart;
+  }
+
+  /** Where the parked golf cart waits (world pos), or null once it's driven off. */
+  get parkedCartPosition(): THREE.Vector3 | null {
+    return this.#parkedCart && this.#parkedCart.visible ? this.#parkedCart.position : null;
+  }
+
+  /** Number of people aboard the cart (1 driver, 2 with a passenger). main.ts's
+   *  passenger wiring can call this so the second golf bag appears on the deck. */
+  setCartOccupants(n: number) {
+    this.#cartOccupants = Math.max(1, Math.min(2, n));
+    if (this.#driveCart) setCartBags(this.#driveCart, this.#cartOccupants);
+  }
+
+  #tryBoardCart(player: Player, hud: HUD): boolean {
+    if (!this.#parkedCart || this.#cartBoarded || this.#parkedCart.visible === false) return false;
+    const p = player.renderPosition;
+    const cp = this.#parkedCart.position;
+    if (Math.hypot(p.x - cp.x, p.z - cp.z) > 3.6) return false;
+    // swap the player's drive embodiment to the cart + its lighter, tippier spec
+    this.#driveCart = buildGolfCartMesh();
+    this.#cartOccupants = 1;
+    setCartBags(this.#driveCart, this.#cartOccupants);
+    player.setDriveStyle(this.#driveCart, GOLF_CART_SPEC);
+    player.position.set(cp.x, player.position.y, cp.z);
+    player.heading = this.#parkedCart.rotation.y + Math.PI;
+    player.trySwitch("drive");
+    this.#parkedCart.visible = false; // it's now the thing you're driving
+    this.#cartBoarded = true;
+    hud.message("Golf cart — drive to your ball, E to hop off ⛳", 3);
     return true;
+  }
+
+  /** Watch for the driver hopping out (E → walk) and leave the cart parked
+   *  where they got off; keep the deck bags synced to occupancy while aboard. */
+  #updateCart(player: Player) {
+    if (!this.#cartBoarded) return;
+    if (player.mode !== "drive") {
+      // exited (or switched modes): main.ts restored the default drive mesh, so
+      // re-show the parked cart here for the next hop-in
+      this.#cartBoarded = false;
+      this.#driveCart = null;
+      if (this.#parkedCart) {
+        const p = player.renderPosition;
+        this.#parkedCart.position.set(p.x, this.#map.effectiveGround(p.x, p.z) + 0.55, p.z);
+        this.#parkedCart.rotation.y = player.heading;
+        setCartBags(this.#parkedCart, 0);
+        this.#parkedCart.visible = true;
+      }
+      return;
+    }
+    if (this.#driveCart) setCartBags(this.#driveCart, this.#cartOccupants);
   }
 
   /** main.ts: digits pick clubs instead of vehicles while the swing UI is up. */
@@ -417,6 +518,8 @@ export class GolfGame {
     const onFoot = player.mode === "walk";
     const px = player.renderPosition.x;
     const pz = player.renderPosition.z;
+
+    this.#updateCart(player);
 
     // floating "next objective" pointer: aims at the tee on the way up, the
     // resting ball after a shot, the pin while you settle over it

@@ -64,6 +64,9 @@ const DOOR_SWING_TIME = 0.6; // swing duration (s), ease-out
 const DOOR_PASSABLE_AT = Math.PI * (28 / 180);
 const DOOR_LEAF_T = 0.06;    // leaf thickness (m) — matches the grammar-authored leaf
 const DOOR_FACE_OFFSET = 0.04;// sit on the same proud plane as the grammar leaf
+const DOOR_PLAYER_R = 0.48;  // conservative XZ player/capsule reach around a moving leaf
+const DETAIL_OCCUPANCY_MARGIN = 1.4; // pin a detail building through the indoor-camera handoff
+const OPEN_INTERIOR_RETAIN = 12;     // keep an opened home's reveal alive for exterior viewing
 
 interface PhysWorld {
   createBox(o: { type: number; position: readonly [number, number, number]; halfExtents: readonly [number, number, number]; friction?: number }): number;
@@ -581,6 +584,22 @@ export async function createCityGenRing(
     const r = rt.halfW + 0.4;
     return dx * dx + dz * dz < r * r && lastPlayer.y > rt.sill - 0.5 && lastPlayer.y < rt.openTop;
   };
+  // Conservative occupancy test for the whole sector swept by the hinged leaf,
+  // not only the aperture centre. A player can stand inside beside the open leaf's
+  // latch edge (~1.7 m from the hinge), outside playerInGap's smaller radius; a
+  // close must still reverse before the render-only slab passes through them.
+  const playerInLeafSweep = (rt: DoorRt): boolean => {
+    if (lastPlayer.y < rt.sill - 0.5 || lastPlayer.y > rt.openTop) return false;
+    const px = lastPlayer.x - rt.hx, pz = lastPlayer.z - rt.hz;
+    const radius = Math.hypot(px, pz);
+    if (radius > rt.w + DOOR_PLAYER_R) return false;
+    if (radius < DOOR_PLAYER_R) return true;
+    const closedAngle = -rt.baseYaw;
+    const playerAngle = Math.atan2(pz, px);
+    const delta = Math.atan2(Math.sin(playerAngle - closedAngle), Math.cos(playerAngle - closedAngle));
+    const angularReach = Math.asin(Math.min(1, DOOR_PLAYER_R / radius));
+    return delta >= -angularReach && delta <= rt.swing + angularReach;
+  };
   const retargetSwing = (rt: DoorRt, to: number) => { rt.from = rt.swing; rt.to = to; rt.t = 0; rt.animating = true; };
   // Spawn the dynamic hinged leaf + hide the baked leaf AND its dedicated closed
   // backing (one bundle re-record). The old backing lived in citygen.room, so it
@@ -666,8 +685,10 @@ export async function createCityGenRing(
     clearBodies(e);
     buildSolidWallsNow(e, true); // detail tier: steps stay tangible across the swap
   };
-  // leaf reached the frame: logically closed — restore the baked leaf + solid walls
-  const finishClose = (e: Entry, rt: DoorRt) => {
+  // Complete the visual/logical close only AFTER solid walls actually land. This
+  // keeps debug/UI state truthful and never paints a closed backing over a still-
+  // passable gap while an occupant delays solidification.
+  const restoreClosedVisual = (e: Entry, rt: DoorRt) => {
     e.doorPending = true;
     if (e.detail) {
       if (rt.bakedLeaf) rt.bakedLeaf.visible = true;
@@ -675,8 +696,14 @@ export async function createCityGenRing(
       if (rt.bakedLeaf || rt.bakedBack) (e.detail.group as THREE.BundleGroup).needsUpdate = true;
     }
     disposeLeaf(rt);
+  };
+  // Leaf reached the frame: request solid walls, then restore the baked closed
+  // visual. If occupied, advanceDoors retries and performs the visual handoff once
+  // the wall swap succeeds.
+  const finishClose = (e: Entry, rt: DoorRt) => {
     trySolidify(e, rt);
-    if (rt.needSolid) markDoorActive(e); // keep retrying the wall swap
+    if (rt.needSolid) markDoorActive(e);
+    else restoreClosedVisual(e, rt);
   };
   // instant close (no animation) — fade-out path: the baked leaf must dither away
   // with the bundle, and no dynamic leaf may outlive the detail mesh
@@ -701,6 +728,21 @@ export async function createCityGenRing(
     if (idx >= 0) activeDoors.splice(idx, 1);
   };
 
+  // Occupied buildings are allowed to exceed maxDetail by one (or, for malformed
+  // overlaps, by the number actually occupied). Open doors within viewing range
+  // are pinned too, so their furnished reveal cannot disappear while the player
+  // steps back for an exterior look.
+  const playerOccupiesDetail = (e: Entry): boolean => {
+    const rt = e.door;
+    if (rt && playerInGap(rt)) return true;
+    if (rt && (!e.doorPending || rt.leaf)) {
+      const dx = lastPlayer.x - rt.cx, dz = lastPlayer.z - rt.cz;
+      if (dx * dx + dz * dz <= OPEN_INTERIOR_RETAIN * OPEN_INTERIOR_RETAIN) return true;
+    }
+    if (lastPlayer.y <= e.base - 1.5 || lastPlayer.y >= e.top + 1.0) return false;
+    return signedDistToPoly(e.poly, lastPlayer.x, lastPlayer.z) >= -DETAIL_OCCUPANCY_MARGIN;
+  };
+
   const dropDetail = (e: Entry) => {
     resetDoorRt(e); // dynamic leaf + door bookkeeping first (leaf must not outlive the mesh)
     disposeInterior(e);
@@ -715,6 +757,9 @@ export async function createCityGenRing(
   const advanceFades = (dt: number) => {
     for (const cell of loaded.values()) for (const e of cell.entries) {
       if (!e.detail || e.fadeDir === 0) continue;
+      // A fade request can predate this frame's doorway crossing. Cancel it before
+      // any close/drop work if the player now occupies the home or its open reveal.
+      if (e.fadeDir < 0 && playerOccupiesDetail(e)) e.fadeDir = 1;
       // fading out with the door open/mid-swing → snap it shut first, so the baked
       // leaf dithers away with the bundle and the walls settle back to solid
       if (e.fadeDir < 0 && (!e.doorPending || e.door?.leaf)) closeDoorNow(e);
@@ -737,8 +782,9 @@ export async function createCityGenRing(
         // visual immediately and keep the gapped colliders. The previous code
         // finished closing visually, then merely deferred the wall swap, leaving
         // a person intersecting a baked door even though physics still let them pass.
-        if (rt.to === 0 && playerInGap(rt)) retargetSwing(rt, DOOR_SWING);
-        rt.t = Math.min(1, rt.t + dt / DOOR_SWING_TIME);
+        if (rt.to === 0 && (playerInGap(rt) || playerInLeafSweep(rt))) retargetSwing(rt, DOOR_SWING);
+        const duration = Math.max(0.08, DOOR_SWING_TIME * Math.abs(rt.to - rt.from) / DOOR_SWING);
+        rt.t = Math.min(1, rt.t + dt / duration);
         const k = 1 - (1 - rt.t) ** 3; // ease-out cubic
         rt.swing = rt.from + (rt.to - rt.from) * k;
         if (rt.leaf) {
@@ -754,7 +800,10 @@ export async function createCityGenRing(
           if (rt.to === 0) finishClose(e, rt);
         }
       }
-      if (!rt.animating && rt.needSolid) trySolidify(e, rt); // player was in the gap — retry
+      if (!rt.animating && rt.needSolid) {
+        trySolidify(e, rt); // player was in the gap — retry
+        if (!rt.needSolid && rt.swing === 0) restoreClosedVisual(e, rt);
+      }
       if (!rt.animating && !rt.needSolid) activeDoors.splice(i, 1);
     }
   };
@@ -782,9 +831,15 @@ export async function createCityGenRing(
   };
   const gateInterior = (e: Entry, p: THREE.Vector3, wasCameraInside: boolean) => {
     if (e.state !== "detail") return; // only faded-in detail buildings have interiors
+    const rt = e.door;
+    const openReveal = !!rt && (!e.doorPending || !!rt.leaf);
+    const broadMargin = openReveal ? OPEN_INTERIOR_RETAIN : 4;
     // broad-phase: outside the (inflated) AABB by a clear margin → definitely out
-    if (p.x < e.bb.minx - 4 || p.x > e.bb.maxx + 4 || p.z < e.bb.minz - 4 || p.z > e.bb.maxz + 4) {
-      if (e.interior) disposeInterior(e);
+    if (p.x < e.bb.minx - broadMargin || p.x > e.bb.maxx + broadMargin || p.z < e.bb.minz - broadMargin || p.z > e.bb.maxz + broadMargin) {
+      if (e.interior) {
+        if (openReveal) closeDoorNow(e);
+        disposeInterior(e);
+      }
       return;
     }
     const inY = p.y > e.base - 1.5 && p.y < e.top + 1.0;
@@ -794,6 +849,8 @@ export async function createCityGenRing(
     if (cameraInside) insideBuilding = e;
     if (inside) ensureInterior(e);
     else if (e.interior && d < -GATE_DISPOSE) {
+      if (openReveal && d >= -OPEN_INTERIOR_RETAIN) return;
+      if (openReveal) closeDoorNow(e);
       disposeInterior(e);
     }
   };
@@ -958,7 +1015,11 @@ export async function createCityGenRing(
       const ranked = haveDetail.concat(candidates);
       ranked.sort((a, b) => a[1] - b[1]);
       const keep = new Set<Entry>();
+      // Occupancy/reveal safety outranks the nearest-N cap. This prevents a large
+      // building (centroid far from its doorway) from fading around its player.
+      for (const [e] of haveDetail) if (playerOccupiesDetail(e)) keep.add(e);
       for (const [e, d2] of ranked) {
+        if (keep.has(e)) continue;
         if (keep.size >= maxDetail) break;
         if (d2 > detailExit2) continue;
         if (d2 > detailR2 && !e.detail) continue; // candidates need the entry band
@@ -1107,7 +1168,7 @@ export async function createCityGenRing(
         }
         // A second press during opening asks it to close again. If the gap has
         // already gone live, retain the same anti-wedge refusal as a settled door.
-        if (!e.doorPending && playerInGap(rt)) return "blocked";
+        if (!e.doorPending && (playerInGap(rt) || playerInLeafSweep(rt))) return "blocked";
         retargetSwing(rt, 0);
         markDoorActive(e);
         return "closed";
@@ -1127,7 +1188,7 @@ export async function createCityGenRing(
         return "opened";
       }
       // OPEN → close; refused while the player stands in the gap
-      if (playerInGap(rt)) return "blocked";
+      if (playerInGap(rt) || playerInLeafSweep(rt)) return "blocked";
       retargetSwing(rt, 0);
       markDoorActive(e);
       return "closed";

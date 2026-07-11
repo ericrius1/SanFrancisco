@@ -12,7 +12,7 @@ import type * as THREE from "three/webgpu";
 import { createSeedForest, type SeedForest } from "../seedForest";
 import { createFlowerRing, type FlowerRing } from "./flowerRing";
 import { createWildGrass, type WildGrass } from "./grassField";
-import { collectWildTrees, WILD_TREE_DESIGNS, type WildTree } from "./layout";
+import { collectWildTrees, wildRegionAt, WILD_TREE_DESIGNS, type WildTree } from "./layout";
 import type { GardenTerrain } from "../garden/layout";
 
 export { wildlandsSuppressesTree, wildRegionAt, WILD_REGIONS } from "./layout";
@@ -22,6 +22,8 @@ export { wildlandsSuppressesTree, wildRegionAt, WILD_REGIONS } from "./layout";
 // LOD). Toggle a layer via `wildlands.<layer>.group.visible`.
 export type Wildlands = {
   trees: SeedForest;
+  /** Long-range canopy kept resident for the Corona Heights cinematic. */
+  buenaVistaTrees: SeedForest;
   flowers: FlowerRing;
   grass: WildGrass;
   /** Resolves after the asynchronous SeedForest designs/chunks are attached. */
@@ -48,7 +50,12 @@ export type WildlandsExclusions = {
 };
 
 export function createWildlands(map: GardenTerrain, exclusions: WildlandsExclusions = {}): Wildlands {
-  const treeSlots: WildTree[] = collectWildTrees(map, exclusions.trees);
+  const allTreeSlots: WildTree[] = collectWildTrees(map, exclusions.trees);
+  // Buena Vista needs to read from Corona Heights, roughly 450–750 m away. Keep
+  // it in its own forest so that longer reach does not multiply the resident
+  // chunks across Golden Gate Park, the Presidio, Marin, and Mount Sutro.
+  const buenaVistaSlots = allTreeSlots.filter((tree) => wildRegionAt(tree.x, tree.z)?.id === "buenavista");
+  const treeSlots = allTreeSlots.filter((tree) => wildRegionAt(tree.x, tree.z)?.id !== "buenavista");
 
   const trees = createSeedForest(WILD_TREE_DESIGNS, treeSlots, {
     name: "wildlands_trees",
@@ -64,25 +71,36 @@ export function createWildlands(map: GardenTerrain, exclusions: WildlandsExclusi
     nearExitRadius: 110,
     nearMax: 46
   });
+  const buenaVistaTrees = createSeedForest(WILD_TREE_DESIGNS, buenaVistaSlots, {
+    name: "buena_vista_trees",
+    chunkSize: 150,
+    visibleDistance: 1050,
+    farCastShadow: false,
+    nearRadius: 96,
+    nearExitRadius: 110,
+    nearMax: 36
+  });
   const flowers = createFlowerRing(map, exclusions.groundcover); // player-following ring, like the grass
   const grass = createWildGrass(map, exclusions.groundcover); // player-following ring; free off green (grows in city parks too)
 
   return {
     trees,
+    buenaVistaTrees,
     flowers,
     grass,
-    ready: trees.ready,
-    groups: [trees.group, flowers.group, grass.group],
+    ready: Promise.all([trees.ready, buenaVistaTrees.ready]).then(() => undefined),
+    groups: [trees.group, buenaVistaTrees.group, flowers.group, grass.group],
     update(ringFocus, cullFocus = ringFocus) {
       trees.update(cullFocus); // distance-cull to what the camera sees
+      buenaVistaTrees.update(cullFocus); // longer reach is isolated to this compact park
       flowers.update(ringFocus); // rings stay centred on the player, not the camera
       grass.update(ringFocus);
     },
     get stats() {
       return {
-        trees: treeSlots.length,
+        trees: allTreeSlots.length,
         flowers: flowers.stats.count, // live: the ring re-scatters as the player moves
-        treeChunks: 0 // filled once seedForest finishes async build (see trees.stats)
+        treeChunks: trees.stats.chunks + buenaVistaTrees.stats.chunks
       };
     }
   };
