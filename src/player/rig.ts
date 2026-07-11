@@ -94,7 +94,10 @@ function boxGeo(w: number, h: number, d: number): THREE.BoxGeometry {
 function part(parent: THREE.Object3D, mat: THREE.Material, w: number, h: number, d: number, x: number, y: number, z: number): THREE.Mesh {
   const m = new THREE.Mesh(boxGeo(w, h, d), mat);
   m.position.set(x, y, z);
-  m.castShadow = true;
+  // Only silhouette-scale boxes cast: small detail (shades, nose, straps,
+  // trim) is invisible at CSM resolution, yet every caster re-encodes into
+  // each shadow cascade — and this rig exists per player AND per busker.
+  m.castShadow = w * h * d >= 1.5e-3;
   parent.add(m);
   return m;
 }

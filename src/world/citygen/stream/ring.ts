@@ -394,6 +394,11 @@ export async function createCityGenRing(
 
   const loaded = new Map<string, CellState>();
   const building: CellState[] = []; // cells still merging their chunk
+  // Every entry that currently holds a detail mesh (≤ maxDetail + in-flight
+  // fades). The per-frame loops (interior gate, fades) walk THIS, not every
+  // loaded building — with a wide tileLoadRadius that's thousands of entries
+  // per frame doing nothing but an early-out (measured ~8% of frame CPU).
+  const detailSet = new Set<Entry>();
   let accum = 0;
 
   // Every box is mirrored into the query world (walls AND interior geometry) so
@@ -509,6 +514,7 @@ export async function createCityGenRing(
     b.setOpacity(0);
     ctx.scene.add(b.group);
     e.detail = b; e.fade = 0; e.fadeDir = 1;
+    detailSet.add(e);
     ctx.tiles.suppressBuilding(e.key, e.i); // baked mesh + loose collider fully off
     // R6: DON'T open the door gap — the walls stay SOLID after fade-in too, because
     // doors are now player-operated: they materialize CLOSED (doorPending=true) and
@@ -861,6 +867,7 @@ export async function createCityGenRing(
     resetDoorRt(e); // dynamic leaf + door bookkeeping first (leaf must not outlive the mesh)
     disposeInterior(e);
     if (e.detail) { ctx.scene.remove(e.detail.group); e.detail.dispose(); e.detail = null; }
+    detailSet.delete(e);
     clearBodies(e);
     // back to LOD: baked mesh hidden (R=1) but accurate baked collider live again.
     // If still within collider range the next scan re-swaps it to a tight "coll".
@@ -869,7 +876,7 @@ export async function createCityGenRing(
     e.state = "lod"; e.fade = 0; e.fadeDir = 0; e.doorPending = true; e.pendingBuild = false;
   };
   const advanceFades = (dt: number) => {
-    for (const cell of loaded.values()) for (const e of cell.entries) {
+    for (const e of detailSet) {
       if (!e.detail || e.fadeDir === 0) continue;
       // A fade request can predate this frame's doorway crossing. Cancel it before
       // any close/drop work if the player now occupies the home or its open reveal.
@@ -1069,7 +1076,7 @@ export async function createCityGenRing(
       // per-frame: interior gate + detail crossfade + chunk merging
       const previousInside = insideBuilding;
       insideBuilding = null;
-      for (const cell of loaded.values()) for (const e of cell.entries) gateInterior(e, playerPos, e === previousInside);
+      for (const e of detailSet) gateInterior(e, playerPos, e === previousInside);
       advanceFades(dt);
       advanceDoors(dt);
       if (building.length) {

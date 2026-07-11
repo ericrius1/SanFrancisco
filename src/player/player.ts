@@ -375,7 +375,7 @@ export class Player {
    * gently slide apart. On-foot only: vehicles have real silhouettes and a
    * shove while driving would feel like a physics bug.
    */
-  separateFromAvatars(others: { x: number; z: number }[], dt: number) {
+  separateFromAvatars(others: readonly { x: number; z: number }[], dt: number) {
     if (this.riding || this.mode !== "walk" || !this.body) return;
     const RADIUS = 0.7; // rig shoulders are ~0.6 m wide
     const SPEED = 1.1; // m/s of drift, slow enough to read as a polite step

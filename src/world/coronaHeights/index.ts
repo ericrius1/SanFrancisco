@@ -23,6 +23,14 @@ import { makeSummitCrags, summitKeepOut, summitPlatformLift } from "./summitCrag
 
 const DETAIL_RANGE = 1450;
 const ACTIVITY_RANGE = 420;
+// Tiered detail: the recolored hill skin/rocks/crags read from across the
+// valley (fog only covers ~1200), but furniture and ground tufts are sub-pixel
+// long before these cutoffs — no reason to encode them city-wide.
+const PROPS_RANGE = 800;
+const FOLIAGE_RANGE = 900;
+// Parts smaller than this never shadow-cast — invisible at CSM resolution,
+// but every casting mesh re-encodes into each shadow cascade.
+const CASTER_MIN_VOLUME = 1.5e-3; // m³
 const HILL_RX = 118;
 const HILL_RZ = 126;
 const HILL_STEP = 4;
@@ -1399,10 +1407,37 @@ function driveDogJaw(dog: ParkDog, target: number, dt: number) {
   applyDogJaw(dog, cur + (target - cur) * (1 - Math.exp(-dt * 12)));
 }
 
+/** Build-time render tuning for the park's plain prop meshes: re-enable
+ * frustum culling (their bounds are valid — only instanced fields whose
+ * instances spread far from the mesh origin need the always-draw escape) and
+ * drop shadow casting on parts too small to read at CSM resolution. */
+function tunePropRendering(root: THREE.Object3D) {
+  const size = new THREE.Vector3();
+  const scale = new THREE.Vector3();
+  root.updateMatrixWorld(true);
+  root.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    if (!(mesh as unknown as THREE.InstancedMesh).isInstancedMesh) {
+      if (!mesh.geometry.boundingSphere) mesh.geometry.computeBoundingSphere();
+      mesh.frustumCulled = true;
+    }
+    if (!mesh.castShadow) return;
+    const geo = mesh.geometry;
+    if (!geo.boundingBox) geo.computeBoundingBox();
+    geo.boundingBox!.getSize(size);
+    mesh.getWorldScale(scale);
+    const volume = Math.abs(size.x * scale.x) * Math.abs(size.y * scale.y) * Math.abs(size.z * scale.z);
+    if (volume < CASTER_MIN_VOLUME) mesh.castShadow = false;
+  });
+}
+
 export class CoronaHeightsPark {
   readonly group = new THREE.Group();
   readonly activity = new THREE.Group();
   readonly foliage = new THREE.Group();
+  readonly props = new THREE.Group();
+  #foliageOn = true;
   readonly dogs: ParkDog[];
   readonly owners: ParkOwner[];
   readonly stats: CoronaHeightsStats;
@@ -1462,6 +1497,7 @@ export class CoronaHeightsPark {
     this.group.name = "corona_heights_park";
     this.activity.name = "corona_heights_dog_activity";
     this.foliage.name = "corona_heights_foliage";
+    this.props.name = "corona_heights_props";
 
     this.group.add(makeHillSkin(map));
     this.group.add(makeQuarryFace(map));
@@ -1470,8 +1506,9 @@ export class CoronaHeightsPark {
     this.group.add(makeSummitCrags(map, physics));
     this.foliage.add(makeHillGrass(map), makeWildflowers(map), makeShrubsAndTrees(map));
     this.group.add(this.foliage);
-    this.group.add(makeDogPark(map, physics));
-    this.group.add(makeBench(map, 430, 2751, Math.PI * 0.44));
+    this.props.add(makeDogPark(map, physics));
+    this.props.add(makeBench(map, 430, 2751, Math.PI * 0.44));
+    this.group.add(this.props);
 
     this.dogs = [
       makeDog({ name: "golden", coat: 0xb97835, accent: 0xe4bb72, collar: 0x2f86b6, scale: 1.12, floppy: true }),
@@ -1529,10 +1566,20 @@ export class CoronaHeightsPark {
       { mode: "roam", tx: 384, tz: 2696, timer: 0, dur: 1 }
     ];
     this.stats = { dogs: this.dogs.length, owners: this.owners.length, summit: CORONA_HEIGHTS_SUMMIT };
+    tunePropRendering(this.group);
+    // Static subtrees leave the scene's per-frame matrix pass; activity (dogs,
+    // owners, ball, frisbee) keeps animating. Anything later parented under a
+    // frozen subtree needs a manual updateMatrixWorld(true).
+    for (const child of this.group.children) {
+      if (child === this.activity) continue;
+      child.updateMatrixWorld(true);
+      child.matrixWorldAutoUpdate = false;
+    }
   }
 
   setFoliageVisible(visible: boolean) {
-    this.foliage.visible = visible;
+    this.#foliageOn = visible;
+    this.foliage.visible = visible && this.foliage.visible;
   }
 
   update(dt: number, elapsed: number, viewPos: { x: number; z: number }) {
@@ -1542,6 +1589,8 @@ export class CoronaHeightsPark {
       applyBallGlow(this.#ballMaterial, 0);
       return;
     }
+    this.props.visible = distance < PROPS_RANGE;
+    this.foliage.visible = this.#foliageOn && distance < FOLIAGE_RANGE;
     this.activity.visible = distance < ACTIVITY_RANGE;
     if (!this.activity.visible) {
       applyBallGlow(this.#ballMaterial, 0);

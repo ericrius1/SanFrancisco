@@ -152,6 +152,25 @@ export class RemotePlayers {
     if (c) this.#passengerSeat.set(-c.seat[0], c.seat[1], c.seat[2]);
   }
 
+  #walkScratch: { x: number; z: number }[] = [];
+
+  /** Walking avatars' XZ for the per-frame personal-space pass — reuses one
+   *  scratch array + slot objects so the hot loop allocates nothing (the old
+   *  positions().filter() built two arrays + N objects every frame). */
+  walkingPositions(): readonly { x: number; z: number }[] {
+    const out = this.#walkScratch;
+    let n = 0;
+    for (const a of this.avatars.values()) {
+      if (a.mode !== "walk") continue;
+      const slot = out[n] ?? (out[n] = { x: 0, z: 0 });
+      slot.x = a.root.position.x;
+      slot.z = a.root.position.z;
+      n++;
+    }
+    out.length = n;
+    return out;
+  }
+
   /** Everything the minimap needs, no THREE types. */
   positions(): { id: number; name: string; hue: number; x: number; z: number; mode: PlayerMode }[] {
     const out = [];

@@ -43,6 +43,12 @@ const RELEASE_DURATION = 0.36; // seconds to play windup→follow-through after 
 const TAKE_FROM_DOG_RANGE = 2.0; // E-to-take reach while a dog waits
 const TAKE_RESTING_RANGE = 1.5; // E-to-pick-up reach for a free ball
 const ABANDON_RANGE = 60; // a claimed (un-adopted) dog gives up if the player strays this far
+// Free balls are pooled and bounded: without a cap every throw left a live
+// simulated mesh in the scene forever (monotonic fps decay + memory leak).
+const MAX_FREE_BALLS = 16;
+const BALL_TTL = 120; // s a resting ball survives once the player has moved on
+const BALL_TTL_RANGE = 15; // …but never TTL one the player is standing near
+const FAR_DESPAWN = 150; // m — out of sight (and out of tool range) = gone
 // Centroid of CORONA_DOG_PARK (layout.ts) — used to tell "just outside the fence
 // for a handoff" from "dragged well out of the run" during a committed fetch.
 const PARK_CX = 373;
@@ -78,6 +84,7 @@ type FreeBall = {
   mesh: THREE.Mesh;
   material: THREE.MeshStandardMaterial;
   state: BallSimState;
+  born: number; // elapsed at launch, drives the abandoned-ball TTL
 };
 
 type DogPhase =
@@ -95,6 +102,14 @@ export class FetchBall {
   #free: FreeBall[] = [];
   #dogPhase: DogPhase = { kind: "none" };
   #active = false;
+  #elapsed = 0;
+
+  // ONE geometry + ONE glow material for every ball, meshes recycled through a
+  // pool — a throw allocates nothing once the pool is warm, and the night glow
+  // is a single material write per frame instead of one per ball.
+  #ballGeo: THREE.SphereGeometry | null = null;
+  #ballMat: THREE.MeshStandardMaterial | null = null;
+  #meshPool: THREE.Mesh[] = [];
 
   #dog: ParkDog | null = null; // the fetching dog (claimed) — becomes a pet on adoption
   #pets: ParkDog[] = []; // adopted followers
@@ -240,11 +255,24 @@ export class FetchBall {
 
   update(dt: number, elapsed: number, playerPos: THREE.Vector3): void {
     this.#lastPlayer.copy(playerPos);
+    this.#elapsed = elapsed;
     if (!this.#petInit) {
       this.#prevPlayer.copy(playerPos);
       this.#petInit = true;
     }
     const park = this.#deps.park();
+
+    // Abandoned balls despawn (back to the mesh pool): instantly once far out
+    // of tool range, on a generous TTL otherwise — never one a dog is working
+    // or the player is standing beside.
+    for (let i = this.#free.length - 1; i >= 0; i--) {
+      const ball = this.#free[i];
+      if (this.#dogWorking(ball)) continue;
+      const dist = Math.hypot(playerPos.x - ball.state.x, playerPos.z - ball.state.z);
+      if (dist > FAR_DESPAWN || (elapsed - ball.born > BALL_TTL && dist > BALL_TTL_RANGE)) {
+        this.#removeFree(ball);
+      }
+    }
 
     // Every free ball keeps simulating; dog choreography rides one of them.
     for (const ball of this.#free) {
@@ -317,13 +345,18 @@ export class FetchBall {
   dispose(): void {
     for (const ball of this.#free) this.#disposeBall(ball);
     this.#free.length = 0;
+    this.#meshPool.length = 0;
+    this.#ballGeo?.dispose();
+    this.#ballGeo = null;
+    this.#ballMat?.dispose();
+    this.#ballMat = null;
   }
 
   /* -------------------------------------------------------------- internals */
 
   #syncGlow(): void {
-    const night = BALL_GLOW_NIGHT.value;
-    for (const ball of this.#free) applyBallGlow(ball.material, night);
+    // one shared material → one write, however many balls are live
+    if (this.#ballMat && this.#free.length) applyBallGlow(this.#ballMat, BALL_GLOW_NIGHT.value);
   }
 
   #advanceRelease(dt: number): void {
@@ -352,19 +385,22 @@ export class FetchBall {
     this.#hadHeldBeforeCharge = false;
     this.#deps.playerView.setBallHeld(false);
 
+    // cap: recycle the oldest ball no dog is working before adding another
+    if (this.#free.length >= MAX_FREE_BALLS) {
+      const idle = this.#free.find((b) => !this.#dogWorking(b));
+      if (idle) this.#removeFree(idle);
+    }
+
     const hand = this.#deps.playerView.handWorldPos(this.#tmp);
-    const material = new THREE.MeshStandardMaterial({ color: TENNIS_BALL_COLOR, roughness: 0.62 });
-    prepareBallGlowMaterial(material);
-    const mesh = new THREE.Mesh(new THREE.SphereGeometry(BALL_R, 12, 8), material);
-    mesh.name = "player_tennis_ball";
-    mesh.castShadow = true;
+    const mesh = this.#acquireMesh();
     mesh.position.copy(hand);
     mesh.visible = true;
     this.#deps.scene.add(mesh);
     const speed = this.#throwSpeed;
     const ball: FreeBall = {
       mesh,
-      material,
+      material: this.#ballMat!,
+      born: this.#elapsed,
       state: {
         x: hand.x,
         y: hand.y,
@@ -376,6 +412,26 @@ export class FetchBall {
       }
     };
     this.#free.push(ball);
+  }
+
+  #dogWorking(ball: FreeBall): boolean {
+    return this.#dogPhase.kind !== "none" && this.#dogPhase.ball === ball;
+  }
+
+  #acquireMesh(): THREE.Mesh {
+    const pooled = this.#meshPool.pop();
+    if (pooled) return pooled;
+    if (!this.#ballGeo) this.#ballGeo = new THREE.SphereGeometry(BALL_R, 12, 8);
+    if (!this.#ballMat) {
+      this.#ballMat = new THREE.MeshStandardMaterial({ color: TENNIS_BALL_COLOR, roughness: 0.62 });
+      prepareBallGlowMaterial(this.#ballMat);
+    }
+    const mesh = new THREE.Mesh(this.#ballGeo, this.#ballMat);
+    mesh.name = "player_tennis_ball";
+    // no cast: a 16 cm ball reads as a dot at CSM resolution, but every caster
+    // re-encodes into each shadow cascade
+    mesh.castShadow = false;
+    return mesh;
   }
 
   #cancelCharge(): void {
@@ -563,9 +619,9 @@ export class FetchBall {
   }
 
   #disposeBall(ball: FreeBall): void {
+    // geometry + material are shared — the mesh just goes back to the pool
     ball.mesh.removeFromParent();
-    ball.mesh.geometry.dispose();
-    ball.material.dispose();
+    this.#meshPool.push(ball.mesh);
   }
 
   /** Leash for a committed fetch: if the claimed dog has been dragged well out
