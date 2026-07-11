@@ -1,12 +1,12 @@
 import * as THREE from "three/webgpu";
-import { effectsAudioLevel } from "../../core/audioSettings";
+import { musicAudioLevel } from "../../core/audioSettings";
 import type { BuskerId, MusicianAudio } from "./types";
 
 /**
  * The trio's audio core: ONE AudioContext for all three musicians (the app
  * is already near the browser's context budget), a spatial HRTF panner per
  * musician placed at their seat, and a master gain that tracks the HUD
- * effects-volume slider every frame. The context suspends itself when the
+ * music-volume slider every frame. The context suspends itself when the
  * listener wanders out of earshot and quietly retries resume() while the
  * browser is still waiting for a user gesture.
  *
@@ -77,7 +77,7 @@ export class TrioAudio {
     const t = ctx.currentTime;
     // Immediate cut — setTargetAtTime alone left audible tails through the Q gap.
     master.gain.cancelScheduledValues(t);
-    master.gain.setValueAtTime(on ? 0 : effectsAudioLevel(), t);
+    master.gain.setValueAtTime(on ? 0 : musicAudioLevel(), t);
     // Gate the wet bus too so the convolver can't spit a leftover hall into the
     // unmute that starts the next song.
     const reverbIn = this.#reverbIn;
@@ -212,7 +212,7 @@ export class TrioAudio {
     if (this.#holdSilent) {
       master.gain.setValueAtTime(0, t);
     } else {
-      setParam(master.gain, effectsAudioLevel(), t);
+      setParam(master.gain, musicAudioLevel(), t);
     }
 
     camera.getWorldPosition(_pos);

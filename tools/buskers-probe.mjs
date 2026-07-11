@@ -72,8 +72,8 @@ const FOG_VIEWS = [
   { name: "fog_fill_run", focus: "handpan", dist: 2.4, lateral: -0.6, up: 0.6, targetUp: 0.4, seekBeat: 26.5, afterSeconds: 1 },
   { name: "fog_chorus_wide", focus: "group", dist: 7.5, lateral: 0.8, up: 1.6, targetUp: 0.9, seekBeat: 31.5, afterSeconds: 2 },
   { name: "fog_turn_pick", focus: "group", dist: 5.4, lateral: -0.8, up: 1.3, targetUp: 0.9, seekBeat: 46.5, afterSeconds: 2.5 },
-  { name: "fog_reprise_wide", focus: "group", dist: 7.5, lateral: -0.9, up: 1.6, targetUp: 0.9, seekBeat: 79.5, afterSeconds: 2 },
-  { name: "fog_landing", focus: "group", dist: 4.8, lateral: 0.6, up: 1.2, targetUp: 0.9, seekBeat: 90, afterSeconds: 2 }
+  { name: "fog_reprise_wide", focus: "group", dist: 7.5, lateral: -0.9, up: 1.6, targetUp: 0.9, seekBeat: 63.5, afterSeconds: 2 },
+  { name: "fog_landing", focus: "group", dist: 4.8, lateral: 0.6, up: 1.2, targetUp: 0.9, seekBeat: 74, afterSeconds: 2 }
 ];
 
 async function isFile(p) { try { return existsSync(p); } catch { return false; } }

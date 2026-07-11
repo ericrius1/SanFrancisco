@@ -19,9 +19,8 @@ import type { BuskerId, NoteEvent } from "./types";
  *                   up high, uke back to driving eighths, walk-up handoff
  *      bars 12-15   turn — flute tacet; uke picks Dm Bb Gm Am over a sparse
  *                   handpan, Am pulling the ear back home
- *      bars 16-19   chorus' — F C Dm Am, the same lift winding back down
- *      bars 20-23   reprise verse — everyone driving, flute ends on a held E5
- *      bar   24     landing — one long D minor, rung out together
+ *      bars 16-19   reprise verse — everyone driving, flute ends on a held E5
+ *      bar   20     landing — one long D minor, rung out together
  *
  * 2. "Corona Wind" (disabled) — warm folk riff in D minor. Handpan states the
  *    pulse alone, ukulele joins, flute carries the tune. Cycle Dm | Bb | F | C.
@@ -339,17 +338,16 @@ const CORONA_WIND: TrioSong = {
 
 /* ------------------------------------------------ song 2: Fog Rolls Home */
 
-const FOG_LANDING = 24;
+const FOG_LANDING = 20;
 
-// Per-section harmony (bar 1 → 24). Verses walk Dm C Bb C; the chorus lifts
+// Per-section harmony (bar 1 → 20). Verses walk Dm C Bb C; the chorus lifts
 // to the relative major (F C Gm Bb); the turn borrows Gm and lands on Am — the
-// minor dominant — to pull the ear home; the second chorus resolves F C Dm Am.
+// minor dominant — pulling the ear home into the reprise's Dm.
 const FOG_CHORDS: readonly ChordName[] = [
   "Dm", "Bb", "C", // intro turnaround (uke jam; pan slips in bar 2)
   "Dm", "C", "Bb", "C", // verse — flute phrase A
   "F", "C", "Gm", "Bb", // chorus — flute phrase B
   "Dm", "Bb", "Gm", "Am", // turn — flute tacet, uke picks
-  "F", "C", "Dm", "Am", // chorus' — flute phrase B'
   "Dm", "C", "Bb", "C", // reprise verse — phrase A'
   "Dm" // landing
 ];
@@ -366,18 +364,13 @@ const FOG_FLUTE: FluteBars = [
   [10, [["D5", 0, 1, 0.76], ["C5", 1, 0.5, 0.66], ["Bb4", 1.5, 1, 0.72], ["G4", 2.5, 1.5, 0.66]]],
   [11, [["A4", 0, 1, 0.7], ["Bb4", 1, 1, 0.72], ["C5", 2, 1, 0.7], ["D5", 3, 1, 0.74]]],
   // (bars 12-15: tacet — the turn; he lowers the flute for the picking)
-  // phrase B' — the same lift, winding back down home
-  [16, [["C5", 0, 1, 0.74], ["D5", 1, 0.5, 0.68], ["C5", 1.5, 1, 0.72], ["A4", 2.5, 1.5, 0.68]]],
-  [17, [["G4", 0, 1, 0.68], ["A4", 1, 0.5, 0.62], ["G4", 1.5, 1, 0.66], ["E4", 2.5, 1.5, 0.6]]],
-  [18, [["F4", 0, 1, 0.64], ["G4", 1, 0.5, 0.6], ["A4", 1.5, 1.5, 0.7], ["C5", 3, 1, 0.68]]],
-  [19, [["E5", 0, 1.5, 0.78], ["D5", 1.5, 0.5, 0.68], ["C5", 2, 1, 0.66], ["A4", 3, 1, 0.62]]],
   // reprise verse — phrase A', everyone driving under it
-  [20, [["D4", 0, 0.75, 0.74], ["E4", 0.75, 0.25, 0.62], ["F4", 1, 0.5, 0.66], ["E4", 1.5, 0.5, 0.6], ["A4", 2, 1.5, 0.8]]],
-  [21, [["G4", 0, 1, 0.72], ["A4", 1, 1, 0.72], ["C5", 2, 2, 0.78]]],
-  [22, [["D5", 0, 1, 0.8], ["C5", 1, 0.5, 0.68], ["Bb4", 1.5, 1, 0.74], ["A4", 2.5, 1.5, 0.68]]],
-  [23, [["G4", 0, 0.5, 0.64], ["A4", 0.5, 0.5, 0.66], ["C5", 1, 1, 0.74], ["E5", 2, 2, 0.84]]],
+  [16, [["D4", 0, 0.75, 0.74], ["E4", 0.75, 0.25, 0.62], ["F4", 1, 0.5, 0.66], ["E4", 1.5, 0.5, 0.6], ["A4", 2, 1.5, 0.8]]],
+  [17, [["G4", 0, 1, 0.72], ["A4", 1, 1, 0.72], ["C5", 2, 2, 0.78]]],
+  [18, [["D5", 0, 1, 0.8], ["C5", 1, 0.5, 0.68], ["Bb4", 1.5, 1, 0.74], ["A4", 2.5, 1.5, 0.68]]],
+  [19, [["G4", 0, 0.5, 0.64], ["A4", 0.5, 0.5, 0.66], ["C5", 1, 1, 0.74], ["E5", 2, 2, 0.84]]],
   // landing — one long D, fading with the ding
-  [24, [["D5", 0, 3.5, 0.72]]]
+  [20, [["D5", 0, 3.5, 0.72]]]
 ];
 
 const FOG_ROLLS_HOME: TrioSong = {
@@ -398,20 +391,20 @@ const FOG_ROLLS_HOME: TrioSong = {
       fills: {
         7: [["E4", 3, 0.55], ["F4", 3.25, 0.58], ["G4", 3.5, 0.62], ["A4", 3.75, 0.68]], // → chorus
         11: [["D4", 3, 0.55], ["C4", 3.5, 0.5]], // settling into the turn
-        19: [["D4", 3, 0.58], ["E4", 3.25, 0.6], ["G4", 3.5, 0.64], ["A4", 3.75, 0.7]], // → reprise
-        23: [["F4", 3, 0.6], ["A4", 3.25, 0.64], ["G4", 3.5, 0.6], ["A4", 3.75, 0.68]] // → landing
+        15: [["D4", 3, 0.58], ["E4", 3.25, 0.6], ["G4", 3.5, 0.64], ["A4", 3.75, 0.7]], // → reprise
+        19: [["F4", 3, 0.6], ["A4", 3.25, 0.64], ["G4", 3.5, 0.6], ["A4", 3.75, 0.68]] // → landing
       },
-      // verses breathe, choruses sit full, the turn rebuilds, the reprise pushes
-      accent: (b) => (b <= 7 ? 0.92 : b <= 11 ? 1 : b <= 15 ? 0.95 : b <= 19 ? 1 : 1.06)
+      // the verse breathes, the chorus sits full, the turn rebuilds, the reprise pushes
+      accent: (b) => (b <= 7 ? 0.92 : b <= 11 ? 1 : b <= 15 ? 0.95 : 1.06)
     }),
     ukulele: buildUkulelePart({
       chords: FOG_CHORDS,
       landingBar: FOG_LANDING,
       enterBar: 1,
-      // solo jam opening, folk strum under the verse, jam for the choruses'
+      // solo jam opening, folk strum under the verse, jam for the chorus
       // lift, picked turn, jam reprise
-      patternAt: (b) => (b <= 3 ? "jam" : b <= 7 ? "strum" : b <= 11 ? "jam" : b <= 15 ? "pick" : b <= 19 ? "strum" : "jam"),
-      accent: (b) => (b <= 3 ? 1 : b <= 7 ? 0.88 : b <= 11 ? 1 : b <= 15 ? 0.92 : b <= 19 ? 0.9 : 1.06)
+      patternAt: (b) => (b <= 3 ? "jam" : b <= 7 ? "strum" : b <= 11 ? "jam" : b <= 15 ? "pick" : "jam"),
+      accent: (b) => (b <= 3 ? 1 : b <= 7 ? 0.88 : b <= 11 ? 1 : b <= 15 ? 0.92 : 1.06)
     }),
     flute: buildFlutePart(FOG_FLUTE)
   }

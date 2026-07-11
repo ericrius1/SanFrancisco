@@ -66,9 +66,9 @@ export async function renderTrioAudioOffline(opts: OfflineRenderOptions): Promis
   const audio = new TrioAudio(ctx);
   // Master gain starts at 0 and is only opened by update()/holdSilent() in the
   // live game; offline never ticks update(), so open the mix explicitly. This
-  // sets master.gain to effectsAudioLevel() (the game's HUD-volume level, which
-  // the render tool seeds via localStorage) and un-gates the reverb bus, at the
-  // offline clock's t=0.
+  // sets master.gain to musicAudioLevel() (the game's HUD music-volume level,
+  // which the render tool seeds via localStorage) and un-gates the reverb bus,
+  // at the offline clock's t=0.
   audio.holdSilent(false);
 
   // Build the REAL musicians, tapped into the offline graph, and place their

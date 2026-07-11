@@ -1,20 +1,24 @@
 /**
- * Master audio preferences (mute toggle + effects/voice sliders in the HUD).
+ * Master audio preferences (mute toggle + music/effects/voice sliders in the HUD).
  * Stored under its own localStorage key — deliberately outside the "/" tweak
  * store, so a factory reset (".") doesn't blast the speakers back on.
- * Consumers poll effectsAudioLevel() or voiceAudioLevel(); vehicle hum reads
- * every frame, fireworks read per triggered sound, voice applies per peer.
+ * Consumers poll musicAudioLevel(), effectsAudioLevel() or voiceAudioLevel();
+ * vehicle hum reads every frame, fireworks read per triggered sound, voice
+ * applies per peer, corona songs poll music.
  */
 
 const KEY = "sf-audio";
 
 export type AudioPrefs = {
+  musicVolume: number;
   effectsVolume: number;
   voiceVolume: number;
   enabled: boolean;
 };
 
 const DEFAULTS: AudioPrefs = {
+  // Music defaults near FX so corona songs sit in the same mix ballpark.
+  musicVolume: 0.42,
   // Voice defaults a little hotter than FX so proximity chat cuts through the mix.
   effectsVolume: 0.42,
   voiceVolume: 0.62,
@@ -31,11 +35,16 @@ export const AUDIO_PREFS: AudioPrefs = (() => {
       AudioPrefs & { volume?: number }
     >;
     const legacy = typeof s.volume === "number" ? clamp01(s.volume) : null;
+    const effectsVolume =
+      typeof s.effectsVolume === "number"
+        ? clamp01(s.effectsVolume)
+        : legacy ?? DEFAULTS.effectsVolume;
     return {
-      effectsVolume:
-        typeof s.effectsVolume === "number"
-          ? clamp01(s.effectsVolume)
-          : legacy ?? DEFAULTS.effectsVolume,
+      // Music used to ride the effects slider; seed from it when missing so the
+      // corona song doesn't jump when the third slider lands.
+      musicVolume:
+        typeof s.musicVolume === "number" ? clamp01(s.musicVolume) : effectsVolume,
+      effectsVolume,
       voiceVolume:
         typeof s.voiceVolume === "number"
           ? clamp01(s.voiceVolume)
@@ -56,6 +65,10 @@ export function saveAudioPrefs() {
 /** 0 when muted; volume² otherwise (perceptual taper so mid-slider feels mid-loud). */
 function levelFrom(volume: number) {
   return AUDIO_PREFS.enabled ? volume * volume : 0;
+}
+
+export function musicAudioLevel() {
+  return levelFrom(AUDIO_PREFS.musicVolume);
 }
 
 export function effectsAudioLevel() {

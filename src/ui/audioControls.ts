@@ -1,7 +1,7 @@
 import { AUDIO_PREFS, saveAudioPrefs } from "../core/audioSettings";
 
 /**
- * Master audio widget: effects/voice sliders, a labeled mute button, and a
+ * Master audio widget: music/effects/voice sliders, a labeled mute button, and a
  * voice-mic button, bottom-left of the HUD. Pure DOM inside #hud
  * (pointer-events: none — this widget opts itself back in, like the toolbar).
  * Writes core/audioSettings; the audio systems poll it, so there's nothing to
@@ -13,6 +13,7 @@ export class AudioControls {
   #muteLabel: HTMLSpanElement;
   #mic: HTMLButtonElement;
   #micLabel: HTMLSpanElement;
+  #musicSlider: HTMLInputElement;
   #effectsSlider: HTMLInputElement;
   #voiceSlider!: HTMLInputElement;
 
@@ -23,7 +24,10 @@ export class AudioControls {
     const root = document.createElement("div");
     root.className = "audio";
 
-    this.#effectsSlider = this.#makeSlider("effects", "game effects volume", (v) => {
+    this.#musicSlider = this.#makeSlider("music", "music volume (songs)", (v) => {
+      AUDIO_PREFS.musicVolume = v;
+    });
+    this.#effectsSlider = this.#makeSlider("effects", "sound effects volume", (v) => {
       AUDIO_PREFS.effectsVolume = v;
     });
     this.#voiceSlider = this.#makeSlider("voice", "other players' voice volume", (v) => {
@@ -32,7 +36,11 @@ export class AudioControls {
 
     const sliders = document.createElement("div");
     sliders.className = "audio-sliders";
-    sliders.append(this.#labeledRow("FX", this.#effectsSlider), this.#labeledRow("Voice", this.#voiceSlider));
+    sliders.append(
+      this.#labeledRow("Music", this.#musicSlider),
+      this.#labeledRow("FX", this.#effectsSlider),
+      this.#labeledRow("Voice", this.#voiceSlider)
+    );
 
     this.#btn = document.createElement("button");
     this.#btn.className = "mute-btn";
@@ -70,7 +78,7 @@ export class AudioControls {
     this.#refresh();
   }
 
-  #makeSlider(kind: "effects" | "voice", title: string, apply: (v: number) => void) {
+  #makeSlider(kind: "music" | "effects" | "voice", title: string, apply: (v: number) => void) {
     const slider = document.createElement("input");
     slider.type = "range";
     slider.min = "0";
@@ -106,19 +114,30 @@ export class AudioControls {
   }
 
   #refresh() {
+    const musicOn = AUDIO_PREFS.enabled && AUDIO_PREFS.musicVolume > 0;
     const fxOn = AUDIO_PREFS.enabled && AUDIO_PREFS.effectsVolume > 0;
     const voiceOn = AUDIO_PREFS.enabled && AUDIO_PREFS.voiceVolume > 0;
     const muted = !AUDIO_PREFS.enabled;
-    const anyOn = !muted && (AUDIO_PREFS.effectsVolume > 0 || AUDIO_PREFS.voiceVolume > 0);
-    const peak = Math.max(AUDIO_PREFS.effectsVolume, AUDIO_PREFS.voiceVolume);
+    const anyOn =
+      !muted &&
+      (AUDIO_PREFS.musicVolume > 0 ||
+        AUDIO_PREFS.effectsVolume > 0 ||
+        AUDIO_PREFS.voiceVolume > 0);
+    const peak = Math.max(
+      AUDIO_PREFS.musicVolume,
+      AUDIO_PREFS.effectsVolume,
+      AUDIO_PREFS.voiceVolume
+    );
     this.#muteIcon.textContent = muted || !anyOn ? "🔇" : peak > 0.5 ? "🔊" : "🔉";
     this.#muteLabel.textContent = muted ? "Unmute" : "Mute";
     this.#btn.title = muted ? "unmute all sound" : "mute all sound";
     this.#btn.setAttribute("aria-label", muted ? "Unmute" : "Mute");
     this.#btn.setAttribute("aria-pressed", muted ? "true" : "false");
     this.#btn.classList.toggle("off", muted);
+    this.#musicSlider.value = String(Math.round(AUDIO_PREFS.musicVolume * 100));
     this.#effectsSlider.value = String(Math.round(AUDIO_PREFS.effectsVolume * 100));
     this.#voiceSlider.value = String(Math.round(AUDIO_PREFS.voiceVolume * 100));
+    this.#musicSlider.classList.toggle("off", !musicOn);
     this.#effectsSlider.classList.toggle("off", !fxOn);
     this.#voiceSlider.classList.toggle("off", !voiceOn);
   }
