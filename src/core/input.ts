@@ -51,6 +51,8 @@ export class Input {
   firePressed = false;
   fireHeld = false;
   locked = false;
+  /** Last caller intent — false after releaseLock so a late lock grant is dropped. */
+  #wantLocked = false;
   suspended = false;
   padConnected = false;
   device: "kb" | "pad" = "kb";
@@ -94,7 +96,8 @@ export class Input {
       if (e.repeat) return;
       // Any key with Command demonstrably up recovers a stale free cursor whose
       // Meta keyup was lost (macOS) — heal then relock (keydown is a gesture).
-      if (this.freeCursor && !e.metaKey && !this.suspended) this.#endFreeCursor(true);
+      // (never re-lock on Escape — Esc must always leave the cursor free)
+      if (this.freeCursor && !e.metaKey && !this.suspended) this.#endFreeCursor(e.code !== "Escape");
       // Command/Meta held: drop pointer lock so a free cursor can roam the world
       // and reach UI panels. Its keyup re-locks. Never fights the map/camera modes.
       if ((e.code === "MetaLeft" || e.code === "MetaRight") && this.locked && !this.suspended && !this.freeCursor) {
@@ -139,7 +142,14 @@ export class Input {
     });
 
     document.addEventListener("pointerlockchange", () => {
-      this.locked = document.pointerLockElement === el;
+      const nowLocked = document.pointerLockElement === el;
+      // A grant that lands after releaseLock() (Esc during an in-flight
+      // requestLock) is stale — drop it so Esc always wins.
+      if (nowLocked && !this.#wantLocked) {
+        document.exitPointerLock();
+        return;
+      }
+      this.locked = nowLocked;
       if (!this.locked) this.fireHeld = false;
       this.onLockChange(this.locked);
     });
@@ -298,6 +308,7 @@ export class Input {
   }
 
   requestLock() {
+    this.#wantLocked = true;
     // Chrome returns a promise and rejects during the post-Esc cooldown —
     // swallow it, the existing click-to-lock path is the fallback
     const p = this.#el.requestPointerLock() as unknown as Promise<void> | undefined;
@@ -305,7 +316,11 @@ export class Input {
   }
 
   releaseLock() {
-    if (this.locked) document.exitPointerLock();
+    // Unconditional: `this.locked` lags reality (pointerlockchange is async) and
+    // a pending requestLock grant may still be in flight — clearing the intent
+    // flag makes the pointerlockchange handler drop that late grant too.
+    this.#wantLocked = false;
+    document.exitPointerLock();
   }
 
   down(code: string) {

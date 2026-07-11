@@ -1276,6 +1276,9 @@ async function boot() {
       ) {
         return;
       }
+      // Esc ALWAYS frees the mouse, whatever else it also dismisses below.
+      // releaseLock is unconditional and cancels any in-flight relock grant.
+      input.releaseLock();
       if (behindTheScenes?.isOpen) {
         behindTheScenes.setOpen(false);
         e.preventDefault();
@@ -1295,11 +1298,8 @@ async function boot() {
         e.stopImmediatePropagation();
         return;
       }
-      if (input.locked) {
-        // Belt-and-suspenders with the browser's Esc-to-unlock; don't preventDefault
-        // so the UA default unlock still runs if exitPointerLock is ignored.
-        input.releaseLock();
-      }
+      // Lock already released above; don't preventDefault so the UA default
+      // unlock still runs if exitPointerLock is ignored.
     },
     true
   );

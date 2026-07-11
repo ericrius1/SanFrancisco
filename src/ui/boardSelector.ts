@@ -619,30 +619,37 @@ export class BoardSelector {
       }
       ctx.restore();
     } else {
-      // glitch: shear whole bands of the finished frame sideways (self-copy)
-      const tick = Math.floor(time * (0.0016 + flow * 0.006));
-      const bands = 6;
-      const bh = Math.ceil(h / bands);
-      for (let band = 0; band < bands; band++) {
-        const jolt = Math.abs(Math.sin(band * 127.1 + tick * 311.7)) % 1;
-        if (jolt < 0.42) continue;
-        const dx = Math.round((jolt - 0.7) * fx * w * 0.5);
-        if (!dx) continue;
-        const sy = band * bh;
-        ctx.drawImage(canvas, 0, sy, w, bh, dx, sy, w, bh);
-        ctx.fillStyle = `rgba(121,255,220,${fx * 0.2 * jolt})`;
-        ctx.fillRect(dx > 0 ? 0 : w + dx, sy, Math.abs(dx), 1.5);
+      // kaleido: mirrored petals fold the frame into a spinning mandala
+      ctx.save();
+      ctx.globalCompositeOperation = "screen";
+      ctx.translate(w * 0.5, h * 0.5);
+      ctx.rotate(time * (0.0004 + flow * 0.0016));
+      const petals = 8;
+      const reach = Math.min(w, h) * (0.18 + fx * 0.34);
+      ctx.strokeStyle = `rgba(121,255,220,${0.14 + fx * 0.5})`;
+      ctx.lineWidth = 1 + fx * 1.4;
+      for (let i = 0; i < petals; i++) {
+        const a = (i / petals) * Math.PI * 2;
+        const tip = [Math.cos(a) * reach, Math.sin(a) * reach];
+        const bend = 0.34;
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.quadraticCurveTo(Math.cos(a - bend) * reach * 0.7, Math.sin(a - bend) * reach * 0.7, tip[0], tip[1]);
+        ctx.quadraticCurveTo(Math.cos(a + bend) * reach * 0.7, Math.sin(a + bend) * reach * 0.7, 0, 0);
+        ctx.stroke();
       }
-      // continuous CRT sweep so the pad reads live even between band re-deals
-      const scanY = (time * (0.02 + flow * 0.1)) % h;
-      ctx.fillStyle = `rgba(121,255,220,${fx * 0.16})`;
-      ctx.fillRect(0, scanY, w, 1.5);
+      // bright core where every mirror seam meets
+      ctx.fillStyle = `rgba(121,255,220,${fx * 0.3})`;
+      ctx.beginPath();
+      ctx.arc(0, 0, 2 + fx * 3.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
     }
   }
 
-  /** Thruster energy sketch: two pods breathing soft wisps upward. Reach sets
-   *  how far they climb, shimmer how hard they fizz, sparks add motes. Always
-   *  animated — even a calm wisp must drift so the pad reads live. */
+  /** Thruster energy sketch: four pods — two hover columns + two aft push
+   *  streams. Reach sets length, shimmer how hard they fizz, sparks add motes.
+   *  Always animated — even a calm wisp must drift so the pad reads live. */
   #drawPlumePreview(time: number) {
     const canvas = this.#previewCanvases.get("plume");
     const ctx = canvas?.getContext("2d");
@@ -662,25 +669,34 @@ export class BoardSelector {
     ctx.fillStyle = bg;
     ctx.fillRect(0, 0, w, h);
 
-    const pods = [w * 0.32, w * 0.68];
-    const baseY = h * 0.85;
-    const len = h * (0.14 + reach * 0.64);
+    // hover pair (up) + thrust pair (aft / to the right)
+    const streams: { x: number; y: number; ang: number; seed: number }[] = [
+      { x: w * 0.28, y: h * 0.82, ang: -Math.PI / 2, seed: 0 },
+      { x: w * 0.48, y: h * 0.82, ang: -Math.PI / 2, seed: 1 },
+      { x: w * 0.62, y: h * 0.38, ang: 0, seed: 2 },
+      { x: w * 0.62, y: h * 0.62, ang: 0, seed: 3 }
+    ];
+    const len = Math.min(w, h) * (0.14 + reach * 0.55);
     ctx.save();
     ctx.globalCompositeOperation = "screen";
-    for (let p = 0; p < pods.length; p++) {
-      const px = pods[p];
+    for (const stream of streams) {
+      const px = stream.x;
+      const baseY = stream.y;
+      const cosA = Math.cos(stream.ang);
+      const sinA = Math.sin(stream.ang);
       // pod nub + hot core glow
       ctx.fillStyle = `rgba(${r},${g},${b},0.9)`;
       ctx.beginPath();
-      ctx.ellipse(px, baseY, 8, 3, 0, 0, Math.PI * 2);
+      ctx.ellipse(px, baseY, 8, 3, stream.ang, 0, Math.PI * 2);
       ctx.fill();
+      const midX = px + cosA * len * 0.4;
+      const midY = baseY + sinA * len * 0.4;
       ctx.fillStyle = `rgba(${r},${g},${b},${0.1 + reach * 0.1})`;
       ctx.beginPath();
-      ctx.ellipse(px, baseY - len * 0.4, 9 + shimmer * 4, len * 0.55 + 3, 0, 0, Math.PI * 2);
+      ctx.ellipse(midX, midY, 9 + shimmer * 4, len * 0.55 + 3, stream.ang, 0, Math.PI * 2);
       ctx.fill();
-      // energy wisps — the breathing term keeps them alive at any setting
       for (let s = 0; s < 4; s++) {
-        const seed = p * 4 + s;
+        const seed = stream.seed * 4 + s;
         const sway = 1.5 + shimmer * 7.5;
         const speed = 0.0016 + shimmer * 0.0042;
         const breathe = 0.6 + 0.4 * Math.abs(Math.sin(seed * 2.3 + time * 0.0009));
@@ -689,22 +705,25 @@ export class BoardSelector {
         ctx.beginPath();
         for (let i = 0; i <= 18; i++) {
           const u = i / 18;
-          const y = baseY - 2 - u * len * breathe;
+          const along = 2 + u * len * breathe;
           const wob =
             Math.sin(u * (3 + shimmer * 9) + time * speed * (1 + seed * 0.13) + seed * 5.1) * sway * u +
             Math.sin(time * 0.0011 + seed) * 1.3 * u;
-          const x = px + (s - 1.5) * (1.4 + shimmer * 2.2) * u + wob;
+          const side = (s - 1.5) * (1.4 + shimmer * 2.2) * u + wob;
+          const x = px + cosA * along - sinA * side;
+          const y = baseY + sinA * along + cosA * side;
           if (i === 0) ctx.moveTo(x, y);
           else ctx.lineTo(x, y);
         }
         ctx.stroke();
       }
-      // orbiting spark motes riding the column
       if (this.#config.plumeSparks) {
         for (let i = 0; i < 5; i++) {
-          const cycle = (time * (0.00022 + shimmer * 0.0005) + i / 5 + p * 0.5) % 1;
-          const y = baseY - 4 - cycle * len;
-          const x = px + Math.sin(cycle * Math.PI * (2 + shimmer * 6) + i * 2.7 + p) * (3 + shimmer * 8);
+          const cycle = (time * (0.00022 + shimmer * 0.0005) + i / 5 + stream.seed * 0.25) % 1;
+          const along = 4 + cycle * len;
+          const side = Math.sin(cycle * Math.PI * (2 + shimmer * 6) + i * 2.7 + stream.seed) * (3 + shimmer * 8);
+          const x = px + cosA * along - sinA * side;
+          const y = baseY + sinA * along + cosA * side;
           ctx.fillStyle = `rgba(255,255,255,${(1 - cycle) * 0.65})`;
           ctx.beginPath();
           ctx.arc(x, y, 1 + (1 - cycle) * 1.2, 0, Math.PI * 2);

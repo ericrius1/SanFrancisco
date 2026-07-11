@@ -169,7 +169,7 @@ const CONFIGS = [
     cfg: {
       shape: "dart", fin: "spoiler", deck: 1, trim: 3, glow: 4,
       surface: "topo", surfaceScale: 70, surfaceWarp: 18, surfaceSeed: 202,
-      surfaceFlow: 35, surfaceFx: 48, surfaceFxKind: "glitch",
+      surfaceFlow: 35, surfaceFx: 48, surfaceFxKind: "kaleido",
       plumeReach: 62, plumeShimmer: 40, plumeSparks: true, plumeGlow: 4, plumeHex: null,
       deckHex: 0x2f6b4f, trimHex: null, glowHex: null,
       hum: "retro", pitch: 3, soundTone: 80, soundMotion: 72, soundThrust: 82, soundAir: 46
@@ -191,7 +191,7 @@ const CONFIGS = [
     cfg: {
       shape: "saucer", fin: "twin", deck: 5, trim: 6, glow: 2,
       surface: "circuit", surfaceScale: 76, surfaceWarp: 42, surfaceSeed: 404,
-      surfaceFlow: 42, surfaceFx: 64, surfaceFxKind: "glitch",
+      surfaceFlow: 42, surfaceFx: 64, surfaceFxKind: "kaleido",
       plumeReach: 30, plumeShimmer: 74, plumeSparks: false, plumeGlow: 6, plumeHex: null,
       deckHex: null, trimHex: 0x101820, glowHex: null,
       hum: "crystal", pitch: 4, soundTone: 68, soundMotion: 82, soundThrust: 70, soundAir: 80
@@ -316,14 +316,14 @@ async function main() {
     const versionAfterMotion=surface.texture.version;
 
     // Effect-kind switch is a pure weight flip — same texture, same program.
-    sf.player.previewBoardSurface({...base,surfaceFlow:82,surfaceFx:91,surfaceFxKind:'glitch'});
+    sf.player.previewBoardSurface({...base,surfaceFlow:82,surfaceFx:91,surfaceFxKind:'kaleido'});
     const wg=surface.uFx.value;
-    const weightsGlitch=[wg.x,wg.y,wg.z];
+    const weightsKaleido=[wg.x,wg.y,wg.z];
     const versionAfterKind=surface.texture.version;
     return {
       version0,versionAfterStatic,versionAfterMotionEdit,versionAfterMotion,versionAfterKind,
       versionStable:version0===versionAfterStatic&&version0===versionAfterMotionEdit&&version0===versionAfterMotion&&version0===versionAfterKind,
-      scrollStatic,scrollDelta,phaseDelta,flowSet,fxSet,emissive,weightsVortex,weightsGlitch
+      scrollStatic,scrollDelta,phaseDelta,flowSet,fxSet,emissive,weightsVortex,weightsKaleido
     };
   })()`);
   assertProbe(results.animation.versionStable, "animation changed CanvasTexture.version (unexpected upload)");
@@ -338,8 +338,8 @@ async function main() {
     `vortex weights wrong: ${results.animation.weightsVortex}`
   );
   assertProbe(
-    results.animation.weightsGlitch[0] === 0 && results.animation.weightsGlitch[1] === 0 && Math.abs(results.animation.weightsGlitch[2] - 0.91) < 1e-9,
-    `glitch weight flip failed: ${results.animation.weightsGlitch}`
+    results.animation.weightsKaleido[0] === 0 && results.animation.weightsKaleido[1] === 0 && Math.abs(results.animation.weightsKaleido[2] - 0.91) < 1e-9,
+    `kaleido weight flip failed: ${results.animation.weightsKaleido}`
   );
 
   // ---- 2. config swaps on the local player ----
@@ -606,7 +606,7 @@ async function main() {
     return {present:true,closedH,openNow,openH,labels,savedKind:saved?.surfaceFxKind??null,stillOpen,onChip,weights:[weights.x,weights.y,weights.z]};
   })()`);
   assertProbe(results.ui.fxDrawer.present && results.ui.fxDrawer.openNow && results.ui.fxDrawer.openH > results.ui.fxDrawer.closedH + 8, "fx drawer did not slide open on header click");
-  assertProbe(results.ui.fxDrawer.labels.join(",") === "vortex,ripple,glitch", `fx chips wrong: ${results.ui.fxDrawer.labels}`);
+  assertProbe(results.ui.fxDrawer.labels.join(",") === "vortex,ripple,kaleido", `fx chips wrong: ${results.ui.fxDrawer.labels}`);
   assertProbe(results.ui.fxDrawer.savedKind === "ripple" && results.ui.fxDrawer.stillOpen && results.ui.fxDrawer.onChip === "ripple", "fx chip click did not commit and keep the drawer open");
   assertProbe(results.ui.fxDrawer.weights[1] > 0 && results.ui.fxDrawer.weights[0] === 0 && results.ui.fxDrawer.weights[2] === 0, `ripple weight not applied to the live board: ${results.ui.fxDrawer.weights}`);
   results.shots.push(await shot(c, "board-fx-drawer.png"));

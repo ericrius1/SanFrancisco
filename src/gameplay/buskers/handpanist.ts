@@ -7,9 +7,10 @@ import type { MusicianBuilder, NoteEvent, TrioClock } from "./types";
 
 /**
  * The handpan girl — centre seat, leader of the trio. Long dirty-blonde hair
- * that sways in the wind, swept bangs, charcoal cat-eye sunglasses, bare arms,
- * and the classic bronze UFO lens resting on her lap over the dangling legs.
- * She opens the song and counts the loop back in with four clear nods.
+ * with bangs and face-framing front locks, a soft feminine silhouette (narrow
+ * tapered arms, slight bust), charcoal cat-eye sunglasses, bare arms, and the
+ * classic bronze UFO lens resting on her lap over the dangling legs. She opens
+ * the song and counts the loop back in with four clear nods.
  *
  * Tap choreography: every distinct pitch in her part is pinned to one dimple
  * on the drum (sorted pitches zig-zag around the ring like a real D Kurd, so
@@ -75,11 +76,16 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
   rig.avatar.materials.sole.color.set(0x050608);
   rig.avatar.materials.trim.color.set(0x2b3341); // cool slate tee inset, matching the eyewear
   rig.avatar.materials.hair.color.set(0xd2b57f); // beige dirty blonde, not auburn/brown
+  // Feminine silhouette: narrower waist/hips, softer torso, stock long-hair
+  // replaced by the custom cut below (bangs + face-framing front + long fall).
+  for (const h of rig.avatar.hair.long) h.visible = false;
+  rig.avatar.torsoBlock.scale.set(0.92, 1.02, 0.88);
+  rig.avatar.hipBlock.scale.set(0.9, 1, 0.92);
   rig.group.position.y = SEAT_RIG_Y;
   // Give the upper arms a clean shoulder seam. The forearms do the inward
   // reaching; the upper-arm boxes no longer have to pass through the torso.
-  rig.armL.position.x = 0.315;
-  rig.armR.position.x = -0.315;
+  rig.armL.position.x = 0.29;
+  rig.armR.position.x = -0.29;
   group.add(rig.group);
 
   // Replace this rig's shared cube with an owned, low-poly tapered face. The
@@ -100,8 +106,8 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
   );
   if (stockShades) stockShades.visible = false;
 
-  const frameMat = new THREE.MeshLambertMaterial({ color: 0x10151d, side: THREE.DoubleSide });
-  const lensMat = new THREE.MeshLambertMaterial({ color: 0x2a3443, side: THREE.DoubleSide });
+  const frameMat = new THREE.MeshLambertMaterial({ color: 0x0a0d12, side: THREE.DoubleSide });
+  const lensMat = new THREE.MeshLambertMaterial({ color: 0x090c12, side: THREE.DoubleSide });
   const lipMat = new THREE.MeshLambertMaterial({ color: 0xa85f68 });
   const hairLowMat = new THREE.MeshLambertMaterial({ color: 0xaa895f });
   const hairHiMat = new THREE.MeshLambertMaterial({ color: 0xead8ad });
@@ -151,6 +157,43 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
     rig.head.add(wing);
   }
 
+  // ---- jewelled rim: a row of faceted rhinestone gems studding the upswept
+  // outer edge of each cat-eye, with a larger accent gem at the very wing tip.
+  // MeshStandard (unlike the Lambert everywhere else) gives sharp speculars so
+  // they throw glints as she moves; the faint emissive keeps them sparkling
+  // even in the shade so they never read as dead black beads.
+  const gemMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    metalness: 0.5,
+    roughness: 0.05,
+    emissive: 0xbcd6ff, // icy diamond glint so they sparkle even in shade
+    emissiveIntensity: 0.95
+  });
+  ownedMats.push(gemMat);
+  const gemGeo = new THREE.OctahedronGeometry(0.014, 0);
+  const tipGemGeo = new THREE.OctahedronGeometry(0.019, 0);
+  ownedGeos.push(gemGeo, tipGemGeo);
+  // studs climb along the top rim from the bridge out to the cat-eye tip
+  const studs: readonly (readonly [number, number, number])[] = [
+    [0.04, 0.266, 0.02],
+    [0.066, 0.271, 0.35],
+    [0.093, 0.276, -0.25],
+    [0.118, 0.281, 0.15]
+  ];
+  for (const side of [1, -1] as const) {
+    for (const [x, y, spin] of studs) {
+      const gem = new THREE.Mesh(gemGeo, gemMat);
+      gem.position.set(side * x, y, -0.163);
+      gem.rotation.set(spin, side * 0.5, side * 0.4);
+      rig.head.add(gem);
+    }
+    // accent gem set into the swept wing tip
+    const tip = new THREE.Mesh(tipGemGeo, gemMat);
+    tip.position.set(side * 0.134, 0.283, -0.155);
+    tip.rotation.set(0.2, side * 0.6, side * 0.5);
+    rig.head.add(tip);
+  }
+
   // A tiny two-stroke smile helps the tapered face read at gameplay distance
   // without turning the intentionally minimal voxel face into a portrait.
   const lipGeo = new THREE.BoxGeometry(0.038, 0.011, 0.01);
@@ -162,45 +205,127 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
     rig.head.add(lip);
   }
 
-  // a normal medium-long hair fall down the back — one soft sheet of three
-  // overlapping slats, pivoted at the nape BEHIND the head so it always hangs
-  // clear of the face, arms and torso, and sways as one in the wind.
+  // ---- feminine arms: swap the stock chunky boxes for thin tapered cylinders
+  // so the silhouette reads soft and girl-like while IK joints stay put.
+  const upperArmGeo = new THREE.CylinderGeometry(0.038, 0.048, 0.3, 8);
+  const foreArmGeo = new THREE.CylinderGeometry(0.028, 0.036, 0.16, 8);
+  const wristGeo = new THREE.CylinderGeometry(0.026, 0.03, 0.11, 8);
+  ownedGeos.push(upperArmGeo, foreArmGeo, wristGeo);
+  // armBlocks order from buildRig: L upper, L fore, R upper, R fore
+  for (let i = 0; i < 4; i++) {
+    const block = rig.avatar.armBlocks[i];
+    block.geometry = i % 2 === 0 ? upperArmGeo : foreArmGeo;
+    block.scale.set(1, 1, 1);
+  }
+  // Replace the stock wrist boxes (first skin mesh on each forearm).
+  for (const fore of [rig.foreL, rig.foreR]) {
+    for (const child of fore.children) {
+      if (child instanceof THREE.Mesh && child.material === rig.avatar.materials.skin && child.position.y < -0.15) {
+        child.geometry = wristGeo;
+        child.scale.set(1, 1, 1);
+      }
+    }
+  }
+  // Soften the mitts so they don't read as big male fists over the drum.
+  rig.handL.scale.set(0.82, 0.88, 0.82);
+  rig.handR.scale.set(0.82, 0.88, 0.82);
+  // Slim the tee's stock shoulder caps to match the narrower arms, and hide
+  // the flat chest trim — the bust geometry replaces that front detail.
+  for (const detail of rig.avatar.outfits.tee) {
+    if (!(detail instanceof THREE.Mesh)) continue;
+    if (Math.abs(detail.position.x) < 0.05) {
+      detail.visible = false; // centre trim plaque
+    } else if (Math.abs(detail.position.x) > 0.2) {
+      detail.scale.set(0.72, 0.85, 0.78);
+      detail.position.x *= 0.92;
+    }
+  }
+
+  // ---- slight bust: two soft black tee mounds so she reads clearly feminine
+  // at gameplay distance without leaving the chunky house style.
+  const bustMat = rig.avatar.materials.jacket;
+  const bustGeo = new THREE.SphereGeometry(0.07, 10, 8);
+  ownedGeos.push(bustGeo);
+  for (const side of [1, -1] as const) {
+    const bust = new THREE.Mesh(bustGeo, bustMat);
+    bust.position.set(side * 0.07, 0.28, -0.11);
+    bust.scale.set(1.05, 0.85, 0.95);
+    bust.castShadow = true;
+    rig.torso.add(bust);
+  }
+  // A soft cleavage bridge keeps the two mounds reading as one chest, not
+  // disconnected balls stuck on a flat board.
+  const cleavageGeo = new THREE.BoxGeometry(0.1, 0.08, 0.06);
+  ownedGeos.push(cleavageGeo);
+  const cleavage = new THREE.Mesh(cleavageGeo, bustMat);
+  cleavage.position.set(0, 0.265, -0.12);
+  cleavage.castShadow = true;
+  rig.torso.add(cleavage);
+
+  // ---- long dirty-blonde cut: crown + layered bangs + face-framing front
+  // locks past the jaw, and a longer multi-slat fall down the back that sways
+  // in the wind. Stock long-hair is already hidden above.
   const hairMat = rig.avatar.materials.hair;
-  const slatGeo = new THREE.BoxGeometry(0.11, 0.32, 0.05);
-  ownedGeos.push(slatGeo);
+  const box = (w: number, h: number, d: number) => {
+    const g = new THREE.BoxGeometry(w, h, d);
+    ownedGeos.push(g);
+    return g;
+  };
+  const hairMesh = (parent: THREE.Object3D, g: THREE.BufferGeometry, mat: THREE.Material, x: number, y: number, z: number) => {
+    const m = new THREE.Mesh(g, mat);
+    m.position.set(x, y, z);
+    m.castShadow = true;
+    parent.add(m);
+    return m;
+  };
+
+  // crown cap — slightly taller/softer than the stock flat lid
+  hairMesh(rig.head, box(0.3, 0.1, 0.3), hairMat, 0, 0.34, 0.01);
+  // layered bangs across the brow (asymmetric lengths so it isn't a ruler cut)
+  const fringeL = hairMesh(rig.head, box(0.11, 0.13, 0.055), hairHiMat, -0.09, 0.255, -0.145);
+  fringeL.rotation.z = 0.2;
+  const fringeC = hairMesh(rig.head, box(0.1, 0.15, 0.05), hairMat, 0.01, 0.24, -0.148);
+  fringeC.rotation.z = -0.05;
+  const fringeR = hairMesh(rig.head, box(0.1, 0.12, 0.055), hairHiMat, 0.1, 0.265, -0.142);
+  fringeR.rotation.z = -0.24;
+  // long face-framing front locks — past the jaw, hanging beside the cheeks
+  // so the hair reads long from the front, not just a bob with a back fall
+  const sideFrontL = hairMesh(rig.head, box(0.065, 0.36, 0.08), hairMat, -0.155, 0.08, -0.06);
+  sideFrontL.rotation.x = 0.08;
+  sideFrontL.rotation.z = 0.06;
+  const sideFrontR = hairMesh(rig.head, box(0.065, 0.38, 0.08), hairLowMat, 0.155, 0.06, -0.055);
+  sideFrontR.rotation.x = 0.1;
+  sideFrontR.rotation.z = -0.08;
+  // extra cheek wisps that tuck in front of the shoulders
+  const cheekL = hairMesh(rig.head, box(0.05, 0.28, 0.055), hairHiMat, -0.14, 0.12, -0.11);
+  cheekL.rotation.z = 0.12;
+  const cheekR = hairMesh(rig.head, box(0.05, 0.26, 0.055), hairMat, 0.14, 0.13, -0.105);
+  cheekR.rotation.z = -0.1;
+  // temple/side volume so the head isn't a bare cylinder behind the bangs
+  hairMesh(rig.head, box(0.07, 0.26, 0.12), hairLowMat, -0.16, 0.16, 0.04);
+  hairMesh(rig.head, box(0.07, 0.28, 0.12), hairMat, 0.16, 0.14, 0.04);
+
+  // back fall — longer overlapping slats, pivoted at the nape for wind sway
+  const slatGeo = box(0.11, 0.44, 0.05);
   const hairFall = new THREE.Group();
-  hairFall.position.set(0, 0.05, 0.14); // nape, at the back of the head block
+  hairFall.position.set(0, 0.06, 0.14); // nape, at the back of the head block
   rig.head.add(hairFall);
   const slats: THREE.Mesh[] = [];
   const slatBaseZ: number[] = [];
   const slatMats = [hairLowMat, hairMat, hairHiMat] as const;
   for (let i = 0; i < 3; i++) {
     const s = new THREE.Mesh(slatGeo, slatMats[i]);
-    s.position.set((i - 1) * 0.075, -0.15, 0.006 + Math.abs(i - 1) * 0.008);
-    const baseZ = (i - 1) * 0.13; // gentle outward fan
+    s.position.set((i - 1) * 0.078, -0.2, 0.006 + Math.abs(i - 1) * 0.008);
+    const baseZ = (i - 1) * 0.12; // gentle outward fan
     s.rotation.z = baseZ;
     s.castShadow = true;
     hairFall.add(s);
     slats.push(s);
     slatBaseZ.push(baseZ);
   }
-
-  // Asymmetric swept bangs echo the reference hairline and break up the old
-  // ruler-straight crown. They sit behind the glasses, so the cat-eye shape
-  // stays crisp even when the head turns.
-  const bangGeo = new THREE.BoxGeometry(0.18, 0.045, 0.035);
-  const frontLockGeo = new THREE.BoxGeometry(0.052, 0.15, 0.05);
-  ownedGeos.push(bangGeo, frontLockGeo);
-  const bang = new THREE.Mesh(bangGeo, hairHiMat);
-  bang.position.set(0.025, 0.305, -0.14);
-  bang.rotation.z = -0.13;
-  bang.castShadow = true;
-  rig.head.add(bang);
-  const frontLock = new THREE.Mesh(frontLockGeo, hairMat);
-  frontLock.position.set(0.137, 0.245, -0.116);
-  frontLock.rotation.z = -0.1;
-  frontLock.castShadow = true;
-  rig.head.add(frontLock);
+  // one extra longer central lock for a shaggy feminine silhouette
+  const longLock = hairMesh(hairFall, box(0.1, 0.5, 0.048), hairMat, 0.015, -0.24, 0.02);
+  longLock.rotation.z = 0.05;
 
   // ---- the handpan: parented to the GROUP (not a limb) so it never bobs
   const shellMat = new THREE.MeshLambertMaterial({ color: 0x8a5a33 });
@@ -445,7 +570,7 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
     rig.shinR.rotation.x = -0.98 + Math.sin(t * 0.83 + 1.5) * swing * 1.8;
 
     // ---- hair in the wind: the whole fall sways as one, with a little
-    // per-slat lag so it reads as soft strands, never a rigid board
+    // per-slat lag so it reads as soft strands; bangs + face locks drift too
     const hairAmp = 0.05 + wind * 0.24;
     hairFall.rotation.x = 0.05 + Math.sin(t * 1.5 + 0.3) * hairAmp * 0.5; // drift back & forth
     hairFall.rotation.z = Math.sin(t * 1.9 + 1.1) * hairAmp; // side-to-side sway
@@ -453,6 +578,14 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
     for (let i = 0; i < slats.length; i++) {
       slats[i].rotation.z = slatBaseZ[i] + Math.sin(t * 2.2 + i * 1.3) * hairAmp * 0.5;
     }
+    longLock.rotation.z = 0.05 + Math.sin(t * 1.7 + 2.2) * hairAmp * 0.5;
+    fringeL.rotation.z = 0.2 + Math.sin(t * 2.4 + 0.5) * hairAmp * 0.28;
+    fringeC.rotation.z = -0.05 + Math.sin(t * 2.1 + 1.1) * hairAmp * 0.2;
+    fringeR.rotation.z = -0.24 + Math.sin(t * 2.2 + 1.8) * hairAmp * 0.28;
+    sideFrontL.rotation.z = 0.06 + Math.sin(t * 1.8 + 0.3) * hairAmp * 0.35;
+    sideFrontR.rotation.z = -0.08 + Math.sin(t * 1.9 + 1.4) * hairAmp * 0.35;
+    cheekL.rotation.z = 0.12 + Math.sin(t * 2.0 + 0.8) * hairAmp * 0.22;
+    cheekR.rotation.z = -0.1 + Math.sin(t * 2.05 + 1.6) * hairAmp * 0.22;
   };
 
   // ---- audio: one self-cleaning struck-handpan voice per note

@@ -14,13 +14,13 @@ export const BUSKER_FIREFLY_TUNING = tunables("busker.fireflies", {
   enabled: { v: true, label: "enabled" },
   brightness: { v: 1, min: 0, max: 2.5, step: 0.05, label: "light strength" },
   drift: { v: 1, min: 0, max: 2, step: 0.05, label: "flight speed" },
-  pulse: { v: 0.05, min: 0, max: 0.15, step: 0.005, label: "gentle pulse" },
+  pulse: { v: 0.14, min: 0, max: 0.35, step: 0.005, label: "flicker depth" },
   glowSize: { v: 1, min: 0.5, max: 1.8, step: 0.05, label: "glow size" }
 });
 
 const TAU = Math.PI * 2;
 const ACTIVE_RANGE = 90;
-const LIGHT_INTENSITY = 9;
+const LIGHT_INTENSITY = 7;
 const LIGHT_DISTANCE = 5.2;
 // Key sits in front of the trio (camera side), slightly camera-left and above
 // the swarm — soft face fill without sitting inside the insects.
@@ -66,10 +66,10 @@ function makeGlowTexture(): THREE.CanvasTexture {
   canvas.width = canvas.height = 64;
   const ctx = canvas.getContext("2d")!;
   const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 31);
-  gradient.addColorStop(0, "rgba(255,236,200,1)");
-  gradient.addColorStop(0.12, "rgba(255,180,70,0.95)");
-  gradient.addColorStop(0.35, "rgba(255,120,35,0.38)");
-  gradient.addColorStop(1, "rgba(220,80,20,0)");
+  gradient.addColorStop(0, "rgba(255,255,230,1)");
+  gradient.addColorStop(0.1, "rgba(255,245,120,0.98)");
+  gradient.addColorStop(0.28, "rgba(210,255,80,0.45)");
+  gradient.addColorStop(1, "rgba(160,220,40,0)");
   ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, 64, 64);
   const texture = new THREE.CanvasTexture(canvas);
@@ -92,7 +92,7 @@ export class BuskerFireflies {
     for (let i = 0; i < LAYOUT.length; i++) {
       const material = new THREE.SpriteMaterial({
         map: this.#texture,
-        color: new THREE.Color(0xffb45c).multiplyScalar(LIGHT_SCALE * 0.72),
+        color: new THREE.Color(0xf2ff7a).multiplyScalar(LIGHT_SCALE * 0.78),
         opacity: 0
       });
       applyMaterialPolicy(material, "additiveWorld");
@@ -113,7 +113,7 @@ export class BuskerFireflies {
 
     // One warm, shadowless fill — follows the swarm with a fixed key offset
     // so it stays in front of the faces rather than inside the insects.
-    this.#light = new THREE.PointLight(0xff8f3a, 0, LIGHT_DISTANCE, 2);
+    this.#light = new THREE.PointLight(0xe8f06a, 0, LIGHT_DISTANCE, 2);
     this.#light.name = "busker-firefly-fill";
     this.#light.castShadow = false;
     this.#light.position.set(LIGHT_OFFSET.x, 1.9 + LIGHT_OFFSET.y, -1.55 + LIGHT_OFFSET.z);
@@ -152,10 +152,13 @@ export class BuskerFireflies {
       cy += sprite.position.y;
       cz += sprite.position.z;
 
-      // Slow, shallow breathing—never an on/off twinkle or high-frequency flicker.
-      const pulse = 1 + Math.sin(this.#elapsed * 0.58 + phase) * pulseDepth;
+      // Soft firefly flicker — deeper and a touch faster than a slow breath.
+      const pulse =
+        1 +
+        Math.sin(this.#elapsed * 1.85 + phase) * pulseDepth +
+        Math.sin(this.#elapsed * 4.2 + phase * 1.7) * pulseDepth * 0.35;
       this.#materials[i].opacity = twilight * 0.72 * pulse;
-      const size = p.size * sizeGain * (0.98 + 0.02 * pulse);
+      const size = p.size * sizeGain * (0.96 + 0.04 * pulse);
       sprite.scale.setScalar(size);
     }
 
@@ -166,8 +169,12 @@ export class BuskerFireflies {
       cy / n + LIGHT_OFFSET.y,
       cz / n + LIGHT_OFFSET.z
     );
-    this.#light.intensity =
-      LIGHT_INTENSITY * lightGain * (1 + Math.sin(this.#elapsed * 0.51) * pulseDepth);
+    // Shared fill flickers with the swarm — wider range, firefly-like tempo.
+    const lightFlicker =
+      1 +
+      Math.sin(this.#elapsed * 1.7) * pulseDepth * 1.35 +
+      Math.sin(this.#elapsed * 3.9 + 0.8) * pulseDepth * 0.55;
+    this.#light.intensity = LIGHT_INTENSITY * lightGain * lightFlicker;
   }
 
   dispose() {

@@ -15,7 +15,7 @@ import { BodyType, type Physics } from "../../core/physics";
 
 export const PERCH = {
   width: 5.0, // X — full width of the flat cap
-  depth: 2.9, // Z — front-to-back of the cap
+  depth: 1.45, // Z — front-to-back of the cap (half the original slab so it doesn't fill the shot)
   top: 1.3 // cap surface height above the group origin (ground contact point)
 } as const;
 

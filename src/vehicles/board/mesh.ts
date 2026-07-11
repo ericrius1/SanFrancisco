@@ -1,5 +1,5 @@
 import * as THREE from "three/webgpu";
-import { cos, float, floor, fract, length, mix, sin, smoothstep, texture, uniform, uv, vec2, vec3 } from "three/tsl";
+import { abs, cos, float, length, mix, sin, smoothstep, texture, uniform, uv, vec2, vec3 } from "three/tsl";
 import { LIGHT_SCALE } from "../../config";
 import { lightAnchor, type LightAnchorSpec } from "../../player/lightPool";
 import { applyMaterialPolicy, clampCoverage, fresnelCoverage, tagTransparency } from "../../render/transparency";
@@ -19,8 +19,9 @@ import { BOARD_EFFECT_TUNING, HALO_TUNING } from "./tuning";
  * Hoverboard, front is local -Z. The deck is a real silhouette now — a closed
  * spline outline extruded with a bevel, nose/tail kicked by bending vertices
  * up along a curve — with a glow rail tube tracing the rim, a shaped underglow
- * plate that breathes, and twin thruster pods whose turbine blades spin with
- * speed (animateBoard, called by whoever owns the mesh each frame).
+ * plate that breathes, and four thruster pods whose turbine blades spin with
+ * speed (animateBoard, called by whoever owns the mesh each frame) — a pair
+ * firing down for hover, and a rear pair firing aft for forward push.
  *
  * Everything cosmetic reads from a BoardConfig (config.ts) so the customizer
  * can rebuild the whole thing per player. Materials are created per build —
@@ -188,7 +189,7 @@ type BoardSurfaceState = {
   uPhase: ReturnType<typeof uniform>;
   uScroll: ReturnType<typeof uniform>;
   uFlow: ReturnType<typeof uniform>;
-  uFx: ReturnType<typeof uniform>; // vec3 weights: x vortex, y ripple, z glitch
+  uFx: ReturnType<typeof uniform>; // vec3 weights: x vortex, y ripple, z kaleido
   uEmissive: ReturnType<typeof uniform>;
   reducedMotion: boolean;
 };
@@ -200,7 +201,7 @@ function applyFxWeights(state: BoardSurfaceState) {
   (state.uFx.value as THREE.Vector3).set(
     state.fxKind === "vortex" ? s : 0,
     state.fxKind === "ripple" ? s : 0,
-    state.fxKind === "glitch" ? s : 0
+    state.fxKind === "kaleido" ? s : 0
   );
 }
 
@@ -208,7 +209,7 @@ function applyFxWeights(state: BoardSurfaceState) {
  * The deck artwork's living skin: one Lambert node material that samples the
  * painted canvas through a warped, travelling UV. Flow scrolls + sways the art
  * (obviously, at full tilt); the chosen effect bends the lookup — a swirling
- * vortex, radial shockwave ripples, or scanline glitch tears with RGB split.
+ * vortex, radial shockwave ripples, or a spinning kaleidoscope mandala.
  * All three are computed branchlessly and blended by weight so effect strength
  * 0 is a perfect identity (never If(): see the shader-branch pixel hazard).
  */
@@ -241,19 +242,29 @@ function buildSurfaceMaterial(
   const wave = sin(r.mul(16).sub(phase.mul(3.4)));
   const radial = p.div(r.max(0.002)).mul(wave).mul(fall).mul(weights.y).mul(0.16);
 
-  const warped = swirled.add(radial).mul(vec2(1, 0.5)).add(0.5);
+  const base = swirled.add(radial); // centered aspect coords after vortex + ripple
 
-  // glitch — horizontal band tears that re-deal with the clock
-  const tick = floor(phase.mul(2.3));
-  const band = floor(warped.y.mul(15).add(tick.mul(3)));
-  const jolt = fract(sin(band.mul(127.1).add(tick.mul(311.7))).mul(43758.547));
-  const tear = jolt.sub(0.5).mul(smoothstep(0.35, 0.95, jolt)).mul(weights.z).mul(0.42);
+  // kaleido — fold the plane into a spinning mirror mandala. Rotate by the
+  // clock, mirror across both axes (abs → 4-fold), rotate 45° and mirror again
+  // (→ 8-fold), so the artwork blooms into an octagonal kaleidoscope that
+  // churns as it spins. Pure abs/rotate — no branch (see the shader-branch
+  // pixel hazard) — and blended by fall so the rim keeps the untouched art.
+  const kspin = phase.mul(0.35);
+  const kc = cos(kspin);
+  const ks = sin(kspin);
+  const k4 = abs(vec2(base.x.mul(kc).sub(base.y.mul(ks)), base.x.mul(ks).add(base.y.mul(kc))));
+  const OCT = float(0.70710677); // cos/sin(45°): second mirror axis, half-turned
+  const k8 = abs(vec2(k4.x.sub(k4.y).mul(OCT), k4.x.add(k4.y).mul(OCT)));
+  const folded = mix(base, k8, weights.z.mul(fall));
+
+  const warped = folded.mul(vec2(1, 0.5)).add(0.5);
 
   // flow's travelling motion: artwork streams down the deck + gentle sideways sway
   const sway = sin(phase.mul(0.9)).mul(flow).mul(0.05);
-  const suv = warped.add(vec2(tear.add(sway), (s.uScroll as unknown as ReturnType<typeof float>).negate()));
+  const suv = warped.add(vec2(sway, (s.uScroll as unknown as ReturnType<typeof float>).negate()));
 
-  // glitch RGB split: side samples collapse onto the centre one at weight 0
+  // kaleido prism sheen: a faint chromatic split fringes the mandala's mirror
+  // seams; collapses to zero at weight 0 so vortex/ripple stay perfectly clean.
   const split = vec2(weights.z.mul(0.018).mul(float(0.7).add(sin(phase.mul(4.7)).mul(0.3))), 0);
   const art = vec3(
     texture(map, suv.add(split)).r,
@@ -332,6 +343,17 @@ type BoardPlume = PlumeUniforms & {
   shimmer: number; // 0..1 from config
   sparks: boolean;
   length: number; // current eased shell length (m)
+};
+
+/** Pod mount: hover fires local -Y (world down); thrust rotates so -Y is aft (+Z). */
+type PodSpec = {
+  x: number;
+  y: number;
+  z: number;
+  /** Radians around X; 0 = down, -π/2 = aft */
+  pitch: number;
+  spinRate: number;
+  motePhase: number;
 };
 
 const MAX_HALO_ORBS = 12;
@@ -450,14 +472,14 @@ export function buildBoardMesh(config?: BoardConfig): THREE.Group {
   underglow.name = "board-underglow-ring";
   g.add(underglow);
 
-  // --- thruster pods: dark casing, glow intake ring, spinning turbine,
-  // and an energy plume shell + spark motes hanging below each pod ---
+  // --- thruster pods: two hover (down) + two thrust (aft). Each pod is a
+  // local assembly whose -Y is the exhaust axis — pitch the root to aim it.
   const spinners: BoardAnim["spinners"] = [];
   const podGeo = geo(new THREE.CylinderGeometry(0.09, 0.115, 0.075, 12, 1, true));
   const ringGeo = geo(new THREE.TorusGeometry(0.1, 0.011, 6, 20));
   ringGeo.rotateX(Math.PI / 2);
   const bladeGeo = geo(new THREE.BoxGeometry(0.15, 0.006, 0.03));
-  // unit-length open shell; top sits at local y=0 so scale.y grows it downward
+  // unit-length open shell; top sits at local y=0 so scale.y grows it along -Y
   const plumeGeo = geo(new THREE.CylinderGeometry(0.07, 0.03, 1, 12, 1, true));
   plumeGeo.translate(0, -0.5, 0);
   const moteGeo = geo(new THREE.SphereGeometry(0.016, 6, 5));
@@ -469,49 +491,57 @@ export function buildBoardMesh(config?: BoardConfig): THREE.Group {
     uPlumeFresnelPower: uniform(BOARD_EFFECT_TUNING.values.plumeFresnelPower),
     uPlumeColor: uniform(new THREE.Color(plumeHexNow))
   };
-  const plumeMat = mat(buildPlumeMaterial(plumeUniforms)); // ONE material, both pods
+  const plumeMat = mat(buildPlumeMaterial(plumeUniforms)); // ONE material, all pods
   const moteMat = mat(new THREE.MeshBasicMaterial({ color: new THREE.Color(plumeHexNow).multiplyScalar(LIGHT_SCALE) }));
   applyMaterialPolicy(moteMat, "additiveWorld");
   const plumeCones: THREE.Mesh[] = [];
   const plumeMotes: BoardPlume["motes"] = [];
   const plumeLen0 = PLUME_MIN_LEN + (cfg.plumeReach / 100) * (PLUME_MAX_LEN - PLUME_MIN_LEN);
-  for (const pz of [-0.5, 0.5]) {
-    const y = kickLift(p, pz);
+  // hover pair along the keel; thrust pair at the tail, left/right, firing aft
+  const thrustZ = p.notch !== undefined ? p.notch - 0.02 : p.halfL - 0.14;
+  const thrustY = kickLift(p, thrustZ) - 0.06;
+  const pods: PodSpec[] = [
+    { x: 0, y: kickLift(p, -0.5) - 0.135, z: -0.5, pitch: 0, spinRate: 9, motePhase: 0 },
+    { x: 0, y: kickLift(p, 0.5) - 0.135, z: 0.5, pitch: 0, spinRate: -9, motePhase: Math.PI },
+    { x: -0.18, y: thrustY, z: thrustZ, pitch: -Math.PI / 2, spinRate: 11, motePhase: Math.PI * 0.5 },
+    { x: 0.18, y: thrustY, z: thrustZ, pitch: -Math.PI / 2, spinRate: -11, motePhase: Math.PI * 1.5 }
+  ];
+  for (const pod of pods) {
+    // root at the mouth; children sit along local -Y so pitch aims the stream
+    const root = new THREE.Group();
+    root.position.set(pod.x, pod.y, pod.z);
+    root.rotation.x = pod.pitch;
     const casing = new THREE.Mesh(podGeo, darkMat);
-    casing.position.set(0, y - 0.095, pz);
-    g.add(casing);
+    casing.position.set(0, 0.04, 0);
+    root.add(casing);
     const ring = new THREE.Mesh(ringGeo, pulseMat);
-    ring.position.set(0, y - 0.13, pz);
-    g.add(ring);
+    ring.position.set(0, 0.005, 0);
+    root.add(ring);
     const turbine = new THREE.Group();
-    turbine.position.set(0, y - 0.11, pz);
+    turbine.position.set(0, 0.025, 0);
     for (let k = 0; k < 3; k++) {
       const blade = new THREE.Mesh(bladeGeo, glowMat);
       blade.rotation.y = (k * Math.PI * 2) / 3;
       blade.rotation.x = 0.35;
       turbine.add(blade);
     }
-    g.add(turbine);
-    spinners.push({ obj: turbine, axis: "y", rate: pz < 0 ? 9 : -9 }); // counter-rotating pair
-    // the emanation hangs from a group at the pod mouth; motes position
-    // themselves in its local space so animateBoard never touches world math
-    const plumeRoot = new THREE.Group();
-    plumeRoot.position.set(0, y - 0.135, pz);
+    root.add(turbine);
+    spinners.push({ obj: turbine, axis: "y", rate: pod.spinRate });
     const cone = new THREE.Mesh(plumeGeo, plumeMat);
     cone.scale.y = plumeLen0;
     tagTransparency(cone, { profile: "additiveWorld" });
-    plumeRoot.add(cone);
+    root.add(cone);
     plumeCones.push(cone);
     for (let k = 0; k < 3; k++) {
       const mote = new THREE.Mesh(moteGeo, moteMat);
-      const phase = (pz < 0 ? 0 : Math.PI) + k * 2.1;
+      const phase = pod.motePhase + k * 2.1;
       mote.position.set(Math.cos(phase) * 0.05, -((k + 0.5) / 3) * plumeLen0, Math.sin(phase) * 0.05);
       mote.visible = cfg.plumeSparks;
       tagTransparency(mote, { profile: "additiveWorld" });
-      plumeRoot.add(mote);
+      root.add(mote);
       plumeMotes.push({ mesh: mote, phase });
     }
-    g.add(plumeRoot);
+    g.add(root);
   }
   const plume: BoardPlume = {
     ...plumeUniforms,
@@ -714,7 +744,7 @@ export function animateBoard(board: THREE.Group, dt: number, t: number, speed: n
   const lightGain = BOARD_EFFECT_TUNING.values.boardLightIntensity;
   for (const light of anim.lights) light.spec.intensity = light.baseIntensity * lightGain * lightPulse;
 
-  // --- thruster plumes: uniforms + transforms only, shared by both pods ---
+  // --- thruster plumes: uniforms + transforms only, shared by all four pods ---
   const plume = anim.plume;
   // reducedMotion freezes the flow but keeps the static soft glow standing
   if (!surface.reducedMotion) {
@@ -728,8 +758,8 @@ export function animateBoard(board: THREE.Group, dt: number, t: number, speed: n
   plume.length += (targetLen - plume.length) * Math.min(1, dt * 6);
   for (const cone of plume.cones) cone.scale.y = plume.length;
   if (plume.sparks && !surface.reducedMotion) {
-    // motes spiral lazily down the plume, wrap back to the pod mouth, and
-    // pulse — cheap CPU transforms on six tiny spheres
+    // motes spiral lazily along each plume, wrap back to the mouth, and pulse —
+    // cheap CPU transforms on twelve tiny spheres (3 × 4 pods)
     for (const mote of plume.motes) {
       const cyc = (t * 0.45 + mote.phase * 0.161) % 1;
       const ang = t * 1.4 + mote.phase;

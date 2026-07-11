@@ -1,24 +1,23 @@
 import * as THREE from "three/webgpu";
-import { LIGHT_SCALE } from "../../config";
 import { buildRig, setRigClasp } from "../../player/rig";
 import { applyArmPose, dampArmPose, mixArmPose, solveArmPose, type ArmPose } from "./armIk";
 import { SEC_PER_BEAT } from "./song";
 import { midiHz, NoteCursor, type MusicianBuilder, type NoteEvent, type TrioClock } from "./types";
 
-/** Light warm brown — must stay readable inside the raised hood's shadow. */
-const HAIR_BROWN = 0xd8b07a;
+/** Warm light-brown — a touch richer than sandy blonde so it reads brown in daylight. */
+const HAIR_BROWN = 0x8f5e30;
 
 /**
- * The flutist — viewer's RIGHT seat. Hood up, eyes down, lost in it.
+ * The flutist — viewer's RIGHT seat. Eyes down, lost in it.
  *
- * A deep-navy alpaca-knit figure (the only hooded one of the trio, light-brown
- * fringe peeking out) with a raised hood built from boxes parented to the head, a
- * reddish cedar Native American flute (end-blown, carved bird block + buckskin
- * tie) held out front-and-down, and legs dangling over the edge. His part
- * (SONG.flute) doesn't enter until bar 9: through the handpan/uke intro he sits
- * with the flute low across his lap, nodding faintly with the pulse, then
- * raises it to his mouth in one smooth motion a beat before his first note. He
- * also drops out for the bars-17-20 interlude and lifts back in for phrase B.
+ * A deep-navy alpaca-knit figure with shaggy light-brown hair (no hat/hood),
+ * round black teashades, a reddish cedar Native American flute
+ * (end-blown, carved bird block + buckskin tie) held out front-and-down, and
+ * legs dangling over the edge. His part (SONG.flute) doesn't enter until bar 9:
+ * through the handpan/uke intro he sits with the flute low across his lap,
+ * nodding faintly with the pulse, then raises it to his mouth in one smooth
+ * motion a beat before his first note. He also drops out for the bars-17-20
+ * interlude and lifts back in for phrase B.
  *
  * Animation is rig.ts pose-function style: every frame overwrites the joint
  * rotations from (clock, NoteCursor). Two eased scalars drive all blending —
@@ -95,26 +94,25 @@ function set(g: THREE.Group, x: number, y: number, z: number) {
 /* --------------------------------------------------------------- builder */
 
 export const buildFlutist: MusicianBuilder = (audio, part) => {
-  // A deep-navy alpaca-knit hooded sweater. The hood remains hand-built below
-  // (hat "none" lets a fringe peek through), while restrained Andean bands are
+  // A deep-navy alpaca-knit sweater (no hood). Restrained Andean bands are
   // added as raised voxel-knit details on the chest and animated sleeves.
-  const rig = buildRig({ skin: 2, hair: "short", hat: "none", outfit: "hoodie", color: 5, accent: 7 });
+  const rig = buildRig({ skin: 2, hair: "long", hat: "none", outfit: "hoodie", color: 5, accent: 7 });
   rig.avatar.materials.jacket.color.set(0x27323c);
   rig.avatar.materials.sleeve.color.set(0x2d3842);
   rig.avatar.materials.shirt.color.set(0xd7c6a3);
   rig.avatar.materials.trim.color.set(0x27323c);
+  rig.avatar.materials.hair.color.set(HAIR_BROWN);
   rig.avatar.torsoBlock.scale.set(1.04, 1.02, 1.04);
   for (const sleeve of rig.avatar.armBlocks) sleeve.scale.set(1.055, 1, 1.055);
-  // hide the default short-hair cap — under the raised hood it reads as a
-  // black helmet; only the fringe / sideburns / nape lock below should show
-  for (const h of rig.avatar.hair.short) h.visible = false;
+  // stock long-hair is replaced by the shaggy custom cut below
+  for (const h of rig.avatar.hair.long) h.visible = false;
   rig.group.position.y = 0.11; // seat of the pants on the deck top
   const group = new THREE.Group();
   group.name = "busker-flutist";
   group.add(rig.group);
 
-  // Hide the stock hood-down bump, pocket and chest stripe; the raised hood and
-  // woven sweater detailing below replace all three.
+  // Hide the stock hood-down bump, pocket and chest stripe; the woven sweater
+  // detailing below replaces all three.
   for (const detail of rig.avatar.outfits.hoodie) detail.visible = false;
 
   const ownGeos: THREE.BufferGeometry[] = [];
@@ -179,51 +177,74 @@ export const buildFlutist: MusicianBuilder = (audio, part) => {
     mesh(fore, cuff, knitDark, 0, -0.148, 0);
   }
 
-  /* ---- raised hood (children of rig.head so it turns with him) ---- */
-  const hoodMat = rig.avatar.materials.jacket.clone();
-  hoodMat.color.multiplyScalar(0.82); // a shade darker than the hoodie
-  ownMats.push(hoodMat);
-  const cheekGeo = geo(0.05, 0.28, 0.32);
-  const hoodBack = mesh(rig.head, geo(0.36, 0.32, 0.1), hoodMat, 0, 0.2, 0.15);
-  const hoodTop = mesh(rig.head, geo(0.36, 0.1, 0.36), hoodMat, 0, 0.4, 0.0);
-  const hoodBrow = mesh(rig.head, geo(0.3, 0.05, 0.06), hoodMat, 0, 0.365, -0.17); // peak shading the eyes
-  const hoodCheekL = mesh(rig.head, cheekGeo, hoodMat, 0.155, 0.19, 0.01);
-  const hoodCheekR = mesh(rig.head, cheekGeo, hoodMat, -0.155, 0.19, 0.01);
+  /* ---- round black teashades (distinct from uke's stock bar and the
+     handpanist's cat-eyes). Hide the shared rectangular visor, then build two
+     circular lenses + a thin bridge and short temples. ---- */
+  const stockShades = rig.head.children.find(
+    (child) => child instanceof THREE.Mesh && child.material === rig.avatar.materials.visor
+  );
+  if (stockShades) stockShades.visible = false;
+  const shadeFrame = new THREE.MeshLambertMaterial({ color: 0x10151d });
+  const shadeLens = new THREE.MeshLambertMaterial({ color: 0x1a222c });
+  ownMats.push(shadeFrame, shadeLens);
+  const lensGeo = new THREE.CylinderGeometry(0.055, 0.055, 0.018, 10);
+  const rimGeo = new THREE.CylinderGeometry(0.062, 0.062, 0.014, 10);
+  ownGeos.push(lensGeo, rimGeo);
+  for (const side of [1, -1] as const) {
+    const rim = new THREE.Mesh(rimGeo, shadeFrame);
+    rim.rotation.x = Math.PI / 2;
+    rim.position.set(side * 0.068, 0.225, -0.148);
+    rim.castShadow = true;
+    rig.head.add(rim);
+    const lens = new THREE.Mesh(lensGeo, shadeLens);
+    lens.rotation.x = Math.PI / 2;
+    lens.position.set(side * 0.068, 0.225, -0.15);
+    rig.head.add(lens);
+  }
+  mesh(rig.head, geo(0.04, 0.016, 0.016), shadeFrame, 0, 0.228, -0.148); // bridge
+  for (const side of [1, -1] as const) {
+    const temple = mesh(rig.head, geo(0.02, 0.016, 0.1), shadeFrame, side * 0.125, 0.225, -0.09);
+    temple.rotation.y = side * 0.12;
+  }
 
-  /* ---- shaggy light-brown fringe under the hood: uneven brow fringe, sideburns
-     past the ears, and a longer lock at the nape (short-hair cap is hidden).
-     Own material + mild emissive — albedo alone still crushed to black in the
-     hood cavity (0x63431e and 0x9a6430 both failed that test). Fringe sits
-     forward in the hood opening so it catches light. ---- */
-  const hairMat = new THREE.MeshLambertMaterial({
-    color: HAIR_BROWN,
-    emissive: new THREE.Color(HAIR_BROWN),
-    emissiveIntensity: 0.1 * LIGHT_SCALE
-  });
-  ownMats.push(hairMat);
-  rig.avatar.materials.hair.color.set(HAIR_BROWN);
-  const fringeL = mesh(rig.head, geo(0.11, 0.18, 0.055), hairMat, -0.08, 0.24, -0.148);
-  fringeL.rotation.z = 0.12;
-  mesh(rig.head, geo(0.1, 0.2, 0.055), hairMat, 0.01, 0.22, -0.152);
-  const fringeR = mesh(rig.head, geo(0.1, 0.17, 0.055), hairMat, 0.1, 0.25, -0.148);
-  fringeR.rotation.z = -0.14;
-  mesh(rig.head, geo(0.055, 0.24, 0.12), hairMat, -0.118, 0.1, -0.06); // sideburn L
-  mesh(rig.head, geo(0.055, 0.22, 0.12), hairMat, 0.118, 0.12, -0.06); // sideburn R
-  const napeLock = mesh(rig.head, geo(0.22, 0.22, 0.05), hairMat, 0, 0.02, 0.12); // long lock at the back
-  napeLock.rotation.x = -0.1;
-
-  /* ---- drawstrings (pivots on the torso collar, sway with the wind) ---- */
-  const cordMat = new THREE.MeshLambertMaterial({ color: 0xd9d4c6 });
-  ownMats.push(cordMat);
-  const cordGeo = geo(0.02, 0.15, 0.02);
-  const cordL = new THREE.Group();
-  cordL.position.set(0.075, 0.36, -0.15);
-  rig.torso.add(cordL);
-  mesh(cordL, cordGeo, cordMat, 0, -0.075, -0.012);
-  const cordR = new THREE.Group();
-  cordR.position.set(-0.075, 0.36, -0.15);
-  rig.torso.add(cordR);
-  mesh(cordR, cordGeo, cordMat, 0, -0.075, -0.012);
+  /* ---- shaggy longer light-brown hair (no hat/hood): uneven crown + bangs,
+     side locks past the jaw, and a multi-slat fall down the back that sways
+     with the wind ---- */
+  const hairMat = rig.avatar.materials.hair;
+  const hairLowMat = new THREE.MeshLambertMaterial({ color: 0x7c5228 });
+  ownMats.push(hairLowMat);
+  // crown cap
+  mesh(rig.head, geo(0.3, 0.1, 0.3), hairMat, 0, 0.34, 0.01);
+  // uneven bangs over the brow
+  const fringeL = mesh(rig.head, geo(0.12, 0.14, 0.06), hairMat, -0.09, 0.26, -0.14);
+  fringeL.rotation.z = 0.18;
+  mesh(rig.head, geo(0.1, 0.16, 0.055), hairMat, 0.02, 0.24, -0.145);
+  const fringeR = mesh(rig.head, geo(0.11, 0.13, 0.06), hairMat, 0.11, 0.27, -0.138);
+  fringeR.rotation.z = -0.22;
+  // side locks hanging past the jaw
+  mesh(rig.head, geo(0.07, 0.28, 0.1), hairMat, -0.16, 0.12, 0.02);
+  mesh(rig.head, geo(0.07, 0.3, 0.1), hairLowMat, 0.16, 0.1, 0.02);
+  // back fall — three overlapping slats, pivoted at the nape for wind sway
+  const hairFall = new THREE.Group();
+  hairFall.position.set(0, 0.08, 0.14);
+  rig.head.add(hairFall);
+  const slatGeo = geo(0.12, 0.36, 0.055);
+  const slats: THREE.Mesh[] = [];
+  const slatBaseZ: number[] = [];
+  const slatMats = [hairLowMat, hairMat, hairLowMat] as const;
+  for (let i = 0; i < 3; i++) {
+    const s = new THREE.Mesh(slatGeo, slatMats[i]);
+    s.position.set((i - 1) * 0.08, -0.16, 0.008 + Math.abs(i - 1) * 0.01);
+    const baseZ = (i - 1) * 0.14;
+    s.rotation.z = baseZ;
+    s.castShadow = true;
+    hairFall.add(s);
+    slats.push(s);
+    slatBaseZ.push(baseZ);
+  }
+  // one extra longer central lock for the shaggy silhouette
+  const longLock = mesh(hairFall, geo(0.1, 0.42, 0.05), hairMat, 0.02, -0.2, 0.02);
+  longLock.rotation.z = 0.06;
 
   /* ---- Native American cedar flute (parented to the head → stays at lips).
      Mouthpiece at the group origin; the reddish-wood body runs along local -Z
@@ -608,16 +629,17 @@ export const buildFlutist: MusicianBuilder = (audio, part) => {
     setRigClasp(rig, "L", clasp);
     setRigClasp(rig, "R", clasp);
 
-    // ---- cloth: hood ruffle + drawstring sway, scaled by the wind ----
-    const ruffle = wind * 0.028;
-    hoodTop.rotation.set(ruffle * Math.sin(t * 2.7 + 0.5), 0, ruffle * Math.sin(t * 2.3));
-    hoodBack.rotation.set(ruffle * Math.sin(t * 3.1 + 2.1), 0, ruffle * 0.7 * Math.sin(t * 2.9 + 1.2));
-    hoodBrow.rotation.set(ruffle * 0.6 * Math.sin(t * 3.4 + 4), 0, 0);
-    hoodCheekL.rotation.set(0, 0, ruffle * 0.4 * Math.sin(t * 2.5 + 0.9));
-    hoodCheekR.rotation.set(0, 0, ruffle * 0.4 * Math.sin(t * 2.6 + 2.4));
-    const cord = 0.12 + 0.5 * wind;
-    cordL.rotation.set(-0.08 + cord * 0.3 * Math.sin(t * 1.9), 0, cord * 0.22 * Math.sin(t * 2.3 + 0.7));
-    cordR.rotation.set(-0.08 + cord * 0.3 * Math.sin(t * 2.1 + 2.9), 0, cord * 0.22 * Math.sin(t * 2.5 + 3.6));
+    // ---- hair: shaggy fall sways with the wind ----
+    const hairAmp = 0.04 + wind * 0.22;
+    hairFall.rotation.x = 0.04 + Math.sin(t * 1.4 + 0.4) * hairAmp * 0.45;
+    hairFall.rotation.z = Math.sin(t * 1.8 + 1.0) * hairAmp;
+    hairFall.rotation.y = Math.sin(t * 1.1) * hairAmp * 0.35;
+    for (let i = 0; i < slats.length; i++) {
+      slats[i].rotation.z = slatBaseZ[i] + Math.sin(t * 2.1 + i * 1.2) * hairAmp * 0.45;
+    }
+    longLock.rotation.z = 0.06 + Math.sin(t * 1.7 + 2.2) * hairAmp * 0.5;
+    fringeL.rotation.z = 0.18 + Math.sin(t * 2.4 + 0.5) * hairAmp * 0.25;
+    fringeR.rotation.z = -0.22 + Math.sin(t * 2.2 + 1.8) * hairAmp * 0.25;
   };
 
   return {

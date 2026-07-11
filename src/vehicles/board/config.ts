@@ -10,7 +10,7 @@
 export type BoardShape = "classic" | "dart" | "manta" | "saucer" | "twintip";
 export type BoardFin = "none" | "twin" | "spoiler" | "halo";
 export type BoardSurface = "aurora" | "topo" | "terrazzo" | "circuit" | "plasma";
-export type BoardFx = "vortex" | "ripple" | "glitch";
+export type BoardFx = "vortex" | "ripple" | "kaleido";
 export type BoardHum = "hum" | "crystal" | "deep" | "choir" | "retro";
 
 export type BoardConfig = {
@@ -75,7 +75,7 @@ export const BOARD_SURFACES: { id: BoardSurface; label: string }[] = [
 export const BOARD_FX: { id: BoardFx; label: string }[] = [
   { id: "vortex", label: "vortex" },
   { id: "ripple", label: "ripple" },
-  { id: "glitch", label: "glitch" }
+  { id: "kaleido", label: "kaleido" }
 ];
 
 export const BOARD_HUMS: { id: BoardHum; label: string }[] = [

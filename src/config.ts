@@ -73,7 +73,7 @@ export const WORLD_TUNING = tunables("world", {
   radius: {
     v: DRAW_BASELINE,
     min: 50,
-    max: 222000,
+    max: 444000,
     step: 100,
     label: "draw distance (m)"
   },
