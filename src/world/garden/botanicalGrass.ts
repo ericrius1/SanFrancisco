@@ -232,12 +232,18 @@ export class BotanicalGrassController extends THREE.Group {
   #map: GardenTerrain;
   #trees: GardenTree[];
   #material = createGrassMaterial();
-  // Far field keeps the lean 4/5-blade clusters (it's mostly sub-pixel);
-  // the near-detail ring gets the rich 6/8-blade clusters.
+  // Both tiers use the lean 4/5-blade clusters — the old 5/6 near ring spent
+  // ~25% more vertex work on overlapping silhouettes that read identically at
+  // eye level, and meadow probes were triangle-bound (~4M garden tris).
   #lowGeometryFar = createBladeClusterGeometry({ blades: 4, segments: 3, width: 0.085, radius: 0.34, curvature: 0.22 });
   #tallGeometryFar = createBladeClusterGeometry({ blades: 5, segments: 4, width: 0.095, radius: 0.45, curvature: 0.36 });
-  #lowGeometryNear = createBladeClusterGeometry({ blades: 6, segments: 3, width: 0.085, radius: 0.37, curvature: 0.24 });
-  #tallGeometryNear = createBladeClusterGeometry({ blades: 8, segments: 4, width: 0.095, radius: 0.48, curvature: 0.4 });
+  #lowGeometryNear = createBladeClusterGeometry({ blades: 4, segments: 3, width: 0.09, radius: 0.37, curvature: 0.24 });
+  #tallGeometryNear = createBladeClusterGeometry({ blades: 5, segments: 4, width: 0.105, radius: 0.48, curvature: 0.4 });
+  // Hard live-instance caps (~1.2M tris at ~28 tris/cluster). Density knobs can
+  // request more; updateFocus scales draw ranges down so GG Park never blows the
+  // frame budget even if a slider is cranked.
+  static readonly #MAX_LIVE_BASE = 28_000;
+  static readonly #MAX_LIVE_DETAIL = 12_000;
   #baseGroup = new THREE.Group();
   #detailGroup = new THREE.Group();
   #baseChunks: { mesh: THREE.InstancedMesh; cx: number; cz: number; full: number }[] = [];
@@ -274,7 +280,7 @@ export class BotanicalGrassController extends THREE.Group {
     if (values.showTall) this.#buildBaseChunks("tall", base.tall, this.#tallGeometryFar, baseFade);
     this.stats.baseLow = values.showLow ? base.low.length : 0;
     this.stats.baseTall = values.showTall ? base.tall.length : 0;
-    // Drop the detail pool so castShadow/geometry changes are picked up.
+    // Drop the detail pool so geometry changes are picked up.
     this.#clearGroup(this.#detailGroup);
     this.#detailLow = null;
     this.#detailTall = null;
@@ -285,6 +291,22 @@ export class BotanicalGrassController extends THREE.Group {
       this.stats.detailTall = 0;
       this.#syncStats();
     }
+  }
+
+  /** Zero every draw range and hide base chunks. Called when the whole garden is
+   *  distance-gated out so a stale mesh.visible / count can't leak tris into
+   *  Corona Heights / downtown frames. */
+  park() {
+    for (const chunk of this.#baseChunks) {
+      chunk.mesh.visible = false;
+      chunk.mesh.count = 0;
+    }
+    if (this.#detailLow) this.#detailLow.count = 0;
+    if (this.#detailTall) this.#detailTall.count = 0;
+    this.stats.detailLow = 0;
+    this.stats.detailTall = 0;
+    this.#lastDetailFocus = null;
+    this.#syncStats();
   }
 
   updateFocus(focus: GrassFocus, force = false) {
@@ -312,18 +334,32 @@ export class BotanicalGrassController extends THREE.Group {
     // Visible chunks additionally GRADE their instance count by distance:
     // each chunk's entries were hash-shuffled at build, so drawing a count
     // prefix is a spatially uniform thinning — full density near the player,
-    // ~half past ~190 m where clumps are a few pixels tall. mesh.count is a
+    // sparse past ~120 m where clumps are a few pixels tall. mesh.count is a
     // free draw-range knob (no buffer uploads).
-    const chunkCutoff = Math.max(80, Number(values.baseViewDistance)) + 34;
+    const chunkCutoff = Math.max(80, Number(values.baseViewDistance)) + 24;
+    let liveBase = 0;
     for (const chunk of this.#baseChunks) {
       const d = Math.hypot(chunk.cx - focus.x, chunk.cz - focus.z);
       chunk.mesh.visible = d < chunkCutoff;
       if (chunk.mesh.visible) {
-        // near: under the detail ring the base is outnumbered ~20:1 — thin it
-        // far: past ~190 m clumps are a few pixels tall — halve them
-        const nearUnderlap = 1 - 0.34 * (1 - smoothstep(30, 60, d));
-        const farThin = 1 - 0.55 * smoothstep(110, 190, d);
-        chunk.mesh.count = Math.max(1, Math.round(chunk.full * nearUnderlap * farThin));
+        // near: under the detail ring the base is outnumbered — thin it
+        // far: past ~120 m clumps are a few pixels tall — keep ~25%
+        const nearUnderlap = 1 - 0.4 * (1 - smoothstep(24, 48, d));
+        const farThin = 1 - 0.75 * smoothstep(80, 130, d);
+        const n = Math.max(1, Math.round(chunk.full * nearUnderlap * farThin));
+        chunk.mesh.count = n;
+        liveBase += n;
+      } else {
+        chunk.mesh.count = 0;
+      }
+    }
+    // Hard budget: scale every visible chunk's count down if the park still
+    // overshoots (density knobs / large meadow).
+    if (liveBase > BotanicalGrassController.#MAX_LIVE_BASE) {
+      const scale = BotanicalGrassController.#MAX_LIVE_BASE / liveBase;
+      for (const chunk of this.#baseChunks) {
+        if (!chunk.mesh.visible) continue;
+        chunk.mesh.count = Math.max(1, Math.round(chunk.mesh.count * scale));
       }
     }
     // fast movers (car boost / plane / bird) skip the near-detail ring exactly
@@ -355,23 +391,33 @@ export class BotanicalGrassController extends THREE.Group {
       densityScale: values.nearDensity,
       focus: { x: focus.x, z: focus.z, radius: r }
     });
+    // Cap detail samples before upload so a density crank can't explode the ring.
+    const maxDetail = BotanicalGrassController.#MAX_LIVE_DETAIL;
+    let lowEntries = values.showLow ? detail.low : [];
+    let tallEntries = values.showTall ? detail.tall : [];
+    const detailTotal = lowEntries.length + tallEntries.length;
+    if (detailTotal > maxDetail) {
+      const keep = maxDetail / detailTotal;
+      lowEntries = lowEntries.slice(0, Math.max(0, Math.round(lowEntries.length * keep)));
+      tallEntries = tallEntries.slice(0, Math.max(0, Math.round(tallEntries.length * keep)));
+    }
     const fadeRadius = Math.max(1, r);
     this.#detailLow = this.#writeDetailTier(
       this.#detailLow,
       "sfbg_near_low_grass_clumps",
       this.#lowGeometryNear,
-      values.showLow ? detail.low : [],
+      lowEntries,
       fadeRadius
     );
     this.#detailTall = this.#writeDetailTier(
       this.#detailTall,
       "sfbg_near_tall_grass_clumps",
       this.#tallGeometryNear,
-      values.showTall ? detail.tall : [],
+      tallEntries,
       fadeRadius
     );
-    this.stats.detailLow = values.showLow ? detail.low.length : 0;
-    this.stats.detailTall = values.showTall ? detail.tall.length : 0;
+    this.stats.detailLow = lowEntries.length;
+    this.stats.detailTall = tallEntries.length;
     this.#lastDetailFocus = { x: focus.x, z: focus.z };
     this.#syncStats();
   }
@@ -401,7 +447,7 @@ export class BotanicalGrassController extends THREE.Group {
         list.length,
         geometry,
         this.#material,
-        Boolean(GRASS_TUNING.values.castShadows)
+        false
       );
       writeGrassMesh(mesh, list, fadeRadius);
       let minX = Infinity;
@@ -454,7 +500,7 @@ export class BotanicalGrassController extends THREE.Group {
         Math.ceil(entries.length * 1.3) + 64,
         geometry,
         this.#material,
-        Boolean(GRASS_TUNING.values.castShadows)
+        false
       );
       this.#detailGroup.add(mesh);
     }

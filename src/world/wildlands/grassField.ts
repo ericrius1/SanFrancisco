@@ -46,9 +46,10 @@ export function createWildGrass(map: GardenTerrain, excluded?: (x: number, z: nu
   const group = new THREE.Group();
   group.name = "wildlands_grass";
   const material = createGrassMaterial(); // SHARED garden SSS material
-  // same near-tier blade clusters the garden uses up close
-  const lowGeo = createBladeClusterGeometry({ blades: 6, segments: 3, width: 0.085, radius: 0.37, curvature: 0.24 });
-  const tallGeo = createBladeClusterGeometry({ blades: 8, segments: 4, width: 0.095, radius: 0.48, curvature: 0.4 });
+  // Same optimized near-tier clusters the garden uses up close: slightly wider
+  // blades preserve coverage with fewer overlapping triangle strips.
+  const lowGeo = createBladeClusterGeometry({ blades: 5, segments: 3, width: 0.09, radius: 0.37, curvature: 0.24 });
+  const tallGeo = createBladeClusterGeometry({ blades: 6, segments: 4, width: 0.105, radius: 0.48, curvature: 0.4 });
 
   const cellsAcross = (RING_RADIUS * 2) / SPACING;
   const cap = Math.ceil(cellsAcross * cellsAcross * 0.7) + 256;

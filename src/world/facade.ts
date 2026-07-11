@@ -121,6 +121,10 @@ function facadeSurface(opts: {
   topRel?: N; // roof height above baseY in metres (omit = never mask rows)
   litWindows: boolean; // lit panes + emissive glow
   litScale?: N; // 0..1 multiplier on the lit mask (fade the windows out)
+  // When false, skip mx_noise brick/weathering entirely (far material). Noise
+  // cannot be distance-branched inside one shader — If() corrupts lit windows on
+  // the WGSL→Metal path — so tiles swap between near/far pooled materials instead.
+  detail?: boolean;
   // pattern frame: a caller can pass a frozen spawn-pose position/normal so the
   // facade stays glued to a moving piece instead of re-deriving from live world
   // space (which reads as the pattern scrolling as it moves). Unused by the
@@ -128,6 +132,7 @@ function facadeSurface(opts: {
   frame?: { pos: N; nrm: N };
 }) {
   const { baseTone, bid, baseY, litWindows } = opts;
+  const detail = opts.detail !== false;
 
   const p = opts.frame ? opts.frame.pos : positionWorld;
   const dist = positionWorld.distance(cameraPosition); // LOD by real distance, always
@@ -155,106 +160,111 @@ function facadeSurface(opts: {
   const band = (t: N, lo: number, hi: number, dd: N): N =>
     smoothstep(float(lo).sub(dd), float(lo).add(dd), t).mul(smoothstep(float(hi).add(dd), float(hi).sub(dd), t));
 
-  /* --- masonry + weathering, distance-gated -------------------------------- */
+  /* --- masonry + weathering -------------------------------------------------- */
 
-  // Beyond ~300 m the brick coursing, streaks and mottle are sub-pixel: the AA
-  // mortar has already dissolved and the noise just burns ALU on the pixels
-  // that dominate every vista (distant towers). The noise stacks run behind
-  // branches and cross-fade to flat fallbacks over 240→300 m, so there is no
-  // pop line. tone is a vertex-stage varying — effectively free — and stays on
-  // at all distances so far facades keep their broad patina.
-  //
-  // NO If() around these blocks. An If inside a Fn here corrupts unrelated
-  // outputs for the pixels that SKIP the branch (measured: far lit windows
-  // died wholesale past the 300 m gate — the "lights draw in around the
-  // camera" bug; branch removed → far skyline back to baseline pixel-for-
-  // pixel). These blocks pull in the mx_noise library and that combo
-  // miscompiles on the WGSL→Metal path. So the fade is a plain multiplier:
-  // the noise always runs, and wFade only steers the blend to the flat
-  // fallback. Values still route through Fn IIFEs with call-site arguments —
-  // keeps the shared varying chains (normalWorldGeometry et al) materializing
-  // in uniform flow at main scope.
-  const tone = varying(mx_fractal_noise_float(p.mul(0.03), 2)).mul(0.18);
+  // Near material: full brick coursing + multi-octave weathering (expensive ALU).
+  // Far material: flat masonry — distant brick is sub-pixel and only burned fill.
   const soot = color(0x4a4236);
-  const wFade = smoothstep(300.0, 240.0, dist);
-  const texel = fwidth(p).length();
-  const fwRel = fwidth(rel);
+  let joint: N;
+  let brickFace: N;
+  let tone: N;
+  let dirt: N;
+  let roofGrime: N;
+  let stoneRough: N;
+  let perBrick: N;
+  let brickShift: N;
 
-  /* masonry brickwork (reference running bond, world-anchored per building) */
-  // → vec4(joint, brickFace, brickRnd, brickRnd2); far defaults make every
-  //   consumer collapse to the flat fallback (rnd 0.5 = neutral tone shift)
-  const brick: N = (Fn(([acrossV, relV, rawDDV, fwRelV, texelV, wallMaskV, fadeV]: N[]) => {
-    const out = vec4(0, 0, 0.5, 0.5).toVar();
-    {
-      const BRICK_H = 0.3;
-      const BRICK_L = 0.6;
-      const MORTAR = 0.025;
+  if (detail) {
+    // Beyond ~300 m the brick coursing, streaks and mottle are sub-pixel: the AA
+    // mortar has already dissolved and the noise just burns ALU on the pixels
+    // that dominate every vista (distant towers). The noise stacks run behind
+    // branches and cross-fade to flat fallbacks over 240→300 m, so there is no
+    // pop line. tone is a vertex-stage varying — effectively free — and stays on
+    // at all distances so far facades keep their broad patina.
+    //
+    // NO If() around these blocks inside ONE material. An If inside a Fn here
+    // corrupts unrelated outputs for the pixels that SKIP the branch (measured:
+    // far lit windows died wholesale past the 300 m gate). Far tiles use a
+    // separate pooled material with detail=false instead.
+    const wFade = smoothstep(300.0, 240.0, dist);
+    const texel = fwidth(p).length();
+    const fwRel = fwidth(rel);
+    tone = varying(mx_fractal_noise_float(p.mul(0.03), 2)).mul(0.18);
 
-      const rowB = relV.div(BRICK_H);
-      const courseRow = floor(rowB);
-      const colB = acrossV.div(BRICK_L).add(mod(courseRow, 2).mul(0.5)); // half-brick stagger
+    /* masonry brickwork (reference running bond, world-anchored per building) */
+    const brick: N = (Fn(([acrossV, relV, rawDDV, fwRelV, texelV, wallMaskV, fadeV]: N[]) => {
+      const out = vec4(0, 0, 0.5, 0.5).toVar();
+      {
+        const BRICK_H = 0.3;
+        const BRICK_L = 0.6;
+        const MORTAR = 0.025;
 
-      // "pristine grid" AA mortar: joints never fall below a pixel and fade in
-      // opacity, so the coursing stays crisp near and dissolves far instead of
-      // shimmering. fwidth(rowB) = fwidth(rel)/BRICK_H, precomputed outside.
-      const mU = MORTAR / (2 * BRICK_L);
-      const mV = MORTAR / (2 * BRICK_H);
-      const ddU = rawDDV.div(BRICK_L).clamp(1e-6, 0.5);
-      const ddV = fwRelV.div(BRICK_H).clamp(1e-6, 0.5);
-      const distU = float(0.5).sub(fract(colB).sub(0.5).abs());
-      const distV = float(0.5).sub(fract(rowB).sub(0.5).abs());
-      const drawU = ddU.max(mU);
-      const drawV = ddV.max(mV);
-      const lineU: N = smoothstep(drawU.add(ddU), drawU.sub(ddU), distU).mul(float(mU).div(drawU).min(1));
-      const lineV: N = smoothstep(drawV.add(ddV), drawV.sub(ddV), distV).mul(float(mV).div(drawV).min(1));
-      const joint: N = lineU.max(lineV).mul(wallMaskV).mul(fadeV);
+        const rowB = relV.div(BRICK_H);
+        const courseRow = floor(rowB);
+        const colB = acrossV.div(BRICK_L).add(mod(courseRow, 2).mul(0.5)); // half-brick stagger
 
-      const brickKey = uint(courseRow.add(1 << 16))
-        .mul(uint(73856093))
-        .bitXor(uint(floor(colB).add(1 << 16)).mul(uint(19349663)))
-        .toVar();
+        const mU = MORTAR / (2 * BRICK_L);
+        const mV = MORTAR / (2 * BRICK_H);
+        const ddU = rawDDV.div(BRICK_L).clamp(1e-6, 0.5);
+        const ddV = fwRelV.div(BRICK_H).clamp(1e-6, 0.5);
+        const distU = float(0.5).sub(fract(colB).sub(0.5).abs());
+        const distV = float(0.5).sub(fract(rowB).sub(0.5).abs());
+        const drawU = ddU.max(mU);
+        const drawV = ddV.max(mV);
+        const lineU: N = smoothstep(drawU.add(ddU), drawU.sub(ddU), distU).mul(float(mU).div(drawU).min(1));
+        const lineV: N = smoothstep(drawV.add(ddV), drawV.sub(ddV), distV).mul(float(mV).div(drawV).min(1));
+        const jointN: N = lineU.max(lineV).mul(wallMaskV).mul(fadeV);
 
-      // soft per-brick dome for the bump, bevel widened to a screen pixel
-      const lodBevel = texelV.mul(1.5).max(0.02);
-      const brickFace: N = smoothstep(0, lodBevel, distU.mul(BRICK_L)).mul(smoothstep(0, lodBevel, distV.mul(BRICK_H))).mul(wallMaskV);
+        const brickKey = uint(courseRow.add(1 << 16))
+          .mul(uint(73856093))
+          .bitXor(uint(floor(colB).add(1 << 16)).mul(uint(19349663)))
+          .toVar();
 
-      // fade the rnds toward the neutral 0.5 so tone shifts dissolve too
-      out.assign(
-        vec4(
-          joint,
-          brickFace.mul(fadeV),
-          mixN(float(0.5), hash(brickKey), fadeV),
-          mixN(float(0.5), hash(brickKey.add(uint(1))), fadeV)
-        )
-      );
-    }
-    return out;
-  }) as N)(across, rel, rawDD, fwRel, texel, wallMask, wFade);
-  const joint = brick.x;
-  const brickFace = brick.y;
+        const lodBevel = texelV.mul(1.5).max(0.02);
+        const brickFaceN: N = smoothstep(0, lodBevel, distU.mul(BRICK_L)).mul(smoothstep(0, lodBevel, distV.mul(BRICK_H))).mul(wallMaskV);
 
-  /* broad weathering → vec4(mottle, dirt, roofGrime, stoneRoughBase) */
-  const weather: N = (Fn(([pv, relV, fadeV]: N[]) => {
-    const out = vec4(0, 0, 0, 0.93).toVar();
-    {
-      const mottle: N = mx_noise_float(pv.mul(0.7)).mul(0.06);
-      const streak: N = mx_fractal_noise_float(vec3(pv.x.mul(1.5), pv.y.mul(0.04), pv.z.mul(1.5)), 2);
-      const dirt: N = smoothstep(-0.1, 0.45, streak).mul(smoothstep(160.0, 0.0, relV)).mul(0.5);
-      const roofG: N = smoothstep(0.0, 0.55, mx_fractal_noise_float(pv.mul(0.025), 3)).mul(0.22);
-      const rough: N = mx_noise_float(pv.mul(0.5)).mul(0.06).add(0.9);
-      out.assign(vec4(mottle.mul(fadeV), dirt.mul(fadeV), roofG.mul(fadeV), mixN(float(0.93), rough, fadeV)));
-    }
-    return out;
-  }) as N)(p, rel, wFade);
-  const dirt = weather.y;
-  const roofGrime = weather.z;
-  const stoneRough = weather.w.add(joint.mul(0.1));
+        out.assign(
+          vec4(
+            jointN,
+            brickFaceN.mul(fadeV),
+            mixN(float(0.5), hash(brickKey), fadeV),
+            mixN(float(0.5), hash(brickKey.add(uint(1))), fadeV)
+          )
+        );
+      }
+      return out;
+    }) as N)(across, rel, rawDD, fwRel, texel, wallMask, wFade);
+    joint = brick.x;
+    brickFace = brick.y;
 
-  // per-brick tone drift + warm/cool firing shift, relative to the building
-  // colour (the far-default rnd of 0.5 zeroes both shift terms)
-  const perBrick = float(1).add(tone).add(weather.x).add(brick.z.sub(0.5).mul(0.14).mul(wFade));
-  const warmCool = brick.w.sub(0.5).mul(0.14).mul(wFade);
-  const brickShift = vec3(float(1).add(warmCool), float(1), float(1).sub(warmCool));
+    const weather: N = (Fn(([pv, relV, fadeV]: N[]) => {
+      const out = vec4(0, 0, 0, 0.93).toVar();
+      {
+        const mottle: N = mx_noise_float(pv.mul(0.7)).mul(0.06);
+        const streak: N = mx_fractal_noise_float(vec3(pv.x.mul(1.5), pv.y.mul(0.04), pv.z.mul(1.5)), 2);
+        const dirtN: N = smoothstep(-0.1, 0.45, streak).mul(smoothstep(160.0, 0.0, relV)).mul(0.5);
+        const roofG: N = smoothstep(0.0, 0.55, mx_fractal_noise_float(pv.mul(0.025), 3)).mul(0.22);
+        const rough: N = mx_noise_float(pv.mul(0.5)).mul(0.06).add(0.9);
+        out.assign(vec4(mottle.mul(fadeV), dirtN.mul(fadeV), roofG.mul(fadeV), mixN(float(0.93), rough, fadeV)));
+      }
+      return out;
+    }) as N)(p, rel, wFade);
+    dirt = weather.y;
+    roofGrime = weather.z;
+    stoneRough = weather.w.add(joint.mul(0.1));
+    perBrick = float(1).add(tone).add(weather.x).add(brick.z.sub(0.5).mul(0.14).mul(wFade));
+    const warmCool = brick.w.sub(0.5).mul(0.14).mul(wFade);
+    brickShift = vec3(float(1).add(warmCool), float(1), float(1).sub(warmCool));
+  } else {
+    joint = float(0);
+    brickFace = float(0);
+    tone = float(0);
+    dirt = float(0);
+    roofGrime = float(0);
+    stoneRough = float(0.93);
+    perBrick = float(1);
+    brickShift = vec3(1, 1, 1);
+  }
 
   /* --- facade zones ---------------------------------------------------------- */
 
@@ -353,9 +363,9 @@ function facadeSurface(opts: {
   // the brick bump only belongs on bare masonry — riding under glass it makes the
   // sun glint off phantom joints as rows of staggered bright dashes
   // plain math on already-computed masks — cheap enough to run unbranched;
-  // reliefFade zeroes it beyond 220 m anyway
+  // reliefFade zeroes it beyond 220 m anyway. Far material: brickFace is 0.
   const smoothZone = openingUpper.max(paneShop).max(fascia).max(bulkhead).max(course6);
-  const reliefFade = smoothstep(220.0, 50.0, dist);
+  const reliefFade = detail ? smoothstep(220.0, 50.0, dist) : float(0);
   const relief = brickFace
     .mul(smoothZone.oneMinus())
     .mul(0.0038)
@@ -397,9 +407,18 @@ function facadeSurface(opts: {
  * columns grow procedurally from world position; each building's base height (from
  * the alive texture) anchors its storefront and floor lines to its own street level.
  * Suppressed buildings are clipped via the alive flag.
+ *
+ * `detail` selects the near (full brick/weather noise) or far (flat masonry +
+ * windows) graph. Tiles swap between two pooled materials by distance — never
+ * branch noise inside one shader (WGSL→Metal If bug).
  */
-export function createFacadeMaterial(aliveTex: THREE.DataTexture, texWidth: number): THREE.MeshStandardNodeMaterial {
+export function createFacadeMaterial(
+  aliveTex: THREE.DataTexture,
+  texWidth: number,
+  opts: { detail?: boolean } = {}
+): THREE.MeshStandardNodeMaterial {
   const mat = new THREE.MeshStandardNodeMaterial();
+  const detail = opts.detail !== false;
 
   const bid = attribute("_bid", "float") as unknown as N;
   const vColor = attribute("color", "vec3") as unknown as N;
@@ -454,7 +473,7 @@ export function createFacadeMaterial(aliveTex: THREE.DataTexture, texWidth: numb
   }
   const baseTone = varying(mix(vColor, palette, 0.72).mul(hash(bid.add(223)).mul(0.16).add(0.9)) as N) as N;
 
-  const nodes = facadeSurface({ baseTone, bid, baseY, topRel, litWindows: true });
+  const nodes = facadeSurface({ baseTone, bid, baseY, topRel, litWindows: true, detail });
   mat.colorNode = nodes.colorNode;
   mat.roughnessNode = nodes.roughnessNode;
   mat.metalnessNode = nodes.metalnessNode;

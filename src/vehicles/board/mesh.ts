@@ -330,7 +330,7 @@ function buildPlumeMaterial(u: PlumeUniforms) {
  *  per frame), so only the integrated motion state is kept here. */
 type BoardHalo = {
   orbs: THREE.Mesh[]; // MAX_HALO_ORBS children of the ring-centre group
-  mats: THREE.MeshBasicMaterial[]; // per-orb, additive, recolored per frame
+  mats: THREE.MeshBasicMaterial[]; // per-orb, opaque, recolored per frame
   theta: number; // comet head angle on the ring
   spread: number; // current tail arc, eased toward the speed-scaled target
 };
@@ -604,7 +604,7 @@ export function buildBoardMesh(config?: BoardConfig): THREE.Group {
     g.add(strip);
   } else if (cfg.fin === "halo") {
     // an energy ring the board perpetually flies through, with a comet riding
-    // it: a chain of additive orbs that whips through the sides, stalls at the
+    // it: a chain of solid orbs that whips through the sides, stalls at the
     // top/bottom, and collapses there into a concentric glowing stack. All
     // motion + look live in HALO_TUNING (animateBoard reads it per frame).
     const fz = p.halfL - 0.02;
@@ -615,17 +615,15 @@ export function buildBoardMesh(config?: BoardConfig): THREE.Group {
     const comet = new THREE.Group();
     comet.position.set(0, fy, fz);
     // one unit sphere serves every orb; scale.setScalar is the radius knob.
-    // Per-orb additive materials so overlapping orbs ADD light when stacked.
+    // Per-orb opaque materials (same as the ring) so stacked orbs stay solid.
     const cometOrbGeo = geo(new THREE.SphereGeometry(1, 8, 6));
     const orbs: THREE.Mesh[] = [];
     const orbMats: THREE.MeshBasicMaterial[] = [];
     for (let i = 0; i < MAX_HALO_ORBS; i++) {
       const orbMat = mat(new THREE.MeshBasicMaterial());
-      applyMaterialPolicy(orbMat, "additiveWorld");
       const cometOrb = new THREE.Mesh(cometOrbGeo, orbMat);
       cometOrb.scale.setScalar(HALO_HEAD_RADIUS);
       cometOrb.position.set(HALO_RADIUS, 0, 0);
-      tagTransparency(cometOrb, { profile: "additiveWorld" });
       comet.add(cometOrb);
       orbs.push(cometOrb);
       orbMats.push(orbMat);

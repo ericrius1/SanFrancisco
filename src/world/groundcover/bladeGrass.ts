@@ -200,18 +200,20 @@ export function createGrassMaterial(): THREE.Material {
   return mat;
 }
 
-/** An empty instanced grass mesh (static-usage buffers, sized to `capacity`). */
+/** An empty instanced grass mesh (static-usage buffers, sized to `capacity`).
+ *  Grass never casts or receives shadows — overlapping blade tris × CSM was a
+ *  foliage GPU outlier, and small-scale shadowing doesn't read on blades. */
 export function createGrassMesh(
   name: string,
   capacity: number,
   geometry: THREE.BufferGeometry,
   material: THREE.Material,
-  castShadow: boolean
+  _castShadow = false
 ): THREE.InstancedMesh {
   const mesh = new THREE.InstancedMesh(geometry.clone(), material, capacity);
   mesh.name = name;
-  mesh.castShadow = castShadow;
-  mesh.receiveShadow = true;
+  mesh.castShadow = false;
+  mesh.receiveShadow = false;
   mesh.frustumCulled = false;
 
   // StaticDrawUsage on purpose: r185 re-uploads DynamicDrawUsage buffers every

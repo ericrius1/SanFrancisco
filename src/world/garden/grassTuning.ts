@@ -7,11 +7,14 @@ import { windSpeed, windStrength } from "../../../vendor/SeedThree/src/core/wind
 import { tunables } from "../../core/persist";
 
 export const GRASS_TUNING = tunables("grass", {
-  spacing: { v: 1.32, min: 0.75, max: 4.5, step: 0.05, label: "base spacing (m)" },
-  nearSpacing: { v: 0.36, min: 0.24, max: 1.8, step: 0.02, label: "near spacing (m)" },
-  nearRadius: { v: 64, min: 0, max: 180, step: 2, label: "near detail radius (m)" },
-  baseViewDistance: { v: 195, min: 80, max: 600, step: 10, label: "base view distance (m)" },
-  nearDensity: { v: 1, min: 0, max: 1, step: 0.01, label: "near detail density" },
+  // 2026-07 FPS pass: meadow probes hit ~4M garden tris / ~24 fps @ 2560×1600.
+  // Wider spacing + shorter rings keep the lawn reading dense at the feet while
+  // capping the live triangle budget (see botanicalGrass MAX_LIVE_*).
+  spacing: { v: 1.65, min: 0.75, max: 4.5, step: 0.05, label: "base spacing (m)" },
+  nearSpacing: { v: 0.48, min: 0.24, max: 1.8, step: 0.02, label: "near spacing (m)" },
+  nearRadius: { v: 42, min: 0, max: 180, step: 2, label: "near detail radius (m)" },
+  baseViewDistance: { v: 140, min: 80, max: 600, step: 10, label: "base view distance (m)" },
+  nearDensity: { v: 0.55, min: 0, max: 1, step: 0.01, label: "near detail density" },
   nearRebuildStep: { v: 10, min: 2, max: 30, step: 1, label: "near rebuild step (m)" },
   meadowKeep: { v: 0.96, min: 0, max: 1, step: 0.01, label: "meadow density" },
   collectionKeep: { v: 0.78, min: 0, max: 1, step: 0.01, label: "collection density" },
@@ -27,7 +30,6 @@ export const GRASS_TUNING = tunables("grass", {
   slopeCull: { v: 0.62, min: 0.1, max: 2.5, step: 0.05, label: "slope cull (m rise)" },
   showLow: { v: true, label: "low clumps visible" },
   showTall: { v: true, label: "tall clumps visible" },
-  castShadows: { v: false, label: "cast shadows" },
   windStrength: { v: 0.42, min: 0, max: 1, step: 0.01, label: "tree wind strength" },
   windSpeed: { v: 0.92, min: 0, max: 3, step: 0.05, label: "tree wind tempo" },
   trampleStrength: { v: 0.9, min: 0, max: 2, step: 0.05, label: "trample strength" },
@@ -54,8 +56,7 @@ export const GRASS_SCATTER_KEYS = [
   "groundSink",
   "slopeCull",
   "showLow",
-  "showTall",
-  "castShadows"
+  "showTall"
 ] as const;
 
 export const GRASS_LIVE_KEYS = ["windStrength", "windSpeed", "trampleStrength", "leafBrightness"] as const;

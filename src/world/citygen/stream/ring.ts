@@ -50,6 +50,11 @@ const COLLIDER_R = 90;
 const COLLIDER_EXIT = 115; // hysteresis: drop back to baked only past here
 const COLLIDER_BUDGET = 20; // exact-collider swaps per scan (cheap: no mesh) — nearest first
 const CHUNK_BUDGET = 260;// buildings merged into chunk geometry per frame (no hitch)
+// Visual chunk LOD radius (m): shorter than the master tile/draw-distance stream so
+// far skyline stays on cheap baked OSM tiles instead of millions of citygen prism
+// tris. At Corona Heights probes chunkLOD alone was ~1M tris with a 6 km stream.
+// Collision/detail still use their own tight radii inside loaded cells.
+const CHUNK_VISUAL_RADIUS = 2800;
 const SCAN_EVERY = 0.15;
 // Player-operated doors (E → toggleDoor). Doors start CLOSED (solid walls + the
 // grammar's baked leaf); opening hides the baked leaf, swings a dynamic twin
@@ -1092,10 +1097,13 @@ export async function createCityGenRing(
       const ptx = Math.floor((playerPos.x - minX) / tile);
       const ptz = Math.floor((playerPos.z - minZ) / tile);
       // read the live-tunable knobs fresh each scan (dragging a "/" slider re-tunes now).
-      // chunk reach follows the master draw-distance slider (not its own knob): whole
-      // cells inside the tile radius, never below the ±1 the near detail band needs.
-      // unload one cell further out — the same hysteresis the old sliders defaulted to.
-      const cellLoad = Math.max(1, Math.floor(CONFIG.tileLoadRadius / tile));
+      // Chunk MESH reach is capped at CHUNK_VISUAL_RADIUS so a large draw-distance
+      // vista doesn't stream hundreds of prism cells (Corona/meadow tris). Baked
+      // OSM tiles still cover the farther skyline. Unload one cell further out.
+      const cellLoad = Math.max(
+        1,
+        Math.floor(Math.min(CONFIG.tileLoadRadius, CHUNK_VISUAL_RADIUS) / tile)
+      );
       const cellUnload = cellLoad + 1;
       const detailR = CT.detailRadius, detailR2 = detailR * detailR;
       const detailExit = detailR + DETAIL_EXIT_MARGIN, detailExit2 = detailExit * detailExit;

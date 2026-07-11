@@ -228,35 +228,6 @@ export class AbandonedMounts {
     return this.#takePose(best);
   }
 
-  /**
-   * Mode-key resume: pull back a non-persistent mount of `mode` (the one
-   * nearest to `near`, or the most recently left if no hint). Persistent bay
-   * boats stay put — those are world props, not your last ride.
-   */
-  reclaimMode(
-    mode: MountMode,
-    near?: { x: number; z: number }
-  ): { mode: MountMode; x: number; y: number; z: number; heading: number } | null {
-    let best: AbandonedMount | null = null;
-    let bestScore = Infinity;
-    for (let i = 0; i < this.#items.length; i++) {
-      const item = this.#items[i];
-      if (item.mode !== mode || item.persistent) continue;
-      const t = this.#physics.world.getBodyTransform(item.handle);
-      // prefer proximity to the remembered spot; fall back to "most recent"
-      // (higher index) when no hint is given
-      const score = near
-        ? Math.hypot(t.position[0] - near.x, t.position[2] - near.z)
-        : this.#items.length - i;
-      if (score < bestScore) {
-        bestScore = score;
-        best = item;
-      }
-    }
-    if (!best) return null;
-    return this.#takePose(best);
-  }
-
   #takePose(item: AbandonedMount): { mode: MountMode; x: number; y: number; z: number; heading: number } {
     const t = this.#physics.world.getBodyTransform(item.handle);
     V.fwd.set(0, 0, -1).applyQuaternion(

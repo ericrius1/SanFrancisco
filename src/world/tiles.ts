@@ -60,12 +60,20 @@ type LoadedTile = {
 // material *instance* — a fresh material per tile means a full WGSL codegen every
 // time a tile streams in. Pooled slots are reused across tiles so steady-state
 // flying compiles nothing. The texture is fixed at the manifest-wide max building
-// count so any tile fits any slot.
+// count so any tile fits any slot. Each slot holds NEAR (brick/weather noise) and
+// FAR (flat masonry) materials sharing one alive texture; tiles swap by distance.
 type FacadeSlot = {
   tex: THREE.DataTexture;
   data: Uint8Array;
-  mat: THREE.MeshStandardNodeMaterial;
+  matNear: THREE.MeshStandardNodeMaterial;
+  matFar: THREE.MeshStandardNodeMaterial;
+  /** Which material is currently bound to this tile's building meshes. */
+  far: boolean;
 };
+
+// Swap facade detail material past this distance (m). Hysteresis avoids flicker.
+const FACADE_FAR_ENTER = 280;
+const FACADE_FAR_EXIT = 240;
 
 // a parsed tile waiting for its main-thread finalize (materials, scene add = GPU
 // upload); drained one per frame so a burst of finished loads can't stack several
@@ -511,6 +519,17 @@ export class TileStreamer {
     // while #fastStream — see update())
     this.#queue.sort((a, b) => a.d2 - b.d2);
     this.#pump();
+    // Facade near/far material swap: far tiles drop brick/weather noise ALU.
+    // Hysteresis on enter/exit; BundleGroup re-records only when the bind changes.
+    for (const tile of this.loaded.values()) {
+      if (!tile.slot) continue;
+      const [cx, cz] = this.keyToCenter(tile.key);
+      const d = Math.hypot(px - cx, pz - cz);
+      const wantFar = tile.slot.far ? d > FACADE_FAR_EXIT : d >= FACADE_FAR_ENTER;
+      if (this.#applyFacadeLod(tile, wantFar)) {
+        (tile.group as THREE.BundleGroup).needsUpdate = true;
+      }
+    }
   }
 
   #pump() {
@@ -553,7 +572,43 @@ export class TileStreamer {
     if (pooled) return pooled;
     const data = new Uint8Array(this.#aliveW * 4);
     const tex = new THREE.DataTexture(data, this.#aliveW, 1, THREE.RGBAFormat, THREE.UnsignedByteType);
-    return { tex, data, mat: createFacadeMaterial(tex, this.#aliveW) };
+    return {
+      tex,
+      data,
+      matNear: createFacadeMaterial(tex, this.#aliveW, { detail: true }),
+      matFar: createFacadeMaterial(tex, this.#aliveW, { detail: false }),
+      far: false
+    };
+  }
+
+  /** Bind near or far facade material on every building mesh in a tile. Returns
+   *  true when the binding changed (caller must re-record the BundleGroup). */
+  #applyFacadeLod(tile: LoadedTile, wantFar: boolean): boolean {
+    const slot = tile.slot;
+    if (!slot || slot.far === wantFar) return false;
+    slot.far = wantFar;
+    const mat = wantFar ? slot.matFar : slot.matNear;
+    tile.group.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      if (mesh.geometry.getAttribute("_bid") || mesh.geometry.getAttribute("_BID")) {
+        mesh.material = mat;
+      }
+    });
+    // pending/detail parts not yet in the group still need the right material
+    for (const parked of [tile.pendingParts, tile.detailParts]) {
+      if (!parked) continue;
+      for (const part of parked) {
+        part.traverse((o) => {
+          const mesh = o as THREE.Mesh;
+          if (!mesh.isMesh) return;
+          if (mesh.geometry.getAttribute("_bid") || mesh.geometry.getAttribute("_BID")) {
+            mesh.material = mat;
+          }
+        });
+      }
+    }
+    return true;
   }
 
   /** Finalize one parsed tile: alive texture, materials, scene add. Returns false when idle. */
@@ -609,7 +664,12 @@ export class TileStreamer {
         else if (this.#meshSuppressed.has(`${key}:${i}`)) aliveData[i * 4] = 1; // mesh off, collider kept
       }
       slot.tex.needsUpdate = true;
-      const bMat = slot.mat;
+      // Pick near/far by tile-centre distance at finalize; #scan refreshes as
+      // the player moves (hysteresis — see FACADE_FAR_*).
+      const [tcx, tcz] = this.keyToCenter(key);
+      const td = Math.hypot(this.#px - tcx, this.#pz - tcz);
+      slot.far = td >= FACADE_FAR_ENTER;
+      const bMat = slot.far ? slot.matFar : slot.matNear;
       group.traverse((o) => {
         const mesh = o as THREE.Mesh;
         if (!mesh.isMesh) return;
@@ -755,9 +815,12 @@ export class TileStreamer {
     tile.pendingParts = undefined;
     tile.detailParts = undefined;
     this.#deferred.delete(key);
-    // the alive texture + facade material go back to the pool — reusing the
-    // material instance is what keeps the node-builder cache hot (see FacadeSlot)
-    if (tile.slot) this.#slotPool.push(tile.slot);
+    // the alive texture + facade materials go back to the pool — reusing the
+    // material instances keeps the node-builder cache hot (see FacadeSlot)
+    if (tile.slot) {
+      tile.slot.far = false;
+      this.#slotPool.push(tile.slot);
+    }
   }
 
   // buildings permanently replaced by custom layers (the Exploratorium builds

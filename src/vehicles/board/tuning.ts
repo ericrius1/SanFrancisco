@@ -29,7 +29,7 @@ export const BOARD_EFFECT_TUNING = tunables("board.effects", {
 });
 
 /**
- * Halo-fin comet: a chain of additive orbs riding the energy ring. The whole
+ * Halo-fin comet: a chain of solid orbs riding the energy ring. The whole
  * look is tuned live — animateBoard reads .values every frame, so every slider
  * (including orb count) acts without a mesh rebuild. The signature move: the
  * comet whips through the ring's sides and stalls at top/bottom, where the

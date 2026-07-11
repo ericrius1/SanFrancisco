@@ -11,3 +11,5 @@ data/city/
 *.blend1
 *.mp4
 scratchpad/
+renders/
+tmp/

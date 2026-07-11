@@ -587,7 +587,8 @@ function makeHillGrass(map: WorldMap) {
   mesh.count = count;
   mesh.instanceMatrix.needsUpdate = true;
   if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-  mesh.receiveShadow = true;
+  mesh.castShadow = false;
+  mesh.receiveShadow = false;
   mesh.frustumCulled = false;
   return mesh;
 }

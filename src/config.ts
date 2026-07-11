@@ -62,15 +62,15 @@ export const RENDER_TUNING = tunables("render", {
  * distant corner while staying below the camera's 24 km far plane. */
 export const DRAW_DISTANCE_MAX = 21000
 
-/** Default streaming radius. Six kilometres preserves the broad city vistas
- * while keeping a meaningful fraction of the world out of the render scene.
- * Players can still deliberately select the whole-city radius above. */
-export const DRAW_DISTANCE_DEFAULT = 6000
+/** Default streaming radius. 3.5 km keeps FiDi/Corona vistas readable while
+ * cutting the fragment/streaming load of the previous 6 km default (meadow and
+ * Corona probes were GPU-bound with millions of far tris still on screen).
+ * Players can still crank toward DRAW_DISTANCE_MAX for the whole-city look. */
+export const DRAW_DISTANCE_DEFAULT = 3500
 
 /** Draw distance + fog, bound in the "/" panel. `radius` is the MASTER draw
- * distance: one top-level slider drives the tile streaming radii, rescales the
- * distance fog (see DRAW_BASELINE), and sets the citygen chunk reach — pull it
- * and the whole visible world grows or shrinks together. */
+ * distance: one top-level slider drives the tile streaming radii, the narrow
+ * cull-edge fade, and the citygen chunk reach. Atmospheric haze is independent. */
 export const WORLD_TUNING = tunables("world", {
   radius: {
     v: DRAW_DISTANCE_DEFAULT,
@@ -79,7 +79,7 @@ export const WORLD_TUNING = tunables("world", {
     step: 100,
     label: "draw distance (m)"
   },
-  fogEnabled: { v: true, label: "custom fog" },
+  fogEnabled: { v: true, label: "all fog" },
   // The five fog controls. Shape, colour, octave scales, path accumulation and
   // cull-edge calibration live together in sky.ts beside the r185 reference graph.
   //
@@ -87,7 +87,7 @@ export const WORLD_TUNING = tunables("world", {
   // districts while Twin Peaks, Sutro and the bridge towers emerge above it.
   fogTop: { v: 95, min: -20, max: 320, step: 1, label: "height (m)" },
   // Beer-Lambert path density inside the layer; 1 is the authored reference.
-  fogBank: { v: 1, min: 0, max: 2, step: 0.02, label: "density" },
+  fogBank: { v: 1, min: 0, max: 2, step: 0.02, label: "marine bank" },
   // 1 = the official 22 m noisy-ceiling variation; 0 = a flat bank.
   fogNoise: { v: 1, min: 0, max: 1.5, step: 0.02, label: "billow" },
   // 1 = official r185 motion; lower values make the world-anchored billows evolve
@@ -104,14 +104,14 @@ export const WORLD_TUNING = tunables("world", {
   // final streamed slice and is intentionally not an artistic control.
   fog: {
     // Broad atmospheric perspective, independent of the streaming radius.
-    // 0.0001 keeps the opposite side of the city legible while the separate
-    // height bank still supplies San Francisco's local marine fog.
-    v: 0.0001,
+    // Slightly denser than the ultra-clear 0.0001 so far facades/water eat less
+    // fill without restoring the old radius-coupled fog blowout.
+    v: 0.00025,
     min: 0,
     max: 0.0012,
     step: 0.00001,
     format: (v: number) => v.toFixed(5),
-    label: "haze"
+    label: "distance haze"
   }
 })
 

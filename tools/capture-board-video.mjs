@@ -36,7 +36,9 @@ const SERVER_URL = process.env.SF_BV_URL ?? "http://127.0.0.1:5193";
 const TIME = Number(process.env.SF_BV_TIME ?? 20.15);
 const WORK = path.join(ROOT, ".data", "board-video");
 const RAW = path.join(WORK, "raw");
-const OUT_MP4 = process.env.SF_BV_OUT ? path.resolve(ROOT, process.env.SF_BV_OUT) : path.join(ROOT, "dist", "reel", "board-customizer-15s.mp4");
+// default output lives OUTSIDE the repo — dist/ gets wiped by vite builds
+const OUT_DIR = "/Users/eric/videos/my creations/sf/InProgress";
+const OUT_MP4 = process.env.SF_BV_OUT ? path.resolve(ROOT, process.env.SF_BV_OUT) : path.join(OUT_DIR, "board-customizer-15s.mp4");
 // preview stills sampled across the timeline (frame indices)
 const STILL_FRAMES = [12, 70, 140, 230, 310, 330, 420, 470, 540, 585, 615, 665, 700, 770, 820, 880];
 

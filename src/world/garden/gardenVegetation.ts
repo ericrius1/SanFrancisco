@@ -213,8 +213,8 @@ function createFloraMesh(flora: GardenFlora[]): THREE.InstancedMesh {
     mesh.setColorAt(i, color);
   });
   mesh.instanceColor!.needsUpdate = true;
-  mesh.castShadow = false; // thousands of tufts; shadows would double the cost for no read
-  mesh.receiveShadow = true;
+  mesh.castShadow = false; // thousands of tufts; shadows add cost with no read
+  mesh.receiveShadow = false;
   mesh.frustumCulled = false;
   return mesh;
 }

@@ -3,6 +3,7 @@ import { BodyType } from "../../core/physics";
 import { waterHeight } from "../../world/heightmap";
 import type { Input } from "../../core/input";
 import type { ModeController, ModeFrame, PlayerCtx } from "../../player/types";
+import { enterOnWater } from "../shared";
 import { BOAT_TUNING } from "./tuning";
 
 const V = {
@@ -41,16 +42,8 @@ export class BoatController implements ModeController {
   }
 
   enter(ctx: PlayerCtx): number | void {
-    if (ctx.map.isWater(ctx.position.x, ctx.position.z)) {
-      ctx.position.y = waterHeight(ctx.position.x, ctx.position.z, ctx.time) + 0.5;
-      return;
-    }
-    // same-spot mode switch: stay put (beached) — don't yank downtown walkers
-    // out to the bay spawn on their first boat keypress
-    ctx.position.y = Math.max(
-      ctx.position.y,
-      ctx.map.effectiveGround(ctx.position.x, ctx.position.z) + 0.8
-    );
+    // land / bridge / shallows → nearest navigable water (enterOnWater)
+    enterOnWater(ctx);
   }
 
   update(ctx: PlayerCtx, dt: number, input: Input, frame: ModeFrame) {

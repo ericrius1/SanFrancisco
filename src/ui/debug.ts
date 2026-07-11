@@ -309,9 +309,9 @@ export class DebugPanel {
 
     // MASTER draw distance — one top-level slider for how far the world draws.
     // Drives the tile streaming radii (unload trails load by a fixed hysteresis
-    // margin so tiles never thrash at the boundary), rescales the distance fog so
-    // the far-cull veil closes just inside the new edge (sky.applyFogParams reads
-    // the radius), and the citygen ring derives its chunk reach from it each scan.
+    // margin so tiles never thrash at the boundary), moves only the narrow cull
+    // fade at the streamed edge (broad haze is independent), and the citygen ring
+    // derives its chunk reach from it each scan.
     // forceScan makes it take effect now instead of on the next 30-frame scan.
     WORLD_TUNING.bind(pane, {
       keys: ["radius"],

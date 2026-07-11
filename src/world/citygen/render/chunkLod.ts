@@ -56,7 +56,9 @@ export function buildChunkLOD(specs: BuildingSpec[], opts?: ChunkLODOptions): Ch
         const mesh = new THREE.Mesh(g, lodMaterial());
         mesh.name = "cityGenChunkLOD";
         mesh.castShadow = false;
-        mesh.receiveShadow = true;
+        // Chunk prisms fill the skyline past the CSM far cascade (350 m) — receive
+        // samples there are wasted bandwidth. Detail buildings still receive.
+        mesh.receiveShadow = false;
         mesh.frustumCulled = true;
         mesh.matrixAutoUpdate = false; // geometry is world-space
         chunk.mesh = mesh;

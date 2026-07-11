@@ -9,9 +9,9 @@ import type { PlayerMode } from "../player/types";
 
 const TWEAKS_KEY = "sf-tweaks";
 const TWEAKS_SCHEMA_KEY = "sf-tweaks-schema";
-// One current schema only: transparency policy diagnostics and the board's
-// independently tunable plume/light controls changed the pane shape.
-const TWEAKS_SCHEMA = "2026-07-busker-fireflies-flicker";
+// One current schema only: draw-distance default (3.5 km), haze, and garden
+// grass budgets changed together — discard incompatible saved tweaks.
+const TWEAKS_SCHEMA = "2026-07-fps-draw35-haze-grass";
 const PLAYER_KEY = "sf-player";
 
 const IDLE_FLUSH_TIMEOUT_MS = 1000;
