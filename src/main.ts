@@ -605,9 +605,24 @@ async function boot() {
   orbit.draggingSmoothTime = 0.08;
   orbit.maxDistance = 1200;
   // O in camera mode: smoothstepped 180° azimuth flip around the current target
-  let orbitFlip: { t: number; duration: number; startAz: number; delta: number } | null = null;
+  let orbitFlip: {
+    t: number;
+    duration: number;
+    startAz: number;
+    delta: number;
+    startDist: number;
+    endDist: number;
+  } | null = null;
   const orbitPickOrigin = new THREE.Vector3();
   const orbitPickDir = new THREE.Vector3();
+  // Synthetic negative entity ids for busker pick proxies (stay clear of net ids).
+  const BUSKER_PICK_ID = { ukulele: -901, handpan: -902, flute: -903 } as const;
+  const BUSKER_BY_ENTITY: Record<number, keyof typeof BUSKER_PICK_ID> = {
+    [BUSKER_PICK_ID.ukulele]: "ukulele",
+    [BUSKER_PICK_ID.handpan]: "handpan",
+    [BUSKER_PICK_ID.flute]: "flute"
+  };
+  const BUSKER_PICK_R = 0.65;
 
   const setCameraMode = (on: boolean) => {
     cameraMode = on;
@@ -635,6 +650,7 @@ async function boot() {
 
   // Double-click any surface in camera mode → that point becomes the new orbit target
   // (camera stays put; orbit/dolly continue around the new look-at).
+  // Busker hits snap to the musician's chest so the orbit centers on the singer.
   renderer.domElement.addEventListener("dblclick", (e) => {
     if (!cameraMode || e.button !== 0) return;
     const rect = renderer.domElement.getBoundingClientRect();
@@ -644,6 +660,12 @@ async function boot() {
     orbitPickDir.set(ndcX, ndcY, 0.5).unproject(camera).sub(orbitPickOrigin).normalize();
     const hit = worldQueries.raycast(orbitPickOrigin, orbitPickDir, 2500, { ignoreSelf: true });
     if (!hit) return;
+    const buskerId = BUSKER_BY_ENTITY[hit.entityId];
+    if (buskerId) {
+      buskers.seatWorld(buskerId, orbitPickOrigin);
+      void orbit.setTarget(orbitPickOrigin.x, orbitPickOrigin.y, orbitPickOrigin.z, true);
+      return;
+    }
     void orbit.setTarget(hit.point.x, hit.point.y, hit.point.z, true);
   });
 
@@ -2435,7 +2457,9 @@ async function boot() {
     if (cameraMode && input.pressed("KeyO")) {
       const duration = Math.max(0.05, CAMERA_TUNING.values.orbitFlipSec);
       const delta = CAMERA_TUNING.values.orbitFlipCCW ? Math.PI : -Math.PI;
-      orbitFlip = { t: 0, duration, startAz: orbit.azimuthAngle, delta };
+      const startDist = orbit.distance;
+      const endDist = Math.min(orbit.maxDistance, startDist + CAMERA_TUNING.values.orbitFlipPull);
+      orbitFlip = { t: 0, duration, startAz: orbit.azimuthAngle, delta, startDist, endDist };
     }
     // V: voice chat mic on/off (same as the HUD mic button)
     if (input.pressed("KeyV")) toggleMic();
@@ -2553,8 +2577,9 @@ async function boot() {
     if (orbitFlip) {
       orbitFlip.t += frameDt;
       const u = Math.min(1, orbitFlip.t / orbitFlip.duration);
-      const eased = u * u * (3 - 2 * u); // smoothstep — zero angular velocity at ends
+      const eased = u * u * (3 - 2 * u); // smoothstep — zero velocity at ends
       orbit.azimuthAngle = orbitFlip.startAz + orbitFlip.delta * eased;
+      orbit.distance = orbitFlip.startDist + (orbitFlip.endDist - orbitFlip.startDist) * eased;
       if (u >= 1) orbitFlip = null;
     }
     if (scrubHeld && !timeScrub) timeScrub = { target: sky.timeOfDay, wasCycling: sky.cycleEnabled };
@@ -2809,6 +2834,19 @@ async function boot() {
         mesh.position.y + hitSphere.y,
         mesh.position.z
       );
+    }
+    // Busker trio: chest spheres so camera-mode double-click can retarget onto
+    // a singer instead of punching through the mesh to the city behind them.
+    if (buskers.group.visible) {
+      buskers.forEachPickTarget((id, object, x, y, z) => {
+        entityProxies.put(
+          `busker:${id}`,
+          { id: BUSKER_PICK_ID[id], kind: "prop", object, shape: { form: "sphere", radius: BUSKER_PICK_R } },
+          x,
+          y,
+          z
+        );
+      });
     }
     entityProxies.end();
     paintballs.update(frameDt, worldQueries, graffiti, paintSkins);

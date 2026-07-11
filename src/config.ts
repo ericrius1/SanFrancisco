@@ -62,7 +62,9 @@ export const CAMERA_TUNING = tunables("camera", {
   // O in camera mode: smooth 180° azimuth flip around the current look target.
   orbitFlipSec: { v: 5.5, min: 0.4, max: 12, step: 0.1, label: "180° orbit (s)" },
   // false = clockwise (default); true = counter-clockwise
-  orbitFlipCCW: { v: false, label: "orbit CCW" }
+  orbitFlipCCW: { v: false, label: "orbit CCW" },
+  // meters added to orbit radius over the flip (dolly out)
+  orbitFlipPull: { v: 8, min: 0, max: 80, step: 0.5, label: "orbit pull-back (m)" }
 })
 
 /** The committed heightfield is 15.1 × 13.9 km (20.5 km corner-to-corner).

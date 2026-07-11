@@ -194,6 +194,19 @@ export class BuskerTrio {
     return local ? out.copy(local).applyMatrix4(this.group.matrixWorld) : out.copy(this.group.position);
   }
 
+  /**
+   * Chest-height pick centers for each musician (camera-mode retarget / cursor).
+   * Origins match the spatial audio sources — torso, not the seat point.
+   */
+  forEachPickTarget(cb: (id: BuskerId, object: THREE.Object3D, x: number, y: number, z: number) => void) {
+    for (const [id, musician] of this.#musicians) {
+      const local = this.#seatLocal.get(id);
+      if (!local) continue;
+      this.#tmp.copy(local).applyMatrix4(this.group.matrixWorld);
+      cb(id, musician.group, this.#tmp.x, this.#tmp.y, this.#tmp.z);
+    }
+  }
+
   get clock(): Readonly<TrioClock> {
     return this.#clock;
   }
