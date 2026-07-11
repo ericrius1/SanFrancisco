@@ -75,7 +75,7 @@ async function bootPage(chrome, profileTag, urlExtra = "") {
   const proc = spawn(chrome, [
     `--user-data-dir=${path.join(OUT, profileTag)}`, "--headless=new", `--remote-debugging-port=${port}`,
     "--enable-unsafe-webgpu", "--enable-features=WebGPUDeveloperFeatures", "--use-angle=metal",
-    "--hide-scrollbars", "--mute-audio", `--window-size=${W},${H}`, `${SERVER_URL}/?autostart&fullfps${urlExtra}`
+    "--hide-scrollbars", "--mute-audio", `--window-size=${W},${H}`, `${SERVER_URL}/?autostart&profile&fullfps${urlExtra}`
   ], { cwd: ROOT, stdio: "ignore" });
   await sleep(2500);
   let page;

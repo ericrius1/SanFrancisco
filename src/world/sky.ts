@@ -33,7 +33,7 @@ import { GOLDEN_GATE_LIGHTS_INTENSITY } from "./goldenGateLights"
 import { SUTRO_LIGHTS_INTENSITY } from "./sutroTower"
 import { STREET_LAMPS_INTENSITY } from "./streetLamps"
 import { BUENA_VISTA_MIST, BUENA_VISTA_SUMMIT_CLEARING } from "./buenaVista"
-import { DRAW_BASELINE, EXPOSURE_REBASE, LIGHT_SCALE, WORLD_TUNING } from "../config"
+import { EXPOSURE_REBASE, LIGHT_SCALE, WORLD_TUNING } from "../config"
 import { tunables } from "../core/persist"
 import {
   sanFranciscoCivilNow,
@@ -654,11 +654,12 @@ export class Sky {
 
   applyFogParams() {
     const v = WORLD_TUNING.values
-    // Preserve the same haze curve as draw distance changes (constant d·density),
-    // while the cull fade remains pinned to the final slice of the streamed radius.
-    // The height bank stays in physical metres.
-    const k = v.radius / DRAW_BASELINE
-    this.#uFogDensity.value = v.fog / k
+    // Atmospheric perspective is an artistic/physical property, not a streaming
+    // control. Coupling density inversely to the draw radius made a smaller world
+    // turn exponentially whiter, so players had to select absurd 60–300 km radii
+    // just to see across an 11 km city. Only the narrow cull-edge fade follows the
+    // streamed radius; broad haze and the height bank stay in physical metres.
+    this.#uFogDensity.value = v.fog
     this.#uFogTop.value = v.fogTop
     this.#uFogBank.value = v.fogBank
     this.#uFogNoise.value = v.fogNoise

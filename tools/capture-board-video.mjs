@@ -44,7 +44,7 @@ const STILL_FRAMES = [12, 70, 140, 230, 310, 330, 420, 470, 540, 585, 615, 665, 
 // Corona Heights summit platform, facing NE past the crags toward downtown.
 const PX = 412, PZ = 2758, FACING = 2.25;
 // phase A free camera: slow push-in, player left-of-frame (panel sits right)
-const CAM_BACK0 = 7.4, CAM_BACK1 = 6.2, CAM_UP0 = 2.9, CAM_UP1 = 2.4;
+const CAM_BACK0 = 8.4, CAM_BACK1 = 7.3, CAM_UP0 = 3.1, CAM_UP1 = 2.7;
 const CAM_SIDE = 4.2; // shift target sideways so the board sits left of center
 const PHASE_B = 10.0; // customization ends, riding begins
 const CLOSE_T = 9.55; // click the panel toggle shut
@@ -99,7 +99,15 @@ class Cdp {
       m.error ? p.rej(new Error(`${p.method}: ${m.error.message}`)) : p.res(m.result ?? {});
     });
   }
-  send(method, params = {}) { const id = this.#id++; this.#ws.send(JSON.stringify({ id, method, params })); return new Promise((res, rej) => this.#p.set(id, { res, rej, method })); }
+  send(method, params = {}, timeoutMs = 60000) {
+    const id = this.#id++;
+    this.#ws.send(JSON.stringify({ id, method, params }));
+    return new Promise((res, rej) => {
+      // a dead renderer never answers — fail fast instead of hanging the run
+      const timer = setTimeout(() => { this.#p.delete(id); rej(new Error(`${method}: CDP timeout after ${timeoutMs}ms`)); }, timeoutMs);
+      this.#p.set(id, { res: (v) => { clearTimeout(timer); res(v); }, rej: (e) => { clearTimeout(timer); rej(e); }, method });
+    });
+  }
   close() { this.#ws.close(); }
 }
 async function ev(c, expr) {
@@ -139,7 +147,7 @@ function cursorAt(keys, t) {
 // ---- in-page bootstrap (cursor + per-frame op applier) ------------------------
 const BOOTSTRAP = `(()=>{ if(window.__bv) return true;
   const cur=document.createElement('div');
-  cur.style.cssText='position:fixed;left:0;top:0;width:26px;height:30px;z-index:2147483647;pointer-events:none;filter:drop-shadow(0 1.5px 2.5px rgba(0,0,0,0.6))';
+  cur.style.cssText='position:fixed;left:0;top:0;width:26px;height:30px;z-index:2147483647;pointer-events:none;opacity:0;filter:drop-shadow(0 1.5px 2.5px rgba(0,0,0,0.6))';
   cur.innerHTML='<svg width="26" height="30" viewBox="0 0 26 30"><path d="M2 1 L2 23.2 L7.7 17.9 L11.5 26.4 L15.4 24.6 L11.7 16.3 L19.4 15.7 Z" fill="#fff" stroke="#1a1a1a" stroke-width="1.5" stroke-linejoin="round"/></svg>';
   const pulse=document.createElement('div');
   pulse.style.cssText='position:fixed;left:0;top:0;width:46px;height:46px;border-radius:50%;border:2.5px solid rgba(255,255,255,0.95);box-shadow:0 0 14px rgba(140,240,255,0.9);z-index:2147483646;pointer-events:none;opacity:0';
@@ -150,15 +158,16 @@ const BOOTSTRAP = `(()=>{ if(window.__bv) return true;
     if(op.pulse){pulse.style.transform='translate('+(op.pulse.x-23)+'px,'+(op.pulse.y-23)+'px) scale('+op.pulse.s+')';pulse.style.opacity=op.pulse.o;}
     else pulse.style.opacity=0;
     if(op.cam) window.__sfFreeCam(op.cam.eye,op.cam.target);
-    if(op.camRelease){
-      // hand off to the chase cam from roughly where the free cam ended
-      window.__sfFreeCam(null);
-      const p=sf.player,T=sf.THREE;
-      const d=new T.Vector3(Math.sin(op.camRelease.facing),0,Math.cos(op.camRelease.facing));
-      const eye=p.position.clone().addScaledVector(d,-op.camRelease.back); eye.y+=op.camRelease.up;
-      sf.chase.camera.position.copy(eye);
-      sf.chase.camera.lookAt(p.position.x,p.position.y+1.1,p.position.z);
-      sf.input.suspended=false;
+    if(op.camFollow){
+      // deterministic follow rail: glide from wherever phase A ended toward a
+      // behind-the-player tripod that tracks the ride + ollie
+      const f=op.camFollow,p=sf.player,T=sf.THREE;
+      const d=new T.Vector3(Math.sin(f.facing),0,Math.cos(f.facing));
+      const wantEye=p.position.clone().addScaledVector(d,-f.back); wantEye.y+=f.up;
+      const wantTgt=p.position.clone().addScaledVector(d,f.lead); wantTgt.y+=1.0;
+      if(!this._eye){ this._eye=sf.camera.position.clone(); this._tgt=wantTgt.clone(); sf.input.suspended=false; }
+      this._eye.lerp(wantEye,f.k); this._tgt.lerp(wantTgt,f.k);
+      window.__sfFreeCam([this._eye.x,this._eye.y,this._eye.z],[this._tgt.x,this._tgt.y,this._tgt.z]);
     }
     for(const k of op.keysAdd||[]) sf.input.keys.add(k);
     for(const k of op.keysDel||[]) sf.input.keys.delete(k);
@@ -261,14 +270,18 @@ function opForFrame(plan, i) {
     const u = easeInOut(t / PHASE_B);
     const back = lerp(CAM_BACK0, CAM_BACK1, u), up = lerp(CAM_UP0, CAM_UP1, u);
     const dx = Math.sin(FACING), dz = Math.cos(FACING);
-    // perpendicular offset pushes the board left-of-frame (panel lives right)
-    const px = Math.cos(FACING), pz = -Math.sin(FACING);
+    // perpendicular offset: shifting the TARGET screen-right pans the camera
+    // right, which parks the board left-of-frame (panel lives right)
+    const px = -Math.cos(FACING), pz = Math.sin(FACING);
     op.cam = {
       eye: [PX - dx * back + px * CAM_SIDE * 0.4, `GY+${up}`, PZ - dz * back + pz * CAM_SIDE * 0.4],
       target: [PX + dx * 3 + px * CAM_SIDE, `GY+${1.0}`, PZ + dz * 3 + pz * CAM_SIDE]
     };
-  } else if (i === Math.round(PHASE_B * FPS)) {
-    op.camRelease = { facing: FACING, back: CAM_BACK1, up: CAM_UP1 };
+  } else {
+    // follow gains: ease the lerp in so the panel framing releases gracefully
+    const s = Math.min(1, (t - PHASE_B) / 1.2);
+    // player yaw convention is π+bearing, so trail the ACTUAL travel direction
+    op.camFollow = { facing: FACING + Math.PI, back: 6.8, up: 2.6, lead: 4, k: 0.05 + 0.17 * s };
   }
 
   // ride + jump
@@ -375,7 +388,10 @@ async function main() {
   // stock cap is min(78vh,680px) which forces a scrollbar
   // transitions never advance under the pinned headless clock (the panel's
   // opacity fade would stay at 0 forever) — snap everything to final state
-  await ev(c, `(()=>{const st=document.createElement('style');st.textContent='.board-panel{max-height:min(94vh,1010px)!important} #hud *,#hud{transition:none!important;animation:none!important}';document.head.appendChild(st);return true;})()`);
+  await ev(c, `(()=>{const st=document.createElement('style');st.textContent='.board-panel{max-height:min(94vh,1010px)!important} #hud *,#hud{transition:none!important;animation:none!important} #hud .center{display:none!important}';document.head.appendChild(st);return true;})()`);
+  // the pinned manual clock freezes the boot flow before it flips body.started,
+  // and body:not(.started) #hud { opacity:0 } would hide every panel — force it
+  await ev(c, `(()=>{document.body.classList.add('started');return true;})()`);
   // solo the board panel, open it, install the fake cursor
   await ev(c, `(()=>{window.__sf.hud.soloPanel('board');document.querySelector('.board-toggle').click();return true;})()`);
   await settle(c, 8);

@@ -57,13 +57,15 @@ export const RENDER_TUNING = tunables("render", {
   colliderDebug: { v: false, label: "collider x-ray" }
 })
 
-/**
- * The official-example distance haze is calibrated at this draw distance.
- * Sky.applyFogParams scales its density by radius / DRAW_BASELINE and keeps a
- * narrow white edge fade over only the final 12% of the streamed radius, so
- * geometry culls invisibly without turning the whole middle distance into a wall.
- */
-export const DRAW_BASELINE = 212377
+/** The committed heightfield is 15.1 × 13.9 km (20.5 km corner-to-corner).
+ * A 21 km radius therefore covers the complete sandbox from even the most
+ * distant corner while staying below the camera's 24 km far plane. */
+export const DRAW_DISTANCE_MAX = 21000
+
+/** Default streaming radius. Six kilometres preserves the broad city vistas
+ * while keeping a meaningful fraction of the world out of the render scene.
+ * Players can still deliberately select the whole-city radius above. */
+export const DRAW_DISTANCE_DEFAULT = 6000
 
 /** Draw distance + fog, bound in the "/" panel. `radius` is the MASTER draw
  * distance: one top-level slider drives the tile streaming radii, rescales the
@@ -71,9 +73,9 @@ export const DRAW_BASELINE = 212377
  * and the whole visible world grows or shrinks together. */
 export const WORLD_TUNING = tunables("world", {
   radius: {
-    v: DRAW_BASELINE,
-    min: 50,
-    max: 444000,
+    v: DRAW_DISTANCE_DEFAULT,
+    min: 1200,
+    max: DRAW_DISTANCE_MAX,
     step: 100,
     label: "draw distance (m)"
   },
@@ -101,9 +103,12 @@ export const WORLD_TUNING = tunables("world", {
   // The official exp² distance haze; the separate fixed edge fade hides only the
   // final streamed slice and is intentionally not an artistic control.
   fog: {
-    v: 0.0012,
+    // Broad atmospheric perspective, independent of the streaming radius.
+    // 0.0001 keeps the opposite side of the city legible while the separate
+    // height bank still supplies San Francisco's local marine fog.
+    v: 0.0001,
     min: 0,
-    max: 0.0025,
+    max: 0.0012,
     step: 0.00001,
     format: (v: number) => v.toFixed(5),
     label: "haze"
