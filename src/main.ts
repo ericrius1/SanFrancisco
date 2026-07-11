@@ -2000,7 +2000,7 @@ async function boot() {
   });
 
   // A demo can install a per-frame cinematic controller that fully owns the
-  // player pose AND the camera for a scripted shot (see dev/demo.ts "ggboat").
+  // player pose AND the camera for a scripted shot (see dev/demos/buskersCinematic.ts).
   let cineHook: ((dt: number) => void) | null = null;
 
   let pickleballAnimationTime = 0;
@@ -2987,10 +2987,13 @@ async function boot() {
       player,
       physics,
       chase,
+      camera,
+      scene,
       hud,
       sky,
       minimap,
       map,
+      buskers,
       setTool: (t: string) => setTool(t as ToolName),
       setCine: (fn: ((dt: number) => void) | null) => {
         cineHook = fn;
@@ -3001,17 +3004,6 @@ async function boot() {
       setPostFx: (values: Record<string, number | boolean>) => {
         Object.assign(POSTFX_TUNING.values, values);
         pipeline.applyPostFx(); // select the retained toggle variant + push uniforms
-      },
-      launchBoatFireworks: (forward: THREE.Vector3) => {
-        boatLaunchers?.fireAll({
-          scene,
-          fireworks,
-          rocketRiders,
-          map,
-          playerPos: player.position,
-          forward,
-          hostVelocity: player.velocity
-        });
       }
     };
     (window as never as { __demo: (n: string) => void }).__demo = (n: string) => {
