@@ -7,6 +7,7 @@ import type { BuskerId, Musician, MusicianBuilder, NoteEvent, TrioClock, TrioPha
 import { buildFlutist } from "./flutist";
 import { buildHandpanist } from "./handpanist";
 import { buildUkulelist } from "./ukulelist";
+import { BuskerFireflies } from "./fireflies";
 
 /**
  * The busker trio: three musicians perched on a flat-topped chert boulder
@@ -59,6 +60,7 @@ export class BuskerTrio {
 
   #audio = new TrioAudio();
   #perch: ReturnType<typeof buildPerchRock>;
+  #fireflies = new BuskerFireflies();
   #musicians = new Map<BuskerId, Musician>();
   #seatLocal = new Map<BuskerId, THREE.Vector3>();
   #groundHeight: (x: number, z: number) => number;
@@ -75,6 +77,7 @@ export class BuskerTrio {
     this.#groundHeight = opts.groundHeight;
     this.#perch = buildPerchRock(opts.physics ?? null);
     this.group.add(this.#perch.group);
+    this.group.add(this.#fireflies.group);
 
     for (const seat of SEATS) {
       const tap = this.#audio.channel(seat.id);
@@ -130,12 +133,13 @@ export class BuskerTrio {
     return this.#clock;
   }
 
-  update(dt: number, camera: THREE.Camera, gust = 0) {
+  update(dt: number, camera: THREE.Camera, gust = 0, sunElevation = 90) {
     dt = Math.min(dt, 0.1);
     this.#elapsed += dt;
 
     const dist = camera.getWorldPosition(this.#tmp).distanceTo(this.group.position);
     this.#audio.update(camera, dist, this.#elapsed);
+    this.#fireflies.update(dt, dist, sunElevation);
 
     // ---- transport (always runs; the show goes on unheard) ----
     this.#phaseTime += dt;
@@ -186,6 +190,7 @@ export class BuskerTrio {
   dispose() {
     for (const musician of this.#musicians.values()) musician.dispose();
     this.#musicians.clear();
+    this.#fireflies.dispose();
     this.#perch.dispose();
     this.#audio.dispose();
     this.group.parent?.remove(this.group);

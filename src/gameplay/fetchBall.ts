@@ -1,17 +1,20 @@
 // Player fetch-ball tool + the whole dog-fetch/pet loop.
 //
-// This module owns the player's tennis balls: an always-available held prop
-// (infinite throws while the 🎾 tool is active), any number of free kinematic
-// balls that fly/bounce/roll via the shared ballSim, the player-side fetch
-// state machine (throw → a free dog chases, bites, carries it back and waits →
-// the player takes it with E), and the pet-follow driver once a dog has been
-// adopted.
+// Hold-to-throw: the tennis ball only appears in hand while winding up. Hold
+// longer to cock further back and throw harder; aim is sampled on release.
+// After the ball leaves the hand, hands stay empty until the next hold — so a
+// dog can bring a thrown ball back and the player takes it with E.
+//
+// Free kinematic balls fly/bounce/roll via the shared ballSim. The player-side
+// fetch state machine (throw → a free dog chases, bites, carries it back and
+// waits → the player takes it with E) and the pet-follow driver once a dog has
+// been adopted live here too.
 //
 // main.ts constructs one instance and calls update() EVERY frame (tool-agnostic,
 // so balls already in flight keep simulating even after the player switches
-// tools) plus click() when the ball tool fires and tryPickup() on E. The park
-// exposes the dog-driving primitives (steer/hold/jaw/mouth/claim/adopt) so the
-// choreography reuses the park's exact locomotion.
+// tools), driveThrow() while the ball tool is selected, and tryPickup() on E.
+// The park exposes the dog-driving primitives (steer/hold/jaw/mouth/claim/adopt)
+// so the choreography reuses the park's exact locomotion.
 
 import * as THREE from "three/webgpu";
 import type { Physics } from "../core/physics";
@@ -23,9 +26,12 @@ import { dogParkFenceSegments } from "../world/coronaHeights/dogParkFence";
 const BALL_R = 0.16; // matches the park's tennis ball
 const DOG_SURFACE_LIFT = 0.04; // woodchip lift inside the park; 0 on open terrain
 const FENCE_TOP_LIFT = 1.55; // fence height added over ground for the rebound cap
-const THROW_SPEED = 15; // m/s launch; under the 1/90 substep's ~22 m/s anti-tunnel ceiling
-const THROW_ANIM_LEN = 0.6; // full windup→release→follow-through of the arm swing
-const THROW_RELEASE_T = 0.24; // seconds into the swing when the ball leaves the hand
+const THROW_SPEED_MIN = 7; // m/s at a tap
+const THROW_SPEED_MAX = 22; // m/s at full windup (under the ~22 m/s anti-tunnel ceiling)
+const CHARGE_TIME = 0.9; // seconds of hold to reach full power
+const WINDUP_T = 0.4; // throw-anim t at full cock-back (matches Player.#applyThrowSwing)
+const LAUNCH_T = 0.5; // throw-anim t when the ball leaves the hand (mid-whip)
+const RELEASE_DURATION = 0.36; // seconds to play windup→follow-through after release
 const TAKE_FROM_DOG_RANGE = 2.0; // E-to-take reach while a dog waits
 const TAKE_RESTING_RANGE = 1.5; // E-to-pick-up reach for a free ball
 const ABANDON_RANGE = 60; // a claimed (un-adopted) dog gives up if the player strays this far
@@ -71,6 +77,8 @@ type DogPhase =
   | { kind: "returning"; ball: FreeBall; dog: ParkDog }
   | { kind: "waiting"; ball: FreeBall; dog: ParkDog };
 
+type ThrowPhase = "idle" | "charging" | "releasing";
+
 export class FetchBall {
   #deps: FetchBallDeps;
   #ctxPark: BallSimCtx; // inside the fence: rebound + woodchip lift
@@ -82,10 +90,16 @@ export class FetchBall {
   #dog: ParkDog | null = null; // the fetching dog (claimed) — becomes a pet on adoption
   #pets: ParkDog[] = []; // adopted followers
 
-  // throw animation timeline: >= 0 while a swing plays
-  #throwAnimT = -1;
-  #throwPending = false; // next free ball still waiting for the release frame
+  // hold-to-throw: ball only shows while charging / releasing / after an E pickup
+  #held = false;
+  #throwPhase: ThrowPhase = "idle";
+  #charge = 0; // 0..1 windup power while charging
+  #throwAnimT = 0; // 0..1 arm-swing parameter fed to the player view
+  #releaseElapsed = 0; // seconds since mouse-up
+  #releaseStartT = 0; // anim t at the moment of release
+  #throwSpeed = THROW_SPEED_MIN;
   #aim = new THREE.Vector3(0, 0, -1);
+  #hadHeldBeforeCharge = false; // restore this if a charge is cancelled
 
   #lastPlayer = new THREE.Vector3();
   #prevPlayer = new THREE.Vector3();
@@ -117,20 +131,58 @@ export class FetchBall {
 
   setActive(active: boolean): void {
     this.#active = active;
-    // Infinite ammo: the held prop shows whenever the ball tool is selected.
-    this.#deps.playerView.setBallHeld(active);
+    if (!active) this.#cancelCharge();
+    // Ball only shows when we actually have one (pickup or mid-throw).
+    this.#deps.playerView.setBallHeld(active && this.#held);
+    if (!active) this.#deps.playerView.setThrowAnim(0);
   }
 
-  /** Click always throws a new ball (infinite supply while the tool is active). */
-  click(origin: THREE.Vector3, aim: THREE.Vector3): void {
-    void origin; // the ball leaves the hand (handWorldPos), not the camera ray
+  /**
+   * Drive hold-to-throw while the ball tool is selected. `firing` is the mouse /
+   * pad fire level; `aim` is the view direction (sampled on release). Pass
+   * `cancelled` when pointer lock drops mid-charge so we don't accidental-toss.
+   */
+  driveThrow(dt: number, firing: boolean, aim: THREE.Vector3, cancelled = false): void {
     if (!this.#active) return;
-    if (this.#throwPending) return; // wait for the in-hand ball to leave first
-    this.#aim.copy(aim);
-    if (this.#aim.lengthSq() < 1e-6) this.#aim.set(0, 0.12, -1);
-    this.#aim.normalize();
-    this.#throwPending = true;
-    this.#throwAnimT = 0;
+
+    if (this.#throwPhase === "releasing") {
+      this.#advanceRelease(dt);
+      return;
+    }
+
+    if (this.#throwPhase === "charging") {
+      if (cancelled) {
+        this.#cancelCharge();
+        return;
+      }
+      if (firing) {
+        this.#charge = Math.min(1, this.#charge + dt / CHARGE_TIME);
+        this.#throwAnimT = this.#charge * WINDUP_T;
+        this.#deps.playerView.setThrowAnim(this.#throwAnimT);
+        return;
+      }
+      // Mouse up — lock aim + power and whip forward.
+      this.#aim.copy(aim);
+      if (this.#aim.lengthSq() < 1e-6) this.#aim.set(0, 0.12, -1);
+      this.#aim.normalize();
+      const power = Math.max(this.#charge, 0.08);
+      this.#throwSpeed = THREE.MathUtils.lerp(THROW_SPEED_MIN, THROW_SPEED_MAX, power);
+      this.#releaseStartT = this.#throwAnimT;
+      this.#releaseElapsed = 0;
+      this.#throwPhase = "releasing";
+      return;
+    }
+
+    // idle
+    if (firing && !cancelled) {
+      this.#hadHeldBeforeCharge = this.#held;
+      this.#held = true;
+      this.#charge = 0;
+      this.#throwAnimT = 0;
+      this.#throwPhase = "charging";
+      this.#deps.playerView.setBallHeld(true);
+      this.#deps.playerView.setThrowAnim(0);
+    }
   }
 
   /**
@@ -150,6 +202,7 @@ export class FetchBall {
     const nearest = this.#nearestPickupBall(playerPos);
     if (!nearest) return false;
     this.#removeFree(nearest.ball);
+    this.#receiveBall();
     return true;
   }
 
@@ -160,8 +213,6 @@ export class FetchBall {
       this.#petInit = true;
     }
     const park = this.#deps.park();
-
-    this.#advanceThrowAnim(dt);
 
     // Every free ball keeps simulating; dog choreography rides one of them.
     for (const ball of this.#free) {
@@ -202,9 +253,9 @@ export class FetchBall {
     this.#prevPlayer.copy(playerPos);
   }
 
-  /** Click-row verb — always throw; pickup is on E. */
+  /** Click-row verb — hold to wind up; pickup is on E. */
   verb(): string {
-    return "throw the ball";
+    return "hold to throw";
   }
 
   /** True when E would pick something up right now (dog handoff or free ball). */
@@ -217,8 +268,13 @@ export class FetchBall {
     return this.#nearestPickupBall(this.#lastPlayer) !== null;
   }
 
+  /** 0..1 while charging/releasing (for chase zoom); −1 when idle. */
   throwProgress(): number {
-    return this.#throwAnimT < 0 ? -1 : Math.min(1, this.#throwAnimT / THROW_ANIM_LEN);
+    if (this.#throwPhase === "charging") return this.#charge;
+    if (this.#throwPhase === "releasing") {
+      return Math.min(1, this.#releaseElapsed / RELEASE_DURATION);
+    }
+    return -1;
   }
 
   dispose(): void {
@@ -228,19 +284,32 @@ export class FetchBall {
 
   /* -------------------------------------------------------------- internals */
 
-  #advanceThrowAnim(dt: number): void {
-    if (this.#throwAnimT < 0) return;
-    this.#throwAnimT += dt;
-    this.#deps.playerView.setThrowAnim(Math.min(1, this.#throwAnimT / THROW_ANIM_LEN));
-    if (this.#throwPending && this.#throwAnimT >= THROW_RELEASE_T) this.#launch();
-    if (this.#throwAnimT >= THROW_ANIM_LEN) {
-      this.#throwAnimT = -1;
+  #advanceRelease(dt: number): void {
+    this.#releaseElapsed += dt;
+    const u = Math.min(1, this.#releaseElapsed / RELEASE_DURATION);
+    // Ease from the cocked pose through the whip and settle.
+    this.#throwAnimT = THREE.MathUtils.lerp(this.#releaseStartT, 1, u);
+    this.#deps.playerView.setThrowAnim(this.#throwAnimT);
+
+    if (this.#held && this.#throwAnimT >= LAUNCH_T) this.#launch();
+
+    if (u >= 1) {
+      this.#throwPhase = "idle";
+      this.#throwAnimT = 0;
       this.#deps.playerView.setThrowAnim(0);
+      // Safety: if a cancelled/tiny charge somehow skipped launch, clear the hand.
+      if (this.#held && !this.#hadHeldBeforeCharge) {
+        this.#held = false;
+        this.#deps.playerView.setBallHeld(false);
+      }
     }
   }
 
   #launch(): void {
-    this.#throwPending = false;
+    this.#held = false;
+    this.#hadHeldBeforeCharge = false;
+    this.#deps.playerView.setBallHeld(false);
+
     const hand = this.#deps.playerView.handWorldPos(this.#tmp);
     const mesh = new THREE.Mesh(
       new THREE.SphereGeometry(BALL_R, 12, 8),
@@ -251,21 +320,40 @@ export class FetchBall {
     mesh.position.copy(hand);
     mesh.visible = true;
     this.#deps.scene.add(mesh);
+    const speed = this.#throwSpeed;
     const ball: FreeBall = {
       mesh,
       state: {
         x: hand.x,
         y: hand.y,
         z: hand.z,
-        vx: this.#aim.x * THROW_SPEED,
-        vy: this.#aim.y * THROW_SPEED,
-        vz: this.#aim.z * THROW_SPEED,
+        vx: this.#aim.x * speed,
+        vy: this.#aim.y * speed,
+        vz: this.#aim.z * speed,
         grounded: false
       }
     };
     this.#free.push(ball);
-    // Held prop stays — infinite ammo. A duplicate flies out of the hand.
-    this.#deps.playerView.setBallHeld(this.#active);
+  }
+
+  #cancelCharge(): void {
+    if (this.#throwPhase === "idle") return;
+    // Don't cancel mid-release — the ball is already committed to leave the hand.
+    if (this.#throwPhase === "releasing") return;
+    this.#throwPhase = "idle";
+    this.#charge = 0;
+    this.#throwAnimT = 0;
+    this.#held = this.#hadHeldBeforeCharge;
+    this.#deps.playerView.setThrowAnim(0);
+    this.#deps.playerView.setBallHeld(this.#active && this.#held);
+  }
+
+  /** Put a collected ball in hand (dog handoff or ground scoop). */
+  #receiveBall(): void {
+    this.#held = true;
+    if (this.#active && this.#throwPhase === "idle") {
+      this.#deps.playerView.setBallHeld(true);
+    }
   }
 
   #stepFreeBall(ball: FreeBall, dt: number, park: CoronaHeightsPark | null): void {
@@ -389,6 +477,7 @@ export class FetchBall {
     }
     this.#removeFree(phase.ball);
     this.#dogPhase = { kind: "none" };
+    this.#receiveBall();
   }
 
   #nearestPickupBall(playerPos: THREE.Vector3): { ball: FreeBall; dist: number } | null {

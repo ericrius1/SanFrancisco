@@ -63,6 +63,7 @@ import { FetchBall } from "./gameplay/fetchBall";
 import {
   createPickleball,
   type PickleballInputIntent,
+  type PickleballLocalPose,
   type PickleballSide
 } from "./gameplay/pickleball";
 import { Satchel } from "./ui/satchel";
@@ -214,7 +215,7 @@ async function boot() {
     tool = t;
     toolbar.setTool(t);
     hud.setToolVerb(TOOL_VERB[t]);
-    // ball tool → show the held prop; leaving it hides the prop, but free balls,
+    // ball tool → hold-to-throw prop; leaving it hides the prop, but free balls,
     // in-flight fetch + pet follow keep running because fetchBall.update runs every frame
     fetchBall?.setActive(t === "ball");
   };
@@ -465,9 +466,12 @@ async function boot() {
     for (const building of GOLDMAN_SUPPRESSED_BUILDINGS) {
       tiles.suppressBuildingMesh(building.key, building.index);
     }
-    goldenGateTennis = createGoldenGateTennisSite(map).addTo(scene);
+    goldenGateTennis = createGoldenGateTennisSite(map, { physics }).addTo(scene);
     goldenGateTennis.setFoliageVisible(foliageOn);
   } catch (err) {
+    for (const building of GOLDMAN_SUPPRESSED_BUILDINGS) {
+      tiles.unsuppressBuildingMesh(building.key, building.index);
+    }
     console.warn("[boot] Goldman Tennis Center unavailable:", err);
   }
   try {
@@ -502,12 +506,13 @@ async function boot() {
   } catch (err) {
     console.warn("[boot] corona heights unavailable:", err);
   }
-  // Fetch-the-ball loop: the 🎾 tool throws bouncing balls (infinite supply);
-  // walk up and press E to pick one up, or take it from a waiting dog. A free
-  // dog in the Corona Heights park chases park throws, carries back and waits —
-  // two full fetches adopt it as a pet. Free balls, in-flight fetch and pet
-  // follow are driven every frame by fetchBall.update (tool-agnostic). park is
-  // a getter — coronaHeights is null-until-built.
+  // Fetch-the-ball loop: hold-to-throw (ball appears only while winding up;
+  // hands empty after release). Walk up and press E to pick one up, or take it
+  // from a waiting dog. A free dog in the Corona Heights park chases park
+  // throws, carries back and waits — two full fetches adopt it as a pet. Free
+  // balls, in-flight fetch and pet follow are driven every frame by
+  // fetchBall.update (tool-agnostic). park is a getter — coronaHeights is
+  // null-until-built.
   fetchBall = new FetchBall({
     scene,
     map,
@@ -526,15 +531,17 @@ async function boot() {
   // the nature soundscape's context/bus so HUD volume/mute and the corona
   // region fade all apply. Idles to a single distance check away from the park.
   const dogParkAudio = new DogParkAudio(nature, () => coronaHeights?.dogs ?? []);
-  // Busker trio up on the Corona Heights summit crown (moved up-slope from the
-  // SE shoulder so a 360 drone shot clears the crags and takes in Sutro, Buena
-  // Vista and the whole city). Same ESE facing. The module is placeless by
-  // design; move it with buskers.setPlacement(x, z, yaw) (it re-grounds itself).
+  // Busker trio right on the Corona Heights summit crown (the flat top the
+  // player stands on) so a 360 orbit clears the hill on every side and takes in
+  // Sutro, Buena Vista and the whole city. Same ESE facing. Grounds to
+  // groundTop — the LIFTED, walkable summit surface (the platform lift lives in
+  // groundTops, not the raw heightfield) — so the perch sits on top, not sunk
+  // into it. The module is placeless; move it with setPlacement (re-grounds).
   const buskers = createBuskerTrio({
-    x: 418,
-    z: 2772, // up the hill toward the summit crown, clear of the big crags
+    x: 412,
+    z: 2760, // summit platform centre — the crown
     yaw: -1.72, // unchanged facing (ESE) over downtown / the Mission
-    groundHeight: (x, z) => map.groundHeight(x, z),
+    groundHeight: (x, z) => map.groundTop(x, z),
     physics
   });
   scene.add(buskers.group);
@@ -625,6 +632,10 @@ async function boot() {
   let pickleballSwingQueued = false;
   let pickleballPromptSide: PickleballSide | null = null;
   let pickleballInput: PickleballInputIntent = {};
+  let pickleballLocalPose: PickleballLocalPose | null = null;
+  const pickleballUp = new THREE.Vector3(0, 1, 0);
+  const pickleballNetPosition = new THREE.Vector3();
+  const pickleballNetQuaternion = new THREE.Quaternion();
   const pickleballOwnerName = (id: number): string | null => {
     if (!id) return null;
     if (id === net.selfId) return net.name;
@@ -638,13 +649,37 @@ async function boot() {
     // Once a slot is claimed, only the relay-selected client advances physics.
     pickleball.setAuthoritative(authorityId === 0 || authorityId === net.selfId);
   };
+  const enterPickleballSide = (side: PickleballSide): boolean => {
+    if (!pickleball) return false;
+    exitToWalk();
+    if (!pickleball.enterSide(side, net.name)) return false;
+    player.setExternalEmbodimentHidden(true);
+    return true;
+  };
+  const finishPickleballExit = (side: PickleballSide) => {
+    if (!pickleball) return;
+    const pose = pickleballLocalPose;
+    pickleball.exitSide(side);
+    pickleballLocalPose = null;
+    if (pose) {
+      player.restoreState({
+        mode: "walk",
+        x: pose.worldPosition.x,
+        y: pose.worldPosition.y + 0.58,
+        z: pose.worldPosition.z,
+        heading: pose.worldHeading + Math.PI
+      });
+      chase.yaw = pose.worldHeading;
+    }
+    player.setExternalEmbodimentHidden(false);
+  };
   const requestPickleballSide = (side: PickleballSide) => {
     if (!pickleball || pendingPickleballClaim !== null || pickleball.localSide !== null) return;
     if (net.status === "online" && net.selfId) {
       pendingPickleballClaim = side;
       net.claimPickleball(side);
       hud.message("Claiming pickleball side…", 1.4);
-    } else if (pickleball.enterSide(side, net.name)) {
+    } else if (enterPickleballSide(side)) {
       hud.message("You’re playing · WASD move · click/Space swings · E leaves", 3.4);
     }
   };
@@ -657,7 +692,7 @@ async function boot() {
         net.releasePickleball(side);
       }
     } else {
-      pickleball.exitSide(side);
+      finishPickleballExit(side);
       hud.message("Back to exploring", 1.8);
     }
     return true;
@@ -666,17 +701,18 @@ async function boot() {
   net.onPickleballClaim = (side, ownerId, ok) => {
     if (ok && ownerId === net.selfId) {
       pendingPickleballClaim = null;
-      pickleball?.enterSide(side, net.name);
+      enterPickleballSide(side);
       hud.message("You’re playing · WASD move · click/Space swings · E leaves", 3.4);
     } else if (!ok && pendingPickleballClaim === side) {
       pendingPickleballClaim = null;
+      if (pickleball?.localSide === side) finishPickleballExit(side);
       hud.message(`${pickleballOwnerName(ownerId) ?? "Another player"} already has that side`, 2.6);
     }
   };
   net.onPickleballRelease = (side, ownerId, ok) => {
     if (ok && (ownerId === net.selfId || pendingPickleballRelease === side)) {
       pendingPickleballRelease = null;
-      pickleball?.exitSide(side);
+      finishPickleballExit(side);
       hud.message("Back to exploring", 1.8);
     } else if (!ok && pendingPickleballRelease === side) {
       pendingPickleballRelease = null;
@@ -871,7 +907,12 @@ async function boot() {
       hud.message(`Online as ${net.name} — M for the map`, 3.2);
     }
     else if (status === "full") hud.message(detail ?? "Server is full", 4);
-    // "offline" stays silent: single-player keeps working and Net retries forever
+    else if (status === "offline") {
+      pendingPickleballClaim = null;
+      pendingPickleballRelease = null;
+      syncPickleballSlots();
+      // Offline stays silent: the local AI match keeps working and Net retries.
+    }
   };
 
   // Name gate is wired at module startup so typing works during loading; this
@@ -2140,6 +2181,7 @@ async function boot() {
       };
       if (swing) pickleballSwingQueued = true;
       const frame = pickleball.update(frameDt, elapsed, player.position, pickleballInput);
+      pickleballLocalPose = frame.localPose;
       if (frame.requestedRelease !== null) {
         pickleballEConsumed = releasePickleballSide();
       } else if (frame.requestedSide !== null) {
@@ -2310,13 +2352,13 @@ async function boot() {
         forest?.fireGummy(rayOrigin, aim, player.velocity);
       }
     } else if (tool === "ball") {
-      // ball tool: every press throws another bouncing ball (infinite supply).
-      // Pick thrown balls back up with E (see KeyE handler above).
-      if (input.firePressed && !input.suspended && fireCooldown <= 0 && fetchBall) {
+      // Hold to wind up (ball appears in hand); release to throw along the view.
+      // Hands stay empty afterward — pick thrown balls back up with E.
+      if (fetchBall) {
         chase.interactionDir(aim, player);
-        chase.viewOrigin(rayOrigin, player);
-        fetchBall.click(rayOrigin, aim);
-        fireCooldown = 0.35;
+        const cancelled =
+          input.suspended || (input.device === "kb" && (!input.locked || !document.hasFocus()));
+        fetchBall.driveThrow(frameDt, input.firing && !input.suspended, aim, cancelled);
       }
     } else if (input.firing) {
       chase.interactionDir(aim, player);
@@ -2404,6 +2446,14 @@ async function boot() {
     // passenger's seat is glued to this frame's view of the driver's car
     remotes.selfId = net.selfId;
     remotes.update(frameDt);
+    // The court rig is the visible embodiment of a claimed side. Hide the
+    // owner's ordinary remote avatar so the two representations do not overlap.
+    for (const ownerId of net.pickleballSlots) {
+      if (ownerId && ownerId !== net.selfId) {
+        const remote = remotes.avatars.get(ownerId);
+        if (remote) remote.root.visible = false;
+      }
+    }
     if (passengerOf !== null) {
       if (remotes.ridePose(passengerOf, ridePos, rideQuat)) {
         player.setRidePose(ridePos, rideQuat, frameDt);
@@ -2418,6 +2468,21 @@ async function boot() {
       // 120 Hz frames don't see a 60 Hz stutter
       player.afterSteps(steps, accumulator / physics.world.fixedTimeStep);
       player.syncMesh(frameDt);
+    }
+    if (pickleballLocalPose) {
+      const pose = pickleballLocalPose;
+      const y = pose.worldPosition.y + 0.58;
+      player.position.set(pose.worldPosition.x, y, pose.worldPosition.z);
+      player.renderPosition.copy(player.position);
+      player.heading = pose.worldHeading + Math.PI;
+      player.velocity.set(0, 0, 0);
+      pickleballNetQuaternion.setFromAxisAngle(pickleballUp, pose.worldHeading);
+      player.quaternion.copy(pickleballNetQuaternion);
+      player.renderQuaternion.copy(pickleballNetQuaternion);
+      const mesh = player.meshes.walk;
+      mesh.position.copy(player.renderPosition);
+      mesh.quaternion.copy(pickleballNetQuaternion);
+      player.setExternalEmbodimentHidden(true);
     }
     const altitude = player.position.y - map.groundHeight(player.position.x, player.position.z);
     highUp = highUp ? altitude > 110 : altitude > 150;
@@ -2434,7 +2499,7 @@ async function boot() {
     coronaHeights?.update(frameDt, elapsed, camera.position);
     // Ball fetch loop + pet follow run every frame, tool-agnostic, so a thrown
     // ball keeps bouncing and a returning/adopted dog keeps moving even after
-    // switching tools. verb() flips the HUD Click row throw↔take live.
+    // switching tools. verb() keeps the HUD Click row in sync with hold-to-throw.
     fetchBall?.update(frameDt, elapsed, player.position);
     if (tool === "ball" && fetchBall) hud.setToolVerb(fetchBall.verb());
     // brief over-the-shoulder pull-in during a throw, then ease back. Set before
@@ -2450,7 +2515,7 @@ async function boot() {
         throwZoomBase = -1;
       }
     }
-    buskers.update(frameDt, camera, windGustValue?.() ?? 0);
+    buskers.update(frameDt, camera, windGustValue?.() ?? 0, sky.sunElevation);
     // MASTER foliage gate: when the "/" panel's foliage switch is OFF, every
     // vegetation group is already hidden (setFoliageVisible) — skip all its
     // per-frame work too so it costs near zero. We STILL advance the shared wind
@@ -2562,7 +2627,13 @@ async function boot() {
     // position AND facing — walk's body quat is pinned, the mesh isn't; the
     // ride id lets viewers glue me into my driver's car), redraw the minimap.
     // remotes.update already ran before the passenger glue above.
-    net.sendState(player.mode, player.meshes[player.mode].position, player.meshes[player.mode].quaternion, player.speed, passengerOf ?? 0);
+    if (pickleballLocalPose) {
+      pickleballNetPosition.copy(player.renderPosition);
+      pickleballNetQuaternion.setFromAxisAngle(pickleballUp, pickleballLocalPose.worldHeading);
+      net.sendState("walk", pickleballNetPosition, pickleballNetQuaternion, 0, 0);
+    } else {
+      net.sendState(player.mode, player.meshes[player.mode].position, player.meshes[player.mode].quaternion, player.speed, passengerOf ?? 0);
+    }
     if (pickleball && elapsed >= pickleballNetSendAt && net.status === "online") {
       pickleballNetSendAt = elapsed + 1 / 12;
       const side = pickleball.localSide;

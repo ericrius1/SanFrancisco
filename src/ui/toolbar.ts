@@ -7,7 +7,7 @@ export const TOOL_ORDER: ToolName[] = ["ball", "spray", "bubbles"];
 
 /** What the HUD's Click row should say per tool. */
 export const TOOL_VERB: Record<ToolName, string> = {
-  ball: "throw the ball",
+  ball: "hold to throw",
   spray: "sling paintballs",
   bubbles: "blow bubbles"
 };

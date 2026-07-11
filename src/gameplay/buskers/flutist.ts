@@ -94,7 +94,12 @@ export const buildFlutist: MusicianBuilder = (audio, part) => {
   // graphite hoodie / teal accent, hood built by hand below (hat "none" so
   // a fringe peeks out under the hood shell)
   const rig = buildRig({ skin: 2, hair: "short", hat: "none", outfit: "hoodie", color: 5, accent: 7 });
-  rig.avatar.materials.hair.color.set(0x63431e); // warm shaggy brown
+  // lighter warm brown so it still reads brown in the hood's shadow (the
+  // darker 0x63431e looked black next to the graphite shell)
+  rig.avatar.materials.hair.color.set(0x9a6430);
+  // hide the default short-hair cap — under the raised hood it reads as a
+  // black helmet; only the fringe / sideburns / nape lock below should show
+  for (const h of rig.avatar.hair.short) h.visible = false;
   rig.group.position.y = 0.11; // seat of the pants on the deck top
   const group = new THREE.Group();
   group.name = "busker-flutist";
@@ -130,8 +135,8 @@ export const buildFlutist: MusicianBuilder = (audio, part) => {
   const hoodCheekL = mesh(rig.head, cheekGeo, hoodMat, 0.155, 0.19, 0.01);
   const hoodCheekR = mesh(rig.head, cheekGeo, hoodMat, -0.155, 0.19, 0.01);
 
-  /* ---- shaggy brown hair spilling out under the hood: a long uneven fringe
-     over the brow, sideburns past the ears, and a longer lock at the nape ---- */
+  /* ---- shaggy brown fringe under the hood: uneven brow fringe, sideburns
+     past the ears, and a longer lock at the nape (short-hair cap is hidden) ---- */
   const hairMat = rig.avatar.materials.hair; // shared — never disposed here
   const fringeL = mesh(rig.head, geo(0.1, 0.17, 0.05), hairMat, -0.08, 0.25, -0.125);
   fringeL.rotation.z = 0.12;

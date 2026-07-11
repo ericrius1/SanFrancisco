@@ -855,8 +855,9 @@ function makeDogParkSign(map: WorldMap) {
     new THREE.PlaneGeometry(2.58, 1.23),
     new THREE.MeshBasicMaterial({ map: signTexture("CORONA HEIGHTS", "DOG PLAY AREA") })
   );
-  addBox(group, post, [0.14, 2.2, 0.14], [-0.9, 1.1, 0]);
-  addBox(group, post, [0.14, 2.2, 0.14], [0.9, 1.1, 0]);
+  // Flush with the board edges (±1.35) so posts don't cover the side lettering.
+  addBox(group, post, [0.14, 2.2, 0.14], [-1.28, 1.1, 0]);
+  addBox(group, post, [0.14, 2.2, 0.14], [1.28, 1.1, 0]);
   board.position.y = 1.65;
   board.castShadow = true;
   face.position.set(0, 1.65, -0.066);

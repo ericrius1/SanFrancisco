@@ -9,10 +9,10 @@ export const PICKLEBALL_COURT = Object.freeze({
   netCentreHeight: 0.8636, // 34 in
   netSidelineHeight: 0.9144, // 36 in
   netPostX: 3.3528, // 22 ft post-to-post
-  // Current USA Pickleball minimum playing surface: 30 x 60 ft. The painted
-  // court stays 20 x 44 ft inside this runoff apron.
-  apronWidth: 9.144,
-  apronLength: 18.288,
+  // The painted court remains regulation 20 x 44 ft. This placeholder's apron
+  // matches the surveyed Goldman mini-court bay so it does not overlap 14A/14C.
+  apronWidth: 8.35,
+  apronLength: 16.65,
   ballRadius: 0.037,
   paddleRadius: 0.215,
   paddleThickness: 0.018

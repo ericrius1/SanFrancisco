@@ -3,7 +3,7 @@
 // adds calm plaster, base/crown trim, framed daylight panels and optional curtains.
 // The ground-floor front-door span is explicitly cut out.
 import { PanelBuilder, type Vec3 } from "../core/facade";
-import { WALL_H, type Rect } from "./common";
+import type { Rect } from "./common";
 import type { InteriorStyle } from "./style";
 
 export interface FrontOpening {

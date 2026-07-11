@@ -70,7 +70,8 @@ export class WorldCursor {
     mat.colorNode = col.mul(LIGHT_SCALE * 0.7);
 
     applyMaterialPolicy(mat, "additiveWorld");
-    mat.depthTest = true; // rests on the surface it points at, occludes behind it
+    // additiveWorld depth-tests against the scene, so the marker rests on the
+    // surface it points at and remains occluded by foreground geometry.
     mat.side = THREE.DoubleSide;
     mat.fog = false;
     mat.toneMapped = false;

@@ -1,6 +1,7 @@
 import * as THREE from "three/webgpu";
 import { lightAnchor } from "../../player/lightPool";
 import { GuitaristStand, LauncherRig, RocketBattery, buildGuitarPlayer } from "../../gameplay/launchers";
+import { applyMaterialPolicy, tagTransparency } from "../../render/transparency";
 
 /**
  * A sleek open-cockpit speedboat — the fast cousin of the day-sailer. Front is
@@ -23,7 +24,10 @@ export function buildSpeedboatMesh(): THREE.Group {
   const deckTan = new THREE.MeshLambertMaterial({ color: 0xb9987a });
   const trim = new THREE.MeshLambertMaterial({ color: 0x1a1c22 });
   const chrome = new THREE.MeshLambertMaterial({ color: 0x9aa3ad });
-  const glass = new THREE.MeshLambertMaterial({ color: 0x0e1a24, transparent: true, opacity: 0.55 });
+  const glass = applyMaterialPolicy(
+    new THREE.MeshLambertMaterial({ color: 0x0e1a24, opacity: 0.55 }),
+    "alphaSurface"
+  );
 
   // hull silhouette (top-down): pointed bow at -Z, transom at +Z. Shape is laid
   // out in X (beam) / Y (length) then rotated so length runs along Z and the
@@ -80,6 +84,7 @@ export function buildSpeedboatMesh(): THREE.Group {
   console_.position.set(0, 0.42, -0.2);
   g.add(console_);
   const screen = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.34, 0.06), glass);
+  tagTransparency(screen, { profile: "alphaSurface" });
   screen.position.set(0, 0.66, -0.42);
   screen.rotation.x = -0.5;
   g.add(screen);

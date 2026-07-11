@@ -6,10 +6,10 @@ import { midiHz, NoteCursor } from "./types";
 import type { MusicianBuilder, NoteEvent, TrioClock } from "./types";
 
 /**
- * The handpan girl — centre seat, leader of the trio. Long auburn hair that
- * sways in the wind, a thin gold headband, bare arms, and the classic bronze
- * UFO lens resting on her lap over the dangling legs. She opens the song and
- * counts the loop back in with four clear nods.
+ * The handpan girl — centre seat, leader of the trio. Long dirty-blonde hair
+ * that sways in the wind, swept bangs, charcoal cat-eye sunglasses, bare arms,
+ * and the classic bronze UFO lens resting on her lap over the dangling legs.
+ * She opens the song and counts the loop back in with four clear nods.
  *
  * Tap choreography: every distinct pitch in her part is pinned to one dimple
  * on the drum (sorted pitches zig-zag around the ring like a real D Kurd, so
@@ -63,7 +63,7 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
   const ownedGeos: THREE.BufferGeometry[] = [];
   const ownedMats: THREE.Material[] = [];
 
-  // ---- figure: cool black stagewear, long auburn hair, no hat, bare arms.
+  // ---- figure: cool black stagewear, long dirty-blonde hair, no hat, bare arms.
   // Per-rig overrides keep this look local to the performer instead of adding a
   // special case to the shared player-avatar palette.
   const rig = buildRig({ skin: 5, hair: "long", hat: "none", outfit: "tee", color: 5, accent: 3 });
@@ -72,13 +72,94 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
   rig.avatar.materials.pants.color.set(0x090b11);
   rig.avatar.materials.shoe.color.set(0x1a1f29);
   rig.avatar.materials.sole.color.set(0x050608);
-  rig.avatar.materials.trim.color.set(0xc69a45); // restrained brass headband/neckline
+  rig.avatar.materials.trim.color.set(0x2b3341); // cool slate tee inset, matching the eyewear
+  rig.avatar.materials.hair.color.set(0xc2a673); // beige dirty blonde, not auburn/brown
   rig.group.position.y = SEAT_RIG_Y;
   // Give the upper arms a clean shoulder seam. The forearms do the inward
   // reaching; the upper-arm boxes no longer have to pass through the torso.
   rig.armL.position.x = 0.315;
   rig.armR.position.x = -0.315;
   group.add(rig.group);
+
+  // Replace this rig's shared cube with an owned, low-poly tapered face. The
+  // octagonal temples and narrower jaw keep the chunky house style while the
+  // silhouette reads softer and less square. Reassignment is important: the
+  // original BoxGeometry comes from the rig-wide cache and must not be mutated.
+  const faceGeo = new THREE.CylinderGeometry(0.14, 0.105, 0.28, 8, 1, false, Math.PI / 8).toNonIndexed();
+  faceGeo.computeVertexNormals();
+  ownedGeos.push(faceGeo);
+  rig.avatar.headBlock.geometry = faceGeo;
+  rig.avatar.headBlock.position.z = -0.02;
+
+  // The stock shades are a single rectangular visor. Hide only this rig's bar
+  // (its material is per-rig), then layer inset smoke lenses over angular black
+  // silhouettes to make oversized cat-eye frames with no metallic/gold rim.
+  const stockShades = rig.head.children.find(
+    (child) => child instanceof THREE.Mesh && child.material === rig.avatar.materials.visor
+  );
+  if (stockShades) stockShades.visible = false;
+
+  const frameMat = new THREE.MeshLambertMaterial({ color: 0x10151d, side: THREE.DoubleSide });
+  const lensMat = new THREE.MeshLambertMaterial({ color: 0x2a3443, side: THREE.DoubleSide });
+  const lipMat = new THREE.MeshLambertMaterial({ color: 0xa85f68 });
+  const hairLowMat = new THREE.MeshLambertMaterial({ color: 0x8b704f });
+  const hairHiMat = new THREE.MeshLambertMaterial({ color: 0xddc995 });
+  ownedMats.push(frameMat, lensMat, lipMat, hairLowMat, hairHiMat);
+
+  const polygonGeo = (points: readonly (readonly [number, number])[]) => {
+    const shape = new THREE.Shape();
+    shape.moveTo(points[0][0], points[0][1]);
+    for (let i = 1; i < points.length; i++) shape.lineTo(points[i][0], points[i][1]);
+    shape.closePath();
+    const geo = new THREE.ShapeGeometry(shape);
+    ownedGeos.push(geo);
+    return geo;
+  };
+  const mirror = (points: readonly (readonly [number, number])[]) =>
+    points.map(([x, y]) => [-x, y] as const).reverse();
+  const framePoints = [
+    [0.014, 0.263],
+    [0.134, 0.28],
+    [0.122, 0.2],
+    [0.016, 0.207]
+  ] as const;
+  const lensPoints = [
+    [0.023, 0.255],
+    [0.121, 0.268],
+    [0.111, 0.212],
+    [0.024, 0.216]
+  ] as const;
+  for (const side of [1, -1] as const) {
+    const frame = new THREE.Mesh(polygonGeo(side === 1 ? framePoints : mirror(framePoints)), frameMat);
+    frame.position.z = -0.154;
+    rig.head.add(frame);
+    const lens = new THREE.Mesh(polygonGeo(side === 1 ? lensPoints : mirror(lensPoints)), lensMat);
+    lens.position.z = -0.157;
+    rig.head.add(lens);
+  }
+  const bridgeGeo = new THREE.BoxGeometry(0.038, 0.012, 0.012);
+  const wingGeo = new THREE.BoxGeometry(0.026, 0.014, 0.02);
+  ownedGeos.push(bridgeGeo, wingGeo);
+  const bridge = new THREE.Mesh(bridgeGeo, frameMat);
+  bridge.position.set(0, 0.235, -0.155);
+  rig.head.add(bridge);
+  for (const side of [1, -1] as const) {
+    const wing = new THREE.Mesh(wingGeo, frameMat);
+    wing.position.set(side * 0.133, 0.258, -0.137);
+    wing.rotation.z = side * 0.18;
+    rig.head.add(wing);
+  }
+
+  // A tiny two-stroke smile helps the tapered face read at gameplay distance
+  // without turning the intentionally minimal voxel face into a portrait.
+  const lipGeo = new THREE.BoxGeometry(0.038, 0.011, 0.01);
+  ownedGeos.push(lipGeo);
+  for (const side of [1, -1] as const) {
+    const lip = new THREE.Mesh(lipGeo, lipMat);
+    lip.position.set(side * 0.018, 0.098, -0.124);
+    lip.rotation.z = side * 0.14;
+    rig.head.add(lip);
+  }
 
   // a normal medium-long hair fall down the back — one soft sheet of three
   // overlapping slats, pivoted at the nape BEHIND the head so it always hangs
@@ -91,8 +172,9 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
   rig.head.add(hairFall);
   const slats: THREE.Mesh[] = [];
   const slatBaseZ: number[] = [];
+  const slatMats = [hairLowMat, hairMat, hairHiMat] as const;
   for (let i = 0; i < 3; i++) {
-    const s = new THREE.Mesh(slatGeo, hairMat);
+    const s = new THREE.Mesh(slatGeo, slatMats[i]);
     s.position.set((i - 1) * 0.075, -0.15, 0.006 + Math.abs(i - 1) * 0.008);
     const baseZ = (i - 1) * 0.13; // gentle outward fan
     s.rotation.z = baseZ;
@@ -101,13 +183,23 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
     slats.push(s);
     slatBaseZ.push(baseZ);
   }
-  // thin gold trim headband across the hairline
-  const bandGeo = new THREE.BoxGeometry(0.272, 0.03, 0.272);
-  ownedGeos.push(bandGeo);
-  const band = new THREE.Mesh(bandGeo, rig.avatar.materials.trim);
-  band.position.set(0, 0.285, 0);
-  band.castShadow = true;
-  rig.head.add(band);
+
+  // Asymmetric swept bangs echo the reference hairline and break up the old
+  // ruler-straight crown. They sit behind the glasses, so the cat-eye shape
+  // stays crisp even when the head turns.
+  const bangGeo = new THREE.BoxGeometry(0.18, 0.045, 0.035);
+  const frontLockGeo = new THREE.BoxGeometry(0.052, 0.15, 0.05);
+  ownedGeos.push(bangGeo, frontLockGeo);
+  const bang = new THREE.Mesh(bangGeo, hairHiMat);
+  bang.position.set(0.025, 0.305, -0.14);
+  bang.rotation.z = -0.13;
+  bang.castShadow = true;
+  rig.head.add(bang);
+  const frontLock = new THREE.Mesh(frontLockGeo, hairMat);
+  frontLock.position.set(0.137, 0.245, -0.116);
+  frontLock.rotation.z = -0.1;
+  frontLock.castShadow = true;
+  rig.head.add(frontLock);
 
   // ---- the handpan: parented to the GROUP (not a limb) so it never bobs
   const shellMat = new THREE.MeshLambertMaterial({ color: 0x8a5a33 });
@@ -442,7 +534,7 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
     schedule,
     dispose() {
       group.parent?.remove(group);
-      for (const g of ownedGeos) g.dispose(); // pan + strands + band only —
+      for (const g of ownedGeos) g.dispose(); // face + styling + pan + strands —
       for (const m of ownedMats) m.dispose(); // never the rig's shared cache
     }
   };

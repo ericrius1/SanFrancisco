@@ -1,4 +1,5 @@
 import * as THREE from "three/webgpu";
+import { BodyType, type Physics } from "../../core/physics";
 import type { WorldMap } from "../heightmap";
 import {
   DEFAULT_GAMEPLAY_COURT_REF,
@@ -40,9 +41,14 @@ export type GoldenGateTennisSiteOptions = {
    */
   reservedCourtRef?: GoldmanPickleballCourtRef | null;
   includeTrees?: boolean;
+  /** Optional stepped/query physics for perimeter fences and court nets. */
+  physics?: Physics;
 };
 
-const COURT_PAD_THICKNESS = 0.2;
+// The real center is terraced into a slope. A deep foundation lets every flat
+// surveyed pad sit above the baked terrain without floating side gaps.
+const COURT_PAD_THICKNESS = 1.75;
+const COURT_PAD_TOP = 0.03;
 const COURT_PAINT_LIFT = 0.05;
 const COURT_SURFACE_LIFT = COURT_PAINT_LIFT + 0.035 / 2;
 const LINE_LIFT = 0.073;
@@ -59,23 +65,43 @@ function localPoint(court: GoldmanCourtSpec, lateral: number, along: number): { 
   };
 }
 
-/** Local grading only: samples the host terrain without claiming its one global overlay. */
+/** Terrace each pad above the highest host-terrain sample under its footprint. */
 function courtGrade(map: WorldMap, court: GoldmanCourtSpec): number {
-  const hx = court.padWidth * 0.46;
-  const hz = court.padLength * 0.46;
-  const samples: [number, number][] = [
-    [0, 0],
-    [-hx, -hz],
-    [hx, -hz],
-    [hx, hz],
-    [-hx, hz]
-  ];
-  let total = 0;
-  for (const [lateral, along] of samples) {
-    const p = localPoint(court, lateral, along);
-    total += map.groundTop(p.x, p.z);
+  const hx = court.padWidth * 0.5;
+  const hz = court.padLength * 0.5;
+  let highest = -Infinity;
+  for (let iz = 0; iz <= 8; iz++) {
+    const along = THREE.MathUtils.lerp(-hz, hz, iz / 8);
+    for (let ix = 0; ix <= 5; ix++) {
+      const lateral = THREE.MathUtils.lerp(-hx, hx, ix / 5);
+      const p = localPoint(court, lateral, along);
+      highest = Math.max(highest, map.baseGroundTop(p.x, p.z));
+    }
   }
-  return total / samples.length;
+  return highest + 0.025;
+}
+
+function courtLocal(court: GoldmanCourtSpec, x: number, z: number): { lateral: number; along: number } {
+  const dx = x - court.x;
+  const dz = z - court.z;
+  const c = Math.cos(court.yaw);
+  const s = Math.sin(court.yaw);
+  return { lateral: dx * c - dz * s, along: dx * s + dz * c };
+}
+
+/** Physics/player grounding that exactly matches the visible terraced pads. */
+function installCourtGrounding(map: WorldMap, grades: ReadonlyMap<GoldmanCourtRef, number>) {
+  map.setGroundTopOverlay((x, z, base) => {
+    for (const court of GOLDMAN_COURTS) {
+      const local = courtLocal(court, x, z);
+      if (Math.abs(local.lateral) > court.padWidth / 2 || Math.abs(local.along) > court.padLength / 2) continue;
+      const grade = grades.get(court.ref)!;
+      const onPaint =
+        Math.abs(local.lateral) <= court.playWidth / 2 && Math.abs(local.along) <= court.playLength / 2;
+      return grade + (onPaint ? COURT_SURFACE_LIFT : COURT_PAD_TOP);
+    }
+    return base;
+  });
 }
 
 function composeBoxMatrix(
@@ -113,7 +139,7 @@ function makeCourtBoxes(
     composeBoxMatrix(
       matrix,
       court.x,
-      playingArea ? y + COURT_PAINT_LIFT : y - COURT_PAD_THICKNESS * 0.35,
+      playingArea ? y + COURT_PAINT_LIFT : y + COURT_PAD_TOP - COURT_PAD_THICKNESS / 2,
       court.z,
       court.yaw,
       playingArea ? court.playWidth : court.padWidth,
@@ -271,7 +297,7 @@ function makePaths(map: WorldMap, paths: readonly GoldmanPathSpec[]) {
     }
     for (let i = 0; i < pts.length - 1; i++) {
       const a = base + i * 2;
-      indices.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
+      indices.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
     }
   }
   const geometry = new THREE.BufferGeometry();
@@ -311,7 +337,7 @@ function makeClubhouse(map: WorldMap) {
     steps: 1
   });
   shell.rotateX(-Math.PI / 2);
-  shell.translate(anchor[0], grade - 1.25, anchor[1]);
+  shell.translate(anchor[0], grade - 2.25, anchor[1]);
   const walls = new THREE.Mesh(
     shell,
     new THREE.MeshStandardMaterial({ color: 0xd8d0bb, roughness: 0.82, metalness: 0 })
@@ -414,6 +440,72 @@ function makeFences(map: WorldMap, runs: readonly FenceRun[]) {
   return [panels, postMesh] as const;
 }
 
+function registerStaticBox(
+  physics: Physics,
+  bodies: number[],
+  box: { x: number; y: number; z: number; hx: number; hy: number; hz: number; yaw: number }
+) {
+  const body = physics.world.createBox({
+    type: BodyType.Static,
+    position: [box.x, box.y, box.z],
+    halfExtents: [box.hx, box.hy, box.hz],
+    friction: 0.72
+  });
+  const quat: [number, number, number, number] = [0, Math.sin(box.yaw / 2), 0, Math.cos(box.yaw / 2)];
+  physics.world.setBodyTransform(body, [box.x, box.y, box.z], quat);
+  physics.addQuerySolid(body, box);
+  bodies.push(body);
+}
+
+function registerSiteColliders(
+  map: WorldMap,
+  physics: Physics,
+  anchors: ReadonlyMap<GoldmanCourtRef, GoldmanCourtAnchor>,
+  bodies: number[]
+) {
+  // Short panels follow the terrain closely, matching the rendered 10-ft runs.
+  for (const run of [
+    { points: GOLDMAN_SITE_OUTLINE, closed: true },
+    { points: GOLDMAN_NORTHEAST_POD_OUTLINE, closed: true }
+  ] as const) {
+    const source = run.closed ? [...run.points, run.points[0]] : [...run.points];
+    const pts = densify(source, 3.2);
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i];
+      const b = pts[i + 1];
+      const dx = b[0] - a[0];
+      const dz = b[1] - a[1];
+      const x = (a[0] + b[0]) / 2;
+      const z = (a[1] + b[1]) / 2;
+      if (x < -1354 && z > 2160 && z < 2232) continue; // clubhouse/entry opening
+      registerStaticBox(physics, bodies, {
+        x,
+        y: map.groundTop(x, z) + FENCE_HEIGHT / 2,
+        z,
+        hx: Math.hypot(dx, dz) / 2,
+        hy: FENCE_HEIGHT / 2,
+        hz: 0.055,
+        yaw: -Math.atan2(dz, dx)
+      });
+    }
+  }
+  // Nets are real waist-high obstacles for an exploring avatar. The reserved
+  // 14B net is included here even though its visual belongs to the game layer.
+  for (const court of GOLDMAN_COURTS) {
+    const anchor = anchors.get(court.ref)!;
+    const height = court.kind === "tennis" ? 0.96 : 0.88;
+    registerStaticBox(physics, bodies, {
+      x: court.x,
+      y: anchor.y + height / 2,
+      z: court.z,
+      hx: court.playWidth / 2 + 0.32,
+      hy: height / 2,
+      hz: 0.045,
+      yaw: court.yaw
+    });
+  }
+}
+
 type TreePlacement = { x: number; z: number; scale: number; yaw: number; crown: number };
 
 function hash(index: number, salt: number) {
@@ -456,7 +548,10 @@ function makeTrees(map: WorldMap) {
   ellipseTrees(candidates, -1227, 2228, 67, 54, 24, 51, true);
   // Cluster ellipses intentionally overlap the fence line so the canopy reads
   // continuous; reject their inward half so no trunk lands on a play surface.
-  const placements = candidates.filter((tree) => !inGoldmanTennisSite(tree.x, tree.z, 3.5));
+  const placements = candidates.filter((tree) => {
+    const surface = map.surfaceType(tree.x, tree.z);
+    return surface !== 3 && surface !== 4 && !inGoldmanTennisSite(tree.x, tree.z, 3.5);
+  });
 
   const trunks = new THREE.InstancedMesh(
     new THREE.CylinderGeometry(0.46, 0.34, 1, 6),
@@ -505,7 +600,11 @@ function makeTrees(map: WorldMap) {
 }
 
 function makeHippieHillEdge(map: WorldMap) {
-  const path: GoldmanPathSpec = { name: "Hippie Hill edge", width: 1.7, points: HIPPIE_HILL_OUTLINE };
+  const path: GoldmanPathSpec = {
+    name: "Hippie Hill edge",
+    width: 1.7,
+    points: [...HIPPIE_HILL_OUTLINE, HIPPIE_HILL_OUTLINE[0]]
+  };
   const mesh = makePaths(map, [path]);
   mesh.name = "goldman_hippie_hill_edge_path";
   return mesh;
@@ -517,11 +616,14 @@ export class GoldenGateTennisSite {
   readonly courtAnchors: ReadonlyMap<GoldmanCourtRef, GoldmanCourtAnchor>;
   readonly gameplayAnchor: GoldmanCourtAnchor;
   readonly reservedCourtRef: GoldmanPickleballCourtRef | null;
+  #physics?: Physics;
+  #bodies: number[] = [];
 
   constructor(map: WorldMap, options: GoldenGateTennisSiteOptions = {}) {
     this.group.name = "goldman_tennis_center";
     this.vegetation.name = "goldman_tennis_vegetation";
     this.reservedCourtRef = options.reservedCourtRef === undefined ? DEFAULT_GAMEPLAY_COURT_REF : options.reservedCourtRef;
+    this.#physics = options.physics;
 
     const grades = new Map<GoldmanCourtRef, number>();
     const anchors = new Map<GoldmanCourtRef, GoldmanCourtAnchor>();
@@ -562,6 +664,8 @@ export class GoldenGateTennisSite {
 
     if (options.includeTrees !== false) this.vegetation.add(...makeTrees(map));
     this.group.add(this.vegetation);
+    installCourtGrounding(map, grades);
+    if (this.#physics) registerSiteColliders(map, this.#physics, anchors, this.#bodies);
   }
 
   getCourtAnchor(ref: GoldmanCourtRef): GoldmanCourtAnchor {
@@ -590,6 +694,13 @@ export class GoldenGateTennisSite {
     });
     for (const geometry of geometries) geometry.dispose();
     for (const material of materials) material.dispose();
+    if (this.#physics) {
+      for (const body of this.#bodies) {
+        this.#physics.removeQuerySolid(body);
+        this.#physics.world.destroyBody(body);
+      }
+      this.#bodies.length = 0;
+    }
     this.group.removeFromParent();
   }
 }

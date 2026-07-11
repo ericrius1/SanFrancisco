@@ -24,6 +24,7 @@ import { auditSceneTransparency } from "../render/transparency";
 import type { Fireworks } from "../fx/fireworks";
 import type { TileStreamer } from "../world/tiles";
 import { withTweakBindingEventsSuppressed } from "../core/persist";
+import { BUSKER_FIREFLY_TUNING } from "../gameplay/buskers/fireflies";
 
 type WireframeMaterial = THREE.Material & { wireframe: boolean };
 
@@ -519,8 +520,12 @@ export class DebugPanel {
 
     this.#moveFolders = addMovementTuning(advanced);
 
-    // fireworks bindings read/write the params object the sim consumes each frame
-    this.#monitorBindings = this.#fireworks?.addTuning(advanced) ?? [];
+    // Particle systems live together; fireflies are a tiny CPU-driven ambient
+    // group, while fireworks own their GPU simulation controls and monitors.
+    const particles = advanced.addFolder({ title: "particles" });
+    const fireflies = particles.addFolder({ title: "busker fireflies" });
+    BUSKER_FIREFLY_TUNING.bind(fireflies);
+    this.#monitorBindings = this.#fireworks?.addTuning(particles) ?? [];
 
     // Full GPU profiler (three.js Inspector: FPS/CPU/GPU graph, timing, memory).
     // Heavy — per-frame GPU timestamp queries + canvas redraw — so it's OFF by

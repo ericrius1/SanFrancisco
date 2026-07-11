@@ -176,7 +176,7 @@ export class HUD {
   #msgTimer = 0
   #current: PlayerMode = "walk"
   #device: "kb" | "pad" = "kb"
-  #toolVerb = "throw the ball" // what a click does right now (the toolbar's tool)
+  #toolVerb = "hold to throw" // what a click does right now (the toolbar's tool)
   #historyCanBack = false
   #historyCanForward = false
 
@@ -198,11 +198,13 @@ export class HUD {
 
   /** The Click/X row tracks the active toolbar tool. */
   setToolVerb(verb: string) {
+    if (verb === this.#toolVerb) return
     this.#toolVerb = verb
     this.#renderHelp()
   }
 
   setMode(mode: PlayerMode) {
+    if (mode === this.#current) return
     this.#current = mode
     this.#renderHelp()
   }

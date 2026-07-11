@@ -317,3 +317,17 @@ export function polyGroundSlab(
   }
   cols.push({ x: rectCX(bb), y: y - SLAB, z: rectCZ(bb), hx: rectW(bb) / 2, hy: SLAB, hz: rectD(bb) / 2, yaw: 0 });
 }
+
+/** Footprint-faithful downward ceiling for the top occupied storey. Unlike the
+ * room-plan rectangle, this seals concave bays and shallow frontage notches too,
+ * so exterior crown lines cannot peek through around an irregular floor plate. */
+export function polyCeiling(
+  out: PanelBuilder, poly: readonly (readonly [number, number])[],
+  tris: number[], y: number, mat = "int.ceil",
+): void {
+  const verts: Vec3[] = poly.map(([x, z]) => [x, y, z]);
+  for (let t = 0; t + 2 < tris.length; t += 3) {
+    const a = verts[tris[t]], b = verts[tris[t + 1]], c = verts[tris[t + 2]];
+    out.quad(mat, a, c, b, a, [0, -1, 0]);
+  }
+}

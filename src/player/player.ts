@@ -130,6 +130,7 @@ export class Player {
   #planeAnim: PlaneAnim;
   #avatar: AvatarTraits;
   #firstPersonView = false;
+  #externalEmbodimentHidden = false;
   #hasWheel = false;
   #animT = 0; // free-running clock for idle sway/bob
   #strideT = 0; // stride/stroke phase, advanced by speed
@@ -253,9 +254,14 @@ export class Player {
 
   /** Hide only the local walk embodiment once the camera reaches the FPS eye. */
   setFirstPersonView(active: boolean) {
-    if (this.#firstPersonView === active) return;
     this.#firstPersonView = active;
-    this.meshes.walk.visible = !active;
+    this.meshes.walk.visible = !active && !this.#externalEmbodimentHidden;
+  }
+
+  /** Let an in-world activity rig embody the local player without moving the camera target. */
+  setExternalEmbodimentHidden(hidden: boolean) {
+    this.#externalEmbodimentHidden = hidden;
+    this.meshes[this.mode].visible = !hidden && (this.mode !== "walk" || !this.#firstPersonView);
   }
 
   #destroyBody() {

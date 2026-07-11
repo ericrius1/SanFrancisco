@@ -92,7 +92,7 @@ for (let seed = 1; seed <= 1200; seed++) {
     const colliders = [];
     const props = furnish(
       new PanelBuilder(), colliders, stair?.region ?? null,
-      roles[(seed + room) % roles.length], layout.rooms[room], 0, rng(seed, 300 + room),
+      roles[(seed + room) % roles.length], layout.rooms[room], 0, 3.4, rng(seed, 300 + room),
       circulation.byRoom[room], style,
     );
     for (let i = 0; i < props.length; i++) {

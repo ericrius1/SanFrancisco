@@ -362,8 +362,11 @@ export class Net {
     ws.onmessage = (ev) => this.#handle(String(ev.data));
     ws.onclose = () => {
       this.#ws = null;
-      this.#resetPickleball();
+      // Clear identity before synthetic slot-release notifications so the app
+      // can keep an already-controlled side alive as an offline AI match and
+      // reclaim it after reconnect, instead of treating disconnect as a leave.
       this.selfId = 0;
+      this.#resetPickleball();
       if (this.roster.size) {
         for (const id of [...this.roster.keys()]) {
           this.roster.delete(id);

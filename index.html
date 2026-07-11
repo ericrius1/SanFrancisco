@@ -2617,23 +2617,16 @@
         backdrop-filter: blur(6px);
         pointer-events: auto;
       }
-      #hud .audio-vol {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-      }
       #hud .audio-sliders {
         display: flex;
         flex-direction: column;
         gap: 5px;
-        flex: 1;
         min-width: 0;
       }
       #hud .audio-row {
         display: flex;
         align-items: center;
         gap: 8px;
-        flex: 1;
         min-width: 0;
       }
       #hud .audio-lbl {
@@ -2644,34 +2637,7 @@
         text-transform: uppercase;
         color: rgba(188, 217, 230, 0.72);
       }
-      #hud .audio .mute {
-        flex: 0 0 auto;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        width: 30px;
-        height: 30px;
-        padding: 0;
-        border-radius: 7px;
-        cursor: pointer;
-        font-size: 15px;
-        line-height: 1;
-        background: rgba(18, 40, 56, 0.6);
-        border: 1px solid rgba(190, 225, 240, 0.25);
-        color: var(--text-dim);
-        transition:
-          border-color 0.15s,
-          color 0.15s,
-          opacity 0.15s;
-      }
-      #hud .audio .mute:hover {
-        border-color: rgba(190, 225, 240, 0.55);
-        color: var(--accent-strong);
-      }
-      #hud .audio .mute.off {
-        border-color: rgba(190, 225, 240, 0.4);
-        color: var(--accent);
-      }
+      #hud .audio .mute-btn,
       #hud .audio .mic-btn {
         display: inline-flex;
         align-items: center;
@@ -2689,13 +2655,16 @@
           border-color 0.15s,
           color 0.15s;
       }
+      #hud .audio .mute-btn .ic,
       #hud .audio .mic-btn .ic {
         font-size: 18px;
         line-height: 1;
       }
+      #hud .audio .mute-btn:hover,
       #hud .audio .mic-btn:hover {
         border-color: rgba(190, 225, 240, 0.55);
       }
+      #hud .audio .mute-btn.off,
       #hud .audio .mic-btn.on {
         border-color: var(--accent);
         color: var(--accent-strong);

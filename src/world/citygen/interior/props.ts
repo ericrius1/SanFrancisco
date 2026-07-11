@@ -6,7 +6,7 @@ import type { ColliderBox } from "../core/types";
 import { PanelBuilder, type Vec3 } from "../core/facade";
 import type { Rng } from "../core/rng";
 import {
-  EYE, WALL_H, addBox, containsRect, expand, inset, overlaps, rectAround,
+  EYE, addBox, containsRect, expand, inset, overlaps, rectAround,
   type Rect, rectW, rectD, rectCX, rectCZ,
 } from "./common";
 import type { InteriorStyle } from "./style";
@@ -24,6 +24,14 @@ export interface PlacedProp {
 
 /** A spot on a wall to hang a picture: a point + the inward-facing normal. */
 export interface ArtSpot { x: number; z: number; normal: Vec3; }
+
+/** Arrival-axis hint for the ground-floor room that owns the front door. */
+export interface EntryFocus {
+  /** A point already 1.55 m inside the threshold. */
+  point: readonly [number, number];
+  /** Unit direction from the door into the home, in the planner's local frame. */
+  inward: readonly [number, number];
+}
 
 function shuffled<T>(items: T[], r: Rng): T[] {
   for (let i = items.length - 1; i > 0; i--) {
@@ -99,12 +107,22 @@ function wallPlaces(cell: Rect, length: number, depth: number): WallPlace[] {
  */
 export function furnish(
   out: PanelBuilder, cols: ColliderBox[], stair: Rect | null,
-  role: Role, cell: Rect, floorY: number, r: Rng,
-  keepouts: readonly Rect[], style: InteriorStyle,
+  role: Role, cell: Rect, floorY: number, roomHeight: number, r: Rng,
+  keepouts: readonly Rect[], style: InteriorStyle, entryFocus: EntryFocus | null = null,
 ): PlacedProp[] {
   const inner = inset(cell, 0.30);
   const cx = rectCX(inner), cz = rectCZ(inner);
   const w = rectW(inner), d = rectD(inner);
+  const clampX = (x: number) => Math.min(inner.x1 - 0.08, Math.max(inner.x0 + 0.08, x));
+  const clampZ = (z: number) => Math.min(inner.z1 - 0.08, Math.max(inner.z0 + 0.08, z));
+  // Compose the first room around what a player sees after walking in. The
+  // 2.9 m look-ahead lands beyond the immediate threshold but well before the
+  // old whole-floor centre in a deep SF lot. Solid props still go through the
+  // same circulation admission test, so this is presentation—not an obstacle.
+  const focus = entryFocus ? {
+    x: clampX(entryFocus.point[0] + entryFocus.inward[0] * 2.9),
+    z: clampZ(entryFocus.point[1] + entryFocus.inward[1] * 2.9),
+  } : null;
   const occupied: PlacedProp[] = [];
   const blocked = [...keepouts, ...(stair ? [expand(stair, 0.12)] : [])];
 
@@ -139,9 +157,15 @@ export function furnish(
     emit: (p: WallPlace) => void, height = 0.75, gap = 0.10,
   ): WallPlace | null => {
     const candidates = shuffled(wallPlaces(inner, length, depth), r);
-    // Long pieces read best on the long wall; stable sort preserves seeded order
-    // among equal candidates.
-    candidates.sort((a, b) => b.length - a.length);
+    // Long pieces read best on the long wall. In an entry room, prefer the bays
+    // around the arrival focal zone rather than a random far end of the lot.
+    candidates.sort((a, b) => {
+      const lengthBias = (b.length - a.length) * 3;
+      if (!focus) return lengthBias;
+      const da = Math.hypot(a.cx - focus.x, a.cz - focus.z);
+      const db = Math.hypot(b.cx - focus.x, b.cz - focus.z);
+      return da - db + lengthBias;
+    });
     for (const p of candidates) if (admit(kind, p.foot, collider, () => emit(p), height, gap)) return p;
     return null;
   };
@@ -151,10 +175,23 @@ export function furnish(
   ): Rect | null => {
     const ox = Math.max(0, w / 2 - fw / 2 - 0.12) * 0.58;
     const oz = Math.max(0, d / 2 - fd / 2 - 0.12) * 0.58;
-    const pts = shuffled([
+    const basePts = [
       [cx - ox, cz - oz], [cx + ox, cz - oz], [cx - ox, cz + oz], [cx + ox, cz + oz],
       [cx - ox, cz], [cx + ox, cz], [cx, cz - oz], [cx, cz + oz],
-    ] as [number, number][], r);
+    ] as [number, number][];
+    const pts = focus && entryFocus ? (() => {
+      const tx = -entryFocus.inward[1], tz = entryFocus.inward[0];
+      const side = Math.max(1.05, (Math.abs(tx) * fw + Math.abs(tz) * fd) / 2 + 0.78);
+      const ahead = Math.max(0.6, (Math.abs(entryFocus.inward[0]) * fw + Math.abs(entryFocus.inward[1]) * fd) * 0.45);
+      const focal: [number, number][] = [];
+      for (const s of [-1, 1]) {
+        focal.push(
+          [clampX(focus.x + tx * side * s), clampZ(focus.z + tz * side * s)],
+          [clampX(focus.x + tx * side * s + entryFocus.inward[0] * ahead), clampZ(focus.z + tz * side * s + entryFocus.inward[1] * ahead)],
+        );
+      }
+      return [...shuffled(focal, r), ...shuffled(basePts, r)];
+    })() : shuffled(basePts, r);
     for (const [px, pz] of pts) {
       const foot = rectAround(px, pz, fw, fd);
       if (admit(kind, foot, collider, () => emit(px, pz), height, gap)) return foot;
@@ -162,7 +199,9 @@ export function furnish(
     return null;
   };
 
-  const rug = (px = cx, pz = cz, rw = Math.min(2.5, w * 0.55), rd = Math.min(1.8, d * 0.45)) =>
+  const rugMaxW = role === "loft" ? 4.2 : style.tier === 2 ? 3.5 : 3.0;
+  const rugMaxD = role === "loft" ? 2.8 : style.tier === 2 ? 2.4 : 2.05;
+  const rug = (px = focus?.x ?? cx, pz = focus?.z ?? cz, rw = Math.min(rugMaxW, w * 0.55), rd = Math.min(rugMaxD, d * 0.45)) =>
     visual("int.rug", px, floorY + 0.018, pz, rw / 2, 0.018, rd / 2);
 
   const sofa = () => {
@@ -270,10 +309,15 @@ export function furnish(
   }, 0.56, 0.14);
 
   const plant = () => {
-    const pts = shuffled([
+    const corners = [
       [inner.x0 + 0.28, inner.z0 + 0.28], [inner.x1 - 0.28, inner.z0 + 0.28],
       [inner.x0 + 0.28, inner.z1 - 0.28], [inner.x1 - 0.28, inner.z1 - 0.28],
-    ] as [number, number][], r);
+    ] as [number, number][];
+    const focal = focus && entryFocus ? (() => {
+      const tx = -entryFocus.inward[1], tz = entryFocus.inward[0];
+      return [-1, 1].map((s) => [clampX(focus.x + tx * s * 1.45), clampZ(focus.z + tz * s * 1.45)] as [number, number]);
+    })() : [];
+    const pts = [...shuffled(focal, r), ...shuffled(corners, r)];
     for (const [px, pz] of pts) {
       const foot = rectAround(px, pz, 0.42, 0.42);
       if (!admit("plant", foot, false, () => {
@@ -287,29 +331,32 @@ export function furnish(
   };
 
   const ceilingLight = () => {
-    const yTop = floorY + Math.min(WALL_H - 0.08, 2.76);
+    // Anchor to the actual ceiling rather than the legacy 2.7 m partition cap.
+    // This keeps fixtures attached across the archetypes' 3.2–4.2 m storeys.
+    const yTop = floorY + roomHeight - 0.14;
+    const lightX = focus?.x ?? cx, lightZ = focus?.z ?? cz;
     const chandelier = style.chandelier && ["parlor", "dining", "hall", "retail"].includes(role) && Math.min(w, d) > 3.4;
-    visual("int.brass", cx, yTop, cz, 0.13, 0.035, 0.13); // canopy
+    visual("int.brass", lightX, yTop, lightZ, 0.13, 0.035, 0.13); // canopy
     if (chandelier) {
-      visual("int.brass", cx, yTop - 0.30, cz, 0.035, 0.30, 0.035);
-      visual("int.brass", cx, yTop - 0.57, cz, 0.12, 0.07, 0.12);
+      visual("int.brass", lightX, yTop - 0.30, lightZ, 0.035, 0.30, 0.035);
+      visual("int.brass", lightX, yTop - 0.57, lightZ, 0.12, 0.07, 0.12);
       const arms = style.tier === 2 ? 6 : 4;
       const radius = 0.58;
       for (let i = 0; i < arms; i++) {
         const a = (i / arms) * Math.PI * 2;
         const ux = Math.cos(a), uz = Math.sin(a);
         const along: Vec3 = [ux, 0, uz], normal: Vec3 = [-uz, 0, ux];
-        out.box("int.brass", [cx + ux * radius / 2, yTop - 0.56, cz + uz * radius / 2], [radius / 2, 0.025, 0.025], along, [0, 1, 0], normal, false);
-        visual("int.glow", cx + ux * radius, yTop - 0.46, cz + uz * radius, 0.09, 0.13, 0.09);
+        out.box("int.brass", [lightX + ux * radius / 2, yTop - 0.56, lightZ + uz * radius / 2], [radius / 2, 0.025, 0.025], along, [0, 1, 0], normal, false);
+        visual("int.glow", lightX + ux * radius, yTop - 0.46, lightZ + uz * radius, 0.09, 0.13, 0.09);
       }
     } else {
       const drop = style.family === "industrial" ? 0.58 : style.tier === 0 ? 0.25 : 0.4;
-      visual(style.family === "industrial" ? "int.metal" : "int.brass", cx, yTop - drop / 2, cz, 0.025, drop / 2, 0.025);
+      visual(style.family === "industrial" ? "int.metal" : "int.brass", lightX, yTop - drop / 2, lightZ, 0.025, drop / 2, 0.025);
       const shadeY = yTop - drop - 0.08;
       const shade = style.tier === 0 ? 0.16 : 0.22;
-      visual("int.glow", cx, shadeY + 0.07, cz, shade * 0.58, 0.045, shade * 0.58);
-      visual("int.glow", cx, shadeY, cz, shade, 0.055, shade);
-      visual("int.brass", cx, shadeY - 0.075, cz, shade * 0.48, 0.025, shade * 0.48);
+      visual("int.glow", lightX, shadeY + 0.07, lightZ, shade * 0.58, 0.045, shade * 0.58);
+      visual("int.glow", lightX, shadeY, lightZ, shade, 0.055, shade);
+      visual("int.brass", lightX, shadeY - 0.075, lightZ, shade * 0.48, 0.025, shade * 0.48);
     }
   };
 
@@ -344,7 +391,10 @@ export function furnish(
     );
   }
   let hung = 0;
-  for (const c of shuffled(candidates, r)) {
+  const orderedArt = shuffled(candidates, r);
+  if (focus) orderedArt.sort((a, b) =>
+    Math.hypot(a.spot.x - focus.x, a.spot.z - focus.z) - Math.hypot(b.spot.x - focus.x, b.spot.z - focus.z));
+  for (const c of orderedArt) {
     if (hung >= artCount || blocked.some((b) => overlaps(c.foot, b))) continue;
     hangArt(out, c.spot, r, floorY, style.artScale);
     hung++;

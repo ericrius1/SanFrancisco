@@ -259,10 +259,11 @@ export class PickleballGame {
         this.ballPhysics.update(dt, sweeps, (event) => this.#handlePhysicsEvent(event));
         for (const sweep of sweeps) {
           if (this.#phase !== "rally") break;
-          this.ballPhysics.tryPaddleStrike(sweep, (event) => this.#handlePhysicsEvent(event));
+          const assistedReach = this.#controllerFor(sweep.side) === "ai" ? 0.74 : 0.52;
+          this.ballPhysics.tryPaddleStrike(sweep, (event) => this.#handlePhysicsEvent(event), assistedReach);
         }
         if (this.#phase === "rally" && (!this.ballPhysics.active || this.#rallyAge > 16)) {
-          this.#awardPoint(this.#lastHitter === null ? otherSide(this.#server) : otherSide(this.#lastHitter), "stalled");
+          this.#awardPoint(this.#winnerAfterMiss(), "stalled");
         }
       }
     }
@@ -448,14 +449,37 @@ export class PickleballGame {
       targetX = (parity === 0 ? 1.45 : -1.45) * (side === 0 ? 1 : -1);
     } else if (this.#phase === "rally" && this.ballPhysics.active) {
       const ball = this.ballPhysics.position;
-      targetX = THREE.MathUtils.clamp(ball.x, -PLAYER_X_LIMIT, PLAYER_X_LIMIT);
+      const velocity = this.ballPhysics.velocity;
+      const approaching = side === 0 ? velocity.z < -0.1 : velocity.z > 0.1;
+      const paddleLine = player.position.z + (side === 0 ? 0.34 : -0.34);
+      const interceptSeconds = approaching
+        ? THREE.MathUtils.clamp((paddleLine - ball.z) / velocity.z, 0, 0.55)
+        : 0;
+      const movementLead = THREE.MathUtils.clamp(interceptSeconds || 0.2, 0.12, 0.36);
+      const predictedX = ball.x + velocity.x * movementLead;
+      const predictedZ = ball.z + velocity.z * movementLead;
+      targetX = THREE.MathUtils.clamp(predictedX, -PLAYER_X_LIMIT, PLAYER_X_LIMIT);
       targetZ = side === 0
-        ? THREE.MathUtils.clamp(ball.z - 0.58, -PLAYER_BASELINE_Z - 0.6, -0.7)
-        : THREE.MathUtils.clamp(ball.z + 0.58, 0.7, PLAYER_BASELINE_Z + 0.6);
-      const approaching = side === 0 ? this.ballPhysics.velocity.z < -0.1 : this.ballPhysics.velocity.z > 0.1;
+        ? THREE.MathUtils.clamp(predictedZ - 0.52, -PLAYER_BASELINE_Z - 0.6, -0.7)
+        : THREE.MathUtils.clamp(predictedZ + 0.52, 0.7, PLAYER_BASELINE_Z + 0.6);
       const onSide = side === 0 ? ball.z < 0.35 : ball.z > -0.35;
-      const distance = Math.hypot(ball.x - player.position.x, ball.z - player.position.z);
-      swing = approaching && onSide && ball.y < 1.65 && distance < 1.15 && player.swingCooldown <= 0;
+      const receiver = otherSide(this.#server);
+      const legalReturn =
+        this.#lastHitter !== side &&
+        (side === receiver ? this.#twoBounceStage >= 1 : this.#twoBounceStage >= 2);
+      const contactTime = approaching ? (paddleLine - ball.z) / velocity.z : Infinity;
+      const contactX = ball.x + velocity.x * contactTime;
+      const contactY = ball.y + velocity.y * contactTime - 0.5 * T.gravity * contactTime * contactTime;
+      swing =
+        legalReturn &&
+        approaching &&
+        onSide &&
+        contactTime >= 0.12 &&
+        contactTime <= 0.36 &&
+        contactY > 0.16 &&
+        contactY < 1.72 &&
+        Math.abs(contactX - player.position.x) < 1.05 &&
+        player.swingCooldown <= 0;
     }
 
     const dx = targetX - player.position.x;
@@ -581,7 +605,7 @@ export class PickleballGame {
       const worldPosition = this.root.localToWorld(event.position.clone());
       this.onEvent({ kind: "bounce", side: event.side, inCourt: event.inCourt, worldPosition });
       if (!event.inCourt) {
-        this.#awardPoint(this.#lastHitter === null ? otherSide(event.side) : otherSide(this.#lastHitter), "out");
+        this.#awardPoint(this.#winnerAfterMiss(), "out");
         return;
       }
       this.#bouncesSinceHit++;
@@ -649,6 +673,12 @@ export class PickleballGame {
       this.#phase = "pointDelay";
       this.#phaseTimer = T.pointDelay;
     }
+  }
+
+  /** First bounce out faults the hitter; a later miss is won by that hitter. */
+  #winnerAfterMiss(): PickleballSide {
+    const hitter = this.#lastHitter ?? this.#server;
+    return this.#bouncesSinceHit > 0 ? hitter : otherSide(hitter);
   }
 
   #beginPoint(): void {

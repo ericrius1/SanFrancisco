@@ -1,7 +1,7 @@
 import { AUDIO_PREFS, saveAudioPrefs } from "../core/audioSettings";
 
 /**
- * Master audio widget: mute toggle + effects/voice sliders, plus a separate
+ * Master audio widget: effects/voice sliders, a labeled mute button, and a
  * voice-mic button, bottom-left of the HUD. Pure DOM inside #hud
  * (pointer-events: none — this widget opts itself back in, like the toolbar).
  * Writes core/audioSettings; the audio systems poll it, so there's nothing to
@@ -9,6 +9,8 @@ import { AUDIO_PREFS, saveAudioPrefs } from "../core/audioSettings";
  */
 export class AudioControls {
   #btn: HTMLButtonElement;
+  #muteIcon: HTMLSpanElement;
+  #muteLabel: HTMLSpanElement;
   #mic: HTMLButtonElement;
   #micLabel: HTMLSpanElement;
   #effectsSlider: HTMLInputElement;
@@ -21,20 +23,6 @@ export class AudioControls {
     const root = document.createElement("div");
     root.className = "audio";
 
-    const vol = document.createElement("div");
-    vol.className = "audio-vol";
-
-    this.#btn = document.createElement("button");
-    this.#btn.className = "mute";
-    this.#btn.type = "button";
-    this.#btn.setAttribute("aria-label", "Mute");
-    this.#btn.addEventListener("click", () => {
-      AUDIO_PREFS.enabled = !AUDIO_PREFS.enabled;
-      saveAudioPrefs();
-      this.#btn.blur(); // keep Space as jump, not "click the button again"
-      this.#refresh();
-    });
-
     this.#effectsSlider = this.#makeSlider("effects", "game effects volume", (v) => {
       AUDIO_PREFS.effectsVolume = v;
     });
@@ -46,7 +34,21 @@ export class AudioControls {
     sliders.className = "audio-sliders";
     sliders.append(this.#labeledRow("FX", this.#effectsSlider), this.#labeledRow("Voice", this.#voiceSlider));
 
-    vol.append(this.#btn, sliders);
+    this.#btn = document.createElement("button");
+    this.#btn.className = "mute-btn";
+    this.#btn.type = "button";
+    this.#btn.title = "mute all sound";
+    this.#muteIcon = document.createElement("span");
+    this.#muteIcon.className = "ic";
+    this.#muteLabel = document.createElement("span");
+    this.#muteLabel.className = "label";
+    this.#btn.append(this.#muteIcon, this.#muteLabel);
+    this.#btn.addEventListener("click", () => {
+      AUDIO_PREFS.enabled = !AUDIO_PREFS.enabled;
+      saveAudioPrefs();
+      this.#btn.blur(); // keep Space as jump, not "click the button again"
+      this.#refresh();
+    });
 
     this.#mic = document.createElement("button");
     this.#mic.className = "mic-btn";
@@ -62,7 +64,7 @@ export class AudioControls {
       this.#mic.blur();
     });
 
-    root.append(vol, this.#mic);
+    root.append(sliders, this.#btn, this.#mic);
     document.getElementById("hud")!.appendChild(root);
     this.setMic(false);
     this.#refresh();
@@ -109,8 +111,9 @@ export class AudioControls {
     const muted = !AUDIO_PREFS.enabled;
     const anyOn = !muted && (AUDIO_PREFS.effectsVolume > 0 || AUDIO_PREFS.voiceVolume > 0);
     const peak = Math.max(AUDIO_PREFS.effectsVolume, AUDIO_PREFS.voiceVolume);
-    this.#btn.textContent = muted || !anyOn ? "🔇" : peak > 0.5 ? "🔊" : "🔉";
-    this.#btn.title = muted ? "Unmute" : "Mute";
+    this.#muteIcon.textContent = muted || !anyOn ? "🔇" : peak > 0.5 ? "🔊" : "🔉";
+    this.#muteLabel.textContent = muted ? "Unmute" : "Mute";
+    this.#btn.title = muted ? "unmute all sound" : "mute all sound";
     this.#btn.setAttribute("aria-label", muted ? "Unmute" : "Mute");
     this.#btn.setAttribute("aria-pressed", muted ? "true" : "false");
     this.#btn.classList.toggle("off", muted);

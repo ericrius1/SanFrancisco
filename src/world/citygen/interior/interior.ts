@@ -21,7 +21,7 @@ import { doorMetrics } from "../core/collider";
 import { rng } from "../core/rng";
 import { specFor } from "../theme/archetypes";
 import { MAX_FLOORS, INSET, bboxOf, inset, rectArea, rectCX, rectCZ, rectMinDim, type Rect } from "./common";
-import { partition, buildWalls, deck, planCirculation, polyGroundSlab, type EntryAccess } from "./rooms";
+import { partition, buildWalls, deck, planCirculation, polyCeiling, polyGroundSlab, type EntryAccess } from "./rooms";
 import { planStair, buildStair, stairFits, type StairPlan } from "./stairs";
 import { furnish, type Role } from "./props";
 import { dressInteriorShell, type FrontOpening } from "./shell";
@@ -235,7 +235,7 @@ export function buildInterior(spec: BuildingSpec, zone: InteriorZone = "resident
 
     // ceiling: under each upper floor with the stairwell open; a plain cap on top
     if (k < nFloors - 1) deck(out, null, "int.ceil", area, hole, base + (k + 1) * storeyH - 0.06, false);
-    else deck(out, null, "int.ceil", area, null, Math.min(spec.top - 0.12, fY + storeyH - 0.06), false);
+    else polyCeiling(out, poly, tris, Math.min(spec.top - 0.12, fY + storeyH - 0.06));
 
     // Interior plaster hides the exterior's DoubleSide brick/clapboard; window
     // frames, curtains and daylight are one coherent dressing pass. Ground floor
@@ -263,7 +263,7 @@ export function buildInterior(spec: BuildingSpec, zone: InteriorZone = "resident
       );
       furnish(
         out, cols, stair ? stair.region : null,
-        zone === "commercial" ? "retail" : "loft", area, fY, rf,
+        zone === "commercial" ? "retail" : "loft", area, fY, storeyH, rf,
         [...circulation.byRoom[0], ...entryKeepouts, ...shell.windowKeepouts], style,
       );
     } else {
@@ -277,7 +277,7 @@ export function buildInterior(spec: BuildingSpec, zone: InteriorZone = "resident
         else if (k === 0) role = groundRoles[i];
         else role = i === bathIdx ? "bath" : "bedroom";
         furnish(
-          out, cols, stair ? stair.region : null, role, rooms[i], fY, rf,
+          out, cols, stair ? stair.region : null, role, rooms[i], fY, storeyH, rf,
           [...circulation.byRoom[i], ...entryKeepouts, ...shell.windowKeepouts], style,
         );
       }

@@ -3,6 +3,7 @@ import { float, hash, instanceIndex, positionLocal, sin, time, uniform, vec3 } f
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { WorldMap } from "../world/heightmap";
 import type { Cockpit, DriveSpec } from "../player/types";
+import { applyMaterialPolicy, tagTransparency } from "../render/transparency";
 
 type N = any;
 
@@ -219,13 +220,16 @@ export class Forest {
       raccoon: this.#buildHerd("raccoon", scene)
     };
 
-    const gummyMat = new THREE.MeshStandardNodeMaterial({
-      vertexColors: true,
-      roughness: 0.25,
-      transparent: true,
-      opacity: 0.85
-    });
+    const gummyMat = applyMaterialPolicy(
+      new THREE.MeshStandardNodeMaterial({
+        vertexColors: true,
+        roughness: 0.25,
+        opacity: 0.85
+      }),
+      "alphaSurface"
+    );
     this.#gummy = new THREE.InstancedMesh(gummyGeometry(), gummyMat, GUMMY_MAX);
+    tagTransparency(this.#gummy, { profile: "alphaSurface" });
     this.#gummy.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.#gummy.setColorAt(0, this.#color.set("#ffffff")); // attribute exists before first compile
     this.#gummy.instanceColor!.setUsage(THREE.DynamicDrawUsage);
