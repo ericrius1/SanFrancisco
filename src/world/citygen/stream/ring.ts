@@ -503,6 +503,7 @@ export async function createCityGenRing(
   // NEVER materialize this frame (they'd spawn around/inside the player = wedge);
   // the coll job defers with "again" until the player clears the lot.
   const lastPlayer = new THREE.Vector3();
+  let speedEma = 0; // smoothed player speed (m/s) — gates detail reach while flying
   const playerInsideBB = (e: Entry, margin: number) =>
     lastPlayer.x > e.bb.minx - margin && lastPlayer.x < e.bb.maxx + margin &&
     lastPlayer.z > e.bb.minz - margin && lastPlayer.z < e.bb.maxz + margin &&
@@ -1099,6 +1100,13 @@ export async function createCityGenRing(
   return {
     count: total,
     update(playerPos, dt) {
+      // smoothed player speed (m/s) — fast traversal (flying, boost) shrinks the
+      // effective detail radius below: at 400 m the ring would otherwise churn
+      // builds/fades for buildings that blur past (measured fly-leg hitching)
+      if (dt > 1e-4) {
+        const inst = lastPlayer.distanceTo(playerPos) / dt;
+        if (inst < 200) speedEma += (inst - speedEma) * Math.min(1, dt * 2.5);
+      }
       lastPlayer.copy(playerPos); // read by queued coll jobs (anti-wedge) + stale-build check
       if (!warmupStarted) startWarmup(playerPos); // one-shot pipeline warmup rig
       // per-frame: interior gate + detail crossfade + chunk merging
@@ -1128,7 +1136,12 @@ export async function createCityGenRing(
         Math.floor(Math.min(CONFIG.tileLoadRadius, CHUNK_VISUAL_RADIUS) / tile)
       );
       const cellUnload = cellLoad + 1;
-      const detailR = CT.detailRadius, detailR2 = detailR * detailR;
+      // fast traversal shrinks the detail ring: above ~18 m/s taper toward a
+      // 160 m floor (street-level trim is unreadable at flight/boost speed, and
+      // the build/fade churn of a full-radius ring was the fly-leg hitch source)
+      const speedT = Math.min(1, Math.max(0, (speedEma - 18) / 22));
+      const detailR = Math.max(Math.min(160, CT.detailRadius), CT.detailRadius * (1 - speedT) + 160 * speedT);
+      const detailR2 = detailR * detailR;
       const detailExit = detailR + DETAIL_EXIT_MARGIN, detailExit2 = detailExit * detailExit;
       const maxDetail = CT.maxDetail;
       const collR2 = COLLIDER_R * COLLIDER_R, collExit2 = COLLIDER_EXIT * COLLIDER_EXIT;
