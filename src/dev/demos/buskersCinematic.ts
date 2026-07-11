@@ -29,6 +29,9 @@ const ANCHOR_Z = 2760;
 // (they face ESE ≈ (+0.989,0,+0.150)); camPos = anchor + (sin·R, H, cos·R), so
 // this puts the lens on the far side, looking over their shoulders at downtown.
 const AZ_BEHIND = -1.721;
+// Orbit spin direction: -1 sweeps the opposite way around from take 1 (which
+// used +1). az = AZ_BEHIND + ORBIT_DIR·π·u.
+const ORBIT_DIR = -1;
 
 // 5:00 pm start; 7:50 pm as the camera reaches the front; 8:05 pm sunset beat;
 // 10:15 pm end.
@@ -61,8 +64,8 @@ const heightCurve = monotoneCurve([
  * leg uses smoothstep easing so the camera velocity is zero at every keyframe —
  * it arrives at the front (u=1, T=14) dead-on and holds, drifts a touch past
  * (u=1.12) through the sunset beat, then eases all the way back around to behind
- * (u=2). Increasing az sweeps SOUTH of the trio first, so mid-orbit the city
- * stays behind them.
+ * (u=2). ORBIT_DIR sets which way the sweep goes; either way the anchor keeps
+ * the city behind the trio mid-orbit.
  */
 function orbitU(T: number): number {
   if (T <= 1) return 0; // static behind-hold while the trio rests
@@ -117,7 +120,7 @@ export const buskersCinematic: Demo = {
       buskers.seatWorld("handpan", anchor);
       anchor.y += 0.55;
 
-      const az = AZ_BEHIND + Math.PI * orbitU(T);
+      const az = AZ_BEHIND + ORBIT_DIR * Math.PI * orbitU(T);
       const R = radiusCurve(T);
       const H = heightCurve(T);
       camera.position.set(anchor.x + Math.sin(az) * R, anchor.y + H, anchor.z + Math.cos(az) * R);
