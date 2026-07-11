@@ -201,11 +201,12 @@ export class NatureSoundscape {
     // the optional nature layer or its wildlife slider is disabled. This tap
     // follows only the user's global FX/mute preference and page visibility.
     const alwaysTarget = visible ? effects : 0;
+    if (ctx.state === "running") this.#reapVoices(ctx.currentTime);
     if (targetMaster <= 0.0001 && this.#masterLevel <= 0.001) {
       // No region presence. Normally park the whole graph (zero city cost). But
       // if a sibling layer (pet at heel) needs to stay audible, keep the ctx
       // alive and drive only the presence-independent tap.
-      if (this.#externalAwake) {
+      if (this.#externalAwake && visible && effects > 0.001) {
         if (ctx.state === "suspended") void ctx.resume();
         if (ctx.state === "running") {
           this.#bus.gain.value = 0;
@@ -265,7 +266,6 @@ export class NatureSoundscape {
     }
 
     // ---- spatial voice scheduler ----------------------------------------
-    this.#reapVoices(now);
     if (presence > 0.02 && effects > 0.001 && Number(T.voices) > 0.001) {
       let ratePerMin = 0;
       for (let i = 0; i < NATURE_REGIONS.length; i++) {

@@ -58,12 +58,19 @@ const DOG_AUDIO = {
   ambientRetryMin: 2.5,
   ambientRetryMax: 5,
   ambientMaxDogSpeed: 2.4,
-  cueChance: {
+  playerCueChance: {
     // Chase + return are the two moments a player expects to hear. They are
     // guaranteed when cooldowns permit; catch stays a quieter optional huff.
     chase: 1,
     catch: 0.42,
     return: 1
+  } satisfies Record<DogAudioCue, number>,
+  parkCueChance: {
+    // The two owner-run fetch loops repeat forever, so they speak less often
+    // and leave space for the player's dog and the occasional idle bark.
+    chase: 0.5,
+    catch: 0.2,
+    return: 0.6
   } satisfies Record<DogAudioCue, number>,
   reverbCharacter: 0.42
 } as const;
@@ -84,6 +91,14 @@ export class DogParkAudio {
   #lastAmbientDog: DogParkDog | null = null;
   #vocalCount = 0;
   #ambientCount = 0;
+  #cueCounts: Record<DogVocalMoment, number> = { chase: 0, catch: 0, return: 0, ambient: 0 };
+  #kindCounts: Record<DogVoiceKind, number> = {
+    goldenBark: 0,
+    collieBark: 0,
+    terrierBark: 0,
+    corgiBark: 0,
+    dogHuff: 0
+  };
   #lastVocal: { dog: string; cue: DogVocalMoment; kind: DogVoiceKind } | null = null;
 
   constructor(nature: NatureSoundscape, dogs: () => readonly DogParkDog[]) {
@@ -103,6 +118,8 @@ export class DogParkAudio {
       ambientIn: +this.#ambientTimer.toFixed(2),
       vocalCount: this.#vocalCount,
       ambientCount: this.#ambientCount,
+      cueCounts: { ...this.#cueCounts },
+      kindCounts: { ...this.#kindCounts },
       lastVocal: this.#lastVocal
     };
   }
@@ -111,8 +128,14 @@ export class DogParkAudio {
    * dogs finish together, the shared cooldown keeps only a tasteful response. */
   cue(dog: DogParkDog, cue: DogAudioCue): void {
     const rig = this.#rigs.get(dog);
-    if (rig) rig.pendingCue = cue;
-    else this.#pendingCues.set(dog, cue);
+    if (rig) {
+      rig.pendingCue = cue;
+      // A user's fresh throw is the foundational feedback beat: an unrelated
+      // earlier idle/owner bark must not make their dog silently start running.
+      if (dog.controller === "player" && cue === "chase") rig.vocalCooldown = 0;
+    } else {
+      this.#pendingCues.set(dog, cue);
+    }
   }
 
   /** Freeze/pause hook: stops looped patter instead of leaving the last running
@@ -166,6 +189,11 @@ export class DogParkAudio {
       if (!rig) continue;
       rig.vocalCooldown = Math.max(0, rig.vocalCooldown - dt);
       movePanner(rig.panner, io.ctx, dog.x, dog.group.position.y + 0.3 * dog.style.scale, dog.z);
+      rig.send.gain.setTargetAtTime(
+        DOG_AUDIO.reverbCharacter * Number(NATURE_AUDIO_TUNING.values.reverb),
+        now,
+        0.16
+      );
 
       const dogDist = Math.hypot(dog.x - playerPos.x, dog.z - playerPos.z);
       const patter =
@@ -187,11 +215,13 @@ export class DogParkAudio {
       rig.pendingCue = null;
       if (cue) {
         hadSemanticCue = true;
-        const priority = (dog.controller === "player" ? 10 : 0) + (cue === "return" ? 3 : cue === "chase" ? 2 : 1);
+        const priority =
+          (dog.controller === "player" ? 10 : 0) +
+          (cue === "return" ? 3 : cue === "chase" ? 2 : 1);
         if (
           dogDist < DOG_AUDIO.wakeRadius &&
           rig.vocalCooldown <= 0 &&
-          Math.random() < DOG_AUDIO.cueChance[cue] &&
+          Math.random() < cueChance(dog, cue) &&
           (!semantic || priority > semantic.priority)
         ) {
           semantic = { dog, rig, cue, priority };
@@ -244,6 +274,8 @@ export class DogParkAudio {
       level
     });
     this.#vocalCount++;
+    this.#cueCounts[cue]++;
+    this.#kindCounts[kind]++;
     if (cue === "ambient") {
       this.#ambientCount++;
       this.#ambientTimer = randomBetween(DOG_AUDIO.ambientGapMin, DOG_AUDIO.ambientGapMax);
@@ -405,6 +437,10 @@ export class DogParkAudio {
 
 function randomBetween(min: number, max: number): number {
   return min + Math.random() * (max - min);
+}
+
+function cueChance(dog: DogParkDog, cue: DogAudioCue): number {
+  return (dog.controller === "player" ? DOG_AUDIO.playerCueChance : DOG_AUDIO.parkCueChance)[cue];
 }
 
 function movePanner(

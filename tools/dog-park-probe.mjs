@@ -317,8 +317,11 @@ function runAssertions(samples, fence, audio, nature, pageErrors) {
 
   push(
     "dog-bark-audio-live",
-    audio.context === "running" && audio.layerGain > 0.5 && nature.always > 0.01 && audio.vocalCount > 0,
-    `ctx ${audio.context}, dog layer ${audio.layerGain}, FX tap ${nature.always}, vocals ${audio.vocalCount}, last ${JSON.stringify(audio.lastVocal)}`
+    audio.context === "running" &&
+      audio.layerGain > 0.5 &&
+      nature.always > 0.01 &&
+      audio.cueCounts.chase + audio.cueCounts.return > 0,
+    `ctx ${audio.context}, dog layer ${audio.layerGain}, FX tap ${nature.always}, cues ${JSON.stringify(audio.cueCounts)}, last ${JSON.stringify(audio.lastVocal)}`
   );
 
   push(
@@ -414,6 +417,23 @@ async function main() {
   console.log(`[probe] activity gate open after ${gateTicks} ticks`);
   await ev(c, `window.__sf.nature.unlock()`);
   await sleep(120);
+  // Deterministic smoke cue through the world's real callback boundary. Owner
+  // loops remain probabilistic by design, so they cannot be the only proof.
+  await ev(c, `(()=>{
+    const sf=window.__sf, ch=sf.coronaHeights, oldRandom=Math.random;
+    const dog=ch.dogs[0], oldController=dog.controller;
+    sf.tick(${DT});
+    try {
+      Math.random=()=>0;
+      dog.controller="player";
+      ch.cueDogAudio(dog,"chase");
+      sf.dogParkAudio.update(${DT},sf.player.renderPosition);
+    } finally {
+      dog.controller=oldController;
+      Math.random=oldRandom;
+    }
+    return sf.dogParkAudio.debugState;
+  })()`);
   const fence = await checkFence(c);
   const samples = await sampleBehavior(c);
   const audio = await ev(c, `window.__sf.dogParkAudio.debugState`);

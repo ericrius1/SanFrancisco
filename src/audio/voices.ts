@@ -586,29 +586,29 @@ const goldenBark = dogBark({
 
 // Alert, crisp and more likely to answer twice than the retriever.
 const collieBark = dogBark({
-  fundamental: [245, 350],
-  duration: [0.095, 0.15],
-  pitchDrop: [0.58, 0.73],
-  bodyCutoff: [1350, 2050],
-  formant: [760, 1160],
-  rasp: [1150, 1950],
-  voicedMix: 0.62,
-  formantMix: 0.3,
-  raspMix: 0.5,
-  output: 0.8,
-  doubleChance: 0.28,
+  fundamental: [330, 450],
+  duration: [0.075, 0.115],
+  pitchDrop: [0.65, 0.8],
+  bodyCutoff: [1750, 2500],
+  formant: [1050, 1600],
+  rasp: [1600, 2600],
+  voicedMix: 0.58,
+  formantMix: 0.28,
+  raspMix: 0.56,
+  output: 0.74,
+  doubleChance: 0.36,
   tripleChance: 0.03,
-  gap: [0.1, 0.17]
+  gap: [0.085, 0.14]
 });
 
 // Scrappy high yaps, with the widest phrase-count variation but lower output.
 const terrierBark = dogBark({
-  fundamental: [420, 620],
-  duration: [0.052, 0.09],
-  pitchDrop: [0.62, 0.79],
-  bodyCutoff: [2200, 3400],
-  formant: [1450, 2300],
-  rasp: [2050, 3400],
+  fundamental: [520, 760],
+  duration: [0.048, 0.082],
+  pitchDrop: [0.68, 0.84],
+  bodyCutoff: [2500, 3800],
+  formant: [1750, 2700],
+  rasp: [2400, 3900],
   voicedMix: 0.52,
   formantMix: 0.26,
   raspMix: 0.62,
@@ -618,21 +618,21 @@ const terrierBark = dogBark({
   gap: [0.065, 0.115]
 });
 
-// Short-legged but not tiny-sounding: a compact, throaty mid-high "arf".
+// Short-legged but not tiny-sounding: a compact, throaty low-mid "arf".
 const corgiBark = dogBark({
-  fundamental: [295, 430],
-  duration: [0.082, 0.13],
-  pitchDrop: [0.54, 0.7],
-  bodyCutoff: [1550, 2450],
-  formant: [900, 1450],
-  rasp: [1350, 2450],
-  voicedMix: 0.66,
-  formantMix: 0.34,
-  raspMix: 0.54,
-  output: 0.72,
-  doubleChance: 0.32,
+  fundamental: [235, 315],
+  duration: [0.11, 0.16],
+  pitchDrop: [0.48, 0.64],
+  bodyCutoff: [1200, 1800],
+  formant: [700, 1100],
+  rasp: [1000, 1800],
+  voicedMix: 0.7,
+  formantMix: 0.38,
+  raspMix: 0.46,
+  output: 0.76,
+  doubleChance: 0.22,
   tripleChance: 0.04,
-  gap: [0.085, 0.145]
+  gap: [0.11, 0.18]
 });
 
 // Soft close-range huff/snuffle for catches and completed returns. It adds a
