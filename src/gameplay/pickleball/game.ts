@@ -93,6 +93,8 @@ export class PickleballGame {
   #authoritative: boolean;
   #interactionRadius: number;
   #seed: number;
+  /** When false, AI/physics/scoring halt and the court root is hidden. */
+  #active = true;
 
   #phase: PickleballPhase = "serveDelay";
   #phaseTimer: number = T.serveDelay;
@@ -110,13 +112,15 @@ export class PickleballGame {
   #ballGeometry: THREE.SphereGeometry;
   #ballMaterial: THREE.MeshStandardNodeMaterial;
   #ballMesh: THREE.Mesh;
+  #wantVisible: boolean;
 
   constructor(options: PickleballOptions = {}) {
     this.root.name = "pickleball-game";
     const origin = options.origin ?? { x: 0, y: 0, z: 0 };
     this.root.position.set(origin.x, origin.y, origin.z);
     this.root.rotation.y = options.yaw ?? 0;
-    this.root.visible = options.visible ?? true;
+    this.#wantVisible = options.visible ?? true;
+    this.root.visible = this.#wantVisible;
     this.#authoritative = options.authoritative ?? true;
     this.#interactionRadius = options.interactionRadius ?? T.interactionRadius;
     this.#seed = options.seed ?? 2407;
@@ -146,6 +150,10 @@ export class PickleballGame {
     return this.#authoritative;
   }
 
+  get active(): boolean {
+    return this.#active;
+  }
+
   get localSide(): PickleballSide | null {
     return this.#localSide;
   }
@@ -164,6 +172,21 @@ export class PickleballGame {
 
   setAuthoritative(authoritative: boolean): void {
     this.#authoritative = authoritative;
+  }
+
+  /**
+   * Sleep the ambient AI match when the local player is far from the courts.
+   * A live local seat always stays awake. Deactivating mid-rally freezes the
+   * score and queues a fresh serve so resume never auto-awards a stalled point.
+   */
+  setActive(active: boolean): void {
+    if (this.#active === active) return;
+    this.#active = active;
+    this.root.visible = active && this.#wantVisible;
+    if (active) return;
+    this.ballPhysics.stop();
+    if (this.#phase === "rally") this.#beginPoint();
+    this.#syncBallMesh(0);
   }
 
   setLocalSide(side: PickleballSide | null): void {
@@ -232,6 +255,18 @@ export class PickleballGame {
     localWorldPosition: THREE.Vector3 | null,
     input: PickleballInputIntent = EMPTY_INPUT
   ): PickleballFrameResult {
+    if (!this.#active) {
+      return {
+        interaction: null,
+        requestedSide: null,
+        requestedRelease: null,
+        localPose: this.#localSide === null ? null : this.#localPose(this.#localSide),
+        phase: this.#phase,
+        score: [this.#score[0], this.#score[1]],
+        server: this.#server
+      };
+    }
+
     const dt = Math.min(Math.max(deltaSeconds, 0), T.maxFrameDelta);
     let interaction = localWorldPosition ? this.getInteraction(localWorldPosition) : null;
     let requestedSide: PickleballSide | null = null;

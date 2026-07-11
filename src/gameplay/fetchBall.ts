@@ -145,9 +145,9 @@ export class FetchBall {
   }
 
   /**
-   * Drive hold-to-throw while the ball tool is selected. `firing` is the mouse /
-   * pad fire level; `aim` is the view direction (sampled on release). Pass
-   * `cancelled` when pointer lock drops mid-charge so we don't accidental-toss.
+   * Drive hold-to-throw while the ball tool is selected. `firing` is the Space /
+   * pad-X fire level; `aim` is the view direction (sampled on release). Pass
+   * `cancelled` when focus drops mid-charge so we don't accidental-toss.
    */
   driveThrow(dt: number, firing: boolean, aim: THREE.Vector3, cancelled = false): void {
     if (!this.#active) return;
@@ -261,7 +261,7 @@ export class FetchBall {
     this.#syncGlow();
   }
 
-  /** Click-row verb — hold to wind up; pickup is on E. */
+  /** Space/X-row verb — hold to wind up; pickup is on E. */
   verb(): string {
     return "hold to throw";
   }

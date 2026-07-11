@@ -25,7 +25,7 @@ import { createBayLights, updateBayLights, resetBayLightsTweaks } from "./world/
 import { createGoldenGateLights, updateGoldenGateLights, resetGoldenGateLightsTweaks } from "./world/goldenGateLights";
 import { createPalaceColonnade, PALACE_RING_BUILDINGS } from "./world/palaceColonnade";
 import { createSutroTower, updateSutroTower, resetSutroLightsTweaks } from "./world/sutroTower";
-import { createGoldenGateTennisSite, GOLDMAN_SUPPRESSED_BUILDINGS } from "./world/goldenGateTennis";
+import { createGoldenGateTennisSite, GOLDMAN_SUPPRESSED_BUILDINGS, inGoldmanTennisSite } from "./world/goldenGateTennis";
 import { CoronaHeightsPark, prepareCoronaHeightsGround } from "./world/coronaHeights";
 import { createBuskerTrio } from "./gameplay/buskers";
 import { findOpenSpawn } from "./world/spawn";
@@ -64,6 +64,7 @@ import { Hunt } from "./gameplay/hunt";
 import { FetchBall } from "./gameplay/fetchBall";
 import {
   createPickleball,
+  PICKLEBALL_TUNING,
   type PickleballInputIntent,
   type PickleballLocalPose,
   type PickleballSide
@@ -209,7 +210,7 @@ async function boot() {
   const splashes = new WaterSplashes(scene, wake, map);
   const fireworks = new Fireworks(renderer, scene, map);
 
-  // left-click toys — the toolbar swaps between them (arrow keys while UI is open)
+  // Space / pad-X toys — the toolbar swaps between them (arrow keys while UI is open)
   const graffiti = new Graffiti(scene);
   const paintballs = new Paintballs(scene);
   const paintSkins = new PaintSkins();
@@ -387,6 +388,7 @@ async function boot() {
   } | null = null;
   let goldenGateTennis: ReturnType<typeof createGoldenGateTennisSite> | null = null;
   let pickleball: ReturnType<typeof createPickleball> | null = null;
+  let pickleballSiteAwake = false;
   let coronaHeights: CoronaHeightsPark | null = null;
   let windGustValue: (() => number) | null = null;
   let advanceWind: ((dt: number) => void) | null = null;
@@ -502,6 +504,11 @@ async function boot() {
           hud.message(`${event.winner === 0 ? "Near" : "Far"} side wins · ${event.score[0]}–${event.score[1]}`, 4);
         }
       };
+      // Sleep until the player is near Goldman tennis/pickleball — otherwise the
+      // ambient AI match scores and HUD-spams from across the city.
+      const nearCourts = inGoldmanTennisSite(player.position.x, player.position.z, PICKLEBALL_TUNING.activateSitePad);
+      pickleball.setActive(nearCourts);
+      pickleballSiteAwake = nearCourts;
     }
   } catch (err) {
     console.warn("[boot] pickleball game unavailable:", err);
@@ -690,7 +697,7 @@ async function boot() {
       net.claimPickleball(side);
       hud.message("Claiming pickleball side…", 1.4);
     } else if (enterPickleballSide(side)) {
-      hud.message("You’re playing · WASD move · click/Space swings · E leaves", 3.4);
+      hud.message("You’re playing · WASD move · Space swings · E leaves", 3.4);
     }
   };
   const releasePickleballSide = (): boolean => {
@@ -724,7 +731,7 @@ async function boot() {
     if (ok && ownerId === net.selfId) {
       pendingPickleballClaim = null;
       enterPickleballSide(side);
-      hud.message("You’re playing · WASD move · click/Space swings · E leaves", 3.4);
+      hud.message("You’re playing · WASD move · Space swings · E leaves", 3.4);
     } else if (!ok && pendingPickleballClaim === side) {
       pendingPickleballClaim = null;
       if (pickleball?.localSide === side) finishPickleballExit(side);
@@ -741,10 +748,11 @@ async function boot() {
     }
   };
   net.onPickleballState = (ownerId, state) => {
-    if (ownerId !== net.selfId) pickleball?.applyState(state);
+    if (ownerId !== net.selfId && pickleball?.active) pickleball.applyState(state);
   };
   net.onPickleballInput = (side, _ownerId, d) => {
-    pickleball?.setRemoteInput(side, {
+    if (!pickleball?.active) return;
+    pickleball.setRemoteInput(side, {
       moveX: d[0] ?? 0,
       moveZ: d[1] ?? 0,
       swing: (d[2] ?? 0) > 0.5,
@@ -1975,8 +1983,36 @@ async function boot() {
   let cineHook: ((dt: number) => void) | null = null;
 
   let pickleballAnimationTime = 0;
+  const syncPickleballSiteActivation = () => {
+    if (!pickleball) return;
+    // A claimed local seat always stays live, even if the player somehow leaves
+    // the site while still controlling a side.
+    if (pickleball.localSide !== null) {
+      pickleballSiteAwake = true;
+      pickleball.setActive(true);
+      return;
+    }
+    const { x, z } = player.position;
+    const wasAwake = pickleballSiteAwake;
+    if (pickleballSiteAwake) {
+      pickleballSiteAwake = inGoldmanTennisSite(x, z, PICKLEBALL_TUNING.deactivateSitePad);
+    } else {
+      pickleballSiteAwake = inGoldmanTennisSite(x, z, PICKLEBALL_TUNING.activateSitePad);
+    }
+    pickleball.setActive(pickleballSiteAwake);
+    // Approaching the courts after a long roam: ask the relay for the latest
+    // match snapshot so we don't briefly show a stale local AI serve.
+    if (!wasAwake && pickleballSiteAwake && net.status === "online") net.replayPickleball();
+  };
   const updatePickleballGameplay = (dt: number): boolean => {
     if (!pickleball) return false;
+    syncPickleballSiteActivation();
+    if (!pickleball.active) {
+      pickleballLocalPose = null;
+      pickleballPromptSide = null;
+      pickleballInput = {};
+      return false;
+    }
     pickleballAnimationTime += dt;
     const side = pickleball.localSide;
     const moveX = input.axis("KeyA", "KeyD");
@@ -2051,7 +2087,7 @@ async function boot() {
     }
   };
   const sendPickleballNetwork = () => {
-    if (!pickleball || net.status !== "online") return;
+    if (!pickleball || !pickleball.active || net.status !== "online") return;
     const now = performance.now() / 1000;
     if (now < pickleballNetSendAt) return;
     pickleballNetSendAt = now + 1 / 12;
@@ -2319,7 +2355,7 @@ async function boot() {
           player.heading = info.heading + Math.PI; // storage convention is facing+π
           player.trySwitch("drive");
           hud.message(
-            info.kind === "raccoon" ? "You're riding the raccoon! Left click — gummy bears" : "You're riding the bear!",
+            info.kind === "raccoon" ? "You're riding the raccoon! Space — gummy bears" : "You're riding the bear!",
             3
           );
         } else {
@@ -2403,18 +2439,17 @@ async function boot() {
     // sprite set resident and just advance its blink clock every frame.
     updateSutroTower(frameDt);
 
-    // left-click tools, all along the true view direction: the ball launches
+    // Space / pad-X tools, all along the true view direction: the ball launches
     // from the hand, paint sticks to whatever the center-screen ray lands on,
     // bubbles ride the wand
     fireCooldown -= frameDt;
     if (input.freeCursor) {
-      // free cursor out: clicks only reach UI panels — the ball/spray/bubble
-      // tools stand down so pointing around never fires them
+      // free cursor out: pointing around never fires tools
     } else if (playingPickleball) {
-      // Pickleball consumes click as a paddle swing; do not also fire the
+      // Pickleball consumes Space/click as a paddle swing; do not also fire the
       // selected city tool or a vehicle weapon.
     } else if (golf?.capturesFire) {
-      // golf swing context: the held mouse is the power meter (gameplay/golf
+      // golf swing context: held Space is the power meter (gameplay/golf
       // reads input.firing itself) — every click-tool stands down
     } else if (player.mode === "drone") {
       if (!input.suspended && input.firePressed && fireCooldown <= 0) {
@@ -2456,7 +2491,7 @@ async function boot() {
       if (fetchBall) {
         chase.interactionDir(aim, player);
         const cancelled =
-          input.suspended || (input.device === "kb" && (!input.locked || !document.hasFocus()));
+          input.suspended || (input.device === "kb" && !document.hasFocus());
         fetchBall.driveThrow(frameDt, input.firing && !input.suspended, aim, cancelled);
       }
     } else if (input.firing) {
@@ -2581,7 +2616,7 @@ async function boot() {
     coronaHeights?.update(frameDt, elapsed, camera.position);
     // Ball fetch loop + pet follow run every frame, tool-agnostic, so a thrown
     // ball keeps bouncing and a returning/adopted dog keeps moving even after
-    // switching tools. verb() keeps the HUD Click row in sync with hold-to-throw.
+    // switching tools. verb() keeps the HUD Space/X row in sync with hold-to-throw.
     fetchBall?.update(frameDt, elapsed, player.position);
     if (tool === "ball" && fetchBall) hud.setToolVerb(fetchBall.verb());
     // brief over-the-shoulder pull-in during a throw, then ease back. Set before

@@ -5,7 +5,7 @@ import type { PlayerMode } from "../player/types";
 export type ToolName = "ball" | "spray" | "bubbles";
 export const TOOL_ORDER: ToolName[] = ["ball", "spray", "bubbles"];
 
-/** What the HUD's Click row should say per tool. */
+/** What the HUD's Space/X shoot row should say per tool. */
 export const TOOL_VERB: Record<ToolName, string> = {
   ball: "hold to throw",
   spray: "sling paintballs",

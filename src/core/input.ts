@@ -8,12 +8,13 @@ import type { PlayerMode } from "../player/types";
  * all game inputs read as idle so the player coasts. Global holds that must
  * still work there (Z time-scrub) use `holding()` instead of `down()`.
  *
- * A gamepad (Xbox standard mapping) rides the same logical rails: pollPad()
- * translates buttons into the key codes the game already reads (A→Space,
- * B→E, RT→Shift, …), the left stick into the WASD axis pairs, the right stick
- * into mouselook deltas, and the triggers into the active mode's throttle —
- * fly routes them to ↑/↓, bird routes LB/RB to Q/E twirl —
- * so modes/camera/fireworks never see a second input path. `device` tracks
+ * Keyboard fire is Space (hold); the mouse only captures look. A gamepad
+ * (Xbox standard mapping) rides the same logical rails: pollPad() translates
+ * buttons into the key codes the game already reads (A→Space, B→E, RT→Shift, …),
+ * the left stick into the WASD axis pairs, the right stick into mouselook
+ * deltas, and the triggers into the active mode's throttle — fly routes them
+ * to ↑/↓, bird routes LB/RB to Q/E twirl — so modes/camera/fireworks never see
+ * a second input path. Pad X is fire (separate from A→Space). `device` tracks
  * whichever input was touched last; the HUD swaps its control labels off it.
  */
 
@@ -105,6 +106,12 @@ export class Input {
         this.onFreeCursorChange(true);
         document.exitPointerLock();
       }
+      // Space is the keyboard fire button (pad keeps X). Set before keys.add so
+      // the same frame's consumers see firePressed/fireHeld.
+      if (e.code === "Space") {
+        this.firePressed = true;
+        this.fireHeld = true;
+      }
       this.keys.add(e.code);
       this.#justPressed.add(e.code);
       if (e.shiftKey) this.#shiftedPresses.add(e.code);
@@ -116,6 +123,7 @@ export class Input {
     });
     window.addEventListener("keyup", (e) => {
       this.keys.delete(e.code);
+      if (e.code === "Space") this.fireHeld = false;
       if ((e.code === "MetaLeft" || e.code === "MetaRight") && this.freeCursor) this.#endFreeCursor(true);
     });
     window.addEventListener("blur", () => {
@@ -140,25 +148,12 @@ export class Input {
 
     document.addEventListener("pointerlockchange", () => {
       this.locked = document.pointerLockElement === el;
-      if (!this.locked) this.fireHeld = false;
+      // Mouse no longer owns fire — keep charging across lock loss; blur/Space
+      // keyup still clear fireHeld.
       this.onLockChange(this.locked);
     });
 
-    el.addEventListener("mousedown", (e) => {
-      // captured: fire the held tool. free cursor: a single click-to-inspect
-      // (no held auto-fire — the world stays put while you point at things).
-      if (e.button === 0 && this.locked) {
-        this.firePressed = true;
-        this.fireHeld = true;
-        this.#setDevice("kb");
-      } else if (e.button === 0 && this.freeCursor) {
-        this.firePressed = true;
-        this.#setDevice("kb");
-      }
-    });
-    window.addEventListener("mouseup", (e) => {
-      if (e.button === 0) this.fireHeld = false;
-    });
+    // Clicks only capture / release the pointer — tools fire on Space (or pad X).
     el.addEventListener("contextmenu", (e) => e.preventDefault());
 
     window.addEventListener("mousemove", (e) => {

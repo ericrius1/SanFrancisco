@@ -667,8 +667,8 @@ export class GolfGame {
         // Monotonic charge: holding longer can only add force; full draw holds.
         this.#charge = Math.min(1, this.#charge + dt / CHARGE_TIME);
       } else {
-        // Losing focus/pointer lock cancels instead of firing an accidental shot.
-        const cancelled = input.device === "kb" && (!input.locked || !document.hasFocus());
+        // Losing focus cancels instead of firing an accidental shot.
+        const cancelled = input.device === "kb" && !document.hasFocus();
         if (cancelled) {
           this.#phase = "aim";
           this.#charge = 0;

@@ -11,7 +11,7 @@ const KB: Record<PlayerMode, Row[]> = {
     { c: ["Shift"], label: "run" },
     { c: ["Space"], label: "jump" },
     { c: ["E"], label: "hop on a ride" },
-    { c: ["Click"], label: "shoot" }
+    { c: ["Space"], label: "shoot" }
   ],
   drive: [
     { c: ["Mouse"], label: "look" },
@@ -20,7 +20,7 @@ const KB: Record<PlayerMode, Row[]> = {
     { c: ["Space"], label: "drift" },
     { c: ["Shift"], label: "boost" },
     { c: ["E"], label: "get out" },
-    { c: ["Click"], label: "shoot" }
+    { c: ["Space"], label: "shoot" }
   ],
   plane: [
     { c: ["Mouse"], label: "aim nose" },
@@ -28,14 +28,14 @@ const KB: Record<PlayerMode, Row[]> = {
     { c: ["A", "D"], label: "turn" },
     { c: ["Shift"], label: "boost" },
     { c: ["Space"], label: "air brake" },
-    { c: ["Click"], label: "shoot" }
+    { c: ["Space"], label: "shoot" }
   ],
   boat: [
     { c: ["Mouse"], label: "look" },
     { c: ["W", "S"], label: "throttle" },
     { c: ["A", "D"], label: "steer" },
     { c: ["Shift"], label: "boost" },
-    { c: ["Click"], label: "shoot" }
+    { c: ["Space"], label: "shoot" }
   ],
   speedboat: [
     { c: ["Mouse"], label: "look" },
@@ -43,7 +43,7 @@ const KB: Record<PlayerMode, Row[]> = {
     { c: ["A", "D"], label: "steer" },
     { c: ["Shift"], label: "boost" },
     { c: ["E"], label: "get out" },
-    { c: ["Click"], label: "shoot" }
+    { c: ["Space"], label: "shoot" }
   ],
   drone: [
     { c: ["Mouse"], label: "aim" },
@@ -52,7 +52,7 @@ const KB: Record<PlayerMode, Row[]> = {
     { c: ["E", "Q"], label: "up · down" },
     { c: ["Space"], label: "hover" },
     { c: ["Shift"], label: "boost" },
-    { c: ["Click"], label: "shoot" }
+    { c: ["Space"], label: "shoot" }
   ],
   board: [
     { c: ["Mouse"], label: "look" },
@@ -61,7 +61,7 @@ const KB: Record<PlayerMode, Row[]> = {
     { c: ["A", "D"], label: "carve" },
     { c: ["Space"], label: "ollie" },
     { c: ["Shift"], label: "boost" },
-    { c: ["Click"], label: "shoot" }
+    { c: ["Space"], label: "shoot" }
   ],
   bird: [
     { c: ["Mouse"], label: "aim" },
@@ -70,7 +70,7 @@ const KB: Record<PlayerMode, Row[]> = {
     { c: ["Space"], label: "flap · climb" },
     { c: ["Shift"], label: "tuck dive" },
     { c: ["Q", "E"], label: "twirl" },
-    { c: ["Click"], label: "shoot" }
+    { c: ["Space"], label: "shoot" }
   ]
 }
 
@@ -176,7 +176,7 @@ export class HUD {
   #msgTimer = 0
   #current: PlayerMode = "walk"
   #device: "kb" | "pad" = "kb"
-  #toolVerb = "hold to throw" // what a click does right now (the toolbar's tool)
+  #toolVerb = "hold to throw" // what Space/X does right now (the toolbar's tool)
   #historyCanBack = false
   #historyCanForward = false
 
@@ -196,7 +196,7 @@ export class HUD {
     this.#renderHistory()
   }
 
-  /** The Click/X row tracks the active toolbar tool. */
+  /** The Space/X shoot row tracks the active toolbar tool. */
   setToolVerb(verb: string) {
     if (verb === this.#toolVerb) return
     this.#toolVerb = verb

@@ -4,9 +4,9 @@ import { tunables } from "../../core/persist";
 import { applyMaterialPolicy, RenderBand, tagTransparency } from "../../render/transparency";
 
 /**
- * A small, fixed firefly group for the trio. The visible insects stay around
- * the performers' silhouette while two shadowless local lights provide the
- * actual face/instrument fill. Keeping the light count fixed is important in
+ * A small firefly swarm for the trio. Visible insects drift in a gentle 3D
+ * volume around the instruments; one shadowless local light provides the
+ * face/instrument fill. Keeping the light count fixed is important in
  * WebGPU: changing it at runtime invalidates every lit pipeline.
  */
 
@@ -20,8 +20,8 @@ export const BUSKER_FIREFLY_TUNING = tunables("busker.fireflies", {
 
 const TAU = Math.PI * 2;
 const ACTIVE_RANGE = 90;
-const LIGHT_INTENSITY = 13;
-const LIGHT_DISTANCE = 4.2;
+const LIGHT_INTENSITY = 20;
+const LIGHT_DISTANCE = 4.6;
 const TWILIGHT_START_ELEVATION = 7;
 const TWILIGHT_FULL_ELEVATION = -2;
 
@@ -37,16 +37,20 @@ type FireflyLayout = {
   size: number;
 };
 
-// The trio faces -Z. Most paths sit above the heads or beyond the outer
-// shoulders, leaving the central face/instrument sightline clear.
+// Homes sit in a volume around the instruments (not a flat arc). Trio faces
+// -Z; seats are flute −X, handpan center, ukulele +X.
 const LAYOUT: readonly FireflyLayout[] = [
-  { x: -1.62, y: 2.18, z: -1.82, ax: 0.11, ay: 0.13, az: 0.08, speed: 0.18, phase: 0.08, size: 0.2 },
-  { x: -1.86, y: 1.62, z: -1.57, ax: 0.09, ay: 0.1, az: 0.07, speed: 0.15, phase: 0.31, size: 0.16 },
-  { x: -0.64, y: 2.62, z: -1.54, ax: 0.14, ay: 0.08, az: 0.06, speed: 0.13, phase: 0.52, size: 0.17 },
-  { x: 0.18, y: 2.73, z: -1.46, ax: 0.1, ay: 0.07, az: 0.07, speed: 0.16, phase: 0.74, size: 0.15 },
-  { x: 0.96, y: 2.58, z: -1.56, ax: 0.12, ay: 0.09, az: 0.06, speed: 0.14, phase: 0.91, size: 0.17 },
-  { x: 1.58, y: 2.12, z: -1.84, ax: 0.1, ay: 0.12, az: 0.08, speed: 0.17, phase: 0.43, size: 0.2 },
-  { x: 1.88, y: 1.54, z: -1.55, ax: 0.08, ay: 0.09, az: 0.06, speed: 0.12, phase: 0.65, size: 0.15 }
+  // flute
+  { x: -1.12, y: 2.02, z: -1.42, ax: 0.34, ay: 0.28, az: 0.38, speed: 0.52, phase: 0.08, size: 0.18 },
+  { x: -0.82, y: 1.68, z: -1.78, ax: 0.3, ay: 0.24, az: 0.32, speed: 0.44, phase: 0.31, size: 0.15 },
+  // handpan
+  { x: 0.08, y: 1.62, z: -1.52, ax: 0.36, ay: 0.26, az: 0.34, speed: 0.58, phase: 0.52, size: 0.16 },
+  { x: -0.18, y: 1.92, z: -1.28, ax: 0.32, ay: 0.3, az: 0.4, speed: 0.4, phase: 0.74, size: 0.14 },
+  // ukulele
+  { x: 1.08, y: 1.74, z: -1.46, ax: 0.34, ay: 0.27, az: 0.36, speed: 0.5, phase: 0.91, size: 0.17 },
+  { x: 0.78, y: 2.08, z: -1.82, ax: 0.28, ay: 0.25, az: 0.3, speed: 0.46, phase: 0.43, size: 0.19 },
+  // free floater above the gap
+  { x: 0.28, y: 2.32, z: -1.18, ax: 0.42, ay: 0.22, az: 0.44, speed: 0.38, phase: 0.65, size: 0.15 }
 ] as const;
 
 function smooth01(edge0: number, edge1: number, value: number) {
@@ -76,7 +80,7 @@ export class BuskerFireflies {
   #texture = makeGlowTexture();
   #sprites: THREE.Sprite[] = [];
   #materials: THREE.SpriteMaterial[] = [];
-  #lights: THREE.PointLight[] = [];
+  #light: THREE.PointLight;
   #elapsed = 0;
 
   constructor() {
@@ -104,16 +108,13 @@ export class BuskerFireflies {
       this.#materials.push(material);
     }
 
-    // Two warm, shadowless keys sit on the outer fireflies. They brighten the
-    // three faces from the camera side without putting a glowing orb over one.
-    for (const index of [0, 5]) {
-      const light = new THREE.PointLight(0xffdf79, 0, LIGHT_DISTANCE, 2);
-      light.name = `busker-firefly-fill-${this.#lights.length + 1}`;
-      light.castShadow = false;
-      light.position.set(LAYOUT[index].x, LAYOUT[index].y, LAYOUT[index].z);
-      this.group.add(light);
-      this.#lights.push(light);
-    }
+    // One warm, shadowless fill — tracks the swarm centroid so faces and
+    // instruments stay lit without a second WebGPU point light.
+    this.#light = new THREE.PointLight(0xffdf79, 0, LIGHT_DISTANCE, 2);
+    this.#light.name = "busker-firefly-fill";
+    this.#light.castShadow = false;
+    this.#light.position.set(0, 1.9, -1.55);
+    this.group.add(this.#light);
   }
 
   update(dt: number, cameraDistance: number, sunElevation: number) {
@@ -128,16 +129,25 @@ export class BuskerFireflies {
 
     this.group.visible = twilight > 0.001;
 
+    let cx = 0;
+    let cy = 0;
+    let cz = 0;
+
     for (let i = 0; i < LAYOUT.length; i++) {
       const p = LAYOUT[i];
       const phase = p.phase * TAU;
       const t = this.#elapsed * p.speed * drift + phase;
+      // Multi-frequency Lissajous so paths read as a loose 3D swarm, not a
+      // shared planar arc. Secondary terms push depth and height independently.
       const sprite = this.#sprites[i];
       sprite.position.set(
-        p.x + Math.sin(t) * p.ax,
-        p.y + Math.sin(t * 0.73 + phase * 0.41) * p.ay,
-        p.z + Math.sin(t * 0.47 + phase * 1.37) * p.az
+        p.x + Math.sin(t) * p.ax + Math.sin(t * 2.17 + phase) * p.ax * 0.38,
+        p.y + Math.sin(t * 0.73 + phase * 0.41) * p.ay + Math.cos(t * 1.41 + phase) * p.ay * 0.32,
+        p.z + Math.cos(t * 0.91 + phase * 1.17) * p.az + Math.sin(t * 1.63 + phase * 0.7) * p.az * 0.42
       );
+      cx += sprite.position.x;
+      cy += sprite.position.y;
+      cz += sprite.position.z;
 
       // Slow, shallow breathing—never an on/off twinkle or high-frequency flicker.
       const pulse = 1 + Math.sin(this.#elapsed * 0.58 + phase) * pulseDepth;
@@ -146,14 +156,11 @@ export class BuskerFireflies {
       sprite.scale.setScalar(size);
     }
 
+    const n = LAYOUT.length;
     const lightGain = twilight * BUSKER_FIREFLY_TUNING.values.brightness;
-    for (let i = 0; i < this.#lights.length; i++) {
-      const sourceIndex = i === 0 ? 0 : 5;
-      const phase = LAYOUT[sourceIndex].phase * TAU;
-      this.#lights[i].position.copy(this.#sprites[sourceIndex].position);
-      this.#lights[i].intensity =
-        LIGHT_INTENSITY * lightGain * (1 + Math.sin(this.#elapsed * 0.51 + phase) * pulseDepth);
-    }
+    this.#light.position.set(cx / n, cy / n, cz / n);
+    this.#light.intensity =
+      LIGHT_INTENSITY * lightGain * (1 + Math.sin(this.#elapsed * 0.51) * pulseDepth);
   }
 
   dispose() {
@@ -161,7 +168,6 @@ export class BuskerFireflies {
     for (const material of this.#materials) material.dispose();
     this.#materials.length = 0;
     this.#sprites.length = 0;
-    this.#lights.length = 0;
     this.#texture.dispose();
   }
 }

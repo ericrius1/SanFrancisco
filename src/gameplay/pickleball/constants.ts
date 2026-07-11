@@ -40,5 +40,9 @@ export const PICKLEBALL_TUNING = Object.freeze({
   swingCooldown: 0.38,
   serveDelay: 1.15,
   pointDelay: 1.65,
-  gameResetDelay: 4.25
+  gameResetDelay: 4.25,
+  /** Metres beyond the Goldman tennis/pickleball site outline before the match wakes. */
+  activateSitePad: 48,
+  /** Metres beyond the site outline before a woken match sleeps again (hysteresis). */
+  deactivateSitePad: 72
 });
