@@ -220,8 +220,17 @@ async function main() {
   console.log(`[audit] meshes=${audit.meshCount} coplanarPairs=${audit.pairs.length}`);
   for (const p of audit.pairs) console.log("  pair:", JSON.stringify(p));
 
-  // spawn a remote twin standing exactly at the player's position, facing the
-  // opposite way — the "second tab idle at the shared spawn point" scenario
+  // FIX 1 check: the session must NOT boot at the exact registered spawn point
+  // (398, 2752) — every fresh session scatters a stride or two off it.
+  const scatter = await ev(c, `(()=>{
+    const p = window.__sf.player.position;
+    return { d: Math.hypot(p.x - 398, p.z - 2752) };
+  })()`);
+  console.log("[scatter]", JSON.stringify(scatter));
+
+  // FIX 2 check: spawn a remote twin standing exactly at the player's position
+  // (the "second tab idle at the shared spawn point" scenario), then verify the
+  // local player politely drifts out of the overlap while otherwise idle.
   const twin = await ev(c, `(async()=>{ ${P}
     sf.remotes.add({id:777,name:'Twin',hue:200,avatar:{skin:2,hair:"short",hat:"cap",outfit:"overalls",color:7,accent:7}});
     const p = sf.player.position;
@@ -229,11 +238,27 @@ async function main() {
     const q = new sf.THREE.Quaternion().setFromAxisAngle(new sf.THREE.Vector3(0,1,0), yaw);
     const t = performance.now();
     sf.remotes.sample(777,{t:t-400,mode:'walk',x:p.x,y:p.y,z:p.z,qx:q.x,qy:q.y,qz:q.z,qw:q.w,speed:0});
-    sf.remotes.sample(777,{t:t+60000,mode:'walk',x:p.x,y:p.y,z:p.z,qx:q.x,qy:q.y,qz:q.z,qw:q.w,speed:0});
+    sf.remotes.sample(777,{t:t+600000,mode:'walk',x:p.x,y:p.y,z:p.z,qx:q.x,qy:q.y,qz:q.z,qw:q.w,speed:0});
+    const start = {x:p.x, z:p.z};
     await tick(20);
-    return { ok: sf.remotes.avatars.has(777) };
+    return { ok: sf.remotes.avatars.has(777), start };
   })()`);
   console.log("[twin]", JSON.stringify(twin));
+
+  // drive ~3 s of frames and watch the player step out of the twin
+  const sep = await ev(c, `(async()=>{ ${P}
+    const twinPos = sf.remotes.positionOf(777);
+    const trace = [];
+    for (let i = 0; i < 12; i++) {
+      await tick(15);
+      const p = sf.player.position;
+      trace.push(+Math.hypot(p.x - twinPos.x, p.z - twinPos.z).toFixed(3));
+    }
+    return { trace, final: trace[trace.length - 1] };
+  })()`);
+  console.log("[separation]", JSON.stringify(sep));
+  if (!(sep.final >= 0.65)) throw new Error(`player did not separate from overlapping twin (final ${sep.final}m)`);
+  if (!(scatter.d > 0.5)) throw new Error(`spawn did not scatter off the registered point (${scatter.d}m)`);
 
   // live mode: real clock, free cam parked close behind the avatar (video framing)
   await ev(c, `(async()=>{ ${P}

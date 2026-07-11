@@ -132,14 +132,14 @@ export const CITYGEN_TUNING = tunables("citygen", {
   detailRadius: {
     v: 150,
     min: 40,
-    max: 700,
+    max: 7000,
     step: 5,
     label: "detail distance (m)"
   },
   maxDetail: {
     v: 40,
     min: 4,
-    max: 400,
+    max: 4000,
     step: 2,
     label: "max detail buildings"
   },

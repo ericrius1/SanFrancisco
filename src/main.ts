@@ -259,7 +259,17 @@ async function boot() {
   // under (or inside) a building. (Resume/invite paths override this entirely.)
   const spawnPoint = resolveSpawnPoint(START.spawn) ?? resolveSpawnPoint(START_DEFAULTS.spawn);
   const startAt = spawnPoint ?? map.meta.spawns[START.spawn] ?? map.meta.spawns[START_DEFAULTS.spawn];
-  const spawn = await findOpenSpawn(map, tiles.manifest, startAt);
+  // Per-session scatter: every fresh session lands a stride or two off the
+  // registered point, so two players (or two tabs) never boot into the exact
+  // same spot — co-located avatars interpenetrate and read as z-fighting.
+  // findOpenSpawn validates the scattered point like any other candidate.
+  const scatterA = Math.random() * Math.PI * 2;
+  const scatterR = 0.8 + Math.random() * 1.6;
+  const spawn = await findOpenSpawn(map, tiles.manifest, {
+    ...startAt,
+    x: startAt.x + Math.cos(scatterA) * scatterR,
+    z: startAt.z + Math.sin(scatterA) * scatterR
+  });
   // Lean-boot spawns cap the draw radius while the cover is up: only the near
   // district (tiles + citygen cells, both keyed off CONFIG.tileLoadRadius) gates
   // the reveal. The first covered tile scan runs after this, so the cap takes
@@ -2254,6 +2264,8 @@ async function boot() {
       remotes.selfId = net.selfId;
       remotes.update(frameDt);
       hidePickleballRemoteAvatars();
+      // personal space: standing inside another avatar shimmers like z-fighting
+      player.separateFromAvatars(remotes.positions().filter((r) => r.mode === "walk"), frameDt);
       // riding shotgun with a friend keeps you glued; otherwise settle the render
       // transform between physics states like a live frame
       if (passengerOf !== null && remotes.ridePose(passengerOf, ridePos, rideQuat)) {
@@ -2601,6 +2613,8 @@ async function boot() {
     remotes.selfId = net.selfId;
     remotes.update(frameDt);
     hidePickleballRemoteAvatars();
+    // personal space: standing inside another avatar shimmers like z-fighting
+    player.separateFromAvatars(remotes.positions().filter((r) => r.mode === "walk"), frameDt);
     if (passengerOf !== null) {
       if (remotes.ridePose(passengerOf, ridePos, rideQuat)) {
         player.setRidePose(ridePos, rideQuat, frameDt);

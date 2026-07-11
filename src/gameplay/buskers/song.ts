@@ -4,21 +4,7 @@ import type { BuskerId, NoteEvent } from "./types";
  * The trio's songbook — two authored songs sharing one harmonic vocabulary,
  * cycled with Q (BuskerTrio.cycleSong).
  *
- * 1. "Corona Wind" — warm folk riff in D minor. Handpan states the pulse
- *    alone, ukulele joins, flute carries the tune. Cycle Dm | Bb | F | C.
- *
- *      bars  1-4    handpan alone — sparse ostinato states the pulse
- *      bars  5-8    ukulele joins — calypso strum carries the harmony
- *      bars  9-12   flute enters — phrase A (answering rise)
- *      bars 13-16   flute phrase A' — same opening, climbing resolution
- *      bars 17-20   interlude — flute rests; the uke drops to a picked
- *                   arpeggio over a sparse handpan, then both build back up
- *      bars 21-24   flute phrase B — higher, searching (the folky verse)
- *      bars 25-28   flute phrase B' — winds the search back down home
- *      bars 29-32   reprise — phrase A' again, everyone at full sail
- *      bar   33     landing — one long D minor: ding + slow roll + fading D5
- *
- * 2. "Fog Rolls Home" — a shorter, brighter folk tune with real verse/chorus
+ * 1. "Fog Rolls Home" — a shorter, brighter folk tune with real verse/chorus
  *    form. The ukulele opens jamming on driving eighths, the handpan falls in
  *    two bars later, the flute two bars after that; the harmony changes per
  *    section instead of looping one cycle.
@@ -35,6 +21,20 @@ import type { BuskerId, NoteEvent } from "./types";
  *      bars 21-24   chorus' — F C Dm Am, the same lift winding back down
  *      bars 25-28   reprise verse — everyone driving, flute ends on a held E5
  *      bar   29     landing — one long D minor, rung out together
+ *
+ * 2. "Corona Wind" — warm folk riff in D minor. Handpan states the pulse
+ *    alone, ukulele joins, flute carries the tune. Cycle Dm | Bb | F | C.
+ *
+ *      bars  1-4    handpan alone — sparse ostinato states the pulse
+ *      bars  5-8    ukulele joins — calypso strum carries the harmony
+ *      bars  9-12   flute enters — phrase A (answering rise)
+ *      bars 13-16   flute phrase A' — same opening, climbing resolution
+ *      bars 17-20   interlude — flute rests; the uke drops to a picked
+ *                   arpeggio over a sparse handpan, then both build back up
+ *      bars 21-24   flute phrase B — higher, searching (the folky verse)
+ *      bars 25-28   flute phrase B' — winds the search back down home
+ *      bars 29-32   reprise — phrase A' again, everyone at full sail
+ *      bar   33     landing — one long D minor: ding + slow roll + fading D5
  *
  * Every pitch sits inside the D Kurd handpan scale (D3 A3 Bb3 C4 D4 E4 F4 G4
  * A4) or the ukulele's re-entrant gCEA voicings, and every chord (Dm Bb F C
@@ -424,7 +424,7 @@ const FOG_ROLLS_HOME: TrioSong = {
 
 /* ----------------------------------------------------------------- songs */
 
-export const SONGS: readonly TrioSong[] = [CORONA_WIND, FOG_ROLLS_HOME];
+export const SONGS: readonly TrioSong[] = [FOG_ROLLS_HOME, CORONA_WIND];
 
 // The transport relies on each part being onset-sorted.
 for (const song of SONGS) {

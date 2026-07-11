@@ -121,6 +121,7 @@ async function main() {
     `--user-data-dir=${profile}`, `--remote-debugging-port=${port}`, "--no-first-run", "--no-default-browser-check",
     "--enable-unsafe-webgpu", "--enable-features=WebGPUDeveloperFeatures", "--use-angle=metal",
     "--hide-scrollbars", "--mute-audio", `--window-size=${W},${H}`, "--window-position=40,40",
+    "--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding",
     `${SERVER_URL}/?fullfps`
   ], { cwd: ROOT, stdio: "ignore" });
   await sleep(2500);
@@ -154,6 +155,8 @@ async function main() {
   await c.send("Page.enable"); await c.send("Runtime.enable");
   // NOTE: no Emulation.setDeviceMetricsOverride here — device emulation makes
   // requestPointerLock reject with WrongDocumentError. --window-size suffices.
+  // An unfocused window also rejects pointer lock — front it first.
+  await c.send("Page.bringToFront");
 
   console.log("[probe] waiting for __sf...");
   const t0 = Date.now();

@@ -368,6 +368,47 @@ export class Player {
   }
 
   /**
+   * Soft personal space against other avatars. When another standing player
+   * occupies (almost) the same spot — the shared spawn point, a group photo,
+   * an idle friend — the two box rigs interpenetrate and the coplanar faces
+   * shimmer like z-fighting. Both clients run this, so overlapping players
+   * gently slide apart. On-foot only: vehicles have real silhouettes and a
+   * shove while driving would feel like a physics bug.
+   */
+  separateFromAvatars(others: { x: number; z: number }[], dt: number) {
+    if (this.riding || this.mode !== "walk" || !this.body) return;
+    const RADIUS = 0.7; // rig shoulders are ~0.6 m wide
+    const SPEED = 1.1; // m/s of drift, slow enough to read as a polite step
+    let px = 0;
+    let pz = 0;
+    for (const o of others) {
+      const dx = this.position.x - o.x;
+      const dz = this.position.z - o.z;
+      const d = Math.hypot(dx, dz);
+      if (d >= RADIUS) continue;
+      if (d < 1e-3) {
+        // dead-centre overlap: step out to the side we're facing away from
+        px += Math.cos(this.heading);
+        pz += -Math.sin(this.heading);
+      } else {
+        const w = (RADIUS - d) / RADIUS;
+        px += (dx / d) * w;
+        pz += (dz / d) * w;
+      }
+    }
+    if (px === 0 && pz === 0) return;
+    const len = Math.hypot(px, pz);
+    const step = Math.min(SPEED * dt, 0.05);
+    const w = this.physics.world;
+    const t = w.getBodyTransform(this.body);
+    w.setBodyTransform(
+      this.body,
+      [t.position[0] + (px / len) * step, t.position[1], t.position[2] + (pz / len) * step],
+      t.rotation
+    );
+  }
+
+  /**
    * Riding shotgun in another player's vehicle: no physics body of our own,
    * the pose is glued to the driver's car every frame (setRidePose). Wire and
    * HUD treat the rider as a walker; main.ts owns who the driver is.
