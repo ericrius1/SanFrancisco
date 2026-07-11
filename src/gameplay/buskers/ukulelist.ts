@@ -138,7 +138,6 @@ export const buildUkulelist: MusicianBuilder = (audio, part): Musician => {
   rig.avatar.materials.jacket.color.set(0x3d4b35);
   rig.avatar.materials.sleeve.color.set(0x35422f);
   rig.avatar.materials.shirt.color.set(0xb9633d);
-  rig.avatar.materials.visor.color.set(0x0a0d12); // black bar shades
   for (const detail of rig.avatar.outfits.jacket) detail.visible = false;
   rig.avatar.torsoBlock.scale.set(1.025, 1.015, 1.025);
   for (const sleeve of rig.avatar.armBlocks) sleeve.scale.set(1.045, 1, 1.045);
@@ -155,6 +154,13 @@ export const buildUkulelist: MusicianBuilder = (audio, part): Musician => {
   // own geometries/materials (rig.ts geometry cache is shared — never touch it)
   const geos: THREE.BufferGeometry[] = [];
   const mats: THREE.Material[] = [];
+  // MeshBasic so the firefly fill can't lift the bar shades to charcoal grey.
+  const blackShades = new THREE.MeshBasicMaterial({ color: 0x000000 });
+  mats.push(blackShades);
+  const stockShades = rig.head.children.find(
+    (child) => child instanceof THREE.Mesh && child.material === rig.avatar.materials.visor
+  );
+  if (stockShades instanceof THREE.Mesh) stockShades.material = blackShades;
   const own = <T extends THREE.BufferGeometry>(g: T): T => {
     geos.push(g);
     return g;

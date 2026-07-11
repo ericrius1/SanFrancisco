@@ -220,35 +220,20 @@ async function main() {
   console.log(`[audit] meshes=${audit.meshCount} coplanarPairs=${audit.pairs.length}`);
   for (const p of audit.pairs) console.log("  pair:", JSON.stringify(p));
 
-  // paint the avatar's back: overlapping splats of two colors on torso + pack,
-  // exactly what the paint tool leaves after a splat fight
-  const paint = await ev(c, `(async()=>{ ${P}
-    const skins = sf.paintSkins ?? sf.paint?.skins ?? null;
-    if (!skins) return { ok: false, keys: Object.keys(sf) };
-    const walk = sf.player.meshes.walk;
-    let torso = null, pack = null;
-    walk.traverse((o) => {
-      if (!o.isMesh) return;
-      const bb = o.geometry.boundingBox ?? (o.geometry.computeBoundingBox(), o.geometry.boundingBox);
-      const sx = bb.max.x - bb.min.x, sy = bb.max.y - bb.min.y, sz = bb.max.z - bb.min.z;
-      if (Math.abs(sx - 0.44) < 1e-3 && Math.abs(sy - 0.42) < 1e-3) torso = o;
-      if (Math.abs(sx - 0.34) < 1e-3 && Math.abs(sy - 0.34) < 1e-3 && Math.abs(sz - 0.14) < 1e-3) pack = o;
-    });
-    if (!torso || !pack) return { ok: false, torso: !!torso, pack: !!pack };
-    walk.updateWorldMatrix(true, true);
-    const V = sf.THREE.Vector3;
-    const back = new V(0, 0, 1).transformDirection(walk.matrixWorld); // avatar back = local +z
-    const packP = pack.getWorldPosition(new V()).addScaledVector(back, 0.07);
-    const torsoP = torso.getWorldPosition(new V()).addScaledVector(back, 0.13);
-    // two big overlapping splats, different colors, both on the back plane
-    skins.stamp(pack, packP, back, 0.92, 0.9, 0.85, 0.55);
-    skins.stamp(torso, torsoP.clone().add(new V(0.06, 0.05, 0)), back, 0.1, 0.1, 0.14, 0.55);
-    skins.stamp(pack, packP.clone().add(new V(-0.08, -0.12, 0)), back, 0.1, 0.1, 0.14, 0.5);
-    skins.stamp(torso, torsoP.clone().add(new V(0.1, -0.1, 0)), back, 0.92, 0.9, 0.85, 0.5);
-    await tick(5);
-    return { ok: true };
+  // spawn a remote twin standing exactly at the player's position, facing the
+  // opposite way — the "second tab idle at the shared spawn point" scenario
+  const twin = await ev(c, `(async()=>{ ${P}
+    sf.remotes.add({id:777,name:'Twin',hue:200,avatar:{skin:2,hair:"short",hat:"cap",outfit:"overalls",color:7,accent:7}});
+    const p = sf.player.position;
+    const yaw = (sf.player.heading ?? 0) + Math.PI;
+    const q = new sf.THREE.Quaternion().setFromAxisAngle(new sf.THREE.Vector3(0,1,0), yaw);
+    const t = performance.now();
+    sf.remotes.sample(777,{t:t-400,mode:'walk',x:p.x,y:p.y,z:p.z,qx:q.x,qy:q.y,qz:q.z,qw:q.w,speed:0});
+    sf.remotes.sample(777,{t:t+60000,mode:'walk',x:p.x,y:p.y,z:p.z,qx:q.x,qy:q.y,qz:q.z,qw:q.w,speed:0});
+    await tick(20);
+    return { ok: sf.remotes.avatars.has(777) };
   })()`);
-  console.log("[paint]", JSON.stringify(paint));
+  console.log("[twin]", JSON.stringify(twin));
 
   // live mode: real clock, free cam parked close behind the avatar (video framing)
   await ev(c, `(async()=>{ ${P}

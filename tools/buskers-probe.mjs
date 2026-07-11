@@ -11,6 +11,8 @@
 //   SF_PROBE_URL  existing vite (default http://127.0.0.1:5191)
 //   SF_TIME       time of day hours (default 15.0)
 //   SF_VIEWS      comma list of view names (default all)
+//   SF_SONG       songbook index (default 0 = Corona Wind; 1 = Fog Rolls
+//                 Home — cycles via cycleSong() and uses that song's views)
 
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
@@ -22,6 +24,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const OUT = path.resolve(ROOT, process.env.SF_PROBE_OUT ?? ".data/buskers-probe");
 const SERVER_URL = process.env.SF_PROBE_URL ?? "http://127.0.0.1:5191";
 const TIME = Number(process.env.SF_TIME ?? 15.0);
+const SONG_IDX = Number(process.env.SF_SONG ?? 0);
 const ONLY = (process.env.SF_VIEWS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 const W = 1280, H = 720;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -53,6 +56,24 @@ const VIEWS = [
   // drone shot from SOUTH of the trio looking NORTH over the summit crag toward
   // the Golden Gate horizon — verifies the lowered crag no longer walls it off
   { name: "gg_background", focus: "group", dist: -2, lateral: 8, up: 4.5, targetUp: 3.2, seekBeat: 30.0 }
+];
+
+// "Fog Rolls Home" (SF_SONG=1) — the folk tune's own musical moments:
+// staggered entrances (uke bar 1 → handpan bar 3 → flute bar 5), the
+// bar-12 fill run, the chorus lift, the picked turn, and the landing.
+// Damped animation scalars (flute lift, hand hovers) need wall-clock to
+// converge after a cold seek, so each moment seeks a little early and
+// advances real seconds into the beat it wants to catch.
+const FOG_VIEWS = [
+  { name: "fog_uke_jam_solo", focus: "ukulele", dist: 2.6, lateral: 0.7, up: 0.6, targetUp: 0.45, seekBeat: 2.05 },
+  { name: "fog_solo_wide", focus: "group", dist: 6.5, lateral: 0.8, up: 1.5, targetUp: 0.9, seekBeat: 3.02 },
+  { name: "fog_pan_entrance", focus: "handpan", dist: 2.4, lateral: -0.6, up: 0.6, targetUp: 0.4, seekBeat: 8.5, afterSeconds: 1 },
+  { name: "fog_flute_verse", focus: "flute", dist: 2.4, lateral: -0.75, up: 0.6, targetUp: 0.5, seekBeat: 16.0, afterSeconds: 2 },
+  { name: "fog_fill_run", focus: "handpan", dist: 2.4, lateral: -0.6, up: 0.6, targetUp: 0.4, seekBeat: 46.5, afterSeconds: 1 },
+  { name: "fog_chorus_wide", focus: "group", dist: 7.5, lateral: 0.8, up: 1.6, targetUp: 0.9, seekBeat: 51.5, afterSeconds: 2 },
+  { name: "fog_turn_pick", focus: "group", dist: 5.4, lateral: -0.8, up: 1.3, targetUp: 0.9, seekBeat: 66.5, afterSeconds: 2.5 },
+  { name: "fog_reprise_wide", focus: "group", dist: 7.5, lateral: -0.9, up: 1.6, targetUp: 0.9, seekBeat: 99.5, afterSeconds: 2 },
+  { name: "fog_landing", focus: "group", dist: 4.8, lateral: 0.6, up: 1.2, targetUp: 0.9, seekBeat: 110, afterSeconds: 2 }
 ];
 
 async function isFile(p) { try { return existsSync(p); } catch { return false; } }
@@ -222,8 +243,20 @@ async function main() {
   await teleport(c, 340, 2840, Math.PI);
   await settle(c, 2);
 
+  // cycle the songbook to the requested song (boot default is index 0)
+  if (SONG_IDX > 0) {
+    const name = await ev(c, `(()=>{
+      const b = window.__sf.buskers;
+      let n = b.songName;
+      for (let i = 0; i < ${SONG_IDX}; i++) n = b.cycleSong(0);
+      window.__sf.tick(1/30);
+      return n;
+    })()`);
+    console.log(`[probe] song: ${name}`);
+  }
+
   let failedViews = 0;
-  for (const v of VIEWS) {
+  for (const v of (SONG_IDX === 1 ? FOG_VIEWS : VIEWS)) {
     if (ONLY.length && !ONLY.includes(v.name)) continue;
     try {
       if (v.seekBeat != null) await ev(c, `(window.__sf.buskers.seek(${v.seekBeat}), true)`);

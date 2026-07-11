@@ -184,8 +184,9 @@ export const buildFlutist: MusicianBuilder = (audio, part) => {
     (child) => child instanceof THREE.Mesh && child.material === rig.avatar.materials.visor
   );
   if (stockShades) stockShades.visible = false;
-  const shadeFrame = new THREE.MeshLambertMaterial({ color: 0x0a0d12 });
-  const shadeLens = new THREE.MeshLambertMaterial({ color: 0x05070c });
+  // MeshBasic so the firefly fill can't lift them to charcoal grey — ink black.
+  const shadeFrame = new THREE.MeshBasicMaterial({ color: 0x000000 });
+  const shadeLens = new THREE.MeshBasicMaterial({ color: 0x000000 });
   ownMats.push(shadeFrame, shadeLens);
   const lensGeo = new THREE.CylinderGeometry(0.055, 0.055, 0.018, 10);
   const rimGeo = new THREE.CylinderGeometry(0.062, 0.062, 0.014, 10);

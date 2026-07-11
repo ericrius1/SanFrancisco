@@ -152,7 +152,8 @@ async function main() {
   };
   await c.open();
   await c.send("Page.enable"); await c.send("Runtime.enable");
-  await c.send("Emulation.setDeviceMetricsOverride", { width: W, height: H, deviceScaleFactor: 1, mobile: false });
+  // NOTE: no Emulation.setDeviceMetricsOverride here — device emulation makes
+  // requestPointerLock reject with WrongDocumentError. --window-size suffices.
 
   console.log("[probe] waiting for __sf...");
   const t0 = Date.now();
@@ -190,8 +191,15 @@ async function main() {
   let s = await waitLock(c, true);
   push("control-click-locks", s.el && s.locked, `after canvas click: pointerLockElement=${s.el} input.locked=${s.locked}`);
   if (!s.el) {
-    console.log("[probe] headless Chrome refused pointer lock — remaining tests meaningless, aborting");
-    return finish();
+    const diag = await evGesture(c, `(async()=>{try{await (document.querySelector('canvas')||document.body).requestPointerLock();return "granted:"+!!document.pointerLockElement;}catch(e){return "rejected:"+e.name+":"+e.message;}})()`);
+    console.log(`[probe] direct requestPointerLock: ${diag}; hasFocus=${await ev(c, "document.hasFocus()")}`);
+    if (!String(diag).startsWith("granted")) {
+      console.log("[probe] Chrome refused pointer lock — remaining tests meaningless, aborting");
+      return finish();
+    }
+    s = await waitLock(c, true);
+    push("control-direct-lock", s.el && s.locked, `direct gesture lock: el=${s.el} locked=${s.locked}`);
+    if (!s.el) return finish();
   }
 
   // ---- A. late-grant race: exit + request (grant in flight) + releaseLock →

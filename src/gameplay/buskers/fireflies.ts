@@ -21,7 +21,9 @@ export const BUSKER_FIREFLY_TUNING = tunables("busker.fireflies", {
 const TAU = Math.PI * 2;
 const ACTIVE_RANGE = 90;
 const LIGHT_INTENSITY = 7;
-const LIGHT_DISTANCE = 5.2;
+// Reach a little past the rock so hillside facades behind the trio still catch
+// a soft wash — faces stay the key, but the night city reads further back.
+const LIGHT_DISTANCE = 7.4;
 // Key sits in front of the trio (camera side), slightly camera-left and above
 // the swarm — soft face fill without sitting inside the insects.
 const LIGHT_OFFSET = { x: 0.65, y: 0.4, z: -1.35 };
@@ -40,20 +42,20 @@ type FireflyLayout = {
   size: number;
 };
 
-// Homes sit in a volume around the instruments (not a flat arc). Trio faces
-// -Z; seats are flute −X, handpan center, ukulele +X.
+// Homes sit in a looser volume around the instruments (not a tight cluster).
+// Trio faces -Z; seats are flute −X, handpan center, ukulele +X.
 const LAYOUT: readonly FireflyLayout[] = [
   // flute
-  { x: -1.12, y: 2.02, z: -1.42, ax: 0.34, ay: 0.28, az: 0.38, speed: 0.52, phase: 0.08, size: 0.18 },
-  { x: -0.82, y: 1.68, z: -1.78, ax: 0.3, ay: 0.24, az: 0.32, speed: 0.44, phase: 0.31, size: 0.15 },
+  { x: -1.55, y: 2.18, z: -1.15, ax: 0.48, ay: 0.34, az: 0.52, speed: 0.52, phase: 0.08, size: 0.12 },
+  { x: -1.05, y: 1.52, z: -2.15, ax: 0.42, ay: 0.3, az: 0.44, speed: 0.44, phase: 0.31, size: 0.1 },
   // handpan
-  { x: 0.08, y: 1.62, z: -1.52, ax: 0.36, ay: 0.26, az: 0.34, speed: 0.58, phase: 0.52, size: 0.16 },
-  { x: -0.18, y: 1.92, z: -1.28, ax: 0.32, ay: 0.3, az: 0.4, speed: 0.4, phase: 0.74, size: 0.14 },
+  { x: 0.22, y: 1.48, z: -1.85, ax: 0.5, ay: 0.32, az: 0.48, speed: 0.58, phase: 0.52, size: 0.11 },
+  { x: -0.35, y: 2.05, z: -0.95, ax: 0.44, ay: 0.36, az: 0.55, speed: 0.4, phase: 0.74, size: 0.095 },
   // ukulele
-  { x: 1.08, y: 1.74, z: -1.46, ax: 0.34, ay: 0.27, az: 0.36, speed: 0.5, phase: 0.91, size: 0.17 },
-  { x: 0.78, y: 2.08, z: -1.82, ax: 0.28, ay: 0.25, az: 0.3, speed: 0.46, phase: 0.43, size: 0.19 },
+  { x: 1.48, y: 1.68, z: -1.25, ax: 0.46, ay: 0.33, az: 0.5, speed: 0.5, phase: 0.91, size: 0.115 },
+  { x: 1.12, y: 2.28, z: -2.2, ax: 0.4, ay: 0.3, az: 0.42, speed: 0.46, phase: 0.43, size: 0.125 },
   // free floater above the gap
-  { x: 0.28, y: 2.32, z: -1.18, ax: 0.42, ay: 0.22, az: 0.44, speed: 0.38, phase: 0.65, size: 0.15 }
+  { x: 0.05, y: 2.55, z: -0.72, ax: 0.58, ay: 0.28, az: 0.6, speed: 0.38, phase: 0.65, size: 0.1 }
 ] as const;
 
 function smooth01(edge0: number, edge1: number, value: number) {

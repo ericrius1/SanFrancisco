@@ -4,7 +4,7 @@
 // the D Kurd scale, onsets sorted and inside the song, sane velocities and
 // durations, and per-bar chord membership for the strummed ukulele voicings.
 // Runs the same checks against every song in SONGS, using each song's own
-// chord cycle and landing bar.
+// per-bar chord list and landing bar.
 //
 //   node --experimental-strip-types tools/buskers-song-probe.mjs
 
@@ -19,18 +19,23 @@ const NAMES = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];
 const D_MINOR = new Set([2, 4, 5, 7, 9, 10, 0]);
 // D Kurd 9 handpan: D3 A3 Bb3 C4 D4 E4 F4 G4 A4
 const KURD = new Set([50, 57, 58, 60, 62, 64, 65, 67, 69]);
-const CHORDS = { Dm: [2, 5, 9], Bb: [10, 2, 5], F: [5, 9, 0], C: [0, 4, 7] };
+const CHORDS = { Dm: [2, 5, 9], Bb: [10, 2, 5], F: [5, 9, 0], C: [0, 4, 7], Gm: [7, 10, 2], Am: [9, 0, 4] };
 // melody colour tones allowed on sustained notes beyond the triad (6th/9th;
-// Bb gets the maj7)
-const COLOUR = { Dm: [4, 0], Bb: [7, 0, 9], F: [2, 7], C: [9, 2] };
+// Bb gets the maj7, Gm its 9th/11th/6th, Am the 11th and b7)
+const COLOUR = { Dm: [4, 0], Bb: [7, 0, 9], F: [2, 7], C: [9, 2], Gm: [9, 0, 4], Am: [2, 7] };
+// bar-opening handpan ding: chord root, or the drum's bass substitute where
+// the root is missing from the D Kurd scale (F→A third-bass, C→C, Gm→Bb)
+const DING_OK = { Dm: [2], Bb: [10], F: [5, 9], C: [0], Gm: [7, 10], Am: [9] };
 
 for (const song of SONGS) {
   const fail = (msg) => {
     failures++;
     console.error(`FAIL [${song.name}]:`, msg);
   };
-  // the song's cycle runs unbroken; the landing bar is always Dm
-  const chordAt = (bar) => (bar >= song.landingBar ? "Dm" : song.cycle[(bar - 1) % song.cycle.length]);
+
+  if (song.chords.length !== song.bars) fail(`chords list has ${song.chords.length} entries for ${song.bars} bars`);
+  if (song.chords[song.landingBar - 1] !== "Dm") fail(`landing bar chord is ${song.chords[song.landingBar - 1]}, must be Dm`);
+  const chordAt = (bar) => song.chords[Math.min(bar, song.bars) - 1];
 
   for (const [part, events] of Object.entries(song.parts)) {
     if (!events.length) fail(`${part}: empty part`);
@@ -54,16 +59,14 @@ for (const song of SONGS) {
       }
       // bar-opening handpan dings must be the chord root (or its bass substitute)
       if (part === "handpan" && e.tag === "ding") {
-        const root = CHORDS[chordAt(bar)][0];
         const bass = pc(e.midis[0]);
-        const ok = bass === root || (chordAt(bar) === "F" && bass === 9) || (chordAt(bar) === "C" && bass === 0);
-        if (!ok) fail(`handpan: bar ${bar} ding is ${NAMES[bass]}, chord ${chordAt(bar)}`);
+        if (!DING_OK[chordAt(bar)].includes(bass)) fail(`handpan: bar ${bar} ding is ${NAMES[bass]}, chord ${chordAt(bar)}`);
       }
     }
   }
 
   // melody-vs-chord spot check: flute notes ≥ a quarter note long should be
-  // consonant with the bar (chord tone, or the colour tones 6th/9th).
+  // consonant with the bar (chord tone, or the colour tones above).
   for (const e of song.parts.flute) {
     if (e.dur < 1) continue;
     const bar = Math.floor(e.beat / BEATS_PER_BAR) + 1;

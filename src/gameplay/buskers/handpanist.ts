@@ -106,8 +106,9 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
   );
   if (stockShades) stockShades.visible = false;
 
-  const frameMat = new THREE.MeshLambertMaterial({ color: 0x05070c, side: THREE.DoubleSide });
-  const lensMat = new THREE.MeshLambertMaterial({ color: 0x030508, side: THREE.DoubleSide });
+  // MeshBasic so the firefly fill can't lift them to charcoal grey — ink black.
+  const frameMat = new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.DoubleSide });
+  const lensMat = new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.DoubleSide });
   const lipMat = new THREE.MeshLambertMaterial({ color: 0xa85f68 });
   const hairLowMat = new THREE.MeshLambertMaterial({ color: 0xaa895f });
   const hairHiMat = new THREE.MeshLambertMaterial({ color: 0xead8ad });
