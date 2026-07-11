@@ -81,8 +81,10 @@ export class PanelBuilder {
    * An oriented box from a center, with basis vectors (unit `along`, `up`,
    * `normal`) and half-sizes on each. `skipBack` drops the -normal face (used for
    * bay windows flush against the wall so no z-fighting interior face renders).
+   * `skipBottom` drops the -up face for boxes seated on another visible surface;
+   * this avoids coplanar double-sided faces without opening a visible side.
    */
-  box(matId: string, center: Vec3, half: Vec3, along: Vec3, up: Vec3, normal: Vec3, skipBack = false): void {
+  box(matId: string, center: Vec3, half: Vec3, along: Vec3, up: Vec3, normal: Vec3, skipBack = false, skipBottom = false): void {
     const s = (a: number, u: number, n: number): Vec3 => [
       center[0] + along[0] * a + up[0] * u + normal[0] * n,
       center[1] + along[1] * a + up[1] * u + normal[1] * n,
@@ -101,7 +103,7 @@ export class PanelBuilder {
     this.quad(matId, c.lbf, c.ltf, c.ltb, c.lbb, neg(along));             // left (-a)
     this.quad(matId, c.rbf, c.rbb, c.rtb, c.rtf, along);                  // right (+a)
     this.quad(matId, c.ltf, c.rtf, c.rtb, c.ltb, up);                     // top (+u)
-    this.quad(matId, c.lbb, c.rbb, c.rbf, c.lbf, neg(up));                // bottom (-u)
+    if (!skipBottom) this.quad(matId, c.lbb, c.rbb, c.rbf, c.lbf, neg(up)); // bottom (-u)
     if (!skipBack) this.quad(matId, c.rbb, c.lbb, c.ltb, c.rtb, neg(normal)); // back (-n)
   }
 

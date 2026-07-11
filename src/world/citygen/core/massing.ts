@@ -90,18 +90,21 @@ function roofProps(out: PanelBuilder, poly: Vec2[], cx: number, cz: number, top:
   ];
   // stairwell bulkhead near centre
   const [bx, bz] = spot((rng() - 0.5) * w * 0.3, (rng() - 0.5) * d * 0.3);
-  out.box(arch.roofMaterial, [bx, top + 0.9, bz], [0.9, 0.9, 1.1], X, Y, Z, true);
+  // These are freestanding roof volumes, so every vertical side must render.
+  // Their bottom is supplied by the roof cap itself; emitting another DoubleSide
+  // face at exactly `top` causes the close-range z-fighting seen from the board.
+  out.box(arch.roofMaterial, [bx, top + 0.9, bz], [0.9, 0.9, 1.1], X, Y, Z, false, true);
   // a couple of low vents
   const nv = 1 + Math.floor(rng() * 2);
   for (let i = 0; i < nv; i++) {
     const [vx, vz] = spot((rng() - 0.5) * w * 0.7, (rng() - 0.5) * d * 0.7);
-    out.box("roof.flatTrim", [vx, top + 0.35, vz], [0.35, 0.35, 0.35], X, Y, Z, true);
+    out.box("roof.flatTrim", [vx, top + 0.35, vz], [0.35, 0.35, 0.35], X, Y, Z, false, true);
   }
   // ~30%: a wooden rooftop water tank (a box on stubby legs, iconic on SF/Bay roofs)
   if (rng() < 0.3 && w > 6 && d > 6) {
     const [tx, tz] = spot((rng() - 0.5) * w * 0.5, (rng() - 0.5) * d * 0.5);
-    out.box("int.wood", [tx, top + 1.5, tz], [0.7, 0.9, 0.7], X, Y, Z, true);          // tank
-    out.box("int.wood", [tx, top + 0.35, tz], [0.75, 0.35, 0.75], X, Y, Z, false);     // frame base
+    out.box("int.wood", [tx, top + 1.5, tz], [0.7, 0.9, 0.7], X, Y, Z, false);          // tank
+    out.box("int.wood", [tx, top + 0.35, tz], [0.75, 0.35, 0.75], X, Y, Z, false, true); // frame base
   }
 }
 
