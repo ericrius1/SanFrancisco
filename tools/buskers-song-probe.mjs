@@ -21,10 +21,11 @@ const NAMES = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];
 const D_MINOR = new Set([2, 4, 5, 7, 9, 10, 0]);
 // D Kurd 9 handpan: D3 A3 Bb3 C4 D4 E4 F4 G4 A4
 const KURD = new Set([50, 57, 58, 60, 62, 64, 65, 67, 69]);
-// bar (1-indexed) -> chord pitch classes. Cycle Dm Bb F C, bar 17 = Dm.
+// bar (1-indexed) -> chord pitch classes. Cycle Dm Bb F C runs unbroken; the
+// final landing bar (33) is Dm.
 const CHORDS = { Dm: [2, 5, 9], Bb: [10, 2, 5], F: [5, 9, 0], C: [0, 4, 7] };
 const CYCLE = ["Dm", "Bb", "F", "C"];
-const chordAt = (bar) => (bar >= 17 ? "Dm" : CYCLE[(bar - 1) % 4]);
+const chordAt = (bar) => (bar >= 33 ? "Dm" : CYCLE[(bar - 1) % 4]);
 
 for (const [part, events] of Object.entries(SONG)) {
   if (!events.length) fail(`${part}: empty part`);

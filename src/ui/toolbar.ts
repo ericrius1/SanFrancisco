@@ -2,24 +2,20 @@ import { PAINT_COLORS, RAINBOW_INDEX } from "../fx/graffiti";
 import { MENU_MODES, MODE_META } from "../player/discovery";
 import type { PlayerMode } from "../player/types";
 
-export type ToolName = "spray" | "bubbles" | "chimes" | "rope" | "grab";
-export const TOOL_ORDER: ToolName[] = ["spray", "bubbles", "chimes", "rope", "grab"];
+export type ToolName = "ball" | "spray" | "bubbles";
+export const TOOL_ORDER: ToolName[] = ["ball", "spray", "bubbles"];
 
 /** What the HUD's Click row should say per tool. */
 export const TOOL_VERB: Record<ToolName, string> = {
+  ball: "throw the ball",
   spray: "sling paintballs",
-  bubbles: "blow bubbles",
-  chimes: "ring the city",
-  rope: "tie two things together",
-  grab: "hold — grab · release — throw"
+  bubbles: "blow bubbles"
 };
 
 const TOOL_META: Record<ToolName, { icon: string; label: string }> = {
+  ball: { icon: "🎾", label: "ball" },
   spray: { icon: "🎨", label: "paint" },
-  bubbles: { icon: "🫧", label: "bubbles" },
-  chimes: { icon: "🎐", label: "chimes" },
-  rope: { icon: "🪢", label: "rope" },
-  grab: { icon: "🧲", label: "grab" }
+  bubbles: { icon: "🫧", label: "bubbles" }
 };
 
 /**

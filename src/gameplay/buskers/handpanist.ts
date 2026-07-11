@@ -118,23 +118,27 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
   rig.group.position.y = SEAT_RIG_Y;
   group.add(rig.group);
 
-  // extra swaying hair: two strand groups pivoted at the head so rotating the
-  // GROUP swings the fall below the built-in "long" hair blocks
+  // a normal medium-long hair fall down the back — one soft sheet of three
+  // overlapping slats, pivoted at the nape BEHIND the head so it always hangs
+  // clear of the face, arms and torso, and sways as one in the wind.
   const hairMat = rig.avatar.materials.hair;
-  const strandGeo = new THREE.BoxGeometry(0.06, 0.28, 0.055);
-  ownedGeos.push(strandGeo);
-  const mkStrand = (side: number) => {
-    const pivot = new THREE.Group();
-    pivot.position.set(side * 0.1, 0.08, 0.15);
-    const m = new THREE.Mesh(strandGeo, hairMat);
-    m.position.set(0, -0.12, 0.005);
-    m.castShadow = true;
-    pivot.add(m);
-    rig.head.add(pivot);
-    return pivot;
-  };
-  const strandL = mkStrand(1);
-  const strandR = mkStrand(-1);
+  const slatGeo = new THREE.BoxGeometry(0.11, 0.32, 0.05);
+  ownedGeos.push(slatGeo);
+  const hairFall = new THREE.Group();
+  hairFall.position.set(0, 0.05, 0.14); // nape, at the back of the head block
+  rig.head.add(hairFall);
+  const slats: THREE.Mesh[] = [];
+  const slatBaseZ: number[] = [];
+  for (let i = 0; i < 3; i++) {
+    const s = new THREE.Mesh(slatGeo, hairMat);
+    s.position.set((i - 1) * 0.075, -0.15, 0.006 + Math.abs(i - 1) * 0.008);
+    const baseZ = (i - 1) * 0.13; // gentle outward fan
+    s.rotation.z = baseZ;
+    s.castShadow = true;
+    hairFall.add(s);
+    slats.push(s);
+    slatBaseZ.push(baseZ);
+  }
   // thin gold trim headband across the hairline
   const bandGeo = new THREE.BoxGeometry(0.272, 0.03, 0.272);
   ownedGeos.push(bandGeo);
@@ -374,19 +378,22 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
     rig.head.rotation.set(restHeadX + (playHeadX - restHeadX) * p, restHeadY + (headYaw - restHeadY) * p, restHeadZ * (1 - p));
     rig.hips.rotation.set(0, 0, (1 - p) * 0.012 * Math.sin(t * 0.45));
 
-    // ---- legs: dangling over the drop, slow phase-offset swing (the charm)
-    const swing = 0.09 - 0.05 * p + wind * 0.02;
+    // ---- legs: dangling over the drop, loose lazy swing (the charm)
+    const swing = 0.15 - 0.07 * p + wind * 0.03;
     rig.legL.rotation.x = 1.36 + Math.sin(t * 0.83) * swing;
     rig.legR.rotation.x = 1.31 + Math.sin(t * 0.83 + 2.4) * swing;
-    rig.shinL.rotation.x = -1.27 + Math.sin(t * 0.83 - 0.9) * swing * 1.6;
-    rig.shinR.rotation.x = -1.23 + Math.sin(t * 0.83 + 1.5) * swing * 1.6;
+    rig.shinL.rotation.x = -1.27 + Math.sin(t * 0.83 - 0.9) * swing * 1.8;
+    rig.shinR.rotation.x = -1.23 + Math.sin(t * 0.83 + 1.5) * swing * 1.8;
 
-    // ---- hair in the wind (amplitude rides clock.wind, always alive)
-    const hairAmp = 0.06 + wind * 0.3;
-    strandL.rotation.x = 0.1 + Math.sin(t * 1.6 + 0.3) * hairAmp * 0.5;
-    strandL.rotation.z = 0.08 + Math.sin(t * 2.1 + 1.1) * hairAmp;
-    strandR.rotation.x = 0.1 + Math.sin(t * 1.75 + 2.2) * hairAmp * 0.5;
-    strandR.rotation.z = -0.08 + Math.sin(t * 1.95 + 4.0) * hairAmp;
+    // ---- hair in the wind: the whole fall sways as one, with a little
+    // per-slat lag so it reads as soft strands, never a rigid board
+    const hairAmp = 0.05 + wind * 0.24;
+    hairFall.rotation.x = 0.05 + Math.sin(t * 1.5 + 0.3) * hairAmp * 0.5; // drift back & forth
+    hairFall.rotation.z = Math.sin(t * 1.9 + 1.1) * hairAmp; // side-to-side sway
+    hairFall.rotation.y = Math.sin(t * 1.15) * hairAmp * 0.4; // gentle twist
+    for (let i = 0; i < slats.length; i++) {
+      slats[i].rotation.z = slatBaseZ[i] + Math.sin(t * 2.2 + i * 1.3) * hairAmp * 0.5;
+    }
   };
 
   // ---- audio: one self-cleaning struck-handpan voice per note

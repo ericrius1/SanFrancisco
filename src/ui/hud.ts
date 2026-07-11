@@ -79,7 +79,7 @@ const PAD: Record<PlayerMode, Row[]> = {
   walk: [
     { c: ["RS"], label: "look" },
     { c: ["LS"], label: "move" },
-    { c: ["RB"], label: "run" },
+    { c: ["RT"], label: "run" },
     { c: ["A"], label: "jump" },
     { c: ["B"], label: "hop on a ride" },
     { c: ["X"], label: "shoot" }
@@ -89,7 +89,7 @@ const PAD: Record<PlayerMode, Row[]> = {
     { c: ["RT", "LT"], label: "gas · brake" },
     { c: ["LS"], label: "steer" },
     { c: ["A"], label: "drift" },
-    { c: ["RB"], label: "boost" },
+    { c: ["RT"], label: "boost" },
     { c: ["B"], label: "get out" },
     { c: ["X"], label: "shoot" }
   ],
@@ -97,7 +97,7 @@ const PAD: Record<PlayerMode, Row[]> = {
     { c: ["RS"], label: "aim nose" },
     { c: ["LS"], label: "turn" },
     { c: ["RT", "LT"], label: "throttle" },
-    { c: ["RB"], label: "boost" },
+    { c: ["RT"], label: "boost" },
     { c: ["A"], label: "air brake" },
     { c: ["X"], label: "shoot" }
   ],
@@ -105,14 +105,14 @@ const PAD: Record<PlayerMode, Row[]> = {
     { c: ["RS"], label: "look" },
     { c: ["RT", "LT"], label: "throttle" },
     { c: ["LS"], label: "steer" },
-    { c: ["RB"], label: "boost" },
+    { c: ["RT"], label: "boost" },
     { c: ["X"], label: "shoot" }
   ],
   speedboat: [
     { c: ["RS"], label: "look" },
     { c: ["RT", "LT"], label: "throttle" },
     { c: ["LS"], label: "steer" },
-    { c: ["RB"], label: "boost" },
+    { c: ["RT"], label: "boost" },
     { c: ["B"], label: "get out" },
     { c: ["X"], label: "shoot" }
   ],
@@ -121,7 +121,7 @@ const PAD: Record<PlayerMode, Row[]> = {
     { c: ["LS"], label: "move" },
     { c: ["B", "LB"], label: "up · down" },
     { c: ["A"], label: "hover" },
-    { c: ["RB"], label: "boost" },
+    { c: ["RT"], label: "boost" },
     { c: ["X"], label: "shoot" }
   ],
   board: [
@@ -130,15 +130,15 @@ const PAD: Record<PlayerMode, Row[]> = {
     { c: ["LT"], label: "reverse" },
     { c: ["LS"], label: "carve" },
     { c: ["A"], label: "ollie" },
-    { c: ["RB"], label: "boost" },
+    { c: ["RT"], label: "boost" },
     { c: ["X"], label: "shoot" }
   ],
   bird: [
     { c: ["RS"], label: "aim" },
     { c: ["LS"], label: "move" },
     { c: ["A"], label: "flap · climb" },
-    { c: ["RB"], label: "tuck dive" },
-    { c: ["LB", "B"], label: "twirl" },
+    { c: ["RT"], label: "tuck dive" },
+    { c: ["LB", "RB"], label: "twirl" },
     { c: ["X"], label: "shoot" }
   ]
 }

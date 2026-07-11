@@ -71,6 +71,7 @@ self.addEventListener("fetch", (event) => {
   if (request.method !== "GET") return;
   if (request.mode === "navigate" || request.destination === "document") return;
   if (request.headers.has("range")) return;
+  if (request.cache === "only-if-cached" && request.mode !== "same-origin") return;
   let url;
   try {
     url = new URL(request.url);

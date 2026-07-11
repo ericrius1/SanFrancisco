@@ -15,6 +15,10 @@ import {
 } from "./postfx";
 
 type SceneSamples = 0 | 4;
+/** "boot": compile only the active sample mode + active post-FX variant (fast,
+ * covered). "full": every sample mode and all eight variants (revisit for
+ * deferred-module materials). */
+type WarmupScope = "boot" | "full";
 type RuntimePassOptions = { options: { samples?: number } };
 type WarmableRenderPipeline = THREE.RenderPipeline & {
   _update: () => void;
@@ -149,8 +153,8 @@ export function createRenderPipeline(
    * asking the pipeline to configure it. Keeping this adapter here makes the
    * returned warmup API independent of Three's private shape.
    */
-  const compilePostFxVariants = async () => {
-    const quads = POSTFX_VARIANT_MASKS.map((mask) => {
+  const compilePostFxVariants = async (masks: readonly number[] = POSTFX_VARIANT_MASKS) => {
+    const quads = masks.map((mask) => {
       const internal = getVariantPipeline(mask) as WarmableRenderPipeline;
       internal._update();
       return internal._quadMesh;
@@ -196,7 +200,7 @@ export function createRenderPipeline(
    * it while the loading cover is visible and no animation render is running.
    */
   let warmupInFlight: Promise<void> | null = null;
-  const warmupOnce = async () => {
+  const warmupOnce = async (scope: WarmupScope) => {
     const sceneUpdateType = scenePass.updateBeforeType;
     const prePassUpdateType = prePass.updateBeforeType;
     const renderTarget = renderer.getRenderTarget();
@@ -212,8 +216,12 @@ export function createRenderPipeline(
     try {
       await compilePass(prePass);
 
-      const selectedAtStart = activeSceneSamples;
-      const sampleOrder: SceneSamples[] = selectedAtStart === 0 ? [4, 0] : [0, 4];
+      // "boot": compile only the mode the canvas is about to show. The other
+      // MSAA mode and the seven inactive post-FX variants are debug-panel toggles
+      // — they compile lazily on first use (a single one-off hitch nobody but a
+      // tinkerer ever triggers), keeping the covered boot warmup minimal.
+      const sampleOrder: SceneSamples[] =
+        scope === "boot" ? [activeSceneSamples] : activeSceneSamples === 0 ? [4, 0] : [0, 4];
       for (const samples of sampleOrder) {
         setScenePassSamples(samples);
         await compilePass(scenePass);
@@ -222,15 +230,19 @@ export function createRenderPipeline(
         activePipeline.render();
       }
 
-      await compilePostFxVariants();
+      await compilePostFxVariants(scope === "boot" ? [activeVariantMask & 7] : POSTFX_VARIANT_MASKS);
 
-      // Explicitly visit an ink pipeline on every call: deferred BundleGroup
-      // contents need recording in the normal/depth MRT even after the quad's GPU
-      // program was already warm. Finish with the selected look on the canvas.
-      setScenePassSamples(activeSceneSamples);
-      const inkPipeline = getVariantPipeline(INK_VARIANT_MASK);
-      inkPipeline.render();
-      if (inkPipeline !== activePipeline) activePipeline.render();
+      // Explicitly visit an ink pipeline: deferred BundleGroup contents need
+      // recording in the normal/depth MRT even after the quad's GPU program was
+      // already warm. In "boot" scope only bother when ink IS the active look
+      // (its prepass BundleGroups otherwise record on first toggle). Finish with
+      // the selected look on the canvas.
+      if (scope === "full" || activeVariantMask & INK_VARIANT_MASK) {
+        setScenePassSamples(activeSceneSamples);
+        const inkPipeline = getVariantPipeline(INK_VARIANT_MASK);
+        inkPipeline.render();
+        if (inkPipeline !== activePipeline) activePipeline.render();
+      }
     } finally {
       setScenePassSamples(activeSceneSamples);
       scenePass.updateBeforeType = sceneUpdateType;
@@ -245,9 +257,9 @@ export function createRenderPipeline(
     // toggle inherits the tail of the warmup queue and looks falsely slow.
     await (renderer as QueueBackedRenderer).backend.device?.queue.onSubmittedWorkDone();
   };
-  const warmup = () => {
+  const warmup = (scope: WarmupScope = "full") => {
     if (warmupInFlight !== null) return warmupInFlight;
-    warmupInFlight = warmupOnce().finally(() => {
+    warmupInFlight = warmupOnce(scope).finally(() => {
       warmupInFlight = null;
     });
     return warmupInFlight;

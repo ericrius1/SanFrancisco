@@ -37,7 +37,6 @@ import { Fireworks } from "./fx/fireworks";
 import { Graffiti, PAINT_COLORS } from "./fx/graffiti";
 import { Paintballs, PaintSkins, PAINTBALL_SPEED } from "./fx/paintball";
 import { Bubbles } from "./fx/bubbles";
-import { Chimes } from "./fx/chimes";
 import { WorldCursor } from "./fx/worldCursor";
 import { WorldQueries, ProxySet } from "./core/worldQueries";
 import { Toolbar, TOOL_ORDER, TOOL_VERB, type ToolName } from "./ui/toolbar";
@@ -53,10 +52,11 @@ import { RocketRiders, type LauncherRig } from "./gameplay/launchers";
 import type { Creatures } from "./gameplay/creatures";
 import type { Forest, AnimalKind } from "./gameplay/forest";
 import type { GrassDisplacer } from "./world/garden";
+import { BOTANICAL_GARDEN_BOUNDS } from "./world/garden/layout";
 import type { CityGenRing, ColliderBox } from "./world/citygen";
 import { Islands } from "./gameplay/islands";
 import { Hunt } from "./gameplay/hunt";
-import { Ropes, Grabber, type PickCandidate } from "./gameplay/ropes";
+import { FetchBall } from "./gameplay/fetchBall";
 import { Satchel } from "./ui/satchel";
 import { HUD } from "./ui/hud";
 import { ShareButton } from "./ui/share";
@@ -199,15 +199,16 @@ async function boot() {
   const paintSkins = new PaintSkins();
   paintballs.onWater = (x, y, z) => splashes.splash(x, y, z, elapsed, 0.5);
   const bubbles = new Bubbles(scene, map, physics);
-  const chimes = new Chimes(scene);
   const worldCursor = new WorldCursor(scene);
   let tool: ToolName = "spray";
-  let grabberRef: Grabber | null = null; // assigned below; setTool runs once before it exists
+  let fetchBall: FetchBall | null = null; // built after coronaHeights; setTool runs once before it exists
   const setTool = (t: ToolName) => {
-    if (t !== "grab") grabberRef?.release(); // switching tools drops whatever the beam held
     tool = t;
     toolbar.setTool(t);
     hud.setToolVerb(TOOL_VERB[t]);
+    // ball tool → show the held prop; leaving it hides the prop, but the in-flight
+    // fetch + pet follow keep running because fetchBall.update runs every frame
+    fetchBall?.setActive(t === "ball");
   };
   let paintColorTouched = false;
   let paintColorSeeded = false;
@@ -396,8 +397,7 @@ async function boot() {
   let citygen: { update?: (dt: number) => void; [k: string]: unknown } | null = null;
   const citygenRing: { current: CityGenRing | null } = { current: null };
 
-  // crabs to hunt plus the Garry's-Mod rope/grab click-tools
-  // (hunt.ts / ropes.ts)
+  // crabs to hunt (hunt.ts)
   const satchel = new Satchel();
   // Presidio golf: full 18 playable holes on the real course footprint —
   // deferred (data fetch + course meshes build behind the settle gate below)
@@ -407,38 +407,53 @@ async function boot() {
     satchel.add(kind);
     hud.message("Crab caught!", 1.1);
   };
-  const ropes = new Ropes(physics, scene);
-  const grabber = new Grabber(physics, scene);
-  grabberRef = grabber;
-  // No ambient vehicles anymore, so the rope/grab tools have no extra spherical
-  // candidates to offer — they still reach the static world directly.
-  const pickables: PickCandidate[] = [];
-  const gatherPickables = () => pickables;
 
-  const bayLights = createBayLights(map);
-  if (bayLights) scene.add(bayLights);
-  const goldenGateLights = createGoldenGateLights(map);
-  if (goldenGateLights) scene.add(goldenGateLights);
+  // Decorative landmarks/parks: each build is isolated so a broken subsystem
+  // degrades scenery (a missing tower, dark bridge) instead of wedging boot on a
+  // stuck loading cover. Core systems above (map/renderer/tiles/physics/player)
+  // stay fatal — the world is unplayable without them.
+  const scenery = (label: string, build: () => void) => {
+    try {
+      build();
+    } catch (err) {
+      console.warn(`[boot] ${label} unavailable:`, err);
+    }
+  };
+  let bayLights: ReturnType<typeof createBayLights> = null;
+  scenery("bay lights", () => {
+    bayLights = createBayLights(map);
+    if (bayLights) scene.add(bayLights);
+  });
+  let goldenGateLights: ReturnType<typeof createGoldenGateLights> = null;
+  scenery("golden gate lights", () => {
+    goldenGateLights = createGoldenGateLights(map);
+    if (goldenGateLights) scene.add(goldenGateLights);
+  });
   // Palace of Fine Arts peristyle: the OSM data carries the curved colonnade as
   // ordinary windowed buildings, so swap them for a real open row of columns.
-  for (const b of PALACE_RING_BUILDINGS) tiles.suppressBuilding(b.key, b.index);
-  scene.add(createPalaceColonnade(map));
-  const sutroTower = createSutroTower(map);
-  scene.add(sutroTower);
-  coronaHeights = new CoronaHeightsPark(map, physics);
-  coronaHeights.setFoliageVisible(foliageOn);
-  scene.add(coronaHeights.group);
+  scenery("palace colonnade", () => {
+    for (const b of PALACE_RING_BUILDINGS) tiles.suppressBuilding(b.key, b.index);
+    scene.add(createPalaceColonnade(map));
+  });
+  scenery("sutro tower", () => scene.add(createSutroTower(map)));
+  scenery("corona heights", () => {
+    coronaHeights = new CoronaHeightsPark(map, physics);
+    coronaHeights.setFoliageVisible(foliageOn);
+    scene.add(coronaHeights.group);
+  });
   // Dog-park sound layer: barks + paw-patter from the actual park dogs, riding
   // the nature soundscape's context/bus so HUD volume/mute and the corona
   // region fade all apply. Idles to a single distance check away from the park.
   const dogParkAudio = new DogParkAudio(nature, () => coronaHeights?.dogs ?? []);
-  // Busker trio on the Corona Heights summit shoulder. TEMPORARY placement —
-  // the module is placeless by design; once the summit detail pass settles,
-  // move it with buskers.setPlacement(x, z, yaw) (it re-grounds itself).
+  // Busker trio perched on the Corona Heights summit's SE shoulder, out on the
+  // open dirt at the rim where the hill drops toward the city — Sutro Tower at
+  // their backs, facing ESE so their gaze splits downtown (NE) and the Mission
+  // (SE). The module is placeless by design; move it with
+  // buskers.setPlacement(x, z, yaw) (it re-grounds itself).
   const buskers = createBuskerTrio({
-    x: 408,
-    z: 2738,
-    yaw: -Math.PI / 4, // deck faces northeast, out over the city
+    x: 424,
+    z: 2784, // out past the summit's step-tie trails, on the open SE slope over the drop
+    yaw: -1.72, // rock faces ESE (+X, slight +Z), out over downtown and the Mission
     groundHeight: (x, z) => map.groundHeight(x, z),
     physics
   });
@@ -616,7 +631,11 @@ async function boot() {
   // shared skies: my rocket launches go out, friends' volleys replay here
   fireworks.onVolley = (rockets) => net.sendFireworks(rockets);
   net.onFireworks = (_id, rockets) => fireworks.launchRemote(rockets);
-  // ephemeral text chat (T to type) — fire-and-forget over the relay, no history
+  // ephemeral text chat (T to type) — fire-and-forget over the relay, no history.
+  // Esc-blur must not re-lock (see Escape priority stack below); Enter-submit may.
+  let skipChatRelock = false;
+  // Constructed in the deferred loader; Escape stack checks .open when present.
+  let behindTheScenes: { isOpen: boolean; setOpen(open: boolean): void } | null = null;
   const chat = new Chat(
     (text) => {
       chat.addMessage(net.name, text, true); // local echo (server doesn't bounce back to sender)
@@ -625,7 +644,13 @@ async function boot() {
     (focused) => {
       if (focused) {
         input.releaseLock();
-      } else if (!cameraMode && document.body.classList.contains("started") && !input.suspended) {
+        return;
+      }
+      if (skipChatRelock) {
+        skipChatRelock = false;
+        return;
+      }
+      if (!cameraMode && document.body.classList.contains("started") && !input.suspended) {
         input.requestLock();
       }
     }
@@ -931,9 +956,58 @@ async function boot() {
   };
   minimap.onExpandChange = (on) => {
     input.suspended = on || cameraMode; // camera mode owns suspension when the map closes
+    // Open always frees the pointer. Collapse does not re-lock here — Esc-dismiss
+    // must leave the cursor free; M-toggle re-locks in the tick below.
     if (on) input.releaseLock();
-    else if (!cameraMode) input.requestLock();
   };
+
+  // Escape priority: dismiss an open overlay (stay unlocked) → else release pointer
+  // lock. Stops the old "Esc closes UI and immediately re-locks" double-tap.
+  // Registered after minimap exists so an early Esc can't hit a TDZ binding.
+  window.addEventListener(
+    "keydown",
+    (e) => {
+      if (e.code !== "Escape" || e.repeat) return;
+      const t = e.target;
+      // Debug search / other fields keep their own Esc behavior.
+      if (
+        (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement) &&
+        !chat.focused
+      ) {
+        return;
+      }
+      if (behindTheScenes?.isOpen) {
+        behindTheScenes.setOpen(false);
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        return;
+      }
+      if (minimap.expanded) {
+        minimap.setExpanded(false);
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        return;
+      }
+      if (chat.focused) {
+        skipChatRelock = true;
+        chat.blur();
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        return;
+      }
+      if (input.locked) {
+        // Belt-and-suspenders with the browser's Esc-to-unlock; don't preventDefault
+        // so the UA default unlock still runs if exitPointerLock is ignored.
+        input.releaseLock();
+      }
+    },
+    true
+  );
+  // Fullscreen Esc often exits fullscreen first and leaves pointer lock on —
+  // drop the lock whenever fullscreen ends so one Esc is enough.
+  document.addEventListener("fullscreenchange", () => {
+    if (!document.fullscreenElement) input.releaseLock();
+  });
 
   // interactive tutorial (ui/tutorial.ts): the 🎓 button under Share starts a
   // chaptered walkthrough — movement, entering buildings, vehicles, and the map.
@@ -1058,6 +1132,7 @@ async function boot() {
   // Free the pointer lock while it's open so the cursor can reach the links.
   // While it's open the whole world stops rendering (see `btsReading` in tick)
   // and the frozen canvas dims a touch, so no live frames flicker behind the read.
+  // Esc-dismiss stays unlocked (click to capture); see Escape priority stack.
   let btsReading = false;
   // BehindTheScenes is constructed after progress(100) in the deferred loader
 
@@ -1164,7 +1239,7 @@ async function boot() {
     });
   }
   progress(90, "warming render paths");
-  await pipeline.warmup();
+  await pipeline.warmup("boot");
   colliderDebug.setVisible(warmColliderDebug);
   calibrationChart.sync(camera, warmGreyCards);
   // one rAF flush is enough for the compile submit; no fixed 350ms wait
@@ -1192,6 +1267,20 @@ async function boot() {
   let deferredModulesSettled = false;
   let lateRenderWarmupActive = false;
   let lateRenderWarmupRequestedAt = 0;
+  // Resolves the instant the loading cover lifts. Modules whose region is far
+  // from the spawn wait on this and build post-reveal (hidden → compileAsync →
+  // visible) so they never delay first play — the "load the garden when you go
+  // there" idea. NEAR_GATE is the metres-from-footprint that still gates reveal.
+  const NEAR_GATE = 1300;
+  let resolveRevealed!: () => void;
+  const revealedPromise = new Promise<void>((r) => {
+    resolveRevealed = r;
+  });
+  const gardenNear =
+    Math.hypot(
+      player.position.x - (BOTANICAL_GARDEN_BOUNDS.minX + BOTANICAL_GARDEN_BOUNDS.maxX) / 2,
+      player.position.z - (BOTANICAL_GARDEN_BOUNDS.minZ + BOTANICAL_GARDEN_BOUNDS.maxZ) / 2
+    ) < NEAR_GATE;
   void (async () => {
     // Forest + Creatures: ambient wildlife and rideable animals
     const [forestMod, creaturesMod] = await Promise.all([
@@ -1218,10 +1307,36 @@ async function boot() {
     }
     windGustValue = gardenMod.windGustValue;
     advanceWind = gardenMod.updateWindGusts; // keep the wind envelope live when foliage is toggled off
-    const _garden = gardenMod.createBotanicalGarden(map);
-    scene.add(_garden.group);
-    _garden.setVisible(Boolean(FOLIAGE_TUNING.values.visible), player.position);
-    garden = _garden;
+    // Botanical garden: the heaviest single park (SeedThree trees + textures).
+    // When spawn is near it, build now and gate the reveal as before. When far
+    // (the default Golden Gate spawn is ~4.7 km away), build it AFTER the cover
+    // lifts, hidden until compiled, so its trees never sit on the boot path.
+    const buildGarden = () => {
+      const g = gardenMod.createBotanicalGarden(map);
+      garden = g;
+      const sfHooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
+      if (sfHooks) Object.assign(sfHooks, { garden: g });
+      return g;
+    };
+    let _garden: ReturnType<typeof gardenMod.createBotanicalGarden> | null = null;
+    if (gardenNear) {
+      _garden = buildGarden();
+      scene.add(_garden.group);
+      _garden.setVisible(foliageOn, player.position);
+    } else {
+      void revealedPromise.then(async () => {
+        const g = buildGarden();
+        g.group.visible = false;
+        scene.add(g.group);
+        await g.ready;
+        try {
+          await renderer.compileAsync(g.group, camera, scene);
+        } catch (err) {
+          console.warn("[garden] deferred compile failed:", err);
+        }
+        g.setVisible(foliageOn, player.position);
+      });
+    }
     const _wildlands = wildlandsMod.createWildlands(
       map,
       loadedGolfCourse
@@ -1238,14 +1353,17 @@ async function boot() {
     for (const g of _wildlands.groups) { g.visible = FOLIAGE_TUNING.values.visible; scene.add(g); }
     wildlands = _wildlands;
     // __sf snapshots these refs at expose time (they were null then) — patch the
-    // live objects in so probes/console can reach the garden + wildlands groups.
+    // live wildlands group in (a near garden already patched itself in buildGarden;
+    // a far garden patches in when it lands post-reveal).
     const sfHooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
-    if (sfHooks) Object.assign(sfHooks, { garden: _garden, wildlands: _wildlands });
+    if (sfHooks) Object.assign(sfHooks, { wildlands: _wildlands });
 
     // Both systems add SeedThree renderables after their synchronous wrapper
     // exists. Keep the cover's render-variant warmup behind that true material
     // boundary; scheduler-idle alone cannot observe these async growth chains.
-    await Promise.all([_garden.ready, _wildlands.ready]);
+    // A far garden is intentionally excluded — it builds post-reveal and must
+    // not gate the cover.
+    await Promise.all([...(_garden ? [_garden.ready] : []), _wildlands.ready]);
 
     // CityGen: procedural building ring + demo. Awaited (not fire-and-forget)
     // so modulesReady only flips once the ring exists — its cell builds land in
@@ -1257,14 +1375,14 @@ async function boot() {
     citygen = citygenDemoMod.createCityGenDemo({ scene, map }) as NonNullable<typeof citygen>;
     citygenRing.current = await citygenMod.createCityGenRing({}, { scene, physics, map, tiles, schedule: scheduler.schedule });
 
-    // BehindTheScenes: the "how it was made" reading overlay
+    // BehindTheScenes: the "how it was made" reading overlay.
+    // Closing does not re-lock — Esc (and backdrop/close) leave the cursor free.
     const { BehindTheScenes } = await import("./ui/behindTheScenes");
-    new BehindTheScenes((open: boolean) => {
+    behindTheScenes = new BehindTheScenes((open: boolean) => {
       btsReading = open;
       app.classList.toggle("world-dimmed", open);
       input.suspended = open || cameraMode;
       if (open) input.releaseLock();
-      else if (!cameraMode) input.requestLock();
     });
 
     // Presidio Golf Course: greens/bunkers/tees over the real OSM layout, the
@@ -1322,10 +1440,16 @@ async function boot() {
   const revealWorld = (reason = "settled") => {
     if (revealed) return;
     revealed = true;
+    resolveRevealed(); // release any region-deferred park builds
     progress(100, "ready");
     startReady = true;
     startButton.disabled = false;
     loading.classList.add("ready");
+    // Cache world assets for instant repeat loads. Post-reveal on purpose — it
+    // must not compete with the boot fetches it is meant to make free next time.
+    if (import.meta.env.PROD && "serviceWorker" in navigator) {
+      void navigator.serviceWorker.register("/sw.js").catch(() => {});
+    }
     console.info(
       `[boot] world ${reason} in ${((performance.now() - bootT0) / 1000).toFixed(1)}s` +
         ` (sched ${scheduler.pending}/${scheduler.waiting} waiting, tiles ${tiles.busy}, modules ${modulesReady}, aux ${auxPending})`
@@ -1352,7 +1476,7 @@ async function boot() {
     else quietFrames = 0;
     // 15 s cap: a missing chunk or a genuinely slow connection falls back to
     // the old behaviour (reveal while still streaming) instead of wedging.
-    if (quietFrames >= 30) {
+    if (quietFrames >= 12) {
       revealWorld();
       return;
     }
@@ -1579,9 +1703,12 @@ async function boot() {
       hud.setFaded(!uiOpen);
     }
     // M (or clicking the minimap): the full city map — players, teleports.
-    // Works while paused; Esc also closes it.
-    if (input.pressed("KeyM") || (minimap.expanded && input.pressed("Escape"))) {
+    // Works while paused. Esc closes it via the Escape priority stack (stays
+    // unlocked); M-toggle closed re-locks so play resumes without a click.
+    if (input.pressed("KeyM")) {
+      const closing = minimap.expanded;
       minimap.setExpanded(!minimap.expanded);
+      if (closing && !cameraMode) input.requestLock();
     }
 
     // Full freeze: a pause with "freeze player" armed. Everything holds — sim,
@@ -1994,7 +2121,7 @@ async function boot() {
     if (player.mode === "speedboat") boatLaunchers?.update(frameDt); // guitarist jam + rocket reload
     creatures?.update(elapsed, camera.position); // gulls live at altitude — never gated
     forest?.update(frameDt, camera.position);
-    coronaHeights.update(frameDt, elapsed, camera.position);
+    coronaHeights?.update(frameDt, elapsed, camera.position);
     buskers.update(frameDt, camera, windGustValue?.() ?? 0);
     // MASTER foliage gate: when the "/" panel's foliage switch is OFF, every
     // vegetation group is already hidden (setFoliageVisible) — skip all its
@@ -2213,7 +2340,7 @@ async function boot() {
       progress(Math.max(settlePct, 99), "warming render paths");
       tracer.end("sched");
       input.endFrame();
-      void pipeline.warmup()
+      void pipeline.warmup("boot")
         .catch((err) => console.warn("[sf] deferred render warmup failed:", err))
         .finally(() => {
           lateRenderWarmupActive = false;
@@ -2360,6 +2487,11 @@ async function boot() {
 }
 
 boot().catch((err) => {
-  loadingLabel.textContent = String(err);
-  console.error(err);
+  console.error("[boot] fatal:", err);
+  const msg = err instanceof Error ? err.message : String(err);
+  loadingLabel.textContent = `boot failed: ${msg} — click to reload`;
+  loadingBar.style.width = "100%";
+  loadingBar.style.background = "#c0392b";
+  loading.style.cursor = "pointer";
+  loading.addEventListener("click", () => location.reload(), { once: true });
 });

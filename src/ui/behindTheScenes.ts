@@ -588,6 +588,10 @@ export class BehindTheScenes implements ShareableModal {
     return el;
   }
 
+  get isOpen() {
+    return this.#open;
+  }
+
   setOpen(open: boolean) {
     if (open === this.#open) return;
     this.#open = open;

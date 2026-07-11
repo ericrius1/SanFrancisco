@@ -217,12 +217,24 @@ function shadeSeedTreeFoliage(root: THREE.Object3D) {
 
 const textureLoader = new THREE.TextureLoader();
 async function loadTexture(path: string, { srgb }: { srgb: boolean }): Promise<THREE.Texture | null> {
-  try {
-    const t = await textureLoader.loadAsync(`/${path}`);
+  const apply = (t: THREE.Texture) => {
     t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
     t.wrapS = t.wrapT = THREE.RepeatWrapping;
     t.anisotropy = 4;
     return t;
+  };
+  // Prefer the smaller .webp sibling (tools/optimize-seedthree.mjs); fall back to
+  // the source PNG for any map that has no webp yet.
+  const webp = path.replace(/\.(png|jpg)$/i, ".webp");
+  if (webp !== path) {
+    try {
+      return apply(await textureLoader.loadAsync(`/${webp}`));
+    } catch {
+      // no webp sibling — try the original below
+    }
+  }
+  try {
+    return apply(await textureLoader.loadAsync(`/${path}`));
   } catch {
     return null; // optional maps 404 → material factories handle it
   }

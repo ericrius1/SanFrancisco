@@ -3,16 +3,17 @@ import type * as THREE from "three/webgpu";
 /**
  * Busker trio — shared contracts.
  *
- * Three seated musicians (ukulele / handpan / flute) on a small wooden
- * platform, playing one authored song together (see ./song.ts), then resting
- * in the wind between passes. The module is fully self-positioned: nothing in
- * here knows about Corona Heights or any other landmark — `createBuskerTrio`
- * takes a world position and can be re-placed later with `setPlacement`.
+ * Three seated musicians (ukulele / handpan / flute) perched on a flat-topped
+ * chert boulder (see ./perchRock.ts), playing one authored song together (see
+ * ./song.ts), then resting in the wind between passes. The module is fully
+ * self-positioned: nothing in here knows about Corona Heights or any other
+ * landmark — `createBuskerTrio` takes a world position and can be re-placed
+ * later with `setPlacement`.
  *
  * Conventions (match player/rig.ts):
- *  - A musician's group origin is their SEAT POINT: the spot on the platform
- *    top surface under their hips. +Y up. They face local -Z (game front),
- *    legs dangling over the platform's -Z edge.
+ *  - A musician's group origin is their SEAT POINT: the spot on the rock's flat
+ *    top under their hips. +Y up. They face local -Z (game front), legs
+ *    dangling over the rock's -Z front lip.
  *  - Limbs hang along -Y; rotation.x > 0 swings a limb toward -Z (forward);
  *    knees bend with negative x, elbows with positive x.
  *  - Units are metres; a standing figure is ~1.65 m.
@@ -68,6 +69,11 @@ export type TrioClock = {
 export type MusicianAudio = {
   ctx: AudioContext;
   out: GainNode;
+  /** Wet send into the shared "off the mountains" convolution reverb. Connect
+   * a fraction of a voice here (in parallel with `out`) to give it a tail;
+   * the flute leans on this for its airy alpine echo. Same lifetime rules as
+   * `out`. Null only in audio-less contexts (where schedule() never runs). */
+  reverb: GainNode;
 };
 
 export interface Musician {

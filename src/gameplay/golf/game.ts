@@ -24,8 +24,9 @@ type N = any;
  */
 
 const TEE_ZONE = 8; // "press E" radius around a tee spot
-const SWING_ZONE = 4.2; // how close to the resting ball before you can swing
+const SWING_ZONE = 2.6; // how close to the resting ball before you can swing (stance eases the rest)
 const CHARGE_TIME = 1.15; // seconds, 0 → full draw (then holds at full power)
+const SWING_TIME = 0.46; // downswing seconds (release → full follow-through)
 const SNAP_HZ = 8;
 
 export type GolfNetMsg =
@@ -46,7 +47,7 @@ type Ctx = {
 
 type RemoteBall = { mesh: THREE.Mesh; target: THREE.Vector3; moving: boolean };
 
-type Phase = "toTee" | "toBall" | "aim" | "charge" | "flight";
+type Phase = "toTee" | "toBall" | "aim" | "charge" | "swing" | "flight";
 
 export class GolfGame {
   active = false;
@@ -71,6 +72,8 @@ export class GolfGame {
   #charge = 0;
   #swingAnim = -1;
   #swingFrom = -1;
+  #pendingStrike: { yaw: number; power: number; lie: GolfSurface } | null = null;
+  #audio = new GolfAudio();
   #preShot = new THREE.Vector3();
   #pin = new THREE.Vector3();
   #teeSpot = new THREE.Vector3();
@@ -156,7 +159,7 @@ export class GolfGame {
 
   /** main.ts: the click-tools stand down while golf owns the mouse. */
   get capturesFire(): boolean {
-    return this.capturesDigits || (this.active && this.#phase === "flight");
+    return this.capturesDigits || (this.active && (this.#phase === "swing" || this.#phase === "flight"));
   }
 
   get club(): Club {
@@ -213,6 +216,7 @@ export class GolfGame {
   #endRound(hud: HUD, quiet = false) {
     this.active = false;
     this.#roundComplete = false;
+    this.#pendingStrike = null; // a quit mid-downswing must not still launch the ball
     this.#ballMesh.visible = false;
     this.#beacon.visible = false;
     this.#aimArrow.visible = false;
@@ -290,6 +294,7 @@ export class GolfGame {
     this.#pendingEvent = null;
     if (e.kind === "land") {
       this.onImpact(this.#ball.pos);
+      this.#audio.landThud(this.#ball.vel.length() * 2);
       return;
     }
 
@@ -311,6 +316,7 @@ export class GolfGame {
       const label = standingLabel(this.#strokes, h.par);
       const nextTotal = this.#totalDelta + (this.#strokes - h.par);
       this.onImpact(this.#ball.pos);
+      this.#audio.holed();
       this.onNet({ k: "score", h: h.ref, p: h.par, s: this.#strokes, r: nextTotal });
       hud.message(`${label} — holed in ${this.#strokes} on the par ${h.par} 🏌️`, 3.6);
       this.#totalDelta = nextTotal;
@@ -371,10 +377,14 @@ export class GolfGame {
     const { player, input, hud, chase } = ctx;
     if (this.#swingAnim >= 0) {
       this.#swingAnim += dt;
-      const t = Math.min(1, this.#swingAnim / 0.46);
+      const t = Math.min(1, this.#swingAnim / SWING_TIME);
       const ease = 1 - Math.pow(1 - t, 3);
-      player.setGolfPose(true, THREE.MathUtils.lerp(this.#swingFrom, 1, ease));
-      if (this.#swingAnim >= 0.72) {
+      const s = THREE.MathUtils.lerp(this.#swingFrom, 1, ease);
+      player.setGolfPose(true, s);
+      // the ball leaves when the CLUB arrives, not on mouse-up: contact fires
+      // as the eased pose sweeps through s=0 (address/impact)
+      if (this.#pendingStrike && s >= 0) this.#strikeNow();
+      if (this.#swingAnim >= SWING_TIME + 0.32) {
         this.#swingAnim = -1;
         player.setGolfPose(false);
       }
@@ -421,6 +431,12 @@ export class GolfGame {
     if (this.#phase === "toTee") {
       // heading to the next tee — auto tee-up on arrival
       if (onFoot && Math.hypot(px - this.#teeSpot.x, pz - this.#teeSpot.z) < TEE_ZONE) this.#teeUp(hud);
+      return;
+    }
+
+    if (this.#phase === "swing") {
+      // club is on its way down — stance stays planted; the swingAnim block
+      // above drives the pose and fires #strikeNow at impact
       return;
     }
 
@@ -471,7 +487,16 @@ export class GolfGame {
     // aim line follows the camera. chase.yaw is the boom side — the view
     // direction is -(sin,cos)(yaw), i.e. heading yaw+π in ball.strike's terms
     const aimYaw = chase.yaw + Math.PI;
-    player.heading = aimYaw;
+    // stand side-on like a real golfer: target line to the lead side. The rig
+    // root (not the capsule) eases to the address spot beside the ball —
+    // 0.6m back across the line, a touch toward the trail foot.
+    player.heading = aimYaw - Math.PI / 2;
+    this.#tmp2.set(
+      ballP.x + Math.cos(aimYaw) * 0.6 - Math.sin(aimYaw) * 0.12,
+      ballP.y,
+      ballP.z - Math.sin(aimYaw) * 0.6 - Math.cos(aimYaw) * 0.12
+    );
+    player.setGolfAddress(this.#tmp2);
     this.#aimArrow.visible = true;
     this.#aimArrow.position.set(ballP.x, ballP.y + 0.02, ballP.z);
     this.#aimArrow.rotation.set(0, chase.yaw, 0);
@@ -497,7 +522,7 @@ export class GolfGame {
           this.#charge = 0;
         } else {
           // release — swing!
-          this.#swing(aimYaw, Math.max(this.#charge, 0.06), lie);
+          this.#beginSwing(aimYaw, Math.max(this.#charge, 0.06), lie);
           return;
         }
       }
@@ -508,18 +533,32 @@ export class GolfGame {
     if (this.#swingAnim < 0) player.setGolfPose(true, -this.#charge);
   }
 
-  #swing(aimYaw: number, power: number, lie: GolfSurface) {
-    this.#strokes += 1;
-    this.#preShot.copy(this.#ball.pos);
-    this.#ball.strike(this.club, aimYaw, power, lie, this.#pin);
+  /** Mouse released: start the downswing. The strike itself lands ~0.1s later
+   *  when the animated club sweeps through the ball (#strikeNow). */
+  #beginSwing(aimYaw: number, power: number, lie: GolfSurface) {
+    this.#phase = "swing";
+    this.#pendingStrike = { yaw: aimYaw, power, lie };
     this.#swingFrom = -power;
     this.#swingAnim = 0;
-    this.#phase = "flight";
-    this.#camEye.copy(this.#ball.pos).addScaledVector(this.#tmp.set(Math.sin(aimYaw), 0, Math.cos(aimYaw)), -3.5);
-    this.#camEye.y = this.#ball.pos.y + 2.2;
-    this.#ui.setScore(this.#strokes, this.#totalDelta, this.#holesDone);
+    // cubic-eased downswing crosses s=0 here — aim the whoosh's peak at it
+    const impactIn = SWING_TIME * (1 - Math.cbrt(1 / (1 + power)));
+    this.#audio.whoosh(power, impactIn);
     this.#ui.showSwing(false);
     this.#aimArrow.visible = false;
+  }
+
+  #strikeNow() {
+    const hit = this.#pendingStrike;
+    if (!hit) return;
+    this.#pendingStrike = null;
+    this.#strokes += 1;
+    this.#preShot.copy(this.#ball.pos);
+    this.#ball.strike(this.club, hit.yaw, hit.power, hit.lie, this.#pin);
+    this.#audio.thwack(hit.power, this.club.id === "putter");
+    this.#phase = "flight";
+    this.#camEye.copy(this.#ball.pos).addScaledVector(this.#tmp.set(Math.sin(hit.yaw), 0, Math.cos(hit.yaw)), -3.5);
+    this.#camEye.y = this.#ball.pos.y + 2.2;
+    this.#ui.setScore(this.#strokes, this.#totalDelta, this.#holesDone);
     const v = this.#ball.vel;
     this.onNet({ k: "swing", d: [this.#ball.pos.x, this.#ball.pos.y, this.#ball.pos.z, v.x, v.y, v.z] });
     this.#publishState(true, true);

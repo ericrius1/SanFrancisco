@@ -31,6 +31,8 @@ export type Rig = {
   armR: THREE.Group;
   foreL: THREE.Group;
   foreR: THREE.Group;
+  handL: THREE.Group; // mitt group at the wrist tip (clasps a held ball)
+  handR: THREE.Group;
   legL: THREE.Group;
   legR: THREE.Group;
   shinL: THREE.Group;
@@ -251,9 +253,15 @@ export function buildRig(avatar: AvatarTraits = DEFAULT_RIG_AVATAR): Rig {
     fore.position.y = -0.3;
     shoulder.add(fore);
     armBlocks.push(part(fore, materials.sleeve, 0.1, 0.16, 0.12, 0, -0.07, 0));
-    part(fore, materials.skin, 0.09, 0.12, 0.1, 0, -0.2, 0);
-    part(fore, materials.skin, 0.09, 0.1, 0.11, 0, -0.3, -0.01); // hand
-    return { shoulder, fore };
+    part(fore, materials.skin, 0.09, 0.12, 0.1, 0, -0.2, 0); // wrist
+    const hand = new THREE.Group(); // mitt: palm stays put, flap curls to clasp
+    hand.position.set(0, -0.3, -0.01); // same spot the old hand box sat
+    hand.name = side === 1 ? "hand-L" : "hand-R";
+    fore.add(hand);
+    part(hand, materials.skin, 0.09, 0.1, 0.11, 0, 0, 0); // palm
+    const flap = part(hand, materials.skin, 0.09, 0.03, 0.1, 0, -0.055, -0.045); // fingers, hinged front-bottom
+    flap.name = side === 1 ? "clasp-L" : "clasp-R";
+    return { shoulder, fore, hand };
   };
   const aL = arm(1);
   const aR = arm(-1);
@@ -283,6 +291,8 @@ export function buildRig(avatar: AvatarTraits = DEFAULT_RIG_AVATAR): Rig {
     armR: aR.shoulder,
     foreL: aL.fore,
     foreR: aR.fore,
+    handL: aL.hand,
+    handR: aR.hand,
     legL: lL.hip,
     legR: lR.hip,
     shinL: lL.shin,
@@ -304,6 +314,22 @@ export function buildRig(avatar: AvatarTraits = DEFAULT_RIG_AVATAR): Rig {
   };
   applyAvatarToRig(rig, avatar);
   return rig;
+}
+
+/** Curl a mitt's finger flap over a held ball. Pure visual, layered AFTER the
+ *  pose fns each frame: poses overwrite joint rotations but never touch the flap
+ *  child, so there's no conflict. `amount`: 0 = open, 1 = closed. */
+export function setRigClasp(rig: Rig, side: "L" | "R", amount: number): void {
+  const hand = side === "R" ? rig.handR : rig.handL;
+  const flap = hand.children.find((c) => c.name.startsWith("clasp")) as THREE.Mesh | undefined;
+  if (flap) flap.rotation.x = -1.15 * Math.min(1, Math.max(0, amount)); // 0 open → curled over a ball
+}
+
+/** World position of a throwing/holding hand. The caller MUST have updated world
+ *  matrices this frame (i.e. call after the player's syncMesh). Writes into
+ *  `out`, returns `out`. */
+export function rigHandWorld(rig: Rig, side: "L" | "R", out: THREE.Vector3): THREE.Vector3 {
+  return (side === "R" ? rig.handR : rig.handL).getWorldPosition(out);
 }
 
 /**
@@ -344,18 +370,22 @@ export function buildGolfClub(): THREE.Group {
   const group = new THREE.Group();
   group.name = "golf-club";
 
+  // ~1.1 m grip-to-head so it reaches from the chest-high joined hands down to
+  // a ball out in front at a natural ~45° address lie (measured w/ golf-pose-probe)
   const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.026, 0.022, 0.24, 7), STATIC_MAT.clubGrip);
   grip.position.y = -0.11;
-  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.017, 0.58, 7), STATIC_MAT.clubShaft);
-  shaft.position.y = -0.52;
+  grip.name = "club-grip";
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.017, 0.86, 7), STATIC_MAT.clubShaft);
+  shaft.position.y = -0.66;
   // head: heel at the shaft, toe reaching -Z; a brighter face plate on the -X
   // (target) side reads as "this is the side that hits the ball"
   const head = new THREE.Mesh(new THREE.BoxGeometry(0.085, 0.08, 0.22), STATIC_MAT.clubHead);
-  head.position.set(-0.005, -0.835, -0.06);
+  head.position.set(-0.005, -1.11, -0.06);
+  head.name = "club-head";
   const face = new THREE.Mesh(new THREE.BoxGeometry(0.014, 0.07, 0.2), STATIC_MAT.clubShaft);
-  face.position.set(-0.052, -0.835, -0.06);
+  face.position.set(-0.052, -1.11, -0.06);
   const sole = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.02, 0.23), STATIC_MAT.sole);
-  sole.position.set(-0.005, -0.882, -0.06);
+  sole.position.set(-0.005, -1.157, -0.06);
   for (const mesh of [grip, shaft, head, face, sole]) {
     mesh.castShadow = true;
     group.add(mesh);
@@ -368,6 +398,16 @@ export function buildGolfClub(): THREE.Group {
 
 function set(g: THREE.Group, x: number, y: number, z: number) {
   g.rotation.set(x, y, z);
+}
+
+/** DEV-only spine-hinge override so tools/golf-pose-probe.mjs can sweep the
+ *  golf address without a rebuild; ships as the constant 0.62. */
+function golfHinge(): number {
+  if (import.meta.env.DEV) {
+    const t = (globalThis as unknown as { __golfTune?: { hinge?: number } }).__golfTune;
+    if (t && typeof t.hinge === "number") return t.hinge;
+  }
+  return 0.62;
 }
 
 export function poseIdle(r: Rig, t: number) {
@@ -421,32 +461,37 @@ export function poseGolf(r: Rig, swing: number) {
   const L = (addr: number, b: number, f: number) =>
     s < 0 ? THREE.MathUtils.lerp(addr, b, back) : THREE.MathUtils.lerp(addr, f, thru);
 
-  const shoulders = s * 0.95; // - = chest toward +X (trail), + = open to target
-  const hipTurn = s * 0.4 + thru * 0.28;
+  const shoulders = s * 1.05; // - = chest toward +X (trail), + = open to target
+  const hipTurn = s * 0.42 + thru * 0.3;
+  const hinge = golfHinge(); // DEV-tunable spine hinge (window.__golfTune.hinge)
 
-  // weight shift: trail foot at the top, hard onto the lead foot at the finish
-  r.hips.position.x = -s * 0.06 - thru * 0.07;
-  r.hips.position.y = -0.07 - back * 0.02 + thru * 0.025;
-  r.hips.position.z = 0.05 - thru * 0.04; // butt back at address, tall finish
+  // weight shift: loads the trail foot going back, drives onto the lead foot at
+  // the finish. The whole pelvis slides, not just the arms.
+  r.hips.position.x = -s * 0.05 - thru * 0.08;
+  r.hips.position.y = -0.1 - back * 0.02 + thru * 0.05;
+  r.hips.position.z = 0.04 - thru * 0.05; // butt out over the ball, tall finish
   set(r.hips, 0, hipTurn, 0);
-  // spine hinged toward the ball, side-bending with the turn, rising to finish
-  set(r.torso, 0.42 - thru * 0.3, shoulders, s * 0.1);
+  // deep spine hinge from the hips so the chest points down at the ball; side-
+  // bends with the turn, unwinds tall through impact into the finish
+  set(r.torso, hinge - thru * 0.42, shoulders, s * 0.12);
   // eyes stay down on the ball until well after impact, then chase the shot
-  set(r.head, -0.26 + thru * 0.14, -shoulders * 0.72 + thru * 0.55, -s * 0.05);
+  set(r.head, -0.34 + thru * 0.2, -shoulders * 0.7 + thru * 0.5, -s * 0.05);
 
-  // stance splayed, knees soft; the trail leg releases (knee in, heel up) as
-  // the hips clear through the finish
-  set(r.legL, L(0.06, 0.02, -0.5), 0, 0.14 - thru * 0.18);
-  set(r.legR, L(0.06, 0.1, 0.12), 0, -0.14 + back * 0.06);
-  set(r.shinL, L(-0.16, -0.12, -0.75), 0, 0);
-  set(r.shinR, L(-0.16, -0.22, -0.06), 0, 0);
+  // athletic stance: knees flexed, feet splayed; the trail knee kicks in and
+  // the lead leg posts up straight as the hips clear to the finish
+  set(r.legL, L(0.12, 0.06, -0.42), 0, 0.16 - thru * 0.22);
+  set(r.legR, L(0.12, 0.16, 0.14), 0, -0.16 + back * 0.05);
+  set(r.shinL, L(-0.34, -0.28, -0.72), 0, 0);
+  set(r.shinR, L(-0.34, -0.4, -0.12), 0, 0);
 
-  // joined hands ride the club: the lead arm (-X side, armR) stays long while
-  // the trail arm folds at the top — mirrored through the finish
-  set(r.armL, L(0.55, 0.18, 0.5), L(0, -0.15, 0.1), L(-0.5, -0.12, -1.1));
-  set(r.armR, L(0.55, 0.5, 0.18), L(0, -0.1, 0.15), L(0.5, 1.1, 0.12));
-  set(r.foreL, L(0.35, 0.95, 0.12), 0, 0);
-  set(r.foreR, L(0.35, 0.12, 0.95), 0, 0);
+  // Both hands grip together in front of the sternum. armL is the +X (trail)
+  // arm, armR the -X (lead) arm; both swing down-and-in so the hands meet at
+  // centre, then travel as one unit with the shoulder turn. At the top the
+  // trail elbow folds high; through the finish the lead arm folds instead.
+  set(r.armL, L(1.02, 0.62, 0.7), L(-0.34, -0.55, 0.05), L(-0.28, -0.05, -0.95));
+  set(r.armR, L(1.02, 0.7, 0.62), L(0.34, 0.05, -0.55), L(0.28, 0.95, 0.05));
+  set(r.foreL, L(0.32, 1.35, 0.15), 0, L(0, 0, 0.15));
+  set(r.foreR, L(0.32, 0.15, 1.35), 0, L(0, 0.15, 0));
 }
 
 /** Airborne (jump/fall): asymmetric tuck with arms flung out. */

@@ -2,15 +2,16 @@ import type { PlayerMode } from "../player/types";
 
 /**
  * Pointer-lock game input. Clicking the canvas captures the mouse; mouselook
- * deltas accumulate only while locked. Esc releases the pointer (browser-level),
- * and the game keeps simulating unfocused. While `suspended` (camera-orbit mode)
+ * deltas accumulate only while locked. Escape is owned by main.ts (overlay
+ * dismiss → then releaseLock); the browser also exits lock on Esc. The game
+ * keeps simulating while unlocked. While `suspended` (camera-orbit mode)
  * all game inputs read as idle so the player coasts.
  *
  * A gamepad (Xbox standard mapping) rides the same logical rails: pollPad()
  * translates buttons into the key codes the game already reads (A→Space,
- * B→E, RB→Shift, …), the left stick into the WASD axis pairs, the right stick
- * into mouselook deltas, and the triggers into the active mode's throttle or
- * twirl — fly routes them to ↑/↓, bird to Q/E —
+ * B→E, RT→Shift, …), the left stick into the WASD axis pairs, the right stick
+ * into mouselook deltas, and the triggers into the active mode's throttle —
+ * fly routes them to ↑/↓, bird routes LB/RB to Q/E twirl —
  * so modes/camera/fireworks never see a second input path. `device` tracks
  * whichever input was touched last; the HUD swaps its control labels off it.
  */
@@ -27,8 +28,9 @@ const PAD_BUTTONS: Record<number, string> = {
   0: "Space", //     A: jump / ollie / drift / air brake / hover
   1: "KeyE", //      B: enter-exit vehicle
   3: "KeyR", //      Y: respawn
-  4: "KeyQ", //      LB: drone down
-  5: "ShiftLeft", // RB: boost / run
+  4: "KeyQ", //      LB: drone down / bird twirl left
+  // 5 RB: bird twirl right — routed via pad axis (not KeyE, which exits)
+  7: "ShiftLeft", // RT: boost / run / tuck
   8: "KeyI", //      Back: hide UI
   9: "KeyP", //      Start: pause
   10: "ShiftLeft", //L3: boost too
@@ -74,7 +76,7 @@ export class Input {
   #padPrev: boolean[] = [];
   #padAxes = new Map<string, number>();
   #padFireHeld = false;
-  #triggerRoute: "plane" | "bird" | "drone" | null = null; // plane: ↑/↓ throttle; bird/drone: Q/U vertical or twirl
+  #triggerRoute: "plane" | "bird" | "drone" | null = null; // plane: ↑/↓ throttle; bird: LB/RB twirl; drone: Q/U vertical
   #invertLookY = false; // flight/boat modes keep their authored inverted-stick convention
 
   constructor(el: HTMLElement) {
@@ -189,7 +191,7 @@ export class Input {
     this.onDeviceChange(device);
   }
 
-  /** Per-mode pad routing: fly → ↑/↓ throttle, bird → Q/E twirl, drone → Q/U vertical; vehicle/flight modes retain their authored right-stick pitch. */
+  /** Per-mode pad routing: fly → ↑/↓ throttle, bird → LB/RB twirl, drone → Q/U vertical; vehicle/flight modes retain their authored right-stick pitch. */
   setMode(mode: PlayerMode) {
     this.#triggerRoute =
       mode === "plane" ? "plane" : mode === "bird" ? "bird" : mode === "drone" ? "drone" : null;
@@ -251,6 +253,9 @@ export class Input {
     const lt = gp.buttons[6]?.value ?? 0;
     const rt = gp.buttons[7]?.value ?? 0;
     const trig = rt - lt;
+    // bumpers: bird twirl (RB is axis-only so it doesn't impersonate KeyE / exit)
+    const lb = gp.buttons[4]?.pressed || (gp.buttons[4]?.value ?? 0) > 0.5 ? 1 : 0;
+    const rb = gp.buttons[5]?.pressed || (gp.buttons[5]?.value ?? 0) > 0.5 ? 1 : 0;
     this.#padAxes.set("KeyA|KeyD", lx);
     this.#padAxes.set("KeyS|KeyW", -ly + (this.#triggerRoute ? 0 : trig));
     if (this.#triggerRoute === "plane") {
@@ -258,7 +263,8 @@ export class Input {
       this.#padAxes.delete("KeyQ|KeyE");
       this.#padAxes.delete("KeyQ|KeyU");
     } else if (this.#triggerRoute === "bird") {
-      this.#padAxes.set("KeyQ|KeyE", trig);
+      // LB is also KeyQ in PAD_BUTTONS; RB contributes via this axis only
+      this.#padAxes.set("KeyQ|KeyE", rb);
       this.#padAxes.delete("ArrowDown|ArrowUp");
       this.#padAxes.delete("KeyQ|KeyU");
     } else if (this.#triggerRoute === "drone") {
@@ -270,7 +276,7 @@ export class Input {
       this.#padAxes.delete("KeyQ|KeyE");
       this.#padAxes.delete("KeyQ|KeyU");
     }
-    if (lx !== 0 || ly !== 0 || rx !== 0 || ry !== 0 || lt > 0.02 || rt > 0.02) active = true;
+    if (lx !== 0 || ly !== 0 || rx !== 0 || ry !== 0 || lt > 0.02 || rt > 0.02 || lb || rb) active = true;
 
     // right stick = mouselook; works without pointer lock
     if (!this.suspended) {

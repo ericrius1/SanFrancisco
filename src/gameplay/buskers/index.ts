@@ -1,7 +1,7 @@
 import * as THREE from "three/webgpu";
 import type { Physics } from "../../core/physics";
 import { TrioAudio } from "./audio";
-import { buildPlatform, PLATFORM } from "./platform";
+import { buildPerchRock, PERCH } from "./perchRock";
 import { COUNTIN_BEATS, REST_SECONDS, SEC_PER_BEAT, SONG, SONG_BEATS } from "./song";
 import type { BuskerId, Musician, MusicianBuilder, NoteEvent, TrioClock, TrioPhase } from "./types";
 import { buildFlutist } from "./flutist";
@@ -9,9 +9,10 @@ import { buildHandpanist } from "./handpanist";
 import { buildUkulelist } from "./ukulelist";
 
 /**
- * The busker trio: three musicians on a small wooden deck playing one song
- * together (song.ts), resting in the wind between passes. Deliberately
- * placeless — createBuskerTrio() drops it at any world position and
+ * The busker trio: three musicians perched on a flat-topped chert boulder
+ * (perchRock.ts) playing one song together (song.ts), resting in the wind
+ * between passes. Deliberately placeless — createBuskerTrio() drops it at any
+ * world position and
  * setPlacement() moves it later (it re-grounds itself), so it can live on
  * the Corona Heights summit today and be nudged when that hill's detail
  * pass lands.
@@ -30,7 +31,7 @@ const ANIM_RADIUS = 200; // beyond this, skip musician animation updates
 const SONG_SECONDS = SONG_BEATS * SEC_PER_BEAT;
 const COUNTIN_SECONDS = COUNTIN_BEATS * SEC_PER_BEAT;
 
-// Seats along the front (-Z) edge. A viewer standing in front of the deck
+// Seats along the front (-Z) edge. A viewer standing in front of the rock
 // sees: ukulele on their left, handpan girl in the middle, flute on their
 // right. The outer two angle slightly inward, toward each other.
 const SEATS: { id: BuskerId; x: number; yaw: number; build: MusicianBuilder }[] = [
@@ -38,7 +39,9 @@ const SEATS: { id: BuskerId; x: number; yaw: number; build: MusicianBuilder }[] 
   { id: "handpan", x: 0, yaw: 0, build: buildHandpanist },
   { id: "flute", x: -1.02, yaw: -0.14, build: buildFlutist }
 ];
-const SEAT_Z = -PLATFORM.depth / 2 + 0.16; // hips just behind the front edge
+// Butts perched right on the front lip (knees past the edge) so the shins hang
+// over the undercut drop.
+const SEAT_Z = -PERCH.depth / 2 + 0.2;
 const VOICE_HEIGHT = 0.55; // sound source at chest height above the seat
 
 export type BuskerTrioOptions = {
@@ -55,7 +58,7 @@ export class BuskerTrio {
   readonly group = new THREE.Group();
 
   #audio = new TrioAudio();
-  #platform: ReturnType<typeof buildPlatform>;
+  #perch: ReturnType<typeof buildPerchRock>;
   #musicians = new Map<BuskerId, Musician>();
   #seatLocal = new Map<BuskerId, THREE.Vector3>();
   #groundHeight: (x: number, z: number) => number;
@@ -70,33 +73,33 @@ export class BuskerTrio {
 
   constructor(opts: BuskerTrioOptions) {
     this.#groundHeight = opts.groundHeight;
-    this.#platform = buildPlatform(opts.physics ?? null);
-    this.group.add(this.#platform.group);
+    this.#perch = buildPerchRock(opts.physics ?? null);
+    this.group.add(this.#perch.group);
 
     for (const seat of SEATS) {
       const tap = this.#audio.channel(seat.id);
       // Headless/audio-less contexts still get the full visual performance:
       // hand the builder a dummy tap wired to nothing.
       const musician = seat.build(tap ?? makeSilentTap(), SONG[seat.id]);
-      musician.group.position.set(seat.x, PLATFORM.top, SEAT_Z);
+      musician.group.position.set(seat.x, PERCH.top, SEAT_Z);
       musician.group.rotation.y = seat.yaw;
       this.group.add(musician.group);
       this.#musicians.set(seat.id, musician);
-      this.#seatLocal.set(seat.id, new THREE.Vector3(seat.x, PLATFORM.top + VOICE_HEIGHT, SEAT_Z));
+      this.#seatLocal.set(seat.id, new THREE.Vector3(seat.x, PERCH.top + VOICE_HEIGHT, SEAT_Z));
     }
 
     this.setPlacement(opts.x, opts.z, opts.yaw ?? 0);
   }
 
-  /** Move the whole act (deck, trio, collider, sound sources) and re-seat it
-   * on the terrain. Safe to call at runtime — use it when Corona Heights'
+  /** Move the whole act (perch rock, trio, collider, sound sources) and re-seat
+   * it on the terrain. Safe to call at runtime — use it when Corona Heights'
    * detail pass settles and the summit spot moves. */
   setPlacement(x: number, z: number, yaw = this.group.rotation.y) {
     const y = this.#groundHeight(x, z);
     this.group.position.set(x, y, z);
     this.group.rotation.y = yaw;
     this.group.updateMatrixWorld(true);
-    this.#platform.setColliderTransform(x, y, z, yaw);
+    this.#perch.setColliderTransform(x, y, z, yaw);
     for (const [id, local] of this.#seatLocal) {
       this.#tmp.copy(local).applyMatrix4(this.group.matrixWorld);
       this.#audio.setChannelPosition(id, this.#tmp.x, this.#tmp.y, this.#tmp.z);
@@ -183,7 +186,7 @@ export class BuskerTrio {
   dispose() {
     for (const musician of this.#musicians.values()) musician.dispose();
     this.#musicians.clear();
-    this.#platform.dispose();
+    this.#perch.dispose();
     this.#audio.dispose();
     this.group.parent?.remove(this.group);
   }
@@ -208,7 +211,8 @@ function makeSilentTap() {
     // schedule() is only called when the real context runs, so musicians
     // never touch this in the audio-less case; the cast keeps builders simple.
     ctx: null as unknown as AudioContext,
-    out: null as unknown as GainNode
+    out: null as unknown as GainNode,
+    reverb: null as unknown as GainNode
   };
 }
 

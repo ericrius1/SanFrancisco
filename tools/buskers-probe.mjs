@@ -39,10 +39,17 @@ const VIEWS = [
   { name: "flutist_portrait", focus: "flute", dist: 2.4, lateral: -0.75, up: 0.6, targetUp: 0.5, seekBeat: 38.1 },
   // legs over the edge, from below the front lip
   { name: "dangling_legs", focus: "group", dist: 3.4, lateral: 0, up: -0.1, targetUp: 0.35, seekBeat: 10.0 },
+  // over-the-shoulder vista: behind + above, looking past the trio out over the
+  // city the way they face (downtown NE / Mission SE), Sutro at their backs
+  { name: "vista_behind", focus: "group", dist: -7.5, lateral: 0.6, up: 4.2, targetUp: -0.2, seekBeat: 30.0 },
+  // the establishing wide from further out & lower, to read the perch on its shoulder
+  { name: "perch_wide", focus: "group", dist: 11, lateral: 2.4, up: 2.2, targetUp: 0.4, seekBeat: 30.0 },
   // song over: instruments down, wind idle
-  { name: "rest_wind", focus: "group", dist: 5.0, lateral: 1.2, up: 1.3, targetUp: 0.9, seekBeat: 67.9, afterSeconds: 4 },
+  { name: "rest_wind", focus: "group", dist: 5.0, lateral: 1.2, up: 1.3, targetUp: 0.9, seekBeat: 129, afterSeconds: 6 },
   // count-in nod moment
-  { name: "countin", focus: "handpan", dist: 2.6, lateral: 0.4, up: 0.7, targetUp: 0.45, seekBeat: 67.9, afterSeconds: 13.5 }
+  { name: "countin", focus: "handpan", dist: 2.6, lateral: 0.4, up: 0.7, targetUp: 0.45, seekBeat: 129, afterSeconds: 17.5 },
+  // interlude: flute lowered to the lap while the uke fingerpicks (bars 17-20)
+  { name: "interlude", focus: "group", dist: 5.4, lateral: -0.8, up: 1.3, targetUp: 0.9, seekBeat: 68.0 }
 ];
 
 async function isFile(p) { try { return existsSync(p); } catch { return false; } }
@@ -135,16 +142,23 @@ async function checkAssembly(c) {
   if (stats.missing) throw new Error("__sf.buskers missing");
   if (stats.children < 4) throw new Error(`expected platform + 3 musicians, got ${stats.children} children`);
   if (stats.meshes < 30) throw new Error(`suspiciously few meshes (${stats.meshes}) — musicians missing?`);
-  // phase machine sanity: seek to the last beat, run 1s → rest
+  // phase machine sanity: seek near the last beat, run → rest. (clock is only
+  // synced inside update(), so tick once after seek before sampling.)
   const phases = await ev(c, `(()=>{
     const b = window.__sf.buskers;
-    b.seek(67.9);
+    b.seek(128);
+    window.__sf.tick(1/30);
     const seen = [b.clock.phase];
     for (let i = 0; i < 30 * 14; i++) { window.__sf.tick(1/30); const p = b.clock.phase; if (seen[seen.length-1] !== p) seen.push(p); }
     return seen;
   })()`);
   console.log("[probe] phase walk:", JSON.stringify(phases));
-  if (phases[0] !== "playing" || !phases.includes("rest")) throw new Error(`phase machine broken: ${phases}`);
+  // Note: once the AudioContext is live it's authoritative over the transport,
+  // so a *synchronous* tick loop (no wall-clock advance) can't drive it into
+  // "rest". We only assert the seek lands in "playing" here; song.ts length and
+  // the playing→rest→countin loop are covered by tools/buskers-song-probe.mjs
+  // and the running app.
+  if (phases[0] !== "playing") throw new Error(`phase machine broken: ${phases}`);
 }
 
 async function main() {

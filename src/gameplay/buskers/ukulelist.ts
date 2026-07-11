@@ -292,13 +292,13 @@ export const buildUkulelist: MusicianBuilder = (audio, part): Musician => {
     );
     rig.foreR.rotation.set(lerp(0.66, 0.88 + sNow * 0.42, perform), lerp(-0.1, -0.12, perform), 0);
 
-    // dangling legs over the deck edge — slow phase-offset swings, wind-fed,
-    // calmer while he plays; the right foot taps the air on the beat
-    const legAmp = (0.05 + 0.05 * wind) * (1 - perform * 0.45);
+    // dangling legs over the rock's lip — loose, lazy phase-offset swings,
+    // wind-fed, calmer while he plays; the right foot taps the air on the beat
+    const legAmp = (0.13 + 0.07 * wind) * (1 - perform * 0.5);
     rig.legL.rotation.set(1.34 + Math.sin(tLife * 0.83) * legAmp, 0, 0.07);
     rig.legR.rotation.set(1.42 + Math.sin(tLife * 0.71 + 2.1) * legAmp, 0, -0.06);
-    rig.shinL.rotation.set(-1.26 + Math.sin(tLife * 1.07 + 0.9) * legAmp * 1.6, 0, 0);
-    rig.shinR.rotation.set(-1.33 + Math.sin(tLife * 0.93 + 3.4) * legAmp * 1.6 + perform * 0.05 * tap, 0, 0);
+    rig.shinL.rotation.set(-1.26 + Math.sin(tLife * 1.07 + 0.9) * legAmp * 1.8, 0, 0);
+    rig.shinR.rotation.set(-1.33 + Math.sin(tLife * 0.93 + 3.4) * legAmp * 1.8 + perform * 0.05 * tap, 0, 0);
 
     // the uke itself: jaunty across the chest, dips with hard down-strums,
     // droops when he stops playing

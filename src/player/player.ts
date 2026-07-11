@@ -15,6 +15,7 @@ import {
   poseRide,
   poseSwim,
   poseWalk,
+  setRigClasp,
   type Rig
 } from "./rig";
 import { avatarFromSeed, normalizeAvatarTraits, type AvatarTraits } from "./avatar";
@@ -34,6 +35,10 @@ const V = {
   up: new THREE.Vector3(0, 1, 0),
   quat: new THREE.Quaternion()
 };
+
+/** DEV-only live golf-pose tuning (window.__golfTune), consumed by the golf
+ *  club pivot + poseGolf so tools/golf-pose-probe.mjs can sweep in one boot. */
+type GolfTune = { pivotY?: number; pivotZ?: number; pivotAX?: number; raise?: number; swingZ?: number; hinge?: number };
 
 /**
  * Show/hide an embodiment's visual meshes. Embodiments carry no Light objects
@@ -107,6 +112,12 @@ export class Player {
   #golfAddress = new THREE.Vector3(); // world spot the stance eases toward
   #golfAddressSet = false;
   #golfMeshShift = new THREE.Vector3(); // eased rig-root offset (walk-mesh local)
+  // ball tool: a tennis ball riding the right mitt, shown while held. The clasp
+  // + prop visibility are driven every walk frame in #animate (setEmbodimentVisible
+  // re-shows every walk mesh on a mode return, so #ballHeld is the true owner).
+  #ballProp: THREE.Mesh;
+  #ballHeld = false;
+  #throwT = 0; // 0 = idle; >0 drives an additive windup→release arm swing
   #riderRig: Rig;
   #driverRig: Rig;
   #wheel: { group: THREE.Group; spin: THREE.Group };
@@ -148,13 +159,23 @@ export class Player {
     this.#walkRig = buildRig(this.#avatar);
     const walkGroup = new THREE.Group();
     walkGroup.add(this.#walkRig.group); // rig origin already sits at the capsule centre
-    // the club hangs from a chest pivot so it travels with the shoulder turn;
-    // setGolfPose swings the pivot, poseGolf brings the hands to the grip
+    // the club hangs from a chest pivot placed where the joined hands grip it,
+    // so it travels with the shoulder turn; setGolfPose swings the pivot,
+    // poseGolf brings both hands to this same spot
     this.#clubPivot = new THREE.Group();
-    this.#clubPivot.position.set(0, 0.04, -0.2);
+    this.#clubPivot.position.set(0, -0.06, -0.34);
     this.#walkRig.torso.add(this.#clubPivot);
     this.#golfClub = buildGolfClub();
     this.#clubPivot.add(this.#golfClub);
+    // tennis ball nestled in the right mitt — rides the animated hand exactly, so
+    // a throw launches it from wherever the hand is (no per-frame position math).
+    this.#ballProp = new THREE.Mesh(
+      new THREE.SphereGeometry(0.11, 12, 10),
+      new THREE.MeshLambertMaterial({ color: 0xb9ef31 })
+    );
+    this.#ballProp.position.set(0, -0.02, -0.05); // cupped in the curled fingers
+    this.#ballProp.visible = false;
+    this.#walkRig.handR.add(this.#ballProp);
     this.meshes = {
       walk: walkGroup,
       drive: buildCarMesh(),
@@ -418,10 +439,17 @@ export class Player {
     this.#golfClub.visible = this.#golfPose.active;
     if (this.#golfPose.active) {
       const s = this.#golfPose.swing;
-      // The pivot's local Z-arc sweeps the shaft trail-side up (backswing,
-      // s<0) through impact to a high lead-side finish; the X tilt leans the
-      // whole swing plane toward the ball and relaxes toward the extremes.
-      this.#clubPivot.rotation.set(0.52 - Math.abs(s) * 0.34, s * 0.22, -s * 2.15);
+      const t = import.meta.env.DEV ? (window as unknown as { __golfTune?: GolfTune }).__golfTune : undefined;
+      const pAX = t?.pivotAX ?? 0.18;
+      const raise = t?.raise ?? 0.6;
+      const swingZ = t?.swingZ ?? 2.5;
+      this.#clubPivot.position.set(0, t?.pivotY ?? -0.06, t?.pivotZ ?? -0.34);
+      // At address (s=0) the club hangs forward-down to reach the ball out in
+      // front. The Z-arc sweeps the shaft trail-side up on the backswing (s<0)
+      // and to a high lead-side finish (s>0); the X term tilts the shaft back
+      // and UP toward both extremes so the club rises high behind the shoulders
+      // instead of staying flat like a pool cue.
+      this.#clubPivot.rotation.set(pAX - Math.abs(s) * raise, s * 0.28, -s * swingZ);
     }
   }
 
@@ -430,6 +458,56 @@ export class Player {
   setGolfAddress(target: THREE.Vector3 | null) {
     if (target) this.#golfAddress.copy(target);
     this.#golfAddressSet = !!target;
+  }
+
+  // ---- ball tool (the PlayerBallView backing FetchBall drives) ----
+
+  /** Show/hide the held tennis ball and curl the right mitt over it. #animate
+   *  is the true owner each frame; this just flips the state it reads. */
+  setBallHeld(held: boolean) {
+    this.#ballHeld = held;
+    this.#ballProp.visible = held && this.mode === "walk";
+    setRigClasp(this.#walkRig, "R", held ? 1 : 0);
+  }
+
+  /** Windup→release arm swing, `t` 0..1 (0 = idle, adds nothing). #animate lays
+   *  the overlay on top of the base walk/idle pose while t > 0. */
+  setThrowAnim(t: number) {
+    this.#throwT = THREE.MathUtils.clamp(t, 0, 1);
+  }
+
+  /** World position of the throwing (right) hand. Caller must have updated world
+   *  matrices this frame (call after syncMesh). Writes into `out`, returns it. */
+  handWorldPos(out: THREE.Vector3): THREE.Vector3 {
+    return rigHandWorld(this.#walkRig, "R", out);
+  }
+
+  /** Additive throw swing on the right arm + torso: cock back through t≈0.4, whip
+   *  forward at t≈0.5, settle to neutral by t=1. Deltas taper to 0 at both ends so
+   *  the base pose shows through when idle/settled. */
+  #applyThrowSwing(r: Rig) {
+    const t = this.#throwT;
+    let armX: number, foreX: number, twist: number;
+    if (t < 0.4) {
+      const k = THREE.MathUtils.smoothstep(t, 0, 0.4); // cock back, fold elbow, wind up
+      armX = -1.5 * k;
+      foreX = 1.3 * k;
+      twist = 0.35 * k;
+    } else if (t < 0.62) {
+      const k = THREE.MathUtils.smoothstep(t, 0.4, 0.62); // whip forward, extend, unwind
+      armX = THREE.MathUtils.lerp(-1.5, 2.4, k);
+      foreX = THREE.MathUtils.lerp(1.3, 0.1, k);
+      twist = THREE.MathUtils.lerp(0.35, -0.4, k);
+    } else {
+      const k = THREE.MathUtils.smoothstep(t, 0.62, 1); // relax back to the base pose
+      armX = THREE.MathUtils.lerp(2.4, 0, k);
+      foreX = THREE.MathUtils.lerp(0.1, 0, k);
+      twist = THREE.MathUtils.lerp(-0.4, 0, k);
+    }
+    r.armR.rotation.x += armX;
+    r.foreR.rotation.x += foreX;
+    r.torso.rotation.y += twist;
+    r.head.rotation.y += twist * 0.4;
   }
 
   /** Board airborne state — the hoverboard hum softens in the air. */
@@ -612,6 +690,12 @@ export class Player {
       }
       this.#golfMeshShift.lerp(V.tmp, 1 - Math.exp(-dt * 9));
       r.group.position.set(this.#golfMeshShift.x, 0, this.#golfMeshShift.z);
+      // both mitts curl over the grip while golfing; the right mitt also curls
+      // over a held tennis ball. #ballHeld owns the ball prop's visibility since
+      // setEmbodimentVisible re-shows every walk mesh whenever we return on foot.
+      setRigClasp(r, "L", golfing ? 1 : 0);
+      setRigClasp(r, "R", golfing || this.#ballHeld ? 1 : 0);
+      this.#ballProp.visible = this.#ballHeld;
       if (golfing) {
         poseGolf(r, this.#golfPose.swing);
       } else if (walk.swimming) {
@@ -628,6 +712,9 @@ export class Player {
           poseIdle(r, this.#animT);
         }
       }
+      // throw swing: an additive overlay on the right arm + torso, layered AFTER
+      // the base pose so it rides on top of walk/idle without a dedicated pose fn.
+      if (this.#throwT > 0 && !golfing) this.#applyThrowSwing(r);
     } else if (this.mode === "board") {
       const board = this.#modes.board;
       const crouch = Math.min(1, this.speed / BOARD_TUNING.values.boostMaxSpeed + Math.abs(board.lean) * 0.6);

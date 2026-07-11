@@ -8,6 +8,7 @@ import { createRoadMaterial, createParkMaterial } from "./streets";
 import { createCrownMaterial } from "./salesforceCrown";
 import { applyLandmarkFixes } from "./landmarkFixes";
 import type { WorldMap } from "./heightmap";
+import { prefetched } from "./heightmap";
 
 export type BuildingCollider = {
   i: number;
@@ -269,7 +270,7 @@ export class TileStreamer {
   }
 
   async init(map: WorldMap) {
-    this.manifest = await (await fetch("/data/manifest.json")).json();
+    this.manifest = await (await prefetched("/data/manifest.json")).json();
     this.#entries = Object.keys(this.manifest.tiles).map((key) => {
       const [cx, cz] = this.keyToCenter(key);
       return { key, cx, cz, d2: 0 };

@@ -22,6 +22,15 @@ export type Meta = {
   landmarks: Record<string, { x: number; z: number }>;
 };
 
+/** Consume a boot-critical download the inline <head> prefetch already started
+ * (window.__sfPrefetch). Falls back to a fresh fetch when the prefetch is
+ * missing (script not present / HMR), rejected, or its body was already read. */
+export function prefetched(url: string): Promise<Response> {
+  const pre = (globalThis as { __sfPrefetch?: Record<string, Promise<Response>> }).__sfPrefetch?.[url];
+  if (!pre) return fetch(url);
+  return pre.then((r) => (r && !r.bodyUsed ? r : fetch(url))).catch(() => fetch(url));
+}
+
 export const PALACE_FINE_ARTS = { x: -388, z: -1426 } as const;
 
 export const PALACE_LAGOON = {
@@ -62,12 +71,12 @@ export class WorldMap {
   static async load(): Promise<WorldMap> {
     const map = new WorldMap();
     const [meta, hBuf, sBuf, gBuf] = await Promise.all([
-      fetch("/data/meta.json").then((r) => r.json()),
-      fetch("/data/heightmap.bin").then((r) => r.arrayBuffer()),
-      fetch("/data/surface.bin").then((r) => r.arrayBuffer()),
+      prefetched("/data/meta.json").then((r) => r.json()),
+      prefetched("/data/heightmap.bin").then((r) => r.arrayBuffer()),
+      prefetched("/data/surface.bin").then((r) => r.arrayBuffer()),
       // prefer sparse delta; fall back to legacy float32; fall back to null
       (async (): Promise<{ buf: ArrayBuffer; format: "delta" | "float32" } | null> => {
-        const r1 = await fetch("/data/groundtop-delta.bin").catch(() => null);
+        const r1 = await prefetched("/data/groundtop-delta.bin").catch(() => null);
         if (r1?.ok) {
           const b = await r1.arrayBuffer().catch(() => null);
           if (b) return { buf: b, format: "delta" };

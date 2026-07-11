@@ -30,7 +30,9 @@ function setParam(p: AudioParam | undefined, v: number, t: number) {
 export class TrioAudio {
   #ctx: AudioContext | null = null;
   #master: GainNode | null = null;
-  #channels = new Map<BuskerId, { gain: GainNode; panner: PannerNode }>();
+  #reverbIn: GainNode | null = null; // shared wet bus → convolver → master
+  #convolver: ConvolverNode | null = null;
+  #channels = new Map<BuskerId, { gain: GainNode; panner: PannerNode; reverb: GainNode }>();
   #retryAt = 0;
   #wantSuspend = false;
 
@@ -58,13 +60,29 @@ export class TrioAudio {
     comp.release.value = 0.24;
     master.connect(comp).connect(ctx.destination);
     this.#master = master;
+
+    // "off the mountains" reverb: a synthetic exponential-decay impulse (a
+    // long, slightly bright hall — the summit air), shared by all three
+    // musicians. Voices send a wet fraction into #reverbIn; the convolved
+    // return rejoins the master DOWNSTREAM of the panners, so the tail reads
+    // as diffuse, non-localized reflection rather than a point source.
+    const reverbIn = ctx.createGain();
+    reverbIn.gain.value = 1;
+    const convolver = ctx.createConvolver();
+    convolver.buffer = buildImpulse(ctx, 2.7, 3.2);
+    const wetReturn = ctx.createGain();
+    wetReturn.gain.value = 0.9;
+    reverbIn.connect(convolver).connect(wetReturn).connect(master);
+    this.#reverbIn = reverbIn;
+    this.#convolver = convolver;
   }
 
   /** The per-musician tap. Creates the spatial chain on first request. */
   channel(id: BuskerId): MusicianAudio | null {
     const ctx = this.#ctx;
     const master = this.#master;
-    if (!ctx || !master) return null;
+    const reverbIn = this.#reverbIn;
+    if (!ctx || !master || !reverbIn) return null;
     let ch = this.#channels.get(id);
     if (!ch) {
       const panner = ctx.createPanner();
@@ -76,10 +94,15 @@ export class TrioAudio {
       const gain = ctx.createGain();
       gain.gain.value = 1;
       gain.connect(panner).connect(master);
-      ch = { gain, panner };
+      // wet send node the musician connects voices to; routes into the shared
+      // reverb bus. Its own gain is 1 — musicians decide how much to send.
+      const reverb = ctx.createGain();
+      reverb.gain.value = 1;
+      reverb.connect(reverbIn);
+      ch = { gain, panner, reverb };
       this.#channels.set(id, ch);
     }
-    return { ctx, out: ch.gain };
+    return { ctx, out: ch.gain, reverb: ch.reverb };
   }
 
   /** World position of a musician's sound source (chest height at the seat). */
@@ -158,10 +181,36 @@ export class TrioAudio {
     for (const ch of this.#channels.values()) {
       ch.gain.disconnect();
       ch.panner.disconnect();
+      ch.reverb.disconnect();
     }
     this.#channels.clear();
+    this.#reverbIn?.disconnect();
+    this.#convolver?.disconnect();
     void this.#ctx?.close().catch(() => {});
     this.#ctx = null;
     this.#master = null;
+    this.#reverbIn = null;
+    this.#convolver = null;
   }
+}
+
+/** Build a stereo exponential-decay noise impulse response — a cheap, warm
+ * synthetic hall. `seconds` = tail length, `decay` = how fast it dies (bigger
+ * = tighter). Slightly gentler on the highs so the flute echo stays soft, not
+ * hissy. */
+function buildImpulse(ctx: AudioContext, seconds: number, decay: number): AudioBuffer {
+  const rate = ctx.sampleRate;
+  const len = Math.max(1, Math.floor(rate * seconds));
+  const buf = ctx.createBuffer(2, len, rate);
+  for (let c = 0; c < 2; c++) {
+    const data = buf.getChannelData(c);
+    let lp = 0;
+    for (let i = 0; i < len; i++) {
+      const env = Math.pow(1 - i / len, decay);
+      const white = Math.random() * 2 - 1;
+      lp += 0.42 * (white - lp); // one-pole lowpass — softens the tail
+      data[i] = lp * env;
+    }
+  }
+  return buf;
 }
