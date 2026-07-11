@@ -96,7 +96,9 @@ function set(g: THREE.Group, x: number, y: number, z: number) {
 export const buildFlutist: MusicianBuilder = (audio, part) => {
   // A deep-navy alpaca-knit sweater (no hood). Restrained Andean bands are
   // added as raised voxel-knit details on the chest and animated sleeves.
-  const rig = buildRig({ skin: 2, hair: "long", hat: "none", outfit: "hoodie", color: 5, accent: 7 });
+  const rig = buildRig({ skin: 1, hair: "long", hat: "none", outfit: "hoodie", color: 5, accent: 7 });
+  // peach base, nudged a touch fairer — short of porcelain
+  rig.avatar.materials.skin.color.set(0xe6b08a);
   rig.avatar.materials.jacket.color.set(0x27323c);
   rig.avatar.materials.sleeve.color.set(0x2d3842);
   rig.avatar.materials.shirt.color.set(0xd7c6a3);
