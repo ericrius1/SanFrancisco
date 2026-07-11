@@ -1,16 +1,17 @@
 // Player fetch-ball tool + the whole dog-fetch/pet loop.
 //
-// This module owns the player's free tennis ball (a kinematic mesh that flies,
-// bounces and rolls with the SAME feel as the park's autonomous ball, via the
-// shared ballSim), the player-side fetch state machine (throw → a free dog
-// chases, bites, carries it back and waits → the player takes it back), and the
-// pet-follow driver once a dog has been adopted.
+// This module owns the player's tennis balls: an always-available held prop
+// (infinite throws while the 🎾 tool is active), any number of free kinematic
+// balls that fly/bounce/roll via the shared ballSim, the player-side fetch
+// state machine (throw → a free dog chases, bites, carries it back and waits →
+// the player takes it with E), and the pet-follow driver once a dog has been
+// adopted.
 //
 // main.ts constructs one instance and calls update() EVERY frame (tool-agnostic,
-// so a ball already in flight keeps simulating even after the player switches
-// tools) plus click() when the ball tool fires. The park exposes the dog-driving
-// primitives (steer/hold/jaw/mouth/claim/adopt) so the choreography reuses the
-// park's exact locomotion.
+// so balls already in flight keep simulating even after the player switches
+// tools) plus click() when the ball tool fires and tryPickup() on E. The park
+// exposes the dog-driving primitives (steer/hold/jaw/mouth/claim/adopt) so the
+// choreography reuses the park's exact locomotion.
 
 import * as THREE from "three/webgpu";
 import type { Physics } from "../core/physics";
@@ -25,8 +26,8 @@ const FENCE_TOP_LIFT = 1.55; // fence height added over ground for the rebound c
 const THROW_SPEED = 15; // m/s launch; under the 1/90 substep's ~22 m/s anti-tunnel ceiling
 const THROW_ANIM_LEN = 0.6; // full windup→release→follow-through of the arm swing
 const THROW_RELEASE_T = 0.24; // seconds into the swing when the ball leaves the hand
-const TAKE_FROM_DOG_RANGE = 2.0; // click-to-take reach while a dog waits
-const TAKE_RESTING_RANGE = 1.5; // click-to-take reach for a ball at rest, no dog
+const TAKE_FROM_DOG_RANGE = 2.0; // E-to-take reach while a dog waits
+const TAKE_RESTING_RANGE = 1.5; // E-to-pick-up reach for a free ball
 const ABANDON_RANGE = 60; // a claimed (un-adopted) dog gives up if the player strays this far
 // Centroid of CORONA_DOG_PARK (layout.ts) — used to tell "just outside the fence
 // for a handoff" from "dragged well out of the run" during a committed fetch.
@@ -51,7 +52,7 @@ export interface FetchHud {
 }
 
 export interface FetchBallDeps {
-  scene: THREE.Object3D; // free ball mesh + reparented pet live here
+  scene: THREE.Object3D; // free ball meshes + reparented pet live here
   map: WorldMap;
   physics: Physics;
   park: () => CoronaHeightsPark | null; // getter (park is null until the hill is built)
@@ -59,24 +60,31 @@ export interface FetchBallDeps {
   hud: FetchHud;
 }
 
-type Phase = "held" | "flying" | "dogChasing" | "dogReturning" | "dogWaiting";
+type FreeBall = {
+  mesh: THREE.Mesh;
+  state: BallSimState;
+};
+
+type DogPhase =
+  | { kind: "none" }
+  | { kind: "chasing"; ball: FreeBall; dog: ParkDog; reactTimer: number }
+  | { kind: "returning"; ball: FreeBall; dog: ParkDog }
+  | { kind: "waiting"; ball: FreeBall; dog: ParkDog };
 
 export class FetchBall {
   #deps: FetchBallDeps;
-  #ball: THREE.Mesh;
-  #state: BallSimState = { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, grounded: false };
   #ctxPark: BallSimCtx; // inside the fence: rebound + woodchip lift
   #ctxOpen: BallSimCtx; // open terrain: pure roll, no lift
-  #phase: Phase = "held";
+  #free: FreeBall[] = [];
+  #dogPhase: DogPhase = { kind: "none" };
   #active = false;
 
   #dog: ParkDog | null = null; // the fetching dog (claimed) — becomes a pet on adoption
   #pets: ParkDog[] = []; // adopted followers
-  #reactTimer = 0; // dog reads the throw before bolting
 
-  // throw animation timeline (independent of phase): >= 0 while a swing plays
+  // throw animation timeline: >= 0 while a swing plays
   #throwAnimT = -1;
-  #throwPending = false; // ball still in hand, waiting for the release frame
+  #throwPending = false; // next free ball still waiting for the release frame
   #aim = new THREE.Vector3(0, 0, -1);
 
   #lastPlayer = new THREE.Vector3();
@@ -90,14 +98,6 @@ export class FetchBall {
 
   constructor(deps: FetchBallDeps) {
     this.#deps = deps;
-    this.#ball = new THREE.Mesh(
-      new THREE.SphereGeometry(BALL_R, 12, 8),
-      new THREE.MeshStandardMaterial({ color: 0xb9ef31, roughness: 0.62 })
-    );
-    this.#ball.name = "player_tennis_ball";
-    this.#ball.castShadow = true;
-    this.#ball.visible = false;
-    deps.scene.add(this.#ball);
 
     // Own fence data so the sim decouples from the park instance (which is
     // null until the hill loads and could rebuild).
@@ -117,34 +117,40 @@ export class FetchBall {
 
   setActive(active: boolean): void {
     this.#active = active;
-    // The held prop only shows when the ball is actually in hand.
-    this.#deps.playerView.setBallHeld(active && this.#phase === "held");
+    // Infinite ammo: the held prop shows whenever the ball tool is selected.
+    this.#deps.playerView.setBallHeld(active);
   }
 
-  /** One entry point for the click: throws OR takes based on wantsTake(). */
+  /** Click always throws a new ball (infinite supply while the tool is active). */
   click(origin: THREE.Vector3, aim: THREE.Vector3): void {
     void origin; // the ball leaves the hand (handWorldPos), not the camera ray
-    if (this.wantsTake()) {
-      this.#take();
-      return;
+    if (!this.#active) return;
+    if (this.#throwPending) return; // wait for the in-hand ball to leave first
+    this.#aim.copy(aim);
+    if (this.#aim.lengthSq() < 1e-6) this.#aim.set(0, 0.12, -1);
+    this.#aim.normalize();
+    this.#throwPending = true;
+    this.#throwAnimT = 0;
+  }
+
+  /**
+   * E-to-pick-up: take a ball from a waiting dog, or scoop up the nearest free
+   * ball on the ground. Returns true when something was collected (so the E
+   * handler can skip boarding / doors).
+   */
+  tryPickup(playerPos: THREE.Vector3): boolean {
+    this.#lastPlayer.copy(playerPos);
+    if (this.#dogPhase.kind === "waiting" && this.#dog) {
+      const dog = this.#dog;
+      if (Math.hypot(playerPos.x - dog.x, playerPos.z - dog.z) < TAKE_FROM_DOG_RANGE) {
+        this.#takeFromDog();
+        return true;
+      }
     }
-    if (this.#phase === "held" && !this.#throwPending) {
-      // commit the aim now; the ball actually launches at the release frame
-      this.#aim.copy(aim);
-      if (this.#aim.lengthSq() < 1e-6) this.#aim.set(0, 0.12, -1);
-      this.#aim.normalize();
-      this.#throwPending = true;
-      this.#throwAnimT = 0;
-      return;
-    }
-    // Recall a stranded FREE ball back to the hand: a ball that rolled out of
-    // reach (never rested on a slope, or landed unreachable inside the enclosed
-    // run when no free dog could fetch it) would otherwise leave the tool dead —
-    // click() no-ops in every non-"held" phase and #take only fires in range.
-    // Only "flying" (a loose ball) is recalled; an in-progress fetch
-    // (dogChasing/dogReturning/dogWaiting) is never disturbed, and #dog stays
-    // claimed so a heeling reused dog keeps its adoption progress.
-    if (this.#phase === "flying" && !this.#throwPending) this.#rearm();
+    const nearest = this.#nearestPickupBall(playerPos);
+    if (!nearest) return false;
+    this.#removeFree(nearest.ball);
+    return true;
   }
 
   update(dt: number, elapsed: number, playerPos: THREE.Vector3): void {
@@ -157,20 +163,25 @@ export class FetchBall {
 
     this.#advanceThrowAnim(dt);
 
-    switch (this.#phase) {
-      case "held":
-        this.#updateHeld(dt, elapsed, playerPos, park);
+    // Every free ball keeps simulating; dog choreography rides one of them.
+    for (const ball of this.#free) {
+      if (this.#dogPhase.kind === "returning" || this.#dogPhase.kind === "waiting") {
+        if (this.#dogPhase.ball === ball) continue; // mouth-carried — posed below
+      }
+      this.#stepFreeBall(ball, dt, park);
+    }
+
+    switch (this.#dogPhase.kind) {
+      case "none":
+        this.#updateIdle(dt, elapsed, playerPos, park);
         break;
-      case "flying":
-        this.#updateFlying(dt, elapsed, park);
-        break;
-      case "dogChasing":
+      case "chasing":
         this.#updateChasing(dt, elapsed, park);
         break;
-      case "dogReturning":
+      case "returning":
         this.#updateReturning(dt, playerPos, park);
         break;
-      case "dogWaiting":
+      case "waiting":
         this.#updateWaiting(dt, elapsed, playerPos, park);
         break;
     }
@@ -191,25 +202,19 @@ export class FetchBall {
     this.#prevPlayer.copy(playerPos);
   }
 
+  /** Click-row verb — always throw; pickup is on E. */
   verb(): string {
-    if (this.wantsTake()) return "take the ball back";
-    if (this.#phase === "held") return "throw the ball";
-    // A loose ball can be recalled to hand (see click()); the dog carrying or
-    // waiting-with the ball can't be thrown, so don't advertise a dead click.
-    if (this.#phase === "flying") return "call the ball back";
-    if (this.#phase === "dogWaiting") return "get closer to take the ball";
-    return "wait for the dog"; // dogChasing / dogReturning
+    return "throw the ball";
   }
 
+  /** True when E would pick something up right now (dog handoff or free ball). */
   wantsTake(): boolean {
-    if (this.#phase === "dogWaiting" && this.#dog) {
-      return Math.hypot(this.#lastPlayer.x - this.#dog.x, this.#lastPlayer.z - this.#dog.z) < TAKE_FROM_DOG_RANGE;
+    if (this.#dogPhase.kind === "waiting" && this.#dog) {
+      if (Math.hypot(this.#lastPlayer.x - this.#dog.x, this.#lastPlayer.z - this.#dog.z) < TAKE_FROM_DOG_RANGE) {
+        return true;
+      }
     }
-    // a free ball at rest, nobody fetching → pick it up
-    if (this.#phase === "flying" && this.#state.grounded && Math.hypot(this.#state.vx, this.#state.vz) < 0.15) {
-      return Math.hypot(this.#lastPlayer.x - this.#state.x, this.#lastPlayer.z - this.#state.z) < TAKE_RESTING_RANGE;
-    }
-    return false;
+    return this.#nearestPickupBall(this.#lastPlayer) !== null;
   }
 
   throwProgress(): number {
@@ -217,9 +222,8 @@ export class FetchBall {
   }
 
   dispose(): void {
-    this.#ball.removeFromParent();
-    this.#ball.geometry.dispose();
-    (this.#ball.material as THREE.Material).dispose();
+    for (const ball of this.#free) this.#disposeBall(ball);
+    this.#free.length = 0;
   }
 
   /* -------------------------------------------------------------- internals */
@@ -238,35 +242,48 @@ export class FetchBall {
   #launch(): void {
     this.#throwPending = false;
     const hand = this.#deps.playerView.handWorldPos(this.#tmp);
-    this.#state.x = hand.x;
-    this.#state.y = hand.y;
-    this.#state.z = hand.z;
-    this.#state.vx = this.#aim.x * THROW_SPEED;
-    this.#state.vy = this.#aim.y * THROW_SPEED;
-    this.#state.vz = this.#aim.z * THROW_SPEED;
-    this.#state.grounded = false;
-    this.#ball.position.set(hand.x, hand.y, hand.z);
-    this.#ball.visible = true;
-    this.#deps.playerView.setBallHeld(false);
-    this.#phase = "flying";
+    const mesh = new THREE.Mesh(
+      new THREE.SphereGeometry(BALL_R, 12, 8),
+      new THREE.MeshStandardMaterial({ color: 0xb9ef31, roughness: 0.62 })
+    );
+    mesh.name = "player_tennis_ball";
+    mesh.castShadow = true;
+    mesh.position.copy(hand);
+    mesh.visible = true;
+    this.#deps.scene.add(mesh);
+    const ball: FreeBall = {
+      mesh,
+      state: {
+        x: hand.x,
+        y: hand.y,
+        z: hand.z,
+        vx: this.#aim.x * THROW_SPEED,
+        vy: this.#aim.y * THROW_SPEED,
+        vz: this.#aim.z * THROW_SPEED,
+        grounded: false
+      }
+    };
+    this.#free.push(ball);
+    // Held prop stays — infinite ammo. A duplicate flies out of the hand.
+    this.#deps.playerView.setBallHeld(this.#active);
   }
 
-  #stepFreeBall(dt: number, park: CoronaHeightsPark | null): void {
-    const inPark = park?.isInsidePark(this.#state.x, this.#state.z) ?? false;
-    const px = this.#state.x;
-    const pz = this.#state.z;
-    stepBall(this.#state, inPark ? this.#ctxPark : this.#ctxOpen, dt);
-    this.#ball.position.set(this.#state.x, this.#state.y, this.#state.z);
-    const dx = this.#state.x - px;
-    const dz = this.#state.z - pz;
+  #stepFreeBall(ball: FreeBall, dt: number, park: CoronaHeightsPark | null): void {
+    const inPark = park?.isInsidePark(ball.state.x, ball.state.z) ?? false;
+    const px = ball.state.x;
+    const pz = ball.state.z;
+    stepBall(ball.state, inPark ? this.#ctxPark : this.#ctxOpen, dt);
+    ball.mesh.position.set(ball.state.x, ball.state.y, ball.state.z);
+    const dx = ball.state.x - px;
+    const dz = ball.state.z - pz;
     const travelled = Math.hypot(dx, dz);
     if (travelled > 1e-6) {
       this.#spinAxis.set(-dz / travelled, 0, dx / travelled);
-      this.#ball.rotateOnWorldAxis(this.#spinAxis, (travelled / BALL_R) * (this.#state.grounded ? 1 : 0.35));
+      ball.mesh.rotateOnWorldAxis(this.#spinAxis, (travelled / BALL_R) * (ball.state.grounded ? 1 : 0.35));
     }
   }
 
-  #updateHeld(dt: number, elapsed: number, playerPos: THREE.Vector3, park: CoronaHeightsPark | null): void {
+  #updateIdle(dt: number, elapsed: number, playerPos: THREE.Vector3, park: CoronaHeightsPark | null): void {
     // A claimed dog (mid-loop, between throws) waits at heel for the next throw.
     if (this.#dog && this.#dog.controller === "player" && park) {
       const d = Math.hypot(playerPos.x - this.#dog.x, playerPos.z - this.#dog.z);
@@ -278,94 +295,88 @@ export class FetchBall {
         park.setDogJaw(this.#dog, 0);
       }
     }
-  }
-
-  #updateFlying(dt: number, elapsed: number, park: CoronaHeightsPark | null): void {
-    this.#stepFreeBall(dt, park);
     if (!park) return;
-    if (park.isInsidePark(this.#state.x, this.#state.z)) {
-      // Ball is over the run — get a dog on it. Reuse the already-claimed dog
-      // across fetch cycles (guarantees "same dog" for the adoption count).
+    // Start a fetch on the first free ball that lands inside the run.
+    for (const ball of this.#free) {
+      if (!park.isInsidePark(ball.state.x, ball.state.z)) continue;
       if (!this.#dog) {
-        this.#dog = park.claimFreeDog(this.#state.x, this.#state.z);
-        if (this.#dog) this.#reactTimer = 0.25;
+        this.#dog = park.claimFreeDog(ball.state.x, ball.state.z);
       }
       if (this.#dog && this.#dog.controller === "player") {
-        if (this.#reactTimer <= 0) this.#reactTimer = 0.25;
-        this.#phase = "dogChasing";
+        this.#dogPhase = { kind: "chasing", ball, dog: this.#dog, reactTimer: 0.25 };
         return;
       }
-    }
-    // No claim yet (ball outside, or both dogs busy): keep a reused dog at heel.
-    if (this.#dog && this.#dog.controller === "player") {
-      park.holdDog(this.#dog, this.#lastPlayer.x, this.#lastPlayer.z, elapsed, dt);
-      park.setDogJaw(this.#dog, 0);
     }
   }
 
   #updateChasing(dt: number, elapsed: number, park: CoronaHeightsPark | null): void {
-    this.#stepFreeBall(dt, park);
-    const dog = this.#dog;
-    if (!park || !dog) {
-      this.#phase = "flying";
+    const phase = this.#dogPhase;
+    if (phase.kind !== "chasing") return;
+    const { ball, dog } = phase;
+    if (!park || !this.#free.includes(ball)) {
+      this.#dogPhase = { kind: "none" };
       return;
     }
     if (this.#maybeAbandon(park)) return;
-    const bx = this.#state.x;
-    const bz = this.#state.z;
-    if (this.#reactTimer > 0) {
-      this.#reactTimer -= dt;
+    const bx = ball.state.x;
+    const bz = ball.state.z;
+    if (phase.reactTimer > 0) {
+      phase.reactTimer -= dt;
       park.holdDog(dog, bx, bz, elapsed, dt); // read the throw
     } else {
       park.steerDog(dog, bx, bz, park.dogSprintSpeed(dog), dt);
     }
     const d = Math.hypot(bx - dog.x, bz - dog.z);
     park.setDogJaw(dog, d < 1.1 ? 1 : 0); // gape as it closes in
-    const speed = Math.hypot(this.#state.vx, this.#state.vz);
-    if (this.#state.grounded && speed < PICKUP_SPEED && d < PICKUP_RANGE) {
+    const speed = Math.hypot(ball.state.vx, ball.state.vz);
+    if (ball.state.grounded && speed < PICKUP_SPEED && d < PICKUP_RANGE) {
       park.setDogJaw(dog, 1);
-      this.#phase = "dogReturning";
+      this.#dogPhase = { kind: "returning", ball, dog };
     }
   }
 
   #updateReturning(dt: number, playerPos: THREE.Vector3, park: CoronaHeightsPark | null): void {
-    const dog = this.#dog;
-    if (!park || !dog) {
-      this.#phase = "flying";
+    const phase = this.#dogPhase;
+    if (phase.kind !== "returning") return;
+    const { ball, dog } = phase;
+    if (!park || !this.#free.includes(ball)) {
+      this.#dogPhase = { kind: "none" };
       return;
     }
     if (this.#maybeAbandon(park)) return;
-    // ball rides the mouth
     park.dogMouthWorld(dog, this.#tmp);
-    this.#ball.position.copy(this.#tmp);
-    this.#ball.visible = true;
+    ball.mesh.position.copy(this.#tmp);
+    ball.mesh.visible = true;
     park.setDogJaw(dog, 0.15);
     const dx = dog.x - playerPos.x;
     const dz = dog.z - playerPos.z;
     const d = Math.hypot(dx, dz) || 1;
     park.steerDog(dog, playerPos.x + (dx / d) * 1.2, playerPos.z + (dz / d) * 1.2, park.dogSprintSpeed(dog) * 0.55, dt);
-    if (d < 1.9 && dog.speed < 0.9) this.#phase = "dogWaiting";
+    if (d < 1.9 && dog.speed < 0.9) this.#dogPhase = { kind: "waiting", ball, dog };
   }
 
   #updateWaiting(dt: number, elapsed: number, playerPos: THREE.Vector3, park: CoronaHeightsPark | null): void {
-    const dog = this.#dog;
-    if (!park || !dog) {
-      this.#phase = "flying";
+    const phase = this.#dogPhase;
+    if (phase.kind !== "waiting") return;
+    const { ball, dog } = phase;
+    if (!park || !this.#free.includes(ball)) {
+      this.#dogPhase = { kind: "none" };
       return;
     }
     if (this.#maybeAbandon(park)) return;
     park.dogMouthWorld(dog, this.#tmp);
-    this.#ball.position.copy(this.#tmp);
-    this.#ball.visible = true;
+    ball.mesh.position.copy(this.#tmp);
+    ball.mesh.visible = true;
     park.holdDog(dog, playerPos.x, playerPos.z, elapsed, dt);
     park.setDogJaw(dog, 0.15);
   }
 
-  #take(): void {
+  #takeFromDog(): void {
+    const phase = this.#dogPhase;
+    if (phase.kind !== "waiting") return;
     const park = this.#deps.park();
-    const fromDog = this.#phase === "dogWaiting" && this.#dog;
-    if (fromDog && park && this.#dog) {
-      const dog = this.#dog;
+    const dog = phase.dog;
+    if (park) {
       park.setDogJaw(dog, 1); // open to release into the hand
       dog.playerFetchCount++;
       if (dog.playerFetchCount >= 2 && dog.controller !== "pet") {
@@ -376,38 +387,68 @@ export class FetchBall {
       }
       // else: keep the dog claimed so the SAME dog runs the next fetch cycle.
     }
-    this.#rearm();
+    this.#removeFree(phase.ball);
+    this.#dogPhase = { kind: "none" };
   }
 
-  /** Put the ball back in the player's hand (from a take or a recall). Leaves
-   *  this.#dog untouched so a heeling reused dog stays claimed. */
-  #rearm(): void {
-    this.#ball.visible = false;
-    this.#state.vx = this.#state.vy = this.#state.vz = 0;
-    this.#state.grounded = false;
-    this.#phase = "held";
-    this.#deps.playerView.setBallHeld(this.#active);
+  #nearestPickupBall(playerPos: THREE.Vector3): { ball: FreeBall; dist: number } | null {
+    let best: { ball: FreeBall; dist: number } | null = null;
+    for (const ball of this.#free) {
+      // Skip the ball a dog is currently carrying / offering — that's the
+      // dog-handoff path, not a ground scoop.
+      if (
+        (this.#dogPhase.kind === "returning" || this.#dogPhase.kind === "waiting") &&
+        this.#dogPhase.ball === ball
+      ) {
+        continue;
+      }
+      if (!ball.state.grounded) continue;
+      if (Math.hypot(ball.state.vx, ball.state.vz) >= 0.15) continue;
+      const dist = Math.hypot(playerPos.x - ball.state.x, playerPos.z - ball.state.z);
+      if (dist >= TAKE_RESTING_RANGE) continue;
+      if (!best || dist < best.dist) best = { ball, dist };
+    }
+    return best;
+  }
+
+  #removeFree(ball: FreeBall): void {
+    const i = this.#free.indexOf(ball);
+    if (i >= 0) this.#free.splice(i, 1);
+    if (
+      (this.#dogPhase.kind === "chasing" ||
+        this.#dogPhase.kind === "returning" ||
+        this.#dogPhase.kind === "waiting") &&
+      this.#dogPhase.ball === ball
+    ) {
+      this.#dogPhase = { kind: "none" };
+    }
+    this.#disposeBall(ball);
+  }
+
+  #disposeBall(ball: FreeBall): void {
+    ball.mesh.removeFromParent();
+    ball.mesh.geometry.dispose();
+    (ball.mesh.material as THREE.Material).dispose();
   }
 
   /** Leash for a committed fetch: if the claimed dog has been dragged well out
    *  of the fenced run (the player walking off mid-return would otherwise pull
    *  it through the fence and across the map, never re-settling), hand it back
-   *  to the wander pool and re-arm the ball. Keyed on the DOG's position, not
-   *  the player-to-dog gap (which stays ~1.2 m forever during a return), and
-   *  with a generous margin so a legit fence-line handoff is never abandoned.
-   *  Returns true when it abandoned (caller should stop touching the dog). */
+   *  to the wander pool and leave the free ball where it is. Keyed on the DOG's
+   *  position, not the player-to-dog gap (which stays ~1.2 m forever during a
+   *  return), and with a generous margin so a legit fence-line handoff is never
+   *  abandoned. Returns true when it abandoned. */
   #maybeAbandon(park: CoronaHeightsPark): boolean {
     const dog = this.#dog;
     if (!dog || dog.controller !== "player") return false;
     if (park.isInsidePark(dog.x, dog.z)) return false; // still in the run
-    // Just outside for a handoff? A step toward the run's centre lands inside.
     const dx = PARK_CX - dog.x;
     const dz = PARK_CZ - dog.z;
     const d = Math.hypot(dx, dz) || 1;
     if (park.isInsidePark(dog.x + (dx / d) * LEASH_MARGIN, dog.z + (dz / d) * LEASH_MARGIN)) return false;
     park.releaseDog(dog);
     this.#dog = null;
-    this.#rearm();
+    this.#dogPhase = { kind: "none" };
     return true;
   }
 }

@@ -13,7 +13,7 @@
 // Everything is STATIC: world-space geometry, matrixAutoUpdate off, Static bodies.
 // Nothing is destructible — buildings don't break; a crash just stops you.
 import * as THREE from "three/webgpu";
-import { buildingColliders, doorMetrics, doorEligible, stoopColliders } from "../core/collider";
+import { buildingColliders, doorMetrics, doorEligible, STOOP_MAX_RISE, stoopColliders } from "../core/collider";
 import { ensureCCW, streetEdgeIndex, edgeOutwardNormal, pointInPoly, signedDistToPoly } from "../core/footprint";
 import { buildBuilding, buildInterior, assembleBuilding, warmupMaterials } from "../render";
 import { buildChunkLOD, type ChunkLOD } from "../render/chunkLod";
@@ -58,10 +58,10 @@ const DOOR_RANGE = 8;        // nearestDoor scan radius (m)
 const DOOR_SWING = Math.PI * (100 / 180); // open leaf angle (rad), swung INTO the building
 const DOOR_SWING_TIME = 0.6; // swing duration (s), ease-out
 // Keep the closed blocker in place for the first visible part of the swing. At
-// ~28° the leaf is unmistakably ajar but still leaves the player outside; only
-// then does the expensive solid→gapped perimeter swap happen. This prevents the
-// old "press E and walk through a visually closed slab" frame.
-const DOOR_PASSABLE_AT = Math.PI * (28 / 180);
+// A 0.70 m player capsule clears even the narrowest 1.10 m opening at ~70°;
+// before that the visible slab still occupies too much of the aperture. The
+// solid↔gapped wall handoff happens at this same angle in both directions.
+const DOOR_PASSABLE_AT = Math.PI * (70 / 180);
 const DOOR_LEAF_T = 0.06;    // leaf thickness (m) — matches the grammar-authored leaf
 const DOOR_FACE_OFFSET = 0.04;// sit on the same proud plane as the grammar leaf
 const DOOR_PLAYER_R = 0.48;  // conservative XZ player/capsule reach around a moving leaf
@@ -312,11 +312,17 @@ export async function createCityGenRing(
     }
     return false;
   };
+  const sampleDoorFrontGround = (cx: number, cz: number, nx: number, nz: number, sill: number): number => {
+    const at = (d: number) => ctx.map.groundHeight(cx + nx * d, cz + nz * d);
+    const near = at(1.3);
+    const foot = 0.3 + Math.max(0.5, (sill - near) / 0.63);
+    return Math.min(near, at(foot));
+  };
   const chooseExposedStreetEdge = (e: Entry): { edge: number; doorAllowed: boolean } => {
     const poly = ensureCCW(e.poly);
     const grade = e.grade ?? e.base;
     const fallback = streetEdgeIndex(poly);
-    let best = fallback, bestScore = -Infinity, bestNearClear = false;
+    let best = fallback, bestScore = -Infinity, bestClearance = 0;
     for (let i = 0; i < poly.length; i++) {
       const p0 = poly[i], p1 = poly[(i + 1) % poly.length];
       const dx = p1[0] - p0[0], dz = p1[1] - p0[1];
@@ -324,14 +330,21 @@ export async function createCityGenRing(
       if (length < 0.3 || !doorEligible({ isStreet: true, length, base: e.base, top: e.top, grade })) continue;
       const ux = dx / length, uz = dz / length;
       const nrm = edgeOutwardNormal(p0, p1);
-      const { tc } = doorMetrics(length, e.base, e.top, grade);
+      const dm = doorMetrics(length, e.base, e.top, grade);
+      const { tc } = dm;
       const cx = p0[0] + ux * tc * length, cz = p0[1] + uz * tc * length;
+      // An exposed facade is still unusable if its sill floats above terrain
+      // beyond the authored ramp/step contract. Score only candidates the same
+      // 3 m stoop can physically reach; almost every steep-lot building has a
+      // better exposed side, and the rare remainder becomes honestly doorless.
+      const frontGround = sampleDoorFrontGround(cx, cz, nrm[0], nrm[1], dm.sill);
+      if (!Number.isFinite(frontGround) || dm.sill - frontGround > STOOP_MAX_RISE) continue;
       // Near clearance has the largest weight: a sample immediately inside a
       // neighbour proves a party wall. Farther samples favour the street over a
       // narrow side/rear alley while edge length keeps the result deterministic.
       const distances = [0.35, 0.8, 1.5] as const;
       const laterals = [-0.42, 0, 0.42] as const; // full player-capsule corridor, not a zero-width ray
-      let clearance = 0, nearClear = false;
+      let clearance = 0;
       for (let s = 0; s < distances.length; s++) {
         const d = distances[s];
         let depthClear = true;
@@ -343,13 +356,12 @@ export async function createCityGenRing(
         }
         if (depthClear) {
           clearance += 1 << (distances.length - s);
-          if (s === 0) nearClear = true;
         }
       }
       const score = clearance * 10000 + length;
-      if (score > bestScore) { bestScore = score; best = i; bestNearClear = nearClear; }
+      if (score > bestScore) { bestScore = score; best = i; bestClearance = clearance; }
     }
-    return { edge: best, doorAllowed: bestScore > -Infinity && bestNearClear };
+    return { edge: best, doorAllowed: bestScore > -Infinity && bestClearance === 14 };
   };
   const tile = grid?.tile ?? 800;
   const minX = grid?.minX ?? 0, minZ = grid?.minZ ?? 0;
@@ -575,10 +587,7 @@ export async function createCityGenRing(
     const { tc, sill } = doorMetrics(length, e.base, e.top, grade);
     const dC = tc * length;
     const cxd = p0[0] + ux * dC, czd = p0[1] + uz * dC;
-    const at = (d: number) => ctx.map.groundHeight(cxd + nrm[0] * d, czd + nrm[1] * d);
-    const near = at(1.3);
-    const foot = 0.3 + Math.max(0.5, (sill - near) / 0.63); // ≈ ramp run for that rise
-    return Math.min(near, at(foot));
+    return sampleDoorFrontGround(cxd, czd, nrm[0], nrm[1], sill);
   };
   // Swap the solid street wall for the door-gapped one once the live leaf reaches
   // DOOR_PASSABLE_AT. Passes the live front-terrain height so a downhill door gets
@@ -760,6 +769,7 @@ export async function createCityGenRing(
     rt.needSolid = false;
     clearBodies(e);
     buildSolidWallsNow(e, true); // detail tier: steps stay tangible across the swap
+    e.doorPending = true;
   };
   // Complete the visual/logical close only AFTER solid walls actually land. This
   // keeps debug/UI state truthful and never paints a closed backing over a still-
@@ -777,7 +787,8 @@ export async function createCityGenRing(
   // visual. If occupied, advanceDoors retries and performs the visual handoff once
   // the wall swap succeeds.
   const finishClose = (e: Entry, rt: DoorRt) => {
-    trySolidify(e, rt);
+    if (!e.doorPending) trySolidify(e, rt);
+    else rt.needSolid = false;
     if (rt.needSolid) markDoorActive(e);
     else restoreClosedVisual(e, rt);
   };
@@ -876,6 +887,7 @@ export async function createCityGenRing(
         // Opening is visual first, physical second: retain the solid wall until
         // the panel is clearly ajar, then atomically expose the walk-through gap.
         if (rt.to === DOOR_SWING && e.doorPending && rt.swing >= DOOR_PASSABLE_AT) openDoorway(e);
+        if (rt.to === 0 && !e.doorPending && rt.swing <= DOOR_PASSABLE_AT) trySolidify(e, rt);
         if (rt.t >= 1) {
           rt.animating = false;
           rt.swing = rt.to;
@@ -1001,6 +1013,7 @@ export async function createCityGenRing(
     geo.setAttribute("normal", new THREE.BufferAttribute(new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]), 3));
     geo.setAttribute("uv", new THREE.BufferAttribute(new Float32Array([0, 0, 1, 0, 0, 1]), 2));
     geo.setAttribute("color", new THREE.BufferAttribute(new Float32Array([1, 1, 1, 1, 1, 1, 1, 1, 1]), 3)); // lodMaterial reads vertex colour
+    geo.setAttribute("lodVisibility", new THREE.BufferAttribute(new Float32Array([1, 1, 1]), 1));
     geo.setIndex(new THREE.BufferAttribute(new Uint32Array([0, 1, 2]), 1));
     const group = new THREE.Group();
     group.position.set(at.x, ctx.map.groundHeight(at.x, at.z) + 0.4, at.z);

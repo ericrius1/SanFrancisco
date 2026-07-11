@@ -13,6 +13,7 @@ import {
   POSTFX_TUNING,
   POSTFX_VARIANT_MASKS
 } from "./postfx";
+import { INK_EXCLUDED_LAYER } from "./transparency";
 
 type SceneSamples = 0 | 4;
 /** "boot": compile only the active sample mode + active post-FX variant (fast,
@@ -46,6 +47,11 @@ export function createRenderPipeline(
   scene: THREE.Scene,
   camera: THREE.Camera
 ) {
+  // Beauty sees the ordinary world plus ephemeral hashed markers. The ink
+  // prepass below deliberately stays on layer 0 so alpha-hash grain cannot
+  // become a noisy normal/depth outline.
+  camera.layers.enable(INK_EXCLUDED_LAYER);
+
   // cheap outline prepass: view-space normals (packed to 8-bit) + depth, opaque only.
   // Geometry normals, not material normals: normalView pulls in each material's
   // normalNode chain (the facade's brick-bump fractal noise), re-running it over
@@ -54,6 +60,9 @@ export function createRenderPipeline(
   // samples: 0 — multisampling this half-resolution lookup is pure bandwidth.
   const prePass = pass(scene, camera, { samples: 0 });
   prePass.transparent = false;
+  const inkLayers = new THREE.Layers();
+  inkLayers.set(0);
+  prePass.setLayers(inkLayers);
   prePass.setResolutionScale(OUTLINE_PREPASS_SCALE);
   prePass.setMRT(mrt({ output: packNormalToRGB(normalViewGeometry) }));
   prePass.getTexture("output").type = THREE.UnsignedByteType;

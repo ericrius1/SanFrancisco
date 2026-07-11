@@ -7,9 +7,7 @@ import {
   mix,
   mx_fractal_noise_float,
   mx_noise_float,
-  normalView,
   positionLocal,
-  positionViewDirection,
   positionWorld,
   smoothstep,
   uniform,
@@ -17,6 +15,12 @@ import {
   vec3
 } from "three/tsl";
 import { LIGHT_SCALE } from "../../config";
+import {
+  applyMaterialPolicy,
+  clampCoverage,
+  fresnelCoverage,
+  tagTransparency
+} from "../../render/transparency";
 import { bumpNormal } from "../../world/tslUtil";
 import type { WorldMap } from "../../world/heightmap";
 import { GolfCourse, type GolfPoly, type GolfSurface } from "./data";
@@ -399,10 +403,9 @@ export class GolfCourseView {
     curtainGeo.translate(0, 3.75, 0);
     const curtain = new THREE.MeshBasicNodeMaterial();
     const vfade = (uv().y as N).oneMinus().pow(1.6); // bright at the grass, gone at the top
-    const facing = (normalView as N).normalize().dot((positionViewDirection as N).normalize()).abs().clamp(0, 1);
     // Keep only a trace of face-on coverage. Most of the signal lives on the
     // Fresnel rim, so the volume reads clearly without becoming a tinted wall.
-    const fresnel = facing.oneMinus().pow(fresnelPower).mul(0.94).add(0.06);
+    const fresnel = fresnelCoverage(fresnelPower, 0.06) as N;
     const bands = mx_fractal_noise_float(
       vec3((uv().x as N).mul(9).add(seed.mul(3.7)), (uv().y as N).mul(2.4).sub(t.mul(0.35)), t.mul(0.13)),
       2
@@ -416,22 +419,23 @@ export class GolfCourseView {
     const auroraCol = mix(mix(hueA, hueB, huePhase), hueC, bands.mul(0.45));
     curtain.colorNode = auroraCol.mul(bands.mul(0.9).add(0.35)).mul(LIGHT_SCALE * 1.15);
     const pulse = t.mul(1.7).add(seed.mul(2.1)).sin().mul(0.12).add(0.9);
-    curtain.opacityNode = vfade
-      .mul(fresnel)
-      .mul(bands.mul(0.6).add(0.4))
-      .mul(pulse)
-      .mul(boost)
-      .mul(alpha)
-      .clamp(0, 1);
+    curtain.opacityNode = clampCoverage(
+      vfade
+        .mul(fresnel)
+        .mul(bands.mul(0.6).add(0.4))
+        .mul(pulse)
+        .mul(boost)
+        .mul(alpha)
+    );
     // Hashed coverage stays in the opaque pass and writes depth. Scene objects
     // behind the near wall (especially the avatar) therefore show through the
     // discarded holes instead of being flattened by an additive color wash.
-    curtain.alphaHash = true;
-    curtain.transparent = false;
-    curtain.depthWrite = true;
+    applyMaterialPolicy(curtain, "hashedCoverage");
     curtain.side = THREE.DoubleSide;
     curtain.fog = true;
     const curtains = new THREE.InstancedMesh(curtainGeo, curtain, n);
+    curtains.name = "golf-tee-curtains";
+    tagTransparency(curtains, { profile: "hashedCoverage", ink: false });
 
     // — ground halo ring
     const haloGeo = new THREE.RingGeometry(3.4, 5.1, 36);
@@ -443,11 +447,11 @@ export class GolfCourseView {
     const rad = (positionLocal as N).xz.length().sub(3.4).div(1.7).sub(0.5).abs().mul(2).oneMinus().max(0).pow(1.8);
     halo.colorNode = auroraCol.mul(LIGHT_SCALE * 1.35);
     halo.opacityNode = rad.mul(pulse).mul(boost).mul(0.8);
-    halo.transparent = true;
-    halo.blending = THREE.AdditiveBlending;
-    halo.depthWrite = false;
+    applyMaterialPolicy(halo, "additiveWorld");
     halo.fog = true;
     const halos = new THREE.InstancedMesh(haloGeo, halo, n);
+    halos.name = "golf-tee-halos";
+    tagTransparency(halos, { profile: "additiveWorld" });
 
     // — sky beam: a tall soft shaft over ONLY the active tee, the long-range
     // "the hole you're playing is over here" cue. Idle tees show none of it.
@@ -455,23 +459,23 @@ export class GolfCourseView {
     beamGeo.translate(0, 15, 0);
     const beam = new THREE.MeshBasicNodeMaterial();
     const bFade = (uv().y as N).oneMinus().pow(1.5); // solid at the grass, feathering to nothing up high
-    const bFacing = (normalView as N).normalize().dot((positionViewDirection as N).normalize()).abs().clamp(0, 1);
-    const bFres = bFacing.oneMinus().pow(fresnelPower).mul(0.94).add(0.06);
+    const bFres = fresnelCoverage(fresnelPower, 0.06) as N;
     const bPulse = t.mul(2.3).add(seed.mul(1.1)).sin().mul(0.18).add(0.82);
     beam.colorNode = mix(vec3(0.55, 1.0, 0.72), vec3(0.6, 0.8, 1.0), (uv().y as N)).mul(LIGHT_SCALE * 1.5);
-    beam.opacityNode = bFade
-      .mul(bFres)
-      .mul(bPulse)
-      .mul(isActive)
-      .mul(alpha)
-      .mul(0.8)
-      .clamp(0, 1); // isActive gate → only the current tee
-    beam.alphaHash = true;
-    beam.transparent = false;
-    beam.depthWrite = true;
+    beam.opacityNode = clampCoverage(
+      bFade
+        .mul(bFres)
+        .mul(bPulse)
+        .mul(isActive)
+        .mul(alpha)
+        .mul(0.8)
+    ); // isActive gate → only the current tee
+    applyMaterialPolicy(beam, "hashedCoverage");
     beam.side = THREE.DoubleSide;
     beam.fog = true;
     const beams = new THREE.InstancedMesh(beamGeo, beam, n);
+    beams.name = "golf-tee-active-beams";
+    tagTransparency(beams, { profile: "hashedCoverage", ink: false });
 
     for (let i = 0; i < n; i++) {
       course.teeSpot(i, tee);

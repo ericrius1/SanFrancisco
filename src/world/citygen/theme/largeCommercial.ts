@@ -24,7 +24,7 @@ import {
   type FacadeEdge, type Vec3, type PanelBuilder,
 } from "../core/facade";
 import type { Rng } from "../core/rng";
-import { sub, len, unit, lerp, UP, gp, beltCourse, cornice, faceWindow, frontDoor, frontStoop, wallWithDoorway, type WinMats } from "./facadeKit";
+import { sub, len, unit, lerp, UP, gp, beltCourse, cornice, faceWindowAvoidDoor, frontDoor, frontStoop, wallWithDoorway, type WinMats } from "./facadeKit";
 import { doorEligible, doorMetrics } from "../core/collider";
 
 // Relief depths (metres proud of the flat wall). Piers stand deepest, then the
@@ -126,20 +126,20 @@ export function largeCommercialFacade(e: FacadeEdge, out: PanelBuilder, _rng: Rn
   const n3: Vec3 = [e.normal[0], 0, e.normal[1]];
   const along = unit(sub(gp(e, 1), gp(e, 0)));
 
-  const base = e.base, top = e.top, H = top - base;
+  const base = e.base, top = e.top, H = top - base, visibleH = top - e.grade;
   const bands = floorBands(e);
 
   // ---- tripartite split: stone base · shaft · cap --------------------------
   const nBase = H >= 26 ? 2 : 1;                          // 2-storey base on the tall ones
   let baseTopY = bands[Math.min(nBase, bands.length) - 1]?.y1 ?? base + arch.floorH;
-  baseTopY = clamp(baseTopY, base + Math.min(H * 0.5, arch.floorH * 0.9), base + H * 0.42);
+  baseTopY = clamp(baseTopY, e.grade + Math.min(visibleH * 0.45, arch.floorH * 0.9), e.grade + visibleH * 0.55);
 
   // ---- backdrop wall (stone base tone below, body colour above) ------------
   // the stone base is cut open at the entrance so the collider's walk-through gap
   // isn't backed by a solid quad (the grand portal geometry occludes the prism).
   const g0 = gp(e, 0), g1 = gp(e, 1);
   wallWithDoorway(out, e, stone, base, baseTopY, n3);
-  out.quad(wall, [g0[0], baseTopY, g0[2]], [g1[0], baseTopY, g1[2]], [g1[0], top, g1[2]], [g0[0], top, g0[2]], n3);
+  wallWithDoorway(out, e, wall, baseTopY, top, n3);
 
   // water-table string course capping the stone base
   beltCourse(out, e, baseTopY, stone, 0.13, 0.22);
@@ -164,12 +164,12 @@ export function largeCommercialFacade(e: FacadeEdge, out: PanelBuilder, _rng: Rn
     for (let c = 0; c < cols; c++) {
       const t = (c + 0.5) / cols;
       if (Math.abs(t - (e.length > 6 ? 0.24 : 0.5)) < 0.14) continue; // skip the entrance bay(s)
-      faceWindow(out, gp(e, (c + 0.2) / cols), gp(e, (c + 0.8) / cols), baseWinY0, baseWinY1, n3, wm);
+      faceWindowAvoidDoor(out, e, (c + 0.2) / cols, (c + 0.8) / cols, baseWinY0, baseWinY1, n3, wm);
     }
   } else {
     // non-street / too-short base: an even arcade of tall windows
     for (let c = 0; c < cols; c++) {
-      faceWindow(out, gp(e, (c + 0.2) / cols), gp(e, (c + 0.8) / cols), baseWinY0, baseWinY1, n3, wm);
+      faceWindowAvoidDoor(out, e, (c + 0.2) / cols, (c + 0.8) / cols, baseWinY0, baseWinY1, n3, wm);
     }
   }
 

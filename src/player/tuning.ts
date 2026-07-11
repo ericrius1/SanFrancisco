@@ -5,7 +5,7 @@ import { PLANE_TUNING } from "../vehicles/plane";
 import { BOAT_TUNING, SPEEDBOAT_TUNING } from "../vehicles/boat";
 import { DRONE_TUNING } from "../vehicles/drone";
 import { BOARD_TUNING } from "../vehicles/board";
-import { HALO_TUNING } from "../vehicles/board/tuning";
+import { BOARD_EFFECT_TUNING, HALO_TUNING } from "../vehicles/board/tuning";
 import { BIRD_TUNING } from "../vehicles/bird";
 import type { PlayerMode } from "./types";
 
@@ -45,6 +45,7 @@ export function addMovementTuning(pane: Pane | FolderApi): Record<PlayerMode, Fo
   SPEEDBOAT_TUNING.bind(folders.speedboat);
   DRONE_TUNING.bind(folders.drone);
   BOARD_TUNING.bind(folders.board);
+  BOARD_EFFECT_TUNING.bind(folders.board.addFolder({ title: "effects" }));
   HALO_TUNING.bind(folders.board.addFolder({ title: "halo comet" }));
   BIRD_TUNING.bind(folders.bird);
   return folders;

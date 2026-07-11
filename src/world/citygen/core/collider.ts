@@ -89,7 +89,7 @@ function qmul(
   ];
 }
 
-const STOOP_MAX_RISE = 3.0;  // cap the stoop climb (metres)
+export const STOOP_MAX_RISE = 3.0; // cap the stoop climb (metres); resolver shares this accessibility contract
 const STOOP_THETA = 0.56;    // ~32° incline — the same walkable slope as interior stair ramps
 const RAMP_HY = 0.13;        // ramp collider half-thickness
 

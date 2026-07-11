@@ -203,14 +203,14 @@ async function boot() {
   paintballs.onWater = (x, y, z) => splashes.splash(x, y, z, elapsed, 0.5);
   const bubbles = new Bubbles(scene, map, physics);
   const worldCursor = new WorldCursor(scene);
-  let tool: ToolName = "spray";
+  let tool: ToolName = "ball";
   let fetchBall: FetchBall | null = null; // built after coronaHeights; setTool runs once before it exists
   const setTool = (t: ToolName) => {
     tool = t;
     toolbar.setTool(t);
     hud.setToolVerb(TOOL_VERB[t]);
-    // ball tool → show the held prop; leaving it hides the prop, but the in-flight
-    // fetch + pet follow keep running because fetchBall.update runs every frame
+    // ball tool → show the held prop; leaving it hides the prop, but free balls,
+    // in-flight fetch + pet follow keep running because fetchBall.update runs every frame
     fetchBall?.setActive(t === "ball");
   };
   let paintColorTouched = false;
@@ -226,7 +226,7 @@ async function boot() {
     (i) => setColor(i, true),
     (mode) => switchModeFromToolbar(mode)
   );
-  setTool("spray");
+  setTool("ball");
   setColor(0);
 
   // procedural vehicle hum + the HUD's master volume/mute widget (bottom-left)
@@ -471,11 +471,12 @@ async function boot() {
   } catch (err) {
     console.warn("[boot] corona heights unavailable:", err);
   }
-  // Fetch-the-ball loop: the 🎾 tool throws a bouncing ball; a free dog in the
-  // Corona Heights park chases it, carries it back and waits. Two full fetches
-  // adopt the dog as a pet. The free ball, the in-flight fetch and the pet follow
-  // are all driven every frame by fetchBall.update (tool-agnostic), so they keep
-  // going after switching tools. park is a getter — coronaHeights is null-until-built.
+  // Fetch-the-ball loop: the 🎾 tool throws bouncing balls (infinite supply);
+  // walk up and press E to pick one up, or take it from a waiting dog. A free
+  // dog in the Corona Heights park chases park throws, carries back and waits —
+  // two full fetches adopt it as a pet. Free balls, in-flight fetch and pet
+  // follow are driven every frame by fetchBall.update (tool-agnostic). park is
+  // a getter — coronaHeights is null-until-built.
   fetchBall = new FetchBall({
     scene,
     map,
@@ -488,19 +489,20 @@ async function boot() {
     },
     hud: { message: (t, s) => hud.message(t, s) }
   });
+  // setTool ran before fetchBall existed — sync the held prop to the active tool
+  fetchBall.setActive(tool === "ball");
   // Dog-park sound layer: barks + paw-patter from the actual park dogs, riding
   // the nature soundscape's context/bus so HUD volume/mute and the corona
   // region fade all apply. Idles to a single distance check away from the park.
   const dogParkAudio = new DogParkAudio(nature, () => coronaHeights?.dogs ?? []);
-  // Busker trio perched on the NW high ground by the Hole 18 tee (Lincoln Park
-  // bluff), facing ESE so the whole city sweeps out in front of them — Sutro
-  // Tower and Buena Vista both fall in frame for the 360. The module is
-  // placeless by design; move it with buskers.setPlacement(x, z, yaw) (it
-  // re-grounds itself).
+  // Busker trio up on the Corona Heights summit crown (moved up-slope from the
+  // SE shoulder so a 360 drone shot clears the crags and takes in Sutro, Buena
+  // Vista and the whole city). Same ESE facing. The module is placeless by
+  // design; move it with buskers.setPlacement(x, z, yaw) (it re-grounds itself).
   const buskers = createBuskerTrio({
-    x: -1762,
-    z: -348, // Hole 18 tee bluff, high ground over the NW city edge
-    yaw: -1.72, // unchanged facing (ESE) — city + Sutro + Buena Vista out in front
+    x: 418,
+    z: 2772, // up the hill toward the summit crown, clear of the big crags
+    yaw: -1.72, // unchanged facing (ESE) over downtown / the Mission
     groundHeight: (x, z) => map.groundHeight(x, z),
     physics
   });
@@ -786,6 +788,13 @@ async function boot() {
     },
     () => remotes.positions()
   );
+  if (goldenGateTennis) {
+    minimap.addLandmark(
+      goldenGateTennis.gameplayAnchor.x,
+      goldenGateTennis.gameplayAnchor.z,
+      "Goldman Tennis & Pickleball"
+    );
+  }
   const playerLocator = new PlayerLocator();
   type ReleaseMotion = {
     linear: [number, number, number];
@@ -1986,9 +1995,11 @@ async function boot() {
     if (input.altPressed("ArrowLeft")) applyPlaceHistory(-1);
     if (input.altPressed("ArrowRight")) applyPlaceHistory(1);
 
-    // E: exit any vehicle/creature, or on foot hop into the nearest ride (a
-    // friend's passenger seat, a rideable animal, or a mount you left behind)
+    // E: exit any vehicle/creature, pick up a thrown tennis ball, or on foot
+    // hop into the nearest ride (a friend's passenger seat, a rideable animal,
+    // or a mount you left behind)
     if (input.pressed("KeyE") && !exitToWalk() && !golf?.tryStartAtTee(player, hud)) {
+      if (!fetchBall?.tryPickup(player.position)) {
         const drv = remotes.nearestDriver(player.position, 5.5);
         const animal = drv ? null : forest?.nearest(player.position, 5);
         if (drv) {
@@ -2028,6 +2039,7 @@ async function boot() {
             }
           }
         }
+      }
     }
 
     if (input.pressed("KeyR")) {
@@ -2130,8 +2142,8 @@ async function boot() {
         forest?.fireGummy(rayOrigin, aim, player.velocity);
       }
     } else if (tool === "ball") {
-      // ball tool: one press throws (launch a bouncing ball from the hand) OR
-      // takes the ball back from a waiting dog / the ground — fetchBall decides.
+      // ball tool: every press throws another bouncing ball (infinite supply).
+      // Pick thrown balls back up with E (see KeyE handler above).
       if (input.firePressed && !input.suspended && fireCooldown <= 0 && fetchBall) {
         chase.interactionDir(aim, player);
         chase.viewOrigin(rayOrigin, player);

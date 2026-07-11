@@ -33,6 +33,7 @@ const SNAP_HZ = 8;
 // Once a roller is this slow, less than ~0.45 m remains on a flat green.
 // Hand the camera back early so the golfer is framed before the next walk.
 const BALL_CAM_RETURN_SPEED = 0.7;
+const BALL_CAM_MIN_FOLLOW_TIME = 0.45; // keep even a soft tap-in on camera briefly
 
 export type GolfNetMsg =
   | { k: "swing"; d: number[] }
@@ -106,6 +107,7 @@ export class GolfGame {
   #snapAt = 0;
   #camEye = new THREE.Vector3();
   #ballCamActive = false;
+  #ballCamAge = 0;
   #wantCamYaw: number | null = null;
   #quitArmedAt = -Infinity;
   #summaryUntil = 0;
@@ -707,6 +709,7 @@ export class GolfGame {
     this.#audio.thwack(hit.power, this.club.id === "putter");
     this.#phase = "flight";
     this.#ballCamActive = true;
+    this.#ballCamAge = 0;
     this.#camEye.copy(this.#ball.pos).addScaledVector(this.#tmp.set(Math.sin(hit.yaw), 0, Math.cos(hit.yaw)), -3.5);
     this.#camEye.y = this.#ball.pos.y + 2.2;
     this.#ui.setScore(this.#strokes, this.#totalDelta, this.#holesDone);
@@ -718,12 +721,14 @@ export class GolfGame {
   /** Flight camera: true = golf owns the camera this frame (main skips chase). */
   updateBallCam(dt: number, camera: THREE.PerspectiveCamera): boolean {
     if (!this.active || this.#phase !== "flight" || !this.#ballCamActive) return false;
+    this.#ballCamAge += Math.min(dt, 0.1);
 
     // The ball can creep indefinitely on a slope, so camera ownership cannot
     // wait for the simulation's exact rest event. Release once a ground roll is
     // nearly spent, and latch the release for this shot so a downhill nudge
     // cannot yank the view away from the player again.
     const nearlyStopped =
+      this.#ballCamAge >= BALL_CAM_MIN_FOLLOW_TIME &&
       this.#ball.phase === "roll" &&
       this.#ball.vel.lengthSq() <= BALL_CAM_RETURN_SPEED * BALL_CAM_RETURN_SPEED;
     if (!this.#ball.moving || nearlyStopped) {

@@ -146,7 +146,25 @@ const PAGE_HELPERS = `(() => {
   const T = window.__sf.THREE;
   const tmp = new T.Vector3();
   window.__fp = {
-    playerBall() { return window.__sf.scene.getObjectByName('player_tennis_ball'); },
+    // Prefer the free ball a player-claimed dog is interacting with; else any
+    // visible thrown ball (infinite throws leave several in the scene).
+    playerBall() {
+      const balls = [];
+      window.__sf.scene.traverse((o) => {
+        if (o.name === 'player_tennis_ball' && o.visible) balls.push(o);
+      });
+      if (!balls.length) return null;
+      const dog = window.__sf.coronaHeights.dogs.find((d) => d.controller === 'player');
+      if (dog) {
+        let best = balls[0], bestD = Infinity;
+        for (const b of balls) {
+          const dd = Math.hypot(b.position.x - dog.x, b.position.z - dog.z);
+          if (dd < bestD) { bestD = dd; best = b; }
+        }
+        return best;
+      }
+      return balls[balls.length - 1];
+    },
     snap() {
       const sf = window.__sf, ch = sf.coronaHeights, fb = sf.fetchBall;
       const ball = window.__fp.playerBall();
@@ -161,6 +179,10 @@ const PAGE_HELPERS = `(() => {
       return { ball: bpos, dogs, player: { x: p.x, y: p.y, z: p.z },
         verb: fb.verb(), wantsTake: fb.wantsTake(), throwProg: fb.throwProgress(),
         groundAtBall: bpos ? sf.map.groundTop(bpos.x, bpos.z) : 0, activityVis: ch.activity.visible };
+    },
+    // E-to-pick-up (replaces click-to-take)
+    pickupBall() {
+      return window.__sf.fetchBall.tryPickup(window.__sf.player.position);
     },
     // run frames with a live-world heartbeat; stop early on a named condition
     run(dt, maxFrames, cond) {
@@ -491,14 +513,14 @@ async function main() {
       a1.minDogBall < 0.6 && a1.carryFrames >= 8 && cyc1.tookReady,
     `airborne ${a1.maxAir} frames, horiz travel ${a1.maxHoriz?.toFixed(1)} m, chase ${a1.chaseFrames} frames (dog→ball ${a1.maxDogBall?.toFixed(1)}→${a1.minDogBall?.toFixed(2)} m), carry ${a1.carryFrames} frames, take-ready ${cyc1.tookReady}`);
 
-  // assertion 5: verb flips to "take" while the dog waits within reach
-  let verbAtWait = "(never reached)";
+  // assertion 5: wantsTake is true while the dog waits within reach (pickup is E)
+  let takeReady = false;
   if (cyc1.tookReady) {
-    verbAtWait = await ev(c, `window.__sf.fetchBall.verb()`);
+    takeReady = await ev(c, `window.__sf.fetchBall.wantsTake()`);
   }
-  push("verb-flips-to-take",
-    /take/i.test(verbAtWait),
-    `verb while dog waits in reach = "${verbAtWait}" (expected a TAKE verb)`);
+  push("wants-take-while-dog-waits",
+    takeReady,
+    `wantsTake while dog waits in reach = ${takeReady} (expected true; pickup is E)`);
 
   // mid-fetch chase screenshot: drive a fresh throw and stop mid-chase
   {
@@ -510,15 +532,15 @@ async function main() {
     catch (e) { console.log("[shot-fail] mid_fetch_chase", String(e).slice(0, 120)); }
     // let this stray throw resolve back to take-ready so state is clean
     for (let a = 0; a < 6; a++) { const rr = await ev(c, `window.__fp.run(${DT}, 260, 'takeReady')`); if (rr.frozen) { await waitWorldLive(c, "midchase drain"); continue; } if (rr.hit || rr.samples.length < 260) break; }
-    // take it back (this counts as a fetch on whichever dog is claimed)
+    // take it back with E (this counts as a fetch on whichever dog is claimed)
     const wt = await ev(c, `window.__sf.fetchBall.wantsTake()`);
-    if (wt) { await ev(c, `window.__fp.clickBall(${PX}, ${PZ}, 388, 2696, 0.28)`); await settle(c, 3); }
+    if (wt) { await ev(c, `window.__fp.pickupBall()`); await settle(c, 3); }
   }
 
   // Take cycle 1's ball back if still waiting (idempotent guard)
   {
     const wt = await ev(c, `window.__sf.fetchBall.wantsTake()`);
-    if (wt) { await ev(c, `window.__fp.clickBall(${PX}, ${PZ}, 388, 2696, 0.28)`); await settle(c, 3); }
+    if (wt) { await ev(c, `window.__fp.pickupBall()`); await settle(c, 3); }
   }
   const fetchCountAfter1 = await ev(c, `(()=>{const ds=window.__sf.coronaHeights.dogs;return Math.max(...ds.map(d=>d.playerFetchCount));})()`);
   console.log(`[probe] max playerFetchCount after cycle 1 takes: ${fetchCountAfter1}`);
@@ -527,7 +549,7 @@ async function main() {
   let adopted = false, adoptDetail = "", petIndex = -1;
   for (let cyc = 0; cyc < 4 && !adopted; cyc++) {
     const r = await throwAndReturn(`cycle${cyc + 2}`);
-    if (r.tookReady) { await ev(c, `window.__fp.clickBall(${PX}, ${PZ}, 388, 2696, 0.28)`); await settle(c, 3); }
+    if (r.tookReady) { await ev(c, `window.__fp.pickupBall()`); await settle(c, 3); }
     const petInfo = await ev(c, `(()=>{const ds=window.__sf.coronaHeights.dogs;const i=ds.findIndex(d=>d.controller==='pet');return {i, counts: ds.map(d=>d.playerFetchCount)};})()`);
     console.log(`[probe] after extra cycle ${cyc + 1}: pet index ${petInfo.i}, counts [${petInfo.counts.join(",")}]`);
     if (petInfo.i >= 0) { adopted = true; petIndex = petInfo.i; adoptDetail = `dog[${petInfo.i}] controller=pet, fetch counts [${petInfo.counts.join(",")}]`; }

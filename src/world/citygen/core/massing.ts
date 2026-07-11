@@ -30,8 +30,10 @@ export function massBuilding(spec: BuildingSpec, arch: ArchetypeSpec, decorate: 
   // grade = highest ground under the footprint; clamp into (base, top) so a lot
   // never loses its whole façade to a bad sample. Windows sit above this line.
   const grade = Math.min(Math.max(spec.grade ?? base, base), top - 1.5);
-  const height = Math.max(0.1, top - base);
-  const floors = Math.max(1, Math.round(height / arch.floorH));
+  // Visible storeys begin at live grade, matching the doorway sill, interiors
+  // and chunk-LOD window grid. Counting from the buried low foundation shifted
+  // upper facade bands down across raised doors on hillsides.
+  const floors = Math.max(1, Math.round(Math.max(0.1, top - grade) / arch.floorH));
   const streetI = streetEdgeIndex(poly, spec.streetEdge);
 
   const out = new PanelBuilder();

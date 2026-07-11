@@ -160,12 +160,18 @@ for (const spec of samples) {
 // citygen.doorleaf + citygen.doorback are hidden when the hinged leaf takes over.
 let apertureCases = 0;
 const apertureOffenders = [];
-for (const archetype of archetypes) for (const length of [4.5, 6, 9, 16]) {
+const apertureGrades = [
+  { top: 10, grade: 0 },
+  { top: 12, grade: 3.6 },
+  { top: 16, grade: 7.2 },
+  { top: 30, grade: 12 },
+];
+for (const archetype of archetypes) for (const length of [4.5, 6, 9, 16]) for (const elevation of apertureGrades) {
   const spec = {
     i: 0, id: 900000 + apertureCases, seed: 1200 + apertureCases,
     poly: [[0, 0], [length, 0], [length, 9], [0, 9]],
     streetEdge: 0, doorAllowed: true,
-    base: 0, grade: 0, top: 10, archetype,
+    base: 0, grade: elevation.grade, top: elevation.top, archetype,
   };
   const mass = massBuilding(spec, specFor(archetype), decoratorFor(archetype));
   const dm = doorMetrics(length, spec.base, spec.top, spec.grade);
@@ -188,8 +194,8 @@ for (const archetype of archetypes) for (const length of [4.5, 6, 9, 16]) {
     }
   }
   if (offenders.size) {
-    apertureOffenders.push({ archetype, length, materials: [...offenders].sort() });
-    fail(`${archetype} ${length}m: permanent doorway geometry ${[...offenders].sort().join(",")}`);
+    apertureOffenders.push({ archetype, length, grade: elevation.grade, top: elevation.top, materials: [...offenders].sort() });
+    fail(`${archetype} ${length}m grade ${elevation.grade}: permanent doorway geometry ${[...offenders].sort().join(",")}`);
   }
   apertureCases++;
 }

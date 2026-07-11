@@ -49,7 +49,10 @@ const VIEWS = [
   // count-in nod moment
   { name: "countin", focus: "handpan", dist: 2.6, lateral: 0.4, up: 0.7, targetUp: 0.45, seekBeat: 129, afterSeconds: 17.5 },
   // interlude: flute lowered to the lap while the uke fingerpicks (bars 17-20)
-  { name: "interlude", focus: "group", dist: 5.4, lateral: -0.8, up: 1.3, targetUp: 0.9, seekBeat: 68.0 }
+  { name: "interlude", focus: "group", dist: 5.4, lateral: -0.8, up: 1.3, targetUp: 0.9, seekBeat: 68.0 },
+  // drone shot from SOUTH of the trio looking NORTH over the summit crag toward
+  // the Golden Gate horizon — verifies the lowered crag no longer walls it off
+  { name: "gg_background", focus: "group", dist: -2, lateral: 8, up: 4.5, targetUp: 3.2, seekBeat: 30.0 }
 ];
 
 async function isFile(p) { try { return existsSync(p); } catch { return false; } }

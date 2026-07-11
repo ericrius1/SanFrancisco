@@ -43,8 +43,8 @@ export const SUMMIT_PLATFORM = { x: 412, z: 2760, rx: 16, rz: 12 } as const;
  * the platform, a second mass NW along the same strike, low spurs east and
  * southwest. All positions were checked against CORONA_TRAILS for clearance. */
 export const SUMMIT_CRAGS: readonly CragSpec[] = [
-  { x: 412, z: 2748, yaw: -0.52, length: 7.4, height: 4.3, beds: 9, seed: 101, flatTop: true },
-  { x: 403.5, z: 2740.5, yaw: -0.62, length: 5.2, height: 3.1, beds: 7, seed: 102, girth: 1.3 },
+  { x: 412, z: 2748, yaw: -0.52, length: 6.0, height: 2.5, beds: 6, seed: 101, flatTop: true }, // lowered so the summit 360 clears it to the Golden Gate
+  { x: 403.5, z: 2740.5, yaw: -0.62, length: 5.0, height: 2.3, beds: 6, seed: 102, girth: 1.3 },
   { x: 432, z: 2764, yaw: 0.92, length: 5.4, height: 2.6, beds: 6, seed: 103, girth: 1.15 },
   { x: 396, z: 2769, yaw: -0.74, length: 4.4, height: 2.1, beds: 5, seed: 104 },
   // Sittable perch blocks on the platform's south rim, facing downtown.

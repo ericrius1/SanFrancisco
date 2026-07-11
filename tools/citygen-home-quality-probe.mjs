@@ -668,20 +668,20 @@ async function verifyDistrict(cdp, district) {
   ];
   addCheck(checks, "dynamic leaf has slab, panels, and hardware", early.pivot.found && expectedParts.every((name) => early.pivot.childNames.includes(name)) && early.pivot.panelCount >= 2 && early.pivot.hardwareCount >= 3, early.pivot);
 
-  let beforePassable = early;
-  let firstPassable = early;
+  const mid = await waitForState(cdp, door, id, (state) => state.phase === "opening" && state.swing >= 0.72, { frames: 80, dt: 0.012 });
+  addCheck(checks, "mid-swing remains solid until the capsule has visual clearance", mid.swing >= 0.72 && mid.swing < 1.18 && !mid.passable && mid.gap.solid && Math.abs(mid.pivot.userSwing - mid.swing) < 0.02, mid);
+  await evaluate(cdp, `window.__homeFrameExterior(${doorJson(door)})`);
+  await renderOnly(cdp);
+  screenshots.push(await screenshot(cdp, `${district.label}-door-mid.jpg`));
+
+  let beforePassable = mid;
+  let firstPassable = mid;
   for (let i = 0; i < 80 && !firstPassable.passable; i++) {
     beforePassable = firstPassable;
     await tick(cdp, 0.01);
     firstPassable = await stateOf(cdp, door, id);
   }
-  addCheck(checks, "collider gap activates only after a visibly ajar swing", !beforePassable.passable && beforePassable.swing > 0 && firstPassable.passable && firstPassable.swing >= 0.45 && firstPassable.gap.clear, { beforePassable, firstPassable });
-
-  const mid = await waitForState(cdp, door, id, (state) => state.phase === "opening" && state.swing >= 0.9, { frames: 80, dt: 0.012 });
-  addCheck(checks, "mid-swing angle differs from closed and full-open", mid.swing >= 0.9 && mid.swing < 1.72 && Math.abs(mid.pivot.userSwing - mid.swing) < 0.02, mid);
-  await evaluate(cdp, `window.__homeFrameExterior(${doorJson(door)})`);
-  await renderOnly(cdp);
-  screenshots.push(await screenshot(cdp, `${district.label}-door-mid.jpg`));
+  addCheck(checks, "collider gap activates only once the leaf clears the player capsule", !beforePassable.passable && beforePassable.swing > 1.1 && firstPassable.passable && firstPassable.swing >= 1.18 && firstPassable.gap.clear, { beforePassable, firstPassable });
 
   const opened = await waitForState(cdp, door, id, (state) => state.phase === "open", { frames: 100, dt: 0.02 });
   addCheck(checks, "fully open door is passable at about 100 degrees", opened.phase === "open" && opened.passable && opened.swing > 1.68 && opened.gap.clear, opened);
@@ -723,6 +723,12 @@ async function verifyDistrict(cdp, district) {
   await placeAtDoor(cdp, door, -2.2);
   await waitForState(cdp, door, id, (state) => state.phase === "open", { frames: 120, dt: 0.02 });
   await pressE(cdp, 0.02);
+  let closingSolid = await stateOf(cdp, door, id);
+  for (let i = 0; i < 100 && closingSolid.passable; i++) {
+    await tick(cdp, 0.01);
+    closingSolid = await stateOf(cdp, door, id);
+  }
+  addCheck(checks, "closing restores collision while the live leaf still covers the narrow gap", closingSolid.phase === "closing" && !closingSolid.passable && closingSolid.dynamicLeaf && closingSolid.swing <= 1.24 && closingSolid.gap.solid, closingSolid);
   const reclosed = await waitForState(cdp, door, id, (state) => state.phase === "closed", { frames: 140, dt: 0.02 });
   addCheck(checks, "settled close restores backing, baked leaf, and solid collider", reclosed.phase === "closed" && !reclosed.passable && !reclosed.pivot.found && reclosed.backing.visible && reclosed.bakedLeaf.visible && reclosed.gap.solid, reclosed);
 
@@ -733,7 +739,7 @@ async function verifyDistrict(cdp, district) {
     exteriorFrame,
     interiorFrame,
     diagnostics,
-    states: { closed, early, firstPassable, mid, opened, blockedClose, closing, reversed, reclosed },
+    states: { closed, early, mid, firstPassable, opened, blockedClose, closing, reversed, closingSolid, reclosed },
     walks: { blockedWalk, walkIn, walkOut },
     checks,
     screenshots,

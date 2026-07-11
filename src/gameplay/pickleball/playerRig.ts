@@ -94,7 +94,10 @@ export class PickleballPlayerRig {
 
     this.paddleAnchor.getWorldQuaternion(_worldQuaternion);
     courtRoot.getWorldQuaternion(_courtQuaternion).invert();
-    outNormal.set(0, 0, 1).applyQuaternion(_worldQuaternion).applyQuaternion(_courtQuaternion).normalize();
+    // The rig's visual forward is local -Z. Side 0 rotates the whole athlete by
+    // PI, so this resolves toward +Z; side 1 resolves toward -Z — in both cases
+    // the paddle face points across the net rather than behind the player.
+    outNormal.set(0, 0, -1).applyQuaternion(_worldQuaternion).applyQuaternion(_courtQuaternion).normalize();
   }
 
   worldPosition(out: THREE.Vector3): THREE.Vector3 {
@@ -234,4 +237,3 @@ export class PickleballPlayerRig {
     shin.add(foot);
   }
 }
-

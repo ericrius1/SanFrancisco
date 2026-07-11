@@ -77,8 +77,10 @@ export class PickleballCourtView {
     addLine("pickleball-line-right", C.lineWidth, C.length, C.halfWidth - C.lineWidth / 2, 0);
     addLine("pickleball-line-near-baseline", C.width, C.lineWidth, 0, -C.halfLength + C.lineWidth / 2);
     addLine("pickleball-line-far-baseline", C.width, C.lineWidth, 0, C.halfLength - C.lineWidth / 2);
-    addLine("pickleball-line-near-kitchen", C.width, C.lineWidth, 0, -C.nonVolleyLine);
-    addLine("pickleball-line-far-kitchen", C.width, C.lineWidth, 0, C.nonVolleyLine);
+    // The seven-foot NVZ measurement lands on the line's outside edge.
+    const kitchenLineCentre = C.nonVolleyLine - C.lineWidth / 2;
+    addLine("pickleball-line-near-kitchen", C.width, C.lineWidth, 0, -kitchenLineCentre);
+    addLine("pickleball-line-far-kitchen", C.width, C.lineWidth, 0, kitchenLineCentre);
 
     const centreLength = C.halfLength - C.nonVolleyLine;
     addLine(
@@ -115,9 +117,12 @@ export class PickleballCourtView {
     });
     this.#owned.push(postMaterial, tapeMaterial, netMaterial);
 
-    const postGeometry = new THREE.CylinderGeometry(0.045, 0.052, C.netSidelineHeight + 0.12, 12);
+    const postRadius = 0.035; // below the 3-in / 76.2-mm maximum diameter
+    const postGeometry = new THREE.CylinderGeometry(postRadius, postRadius, C.netSidelineHeight + 0.12, 12);
     this.#owned.push(postGeometry);
-    for (const x of [-C.netPostX, C.netPostX]) {
+    // C.netPostX is the half inside-to-inside distance; move the post centres
+    // outward by their radius so the clear gap remains exactly 22 ft.
+    for (const x of [-(C.netPostX + postRadius), C.netPostX + postRadius]) {
       const post = new THREE.Mesh(postGeometry, postMaterial);
       post.name = "pickleball-net-post";
       post.position.set(x, (C.netSidelineHeight + 0.12) / 2, 0);
@@ -154,4 +159,3 @@ export class PickleballCourtView {
     }
   }
 }
-

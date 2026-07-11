@@ -1867,6 +1867,7 @@ export class CoronaHeightsPark {
     const sprint = dogSprint(dog.style);
     const gait = d > 8 ? sprint : d > 2.5 ? lerp(trot, sprint, clamp01((d - 2.5) / 5.5)) : trot;
     moveDog(this.#map, dog, targetX, targetZ, gait, NO_OWNERS, dt, 0);
+    driveDogJaw(dog, 0, dt); // adoption released the ball with the jaw wide open — let it ease shut
     if (dog.speed < 0.4) {
       // settled at heel: a contented idle wag
       dog.tail.rotation.y = Math.sin(elapsed * 6 + dog.style.coat) * 0.7;

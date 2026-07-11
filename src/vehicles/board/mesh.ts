@@ -2,6 +2,7 @@ import * as THREE from "three/webgpu";
 import { cos, float, floor, fract, length, mix, sin, smoothstep, texture, uniform, uv, vec2, vec3 } from "three/tsl";
 import { LIGHT_SCALE } from "../../config";
 import { lightAnchor, type LightAnchorSpec } from "../../player/lightPool";
+import { applyMaterialPolicy, clampCoverage, fresnelCoverage, tagTransparency } from "../../render/transparency";
 import {
   boardGlowHex,
   boardPlumeHex,
@@ -12,7 +13,7 @@ import {
   type BoardShape
 } from "./config";
 import { paintBoardSurface } from "./surfaceTexture";
-import { HALO_TUNING } from "./tuning";
+import { BOARD_EFFECT_TUNING, HALO_TUNING } from "./tuning";
 
 /**
  * Hoverboard, front is local -Z. The deck is a real silhouette now — a closed
@@ -273,6 +274,7 @@ type PlumeUniforms = {
   uPlumeTime: ReturnType<typeof uniform>;
   uPlumeStrength: ReturnType<typeof uniform>;
   uPlumeShimmer: ReturnType<typeof uniform>;
+  uPlumeFresnelPower: ReturnType<typeof uniform>;
   uPlumeColor: ReturnType<typeof uniform>; // THREE.Color, raw config hex (LIGHT_SCALE applied in-shader)
 };
 
@@ -286,14 +288,15 @@ type PlumeUniforms = {
  */
 function buildPlumeMaterial(u: PlumeUniforms) {
   const material = new THREE.MeshBasicNodeMaterial({
-    side: THREE.DoubleSide,
-    transparent: true,
-    depthWrite: false,
-    blending: THREE.AdditiveBlending
+    // Only the exterior wall contributes. Double-sided additive shells draw
+    // both cylinder walls and roughly double their energy through the rider.
+    side: THREE.FrontSide
   });
+  applyMaterialPolicy(material, "additiveWorld");
   const time = u.uPlumeTime as unknown as ReturnType<typeof float>;
   const strength = u.uPlumeStrength as unknown as ReturnType<typeof float>;
   const shimmer = u.uPlumeShimmer as unknown as ReturnType<typeof float>;
+  const fresnelPower = u.uPlumeFresnelPower as unknown as ReturnType<typeof float>;
   const tint = u.uPlumeColor as unknown as ReturnType<typeof vec3>;
   const vuv = uv();
   // hot near-white core where the plume meets the pod, config color below
@@ -305,7 +308,10 @@ function buildPlumeMaterial(u: PlumeUniforms) {
   const bands = sin(vuv.y.mul(14).sub(time.mul(5)).add(wobble)).mul(0.5).add(0.5);
   const banded = mix(float(1), bands, float(0.3).add(shimmer.mul(0.55)));
   const fade = smoothstep(0.0, 0.45, vuv.y); // dissolves toward the tip
-  material.opacityNode = banded.mul(fade).mul(strength);
+  // Suppress face-on coverage while retaining a small core; clamping prevents
+  // boost + live intensity tuning from feeding >1 coverage into the blend.
+  const fresnel = fresnelCoverage(fresnelPower, 0.08);
+  material.opacityNode = clampCoverage(banded.mul(fade).mul(strength).mul(fresnel));
   return material;
 }
 
@@ -338,8 +344,7 @@ export type BoardAnim = {
   spinners: { obj: THREE.Object3D; axis: "y" | "z"; rate: number }[];
   pulseMat: THREE.MeshBasicMaterial;
   pulseBase: THREE.Color; // LIGHT_SCALE already applied
-  lightSpec: LightAnchorSpec;
-  lightBase: number;
+  lights: { spec: LightAnchorSpec; baseIntensity: number }[];
   surface: BoardSurfaceState;
   halo?: BoardHalo; // only halo-fin boards carry a comet
   plume: BoardPlume;
@@ -461,17 +466,12 @@ export function buildBoardMesh(config?: BoardConfig): THREE.Group {
     uPlumeTime: uniform(0),
     uPlumeStrength: uniform(0),
     uPlumeShimmer: uniform(cfg.plumeShimmer / 100),
+    uPlumeFresnelPower: uniform(BOARD_EFFECT_TUNING.values.plumeFresnelPower),
     uPlumeColor: uniform(new THREE.Color(plumeHexNow))
   };
   const plumeMat = mat(buildPlumeMaterial(plumeUniforms)); // ONE material, both pods
-  const moteMat = mat(
-    new THREE.MeshBasicMaterial({
-      color: new THREE.Color(plumeHexNow).multiplyScalar(LIGHT_SCALE),
-      transparent: true,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending
-    })
-  );
+  const moteMat = mat(new THREE.MeshBasicMaterial({ color: new THREE.Color(plumeHexNow).multiplyScalar(LIGHT_SCALE) }));
+  applyMaterialPolicy(moteMat, "additiveWorld");
   const plumeCones: THREE.Mesh[] = [];
   const plumeMotes: BoardPlume["motes"] = [];
   const plumeLen0 = PLUME_MIN_LEN + (cfg.plumeReach / 100) * (PLUME_MAX_LEN - PLUME_MIN_LEN);
@@ -499,6 +499,7 @@ export function buildBoardMesh(config?: BoardConfig): THREE.Group {
     plumeRoot.position.set(0, y - 0.135, pz);
     const cone = new THREE.Mesh(plumeGeo, plumeMat);
     cone.scale.y = plumeLen0;
+    tagTransparency(cone, { profile: "additiveWorld" });
     plumeRoot.add(cone);
     plumeCones.push(cone);
     for (let k = 0; k < 3; k++) {
@@ -506,6 +507,7 @@ export function buildBoardMesh(config?: BoardConfig): THREE.Group {
       const phase = (pz < 0 ? 0 : Math.PI) + k * 2.1;
       mote.position.set(Math.cos(phase) * 0.05, -((k + 0.5) / 3) * plumeLen0, Math.sin(phase) * 0.05);
       mote.visible = cfg.plumeSparks;
+      tagTransparency(mote, { profile: "additiveWorld" });
       plumeRoot.add(mote);
       plumeMotes.push({ mesh: mote, phase });
     }
@@ -588,12 +590,12 @@ export function buildBoardMesh(config?: BoardConfig): THREE.Group {
     const orbs: THREE.Mesh[] = [];
     const orbMats: THREE.MeshBasicMaterial[] = [];
     for (let i = 0; i < MAX_HALO_ORBS; i++) {
-      const orbMat = mat(
-        new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, blending: THREE.AdditiveBlending })
-      );
+      const orbMat = mat(new THREE.MeshBasicMaterial());
+      applyMaterialPolicy(orbMat, "additiveWorld");
       const cometOrb = new THREE.Mesh(cometOrbGeo, orbMat);
       cometOrb.scale.setScalar(HALO_HEAD_RADIUS);
       cometOrb.position.set(HALO_RADIUS, 0, 0);
+      tagTransparency(cometOrb, { profile: "additiveWorld" });
       comet.add(cometOrb);
       orbs.push(cometOrb);
       orbMats.push(orbMat);
@@ -604,11 +606,17 @@ export function buildBoardMesh(config?: BoardConfig): THREE.Group {
 
   // --- light (shared LightPool anchors — never real Light objects here) ---
   // primary: the glow pool around the deck that lifts the rider out of the dark;
-  // its spec object is live — animateBoard breathes the intensity with the plate
-  const lightSpec: LightAnchorSpec = { color: glowColor, intensity: 10, distance: 8 };
-  g.add(lightAnchor(lightSpec, 0, 0.55, 0));
+  // both spec objects stay live so animateBoard can scale the complete light rig
+  const initialLightGain = BOARD_EFFECT_TUNING.values.boardLightIntensity;
+  const deckLightSpec: LightAnchorSpec = { color: glowColor, intensity: 10 * initialLightGain, distance: 8 };
+  g.add(lightAnchor(deckLightSpec, 0, 0.55, 0));
   // secondary chest-height fill so the rider's vertical faces aren't black at night
-  g.add(lightAnchor({ color: glowColor, intensity: 5, distance: 6 }, 0.75, 1.5, -0.65));
+  const riderLightSpec: LightAnchorSpec = { color: glowColor, intensity: 5 * initialLightGain, distance: 6 };
+  g.add(lightAnchor(riderLightSpec, 0.75, 1.5, -0.65));
+  const lights = [
+    { spec: deckLightSpec, baseIntensity: 10 },
+    { spec: riderLightSpec, baseIntensity: 5 }
+  ];
 
   const surfaceState: BoardSurfaceState = {
     canvas: surfaceCanvas,
@@ -626,7 +634,7 @@ export function buildBoardMesh(config?: BoardConfig): THREE.Group {
   };
   applyFxWeights(surfaceState);
   surfaceState.uPhase.value = surfaceState.phase;
-  const anim: BoardAnim = { spinners, pulseMat, pulseBase, lightSpec, lightBase: 10, surface: surfaceState, halo, plume };
+  const anim: BoardAnim = { spinners, pulseMat, pulseBase, lights, surface: surfaceState, halo, plume };
   g.userData.boardAnim = anim;
   g.userData.boardSurface = surfaceState;
   g.userData.dispose = () => {
@@ -702,7 +710,9 @@ export function animateBoard(board: THREE.Group, dt: number, t: number, speed: n
 
   const breathe = 0.82 + 0.18 * Math.sin(t * 2.4) + 0.06 * Math.sin(t * 11) * norm;
   anim.pulseMat.color.copy(anim.pulseBase).multiplyScalar(breathe);
-  anim.lightSpec.intensity = anim.lightBase * (0.88 + 0.24 * (breathe - 0.82));
+  const lightPulse = 0.88 + 0.24 * (breathe - 0.82);
+  const lightGain = BOARD_EFFECT_TUNING.values.boardLightIntensity;
+  for (const light of anim.lights) light.spec.intensity = light.baseIntensity * lightGain * lightPulse;
 
   // --- thruster plumes: uniforms + transforms only, shared by both pods ---
   const plume = anim.plume;
@@ -710,7 +720,9 @@ export function animateBoard(board: THREE.Group, dt: number, t: number, speed: n
   if (!surface.reducedMotion) {
     plume.uPlumeTime.value = (plume.uPlumeTime.value as number) + step * (0.8 + plume.shimmer * 2.2 + norm * 0.8);
   }
-  plume.uPlumeStrength.value = (0.28 + plume.reach * 0.22) * (boosting ? 1.4 : 1);
+  const effects = BOARD_EFFECT_TUNING.values;
+  plume.uPlumeFresnelPower.value = effects.plumeFresnelPower;
+  plume.uPlumeStrength.value = (0.28 + plume.reach * 0.22) * effects.plumeIntensity * (boosting ? 1.4 : 1);
   const targetLen =
     PLUME_MIN_LEN + plume.reach * (PLUME_MAX_LEN - PLUME_MIN_LEN) + norm * 0.08 + (boosting ? 0.05 : 0);
   plume.length += (targetLen - plume.length) * Math.min(1, dt * 6);

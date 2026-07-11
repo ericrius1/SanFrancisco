@@ -135,7 +135,7 @@ export function partition(area: Rect, target: number, r: Rng, entryVista?: Rect 
         // Very short room spans can clamp the portal away from the desired axis,
         // leaving a thin jamb inside the capsule's view. In that rare case a
         // fully open shared edge is cleaner than a visibly off-centre doorway.
-        if (clearL > preferred - 0.38 || clearR < preferred + 0.38)
+        if (clearL > preferred - 0.42 || clearR < preferred + 0.42)
           dw = { c: (xs[c] + xs[c + 1]) / 2, w: xs[c + 1] - xs[c] };
       }
       walls.push({ axis: "x", line: zs[rr], s0: xs[c], s1: xs[c + 1], door: dw.c, doorW: dw.w,

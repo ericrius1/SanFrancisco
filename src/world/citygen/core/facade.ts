@@ -126,8 +126,8 @@ export const defaultFlatWall: FacadeDecorator = (e, out) => {
 /** even floor bands between base and top */
 export function floorBands(e: FacadeEdge): { y0: number; y1: number; i: number }[] {
   const out: { y0: number; y1: number; i: number }[] = [];
-  const h = (e.top - e.base) / e.floors;
-  for (let i = 0; i < e.floors; i++) out.push({ y0: e.base + i * h, y1: e.base + (i + 1) * h, i });
+  const h = (e.top - e.grade) / e.floors;
+  for (let i = 0; i < e.floors; i++) out.push({ y0: e.grade + i * h, y1: e.grade + (i + 1) * h, i });
   return out;
 }
 

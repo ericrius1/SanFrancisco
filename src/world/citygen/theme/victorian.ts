@@ -167,7 +167,7 @@ export const victorianFacade: FacadeDecorator = (e, out, rng) => {
   // isn't backed by a solid quad; the upper band spans the whole edge.
   const g0 = gp(e, 0), g1 = gp(e, 1);
   wallWithDoorway(out, e, baseMat, e.base, groundTopY, n3);
-  out.quad(wall, [g0[0], groundTopY, g0[2]], [g1[0], groundTopY, g1[2]], [g1[0], e.top, g1[2]], [g0[0], e.top, g0[2]], n3);
+  wallWithDoorway(out, e, wall, groundTopY, e.top, n3);
 
   // corner boards (vertical trim at the façade ends) on the street face
   if (e.isStreet) {

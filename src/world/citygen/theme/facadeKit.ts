@@ -5,7 +5,7 @@
 import {
   type FacadeEdge, type Vec3, PanelBuilder, pointOnWall, floorBands, bayCount, aboveGrade,
 } from "../core/facade";
-import { doorMetrics, doorEligible } from "../core/collider";
+import { doorMetrics, doorEligible, STOOP_MAX_RISE } from "../core/collider";
 
 // ---- vector helpers ---------------------------------------------------------
 export const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -42,7 +42,10 @@ export function wallWithDoorway(out: PanelBuilder, e: FacadeEdge, mat: string, y
   const fR = Math.min(1, (dCenter + halfW) / e.length);   // opening right fraction
   const holeBase = Math.max(yBottom, sill);               // buried foundation skirt stays solid
   const holeTop = Math.min(yTop, openTop);                // walk-through clearance above the sill
-  if (holeTop - holeBase < 0.6 || fR - fL < 0.001) { seg(0, 1, yBottom, yTop); return; }
+  // Even a thin overlap matters when grade lifts the opening across a storey
+  // boundary. Treating <0.6 m as solid left horizontal wall bands in the live
+  // aperture on hillsides.
+  if (holeTop - holeBase < 0.001 || fR - fL < 0.001) { seg(0, 1, yBottom, yTop); return; }
   if (holeBase - yBottom > 0.001) seg(fL, fR, yBottom, holeBase); // skirt under the opening
   if (fL > 0.001) seg(0, fL, yBottom, yTop);              // left jamb wall
   if (fR < 0.999) seg(fR, 1, yBottom, yTop);              // right jamb wall
@@ -65,7 +68,7 @@ export function frontStoop(out: PanelBuilder, e: FacadeEdge, mat: string): void 
   const { tc, halfW, sill } = doorMetrics(e.length, e.base, e.top, e.grade);
   const fg = e.frontGround ?? e.base;
   const rise = sill - fg;
-  if (rise <= 0.25 || rise > 3.0) return; // MATCH core/collider appendStoop's gate
+  if (rise <= 0.25 || rise > STOOP_MAX_RISE) return; // MATCH core/collider appendStoop's gate
   const n: Vec3 = [e.normal[0], 0, e.normal[1]];
   const along = unit(sub(gp(e, 1), gp(e, 0)));
   const c = gp(e, tc);
@@ -109,6 +112,27 @@ export function faceWindow(out: PanelBuilder, a: Vec3, b: Vec3, y0: number, y1: 
   // sill + crown (a chunkier keystone crown when arched)
   out.box(m.trim, off([cA[0], y0 - 0.05, cA[2]], 0.08), [W / 2 + 0.12, 0.05, 0.11], along, UP, n, true);
   out.box(m.trim, off([cA[0], y1 + 0.10, cA[2]], 0.10), [W / 2 + (arched ? 0.05 : 0.15), arched ? 0.14 : 0.08, 0.13], along, UP, n, true);
+}
+
+/** Window authored on an edge, split around the live doorway whenever its
+ * vertical span intersects the opening. Direct callers and windowGrid share
+ * this so a short bay cannot leave glass/trim in a raised entrance. */
+export function faceWindowAvoidDoor(
+  out: PanelBuilder, e: FacadeEdge, t0: number, t1: number, y0: number, y1: number,
+  n: Vec3, m: WinMats, arched = false,
+): void {
+  if (!doorEligible(e)) { faceWindow(out, gp(e, t0), gp(e, t1), y0, y1, n, m, arched); return; }
+  const dm = doorMetrics(e.length, e.base, e.top, e.grade);
+  if (y1 <= dm.sill + 0.02 || y0 >= dm.openTop - 0.02) {
+    faceWindow(out, gp(e, t0), gp(e, t1), y0, y1, n, m, arched);
+    return;
+  }
+  const pad = 0.12 / e.length;
+  const door0 = dm.tc - dm.halfW / e.length - pad;
+  const door1 = dm.tc + dm.halfW / e.length + pad;
+  if (t1 <= door0 || t0 >= door1) { faceWindow(out, gp(e, t0), gp(e, t1), y0, y1, n, m, arched); return; }
+  if (door0 > t0) faceWindow(out, gp(e, t0), gp(e, Math.min(t1, door0)), y0, y1, n, m, arched);
+  if (door1 < t1) faceWindow(out, gp(e, Math.max(t0, door1)), gp(e, t1), y0, y1, n, m, arched);
 }
 
 /**
@@ -171,7 +195,7 @@ export function windowGrid(out: PanelBuilder, e: FacadeEdge, m: WinMats, bandY0:
     // (faceWindow bails when the opening shrinks under 0.6 m).
     const wy0 = aboveGrade(e, band.y0 + 0.45), wy1 = band.y1 - 0.28;
     for (let c = 0; c < cols; c++) {
-      faceWindow(out, gp(e, (c + 0.24) / cols), gp(e, (c + 0.76) / cols), wy0, wy1, n, m, arched);
+      faceWindowAvoidDoor(out, e, (c + 0.24) / cols, (c + 0.76) / cols, wy0, wy1, n, m, arched);
     }
   }
 }

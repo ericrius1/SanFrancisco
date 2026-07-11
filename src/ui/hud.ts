@@ -176,7 +176,7 @@ export class HUD {
   #msgTimer = 0
   #current: PlayerMode = "walk"
   #device: "kb" | "pad" = "kb"
-  #toolVerb = "sling paintballs" // what a click does right now (the toolbar's tool)
+  #toolVerb = "throw the ball" // what a click does right now (the toolbar's tool)
   #historyCanBack = false
   #historyCanForward = false
 

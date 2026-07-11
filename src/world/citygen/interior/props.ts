@@ -34,11 +34,11 @@ function shuffled<T>(items: T[], r: Rng): T[] {
 }
 
 /** Multi-layer geometric placeholder art: frame, colour field and 2–3 accents. */
-export function hangArt(out: PanelBuilder, spot: ArtSpot, r: Rng, scale = 1): void {
+export function hangArt(out: PanelBuilder, spot: ArtSpot, r: Rng, floorY: number, scale = 1): void {
   const mats = shuffled([...ART_MATS], r);
   const hw = Math.min(0.78, (0.30 + r() * 0.18) * scale);
   const hh = Math.min(0.62, (0.24 + r() * 0.15) * scale);
-  const y = EYE + (r() - 0.5) * 0.12;
+  const y = floorY + EYE + (r() - 0.5) * 0.12;
   const n = spot.normal;
   const along: Vec3 = [-n[2], 0, n[0]];
   const up: Vec3 = [0, 1, 0];
@@ -295,12 +295,16 @@ export function furnish(
     } else {
       const drop = style.family === "industrial" ? 0.58 : style.tier === 0 ? 0.25 : 0.4;
       visual(style.family === "industrial" ? "int.metal" : "int.brass", cx, yTop - drop / 2, cz, 0.025, drop / 2, 0.025);
-      visual("int.glow", cx, yTop - drop - 0.08, cz, style.tier === 0 ? 0.16 : 0.22, 0.11, style.tier === 0 ? 0.16 : 0.22);
+      const shadeY = yTop - drop - 0.08;
+      const shade = style.tier === 0 ? 0.16 : 0.22;
+      visual("int.glow", cx, shadeY + 0.07, cz, shade * 0.58, 0.045, shade * 0.58);
+      visual("int.glow", cx, shadeY, cz, shade, 0.055, shade);
+      visual("int.brass", cx, shadeY - 0.075, cz, shade * 0.48, 0.025, shade * 0.48);
     }
   };
 
   ceilingLight();
-  if (["parlor", "dining", "bedroom", "office"].includes(role)) rug();
+  if (["parlor", "dining", "bedroom", "office", "loft", "retail", "hall"].includes(role)) rug();
 
   switch (role) {
     case "parlor": sofa(); lowTable(); bookcase(); if (style.tier >= 1) plant(); break;
@@ -328,7 +332,7 @@ export function furnish(
   let hung = 0;
   for (const c of shuffled(candidates, r)) {
     if (hung >= artCount || blocked.some((b) => overlaps(c.foot, b))) continue;
-    hangArt(out, c.spot, r, style.artScale);
+    hangArt(out, c.spot, r, floorY, style.artScale);
     hung++;
   }
   return occupied;

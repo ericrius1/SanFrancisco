@@ -19,6 +19,16 @@ export const BOARD_TUNING = tunables("movement.board", {
 });
 
 /**
+ * Board-local lighting controls. These stay separate from the movement table
+ * so tuning the look cannot accidentally change how the board handles.
+ */
+export const BOARD_EFFECT_TUNING = tunables("board.effects", {
+  plumeIntensity: { v: 1, min: 0, max: 2, step: 0.05, label: "plume intensity" },
+  plumeFresnelPower: { v: 2.2, min: 0.25, max: 6, step: 0.05, label: "plume fresnel" },
+  boardLightIntensity: { v: 0.4, min: 0, max: 1, step: 0.05, label: "board light intensity" }
+});
+
+/**
  * Halo-fin comet: a chain of additive orbs riding the energy ring. The whole
  * look is tuned live — animateBoard reads .values every frame, so every slider
  * (including orb count) acts without a mesh rebuild. The signature move: the

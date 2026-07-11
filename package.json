@@ -18,6 +18,7 @@
     "audit:traffic": "node --experimental-strip-types tools/audit-traffic-system.mjs",
     "test:golf": "node --experimental-strip-types tools/golf-logic-probe.mjs",
     "test:golf:terrain": "node --experimental-strip-types tools/golf-terrain-probe.mjs",
+    "test:transparency": "node tools/transparency-audit.mjs",
     "test:car-jump": "node --experimental-strip-types tools/car-jump-physics-probe.mjs",
     "fetch:osm": "node tools/fetch-osm.mjs",
     "fetch:terrain": "node tools/fetch-terrain.mjs",
