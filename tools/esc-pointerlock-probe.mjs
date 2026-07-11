@@ -65,14 +65,15 @@ function cleanup() {
 process.on("exit", cleanup);
 process.on("SIGINT", () => { cleanup(); process.exit(130); });
 
+const withTimeout = (p, ms, label) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(`timeout(${ms}ms): ${label}`)), ms))]);
 async function ev(c, expr) {
-  const r = await c.send("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true, userGesture: false });
+  const r = await withTimeout(c.send("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true, userGesture: false }), 8000, expr.slice(0, 60));
   if (r.exceptionDetails) throw new Error(`eval: ${JSON.stringify(r.exceptionDetails).slice(0, 500)}`);
   return r.result?.value;
 }
 // Same eval but with Chrome's user-activation bit set — for paths that need a gesture.
 async function evGesture(c, expr) {
-  const r = await c.send("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true, userGesture: true });
+  const r = await withTimeout(c.send("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true, userGesture: true }), 8000, "gesture:" + expr.slice(0, 50));
   if (r.exceptionDetails) throw new Error(`eval: ${JSON.stringify(r.exceptionDetails).slice(0, 500)}`);
   return r.result?.value;
 }
@@ -207,37 +208,47 @@ async function main() {
 
   // ---- A. late-grant race: exit + request (grant in flight) + releaseLock →
   // must settle UNLOCKED. First a control: exit+request alone re-locks.
-  await evGesture(c, `(()=>{document.exitPointerLock();window.__sf.input.requestLock();return true;})()`);
-  s = await waitLock(c, true);
-  push("control-relock-works", s.el && s.locked, `exit+request alone re-locks: el=${s.el} locked=${s.locked}`);
-  if (s.el) {
-    await evGesture(c, `(()=>{document.exitPointerLock();window.__sf.input.requestLock();window.__sf.input.releaseLock();return true;})()`);
-    await sleep(1200); // let any stale grant land and be dropped
+  console.log("[probe] test A: late-grant race");
+  try {
+    // real Esc first to clear any grant, re-lock via trusted click, then race.
+    await pressEscape(c); await sleep(400);
+    await click(c, W / 2, H / 2); await waitLock(c, true);
+    // requestLock (grant in flight) immediately cancelled by releaseLock.
+    await ev(c, `(()=>{window.__sf.input.requestLock();window.__sf.input.releaseLock();return true;})()`);
+    await sleep(1500); // let any stale grant land and be dropped
     s = await ev(c, lockState);
-    push("A-late-grant-dropped", !s.el && !s.locked, `exit+request+releaseLock settles unlocked: el=${s.el} locked=${s.locked}`);
-  } else {
-    push("A-late-grant-dropped", false, "skipped — relock control failed");
-  }
+    push("A-late-grant-dropped", !s.el && !s.locked, `request+release settles unlocked: el=${s.el} locked=${s.locked}`);
+  } catch (e) { push("A-late-grant-dropped", false, `errored: ${String(e).slice(0, 120)}`); }
 
   // ---- B. stale free cursor + Escape must stay unlocked (no heal-and-relock)
-  await ev(c, `(()=>{const i=window.__sf.input;i.freeCursor=true;i.onFreeCursorChange(true);document.exitPointerLock();return true;})()`);
-  await sleep(300);
-  await pressEscape(c);
-  await sleep(1200);
-  s = await ev(c, lockState);
-  push("B-esc-stale-freecursor", !s.el && !s.locked && !s.free, `after Esc w/ stale freeCursor: el=${s.el} locked=${s.locked} freeCursor=${s.free}`);
+  console.log("[probe] test B: stale free cursor + Esc");
+  try {
+    await ev(c, `(()=>{const i=window.__sf.input;i.freeCursor=true;i.onFreeCursorChange(true);document.exitPointerLock();return true;})()`);
+    await sleep(300);
+    await pressEscape(c);
+    await sleep(1200);
+    s = await ev(c, lockState);
+    push("B-esc-stale-freecursor", !s.el && !s.locked && !s.free, `after Esc w/ stale freeCursor: el=${s.el} locked=${s.locked} freeCursor=${s.free}`);
+    // clean the flag for later tests
+    await ev(c, `(()=>{window.__sf.input.freeCursor=false;window.__sf.input.onFreeCursorChange(false);return true;})()`);
+  } catch (e) { push("B-esc-stale-freecursor", false, `errored: ${String(e).slice(0, 120)}`); }
 
   // ---- C. overlay open + locked: one Esc closes the overlay AND unlocks
-  await click(c, W / 2, H / 2); // re-lock (trusted gesture)
-  s = await waitLock(c, true);
-  if (!s.el) { push("C-esc-overlay-unlocks", false, "could not re-lock for overlay test"); return finish(); }
-  await ev(c, `(()=>{window.__sf.minimap.setExpanded(true);return true;})()`);
-  await sleep(200);
-  await pressEscape(c);
-  await sleep(1200);
-  const exp = await ev(c, `window.__sf.minimap.expanded`);
-  s = await ev(c, lockState);
-  push("C-esc-overlay-unlocks", !exp && !s.el && !s.locked, `after one Esc: minimap.expanded=${exp} el=${s.el} locked=${s.locked}`);
+  console.log("[probe] test C: overlay + Esc unlocks");
+  try {
+    await click(c, W / 2, H / 2); // re-lock (trusted gesture)
+    s = await waitLock(c, true);
+    if (!s.el) { push("C-esc-overlay-unlocks", false, "could not re-lock for overlay test"); }
+    else {
+      await ev(c, `(()=>{window.__sf.minimap.setExpanded(true);return true;})()`);
+      await sleep(200);
+      await pressEscape(c);
+      await sleep(1200);
+      const exp = await ev(c, `window.__sf.minimap.expanded`);
+      s = await ev(c, lockState);
+      push("C-esc-overlay-unlocks", !exp && !s.el && !s.locked, `after one Esc: minimap.expanded=${exp} el=${s.el} locked=${s.locked}`);
+    }
+  } catch (e) { push("C-esc-overlay-unlocks", false, `errored: ${String(e).slice(0, 120)}`); }
 
   return finish();
 

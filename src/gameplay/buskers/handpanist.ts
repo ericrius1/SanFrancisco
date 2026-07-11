@@ -280,26 +280,25 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
   // crown cap — slightly taller/softer than the stock flat lid, pushed back so
   // it meets the occipital cover (no bare scalp from behind)
   hairMesh(rig.head, box(0.3, 0.1, 0.32), hairMat, 0, 0.34, 0.02);
-  // layered bangs across the brow (asymmetric lengths so it isn't a ruler cut)
-  const fringeL = hairMesh(rig.head, box(0.11, 0.13, 0.055), hairHiMat, -0.09, 0.255, -0.145);
-  fringeL.rotation.z = 0.2;
-  const fringeC = hairMesh(rig.head, box(0.1, 0.15, 0.05), hairMat, 0.01, 0.24, -0.148);
-  fringeC.rotation.z = -0.05;
-  const fringeR = hairMesh(rig.head, box(0.1, 0.12, 0.055), hairHiMat, 0.1, 0.265, -0.142);
-  fringeR.rotation.z = -0.24;
-  // long face-framing front locks — past the jaw, hanging beside the cheeks
-  // so the hair reads long from the front, not just a bob with a back fall
-  const sideFrontL = hairMesh(rig.head, box(0.065, 0.36, 0.08), hairMat, -0.155, 0.08, -0.06);
+  // thin bang wisps above the frames — not slabs over the lenses
+  const fringeL = hairMesh(rig.head, box(0.032, 0.055, 0.038), hairHiMat, -0.075, 0.318, -0.148);
+  fringeL.rotation.z = 0.18;
+  const fringeC = hairMesh(rig.head, box(0.028, 0.05, 0.036), hairMat, 0.015, 0.322, -0.15);
+  fringeC.rotation.z = -0.06;
+  const fringeR = hairMesh(rig.head, box(0.032, 0.052, 0.038), hairHiMat, 0.085, 0.32, -0.147);
+  fringeR.rotation.z = -0.2;
+  // face-framing locks kept outboard of the cat-eyes so shades stay clear
+  const sideFrontL = hairMesh(rig.head, box(0.055, 0.36, 0.07), hairMat, -0.175, 0.08, -0.04);
   sideFrontL.rotation.x = 0.08;
   sideFrontL.rotation.z = 0.06;
-  const sideFrontR = hairMesh(rig.head, box(0.065, 0.38, 0.08), hairLowMat, 0.155, 0.06, -0.055);
+  const sideFrontR = hairMesh(rig.head, box(0.055, 0.38, 0.07), hairLowMat, 0.175, 0.06, -0.035);
   sideFrontR.rotation.x = 0.1;
   sideFrontR.rotation.z = -0.08;
-  // extra cheek wisps that tuck in front of the shoulders
-  const cheekL = hairMesh(rig.head, box(0.05, 0.28, 0.055), hairHiMat, -0.14, 0.12, -0.11);
-  cheekL.rotation.z = 0.12;
-  const cheekR = hairMesh(rig.head, box(0.05, 0.26, 0.055), hairMat, 0.14, 0.13, -0.105);
-  cheekR.rotation.z = -0.1;
+  // cheek wisps — thinner, tucked beside the face (not over the lenses)
+  const cheekL = hairMesh(rig.head, box(0.032, 0.24, 0.045), hairHiMat, -0.165, 0.12, -0.08);
+  cheekL.rotation.z = 0.1;
+  const cheekR = hairMesh(rig.head, box(0.032, 0.22, 0.045), hairMat, 0.165, 0.13, -0.075);
+  cheekR.rotation.z = -0.08;
   // temple/side volume so the head isn't a bare cylinder behind the bangs
   hairMesh(rig.head, box(0.07, 0.26, 0.12), hairLowMat, -0.16, 0.16, 0.04);
   hairMesh(rig.head, box(0.07, 0.28, 0.12), hairMat, 0.16, 0.14, 0.04);
@@ -588,13 +587,13 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
       slats[i].rotation.z = slatBaseZ[i] + Math.sin(t * 2.2 + i * 1.3) * hairAmp * 0.5;
     }
     longLock.rotation.z = 0.05 + Math.sin(t * 1.7 + 2.2) * hairAmp * 0.5;
-    fringeL.rotation.z = 0.2 + Math.sin(t * 2.4 + 0.5) * hairAmp * 0.28;
-    fringeC.rotation.z = -0.05 + Math.sin(t * 2.1 + 1.1) * hairAmp * 0.2;
-    fringeR.rotation.z = -0.24 + Math.sin(t * 2.2 + 1.8) * hairAmp * 0.28;
+    fringeL.rotation.z = 0.18 + Math.sin(t * 2.4 + 0.5) * hairAmp * 0.2;
+    fringeC.rotation.z = -0.06 + Math.sin(t * 2.1 + 1.1) * hairAmp * 0.15;
+    fringeR.rotation.z = -0.2 + Math.sin(t * 2.2 + 1.8) * hairAmp * 0.2;
     sideFrontL.rotation.z = 0.06 + Math.sin(t * 1.8 + 0.3) * hairAmp * 0.35;
     sideFrontR.rotation.z = -0.08 + Math.sin(t * 1.9 + 1.4) * hairAmp * 0.35;
-    cheekL.rotation.z = 0.12 + Math.sin(t * 2.0 + 0.8) * hairAmp * 0.22;
-    cheekR.rotation.z = -0.1 + Math.sin(t * 2.05 + 1.6) * hairAmp * 0.22;
+    cheekL.rotation.z = 0.1 + Math.sin(t * 2.0 + 0.8) * hairAmp * 0.18;
+    cheekR.rotation.z = -0.08 + Math.sin(t * 2.05 + 1.6) * hairAmp * 0.18;
   };
 
   // ---- audio: one self-cleaning struck-handpan voice per note

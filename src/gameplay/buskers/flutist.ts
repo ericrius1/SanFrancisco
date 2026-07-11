@@ -208,22 +208,22 @@ export const buildFlutist: MusicianBuilder = (audio, part) => {
     temple.rotation.y = side * 0.12;
   }
 
-  /* ---- shorter light-brown cut (no hat/hood, no ponytail): uneven crown +
-     bangs, cropped sides, and a short occipital cover over the back ---- */
+  /* ---- shorter light-brown cut (no hat/hood, no ponytail): crown + short
+     fringe above the teashades, cropped sides, short occipital cover ---- */
   const hairMat = rig.avatar.materials.hair;
   const hairLowMat = new THREE.MeshLambertMaterial({ color: 0x7c5228 });
   ownMats.push(hairLowMat);
   // crown cap
-  mesh(rig.head, geo(0.3, 0.1, 0.3), hairMat, 0, 0.34, 0.01);
-  // uneven bangs over the brow
-  const fringeL = mesh(rig.head, geo(0.12, 0.14, 0.06), hairMat, -0.09, 0.26, -0.14);
-  fringeL.rotation.z = 0.18;
-  mesh(rig.head, geo(0.1, 0.16, 0.055), hairMat, 0.02, 0.24, -0.145);
-  const fringeR = mesh(rig.head, geo(0.11, 0.13, 0.06), hairMat, 0.11, 0.27, -0.138);
-  fringeR.rotation.z = -0.22;
+  mesh(rig.head, geo(0.3, 0.09, 0.28), hairMat, 0, 0.335, 0.02);
+  // short fringe wisps above the shades — clear of the lenses
+  const fringeL = mesh(rig.head, geo(0.06, 0.05, 0.04), hairMat, -0.07, 0.312, -0.14);
+  fringeL.rotation.z = 0.12;
+  mesh(rig.head, geo(0.05, 0.045, 0.038), hairMat, 0.02, 0.316, -0.142);
+  const fringeR = mesh(rig.head, geo(0.055, 0.048, 0.04), hairMat, 0.085, 0.314, -0.138);
+  fringeR.rotation.z = -0.14;
   // cropped side volume (no long jaw locks / ponytail)
-  mesh(rig.head, geo(0.07, 0.16, 0.12), hairMat, -0.16, 0.2, 0.02);
-  mesh(rig.head, geo(0.07, 0.18, 0.12), hairLowMat, 0.16, 0.18, 0.02);
+  mesh(rig.head, geo(0.065, 0.14, 0.11), hairMat, -0.16, 0.22, 0.03);
+  mesh(rig.head, geo(0.065, 0.15, 0.11), hairLowMat, 0.16, 0.2, 0.03);
   // short back cover — sits on the occiput, no dangling fall
   mesh(rig.head, geo(0.26, 0.14, 0.1), hairMat, 0, 0.24, 0.125);
   mesh(rig.head, geo(0.22, 0.1, 0.08), hairLowMat, 0, 0.16, 0.14);
@@ -612,9 +612,9 @@ export const buildFlutist: MusicianBuilder = (audio, part) => {
     setRigClasp(rig, "R", clasp);
 
     // ---- hair: short fringe drifts a little in the wind ----
-    const hairAmp = 0.03 + wind * 0.14;
-    fringeL.rotation.z = 0.18 + Math.sin(t * 2.4 + 0.5) * hairAmp * 0.25;
-    fringeR.rotation.z = -0.22 + Math.sin(t * 2.2 + 1.8) * hairAmp * 0.25;
+    const hairAmp = 0.025 + wind * 0.1;
+    fringeL.rotation.z = 0.12 + Math.sin(t * 2.4 + 0.5) * hairAmp * 0.2;
+    fringeR.rotation.z = -0.14 + Math.sin(t * 2.2 + 1.8) * hairAmp * 0.2;
   };
 
   return {
