@@ -65,7 +65,7 @@ type ActiveVoice = { panner: PannerNode; send: GainNode; expires: number };
 export class NatureSoundscape {
   #ctx: AudioContext | null = null;
   #bus!: GainNode; // master volume/presence fade
-  #alwaysBus!: GainNode; // HUD-master/mute scaled, but NOT presence-faded or suspended
+  #alwaysBus!: GainNode; // HUD effects/mute scaled, but NOT nature/presence-faded
   #externalAwake = false; // a sibling layer (pet at heel) needs the ctx kept alive
   #reverbSend!: GainNode;
   #convolver!: ConvolverNode;
@@ -107,6 +107,7 @@ export class NatureSoundscape {
       ctx: this.#ctx?.state ?? "none",
       unlocked: this.#unlocked,
       master: +this.#masterLevel.toFixed(3),
+      always: +(this.#alwaysBus?.gain.value ?? 0).toFixed(3),
       presence: +this.#presence.toFixed(3),
       beds: BED_IDS.map((id) => ({ id, level: +(this.#beds.get(id)?.level ?? 0).toFixed(3) })),
       influence: NATURE_REGIONS.map((r, i) => ({ id: r.id, inf: +this.#inf[i].toFixed(3) })),
@@ -183,15 +184,23 @@ export class NatureSoundscape {
       fog /= infSum;
     }
 
-    const allowed =
-      document.visibilityState === "visible" && Boolean(T.enabled) && Number(T.master) > 0.001;
+    const visible = document.visibilityState === "visible";
+    const allowed = visible && Boolean(T.enabled) && Number(T.master) > 0.001;
     const effects = effectsAudioLevel();
     const targetPresence = allowed ? presence : 0;
     this.#presence = approach(this.#presence, targetPresence, dt, 1.6);
 
+    // NatureSoundscape owns the one shared Web Audio listener. Keep its full
+    // camera position + orientation current for presence-independent sibling
+    // SFX too (an adopted dog can follow the player outside every region).
+    if (presence > 0.02 || this.#externalAwake) this.#updateListener(o.camera);
+
     // ---- master fade + park the whole graph when far from any region ------
     const targetMaster = allowed ? effects * Number(T.master) * this.#presence : 0;
-    const alwaysTarget = allowed ? effects * Number(T.master) : 0; // no presence term
+    // Sibling gameplay SFX (currently dog fetch audio) must not disappear when
+    // the optional nature layer or its wildlife slider is disabled. This tap
+    // follows only the user's global FX/mute preference and page visibility.
+    const alwaysTarget = visible ? effects : 0;
     if (targetMaster <= 0.0001 && this.#masterLevel <= 0.001) {
       // No region presence. Normally park the whole graph (zero city cost). But
       // if a sibling layer (pet at heel) needs to stay audible, keep the ctx
@@ -256,7 +265,6 @@ export class NatureSoundscape {
     }
 
     // ---- spatial voice scheduler ----------------------------------------
-    this.#updateListener(o.camera);
     this.#reapVoices(now);
     if (presence > 0.02 && effects > 0.001 && Number(T.voices) > 0.001) {
       let ratePerMin = 0;

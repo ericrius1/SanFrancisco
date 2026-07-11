@@ -8,7 +8,7 @@
 // in movement without turning the dog park into a looped ambience track.
 
 import { smoothstep } from "./regions";
-import { VOICE_LIB, type NatureVoiceKind } from "./voices";
+import { DOG_VOICE_LIB, dogVoiceForStyle, type DogVoiceKind } from "./voices";
 import { NATURE_AUDIO_TUNING, type NatureSoundscape } from "./natureSoundscape";
 
 /** Structural mirror of a world dog's public audio-facing fields. Keeping this
@@ -17,11 +17,13 @@ export type DogParkDog = {
   x: number;
   z: number;
   speed: number;
+  controller?: "park" | "player" | "pet";
   style: { scale: number; name: string };
   group: { position: { x: number; y: number; z: number } };
 };
 
 export type DogAudioCue = "chase" | "catch" | "return";
+type DogVocalMoment = DogAudioCue | "ambient";
 
 type NatureVoiceIO = NonNullable<ReturnType<NatureSoundscape["voiceBus"]>>;
 
@@ -41,15 +43,27 @@ type DogRig = {
 const DOG_AUDIO = {
   wakeRadius: 38,
   scamperRadius: 23,
-  layerGain: 0.55,
+  // Dog calls are gameplay SFX, not background wildlife. Keep enough headroom
+  // for doubles, but make a single nearby bark unmistakable at default FX gain.
+  layerGain: 0.92,
   patterLevel: 0.055,
-  globalVocalGap: 4.25,
-  dogVocalGapMin: 7,
-  dogVocalGapMax: 12,
+  globalVocalGap: 3.4,
+  dogVocalGapMin: 4.5,
+  dogVocalGapMax: 7,
+  ambientRadius: 30,
+  ambientFirstGapMin: 8,
+  ambientFirstGapMax: 12,
+  ambientGapMin: 22,
+  ambientGapMax: 38,
+  ambientRetryMin: 2.5,
+  ambientRetryMax: 5,
+  ambientMaxDogSpeed: 2.4,
   cueChance: {
-    chase: 0.22,
-    catch: 0.48,
-    return: 0.25
+    // Chase + return are the two moments a player expects to hear. They are
+    // guaranteed when cooldowns permit; catch stays a quieter optional huff.
+    chase: 1,
+    catch: 0.42,
+    return: 1
   } satisfies Record<DogAudioCue, number>,
   reverbCharacter: 0.42
 } as const;
@@ -66,10 +80,31 @@ export class DogParkAudio {
   #awake = false;
   #paused = false;
   #globalVocalCooldown = 0;
+  #ambientTimer = randomBetween(DOG_AUDIO.ambientFirstGapMin, DOG_AUDIO.ambientFirstGapMax);
+  #lastAmbientDog: DogParkDog | null = null;
+  #vocalCount = 0;
+  #ambientCount = 0;
+  #lastVocal: { dog: string; cue: DogVocalMoment; kind: DogVoiceKind } | null = null;
 
   constructor(nature: NatureSoundscape, dogs: () => readonly DogParkDog[]) {
     this.#nature = nature;
     this.#dogs = dogs;
+  }
+
+  /** Read-only verification surface used by the headless audio probe. */
+  get debugState() {
+    return {
+      awake: this.#awake,
+      paused: this.#paused,
+      rigs: this.#rigs.size,
+      context: this.#io?.ctx.state ?? "none",
+      layerGain: +(this.#layer?.gain.value ?? 0).toFixed(3),
+      globalCooldown: +this.#globalVocalCooldown.toFixed(2),
+      ambientIn: +this.#ambientTimer.toFixed(2),
+      vocalCount: this.#vocalCount,
+      ambientCount: this.#ambientCount,
+      lastVocal: this.#lastVocal
+    };
   }
 
   /** Queue an exact gameplay moment. Cues are intentionally lossy: if several
@@ -115,12 +150,17 @@ export class DogParkAudio {
 
     const now = io.ctx.currentTime;
     this.#globalVocalCooldown = Math.max(0, this.#globalVocalCooldown - dt);
+    this.#ambientTimer -= dt;
     this.#layer!.gain.setTargetAtTime(
       DOG_AUDIO.layerGain * smoothstep(DOG_AUDIO.wakeRadius, DOG_AUDIO.wakeRadius - 11, nearestDogDist),
       now,
       0.2
     );
 
+    let hadSemanticCue = false;
+    let semantic:
+      | { dog: DogParkDog; rig: DogRig; cue: DogAudioCue; priority: number }
+      | null = null;
     for (const dog of dogs) {
       const rig = this.#rigs.get(dog);
       if (!rig) continue;
@@ -145,15 +185,25 @@ export class DogParkAudio {
 
       const cue = rig.pendingCue;
       rig.pendingCue = null;
-      if (
-        cue &&
-        dogDist < DOG_AUDIO.wakeRadius &&
-        rig.vocalCooldown <= 0 &&
-        this.#globalVocalCooldown <= 0 &&
-        Math.random() < DOG_AUDIO.cueChance[cue]
-      ) {
-        this.#vocalize(io, rig, dog, cue, now);
+      if (cue) {
+        hadSemanticCue = true;
+        const priority = (dog.controller === "player" ? 10 : 0) + (cue === "return" ? 3 : cue === "chase" ? 2 : 1);
+        if (
+          dogDist < DOG_AUDIO.wakeRadius &&
+          rig.vocalCooldown <= 0 &&
+          Math.random() < DOG_AUDIO.cueChance[cue] &&
+          (!semantic || priority > semantic.priority)
+        ) {
+          semantic = { dog, rig, cue, priority };
+        }
       }
+    }
+    // A player's own throw wins a same-frame owner/ambient cue and may punch
+    // through the park-wide gap. Its per-dog cooldown still prevents chatter.
+    if (semantic && (this.#globalVocalCooldown <= 0 || semantic.dog.controller === "player")) {
+      this.#vocalize(io, semantic.rig, semantic.dog, semantic.cue, now);
+    } else if (!hadSemanticCue) {
+      this.#tryAmbientVocal(io, dogs, playerPos, now);
     }
   }
 
@@ -169,7 +219,7 @@ export class DogParkAudio {
     io: NatureVoiceIO,
     rig: DogRig,
     dog: DogParkDog,
-    cue: DogAudioCue,
+    cue: DogVocalMoment,
     now: number
   ): void {
     this.#globalVocalCooldown = DOG_AUDIO.globalVocalGap + Math.random() * 1.5;
@@ -177,14 +227,15 @@ export class DogParkAudio {
       DOG_AUDIO.dogVocalGapMin +
       Math.random() * (DOG_AUDIO.dogVocalGapMax - DOG_AUDIO.dogVocalGapMin);
 
-    // Fetch completion often gets a soft breathy huff instead of another bark.
-    // Chases read best with a bark; small dogs favor the brighter yip.
-    const huffChance = cue === "return" ? 0.72 : cue === "catch" ? 0.34 : 0;
-    const kind: NatureVoiceKind =
-      Math.random() < huffChance ? "dogHuff" : dog.style.scale < 0.9 ? "dogYip" : "dogWoof";
-    const base = kind === "dogHuff" ? 0.2 + Math.random() * 0.06 : 0.27 + Math.random() * 0.09;
-    const level = Number(NATURE_AUDIO_TUNING.values.voices) * base;
-    VOICE_LIB[kind]({
+    // Catching with a ball in the mouth favors a breathy huff. Chase and return
+    // use the authored breed voice so the fundamental interaction always reads.
+    const huffChance = cue === "catch" ? 0.78 : cue === "return" ? 0.14 : 0;
+    const kind: DogVoiceKind =
+      Math.random() < huffChance ? "dogHuff" : dogVoiceForStyle(dog.style.name, dog.style.scale);
+    // Do not multiply by the nature "wildlife calls" control: dog barks are
+    // interaction SFX and already ride the user's effects volume + master mute.
+    const level = kind === "dogHuff" ? 0.38 + Math.random() * 0.08 : 0.72 + Math.random() * 0.12;
+    DOG_VOICE_LIB[kind]({
       ctx: io.ctx,
       out: rig.panner,
       t0: now + 0.02,
@@ -192,6 +243,47 @@ export class DogParkAudio {
       rng: Math.random,
       level
     });
+    this.#vocalCount++;
+    if (cue === "ambient") {
+      this.#ambientCount++;
+      this.#ambientTimer = randomBetween(DOG_AUDIO.ambientGapMin, DOG_AUDIO.ambientGapMax);
+      this.#lastAmbientDog = dog;
+    }
+    this.#lastVocal = { dog: dog.style.name, cue, kind };
+  }
+
+  /** One shared countdown for the whole audible pack. This avoids four
+   * independent dogs each deciding to bark in the same quiet moment. */
+  #tryAmbientVocal(
+    io: NatureVoiceIO,
+    dogs: readonly DogParkDog[],
+    playerPos: { x: number; z: number },
+    now: number
+  ): void {
+    if (this.#ambientTimer > 0) return;
+    if (this.#globalVocalCooldown > 0) {
+      this.#ambientTimer = randomBetween(DOG_AUDIO.ambientRetryMin, DOG_AUDIO.ambientRetryMax);
+      return;
+    }
+    let candidates = dogs.filter((dog) => {
+      const rig = this.#rigs.get(dog);
+      return Boolean(
+        rig &&
+          rig.vocalCooldown <= 0 &&
+          dog.speed <= DOG_AUDIO.ambientMaxDogSpeed &&
+          Math.hypot(dog.x - playerPos.x, dog.z - playerPos.z) < DOG_AUDIO.ambientRadius
+      );
+    });
+    if (candidates.length > 1 && this.#lastAmbientDog) {
+      const rotated = candidates.filter((dog) => dog !== this.#lastAmbientDog);
+      if (rotated.length) candidates = rotated;
+    }
+    if (candidates.length === 0) {
+      this.#ambientTimer = randomBetween(DOG_AUDIO.ambientRetryMin, DOG_AUDIO.ambientRetryMax);
+      return;
+    }
+    const dog = candidates[Math.min(candidates.length - 1, Math.floor(Math.random() * candidates.length))];
+    this.#vocalize(io, this.#rigs.get(dog)!, dog, "ambient", now);
   }
 
   #wake(io: NatureVoiceIO, dogs: readonly DogParkDog[]): void {
@@ -240,6 +332,7 @@ export class DogParkAudio {
     for (const rig of this.#rigs.values()) rig.pendingCue = null;
     if (!this.#awake) return;
     this.#awake = false;
+    this.#ambientTimer = randomBetween(DOG_AUDIO.ambientFirstGapMin, DOG_AUDIO.ambientFirstGapMax);
     const io = this.#io;
     if (!io) return;
     this.#layer?.gain.setTargetAtTime(0, io.ctx.currentTime, 0.12);
@@ -258,8 +351,8 @@ export class DogParkAudio {
     const panner = ctx.createPanner();
     panner.panningModel = "HRTF";
     panner.distanceModel = "inverse";
-    panner.refDistance = 4;
-    panner.rolloffFactor = 1.35;
+    panner.refDistance = 7;
+    panner.rolloffFactor = 0.9;
     panner.maxDistance = 60;
     panner.connect(layer);
 
@@ -285,7 +378,9 @@ export class DogParkAudio {
       patterLevel,
       patterSrc: null,
       tickPhase: Math.random(),
-      vocalCooldown: Math.random() * 3,
+      // The first interaction after the audio layer wakes must be allowed to
+      // speak; the shared global gap handles simultaneous dogs after that.
+      vocalCooldown: 0,
       pendingCue: null
     };
   }
@@ -306,6 +401,10 @@ export class DogParkAudio {
     rig.panner.disconnect();
     rig.send.disconnect();
   }
+}
+
+function randomBetween(min: number, max: number): number {
+  return min + Math.random() * (max - min);
 }
 
 function movePanner(

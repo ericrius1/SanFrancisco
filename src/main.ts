@@ -542,11 +542,11 @@ async function boot() {
   } catch (err) {
     console.warn("[boot] corona heights unavailable:", err);
   }
-  // Fetch-the-ball loop: hold-to-throw (ball appears only while winding up;
-  // hands empty after release). Walk up and press E to pick one up, or take it
-  // from a waiting dog. A free dog in the Corona Heights park chases park
-  // throws, carries back and waits — two full fetches adopt it as a pet. Free
-  // balls, in-flight fetch and pet follow are driven every frame by
+  // Fetch-the-ball loop: hold-to-throw (ball + overhand windup start immediately;
+  // release before 1s stows, hold longer for power). Walk up and press E to pick
+  // one up, or take it from a waiting dog. A free dog in the Corona Heights park
+  // chases park throws, carries back and waits — two full fetches adopt it as a
+  // pet. Free balls, in-flight fetch and pet follow are driven every frame by
   // fetchBall.update (tool-agnostic). park is a getter — coronaHeights is
   // null-until-built.
   fetchBall = new FetchBall({
@@ -2528,8 +2528,8 @@ async function boot() {
         forest?.fireGummy(rayOrigin, aim, player.velocity);
       }
     } else if (tool === "ball") {
-      // Hold ≥1s to spot the ball in hand, then wind up; release to throw.
-      // Hands stay empty afterward — pick thrown balls back up with E.
+      // Hold to wind up overhand (meter fills); release after 1s to throw,
+      // earlier stows. Hands empty afterward — pick balls back up with E.
       if (fetchBall) {
         chase.interactionDir(aim, player);
         const cancelled =
