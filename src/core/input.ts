@@ -5,7 +5,8 @@ import type { PlayerMode } from "../player/types";
  * deltas accumulate only while locked. Escape is owned by main.ts (overlay
  * dismiss → then releaseLock); the browser also exits lock on Esc. The game
  * keeps simulating while unlocked. While `suspended` (camera-orbit mode)
- * all game inputs read as idle so the player coasts.
+ * all game inputs read as idle so the player coasts. Global holds that must
+ * still work there (Z time-scrub) use `holding()` instead of `down()`.
  *
  * A gamepad (Xbox standard mapping) rides the same logical rails: pollPad()
  * translates buttons into the key codes the game already reads (A→Space,
@@ -161,10 +162,12 @@ export class Input {
     el.addEventListener("contextmenu", (e) => e.preventDefault());
 
     window.addEventListener("mousemove", (e) => {
-      if (this.locked) {
+      // Pointer-lock look, or Z-held time scrub (works unlocked in camera-orbit
+      // mode where the chase cam has released the pointer).
+      if (this.locked || this.keys.has("KeyZ")) {
         this.mouseDX += e.movementX;
         this.mouseDY += e.movementY;
-        return;
+        if (this.locked) return;
       }
       // stale free cursor (lost Meta keyup): metaKey is authoritative, so drop
       // it here too — the next canvas click then relocks like it used to.
@@ -307,6 +310,11 @@ export class Input {
 
   down(code: string) {
     return !this.suspended && (this.keys.has(code) || this.#padHeld.has(code));
+  }
+
+  /** Physical hold — ignores `suspended` so global holds (Z time-scrub) work in camera-orbit mode. */
+  holding(code: string) {
+    return this.keys.has(code) || this.#padHeld.has(code);
   }
 
   /** True on the frame the key went down. Reads through even while suspended for mode toggles. */

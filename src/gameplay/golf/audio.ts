@@ -3,8 +3,8 @@ import { effectsAudioLevel } from "../../core/audioSettings";
 /**
  * Golf one-shots, all synthesized (no assets): the downswing whoosh, the
  * strike "thwack", a soft turf thud on landing and the cup rattle when a putt
- * drops. Same lazy-AudioContext pattern as the chimes — the swing itself is a
- * user gesture, so resume() always succeeds.
+ * drops. A lazy AudioContext opened on first use — the swing itself is a user
+ * gesture, so resume() always succeeds.
  */
 export class GolfAudio {
   #ctx: AudioContext | null = null;

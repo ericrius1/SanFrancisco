@@ -1,8 +1,9 @@
 import * as THREE from "three/webgpu";
 import { BodyType, type Physics } from "../../core/physics";
 import { avatarFromSeed } from "../../player/avatar";
-import { buildRig, poseIdle, type Rig } from "../../player/rig";
+import { buildRig, poseIdle, setRigClasp, type Rig } from "../../player/rig";
 import type { WorldMap } from "../heightmap";
+import { stepBall, type BallSimCtx, type BallSimState } from "./ballSim";
 import { dogParkFenceSegments, makeDogParkFence, type FenceSegment2D } from "./dogParkFence";
 import {
   CORONA_DOG_GATE,
@@ -26,7 +27,7 @@ const DOG_ACCEL = 10;
 const DOG_ARRIVE = 2.5; // arrival slow-down radius so dogs ease in instead of teleport-stopping
 const OWNER_CLEARANCE = 0.85; // dogs never crowd inside this ring around a human
 const BALL_R = 0.16;
-const FENCE_PAD = 0.1; // fence rail half-thickness for ball rebounds
+const RECEIVE_TIME = 0.55; // dog-to-hand ball handoff: reach, clasp, jaw release
 const THROW_RELEASE = 0.3; // seconds into the throw animation when the prop leaves the hand
 const THROW_ANIM_LEN = 0.85;
 const preparedMaps = new WeakSet<WorldMap>();
@@ -52,6 +53,8 @@ type ParkOwner = {
   greet: number;
   greetTimer: number;
   throwAnim: number; // seconds since windup start; >= THROW_ANIM_LEN means idle
+  reach: number; // 0..1 bow-and-reach-down weight during the ball handoff
+  clasp: number; // 0..1 mitt-close weight (grips the prop / catches the returned ball)
 };
 
 type WanderState = {
@@ -72,17 +75,24 @@ type DogStyle = {
   floppy?: boolean;
 };
 
-type ParkDog = {
+export type ParkDog = {
   style: DogStyle;
   group: THREE.Group;
   legs: THREE.Group[];
   head: THREE.Group;
   tail: THREE.Group;
+  jaw: THREE.Group; // articulated lower muzzle; setDogJaw drives it 0 closed .. 1 open
   x: number;
   z: number;
   heading: number;
   stride: number;
   speed: number;
+  // Who steers this dog. "park" = the ambient routine (wander/owner fetch);
+  // "player" = claimed by the player's ball tool; "pet" = adopted follower.
+  // update() only runs the wander/gate logic for "park" dogs.
+  controller: "park" | "player" | "pet";
+  // Completed player take-backs FROM THIS dog; at 2 the dog adopts the player.
+  playerFetchCount: number;
 };
 
 export type CoronaHeightsStats = {
@@ -914,10 +924,20 @@ function makeDog(style: DogStyle): ParkDog {
   group.add(head);
   const skull = dogMesh(head, new THREE.SphereGeometry(1, 10, 8), coat, 0, 0, 0);
   skull.scale.set(0.32, 0.3, 0.32);
-  const muzzle = dogMesh(head, new THREE.SphereGeometry(1, 8, 6), accent, 0, -0.08, -0.3);
-  muzzle.scale.set(0.22, 0.16, 0.28);
-  const nose = dogMesh(head, new THREE.SphereGeometry(1, 7, 5), dark, 0, -0.04, -0.53);
+  // Upper muzzle + nose ride the skull; the lower muzzle lives on a hinged jaw.
+  const muzzle = dogMesh(head, new THREE.SphereGeometry(1, 8, 6), accent, 0, -0.04, -0.3);
+  muzzle.scale.set(0.22, 0.12, 0.28);
+  const nose = dogMesh(head, new THREE.SphereGeometry(1, 7, 5), dark, 0, -0.02, -0.53);
   nose.scale.set(0.1, 0.08, 0.08);
+  // Articulated lower jaw: hinge near the muzzle root, wedge + chin reaching
+  // forward (-Z). Opening pitches the front down (see setDogJaw sign note).
+  const jaw = new THREE.Group();
+  jaw.position.set(0, -0.1, -0.12);
+  head.add(jaw);
+  const lowerMuzzle = dogMesh(jaw, new THREE.SphereGeometry(1, 8, 6), accent, 0, -0.03, -0.2);
+  lowerMuzzle.scale.set(0.2, 0.09, 0.24);
+  const chin = dogMesh(jaw, new THREE.BoxGeometry(0.18, 0.06, 0.14), dark, 0, -0.06, -0.34);
+  chin.scale.set(1, 1, 1);
   for (const side of [-1, 1]) {
     const eye = dogMesh(head, new THREE.SphereGeometry(1, 6, 4), dark, side * 0.13, 0.08, -0.27);
     eye.scale.setScalar(0.045);
@@ -947,7 +967,21 @@ function makeDog(style: DogStyle): ParkDog {
   tailMesh.rotation.z = 0.08;
   tail.rotation.x = 0.9;
   group.add(tail);
-  return { style, group, legs, head, tail, x: 370, z: 2702, heading: 0, stride: 0, speed: 0 };
+  return {
+    style,
+    group,
+    legs,
+    head,
+    tail,
+    jaw,
+    x: 370,
+    z: 2702,
+    heading: 0,
+    stride: 0,
+    speed: 0,
+    controller: "park",
+    playerFetchCount: 0
+  };
 }
 
 function ownerFacing(x: number, z: number, tx: number, tz: number) {
@@ -976,7 +1010,9 @@ function makeOwner(map: WorldMap, action: OwnerAction, x: number, z: number, tx:
     cheerTimer: 0,
     greet: 0,
     greetTimer: 0,
-    throwAnim: THROW_ANIM_LEN
+    throwAnim: THROW_ANIM_LEN,
+    reach: 0,
+    clasp: 0
   } satisfies ParkOwner;
 }
 
@@ -1032,6 +1068,15 @@ function ownerPose(map: WorldMap, owner: ParkOwner, dog: ParkDog, elapsed: numbe
     rig.head.rotation.x += 0.2 * owner.greet;
     rig.armR.rotation.x += 0.6 * owner.greet;
   }
+  // reach-down handoff: bow, swing the right arm/forearm down toward the dog's
+  // mouth, drop the gaze onto the ball. Runs while throwAnim is idle, so it
+  // never fights the windup below.
+  if (owner.reach > 1e-3) {
+    rig.torso.rotation.x += 0.55 * owner.reach;
+    rig.head.rotation.x += 0.35 * owner.reach;
+    rig.armR.rotation.x += 1.15 * owner.reach;
+    rig.foreR.rotation.x += 0.5 * owner.reach;
+  }
 
   if (owner.throwAnim < THROW_ANIM_LEN) {
     owner.throwAnim += dt;
@@ -1043,6 +1088,10 @@ function ownerPose(map: WorldMap, owner: ParkOwner, dog: ParkDog, elapsed: numbe
     rig.torso.rotation.y += 0.32 * windup - 0.4 * release;
     rig.head.rotation.y -= 0.15 * release;
   }
+
+  // Mitt clasp is layered AFTER the pose fns (it only rotates a child flap, so
+  // poses never overwrite it). Right hand grips the prop / catches the ball.
+  setRigClasp(rig, "R", owner.clasp);
 
   rig.group.position.set(owner.x, map.groundTop(owner.x, owner.z) + DOG_SURFACE_LIFT + 0.93, owner.z);
   rig.group.rotation.y = owner.yaw;
@@ -1071,9 +1120,9 @@ function keepClearOfOwners(dog: ParkDog, owners: ParkOwner[]) {
   }
 }
 
-function dogGaitPose(map: WorldMap, dog: ParkDog, advance: number) {
+function dogGaitPose(map: WorldMap, dog: ParkDog, advance: number, lift = DOG_SURFACE_LIFT) {
   dog.stride += advance * (3.4 / dog.style.scale);
-  dog.group.position.set(dog.x, map.groundTop(dog.x, dog.z) + DOG_SURFACE_LIFT + 0.04, dog.z);
+  dog.group.position.set(dog.x, map.groundTop(dog.x, dog.z) + lift + 0.04, dog.z);
   dog.group.rotation.y = dog.heading;
   dog.group.position.y += Math.abs(Math.sin(dog.stride * 0.5)) * Math.min(0.09, dog.speed * 0.016) * dog.style.scale;
   const swing = Math.sin(dog.stride) * Math.min(0.9, dog.speed * 0.19);
@@ -1089,7 +1138,16 @@ function dogGaitPose(map: WorldMap, dog: ParkDog, advance: number) {
 /** Steer-and-integrate locomotion: speed accelerates toward the gait, eases
  * off inside DOG_ARRIVE, and heading obeys a turn-rate limit so a sprinting
  * dog carves an arc instead of rotating in place. */
-function moveDog(map: WorldMap, dog: ParkDog, tx: number, tz: number, gait: number, owners: ParkOwner[], dt: number) {
+function moveDog(
+  map: WorldMap,
+  dog: ParkDog,
+  tx: number,
+  tz: number,
+  gait: number,
+  owners: ParkOwner[],
+  dt: number,
+  lift = DOG_SURFACE_LIFT
+) {
   const step = Math.min(dt, 1 / 30);
   const dx = tx - dog.x;
   const dz = tz - dog.z;
@@ -1108,7 +1166,7 @@ function moveDog(map: WorldMap, dog: ParkDog, tx: number, tz: number, gait: numb
   dog.x -= Math.sin(dog.heading) * advance;
   dog.z -= Math.cos(dog.heading) * advance;
   keepClearOfOwners(dog, owners);
-  dogGaitPose(map, dog, advance);
+  dogGaitPose(map, dog, advance, lift);
 }
 
 /** Waiting-for-the-throw idle: face the point of interest, wag hard, and every
@@ -1147,6 +1205,10 @@ function throwTargetClear(x: number, z: number) {
   );
 }
 
+// Pet locomotion drives moveDog with no owner-avoidance ring (the pet is off
+// following the player, not weaving between the park's NPC owners).
+const NO_OWNERS: ParkOwner[] = [];
+
 function dogMouth(dog: ParkDog, out: THREE.Vector3) {
   const scale = dog.style.scale;
   out.set(
@@ -1155,6 +1217,23 @@ function dogMouth(dog: ParkDog, out: THREE.Vector3) {
     dog.z - Math.cos(dog.heading) * 0.84 * scale
   );
   return out;
+}
+
+// Jaw sign note: the lower jaw's mass is forward (-Z), so a POSITIVE x-pitch
+// would raise the chin (close/overbite); opening the mouth needs a negative
+// pitch. `open01` (0 closed .. 1 open) is mapped through that sign here so every
+// caller can speak in plain "how open" terms.
+function applyDogJaw(dog: ParkDog, open01: number) {
+  dog.jaw.rotation.x = -0.5 * clamp01(open01);
+}
+
+function dogJawOpen(dog: ParkDog) {
+  return clamp01(-dog.jaw.rotation.x / 0.5);
+}
+
+function driveDogJaw(dog: ParkDog, target: number, dt: number) {
+  const cur = dogJawOpen(dog);
+  applyDogJaw(dog, cur + (target - cur) * (1 - Math.exp(-dt * 12)));
 }
 
 export class CoronaHeightsPark {
@@ -1174,16 +1253,21 @@ export class CoronaHeightsPark {
   #frisbee: THREE.Mesh;
   #mouth = new THREE.Vector3();
   #propTarget = new THREE.Vector3();
+  #receiveFrom = new THREE.Vector3();
   #spinAxis = new THREE.Vector3();
   #segs: FenceSegment2D[];
   #segTop: Float64Array;
   #fenceTopMax = -Infinity;
+  #ballSimState: BallSimState = { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, grounded: false };
+  #ballSimCtx!: BallSimCtx;
   #wander: WanderState[];
   #throwX = 0;
   #throwZ = 0;
-  // ball: held-by-owner → windup → free flight/bounce/roll → carried back
-  #ballPhase: "held" | "windup" | "free" | "carried" = "held";
+  // ball: held-by-owner → windup → free flight/bounce/roll → carried back →
+  // receive (dog-to-hand handoff interstitial) → held
+  #ballPhase: "held" | "windup" | "free" | "carried" | "receive" = "held";
   #ballTimer = 2.2;
+  #receiveTimer = 0;
   #ballVX = 0;
   #ballVY = 0;
   #ballVZ = 0;
@@ -1268,6 +1352,14 @@ export class CoronaHeightsPark {
       this.#segTop[i] = top;
       this.#fenceTopMax = Math.max(this.#fenceTopMax, top);
     }
+    this.#ballSimCtx = {
+      groundTop: (x, z) => map.groundTop(x, z),
+      lift: DOG_SURFACE_LIFT,
+      radius: BALL_R,
+      segs: this.#segs,
+      segTop: this.#segTop,
+      fenceTopMax: this.#fenceTopMax
+    };
     this.#wander = [
       { mode: "roam", tx: 366, tz: 2699, timer: 0, dur: 1 },
       { mode: "roam", tx: 384, tz: 2696, timer: 0, dur: 1 }
@@ -1310,8 +1402,10 @@ export class CoronaHeightsPark {
 
   #handPos(owner: ParkOwner, windup: number, out: THREE.Vector3) {
     const lx = 0.35;
-    const ly = 1.22 + 0.42 * windup;
-    const lz = -0.22 + 0.62 * windup;
+    // reach drops the hand and pushes it forward (-Z) to meet the dog's mouth,
+    // so the returned ball lands in the palm instead of floating by the shoulder
+    const ly = 1.22 + 0.42 * windup - 0.52 * owner.reach;
+    const lz = -0.22 + 0.62 * windup - 0.44 * owner.reach;
     const sin = Math.sin(owner.yaw);
     const cos = Math.cos(owner.yaw);
     out.set(
@@ -1357,9 +1451,13 @@ export class CoronaHeightsPark {
     const owner = this.owners[0];
     const dog = this.dogs[0];
     const ball = this.#ball;
+    let reachTarget = 0;
+    let claspTarget = 0;
+    let jawTarget = 0;
     if (this.#ballPhase === "held" || this.#ballPhase === "windup") {
       const w = this.#ballPhase === "windup" ? throwWindup(Math.min(owner.throwAnim, THROW_RELEASE)) : 0;
       ball.position.copy(this.#handPos(owner, w, this.#propTarget));
+      claspTarget = 1; // grip the ball until it leaves the hand
       if (this.#ballPhase === "held") {
         this.#ballTimer -= dt;
         if (this.#ballTimer <= 0 && this.#ballFetch === "wait") {
@@ -1371,8 +1469,25 @@ export class CoronaHeightsPark {
       }
     } else if (this.#ballPhase === "free") {
       this.#stepBall(dt);
+    } else if (this.#ballPhase === "receive") {
+      // dog-to-hand handoff: owner bows and reaches, mitt closes as the ball
+      // travels from the mouth to the palm, dog's jaw drops open to release
+      this.#receiveTimer -= dt;
+      const p = clamp01(1 - this.#receiveTimer / RECEIVE_TIME);
+      reachTarget = 1;
+      claspTarget = smooth01((p - 0.35) / 0.5);
+      jawTarget = smooth01((p - 0.3) / 0.4); // open to let go once the hand is there
+      dogMouth(dog, this.#receiveFrom);
+      ball.position.lerpVectors(this.#receiveFrom, this.#handPos(owner, 0, this.#propTarget), smooth01(p));
+      if (this.#receiveTimer <= 0) {
+        this.#ballPhase = "held";
+        this.#ballTimer = 1.5 + Math.random() * 1.5;
+        owner.greetTimer = 1.1;
+      }
     } else {
+      // carried: ball rides the mouth, jaw held a touch open so it peeks out
       ball.position.copy(dogMouth(dog, this.#mouth));
+      jawTarget = 0.15;
     }
 
     switch (this.#ballFetch) {
@@ -1388,6 +1503,7 @@ export class CoronaHeightsPark {
         moveDog(this.#map, dog, ball.position.x, ball.position.z, dogSprint(dog.style), this.owners, dt);
         const d = Math.hypot(ball.position.x - dog.x, ball.position.z - dog.z);
         const ballSpeed = Math.hypot(this.#ballVX, this.#ballVZ);
+        jawTarget = d < 1.1 ? 1 : 0; // gape open as it closes on the ball
         // the wide-radius fallback covers a ball resting inside an owner's clearance ring
         const pickup =
           this.#ballGrounded && ((ballSpeed < 2.4 && d < 0.55) || (ballSpeed < 0.05 && d < 1));
@@ -1401,17 +1517,23 @@ export class CoronaHeightsPark {
         const dx = dog.x - owner.x;
         const dz = dog.z - owner.z;
         const d = Math.hypot(dx, dz) || 1;
+        jawTarget = 0.15;
         // stop short on the dog's side of the owner rather than running them over
         moveDog(this.#map, dog, owner.x + (dx / d) * 1.1, owner.z + (dz / d) * 1.1, dogSprint(dog.style) * 0.55, this.owners, dt);
         if (d < 1.45 && dog.speed < 0.9) {
-          this.#ballPhase = "held";
-          this.#ballTimer = 1.5 + Math.random() * 1.5;
+          // hand it over: interstitial reach+clasp before the ball reads "held"
+          this.#ballPhase = "receive";
+          this.#receiveTimer = RECEIVE_TIME;
           this.#ballFetch = "wait";
-          owner.greetTimer = 1.1;
         }
         break;
       }
     }
+
+    const ease = 1 - Math.exp(-dt * 9);
+    owner.reach += (reachTarget - owner.reach) * ease;
+    owner.clasp += (claspTarget - owner.clasp) * ease;
+    driveDogJaw(dog, jawTarget, dt);
   }
 
   #launchBall(owner: ParkOwner, elapsed: number) {
@@ -1430,102 +1552,33 @@ export class CoronaHeightsPark {
   }
 
   /** Ballistic flight, restitution bounces, then woodchip rolling with terrain
-   * downhill drift. Substepped so a frame hitch can't tunnel through the fence:
-   * 1/90 keeps the fastest throw (≤22 m/s) under one ball radius per step. */
+   * downhill drift + fence rebound — all in the shared ballSim so the player's
+   * thrown ball matches. Roll spin is applied here from the frame's net travel. */
   #stepBall(dt: number) {
     const ball = this.#ball;
-    let remaining = Math.min(dt, 0.1);
-    while (remaining > 1e-5) {
-      const h = Math.min(remaining, 1 / 90);
-      remaining -= h;
-      const px = ball.position.x;
-      const pz = ball.position.z;
-      if (!this.#ballGrounded) {
-        this.#ballVY -= 9.8 * h;
-        ball.position.x += this.#ballVX * h;
-        ball.position.y += this.#ballVY * h;
-        ball.position.z += this.#ballVZ * h;
-        const gy = this.#map.groundTop(ball.position.x, ball.position.z) + DOG_SURFACE_LIFT + BALL_R;
-        if (ball.position.y <= gy && this.#ballVY < 0) {
-          ball.position.y = gy;
-          this.#ballVY = -this.#ballVY * 0.55;
-          this.#ballVX *= 0.85;
-          this.#ballVZ *= 0.85;
-          if (this.#ballVY < 1.5) {
-            this.#ballVY = 0;
-            this.#ballGrounded = true;
-          }
-        }
-      } else {
-        const speed = Math.hypot(this.#ballVX, this.#ballVZ);
-        if (speed > 1e-4) {
-          const k = Math.max(0, speed - 1.6 * h) / speed; // woodchip friction
-          this.#ballVX *= k;
-          this.#ballVZ *= k;
-        }
-        const gx =
-          (this.#map.groundTop(ball.position.x + 0.6, ball.position.z) -
-            this.#map.groundTop(ball.position.x - 0.6, ball.position.z)) /
-          1.2;
-        const gz =
-          (this.#map.groundTop(ball.position.x, ball.position.z + 0.6) -
-            this.#map.groundTop(ball.position.x, ball.position.z - 0.6)) /
-          1.2;
-        this.#ballVX -= 4.9 * gx * h;
-        this.#ballVZ -= 4.9 * gz * h;
-        ball.position.x += this.#ballVX * h;
-        ball.position.z += this.#ballVZ * h;
-        ball.position.y = this.#map.groundTop(ball.position.x, ball.position.z) + DOG_SURFACE_LIFT + BALL_R;
-      }
-      this.#collideBallFence();
-      const dx = ball.position.x - px;
-      const dz = ball.position.z - pz;
-      const travelled = Math.hypot(dx, dz);
-      if (travelled > 1e-6) {
-        // visible roll: spin about the axis perpendicular to travel
-        this.#spinAxis.set(-dz / travelled, 0, dx / travelled);
-        ball.rotateOnWorldAxis(this.#spinAxis, (travelled / BALL_R) * (this.#ballGrounded ? 1 : 0.35));
-      }
-    }
-  }
-
-  #collideBallFence() {
-    const ball = this.#ball;
-    if (ball.position.y > this.#fenceTopMax) return;
-    const rad = BALL_R + FENCE_PAD;
-    // two sequential passes settle corner hits without a solver
-    for (let iter = 0; iter < 2; iter++) {
-      let hit = false;
-      for (let i = 0; i < this.#segs.length; i++) {
-        if (ball.position.y > this.#segTop[i]) continue;
-        const seg = this.#segs[i];
-        const ex = seg.bx - seg.ax;
-        const ez = seg.bz - seg.az;
-        const t = clamp01(((ball.position.x - seg.ax) * ex + (ball.position.z - seg.az) * ez) / (ex * ex + ez * ez));
-        const cx = seg.ax + ex * t;
-        const cz = seg.az + ez * t;
-        let nx = ball.position.x - cx;
-        let nz = ball.position.z - cz;
-        const d = Math.hypot(nx, nz);
-        if (d >= rad) continue;
-        if (d > 1e-4 && nx * seg.nx + nz * seg.nz > 0) {
-          nx /= d;
-          nz /= d;
-        } else {
-          // tunnelled past the line: recover along the inward normal
-          nx = seg.nx;
-          nz = seg.nz;
-        }
-        ball.position.x = cx + nx * rad;
-        ball.position.z = cz + nz * rad;
-        const vn = this.#ballVX * nx + this.#ballVZ * nz;
-        if (vn < 0) {
-          this.#ballVX -= 1.6 * vn * nx;
-          this.#ballVZ -= 1.6 * vn * nz;
-        }
-        hit = true;
-      }
-      if (!hit) break;
+    const s = this.#ballSimState;
+    s.x = ball.position.x;
+    s.y = ball.position.y;
+    s.z = ball.position.z;
+    s.vx = this.#ballVX;
+    s.vy = this.#ballVY;
+    s.vz = this.#ballVZ;
+    s.grounded = this.#ballGrounded;
+    const px = s.x;
+    const pz = s.z;
+    stepBall(s, this.#ballSimCtx, dt);
+    ball.position.set(s.x, s.y, s.z);
+    this.#ballVX = s.vx;
+    this.#ballVY = s.vy;
+    this.#ballVZ = s.vz;
+    this.#ballGrounded = s.grounded;
+    const dx = s.x - px;
+    const dz = s.z - pz;
+    const travelled = Math.hypot(dx, dz);
+    if (travelled > 1e-6) {
+      // visible roll: spin about the axis perpendicular to travel
+      this.#spinAxis.set(-dz / travelled, 0, dx / travelled);
+      ball.rotateOnWorldAxis(this.#spinAxis, (travelled / BALL_R) * (this.#ballGrounded ? 1 : 0.35));
     }
   }
 
@@ -1533,12 +1586,15 @@ export class CoronaHeightsPark {
     const owner = this.owners[1];
     const dog = this.dogs[1];
     const f = this.#frisbee;
+    let claspTarget = 0;
+    let jawTarget = 0;
     switch (this.#friPhase) {
       case "held":
       case "windup": {
         const w = this.#friPhase === "windup" ? throwWindup(Math.min(owner.throwAnim, THROW_RELEASE)) : 0;
         f.position.copy(this.#handPos(owner, w, this.#propTarget));
         f.rotation.set(0.35 + w * 0.3, owner.yaw, 0.3);
+        claspTarget = 1; // grip the disc
         if (this.#friPhase === "held") {
           this.#friTimer -= dt;
           if (this.#friTimer <= 0 && this.#friFetch === "wait") {
@@ -1585,6 +1641,7 @@ export class CoronaHeightsPark {
       case "carried":
         f.position.copy(dogMouth(dog, this.#mouth));
         f.rotation.set(0.5, dog.heading, 0);
+        jawTarget = 0.15; // disc peeks from the jaws
         break;
     }
 
@@ -1600,6 +1657,7 @@ export class CoronaHeightsPark {
       case "chase": {
         moveDog(this.#map, dog, f.position.x, f.position.z, dogSprint(dog.style), this.owners, dt);
         const d = Math.hypot(f.position.x - dog.x, f.position.z - dog.z);
+        if (d < 1.1 && this.#friPhase !== "carried") jawTarget = 1; // gape for the catch
         const catchable =
           this.#friPhase === "rest" ||
           this.#friPhase === "settle" ||
@@ -1624,6 +1682,9 @@ export class CoronaHeightsPark {
         break;
       }
     }
+
+    owner.clasp += (claspTarget - owner.clasp) * (1 - Math.exp(-dt * 9));
+    driveDogJaw(dog, jawTarget, dt);
   }
 
   #launchFrisbee(owner: ParkOwner, elapsed: number) {
@@ -1651,6 +1712,9 @@ export class CoronaHeightsPark {
   }
 
   #updateWander(state: WanderState, dog: ParkDog, other: ParkDog, dt: number, elapsed: number) {
+    // A claimed or adopted dog is steered by the fetch/pet driver instead — don't
+    // let the ambient wander fight it for the same body.
+    if (dog.controller !== "park") return;
     switch (state.mode) {
       case "roam":
         moveDog(this.#map, dog, state.tx, state.tz, dogTrot(dog.style), this.owners, dt);
@@ -1715,5 +1779,104 @@ export class CoronaHeightsPark {
     }
     state.tx = 371;
     state.tz = 2702;
+  }
+
+  /* -------------------------------------------- player fetch + pet adoption */
+
+  /** Is this world point inside the fenced dog run? */
+  isInsidePark(x: number, z: number): boolean {
+    return pointInPolygon(x, z, CORONA_DOG_PARK);
+  }
+
+  /** Claim the nearest free wander dog (dogs[2]/[3], controller "park") to run a
+   *  player fetch. Returns null if both are busy. Owner-attached dogs are never
+   *  touched. */
+  claimFreeDog(nearX: number, nearZ: number): ParkDog | null {
+    let best: ParkDog | null = null;
+    let bestD = Infinity;
+    for (const dog of [this.dogs[2], this.dogs[3]]) {
+      if (dog.controller !== "park") continue;
+      const d = (dog.x - nearX) ** 2 + (dog.z - nearZ) ** 2;
+      if (d < bestD) {
+        bestD = d;
+        best = dog;
+      }
+    }
+    if (best) best.controller = "player";
+    return best;
+  }
+
+  /** Hand a claimed dog back to the ambient wander routine. */
+  releaseDog(dog: ParkDog): void {
+    dog.controller = "park";
+    const wi = dog === this.dogs[2] ? 0 : dog === this.dogs[3] ? 1 : -1;
+    if (wi >= 0) {
+      const state = this.#wander[wi];
+      state.mode = "roam";
+      this.#pickWanderPoint(state, dog);
+    }
+  }
+
+  /** Steer a dog toward a target with the shared locomotion feel. */
+  steerDog(dog: ParkDog, tx: number, tz: number, gait: number, dt: number): void {
+    moveDog(this.#map, dog, tx, tz, gait, this.owners, dt);
+  }
+
+  /** Stop-short, face and wag at a point (the returned-ball waiting idle). */
+  holdDog(dog: ParkDog, faceX: number, faceZ: number, elapsed: number, dt: number): void {
+    dogWait(this.#map, dog, faceX, faceZ, this.owners, elapsed, dt);
+  }
+
+  /** World carry point at the dog's mouth (writes into out). */
+  dogMouthWorld(dog: ParkDog, out: THREE.Vector3): THREE.Vector3 {
+    return dogMouth(dog, out);
+  }
+
+  /** Open the dog's jaw: 0 closed .. 1 open. */
+  setDogJaw(dog: ParkDog, open01: number): void {
+    applyDogJaw(dog, open01);
+  }
+
+  dogSprintSpeed(dog: ParkDog): number {
+    return dogSprint(dog.style);
+  }
+
+  dogTrotSpeed(dog: ParkDog): number {
+    return dogTrot(dog.style);
+  }
+
+  /** Adopt a dog as the player's pet: reparent it out of the activity group (so
+   *  the DETAIL/ACTIVITY visibility gates never touch it) but KEEP it in the dog
+   *  roster so the audio layer's positional rig indices stay stable. */
+  adoptDog(dog: ParkDog, root: THREE.Object3D): void {
+    dog.controller = "pet";
+    root.add(dog.group); // THREE.add reparents; world transform is preserved (both at origin)
+  }
+
+  /** Drive an adopted pet toward a follow target: trot when close, sprint when
+   *  far, teleport-catchup past 80 m. Grounds on plain terrain (no woodchip lift)
+   *  and is never gated by the park's detail/activity ranges. */
+  updatePet(dog: ParkDog, targetX: number, targetZ: number, dt: number, elapsed: number): void {
+    const dx = targetX - dog.x;
+    const dz = targetZ - dog.z;
+    const d = Math.hypot(dx, dz);
+    if (d > 80) {
+      // fell too far behind (loading gap, big teleport): quiet catch-up
+      dog.x = targetX;
+      dog.z = targetZ;
+      dog.speed = 0;
+      if (d > 1e-4) dog.heading = Math.atan2(-dx, -dz);
+      dogGaitPose(this.#map, dog, 0, 0);
+      return;
+    }
+    const trot = dogTrot(dog.style);
+    const sprint = dogSprint(dog.style);
+    const gait = d > 8 ? sprint : d > 2.5 ? lerp(trot, sprint, clamp01((d - 2.5) / 5.5)) : trot;
+    moveDog(this.#map, dog, targetX, targetZ, gait, NO_OWNERS, dt, 0);
+    if (dog.speed < 0.4) {
+      // settled at heel: a contented idle wag
+      dog.tail.rotation.y = Math.sin(elapsed * 6 + dog.style.coat) * 0.7;
+      dog.tail.rotation.x = 0.6;
+    }
   }
 }

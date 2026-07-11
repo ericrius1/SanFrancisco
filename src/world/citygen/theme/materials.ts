@@ -121,20 +121,42 @@ export function buildCityGenMaterials(): Record<string, THREE.Material> {
     // when the player opens a door with E, and the dynamic swinging leaf reuses
     // this shared material so baked + live leaves match exactly.
     "citygen.doorleaf": standard(0x53382c, 0.55, { emissive: 0.12 }),
+    // Dedicated closed-door occluder. Unlike the generic room-dark material this
+    // bucket is owned by the door runtime, which hides it with the baked leaf so
+    // an opened doorway reveals the real lazy-built interior instead of leaving
+    // an intangible black quad across the threshold.
+    "citygen.doorback": standard(0x171922, 0.9, { emissive: 0.05 }),
+    // Small live-leaf accents. These stay shared city-wide; an animated door adds
+    // only geometry, never a one-off material/pipeline.
+    "citygen.door.panel": standard(0x3d271f, 0.68, { emissive: 0.1 }),
+    "citygen.door.hardware": standard(0xc9a557, 0.28, { metalness: 0.78, emissive: 0.22 }),
     "citygen.room": standard(0x171922, 0.9, { emissive: 0.05 }),
     "citygen.awn": standard(0x8a3b34, 0.7, { emissive: 0.2 }),    // storefront awning
     "citygen.sign": standard(0x2c2f36, 0.6, { emissive: 0.28 }),  // shop signband
     // interiors — self-lit (the room has no sky light) so they read when entered
     "int.floor": standard(0x6b4e34, 0.8, { emissive: 0.4 }),    // wood floor
+    "int.floor.light": standard(0x9c7449, 0.78, { emissive: 0.42 }), // sunlit oak / refined homes
+    "int.floor.tile": standard(0xc9bba4, 0.82, { emissive: 0.48 }),  // kitchens, baths, polished entries
     "int.wood": standard(0x5a4028, 0.7, { emissive: 0.35 }),    // furniture / stairs
     "int.sofa": standard(0x7a5a52, 0.85, { emissive: 0.4 }),    // upholstery
+    "int.fabric.blue": standard(0x486a82, 0.86, { emissive: 0.42 }),
+    "int.fabric.green": standard(0x55715c, 0.88, { emissive: 0.4 }),
+    "int.fabric.gold": standard(0xb68a42, 0.84, { emissive: 0.44 }),
+    "int.linen": standard(0xe9dfcb, 0.9, { emissive: 0.54 }),
     "int.glow": standard(0xffdca0, 0.9, { emissive: 2.4 }),     // warm lamp / hearth
     "int.wall": standard(0xd7ccba, 0.94, { emissive: 0.62 }),   // interior partition (plaster)
+    "int.wall.warm": standard(0xe4d7c2, 0.94, { emissive: 0.62 }),
+    "int.wall.sage": standard(0xc7d0c0, 0.94, { emissive: 0.58 }),
+    "int.wall.cool": standard(0xbfc7cd, 0.92, { emissive: 0.55 }),
     "int.ceil": standard(0xefe7d6, 0.95, { emissive: 0.85 }),   // ceiling doubles as the room's fill light
     "int.window": standard(0xbcd6ea, 0.3, { emissive: 2.6 }),   // daylight behind an interior window (bright, so rooms aren't caves)
     "int.trim": standard(0xece4d4, 0.6, { emissive: 0.4 }),     // baseboards / door casing
     "int.rug": standard(0x7a3b34, 0.9, { emissive: 0.38 }),     // area rug
     "int.metal": standard(0x8a8f96, 0.5, { metalness: 0.6, emissive: 0.3 }), // loft/industrial
+    "int.brass": standard(0xc79b45, 0.34, { metalness: 0.68, emissive: 0.35 }),
+    "int.plant": standard(0x47734b, 0.9, { emissive: 0.3 }),
+    "int.book": standard(0x7a3e36, 0.82, { emissive: 0.3 }),
+    "int.ceramic": standard(0xd5c9b6, 0.55, { emissive: 0.48 }),
     "int.counter": standard(0x40352a, 0.6, { emissive: 0.34 }), // shop counter / shelving
     // placeholder framed art (paintings/photos) — self-lit so they read on the wall;
     // real art textures come later. int.frame = the gilt/dark frame around each.

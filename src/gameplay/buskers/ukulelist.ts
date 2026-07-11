@@ -1,5 +1,6 @@
 import * as THREE from "three/webgpu";
-import { buildRig } from "../../player/rig";
+import { buildRig, setRigClasp } from "../../player/rig";
+import { applyArmPose, mixArmPose, solveArmPose, type ArmPose } from "./armIk";
 import { SEC_PER_BEAT } from "./song";
 import { midiHz, NoteCursor } from "./types";
 import type { Musician, MusicianBuilder, NoteEvent } from "./types";
@@ -23,10 +24,33 @@ import type { Musician, MusicianBuilder, NoteEvent } from "./types";
 
 const { damp, lerp, clamp, smoothstep } = THREE.MathUtils;
 
-const STRIKE_S = 0.09; // strum strike time (onset → full swing)
-const ANTICIPATE_S = 0.14; // pre-strum wind-up window
+const WINDUP_S = 0.17;
+const STROKE_HALF_S = 0.085; // centre/string contact lands exactly on the note onset
+const RECOVER_S = 0.14;
+const ARPEGGIO_SWEEP_S = 0.3;
 const GINGER_HAIR = 0xd68c3a;
 const GINGER_BEARD = 0xc2762e;
+
+function smootherstep01(value: number): number {
+  const x = clamp(value, 0, 1);
+  return x * x * x * (x * (x * 6 - 15) + 10);
+}
+
+function sampleArmStations(stations: ArmPose[], amount: number, out: ArmPose): ArmPose {
+  const u = clamp(amount, 0, 1) * (stations.length - 1);
+  const i1 = Math.min(stations.length - 2, Math.floor(u));
+  const t = u - i1;
+  const p0 = stations[Math.max(0, i1 - 1)];
+  const p1 = stations[i1];
+  const p2 = stations[Math.min(stations.length - 1, i1 + 1)];
+  const p3 = stations[Math.min(stations.length - 1, i1 + 2)];
+  const t2 = t * t;
+  const t3 = t2 * t;
+  for (let i = 0; i < out.length; i++) {
+    out[i] = 0.5 * (2 * p1[i] + (-p0[i] + p2[i]) * t + (2 * p0[i] - 5 * p1[i] + 4 * p2[i] - p3[i]) * t2 + (-p0[i] + 3 * p1[i] - 3 * p2[i] + p3[i]) * t3);
+  }
+  return out;
+}
 
 /** Chord "reach" 0..1 along the neck, derived from the event's pitch span so
  * each of the song's four chords (Dm/Bb/F/C) gets its own fret-hand spot. */
@@ -115,6 +139,7 @@ export const buildUkulelist: MusicianBuilder = (audio, part): Musician => {
   // height so the seat of the pants meets the planks (hip block is 0.22 tall
   // centred at y 0.01 in hip space).
   const group = new THREE.Group();
+  group.name = "busker-ukulelist";
   rig.group.position.y = 0.11;
   group.add(rig.group);
   rig.hips.rotation.set(0, 0, 0); // never moves again — everything else is per-frame
@@ -165,6 +190,7 @@ export const buildUkulelist: MusicianBuilder = (audio, part): Musician => {
   const stringMat = mat(0xe9e2cf);
 
   const uke = new THREE.Group();
+  uke.name = "busker-ukulele";
   uke.rotation.x = -Math.PI / 2 + 0.14; // soundboard out toward -Z, tipped up a touch
   box(uke, wood, 0.26, 0.09, 0.2, 0, 0, 0); // body
   const hole = new THREE.Mesh(own(new THREE.CylinderGeometry(0.048, 0.048, 0.012, 12)), holeMat);
@@ -186,55 +212,103 @@ export const buildUkulelist: MusicianBuilder = (audio, part): Musician => {
   ukeSway.add(uke);
   rig.torso.add(ukeSway);
 
+  // QA-visible contacts ride in instrument space. The hand stations below are
+  // solved against these exact paths, so the stroke crosses the strings instead
+  // of pumping toward/away from the player's chest.
+  const strumContact = new THREE.Object3D();
+  strumContact.name = "ukulele-strum-contact";
+  strumContact.position.set(0.02, 0.105, 0);
+  uke.add(strumContact);
+  const fretContact = new THREE.Object3D();
+  fretContact.name = "ukulele-fret-contact";
+  fretContact.position.set(0.27, 0.07, 0);
+  uke.add(fretContact);
+
+  /* --------------------------------------------------- build-time hand stations */
+  // Right hand: five samples across the rolled soundboard. A Catmull-Rom sample
+  // of these stations gives a continuous, curved arm path at runtime.
+  const strumPoses: ArmPose[] = [];
+  let strumSeed: ArmPose = [0.85, -0.05, -0.115, 0.12, 0, 1.3];
+  for (const z of [-0.055, -0.0275, 0, 0.0275, 0.055]) {
+    strumContact.position.z = z;
+    uke.updateWorldMatrix(true, true);
+    const target = strumContact.getWorldPosition(new THREE.Vector3());
+    strumSeed = solveArmPose(rig.armR, rig.foreR, rig.handR, target, strumSeed, {
+      side: -1,
+      elbowClearance: 0.245,
+      elbowFront: -0.15
+    });
+    strumPoses.push(strumSeed);
+  }
+
+  // Left hand: chord changes travel a short, readable distance along the neck.
+  const fretPoses: ArmPose[] = [];
+  let fretSeed: ArmPose = [0.58, -0.08, 0.2, 1.95, -0.08, -0.22];
+  for (const x of [0.25, 0.295, 0.34, 0.385]) {
+    fretContact.position.x = x;
+    uke.updateWorldMatrix(true, true);
+    const target = fretContact.getWorldPosition(new THREE.Vector3());
+    fretSeed = solveArmPose(rig.armL, rig.foreL, rig.handL, target, fretSeed, {
+      side: 1,
+      elbowClearance: 0.235,
+      elbowFront: -0.14
+    });
+    fretPoses.push(fretSeed);
+  }
+  strumContact.position.set(0.02, 0.105, 0);
+  fretContact.position.set(0.27, 0.07, 0);
+
+  const strumSample = strumPoses[2].slice() as ArmPose;
+  const strumPose = strumPoses[2].slice() as ArmPose;
+  const fretSample = fretPoses[0].slice() as ArmPose;
+  const fretPose = fretPoses[0].slice() as ArmPose;
+  const fretRest: ArmPose = [0.55, 0.02, 0.12, 0.32, 0, 0];
+
   /* ---------------------------------------------------------- animation */
   const cursor = new NoteCursor(part);
   let tLife = 3.7; // own continuous clock (phaseTime resets would pop the sines)
   let perform = 0; // eased playing-intensity: 1 in playing/countin, 0 in rest
-  let sNow = 0; // strum scalar: -1 = swung through a down, +1 = through an up
-  let sFrom = 0; // latched value at each onset so strikes start where the arm is
+  let sNow = 0; // -1..1 across the soundboard; down/up strokes traverse opposite ways
   let fret = 0; // eased fret-hand reach along the neck
-  let lastEv: NoteEvent | null = null;
 
   const update = (dt: number, clock: Parameters<Musician["update"]>[1]) => {
     tLife += dt;
     perform = damp(perform, clock.phase === "rest" ? 0 : 1, 3, dt);
     const wind = clock.wind;
 
-    // ---- strum scalar from the part, sample-accurate against clock.beat ----
+    // ---- onset-centred strum path from the authored part ----
+    // The old stroke began at the audio onset, accelerated with f², then jumped
+    // straight into exponential recovery. This C1/C2 path winds up beforehand,
+    // crosses the middle pair of strings exactly at onset, and eases out without
+    // a velocity discontinuity.
     const { current, next } = cursor.at(clock.beat);
-    if (current !== lastEv) {
-      sFrom = sNow; // new onset (or loop reset): strike departs from wherever the arm is
-      lastEv = current;
-    }
     if (clock.phase === "playing") {
       let sT = 0;
-      if (current) {
-        const tSince = (clock.beat - current.beat) * SEC_PER_BEAT;
-        if (current.tag === "arpeggio") {
-          // one slow, luxurious downward roll, then stillness
-          if (tSince < 0.5) sT = lerp(sFrom, -1, smoothstep(tSince, 0, 0.5));
-          else sT = lerp(-1, -0.35, 1 - Math.exp(-(tSince - 0.5) * 0.8));
-        } else if (current.tag === "down" || current.tag === "up") {
-          const dir = current.tag === "up" ? 1 : -1;
-          if (tSince < STRIKE_S) {
-            const f = tSince / STRIKE_S;
-            sT = lerp(sFrom, dir, f * f); // accelerating whip through the strings
+      if (next) {
+        const tUntil = (next.beat - clock.beat) * SEC_PER_BEAT;
+        if (tUntil <= WINDUP_S) {
+          const dir = next.tag === "up" ? -1 : 1;
+          if (tUntil > STROKE_HALF_S) {
+            const windup = (WINDUP_S - tUntil) / (WINDUP_S - STROKE_HALF_S);
+            sT = -dir * smootherstep01(windup);
           } else {
-            sT = dir * Math.exp(-(tSince - STRIKE_S) * 6); // relaxed recovery
+            sT = dir * Math.sin((-tUntil / STROKE_HALF_S) * (Math.PI / 2));
           }
         }
       }
-      if (next && (!current || current.tag !== "arpeggio")) {
-        // wind up opposite the coming stroke just before it lands
-        const tUntil = (next.beat - clock.beat) * SEC_PER_BEAT;
-        const settled = current ? (clock.beat - current.beat) * SEC_PER_BEAT > 0.15 : true;
-        if (tUntil < ANTICIPATE_S && settled) {
-          const nd = next.tag === "up" ? 1 : -1;
-          const w = 1 - tUntil / ANTICIPATE_S;
-          sT += -nd * 0.45 * w * w;
+      if (current) {
+        const tSince = (clock.beat - current.beat) * SEC_PER_BEAT;
+        const dir = current.tag === "up" ? -1 : 1;
+        if (current.tag === "arpeggio") {
+          if (tSince <= ARPEGGIO_SWEEP_S) sT = lerp(-1, 1, smootherstep01(tSince / ARPEGGIO_SWEEP_S));
+          else if (tSince <= ARPEGGIO_SWEEP_S + RECOVER_S) sT = 1 - smootherstep01((tSince - ARPEGGIO_SWEEP_S) / RECOVER_S);
+        } else if (tSince <= STROKE_HALF_S) {
+          sT = dir * Math.sin((tSince / STROKE_HALF_S) * (Math.PI / 2));
+        } else if (tSince <= STROKE_HALF_S + RECOVER_S) {
+          sT = dir * (1 - smootherstep01((tSince - STROKE_HALF_S) / RECOVER_S));
         }
       }
-      sNow = clamp(sT, -1.3, 1.3);
+      sNow = clamp(sT, -1, 1);
     } else {
       sNow = damp(sNow, 0, 4, dt); // countin/rest: hand drifts to a neutral hover
     }
@@ -272,37 +346,31 @@ export const buildUkulelist: MusicianBuilder = (audio, part): Musician => {
       lerp(swayR * 0.03, sNow * 0.01, perform)
     );
 
-    // fret arm: wraps the neck while playing (deep elbow fold puts the hand at
-    // the nut), slides subtly with the chord, micro finger wiggle; rests on
-    // the thigh between passes
-    const wiggle = perform * (0.03 * Math.sin(tLife * 12.7) + 0.02 * Math.sin(tLife * 8.3));
-    rig.armL.rotation.set(
-      lerp(0.55, 0.55 - fret * 0.06, perform),
-      lerp(0.02, -0.1 - fret * 0.05, perform),
-      lerp(0.08, 0.15 + fret * 0.08, perform)
-    );
-    rig.foreL.rotation.set(lerp(0.32, 2.05 + fret * 0.12, perform), lerp(0, -0.1, perform), wiggle);
-
-    // strum arm: forearm carries the stroke (down = wrist toward -Y/-Z);
-    // at rest the hand lies flat on the soundboard
-    rig.armR.rotation.set(
-      lerp(0.52, 0.56 + sNow * 0.06, perform),
-      lerp(0.1, 0.18, perform),
-      lerp(0.3, 0.34, perform)
-    );
-    rig.foreR.rotation.set(lerp(0.66, 0.88 + sNow * 0.42, perform), lerp(-0.1, -0.12, perform), 0);
+    // Both hands follow solved instrument-space stations. The fret elbow stays
+    // outside the body while the forearm folds to the neck; the right hand runs
+    // directly across the soundboard instead of vertically pumping at the elbow.
+    sampleArmStations(fretPoses, fret, fretSample);
+    mixArmPose(fretPose, fretRest, fretSample, perform);
+    applyArmPose(rig.armL, rig.foreL, fretPose);
+    sampleArmStations(strumPoses, (sNow + 1) * 0.5, strumSample);
+    mixArmPose(strumPose, strumPoses[2], strumSample, perform);
+    applyArmPose(rig.armR, rig.foreR, strumPose);
+    setRigClasp(rig, "L", 0.25 + 0.62 * perform);
+    setRigClasp(rig, "R", 0.18 + 0.18 * perform);
+    strumContact.position.z = sNow * 0.055;
+    fretContact.position.x = lerp(0.25, 0.385, fret);
 
     // dangling legs over the rock's lip — loose, lazy phase-offset swings,
     // wind-fed, calmer while he plays; the right foot taps the air on the beat
     const legAmp = (0.13 + 0.07 * wind) * (1 - perform * 0.5);
-    rig.legL.rotation.set(1.34 + Math.sin(tLife * 0.83) * legAmp, 0, 0.07);
-    rig.legR.rotation.set(1.42 + Math.sin(tLife * 0.71 + 2.1) * legAmp, 0, -0.06);
-    rig.shinL.rotation.set(-1.26 + Math.sin(tLife * 1.07 + 0.9) * legAmp * 1.8, 0, 0);
-    rig.shinR.rotation.set(-1.33 + Math.sin(tLife * 0.93 + 3.4) * legAmp * 1.8 + perform * 0.05 * tap, 0, 0);
+    rig.legL.rotation.set(1.28 + Math.sin(tLife * 0.83) * legAmp, 0, 0.07);
+    rig.legR.rotation.set(1.36 + Math.sin(tLife * 0.71 + 2.1) * legAmp, 0, -0.06);
+    rig.shinL.rotation.set(-1.0 + Math.sin(tLife * 1.07 + 0.9) * legAmp * 1.8, 0, 0);
+    rig.shinR.rotation.set(-1.07 + Math.sin(tLife * 0.93 + 3.4) * legAmp * 1.8 + perform * 0.05 * tap, 0, 0);
 
     // the uke itself: jaunty across the chest, dips with hard down-strums,
     // droops when he stops playing
-    ukeSway.rotation.z = 0.6 - (1 - perform) * 0.3 + sNow * 0.03 * perform;
+    ukeSway.rotation.z = 0.6 - (1 - perform) * 0.3 + sNow * 0.008 * perform;
   };
 
   /* -------------------------------------------------------------- audio */

@@ -19,10 +19,13 @@ import { PanelBuilder } from "../core/facade";
 import { ensureCCW, triangulate, centroid, streetEdgeIndex, pointInPoly, distToPolyEdge } from "../core/footprint";
 import { doorMetrics } from "../core/collider";
 import { rng } from "../core/rng";
-import { FLOOR_H, MAX_FLOORS, INSET, bboxOf, inset, rectArea, rectMinDim, type Rect } from "./common";
-import { partition, buildWalls, deck, polyGroundSlab } from "./rooms";
+import { specFor } from "../theme/archetypes";
+import { MAX_FLOORS, INSET, bboxOf, inset, rectArea, rectMinDim, type Rect } from "./common";
+import { partition, buildWalls, deck, planCirculation, polyGroundSlab, type EntryAccess, type Portal, type Wall } from "./rooms";
 import { planStair, buildStair, stairFits, type StairPlan } from "./stairs";
 import { furnish, type Role } from "./props";
+import { dressInteriorShell, type FrontOpening } from "./shell";
+import { interiorStyle, type InteriorUse } from "./style";
 
 export interface BuiltInterior {
   panels: Panel[];
@@ -32,31 +35,7 @@ export interface BuiltInterior {
 
 /** matches the parallax-window zone so what you see through the glass ≈ what you
  *  find inside: homes (parlour/apartments), shops (retail + offices), lofts (open). */
-export type InteriorZone = "residential" | "commercial" | "loft";
-
-/** Bright "daylight" glow panels along the perimeter walls at window height, so a
- *  room reads as lit by its windows instead of a cave (the parallax glass is
- *  one-sided → dark from inside). Cheap emissive quads, no colliders; not aligned
- *  to the exact exterior windows but spaced to read as them. */
-function daylight(out: PanelBuilder, poly: readonly (readonly [number, number])[], cx: number, cz: number, fY: number): void {
-  const y0 = fY + 1.35, y1 = fY + 2.15, off = 0.08, winW = 1.1;
-  for (let i = 0; i < poly.length; i++) {
-    const [x0, z0] = poly[i], [x1, z1] = poly[(i + 1) % poly.length];
-    const ex = x1 - x0, ez = z1 - z0; const L = Math.hypot(ex, ez);
-    if (L < 1.8) continue;
-    let nx = -ez / L, nz = ex / L;                        // wall normal
-    const mx = (x0 + x1) / 2, mz = (z0 + z1) / 2;
-    if ((cx - mx) * nx + (cz - mz) * nz < 0) { nx = -nx; nz = -nz; } // point inward
-    const n = Math.max(1, Math.floor(L / 2.8));
-    for (let w = 0; w < n; w++) {
-      const tc = (w + 0.5) / n, half = (winW / 2) / L;
-      const s0 = Math.max(0.02, tc - half), s1 = Math.min(0.98, tc + half);
-      const ax0 = x0 + ex * s0 + nx * off, az0 = z0 + ez * s0 + nz * off;
-      const ax1 = x0 + ex * s1 + nx * off, az1 = z0 + ez * s1 + nz * off;
-      out.quad("int.window", [ax0, y0, az0], [ax1, y0, az1], [ax1, y1, az1], [ax0, y1, az0], [nx, 0, nz]);
-    }
-  }
-}
+export type InteriorZone = InteriorUse;
 
 /**
  * Largest axis-aligned rectangle that fits INSIDE a (local-frame) footprint polygon.

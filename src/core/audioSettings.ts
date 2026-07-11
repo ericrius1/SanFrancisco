@@ -3,7 +3,7 @@
  * Stored under its own localStorage key — deliberately outside the "/" tweak
  * store, so a factory reset (".") doesn't blast the speakers back on.
  * Consumers poll effectsAudioLevel() or voiceAudioLevel(); vehicle hum reads
- * every frame, fireworks/chimes read per triggered sound, voice applies per peer.
+ * every frame, fireworks read per triggered sound, voice applies per peer.
  */
 
 const KEY = "sf-audio";

@@ -130,7 +130,10 @@ function stoopAndDoor(out: PanelBuilder, e: FacadeEdge, base: number, groundTopY
   // Hinge at the LEFT jamb (dl = dCenter − halfW viewed from the street); proud
   // 0.055 so no face is coplanar with the 0.02 backing or the 0.09 trim front.
   const inw = (p: Vec3, d: number, yy: number): Vec3 => [p[0] + n3[0] * d, yy, p[2] + n3[2] * d];
-  out.quad("citygen.room", inw(dl, 0.02, doorBase), inw(dr, 0.02, doorBase), inw(dr, 0.02, doorTop), inw(dl, 0.02, doorTop), n3);
+  // Dedicated backing bucket: ring.ts hides/restores this with the baked leaf.
+  // A generic citygen.room quad stayed opaque after opening and visually sealed
+  // the doorway even though its collider gap was live.
+  out.quad("citygen.doorback", inw(dl, 0.02, doorBase), inw(dr, 0.02, doorBase), inw(dr, 0.02, doorTop), inw(dl, 0.02, doorTop), n3);
   const leafHalf = halfW * 0.96, dMid = (sill + openTop) / 2;
   const hinge = inw(dl, 0.055, dMid);
   out.box("citygen.doorleaf", [hinge[0] + along[0] * leafHalf, dMid, hinge[2] + along[2] * leafHalf], [leafHalf, (openTop - sill) / 2 - 0.02, 0.03], along, UP, n3, true);

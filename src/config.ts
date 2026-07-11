@@ -180,7 +180,9 @@ export const GRASS_TUNING = tunables("grass", {
  * Where and how a fresh session starts. Editable in the Tab panel (persisted);
  */
 export const START_DEFAULTS = {
-  spawn: "goldenGate",
+  // Corona Heights summit — a code spawn (src/world/spawnPoints.ts), not a baked
+  // meta.json one. Scenic and cheap to boot: it gates no heavy foliage region.
+  spawn: "coronaHeights",
   mode: "board" as PlayerMode
 }
 

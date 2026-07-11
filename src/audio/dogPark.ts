@@ -66,7 +66,18 @@ export class DogParkAudio {
   update(dt: number, playerPos: { x: number; y: number; z: number }): void {
     const centerDist = Math.hypot(playerPos.x - PARK_X, playerPos.z - PARK_Z);
     const dogs = this.#dogs();
-    if (centerDist > WAKE_RADIUS || dogs.length === 0) {
+    if (dogs.length === 0) {
+      this.#park();
+      return;
+    }
+    // Keep the layer awake if the park is near OR any single dog is — an adopted
+    // pet trotting at heel stays audible even when its home hill is silent.
+    let nearestDogDist = Infinity;
+    for (const dog of dogs) {
+      const d = Math.hypot(dog.x - playerPos.x, dog.z - playerPos.z);
+      if (d < nearestDogDist) nearestDogDist = d;
+    }
+    if (centerDist > WAKE_RADIUS && nearestDogDist > WAKE_RADIUS) {
       this.#park();
       return;
     }
@@ -74,9 +85,11 @@ export class DogParkAudio {
     if (!io || io.ctx.state !== "running") return; // nature owns unlock/suspend
     this.#wake(io, dogs);
     const now = io.ctx.currentTime;
-    // soft master gate: the layer breathes in over the last dozen metres
+    // soft master gate: the layer breathes in over the last dozen metres, driven
+    // by whichever is closer — the park itself or the nearest (possibly pet) dog
+    const proximity = Math.min(centerDist, nearestDogDist);
     this.#layer!.gain.setTargetAtTime(
-      LAYER_GAIN * smoothstep(WAKE_RADIUS, WAKE_RADIUS - 12, centerDist),
+      LAYER_GAIN * smoothstep(WAKE_RADIUS, WAKE_RADIUS - 12, proximity),
       now,
       0.2
     );
@@ -104,15 +117,18 @@ export class DogParkAudio {
       }
 
       // ---- barks: cooldown-gated, spiking when a chase starts --------------
+      // Per-dog proximity gate: while the layer is held awake for a nearby pet,
+      // a distant park dog's chase spike shouldn't yip across the whole hill.
+      const audible = dogDist < WAKE_RADIUS;
       const sprinting = dog.speed > SPRINT_SPEED;
       const chaseStart = sprinting && !rig.wasSprinting;
       rig.wasSprinting = sprinting;
       rig.barkTimer -= dt;
-      if (chaseStart && rig.barkTimer <= 1.5 && Math.random() < 0.85) {
+      if (audible && chaseStart && rig.barkTimer <= 1.5 && Math.random() < 0.85) {
         this.#bark(io, rig, dog, now);
       } else if (rig.barkTimer <= 0) {
         // idle excitement: an occasional yip while waiting on a throw
-        if (dog.speed < 1.2 && Math.random() < 0.3) this.#bark(io, rig, dog, now);
+        if (audible && dog.speed < 1.2 && Math.random() < 0.3) this.#bark(io, rig, dog, now);
         else rig.barkTimer = 0.8 + Math.random() * 1.4; // re-roll soon
       }
     }

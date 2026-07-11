@@ -468,7 +468,7 @@ export const SOUNDSCAPE_TAB_HTML = `
     <h3><span class="bts-ic">🎛️</span> One context, kept honest</h3>
     <p>There's a quiet engineering reason the whole thing lives in a single audio graph. A browser only
     hands out a handful of audio contexts before it starts refusing, and this game already spends several
-    of them — the vehicle hum, the fireworks, the wind chimes, proximity voice chat. So the nature engine
+    of them — the vehicle hum, the fireworks, the park dogs, proximity voice chat. So the nature engine
     deliberately does <em>not</em> spin up its own listener rig; it borrows one <code>AudioContext</code>,
     routes everything through one master bus and one soft limiter, and — crucially — parks the entire
     context the moment you leave every nature region. Out on Market Street it costs nothing at all. Step

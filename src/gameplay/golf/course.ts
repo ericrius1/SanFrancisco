@@ -380,14 +380,16 @@ export class GolfCourseView {
     const seed = instancedBufferAttribute(seeds) as unknown as N;
     const t = this.#time as unknown as N;
     const active = this.#activeTee as unknown as N;
-    // active hole's tee burns brighter; -1 = free-roam, everything simmers
-    // WGSL smoothstep requires edge0 < edge1; invert a legal step rather than
-    // relying on the undefined reversed-edge form.
-    const boost = smoothstep(float(0.45), float(0.5), seed.sub(active).abs()).oneMinus().mul(1.1).add(0.75);
+    // active hole's tee burns much brighter; -1 = free-roam, everything simmers
+    // at a clearly-visible base. WGSL smoothstep requires edge0 < edge1; invert a
+    // legal step rather than relying on the undefined reversed-edge form.
+    const isActive = smoothstep(float(0.45), float(0.5), seed.sub(active).abs()).oneMinus(); // 1 on the active tee
+    const boost = isActive.mul(1.05).add(1.0); // ~2.05 active, 1.0 idle (was 1.85 / 0.75)
 
-    // — aurora curtain: open cylinder, vertical fade, scrolling bands, fresnel rim
-    const curtainGeo = new THREE.CylinderGeometry(4.4, 4.9, 5.2, 28, 1, true);
-    curtainGeo.translate(0, 2.6, 0);
+    // — aurora curtain: open cylinder, vertical fade, scrolling bands, fresnel rim.
+    // Taller + wider than before so the shimmer is unmistakable from a fairway away.
+    const curtainGeo = new THREE.CylinderGeometry(4.8, 5.4, 7.5, 28, 1, true);
+    curtainGeo.translate(0, 3.75, 0);
     const curtain = new THREE.MeshBasicNodeMaterial();
     const vfade = (uv().y as N).oneMinus().pow(1.6); // bright at the grass, gone at the top
     const facing = (normalView as N).normalize().dot((positionViewDirection as N).normalize()).abs();
@@ -404,8 +406,8 @@ export class GolfCourseView {
     const huePhase = t.mul(0.21).add(seed.mul(1.3)).sin().mul(0.5).add(0.5);
     const auroraCol = mix(mix(hueA, hueB, huePhase), hueC, bands.mul(0.45));
     curtain.colorNode = auroraCol.mul(bands.mul(0.9).add(0.35)).mul(LIGHT_SCALE * 1.15);
-    const pulse = t.mul(1.7).add(seed.mul(2.1)).sin().mul(0.1).add(0.9);
-    curtain.opacityNode = vfade.mul(fresnel).mul(bands.mul(0.75).add(0.25)).mul(pulse).mul(boost).mul(0.4);
+    const pulse = t.mul(1.7).add(seed.mul(2.1)).sin().mul(0.12).add(0.9);
+    curtain.opacityNode = vfade.mul(fresnel).mul(bands.mul(0.6).add(0.4)).mul(pulse).mul(boost).mul(0.4);
     curtain.transparent = true;
     curtain.blending = THREE.AdditiveBlending;
     curtain.depthWrite = false;
@@ -421,25 +423,44 @@ export class GolfCourseView {
     // RingGeometry UVs are planar — recover the radius from local position for
     // a soft band peaking mid-ring
     const rad = (positionLocal as N).xz.length().sub(3.4).div(1.7).sub(0.5).abs().mul(2).oneMinus().max(0).pow(1.8);
-    halo.colorNode = auroraCol.mul(LIGHT_SCALE * 1.2);
-    halo.opacityNode = rad.mul(pulse).mul(boost).mul(0.5);
+    halo.colorNode = auroraCol.mul(LIGHT_SCALE * 1.35);
+    halo.opacityNode = rad.mul(pulse).mul(boost).mul(0.8);
     halo.transparent = true;
     halo.blending = THREE.AdditiveBlending;
     halo.depthWrite = false;
     halo.fog = true;
     const halos = new THREE.InstancedMesh(haloGeo, halo, n);
 
+    // — sky beam: a tall soft shaft over ONLY the active tee, the long-range
+    // "the hole you're playing is over here" cue. Idle tees show none of it.
+    const beamGeo = new THREE.CylinderGeometry(0.7, 1.35, 30, 18, 1, true);
+    beamGeo.translate(0, 15, 0);
+    const beam = new THREE.MeshBasicNodeMaterial();
+    const bFade = (uv().y as N).oneMinus().pow(1.5); // solid at the grass, feathering to nothing up high
+    const bFacing = (normalView as N).normalize().dot((positionViewDirection as N).normalize()).abs();
+    const bFres = bFacing.oneMinus().pow(1.6).mul(0.7).add(0.3);
+    const bPulse = t.mul(2.3).add(seed.mul(1.1)).sin().mul(0.18).add(0.82);
+    beam.colorNode = mix(vec3(0.55, 1.0, 0.72), vec3(0.6, 0.8, 1.0), (uv().y as N)).mul(LIGHT_SCALE * 1.5);
+    beam.opacityNode = bFade.mul(bFres).mul(bPulse).mul(isActive).mul(0.32); // isActive gate → only the current tee
+    beam.transparent = true;
+    beam.blending = THREE.AdditiveBlending;
+    beam.depthWrite = false;
+    beam.side = THREE.DoubleSide;
+    beam.fog = true;
+    const beams = new THREE.InstancedMesh(beamGeo, beam, n);
+
     for (let i = 0; i < n; i++) {
       course.teeSpot(i, tee);
       m.compose(tee, q, s);
       curtains.setMatrixAt(i, m);
       halos.setMatrixAt(i, m);
+      beams.setMatrixAt(i, m);
     }
-    curtains.instanceMatrix.needsUpdate = true;
-    halos.instanceMatrix.needsUpdate = true;
-    curtains.frustumCulled = false;
-    halos.frustumCulled = false;
-    this.group.add(curtains, halos);
+    for (const mesh of [curtains, halos, beams]) {
+      mesh.instanceMatrix.needsUpdate = true;
+      mesh.frustumCulled = false;
+    }
+    this.group.add(curtains, halos, beams);
   }
 
   /** Spotlight one hole's tee (the hole being played / up next), -1 for all. */

@@ -1,5 +1,6 @@
 import * as THREE from "three/webgpu";
-import { buildRig } from "../../player/rig";
+import { buildRig, setRigClasp } from "../../player/rig";
+import { applyArmPose, dampArmPose, mixArmPose, solveArmPose, type ArmPose } from "./armIk";
 import { SEC_PER_BEAT } from "./song";
 import { midiHz, NoteCursor, type MusicianBuilder, type NoteEvent, type TrioClock } from "./types";
 
@@ -38,12 +39,25 @@ const LIP_QUAT = new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.63, 0.02
 // flute lowered across the lap, in TORSO space (head origin sits at torso
 // (0, 0.46, 0); lap point ≈ torso (0, -0.08, -0.24)); rolled so the long body
 // lies across the thighs pointing to his right.
-const LAP_OFFSET = new THREE.Vector3(0.02, -0.52, -0.22);
-const LAP_QUAT_T = new THREE.Quaternion().setFromEuler(new THREE.Euler(0.1, -1.25, 0.12));
+const LAP_OFFSET = new THREE.Vector3(0.2, -0.52, -0.22);
+const LAP_QUAT_T = new THREE.Quaternion().setFromEuler(new THREE.Euler(0.1, 1.25, 0.12));
 
 const RAISE_LAMBDA = 4.5; // lift → lips (one smooth ~0.7 s motion)
 const LOWER_LAMBDA = 2.0; // lips → lap (deliberate, unhurried)
 const PERFORM_LAMBDA = 3.0;
+const GRIP_LAMBDA = 10.0;
+const ACTIVE_TAIL_BEATS = 0.12; // keep the flute raised through the note's soft release
+
+// The base prop was much thinner than one voxel hand. Width is scaled separately
+// from length so it reads clearly without turning into a walking stick.
+const FLUTE_WIDTH_SCALE = 2.4;
+const FLUTE_LENGTH_SCALE = 1.1;
+const GRIP_MIDI_LOW = 64; // E4, bottom of the authored melody
+const GRIP_MIDI_HIGH = 76; // E5, top of the authored melody
+const GRIP_L_LOW_Z = -0.26;
+const GRIP_L_HIGH_Z = -0.22;
+const GRIP_R_LOW_Z = -0.41;
+const GRIP_R_HIGH_Z = -0.35;
 
 // synth (warm, woody Native American flute — deep fundamental, soft breath,
 // long tail into the mountain reverb; deliberately un-tinny)
@@ -80,9 +94,10 @@ export const buildFlutist: MusicianBuilder = (audio, part) => {
   // graphite hoodie / teal accent, hood built by hand below (hat "none" so
   // a fringe peeks out under the hood shell)
   const rig = buildRig({ skin: 2, hair: "short", hat: "none", outfit: "hoodie", color: 5, accent: 7 });
-  rig.avatar.materials.hair.color.set(0x4b3117); // warm brown fringe
+  rig.avatar.materials.hair.color.set(0x63431e); // warm shaggy brown
   rig.group.position.y = 0.11; // seat of the pants on the deck top
   const group = new THREE.Group();
+  group.name = "busker-flutist";
   group.add(rig.group);
 
   // the hoodie outfit ships a hood-down bump on the back of the neck; his
@@ -115,6 +130,19 @@ export const buildFlutist: MusicianBuilder = (audio, part) => {
   const hoodCheekL = mesh(rig.head, cheekGeo, hoodMat, 0.155, 0.19, 0.01);
   const hoodCheekR = mesh(rig.head, cheekGeo, hoodMat, -0.155, 0.19, 0.01);
 
+  /* ---- shaggy brown hair spilling out under the hood: a long uneven fringe
+     over the brow, sideburns past the ears, and a longer lock at the nape ---- */
+  const hairMat = rig.avatar.materials.hair; // shared — never disposed here
+  const fringeL = mesh(rig.head, geo(0.1, 0.17, 0.05), hairMat, -0.08, 0.25, -0.125);
+  fringeL.rotation.z = 0.12;
+  mesh(rig.head, geo(0.09, 0.2, 0.05), hairMat, 0.01, 0.23, -0.132);
+  const fringeR = mesh(rig.head, geo(0.09, 0.16, 0.05), hairMat, 0.1, 0.26, -0.125);
+  fringeR.rotation.z = -0.14;
+  mesh(rig.head, geo(0.05, 0.22, 0.13), hairMat, -0.125, 0.11, -0.03); // sideburn L
+  mesh(rig.head, geo(0.05, 0.2, 0.13), hairMat, 0.125, 0.13, -0.03); // sideburn R
+  const napeLock = mesh(rig.head, geo(0.22, 0.22, 0.05), hairMat, 0, 0.02, 0.12); // long lock at the back
+  napeLock.rotation.x = -0.1;
+
   /* ---- drawstrings (pivots on the torso collar, sway with the wind) ---- */
   const cordMat = new THREE.MeshLambertMaterial({ color: 0xd9d4c6 });
   ownMats.push(cordMat);
@@ -138,6 +166,9 @@ export const buildFlutist: MusicianBuilder = (audio, part) => {
   const hideMat = new THREE.MeshLambertMaterial({ color: 0xc79a4e }); // buckskin tie
   ownMats.push(cedar, cedarDark, holeMat, hideMat);
   const flute = new THREE.Group();
+  flute.name = "busker-flute";
+  flute.scale.set(FLUTE_WIDTH_SCALE, FLUTE_WIDTH_SCALE, FLUTE_LENGTH_SCALE);
+  flute.userData.bodyRadius = 0.0185 * FLUTE_WIDTH_SCALE;
   rig.head.add(flute);
 
   const FLEN = 0.5; // full length; mouth at z≈+0.03, foot at z≈-0.47
@@ -178,8 +209,89 @@ export const buildFlutist: MusicianBuilder = (audio, part) => {
   // dark carved foot inlay
   mesh(flute, geo(0.041, 0.041, 0.05), cedarDark, 0, 0, -0.445);
 
+  // Named, transform-only contact points. They travel along the tone-hole rows
+  // with the damped fingering value, giving QA an exact hand/contact reference.
+  const gripAnchorL = new THREE.Group();
+  gripAnchorL.name = "flute-grip-L";
+  flute.add(gripAnchorL);
+  const gripAnchorR = new THREE.Group();
+  gripAnchorR.name = "flute-grip-R";
+  flute.add(gripAnchorR);
+
   flute.position.copy(LIP_POS);
   flute.quaternion.copy(LIP_QUAT);
+
+  /* ---- build-time arm stations: lap hold + low/high playing grips ---- */
+  const solveTargetL = new THREE.Vector3();
+  const solveTargetR = new THREE.Vector3();
+  const setGripAnchors = (amount: number) => {
+    gripAnchorL.position.set(0, 0, lerp(GRIP_L_LOW_Z, GRIP_L_HIGH_Z, amount));
+    gripAnchorR.position.set(0, 0, lerp(GRIP_R_LOW_Z, GRIP_R_HIGH_Z, amount));
+  };
+  const solveGripPair = (seedL: ArmPose, seedR: ArmPose): [ArmPose, ArmPose] => {
+    group.updateWorldMatrix(true, true);
+    gripAnchorL.getWorldPosition(solveTargetL);
+    gripAnchorR.getWorldPosition(solveTargetR);
+    const left = solveArmPose(rig.armL, rig.foreL, rig.handL, solveTargetL, seedL, {
+      side: 1,
+      elbowClearance: 0.27,
+      elbowFront: -0.15,
+      regularize: 0.000015
+    });
+    const right = solveArmPose(rig.armR, rig.foreR, rig.handR, solveTargetR, seedR, {
+      side: -1,
+      elbowClearance: 0.27,
+      elbowFront: -0.15,
+      regularize: 0.000015
+    });
+    return [left, right];
+  };
+
+  // Representative raised pose. The live head movement around this station is
+  // deliberately small enough that the widened flute stays inside each palm.
+  rig.torso.rotation.set(0.12, 0, -0.02);
+  rig.head.rotation.set(0.14, 0, 0);
+  flute.position.copy(LIP_POS);
+  flute.quaternion.copy(LIP_QUAT);
+  setGripAnchors(0);
+  const [playLowL, playLowR] = solveGripPair(
+    [1.45, 0.77, -0.03, 1.46, -0.08, -0.43],
+    [1.56, -1.12, 0.08, 1.24, -0.89, 0.41]
+  );
+  setGripAnchors(1);
+  const [playHighL, playHighR] = solveGripPair(playLowL, playLowR);
+
+  // Lap stations use the same named anchors. Cancelling the representative head
+  // rotation puts the flute in torso space, matching the runtime lap transform.
+  rig.torso.rotation.set(0.07, 0, 0);
+  rig.head.rotation.set(-0.07, 0, 0);
+  _q1.copy(rig.head.quaternion).invert();
+  _v1.copy(LAP_OFFSET).applyQuaternion(_q1);
+  _q1.multiply(LAP_QUAT_T);
+  flute.position.copy(_v1);
+  flute.quaternion.copy(_q1);
+  setGripAnchors(0);
+  const [lapLowL, lapLowR] = solveGripPair(
+    [0.5, 0.12, -0.14, 0.6, -0.15, 0],
+    [0.52, -0.12, 0.14, 0.62, 0.15, 0]
+  );
+  setGripAnchors(1);
+  const [lapHighL, lapHighR] = solveGripPair(lapLowL, lapLowR);
+
+  const gripStart = clamp(((part[0]?.midis[0] ?? 69) - GRIP_MIDI_LOW) / (GRIP_MIDI_HIGH - GRIP_MIDI_LOW), 0, 1);
+  setGripAnchors(gripStart);
+  const lapGoalL = [...lapLowL] as ArmPose;
+  const lapGoalR = [...lapLowR] as ArmPose;
+  const playGoalL = [...playLowL] as ArmPose;
+  const playGoalR = [...playLowR] as ArmPose;
+  const armGoalL = [...lapLowL] as ArmPose;
+  const armGoalR = [...lapLowR] as ArmPose;
+  const armPoseL = [...lapLowL] as ArmPose;
+  const armPoseR = [...lapLowR] as ArmPose;
+  mixArmPose(armPoseL, lapLowL, lapHighL, gripStart);
+  mixArmPose(armPoseR, lapLowR, lapHighR, gripStart);
+  applyArmPose(rig.armL, rig.foreL, armPoseL);
+  applyArmPose(rig.armR, rig.foreR, armPoseR);
 
   /* ------------------------------------------------------ animation state */
 
@@ -187,8 +299,8 @@ export const buildFlutist: MusicianBuilder = (audio, part) => {
   let t = Math.random() * 20; // ambient time (never resets → no oscillator pops)
   let perform = 0; // 0 = resting, 1 = attentive/performing
   let lift = 0; // 0 = flute in lap, 1 = flute at lips
+  let grip = gripStart; // 0(low note, hands down-body)..1(high note, hands up-body)
   let prevNote: NoteEvent | null = null;
-  let rippleT = 10; // since last note change (finger ripple envelope)
   let dipT = 10; // since last phrase start (head-dip envelope)
 
   /* -------------------------------------------------------------- audio */
@@ -316,7 +428,6 @@ export const buildFlutist: MusicianBuilder = (audio, part) => {
 
   const update = (dt: number, clock: TrioClock) => {
     t += dt;
-    rippleT += dt;
     dipT += dt;
     const wind = clock.wind;
     const playing = clock.phase === "playing";
@@ -324,7 +435,6 @@ export const buildFlutist: MusicianBuilder = (audio, part) => {
     const cur = cursor.at(clock.beat);
     if (playing && cur.current !== prevNote) {
       if (cur.current) {
-        rippleT = 0; // fingers move on every note change
         const prevEnd = prevNote ? prevNote.beat + prevNote.dur : -10;
         if (prevNote === null || cur.current.beat - prevEnd > 0.35) dipT = 0; // phrase start
       }
@@ -335,9 +445,19 @@ export const buildFlutist: MusicianBuilder = (audio, part) => {
     // ---- the two blend scalars ----
     perform = damp(perform, clock.phase === "rest" ? 0 : 1, PERFORM_LAMBDA, dt);
     // he enters at bar 9: raise the flute one beat before his first onset,
-    // keep it up while his part is live, lower it in rest/countin
-    const raise = playing && (cur.current !== null || (cur.next !== null && cur.next.beat - clock.beat < 1.1));
+    // keep it up while a note is actually live, and lower it in the long tacet.
+    // NoteCursor.current is historical, so it cannot be the raise gate by itself.
+    const activeNote =
+      playing && cur.current && clock.beat <= cur.current.beat + cur.current.dur + ACTIVE_TAIL_BEATS ? cur.current : null;
+    const upcomingNote = playing && cur.next && cur.next.beat - clock.beat < 1.1 ? cur.next : null;
+    const raise = activeNote !== null || upcomingNote !== null;
     lift = damp(lift, raise ? 1 : 0, raise ? RAISE_LAMBDA : LOWER_LAMBDA, dt);
+    const gripEvent = activeNote ?? upcomingNote;
+    if (gripEvent) {
+      const gripTarget = clamp((gripEvent.midis[0] - GRIP_MIDI_LOW) / (GRIP_MIDI_HIGH - GRIP_MIDI_LOW), 0, 1);
+      grip = damp(grip, gripTarget, GRIP_LAMBDA, dt);
+    }
+    flute.userData.activeMidi = gripEvent?.midis[0] ?? null;
     const w = perform;
     const l = lift;
     const wl = w * l;
@@ -359,16 +479,15 @@ export const buildFlutist: MusicianBuilder = (audio, part) => {
         }
       }
     }
-    const ripple = Math.exp(-rippleT * 7) * Math.sin(rippleT * 38);
     const dip = dipT < 0.45 ? Math.sin((dipT / 0.45) * Math.PI) : 0;
     const nod = playing ? 0.03 * Math.sin(Math.PI * clock.beat) * (1 - l) : 0; // ready bars: faint pulse nod
 
     // ---- legs: dangling over the drop, loose lazy swing ----
     const swing = 1 - 0.35 * wl; // stiller while he's playing
-    set(rig.legL, 1.38 + 0.13 * swing * Math.sin(t * 0.83 + 0.4), 0, 0.04);
-    set(rig.legR, 1.31 + 0.13 * swing * Math.sin(t * 0.79 + 2.6), 0, -0.04);
-    set(rig.shinL, -1.3 + 0.24 * swing * Math.sin(t * 1.07 + 1.1), 0, 0);
-    set(rig.shinR, -1.24 + 0.24 * swing * Math.sin(t * 1.13 + 3.4), 0, 0);
+    set(rig.legL, 1.32 + 0.13 * swing * Math.sin(t * 0.83 + 0.4), 0, 0.04);
+    set(rig.legR, 1.26 + 0.13 * swing * Math.sin(t * 0.79 + 2.6), 0, -0.04);
+    set(rig.shinL, -1.02 + 0.24 * swing * Math.sin(t * 1.07 + 1.1), 0, 0);
+    set(rig.shinR, -0.98 + 0.24 * swing * Math.sin(t * 1.13 + 3.4), 0, 0);
 
     // ---- torso: rest = slow breath + wind sway; playing = phrasing body ----
     const breathe = Math.sin(t * 1.5);
@@ -394,33 +513,31 @@ export const buildFlutist: MusicianBuilder = (audio, part) => {
     const attHZ = lerp(0, 0.01 * Math.sin(t * 0.6), l); // centered flute — no lean
     set(rig.head, lerp(restHX, attHX, w) + nod, lerp(restHY, attHY, w), lerp(restHZ, attHZ, w));
 
-    // ---- arms: lap hold ↔ end-blown flute hold (both hands out front, left
-    // hand high near the block, right hand low toward the foot) ----
-    const shoulderBr = 0.05 * breathF * l; // breaths flare the shoulders
-    const settle = (1 - l) * w; // countin / ready-bars grip fidget
-    const armLX = lerp(0.5 + 0.02 * breathe, 1.02, l);
-    const armLY = lerp(0.12, 0.06, l);
-    const armLZ = lerp(-0.14, 0.24, l) + shoulderBr;
-    const armRX = lerp(0.52 + 0.02 * breathe, 1.16, l);
-    const armRY = lerp(-0.12, -0.06, l);
-    const armRZ = lerp(0.14, -0.24, l) - shoulderBr;
-    set(rig.armL, armLX, armLY, armLZ);
-    set(rig.armR, armRX, armRY, armRZ);
-    // left forearm bends up higher (upper holes), right a touch lower (foot)
-    set(rig.foreL, lerp(0.6, 1.62, l) + 0.02 * Math.sin(t * 2.1) * settle, lerp(-0.15, -0.12, l), lerp(0, -0.18, l));
-    set(
-      rig.foreR,
-      lerp(0.62, 1.4, l) + 0.05 * ripple * l + 0.02 * Math.sin(t * 2.4 + 1) * settle,
-      lerp(0.15, 0.12, l),
-      lerp(0, 0.18, l) + 0.03 * ripple * l
-    );
-
     // ---- flute: lap (head-rotation cancelled) ↔ lips (head-glued) ----
     _q1.copy(rig.head.quaternion).invert();
     _v1.copy(LAP_OFFSET).applyQuaternion(_q1); // lap position in head space
     _q1.multiply(LAP_QUAT_T); // lap orientation in head space
     flute.position.copy(_v1).lerp(LIP_POS, l);
     flute.quaternion.copy(_q1).slerp(LIP_QUAT, l);
+
+    // ---- hands: named flute anchors + collision-clear, build-time Pose6
+    // stations. Pitch moves each grip a few centimetres along its hole bank;
+    // damping replaces the old high-frequency wrist twitch with a real slide. ----
+    setGripAnchors(grip);
+    mixArmPose(lapGoalL, lapLowL, lapHighL, grip);
+    mixArmPose(lapGoalR, lapLowR, lapHighR, grip);
+    mixArmPose(playGoalL, playLowL, playHighL, grip);
+    mixArmPose(playGoalR, playLowR, playHighR, grip);
+    mixArmPose(armGoalL, lapGoalL, playGoalL, l);
+    mixArmPose(armGoalR, lapGoalR, playGoalR, l);
+    const armLambda = lerp(7.5, 12, l);
+    dampArmPose(armPoseL, armGoalL, armLambda, dt);
+    dampArmPose(armPoseR, armGoalR, armLambda, dt);
+    applyArmPose(rig.armL, rig.foreL, armPoseL);
+    applyArmPose(rig.armR, rig.foreR, armPoseR);
+    const clasp = lerp(0.72, 0.9, l);
+    setRigClasp(rig, "L", clasp);
+    setRigClasp(rig, "R", clasp);
 
     // ---- cloth: hood ruffle + drawstring sway, scaled by the wind ----
     const ruffle = wind * 0.028;

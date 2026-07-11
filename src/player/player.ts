@@ -15,6 +15,7 @@ import {
   poseRide,
   poseSwim,
   poseWalk,
+  rigHandWorld,
   setRigClasp,
   type Rig
 } from "./rig";

@@ -129,8 +129,12 @@ export function frontDoor(out: PanelBuilder, e: FacadeEdge, m: { door: string; t
   const y0 = sill, y1 = openTop, midY = (y0 + y1) / 2, hH = (y1 - y0) / 2;
   const off = (p: Vec3, d: number): Vec3 => [p[0] + n[0] * d, p[1], p[2] + n[2] * d];
   const pt = (t: number, yy: number, d: number): Vec3 => off([c[0] + along[0] * t, yy, c[2] + along[2] * t], d);
-  // dark opening panel (proud a hair so it isn't occluded by the wall quad)
-  out.quad("citygen.room", pt(-halfW, y0, 0.03), pt(halfW, y0, 0.03), pt(halfW, y1, 0.03), pt(-halfW, y1, 0.03), n);
+  // Closed-door occluder (proud a hair so it isn't occluded by the wall quad).
+  // It deliberately has its OWN bucket: the runtime hides it together with the
+  // baked leaf while the live hinged door is open. Keeping this in the generic
+  // citygen.room bucket left an opaque black quad across an otherwise passable
+  // doorway, so the leaf appeared to vanish instead of revealing the interior.
+  out.quad("citygen.doorback", pt(-halfW, y0, 0.03), pt(halfW, y0, 0.03), pt(halfW, y1, 0.03), pt(-halfW, y1, 0.03), n);
   // door leaf, authored fully CLOSED: it lies in the doorway plane (a hair proud
   // so no face is coplanar with the wall/LOD prism), hinged at the LEFT jamb
   // (dCenter − halfW viewed from the street) and spanning the opening. leafW =

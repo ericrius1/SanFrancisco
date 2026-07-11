@@ -213,9 +213,7 @@ const TAB_LIFE = `
     bridge decks), and nearby buildings materialize static box bodies as you approach and release them
     as you leave.</p>
     <p>The buildings are immovable and indestructible: run a bus into a wall and the contact solver
-    simply stops you dead — no dents, no debris, just a solid city. The rope and grab tools are Box3D
-    joints: rope ties any two bodies together (tie a crate to a bus, you know you want to), and grab is
-    a tractor beam that carries and flings.</p>
+    simply stops you dead — no dents, no debris, just a solid city.</p>
     <p class="bts-links-inline">
       ${a(BOX3D_URL, "Box3D (Erin Catto)")}
       ${a(BOX3D_WASM_DEMO, "Box3D → WASM live demo")}
@@ -318,9 +316,7 @@ const TAB_PLAY = `
     synth voice — an oscillator stack and/or filtered noise — that idles near-silent and swells and
     pitches up with speed, all on one AudioContext with the voices crossfaded on a mode switch so
     nothing clicks. The hoverboard is the showpiece: root, fifth and octave with a barely-sharp partial
-    for a slow shimmering beat, breathing through a slow filter sweep. Even the wind chimes are tuned —
-    a C-major pentatonic across three octaves, pitched by where you struck, so tapping your way up the
-    skyline plays it like a xylophone.</p>
+    for a slow shimmering beat, breathing through a slow filter sweep.</p>
     <p class="bts-aside">The parks and wild places have a soundscape all their own — a whole procedural
     ecology of birds, wind and weather. It has its own chapter: <a data-bts-tab="sound" href="#">The
     soundscape →</a></p>

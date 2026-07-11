@@ -11,6 +11,7 @@ import { BALL_RADIUS, CLUBS, GolfBall, estimatedCarry, suggestedClubIndex, type 
 import { GolfCourse, type GolfSurface } from "./data";
 import { GolfCourseView } from "./course";
 import { GolfAudio } from "./audio";
+import { GolfGuide } from "./guide";
 import { GolfUI, standingLabel, totalLabel, type GolfHoleScore, type GolfPeerScore } from "./ui";
 
 type N = any;
@@ -60,6 +61,7 @@ export class GolfGame {
   #view: GolfCourseView;
   #ball: GolfBall;
   #ui = new GolfUI();
+  #guide: GolfGuide;
   #map: WorldMap;
 
   #holeIdx = 0;
@@ -100,6 +102,7 @@ export class GolfGame {
     this.#course = course;
     this.#map = map;
     this.#view = new GolfCourseView(course, map, scene);
+    this.#guide = new GolfGuide(scene);
     this.#ball = new GolfBall(course, map, physics);
     this.#ball.onEvent = (e) => this.#onBallEvent(e);
 
@@ -368,6 +371,26 @@ export class GolfGame {
     }
   }
 
+  /** Point the floating chevron at whatever the golfer should head for next. */
+  #updateGuide(dt: number, elapsed: number, player: Player) {
+    let target: THREE.Vector3 | null = null;
+    let hideWithin = 6;
+    if (this.active) {
+      if (this.#phase === "toTee") {
+        target = this.#teeSpot;
+        hideWithin = TEE_ZONE;
+      } else if (this.#phase === "toBall") {
+        target = this.#ball.pos;
+        hideWithin = SWING_ZONE + 1;
+      } else if (this.#phase === "aim" || this.#phase === "charge") {
+        target = this.#pin; // once you're over the ball, it aims at the hole
+        hideWithin = 4;
+      }
+      // swing / flight: no pointer (the shot has the stage)
+    }
+    this.#guide.update(dt, player.renderPosition, target, target !== null && player.mode === "walk", elapsed, hideWithin);
+  }
+
   // ------------------------------------------------------------- per frame
 
   update(dt: number, elapsed: number, ctx: Ctx) {
@@ -394,6 +417,10 @@ export class GolfGame {
     const onFoot = player.mode === "walk";
     const px = player.renderPosition.x;
     const pz = player.renderPosition.z;
+
+    // floating "next objective" pointer: aims at the tee on the way up, the
+    // resting ball after a shot, the pin while you settle over it
+    this.#updateGuide(dt, elapsed, player);
 
     // ---- not playing: nudge at any glowing tee (E itself is handled by
     // main.ts's E-chain via tryStartAtTee, so golf wins over "hop on a ride")

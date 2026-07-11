@@ -14,6 +14,10 @@ export const DOOR_W = 1.5;    // clear doorway width (roomy for a 0.7 m capsule)
 export const DOOR_H = 2.2;    // clear doorway height (a 1.8 m capsule + headroom)
 export const INSET = 0.2;     // keep the interior clear of the exterior shell
 export const EYE = 1.6;       // picture-hanging / eye height
+/** Comfortable route width around the 0.70 m player capsule. */
+export const CIRCULATION_W = 1.2;
+/** Clear depth on each side of a room portal / stair landing. */
+export const APPROACH_D = 1.05;
 
 /** an axis-aligned floorplan rectangle in world x/z (metres). */
 export interface Rect { x0: number; x1: number; z0: number; z1: number; }
@@ -45,6 +49,39 @@ export function inset(r: Rect, d: number): Rect {
 /** do two rects overlap (open intersection, small epsilon)? */
 export function overlaps(a: Rect, b: Rect): boolean {
   return a.x0 < b.x1 - 1e-4 && a.x1 > b.x0 + 1e-4 && a.z0 < b.z1 - 1e-4 && a.z1 > b.z0 + 1e-4;
+}
+
+/** grow a footprint on every side (useful for comfort / occupied spacing). */
+export function expand(r: Rect, d: number): Rect {
+  return { x0: r.x0 - d, x1: r.x1 + d, z0: r.z0 - d, z1: r.z1 + d };
+}
+
+/** closed containment with a small numerical tolerance. */
+export function containsRect(outer: Rect, inner: Rect, eps = 1e-4): boolean {
+  return inner.x0 >= outer.x0 - eps && inner.x1 <= outer.x1 + eps &&
+    inner.z0 >= outer.z0 - eps && inner.z1 <= outer.z1 + eps;
+}
+
+/** clip a rect to another rect; null when they do not share positive area. */
+export function intersectRect(a: Rect, b: Rect): Rect | null {
+  const r = {
+    x0: Math.max(a.x0, b.x0), x1: Math.min(a.x1, b.x1),
+    z0: Math.max(a.z0, b.z0), z1: Math.min(a.z1, b.z1),
+  };
+  return rectW(r) > 1e-4 && rectD(r) > 1e-4 ? r : null;
+}
+
+export function rectAround(x: number, z: number, w: number, d: number): Rect {
+  return { x0: x - w / 2, x1: x + w / 2, z0: z - d / 2, z1: z + d / 2 };
+}
+
+export function clampPoint(r: Rect, x: number, z: number, margin = 0): readonly [number, number] {
+  const mx = Math.min(margin, Math.max(0, rectW(r) / 2 - 0.01));
+  const mz = Math.min(margin, Math.max(0, rectD(r) / 2 - 0.01));
+  return [
+    Math.min(r.x1 - mx, Math.max(r.x0 + mx, x)),
+    Math.min(r.z1 - mz, Math.max(r.z0 + mz, z)),
+  ];
 }
 
 /**

@@ -311,8 +311,8 @@ export function runDemo(name: string, ctx: Ctx) {
 
     case "reel2": {
       // 35-second interaction reel: five 7-second clips showing off the toys —
-      // paint on a wall, drone fireworks, the Exploratorium fluid pool, city
-      // chimes and bubbles. Mostly night/sunset with one bright daylight beat.
+      // paint on a wall, drone fireworks, the Exploratorium fluid pool, more
+      // paint and bubbles. Mostly night/sunset with one bright daylight beat.
       // Reuses the __sfReel* capture hooks (capture-reel.mjs SF_CAPTURE_DEMO=reel2).
       type ReelWindow = Window &
         typeof globalThis & {
@@ -363,8 +363,8 @@ export function runDemo(name: string, ctx: Ctx) {
 
       // Interaction plumbing. firePressed is edge-reset every frame, so a salvo
       // (drone fireworks) must be re-pulsed; firing/fireHeld is level, so paint,
-      // chimes, bubbles and the museum pokes just hold it. A slow orbit keeps the
-      // shot alive and sweeps paint/chimes across the surface.
+      // bubbles and the museum pokes just hold it. A slow orbit keeps the shot
+      // alive and sweeps the paint across the surface.
       let pulse: number | null = null;
       let panner: number | null = null;
       const stopPan = () => {
@@ -444,15 +444,15 @@ export function runDemo(name: string, ctx: Ctx) {
         at(14000, () => {
           dusk(); // let some daylight leak into the shed so the tank reads
           jump("walk", 4112.6, 4.6, -1266.8, -2.523, 0.08, 1.2);
-          holdFire("grab"); // museum consumes the click; grab is a harmless miss
+          holdFire("bubbles"); // museum consumes the click; bubbles is a harmless miss
         });
         at(20600, () => stopFire());
 
-        // Clip 4 (21-28s) — SUNSET — ring the city with chimes from the board.
+        // Clip 4 (21-28s) — SUNSET — sling paint across the city from the board.
         at(21000, () => {
           sunset();
           jump("board", 4340, 4, -380, 1.8, 0.32, 1.15);
-          holdFire("chimes");
+          holdFire("spray");
           pan(0.0018);
         });
         at(27600, () => {
@@ -574,7 +574,7 @@ export function runDemo(name: string, ctx: Ctx) {
         // in, then walk back and forth in front of the fluid tank so each pass
         // drags the SPH water as the aim sweeps across it.
         { t: 10000, fn: () => { midday(); releaseAll(); minimap?.focusLandmark("Exploratorium"); } },
-        { t: 12800, fn: () => { minimap?.setExpanded(false); jump("walk", 4112.6, 4.6, -1266.8, -2.523, 0.05, 1.15); holdFire("grab"); } },
+        { t: 12800, fn: () => { minimap?.setExpanded(false); jump("walk", 4112.6, 4.6, -1266.8, -2.523, 0.05, 1.15); holdFire("bubbles"); } },
         { t: 13500, fn: () => press("KeyD") },
         { t: 14400, fn: () => { release("KeyD"); press("KeyA"); } },
         { t: 16200, fn: () => { release("KeyA"); press("KeyD"); } },

@@ -113,10 +113,16 @@ async function view(c, name) {
     const toes = new T.Vector3(-Math.cos(a), 0, Math.sin(a)); // golfer → ball
     const focus = new T.Vector3(b.x, b.y + 0.75, b.z).addScaledVector(toes, -0.5);
     let eye;
+    let look = focus.clone();
     if ("${name}".startsWith("faceon")) eye = focus.clone().addScaledVector(toes, 3.4).add(new T.Vector3(0, 0.7, 0));
     else if ("${name}".startsWith("dtl")) eye = focus.clone().addScaledVector(sh, -3.8).add(new T.Vector3(0, 0.9, 0));
-    else eye = focus.clone().addScaledVector(toes, 2.8).addScaledVector(sh, -2.4).add(new T.Vector3(0, 0.8, 0));
-    window.__sfFreeCam([eye.x, eye.y, eye.z], [focus.x, focus.y, focus.z]);
+    else if ("${name}".startsWith("wide")) {
+      // pulled back + up behind the golfer: shows the floating arrow + tee beam
+      const p = window.__sf.player.renderPosition;
+      look = new T.Vector3(p.x, p.y + 2.6, p.z);
+      eye = look.clone().addScaledVector(toes, 9).addScaledVector(sh, -2).add(new T.Vector3(0, 4.5, 0));
+    } else eye = focus.clone().addScaledVector(toes, 2.8).addScaledVector(sh, -2.4).add(new T.Vector3(0, 0.8, 0));
+    window.__sfFreeCam([eye.x, eye.y, eye.z], [look.x, look.y, look.z]);
     return true;
   })()`);
   await tick(c, 0);
@@ -204,6 +210,10 @@ async function main() {
     await ev(c, "(window.__sf.input.fireHeld = false, delete window.__golfTune, true)");
     await ticks(c, 60, 1 / 60);
   }
+
+  // wide shot in AIM (before charging): shows the floating next-hole arrow
+  // (aims at the pin) + the active tee's boosted glow/beam from gameplay range
+  await view(c, "wide_aim");
 
   // --- address (tiny charge so the pose is live at s≈0)
   await ev(c, "(window.__sf.input.fireHeld = true, true)");

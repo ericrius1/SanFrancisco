@@ -6,7 +6,7 @@
 // the two lanes sit side by side across it (up one, turn on the landing, up the other).
 import type { ColliderBox } from "../core/types";
 import { PanelBuilder, type Vec3 } from "../core/facade";
-import { addBox, FLOOR_H, overlaps, type Rect, rectW, rectD } from "./common";
+import { addBox, CIRCULATION_W, FLOOR_H, containsRect, overlaps, rectAround, type Rect, rectW, rectD } from "./common";
 import type { Axis } from "./rooms";
 
 const N = 9;            // steps per flight → 18 per storey → rise 3.4/18 ≈ 0.189 m
@@ -26,12 +26,15 @@ export interface StairPlan {
   region: Rect;   // footprint the stair occupies (keep furniture out of it)
   hole: Rect;     // hole to cut in the slab + ceiling above
   runAxis: Axis;
+  /** clear floor at the foot/top of the switchback (both emerge at run origin). */
+  approach: Rect;
+  accessPoint: readonly [number, number];
 }
 
 /** does a room rect have space for the stair footprint (with a margin)? */
 export function stairFits(cell: Rect): boolean {
   const lo = Math.min(rectW(cell), rectD(cell)), hi = Math.max(rectW(cell), rectD(cell));
-  return hi >= STAIR_ALONG + 0.4 && lo >= STAIR_CROSS + 0.4;
+  return hi >= STAIR_ALONG + CIRCULATION_W + 0.5 && lo >= STAIR_CROSS + 0.5;
 }
 
 /** anchor the stair in a corner of `cell`, flights along the cell's long axis.
@@ -42,25 +45,50 @@ export function planStair(cell: Rect, avoid?: Rect | null): StairPlan {
   const runAxis: Axis = rectW(cell) >= rectD(cell) ? "x" : "z";
   const m = 0.25; // keep off the walls
   const [aw, cw] = runAxis === "x" ? [STAIR_ALONG, STAIR_CROSS] : [STAIR_CROSS, STAIR_ALONG];
-  const corners: Rect[] = [
-    { x0: cell.x0 + m, x1: cell.x0 + m + aw, z0: cell.z0 + m, z1: cell.z0 + m + cw },
-    { x0: cell.x1 - m - aw, x1: cell.x1 - m, z0: cell.z0 + m, z1: cell.z0 + m + cw },
-    { x0: cell.x0 + m, x1: cell.x0 + m + aw, z0: cell.z1 - m - cw, z1: cell.z1 - m },
-    { x0: cell.x1 - m - aw, x1: cell.x1 - m, z0: cell.z1 - m - cw, z1: cell.z1 - m },
-  ];
-  const region = (avoid ? corners.find((r) => !overlaps(r, avoid)) : corners[0]) ?? corners[0];
-  return { region, hole: { ...region }, runAxis };
+  const xStarts = runAxis === "x"
+    ? [cell.x0 + m + CIRCULATION_W, cell.x1 - m - aw]
+    : [cell.x0 + m, cell.x1 - m - aw];
+  const zStarts = runAxis === "z"
+    ? [cell.z0 + m + CIRCULATION_W, cell.z1 - m - cw]
+    : [cell.z0 + m, cell.z1 - m - cw];
+  const candidates: { region: Rect; approach: Rect; point: readonly [number, number] }[] = [];
+  for (const x0 of xStarts) for (const z0 of zStarts) {
+    const region = { x0, x1: x0 + aw, z0, z1: z0 + cw };
+    const point = runAxis === "x"
+      ? [region.x0 - CIRCULATION_W / 2, (region.z0 + region.z1) / 2] as const
+      : [(region.x0 + region.x1) / 2, region.z0 - CIRCULATION_W / 2] as const;
+    const approach = runAxis === "x"
+      ? rectAround(point[0], point[1], CIRCULATION_W, STAIR_CROSS)
+      : rectAround(point[0], point[1], STAIR_CROSS, CIRCULATION_W);
+    if (containsRect(cell, region) && containsRect(cell, approach)) candidates.push({ region, approach, point });
+  }
+  const picked = candidates.find((c) => !avoid || (!overlaps(c.region, avoid) && !overlaps(c.approach, avoid))) ?? candidates[0];
+  // stairFits guarantees at least one candidate; retain a defensive centred fallback
+  // for direct callers that skip it.
+  const fallbackRegion: Rect = {
+    x0: cell.x1 - m - aw, x1: cell.x1 - m,
+    z0: cell.z1 - m - cw, z1: cell.z1 - m,
+  };
+  const region = picked?.region ?? fallbackRegion;
+  const accessPoint = picked?.point ?? (runAxis === "x"
+    ? [region.x0 - CIRCULATION_W / 2, (region.z0 + region.z1) / 2] as const
+    : [(region.x0 + region.x1) / 2, region.z0 - CIRCULATION_W / 2] as const);
+  const approach = picked?.approach ?? (runAxis === "x"
+    ? rectAround(accessPoint[0], accessPoint[1], CIRCULATION_W, STAIR_CROSS)
+    : rectAround(accessPoint[0], accessPoint[1], STAIR_CROSS, CIRCULATION_W));
+  return { region, hole: { ...region }, runAxis, approach, accessPoint };
 }
 
 export function buildStair(
   out: PanelBuilder, cols: ColliderBox[], region: Rect, runAxis: Axis, floorY: number,
+  storeyH = FLOOR_H,
 ): void {
-  const rise = FLOOR_H / (2 * N);
+  const rise = storeyH / (2 * N);
   const a0 = runAxis === "x" ? region.x0 : region.z0; // along origin
   const c0 = runAxis === "x" ? region.z0 : region.x0; // cross origin
   const lane1 = c0 + LANE_W / 2;
   const lane2 = c0 + LANE_W + LANE_GAP + LANE_W / 2;
-  const flightLen = N * RUN, flightRise = FLOOR_H / 2;
+  const flightLen = N * RUN, flightRise = storeyH / 2;
   const theta = Math.atan2(flightRise, flightLen);
   const slopeLen = Math.hypot(flightLen, flightRise);
   const midY = floorY + flightRise; // landing height

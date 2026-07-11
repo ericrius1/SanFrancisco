@@ -39,9 +39,9 @@ const SEATS: { id: BuskerId; x: number; yaw: number; build: MusicianBuilder }[] 
   { id: "handpan", x: 0, yaw: 0, build: buildHandpanist },
   { id: "flute", x: -1.02, yaw: -0.14, build: buildFlutist }
 ];
-// Butts perched right on the front lip (knees past the edge) so the shins hang
-// over the undercut drop.
-const SEAT_Z = -PERCH.depth / 2 + 0.2;
+// Butts perched right on the front lip (hip front flush with the edge, knees
+// past it) so the shins hang straight over the undercut drop, not on the rock.
+const SEAT_Z = -PERCH.depth / 2 + 0.12;
 const VOICE_HEIGHT = 0.55; // sound source at chest height above the seat
 
 export type BuskerTrioOptions = {

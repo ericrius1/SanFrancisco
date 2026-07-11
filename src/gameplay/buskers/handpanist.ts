@@ -1,5 +1,6 @@
 import * as THREE from "three/webgpu";
 import { buildRig } from "../../player/rig";
+import { applyArmPose, solveArmPose, type ArmPose } from "./armIk";
 import { SEC_PER_BEAT } from "./song";
 import { midiHz, NoteCursor } from "./types";
 import type { MusicianBuilder, NoteEvent, TrioClock } from "./types";
@@ -52,70 +53,31 @@ const APPROACH_BEATS = 1.7; // start hovering over the next target this early
 const PARTIALS = [1, 2.0, 3.03] as const; // the 3.03 gives the metallic shimmer
 const PARTIAL_GAIN = [1, 0.5, 0.24] as const;
 
-// arm IK solver clamps: [armX, armY, armZ, foreX]
-const P_MIN = [-0.6, -1.1, -1.5, 0.06] as const;
-const P_MAX = [2.1, 1.1, 1.5, 2.5] as const;
-
-type Pose4 = [number, number, number, number];
-
-const _v = new THREE.Vector3();
 const damp = THREE.MathUtils.damp;
-
-/* ---------------------------------------------------- build-time arm IK */
-
-/** Coordinate-descent solve of (armX, armY, armZ, foreX) so the hand marker
- * lands on `target` (musician-group space; the group is unparented at build
- * time, so world == group-local). Runs only at build — never per frame. */
-function solveArm(arm: THREE.Group, fore: THREE.Group, marker: THREE.Object3D, target: THREE.Vector3, seed: Pose4): Pose4 {
-  const p: Pose4 = [
-    THREE.MathUtils.clamp(seed[0], P_MIN[0], P_MAX[0]),
-    THREE.MathUtils.clamp(seed[1], P_MIN[1], P_MAX[1]),
-    THREE.MathUtils.clamp(seed[2], P_MIN[2], P_MAX[2]),
-    THREE.MathUtils.clamp(seed[3], P_MIN[3], P_MAX[3])
-  ];
-  const evalErr = () => {
-    arm.rotation.set(p[0], p[1], p[2]);
-    fore.rotation.set(p[3], 0, 0);
-    marker.getWorldPosition(_v); // updates the ancestor chain itself
-    return _v.distanceToSquared(target);
-  };
-  let best = evalErr();
-  let step = 0.55;
-  let evals = 0;
-  while (step > 0.006 && evals < 700) {
-    let improved = false;
-    for (let i = 0; i < 4; i++) {
-      const orig = p[i];
-      for (let dir = 1; dir >= -1; dir -= 2) {
-        const cand = THREE.MathUtils.clamp(orig + dir * step, P_MIN[i], P_MAX[i]);
-        if (cand === orig) continue;
-        p[i] = cand;
-        evals++;
-        const err = evalErr();
-        if (err < best - 1e-10) {
-          best = err;
-          improved = true;
-          break;
-        }
-        p[i] = orig;
-      }
-    }
-    if (!improved) step *= 0.62;
-  }
-  return p;
-}
 
 /* ----------------------------------------------------------- the builder */
 
 export const buildHandpanist: MusicianBuilder = (audio, part) => {
   const group = new THREE.Group();
+  group.name = "busker-handpanist";
   const ownedGeos: THREE.BufferGeometry[] = [];
   const ownedMats: THREE.Material[] = [];
 
-  // ---- figure: warm rose tee, long auburn hair, no hat, bare arms
-  const rig = buildRig({ skin: 5, hair: "long", hat: "none", outfit: "tee", color: 6, accent: 3 });
-  rig.avatar.materials.pants.color.set(0x463844); // warm mauve over default denim
+  // ---- figure: cool black stagewear, long auburn hair, no hat, bare arms.
+  // Per-rig overrides keep this look local to the performer instead of adding a
+  // special case to the shared player-avatar palette.
+  const rig = buildRig({ skin: 5, hair: "long", hat: "none", outfit: "tee", color: 5, accent: 3 });
+  rig.avatar.materials.jacket.color.set(0x11141a); // black tee + sleeve caps
+  rig.avatar.materials.shirt.color.set(0x343b4b);
+  rig.avatar.materials.pants.color.set(0x090b11);
+  rig.avatar.materials.shoe.color.set(0x1a1f29);
+  rig.avatar.materials.sole.color.set(0x050608);
+  rig.avatar.materials.trim.color.set(0xc69a45); // restrained brass headband/neckline
   rig.group.position.y = SEAT_RIG_Y;
+  // Give the upper arms a clean shoulder seam. The forearms do the inward
+  // reaching; the upper-arm boxes no longer have to pass through the torso.
+  rig.armL.position.x = 0.315;
+  rig.armR.position.x = -0.315;
   group.add(rig.group);
 
   // a normal medium-long hair fall down the back — one soft sheet of three
@@ -155,6 +117,7 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
   ownedMats.push(shellMat, domeMat, dimpleMat, seamMat);
 
   const pan = new THREE.Group();
+  pan.name = "busker-handpan";
   pan.position.set(0, PAN_Y, PAN_Z);
   pan.rotation.x = PAN_TILT;
   group.add(pan);
@@ -221,43 +184,47 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
 
   // ---- solve the station lookup: strike + hover per target, per hand
   const handRigs = [
-    { arm: rig.armL, fore: rig.foreL, marker: markL, seed: [0.85, 0.1, -0.3, 1.15] as Pose4 },
-    { arm: rig.armR, fore: rig.foreR, marker: markR, seed: [0.85, -0.1, 0.3, 1.15] as Pose4 }
+    { arm: rig.armL, fore: rig.foreL, marker: markL, side: 1 as const, seed: [0.85, 0.08, 0.22, 1.15, 0, -0.65] as ArmPose },
+    { arm: rig.armR, fore: rig.foreR, marker: markR, side: -1 as const, seed: [0.85, -0.08, -0.22, 1.15, 0, 0.65] as ArmPose }
   ];
-  const strike: Pose4[][] = [[], []];
-  const hover: Pose4[][] = [[], []];
-  const readyPose: Pose4[] = [];
-  const restPose: Pose4[] = [];
+  const strike: ArmPose[][] = [[], []];
+  const hover: ArmPose[][] = [[], []];
+  const readyPose: ArmPose[] = [];
+  const restPose: ArmPose[] = [];
   rig.hips.rotation.set(0, 0, 0);
   for (let h = 0; h < 2; h++) {
     const H = handRigs[h];
     rig.torso.rotation.set(PLAY_LEAN, 0, 0); // playing stations solved at play lean
     for (let j = 0; j < 8; j++) {
-      const s = solveArm(H.arm, H.fore, H.marker, strikePts[j], H.seed);
+      const s = solveArmPose(H.arm, H.fore, H.marker, strikePts[j], H.seed, { side: H.side, elbowClearance: 0.265 });
       strike[h].push(s);
-      hover[h].push(solveArm(H.arm, H.fore, H.marker, hoverPts[j], s)); // seeded nearby → same elbow branch
+      hover[h].push(solveArmPose(H.arm, H.fore, H.marker, hoverPts[j], s, { side: H.side, elbowClearance: 0.265 }));
     }
-    readyPose.push(solveArm(H.arm, H.fore, H.marker, readyPts[h], H.seed));
+    readyPose.push(solveArmPose(H.arm, H.fore, H.marker, readyPts[h], H.seed, { side: H.side, elbowClearance: 0.265 }));
     rig.torso.rotation.set(REST_LEAN, 0, 0); // palms park on the drum at rest lean
-    restPose.push(solveArm(H.arm, H.fore, H.marker, restPts[h], readyPose[h]));
+    restPose.push(solveArmPose(H.arm, H.fore, H.marker, restPts[h], readyPose[h], { side: H.side, elbowClearance: 0.265 }));
   }
 
-  // ---- per-event choreography: pitch → dimple, hand alternation (dings → R)
+  // ---- per-event choreography: pitch → dimple. Side dimples belong to the
+  // nearest hand; only the centre/ding targets alternate. This prevents the
+  // conspicuous cross-body shoulder penetration of the old blind alternation.
   const distinct = Array.from(new Set(part.map((e) => e.midis[0]))).sort((a, b) => a - b);
   const dimpleOf = new Map<number, number>();
   distinct.forEach((m, i) => dimpleOf.set(m, i % 7));
   const animOf = new Map<NoteEvent, { hand: number; target: number }>();
-  let lastHand = 0;
+  let lastHand = 1;
   for (const e of part) {
     const ding = e.tag === "ding";
-    const hand = ding ? 1 : lastHand === 1 ? 0 : 1;
+    const target = ding ? 7 : (dimpleOf.get(e.midis[0]) ?? 0);
+    const x = targetX[target];
+    const hand = ding || Math.abs(x) < 0.035 ? (lastHand === 1 ? 0 : 1) : x > 0 ? 0 : 1;
     lastHand = hand;
-    animOf.set(e, { hand, target: ding ? 7 : (dimpleOf.get(e.midis[0]) ?? 0) });
+    animOf.set(e, { hand, target });
   }
 
   // ---- runtime state (module-temp reuse only; zero per-frame allocations)
   const cursor = new NoteCursor(part);
-  const handPose: Pose4[] = [restPose[0].slice() as Pose4, restPose[1].slice() as Pose4];
+  const handPose: ArmPose[] = [restPose[0].slice() as ArmPose, restPose[1].slice() as ArmPose];
   let perform = 0; // eased 0(rest)..1(playing/countin)
   let t = 0; // own accumulator (phaseTime resets at phase edges)
   let gaze = 0.1;
@@ -270,13 +237,12 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
   rig.torso.rotation.set(REST_LEAN, 0, 0);
   rig.head.rotation.set(-0.1, 0, 0);
   for (let h = 0; h < 2; h++) {
-    handRigs[h].arm.rotation.set(handPose[h][0], handPose[h][1], handPose[h][2]);
-    handRigs[h].fore.rotation.set(handPose[h][3], 0, 0);
+    applyArmPose(handRigs[h].arm, handRigs[h].fore, handPose[h]);
   }
-  rig.legL.rotation.set(1.36, 0, 0.04);
-  rig.legR.rotation.set(1.31, 0, -0.04);
-  rig.shinL.rotation.x = -1.27;
-  rig.shinR.rotation.x = -1.23;
+  rig.legL.rotation.set(1.3, 0, 0.04);
+  rig.legR.rotation.set(1.26, 0, -0.04);
+  rig.shinL.rotation.x = -1.0;
+  rig.shinR.rotation.x = -0.98;
 
   const update = (dt: number, clock: TrioClock) => {
     t += dt;
@@ -301,7 +267,7 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
     // ---- hands: hover over the next target, drop at the onset, bounce back
     for (let h = 0; h < 2; h++) {
       const rest = restPose[h];
-      let tgt: Pose4 = readyPose[h];
+      let tgt: ArmPose = readyPose[h];
       let lam = 5.5;
       if (clock.phase === "countin") {
         lam = 6; // hover back into ready position under the count
@@ -328,14 +294,14 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
       }
       const pose = handPose[h];
       const lamF = 4 + (lam - 4) * p;
-      for (let i = 0; i < 4; i++) {
+      for (let i = 0; i < pose.length; i++) {
         const goal = rest[i] + (tgt[i] - rest[i]) * p; // rest ↔ perform blend, no pops
         pose[i] = damp(pose[i], goal, lamF, dt);
       }
       const H = handRigs[h];
       const bob = (1 - p) * 0.02 * Math.sin(t * 1.05 + h * 2.5) + p * 0.012 * Math.sin(t * 2.3 + h * 2.9);
-      H.arm.rotation.set(pose[0] + bob, pose[1], pose[2]);
-      H.fore.rotation.set(pose[3], 0, 0);
+      applyArmPose(H.arm, H.fore, pose);
+      H.arm.rotation.x += bob;
     }
 
     // ---- nods: the count-in is THE moment — four big legible dips
@@ -380,10 +346,10 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
 
     // ---- legs: dangling over the drop, loose lazy swing (the charm)
     const swing = 0.15 - 0.07 * p + wind * 0.03;
-    rig.legL.rotation.x = 1.36 + Math.sin(t * 0.83) * swing;
-    rig.legR.rotation.x = 1.31 + Math.sin(t * 0.83 + 2.4) * swing;
-    rig.shinL.rotation.x = -1.27 + Math.sin(t * 0.83 - 0.9) * swing * 1.8;
-    rig.shinR.rotation.x = -1.23 + Math.sin(t * 0.83 + 1.5) * swing * 1.8;
+    rig.legL.rotation.x = 1.3 + Math.sin(t * 0.83) * swing;
+    rig.legR.rotation.x = 1.26 + Math.sin(t * 0.83 + 2.4) * swing;
+    rig.shinL.rotation.x = -1.0 + Math.sin(t * 0.83 - 0.9) * swing * 1.8;
+    rig.shinR.rotation.x = -0.98 + Math.sin(t * 0.83 + 1.5) * swing * 1.8;
 
     // ---- hair in the wind: the whole fall sways as one, with a little
     // per-slat lag so it reads as soft strands, never a rigid board
