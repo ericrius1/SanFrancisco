@@ -17,9 +17,10 @@ import { buildingColliders, doorMetrics, doorEligible, STOOP_MAX_RISE, stoopColl
 import { ensureCCW, streetEdgeIndex, edgeOutwardNormal, pointInPoly, signedDistToPoly } from "../core/footprint";
 import { buildBuilding, buildInterior, assembleBuilding, warmupMaterials } from "../render";
 import { buildChunkLOD, type ChunkLOD } from "../render/chunkLod";
+import { createModuleLayer } from "../render/moduleLayer";
 import { lodMaterial } from "../render/lod";
 import { buildCityGenMaterials } from "../theme/materials";
-import type { BuildingSpec, ColliderBox, MeshData } from "../core/types";
+import type { BuildingSpec, ColliderBox, MeshData, ModuleInstance } from "../core/types";
 import { CITYGEN_TUNING, CONFIG } from "../../../config";
 
 const READY = new Set(["victorian", "edwardian", "marina", "downtown", "soma"]);
@@ -262,6 +263,9 @@ export async function createCityGenRing(
   const url = opts.url ?? "/citygen/buildings.json";
   const grid = await fetchGrid(url);
   const materials = buildCityGenMaterials();
+  // instanced kit-of-parts windows: every detail building's panes/frames draw
+  // as a handful of city-wide instanced meshes (see render/moduleLayer.ts)
+  const moduleLayer = createModuleLayer(ctx.scene);
   // no host scheduler → run deferred work immediately (portable fallback)
   const schedule: ScheduleFn = ctx.schedule ?? ((_lane, job) => { let v = job(); let guard = 0; while (v === "again" && guard++ < 10000) v = job(); });
 
@@ -556,8 +560,8 @@ export async function createCityGenRing(
   let nextBuildId = 1;
   try {
     buildWorker = new Worker(new URL("./buildWorker.ts", import.meta.url), { type: "module" });
-    buildWorker.onmessage = (ev: MessageEvent<{ id: number; meshes: MeshData[] }>) => {
-      const { id, meshes } = ev.data;
+    buildWorker.onmessage = (ev: MessageEvent<{ id: number; meshes: MeshData[]; instances?: ModuleInstance[]; matTable?: string[] }>) => {
+      const { id, meshes, instances, matTable } = ev.data;
       const e = pendingBuilds.get(id);
       pendingBuilds.delete(id);
       if (!e || !e.pendingBuild) return; // cancelled while in flight
@@ -571,7 +575,7 @@ export async function createCityGenRing(
         const sdx = e.cx - lastPlayer.x, sdz = e.cz - lastPlayer.z;
         const staleR = CT.detailRadius + 40;
         if (sdx * sdx + sdz * sdz > staleR * staleR) return;
-        finishDetail(e, assembleBuilding(e as BuildingSpec, meshes, materials));
+        finishDetail(e, assembleBuilding(e as BuildingSpec, { meshes, instances, matTable }, materials, moduleLayer));
       });
     };
     buildWorker.onerror = (err) => {
@@ -596,7 +600,7 @@ export async function createCityGenRing(
     // (openDoorway → appendStoop) both read this same number, so steps ⟺ ramp.
     if (e.frontGround === undefined) e.frontGround = frontGroundFor(e);
     if (!buildWorker) {
-      finishDetail(e, buildBuilding(e as BuildingSpec, materials)); // sync fallback
+      finishDetail(e, buildBuilding(e as BuildingSpec, materials, moduleLayer)); // sync fallback
       return;
     }
     e.pendingBuild = true;
@@ -1211,6 +1215,7 @@ export async function createCityGenRing(
       buildWorker = null;
       pendingBuilds.clear();
       for (const cell of [...loaded.values()]) unloadCell(cell); // → dropDetail → resetDoorRt per entry
+      moduleLayer.dispose();
       loaded.clear();
       building.length = 0;
       activeDoors.length = 0;

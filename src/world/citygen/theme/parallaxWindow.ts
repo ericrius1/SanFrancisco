@@ -54,7 +54,7 @@ const UV_SCALE = 3.0;
 
 export type ParallaxZone = "residential" | "commercial" | "loft";
 
-interface ZoneLook {
+export interface ZoneLook {
   litChance: number; // fraction of windows with a light on (0..1)
   glass: number; // flat glass tint (day)
   light: [number, number]; // lamp colour range (warm → cool), mixed per-pane
@@ -64,7 +64,7 @@ interface ZoneLook {
 //  • residential: dark warm glass, ~1/4 lit, warm lamps.
 //  • commercial:  lighter shopfront glass, mostly lit, cooler retail lighting.
 //  • loft:        darkest glass, sparsely lit, warm bulbs.
-const ZONES: Record<ParallaxZone, ZoneLook> = {
+export const ZONES: Record<ParallaxZone, ZoneLook> = {
   residential: { litChance: 0.26, glass: 0x20262b, light: [0xffb845, 0xffe4a0] },
   commercial: { litChance: 0.68, glass: 0x28323a, light: [0xfff2d0, 0xdfeaff] },
   loft: { litChance: 0.16, glass: 0x181c20, light: [0xffa838, 0xffcf78] },

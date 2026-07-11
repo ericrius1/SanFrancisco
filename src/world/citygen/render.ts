@@ -5,13 +5,16 @@
 // portable. LOD/streaming/shadow-proxy integration is the streaming phase — this
 // file is the direct "build these buildings now" path used by the demo + tests.
 import * as THREE from "three/webgpu";
+import { materialOpacity } from "three/tsl";
 import { generate, type BuildingSpec } from "./index";
 import { buildCityGenMaterials, makeWallMaterial, type WallKind } from "./theme/materials";
 import { makeParallaxGlass, type ParallaxZone } from "./theme/parallaxWindow";
+import { expandModuleInstances } from "./theme/moduleDefs";
 import { rng } from "./core/rng";
 import { mergePanels } from "./core/mesh";
 import { buildInterior as buildInteriorParts } from "./interior/interior";
-import type { ColliderBox, MeshData } from "./core/types";
+import type { ColliderBox, MeshData, ModuleInstance } from "./core/types";
+import type { ModuleLayer } from "./render/moduleLayer";
 
 // SF "painted lady" body colours — mid-saturated so the bright white trim reads
 // as the classic Victorian contrast (bodies vary building-to-building).
@@ -91,7 +94,30 @@ function settledWall(spec: BuildingSpec): THREE.Material {
   return m;
 }
 function fadeCloneOf(settled: THREE.Material): THREE.Material {
-  const f = settled.clone() as THREE.Material & { alphaHash: boolean };
+  // Fade clones must be NODE materials even when the settled source is a plain
+  // MeshStandardMaterial (trim/roof/door/stoop). Our buildings render inside
+  // STATIC BundleGroups, and three's NodeMaterialObserver.needsRefresh() skips
+  // the per-frame uniform refresh for bundle objects whose material carries no
+  // node (hasNode=false) — so a plain clone's animated `opacity` never reached
+  // the GPU: those parts stayed at the record-time dither (~invisible) through
+  // the whole fade, then popped at the settle re-record. An explicit
+  // opacityNode (same value materialOpacity resolves to by default) flips
+  // hasNode=true, which keeps the opacity uniform live while costing nothing
+  // once the clone is returned to the pool.
+  let f: THREE.Material & { alphaHash: boolean };
+  if ((settled as { isNodeMaterial?: boolean }).isNodeMaterial) {
+    f = settled.clone() as THREE.Material & { alphaHash: boolean };
+  } else {
+    const s = settled as THREE.MeshStandardMaterial;
+    const nm = new THREE.MeshStandardNodeMaterial({
+      color: s.color, roughness: s.roughness, metalness: s.metalness, side: s.side,
+    });
+    nm.envMapIntensity = s.envMapIntensity;
+    nm.emissive = s.emissive.clone();
+    nm.emissiveIntensity = s.emissiveIntensity;
+    nm.opacityNode = materialOpacity;
+    f = nm as THREE.Material & { alphaHash: boolean };
+  }
   f.alphaHash = true; // dithered fade in the OPAQUE pass — no sorting, no blending
   f.opacity = 0.02;
   return f;
@@ -134,8 +160,32 @@ export function warmupMaterials(mats: Record<string, THREE.Material>): THREE.Mat
 }
 
 /** Assemble ONE building's THREE meshes from already-generated MeshData (the
- *  expensive generate() may have run on a worker). Used by the streaming ring. */
-export function assembleBuilding(spec: BuildingSpec, meshes: MeshData[], mats: Record<string, THREE.Material>): BuiltBuilding {
+ *  expensive generate() may have run on a worker). Used by the streaming ring.
+ *
+ *  `gen.instances` (kit-of-parts windows) go to the instanced module layer when
+ *  one is supplied — the per-building bundle then only carries walls/roof/trim
+ *  boxes/doors. Without a layer they're expanded back into baked meshes. */
+export function assembleBuilding(
+  spec: BuildingSpec,
+  gen: { meshes: MeshData[]; instances?: ModuleInstance[]; matTable?: string[] },
+  mats: Record<string, THREE.Material>,
+  moduleLayer?: ModuleLayer | null,
+): BuiltBuilding {
+  let meshes = gen.meshes;
+  const instances = gen.instances ?? [];
+  const matTable = gen.matTable ?? [];
+  if (instances.length && !moduleLayer) {
+    meshes = meshes.concat(mergePanels(expandModuleInstances(instances, matTable)));
+  }
+  return assembleBuildingMeshes(spec, meshes, mats, moduleLayer && instances.length ? { moduleLayer, instances, matTable } : null);
+}
+
+function assembleBuildingMeshes(
+  spec: BuildingSpec,
+  meshes: MeshData[],
+  mats: Record<string, THREE.Material>,
+  modules: { moduleLayer: ModuleLayer; instances: ModuleInstance[]; matTable: string[] } | null,
+): BuiltBuilding {
   const settledOf = (id: string): THREE.Material => {
     if (id.startsWith("wall.")) return settledWall(spec);
     if (id === "glass") return zoneGlass(spec.archetype);
@@ -201,6 +251,41 @@ export function assembleBuilding(spec: BuildingSpec, meshes: MeshData[], mats: R
       .multiply(new THREE.Matrix4().makeTranslation(-cx, -b, -cz));
     group.matrixWorldNeedsUpdate = true;
   }
+  // kit-of-parts windows → the instanced module layer, under the SAME proud
+  // transform as the bundle (or the panes would sink into the scaled walls).
+  // Its fade slot is driven from setOpacity below, so windows dither in step
+  // with the building's clone-fade parts.
+  const moduleHandle = modules
+    ? modules.moduleLayer.addBuilding(modules.instances, modules.matTable, {
+        matrix: group.matrix,
+        zone: ARCH_ZONE[spec.archetype] ?? "residential",
+        seed: spec.seed,
+      })
+    : null;
+  // slot texture exhausted → fall back to baked expansion so windows still draw
+  if (modules && !moduleHandle) {
+    const expanded = mergePanels(expandModuleInstances(modules.instances, modules.matTable));
+    for (const md of expanded) {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.BufferAttribute(md.positions, 3));
+      g.setAttribute("normal", new THREE.BufferAttribute(md.normals, 3));
+      g.setAttribute("uv", new THREE.BufferAttribute(md.uvs, 2));
+      g.setIndex(new THREE.BufferAttribute(md.indices, 1));
+      g.computeBoundingSphere();
+      geoms.push(g);
+      triangles += md.indices.length / 3;
+      const settled = settledOf(md.materialId);
+      let fade = borrowed!.get(settled);
+      if (!fade) { fade = acquireFadeClone(settled); borrowed!.set(settled, fade); }
+      const mesh = new THREE.Mesh(g, fade);
+      mesh.name = md.materialId;
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.frustumCulled = false;
+      group.add(mesh);
+      parts.push({ mesh, settled });
+    }
+  }
   let onFadeMats = true; // meshes start on their borrowed fade clones
   const returnClones = () => {
     if (!borrowed) return;
@@ -210,6 +295,7 @@ export function assembleBuilding(spec: BuildingSpec, meshes: MeshData[], mats: R
   return {
     group, triangles,
     setOpacity(o: number) {
+      moduleHandle?.setFade(o); // instanced windows dither in step (one texel write)
       const fading = o < 0.999;
       if (fading !== onFadeMats) {
         // crossing the settle boundary (either direction) swaps material pointers
@@ -232,6 +318,7 @@ export function assembleBuilding(spec: BuildingSpec, meshes: MeshData[], mats: R
       }
     },
     dispose() {
+      moduleHandle?.free();
       for (const g of geoms) g.dispose();
       returnClones(); // pooled clones outlive the building — never disposed
       group.clear();
@@ -242,8 +329,9 @@ export function assembleBuilding(spec: BuildingSpec, meshes: MeshData[], mats: R
 /** Build ONE building's meshes into a fresh group (synchronous path: generate()
  *  runs here on the main thread — the streaming ring prefers the worker +
  *  assembleBuilding; demos/tests and the no-worker fallback use this). */
-export function buildBuilding(spec: BuildingSpec, mats: Record<string, THREE.Material>): BuiltBuilding {
-  return assembleBuilding(spec, generate(spec).meshes, mats);
+export function buildBuilding(spec: BuildingSpec, mats: Record<string, THREE.Material>, moduleLayer?: ModuleLayer | null): BuiltBuilding {
+  const gen = generate(spec);
+  return assembleBuilding(spec, gen, mats, moduleLayer);
 }
 
 /** Build a building's INTERIOR meshes + colliders (lazy: only when entered).
@@ -292,7 +380,7 @@ export function buildCityGenGroup(
   let triangles = 0;
 
   for (const spec of specs) {
-    const { meshes } = generate(spec);
+    const { meshes } = generate(spec, false, { expandModules: true }); // demo path: bake windows
     // seeded painted-lady body colour → its own clapboard wall material
     const r = rng(spec.seed, 99);
     const body = PAINTED_LADY[Math.floor(r() * PAINTED_LADY.length) % PAINTED_LADY.length];

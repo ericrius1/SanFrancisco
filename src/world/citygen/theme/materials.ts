@@ -82,6 +82,14 @@ function wallNodes(kind: WallKind): WallNodes {
   return g;
 }
 
+/** Trim hex per trim material id — the instanced window layer tints its shared
+ *  trim mesh per instance instead of binding these materials (KEEP IN SYNC with
+ *  the `standard()` colours in buildCityGenMaterials below). */
+export const MODULE_TRIM_HEX: Record<string, number> = {
+  "trim.victorian": 0xf9f4ea,
+  "trim.edwardian": 0xf2eee4,
+};
+
 export function makeWallMaterial(hex: number, kind: WallKind = "smooth"): THREE.MeshStandardNodeMaterial {
   const m = new THREE.MeshStandardNodeMaterial({ roughness: 0.92, metalness: 0, side: THREE.DoubleSide });
   m.envMapIntensity = ENV;

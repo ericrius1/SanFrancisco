@@ -5,6 +5,7 @@
 import {
   type FacadeEdge, type Vec3, PanelBuilder, pointOnWall, floorBands, bayCount, aboveGrade,
 } from "../core/facade";
+import { MODULE_FACE_WINDOW, MODULE_FACE_WINDOW_ARCHED } from "../core/types";
 import { doorMetrics, doorEligible, STOOP_MAX_RISE } from "../core/collider";
 
 // ---- vector helpers ---------------------------------------------------------
@@ -89,8 +90,32 @@ export function frontStoop(out: PanelBuilder, e: FacadeEdge, mat: string): void 
  * A framed, divided-lite window on a face (ground points a→b, y0..y1, outward n).
  * Dark glass proud of the wall + white muntins + frame surround + sill + crown.
  * `arched` adds a shallow arched head (Mediterranean).
+ *
+ * KIT-OF-PARTS: on the normal streamed path this emits ONE ModuleInstance
+ * (module id + wall basis + w/h) instead of its ~82 baked triangles — the
+ * render layer draws every window in the city as a couple of instanced meshes
+ * (see theme/moduleDefs.ts + citygen/render/moduleLayer.ts). The baked path
+ * below stays for module-template extraction, for legacy demo expansion, and
+ * for any caller whose face normal doesn't match the standard CCW wall basis.
  */
 export function faceWindow(out: PanelBuilder, a: Vec3, b: Vec3, y0: number, y1: number, n: Vec3, m: WinMats, arched = false): void {
+  const alongI = unit(sub(b, a));
+  const W0 = len(sub(b, a));
+  if (W0 < 0.5 || y1 - y0 < 0.6) return;
+  // instance path: requires the module-frame invariant (horizontal edge, outward
+  // normal = (az, −ax)); every grammar call site satisfies it, but verify so an
+  // exotic future caller silently gets the correct baked fallback instead.
+  if (out.instancing && Math.abs(alongI[1]) < 1e-4 &&
+      Math.abs(n[0] - alongI[2]) < 1e-3 && Math.abs(n[2] + alongI[0]) < 1e-3 && Math.abs(n[1]) < 1e-3) {
+    out.instance(arched ? MODULE_FACE_WINDOW_ARCHED : MODULE_FACE_WINDOW,
+      [a[0], y0, a[2]], [alongI[0], alongI[2]], W0, y1 - y0, m.trim, m.glass);
+    return;
+  }
+  bakedFaceWindow(out, a, b, y0, y1, n, m, arched);
+}
+
+/** The baked-triangle body of faceWindow (module templates evaluate this). */
+export function bakedFaceWindow(out: PanelBuilder, a: Vec3, b: Vec3, y0: number, y1: number, n: Vec3, m: WinMats, arched = false): void {
   const along = unit(sub(b, a));
   const W = len(sub(b, a));
   if (W < 0.5 || y1 - y0 < 0.6) return;

@@ -24,6 +24,7 @@ import {
   type FacadeEdge, type Vec3, type PanelBuilder,
 } from "../core/facade";
 import type { Rng } from "../core/rng";
+import { MODULE_SHAFT_WINDOW } from "../core/types";
 import { sub, len, unit, lerp, UP, gp, beltCourse, cornice, faceWindowAvoidDoor, frontDoor, frontStoop, wallWithDoorway, type WinMats } from "./facadeKit";
 import { doorEligible, doorMetrics } from "../core/collider";
 
@@ -39,8 +40,22 @@ const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.m
 /** A lightweight recessed shaft window: one glass sheet a hair proud of the wall
  *  plus a single central mullion (the tall Chicago-window look). Cheap (~12 tris)
  *  because the surrounding pier×band grid supplies the frame — so a big building's
- *  hundreds of windows stay inside the triangle budget. */
+ *  hundreds of windows stay inside the triangle budget. Emits a kit-of-parts
+ *  instance on the streamed path (see facadeKit.faceWindow for the pattern). */
 function shaftWindow(out: PanelBuilder, a: Vec3, b: Vec3, y0: number, y1: number, n: Vec3, m: WinMats): void {
+  const WI = len(sub(b, a));
+  if (WI < 0.6 || y1 - y0 < 0.7) return;
+  const alongI = unit(sub(b, a));
+  if (out.instancing && Math.abs(alongI[1]) < 1e-4 &&
+      Math.abs(n[0] - alongI[2]) < 1e-3 && Math.abs(n[2] + alongI[0]) < 1e-3 && Math.abs(n[1]) < 1e-3) {
+    out.instance(MODULE_SHAFT_WINDOW, [a[0], y0, a[2]], [alongI[0], alongI[2]], WI, y1 - y0, m.trim, m.glass);
+    return;
+  }
+  bakedShaftWindow(out, a, b, y0, y1, n, m);
+}
+
+/** baked-triangle body of shaftWindow (module templates evaluate this) */
+export function bakedShaftWindow(out: PanelBuilder, a: Vec3, b: Vec3, y0: number, y1: number, n: Vec3, m: WinMats): void {
   const W = len(sub(b, a));
   if (W < 0.6 || y1 - y0 < 0.7) return;
   const along = unit(sub(b, a));

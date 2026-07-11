@@ -5,12 +5,16 @@
 // the theme's FacadeDecorator details (bay windows, cornice, storefront); a
 // triangulated roof cap closes the top. If no decorator is supplied it falls back
 // to a flat wall (Phase-1 shell). Pure geometry — no THREE, no textures.
-import type { ArchetypeSpec, BuildingSpec, Panel, Vec2 } from "./types";
+import type { ArchetypeSpec, BuildingSpec, ModuleInstance, Panel, Vec2 } from "./types";
 import { centroid, edgeOutwardNormal, ensureCCW, streetEdgeIndex, triangulate } from "./footprint";
 import { PanelBuilder, defaultFlatWall, type FacadeDecorator, type FacadeEdge, type Vec3 } from "./facade";
 
 export interface Massing {
   panels: Panel[];
+  /** kit-of-parts window instances (drawn instanced; see core/types.ModuleInstance) */
+  instances: ModuleInstance[];
+  /** material-id table the instances index into */
+  matTable: string[];
   /** storeys, derived from real height ÷ archetype floor height (≥1) */
   floors: number;
   /** footprint centroid + base/top, handy for placement / interiors */
@@ -73,7 +77,7 @@ export function massBuilding(spec: BuildingSpec, arch: ArchetypeSpec, decorate: 
 
   const panels = out.panels();
   if (roof.indices.length) panels.push(roof);
-  return { panels, floors, center: [cx, cz], base, top };
+  return { panels, instances: out.moduleInstances(), matTable: out.matTable(), floors, center: [cx, cz], base, top };
 }
 
 /** small deterministic rooftop props inside a footprint (flat roofs). */

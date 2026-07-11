@@ -11,7 +11,7 @@ import {
   type FacadeDecorator, type FacadeEdge, type Vec3,
   PanelBuilder, pointOnWall, outset, floorBands, bayCount, aboveGrade,
 } from "../core/facade";
-import { wallWithDoorway, frontStoop } from "./facadeKit";
+import { wallWithDoorway, frontStoop, faceWindow } from "./facadeKit";
 import { doorEligible, doorMetrics } from "../core/collider";
 
 // ---- small vector helpers ---------------------------------------------------
@@ -24,54 +24,10 @@ const UP: Vec3 = [0, 1, 0];
 /** ground point at fraction t along the edge (y=0 placeholder replaced by caller) */
 const gp = (e: FacadeEdge, t: number): Vec3 => pointOnWall(e, t, 0);
 
-/**
- * A deep, framed, double-hung-style window on a face defined by two ground
- * points a→b, spanning y0..y1, with outward normal n. Draws: a recessed glass
- * plane split into panes by mullions, a projecting frame surround, a sill below
- * and a crown/lintel above — the Victorian window signature.
- */
-function faceWindow(
-  out: PanelBuilder, a: Vec3, b: Vec3, y0: number, y1: number, n: Vec3,
-  m: { frame: string; glass: string; trim: string },
-): void {
-  const along = unit(sub(b, a));
-  const W = len(sub(b, a));
-  if (W < 0.5 || y1 - y0 < 0.6) return;
-  const cA = lerp(a, b, 0.5);
-  const midY = (y0 + y1) / 2;
-  const off = (p: Vec3, d: number): Vec3 => [p[0] + n[0] * d, p[1], p[2] + n[2] * d];
-  // A glass pane must sit PROUD of the wall — the flat wall quad already covers
-  // this cell, so a recessed pane would be occluded (that was why windows never
-  // showed). Glass a hair in front, muntins in front of that, frame around it.
-  const gd = 0.03;   // glass proud of wall
-  const md_ = 0.05;  // muntin bars proud
-  const fw = 0.05;   // frame width
-  const glassCorner = (t: number, yy: number): Vec3 =>
-    off([a[0] + (b[0] - a[0]) * t, yy, a[2] + (b[2] - a[2]) * t], gd);
-  // single dark glass sheet filling the opening (inset a touch from the frame)
-  const inset = 0.06;
-  const gt0 = inset / W, gt1 = 1 - inset / W;
-  const gy0 = y0 + inset, gy1 = y1 - inset;
-  out.quad(m.glass, glassCorner(gt0, gy0), glassCorner(gt1, gy0), glassCorner(gt1, gy1), glassCorner(gt0, gy1), n);
-
-  // muntins: a white cross dividing the sash into 2×2 lites (thin bars proud of glass)
-  const muntin = (ha: number, hu: number, cx: Vec3): void =>
-    out.box(m.trim, [cx[0] + n[0] * md_, cx[1], cx[2] + n[2] * md_], [ha, hu, 0.012], along, UP, n, true);
-  muntin(W / 2 - inset, 0.02, [cA[0], midY, cA[2]]);                 // horizontal bar
-  muntin(0.02, (y1 - y0) / 2 - inset, [cA[0], midY, cA[2]]);         // vertical bar
-
-  // projecting frame surround (four slim boxes proud of the wall)
-  const bar = (c: Vec3, ha: number, hu: number): void =>
-    out.box(m.frame, off([c[0], c[1], c[2]], 0.02), [ha, hu, 0.05], along, UP, n, true);
-  bar([cA[0], y0, cA[2]], W / 2 + fw, fw);            // bottom
-  bar([cA[0], y1, cA[2]], W / 2 + fw, fw);            // top
-  bar([a[0], midY, a[2]], fw, (y1 - y0) / 2 + fw);    // left
-  bar([b[0], midY, b[2]], fw, (y1 - y0) / 2 + fw);    // right
-
-  // sill below + crowned lintel above (project further for relief)
-  out.box(m.trim, off([cA[0], y0 - 0.05, cA[2]], 0.08), [W / 2 + 0.12, 0.05, 0.11], along, UP, n, true);
-  out.box(m.trim, off([cA[0], y1 + 0.10, cA[2]], 0.10), [W / 2 + 0.15, 0.08, 0.13], along, UP, n, true);
-}
+// The Victorian window (deep frame + muntin cross + sill/crown) is the shared
+// kit faceWindow — its former private copy here was byte-identical to the
+// non-arched kit build, and the kit version now emits kit-of-parts INSTANCES
+// on the streamed path (one record instead of ~82 baked triangles).
 
 /** horizontal projecting belt/string course across the whole edge at height y */
 function beltCourse(out: PanelBuilder, e: FacadeEdge, y: number, mat: string, depth = 0.06, h = 0.07): void {
