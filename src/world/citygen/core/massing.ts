@@ -87,25 +87,38 @@ function roofProps(out: PanelBuilder, poly: Vec2[], cx: number, cz: number, top:
   const w = maxx - minx, d = maxz - minz;
   if (w < 4 || d < 4) return; // too small to clutter
   const X: Vec3 = [1, 0, 0], Y: Vec3 = [0, 1, 0], Z: Vec3 = [0, 0, 1];
+  // Every prop that sits ON the roof slab must SINK its base BELOW the cap plane,
+  // never rest a face coplanar with it: a box bottom exactly at `top` z-fights the
+  // roof cap (reversed-z separates coincident surfaces spatially, not with offset)
+  // — the roof-edge shimmer in the bug report. EMBED pushes each base under the cap;
+  // the buried sliver is hidden by the slab, and the visible top height is preserved.
+  const EMBED = 0.12;
   // keep props inside the footprint bbox with an inset (concave overhang is minor)
   const spot = (fx: number, fz: number): [number, number] => [
     Math.min(maxx - 0.9, Math.max(minx + 0.9, cx + fx)),
     Math.min(maxz - 0.9, Math.max(minz + 0.9, cz + fz)),
   ];
+  // Emit a box whose TOP face stays at `top + rise + 2*halfY` but whose BASE is
+  // sunk EMBED below the roof cap (grows the half-height, lowers the centre).
+  const roofBox = (mat: string, x: number, z: number, halfXZ: [number, number], rise: number, halfY: number, cast: boolean) => {
+    const hy = halfY + EMBED / 2;                 // extend downward by EMBED
+    const cy = top + rise + halfY - EMBED / 2;    // keep the top where it was
+    out.box(mat, [x, cy, z], [halfXZ[0], hy, halfXZ[1]], X, Y, Z, cast);
+  };
   // stairwell bulkhead near centre
   const [bx, bz] = spot((rng() - 0.5) * w * 0.3, (rng() - 0.5) * d * 0.3);
-  out.box(arch.roofMaterial, [bx, top + 0.9, bz], [0.9, 0.9, 1.1], X, Y, Z, true);
+  roofBox(arch.roofMaterial, bx, bz, [0.9, 1.1], 0, 0.9, true);
   // a couple of low vents
   const nv = 1 + Math.floor(rng() * 2);
   for (let i = 0; i < nv; i++) {
     const [vx, vz] = spot((rng() - 0.5) * w * 0.7, (rng() - 0.5) * d * 0.7);
-    out.box("roof.flatTrim", [vx, top + 0.35, vz], [0.35, 0.35, 0.35], X, Y, Z, true);
+    roofBox("roof.flatTrim", vx, vz, [0.35, 0.35], 0, 0.35, true);
   }
   // ~30%: a wooden rooftop water tank (a box on stubby legs, iconic on SF/Bay roofs)
   if (rng() < 0.3 && w > 6 && d > 6) {
     const [tx, tz] = spot((rng() - 0.5) * w * 0.5, (rng() - 0.5) * d * 0.5);
-    out.box("int.wood", [tx, top + 1.5, tz], [0.7, 0.9, 0.7], X, Y, Z, true);          // tank
-    out.box("int.wood", [tx, top + 0.35, tz], [0.75, 0.35, 0.75], X, Y, Z, false);     // frame base
+    out.box("int.wood", [tx, top + 1.5, tz], [0.7, 0.9, 0.7], X, Y, Z, true);          // tank (rides on the frame)
+    roofBox("int.wood", tx, tz, [0.75, 0.75], 0, 0.35, false);                          // frame base
   }
 }
 

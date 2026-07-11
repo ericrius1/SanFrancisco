@@ -1196,8 +1196,19 @@ export async function createCityGenRing(
 
       // Rank holders + candidates by distance; nearest maxDetail earn/keep a slot.
       // Holders past detailExit are ranked but never kept (they must leave).
+      //
+      // ADMISSION HYSTERESIS (the "roof flicker" fix): a building already showing
+      // detail and not fading out sorts as if ~13% nearer, so at the maxDetail /
+      // cost-budget bubble a candidate must be clearly closer to bump it, and a
+      // bumped holder can't re-qualify until the nearer crowd genuinely thins.
+      // Without this dead-band a building whose rank hovered at the cap flip-flopped
+      // admit<->evict every scan and never settled — a permanent alphaHash dither
+      // dissolve on one façade/roof while its neighbours were solid. The bonus also
+      // covers fading-IN holders so an in-flight fade can finish before it's evictable.
+      const STICKY = 0.76; // ≈0.87² on squared distance → ~13% linear dead-band
+      const rankKey = (e: Entry, d2: number) => (e.detail && e.fadeDir >= 0 ? d2 * STICKY : d2);
       const ranked = haveDetail.concat(candidates);
-      ranked.sort((a, b) => a[1] - b[1]);
+      ranked.sort((a, b) => rankKey(a[0], a[1]) - rankKey(b[0], b[1]));
       const keep = new Set<Entry>();
       // Occupancy/reveal safety outranks the nearest-N cap. This prevents a large
       // building (centroid far from its doorway) from fading around its player.
@@ -1217,10 +1228,21 @@ export async function createCityGenRing(
       for (const [e, d2] of ranked) {
         if (keep.has(e)) { costLeft -= costOf(e); continue; }
         if (keep.size >= maxDetail) break;
-        if (d2 > detailExit2) continue;
-        if (d2 > detailR2 && !e.detail) continue; // candidates need the entry band
+        if (d2 > detailExit2) continue; // past the hard exit band — never kept
         const c = costOf(e);
-        if (c > costLeft) continue; // facade-area budget spent — skip the big ones, keep filling with small
+        // Grandfather clause (second half of the flicker fix): a building that
+        // ALREADY owns detail and isn't fading out skips the entry-band + cost-
+        // budget gates — those gate NEW admissions only. Re-evicting a holder
+        // because the facade-area budget was momentarily tight was the other
+        // flip-flop source: a big building on the cost bubble rebuilt, fade-
+        // dithered, got cost-evicted, rebuilt… forever. A holder now leaves ONLY
+        // when it falls past detailExit2 (distance) or the sticky rank pushes it
+        // past the count cap.
+        const holder = e.detail && e.fadeDir >= 0;
+        if (!holder) {
+          if (d2 > detailR2) continue; // candidates need the entry band
+          if (c > costLeft) continue; // facade-area budget spent — skip big, keep filling small
+        }
         costLeft -= c;
         keep.add(e);
       }
@@ -1303,7 +1325,8 @@ export async function createCityGenRing(
         if (d2 > r2) continue;
         out.push({ i: e.i, d: Math.round(Math.sqrt(d2) * 10) / 10, state: e.state, bodies: e.bodies.length,
           pendingBuild: e.pendingBuild,
-          insideBB: x > e.bb.minx - 1 && x < e.bb.maxx + 1 && z > e.bb.minz - 1 && z < e.bb.maxz + 1 });
+          hasDetail: !!e.detail, fade: Math.round(e.fade * 100) / 100, fadeDir: e.fadeDir,
+          insideBB: x > e.bb.minx - 1 && x < e.bb.maxx + 1 && z > e.bb.minz - 1 && z < e.bb.maxz + 1 } as typeof out[number]);
       }
       out.sort((a, b) => a.d - b.d);
       return out;
