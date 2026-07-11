@@ -2019,11 +2019,13 @@ async function boot() {
     player.setExternalEmbodimentHidden(true);
   };
   const hidePickleballRemoteAvatars = () => {
-    for (const ownerId of net.pickleballSlots) {
-      if (ownerId && ownerId !== net.selfId) {
-        const remote = remotes.avatars.get(ownerId);
-        if (remote) remote.root.visible = false;
-      }
+    const claimed = new Set(net.pickleballSlots.filter((id) => id && id !== net.selfId));
+    for (const [id, remote] of remotes.avatars) {
+      const body = remote.mode ? remote.bodies[remote.mode] : undefined;
+      if (body) body.visible = !claimed.has(id);
+      // Keep the presence root/name tag live: map clicks, shift-number travel,
+      // voice positioning and HUD locators still lead friends to the open side.
+      remote.root.visible = Boolean(remote.mode);
     }
   };
   const sendLocalPresence = (speed = player.speed) => {
@@ -2150,9 +2152,11 @@ async function boot() {
         timeOfDay: sky.timeOfDay
       });
       // stay social while frozen: peers keep moving, our keepalive keeps flowing
-      net.sendState(player.mode, player.meshes[player.mode].position, player.meshes[player.mode].quaternion, 0, passengerOf ?? 0);
+      sendLocalPresence(0);
+      sendPickleballNetwork();
       remotes.selfId = net.selfId;
       remotes.update(frameDt);
+      hidePickleballRemoteAvatars();
       // stay glued to a friend's car while frozen
       if (passengerOf !== null && remotes.ridePose(passengerOf, ridePos, rideQuat)) {
         player.setRidePose(ridePos, rideQuat, frameDt);
@@ -2172,15 +2176,14 @@ async function boot() {
     // physics.
     if (paused) {
       accumulator += frameDt; // no elapsed++ — the world clock stays frozen
-      const playingPickleballWhilePaused = pickleball?.localSide !== null && pickleball?.localSide !== undefined;
       if (player.mode === "plane") player.steerFly(input, frameDt);
-      if (!playingPickleballWhilePaused && !input.suspended && player.mode === "board" && input.pressed("Space")) player.requestBoardJump();
-      if (!playingPickleballWhilePaused && !input.suspended && player.mode === "walk" && input.pressed("Space")) player.requestWalkJump();
+      if (!playingPickleball && !input.suspended && player.mode === "board" && input.pressed("Space")) player.requestBoardJump();
+      if (!playingPickleball && !input.suspended && player.mode === "walk" && input.pressed("Space")) player.requestWalkJump();
       chase.lookDir(aim);
       let steps = 0;
       while (accumulator >= physics.world.fixedTimeStep && steps < 3) {
         const wasSuspended = input.suspended;
-        if (playingPickleballWhilePaused) input.suspended = true;
+        if (playingPickleball) input.suspended = true;
         player.update(physics.world.fixedTimeStep, input, chase.yaw, aim);
         input.suspended = wasSuspended;
         physics.step(physics.world.fixedTimeStep, player.position);
@@ -2190,6 +2193,7 @@ async function boot() {
       if (steps === 3) accumulator = 0;
       remotes.selfId = net.selfId;
       remotes.update(frameDt);
+      hidePickleballRemoteAvatars();
       // riding shotgun with a friend keeps you glued; otherwise settle the render
       // transform between physics states like a live frame
       if (passengerOf !== null && remotes.ridePose(passengerOf, ridePos, rideQuat)) {
@@ -2198,6 +2202,7 @@ async function boot() {
         player.afterSteps(steps, accumulator / physics.world.fixedTimeStep);
         player.syncMesh(frameDt);
       }
+      applyPickleballPlayerPose();
       const altitude = player.position.y - map.groundHeight(player.position.x, player.position.z);
       highUp = highUp ? altitude > 110 : altitude > 150;
       tiles.update(player.position.x, player.position.z, highUp);
@@ -2226,7 +2231,8 @@ async function boot() {
         gust: windGustValue?.() ?? 0,
         timeOfDay: sky.timeOfDay
       });
-      net.sendState(player.mode, player.meshes[player.mode].position, player.meshes[player.mode].quaternion, player.speed, passengerOf ?? 0);
+      sendLocalPresence();
+      sendPickleballNetwork();
       voice.update(camera);
       minimap.update();
       playerLocator.update(camera, player.position, remotes.locatorTargets());
@@ -2526,14 +2532,7 @@ async function boot() {
     // passenger's seat is glued to this frame's view of the driver's car
     remotes.selfId = net.selfId;
     remotes.update(frameDt);
-    // The court rig is the visible embodiment of a claimed side. Hide the
-    // owner's ordinary remote avatar so the two representations do not overlap.
-    for (const ownerId of net.pickleballSlots) {
-      if (ownerId && ownerId !== net.selfId) {
-        const remote = remotes.avatars.get(ownerId);
-        if (remote) remote.root.visible = false;
-      }
-    }
+    hidePickleballRemoteAvatars();
     if (passengerOf !== null) {
       if (remotes.ridePose(passengerOf, ridePos, rideQuat)) {
         player.setRidePose(ridePos, rideQuat, frameDt);
@@ -2549,21 +2548,7 @@ async function boot() {
       player.afterSteps(steps, accumulator / physics.world.fixedTimeStep);
       player.syncMesh(frameDt);
     }
-    if (pickleballLocalPose) {
-      const pose = pickleballLocalPose;
-      const y = pose.worldPosition.y + 0.58;
-      player.position.set(pose.worldPosition.x, y, pose.worldPosition.z);
-      player.renderPosition.copy(player.position);
-      player.heading = pose.worldHeading + Math.PI;
-      player.velocity.set(0, 0, 0);
-      pickleballNetQuaternion.setFromAxisAngle(pickleballUp, pose.worldHeading);
-      player.quaternion.copy(pickleballNetQuaternion);
-      player.renderQuaternion.copy(pickleballNetQuaternion);
-      const mesh = player.meshes.walk;
-      mesh.position.copy(player.renderPosition);
-      mesh.quaternion.copy(pickleballNetQuaternion);
-      player.setExternalEmbodimentHidden(true);
-    }
+    applyPickleballPlayerPose();
     const altitude = player.position.y - map.groundHeight(player.position.x, player.position.z);
     highUp = highUp ? altitude > 110 : altitude > 150;
     // high over the city streams buildings only — no park lawns / trees uploaded.
@@ -2707,30 +2692,8 @@ async function boot() {
     // position AND facing — walk's body quat is pinned, the mesh isn't; the
     // ride id lets viewers glue me into my driver's car), redraw the minimap.
     // remotes.update already ran before the passenger glue above.
-    if (pickleballLocalPose) {
-      pickleballNetPosition.copy(player.renderPosition);
-      pickleballNetQuaternion.setFromAxisAngle(pickleballUp, pickleballLocalPose.worldHeading);
-      net.sendState("walk", pickleballNetPosition, pickleballNetQuaternion, 0, 0);
-    } else {
-      net.sendState(player.mode, player.meshes[player.mode].position, player.meshes[player.mode].quaternion, player.speed, passengerOf ?? 0);
-    }
-    if (pickleball && elapsed >= pickleballNetSendAt && net.status === "online") {
-      pickleballNetSendAt = elapsed + 1 / 12;
-      const side = pickleball.localSide;
-      if (net.pickleballAuthority === net.selfId) {
-        net.sendPickleballState(pickleball.serializeState());
-      } else if (side !== null && net.pickleballSlots[side] === net.selfId) {
-        net.sendPickleballInput(side, [
-          pickleballInput.moveX ?? 0,
-          pickleballInput.moveZ ?? 0,
-          pickleballSwingQueued ? 1 : 0,
-          pickleballInput.sprint ? 1 : 0,
-          pickleballInput.aimX ?? 0,
-          pickleballInput.aimZ ?? 0
-        ]);
-      }
-      pickleballSwingQueued = false;
-    }
+    sendLocalPresence();
+    sendPickleballNetwork();
     voice.update(camera); // listener follows the camera, voices follow the avatars
     minimap.update();
     playerLocator.update(camera, player.position, remotes.locatorTargets());
@@ -2741,7 +2704,7 @@ async function boot() {
     entityProxies.begin();
     for (const a of remotes.avatars.values()) {
       const body = a.mode ? a.bodies[a.mode] : undefined;
-      if (!body || !a.root.visible) continue;
+      if (!body || !body.visible || !a.root.visible) continue;
       const hitSphere = PAINT_HIT[a.mode!];
       entityProxies.put(
         a,

@@ -7,6 +7,12 @@ import type { WorldMap } from "../heightmap";
 import { stepBall, type BallSimCtx, type BallSimState } from "./ballSim";
 import { dogParkFenceSegments, makeDogParkFence, type FenceSegment2D } from "./dogParkFence";
 import {
+  applyBallGlow,
+  createBallGlowLight,
+  prepareBallGlowMaterial,
+  TENNIS_BALL_COLOR
+} from "../../fx/ballGlow";
+import {
   CORONA_DOG_GATE,
   CORONA_DOG_PARK,
   CORONA_HEIGHTS_SUMMIT,
@@ -1423,6 +1429,8 @@ export class CoronaHeightsPark {
 
   #map: WorldMap;
   #ball: THREE.Mesh;
+  #ballMaterial: THREE.MeshStandardMaterial;
+  #ballGlow: THREE.PointLight;
   #frisbee: THREE.Mesh;
   #mouth = new THREE.Vector3();
   #propTarget = new THREE.Vector3();
@@ -1502,12 +1510,13 @@ export class CoronaHeightsPark {
     ];
     for (const owner of this.owners) this.activity.add(owner.rig.group);
 
-    this.#ball = new THREE.Mesh(
-      new THREE.SphereGeometry(0.16, 12, 8),
-      new THREE.MeshStandardMaterial({ color: 0xb9ef31, roughness: 0.62 })
-    );
+    this.#ballMaterial = new THREE.MeshStandardMaterial({ color: TENNIS_BALL_COLOR, roughness: 0.62 });
+    prepareBallGlowMaterial(this.#ballMaterial);
+    this.#ball = new THREE.Mesh(new THREE.SphereGeometry(0.16, 12, 8), this.#ballMaterial);
     this.#ball.name = "corona_tennis_ball";
     this.#ball.castShadow = true;
+    this.#ballGlow = createBallGlowLight("corona-tennis-ball-glow");
+    this.#ball.add(this.#ballGlow);
     this.#frisbee = new THREE.Mesh(
       new THREE.CylinderGeometry(0.3, 0.3, 0.055, 20),
       new THREE.MeshStandardMaterial({ color: 0xff654a, roughness: 0.68 })

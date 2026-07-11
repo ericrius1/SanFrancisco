@@ -23,6 +23,12 @@ import { avatarFromSeed, normalizeAvatarTraits, type AvatarTraits } from "./avat
 import { DEFAULT_DRIVE_SPEC, type Cockpit, type DriveSpec, type PlayerMode } from "./types";
 import { WalkController, WALK_TUNING } from "./walk";
 import { LightPool } from "./lightPool";
+import {
+  applyBallGlow,
+  createBallGlowLight,
+  prepareBallGlowMaterial,
+  TENNIS_BALL_COLOR
+} from "../fx/ballGlow";
 import { buildCarMesh, CarController } from "../vehicles/car";
 import { buildPlaneMesh, collectPlaneAnim, FlyController, type PlaneAnim } from "../vehicles/plane";
 import { buildBoatMesh, buildSpeedboatMesh, BoatController, BOAT_TUNING, SPEEDBOAT_TUNING, type BoatSailRig } from "../vehicles/boat";
@@ -117,6 +123,8 @@ export class Player {
   // + prop visibility are driven every walk frame in #animate (setEmbodimentVisible
   // re-shows every walk mesh on a mode return, so #ballHeld is the true owner).
   #ballProp: THREE.Mesh;
+  #ballMaterial: THREE.MeshStandardMaterial;
+  #ballGlow: THREE.PointLight;
   #ballHeld = false;
   #throwT = 0; // 0 = idle; >0 drives an additive windup→release arm swing
   #riderRig: Rig;

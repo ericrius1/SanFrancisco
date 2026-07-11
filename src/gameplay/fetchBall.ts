@@ -22,8 +22,16 @@ import type { WorldMap } from "../world/heightmap";
 import { stepBall, type BallSimCtx, type BallSimState } from "../world/coronaHeights/ballSim";
 import type { CoronaHeightsPark, ParkDog } from "../world/coronaHeights";
 import { dogParkFenceSegments } from "../world/coronaHeights/dogParkFence";
+import {
+  applyBallGlow,
+  BALL_GLOW_NIGHT,
+  createBallGlowLight,
+  prepareBallGlowMaterial,
+  TENNIS_BALL_COLOR
+} from "../fx/ballGlow";
 
 const BALL_R = 0.16; // matches the park's tennis ball
+const FREE_BALL_GLOW_LIGHTS = 4; // fixed pool — never add/remove lights at runtime
 const DOG_SURFACE_LIFT = 0.04; // woodchip lift inside the park; 0 on open terrain
 const FENCE_TOP_LIFT = 1.55; // fence height added over ground for the rebound cap
 const THROW_SPEED_MIN = 7; // m/s at a tap
@@ -68,6 +76,7 @@ export interface FetchBallDeps {
 
 type FreeBall = {
   mesh: THREE.Mesh;
+  material: THREE.MeshStandardMaterial;
   state: BallSimState;
 };
 
@@ -109,6 +118,7 @@ export class FetchBall {
 
   #spinAxis = new THREE.Vector3();
   #tmp = new THREE.Vector3();
+  #glowLights: THREE.PointLight[] = [];
 
   constructor(deps: FetchBallDeps) {
     this.#deps = deps;
@@ -127,6 +137,13 @@ export class FetchBall {
     const groundTop = (x: number, z: number) => deps.map.groundTop(x, z);
     this.#ctxPark = { groundTop, lift: DOG_SURFACE_LIFT, radius: BALL_R, segs, segTop, fenceTopMax };
     this.#ctxOpen = { groundTop, lift: 0, radius: BALL_R };
+
+    // Fixed glow lights for free balls (scene light count must stay stable).
+    for (let i = 0; i < FREE_BALL_GLOW_LIGHTS; i++) {
+      const light = createBallGlowLight(`player-tennis-ball-glow-${i + 1}`);
+      deps.scene.add(light);
+      this.#glowLights.push(light);
+    }
   }
 
   setActive(active: boolean): void {
@@ -251,6 +268,7 @@ export class FetchBall {
       for (const pet of this.#pets) park.updatePet(pet, tx, tz, dt, elapsed);
     }
     this.#prevPlayer.copy(playerPos);
+    this.#syncGlow();
   }
 
   /** Click-row verb — hold to wind up; pickup is on E. */
@@ -280,9 +298,32 @@ export class FetchBall {
   dispose(): void {
     for (const ball of this.#free) this.#disposeBall(ball);
     this.#free.length = 0;
+    for (const light of this.#glowLights) {
+      light.intensity = 0;
+      light.removeFromParent();
+    }
+    this.#glowLights.length = 0;
   }
 
   /* -------------------------------------------------------------- internals */
+
+  #syncGlow(): void {
+    const night = BALL_GLOW_NIGHT.value;
+    for (let i = 0; i < this.#glowLights.length; i++) {
+      const light = this.#glowLights[i];
+      const ball = this.#free[i];
+      if (!ball || night < 0.001) {
+        light.intensity = 0;
+        if (ball) applyBallGlow(ball.material, null, night);
+        continue;
+      }
+      light.position.copy(ball.mesh.position);
+      applyBallGlow(ball.material, light, night);
+    }
+    for (let i = this.#glowLights.length; i < this.#free.length; i++) {
+      applyBallGlow(this.#free[i].material, null, night);
+    }
+  }
 
   #advanceRelease(dt: number): void {
     this.#releaseElapsed += dt;
@@ -311,10 +352,9 @@ export class FetchBall {
     this.#deps.playerView.setBallHeld(false);
 
     const hand = this.#deps.playerView.handWorldPos(this.#tmp);
-    const mesh = new THREE.Mesh(
-      new THREE.SphereGeometry(BALL_R, 12, 8),
-      new THREE.MeshStandardMaterial({ color: 0xb9ef31, roughness: 0.62 })
-    );
+    const material = new THREE.MeshStandardMaterial({ color: TENNIS_BALL_COLOR, roughness: 0.62 });
+    prepareBallGlowMaterial(material);
+    const mesh = new THREE.Mesh(new THREE.SphereGeometry(BALL_R, 12, 8), material);
     mesh.name = "player_tennis_ball";
     mesh.castShadow = true;
     mesh.position.copy(hand);
@@ -323,6 +363,7 @@ export class FetchBall {
     const speed = this.#throwSpeed;
     const ball: FreeBall = {
       mesh,
+      material,
       state: {
         x: hand.x,
         y: hand.y,
@@ -522,7 +563,7 @@ export class FetchBall {
   #disposeBall(ball: FreeBall): void {
     ball.mesh.removeFromParent();
     ball.mesh.geometry.dispose();
-    (ball.mesh.material as THREE.Material).dispose();
+    ball.material.dispose();
   }
 
   /** Leash for a committed fetch: if the claimed dog has been dragged well out
