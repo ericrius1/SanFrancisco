@@ -87,9 +87,24 @@ export class TrioAudio {
     }
   }
 
-  constructor() {
-    if (typeof AudioContext === "undefined") return;
-    const ctx = new AudioContext();
+  /**
+   * @param injectedCtx when supplied (an OfflineAudioContext for the
+   * deterministic film render — see offlineRender.ts), the whole graph is built
+   * on it instead of a fresh live AudioContext. Suspend/resume/capture-stream
+   * are never exercised in that path, so the identical build works unchanged.
+   * Omit it and the live game gets exactly the same `new AudioContext()` as before.
+   */
+  constructor(injectedCtx?: BaseAudioContext) {
+    let ctx: AudioContext;
+    if (injectedCtx) {
+      // OfflineAudioContext exposes every create*/gain method the graph uses;
+      // the AudioContext-only bits (suspend, resume, createMediaStreamDestination)
+      // are simply never called offline.
+      ctx = injectedCtx as unknown as AudioContext;
+    } else {
+      if (typeof AudioContext === "undefined") return;
+      ctx = new AudioContext();
+    }
     this.#ctx = ctx;
     const master = ctx.createGain();
     master.gain.value = 0;
@@ -234,7 +249,10 @@ export class TrioAudio {
     this.#reverbIn?.disconnect();
     this.#convolver?.disconnect();
     this.#captureDest?.disconnect();
-    void this.#ctx?.close().catch(() => {});
+    // OfflineAudioContext has no close(); guard so an injected-context TrioAudio
+    // can be disposed without throwing.
+    const c = this.#ctx as AudioContext | null;
+    if (c && typeof c.close === "function") void c.close().catch(() => {});
     this.#ctx = null;
     this.#master = null;
     this.#comp = null;

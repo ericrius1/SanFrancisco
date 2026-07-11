@@ -8,6 +8,9 @@ import { buildFlutist } from "./flutist";
 import { buildHandpanist } from "./handpanist";
 import { buildUkulelist } from "./ukulelist";
 import { BuskerFireflies } from "./fireflies";
+// Side-effect: installs window.__sfRenderTrioAudio for the render tool's
+// deterministic offline audio pass. No live-game behavior; safe to always load.
+import "./offlineRender";
 
 /**
  * The busker trio: three musicians perched on a flat-topped chert boulder
