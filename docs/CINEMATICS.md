@@ -18,11 +18,17 @@ customization film and an 11-second sunset dog-park film.
 | `tools/cinematic/transition.mjs` | Deterministic picture/audio transition and final assembly. |
 | `tools/render-cinematic.mjs` | CLI orchestration and process cleanup. |
 
-The default master is 1920x1080 at 60 fps, captured as PNG and encoded as H.264
-CRF 15 with AAC audio, `yuv420p`, and explicit BT.709 metadata. Requirements are
-Node dependencies, Chrome or Chromium with WebGPU, and `ffmpeg`/`ffprobe` on
-`PATH`. `CHROME_BIN`, `FFMPEG_BIN`, and `FFPROBE_BIN` may point to custom
-executables.
+The pipeline has two output tiers. The archival master captures a lossless PNG
+sequence and encodes H.264 CRF 15. The fast renderer reads the same final WebGPU
+render target through a two-slot staging-buffer ring and streams it to Chrome's
+WebCodecs H.264 encoder, avoiding PNG screenshots and intermediate image files.
+Both use the same deterministic timeline, offline AAC audio, `yuv420p`, explicit
+BT.709 metadata, review artifacts, and technical audit.
+
+The default is 1920x1080 at 60 fps. Requirements are Node dependencies, Chrome
+or Chromium with WebGPU, and `ffmpeg`/`ffprobe` on `PATH`; fast capture also
+requires browser WebCodecs H.264 support. `CHROME_BIN`, `FFMPEG_BIN`, and
+`FFPROBE_BIN` may point to custom executables.
 
 ## Commands
 
@@ -30,6 +36,11 @@ executables.
 # Fast composition checks; each requested frame is still simulated from frame 0.
 npm run render:cinematic -- hoverboard --probe-at 2.8,7.9,13.5
 npm run render:cinematic -- dog-park --stills
+
+# Fast, audited review films. These are the normal choice while iterating.
+npm run render:hoverboard:fast
+npm run render:dog-park:fast
+npm run render:cinematics:fast
 
 # Audited individual masters.
 npm run render:hoverboard
@@ -41,6 +52,13 @@ npm run render:cinematics
 # Rebuild only the combined film from existing individual masters.
 npm run render:cinematic -- --combine
 ```
+
+Use `--fast` with any production for an audited review render without a PNG
+sequence; it implies `--full` and defaults the take name to `fast`. Its default
+24 Mbps target can be changed with `--fast-bitrate` or
+`SF_CINE_FAST_BITRATE`. If the browser cannot provide the required WebCodecs
+H.264/Annex-B path, the command exits with a capability error; rerun without
+`--fast` for the portable archival path.
 
 Run `npm run render:cinematic -- --help` for resolution, fps, frame format,
 quality, take-name, seed, and settle-frame overrides. Environment equivalents
@@ -81,12 +99,16 @@ modes skip unwanted screenshots, not simulation; there is deliberately no
 partial-seek capture API. This keeps stateful physics, particles, dogs, and
 vehicle effects consistent with a full render.
 
-Each screenshot has one authoritative frame barrier: advance the timeline and
-app tick, wait for browser composition, await
+The archival path gives every screenshot one authoritative frame barrier:
+advance the timeline and app tick, wait for browser composition, await
 `WebGPUQueue.onSubmittedWorkDone()`, compose once more, and await the queue again.
-The manifest marks captured frames `gpuComplete`. Never remove or bypass this
-barrier: a JavaScript tick completing does not mean WebGPU has finished drawing
-the pixels being captured.
+The manifest marks captured frames `gpuComplete`. The fast path instead renders
+the final post-FX image to an RGBA8 texture, queues an ordered
+`copyTextureToBuffer`, and maps the previous frame's staging buffer while the GPU
+fills the next. Its canvas overlay mirrors the deterministic DOM film layer so
+titles and letterbox bars are included before WebCodecs encoding. Do not replace
+either synchronization scheme with a JavaScript-only wait: a tick completing
+does not mean WebGPU has finished drawing the pixels being captured.
 
 Camera rails are preflight-sampled before frame zero. The audit reports terrain
 clearance, optional line-of-sight occlusion, excessive per-sample travel, and
@@ -109,9 +131,9 @@ The dog-park mix may layer the repository's CC0 nature beds. The combined film
 uses a seeded whoosh/sparkle/impact design and an equal-power crossfade through
 the visual transition.
 
-Work files live under `.data/cinematics/<production>/<take>/` and include master
-frames, PCM audio, the temporary Chrome profile, and a frame manifest. Review
-and delivery artifacts live under `renders/cinematics/`:
+Work files live under `.data/cinematics/<production>/<take>/` and include the
+frame manifest, PCM audio, and either master frames or the fast Annex-B H.264
+bitstream. Review and delivery artifacts live under `renders/cinematics/`:
 
 ```text
 renders/cinematics/<production>/<production>-<take>.mp4
@@ -129,6 +151,14 @@ captures the source Git revision/dirty state and browser console, exception, and
 network diagnostics. Technical success is necessary but not sufficient: always
 review the poster, 12-frame contact sheet, cuts, action peaks, title-safe text,
 and transition frames at full resolution.
+
+On the reference development machine, the 15-second hoverboard production at
+1080p60 captured in 46.20 seconds with the fast backend versus 253.07 seconds
+for the PNG master: 5.48x faster, with all 900 frames and the final audit
+passing. This is a workflow benchmark, not a fixed guarantee; scene cost,
+resolution, Chrome, and GPU/video-encoder hardware all affect it. Use fast
+renders for dailies and iteration, then make a PNG master for final delivery or
+archival.
 
 ## Eidoverse research and licensing
 

@@ -8,11 +8,13 @@ import {
   ROOT,
   WORK_ROOT,
   auditVideo,
+  captureFastProduction,
   captureProduction,
   cinematicPaths,
   createReviewArtifacts,
   encodeProduction,
   fileExists,
+  muxFastProduction,
   relativeToRoot,
   startVite,
   stopCinematicProcesses
@@ -28,6 +30,7 @@ Deterministic San Francisco cinematic renderer
 
 Usage:
   node tools/render-cinematic.mjs hoverboard --full
+  node tools/render-cinematic.mjs hoverboard --fast
   node tools/render-cinematic.mjs dog-park --stills
   node tools/render-cinematic.mjs hoverboard --probe-at 2.4,7.1,12.35
   node tools/render-cinematic.mjs --all
@@ -36,6 +39,7 @@ Usage:
 
 Modes:
   --full               Capture every frame from zero, render audio, encode, and audit
+  --fast               Browser WebCodecs review render; no PNG sequence (implies --full)
   --stills             Replay from zero and capture the production's review stills
   --probe-at <times>   Replay from zero and capture comma-separated times in seconds
   --all                Apply the selected mode to hoverboard and dog-park
@@ -48,6 +52,7 @@ Settings (environment equivalents use SF_CINE_*):
   --format png|jpg     Master frame format; default png (SF_CINE_FORMAT)
   --jpeg-quality <n>   JPEG quality 1..100; default 95
   --crf <n>            H.264 CRF 14..16; default 15
+  --fast-bitrate <n>   WebCodecs H.264 bitrate; default 24000000
   --take <name>        Output take name; default master
   --seed <integer>     Override the production's deterministic seed
   --settle-frames <n>  Zero-dt WebGPU/world pre-roll frames
@@ -88,6 +93,7 @@ function parseArgs(argv) {
     mode: null,
     all: false,
     combine: false,
+    fast: false,
     probeAt: [],
     overrides: {},
     viteUrl: undefined,
@@ -107,6 +113,10 @@ function parseArgs(argv) {
     }
     if (argument === "--help") options.help = true;
     else if (argument === "--full") setMode(options, "full", argument);
+    else if (argument === "--fast") {
+      options.fast = true;
+      setMode(options, "full", argument);
+    }
     else if (argument === "--stills") setMode(options, "stills", argument);
     else if (argument === "--all") options.all = true;
     else if (argument === "--combine") options.combine = true;
@@ -127,6 +137,7 @@ function parseArgs(argv) {
         "--format": ["frameFormat", false],
         "--jpeg-quality": ["jpegQuality", true],
         "--crf": ["crf", true],
+        "--fast-bitrate": ["fastBitrate", true],
         "--take": ["take", false],
         "--seed": ["seed", true],
         "--settle-frames": ["settleFrames", true],
@@ -151,6 +162,8 @@ function parseArgs(argv) {
     throw new Error(`unknown production ${JSON.stringify(options.productionId)}; choose ${productionIds().join(", ")}`);
   }
   if (options.mode === "probe" && !options.probeAt.length) throw new Error("--probe-at requires at least one time");
+  if (options.fast && options.mode !== "full") throw new Error("--fast only supports full-film capture");
+  if (options.fast && options.overrides.take === undefined) options.overrides.take = "fast";
   return options;
 }
 
@@ -159,15 +172,18 @@ async function writeJson(file, value) {
   await writeFile(file, `${JSON.stringify(value, null, 2)}\n`);
 }
 
-async function renderFull(production, viteUrl) {
+async function renderFull(production, viteUrl, { fast = false } = {}) {
   const paths = cinematicPaths(production);
-  await captureProduction({ production, viteUrl, mode: "full", paths, log });
+  if (fast) await captureFastProduction({ production, viteUrl, paths, log });
+  else await captureProduction({ production, viteUrl, mode: "full", paths, log });
 
   log(`${production.id}: rendering picture-locked deterministic audio`);
   const audio = await renderCinematicAudio(production, paths.audioFile);
   log(`${production.id}: audio ${audio.rmsDb.toFixed(1)} dB RMS, ${audio.peakDb.toFixed(1)} dB peak`);
 
-  const encoded = await encodeProduction({ production, paths, audioFile: audio.file, log });
+  const encoded = fast
+    ? await muxFastProduction({ production, paths, audioFile: audio.file, log })
+    : await encodeProduction({ production, paths, audioFile: audio.file, log });
   await createReviewArtifacts({
     videoFile: encoded.file,
     posterFile: paths.posterFile,
@@ -192,7 +208,7 @@ async function runCaptures(options, productions) {
   try {
     for (const production of productions) {
       if (options.mode === "full") {
-        results.push(await renderFull(production, vite.url));
+        results.push(await renderFull(production, vite.url, { fast: options.fast }));
       } else {
         const capture = await captureProduction({
           production,

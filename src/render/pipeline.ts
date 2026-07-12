@@ -31,6 +31,10 @@ type QueueBackedRenderer = THREE.WebGPURenderer & {
 
 const OUTLINE_PREPASS_SCALE = 0.5;
 const INK_VARIANT_MASK = 1;
+// WebGPU enum values are stable; TypeScript's DOM lib still omits their names.
+const GPU_BUFFER_USAGE_MAP_READ = 0x0001;
+const GPU_BUFFER_USAGE_COPY_DST = 0x0008;
+const GPU_MAP_MODE_READ = 0x0001;
 
 /** WebGPU supports one effective sample or 4x MSAA; all other values are 1x. */
 const effectiveSceneSamples = (value: unknown): SceneSamples => Number(value) >= 4 ? 4 : 0;
@@ -111,6 +115,38 @@ export function createRenderPipeline(
 
   let activeVariantMask = getPostFxVariantMask();
   let activePipeline = getVariantPipeline(activeVariantMask);
+  const fastCaptureEnabled = new URLSearchParams(location.search).has("fastcapture");
+  const fastCaptureSize = new THREE.Vector2();
+  let fastCaptureTarget: THREE.RenderTarget | null = null;
+  let fastReadback:
+    | {
+        buffers: any[];
+        bytesPerRow: number;
+        nextSlot: number;
+        pending: { slot: number; mapped: Promise<unknown> } | null;
+      }
+    | null = null;
+  if (fastCaptureEnabled) {
+    renderer.getDrawingBufferSize(fastCaptureSize);
+    fastCaptureTarget = new THREE.RenderTarget(fastCaptureSize.x, fastCaptureSize.y, {
+      format: THREE.RGBAFormat,
+      type: THREE.UnsignedByteType,
+      depthBuffer: false,
+      stencilBuffer: false
+    });
+    fastCaptureTarget.texture.name = "cinematic-fast-final-color";
+    const backend = renderer.backend as any;
+    const bytesPerRow = Math.ceil((fastCaptureSize.x * 4) / 256) * 256;
+    fastReadback = {
+      buffers: [0, 1].map(() => backend.device.createBuffer({
+        size: bytesPerRow * fastCaptureSize.y,
+        usage: GPU_BUFFER_USAGE_COPY_DST | GPU_BUFFER_USAGE_MAP_READ
+      })),
+      bytesPerRow,
+      nextSlot: 0,
+      pending: null
+    };
+  }
 
   const applyPostQuality = () => {
     const samples = effectiveSceneSamples(POSTFX_TUNING.values.sceneSamples);
@@ -276,8 +312,75 @@ export function createRenderPipeline(
 
   applyPostFx();
 
+  const render = () => {
+    if (!fastCaptureTarget) {
+      activePipeline.render();
+      return;
+    }
+    const previousTarget = renderer.getRenderTarget();
+    const previousCubeFace = renderer.getActiveCubeFace();
+    const previousMipmapLevel = renderer.getActiveMipmapLevel();
+    renderer.setRenderTarget(fastCaptureTarget);
+    activePipeline.render();
+    renderer.setRenderTarget(previousTarget, previousCubeFace, previousMipmapLevel);
+  };
+
+  const drainFastSlot = (slot: number) => {
+    if (!fastCaptureTarget || !fastReadback) throw new Error("fast cinematic readback is not enabled");
+    const width = fastCaptureTarget.width;
+    const height = fastCaptureTarget.height;
+    const tightStride = width * 4;
+    const padded = new Uint8Array(fastReadback.buffers[slot].getMappedRange());
+    const tight = new Uint8ClampedArray(tightStride * height);
+    if (fastReadback.bytesPerRow === tightStride) tight.set(padded.subarray(0, tight.length));
+    else {
+      for (let y = 0; y < height; y++) {
+        tight.set(
+          padded.subarray(y * fastReadback.bytesPerRow, y * fastReadback.bytesPerRow + tightStride),
+          y * tightStride
+        );
+      }
+    }
+    fastReadback.buffers[slot].unmap();
+    return tight;
+  };
+
+  const queueFastFrame = async () => {
+    if (!fastCaptureTarget || !fastReadback) throw new Error("fast cinematic render target is not enabled");
+    const backend = renderer.backend as any;
+    const texture = backend.get(fastCaptureTarget.texture).texture;
+    if (!texture) throw new Error("fast cinematic GPU texture is not initialized");
+    const slot = fastReadback.nextSlot;
+    const encoder = backend.device.createCommandEncoder();
+    encoder.copyTextureToBuffer(
+      { texture },
+      {
+        buffer: fastReadback.buffers[slot],
+        bytesPerRow: fastReadback.bytesPerRow,
+        rowsPerImage: fastCaptureTarget.height
+      },
+      [fastCaptureTarget.width, fastCaptureTarget.height, 1]
+    );
+    backend.device.queue.submit([encoder.finish()]);
+    const mapped = fastReadback.buffers[slot].mapAsync(GPU_MAP_MODE_READ);
+    const previous = fastReadback.pending;
+    fastReadback.pending = { slot, mapped };
+    fastReadback.nextSlot = 1 - slot;
+    if (!previous) return null;
+    await previous.mapped;
+    return drainFastSlot(previous.slot);
+  };
+
+  const drainFastFrame = async () => {
+    if (!fastReadback?.pending) return null;
+    const pending = fastReadback.pending;
+    fastReadback.pending = null;
+    await pending.mapped;
+    return drainFastSlot(pending.slot);
+  };
+
   return {
-    render: () => activePipeline.render(),
+    render,
     /** The currently selected persistent fullscreen pipeline. */
     get pipeline() {
       return activePipeline;
@@ -286,6 +389,10 @@ export function createRenderPipeline(
     applyPostQuality,
     /** Select the cached post-FX graph after a toggle change. */
     applyPostFx,
+    /** Browser-native review capture reads the final post-FX texture here. */
+    queueFastFrame,
+    drainFastFrame,
+    fastCaptureSize: fastCaptureTarget ? [fastCaptureTarget.width, fastCaptureTarget.height] as const : null,
     /** Precompile scene/sample/effect variants; safe to repeat after new loads. */
     warmup
   };
