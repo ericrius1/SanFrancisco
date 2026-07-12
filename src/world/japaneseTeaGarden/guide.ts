@@ -18,7 +18,11 @@ import {
   type TeaGardenTerrain,
   type TeaGardenXZ
 } from "./layout";
-import { createTeaMasterVisual, type TeaMasterAction } from "./teaMaster";
+import {
+  createTeaMasterVisual,
+  type TeaMasterAction,
+  type TeaMasterVisualDebugState
+} from "./teaMaster";
 
 export type TeaGardenPlayerPosition = { readonly x: number; readonly y: number; readonly z: number };
 
@@ -33,12 +37,14 @@ export type TeaGardenGuideDebugState = {
   playerDistance: number;
   busy: boolean;
   worldVisible: boolean;
+  iroh: TeaMasterVisualDebugState;
 };
 
 export type TeaGardenGuide = {
   group: THREE.Group;
   setWorldVisible(visible: boolean): void;
   update(dt: number, time: number, player: TeaGardenPlayerPosition, camera: THREE.Camera): void;
+  project(camera: THREE.Camera): void;
   interact(player: TeaGardenPlayerPosition, mode: string): boolean;
   debugState(): TeaGardenGuideDebugState;
   dispose(): void;
@@ -130,13 +136,13 @@ export function createTeaGardenGuide(
 
   const showIdlePrompt = () => {
     if (uiPresentation === "prompt:idle") return;
-    ui.showPrompt({ speaker: TEA_MASTER_SPEAKER, key: "E", label: "Share tea with Haru" });
+    ui.showPrompt({ speaker: TEA_MASTER_SPEAKER, key: "E", label: "Share tea with Iroh" });
     uiPresentation = "prompt:idle";
   };
 
   const showBusyPrompt = () => {
     if (uiPresentation === "prompt:busy") return;
-    ui.showPrompt({ speaker: TEA_MASTER_SPEAKER, key: "", label: "Haru listens to the kettle…" });
+    ui.showPrompt({ speaker: TEA_MASTER_SPEAKER, key: "", label: "Iroh listens to the kettle…" });
     uiPresentation = "prompt:busy";
   };
 
@@ -256,7 +262,7 @@ export function createTeaGardenGuide(
     } catch (error: unknown) {
       if (!controller.signal.aborted) {
         console.warn("[tea-garden] Dialogue provider failed", error);
-        ui.showPrompt({ speaker: TEA_MASTER_SPEAKER, key: "E", label: "Ask Haru again" });
+        ui.showPrompt({ speaker: TEA_MASTER_SPEAKER, key: "E", label: "Ask Iroh again" });
         uiPresentation = "prompt:error";
       }
     } finally {
@@ -281,18 +287,24 @@ export function createTeaGardenGuide(
   const faceDirection = (dx: number, dz: number, dt: number) => {
     if (Math.abs(dx) + Math.abs(dz) < 1e-5) return;
     const targetYaw = Math.atan2(-dx, -dz);
-    visual.group.rotation.y = THREE.MathUtils.damp(visual.group.rotation.y, targetYaw, TURN_RESPONSE, dt);
+    const delta = Math.atan2(
+      Math.sin(targetYaw - visual.group.rotation.y),
+      Math.cos(targetYaw - visual.group.rotation.y)
+    );
+    visual.group.rotation.y += delta * (1 - Math.exp(-TURN_RESPONSE * Math.min(dt, 0.1)));
   };
 
-  const updateWalking = (dt: number, player: TeaGardenPlayerPosition) => {
+  const updateWalking = (dt: number, player: TeaGardenPlayerPosition): number => {
     const returning = phase === "returning";
     if (!returning && playerDistance > WAIT_DISTANCE) phase = "waiting";
     if (phase === "waiting") {
       if (playerDistance <= RESUME_DISTANCE) phase = "walking";
-      else return;
+      else return 0;
     }
-    if (phase !== "walking" && phase !== "returning") return;
+    if (phase !== "walking" && phase !== "returning") return 0;
 
+    const startX = visual.group.position.x;
+    const startZ = visual.group.position.z;
     let remaining = Math.min(dt, 0.1) * WALK_SPEED;
     while (remaining > 0 && routePoint < route.length) {
       const [targetX, targetZ] = route[routePoint];
@@ -305,20 +317,22 @@ export function createTeaGardenGuide(
         routePoint += 1;
         continue;
       }
-      faceDirection(dx, dz, dt);
       const step = Math.min(distance, remaining);
       visual.group.position.x += (dx / distance) * step;
       visual.group.position.z += (dz / distance) * step;
       remaining -= step;
       if (step >= distance - 1e-5) routePoint += 1;
     }
-    visual.group.position.y = map.groundTop(visual.group.position.x, visual.group.position.z);
-
+    const movedX = visual.group.position.x - startX;
+    const movedZ = visual.group.position.z - startZ;
+    const movedDistance = Math.hypot(movedX, movedZ);
+    if (movedDistance > 1e-5) faceDirection(movedX, movedZ, dt);
     if (routePoint >= route.length && arrival) {
       const callback = arrival;
       arrival = null;
       callback();
     }
+    return movedDistance;
   };
 
   const syncPresentation = (camera: THREE.Camera) => {
@@ -348,10 +362,20 @@ export function createTeaGardenGuide(
       worldVisible = visible;
       if (!visible) hideUi();
     },
-    update(dt: number, time: number, player: TeaGardenPlayerPosition, camera: THREE.Camera) {
+    update(dt: number, time: number, player: TeaGardenPlayerPosition, _camera: THREE.Camera) {
       if (disposed) return;
       playerDistance = distanceXZ(visual.group.position, player);
-      updateWalking(dt, player);
+      const travelDistance = updateWalking(dt, player);
+      // Ground convergence belongs to the outer update, not locomotion: arrival
+      // can switch to speaking on the same frame and waiting can last minutes.
+      // Keeping this live in every phase prevents a partially converged slope
+      // sample from freezing Iroh above or below the path.
+      visual.group.position.y = THREE.MathUtils.damp(
+        visual.group.position.y,
+        map.groundTop(visual.group.position.x, visual.group.position.z),
+        13,
+        Math.min(dt, 0.1)
+      );
       playerDistance = distanceXZ(visual.group.position, player);
 
       let action: TeaMasterAction = "idle";
@@ -364,7 +388,10 @@ export function createTeaGardenGuide(
         faceDirection(player.x - visual.group.position.x, player.z - visual.group.position.z, dt);
       }
       const lookTarget = playerDistance <= CARD_RANGE ? player : undefined;
-      visual.update(dt, time, lookTarget);
+      visual.update(dt, time, lookTarget, travelDistance);
+    },
+    project(camera: THREE.Camera) {
+      if (disposed) return;
       syncPresentation(camera);
     },
     interact(player: TeaGardenPlayerPosition, mode: string): boolean {
@@ -392,7 +419,8 @@ export function createTeaGardenGuide(
         routeLength: route.length,
         playerDistance,
         busy,
-        worldVisible
+        worldVisible,
+        iroh: visual.debugState()
       };
     },
     dispose() {

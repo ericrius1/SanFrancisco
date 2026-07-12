@@ -1,5 +1,7 @@
 import * as THREE from "three/webgpu";
 import { buildRig, poseIdle, poseWalk, setRigClasp, type Rig } from "../../player/rig";
+import { applyArmPose, solveArmPose, type ArmPose } from "../../gameplay/buskers/armIk";
+import { createIrohCostume } from "./irohCostume";
 
 export type TeaMasterAction = "idle" | "welcome" | "serve" | "walk" | "talk" | "point";
 
@@ -8,15 +10,29 @@ export type TeaMasterVisual = {
   dialogueAnchor: THREE.Object3D;
   cupAnchor: THREE.Object3D;
   setAction(action: TeaMasterAction): void;
-  update(dt: number, time: number, lookTarget?: { x: number; y?: number; z: number }): void;
+  update(
+    dt: number,
+    time: number,
+    lookTarget?: { x: number; y?: number; z: number },
+    travelDistance?: number
+  ): void;
+  debugState(): TeaMasterVisualDebugState;
   dispose(): void;
 };
 
+export type TeaMasterVisualDebugState = {
+  action: TeaMasterAction;
+  position: [number, number, number];
+  joints: number[];
+  walkBlend: number;
+  stridePhase: number;
+  cupToLeftHand: number;
+  cupToRightHand: number;
+};
+
 const PALETTE = {
-  mantle: 0xe8ece7,
   paleBlue: 0xc9d8df,
   indigo: 0x1b2d47,
-  blueTrim: 0x315c78,
   hair: 0x6f8794,
   skin: 0xd7a17b,
   gold: 0xb9934d,
@@ -99,7 +115,7 @@ export function createTeaMasterVisual(): TeaMasterVisual {
   for (const arm of rig.avatar.armBlocks) arm.scale.set(1.12, 1.02, 1.12);
 
   const group = new THREE.Group();
-  group.name = "tea_master_haru";
+  group.name = "tea_master_iroh";
   group.scale.setScalar(1.12);
   rig.group.position.y = 0.9;
   group.add(rig.group);
@@ -112,10 +128,6 @@ export function createTeaMasterVisual(): TeaMasterVisual {
     return value;
   };
   const skin = rig.avatar.materials.skin;
-  const indigo = lambert(PALETTE.indigo);
-  const mantle = lambert(PALETTE.mantle);
-  const paleBlue = lambert(PALETTE.paleBlue);
-  const blue = lambert(PALETTE.blueTrim);
   const hair = lambert(PALETTE.hair);
   const gold = lambert(PALETTE.gold);
   const ink = new THREE.MeshBasicMaterial({ color: 0x17212a });
@@ -139,22 +151,7 @@ export function createTeaMasterVisual(): TeaMasterVisual {
     return mesh;
   };
 
-  // Bell-shaped indigo robe: visually roots him to the garden and hides the
-  // stock trousers while keeping the walk joints available under the hem.
-  const robe = addMesh(rig.hips, new THREE.CylinderGeometry(0.31, 0.55, 0.98, 12), indigo, [0, -0.42, 0], "tea_master_robe");
-  robe.scale.z = 0.82;
-  const robePanel = addMesh(rig.hips, new THREE.BoxGeometry(0.24, 0.82, 0.035), mantle, [0, -0.38, -0.47], "tea_master_robe_panel");
-  robePanel.rotation.x = -0.05;
-  const sash = addMesh(rig.hips, new THREE.CylinderGeometry(0.39, 0.39, 0.1, 12), blue, [0, 0.02, 0], "tea_master_sash");
-  sash.scale.z = 0.86;
-
-  // Broad white shoulder mantle with pale-blue underside and indigo piping.
-  const mantleLower = addMesh(rig.torso, new THREE.CylinderGeometry(0.46, 0.64, 0.21, 12), paleBlue, [0, 0.37, 0], "tea_master_mantle_lining");
-  mantleLower.scale.z = 0.78;
-  const mantleTop = addMesh(rig.torso, new THREE.CylinderGeometry(0.42, 0.61, 0.17, 12), mantle, [0, 0.43, -0.01], "tea_master_white_mantle");
-  mantleTop.scale.z = 0.8;
-  const collar = addMesh(rig.torso, new THREE.TorusGeometry(0.25, 0.035, 6, 18, Math.PI), blue, [0, 0.43, -0.2], "tea_master_collar_trim");
-  collar.rotation.z = Math.PI;
+  const costume = createIrohCostume(rig);
 
   // Bald crown, grey wing-like side hair, topknot, side beard and goatee.
   for (const side of [-1, 1]) {
@@ -200,6 +197,33 @@ export function createTeaMasterVisual(): TeaMasterVisual {
   const cup = createTeaCup(geometries, materials);
   cupAnchor.add(cup);
 
+  // Solve the two-hand serving station once against the live rig. The hands
+  // land at opposite points on the 22 cm bowl instead of hovering 30 cm away;
+  // runtime only blends six cached angles per arm.
+  poseIdle(rig, 0);
+  rig.group.updateWorldMatrix(true, true);
+  const serveTargetL = new THREE.Vector3(0.105, 0.08, -0.5);
+  const serveTargetR = new THREE.Vector3(-0.105, 0.08, -0.5);
+  rig.torso.localToWorld(serveTargetL);
+  rig.torso.localToWorld(serveTargetR);
+  const servePoseL = solveArmPose(
+    rig.armL,
+    rig.foreL,
+    rig.handL,
+    serveTargetL,
+    [0.98, -0.18, 0.18, 0.78, 0.08, 0] as ArmPose,
+    { side: 1, elbowClearance: 0.2 }
+  );
+  const servePoseR = solveArmPose(
+    rig.armR,
+    rig.foreR,
+    rig.handR,
+    serveTargetR,
+    [0.98, 0.18, -0.18, 0.78, -0.08, 0] as ArmPose,
+    { side: -1, elbowClearance: 0.2 }
+  );
+  poseIdle(rig, 0);
+
   const dialogueAnchor = new THREE.Object3D();
   dialogueAnchor.name = "tea_master_dialogue_anchor";
   dialogueAnchor.position.set(0, 2.18, 0);
@@ -207,8 +231,63 @@ export function createTeaMasterVisual(): TeaMasterVisual {
 
   let action: TeaMasterAction = "idle";
   let actionTime = 0;
+  let stridePhase = 0;
+  let walkBlend = 0;
+  let handClasp = 0;
+  let mouthBlend = 0;
+  let previousHeading = group.rotation.y;
   const headTarget = new THREE.Vector3();
   const localTarget = new THREE.Vector3();
+  const handLWorld = new THREE.Vector3();
+  const handRWorld = new THREE.Vector3();
+  const cupTarget = new THREE.Vector3();
+  const cupWorld = new THREE.Vector3();
+  const poseJoints = [
+    rig.hips,
+    rig.torso,
+    rig.head,
+    rig.armL,
+    rig.armR,
+    rig.foreL,
+    rig.foreR,
+    rig.legL,
+    rig.legR,
+    rig.shinL,
+    rig.shinR
+  ] as const;
+  const currentPose = new Float32Array(poseJoints.length * 3 + 1);
+  const targetPose = new Float32Array(poseJoints.length * 3 + 1);
+
+  const capturePose = (out: Float32Array) => {
+    poseJoints.forEach((joint, index) => {
+      const offset = index * 3;
+      out[offset] = joint.rotation.x;
+      out[offset + 1] = joint.rotation.y;
+      out[offset + 2] = joint.rotation.z;
+    });
+    out[out.length - 1] = rig.hips.position.y;
+  };
+
+  const blendToTargetPose = (safeDt: number) => {
+    // Deliberately slower than the player rig: Iroh settles into gestures like
+    // a practiced host. At 60 Hz even the largest scripted transition stays
+    // below a visually jarring one-frame snap.
+    const response = action === "walk" ? 7.5 : 6;
+    poseJoints.forEach((joint, index) => {
+      const offset = index * 3;
+      joint.rotation.set(
+        THREE.MathUtils.damp(currentPose[offset], targetPose[offset], response, safeDt),
+        THREE.MathUtils.damp(currentPose[offset + 1], targetPose[offset + 1], response, safeDt),
+        THREE.MathUtils.damp(currentPose[offset + 2], targetPose[offset + 2], response, safeDt)
+      );
+    });
+    rig.hips.position.y = THREE.MathUtils.damp(
+      currentPose[currentPose.length - 1],
+      targetPose[targetPose.length - 1],
+      response,
+      safeDt
+    );
+  };
 
   const setAction = (next: TeaMasterAction) => {
     if (next === action) return;
@@ -216,12 +295,36 @@ export function createTeaMasterVisual(): TeaMasterVisual {
     actionTime = 0;
   };
 
-  const update = (dt: number, time: number, lookTarget?: { x: number; y?: number; z: number }) => {
-    actionTime += dt;
-    if (action === "walk") poseWalk(rig, time * 5.2, 0);
+  const update = (
+    dt: number,
+    time: number,
+    lookTarget?: { x: number; y?: number; z: number },
+    travelDistance = 0
+  ) => {
+    const safeDt = Math.min(Math.max(dt, 0), 0.1);
+    actionTime += safeDt;
+    walkBlend = THREE.MathUtils.damp(walkBlend, action === "walk" ? 1 : 0, 7.5, safeDt);
+    if (action === "walk") stridePhase = (stridePhase + Math.max(0, travelDistance) * 4.6) % (Math.PI * 2);
+
+    // Pose functions author an instantaneous target. Preserve the live pose,
+    // generate the target, then exponentially blend every joint back from the
+    // preserved state. This removes the 30–48° state-transition snaps without
+    // changing the shared player-rig API.
+    capturePose(currentPose);
+    if (action === "walk") {
+      poseWalk(rig, stridePhase, 0);
+      // Iroh walks with a short, grounded tea-master stride. Besides reading as
+      // calmer, this keeps the hidden legs well inside the robe's authored
+      // envelope so capsule projection remains a safety net, not the silhouette.
+      rig.legL.rotation.x *= 0.7;
+      rig.legR.rotation.x *= 0.7;
+      rig.shinL.rotation.x *= 0.78;
+      rig.shinR.rotation.x *= 0.78;
+      rig.armL.rotation.x *= 0.64;
+      rig.armR.rotation.x *= 0.64;
+      rig.torso.rotation.y *= 0.62;
+    }
     else poseIdle(rig, time);
-    setRigClasp(rig, "L", 0);
-    setRigClasp(rig, "R", 0);
 
     if (action === "welcome") {
       setRotation(rig.armL, -0.25, 0, 1.05);
@@ -230,12 +333,8 @@ export function createTeaMasterVisual(): TeaMasterVisual {
       setRotation(rig.foreR, 0.78, 0, 0);
       rig.torso.rotation.x += Math.sin(Math.min(1, actionTime * 2.4) * Math.PI) * 0.08;
     } else if (action === "serve") {
-      setRotation(rig.armL, 0.98, -0.18, 0.18);
-      setRotation(rig.armR, 0.98, 0.18, -0.18);
-      setRotation(rig.foreL, 0.78, 0.08, 0);
-      setRotation(rig.foreR, 0.78, -0.08, 0);
-      setRigClasp(rig, "L", 0.72);
-      setRigClasp(rig, "R", 0.72);
+      applyArmPose(rig.armL, rig.foreL, servePoseL);
+      applyArmPose(rig.armR, rig.foreR, servePoseR);
     } else if (action === "talk") {
       const gesture = 0.55 + Math.sin(time * 1.35) * 0.12;
       setRotation(rig.armL, 0.2, 0, 0.72);
@@ -248,13 +347,30 @@ export function createTeaMasterVisual(): TeaMasterVisual {
       setRotation(rig.armR, 0.35, 0, -0.18);
       setRotation(rig.foreR, 0.68, 0, 0);
     }
+    capturePose(targetPose);
+    blendToTargetPose(safeDt);
+    handClasp = THREE.MathUtils.damp(handClasp, action === "serve" ? 0.72 : 0, 10, safeDt);
+    setRigClasp(rig, "L", handClasp);
+    setRigClasp(rig, "R", handClasp);
 
-    // The cup remains visible as a quiet emblem; during walking it tucks nearer the sash.
-    const servedZ = -0.54 - Math.sin(Math.min(1, actionTime * 1.5) * Math.PI * 0.5) * 0.08;
-    const cupTargetZ = action === "serve" ? servedZ : action === "walk" ? -0.38 : -0.48;
-    cupAnchor.position.z = THREE.MathUtils.damp(cupAnchor.position.z, cupTargetZ, 7, dt);
-    cupAnchor.position.y = action === "walk" ? 0.1 : 0.22;
-    cupAnchor.rotation.x = action === "walk" ? -0.2 : 0;
+    // During service the bowl follows the midpoint between both articulated
+    // hands. At rest it eases back to a sash cradle; every axis is damped so the
+    // prop never teleports when dialogue changes action.
+    if (action === "serve") {
+      rig.group.updateWorldMatrix(true, true);
+      rig.handL.getWorldPosition(handLWorld);
+      rig.handR.getWorldPosition(handRWorld);
+      cupTarget.copy(handLWorld).add(handRWorld).multiplyScalar(0.5);
+      rig.torso.worldToLocal(cupTarget);
+      cupTarget.y += 0.035;
+      cupTarget.z -= 0.03;
+    } else {
+      cupTarget.set(0, action === "walk" ? 0.09 : 0.18, action === "walk" ? -0.36 : -0.43);
+    }
+    cupAnchor.position.x = THREE.MathUtils.damp(cupAnchor.position.x, cupTarget.x, 8, safeDt);
+    cupAnchor.position.y = THREE.MathUtils.damp(cupAnchor.position.y, cupTarget.y, 8, safeDt);
+    cupAnchor.position.z = THREE.MathUtils.damp(cupAnchor.position.z, cupTarget.z, 8, safeDt);
+    cupAnchor.rotation.x = THREE.MathUtils.damp(cupAnchor.rotation.x, action === "walk" ? -0.16 : 0, 8, safeDt);
     cup.children.forEach((child) => {
       if (!child.name.startsWith("tea_steam")) return;
       const phase = Number(child.userData.phase ?? 0);
@@ -262,10 +378,15 @@ export function createTeaMasterVisual(): TeaMasterVisual {
       child.scale.y = 0.88 + Math.sin(time * 1.6 + phase) * 0.1;
     });
 
-    const speaking = action === "talk" || action === "point";
-    const mouthPulse = speaking && Math.sin(time * 8.4) > 0.2;
-    mouthOpen.visible = mouthPulse;
-    smile.visible = !mouthPulse;
+    const speaking = action === "talk" || action === "point" || action === "welcome";
+    const syllable = speaking ? 0.18 + (Math.sin(time * 7.1) * 0.5 + 0.5) * 0.72 : 0;
+    mouthBlend = THREE.MathUtils.damp(mouthBlend, syllable, 15, safeDt);
+    mouthOpen.visible = true;
+    smile.visible = true;
+    mouthOpen.scale.x = 0.22 + mouthBlend * 1.03;
+    mouthOpen.scale.y = 0.06 + mouthBlend * 0.58;
+    mouthOpen.scale.z = 0.35;
+    smile.scale.y = 1 - mouthBlend * 0.7;
 
     if (lookTarget) {
       headTarget.set(lookTarget.x, lookTarget.y ?? group.position.y + 1.55, lookTarget.z);
@@ -273,9 +394,17 @@ export function createTeaMasterVisual(): TeaMasterVisual {
       group.worldToLocal(localTarget);
       const desiredYaw = THREE.MathUtils.clamp(Math.atan2(-localTarget.x, -localTarget.z), -0.55, 0.55);
       const desiredPitch = THREE.MathUtils.clamp(Math.atan2(localTarget.y - 1.55, Math.hypot(localTarget.x, localTarget.z)), -0.28, 0.25);
-      rig.head.rotation.y = THREE.MathUtils.damp(rig.head.rotation.y, desiredYaw, 4.2, dt);
-      rig.head.rotation.x = THREE.MathUtils.damp(rig.head.rotation.x, desiredPitch, 4.2, dt);
+      rig.head.rotation.y = THREE.MathUtils.damp(rig.head.rotation.y, desiredYaw, 4.2, safeDt);
+      rig.head.rotation.x = THREE.MathUtils.damp(rig.head.rotation.x, desiredPitch, 4.2, safeDt);
     }
+
+    const headingDelta = Math.atan2(
+      Math.sin(group.rotation.y - previousHeading),
+      Math.cos(group.rotation.y - previousHeading)
+    );
+    const turn = safeDt > 1e-5 ? THREE.MathUtils.clamp(headingDelta / safeDt / 4, -1, 1) : 0;
+    previousHeading = group.rotation.y;
+    costume.update(safeDt, walkBlend, turn);
   };
 
   return {
@@ -284,7 +413,24 @@ export function createTeaMasterVisual(): TeaMasterVisual {
     cupAnchor,
     setAction,
     update,
+    debugState() {
+      capturePose(currentPose);
+      group.updateWorldMatrix(true, true);
+      rig.handL.getWorldPosition(handLWorld);
+      rig.handR.getWorldPosition(handRWorld);
+      cupAnchor.getWorldPosition(cupWorld);
+      return {
+        action,
+        position: group.position.toArray() as [number, number, number],
+        joints: Array.from(currentPose),
+        walkBlend,
+        stridePhase,
+        cupToLeftHand: cupWorld.distanceTo(handLWorld),
+        cupToRightHand: cupWorld.distanceTo(handRWorld)
+      };
+    },
     dispose() {
+      costume.dispose();
       for (const geometry of geometries) geometry.dispose();
       for (const value of materials) value.dispose();
       for (const value of Object.values(rig.avatar.materials)) value.dispose();

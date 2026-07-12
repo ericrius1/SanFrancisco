@@ -56,6 +56,7 @@ export type JapaneseTeaGarden = {
   ready: Promise<void>;
   setFoliageVisible(visible: boolean): void;
   update(dt: number, time: number, player: TeaGardenPlayerPosition, camera: THREE.Camera): void;
+  project(camera: THREE.Camera): void;
   interact(player: TeaGardenPlayerPosition, mode: string): boolean;
   dispose(): void;
   stats: JapaneseTeaGardenStats;
@@ -135,6 +136,10 @@ export function createJapaneseTeaGarden(
       if (!awake) return;
       architecture.update(time);
       guide.update(dt, time, player, camera);
+    },
+    project(camera: THREE.Camera) {
+      if (disposed || !awake) return;
+      guide.project(camera);
     },
     interact(player: TeaGardenPlayerPosition, mode: string): boolean {
       if (disposed || !awake) return false;

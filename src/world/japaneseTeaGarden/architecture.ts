@@ -1,4 +1,5 @@
 import * as THREE from "three/webgpu";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { BodyType, type Physics } from "../../core/physics";
 import {
   TEA_GARDEN_BUILDINGS,
@@ -56,6 +57,37 @@ export type TeaGardenArchitecture = {
 
 function material(color: number, roughness = 0.86, metalness = 0): THREE.MeshStandardMaterial {
   return new THREE.MeshStandardMaterial({ color, roughness, metalness });
+}
+
+/** Tiny deterministic grain map: enough directional breakup to stop hero
+ * timber reading as flat plastic, but shared by every bridge member. */
+function woodGrainTexture(): THREE.DataTexture {
+  const width = 128;
+  const height = 64;
+  const data = new Uint8Array(width * height * 4);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const index = (y * width + x) * 4;
+      const wave = Math.sin(x * 0.31 + Math.sin(y * 0.37) * 1.8) * 0.5 + 0.5;
+      const fine = Math.sin(x * 1.73 + y * 0.17) * 0.5 + 0.5;
+      const knotDx = x - 76;
+      const knotDy = (y - 31) * 2.2;
+      const knot = Math.max(0, 1 - Math.hypot(knotDx, knotDy) / 17);
+      const shade = Math.round(112 + wave * 34 + fine * 8 - knot * 38);
+      data[index] = shade;
+      data[index + 1] = Math.round(shade * 0.72);
+      data[index + 2] = Math.round(shade * 0.48);
+      data[index + 3] = 255;
+    }
+  }
+  const texture = new THREE.DataTexture(data, width, height, THREE.RGBAFormat);
+  texture.name = "tea_garden_weathered_timber_grain";
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(2.6, 1);
+  texture.needsUpdate = true;
+  return texture;
 }
 
 function centroid(points: readonly TeaGardenXZ[]): { x: number; z: number } {
@@ -245,6 +277,87 @@ function makeRailing(
   return group;
 }
 
+const TEA_HOUSE_ART = [
+  "/art/tea-house/misty-pines.webp",
+  "/art/tea-house/drum-bridge-moon.webp",
+  "/art/tea-house/koi-ginkgo.webp",
+  "/art/tea-house/four-seasons.webp"
+] as const;
+
+function makeTeaHouseGallery(
+  center: { x: number; z: number },
+  grade: number,
+  yaw: number,
+  timber: THREE.Material
+): THREE.Group {
+  const group = new THREE.Group();
+  group.name = "tea_house_original_fusuma_gallery";
+  group.position.set(center.x, grade, center.z);
+  group.rotation.y = yaw;
+  const loader = new THREE.TextureLoader();
+  const paintingGeometry = new THREE.PlaneGeometry(2.08, 1.02);
+  const xPositions = [-3.42, -1.14, 1.14, 3.42] as const;
+  TEA_HOUSE_ART.forEach((url, index) => {
+    const texture = loader.load(url);
+    texture.name = `tea_house_art_${index + 1}`;
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.anisotropy = 4;
+    const painting = new THREE.Mesh(
+      paintingGeometry,
+      new THREE.MeshStandardMaterial({
+        map: texture,
+        roughness: 0.86,
+        metalness: 0,
+        emissive: 0x1d130b,
+        emissiveIntensity: 0.09
+      })
+    );
+    painting.name = `tea_house_fusuma_art_${index + 1}`;
+    painting.position.set(xPositions[index], 2.08, -4.235);
+    painting.castShadow = false;
+    painting.receiveShadow = false;
+    group.add(painting);
+    const frameWidth = 2.2;
+    const frameHeight = 1.14;
+    group.add(makeBox("tea_house_art_frame_top", [frameWidth, 0.055, 0.065], timber, [xPositions[index], 2.08 + frameHeight / 2, -4.21]));
+    group.add(makeBox("tea_house_art_frame_bottom", [frameWidth, 0.055, 0.065], timber, [xPositions[index], 2.08 - frameHeight / 2, -4.21]));
+    group.add(makeBox("tea_house_art_frame_left", [0.055, frameHeight, 0.065], timber, [xPositions[index] - frameWidth / 2, 2.08, -4.21]));
+    group.add(makeBox("tea_house_art_frame_right", [0.055, frameHeight, 0.065], timber, [xPositions[index] + frameWidth / 2, 2.08, -4.21]));
+  });
+  return group;
+}
+
+function makeTeaKettleGeometry(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const matrix = new THREE.Matrix4();
+  const body = new THREE.SphereGeometry(0.28, 14, 10);
+  body.scale(1, 0.8, 1);
+  parts.push(body);
+  const lid = new THREE.CylinderGeometry(0.15, 0.19, 0.045, 14);
+  lid.translate(0, 0.22, 0);
+  parts.push(lid);
+  const knob = new THREE.SphereGeometry(0.05, 10, 6);
+  knob.translate(0, 0.29, 0);
+  parts.push(knob);
+  const spout = new THREE.ConeGeometry(0.065, 0.34, 10);
+  matrix.makeRotationZ(-Math.PI / 2);
+  matrix.setPosition(0.27, 0.08, 0);
+  spout.applyMatrix4(matrix);
+  parts.push(spout);
+  // A full ring sits just behind the body; natural occlusion leaves the upper
+  // arch and side grips visible as a traditional iron-kettle handle.
+  const handle = new THREE.TorusGeometry(0.235, 0.026, 6, 20);
+  handle.translate(0, 0.06, -0.085);
+  parts.push(handle);
+  const flatParts = parts.map((part) => part.toNonIndexed());
+  const merged = mergeGeometries(flatParts, false)!;
+  for (const part of parts) part.dispose();
+  for (const part of flatParts) part.dispose();
+  merged.computeBoundingBox();
+  merged.computeBoundingSphere();
+  return merged;
+}
+
 function makeTeaHouse(
   map: TeaGardenTerrain,
   spec: TeaGardenBuildingSpec,
@@ -258,56 +371,165 @@ function makeTeaHouse(
   const grade = highestGround(map, spec.outline);
   const lowGrade = lowestGround(map, spec.outline);
   const yaw = spec.yaw;
+  const up = new THREE.Vector3(0, 1, 0);
   const foundationBottom = lowGrade - 0.12;
-  const foundationTop = grade + 0.3;
+  const foundationTop = grade + 0.38;
   const foundationHeight = foundationTop - foundationBottom;
   group.add(makeBox(
     "tea_house_stone_foundation",
-    [11.4, foundationHeight, 9.2],
+    [11.6, foundationHeight, 10.6],
     mats.stoneDark,
     [c.x, foundationBottom + foundationHeight / 2, c.z],
     yaw
   ));
-  group.add(makeBox("tea_house_veranda", [12.2, 0.28, 9.9], mats.timber, [c.x, grade + 0.48, c.z], yaw));
-  group.add(makeBox("tea_house_core", [8.7, 2.65, 6.5], mats.plaster, [c.x, grade + 1.9, c.z], yaw));
+  group.add(makeBox("tea_house_walkable_veranda", [12.4, 0.26, 11.25], mats.timber, [c.x, grade + 0.5, c.z], yaw));
 
   const local = new THREE.Vector3();
   const world = (lx: number, ly: number, lz: number) => {
-    local.set(lx, ly, lz).applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
+    local.set(lx, ly, lz).applyAxisAngle(up, yaw);
     return [c.x + local.x, grade + local.y, c.z + local.z] as const;
   };
-  group.add(makeShojiWall(7.6, 2.15, ...world(0, 2.02, 3.31), yaw, mats.shoji, mats.timberDark));
-  group.add(makeShojiWall(7.6, 2.15, ...world(0, 2.02, -3.31), yaw + Math.PI, mats.shoji, mats.timberDark));
-  group.add(makeShojiWall(5.55, 2.15, ...world(4.36, 2.02, 0), yaw + Math.PI / 2, mats.shoji, mats.timberDark));
-  group.add(makeShojiWall(5.55, 2.15, ...world(-4.36, 2.02, 0), yaw - Math.PI / 2, mats.shoji, mats.timberDark));
-  group.add(makeRailing(10.8, ...world(0, 0.48, 4.55), yaw, mats.timberDark));
-  for (const sx of [-1, 1]) {
-    for (const sz of [-1, 1]) {
-      const p = world(sx * 4.05, 1.84, sz * 2.95);
-      group.add(makeBox("tea_house_post", [0.2, 2.85, 0.2], mats.timberDark, p, yaw));
+
+  // Enclosed north/back wall carries the art; the pond-facing south elevation
+  // is genuinely open across five bays. Side walls stop short of that veranda.
+  group.add(makeBox("tea_house_north_knee_wall", [10.1, 0.9, 0.24], mats.plaster, world(0, 1.03, -4.42), yaw));
+  group.add(makeShojiWall(9.8, 1.55, ...world(0, 2.22, -4.36), yaw, mats.shoji, mats.timberDark));
+  for (const side of [-1, 1]) {
+    group.add(makeBox("tea_house_side_knee_wall", [0.24, 0.9, 7.35], mats.plaster, world(side * 4.82, 1.03, -0.65), yaw));
+    group.add(makeShojiWall(6.65, 1.55, ...world(side * 4.76, 2.22, -0.72), yaw + side * Math.PI / 2, mats.shoji, mats.timberDark));
+  }
+
+  const postPositions: readonly [number, number][] = [
+    ...[-4.7, -2.35, 0, 2.35, 4.7].flatMap((x) => [[x, -4.48], [x, 4.48]] as [number, number][]),
+    ...[-2.25, 0, 2.25].flatMap((z) => [[-4.72, z], [4.72, z]] as [number, number][])
+  ];
+  const postGeometry = new THREE.BoxGeometry(0.23, 2.84, 0.23);
+  const posts = new THREE.InstancedMesh(postGeometry, mats.timberDark, postPositions.length);
+  posts.name = "tea_house_structural_posts";
+  const dummy = new THREE.Object3D();
+  postPositions.forEach(([x, z], index) => {
+    dummy.position.set(...world(x, 1.94, z));
+    dummy.rotation.set(0, yaw, 0);
+    dummy.scale.setScalar(1);
+    dummy.updateMatrix();
+    posts.setMatrixAt(index, dummy.matrix);
+  });
+  posts.instanceMatrix.needsUpdate = true;
+  posts.computeBoundingSphere();
+  posts.castShadow = true;
+  posts.receiveShadow = true;
+  group.add(posts);
+
+  group.add(makeBox("tea_house_front_lintel", [10.15, 0.22, 0.22], mats.timberDark, world(0, 3.36, 4.48), yaw));
+  group.add(makeBox("tea_house_back_lintel", [10.15, 0.22, 0.22], mats.timberDark, world(0, 3.36, -4.48), yaw));
+  group.add(makeBox("tea_house_east_lintel", [0.22, 0.22, 9.15], mats.timberDark, world(4.72, 3.36, 0), yaw));
+  group.add(makeBox("tea_house_west_lintel", [0.22, 0.22, 9.15], mats.timberDark, world(-4.72, 3.36, 0), yaw));
+
+  // Open front safety rails terminate before the broad central entry.
+  group.add(makeRailing(2.75, ...world(-3.55, 0.58, 5.08), yaw, mats.timberDark));
+  group.add(makeRailing(2.75, ...world(3.55, 0.58, 5.08), yaw, mats.timberDark));
+
+  // Shared exposed rafters: two instanced draws instead of twelve box meshes.
+  const rafterLong = new THREE.InstancedMesh(new THREE.BoxGeometry(0.13, 0.16, 9.5), mats.timber, 7);
+  rafterLong.name = "tea_house_exposed_long_rafters";
+  for (let index = 0; index < 7; index++) {
+    dummy.position.set(...world(THREE.MathUtils.lerp(-4.35, 4.35, index / 6), 3.44, 0));
+    dummy.rotation.set(0, yaw, 0);
+    dummy.updateMatrix();
+    rafterLong.setMatrixAt(index, dummy.matrix);
+  }
+  rafterLong.instanceMatrix.needsUpdate = true;
+  rafterLong.computeBoundingSphere();
+  rafterLong.castShadow = true;
+  group.add(rafterLong);
+  const rafterCross = new THREE.InstancedMesh(new THREE.BoxGeometry(9.65, 0.17, 0.14), mats.timber, 5);
+  rafterCross.name = "tea_house_exposed_cross_rafters";
+  for (let index = 0; index < 5; index++) {
+    dummy.position.set(...world(0, 3.39, THREE.MathUtils.lerp(-3.8, 3.8, index / 4)));
+    dummy.rotation.set(0, yaw, 0);
+    dummy.updateMatrix();
+    rafterCross.setMatrixAt(index, dummy.matrix);
+  }
+  rafterCross.instanceMatrix.needsUpdate = true;
+  rafterCross.computeBoundingSphere();
+  rafterCross.castShadow = true;
+  group.add(rafterCross);
+
+  group.add(makeRoof("tea_house_roof", 13.6, 12.25, 2.08, c.x, grade + 3.48, c.z, yaw, mats.roof, mats.timberDark));
+  group.add(makeBox("tea_house_roof_monitor", [4.55, 0.7, 3.15], mats.timberDark, world(0, 5.12, 0), yaw));
+  group.add(makeShojiWall(3.75, 0.48, ...world(0, 5.15, 1.59), yaw, mats.shoji, mats.timberDark));
+  group.add(makeShojiWall(3.75, 0.48, ...world(0, 5.15, -1.59), yaw + Math.PI, mats.shoji, mats.timberDark));
+  group.add(makeRoof("tea_house_monitor_roof", 5.7, 4.35, 0.92, c.x, grade + 5.46, c.z, yaw, mats.roof, mats.timberDark));
+
+  const tatamiGeometry = new THREE.BoxGeometry(2.05, 0.055, 1.02);
+  const tatami = new THREE.InstancedMesh(tatamiGeometry, mats.tatami, 8);
+  tatami.name = "tea_house_tatami_floor";
+  let tatamiIndex = 0;
+  for (const x of [-2.2, 0, 2.2, 4.4]) {
+    for (const z of [-1.15, 1.15]) {
+      dummy.position.set(...world(x - 1.1, 0.67, z));
+      dummy.rotation.set(0, yaw + ((tatamiIndex & 1) ? Math.PI / 2 : 0), 0);
+      dummy.updateMatrix();
+      tatami.setMatrixAt(tatamiIndex++, dummy.matrix);
     }
   }
-  group.add(makeRoof("tea_house_roof", 12.8, 10.4, 2.25, c.x, grade + 3.28, c.z, yaw, mats.roof, mats.vermilionDark));
+  tatami.instanceMatrix.needsUpdate = true;
+  tatami.computeBoundingSphere();
+  tatami.receiveShadow = true;
+  group.add(tatami);
 
-  // Small irori table and ceremonial tea set visible from the south veranda.
-  const tableP = world(0.7, 1.01, 1.45);
-  group.add(makeBox("tea_house_irori", [2.2, 0.42, 1.25], mats.timberDark, tableP, yaw));
-  const kettle = new THREE.Mesh(new THREE.SphereGeometry(0.28, 12, 8), mats.iron);
+  // Irori table, benches, cushions and kettle form a visible social centre.
+  const tableP = world(0, 1.05, 0.55);
+  group.add(makeBox("tea_house_irori", [2.8, 0.42, 1.55], mats.bridgeTimberDark, tableP, yaw));
+  group.add(makeBox("tea_house_irori_hearth", [1.15, 0.08, 0.72], mats.iron, world(0, 1.28, 0.55), yaw));
+  group.add(makeBox("tea_house_bench_left", [2.7, 0.28, 0.62], mats.bridgeTimberDark, world(-2.35, 0.86, 0.55), yaw));
+  group.add(makeBox("tea_house_bench_right", [2.7, 0.28, 0.62], mats.bridgeTimberDark, world(2.35, 0.86, 0.55), yaw));
+  const kettle = new THREE.Mesh(makeTeaKettleGeometry(), mats.iron);
   kettle.name = "tea_house_kettle";
-  kettle.position.set(...world(0.7, 1.43, 1.45));
+  kettle.position.set(...world(0, 1.47, 0.55));
   kettle.castShadow = true;
   group.add(kettle);
 
-  const collisionTop = grade + 3.25;
+  group.add(makeTeaHouseGallery(c, grade, yaw, mats.timberDark));
+  const lanternMaterial = new THREE.MeshStandardMaterial({
+    color: 0xf5dfb1,
+    emissive: 0xffbb68,
+    emissiveIntensity: 1.25,
+    roughness: 0.86
+  });
+  for (const x of [-2.5, 2.5]) {
+    const lantern = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.3, 0.58, 16), lanternMaterial);
+    lantern.name = "tea_house_warm_paper_lantern";
+    lantern.position.set(...world(x, 2.85, 0.2));
+    group.add(lantern);
+    // Modern physically-correct light units make single-digit point-light
+    // intensities nearly decorative. These remain the same two lights/draw
+    // budget, but now softly reveal the timber, tatami, irori and artwork.
+    const light = new THREE.PointLight(0xffc47d, 38, 8, 2);
+    light.position.copy(lantern.position);
+    group.add(light);
+  }
+
+  // Walkable slab plus three enclosing walls. The whole south façade and its
+  // central veranda remain physically open, so the player can enter and cross
+  // the pavilion instead of colliding with a single sealed proxy.
   addPhysicsBox(physics, bodies, {
     x: c.x,
-    y: (foundationBottom + collisionTop) / 2,
+    y: grade + 0.49,
     z: c.z,
-    hx: 4.35,
-    hy: (collisionTop - foundationBottom) / 2,
-    hz: 3.25,
+    hx: 5.6,
+    hy: 0.15,
+    hz: 5.05,
     yaw
   });
+  const backP = world(0, 1.9, -4.44);
+  addPhysicsBox(physics, bodies, { x: backP[0], y: backP[1], z: backP[2], hx: 5.05, hy: 1.42, hz: 0.13, yaw });
+  for (const side of [-1, 1]) {
+    const sideP = world(side * 4.84, 1.9, -0.65);
+    addPhysicsBox(physics, bodies, {
+      x: sideP[0], y: sideP[1], z: sideP[2], hx: 3.68, hy: 1.42, hz: 0.13, yaw: yaw + Math.PI / 2
+    });
+  }
   return group;
 }
 
@@ -660,8 +882,8 @@ function makeDrumBridge(
   const b = new THREE.Vector3(-2273.11, 0, 2189.91);
   const baseY = Math.max(map.groundTop(a.x, a.z), map.groundTop(b.x, b.z)) + 0.18;
   const count = 18;
-  const rise = 3.25;
-  const width = 2.15;
+  const rise = 3.12;
+  const width = 1.82;
   const group = new THREE.Group();
   group.name = "japanese_tea_garden_drum_bridge";
   const curvePoints: THREE.Vector3[] = [];
@@ -676,50 +898,141 @@ function makeDrumBridge(
 
   const forward = b.clone().sub(a).setY(0).normalize();
   const right = new THREE.Vector3(forward.z, 0, -forward.x);
+  const upAxis = new THREE.Vector3(0, 1, 0);
+  const yaw = Math.atan2(forward.x, forward.z);
+  const treadQuaternion = new THREE.Quaternion().setFromAxisAngle(upAxis, yaw);
+  const treadGeometry = new THREE.BoxGeometry(1, 1, 1);
+  const treads = new THREE.InstancedMesh(treadGeometry, mats.bridgeTimber, count);
+  treads.name = "drum_bridge_worn_stair_treads";
+  const dummy = new THREE.Object3D();
   for (let i = 0; i < count; i++) {
     const p0 = curvePoints[i];
     const p1 = curvePoints[i + 1];
     const mid = p0.clone().add(p1).multiplyScalar(0.5);
-    const tangent = p1.clone().sub(p0).normalize();
-    // X=right and Z=tangent require Y=ZxX for a right-handed basis. Reversing
-    // this cross product produces a reflection that a quaternion cannot encode.
-    const up = new THREE.Vector3().crossVectors(tangent, right).normalize();
-    const matrix = new THREE.Matrix4().makeBasis(right, up, tangent);
-    const quaternion = new THREE.Quaternion().setFromRotationMatrix(matrix);
-    const length = p0.distanceTo(p1) + 0.055;
-    const plank = new THREE.Mesh(new THREE.BoxGeometry(width, 0.13, length), i % 2 ? mats.timber : mats.timberDark);
-    plank.name = "drum_bridge_plank";
-    plank.position.copy(mid);
-    plank.quaternion.copy(quaternion);
-    // A few planks plus both continuous rails carry the bridge silhouette; every
-    // individual slat in every shadow cascade is unnecessary.
-    plank.castShadow = i % 3 === 0;
-    plank.receiveShadow = true;
-    group.add(plank);
-    const q = [quaternion.x, quaternion.y, quaternion.z, quaternion.w] as const;
+    const length = Math.hypot(p1.x - p0.x, p1.z - p0.z) + 0.075;
+    // Horizontal stair treads, not a smooth black ramp. Each rises to the high
+    // end of its segment, creating the real bridge's deliberate steep steps.
+    mid.y = Math.max(p0.y, p1.y) - 0.055;
+    dummy.position.copy(mid);
+    dummy.quaternion.copy(treadQuaternion);
+    dummy.scale.set(width, 0.14, length);
+    dummy.updateMatrix();
+    treads.setMatrixAt(i, dummy.matrix);
+    // Near-white instance colors preserve subtle board-to-board variation
+    // without multiplying the shared grain map into black.
+    treads.setColorAt(i, new THREE.Color(i % 3 === 0 ? 0xfff5eb : i % 2 ? 0xead9c9 : 0xd9c3af));
+    const q = [treadQuaternion.x, treadQuaternion.y, treadQuaternion.z, treadQuaternion.w] as const;
     addPhysicsBox(physics, bodies, { x: mid.x, y: mid.y, z: mid.z, hx: width / 2, hy: 0.08, hz: length / 2, quat: q });
+  }
+  treads.instanceMatrix.needsUpdate = true;
+  if (treads.instanceColor) treads.instanceColor.needsUpdate = true;
+  treads.computeBoundingSphere();
+  treads.castShadow = true;
+  treads.receiveShadow = true;
+  group.add(treads);
 
-    if (i % 2 === 0) {
-      for (const sign of [-1, 1]) {
-        const post = makeBox(
-          "drum_bridge_post",
-          [0.12, 1.05, 0.12],
-          mats.vermilionDark,
-          [mid.x + right.x * sign * (width / 2 + 0.08), mid.y + 0.48, mid.z + right.z * sign * (width / 2 + 0.08)]
-        );
-        group.add(post);
-      }
+  // Six laminated load-bearing ribs are the bridge's defining underside.
+  const ribCurve = new THREE.CatmullRomCurve3(
+    curvePoints.map((point) => point.clone().add(new THREE.Vector3(0, -0.31, 0)))
+  );
+  const rectangularPathGeometry = (
+    curve: THREE.Curve<THREE.Vector3>,
+    width: number,
+    height: number
+  ) => {
+    const shape = new THREE.Shape();
+    shape.moveTo(-width / 2, -height / 2);
+    shape.lineTo(width / 2, -height / 2);
+    shape.lineTo(width / 2, height / 2);
+    shape.lineTo(-width / 2, height / 2);
+    shape.closePath();
+    return new THREE.ExtrudeGeometry(shape, {
+      steps: 64,
+      bevelEnabled: false,
+      extrudePath: curve
+    });
+  };
+  const ribGeometry = rectangularPathGeometry(ribCurve, 0.16, 0.22);
+  const ribs = new THREE.InstancedMesh(ribGeometry, mats.bridgeTimberDark, 6);
+  ribs.name = "drum_bridge_six_laminated_arch_ribs";
+  [-0.72, -0.43, -0.14, 0.14, 0.43, 0.72].forEach((offset, index) => {
+    dummy.position.copy(right).multiplyScalar(offset);
+    dummy.quaternion.identity();
+    dummy.scale.setScalar(1);
+    dummy.updateMatrix();
+    ribs.setMatrixAt(index, dummy.matrix);
+  });
+  ribs.instanceMatrix.needsUpdate = true;
+  ribs.computeBoundingSphere();
+  ribs.castShadow = true;
+  ribs.receiveShadow = true;
+  group.add(ribs);
+
+  // Upper handrail and lower side rail are rectangular laminated timbers, not
+  // round pipes. They still share one geometry and one instanced draw.
+  const railGeometry = rectangularPathGeometry(new THREE.CatmullRomCurve3(curvePoints), 0.13, 0.15);
+  const rails = new THREE.InstancedMesh(railGeometry, mats.bridgeTimberDark, 4);
+  rails.name = "drum_bridge_joined_upper_and_lower_rails";
+  let railIndex = 0;
+  for (const sign of [-1, 1]) {
+    for (const height of [0.55, 1.02]) {
+      dummy.position.copy(right).multiplyScalar(sign * (width / 2 + 0.09));
+      dummy.position.y = height;
+      dummy.quaternion.identity();
+      dummy.scale.setScalar(1);
+      dummy.updateMatrix();
+      rails.setMatrixAt(railIndex++, dummy.matrix);
     }
   }
+  rails.instanceMatrix.needsUpdate = true;
+  rails.computeBoundingSphere();
+  rails.castShadow = true;
+  group.add(rails);
+
+  const postCountPerSide = Math.floor(count / 2) + 1;
+  const posts = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), mats.bridgeTimberDark, postCountPerSide * 2);
+  posts.name = "drum_bridge_square_balustrade_posts";
+  let postIndex = 0;
   for (const sign of [-1, 1]) {
-    const railCurve = new THREE.CatmullRomCurve3(
-      curvePoints.map((point) => point.clone().addScaledVector(right, sign * (width / 2 + 0.08)).add(new THREE.Vector3(0, 1.02, 0)))
-    );
-    const rail = new THREE.Mesh(new THREE.TubeGeometry(railCurve, 48, 0.095, 8, false), mats.vermilionDark);
-    rail.name = "drum_bridge_arch_rail";
-    rail.castShadow = true;
-    group.add(rail);
+    for (let i = 0; i <= count; i += 2) {
+      const point = curvePoints[i];
+      dummy.position.copy(point).addScaledVector(right, sign * (width / 2 + 0.09));
+      dummy.position.y += 0.74;
+      dummy.quaternion.identity();
+      dummy.scale.set(0.14, 0.96, 0.14);
+      dummy.updateMatrix();
+      posts.setMatrixAt(postIndex++, dummy.matrix);
+    }
   }
+  posts.instanceMatrix.needsUpdate = true;
+  posts.computeBoundingSphere();
+  posts.castShadow = true;
+  group.add(posts);
+
+  // Damp, irregular abutment stones conceal the rib ends in the planting.
+  const rockGeometry = new THREE.DodecahedronGeometry(1, 0);
+  const abutments = new THREE.InstancedMesh(rockGeometry, mats.stoneDark, 12);
+  abutments.name = "drum_bridge_mossy_rock_abutments";
+  let rockIndex = 0;
+  for (const endpoint of [a, b]) {
+    for (let index = 0; index < 6; index++) {
+      const side = index < 3 ? -1 : 1;
+      const along = ((index % 3) - 1) * 0.48;
+      const x = endpoint.x + right.x * side * (0.86 + (index % 2) * 0.32) + forward.x * along;
+      const z = endpoint.z + right.z * side * (0.86 + (index % 2) * 0.32) + forward.z * along;
+      const scale = 0.42 + (index % 3) * 0.12;
+      dummy.position.set(x, map.groundTop(x, z) + scale * 0.24, z);
+      dummy.rotation.set(index * 0.17, index * 0.83, index * 0.11);
+      dummy.scale.set(scale * 1.25, scale * 0.72, scale);
+      dummy.updateMatrix();
+      abutments.setMatrixAt(rockIndex++, dummy.matrix);
+    }
+  }
+  abutments.instanceMatrix.needsUpdate = true;
+  abutments.computeBoundingSphere();
+  abutments.castShadow = true;
+  abutments.receiveShadow = true;
+  group.add(abutments);
   return group;
 }
 
@@ -826,8 +1139,8 @@ function createPonds(map: TeaGardenTerrain, mats: ReturnType<typeof createMateri
     const rx = pondIndex === 0 ? 7.4 : 1.45;
     const rz = pondIndex === 0 ? 8.2 : 2.25;
     const count = pondIndex === 0 ? 10 : 6;
-    const fishGeometry = new THREE.SphereGeometry(0.34, 10, 6);
-    fishGeometry.scale(1.55, 0.35, 0.52);
+    const fishGeometry = new THREE.SphereGeometry(0.22, 10, 6);
+    fishGeometry.scale(1.65, 0.31, 0.48);
     const fishMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55, metalness: 0 });
     const fish = new THREE.InstancedMesh(fishGeometry, fishMaterial, count);
     fish.name = `${name}_koi`;
@@ -843,6 +1156,7 @@ function createPonds(map: TeaGardenTerrain, mats: ReturnType<typeof createMateri
 }
 
 function createMaterials() {
+  const grain = woodGrainTexture();
   return {
     vermilion: material(COLORS.vermilion, 0.72),
     vermilionDark: material(COLORS.vermilionDark, 0.76),
@@ -858,12 +1172,26 @@ function createMaterials() {
     pathEdge: material(COLORS.pathEdge, 1),
     bronze: material(0x8a6b31, 0.48, 0.44),
     iron: material(0x272625, 0.5, 0.45),
-    water: alphaSurface(new THREE.MeshPhysicalMaterial({
-      color: COLORS.water,
-      roughness: 0.22,
+    tatami: material(0xb4a46f, 0.98),
+    bridgeTimber: new THREE.MeshStandardMaterial({
+      color: 0xa98669,
+      map: grain,
+      roughness: 0.9,
       metalness: 0,
-      transmission: 0.08,
-      opacity: 0.86,
+      vertexColors: true
+    }),
+    bridgeTimberDark: new THREE.MeshStandardMaterial({
+      color: 0x80624c,
+      map: grain,
+      roughness: 0.94,
+      metalness: 0
+    }),
+    water: alphaSurface(new THREE.MeshPhysicalMaterial({
+      color: 0x203d35,
+      roughness: 0.16,
+      metalness: 0,
+      transmission: 0.04,
+      opacity: 0.82,
       side: THREE.DoubleSide
     }))
   };
@@ -992,7 +1320,7 @@ export function createTeaGardenArchitecture(
           z
         );
         dummy.rotation.set(0, -angle + Math.PI / 2, 0);
-        const scale = 0.75 + (i % 4) * 0.11;
+        const scale = 0.62 + (i % 4) * 0.075;
         dummy.scale.setScalar(scale);
         dummy.updateMatrix();
         pond.mesh.setMatrixAt(i, dummy.matrix);
@@ -1015,15 +1343,21 @@ export function createTeaGardenArchitecture(
     dispose() {
       const geometries = new Set<THREE.BufferGeometry>();
       const materials = new Set<THREE.Material>();
+      const textures = new Set<THREE.Texture>();
       group.traverse((object) => {
         const mesh = object as THREE.Mesh;
         if (!mesh.isMesh) return;
         geometries.add(mesh.geometry);
         const list = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-        for (const entry of list) materials.add(entry);
+        for (const entry of list) {
+          materials.add(entry);
+          const map = (entry as THREE.Material & { map?: THREE.Texture | null }).map;
+          if (map) textures.add(map);
+        }
       });
       for (const geometry of geometries) geometry.dispose();
       for (const entry of materials) entry.dispose();
+      for (const texture of textures) texture.dispose();
       if (physics) {
         for (const body of bodies) {
           physics.removeQuerySolid(body);

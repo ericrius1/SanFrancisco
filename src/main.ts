@@ -215,7 +215,7 @@ async function boot() {
   // future location sharing. An unknown key safely falls back to the saved/default
   // start without changing settings.
   const requestedSpawn = new URLSearchParams(location.search).get("spawn")?.trim();
-  const autoStartHaruTour = new URLSearchParams(location.search).get("tour") === "haru";
+  const autoStartIrohTour = new URLSearchParams(location.search).get("tour") === "iroh";
   const spawnKey = requestedSpawn && (resolveSpawnPoint(requestedSpawn) || map.meta.spawns[requestedSpawn])
     ? requestedSpawn
     : START.spawn;
@@ -1418,7 +1418,7 @@ async function boot() {
     }
 
     // Japanese Tea Garden: exact OSM footprint with authored gates, Tea House,
-    // pagoda, ponds, bridges, specimen planting and Haru's walkable guided tour.
+    // pagoda, ponds, bridges, specimen planting and Iroh's walkable guided tour.
     // It shares the Botanical Garden region gate because the two sites touch;
     // distant boots compile it after reveal so it never delays first play.
     const buildTeaGarden = () => {
@@ -1451,7 +1451,7 @@ async function boot() {
       const site = buildTeaGarden();
       scene.add(site.group);
       site.update(0, 0, player.renderPosition, camera);
-      if (autoStartHaruTour) site.interact(player.position, player.mode);
+      if (autoStartIrohTour) site.interact(player.position, player.mode);
       teaGardenReady = site.ready;
     } else {
       void revealedPromise.then(async () => {
@@ -1465,7 +1465,7 @@ async function boot() {
         }
         scene.add(site.group);
         site.update(0, 0, player.renderPosition, camera);
-        if (autoStartHaruTour) site.interact(player.position, player.mode);
+        if (autoStartIrohTour) site.interact(player.position, player.mode);
       }).catch((err) => {
         console.warn("[tea-garden] deferred construction failed:", err);
       });
@@ -2463,6 +2463,10 @@ async function boot() {
       chase.indoor = citygenRing.current?.isPlayerInside() ?? false; // blend into the indoor eye rig
       chase.update(frameDt, player, input);
     }
+    // World-anchored dialogue must project after the chase/orbit/cinematic has
+    // committed this frame's final camera pose; projecting during simulation
+    // left Iroh's card one camera frame behind and visibly jittering.
+    japaneseTeaGarden?.project(camera);
     sky.update(elapsed, camera.position);
     water.update(elapsed, camera.position, player.renderPosition);
     oceanBeachWaves.update(elapsed, player.renderPosition);
