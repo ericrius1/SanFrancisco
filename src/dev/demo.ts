@@ -76,11 +76,13 @@ export type Demo = {
 import { buskersCinematic } from "./demos/buskersCinematic";
 import { hoverboardCinematic } from "./demos/hoverboardCinematic";
 import { dogParkCinematic } from "./demos/dogParkCinematic";
+import { palaceShowcase } from "./demos/palaceShowcase";
 
 const DEMOS: Record<string, Demo> = {
   [buskersCinematic.name]: buskersCinematic,
   [hoverboardCinematic.name]: hoverboardCinematic,
-  [dogParkCinematic.name]: dogParkCinematic
+  [dogParkCinematic.name]: dogParkCinematic,
+  [palaceShowcase.name]: palaceShowcase
 };
 
 export function runDemo(name: string, ctx: DemoContext) {

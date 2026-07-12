@@ -17,7 +17,6 @@ import {
 import { waterHeight, type WorldMap } from "../world/heightmap";
 import { chopZoneMask, swellBase, swellChop } from "../world/tslUtil";
 import { LIGHT_SCALE } from "../config";
-import { applyMaterialPolicy, RenderBand, tagTransparency } from "../render/transparency";
 
 type N = any;
 
@@ -59,7 +58,11 @@ export class WakeRipples {
     this.#progAttr = new THREE.InstancedBufferAttribute(new Float32Array(POOL).fill(1), 1);
     this.#progAttr.setUsage(THREE.DynamicDrawUsage);
 
-    const mat = applyMaterialPolicy(new THREE.MeshBasicNodeMaterial(), "additiveWorld");
+    const mat = new THREE.MeshBasicNodeMaterial({
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false
+    });
     const prog = varying(instancedBufferAttribute(this.#progAttr) as N) as N;
 
     // radial distance across the quad: 0 centre, 1 at the edge
@@ -87,7 +90,7 @@ export class WakeRipples {
     this.#mesh = new THREE.InstancedMesh(geo, mat, POOL);
     this.#mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.#mesh.frustumCulled = false;
-    tagTransparency(this.#mesh, { profile: "additiveWorld", renderBand: RenderBand.WATER_EFFECTS });
+    this.#mesh.renderOrder = 12;
     const zero = new THREE.Matrix4().makeScale(0, 0, 0);
     for (let i = 0; i < POOL; i++) {
       this.#mesh.setMatrixAt(i, zero);
@@ -244,7 +247,11 @@ class WakeRibbon {
     geo.setDrawRange(0, 0);
     this.#geo = geo;
 
-    const mat = applyMaterialPolicy(new THREE.MeshBasicNodeMaterial(), "additiveWorld");
+    const mat = new THREE.MeshBasicNodeMaterial({
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false
+    });
     const t = this.#uTime;
     const aSide = attribute("aSide", "float") as N;
     const aData = attribute("aData", "vec3") as N;
@@ -282,7 +289,7 @@ class WakeRibbon {
 
     this.mesh = new THREE.Mesh(geo, mat);
     this.mesh.frustumCulled = false;
-    tagTransparency(this.mesh, { profile: "additiveWorld", renderBand: RenderBand.WATER_EFFECTS });
+    this.mesh.renderOrder = 12;
     this.mesh.visible = false; // hidden until the strip has ≥2 points to draw
     scene.add(this.mesh);
   }
@@ -396,7 +403,11 @@ export class BoardWake {
     this.#shapeAttr = new THREE.InstancedBufferAttribute(new Float32Array(BW_POOL * 3), 3);
     this.#shapeAttr.setUsage(THREE.DynamicDrawUsage);
 
-    const mat = applyMaterialPolicy(new THREE.MeshBasicNodeMaterial(), "additiveWorld");
+    const mat = new THREE.MeshBasicNodeMaterial({
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false
+    });
     const prog = varying(instancedBufferAttribute(this.#progAttr) as N) as N;
     const shape = varying(instancedBufferAttribute(this.#shapeAttr) as N) as N;
     const u = uv() as N;
@@ -421,7 +432,7 @@ export class BoardWake {
     this.#mesh = new THREE.InstancedMesh(geo, mat, BW_POOL);
     this.#mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.#mesh.frustumCulled = false;
-    tagTransparency(this.#mesh, { profile: "additiveWorld", renderBand: RenderBand.WATER_EFFECTS });
+    this.#mesh.renderOrder = 12;
     const zero = new THREE.Matrix4().makeScale(0, 0, 0);
     for (let i = 0; i < BW_POOL; i++) {
       this.#mesh.setMatrixAt(i, zero);

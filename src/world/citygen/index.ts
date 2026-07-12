@@ -63,7 +63,11 @@ export interface CityGenCtx {
   scene: THREE.Object3D;
   physics: { world: unknown };
   map: { groundHeight(x: number, z: number): number; surfaceType?(x: number, z: number): number };
-  tiles: { suppressBuilding(key: string, i: number): void; unsuppressBuilding(key: string, i: number): void };
+  tiles: {
+    suppressBuilding(key: string, i: number): void;
+    unsuppressBuilding(key: string, i: number): void;
+    isBuildingSuppressed?(key: string, i: number): boolean;
+  };
 }
 
 /** Streaming host — STUB (Phases 3–5). Present so main.ts can wire the module

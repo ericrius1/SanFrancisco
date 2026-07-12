@@ -32,7 +32,7 @@ const LOOK_Y = 720;
 const PAD_BUTTONS: Record<number, string> = {
   0: "Space", //     A: jump / ollie / drift / air brake / hover
   1: "KeyE", //      B: enter-exit vehicle
-  3: "KeyR", //      Y: respawn
+  // 3 Y: unbound
   4: "KeyQ", //      LB: drone down / bird twirl left
   // 5 RB: bird twirl right — routed via pad axis (not KeyE, which exits)
   7: "ShiftLeft", // RT: boost / run / tuck

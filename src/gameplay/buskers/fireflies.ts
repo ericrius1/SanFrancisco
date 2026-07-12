@@ -1,6 +1,5 @@
 import * as THREE from "three/webgpu";
 import { LIGHT_SCALE } from "../../config";
-import { applyMaterialPolicy, RenderBand, tagTransparency } from "../../render/transparency";
 import { BUSKER_FIREFLY_TUNING } from "./tuning";
 
 /**
@@ -89,19 +88,18 @@ export class BuskerFireflies {
       const material = new THREE.SpriteMaterial({
         map: this.#texture,
         color: new THREE.Color(0xf2ff7a).multiplyScalar(LIGHT_SCALE * 0.78),
-        opacity: 0
+        opacity: 0,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false
       });
-      applyMaterialPolicy(material, "additiveWorld");
       material.fog = false;
 
       const sprite = new THREE.Sprite(material);
       sprite.name = `busker-firefly-${i + 1}`;
       sprite.frustumCulled = false;
-      tagTransparency(sprite, {
-        profile: "additiveWorld",
-        renderBand: RenderBand.WORLD_ADDITIVE_FRONT,
-        ink: false
-      });
+      sprite.renderOrder = 91;
+      sprite.layers.set(31); // beauty-only: keep glow quads out of the ink prepass
       this.group.add(sprite);
       this.#sprites.push(sprite);
       this.#materials.push(material);

@@ -311,14 +311,12 @@ export class HUD {
 
     const extraRows = (pad
       ? [
-          { c: ["Y"], label: "respawn" },
           { c: ["R3"], label: "camera" },
           { c: ["▲"], label: "fireworks" },
           { c: ["Start"], label: "pause" },
           { c: ["Back"], label: "immersive" }
         ]
       : [
-          { c: ["R"], label: "respawn" },
           { c: ["B"], label: "fireworks" },
           { c: ["Z"], label: "hold — time of day" },
           { c: ["P"], label: "pause" },

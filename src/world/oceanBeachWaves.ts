@@ -14,10 +14,18 @@ export const OCEAN_BEACH_SURF = {
   centerZ: 3100,
   entryX: -6070,
   entryZ: 3370,
-  spacing: 112,
+  // Bigger, better-spaced sets for a Kelly-Slater-style peeling wall: crests sit
+  // ~150 m apart (one clean wave at a time, not a busy ripple field) and stand
+  // up head-high-plus on the shoreward face.
+  spacing: 150,
   speed: 9.2,
-  amplitude: 3.7,
-  offshoreCrest: -6310
+  amplitude: 4.6,
+  offshoreCrest: -6310,
+  // Shoaling profile widths (metres): a broad offshore shoulder feeds a steep,
+  // narrow shoreward face. Shared by the CPU sampler AND the GPU twin
+  // (tslUtil.oceanBeachSurfField) — change here, both follow.
+  shoulderWidth: 29,
+  faceWidth: 7.5
 } as const;
 
 const TAU = Math.PI * 2;
@@ -92,7 +100,7 @@ export function oceanBeachWaveHeight(x: number, z: number, time: number): number
   if (mask <= 0.0001) return 0;
   const { slot, distance: d } = nearestOceanBeachCrest(x, z, time);
   const a = waveAmplitude(z, time, slot);
-  const width = d < 0 ? 29 : 8.5;
+  const width = d < 0 ? OCEAN_BEACH_SURF.shoulderWidth : OCEAN_BEACH_SURF.faceWidth;
   const ridge = Math.exp(-0.5 * (d / width) ** 2);
   const trough = Math.exp(-0.5 * ((d - 22) / 11) ** 2) * 0.24;
   return (ridge - trough) * a * mask;

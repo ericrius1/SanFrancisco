@@ -843,6 +843,13 @@ export class TileStreamer {
     this.onBuildingAlive(key, index, false);
   }
 
+  /** True when an authored landmark/site has permanently claimed this OSM
+   *  footprint. Streaming replacement systems must leave these entries alone:
+   *  reviving one would draw a generated house through the custom landmark. */
+  isBuildingSuppressed(key: string, index: number): boolean {
+    return this.#suppressed.has(`${key}:${index}`);
+  }
+
   /** Hide only the baked MESH (alive flag → 1); the baked collider stays live so
    *  physics still sees the real footprint. Survives tile reloads. */
   suppressBuildingMesh(key: string, index: number) {

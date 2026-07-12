@@ -1,7 +1,6 @@
 import * as THREE from "three/webgpu";
 import { uniform, uv, smoothstep, sin, cos, float, vec2, vec3, mix } from "three/tsl";
 import { LIGHT_SCALE } from "../config";
-import { applyMaterialPolicy, RenderBand, tagTransparency } from "../render/transparency";
 
 type N = any;
 
@@ -69,8 +68,10 @@ export class WorldCursor {
     const col = body.add(warm.mul(parts).mul(1.5));
     mat.colorNode = col.mul(LIGHT_SCALE * 0.7);
 
-    applyMaterialPolicy(mat, "additiveWorld");
-    // additiveWorld depth-tests against the scene, so the marker rests on the
+    mat.transparent = true;
+    mat.blending = THREE.AdditiveBlending;
+    mat.depthWrite = false;
+    // Depth-testing lets the marker rest on the
     // surface it points at and remains occluded by foreground geometry.
     mat.side = THREE.DoubleSide;
     mat.fog = false;
@@ -78,7 +79,7 @@ export class WorldCursor {
 
     this.#mesh = new THREE.Mesh(geo, mat);
     this.#mesh.frustumCulled = false;
-    tagTransparency(this.#mesh, { profile: "additiveWorld", renderBand: RenderBand.MARKERS });
+    this.#mesh.renderOrder = 999;
     this.#mesh.visible = false;
     scene.add(this.#mesh);
   }

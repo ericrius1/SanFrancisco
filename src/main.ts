@@ -58,7 +58,6 @@ import { VehicleAudio } from "./fx/vehicleAudio";
 import { SwimAudio } from "./fx/swimAudio";
 import { createNatureSoundscape, DogParkAudio } from "./audio";
 import { AbandonedMounts } from "./gameplay/abandonedMounts";
-import { RocketRiders, type LauncherRig } from "./gameplay/launchers";
 import type { Creatures } from "./gameplay/creatures";
 import type { Forest, AnimalKind } from "./gameplay/forest";
 import type { GrassDisplacer } from "./world/garden";
@@ -156,7 +155,7 @@ async function boot() {
   const splashes = new WaterSplashes(scene, wake, map);
   const fireworks = new Fireworks(renderer, scene, map);
 
-  // left-click toys — the toolbar swaps between them (arrow keys while UI is open)
+  // Space / pad-X toys — ↑/↓ pick the toolbar row, ←/→ cycle within it
   const graffiti = new Graffiti(scene);
   const paintballs = new Paintballs(scene);
   const paintSkins = new PaintSkins();
@@ -247,7 +246,6 @@ async function boot() {
   const surfExperience = new SurfExperience(vehicleAudio);
   const birdTrails = new BirdTrails(scene, player.meshes.bird);
   const droneFireworkMounts = player.meshes.drone.userData.fireworkMounts as THREE.Object3D[] | undefined;
-  const boatLaunchers = player.meshes.speedboat.userData.launcherRig as LauncherRig | undefined;
   const startMode = spawnPoint?.mode ?? START.mode;
   if (startMode !== "walk" && ALL_MODES.includes(startMode)) player.trySwitch(startMode);
   player.onModeChange = (mode) => {
@@ -312,7 +310,6 @@ async function boot() {
   const exitToWalk = () => embodiments.exitToWalk();
   const dropCurrentDriveMount = () => embodiments.dropCurrentDriveMount();
   let cameraMode = false;
-  const rocketRiders = new RocketRiders(scene, map);
   // scatter boardable boats around the bay — walk/swim up + E to drive one off.
   // persistent: they wait at their spot no matter how far you roam.
   const scatterBoat = (mode: "boat" | "speedboat", x: number, z: number, heading: number) => {
@@ -1850,8 +1847,9 @@ async function boot() {
     elapsed += frameDt;
     accumulator += frameDt;
 
-    // Plain number keys switch travel modes; Ctrl+number picks click-tools;
-    // Shift+number still teleports to player slots.
+    // Plain number keys switch travel modes; Ctrl+number still jumps click-tools;
+    // Shift+number teleports to player slots. Arrows: ↑/↓ between toolbar rows,
+    // ←/→ cycle the focused row (vehicles / tools / paint swatches).
     const numberPressed = (i: number) => input.pressed(`Digit${i}`) || input.pressed(`Numpad${i}`);
     const ctrlNumberPress = (i: number) => input.ctrlPressed(`Digit${i}`) || input.ctrlPressed(`Numpad${i}`);
     const shiftedNumberPress = (i: number) => input.shiftedPress(`Digit${i}`) || input.shiftedPress(`Numpad${i}`);
@@ -1861,7 +1859,10 @@ async function boot() {
       if (golf?.capturesDigits) break; // golf swing UI owns the number row (club picks)
       if (ctrlNumberPress(i)) {
         const nextTool = TOOL_ORDER[i - 1];
-        if (nextTool) setTool(nextTool);
+        if (nextTool) {
+          toolbar.focusTools();
+          setTool(nextTool);
+        }
         continue;
       }
       // Snapshot Shift from the digit's keydown event; a stale held-key entry
@@ -1873,18 +1874,29 @@ async function boot() {
         continue;
       }
       const nextMode = MENU_MODES[i - 1];
-      if (nextMode) switchMode(nextMode);
+      if (nextMode) {
+        toolbar.focusVehicles();
+        switchMode(nextMode);
+      }
     }
-    const keyboardCycle =
-      ((input.pressed("ArrowRight") && !input.altPressed("ArrowRight")) || (input.pressed("ArrowDown") && !input.altPressed("ArrowDown")) ? 1 : 0) -
-      ((input.pressed("ArrowLeft") && !input.altPressed("ArrowLeft")) || (input.pressed("ArrowUp") && !input.altPressed("ArrowUp")) ? 1 : 0);
-    const cycle = keyboardCycle + (input.pressed("PadModeNext") ? 1 : 0) - (input.pressed("PadModePrev") ? 1 : 0);
-    if (cycle && !playingPickleball) {
+    if (!playingPickleball) {
+      const dx =
+        (input.pressed("ArrowRight") && !input.altPressed("ArrowRight") ? 1 : 0) -
+        (input.pressed("ArrowLeft") && !input.altPressed("ArrowLeft") ? 1 : 0);
+      const dy =
+        (input.pressed("ArrowDown") ? 1 : 0) - (input.pressed("ArrowUp") ? 1 : 0);
+      if (dx || dy) toolbar.navigate(dx, dy);
+    }
+    const padCycle = (input.pressed("PadModeNext") ? 1 : 0) - (input.pressed("PadModePrev") ? 1 : 0);
+    if (padCycle && !playingPickleball) {
       const cycleOrder = MENU_MODES;
       const idx = cycleOrder.indexOf(player.mode);
       const from = idx >= 0 ? idx : 0;
-      const step = cycle < 0 ? -1 : 1;
-      if (cycleOrder.length) switchMode(cycleOrder[(from + step + cycleOrder.length) % cycleOrder.length]);
+      const step = padCycle < 0 ? -1 : 1;
+      if (cycleOrder.length) {
+        toolbar.focusVehicles();
+        switchMode(cycleOrder[(from + step + cycleOrder.length) % cycleOrder.length]);
+      }
     }
     if (!playingPickleball && input.altPressed("ArrowLeft")) applyPlaceHistory(-1);
     if (!playingPickleball && input.altPressed("ArrowRight")) applyPlaceHistory(1);
@@ -1950,14 +1962,6 @@ async function boot() {
       }
     }
 
-    if (input.pressed("KeyR")) {
-      releasePickleballForNavigation();
-      leaveRide();
-      const wasSurfing = player.mode === "surf";
-      player.respawn(spawn);
-      hud.message(wasSurfing ? "Back on the next set" : "Back at the start");
-    }
-
     // Q: busker trio cycles to the next song in its songbook and cues it
     // 2s before the first note (no teleport)
     if (input.pressed("KeyQ")) {
@@ -1966,7 +1970,7 @@ async function boot() {
     }
 
     // ".": factory reset for tweaks — every tweakpane value back to its
-    // source-code default, saved tweaks wiped. Player stays put ("R" respawns).
+    // source-code default, saved tweaks wiped. Player stays put.
     if (input.pressed("Period")) {
       resetAllTweaks();
       resetCrownTweaks();
@@ -2044,25 +2048,6 @@ async function boot() {
         fireCooldown = 0.22;
         fireworks.launchDroneSalvo(droneFireworkMounts ?? [], aim, player.velocity);
         chase.shake(0.08);
-      }
-    } else if (player.mode === "speedboat") {
-      // freedom boat: one press launches the whole cockpit rocket battery forward
-      // over the water — red/white/blue barrage from the cockpit rocket battery
-      if (!input.suspended && input.firePressed && fireCooldown <= 0 && boatLaunchers) {
-        chase.lookDir(aim);
-        fireCooldown = 0.6;
-        const boatFwd = new THREE.Vector3(0, 0, -1).applyQuaternion(player.quaternion);
-        boatFwd.y = 0;
-        boatLaunchers.fireAll({
-          scene,
-          fireworks,
-          rocketRiders,
-          map,
-          playerPos: player.position,
-          forward: boatFwd,
-          hostVelocity: player.velocity
-        });
-        chase.shake(0.18);
       }
     } else if (input.firing && embodiments.currentAnimal === "raccoon") {
       // mounted raccoon: the click-tools stand down, the gummy cannon speaks
@@ -2203,8 +2188,6 @@ async function boot() {
     trafficLights?.update(player.position, performance.now() / 1000);
     streetLamps?.update(player.position);
     abandonedMounts.update(frameDt, player.position);
-    rocketRiders.update(frameDt, player.position); // the launched guitarists live their own lives
-    if (player.mode === "speedboat") boatLaunchers?.update(frameDt); // guitarist jam + rocket reload
     creatures?.update(elapsed, camera.position); // gulls live at altitude — never gated
     forest?.update(frameDt, camera.position);
     // Night ball glow amount from the current sun elevation (park / fetch / held /
@@ -2532,7 +2515,7 @@ async function boot() {
       // deferred render warmup runs, tick() early-returns without rendering, so
       // screenshots would capture a stale boot-pose frame no matter what the
       // camera was set to.
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, goldenGateTennis, pickleball: pickleballController.game, pickleballAmbient: pickleballController.ambient, pickleballAudio: pickleballController.audio, pickleballUI: pickleballController.ui, pickleballController, coronaHeights, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, rocketRiders, boatLaunchers, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, siteGate,
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, goldenGateTennis, pickleball: pickleballController.game, pickleballAmbient: pickleballController.ambient, pickleballAudio: pickleballController.audio, pickleballUI: pickleballController.ui, pickleballController, coronaHeights, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, siteGate,
         TSL,
         renderIdle: () => modulesReady && !lateRenderWarmupActive }
     });
