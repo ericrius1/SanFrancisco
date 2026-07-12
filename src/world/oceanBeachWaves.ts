@@ -19,7 +19,7 @@ export const OCEAN_BEACH_SURF = {
   // up head-high-plus on the shoreward face.
   spacing: 150,
   speed: 9.2,
-  amplitude: 5.4,
+  amplitude: 8.5,
   offshoreCrest: -6310,
   // Shoaling profile widths (metres): a broad offshore shoulder feeds a steep,
   // narrow shoreward face. Shared by the CPU sampler AND the GPU twin

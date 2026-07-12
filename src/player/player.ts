@@ -165,6 +165,7 @@ export class Player {
   // what the player is currently driving; swapped when mounting a ridden animal
   driveSpec: DriveSpec = DEFAULT_DRIVE_SPEC;
   swimEnter = false;
+  #carryBoard!: THREE.Group; // surfboard tucked under the arm while on the beach
   #defaultDriveMesh!: THREE.Group;
   #defaultDroneMesh!: THREE.Group;
   #broomRigAttached = false;
@@ -240,6 +241,14 @@ export class Player {
     this.#surfRig.group.rotation.y = 1.05;
     this.#surfRig.group.position.y = 0.93;
     this.meshes.surf.add(this.#surfRig.group);
+    // A surfboard tucked upright under the right arm, shown on foot at the beach
+    // so you arrive "holding your board, ready to paddle out".
+    this.#carryBoard = buildSurfboardMesh();
+    this.#carryBoard.scale.setScalar(0.82);
+    this.#carryBoard.position.set(0.62, 1.0, -0.05);
+    this.#carryBoard.rotation.set(0.05, 0, Math.PI * 0.52);
+    this.#carryBoard.visible = false;
+    this.meshes.walk.add(this.#carryBoard);
     this.#scooterRig = buildRig(this.#avatar);
     const scooterCockpit = this.meshes.scooter.userData.cockpit as Cockpit;
     this.#scooterRig.group.position.set(...scooterCockpit.seat);
@@ -609,6 +618,11 @@ export class Player {
     setHandPose(this.#walkRig, "R", held ? 1 : 0);
   }
 
+  /** Carry a surfboard under the arm while on foot at the beach (visual only). */
+  setCarryingBoard(on: boolean) {
+    this.#carryBoard.visible = on && this.mode === "walk";
+  }
+
   /** Windup→release arm swing, `t` 0..1 (0 = idle, adds nothing). #animate lays
    *  the overlay on top of the base walk/idle pose while t > 0. */
   setThrowAnim(t: number) {
@@ -976,9 +990,14 @@ export class Player {
       animateBoard(this.meshes.board, dt, this.#animT, board.horizontalSpeed, board.boosting);
     } else if (this.mode === "surf") {
       const surf = this.#modes.surf;
-      const crouch = Math.min(1, this.speed / SURF_TUNING.values.maxSpeed + Math.abs(surf.lean) * 0.5);
+      const paddling = surf.telemetry.phase === "paddle";
+      const crouch = paddling
+        ? 1 // hunched low over the deck while paddling
+        : Math.min(1, this.speed / SURF_TUNING.values.maxTrim + Math.abs(surf.lean) * 0.5);
       poseRide(this.#surfRig, surf.lean, crouch, !surf.grounded, this.#animT);
       this.#surfRig.group.rotation.z = surf.lean * 0.34;
+      // lean forward onto the board while paddling out
+      this.#surfRig.group.rotation.x = paddling ? 0.6 : 0;
     } else if (this.mode === "scooter") {
       const scooter = this.#modes.scooter;
       const airborne = scooter.jumpDebug.airborne;

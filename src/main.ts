@@ -910,6 +910,10 @@ async function boot() {
   if (archery) {
     minimap.addLandmark(ARCHERY_CENTER.x, ARCHERY_CENTER.z, "Archery Range");
   }
+  // Ocean Beach surf break. The pin sits just inside the waterline so a teleport
+  // (or a shared ?j= link) drops you on the sand at the shore, facing the swell,
+  // board in hand — ready to press E and paddle out.
+  minimap.addLandmark(OCEAN_BEACH_SURF.maxX - 26, OCEAN_BEACH_SURF.entryZ, "Ocean Beach · Surf");
   const playerLocator = new PlayerLocator();
   const navigation = new NavigationController({
     player,
@@ -1931,12 +1935,12 @@ async function boot() {
       const nearOceanBeach =
         player.mode === "walk" &&
         player.position.x > OCEAN_BEACH_SURF.minX - 180 &&
-        player.position.x < OCEAN_BEACH_SURF.maxX + 280 &&
+        player.position.x < OCEAN_BEACH_SURF.maxX + 60 && // must be at the waterline, not inland
         player.position.z > OCEAN_BEACH_SURF.minZ - 120 &&
         player.position.z < OCEAN_BEACH_SURF.maxZ + 120;
       if (nearOceanBeach) {
         player.trySwitch("surf");
-        hud.message("Paddle out — chase the green face!", 3);
+        hud.message("Paddle out (W) — carve the green face with A/D, Space off the lip!", 4);
       } else if (!fetchBall?.tryPickup(player.position)) {
         const drv = remotes.nearestDriver(player.position, 5.5);
         const animal = drv ? null : forest?.nearest(player.position, 5);
@@ -2338,6 +2342,19 @@ async function boot() {
     birdTrails.update(elapsed, player);
     splashes.update(frameDt, elapsed, player);
     surfExperience.update(frameDt, player.mode, player.surfTelemetry);
+    // Ride ends on the sand: stand up, board in hand (you can only surf in the water).
+    if (player.mode === "surf" && player.surfTelemetry.beached) {
+      player.trySwitch("walk");
+      hud.message("Back on the beach — E to paddle out again", 2.4);
+    }
+    // On foot at Ocean Beach you carry your board, ready to paddle out.
+    player.setCarryingBoard(
+      player.mode === "walk" &&
+        player.position.x > OCEAN_BEACH_SURF.minX - 40 &&
+        player.position.x < OCEAN_BEACH_SURF.maxX + 110 &&
+        player.position.z > OCEAN_BEACH_SURF.minZ - 60 &&
+        player.position.z < OCEAN_BEACH_SURF.maxZ + 60
+    );
     vehicleAudio.update(frameDt, {
       mode: player.mode,
       speed: player.speed,

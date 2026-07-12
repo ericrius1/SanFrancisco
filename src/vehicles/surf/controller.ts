@@ -6,16 +6,18 @@ import { waterHeight } from "../../world/heightmap";
 import {
   OCEAN_BEACH_SURF,
   oceanBeachMask,
+  oceanBeachCrestX,
+  nearestOceanBeachCrest,
   sampleOceanBeachWave
 } from "../../world/oceanBeachWaves";
 import { SURF_TUNING } from "./tuning";
 
-const JUMP_BUFFER = 0.22;
 const V = {
   fwd: new THREE.Vector3(),
-  right: new THREE.Vector3(),
   euler: new THREE.Euler(0, 0, 0, "YXZ")
 };
+
+export type SurfPhase = "paddle" | "ride" | "wipeout";
 
 export type SurfTelemetry = {
   speed: number;
@@ -29,40 +31,54 @@ export type SurfTelemetry = {
   landingSerial: number;
   wipeoutSerial: number;
   inBreak: boolean;
+  /** which phase of the ride we're in — drives the HUD + pose */
+  phase: SurfPhase;
+  /** true the moment the board runs up onto dry sand; main.ts stands you up */
+  beached: boolean;
+  /** bumps each time a wave is caught (paddle → pop-up) for HUD/audio cues */
+  caughtSerial: number;
 };
 
-/** Authored arcade surf physics: fixed-step rail motion over the analytic wave face. */
+/**
+ * Arcade surf, Kelly-Slater-Pro-Surfer style. The board is kinematic and rides
+ * an analytic Pacific wave face:
+ *  · paddle — prone; W paddles, A/D steer. Drift into a steep crest to pop up.
+ *  · ride   — pinned to the moving face. A/D carves up (lip) / down (shoulder),
+ *             W pumps for line speed, Shift tucks, Space launches off the lip.
+ * X is slaved to the crest so the wave can never sweep you onto the sand; a
+ * closed-out or missed wave just drops you back to paddling in the lineup.
+ */
 export class SurfController implements ModeController {
   readonly spawnLift = 0;
-  yaw = Math.PI;
+  yaw = Math.PI / 2; // face offshore to paddle out
   lean = 0;
   pitch = 0;
   grounded = true;
   telemetry: SurfTelemetry = {
-    speed: 0,
-    face: 0,
-    lip: 0,
-    lean: 0,
-    grounded: true,
-    airborne: false,
-    airTime: 0,
-    landedAirTime: 0,
-    landingSerial: 0,
-    wipeoutSerial: 0,
-    inBreak: true
+    speed: 0, face: 0, lip: 0, lean: 0,
+    grounded: true, airborne: false, airTime: 0,
+    landedAirTime: 0, landingSerial: 0, wipeoutSerial: 0,
+    inBreak: true, phase: "paddle", beached: false, caughtSerial: 0
   };
-  #jumpBuffer = 0;
-  #jumpLock = 0;
-  #airTime = 0;
+
+  #phase: SurfPhase = "paddle";
+  #paddleSpeed = 0;
+  #ridingSlot = 0;
+  #peelDir = -1; // +1 south / −1 north along the beach
+  #faceT = 0.4; // 0 shoulder … 1 lip
+  #trim = 0; // current down-the-line speed
   #airborne = false;
+  #airTime = 0;
+  #jumpBuffer = 0;
   #wipeoutTimer = 0;
+  #popup = 0; // brief pop-up animation lockout
 
   spawnBody(ctx: PlayerCtx, facing: number): number {
     const p = ctx.position;
     const w = ctx.physics.world;
-    const water = waterHeight(p.x, p.z, ctx.time);
-    if (oceanBeachMask(p.x, p.z) < 0.03 || p.y < water - 1) this.#placeOnFace(ctx);
-    else p.y = Math.max(p.y, water + SURF_TUNING.values.railHeight);
+    // Drop into the water. If we're on sand / outside the break, wade west into it.
+    if (oceanBeachMask(p.x, p.z) < 0.03) this.#toLineup(ctx, false);
+    else p.y = Math.max(p.y, waterHeight(p.x, p.z, ctx.time) + SURF_TUNING.values.proneHeight);
     ctx.body = w.createBox({
       type: BodyType.Dynamic,
       position: [p.x, p.y, p.z],
@@ -76,184 +92,277 @@ export class SurfController implements ModeController {
     this.lean = 0;
     this.pitch = 0;
     this.grounded = true;
-    this.#jumpBuffer = 0;
-    this.#jumpLock = 0;
-    this.#airTime = 0;
+    this.#phase = "paddle";
+    this.#paddleSpeed = 0;
     this.#airborne = false;
+    this.#airTime = 0;
+    this.#jumpBuffer = 0;
     this.#wipeoutTimer = 0;
+    this.#popup = 0;
     this.telemetry.landedAirTime = 0;
+    this.telemetry.beached = false;
     return p.y;
   }
 
   enter(ctx: PlayerCtx) {
     const b = OCEAN_BEACH_SURF;
     const nearBreak =
-      ctx.position.x > b.minX - 350 &&
-      ctx.position.x < b.maxX + 450 &&
+      ctx.position.x > b.minX - 400 &&
+      ctx.position.x < b.maxX + 500 &&
       ctx.position.z > b.minZ - 400 &&
       ctx.position.z < b.maxZ + 400;
-    if (!nearBreak) ctx.position.set(b.entryX, 0, b.entryZ);
-    const face = sampleOceanBeachWave(ctx.position.x, ctx.position.z, ctx.time);
-    ctx.position.x = face.crestX + 4;
-    ctx.position.y = waterHeight(ctx.position.x, ctx.position.z, ctx.time) + SURF_TUNING.values.railHeight;
-    // Face north for the first clean line; A/D can immediately choose either shoulder.
-    return Math.PI;
+    if (!nearBreak) {
+      ctx.position.set(b.entryX, 0, b.entryZ);
+    }
+    // Start prone in the water; nudge west off the sand so you paddle OUT.
+    if (oceanBeachMask(ctx.position.x, ctx.position.z) < 0.05 || ctx.position.x > b.maxX - 40) {
+      this.#toLineup(ctx, false);
+    } else {
+      ctx.position.y = waterHeight(ctx.position.x, ctx.position.z, ctx.time) + SURF_TUNING.values.proneHeight;
+    }
+    this.#phase = "paddle";
+    return Math.PI / 2; // face offshore to paddle out
   }
 
   requestJump() {
-    this.#jumpBuffer = JUMP_BUFFER;
+    this.#jumpBuffer = 0.2;
   }
 
   update(ctx: PlayerCtx, dt: number, input: Input, frame: ModeFrame) {
-    const w = ctx.physics.world;
-    const tb = SURF_TUNING.values;
-    const throttle = input.axis("KeyS", "KeyW");
-    const steer = input.axis("KeyD", "KeyA");
+    const throttle = input.axis("KeyS", "KeyW"); // +1 forward (W)
+    const steer = input.axis("KeyA", "KeyD"); // +1 right (D)
     const tuck = input.down("ShiftLeft");
     if (!input.suspended && input.pressed("Space")) this.requestJump();
     this.#jumpBuffer = Math.max(0, this.#jumpBuffer - dt);
-    this.#jumpLock = Math.max(0, this.#jumpLock - dt);
+    this.#popup = Math.max(0, this.#popup - dt);
 
+    if (this.#wipeoutTimer > 0) return this.#updateWipeout(ctx, dt, frame);
+    if (this.#phase === "ride") return this.#updateRide(ctx, dt, throttle, steer, tuck, frame);
+    return this.#updatePaddle(ctx, dt, throttle, steer, frame);
+  }
+
+  // --- paddle -----------------------------------------------------------------
+
+  #updatePaddle(ctx: PlayerCtx, dt: number, throttle: number, steer: number, frame: ModeFrame) {
+    const tb = SURF_TUNING.values;
     const p = ctx.position;
-    const sample = sampleOceanBeachWave(p.x, p.z, ctx.time);
-    const baseWater = waterHeight(p.x, p.z, ctx.time) - sample.height;
-    const surface = baseWater + sample.height;
-    const rideY = surface + tb.railHeight;
-    const heightAbove = p.y - rideY;
-    const wasGrounded = this.grounded;
-    if (this.#airborne && this.#jumpLock <= 0 && heightAbove < 0.62 && frame.v.linear[1] < 3) {
-      this.#airborne = false;
-    }
-    // A moving analytic face is code-owned footing: losing a metre to one
-    // coarse rendered vertex must not turn into an endless accidental aerial.
-    // Only an explicit launch (or wipeout) enters the airborne state.
-    this.grounded = !this.#airborne;
+    const w = ctx.physics.world;
 
-    if (this.#wipeoutTimer > 0) {
-      this.#wipeoutTimer -= dt;
-      w.setBodyVelocity(ctx.body, [3.5, -2.2, 0], [0, 0, 0]);
-      if (this.#wipeoutTimer <= 0) {
-        this.#placeOnFace(ctx);
-        this.yaw = Math.PI;
-        this.#airborne = false;
-        this.grounded = true;
-        this.#airTime = 0;
-        w.setBodyTransform(ctx.body, [p.x, p.y, p.z], [0, 1, 0, 0]);
-        w.setBodyVelocity(ctx.body, [0, 0, 11], [0, 0, 0]);
-      }
-      this.#syncTelemetry(frame, sample, false);
-      return;
-    }
+    this.yaw += steer * tb.paddleTurn * dt;
+    this.#paddleSpeed += (Math.max(0, throttle) * tb.paddleSpeed - this.#paddleSpeed) * Math.min(1, dt * 3);
+    if (throttle < 0) this.#paddleSpeed = Math.max(0, this.#paddleSpeed + throttle * tb.paddleAccel * dt);
 
     const fwd = V.fwd.set(-Math.sin(this.yaw), 0, -Math.cos(this.yaw));
-    const right = V.right.set(-fwd.z, 0, fwd.x);
-    let fwdSpeed = ctx.velocity.dot(fwd);
-    const latSpeed = ctx.velocity.dot(right);
-    const steerAuthority = 0.45 + Math.min(1, Math.abs(fwdSpeed) / 12) * 0.55;
-    const steerRate = steer * tb.steerRate * steerAuthority;
-    this.yaw += steerRate * dt;
+    let nx = p.x + fwd.x * this.#paddleSpeed * dt;
+    let nz = p.z + fwd.z * this.#paddleSpeed * dt;
 
-    const faceDrive = sample.face * tb.faceAccel;
-    const maxSpeed = tuck ? tb.tuckMaxSpeed : tb.maxSpeed;
-    const targetCruise = tb.cruiseSpeed + sample.face * 8 + (tuck ? 5 : 0);
-    fwdSpeed += (targetCruise - fwdSpeed) * Math.min(1, dt * (1.4 + sample.face * 1.8));
-    if (throttle > 0) fwdSpeed += tb.pumpAccel * throttle * dt;
-    if (throttle < 0) fwdSpeed += tb.pumpAccel * 1.35 * throttle * dt;
-    fwdSpeed += faceDrive * Math.max(0.2, -fwd.x * 0.7 + 0.3) * dt;
-    fwdSpeed *= Math.max(0, 1 - tb.coastDrag * dt);
-    fwdSpeed = THREE.MathUtils.clamp(fwdSpeed, 2.5, maxSpeed);
+    // stand up on dry sand (main.ts converts this to a walk with the board)
+    const beached = !ctx.map.isWater(nx, nz) && nx > OCEAN_BEACH_SURF.maxX - 24;
+    this.telemetry.beached = beached;
+    if (!beached) {
+      // keep the paddler inside the surf strip
+      nx = THREE.MathUtils.clamp(nx, OCEAN_BEACH_SURF.minX + 8, OCEAN_BEACH_SURF.maxX - 6);
+      nz = THREE.MathUtils.clamp(nz, OCEAN_BEACH_SURF.minZ + 12, OCEAN_BEACH_SURF.maxZ - 12);
+    }
+    p.x = nx;
+    p.z = nz;
+    const surface = waterHeight(p.x, p.z, ctx.time);
+    p.y = surface + tb.proneHeight;
 
-    // Breaking water carries the board east; aiming down the line converts most
-    // of that energy into speed while a bottom turn crosses the face shoreward.
-    const shorePush = sample.face * (OCEAN_BEACH_SURF.speed * 0.95 + sample.lip * 2.2);
-    let nvx = fwd.x * fwdSpeed + right.x * latSpeed * tb.grip + shorePush;
-    let nvz = fwd.z * fwdSpeed + right.z * latSpeed * tb.grip;
-    let vy = frame.v.linear[1];
-
-    if (this.#jumpBuffer > 0 && this.grounded && sample.face > 0.16) {
-      vy = tb.jump + sample.lip * 4.5;
-      this.#jumpBuffer = 0;
-      this.#jumpLock = 0.28;
-      this.#airborne = true;
-      this.grounded = false;
-      this.#airTime = 0;
-    } else if (this.grounded) {
-      const look = 1.25;
-      const next = sampleOceanBeachWave(p.x + nvx * dt * look, p.z + nvz * dt * look, ctx.time + dt * look);
-      const nextY = baseWater + next.height + tb.railHeight;
-      vy = THREE.MathUtils.clamp((nextY - p.y) * 10, -14, 18);
+    const sample = sampleOceanBeachWave(p.x, p.z, ctx.time);
+    // Catch: a steep crest reaching the board (crest at/just behind) lifts you in.
+    const crest = nearestOceanBeachCrest(p.x, p.z, ctx.time);
+    const d = crest.distance; // + shoreward of crest
+    if (!beached && sample.face > tb.catchFace && d > -2.5 && d < 7 && throttle > -0.2) {
+      this.#popUp(ctx, crest.slot, d);
     } else {
-      vy -= tb.gravity * dt;
-      this.#airTime += dt;
-      // A/D adds a readable aerial roll without destabilising the collider.
-      this.lean += steer * dt * 1.8;
-      // The crest moves ~9 m/s underneath the arc. At low frame rates the
-      // narrow height crossing can be skipped entirely; rejoin the analytic
-      // rail at the end of the authored air window instead of falling forever.
-      const maxAirTime = Number.isFinite(tb.maxAirTime) ? tb.maxAirTime : 1.65;
-      if (this.#airTime >= maxAirTime) {
-        p.y = rideY;
-        vy = 0;
-        this.#airborne = false;
-        this.grounded = true;
-      }
-    }
-
-    if (!wasGrounded && this.grounded) {
-      this.telemetry.landedAirTime = this.#airTime;
-      this.telemetry.landingSerial++;
-      if (Math.abs(frame.v.linear[1]) > 18 || Math.abs(this.lean) > 1.25) this.#wipeout(ctx);
-      this.#airTime = 0;
-    }
-
-    // Reaching dry sand or escaping the authored strip is the fail/retry path.
-    const inBreak = oceanBeachMask(p.x, p.z) > 0.03;
-    if ((!ctx.map.isWater(p.x, p.z) && p.x > OCEAN_BEACH_SURF.maxX - 30) || p.y < -3 || !inBreak) {
-      this.#wipeout(ctx);
-    }
-
-    const targetLean = THREE.MathUtils.clamp(steerRate * tb.carveLean, -0.95, 0.95);
-    this.lean += (targetLean - this.lean) * Math.min(1, dt * (this.grounded ? 7 : 2.2));
-    const pitchTarget = this.grounded
-      ? THREE.MathUtils.clamp(Math.atan(sample.slopeX) * -fwd.x * 0.8, -0.55, 0.55)
-      : THREE.MathUtils.clamp(vy * 0.025, -0.36, 0.42);
-    this.pitch += (pitchTarget - this.pitch) * Math.min(1, dt * 7);
-
-    if (this.#wipeoutTimer <= 0) {
-      w.setBodyVelocity(ctx.body, [nvx, vy, nvz], [0, 0, 0]);
+      this.pitch += (-0.28 - this.pitch) * Math.min(1, dt * 6); // prone nose-down
+      this.lean += (steer * 0.3 - this.lean) * Math.min(1, dt * 5);
       const q = ctx.quaternion.setFromEuler(V.euler.set(this.pitch, this.yaw, this.lean, "YXZ"));
+      w.setBodyVelocity(ctx.body, [fwd.x * this.#paddleSpeed, 0, fwd.z * this.#paddleSpeed], [0, 0, 0]);
       w.setBodyTransform(ctx.body, [p.x, p.y, p.z], [q.x, q.y, q.z, q.w]);
       ctx.heading = this.yaw + Math.PI;
     }
-    this.#syncTelemetry(frame, sample, inBreak);
+    this.grounded = true;
+    this.#airborne = false;
+    this.#syncTelemetry(frame, sample, true);
   }
+
+  #popUp(ctx: PlayerCtx, slot: number, crestDistance: number) {
+    const tb = SURF_TUNING.values;
+    this.#phase = "ride";
+    this.#ridingSlot = slot;
+    // map current crest distance → face position (base far, lip near)
+    this.#faceT = THREE.MathUtils.clamp((tb.baseOffset - crestDistance) / (tb.baseOffset - tb.lipOffset), 0.05, 0.9);
+    this.#trim = Math.max(tb.trimSpeed * 0.7, this.#paddleSpeed);
+    // peel toward the middle of the beach so the ride lasts
+    this.#peelDir = ctx.position.z > OCEAN_BEACH_SURF.centerZ ? -1 : 1;
+    this.#popup = 0.35;
+    this.#airborne = false;
+    this.#airTime = 0;
+    this.telemetry.caughtSerial++;
+  }
+
+  // --- ride -------------------------------------------------------------------
+
+  #updateRide(ctx: PlayerCtx, dt: number, throttle: number, steer: number, tuck: boolean, frame: ModeFrame) {
+    const tb = SURF_TUNING.values;
+    const p = ctx.position;
+    const w = ctx.physics.world;
+    const t = ctx.time;
+
+    // carve up/down the face; the face has a slight downhill pull toward the base
+    this.#faceT = THREE.MathUtils.clamp(
+      this.#faceT + steer * tb.climbRate * dt - tb.faceGravity * dt * 0.5,
+      -0.15,
+      1.12
+    );
+
+    // line speed: pump (W), tuck (Shift), a touch faster in the steep pocket
+    const pocket = 1 - Math.abs(this.#faceT - 0.55) * 1.4;
+    let target = tb.trimSpeed + Math.max(0, pocket) * 4 + (throttle > 0 ? tb.pumpBoost : 0) + (tuck ? tb.tuckBoost : 0);
+    target = Math.min(target, tb.maxTrim);
+    this.#trim += (target - this.#trim) * Math.min(1, dt * 2.2);
+
+    const faceT = THREE.MathUtils.clamp(this.#faceT, 0, 1);
+    const faceOffset = THREE.MathUtils.lerp(tb.baseOffset, tb.lipOffset, faceT);
+    const crestX = oceanBeachCrestX(this.#ridingSlot, p.z, t);
+    const targetX = crestX + faceOffset;
+
+    // advance down the line, ease X onto the moving face
+    const nz = p.z + this.#peelDir * this.#trim * dt;
+    const nx = p.x + (targetX - p.x) * Math.min(1, dt * tb.trackGain);
+
+    const prevX = p.x, prevZ = p.z, prevY = p.y;
+    p.z = nz;
+    p.x = nx;
+
+    const sample = sampleOceanBeachWave(p.x, p.z, t);
+    const surfaceY = sample.height + tb.railHeight;
+
+    // launch off the lip
+    let vy = frame.v.linear[1];
+    if (this.#jumpBuffer > 0 && !this.#airborne && faceT > 0.5) {
+      vy = tb.jump + sample.lip * 5;
+      this.#airborne = true;
+      this.#airTime = 0;
+      this.#jumpBuffer = 0;
+    }
+
+    if (this.#airborne) {
+      vy -= tb.gravity * dt;
+      this.#airTime += dt;
+      p.y = prevY + vy * dt;
+      this.lean += steer * dt * 2.2; // aerial roll
+      if (p.y <= surfaceY && vy < 0) {
+        p.y = surfaceY;
+        this.#airborne = false;
+        this.telemetry.landedAirTime = this.#airTime;
+        this.telemetry.landingSerial++;
+        if (Math.abs(this.lean) > 1.3) return this.#wipeout(ctx);
+        this.#airTime = 0;
+        // re-seat on the face from where we landed
+        this.#faceT = THREE.MathUtils.clamp((tb.baseOffset - sample.crestDistance) / (tb.baseOffset - tb.lipOffset), 0, 1);
+      }
+    } else {
+      p.y = surfaceY;
+    }
+
+    // end-of-ride conditions → back to paddling in the lineup
+    const closedOut = crestX > OCEAN_BEACH_SURF.maxX - 18;
+    const offBack = this.#faceT < -0.1; // slid off the back onto flat water
+    const outOfBounds = p.z < OCEAN_BEACH_SURF.minZ + 10 || p.z > OCEAN_BEACH_SURF.maxZ - 10;
+    if (!this.#airborne && (closedOut || offBack || outOfBounds)) {
+      this.#toLineup(ctx, true);
+      this.#phase = "paddle";
+      this.#paddleSpeed = tb.paddleSpeed * 0.6;
+      this.grounded = true;
+      this.#syncTelemetry(frame, sample, true);
+      return;
+    }
+    // over the falls
+    if (this.#faceT > 1.08 && !this.#airborne) return this.#wipeout(ctx);
+
+    // orientation: heading down the line, rolled into the carve
+    const dx = (p.x - prevX) / Math.max(dt, 1e-3);
+    const dz = (p.z - prevZ) / Math.max(dt, 1e-3);
+    this.grounded = !this.#airborne;
+    const targetLean = THREE.MathUtils.clamp(steer * tb.carveLean, -1.0, 1.0);
+    this.lean += (targetLean - this.lean) * Math.min(1, dt * (this.#airborne ? 2 : 7));
+    const pitchTarget = this.#airborne
+      ? THREE.MathUtils.clamp(vy * 0.02, -0.4, 0.5)
+      : THREE.MathUtils.clamp(-Math.atan(sample.slopeX) * 0.7, -0.5, 0.5);
+    this.pitch += (pitchTarget - this.pitch) * Math.min(1, dt * 7);
+
+    const heading = Math.atan2(-dx, -dz);
+    this.yaw = heading;
+    const q = ctx.quaternion.setFromEuler(V.euler.set(this.pitch, this.yaw, this.lean, "YXZ"));
+    w.setBodyVelocity(ctx.body, [dx, this.#airborne ? vy : 0, dz], [0, 0, 0]);
+    w.setBodyTransform(ctx.body, [p.x, p.y, p.z], [q.x, q.y, q.z, q.w]);
+    ctx.heading = this.yaw + Math.PI;
+    this.#syncTelemetry(frame, sample, true);
+  }
+
+  // --- wipeout ----------------------------------------------------------------
 
   #wipeout(ctx: PlayerCtx) {
-    if (this.#wipeoutTimer > 0) return;
-    this.#wipeoutTimer = 1.15;
-    this.telemetry.wipeoutSerial++;
-    this.#airborne = true;
+    this.#phase = "wipeout";
+    this.#wipeoutTimer = 1.1;
+    this.#airborne = false;
     this.grounded = false;
-    ctx.physics.world.setBodyVelocity(ctx.body, [4, -3, 0], [0, 0, 0]);
+    this.telemetry.wipeoutSerial++;
+    ctx.physics.world.setBodyVelocity(ctx.body, [3, -3, this.#peelDir * 3], [2, 1, 2]);
   }
 
-  #placeOnFace(ctx: PlayerCtx) {
+  #updateWipeout(ctx: PlayerCtx, dt: number, frame: ModeFrame) {
+    this.#wipeoutTimer -= dt;
     const p = ctx.position;
-    p.set(OCEAN_BEACH_SURF.entryX, 0, OCEAN_BEACH_SURF.entryZ);
-    const face = sampleOceanBeachWave(p.x, p.z, ctx.time);
-    p.x = face.crestX + 4;
-    p.y = waterHeight(p.x, p.z, ctx.time) + SURF_TUNING.values.railHeight;
+    const w = ctx.physics.world;
+    if (this.#wipeoutTimer <= 0) {
+      this.#toLineup(ctx, true);
+      this.#phase = "paddle";
+      this.#paddleSpeed = 0;
+      this.lean = 0;
+      this.pitch = 0;
+      this.grounded = true;
+      w.setBodyVelocity(ctx.body, [0, 0, 0], [0, 0, 0]);
+    } else {
+      w.setBodyVelocity(ctx.body, [2.5, -1.5, this.#peelDir * 2], [0, 0, 0]);
+    }
+    const sample = sampleOceanBeachWave(p.x, p.z, ctx.time);
+    this.#syncTelemetry(frame, sample, true);
+  }
+
+  // --- helpers ----------------------------------------------------------------
+
+  /** Reset into the lineup (just outside the break) to paddle for the next wave. */
+  #toLineup(ctx: PlayerCtx, keepZ: boolean) {
+    const b = OCEAN_BEACH_SURF;
+    const p = ctx.position;
+    const z = keepZ ? THREE.MathUtils.clamp(p.z, b.minZ + 40, b.maxZ - 40) : b.entryZ;
+    p.set(b.offshoreCrest + 55, 0, z); // offshore of the shoreward-breaking crests
+    p.y = waterHeight(p.x, p.z, ctx.time) + SURF_TUNING.values.proneHeight;
+    this.yaw = Math.PI / 2; // face offshore
+    this.#faceT = 0.4;
+    this.#airborne = false;
+    this.#airTime = 0;
+    if (ctx.body) {
+      const q = ctx.quaternion.setFromEuler(V.euler.set(-0.2, this.yaw, 0, "YXZ"));
+      ctx.physics.world.setBodyTransform(ctx.body, [p.x, p.y, p.z], [q.x, q.y, q.z, q.w]);
+      ctx.physics.world.setBodyVelocity(ctx.body, [0, 0, 0], [0, 0, 0]);
+    }
   }
 
   #syncTelemetry(frame: ModeFrame, sample: ReturnType<typeof sampleOceanBeachWave>, inBreak: boolean) {
-    const t = this.telemetry;
-    t.speed = Math.hypot(frame.v.linear[0], frame.v.linear[2]);
-    t.face = sample.face;
-    t.lip = sample.lip;
-    t.lean = this.lean;
-    t.grounded = this.grounded;
-    t.airborne = !this.grounded;
-    t.airTime = this.#airTime;
-    t.inBreak = inBreak;
+    const tm = this.telemetry;
+    tm.speed = Math.hypot(frame.v.linear[0], frame.v.linear[2]);
+    tm.face = sample.face;
+    tm.lip = sample.lip;
+    tm.lean = this.lean;
+    tm.grounded = this.grounded;
+    tm.airborne = this.#airborne;
+    tm.airTime = this.#airTime;
+    tm.inBreak = inBreak;
+    tm.phase = this.#phase;
   }
 }
