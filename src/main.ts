@@ -11,6 +11,7 @@ import { bootMarkStart, bootMark, bootMarkSummary, persistBootHistory } from "./
 import { createFrameScheduler } from "./core/frameBudget";
 import { applyBundleOrderPatch } from "./render/bundleOrderPatch";
 import { WorldMap, waterHeight } from "./world/heightmap";
+import { OCEAN_BEACH_SURF } from "./world/oceanBeachWaves";
 import { Sky, SKY_TUNING } from "./world/sky";
 import { Water } from "./world/water";
 import { UnderwaterOverlay } from "./fx/underwater";
@@ -36,6 +37,7 @@ import {
 } from "./world/goldenGateTennis";
 import { CoronaHeightsPark, prepareCoronaHeightsGround } from "./world/coronaHeights";
 import { createBuskerTrio } from "./gameplay/buskers";
+import { OceanBeachWaves, SurfExperience } from "./gameplay/surfing";
 import { findOpenSpawn } from "./world/spawn";
 import { resolveSpawnPoint, type RegionKey } from "./world/spawnPoints";
 import { nearAnyWildRegion } from "./world/wildlands/layout";
@@ -56,6 +58,7 @@ import { BuildingRayRefiner } from "./core/buildingRayRefine";
 import { Toolbar, TOOL_ORDER, TOOL_VERB, type ToolName } from "./ui/toolbar";
 import { AvatarSelector } from "./ui/avatarSelector";
 import { BoardSelector } from "./ui/boardSelector";
+import { ScooterSelector } from "./ui/scooterSelector";
 import { AudioControls } from "./ui/audioControls";
 import { Chat } from "./ui/chat";
 import { VehicleAudio } from "./fx/vehicleAudio";
@@ -105,6 +108,7 @@ import { Minimap } from "./ui/minimap";
 import { PlayerLocator } from "./ui/playerLocator";
 import { avatarFromSeed, loadSavedAvatar, randomAvatarTraits, saveAvatarTraits } from "./player/avatar";
 import { boardFromSeed, boardVisualKey, loadSavedBoard, randomBoardConfig, saveBoardConfig, setLocalBoardConfig } from "./vehicles/board";
+import { loadSavedScooter, randomScooterConfig, saveScooterConfig, scooterFromSeed, scooterKey, setLocalScooterConfig } from "./vehicles/scooter";
 import { MENU_MODES, ModeDiscovery, ALL_MODES } from "./player/discovery";
 
 CameraControls.install({ THREE });
@@ -196,6 +200,7 @@ async function boot() {
 
   const sky = new Sky(scene);
   const water = new Water(scene, map);
+  const oceanBeachWaves = new OceanBeachWaves(scene);
   const underwater = new UnderwaterOverlay(app, map);
   const seaPillars = new SeaPillars(scene, map);
 
@@ -311,8 +316,13 @@ async function boot() {
   let boardCustomized = savedBoard !== null;
   let boardConfig = savedBoard ?? randomBoardConfig();
   setLocalBoardConfig(boardConfig); // abandonedMounts builds YOUR board from this
+  const savedScooter = loadSavedScooter();
+  let scooterCustomized = savedScooter !== null;
+  let scooterConfig = savedScooter ?? randomScooterConfig();
+  setLocalScooterConfig(scooterConfig);
   vehicleAudio.setBoardStyle(boardConfig);
-  const player = new Player(physics, map, scene, spawn, avatarTraits, boardConfig);
+  const player = new Player(physics, map, scene, spawn, avatarTraits, boardConfig, scooterConfig);
+  const surfExperience = new SurfExperience(vehicleAudio);
   const birdTrails = new BirdTrails(scene, player.meshes.bird);
   const droneFireworkMounts = player.meshes.drone.userData.fireworkMounts as THREE.Object3D[] | undefined;
   const boatLaunchers = player.meshes.speedboat.userData.launcherRig as LauncherRig | undefined;
@@ -324,6 +334,13 @@ async function boot() {
     toolbar.setVehicle(mode);
     input.setMode(mode); // trigger routing (fly puts them on the ↑/↓ throttle)
     debugPanel.setMode(mode); // tuning pane shows only the active mode's movement folder
+    if (mode === "surf") {
+      // Drop straight into a readable down-the-line shot: the board travels
+      // south while the wave face peels along the player's left shoulder.
+      chase.yaw = Math.PI - 0.38;
+      chase.pitch = 0.12;
+      chase.zoom = 1.15;
+    }
     if (fresh) {
       const msg = modeDiscovery.revealMessage(mode);
       if (msg) hud.message(msg, 2.8);
@@ -800,7 +817,7 @@ async function boot() {
   // Send a custom avatar only if the player actually chose one; a null avatar
   // lets the server keep its per-id seed (server.mjs), so un-customized players
   // stay distinct instead of all sending the same saved blob.
-  const net = new Net(suggestedName, savedAvatar ?? undefined, savedBoard ?? undefined);
+  const net = new Net(suggestedName, savedAvatar ?? undefined, savedBoard ?? undefined, savedScooter ?? undefined);
   let pendingPickleballClaim: PickleballSide | null = null;
   let pendingPickleballRelease: PickleballSide | null = null;
   let pickleballNetSendAt = 0;
@@ -986,6 +1003,21 @@ async function boot() {
       if (player.mode !== "board" && !player.riding) player.trySwitch("board");
     }
   );
+  const scooterSelector = new ScooterSelector(
+    scooterConfig,
+    (config) => {
+      scooterCustomized = true;
+      const changed = scooterKey(config) !== scooterKey(scooterConfig);
+      scooterConfig = config;
+      setLocalScooterConfig(config);
+      saveScooterConfig(config);
+      if (changed) player.setScooterConfig(config);
+      net.setScooter(config);
+    },
+    () => {
+      if (player.mode !== "scooter" && !player.riding) player.trySwitch("scooter");
+    }
+  );
   net.onWelcome = () => {
     avatarSelector.setName(net.name); // server may canonicalize a duplicate/invalid name
     if (customized) {
@@ -1003,6 +1035,14 @@ async function boot() {
       const seeded = boardFromSeed(net.selfId);
       applyBoardConfig(seeded);
       boardSelector.setConfig(seeded);
+    }
+    if (scooterCustomized) {
+      net.setScooter(scooterConfig);
+    } else {
+      scooterConfig = scooterFromSeed(net.selfId);
+      setLocalScooterConfig(scooterConfig);
+      player.setScooterConfig(scooterConfig);
+      scooterSelector.setConfig(scooterConfig);
     }
     golf?.syncNetState();
     net.replayGolf();
@@ -1024,6 +1064,7 @@ async function boot() {
         if (existing.info.name !== info.name) remotes.rename(info);
         remotes.updateAvatar(info);
         remotes.updateBoard(info);
+        remotes.updateScooter(info);
       }
     }
     syncPickleballSlots();
@@ -1073,8 +1114,9 @@ async function boot() {
       hud.message("Click to capture the mouse · Esc releases it", 2.8);
     }
   };
-  // passenger seat support: remotes resolves "riding MY car" through this
-  remotes.localDriveMesh = () => (player.mode === "drive" && !player.riding ? player.meshes.drive : null);
+  // passenger seat support: cars and scooters both publish a local seat anchor.
+  remotes.localDriveMesh = () =>
+    (player.mode === "drive" || player.mode === "scooter") && !player.riding ? player.meshes[player.mode] : null;
 
   // riding shotgun in a friend's car (remote player id). Pose glue runs each
   // frame; every mode change, respawn or teleport goes through leaveRide first.
@@ -1192,7 +1234,7 @@ async function boot() {
   const exitClearance = (mode: PlayerMode) => {
     if (mode === "drive" && currentAnimal) return currentAnimal === "bear" ? 3.0 : 2.4;
     if (mode === "plane" || mode === "boat") return 6.5;
-    if (mode === "drone" || mode === "board") return 2.8;
+    if (mode === "drone" || mode === "board" || mode === "surf" || mode === "scooter") return 2.8;
     if (mode === "bird") return 6.5;
     return 2.4;
   };
@@ -1231,9 +1273,9 @@ async function boot() {
         angular: motion.angular
       });
     }
-    if (exitMode === "boat" || exitMode === "speedboat") {
+    if (exitMode === "boat" || exitMode === "speedboat" || exitMode === "surf") {
       // step off the gunwale into the water — stay beside the hull so you can swim back on
-      const side = 2.2;
+      const side = exitMode === "surf" ? 1.35 : 2.2;
       player.position.x += Math.sin(player.heading) * side;
       player.position.z += Math.cos(player.heading) * side;
       const wy = waterHeight(player.position.x, player.position.z, player.time);
@@ -1624,7 +1666,9 @@ async function boot() {
   // hit spheres for paint-vs-player, per embodiment: radius + centre lift
   const PAINT_HIT: Record<PlayerMode, { r: number; y: number }> = {
     walk: { r: 1.05, y: 0.95 },
+    scooter: { r: 1.45, y: 1.05 },
     board: { r: 1.15, y: 1.0 },
+    surf: { r: 1.35, y: 1.0 },
     drive: { r: 2.3, y: 0.8 },
     plane: { r: 3.2, y: 1.0 },
     boat: { r: 4.5, y: 1.8 },
@@ -2445,6 +2489,7 @@ async function boot() {
       accumulator += frameDt; // no elapsed++ — the world clock stays frozen
       if (player.mode === "plane") player.steerFly(input, frameDt);
       if (!playingPickleball && !input.suspended && player.mode === "board" && input.pressed("Space")) player.requestBoardJump();
+      if (!playingPickleball && !input.suspended && player.mode === "surf" && input.pressed("Space")) player.requestSurfJump();
       if (!playingPickleball && !input.suspended && player.mode === "walk" && input.pressed("Space")) player.requestWalkJump();
       chase.lookDir(aim);
       let steps = 0;
@@ -2488,6 +2533,7 @@ async function boot() {
         vspeed: player.velocity.y,
         boost: input.down("ShiftLeft"),
         grounded: player.mode !== "board" || player.boardGrounded,
+        surfFace: player.mode === "surf" ? player.surfTelemetry.face : 0,
         driveVoice: player.driveSpec.voice ?? "engine"
       });
       swimAudio.update(frameDt, {
@@ -2567,7 +2613,16 @@ async function boot() {
       !golf?.tryStartAtTee(player, hud) &&
       !archery?.tryInteract(player, hud)
     ) {
-      if (!fetchBall?.tryPickup(player.position)) {
+      const nearOceanBeach =
+        player.mode === "walk" &&
+        player.position.x > OCEAN_BEACH_SURF.minX - 180 &&
+        player.position.x < OCEAN_BEACH_SURF.maxX + 280 &&
+        player.position.z > OCEAN_BEACH_SURF.minZ - 120 &&
+        player.position.z < OCEAN_BEACH_SURF.maxZ + 120;
+      if (nearOceanBeach) {
+        player.trySwitch("surf");
+        hud.message("Paddle out — chase the green face!", 3);
+      } else if (!fetchBall?.tryPickup(player.position)) {
         const drv = remotes.nearestDriver(player.position, 5.5);
         const animal = drv ? null : forest?.nearest(player.position, 5);
         if (drv) {
@@ -2613,8 +2668,9 @@ async function boot() {
     if (input.pressed("KeyR")) {
       releasePickleballForNavigation();
       leaveRide();
+      const wasSurfing = player.mode === "surf";
       player.respawn(spawn);
-      hud.message("Back at the start");
+      hud.message(wasSurfing ? "Back on the next set" : "Back at the start");
     }
 
     // Q: busker trio cycles to the next song in its songbook and cues it
@@ -2812,6 +2868,7 @@ async function boot() {
     // frame can render without a fixed physics step, so `pressed()` would be gone
     // before #updateBoard saw it.
     if (!playingPickleball && !input.suspended && player.mode === "board" && input.pressed("Space")) player.requestBoardJump();
+    if (!playingPickleball && !input.suspended && player.mode === "surf" && input.pressed("Space")) player.requestSurfJump();
     if (!playingPickleball && !input.suspended && player.mode === "walk" && input.pressed("Space")) player.requestWalkJump();
 
     chase.lookDir(aim); // drone moves along the true view direction (no shot bias)
@@ -2874,7 +2931,10 @@ async function boot() {
     // Ball fetch loop + pet follow run every frame, tool-agnostic, so a thrown
     // ball keeps bouncing and a returning/adopted dog keeps moving even after
     // switching tools. verb() keeps the HUD Click row in sync with hold-to-throw.
-    fetchBall?.update(frameDt, elapsed, player.position);
+    const petSeat = player.mode === "scooter" && !remotes.hasPassenger(net.selfId)
+      ? (player.meshes.scooter.userData.petSeat as THREE.Object3D | undefined) ?? null
+      : null;
+    fetchBall?.update(frameDt, elapsed, player.position, petSeat);
     if (tool === "ball" && fetchBall) hud.setToolVerb(fetchBall.verb());
     // brief over-the-shoulder pull-in during a throw, then ease back. Set before
     // chase.update (below) so it reads this zoom; gated to walk so the wheel-zoom
@@ -2935,14 +2995,21 @@ async function boot() {
     if (player.mode === "walk" && passengerOf === null) {
       const drv = remotes.nearestDriver(player.position, 5.5);
       const nearAnimal = drv ? null : forest?.nearest(player.position, 5);
-      if ((drv || nearAnimal) && !ridePromptShown) {
+      const nearSurfBreak =
+        !drv &&
+        !nearAnimal &&
+        player.position.x > OCEAN_BEACH_SURF.minX - 180 &&
+        player.position.x < OCEAN_BEACH_SURF.maxX + 280 &&
+        player.position.z > OCEAN_BEACH_SURF.minZ - 120 &&
+        player.position.z < OCEAN_BEACH_SURF.maxZ + 120;
+      if ((drv || nearAnimal || nearSurfBreak) && !ridePromptShown) {
         hud.message(
-          drv ? `E — ride with ${drv.name}` : `E — ride the ${nearAnimal!.label}`,
+          drv ? `E — ride with ${drv.name}` : nearAnimal ? `E — ride the ${nearAnimal.label}` : "E — paddle out at Ocean Beach",
           1.8
         );
         ridePromptShown = true;
       }
-      if (!drv && !nearAnimal) ridePromptShown = false;
+      if (!drv && !nearAnimal && !nearSurfBreak) ridePromptShown = false;
       // "open the door" nudge — same one-shot pattern; the ride prompt wins
       // when both are in range. nearestDoor is alloc-light but not free, so
       // it runs every 6th frame (prompt latency ~0.1 s) and only on foot.
@@ -2976,6 +3043,7 @@ async function boot() {
     }
     sky.update(elapsed, camera.position);
     water.update(elapsed, camera.position, player.renderPosition);
+    oceanBeachWaves.update(elapsed, player.renderPosition);
     underwater.update(camera, elapsed);
     seaPillars.update(player.renderPosition, elapsed);
     fx.update(frameDt);
@@ -2984,12 +3052,14 @@ async function boot() {
     boardWake.update(frameDt, elapsed, player);
     birdTrails.update(elapsed, player);
     splashes.update(frameDt, elapsed, player);
+    surfExperience.update(frameDt, player.mode, player.surfTelemetry);
     vehicleAudio.update(frameDt, {
       mode: player.mode,
       speed: player.speed,
       vspeed: player.velocity.y,
       boost: input.down("ShiftLeft"),
       grounded: player.mode !== "board" || player.boardGrounded,
+      surfFace: player.mode === "surf" ? player.surfTelemetry.face : 0,
       driveVoice: player.driveSpec.voice ?? "engine"
     });
     swimAudio.update(frameDt, {
@@ -3217,7 +3287,7 @@ async function boot() {
       // deferred render warmup runs, tick() early-returns without rendering, so
       // screenshots would capture a stale boot-pose frame no matter what the
       // camera was set to.
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, goldenGateTennis, pickleball, pickleballAmbient, pickleballAudio, pickleballUI, coronaHeights, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, rocketRiders, boatLaunchers, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, siteGate,
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, goldenGateTennis, pickleball, pickleballAmbient, pickleballAudio, pickleballUI, coronaHeights, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, rocketRiders, boatLaunchers, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, siteGate,
         TSL,
         renderIdle: () => modulesReady && !lateRenderWarmupActive }
     });

@@ -1,0 +1,57 @@
+import type { Input } from "../../core/input";
+import type { DriveSpec, ModeController, ModeFrame, PlayerCtx } from "../../player/types";
+import { CarController } from "../car";
+import { SCOOTER_TUNING } from "./tuning";
+
+/**
+ * A light, punchy step-through scooter using the car's proven ramp/landing
+ * state machine. Only the vehicle dimensions and handling multipliers differ,
+ * so it inherits drift, boost, anti-snag suspension, real ramp takeoff, and
+ * the allocation-free airborne attitude assist.
+ */
+export class ScooterController implements ModeController {
+  readonly spawnLift = 0.8;
+  #drive = new CarController();
+
+  get steerVis(): number {
+    return this.#drive.steerVis;
+  }
+
+  get jumpDebug() {
+    return this.#drive.jumpDebug;
+  }
+
+  #spec(): DriveSpec {
+    const t = SCOOTER_TUNING.values;
+    return {
+      halfExtents: [0.52, 0.42, 1.35],
+      rideHeight: 0.78,
+      maxFactor: t.maxFactor,
+      accelFactor: t.accelFactor,
+      steerFactor: t.steerFactor,
+      voice: "electric"
+    };
+  }
+
+  #withSpec<T>(ctx: PlayerCtx, run: () => T): T {
+    const prior = ctx.driveSpec;
+    ctx.driveSpec = this.#spec();
+    try {
+      return run();
+    } finally {
+      ctx.driveSpec = prior;
+    }
+  }
+
+  spawnBody(ctx: PlayerCtx, facing: number): number {
+    return this.#withSpec(ctx, () => this.#drive.spawnBody(ctx, facing));
+  }
+
+  enter(ctx: PlayerCtx): void {
+    this.#drive.enter(ctx);
+  }
+
+  update(ctx: PlayerCtx, dt: number, input: Input, frame: ModeFrame): void {
+    this.#withSpec(ctx, () => this.#drive.update(ctx, dt, input, frame));
+  }
+}

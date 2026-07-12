@@ -8,11 +8,13 @@ const OFFSETS: Record<PlayerMode, { back: number; up: number; look: number }> =
   {
     walk: { back: 6.5, up: 2.4, look: 1.4 },
     drive: { back: 9.5, up: 3.2, look: 1.2 },
+    scooter: { back: 7.8, up: 2.8, look: 1.25 },
     plane: { back: 17, up: 4.6, look: 0 },
     boat: { back: 12, up: 4.2, look: 0.8 },
     speedboat: { back: 11, up: 3.6, look: 0.7 },
     drone: { back: 7, up: 1.9, look: 0.4 },
     board: { back: 7.5, up: 2.6, look: 1.3 },
+    surf: { back: 9.8, up: 3.15, look: 1.15 },
     bird: { back: 15, up: 3.1, look: 0.55 }
   }
 
@@ -224,6 +226,13 @@ export class ChaseCamera {
     // the player underwater; the seabed clamp still stops it clipping through.
     const floor = this.#map.effectiveGround(cx, cz) + 0.7
     if (this.#chasePos.y < floor) this.#chasePos.y = floor
+    // Ocean Beach crests are several metres tall. A normal chase boom can sit
+    // inside the next ridge and trigger the full underwater overlay, hiding the
+    // very wave the player is reading. Surf mode skims above the local crest.
+    if (player.mode === "surf") {
+      const water = waterHeight(cx, cz, player.time) + 1.1
+      if (this.#chasePos.y < water) this.#chasePos.y = water
+    }
 
     // When you're swimming BELOW the surface, duck the camera under with you.
     // The `up` offset otherwise keeps the eye above the waterline on a shallow

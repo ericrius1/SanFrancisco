@@ -22,6 +22,14 @@ const KB: Record<PlayerMode, Row[]> = {
     { c: ["E"], label: "get out" },
     { c: ["Click"], label: "shoot" }
   ],
+  scooter: [
+    { c: ["Mouse"], label: "look" },
+    { c: ["W", "S"], label: "go · reverse" },
+    { c: ["A", "D"], label: "steer" },
+    { c: ["Space"], label: "drift" },
+    { c: ["Shift"], label: "boost" },
+    { c: ["E"], label: "hop off" }
+  ],
   plane: [
     { c: ["Mouse"], label: "aim nose" },
     { c: ["W", "S"], label: "throttle" },
@@ -63,6 +71,14 @@ const KB: Record<PlayerMode, Row[]> = {
     { c: ["Shift"], label: "boost" },
     { c: ["Click"], label: "shoot" }
   ],
+  surf: [
+    { c: ["Mouse"], label: "look" },
+    { c: ["W", "S"], label: "pump · stall" },
+    { c: ["A", "D"], label: "carve" },
+    { c: ["Space"], label: "launch" },
+    { c: ["Shift"], label: "tuck" },
+    { c: ["E"], label: "kick out" }
+  ],
   bird: [
     { c: ["Mouse"], label: "aim" },
     { c: ["W", "S"], label: "along the view" },
@@ -92,6 +108,14 @@ const PAD: Record<PlayerMode, Row[]> = {
     { c: ["RT"], label: "boost" },
     { c: ["B"], label: "get out" },
     { c: ["X"], label: "shoot" }
+  ],
+  scooter: [
+    { c: ["RS"], label: "look" },
+    { c: ["RT", "LT"], label: "go · reverse" },
+    { c: ["LS"], label: "steer" },
+    { c: ["A"], label: "drift" },
+    { c: ["RT"], label: "boost" },
+    { c: ["B"], label: "hop off" }
   ],
   plane: [
     { c: ["RS"], label: "aim nose" },
@@ -133,6 +157,14 @@ const PAD: Record<PlayerMode, Row[]> = {
     { c: ["RT"], label: "boost" },
     { c: ["X"], label: "shoot" }
   ],
+  surf: [
+    { c: ["RS"], label: "look" },
+    { c: ["RT", "LT"], label: "pump · stall" },
+    { c: ["LS"], label: "carve" },
+    { c: ["A"], label: "launch" },
+    { c: ["RT"], label: "tuck" },
+    { c: ["B"], label: "kick out" }
+  ],
   bird: [
     { c: ["RS"], label: "aim" },
     { c: ["LS"], label: "move" },
@@ -147,7 +179,9 @@ const PAD: Record<PlayerMode, Row[]> = {
 const TIPS: Partial<Record<PlayerMode, string>> = {
   walk: "Every building has a front door — walk in and explore",
   drive: "Handbrake (Space) drifts · Shift boosts",
+  scooter: "Ramps launch cleanly · rear seat fits a friend or your pet",
   board: "White glow = nose · surfs streets, hills and the bay",
+  surf: "Stay near the steep green face · alternate carves to build combo",
   bird: "Look down + Shift to stoop — skim the bay for spray"
 }
 
@@ -176,8 +210,9 @@ const PANELS: Record<string, string> = {
   chat: ".chat",
   minimap: ".minimap",
   history: ".place-history",
-  avatar: ".avatar-ui:not(.board-ui)",
+  avatar: ".avatar-ui:not(.board-ui):not(.scooter-ui)",
   board: ".board-ui",
+  scooter: ".scooter-ui",
   satchel: ".satchel",
   share: ".share-ui",
   tutorial: ".tutorial-ui, .tutorial-panel",

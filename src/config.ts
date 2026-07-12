@@ -67,6 +67,13 @@ export const CAMERA_TUNING = tunables("camera", {
   orbitFlipPull: { v: 8, min: 0, max: 80, step: 0.5, label: "orbit pull-back (m)" }
 })
 
+/** Gamepad look. Bound under advanced → controls in the "/" panel. Applies to
+ * every mode (walk + all vehicles) — right-stick pitch only; mouse is untouched. */
+export const INPUT_TUNING = tunables("input", {
+  // true = stick-up raises the chase cam / pitches the plane nose up (default).
+  invertPadLookY: { v: true, label: "invert pad look Y" }
+})
+
 /** The committed heightfield is 15.1 × 13.9 km (20.5 km corner-to-corner).
  * A 21 km radius therefore covers the complete sandbox from even the most
  * distant corner while staying below the camera's 24 km far plane. */
@@ -155,14 +162,14 @@ export const CITYGEN_TUNING = tunables("citygen", {
   detailRadius: {
     v: 700,
     min: 40,
-    max: 7000,
+    max: 10000,
     step: 5,
     label: "detail distance (m)"
   },
   maxDetail: {
     v: 500,
     min: 4,
-    max: 4000,
+    max: 20000,
     step: 2,
     label: "max detail buildings"
   },

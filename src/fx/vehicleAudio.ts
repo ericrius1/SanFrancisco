@@ -20,6 +20,8 @@ export type VehicleSignals = {
   vspeed: number; // vertical m/s, signed
   boost: boolean;
   grounded: boolean; // board only — everything else passes true
+  /** Surf-only proximity to the steep wave face/lip (0..1). */
+  surfFace?: number;
   /** When mode is drive: combustion car vs electric cart (etc). */
   driveVoice?: "engine" | "electric";
 };
@@ -228,6 +230,45 @@ export class VehicleAudio {
     this.#previewT = 0;
   }
 
+  /** One-shot surf feedback through the existing FX mix and unlock policy. */
+  surfEvent(kind: "carve" | "landing" | "wipeout", strength = 1) {
+    const ctx = this.#ensure();
+    if (!ctx) return;
+    if (ctx.state === "suspended") void ctx.resume();
+    const now = ctx.currentTime;
+    const amount = clamp01(strength);
+    const out = ctx.createGain();
+    out.gain.setValueAtTime(0.0001, now);
+    out.connect(this.#master);
+
+    if (kind === "landing") {
+      const thump = ctx.createOscillator();
+      thump.type = "sine";
+      thump.frequency.setValueAtTime(92, now);
+      thump.frequency.exponentialRampToValueAtTime(44, now + 0.24);
+      thump.connect(out);
+      out.gain.exponentialRampToValueAtTime(0.19 + amount * 0.16, now + 0.012);
+      out.gain.exponentialRampToValueAtTime(0.0001, now + 0.31);
+      thump.start(now);
+      thump.stop(now + 0.34);
+      return;
+    }
+
+    const src = ctx.createBufferSource();
+    src.buffer = this.#noise;
+    const filter = ctx.createBiquadFilter();
+    filter.type = kind === "carve" ? "bandpass" : "lowpass";
+    filter.frequency.value = kind === "carve" ? 1200 : 520;
+    filter.Q.value = kind === "carve" ? 0.8 : 0.35;
+    src.connect(filter);
+    filter.connect(out);
+    const duration = kind === "carve" ? 0.18 : 0.72;
+    out.gain.exponentialRampToValueAtTime((kind === "carve" ? 0.1 : 0.23) + amount * 0.12, now + 0.015);
+    out.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+    src.start(now, Math.random() * 1.2, duration);
+    src.stop(now + duration + 0.02);
+  }
+
   /** Per rendered frame. `sig` null (paused) fades every voice out. */
   update(dt: number, sig: VehicleSignals | null) {
     let boardPreviewEnv = 0;
@@ -301,6 +342,7 @@ export class VehicleAudio {
 
     this.#voices = [
       this.#buildBoard(ctx),
+      this.#buildSurf(ctx),
       this.#buildCar(ctx),
       this.#buildElectricCart(ctx),
       this.#buildPlane(ctx),
@@ -310,6 +352,29 @@ export class VehicleAudio {
     ];
     for (const v of this.#voices) v.gain.connect(this.#master);
     return ctx;
+  }
+
+  /** Surfboard: two filtered-noise bands — rail hiss from speed and a deeper
+   * breaker roar as the rider climbs into the pocket. */
+  #buildSurf(ctx: AudioContext): Voice {
+    const out = this.#out(ctx);
+    const rail = this.#noiseInto(ctx, "bandpass", 820, 0.7, 0, out);
+    const breaker = this.#noiseInto(ctx, "lowpass", 420, 0.35, 0, out);
+    this.#lfo(ctx, 0.24, 0.035, breaker.gain.gain);
+    return {
+      mode: "surf",
+      gain: out,
+      level: 0,
+      drive: (sig) => {
+        const speed = clamp01(sig.speed / 30);
+        const face = clamp01(sig.surfFace ?? 0);
+        rail.filter.frequency.value = 680 + speed * 1250;
+        rail.gain.gain.value = 0.08 + speed * 0.32;
+        breaker.filter.frequency.value = 300 + face * 440;
+        breaker.gain.gain.value = 0.08 + face * 0.48;
+        return 0.12 + speed * 0.22 + face * 0.3;
+      }
+    };
   }
 
   /** Voice output gain, born silent. */

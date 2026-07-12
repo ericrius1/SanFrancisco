@@ -8,6 +8,7 @@ import {
   FOLIAGE_TUNING,
   GRASS_TUNING,
   CITYGEN_TUNING,
+  INPUT_TUNING,
   RENDER_TUNING,
   WORLD_TUNING
 } from "../config";
@@ -473,6 +474,10 @@ export class DebugPanel {
     // free-orbit camera (C): duration of the O-key 180° flip around the target
     const cameraF = advanced.addFolder({ title: "camera" });
     CAMERA_TUNING.bind(cameraF);
+
+    // gamepad look polarity — master switch for every mode (walk + vehicles)
+    const controls = advanced.addFolder({ title: "controls" });
+    INPUT_TUNING.bind(controls);
 
     // foliage detail knobs (the master on/off lives at the very top of the pane).
     const foliage = advanced.addFolder({ title: "foliage" });

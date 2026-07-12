@@ -12,6 +12,7 @@ import {
   poseIdle,
   poseGolf,
   poseRide,
+  poseScooter,
   poseSwim,
   poseWalk,
   rigHandWorld,
@@ -34,6 +35,8 @@ import { buildPlaneMesh, collectPlaneAnim, FlyController, type PlaneAnim } from 
 import { buildBoatMesh, buildSpeedboatMesh, BoatController, BOAT_TUNING, SPEEDBOAT_TUNING, type BoatSailRig } from "../vehicles/boat";
 import { buildDroneMesh, DroneController } from "../vehicles/drone";
 import { buildBoardMesh, animateBoard, updateBoardSurface, BoardController, BOARD_TUNING, type BoardConfig } from "../vehicles/board";
+import { buildSurfboardMesh, SurfController, SURF_TUNING, type SurfTelemetry } from "../vehicles/surf";
+import { animateScooter, buildScooterMesh, ScooterController, type ScooterConfig } from "../vehicles/scooter";
 import { buildBirdMesh, BirdController } from "../vehicles/bird";
 
 const V = {
@@ -109,11 +112,13 @@ export class Player {
   #modes: {
     walk: WalkController;
     drive: CarController;
+    scooter: ScooterController;
     plane: FlyController;
     boat: BoatController;
     speedboat: BoatController;
     drone: DroneController;
     board: BoardController;
+    surf: SurfController;
     bird: BirdController;
   };
 
@@ -140,6 +145,8 @@ export class Player {
   #ballHeld = false;
   #throwT = 0; // 0 = idle; >0 drives an additive windup→release arm swing
   #riderRig: Rig;
+  #surfRig: Rig;
+  #scooterRig: Rig;
   #driverRig: Rig;
   #wheel: { group: THREE.Group; spin: THREE.Group };
   #helmRig: Rig; // boat crew: the boat never swaps meshes, so it keeps its own
@@ -172,7 +179,8 @@ export class Player {
     scene: THREE.Scene,
     spawn: { x: number; z: number; heading: number },
     avatar: AvatarTraits = avatarFromSeed("local-default"),
-    board?: BoardConfig
+    board?: BoardConfig,
+    scooter?: ScooterConfig
   ) {
     this.physics = physics;
     this.map = map;
@@ -199,21 +207,25 @@ export class Player {
     this.meshes = {
       walk: walkGroup,
       drive: buildCarMesh(),
+      scooter: buildScooterMesh(scooter),
       plane: buildPlaneMesh(),
       boat: buildBoatMesh(),
       speedboat: buildSpeedboatMesh(),
       drone: buildDroneMesh(),
       board: buildBoardMesh(board),
+      surf: buildSurfboardMesh(),
       bird: buildBirdMesh()
     };
     this.#modes = {
       walk: new WalkController(),
       drive: new CarController(),
+      scooter: new ScooterController(),
       plane: new FlyController(),
       boat: new BoatController(),
       speedboat: new BoatController(SPEEDBOAT_TUNING),
       drone: new DroneController(this.meshes.drone),
       board: new BoardController(),
+      surf: new SurfController(),
       bird: new BirdController(this.meshes.bird)
     };
     // surf stance across the deck; ZYX order so the carve lean (z) rolls the
@@ -223,6 +235,15 @@ export class Player {
     this.#riderRig.group.rotation.y = 1.05;
     this.#riderRig.group.position.y = 0.93; // soles on the deck top
     this.meshes.board.add(this.#riderRig.group);
+    this.#surfRig = buildRig(this.#avatar);
+    this.#surfRig.group.rotation.order = "ZYX";
+    this.#surfRig.group.rotation.y = 1.05;
+    this.#surfRig.group.position.y = 0.93;
+    this.meshes.surf.add(this.#surfRig.group);
+    this.#scooterRig = buildRig(this.#avatar);
+    const scooterCockpit = this.meshes.scooter.userData.cockpit as Cockpit;
+    this.#scooterRig.group.position.set(...scooterCockpit.seat);
+    this.meshes.scooter.add(this.#scooterRig.group);
     this.#driverRig = buildRig(this.#avatar);
     this.#wheel = buildSteeringWheel();
     // helmsman on the stern bench, hands on a wheel at the console (same
@@ -264,6 +285,8 @@ export class Player {
     this.#avatar = normalizeAvatarTraits(avatar);
     applyAvatarToRig(this.#walkRig, this.#avatar);
     applyAvatarToRig(this.#riderRig, this.#avatar);
+    applyAvatarToRig(this.#surfRig, this.#avatar);
+    applyAvatarToRig(this.#scooterRig, this.#avatar);
     applyAvatarToRig(this.#driverRig, this.#avatar);
     applyAvatarToRig(this.#helmRig, this.#avatar);
     applyAvatarToRig(this.#speedRig, this.#avatar);
@@ -489,6 +512,14 @@ export class Player {
     if (this.mode === "board") this.#modes.board.requestJump();
   }
 
+  requestSurfJump() {
+    if (this.mode === "surf") this.#modes.surf.requestJump();
+  }
+
+  get surfTelemetry(): SurfTelemetry {
+    return this.#modes.surf.telemetry;
+  }
+
   requestWalkJump() {
     if (this.mode === "walk") this.#modes.walk.requestJump();
   }
@@ -496,6 +527,10 @@ export class Player {
   /** Air/landing state for probes and the window.__sf diagnostics surface. */
   get driveJumpState() {
     return this.#modes.drive.jumpDebug;
+  }
+
+  get scooterJumpState() {
+    return this.#modes.scooter.jumpDebug;
   }
 
   /** Gameplay-owned golfer pose; the normal walk/idle animator resumes when off. */
@@ -726,6 +761,26 @@ export class Player {
     if (this.mode === "board") this.#lightPool.claim(next);
   }
 
+  /** Rebuild the cosmetic scooter shell without disturbing its live pose. */
+  setScooterConfig(config: ScooterConfig) {
+    const old = this.meshes.scooter;
+    const next = buildScooterMesh(config);
+    next.position.copy(old.position);
+    next.quaternion.copy(old.quaternion);
+    this.#scooterRig.group.removeFromParent();
+    const cockpit = next.userData.cockpit as Cockpit;
+    this.#scooterRig.group.position.set(...cockpit.seat);
+    this.#scooterRig.group.rotation.set(0, 0, 0);
+    next.add(this.#scooterRig.group);
+    setEmbodimentVisible(old, false);
+    this.#scene.remove(old);
+    (old.userData.dispose as (() => void) | undefined)?.();
+    this.#scene.add(next);
+    this.meshes.scooter = next;
+    setEmbodimentVisible(next, this.mode === "scooter");
+    if (this.mode === "scooter") this.#lightPool.claim(next);
+  }
+
   /** Lightweight local-only preview used while the deck XY pad is held. */
   previewBoardSurface(config: BoardConfig) {
     updateBoardSurface(this.meshes.board, config);
@@ -853,6 +908,22 @@ export class Player {
       poseRide(this.#riderRig, board.lean, crouch, !board.grounded, this.#animT);
       this.#riderRig.group.rotation.z = board.lean * 0.4; // whole-body dip on top of the deck roll
       animateBoard(this.meshes.board, dt, this.#animT, board.horizontalSpeed, board.boosting);
+    } else if (this.mode === "surf") {
+      const surf = this.#modes.surf;
+      const crouch = Math.min(1, this.speed / SURF_TUNING.values.maxSpeed + Math.abs(surf.lean) * 0.5);
+      poseRide(this.#surfRig, surf.lean, crouch, !surf.grounded, this.#animT);
+      this.#surfRig.group.rotation.z = surf.lean * 0.34;
+    } else if (this.mode === "scooter") {
+      const scooter = this.#modes.scooter;
+      const airborne = scooter.jumpDebug.airborne;
+      poseScooter(this.#scooterRig, scooter.steerVis, this.#animT, airborne);
+      animateScooter(
+        this.meshes.scooter,
+        dt,
+        Math.hypot(this.velocity.x, this.velocity.z),
+        scooter.steerVis,
+        this.speed > 34
+      );
     } else if (this.mode === "drone" && this.#broomRigAttached) {
       const lean = THREE.MathUtils.clamp(this.velocity.x * 0.04, -0.5, 0.5);
       const crouch = Math.min(1, this.speed / 28);

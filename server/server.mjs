@@ -244,6 +244,13 @@ const BOARD_HUMS = ["hum", "crystal", "deep", "choir", "retro"];
 const BOARD_DECK_COUNT = 8;
 const BOARD_GLOW_COUNT = 8;
 const BOARD_PITCH_COUNT = 5;
+const SCOOTER_BODIES = ["classic", "sport", "touring"];
+const SCOOTER_SEATS = ["bench", "saddle", "petpad"];
+const SCOOTER_SCREENS = ["none", "fly", "touring"];
+const SCOOTER_CARGO = ["none", "rack", "basket", "topbox"];
+const SCOOTER_PAINT_COUNT = 8;
+const SCOOTER_TRIM_COUNT = 6;
+const SCOOTER_SEAT_COUNT = 6;
 
 const makeFunName = () => `${ADJ[(Math.random() * ADJ.length) | 0]} ${NOUN[(Math.random() * NOUN.length) | 0]}`;
 
@@ -420,6 +427,49 @@ const sanitizeBoard = (raw) => {
   };
 };
 
+const DEFAULT_SCOOTER = {
+  body: "classic", seat: "bench", screen: "fly", cargo: "rack",
+  paint: 0, trim: 0, upholstery: 0,
+  paintHex: null, trimHex: null, upholsteryHex: null, whitewalls: true
+};
+
+const scooterFromSeed = (seed) => {
+  const roll = lcg(hashSeed(seed));
+  return {
+    body: pick(SCOOTER_BODIES, roll),
+    seat: pick(SCOOTER_SEATS, roll),
+    screen: pick(SCOOTER_SCREENS, roll),
+    cargo: pick(SCOOTER_CARGO, roll),
+    paint: Math.floor(roll() * SCOOTER_PAINT_COUNT) % SCOOTER_PAINT_COUNT,
+    trim: Math.floor(roll() * SCOOTER_TRIM_COUNT) % SCOOTER_TRIM_COUNT,
+    upholstery: Math.floor(roll() * SCOOTER_SEAT_COUNT) % SCOOTER_SEAT_COUNT,
+    whitewalls: roll() > 0.35,
+    paintHex: null,
+    trimHex: null,
+    upholsteryHex: null
+  };
+};
+
+const scooterKey = (s) =>
+  `${s.body}|${s.seat}|${s.screen}|${s.cargo}|${s.paint}|${s.trim}|${s.upholstery}|${s.paintHex}|${s.trimHex}|${s.upholsteryHex}|${s.whitewalls}`;
+const isDefaultScooter = (s) => scooterKey(s) === scooterKey(DEFAULT_SCOOTER);
+const sanitizeScooter = (raw) => {
+  if (!raw || typeof raw !== "object") return null;
+  return {
+    body: oneOf(raw.body, SCOOTER_BODIES, DEFAULT_SCOOTER.body),
+    seat: oneOf(raw.seat, SCOOTER_SEATS, DEFAULT_SCOOTER.seat),
+    screen: oneOf(raw.screen, SCOOTER_SCREENS, DEFAULT_SCOOTER.screen),
+    cargo: oneOf(raw.cargo, SCOOTER_CARGO, DEFAULT_SCOOTER.cargo),
+    paint: intRange(raw.paint, SCOOTER_PAINT_COUNT, DEFAULT_SCOOTER.paint),
+    trim: intRange(raw.trim, SCOOTER_TRIM_COUNT, DEFAULT_SCOOTER.trim),
+    upholstery: intRange(raw.upholstery, SCOOTER_SEAT_COUNT, DEFAULT_SCOOTER.upholstery),
+    paintHex: hexOrNull(raw.paintHex),
+    trimHex: hexOrNull(raw.trimHex),
+    upholsteryHex: hexOrNull(raw.upholsteryHex),
+    whitewalls: typeof raw.whitewalls === "boolean" ? raw.whitewalls : DEFAULT_SCOOTER.whitewalls
+  };
+};
+
 const send = (ws, obj) => {
   if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj));
 };
@@ -517,6 +567,7 @@ wss.on("connection", (ws) => {
     hue: Math.round((id * 137.508) % 360),
     avatar: avatarFromSeed(id),
     board: boardFromSeed(id),
+    scooter: scooterFromSeed(id),
     alive: true,
     budget: MSG_BUDGET_PER_SEC,
     lastState: Date.now(),
@@ -541,6 +592,8 @@ wss.on("connection", (ws) => {
       if (custom && !isDefaultAvatar(custom)) p.avatar = custom;
       const customBoard = sanitizeBoard(msg.board);
       if (customBoard && !isDefaultBoard(customBoard)) p.board = customBoard;
+      const customScooter = sanitizeScooter(msg.scooter);
+      if (customScooter && !isDefaultScooter(customScooter)) p.scooter = customScooter;
       send(ws, {
         t: "welcome",
         id,
@@ -548,10 +601,10 @@ wss.on("connection", (ws) => {
         name: p.name,
         players: [...players.values()]
           .filter((o) => o.id !== id)
-          .map((o) => ({ id: o.id, name: o.name, hue: o.hue, avatar: o.avatar, board: o.board, golf: o.golf })),
+          .map((o) => ({ id: o.id, name: o.name, hue: o.hue, avatar: o.avatar, board: o.board, scooter: o.scooter, golf: o.golf })),
         pickle: pickleballWelcome()
       });
-      broadcast({ t: "join", id, name: p.name, hue: p.hue, avatar: p.avatar, board: p.board }, id);
+      broadcast({ t: "join", id, name: p.name, hue: p.hue, avatar: p.avatar, board: p.board, scooter: p.scooter }, id);
       console.log(`[sf-server] join #${id} "${p.name}" (${players.size} online)`);
     } else if (msg.t === "s" && Array.isArray(msg.d) && (msg.d.length === 9 || msg.d.length === 10)) {
       // [modeIndex, x, y, z, qx, qy, qz, qw, speed, ride?] — validate finite numbers
@@ -573,6 +626,10 @@ wss.on("connection", (ws) => {
       const custom = sanitizeBoard(msg.board);
       p.board = custom && !isDefaultBoard(custom) ? custom : boardFromSeed(id);
       broadcast({ t: "board", id, board: p.board }, id);
+    } else if (msg.t === "scooter") {
+      const custom = sanitizeScooter(msg.scooter);
+      p.scooter = custom && !isDefaultScooter(custom) ? custom : scooterFromSeed(id);
+      broadcast({ t: "scooter", id, scooter: p.scooter }, id);
     } else if (msg.t === "paint" && Array.isArray(msg.d) && msg.d.length === 7) {
       // paintball shot: [x,y,z,vx,vy,vz,rgb] — pure relay, every client
       // simulates the flight and splats locally

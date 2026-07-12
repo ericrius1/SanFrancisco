@@ -1,5 +1,5 @@
 import * as THREE from "three/webgpu";
-import { applyAvatarToRig, buildRig, poseAir, poseDrive, poseIdle, poseRide, poseWalk, type Rig } from "../player/rig";
+import { applyAvatarToRig, buildRig, poseAir, poseDrive, poseIdle, poseRide, poseScooter, poseWalk, type Rig } from "../player/rig";
 import { avatarFromSeed, avatarKey, type AvatarTraits } from "../player/avatar";
 import { buildCarMesh } from "../vehicles/car";
 import { buildPlaneMesh, collectPlaneAnim, type PlaneAnim } from "../vehicles/plane";
@@ -7,6 +7,8 @@ import { buildBoatMesh, buildSpeedboatMesh } from "../vehicles/boat";
 import { buildDroneMesh } from "../vehicles/drone";
 import { buildBoardMesh, animateBoard, boardFromSeed, boardVisualKey, normalizeBoardConfig, type BoardConfig } from "../vehicles/board";
 import { buildBirdMesh } from "../vehicles/bird";
+import { buildSurfboardMesh } from "../vehicles/surf";
+import { animateScooter, buildScooterMesh, normalizeScooterConfig, scooterFromSeed, scooterKey, type ScooterConfig } from "../vehicles/scooter";
 import type { Cockpit, PlayerMode } from "../player/types";
 import type { NetSample, RemoteInfo } from "./net";
 
@@ -74,11 +76,13 @@ function makeTag(name: string, hue: number): THREE.Sprite {
 const TAG_Y: Record<PlayerMode, number> = {
   walk: 2.1,
   drive: 2.2,
+  scooter: 2.4,
   plane: 2.6,
   boat: 7.6, // above the mast
   speedboat: 2.4,
   drone: 1.6,
   board: 2.3,
+  surf: 2.2,
   bird: 2.2
 };
 
@@ -99,6 +103,8 @@ type Avatar = {
   avatarKey: string;
   board: BoardConfig;
   boardKey: string;
+  scooter: ScooterConfig;
+  scooterKey: string;
 };
 
 const TMP = {
@@ -121,6 +127,10 @@ function avatarForInfo(info: RemoteInfo): AvatarTraits {
 
 function boardForInfo(info: RemoteInfo): BoardConfig {
   return info.board ? normalizeBoardConfig(info.board) : boardFromSeed(info.id);
+}
+
+function scooterForInfo(info: RemoteInfo): ScooterConfig {
+  return info.scooter ? normalizeScooterConfig(info.scooter) : scooterFromSeed(info.id);
 }
 
 export class RemotePlayers {
@@ -147,7 +157,8 @@ export class RemotePlayers {
       plane: buildPlaneMesh(),
       boat: buildBoatMesh(),
       speedboat: buildSpeedboatMesh(),
-      drone: buildDroneMesh()
+      drone: buildDroneMesh(),
+      surf: buildSurfboardMesh()
     };
     const c = this.#protos.drive!.userData.cockpit as Cockpit | undefined;
     if (c) this.#passengerSeat.set(-c.seat[0], c.seat[1], c.seat[2]);
@@ -207,12 +218,21 @@ export class RemotePlayers {
     return { x: p.x, y: p.y, z: p.z, mode: a.mode };
   }
 
-  /** Nearest player currently driving within maxDist of pos (hop-in candidate). */
+  /** Whether a remote avatar is currently occupying this driver's rear seat. */
+  hasPassenger(driverId: number): boolean {
+    if (driverId <= 0) return false;
+    for (const avatar of this.avatars.values()) {
+      if (avatar.ride === driverId && avatar.root.visible) return true;
+    }
+    return false;
+  }
+
+  /** Nearest player driving a vehicle with a passenger seat. */
   nearestDriver(pos: THREE.Vector3, maxDist: number): { id: number; name: string } | null {
     let best: { id: number; name: string } | null = null;
     let bestD = maxDist;
     for (const a of this.avatars.values()) {
-      if (a.mode !== "drive" || !a.root.visible) continue;
+      if ((a.mode !== "drive" && a.mode !== "scooter") || !a.root.visible) continue;
       const d = a.root.position.distanceTo(pos);
       if (d < bestD) {
         bestD = d;
@@ -232,16 +252,22 @@ export class RemotePlayers {
     if (driverId === this.selfId && this.selfId) {
       const m = this.localDriveMesh();
       if (!m) return false;
+      const passenger = m.userData.passengerSeat as [number, number, number] | undefined;
       const c = m.userData.cockpit as Cockpit | undefined;
-      if (c) outPos.set(-c.seat[0], c.seat[1], c.seat[2]);
+      if (passenger) outPos.set(...passenger);
+      else if (c) outPos.set(-c.seat[0], c.seat[1], c.seat[2]);
       else outPos.copy(this.#passengerSeat);
       outQuat.copy(m.quaternion);
       outPos.applyQuaternion(outQuat).add(m.position);
       return true;
     }
     const a = this.avatars.get(driverId);
-    if (!a || a.mode !== "drive" || !a.root.visible) return false;
-    outPos.copy(this.#passengerSeat).applyQuaternion(a.root.quaternion).add(a.root.position);
+    if (!a || (a.mode !== "drive" && a.mode !== "scooter") || !a.root.visible) return false;
+    const body = a.bodies[a.mode];
+    const passenger = body?.userData.passengerSeat as [number, number, number] | undefined;
+    if (passenger) outPos.set(...passenger);
+    else outPos.copy(this.#passengerSeat);
+    outPos.applyQuaternion(a.root.quaternion).add(a.root.position);
     outQuat.copy(a.root.quaternion);
     return true;
   }
@@ -270,6 +296,7 @@ export class RemotePlayers {
     this.#scene.add(root);
     const av = avatarForInfo(info);
     const bd = boardForInfo(info);
+    const sc = scooterForInfo(info);
     this.avatars.set(info.id, {
       info,
       root,
@@ -286,7 +313,9 @@ export class RemotePlayers {
       avatar: av,
       avatarKey: avatarKey(av),
       board: bd,
-      boardKey: boardVisualKey(bd)
+      boardKey: boardVisualKey(bd),
+      scooter: sc,
+      scooterKey: scooterKey(sc)
     });
   }
 
@@ -341,6 +370,26 @@ export class RemotePlayers {
     }
   }
 
+  updateScooter(info: RemoteInfo) {
+    const a = this.avatars.get(info.id);
+    if (!a) return;
+    a.info = info;
+    const next = scooterForInfo(info);
+    const key = scooterKey(next);
+    a.scooter = next;
+    if (key === a.scooterKey) return;
+    a.scooterKey = key;
+    const old = a.bodies.scooter;
+    if (!old) return;
+    a.root.remove(old);
+    (old.userData.dispose as (() => void) | undefined)?.();
+    delete a.bodies.scooter;
+    if (a.mode === "scooter") {
+      a.mode = null;
+      this.#embody(a, "scooter");
+    }
+  }
+
   remove(id: number) {
     const a = this.avatars.get(id);
     if (!a) return;
@@ -348,9 +397,9 @@ export class RemotePlayers {
     this.#scene.remove(a.root);
     a.tag.material.map?.dispose();
     a.tag.material.dispose();
-    // vehicle meshes are clones sharing prototype materials/geometry — only the
-    // board is a per-remote build that owns its resources
+    // Per-player board/scooter builds own their resources.
     (a.bodies.board?.userData.dispose as (() => void) | undefined)?.();
+    (a.bodies.scooter?.userData.dispose as (() => void) | undefined)?.();
   }
 
   sample(id: number, s: NetSample) {
@@ -403,6 +452,25 @@ export class RemotePlayers {
       rig.group.rotation.order = "ZYX";
       rig.group.rotation.y = 1.05; // surf stance across the deck (player.ts)
       rig.group.position.y = 0.93;
+      g.add(rig.group);
+      g.userData.remoteRig = rig;
+      return g;
+    }
+    if (mode === "surf") {
+      const g = this.#protos.surf!.clone(true);
+      const rig = buildRig(a.avatar);
+      rig.group.rotation.order = "ZYX";
+      rig.group.rotation.y = 1.05;
+      rig.group.position.y = 0.93;
+      g.add(rig.group);
+      g.userData.remoteRig = rig;
+      return g;
+    }
+    if (mode === "scooter") {
+      const g = buildScooterMesh(a.scooter);
+      const rig = buildRig(a.avatar);
+      const cockpit = g.userData.cockpit as Cockpit;
+      rig.group.position.set(...cockpit.seat);
       g.add(rig.group);
       g.userData.remoteRig = rig;
       return g;
@@ -503,6 +571,13 @@ export class RemotePlayers {
       poseRide(rig, 0, crouch, Math.abs(a.vy) > 4, a.animT);
       const body = a.bodies.board;
       if (body) animateBoard(body, dt, a.animT, a.speed);
+    } else if (a.mode === "surf") {
+      const crouch = Math.min(1, a.speed / 28);
+      poseRide(rig, 0, crouch, Math.abs(a.vy) > 3.5, a.animT);
+    } else if (a.mode === "scooter") {
+      poseScooter(rig, 0, a.animT, Math.abs(a.vy) > 3.5);
+      const body = a.bodies.scooter;
+      if (body) animateScooter(body, dt, a.speed, 0, a.speed > 34);
     } else if (a.mode === "drive") {
       poseDrive(rig, 0, a.animT, false);
     } else if (a.mode === "plane") {

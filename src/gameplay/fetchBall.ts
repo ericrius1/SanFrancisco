@@ -165,6 +165,7 @@ export class FetchBall {
 
   #dog: ParkDog | null = null; // the fetching dog (claimed) — becomes a pet on adoption
   #pets: ParkDog[] = []; // adopted followers
+  #seatedPet: ParkDog | null = null;
 
   // hold-to-throw: ball spots immediately on hold; E pickup also leaves it held
   #held = false;
@@ -301,7 +302,7 @@ export class FetchBall {
     return true;
   }
 
-  update(dt: number, elapsed: number, playerPos: THREE.Vector3): void {
+  update(dt: number, elapsed: number, playerPos: THREE.Vector3, petSeat: THREE.Object3D | null = null): void {
     this.#lastPlayer.copy(playerPos);
     this.#elapsed = elapsed;
     if (!this.#petInit) {
@@ -309,6 +310,7 @@ export class FetchBall {
       this.#petInit = true;
     }
     const park = this.#deps.park();
+    this.#syncPetSeat(petSeat, elapsed);
 
     // Abandoned balls despawn (back to the mesh pool): instantly once far out
     // of tool range, on a generous TTL otherwise — never one a dog is working
@@ -356,7 +358,9 @@ export class FetchBall {
       }
       const tx = playerPos.x - this.#petDirX * PET_TRAIL;
       const tz = playerPos.z - this.#petDirZ * PET_TRAIL;
-      for (const pet of this.#pets) park.updatePet(pet, tx, tz, dt, elapsed);
+      for (const pet of this.#pets) {
+        if (pet !== this.#seatedPet) park.updatePet(pet, tx, tz, dt, elapsed);
+      }
     }
     this.#prevPlayer.copy(playerPos);
     this.#syncGlow();
@@ -463,6 +467,46 @@ export class FetchBall {
   }
 
   /* -------------------------------------------------------------- internals */
+
+  /** First adopted dog rides the scooter's rear perch; leaving the scooter
+   * reparents it to the world at the exact seat pose so follow resumes cleanly. */
+  #syncPetSeat(seat: THREE.Object3D | null, elapsed: number): void {
+    const dog = this.#pets[0] ?? null;
+    if (seat && dog) {
+      if (this.#seatedPet !== dog || dog.group.parent !== seat) {
+        seat.add(dog.group);
+        dog.group.position.set(0, 0, 0);
+        dog.group.rotation.set(0, 0, 0);
+        // A live scooter rebuild hides the old embodiment deeply before this
+        // reparent. Restore the pet meshes when they move onto the new seat.
+        dog.group.traverse((object) => {
+          if ((object as THREE.Mesh).isMesh) object.visible = true;
+        });
+        this.#seatedPet = dog;
+      }
+      dog.group.position.y = Math.sin(elapsed * 4.2) * 0.012;
+      dog.head.rotation.x = -0.08 + Math.sin(elapsed * 1.7) * 0.04;
+      dog.tail.rotation.x = 0.6;
+      dog.tail.rotation.y = Math.sin(elapsed * 7.5) * 0.75;
+      dog.legs.forEach((leg, i) => leg.rotation.x = i < 2 ? 0.55 : -0.45);
+      dog.group.getWorldPosition(this.#tmp);
+      dog.x = this.#tmp.x;
+      dog.z = this.#tmp.z;
+      dog.speed = 0;
+      return;
+    }
+    if (!this.#seatedPet) return;
+    const leaving = this.#seatedPet;
+    leaving.group.getWorldPosition(this.#tmp);
+    this.#deps.scene.attach(leaving.group);
+    leaving.group.traverse((object) => {
+      if ((object as THREE.Mesh).isMesh) object.visible = true;
+    });
+    leaving.x = this.#tmp.x;
+    leaving.z = this.#tmp.z;
+    leaving.heading = leaving.group.rotation.y;
+    this.#seatedPet = null;
+  }
 
   #syncGlow(): void {
     // one shared material → one write, however many balls are live

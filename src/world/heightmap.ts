@@ -1,4 +1,5 @@
 import * as THREE from "three/webgpu";
+import { oceanBeachWaveHeight } from "./oceanBeachWaves";
 
 type BridgeDef = {
   name: string;
@@ -345,6 +346,9 @@ export function waterHeight(x: number, z: number, t: number): number {
         Math.sin(z * 0.083 - t * 1.1) * 0.29 +
         Math.sin((x + z) * 0.052 + t * 0.8) * 0.24);
   }
+  // Pacific surf zone: a directional shoaling train. Kept separate from the
+  // generic bay chop so it is easy to sample for board rails and foam/lip FX.
+  h += oceanBeachWaveHeight(x, z, t);
   const lagoon = palaceLagoonMask(x, z);
   if (lagoon > 0.001) return PALACE_LAGOON.surfaceY + h * (0.35 + lagoon * 0.3);
   return h;

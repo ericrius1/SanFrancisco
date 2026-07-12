@@ -2166,6 +2166,62 @@
       #hud .board-ui {
         right: max(74px, calc(env(safe-area-inset-right) + 74px));
       }
+      #hud .scooter-ui {
+        right: max(128px, calc(env(safe-area-inset-right) + 128px));
+      }
+      #hud .scooter-toggle .scooter-ic-body {
+        position: absolute;
+        left: 13px;
+        top: 17px;
+        width: 22px;
+        height: 19px;
+        border-radius: 10px 10px 6px 6px;
+        transform: skewX(-8deg);
+        box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.2);
+      }
+      #hud .scooter-toggle .scooter-ic-wheel {
+        position: absolute;
+        top: 31px;
+        width: 10px;
+        height: 10px;
+        border: 3px solid;
+        border-radius: 50%;
+        background: #11181d;
+      }
+      #hud .scooter-toggle .scooter-ic-front { left: 8px; }
+      #hud .scooter-toggle .scooter-ic-rear { right: 8px; }
+      #hud .scooter-panel {
+        width: min(390px, calc(100vw - 24px));
+        max-height: min(78vh, 650px);
+        overscroll-behavior: contain;
+        scrollbar-gutter: stable;
+        background: linear-gradient(145deg, rgba(42, 31, 34, 0.94), rgba(8, 18, 26, 0.96));
+        border-color: rgba(255, 180, 128, 0.25);
+      }
+      #hud .scooter-panel-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 2px 2px 6px;
+        color: var(--text);
+        font: 700 13px var(--font);
+      }
+      #hud .scooter-panel-head small {
+        color: var(--text-dim);
+        font: 600 9px var(--font);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+      #hud .scooter-color-input {
+        width: 28px;
+        height: 28px;
+        padding: 2px;
+        cursor: pointer;
+        border-radius: 8px;
+        border: 1px solid rgba(190, 225, 240, 0.3);
+        background: rgba(18, 40, 56, 0.58);
+      }
       #hud .board-toggle .board-ic-deck {
         position: absolute;
         left: 10px;
@@ -3347,6 +3403,54 @@
         font-weight: 600;
         letter-spacing: 0.02em;
         line-height: 1;
+      }
+      /* Ocean Beach surf challenge — compact arcade scorecard, hidden unless
+         the dedicated surf vehicle is active. */
+      #hud .surf-hud {
+        position: absolute;
+        top: max(22px, env(safe-area-inset-top));
+        left: 50%;
+        width: min(430px, calc(100vw - 32px));
+        transform: translate(-50%, -18px) scale(0.96);
+        opacity: 0;
+        visibility: hidden;
+        padding: 12px 16px 11px;
+        border: 1px solid rgba(181, 239, 241, 0.34);
+        border-radius: 15px;
+        background: linear-gradient(135deg, rgba(4, 26, 37, 0.91), rgba(6, 65, 74, 0.76));
+        box-shadow: 0 14px 38px rgba(0, 12, 20, 0.32), inset 0 1px rgba(255, 255, 255, 0.12);
+        backdrop-filter: blur(14px) saturate(1.15);
+        color: #edffff;
+        pointer-events: none;
+        transition: opacity 180ms ease, transform 220ms ease, visibility 220ms;
+        display: grid;
+        grid-template-columns: 1fr auto auto;
+        gap: 3px 13px;
+        align-items: center;
+      }
+      #hud .surf-hud.on { opacity: 1; visibility: visible; transform: translate(-50%, 0) scale(1); }
+      #hud .surf-title { display: flex; flex-direction: column; letter-spacing: 0.16em; font-weight: 800; font-size: 12px; }
+      #hud .surf-title small { color: #75e3df; font-size: 8px; letter-spacing: 0.23em; margin-top: 2px; }
+      #hud .surf-score { display: flex; flex-direction: column; align-items: flex-end; font-variant-numeric: tabular-nums; }
+      #hud .surf-score > span { font-size: 24px; line-height: 1; font-weight: 780; }
+      #hud .surf-score small { color: rgba(222, 250, 250, 0.56); font-size: 7px; letter-spacing: 0.19em; }
+      #hud .surf-combo { min-width: 42px; text-align: center; padding: 5px 7px; border-radius: 9px; background: rgba(121, 222, 218, 0.14); color: #9ee9e3; font-size: 14px; font-weight: 800; }
+      #hud .surf-combo.hot { color: #fff1a8; background: rgba(244, 188, 74, 0.2); }
+      #hud .surf-status { grid-column: 1 / 4; text-align: center; color: rgba(231, 250, 251, 0.75); font-size: 11px; font-weight: 760; letter-spacing: 0.12em; min-height: 14px; }
+      #hud .surf-status[data-tone="good"] { color: #8ff1d5; }
+      #hud .surf-status[data-tone="air"] { color: #ffe69a; }
+      #hud .surf-status[data-tone="bad"] { color: #ff8d83; }
+      #hud .surf-meter { grid-column: 1 / 4; height: 4px; border-radius: 3px; background: rgba(255,255,255,0.09); overflow: hidden; }
+      #hud .surf-meter i { display: block; width: 100%; height: 100%; transform: scaleX(0); transform-origin: left; background: linear-gradient(90deg, #36bfc1, #9df5dc, #fff1a7); transition: transform 90ms linear; }
+      #hud .surf-controls { grid-column: 1 / 4; text-align: center; color: rgba(219, 242, 244, 0.48); font-size: 8px; letter-spacing: 0.06em; }
+      #hud .surf-hud.pulse { animation: surf-pulse 240ms ease-out; }
+      #hud .surf-hud.wipeout { animation: surf-wipeout 420ms ease-out; }
+      @keyframes surf-pulse { 50% { transform: translate(-50%, 0) scale(1.025); filter: brightness(1.15); } }
+      @keyframes surf-wipeout { 35% { transform: translate(-50%, 0) rotate(-1.2deg); border-color: rgba(255, 107, 95, 0.65); } }
+      @media (max-width: 620px) {
+        #hud .surf-hud { top: max(10px, env(safe-area-inset-top)); padding: 9px 12px 8px; }
+        #hud .surf-controls { display: none; }
+        #hud .surf-score > span { font-size: 20px; }
       }
     </style>
   </head>
