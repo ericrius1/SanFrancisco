@@ -236,7 +236,7 @@ async function sampleBehavior(c) {
   return samples;
 }
 
-function runAssertions(samples, fence, pageErrors) {
+function runAssertions(samples, fence, audio, nature, pageErrors) {
   const results = [];
   const push = (name, pass, detail) => {
     results.push({ name, pass, detail });
@@ -316,6 +316,21 @@ function runAssertions(samples, fence, pageErrors) {
   );
 
   push(
+    "dog-bark-audio-live",
+    audio.context === "running" &&
+      audio.layerGain > 0.5 &&
+      nature.always > 0.01 &&
+      audio.cueCounts.chase + audio.cueCounts.return > 0,
+    `ctx ${audio.context}, dog layer ${audio.layerGain}, FX tap ${nature.always}, cues ${JSON.stringify(audio.cueCounts)}, last ${JSON.stringify(audio.lastVocal)}`
+  );
+
+  push(
+    "dog-idle-bark-sparse",
+    audio.ambientCount >= 1 && audio.ambientCount <= 2,
+    `${audio.ambientCount} park-wide idle bark(s) in ${SIM_SECONDS}s (expected 1-2)`
+  );
+
+  push(
     "no-console-errors",
     pageErrors.length === 0,
     pageErrors.length === 0 ? "clean run" : `${pageErrors.length} error(s): ${pageErrors.slice(0, 3).join(" | ").slice(0, 400)}`
@@ -336,7 +351,8 @@ async function main() {
   const proc = spawn(chrome, [
     `--user-data-dir=${profile}`, "--headless=new", `--remote-debugging-port=${port}`,
     "--enable-unsafe-webgpu", "--enable-features=WebGPUDeveloperFeatures", "--use-angle=metal",
-    "--hide-scrollbars", "--mute-audio", `--window-size=${W},${H}`, `${SERVER_URL}/?autostart&fullfps`
+    "--autoplay-policy=no-user-gesture-required", "--hide-scrollbars", "--mute-audio",
+    `--window-size=${W},${H}`, `${SERVER_URL}/?autostart&fullfps`
   ], { cwd: ROOT, stdio: "ignore" });
   chromeProc = proc;
   await sleep(2500);
@@ -399,8 +415,30 @@ async function main() {
   })()`);
   if (gateTicks < 0) throw new Error("dog park activity gate never opened (camera outside 420 m?)");
   console.log(`[probe] activity gate open after ${gateTicks} ticks`);
+  await ev(c, `window.__sf.nature.unlock()`);
+  await sleep(120);
+  // Deterministic smoke cue through the world's real callback boundary. Owner
+  // loops remain probabilistic by design, so they cannot be the only proof.
+  await ev(c, `(()=>{
+    const sf=window.__sf, ch=sf.coronaHeights, oldRandom=Math.random;
+    const dog=ch.dogs[0], oldController=dog.controller;
+    sf.tick(${DT});
+    try {
+      Math.random=()=>0;
+      dog.controller="player";
+      ch.cueDogAudio(dog,"chase");
+      sf.dogParkAudio.update(${DT},sf.player.renderPosition);
+    } finally {
+      dog.controller=oldController;
+      Math.random=oldRandom;
+    }
+    return sf.dogParkAudio.debugState;
+  })()`);
   const fence = await checkFence(c);
   const samples = await sampleBehavior(c);
+  const audio = await ev(c, `window.__sf.dogParkAudio.debugState`);
+  const nature = await ev(c, `window.__sf.nature.debugState`);
+  console.log(`[probe] dog audio: ${JSON.stringify(audio)}; FX tap ${nature.always}`);
   writeFileSync(path.join(OUT, "behavior.json"), JSON.stringify(samples));
   console.log(`[probe] ${samples.length} samples → ${path.join(OUT, "behavior.json")}`);
 
@@ -466,7 +504,7 @@ async function main() {
     }
   }
 
-  const results = runAssertions(samples, fence, pageErrors);
+  const results = runAssertions(samples, fence, audio, nature, pageErrors);
   writeFileSync(path.join(OUT, "results.json"), JSON.stringify({ results, shots: shotPaths, failedViews }, null, 2));
   console.log(`[probe] screenshots + results in ${OUT}`);
   cleanup();

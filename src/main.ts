@@ -1,8 +1,9 @@
 import * as THREE from "three/webgpu";
+import * as TSL from "three/tsl";
 import { Inspector } from "three/addons/inspector/Inspector.js";
 import Stats from "three/addons/libs/stats.module.js";
 import CameraControls from "camera-controls";
-import { CAMERA_TUNING, CONFIG, FLOWER_TUNING, FOLIAGE_TUNING, RENDER_MODE, RENDER_TUNING, START, START_DEFAULTS, WORLD_TUNING } from "./config";
+import { CAMERA_TUNING, CITYGEN_TUNING, CONFIG, FLOWER_TUNING, FOLIAGE_TUNING, RENDER_MODE, RENDER_TUNING, START, START_DEFAULTS, WORLD_TUNING } from "./config";
 import { loadPlayerState, resetAllTweaks, savePlayerState } from "./core/persist";
 import { Input } from "./core/input";
 import { tracer } from "./core/hitchTracer";
@@ -51,6 +52,7 @@ import { Paintballs, PaintSkins, PAINTBALL_SPEED } from "./fx/paintball";
 import { Bubbles } from "./fx/bubbles";
 import { WorldCursor } from "./fx/worldCursor";
 import { WorldQueries, ProxySet } from "./core/worldQueries";
+import { BuildingRayRefiner } from "./core/buildingRayRefine";
 import { Toolbar, TOOL_ORDER, TOOL_VERB, type ToolName } from "./ui/toolbar";
 import { AvatarSelector } from "./ui/avatarSelector";
 import { BoardSelector } from "./ui/boardSelector";
@@ -65,7 +67,7 @@ import type { Creatures } from "./gameplay/creatures";
 import type { Forest, AnimalKind } from "./gameplay/forest";
 import type { GrassDisplacer } from "./world/garden";
 import { BOTANICAL_GARDEN_BOUNDS } from "./world/garden/layout";
-import type { CityGenRing, ColliderBox } from "./world/citygen";
+import type { CityGenRing, ColliderBox, ColliderMesh } from "./world/citygen";
 import { Islands } from "./gameplay/islands";
 import { Hunt } from "./gameplay/hunt";
 import { FetchBall } from "./gameplay/fetchBall";
@@ -94,7 +96,7 @@ import { createRenderPipeline } from "./render/pipeline";
 import { createDynamicResolution } from "./render/dynamicRes";
 import { POSTFX_TUNING } from "./render/postfx";
 import { DebugPanel } from "./ui/debug";
-import { ColliderDebug, type DebugBox } from "./ui/colliderDebug";
+import { ColliderDebug, type DebugBox, type DebugMesh } from "./ui/colliderDebug";
 import { CalibrationChart } from "./ui/calibrationChart";
 import { Net, makeFunName, hasChosenName, pickName } from "./net/net";
 import { RemotePlayers } from "./net/remotes";
@@ -458,6 +460,13 @@ async function boot() {
   // broadphase cast over a dedicated query world of entity proxies, raced against
   // the static-world caster.
   const worldQueries = new WorldQueries(physics);
+  // Building ray refinement: baked building colliders overshoot the true
+  // footprint by up to ~2 m, so every raycastWorld consumer (paint, the world
+  // cursor, golf bounces) re-tests building hits against the RENDERED citygen
+  // geometry — splats land on the visible wall, and rays aimed through gaps
+  // between far buildings no longer stop mid-air on the loose box.
+  const buildingRayRefiner = new BuildingRayRefiner(scene);
+  physics.setBuildingRayRefiner(buildingRayRefiner);
 
   // Frame-budget scheduler: ALL deferrable bursty work (streamed physics bodies,
   // citygen assembly, material warmups) queues here and drains under a per-frame
@@ -626,11 +635,11 @@ async function boot() {
   } catch (err) {
     console.warn("[boot] corona heights unavailable:", err);
   }
-  // Fetch-the-ball loop: hold-to-throw (ball appears only while winding up;
-  // hands empty after release). Walk up and press E to pick one up, or take it
-  // from a waiting dog. A free dog in the Corona Heights park chases park
-  // throws, carries back and waits — two full fetches adopt it as a pet. Free
-  // balls, in-flight fetch and pet follow are driven every frame by
+  // Fetch-the-ball loop: hold-to-throw (ball + overhand windup start immediately;
+  // release before 1s stows, hold longer for power). Walk up and press E to pick
+  // one up, or take it from a waiting dog. A free dog in the Corona Heights park
+  // chases park throws, carries back and waits — two full fetches adopt it as a
+  // pet. Free balls, in-flight fetch and pet follow are driven every frame by
   // fetchBall.update (tool-agnostic). park is a getter — coronaHeights is
   // null-until-built.
   fetchBall = new FetchBall({
@@ -1564,25 +1573,29 @@ async function boot() {
   // camera-locked row of known-albedo spheres for reading the tone grade.
   const calibrationChart = new CalibrationChart(scene);
   const colliderBoxes: DebugBox[] = [];
+  const colliderMeshes: DebugMesh[] = [];
   const dbgBaked: { x: number; y: number; z: number; hx: number; hy: number; hz: number; yaw: number; index: boolean }[] = [];
   const dbgWalls: ColliderBox[] = [];
   const dbgInteriors: ColliderBox[] = [];
+  const dbgRoofs: ColliderMesh[] = [];
   const syncColliderDebug = () => {
     const on = Boolean(RENDER_TUNING.values.colliderDebug);
     if (on !== colliderDebug.visible) colliderDebug.setVisible(on);
     if (!on) return;
     colliderBoxes.length = 0;
+    colliderMeshes.length = 0;
     physics.debugBuildingBodies(dbgBaked);
     for (const b of dbgBaked) {
       // red = baked visual-tile body, orange = citywide-index body
       colliderBoxes.push({ ...b, r: 1, g: b.index ? 0.55 : 0.12, b: 0.12 });
     }
     if (citygenRing.current) {
-      citygenRing.current.debugColliders(dbgWalls, dbgInteriors);
+      citygenRing.current.debugColliders(dbgWalls, dbgInteriors, dbgRoofs);
       for (const c of dbgWalls) colliderBoxes.push({ ...c, r: 0.15, g: 1, b: 0.3 });      // green = walk-in wall
       for (const c of dbgInteriors) colliderBoxes.push({ ...c, r: 0.25, g: 0.55, b: 1 }); // blue = interior
+      for (const c of dbgRoofs) colliderMeshes.push({ ...c, r: 0.15, g: 1, b: 0.3 });      // green = walk-in roof
     }
-    colliderDebug.sync(colliderBoxes);
+    colliderDebug.sync(colliderBoxes, colliderMeshes);
   };
 
   const aim = new THREE.Vector3();
@@ -2719,8 +2732,8 @@ async function boot() {
         forest?.fireGummy(rayOrigin, aim, player.velocity);
       }
     } else if (tool === "ball") {
-      // Hold ≥1s to spot the ball in hand, then wind up; release to throw.
-      // Hands stay empty afterward — pick thrown balls back up with E.
+      // Hold to wind up overhand (meter fills); release after 1s to throw,
+      // earlier stows. Hands empty afterward — pick balls back up with E.
       if (fetchBall) {
         chase.interactionDir(aim, player);
         const cancelled =
@@ -3200,7 +3213,13 @@ async function boot() {
 
   const exposeDebugHooks = () => {
     Object.assign(window as never, {
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, goldenGateTennis, pickleball, pickleballAmbient, pickleballAudio, pickleballUI, coronaHeights, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, rocketRiders, boatLaunchers, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, underwater, seaPillars, water, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, setFoliageVisible, buskers, boardSelector, siteGate }
+      // renderIdle: probes MUST wait for this before capture phases — while the
+      // deferred render warmup runs, tick() early-returns without rendering, so
+      // screenshots would capture a stale boot-pose frame no matter what the
+      // camera was set to.
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, goldenGateTennis, pickleball, pickleballAmbient, pickleballAudio, pickleballUI, coronaHeights, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, rocketRiders, boatLaunchers, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, siteGate,
+        TSL,
+        renderIdle: () => modulesReady && !lateRenderWarmupActive }
     });
   };
   if (import.meta.env.DEV || new URLSearchParams(location.search).has("profile")) {

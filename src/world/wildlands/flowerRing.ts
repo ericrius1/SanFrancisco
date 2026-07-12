@@ -26,16 +26,15 @@ import {
   Fn,
   Loop,
   mix,
-  modelWorldMatrix,
   normalView,
   positionLocal,
   positionViewDirection,
   uniform,
-  vec3,
-  vec4
+  vec3
 } from "three/tsl";
 import { groundSway, WIND_DIR } from "../groundcover/sway";
 import { DISPLACERS, MAX_DISPLACERS } from "../groundcover/displacers";
+import { fadeAroundInstanceAnchor, instanceAnchorWorld, worldOffsetToModelLocal } from "../groundcover/instanceDeform";
 import { hash2, smoothstep, worleyClump } from "../groundcover/scatter";
 import { flowerDriftAt, grassyGround, nearAnyWildRegion, wildRegionAt } from "./layout";
 import type { GardenTerrain } from "../garden/layout";
@@ -248,12 +247,14 @@ const BUILDERS = [poppyGeometry, lupineGeometry, yarrowGeometry, goldfieldGeomet
 // ---- material ------------------------------------------------------------------
 
 const STEM_COL = vec3(0.12, 0.22, 0.09);
-const FLOWER_FADE_FOCUS = uniform(new THREE.Vector2(1e6, 1e6));
-const FLOWER_REACH_U = uniform(80);
 
-let sharedMaterial: THREE.MeshSSSNodeMaterial | null = null;
-function flowerMaterial(): THREE.MeshSSSNodeMaterial {
-  if (sharedMaterial) return sharedMaterial;
+type FlowerMaterialState = {
+  material: THREE.MeshSSSNodeMaterial;
+  focus: THREE.Vector2;
+  reach: N;
+};
+
+function flowerMaterial(): FlowerMaterialState {
   // MeshSSS (same family as the grass) so petals are TRANSLUCENT — light passes
   // through them and they glow when back-lit, the ethereal look from the reference.
   const mat = new THREE.MeshSSSNodeMaterial();
@@ -264,15 +265,20 @@ function flowerMaterial(): THREE.MeshSSSNodeMaterial {
   const headMask: N = attribute("aHead", "float");
   const grad: N = attribute("aG", "float"); // 0 bloom centre → 1 petal tip
   const bloom: N = attribute("aBloom", "vec3"); // per-instance bloom colour
-  // Per-instance (cosYaw, sinYaw, worldX, worldZ). We must carry the world anchor in
-  // an attribute because modelWorldMatrix on an InstancedMesh is the MESH origin, not
-  // the instance's — exactly how the grass passes its anchor (aGrassWind.zw).
-  const inst: N = attribute("aInst", "vec4");
+  // positionNode runs after the instance matrix in Three r185. Keep the exact
+  // mesh-local instance translation available so LOD scales around the root,
+  // never around the world's origin. W carries precomputed yaw colour variance.
+  const flowerAnchor: N = attribute("aFlowerAnchor", "vec4");
+  const anchorLocal: N = flowerAnchor.xyz;
+  const anchorWorld: N = instanceAnchorWorld(anchorLocal);
+  const focus = new THREE.Vector2(1e6, 1e6);
+  const focusU: N = uniform(focus);
+  const reachU: N = uniform(80);
 
   // COLOUR-FROM-ROTATION (the article's cheap-variation trick): a flower's yaw
   // nudges its brightness, so a patch of the same species + tint still varies bloom
-  // to bloom for free — no extra attribute, no extra pass.
-  const rotShade: N = inst.x.mul(0.1).add(inst.y.mul(0.06)).add(1.0);
+  // to bloom for free — packed beside the anchor, no extra buffer or pass.
+  const rotShade: N = flowerAnchor.w;
   const bloomV: N = bloom.mul(rotShade);
   // Petal COLOUR RAMP: just a small luminous lift at the very centre → the SATURATED
   // bloom over most of the petal (a soft glow without washing the flower out — pale
@@ -298,42 +304,36 @@ function flowerMaterial(): THREE.MeshSSSNodeMaterial {
   mat.thicknessPowerNode = uniform(3.0);
   mat.thicknessScaleNode = uniform(9.0);
 
-  const anchorWorld: N = (modelWorldMatrix as N).mul(vec4(inst.z, 0, inst.w, 1)).xz;
-
   // SHARED trample — read the same displacer field the grass reads, so walking a
   // drift presses the blooms down as the grass flattens (head dips, wind damps).
   const crush: N = (Fn(() => {
     const c = (float(0) as N).toVar();
     Loop(MAX_DISPLACERS, ({ i }: { i: N }) => {
       const d = (DISPLACERS as N).element(i);
-      const len = anchorWorld.sub(d.xy).length().max(1e-4);
+      const len = anchorWorld.xz.sub(d.xy).length().max(1e-4);
       const infl = d.z.sub(len).div(d.z.max(1e-4)).clamp(0, 1);
       c.addAssign(infl.mul(infl).mul(d.w));
     });
     return c.min(1);
   }) as N)();
 
-  // SHARED wind — the exact grass sway signal, leaned along the shared WIND_DIR and
-  // rotated into this instance's local frame via its (cos,sin) yaw so every flower
-  // AND every grass blade lean the same world direction at the same phase/gust.
-  const swayAmt: N = groundSway(anchorWorld);
-  const wWorldX: N = swayAmt.mul(WIND_DIR.x);
-  const wWorldZ: N = swayAmt.mul(WIND_DIR.z);
-  const localX: N = wWorldX.mul(inst.x).sub(wWorldZ.mul(inst.y)); // R(-yaw) * worldWind
-  const localZ: N = wWorldX.mul(inst.y).add(wWorldZ.mul(inst.x));
+  // SHARED wind — form every offset in world space, then map that VECTOR (w=0)
+  // through only the mesh world inverse. The instance transform already ran.
+  const swayAmt: N = groundSway(anchorWorld.xz);
   const windDamp: N = float(1).sub(crush.mul(0.7));
-  const windOffset: N = vec3(localX, float(0), localZ).mul(0.11).mul(swayW).mul(windDamp);
-  const dip: N = vec3(0, crush.mul(-0.4).mul(swayW), 0); // head sinks when stepped on
+  const windWorld: N = vec3(WIND_DIR.x, 0, WIND_DIR.z).mul(swayAmt).mul(0.11).mul(swayW).mul(windDamp);
+  const dipWorld: N = vec3(0, crush.mul(-0.4).mul(swayW), 0); // head sinks when stepped on
 
   // Fade toward the ring rim (shared idea with the grass) so blooms shrink to nothing
   // at the edge instead of popping in as the ring re-scatters.
-  const dist: N = anchorWorld.sub(FLOWER_FADE_FOCUS).length();
-  const fade: N = (FLOWER_REACH_U as N).sub(dist).div((FLOWER_REACH_U as N).mul(0.16).max(1)).clamp(0, 1);
+  const dist: N = anchorWorld.xz.sub(focusU).length();
+  const fade: N = reachU.sub(dist).div(reachU.mul(0.16).max(1)).clamp(0, 1);
 
-  mat.positionNode = (positionLocal as N).mul(fade).add(windOffset.mul(fade)).add(dip);
+  const scaled: N = fadeAroundInstanceAnchor(positionLocal as N, anchorLocal, fade);
+  const offsetLocal: N = worldOffsetToModelLocal(windWorld.add(dipWorld).mul(fade));
+  mat.positionNode = scaled.add(offsetLocal);
   mat.envMapIntensity = 0.5;
-  sharedMaterial = mat;
-  return mat;
+  return { material: mat, focus, reach: reachU };
 }
 
 // ---- ring ----------------------------------------------------------------------
@@ -361,7 +361,8 @@ export type FlowerRing = {
 export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: number) => boolean): FlowerRing {
   const group = new THREE.Group();
   group.name = "wildlands_flowers";
-  const material = flowerMaterial();
+  const materialState = flowerMaterial();
+  const material = materialState.material;
   const geoms = BUILDERS.map((b) => b());
 
   const cellsAcross = (MAX_REACH * 2) / SPACING;
@@ -375,10 +376,10 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
     mesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
     const bloom = new THREE.InstancedBufferAttribute(new Float32Array(capPerSpecies * 3), 3);
     bloom.setUsage(THREE.StaticDrawUsage);
-    const inst = new THREE.InstancedBufferAttribute(new Float32Array(capPerSpecies * 4), 4);
-    inst.setUsage(THREE.StaticDrawUsage);
+    const anchor = new THREE.InstancedBufferAttribute(new Float32Array(capPerSpecies * 4), 4);
+    anchor.setUsage(THREE.StaticDrawUsage);
     mesh.geometry.setAttribute("aBloom", bloom);
-    mesh.geometry.setAttribute("aInst", inst);
+    mesh.geometry.setAttribute("aFlowerAnchor", anchor);
     mesh.count = 0;
     group.add(mesh);
     return mesh;
@@ -395,9 +396,9 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
   function write(mesh: THREE.InstancedMesh, list: Row[]) {
     const m = mesh.instanceMatrix.array as Float32Array;
     const bloomAttr = mesh.geometry.getAttribute("aBloom") as THREE.InstancedBufferAttribute;
-    const instAttr = mesh.geometry.getAttribute("aInst") as THREE.InstancedBufferAttribute;
+    const anchorAttr = mesh.geometry.getAttribute("aFlowerAnchor") as THREE.InstancedBufferAttribute;
     const bloom = bloomAttr.array as Float32Array;
-    const inst = instAttr.array as Float32Array;
+    const anchor = anchorAttr.array as Float32Array;
     for (let i = 0; i < list.length; i++) {
       const f = list[i];
       dummy.position.set(f.x, f.y, f.z);
@@ -408,15 +409,15 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
       bloom[i * 3] = f.r;
       bloom[i * 3 + 1] = f.g;
       bloom[i * 3 + 2] = f.b;
-      inst[i * 4] = Math.cos(f.yaw);
-      inst[i * 4 + 1] = Math.sin(f.yaw);
-      inst[i * 4 + 2] = f.x;
-      inst[i * 4 + 3] = f.z;
+      anchor[i * 4] = f.x;
+      anchor[i * 4 + 1] = f.y;
+      anchor[i * 4 + 2] = f.z;
+      anchor[i * 4 + 3] = 1 + Math.cos(f.yaw) * 0.1 + Math.sin(f.yaw) * 0.06;
     }
     mesh.count = list.length;
     mesh.instanceMatrix.needsUpdate = true;
     bloomAttr.needsUpdate = true;
-    instAttr.needsUpdate = true;
+    anchorAttr.needsUpdate = true;
   }
 
   function resample(fx: number, fz: number) {
@@ -425,8 +426,7 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
     const density = Math.max(0, T.density as number);
     const clumpiness = Math.min(1, Math.max(0, T.clumpiness as number));
     const clumpSize = Math.max(2, T.clumpSize as number);
-    FLOWER_REACH_U.value = reach;
-    FLOWER_FADE_FOCUS.value.set(fx, fz);
+    materialState.reach.value = reach;
 
     for (const list of rows) list.length = 0;
     const r2 = reach * reach;
@@ -500,6 +500,9 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
   return {
     group,
     update(focus) {
+      // Keep fade centred on the live player every frame; only the deterministic
+      // scatter itself is throttled by RESAMPLE_STEP.
+      materialState.focus.set(focus.x, focus.z);
       const dx = focus.x - last.x, dz = focus.z - last.z;
       if (dx * dx + dz * dz < RESAMPLE_STEP * RESAMPLE_STEP) return;
       last.x = focus.x;

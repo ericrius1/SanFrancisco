@@ -586,32 +586,47 @@ export class Player {
     return rigHandWorld(this.#walkRig, "R", out);
   }
 
-  /** Additive throw swing on the right arm + torso: cock back through t≈0.4, whip
-   *  forward at t≈0.5, settle to neutral by t=1. Deltas taper to 0 at both ends so
-   *  the base pose shows through when idle/settled. */
+  /** Additive baseball-style overhand: cock the arm high behind the head through
+   *  t≈0.4, whip over the top at t≈0.5, settle through follow-through by t=1.
+   *  Deltas taper to 0 at both ends so the base pose shows through when idle. */
   #applyThrowSwing(r: Rig) {
     const t = this.#throwT;
-    let armX: number, foreX: number, twist: number;
+    let armX: number, armZ: number, foreX: number, twist: number, lean: number;
     if (t < 0.4) {
-      const k = THREE.MathUtils.smoothstep(t, 0, 0.4); // cock back, fold elbow, wind up
-      armX = -1.5 * k;
-      foreX = 1.3 * k;
-      twist = 0.35 * k;
-    } else if (t < 0.62) {
-      const k = THREE.MathUtils.smoothstep(t, 0.4, 0.62); // whip forward, extend, unwind
-      armX = THREE.MathUtils.lerp(-1.5, 2.4, k);
-      foreX = THREE.MathUtils.lerp(1.3, 0.1, k);
-      twist = THREE.MathUtils.lerp(0.35, -0.4, k);
+      // Pitcher windup: raise + coil — arm high behind the head, elbow cocked.
+      const k = THREE.MathUtils.smoothstep(t, 0, 0.4);
+      armX = -2.15 * k;
+      armZ = -1.25 * k;
+      foreX = 1.65 * k;
+      twist = 0.62 * k;
+      lean = -0.14 * k;
+    } else if (t < 0.58) {
+      // Over-the-top release: uncoil and whip the arm forward/down.
+      const k = THREE.MathUtils.smoothstep(t, 0.4, 0.58);
+      armX = THREE.MathUtils.lerp(-2.15, 2.55, k);
+      armZ = THREE.MathUtils.lerp(-1.25, 0.2, k);
+      foreX = THREE.MathUtils.lerp(1.65, 0.08, k);
+      twist = THREE.MathUtils.lerp(0.62, -0.55, k);
+      lean = THREE.MathUtils.lerp(-0.14, 0.28, k);
     } else {
-      const k = THREE.MathUtils.smoothstep(t, 0.62, 1); // relax back to the base pose
-      armX = THREE.MathUtils.lerp(2.4, 0, k);
-      foreX = THREE.MathUtils.lerp(0.1, 0, k);
-      twist = THREE.MathUtils.lerp(-0.4, 0, k);
+      // Follow-through across the body, then relax.
+      const k = THREE.MathUtils.smoothstep(t, 0.58, 1);
+      armX = THREE.MathUtils.lerp(2.55, 0, k);
+      armZ = THREE.MathUtils.lerp(0.2, 0, k);
+      foreX = THREE.MathUtils.lerp(0.08, 0, k);
+      twist = THREE.MathUtils.lerp(-0.55, 0, k);
+      lean = THREE.MathUtils.lerp(0.28, 0, k);
     }
     r.armR.rotation.x += armX;
+    r.armR.rotation.z += armZ;
     r.foreR.rotation.x += foreX;
     r.torso.rotation.y += twist;
-    r.head.rotation.y += twist * 0.4;
+    r.torso.rotation.x += lean;
+    r.head.rotation.y += twist * 0.35;
+    // Glove-side balance arm drifts out a little during the coil.
+    const balance = t < 0.4 ? THREE.MathUtils.smoothstep(t, 0, 0.4) : t < 0.58 ? 1 - THREE.MathUtils.smoothstep(t, 0.4, 0.58) : 0;
+    r.armL.rotation.z += 0.55 * balance;
+    r.armL.rotation.x += 0.25 * balance;
   }
 
   /** Board airborne state — the hoverboard hum softens in the air. */

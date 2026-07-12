@@ -20,6 +20,7 @@ import {
   type CoronaXZ
 } from "./layout";
 import { makeSummitCrags, summitKeepOut, summitPlatformLift } from "./summitCrags";
+import { fitGroundY } from "../groundcover/grounding";
 
 const DETAIL_RANGE = 1450;
 const ACTIVITY_RANGE = 420;
@@ -561,6 +562,7 @@ function makeHillGrass(map: WorldMap) {
   const dummy = new THREE.Object3D();
   const color = new THREE.Color();
   const normal = new THREE.Vector3();
+  const sampleGroundTop = (x: number, z: number) => map.groundTop(x, z);
   let count = 0;
   for (let gz = -49; gz <= 49 && count < capacity; gz++) {
     for (let gx = -46; gx <= 46 && count < capacity; gx++) {
@@ -570,13 +572,17 @@ function makeHillGrass(map: WorldMap) {
       if (q > 0.94 || hash2(gx, gz, 7) > 0.22) continue;
       if (pointInPolygon(x, z, CORONA_DOG_PARK) || distanceToTrails(x, z) < 2.7) continue;
       if (summitKeepOut(x, z, 1)) continue;
-      const y = map.groundTop(x, z);
+      const centerY = map.groundTop(x, z);
       map.normal(x, z, normal, 2);
-      if (normal.y < 0.86 || (y > 140 && hash2(gx, gz, 11) > 0.48)) continue;
+      if (normal.y < 0.86 || (centerY > 140 && hash2(gx, gz, 11) > 0.48)) continue;
       const s = 0.45 + hash2(gx, gz, 13) * 0.9;
-      dummy.position.set(x, y + 0.045, z);
+      const scaleX = s * (0.72 + hash2(gx, gz, 19) * 0.5);
+      const scaleZ = s * (0.72 + hash2(gx, gz, 23) * 0.5);
+      const groundY = fitGroundY(sampleGroundTop, x, z, 0.5 * Math.max(scaleX, scaleZ), 0.85, 0.045);
+      if (groundY === null) continue;
+      dummy.position.set(x, groundY, z);
       dummy.rotation.set(0, hash2(gx, gz, 17) * Math.PI * 2, 0);
-      dummy.scale.set(s * (0.72 + hash2(gx, gz, 19) * 0.5), s, s * (0.72 + hash2(gx, gz, 23) * 0.5));
+      dummy.scale.set(scaleX, s, scaleZ);
       dummy.updateMatrix();
       mesh.setMatrixAt(count, dummy.matrix);
       color.setHex(hash2(gx, gz, 29) > 0.45 ? 0x7c7d34 : 0x536f35).offsetHSL((hash2(gx, gz, 31) - 0.5) * 0.05, 0, (hash2(gx, gz, 37) - 0.5) * 0.12);

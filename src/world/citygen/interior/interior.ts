@@ -14,7 +14,7 @@
 //
 // Determinism: all variation from spec.seed via mulberry32 (rng). Emissive-only
 // lighting (no THREE lights — the app has a fixed LightPool), so every room reads.
-import type { BuildingSpec, ColliderBox, Panel, Vec2 } from "../core/types";
+import type { BuildingSpec, ColliderBox, ModuleInstance, Panel, Vec2 } from "../core/types";
 import { PanelBuilder } from "../core/facade";
 import { ensureCCW, triangulate, centroid, streetEdgeIndex, pointInPoly, distToPolyEdge } from "../core/footprint";
 import { doorMetrics } from "../core/collider";
@@ -24,7 +24,7 @@ import { MAX_FLOORS, INSET, bboxOf, inset, rectArea, rectCX, rectCZ, rectMinDim,
 import { partition, buildWalls, deck, planCirculation, polyCeiling, polyGroundSlab, type EntryAccess } from "./rooms";
 import { planStair, buildStair, stairFits, type StairPlan } from "./stairs";
 import { furnish, type Role } from "./props";
-import { dressInteriorShell, type FrontOpening } from "./shell";
+import { dressInteriorShell, type FrontOpening, type WindowOpening } from "./shell";
 import { interiorStyle, type InteriorUse } from "./style";
 
 export interface BuiltInterior {
@@ -90,7 +90,70 @@ function roomiest(rooms: Rect[], avoid = -1): number {
   return best;
 }
 
-export function buildInterior(spec: BuildingSpec, zone: InteriorZone = "residential"): BuiltInterior {
+/**
+ * Rotate each building-space ModuleInstance window into the SAME local frame
+ * `buildInterior` lays the room plan out in (rotate −θ about the footprint
+ * centroid — the exact inverse of the local→world map applied to panels below),
+ * then find which `poly` edge it sits on: project both pane endpoints onto
+ * every edge's line, keep the edge whose OUTWARD normal matches the window's
+ * own outward normal (az, −ax rotated the same way) and whose perpendicular
+ * distance from the endpoints is smallest. `t0/t1` become the param range along
+ * that edge; `y0/y1` stay in world height (storeys are compared in that frame).
+ * A window matching no edge closely (degenerate footprint, mismatched grammar)
+ * is silently dropped — dressInteriorShell falls back to its synthetic view
+ * quad for that wall instead of carving a hole in the wrong place.
+ */
+function localWindowOpenings(
+  windows: readonly ModuleInstance[],
+  poly: readonly Vec2[],
+  ctrX: number, ctrZ: number, cosT: number, sinT: number,
+): WindowOpening[] {
+  if (!windows.length) return [];
+  const toLocal = (x: number, z: number): Vec2 => {
+    const dx = x - ctrX, dz = z - ctrZ;
+    return [ctrX + dx * cosT + dz * sinT, ctrZ - dx * sinT + dz * cosT];
+  };
+  const out: WindowOpening[] = [];
+  for (const win of windows) {
+    const [x0, z0] = toLocal(win.ox, win.oz);
+    const [x1, z1] = toLocal(win.ox + win.ax * win.w, win.oz + win.az * win.w);
+    // world outward normal (az, −ax) rotated by the same −θ used for points
+    // (a direction needs no translation)
+    const owx = win.az, owz = -win.ax;
+    const lnx = owx * cosT + owz * sinT, lnz = -owx * sinT + owz * cosT;
+    let bestEdge = -1, bestT0 = 0, bestT1 = 0, bestErr = Infinity;
+    for (let edge = 0; edge < poly.length; edge++) {
+      const [ex0, ez0] = poly[edge], [ex1, ez1] = poly[(edge + 1) % poly.length];
+      const ex = ex1 - ex0, ez = ez1 - ez0, L = Math.hypot(ex, ez);
+      if (L < 0.5) continue;
+      const ux = ex / L, uz = ez / L;
+      // interior/shell.ts's edge normal (−uz, ux) is INWARD (ensureCCW ring);
+      // the window's outward normal must point the opposite way on its wall.
+      const inX = -uz, inZ = ux;
+      if (-inX * lnx + -inZ * lnz < 0.7) continue; // not the same wall orientation
+      const t0 = ((x0 - ex0) * ux + (z0 - ez0) * uz) / L;
+      const t1 = ((x1 - ex0) * ux + (z1 - ez0) * uz) / L;
+      if (t0 < -0.3 || t1 > 1.3) continue;
+      const perp0 = (x0 - ex0) * inX + (z0 - ez0) * inZ;
+      const perp1 = (x1 - ex0) * inX + (z1 - ez0) * inZ;
+      const err = Math.abs(perp0) + Math.abs(perp1);
+      if (err < bestErr) { bestErr = err; bestEdge = edge; bestT0 = Math.min(t0, t1); bestT1 = Math.max(t0, t1); }
+    }
+    if (bestEdge < 0 || bestErr > 0.6) continue;
+    out.push({
+      edge: bestEdge,
+      t0: Math.max(0, Math.min(1, bestT0)), t1: Math.max(0, Math.min(1, bestT1)),
+      y0: win.oy, y1: win.oy + win.h,
+    });
+  }
+  return out;
+}
+
+export function buildInterior(
+  spec: BuildingSpec,
+  zone: InteriorZone = "residential",
+  windows: readonly ModuleInstance[] = [],
+): BuiltInterior {
   // Lay the whole interior out in the FOOTPRINT'S LOCAL FRAME. SF lots are rotated
   // ~30–45° off the world axes, so an axis-aligned-bbox layout (what this used to
   // do) puts slabs/rooms/stairs/furniture metres OUTSIDE the real walls. We rotate
@@ -110,6 +173,12 @@ export function buildInterior(spec: BuildingSpec, zone: InteriorZone = "resident
     const dx = x - ctrX, dz = z - ctrZ;
     return [ctrX + dx * cosT + dz * sinT, ctrZ - dx * sinT + dz * cosT] as Vec2;
   });
+  // Real ModuleInstance windows (kit-of-parts, world-space, pre-proud-transform
+  // — see BuiltBuilding.windows) rotated into this SAME local frame and matched
+  // to a `poly` edge, so the shell can carve a true hole aligned to the actual
+  // pane instead of drawing a synthetic painted-view quad. Computed ONCE for the
+  // whole building; dressInteriorShell filters by y-range per storey.
+  const windowOpenings = localWindowOpenings(windows, poly, ctrX, ctrZ, cosT, sinT);
   const tris = triangulate(poly);
   const bb = bboxOf(poly);
   const bbArea = inset(bb, INSET);
@@ -242,7 +311,7 @@ export function buildInterior(spec: BuildingSpec, zone: InteriorZone = "resident
     // Interior plaster hides the exterior's DoubleSide brick/clapboard; window
     // frames, curtains and daylight are one coherent dressing pass. Ground floor
     // keeps the real front-door span completely open.
-    const shell = dressInteriorShell(out, poly, fY, storeyH, style, k === 0 ? frontOpening : null);
+    const shell = dressInteriorShell(out, poly, fY, storeyH, style, k === 0 ? frontOpening : null, windowOpenings);
 
     // partition walls (skip on open plans), then the stair up to the next floor
     // Partitions meet the ceiling underside. The old 3.05 m aesthetic cap left a

@@ -4,11 +4,11 @@
 // panel ("collider x-ray"). Colours name the source:
 //   red    = baked building body (visual tile stream)
 //   orange = baked building body (citywide index — regions no one is looking at)
-//   green  = CityGen walk-in wall (detail tier)
+//   green  = CityGen walk-in wall / roof (detail tier)
 //   blue   = CityGen interior (floor slabs / stair / furniture)
-// Rebuilt each frame it's on from a caller-supplied box list; depthTest off so
-// the boxes read through geometry (that's the point — you want to see a box that
-// sits where nothing is drawn).
+// Rebuilt each frame it's on from caller-supplied box/mesh lists; depthTest off
+// so the colliders read through geometry (that's the point — you want to see a
+// shape that sits where nothing is drawn).
 import * as THREE from "three/webgpu";
 
 /** One oriented collider box in world space + its overlay colour. */
@@ -16,6 +16,14 @@ export interface DebugBox {
   x: number; y: number; z: number;
   hx: number; hy: number; hz: number;
   yaw: number;
+  r: number; g: number; b: number;
+}
+
+/** One local-space indexed triangle mesh collider + its world origin/colour. */
+export interface DebugMesh {
+  x: number; y: number; z: number;
+  vertices: ArrayLike<number>;
+  indices: ArrayLike<number>;
   r: number; g: number; b: number;
 }
 
@@ -35,7 +43,7 @@ export class ColliderDebug {
   #line: THREE.LineSegments;
   #pos: Float32Array;
   #col: Float32Array;
-  #cap: number; // capacity in boxes
+  #cap: number; // capacity in line vertices
   #cx = new Float64Array(8);
   #cy = new Float64Array(8);
   #cz = new Float64Array(8);
@@ -45,9 +53,9 @@ export class ColliderDebug {
     // The active broadphase is capped below this in normal play. Reserving the
     // modest debug buffer up front avoids a geometry/vertex-layout mutation on
     // the first checkbox click; #grow remains as a safety valve for dense scenes.
-    this.#cap = 1024;
-    this.#pos = new Float32Array(this.#cap * VERTS_PER_BOX * 3);
-    this.#col = new Float32Array(this.#cap * VERTS_PER_BOX * 3);
+    this.#cap = 1024 * VERTS_PER_BOX;
+    this.#pos = new Float32Array(this.#cap * 3);
+    this.#col = new Float32Array(this.#cap * 3);
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.BufferAttribute(this.#pos, 3));
     geo.setAttribute("color", new THREE.BufferAttribute(this.#col, 3));
@@ -73,20 +81,22 @@ export class ColliderDebug {
     this.#line.visible = on;
   }
 
-  #grow(boxes: number): void {
-    if (boxes <= this.#cap) return;
-    this.#cap = Math.max(boxes, Math.ceil(this.#cap * 1.5), 64);
-    this.#pos = new Float32Array(this.#cap * VERTS_PER_BOX * 3);
-    this.#col = new Float32Array(this.#cap * VERTS_PER_BOX * 3);
+  #grow(vertices: number): void {
+    if (vertices <= this.#cap) return;
+    this.#cap = Math.max(vertices, Math.ceil(this.#cap * 1.5), 64);
+    this.#pos = new Float32Array(this.#cap * 3);
+    this.#col = new Float32Array(this.#cap * 3);
     const geo = this.#line.geometry;
     geo.setAttribute("position", new THREE.BufferAttribute(this.#pos, 3));
     geo.setAttribute("color", new THREE.BufferAttribute(this.#col, 3));
   }
 
   /** Rebuild the wireframe from the current active-collider set. */
-  sync(boxes: readonly DebugBox[]): void {
+  sync(boxes: readonly DebugBox[], meshes: readonly DebugMesh[] = []): void {
     if (!this.visible) return;
-    this.#grow(boxes.length);
+    let vertexCount = boxes.length * VERTS_PER_BOX;
+    for (const mesh of meshes) vertexCount += mesh.indices.length * 2;
+    this.#grow(vertexCount);
     const pos = this.#pos;
     const col = this.#col;
     // precompute the 8 world corners of each box, then stream its 12 edges
@@ -111,10 +121,30 @@ export class ColliderDebug {
         o += 3;
       }
     }
+    // Draw every triangle edge. Duplicate shared edges are harmless in this
+    // opt-in overlay and keep arbitrary static meshes debuggable without an
+    // allocation-heavy edge-dedup pass each frame.
+    for (const mesh of meshes) {
+      const vertices = mesh.vertices;
+      const indices = mesh.indices;
+      for (let i = 0; i + 2 < indices.length; i += 3) {
+        const a = indices[i], b = indices[i + 1], c = indices[i + 2];
+        for (const [u, v] of [[a, b], [b, c], [c, a]] as const) {
+          let k = u * 3;
+          pos[o] = mesh.x + vertices[k]; pos[o + 1] = mesh.y + vertices[k + 1]; pos[o + 2] = mesh.z + vertices[k + 2];
+          col[o] = mesh.r; col[o + 1] = mesh.g; col[o + 2] = mesh.b;
+          o += 3;
+          k = v * 3;
+          pos[o] = mesh.x + vertices[k]; pos[o + 1] = mesh.y + vertices[k + 1]; pos[o + 2] = mesh.z + vertices[k + 2];
+          col[o] = mesh.r; col[o + 1] = mesh.g; col[o + 2] = mesh.b;
+          o += 3;
+        }
+      }
+    }
     const geo = this.#line.geometry;
     (geo.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;
     (geo.getAttribute("color") as THREE.BufferAttribute).needsUpdate = true;
-    geo.setDrawRange(0, boxes.length * VERTS_PER_BOX);
+    geo.setDrawRange(0, o / 3);
   }
 
   dispose(): void {

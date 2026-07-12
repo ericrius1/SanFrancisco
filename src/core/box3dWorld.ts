@@ -19,6 +19,7 @@ import type {
   b3JointId,
   b3WorldId,
   b3ShapeId,
+  b3MeshData,
   b3Quat,
   b3Vec3,
   b3BodyType,
@@ -58,6 +59,17 @@ export type BoxOptions = {
   bullet?: boolean;
   /** Collision/query category bits for this shape (default 1). Lets query-only
    * worlds tag proxies so a cast's maskBits can include/exclude them. */
+  categoryBits?: bigint;
+};
+export type StaticMeshOptions = {
+  /** World transform of the mesh's local-space vertices. */
+  position: Vec3;
+  /** Flat local-space xyz triples. */
+  vertices: ArrayLike<number>;
+  /** Flat triangle indices. */
+  indices: ArrayLike<number>;
+  friction?: number;
+  restitution?: number;
   categoryBits?: bigint;
 };
 export type SphereOptions = {
@@ -175,6 +187,10 @@ export class PhysicsWorld {
   #world: b3WorldId;
   #types: [b3BodyType, b3BodyType, b3BodyType];
   #bodies = new Map<number, b3BodyId>();
+  // Triangle-mesh shapes retain their b3MeshData pointer for their whole
+  // lifetime. Keep it beside the owning body and free it immediately after the
+  // body/shape is destroyed (hull data, by contrast, is copied at creation).
+  #meshes = new Map<number, b3MeshData>();
   #joints = new Map<number, b3JointId>();
   #keyToHandle = new Map<string, number>();
   #handleKey = new Map<number, string>();
@@ -233,6 +249,43 @@ export class PhysicsWorld {
     return this.#register(id);
   }
 
+  /** Create a static triangle mesh. Intended for footprint-faithful level
+   * geometry (roofs/terrain), not moving bodies. The mesh data must outlive the
+   * shape, so this facade owns and releases it with the returned body handle. */
+  createStaticMesh(options: StaticMeshOptions): number {
+    const m = this.#m;
+    const vertices = Float32Array.from(options.vertices);
+    const indices = Uint32Array.from(options.indices);
+    if (vertices.length < 9 || vertices.length % 3 !== 0 || indices.length < 3 || indices.length % 3 !== 0) {
+      throw new Error("Static mesh needs xyz vertices and triangle indices");
+    }
+
+    const mesh = m.b3CreateMesh(vertices, indices);
+    if (!mesh) throw new Error("Box3D rejected static mesh geometry");
+
+    const bd = m.b3DefaultBodyDef();
+    bd.type = this.#types[BodyType.Static];
+    bd.position = { x: options.position[0], y: options.position[1], z: options.position[2] };
+    const id = m.b3CreateBody(this.#world, bd);
+    const sd = m.b3DefaultShapeDef();
+    sd.baseMaterial.friction = options.friction ?? 0.55;
+    sd.baseMaterial.restitution = options.restitution ?? 0.05;
+    if (options.categoryBits !== undefined) sd.filter.categoryBits = options.categoryBits;
+
+    try {
+      m.b3CreateMeshShape(id, sd, mesh, { x: 1, y: 1, z: 1 });
+    } catch (error) {
+      m.b3DestroyBody(id);
+      m.b3DestroyMesh(mesh);
+      throw error;
+    }
+
+    tracer.count("bodyCreate");
+    const handle = this.#register(id);
+    this.#meshes.set(handle, mesh);
+    return handle;
+  }
+
   createSphere(options: SphereOptions): number {
     const m = this.#m;
     const dynamic = options.type === BodyType.Dynamic;
@@ -283,6 +336,11 @@ export class PhysicsWorld {
     // callers, and destroyJoint below guards against already-freed joints.
     tracer.count("bodyDestroy");
     this.#m.b3DestroyBody(id);
+    const mesh = this.#meshes.get(bodyHandle);
+    if (mesh) {
+      this.#m.b3DestroyMesh(mesh);
+      this.#meshes.delete(bodyHandle);
+    }
     this.#bodies.delete(bodyHandle);
     const key = this.#handleKey.get(bodyHandle);
     if (key !== undefined) {
@@ -701,6 +759,10 @@ export class PhysicsWorld {
 
   dispose(): void {
     this.#m.b3DestroyWorld(this.#world);
+    // Mesh shapes retain raw b3MeshData pointers; once the world has destroyed
+    // every owning shape it is safe (and necessary) to release those buffers.
+    for (const mesh of this.#meshes.values()) this.#m.b3DestroyMesh(mesh);
+    this.#meshes.clear();
     this.#bodies.clear();
     this.#joints.clear();
     this.#keyToHandle.clear();
