@@ -713,6 +713,7 @@ export const buildHandpanist: MusicianBuilder = (audio, part) => {
       group.parent?.remove(group);
       for (const g of ownedGeos) g.dispose(); // face + styling + pan + strands —
       for (const m of ownedMats) m.dispose(); // never the rig's shared cache
+      for (const m of Object.values(rig.avatar.materials)) m.dispose();
     }
   };
 };

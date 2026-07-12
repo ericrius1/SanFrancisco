@@ -64,6 +64,19 @@ export type BuskerTrioOptions = {
   /** terrain sampler (map.groundHeight) — used on every (re)placement */
   groundHeight: (x: number, z: number) => number;
   physics?: Physics | null;
+  /** Plain-data transport state restored by the development HMR boundary. */
+  state?: BuskerTrioState;
+};
+
+export type BuskerTrioState = {
+  version: 1;
+  placement: { x: number; z: number; yaw: number };
+  visible: boolean;
+  songIndex: number;
+  phase: TrioPhase;
+  phaseTime: number;
+  silenceRemaining: number;
+  elapsed: number;
 };
 
 export class BuskerTrio {
@@ -88,6 +101,7 @@ export class BuskerTrio {
   #schedIdx: Record<BuskerId, number> = { ukulele: 0, handpan: 0, flute: 0 };
   #clock: TrioClock = { phase: "countin", phaseTime: 0, songTime: 0, beat: 0, wind: 0.3 };
   #tmp = new THREE.Vector3();
+  #disposed = false;
 
   constructor(opts: BuskerTrioOptions) {
     this.#groundHeight = opts.groundHeight;
@@ -108,6 +122,7 @@ export class BuskerTrio {
     }
 
     this.setPlacement(opts.x, opts.z, opts.yaw ?? 0);
+    if (opts.state) this.#restoreState(opts.state);
     applyShadowDiet(this.group);
     // Prune the ~280-node subtree from the scene's per-frame matrix pass;
     // update() refreshes it manually while the trio is on-screen and animating.
@@ -118,7 +133,7 @@ export class BuskerTrio {
    * it on the terrain. Safe to call at runtime — use it when Corona Heights'
    * detail pass settles and the summit spot moves. */
   setPlacement(x: number, z: number, yaw = this.group.rotation.y) {
-    const y = this.#groundHeight(x, z);
+    const y = this.#groundHeight(x, z) + 0;
     this.group.position.set(x, y, z);
     this.group.rotation.y = yaw;
     this.#refreshMatrices();
@@ -211,6 +226,19 @@ export class BuskerTrio {
     return this.#clock;
   }
 
+  snapshotState(): BuskerTrioState {
+    return {
+      version: 1,
+      placement: { x: this.group.position.x, z: this.group.position.z, yaw: this.group.rotation.y },
+      visible: this.group.visible,
+      songIndex: this.#songIdx,
+      phase: this.#phase,
+      phaseTime: this.#phaseTime,
+      silenceRemaining: this.#silenceRemaining,
+      elapsed: this.#elapsed
+    };
+  }
+
   update(dt: number, camera: THREE.Camera, gust = 0, sunElevation = 90) {
     dt = Math.min(dt, 0.1);
     this.#elapsed += dt;
@@ -278,12 +306,15 @@ export class BuskerTrio {
   }
 
   dispose() {
+    if (this.#disposed) return;
+    this.#disposed = true;
     for (const musician of this.#musicians.values()) musician.dispose();
     this.#musicians.clear();
     this.#fireflies.dispose();
     this.#perch.dispose();
     this.#audio.dispose();
     this.group.parent?.remove(this.group);
+    this.group.clear();
   }
 
   /** The root sits outside the scene's auto matrix pass (matrixWorldAutoUpdate
@@ -305,7 +336,39 @@ export class BuskerTrio {
       this.#anchor = (ctx ? ctx.currentTime : 0) + 0.06;
     }
   }
+
+  #restoreState(state: BuskerTrioState) {
+    this.setPlacement(state.placement.x, state.placement.z, state.placement.yaw);
+    this.group.visible = state.visible;
+    this.#songIdx = THREE.MathUtils.clamp(Math.trunc(state.songIndex), 0, SONGS.length - 1);
+    this.#song = SONGS[this.#songIdx];
+    this.#songSeconds = this.#song.beats * SEC_PER_BEAT;
+    for (const [id, musician] of this.#musicians) musician.setPart(this.#song.parts[id]);
+    this.#phase = state.phase;
+    this.#phaseTime = Math.max(0, state.phaseTime);
+    this.#silenceRemaining = Math.max(0, state.silenceRemaining);
+    this.#elapsed = Math.max(0, state.elapsed);
+    this.#schedIdx = { ukulele: 0, handpan: 0, flute: 0 };
+    this.#audio.holdSilent(this.#silenceRemaining > 0);
+    const ctx = this.#audio.ctx;
+    if (this.#phase === "playing" && ctx) this.#anchor = ctx.currentTime - this.#phaseTime;
+  }
 }
+
+export type BuskerTrioApi = Pick<
+  BuskerTrio,
+  | "group"
+  | "clock"
+  | "setPlacement"
+  | "restartSong"
+  | "cycleSong"
+  | "cueShow"
+  | "seek"
+  | "captureStream"
+  | "seatWorld"
+  | "forEachPickTarget"
+  | "update"
+>;
 
 /** No-audio environments (tests, unsupported browsers): a detached context
  * stand-in is impossible, so give musicians a tap whose scheduling is

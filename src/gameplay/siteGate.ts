@@ -25,8 +25,13 @@ export type GameSite = {
   onWake?(): void;
 };
 
+export type GameSiteRegistration = {
+  replace(site: GameSite): void;
+  dispose(): void;
+};
+
 export function createSiteGate(): {
-  register(site: GameSite): void;
+  register(site: GameSite): GameSiteRegistration;
   update(x: number, z: number): void;
   awake(id: string): boolean;
 } {
@@ -40,6 +45,29 @@ export function createSiteGate(): {
       const entry: Entry = { site, awake: false };
       entries.push(entry);
       byId.set(site.id, entry);
+      let disposed = false;
+      return {
+        replace(next) {
+          if (disposed) return;
+          const wasAwake = entry.awake;
+          if (wasAwake) entry.site.setAwake(false);
+          if (byId.get(entry.site.id) === entry) byId.delete(entry.site.id);
+          entry.site = next;
+          byId.set(next.id, entry);
+          if (wasAwake) {
+            next.setAwake(true);
+            next.onWake?.();
+          }
+        },
+        dispose() {
+          if (disposed) return;
+          disposed = true;
+          if (entry.awake) entry.site.setAwake(false);
+          const index = entries.indexOf(entry);
+          if (index >= 0) entries.splice(index, 1);
+          if (byId.get(entry.site.id) === entry) byId.delete(entry.site.id);
+        }
+      };
     },
 
     update(x: number, z: number) {

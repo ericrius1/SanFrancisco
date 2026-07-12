@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:play": "SF_HMR=0 vite",
     "build": "tsc --noEmit && vite build && node tools/precompress-dist.mjs",
     "precompress": "node tools/precompress-dist.mjs",
     "render:buskers": "node tools/render-buskers-cinematic.mjs",
@@ -25,6 +26,8 @@
     "test:car-jump": "node --experimental-strip-types tools/car-jump-physics-probe.mjs",
     "test:roof-collision": "node tools/roof-collision-probe.mjs",
     "test:roof-visuals": "node tools/citygen-roof-visual-probe.mjs",
+    "test:hmr": "node --experimental-strip-types tools/hmr-lifecycle-probe.mjs",
+    "test:hmr:browser": "node tools/hmr-browser-probe.mjs",
     "test:groundcover": "node --experimental-strip-types tools/grounding-fit-probe.mjs && node tools/groundcover-anchor-fade-probe.mjs",
     "fetch:osm": "node tools/fetch-osm.mjs",
     "fetch:terrain": "node tools/fetch-terrain.mjs",

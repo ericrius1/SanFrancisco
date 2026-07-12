@@ -17,7 +17,7 @@ import type { Player } from "../player/player";
 import type { Physics } from "../core/physics";
 import type { ChaseCamera } from "../core/camera";
 import type { WorldMap } from "../world/heightmap";
-import type { BuskerTrio } from "../gameplay/buskers";
+import type { BuskerTrioApi } from "../gameplay/buskers";
 import type { FetchBall } from "../gameplay/fetchBall";
 import type { CoronaHeightsPark } from "../world/coronaHeights";
 import type { WorldQueries } from "../core/worldQueries";
@@ -53,7 +53,7 @@ export type DemoContext = {
     setExpanded: (on: boolean) => void;
   };
   map?: WorldMap;
-  buskers?: BuskerTrio;
+  buskers?: BuskerTrioApi;
   fetchBall?: FetchBall;
   coronaHeights?: CoronaHeightsPark;
   worldQueries?: WorldQueries;

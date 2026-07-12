@@ -237,7 +237,7 @@ export class WorldQueries {
  */
 export class ProxySet {
   #q: WorldQueries;
-  #live = new Map<unknown, { handle: number; sig: string }>();
+  #live = new Map<unknown, { handle: number; sig: string; id: number; object: THREE.Object3D | null }>();
   #seen = new Set<unknown>();
 
   constructor(q: WorldQueries) {
@@ -266,9 +266,10 @@ export class ProxySet {
       (spec.self ? "!" : "") +
       (s.form === "box" ? `b${s.hx},${s.hy},${s.hz}` : s.form === "sphere" ? `s${s.radius}` : `c${s.halfHeight},${s.radius}`);
     let e = this.#live.get(key);
-    if (!e || e.sig !== sig) {
+    const object = spec.object ?? null;
+    if (!e || e.sig !== sig || e.id !== spec.id || e.object !== object) {
       if (e) this.#q.removeProxy(e.handle);
-      e = { handle: this.#q.addProxy({ ...spec, position: [px, py, pz] }), sig };
+      e = { handle: this.#q.addProxy({ ...spec, position: [px, py, pz] }), sig, id: spec.id, object };
       this.#live.set(key, e);
     }
     this.#q.moveProxy(e.handle, px, py, pz, qx, qy, qz, qw);
