@@ -31,8 +31,17 @@ export type Rig = {
   armR: THREE.Group;
   foreL: THREE.Group;
   foreR: THREE.Group;
-  handL: THREE.Group; // mitt group at the wrist tip (clasps a held ball)
+  handL: THREE.Group; // mitt group at the wrist tip (grip frame for held items)
   handR: THREE.Group;
+  // articulated mitt joints, cached at build so setHandPose is lookup-free.
+  // fingers = proximal hinge at the palm's front-bottom edge; fingersTip nests
+  // inside it; thumb hinges on the inner palm edge and sweeps across to oppose.
+  fingersL: THREE.Group;
+  fingersR: THREE.Group;
+  fingersTipL: THREE.Group;
+  fingersTipR: THREE.Group;
+  thumbL: THREE.Group;
+  thumbR: THREE.Group;
   legL: THREE.Group;
   legR: THREE.Group;
   shinL: THREE.Group;
@@ -73,10 +82,7 @@ export type RigAvatarState = {
 const DEFAULT_RIG_AVATAR = avatarFromSeed("local-default");
 
 const STATIC_MAT = {
-  sole: new THREE.MeshLambertMaterial({ color: 0x1b1d22 }),
-  clubGrip: new THREE.MeshLambertMaterial({ color: 0x263137 }),
-  clubShaft: new THREE.MeshLambertMaterial({ color: 0xa9b8be }),
-  clubHead: new THREE.MeshLambertMaterial({ color: 0x5c6d73 })
+  sole: new THREE.MeshLambertMaterial({ color: 0x1b1d22 })
 };
 
 // tiny geometry cache — three rigs share every box size they have in common
@@ -288,14 +294,33 @@ export function buildRig(avatar: AvatarTraits = DEFAULT_RIG_AVATAR): Rig {
     shoulder.add(fore);
     armBlocks.push(part(fore, materials.sleeve, 0.1, 0.16, 0.12, 0, -0.07, 0));
     part(fore, materials.skin, 0.09, 0.12, 0.1, 0, -0.2, 0); // wrist
-    const hand = new THREE.Group(); // mitt: palm stays put, flap curls to clasp
+    // Articulated mitt: palm stays put; a two-segment finger chain hinges at
+    // the palm's front-bottom edge and a thumb sweeps across from the inner
+    // edge. setHandPose curls all three so a 0.03–0.05 m grip bar (club shaft,
+    // paddle handle, bow riser — axis = hand local X) sits enclosed in the
+    // pocket under the palm front. All boxes stay under the castShadow volume
+    // threshold — this rig exists per player AND per NPC.
+    const hand = new THREE.Group();
     hand.position.set(0, -0.3, -0.01); // same spot the old hand box sat
     hand.name = side === 1 ? "hand-L" : "hand-R";
     fore.add(hand);
     part(hand, materials.skin, 0.09, 0.1, 0.11, 0, 0, 0); // palm
-    const flap = part(hand, materials.skin, 0.09, 0.03, 0.1, 0, -0.055, -0.045); // fingers, hinged front-bottom
-    flap.name = side === 1 ? "clasp-L" : "clasp-R";
-    return { shoulder, fore, hand };
+    const fingers = new THREE.Group(); // proximal hinge, front-bottom of palm
+    fingers.name = side === 1 ? "fingers-L" : "fingers-R";
+    fingers.position.set(0, -0.038, -0.05);
+    hand.add(fingers);
+    part(fingers, materials.skin, 0.088, 0.028, 0.06, 0, -0.006, -0.022); // proximal segment
+    const fingersTip = new THREE.Group(); // distal hinge at the proximal's far edge
+    fingersTip.name = side === 1 ? "fingersTip-L" : "fingersTip-R";
+    fingersTip.position.set(0, -0.006, -0.05);
+    fingers.add(fingersTip);
+    part(fingersTip, materials.skin, 0.084, 0.026, 0.048, 0, 0, -0.018); // distal segment
+    const thumb = new THREE.Group(); // inner-edge hinge, opposes across the palm front
+    thumb.name = side === 1 ? "thumb-L" : "thumb-R";
+    thumb.position.set(side * 0.045, -0.025, -0.04);
+    hand.add(thumb);
+    part(thumb, materials.skin, 0.028, 0.032, 0.055, side * 0.004, -0.004, -0.02);
+    return { shoulder, fore, hand, fingers, fingersTip, thumb };
   };
   const aL = arm(1);
   const aR = arm(-1);
@@ -327,6 +352,12 @@ export function buildRig(avatar: AvatarTraits = DEFAULT_RIG_AVATAR): Rig {
     foreR: aR.fore,
     handL: aL.hand,
     handR: aR.hand,
+    fingersL: aL.fingers,
+    fingersR: aR.fingers,
+    fingersTipL: aL.fingersTip,
+    fingersTipR: aR.fingersTip,
+    thumbL: aL.thumb,
+    thumbR: aR.thumb,
     legL: lL.hip,
     legR: lR.hip,
     shinL: lL.shin,
@@ -350,13 +381,30 @@ export function buildRig(avatar: AvatarTraits = DEFAULT_RIG_AVATAR): Rig {
   return rig;
 }
 
-/** Curl a mitt's finger flap over a held ball. Pure visual, layered AFTER the
- *  pose fns each frame: poses overwrite joint rotations but never touch the flap
- *  child, so there's no conflict. `amount`: 0 = open, 1 = closed. */
+/** Curl a mitt around a grip. Pure visual, layered AFTER the pose fns each
+ *  frame: poses overwrite joint rotations but never touch the hand children,
+ *  so there's no conflict. `curl`: 0 = open flat mitt (a relaxed rest bias
+ *  keeps open fingers from reading as a rigid plank), 1 = closed — proximal
+ *  ~55°, distal ~75°, thumb swept ~45° to oppose, sized so a 0.03–0.05 m bar
+ *  at the grip frame (see held.ts) sits enclosed. Allocation-free. */
+export function setHandPose(rig: Rig, side: "L" | "R", curl: number): void {
+  const c = Math.min(1, Math.max(0, curl));
+  const right = side === "R";
+  const fingers = right ? rig.fingersR : rig.fingersL;
+  const tip = right ? rig.fingersTipR : rig.fingersTipL;
+  const thumb = right ? rig.thumbR : rig.thumbL;
+  fingers.rotation.x = -0.3 - 0.96 * c; // rest slope + ~55° curl
+  tip.rotation.x = -0.12 - 1.31 * c; // + ~75°
+  // thumb hinges on the inner edge (+X for L, -X for R) and yaws across the
+  // palm front to press the bar; a small x-curl drops it onto the grip
+  const sideSign = right ? -1 : 1;
+  thumb.rotation.y = sideSign * 0.8 * c;
+  thumb.rotation.x = -0.4 * c;
+}
+
+/** Back-compat alias for the old single-flap clasp API (fetchBall, buskers). */
 export function setRigClasp(rig: Rig, side: "L" | "R", amount: number): void {
-  const hand = side === "R" ? rig.handR : rig.handL;
-  const flap = hand.children.find((c) => c.name.startsWith("clasp")) as THREE.Mesh | undefined;
-  if (flap) flap.rotation.x = -1.15 * Math.min(1, Math.max(0, amount)); // 0 open → curled over a ball
+  setHandPose(rig, side, amount);
 }
 
 /** World position of a throwing/holding hand. The caller MUST have updated world
@@ -394,39 +442,9 @@ export function buildSteeringWheel(): { group: THREE.Group; spin: THREE.Group } 
   return { group, spin };
 }
 
-/** Lightweight club prop. Origin = the TOP of the grip (where the joined hands
- *  hold it), shaft hanging down local -Y. In the golfer's address frame the
- *  ball is in front (local -Z) and the target is to the lead side (local -X),
- *  so the head's toe points -Z (away from the golfer) and its face plate looks
- *  -X (down the line). The Player parents one persistent instance under an
- *  animated chest pivot so the club actually travels with the hands. */
-export function buildGolfClub(): THREE.Group {
-  const group = new THREE.Group();
-  group.name = "golf-club";
-
-  // ~1.1 m grip-to-head so it reaches from the chest-high joined hands down to
-  // a ball out in front at a natural ~45° address lie (measured w/ golf-pose-probe)
-  const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.026, 0.022, 0.24, 7), STATIC_MAT.clubGrip);
-  grip.position.y = -0.11;
-  grip.name = "club-grip";
-  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.017, 0.86, 7), STATIC_MAT.clubShaft);
-  shaft.position.y = -0.66;
-  // head: heel at the shaft, toe reaching -Z; a brighter face plate on the -X
-  // (target) side reads as "this is the side that hits the ball"
-  const head = new THREE.Mesh(new THREE.BoxGeometry(0.085, 0.08, 0.22), STATIC_MAT.clubHead);
-  head.position.set(-0.005, -1.11, -0.06);
-  head.name = "club-head";
-  const face = new THREE.Mesh(new THREE.BoxGeometry(0.014, 0.07, 0.2), STATIC_MAT.clubShaft);
-  face.position.set(-0.052, -1.11, -0.06);
-  const sole = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.02, 0.23), STATIC_MAT.sole);
-  sole.position.set(-0.005, -1.157, -0.06);
-  for (const mesh of [grip, shaft, head, face, sole]) {
-    mesh.castShadow = true;
-    group.add(mesh);
-  }
-  group.visible = false;
-  return group;
-}
+// Item builders live with the grip system now; kept on this module for the
+// pre-held.ts import paths (player.ts and probes).
+export { buildGolfClub } from "./held";
 
 /* ------------------------------------------------------------------- poses */
 
@@ -443,6 +461,15 @@ function golfHinge(): number {
   }
   return 0.62;
 }
+
+/** Golf wrist keyframes (lead hand; the trail hand mirrors y/z). The club is
+ *  rigid in the lead mitt (held.ts attachToHand — shaft down hand -X), so the
+ *  wrist IS the club: address lays the head on the ball, the top cocks the
+ *  shaft high behind the trail shoulder, the finish releases it over the lead
+ *  one. Solved against the live hand frame with the grip probe, DEV-sweepable
+ *  via window.__golfTune (wax..wfz). */
+const GOLF_WRIST = { ax: 0.477, ay: 1.246, az: -0.653, bx: -1.006, by: -1.215, bz: -1.338, fx: 0.607, fy: -0.912, fz: 1.136 };
+type GolfWristTune = Partial<Record<`w${keyof typeof GOLF_WRIST}`, number>>;
 
 export function poseIdle(r: Rig, t: number) {
   const breathe = Math.sin(t * 1.6);
@@ -526,6 +553,16 @@ export function poseGolf(r: Rig, swing: number) {
   set(r.armR, L(1.02, 0.7, 0.62), L(0.34, 0.05, -0.55), L(0.28, 0.95, 0.05));
   set(r.foreL, L(0.32, 1.35, 0.15), 0, L(0, 0, 0.15));
   set(r.foreR, L(0.32, 0.15, 1.35), 0, L(0, 0.15, 0));
+
+  // wrists carry the club (see GOLF_WRIST); the trail hand mirrors so both
+  // mitts read as stacked on the same grip
+  const w = GOLF_WRIST;
+  const t = import.meta.env.DEV ? ((globalThis as unknown as { __golfTune?: GolfWristTune }).__golfTune ?? undefined) : undefined;
+  const wx = L(t?.wax ?? w.ax, t?.wbx ?? w.bx, t?.wfx ?? w.fx);
+  const wy = L(t?.way ?? w.ay, t?.wby ?? w.by, t?.wfy ?? w.fy);
+  const wz = L(t?.waz ?? w.az, t?.wbz ?? w.bz, t?.wfz ?? w.fz);
+  set(r.handR, wx, wy, wz);
+  set(r.handL, wx, -wy, -wz);
 }
 
 /** Airborne (jump/fall): asymmetric tuck with arms flung out. */

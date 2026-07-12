@@ -8,7 +8,7 @@
 // point on the wall plane is `pointOnWall(edge, t, y)` for t∈[0,1] along the
 // segment and world height y; `outset` pushes a point out along the wall's
 // outward normal (bay windows, cornices project outward).
-import type { ArchetypeSpec, Panel, Vec2 } from "./types";
+import type { ArchetypeSpec, ModuleInstance, Panel, Vec2 } from "./types";
 
 export interface FacadeEdge {
   /** endpoints of the wall segment on the ground (x,z) */
@@ -54,15 +54,41 @@ export function outset(p: Vec3, e: FacadeEdge, d: number): Vec3 {
 
 const UV_SCALE = 3.0;
 
-/** Accumulates geometry into one Panel per material id. */
+/** Accumulates geometry into one Panel per material id, plus repeated-module
+ *  INSTANCES (kit-of-parts windows) the render layer draws instanced. Set
+ *  `instancing = false` to force every emitter down the baked-triangle path
+ *  (module templates + legacy demo paths do this). */
 export class PanelBuilder {
   #byMat = new Map<string, Panel>();
+  #instances: ModuleInstance[] = [];
+  #matTable: string[] = [];
+  #matIdx = new Map<string, number>();
+  /** emitters (faceWindow/shaftWindow) prefer `.instance()` while true */
+  instancing = true;
 
   #panel(matId: string): Panel {
     let p = this.#byMat.get(matId);
     if (!p) this.#byMat.set(matId, (p = { materialId: matId, positions: [], normals: [], uvs: [], indices: [] }));
     return p;
   }
+
+  #matIndex(id: string): number {
+    let i = this.#matIdx.get(id);
+    if (i === undefined) { i = this.#matTable.length; this.#matTable.push(id); this.#matIdx.set(id, i); }
+    return i;
+  }
+
+  /** record one module instance (see core/types.ts ModuleInstance for the frame) */
+  instance(module: number, origin: Vec3, along: readonly [number, number], w: number, h: number, trimId: string, glassId: string): void {
+    this.#instances.push({
+      module, ox: origin[0], oy: origin[1], oz: origin[2],
+      ax: along[0], az: along[1], w, h,
+      trim: this.#matIndex(trimId), glass: this.#matIndex(glassId),
+    });
+  }
+
+  moduleInstances(): ModuleInstance[] { return this.#instances; }
+  matTable(): string[] { return this.#matTable; }
 
   /** a quad given four world corners in CCW order (bl, br, tr, tl) + a normal.
    *  UVs come from the quad's own width/height so texel density stays uniform. */
@@ -81,8 +107,10 @@ export class PanelBuilder {
    * An oriented box from a center, with basis vectors (unit `along`, `up`,
    * `normal`) and half-sizes on each. `skipBack` drops the -normal face (used for
    * bay windows flush against the wall so no z-fighting interior face renders).
+   * `skipBottom` drops the -up face for boxes seated on another visible surface;
+   * this avoids coplanar double-sided faces without opening a visible side.
    */
-  box(matId: string, center: Vec3, half: Vec3, along: Vec3, up: Vec3, normal: Vec3, skipBack = false): void {
+  box(matId: string, center: Vec3, half: Vec3, along: Vec3, up: Vec3, normal: Vec3, skipBack = false, skipBottom = false): void {
     const s = (a: number, u: number, n: number): Vec3 => [
       center[0] + along[0] * a + up[0] * u + normal[0] * n,
       center[1] + along[1] * a + up[1] * u + normal[1] * n,
@@ -101,7 +129,7 @@ export class PanelBuilder {
     this.quad(matId, c.lbf, c.ltf, c.ltb, c.lbb, neg(along));             // left (-a)
     this.quad(matId, c.rbf, c.rbb, c.rtb, c.rtf, along);                  // right (+a)
     this.quad(matId, c.ltf, c.rtf, c.rtb, c.ltb, up);                     // top (+u)
-    this.quad(matId, c.lbb, c.rbb, c.rbf, c.lbf, neg(up));                // bottom (-u)
+    if (!skipBottom) this.quad(matId, c.lbb, c.rbb, c.rbf, c.lbf, neg(up)); // bottom (-u)
     if (!skipBack) this.quad(matId, c.rbb, c.lbb, c.ltb, c.rtb, neg(normal)); // back (-n)
   }
 

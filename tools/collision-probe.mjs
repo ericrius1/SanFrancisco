@@ -35,7 +35,7 @@ await build({
   platform: "node",
   logLevel: "error"
 });
-const { selectBodyCandidates, obbPlanarDistance } = await import(outfile);
+const { selectBodyCandidates, obbPlanarDistance, anchorInsideCollider } = await import(outfile);
 
 // --- load the real baked city ----------------------------------------------
 const manifest = JSON.parse(await readFile(path.join(ROOT, "public/data/manifest.json"), "utf8"));
@@ -187,7 +187,15 @@ carAnchors.forEach((a) => {
 check(tight.length <= 120, `tight budget respected (${tight.length} ≤ 120)`);
 check(tightCarsCovered, `even a tight 120 budget still covers every car (nearest walls win)`);
 
-// --- 5. geometric proof: a car driven at the wall STOPS ---------------------
+// --- 5. altitude-aware anti-wedge guard -------------------------------------
+// A player genuinely inside a box must defer its creation, but an airborne
+// hoverboard over the same footprint must be allowed to materialise the roof.
+const guardBox = { i: 0, s: 0, x: 0, y: 5, z: 0, hx: 5, hy: 5, hz: 5, cosYaw: 1, sinYaw: 0 };
+check(anchorInsideCollider(guardBox, { x: 0, y: 5, z: 0, r: 260 }, 2.5), `embedded player defers building body creation`);
+check(!anchorInsideCollider(guardBox, { x: 0, y: 20, z: 0, r: 260 }, 2.5), `airborne player above roof does NOT defer body creation`);
+check(anchorInsideCollider(guardBox, { x: 0, z: 0, r: 60 }, 2.5), `altitude-less auxiliary anchor stays conservative`);
+
+// --- 6. geometric proof: a car driven at the wall STOPS ---------------------
 // 2D slab test (x,z) of the drive segment against the target OBB, mirroring
 // physics.sweepBuildings. Returns hit distance along the segment, or null.
 function sweepSegmentXZ(c, x0, z0, x1, z1) {

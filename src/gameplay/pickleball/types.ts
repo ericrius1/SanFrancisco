@@ -74,6 +74,8 @@ export type PickleballFrameResult = {
   phase: PickleballPhase;
   score: readonly [number, number];
   server: PickleballSide;
+  /** Paddle hits in the current rally (HUD rally counter). */
+  rally: number;
 };
 
 export type PickleballDiagnostics = {

@@ -22,11 +22,12 @@ export type {
 import { CONFIG } from "../config";
 import { tracer } from "./hitchTracer";
 import type { WorldMap } from "../world/heightmap";
+import type { BuildingRayRefiner } from "./buildingRayRefine";
 import type { BuildingCollider, TileStreamer } from "../world/tiles";
 import { BuildingColliderIndex } from "./buildingColliderIndex";
 import {
   selectBodyCandidates,
-  obbContainsXZ,
+  anchorInsideCollider,
   anchorHold,
   type ColliderAnchor,
   type BodyTileSource
@@ -100,6 +101,17 @@ export class Physics {
   // keyed by the stepped-body handle, so a ray strikes citygen geometry exactly
   // where the baked twin has been suppressed.
   #querySolids = new Map<number, number>(); // caller id (stepped handle) -> #solids handle
+  // Classification of each #solids body for raycastWorld's refinement step:
+  // baked-tile building boxes carry their tile key + building index (so a hit can
+  // ask tiles whether the baked mesh is actually DRAWN there), citygen mirrors are
+  // tagged "citygen" (tight exact-poly walls, already flush with the visible
+  // mesh). Landmark boxes stay untagged — the box is the authority for them.
+  #solidTag = new Map<number, { key: string; i: number } | "citygen">();
+  // Optional refiner (core/buildingRayRefine.ts, needs the scene): re-tests
+  // building box hits against the RENDERED citygen geometry so paint/golf rays
+  // land on the visible wall instead of the ~2m-oversized baked OBB.
+  #rayRefiner: BuildingRayRefiner | null = null;
+  #advOrigin = new THREE.Vector3(); // scratch for the continue-past-box re-cast
   // baked OBBs streamed around the player collider anchor, decoupled from the
   // visual tile stream (see buildingColliderIndex.ts). Null until create()
   // finishes loading the manifest.
@@ -338,7 +350,7 @@ export class Physics {
   #gatherAnchors(playerPos: THREE.Vector3): ColliderAnchor[] {
     const out = this.#anchorList;
     out.length = 0;
-    out.push({ x: playerPos.x, z: playerPos.z, r: CONFIG.colliderRadius });
+    out.push({ x: playerPos.x, y: playerPos.y, z: playerPos.z, r: CONFIG.colliderRadius });
     return out;
   }
 
@@ -458,13 +470,15 @@ export class Physics {
       const { key, c } = cand;
       const id = `${key}:${c.i}:${c.s}`;
       if (this.#bodyByBuilding.has(id)) continue;
-      // never materialise a box around an anchor already inside its footprint:
+      // Never materialise a box around an anchor actually inside its 3D volume:
       // some OBBs overhang plazas, and a dynamic body spawned inside a static box
-      // gets pinned by the solver. Defer it — the next update creates it once the
-      // anchor steps out.
+      // gets pinned by the solver. This used to test XZ only, so an airborne board
+      // directly ABOVE a roof was misclassified as embedded and the roof body was
+      // deferred throughout the descent. Altitude-less auxiliary anchors retain
+      // the conservative old behavior.
       let insideAny = false;
       for (const a of anchors) {
-        if (obbContainsXZ(c, a.x, a.z, 2.5)) {
+        if (anchorInsideCollider(c, a, 2.5)) {
           insideAny = true;
           break;
         }
@@ -513,6 +527,11 @@ export class Physics {
     return false;
   }
 
+  /** Hand the scene-aware building-ray refiner to raycastWorld (see below). */
+  setBuildingRayRefiner(refiner: BuildingRayRefiner | null): void {
+    this.#rayRefiner = refiner;
+  }
+
   /**
    * Nearest world surface along a ray: static SOLIDS (buildings + bridge +
    * landmarks) via one broadphase-accelerated cast over the never-stepped
@@ -520,12 +539,59 @@ export class Physics {
    * world hit point, outward surface normal, and what was struck. `kind: "water"`
    * means the ray landed on open bay rather than land. The bridge is a real solid
    * here (deck + rails + underside), so it is hit at any angle — not a top plane.
+   *
+   * Building hits are REFINED when a scene refiner is attached: a baked building
+   * OBB overshoots the true footprint by up to ~2 m, so when the hit box's baked
+   * mesh is hidden (the citygen ring draws the exact-footprint prism / detail
+   * mesh in its place) the ray is re-tested against that rendered geometry near
+   * the box hit. A triangle hit replaces the point/normal (splats sit ON the
+   * visible wall, possibly a hair past `maxDist` — callers treat that as "about
+   * to hit"); no triangle means the ray passed through bake overshoot (a gap
+   * between buildings) and the cast CONTINUES past the loose box. Hits on
+   * citygen's own tight walls, landmarks, or buildings whose baked mesh is
+   * visible return unrefined — the box is (near enough) the visible surface.
    */
   raycastWorld(
     origin: THREE.Vector3,
     dir: THREE.Vector3,
     maxDist: number
   ): { point: THREE.Vector3; normal: THREE.Vector3; kind: "building" | "ground" | "water" } | null {
+    let hit = this.#castWorldOnce(origin, dir, maxDist);
+    const refiner = this.#rayRefiner;
+    if (!refiner) return hit;
+    let advance = 0;
+    for (let iter = 0; iter < 4 && hit; iter++) {
+      if (hit.kind !== "building" || hit.handle === undefined) return hit;
+      const tag = this.#solidTag.get(hit.handle);
+      // untagged (landmark) or citygen exact walls: the box already matches the
+      // rendered surface — return as-is
+      if (!tag || tag === "citygen") return hit;
+      // baked facade still visible (non-citygen archetype / chunk not ready yet):
+      // the box stays the authority — bld_* tile meshes are not raycast here
+      if (!this.tiles.isBuildingMeshHidden(tag.key, tag.i)) return hit;
+      const boxT = advance + hit.distance;
+      const refined = refiner.refine(origin, dir, boxT);
+      if (refined) return { point: refined.point, normal: refined.normal, kind: "building" };
+      // no rendered surface near the box hit — the ray only clipped the bake's
+      // overshoot; step just past the box face and keep casting
+      advance = boxT + 0.05;
+      if (advance >= maxDist) return null;
+      hit = this.#castWorldOnce(
+        this.#advOrigin.copy(origin).addScaledVector(dir, advance),
+        dir,
+        maxDist - advance
+      );
+    }
+    return hit; // iteration cap: fall back to whatever the last cast said
+  }
+
+  /** One raw solids-vs-terrain cast (no refinement). `distance` is metres from
+   * the (possibly advanced) cast origin; `handle` is set for building hits. */
+  #castWorldOnce(
+    origin: THREE.Vector3,
+    dir: THREE.Vector3,
+    maxDist: number
+  ): { point: THREE.Vector3; normal: THREE.Vector3; kind: "building" | "ground" | "water"; distance: number; handle?: number } | null {
     // --- static solids: one broadphase cast over the never-stepped world (dir
     // is unit, so hit.distance is metres). Buildings, bridge + landmarks all live
     // here, so this single call replaces the old per-collider slab sweep.
@@ -592,10 +658,10 @@ export class Physics {
       );
       const normal = this.map.normal(point.x, point.z, new THREE.Vector3());
       const kind = this.map.isWater(point.x, point.z) ? "water" : "ground";
-      return { point, normal, kind };
+      return { point, normal, kind, distance: groundT };
     }
     const point = new THREE.Vector3(origin.x + dir.x * bestT, origin.y + dir.y * bestT, origin.z + dir.z * bestT);
-    return { point, normal: new THREE.Vector3(...bestN!), kind: "building" };
+    return { point, normal: new THREE.Vector3(...bestN!), kind: "building", distance: bestT, handle: this.#solidRay.handle };
   }
 
   // ------------------------------------------------- world-solid query bodies
@@ -642,7 +708,9 @@ export class Physics {
         } else if (!job.started.has(bk)) {
           continue; // alive-flip materialized this building first — don't double-add
         }
-        arr.push(this.#makeSolid(c.x, c.y, c.z, c.hx, c.hy, c.hz, c.yaw));
+        const h = this.#makeSolid(c.x, c.y, c.z, c.hx, c.hy, c.hz, c.yaw);
+        arr.push(h);
+        this.#solidTag.set(h, { key: job.key, i: c.i });
         tracer.count("tileSolids");
       }
       queue.shift();
@@ -659,7 +727,7 @@ export class Physics {
     if (!owned) return;
     for (const bk of owned) {
       const arr = this.#solidByBuilding.get(bk);
-      if (arr) for (const h of arr) this.#solids.destroyBody(h);
+      if (arr) for (const h of arr) { this.#solids.destroyBody(h); this.#solidTag.delete(h); }
       this.#solidByBuilding.delete(bk);
     }
     this.#solidTileIndex.delete(key);
@@ -676,7 +744,11 @@ export class Physics {
       const cols = this.#tileColliders.get(key);
       if (!cols) return;
       const fresh: number[] = [];
-      for (const c of cols) if (c.i === i) fresh.push(this.#makeSolid(c.x, c.y, c.z, c.hx, c.hy, c.hz, c.yaw));
+      for (const c of cols) if (c.i === i) {
+        const h = this.#makeSolid(c.x, c.y, c.z, c.hx, c.hy, c.hz, c.yaw);
+        fresh.push(h);
+        this.#solidTag.set(h, { key, i });
+      }
       if (fresh.length) {
         this.#solidByBuilding.set(bk, fresh);
         const owned = this.#solidTileIndex.get(key) ?? [];
@@ -686,7 +758,7 @@ export class Physics {
         }
       }
     } else if (arr) {
-      for (const h of arr) this.#solids.destroyBody(h);
+      for (const h of arr) { this.#solids.destroyBody(h); this.#solidTag.delete(h); }
       this.#solidByBuilding.set(bk, []); // keep the entry so the tile index still owns it
     }
   }
@@ -703,8 +775,28 @@ export class Physics {
     box: { x: number; y: number; z: number; hx: number; hy: number; hz: number; yaw?: number; quat?: readonly [number, number, number, number] }
   ): void {
     const existing = this.#querySolids.get(id);
+    if (existing !== undefined) { this.#solids.destroyBody(existing); this.#solidTag.delete(existing); }
+    const h = this.#makeSolid(box.x, box.y, box.z, box.hx, box.hy, box.hz, box.yaw ?? 0, box.quat);
+    this.#solidTag.set(h, "citygen");
+    this.#querySolids.set(id, h);
+  }
+
+  /** Register a static triangle mesh in the query world. CityGen roofs use the
+   * exact footprint mesh in both worlds so player contacts and paint/cursor rays
+   * agree even for rotated or concave buildings. */
+  addQueryMesh(
+    id: number,
+    mesh: { x: number; y: number; z: number; vertices: ArrayLike<number>; indices: ArrayLike<number> }
+  ): void {
+    const existing = this.#querySolids.get(id);
     if (existing !== undefined) this.#solids.destroyBody(existing);
-    this.#querySolids.set(id, this.#makeSolid(box.x, box.y, box.z, box.hx, box.hy, box.hz, box.yaw ?? 0, box.quat));
+    const handle = this.#solids.createStaticMesh({
+      position: [mesh.x, mesh.y, mesh.z],
+      vertices: mesh.vertices,
+      indices: mesh.indices,
+      friction: 0.8
+    });
+    this.#querySolids.set(id, handle);
   }
 
   /** Drop a previously registered extra query solid (no-op if the id is unknown). */
@@ -712,6 +804,7 @@ export class Physics {
     const h = this.#querySolids.get(id);
     if (h === undefined) return;
     this.#solids.destroyBody(h);
+    this.#solidTag.delete(h);
     this.#querySolids.delete(id);
   }
 

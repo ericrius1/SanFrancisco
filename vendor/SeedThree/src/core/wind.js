@@ -6,8 +6,14 @@
 // Not exported to glTF (vertex animation is engine-specific); the aWind
 // attribute stays available in the app for future engine-side wind.
 //
-// PIPELINE FACT (verified by reading the COMPILED WGSL, r184 WebGPU backend —
-// do not trust the JS setupPosition order): for InstancedMeshes the instance
+// PIPELINE VERSION NOTE: the block below records the r184 WebGPU behavior that
+// the vendored tree-card attributes were authored against. The host now runs
+// r185, whose NodeMaterial.setupPosition applies instancing BEFORE positionNode.
+// Do not copy this r184 contract into new r185 code. Ground grass is migrated
+// explicitly in grass.js with an anchor-preserving fade and w=0 world offsets;
+// the legacy tree paths retain their existing packed-attribute contract.
+//
+// In r184 (verified from compiled WGSL), for InstancedMeshes the instance
 // matrix is composed into the model transform AFTER positionNode runs. Inside
 // positionNode, positionLocal is the RAW quad-local vertex and positionWorld
 // is modelWorld·(raw local) — NO instance transform. Consequences for any
@@ -157,14 +163,9 @@ if (typeof window !== 'undefined') {
 
 // ---- grass ------------------------------------------------------------------
 //
-// Grass USED to add windDir·sway in pre-instance space with positionWorld as
-// its phase. Per the pipeline note above, that meant (a) each tuft's random
-// yaw ROTATED the bend direction — neighbouring tufts visibly swayed in
-// opposite directions — and (b) positionWorld ≈ the mesh origin for every
-// instance, so the whole meadow shared one phase. Grass now uses the same
-// machinery as the foliage cards: a per-instance counter-rotated wind vector
-// (R⁻¹S⁻¹·windDir, packed in aGrassWind.xy by grass.js) and a per-instance
-// anchor (aGrassWind.zw) whose modelWorld transform drives the phase.
+// Grass is authored separately in grass.js for Three r185's post-instancing
+// positionNode order: an explicit root anchor drives phase and anchor-preserving
+// fade, while a world-space offset is converted through the mesh-world inverse.
 //
 // On top of the coherent two-octave sine, a SCROLLING SIMPLEX-STYLE noise
 // field (MaterialX perlin — same visual family) drifts along the wind heading,
@@ -191,8 +192,8 @@ export function grassWindPosition(bladeHeight = 1) {
 
 /**
  * Scalar sway (± ~windStrength·0.26) at a WORLD-space xz anchor node.
- * Multiply by the per-instance counter-rotated wind vector and the blade's
- * height² to displace tips (see grass.js).
+ * Multiply by the canonical world direction, per-instance amplitude, and the
+ * blade's height² to displace tips (see grass.js).
  */
 export function grassSway(anchorWorldXZ) {
   const t = time.mul(windSpeed);

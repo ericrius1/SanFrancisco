@@ -84,6 +84,52 @@ export interface ColliderBox {
   quat?: readonly [number, number, number, number];
 }
 
+/** Static triangle mesh collider in a local frame. CityGen uses this for thin,
+ * footprint-faithful roof slabs: a single bbox/OBB would bridge concave courts
+ * and create an invisible landing surface outside rotated lots. */
+export interface ColliderMesh {
+  /** World position of the local mesh origin. */
+  x: number; y: number; z: number;
+  /** Flat local-space xyz triples and triangle indices. */
+  vertices: number[];
+  indices: number[];
+}
+
+/**
+ * A repeated façade module emitted as ONE instance record instead of baked
+ * triangles (the kit-of-parts path: a Victorian block is thousands of copies of
+ * the same window, so the renderer draws them all as a few instanced meshes).
+ *
+ * Local module frame: origin at the module's bottom-left ON the wall plane,
+ * +X along the wall (the `a→b` direction the emitter received), +Y up, and the
+ * wall's OUTWARD normal at local −Z (a +Y rotation that maps +X onto `along`
+ * maps −Z onto the CCW-footprint outward normal `(az, −ax)`).
+ *
+ * Geometry inside a module is AFFINE in its (w, h) parameters — every vertex is
+ * `c0 + cW·w + cH·h` (trim cross-sections are metric constants; spans scale).
+ * theme/moduleDefs.ts extracts those coefficients once per module kind and the
+ * render layer evaluates them per instance in the vertex stage.
+ */
+export interface ModuleInstance {
+  /** module template id — MODULE_KINDS index (moduleDefs.ts) */
+  module: number;
+  /** world origin: module bottom-left on the wall plane */
+  ox: number; oy: number; oz: number;
+  /** unit wall direction in XZ (local +X); outward normal = (az, −ax) */
+  ax: number; az: number;
+  /** module parameters (window width / height in metres) */
+  w: number; h: number;
+  /** index into the build's matTable for the trim/frame material id */
+  trim: number;
+  /** index into the build's matTable for the glass material id */
+  glass: number;
+}
+
+export const MODULE_FACE_WINDOW = 0;
+export const MODULE_FACE_WINDOW_ARCHED = 1;
+export const MODULE_SHAFT_WINDOW = 2;
+export const MODULE_KIND_COUNT = 3;
+
 /** Per-archetype style parameters a theme pack supplies to the engine. */
 export interface ArchetypeSpec {
   /** metres per storey (drives floor count from real height) */

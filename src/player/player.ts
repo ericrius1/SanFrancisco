@@ -5,7 +5,6 @@ import type { Input } from "../core/input";
 import type { SavedPlayer } from "../core/persist";
 import {
   applyAvatarToRig,
-  buildGolfClub,
   buildRig,
   buildSteeringWheel,
   poseAir,
@@ -16,9 +15,11 @@ import {
   poseSwim,
   poseWalk,
   rigHandWorld,
-  setRigClasp,
+  setHandPose,
   type Rig
 } from "./rig";
+import { attachToHand, buildBow, buildGolfClub, secondHandCurl, GOLF_CLUB_GRIP, type GripSpec, type HeldItem } from "./held";
+import { ARCHER_BOW_GRIP, poseArcher } from "../gameplay/archery/poses";
 import { avatarFromSeed, normalizeAvatarTraits, type AvatarTraits } from "./avatar";
 import { DEFAULT_DRIVE_SPEC, type Cockpit, type DriveSpec, type PlayerMode } from "./types";
 import { WalkController, WALK_TUNING } from "./walk";
@@ -43,8 +44,15 @@ const V = {
 };
 
 /** DEV-only live golf-pose tuning (window.__golfTune), consumed by the golf
- *  club pivot + poseGolf so tools/golf-pose-probe.mjs can sweep in one boot. */
-type GolfTune = { pivotY?: number; pivotZ?: number; pivotAX?: number; raise?: number; swingZ?: number; hinge?: number };
+ *  grip + poseGolf so tools/golf-pose-probe.mjs can sweep in one boot. The
+ *  old chest-pivot keys (pivotY/pivotZ/pivotAX/raise/swingZ) died with the
+ *  pivot — the club is now solved into the lead hand via attachToHand, so the
+ *  tunables are the item-local grip point/orientation instead. */
+type GolfTune = { gripX?: number; gripY?: number; gripZ?: number; gripRX?: number; gripRY?: number; gripRZ?: number; hinge?: number };
+
+/** DEV-only live archery bow-grip tuning (window.__archeryTune) — same idea
+ *  as GolfTune: presence re-solves the attach every setArcherPose call. */
+type ArcheryTune = { bx?: number; by?: number; bz?: number; brx?: number; bry?: number; brz?: number };
 
 /**
  * Show/hide an embodiment's visual meshes. Embodiments carry no Light objects
@@ -113,11 +121,17 @@ export class Player {
   // Poses are written every rendered frame in #animate.
   #walkRig: Rig;
   #golfClub: THREE.Group;
-  #clubPivot: THREE.Group; // chest-mounted swing pivot the club hangs from
+  #heldClub: HeldItem | null = null; // grip attachment while golfing
   #golfPose = { active: false, swing: 0 };
   #golfAddress = new THREE.Vector3(); // world spot the stance eases toward
   #golfAddressSet = false;
   #golfMeshShift = new THREE.Vector3(); // eased rig-root offset (walk-mesh local)
+  // archery: a persistent bow in the LEFT mitt, the golf-club pattern verbatim
+  // (attach once, toggle visibility; releasing per-frame would zero the wrist)
+  #bow: THREE.Group;
+  #heldBow: HeldItem | null = null;
+  #archerPose = { active: false, draw: 0, pitch: 0 };
+  #bowCarried = false; // bow visible + left mitt curled while merely walking around
   // ball tool: a tennis ball riding the right mitt, shown while held. The clasp
   // + prop visibility are driven every walk frame in #animate (setEmbodimentVisible
   // re-shows every walk mesh on a mode return, so #ballHeld is the true owner).
@@ -167,14 +181,13 @@ export class Player {
     this.#walkRig = buildRig(this.#avatar);
     const walkGroup = new THREE.Group();
     walkGroup.add(this.#walkRig.group); // rig origin already sits at the capsule centre
-    // the club hangs from a chest pivot placed where the joined hands grip it,
-    // so it travels with the shoulder turn; setGolfPose swings the pivot,
-    // poseGolf brings both hands to this same spot
-    this.#clubPivot = new THREE.Group();
-    this.#clubPivot.position.set(0, -0.06, -0.34);
-    this.#walkRig.torso.add(this.#clubPivot);
+    // the club lives IN the lead hand: setGolfPose attaches this persistent
+    // instance via the grip system, so it travels with the swinging arms and
+    // the fingers visibly wrap the grip. Unparented while not golfing.
     this.#golfClub = buildGolfClub();
-    this.#clubPivot.add(this.#golfClub);
+    // the bow rides the left hand for the archery range, hidden until held
+    this.#bow = buildBow();
+    this.#bow.visible = false;
     // tennis ball nestled in the right mitt — rides the animated hand exactly, so
     // a throw launches it from wherever the hand is (no per-frame position math).
     this.#ballMaterial = new THREE.MeshStandardMaterial({ color: TENNIS_BALL_COLOR, roughness: 0.62 });
@@ -489,21 +502,25 @@ export class Player {
   setGolfPose(active: boolean, swing = 0) {
     this.#golfPose.active = active && this.mode === "walk";
     this.#golfPose.swing = THREE.MathUtils.clamp(swing, -1, 1);
-    this.#golfClub.visible = this.#golfPose.active;
-    if (this.#golfPose.active) {
-      const s = this.#golfPose.swing;
-      const t = import.meta.env.DEV ? (window as unknown as { __golfTune?: GolfTune }).__golfTune : undefined;
-      const pAX = t?.pivotAX ?? 0.18;
-      const raise = t?.raise ?? 0.6;
-      const swingZ = t?.swingZ ?? 2.5;
-      this.#clubPivot.position.set(0, t?.pivotY ?? -0.06, t?.pivotZ ?? -0.34);
-      // At address (s=0) the club hangs forward-down to reach the ball out in
-      // front. The Z-arc sweeps the shaft trail-side up on the backswing (s<0)
-      // and to a high lead-side finish (s>0); the X term tilts the shaft back
-      // and UP toward both extremes so the club rises high behind the shoulders
-      // instead of staying flat like a pool cue.
-      this.#clubPivot.rotation.set(pAX - Math.abs(s) * raise, s * 0.28, -s * swingZ);
+    // club into the LEAD (-X, armR → "R") hand: poseGolf joins both hands at
+    // the sternum, so gripping the top of the club with the lead mitt keeps it
+    // tracking the whole swing arc; the trail mitt curls alongside (#animate).
+    // The golf game flips this false→true within a single update while aiming,
+    // so going inactive only HIDES the club — it stays parented in the hand
+    // (same lifetime as the old chest pivot) and #animate neutralises wrists.
+    const t = import.meta.env.DEV ? (window as unknown as { __golfTune?: GolfTune }).__golfTune : undefined;
+    if (this.#golfPose.active && (!this.#heldClub || t)) {
+      // DEV: re-solve the grip every call so the probe can sweep offsets live
+      const spec: GripSpec = t
+        ? {
+            position: [t.gripX ?? GOLF_CLUB_GRIP.position[0], t.gripY ?? GOLF_CLUB_GRIP.position[1], t.gripZ ?? GOLF_CLUB_GRIP.position[2]],
+            rotation: [t.gripRX ?? GOLF_CLUB_GRIP.rotation![0], t.gripRY ?? GOLF_CLUB_GRIP.rotation![1], t.gripRZ ?? GOLF_CLUB_GRIP.rotation![2]]
+          }
+        : GOLF_CLUB_GRIP;
+      this.#heldClub = attachToHand(this.#walkRig, "R", this.#golfClub, spec);
+      secondHandCurl(this.#walkRig, "L", 1);
     }
+    this.#golfClub.visible = this.#golfPose.active;
   }
 
   /** While golfing: world point the stance should occupy (beside the ball).
@@ -513,6 +530,40 @@ export class Player {
     this.#golfAddressSet = !!target;
   }
 
+  /** Gameplay-owned archer pose, the setGolfPose pattern: while active the
+   *  walk/idle animator hands the whole rig to poseArcher(draw, pitch); the
+   *  bow attaches to the LEFT mitt on first use and stays parented (hidden
+   *  when neither aiming nor carrying). `draw` < 0 = nock flourish. */
+  setArcherPose(active: boolean, draw = 0, pitch = 0) {
+    this.#archerPose.active = active && this.mode === "walk";
+    this.#archerPose.draw = THREE.MathUtils.clamp(draw, -1, 1);
+    this.#archerPose.pitch = pitch;
+    const t = import.meta.env.DEV ? (window as unknown as { __archeryTune?: ArcheryTune }).__archeryTune : undefined;
+    if ((this.#archerPose.active || this.#bowCarried) && (!this.#heldBow || t)) {
+      // DEV: re-solve the grip every call so a probe can sweep offsets live
+      const spec: GripSpec = t
+        ? {
+            position: [t.bx ?? ARCHER_BOW_GRIP.position[0], t.by ?? ARCHER_BOW_GRIP.position[1], t.bz ?? ARCHER_BOW_GRIP.position[2]],
+            rotation: [t.brx ?? ARCHER_BOW_GRIP.rotation![0], t.bry ?? ARCHER_BOW_GRIP.rotation![1], t.brz ?? ARCHER_BOW_GRIP.rotation![2]]
+          }
+        : ARCHER_BOW_GRIP;
+      this.#heldBow = attachToHand(this.#walkRig, "L", this.#bow, spec);
+    }
+    this.#bow.visible = this.#archerPose.active || this.#bowCarried;
+  }
+
+  /** Bow-in-hand while walking around the range (no pose override — the
+   *  ordinary walk/idle animator keeps running, the left mitt just curls). */
+  setBowCarried(on: boolean) {
+    if (this.#bowCarried === on) {
+      this.#bow.visible = on || this.#archerPose.active;
+      return;
+    }
+    this.#bowCarried = on;
+    if (on && !this.#heldBow) this.setArcherPose(this.#archerPose.active, this.#archerPose.draw, this.#archerPose.pitch);
+    this.#bow.visible = on || this.#archerPose.active;
+  }
+
   // ---- ball tool (the PlayerBallView backing FetchBall drives) ----
 
   /** Show/hide the held tennis ball and curl the right mitt over it. #animate
@@ -520,7 +571,7 @@ export class Player {
   setBallHeld(held: boolean) {
     this.#ballHeld = held;
     this.#ballProp.visible = held && this.mode === "walk";
-    setRigClasp(this.#walkRig, "R", held ? 1 : 0);
+    setHandPose(this.#walkRig, "R", held ? 1 : 0);
   }
 
   /** Windup→release arm swing, `t` 0..1 (0 = idle, adds nothing). #animate lays
@@ -535,32 +586,47 @@ export class Player {
     return rigHandWorld(this.#walkRig, "R", out);
   }
 
-  /** Additive throw swing on the right arm + torso: cock back through t≈0.4, whip
-   *  forward at t≈0.5, settle to neutral by t=1. Deltas taper to 0 at both ends so
-   *  the base pose shows through when idle/settled. */
+  /** Additive baseball-style overhand: cock the arm high behind the head through
+   *  t≈0.4, whip over the top at t≈0.5, settle through follow-through by t=1.
+   *  Deltas taper to 0 at both ends so the base pose shows through when idle. */
   #applyThrowSwing(r: Rig) {
     const t = this.#throwT;
-    let armX: number, foreX: number, twist: number;
+    let armX: number, armZ: number, foreX: number, twist: number, lean: number;
     if (t < 0.4) {
-      const k = THREE.MathUtils.smoothstep(t, 0, 0.4); // cock back, fold elbow, wind up
-      armX = -1.5 * k;
-      foreX = 1.3 * k;
-      twist = 0.35 * k;
-    } else if (t < 0.62) {
-      const k = THREE.MathUtils.smoothstep(t, 0.4, 0.62); // whip forward, extend, unwind
-      armX = THREE.MathUtils.lerp(-1.5, 2.4, k);
-      foreX = THREE.MathUtils.lerp(1.3, 0.1, k);
-      twist = THREE.MathUtils.lerp(0.35, -0.4, k);
+      // Pitcher windup: raise + coil — arm high behind the head, elbow cocked.
+      const k = THREE.MathUtils.smoothstep(t, 0, 0.4);
+      armX = -2.15 * k;
+      armZ = -1.25 * k;
+      foreX = 1.65 * k;
+      twist = 0.62 * k;
+      lean = -0.14 * k;
+    } else if (t < 0.58) {
+      // Over-the-top release: uncoil and whip the arm forward/down.
+      const k = THREE.MathUtils.smoothstep(t, 0.4, 0.58);
+      armX = THREE.MathUtils.lerp(-2.15, 2.55, k);
+      armZ = THREE.MathUtils.lerp(-1.25, 0.2, k);
+      foreX = THREE.MathUtils.lerp(1.65, 0.08, k);
+      twist = THREE.MathUtils.lerp(0.62, -0.55, k);
+      lean = THREE.MathUtils.lerp(-0.14, 0.28, k);
     } else {
-      const k = THREE.MathUtils.smoothstep(t, 0.62, 1); // relax back to the base pose
-      armX = THREE.MathUtils.lerp(2.4, 0, k);
-      foreX = THREE.MathUtils.lerp(0.1, 0, k);
-      twist = THREE.MathUtils.lerp(-0.4, 0, k);
+      // Follow-through across the body, then relax.
+      const k = THREE.MathUtils.smoothstep(t, 0.58, 1);
+      armX = THREE.MathUtils.lerp(2.55, 0, k);
+      armZ = THREE.MathUtils.lerp(0.2, 0, k);
+      foreX = THREE.MathUtils.lerp(0.08, 0, k);
+      twist = THREE.MathUtils.lerp(-0.55, 0, k);
+      lean = THREE.MathUtils.lerp(0.28, 0, k);
     }
     r.armR.rotation.x += armX;
+    r.armR.rotation.z += armZ;
     r.foreR.rotation.x += foreX;
     r.torso.rotation.y += twist;
-    r.head.rotation.y += twist * 0.4;
+    r.torso.rotation.x += lean;
+    r.head.rotation.y += twist * 0.35;
+    // Glove-side balance arm drifts out a little during the coil.
+    const balance = t < 0.4 ? THREE.MathUtils.smoothstep(t, 0, 0.4) : t < 0.58 ? 1 - THREE.MathUtils.smoothstep(t, 0.4, 0.58) : 0;
+    r.armL.rotation.z += 0.55 * balance;
+    r.armL.rotation.x += 0.25 * balance;
   }
 
   /** Board airborne state — the hoverboard hum softens in the air. */
@@ -732,6 +798,7 @@ export class Player {
       const r = this.#walkRig;
       const walk = this.#modes.walk;
       const golfing = this.#golfPose.active && walk.grounded && !walk.swimming;
+      const archering = !golfing && this.#archerPose.active && walk.grounded && !walk.swimming;
       // golf stance shift: the rig root (not the capsule) eases sideways to
       // stand beside the ball, and eases home again when the pose drops
       if (golfing && this.#golfAddressSet) {
@@ -747,12 +814,22 @@ export class Player {
       // both mitts curl over the grip while golfing; the right mitt also curls
       // over a held tennis ball. #ballHeld owns the ball prop's visibility since
       // setEmbodimentVisible re-shows every walk mesh whenever we return on foot.
-      setRigClasp(r, "L", golfing ? 1 : 0);
-      setRigClasp(r, "R", golfing || this.#ballHeld ? 1 : 0);
+      // the left mitt also wraps a held bow (archery); the string hand curls
+      // only while actually pulling
+      setHandPose(r, "L", golfing || archering || this.#bowCarried ? 1 : 0);
+      setHandPose(r, "R", golfing || this.#ballHeld || (archering && this.#archerPose.draw > 0.05) ? 1 : 0);
+      if (!golfing && !archering) {
+        // only poseGolf/poseArcher rotate the wrist groups; neutralise them
+        // here so the last swing frame doesn't linger into walk/idle
+        r.handL.rotation.set(0, 0, 0);
+        r.handR.rotation.set(0, 0, 0);
+      }
       this.#ballProp.visible = this.#ballHeld;
       applyBallGlow(this.#ballMaterial, this.#ballHeld ? undefined : 0);
       if (golfing) {
         poseGolf(r, this.#golfPose.swing);
+      } else if (archering) {
+        poseArcher(r, this.#archerPose.draw, this.#archerPose.pitch);
       } else if (walk.swimming) {
         this.#strideT += dt * 3.4;
         poseSwim(r, this.#strideT);
