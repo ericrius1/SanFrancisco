@@ -2,9 +2,9 @@ import { createServer } from "node:net";
 import { fileURLToPath, URL } from "node:url";
 import { defineConfig, type Plugin } from "vite";
 
-// Hot module reload toggle: false = no auto-reload on file edits; refresh the
-// browser manually to pick up changes. Flip to true (or set SF_HMR=1) to restore.
-const HMR_ENABLED = process.env.SF_HMR === "1" ? true : false;
+// HMR is the default development workflow. Set SF_HMR=0 for long play sessions
+// where even structural edits should wait for a manual browser refresh.
+const HMR_ENABLED = process.env.SF_HMR !== "0";
 
 const RELAY_PORT = process.env.SF_RELAY_PORT || "8787";
 const RELAY_WS = `ws://localhost:${RELAY_PORT}`;

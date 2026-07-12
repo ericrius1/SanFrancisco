@@ -13,6 +13,7 @@ const TWEAKS_SCHEMA_KEY = "sf-tweaks-schema";
 // grass budgets changed together — discard incompatible saved tweaks.
 const TWEAKS_SCHEMA = "2026-07-camera-occlusion";
 const PLAYER_KEY = "sf-player";
+export const TUNABLES_UPDATED_EVENT = "sf:tunables-updated";
 
 const IDLE_FLUSH_TIMEOUT_MS = 1000;
 const FALLBACK_FLUSH_DELAY_MS = 100;
@@ -139,8 +140,16 @@ type WidenTunable<T extends TunableValue> = T extends boolean ? boolean : T exte
 type Values<S extends Record<string, TunableSpec>> = { [K in keyof S]: WidenTunable<S[K]["v"]> };
 type RefreshableBinding = { refresh(): void };
 
-// every tunables() group, so resetAllTweaks can restore the inline defaults
-const groups: { spec: Record<string, TunableSpec>; values: Record<string, TunableValue> }[] = [];
+type TunableGroupRecord = {
+  spec: Record<string, TunableSpec>;
+  values: Record<string, TunableValue>;
+};
+
+// Keyed by persisted path + schema keys so a hot-evaluated feature reuses the
+// exact values object that existing Tweakpane bindings already reference. The
+// schema suffix matters because a couple of legacy groups intentionally share
+// a storage path (notably the global and garden `grass` controls).
+const groups = new Map<string, TunableGroupRecord>();
 
 /**
  * A persisted tunable group. `values` is the live object gameplay code reads
@@ -150,9 +159,25 @@ const groups: { spec: Record<string, TunableSpec>; values: Record<string, Tunabl
  * Entries with only a `v` (no range/label) are plain tuned constants — no control.
  */
 export function tunables<S extends Record<string, TunableSpec>>(path: string, spec: S) {
-  const values = {} as Values<S>;
-  for (const k in spec) values[k] = tweakDefault(`${path}.${k}`, spec[k].v) as Values<S>[typeof k];
-  groups.push({ spec, values });
+  const groupKey = `${path}\u0000${Object.keys(spec).sort().join("\u0000")}`;
+  let group = groups.get(groupKey);
+  if (!group) {
+    const values: Record<string, TunableValue> = {};
+    for (const k in spec) values[k] = tweakDefault(`${path}.${k}`, spec[k].v);
+    group = { spec, values };
+    groups.set(groupKey, group);
+  } else {
+    const previousSpec = group.spec;
+    for (const k in spec) {
+      if (previousSpec[k] && Object.is(group.values[k], previousSpec[k].v)) {
+        // If the value was still at the old source default, adopt a newly edited
+        // default live. Explicit pane/persisted values remain untouched.
+        group.values[k] = spec[k].v;
+      }
+    }
+    group.spec = spec;
+  }
+  const values = group.values as Values<S>;
   return {
     values,
     /**
@@ -173,9 +198,10 @@ export function tunables<S extends Record<string, TunableSpec>>(path: string, sp
     ) {
       const target = hooks?.target ?? values;
       const bindings: RefreshableBinding[] = [];
-      for (const k in spec) {
-        if (hooks?.keys && !hooks.keys.includes(k)) continue;
-        const { v, ...opts } = spec[k];
+      for (const k in group.spec) {
+        const key = k as keyof S & string;
+        if (hooks?.keys && !hooks.keys.includes(key)) continue;
+        const { v, ...opts } = group.spec[k];
         void v;
         if (Object.keys(opts).length === 0) continue; // tuned constant, no control
         const binding = folder.addBinding(target, k, opts);
@@ -184,7 +210,7 @@ export function tunables<S extends Record<string, TunableSpec>>(path: string, sp
           (values as Record<string, unknown>)[k] = ev.value;
           const last = ev.last ?? true;
           if (last) saveTweak(`${path}.${k}`, ev.value);
-          hooks?.onChange?.(k, ev.value as TunableValue, last);
+          hooks?.onChange?.(key, ev.value as TunableValue, last);
         });
         bindings.push(binding);
       }
@@ -206,7 +232,7 @@ export function resetAllTweaks() {
   for (const k in saved) delete saved[k];
   localStorage.removeItem(TWEAKS_KEY);
   localStorage.setItem(TWEAKS_SCHEMA_KEY, TWEAKS_SCHEMA);
-  for (const g of groups) {
+  for (const g of groups.values()) {
     for (const k in g.spec) g.values[k] = g.spec[k].v;
   }
 }

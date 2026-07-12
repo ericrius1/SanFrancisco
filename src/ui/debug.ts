@@ -25,8 +25,8 @@ import { TEE_BEACON_TUNING } from "../gameplay/golf/tuning";
 import { auditSceneTransparency } from "../render/transparency";
 import type { Fireworks } from "../fx/fireworks";
 import type { TileStreamer } from "../world/tiles";
-import { withTweakBindingEventsSuppressed, saveTweak } from "../core/persist";
-import { BUSKER_FIREFLY_TUNING } from "../gameplay/buskers/fireflies";
+import { TUNABLES_UPDATED_EVENT, withTweakBindingEventsSuppressed, saveTweak } from "../core/persist";
+import { BUSKER_FIREFLY_TUNING } from "../gameplay/buskers/tuning";
 
 type WireframeMaterial = THREE.Material & { wireframe: boolean };
 
@@ -142,6 +142,7 @@ export class DebugPanel {
     this.#refreshFlowers = refreshFlowers;
     this.#refreshGrass = refreshGrass;
     this.#toggleProfiler = toggleProfiler;
+    window.addEventListener(TUNABLES_UPDATED_EVENT, () => this.#refreshAllBindings());
   }
 
   toggle() {
@@ -222,12 +223,20 @@ export class DebugPanel {
       this.#lightingView.cycleDuration = this.#sky.cycleDuration;
       this.#lightingView.nightBrightness = this.#sky.nightBrightness;
     }
+    try {
+      this.#refreshAllBindings();
+    } finally {
+      this.#syncingFromSky = false;
+    }
+  }
+
+  #refreshAllBindings() {
+    if (!this.#pane) return;
     this.#syncingPane = true;
     try {
       withTweakBindingEventsSuppressed(() => this.#pane?.refresh());
     } finally {
       this.#syncingPane = false;
-      this.#syncingFromSky = false;
     }
   }
 
