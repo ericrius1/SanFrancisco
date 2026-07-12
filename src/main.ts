@@ -57,6 +57,7 @@ import { Chat } from "./ui/chat";
 import { VehicleAudio } from "./fx/vehicleAudio";
 import { SwimAudio } from "./fx/swimAudio";
 import { createNatureSoundscape, DogParkAudio } from "./audio";
+import { WaveAudio, oceanWaveEnergyAt } from "./audio/waveAudio";
 import { AbandonedMounts } from "./gameplay/abandonedMounts";
 import type { Creatures } from "./gameplay/creatures";
 import type { Forest, AnimalKind } from "./gameplay/forest";
@@ -196,6 +197,9 @@ async function boot() {
   // / Marin): sampled beds + gust-locked wind synth + spatial animal calls, all
   // fading in per region. Suspends itself when the player is out in the city.
   const nature = createNatureSoundscape();
+  // Reusable ocean-wave layer (breaking surf at Ocean Beach + shoreline wash
+  // anywhere near water); rides the nature AudioContext.
+  const waveAudio = new WaveAudio(nature);
 
   // Where a fresh session begins. Code spawns (src/world/spawnPoints.ts) win
   // over the baked meta.json table so a location can declare which heavy foliage
@@ -248,12 +252,45 @@ async function boot() {
   const droneFireworkMounts = player.meshes.drone.userData.fireworkMounts as THREE.Object3D[] | undefined;
   const startMode = spawnPoint?.mode ?? START.mode;
   if (startMode !== "walk" && ALL_MODES.includes(startMode)) player.trySwitch(startMode);
+  // Surf-mode far-cull (perf audit's #1 win): a west-facing surfer never sees the
+  // city behind them, but streamed tiles + citygen chunks are frustumCulled=false
+  // — they pay GPU draw cost every frame regardless of view, cleared only by
+  // distance-unload. So while surfing we shrink the streamed radius + citygen
+  // detail and pull the fog cull-edge in to hide the closer unload seam, then
+  // restore on the way out. Mutating .values directly does NOT persist (only the
+  // tweakpane onChange path does), so no saved-tweak pollution.
+  let surfCullStash: { load: number; unload: number; detail: number; maxDetail: number } | null = null;
+  const applySurfCull = (on: boolean) => {
+    if (on && !surfCullStash) {
+      surfCullStash = {
+        load: CONFIG.tileLoadRadius,
+        unload: CONFIG.tileUnloadRadius,
+        detail: CITYGEN_TUNING.values.detailRadius,
+        maxDetail: CITYGEN_TUNING.values.maxDetail
+      };
+      CONFIG.tileLoadRadius = Math.min(CONFIG.tileLoadRadius, 2000);
+      CONFIG.tileUnloadRadius = 2400;
+      CITYGEN_TUNING.values.detailRadius = Math.min(CITYGEN_TUNING.values.detailRadius, 140);
+      CITYGEN_TUNING.values.maxDetail = Math.min(CITYGEN_TUNING.values.maxDetail, 40);
+      sky.setCullRadiusOverride(2000);
+      tiles.forceScan();
+    } else if (!on && surfCullStash) {
+      CONFIG.tileLoadRadius = surfCullStash.load;
+      CONFIG.tileUnloadRadius = surfCullStash.unload;
+      CITYGEN_TUNING.values.detailRadius = surfCullStash.detail;
+      CITYGEN_TUNING.values.maxDetail = surfCullStash.maxDetail;
+      surfCullStash = null;
+      sky.setCullRadiusOverride(null);
+      tiles.forceScan();
+    }
+  };
   player.onModeChange = (mode) => {
     const fresh = modeDiscovery.discover(mode);
     hud.setMode(mode);
     toolbar.setVehicle(mode);
     input.setMode(mode); // trigger routing (fly puts them on the ↑/↓ throttle)
     debugPanel.setMode(mode); // tuning pane shows only the active mode's movement folder
+    applySurfCull(mode === "surf");
     if (mode === "surf") {
       // Drop straight into a readable down-the-line shot: the board travels
       // south while the wave face peels along the player's left shoulder.
@@ -268,6 +305,9 @@ async function boot() {
   };
   input.setMode(player.mode);
   toolbar.setVehicle(player.mode);
+  // onModeChange is wired after the startup trySwitch, so a boot straight into
+  // surf (spawnPoint/invite) needs the cull applied once explicitly.
+  if (player.mode === "surf") applySurfCull(true);
   // controller: swap the help labels to whichever device was touched last
   input.onDeviceChange = (device) => hud.setDevice(device);
   window.addEventListener("gamepadconnected", () => hud.message("Controller connected", 2.4));
@@ -2342,6 +2382,7 @@ async function boot() {
     birdTrails.update(elapsed, player);
     splashes.update(frameDt, elapsed, player);
     surfExperience.update(frameDt, player.mode, player.surfTelemetry);
+    waveAudio.update(frameDt, oceanWaveEnergyAt(map, player.position.x, player.position.z, elapsed));
     // Ride ends on the sand: stand up, board in hand (you can only surf in the water).
     if (player.mode === "surf" && player.surfTelemetry.beached) {
       player.trySwitch("walk");

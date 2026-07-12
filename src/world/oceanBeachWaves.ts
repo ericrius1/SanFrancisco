@@ -19,13 +19,13 @@ export const OCEAN_BEACH_SURF = {
   // up head-high-plus on the shoreward face.
   spacing: 150,
   speed: 9.2,
-  amplitude: 8.5,
+  amplitude: 10,
   offshoreCrest: -6310,
   // Shoaling profile widths (metres): a broad offshore shoulder feeds a steep,
   // narrow shoreward face. Shared by the CPU sampler AND the GPU twin
   // (tslUtil.oceanBeachSurfField) — change here, both follow.
   shoulderWidth: 29,
-  faceWidth: 7.5
+  faceWidth: 6.5
 } as const;
 
 const TAU = Math.PI * 2;

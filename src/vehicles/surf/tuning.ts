@@ -19,8 +19,7 @@ export const SURF_TUNING = tunables("movement.surf", {
   catchFace: { v: 0.34, min: 0.1, max: 0.9, step: 0.02, label: "catch steepness" },
 
   // ride phase — face position + trim
-  climbRate: { v: 1.5, min: 0.4, max: 4, step: 0.05, label: "carve climb" },
-  faceGravity: { v: 0.45, min: 0, max: 2, step: 0.05, label: "face gravity" },
+  climbRate: { v: 5, min: 1, max: 12, step: 0.5, label: "carve response" },
   baseOffset: { v: 15, min: 6, max: 26, step: 0.5, label: "shoulder offset" },
   lipOffset: { v: 3.2, min: 1, max: 8, step: 0.1, label: "lip offset" },
   trackGain: { v: 9, min: 3, max: 20, step: 0.5, label: "face grip" },

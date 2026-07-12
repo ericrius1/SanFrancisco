@@ -63,6 +63,7 @@ export class SurfController implements ModeController {
 
   #phase: SurfPhase = "paddle";
   #paddleSpeed = 0;
+  #paddleTime = 0;
   #ridingSlot = 0;
   #peelDir = -1; // +1 south / −1 north along the beach
   #faceT = 0.4; // 0 shoulder … 1 lip
@@ -94,6 +95,7 @@ export class SurfController implements ModeController {
     this.grounded = true;
     this.#phase = "paddle";
     this.#paddleSpeed = 0;
+    this.#paddleTime = 0;
     this.#airborne = false;
     this.#airTime = 0;
     this.#jumpBuffer = 0;
@@ -111,17 +113,12 @@ export class SurfController implements ModeController {
       ctx.position.x < b.maxX + 500 &&
       ctx.position.z > b.minZ - 400 &&
       ctx.position.z < b.maxZ + 400;
-    if (!nearBreak) {
-      ctx.position.set(b.entryX, 0, b.entryZ);
-    }
-    // Start prone in the water; nudge west off the sand so you paddle OUT.
-    if (oceanBeachMask(ctx.position.x, ctx.position.z) < 0.05 || ctx.position.x > b.maxX - 40) {
-      this.#toLineup(ctx, false);
-    } else {
-      ctx.position.y = waterHeight(ctx.position.x, ctx.position.z, ctx.time) + SURF_TUNING.values.proneHeight;
-    }
+    if (!nearBreak) ctx.position.set(b.entryX, 0, b.entryZ);
+    // Drop prone onto the face of a mid-break crest (keeping our spot down the
+    // beach if we were already there), ready to paddle in.
     this.#phase = "paddle";
-    return Math.PI / 2; // face offshore to paddle out
+    this.#toLineup(ctx, nearBreak);
+    return Math.PI / 2; // face offshore for the paddle look
   }
 
   requestJump() {
@@ -169,12 +166,15 @@ export class SurfController implements ModeController {
     const surface = waterHeight(p.x, p.z, ctx.time);
     p.y = surface + tb.proneHeight;
 
+    this.#paddleTime += dt;
     const sample = sampleOceanBeachWave(p.x, p.z, ctx.time);
-    // Catch: a steep crest reaching the board (crest at/just behind) lifts you in.
+    // Catch: after a brief paddle, drop into the nearest steep crest face. The
+    // lineup places you right on a face, so this fires reliably within ~0.4 s —
+    // arcade-forgiving, no waiting for wave phase.
     const crest = nearestOceanBeachCrest(p.x, p.z, ctx.time);
     const d = crest.distance; // + shoreward of crest
-    if (!beached && sample.face > tb.catchFace && d > -2.5 && d < 7 && throttle > -0.2) {
-      this.#popUp(ctx, crest.slot, d);
+    if (!beached && this.#paddleTime > 0.35 && sample.face > tb.catchFace && d > -8 && d < 16 && throttle > -0.2) {
+      this.#popUp(ctx, crest.slot, THREE.MathUtils.clamp(d, 2, tb.baseOffset));
     } else {
       this.pitch += (-0.28 - this.pitch) * Math.min(1, dt * 6); // prone nose-down
       this.lean += (steer * 0.3 - this.lean) * Math.min(1, dt * 5);
@@ -198,6 +198,7 @@ export class SurfController implements ModeController {
     // peel toward the middle of the beach so the ride lasts
     this.#peelDir = ctx.position.z > OCEAN_BEACH_SURF.centerZ ? -1 : 1;
     this.#popup = 0.35;
+    this.#paddleTime = 0;
     this.#airborne = false;
     this.#airTime = 0;
     this.telemetry.caughtSerial++;
@@ -211,12 +212,13 @@ export class SurfController implements ModeController {
     const w = ctx.physics.world;
     const t = ctx.time;
 
-    // carve up/down the face; the face has a slight downhill pull toward the base
-    this.#faceT = THREE.MathUtils.clamp(
-      this.#faceT + steer * tb.climbRate * dt - tb.faceGravity * dt * 0.5,
-      -0.15,
-      1.12
-    );
+    // carve: neutral trims mid-face (the steep green pocket); hold D to climb to
+    // the lip, hold A to drop to the shoulder. Forgiving — carving keeps you ON
+    // the wave (never off the back); you leave a wave only by closing it out,
+    // riding off the end, or pressing E. Eased so it reads as a carve.
+    const restT = 0.5;
+    const wantT = THREE.MathUtils.clamp(restT + steer * 0.55, 0.05, 1.0);
+    this.#faceT += (wantT - this.#faceT) * Math.min(1, dt * tb.climbRate);
 
     // line speed: pump (W), tuck (Shift), a touch faster in the steep pocket
     const pocket = 1 - Math.abs(this.#faceT - 0.55) * 1.4;
@@ -335,15 +337,18 @@ export class SurfController implements ModeController {
 
   // --- helpers ----------------------------------------------------------------
 
-  /** Reset into the lineup (just outside the break) to paddle for the next wave. */
+  /** Reset into the lineup to paddle for the next wave. Places the board right on
+   *  the steep face of a mid-break crest so a brief paddle reliably drops you in. */
   #toLineup(ctx: PlayerCtx, keepZ: boolean) {
     const b = OCEAN_BEACH_SURF;
     const p = ctx.position;
     const z = keepZ ? THREE.MathUtils.clamp(p.z, b.minZ + 40, b.maxZ - 40) : b.entryZ;
-    p.set(b.offshoreCrest + 55, 0, z); // offshore of the shoreward-breaking crests
+    const crest = nearestOceanBeachCrest(b.entryX + 20, z, ctx.time);
+    p.set(crest.crestX + 6, 0, z); // on the shoreward face, ready to drop in
     p.y = waterHeight(p.x, p.z, ctx.time) + SURF_TUNING.values.proneHeight;
-    this.yaw = Math.PI / 2; // face offshore
+    this.yaw = Math.PI / 2; // face offshore for the paddle look
     this.#faceT = 0.4;
+    this.#paddleTime = 0;
     this.#airborne = false;
     this.#airTime = 0;
     if (ctx.body) {
