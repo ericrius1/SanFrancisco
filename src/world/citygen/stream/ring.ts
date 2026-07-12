@@ -256,7 +256,7 @@ async function fetchGrid(url: string): Promise<GridData | null> {
 }
 
 export async function createCityGenRing(
-  opts: { url?: string },
+  opts: { url?: string; excludeBuilding?: (key: string, index: number) => boolean },
   ctx: { scene: THREE.Object3D; physics: { world: PhysWorld } & Partial<QuerySolidHost>; map: { groundHeight(x: number, z: number): number; surfaceType?(x: number, z: number): number }; tiles: Tiles; schedule?: ScheduleFn },
 ): Promise<CityGenRing> {
   const url = opts.url ?? "/citygen/buildings.json";
@@ -270,7 +270,7 @@ export async function createCityGenRing(
   let total = 0;
   if (grid) {
     for (const [key, list] of Object.entries(grid.cells)) {
-      const entries = list.filter((b) => READY.has(b.archetype)).map((b) => {
+      const entries = list.filter((b) => READY.has(b.archetype) && !opts.excludeBuilding?.(key, b.i)).map((b) => {
         const g = boundsOf(b.poly);
         const grade = footprintGrade(b.poly, b.base, b.top, ctx.map);
         return { ...b, grade, key, cx: g.cx, cz: g.cz, bb: { minx: g.minx, maxx: g.maxx, minz: g.minz, maxz: g.maxz },

@@ -9,6 +9,7 @@ import {
   type GardenTerrain,
   type GardenTree
 } from "./layout";
+import { inJapaneseTeaGarden } from "../japaneseTeaGarden/layout";
 import { MAX_DISPLACERS, setGroundDisplacers, type GroundDisplacer } from "../groundcover/displacers";
 // The blade geometry + SSS material + instance-write all come from the shared
 // ground-cover grass primitive now — the garden keeps only its own SAMPLING
@@ -144,7 +145,12 @@ function sampleGrassEntries(map: GardenTerrain, trees: GardenTree[], options: Gr
       const z = b.minZ + gz * spacing;
       const px = x + (hash(gx, gz, 11 + salt) - 0.5) * spacing * 0.85;
       const pz = z + (hash(gx, gz, 17 + salt) - 0.5) * spacing * 0.85;
-      if (!inBotanicalGarden(px, pz) || map.surfaceType(px, pz) !== 1 || map.isWater(px, pz)) continue;
+      if (
+        !inBotanicalGarden(px, pz) ||
+        inJapaneseTeaGarden(px, pz, 4) ||
+        map.surfaceType(px, pz) !== 1 ||
+        map.isWater(px, pz)
+      ) continue;
 
       let focusWeight = 1;
       if (options.focus) {
