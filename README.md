@@ -230,13 +230,17 @@ The deterministic WebGPU film pipeline can render an individual master or both
 reference films plus their transition:
 
 ```bash
+npm run render:hoverboard:fast
+npm run render:dog-park:fast
+npm run render:cinematics:fast
 npm run render:hoverboard
 npm run render:dog-park
 npm run render:cinematics
 ```
 
 See [Cinematic rendering](docs/CINEMATICS.md) for probe renders, shot authoring,
-fixed-frame capture, camera preflight, audio, outputs, and QA.
+the fast WebCodecs review backend, archival fixed-frame capture, camera
+preflight, audio, outputs, and QA.
 
 ---
 

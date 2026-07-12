@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
-import { access, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -369,6 +369,7 @@ export function cinematicPaths(production) {
   return {
     workDir,
     framesDir: path.join(workDir, "frames"),
+    fastBitstream: path.join(workDir, "fast-video.h264"),
     audioFile: path.join(workDir, "audio.wav"),
     chromeProfile: path.join(workDir, "chrome"),
     workManifest: path.join(workDir, "frame-manifest.json"),
@@ -383,7 +384,7 @@ export function cinematicPaths(production) {
   };
 }
 
-function shotUrl(viteUrl, production) {
+function shotUrl(viteUrl, production, { fast = false } = {}) {
   const url = new URL(viteUrl);
   url.pathname = "/";
   url.search = "";
@@ -391,6 +392,7 @@ function shotUrl(viteUrl, production) {
   url.searchParams.set("manual", "1");
   url.searchParams.set("autostart", "1");
   url.searchParams.set("fullfps", "1");
+  if (fast) url.searchParams.set("fastcapture", "1");
   return url.href;
 }
 
@@ -422,10 +424,22 @@ function fixedNumber(value) {
   return Number(value).toPrecision(17);
 }
 
-// One authoritative frame barrier: advance the pure timeline, tick exactly one
-// requested dt, then wait for command submission, GPU completion, and browser
-// compositing. Page.captureScreenshot is only called after this resolves.
-async function stepFrame(client, time, dt) {
+// One authoritative frame barrier: advance the pure timeline and tick exactly
+// one requested dt. Screenshot capture waits for GPU + browser composition;
+// fast capture instead appends a copyTextureToBuffer command to the same queue
+// and lets its two staging slots overlap GPU readback with the following frame.
+async function stepFrame(client, time, dt, { fastFrameIndex = null } = {}) {
+  const fastEncode = Number.isInteger(fastFrameIndex)
+    ? `await window.__sfFastCapture.encode(${fastFrameIndex}, desiredTime);`
+    : "";
+  const compositorBarrier = Number.isInteger(fastFrameIndex)
+    ? ""
+    : `
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      await queue.onSubmittedWorkDone();
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      await queue.onSubmittedWorkDone();
+    `;
   return evaluate(client, `(async () => {
     const sf = window.__sf;
     if (!sf || typeof sf.tick !== "function") throw new Error("window.__sf.tick is unavailable");
@@ -453,10 +467,8 @@ async function stepFrame(client, time, dt) {
     if (!queue || typeof queue.onSubmittedWorkDone !== "function") {
       throw new Error("WebGPU queue.onSubmittedWorkDone is unavailable");
     }
-    await new Promise((resolve) => requestAnimationFrame(resolve));
-    await queue.onSubmittedWorkDone();
-    await new Promise((resolve) => requestAnimationFrame(resolve));
-    await queue.onSubmittedWorkDone();
+    ${compositorBarrier}
+    ${fastEncode}
     return {
       cineT: Number(window.__cineT ?? desiredTime),
       cinematicTime: Number(window.__sfCinematicState?.time ?? -1),
@@ -464,6 +476,219 @@ async function stepFrame(client, time, dt) {
       gpuComplete: true
     };
   })()`);
+}
+
+function avcCodecFor(production) {
+  // High@4.2 covers 1080p60. Use High@5.1 above that envelope so resolution
+  // overrides remain useful without changing the one production schema.
+  return production.width * production.height * production.fps <= 1920 * 1080 * 60
+    ? "avc1.64002A"
+    : "avc1.640033";
+}
+
+function fastEncoderSource(production) {
+  const codec = avcCodecFor(production);
+  const base = {
+    codec,
+    width: production.width,
+    height: production.height,
+    bitrate: production.fastBitrate,
+    framerate: production.fps,
+    bitrateMode: "variable",
+    latencyMode: "realtime",
+    avc: { format: "annexb" }
+  };
+  const candidates = [
+    { ...base, hardwareAcceleration: "prefer-hardware" },
+    { ...base, hardwareAcceleration: "no-preference" },
+    { ...base, codec: codec.replace("6400", "4D00"), hardwareAcceleration: "prefer-software" }
+  ];
+  return `(async () => {
+    if (typeof VideoEncoder !== "function" || typeof VideoFrame !== "function") {
+      throw new Error("FAST_CAPTURE_UNSUPPORTED: WebCodecs VideoEncoder/VideoFrame unavailable");
+    }
+    const sf = window.__sf;
+    const queueFastFrame = sf?.pipeline?.queueFastFrame;
+    const drainFastFrame = sf?.pipeline?.drainFastFrame;
+    const captureSize = sf?.pipeline?.fastCaptureSize;
+    if (typeof queueFastFrame !== "function" || typeof drainFastFrame !== "function" || !Array.isArray(captureSize)) {
+      throw new Error("FAST_CAPTURE_UNSUPPORTED: final WebGPU capture target unavailable");
+    }
+    const overlay = window.__sfCinematicOverlayCanvas;
+    if (!(overlay instanceof HTMLCanvasElement)) {
+      throw new Error("FAST_CAPTURE_UNSUPPORTED: cinematic overlay canvas unavailable");
+    }
+    const candidates = ${JSON.stringify(candidates)};
+    let chosen = null;
+    for (const candidate of candidates) {
+      try {
+        const support = await VideoEncoder.isConfigSupported(candidate);
+        if (support.supported) { chosen = support.config; break; }
+      } catch {}
+    }
+    if (!chosen) {
+      throw new Error("FAST_CAPTURE_UNSUPPORTED: no Annex-B H.264 WebCodecs configuration is supported");
+    }
+    const composite = document.createElement("canvas");
+    composite.width = ${production.width};
+    composite.height = ${production.height};
+    const ctx = composite.getContext("2d", { alpha: false, desynchronized: true, colorSpace: "srgb" });
+    if (!ctx) throw new Error("FAST_CAPTURE_UNSUPPORTED: 2D composite canvas unavailable");
+    const world = document.createElement("canvas");
+    world.width = composite.width;
+    world.height = composite.height;
+    const worldCtx = world.getContext("2d", { alpha: false, desynchronized: true, colorSpace: "srgb" });
+    if (!worldCtx) throw new Error("FAST_CAPTURE_UNSUPPORTED: world readback canvas unavailable");
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    await document.fonts?.ready;
+
+    const toBase64 = (bytes) => {
+      let binary = "";
+      const stride = 0x8000;
+      for (let offset = 0; offset < bytes.length; offset += stride) {
+        binary += String.fromCharCode(...bytes.subarray(offset, Math.min(bytes.length, offset + stride)));
+      }
+      return btoa(binary);
+    };
+    let framesEncoded = 0;
+    let chunksEmitted = 0;
+    let bytesEmitted = 0;
+    let keyframes = 0;
+    let fatalError = null;
+    const encoder = new VideoEncoder({
+      output(chunk) {
+        const bytes = new Uint8Array(chunk.byteLength);
+        chunk.copyTo(bytes);
+        chunksEmitted++;
+        bytesEmitted += bytes.byteLength;
+        if (chunk.type === "key") keyframes++;
+        window.__sfCineChunk(JSON.stringify({
+          kind: "chunk",
+          index: chunksEmitted - 1,
+          chunkType: chunk.type,
+          timestamp: chunk.timestamp,
+          duration: chunk.duration ?? null,
+          data: toBase64(bytes)
+        }));
+      },
+      error(error) {
+        fatalError = String(error?.stack ?? error?.message ?? error);
+        window.__sfCineChunk(JSON.stringify({ kind: "error", message: fatalError }));
+      }
+    });
+    encoder.configure(chosen);
+    const keyInterval = ${Math.max(1, production.fps * 2)};
+    const fps = ${production.fps};
+    const pendingOverlays = [];
+
+    const encodePixels = async (index, pixels, overlayBitmap) => {
+      if (pixels.byteLength !== composite.width * composite.height * 4) {
+        throw new Error(
+          "fast readback size mismatch: " + pixels.byteLength +
+          " vs " + (composite.width * composite.height * 4)
+        );
+      }
+      worldCtx.putImageData(new ImageData(pixels, composite.width, composite.height), 0, 0);
+      ctx.drawImage(world, 0, 0, composite.width, composite.height);
+      ctx.drawImage(overlayBitmap, 0, 0, composite.width, composite.height);
+      overlayBitmap.close();
+      const timestamp = Math.round(index * 1000000 / fps);
+      const nextTimestamp = Math.round((index + 1) * 1000000 / fps);
+      const frame = new VideoFrame(composite, {
+        timestamp,
+        duration: nextTimestamp - timestamp,
+        alpha: "discard"
+      });
+      encoder.encode(frame, { keyFrame: index % keyInterval === 0 });
+      frame.close();
+      framesEncoded++;
+      if (encoder.encodeQueueSize >= 4) await encoder.flush();
+    };
+
+    window.__sfFastCapture = {
+      config: chosen,
+      async encode(index) {
+        if (fatalError) throw new Error(fatalError);
+        pendingOverlays.push({ index, bitmap: await createImageBitmap(overlay) });
+        const pixels = await queueFastFrame();
+        if (!pixels) return;
+        const pending = pendingOverlays.shift();
+        if (!pending) throw new Error("fast overlay/readback queue underflow");
+        await encodePixels(pending.index, pixels, pending.bitmap);
+      },
+      async finish() {
+        const pixels = await drainFastFrame();
+        if (pixels) {
+          const pending = pendingOverlays.shift();
+          if (!pending) throw new Error("fast final overlay/readback queue underflow");
+          await encodePixels(pending.index, pixels, pending.bitmap);
+        }
+        if (pendingOverlays.length) throw new Error("fast overlay/readback queue did not fully drain");
+        await encoder.flush();
+        if (fatalError) throw new Error(fatalError);
+        const report = { framesEncoded, chunksEmitted, bytesEmitted, keyframes, config: chosen };
+        window.__sfCineChunk(JSON.stringify({ kind: "done", report }));
+        encoder.close();
+        return report;
+      }
+    };
+    return { config: chosen, source: captureSize, overlay: [overlay.width, overlay.height] };
+  })()`;
+}
+
+async function createFastBitstreamSink(client, file) {
+  await mkdir(path.dirname(file), { recursive: true });
+  await rm(file, { force: true });
+  const handle = await open(file, "w");
+  let writeChain = Promise.resolve();
+  let chunks = 0;
+  let bytes = 0;
+  let keyframes = 0;
+  let settled = false;
+  let resolveDone;
+  let rejectDone;
+  const done = new Promise((resolve, reject) => {
+    resolveDone = resolve;
+    rejectDone = reject;
+  });
+  const off = client.onEvent((event) => {
+    if (event.method !== "Runtime.bindingCalled" || event.params?.name !== "__sfCineChunk") return;
+    try {
+      const message = JSON.parse(event.params.payload);
+      if (message.kind === "chunk") {
+        const data = Buffer.from(message.data, "base64");
+        chunks++;
+        bytes += data.byteLength;
+        if (message.chunkType === "key") keyframes++;
+        writeChain = writeChain.then(() => handle.write(data));
+      } else if (message.kind === "error") {
+        if (!settled) {
+          settled = true;
+          rejectDone(new Error(`browser WebCodecs encoder failed: ${message.message}`));
+        }
+      } else if (message.kind === "done" && !settled) {
+        settled = true;
+        writeChain.then(
+          () => resolveDone({ chunks, bytes, keyframes, browser: message.report }),
+          rejectDone
+        );
+      }
+    } catch (error) {
+      if (!settled) {
+        settled = true;
+        rejectDone(error);
+      }
+    }
+  });
+  return {
+    wait: () => done,
+    async close() {
+      off();
+      await writeChain.catch(() => {});
+      await handle.close();
+    }
+  };
 }
 
 async function captureScreenshot(client, production) {
@@ -678,6 +903,159 @@ export async function captureProduction({
   }
 }
 
+/**
+ * Browser-native review renderer. Frames stay inside Chrome: the real WebGPU
+ * canvas and a deterministic overlay mirror are composited into a 2D canvas,
+ * encoded by WebCodecs, and streamed as Annex-B H.264 through a CDP binding.
+ * The archival PNG path above remains the fallback/master implementation.
+ */
+export async function captureFastProduction({
+  production,
+  viteUrl,
+  paths = cinematicPaths(production),
+  readyTimeoutMs = Number(process.env.SF_CINE_READY_TIMEOUT_MS ?? 180_000),
+  log = defaultLog
+}) {
+  if (!viteUrl) throw new Error("captureFastProduction requires viteUrl");
+  await mkdir(paths.workDir, { recursive: true });
+  await mkdir(paths.outputDir, { recursive: true });
+  await rm(paths.fastBitstream, { force: true });
+  const manifestFiles = [paths.workManifest, paths.outputManifest];
+  const manifest = {
+    schema: 1,
+    status: "capturing",
+    production: {
+      id: production.id,
+      demo: production.demo,
+      title: production.title,
+      duration: production.duration,
+      width: production.width,
+      height: production.height,
+      fps: production.fps,
+      totalFrames: production.totalFrames,
+      seed: production.seed,
+      take: production.take
+    },
+    capture: {
+      mode: "fast",
+      backend: "browser-webcodecs",
+      intermediate: "annexb-h264",
+      bitrate: production.fastBitrate,
+      replayedFromFrame: 0,
+      replayedThroughFrame: production.totalFrames - 1,
+      settleFrames: production.settleFrames,
+      settleGapMs: production.settleGapMs,
+      gpuBarrier: "ordered render→copyTextureToBuffer with two MAP_READ staging slots"
+    },
+    url: shotUrl(viteUrl, production, { fast: true }),
+    source: await sourceRevision(),
+    startedAt: new Date().toISOString(),
+    diagnostics: null
+  };
+  await persistCaptureManifest(manifestFiles, manifest);
+
+  const browser = await launchChrome({
+    production,
+    profileDir: `${paths.chromeProfile}-fast`,
+    log
+  });
+  const { client, diagnostics } = browser;
+  let sink = null;
+  const startedAt = Date.now();
+  try {
+    sink = await createFastBitstreamSink(client, paths.fastBitstream);
+    await client.send("Runtime.addBinding", { name: "__sfCineChunk" });
+    log(`${production.id}: fast WebCodecs replay 0..${production.totalFrames - 1} -> ${manifest.url}`);
+    const navigation = await client.send("Page.navigate", { url: manifest.url });
+    if (navigation.errorText) throw new Error(`navigation failed: ${navigation.errorText}`);
+
+    await waitForExpression(
+      client,
+      `Boolean(
+        window.__sfReelArmed &&
+        window.__sf &&
+        typeof window.__sf.tick === "function" &&
+        typeof window.__sfReelStep === "function" &&
+        typeof window.__sfManual === "function" &&
+        window.__sf.renderer?.backend?.device?.queue?.onSubmittedWorkDone &&
+        window.__sfCinematicOverlayCanvas
+      )`,
+      readyTimeoutMs,
+      `${production.demo} cinematic + WebGPU + overlay mirror`
+    );
+
+    await evaluate(client, `window.__sfManual(true); window.__sfReelStep(0); true`);
+    log(`${production.id}: fast pre-roll/settle at frame zero (${production.settleFrames} zero-dt frames)`);
+    for (let index = 0; index < production.settleFrames; index++) {
+      await stepFrame(client, 0, 0);
+      if (production.settleGapMs) await sleep(production.settleGapMs);
+    }
+
+    const encoder = await evaluate(client, fastEncoderSource(production));
+    manifest.capture.encoder = encoder;
+    log(
+      `${production.id}: WebCodecs ${encoder.config.codec}, ` +
+      `${Math.round(production.fastBitrate / 1_000_000)}Mbps, ${encoder.config.hardwareAcceleration}`
+    );
+
+    for (let index = 0; index < production.totalFrames; index++) {
+      const time = index / production.fps;
+      const frameState = await stepFrame(client, time, production.dt, { fastFrameIndex: index });
+      if (Math.abs(frameState.cineT - time) > 1e-6 || Math.abs(frameState.cinematicTime - time) > 1e-6) {
+        throw new Error(
+          `fast render-state drift at frame ${index}: expected ${time}, ` +
+          `clock=${frameState.cineT}, rendered=${frameState.cinematicTime}`
+        );
+      }
+      if (index === 0 || index === production.totalFrames - 1 || (index > 0 && index % Math.max(120, production.fps * 2) === 0)) {
+        const elapsed = Math.max(1, Date.now() - startedAt);
+        const rate = (index + 1) / (elapsed / 1000);
+        const remaining = Math.max(0, production.totalFrames - index - 1);
+        log(`${production.id}: fast frame ${index}/${production.totalFrames - 1} (${time.toFixed(2)}s, ${rate.toFixed(2)} fps, ETA ${Math.round(remaining / Math.max(rate, 0.001))}s)`);
+        await persistCaptureManifest(manifestFiles, manifest);
+      }
+    }
+
+    const browserReport = await evaluate(client, "window.__sfFastCapture.finish()");
+    const sinkReport = await sink.wait();
+    if (browserReport.framesEncoded !== production.totalFrames) {
+      throw new Error(`WebCodecs encoded ${browserReport.framesEncoded} frames; expected ${production.totalFrames}`);
+    }
+    if (sinkReport.chunks !== browserReport.chunksEmitted || sinkReport.bytes !== browserReport.bytesEmitted) {
+      throw new Error(
+        `WebCodecs stream mismatch: browser ${browserReport.chunksEmitted}/${browserReport.bytesEmitted}, ` +
+        `node ${sinkReport.chunks}/${sinkReport.bytes}`
+      );
+    }
+    const bitstreamInfo = await stat(paths.fastBitstream);
+    if (bitstreamInfo.size <= 0) throw new Error("WebCodecs produced an empty H.264 bitstream");
+
+    manifest.status = "complete";
+    manifest.completedAt = new Date().toISOString();
+    manifest.wallSeconds = (Date.now() - startedAt) / 1000;
+    manifest.capture.report = sinkReport;
+    manifest.capture.bitstream = path.relative(ROOT, paths.fastBitstream);
+    manifest.diagnostics = diagnostics;
+    manifest.cinematicReport = await evaluate(client, "window.__sfCinematicReport?.() ?? null");
+    await persistCaptureManifest(manifestFiles, manifest);
+    log(`${production.id}: fast encoded ${production.totalFrames} frames in ${manifest.wallSeconds.toFixed(1)}s`);
+    return { manifest, bitstreamFile: paths.fastBitstream, paths };
+  } catch (error) {
+    manifest.status = "failed";
+    manifest.completedAt = new Date().toISOString();
+    manifest.error = error instanceof Error ? error.message : String(error);
+    manifest.diagnostics = diagnostics;
+    try {
+      manifest.cinematicReport = await evaluate(client, "window.__sfCinematicReport?.() ?? null");
+    } catch {}
+    await persistCaptureManifest(manifestFiles, manifest);
+    throw error;
+  } finally {
+    await sink?.close();
+    await browser.close();
+  }
+}
+
 async function verifyExactFrameSequence(production, framesDir) {
   const frames = await listCapturedFrames(framesDir, production.frameFormat);
   if (frames.length !== production.totalFrames) {
@@ -757,6 +1135,71 @@ export async function encodeProduction({
     file: path.relative(ROOT, paths.videoFile),
     bytes: info.size,
     video: { codec: "h264", crf: production.crf, pixelFormat: "yuv420p", color: "bt709" },
+    audio: { codec: "aac", bitrate: 192000, sampleRate: 48000, channels: 2 }
+  };
+  await Promise.all([writeJson(paths.workManifest, manifest), writeJson(paths.outputManifest, manifest)]);
+  return { file: paths.videoFile, bytes: info.size };
+}
+
+/** Remux the browser's already-encoded Annex-B stream and add final audio. */
+export async function muxFastProduction({
+  production,
+  paths = cinematicPaths(production),
+  audioFile = paths.audioFile,
+  ffmpeg = process.env.FFMPEG_BIN ?? process.env.FFMPEG_PATH ?? "ffmpeg",
+  log = defaultLog
+}) {
+  if (!(await fileExists(paths.fastBitstream))) {
+    throw new Error(`fast H.264 bitstream is missing: ${relativeToRoot(paths.fastBitstream)}`);
+  }
+  if (!(await fileExists(audioFile))) throw new Error(`cinematic audio is missing: ${relativeToRoot(audioFile)}`);
+  await mkdir(paths.outputDir, { recursive: true });
+  const temporary = `${paths.videoFile}.tmp.mp4`;
+  await rm(temporary, { force: true });
+  const duration = String(production.duration);
+  log(`${production.id}: remuxing browser H.264 + AAC 192k with BT.709 metadata`);
+  await runCommand(ffmpeg, [
+    "-hide_banner", "-y",
+    "-f", "h264",
+    "-i", paths.fastBitstream,
+    "-i", audioFile,
+    "-map", "0:v:0",
+    "-map", "1:a:0",
+    "-c:v", "copy",
+    "-bsf:v",
+    `setts=pts=N/${production.fps}/TB:dts=N/${production.fps}/TB:duration=1/${production.fps}/TB,` +
+      "h264_metadata=colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1:video_full_range_flag=0",
+    "-frames:v", String(production.totalFrames),
+    "-color_primaries", "bt709",
+    "-color_trc", "bt709",
+    "-colorspace", "bt709",
+    "-color_range", "tv",
+    "-af", `apad=whole_dur=${duration}`,
+    "-c:a", "aac",
+    "-b:a", "192k",
+    "-ar", "48000",
+    "-ac", "2",
+    "-t", duration,
+    "-metadata", `title=${production.title}`,
+    "-metadata", `comment=Browser WebCodecs fast cinematic seed ${production.seed}`,
+    "-movflags", "+faststart",
+    temporary
+  ], { log });
+  await rename(temporary, paths.videoFile);
+
+  const info = await stat(paths.videoFile);
+  let manifest;
+  try { manifest = JSON.parse(await readFile(paths.workManifest, "utf8")); } catch { manifest = {}; }
+  manifest.output = {
+    file: path.relative(ROOT, paths.videoFile),
+    bytes: info.size,
+    video: {
+      codec: "h264",
+      source: "browser-webcodecs",
+      bitrate: production.fastBitrate,
+      pixelFormat: "yuv420p",
+      color: "bt709"
+    },
     audio: { codec: "aac", bitrate: 192000, sampleRate: 48000, channels: 2 }
   };
   await Promise.all([writeJson(paths.workManifest, manifest), writeJson(paths.outputManifest, manifest)]);

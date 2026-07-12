@@ -5,6 +5,7 @@ const DEFAULTS = Object.freeze({
   frameFormat: "png",
   jpegQuality: 95,
   crf: 15,
+  fastBitrate: 24_000_000,
   take: "master",
   settleFrames: 48,
   settleGapMs: 35
@@ -79,7 +80,8 @@ function frameFormat(value) {
  *
  *   SF_CINE_WIDTH, SF_CINE_HEIGHT, SF_CINE_FPS
  *   SF_CINE_FORMAT=png|jpg, SF_CINE_JPEG_QUALITY, SF_CINE_CRF=14..16
- *   SF_CINE_TAKE, SF_CINE_SEED, SF_CINE_SETTLE_FRAMES, SF_CINE_SETTLE_GAP_MS
+ *   SF_CINE_TAKE, SF_CINE_SEED, SF_CINE_FAST_BITRATE
+ *   SF_CINE_SETTLE_FRAMES, SF_CINE_SETTLE_GAP_MS
  */
 export function resolveProduction(id, { env = process.env, overrides = {} } = {}) {
   const definition = DEFINITIONS[id];
@@ -106,6 +108,13 @@ export function resolveProduction(id, { env = process.env, overrides = {} } = {}
 
   const crf = positiveInt(Number(overrides.crf ?? envNumber(env, "SF_CINE_CRF", DEFAULTS.crf)), "CRF");
   if (crf < 14 || crf > 16) throw new Error(`cinematic H.264 CRF must be in 14..16 (received ${crf})`);
+  const fastBitrate = positiveInt(
+    Number(overrides.fastBitrate ?? envNumber(env, "SF_CINE_FAST_BITRATE", DEFAULTS.fastBitrate)),
+    "fast bitrate"
+  );
+  if (fastBitrate < 1_000_000 || fastBitrate > 100_000_000) {
+    throw new Error(`fast bitrate must be in 1000000..100000000 (received ${fastBitrate})`);
+  }
 
   const duration = Number(overrides.duration ?? definition.duration);
   if (!Number.isFinite(duration) || duration <= 0) throw new Error(`duration must be positive (received ${duration})`);
@@ -137,6 +146,7 @@ export function resolveProduction(id, { env = process.env, overrides = {} } = {}
     frameFormat: format,
     jpegQuality,
     crf,
+    fastBitrate,
     take: safeTake(overrides.take ?? env.SF_CINE_TAKE ?? DEFAULTS.take),
     seed,
     settleFrames,
