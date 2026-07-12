@@ -160,6 +160,61 @@ const STYLE = `
   opacity: 1;
   transform: translate(-50%, -50%) scale(1);
 }
+#hud .archery-prompt {
+  position: absolute;
+  left: 50%;
+  bottom: 128px;
+  transform: translateX(-50%) translateY(8px);
+  padding: 9px 15px;
+  border-radius: var(--r-md);
+  color: rgba(242, 249, 252, 0.96);
+  background: rgba(9, 22, 34, 0.78);
+  border: 1px solid var(--hairline-2);
+  box-shadow: var(--shadow-sm), var(--edge-hi);
+  backdrop-filter: blur(var(--blur));
+  font: 700 14px var(--font);
+  letter-spacing: 0.01em;
+  opacity: 0;
+  transition: opacity 0.18s var(--ease), transform 0.18s var(--ease);
+  pointer-events: none;
+  white-space: nowrap;
+}
+#hud .archery-prompt.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+#hud .archery-reticle {
+  --archery-charge: 0;
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 24px;
+  height: 24px;
+  transform: translate(-50%, -50%);
+  border: 2px solid rgba(248, 252, 255, 0.9);
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(7, 16, 24, 0.72), 0 0 12px rgba(97, 210, 255, 0.45);
+  opacity: 0;
+  transition: opacity 0.18s var(--ease), scale 0.12s var(--ease);
+  pointer-events: none;
+}
+#hud .archery-reticle::before,
+#hud .archery-reticle::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  background: rgba(248, 252, 255, 0.95);
+  box-shadow: 0 0 3px rgba(7, 16, 24, 0.9);
+  transform: translate(-50%, -50%);
+}
+#hud .archery-reticle::before { width: 6px; height: 2px; }
+#hud .archery-reticle::after { width: 2px; height: 6px; }
+#hud .archery-reticle.show { opacity: 1; }
+#hud .archery-reticle.drawing {
+  border-color: #f5c542;
+  scale: calc(1 - var(--archery-charge) * 0.18);
+}
 `;
 
 let styleInjected = false;
@@ -184,6 +239,8 @@ export class ArcheryUI {
   #sub: HTMLElement;
   #hint: HTMLElement;
   #toast: HTMLElement;
+  #prompt: HTMLElement;
+  #reticle: HTMLElement;
   #toastUntil = 0;
 
   constructor() {
@@ -232,15 +289,36 @@ export class ArcheryUI {
     this.#toast = document.createElement("div");
     this.#toast.className = "archery-toast";
     hud.appendChild(this.#toast);
+
+    this.#prompt = document.createElement("div");
+    this.#prompt.className = "archery-prompt";
+    hud.appendChild(this.#prompt);
+
+    this.#reticle = document.createElement("div");
+    this.#reticle.className = "archery-reticle";
+    hud.appendChild(this.#reticle);
   }
 
   /** Scorecard chip (holding a bow). */
   setVisible(on: boolean) {
     this.#card.classList.toggle("show", on);
+    this.#reticle.classList.toggle("show", on);
     if (!on) {
       this.showDraw(false);
       this.#toast.classList.remove("show");
+      this.setReticleCharge(0, false);
     }
+  }
+
+  /** Persistent interaction prompt; unlike HUD toasts it stays until leaving. */
+  setPrompt(text: string | null) {
+    if (text) this.#prompt.textContent = text;
+    this.#prompt.classList.toggle("show", !!text);
+  }
+
+  setReticleCharge(charge: number, drawing: boolean) {
+    this.#reticle.style.setProperty("--archery-charge", String(Math.min(1, Math.max(0, charge))));
+    this.#reticle.classList.toggle("drawing", drawing);
   }
 
   /** Fill pips with the end's per-arrow scores (-1 = not yet shot, 0 = miss). */

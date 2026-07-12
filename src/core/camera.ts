@@ -3,6 +3,12 @@ import type { Input } from "./input"
 import type { Player } from "../player/player"
 import type { PlayerMode } from "../player/types"
 import { waterHeight, type WorldMap } from "../world/heightmap"
+import type { Physics } from "./physics"
+import { CAMERA_TUNING } from "../config"
+import {
+  clearCameraCutaway,
+  updateCameraCutaway
+} from "../render/cameraCutaway"
 
 const OFFSETS: Record<PlayerMode, { back: number; up: number; look: number }> =
   {
@@ -35,6 +41,25 @@ const VIEW = {
 
 const smoothstep = (t: number) => t * t * (3 - 2 * t)
 
+// Per-mode camera volume and minimum readable framing. `comfort` is the nearest
+// boom distance we keep once the cutaway takes over; `cutRadius` is the visual
+// tunnel radius around the sight line. Large/faster mounts need more context.
+const OCCLUSION: Record<
+  PlayerMode,
+  { radius: number; comfort: number; cutRadius: number }
+> = {
+  walk: { radius: 0.34, comfort: 2.2, cutRadius: 1.4 },
+  drive: { radius: 0.62, comfort: 5.0, cutRadius: 3.1 },
+  scooter: { radius: 0.46, comfort: 3.6, cutRadius: 2.2 },
+  plane: { radius: 0.9, comfort: 9.0, cutRadius: 5.2 },
+  boat: { radius: 0.68, comfort: 6.0, cutRadius: 3.8 },
+  speedboat: { radius: 0.68, comfort: 5.5, cutRadius: 3.6 },
+  drone: { radius: 0.42, comfort: 3.4, cutRadius: 2.0 },
+  board: { radius: 0.46, comfort: 3.5, cutRadius: 2.2 },
+  surf: { radius: 0.58, comfort: 5.0, cutRadius: 3.0 },
+  bird: { radius: 0.85, comfort: 8.0, cutRadius: 4.8 }
+}
+
 /**
  * Pointer-lock chase camera. The mouse owns yaw/pitch (no orbit button) and
  * the camera never recenters on its own.
@@ -48,6 +73,8 @@ export class ChaseCamera {
   /** Set true while the player is inside a building. The camera blends to a
    *  zoom-independent eye pose with true yaw/pitch orientation. */
   indoor = false
+  /** Activities such as archery can request the same eye rig outdoors. */
+  activityFirstPerson = false
   #indoor = 0 // smoothed 0..1
 
   #chasePos = new THREE.Vector3()
@@ -64,21 +91,37 @@ export class ChaseCamera {
   #firstPersonEuler = new THREE.Euler(0, 0, 0, "YXZ")
   #up = new THREE.Vector3(0, 1, 0)
   #firstPersonAvatarHidden = false
+  #safeBoomDistance = 0
+  #cutaway = 0
+  #buildingBlocked = false
+  #lastHitDistance = Infinity
   #initialized = false
   #externallyOwned = false
   #holdOrbitPose = false
   #lastMode: PlayerMode | null = null
   #outdoorFov: number
   #map: WorldMap
+  #physics: Physics
 
-  constructor(camera: THREE.PerspectiveCamera, map: WorldMap) {
+  constructor(camera: THREE.PerspectiveCamera, map: WorldMap, physics: Physics) {
     this.camera = camera
     this.#outdoorFov = camera.fov
     this.#map = map
+    this.#physics = physics
   }
 
   shake(amount: number) {
     this.shakeAmount = Math.min(1.6, this.shakeAmount + amount)
+  }
+
+  /** Allocation-on-demand runtime probe; the hot update path remains allocation-free. */
+  obstructionDiagnostics() {
+    return {
+      blocked: this.#buildingBlocked,
+      hitDistance: this.#lastHitDistance,
+      safeBoomDistance: this.#safeBoomDistance,
+      cutaway: this.#cutaway
+    }
   }
 
   /** Eased first-person contribution, used by interaction rays and diagnostics. */
@@ -106,6 +149,11 @@ export class ChaseCamera {
     this.#indoor = 0
     this.#holdOrbitPose = false
     this.#firstPersonAvatarHidden = false
+    this.#safeBoomDistance = 0
+    this.#cutaway = 0
+    this.#buildingBlocked = false
+    this.#lastHitDistance = Infinity
+    clearCameraCutaway()
     player.setFirstPersonView(false)
     this.#applyFov(0)
   }
@@ -133,7 +181,7 @@ export class ChaseCamera {
 
   update(dt: number, player: Player, input: Input) {
     this.#resume(player)
-    const indoorTarget = this.indoor && player.mode === "walk" ? 1 : 0
+    const indoorTarget = (this.indoor || this.activityFirstPerson) && player.mode === "walk" ? 1 : 0
     this.#indoor +=
       (indoorTarget - this.#indoor) *
       (1 - Math.exp(-Math.min(dt, 0.1) * VIEW.transitionRate))
@@ -305,15 +353,22 @@ export class ChaseCamera {
       this.#eyePos,
       1 - Math.exp(-smoothDt * VIEW.firstPersonFollow)
     )
-    this.camera.position.lerpVectors(
-      this.#orbitPos,
-      this.#firstPersonPos,
-      firstPersonBlend
-    )
-    this.#orbitViewPos.copy(this.#orbitPos)
 
     this.#target.copy(anchor)
     this.#target.y += o.look
+    this.#orbitViewPos.copy(this.#orbitPos)
+    this.#resolveBuildingOcclusion(
+      smoothDt,
+      player.mode,
+      modeChanged,
+      indoorTarget === 1,
+      this.#orbitViewPos
+    )
+    this.camera.position.lerpVectors(
+      this.#orbitViewPos,
+      this.#firstPersonPos,
+      firstPersonBlend
+    )
 
     if (this.shakeAmount > 0.002) {
       // shake position and look-target together so it reads as a jolt, not a wobble
@@ -348,6 +403,85 @@ export class ChaseCamera {
       this.#orbitQuat,
       this.#firstPersonQuat,
       firstPersonBlend
+    )
+    updateCameraCutaway(
+      this.camera.position,
+      this.#target,
+      (OCCLUSION[player.mode].cutRadius * CAMERA_TUNING.values.cutawayRadiusScale),
+      this.#cutaway * (1 - firstPersonBlend)
+    )
+  }
+
+  /** Resolve the smoothed orbit pose, so follow-lag can never carry the rendered
+   * camera through a corner even when the raw desired chase endpoint is clear. */
+  #resolveBuildingOcclusion(
+    dt: number,
+    mode: PlayerMode,
+    modeChanged: boolean,
+    indoor: boolean,
+    candidate: THREE.Vector3
+  ) {
+    const cfg = OCCLUSION[mode]
+    const dx = candidate.x - this.#target.x
+    const dy = candidate.y - this.#target.y
+    const dz = candidate.z - this.#target.z
+    const desiredDistance = Math.hypot(dx, dy, dz)
+    if (desiredDistance < 0.001) {
+      this.#cutaway = 0
+      clearCameraCutaway()
+      return
+    }
+
+    const collisionOn = CAMERA_TUNING.values.collisionEnabled && !indoor
+    const radius = cfg.radius * CAMERA_TUNING.values.collisionRadiusScale
+    const hitDistance = collisionOn
+      ? this.#physics.cameraObstructionDistance(this.#target, candidate, radius)
+      : Infinity
+    const blocked = Number.isFinite(hitDistance) && hitDistance < desiredDistance
+    this.#buildingBlocked = blocked
+    this.#lastHitDistance = blocked ? hitDistance : Infinity
+    const safeDistance = blocked
+      ? Math.max(0.65, Math.min(desiredDistance, hitDistance - 0.14))
+      : desiredDistance
+
+    if (modeChanged || this.#safeBoomDistance <= 0) {
+      this.#safeBoomDistance = safeDistance
+    } else if (safeDistance < this.#safeBoomDistance) {
+      // Collision entry is immediate: never interpolate through a wall.
+      this.#safeBoomDistance = safeDistance
+    } else {
+      // Release slowly with a continuous exponential response so clearing a
+      // facade edge does not pump the boom at frame rate.
+      this.#safeBoomDistance +=
+        (safeDistance - this.#safeBoomDistance) *
+        (1 - Math.exp(-dt * CAMERA_TUNING.values.collisionRelease))
+    }
+
+    const comfort = Math.min(desiredDistance, cfg.comfort)
+    const crushRange = Math.max(0.8, comfort * 0.32)
+    const severity = blocked
+      ? THREE.MathUtils.clamp((comfort - safeDistance) / crushRange, 0, 1)
+      : 0
+    const cutTarget =
+      CAMERA_TUNING.values.cutawayEnabled && !indoor ? smoothstep(severity) : 0
+    const response = CAMERA_TUNING.values.cutawayResponse *
+      (cutTarget > this.#cutaway ? 1 : 0.32)
+    this.#cutaway +=
+      (cutTarget - this.#cutaway) * (1 - Math.exp(-dt * response))
+    if (this.#cutaway < 0.001 && cutTarget === 0) this.#cutaway = 0
+
+    // Collision owns ordinary obstructions. Only when framing is crushed does
+    // the cutaway pull the camera back toward a readable minimum distance.
+    const resolvedDistance = THREE.MathUtils.lerp(
+      this.#safeBoomDistance,
+      comfort,
+      this.#cutaway
+    )
+    const inv = resolvedDistance / desiredDistance
+    candidate.set(
+      this.#target.x + dx * inv,
+      this.#target.y + dy * inv,
+      this.#target.z + dz * inv
     )
   }
 

@@ -527,6 +527,75 @@ export class Physics {
     return false;
   }
 
+  /**
+   * Conservative camera-volume cast through the static query world. Five
+   * parallel broadphase rays approximate a swept sphere without creating a
+   * physics body or touching the stepped gameplay world. Returns metres from
+   * `focus` to the first obstruction, or Infinity when the complete boom is
+   * clear. Terrain is handled by the chase camera's existing endpoint clamp;
+   * this query is deliberately building/bridge/landmark-only and allocation-free.
+   */
+  cameraObstructionDistance(
+    focus: THREE.Vector3,
+    desired: THREE.Vector3,
+    radius: number
+  ): number {
+    let dx = desired.x - focus.x;
+    let dy = desired.y - focus.y;
+    let dz = desired.z - focus.z;
+    const length = Math.hypot(dx, dy, dz);
+    if (length < 0.001) return Infinity;
+    dx /= length;
+    dy /= length;
+    dz /= length;
+
+    // Camera-local right. For an almost-vertical boom, choose world X so the
+    // offset frame remains defined instead of amplifying floating-point noise.
+    let rx = -dz;
+    let rz = dx;
+    const rLen = Math.hypot(rx, rz);
+    if (rLen < 0.001) {
+      rx = 1;
+      rz = 0;
+    } else {
+      rx /= rLen;
+      rz /= rLen;
+    }
+    // Camera-local up = forward × right.
+    const ux = dy * rz;
+    const uy = dz * rx - dx * rz;
+    const uz = -dy * rx;
+
+    let nearest = Infinity;
+    const cast = (ox: number, oy: number, oz: number) => {
+      const hit = this.#solids.castRayClosest(
+        focus.x + ox,
+        focus.y + oy,
+        focus.z + oz,
+        dx,
+        dy,
+        dz,
+        length,
+        undefined,
+        this.#solidRay
+      );
+      // A focus point can sit flush with a rooftop collider. Ignore contact
+      // epsilon there; a real facade obstruction is always farther down-boom.
+      // Only an ENTERING face blocks the boom. An offset ray can begin inside a
+      // roof/parapet beside the subject; its first hit is then the exit face and
+      // must not collapse the camera as though the wall were behind the player.
+      const entering = hit ? hit.nx * dx + hit.ny * dy + hit.nz * dz < -0.01 : false;
+      if (hit && entering && hit.distance > 0.08 && hit.distance < nearest) nearest = hit.distance;
+    };
+
+    cast(0, 0, 0);
+    cast(rx * radius, 0, rz * radius);
+    cast(-rx * radius, 0, -rz * radius);
+    cast(ux * radius, uy * radius, uz * radius);
+    cast(-ux * radius, -uy * radius, -uz * radius);
+    return nearest;
+  }
+
   /** Hand the scene-aware building-ray refiner to raycastWorld (see below). */
   setBuildingRayRefiner(refiner: BuildingRayRefiner | null): void {
     this.#rayRefiner = refiner;

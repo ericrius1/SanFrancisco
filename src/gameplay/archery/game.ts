@@ -8,11 +8,12 @@ import type { WorldMap } from "../../world/heightmap";
 import type { WorldQueries } from "../../core/worldQueries";
 import type { GameSite } from "../siteGate";
 import type { NatureSoundscape } from "../../audio/natureSoundscape";
+import { buildArrow, buildBow } from "../../player/held";
 import { ArcheryAudio } from "./audio";
 import { ArcheryUI, ringColorCss } from "./ui";
 import { NpcArchers } from "./npcArchers";
 import { buildArcherySite, RING_RADII, RING_SCORES, type ArcheryTarget } from "./site";
-import { archeryLocal, inArcheryRange, LANE_COUNT, LANE_SPACING, laneV } from "./layout";
+import { ARCHERY_YAW, archeryLocal, inArcheryRange, LANE_COUNT, LANE_SPACING, laneV } from "./layout";
 
 /**
  * The Golden Gate Park archery range: walk up to the rack (or a lane), press
@@ -33,15 +34,18 @@ const DRAW_TIME = 1.1; // seconds to full draw
 const NOCK_TIME = 0.3; // quiver-reach flourish before the pull
 const RELEASE_TIME = 0.28; // pose ease after the loose
 const ARROWS_PER_END = 6;
-const ARROW_CAP = 40; // live instances (flight + stuck + fading)
-const STUCK_CAP = 30; // stuck arrows recycled FIFO beyond this
+const ARROW_CAP = 48; // live instances (flight + stuck)
+const STUCK_CAP = 42; // stuck arrows recycled FIFO beyond this
 const MAX_FLIGHT_SECONDS = 4;
 const MAX_FLIGHT_METRES = 120;
-const GROUND_FADE_DELAY = 10; // seconds a missed arrow rests before fading
 const GRAVITY = 9.8;
 const LINE_PAD = 3.2; // how close to the shooting line counts as "at the line"
-const RACK_REACH = 4.2;
-const NPC_REACH = 2.4;
+const LINE_INTERACT_REACH = 6;
+const RACK_REACH = 6;
+const NPC_REACH = 3.2;
+const ARROW_LENGTH = 0.82;
+const TARGET_EMBED = 0.14;
+const SURFACE_EMBED = 0.22;
 const NPC_LANES = [0, LANE_COUNT - 1] as const;
 
 const RING_NAMES = ["GOLD!", "RED!", "BLUE!", "BLACK", "WHITE"] as const;
@@ -54,7 +58,7 @@ type Ctx = {
   camera: THREE.PerspectiveCamera;
 };
 
-type ArrowMode = "free" | "fly" | "stuck" | "ground";
+type ArrowMode = "free" | "fly" | "stuck";
 
 type Arrow = {
   mode: ArrowMode;
@@ -109,7 +113,6 @@ export class ArcheryGame {
   #releasedCharge = 0;
   #lane = 2;
   #nearLine = false;
-  #promptShown = false;
   #takenOverNpc = -1;
 
   // scoring: an end of six. endScores[i] = -1 not shot, 0 miss, else ring pts
@@ -125,6 +128,14 @@ export class ArcheryGame {
   #shaftMesh: THREE.InstancedMesh;
   #fletchMesh: THREE.InstancedMesh;
   #stuckTicket = 0;
+
+  // Camera-space bow keeps the draw readable after the outdoor FPS handoff
+  // hides the local avatar mesh.
+  #viewModel = new THREE.Group();
+  #viewBow = buildBow();
+  #viewArrow = buildArrow();
+  #viewStringTop: THREE.Mesh;
+  #viewStringBottom: THREE.Mesh;
 
   constructor(map: WorldMap, worldQueries: WorldQueries, scene: THREE.Scene, opts: { nature: NatureSoundscape; daylight?: () => boolean }) {
     this.#wq = worldQueries;
@@ -156,24 +167,24 @@ export class ArcheryGame {
 
     // arrow instancing: shaft+tip merged into one geometry (+Y = tip, origin
     // at the nock, matching held.ts buildArrow), fins in a second mesh
-    const shaft = new THREE.CylinderGeometry(0.008, 0.008, 0.66, 5);
-    shaft.translate(0, 0.35, 0);
-    const tip = new THREE.ConeGeometry(0.016, 0.06, 5);
-    tip.translate(0, 0.7, 0);
+    const shaft = new THREE.CylinderGeometry(0.012, 0.012, ARROW_LENGTH - 0.07, 6);
+    shaft.translate(0, (ARROW_LENGTH - 0.07) / 2, 0);
+    const tip = new THREE.ConeGeometry(0.024, 0.07, 6);
+    tip.translate(0, ARROW_LENGTH, 0);
     const shaftGeo = mergeGeometries([shaft, tip], false)!;
     shaft.dispose();
     tip.dispose();
     const finParts: THREE.BufferGeometry[] = [];
     for (let i = 0; i < 3; i++) {
-      const fin = new THREE.BoxGeometry(0.004, 0.09, 0.03);
-      fin.translate(0, 0.075, 0.017);
+      const fin = new THREE.BoxGeometry(0.007, 0.13, 0.048);
+      fin.translate(0, 0.09, 0.027);
       fin.applyMatrix4(S.m.makeRotationY((i / 3) * Math.PI * 2));
       finParts.push(fin);
     }
     const finGeo = mergeGeometries(finParts, false)!;
     for (const f of finParts) f.dispose();
-    this.#shaftMesh = new THREE.InstancedMesh(shaftGeo, new THREE.MeshLambertMaterial({ color: 0xc9a86a }), ARROW_CAP);
-    this.#fletchMesh = new THREE.InstancedMesh(finGeo, new THREE.MeshLambertMaterial({ color: 0xdd5544 }), ARROW_CAP);
+    this.#shaftMesh = new THREE.InstancedMesh(shaftGeo, new THREE.MeshLambertMaterial({ color: 0xf0d59a }), ARROW_CAP);
+    this.#fletchMesh = new THREE.InstancedMesh(finGeo, new THREE.MeshBasicMaterial({ color: 0xff633d }), ARROW_CAP);
     for (const m of [this.#shaftMesh, this.#fletchMesh]) {
       m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       m.castShadow = false;
@@ -195,6 +206,25 @@ export class ArcheryGame {
       });
     }
     this.#writeInstances();
+
+    this.#viewModel.name = "archery-first-person-bow";
+    this.#viewModel.visible = false;
+    this.#viewModel.position.set(0.34, -0.28, -0.72);
+    this.#viewModel.rotation.set(0, -0.04, -0.02);
+    this.#viewBow.getObjectByName("bow-string")!.visible = false;
+    this.#prepareViewModel(this.#viewBow);
+    this.#prepareViewModel(this.#viewArrow);
+    this.#viewArrow.rotation.x = -Math.PI / 2;
+    this.#viewModel.add(this.#viewBow, this.#viewArrow);
+    const stringGeo = new THREE.CylinderGeometry(0.0045, 0.0045, 1, 5);
+    const stringMat = new THREE.MeshBasicMaterial({ color: 0xfff4d6, depthTest: false, depthWrite: false });
+    this.#viewStringTop = new THREE.Mesh(stringGeo, stringMat);
+    this.#viewStringBottom = new THREE.Mesh(stringGeo, stringMat);
+    for (const string of [this.#viewStringTop, this.#viewStringBottom]) {
+      string.renderOrder = 10001;
+      string.frustumCulled = false;
+      this.#viewModel.add(string);
+    }
 
     if (import.meta.env.DEV) {
       Object.assign(window as object, {
@@ -264,9 +294,7 @@ export class ArcheryGame {
     if (on) {
       this.root.updateMatrixWorld(true);
       this.#npcs.setShown(this.#daylight());
-    } else {
-      this.#promptShown = false;
-    }
+    } else this.#ui.setPrompt(null);
   }
 
   /** The registration record main.ts hands to siteGate.register(). */
@@ -286,11 +314,16 @@ export class ArcheryGame {
     return this.#holding && (this.#drawing || this.#nearLine);
   }
 
+  /** main.ts feeds this into ChaseCamera's outdoor eye-rig override. */
+  get firstPersonActive(): boolean {
+    return this.#holding;
+  }
+
   // ------------------------------------------------------------- E-chain
 
   /** main.ts E-chain: pick a bow off the rack / at the line, take over an NPC
    *  lane, or put a held bow back. Returns true = E consumed. */
-  tryInteract(player: Player, hud: HUD): boolean {
+  tryInteract(player: Player, hud: HUD, chase: ChaseCamera): boolean {
     if (player.mode !== "walk" || !this.#siteAwake) return false;
     if (this.#holding) {
       if (this.#drawing) return true; // mid-draw E is swallowed, not a putback
@@ -299,32 +332,36 @@ export class ArcheryGame {
       return true;
     }
     const p = player.renderPosition;
-    if (!inArcheryRange(p.x, p.z, 8)) return false;
+    if (!inArcheryRange(p.x, p.z, 12)) return false;
     // an NPC lane takeover wins over a plain rack grab when beside one
     const npcIdx = this.#npcs.nearestLane(p.x, p.z, NPC_REACH);
     if (npcIdx >= 0) {
       this.#npcs.setTakenOver(npcIdx, true);
       this.#takenOverNpc = npcIdx;
-      this.#equip(hud, `Lane ${this.#npcs.laneOf(npcIdx) + 1} is yours — hold click to draw 🏹`);
+      this.#equip(hud, chase, `Lane ${this.#npcs.laneOf(npcIdx) + 1} is yours — hold click to draw 🏹`);
       return true;
     }
     const nearRack = Math.hypot(p.x - this.#rackXZ.x, p.z - this.#rackXZ.z) < RACK_REACH;
     const local = archeryLocal(p.x, p.z);
-    const nearLine = Math.abs(local.u) < LINE_PAD && Math.abs(local.v) < laneV(LANE_COUNT - 1) + LANE_SPACING;
+    const nearLine = Math.abs(local.u) < LINE_INTERACT_REACH && Math.abs(local.v) < laneV(LANE_COUNT - 1) + LANE_SPACING;
     if (nearRack || nearLine) {
-      this.#equip(hud, "Bow in hand — stand on the white line, hold click to draw 🏹");
+      this.#equip(hud, chase, "Archery started — aim with the reticle, hold click to draw, release to loose 🏹");
       return true;
     }
-    return false;
+    hud.message("Move to the white shooting line or bow rack, then press E", 2.6);
+    return true;
   }
 
-  #equip(hud: HUD, msg: string) {
+  #equip(hud: HUD, chase: ChaseCamera, msg: string) {
     this.#holding = true;
     this.#drawing = false;
     this.#charge = 0;
     this.#resetEnd();
     this.#ui.setVisible(true);
+    this.#ui.setPrompt(null);
     this.#ui.setEnd(this.#endScores, this.#endTotal, this.#grandTotal);
+    chase.yaw = ARCHERY_YAW + Math.PI;
+    chase.pitch = 0;
     hud.message(msg, 3);
   }
 
@@ -334,6 +371,7 @@ export class ArcheryGame {
     player.setArcherPose(false);
     player.setBowCarried(false);
     this.#ui.setVisible(false);
+    this.#viewModel.visible = false;
     if (this.#takenOverNpc >= 0) {
       this.#npcs.setTakenOver(this.#takenOverNpc, false);
       this.#takenOverNpc = -1;
@@ -360,6 +398,7 @@ export class ArcheryGame {
     this.#npcs.setShown(this.#daylight());
     this.#npcs.update(dt, ctx.player.renderPosition.x, ctx.player.renderPosition.z);
     this.#updatePlayer(dt, ctx);
+    this.#syncViewModel(ctx.camera);
   }
 
   #updatePlayer(dt: number, ctx: Ctx) {
@@ -368,21 +407,23 @@ export class ArcheryGame {
     const onFoot = player.mode === "walk";
 
     if (!this.#holding) {
-      // gentle nudge at the rack / line, golf's tee-prompt pattern
+      // Persistent prompt at the rack / line; do not rely on an expiring toast.
       if (onFoot && this.#siteAwake) {
         const nearRack = Math.hypot(p.x - this.#rackXZ.x, p.z - this.#rackXZ.z) < RACK_REACH;
         const local = archeryLocal(p.x, p.z);
-        const nearLine = Math.abs(local.u) < LINE_PAD && Math.abs(local.v) < laneV(LANE_COUNT - 1) + LANE_SPACING;
+        const nearLine = Math.abs(local.u) < LINE_INTERACT_REACH && Math.abs(local.v) < laneV(LANE_COUNT - 1) + LANE_SPACING;
         const nearNpc = this.#npcs.nearestLane(p.x, p.z, NPC_REACH) >= 0;
-        if (nearRack || nearLine || nearNpc) {
-          if (!this.#promptShown) {
-            hud.message(nearNpc ? "Press E — take over this lane 🏹" : "Press E — pick up a bow 🏹", 2.4);
-            this.#promptShown = true;
-          }
-        } else this.#promptShown = false;
+        this.#ui.setPrompt(
+          nearRack || nearLine || nearNpc
+            ? nearNpc
+              ? "E — Take over this archery lane"
+              : "E — Start archery"
+            : null
+        );
       }
       return;
     }
+    this.#ui.setPrompt(null);
 
     // holding: dropping the walk mode (vehicles, swimming) or wandering off
     // the field quietly racks the bow
@@ -405,6 +446,7 @@ export class ArcheryGame {
       const k = Math.max(0, this.#releaseT / RELEASE_TIME);
       player.setArcherPose(true, this.#releasedCharge * k * 0.35, 0);
       this.#ui.setDraw(0, target.distance);
+      this.#ui.setReticleCharge(0, false);
       return;
     }
 
@@ -412,6 +454,7 @@ export class ArcheryGame {
       player.setArcherPose(false);
       this.#ui.showDraw(this.#nearLine);
       if (this.#nearLine) this.#ui.setDraw(0, target.distance);
+      this.#ui.setReticleCharge(0, false);
       // start the draw: hold fire at the line (kb focus rules match golf)
       if (this.#nearLine && input.firing && !input.freeCursor && !input.suspended) {
         this.#drawing = true;
@@ -448,6 +491,7 @@ export class ArcheryGame {
       }
       this.#ui.showDraw(true);
       this.#ui.setDraw(this.#charge, target.distance);
+      this.#ui.setReticleCharge(this.#charge, true);
       return;
     }
 
@@ -460,9 +504,11 @@ export class ArcheryGame {
     camera.getWorldDirection(S.dir);
     S.dir.y += 0.012; // a hair of loft so point-blank aim reads true at range
     S.dir.normalize();
-    S.v.copy(p);
-    S.v.y += 0.55; // chest anchor
-    S.v.addScaledVector(S.dir, 0.6);
+    // Spawn on the rendered sight line. The old chest origin began inside the
+    // local-player query proxy, so the first segment could hit the archer.
+    S.v.copy(chase.firstPersonBlend > 0.5 ? camera.position : p);
+    if (chase.firstPersonBlend <= 0.5) S.v.y += 0.55;
+    S.v.addScaledVector(S.dir, 0.48);
     const speed = 20 + this.#charge * 35;
     const slot = this.#shotIdx < ARROWS_PER_END ? this.#shotIdx : -1;
     if (slot >= 0) this.#shotIdx++;
@@ -472,6 +518,50 @@ export class ArcheryGame {
     this.#releaseT = RELEASE_TIME;
     this.#charge = 0;
     this.#ui.setDraw(0, target.distance);
+    this.#ui.setReticleCharge(0, false);
+  }
+
+  #prepareViewModel(root: THREE.Object3D) {
+    root.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      const clones = materials.map((material) => {
+        const clone = material.clone();
+        clone.depthTest = false;
+        clone.depthWrite = false;
+        return clone;
+      });
+      mesh.material = Array.isArray(mesh.material) ? clones : clones[0];
+      mesh.renderOrder = 10000;
+      mesh.frustumCulled = false;
+      mesh.castShadow = false;
+    });
+  }
+
+  #syncViewModel(camera: THREE.PerspectiveCamera) {
+    if (!this.#holding) {
+      this.#viewModel.visible = false;
+      return;
+    }
+    if (this.#viewModel.parent !== camera) camera.add(this.#viewModel);
+    this.#viewModel.visible = true;
+    const pull = this.#drawing ? this.#charge : 0;
+    const nockZ = 0.055 + pull * 0.3;
+    this.#viewArrow.visible = this.#nearLine && this.#releaseT <= 0;
+    this.#viewArrow.position.set(0, 0, nockZ);
+    this.#placeViewString(this.#viewStringTop, 0.62, 0.055, 0, nockZ);
+    this.#placeViewString(this.#viewStringBottom, -0.62, 0.055, 0, nockZ);
+    this.#viewModel.position.x = 0.34 + pull * 0.025;
+    this.#viewModel.rotation.z = -0.02 - pull * 0.025;
+  }
+
+  #placeViewString(mesh: THREE.Mesh, ay: number, az: number, by: number, bz: number) {
+    S.v.set(0, by - ay, bz - az);
+    const len = S.v.length();
+    mesh.position.set(0, (ay + by) * 0.5, (az + bz) * 0.5);
+    mesh.quaternion.setFromUnitVectors(S.up, S.v.multiplyScalar(1 / Math.max(len, 1e-6)));
+    mesh.scale.set(1, len, 1);
   }
 
   // ------------------------------------------------------------- arrows
@@ -520,16 +610,6 @@ export class ArcheryGame {
       if (arrow.mode === "free" || arrow.mode === "stuck") continue; // stuck = static, already written
       dirty = true;
 
-      if (arrow.mode === "ground") {
-        arrow.age += dt;
-        if (arrow.age > GROUND_FADE_DELAY) {
-          // "fade": ground arrows shrink away (instances can't blend opacity)
-          arrow.scale = Math.max(0, 1 - (arrow.age - GROUND_FADE_DELAY) / 0.8);
-          if (arrow.scale <= 0) arrow.mode = "free";
-        }
-        continue;
-      }
-
       // ---- flight
       arrow.age += dt;
       arrow.vel.y -= GRAVITY * dt;
@@ -555,12 +635,22 @@ export class ArcheryGame {
       if (resolved) continue;
 
       // 2) world raycast for everything else (terrain, trees, buildings)
-      const hit = this.#wq.raycast(arrow.pos, S.dir, segLen);
+      const hit = this.#wq.raycast(arrow.pos, S.dir, segLen, { ignoreSelf: arrow.fromPlayer });
       if (hit) {
-        arrow.pos.copy(hit.point).addScaledVector(S.dir, -(0.7 - 0.24)); // tip buried ~0.24
-        arrow.quat.setFromUnitVectors(S.up, S.dir);
-        arrow.mode = "ground";
+        // Keep a useful amount of shaft above grass even on a shallow hit: the
+        // arrow catches into the surface instead of lying under ground cover.
+        S.v2.copy(S.dir);
+        const incidence = S.v2.dot(hit.normal);
+        if (incidence > -0.32) S.v2.addScaledVector(hit.normal, -0.32 - incidence).normalize();
+        arrow.pos
+          .copy(hit.point)
+          .addScaledVector(S.v2, -(ARROW_LENGTH - SURFACE_EMBED))
+          .addScaledVector(hit.normal, 0.025);
+        arrow.quat.setFromUnitVectors(S.up, S.v2);
+        arrow.mode = "stuck";
         arrow.age = 0;
+        arrow.stuckOrder = this.#stuckTicket++;
+        this.#enforceStuckCap();
         const soundQuiet = !arrow.fromPlayer;
         if (hit.kind === "terrain" || hit.kind === "water") this.#audio.thunk(hit.point.x, hit.point.y, hit.point.z, soundQuiet);
         else this.#audio.crack(hit.point.x, hit.point.y, hit.point.z, soundQuiet);
@@ -579,16 +669,10 @@ export class ArcheryGame {
     }
     if (dirty) this.#writeInstances();
 
-    // deferred end reset: after the summary toast, clear pips + fade the
-    // player's arrows out of the targets
+    // Deferred score reset. Embedded arrows remain until the FIFO visual cap,
+    // so the range keeps the history of where each end landed.
     if (this.#endResetAt > 0 && performance.now() >= this.#endResetAt) {
       this.#endResetAt = 0;
-      for (const a of this.#arrows) {
-        if (a.mode === "stuck" && a.fromPlayer) {
-          a.mode = "ground"; // reuse the shrink-out path
-          a.age = GROUND_FADE_DELAY;
-        }
-      }
       const grand = this.#grandTotal;
       this.#resetEnd();
       this.#grandTotal = grand;
@@ -611,7 +695,7 @@ export class ArcheryGame {
     S.q.setFromEuler(S.e.set((Math.random() - 0.5) * 0.12, (Math.random() - 0.5) * 0.12, 0));
     arrow.quat.multiply(S.q);
     // place the nock so the tip sits ~0.14 into the straw
-    arrow.pos.copy(hitPoint).addScaledVector(S.dir, -(0.7 - 0.14));
+    arrow.pos.copy(hitPoint).addScaledVector(S.dir, -(ARROW_LENGTH - TARGET_EMBED));
     arrow.mode = "stuck";
     arrow.scale = 1;
     arrow.age = 0;

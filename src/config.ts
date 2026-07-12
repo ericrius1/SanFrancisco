@@ -64,7 +64,18 @@ export const CAMERA_TUNING = tunables("camera", {
   // false = clockwise (default); true = counter-clockwise
   orbitFlipCCW: { v: false, label: "orbit CCW" },
   // meters added to orbit radius over the flip (dolly out)
-  orbitFlipPull: { v: 8, min: 0, max: 80, step: 0.5, label: "orbit pull-back (m)" }
+  orbitFlipPull: { v: 8, min: 0, max: 80, step: 0.5, label: "orbit pull-back (m)" },
+  // Chase-camera obstruction. Radius scales the per-mode swept-volume proxy;
+  // recovery is intentionally slower than collision entry so a corner cannot
+  // pump the camera in and out every frame.
+  collisionEnabled: { v: true, label: "building collision" },
+  collisionRadiusScale: { v: 1, min: 0.5, max: 1.8, step: 0.05, label: "collision radius" },
+  collisionRelease: { v: 4.5, min: 1, max: 14, step: 0.25, label: "boom recovery" },
+  // When collision would crush the framing, a dithered wall-only corridor takes
+  // over. This keeps the city silhouette/roof intact and avoids alpha blending.
+  cutawayEnabled: { v: true, label: "building cutaway" },
+  cutawayRadiusScale: { v: 1, min: 0.5, max: 1.8, step: 0.05, label: "cutaway radius" },
+  cutawayResponse: { v: 18, min: 4, max: 40, step: 1, label: "cutaway response" }
 })
 
 /** Gamepad look. Bound under advanced → controls in the "/" panel. Applies to

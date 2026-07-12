@@ -35,6 +35,7 @@ import {
 } from "three/tsl";
 import { bumpNormal } from "./tslUtil";
 import { LIGHT_SCALE } from "../config";
+import { cameraCutawayMask } from "../render/cameraCutaway";
 
 /** Sky-driven lit-window weight: 0 in daylight → 1 after dusk, written every
  * frame by Sky#applySun (same twilight curve as the street lamps). Window
@@ -431,7 +432,7 @@ export function createFacadeMaterial(
   // camera's 24 km far plane. A material mask removes those fragments (including
   // from shadow passes). Both R=0 (mesh and collider off) and R=1/255 (mesh off,
   // collider kept) stay below this threshold.
-  mat.maskNode = info.r.greaterThan(0.5);
+  mat.maskNode = info.r.greaterThan(0.5).and(cameraCutawayMask());
 
   // Deterministic per-building nudge (±3cm in XZ): raw OSM leaves duplicate
   // footprints (way + multipolygon twins) and shared party walls exactly

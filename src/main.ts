@@ -703,7 +703,7 @@ async function boot() {
   // are subpixel — their systems pause. Hysteresis so hill flanks don't flicker it.
   let highUp = false;
 
-  const chase = new ChaseCamera(camera, map);
+  const chase = new ChaseCamera(camera, map, physics);
   chase.yaw = spawn.heading; // behind the player, looking the way they face (spawn.heading is raw facing)
   // seed the camera above the local ground — hilltop spawns sit well over y=30
   camera.position.set(spawn.x + 20, map.effectiveGround(spawn.x, spawn.z) + 30, spawn.z + 20);
@@ -2611,7 +2611,7 @@ async function boot() {
       input.pressed("KeyE") &&
       !exitToWalk() &&
       !golf?.tryStartAtTee(player, hud) &&
-      !archery?.tryInteract(player, hud)
+      !archery?.tryInteract(player, hud, chase)
     ) {
       const nearOceanBeach =
         player.mode === "walk" &&
@@ -3028,6 +3028,7 @@ async function boot() {
       ridePromptShown = false;
       doorPromptShown = false;
     }
+    chase.activityFirstPerson = archery?.firstPersonActive ?? false;
     if (cineHook) {
       chase.suspend(player);
       cineHook(frameDt); // scripted cinematic owns pose + camera

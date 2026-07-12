@@ -29,6 +29,7 @@ import {
 } from "three/tsl";
 import type { MeshData } from "../core/types";
 import { wallPattern, WALL_EMISSIVE, type WallKind } from "../theme/materials";
+import { cameraCutawayVisibility } from "../../../render/cameraCutaway";
 
 // TSL node generics fight composition; `any` is this app's node-code idiom.
 type N = any;
@@ -96,7 +97,7 @@ function makeWallBatchMaterial(kind: WallKind, mesh: THREE.BatchedMesh, dataTex:
   const tinted = (wallPattern(kind) as N).mul(tint); // grayscale pattern × per-instance body colour
   m.colorNode = tinted;
   m.emissiveNode = tinted.mul(float(WALL_EMISSIVE)); // faint self-lit tint (near-zero ambient world)
-  m.opacityNode = fade;
+  m.opacityNode = fade.mul(cameraCutawayVisibility());
   m.alphaHash = true;
   return m;
 }
@@ -112,7 +113,7 @@ function makeStdBatchMaterial(base: THREE.Material, mesh: THREE.BatchedMesh, dat
   m.envMapIntensity = s.envMapIntensity ?? 5.5;
   if (s.emissive) { m.emissive = s.emissive.clone(); m.emissiveIntensity = s.emissiveIntensity ?? 1; }
   const { fade } = instanceData(mesh, dataTex);
-  m.opacityNode = fade;
+  m.opacityNode = fade.mul(cameraCutawayVisibility());
   m.alphaHash = true;
   return m;
 }
