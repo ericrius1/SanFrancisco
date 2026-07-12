@@ -77,6 +77,12 @@ async function main() {
   while (Date.now() - t0 < 150000) { try { if (await ev(c, `!!(window.__sf&&window.__sf.sky&&window.__sf.player&&window.__archery&&window.__archery.game)`)) { ready = true; break; } } catch {} await sleep(600); }
   if (!ready) throw new Error("__sf/__archery never ready");
   console.log(`[probe] ready in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
+  const idleStart = Date.now();
+  while (Date.now() - idleStart < 90000) {
+    if (await ev(c, `window.__sf.renderIdle()`)) break;
+    await sleep(300);
+  }
+  if (!(await ev(c, `window.__sf.renderIdle()`))) throw new Error("render warmup never became idle");
   await ev(c, `window.__sfManual&&window.__sfManual(true)`);
   await ev(c, `(()=>{const s=window.__sf.sky;s.cycleEnabled=false;s.setTimeOfDay(13.5);return true;})()`);
   await ev(c, `document.body.classList.add("started")`);
@@ -90,6 +96,26 @@ async function main() {
   await settle(c, 24);
   out.archeryWake = await ev(c, `window.__archery.stats()`);
   console.log("[archery] wake stats", JSON.stringify(out.archeryWake));
+
+  // Start through the same public E-chain entry point main.ts uses. Verify the
+  // activity requests first person and that its camera-space bow survives the
+  // local-avatar hide at the end of the handoff.
+  out.archeryInteract = await ev(c, `(()=>{
+    const g=window.__sf, a=window.__archery.game;
+    const consumed=a.tryInteract(g.player,g.hud,g.chase);
+    for(let i=0;i<45;i++) g.tick(${DT});
+    const vm=g.camera.getObjectByName('archery-first-person-bow');
+    const p=g.player.renderPosition, cam=g.camera.position;
+    const look=g.camera.getWorldDirection(new g.THREE.Vector3());
+    return {consumed,holding:window.__archery.stats().holding,firstPerson:g.chase.firstPersonBlend,viewModel:!!vm&&vm.visible,cameraToPlayer:cam.distanceTo(p),avatarVisible:g.player.meshes.walk.visible,downrangeDot:look.x};
+  })()`);
+  console.log("[archery] interaction", JSON.stringify(out.archeryInteract));
+  if (!out.archeryInteract.consumed || !out.archeryInteract.holding || out.archeryInteract.firstPerson < 0.9 || !out.archeryInteract.viewModel || out.archeryInteract.cameraToPlayer > 1.5 || out.archeryInteract.avatarVisible || out.archeryInteract.downrangeDot < 0.9) {
+    throw new Error(`archery first-person interaction failed: ${JSON.stringify(out.archeryInteract)}`);
+  }
+  await shoot(c, "archery_first_person", shots);
+  await ev(c, `window.__archery.game.tryInteract(window.__sf.player,window.__sf.hud,window.__sf.chase)`);
+  await settle(c, 8);
 
   // targets/ground info for framing
   const geo = await ev(c, `(()=>{const g=window.__sf; const ts=window.__archery.targets.map(t=>({lane:t.lane,x:t.center.x,y:t.center.y,z:t.center.z,d:t.distance})); const gy=g.map.groundHeight(${AC.x},${AC.z}); return {ts,gy};})()`);
@@ -107,12 +133,16 @@ async function main() {
     fire(2, 0.20, 0.10);  // red/blue ring
     fire(2, -0.34, 0.14); // outer ring
     fire(2, 0.05, -0.42); // low outer
+    fire(2, 0, -2.0);     // below the butt → embedded in the grass
     for (let i=0;i<90;i++) window.__sf.tick(${DT});
     const after = window.__archery.stats();
     return { before, after };
   })()`);
   out.archeryFire = fireSeq;
   console.log("[archery] fire before end", JSON.stringify(fireSeq.before.end), "after end", JSON.stringify(fireSeq.after.end), "endTotal", fireSeq.after.endTotal, "grand", fireSeq.after.grandTotal, "stuck", fireSeq.after.stuck);
+  if (fireSeq.after.stuck < 5 || fireSeq.after.end[4] !== 0) {
+    throw new Error(`archery ground impact did not persist: ${JSON.stringify(fireSeq.after)}`);
+  }
 
   // (C) arrows stuck in the lane-2 face: front 3/4 closeup
   const t2 = geo.ts.find((t) => t.lane === 2);

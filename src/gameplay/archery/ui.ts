@@ -184,7 +184,7 @@ const STYLE = `
   transform: translateX(-50%) translateY(0);
 }
 #hud .archery-reticle {
-  --archery-charge: 0;
+  --archery-scale: 1;
   position: absolute;
   left: 50%;
   top: 50%;
@@ -213,7 +213,7 @@ const STYLE = `
 #hud .archery-reticle.show { opacity: 1; }
 #hud .archery-reticle.drawing {
   border-color: #f5c542;
-  scale: calc(1 - var(--archery-charge) * 0.18);
+  scale: var(--archery-scale);
 }
 `;
 
@@ -317,7 +317,8 @@ export class ArcheryUI {
   }
 
   setReticleCharge(charge: number, drawing: boolean) {
-    this.#reticle.style.setProperty("--archery-charge", String(Math.min(1, Math.max(0, charge))));
+    const t = Math.min(1, Math.max(0, charge));
+    this.#reticle.style.setProperty("--archery-scale", String(1 - t * 0.18));
     this.#reticle.classList.toggle("drawing", drawing);
   }
 
