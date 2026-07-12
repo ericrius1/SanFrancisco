@@ -398,7 +398,6 @@ export class FetchBall {
     const scale = Math.min(1, 22 / speed); // ballSim's documented no-tunnel cap
     const hand = this.#deps.playerView.handWorldPos(this.#tmp);
     this.#held = false;
-    this.#hadHeldBeforeCharge = false;
     this.#throwPhase = "idle";
     this.#holdElapsed = 0;
     this.#charge = 0;
@@ -445,7 +444,6 @@ export class FetchBall {
     this.#dogPhase = { kind: "none" };
     for (const ball of [...this.#free]) this.#removeFree(ball);
     this.#held = false;
-    this.#hadHeldBeforeCharge = false;
     this.#throwPhase = "idle";
     this.#holdElapsed = 0;
     this.#charge = 0;
