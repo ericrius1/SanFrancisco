@@ -10,22 +10,29 @@
 <body>
   <div id="status">loading</div>
   <script type="module">
-    import * as THREE from "three/webgpu";
+    import * as THREE from "/node_modules/three/build/three.module.js";
     import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+    import { MeshoptDecoder } from "three/addons/libs/meshopt_decoder.module.js";
     import { WorldMap } from "/src/world/heightmap.ts";
     import { createRoadMarkings } from "/src/world/roadMarkings.ts";
 
     const status = document.querySelector("#status");
-    const renderer = new THREE.WebGPURenderer({ antialias: true, forceWebGL: true });
+    window.addEventListener("error", (e) => { status.textContent = `error: ${e.message}`; document.title = "road-markings-error"; });
+    window.addEventListener("unhandledrejection", (e) => { status.textContent = `rejection: ${e.reason}`; document.title = "road-markings-error"; });
+    // The production material is a WebGPU NodeMaterial. This focused geometry
+    // probe uses WebGL and swaps in equivalent flat colours after construction,
+    // allowing it to run on CI/browser surfaces without WebGPU.
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(1);
     renderer.setSize(innerWidth, innerHeight);
     document.body.append(renderer.domElement);
-    await renderer.init();
 
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x8793a0);
     const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.2, 500);
+    status.textContent = "loading map";
     const map = await WorldMap.load();
+    status.textContent = "loading roads";
     const roadData = await fetch("/data/roads.json").then((r) => r.json());
     const TARGET = { x: 4260, z: 420 };
     let best = null;
@@ -46,20 +53,25 @@
     const meta = await fetch("/data/manifest.json").then((r) => r.json());
     const ix = Math.floor((best.x - meta.minX) / meta.tile);
     const iz = Math.floor((best.z - meta.minZ) / meta.tile);
-    const gltf = await new GLTFLoader().loadAsync(`/tiles/tile_${ix}_${iz}.glb`);
-    const asphalt = new THREE.MeshBasicNodeMaterial({ color: 0x24282d, side: THREE.DoubleSide });
+    const gltf = await new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).loadAsync(`/tiles/tile_${ix}_${iz}.glb`);
+    status.textContent = `building tile ${ix}_${iz}`;
+    const asphalt = new THREE.MeshBasicMaterial({ color: 0x24282d, side: THREE.DoubleSide });
     gltf.scene.traverse((o) => {
       if (!o.isMesh) return;
       o.visible = o.name.startsWith("road_");
       if (o.visible) o.material = asphalt;
     });
     scene.add(gltf.scene);
+    status.textContent = "building markings";
     const markings = await createRoadMarkings(scene, map);
+    for (const mesh of markings.children) {
+      mesh.material = new THREE.MeshBasicMaterial({ color: mesh.name.includes("Yellow") ? 0xffcc33 : 0xffffff, side: THREE.DoubleSide });
+    }
 
     const y = map.groundHeight(best.x, best.z) + 0.3;
     camera.position.set(best.x - best.ux * 35 - best.uz * 7, y + 12, best.z - best.uz * 35 + best.ux * 7);
     camera.lookAt(best.x + best.ux * 75, y, best.z + best.uz * 75);
-    await renderer.renderAsync(scene, camera);
+    renderer.render(scene, camera);
     const tris = markings.children.reduce((n, o) => n + o.geometry.attributes.position.count / 3, 0);
     status.textContent = `ready tile ${ix}_${iz} · ${Math.round(tris).toLocaleString()} marking tris`;
     document.title = "road-markings-ready";

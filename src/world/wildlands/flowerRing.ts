@@ -22,6 +22,7 @@ import * as THREE from "three/webgpu";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import {
   attribute,
+  cameraPosition,
   float,
   Fn,
   Loop,
@@ -190,7 +191,7 @@ function finalizeBloom(parts: THREE.BufferGeometry[], totalH: number): THREE.Buf
  *  spun by irregular offsets so the packing reads natural, not radially symmetric. */
 function poppyGeometry(): THREE.BufferGeometry {
   const stemH = 0.5;
-  const parts = makeStem(stemH, 0.02);
+  const parts = makeStem(stemH, 0.032);
   bloomRings(parts, stemH + 0.02, [
     { count: 8, pitch: 0.12, len: 0.2, wid: 0.17, rise: 0.32, close: 0.12, cup: 0.5, out: 0.022 },
     { count: 8, pitch: 0.42, len: 0.16, wid: 0.14, rise: 0.46, close: 0.26, cup: 0.7, out: 0.016, spin: 0.4 },
@@ -204,7 +205,7 @@ function poppyGeometry(): THREE.BufferGeometry {
 /** 1 lupine — tall spike of stacked cupped florets. */
 function lupineGeometry(): THREE.BufferGeometry {
   const stemH = 0.34, spikeH = 0.44, tiers = 8;
-  const parts = makeStem(stemH, 0.02);
+  const parts = makeStem(stemH, 0.03);
   const floret = makePetal(0.075, 0.07, 0.55, 0.35, 0.7, 3);
   for (let t = 0; t < tiers; t++) {
     const frac = t / (tiers - 1);
@@ -219,7 +220,7 @@ function lupineGeometry(): THREE.BufferGeometry {
 /** 2 yarrow — short stem + a domed umbel of tiny florets. */
 function yarrowGeometry(): THREE.BufferGeometry {
   const stemH = 0.3;
-  const parts = makeStem(stemH, 0.02);
+  const parts = makeStem(stemH, 0.028);
   const flo = makePetal(0.05, 0.05, 0.3, 0.2, 0.5, 2);
   const n = 13;
   for (let i = 0; i < n; i++) {
@@ -234,7 +235,7 @@ function yarrowGeometry(): THREE.BufferGeometry {
 /** 3 goldfield — low daisy for carpeting drifts: a small cupped gold star. */
 function goldfieldGeometry(): THREE.BufferGeometry {
   const stemH = 0.16;
-  const parts = makeStem(stemH, 0.016);
+  const parts = makeStem(stemH, 0.024);
   bloomRings(parts, stemH + 0.005, [
     { count: 11, pitch: 0.18, len: 0.075, wid: 0.045, rise: 0.28, close: 0.05, cup: 0.5, out: 0.006 },
     { count: 8, pitch: 0.5, len: 0.05, wid: 0.038, rise: 0.45, close: 0.2, cup: 0.7, out: 0.004, spin: 0.4 }
@@ -243,6 +244,13 @@ function goldfieldGeometry(): THREE.BufferGeometry {
 }
 
 const BUILDERS = [poppyGeometry, lupineGeometry, yarrowGeometry, goldfieldGeometry];
+
+// Flower heads remain clearly readable nearby, where their movement spans
+// several pixels. Farther out, even a few centimetres of sway makes the bright
+// petals jump between pixels after their thin stems disappear. Ease that motion
+// away before the flowers become sub-pixel so they keep reading as planted.
+const FLOWER_WIND_FULL_DISTANCE = 14;
+const FLOWER_WIND_ZERO_DISTANCE = 46;
 
 // ---- material ------------------------------------------------------------------
 
@@ -321,7 +329,18 @@ function flowerMaterial(): FlowerMaterialState {
   // through only the mesh world inverse. The instance transform already ran.
   const swayAmt: N = groundSway(anchorWorld.xz);
   const windDamp: N = float(1).sub(crush.mul(0.7));
-  const windWorld: N = vec3(WIND_DIR.x, 0, WIND_DIR.z).mul(swayAmt).mul(0.11).mul(swayW).mul(windDamp);
+  const windLod: N = anchorWorld
+    .distance(cameraPosition)
+    .sub(FLOWER_WIND_FULL_DISTANCE)
+    .div(FLOWER_WIND_ZERO_DISTANCE - FLOWER_WIND_FULL_DISTANCE)
+    .clamp(0, 1)
+    .oneMinus();
+  const windWorld: N = vec3(WIND_DIR.x, 0, WIND_DIR.z)
+    .mul(swayAmt)
+    .mul(0.11)
+    .mul(swayW)
+    .mul(windDamp)
+    .mul(windLod);
   const dipWorld: N = vec3(0, crush.mul(-0.4).mul(swayW), 0); // head sinks when stepped on
 
   // Fade toward the ring rim (shared idea with the grass) so blooms shrink to nothing
@@ -340,7 +359,15 @@ function flowerMaterial(): FlowerMaterialState {
 
 const RESAMPLE_STEP = 9; // re-scatter after the focus moves this far (m)
 const SPACING = 1.6; // flower cell (coarser than grass — flowers are accents)
-const MAX_REACH = 110; // instance caps are sized for this worst case
+const MAX_REACH = 110;
+// Keep one rebuild-step of invisible instances outside the visible ring. As the
+// player moves, those flowers enter through the shader fade from zero instead
+// of appearing at ~70% scale on the next deterministic re-scatter.
+const SAMPLE_OVERSCAN = RESAMPLE_STEP;
+const MAX_SAMPLE_REACH = MAX_REACH + SAMPLE_OVERSCAN;
+// The beauty camera sees this layer; the half-resolution ink prepass does not.
+// Tiny animated petals otherwise become unstable depth/normal outlines.
+const BEAUTY_ONLY_LAYER = 31;
 const CLUMP_SALT = 5171;
 
 // keep-probability shape (before the density knob multiplies it)
@@ -365,7 +392,7 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
   const material = materialState.material;
   const geoms = BUILDERS.map((b) => b());
 
-  const cellsAcross = (MAX_REACH * 2) / SPACING;
+  const cellsAcross = (MAX_SAMPLE_REACH * 2) / SPACING;
   const capPerSpecies = Math.ceil(cellsAcross * cellsAcross * 0.5);
   const meshes = geoms.map((geo, species) => {
     const mesh = new THREE.InstancedMesh(geo, material, capPerSpecies);
@@ -373,6 +400,7 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
     mesh.castShadow = false;
     mesh.receiveShadow = true;
     mesh.frustumCulled = false; // always right around the player
+    mesh.layers.set(BEAUTY_ONLY_LAYER);
     mesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
     const bloom = new THREE.InstancedBufferAttribute(new Float32Array(capPerSpecies * 3), 3);
     bloom.setUsage(THREE.StaticDrawUsage);
@@ -429,11 +457,12 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
     materialState.reach.value = reach;
 
     for (const list of rows) list.length = 0;
-    const r2 = reach * reach;
-    const gx0 = Math.floor((fx - reach) / SPACING);
-    const gx1 = Math.ceil((fx + reach) / SPACING);
-    const gz0 = Math.floor((fz - reach) / SPACING);
-    const gz1 = Math.ceil((fz + reach) / SPACING);
+    const sampleReach = reach + SAMPLE_OVERSCAN;
+    const r2 = sampleReach * sampleReach;
+    const gx0 = Math.floor((fx - sampleReach) / SPACING);
+    const gx1 = Math.ceil((fx + sampleReach) / SPACING);
+    const gz0 = Math.floor((fz - sampleReach) / SPACING);
+    const gz1 = Math.ceil((fz + sampleReach) / SPACING);
 
     for (let gx = gx0; gx <= gx1; gx++) {
       for (let gz = gz0; gz <= gz1; gz++) {
@@ -511,7 +540,7 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
       // city-wide, even downtown where grassyGround rejects every cell. Outside
       // every wild region (+reach) skip the scan; one clearing write empties
       // the ring on the way out.
-      if (!nearAnyWildRegion(focus.x, focus.z, MAX_REACH + 2)) {
+      if (!nearAnyWildRegion(focus.x, focus.z, MAX_SAMPLE_REACH + 2)) {
         if (count > 0) {
           for (const list of rows) list.length = 0;
           meshes.forEach((mesh, species) => write(mesh, rows[species]));

@@ -162,6 +162,9 @@
         const camera = new THREE.OrthographicCamera(-1.3, 1.3, 1.3, -1.3, 0.1, 20);
         camera.position.set(ANCHOR.x, 0.62, ANCHOR.z + 5);
         camera.lookAt(ANCHOR.x, 0.62, ANCHOR.z);
+        // Production's beauty camera enables layer 31 while its half-resolution
+        // ink prepass stays on layer 0. Flowers intentionally live beauty-only.
+        camera.layers.enable(31);
         camera.updateMatrixWorld(true);
         const expectedAnchor = anchorPixel(camera);
 
