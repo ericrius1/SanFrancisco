@@ -18,6 +18,10 @@ import type { Physics } from "../core/physics";
 import type { ChaseCamera } from "../core/camera";
 import type { WorldMap } from "../world/heightmap";
 import type { BuskerTrio } from "../gameplay/buskers";
+import type { FetchBall } from "../gameplay/fetchBall";
+import type { CoronaHeightsPark } from "../world/coronaHeights";
+import type { WorldQueries } from "../core/worldQueries";
+import type { BoardConfig } from "../vehicles/board";
 
 /**
  * Everything a demo can reach. main.ts builds one of these and passes it to
@@ -50,7 +54,12 @@ export type DemoContext = {
   };
   map?: WorldMap;
   buskers?: BuskerTrio;
+  fetchBall?: FetchBall;
+  coronaHeights?: CoronaHeightsPark;
+  worldQueries?: WorldQueries;
   setTool?: (tool: string) => void;
+  /** Apply a local, non-persisted board configuration for demos and capture. */
+  setBoardConfig?: (config: BoardConfig) => void;
   /** Install (or clear, with null) a per-frame cinematic hook that owns the
    * camera + player pose. main runs it in place of the chase camera. */
   setCine: (fn: ((dt: number) => void) | null) => void;
@@ -65,9 +74,13 @@ export type Demo = {
 };
 
 import { buskersCinematic } from "./demos/buskersCinematic";
+import { hoverboardCinematic } from "./demos/hoverboardCinematic";
+import { dogParkCinematic } from "./demos/dogParkCinematic";
 
 const DEMOS: Record<string, Demo> = {
-  [buskersCinematic.name]: buskersCinematic
+  [buskersCinematic.name]: buskersCinematic,
+  [hoverboardCinematic.name]: hoverboardCinematic,
+  [dogParkCinematic.name]: dogParkCinematic
 };
 
 export function runDemo(name: string, ctx: DemoContext) {

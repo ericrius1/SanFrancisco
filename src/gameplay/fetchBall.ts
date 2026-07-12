@@ -342,6 +342,74 @@ export class FetchBall {
     return -1;
   }
 
+  /**
+   * Deterministic authored launch used by cinematics and gameplay probes. The
+   * normal hold/windup interaction remains the player-facing path; this seam
+   * only commits an already-authored world velocity from the actual hand so the
+   * real ball physics and dog fetch state machine still own the result.
+   */
+  throwForCinematic(velocity: THREE.Vector3): boolean {
+    const speed = velocity.length();
+    if (!Number.isFinite(speed) || speed < 0.05) return false;
+    const scale = Math.min(1, 22 / speed); // ballSim's documented no-tunnel cap
+    const hand = this.#deps.playerView.handWorldPos(this.#tmp);
+    this.#held = false;
+    this.#hadHeldBeforeCharge = false;
+    this.#throwPhase = "idle";
+    this.#holdElapsed = 0;
+    this.#charge = 0;
+    this.#throwAnimT = 0;
+    this.#deps.playerView.setBallHeld(false);
+    this.#spawnBall(
+      hand.x,
+      hand.y,
+      hand.z,
+      velocity.x * scale,
+      velocity.y * scale,
+      velocity.z * scale
+    );
+    return true;
+  }
+
+  /** Latest live player ball, suitable as a camera focus point. */
+  activeBallWorld(out: THREE.Vector3): boolean {
+    if (!this.#free.length) return false;
+    const active =
+      this.#dogPhase.kind === "none"
+        ? this.#free[this.#free.length - 1]
+        : this.#dogPhase.ball;
+    out.copy(active.mesh.position);
+    return true;
+  }
+
+  /** Claimed fetch dog's chest-height camera target. */
+  fetchDogWorld(out: THREE.Vector3): boolean {
+    if (!this.#dog) return false;
+    out.set(this.#dog.x, this.#dog.group.position.y + this.#dog.style.scale * 0.62, this.#dog.z);
+    return true;
+  }
+
+  get fetchPhase(): DogPhase["kind"] {
+    return this.#dogPhase.kind;
+  }
+
+  /** Fresh-take reset. Capture replays simulations from frame zero after this. */
+  resetForCinematic(): void {
+    const park = this.#deps.park();
+    if (this.#dog && this.#dog.controller === "player") park?.releaseDog(this.#dog);
+    this.#dog = null;
+    this.#dogPhase = { kind: "none" };
+    for (const ball of [...this.#free]) this.#removeFree(ball);
+    this.#held = false;
+    this.#hadHeldBeforeCharge = false;
+    this.#throwPhase = "idle";
+    this.#holdElapsed = 0;
+    this.#charge = 0;
+    this.#throwAnimT = 0;
+    this.#deps.playerView.setBallHeld(false);
+    this.#deps.playerView.setThrowAnim(0);
+  }
+
   dispose(): void {
     for (const ball of this.#free) this.#disposeBall(ball);
     this.#free.length = 0;
@@ -385,29 +453,40 @@ export class FetchBall {
     this.#hadHeldBeforeCharge = false;
     this.#deps.playerView.setBallHeld(false);
 
+    const hand = this.#deps.playerView.handWorldPos(this.#tmp);
+    const speed = this.#throwSpeed;
+    this.#spawnBall(
+      hand.x,
+      hand.y,
+      hand.z,
+      this.#aim.x * speed,
+      this.#aim.y * speed,
+      this.#aim.z * speed
+    );
+  }
+
+  #spawnBall(x: number, y: number, z: number, vx: number, vy: number, vz: number): void {
     // cap: recycle the oldest ball no dog is working before adding another
     if (this.#free.length >= MAX_FREE_BALLS) {
       const idle = this.#free.find((b) => !this.#dogWorking(b));
       if (idle) this.#removeFree(idle);
     }
 
-    const hand = this.#deps.playerView.handWorldPos(this.#tmp);
     const mesh = this.#acquireMesh();
-    mesh.position.copy(hand);
+    mesh.position.set(x, y, z);
     mesh.visible = true;
     this.#deps.scene.add(mesh);
-    const speed = this.#throwSpeed;
     const ball: FreeBall = {
       mesh,
       material: this.#ballMat!,
       born: this.#elapsed,
       state: {
-        x: hand.x,
-        y: hand.y,
-        z: hand.z,
-        vx: this.#aim.x * speed,
-        vy: this.#aim.y * speed,
-        vz: this.#aim.z * speed,
+        x,
+        y,
+        z,
+        vx,
+        vy,
+        vz,
         grounded: false
       }
     };

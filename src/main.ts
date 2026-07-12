@@ -3030,7 +3030,14 @@ async function boot() {
       minimap,
       map,
       buskers,
+      fetchBall: fetchBall ?? undefined,
+      coronaHeights: coronaHeights ?? undefined,
+      worldQueries,
       setTool: (t: string) => setTool(t as ToolName),
+      setBoardConfig: (config: typeof boardConfig) => {
+        applyBoardConfig(config);
+        boardSelector.setConfig(config);
+      },
       setCine: (fn: ((dt: number) => void) | null) => {
         cineHook = fn;
       },
