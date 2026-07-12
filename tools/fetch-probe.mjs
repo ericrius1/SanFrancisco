@@ -1,6 +1,6 @@
 // Headless verification probe for the Corona Heights FETCH-THE-BALL loop + pet
 // adoption + tool/UI cleanup. Boots the app in headless Chrome (WebGPU/metal)
-// WITHOUT ?autostart (so the real settle gate runs), simulates the name-gate
+// WITH ?startscreen=1 (so the real settle/name gate runs), simulates the name-gate
 // Start, pins the clock, teleports the camera to the dog park (waiting out the
 // render warmup + the camera fly-in the way dog-park-probe does), then drives
 // the whole loop through the exposed __sf hooks and asserts:
@@ -298,11 +298,11 @@ async function main() {
   const chrome = await findChrome();
   const port = await freePort();
   const profile = path.join(OUT, "chrome");
-  // NO ?autostart — let the real settle gate run. ?fullfps: webdriver would cap rAF.
+  // ?startscreen keeps the real settle gate in dev. ?fullfps: webdriver would cap rAF.
   chromeProc = spawn(chrome, [
     `--user-data-dir=${profile}`, "--headless=new", `--remote-debugging-port=${port}`,
     "--enable-unsafe-webgpu", "--enable-features=WebGPUDeveloperFeatures", "--use-angle=metal",
-    "--hide-scrollbars", "--mute-audio", `--window-size=${W},${H}`, `${SERVER_URL}/?fullfps`
+    "--hide-scrollbars", "--mute-audio", `--window-size=${W},${H}`, `${SERVER_URL}/?startscreen=1&fullfps`
   ], { cwd: ROOT, stdio: "ignore" });
   await sleep(2500);
 

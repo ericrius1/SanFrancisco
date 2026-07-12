@@ -1,5 +1,5 @@
 // Boot probe: measures REAL loading time headless (WebGPU/metal) with the
-// settle gate active (no ?autostart — that skips the gate). Per run it records:
+// settle gate active (`?startscreen=1` overrides dev auto-entry). Per run it records:
 //   - the loading-cover label/percent timeline (polled at 40ms)
 //   - the app's own [boot] console marks (core-up / settled / reveal reason)
 //   - the full resource waterfall (performance resource timing): per-asset
@@ -118,7 +118,7 @@ async function runOnce(chrome, serverUrl, runIdx) {
     await c.send("Emulation.setDeviceMetricsOverride", { width: W, height: H, deviceScaleFactor: 1, mobile: false });
     await c.send("Page.addScriptToEvaluateOnNewDocument", { source: POLLER });
     // fullfps: webdriver rAF throttle would slow the settle drain to 20fps
-    await c.send("Page.navigate", { url: `${serverUrl}/?fullfps` });
+    await c.send("Page.navigate", { url: `${serverUrl}/?startscreen=1&fullfps` });
 
     const t0 = Date.now();
     let ready = null;

@@ -1,6 +1,7 @@
 import * as THREE from "three/webgpu";
 import { EXPOSURE_REBASE } from "../config";
 import { waterHeight, type WorldMap } from "./heightmap";
+import { oceanBeachMask } from "./oceanBeachWaves";
 import { hash2 } from "./groundcover/scatter";
 
 /**
@@ -95,6 +96,10 @@ export class SeaPillars {
         const pz = (iz + hash2(ix, iz, 23) - 0.5) * CELL;
         if (Math.hypot(px - playerPos.x, pz - playerPos.z) > RADIUS) continue;
         if (!map.isWater(px, pz)) continue;
+        // Keep spires out of the Ocean Beach surf break — it's a sandy beach, and
+        // the transparent surf strip would otherwise leave them jutting through the
+        // green wave face.
+        if (oceanBeachMask(px, pz) > 0.05) continue;
 
         const floor = map.groundHeight(px, pz);
         const wy = waterHeight(px, pz, this.#time);

@@ -1489,15 +1489,26 @@ async function boot() {
   let peakRemaining = 0;
   let settlePct = 88;
   let settleLabel = "";
-  // headless verification, demos and perf runs can't click — skip the gate
-  // (and the settle hold: they measure live-frame behaviour, not boot polish)
-  const skipGate = ["autostart", "demo", "profile"].some((k) => new URLSearchParams(location.search).has(k));
+  const bootQuery = new URLSearchParams(location.search);
+  // Local development is primarily exercised by browser agents, so enter the
+  // world as soon as it is ready instead of leaving them stranded at a purely
+  // human identity gate. `?startscreen=1` keeps the real onboarding path easy
+  // to inspect. Deployed browser tests opt in explicitly with `?autostart=1`.
+  const autoEnter =
+    !parseReadLink(location.search) &&
+    !bootQuery.has("startscreen") &&
+    (import.meta.env.DEV || ["autostart", "demo", "profile"].some((key) => bootQuery.has(key)));
+  // Explicit headless verification, demos and perf runs also skip the settle
+  // hold because they measure live-frame behaviour rather than boot polish.
+  const skipGate = ["autostart", "demo", "profile"].some((key) => bootQuery.has(key));
   // A returning player who already picked a real name skips the gate: once the
   // world is ready we drop them straight in under their saved name. Fun/generated
   // names don't count (re-rolled each load), and the headless/demo (`skipGate`)
   // and reading-link paths run their own start, so they opt out here.
   const autoStartSaved =
-    !parseReadLink(location.search) && ((!skipGate && hasChosenName()) || Boolean(devReload?.started));
+    !parseReadLink(location.search) &&
+    !bootQuery.has("startscreen") &&
+    ((!skipGate && hasChosenName()) || Boolean(devReload?.started));
   const revealWorld = (reason = "settled") => {
     if (revealed) return;
     revealed = true;
@@ -1519,6 +1530,12 @@ async function boot() {
     );
     console.info(`[boot] phases ${bootMarkSummary()}`);
     persistBootHistory();
+    if (autoEnter) {
+      // Programmatic starts have no user gesture, so do not request pointer
+      // lock. The first canvas click can capture it normally when needed.
+      bootScreen.startNow(suggestedName, { lock: false });
+      return;
+    }
     if (autoStartSaved) {
       // no click to consume, so pointer lock has no gesture — startGame still
       // requests it (a no-op if the browser declines; first click re-locks)
