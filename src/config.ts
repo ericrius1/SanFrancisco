@@ -99,7 +99,7 @@ export const WORLD_TUNING = tunables("world", {
   // Beer-Lambert path density inside the layer; 1 is the authored reference.
   fogBank: { v: 1, min: 0, max: 2, step: 0.02, label: "marine bank" },
   // 1 = the official 22 m noisy-ceiling variation; 0 = a flat bank.
-  fogNoise: { v: 1, min: 0, max: 1.5, step: 0.02, label: "billow" },
+  fogNoise: { v: 0.2, min: 0, max: 1.5, step: 0.02, label: "billow" },
   // 1 = official r185 motion; lower values make the world-anchored billows evolve
   // more slowly without turning them into a coherently scrolling texture.
   fogDrift: {
