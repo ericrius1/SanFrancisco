@@ -272,7 +272,7 @@ export class GolfCourseView {
   #teeAlpha: ReturnType<typeof uniform>;
   #teeFresnelPower: ReturnType<typeof uniform>;
 
-  constructor(course: GolfCourse, _map: WorldMap, scene: THREE.Scene) {
+  constructor(course: GolfCourse, _map: WorldMap, parent: THREE.Object3D) {
     this.group.name = "golf-course";
     this.#time = uniform(0);
     this.#activeTee = uniform(-1);
@@ -315,7 +315,7 @@ export class GolfCourseView {
 
     this.#buildPins(course);
     this.#buildTeeGlow(course);
-    scene.add(this.group);
+    parent.add(this.group);
   }
 
   /** 18 pins: pole + waving flag + cup, one InstancedMesh each. */

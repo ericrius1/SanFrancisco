@@ -1,9 +1,10 @@
 import * as THREE from "three/webgpu";
 import { BodyType, type Physics } from "../../core/physics";
 import type { GroundTopOverlay, WorldMap } from "../heightmap";
+import { buildClubhouse, type ClubhouseBuild } from "./clubhouse";
+import { createClubhouseNpcs, type ClubhouseNpcs } from "./npcs";
 import {
   DEFAULT_GAMEPLAY_COURT_REF,
-  GOLDMAN_CLUBHOUSE_OUTLINE,
   GOLDMAN_COURTS,
   GOLDMAN_NORTHEAST_POD_OUTLINE,
   GOLDMAN_PATHS,
@@ -43,6 +44,8 @@ export type GoldenGateTennisSiteOptions = {
   includeTrees?: boolean;
   /** Optional stepped/query physics for perimeter fences and court nets. */
   physics?: Physics;
+  /** Day/night provider for the clubhouse crowd; omitted = always day. */
+  daylight?: () => boolean;
 };
 
 // The real center is terraced into a slope. A deep foundation lets every flat
@@ -89,9 +92,16 @@ function courtLocal(court: GoldmanCourtSpec, x: number, z: number): { lateral: n
   return { lateral: dx * c - dz * s, along: dx * s + dz * c };
 }
 
-/** Physics/player grounding that exactly matches the visible terraced pads. */
-function installCourtGrounding(map: WorldMap, grades: ReadonlyMap<GoldmanCourtRef, number>) {
+/** Physics/player grounding that exactly matches the visible terraced pads
+ *  and the clubhouse interior floor (incl. its door ramps). */
+function installSiteGrounding(
+  map: WorldMap,
+  grades: ReadonlyMap<GoldmanCourtRef, number>,
+  clubhouse: ClubhouseBuild
+) {
   const overlay: GroundTopOverlay = (x, z, base) => {
+    const interior = clubhouse.groundTopAt(x, z, base);
+    if (interior !== null) return interior;
     for (const court of GOLDMAN_COURTS) {
       const local = courtLocal(court, x, z);
       if (Math.abs(local.lateral) > court.padWidth / 2 || Math.abs(local.along) > court.padLength / 2) continue;
@@ -313,74 +323,6 @@ function makePaths(map: WorldMap, paths: readonly GoldmanPathSpec[]) {
   mesh.name = "goldman_paths";
   mesh.receiveShadow = true;
   return mesh;
-}
-
-function polygonShape(points: readonly GoldmanXZ[], anchor: GoldmanXZ) {
-  const shape = new THREE.Shape();
-  for (let i = 0; i < points.length; i++) {
-    const x = points[i][0] - anchor[0];
-    const y = -(points[i][1] - anchor[1]);
-    if (i === 0) shape.moveTo(x, y);
-    else shape.lineTo(x, y);
-  }
-  shape.closePath();
-  return shape;
-}
-
-function makeClubhouse(map: WorldMap) {
-  const group = new THREE.Group();
-  group.name = "goldman_taube_family_clubhouse";
-  const anchor = GOLDMAN_CLUBHOUSE_OUTLINE[0];
-  let grade = -Infinity;
-  for (const [x, z] of GOLDMAN_CLUBHOUSE_OUTLINE) grade = Math.max(grade, map.groundTop(x, z));
-  const shell = new THREE.ExtrudeGeometry(polygonShape(GOLDMAN_CLUBHOUSE_OUTLINE, anchor), {
-    depth: 5.7,
-    bevelEnabled: false,
-    steps: 1
-  });
-  shell.rotateX(-Math.PI / 2);
-  shell.translate(anchor[0], grade - 2.25, anchor[1]);
-  const walls = new THREE.Mesh(
-    shell,
-    new THREE.MeshStandardMaterial({ color: 0xd8d0bb, roughness: 0.82, metalness: 0 })
-  );
-  walls.name = "goldman_clubhouse_walls";
-  walls.castShadow = true;
-  walls.receiveShadow = true;
-  group.add(walls);
-
-  // The real pavilion is a low horizontal bar: solid park-facing wall, broad
-  // flat roof, and an east-facing glass ribbon overlooking the courts.
-  const roof = new THREE.Mesh(
-    new THREE.BoxGeometry(11.8, 0.32, 61.5),
-    new THREE.MeshStandardMaterial({ color: 0x5a5547, roughness: 0.88, metalness: 0 })
-  );
-  roof.name = "goldman_clubhouse_low_roof";
-  roof.position.set(-1368.6, grade + 4.58, 2197.9);
-  roof.rotation.y = degToRad(3.1);
-  roof.castShadow = true;
-  group.add(roof);
-
-  const glass = new THREE.Mesh(
-    new THREE.BoxGeometry(0.16, 3.15, 55),
-    new THREE.MeshStandardMaterial({
-      color: 0x71919a,
-      roughness: 0.18,
-      metalness: 0.12,
-      transparent: true,
-      opacity: 0.56,
-      depthWrite: false
-    })
-  );
-  glass.name = "goldman_clubhouse_court_facing_glass";
-  glass.position.set(-1359.75, grade + 2.3, 2197.3);
-  glass.rotation.y = degToRad(3.1);
-  group.add(glass);
-  return group;
-}
-
-function degToRad(degrees: number) {
-  return (degrees * Math.PI) / 180;
 }
 
 type FenceRun = { points: readonly GoldmanXZ[]; closed: boolean };
@@ -629,6 +571,7 @@ export class GoldenGateTennisSite {
   #bodies: number[] = [];
   #map: WorldMap;
   #groundOverlay?: GroundTopOverlay;
+  #npcs?: ClubhouseNpcs;
 
   constructor(map: WorldMap, options: GoldenGateTennisSiteOptions = {}) {
     this.group.name = "goldman_tennis_center";
@@ -665,7 +608,8 @@ export class GoldenGateTennisSite {
     this.group.add(makeCourtLines(visibleCourts, grades));
     this.group.add(...makeNets(visibleCourts, anchors));
     this.group.add(makePaths(map, GOLDMAN_PATHS));
-    this.group.add(makeClubhouse(map));
+    const clubhouse = buildClubhouse(map);
+    this.group.add(clubhouse.group);
     this.group.add(
       ...makeFences(map, [
         { points: GOLDMAN_SITE_OUTLINE, closed: true },
@@ -679,6 +623,8 @@ export class GoldenGateTennisSite {
     if (this.#physics) {
       try {
         registerSiteColliders(map, this.#physics, anchors, this.#bodies);
+        // Clubhouse walls + furniture: solid everywhere but the two doorways.
+        for (const spec of clubhouse.colliders) registerStaticBox(this.#physics, this.#bodies, spec);
       } catch (error) {
         for (const body of this.#bodies) {
           this.#physics.removeQuerySolid(body);
@@ -688,7 +634,29 @@ export class GoldenGateTennisSite {
         throw error;
       }
     }
-    this.#groundOverlay = installCourtGrounding(map, grades);
+    this.#groundOverlay = installSiteGrounding(map, grades, clubhouse);
+
+    // Clubhouse crowd samples the post-overlay ground for its outdoor
+    // waypoints, so it must come after the grounding install.
+    this.#npcs = createClubhouseNpcs({
+      floorTop: clubhouse.floorTop,
+      groundTop: (x, z) => map.groundTop(x, z),
+      daylight: options.daylight
+    });
+    this.group.add(this.#npcs.group);
+  }
+
+  /** Per-frame clubhouse-crowd driver. One squared distance and an early
+   * return when the player is far — safe to call unconditionally. */
+  update(dt: number, elapsed: number, playerPos: THREE.Vector3) {
+    this.#npcs?.update(dt, elapsed, playerPos.x, playerPos.z);
+  }
+
+  /** The site's grounding sheet (court terraces + clubhouse floor/ramps).
+   *  WorldMap overlays now COMPOSE (heightmap.ts keeps a list), so the deferred
+   *  Presidio golf overlay no longer evicts this one. Exposed for probes. */
+  get groundOverlay(): GroundTopOverlay | undefined {
+    return this.#groundOverlay;
   }
 
   getCourtAnchor(ref: GoldmanCourtRef): GoldmanCourtAnchor {
@@ -712,6 +680,10 @@ export class GoldenGateTennisSite {
   }
 
   dispose() {
+    // NPC rigs share rig.ts's geometry cache with the player — detach them
+    // before the traverse below can dispose those shared boxes.
+    this.#npcs?.dispose();
+    this.#npcs = undefined;
     const geometries = new Set<THREE.BufferGeometry>();
     const materials = new Set<THREE.Material>();
     this.group.traverse((object) => {

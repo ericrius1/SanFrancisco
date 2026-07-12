@@ -7,6 +7,7 @@ import {
   type PickleballPhysicsEvent
 } from "./physics";
 import { PickleballPlayerRig } from "./playerRig";
+import type { AvatarTraits } from "../../player/avatar";
 import {
   applyBallGlow,
   PICKLE_BALL_COLOR,
@@ -225,6 +226,12 @@ export class PickleballGame {
     this.#remoteInputs[side] = {};
   }
 
+  /** Swap one athlete's look (takeover wears the local player's own traits;
+   *  null restores this seat's seeded outfit). */
+  setAthleteTraits(side: PickleballSide, traits: AvatarTraits | null): void {
+    this.#players[side].rig.setAvatarTraits(traits);
+  }
+
   getInteraction(worldPosition: THREE.Vector3): PickleballInteraction | null {
     this.root.updateWorldMatrix(true, true);
     let nearest: PickleballInteraction | null = null;
@@ -260,10 +267,11 @@ export class PickleballGame {
         interaction: null,
         requestedSide: null,
         requestedRelease: null,
-        localPose: this.#localSide === null ? null : this.#localPose(this.#localSide),
+        localPose: this.#localSide === null ? null : this.localPose(this.#localSide),
         phase: this.#phase,
         score: [this.#score[0], this.#score[1]],
-        server: this.#server
+        server: this.#server,
+        rally: this.#rallyHits
       };
     }
 
@@ -303,7 +311,9 @@ export class PickleballGame {
         this.ballPhysics.update(dt, sweeps, (event) => this.#handlePhysicsEvent(event));
         for (const sweep of sweeps) {
           if (this.#phase !== "rally") break;
-          const assistedReach = this.#controllerFor(sweep.side) === "ai" ? 0.74 : 0.52;
+          // reach assist: AI has no reactions to forgive; humans get a bit of
+          // magnetism too so a well-timed swing near the ball always connects
+          const assistedReach = this.#controllerFor(sweep.side) === "ai" ? 0.74 : 0.62;
           this.ballPhysics.tryPaddleStrike(sweep, (event) => this.#handlePhysicsEvent(event), assistedReach);
         }
         if (this.#phase === "rally" && (!this.ballPhysics.active || this.#rallyAge > 16)) {
@@ -314,7 +324,7 @@ export class PickleballGame {
 
     this.#syncBallMesh(dt);
     interaction = localWorldPosition ? this.getInteraction(localWorldPosition) : interaction;
-    const localPose = this.#localSide === null ? null : this.#localPose(this.#localSide);
+    const localPose = this.#localSide === null ? null : this.localPose(this.#localSide);
     return {
       interaction,
       requestedSide,
@@ -322,7 +332,8 @@ export class PickleballGame {
       localPose,
       phase: this.#phase,
       score: [this.#score[0], this.#score[1]],
-      server: this.#server
+      server: this.#server,
+      rally: this.#rallyHits
     };
   }
 
@@ -444,7 +455,8 @@ export class PickleballGame {
   }
 
   #makeAthlete(side: PickleballSide): Athlete {
-    const rig = new PickleballPlayerRig(side);
+    // seed feeds the avatar system too: each court's pair gets its own outfits
+    const rig = new PickleballPlayerRig(side, `pickleball:${this.#seed}:${side}`);
     const position = new THREE.Vector3(side === 0 ? -0.8 : 0.8, PLAYER_FOOT_LIFT, side === 0 ? -PLAYER_BASELINE_Z : PLAYER_BASELINE_Z);
     const currentCenter = new THREE.Vector3();
     return {
@@ -760,7 +772,8 @@ export class PickleballGame {
     applyBallGlow(this.#ballMaterial, this.ballPhysics.active ? undefined : 0);
   }
 
-  #localPose(side: PickleballSide): PickleballLocalPose {
+  /** World pose of one athlete (seat handoff: place the walking player here). */
+  localPose(side: PickleballSide): PickleballLocalPose {
     const rig = this.#players[side].rig;
     const worldPosition = rig.worldPosition(new THREE.Vector3());
     rig.group.getWorldQuaternion(tmpQuat);

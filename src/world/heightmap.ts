@@ -68,7 +68,7 @@ export class WorldMap {
   surface!: Uint8Array;
   groundRevision = 0;
   #bridgeBounds?: { minX: number; maxX: number; minZ: number; maxZ: number }[];
-  #groundTopOverlay?: GroundTopOverlay;
+  #groundTopOverlays: GroundTopOverlay[] = [];
 
   static async load(): Promise<WorldMap> {
     const map = new WorldMap();
@@ -147,26 +147,31 @@ export class WorldMap {
     return this.#sampleGrid(this.groundTops, x, z);
   }
 
-  /** Install the single current runtime ground sheet. Its result is shared by
-   *  rendering helpers, player/vehicle grounding, the physics carpet and world
-   *  raycasts, so authored surfaces cannot visually diverge from collision. */
+  /** Install a runtime ground sheet. Overlays COMPOSE: each receives the
+   *  previous overlay's result as `base` (installation order), so co-resident
+   *  sites (Goldman terraces, golf course, archery) don't evict each other.
+   *  The composed result is shared by rendering helpers, player/vehicle
+   *  grounding, the physics carpet and world raycasts, so authored surfaces
+   *  cannot visually diverge from collision. */
   setGroundTopOverlay(overlay?: GroundTopOverlay) {
-    this.#groundTopOverlay = overlay;
+    if (overlay && !this.#groundTopOverlays.includes(overlay)) this.#groundTopOverlays.push(overlay);
     this.groundRevision++;
   }
 
-  /** Clear an overlay only if it is still the caller's current installation. */
+  /** Remove one previously installed overlay (identity match). */
   clearGroundTopOverlay(overlay: GroundTopOverlay) {
-    if (this.#groundTopOverlay !== overlay) return;
-    this.#groundTopOverlay = undefined;
+    const i = this.#groundTopOverlays.indexOf(overlay);
+    if (i < 0) return;
+    this.#groundTopOverlays.splice(i, 1);
     this.groundRevision++;
   }
 
   /** Top of the rendered/playable ground — the surface paint, cursor and walk
    *  carpet all rest here. Excludes bridge decks, which effectiveGround adds. */
   groundTop(x: number, z: number): number {
-    const base = this.baseGroundTop(x, z);
-    return this.#groundTopOverlay?.(x, z, base) ?? base;
+    let top = this.baseGroundTop(x, z);
+    for (const overlay of this.#groundTopOverlays) top = overlay(x, z, top);
+    return top;
   }
 
   surfaceType(x: number, z: number): number {

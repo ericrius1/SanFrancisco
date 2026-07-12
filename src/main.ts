@@ -26,7 +26,13 @@ import { createBayLights, updateBayLights, resetBayLightsTweaks } from "./world/
 import { createGoldenGateLights, updateGoldenGateLights, resetGoldenGateLightsTweaks } from "./world/goldenGateLights";
 import { createPalaceColonnade, PALACE_RING_BUILDINGS } from "./world/palaceColonnade";
 import { createSutroTower, updateSutroTower, resetSutroLightsTweaks } from "./world/sutroTower";
-import { createGoldenGateTennisSite, GOLDMAN_SUPPRESSED_BUILDINGS, inGoldmanTennisSite } from "./world/goldenGateTennis";
+import {
+  createGoldenGateTennisSite,
+  GOLDMAN_SUPPRESSED_BUILDINGS,
+  type GoldmanCourtAnchor,
+  type GoldmanCourtRef,
+  inGoldmanTennisSite
+} from "./world/goldenGateTennis";
 import { CoronaHeightsPark, prepareCoronaHeightsGround } from "./world/coronaHeights";
 import { createBuskerTrio } from "./gameplay/buskers";
 import { findOpenSpawn } from "./world/spawn";
@@ -63,13 +69,20 @@ import type { CityGenRing, ColliderBox } from "./world/citygen";
 import { Islands } from "./gameplay/islands";
 import { Hunt } from "./gameplay/hunt";
 import { FetchBall } from "./gameplay/fetchBall";
+import { createSiteGate } from "./gameplay/siteGate";
 import {
   createPickleball,
+  PickleballAmbient,
+  PickleballAudio,
+  PickleballUI,
   PICKLEBALL_TUNING,
+  type PickleballFrameResult,
   type PickleballInputIntent,
+  type PickleballInteraction,
   type PickleballLocalPose,
   type PickleballSide
 } from "./gameplay/pickleball";
+import { createArchery, ARCHERY_CENTER, type ArcheryGame } from "./gameplay/archery";
 import { Satchel } from "./ui/satchel";
 import { HUD } from "./ui/hud";
 import { ShareButton } from "./ui/share";
@@ -410,7 +423,18 @@ async function boot() {
   } | null = null;
   let goldenGateTennis: ReturnType<typeof createGoldenGateTennisSite> | null = null;
   let pickleball: ReturnType<typeof createPickleball> | null = null;
-  let pickleballSiteAwake = false;
+  // Ambient NPC pickleball on the other Goldman mini courts (14A/14C/14D/15;
+  // 14B stays the networked court). Local-only matches, a shared court-audio
+  // layer on the nature soundscape, and the scoreboard/banner HUD. All three
+  // hang off the same pickleball site gate as the networked court.
+  let pickleballAmbient: PickleballAmbient | null = null;
+  let pickleballAudio: PickleballAudio | null = null;
+  let pickleballUI: PickleballUI | null = null;
+  // Universal minigame site gate: each located game (pickleball, golf, soon
+  // archery) registers a footprint + pads; one cheap update per tick flips
+  // them awake only while the player is nearby. Sites register asleep — the
+  // first tick wakes any the player already stands in.
+  const siteGate = createSiteGate();
   let coronaHeights: CoronaHeightsPark | null = null;
   let windGustValue: (() => number) | null = null;
   let advanceWind: ((dt: number) => void) | null = null;
@@ -450,6 +474,8 @@ async function boot() {
   // Presidio golf: full 18 playable holes on the real course footprint —
   // deferred (data fetch + course meshes build behind the settle gate below)
   let golf: import("./gameplay/golf").GolfGame | null = null;
+  // Golden Gate Park archery range — NW corner of the park; site-gated like golf.
+  let archery: ArcheryGame | null = null;
   const hunt = new Hunt(map, scene);
   hunt.onCatch = (kind) => {
     satchel.add(kind);
@@ -497,7 +523,10 @@ async function boot() {
     for (const building of GOLDMAN_SUPPRESSED_BUILDINGS) {
       tiles.suppressBuildingMesh(building.key, building.index);
     }
-    goldenGateTennis = createGoldenGateTennisSite(map, { physics }).addTo(scene);
+    goldenGateTennis = createGoldenGateTennisSite(map, {
+      physics,
+      daylight: () => sky.sunElevation > 0
+    }).addTo(scene);
     goldenGateTennis.setFoliageVisible(foliageOn);
   } catch (err) {
     for (const building of GOLDMAN_SUPPRESSED_BUILDINGS) {
@@ -515,25 +544,80 @@ async function boot() {
         seed: 1402
       });
       scene.add(pickleball.root);
+      // Shared court-sound layer (rides the nature soundscape — no new
+      // AudioContext) and the scoreboard/banner HUD. Both are shared by the
+      // networked court AND the ambient cluster below.
+      pickleballAudio = new PickleballAudio(nature);
+      pickleballUI = new PickleballUI();
+      const netCenter = new THREE.Vector3(anchor.x, anchor.y + 1, anchor.z);
       pickleball.onEvent = (event) => {
+        pickleballAudio?.handle(event, netCenter);
         if (event.kind === "paddle") {
           fx.impactPuff(event.worldPosition);
-        } else if (event.kind === "point") {
-          const score = `${event.score[0]}–${event.score[1]}`;
-          const result = event.scoringSide === null ? "side out" : "point";
-          hud.message(`${event.winner === 0 ? "Near" : "Far"} side ${result} · ${score}`, 2.2);
-        } else if (event.kind === "game") {
-          hud.message(`${event.winner === 0 ? "Near" : "Far"} side wins · ${event.score[0]}–${event.score[1]}`, 4);
+        } else if (event.kind === "point" || event.kind === "game") {
+          pickleballUI?.applyEvent(event, pickleball?.localSide ?? null);
         }
       };
+      // Ambient NPC matches on the other four Goldman mini courts. Distinct
+      // avatar seeds per court, court audio wired internally, empties at night.
+      const ambientRefs: readonly string[] = ["14A", "14C", "14D", "15"];
+      const ambientAnchors = ambientRefs
+        .map((ref) => ({ ref, anchor: goldenGateTennis?.courtAnchors.get(ref as GoldmanCourtRef) }))
+        .filter((entry): entry is { ref: string; anchor: GoldmanCourtAnchor } => Boolean(entry.anchor));
+      if (ambientAnchors.length > 0) {
+        pickleballAmbient = new PickleballAmbient({
+          anchors: ambientAnchors,
+          daylight: () => sky.sunElevation > 0.05,
+          audio: pickleballAudio
+        });
+        // HUD banners for the ambient court the player is seated on (the
+        // networked court routes its own via pickleball.onEvent above).
+        pickleballAmbient.onSeatEvent = (event) => pickleballUI?.applyEvent(event, pickleballAmbientSide);
+        scene.add(pickleballAmbient.group);
+        // Warm the hidden cluster's shaders off the critical path so its first
+        // wake never hitches (golf/archery do the same).
+        void renderer.compileAsync(pickleballAmbient.group, camera, scene);
+      }
       // Sleep until the player is near Goldman tennis/pickleball — otherwise the
-      // ambient AI match scores and HUD-spams from across the city.
-      const nearCourts = inGoldmanTennisSite(player.position.x, player.position.z, PICKLEBALL_TUNING.activateSitePad);
-      pickleball.setActive(nearCourts);
-      pickleballSiteAwake = nearCourts;
+      // ambient AI match scores and HUD-spams from across the city. A claimed
+      // local seat always stays live, even if the player somehow leaves the
+      // site while still controlling a side. Approaching after a long roam,
+      // onWake asks the relay for the latest match snapshot so we don't
+      // briefly show a stale local AI serve.
+      const game = pickleball;
+      // sites register asleep (the gate fires setAwake on transitions only);
+      // the first tick wakes it if the player already spawned at the courts
+      game.setActive(false);
+      siteGate.register({
+        id: "pickleball",
+        contains: (x, z, pad) => inGoldmanTennisSite(x, z, pad),
+        activatePad: PICKLEBALL_TUNING.activateSitePad,
+        deactivatePad: PICKLEBALL_TUNING.deactivateSitePad,
+        keepAwake: () => game.localSide !== null || pickleballAmbient?.seatedRef != null,
+        setAwake: (on) => {
+          game.setActive(on);
+          pickleballAmbient?.setAwake(on);
+        },
+        onWake: () => {
+          if (net.status === "online") net.replayPickleball();
+        }
+      });
     }
   } catch (err) {
     console.warn("[boot] pickleball game unavailable:", err);
+  }
+  try {
+    // Archery range in GG Park's NW corner. Born hidden (site-gated); a live
+    // draw or an arrow in flight holds the site awake. Compile the hidden root
+    // off the critical path so the first wake never hitches on shaders.
+    archery = createArchery(map, physics, worldQueries, scene, {
+      nature,
+      daylight: () => sky.sunElevation > 0.05
+    });
+    siteGate.register(archery.siteHooks());
+    void renderer.compileAsync(archery.root, camera, scene);
+  } catch (err) {
+    console.warn("[boot] archery range unavailable:", err);
   }
   try {
     coronaHeights = new CoronaHeightsPark(map, physics);
@@ -715,6 +799,8 @@ async function boot() {
   let pickleballPromptSide: PickleballSide | null = null;
   let pickleballInput: PickleballInputIntent = {};
   let pickleballLocalPose: PickleballLocalPose | null = null;
+  // Side of the ambient (local-only) court the player has taken over, if any.
+  let pickleballAmbientSide: PickleballSide | null = null;
   const pickleballUp = new THREE.Vector3(0, 1, 0);
   const pickleballNetPosition = new THREE.Vector3();
   const pickleballNetQuaternion = new THREE.Quaternion();
@@ -780,6 +866,24 @@ async function boot() {
     return true;
   };
   const releasePickleballForNavigation = (): boolean => {
+    // A live ambient (local-only) seat also blocks navigation — leave it first.
+    if (pickleballAmbient?.seatedRef != null) {
+      const pose = pickleballAmbient.exitCourt();
+      pickleballAmbientSide = null;
+      pickleballLocalPose = null;
+      if (pose) {
+        player.restoreState({
+          mode: "walk",
+          x: pose.worldPosition.x,
+          y: pose.worldPosition.y + 0.58,
+          z: pose.worldPosition.z,
+          heading: pose.worldHeading + Math.PI
+        });
+        chase.yaw = pose.worldHeading;
+      }
+      player.setExternalEmbodimentHidden(false);
+      return true;
+    }
     const side = pickleball?.localSide;
     if (side === null || side === undefined || !pickleball) return false;
     if (net.status === "online" && net.selfId && net.pickleballSlots[side] === net.selfId) {
@@ -1047,6 +1151,12 @@ async function boot() {
       goldenGateTennis.gameplayAnchor.z,
       "Goldman Tennis & Pickleball"
     );
+  }
+  // Archery range — NW corner of Golden Gate Park. Static known coords (the
+  // site builds hidden behind its gate), so the pin is safe to drop even when
+  // the range is asleep. Marks the field + gives a teleport like golf/tennis.
+  if (archery) {
+    minimap.addLandmark(ARCHERY_CENTER.x, ARCHERY_CENTER.z, "Archery Range");
   }
   const playerLocator = new PlayerLocator();
   type ReleaseMotion = {
@@ -1716,10 +1826,28 @@ async function boot() {
       // Presidio golf game. Own guard — a bad golf.json must not take the
       // groves/city down with it.
       if (loadedGolfCourse) {
-        const game = await golfMod.createGolf(map, physics, scene, loadedGolfCourse);
+        const game = await golfMod.createGolf(map, physics, scene, loadedGolfCourse, {
+          daylight: () => sky.sunElevation > 0.05
+        });
         game.onNet = (m) => net.sendGolf(m);
         game.onImpact = (p) => fx.impactPuff(p);
         golf = game;
+        // Site gate: the course renders nothing and update() early-returns
+        // until the player nears the footprint. A live round (or a borrowed
+        // cart) holds the site awake wherever it wanders.
+        siteGate.register({
+          id: "golf",
+          contains: (x, z, pad) => game.siteContains(x, z, pad),
+          activatePad: golfMod.GOLF_SITE_PADS.activate,
+          deactivatePad: golfMod.GOLF_SITE_PADS.deactivate,
+          keepAwake: () => game.keepsSiteAwake,
+          setAwake: (on) => game.setSiteAwake(on)
+        });
+        // Pre-compile the hidden root (garden/wildlands deferred pattern) so
+        // the first wake never draws an uncompiled course.
+        void renderer
+          .compileAsync(game.root, camera, scene)
+          .catch((err) => console.warn("[golf] deferred compile failed:", err));
         const first = loadedGolfCourse.holes.find((h2) => h2.ref === 1) ?? loadedGolfCourse.holes[0];
         if (first) minimap.addLandmark(first.teeXZ[0], first.teeXZ[1], "Presidio Golf · Hole 1");
         const gh = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
@@ -2003,42 +2131,13 @@ async function boot() {
   let cineHook: ((dt: number) => void) | null = null;
 
   let pickleballAnimationTime = 0;
-  const syncPickleballSiteActivation = () => {
-    if (!pickleball) return;
-    // A claimed local seat always stays live, even if the player somehow leaves
-    // the site while still controlling a side.
-    if (pickleball.localSide !== null) {
-      pickleballSiteAwake = true;
-      pickleball.setActive(true);
-      return;
-    }
-    const { x, z } = player.position;
-    const wasAwake = pickleballSiteAwake;
-    if (pickleballSiteAwake) {
-      pickleballSiteAwake = inGoldmanTennisSite(x, z, PICKLEBALL_TUNING.deactivateSitePad);
-    } else {
-      pickleballSiteAwake = inGoldmanTennisSite(x, z, PICKLEBALL_TUNING.activateSitePad);
-    }
-    pickleball.setActive(pickleballSiteAwake);
-    // Approaching the courts after a long roam: ask the relay for the latest
-    // match snapshot so we don't briefly show a stale local AI serve.
-    if (!wasAwake && pickleballSiteAwake && net.status === "online") net.replayPickleball();
-  };
-  const updatePickleballGameplay = (dt: number): boolean => {
-    if (!pickleball) return false;
-    syncPickleballSiteActivation();
-    if (!pickleball.active) {
-      pickleballLocalPose = null;
-      pickleballPromptSide = null;
-      pickleballInput = {};
-      return false;
-    }
-    pickleballAnimationTime += dt;
-    const side = pickleball.localSide;
+  // Court-local intent for whichever side the player is controlling. moveZ /
+  // aimZ flip for the far side so "W" always means "toward the net".
+  const buildPickleballInput = (side: PickleballSide): PickleballInputIntent => {
     const moveX = input.axis("KeyA", "KeyD");
     const moveTowardNet = input.axis("KeyS", "KeyW");
     const swing = input.firePressed || input.pressed("Space");
-    pickleballInput = {
+    return {
       moveX,
       moveZ: moveTowardNet * (side === 1 ? -1 : 1),
       swing,
@@ -2048,23 +2147,101 @@ async function boot() {
       interact: input.pressed("KeyE"),
       exit: input.pressed("KeyE")
     };
-    if (swing) pickleballSwingQueued = true;
-    const frame = pickleball.update(dt, pickleballAnimationTime, player.position, pickleballInput);
-    pickleballLocalPose = frame.localPose;
-    let eConsumed = false;
-    if (frame.requestedRelease !== null) {
-      eConsumed = releasePickleballSide();
-    } else if (frame.requestedSide !== null) {
-      eConsumed = true;
-      requestPickleballSide(frame.requestedSide);
-    } else if (input.pressed("KeyE") && frame.interaction) {
-      eConsumed = true;
-      hud.message(frame.interaction.prompt, 2);
+  };
+  // Restore the walking player where an athlete stood after leaving a seat
+  // (mirrors finishPickleballExit for the networked court).
+  const restorePlayerFromPickleballPose = (pose: PickleballLocalPose) => {
+    player.restoreState({
+      mode: "walk",
+      x: pose.worldPosition.x,
+      y: pose.worldPosition.y + 0.58,
+      z: pose.worldPosition.z,
+      heading: pose.worldHeading + Math.PI
+    });
+    chase.yaw = pose.worldHeading;
+    player.setExternalEmbodimentHidden(false);
+  };
+  const updatePickleballGameplay = (dt: number): boolean => {
+    if (!pickleball) return false;
+    // The site gate slaves both the networked court AND the ambient cluster, so
+    // pickleball.active reliably means "site awake". Asleep = fully reset.
+    if (!pickleball.active) {
+      pickleballLocalPose = null;
+      pickleballPromptSide = null;
+      pickleballInput = {};
+      pickleballAmbientSide = null;
+      pickleballUI?.setVisible(false);
+      return false;
     }
-    if (pickleball.localSide === null && frame.interaction?.available) {
-      if (pickleballPromptSide !== frame.interaction.side) {
-        pickleballPromptSide = frame.interaction.side;
-        hud.message(frame.interaction.prompt, 2.2);
+    pickleballAnimationTime += dt;
+    let eConsumed = false;
+    let seatFrame: PickleballFrameResult | null = null;
+    let seatSide: PickleballSide | null = null;
+    let prompt: PickleballInteraction | null = null;
+
+    // ---- networked court (14B): claim/release flows through the relay ----
+    const netSide = pickleball.localSide;
+    const netInput = buildPickleballInput(netSide ?? 0);
+    pickleballInput = netInput;
+    if (netInput.swing) pickleballSwingQueued = true;
+    const netFrame = pickleball.update(dt, pickleballAnimationTime, player.position, netInput);
+    if (netSide !== null) {
+      seatFrame = netFrame;
+      seatSide = netSide;
+    } else if (netFrame.interaction) {
+      prompt = netFrame.interaction;
+    }
+    if (netFrame.requestedRelease !== null) {
+      eConsumed = releasePickleballSide();
+    } else if (netFrame.requestedSide !== null) {
+      eConsumed = true;
+      requestPickleballSide(netFrame.requestedSide);
+    }
+
+    // ---- ambient cluster (local-only mini courts): E takes over a seat ----
+    if (pickleballAmbient) {
+      const ambSeated = pickleballAmbient.seatedRef != null && pickleballAmbientSide !== null;
+      const ambInput = ambSeated ? buildPickleballInput(pickleballAmbientSide!) : undefined;
+      const ambFrame = pickleballAmbient.update(dt, pickleballAnimationTime, player.position, ambInput);
+      if (ambFrame.seat) {
+        pickleballInput = ambInput ?? pickleballInput;
+        if (ambInput?.swing) pickleballSwingQueued = true;
+        if (ambFrame.seat.frame.requestedRelease !== null && !eConsumed) {
+          const pose = pickleballAmbient.exitCourt();
+          pickleballAmbientSide = null;
+          eConsumed = true;
+          if (pose) restorePlayerFromPickleballPose(pose);
+          else player.setExternalEmbodimentHidden(false);
+          hud.message("Back to exploring", 1.8);
+        } else {
+          seatFrame = ambFrame.seat.frame;
+          seatSide = ambFrame.seat.frame.localPose?.side ?? pickleballAmbientSide;
+        }
+      } else if (netSide === null && !prompt && ambFrame.interaction) {
+        prompt = ambFrame.interaction;
+        if (!eConsumed && input.pressed("KeyE") && ambFrame.interaction.available) {
+          exitToWalk();
+          if (pickleballAmbient.enterCourt(ambFrame.interaction.ref, ambFrame.interaction.side, avatarTraits)) {
+            pickleballAmbientSide = ambFrame.interaction.side;
+            player.setExternalEmbodimentHidden(true);
+            eConsumed = true;
+            prompt = null;
+            hud.message("You’re playing · WASD move · click/Space swings · E leaves", 3.4);
+          }
+        }
+      }
+    }
+
+    // ---- drive the shared pose + HUD from the seated court (or spectate) ----
+    pickleballLocalPose = seatFrame?.localPose ?? null;
+    const hudFrame = seatFrame ?? netFrame;
+    pickleballUI?.setVisible(true);
+    pickleballUI?.setScore(hudFrame.score, hudFrame.server, hudFrame.rally);
+    pickleballUI?.setSeated(seatSide !== null, input.padConnected);
+    if (seatSide === null && prompt?.available) {
+      if (pickleballPromptSide !== prompt.side) {
+        pickleballPromptSide = prompt.side;
+        hud.message(prompt.prompt, 2.2);
       }
     } else {
       pickleballPromptSide = null;
@@ -2203,11 +2380,16 @@ async function boot() {
       if (closing && !cameraMode) input.requestLock();
     }
 
+    // One wake/sleep pass over every registered minigame site (pickleball,
+    // golf, …): a contains() test per site, setAwake only on transitions.
+    siteGate.update(player.position.x, player.position.z);
+
     // The shared court keeps advancing even while the rest of the world is
     // paused, so a remote opponent never loses the match when authority opens
     // photo/pause controls.
     const pickleballEConsumed = updatePickleballGameplay(frameDt);
-    const playingPickleball = pickleball?.localSide !== null && pickleball?.localSide !== undefined;
+    const playingPickleball =
+      (pickleball?.localSide != null) || pickleballAmbient?.seatedRef != null;
     applyPickleballPlayerPose();
 
     // Full freeze: a pause with "freeze player" armed. Everything holds — sim,
@@ -2365,7 +2547,13 @@ async function boot() {
     // E: exit any vehicle/creature, pick up a thrown tennis ball, or on foot
     // hop into the nearest ride (a friend's passenger seat, a rideable animal,
     // or a mount you left behind)
-    if (!pickleballEConsumed && input.pressed("KeyE") && !exitToWalk() && !golf?.tryStartAtTee(player, hud)) {
+    if (
+      !pickleballEConsumed &&
+      input.pressed("KeyE") &&
+      !exitToWalk() &&
+      !golf?.tryStartAtTee(player, hud) &&
+      !archery?.tryInteract(player, hud)
+    ) {
       if (!fetchBall?.tryPickup(player.position)) {
         const drv = remotes.nearestDriver(player.position, 5.5);
         const animal = drv ? null : forest?.nearest(player.position, 5);
@@ -2492,6 +2680,9 @@ async function boot() {
       // selected city tool or a vehicle weapon.
     } else if (golf?.capturesFire) {
       // golf swing context: the held mouse is the power meter (gameplay/golf
+      // reads input.firing itself) — every click-tool stands down
+    } else if (archery?.capturesFire) {
+      // archery draw context: the held mouse pulls the bow (gameplay/archery
       // reads input.firing itself) — every click-tool stands down
     } else if (player.mode === "drone") {
       if (!input.suspended && input.firePressed && fireCooldown <= 0) {
@@ -2722,6 +2913,10 @@ async function boot() {
     citygenRing.current?.update(player.position, frameDt);
     if (!highUp) hunt.update(frameDt, elapsed, player.position);
     golf?.update(frameDt, elapsed, { player, input, hud, chase, camera });
+    // Archery: site-gated, one boolean early-return when asleep with nothing live
+    archery?.update(frameDt, elapsed, { player, input, hud, chase, camera });
+    // Goldman clubhouse NPCs: one-hypot early return when far — safe every frame
+    goldenGateTennis?.update(frameDt, elapsed, player.position);
 
     // "hop in" nudge when standing near a ride (friend → wildlife)
     if (player.mode === "walk" && passengerOf === null) {
@@ -3005,7 +3200,7 @@ async function boot() {
 
   const exposeDebugHooks = () => {
     Object.assign(window as never, {
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, goldenGateTennis, pickleball, coronaHeights, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, rocketRiders, boatLaunchers, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, underwater, seaPillars, water, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, setFoliageVisible, buskers, boardSelector }
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, goldenGateTennis, pickleball, pickleballAmbient, pickleballAudio, pickleballUI, coronaHeights, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, rocketRiders, boatLaunchers, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, underwater, seaPillars, water, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, setFoliageVisible, buskers, boardSelector, siteGate }
     });
   };
   if (import.meta.env.DEV || new URLSearchParams(location.search).has("profile")) {

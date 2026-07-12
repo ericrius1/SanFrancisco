@@ -1,4 +1,5 @@
 import type { Club } from "./ball";
+import { SWEET_SPOT } from "./tuning";
 
 /**
  * Golf HUD: a scorecard chip pinned top-center while a round is live, a club
@@ -65,6 +66,11 @@ export class GolfUI {
     this.#meter.className = "golf-meter";
     this.#fill = document.createElement("div");
     this.#fill.className = "gm-ring";
+    // sweet-spot band: a golden arc over the top of the ring (92–100%);
+    // releasing inside it is a pure strike (game.ts SWEET_SPOT)
+    const sweet = document.createElement("div");
+    sweet.className = "gm-sweet";
+    sweet.style.background = `conic-gradient(transparent ${SWEET_SPOT * 360}deg, #ffd76a ${SWEET_SPOT * 360}deg, #ffe9ad 360deg)`;
     const inner = document.createElement("div");
     inner.className = "gm-inner";
     this.#club = document.createElement("div");
@@ -72,9 +78,36 @@ export class GolfUI {
     this.#carry = document.createElement("div");
     this.#carry.className = "gm-carry";
     inner.append(this.#club, this.#carry);
-    this.#meter.append(this.#fill, inner);
+    this.#meter.append(this.#fill, sweet, inner);
     this.#swing.append(this.#clubs, this.#meter);
     hud.appendChild(this.#swing);
+
+    // sweet-spot styling rides in from TS (index.html owns the base golf CSS
+    // and must not be edited; tokens still come from :root)
+    const style = document.createElement("style");
+    style.textContent = `
+      #hud .golf-meter .gm-sweet {
+        position: absolute;
+        inset: 0;
+        border-radius: 50%;
+        -webkit-mask: radial-gradient(closest-side, transparent 74%, #000 76%);
+        mask: radial-gradient(closest-side, transparent 74%, #000 76%);
+        opacity: 0;
+        transition: opacity 0.15s var(--ease);
+      }
+      #hud .golf-meter.charging .gm-sweet { opacity: 0.9; }
+      #hud .golf-meter.sweet .gm-ring { filter: brightness(1.35) saturate(1.15); }
+      #hud .golf-meter.sweet .gm-club { color: #ffd76a; }
+      @keyframes gm-perfect-pop {
+        0% { transform: scale(1); }
+        35% { transform: scale(1.14); }
+        100% { transform: scale(1); }
+      }
+      #hud .golf-meter.perfect { animation: gm-perfect-pop 0.38s var(--ease); }
+      #hud .golf-meter.perfect .gm-ring { filter: brightness(1.7) saturate(1.3); }
+      #hud .golf-meter.perfect .gm-sweet { opacity: 1; }
+    `;
+    document.head.appendChild(style);
   }
 
   /** Round card (hole + running score). */
@@ -141,6 +174,15 @@ export class GolfUI {
     const pct = Math.round(t * 100);
     this.#fill.style.background = `conic-gradient(var(--accent-strong) ${pct * 3.6}deg, var(--accent-soft) ${pct * 3.6}deg)`;
     this.#meter.classList.toggle("charging", charging);
+    this.#meter.classList.toggle("sweet", charging && t >= SWEET_SPOT);
     if (charging) this.#carry.textContent = `${Math.round(carry)}m`;
+  }
+
+  /** Released inside the sweet band: a quick golden pop on the meter. */
+  flashPerfect() {
+    this.#meter.classList.remove("perfect");
+    void this.#meter.offsetWidth; // restart the animation
+    this.#meter.classList.add("perfect");
+    window.setTimeout(() => this.#meter.classList.remove("perfect"), 450);
   }
 }
