@@ -14,6 +14,21 @@ export interface FrontOpening {
   y1: number;
 }
 
+/** A REAL window's local-frame footprint on one poly edge — computed by
+ *  interior.ts from the building's actual ModuleInstance panes (world→local
+ *  rotated the same −θ-about-centroid way as the footprint). `t0..t1` is the
+ *  param range along the edge (0..1, `edge`'s own p0→p1), `y0..y1` the world
+ *  height range. When any of these exist for this building the wall is CARVED
+ *  around them (a true hole — the player sees the real exterior through it)
+ *  instead of getting the painted-parallax fake-view quad. */
+export interface WindowOpening {
+  edge: number;
+  t0: number;
+  t1: number;
+  y0: number;
+  y1: number;
+}
+
 export interface ShellDressing {
   /** Furniture-free footprints immediately inside dressed windows. */
   windowKeepouts: Rect[];
@@ -26,8 +41,13 @@ export function dressInteriorShell(
   storeyH: number,
   style: InteriorStyle,
   opening: FrontOpening | null,
+  windowOpenings: readonly WindowOpening[] = [],
 ): ShellDressing {
   const windowKeepouts: Rect[] = [];
+  // Real ModuleInstance windows exist for this building → carve true holes and
+  // skip the synthetic painted-view quads entirely (the two never mix; a
+  // building either has kit-of-parts window records or it doesn't).
+  const hasRealWindows = windowOpenings.length > 0;
   const top = floorY + Math.max(1.3, storeyH - 0.12);
   const liningOff = 0.105;
   const UP: Vec3 = [0, 1, 0];
@@ -55,20 +75,55 @@ export function dressInteriorShell(
       out.box(style.trim, at(tc, y, liningOff + proud), [len / 2, hy, 0.035], along, UP, normal, false);
     };
 
+    // Real windows on THIS edge, clamped to the current storey band — used to
+    // carve the wall below (a true hole) and, further down, to frame + keep out
+    // furniture around the real opening instead of the synthetic grid.
+    const edgeOpenings = windowOpenings
+      .filter((o) => o.edge === edge && o.y0 >= floorY - 0.05 && o.y0 < top - 0.05)
+      .map((o) => ({
+        t0: Math.max(0, Math.min(o.t0, o.t1)), t1: Math.min(1, Math.max(o.t0, o.t1)),
+        y0: Math.max(floorY, Math.min(o.y0, o.y1)), y1: Math.min(top, Math.max(o.y0, o.y1)),
+      }))
+      .filter((o) => o.t1 - o.t0 > 0.01 && o.y1 - o.y0 > 0.1)
+      .sort((a, b) => a.t0 - b.t0);
+
     const isDoor = !!opening && opening.edge === edge && Math.abs(opening.y0 - floorY) < 0.2;
     let door0 = -1, door1 = -1;
+    // Real windows can share the STREET edge with the door (bay windows flanking
+    // a Victorian stoop) — drop only the rare one that would overlap the door
+    // notch itself (a transom directly over the door isn't authored by this
+    // grammar); everything else carves alongside the door in one sweep below.
+    let usableWindows = edgeOpenings;
     if (isDoor && opening) {
       door0 = Math.max(0, opening.tc - opening.halfW / L);
       door1 = Math.min(1, opening.tc + opening.halfW / L);
-      wallSpan(0, door0, floorY, top);
-      wallSpan(door1, 1, floorY, top);
-      wallSpan(door0, door1, opening.y1, top);
-      trimSpan(0, door0, floorY + 0.09, 0.07, 0.035);
-      trimSpan(door1, 1, floorY + 0.09, 0.07, 0.035);
-      // Interior casing around the opening; there is intentionally no back panel.
-      const dMid = (opening.y0 + opening.y1) / 2;
-      for (const t of [door0, door1]) out.box(style.trim, at(t, dMid, liningOff + 0.055), [0.055, (opening.y1 - opening.y0) / 2, 0.05], along, UP, normal, false);
-      trimSpan(door0, door1, opening.y1 + 0.055, 0.055, 0.055);
+      usableWindows = edgeOpenings.filter((w) => !(w.t1 > door0 - 0.02 && w.t0 < door1 + 0.02));
+    }
+    if (isDoor && opening || usableWindows.length) {
+      // Unify door + windows into one sorted cut list and mirror a single split:
+      // solid strip → (sill-to-floor band unless it's the door, which is void
+      // all the way down) → head-to-ceiling band → next strip.
+      const cuts = usableWindows.map((w) => ({ ...w, isDoorCut: false }));
+      if (isDoor && opening) cuts.push({ t0: door0, t1: door1, y0: floorY, y1: opening.y1, isDoorCut: true });
+      cuts.sort((a, b) => a.t0 - b.t0);
+      let cursor = 0;
+      for (const cut of cuts) {
+        wallSpan(cursor, cut.t0, floorY, top);
+        if (!cut.isDoorCut) wallSpan(cut.t0, cut.t1, floorY, cut.y0);
+        wallSpan(cut.t0, cut.t1, cut.y1, top);
+        cursor = Math.max(cursor, cut.t1);
+      }
+      wallSpan(cursor, 1, floorY, top);
+      if (isDoor && opening) {
+        trimSpan(0, door0, floorY + 0.09, 0.07, 0.035);
+        trimSpan(door1, 1, floorY + 0.09, 0.07, 0.035);
+        // Interior casing around the opening; there is intentionally no back panel.
+        const dMid = (opening.y0 + opening.y1) / 2;
+        for (const t of [door0, door1]) out.box(style.trim, at(t, dMid, liningOff + 0.055), [0.055, (opening.y1 - opening.y0) / 2, 0.05], along, UP, normal, false);
+        trimSpan(door0, door1, opening.y1 + 0.055, 0.055, 0.055);
+      } else {
+        trimSpan(0, 1, floorY + 0.09, 0.07, 0.035);
+      }
     } else {
       wallSpan(0, 1, floorY, top);
       trimSpan(0, 1, floorY + 0.09, 0.07, 0.035);
@@ -81,6 +136,46 @@ export function dressInteriorShell(
     if (style.family !== "industrial" && L < 2.2) {
       const midY = (floorY + top) / 2, halfH = (top - floorY) / 2;
       for (const t of [0, 1]) out.box(style.trim, at(t, midY, liningOff + 0.045), [0.05, halfH, 0.045], along, UP, normal, false);
+    }
+
+    // A real ModuleInstance window carved this wall above — frame + keep out
+    // furniture around ITS actual position/size instead of the synthetic grid
+    // below (which never runs once any real window data exists for this
+    // building; the two window sources never mix on one edge).
+    if (hasRealWindows) {
+      const proud = liningOff + 0.022;
+      const bar = (t: number, yy: number, ha: number, hu: number) => out.box(
+        "int.trim", at(t, yy, proud + 0.035), [ha, hu, 0.035], along, UP, normal, false,
+      );
+      for (const w of usableWindows) {
+        const tc = (w.t0 + w.t1) / 2, winW = (w.t1 - w.t0) * L;
+        const midY = (w.y0 + w.y1) / 2, halfH = (w.y1 - w.y0) / 2;
+        bar(tc, w.y0 - 0.045, winW / 2 + 0.09, 0.045);
+        bar(tc, w.y1 + 0.045, winW / 2 + 0.09, 0.045);
+        bar(w.t0, midY, 0.045, halfH + 0.09);
+        bar(w.t1, midY, 0.045, halfH + 0.09);
+        bar(tc, midY, 0.028, halfH); // centre mullion
+        if (style.tier >= 1) bar(tc, w.y0 + (w.y1 - w.y0) * 0.52, winW / 2, 0.025);
+        if (style.curtains) {
+          const halfT = (w.t1 - w.t0) / 2;
+          for (const side of [-1, 1]) {
+            const t = tc + side * (halfT + 0.055);
+            out.box(style.fabric, at(t, midY - 0.03, proud + 0.07), [0.11, halfH + 0.16, 0.045], along, UP, normal, false);
+          }
+          bar(tc, w.y1 + 0.16, winW / 2 + 0.22, 0.025);
+        }
+        // AABB of a 0.72 m-deep no-furniture zone inside this oriented window.
+        const a = at(w.t0, floorY, liningOff), b = at(w.t1, floorY, liningOff);
+        const c = [a[0] + nx * 0.72, a[2] + nz * 0.72] as const;
+        const d = [b[0] + nx * 0.72, b[2] + nz * 0.72] as const;
+        windowKeepouts.push({
+          x0: Math.min(a[0], b[0], c[0], d[0]) - 0.06,
+          x1: Math.max(a[0], b[0], c[0], d[0]) + 0.06,
+          z0: Math.min(a[2], b[2], c[1], d[1]) - 0.06,
+          z1: Math.max(a[2], b[2], c[1], d[1]) + 0.06,
+        });
+      }
+      continue;
     }
 
     if (L < 1.9) continue;

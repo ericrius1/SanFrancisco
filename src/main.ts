@@ -1,8 +1,9 @@
 import * as THREE from "three/webgpu";
+import * as TSL from "three/tsl";
 import { Inspector } from "three/addons/inspector/Inspector.js";
 import Stats from "three/addons/libs/stats.module.js";
 import CameraControls from "camera-controls";
-import { CAMERA_TUNING, CONFIG, FLOWER_TUNING, FOLIAGE_TUNING, RENDER_MODE, RENDER_TUNING, START, START_DEFAULTS, WORLD_TUNING } from "./config";
+import { CAMERA_TUNING, CITYGEN_TUNING, CONFIG, FLOWER_TUNING, FOLIAGE_TUNING, RENDER_MODE, RENDER_TUNING, START, START_DEFAULTS, WORLD_TUNING } from "./config";
 import { loadPlayerState, resetAllTweaks, savePlayerState } from "./core/persist";
 import { Input } from "./core/input";
 import { tracer } from "./core/hitchTracer";
@@ -45,6 +46,7 @@ import { Paintballs, PaintSkins, PAINTBALL_SPEED } from "./fx/paintball";
 import { Bubbles } from "./fx/bubbles";
 import { WorldCursor } from "./fx/worldCursor";
 import { WorldQueries, ProxySet } from "./core/worldQueries";
+import { BuildingRayRefiner } from "./core/buildingRayRefine";
 import { Toolbar, TOOL_ORDER, TOOL_VERB, type ToolName } from "./ui/toolbar";
 import { AvatarSelector } from "./ui/avatarSelector";
 import { BoardSelector } from "./ui/boardSelector";
@@ -434,6 +436,13 @@ async function boot() {
   // broadphase cast over a dedicated query world of entity proxies, raced against
   // the static-world caster.
   const worldQueries = new WorldQueries(physics);
+  // Building ray refinement: baked building colliders overshoot the true
+  // footprint by up to ~2 m, so every raycastWorld consumer (paint, the world
+  // cursor, golf bounces) re-tests building hits against the RENDERED citygen
+  // geometry — splats land on the visible wall, and rays aimed through gaps
+  // between far buildings no longer stop mid-air on the loose box.
+  const buildingRayRefiner = new BuildingRayRefiner(scene);
+  physics.setBuildingRayRefiner(buildingRayRefiner);
 
   // Frame-budget scheduler: ALL deferrable bursty work (streamed physics bodies,
   // citygen assembly, material warmups) queues here and drains under a per-frame
@@ -3009,7 +3018,13 @@ async function boot() {
 
   const exposeDebugHooks = () => {
     Object.assign(window as never, {
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, goldenGateTennis, pickleball, coronaHeights, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, rocketRiders, boatLaunchers, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, underwater, seaPillars, water, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, setFoliageVisible, buskers, boardSelector }
+      // renderIdle: probes MUST wait for this before capture phases — while the
+      // deferred render warmup runs, tick() early-returns without rendering, so
+      // screenshots would capture a stale boot-pose frame no matter what the
+      // camera was set to.
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, goldenGateTennis, pickleball, coronaHeights, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, rocketRiders, boatLaunchers, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector,
+        TSL,
+        renderIdle: () => modulesReady && !lateRenderWarmupActive }
     });
   };
   if (import.meta.env.DEV || new URLSearchParams(location.search).has("profile")) {

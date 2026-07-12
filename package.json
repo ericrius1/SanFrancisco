@@ -18,6 +18,7 @@
     "test:car-jump": "node --experimental-strip-types tools/car-jump-physics-probe.mjs",
     "test:roof-collision": "node tools/roof-collision-probe.mjs",
     "test:roof-visuals": "node tools/citygen-roof-visual-probe.mjs",
+    "test:groundcover": "node --experimental-strip-types tools/grounding-fit-probe.mjs && node tools/groundcover-anchor-fade-probe.mjs",
     "fetch:osm": "node tools/fetch-osm.mjs",
     "fetch:terrain": "node tools/fetch-terrain.mjs",
     "prepare:city": "node tools/prepare-city.mjs",

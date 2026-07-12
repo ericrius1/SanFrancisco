@@ -144,15 +144,23 @@ export const FOLIAGE_TUNING = tunables("foliage", {
  * from the master draw-distance slider (CONFIG.tileLoadRadius) each scan.
  */
 export const CITYGEN_TUNING = tunables("citygen", {
+  // Defaults raised again (400/250 → 700/500) after the BATCHED SHELL layer
+  // (render/shellBatch.ts): the ~2384 per-building wall sub-draws collapsed into a
+  // dozen BatchedMesh draws that frustum-cull per instance, so the frame no longer
+  // scales linearly with building count (measured +4 ms for +338 buildings vs old
+  // +14 ms). The detail RING can now reach far more buildings for near-free CPU;
+  // the wall is GPU triangles/overdraw + shadows. Sliders go far higher — the
+  // shell batch pre-sizes off maxDetail and falls back to per-building bundles if
+  // a district overflows, so cranking these is safe (just costs GPU + VRAM).
   detailRadius: {
-    v: 150,
+    v: 700,
     min: 40,
     max: 7000,
     step: 5,
     label: "detail distance (m)"
   },
   maxDetail: {
-    v: 40,
+    v: 500,
     min: 4,
     max: 4000,
     step: 2,

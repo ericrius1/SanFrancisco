@@ -878,6 +878,15 @@ export class TileStreamer {
     this.onBuildingAlive(key, index, true);
   }
 
+  /** True when this building's baked MESH is not drawn (fully suppressed, or
+   *  mesh-only suppressed — the CityGen ring renders a prism/detail mesh in its
+   *  place). Used by raycastWorld to decide whether a loose baked-collider hit
+   *  should be refined onto the actually-rendered citygen surface. */
+  isBuildingMeshHidden(key: string, index: number): boolean {
+    const k = `${key}:${index}`;
+    return this.#meshSuppressed.has(k) || this.#suppressed.has(k);
+  }
+
   isAlive(key: string, index: number): boolean {
     const tile = this.loaded.get(key);
     if (!tile) return false;

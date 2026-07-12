@@ -15,12 +15,10 @@
 // only maintains a small superset (approach margin), so between rebins grass
 // grows/shrinks continuously instead of popping.
 //
-// Wind: per-instance aGrassWind = (R⁻¹S⁻¹·windDir·heightAmp, anchorX, anchorZ).
-// See the pipeline note in wind.js — offsets added in positionNode get
-// instance-rotated afterwards, so the OLD windDir.mul(sway) approach made every
-// tuft bend along its own random yaw (neighbours swaying in opposite
-// directions). The counter-rotated vector maps the bend back onto the true
-// world heading, and the anchor gives each tuft its real world phase.
+// Wind/fade: per-instance aGrassAnchor = (anchorXYZ, heightAmp). In Three r185,
+// positionNode receives the already-instanced mesh-local position. Fade must
+// therefore scale around that explicit anchor (never around world origin), and
+// world-space wind vectors are converted through modelWorldMatrixInverse.
 //
 // Vegetation staples kept from the original: vertex normals point straight UP
 // (tufts inherit the terrain's lighting instead of flickering by card angle),
@@ -32,7 +30,7 @@ import {
 } from 'three/webgpu';
 import {
   attribute, cameraViewMatrix, color, normalize, positionGeometry,
-  positionLocal, uniform, vec3, vec4, modelWorldMatrix, mix,
+  positionLocal, uniform, vec3, vec4, modelWorldMatrix, modelWorldMatrixInverse, mix,
 } from 'three/tsl';
 import { Rng } from './rng.js';
 import { grassSway, WIND_DIR } from './wind.js';
@@ -208,7 +206,7 @@ const VARIANT_DEFS = [
 // ---- cells ---------------------------------------------------------------------
 
 // Candidate record layout (Float32Array stride):
-// x y z | m00 m02 m20 m22 (yaw·scale 2×2, precomposed) | h | wvx wvz | r g b | rank | variant
+// x y z | m00 m02 m20 m22 (yaw·scale 2×2, precomposed) | h | windAmp pad | r g b | rank | variant
 const STRIDE = 15;
 
 function buildCell(field, ix, iz) {
@@ -241,13 +239,15 @@ function buildCell(field, ix, iz) {
     const h0 = field.heightAt(x, z);
     const h1 = field.heightAt(x - fx, z), h2 = field.heightAt(x + fx, z);
     const h3 = field.heightAt(x, z - fz), h4 = field.heightAt(x, z + fz);
+    if (
+      !Number.isFinite(h0) || !Number.isFinite(h1) || !Number.isFinite(h2) ||
+      !Number.isFinite(h3) || !Number.isFinite(h4)
+    ) continue;
     const hMin = Math.min(h0, h1, h2, h3, h4);
     if (Math.max(h0, h1, h2, h3, h4) - hMin > GROUNDING.slopeCull) continue;
-    // Counter-rotated, scale-compensated wind vector: instance transform R·S
-    // maps it back onto the world heading. Height-proportional amplitude.
+    // Wind amplitude only. Direction stays canonical in world space and the
+    // shader transforms its displacement as a vector after instancing.
     const amp = 0.7 + 0.35 * h;
-    const wvx = ((c * WIND_DIR.x - s * WIND_DIR.z) / sx) * amp;
-    const wvz = ((s * WIND_DIR.x + c * WIND_DIR.z) / sz) * amp;
     // Green meadow → dry straw-ORANGE as the ground turns rocky (shared noise:
     // the color gradient lands exactly where the scree appears), with wide
     // per-tuft variance and occasional dry clumps even in the meadow.
@@ -256,7 +256,7 @@ function buildCell(field, ix, iz) {
       x, hMin - GROUNDING.sink, z,
       c * sx, s * sz, -s * sx, c * sz, // column-major yaw·scale: m[0], m[8], m[2], m[10]
       h,
-      wvx, wvz,
+      amp, 0,
       rng.range(0.55, 1.0) + dry * 0.45,            // R up
       rng.range(0.55, 1.25) * (1 - dry * 0.35),     // G down
       rng.range(0.45, 0.8) * (1 - dry * 0.55),      // B way down
@@ -317,8 +317,8 @@ function rebin(field, camX, camZ) {
       const t = j * 4;
       v.tint.array[t] = a[o + 10]; v.tint.array[t + 1] = a[o + 11];
       v.tint.array[t + 2] = a[o + 12]; v.tint.array[t + 3] = a[o + 13];
-      v.wind.array[t] = a[o + 8]; v.wind.array[t + 1] = a[o + 9];
-      v.wind.array[t + 2] = a[o]; v.wind.array[t + 3] = a[o + 2];
+      v.anchor.array[t] = a[o]; v.anchor.array[t + 1] = a[o + 1];
+      v.anchor.array[t + 2] = a[o + 2]; v.anchor.array[t + 3] = a[o + 8];
       v.cursor++;
     }
   }
@@ -329,7 +329,7 @@ function rebin(field, camX, camZ) {
     // (tufts visibly teleporting), and the throttled cadence makes ~3 MB cheap.
     v.mesh.instanceMatrix.needsUpdate = true;
     v.tint.needsUpdate = true;
-    v.wind.needsUpdate = true;
+    v.anchor.needsUpdate = true;
   }
 }
 
@@ -368,7 +368,7 @@ export function buildGrass(opts = {}) {
     metalness: 0,
   });
   const tintA = attribute('aTint', 'vec4');   // rgb tint, w = density rank
-  const gw = attribute('aGrassWind', 'vec4'); // xy = R⁻¹S⁻¹·windDir·amp, zw = anchor xz
+  const grassAnchor = attribute('aGrassAnchor', 'vec4'); // xyz = mesh-local root, w = wind amplitude
   const bladeT = positionGeometry.y.clamp(0, 1);
   const rootAo = bladeT.mul(0.38).add(0.62);
   const grassRoot = color(0x23551f);
@@ -390,7 +390,9 @@ export function buildGrass(opts = {}) {
   const camXZU = uniform(new Vector2(1e6, 1e6));
   const ceilingU = uniform(ceiling);
   const lin = (a, b, x) => x.sub(a).div(b.sub(a)).clamp(0, 1);
-  const dist = gw.zw.sub(camXZU).length();
+  const anchorLocal = grassAnchor.xyz;
+  const anchorWorld = modelWorldMatrix.mul(vec4(anchorLocal, 1)).xyz;
+  const dist = anchorLocal.xz.sub(camXZU).length();
   let dens = ringDensityU.x;
   dens = mix(dens, ringDensityU.y, lin(ringRadiiU.x, ringRadiiU.y, dist));
   dens = mix(dens, ringDensityU.z, lin(ringRadiiU.y, ringRadiiU.z, dist));
@@ -399,18 +401,17 @@ export function buildGrass(opts = {}) {
   const frac = dens.div(ceilingU);
   const fade = frac.sub(tintA.w).div(frac.mul(fadeBandU).max(1e-4)).clamp(0, 1);
 
-  // Wind: world-phased sway (sine + scrolling gust noise, see wind.js) along
-  // the per-instance counter-rotated heading; quadratic in blade height so the
-  // base stays pinned. Fade scales the whole tuft toward its ground anchor.
-  // Fade shrinks the tuft toward its ground anchor (positionLocal origin is
-  // the blade base). Bend displaces by localHeight^bendCurve so the base stays
-  // pinned regardless of wind strength; the exponent is the "how far down the
-  // blade does wind reach" control.
-  const scaled = positionLocal.mul(fade);
-  const anchorWorld = modelWorldMatrix.mul(vec4(gw.z, 0, gw.w, 1)).xz;
+  // positionLocal is already instanced in r185. Shrink around the exact root,
+  // and convert the world-space wind VECTOR with w=0 so parent transforms do
+  // not rotate, scale, or translate the intended world displacement twice.
+  const scaled = anchorLocal.add(positionLocal.sub(anchorLocal).mul(fade));
   const bendK = bladeT.pow(grassBendCurve).mul(fade);
-  const bend = vec3(gw.x, 0, gw.y).mul(grassSway(anchorWorld)).mul(bendK);
-  mat.positionNode = scaled.add(bend);
+  const bendWorld = vec3(WIND_DIR.x, 0, WIND_DIR.z)
+    .mul(grassAnchor.w)
+    .mul(grassSway(anchorWorld.xz))
+    .mul(bendK);
+  const bendLocal = modelWorldMatrixInverse.mul(vec4(bendWorld, 0)).xyz;
+  mat.positionNode = scaled.add(bendLocal);
 
   // Explicit world-up normal via cameraViewMatrix: DoubleSide otherwise FLIPS
   // the vertex normal on back-facing quads → half the crossed blades shade
@@ -429,12 +430,12 @@ export function buildGrass(opts = {}) {
     mesh.frustumCulled = false; // field surrounds the camera; culling can't win
     mesh.instanceMatrix.setUsage(DynamicDrawUsage);
     const tint = new InstancedBufferAttribute(new Float32Array(cap * 4), 4);
-    const wind = new InstancedBufferAttribute(new Float32Array(cap * 4), 4);
+    const anchor = new InstancedBufferAttribute(new Float32Array(cap * 4), 4);
     tint.setUsage(DynamicDrawUsage);
-    wind.setUsage(DynamicDrawUsage);
+    anchor.setUsage(DynamicDrawUsage);
     mesh.geometry.setAttribute('aTint', tint);
-    mesh.geometry.setAttribute('aGrassWind', wind);
-    return { mesh, cap, cursor: 0, tint, wind };
+    mesh.geometry.setAttribute('aGrassAnchor', anchor);
+    return { mesh, cap, cursor: 0, tint, anchor };
   });
 
   // all cells that can hold candidates (|center| ≤ maxR + half-diagonal)

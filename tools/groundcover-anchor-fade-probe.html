@@ -1,0 +1,335 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>ground-cover anchor fade probe</title>
+    <style>
+      html, body { margin: 0; background: #050505; }
+      canvas { display: block; width: 320px; height: 320px; image-rendering: pixelated; }
+    </style>
+  </head>
+  <body>
+    <script type="module">
+      // Rendered regression for the r185 NodeMaterial transform order. Three applies
+      // an InstancedMesh's instance matrix before positionNode, so fading with
+      // `positionLocal * fade` also scales the absolute instance translation. At a
+      // large coordinate the half-faded blade/bloom then flies thousands of metres
+      // toward the origin. This fixture renders the real app grass, flower, and
+      // vendored grass positionNode graphs at fade = 1, 0.5, and 0.
+      import * as THREE from "three/webgpu";
+      import { color } from "three/tsl";
+      import {
+        createBladeClusterGeometry,
+        createGrassMaterial,
+        createGrassMesh,
+        writeGrassMesh
+      } from "/src/world/groundcover/bladeGrass.ts";
+      import { createFlowerRing } from "/src/world/wildlands/flowerRing.ts";
+      import { buildGrass as buildVendorGrass } from "/vendor/SeedThree/src/core/grass.js";
+
+      const W = 320;
+      const H = 320;
+      const ANCHOR = new THREE.Vector3(8192, 0, 8192);
+      const GRASS_REACH = 20;
+      const FLOWER_REACH = 80; // flowerMaterial's production default
+      const FADE_BAND = 0.16;
+
+      function finish(result) {
+        window.__probeResult = result;
+        console.log("PROBE_RESULT " + JSON.stringify(result, null, 1));
+      }
+
+      function focusForFade(reach, fade) {
+        // Production fade: clamp((reach - distance) / max(reach * .16, 1)).
+        // Moving focus on +X keeps the rendered instance fixed at the large anchor.
+        const band = Math.max(reach * FADE_BAND, 1);
+        const distance = fade >= 1 ? 0 : reach - fade * band;
+        return new THREE.Vector2(ANCHOR.x + distance, ANCHOR.z);
+      }
+
+      function anchorPixel(camera) {
+        const p = ANCHOR.clone().project(camera);
+        return {
+          x: (p.x * 0.5 + 0.5) * W,
+          // readRenderTargetPixelsAsync returns WebGPU rows top-to-bottom.
+          y: (1 - (p.y * 0.5 + 0.5)) * H
+        };
+      }
+
+      function analyzePixels(buf, expectedAnchor) {
+        let pixels = 0;
+        let anchorPixels = 0;
+        let sx = 0;
+        let sy = 0;
+        let minX = W;
+        let minY = H;
+        let maxX = -1;
+        let maxY = -1;
+        const anchorRadius2 = 72 * 72;
+        for (let y = 0; y < H; y++) {
+          for (let x = 0; x < W; x++) {
+            const i = (y * W + x) * 4;
+            const r = buf[i];
+            const g = buf[i + 1];
+            const b = buf[i + 2];
+            // The target materials are forced emissive for this position-only
+            // fixture. The render target is cleared to exact black.
+            if (Math.max(r, g, b) < 20 || r + g + b < 45) continue;
+            pixels++;
+            sx += x;
+            sy += y;
+            minX = Math.min(minX, x);
+            minY = Math.min(minY, y);
+            maxX = Math.max(maxX, x);
+            maxY = Math.max(maxY, y);
+            const dx = x - expectedAnchor.x;
+            const dy = y - expectedAnchor.y;
+            if (dx * dx + dy * dy <= anchorRadius2) anchorPixels++;
+          }
+        }
+        return {
+          pixels,
+          anchorPixels,
+          centroid: pixels ? [+(sx / pixels).toFixed(2), +(sy / pixels).toFixed(2)] : null,
+          bbox: pixels ? [minX, minY, maxX, maxY] : null
+        };
+      }
+
+      function verifyTriplet(system, samples) {
+        const full = samples.find((sample) => sample.fade === 1);
+        const half = samples.find((sample) => sample.fade === 0.5);
+        const zero = samples.find((sample) => sample.fade === 0);
+        const checks = [
+          {
+            name: `${system}: full fade rasterizes`,
+            pass: full.pixels >= 64,
+            detail: `${full.pixels} lit pixels`
+          },
+          {
+            name: `${system}: half fade remains at its large-coordinate anchor`,
+            pass: half.pixels >= 12 && half.anchorPixels >= Math.max(6, Math.floor(half.pixels * 0.35)),
+            detail: `${half.pixels} lit / ${half.anchorPixels} near anchor`
+          },
+          {
+            name: `${system}: half fade is smaller than full fade`,
+            pass: half.pixels < full.pixels * 0.75,
+            detail: `pixel ratio ${(half.pixels / Math.max(full.pixels, 1)).toFixed(3)}`
+          },
+          {
+            name: `${system}: zero fade is degenerate`,
+            pass: zero.pixels <= 1,
+            detail: `${zero.pixels} lit pixels`
+          }
+        ];
+        return { system, ok: checks.every((check) => check.pass), checks, samples };
+      }
+
+      async function run() {
+        if (!navigator.gpu) {
+          finish({
+            ok: false,
+            unavailable: true,
+            error: "WebGPU is unavailable (navigator.gpu is missing); this GPU regression cannot run."
+          });
+          return;
+        }
+
+        const renderer = new THREE.WebGPURenderer({ antialias: false });
+        renderer.setPixelRatio(1);
+        renderer.setSize(W, H, false);
+        renderer.setClearColor(0x000000, 1);
+        renderer.toneMapping = THREE.NoToneMapping;
+        document.body.appendChild(renderer.domElement);
+        await renderer.init();
+
+        if (!renderer.backend?.isWebGPUBackend) {
+          finish({
+            ok: false,
+            unavailable: true,
+            error: `WebGPU backend is required; renderer selected ${renderer.backend?.constructor?.name ?? "unknown"}.`
+          });
+          renderer.dispose();
+          return;
+        }
+
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x000000);
+        scene.add(new THREE.AmbientLight(0xffffff, 2));
+        const sun = new THREE.DirectionalLight(0xffffff, 3);
+        sun.position.set(ANCHOR.x + 2, 5, ANCHOR.z + 3);
+        scene.add(sun);
+
+        const camera = new THREE.OrthographicCamera(-1.3, 1.3, 1.3, -1.3, 0.1, 20);
+        camera.position.set(ANCHOR.x, 0.62, ANCHOR.z + 5);
+        camera.lookAt(ANCHOR.x, 0.62, ANCHOR.z);
+        camera.updateMatrixWorld(true);
+        const expectedAnchor = anchorPixel(camera);
+
+        // Grass: public production factory + the production attribute writer.
+        const grassState = createGrassMaterial();
+        // Make fragment output deterministic while retaining the production
+        // positionNode object verbatim (the only graph this probe exercises).
+        grassState.material.colorNode = color(0x82ff45);
+        grassState.material.emissiveNode = color(0x82ff45);
+        const grassGeometry = createBladeClusterGeometry({
+          blades: 7,
+          segments: 5,
+          width: 0.15,
+          radius: 0.11,
+          curvature: 0.24
+        });
+        const grass = createGrassMesh("anchor_probe_grass", 1, grassGeometry, grassState.material, false);
+        writeGrassMesh(grass, [{
+          x: ANCHOR.x,
+          y: ANCHOR.y,
+          z: ANCHOR.z,
+          yaw: 0.31,
+          height: 1.2,
+          spread: 1.45,
+          color: new THREE.Color(1, 1, 1),
+          windAmp: 0
+        }], GRASS_REACH);
+        scene.add(grass);
+
+        // Flowers: createFlowerRing owns the private production material state.
+        // Updating far outside every wild region only writes its focus uniform and
+        // deliberately avoids terrain/map sampling; then the fixture writes one
+        // deterministic poppy into the production instance attributes.
+        const flowers = createFlowerRing({
+          groundHeight: () => 0,
+          surfaceType: () => 0,
+          isWater: () => false
+        });
+        flowers.update({ x: ANCHOR.x, z: ANCHOR.z });
+        const flowerMeshes = flowers.group.children.filter((child) => child.isInstancedMesh);
+        const flower = flowerMeshes[0];
+        for (const mesh of flowerMeshes) mesh.count = 0;
+        flower.material.colorNode = color(0xff4ec4);
+        flower.material.emissiveNode = color(0xff4ec4);
+        flower.receiveShadow = false;
+
+        const flowerDummy = new THREE.Object3D();
+        flowerDummy.position.copy(ANCHOR);
+        flowerDummy.rotation.y = 0.47;
+        flowerDummy.scale.set(1.75, 1.75, 1.75);
+        flowerDummy.updateMatrix();
+        flowerDummy.matrix.toArray(flower.instanceMatrix.array, 0);
+        flower.instanceMatrix.needsUpdate = true;
+        const bloom = flower.geometry.getAttribute("aBloom");
+        bloom.setXYZ(0, 1, 1, 1);
+        bloom.needsUpdate = true;
+        const flowerAnchor = flower.geometry.getAttribute("aFlowerAnchor");
+        flowerAnchor.setXYZW(0, ANCHOR.x, ANCHOR.y, ANCHOR.z, 1);
+        flowerAnchor.needsUpdate = true;
+        // Wind is not part of this regression. Zeroing its static tip weights makes
+        // repeated pixel counts identical while the full production fade graph,
+        // anchor transform, and world/local offset conversion still compile/run.
+        const sway = flower.geometry.getAttribute("aSway");
+        sway.array.fill(0);
+        sway.needsUpdate = true;
+        flower.count = 1;
+        scene.add(flowers.group);
+
+        // Vendored SeedThree had the same stale origin-scaling expression. Its
+        // density fade is rank-based rather than reach-based, but we can drive
+        // the exact production graph deterministically through the exposed dev
+        // field and its production per-instance attributes.
+        const vendorGrass = buildVendorGrass({
+          sampler: { heightAt: () => 0, rocknessAt: () => 0, R: 8 },
+          budget: 64,
+          densityCeiling: 1,
+          clearRadius: 0,
+          cellSize: 8,
+          dynamic: false
+        });
+        const vendorField = window.__grassFields.at(-1);
+        const vendorMeshes = vendorGrass.children.filter((child) => child.isInstancedMesh);
+        const vendor = vendorMeshes[0];
+        for (const mesh of vendorMeshes) mesh.count = 0;
+        vendor.material.colorNode = color(0x46d8ff);
+        vendor.material.emissiveNode = color(0x46d8ff);
+        const vendorDummy = new THREE.Object3D();
+        vendorDummy.position.copy(ANCHOR);
+        vendorDummy.rotation.y = -0.39;
+        vendorDummy.scale.set(1.5, 1.3, 1.5);
+        vendorDummy.updateMatrix();
+        vendorDummy.matrix.toArray(vendor.instanceMatrix.array, 0);
+        vendor.instanceMatrix.needsUpdate = true;
+        const vendorTint = vendor.geometry.getAttribute("aTint");
+        const vendorAnchor = vendor.geometry.getAttribute("aGrassAnchor");
+        vendorTint.setXYZW(0, 1, 1, 1, 0);
+        vendorAnchor.setXYZW(0, ANCHOR.x, ANCHOR.y, ANCHOR.z, 0);
+        vendorTint.needsUpdate = true;
+        vendorAnchor.needsUpdate = true;
+        vendorField.camXZU.value.set(ANCHOR.x, ANCHOR.z);
+        vendor.count = 1;
+        scene.add(vendorGrass);
+
+        const target = new THREE.RenderTarget(W, H, {
+          type: THREE.UnsignedByteType,
+          colorSpace: THREE.SRGBColorSpace,
+          depthBuffer: true
+        });
+
+        async function renderSample(system, fade) {
+          grass.visible = system === "grass";
+          flowers.group.visible = system === "flower";
+          vendorGrass.visible = system === "vendor";
+          if (system === "grass") {
+            const focus = focusForFade(GRASS_REACH, fade);
+            grassState.focus.copy(focus);
+          } else if (system === "flower") {
+            const focus = focusForFade(FLOWER_REACH, fade);
+            // update() always moves the private per-ring focus uniform before its
+            // resample throttle / outside-region early return.
+            flowers.update({ x: focus.x, z: focus.y });
+          } else {
+            // At zero distance the default first density ring is 0.9 and this
+            // fixture's density ceiling is 1. Fade = (.9-rank)/(.9*.15).
+            const rank = fade >= 1 ? 0 : 0.9 * (1 - fade * 0.15);
+            vendorTint.setW(0, rank);
+            vendorTint.needsUpdate = true;
+          }
+          renderer.setRenderTarget(target);
+          await renderer.renderAsync(scene, camera);
+          const buf = await renderer.readRenderTargetPixelsAsync(target, 0, 0, W, H);
+          return { fade, ...analyzePixels(buf, expectedAnchor) };
+        }
+
+        const grassSamples = [];
+        const flowerSamples = [];
+        const vendorSamples = [];
+        for (const fade of [1, 0.5, 0]) grassSamples.push(await renderSample("grass", fade));
+        for (const fade of [1, 0.5, 0]) flowerSamples.push(await renderSample("flower", fade));
+        for (const fade of [1, 0.5, 0]) vendorSamples.push(await renderSample("vendor", fade));
+
+        renderer.setRenderTarget(null);
+        const systems = [
+          verifyTriplet("grass", grassSamples),
+          verifyTriplet("flower", flowerSamples),
+          verifyTriplet("vendor grass", vendorSamples)
+        ];
+        const result = {
+          ok: systems.every((system) => system.ok),
+          backend: "webgpu",
+          anchor: ANCHOR.toArray(),
+          expectedAnchorPixel: [
+            +expectedAnchor.x.toFixed(2),
+            +expectedAnchor.y.toFixed(2)
+          ],
+          systems
+        };
+        finish(result);
+
+        target.dispose();
+        grassGeometry.dispose();
+        vendorGrass.userData.dispose?.();
+        renderer.dispose();
+      }
+
+      run().catch((error) => {
+        finish({ ok: false, error: String(error?.stack ?? error) });
+      });
+    </script>
+  </body>
+</html>
