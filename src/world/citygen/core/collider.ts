@@ -1,13 +1,85 @@
-// Building → collider boxes. One oriented wall box per footprint edge (yawed to
-// the edge) plus a ground pad — precise to the REAL polygon, so a car hitting a
-// re-entrant façade stops on the actual wall instead of a bbox. With `door`, the
-// street-facing edge (longest) gets a walk-through gap: its wall becomes two side
+// Building → collision geometry. One oriented wall box per footprint edge
+// (yawed to the edge), a ground pad, and a separate footprint-faithful roof mesh
+// — precise to the REAL polygon, so a car hitting a re-entrant façade stops on
+// the actual wall instead of a bbox. With `door`, the street-facing edge
+// (longest) gets a walk-through gap: its wall becomes two side
 // segments + a lintel above the opening + a solid skirt below it, so the player
 // can walk in at the raised sill. Pure, no THREE.
-import type { BuildingSpec, ColliderBox } from "./types";
-import { ensureCCW, streetEdgeIndex, edgeOutwardNormal } from "./footprint";
+import type { BuildingSpec, ColliderBox, ColliderMesh, Vec2 } from "./types";
+import { ensureCCW, streetEdgeIndex, edgeOutwardNormal, triangulate } from "./footprint";
 
 const WALL_T = 0.25; // wall half-thickness (metres)
+const ROOF_SLAB_HALF = 0.12; // top stays exactly at spec.top; slab hangs below it
+
+const samePoint = (a: Vec2, b: Vec2): boolean =>
+  Math.abs(a[0] - b[0]) < 1e-6 && Math.abs(a[1] - b[1]) < 1e-6;
+
+/** OSM rings may repeat their first point at the end. A rarer valid input has
+ * two lobes touching at one repeated vertex; split that self-touch into simple
+ * rings so ear clipping covers both instead of bailing part-way through. */
+function simpleRoofRings(input: readonly Vec2[]): Vec2[][] {
+  const clean: Vec2[] = [];
+  for (const p of input) if (!clean.length || !samePoint(clean[clean.length - 1], p)) clean.push(p);
+  if (clean.length > 1 && samePoint(clean[0], clean[clean.length - 1])) clean.pop();
+  if (clean.length < 3) return [];
+
+  for (let i = 0; i < clean.length; i++) {
+    for (let j = i + 2; j < clean.length; j++) {
+      if (!samePoint(clean[i], clean[j])) continue;
+      const a = clean.slice(i, j);
+      const b = [...clean.slice(0, i + 1), ...clean.slice(j + 1)];
+      if (a.length < 3 || b.length < 3) continue;
+      return [...simpleRoofRings(a), ...simpleRoofRings(b)];
+    }
+  }
+  return [ensureCCW(clean)];
+}
+
+/** A closed, footprint-faithful roof prism. The near CityGen tier replaces the
+ * baked full-building box with precise edge walls so doors/interiors can work;
+ * this mesh preserves the one surface that edge walls cannot: the roof. A
+ * triangle mesh avoids the invisible overhang a bbox/OBB would create around
+ * rotated, concave, L/C/U-shaped footprints. */
+export function roofColliderMesh(spec: BuildingSpec): ColliderMesh | null {
+  const rings = simpleRoofRings(spec.poly);
+  if (!rings.length) return null;
+
+  let cx = 0, cz = 0, points = 0;
+  for (const ring of rings) for (const [x, z] of ring) { cx += x; cz += z; points++; }
+  cx /= points;
+  cz /= points;
+  const vertices: number[] = [];
+  const indices: number[] = [];
+
+  for (const poly of rings) {
+    const tris = triangulate(poly);
+    if (tris.length < 3) continue;
+    const start = vertices.length / 3;
+    const n = poly.length;
+
+    // Bottom ring first, top ring second. The body origin sits half a slab below
+    // the visible cap, so the collision top is exactly spec.top.
+    for (const [x, z] of poly) vertices.push(x - cx, -ROOF_SLAB_HALF, z - cz);
+    for (const [x, z] of poly) vertices.push(x - cx, ROOF_SLAB_HALF, z - cz);
+
+    for (let i = 0; i < tris.length; i += 3) {
+      const a = start + tris[i], b = start + tris[i + 1], c = start + tris[i + 2];
+      // In the app's x-right/z-down footprint frame, the triangulator's CCW
+      // winding faces -Y in 3D. Keep that winding on the bottom and reverse it on
+      // the top so this is a closed outward-facing prism.
+      indices.push(a, b, c);
+      indices.push(start + n + tris[i], start + n + tris[i + 2], start + n + tris[i + 1]);
+    }
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      const bi = start + i, bj = start + j, ti = start + n + i, tj = start + n + j;
+      indices.push(bi, ti, bj, bj, ti, tj);
+    }
+  }
+
+  if (indices.length < 3) return null;
+  return { x: cx, y: spec.top - ROOF_SLAB_HALF, z: cz, vertices, indices };
+}
 
 /** THE single source of truth for where the front door goes on an edge of length
  *  `len` between world heights `base` (lowest ground under the footprint) and

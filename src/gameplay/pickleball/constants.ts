@@ -35,8 +35,11 @@ export const PICKLEBALL_TUNING = Object.freeze({
   playerAcceleration: 15,
   interactionRadius: 2.35,
   swingDuration: 0.44,
-  swingContactStart: 0.14,
-  swingContactEnd: 0.29,
+  // Contact window inside the swing. Widened past the animation's literal
+  // impact frames (was 0.14–0.29) as timing forgiveness — a slightly early or
+  // late press still connects, which is what keeps rallies fun for humans.
+  swingContactStart: 0.12,
+  swingContactEnd: 0.32,
   swingCooldown: 0.38,
   serveDelay: 1.15,
   pointDelay: 1.65,

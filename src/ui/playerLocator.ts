@@ -31,11 +31,13 @@ const EDGE_PAD_Y = 48;
 const MARKER_Y: Record<PlayerMode, number> = {
   walk: 2.7,
   drive: 2.9,
+  scooter: 3.0,
   plane: 3.3,
   boat: 8.4,
   speedboat: 2.6,
   drone: 2.2,
   board: 2.9,
+  surf: 2.8,
   bird: 2.8
 };
 

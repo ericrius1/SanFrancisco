@@ -218,7 +218,7 @@ window.__parityCast = (x, z) => {
   const origin = new THREE.Vector3(x, oy, z);
 
   // dynamic / non-collidable exclusion (name or ancestor name)
-  const DYN = /(^|[_\\.\\b])(car|vehicle|wheel|chassis|avatar|remote|creature|bear|raccoon|horse|bird|feather|butterfly|crab|fish|gull|player|guitar|rocket|firework|paintball|splat|bubble|chime|coin|chest|rope|grab|sail|cloth|banner|flag|wake|ripple|spray|smoke|dust|cloud|sky|grass|flower|petal|leaf|foliage|tree|shrub|hedge|blade|marking|crosswalk|decal|sprite|cursor|minimap|particle|water|snitch|quaffle|ball|satchel|lamp|light|glow|sign|awning|antenna|wire|cable)/i;
+  const DYN = /(^|[_\\.\\b])(car|vehicle|wheel|chassis|avatar|remote|creature|bear|raccoon|horse|bird|feather|crab|fish|gull|player|guitar|rocket|firework|paintball|splat|bubble|chime|coin|chest|rope|grab|sail|cloth|banner|flag|wake|ripple|spray|smoke|dust|cloud|sky|grass|flower|petal|leaf|foliage|tree|shrub|hedge|blade|marking|crosswalk|decal|sprite|cursor|minimap|particle|water|snitch|quaffle|ball|satchel|lamp|light|glow|sign|awning|antenna|wire|cable)/i;
   const isDyn = (o) => { let p = o; while (p) { if (DYN.test(p.name || "")) return true; p = p.parent; } return false; };
 
   // candidate opaque visible world meshes near the site (rebuilt per site — cheap)

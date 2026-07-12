@@ -1,6 +1,5 @@
 import * as THREE from "three/webgpu";
 import { buildRig, poseIdle, poseWalk, setRigClasp, type Rig } from "../../player/rig";
-import { applyMaterialPolicy, tagTransparency } from "../../render/transparency";
 
 export type TeaMasterAction = "idle" | "welcome" | "serve" | "walk" | "talk" | "point";
 
@@ -26,6 +25,12 @@ const PALETTE = {
   cup: 0xd9c38c
 } as const;
 
+function alphaSurface<T extends THREE.Material>(value: T): T {
+  value.transparent = true;
+  value.depthWrite = false;
+  return value;
+}
+
 function setRotation(group: THREE.Group, x: number, y: number, z: number): void {
   group.rotation.set(x, y, z);
 }
@@ -35,10 +40,7 @@ function createTeaCup(geometries: THREE.BufferGeometry[], materials: THREE.Mater
   group.name = "tea_master_cup";
   const ceramic = new THREE.MeshStandardMaterial({ color: PALETTE.cup, roughness: 0.72, metalness: 0 });
   const tea = new THREE.MeshStandardMaterial({ color: PALETTE.tea, roughness: 0.35, metalness: 0 });
-  const steam = applyMaterialPolicy(
-    new THREE.MeshBasicMaterial({ color: 0xf3f6ee, opacity: 0.52 }),
-    "alphaSurface"
-  );
+  const steam = alphaSurface(new THREE.MeshBasicMaterial({ color: 0xf3f6ee, opacity: 0.52 }));
   materials.push(ceramic, tea, steam);
 
   const bowlGeometry = new THREE.CylinderGeometry(0.11, 0.085, 0.105, 14, 1, true);
@@ -71,7 +73,6 @@ function createTeaCup(geometries: THREE.BufferGeometry[], materials: THREE.Mater
     const wisp = new THREE.Mesh(geometry, steam);
     wisp.name = `tea_steam_${i}`;
     wisp.userData.phase = i * 2.1;
-    tagTransparency(wisp, { profile: "alphaSurface" });
     group.add(wisp);
   }
   return group;

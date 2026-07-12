@@ -13,13 +13,15 @@
 // Everything is STATIC: world-space geometry, matrixAutoUpdate off, Static bodies.
 // Nothing is destructible — buildings don't break; a crash just stops you.
 import * as THREE from "three/webgpu";
-import { buildingColliders, doorMetrics, doorEligible, STOOP_MAX_RISE, stoopColliders } from "../core/collider";
+import { buildingColliders, doorMetrics, doorEligible, roofColliderMesh, STOOP_MAX_RISE, stoopColliders } from "../core/collider";
 import { ensureCCW, streetEdgeIndex, edgeOutwardNormal, pointInPoly, signedDistToPoly } from "../core/footprint";
 import { buildBuilding, buildInterior, assembleBuilding, warmupMaterials } from "../render";
 import { buildChunkLOD, type ChunkLOD } from "../render/chunkLod";
+import { createModuleLayer } from "../render/moduleLayer";
+import { createShellBatchLayer } from "../render/shellBatch";
 import { lodMaterial } from "../render/lod";
 import { buildCityGenMaterials } from "../theme/materials";
-import type { BuildingSpec, ColliderBox, MeshData } from "../core/types";
+import type { BuildingSpec, ColliderBox, ColliderMesh, MeshData, ModuleInstance } from "../core/types";
 import { CITYGEN_TUNING, CONFIG } from "../../../config";
 
 const READY = new Set(["victorian", "edwardian", "marina", "downtown", "soma"]);
@@ -46,6 +48,17 @@ const DETAIL_BUDGET_SLOW = 1; // else: frame is tight, stay conservative
 // #buildingBodies bookkeeping for baked-tile OBBs) — so the wider ring/budget costs
 // effectively nothing extra. Own radius, NOT detailR (which is 150 m for the mesh and
 // would over-spawn).
+// Detail buildings cast shadows only inside this radius (+30 m exit hysteresis).
+// The far CSM cascade ends at 350 m and reads through marine haze well before
+// that; casters past ~220 m cost full cascade re-renders for invisible shadows.
+const SHADOW_CAST_R = 220;
+// Facade-area admission budget (Σ perimeter·storeys over the kept detail set).
+// maxDetail counts BUILDINGS, but a large-commercial tower costs ~8-10x a
+// victorian rowhouse in baked wall/pier triangles — downtown at a 250-building
+// cap measured 2x the frame cost of a residential district. Weighing admission
+// by facade area keeps rowhouse districts at the full count while downtown
+// admits the nearest ~50-80 towers. Occupied buildings always stay.
+const DETAIL_COST_BUDGET = 55_000;
 const COLLIDER_R = 90;
 const COLLIDER_EXIT = 115; // hysteresis: drop back to baked only past here
 const COLLIDER_BUDGET = 20; // exact-collider swaps per scan (cheap: no mesh) — nearest first
@@ -75,6 +88,7 @@ const OPEN_INTERIOR_RETAIN = 12;     // keep an opened home's reveal alive for e
 
 interface PhysWorld {
   createBox(o: { type: number; position: readonly [number, number, number]; halfExtents: readonly [number, number, number]; friction?: number }): number;
+  createStaticMesh(o: { position: readonly [number, number, number]; vertices: ArrayLike<number>; indices: ArrayLike<number>; friction?: number }): number;
   setBodyTransform(h: number, p: readonly [number, number, number], q: readonly [number, number, number, number]): void;
   destroyBody(h: number): void;
 }
@@ -85,6 +99,7 @@ interface PhysWorld {
 // module stays portable to a host without a query world.
 interface QuerySolidHost {
   addQuerySolid(id: number, box: { x: number; y: number; z: number; hx: number; hy: number; hz: number; yaw?: number; quat?: readonly [number, number, number, number] }): void;
+  addQueryMesh(id: number, mesh: ColliderMesh): void;
   removeQuerySolid(id: number): void;
 }
 interface Tiles {
@@ -92,13 +107,29 @@ interface Tiles {
   unsuppressBuilding(key: string, index: number): void;
   suppressBuildingMesh(key: string, index: number): void;
   unsuppressBuildingMesh(key: string, index: number): void;
+  /** Authored replacements (landmarks, bespoke sites) own these footprints and
+   *  must never be materialized or revived by the procedural building ring. */
+  isBuildingSuppressed?(key: string, index: number): boolean;
 }
 // Optional host frame-budget scheduler (SF's core/frameBudget.ts): deferrable
 // bursty work — physics body batches, mesh assembly, material warmups — queues
 // here and drains under the host's per-frame ms budget. Without a host
 // scheduler the module stays portable: work runs immediately (old behaviour).
 type ScheduleFn = (lane: "physics" | "build" | "upload" | "background", job: () => void | "again") => void;
-interface BuiltGroup { group: THREE.Group; setOpacity(o: number): void; dispose(): void; }
+interface BuiltGroup {
+  group: THREE.Group;
+  /** kit-of-parts window records (world-space, pre-proud) — the interior
+   *  look-out feature aligns its wall holes to these. */
+  windows: readonly ModuleInstance[];
+  setOpacity(o: number): void;
+  setCastShadow(cast: boolean): void;
+  setGlassHidden(hidden: boolean): void;
+  /** hide/show the whole exterior shell while the player is inside (see
+   *  render.ts BuiltBuilding.setShellHidden) */
+  setShellHidden(hidden: boolean): void;
+  setDoorLeavesVisible(vis: boolean): void;
+  dispose(): void;
+}
 
 interface Entry extends BuildingSpec {
   key: string;
@@ -108,12 +139,15 @@ interface Entry extends BuildingSpec {
   fade: number; fadeDir: number;
   bodies: number[];              // exact-poly wall colliders (coll + detail tiers)
   wallBoxes: ColliderBox[];      // source OBBs of `bodies` (debug x-ray only)
+  roofBody: number;              // kept across solid↔door-gapped wall swaps
+  roofMesh: ColliderMesh | null; // footprint-faithful roof prism (coll + detail)
   interior: { group: THREE.Group; dispose(): void } | null;
   intBodies: number[];
   intBoxes: ColliderBox[];       // source OBBs of `intBodies` (debug x-ray only)
   // lod    = far: baked mesh hidden (R=1), the LOOSE baked collider is live.
   // coll   = near: baked collider dropped (R=0) + exact-poly SOLID walls, so the
-  //          collider matches the visible LOD prism (no "invisible box" — the
+  //          collider matches the visible LOD prism, including its roof (no
+  //          "invisible box" — the
   //          baked decomposition overshoots the true footprint by ~2 m). Mesh is
   //          still the prism (the pretty grammar mesh is budgeted separately).
   // detail = closest-N: exact-poly walls WITH a door + full grammar mesh + interior.
@@ -129,6 +163,8 @@ interface Entry extends BuildingSpec {
   // a grammar-build request is in flight on the worker (counts against the
   // detail cap; cleared on assemble, displacement is handled by normal eviction)
   pendingBuild: boolean;
+  /** facade-area admission cost (perimeter · storeys), computed lazily */
+  cost?: number;
 }
 
 /** Per-door runtime: world-space metrics cached ONCE per entry (the footprint is
@@ -229,7 +265,7 @@ export interface CityGenRing {
   isPlayerInside(): boolean;
   debugBuildings(): { cx: number; cz: number; base: number; top: number; interior: boolean; bb: { minx: number; maxx: number; minz: number; maxz: number } }[];
   /** DEBUG: live walk-in wall + interior collider OBBs for the "/" x-ray overlay. */
-  debugColliders(walls: ColliderBox[], interiors: ColliderBox[]): void;
+  debugColliders(walls: ColliderBox[], interiors: ColliderBox[], roofs?: ColliderMesh[]): void;
   /** DEBUG/probe: streaming state of every entry within r metres of (x,z). */
   debugEntriesNear(x: number, z: number, r: number): { i: number; d: number; state: string; bodies: number; pendingBuild: boolean; insideBB: boolean }[];
   /** DEBUG/probe: world-space door frames for every faded-in detail building. */
@@ -262,6 +298,15 @@ export async function createCityGenRing(
   const url = opts.url ?? "/citygen/buildings.json";
   const grid = await fetchGrid(url);
   const materials = buildCityGenMaterials();
+  // instanced kit-of-parts windows: every detail building's panes/frames draw
+  // as a handful of city-wide instanced meshes (see render/moduleLayer.ts)
+  const moduleLayer = createModuleLayer(ctx.scene);
+  // batched building SHELLS: walls/roof/trim/stoop/doors of every detail building
+  // draw as ~a dozen city-wide BatchedMesh draws (was ~2384 bundle sub-draws), and
+  // frustum-cull per instance (see render/shellBatch.ts). Sized off the detail cap.
+  const shellBatch = createShellBatchLayer(ctx.scene, {
+    capacity: Math.max(768, Math.ceil(CT.maxDetail * 1.5)),
+  });
   // no host scheduler → run deferred work immediately (portable fallback)
   const schedule: ScheduleFn = ctx.schedule ?? ((_lane, job) => { let v = job(); let guard = 0; while (v === "again" && guard++ < 10000) v = job(); });
 
@@ -270,14 +315,20 @@ export async function createCityGenRing(
   let total = 0;
   if (grid) {
     for (const [key, list] of Object.entries(grid.cells)) {
-      const entries = list.filter((b) => READY.has(b.archetype) && !opts.excludeBuilding?.(key, b.i)).map((b) => {
+      const entries = list
+        .filter((b) =>
+          READY.has(b.archetype) &&
+          !ctx.tiles.isBuildingSuppressed?.(key, b.i) &&
+          !opts.excludeBuilding?.(key, b.i)
+        )
+        .map((b) => {
         const g = boundsOf(b.poly);
         const grade = footprintGrade(b.poly, b.base, b.top, ctx.map);
         return { ...b, grade, key, cx: g.cx, cz: g.cz, bb: { minx: g.minx, maxx: g.maxx, minz: g.minz, maxz: g.maxz },
-          detail: null, fade: 0, fadeDir: 0, bodies: [] as number[], wallBoxes: [] as ColliderBox[],
+          detail: null, fade: 0, fadeDir: 0, bodies: [] as number[], wallBoxes: [] as ColliderBox[], roofBody: 0, roofMesh: null,
           interior: null, intBodies: [] as number[], intBoxes: [] as ColliderBox[],
           state: "lod" as const, doorPending: false, pendingBuild: false } as Entry;
-      });
+        });
       if (entries.length) { cellEntries.set(key, entries); total += entries.length; }
     }
   }
@@ -427,12 +478,35 @@ export async function createCityGenRing(
     ctx.physics.addQuerySolid?.(h, c.quat ? c : { ...c, yaw: -c.yaw }); // raycast query world (same convention fix)
     return h;
   };
-  const clearBodies = (e: Entry) => { for (const h of e.bodies) { ctx.physics.removeQuerySolid?.(h); ctx.physics.world.destroyBody(h); } e.bodies.length = 0; e.wallBoxes = []; };
+  const addMeshBody = (c: ColliderMesh): number => {
+    const h = ctx.physics.world.createStaticMesh({
+      position: [c.x, c.y, c.z], vertices: c.vertices, indices: c.indices, friction: 0.8
+    });
+    ctx.physics.addQueryMesh?.(h, c);
+    return h;
+  };
+  const clearWalls = (e: Entry) => {
+    for (const h of e.bodies) { ctx.physics.removeQuerySolid?.(h); ctx.physics.world.destroyBody(h); }
+    e.bodies.length = 0;
+    e.wallBoxes = [];
+  };
+  const clearBodies = (e: Entry) => {
+    clearWalls(e);
+    if (e.roofBody) {
+      ctx.physics.removeQuerySolid?.(e.roofBody);
+      ctx.physics.world.destroyBody(e.roofBody);
+      e.roofBody = 0;
+    }
+    e.roofMesh = null;
+  };
   const disposeInterior = (e: Entry) => {
     if (e.interior) { ctx.scene.remove(e.interior.group); e.interior.dispose(); e.interior = null; }
     for (const h of e.intBodies) { ctx.physics.removeQuerySolid?.(h); ctx.physics.world.destroyBody(h); }
     e.intBodies.length = 0;
     e.intBoxes = [];
+    // bring the exterior shell + instanced glass back now that nobody's inside
+    e.detail?.setShellHidden(false);
+    e.detail?.setGlassHidden(false);
   };
 
   // ---- collider tier (cheap, eager) ------------------------------------------
@@ -474,12 +548,20 @@ export async function createCityGenRing(
     const { boxes } = buildingColliders(e as BuildingSpec, false); // SOLID (no door gap)
     for (const c of boxes) e.bodies.push(addBody(c));
     e.wallBoxes = boxes;
+    if (!e.roofBody) {
+      const roof = roofColliderMesh(e);
+      if (roof) {
+        e.roofBody = addMeshBody(roof);
+        e.roofMesh = roof;
+      }
+    }
     if (withStoop) appendStoopNow(e);
   };
   // Player XZ inside the footprint AABB (+margin) at building height → walls must
   // NEVER materialize this frame (they'd spawn around/inside the player = wedge);
   // the coll job defers with "again" until the player clears the lot.
   const lastPlayer = new THREE.Vector3();
+  let speedEma = 0; // smoothed player speed (m/s) — gates detail reach while flying
   const playerInsideBB = (e: Entry, margin: number) =>
     lastPlayer.x > e.bb.minx - margin && lastPlayer.x < e.bb.maxx + margin &&
     lastPlayer.z > e.bb.minz - margin && lastPlayer.z < e.bb.maxz + margin &&
@@ -520,29 +602,32 @@ export async function createCityGenRing(
     ctx.scene.add(b.group);
     e.detail = b; e.fade = 0; e.fadeDir = 1;
     detailSet.add(e);
-    ctx.tiles.suppressBuilding(e.key, e.i); // baked mesh + loose collider fully off
     // R6: DON'T open the door gap — the walls stay SOLID after fade-in too, because
     // doors are now player-operated: they materialize CLOSED (doorPending=true) and
     // only toggleDoor → openDoorway() swaps in the door-gapped walls.
     // Reuse the "coll" solid walls if we came from there; otherwise (from "lod", or
-    // "coll" whose queued job hasn't run) build them SYNCHRONOUSLY — the suppress
-    // above just killed the baked collider, so the walls should land this same
-    // frame (no collider hole). Detail builds are capped at 1-3 per scan, so this
+    // "coll" whose queued job hasn't run) atomically suppress the baked collider
+    // and install the exact walls + roof in the same frame. Detail builds are
+    // capped at 1-3 per scan, so this
     // inline burst is ~30-60 createBox worst case — sub-ms, unlike the 20-per-scan
     // coll tier which stays on the physics lane.
     // EXCEPT anti-wedge: if the player is inside the footprint AABB right now
     // (e.g. a car driving across the lot while the worker build landed), walls
     // materializing this frame would spawn AROUND the car and wedge it — the same
     // failure the coll job's playerInsideBB guard prevents. Defer to a "physics"
-    // job that retries ("again") until the player clears the lot. The baked
-    // collider is already suppressed above, so this leaves a temporary collider
-    // hole while the player is inside — acceptable, strictly better than wedging.
+    // job that retries ("again") until the player clears the lot. Keep the baked
+    // collider live during that wait: dropping it early opened the entire house,
+    // including its roof, exactly while an airborne player was arriving.
     e.state = "detail";
     if (!e.bodies.length) {
-      if (!playerInsideBB(e, 3.5)) buildSolidWallsNow(e, true);
+      if (!playerInsideBB(e, 3.5)) {
+        ctx.tiles.suppressBuilding(e.key, e.i);
+        buildSolidWallsNow(e, true);
+      }
       else schedule("physics", () => {
         if (e.state !== "detail" || e.bodies.length) return; // stale/duplicate (dropped, unloaded, or walls landed elsewhere)
         if (playerInsideBB(e, 3.5)) return "again";          // anti-wedge: retry next frame
+        ctx.tiles.suppressBuilding(e.key, e.i);
         buildSolidWallsNow(e, true);
       });
     } else {
@@ -556,8 +641,8 @@ export async function createCityGenRing(
   let nextBuildId = 1;
   try {
     buildWorker = new Worker(new URL("./buildWorker.ts", import.meta.url), { type: "module" });
-    buildWorker.onmessage = (ev: MessageEvent<{ id: number; meshes: MeshData[] }>) => {
-      const { id, meshes } = ev.data;
+    buildWorker.onmessage = (ev: MessageEvent<{ id: number; meshes: MeshData[]; instances?: ModuleInstance[]; matTable?: string[] }>) => {
+      const { id, meshes, instances, matTable } = ev.data;
       const e = pendingBuilds.get(id);
       pendingBuilds.delete(id);
       if (!e || !e.pendingBuild) return; // cancelled while in flight
@@ -571,7 +656,7 @@ export async function createCityGenRing(
         const sdx = e.cx - lastPlayer.x, sdz = e.cz - lastPlayer.z;
         const staleR = CT.detailRadius + 40;
         if (sdx * sdx + sdz * sdz > staleR * staleR) return;
-        finishDetail(e, assembleBuilding(e as BuildingSpec, meshes, materials));
+        finishDetail(e, assembleBuilding(e as BuildingSpec, { meshes, instances, matTable }, materials, moduleLayer, shellBatch));
       });
     };
     buildWorker.onerror = (err) => {
@@ -596,7 +681,7 @@ export async function createCityGenRing(
     // (openDoorway → appendStoop) both read this same number, so steps ⟺ ramp.
     if (e.frontGround === undefined) e.frontGround = frontGroundFor(e);
     if (!buildWorker) {
-      finishDetail(e, buildBuilding(e as BuildingSpec, materials)); // sync fallback
+      finishDetail(e, buildBuilding(e as BuildingSpec, materials, moduleLayer, shellBatch)); // sync fallback
       return;
     }
     e.pendingBuild = true;
@@ -632,12 +717,14 @@ export async function createCityGenRing(
   const openDoorway = (e: Entry) => {
     if (!e.doorPending) return;
     e.doorPending = false;
-    clearBodies(e);
+    clearWalls(e);
     // same frontGround the mesh build used → the ramp matches the drawn steps
     const fg = e.frontGround ?? frontGroundFor(e);
     const { boxes } = buildingColliders(e as BuildingSpec, true, fg); // door gap + stoop
     for (const c of boxes) e.bodies.push(addBody(c));
     e.wallBoxes = boxes;
+    // The roof is independent of the door aperture and stays live through this
+    // wall-only swap (no mesh rebuild, no one-frame contact churn).
   };
 
   // ---- player-operated doors ---------------------------------------------------
@@ -732,20 +819,16 @@ export async function createCityGenRing(
   // swing is the NEGATIVE delta: rotation.y = baseYaw − swing (verified with edge
   // u=+X → street at −Z: baseYaw 0, swing π/2 points the leaf at +Z = inward).
   const spawnLeaf = (e: Entry, rt: DoorRt) => {
-    const bundle = e.detail!.group as THREE.BundleGroup;
-    let baked: THREE.Mesh | null = null, back: THREE.Mesh | null = null;
-    for (const ch of bundle.children) {
-      if (ch.name === "citygen.doorleaf") baked = ch as THREE.Mesh;
-      else if (ch.name === "citygen.doorback") back = ch as THREE.Mesh;
-    }
-    if (baked) baked.visible = false;
-    if (back) back.visible = false;
-    if (baked || back) bundle.needsUpdate = true;
-    rt.bakedLeaf = baked;
-    rt.bakedBack = back;
-    // SAME shared material instance as the baked leaf (settled at fade≥1) → no new
+    const bundle = e.detail!.group;
+    // Hide the baked leaf/back (batched shell OR bundle fallback handle this) while
+    // the dynamic swinging leaf is up. rt.bakedLeaf flags that they're hidden so a
+    // close restores them; the actual meshes live in the shell/batch, not here.
+    e.detail!.setDoorLeavesVisible(false);
+    rt.bakedLeaf = e.detail! as unknown as THREE.Mesh; // sentinel: leaves are hidden
+    rt.bakedBack = null;
+    // SHARED door material (no per-building baked leaf to copy from now) → no new
     // pipeline, and it must never be disposed with the leaf
-    const leafMat = (baked?.material as THREE.Material | undefined) ?? materials["citygen.doorleaf"] ?? materials["citygen.door"];
+    const leafMat = materials["citygen.doorleaf"] ?? materials["citygen.door"];
     const panelMat = materials["citygen.door.panel"] ?? leafMat;
     const hardwareMat = materials["citygen.door.hardware"] ?? materials["int.frame"] ?? leafMat;
     const leaf = new THREE.Group();
@@ -804,7 +887,7 @@ export async function createCityGenRing(
     if (e.state !== "detail") { rt.needSolid = false; return; } // dropped — dropDetail owns the bodies
     if (playerInGap(rt)) { rt.needSolid = true; return; }
     rt.needSolid = false;
-    clearBodies(e);
+    clearWalls(e);
     buildSolidWallsNow(e, true); // detail tier: steps stay tangible across the swap
     e.doorPending = true;
   };
@@ -813,11 +896,7 @@ export async function createCityGenRing(
   // passable gap while an occupant delays solidification.
   const restoreClosedVisual = (e: Entry, rt: DoorRt) => {
     e.doorPending = true;
-    if (e.detail) {
-      if (rt.bakedLeaf) rt.bakedLeaf.visible = true;
-      if (rt.bakedBack) rt.bakedBack.visible = true;
-      if (rt.bakedLeaf || rt.bakedBack) (e.detail.group as THREE.BundleGroup).needsUpdate = true;
-    }
+    if (e.detail && rt.bakedLeaf) { e.detail.setDoorLeavesVisible(true); rt.bakedLeaf = null; rt.bakedBack = null; }
     disposeLeaf(rt);
   };
   // Leaf reached the frame: request solid walls, then restore the baked closed
@@ -843,8 +922,8 @@ export async function createCityGenRing(
     const rt = e.door;
     if (!rt) return;
     disposeLeaf(rt);
-    if (rt.bakedLeaf) { rt.bakedLeaf.visible = true; rt.bakedLeaf = null; } // group is being disposed; restore for tidiness
-    if (rt.bakedBack) { rt.bakedBack.visible = true; rt.bakedBack = null; }
+    if (rt.bakedLeaf) { e.detail?.setDoorLeavesVisible(true); rt.bakedLeaf = null; rt.bakedBack = null; } // detail being dropped; restore for tidiness
+
     rt.swing = 0; rt.from = 0; rt.to = 0; rt.t = 1;
     rt.animating = false;
     rt.needSolid = false;
@@ -955,11 +1034,16 @@ export async function createCityGenRing(
   const GATE_DISPOSE = 3.0;   // dispose only when clearly outside the footprint
   const ensureInterior = (e: Entry) => {
     if (e.interior || e.state !== "detail" || !e.bodies.length) return;
-    const it = buildInterior(e as BuildingSpec, materials);
+    const it = buildInterior(e as BuildingSpec, materials, e.detail?.windows ?? []);
     ctx.scene.add(it.group);
     for (const c of it.colliders) e.intBodies.push(addBody(c));
     e.intBoxes = it.colliders;
     e.interior = it;
+    // "look out the window": hide THIS building's exterior shell + instanced
+    // glass so the real city shows through the interior shell's real window
+    // holes instead of the painted parallax pane. Neighbours keep their shells.
+    e.detail?.setShellHidden(true);
+    e.detail?.setGlassHidden(true);
   };
   const gateInterior = (e: Entry, p: THREE.Vector3, wasCameraInside: boolean) => {
     if (e.state !== "detail") return; // only faded-in detail buildings have interiors
@@ -1076,6 +1160,13 @@ export async function createCityGenRing(
   return {
     count: total,
     update(playerPos, dt) {
+      // smoothed player speed (m/s) — fast traversal (flying, boost) shrinks the
+      // effective detail radius below: at 400 m the ring would otherwise churn
+      // builds/fades for buildings that blur past (measured fly-leg hitching)
+      if (dt > 1e-4) {
+        const inst = lastPlayer.distanceTo(playerPos) / dt;
+        if (inst < 200) speedEma += (inst - speedEma) * Math.min(1, dt * 2.5);
+      }
       lastPlayer.copy(playerPos); // read by queued coll jobs (anti-wedge) + stale-build check
       if (!warmupStarted) startWarmup(playerPos); // one-shot pipeline warmup rig
       // per-frame: interior gate + detail crossfade + chunk merging
@@ -1105,7 +1196,12 @@ export async function createCityGenRing(
         Math.floor(Math.min(CONFIG.tileLoadRadius, CHUNK_VISUAL_RADIUS) / tile)
       );
       const cellUnload = cellLoad + 1;
-      const detailR = CT.detailRadius, detailR2 = detailR * detailR;
+      // fast traversal shrinks the detail ring: above ~18 m/s taper toward a
+      // 160 m floor (street-level trim is unreadable at flight/boost speed, and
+      // the build/fade churn of a full-radius ring was the fly-leg hitch source)
+      const speedT = Math.min(1, Math.max(0, (speedEma - 18) / 22));
+      const detailR = Math.max(Math.min(160, CT.detailRadius), CT.detailRadius * (1 - speedT) + 160 * speedT);
+      const detailR2 = detailR * detailR;
       const detailExit = detailR + DETAIL_EXIT_MARGIN, detailExit2 = detailExit * detailExit;
       const maxDetail = CT.maxDetail;
       const collR2 = COLLIDER_R * COLLIDER_R, collExit2 = COLLIDER_EXIT * COLLIDER_EXIT;
@@ -1160,18 +1256,67 @@ export async function createCityGenRing(
 
       // Rank holders + candidates by distance; nearest maxDetail earn/keep a slot.
       // Holders past detailExit are ranked but never kept (they must leave).
+      //
+      // ADMISSION HYSTERESIS (the "roof flicker" fix): a building already showing
+      // detail and not fading out sorts as if ~13% nearer, so at the maxDetail /
+      // cost-budget bubble a candidate must be clearly closer to bump it, and a
+      // bumped holder can't re-qualify until the nearer crowd genuinely thins.
+      // Without this dead-band a building whose rank hovered at the cap flip-flopped
+      // admit<->evict every scan and never settled — a permanent alphaHash dither
+      // dissolve on one façade/roof while its neighbours were solid. The bonus also
+      // covers fading-IN holders so an in-flight fade can finish before it's evictable.
+      const STICKY = 0.76; // ≈0.87² on squared distance → ~13% linear dead-band
+      const rankKey = (e: Entry, d2: number) => (e.detail && e.fadeDir >= 0 ? d2 * STICKY : d2);
       const ranked = haveDetail.concat(candidates);
-      ranked.sort((a, b) => a[1] - b[1]);
+      ranked.sort((a, b) => rankKey(a[0], a[1]) - rankKey(b[0], b[1]));
       const keep = new Set<Entry>();
       // Occupancy/reveal safety outranks the nearest-N cap. This prevents a large
       // building (centroid far from its doorway) from fading around its player.
       for (const [e] of haveDetail) if (playerOccupiesDetail(e)) keep.add(e);
+      const costOf = (e: Entry): number => {
+        if (e.cost === undefined) {
+          let per = 0;
+          for (let k = 0; k < e.poly.length; k++) {
+            const [x0, z0] = e.poly[k], [x1, z1] = e.poly[(k + 1) % e.poly.length];
+            per += Math.hypot(x1 - x0, z1 - z0);
+          }
+          e.cost = per * Math.max(1, (e.top - (e.grade ?? e.base)) / 3.5);
+        }
+        return e.cost;
+      };
+      let costLeft = DETAIL_COST_BUDGET;
       for (const [e, d2] of ranked) {
-        if (keep.has(e)) continue;
+        if (keep.has(e)) { costLeft -= costOf(e); continue; }
         if (keep.size >= maxDetail) break;
-        if (d2 > detailExit2) continue;
-        if (d2 > detailR2 && !e.detail) continue; // candidates need the entry band
+        if (d2 > detailExit2) continue; // past the hard exit band — never kept
+        const c = costOf(e);
+        // Grandfather clause (second half of the flicker fix): a building that
+        // ALREADY owns detail and isn't fading out skips the entry-band + cost-
+        // budget gates — those gate NEW admissions only. Re-evicting a holder
+        // because the facade-area budget was momentarily tight was the other
+        // flip-flop source: a big building on the cost bubble rebuilt, fade-
+        // dithered, got cost-evicted, rebuilt… forever. A holder now leaves ONLY
+        // when it falls past detailExit2 (distance) or the sticky rank pushes it
+        // past the count cap.
+        const holder = e.detail && e.fadeDir >= 0;
+        if (!holder) {
+          if (d2 > detailR2) continue; // candidates need the entry band
+          if (c > costLeft) continue; // facade-area budget spent — skip big, keep filling small
+        }
+        costLeft -= c;
         keep.add(e);
+      }
+      // Shadow-caster diet: bundle children are frustumCulled=false, so every
+      // detail building would re-render into every CSM cascade — beyond the far
+      // cascade's readable range that's pure GPU burn (measured: the wall that
+      // capped the detail ring at a few hundred buildings). Gate per building
+      // with hysteresis; each flip is one cheap bundle re-record.
+      const shadowR2 = SHADOW_CAST_R * SHADOW_CAST_R;
+      const shadowExit2 = (SHADOW_CAST_R + 30) * (SHADOW_CAST_R + 30);
+      for (const [e, d2] of haveDetail) {
+        if (!e.detail) continue;
+        if (d2 < shadowR2) e.detail.setCastShadow(true);
+        else if (d2 > shadowExit2) e.detail.setCastShadow(false);
       }
       // Drive fade direction from keep membership (not a separate distance hysteresis
       // that would fight eviction and flicker opacity every scan).
@@ -1211,6 +1356,8 @@ export async function createCityGenRing(
       buildWorker = null;
       pendingBuilds.clear();
       for (const cell of [...loaded.values()]) unloadCell(cell); // → dropDetail → resetDoorRt per entry
+      moduleLayer.dispose();
+      shellBatch.dispose();
       loaded.clear();
       building.length = 0;
       activeDoors.length = 0;
@@ -1239,16 +1386,19 @@ export async function createCityGenRing(
         if (d2 > r2) continue;
         out.push({ i: e.i, d: Math.round(Math.sqrt(d2) * 10) / 10, state: e.state, bodies: e.bodies.length,
           pendingBuild: e.pendingBuild,
-          insideBB: x > e.bb.minx - 1 && x < e.bb.maxx + 1 && z > e.bb.minz - 1 && z < e.bb.maxz + 1 });
+          hasDetail: !!e.detail, fade: Math.round(e.fade * 100) / 100, fadeDir: e.fadeDir,
+          insideBB: x > e.bb.minx - 1 && x < e.bb.maxx + 1 && z > e.bb.minz - 1 && z < e.bb.maxz + 1 } as typeof out[number]);
       }
       out.sort((a, b) => a.d - b.d);
       return out;
     },
-    debugColliders(walls, interiors) {
+    debugColliders(walls, interiors, roofs) {
       walls.length = 0; interiors.length = 0;
+      if (roofs) roofs.length = 0;
       for (const cell of loaded.values()) for (const e of cell.entries) {
         for (const c of e.wallBoxes) walls.push(c);
         for (const c of e.intBoxes) interiors.push(c);
+        if (roofs && e.roofMesh) roofs.push(e.roofMesh);
       }
     },
     debugDoors() {

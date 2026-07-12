@@ -214,6 +214,7 @@ export function buildPerchRock(physics: Physics | null): BuskerPerch {
   const hy = PERCH.top / 2;
   const hz = (PERCH.depth / 2) * 0.9;
   let body: number | null = null;
+  let disposed = false;
   if (physics) {
     body = physics.world.createBox({
       type: BodyType.Static,
@@ -234,8 +235,16 @@ export function buildPerchRock(physics: Physics | null): BuskerPerch {
     group,
     setColliderTransform,
     dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      if (physics && body !== null) {
+        physics.removeQuerySolid(body);
+        physics.world.destroyBody(body);
+        body = null;
+      }
       mesh.geometry.dispose();
       (mesh.material as THREE.Material).dispose();
+      group.clear();
     }
   };
 }

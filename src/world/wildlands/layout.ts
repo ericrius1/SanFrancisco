@@ -26,6 +26,7 @@ import { BOTANICAL_GARDEN_BOUNDS, inBotanicalGarden, type GardenTerrain } from "
 import { BUENA_VISTA_REGION, BUENA_VISTA_SUMMIT_CLEARING, inBuenaVistaPark } from "../buenaVista";
 import { inGoldmanTennisSite, inGoldmanVegetationZone } from "../goldenGateTennis/layout";
 import { inJapaneseTeaGarden } from "../japaneseTeaGarden/layout";
+import { inArcheryRange } from "../../gameplay/archery/layout";
 
 export type WildRegionId = "ggpark" | "presidio" | "marin" | "twinpeaks" | "buenavista";
 
@@ -144,6 +145,9 @@ function inAvoid(x: number, z: number, pad = 0): boolean {
   // Keep the region-wide forest matrix from planting through courts, paths, or
   // the deliberately arranged perimeter canopy.
   if (inGoldmanVegetationZone(x, z)) return true;
+  // GG Park archery field: no canopy over the shooting lanes (wide pad so a
+  // grown crown never leans across an arrow's arc)
+  if (inArcheryRange(x, z, 8 + pad)) return true;
   return inAvoidCorridor(x, z, pad);
 }
 
@@ -486,6 +490,7 @@ export function grassyGround(map: GardenTerrain, x: number, z: number): boolean 
   if (inBotanicalGarden(x, z, 6)) return false; // the garden plants its own flora
   if (inJapaneseTeaGarden(x, z, 4)) return false; // the Tea Garden owns its clipped moss, ponds and paths
   if (inGoldmanTennisSite(x, z, 2)) return false; // hard courts/path aprons own this footprint
+  if (inArcheryRange(x, z, 1)) return false; // archery lanes stay mown flat
   if (map.isWater(x, z)) return false;
   const st = map.surfaceType(x, z);
   if (st === SURFACE_ROAD) return false; // never on the streets

@@ -18,24 +18,39 @@ import type * as THREE from "three/webgpu";
 import { massBuilding, type Massing } from "./core/massing";
 import { mergePanels } from "./core/mesh";
 import { buildingColliders } from "./core/collider";
-import type { BuildingSpec, ColliderBox, MeshData } from "./core/types";
+import type { BuildingSpec, ColliderBox, MeshData, ModuleInstance } from "./core/types";
 import { specFor, SF_THEME } from "./theme/archetypes";
 import { decoratorFor } from "./theme/decorators";
+import { expandModuleInstances } from "./theme/moduleDefs";
 
-export type { BuildingSpec, MeshData, ColliderBox } from "./core/types";
+export type { BuildingSpec, MeshData, ColliderBox, ColliderMesh, ModuleInstance } from "./core/types";
+export { expandModuleInstances, moduleBuckets } from "./theme/moduleDefs";
 export { SF_THEME, ARCHETYPE_SPECS, specFor } from "./theme/archetypes";
 export { createCityGenRing, type CityGenRing } from "./stream/ring";
 
 /** Generate one building's geometry + colliders from its spec (pure; no scene).
  *  The theme's per-archetype façade decorator authors the detail (Victorian
  *  canted bays, etc.); the mass silhouette always equals the real footprint.
- *  `withDoor` cuts a walk-through doorway in the street wall + returns where. */
-export function generate(spec: BuildingSpec, withDoor = false): { mass: Massing; meshes: MeshData[]; colliders: ColliderBox[]; door: import("./core/collider").DoorOpening | null } {
+ *  `withDoor` cuts a walk-through doorway in the street wall + returns where.
+ *
+ *  Windows come back as kit-of-parts INSTANCES (`instances` + `matTable`)
+ *  rather than baked triangles; hosts with the instanced module layer draw
+ *  them there, everyone else calls `expandModuleInstances` (or passes
+ *  `expandModules: true`) to fold them back into `meshes`. */
+export function generate(spec: BuildingSpec, withDoor = false, opts: { expandModules?: boolean } = {}): { mass: Massing; meshes: MeshData[]; instances: ModuleInstance[]; matTable: string[]; colliders: ColliderBox[]; door: import("./core/collider").DoorOpening | null } {
   const arch = specFor(spec.archetype);
   const mass = massBuilding(spec, arch, decoratorFor(spec.archetype));
-  const meshes = mergePanels(mass.panels);
+  let panels = mass.panels;
+  let instances = mass.instances;
+  let matTable = mass.matTable;
+  if (opts.expandModules && instances.length) {
+    panels = panels.concat(expandModuleInstances(instances, matTable));
+    instances = [];
+    matTable = [];
+  }
+  const meshes = mergePanels(panels);
   const { boxes: colliders, door } = buildingColliders(spec, withDoor);
-  return { mass, meshes, colliders, door };
+  return { mass, meshes, instances, matTable, colliders, door };
 }
 
 export interface CityGen {
@@ -48,7 +63,11 @@ export interface CityGenCtx {
   scene: THREE.Object3D;
   physics: { world: unknown };
   map: { groundHeight(x: number, z: number): number; surfaceType?(x: number, z: number): number };
-  tiles: { suppressBuilding(key: string, i: number): void; unsuppressBuilding(key: string, i: number): void };
+  tiles: {
+    suppressBuilding(key: string, i: number): void;
+    unsuppressBuilding(key: string, i: number): void;
+    isBuildingSuppressed?(key: string, i: number): boolean;
+  };
 }
 
 /** Streaming host — STUB (Phases 3–5). Present so main.ts can wire the module

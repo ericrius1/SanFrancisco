@@ -26,7 +26,6 @@ import {
 import type { FolderApi, Pane } from "tweakpane";
 import { LIGHT_SCALE } from "../config";
 import { tunables } from "../core/persist";
-import { applyMaterialPolicy, RenderBand, tagTransparency } from "../render/transparency";
 import type { WorldMap } from "../world/heightmap";
 import { AUDIO_TUNING, FireworksAudio } from "./fireworksAudio";
 
@@ -66,25 +65,6 @@ const K_TRAIL = 2;
 const K_SPARK = 3;
 const K_CRACKLE = 4;
 const K_FLASH = 5;
-
-// Dedicated red / white / blue shells for the parade truck's rocket battery —
-// [core, accent] pairs, HDR (LIGHT_SCALE applied at draw). Saturated so the hue
-// survives additive over-brightening; the blue is deep on purpose (a pale blue
-// just washes to white against the bright core).
-const RWB: [[number, number, number], [number, number, number]][] = [
-  [
-    [1.0, 0.1, 0.08],
-    [1.0, 0.32, 0.16]
-  ], // red → warm tips
-  [
-    [1.0, 1.0, 1.0],
-    [0.82, 0.86, 1.0]
-  ], // white → faint cool tips
-  [
-    [0.12, 0.26, 1.0],
-    [0.2, 0.42, 1.0]
-  ] // blue → stays blue as it dies
-];
 
 const PALETTES: [number, number, number][][] = [
   [
@@ -137,8 +117,6 @@ type Rocket = {
   z: number;
   color: [number, number, number];
   accent: [number, number, number];
-  secondary?: number; // child bursts that bloom out of this one a beat later
-  sizeScale?: number; // >1 = a bigger, harder-throwing shell
 };
 
 // Show tuning ("/" panel, F folder), persisted to localStorage. Defaults live
@@ -200,7 +178,6 @@ export class Fireworks {
   #now = 0;
   #holdT = 0;
   #autoT = 0;
-  #rwbi = 0; // cursor so the truck's shells cycle red→white→blue evenly
 
   // gpu resources
   #pPos = instancedArray(POOL, "vec4"); // xyz pos, w size
@@ -453,12 +430,25 @@ export class Fireworks {
     const soft = saturate(d.oneMinus()).pow(2.4);
     const core = saturate(d.mul(1.6).oneMinus()).pow(5).mul(2.5);
     material.colorNode = vec4(packed.xyz.mul(soft.add(core)), 1);
-    applyMaterialPolicy(material, "additiveWorld");
+    material.opacityNode = soft;
+    material.maskNode = d.lessThan(1);
+    // Add RGB energy without touching the scene alpha channel. The radial
+    // opacity and mask keep the billboard exterior inert; preserving destination
+    // alpha prevents the post stack from resurrecting that quad as a square.
+    material.transparent = true;
+    material.blending = THREE.CustomBlending;
+    material.blendSrc = THREE.OneFactor;
+    material.blendDst = THREE.OneFactor;
+    material.blendEquation = THREE.AddEquation;
+    material.blendSrcAlpha = THREE.ZeroFactor;
+    material.blendDstAlpha = THREE.OneFactor;
+    material.blendEquationAlpha = THREE.AddEquation;
+    material.depthWrite = false;
 
     const sprite = new THREE.Sprite(material);
     sprite.count = 0;
     sprite.frustumCulled = false;
-    tagTransparency(sprite, { profile: "additiveWorld", renderBand: RenderBand.PARTICLES });
+    sprite.renderOrder = 100;
     sprite.visible = false;
     return sprite;
   }
@@ -591,35 +581,12 @@ export class Fireworks {
     }
   }
 
-  /**
-   * Launch one shell from `origin` that bursts at `target` after `flightTime`
-   * seconds — the public seam mounted launchers use to fire their own arcs (the
-   * parade truck's honeycomb rack). `palette` < 0 picks a random palette;
-   * broadcasts to the relay like any local volley so other players see it.
-   */
-  launchShell(origin: THREE.Vector3, target: THREE.Vector3, flightTime: number, palette = -1, size = this.params.sparkSize) {
-    const trailN = Math.round(THREE.MathUtils.clamp(this.params.trail, 0, MAX_TRAIL));
-    const pal = palette < 0
-      ? Math.floor(Math.random() * PALETTES.length)
-      : THREE.MathUtils.euclideanModulo(palette | 0, PALETTES.length);
-    this.#queueLaunch(
-      { x: origin.x, y: origin.y, z: origin.z },
-      { x: target.x, y: target.y, z: target.z },
-      Math.max(0.5, flightTime),
-      pal,
-      trailN,
-      size
-    );
-  }
-
   #burst(r: Rocket) {
     const p = this.params;
-    const scale = r.sizeScale ?? 1;
-    const sparks = Math.round(THREE.MathUtils.clamp(p.sparks * scale, 8, MAX_SPARKS));
-    const crackle = Math.round(THREE.MathUtils.clamp(p.crackle * scale, 0, MAX_CRACKLE));
+    const sparks = Math.round(THREE.MathUtils.clamp(p.sparks, 8, MAX_SPARKS));
+    const crackle = Math.round(THREE.MathUtils.clamp(p.crackle, 0, MAX_CRACKLE));
     const l = this.#listener;
-    // bigger shells hit harder; the audio layer handles distance delay/rolloff
-    this.audio.boom(r.x, r.y, r.z, l.x, l.y, l.z, l.yaw, Math.min(1.6, (0.7 + (sparks / MAX_SPARKS) * 0.6) * scale));
+    this.audio.boom(r.x, r.y, r.z, l.x, l.y, l.z, l.yaw, 0.7 + (sparks / MAX_SPARKS) * 0.6);
     this.#pending.push({
       kind: 2,
       count: 1 + sparks + crackle,
@@ -629,63 +596,14 @@ export class Fireworks {
       vx: 0,
       vy: 0,
       vz: 0,
-      p0: p.burstSpeed * (0.85 + 0.25 * scale), // a fatter shell throws its petals farther
+      p0: p.burstSpeed,
       color: r.color,
       accent: r.accent,
       seed: Math.floor(Math.random() * 2 ** 30),
       aux: sparks,
       aux2: crackle,
-      size: p.sparkSize * scale,
+      size: p.sparkSize,
       ttl: 3.2
-    });
-
-    // shell-of-shells: a beat after the primary opens, a ring of child bursts
-    // blooms out of it — the "and then it explodes AGAIN, into even more" stage.
-    const sec = r.secondary ?? 0;
-    if (sec > 0) {
-      const childScale = Math.max(0.7, scale * 0.7);
-      const spread = p.burstSpeed * scale * 0.5; // ~where the primary petals reach
-      for (let i = 0; i < sec; i++) {
-        const a = (i / sec) * Math.PI * 2 + Math.random() * 0.6;
-        const rad = spread * (0.55 + Math.random() * 0.6);
-        const [color, accent] = this.#nextRWB();
-        this.#rockets.push({
-          at: this.#now + 0.45 + Math.random() * 0.22,
-          x: r.x + Math.cos(a) * rad,
-          y: r.y + (Math.random() - 0.3) * spread * 0.5,
-          z: r.z + Math.sin(a) * rad,
-          color,
-          accent,
-          secondary: 0,
-          sizeScale: childScale
-        });
-      }
-    }
-  }
-
-  /** Next red/white/blue shell, cycled so a barrage stays evenly patriotic. */
-  #nextRWB(): [[number, number, number], [number, number, number]] {
-    return RWB[this.#rwbi++ % RWB.length];
-  }
-
-  /**
-   * Detonate a shell immediately at a world point — the seam a self-flying
-   * mounted rocket calls when it reaches its own apex (the parade truck's bed
-   * battery). `secondary` blooms a delayed ring of child bursts out of the
-   * first; colors are red/white/blue. Not broadcast — the launcher that owns the
-   * flying rockets replays their arcs on other clients.
-   */
-  burstAt(pos: THREE.Vector3, opts: { secondary?: number; sizeScale?: number } = {}) {
-    const [color, accent] = this.#nextRWB();
-    this.#rockets.push({
-      at: this.#now,
-      x: pos.x,
-      y: pos.y,
-      z: pos.z,
-      color,
-      accent,
-      secondary: opts.secondary ?? 0,
-      sizeScale: opts.sizeScale ?? 1.5
     });
   }
 

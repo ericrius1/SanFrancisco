@@ -1,4 +1,5 @@
 import type { PlayerMode } from "../player/types";
+import { INPUT_TUNING } from "../config";
 
 /**
  * Pointer-lock game input. Clicking the canvas captures the mouse; mouselook
@@ -15,6 +16,9 @@ import type { PlayerMode } from "../player/types";
  * fly routes them to ↑/↓, bird routes LB/RB to Q/E twirl —
  * so modes/camera/fireworks never see a second input path. `device` tracks
  * whichever input was touched last; the HUD swaps its control labels off it.
+ *
+ * Right-stick pitch polarity is global via INPUT_TUNING.invertPadLookY (every
+ * mode, including ones added later) — mouse look is never flipped here.
  */
 
 const DEADZONE = 0.16;
@@ -28,7 +32,7 @@ const LOOK_Y = 720;
 const PAD_BUTTONS: Record<number, string> = {
   0: "Space", //     A: jump / ollie / drift / air brake / hover
   1: "KeyE", //      B: enter-exit vehicle
-  3: "KeyR", //      Y: respawn
+  // 3 Y: unbound
   4: "KeyQ", //      LB: drone down / bird twirl left
   // 5 RB: bird twirl right — routed via pad axis (not KeyE, which exits)
   7: "ShiftLeft", // RT: boost / run / tuck
@@ -80,7 +84,6 @@ export class Input {
   #padAxes = new Map<string, number>();
   #padFireHeld = false;
   #triggerRoute: "plane" | "bird" | "drone" | null = null; // plane: ↑/↓ throttle; bird: LB/RB twirl; drone: Q/U vertical
-  #invertLookY = false; // flight/boat modes keep their authored inverted-stick convention
 
   constructor(el: HTMLElement) {
     this.#el = el;
@@ -204,16 +207,10 @@ export class Input {
     this.onDeviceChange(device);
   }
 
-  /** Per-mode pad routing: fly → ↑/↓ throttle, bird → LB/RB twirl, drone → Q/U vertical; vehicle/flight modes retain their authored right-stick pitch. */
+  /** Per-mode pad routing: fly → ↑/↓ throttle, bird → LB/RB twirl, drone → Q/U vertical. */
   setMode(mode: PlayerMode) {
     this.#triggerRoute =
       mode === "plane" ? "plane" : mode === "bird" ? "bird" : mode === "drone" ? "drone" : null;
-    this.#invertLookY =
-      mode === "plane" ||
-      mode === "drone" ||
-      mode === "bird" ||
-      mode === "boat" ||
-      mode === "speedboat";
   }
 
   /**
@@ -291,10 +288,11 @@ export class Input {
     }
     if (lx !== 0 || ly !== 0 || rx !== 0 || ry !== 0 || lt > 0.02 || rt > 0.02 || lb || rb) active = true;
 
-    // right stick = mouselook; works without pointer lock
+    // right stick = mouselook; works without pointer lock. Pitch polarity is
+    // the global INPUT_TUNING toggle — same for walk and every vehicle.
     if (!this.suspended) {
       this.mouseDX += rx * Math.abs(rx) * LOOK_X * dt;
-      const pitchStick = this.#invertLookY ? -ry : ry;
+      const pitchStick = INPUT_TUNING.values.invertPadLookY ? -ry : ry;
       this.mouseDY += pitchStick * Math.abs(pitchStick) * LOOK_Y * dt;
     }
 

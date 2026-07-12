@@ -3,7 +3,6 @@ import { BodyType } from "../core/physics";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { Physics } from "../core/physics";
 import type { WorldMap } from "../world/heightmap";
-import { applyMaterialPolicy, tagTransparency } from "../render/transparency";
 
 /**
  * Floating islands drifting over the city — little grass discs with a dirt
@@ -149,12 +148,13 @@ export class Islands {
     stringGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(totalBalloons * 6), 3));
     this.#strings = new THREE.LineSegments(
       stringGeo,
-      applyMaterialPolicy(
-        new THREE.LineBasicMaterial({ color: 0xf5efdf, opacity: 0.7 }),
-        "alphaSurface"
-      )
+      new THREE.LineBasicMaterial({
+        color: 0xf5efdf,
+        opacity: 0.7,
+        transparent: true,
+        depthWrite: false
+      })
     );
-    tagTransparency(this.#strings, { profile: "alphaSurface" });
     this.#strings.frustumCulled = false;
     scene.add(this.#strings);
   }

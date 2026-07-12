@@ -15,7 +15,6 @@ import {
   vec3
 } from "three/tsl";
 import { LIGHT_SCALE } from "../config";
-import { applyMaterialPolicy, RenderBand, tagTransparency } from "../render/transparency";
 
 type N = any;
 
@@ -107,13 +106,15 @@ class LightRibbon {
     const fade = (vAge.oneMinus() as N).pow(1.5).mul(smoothstep(0.0, 0.02, vAge)) as N;
 
     mat.colorNode = col.mul(band.mul(sparkle)).mul(fade).mul(0.14 * LIGHT_SCALE);
-    applyMaterialPolicy(mat, "additiveWorld");
+    mat.transparent = true;
+    mat.blending = THREE.AdditiveBlending;
+    mat.depthWrite = false;
     mat.side = THREE.DoubleSide;
     mat.fog = false;
 
     this.mesh = new THREE.Mesh(geo, mat);
     this.mesh.frustumCulled = false;
-    tagTransparency(this.mesh, { profile: "additiveWorld", renderBand: RenderBand.WATER_EFFECTS });
+    this.mesh.renderOrder = 12;
     this.mesh.visible = false; // hidden until the strip has ≥2 points to draw
     scene.add(this.mesh);
   }

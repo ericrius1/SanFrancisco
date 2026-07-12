@@ -843,6 +843,13 @@ export class TileStreamer {
     this.onBuildingAlive(key, index, false);
   }
 
+  /** True when an authored landmark/site has permanently claimed this OSM
+   *  footprint. Streaming replacement systems must leave these entries alone:
+   *  reviving one would draw a generated house through the custom landmark. */
+  isBuildingSuppressed(key: string, index: number): boolean {
+    return this.#suppressed.has(`${key}:${index}`);
+  }
+
   /** Hide only the baked MESH (alive flag → 1); the baked collider stays live so
    *  physics still sees the real footprint. Survives tile reloads. */
   suppressBuildingMesh(key: string, index: number) {
@@ -876,6 +883,15 @@ export class TileStreamer {
       tile.slot.tex.needsUpdate = true;
     }
     this.onBuildingAlive(key, index, true);
+  }
+
+  /** True when this building's baked MESH is not drawn (fully suppressed, or
+   *  mesh-only suppressed — the CityGen ring renders a prism/detail mesh in its
+   *  place). Used by raycastWorld to decide whether a loose baked-collider hit
+   *  should be refined onto the actually-rendered citygen surface. */
+  isBuildingMeshHidden(key: string, index: number): boolean {
+    const k = `${key}:${index}`;
+    return this.#meshSuppressed.has(k) || this.#suppressed.has(k);
   }
 
   isAlive(key: string, index: number): boolean {

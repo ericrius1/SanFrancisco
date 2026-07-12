@@ -21,17 +21,17 @@ import {
   mx_noise_float
 } from "three/tsl";
 import { PALACE_LAGOON, palaceLagoonMask, waterHeight, type WorldMap } from "./heightmap";
+import { OCEAN_BEACH_SURF } from "./oceanBeachWaves";
 import { bumpNormal, chopZoneMask, swellBase, swellChop } from "./tslUtil";
 import { EXPOSURE_REBASE, LIGHT_SCALE } from "../config";
-import { applyMaterialPolicy, RenderBand, tagTransparency } from "../render/transparency";
 
 const PALACE_LAGOON_SEGMENTS = 112;
 const PALACE_LAGOON_RINGS = 18;
 const NEAR_PATCH_SIZE = 560;
-// 72 segments = 7.8 m spacing over the patch. The vertex swell is low-frequency
-// (shortest wavelength ~63 m), so this is still ~8× Nyquist — geometrically
-// identical to the old 110 but ~57% fewer verts + per-vertex swell sines.
-const NEAR_PATCH_SEGMENTS = 72;
+// 96 segments = 5.8 m spacing over the patch. The normal bay swell needs less,
+// but Ocean Beach's 8.5 m shoreward face needs the extra samples to keep its
+// crest rounded instead of forming a broad low-poly shelf.
+const NEAR_PATCH_SEGMENTS = 96;
 const NEAR_PATCH_MASK_OUTER = 276;
 const NEAR_PATCH_MASK_INNER = 210;
 const NEAR_PATCH_FADE_START_HEIGHT = 5;
@@ -73,6 +73,9 @@ export class Water {
   #uOrigin = uniform(new THREE.Vector2());
   #uCamXZ = uniform(new THREE.Vector2());
   #uCamY = uniform(0);
+  // Ocean Beach cut-out (centreZ, halfWindowZ): the bay sheet goes transparent
+  // here so the dedicated green surf mesh owns the break with no double-draw.
+  #uSurfStrip = uniform(new THREE.Vector2(OCEAN_BEACH_SURF.centerZ, 200));
 
   constructor(scene: THREE.Scene, map: WorldMap) {
     const { tex, scale } = map.buildFloorTexture();
@@ -89,10 +92,12 @@ export class Water {
       // roughness gradient + emissive spark below — a headless A/B at sunset was
       // pixel-indistinguishable. The env-mapped Fresnel sky reflection still
       // falls out of Standard for free.
-      const mat = applyMaterialPolicy(new THREE.MeshStandardNodeMaterial({
+      const mat = new THREE.MeshStandardNodeMaterial({
         roughness: 0.48,
-        metalness: 0
-      }), "alphaSurface");
+        metalness: 0,
+        transparent: true,
+        depthWrite: false
+      });
 
       const t = this.#uTime;
 
@@ -106,7 +111,11 @@ export class Water {
         // steps off the flat far sheet (nothing physical reads water height
         // that far from the player)
         const rim = smoothstep(276, 200, positionLocal.xz.length());
-        const swell = swellBase(lx, lz, t).add(swellChop(lx, lz, t).mul(chopZoneMask(lx, lz).mul(rim)));
+        // Ocean Beach's breaking swell is now owned by the dedicated high-res
+        // green face mesh (gameplay/surfing/waves.ts); the bay sheet stays flat
+        // under it (see the strip hole below) so the two never double-draw.
+        const swell = swellBase(lx, lz, t)
+          .add(swellChop(lx, lz, t).mul(chopZoneMask(lx, lz).mul(rim)));
         mat.positionNode = positionLocal.add(vec3(0, swell.mul(displace), 0));
       }
 
@@ -173,6 +182,15 @@ export class Water {
       const foam = foamBand.mul(smoothstep(0.45, 0.75, foamNoise.mul(0.75).add(lap.mul(0.35)))).mul(0.85)
         .add(zoneF.mul(smoothstep(0.6, 0.86, foamNoise)).mul(0.34))
         .toVar();
+      const foamTotal = clamp(foam, 0, 1).toVar();
+      // Ocean Beach cut-out: fully transparent across the break strip within the
+      // player-following window so the green surf face mesh shows through cleanly
+      // (reversed smoothstep edges silently return 0 — keep edge0<edge1, invert).
+      const OB = OCEAN_BEACH_SURF;
+      const holeX = smoothstep(OB.minX - 6, OB.minX + 46, pxz.x)
+        .mul(smoothstep(OB.maxX - 46, OB.maxX + 6, pxz.x).oneMinus());
+      const holeZ = smoothstep(this.#uSurfStrip.y.sub(80), this.#uSurfStrip.y, pxz.y.sub(this.#uSurfStrip.x).abs()).oneMinus();
+      const surfHole = holeX.mul(holeZ).toVar();
 
       // ripple bump: stylized directional wavelets (sum of sines) replace the old
       // 2×3-octave FBM — a fraction of the per-pixel ALU on the biggest surface on
@@ -192,34 +210,36 @@ export class Water {
       // sun sparkle: occasional near-field flecks only; the env-mapped Fresnel
       // reflection carries the broad sunset sheen, so this stays subtle on top.
       const sparkNoise = mx_noise_float(vec3(p.mul(2.2), t.mul(0.8)));
-      const spark = smoothstep(0.78, 0.97, sparkNoise).mul(detail.mul(detail)).mul(foam.oneMinus());
+      const spark = smoothstep(0.78, 0.97, sparkNoise).mul(detail.mul(detail)).mul(foamTotal.oneMinus());
       mat.emissiveNode = vec3(1.0, 0.95, 0.82).mul(spark.mul(0.035 * LIGHT_SCALE));
 
-      mat.colorNode = mix(waterCol, color(0xf3faf6), foam);
+      mat.colorNode = mix(waterCol, color(0xf3faf6), foamTotal);
       // roughness rises as the ripple bump fades (Toksvig-style): distant water
       // spreads the sun path into a soft band instead of a mirror streak
       const baseRough = mix(float(0.76), float(0.42), detail);
-      mat.roughnessNode = mix(baseRough, float(0.78), foam);
+      mat.roughnessNode = mix(baseRough, float(0.78), foamTotal);
 
       // Body reads (near-)opaque so the Caribbean colour shows at full saturation
       // instead of the sky bleeding through and greying it out: shallow 0.82,
       // deep 1.0. Only the thin edges stay soft — the player-patch feather
       // (waterVisibility) and the land cutout (dry) — so no seams, no z-fight.
-      const alpha = clamp(mix(0.82, 1.0, d2).add(foam.mul(0.25)), 0, 1);
-      mat.opacityNode = alpha.mul(waterVisibility).mul(dry.oneMinus());
+      const alpha = clamp(mix(0.82, 1.0, d2).add(foamTotal.mul(0.25)), 0, 1);
+      mat.opacityNode = alpha.mul(waterVisibility).mul(dry.oneMinus()).mul(surfHole.oneMinus());
 
       mat.envMapIntensity = 0.25;
       return mat;
     };
 
     const makePalaceLagoonMaterial = () => {
-      const mat = applyMaterialPolicy(new THREE.MeshPhysicalNodeMaterial({
-        roughness: 0.5,
+      const mat = new THREE.MeshPhysicalNodeMaterial({
+        roughness: 0.34,
         metalness: 0,
         ior: 1.33,
-        specularIntensity: 0.22,
-        side: THREE.DoubleSide
-      }), "alphaSurface");
+        specularIntensity: 0.62,
+        side: THREE.DoubleSide,
+        transparent: true,
+        depthWrite: false
+      });
 
       const t = this.#uTime;
       const edgeUv = uv().sub(vec2(0.5, 0.5)).mul(2).toVar();
@@ -227,7 +247,9 @@ export class Water {
       const edgeFade = smoothstep(0.64, 0.96, radial).oneMinus().toVar();
       const shore = smoothstep(0.42, 0.96, radial).toVar();
 
-      const swell = swellBase(positionLocal.x, positionLocal.z, t).mul(0.42);
+      // The sheltered lagoon should read as a reflecting pool, not a small
+      // patch of bay swell. Keep just enough displacement to catch the sky.
+      const swell = swellBase(positionLocal.x, positionLocal.z, t).mul(0.18);
       mat.positionNode = positionLocal.add(vec3(0, swell, 0));
 
       const p = positionWorld.xz;
@@ -246,7 +268,7 @@ export class Water {
       const foam = shore
         .mul(smoothstep(0.56, 0.82, foamNoise.mul(0.62).add(lap.mul(0.38))))
         .mul(edgeFade)
-        .mul(0.62)
+        .mul(0.2)
         .toVar();
 
       // wavelet ripple (see bay) + a little FBM(2) break-up — the lagoon is small
@@ -257,16 +279,19 @@ export class Water {
         .mul(edgeFade);
       mat.normalNode = bumpNormal(rippleH);
 
-      const lagoonCol = mix(color(0x14708a), color(0x79dcc9), smoothstep(0.05, 0.9, radial));
-      mat.colorNode = mix(lagoonCol, color(0xf1faf0), foam);
-      mat.roughnessNode = mix(float(0.42), float(0.72), shore);
-      mat.opacityNode = clamp(edgeFade.mul(0.99).add(foam.mul(0.12)), 0, 1).mul(shoreCut);
+      // Palace palette: deep olive-teal in the reflection lane, mossy shallows
+      // at the planted edge. The previous aqua made the pond read like the bay
+      // and washed the warm stone out of its reflection.
+      const lagoonCol = mix(color(0x071d18), color(0x3e5c3e), smoothstep(0.08, 0.94, radial));
+      mat.colorNode = mix(lagoonCol, color(0xe8e1cf), foam);
+      mat.roughnessNode = mix(float(0.24), float(0.58), shore);
+      mat.opacityNode = clamp(edgeFade.mul(0.975).add(foam.mul(0.08)), 0, 1).mul(shoreCut);
 
       const sparkle = smoothstep(0.8, 0.98, mx_noise_float(vec3(p.mul(1.8), t.mul(0.7))))
         .mul(edgeFade)
         .mul(foam.oneMinus());
-      mat.emissiveNode = vec3(0.75, 0.92, 0.86).mul(sparkle.mul(0.018 * LIGHT_SCALE));
-      mat.envMapIntensity = 0.32;
+      mat.emissiveNode = vec3(1.0, 0.78, 0.48).mul(sparkle.mul(0.048 * LIGHT_SCALE));
+      mat.envMapIntensity = 0.38;
       return mat;
     };
 
@@ -275,14 +300,14 @@ export class Water {
     farGeo.rotateX(-Math.PI / 2);
     this.far = new THREE.Mesh(farGeo, makeMaterial(0, true));
     this.far.position.set(g.minX + (g.width * g.cellSize) / 2, 0, g.minZ + (g.height * g.cellSize) / 2);
-    tagTransparency(this.far, { profile: "alphaSurface", renderBand: RenderBand.WATER_SURFACE });
+    this.far.renderOrder = 10;
     this.far.frustumCulled = false;
 
     // near patch: displaced vertices for a gentle bob around the player
     const nearGeo = new THREE.PlaneGeometry(NEAR_PATCH_SIZE, NEAR_PATCH_SIZE, NEAR_PATCH_SEGMENTS, NEAR_PATCH_SEGMENTS);
     nearGeo.rotateX(-Math.PI / 2);
     this.near = new THREE.Mesh(nearGeo, makeMaterial(1, false));
-    tagTransparency(this.near, { profile: "alphaSurface", renderBand: RenderBand.WATER_NEAR });
+    this.near.renderOrder = 11;
     this.near.position.y = 0.02;
     this.near.frustumCulled = false;
 
@@ -340,7 +365,7 @@ export class Water {
 
     this.palaceLagoon = new THREE.Mesh(createPalaceLagoonGeometry(map), makePalaceLagoonMaterial());
     this.palaceLagoon.name = "palace_fine_arts_lagoon";
-    tagTransparency(this.palaceLagoon, { profile: "alphaSurface", renderBand: RenderBand.WATER_OVERLAY });
+    this.palaceLagoon.renderOrder = 10.5;
 
     scene.add(this.far, this.near, this.palaceLagoon, this.underside);
   }
@@ -363,6 +388,8 @@ export class Water {
     this.near.position.z = Math.round(playerPos.z / snap) * snap;
     this.#uOrigin.value.set(this.near.position.x, this.near.position.z);
     this.#uNearRect.value.set(this.near.position.x, this.near.position.z, NEAR_PATCH_MASK_OUTER);
+    // track the surf-mesh window down the beach so the cut-out follows the player
+    this.#uSurfStrip.value.x = THREE.MathUtils.clamp(playerPos.z, OCEAN_BEACH_SURF.minZ, OCEAN_BEACH_SURF.maxZ);
 
     const clearance = playerPos.y - waterHeight(playerPos.x, playerPos.z, t);
     this.#uNearVisibility.value = THREE.MathUtils.clamp(

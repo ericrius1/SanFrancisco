@@ -24,9 +24,15 @@ export type NatureVoiceKind =
   | "frog"
   | "cricketChirp"
   | "bee"
-  | "foghorn"
-  | "dogYip"
-  | "dogWoof"
+  | "foghorn";
+
+/** Dog voices are deliberately separate from NatureVoiceKind so a bark can
+ * never leak into a region's weighted wildlife palette. */
+export type DogVoiceKind =
+  | "goldenBark"
+  | "collieBark"
+  | "terrierBark"
+  | "corgiBark"
   | "dogHuff";
 
 export type VoiceCtx = {
@@ -146,10 +152,12 @@ function band(
   g.gain.exponentialRampToValueAtTime(EPS, t + dur);
   src.connect(bp).connect(g).connect(out);
 
+  let lfo: OscillatorNode | null = null;
+  let lg: GainNode | null = null;
   if (o.vibHz) {
-    const lfo = ctx.createOscillator();
+    lfo = ctx.createOscillator();
     lfo.frequency.value = o.vibHz;
-    const lg = ctx.createGain();
+    lg = ctx.createGain();
     lg.gain.value = o.vibDepth ?? o.f0 * 0.06;
     lfo.connect(lg).connect(bp.frequency);
     lfo.start(t);
@@ -157,6 +165,13 @@ function band(
   }
   src.start(t, v.rng() * 0.5);
   src.stop(t + dur + 0.03);
+  src.onended = () => {
+    src.disconnect();
+    bp.disconnect();
+    g.disconnect();
+    lfo?.disconnect();
+    lg?.disconnect();
+  };
   return t + dur;
 }
 
@@ -429,41 +444,196 @@ const foghorn: VoiceFn = (v) => {
   return dur;
 };
 
-// Small-dog yip: a bright short note with a fast pitch drop plus a bandpass
-// rasp, only very rarely doubled. NOT in any region palette — barks come from the
-// actual park dogs (audio/dogPark.ts), never from random ambience.
-const dogYip: VoiceFn = (v) => {
-  const n = v.rng() < 0.1 ? 2 : 1;
-  let t = v.t0;
-  let end = t;
-  for (let i = 0; i < n; i++) {
-    const dur = rand(v.rng, 0.06, 0.1);
-    const f0 = rand(v.rng, 620, 900);
-    note(v, { t, dur, f0, f1: f0 * rand(v.rng, 0.55, 0.68), type: "triangle", gain: 0.21, attack: 0.006 });
-    band(v, { t, dur: dur * 0.85, f0: f0 * 2.2, f1: f0 * 1.3, q: 1.8, gain: 0.13, attack: 0.005 });
-    end = t + dur;
-    t += rand(v.rng, 0.12, 0.18);
-  }
-  return end - v.t0;
+type BarkProfile = {
+  fundamental: readonly [number, number];
+  duration: readonly [number, number];
+  pitchDrop: readonly [number, number];
+  bodyCutoff: readonly [number, number];
+  formant: readonly [number, number];
+  rasp: readonly [number, number];
+  voicedMix: number;
+  formantMix: number;
+  raspMix: number;
+  output: number;
+  doubleChance: number;
+  tripleChance: number;
+  gap: readonly [number, number];
 };
 
-// Mid-dog woof: lower and breathier chest bark, usually a single "ruff".
-// Palette-excluded like dogYip — emitted only by the dog-park layer.
-const dogWoof: VoiceFn = (v) => {
-  const n = v.rng() < 0.14 ? 2 : 1;
-  let t = v.t0;
-  let end = t;
-  for (let i = 0; i < n; i++) {
-    const dur = rand(v.rng, 0.09, 0.13);
-    const f0 = rand(v.rng, 250, 400);
-    note(v, { t, dur, f0: f0 * 1.15, f1: f0 * 0.72, type: "triangle", gain: 0.25, attack: 0.008 });
-    // breathy body: a broad low noise band riding the same envelope
-    band(v, { t, dur, f0: f0 * 3.2, f1: f0 * 2.0, q: 1.1, gain: 0.18, attack: 0.008 });
-    end = t + dur;
-    t += rand(v.rng, 0.12, 0.18);
-  }
-  return end - v.t0;
-};
+/**
+ * A bark is a short glottal pitch-drop plus two bits of anatomy: a resonant
+ * muzzle/chest formant and a breathy noise burst. Breed profiles move all three
+ * together instead of merely pitch-shifting one generic clip. Every call also
+ * varies pitch, duration, cadence, formant and rasp, so even repeated barks by
+ * the same dog do not produce an audible sample-gun pattern.
+ */
+function dogBark(profile: BarkProfile): VoiceFn {
+  return (v) => {
+    const phraseRoll = v.rng();
+    const count =
+      phraseRoll < profile.tripleChance
+        ? 3
+        : phraseRoll < profile.tripleChance + profile.doubleChance
+          ? 2
+          : 1;
+    let t = v.t0;
+    let end = t;
+    for (let i = 0; i < count; i++) {
+      const dur = rand(v.rng, profile.duration[0], profile.duration[1]);
+      const f0 = rand(v.rng, profile.fundamental[0], profile.fundamental[1]);
+      const drop = rand(v.rng, profile.pitchDrop[0], profile.pitchDrop[1]);
+      const strength = profile.output * (1 - i * 0.08) * rand(v.rng, 0.88, 1.08);
+      const ctx = v.ctx;
+      const envelope = ctx.createGain();
+      const peak = Math.max(EPS * 2, v.level * strength);
+      envelope.gain.setValueAtTime(EPS, t);
+      envelope.gain.exponentialRampToValueAtTime(peak, t + Math.min(0.009, dur * 0.16));
+      envelope.gain.exponentialRampToValueAtTime(peak * 0.42, t + dur * 0.56);
+      envelope.gain.exponentialRampToValueAtTime(EPS, t + dur);
+      envelope.connect(v.out);
+
+      // Glottal body: a slightly detuned saw + triangle pair falling together.
+      const body = ctx.createBiquadFilter();
+      body.type = "lowpass";
+      body.frequency.setValueAtTime(
+        rand(v.rng, profile.bodyCutoff[0], profile.bodyCutoff[1]),
+        t
+      );
+      body.Q.value = 0.72;
+      const bodyGain = ctx.createGain();
+      bodyGain.gain.value = profile.voicedMix;
+      body.connect(bodyGain).connect(envelope);
+      const fundamental = ctx.createOscillator();
+      fundamental.type = "sawtooth";
+      fundamental.frequency.setValueAtTime(f0 * rand(v.rng, 1.05, 1.18), t);
+      fundamental.frequency.exponentialRampToValueAtTime(f0 * drop, t + dur);
+      fundamental.detune.value = rand(v.rng, -18, 18);
+      fundamental.connect(body);
+      const overtone = ctx.createOscillator();
+      overtone.type = "triangle";
+      overtone.frequency.setValueAtTime(f0 * rand(v.rng, 1.92, 2.08), t);
+      overtone.frequency.exponentialRampToValueAtTime(f0 * drop * 1.72, t + dur);
+      overtone.detune.value = rand(v.rng, -28, 28);
+      const overtoneGain = ctx.createGain();
+      overtoneGain.gain.value = 0.24;
+      overtone.connect(overtoneGain).connect(body);
+
+      // Chest/muzzle resonance: the breed's characteristic "aw/arf/yap" vowel.
+      const formant = ctx.createBiquadFilter();
+      formant.type = "bandpass";
+      formant.frequency.setValueAtTime(rand(v.rng, profile.formant[0], profile.formant[1]), t);
+      formant.Q.value = rand(v.rng, 1.1, 1.8);
+      const formantGain = ctx.createGain();
+      formantGain.gain.value = profile.formantMix;
+      fundamental.connect(formant).connect(formantGain).connect(envelope);
+
+      // Air/teeth transient: shared noise, individually filtered for every bark.
+      const noise = ctx.createBufferSource();
+      noise.buffer = v.noise;
+      noise.loop = true;
+      const rasp = ctx.createBiquadFilter();
+      rasp.type = "bandpass";
+      const raspStart = rand(v.rng, profile.rasp[0], profile.rasp[1]);
+      rasp.frequency.setValueAtTime(raspStart, t);
+      rasp.frequency.exponentialRampToValueAtTime(Math.max(120, raspStart * rand(v.rng, 0.58, 0.78)), t + dur);
+      rasp.Q.value = rand(v.rng, 0.7, 1.25);
+      const raspGain = ctx.createGain();
+      raspGain.gain.value = profile.raspMix;
+      noise.connect(rasp).connect(raspGain).connect(envelope);
+
+      fundamental.start(t);
+      overtone.start(t);
+      noise.start(t, v.rng() * 0.6);
+      fundamental.stop(t + dur + 0.025);
+      overtone.stop(t + dur + 0.025);
+      noise.stop(t + dur + 0.025);
+      fundamental.onended = () => {
+        fundamental.disconnect();
+        overtone.disconnect();
+        overtoneGain.disconnect();
+        noise.disconnect();
+        rasp.disconnect();
+        raspGain.disconnect();
+        formant.disconnect();
+        formantGain.disconnect();
+        body.disconnect();
+        bodyGain.disconnect();
+        envelope.disconnect();
+      };
+      end = t + dur;
+      t = end + rand(v.rng, profile.gap[0], profile.gap[1]);
+    }
+    return end - v.t0;
+  };
+}
+
+// Warm, chesty and mostly single: the largest dog carries the lowest formant.
+const goldenBark = dogBark({
+  fundamental: [145, 215],
+  duration: [0.15, 0.22],
+  pitchDrop: [0.52, 0.66],
+  bodyCutoff: [920, 1320],
+  formant: [430, 680],
+  rasp: [720, 1250],
+  voicedMix: 0.74,
+  formantMix: 0.38,
+  raspMix: 0.42,
+  output: 0.92,
+  doubleChance: 0.14,
+  tripleChance: 0.01,
+  gap: [0.14, 0.23]
+});
+
+// Alert, crisp and more likely to answer twice than the retriever.
+const collieBark = dogBark({
+  fundamental: [330, 450],
+  duration: [0.075, 0.115],
+  pitchDrop: [0.65, 0.8],
+  bodyCutoff: [1750, 2500],
+  formant: [1050, 1600],
+  rasp: [1600, 2600],
+  voicedMix: 0.58,
+  formantMix: 0.28,
+  raspMix: 0.56,
+  output: 0.74,
+  doubleChance: 0.36,
+  tripleChance: 0.03,
+  gap: [0.085, 0.14]
+});
+
+// Scrappy high yaps, with the widest phrase-count variation but lower output.
+const terrierBark = dogBark({
+  fundamental: [520, 760],
+  duration: [0.048, 0.082],
+  pitchDrop: [0.68, 0.84],
+  bodyCutoff: [2500, 3800],
+  formant: [1750, 2700],
+  rasp: [2400, 3900],
+  voicedMix: 0.52,
+  formantMix: 0.26,
+  raspMix: 0.62,
+  output: 0.61,
+  doubleChance: 0.4,
+  tripleChance: 0.12,
+  gap: [0.065, 0.115]
+});
+
+// Short-legged but not tiny-sounding: a compact, throaty low-mid "arf".
+const corgiBark = dogBark({
+  fundamental: [235, 315],
+  duration: [0.11, 0.16],
+  pitchDrop: [0.48, 0.64],
+  bodyCutoff: [1200, 1800],
+  formant: [700, 1100],
+  rasp: [1000, 1800],
+  voicedMix: 0.7,
+  formantMix: 0.38,
+  raspMix: 0.46,
+  output: 0.76,
+  doubleChance: 0.22,
+  tripleChance: 0.04,
+  gap: [0.11, 0.18]
+});
 
 // Soft close-range huff/snuffle for catches and completed returns. It adds a
 // second, less attention-grabbing dog sound so every fetch does not demand a
@@ -494,6 +664,31 @@ const dogHuff: VoiceFn = (v) => {
   return dur;
 };
 
+/** Map authored breed names to stable voices; scale keeps future dog styles
+ * useful until they receive their own profile. */
+export function dogVoiceForStyle(name: string, scale: number): Exclude<DogVoiceKind, "dogHuff"> {
+  switch (name) {
+    case "golden":
+      return "goldenBark";
+    case "border_collie":
+      return "collieBark";
+    case "terrier":
+      return "terrierBark";
+    case "corgi":
+      return "corgiBark";
+    default:
+      return scale < 0.8 ? "terrierBark" : scale < 0.95 ? "corgiBark" : scale > 1.08 ? "goldenBark" : "collieBark";
+  }
+}
+
+export const DOG_VOICE_LIB: Record<DogVoiceKind, VoiceFn> = {
+  goldenBark,
+  collieBark,
+  terrierBark,
+  corgiBark,
+  dogHuff
+};
+
 export const VOICE_LIB: Record<NatureVoiceKind, VoiceFn> = {
   songbird,
   sparrow,
@@ -508,10 +703,7 @@ export const VOICE_LIB: Record<NatureVoiceKind, VoiceFn> = {
   frog,
   cricketChirp,
   bee,
-  foghorn,
-  dogYip,
-  dogWoof,
-  dogHuff
+  foghorn
 };
 
 /** Voices that make sense as a call-and-response "answer" from a second bird. */

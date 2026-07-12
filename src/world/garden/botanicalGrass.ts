@@ -19,10 +19,9 @@ import {
   createGrassMaterial,
   createGrassMesh,
   writeGrassMesh,
-  GRASS_DENSITY_FOCUS,
-  WIND_DIR,
   type GrassEntry
 } from "../groundcover/bladeGrass";
+import { fitGroundY } from "../groundcover/grounding";
 import { GRASS_TUNING } from "./grassTuning";
 
 export type BotanicalGrassStats = {
@@ -81,10 +80,6 @@ function smoothstep(a: number, b: number, t: number): number {
   return u * u * (3 - 2 * u);
 }
 
-function groundAt(map: GardenTerrain, x: number, z: number): number {
-  return gardenSurfaceHeight(map, x, z);
-}
-
 function createTreeInfluence(trees: GardenTree[]) {
   const buckets = new Map<string, GardenTree[]>();
   const key = (ix: number, iz: number) => `${ix},${iz}`;
@@ -136,6 +131,7 @@ function sampleGrassEntries(map: GardenTerrain, trees: GardenTree[], options: Gr
   const gx1 = Math.ceil((maxX - b.minX) / spacing);
   const gz0 = Math.floor((minZ - b.minZ) / spacing);
   const gz1 = Math.ceil((maxZ - b.minZ) / spacing);
+  const sampleGround = (x: number, z: number) => gardenSurfaceHeight(map, x, z);
 
   if (minX > maxX || minZ > maxZ) return { low, tall };
 
@@ -184,16 +180,8 @@ function sampleGrassEntries(map: GardenTerrain, trees: GardenTree[], options: Gr
 
       const lowNoise = valueNoise(px, pz, 17, 907);
       const foot = 0.45 + lowNoise * 0.45;
-      const h0 = groundAt(map, px, pz);
-      const h1 = groundAt(map, px - foot, pz);
-      const h2 = groundAt(map, px + foot, pz);
-      const h3 = groundAt(map, px, pz - foot);
-      const h4 = groundAt(map, px, pz + foot);
-      const hMin = Math.min(h0, h1, h2, h3, h4);
-      // NaN from a bad surface sample must never bake into a matrix — NaN
-      // survives min/max and the slope test below (NaN > x is false).
-      if (!Number.isFinite(hMin)) continue;
-      if (Math.max(h0, h1, h2, h3, h4) - hMin > values.slopeCull) continue;
+      const y = fitGroundY(sampleGround, px, pz, foot, values.slopeCull, -values.groundSink);
+      if (y === null) continue;
 
       const nearPath = 1 - smoothstep(values.pathMargin, values.pathMargin + values.pathFeather, pathDistance);
       const dry = Math.min(1, nearPath * 0.42 + (1 - patch) * 0.18);
@@ -209,19 +197,16 @@ function sampleGrassEntries(map: GardenTerrain, trees: GardenTree[], options: Gr
       const height = heightBase * values.heightScale * (treeShade > 0 ? 0.82 : 1);
       const spread = (isTall ? 1.05 : 0.82) * (0.82 + hash(gx, gz, 43 + salt) * 0.36);
       const yaw = hash(gx, gz, 47 + salt) * Math.PI * 2;
-      const cosY = Math.cos(yaw);
-      const sinY = Math.sin(yaw);
       const windAmp = (0.74 + height * 0.34) * (isTall ? 1.08 : 1);
       const entry = {
         x: px,
-        y: hMin - values.groundSink,
+        y,
         z: pz,
         yaw,
         height,
         spread,
         color: dummyColor.clone(),
-        windX: ((cosY * WIND_DIR.x - sinY * WIND_DIR.z) / spread) * windAmp,
-        windZ: ((sinY * WIND_DIR.x + cosY * WIND_DIR.z) / spread) * windAmp
+        windAmp
       };
       if (isTall) tall.push(entry);
       else low.push(entry);
@@ -237,7 +222,8 @@ export class BotanicalGrassController extends THREE.Group {
 
   #map: GardenTerrain;
   #trees: GardenTree[];
-  #material = createGrassMaterial();
+  #materialState = createGrassMaterial();
+  #material = this.#materialState.material;
   // Both tiers use the lean 4/5-blade clusters — the old 5/6 near ring spent
   // ~25% more vertex work on overlapping silhouettes that read identically at
   // eye level, and meadow probes were triangle-bound (~4M garden tris).
@@ -318,7 +304,7 @@ export class BotanicalGrassController extends THREE.Group {
   updateFocus(focus: GrassFocus, force = false) {
     const values = GRASS_TUNING.values;
     this.#focus = { x: focus.x, z: focus.z };
-    GRASS_DENSITY_FOCUS.value.set(focus.x, focus.z);
+    this.#materialState.focus.set(focus.x, focus.z);
 
     // smoothed focus speed (m/s) from successive calls; long gaps reset
     {

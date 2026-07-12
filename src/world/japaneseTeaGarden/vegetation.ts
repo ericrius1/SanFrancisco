@@ -210,8 +210,7 @@ function collectGrass(map: TeaGardenTerrain): GrassEntry[] {
         height: 0.18 + hash(gx, gz, 239) * 0.2,
         spread: 0.54 + hash(gx, gz, 241) * 0.34,
         color: tint,
-        windX: (hash(gx, gz, 251) - 0.5) * 0.34,
-        windZ: (hash(gx, gz, 257) - 0.5) * 0.34
+        windAmp: 0.1 + hash(gx, gz, 251) * 0.24
       });
     }
   }
@@ -223,7 +222,12 @@ function createGrass(map: TeaGardenTerrain): { group: THREE.Group; count: number
   group.name = "japanese_tea_garden_grass";
   const entries = collectGrass(map);
   const geometry = createBladeClusterGeometry({ blades: 5, segments: 3, width: 0.05, radius: 0.2, curvature: 0.24 });
-  const mesh = createGrassMesh("tea_garden_moss_grass", entries.length, geometry, createGrassMaterial());
+  const materialState = createGrassMaterial();
+  materialState.focus.set(
+    (TEA_GARDEN_BOUNDS.minX + TEA_GARDEN_BOUNDS.maxX) * 0.5,
+    (TEA_GARDEN_BOUNDS.minZ + TEA_GARDEN_BOUNDS.maxZ) * 0.5
+  );
+  const mesh = createGrassMesh("tea_garden_moss_grass", entries.length, geometry, materialState.material);
   writeGrassMesh(mesh, entries, 420);
   group.add(mesh);
   return { group, count: entries.length };

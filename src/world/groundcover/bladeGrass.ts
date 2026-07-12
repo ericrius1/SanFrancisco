@@ -21,7 +21,6 @@ import {
   Fn,
   Loop,
   mix,
-  modelWorldMatrix,
   normalize,
   positionGeometry,
   positionLocal,
@@ -30,12 +29,9 @@ import {
   vec3,
   vec4
 } from "three/tsl";
-import { groundSway } from "./sway";
+import { groundSway, WIND_DIR } from "./sway";
 import { DISPLACERS, MAX_DISPLACERS } from "./displacers";
-
-// The prevailing wind direction now lives in the shared sway module; re-exported
-// here so existing importers (grassField) keep their path.
-export { WIND_DIR } from "./sway";
+import { fadeAroundInstanceAnchor, instanceAnchorWorld, worldOffsetToModelLocal } from "./instanceDeform";
 
 export type GrassEntry = {
   x: number;
@@ -45,13 +41,16 @@ export type GrassEntry = {
   height: number;
   spread: number;
   color: THREE.Color;
-  windX: number;
-  windZ: number;
+  windAmp: number;
 };
 
-const GRASS_FADE_BAND = uniform(0.16);
-/** Set to the current view focus (x,z); blades fade out toward the field edge. */
-export const GRASS_DENSITY_FOCUS = uniform(new THREE.Vector2(1e6, 1e6));
+const GRASS_FADE_BAND = 0.16;
+
+export type GrassMaterialState = {
+  material: THREE.Material;
+  /** World-space XZ focus used only by this grass field's LOD fade. */
+  focus: THREE.Vector2;
+};
 
 // TSL's d.ts narrows chained vector nodes too aggressively for vendored JS uniforms.
 type TslNode = any;
@@ -131,16 +130,19 @@ export function createBladeClusterGeometry({
 
 /** The shared grass material: SSS blades, wind sway (shared envelope), and
  *  trample against the shared displacer field. Instances carry aGrassColor
- *  (rgb + per-mesh fade radius), aGrassWind (leanX,leanZ, anchorX,anchorZ), and
- *  aGrassInfo (cosYaw,sinYaw,spread,height). */
-export function createGrassMaterial(): THREE.Material {
+ *  (rgb + per-mesh fade radius) and aGrassData (anchorXYZ + wind amplitude).
+ *  positionNode runs AFTER instancing in Three r185, so every deformation below
+ *  is explicitly post-instance mesh-local or converted from world space. */
+export function createGrassMaterial(): GrassMaterialState {
   const mat = new THREE.MeshSSSNodeMaterial();
   mat.side = THREE.DoubleSide;
   mat.roughness = 0.94;
   mat.metalness = 0;
 
+  const focus = new THREE.Vector2(1e6, 1e6);
+  const focusU = uniform(focus);
   const tint = attribute("aGrassColor", "vec4") as TslNode;
-  const wind = attribute("aGrassWind", "vec4") as TslNode;
+  const data = attribute("aGrassData", "vec4") as TslNode; // anchorXYZ, windAmp
   const bladeT = positionGeometry.y.clamp(0, 1);
   const rootAo = bladeT.mul(0.42).add(0.58);
   const grassRoot = color(0x1f4f1c);
@@ -148,20 +150,20 @@ export function createGrassMaterial(): THREE.Material {
   mat.colorNode = mix(grassRoot, grassTip, bladeT.pow(0.82)).mul(tint.xyz).mul(rootAo);
 
   const fadeRadius = tint.w.max(1);
-  const dist = wind.zw.sub(GRASS_DENSITY_FOCUS).length();
+  const anchorLocal = data.xyz;
+  const anchorWorld = instanceAnchorWorld(anchorLocal);
+  const dist = anchorWorld.xz.sub(focusU).length();
   const fade = fadeRadius.sub(dist).div(fadeRadius.mul(GRASS_FADE_BAND).max(1)).clamp(0, 1);
-  const scaled = positionLocal.mul(fade);
-  const anchorWorld = modelWorldMatrix.mul(vec4(wind.z, 0, wind.w, 1)).xz;
+  const scaled = fadeAroundInstanceAnchor(positionLocal, anchorLocal, fade);
 
   // Trample: accumulate world-space push away from each displacer plus a
   // "crush" factor that flattens blades and damps their wind response.
-  const info = attribute("aGrassInfo", "vec4") as TslNode; // cosYaw, sinYaw, spread, height
   const trampleAccum = (Fn(() => {
     const push = vec2(0).toVar();
     const crush = float(0).toVar();
     Loop(MAX_DISPLACERS, ({ i }: { i: TslNode }) => {
       const d = (DISPLACERS as TslNode).element(i);
-      const delta = anchorWorld.sub(d.xy);
+      const delta = anchorWorld.xz.sub(d.xy);
       const len = delta.length().max(1e-4);
       const infl = d.z.sub(len).div(d.z.max(1e-4)).clamp(0, 1);
       const s = infl.mul(infl).mul(d.w);
@@ -175,20 +177,18 @@ export function createGrassMaterial(): THREE.Material {
   const crushed = crush.min(1);
   const pushLen = push.length();
   const pushXZ = push.mul(pushLen.min(1).div(pushLen.max(1e-4))).mul(0.85);
-  // positionNode offsets get the instance rotation/scale applied AFTER this
-  // runs, so map the world offset back into the instance frame — R(-yaw) and
-  // divide by the XZ/Y scales.
   const trampleT: TslNode = bladeT.pow(1.35).mul(fade);
-  const worldX: TslNode = pushXZ.x.mul(trampleT);
-  const worldZ: TslNode = pushXZ.y.mul(trampleT);
-  const trampleLocalX: TslNode = info.x.mul(worldX).sub(info.y.mul(worldZ)).div(info.z.max(1e-4));
-  const trampleLocalY: TslNode = (crushed as TslNode).mul(-0.42).mul(trampleT).div(info.w.max(1e-4));
-  const trampleLocalZ: TslNode = info.y.mul(worldX).add(info.x.mul(worldZ)).div(info.z.max(1e-4));
-  const localTrample = vec3(trampleLocalX, trampleLocalY, trampleLocalZ).clamp(-4, 4);
+  const trampleWorld = vec3(pushXZ.x, crushed.mul(-0.42), pushXZ.y).mul(trampleT);
+  const localTrample = worldOffsetToModelLocal(trampleWorld);
 
   const windDamp = float(1).sub(crushed.mul(0.75));
-  const bend = vec3(wind.x, 0, wind.y).mul(groundSway(anchorWorld)).mul(bladeT.pow(2.05).mul(fade)).mul(windDamp);
-  mat.positionNode = scaled.add(bend).add(localTrample);
+  const bendWorld = vec3(WIND_DIR.x, 0, WIND_DIR.z)
+    .mul(data.w)
+    .mul(groundSway(anchorWorld.xz))
+    .mul(bladeT.pow(2.05).mul(fade))
+    .mul(windDamp);
+  const bendLocal = worldOffsetToModelLocal(bendWorld);
+  mat.positionNode = scaled.add(bendLocal).add(localTrample);
 
   mat.normalNode = normalize(cameraViewMatrix.mul(vec4(0, 1, 0, 0)).xyz);
   mat.thicknessColorNode = tint.y.mul(bladeT.mul(0.72).add(0.28)).mul(uniform(new THREE.Color(0.42, 0.68, 0.24)));
@@ -197,7 +197,7 @@ export function createGrassMaterial(): THREE.Material {
   mat.thicknessAttenuationNode = uniform(1.0);
   mat.thicknessPowerNode = uniform(5.0);
   mat.thicknessScaleNode = uniform(2.35);
-  return mat;
+  return { material: mat, focus };
 }
 
 /** An empty instanced grass mesh (static-usage buffers, sized to `capacity`).
@@ -223,20 +223,17 @@ export function createGrassMesh(
   mesh.instanceMatrix = matrixAttr;
   const colorAttr = new THREE.StorageInstancedBufferAttribute(capacity, 4);
   colorAttr.setUsage(THREE.StaticDrawUsage);
-  const windAttr = new THREE.StorageInstancedBufferAttribute(capacity, 4);
-  windAttr.setUsage(THREE.StaticDrawUsage);
-  const infoAttr = new THREE.StorageInstancedBufferAttribute(capacity, 4);
-  infoAttr.setUsage(THREE.StaticDrawUsage);
+  const dataAttr = new THREE.StorageInstancedBufferAttribute(capacity, 4);
+  dataAttr.setUsage(THREE.StaticDrawUsage);
   mesh.geometry.setAttribute("aGrassColor", colorAttr);
-  mesh.geometry.setAttribute("aGrassWind", windAttr);
-  mesh.geometry.setAttribute("aGrassInfo", infoAttr);
+  mesh.geometry.setAttribute("aGrassData", dataAttr);
   mesh.count = 0;
   return mesh;
 }
 
 const grassWriteDummy = new THREE.Object3D();
 
-/** Write `entries` into `mesh` (matrices + the three grass attributes), zeroing
+/** Write `entries` into `mesh` (matrices + the two grass attributes), zeroing
  *  any slots a previous larger write left behind. `fadeRadius` is the field
  *  radius the blades fade toward. */
 export function writeGrassMesh(mesh: THREE.InstancedMesh, entries: GrassEntry[], fadeRadius: number) {
@@ -246,11 +243,9 @@ export function writeGrassMesh(mesh: THREE.InstancedMesh, entries: GrassEntry[],
   if (entries.length > capacity) entries = entries.slice(0, capacity);
   const matrices = mesh.instanceMatrix.array as Float32Array;
   const colorAttr = mesh.geometry.getAttribute("aGrassColor") as THREE.StorageInstancedBufferAttribute;
-  const windAttr = mesh.geometry.getAttribute("aGrassWind") as THREE.StorageInstancedBufferAttribute;
-  const infoAttr = mesh.geometry.getAttribute("aGrassInfo") as THREE.StorageInstancedBufferAttribute;
+  const dataAttr = mesh.geometry.getAttribute("aGrassData") as THREE.StorageInstancedBufferAttribute;
   const colors = colorAttr.array as Float32Array;
-  const winds = windAttr.array as Float32Array;
-  const infos = infoAttr.array as Float32Array;
+  const data = dataAttr.array as Float32Array;
   const dummy = grassWriteDummy;
   entries.forEach((entry, i) => {
     dummy.position.set(entry.x, entry.y, entry.z);
@@ -263,26 +258,20 @@ export function writeGrassMesh(mesh: THREE.InstancedMesh, entries: GrassEntry[],
     colors[ci + 1] = entry.color.g;
     colors[ci + 2] = entry.color.b;
     colors[ci + 3] = fadeRadius;
-    winds[ci] = entry.windX;
-    winds[ci + 1] = entry.windZ;
-    winds[ci + 2] = entry.x;
-    winds[ci + 3] = entry.z;
-    infos[ci] = Math.cos(entry.yaw);
-    infos[ci + 1] = Math.sin(entry.yaw);
-    infos[ci + 2] = entry.spread;
-    infos[ci + 3] = entry.height;
+    data[ci] = entry.x;
+    data[ci + 1] = entry.y;
+    data[ci + 2] = entry.z;
+    data[ci + 3] = entry.windAmp;
   });
   const lastCount = (mesh.userData.grassLastCount as number) ?? 0;
   if (lastCount > entries.length) {
     matrices.fill(0, entries.length * 16, lastCount * 16);
     colors.fill(0, entries.length * 4, lastCount * 4);
-    winds.fill(0, entries.length * 4, lastCount * 4);
-    infos.fill(0, entries.length * 4, lastCount * 4);
+    data.fill(0, entries.length * 4, lastCount * 4);
   }
   mesh.userData.grassLastCount = entries.length;
   mesh.count = entries.length;
   mesh.instanceMatrix.needsUpdate = true;
   colorAttr.needsUpdate = true;
-  windAttr.needsUpdate = true;
-  infoAttr.needsUpdate = true;
+  dataAttr.needsUpdate = true;
 }

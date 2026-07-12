@@ -11,16 +11,15 @@ import {
   createGrassMaterial,
   createGrassMesh,
   writeGrassMesh,
-  GRASS_DENSITY_FOCUS,
-  WIND_DIR,
   type GrassEntry
 } from "../groundcover/bladeGrass";
+import { fitGroundY } from "../groundcover/grounding";
 import { hash2, valueNoise } from "../groundcover/scatter";
 import type { GardenTerrain } from "../garden/layout";
 import { grassyGround, nearAnyWildRegion } from "./layout";
 import { GRASS_TUNING } from "../../config";
 
-const RING_RADIUS = 52; // dense grass within this of the player; fades at the rim
+const RING_RADIUS = 44; // dense grass within this of the player; fades at the rim
 const RESAMPLE_STEP = 8; // re-scatter after the focus moves this far (m)
 const SPACING = 0.95;
 
@@ -45,7 +44,8 @@ export type WildGrass = {
 export function createWildGrass(map: GardenTerrain, excluded?: (x: number, z: number) => boolean): WildGrass {
   const group = new THREE.Group();
   group.name = "wildlands_grass";
-  const material = createGrassMaterial(); // SHARED garden SSS material
+  const materialState = createGrassMaterial();
+  const material = materialState.material;
   // Same optimized near-tier clusters the garden uses up close: slightly wider
   // blades preserve coverage with fewer overlapping triangle strips.
   const lowGeo = createBladeClusterGeometry({ blades: 5, segments: 3, width: 0.09, radius: 0.37, curvature: 0.24 });
@@ -66,6 +66,7 @@ export function createWildGrass(map: GardenTerrain, excluded?: (x: number, z: nu
   // predicate the flower ring uses, so blooms always sit IN the grass (and both
   // skip water, wrong surfaces, the botanical garden's turf, and steep faces).
   const plantable = (x: number, z: number) => !excluded?.(x, z) && grassyGround(map, x, z);
+  const sampleGround = (x: number, z: number) => map.groundHeight(x, z);
 
   function resample(fx: number, fz: number) {
     // live tuning: density scales the count, patchiness blends even↔clumpy.
@@ -98,21 +99,13 @@ export function createWildGrass(map: GardenTerrain, excluded?: (x: number, z: nu
         // sample must never bake a stray blade into the sky, and a footprint
         // that breaks too hard (curb/step/steep pocket the coarse grassyGround
         // gate averaged over) is dropped rather than floated.
-        const h0 = map.groundHeight(px, pz);
-        const h1 = map.groundHeight(px - GROUND_FOOT, pz);
-        const h2 = map.groundHeight(px + GROUND_FOOT, pz);
-        const h3 = map.groundHeight(px, pz - GROUND_FOOT);
-        const h4 = map.groundHeight(px, pz + GROUND_FOOT);
-        const hMin = Math.min(h0, h1, h2, h3, h4);
-        if (!Number.isFinite(hMin)) continue;
-        if (Math.max(h0, h1, h2, h3, h4) - hMin > GROUND_SLOPE_CULL) continue;
-        const y = hMin - GROUND_SINK;
+        const y = fitGroundY(sampleGround, px, pz, GROUND_FOOT, GROUND_SLOPE_CULL, -GROUND_SINK);
+        if (y === null) continue;
 
         const isTall = hash2(gx, gz, 31) < 0.26 * (0.7 + patch * 0.6);
         const heightBase = isTall ? 0.9 + hash2(gx, gz, 37) * 0.7 : 0.46 + hash2(gx, gz, 41) * 0.4;
         const spread = (isTall ? 1.05 : 0.82) * (0.82 + hash2(gx, gz, 43) * 0.36);
         const yaw = hash2(gx, gz, 47) * Math.PI * 2;
-        const cosY = Math.cos(yaw), sinY = Math.sin(yaw);
         const windAmp = (0.74 + heightBase * 0.34) * (isTall ? 1.08 : 1);
         const brightness = 0.86 + hash2(gx, gz, 29) * 0.26;
         const dry = (1 - patch) * 0.2;
@@ -128,8 +121,7 @@ export function createWildGrass(map: GardenTerrain, excluded?: (x: number, z: nu
             brightness * (0.92 - dry * 0.14),
             brightness * (0.4 - dry * 0.06)
           ),
-          windX: ((cosY * WIND_DIR.x - sinY * WIND_DIR.z) / spread) * windAmp,
-          windZ: ((sinY * WIND_DIR.x + cosY * WIND_DIR.z) / spread) * windAmp
+          windAmp
         };
         (isTall ? tall : low).push(entry);
       }
@@ -142,6 +134,9 @@ export function createWildGrass(map: GardenTerrain, excluded?: (x: number, z: nu
   return {
     group,
     update(focus) {
+      // The shader focus follows continuously even though the deterministic
+      // instance ring only needs rebuilding every RESAMPLE_STEP metres.
+      materialState.focus.set(focus.x, focus.z);
       const dx = focus.x - last.x, dz = focus.z - last.z;
       if (dx * dx + dz * dz < RESAMPLE_STEP * RESAMPLE_STEP) return;
       last.x = focus.x;
@@ -160,8 +155,6 @@ export function createWildGrass(map: GardenTerrain, excluded?: (x: number, z: nu
         }
         return;
       }
-      // shared fade focus → blades collapse toward the ring rim (hides the pop)
-      GRASS_DENSITY_FOCUS.value.set(focus.x, focus.z);
       resample(focus.x, focus.z);
     },
     refresh() {

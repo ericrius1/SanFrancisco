@@ -13,6 +13,8 @@ import { GolfCourseView } from "./course";
 import { GolfAudio } from "./audio";
 import { GolfGuide } from "./guide";
 import { buildGolfCartMesh, setCartBags, GOLF_CART_SPEC } from "./cart";
+import { NpcGolfers } from "./npcGolfers";
+import { SWEET_SPOT } from "./tuning";
 import { GolfUI, standingLabel, totalLabel, type GolfHoleScore, type GolfPeerScore } from "./ui";
 
 type N = any;
@@ -25,10 +27,18 @@ type N = any;
  * players' balls fly here from owner-simulated snapshots.
  */
 
+/** Site-gate pads (metres beyond the course outline): the course is huge, so
+ *  wake well before any tee is reachable and sleep far enough out that pacing
+ *  the boundary never thrashes visibility. */
+export const GOLF_SITE_PADS = Object.freeze({ activate: 80, deactivate: 140 });
+
 const TEE_ZONE = 8; // "press E" radius around a tee spot
+const JOIN_ZONE = 6; // "press E" radius around an NPC golfer to join their hole
 const SWING_ZONE = 2.6; // how close to the resting ball before you can swing (stance eases the rest)
 const CHARGE_TIME = 1.15; // seconds, 0 → full draw (then holds at full power)
 const SWING_TIME = 0.46; // downswing seconds (release → full follow-through)
+const FOLLOW_HOLD = 0.4; // hold the finish pose (admire it) before relaxing
+const FOLLOW_EASE = 0.28; // then ease down instead of snapping to idle
 const SNAP_HZ = 8;
 // Once a roller is this slow, less than ~0.45 m remains on a flat green.
 // Hand the camera back early so the golfer is framed before the next walk.
@@ -55,8 +65,16 @@ type RemoteBall = { mesh: THREE.Mesh; target: THREE.Vector3; moving: boolean };
 
 type Phase = "toTee" | "toBall" | "aim" | "charge" | "swing" | "flight";
 
+export type GolfOptions = {
+  /** true = golfing weather (day). NPC groups pack up when this goes false.
+   *  main.ts wires sky.sunElevation; defaults to "always day". */
+  daylight?: () => boolean;
+};
+
 export class GolfGame {
   active = false;
+  /** Everything golf renders lives under here — the site gate hides it whole. */
+  root = new THREE.Group();
   /** outbound golf events — main.ts wires this to net.sendGolf */
   onNet: (msg: GolfNetMsg) => void = () => {};
   /** landing/holing thump hook (fx.impactPuff) */
@@ -68,7 +86,6 @@ export class GolfGame {
   #ui = new GolfUI();
   #guide: GolfGuide;
   #map: WorldMap;
-  #scene: THREE.Scene;
 
   // golf cart: a parked cart waits at the first tee; press E beside it to hop
   // in and drive it (reusing the car controller via setDriveStyle). During a
@@ -81,6 +98,10 @@ export class GolfGame {
   #lastTrackX = NaN; // last frame's player XZ — a big jump = a teleport
   #lastTrackZ = NaN;
 
+  // ambient NPC golfer groups (day only) — see npcGolfers.ts. Lives under
+  // root and updates only while the site is awake, so asleep = zero work.
+  #npc: NpcGolfers;
+
   #holeIdx = 0;
   #strokes = 0; // strokes already taken this hole
   #totalDelta = 0;
@@ -91,7 +112,7 @@ export class GolfGame {
   #charge = 0;
   #swingAnim = -1;
   #swingFrom = -1;
-  #pendingStrike: { yaw: number; power: number; lie: GolfSurface } | null = null;
+  #pendingStrike: { yaw: number; power: number; lie: GolfSurface; perfect: boolean } | null = null;
   #audio = new GolfAudio();
   #preShot = new THREE.Vector3();
   #pin = new THREE.Vector3();
@@ -103,6 +124,7 @@ export class GolfGame {
   #ballGeo: THREE.SphereGeometry;
   #ballMat: THREE.MeshStandardNodeMaterial;
 
+  #siteAwake = false; // site gate: asleep = root hidden + update() early-returns
   #teePromptShown = false;
   #snapAt = 0;
   #camEye = new THREE.Vector3();
@@ -117,15 +139,24 @@ export class GolfGame {
   #tmp = new THREE.Vector3();
   #tmp2 = new THREE.Vector3();
 
-  constructor(course: GolfCourse, map: WorldMap, physics: Physics, scene: THREE.Scene) {
+  constructor(course: GolfCourse, map: WorldMap, physics: Physics, scene: THREE.Scene, opts: GolfOptions = {}) {
     this.#course = course;
     this.#map = map;
-    this.#scene = scene;
-    this.#view = new GolfCourseView(course, map, scene);
+    // Born asleep: the site gate wakes the root when the player nears the
+    // course. Skipping the hidden subtree's matrix pass too — setSiteAwake
+    // refreshes matrices on wake.
+    this.root.name = "golf";
+    this.root.visible = false;
+    this.root.matrixWorldAutoUpdate = false;
+    scene.add(this.root);
+    this.#view = new GolfCourseView(course, map, this.root);
+    // the guide floats above the PLAYER (not the course) and only shows during
+    // a live round, so it stays on the scene rather than under the gated root
     this.#guide = new GolfGuide(scene);
     this.#ball = new GolfBall(course, map, physics);
     this.#ball.onEvent = (e) => this.#onBallEvent(e);
     this.#spawnParkedCart();
+    this.#npc = new NpcGolfers(course, map, physics, this.#audio, opts.daylight ?? (() => true), this.root);
 
     if (import.meta.env.DEV) {
       Object.assign(window as object, {
@@ -147,7 +178,7 @@ export class GolfGame {
     this.#ballMat.roughnessNode = float(0.4);
     this.#ballMesh = new THREE.Mesh(this.#ballGeo, this.#ballMat);
     this.#ballMesh.visible = false;
-    scene.add(this.#ballMesh);
+    this.root.add(this.#ballMesh);
 
     // resting-ball beacon: a soft light column so you can find your ball
     const beaconGeo = new THREE.CylinderGeometry(0.22, 0.3, 7, 10, 1, true);
@@ -161,7 +192,7 @@ export class GolfGame {
     beaconMat.side = THREE.DoubleSide;
     this.#beacon = new THREE.Mesh(beaconGeo, beaconMat);
     this.#beacon.visible = false;
-    scene.add(this.#beacon);
+    this.root.add(this.#beacon);
 
     // aim chevron: a slim strip pointing down the shot line while aiming
     const arrowGeo = new THREE.PlaneGeometry(0.14, 2.4);
@@ -175,7 +206,47 @@ export class GolfGame {
     arrowMat.depthWrite = false;
     this.#aimArrow = new THREE.Mesh(arrowGeo, arrowMat);
     this.#aimArrow.visible = false;
-    scene.add(this.#aimArrow);
+    this.root.add(this.#aimArrow);
+  }
+
+  // ------------------------------------------------------------- site gate
+
+  get siteAwake(): boolean {
+    return this.#siteAwake;
+  }
+
+  /** Dev/probe: NPC update counter — frozen while the site sleeps. */
+  get npcTicks(): number {
+    return this.#npc.ticks;
+  }
+
+  /** Gate footprint test (course outline + pad) — main.ts's GameSite.contains. */
+  siteContains(x: number, z: number, pad: number): boolean {
+    return this.#course.contains(x, z, pad);
+  }
+
+  /** A live round (or a borrowed cart) must hold the site awake — rounds
+   *  already auto-end on leaving the footprint, so this can't leak. */
+  get keepsSiteAwake(): boolean {
+    return this.active || this.#cartBoarded;
+  }
+
+  /** Site gate transition: hide/show everything golf owns. While asleep,
+   *  update() early-returns and remote net state is still stored cheaply
+   *  (targets set, no lerp) — wake snaps remote balls to their targets. */
+  setSiteAwake(on: boolean) {
+    if (this.#siteAwake === on) return;
+    this.#siteAwake = on;
+    this.root.visible = on;
+    this.root.matrixWorldAutoUpdate = on;
+    if (on) {
+      this.root.updateMatrixWorld(true);
+      for (const r of this.#remote.values()) r.mesh.position.copy(r.target);
+    } else if (this.#summaryUntil > 0) {
+      // walking away from a finished-round card: don't leave it pinned
+      this.#summaryUntil = 0;
+      this.#ui.setVisible(false);
+    }
   }
 
   /** main.ts E-chain, first in line: start a round when standing on a glowing
@@ -187,6 +258,14 @@ export class GolfGame {
       const near = this.#course.nearestTee(player.renderPosition.x, player.renderPosition.z, TEE_ZONE);
       if (near >= 0) {
         this.#startRound(near, hud);
+        return true;
+      }
+      // not at a tee, but beside an NPC group? join them — your round starts
+      // at THEIR current hole (its tee), and they keep playing alongside
+      const joinHole = this.#npc.joinableHole(player.renderPosition.x, player.renderPosition.z, JOIN_ZONE);
+      if (joinHole >= 0) {
+        this.#joinedGroup = true; // #teeUp folds the welcome into its toast
+        this.#startRound(joinHole, hud);
         return true;
       }
     }
@@ -209,7 +288,7 @@ export class GolfGame {
     cart.position.set(x, this.#map.effectiveGround(x, z) + 0.55, z);
     cart.rotation.y = aim + Math.PI;
     setCartBags(cart, 0);
-    this.#scene.add(cart);
+    this.root.add(cart);
     this.#parkedCart = cart;
   }
 
@@ -322,6 +401,9 @@ export class GolfGame {
     }
   }
 
+  /** Set by tryStartAtTee when the round begins by joining an NPC group. */
+  #joinedGroup = false;
+
   #teeUp(hud: HUD) {
     const h = this.#course.holes[this.#holeIdx];
     this.#ball.place(this.#teeSpot.x, this.#teeSpot.y + BALL_RADIUS, this.#teeSpot.z);
@@ -333,7 +415,10 @@ export class GolfGame {
     this.#wantCamYaw = this.#course.teeAim(this.#holeIdx) + Math.PI;
     this.#autoClub();
     this.#publishState(true, false);
-    hud.message(`Hole ${h.ref} · Par ${h.par} · ${h.len}m — walk to the ball, hold click to swing`, 3.2);
+    if (this.#joinedGroup) {
+      this.#joinedGroup = false;
+      hud.message(`Joined the group at hole ${h.ref} — you're playing too ⛳ Your ball's on the tee`, 3.8);
+    } else hud.message(`Hole ${h.ref} · Par ${h.par} · ${h.len}m — walk to the ball, hold click to swing`, 3.2);
   }
 
   #endRound(hud: HUD, quiet = false) {
@@ -520,20 +605,35 @@ export class GolfGame {
   // ------------------------------------------------------------- per frame
 
   update(dt: number, elapsed: number, ctx: Ctx) {
+    // Asleep with nothing live: the whole feature costs this one test per
+    // frame (the gate holds the site awake through rounds and cart rides).
+    if (!this.#siteAwake && !this.keepsSiteAwake) return;
+
     this.#view.update(dt, elapsed);
     this.#updateRemotes(dt);
+    // NPC groups only play while the site is awake (a cart-held-awake sleep
+    // keeps the root hidden — no point simulating invisible golfers)
+    if (this.#siteAwake) this.#npc.update(dt, elapsed, ctx.player.renderPosition);
 
     const { player, input, hud, chase } = ctx;
     if (this.#swingAnim >= 0) {
       this.#swingAnim += dt;
       const t = Math.min(1, this.#swingAnim / SWING_TIME);
       const ease = 1 - Math.pow(1 - t, 3);
-      const s = THREE.MathUtils.lerp(this.#swingFrom, 1, ease);
+      let s = THREE.MathUtils.lerp(this.#swingFrom, 1, ease);
+      // follow-through: hold the finish briefly, then ease back down instead
+      // of snapping to idle (strike timing below is untouched — the hold only
+      // shapes s after the downswing has fully played out)
+      const past = this.#swingAnim - (SWING_TIME + FOLLOW_HOLD);
+      if (past > 0) {
+        const k = Math.min(1, past / FOLLOW_EASE);
+        s = 1 - k * k * (3 - 2 * k);
+      }
       player.setGolfPose(true, s);
       // the ball leaves when the CLUB arrives, not on mouse-up: contact fires
       // as the eased pose sweeps through s=0 (address/impact)
       if (this.#pendingStrike && s >= 0) this.#strikeNow();
-      if (this.#swingAnim >= SWING_TIME + 0.32) {
+      if (this.#swingAnim >= SWING_TIME + FOLLOW_HOLD + FOLLOW_EASE) {
         this.#swingAnim = -1;
         player.setGolfPose(false);
       }
@@ -701,7 +801,10 @@ export class GolfGame {
    *  when the animated club sweeps through the ball (#strikeNow). */
   #beginSwing(aimYaw: number, power: number, lie: GolfSurface) {
     this.#phase = "swing";
-    this.#pendingStrike = { yaw: aimYaw, power, lie };
+    // released inside the sweet band at the top of the meter = pure strike
+    const perfect = power >= SWEET_SPOT;
+    this.#pendingStrike = { yaw: aimYaw, power, lie, perfect };
+    if (perfect) this.#ui.flashPerfect();
     this.#swingFrom = -power;
     this.#swingAnim = 0;
     // cubic-eased downswing crosses s=0 here — aim the whoosh's peak at it
@@ -717,8 +820,12 @@ export class GolfGame {
     this.#pendingStrike = null;
     this.#strokes += 1;
     this.#preShot.copy(this.#ball.pos);
-    this.#ball.strike(this.club, hit.yaw, hit.power, hit.lie, this.#pin);
-    this.#audio.thwack(hit.power, this.club.id === "putter");
+    // pure strike: +4% carry and a brighter crack (subtle — a reward, not a gear)
+    const power = hit.perfect ? hit.power * 1.04 : hit.power;
+    this.#ball.strike(this.club, hit.yaw, power, hit.lie, this.#pin);
+    this.#audio.thwack(hit.perfect ? Math.min(1, hit.power * 1.25) : hit.power, this.club.id === "putter");
+    // ripping one off the turf kicks up a divot puff (tee pegs stay clean)
+    if (hit.power > 0.5 && hit.lie !== "tee") this.onImpact(this.#ball.pos);
     this.#phase = "flight";
     this.#ballCamActive = true;
     this.#ballCamAge = 0;

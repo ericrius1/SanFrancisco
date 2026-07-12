@@ -64,7 +64,25 @@ export const CAMERA_TUNING = tunables("camera", {
   // false = clockwise (default); true = counter-clockwise
   orbitFlipCCW: { v: false, label: "orbit CCW" },
   // meters added to orbit radius over the flip (dolly out)
-  orbitFlipPull: { v: 8, min: 0, max: 80, step: 0.5, label: "orbit pull-back (m)" }
+  orbitFlipPull: { v: 8, min: 0, max: 80, step: 0.5, label: "orbit pull-back (m)" },
+  // Chase-camera obstruction. Radius scales the per-mode swept-volume proxy;
+  // recovery is intentionally slower than collision entry so a corner cannot
+  // pump the camera in and out every frame.
+  collisionEnabled: { v: true, label: "building collision" },
+  collisionRadiusScale: { v: 1, min: 0.5, max: 1.8, step: 0.05, label: "collision radius" },
+  collisionRelease: { v: 4.5, min: 1, max: 14, step: 0.25, label: "boom recovery" },
+  // When collision would crush the framing, a dithered wall-only corridor takes
+  // over. This keeps the city silhouette/roof intact and avoids alpha blending.
+  cutawayEnabled: { v: true, label: "building cutaway" },
+  cutawayRadiusScale: { v: 1, min: 0.5, max: 1.8, step: 0.05, label: "cutaway radius" },
+  cutawayResponse: { v: 18, min: 4, max: 40, step: 1, label: "cutaway response" }
+})
+
+/** Gamepad look. Bound under advanced → controls in the "/" panel. Applies to
+ * every mode (walk + all vehicles) — right-stick pitch only; mouse is untouched. */
+export const INPUT_TUNING = tunables("input", {
+  // true = stick-up raises the chase cam / pitches the plane nose up (default).
+  invertPadLookY: { v: true, label: "invert pad look Y" }
 })
 
 /** The committed heightfield is 15.1 × 13.9 km (20.5 km corner-to-corner).
@@ -99,7 +117,7 @@ export const WORLD_TUNING = tunables("world", {
   // Beer-Lambert path density inside the layer; 1 is the authored reference.
   fogBank: { v: 1, min: 0, max: 2, step: 0.02, label: "marine bank" },
   // 1 = the official 22 m noisy-ceiling variation; 0 = a flat bank.
-  fogNoise: { v: 1, min: 0, max: 1.5, step: 0.02, label: "billow" },
+  fogNoise: { v: 0.2, min: 0, max: 1.5, step: 0.02, label: "billow" },
   // 1 = official r185 motion; lower values make the world-anchored billows evolve
   // more slowly without turning them into a coherently scrolling texture.
   fogDrift: {
@@ -144,17 +162,25 @@ export const FOLIAGE_TUNING = tunables("foliage", {
  * from the master draw-distance slider (CONFIG.tileLoadRadius) each scan.
  */
 export const CITYGEN_TUNING = tunables("citygen", {
+  // Defaults raised again (400/250 → 700/500) after the BATCHED SHELL layer
+  // (render/shellBatch.ts): the ~2384 per-building wall sub-draws collapsed into a
+  // dozen BatchedMesh draws that frustum-cull per instance, so the frame no longer
+  // scales linearly with building count (measured +4 ms for +338 buildings vs old
+  // +14 ms). The detail RING can now reach far more buildings for near-free CPU;
+  // the wall is GPU triangles/overdraw + shadows. Sliders go far higher — the
+  // shell batch pre-sizes off maxDetail and falls back to per-building bundles if
+  // a district overflows, so cranking these is safe (just costs GPU + VRAM).
   detailRadius: {
-    v: 150,
+    v: 700,
     min: 40,
-    max: 7000,
+    max: 10000,
     step: 5,
     label: "detail distance (m)"
   },
   maxDetail: {
-    v: 40,
+    v: 500,
     min: 4,
-    max: 4000,
+    max: 20000,
     step: 2,
     label: "max detail buildings"
   },

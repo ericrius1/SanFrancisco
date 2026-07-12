@@ -1,6 +1,5 @@
 import * as THREE from "three/webgpu";
 import { BodyType, type Physics } from "../../core/physics";
-import { applyMaterialPolicy, RenderBand, tagTransparency } from "../../render/transparency";
 import {
   TEA_GARDEN_BUILDINGS,
   TEA_GARDEN_PATHS,
@@ -26,6 +25,15 @@ const COLORS = {
   water: 0x507f77,
   waterDeep: 0x244d49
 } as const;
+
+const WATER_RENDER_ORDER = 10.5;
+const WATER_EFFECTS_RENDER_ORDER = 12;
+
+function alphaSurface<T extends THREE.Material>(value: T): T {
+  value.transparent = true;
+  value.depthWrite = false;
+  return value;
+}
 
 type PhysicsBox = {
   x: number;
@@ -812,7 +820,7 @@ function createPonds(map: TeaGardenTerrain, mats: ReturnType<typeof createMateri
     // The committed terrain has no separately carved basin. Keep the connected
     // shallow water just above local grade instead of floating across the slope.
     const water = shapeMesh(map, `${name}_water`, outline, 0.085, mats.water);
-    tagTransparency(water, { profile: "alphaSurface", renderBand: RenderBand.WATER_OVERLAY });
+    water.renderOrder = WATER_RENDER_ORDER;
     group.add(water);
     const c = pondIndex === 0 ? { x: -2288.7, z: 2219.2 } : { x: -2274.2, z: 2193.2 };
     const rx = pondIndex === 0 ? 7.4 : 1.45;
@@ -850,14 +858,14 @@ function createMaterials() {
     pathEdge: material(COLORS.pathEdge, 1),
     bronze: material(0x8a6b31, 0.48, 0.44),
     iron: material(0x272625, 0.5, 0.45),
-    water: applyMaterialPolicy(new THREE.MeshPhysicalMaterial({
+    water: alphaSurface(new THREE.MeshPhysicalMaterial({
       color: COLORS.water,
       roughness: 0.22,
       metalness: 0,
       transmission: 0.08,
       opacity: 0.86,
       side: THREE.DoubleSide
-    }), "alphaSurface")
+    }))
   };
 }
 
@@ -913,17 +921,17 @@ function makeWaterfall(map: TeaGardenTerrain, mats: ReturnType<typeof createMate
     rock.receiveShadow = true;
     group.add(rock);
   }
-  const fallMat = applyMaterialPolicy(new THREE.MeshPhysicalMaterial({
+  const fallMat = alphaSurface(new THREE.MeshPhysicalMaterial({
     color: 0xa7d6d1,
     roughness: 0.08,
     opacity: 0.78,
     transmission: 0.18,
     side: THREE.DoubleSide
-  }), "alphaSurface");
+  }));
   for (let i = 0; i < 3; i++) {
     const fall = makeBox("waterfall_ribbon", [0.48 + i * 0.2, 2.4 - i * 0.35, 0.055], fallMat, [x - 0.55 + i * 0.52, base + 1.55 - i * 0.28, z - 0.45 + i * 0.28], 0.28);
     fall.castShadow = false;
-    tagTransparency(fall, { profile: "alphaSurface", renderBand: RenderBand.WATER_EFFECTS });
+    fall.renderOrder = WATER_EFFECTS_RENDER_ORDER;
     group.add(fall);
   }
   return group;
