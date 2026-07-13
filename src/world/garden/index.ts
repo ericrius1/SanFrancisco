@@ -1,7 +1,8 @@
 // SF Botanical Garden — public surface. A self-contained, portable vegetation
 // module: trees (SeedThree hero growth + near/far instanced LOD), procedural
 // blade grass (terrain-clamped base layer + moving near-detail ring + trample),
-// zone-paletted shrubs, ground flora, colliders, and a shared wind envelope.
+// zone-paletted shrubs, ground flora, and colliders. Sandbox-wide wind and
+// interaction state live in ../vegetation; this module only owns garden work.
 //
 // Drop the whole `garden/` folder into any three/webgpu project. The ONLY things
 // it needs from the host are:
@@ -11,20 +12,16 @@
 //     to procedural materials if the PNGs 404)
 //   • src/core/persist `tunables()` for the live-tunable grass sliders
 //
-// Everything else (layout math, LOD, wind) lives behind this index. Layout is in
+// Garden layout math and rendering live behind this index. Layout is in
 // ./layout with NO three dependency, so a headless trainer can reconstruct the
 // identical obstacle set.
 
 import type * as THREE from "three/webgpu";
 import { createGardenVegetation, type GardenVegetation } from "./gardenVegetation";
 import {
-  MAX_GRASS_DISPLACERS,
-  setGrassDisplacers,
   type BotanicalGrassController,
-  type BotanicalGrassStats,
-  type GrassDisplacer
+  type BotanicalGrassStats
 } from "./botanicalGrass";
-import { updateWindGusts, windGustValue } from "./wind";
 import {
   BOTANICAL_GARDEN_BOUNDS,
   GARDEN_MEADOW,
@@ -32,8 +29,6 @@ import {
   type GardenCollider,
   type GardenTerrain
 } from "./layout";
-
-const NO_DISPLACERS: readonly GrassDisplacer[] = [];
 
 // Whole-garden visibility gate. The SeedThree far tier is frustumCulled=false
 // (its instanced bounds span the whole garden), so those triangles would draw from
@@ -70,12 +65,10 @@ export type BotanicalGarden = {
   stats: GardenVegetation["stats"];
   /**
    * Call once per frame.
-   *  • advances the shared wind-gust envelope (grass sway + any wind audio)
    *  • moves the near-grass detail ring to `focus` (usually the camera/player)
-   *  • writes trample displacers that flatten grass under the player/creatures
    * SeedThree tree LOD self-drives off the render loop — nothing else to tick.
    */
-  update(dt: number, focus: { x: number; z: number }, displacers?: readonly GrassDisplacer[]): void;
+  update(focus: { x: number; z: number }): void;
 };
 
 /** Build the whole garden over a host terrain. Synchronous; trees populate as
@@ -107,15 +100,7 @@ export function createBotanicalGarden(map: GardenTerrain): BotanicalGarden {
     grass: veg.grass,
     colliders: veg.colliders,
     stats: veg.stats,
-    update(dt, focus, displacers) {
-      // Shared ground-cover meta-modules must advance regardless of the garden's
-      // own visibility: the wind-gust envelope also drives the wildlands foliage
-      // sway + the nature soundscape, and the trample field is read by the
-      // wildlands grass/flowers too — and the garden is their sole per-frame
-      // driver. Freezing them here would stall wind/trample across the whole city.
-      updateWindGusts(dt);
-      setGrassDisplacers(displacers ?? NO_DISPLACERS);
-
+    update(focus) {
       // Whole-garden distance gate (see GARDEN_GATE). Hiding the group stops the
       // far-tier trees from rendering AND parks the self-driven tree LOD rebin
       // (its driver meshes no longer render, so onBeforeRender stops firing); the
@@ -134,16 +119,11 @@ export function createBotanicalGarden(map: GardenTerrain): BotanicalGarden {
   };
 }
 
-// Host wiring / debug helpers.
 export {
-  MAX_GRASS_DISPLACERS,
-  setGrassDisplacers,
-  updateWindGusts,
-  windGustValue,
   BOTANICAL_GARDEN_BOUNDS,
   GARDEN_MEADOW,
   inBotanicalGarden
 };
 export { createGardenVegetation, type GardenVegetation } from "./gardenVegetation";
 export { SEED_TREE_DESIGNS, type SeedTreeDesign } from "./seedTreeGarden";
-export type { BotanicalGrassController, BotanicalGrassStats, GrassDisplacer, GardenCollider, GardenTerrain };
+export type { BotanicalGrassController, BotanicalGrassStats, GardenCollider, GardenTerrain };

@@ -98,8 +98,9 @@ Open the map (`M`) and teleport, or just wander. A few of the denser spots:
 
 - **Corona Heights** — default spawn. Red-chert summit, downtown/Mission vista,
   a dog park just below, and a **jammer trio** (ukulele, handpan, flute) perched
-  on a boulder. Stand nearby to hear them; press `Q` to cycle songs. Throw the
-  ball tool for the dogs.
+  on a boulder. Stand nearby to hear their original songbook rotate with a
+  natural quiet break between tunes; press `Q` to skip ahead. Throw the ball
+  tool for the dogs.
 - **Botanical Garden** — San Francisco Botanical Garden in Golden Gate Park:
   SeedThree trees, blade grass, shrubs, and a shared wind envelope. The nature
   soundscape thickens here.
@@ -232,6 +233,7 @@ reference films plus their transition:
 ```bash
 npm run render:hoverboard:fast
 npm run render:dog-park:fast
+npm run render:roqn-open-road:fast
 npm run render:cinematics:fast
 npm run render:hoverboard
 npm run render:dog-park
@@ -241,6 +243,11 @@ npm run render:cinematics
 See [Cinematic rendering](docs/CINEMATICS.md) for probe renders, shot authoring,
 the fast WebCodecs review backend, archival fixed-frame capture, camera
 preflight, audio, outputs, and QA.
+
+Create an X-ready derivative of any finished film with
+`npm run deliver:x -- <video.mp4>`. The opt-in `--experimental-4k` flag also
+makes a labeled 2x upscale for account-level A/B testing without changing the
+archive master.
 
 ---
 

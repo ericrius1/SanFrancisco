@@ -23,21 +23,18 @@ export const LIGHT_SCALE = (100 / 6) * EXPOSURE_REBASE
  * there is no user-facing quality switch any more. The two other universal-mode
  * values live with the systems they configure: scene AA (single-sample by
  * default, optional 4x MSAA for profiling) in POSTFX_TUNING.sceneSamples
- * (render/postfx.ts), and the always-on CSM shadow config as named constants
- * near the setup in world/sky.ts.
+ * (render/postfx.ts), and CSM shadow knobs via SHADOW_TUNING (world/sky.ts).
  */
 export const RENDER_MODE = {
-  // drawing-buffer cap on devicePixelRatio. The scene is fragment-bound: retina
-  // dpr 2 costs ~2× the frame time of 1.5 for a near-invisible sharpness delta
-  // (measured 17.1 → 8.6 ms p50 at 2560×1600). dpr-1 displays are unaffected —
-  // the cap only ever lowers the ratio.
-  pixelRatioCap: 1.5,
-  // Dynamic-resolution governor (src/render/dynamicRes.ts): under sustained
-  // frame pressure the drawing-buffer pixel ratio steps down from the ceiling
-  // — min(devicePixelRatio, pixelRatioCap) — toward minPixelRatio, and back up
-  // when there's headroom, so weaker GPUs hold the display's frame budget.
-  dynamicRes: true,
-  // Lowest pixel ratio the governor will drop to under sustained load.
+  // Fixed drawing-buffer pixel ratio. Always 1 — including retina Macs —
+  // for a stable low-fi look and predictable fragment cost. The scene is
+  // fragment-bound; retina dpr 2 was ~2× the frame time of 1.5 for a near-
+  // invisible sharpness delta (measured 17.1 → 8.6 ms p50 at 2560×1600).
+  pixelRatioCap: 1,
+  // Dynamic-resolution governor left off: floor == ceiling == 1, so there is
+  // nothing to step. Kept as a switch in case a higher fixed cap returns later.
+  dynamicRes: false,
+  // Floor for the governor when dynamicRes is re-enabled; unused while off.
   minPixelRatio: 1.0
 } as const
 

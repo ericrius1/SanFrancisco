@@ -2,11 +2,9 @@
 // These values are intentionally simple: one current schema, no migration, and
 // no coupling to the old vendored dynamic grass field.
 
-import { foliageBrightness } from "../../../vendor/SeedThree/src/core/leaf-cards.js";
-import { windSpeed, windStrength } from "../../../vendor/SeedThree/src/core/wind.js";
 import { tunables } from "../../core/persist";
 
-export const GRASS_TUNING = tunables("grass", {
+export const BOTANICAL_GRASS_TUNING = tunables("botanicalGrass", {
   // 2026-07 FPS pass: meadow probes hit ~4M garden tris / ~24 fps @ 2560×1600.
   // Wider spacing + shorter rings keep the lawn reading dense at the feet while
   // capping the live triangle budget (see botanicalGrass MAX_LIVE_*).
@@ -29,41 +27,5 @@ export const GRASS_TUNING = tunables("grass", {
   groundSink: { v: 0.055, min: 0, max: 0.25, step: 0.005, label: "ground sink (m)" },
   slopeCull: { v: 0.62, min: 0.1, max: 2.5, step: 0.05, label: "slope cull (m rise)" },
   showLow: { v: true, label: "low clumps visible" },
-  showTall: { v: true, label: "tall clumps visible" },
-  windStrength: { v: 0.42, min: 0, max: 1, step: 0.01, label: "tree wind strength" },
-  windSpeed: { v: 0.92, min: 0, max: 3, step: 0.05, label: "tree wind tempo" },
-  trampleStrength: { v: 0.9, min: 0, max: 2, step: 0.05, label: "trample strength" },
-  leafBrightness: { v: 0.44, min: 0.2, max: 1.2, step: 0.01, label: "tree leaf brightness" }
+  showTall: { v: true, label: "tall clumps visible" }
 });
-
-export const GRASS_SCATTER_KEYS = [
-  "spacing",
-  "nearSpacing",
-  "nearRadius",
-  "baseViewDistance",
-  "nearDensity",
-  "nearRebuildStep",
-  "meadowKeep",
-  "collectionKeep",
-  "pathEdgeKeep",
-  "tallShare",
-  "heightScale",
-  "brightness",
-  "greenBias",
-  "pathMargin",
-  "pathFeather",
-  "treeClearance",
-  "groundSink",
-  "slopeCull",
-  "showLow",
-  "showTall"
-] as const;
-
-export const GRASS_LIVE_KEYS = ["windStrength", "windSpeed", "trampleStrength", "leafBrightness"] as const;
-
-export function applyGrassTuning() {
-  const v = GRASS_TUNING.values;
-  windStrength.value = v.windStrength;
-  windSpeed.value = v.windSpeed;
-  foliageBrightness.value = v.leafBrightness;
-}

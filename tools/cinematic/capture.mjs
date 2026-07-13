@@ -1260,7 +1260,7 @@ export async function ffprobeVideo(videoFile, { ffprobe = process.env.FFPROBE_BI
     "-v", "error",
     "-count_frames",
     "-show_entries",
-    "format=duration,size,bit_rate:stream=index,codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate,nb_frames,nb_read_frames,duration,color_space,color_transfer,color_primaries,color_range,bit_rate,sample_rate,channels,channel_layout",
+    "format=duration,size,bit_rate:stream=index,codec_type,codec_name,profile,level,pix_fmt,width,height,sample_aspect_ratio,field_order,avg_frame_rate,r_frame_rate,nb_frames,nb_read_frames,duration,color_space,color_transfer,color_primaries,color_range,bit_rate,sample_rate,channels,channel_layout",
     "-of", "json",
     videoFile
   ], { capture: true, log: () => {} });
@@ -1334,6 +1334,10 @@ export async function auditVideo({
   if (!video) errors.push("missing video stream");
   if (!audio) errors.push("missing audio stream");
   if (video && video.codec_name !== "h264") errors.push(`video codec is ${video.codec_name}, expected h264`);
+  if (video && video.profile !== "High") errors.push(`H.264 profile is ${video.profile ?? "unset"}, expected High`);
+  if (video && video.pix_fmt !== "yuv420p") errors.push(`pixel format is ${video.pix_fmt ?? "unset"}, expected yuv420p`);
+  if (video?.sample_aspect_ratio && video.sample_aspect_ratio !== "1:1") errors.push(`sample aspect ratio is ${video.sample_aspect_ratio}, expected 1:1`);
+  if (video?.field_order && video.field_order !== "progressive") errors.push(`field order is ${video.field_order}, expected progressive`);
   if (audio && audio.codec_name !== "aac") errors.push(`audio codec is ${audio.codec_name}, expected aac`);
   if (audio && Number(audio.sample_rate) !== 48_000) errors.push(`audio sample rate is ${audio.sample_rate}, expected 48000`);
   if (audio && Number(audio.channels) !== 2) errors.push(`audio has ${audio.channels} channels, expected stereo`);
@@ -1347,6 +1351,7 @@ export async function auditVideo({
     ]) {
       if (value !== "bt709") errors.push(`${field} is ${value ?? "unset"}, expected bt709`);
     }
+    if (video.color_range !== "tv") errors.push(`color_range is ${video.color_range ?? "unset"}, expected tv/limited`);
   }
 
   if (expected && video) {

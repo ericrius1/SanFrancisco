@@ -6,7 +6,7 @@
 // per frame from main; the layers just sample it in their vertex shaders.
 //
 // This is the "meta" glue the individual modules (grass, flowers) share — like
-// the wind gust envelope (garden/wind.ts) — while each keeps its own geometry,
+// the sandbox vegetation wind — while each keeps its own geometry,
 // material, and scatter. Slot layout xyzw = (worldX, worldZ, radius, strength);
 // radius 0 disables a slot.
 

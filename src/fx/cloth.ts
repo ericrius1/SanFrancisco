@@ -1,5 +1,5 @@
 import * as THREE from "three/webgpu";
-import { float, normalLocal, positionLocal, sin, texture, time, uniform, uv, vec3 } from "three/tsl";
+import { attribute, float, normalLocal, positionLocal, sin, texture, time, uniform, uv, vec3 } from "three/tsl";
 
 /**
  * ───────────────────────────────────────────────────────────────────────────
@@ -103,27 +103,37 @@ export function capsulesToLocal(mesh: THREE.Object3D, ref: THREE.Object3D, caps:
  * cloth already bellies toward, instead of not moving at all. Off-axis vertices
  * keep their natural radial push; the bias fades out by the capsule surface.
  */
-export function pushOutOfColliders(pos: unknown, colliders: ClothColliders, escape?: unknown): unknown {
+export function pushOutOfColliders(
+  pos: unknown,
+  colliders: ClothColliders,
+  escape?: unknown,
+  iterations = 1
+): unknown {
   let out = pos as any;
-  for (const s of colliders.slots) {
-    const a = s.a as any;
-    const b = s.b as any;
-    const r = (s.rs as any).x;
-    const skin = (s.rs as any).y;
-    const ba = b.sub(a);
-    const pa = out.sub(a);
-    // closest point on the segment (t clamped to the endpoints)
-    const t = pa.dot(ba).div(ba.dot(ba).max(1e-5)).clamp(0, 1);
-    const closest = a.add(ba.mul(t));
-    const radial = out.sub(closest);
-    const dist = radial.length();
-    // Direction to exit along. Near the axis (dist < r) lean on the escape axis
-    // so we always have a stable, leeward-biased normal; farther out, pure radial.
-    let dir = radial;
-    if (escape) dir = radial.add((escape as any).mul(r.sub(dist).max(0)));
-    dir = dir.normalize();
-    const pen = r.add(skin).sub(dist).max(0); // 0 when outside ⇒ no-op
-    out = out.add(dir.mul(pen));
+  for (let pass = 0; pass < Math.max(1, iterations); pass++) {
+    for (const s of colliders.slots) {
+      const a = s.a as any;
+      const b = s.b as any;
+      const r = (s.rs as any).x;
+      const skin = (s.rs as any).y;
+      const ba = b.sub(a);
+      const pa = out.sub(a);
+      // closest point on the segment (t clamped to the endpoints)
+      const t = pa.dot(ba).div(ba.dot(ba).max(1e-5)).clamp(0, 1);
+      const closest = a.add(ba.mul(t));
+      const radial = out.sub(closest);
+      const dist = radial.length();
+      // Direction to exit along. Near the axis (dist < r) lean on the escape axis
+      // so we always have a stable, leeward-biased normal; farther out, pure radial.
+      let dir = radial;
+      if (escape) dir = radial.add((escape as any).mul(r.sub(dist).max(0)));
+      // Safe normalization: disabled slots carry a zero-radius capsule at the
+      // origin, so a vertex at that exact point must remain a no-op rather than
+      // producing NaNs that poison the whole cloth primitive.
+      dir = dir.div(dir.length().max(1e-5));
+      const pen = r.add(skin).sub(dist).max(0); // 0 when outside ⇒ no-op
+      out = out.add(dir.mul(pen));
+    }
   }
   return out;
 }
@@ -186,6 +196,107 @@ export function rippleMaterial(opts: RippleOpts = {}): THREE.MeshLambertNodeMate
   if (opts.colliders) pos = pushOutOfColliders(pos, opts.colliders, vec3(0, 0, 1));
   mat.positionNode = pos as never;
   return mat;
+}
+
+/** Runtime motion fed to a wearable cloth surface. Values are deliberately
+ * dimensionless so the same material controller can drive a robe, cape,
+ * banner, or sail without tying it to one character rig. */
+export type FlowingClothMotion = {
+  /** 0 at rest, 1 at the authored full locomotion ripple. */
+  motion: number;
+  /** Signed turn impulse in roughly -1..1. */
+  turn: number;
+  /** Ambient breeze strength in roughly 0..1. */
+  breeze?: number;
+};
+
+export type FlowingClothMaterial = {
+  material: THREE.MeshStandardNodeMaterial;
+  colliders: ClothColliders;
+  setMotion(state: FlowingClothMotion): void;
+};
+
+/**
+ * Low-cost collision-aware cloth for animated garments and other moving
+ * surfaces. Geometry stays static and GPU-resident; only four capsule uniforms
+ * and three scalar motion uniforms can change each frame. The pinned edge is
+ * UV.y=0 and the free edge is UV.y=1, so authored surfaces control exactly
+ * where motion is allowed without a CPU vertex solve or per-frame upload.
+ *
+ * Collision uses the same capsule contract as sails and flags. A costume can
+ * update those capsules from its moving skeleton while a sail can bind them to
+ * a mast and boom—the shader path is identical.
+ */
+export function flowingClothMaterial(opts: {
+  color?: number;
+  /** Optional authored weave/palette map; useful for costumes and sails. */
+  map?: THREE.Texture;
+  roughness?: number;
+  metalness?: number;
+  side?: THREE.Side;
+  vertexColors?: boolean;
+  amplitude?: number;
+  speed?: number;
+  phase?: number;
+  /** 0 disables capsules for unconstrained sleeves/panels; garment envelopes
+   * normally use three passes so overlapping body capsules converge. */
+  collisionIterations?: number;
+  colliders?: ClothColliders;
+} = {}): FlowingClothMaterial {
+  const colliders = opts.colliders ?? clothColliders();
+  const motion = uniform(0);
+  const turn = uniform(0);
+  const breeze = uniform(0.22);
+  const amplitude = opts.amplitude ?? 0.055;
+  const speed = opts.speed ?? 2.35;
+  const phase = float(opts.phase ?? 0);
+  const collisionIterations = Math.max(0, Math.floor(opts.collisionIterations ?? 3));
+  const vertexColors = opts.vertexColors ?? false;
+  const mat = new THREE.MeshStandardNodeMaterial({
+    color: opts.color ?? 0xffffff,
+    map: opts.map,
+    side: opts.side ?? THREE.DoubleSide,
+    roughness: opts.roughness ?? 0.88,
+    metalness: opts.metalness ?? 0
+  });
+  // Node materials do not consistently honor the legacy `vertexColors` flag
+  // once a custom position node is installed. Bind the geometry attribute as
+  // the color node explicitly so authored garment palettes survive WebGPU.
+  if (vertexColors) mat.colorNode = attribute("color", "vec3");
+
+  const u = uv().x;
+  const loose = uv().y.clamp(0, 1).pow(1.45);
+  const ambient = sin(u.mul(Math.PI * 4).sub(time.mul(speed)).add(phase))
+    .mul(0.72)
+    // Integer 2π harmonics keep u=0 and u=1 identical on closed garments.
+    .add(sin(u.mul(Math.PI * 8).add(time.mul(speed * 0.63)).add(phase.mul(1.7))).mul(0.28))
+    .mul(breeze)
+    .mul(amplitude * 0.5);
+  const locomotion = sin(u.mul(Math.PI * 6).sub(time.mul(speed * 2.15)).add(phase.mul(0.6)))
+    .mul(motion)
+    .mul(amplitude);
+  const turning = sin(u.mul(Math.PI * 2).add(phase))
+    .mul(turn)
+    .mul(amplitude * 0.72);
+  const displacement = ambient.add(locomotion).add(turning).mul(loose);
+  let pos: unknown = positionLocal.add(normalLocal.mul(displacement));
+  // Garments wrap overlapping torso/limb envelopes. Three cheap projection
+  // passes converge those coupled constraints; unconstrained sleeves opt out,
+  // while sail/flag rippleMaterial keeps its one-pass mast path.
+  if (collisionIterations > 0) {
+    pos = pushOutOfColliders(pos, colliders, normalLocal, collisionIterations);
+  }
+  mat.positionNode = pos as never;
+
+  return {
+    material: mat,
+    colliders,
+    setMotion(next) {
+      motion.value = THREE.MathUtils.clamp(next.motion, 0, 1);
+      turn.value = THREE.MathUtils.clamp(next.turn, -1, 1);
+      breeze.value = THREE.MathUtils.clamp(next.breeze ?? 0.22, 0, 1);
+    }
+  };
 }
 
 /**
