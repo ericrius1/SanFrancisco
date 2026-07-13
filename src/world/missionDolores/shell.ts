@@ -4,6 +4,7 @@ import type { WorldMap } from "../heightmap";
 import type { MdWorldBox } from "./ctx";
 import {
   APSE_RADIUS,
+  createApseWallSegments,
   FOOT_HALF_W,
   FOOT_Z0,
   FOOT_Z1,
@@ -15,6 +16,7 @@ import {
   PORTAL_HALF_W,
   TOWER_H,
   VAULT_APEX,
+  WALL_THICKNESS,
   WALL_H,
   Z_APSE,
   Z_ENTRANCE
@@ -29,7 +31,8 @@ const VAULT_CREAM = new THREE.Color(0xe6d8bf).convertSRGBToLinear();
 const TERRACOTTA = new THREE.Color(0xa9573a).convertSRGBToLinear();
 const WOOD = new THREE.Color(0x5a3e26).convertSRGBToLinear();
 
-const WALL_T = 0.6;
+const WALL_T = WALL_THICKNESS;
+const APSE_WALL_H = WALL_H + 0.8;
 
 interface ShellBuild {
   group: THREE.Group;
@@ -159,8 +162,10 @@ export function buildBasilicaShell(map: WorldMap): ShellBuild {
   }
   // apse floor fan
   {
-    const g = new THREE.CircleGeometry(APSE_RADIUS, 24, -Math.PI / 2, Math.PI).toNonIndexed();
+    const g = new THREE.CircleGeometry(APSE_RADIUS, 24, Math.PI, Math.PI).toNonIndexed();
     paint(g, STONE_FLOOR);
+    // Lower-left half in XY becomes the +z sanctuary fan while preserving an
+    // upward-facing winding after the -90° turn onto the floor.
     g.rotateX(-Math.PI / 2);
     g.translate(0, 0.005, Z_APSE);
     floors.push(g);
@@ -192,6 +197,10 @@ export function buildBasilicaShell(map: WorldMap): ShellBuild {
   /* ---------------- façade (entrance, z = Z_ENTRANCE) with portal + towers ---------------- */
   const facadeZ = Z_ENTRANCE;
   const facadeTop = 13.5;
+  const doorW = PORTAL_HALF_W - 0.3;
+  const doorH = PORTAL_H - 0.35;
+  const doorX = PORTAL_HALF_W - 0.16;
+  const doorZ = facadeZ + doorW / 2 + 0.1;
   // wall split around the central portal gap
   box(stone, -(PORTAL_HALF_W + (FOOT_HALF_W - PORTAL_HALF_W) / 2), WALL_H / 2, facadeZ, FOOT_HALF_W - PORTAL_HALF_W, WALL_H, WALL_T, ADOBE);
   box(stone, PORTAL_HALF_W + (FOOT_HALF_W - PORTAL_HALF_W) / 2, WALL_H / 2, facadeZ, FOOT_HALF_W - PORTAL_HALF_W, WALL_H, WALL_T, ADOBE);
@@ -206,8 +215,11 @@ export function buildBasilicaShell(map: WorldMap): ShellBuild {
   // decorative portal surround
   box(trim, 0, PORTAL_H + 0.2, facadeZ + 0.05, PORTAL_HALF_W * 2 + 0.8, 0.5, 0.3, ADOBE_TRIM);
   for (const sx of [-1, 1]) box(trim, sx * (PORTAL_HALF_W + 0.35), PORTAL_H / 2, facadeZ + 0.05, 0.4, PORTAL_H, 0.3, ADOBE_TRIM);
-  // heavy timber doors set inside the portal
-  for (const sx of [-1, 1]) box(woodG, sx * (PORTAL_HALF_W / 2), PORTAL_H / 2, facadeZ - 0.2, PORTAL_HALF_W - 0.1, PORTAL_H - 0.2, 0.16, WOOD);
+  // Heavy timber leaves stand open against the jambs: the chapel visibly
+  // welcomes visitors instead of presenting a shut door they can ghost through.
+  for (const sx of [-1, 1]) {
+    box(woodG, sx * doorX, doorH / 2, doorZ, doorW, doorH, 0.16, WOOD, Math.PI / 2);
+  }
 
   // twin bell towers flanking the façade
   for (const sx of [-1, 1]) {
@@ -223,21 +235,20 @@ export function buildBasilicaShell(map: WorldMap): ShellBuild {
 
   /* ---------------- apse (semicircular sanctuary, z = Z_APSE) ---------------- */
   {
-    const segs = 12;
-    for (let i = 0; i < segs; i++) {
-      const a0 = -Math.PI / 2 + (Math.PI * i) / segs;
-      const a1 = -Math.PI / 2 + (Math.PI * (i + 1)) / segs;
-      const x0 = Math.cos(a0) * APSE_RADIUS;
-      const z0 = Z_APSE + Math.sin(a0) * APSE_RADIUS;
-      const x1 = Math.cos(a1) * APSE_RADIUS;
-      const z1 = Z_APSE + Math.sin(a1) * APSE_RADIUS;
-      const mx = (x0 + x1) / 2;
-      const mz = (z0 + z1) / 2;
-      const len = Math.hypot(x1 - x0, z1 - z0) + 0.05;
-      box(stone, mx, WALL_H / 2, mz, len, WALL_H, WALL_T, ADOBE, -Math.atan2(z1 - z0, x1 - x0));
+    for (const seg of createApseWallSegments()) {
+      box(stone, seg.x, APSE_WALL_H / 2, seg.z, seg.length, APSE_WALL_H, WALL_T, ADOBE, seg.yaw);
+      box(trim, seg.x, APSE_WALL_H + 0.2, seg.z, seg.length + 0.08, 0.4, WALL_T + 0.18, ADOBE_TRIM, seg.yaw);
     }
-    // apse window high on the back curve (emissive) — the apse exhibit adds the statue
-    glass.push({ x: 0, y: 8.2, z: Z_APSE + APSE_RADIUS - 0.35, w: 3.0, h: 4.6, ry: Math.PI, kind: "rose" });
+    // Close the two shoulders between the narrower apse and the outer aisles.
+    // Without these, the sanctuary reads as an outdoor set from either aisle.
+    const shoulderW = FOOT_HALF_W - APSE_RADIUS;
+    const shoulderX = APSE_RADIUS + shoulderW / 2;
+    for (const sx of [-1, 1]) {
+      box(stone, sx * shoulderX, APSE_WALL_H / 2, Z_APSE, shoulderW, APSE_WALL_H, WALL_T, ADOBE);
+      box(trim, sx * shoulderX, APSE_WALL_H + 0.2, Z_APSE, shoulderW, 0.4, WALL_T + 0.25, ADOBE_TRIM);
+    }
+    // Authored rose and lancet glass are installed by the apse exhibit. Keeping
+    // one owner avoids nearly-coplanar duplicate panes and visible z-fighting.
   }
 
   /* ---------------- colonnade: two rows of columns dividing nave / aisle ---------------- */
@@ -267,6 +278,34 @@ export function buildBasilicaShell(map: WorldMap): ShellBuild {
     g.scale(1, (VAULT_APEX - WALL_H) / r, 1); // flatten the arch height to the target apex
     g.translate(0, WALL_H, vaultMidZ);
     vault.push(g);
+
+    // The barrel vault is deliberately open-ended, so close the rounded
+    // sanctuary with a quiet plaster canopy.  This semicircular soffit follows
+    // the same rear footprint as the apse wall and prevents a strip of night
+    // sky from appearing above the stained glass when viewed from the nave.
+    const apseCanopy = new THREE.CircleGeometry(APSE_RADIUS + 0.12, 36, Math.PI, Math.PI).toNonIndexed();
+    paint(apseCanopy, VAULT_CREAM);
+    apseCanopy.rotateX(-Math.PI / 2);
+    apseCanopy.translate(0, APSE_WALL_H, Z_APSE);
+    vault.push(apseCanopy);
+
+    // A shallow triumphal-arch lunette closes the vertical seam where the
+    // nave's barrel vault meets the lower apse canopy. Without it, visitors
+    // could glimpse the terracotta exterior cap above the rose window.
+    const lunetteShape = new THREE.Shape();
+    lunetteShape.moveTo(-APSE_RADIUS, APSE_WALL_H);
+    for (let i = 0; i <= 24; i++) {
+      const x = -APSE_RADIUS + (APSE_RADIUS * 2 * i) / 24;
+      const archY = WALL_H + (VAULT_APEX - WALL_H) * Math.sqrt(Math.max(0, 1 - (x * x) / (r * r)));
+      lunetteShape.lineTo(x, archY);
+    }
+    lunetteShape.lineTo(APSE_RADIUS, APSE_WALL_H);
+    lunetteShape.closePath();
+    const lunette = new THREE.ShapeGeometry(lunetteShape).toNonIndexed();
+    paint(lunette, VAULT_CREAM);
+    lunette.translate(0, 0, Z_APSE - 0.04);
+    vault.push(lunette);
+
     // painted ribs across the vault (thin arches spanning X at intervals along Z)
     for (let z = Z_ENTRANCE + 4; z <= Z_APSE - 2; z += 6.4) {
       const rib = new THREE.TorusGeometry(r - 0.05, 0.16, 5, 24, Math.PI).toNonIndexed();
@@ -352,8 +391,27 @@ export function buildBasilicaShell(map: WorldMap): ShellBuild {
   // façade split around the portal
   pushWall(-(PORTAL_HALF_W + (FOOT_HALF_W - PORTAL_HALF_W) / 2), facadeZ, (FOOT_HALF_W - PORTAL_HALF_W) / 2, WALL_T / 2);
   pushWall(PORTAL_HALF_W + (FOOT_HALF_W - PORTAL_HALF_W) / 2, facadeZ, (FOOT_HALF_W - PORTAL_HALF_W) / 2, WALL_T / 2);
-  // apse blocker (chord across the niche)
-  pushWall(0, Z_APSE + APSE_RADIUS - 0.5, APSE_RADIUS, WALL_T / 2);
+  // Open door leaves are tangible and match their visible yaw.
+  for (const sx of [-1, 1]) {
+    const w = mdToWorldXZ(sx * doorX, doorZ);
+    colliders.push({
+      x: w.x,
+      y: floorTop + doorH / 2,
+      z: w.z,
+      hx: doorW / 2,
+      hy: doorH / 2,
+      hz: 0.09,
+      yaw: MD_YAW + Math.PI / 2
+    });
+  }
+  // Curved apse wall + the two shoulder returns. These are the same sampled
+  // segments as the visible sanctuary, so players cannot walk through it.
+  for (const seg of createApseWallSegments()) {
+    pushWall(seg.x, seg.z, seg.length / 2, WALL_T / 2, seg.yaw);
+  }
+  const shoulderW = FOOT_HALF_W - APSE_RADIUS;
+  const shoulderX = APSE_RADIUS + shoulderW / 2;
+  for (const sx of [-1, 1]) pushWall(sx * shoulderX, Z_APSE, shoulderW / 2, WALL_T / 2);
   // column colliders (slim)
   for (const sx of [-1, 1]) {
     for (let z = Z_ENTRANCE + 6; z <= Z_APSE - 4; z += 5.6) {
@@ -384,24 +442,58 @@ export function buildBasilicaShell(map: WorldMap): ShellBuild {
   return { group, floorTop, colliders, groundTopAt };
 }
 
-/** A solid terracotta gable that fully covers the vault, plus a conical apse cap. */
+/** A terracotta roof shell that clears the interior vault, plus an apse cap. */
 function buildGableRoof(out: THREE.BufferGeometry[], midZ: number, len: number) {
   const ridgeY = VAULT_APEX + 3; // 17 — well above the vault crown
   const eaveY = WALL_H + 0.8; // 11.8
   const halfW = FOOT_HALF_W + 1; // slight overhang past the walls
-  // gable = a filled triangular cross-section (X-Y) extruded along Z — no ridge gap
-  const shape = new THREE.Shape();
-  shape.moveTo(-halfW, eaveY);
-  shape.lineTo(0, ridgeY);
-  shape.lineTo(halfW, eaveY);
-  shape.closePath();
   const depth = len + 2;
-  const gable = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: false, steps: 1 }).toNonIndexed();
-  paint(gable, TERRACOTTA);
-  gable.translate(0, 0, midZ - depth / 2);
-  out.push(gable);
+  const rise = ridgeY - eaveY;
+  const slope = Math.hypot(halfW, rise);
+  const pitch = Math.atan2(rise, halfW);
+
+  // Two thin pitched panels. The former solid triangular extrusion had a
+  // horizontal bottom face at the eaves that sliced through the barrel vault
+  // and read as a black ceiling from inside the church.
+  for (const sx of [-1, 1]) {
+    const panel = new THREE.BoxGeometry(slope, 0.28, depth).toNonIndexed();
+    paint(panel, TERRACOTTA);
+    panel.rotateZ(sx * -pitch);
+    panel.translate(sx * halfW / 2, (eaveY + ridgeY) / 2, midZ);
+    out.push(panel);
+  }
+
+  // Close only the front and rear gable ends with thin adobe triangles; these
+  // preserve the basilica silhouette without putting any surface over the nave.
+  const makePediment = (z: number, faceRear: boolean) => {
+    const shape = new THREE.Shape();
+    shape.moveTo(-halfW, eaveY);
+    shape.lineTo(0, ridgeY);
+    shape.lineTo(halfW, eaveY);
+    shape.closePath();
+    const pediment = new THREE.ShapeGeometry(shape).toNonIndexed();
+    paint(pediment, ADOBE);
+    if (!faceRear) pediment.rotateY(Math.PI);
+    pediment.translate(0, 0, z);
+    out.push(pediment);
+  };
+  makePediment(midZ - depth / 2 - 0.15, false);
+  makePediment(midZ + depth / 2 + 0.15, true);
+
   // conical cap over the semicircular apse
-  const cap = new THREE.ConeGeometry(APSE_RADIUS + 1.5, 4.5, 20).toNonIndexed();
+  // Exterior cone only: a closed bottom cap becomes a huge dark disk when seen
+  // from inside the sanctuary and fights the barrel vault.
+  // Rear half only: a full cone projects ten metres into the nave and its
+  // terracotta underside appears as a stray red arch above the sanctuary.
+  const cap = new THREE.ConeGeometry(
+    APSE_RADIUS + 1.5,
+    4.5,
+    20,
+    1,
+    true,
+    -Math.PI / 2,
+    Math.PI
+  ).toNonIndexed();
   paint(cap, TERRACOTTA);
   cap.translate(0, WALL_H + 2.25, Z_APSE);
   out.push(cap);

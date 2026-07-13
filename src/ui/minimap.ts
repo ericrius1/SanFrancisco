@@ -2,6 +2,7 @@ import { palaceLagoonMask, type WorldMap } from "../world/heightmap";
 import type { PlayerMode } from "../player/types";
 import { BOTANICAL_GARDEN_BOUNDS } from "../world/garden/layout";
 import { WILD_REGIONS } from "../world/wildlands/layout";
+import { SPAWN_POINTS } from "../world/spawnPoints";
 
 /**
  * Minimap (top-left, always on) + full-city map (M or click to expand).
@@ -226,6 +227,12 @@ export class Minimap {
       const [a, b] = ggb.towers;
       this.#landmarks.push({ x: (a[0] + b[0]) / 2, z: (a[1] + b[1]) / 2, name: "Golden Gate Bridge" });
     }
+    const missionDolores = SPAWN_POINTS.missionDolores;
+    this.#landmarks.push({
+      x: missionDolores.x,
+      z: missionDolores.z,
+      name: "Mission Dolores · Saint Francis"
+    });
     // San Francisco Botanical Garden — a labelled dot + teleport at the garden's
     // own centre (real SFBG, east end of Golden Gate Park by the 9th Ave gate).
     // Location comes from the garden module itself, so the marker always sits

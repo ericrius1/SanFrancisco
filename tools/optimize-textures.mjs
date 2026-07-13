@@ -65,7 +65,14 @@ for (const f of files) {
   // KTX2 UASTC (GPU-compressed, mipmapped)
   if (!webpOnly) {
     const ktxOut = path.join(outDir, `${name}.ktx2`);
-    execFileSync(TOKTX, [...encodeArgs, "--genmipmap", "--assign_oetf", oetf, ktxOut, tmp], { stdio: "pipe" });
+    // Three's KTX2Loader uploads compressed levels without interpreting the
+    // KTXorientation metadata. Encode a physical lower-left origin so KTX2 and
+    // the TextureLoader WebP fallback sample with the same upright UVs.
+    execFileSync(
+      TOKTX,
+      [...encodeArgs, "--genmipmap", "--lower_left_maps_to_s0t0", "--assign_oetf", oetf, ktxOut, tmp],
+      { stdio: "pipe" }
+    );
     ktxTotal += statSync(ktxOut).size;
   }
   rmSync(tmp);

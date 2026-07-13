@@ -37,7 +37,8 @@ import {
   isTeaGardenBuilding
 } from "./world/japaneseTeaGarden/layout";
 import { CoronaHeightsPark, prepareCoronaHeightsGround } from "./world/coronaHeights";
-import { createMissionDoloresMuseum, type MissionDoloresMuseum } from "./world/missionDolores";
+import type { MissionDoloresMuseum } from "./world/missionDolores";
+import { MD_CENTER as MISSION_DOLORES_CENTER } from "./world/missionDolores/layout";
 import { OceanBeachWaves, SurfExperience } from "./gameplay/surfing";
 import { findOpenSpawn } from "./world/spawn";
 import { resolveSpawnPoint, type RegionKey } from "./world/spawnPoints";
@@ -517,7 +518,33 @@ async function boot() {
   const siteGate = createSiteGate();
   let coronaHeights: CoronaHeightsPark | null = null;
   let missionDolores: MissionDoloresMuseum | null = null;
+  let missionDoloresLoading: Promise<void> | null = null;
   let museumBookOpen = false;
+  const ensureMissionDolores = (playerPos: THREE.Vector3): void => {
+    if (missionDolores || missionDoloresLoading) return;
+    const dx = playerPos.x - MISSION_DOLORES_CENTER.x;
+    const dz = playerPos.z - MISSION_DOLORES_CENTER.z;
+    if (dx * dx + dz * dz > 190 * 190) return;
+    missionDoloresLoading = import("./world/missionDolores")
+      .then(({ createMissionDoloresMuseum }) => {
+        missionDolores = createMissionDoloresMuseum(map, physics, {
+          scene,
+          renderer,
+          camera,
+          onBookToggle: (open) => {
+            museumBookOpen = open;
+            app.classList.toggle("world-dimmed", open);
+            input.suspended = open || cameraMode;
+            if (open) input.releaseLock();
+          }
+        });
+        const debug = (window as unknown as { __sf?: { missionDolores: MissionDoloresMuseum | null } }).__sf;
+        if (debug) debug.missionDolores = missionDolores;
+      })
+      .catch((err) => {
+        console.warn("[boot] Mission Dolores museum unavailable:", err);
+      });
+  };
   const gardenDisplacer: GroundDisplacer = { x: 0, z: 0, radius: 1.6, strength: 1 };
   const gardenDisplacers = [gardenDisplacer];
   // Master foliage switch (bound at the top of the "/" panel). When off, every
@@ -651,26 +678,9 @@ async function boot() {
   } catch (err) {
     console.warn("[boot] corona heights unavailable:", err);
   }
-  try {
-    // Mission San Francisco de Asís (Mission Dolores) — the founding Franciscan
-    // mission the city is named for, rebuilt basilica-scale and turned into a
-    // walkable museum of Saint Francis. Heavy shell + KTX2 exhibits build lazily
-    // on approach. The Canticle book (E at the pedestal) freezes the world like
-    // the behind-the-scenes reader while its storybook overlay is open.
-    missionDolores = createMissionDoloresMuseum(map, physics, {
-      scene,
-      renderer,
-      camera,
-      onBookToggle: (open) => {
-        museumBookOpen = open;
-        app.classList.toggle("world-dimmed", open);
-        input.suspended = open || cameraMode;
-        if (open) input.releaseLock();
-      }
-    });
-  } catch (err) {
-    console.warn("[boot] Mission Dolores museum unavailable:", err);
-  }
+  // Mission San Francisco de Asís is a first-use region. Its module, hidden
+  // reader UI, procedural shell, exhibits, and art all stay out of clean boot;
+  // ensureMissionDolores() crosses the code gate only on physical approach.
   // Fetch-the-ball loop: hold-to-throw (ball + overhand windup start immediately;
   // release before 1s stows, hold longer for power). Walk up and press E to pick
   // one up, or take it from a waiting dog. A free dog in the Corona Heights park
@@ -2744,7 +2754,8 @@ async function boot() {
     archery?.update(frameDt, elapsed, { player, input, hud, chase, camera });
     // Goldman clubhouse NPCs: one-hypot early return when far — safe every frame
     goldenGateTennis?.update(frameDt, elapsed, player.position);
-    // Mission Dolores museum: book proximity prompt + exhibit animation (cheap far away)
+    // Mission Dolores: dynamic code gate first, then shell/art proximity gates.
+    ensureMissionDolores(player.position);
     missionDolores?.update(frameDt, elapsed, player.position, player.mode, hud);
 
     // "hop in" nudge when standing near a ride (friend → wildlife)
