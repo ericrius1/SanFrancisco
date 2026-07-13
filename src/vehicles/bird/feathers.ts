@@ -168,7 +168,9 @@ function attachFan(bone: THREE.Bone, feathers: Feather[], vaneUp: THREE.Vector3,
   const im = new THREE.InstancedMesh(geo, mat, feathers.length);
   im.frustumCulled = false; // rides an animated bone; static bounds lie
   im.castShadow = false;
-  im.receiveShadow = false;
+  // The source skinned GLB supplies the economical caster silhouette. These
+  // larger physical vanes still receive, but never multiply shadow-map draws.
+  im.receiveShadow = true;
   im.visible = visible;
   bone.getWorldQuaternion(QI).invert(); // rig space → bone local (rest pose)
   for (let i = 0; i < feathers.length; i++) {
@@ -201,7 +203,7 @@ function attachMembrane(
   const mesh = new THREE.Mesh(geo, mat);
   mesh.frustumCulled = false;
   mesh.castShadow = false;
-  mesh.receiveShadow = false;
+  mesh.receiveShadow = true;
   mesh.visible = visible;
   bone.getWorldQuaternion(QI).invert();
   AY.copy(dir).normalize().applyQuaternion(QI);
@@ -221,7 +223,7 @@ function attachBulk(bone: THREE.Bone, pos: THREE.Vector3, radii: THREE.Vector3, 
   const mesh = new THREE.Mesh(new THREE.SphereGeometry(1, 12, 10), mat);
   mesh.frustumCulled = false;
   mesh.castShadow = false;
-  mesh.receiveShadow = false;
+  mesh.receiveShadow = true;
   mesh.visible = visible;
   bone.getWorldQuaternion(QI).invert();
   mesh.position.copy(pos).applyQuaternion(QI);

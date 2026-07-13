@@ -3,6 +3,7 @@ import { BodyType } from "../core/physics";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { Physics } from "../core/physics";
 import type { WorldMap } from "../world/heightmap";
+import { enableLocalFarShadowLayers } from "../world/shadows/shadowLayers";
 
 /**
  * Floating islands drifting over the city — little grass discs with a dirt
@@ -99,6 +100,7 @@ export class Islands {
       const mesh = new THREE.Mesh(islandGeometry(r, i + 1), bodyMat);
       mesh.position.set(x, y, z);
       mesh.castShadow = true;
+      enableLocalFarShadowLayers(mesh);
       mesh.receiveShadow = true;
       scene.add(mesh);
 

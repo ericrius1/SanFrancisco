@@ -126,8 +126,11 @@ export function sampleOceanBeachWave(x: number, z: number, time: number): OceanB
   const slopeX =
     (oceanBeachWaveHeight(x + eps, z, time) - oceanBeachWaveHeight(x - eps, z, time)) /
     (2 * eps);
-  const face = mask * Math.exp(-0.5 * ((crest.distance - 4) / 15) ** 2);
-  const lip = mask * Math.exp(-0.5 * ((crest.distance - 1) / 5.5) ** 2);
+  // These gameplay channels deliberately match oceanBeachSurfField()'s visible
+  // green wall and white lip. A wider invisible scoring band made the board
+  // report "on the lip" while the rendered crest was several metres away.
+  const face = mask * Math.exp(-0.5 * ((crest.distance - 4) / 5.5) ** 2);
+  const lip = mask * Math.exp(-0.5 * ((crest.distance - 1) / 2.6) ** 2);
   return {
     height,
     slopeX,

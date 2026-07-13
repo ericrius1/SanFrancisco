@@ -3,6 +3,7 @@ import { positionLocal, sin, smoothstep, time, uniform, uv, vec3 } from "three/t
 import { LIGHT_SCALE } from "../../config";
 import { lightAnchor } from "../../player/lightPool";
 import { capsulesToLocal, clothColliders, pushOutOfColliders, type Capsule, type ClothColliders } from "../../fx/cloth";
+import { applyVehicleShadowPolicy } from "../shadows";
 
 // animation handles Player's per-frame animate drives while the boat is embodied
 export type BoatSailRig = {
@@ -121,7 +122,7 @@ export function buildBoatMesh(): THREE.Group {
   };
 
   // hull: solid below the sole, open bulwarks above — the cockpit is visible
-  box(hullMat, 2.4, 0.55, 5.9, 0, -0.2, 0.05);
+  const hull = box(hullMat, 2.4, 0.55, 5.9, 0, -0.2, 0.05);
   box(bottomMat, 2.46, 0.3, 5.95, 0, -0.42, 0.05); // antifoul waterline band
   box(bottomMat, 0.16, 0.5, 3.4, 0, -0.7, 0.3); // keel
   box(teakDark, 0.09, 0.75, 0.55, 0, -0.5, 3.0); // rudder
@@ -247,5 +248,9 @@ export function buildBoatMesh(): THREE.Group {
   jib.userData.clothCapsules = jibCaps;
 
   g.userData.sail = { flap, billow, boom, heel } satisfies BoatSailRig;
+  // Three casters cover the physical read: one hull slab plus the two large
+  // animated sails. Spars, stays, deck fittings, and lamps are below the useful
+  // CSM silhouette scale, but opaque surfaces still receive self/player shade.
+  applyVehicleShadowPolicy(g, [hull, main, jib]);
   return g;
 }

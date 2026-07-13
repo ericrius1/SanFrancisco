@@ -22,7 +22,7 @@ export type SeedTreeDesignSpec = {
 
 export type GrownTemplate = {
   design: SeedTreeDesignSpec;
-  /** hero THREE.LOD (LOD0/1/2 baked in, shadows on, foliage shaded) */
+  /** hero THREE.LOD (LOD0/1/2 beauty geometry, foliage shaded) */
   template: THREE.LOD;
   /** the LOD2 level — source for instanced far tiers */
   lod2: THREE.Object3D;
@@ -56,6 +56,12 @@ export function growTemplate(design: SeedTreeDesignSpec): Promise<GrownTemplate>
       controls: design.controls ?? {},
       lod: LOD_OPTS,
       foliageGrade: FOLIAGE_GRADE
+    });
+    template.traverse((object) => {
+      const mesh = object as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      mesh.castShadow = false;
+      mesh.receiveShadow = true;
     });
     return { design, template, lod2 };
   });

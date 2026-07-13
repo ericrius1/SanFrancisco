@@ -14,6 +14,7 @@ import * as THREE from "three/webgpu";
 import { BodyType, type Physics } from "../../core/physics";
 import type { WorldMap } from "../heightmap";
 import { CORONA_TRAILS, type CoronaXZ } from "./layout";
+import { enableLocalFarShadowLayers } from "../shadows/shadowLayers";
 
 type Vec3 = { x: number; y: number; z: number };
 
@@ -380,6 +381,7 @@ function makeCragMesh(map: WorldMap) {
   const mesh = new THREE.Mesh(geometry, material);
   mesh.name = "corona_summit_chert_crags";
   mesh.castShadow = true;
+  enableLocalFarShadowLayers(mesh);
   mesh.receiveShadow = true;
   return mesh;
 }
@@ -617,7 +619,9 @@ function makeScree(map: WorldMap) {
   mesh.count = count;
   mesh.instanceMatrix.needsUpdate = true;
   if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-  mesh.castShadow = true;
+  // Thousands of sub-metre scree rocks cannot resolve even in the local map;
+  // the merged summit crag above owns the readable landform silhouette.
+  mesh.castShadow = false;
   mesh.receiveShadow = true;
   mesh.frustumCulled = false;
   return mesh;

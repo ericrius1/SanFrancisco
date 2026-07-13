@@ -1,5 +1,6 @@
 import * as THREE from "three/webgpu";
 import type { WorldMap } from "./heightmap";
+import { enableLocalFarShadowLayers } from "./shadows/shadowLayers";
 
 const COIT_BASE = 0xbdb5a4;
 
@@ -18,11 +19,6 @@ function groundMin(map: WorldMap, x: number, z: number, radius: number, n = 24):
  * leaves a visible gap under the base — a wide footing skirt fills it in.
  */
 export function applyLandmarkFixes(root: THREE.Object3D, map: WorldMap) {
-  // the crude baked Sutro Tower is superseded by the detailed runtime rig in
-  // sutroTower.ts (createSutroTower); hide it so they do not z-fight.
-  const sutro = root.getObjectByName("lm_sutro");
-  if (sutro) sutro.visible = false;
-
   const coit = root.getObjectByName("lm_coit");
   if (!coit) return;
 
@@ -43,6 +39,7 @@ export function applyLandmarkFixes(root: THREE.Object3D, map: WorldMap) {
   skirt.name = "lm_coit_footing";
   skirt.position.set(x, bottom + h / 2, z);
   skirt.castShadow = true;
+  enableLocalFarShadowLayers(skirt);
   skirt.receiveShadow = true;
   root.add(skirt);
 }

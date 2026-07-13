@@ -12,6 +12,7 @@ export class SurfExperience {
   #comboEl: HTMLElement;
   #statusEl: HTMLElement;
   #meterEl: HTMLElement;
+  #launchEl: HTMLElement;
   #score = 0;
   #combo = 1;
   #comboTimer = 0;
@@ -20,6 +21,9 @@ export class SurfExperience {
   #eventTimer = 0;
   #landingSerial = 0;
   #wipeoutSerial = 0;
+  #flowSerial = 0;
+  #flowDuration = 1;
+  #launchSerial = 0;
   #active = false;
   #audio: VehicleAudio;
 
@@ -29,16 +33,18 @@ export class SurfExperience {
     this.root.className = "surf-hud";
     this.root.setAttribute("aria-label", "Ocean Beach surf score");
     this.root.innerHTML = `
-      <div class="surf-title"><span>OCEAN BEACH</span><small>CHASE THE LIP</small></div>
+      <div class="surf-title"><span>OCEAN BEACH</span><small>FIND YOUR FLOW</small></div>
       <div class="surf-score"><span data-surf-score>0</span><small>POINTS</small></div>
       <div class="surf-combo" data-surf-combo>x1</div>
       <div class="surf-status" data-surf-status>DROP IN</div>
-      <div class="surf-meter"><i data-surf-meter></i></div>
-      <div class="surf-controls">W pump · A/D carve · Space air · Shift tuck</div>`;
+      <div class="surf-meter surf-flow-meter"><span>FLOW</span><i data-surf-meter></i><b>X</b></div>
+      <div class="surf-meter surf-launch-meter"><span>LIP</span><i data-surf-launch></i><b>AUTO</b></div>
+      <div class="surf-controls">W pump · S stall · A/D choose your line · X flow</div>`;
     this.#scoreEl = this.root.querySelector("[data-surf-score]")!;
     this.#comboEl = this.root.querySelector("[data-surf-combo]")!;
     this.#statusEl = this.root.querySelector("[data-surf-status]")!;
     this.#meterEl = this.root.querySelector("[data-surf-meter]")!;
+    this.#launchEl = this.root.querySelector("[data-surf-launch]")!;
     document.getElementById("hud")!.appendChild(this.root);
   }
 
@@ -93,19 +99,39 @@ export class SurfExperience {
         this.#award(points, surf.landedAirTime > 0.85 ? "BIG AIR" : "CLEAN LANDING", "landing");
       }
     }
+    if (surf.flowSerial !== this.#flowSerial) {
+      this.#flowSerial = surf.flowSerial;
+      this.#flowDuration = Math.max(0.001, surf.flowTimeRemaining);
+      this.#status("FLOW STATE", "flow");
+      this.#eventTimer = 1.1;
+      this.#audio.surfEvent("flow", 1);
+      this.root.classList.remove("flow-on");
+      void this.root.offsetWidth;
+      this.root.classList.add("flow-on");
+    }
+    if (surf.launchSerial !== this.#launchSerial) {
+      this.#launchSerial = surf.launchSerial;
+      this.#status("LIFT OFF", "air");
+      this.#eventTimer = 0.8;
+    }
     if (surf.wipeoutSerial !== this.#wipeoutSerial) {
       this.#wipeoutSerial = surf.wipeoutSerial;
-      this.#combo = 1;
-      this.#comboTimer = 0;
-      this.#status("WIPEOUT — RESETTING", "bad");
-      this.#eventTimer = 1.2;
-      this.#audio.surfEvent("wipeout", 1);
-      this.root.classList.add("wipeout");
-      window.setTimeout(() => this.root.classList.remove("wipeout"), 520);
+      this.#combo = Math.max(1, this.#combo - 1);
+      this.#status("SURFACE SAVE", "good");
+      this.#eventTimer = 0.9;
+      this.#audio.surfEvent("wipeout", 0.35);
     } else if (this.#eventTimer > 0) {
       // Hold trick/landing copy long enough to read before live wave status resumes.
+    } else if (surf.flowActive) {
+      this.#status(`FLOW  ${surf.riderMotionRate.toFixed(2)}×`, "flow");
     } else if (surf.airborne) {
       this.#status(`AIR ${surf.airTime.toFixed(1)}s`, "air");
+    } else if (surf.flowReady) {
+      this.#status("X — ENTER FLOW", "flow");
+    } else if (surf.autoLaunchCharge > 0.08) {
+      this.#status(`LIP ENERGY ${Math.round(surf.autoLaunchCharge * 100)}%`, "air");
+    } else if (surf.stalling) {
+      this.#status("STALLING — PUMP W", "");
     } else if (surf.lip > 0.56) {
       this.#status("ON THE LIP", "air");
     } else if (surf.face > 0.34) {
@@ -117,7 +143,13 @@ export class SurfExperience {
     this.#scoreEl.textContent = Math.floor(this.#score).toLocaleString();
     this.#comboEl.textContent = `x${this.#combo}`;
     this.#comboEl.classList.toggle("hot", this.#combo > 1);
-    this.#meterEl.style.transform = `scaleX(${clamp01(surf.face * 1.12)})`;
+    const flowFill = surf.flowActive
+      ? clamp01(surf.flowTimeRemaining / this.#flowDuration)
+      : surf.flow;
+    this.#meterEl.style.transform = `scaleX(${clamp01(flowFill)})`;
+    this.#launchEl.style.transform = `scaleX(${clamp01(surf.autoLaunchCharge)})`;
+    this.root.classList.toggle("flow-ready", surf.flowReady && !surf.flowActive);
+    this.root.classList.toggle("flow-active", surf.flowActive);
     this.root.classList.remove("pulse");
   }
 
@@ -134,7 +166,7 @@ export class SurfExperience {
     this.root.classList.add("pulse");
   }
 
-  #status(text: string, tone: "" | "good" | "air" | "bad") {
+  #status(text: string, tone: "" | "good" | "air" | "bad" | "flow") {
     this.#statusEl.textContent = text;
     this.#statusEl.dataset.tone = tone;
   }

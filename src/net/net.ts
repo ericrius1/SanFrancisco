@@ -3,6 +3,12 @@ import type { PlayerMode } from "../player/types";
 import { avatarFromSeed, isDefaultAvatar, normalizeAvatarTraits, type AvatarTraits } from "../player/avatar";
 import { boardFromSeed, isDefaultBoard, normalizeBoardConfig, type BoardConfig } from "../vehicles/board/config";
 import { isDefaultScooter, normalizeScooterConfig, scooterFromSeed, type ScooterConfig } from "../vehicles/scooter";
+import {
+  isDefaultSurfboard,
+  normalizeSurfboardConfig,
+  surfboardFromSeed,
+  type SurfboardConfig
+} from "../vehicles/surf/config";
 
 /**
  * Client side of the multiplayer presence relay (server/server.mjs).
@@ -14,9 +20,9 @@ import { isDefaultScooter, normalizeScooterConfig, scooterFromSeed, type Scooter
  * hosting (static files on a CDN, relay elsewhere).
  *
  * Protocol (JSON, one room):
- *   → {t:"hi", name, avatar, board}      on open
- *   ← {t:"welcome", id, hue, name, players:[{id,name,hue,avatar,board}]}
- *   ← {t:"join"|{t:"leave"}|{t:"name"}|{t:"avatar"}|{t:"board"} roster changes
+ *   → {t:"hi", name, avatar, board, scooter, surfboard} on open
+ *   ← {t:"welcome", id, hue, name, players:[{id,name,hue,avatar,board,scooter,surfboard}]}
+ *   ← {t:"join"|{t:"leave"}|{t:"name"}|{t:"avatar"}|{t:"board"}|{t:"scooter"}|{t:"surfboard"} roster changes
  *   → {t:"s", d:[mode,x,y,z,qx,qy,qz,qw,speed,ride?]}   ~12 Hz while moving
  *   ← {t:"snap", ts, ps:[[id,...d]]}    batched world snapshot, ~12 Hz
  *   → {t:"rtc", to, payload}            voice signaling to one peer
@@ -48,7 +54,16 @@ export const NET_MODES: PlayerMode[] = ["walk", "drive", "plane", "boat", "drone
 export type RemoteGolfState = { d: number[]; h: number; p: number; s: number; r: number };
 export type PickleballSlot = 0 | 1;
 export type RemotePickleballState = { id: number; d: number[] };
-export type RemoteInfo = { id: number; name: string; hue: number; avatar?: AvatarTraits; board?: BoardConfig; scooter?: ScooterConfig; golf?: RemoteGolfState | null };
+export type RemoteInfo = {
+  id: number;
+  name: string;
+  hue: number;
+  avatar?: AvatarTraits;
+  board?: BoardConfig;
+  scooter?: ScooterConfig;
+  surfboard?: SurfboardConfig;
+  golf?: RemoteGolfState | null;
+};
 
 /** One interpolation sample for a remote player, timestamped in local ms. */
 export type NetSample = {
@@ -220,6 +235,18 @@ function rosterScooter(id: number, raw: unknown): ScooterConfig {
   return scooterFromSeed(id);
 }
 
+// Surfboards use the same presence rule as the other customizable vehicles:
+// missing/invalid data gets a stable per-player seeded board. The relay already
+// sanitizes current-schema messages; normalizing here keeps mixed-version
+// clients harmless and makes RemoteInfo safe for rendering.
+function rosterSurfboard(id: number, raw: unknown): SurfboardConfig {
+  if (raw) {
+    const config = normalizeSurfboardConfig(raw);
+    if (!isDefaultSurfboard(config)) return config;
+  }
+  return surfboardFromSeed(id);
+}
+
 export class Net {
   /** My server-assigned identity (0 until welcomed). */
   selfId = 0;
@@ -273,15 +300,17 @@ export class Net {
   #avatar: AvatarTraits | null;
   #board: BoardConfig | null;
   #scooter: ScooterConfig | null;
+  #surfboard: SurfboardConfig | null;
   // serverTs → local-clock mapping (EWMA of arrival offset; interp buffer
   // absorbs the residual jitter)
   #clockOffset: number | null = null;
 
-  constructor(name = pickName(), avatar?: AvatarTraits, board?: BoardConfig, scooter?: ScooterConfig) {
+  constructor(name = pickName(), avatar?: AvatarTraits, board?: BoardConfig, scooter?: ScooterConfig, surfboard?: SurfboardConfig) {
     this.name = name;
     this.#avatar = avatar ? normalizeAvatarTraits(avatar) : null;
     this.#board = board ? normalizeBoardConfig(board) : null;
     this.#scooter = scooter ? normalizeScooterConfig(scooter) : null;
+    this.#surfboard = surfboard ? normalizeSurfboardConfig(surfboard) : null;
     const envUrl = import.meta.env.VITE_WS_URL as string | undefined;
     const proto = location.protocol === "https:" ? "wss" : "ws";
     this.#url = envUrl || `${proto}://${location.host}/ws`;
@@ -368,7 +397,16 @@ export class Net {
     this.#ws = ws;
     ws.onopen = () => {
       this.#retryMs = 1000;
-      ws.send(JSON.stringify({ t: "hi", name: this.name, avatar: this.#avatar, board: this.#board, scooter: this.#scooter }));
+      ws.send(
+        JSON.stringify({
+          t: "hi",
+          name: this.name,
+          avatar: this.#avatar,
+          board: this.#board,
+          scooter: this.#scooter,
+          surfboard: this.#surfboard
+        })
+      );
     };
     ws.onmessage = (ev) => this.#handle(String(ev.data));
     ws.onclose = () => {
@@ -417,7 +455,13 @@ export class Net {
         this.selfHue = msg.hue as number;
         this.name = msg.name as string; // server-sanitized
         for (const p of msg.players as RemoteInfo[]) {
-          this.roster.set(p.id, { ...p, avatar: rosterAvatar(p.id, p.avatar), board: rosterBoard(p.id, p.board), scooter: rosterScooter(p.id, p.scooter) });
+          this.roster.set(p.id, {
+            ...p,
+            avatar: rosterAvatar(p.id, p.avatar),
+            board: rosterBoard(p.id, p.board),
+            scooter: rosterScooter(p.id, p.scooter),
+            surfboard: rosterSurfboard(p.id, p.surfboard)
+          });
           if (p.golf) this.golfStates.set(p.id, p.golf);
         }
         this.#hydratePickleball(msg.pickle);
@@ -433,7 +477,8 @@ export class Net {
           hue: msg.hue as number,
           avatar: rosterAvatar(msg.id as number, msg.avatar),
           board: rosterBoard(msg.id as number, msg.board),
-          scooter: rosterScooter(msg.id as number, msg.scooter)
+          scooter: rosterScooter(msg.id as number, msg.scooter),
+          surfboard: rosterSurfboard(msg.id as number, msg.surfboard)
         });
         this.onRoster();
         break;
@@ -475,6 +520,14 @@ export class Net {
         const p = this.roster.get(msg.id as number);
         if (p) {
           p.scooter = rosterScooter(p.id, msg.scooter);
+          this.onRoster();
+        }
+        break;
+      }
+      case "surfboard": {
+        const p = this.roster.get(msg.id as number);
+        if (p) {
+          p.surfboard = rosterSurfboard(p.id, msg.surfboard);
           this.onRoster();
         }
         break;
@@ -705,6 +758,13 @@ export class Net {
   setScooter(scooter: ScooterConfig) {
     this.#scooter = normalizeScooterConfig(scooter);
     if (this.#ws?.readyState === WebSocket.OPEN) this.#ws.send(JSON.stringify({ t: "scooter", scooter: this.#scooter }));
+  }
+
+  setSurfboard(surfboard: SurfboardConfig) {
+    this.#surfboard = normalizeSurfboardConfig(surfboard);
+    if (this.#ws?.readyState === WebSocket.OPEN) {
+      this.#ws.send(JSON.stringify({ t: "surfboard", surfboard: this.#surfboard }));
+    }
   }
 
   /**

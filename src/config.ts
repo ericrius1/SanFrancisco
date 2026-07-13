@@ -17,31 +17,18 @@ export const EXPOSURE_REBASE = 0.13
 export const LIGHT_SCALE = (100 / 6) * EXPOSURE_REBASE
 
 /**
- * The one universal render mode: the fixed, measurement-tuned settings every
- * session runs. Replaces the old three-tier quality preset system (performance /
- * balanced / high) and its separate shadow-quality tiers, both removed 2026-07 —
- * there is no user-facing quality switch any more. The two other universal-mode
- * values live with the systems they configure: scene AA (single-sample by
- * default, optional 4x MSAA for profiling) in POSTFX_TUNING.sceneSamples
- * (render/postfx.ts), and CSM shadow knobs via SHADOW_TUNING (world/sky.ts).
+ * Universal render settings live with the systems they configure: drawing-buffer
+ * pixel ratio in RENDER_TUNING (default 1, slider 0.5–2; devicePixelRatio is
+ * ignored), scene AA in POSTFX_TUNING.sceneSamples (render/postfx.ts), and CSM
+ * shadow knobs via SHADOW_TUNING (world/sky.ts). The old quality-preset /
+ * dynamic-res governor stack was removed — one default, optional "/" overrides.
  */
-export const RENDER_MODE = {
-  // drawing-buffer cap on devicePixelRatio. The scene is fragment-bound: retina
-  // dpr 2 costs ~2× the frame time of 1.5 for a near-invisible sharpness delta
-  // (measured 17.1 → 8.6 ms p50 at 2560×1600). dpr-1 displays are unaffected —
-  // the cap only ever lowers the ratio.
-  pixelRatioCap: 1.5,
-  // Dynamic-resolution governor (src/render/dynamicRes.ts): under sustained
-  // frame pressure the drawing-buffer pixel ratio steps down from the ceiling
-  // — min(devicePixelRatio, pixelRatioCap) — toward minPixelRatio, and back up
-  // when there's headroom, so weaker GPUs hold the display's frame budget.
-  dynamicRes: true,
-  // Lowest pixel ratio the governor will drop to under sustained load.
-  minPixelRatio: 1.0
-} as const
 
-/** Renderer grading, bound in the "/" panel's lighting folder. */
+/** Renderer grading + drawing buffer, bound in the "/" panel. */
 export const RENDER_TUNING = tunables("render", {
+  // Drawing-buffer pixel ratio. Default 1 for a low-fi / fragment-cheap look
+  // (devicePixelRatio is ignored, including retina Macs). Slider for profiling.
+  pixelRatio: { v: 1, min: 0.5, max: 2, step: 0.05, label: "pixel ratio" },
   // Anchored at 1.0 — a ±half-stop-ish artistic trim, NOT the day-brightness
   // control (that's sky.ts sunDay/hemiDay). Night, emissives and fog are all
   // balanced against the anchor, so big moves here shift everything at once.
@@ -49,7 +36,7 @@ export const RENDER_TUNING = tunables("render", {
   // grey-card calibration chart (src/ui/calibrationChart.ts): camera-locked row
   // of matte spheres at 5/18/50/90% albedo — the referee for any grading change.
   greyCards: { v: false, label: "grey cards (5·18·50·90%)" },
-  wireframe: { v: false, label: "wireframe mode" },
+  wireframe: { v: false, label: "wireframe mode (R)" },
   // collider x-ray: draw every active physics collider as a wireframe box (red =
   // baked body, orange = citywide index, green = walk-in wall, blue = interior).
   // Diagnoses "invisible collision" — a box that sits where no mesh is drawn.
