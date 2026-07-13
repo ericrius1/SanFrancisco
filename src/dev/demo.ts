@@ -20,6 +20,7 @@ import type { WorldMap } from "../world/heightmap";
 import type { BuskerTrioApi } from "../gameplay/buskers";
 import type { FetchBall } from "../gameplay/fetchBall";
 import type { CoronaHeightsPark } from "../world/coronaHeights";
+import type { LandsEndRegion } from "../world/landsEnd";
 import type { WorldQueries } from "../core/worldQueries";
 import type { BoardConfig } from "../vehicles/board";
 
@@ -56,6 +57,7 @@ export type DemoContext = {
   buskers?: BuskerTrioApi;
   fetchBall?: FetchBall;
   coronaHeights?: CoronaHeightsPark;
+  landsEnd?: LandsEndRegion;
   worldQueries?: WorldQueries;
   setTool?: (tool: string) => void;
   /** Apply a local, non-persisted board configuration for demos and capture. */
@@ -77,12 +79,14 @@ import { buskersCinematic } from "./demos/buskersCinematic";
 import { hoverboardCinematic } from "./demos/hoverboardCinematic";
 import { dogParkCinematic } from "./demos/dogParkCinematic";
 import { palaceShowcase } from "./demos/palaceShowcase";
+import { landsEndCinematic } from "./demos/landsEndCinematic";
 
 const DEMOS: Record<string, Demo> = {
   [buskersCinematic.name]: buskersCinematic,
   [hoverboardCinematic.name]: hoverboardCinematic,
   [dogParkCinematic.name]: dogParkCinematic,
-  [palaceShowcase.name]: palaceShowcase
+  [palaceShowcase.name]: palaceShowcase,
+  [landsEndCinematic.name]: landsEndCinematic
 };
 
 export function runDemo(name: string, ctx: DemoContext) {

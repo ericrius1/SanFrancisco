@@ -168,6 +168,30 @@ export const NATURE_REGIONS: NatureRegionSpec[] = [
     density: 8,
     character: { windBias: 0.72, fog: 0.22, reverb: 0.5 },
     windAltitude: { y0: 104, y1: 158, boost: 0.55 }
+  },
+  {
+    // Lands End — the exposed NW headland over the Pacific: a steady ocean-wind
+    // wash, wheeling gulls by day, and the low two-tone moan of the foghorn out
+    // in the marine layer at night. Fog-soft and open-air reverberant.
+    id: "landsEnd",
+    label: "Lands End",
+    bounds: { minX: -6140, maxX: -5700, minZ: 540, maxZ: 1020 },
+    fade: 140,
+    beds: { windGrass: 0.85, windTree: 0.35, nightCrickets: 0.2 },
+    day: [
+      { kind: "gull", w: 5 },
+      { kind: "crow", w: 2 },
+      { kind: "hawk", w: 1 },
+      { kind: "foghorn", w: 1 }
+    ],
+    night: [
+      { kind: "foghorn", w: 3 },
+      { kind: "owl", w: 2 },
+      { kind: "gull", w: 1 }
+    ],
+    density: 9,
+    character: { windBias: 0.86, fog: 0.62, reverb: 0.58 },
+    windAltitude: { y0: 30, y1: 74, boost: 0.5 }
   }
 ];
 

@@ -12,7 +12,8 @@ const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 
 const PRODUCTION_DURATIONS = Object.freeze({
   hoverboard: 15,
-  "dog-park": 11
+  "dog-park": 11,
+  landsend: 15
 });
 
 /**
@@ -36,6 +37,13 @@ export const CINEMATIC_AUDIO_PLANS = Object.freeze({
     { time: 4.83, id: "bounce-2", description: "second ball bounce" },
     { time: 4.5, id: "chase", description: "dog chase begins" },
     { time: 9.3, id: "resolve", description: "sunset wide resolve" }
+  ]),
+  landsend: Object.freeze([
+    { time: 0, id: "arrival", description: "marine drone + surf wash establishes" },
+    { time: 2.6, id: "walk", description: "the light-wave begins threading inward" },
+    { time: 7, id: "awaken", description: "the spiral comes fully alight" },
+    { time: 10.7, id: "release", description: "gold flood + sea-lanterns lift off" },
+    { time: 13.2, id: "resolve", description: "lanterns drift out over the Pacific" }
   ])
 });
 
@@ -88,6 +96,8 @@ export async function renderCinematicAudio(production, outputPath) {
 
   if (id === "hoverboard") {
     scoreHoverboard(mix);
+  } else if (id === "landsend") {
+    scoreLandsEnd(mix);
   } else {
     scoreDogPark(mix);
     const bedPlan = Array.isArray(production.audio?.beds)
@@ -178,6 +188,45 @@ export async function renderTransitionAudio(options = {}, outputPath) {
     rmsDb: levels.rmsDb,
     beds: []
   };
+}
+
+function scoreLandsEnd(mix) {
+  // A deep, patient marine drone (D aeolian) under an endless surf/wind wash;
+  // glassy chimes ring as the light-wave winds inward, then a warm chord and a
+  // spray of high bells bloom as the sea-lanterns lift off.
+  addPad(mix, { start: 0, duration: 11.6, notes: [38, 45, 50, 57], gain: 0.05, pan: -0.05, brightness: 0.2 });
+  addPad(mix, { start: 8.4, duration: 6.6, notes: [43, 50, 55, 62, 67], gain: 0.062, pan: 0.05, brightness: 0.52 });
+  addAir(mix, { start: 0, duration: 15, gain: 0.032, panDrift: 0.6 });
+
+  // distant foghorn swells
+  addSub(mix, { start: 1.1, duration: 2.5, fromHz: 70, toHz: 57, gain: 0.08 });
+  addSub(mix, { start: 6.0, duration: 2.6, fromHz: 66, toHz: 53, gain: 0.075 });
+
+  // the walk-in: sparse glassy chimes climbing as the spiral lights
+  const walkNotes = [69, 72, 76, 79, 81];
+  for (let i = 0; i < walkNotes.length; i += 1) {
+    addChime(mix, {
+      start: 3.3 + i * 1.5,
+      midi: walkNotes[i],
+      duration: 1.7,
+      gain: 0.05,
+      pan: mix.rng.range(-0.5, 0.5)
+    });
+  }
+
+  // the release: an upward swell + a rising spray of bells (lanterns climbing)
+  addWhoosh(mix, { start: 10.45, duration: 2.3, gain: 0.075, panFrom: -0.45, panTo: 0.55, direction: "out" });
+  addSub(mix, { start: 10.55, duration: 1.5, fromHz: 58, toHz: 92, gain: 0.06 });
+  const bloom = [76, 81, 84, 88, 91, 96];
+  for (let i = 0; i < bloom.length; i += 1) {
+    addChime(mix, {
+      start: 10.85 + i * 0.19 + mix.rng.range(-0.03, 0.03),
+      midi: bloom[i],
+      duration: 2.1,
+      gain: 0.046,
+      pan: mix.rng.range(-0.85, 0.85)
+    });
+  }
 }
 
 function scoreHoverboard(mix) {

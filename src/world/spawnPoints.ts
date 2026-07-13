@@ -58,6 +58,19 @@ export const SPAWN_POINTS: Record<string, SpawnPoint> = {
     // From 150 m up, the near hillside + immediate blocks are what reads; the
     // dense Mission/Castro grid beyond streams in over the next second or two.
     bootTileRadius: 700
+  },
+  // Lands End — the NW headland. Arrive on the cliff plateau beside the stone
+  // Labyrinth, the open Pacific dropping away to the WNW. Treeless clifftop, so
+  // it gates nothing: the city and parks stream in behind you after reveal.
+  landsEnd: {
+    key: "landsEnd",
+    label: "Lands End",
+    x: -5872,
+    z: 792,
+    heading: 2.0, // faces WNW over the labyrinth toward the open ocean
+    mode: "walk",
+    gates: [],
+    bootTileRadius: 700
   }
 };
 

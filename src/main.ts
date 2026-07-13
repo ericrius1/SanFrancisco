@@ -68,6 +68,7 @@ import { Hunt } from "./gameplay/hunt";
 import { FetchBall } from "./gameplay/fetchBall";
 import { createSiteGate } from "./gameplay/siteGate";
 import { createArchery, ARCHERY_CENTER, type ArcheryGame } from "./gameplay/archery";
+import { LandsEndRegion, LANDS_END_CENTER } from "./world/landsEnd";
 import { Satchel } from "./ui/satchel";
 import { HUD } from "./ui/hud";
 import { ShareButton } from "./ui/share";
@@ -390,6 +391,7 @@ async function boot() {
     if (wildlands) for (const g of wildlands.groups) g.visible = visible;
     goldenGateTennis?.setFoliageVisible(visible);
     coronaHeights?.setFoliageVisible(visible);
+    landsEnd?.setFoliageVisible(visible);
   };
   const islands = new Islands(physics, map, scene);
 
@@ -423,6 +425,9 @@ async function boot() {
   let golf: import("./gameplay/golf").GolfGame | null = null;
   // Golden Gate Park archery range — NW corner of the park; site-gated like golf.
   let archery: ArcheryGame | null = null;
+  // Lands End — the NW headland: a cliff-top Labyrinth you light by walking,
+  // Sutro Baths ruins, cypress and a lantern-keeper. Distance-LOD region.
+  let landsEnd: LandsEndRegion | null = null;
   const hunt = new Hunt(map, scene);
   hunt.onCatch = (kind) => {
     satchel.add(kind);
@@ -500,6 +505,14 @@ async function boot() {
     scene.add(coronaHeights.group);
   } catch (err) {
     console.warn("[boot] corona heights unavailable:", err);
+  }
+  try {
+    landsEnd = new LandsEndRegion(map);
+    landsEnd.setFoliageVisible(foliageOn);
+    scene.add(landsEnd.group);
+    void renderer.compileAsync(landsEnd.group, camera, scene);
+  } catch (err) {
+    console.warn("[boot] Lands End unavailable:", err);
   }
   // Fetch-the-ball loop: hold-to-throw (ball + overhand windup start immediately;
   // release before 1s stows, hold longer for power). Walk up and press E to pick
@@ -914,6 +927,7 @@ async function boot() {
   // (or a shared ?j= link) drops you on the sand at the shore, facing the swell,
   // board in hand — ready to press E and paddle out.
   minimap.addLandmark(OCEAN_BEACH_SURF.maxX - 26, OCEAN_BEACH_SURF.entryZ, "Ocean Beach · Surf");
+  minimap.addLandmark(LANDS_END_CENTER.x, LANDS_END_CENTER.z, "Lands End · Labyrinth");
   const playerLocator = new PlayerLocator();
   const navigation = new NavigationController({
     player,
@@ -1930,7 +1944,8 @@ async function boot() {
       input.pressed("KeyE") &&
       !exitToWalk() &&
       !golf?.tryStartAtTee(player, hud) &&
-      !archery?.tryInteract(player, hud, chase)
+      !archery?.tryInteract(player, hud, chase) &&
+      !landsEnd?.keeper.tryInteract(player, hud)
     ) {
       const nearOceanBeach =
         player.mode === "walk" &&
@@ -2216,6 +2231,10 @@ async function boot() {
     // fine; elevation only moves with the clock.
     syncBallGlowNight(sky.sunElevation);
     coronaHeights?.update(frameDt, elapsed, camera.position);
+    landsEnd?.update(frameDt, elapsed, player.position);
+    if (landsEnd && player.mode === "walk") {
+      landsEnd.keeper.updatePrompt(player.position.x, player.position.z, hud);
+    }
     // Ball fetch loop + pet follow run every frame, tool-agnostic, so a thrown
     // ball keeps bouncing and a returning/adopted dog keeps moving even after
     // switching tools. verb() keeps the HUD Click row in sync with hold-to-throw.
@@ -2549,7 +2568,7 @@ async function boot() {
       // deferred render warmup runs, tick() early-returns without rendering, so
       // screenshots would capture a stale boot-pose frame no matter what the
       // camera was set to.
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, goldenGateTennis, pickleball: pickleballController.game, pickleballAmbient: pickleballController.ambient, pickleballAudio: pickleballController.audio, pickleballUI: pickleballController.ui, pickleballController, coronaHeights, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, siteGate,
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, goldenGateTennis, pickleball: pickleballController.game, pickleballAmbient: pickleballController.ambient, pickleballAudio: pickleballController.audio, pickleballUI: pickleballController.ui, pickleballController, coronaHeights, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, siteGate, landsEnd,
         TSL,
         renderIdle: () => modulesReady && !lateRenderWarmupActive }
     });
@@ -2573,6 +2592,7 @@ async function boot() {
       buskers,
       fetchBall: fetchBall ?? undefined,
       coronaHeights: coronaHeights ?? undefined,
+      landsEnd: landsEnd ?? undefined,
       worldQueries,
       setTool: (t: string) => setTool(t as ToolName),
       setBoardConfig: (config: typeof boardConfig) => {

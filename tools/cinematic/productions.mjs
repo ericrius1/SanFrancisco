@@ -37,6 +37,19 @@ const DEFINITIONS = Object.freeze({
       profile: "dog-park",
       description: "Golden-hour park ambience, a playful throw, paws, panting, and soft city air."
     })
+  }),
+  landsend: Object.freeze({
+    id: "landsend",
+    demo: "landsend",
+    title: "The Lands End Labyrinth",
+    duration: 15,
+    seed: 0x4c_41_4e_44,
+    posterAt: 12.4,
+    stillTimes: Object.freeze([0.4, 2.2, 3.8, 5.6, 7.2, 8.9, 10.9, 12.4, 13.8, 14.7]),
+    audio: Object.freeze({
+      profile: "landsend",
+      description: "Marine drone and surf, glassy chimes as the spiral lights, a warm bloom as the lanterns rise."
+    })
   })
 });
 
