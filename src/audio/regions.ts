@@ -8,7 +8,7 @@
 // nature area in is a matter of appending one entry here.
 
 import { BOTANICAL_GARDEN_BOUNDS } from "../world/garden/layout";
-import { WILD_REGIONS } from "../world/wildlands/layout";
+import { WILD_REGIONS } from "../world/wildlands/regions";
 import type { NatureVoiceKind } from "./voices";
 
 export type BedId = "forestBirds" | "windGrass" | "windTree" | "nightCrickets";

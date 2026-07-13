@@ -337,7 +337,7 @@ export type GardenTree = {
   scale: number;
   yaw: number;
   species: number;
-  nearClone?: boolean;
+  nearDetail?: boolean;
 };
 
 export type GardenShrub = {
@@ -406,7 +406,7 @@ function appendMeadowShadeTrees(map: GardenTerrain, trees: GardenTree[]) {
       scale: scale * (1.12 + gardenHash(i, 0, 587) * 0.24),
       yaw: gardenHash(i, 0, 593) * Math.PI * 2,
       species,
-      nearClone: false
+      nearDetail: false
     });
     added++;
   }

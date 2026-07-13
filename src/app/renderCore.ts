@@ -1,6 +1,7 @@
 import * as THREE from "three/webgpu";
 import { CONFIG, RENDER_TUNING } from "../config";
 import { applyBundleOrderPatch } from "../render/bundleOrderPatch";
+import { registerRenderer } from "./rendererRegistry";
 
 export type RenderCore = {
   renderer: THREE.WebGPURenderer;
@@ -26,6 +27,7 @@ export async function createRenderCore(app: HTMLElement): Promise<RenderCore> {
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   app.appendChild(renderer.domElement);
   await renderer.init();
+  registerRenderer(renderer);
 
   // Tiles are BundleGroups; stock r185 draws bundles after transparency and
   // can cover non-depth-writing effects.
@@ -40,4 +42,3 @@ export async function createRenderCore(app: HTMLElement): Promise<RenderCore> {
   );
   return { renderer, scene, camera };
 }
-
