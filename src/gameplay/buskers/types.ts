@@ -97,15 +97,15 @@ export interface Musician {
    */
   schedule(events: NoteEvent[], atTime: (beat: number) => number): void;
   /**
-   * Swap in a different song's part (the transport advances automatically; Q
-   * also skips through the songbook). Called while the transport is outside
-   * "playing" — rebuild any part-derived state (cursors,
+   * Swap in a different song's part (the transport advances the songbook
+   * automatically between performances). Called while the transport is
+   * outside "playing" — rebuild any part-derived state (cursors,
    * choreography maps) so the next pass animates the new score.
    */
   setPart(part: NoteEvent[]): void;
   /**
-   * Hard-stop any ringing or lookahead-scheduled voices. Used when Q cycles
-   * the songbook so mid-song tails can't bleed into the silent gap.
+   * Hard-stop any ringing or lookahead-scheduled voices. Used when a film
+   * cue forces a silent gap so mid-song tails can't bleed into it.
    */
   cutAudio(): void;
   /** Remove/disconnect everything this musician created. Do NOT dispose

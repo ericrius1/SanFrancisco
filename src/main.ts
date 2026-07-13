@@ -1850,9 +1850,24 @@ async function boot() {
     return `${h % 12 === 0 ? 12 : h % 12}:${String(m).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}`;
   };
 
-  // Immersive mode remembers whether the diagnostics layer was visible.
-  let debugWasOn = false;
+  // Immersive mode snapshots HUD + debug visibility and restores them on exit.
+  type ImmersiveSnap = { debugOn: boolean; uiOpen: boolean };
+  let immersiveSnap: ImmersiveSnap | null = null;
   const setDebugUI = (on: boolean) => diagnostics.setDebugUI(on, debugPanel);
+  const exitImmersive = (opts?: { restoreDebug?: boolean }) => {
+    if (!immersive) return;
+    immersive = false;
+    hud.setHidden(false);
+    remotes.setTagsVisible(true);
+    if (immersiveSnap) {
+      // Slash exits immersive then toggles debug itself — skip restore so `/` still opens the panel.
+      if (opts?.restoreDebug !== false) setDebugUI(immersiveSnap.debugOn);
+      uiOpen = immersiveSnap.uiOpen;
+      hud.setFaded(!uiOpen);
+      immersiveSnap = null;
+    }
+    refreshPauseToggle();
+  };
 
   // Bottom-center pause control: only up while paused (and not immersive, since
   // it lives under #hud). Clicking it freezes/unfreezes the player.
@@ -1938,31 +1953,23 @@ async function boot() {
     }
     // /: all debug UI — tuning pane + three.js inspector (works while paused too)
     if (input.pressed("Slash")) {
-      if (immersive) {
-        immersive = false;
-        hud.setHidden(false);
-        remotes.setTagsVisible(true);
-        refreshPauseToggle();
-      }
+      if (immersive) exitImmersive({ restoreDebug: false });
       setDebugUI(!diagnostics.debugOn);
     }
     // I: immersive mode — every scrap of UI goes away until pressed again
     if (input.pressed("KeyI")) {
-      immersive = !immersive;
-      hud.setHidden(immersive);
-      remotes.setTagsVisible(!immersive);
       if (immersive) {
-        debugWasOn = diagnostics.debugOn;
-        setDebugUI(false);
-        if (uiOpen) {
-          uiOpen = false;
-          hud.setFaded(true);
-        }
-      } else {
-        setDebugUI(debugWasOn);
+        exitImmersive();
         hud.message("Immersive off");
+      } else {
+        immersiveSnap = { debugOn: diagnostics.debugOn, uiOpen };
+        immersive = true;
+        // setHidden already covers the HUD — leave uiOpen/faded alone so exit can restore.
+        hud.setHidden(true);
+        remotes.setTagsVisible(false);
+        setDebugUI(false);
+        refreshPauseToggle();
       }
-      refreshPauseToggle(); // the toggle hides in immersive mode
     }
     // Tab: toggle the user UI — fade panels in/out. Runs while paused too.
     if (input.pressed("Tab")) {
@@ -1976,6 +1983,16 @@ async function boot() {
       const closing = minimap.expanded;
       minimap.setExpanded(!minimap.expanded);
       if (closing && !cameraMode) input.requestLock();
+    }
+
+    // Expanded map: gamepad pan / zoom / cursor / select / teleport.
+    if (minimap.expanded) {
+      const axes = input.mapPadAxes();
+      minimap.padPan(axes.lx, axes.ly, frameDt);
+      minimap.padZoom(axes.rt - axes.lt, frameDt);
+      minimap.padMoveCursor(axes.rx, axes.ry, frameDt);
+      if (input.pressed("Space")) minimap.padSelectAtCursor();
+      if (input.firePressed) minimap.padTeleport();
     }
 
     // One wake/sleep pass over every registered minigame site (pickleball,
@@ -2156,13 +2173,17 @@ async function boot() {
     }
     const padCycle = (input.pressed("PadModeNext") ? 1 : 0) - (input.pressed("PadModePrev") ? 1 : 0);
     if (padCycle && !playingPickleball) {
-      const cycleOrder = MENU_MODES;
-      const idx = cycleOrder.indexOf(player.mode);
-      const from = idx >= 0 ? idx : 0;
-      const step = padCycle < 0 ? -1 : 1;
-      if (cycleOrder.length) {
-        toolbar.focusVehicles();
-        switchMode(cycleOrder[(from + step + cycleOrder.length) % cycleOrder.length]);
+      if (minimap.expanded) {
+        minimap.padCyclePins(padCycle);
+      } else {
+        const cycleOrder = MENU_MODES;
+        const idx = cycleOrder.indexOf(player.mode);
+        const from = idx >= 0 ? idx : 0;
+        const step = padCycle < 0 ? -1 : 1;
+        if (cycleOrder.length) {
+          toolbar.focusVehicles();
+          switchMode(cycleOrder[(from + step + cycleOrder.length) % cycleOrder.length]);
+        }
       }
     }
     if (!playingPickleball && input.altPressed("ArrowLeft")) applyPlaceHistory(-1);
@@ -2231,13 +2252,6 @@ async function boot() {
           }
         }
       }
-    }
-
-    // Q: busker trio cycles to the next song in its songbook and cues it
-    // 2s before the first note (no teleport)
-    if (input.pressed("KeyQ")) {
-      const song = buskers.cycleSong(2);
-      hud.message(`♪ ${song} — playing in 2s`, 2.2);
     }
 
     // ".": factory reset for tweaks — every tweakpane value back to its

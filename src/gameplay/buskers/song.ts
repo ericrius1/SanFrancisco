@@ -3,7 +3,7 @@ import type { BuskerId, NoteEvent } from "./types";
 /**
  * The trio's songbook — original authored songs sharing one harmonic
  * vocabulary. The live transport advances through the book after every
- * performance; Q remains a manual skip (BuskerTrio.cycleSong).
+ * performance.
  *
  * 1. "Fog Rolls Home" — a ~22-second folk refrain: staggered entrances, one
  *    pass of the motif, and out together. The long rest between plays reads

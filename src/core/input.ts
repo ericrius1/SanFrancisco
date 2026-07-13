@@ -32,7 +32,7 @@ const LOOK_Y = 720;
 const PAD_BUTTONS: Record<number, string> = {
   0: "Space", //     A: jump / ollie / drift / air brake / hover
   1: "KeyE", //      B: enter-exit vehicle
-  3: "KeyX", //      Y: surf flow state
+  3: "KeyM", //      Y: map toggle
   4: "KeyQ", //      LB: drone down / bird twirl left
   // 5 RB: bird twirl right — routed via pad axis (not KeyE, which exits)
   7: "ShiftLeft", // RT: boost / run / tuck
@@ -45,6 +45,8 @@ const PAD_BUTTONS: Record<number, string> = {
   14: "PadModePrev", // dpad left/right: cycle travel modes
   15: "PadModeNext"
 };
+
+export type MapPadAxes = { lx: number; ly: number; rx: number; ry: number; lt: number; rt: number };
 
 export class Input {
   keys = new Set<string>();
@@ -83,6 +85,7 @@ export class Input {
   #padPrev: boolean[] = [];
   #padAxes = new Map<string, number>();
   #padFireHeld = false;
+  #mapPadAxes: MapPadAxes = { lx: 0, ly: 0, rx: 0, ry: 0, lt: 0, rt: 0 };
   #triggerRoute: "plane" | "bird" | "drone" | null = null; // plane: ↑/↓ throttle; bird: LB/RB twirl; drone: Q/U vertical
 
   constructor(el: HTMLElement) {
@@ -239,6 +242,7 @@ export class Input {
         this.#padAxes.clear();
         this.#padPrev.length = 0;
         this.#padFireHeld = false;
+        this.#mapPadAxes = { lx: 0, ly: 0, rx: 0, ry: 0, lt: 0, rt: 0 };
       }
       return;
     }
@@ -299,6 +303,9 @@ export class Input {
     }
     if (lx !== 0 || ly !== 0 || rx !== 0 || ry !== 0 || lt > 0.02 || rt > 0.02 || lb || rb) active = true;
 
+    // Raw sticks/triggers for the expanded map (readable while suspended).
+    this.#mapPadAxes = { lx, ly, rx, ry, lt, rt };
+
     // right stick = mouselook; works without pointer lock. Pitch polarity is
     // the global INPUT_TUNING toggle — same for walk and every vehicle.
     if (!this.suspended) {
@@ -308,6 +315,11 @@ export class Input {
     }
 
     if (active) this.#setDevice("pad");
+  }
+
+  /** Left/right sticks + triggers, ignoring `suspended` — for expanded-map navigation. */
+  mapPadAxes(): MapPadAxes {
+    return this.#mapPadAxes;
   }
 
   #endFreeCursor(relock: boolean) {

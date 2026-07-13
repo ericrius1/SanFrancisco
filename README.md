@@ -65,7 +65,6 @@ Press `Shift`+`1`–`7` to switch how you get around. Each one has its own feel:
 | `Shift` | Run / boost |
 | `Space` | Jump / drift / ollie / flap / pickleball swing (depends on the mode) |
 | `E` | Mount/dismount a nearby ride, pick up a returned fetch ball, start golf from a glowing tee, or claim/leave a pickleball side |
-| `Q` | Cycle the Corona Heights jammer trio to the next song |
 | `1`–`9` | Teleport to the numbered player next to you (or pick a golf club while playing) |
 | `M` | **Full-city map** — drag/scroll to pan/zoom, click a landmark or spot, press Teleport |
 | Left click | Use the current tool; near your golf ball, hold to draw back and release to swing |
@@ -99,8 +98,7 @@ Open the map (`M`) and teleport, or just wander. A few of the denser spots:
 - **Corona Heights** — default spawn. Red-chert summit, downtown/Mission vista,
   a dog park just below, and a **jammer trio** (ukulele, handpan, flute) perched
   on a boulder. Stand nearby to hear their original songbook rotate with a
-  natural quiet break between tunes; press `Q` to skip ahead. Throw the ball
-  tool for the dogs.
+  natural quiet break between tunes. Throw the ball tool for the dogs.
 - **Botanical Garden** — San Francisco Botanical Garden in Golden Gate Park:
   SeedThree trees, blade grass, shrubs, and a shared wind envelope. The nature
   soundscape thickens here.
@@ -128,7 +126,7 @@ Nothing here is required — it's a list of things people tend to find fun.
 - **Fly up first.** Switch to fly or bird (`Shift`+`3` / `Shift`+`7`) and get
   above the fog. The whole city is easiest to orient from the air.
 - **Hang with the jammers.** Spawn is already on Corona Heights — walk to the
-  boulder, listen, hit `Q` for another tune, then toss a ball for the dogs.
+  boulder, listen for a while, then toss a ball for the dogs.
 - **Walk the Botanical Garden.** Map → **Botanical Garden**. Grass tramples under
   you; trees stream in as you arrive.
 - **Play pickleball.** Map → **Goldman Tennis & Pickleball**, press `E` on an
