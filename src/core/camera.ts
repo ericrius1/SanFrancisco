@@ -9,7 +9,11 @@ import {
   clearCameraCutaway,
   updateCameraCutaway
 } from "../render/cameraCutaway"
-import { SurfCameraController } from "../vehicles/surf/camera"
+import type {
+  SurfCameraController,
+  SurfCameraDiagnostics
+} from "../vehicles/surf/camera"
+import { SURF_CAMERA_TUNING } from "../vehicles/surf/cameraTuning"
 
 const OFFSETS: Record<PlayerMode, { back: number; up: number; look: number }> =
   {
@@ -100,7 +104,9 @@ export class ChaseCamera {
   #externallyOwned = false
   #holdOrbitPose = false
   #lastMode: PlayerMode | null = null
-  #surfCamera: SurfCameraController
+  #surfCamera: SurfCameraController | null = null
+  #surfCameraLoading: Promise<void> | null = null
+  #surfCameraLoadFailed = false
   #outdoorFov: number
   #map: WorldMap
   #physics: Physics
@@ -110,7 +116,6 @@ export class ChaseCamera {
     this.#outdoorFov = camera.fov
     this.#map = map
     this.#physics = physics
-    this.#surfCamera = new SurfCameraController(camera.fov)
   }
 
   shake(amount: number) {
@@ -127,8 +132,27 @@ export class ChaseCamera {
     }
   }
 
-  surfCameraDiagnostics() {
-    return this.#surfCamera.diagnostics()
+  surfCameraDiagnostics(): SurfCameraDiagnostics | null {
+    return this.#surfCamera?.diagnostics() ?? null
+  }
+
+  /** First-use gate for the activity-only camera chunk. */
+  ensureSurfCamera(): Promise<void> {
+    if (this.#surfCamera) return Promise.resolve()
+    if (this.#surfCameraLoadFailed) return Promise.resolve()
+    if (this.#surfCameraLoading) return this.#surfCameraLoading
+    this.#surfCameraLoading = import("../vehicles/surf/camera")
+      .then(({ SurfCameraController }) => {
+        this.#surfCamera ??= new SurfCameraController(this.#outdoorFov)
+      })
+      .catch((error) => {
+        this.#surfCameraLoadFailed = true
+        console.warn("[surf] camera failed to load", error)
+      })
+      .finally(() => {
+        this.#surfCameraLoading = null
+      })
+    return this.#surfCameraLoading
   }
 
   /** Eased first-person contribution, used by interaction rays and diagnostics. */
@@ -154,7 +178,7 @@ export class ChaseCamera {
   suspend(player: Player) {
     if (!this.#externallyOwned) {
       this.#externallyOwned = true
-      this.#surfCamera.reset()
+      this.#surfCamera?.reset()
     }
     this.#indoor = 0
     this.#holdOrbitPose = false
@@ -203,19 +227,52 @@ export class ChaseCamera {
       this.#lastHitDistance = Infinity
       player.setFirstPersonView(false)
       clearCameraCutaway()
-      this.#surfCamera.update(dt, this.camera, player)
-      this.yaw = this.#surfCamera.viewYaw
-      this.pitch = this.#surfCamera.viewPitch
+      if (this.#surfCamera) {
+        this.#surfCamera.update(dt, this.camera, player)
+        this.yaw = this.#surfCamera.viewYaw
+        this.pitch = this.#surfCamera.viewPitch
+      } else {
+        // The activity chunk normally arrives within a frame. Until then, use a
+        // tiny authored fallback with the same invariant: no world-camera input,
+        // shoreward eye, and visible line ahead.
+        void this.ensureSurfCamera()
+        const tuning = SURF_CAMERA_TUNING.values
+        const direction = player.surfTelemetry.lineDirection < 0 ? -1 : 1
+        const anchor = player.renderPosition
+        this.#chasePos.set(
+          anchor.x + tuning.shoreOffset,
+          anchor.y + tuning.height,
+          anchor.z - direction * tuning.distance
+        )
+        this.#chasePos.y = Math.max(
+          this.#chasePos.y,
+          Math.max(waterHeight(this.#chasePos.x, this.#chasePos.z, player.time), 0) + tuning.waterClearance
+        )
+        this.#target.set(
+          anchor.x,
+          anchor.y + tuning.targetHeight,
+          anchor.z + direction * tuning.lookAhead
+        )
+        this.camera.position.copy(this.#chasePos)
+        this.camera.up.copy(this.#up)
+        this.camera.lookAt(this.#target)
+        this.camera.getWorldDirection(this.#viewDir)
+        this.yaw = Math.atan2(-this.#viewDir.x, -this.#viewDir.z)
+        this.pitch = -Math.asin(THREE.MathUtils.clamp(this.#viewDir.y, -1, 1))
+      }
       this.#lastMode = "surf"
       return
     }
-    if (this.#lastMode === "surf") {
-      // Re-enter the world camera from the rendered surf eye, without leaking
-      // any of the surf rig's own damping or composition state.
+    const leavingSurf = this.#lastMode === "surf"
+    if (leavingSurf) {
+      this.#surfCameraLoadFailed = false
+      // Reset the dedicated rig. The ordinary walk pose is snapped below because
+      // surf exit atomically teleports from the break to sand; interpolating that
+      // distance would look like the camera had escaped player control.
       this.#orbitPos.copy(this.camera.position)
       this.#firstPersonPos.copy(this.camera.position)
       this.#initialized = true
-      this.#surfCamera.reset()
+      this.#surfCamera?.reset()
     }
     const indoorTarget = (this.indoor || this.activityFirstPerson) && player.mode === "walk" ? 1 : 0
     this.#indoor +=
@@ -359,7 +416,7 @@ export class ChaseCamera {
       this.#orbitPos.copy(this.camera.position)
       this.#firstPersonPos.copy(this.#eyePos)
       this.#initialized = true
-    } else if (modeChanged && player.mode !== "walk") {
+    } else if (modeChanged && (player.mode !== "walk" || leavingSurf)) {
       // Leaving FPS for a vehicle must clear its geometry immediately rather than
       // easing the camera outward from the vehicle's centre for several frames.
       this.#orbitPos.copy(this.#chasePos)

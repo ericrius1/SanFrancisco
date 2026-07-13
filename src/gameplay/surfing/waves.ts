@@ -1,6 +1,8 @@
 import * as THREE from "three/webgpu";
 import {
+  cameraPosition,
   positionLocal,
+  positionWorld,
   uniform,
   vec3,
   color,
@@ -8,7 +10,6 @@ import {
   mix,
   smoothstep,
   clamp,
-  max,
   sin,
   mx_noise_float
 } from "three/tsl";
@@ -23,15 +24,16 @@ import { waterHeight } from "../../world/heightmap";
 
 const SLOTS = 7;
 
-// High-res green face patch. The strip runs the break in X and follows the
-// surfer along the beach (Z). Fine X tessellation resolves the steep ~7.5 m
-// shoreward face crisply (the old shared 96-seg bay patch smeared it into a
-// low-poly shelf); it only builds/updates near Ocean Beach.
-const FACE_CENTER_X = -6045;
-const FACE_WIDTH_X = 600; // covers offshoreCrest−30 … maxX+15
-const FACE_WINDOW_Z = 520; // player-following window down the beach
-const FACE_SEG_X = 340; // ~1.75 m — resolves the steep shoreward face crisply
-const FACE_SEG_Z = 168; // graded (below): ~1.4 m at the rider, ~5 m at the rim
+// High-res single-wave ribbon. It follows the active rider in both X and Z and
+// covers only the immediate playable crest; broad feathered rims blend into the
+// continuous bay water below. Keeping the locked camera outside this compact
+// patch prevents any displaced carrier triangle from crossing its near plane.
+const FACE_WIDTH_X = 52;
+const FACE_SHORE_OVERHANG = 10;
+const FACE_CENTER_X = OCEAN_BEACH_SURF.entryX - FACE_WIDTH_X * 0.5 + FACE_SHORE_OVERHANG;
+const FACE_WINDOW_Z = 180; // compact player-following window down the beach
+const FACE_SEG_X = 64; // <1 m — resolves the steep shoreward face crisply
+const FACE_SEG_Z = 96; // graded (below): dense at the rider, soft at the rim
 
 /**
  * Player-following face grid with **graded Z resolution**: vertices bunch tight
@@ -203,6 +205,17 @@ export class OceanBeachWaves {
       float(FACE_WINDOW_Z * 0.5),
       positionLocal.z.abs()
     ).oneMinus();
+    const xRim = smoothstep(
+      float(-FACE_WIDTH_X * 0.5),
+      float(-FACE_WIDTH_X * 0.5 + 10),
+      positionLocal.x
+    ).mul(
+      smoothstep(
+        float(FACE_WIDTH_X * 0.5 - 8),
+        float(FACE_WIDTH_X * 0.5),
+        positionLocal.x
+      ).oneMinus()
+    );
 
     // --- colour: chlorophyll green, backlit face, breaking foam ---------------
     // deep trough → mid sea green → bright translucent emerald on the standing
@@ -226,17 +239,35 @@ export class OceanBeachWaves {
     const chop = mx_noise_float(vec3(wx.mul(0.22), wz.mul(0.22), t.mul(0.6))).mul(0.12);
     mat.normalNode = bumpNormal(f.height.add(chop).mul(0.5));
 
-    // The standing face reads near-opaque (a wall you can't see the sky through);
-    // only the thin shallow toe stays a little translucent.
-    const alpha = clamp(mix(float(0.86), float(0.99), max(f.face, f.height.mul(0.14))).add(foam.mul(0.15)), 0, 1);
-    mat.opacityNode = alpha.mul(stripFade).mul(zRim);
+    // The continuous bay water owns the broad body. This lazy layer contributes
+    // only a restrained crest/face tint; turning the full displaced carrier
+    // opaque is what previously made one triangle swallow the arcade camera.
+    const alpha = clamp(
+      f.lip.mul(0.16)
+        .add(f.face.mul(0.015)),
+      0,
+      0.17
+    );
+    // The face is a 600 x 520 m player-following sheet. At full opacity its
+    // steep triangles can cross the close arcade-camera frustum and turn into
+    // screen-sized white wedges even when the centre sightline is clear. Keep a
+    // soft visibility bubble around the eye: never punch a hard hole (the bay
+    // water is deliberately cut out below this mesh), but let the rider and
+    // board read through the local wall before it becomes solid in the distance.
+    const eyeDistance = positionWorld.distance(cameraPosition);
+    const cameraVisibility = mix(
+      float(0),
+      float(1),
+      smoothstep(float(6), float(18), eyeDistance)
+    );
+    mat.opacityNode = alpha.mul(stripFade).mul(xRim).mul(zRim).mul(cameraVisibility);
     mat.envMapIntensity = 0.2;
 
     const mesh = new THREE.Mesh(geo, mat);
     mesh.name = "ocean_beach_surf_face";
-    // Fixed strip in X (the break doesn't move), player-following in Z. World X =
-    // FACE_CENTER_X + localX, matching the shader's uOrigin.x so geometry and the
-    // sampled wave field line up.
+    // The update loop moves this local ribbon with the rider. uOrigin receives
+    // the same snapped centre so the shader's analytic world coordinates and
+    // rendered geometry remain identical.
     mesh.position.x = FACE_CENTER_X;
     mesh.position.y = 0.04; // just above the bay near-patch (0.02) where they meet
     mesh.renderOrder = 12; // after bay water (far 10 / lagoon 10.5 / near 11)
@@ -261,13 +292,19 @@ export class OceanBeachWaves {
     this.group.visible = near;
     if (!near) return;
 
-    // slide the face patch down the beach with the surfer, snapped to its own Z
-    // grid so vertices don't swim under the analytic crest
+    // Slide the ribbon with the surfer, snapped to its own grids so vertices do
+    // not swim under the analytic crest. The default camera stays beyond the
+    // shore rim; the distance fade remains a second guard for custom tuning.
     if (focus) {
+      const snapX = FACE_WIDTH_X / FACE_SEG_X;
       const snap = FACE_WINDOW_Z / FACE_SEG_Z;
+      const x = Math.round(
+        (focus.x - FACE_WIDTH_X * 0.5 + FACE_SHORE_OVERHANG) / snapX
+      ) * snapX;
       const z = Math.round(THREE.MathUtils.clamp(focus.z, b.minZ, b.maxZ) / snap) * snap;
+      this.#face.position.x = x;
       this.#face.position.z = z;
-      this.#uOrigin.value.set(FACE_CENTER_X, z);
+      this.#uOrigin.value.set(x, z);
     }
 
     const focusZ = focus && focus.z > b.minZ - 600 && focus.z < b.maxZ + 600 ? focus.z : b.entryZ;

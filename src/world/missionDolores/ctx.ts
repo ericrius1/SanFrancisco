@@ -2,6 +2,7 @@ import * as THREE from "three/webgpu";
 import type { WorldMap } from "../heightmap";
 import { MD_YAW } from "./layout";
 import { loadTexture } from "../../render/textures";
+import type { RadialLightSource } from "../../render/radialLightTypes";
 
 /** A yawed static collider box in WORLD space (what registerStaticBox consumes). */
 export interface MdWorldBox {
@@ -43,6 +44,21 @@ interface DeferredArt {
   maxDistanceSq: number;
   requested: boolean;
   fit: "contain" | "stretch";
+  radialRays: boolean;
+  radialProxy: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicNodeMaterial> | null;
+}
+
+interface RadialSourceState {
+  scene: THREE.Scene;
+  center: THREE.Vector2;
+  target: THREE.Vector2;
+  candidates: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicNodeMaterial>[];
+  world: THREE.Vector3;
+  view: THREE.Vector3;
+  ndc: THREE.Vector3;
+  normal: THREE.Vector3;
+  toCamera: THREE.Vector3;
+  cameraWorld: THREE.Vector3;
 }
 
 /**
@@ -63,6 +79,8 @@ export class MuseumCtx {
   #registerCollider: (box: MdWorldBox) => void;
   #disposables: { dispose(): void }[] = [];
   #deferredArt: DeferredArt[] = [];
+  #radial: RadialSourceState | null = null;
+  #radialSource: RadialLightSource | null = null;
   #disposed = false;
 
   constructor(opts: {
@@ -120,7 +138,7 @@ export class MuseumCtx {
     material: THREE.MeshStandardMaterial,
     name: string,
     localPosition: readonly [number, number, number],
-    opts: { wakeDistance?: number; fit?: "contain" | "stretch" } = {}
+    opts: { wakeDistance?: number; fit?: "contain" | "stretch"; radialRays?: boolean } = {}
   ): void {
     const wakeDistance = opts.wakeDistance ?? ART_WAKE_DISTANCE;
     mesh.name = `md_art_${name}`;
@@ -132,7 +150,9 @@ export class MuseumCtx {
       localPosition,
       maxDistanceSq: wakeDistance * wakeDistance,
       requested: false,
-      fit: opts.fit ?? "contain"
+      fit: opts.fit ?? "contain",
+      radialRays: opts.radialRays ?? false,
+      radialProxy: null
     });
   }
 
@@ -152,6 +172,10 @@ export class MuseumCtx {
           art.material.needsUpdate = true;
           if (art.fit === "contain") this.#containArt(art.mesh, tex);
           art.mesh.visible = true;
+          // Keep the optional proxy scene genuinely interior-only: paintings
+          // can load on approach, but gain a second material/mesh only while
+          // the visitor has actually activated the effect.
+          if (art.radialRays && this.#radial) this.#addRadialPainting(art, tex);
         })
         .catch(() => {
           // Teardown can legitimately win a race with a texture request.
@@ -343,7 +367,10 @@ export class MuseumCtx {
       const art = new THREE.Mesh(new THREE.PlaneGeometry(innerW, artH), artMat);
       art.position.set(0, innerH / 2 - artH / 2, 0.084);
       grp.add(art);
-      this.bindArt(art, artMat, opts.art!, opts.pos);
+      // Only authored paintings seed this effect. bindArt() is also used by
+      // the apse stained glass, which is intentionally reserved for a later
+      // city-wide interior treatment.
+      this.bindArt(art, artMat, opts.art!, opts.pos, { radialRays: true });
     }
 
     return grp;
@@ -383,7 +410,111 @@ export class MuseumCtx {
     mesh.updateMatrixWorld(true);
   }
 
+  /** Allocate the painting-only source scene on first use inside the museum. */
+  acquireRadialLightSource(): RadialLightSource {
+    if (this.#disposed) throw new Error("cannot acquire radial source from a disposed museum");
+    if (this.#radial && this.#radialSource) return this.#radialSource;
+
+    const scene = new THREE.Scene();
+    scene.name = "mission-dolores-painting-light-sources";
+    scene.background = new THREE.Color(0x000000);
+    const state: RadialSourceState = {
+      scene,
+      center: new THREE.Vector2(0.5, 0.55),
+      target: new THREE.Vector2(0.5, 0.55),
+      candidates: [],
+      world: new THREE.Vector3(),
+      view: new THREE.Vector3(),
+      ndc: new THREE.Vector3(),
+      normal: new THREE.Vector3(),
+      toCamera: new THREE.Vector3(),
+      cameraWorld: new THREE.Vector3()
+    };
+    this.#radial = state;
+    this.#radialSource = {
+      scene,
+      center: state.center,
+      update: (camera) => this.#updateRadialCenter(state, camera)
+    };
+
+    for (const art of this.#deferredArt) {
+      if (art.radialRays && art.mesh.visible && art.material.map) {
+        this.#addRadialPainting(art, art.material.map);
+      }
+    }
+    return this.#radialSource;
+  }
+
+  /** Release all optional proxy materials immediately on exit or toggle-off. */
+  releaseRadialLightSource(): void {
+    if (!this.#radial) return;
+    for (const art of this.#deferredArt) {
+      if (!art.radialProxy) continue;
+      art.radialProxy.removeFromParent();
+      art.radialProxy.material.dispose();
+      art.radialProxy = null;
+    }
+    this.#radial.scene.clear();
+    this.#radial.candidates.length = 0;
+    this.#radial = null;
+    this.#radialSource = null;
+  }
+
+  /** Mirror one loaded painting into the black, proxy-only radial source scene. */
+  #addRadialPainting(art: DeferredArt, tex: THREE.Texture): void {
+    const state = this.#radial;
+    if (this.#disposed || !state || art.radialProxy) return;
+    const mesh = art.mesh;
+    const material = new THREE.MeshBasicNodeMaterial({ map: tex });
+    material.name = `${mesh.name}_radial_source`;
+    material.toneMapped = false;
+
+    mesh.updateWorldMatrix(true, false);
+    const proxy = new THREE.Mesh(mesh.geometry, material);
+    proxy.name = `${mesh.name}_radial_source`;
+    mesh.matrixWorld.decompose(proxy.position, proxy.quaternion, proxy.scale);
+    proxy.castShadow = false;
+    proxy.receiveShadow = false;
+    state.scene.add(proxy);
+    state.candidates.push(proxy);
+    art.radialProxy = proxy;
+  }
+
+  /** Smooth the helper's one screen-space origin toward the visible art cluster. */
+  #updateRadialCenter(state: RadialSourceState, camera: THREE.Camera): void {
+    camera.updateMatrixWorld();
+    camera.getWorldPosition(state.cameraWorld);
+    let x = 0;
+    let y = 0;
+    let weightSum = 0;
+
+    for (const painting of state.candidates) {
+      painting.getWorldPosition(state.world);
+      state.normal.set(0, 0, 1).applyQuaternion(painting.quaternion);
+      state.toCamera.copy(state.cameraWorld).sub(state.world).normalize();
+      if (state.normal.dot(state.toCamera) <= 0.05) continue;
+      state.view.copy(state.world).applyMatrix4(camera.matrixWorldInverse);
+      if (state.view.z >= -0.05) continue;
+      state.ndc.copy(state.world).project(camera);
+      if (Math.abs(state.ndc.x) > 1.15 || Math.abs(state.ndc.y) > 1.15) continue;
+
+      const centerBias = 1 / (0.3 + state.ndc.x ** 2 + state.ndc.y ** 2);
+      const distanceBias = 1 / Math.sqrt(Math.max(1, -state.view.z));
+      const weight = centerBias * distanceBias;
+      x += (state.ndc.x * 0.5 + 0.5) * weight;
+      // screenUV follows framebuffer coordinates (top = 0), opposite NDC Y.
+      y += (-state.ndc.y * 0.5 + 0.5) * weight;
+      weightSum += weight;
+    }
+
+    if (weightSum > 0) state.target.set(x / weightSum, y / weightSum);
+    else state.target.set(0.5, 0.55);
+    state.center.lerp(state.target, 0.14);
+  }
+
   dispose(): void {
+    if (this.#disposed) return;
+    this.releaseRadialLightSource();
     this.#disposed = true;
     this.#deferredArt.length = 0;
     for (const d of this.#disposables) d.dispose();

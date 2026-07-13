@@ -4,8 +4,9 @@ import type { GroundTopOverlay, WorldMap } from "../heightmap";
 import { MuseumCtx, type MdWorldBox } from "./ctx";
 import { basilicaFloorTop, buildBasilicaShell } from "./shell";
 import { createCanticleBook, type CanticleBook } from "../../ui/canticleBook";
-import { MD_CENTER, mdInsideFootprint, mdToWorldXZ } from "./layout";
+import { MD_CENTER, mdInsideFootprint, mdInsideInterior, mdToWorldXZ } from "./layout";
 import { createExhibits, type MdExhibit } from "./exhibits";
+import type { RadialLightSource } from "../../render/radialLightTypes";
 
 export * from "./layout";
 
@@ -164,6 +165,19 @@ export class MissionDoloresMuseum {
 
   isPlayerInside(pos: THREE.Vector3): boolean {
     return mdInsideFootprint(pos.x, pos.z, 0.5) && Math.abs(pos.y - this.floorTop) < 6;
+  }
+
+  /** Strict doorway/interior gate used by optional museum-only render work. */
+  isPlayerInInterior(pos: THREE.Vector3): boolean {
+    return mdInsideInterior(pos.x, pos.z) && Math.abs(pos.y - this.floorTop) < 6;
+  }
+
+  get radialLightSource(): RadialLightSource | null {
+    return this.#ctx?.acquireRadialLightSource() ?? null;
+  }
+
+  releaseRadialLightSource(): void {
+    this.#ctx?.releaseRadialLightSource();
   }
 
   get bookOpen(): boolean {

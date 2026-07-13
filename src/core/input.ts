@@ -12,13 +12,13 @@ import { INPUT_TUNING } from "../config";
  * A gamepad (Xbox standard mapping) rides the same logical rails: pollPad()
  * translates buttons into the key codes the game already reads (A→Space,
  * B→E, RT→Shift, …), the left stick into the WASD axis pairs, the right stick
- * into mouselook deltas, and the triggers into the active mode's throttle —
+ * into mouselook deltas outside the locked surf activity, and the triggers into the active mode's throttle —
  * fly routes them to ↑/↓, bird routes LB/RB to Q/E twirl —
  * so modes/camera/fireworks never see a second input path. `device` tracks
  * whichever input was touched last; the HUD swaps its control labels off it.
  *
  * Right-stick pitch polarity is global via INPUT_TUNING.invertPadLookY (every
- * mode, including ones added later) — mouse look is never flipped here.
+ * free-camera mode, including ones added later) — mouse look is never flipped here.
  */
 
 const DEADZONE = 0.16;
@@ -241,7 +241,7 @@ export class Input {
   /**
    * Read the gamepad once per frame, before any consumer. Buttons feed
    * keys/justPressed under their mapped codes, sticks and triggers feed the
-   * axis pairs, the right stick feeds mouselook.
+   * axis pairs, and the right stick feeds mouselook outside surf.
    */
   pollPad(dt: number) {
     const pads = navigator.getGamepads?.() ?? [];
@@ -317,8 +317,8 @@ export class Input {
     // Raw sticks/triggers for the expanded map (readable while suspended).
     this.#mapPadAxes = { lx, ly, rx, ry, lt, rt };
 
-    // right stick = mouselook; works without pointer lock. Pitch polarity is
-    // the global INPUT_TUNING toggle — same for walk and every vehicle.
+    // right stick = mouselook; works without pointer lock except in surf's
+    // authored camera. Pitch polarity is the global INPUT_TUNING toggle.
     if (!this.suspended && this.#mode !== "surf") {
       this.mouseDX += rx * Math.abs(rx) * LOOK_X * dt;
       const pitchStick = INPUT_TUNING.values.invertPadLookY ? -ry : ry;

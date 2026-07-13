@@ -7,6 +7,7 @@ import { writeFileSync } from "node:fs";
 import { access, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import sharp from "sharp";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const W = 1600, H = 1000;
@@ -34,6 +35,26 @@ async function evaluate(c, expr) { const r = await c.send("Runtime.evaluate", { 
 async function waitEval(c, expr, ms) { const t = Date.now(); while (Date.now() - t < ms) { try { if (await evaluate(c, expr)) return; } catch {} await sleep(300); } throw new Error("eval timeout " + expr); }
 async function tick(c) { try { await evaluate(c, "window.__sf.tick(0.05)"); } catch {} }
 async function shot(c, name) { const s = await c.send("Page.captureScreenshot", { format: "jpeg", quality: 92 }); const f = path.join(OUT, name); writeFileSync(f, Buffer.from(s.data, "base64")); console.log("  saved", f); return f; }
+async function assertVisibleRays(onFile, offFile) {
+  // Ignore the HUD-heavy perimeter and compare the same interior pixels. This
+  // catches both a disconnected composite and a runaway full-screen wash.
+  const crop = { left: 330, top: 100, width: 900, height: 700 };
+  const on = await sharp(onFile).extract(crop).removeAlpha().raw().toBuffer();
+  const off = await sharp(offFile).extract(crop).removeAlpha().raw().toBuffer();
+  let difference = 0;
+  let changed = 0;
+  for (let i = 0; i < on.length; i++) {
+    const delta = Math.abs(on[i] - off[i]);
+    difference += delta;
+    if (delta > 12) changed++;
+  }
+  const meanAbs = difference / on.length;
+  const changedFraction = changed / on.length;
+  if (meanAbs < 0.4 || changedFraction < 0.01 || meanAbs > 30) {
+    throw new Error(`painting-ray A/B outside visual bounds: meanAbs=${meanAbs.toFixed(2)}, changed=${(changedFraction * 100).toFixed(1)}%`);
+  }
+  console.log("[probe] ray A/B:", JSON.stringify({ meanAbs: +meanAbs.toFixed(2), changedPct: +(changedFraction * 100).toFixed(1) }));
+}
 
 async function main() {
   await mkdir(OUT, { recursive: true });
@@ -48,7 +69,7 @@ async function main() {
   const requestFailures = [];
   const CX = 1560, CZ = 3235;
   let phase = "boot";
-  const phaseRequests = { boot: [], approach: [], interior: [], apse: [], bookOpen: [], bookPage: [], bookPage2: [] };
+  const phaseRequests = { boot: [], approach: [], interior: [], exit: [], reentry: [], apse: [], bookOpen: [], bookPage: [], bookPage2: [] };
   try {
     await waitHttp(SERVER_URL, 90000);
     chrome = spawn(chromePath, [`--remote-debugging-port=${dport}`, `--user-data-dir=${path.join(OUT, "chrome-" + Date.now())}`, "--headless=new", "--no-first-run", "--mute-audio", "--enable-features=SharedArrayBuffer", "--use-angle=metal", "--enable-unsafe-webgpu", "--enable-gpu", "--enable-features=WebGPUDeveloperFeatures", `--window-size=${W},${H}`, "--force-device-scale-factor=1", "about:blank"], { stdio: "ignore" });
@@ -65,15 +86,26 @@ async function main() {
     await c.send("Emulation.setDeviceMetricsOverride", { width: W, height: H, deviceScaleFactor: 1, mobile: false });
     await c.send("Page.navigate", { url: `${SERVER_URL}/?autostart=1&fullfps=1` });
     await waitEval(c, "Boolean(window.__sf && window.__sf.player)", 120000);
-    await waitEval(c, "window.__sf.renderIdle && window.__sf.renderIdle()", 120000);
+    await evaluate(c, "window.__sfManual(true)");
+    // With the wall-clock loop stopped, explicitly drain deferred construction
+    // until the late covered warmup can declare the render graph idle.
+    for (let i = 0; i < 900 && !(await evaluate(c, "window.__sf.renderIdle()")); i++) {
+      await tick(c);
+      if (i % 12 === 0) await sleep(60);
+    }
+    await waitEval(c, "window.__sf.renderIdle && window.__sf.renderIdle()", 240000);
     await sleep(600);
 
     const featureCode = (urls) => urls.filter((url) => /\/src\/world\/missionDolores\/(?:index|ctx|shell|exhibits)\b/.test(url));
+    const radialEntryRequests = (urls) => urls.filter((url) => new URL(url).pathname.endsWith("/src/render/radialLightShafts.ts"));
+    const radialFeatureRequests = (urls) => urls.filter((url) => /(?:radialLightShafts|tsl\/display\/radialBlur|three_addons_tsl_display_radialBlur)/.test(new URL(url).pathname));
     const francisMedia = (urls) => urls.filter((url) => url.includes("/francis/"));
     const francisArtStems = (urls) => [...new Set(francisMedia(urls).map((url) => new URL(url).pathname.replace(/\.(ktx2|webp)$/, "")))].sort();
-    if (featureCode(phaseRequests.boot).length || francisMedia(phaseRequests.boot).length) {
-      throw new Error(`clean boot fetched Mission Dolores: ${[...featureCode(phaseRequests.boot), ...francisMedia(phaseRequests.boot)].join(", ")}`);
+    if (featureCode(phaseRequests.boot).length || francisMedia(phaseRequests.boot).length || radialFeatureRequests(phaseRequests.boot).length) {
+      throw new Error(`clean boot fetched Mission Dolores: ${[...featureCode(phaseRequests.boot), ...francisMedia(phaseRequests.boot), ...radialFeatureRequests(phaseRequests.boot)].join(", ")}`);
     }
+    const bootRadial = await evaluate(c, "window.__sf.pipeline.radialLightState");
+    if (bootRadial.active || bootRadial.loaded || bootRadial.renderedFrames !== 0) throw new Error(`clean boot radial state: ${JSON.stringify(bootRadial)}`);
 
     // freeze the world for deterministic shots, warm midday light
     await evaluate(c, `(()=>{const s=window.__sf; s.sky.cycleEnabled=false; s.sky.setTimeOfDay(14.0);
@@ -88,6 +120,13 @@ async function main() {
     if (francisMedia(phaseRequests.approach).length) {
       throw new Error(`distant shell activation fetched art: ${francisMedia(phaseRequests.approach).join(", ")}`);
     }
+    if (radialFeatureRequests(phaseRequests.approach).length) {
+      throw new Error(`approach loaded radial feature code: ${radialFeatureRequests(phaseRequests.approach).join(", ")}`);
+    }
+    const approachRadial = await evaluate(c, "({inside:window.__sf.missionDolores.isPlayerInInterior(window.__sf.player.position),state:window.__sf.pipeline.radialLightState})");
+    if (approachRadial.inside || approachRadial.state.active || approachRadial.state.loaded || approachRadial.state.renderedFrames !== 0) {
+      throw new Error(`approach radial state: ${JSON.stringify(approachRadial)}`);
+    }
 
     const floorTop = await evaluate(c, "window.__sf.missionDolores.floorTop");
     console.log("[probe] museum floorTop:", floorTop);
@@ -97,8 +136,10 @@ async function main() {
     await evaluate(c, `(()=>{const s=window.__sf,p=s.player; const y=${floorTop}+1.6; p.position.set(${CX},y,${CZ - 20}); p.renderPosition.copy(p.position); s.physics.world.setBodyTransform(p.body,[${CX},y,${CZ - 20}],[0,0,0,1]); return 1;})()`);
     for (let i = 0; i < 70; i++) await tick(c);
     await waitEval(c, "window.__sf.renderIdle && window.__sf.renderIdle()", 120000);
+    await waitEval(c, "window.__sf.missionDolores.isPlayerInInterior(window.__sf.player.position) && window.__sf.pipeline.radialLightState.active && window.__sf.pipeline.radialLightState.loaded", 120000);
     await sleep(2500); // let plaque/rose textures finish loading
     for (let i = 0; i < 20; i++) await tick(c);
+    await waitEval(c, "window.__sf.missionDolores.radialLightSource.scene.children.length > 0", 120000);
     const interiorStems = francisArtStems(phaseRequests.interior);
     if (!interiorStems.length || interiorStems.length >= 20) {
       throw new Error(`interior should load a nearby subset of art, got ${interiorStems.length}`);
@@ -106,9 +147,17 @@ async function main() {
     console.log("[probe] waterfall:", JSON.stringify({
       cleanBootFrancis: francisMedia(phaseRequests.boot).length,
       approachFrancis: francisMedia(phaseRequests.approach).length,
-      interiorArtStems: interiorStems.length
+      interiorArtStems: interiorStems.length,
+      radialFeatureRequests: radialFeatureRequests(phaseRequests.interior).length
     }));
     console.log("[probe] isPlayerInside:", await evaluate(c, `window.__sf.missionDolores.isPlayerInside(window.__sf.player.position)`));
+    if (radialEntryRequests(phaseRequests.interior).length !== 1) {
+      throw new Error(`interior should request one radial entry module, got ${radialEntryRequests(phaseRequests.interior).length}`);
+    }
+    const interiorRadial = await evaluate(c, "window.__sf.pipeline.radialLightState");
+    if (!interiorRadial.active || !interiorRadial.loaded || interiorRadial.renderedFrames <= 0) {
+      throw new Error(`interior radial state: ${JSON.stringify(interiorRadial)}`);
+    }
 
     const setCam = (px, py, pz, lx, ly, lz) => evaluate(c, `(()=>{const c=window.__sf.camera; c.position.set(${px},${py},${pz}); c.lookAt(${lx},${ly},${lz}); return 1;})()`);
     const F = floorTop;
@@ -129,9 +178,58 @@ async function main() {
     // 4. nave interior looking back toward the rose window over the portal
     await frame("md_4_nave_rose.jpg", [CX, F + 3.2, CZ + 12], [CX, F + 8.5, CZ - 35]);
     // 5. side view down a colonnade aisle (west gallery) toward the altar
-    await frame("md_5_west_aisle.jpg", [CX - 10, F + 2.4, CZ - 24], [CX - 10, F + 2.6, CZ + 20]);
+    await frame("md_5_west_aisle_rays_on.jpg", [CX - 10, F + 2.4, CZ - 24], [CX - 10, F + 2.6, CZ + 20]);
+    const raysOnFrames = await evaluate(c, "window.__sf.pipeline.radialLightState.renderedFrames");
+    await evaluate(c, "(()=>{const s=window.__sf;s.POSTFX_TUNING.values.museumRays=false;s.pipeline.applyRadialLightFx();return s.pipeline.radialLightState;})()");
+    await frame("md_5_west_aisle_rays_off.jpg", [CX - 10, F + 2.4, CZ - 24], [CX - 10, F + 2.6, CZ + 20]);
+    await assertVisibleRays(
+      path.join(OUT, "md_5_west_aisle_rays_on.jpg"),
+      path.join(OUT, "md_5_west_aisle_rays_off.jpg")
+    );
+    const raysOff = await evaluate(c, "window.__sf.pipeline.radialLightState");
+    if (raysOff.active || raysOff.loaded || raysOff.renderedFrames !== raysOnFrames) {
+      throw new Error(`disabled radial state: ${JSON.stringify(raysOff)}, expected frames=${raysOnFrames}`);
+    }
+    await evaluate(c, "(()=>{const s=window.__sf;s.POSTFX_TUNING.values.museumRays=true;s.pipeline.applyRadialLightFx();return s.pipeline.radialLightState;})()");
+    await tick(c);
+    await waitEval(c, "window.__sf.pipeline.radialLightState.active && window.__sf.pipeline.radialLightState.loaded", 120000);
+    await tick(c);
+    const raysRestored = await evaluate(c, "window.__sf.pipeline.radialLightState");
+    if (!raysRestored.active || !raysRestored.loaded || raysRestored.renderedFrames <= raysOnFrames) {
+      throw new Error(`restored radial state: ${JSON.stringify(raysRestored)}`);
+    }
     // 8. upward at an angle (offset so lookAt isn't degenerate) — vault ceiling check
     await frame("md_8_ceiling.jpg", [CX - 5, F + 2, CZ - 10], [CX + 3, F + 13, CZ + 2]);
+
+    // Crossing back through the entrance immediately drops/disposes the optional
+    // graph; re-entry reuses the already fetched module without another request.
+    phase = "exit";
+    const beforeExitFrames = await evaluate(c, "window.__sf.pipeline.radialLightState.renderedFrames");
+    await evaluate(c, `(()=>{const s=window.__sf,p=s.player; const y=${F}+1.6; p.position.set(${CX},y,${CZ - 35}); p.renderPosition.copy(p.position); s.physics.world.setBodyTransform(p.body,[${CX},y,${CZ - 35}],[0,0,0,1]); return 1;})()`);
+    await tick(c);
+    const exited = await evaluate(c, "({inside:window.__sf.missionDolores.isPlayerInInterior(window.__sf.player.position),state:window.__sf.pipeline.radialLightState})");
+    await tick(c);
+    const exitedStable = await evaluate(c, "window.__sf.pipeline.radialLightState");
+    if (
+      exited.inside ||
+      exited.state.active ||
+      exited.state.loaded ||
+      exitedStable.active ||
+      exitedStable.loaded ||
+      exitedStable.renderedFrames !== exited.state.renderedFrames
+    ) {
+      throw new Error(`exit radial state: before=${beforeExitFrames}, first=${JSON.stringify(exited)}, stable=${JSON.stringify(exitedStable)}`);
+    }
+    if (radialFeatureRequests(phaseRequests.exit).length) throw new Error(`exit fetched radial code: ${radialFeatureRequests(phaseRequests.exit).join(", ")}`);
+
+    phase = "reentry";
+    await evaluate(c, `(()=>{const s=window.__sf,p=s.player; const y=${F}+1.6; p.position.set(${CX},y,${CZ - 20}); p.renderPosition.copy(p.position); s.physics.world.setBodyTransform(p.body,[${CX},y,${CZ - 20}],[0,0,0,1]); return 1;})()`);
+    await tick(c);
+    await waitEval(c, "window.__sf.missionDolores.isPlayerInInterior(window.__sf.player.position) && window.__sf.pipeline.radialLightState.active && window.__sf.pipeline.radialLightState.loaded", 120000);
+    await tick(c);
+    const reentered = await evaluate(c, "window.__sf.pipeline.radialLightState");
+    if (reentered.renderedFrames <= exitedStable.renderedFrames) throw new Error(`re-entry did not resume radial frames: ${JSON.stringify(reentered)}`);
+    if (radialFeatureRequests(phaseRequests.reentry).length) throw new Error(`re-entry refetched radial code: ${radialFeatureRequests(phaseRequests.reentry).join(", ")}`);
 
     // Walk the visitor into the sanctuary art wake radius, then inspect the
     // centered hierarchy and both curved-wall mounts at grazing angles.

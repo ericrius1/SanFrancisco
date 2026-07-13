@@ -299,8 +299,8 @@ export class RemotePlayers {
    * Individual boards still hydrate only inside the immediate 180 m space;
    * distant roster entries keep their procedural fallback and request nothing.
    */
-  enableSurfboardAssets() {
-    this.#surfAssetsEnabled = true;
+  setSurfboardAssetsEnabled(enabled: boolean) {
+    this.#surfAssetsEnabled = enabled;
   }
 
   add(info: RemoteInfo) {

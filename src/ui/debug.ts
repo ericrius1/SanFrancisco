@@ -18,7 +18,13 @@ import { CROWN_SLIDERS, CROWN_TUNING } from "../world/salesforceCrown";
 import { BAY_LIGHTS_SLIDERS, BAY_LIGHTS_TUNING } from "../world/bayLights";
 import { GOLDEN_GATE_LIGHTS_SLIDERS, GOLDEN_GATE_LIGHTS_TUNING } from "../world/goldenGateLights";
 import { SKY_TUNING, type Sky } from "../world/sky";
-import { POSTFX_TUNING, POSTFX_TOGGLES, POSTFX_QUALITY_KEYS, applyPostFxParams } from "../render/postfx";
+import {
+  POSTFX_TUNING,
+  POSTFX_TOGGLES,
+  POSTFX_QUALITY_KEYS,
+  POSTFX_RADIAL_LIGHT_KEYS,
+  applyPostFxParams
+} from "../render/postfx";
 import { VOICE_TUNING } from "../net/voice";
 import { NATURE_AUDIO_TUNING } from "../audio";
 import { TEE_BEACON_TUNING } from "../gameplay/golf/tuning";
@@ -28,7 +34,16 @@ import { TUNABLES_UPDATED_EVENT, withTweakBindingEventsSuppressed, saveTweak } f
 import { BUSKER_FIREFLY_TUNING } from "../gameplay/buskers/tuning";
 import { VEGETATION_TUNING, applyVegetationTuning } from "../world/vegetation/tuning";
 import type { ShadowDiagnosticsSnapshot } from "../world/shadows/diagnostics";
+import { SHADOW_TUNING } from "../world/shadows/tuning";
+import type { ContactShadowComplement } from "../render/contactShadows";
 
+type DebugRenderPipeline = {
+  applyPostFx: () => void;
+  applyPostQuality: () => void;
+  applyRadialLightFx: () => void;
+  setWireframe: (on: boolean) => void;
+  contactShadows: Pick<ContactShadowComplement, "configure" | "setEnabled">;
+};
 
 function isFolderApi(blade: BladeApi): blade is FolderApi {
   return "children" in blade && "title" in blade && "expanded" in blade;
@@ -97,11 +112,7 @@ export class DebugPanel {
   #onOpen: () => void;
   #fireworks: Fireworks | null;
   #tiles: TileStreamer | null;
-  #postfx: {
-    applyPostFx: () => void;
-    applyPostQuality: () => void;
-    setWireframe: (on: boolean) => void;
-  } | null;
+  #postfx: DebugRenderPipeline | null;
   #setFoliageVisible: (visible: boolean) => void;
   #refreshFlowers: () => void;
   #refreshGrass: () => void;
@@ -127,11 +138,7 @@ export class DebugPanel {
     fireworks: Fireworks | null = null,
     tiles: TileStreamer | null = null,
     _scene: THREE.Scene | null = null,
-    postfx: {
-      applyPostFx: () => void;
-      applyPostQuality: () => void;
-      setWireframe: (on: boolean) => void;
-    } | null = null,
+    postfx: DebugRenderPipeline | null = null,
     setFoliageVisible: (visible: boolean) => void = () => {},
     refreshFlowers: () => void = () => {},
     refreshGrass: () => void = () => {},
@@ -148,6 +155,7 @@ export class DebugPanel {
     this.#refreshGrass = refreshGrass;
     this.#toggleProfiler = toggleProfiler;
     window.addEventListener(TUNABLES_UPDATED_EVENT, () => this.#refreshAllBindings());
+    this.#applyShadowTuning();
     // Honor a persisted wireframe flag immediately (no wait for first refresh).
     if (RENDER_TUNING.values.wireframe) this.#applyWireframe(true);
   }
@@ -247,10 +255,27 @@ export class DebugPanel {
     if (this.#fogMonitorView) this.#sky.writeFogWeatherDiagnostics(this.#fogMonitorView);
   }
 
+  /** Push one coherent shadow state across projection maps and contact pass. */
+  #applyShadowTuning() {
+    const values = SHADOW_TUNING.values;
+    this.#sky.applyShadowParams();
+    this.#postfx?.contactShadows.configure({
+      resolutionScale: values.contactResolutionScale,
+      maxDistance: values.contactMaxDistance,
+      thickness: values.contactThickness,
+      intensity: values.contactIntensity,
+      fadeStart: values.contactFadeStart,
+      fadeEnd: values.contactFadeEnd,
+      normalBias: values.contactNormalBias
+    });
+    this.#postfx?.contactShadows.setEnabled(values.enabled && values.contactEnabled);
+  }
+
   /** Re-read every binding now — call after "." resets values behind the pane's back. */
   syncNow() {
     this.#applyWireframe(RENDER_TUNING.values.wireframe);
     this.#setFoliageVisible(Boolean(FOLIAGE_TUNING.values.visible));
+    this.#applyShadowTuning();
     if (this.#lightingView) {
       this.#syncingFromSky = true;
       this.#lightingView.timeOfDay = this.#sky.timeOfDay;
@@ -348,10 +373,19 @@ export class DebugPanel {
     const pane = new Pane({ container: root, title: "tuning — / to close" });
     this.#pane = pane;
 
-    // Shadows first — open by default so clipmap telemetry is the first thing
-    // you see when pressing "/". Allocation-free; refreshed at the pane's 4 Hz
-    // monitor cadence.
+    // Shadows first. Parameters stay open for quick A/B work; read-only metrics
+    // are tucked into a collapsed sibling and refresh at the pane's 4 Hz cadence.
     const shadows = pane.addFolder({ title: "shadows", expanded: true });
+    const shadowParameters = shadows.addFolder({ title: "parameters", expanded: true });
+    SHADOW_TUNING.bind(shadowParameters, {
+      onChange: (key, _value, last) => {
+        if (this.#syncingPane) return;
+        // Avoid resizing the R8 target for every pointer-move while dragging.
+        if (key === "contactResolutionScale" && !last) return;
+        this.#applyShadowTuning();
+      }
+    });
+    const shadowMetrics = shadows.addFolder({ title: "metrics", expanded: false });
     this.#shadowMonitorSnapshot = this.#sky.shadowDiagnostics.createSnapshotBuffer();
     this.#shadowMonitorView = {};
     for (const { id } of this.#shadowMonitorSnapshot.domains) {
@@ -359,7 +393,7 @@ export class DebugPanel {
         const key = `${id} ${suffix}`;
         this.#shadowMonitorView[key] = "pending";
         this.#monitorBindings.push(
-          shadows.addBinding(this.#shadowMonitorView, key, { readonly: true, label: key })
+          shadowMetrics.addBinding(this.#shadowMonitorView, key, { readonly: true, label: key })
         );
       }
     }
@@ -512,7 +546,9 @@ export class DebugPanel {
         else if ((POSTFX_QUALITY_KEYS as readonly string[]).includes(key)) {
           if (last) this.#postfx?.applyPostQuality();
         }
-        else applyPostFxParams();
+        else if ((POSTFX_RADIAL_LIGHT_KEYS as readonly string[]).includes(key)) {
+          if (key !== "museumRaysResolution" || last) this.#postfx?.applyRadialLightFx();
+        } else applyPostFxParams();
       }
     });
 

@@ -17,14 +17,16 @@ import {
 } from "./diagnostics"
 import { SHADOW_LAYERS, type ShadowLayer } from "./shadowLayers"
 import type { FarOcclusionField } from "./farOcclusionField"
+import { SHADOW_DEFAULTS } from "./defaults"
+import { SHADOW_TUNING } from "./tuning"
 
 export const CLIPMAP_SHADOW_CONFIG = {
   hero: {
     extent: 32,
     resolution: 1024,
     depth: 480,
-    normalBias: 0.02,
-    depthBias: -0.00004,
+    normalBias: SHADOW_DEFAULTS.heroNormalBias,
+    depthBias: SHADOW_DEFAULTS.heroDepthBias,
     anchorStep: 0,
     sunAngle: 0,
     layer: SHADOW_LAYERS.HERO_DYNAMIC
@@ -33,8 +35,8 @@ export const CLIPMAP_SHADOW_CONFIG = {
     extent: 96,
     resolution: 1536,
     depth: 900,
-    normalBias: 0.05,
-    depthBias: -0.00008,
+    normalBias: SHADOW_DEFAULTS.localNormalBias,
+    depthBias: SHADOW_DEFAULTS.localDepthBias,
     // Cached projections stay world-correct while the subject moves. Recenter
     // only before the 6 m local→far guard band is consumed.
     anchorStep: 4.5,
@@ -45,8 +47,8 @@ export const CLIPMAP_SHADOW_CONFIG = {
     extent: 1024,
     resolution: 1024,
     depth: 1800,
-    normalBias: 0.5,
-    depthBias: -0.0002,
+    normalBias: SHADOW_DEFAULTS.farNormalBias,
+    depthBias: SHADOW_DEFAULTS.farDepthBias,
     anchorStep: 8,
     sunAngle: THREE.MathUtils.degToRad(0.15),
     layer: SHADOW_LAYERS.FAR_PROXY
@@ -163,6 +165,9 @@ export class ClipmapShadowNode extends THREE.ShadowBaseNode {
   #farCenterUniform = uniform(new THREE.Vector3()).setGroup(renderGroup)
   #farRightUniform = uniform(new THREE.Vector3(1, 0, 0)).setGroup(renderGroup)
   #farUpUniform = uniform(new THREE.Vector3(0, 1, 0)).setGroup(renderGroup)
+  #enabledUniform = uniform(SHADOW_TUNING.values.enabled ? 1 : 0).setGroup(renderGroup)
+  #farFieldStrengthUniform = uniform(SHADOW_TUNING.values.farFieldStrength).setGroup(renderGroup)
+  #enabled = SHADOW_TUNING.values.enabled
   #frame = 0
   #localStaticRevision = 0
   #farStaticRevision = 0
@@ -177,6 +182,7 @@ export class ClipmapShadowNode extends THREE.ShadowBaseNode {
       ([id, config]) => this.#createDomain(id, config)
     )
     this.lights = this.#domains.map((domain) => domain.light)
+    this.applyTuning()
   }
 
   get staticRevision(): number {
@@ -188,14 +194,56 @@ export class ClipmapShadowNode extends THREE.ShadowBaseNode {
     if (scope !== "local") this.#farStaticRevision = (this.#farStaticRevision + 1) >>> 0
   }
 
+  /** Apply persisted/live pane values without rebuilding materials or shadow maps. */
+  applyTuning(): void {
+    const values = SHADOW_TUNING.values
+    const wasEnabled = this.#enabled
+    this.#enabled = Boolean(values.enabled)
+    this.#enabledUniform.value = this.#enabled ? 1 : 0
+    this.#farFieldStrengthUniform.value = values.farFieldStrength
+
+    const byDomain = {
+      hero: {
+        strength: values.heroStrength,
+        normalBias: values.heroNormalBias,
+        depthBias: values.heroDepthBias
+      },
+      local: {
+        strength: values.localStrength,
+        normalBias: values.localNormalBias,
+        depthBias: values.localDepthBias
+      },
+      far: {
+        strength: values.farStrength,
+        normalBias: values.farNormalBias,
+        depthBias: values.farDepthBias
+      }
+    } as const
+
+    for (const domain of this.#domains) {
+      const next = byDomain[domain.id]
+      const wasActive = domain.light.shadow.intensity > 0
+      domain.light.shadow.intensity = next.strength
+      domain.light.shadow.normalBias = next.normalBias
+      domain.light.shadow.bias = next.depthBias
+      const active = this.#enabled && next.strength > 0
+      if (active && (!wasEnabled || !wasActive)) domain.initialized = false
+      if (!active) domain.light.shadow.needsUpdate = false
+    }
+  }
+
   /** Schedule map refreshes before the owning render call. */
   schedule(focus: THREE.Vector3, sunDirection: THREE.Vector3, nowMs = performance.now()): void {
     this.#focusUniform.value.copy(focus)
-    this.#farOcclusion?.update(sunDirection, focus, nowMs)
     this.diagnostics.beginFrame(++this.#frame, nowMs)
+    if (!this.#enabled) return
+    if (SHADOW_TUNING.values.farFieldStrength > 0) {
+      this.#farOcclusion?.update(sunDirection, focus, nowMs)
+    }
 
     for (let i = 0; i < this.#domains.length; i++) {
       const domain = this.#domains[i]
+      if (domain.light.shadow.intensity <= 0) continue
       let reason: ShadowUpdateReason = 0
 
       if (!domain.initialized) reason |= SHADOW_UPDATE_REASON.INITIAL
@@ -243,6 +291,8 @@ export class ClipmapShadowNode extends THREE.ShadowBaseNode {
     const farCenter = this.#farCenterUniform
     const farRight = this.#farRightUniform
     const farUp = this.#farUpUniform
+    const enabled = this.#enabledUniform
+    const farFieldStrength = this.#farFieldStrengthUniform
     const farField = this.#farOcclusion?.replacementSampleNode() ?? null
     return Fn((builder: any) => {
       this.setupShadowPosition(builder)
@@ -267,6 +317,9 @@ export class ClipmapShadowNode extends THREE.ShadowBaseNode {
       const farOffset = positionWorld.sub(farCenter)
       const farRadius = farOffset.dot(farRight).abs()
         .max(farOffset.dot(farUp).abs())
+      const farFieldVisibility = farField
+        ? mix(1, farField.visibility as N, farFieldStrength)
+        : null
 
       If(localRadius.lessThan(42), () => {
         visibility.mulAssign(local as N)
@@ -274,29 +327,29 @@ export class ClipmapShadowNode extends THREE.ShadowBaseNode {
         const farWeight = smoothstep(42, 48, localRadius)
         visibility.mulAssign(mix(local as N, far as N, farWeight))
       }).Else(() => {
-        if (!farField) {
+        if (!farField || !farFieldVisibility) {
           visibility.mulAssign(far as N)
         } else {
           If(farRadius.lessThan(420), () => {
             visibility.mulAssign(far as N)
           }).ElseIf(farRadius.lessThan(500), () => {
             const handoff = smoothstep(420, 500, farRadius).mul(farField.coverage)
-            visibility.mulAssign((mix as N)(far as N, farField.visibility as N, handoff))
+            visibility.mulAssign((mix as N)(far as N, farFieldVisibility as N, handoff))
           }).Else(() => {
             // Stable interior pixels use only the atlas. During revision fades
             // or at atlas edges, retain the raster map as a correctness fallback.
             If(farField.coverage.greaterThan(0.995), () => {
-              visibility.mulAssign(farField.visibility as N)
+              visibility.mulAssign(farFieldVisibility as N)
             }).Else(() => {
               visibility.mulAssign(
-                (mix as N)(far as N, farField.visibility as N, farField.coverage)
+                (mix as N)(far as N, farFieldVisibility as N, farField.coverage)
               )
             })
           })
         }
       })
 
-      return visibility
+      return mix(vec4(1), visibility, enabled)
     })()
   }
 

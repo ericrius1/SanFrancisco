@@ -7,7 +7,8 @@ import { DRONE_TUNING } from "../vehicles/drone";
 import { BOARD_TUNING } from "../vehicles/board";
 import { BOARD_EFFECT_TUNING, HALO_TUNING } from "../vehicles/board/tuning";
 import { BIRD_TUNING } from "../vehicles/bird";
-import { SURF_CAMERA_TUNING, SURF_TUNING } from "../vehicles/surf";
+import { SURF_TUNING } from "../vehicles/surf/tuning";
+import { SURF_CAMERA_TUNING } from "../vehicles/surf/cameraTuning";
 import { SCOOTER_TUNING } from "../vehicles/scooter";
 import type { PlayerMode } from "./types";
 

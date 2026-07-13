@@ -20,6 +20,7 @@ import {
   renderOutput
 } from "three/tsl";
 import { tunables } from "../core/persist";
+import type { RadialLightParams } from "./radialLightTypes";
 
 /**
  * Stylized post effects, all OFF by default, toggled in the "/" panel's
@@ -59,12 +60,44 @@ export const POSTFX_TUNING = tunables("postfx", {
   retro: { v: false, label: "retro crt" },
   retroPixel: { v: 3, min: 1, max: 8, step: 1, label: "· pixel size" },
   retroLevels: { v: 6, min: 2, max: 10, step: 1, label: "· color steps" },
-  retroScan: { v: 0.35, min: 0, max: 1, step: 0.05, label: "· scanlines" }
+  retroScan: { v: 0.35, min: 0, max: 1, step: 0.05, label: "· scanlines" },
+  museumRays: { v: true, label: "museum · painting rays" },
+  museumRaysIntensity: { v: 0.62, min: 0, max: 1.5, step: 0.02, label: "museum · ray strength" },
+  museumRaysWeight: { v: 0.9, min: 0, max: 1, step: 0.01, label: "museum · sample weight" },
+  museumRaysDecay: { v: 0.96, min: 0.85, max: 1, step: 0.005, label: "museum · decay" },
+  museumRaysSamples: { v: 32, min: 16, max: 48, step: 1, label: "museum · samples" },
+  museumRaysExposure: { v: 5.5, min: 1, max: 10, step: 0.1, label: "museum · exposure" },
+  museumRaysResolution: {
+    v: 0.5,
+    options: { "⅓ resolution": 0.35, "½ resolution": 0.5, "¾ resolution": 0.75 },
+    label: "museum · source quality"
+  }
 });
 
 /** The keys that change the shader itself (everything else is a live uniform). */
 export const POSTFX_TOGGLES = ["ink", "dream", "retro"] as const;
 export const POSTFX_QUALITY_KEYS = ["sceneSamples"] as const;
+export const POSTFX_RADIAL_LIGHT_KEYS = [
+  "museumRays",
+  "museumRaysIntensity",
+  "museumRaysWeight",
+  "museumRaysDecay",
+  "museumRaysSamples",
+  "museumRaysExposure",
+  "museumRaysResolution"
+] as const;
+
+export function getRadialLightParams(): RadialLightParams {
+  const v = POSTFX_TUNING.values;
+  return {
+    intensity: v.museumRaysIntensity,
+    weight: v.museumRaysWeight,
+    decay: v.museumRaysDecay,
+    sampleCount: v.museumRaysSamples,
+    exposure: v.museumRaysExposure,
+    resolutionScale: v.museumRaysResolution
+  };
+}
 
 const POSTFX_INK = 1 << 0;
 const POSTFX_DREAM = 1 << 1;

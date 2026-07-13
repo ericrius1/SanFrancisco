@@ -10,10 +10,13 @@ import {
   createPostFx,
   applyPostFxParams,
   getPostFxVariantMask,
+  getRadialLightParams,
   POSTFX_TUNING,
   POSTFX_VARIANT_MASKS
 } from "./postfx";
 import { createContactShadowComplement } from "./contactShadows";
+import { SHADOW_TUNING } from "../world/shadows/tuning";
+import type { RadialLightParams, RadialLightSource } from "./radialLightTypes";
 
 type SceneSamples = 0 | 4;
 /** "boot": compile only the active sample mode + active post-FX variant (fast,
@@ -27,6 +30,12 @@ type WarmableRenderPipeline = THREE.RenderPipeline & {
 };
 type QueueBackedRenderer = THREE.WebGPURenderer & {
   backend: { device?: { queue: { onSubmittedWorkDone(): Promise<unknown> } } };
+};
+type RadialLightRuntime = {
+  compose(key: number, baseNode: any): any;
+  configure(params: RadialLightParams): void;
+  update(): void;
+  dispose(): void;
 };
 
 const OUTLINE_PREPASS_SCALE = 0.5;
@@ -82,14 +91,25 @@ export function createRenderPipeline(
   // Lit scene pass. This is where geometry AA happens; the canvas stays 1x.
   const scenePass = pass(scene, camera, { samples: activeSceneSamples });
   const sceneColor = scenePass.getTextureNode();
+  const sceneDepth = scenePass.getTextureNode("depth");
   // Reuse the lit pass depth so the close-contact complement adds only its
   // half-resolution six-tap fullscreen pass—not a second geometry prepass.
   const contactShadows = createContactShadowComplement({
-    depthTex: scenePass.getTextureNode("depth"),
+    depthTex: sceneDepth,
     camera,
     light: directionalLight,
-    normalTex: null
+    normalTex: null,
+    options: {
+      resolutionScale: SHADOW_TUNING.values.contactResolutionScale,
+      maxDistance: SHADOW_TUNING.values.contactMaxDistance,
+      thickness: SHADOW_TUNING.values.contactThickness,
+      intensity: SHADOW_TUNING.values.contactIntensity,
+      fadeStart: SHADOW_TUNING.values.contactFadeStart,
+      fadeEnd: SHADOW_TUNING.values.contactFadeEnd,
+      normalBias: SHADOW_TUNING.values.contactNormalBias
+    }
   });
+  contactShadows.setEnabled(SHADOW_TUNING.values.enabled && SHADOW_TUNING.values.contactEnabled);
   const runtimeScenePass = scenePass as typeof scenePass & RuntimePassOptions;
   const setScenePassSamples = (samples: SceneSamples) => {
     runtimeScenePass.options.samples = samples;
@@ -151,6 +171,126 @@ export function createRenderPipeline(
 
   let activeVariantMask = getPostFxVariantMask();
   let activePipeline = getVariantPipeline(activeVariantMask);
+
+  // The expensive radial helper and its painting-only passes are a nested lazy
+  // feature. Nothing below imports/builds them until a source crosses an
+  // interior gate; outside, activePipeline is always one of the base variants.
+  let radialSource: RadialLightSource | null = null;
+  let radialRuntime: RadialLightRuntime | null = null;
+  let radialRuntimeSource: RadialLightSource | null = null;
+  let radialModulePromise: Promise<typeof import("./radialLightShafts")> | null = null;
+  let radialBuildPending: { source: RadialLightSource; epoch: number } | null = null;
+  let radialEpoch = 0;
+  let radialActive = false;
+  let radialRenderedFrames = 0;
+  const radialVariants = new Map<number, THREE.RenderPipeline>();
+
+  const radialEnabled = () => Boolean(POSTFX_TUNING.values.museumRays);
+
+  const getRadialVariantPipeline = (requestedMask: number) => {
+    if (!radialRuntime) return null;
+    const mask = requestedMask & 7;
+    let variant = radialVariants.get(mask);
+    if (variant !== undefined) return variant;
+    variant = new THREE.RenderPipeline(renderer);
+    variant.outputColorTransform = false;
+    variant.outputNode = radialRuntime.compose(mask, postfx.get(mask));
+    radialVariants.set(mask, variant);
+    return variant;
+  };
+
+  const selectActivePipeline = () => {
+    if (
+      radialEnabled() &&
+      radialSource !== null &&
+      radialRuntime !== null &&
+      radialRuntimeSource === radialSource
+    ) {
+      const variant = getRadialVariantPipeline(activeVariantMask);
+      if (variant) {
+        activePipeline = variant;
+        radialActive = true;
+        return;
+      }
+    }
+    activePipeline = getVariantPipeline(activeVariantMask);
+    radialActive = false;
+  };
+
+  const disposeRadialRuntime = () => {
+    activePipeline = getVariantPipeline(activeVariantMask);
+    radialActive = false;
+    for (const variant of radialVariants.values()) variant.dispose();
+    radialVariants.clear();
+    radialRuntime?.dispose();
+    radialRuntime = null;
+    radialRuntimeSource = null;
+  };
+
+  const loadRadialModule = () => {
+    if (!radialModulePromise) {
+      radialModulePromise = import("./radialLightShafts").catch((err) => {
+        radialModulePromise = null;
+        throw err;
+      });
+    }
+    return radialModulePromise;
+  };
+
+  const ensureRadialRuntime = () => {
+    const requestedSource = radialSource;
+    if (!requestedSource || !radialEnabled()) {
+      selectActivePipeline();
+      return;
+    }
+    if (radialRuntime && radialRuntimeSource === requestedSource) {
+      radialRuntime.configure(getRadialLightParams());
+      selectActivePipeline();
+      return;
+    }
+
+    const epoch = radialEpoch;
+    if (radialBuildPending?.source === requestedSource && radialBuildPending.epoch === epoch) return;
+    radialBuildPending = { source: requestedSource, epoch };
+    void loadRadialModule()
+      .then(({ createRadialLightShafts }) => {
+        if (radialEpoch !== epoch || radialSource !== requestedSource || !radialEnabled()) return;
+        disposeRadialRuntime();
+        radialRuntime = createRadialLightShafts({
+          camera,
+          sceneDepth,
+          source: requestedSource,
+          params: getRadialLightParams()
+        });
+        radialRuntimeSource = requestedSource;
+        selectActivePipeline();
+      })
+      .catch((err) => console.warn("[render] radial painting light unavailable:", err))
+      .finally(() => {
+        if (radialBuildPending?.source === requestedSource && radialBuildPending.epoch === epoch) {
+          radialBuildPending = null;
+        }
+      });
+  };
+
+  const setRadialLightSource = (source: RadialLightSource | null) => {
+    if (source === radialSource) return;
+    radialEpoch += 1;
+    radialBuildPending = null;
+    radialSource = source;
+    if (radialRuntimeSource !== source) disposeRadialRuntime();
+    if (source) ensureRadialRuntime();
+    else selectActivePipeline();
+  };
+
+  const applyRadialLightFx = () => {
+    radialEpoch += 1; // invalidates an in-flight activation after a toggle-off
+    radialBuildPending = null;
+    radialRuntime?.configure(getRadialLightParams());
+    selectActivePipeline();
+    if (radialEnabled() && radialSource) ensureRadialRuntime();
+  };
+
   const fastCaptureEnabled = new URLSearchParams(location.search).has("fastcapture");
   const fastCaptureSize = new THREE.Vector2();
   let fastCaptureTarget: THREE.RenderTarget | null = null;
@@ -199,10 +339,8 @@ export function createRenderPipeline(
     applyPostFxParams();
     applyPostQuality();
     const mask = getPostFxVariantMask();
-    if (mask === activeVariantMask) return;
-
-    activeVariantMask = mask;
-    activePipeline = getVariantPipeline(mask);
+    if (mask !== activeVariantMask) activeVariantMask = mask;
+    applyRadialLightFx();
   };
 
   /**
@@ -399,6 +537,10 @@ export function createRenderPipeline(
 
   const render = () => {
     if (wireframeActive) syncWireframeCamera();
+    if (radialActive) {
+      radialRuntime?.update();
+      radialRenderedFrames += 1;
+    }
     if (!fastCaptureTarget) {
       activePipeline.render();
       return;
@@ -475,6 +617,18 @@ export function createRenderPipeline(
     applyPostQuality,
     /** Select the cached post-FX graph after a toggle change. */
     applyPostFx,
+    /** Attach/detach an optional interior-only radial-light source. */
+    setRadialLightSource,
+    /** Push radial-light controls without adding them to the global style mask. */
+    applyRadialLightFx,
+    /** Probe-facing state; read-only and allocation-free until requested. */
+    get radialLightState() {
+      return {
+        active: radialActive,
+        loaded: radialRuntime !== null,
+        renderedFrames: radialRenderedFrames
+      };
+    },
     /** Swap the scene pass to/from the retained wireframe override + camera. */
     setWireframe,
     /** Browser-native review capture reads the final post-FX texture here. */

@@ -18,7 +18,7 @@ import {
   vec3,
   vec4
 } from "three/tsl"
-import { SHADOW_DEFAULTS } from "../world/shadows/tuning"
+import { SHADOW_DEFAULTS } from "../world/shadows/defaults.ts"
 
 /**
  * A deliberately small complement to the clipmap shadows. It covers the

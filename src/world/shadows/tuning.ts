@@ -1,32 +1,12 @@
 import { tunables } from "../../core/persist"
+import { SHADOW_DEFAULTS } from "./defaults"
+
+export { SHADOW_DEFAULTS } from "./defaults"
 
 /**
- * One current shadow-settings schema. Defaults, pane metadata, ranges and labels
- * live together so persisted values reset automatically when this surface changes.
+ * One current shadow-settings schema. Pane metadata lives here beside the pure
+ * defaults module so persisted values reset whenever this surface changes.
  */
-export const SHADOW_DEFAULTS = Object.freeze({
-  enabled: true,
-  heroStrength: 1,
-  localStrength: 1,
-  farStrength: 1,
-  farFieldStrength: 1,
-  heroNormalBias: 0.02,
-  heroDepthBias: -0.00004,
-  localNormalBias: 0.05,
-  localDepthBias: -0.00008,
-  farNormalBias: 0.5,
-  farDepthBias: -0.0002,
-  contactEnabled: true,
-  contactResolutionScale: 0.5,
-  contactMaxDistance: 0.8,
-  contactThickness: 0.12,
-  contactIntensity: 0.14,
-  contactFadeStart: 10,
-  contactFadeEnd: 18,
-  contactNormalBias: 0.012,
-  contactSamples: 6 as const
-})
-
 const scientific = (value: number) => value.toExponential(1)
 
 export const SHADOW_TUNING = tunables("shadow", {

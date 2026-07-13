@@ -21,7 +21,6 @@ import {
   mx_noise_float
 } from "three/tsl";
 import { PALACE_LAGOON, palaceLagoonMask, waterHeight, type WorldMap } from "./heightmap";
-import { OCEAN_BEACH_SURF } from "./oceanBeachWaves";
 import { bumpNormal, chopZoneMask, swellBase, swellChop } from "./tslUtil";
 import { EXPOSURE_REBASE, LIGHT_SCALE } from "../config";
 
@@ -73,10 +72,6 @@ export class Water {
   #uOrigin = uniform(new THREE.Vector2());
   #uCamXZ = uniform(new THREE.Vector2());
   #uCamY = uniform(0);
-  // Ocean Beach cut-out (centreZ, halfWindowZ): the bay sheet goes transparent
-  // here so the dedicated green surf mesh owns the break with no double-draw.
-  #uSurfStrip = uniform(new THREE.Vector2(OCEAN_BEACH_SURF.centerZ, 200));
-
   constructor(scene: THREE.Scene, map: WorldMap) {
     const { tex, scale } = map.buildFloorTexture();
     const g = map.meta.grid;
@@ -111,9 +106,10 @@ export class Water {
         // steps off the flat far sheet (nothing physical reads water height
         // that far from the player)
         const rim = smoothstep(276, 200, positionLocal.xz.length());
-        // Ocean Beach's breaking swell is now owned by the dedicated high-res
-        // green face mesh (gameplay/surfing/waves.ts); the bay sheet stays flat
-        // under it (see the strip hole below) so the two never double-draw.
+        // Ocean Beach's breaking shape is owned by the high-res translucent
+        // overlay in gameplay/surfing/waves.ts. This fundamental bay sheet stays
+        // underneath as a continuous ocean surface, so the gameplay visibility
+        // fade can never reveal a rectangular hole or bare sea floor.
         const swell = swellBase(lx, lz, t)
           .add(swellChop(lx, lz, t).mul(chopZoneMask(lx, lz).mul(rim)));
         mat.positionNode = positionLocal.add(vec3(0, swell.mul(displace), 0));
@@ -183,15 +179,6 @@ export class Water {
         .add(zoneF.mul(smoothstep(0.6, 0.86, foamNoise)).mul(0.34))
         .toVar();
       const foamTotal = clamp(foam, 0, 1).toVar();
-      // Ocean Beach cut-out: fully transparent across the break strip within the
-      // player-following window so the green surf face mesh shows through cleanly
-      // (reversed smoothstep edges silently return 0 — keep edge0<edge1, invert).
-      const OB = OCEAN_BEACH_SURF;
-      const holeX = smoothstep(OB.minX - 6, OB.minX + 46, pxz.x)
-        .mul(smoothstep(OB.maxX - 46, OB.maxX + 6, pxz.x).oneMinus());
-      const holeZ = smoothstep(this.#uSurfStrip.y.sub(80), this.#uSurfStrip.y, pxz.y.sub(this.#uSurfStrip.x).abs()).oneMinus();
-      const surfHole = holeX.mul(holeZ).toVar();
-
       // ripple bump: stylized directional wavelets (sum of sines) replace the old
       // 2×3-octave FBM — a fraction of the per-pixel ALU on the biggest surface on
       // screen, while reading crisper/wavier. Still faded out with distance to kill
@@ -224,7 +211,7 @@ export class Water {
       // deep 1.0. Only the thin edges stay soft — the player-patch feather
       // (waterVisibility) and the land cutout (dry) — so no seams, no z-fight.
       const alpha = clamp(mix(0.82, 1.0, d2).add(foamTotal.mul(0.25)), 0, 1);
-      mat.opacityNode = alpha.mul(waterVisibility).mul(dry.oneMinus()).mul(surfHole.oneMinus());
+      mat.opacityNode = alpha.mul(waterVisibility).mul(dry.oneMinus());
 
       mat.envMapIntensity = 0.25;
       return mat;
@@ -388,9 +375,6 @@ export class Water {
     this.near.position.z = Math.round(playerPos.z / snap) * snap;
     this.#uOrigin.value.set(this.near.position.x, this.near.position.z);
     this.#uNearRect.value.set(this.near.position.x, this.near.position.z, NEAR_PATCH_MASK_OUTER);
-    // track the surf-mesh window down the beach so the cut-out follows the player
-    this.#uSurfStrip.value.x = THREE.MathUtils.clamp(playerPos.z, OCEAN_BEACH_SURF.minZ, OCEAN_BEACH_SURF.maxZ);
-
     const clearance = playerPos.y - waterHeight(playerPos.x, playerPos.z, t);
     this.#uNearVisibility.value = THREE.MathUtils.clamp(
       (NEAR_PATCH_FADE_END_HEIGHT - clearance) / (NEAR_PATCH_FADE_END_HEIGHT - NEAR_PATCH_FADE_START_HEIGHT),

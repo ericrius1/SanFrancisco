@@ -100,6 +100,21 @@ export function mdInsideFootprint(x: number, z: number, pad = 0): boolean {
   return false;
 }
 
+/**
+ * Tight visitor-space test for effects that must begin only after the doorway.
+ * Unlike mdInsideFootprint(), this excludes the exterior wall/foundation band.
+ */
+export function mdInsideInterior(x: number, z: number, pad = 0): boolean {
+  const { lx, lz } = mdToLocalXZ(x, z);
+  const halfWidth = WALL_INNER_FACE_X + pad;
+  const innerEntrance = Z_ENTRANCE + WALL_THICKNESS / 2 - pad;
+  if (Math.abs(lx) <= halfWidth && lz >= innerEntrance && lz <= Z_APSE) return true;
+  if (lz <= Z_APSE) return false;
+  const dz = lz - Z_APSE;
+  const innerApseRadius = APSE_RADIUS - WALL_THICKNESS / 2 + pad;
+  return lx * lx + dz * dz <= innerApseRadius * innerApseRadius;
+}
+
 // ---- exhibit zones (LOCAL rectangles) handed to each builder so they never
 // overlap. x across the nave, z along it. Central dioramas stay within |x|<7
 // (inboard of the x=±8 colonnade); aisle galleries hang on the outer walls. ----

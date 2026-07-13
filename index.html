@@ -3529,6 +3529,20 @@
         align-items: center;
       }
       #hud .surf-hud.on { opacity: 1; visibility: visible; transform: translate(-50%, 0) scale(1); }
+      #hud .surf-wave-transition {
+        position: fixed;
+        inset: -12%;
+        z-index: var(--z-hud-base);
+        pointer-events: none;
+        opacity: 0;
+        transform: translateX(-10%) scale(1.04);
+        background:
+          radial-gradient(ellipse at 22% 55%, rgba(255,255,255,.88) 0 5%, rgba(191,244,241,.46) 16%, transparent 39%),
+          radial-gradient(ellipse at 58% 42%, rgba(247,255,255,.78) 0 7%, rgba(128,221,219,.32) 20%, transparent 43%),
+          linear-gradient(100deg, transparent 5%, rgba(224,255,252,.78) 41%, rgba(255,255,255,.68) 56%, transparent 89%);
+        filter: blur(5px) saturate(1.12);
+      }
+      #hud .surf-wave-transition.on { animation: surf-wave-wash 520ms cubic-bezier(.18,.68,.28,1) both; }
       #hud .surf-title { display: flex; flex-direction: column; letter-spacing: 0.16em; font-weight: 800; font-size: 12px; }
       #hud .surf-title small { color: #75e3df; font-size: 8px; letter-spacing: 0.23em; margin-top: 2px; }
       #hud .surf-score { display: flex; flex-direction: column; align-items: flex-end; font-variant-numeric: tabular-nums; }
@@ -3556,6 +3570,11 @@
       @keyframes surf-pulse { 50% { transform: translate(-50%, 0) scale(1.025); filter: brightness(1.15); } }
       @keyframes surf-wipeout { 35% { transform: translate(-50%, 0) rotate(-1.2deg); border-color: rgba(255, 107, 95, 0.65); } }
       @keyframes surf-flow-on { 28% { transform: translate(-50%, 0) scale(1.045); filter: brightness(1.28) saturate(1.22); } }
+      @keyframes surf-wave-wash {
+        0% { opacity: .9; transform: translateX(-10%) scale(1.04); }
+        32% { opacity: .7; }
+        100% { opacity: 0; transform: translateX(11%) scale(1.12); }
+      }
       @media (max-width: 620px) {
         #hud .surf-hud { top: max(10px, env(safe-area-inset-top)); padding: 9px 12px 8px; }
         #hud .surf-controls { display: none; }

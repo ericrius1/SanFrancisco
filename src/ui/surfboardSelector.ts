@@ -99,6 +99,12 @@ export class SurfboardSelector {
     }
   }
 
+  /** The shaping room belongs exclusively to the surf activity context. */
+  setVisible(visible: boolean): void {
+    this.#root.hidden = !visible;
+    if (!visible && this.#open) this.setOpen(false);
+  }
+
   setConfig(config: SurfboardConfig): void {
     this.#config = normalizeSurfboardConfig(config);
     this.#render();

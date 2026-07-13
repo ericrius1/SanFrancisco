@@ -311,6 +311,11 @@ export class Sky {
     return this.#shadowNode.diagnostics
   }
 
+  /** Re-push the live shadow pane values without recompiling render materials. */
+  applyShadowParams() {
+    this.#shadowNode.applyTuning()
+  }
+
   /** Streamers/proxy owners call this only when static caster membership changes. */
   invalidateStaticShadows(scope: StaticShadowScope = "all") {
     this.#shadowNode.invalidateStatic(scope)

@@ -8,6 +8,7 @@ const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
  * this class owns rewards, feedback, HUD pulses and audio events. */
 export class SurfExperience {
   readonly root: HTMLElement;
+  readonly transition: HTMLElement;
   #scoreEl: HTMLElement;
   #comboEl: HTMLElement;
   #statusEl: HTMLElement;
@@ -30,6 +31,9 @@ export class SurfExperience {
 
   constructor(audio: VehicleAudio) {
     this.#audio = audio;
+    this.transition = document.createElement("div");
+    this.transition.className = "surf-wave-transition";
+    this.transition.setAttribute("aria-hidden", "true");
     this.root = document.createElement("section");
     this.root.className = "surf-hud";
     this.root.setAttribute("aria-label", "Ocean Beach surf score");
@@ -40,13 +44,13 @@ export class SurfExperience {
       <div class="surf-status" data-surf-status>DROP IN</div>
       <div class="surf-meter surf-flow-meter"><span>FLOW</span><i data-surf-meter></i><b>SPACE / A</b></div>
       <div class="surf-meter surf-launch-meter"><span>LIP</span><i data-surf-launch></i><b>AUTO</b></div>
-      <div class="surf-controls">A/D carve · W pump · S stall · E exit · camera locked</div>`;
+      <div class="surf-controls">CARVE · PUMP · STALL · E / B EXIT · CAMERA LOCKED</div>`;
     this.#scoreEl = this.root.querySelector("[data-surf-score]")!;
     this.#comboEl = this.root.querySelector("[data-surf-combo]")!;
     this.#statusEl = this.root.querySelector("[data-surf-status]")!;
     this.#meterEl = this.root.querySelector("[data-surf-meter]")!;
     this.#launchEl = this.root.querySelector("[data-surf-launch]")!;
-    document.getElementById("hud")!.appendChild(this.root);
+    document.getElementById("hud")!.append(this.transition, this.root);
   }
 
   get debugState() {
@@ -67,6 +71,8 @@ export class SurfExperience {
       if (active) {
         this.#status("ALREADY RIDING", "good");
         this.root.classList.add("pulse");
+      } else {
+        this.transition.classList.remove("on");
       }
     }
     if (!active) return;
@@ -120,6 +126,12 @@ export class SurfExperience {
       this.#status("NEXT CLEAN WAVE", "good");
       this.#eventTimer = 1.0;
       this.#audio.surfEvent("carve", 0.55);
+      // The endless arcade line projects onto the next incoming crest. A quick
+      // whitewater wash turns that otherwise large ocean-space cut into an
+      // intentional "next wave" transition while preserving the same framing.
+      this.transition.classList.remove("on");
+      void this.transition.offsetWidth;
+      this.transition.classList.add("on");
     } else if (surf.assistSerial !== this.#assistSerial) {
       this.#assistSerial = surf.assistSerial;
       this.#status("AUTO SAVE", "good");

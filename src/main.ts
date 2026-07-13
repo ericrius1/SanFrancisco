@@ -94,6 +94,7 @@ import { parseReadLink, openReadLink } from "./ui/deepLinks";
 import { Tutorial } from "./ui/tutorial";
 import { createRenderPipeline } from "./render/pipeline";
 import { POSTFX_TUNING, setFlowPostFx } from "./render/postfx";
+import type { RadialLightSource } from "./render/radialLightTypes";
 import { DebugPanel } from "./ui/debug";
 import { ColliderDebug, type DebugBox, type DebugMesh } from "./ui/colliderDebug";
 import { CalibrationChart } from "./ui/calibrationChart";
@@ -326,6 +327,10 @@ async function boot() {
   setLocalSurfboardConfig(surfboardConfig);
   vehicleAudio.setBoardStyle(boardConfig);
   const player = new Player(physics, map, scene, spawn, avatarTraits, boardConfig, scooterConfig, surfboardConfig);
+  const chase = new ChaseCamera(camera, map, physics);
+  chase.yaw = spawn.heading; // behind the player, looking the way they face (spawn.heading is raw facing)
+  // Seed above the local ground — hilltop spawns sit well over y=30.
+  camera.position.set(spawn.x + 20, map.effectiveGround(spawn.x, spawn.z) + 30, spawn.z + 20);
   let surfExperience: import("./gameplay/surfing/game").SurfExperience | null = null;
   let surfRuntimeLoading: Promise<void> | null = null;
   const refreshSurfDebug = () => {
@@ -371,17 +376,21 @@ async function boot() {
     }
     setFlowPostFx(surfFlowFx, surfFlowPhase);
   };
-  // The customizer module itself is deferred until surf first activates. This
-  // is rebound after networking exists; the early no-op keeps the mode callback
-  // safe during startup/restores.
+  // The customizer module itself is deferred until the player explicitly opens
+  // the shaping room. This is rebound after networking exists; the early no-op
+  // keeps the mode callback safe during startup/restores.
   let ensureSurfboardCustomizer: (open?: boolean) => void = () => {};
   let setSurfboardLauncherVisible: (visible: boolean) => void = () => {};
-  let enableRemoteSurfboardAssets: () => void = () => {};
+  let setSurfboardCustomizerMode: (active: boolean) => void = () => {};
+  let setRemoteSurfboardAssetsActive: (active: boolean) => void = () => {};
   let leaveCameraModeForSurf: () => void = () => {};
   const birdTrails = new BirdTrails(scene, player.meshes.bird);
   const droneFireworkMounts = player.meshes.drone.userData.fireworkMounts as THREE.Object3D[] | undefined;
   const startMode = spawnPoint?.mode ?? START.mode;
-  if (startMode !== "walk" && ALL_MODES.includes(startMode)) player.trySwitch(startMode);
+  if (startMode !== "walk" && ALL_MODES.includes(startMode)) {
+    if (startMode === "surf") await chase.ensureSurfCamera();
+    player.trySwitch(startMode);
+  }
   // Surf-mode far-cull (perf audit's #1 win): a west-facing surfer never sees the
   // city behind them, but streamed tiles + citygen chunks are frustumCulled=false
   // — they pay GPU draw cost every frame regardless of view, cleared only by
@@ -423,12 +432,14 @@ async function boot() {
     applySurfCull(mode === "surf");
     if (mode === "surf") {
       leaveCameraModeForSurf();
+      void chase.ensureSurfCamera();
       void ensureSurfRuntime();
-      enableRemoteSurfboardAssets();
     } else {
       releaseSurfVisual();
     }
+    setRemoteSurfboardAssetsActive(mode === "surf");
     setSurfboardLauncherVisible(mode === "surf");
+    setSurfboardCustomizerMode(mode === "surf");
     if (fresh) {
       const msg = modeDiscovery.revealMessage(mode);
       if (msg) hud.message(msg, 2.8);
@@ -440,6 +451,7 @@ async function boot() {
   // surf (spawnPoint/invite) needs the cull applied once explicitly.
   if (player.mode === "surf") {
     applySurfCull(true);
+    void chase.ensureSurfCamera();
     void ensureSurfRuntime();
   }
   // controller: swap the help labels to whichever device was touched last
@@ -564,6 +576,7 @@ async function boot() {
   let coronaHeights: CoronaHeightsPark | null = null;
   let missionDolores: MissionDoloresMuseum | null = null;
   let missionDoloresLoading: Promise<void> | null = null;
+  let activeMissionDoloresRadialSource: RadialLightSource | null = null;
   let museumBookOpen = false;
   const ensureMissionDolores = (playerPos: THREE.Vector3): void => {
     if (missionDolores || missionDoloresLoading) return;
@@ -589,6 +602,24 @@ async function boot() {
       .catch((err) => {
         console.warn("[boot] Mission Dolores museum unavailable:", err);
       });
+  };
+  const renderFrame = () => {
+    const wantsMuseumRays =
+      Boolean(POSTFX_TUNING.values.museumRays) &&
+      missionDolores?.isPlayerInInterior(player.position) === true;
+    if (!wantsMuseumRays && activeMissionDoloresRadialSource) {
+      // Detach the render graph before releasing the source proxies it reads.
+      pipeline.setRadialLightSource(null);
+      activeMissionDoloresRadialSource = null;
+      missionDolores?.releaseRadialLightSource();
+    } else if (wantsMuseumRays && !activeMissionDoloresRadialSource) {
+      const nextSource = missionDolores?.radialLightSource ?? null;
+      if (nextSource) {
+        activeMissionDoloresRadialSource = nextSource;
+        pipeline.setRadialLightSource(nextSource);
+      }
+    }
+    pipeline.render();
   };
   const gardenDisplacer: GroundDisplacer = { x: 0, z: 0, radius: 1.6, strength: 1 };
   const gardenDisplacers = [gardenDisplacer];
@@ -789,11 +820,6 @@ async function boot() {
   // are subpixel — their systems pause. Hysteresis so hill flanks don't flicker it.
   let highUp = false;
 
-  const chase = new ChaseCamera(camera, map, physics);
-  chase.yaw = spawn.heading; // behind the player, looking the way they face (spawn.heading is raw facing)
-  // seed the camera above the local ground — hilltop spawns sit well over y=30
-  camera.position.set(spawn.x + 20, map.effectiveGround(spawn.x, spawn.z) + 30, spawn.z + 20);
-
   // Car physics publishes one stable landing event; presentation consumes each
   // serial exactly once. The controller stays independent from camera/audio/VFX,
   // while every authored range remains together under movement > car > landing.
@@ -933,9 +959,9 @@ async function boot() {
   );
   const remotes = new RemotePlayers(scene);
   remotes.localPlayerPosition = () => player.renderPosition;
-  enableRemoteSurfboardAssets = () => remotes.enableSurfboardAssets();
+  setRemoteSurfboardAssetsActive = (active) => remotes.setSurfboardAssetsEnabled(active);
   // Startup/invite can enter surf before networking and its remote-art gate exist.
-  if (player.mode === "surf") enableRemoteSurfboardAssets();
+  setRemoteSurfboardAssetsActive(player.mode === "surf");
   const pickleballController = new PickleballController({
     goldman: goldenGateTennis,
     scene,
@@ -1030,6 +1056,7 @@ async function boot() {
   let surfboardSelector: {
     setConfig(config: SurfboardConfig): void;
     setOpen(open: boolean): void;
+    setVisible(visible: boolean): void;
   } | null = null;
   let surfboardSelectorLoading: Promise<void> | null = null;
   let openSurfboardSelectorAfterLoad = false;
@@ -1045,6 +1072,10 @@ async function boot() {
   document.getElementById("hud")!.appendChild(surfboardLauncher);
   setSurfboardLauncherVisible = (visible) => {
     surfboardLauncher.hidden = !visible || surfboardSelector !== null;
+  };
+  setSurfboardCustomizerMode = (active) => {
+    if (!active) openSurfboardSelectorAfterLoad = false;
+    surfboardSelector?.setVisible(active);
   };
   surfboardLauncherButton.addEventListener("click", () => {
     input.releaseLock();
@@ -1068,12 +1099,11 @@ async function boot() {
             net.setSurfboard(config);
           },
           (config) => player.previewSurfboardSurface(config),
-          () => {
-            if (player.mode !== "surf" && !player.riding) player.trySwitch("surf");
-          }
+          () => {}
         );
         surfboardLauncher.hidden = true;
-        if (openSurfboardSelectorAfterLoad) surfboardSelector.setOpen(true);
+        surfboardSelector.setVisible(player.mode === "surf");
+        if (openSurfboardSelectorAfterLoad && player.mode === "surf") surfboardSelector.setOpen(true);
         openSurfboardSelectorAfterLoad = false;
       })
       .catch((error) => console.warn("[surf] shaping room failed to load", error))
@@ -1288,7 +1318,24 @@ async function boot() {
   const beginPlaceNavigation = (label: string) => navigation.begin(label);
   const finishPlaceNavigation = (label: string) => navigation.finish(label);
   const applyPlaceHistory = (step: -1 | 1) => navigation.applyHistory(step);
-  const switchMode = (mode: PlayerMode) => navigation.switchMode(mode);
+  let surfEntryRequest = 0;
+  const switchMode = (mode: PlayerMode) => {
+    const request = ++surfEntryRequest;
+    // Surf is an isolated activity context. Prevent number keys, toolbar clicks,
+    // and d-pad travel cycling from silently swapping vehicles mid-wave; E/B is
+    // the single clear exit back to the beach.
+    if (player.mode === "surf" && mode !== "walk") {
+      hud.message("E / B exits surfing — then choose another way to travel", 2.2);
+      return;
+    }
+    if (mode === "surf") {
+      void chase.ensureSurfCamera().then(() => {
+        if (request === surfEntryRequest && player.mode !== "surf") navigation.switchMode("surf");
+      });
+      return;
+    }
+    navigation.switchMode(mode);
+  };
   const teleportToTarget = (x: number, z: number, toName?: string, playerId?: number) =>
     navigation.teleportToTarget(x, z, toName, playerId);
   switchModeFromToolbar = switchMode;
@@ -1434,6 +1481,7 @@ async function boot() {
   // An invite link wins over the saved session — the click's intent is explicit.
   const resumed = invite || requestedSpawn ? null : (devReload?.player ?? loadPlayerState());
   if (resumed) {
+    if (resumed.mode === "surf") await chase.ensureSurfCamera();
     player.restoreState(resumed);
     modeDiscovery.discover(resumed.mode);
     chase.yaw = devReload?.camera.yaw ?? resumed.heading + Math.PI;
@@ -1461,6 +1509,7 @@ async function boot() {
     const side = mode === "boat" || mode === "plane" ? 7 : mode === "drive" ? 4 : 2.5;
     const jx = invite.x + Math.cos(invite.facing) * side;
     const jz = invite.z - Math.sin(invite.facing) * side;
+    if (mode === "surf") await chase.ensureSurfCamera();
     player.teleportTo({ x: jx, y: invite.y, z: jz, facing: invite.facing, mode });
     chase.yaw = invite.facing;
     camera.position.set(jx + 20, invite.y + 30, jz + 20);
@@ -1596,7 +1645,7 @@ async function boot() {
   colliderDebug.setVisible(true);
   colliderDebug.sync([{ x: player.position.x, y: player.position.y, z: player.position.z, hx: 1, hy: 1, hz: 1, yaw: 0, r: 1, g: 0.2, b: 0.2 }]);
   calibrationChart.sync(camera, true);
-  pipeline.render();
+  renderFrame();
   player.warmup("all");
   fx.prewarm(); // compiles both sprite blend pipelines before gameplay
   fireworks.prewarm(); // sprite-pool pipeline — was a lazy first-use hitch
@@ -2355,7 +2404,7 @@ async function boot() {
       sky.update(elapsed, camera.position, player.renderPosition);
       hud.update(frameDt);
       input.endFrame();
-      pipeline.render();
+      renderFrame();
       return;
     }
 
@@ -2401,7 +2450,7 @@ async function boot() {
       // frozen. Keep the full-rate hero map aligned before drawing this frame.
       sky.update(elapsed, camera.position, player.renderPosition);
       input.endFrame();
-      pipeline.render();
+      renderFrame();
       return;
     }
 
@@ -2494,7 +2543,7 @@ async function boot() {
       // branch. Keep shadow coverage and the every-frame subject map current.
       sky.update(elapsed, camera.position, player.renderPosition);
       input.endFrame();
-      pipeline.render();
+      renderFrame();
       return;
     }
 
@@ -2555,17 +2604,22 @@ async function boot() {
     if (!playingPickleball && input.altPressed("ArrowLeft")) applyPlaceHistory(-1);
     if (!playingPickleball && input.altPressed("ArrowRight")) applyPlaceHistory(1);
 
-    // E: exit any vehicle/creature, pick up a thrown tennis ball, or on foot
-    // hop into the nearest ride (a friend's passenger seat, a rideable animal,
-    // or a mount you left behind)
-    const teaGardenEConsumed = !pickleballEConsumed
-      && input.pressed("KeyE")
+    // E / pad B: nearby conversations get first refusal. When the prompt was
+    // reached on a vehicle or creature, the same press dismounts and is handed
+    // back to the conversation once the player is on foot; requiring a second
+    // press made Iroh's visible prompt appear unresponsive.
+    const interactPressed = !pickleballEConsumed && input.pressed("KeyE");
+    let teaGardenEConsumed = interactPressed
       && (japaneseTeaGarden?.interact(player.position, player.mode) ?? false);
+    const exitedToWalk = interactPressed && !teaGardenEConsumed && exitToWalk();
+    if (exitedToWalk) {
+      teaGardenEConsumed = japaneseTeaGarden?.interact(player.position, player.mode) ?? false;
+    }
     if (
       !pickleballEConsumed &&
       !teaGardenEConsumed &&
-      input.pressed("KeyE") &&
-      !exitToWalk() &&
+      interactPressed &&
+      !exitedToWalk &&
       !golf?.tryStartAtTee(player, hud) &&
       !archery?.tryInteract(player, hud, chase) &&
       !archery?.tryInteract(player, hud, chase) &&
@@ -2576,12 +2630,24 @@ async function boot() {
       const nearOceanBeach =
         player.mode === "walk" &&
         player.position.x > OCEAN_BEACH_SURF.minX - 180 &&
-        player.position.x < OCEAN_BEACH_SURF.maxX + 60 && // must be at the waterline, not inland
+        player.position.x < OCEAN_BEACH_SURF.maxX + 280 && // beach exit remains inside the activity gate
         player.position.z > OCEAN_BEACH_SURF.minZ - 120 &&
         player.position.z < OCEAN_BEACH_SURF.maxZ + 120;
       if (nearOceanBeach) {
-        player.trySwitch("surf");
-        hud.message("You're surfing — A/D carve · W pump · S stall · E exits to the beach", 4);
+        // Load the exclusive rig before changing embodiment, so even the first
+        // visible surf frame uses the locked shot rather than world-camera state.
+        const request = ++surfEntryRequest;
+        void chase.ensureSurfCamera().then(() => {
+          if (request !== surfEntryRequest || player.mode !== "walk") return;
+          const stillNearOceanBeach =
+            player.position.x > OCEAN_BEACH_SURF.minX - 180 &&
+            player.position.x < OCEAN_BEACH_SURF.maxX + 280 &&
+            player.position.z > OCEAN_BEACH_SURF.minZ - 120 &&
+            player.position.z < OCEAN_BEACH_SURF.maxZ + 120;
+          if (!stillNearOceanBeach) return;
+          player.trySwitch("surf");
+          hud.message("You're surfing — A/D carve · W pump · S stall · E exits to the beach", 4);
+        });
       } else if (!fetchBall?.tryPickup(player.position)) {
         const drv = remotes.nearestDriver(player.position, 5.5);
         const animal = drv ? null : forest?.nearest(player.position, 5);
@@ -3182,6 +3248,7 @@ async function boot() {
     {
       const cursorLive =
         document.body.classList.contains("started") &&
+        player.mode !== "surf" &&
         !cameraMode &&
         !input.suspended &&
         !cineHook &&
@@ -3245,7 +3312,7 @@ async function boot() {
 
     input.endFrame();
     tracer.begin("render");
-    pipeline.render();
+    renderFrame();
     tracer.end("render");
     diagnostics.updateStats();
   };
