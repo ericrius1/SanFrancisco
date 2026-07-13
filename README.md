@@ -100,8 +100,8 @@ Open the map (`M`) and teleport, or just wander. A few of the denser spots:
   on a boulder. Stand nearby to hear their original songbook rotate with a
   natural quiet break between tunes. Throw the ball tool for the dogs.
 - **Botanical Garden** — San Francisco Botanical Garden in Golden Gate Park:
-  SeedThree trees, blade grass, shrubs, and a shared wind envelope. The nature
-  soundscape thickens here.
+  unified trees, curved blade grass, leaf-spray shrubs, dimensional flower
+  clumps, and a shared wind envelope. The nature soundscape thickens here.
 - **Goldman Tennis & Pickleball** — Golden Gate Park courts. Walk up to a
   pickleball athlete and press `E` to take a side (near/far). `WASD` moves,
   click/`Space` swings, `E` again leaves. Online play is slot-arbitrated so two
@@ -110,9 +110,9 @@ Open the map (`M`) and teleport, or just wander. A few of the denser spots:
   Teleport to **Presidio Golf · Hole 1**, or find any glowing tee and press `E`.
   Aim with the camera, clubs with `1`–`9`, hold/release click to swing; `G`
   twice abandons a round. Ball and score state are shared online.
-- **Wildlands** — SeedThree groves across Golden Gate Park, the Presidio, Marin
-  Headlands, Mount Sutro / Buena Vista, with player-following wildflower and
-  grass rings.
+- **Wildlands** — chunked unified groves across Golden Gate Park, the Presidio,
+  Marin Headlands, Mount Sutro / Buena Vista, with player-following wildflower
+  and grass rings.
 - **Skyline landmarks** — Golden Gate, Bay Bridge, Transamerica, Salesforce
   Tower, Coit Tower, the Ferry Building, Sutro Tower, the Palace of Fine Arts,
   Alcatraz — plus floating balloon islands if you can reach them.
@@ -220,7 +220,8 @@ Protocol details live at the top of `server/server.mjs` and `src/net/net.ts`.
 - **`src/world/goldenGateTennis/`** + **`src/gameplay/pickleball/`** — Goldman courts and
   the shared pickleball game.
 - **`src/gameplay/golf/`** — Presidio Golf Club, 18 holes with shared ball/score state.
-- **`src/world/wildlands/`** — SeedThree foliage across GG Park / Presidio / Marin / Sutro.
+- **`src/world/vegetation/`** + **`src/world/wildlands/`** — the shared outdoor
+  plant runtime and its deferred GG Park / Presidio / Marin / Sutro placement layer.
 - **`server/server.mjs`** + **`src/net/`** — multiplayer relay, remote-avatar interpolation,
   and the minimap/full-map UI (`src/ui/minimap.ts`).
 

@@ -115,16 +115,16 @@ const TAB_WORLD = `
 
   <section>
     <h3><span class="bts-ic">🌳</span> A city that grows</h3>
-    <p>The greenery is three cooperating systems sharing one small library of hand-shaped low-poly
-    trees — conifer and redwood, Monterey cypress, coast live oak, eucalyptus, palm. Their crowns
-    aren't blobs: they're airy branch lattices under alpha-tested <strong>leaf cards</strong> drawn from
-    a procedural texture atlas, so up close you see actual limbs carrying the foliage.</p>
-    <p>A near-field densifier follows you around the Marin headlands, thickening the far forest only
-    where you can actually make out trunks; every streamed park tile brings its own merged tree mesh
-    that comes and goes with the tile; and a field of wind-blown grass tufts and wildflowers is rebuilt
-    around the camera as you move — golden-green over Marin, lush where a park mask says lawn. It's all
-    cosmetic (no physics), all deterministic so every player sees the same trees, and all pure
-    mix-style shader math with no branches, which this renderer punishes hard.</p>
+    <p>Every outdoor plant now enters one sandbox-owned vegetation runtime. Places still own their
+    horticulture — the Tea Garden chooses pruned pines and azaleas, Corona chooses coastal scrub, and
+    Hippie Hill chooses its perimeter canopy — but they submit those placements to shared tree,
+    leaf-spray shrub, curved-blade grass, and dimensional flower renderers. That is why a garden can
+    keep its own identity without quietly bringing back a second foliage look.</p>
+    <p>Trees grow once per design, then a chunked far forest and a small pool of nearby hero trees share
+    the result. Grass, shrub leaves, and 3–5-stem flower clumps bend to the same gust and interaction
+    field, while distance gates and first-approach imports keep distant parks and their assets out of a
+    clean boot. Placement is deterministic, so every player sees the same planting; rendering cost is
+    bounded by instancing, chunk culling, and near-detail pools instead of the size of the whole city.</p>
   </section>
 
   <section>

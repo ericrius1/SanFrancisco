@@ -6,25 +6,34 @@ import {
   writeGrassMesh,
   type GrassEntry
 } from "../groundcover/bladeGrass";
-import { compileTree, GARDEN_TREE_PRESETS } from "../garden/proceduralTrees";
 import {
-  GUIDE_HOME,
+  createAuthoredShrubPatch,
+  type AuthoredShrubPalette,
+  type AuthoredShrubPlacement
+} from "../vegetation/authoredShrubs";
+import {
+  createAuthoredTreePatch,
+  type AuthoredTreeArchetype
+} from "../vegetation/authoredTrees";
+import {
   TEA_GARDEN_BOUNDS,
-  TEA_GARDEN_TOUR_STOPS,
-  TEA_GARDEN_TREES,
   distanceToTeaGardenPaths,
   inJapaneseTeaGarden,
   inTeaGardenBuilding,
   inTeaGardenWater,
-  type TeaGardenTerrain,
-  type TeaGardenTreeKind,
-  type TeaGardenTreePlacement
+  type TeaGardenTerrain
 } from "./layout";
+import {
+  collectTeaGardenPlanting,
+  type TeaGardenShrubPalette
+} from "./planting";
 
 export type TeaGardenVegetation = {
   group: THREE.Group;
   grassGroup: THREE.Group;
+  ready: Promise<void>;
   setVisible(visible: boolean): void;
+  update(focus: { x: number; z: number }): void;
   dispose(): void;
   stats: { trees: number; shrubs: number; grassClusters: number; rocks: number };
 };
@@ -37,155 +46,76 @@ function hash(ix: number, iz: number, salt: number): number {
   return (h >>> 0) / 4294967296;
 }
 
-function treePreset(kind: TeaGardenTreeKind): number {
-  if (kind === "pine") return 2;
-  if (kind === "maple") return 5;
-  return 1;
-}
-
-function clearsGuideSightline(x: number, z: number, homeRadius = 14, stopRadius = 3.4): boolean {
-  if (Math.hypot(x - GUIDE_HOME.x, z - GUIDE_HOME.z) < homeRadius) return false;
-  return !TEA_GARDEN_TOUR_STOPS.some((stop) =>
-    Math.hypot(x - stop.guideX, z - stop.guideZ) < stopRadius
-  );
-}
-
-function createTreeMeshes(map: TeaGardenTerrain): { group: THREE.Group; count: number } {
-  const group = new THREE.Group();
-  group.name = "japanese_tea_garden_specimen_trees";
-
-  // Seven mature Japanese black pines define the redesigned 2024 Pagoda Plaza.
-  const plazaPines: TeaGardenTreePlacement[] = [
-    { x: -2330.5, z: 2190.4, kind: "pine", scale: 0.5, yaw: 0.4 },
-    { x: -2323.8, z: 2187.2, kind: "pine", scale: 0.47, yaw: 1.6 },
-    { x: -2316.6, z: 2189.5, kind: "pine", scale: 0.52, yaw: 2.7 },
-    { x: -2307.5, z: 2202.5, kind: "pine", scale: 0.46, yaw: 3.9 },
-    { x: -2313.1, z: 2206, kind: "pine", scale: 0.5, yaw: 5.1 },
-    { x: -2320.3, z: 2209.2, kind: "pine", scale: 0.48, yaw: 0.9 },
-    { x: -2330.7, z: 2206.5, kind: "pine", scale: 0.52, yaw: 2.2 }
-  ];
-  const mappedPlacements = TEA_GARDEN_TREES.filter((tree) =>
-    inJapaneseTeaGarden(tree.x, tree.z) && clearsGuideSightline(tree.x, tree.z)
-  );
-  const placements = [...mappedPlacements, ...plazaPines];
-  const byKind = new Map<TeaGardenTreeKind, TeaGardenTreePlacement[]>();
-  for (const placement of placements) {
-    const list = byKind.get(placement.kind) ?? [];
-    list.push(placement);
-    byKind.set(placement.kind, list);
-  }
-
-  const dummy = new THREE.Object3D();
-  for (const [kind, trees] of byKind) {
-    const compiled = compileTree(GARDEN_TREE_PRESETS[treePreset(kind)]);
-    const branchMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.98, metalness: 0 });
-    const leafMat = new THREE.MeshStandardMaterial({
-      vertexColors: true,
-      roughness: 0.86,
-      metalness: 0,
-      side: THREE.DoubleSide,
-      alphaTest: 0.08
-    });
-    const branches = new THREE.InstancedMesh(compiled.branchGeometry, branchMat, trees.length);
-    branches.name = `tea_garden_${kind}_branches`;
-    const leaves = new THREE.InstancedMesh(compiled.leafGeometry, leafMat, trees.length);
-    leaves.name = `tea_garden_${kind}_foliage`;
-
-    trees.forEach((tree, index) => {
-      const y = map.groundTop(tree.x, tree.z) - 0.12;
-      dummy.position.set(tree.x, y, tree.z);
-      dummy.rotation.set(0, tree.yaw, kind === "pine" ? (hash(index, 0, 51) - 0.5) * 0.12 : 0);
-      // Tea-garden pines are deliberately pruned and layered, not forest-scale
-      // cones. The narrower profile keeps gates, roofs and tour sightlines legible.
-      const wide = kind === "pine" ? 0.88 : 1;
-      const height = kind === "pine" ? 0.7 : kind === "cherry" ? 0.84 : 0.92;
-      dummy.scale.set(tree.scale * wide, tree.scale * height, tree.scale * wide);
-      dummy.updateMatrix();
-      branches.setMatrixAt(index, dummy.matrix);
-      leaves.setMatrixAt(index, dummy.matrix);
-    });
-    branches.instanceMatrix.needsUpdate = true;
-    leaves.instanceMatrix.needsUpdate = true;
-    branches.computeBoundingSphere();
-    leaves.computeBoundingSphere();
-    branches.castShadow = true;
-    branches.receiveShadow = true;
-    leaves.castShadow = true;
-    leaves.receiveShadow = true;
-    group.add(branches, leaves);
-  }
-  return { group, count: placements.length };
-}
-
-type ShrubPlacement = { x: number; y: number; z: number; scale: number; yaw: number; palette: number };
-
-function collectShrubs(map: TeaGardenTerrain): ShrubPlacement[] {
-  const shrubs: ShrubPlacement[] = [];
-  const cell = 3.15;
-  let gx = 0;
-  for (let x = TEA_GARDEN_BOUNDS.minX; x <= TEA_GARDEN_BOUNDS.maxX; x += cell, gx++) {
-    let gz = 0;
-    for (let z = TEA_GARDEN_BOUNDS.minZ; z <= TEA_GARDEN_BOUNDS.maxZ; z += cell, gz++) {
-      const px = x + (hash(gx, gz, 101) - 0.5) * cell * 0.88;
-      const pz = z + (hash(gx, gz, 103) - 0.5) * cell * 0.88;
-      if (!inJapaneseTeaGarden(px, pz, -0.2)) continue;
-      if (inTeaGardenWater(px, pz, 1.6) || inTeaGardenBuilding(px, pz, 1.2)) continue;
-      if (!clearsGuideSightline(px, pz, 5, 2.5)) continue;
-      const pathDistance = distanceToTeaGardenPaths(px, pz);
-      if (pathDistance < 1.1 || pathDistance > 6.2) continue;
-      const edgeBand = 1 - Math.min(1, Math.abs(pathDistance - 2.3) / 3.9);
-      if (hash(gx, gz, 107) > 0.16 + edgeBand * 0.34) continue;
-      shrubs.push({
-        x: px,
-        y: map.groundTop(px, pz) + 0.18,
-        z: pz,
-        scale: 0.62 + hash(gx, gz, 109) * 0.82,
-        yaw: hash(gx, gz, 113) * Math.PI * 2,
-        palette: Math.floor(hash(gx, gz, 127) * 3)
-      });
+const TREE_ARCHETYPES: readonly AuthoredTreeArchetype[] = [
+  {
+    id: "black-pine",
+    design: {
+      species: "pine",
+      seed: 4101,
+      controls: {
+        height: 9.5,
+        branchDensity: 28,
+        leavesPerBranch: 18,
+        leafColorize: 0x385d34,
+        leafTintAmount: 0.5
+      },
+      sink: 0.2
+    }
+  },
+  {
+    id: "japanese-maple",
+    design: {
+      species: "redMaple",
+      seed: 4102,
+      controls: {
+        height: 7.2,
+        leafColorize: 0x8a513e,
+        leafTintAmount: 0.5
+      },
+      sink: 0.16
+    }
+  },
+  {
+    id: "flowering-cherry",
+    design: {
+      species: "tulipPoplar",
+      seed: 4103,
+      controls: {
+        height: 7.8,
+        leafColorize: 0xb66f7f,
+        leafTintAmount: 0.62
+      },
+      sink: 0.16
+    }
+  },
+  {
+    id: "survivor-ginkgo",
+    design: {
+      species: "tulipPoplar",
+      seed: 4104,
+      controls: {
+        height: 9,
+        leafColorize: 0x9ba850,
+        leafTintAmount: 0.62
+      },
+      sink: 0.12
     }
   }
-  return shrubs;
-}
+] as const;
 
-function createShrubMeshes(map: TeaGardenTerrain): { group: THREE.Group; count: number } {
-  const group = new THREE.Group();
-  group.name = "japanese_tea_garden_azaleas";
-  const placements = collectShrubs(map);
-  const palettes = [
-    [0x315e33, 0x5e853c],
-    [0x405c31, 0xbf5b71],
-    [0x3a6738, 0xd88a9c]
-  ] as const;
-  const dummy = new THREE.Object3D();
-  const geometry = new THREE.IcosahedronGeometry(0.62, 1);
-  geometry.scale(1.25, 0.72, 1.05);
-  for (let palette = 0; palette < palettes.length; palette++) {
-    const list = placements.filter((entry) => entry.palette === palette);
-    const mesh = new THREE.InstancedMesh(
-      geometry,
-      new THREE.MeshStandardMaterial({ color: palettes[palette][0], roughness: 0.96, metalness: 0, vertexColors: true }),
-      list.length
-    );
-    mesh.name = `tea_garden_azalea_palette_${palette}`;
-    list.forEach((entry, index) => {
-      dummy.position.set(entry.x, entry.y, entry.z);
-      dummy.rotation.set(0, entry.yaw, 0);
-      dummy.scale.set(entry.scale, entry.scale, entry.scale);
-      dummy.updateMatrix();
-      mesh.setMatrixAt(index, dummy.matrix);
-      const bloom = index % 4 === 0 || palette > 0;
-      mesh.setColorAt(index, new THREE.Color(bloom ? palettes[palette][1] : palettes[palette][0]));
-    });
-    mesh.instanceMatrix.needsUpdate = true;
-    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-    mesh.computeBoundingSphere();
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    group.add(mesh);
-  }
-  return { group, count: placements.length };
-}
+const SHRUB_PALETTES: readonly AuthoredShrubPalette[] = [
+  { foliageA: 0x2d5730, foliageB: 0x547a3a },
+  { foliageA: 0x315b33, foliageB: 0x61813d, blooms: [0xb94e6f, 0xd97591, 0xe8a0b3], bloomChance: 0.7 },
+  { foliageA: 0x356037, foliageB: 0x668640, blooms: [0xd97798, 0xe79bb5, 0xf0becd], bloomChance: 0.78 },
+  { foliageA: 0x294f30, foliageB: 0x476f3b }
+] as const;
+
+const SHRUB_PALETTE_INDEX: Record<TeaGardenShrubPalette, number> = {
+  "azalea-evergreen": 0,
+  "azalea-rose": 1,
+  "azalea-pink": 2,
+  "clipped-hedge": 3
+};
 
 function collectGrass(map: TeaGardenTerrain): GrassEntry[] {
   const entries: GrassEntry[] = [];
@@ -228,6 +158,8 @@ function createGrass(map: TeaGardenTerrain): { group: THREE.Group; count: number
     (TEA_GARDEN_BOUNDS.minZ + TEA_GARDEN_BOUNDS.maxZ) * 0.5
   );
   const mesh = createGrassMesh("tea_garden_moss_grass", entries.length, geometry, materialState.material);
+  // createGrassMesh clones the primitive so the mesh owns its copy.
+  geometry.dispose();
   writeGrassMesh(mesh, entries, 420);
   group.add(mesh);
   return { group, count: entries.length };
@@ -359,62 +291,6 @@ function createBuddha(map: TeaGardenTerrain): THREE.Group {
   return group;
 }
 
-function createMtFujiHedge(map: TeaGardenTerrain): THREE.Group {
-  const group = new THREE.Group();
-  group.name = "japanese_tea_garden_mt_fuji_hedge";
-  const geometry = new THREE.IcosahedronGeometry(0.8, 1);
-  const green = new THREE.MeshStandardMaterial({ color: 0x315f39, roughness: 0.98 });
-  for (let row = 0; row < 5; row++) {
-    const count = 9 - row * 2;
-    for (let i = 0; i < count; i++) {
-      const x = -2236 + (i - (count - 1) / 2) * 1.25;
-      const z = 2216.5 + row * 0.62;
-      const mound = new THREE.Mesh(geometry, green);
-      mound.name = "mt_fuji_clipped_hedge_mound";
-      mound.scale.set(1.1, 0.7, 0.85);
-      mound.position.set(x, map.groundTop(x, z) + 0.5 + row * 0.47, z);
-      mound.castShadow = true;
-      group.add(mound);
-    }
-  }
-  return group;
-}
-
-/** Two young trees descended from ginkgoes that survived Hiroshima, planted in 2019. */
-function createSurvivorGinkgoes(map: TeaGardenTerrain): THREE.Group {
-  const group = new THREE.Group();
-  group.name = "japanese_tea_garden_hiroshima_descendant_ginkgoes";
-  const bark = new THREE.MeshStandardMaterial({ color: 0x75664f, roughness: 0.98 });
-  const leaf = new THREE.MeshStandardMaterial({ color: 0xa2ad54, roughness: 0.9 });
-  const anchors = [
-    [-2308.6, 2209.2],
-    [-2312.8, 2206.9]
-  ] as const;
-  anchors.forEach(([x, z], treeIndex) => {
-    const y = map.groundTop(x, z);
-    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.27, 4.7, 8), bark);
-    trunk.name = "survivor_ginkgo_trunk";
-    trunk.position.set(x, y + 2.35, z);
-    trunk.castShadow = true;
-    group.add(trunk);
-    for (let i = 0; i < 9; i++) {
-      const angle = (i / 9) * Math.PI * 2 + treeIndex * 0.7;
-      const crown = new THREE.Mesh(new THREE.IcosahedronGeometry(0.72 + (i % 3) * 0.12, 1), leaf);
-      crown.name = "survivor_ginkgo_fan_crown";
-      crown.position.set(
-        x + Math.cos(angle) * (0.62 + (i % 2) * 0.42),
-        y + 4.1 + (i % 3) * 0.5,
-        z + Math.sin(angle) * (0.62 + (i % 2) * 0.42)
-      );
-      crown.scale.set(1.25, 0.72, 1.08);
-      crown.castShadow = true;
-      crown.receiveShadow = true;
-      group.add(crown);
-    }
-  });
-  return group;
-}
-
 export function createTeaGardenVegetation(map: TeaGardenTerrain): TeaGardenVegetation {
   const group = new THREE.Group();
   group.name = "japanese_tea_garden_vegetation";
@@ -422,24 +298,51 @@ export function createTeaGardenVegetation(map: TeaGardenTerrain): TeaGardenVeget
   plants.name = "japanese_tea_garden_live_plants";
   const landmarks = new THREE.Group();
   landmarks.name = "japanese_tea_garden_persistent_landmarks";
-  const trees = createTreeMeshes(map);
-  const shrubs = createShrubMeshes(map);
+  const planting = collectTeaGardenPlanting(map);
+  const trees = createAuthoredTreePatch(TREE_ARCHETYPES, planting.trees, {
+    name: "japanese_tea_garden_trees",
+    chunkSize: 64,
+    visibleDistance: 920,
+    nearRadius: 58,
+    nearExitRadius: 68,
+    nearMax: 24
+  });
+  const shrubPlacements: AuthoredShrubPlacement[] = planting.shrubs.map((shrub, index) => ({
+    x: shrub.x,
+    y: shrub.y,
+    z: shrub.z,
+    yaw: shrub.yaw,
+    scale: shrub.scale,
+    palette: SHRUB_PALETTE_INDEX[shrub.palette],
+    profile: shrub.profile === "clipped" ? "hedge" : "azalea",
+    tint: hash(Math.round(shrub.x * 10), Math.round(shrub.z * 10), 1301 + index)
+  }));
+  const shrubs = createAuthoredShrubPatch(shrubPlacements, {
+    name: "japanese_tea_garden_shrubs",
+    palettes: SHRUB_PALETTES
+  });
   const grass = createGrass(map);
   const rocks = createRocks(map);
-  plants.add(trees.group, shrubs.group, grass.group, createMtFujiHedge(map), createSurvivorGinkgoes(map));
+  plants.add(trees.group, shrubs.group, grass.group);
   landmarks.add(rocks.group, createDryLandscape(map), createBuddha(map));
   group.add(plants, landmarks);
 
   return {
     group,
     grassGroup: grass.group,
+    ready: trees.ready,
     setVisible(visible: boolean) {
       plants.visible = visible;
     },
+    update(focus) {
+      trees.update(focus);
+    },
     dispose() {
+      trees.dispose();
+      shrubs.dispose();
       const geometries = new Set<THREE.BufferGeometry>();
       const materials = new Set<THREE.Material>();
-      group.traverse((object) => {
+      for (const owned of [grass.group, landmarks]) owned.traverse((object) => {
         const mesh = object as THREE.Mesh;
         if (!mesh.isMesh) return;
         geometries.add(mesh.geometry);
@@ -450,6 +353,11 @@ export function createTeaGardenVegetation(map: TeaGardenTerrain): TeaGardenVeget
       for (const entry of materials) entry.dispose();
       group.removeFromParent();
     },
-    stats: { trees: trees.count + 2, shrubs: shrubs.count, grassClusters: grass.count, rocks: rocks.count }
+    stats: {
+      trees: planting.trees.length,
+      shrubs: planting.shrubs.length,
+      grassClusters: grass.count,
+      rocks: rocks.count
+    }
   };
 }

@@ -3155,6 +3155,39 @@
         filter: brightness(1.08);
         transform: translateY(-1px);
       }
+      .bigmap-pad-hint {
+        flex: 0 0 auto;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        margin-left: 2px;
+        color: var(--text-dim);
+        font:
+          600 11px var(--font);
+        letter-spacing: 0.01em;
+        user-select: none;
+      }
+      .bigmap-pad-hint[hidden] {
+        display: none !important;
+      }
+      .bigmap-pad-hint .k {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 18px;
+        height: 18px;
+        padding: 0 4px;
+        border-radius: 50%;
+        border: 1px solid #6aaaff;
+        background: rgba(12, 20, 32, 0.9);
+        color: #a9ccff;
+        font-size: 10px;
+        font-weight: 800;
+        line-height: 1;
+      }
+      .bigmap-pad-hint-lbl {
+        white-space: nowrap;
+      }
       .bigmap-hint {
         color: var(--text-dim);
         font-size: 12px;

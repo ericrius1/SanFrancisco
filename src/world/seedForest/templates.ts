@@ -8,7 +8,10 @@
 // no sharing win); unifying it onto this cache is a later cleanup.
 
 import * as THREE from "three/webgpu";
-import { createLegacySeedTree } from "../vegetation/legacySeedTree";
+import {
+  createLegacySeedTree,
+  type LegacySeedTreeFoliageGrade
+} from "../vegetation/legacySeedTree";
 
 export type SeedTreeDesignSpec = {
   species: string;
@@ -18,6 +21,11 @@ export type SeedTreeDesignSpec = {
   sink: number;
   /** false → never promote to a hero clone (rosette species: 16s clone stall) */
   nearClones?: boolean;
+  /** Optional generation policy for a biome with a deliberately lean far LOD. */
+  generation?: {
+    lod?: Record<string, unknown>;
+    foliageGrade?: LegacySeedTreeFoliageGrade;
+  };
 };
 
 export type GrownTemplate = {
@@ -42,7 +50,7 @@ const cache = new Map<string, Promise<GrownTemplate>>();
 let growthChain: Promise<unknown> = Promise.resolve();
 
 function designKey(d: SeedTreeDesignSpec): string {
-  return `${d.species}:${d.seed}:${JSON.stringify(d.controls ?? {})}`;
+  return `${d.species}:${d.seed}:${JSON.stringify(d.controls ?? {})}:${JSON.stringify(d.generation ?? {})}`;
 }
 
 export function growTemplate(design: SeedTreeDesignSpec): Promise<GrownTemplate> {
@@ -54,8 +62,8 @@ export function growTemplate(design: SeedTreeDesignSpec): Promise<GrownTemplate>
       species: design.species,
       seed: design.seed,
       controls: design.controls ?? {},
-      lod: LOD_OPTS,
-      foliageGrade: FOLIAGE_GRADE
+      lod: design.generation?.lod ?? LOD_OPTS,
+      foliageGrade: design.generation?.foliageGrade ?? FOLIAGE_GRADE
     });
     template.traverse((object) => {
       const mesh = object as THREE.Mesh;

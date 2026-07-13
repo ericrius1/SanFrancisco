@@ -158,6 +158,8 @@ export class Minimap {
   #bigRecenter: HTMLButtonElement | null = null;
   #bigTeleWrap: HTMLDivElement | null = null;
   #bigTeleName: HTMLSpanElement | null = null;
+  #bigPadHint: HTMLSpanElement | null = null;
+  #device: "kb" | "pad" = "kb";
   #dpr = 1;
   #layers: MapLayer[] = [];
   #layerButtons = new Map<MapLayerId, HTMLButtonElement>();
@@ -1175,6 +1177,16 @@ export class Minimap {
         this.#bigTeleWrap.style.display = "none";
       }
     }
+    if (this.#bigPadHint) {
+      this.#bigPadHint.hidden = !(name && this.#device === "pad");
+    }
+  }
+
+  /** Swap pad vs keyboard chrome on the expanded map (teleport hint). */
+  setDevice(device: "kb" | "pad") {
+    if (device === this.#device) return;
+    this.#device = device;
+    if (this.#bigPadHint) this.#bigPadHint.hidden = !(this.#selected && device === "pad");
   }
 
   /* --------------------------------------------------- expanded map */
@@ -1391,8 +1403,13 @@ export class Minimap {
       this.#clearSelection();
       this.setExpanded(false);
     });
+    const padHint = document.createElement("span");
+    padHint.className = "bigmap-pad-hint";
+    padHint.hidden = true;
+    padHint.innerHTML = `<span class="k f fx">X</span><span class="bigmap-pad-hint-lbl">to teleport</span>`;
     action.appendChild(targetName);
     action.appendChild(teleportBtn);
+    action.appendChild(padHint);
     mapFrame.append(canvas, recenter);
     inner.appendChild(mapFrame);
     inner.appendChild(action);
@@ -1487,6 +1504,7 @@ export class Minimap {
     this.#bigRecenter = recenter;
     this.#bigTeleWrap = action;
     this.#bigTeleName = targetName;
+    this.#bigPadHint = padHint;
   }
 
   #tryBigSelect(e: MouseEvent, canvas: HTMLCanvasElement) {

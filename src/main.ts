@@ -477,13 +477,13 @@ async function boot() {
   ];
   for (const [x, z, h] of SAIL_SPOTS) scatterBoat("boat", x, z, h);
   for (const [x, z, h] of SPEED_SPOTS) scatterBoat("speedboat", x, z, h);
-  // Nature = SeedThree ONLY now. The old primitive Flora (whole-world low-poly
-  // trees + blade grass riding the tile stream) is gone — one better system,
-  // grown region by region, and no world-wide grass/tree tax on the GPU.
+  // Nature uses one sandbox vegetation runtime now. The old primitive Flora
+  // and site-local blob/tree renderers are gone: regions own placement, while
+  // shared trees, shrubs, grass and flowers own geometry/materials/wind/LOD.
   //
   // San Francisco Botanical Garden — self-contained module (src/world/garden):
-  // SeedThree trees + procedural blade grass + shrubs/flora at the real SFBG
-  // footprint inside Golden Gate Park. Trees stream in async; grass is live now.
+  // Unified trees + blade grass + leaf-spray shrubs + flower clumps at the real
+  // SFBG footprint inside Golden Gate Park. Trees stream in async; grass is live.
   // garden, wildlands are deferred — constructed after progress(100)
   // so they don't block first paint. Nullable refs; update calls are guarded.
   let garden: {
@@ -501,6 +501,9 @@ async function boot() {
   } | null = null;
   let goldenGateTennis: ReturnType<typeof createGoldenGateTennisSite> | null = null;
   let japaneseTeaGarden: import("./world/japaneseTeaGarden").JapaneseTeaGarden | null = null;
+  let wakeDeferredGarden: (() => void) | null = null;
+  let wakeDeferredTeaGarden: (() => void) | null = null;
+  let wakeDeferredWildlandsGolf: (() => void) | null = null;
   // Universal minigame site gate: each located game (pickleball, golf, soon
   // archery) registers a footprint + pads; one cheap update per tick flips
   // them awake only while the player is nearby. Sites register asleep — the
@@ -520,9 +523,11 @@ async function boot() {
     goldenGateTennis?.setFoliageVisible(visible);
     japaneseTeaGarden?.setFoliageVisible(visible);
     coronaHeights?.setFoliageVisible(visible);
+    islands.setFoliageVisible(visible);
     sky.invalidateStaticShadows();
   };
   const islands = new Islands(physics, map, scene);
+  islands.setFoliageVisible(foliageOn);
 
   // Decoupled world-query service: every "what does this ray hit" caller (paint,
   // the in-world cursor, future systems) goes through here. Backed by box3d's
@@ -1111,6 +1116,11 @@ async function boot() {
     // must leave the cursor free; M-toggle re-locks in the tick below.
     if (on) input.releaseLock();
   };
+  input.onDeviceChange = (device) => {
+    hud.setDevice(device);
+    minimap.setDevice(device);
+  };
+  minimap.setDevice(input.device);
 
   // Escape priority: dismiss an open overlay (stay unlocked) → else release pointer
   // lock. Stops the old "Esc closes UI and immediately re-locks" double-tap.
@@ -1444,6 +1454,13 @@ async function boot() {
   const revealedPromise = new Promise<void>((r) => {
     resolveRevealed = r;
   });
+  void revealedPromise.then(() => islands.armVegetation(scene, async (group) => {
+    try {
+      await renderer.compileAsync(group, camera, scene);
+    } catch (err) {
+      console.warn("[islands] deferred vegetation compile failed:", err);
+    }
+  }));
   // A region gates (builds before reveal) if the spawn says so; otherwise by
   // distance — only what sits within NEAR_GATE of the player's start. Corona
   // Heights gates nothing (spawnPoints.gates = []), so every grove streams in
@@ -1478,17 +1495,22 @@ async function boot() {
     creatures = new creaturesMod.Creatures(map, scene);
     forest = new forestMod.Forest(map, scene);
 
-    // Garden + Wildlands: botanical garden grass + designed SeedThree groves
-    const [gardenMod, wildlandsMod, golfMod, teaGardenMod] = await Promise.all([
-      import("./world/garden"),
-      import("./world/wildlands"),
-      import("./gameplay/golf"),
-      import("./world/japaneseTeaGarden")
-    ]);
+    // Each optional region keeps its code, textures and tree growth behind its
+    // own gate. A clean boot does not fetch all parks merely because the module
+    // coordinator itself is running.
+    let gardenModPromise: Promise<typeof import("./world/garden")> | null = null;
+    let teaGardenModPromise: Promise<typeof import("./world/japaneseTeaGarden")> | null = null;
+    let wildlandsModPromise: Promise<typeof import("./world/wildlands")> | null = null;
+    let golfModPromise: Promise<typeof import("./gameplay/golf")> | null = null;
+    const loadGardenMod = () => gardenModPromise ??= import("./world/garden");
+    const loadTeaGardenMod = () => teaGardenModPromise ??= import("./world/japaneseTeaGarden");
+    const loadWildlandsMod = () => wildlandsModPromise ??= import("./world/wildlands");
+    const loadGolfMod = () => golfModPromise ??= import("./gameplay/golf");
     // Botanical garden (heaviest single park: SeedThree trees + textures). Gate
     // it only when the spawn is near; otherwise build it AFTER the cover lifts,
     // hidden until compiled, so its trees never sit on the boot path.
-    const buildGarden = () => {
+    const buildGarden = async () => {
+      const gardenMod = await loadGardenMod();
       const g = gardenMod.createBotanicalGarden(map);
       garden = g;
       void g.ready.then(() => sky.invalidateStaticShadows(), () => {});
@@ -1498,22 +1520,29 @@ async function boot() {
     };
     let gardenReady: Promise<unknown> | null = null;
     if (gardenGates) {
-      const g = buildGarden();
-      scene.add(g.group);
-      g.setVisible(foliageOn, player.position);
-      gardenReady = g.ready;
-    } else {
-      void revealedPromise.then(async () => {
-        const g = buildGarden();
-        g.group.visible = false;
+      gardenReady = (async () => {
+        const g = await buildGarden();
         scene.add(g.group);
-        await g.ready;
-        try {
-          await renderer.compileAsync(g.group, camera, scene);
-        } catch (err) {
-          console.warn("[garden] deferred compile failed:", err);
-        }
         g.setVisible(foliageOn, player.position);
+        await g.ready;
+      })();
+    } else {
+      void revealedPromise.then(() => {
+        wakeDeferredGarden = () => {
+          wakeDeferredGarden = null;
+          void (async () => {
+            const g = await buildGarden();
+            await g.ready;
+            try {
+              // Detached + visible: compileAsync skips visible=false roots.
+              await renderer.compileAsync(g.group, camera, scene);
+            } catch (err) {
+              console.warn("[garden] deferred compile failed:", err);
+            }
+            scene.add(g.group);
+            g.setVisible(foliageOn, player.position);
+          })().catch((err) => console.warn("[garden] first-approach construction failed:", err));
+        };
       });
     }
 
@@ -1521,7 +1550,8 @@ async function boot() {
     // pagoda, ponds, bridges, specimen planting and Iroh's walkable guided tour.
     // It shares the Botanical Garden region gate because the two sites touch;
     // distant boots compile it after reveal so it never delays first play.
-    const buildTeaGarden = () => {
+    const buildTeaGarden = async () => {
+      const teaGardenMod = await loadTeaGardenMod();
       try {
         const site = teaGardenMod.createJapaneseTeaGarden(map, {
           physics,
@@ -1548,26 +1578,34 @@ async function boot() {
     };
     let teaGardenReady: Promise<unknown> | null = null;
     if (gardenGates) {
-      const site = buildTeaGarden();
-      scene.add(site.group);
-      site.update(0, 0, player.renderPosition, camera);
-      if (autoStartIrohTour) site.interact(player.position, player.mode);
-      teaGardenReady = site.ready;
-    } else {
-      void revealedPromise.then(async () => {
-        const site = buildTeaGarden();
-        site.group.visible = false;
-        await site.ready;
-        try {
-          await renderer.compileAsync(site.group, camera, scene);
-        } catch (err) {
-          console.warn("[tea-garden] deferred compile failed:", err);
-        }
+      teaGardenReady = (async () => {
+        const site = await buildTeaGarden();
         scene.add(site.group);
         site.update(0, 0, player.renderPosition, camera);
         if (autoStartIrohTour) site.interact(player.position, player.mode);
-      }).catch((err) => {
-        console.warn("[tea-garden] deferred construction failed:", err);
+        await site.ready;
+      })();
+    } else {
+      void revealedPromise.then(() => {
+        wakeDeferredTeaGarden = () => {
+          wakeDeferredTeaGarden = null;
+          void (async () => {
+            const site = await buildTeaGarden();
+            await site.ready;
+            try {
+              // The site is born asleep/hidden. Compile its detached subtree
+              // while temporarily visible because Three skips hidden roots.
+              site.group.visible = true;
+              await renderer.compileAsync(site.group, camera, scene);
+            } catch (err) {
+              console.warn("[tea-garden] deferred compile failed:", err);
+            }
+            site.group.visible = false;
+            scene.add(site.group);
+            site.update(0, 0, player.renderPosition, camera);
+            if (autoStartIrohTour) site.interact(player.position, player.mode);
+          })().catch((err) => console.warn("[tea-garden] first-approach construction failed:", err));
+        };
       });
     }
 
@@ -1577,6 +1615,7 @@ async function boot() {
     // otherwise the whole pair streams in after reveal, groves hidden until
     // compiled. `deferred` selects which.
     const buildWildlandsGolf = async (deferred: boolean) => {
+      const [wildlandsMod, golfMod] = await Promise.all([loadWildlandsMod(), loadGolfMod()]);
       let loadedGolfCourse: import("./gameplay/golf").GolfCourse | null = null;
       try {
         loadedGolfCourse = await golfMod.loadGolfCourse(map);
@@ -1600,10 +1639,7 @@ async function boot() {
       );
       wildlands = _wildlands;
       const showFoliage = foliageOn && !deferred;
-      for (const g of _wildlands.groups) {
-        g.visible = showFoliage;
-        scene.add(g);
-      }
+      for (const g of _wildlands.groups) g.visible = deferred ? true : showFoliage;
       const h = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
       if (h) Object.assign(h, { wildlands: _wildlands });
       await _wildlands.ready;
@@ -1627,6 +1663,11 @@ async function boot() {
           sky.invalidateStaticShadows();
         }
       }
+      for (const g of _wildlands.groups) {
+        g.visible = foliageOn;
+        scene.add(g);
+      }
+      if (foliageOn) sky.invalidateStaticShadows();
       // Presidio golf game. Own guard — a bad golf.json must not take the
       // groves/city down with it.
       if (loadedGolfCourse) {
@@ -1665,7 +1706,14 @@ async function boot() {
     if (wildlandsGolfGates) {
       wildlandsGolfReady = buildWildlandsGolf(false);
     } else {
-      void revealedPromise.then(() => buildWildlandsGolf(true));
+      void revealedPromise.then(() => {
+        wakeDeferredWildlandsGolf = () => {
+          wakeDeferredWildlandsGolf = null;
+          void buildWildlandsGolf(true).catch((err) => {
+            console.warn("[wildlands/golf] first-approach construction failed:", err);
+          });
+        };
+      });
     }
 
     // Gate the reveal on whatever is near; deferred regions run post-reveal and
@@ -1985,7 +2033,8 @@ async function boot() {
       if (closing && !cameraMode) input.requestLock();
     }
 
-    // Expanded map: gamepad pan / zoom / cursor / select / teleport.
+    // Expanded map: gamepad pan / zoom / cursor / select / teleport / pin cycle.
+    // World + player are fully frozen while the map is open (kb or pad).
     if (minimap.expanded) {
       const axes = input.mapPadAxes();
       minimap.padPan(axes.lx, axes.ly, frameDt);
@@ -1993,6 +2042,36 @@ async function boot() {
       minimap.padMoveCursor(axes.rx, axes.ry, frameDt);
       if (input.pressed("Space")) minimap.padSelectAtCursor();
       if (input.firePressed) minimap.padTeleport();
+      const mapPadCycle =
+        (input.pressed("PadModeNext") ? 1 : 0) - (input.pressed("PadModePrev") ? 1 : 0);
+      if (mapPadCycle) minimap.padCyclePins(mapPadCycle);
+
+      dogParkAudio.setPaused(true);
+      vehicleAudio.update(frameDt, null);
+      swimAudio.update(frameDt, null);
+      nature.update(frameDt, {
+        playerPos: player.renderPosition,
+        camera,
+        gust: windGustValue(),
+        timeOfDay: sky.timeOfDay
+      });
+      sendLocalPresence(0);
+      sendPickleballNetwork();
+      remotes.selfId = net.selfId;
+      remotes.update(frameDt);
+      hidePickleballRemoteAvatars();
+      if (embodiments.passengerOf !== null && remotes.ridePose(embodiments.passengerOf, ridePos, rideQuat)) {
+        player.setRidePose(ridePos, rideQuat, frameDt);
+      }
+      voice.update(camera);
+      minimap.update();
+      playerLocator.update(camera, player.position, remotes.locatorTargets());
+      updateSurfPresentation(frameDt);
+      sky.update(elapsed, camera.position, player.renderPosition);
+      hud.update(frameDt);
+      input.endFrame();
+      pipeline.render();
+      return;
     }
 
     // One wake/sleep pass over every registered minigame site (pickleball,
@@ -2173,17 +2252,13 @@ async function boot() {
     }
     const padCycle = (input.pressed("PadModeNext") ? 1 : 0) - (input.pressed("PadModePrev") ? 1 : 0);
     if (padCycle && !playingPickleball) {
-      if (minimap.expanded) {
-        minimap.padCyclePins(padCycle);
-      } else {
-        const cycleOrder = MENU_MODES;
-        const idx = cycleOrder.indexOf(player.mode);
-        const from = idx >= 0 ? idx : 0;
-        const step = padCycle < 0 ? -1 : 1;
-        if (cycleOrder.length) {
-          toolbar.focusVehicles();
-          switchMode(cycleOrder[(from + step + cycleOrder.length) % cycleOrder.length]);
-        }
+      const cycleOrder = MENU_MODES;
+      const idx = cycleOrder.indexOf(player.mode);
+      const from = idx >= 0 ? idx : 0;
+      const step = padCycle < 0 ? -1 : 1;
+      if (cycleOrder.length) {
+        toolbar.focusVehicles();
+        switchMode(cycleOrder[(from + step + cycleOrder.length) % cycleOrder.length]);
       }
     }
     if (!playingPickleball && input.altPressed("ArrowLeft")) applyPlaceHistory(-1);
@@ -2472,6 +2547,32 @@ async function boot() {
     applyPickleballPlayerPose();
     const altitude = player.position.y - map.groundHeight(player.position.x, player.position.z);
     highUp = highUp ? altitude > 110 : altitude > 150;
+    // Optional park chunks remain unfetched until first approach. Capture the
+    // callback before invoking it because each loader clears its own one-shot.
+    if (wakeDeferredGarden && nearRegionByDistance("garden")) {
+      const wake = wakeDeferredGarden;
+      wakeDeferredGarden = null;
+      wake();
+    }
+    if (
+      wakeDeferredTeaGarden &&
+      Math.hypot(
+        player.position.x - JAPANESE_TEA_GARDEN_ENTRANCE.x,
+        player.position.z - JAPANESE_TEA_GARDEN_ENTRANCE.z
+      ) < 900
+    ) {
+      const wake = wakeDeferredTeaGarden;
+      wakeDeferredTeaGarden = null;
+      wake();
+    }
+    if (
+      wakeDeferredWildlandsGolf &&
+      (nearRegionByDistance("wildlands") || nearRegionByDistance("golf"))
+    ) {
+      const wake = wakeDeferredWildlandsGolf;
+      wakeDeferredWildlandsGolf = null;
+      wake();
+    }
     // high over the city streams buildings only — no park lawns / trees uploaded.
     // turbo while the loading cover is still up (see the settle gate)
     tiles.update(player.position.x, player.position.z, highUp, !revealed);
@@ -2540,7 +2641,7 @@ async function boot() {
     // live loop only: the dogs freeze during pause, so barking there would lie
     dogParkAudio.update(frameDt, player.renderPosition);
     if (embodiments.currentAnimal) forest?.setRiddenSpeed(player.speed);
-    islands.update(elapsed);
+    islands.update(elapsed, camera.position);
     citygenRing.current?.update(player.position, frameDt);
     if (!highUp) hunt.update(frameDt, elapsed, player.position);
     golf?.update(frameDt, elapsed, { player, input, hud, chase, camera });

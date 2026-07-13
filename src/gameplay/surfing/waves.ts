@@ -29,9 +29,62 @@ const SLOTS = 7;
 // low-poly shelf); it only builds/updates near Ocean Beach.
 const FACE_CENTER_X = -6045;
 const FACE_WIDTH_X = 600; // covers offshoreCrest−30 … maxX+15
-const FACE_WINDOW_Z = 460; // player-following window down the beach
-const FACE_SEG_X = 256; // ~2.3 m — 3 verts across the breaking face
-const FACE_SEG_Z = 60;
+const FACE_WINDOW_Z = 520; // player-following window down the beach
+const FACE_SEG_X = 340; // ~1.75 m — resolves the steep shoreward face crisply
+const FACE_SEG_Z = 168; // graded (below): ~1.4 m at the rider, ~5 m at the rim
+
+/**
+ * Player-following face grid with **graded Z resolution**: vertices bunch tight
+ * around the rider (window centre) and smoothly spread toward the rim. Because
+ * the whole patch re-centres on the surfer every frame, this reads as one
+ * continuous sheet that is dense exactly where you look and coarsens with
+ * distance — no discrete LOD, no seam. X stays uniform (the break's steep face
+ * needs even sampling across its whole width).
+ */
+function buildGradedFaceGeometry(): THREE.BufferGeometry {
+  const nx = FACE_SEG_X + 1;
+  const nz = FACE_SEG_Z + 1;
+  const halfZ = FACE_WINDOW_Z / 2;
+  const pos = new Float32Array(nx * nz * 3);
+  const uvs = new Float32Array(nx * nz * 2);
+  const idx: number[] = [];
+  // centred, symmetric bunching: blend linear + cubic so ~⅓ of the rows sit in
+  // the middle ~15 % of the window (dense) while the rim stays gentle (coarse).
+  const gradeZ = (t: number) => {
+    const u = t * 2 - 1; // [-1,1]
+    const s = Math.sign(u);
+    const a = Math.abs(u);
+    return s * (0.32 * a + 0.68 * a * a * a); // dense centre, coarse rim
+  };
+  for (let j = 0; j < nz; j++) {
+    const z = gradeZ(j / FACE_SEG_Z) * halfZ;
+    for (let i = 0; i < nx; i++) {
+      const x = (i / FACE_SEG_X - 0.5) * FACE_WIDTH_X;
+      const k = (j * nx + i) * 3;
+      pos[k] = x;
+      pos[k + 1] = 0;
+      pos[k + 2] = z;
+      const uk = (j * nx + i) * 2;
+      uvs[uk] = i / FACE_SEG_X;
+      uvs[uk + 1] = j / FACE_SEG_Z;
+    }
+  }
+  for (let j = 0; j < FACE_SEG_Z; j++) {
+    for (let i = 0; i < FACE_SEG_X; i++) {
+      const a = j * nx + i;
+      const b = a + 1;
+      const c = a + nx;
+      const d = c + 1;
+      idx.push(a, c, b, b, c, d);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  return geo;
+}
 
 /**
  * Kelly-Slater-style breaking swell for Ocean Beach: a translucent emerald wall
@@ -116,8 +169,7 @@ export class OceanBeachWaves {
   }
 
   #buildFaceMesh(): THREE.Mesh {
-    const geo = new THREE.PlaneGeometry(FACE_WIDTH_X, FACE_WINDOW_Z, FACE_SEG_X, FACE_SEG_Z);
-    geo.rotateX(-Math.PI / 2); // local x → world X (across break), local z → world Z (down beach)
+    const geo = buildGradedFaceGeometry(); // local x → world X (break), local z → world Z (beach)
 
     const mat = new THREE.MeshStandardNodeMaterial({
       roughness: 0.24,

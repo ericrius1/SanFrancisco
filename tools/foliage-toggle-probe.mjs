@@ -99,7 +99,22 @@ async function setFoliage(c, on) {
   await ev(c, `window.__sf.setFoliageVisible(${on})`);
 }
 async function readFoliageState(c) {
-  return await ev(c, `(()=>{const g=window.__sf.garden.group.visible;const w=window.__sf.wildlands.groups.map(x=>x.visible);return{garden:g,wildlands:w,tuning:window.__sf.FOLIAGE_TUNING.values.visible};})()`);
+  return await ev(c, `(()=>{
+    const sf=window.__sf,scene=sf.scene;
+    return {
+      garden:sf.garden.group.visible,
+      wildlands:sf.wildlands.groups.map(x=>x.visible),
+      tea:scene.getObjectByName('japanese_tea_garden_live_plants')?.visible??null,
+      corona:sf.coronaHeights?.foliage?.visible??null,
+      islands:scene.getObjectByName('floating_island_trees')?.visible??null,
+      tuning:sf.FOLIAGE_TUNING.values.visible
+    };
+  })()`);
+}
+
+function visibleFlags(state) {
+  return [state.garden, ...state.wildlands, state.tea, state.corona, state.islands]
+    .filter((value) => value !== null);
 }
 async function teleport(c, x, z, facing) {
   await ev(c, `(()=>{const m=window.__sf.map,p=window.__sf.player;const y=m.groundHeight(${x},${z});p.teleportTo({x:${x},y:y+1.5,z:${z},facing:${facing},mode:'walk'});return true;})()`);
@@ -202,6 +217,14 @@ async function main() {
     const restoredState = await readFoliageState(c);
     await shot(c, `${name}_restored`);
     const onPerf = await measureP50(c);
+
+    const offFlags = visibleFlags(offState);
+    if (offFlags.some(Boolean)) throw new Error(`master foliage OFF left a visible subsystem: ${JSON.stringify(offState)}`);
+    const onFlags = visibleFlags(onState);
+    const restoredFlags = visibleFlags(restoredState);
+    if (onFlags.length !== restoredFlags.length || onFlags.some((value, index) => value !== restoredFlags[index])) {
+      throw new Error(`master foliage restore mismatch: ${JSON.stringify({ onState, restoredState })}`);
+    }
 
     report[name] = {
       onState, offState, restoredState,

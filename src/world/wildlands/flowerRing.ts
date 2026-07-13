@@ -53,6 +53,21 @@ const PALETTES: { a: number; b: number }[] = [
   { a: 0xffc31e, b: 0xffd94a } // 3 goldfield — bright gold
 ];
 
+export type AuthoredFlowerSpecies = "poppy" | "lupine" | "yarrow" | "goldfield";
+
+export type AuthoredFlowerPlacement = {
+  x: number;
+  y: number;
+  z: number;
+  yaw: number;
+  scale: number;
+  species: AuthoredFlowerSpecies;
+  /** Stable 0..1 colour variation within the species palette. */
+  tint?: number;
+};
+
+export type AuthoredFlowerPalette = { a: number; b: number };
+
 // which species favour which region, and (index 0) the clump-dominant pick order
 const REGION_FLOWERS: Record<string, readonly number[]> = {
   ggpark: [0, 1, 2, 3],
@@ -499,6 +514,131 @@ const CLUMP_FLOOR = 0.03; // clumpiness 1: sparse singles between clumps
 
 type Row = { x: number; y: number; z: number; yaw: number; sx: number; sy: number; r: number; g: number; b: number };
 
+function writeFlowerInstances(mesh: THREE.InstancedMesh, list: readonly Row[], computeBounds = false) {
+  const m = mesh.instanceMatrix.array as Float32Array;
+  const bloomAttr = mesh.geometry.getAttribute("aBloom") as THREE.InstancedBufferAttribute;
+  const anchorAttr = mesh.geometry.getAttribute("aFlowerAnchor") as THREE.InstancedBufferAttribute;
+  const bloom = bloomAttr.array as Float32Array;
+  const anchor = anchorAttr.array as Float32Array;
+  const dummy = new THREE.Object3D();
+  for (let i = 0; i < list.length; i++) {
+    const f = list[i];
+    dummy.position.set(f.x, f.y, f.z);
+    dummy.rotation.set(0, f.yaw, 0);
+    dummy.scale.set(f.sx, f.sy, f.sx);
+    dummy.updateMatrix();
+    dummy.matrix.toArray(m, i * 16);
+    bloom[i * 3] = f.r;
+    bloom[i * 3 + 1] = f.g;
+    bloom[i * 3 + 2] = f.b;
+    anchor[i * 4] = f.x;
+    anchor[i * 4 + 1] = f.y;
+    anchor[i * 4 + 2] = f.z;
+    anchor[i * 4 + 3] = 1 + Math.cos(f.yaw) * 0.1 + Math.sin(f.yaw) * 0.06;
+  }
+  mesh.count = list.length;
+  mesh.instanceMatrix.needsUpdate = true;
+  bloomAttr.needsUpdate = true;
+  anchorAttr.needsUpdate = true;
+  if (computeBounds) {
+    mesh.computeBoundingBox();
+    mesh.computeBoundingSphere();
+  }
+}
+
+/**
+ * Static authored flower patch for landmark gardens and compact parks. It uses
+ * the exact same curved 3D clumps, SSS lighting, wind and trample material as
+ * the player-following wildlands ring; only placement ownership differs.
+ */
+export function createAuthoredFlowerPatch(
+  placements: readonly AuthoredFlowerPlacement[],
+  options: {
+    name: string;
+    palettes?: Partial<Record<AuthoredFlowerSpecies, AuthoredFlowerPalette>>;
+  }
+) {
+  const group = new THREE.Group();
+  group.name = options.name;
+  const materialState = flowerMaterial();
+  // Authored patches are spatially bounded by their owner and use its range
+  // gate. Keep the ring-edge shader fade fully open for these static instances.
+  materialState.focus.set(0, 0);
+  materialState.reach.value = 1e7;
+  const material = materialState.material;
+  const geoms = BUILDERS.map((builder) => builder());
+  const speciesIds: readonly AuthoredFlowerSpecies[] = ["poppy", "lupine", "yarrow", "goldfield"];
+  const speciesIndex = new Map(speciesIds.map((id, index) => [id, index] as const));
+  const rows: Row[][] = geoms.map(() => []);
+  const colorA = new THREE.Color();
+  const colorB = new THREE.Color();
+  const color = new THREE.Color();
+
+  placements.forEach((placement, index) => {
+    const species = speciesIndex.get(placement.species);
+    if (species === undefined) return;
+    const fallback = PALETTES[species];
+    const palette = options.palettes?.[placement.species] ?? fallback;
+    const tint = placement.tint ?? hash2(Math.floor(placement.x * 10), Math.floor(placement.z * 10), index + 883);
+    colorA.setHex(palette.a);
+    colorB.setHex(palette.b);
+    color.copy(colorA).lerp(colorB, tint).multiplyScalar(0.9 + tint * 0.18);
+    rows[species].push({
+      x: placement.x,
+      y: placement.y,
+      z: placement.z,
+      yaw: placement.yaw,
+      sx: placement.scale,
+      sy: placement.scale * (0.88 + tint * 0.22),
+      r: color.r,
+      g: color.g,
+      b: color.b
+    });
+  });
+
+  let instances = 0;
+  let heads = 0;
+  let submittedTriangles = 0;
+  const meshes: THREE.InstancedMesh[] = [];
+  geoms.forEach((geometry, species) => {
+    const list = rows[species];
+    if (list.length === 0) {
+      geometry.dispose();
+      return;
+    }
+    const mesh = new THREE.InstancedMesh(geometry, material, list.length);
+    mesh.name = `${options.name}_${speciesIds[species]}`;
+    mesh.castShadow = false;
+    mesh.receiveShadow = true;
+    mesh.layers.set(BEAUTY_ONLY_LAYER);
+    mesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
+    const bloom = new THREE.InstancedBufferAttribute(new Float32Array(list.length * 3), 3);
+    const anchor = new THREE.InstancedBufferAttribute(new Float32Array(list.length * 4), 4);
+    bloom.setUsage(THREE.StaticDrawUsage);
+    anchor.setUsage(THREE.StaticDrawUsage);
+    geometry.setAttribute("aBloom", bloom);
+    geometry.setAttribute("aFlowerAnchor", anchor);
+    writeFlowerInstances(mesh, list, true);
+    group.add(mesh);
+    meshes.push(mesh);
+    const triangles = (geometry.index?.count ?? geometry.getAttribute("position").count) / 3;
+    instances += list.length;
+    heads += list.length * HEADS_PER_CLUMP[species];
+    submittedTriangles += list.length * triangles;
+  });
+
+  return {
+    group,
+    stats: { instances, heads, submittedTriangles, draws: meshes.length },
+    dispose() {
+      for (const mesh of meshes) mesh.geometry.dispose();
+      material.dispose();
+      group.removeFromParent();
+      group.clear();
+    }
+  };
+}
+
 export type FlowerRing = {
   group: THREE.Group;
   update(focus: { x: number; z: number }): void;
@@ -546,40 +686,12 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
     return mesh;
   });
 
-  const dummy = new THREE.Object3D();
   const col = new THREE.Color();
   const a = new THREE.Color();
   const b = new THREE.Color();
   const rows: Row[][] = geoms.map(() => []);
   const last = { x: 1e9, z: 1e9 };
   let count = 0;
-
-  function write(mesh: THREE.InstancedMesh, list: Row[]) {
-    const m = mesh.instanceMatrix.array as Float32Array;
-    const bloomAttr = mesh.geometry.getAttribute("aBloom") as THREE.InstancedBufferAttribute;
-    const anchorAttr = mesh.geometry.getAttribute("aFlowerAnchor") as THREE.InstancedBufferAttribute;
-    const bloom = bloomAttr.array as Float32Array;
-    const anchor = anchorAttr.array as Float32Array;
-    for (let i = 0; i < list.length; i++) {
-      const f = list[i];
-      dummy.position.set(f.x, f.y, f.z);
-      dummy.rotation.set(0, f.yaw, 0);
-      dummy.scale.set(f.sx, f.sy, f.sx);
-      dummy.updateMatrix();
-      dummy.matrix.toArray(m, i * 16);
-      bloom[i * 3] = f.r;
-      bloom[i * 3 + 1] = f.g;
-      bloom[i * 3 + 2] = f.b;
-      anchor[i * 4] = f.x;
-      anchor[i * 4 + 1] = f.y;
-      anchor[i * 4 + 2] = f.z;
-      anchor[i * 4 + 3] = 1 + Math.cos(f.yaw) * 0.1 + Math.sin(f.yaw) * 0.06;
-    }
-    mesh.count = list.length;
-    mesh.instanceMatrix.needsUpdate = true;
-    bloomAttr.needsUpdate = true;
-    anchorAttr.needsUpdate = true;
-  }
 
   function resample(fx: number, fz: number) {
     const T = FLOWER_TUNING.values;
@@ -654,7 +766,7 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
 
     count = 0;
     meshes.forEach((mesh, species) => {
-      write(mesh, rows[species]);
+      writeFlowerInstances(mesh, rows[species]);
       count += rows[species].length;
     });
   }
@@ -676,7 +788,7 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
       if (!nearAnyWildRegion(focus.x, focus.z, MAX_SAMPLE_REACH + 2)) {
         if (count > 0) {
           for (const list of rows) list.length = 0;
-          meshes.forEach((mesh, species) => write(mesh, rows[species]));
+          meshes.forEach((mesh, species) => writeFlowerInstances(mesh, rows[species]));
           count = 0;
         }
         return;

@@ -13,7 +13,6 @@ import {
   collectGardenFlora,
   collectGardenShrubs,
   collectGardenTrees,
-  GARDEN_SPECIES,
   type GardenCollider,
   type GardenFlora,
   type GardenShrub,
@@ -21,14 +20,29 @@ import {
   type GardenTree
 } from "./layout";
 import { buildBotanicalGrass, type BotanicalGrassController } from "./botanicalGrass";
-import { compileTree, GARDEN_TREE_PRESETS } from "./proceduralTrees";
-import { buildSeedTreeGarden, SEED_TREE_DESIGNS } from "./seedTreeGarden";
+import { SEED_TREE_DESIGNS } from "./treeDesigns";
 import { setLocalFarShadowOnly } from "../shadows/shadowLayers";
+import {
+  createAuthoredFlowerPatch,
+  type AuthoredFlowerPlacement,
+  type AuthoredFlowerSpecies
+} from "../vegetation/authoredFlowers";
+import {
+  createAuthoredShrubPatch,
+  type AuthoredShrubPlacement,
+  type AuthoredShrubProfile
+} from "../vegetation/authoredShrubs";
+import {
+  createAuthoredTreePatch,
+  type AuthoredTreeArchetype,
+  type AuthoredTreePlacement
+} from "../vegetation/authoredTrees";
 
 export type GardenVegetation = {
   group: THREE.Group;
-  /** Resolves once the asynchronous SeedThree tree group has been attached. */
+  /** Resolves once the asynchronous shared tree patch is ready. */
   ready: Promise<void>;
+  update(focus: { x: number; z: number }): void;
   /** hidden trunk+canopy proxy mesh for the surface raycaster (BVH) */
   proxy: THREE.Mesh;
   grass: BotanicalGrassController;
@@ -49,12 +63,7 @@ const SHRUB_PALETTES: { foliageA: number; foliageB: number; blooms: number[]; bl
 
 // Flora palettes, indexed by GardenFlora.palette:
 // 0 grass tufts  1 fern floor  2 poppies  3 flower beds
-const FLORA_PALETTES: { a: number; b: number; blooms: number[]; bloomChance: number }[] = [
-  { a: 0x3a622a, b: 0x567a33, blooms: [], bloomChance: 0 },
-  { a: 0x2c5a28, b: 0x477a38, blooms: [], bloomChance: 0 },
-  { a: 0x4f7a2e, b: 0x6a8a3a, blooms: [0xe8863a, 0xf0a04a], bloomChance: 0.45 },
-  { a: 0x4a7a35, b: 0x5f8a3f, blooms: [0xe38ba8, 0xece4d4, 0xd4707e, 0xe4b45e, 0xb49ad8], bloomChance: 0.45 }
-];
+const FLOWER_BED_SPECIES: readonly AuthoredFlowerSpecies[] = ["lupine", "yarrow", "goldfield"];
 
 function buildProxyGeometry(trees: GardenTree[]): THREE.BufferGeometry {
   const buf = buildGardenProxyBuffers(trees);
@@ -67,160 +76,54 @@ function buildProxyGeometry(trees: GardenTree[]): THREE.BufferGeometry {
   return geometry;
 }
 
-// Procedural fallback meshes — now only for species without a SeedThree design
-// (tree fern). Everything else renders through seedTreeGarden.ts.
-function createTreeMeshes(trees: GardenTree[]): { group: THREE.Group; drawCalls: number } {
-  const group = new THREE.Group();
-  group.name = "sf_botanical_garden_trees";
-
-  const barkMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.92, metalness: 0 });
-  const leafMaterial = new THREE.MeshStandardMaterial({
-    vertexColors: true,
-    roughness: 0.9,
-    metalness: 0,
-    side: THREE.DoubleSide
-  });
-
-  const bySpecies: GardenTree[][] = GARDEN_SPECIES.map(() => []);
-  for (const t of trees) bySpecies[t.species]?.push(t);
-
-  const dummy = new THREE.Object3D();
-  const tint = new THREE.Color();
-  let drawCalls = 0;
-  bySpecies.forEach((list, species) => {
-    if (list.length === 0) return;
-    const preset = GARDEN_TREE_PRESETS[species];
-    if (!preset) return;
-    const compiled = compileTree(preset);
-    const branches = new THREE.InstancedMesh(compiled.branchGeometry, barkMaterial, list.length);
-    const leaves = new THREE.InstancedMesh(compiled.leafGeometry, leafMaterial, list.length);
-    branches.name = `sfbg_${GARDEN_SPECIES[species].name}_branches`;
-    leaves.name = `sfbg_${GARDEN_SPECIES[species].name}_leaves`;
-    list.forEach((t, i) => {
-      dummy.position.set(t.x, t.y, t.z);
-      dummy.rotation.set(0, t.yaw, 0);
-      dummy.scale.setScalar(t.scale);
-      dummy.updateMatrix();
-      branches.setMatrixAt(i, dummy.matrix);
-      leaves.setMatrixAt(i, dummy.matrix);
-      // subtle per-instance tint breaks the shared-geometry uniformity: hash the
-      // position so it's stable, lean the crown warmer or cooler
-      const h = (Math.sin(t.x * 12.9898 + t.z * 78.233) * 43758.5453) % 1;
-      const warm = 0.92 + Math.abs(h) * 0.16;
-      tint.setRGB(warm, 0.94 + Math.abs(h) * 0.1, 0.9 + (1 - Math.abs(h)) * 0.14);
-      leaves.setColorAt(i, tint);
-    });
-    if (leaves.instanceColor) leaves.instanceColor.needsUpdate = true;
-    for (const mesh of [branches, leaves]) {
-      // A merged trunk+crown shadow proxy below owns the procedural fern set.
-      mesh.castShadow = false;
-      mesh.receiveShadow = true;
-      // instance matrices span the garden; local geometry bounds would cull wrong
-      mesh.frustumCulled = false;
-      group.add(mesh);
-      drawCalls++;
-    }
-  });
-  return { group, drawCalls };
+function shrubProfile(shrub: GardenShrub): AuthoredShrubProfile {
+  if (shrub.palette === 1) return "fern";
+  if (shrub.palette === 0 || shrub.palette === 2) return "azalea";
+  return "natural";
 }
 
-// Zone-paletted understory: one squashed icosahedron shared by all shrubs,
-// per-instance colour from the deterministic palette + tint hash.
-function createShrubMesh(shrubs: GardenShrub[]): THREE.InstancedMesh {
-  const geometry = new THREE.IcosahedronGeometry(1, 1);
-  geometry.scale(1, 0.68, 1);
-  const material = new THREE.MeshStandardMaterial({ roughness: 0.95, metalness: 0 });
-  const mesh = new THREE.InstancedMesh(geometry, material, shrubs.length);
-  mesh.name = "sfbg_shrubs";
-
-  const dummy = new THREE.Object3D();
-  const color = new THREE.Color();
-  const fA = new THREE.Color();
-  const fB = new THREE.Color();
-  shrubs.forEach((s, i) => {
-    const p = SHRUB_PALETTES[s.palette] ?? SHRUB_PALETTES[0];
-    const bloom = p.blooms.length > 0 && s.tint > 1 - p.bloomChance;
-    // flowering shrubs stay small; a big solid-colour ball reads as plastic
-    const r = 0.9 * s.scale * (bloom ? 0.72 : 1);
-    dummy.position.set(s.x, s.y + r * 0.45, s.z);
-    dummy.rotation.set(0, s.yaw, 0);
-    dummy.scale.setScalar(r);
-    dummy.updateMatrix();
-    mesh.setMatrixAt(i, dummy.matrix);
-    fA.setHex(p.foliageA);
-    fB.setHex(p.foliageB);
-    if (bloom) {
-      // bloom colour tempered toward foliage → flowering bush, not candy
-      color.setHex(p.blooms[Math.floor(s.tint * 25.7) % p.blooms.length]);
-      color.lerp(fB, 0.35);
-    } else {
-      color.lerpColors(fA, fB, s.tint / Math.max(0.001, 1 - p.bloomChance));
-    }
-    mesh.setColorAt(i, color);
-  });
-  mesh.instanceColor!.needsUpdate = true;
-  // The all-garden instance draw is larger than any readable shrub shadow and
-  // cannot cull per instance; nearby tree/contact shadows provide the grounding.
-  mesh.castShadow = false;
-  mesh.receiveShadow = true;
-  mesh.frustumCulled = false;
-  return mesh;
+function authoredShrub(shrub: GardenShrub): AuthoredShrubPlacement {
+  return {
+    x: shrub.x,
+    y: shrub.y,
+    z: shrub.z,
+    yaw: shrub.yaw,
+    scale: shrub.scale,
+    palette: shrub.palette,
+    profile: shrubProfile(shrub),
+    tint: shrub.tint
+  };
 }
 
-// Ground flora: a 3-quad star tuft shared by every instance; poppy/bed
-// palettes read as flower drifts, grove palettes as fern floor.
-function createFloraMesh(flora: GardenFlora[]): THREE.InstancedMesh {
-  const geometry = new THREE.BufferGeometry();
-  const positions: number[] = [];
-  const normals: number[] = [];
-  const indices: number[] = [];
-  const quads = 3;
-  for (let q = 0; q < quads; q++) {
-    const a = (Math.PI * q) / quads;
-    const dx = Math.cos(a) * 0.5;
-    const dz = Math.sin(a) * 0.5;
-    const base = q * 4;
-    positions.push(-dx, 0, -dz, dx, 0, dz, dx, 1, dz, -dx, 1, -dz);
-    const nx = -Math.sin(a);
-    const nz = Math.cos(a);
-    for (let v = 0; v < 4; v++) normals.push(nx, 0.35, nz);
-    indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
-  }
-  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-  geometry.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
-  geometry.setIndex(indices);
+function authoredTreeFern(tree: GardenTree): AuthoredShrubPlacement {
+  return {
+    x: tree.x,
+    y: tree.y,
+    z: tree.z,
+    yaw: tree.yaw,
+    // The shared fern is authored at understory scale. Garden tree ferns keep
+    // their existing specimen-sized footprint through this calibrated scale.
+    scale: tree.scale * 1.8,
+    palette: 1,
+    profile: "fern",
+    tint: Math.abs(Math.sin(tree.x * 12.9898 + tree.z * 78.233) * 43758.5453) % 1,
+    wind: 0.82
+  };
+}
 
-  const material = new THREE.MeshStandardMaterial({ roughness: 0.96, metalness: 0, side: THREE.DoubleSide });
-  const mesh = new THREE.InstancedMesh(geometry, material, flora.length);
-  mesh.name = "sfbg_flora";
-
-  const dummy = new THREE.Object3D();
-  const color = new THREE.Color();
-  const cA = new THREE.Color();
-  const cB = new THREE.Color();
-  flora.forEach((f, i) => {
-    const p = FLORA_PALETTES[f.palette] ?? FLORA_PALETTES[0];
-    const bloom = p.blooms.length > 0 && f.tint > 1 - p.bloomChance;
-    dummy.position.set(f.x, f.y, f.z);
-    dummy.rotation.set(0, f.yaw, 0);
-    // flowers sit lower than grass tufts so beds read as ground colour drifts
-    dummy.scale.set(f.scale, f.scale * (bloom ? 0.45 : 0.7), f.scale);
-    dummy.updateMatrix();
-    mesh.setMatrixAt(i, dummy.matrix);
-    if (bloom) {
-      color.setHex(p.blooms[Math.floor(f.tint * 31.7) % p.blooms.length]);
-    } else {
-      cA.setHex(p.a);
-      cB.setHex(p.b);
-      color.lerpColors(cA, cB, f.tint);
-    }
-    mesh.setColorAt(i, color);
-  });
-  mesh.instanceColor!.needsUpdate = true;
-  mesh.castShadow = false; // thousands of tufts; shadows add cost with no read
-  mesh.receiveShadow = false;
-  mesh.frustumCulled = false;
-  return mesh;
+function authoredFlower(flora: GardenFlora): AuthoredFlowerPlacement {
+  const species = flora.palette === 2
+    ? "poppy"
+    : FLOWER_BED_SPECIES[Math.min(FLOWER_BED_SPECIES.length - 1, Math.floor(flora.tint * FLOWER_BED_SPECIES.length))];
+  return {
+    x: flora.x,
+    y: flora.y,
+    z: flora.z,
+    yaw: flora.yaw,
+    scale: flora.scale * 1.35,
+    species,
+    tint: flora.tint
+  };
 }
 
 export function createGardenVegetation(map: GardenTerrain): GardenVegetation {
@@ -231,42 +134,96 @@ export function createGardenVegetation(map: GardenTerrain): GardenVegetation {
   const group = new THREE.Group();
   group.name = "sf_botanical_garden";
 
-  // procedural meshes only for species with no SeedThree design (tree fern)
-  const proceduralTrees = trees.filter((t) => !SEED_TREE_DESIGNS[t.species]);
-  const treeMeshes = createTreeMeshes(proceduralTrees);
-  group.add(treeMeshes.group);
-  if (proceduralTrees.length > 0) {
-    const proceduralShadow = new THREE.Mesh(
-      buildProxyGeometry(proceduralTrees),
+  const treeArchetypes: AuthoredTreeArchetype[] = [];
+  const archetypeBySpecies = new Map<number, string>();
+  SEED_TREE_DESIGNS.forEach((design, species) => {
+    if (!design) return;
+    const id = `sfbg-species-${species}`;
+    archetypeBySpecies.set(species, id);
+    treeArchetypes.push({ id, design });
+  });
+  const authoredTrees: AuthoredTreePlacement[] = trees.flatMap((tree) => {
+    const archetype = archetypeBySpecies.get(tree.species);
+    return archetype
+      ? [{
+        x: tree.x,
+        y: tree.y,
+        z: tree.z,
+        yaw: tree.yaw,
+        scale: tree.scale,
+        archetype,
+        nearClone: tree.nearClone
+      }]
+      : [];
+  });
+  const treePatch = createAuthoredTreePatch(treeArchetypes, authoredTrees, {
+    name: "sf_botanical_garden_trees",
+    chunkSize: 128,
+    visibleDistance: 1050,
+    nearRadius: 58,
+    nearExitRadius: 66,
+    nearMax: 24,
+    farCardKeep: 0.57,
+    farConeKeep: 0.72,
+    farBarkKeep: 0.4,
+    farBarkAreaFloor: 0.88
+  });
+  group.add(treePatch.group);
+
+  // Tree ferns use the same leaf-spray + shared-wind renderer as fern
+  // understory, with a trunk authored into the shared fern profile. Their
+  // stable low-poly proxy remains the dedicated distant shadow caster.
+  const treeFerns = trees.filter((tree) => !SEED_TREE_DESIGNS[tree.species]);
+  const fernPatch = createAuthoredShrubPatch(treeFerns.map(authoredTreeFern), {
+    name: "sfbg_tree_ferns",
+    palettes: SHRUB_PALETTES
+  });
+  group.add(fernPatch.group);
+  if (treeFerns.length > 0) {
+    const fernShadow = new THREE.Mesh(
+      buildProxyGeometry(treeFerns),
       new THREE.MeshBasicMaterial({ color: 0xffffff })
     );
-    proceduralShadow.name = "sfbg_procedural_fern_shadow_proxy";
-    proceduralShadow.castShadow = true;
-    proceduralShadow.receiveShadow = false;
-    setLocalFarShadowOnly(proceduralShadow);
-    group.add(proceduralShadow);
+    fernShadow.name = "sfbg_fern_shadow_proxy";
+    fernShadow.castShadow = true;
+    fernShadow.receiveShadow = false;
+    setLocalFarShadowOnly(fernShadow);
+    group.add(fernShadow);
   }
 
-  // SeedThree textured trees stream in asynchronously (texture loads + growth);
-  // colliders/proxy below come from the full layout list and are live
-  // immediately. The near/far LOD rebin self-drives via onBeforeRender inside
-  // buildSeedTreeGarden — nothing to tick from here.
-  const ready = buildSeedTreeGarden(trees)
-    .then((st) => {
-      group.add(st.group);
+  // Shared trees stream in asynchronously; colliders/proxy below come from the
+  // full deterministic layout and are live immediately. Near LOD self-drives;
+  // update() below only advances chunk distance culling.
+  const ready = treePatch.ready
+    .then(() => {
       console.log(
-        `[sfbg] SeedThree garden online: ${st.stats.species} species, ${st.stats.instances} trees, ~${(st.stats.farTriangles / 1e6).toFixed(1)}M far-tier tris`
+        `[sfbg] unified trees online: ${treePatch.stats.archetypes} archetypes, ${treePatch.stats.placements} trees, ${treePatch.stats.chunks()} chunks`
       );
     })
-    .catch((e) => console.error("[sfbg] SeedThree garden failed — procedural fern-only visuals remain:", e));
+    .catch((e) => console.error("[sfbg] shared trees failed — fern and ground planting remain:", e));
 
-  const shrubMesh = createShrubMesh(shrubs);
-  group.add(shrubMesh);
+  const shrubPatch = createAuthoredShrubPatch(shrubs.map(authoredShrub), {
+    name: "sfbg_shrubs",
+    palettes: SHRUB_PALETTES
+  });
+  group.add(shrubPatch.group);
 
-  // Procedural blade grass replaced the old flat flora tufts; keep the beds
-  // near paths (flowers) but drop the plain grass/fern palettes as tufts.
-  const floraMesh = createFloraMesh(flora.filter((f) => f.palette === 2 || f.palette === 3));
-  group.add(floraMesh);
+  // Botanical grass owns the plain grass/fern-floor flora palettes. Poppy and
+  // path-bed placements now use the same curved, multi-stem, wind-responsive
+  // clumps as every other authored flower patch.
+  const flowerPatch = createAuthoredFlowerPatch(
+    flora.filter((entry) => entry.palette === 2 || entry.palette === 3).map(authoredFlower),
+    {
+      name: "sfbg_flowers",
+      palettes: {
+        poppy: { a: 0xe8863a, b: 0xf0a04a },
+        lupine: { a: 0x8a6bbf, b: 0xb49ad8 },
+        yarrow: { a: 0xece4d4, b: 0xe4b45e },
+        goldfield: { a: 0xd4707e, b: 0xe38ba8 }
+      }
+    }
+  );
+  group.add(flowerPatch.group);
 
   const grass = buildBotanicalGrass(map, trees);
   group.add(grass);
@@ -282,6 +239,9 @@ export function createGardenVegetation(map: GardenTerrain): GardenVegetation {
   return {
     group,
     ready,
+    update(focus) {
+      treePatch.update(focus);
+    },
     proxy,
     grass,
     colliders: buildGardenTreeColliders(trees),
@@ -289,7 +249,7 @@ export function createGardenVegetation(map: GardenTerrain): GardenVegetation {
       trees: trees.length,
       shrubs: shrubs.length,
       flora: flora.length,
-      drawCalls: treeMeshes.drawCalls + 2
+      drawCalls: fernPatch.stats.draws + shrubPatch.stats.draws + flowerPatch.stats.draws
     }
   };
 }
