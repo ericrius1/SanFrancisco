@@ -23,8 +23,7 @@ export const LIGHT_SCALE = (100 / 6) * EXPOSURE_REBASE
  * there is no user-facing quality switch any more. The two other universal-mode
  * values live with the systems they configure: scene AA (single-sample by
  * default, optional 4x MSAA for profiling) in POSTFX_TUNING.sceneSamples
- * (render/postfx.ts), and the always-on CSM shadow config as named constants
- * near the setup in world/sky.ts.
+ * (render/postfx.ts), and CSM shadow knobs via SHADOW_TUNING (world/sky.ts).
  */
 export const RENDER_MODE = {
   // drawing-buffer cap on devicePixelRatio. The scene is fragment-bound: retina

@@ -17,7 +17,7 @@ import type { PlayerMode } from "../player/types";
 import { CROWN_SLIDERS, CROWN_TUNING } from "../world/salesforceCrown";
 import { BAY_LIGHTS_SLIDERS, BAY_LIGHTS_TUNING } from "../world/bayLights";
 import { GOLDEN_GATE_LIGHTS_SLIDERS, GOLDEN_GATE_LIGHTS_TUNING } from "../world/goldenGateLights";
-import { SKY_TUNING, type Sky } from "../world/sky";
+import { SKY_TUNING, SHADOW_TUNING, type Sky } from "../world/sky";
 import { POSTFX_TUNING, POSTFX_TOGGLES, POSTFX_QUALITY_KEYS, applyPostFxParams } from "../render/postfx";
 import { VOICE_TUNING } from "../net/voice";
 import { NATURE_AUDIO_TUNING } from "../audio";
@@ -333,20 +333,34 @@ export class DebugPanel {
     const pane = new Pane({ container: root, title: "tuning — / to close" });
     this.#pane = pane;
 
-    // MASTER foliage switch — the very first control in the panel. One checkbox
-    // hides AND stops per-frame work for the ENTIRE vegetation system (all trees,
-    // grass, flowers, shrubs, everywhere). Off = invisible + near-zero cost.
-    FOLIAGE_TUNING.bind(pane, {
+    // Shadows first — open by default. Live CSM knobs; map-size edits realloc
+    // depth textures (fine while tuning; reload if a stale render-bundle bind
+    // group starts complaining).
+    const shadows = pane.addFolder({ title: "shadows", expanded: true });
+    SHADOW_TUNING.bind(shadows, {
+      onChange: (_key, _value, last) => {
+        if (this.#syncingPane) return;
+        // Map size changes are expensive / realloc — wait for release. Bias /
+        // split / far update live so you can scrub them.
+        if (!last && (_key === "nearMapSize" || _key === "farMapSize")) return;
+        this.#sky.applyShadowParams();
+      }
+    });
+
+    // Session meta — foliage / draw distance / day cycle. Open, right under
+    // shadows; everything else starts collapsed.
+    const meta = pane.addFolder({ title: "meta", expanded: true });
+
+    // MASTER foliage switch. One checkbox hides AND stops per-frame work for
+    // the ENTIRE vegetation system (all trees, grass, flowers, shrubs).
+    FOLIAGE_TUNING.bind(meta, {
       onChange: (_key, value) => this.#setFoliageVisible(Boolean(value))
     });
 
-    // MASTER draw distance — one top-level slider for how far the world draws.
-    // Drives the tile streaming radii (unload trails load by a fixed hysteresis
-    // margin so tiles never thrash at the boundary), moves only the narrow cull
-    // fade at the streamed edge (broad haze is independent), and the citygen ring
-    // derives its chunk reach from it each scan.
+    // MASTER draw distance — drives tile streaming radii (unload trails load
+    // by a fixed hysteresis), the narrow cull fade, and citygen chunk reach.
     // forceScan makes it take effect now instead of on the next 30-frame scan.
-    WORLD_TUNING.bind(pane, {
+    WORLD_TUNING.bind(meta, {
       keys: ["radius"],
       onChange: (key, value, last) => {
         if (key !== "radius") return;
@@ -357,8 +371,6 @@ export class DebugPanel {
       }
     });
 
-    // basics live at the root — the handful of things touched every session;
-    // buildings (citygen) sits here too; everything else tucks into "advanced".
     // proxy so tweakpane's slider step never quantizes the live cycle clock
     const lightingView = {
       timeOfDay: this.#sky.timeOfDay,
@@ -414,7 +426,7 @@ export class DebugPanel {
         return;
       }
     };
-    this.#lightingBindings = SKY_TUNING.bind(pane, {
+    this.#lightingBindings = SKY_TUNING.bind(meta, {
       target: lightingView,
       keys: ["timeOfDay", "realTime", "cycleEnabled", "cycleDuration", "nightBrightness"],
       onChange: onSkyChange
@@ -424,7 +436,7 @@ export class DebugPanel {
     // the full grammar mesh. Reach comes from the top-level draw-distance slider.
     // The ring reads these live each scan, so no onChange side-effect is needed —
     // drag + watch the fps counter and the near-detail band move.
-    const citygenF = pane.addFolder({ title: "buildings (citygen)", expanded: true });
+    const citygenF = pane.addFolder({ title: "buildings (citygen)", expanded: false });
     CITYGEN_TUNING.bind(citygenF, { onChange: () => {} });
 
     const fog = pane.addFolder({ title: "fog", expanded: false });
@@ -487,7 +499,7 @@ export class DebugPanel {
     const controls = advanced.addFolder({ title: "controls" });
     INPUT_TUNING.bind(controls);
 
-    // foliage detail knobs (the master on/off lives at the very top of the pane).
+    // foliage detail knobs (the master on/off lives in the meta folder above).
     const foliage = advanced.addFolder({ title: "foliage" });
     // Wildflower ring: density + clump↔scatter shaping. The ring reads these live on
     // its next re-scatter; force one now (on slider RELEASE only, `last`) so the edit

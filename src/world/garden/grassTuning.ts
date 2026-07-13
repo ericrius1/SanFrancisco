@@ -2,9 +2,9 @@
 // These values are intentionally simple: one current schema, no migration, and
 // no coupling to the old vendored dynamic grass field.
 
-import { foliageBrightness } from "../../../vendor/SeedThree/src/core/leaf-cards.js";
-import { windSpeed, windStrength } from "../../../vendor/SeedThree/src/core/wind.js";
 import { tunables } from "../../core/persist";
+import { foliageBrightness } from "../vegetation/appearance";
+import { windSpeed, windStrength } from "../vegetation/wind";
 
 export const GRASS_TUNING = tunables("grass", {
   // 2026-07 FPS pass: meadow probes hit ~4M garden tris / ~24 fps @ 2560×1600.

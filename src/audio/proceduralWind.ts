@@ -4,8 +4,8 @@
 //            the gust envelope,
 //   rustle — bright hiss (~1.8-3.4 kHz) weighted by how deep in a region the
 //            listener is (leaf/grass proximity).
-// The gust envelope is the SAME windGustGlobal signal the grass shader sways
-// with (world/garden/wind.ts), so audible swells match visible ones. A stereo
+// The gust envelope is the SAME windGustGlobal signal the vegetation shaders
+// read, so audible swells match visible ones. A stereo
 // panner leans the whole bed toward the world wind heading relative to the
 // camera, so the wind audibly blows from the direction the grass bends.
 //
@@ -15,7 +15,7 @@
 // the browser's AudioContext budget).
 
 import * as THREE from "three/webgpu";
-import { WIND_DIR, windStrength } from "../../vendor/SeedThree/src/core/wind.js";
+import { WIND_DIR, windStrength } from "../world/vegetation/wind";
 
 const NOISE_SECONDS = 4;
 const tmpQuat = new THREE.Quaternion();
@@ -100,7 +100,7 @@ export class ProceduralWindSynth {
   }
 
   /**
-   * @param gust     shared wind envelope, 0..1 (world/garden/wind.ts)
+   * @param gust     shared vegetation wind envelope, 0..1
    * @param camera   listener camera (world quaternion → stereo pan)
    * @param level    overall synth level, 0..1 (tunable × region wind bias × fade)
    * @param nearMix  0..1 how "in the foliage" the listener is — weights rustle

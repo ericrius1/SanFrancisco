@@ -993,6 +993,9 @@ async function boot() {
     "keydown",
     (e) => {
       if (e.code !== "Escape" || e.repeat) return;
+      // Input owns this invariant in an earlier capture listener. Keep this
+      // idempotent call here too so UI routing can never precede the unlock.
+      input.releaseLock();
       const t = e.target;
       // Debug search / other fields keep their own Esc behavior.
       if (
@@ -1001,9 +1004,6 @@ async function boot() {
       ) {
         return;
       }
-      // Esc ALWAYS frees the mouse, whatever else it also dismisses below.
-      // releaseLock is unconditional and cancels any in-flight relock grant.
-      input.releaseLock();
       if (behindTheScenes?.isOpen) {
         behindTheScenes.setOpen(false);
         e.preventDefault();
@@ -2041,8 +2041,6 @@ async function boot() {
       START.spawn = START_DEFAULTS.spawn;
       START.mode = START_DEFAULTS.mode;
       // re-apply the side effects the pane's onChange handlers normally push.
-      // Pixel ratio + shadows are no longer tweakable (universal render mode);
-      // the reset just re-asserts the dynamic-res governor's ceiling.
       renderer.toneMappingExposure = RENDER_TUNING.values.exposure;
       dynRes.syncToCap();
       CONFIG.tileLoadRadius = WORLD_TUNING.values.radius;
@@ -2050,6 +2048,7 @@ async function boot() {
       setFoliageVisible(FOLIAGE_TUNING.values.visible);
       tiles.forceScan();
       sky.applyFogParams();
+      sky.applyShadowParams();
       pipeline.applyPostFx(); // toggles back off + sliders back to defaults
       sky.cycleEnabled = SKY_TUNING.values.cycleEnabled;
       sky.cycleDuration = SKY_TUNING.values.cycleDuration;

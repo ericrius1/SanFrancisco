@@ -8,7 +8,7 @@
 // grass, …) stay their OWN modules with their own geometry/material/group so
 // each can be toggled independently — they just plug into this infrastructure.
 
-export { windGustGlobal, updateWindGusts, windGustValue } from "./wind";
+export { windGustGlobal, updateWindGusts, windGustValue } from "../vegetation/wind";
 export { groundSway, WIND_DIR } from "./sway";
 export { hash2, valueNoise, smoothstep, worleyClump, type Clump } from "./scatter";
 export { DISPLACERS, MAX_DISPLACERS, setGroundDisplacers, type GroundDisplacer } from "./displacers";

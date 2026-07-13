@@ -21,13 +21,21 @@ const SERVER_URL = process.env.SF_PROBE_URL ?? "http://127.0.0.1:5188";
 const W = 1280, H = 720; // smaller surface = less GPU pressure (headless WebGPU tab crashes under load)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// viewpoints: [name, x, z, facing(rad), backDist, upHeight] — overviews pull far
-// back + high; ground/bloom views sit low + close so near-clone trees and the
-// flower drifts are actually visible.
-const VIEWS = [
-  ["marin_no_float", -4450, -6250, 0.3, 12, 3.6],
-  ["ggpark_flowers_grass", -2725, 2540, 1.2, 11, 3.2]
+// Tree-heavy reference sites for both runtimes. Buena Vista uses a fixed
+// eye/target pair because the feature under test is its isolated 1050m tier as
+// seen from Corona Heights, not a close view from inside the grove.
+const ALL_VIEWS = [
+  { name: "sfbg_redwood", x: -2500, z: 2310, facing: 2.4, back: 18, up: 4 },
+  { name: "ggpark_redwood", x: -4600, z: 2080, facing: 1.2, back: 18, up: 4 },
+  { name: "marin_dense_redwood", x: -5300, z: -6200, facing: 0.3, back: 24, up: 6 },
+  { name: "sutro_cloud_forest", x: -782, z: 3846, facing: 2.5, back: 24, up: 7 },
+  { name: "buena_from_corona", x: 408, z: 2760, eyeUp: 12, target: [212, 2450, 18] }
 ];
+const requestedViews = new Set((process.env.SF_PROBE_VIEWS ?? "").split(",").map((v) => v.trim()).filter(Boolean));
+const VIEWS = requestedViews.size > 0 ? ALL_VIEWS.filter(({ name }) => requestedViews.has(name)) : ALL_VIEWS;
+if (requestedViews.size > 0 && VIEWS.length === 0) {
+  throw new Error(`SF_PROBE_VIEWS matched no views. Known: ${ALL_VIEWS.map(({ name }) => name).join(", ")}`);
+}
 
 async function isFile(p) { try { return existsSync(p); } catch { return false; } }
 async function findChrome() {
@@ -92,7 +100,9 @@ async function measure(c) {
     let sum=0;const N=24;
     for(let i=0;i<N;i++){const t=performance.now();window.__sf.tick(1/60);await sync();sum+=performance.now()-t;}
     const inf=r.info.render;
-    return{ms:sum/N,calls:inf.calls,tris:inf.triangles};
+    // WebGPURenderer currently reports the useful count in calls; some builds
+    // expose a present-but-zero drawCalls, so prefer calls when available.
+    return{ms:sum/N,calls:inf.calls??inf.drawCalls??0,tris:inf.triangles??0};
   })()`);
   return s;
 }
@@ -100,17 +110,23 @@ async function setWild(c, on) {
   await ev(c, `(()=>{for(const g of window.__sf.wildlands.groups)g.visible=${on};return true;})()`);
 }
 async function setGarden(c, on) {
-  await ev(c, `(()=>{window.__sf.garden.group.visible=${on};return true;})()`);
+  await ev(c, `(()=>{const sf=window.__sf,p=sf.player.renderPosition??sf.player.position;sf.garden.setVisible(${on},p);return true;})()`);
 }
 async function teleport(c, x, z, facing) {
   await ev(c, `(()=>{const m=window.__sf.map,p=window.__sf.player;const y=m.groundHeight(${x},${z});p.teleportTo({x:${x},y:y+1.5,z:${z},facing:${facing},mode:'walk'});return true;})()`);
 }
-// oblique view: eye pulled back + up from the target ground point (per-view)
-async function freeCam(c, x, z, facing, back, up) {
-  await ev(c, `(()=>{const m=window.__sf.map;const gy=m.groundHeight(${x},${z});
+// Oblique view with both eye and target grounded independently. This matters on
+// the steep Marin/Sutro sites where using target ground for the eye can bury it.
+async function freeCamAt(c, x, z, facing, back, eyeUp, targetUp = 8) {
+  await ev(c, `(()=>{const m=window.__sf.map;
     const dx=Math.sin(${facing}),dz=Math.cos(${facing});
-    const eye=[${x}-dx*${back}, gy+${up}, ${z}-dz*${back}];
-    window.__sfFreeCam(eye,[${x}+dx*35, gy+${Math.max(3, up * 0.15)}, ${z}+dz*35]);return true;})()`);
+    const ex=${x}-dx*${back},ez=${z}-dz*${back};
+    window.__sfFreeCam([ex,m.groundHeight(ex,ez)+${eyeUp},ez],[${x},m.groundHeight(${x},${z})+${targetUp},${z}]);return true;})()`);
+}
+async function freeCamBetween(c, ex, ez, eyeUp, tx, tz, targetUp) {
+  await ev(c, `(()=>{const m=window.__sf.map;window.__sfFreeCam(
+    [${ex},m.groundHeight(${ex},${ez})+${eyeUp},${ez}],
+    [${tx},m.groundHeight(${tx},${tz})+${targetUp},${tz}]);return true;})()`);
 }
 
 async function main() {
@@ -122,7 +138,7 @@ async function main() {
   const proc = spawn(chrome, [
     `--user-data-dir=${profile}`, "--headless=new", `--remote-debugging-port=${port}`,
     "--enable-unsafe-webgpu", "--enable-features=WebGPUDeveloperFeatures", "--use-angle=metal",
-    "--hide-scrollbars", "--mute-audio", `--window-size=${W},${H}`, `${SERVER_URL}/?autostart&fullfps`
+    "--hide-scrollbars", "--mute-audio", `--window-size=${W},${H}`, `${SERVER_URL}/?autostart=1&profile=1&fullfps=1`
   ], { cwd: ROOT, stdio: "ignore" });
   await sleep(2500);
   // find the app page target (not about:blank / devtools) once it's navigated in
@@ -152,23 +168,37 @@ async function main() {
   console.log("[probe] waiting for __sf...");
   const t0 = Date.now();
   let ready = false;
-  while (Date.now() - t0 < 150000) { try { if (await ev(c, `!!(window.__sf&&window.__sf.wildlands&&window.__sf.player)`)) { ready = true; break; } } catch {} await sleep(600); }
+  while (Date.now() - t0 < 150000) { try { if (await ev(c, `!!(window.__sf&&window.__sf.garden&&window.__sf.wildlands&&window.__sf.player)`)) { ready = true; break; } } catch {} await sleep(600); }
   if (!ready) throw new Error("__sf never ready (see [page-exception]/[page-error] above)");
-  console.log(`[probe] __sf ready in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
+  const modulesReadyMs = Date.now() - t0;
+  console.log(`[probe] modules ready in ${(modulesReadyMs / 1000).toFixed(1)}s; waiting for tree templates/chunks...`);
+  const treesReadyAt = Date.now();
+  const readyStats = await ev(c, `(async()=>{
+    const sf=window.__sf;
+    await Promise.all([sf.garden.ready,sf.wildlands.ready]);
+    return {garden:sf.garden.stats,wildlands:sf.wildlands.stats};
+  })()`);
+  const treesReadyMs = Date.now() - treesReadyAt;
+  console.log(`[probe] trees ready in ${(treesReadyMs / 1000).toFixed(1)}s`, JSON.stringify(readyStats));
   await ev(c, `window.__sfManual&&window.__sfManual(true)`); // freeze wall clock
-  await settle(c, 12); // let tiles + hero trees stream
+  await settle(c, 18); // let deferred compilation + first texture uploads settle
 
   const results = [];
   let fails = 0;
-  for (const [name, x, z, facing, back, up] of VIEWS) {
+  for (const view of VIEWS) {
+    const { name, x, z } = view;
     try {
-      await teleport(c, x, z, facing); // stream this area's tiles/colliders
+      await teleport(c, x, z, view.facing ?? 0); // stream this area's tiles/colliders
       await settle(c, 14); // stream tiles + grow species heroes
-      await freeCam(c, x, z, facing, back, up);
+      if (view.target) {
+        await freeCamBetween(c, x, z, view.eyeUp, view.target[0], view.target[1], view.target[2]);
+      } else {
+        await freeCamAt(c, x, z, view.facing, view.back, view.up);
+      }
       for (let i = 0; i < 6; i++) await tick(c, 1 / 60);
       // let the rebin run a few real frames from this eye, then read near-clone count
       for (let i = 0; i < 20; i++) { await tick(c, 1 / 60); await sleep(30); }
-      const diag = await ev(c, `(()=>{const s=window.__sf.wildlands.trees.stats;return{nearActive:s.nearActive(),instances:s.instances,chunks:s.chunks,designs:s.designs};})()`);
+      const diag = await ev(c, `(()=>{const w=window.__sf.wildlands;const read=(s)=>({nearActive:s.nearActive(),instances:s.instances,chunks:s.chunks,designs:s.designs});return{main:read(w.trees.stats),buenaVista:read(w.buenaVistaTrees.stats)};})()`);
       console.log(`[diag] ${name}`, JSON.stringify(diag));
       const gdiag = await ev(c, `(()=>{const g=window.__sf.wildlands.grass.group;const m=g.children.find(o=>o.isInstancedMesh);if(!m)return{grass:'none'};const a=m.instanceMatrix.array;let n=m.count,lo=1e9,hi=-1e9;for(let i=0;i<n;i++){const y=a[i*16+13];if(y<lo)lo=y;if(y>hi)hi=y;}const cam=window.__sf.camera.position;const gh=window.__sf.map.groundHeight(cam.x,cam.z);return{count:n,yLo:+lo.toFixed(1),yHi:+hi.toFixed(1),camGround:+gh.toFixed(1),camY:+cam.y.toFixed(1)};})()`);
       console.log(`[grass] ${name}`, JSON.stringify(gdiag));
@@ -178,7 +208,22 @@ async function main() {
       await setWild(c, false);
       const noWild = await measure(c);
       await setWild(c, true);
-      const row = { view: name, msAll: +all.ms.toFixed(1), msWild: +(all.ms - noWild.ms).toFixed(1) };
+      await setGarden(c, false);
+      const noGarden = await measure(c);
+      await setGarden(c, true);
+      const row = {
+        view: name,
+        msAll: +all.ms.toFixed(1),
+        msWild: +(all.ms - noWild.ms).toFixed(1),
+        msGarden: +(all.ms - noGarden.ms).toFixed(1),
+        callsAll: all.calls,
+        callsWild: all.calls - noWild.calls,
+        callsGarden: all.calls - noGarden.calls,
+        trisAll: all.tris,
+        trisWild: all.tris - noWild.tris,
+        trisGarden: all.tris - noGarden.tris,
+        treeDiag: diag
+      };
       results.push(row);
       console.log(JSON.stringify(row));
       fails = 0;
@@ -188,7 +233,7 @@ async function main() {
     }
   }
   const stats = await ev(c, `({trees:window.__sf.wildlands.stats,garden:window.__sf.garden.stats})`);
-  writeFileSync(path.join(OUT, "perf.json"), JSON.stringify({ results, stats }, null, 2));
+  writeFileSync(path.join(OUT, "perf.json"), JSON.stringify({ modulesReadyMs, treesReadyMs, readyStats, results, stats }, null, 2));
   console.log("[probe] stats", JSON.stringify(stats));
   console.log(`[probe] screenshots + perf.json in ${OUT}`);
   c.close(); proc.kill(); if (dev) dev.kill();
