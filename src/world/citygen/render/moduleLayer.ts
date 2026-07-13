@@ -62,6 +62,9 @@ export interface ModuleLayer {
     instances: readonly ModuleInstance[], matTable: readonly string[],
     opts: { matrix: THREE.Matrix4; zone: ParallaxZone; seed: number },
   ): ModuleBuildingHandle | null;
+  /** Exact always-shared trim/glass owners, populated with a zero-size instance
+   *  so a detached compile visits both pipelines before the layer is published. */
+  warmupOwners(): readonly { label: string; object: THREE.Object3D }[];
   /** live instance count across buckets (probe/debug) */
   stats(): { instances: number; capacity: number; buildings: number };
   dispose(): void;
@@ -344,6 +347,12 @@ export function createModuleLayer(scene: THREE.Object3D): ModuleLayer {
   };
 
   return {
+    warmupOwners() {
+      return [
+        { label: "modules:trim", object: trimBuckets[0]!.mesh },
+        { label: "modules:glass", object: glassBuckets[0]!.mesh },
+      ];
+    },
     addBuilding(instances, matTable, opts) {
       if (!instances.length) return null;
       const slot = allocSlot();

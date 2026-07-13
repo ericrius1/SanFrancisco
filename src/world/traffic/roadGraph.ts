@@ -9,23 +9,25 @@
  * Coordinates are world metres (x, z planar; Y comes from WorldMap elsewhere).
  * The JSON stores coords as 0.1 m ints (metres ×10); we divide back on load.
  *
- * Node-testable: the parsing/index core lives in the constructor which takes an
- * already-parsed JSON object, so tests feed it `JSON.parse(fs.readFileSync(...))`
- * directly. `RoadGraph.load()` is just a browser fetch wrapper around that.
+ * Node-testable: `new RoadGraph(json)` keeps the synchronous constructor used by
+ * semantic tests. Browser `RoadGraph.load()` asks a module worker for a packed,
+ * preprocessed snapshot so fetch, JSON.parse, indexing, and signal selection do
+ * not occupy the render thread.
  */
 
+import { TrafficSignalSystem } from "./trafficSignals.ts";
 import {
-  TrafficSignalSystem,
-  chooseSignalNodes,
-  signalCandidateScore,
-  type SignalApproachSeed,
-  type SignalNodeSeed
-} from "./trafficSignals.ts";
+  ROAD_GRAPH_CELL,
+  buildRoadGraphSnapshot,
+  packedRoadCellSlot,
+  type PackedRoadCellIndex,
+  type RoadGraphSnapshot,
+  type RoadsJson
+} from "./roadGraphCore.ts";
+import { loadRoadGraphSnapshot } from "./roadGraphLoader.ts";
 
-export type RoadsJson = {
-  v: number;
-  segs: { p: number[]; w: number; l?: number; d?: number; k?: number; f?: number; b?: number }[];
-};
+export type { RoadsJson } from "./roadGraphCore.ts";
+export { loadRoadsJson } from "./roadGraphLoader.ts";
 
 export type Projection = {
   segId: number;
@@ -58,24 +60,10 @@ export type RoadSegmentVisitor = (
   roadClass: number
 ) => void;
 
-const CELL = 64; // spatial-hash cell size (m); project() search radius (40 m) < CELL
+const CELL = ROAD_GRAPH_CELL; // project() search radius (40 m) < CELL
 const MAX_PROJECT_DIST = 40; // nearest-road cap (m)
 const HOP_DIST = 15; // max gap to jump across at a polyline end (m)
-const SIGNAL_CELL = 12; // cluster nearby road vertices into one intersection candidate
-const ARM_EPS = Math.PI * 0.16; // ~29°, distinct approach-direction clustering
-
-// integer cell key; world coords comfortably inside ±(4096·64) m
-function cellKey(cx: number, cz: number): number {
-  return (cx + 4096) * 8192 + (cz + 4096);
-}
-
-function signalKey(x: number, z: number): number {
-  return (Math.round(x / SIGNAL_CELL) + 4096) * 8192 + (Math.round(z / SIGNAL_CELL) + 4096);
-}
-
-function angleDiff(a: number, b: number): number {
-  return Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
-}
+const PREPARED_SNAPSHOT = Symbol("RoadGraph.preparedSnapshot");
 
 export class RoadGraph {
   readonly segCount: number;
@@ -95,10 +83,10 @@ export class RoadGraph {
   private segDir: Int8Array; // segId → one-way dir (-1,0,+1)
   private segClass: Int8Array; // segId → coarse road class
 
-  // edge hash: cell → global start-indices g (edge is point g → g+1, same seg)
-  private cells = new Map<number, number[]>();
-  // endpoint hash for cross-segment hops: cell → endpoint-record indices
-  private endCells = new Map<number, number[]>();
+  // packed cell lookup → global start-indices g (edge is point g → g+1, same seg)
+  private cells: PackedRoadCellIndex;
+  // packed endpoint lookup for cross-segment hops
+  private endCells: PackedRoadCellIndex;
   private endX: Float32Array;
   private endZ: Float32Array;
   private endSeg: Int32Array;
@@ -108,103 +96,38 @@ export class RoadGraph {
   private stamp: Uint32Array;
   private stampGen = 0;
 
-  constructor(json: RoadsJson) {
-    const segs = json.segs;
-    this.segCount = segs.length;
-
-    let total = 0;
-    for (const s of segs) total += s.p.length / 2;
-    this.px = new Float32Array(total);
-    this.pz = new Float32Array(total);
-    this.ptSeg = new Int32Array(total);
-    this.cum = new Float32Array(total);
-    this.segStart = new Int32Array(this.segCount);
-    this.segNum = new Int32Array(this.segCount);
-    this.segTotal = new Float32Array(this.segCount);
-    this.segW = new Float32Array(this.segCount);
-    this.segLanes = new Int8Array(this.segCount);
-    this.segForwardLanes = new Int8Array(this.segCount);
-    this.segBackwardLanes = new Int8Array(this.segCount);
-    this.segDir = new Int8Array(this.segCount);
-    this.segClass = new Int8Array(this.segCount);
-    this.endX = new Float32Array(this.segCount * 2);
-    this.endZ = new Float32Array(this.segCount * 2);
-    this.endSeg = new Int32Array(this.segCount * 2);
-    this.endWhich = new Int8Array(this.segCount * 2);
-
-    let g = 0;
-    for (let seg = 0; seg < this.segCount; seg++) {
-      const p = segs[seg].p;
-      const n = p.length / 2;
-      this.segStart[seg] = g;
-      this.segNum[seg] = n;
-      this.segW[seg] = segs[seg].w;
-      const lanes = Math.max(1, Math.min(8, Math.round(segs[seg].l ?? Math.max(1, segs[seg].w / 4))));
-      const dir = segs[seg].d === 1 ? 1 : segs[seg].d === -1 ? -1 : 0;
-      this.segLanes[seg] = lanes;
-      this.segDir[seg] = dir;
-      if (dir === 1) {
-        this.segForwardLanes[seg] = lanes;
-        this.segBackwardLanes[seg] = 0;
-      } else if (dir === -1) {
-        this.segForwardLanes[seg] = 0;
-        this.segBackwardLanes[seg] = lanes;
-      } else {
-        let forward = Math.max(1, Math.min(8, Math.round(segs[seg].f ?? Math.ceil(lanes / 2))));
-        let backward = Math.max(1, Math.min(8, Math.round(segs[seg].b ?? Math.max(1, lanes - forward))));
-        while (forward + backward < lanes) {
-          if (forward <= backward) forward++;
-          else backward++;
-        }
-        while (forward + backward > lanes) {
-          if (forward >= backward && forward > 1) forward--;
-          else if (backward > 1) backward--;
-          else break;
-        }
-        this.segForwardLanes[seg] = forward;
-        this.segBackwardLanes[seg] = backward;
-      }
-      this.segClass[seg] = Math.max(0, Math.min(5, Math.round(segs[seg].k ?? (segs[seg].w >= 14 ? 4 : segs[seg].w >= 10 ? 3 : 1))));
-      let acc = 0;
-      for (let i = 0; i < n; i++) {
-        const x = p[i * 2] / 10;
-        const z = p[i * 2 + 1] / 10;
-        this.px[g] = x;
-        this.pz[g] = z;
-        this.ptSeg[g] = seg;
-        if (i > 0) {
-          acc += Math.hypot(x - this.px[g - 1], z - this.pz[g - 1]);
-        }
-        this.cum[g] = acc;
-        g++;
-      }
-      this.segTotal[seg] = acc;
-      // register both endpoints for hop lookups
-      const g0 = this.segStart[seg];
-      const g1 = g0 + n - 1;
-      this.endX[seg * 2] = this.px[g0];
-      this.endZ[seg * 2] = this.pz[g0];
-      this.endSeg[seg * 2] = seg;
-      this.endWhich[seg * 2] = 0;
-      this.endX[seg * 2 + 1] = this.px[g1];
-      this.endZ[seg * 2 + 1] = this.pz[g1];
-      this.endSeg[seg * 2 + 1] = seg;
-      this.endWhich[seg * 2 + 1] = 1;
-    }
-
-    // visited-stamp array indexed by edge start (global point index)
-    this.stamp = new Uint32Array(g);
-
-    this.#buildEdgeHash();
-    this.#buildEndHash();
-    this.signals = new TrafficSignalSystem(this.#buildSignalNodes());
+  constructor(json: RoadsJson);
+  constructor(snapshot: RoadGraphSnapshot, prepared: typeof PREPARED_SNAPSHOT);
+  constructor(input: RoadsJson | RoadGraphSnapshot, prepared?: typeof PREPARED_SNAPSHOT) {
+    const snapshot = prepared === PREPARED_SNAPSHOT
+      ? input as RoadGraphSnapshot
+      : buildRoadGraphSnapshot(input as RoadsJson);
+    this.segCount = snapshot.segCount;
+    this.px = snapshot.px;
+    this.pz = snapshot.pz;
+    this.ptSeg = snapshot.ptSeg;
+    this.cum = snapshot.cum;
+    this.segStart = snapshot.segStart;
+    this.segNum = snapshot.segNum;
+    this.segTotal = snapshot.segTotal;
+    this.segW = snapshot.segW;
+    this.segLanes = snapshot.segLanes;
+    this.segForwardLanes = snapshot.segForwardLanes;
+    this.segBackwardLanes = snapshot.segBackwardLanes;
+    this.segDir = snapshot.segDir;
+    this.segClass = snapshot.segClass;
+    this.cells = snapshot.edgeCells;
+    this.endCells = snapshot.endCells;
+    this.endX = snapshot.endX;
+    this.endZ = snapshot.endZ;
+    this.endSeg = snapshot.endSeg;
+    this.endWhich = snapshot.endWhich;
+    this.stamp = new Uint32Array(snapshot.px.length);
+    this.signals = TrafficSignalSystem.fromSnapshot(snapshot.signalSystem);
   }
 
-  static async load(url = "data/roads.json"): Promise<RoadGraph> {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`RoadGraph: failed to load ${url} (${res.status})`);
-    const json = (await res.json()) as RoadsJson;
-    return new RoadGraph(json);
+  static async load(url = "/data/roads.json"): Promise<RoadGraph> {
+    return new RoadGraph(await loadRoadGraphSnapshot(url), PREPARED_SNAPSHOT);
   }
 
   /** Visit each decoded road polyline without copying its point data. This is
@@ -264,154 +187,6 @@ export class RoadGraph {
     return { x: this.px[g], z: this.pz[g], tangentX: tx, tangentZ: tz };
   }
 
-  #buildEdgeHash() {
-    for (let seg = 0; seg < this.segCount; seg++) {
-      const g0 = this.segStart[seg];
-      const n = this.segNum[seg];
-      for (let i = 0; i < n - 1; i++) {
-        const g = g0 + i; // edge g → g+1
-        const ax = this.px[g];
-        const az = this.pz[g];
-        const bx = this.px[g + 1];
-        const bz = this.pz[g + 1];
-        const cxMin = Math.floor(Math.min(ax, bx) / CELL);
-        const cxMax = Math.floor(Math.max(ax, bx) / CELL);
-        const czMin = Math.floor(Math.min(az, bz) / CELL);
-        const czMax = Math.floor(Math.max(az, bz) / CELL);
-        for (let cx = cxMin; cx <= cxMax; cx++) {
-          for (let cz = czMin; cz <= czMax; cz++) {
-            const key = cellKey(cx, cz);
-            let list = this.cells.get(key);
-            if (!list) {
-              list = [];
-              this.cells.set(key, list);
-            }
-            list.push(g);
-          }
-        }
-      }
-    }
-  }
-
-  #buildEndHash() {
-    for (let e = 0; e < this.endSeg.length; e++) {
-      const cx = Math.floor(this.endX[e] / CELL);
-      const cz = Math.floor(this.endZ[e] / CELL);
-      const key = cellKey(cx, cz);
-      let list = this.endCells.get(key);
-      if (!list) {
-        list = [];
-        this.endCells.set(key, list);
-      }
-      list.push(e);
-    }
-  }
-
-  #buildSignalNodes(): SignalNodeSeed[] {
-    const groups = new Map<number, { sx: number; sz: number; n: number; approaches: SignalApproachSeed[] }>();
-    const add = (x: number, z: number, app: SignalApproachSeed) => {
-      const key = signalKey(x, z);
-      let g = groups.get(key);
-      if (!g) {
-        g = { sx: 0, sz: 0, n: 0, approaches: [] };
-        groups.set(key, g);
-      }
-      g.sx += x;
-      g.sz += z;
-      g.n++;
-      g.approaches.push(app);
-    };
-
-    for (let seg = 0; seg < this.segCount; seg++) {
-      // Freeways and highway ramps are still drivable road graph, but they are not
-      // good stoplight candidates.
-      if (this.segClass[seg] >= 5) continue;
-      const g0 = this.segStart[seg];
-      const n = this.segNum[seg];
-      const oneWay = this.segDir[seg];
-      for (let i = 0; i < n; i++) {
-        const g = g0 + i;
-        const x = this.px[g];
-        const z = this.pz[g];
-        const s = this.cum[g];
-        if (i > 0 && oneWay !== -1) {
-          const pg = g - 1;
-          let tx = this.px[g] - this.px[pg];
-          let tz = this.pz[g] - this.pz[pg];
-          const tl = Math.hypot(tx, tz) || 1;
-          tx /= tl;
-          tz /= tl;
-          add(x, z, {
-            segId: seg,
-            s,
-            dir: 1,
-            x,
-            z,
-            tangentX: tx,
-            tangentZ: tz,
-            roadClass: this.segClass[seg],
-            lanes: this.segLanes[seg],
-            halfWidth: this.segW[seg] * 0.5
-          });
-        }
-        if (i < n - 1 && oneWay !== 1) {
-          const ng = g + 1;
-          let tx = this.px[g] - this.px[ng];
-          let tz = this.pz[g] - this.pz[ng];
-          const tl = Math.hypot(tx, tz) || 1;
-          tx /= tl;
-          tz /= tl;
-          add(x, z, {
-            segId: seg,
-            s,
-            dir: -1,
-            x,
-            z,
-            tangentX: tx,
-            tangentZ: tz,
-            roadClass: this.segClass[seg],
-            lanes: this.segLanes[seg],
-            halfWidth: this.segW[seg] * 0.5
-          });
-        }
-      }
-    }
-
-    const candidates: SignalNodeSeed[] = [];
-    for (const g of groups.values()) {
-      if (g.approaches.length < 3) continue;
-      const angles: number[] = [];
-      let maxClass = 0;
-      let maxLanes = 1;
-      const seen = new Set<string>();
-      const approaches: SignalApproachSeed[] = [];
-      for (const app of g.approaches) {
-        const id = `${app.segId}:${app.dir}`;
-        if (seen.has(id)) continue;
-        seen.add(id);
-        approaches.push(app);
-        maxClass = Math.max(maxClass, app.roadClass);
-        maxLanes = Math.max(maxLanes, app.lanes);
-        const a = Math.atan2(app.tangentX, app.tangentZ);
-        let fresh = true;
-        for (const prev of angles) {
-          if (angleDiff(a, prev) < ARM_EPS) {
-            fresh = false;
-            break;
-          }
-        }
-        if (fresh) angles.push(a);
-      }
-      if (angles.length < 3) continue;
-      const x = g.sx / g.n;
-      const z = g.sz / g.n;
-      const score = signalCandidateScore(x, z, angles.length, maxClass, maxLanes);
-      if (score < 0) continue;
-      candidates.push({ x, z, score, approaches });
-    }
-    return chooseSignalNodes(candidates);
-  }
-
   /** Nearest road point within 40 m of (x, z), or null. */
   project(x: number, z: number): Projection | null {
     const gen = ++this.stampGen;
@@ -422,10 +197,11 @@ export class RoadGraph {
     let bestT = 0;
     for (let cx = ccx - 1; cx <= ccx + 1; cx++) {
       for (let cz = ccz - 1; cz <= ccz + 1; cz++) {
-        const list = this.cells.get(cellKey(cx, cz));
-        if (!list) continue;
-        for (let li = 0; li < list.length; li++) {
-          const g = list[li];
+        const slot = packedRoadCellSlot(this.cells, cx, cz);
+        if (slot < 0) continue;
+        const end = this.cells.starts[slot + 1];
+        for (let li = this.cells.starts[slot]; li < end; li++) {
+          const g = this.cells.members[li];
           if (this.stamp[g] === gen) continue;
           this.stamp[g] = gen;
           const ax = this.px[g];
@@ -497,10 +273,11 @@ export class RoadGraph {
     let bestT = 0;
     for (let cx = ccx - cellR; cx <= ccx + cellR; cx++) {
       for (let cz = ccz - cellR; cz <= ccz + cellR; cz++) {
-        const list = this.cells.get(cellKey(cx, cz));
-        if (!list) continue;
-        for (let li = 0; li < list.length; li++) {
-          const g = list[li];
+        const slot = packedRoadCellSlot(this.cells, cx, cz);
+        if (slot < 0) continue;
+        const end = this.cells.starts[slot + 1];
+        for (let li = this.cells.starts[slot]; li < end; li++) {
+          const g = this.cells.members[li];
           if (this.stamp[g] === gen) continue;
           this.stamp[g] = gen;
           const ax = this.px[g];
@@ -658,10 +435,11 @@ export class RoadGraph {
     let bestE = -1;
     for (let cx = ccx - 1; cx <= ccx + 1; cx++) {
       for (let cz = ccz - 1; cz <= ccz + 1; cz++) {
-        const list = this.endCells.get(cellKey(cx, cz));
-        if (!list) continue;
-        for (let li = 0; li < list.length; li++) {
-          const e = list[li];
+        const slot = packedRoadCellSlot(this.endCells, cx, cz);
+        if (slot < 0) continue;
+        const end = this.endCells.starts[slot + 1];
+        for (let li = this.endCells.starts[slot]; li < end; li++) {
+          const e = this.endCells.members[li];
           if (this.endSeg[e] === seg) continue;
           const dx = this.endX[e] - bx;
           const dz = this.endZ[e] - bz;
@@ -703,10 +481,11 @@ export class RoadGraph {
     const candidates: number[] = [];
     for (let cx = ccx - cellR; cx <= ccx + cellR; cx++) {
       for (let cz = ccz - cellR; cz <= ccz + cellR; cz++) {
-        const list = this.cells.get(cellKey(cx, cz));
-        if (!list) continue;
-        for (let li = 0; li < list.length; li++) {
-          const g = list[li];
+        const slot = packedRoadCellSlot(this.cells, cx, cz);
+        if (slot < 0) continue;
+        const end = this.cells.starts[slot + 1];
+        for (let li = this.cells.starts[slot]; li < end; li++) {
+          const g = this.cells.members[li];
           if (this.stamp[g] === gen) continue;
           this.stamp[g] = gen;
           const dx = this.px[g] - x;

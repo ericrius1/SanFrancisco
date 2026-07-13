@@ -102,6 +102,21 @@ export class PickleballAmbient {
     return this.#seat?.ref ?? null;
   }
 
+  /** Expose every court for a detached renderer warmup, independent of daylight. */
+  prepareWarmup(): () => void {
+    const visible = this.group.visible;
+    const active = this.#courts.map((court) => court.game.active);
+    this.group.visible = true;
+    for (const court of this.#courts) {
+      court.game.setActive(true);
+      court.game.root.updateMatrixWorld(true);
+    }
+    return () => {
+      this.group.visible = visible;
+      this.#courts.forEach((court, index) => court.game.setActive(active[index]));
+    };
+  }
+
   /** Nearest joinable athlete across the ambient courts (E-prompt source). */
   getInteraction(worldPosition: THREE.Vector3): PickleballAmbientInteraction | null {
     let nearest: PickleballAmbientInteraction | null = null;

@@ -228,6 +228,7 @@ export function createGrassMesh(
   mesh.geometry.setAttribute("aGrassColor", colorAttr);
   mesh.geometry.setAttribute("aGrassData", dataAttr);
   mesh.count = 0;
+  mesh.visible = false;
   return mesh;
 }
 
@@ -271,6 +272,10 @@ export function writeGrassMesh(mesh: THREE.InstancedMesh, entries: GrassEntry[],
   }
   mesh.userData.grassLastCount = entries.length;
   mesh.count = entries.length;
+  // Empty player-following pools must not enter the render list. WebGPU still
+  // builds a node-material pipeline for a zero-count InstancedMesh, turning a
+  // distant/empty grass layer into a large first-render hitch.
+  mesh.visible = entries.length > 0;
   mesh.instanceMatrix.needsUpdate = true;
   colorAttr.needsUpdate = true;
   dataAttr.needsUpdate = true;

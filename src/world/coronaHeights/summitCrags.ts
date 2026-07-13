@@ -14,7 +14,10 @@ import * as THREE from "three/webgpu";
 import { BodyType, type Physics } from "../../core/physics";
 import type { WorldMap } from "../heightmap";
 import { CORONA_TRAILS, type CoronaXZ } from "./layout";
+import { SUMMIT_PLATFORM, summitPlatformLift } from "./ground";
 import { enableLocalFarShadowLayers } from "../shadows/shadowLayers";
+
+export { SUMMIT_PLATFORM, summitPlatformLift } from "./ground";
 
 type Vec3 = { x: number; y: number; z: number };
 
@@ -36,9 +39,6 @@ export type CragSpec = {
   /** Skip physics/query registration (purely decorative fragments). */
   decorative?: boolean;
 };
-
-/** Summit viewing platform — bare eroded dirt, no grass/flowers/legacy rocks. */
-export const SUMMIT_PLATFORM = { x: 412, z: 2760, rx: 16, rz: 12 } as const;
 
 /** Hand-laid to match the real park: the main climbing crag sits just north of
  * the platform, a second mass NW along the same strike, low spurs east and
@@ -102,18 +102,6 @@ function distanceToTrails(x: number, z: number) {
     }
   }
   return best;
-}
-
-/** Extra height the platform skin holds above WorldMap.groundTop at (x,z).
- * 0 outside the platform. Single source of truth so the trail ribbons, step
- * ties and scree can ride ON the dirt instead of drowning under it — the skin
- * must sit well proud of the baked park lawn, whose CDT drape can exceed the
- * bilinear ground query by 20+ cm on the summit folds. */
-export function summitPlatformLift(x: number, z: number) {
-  const p = SUMMIT_PLATFORM;
-  const q = ((x - p.x) / p.rx) ** 2 + ((z - p.z) / p.rz) ** 2;
-  if (q >= 1) return 0;
-  return 0.18 + 0.14 * (1 - smoothEdge(q));
 }
 
 /** True where the summit treatment owns the ground: existing scatter systems

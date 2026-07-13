@@ -40,12 +40,47 @@ export interface ChunkLODOptions {
   groundHeight?: GroundSampler;
 }
 
+/** Exact beauty owner used to compile the merged chunk-LOD node graph while
+ * detached. Live cells clone the same material graph, so the prepared pipeline
+ * is reused without retaining a full city cell. The shadow proxy intentionally
+ * stays out: it uses the app's already-booted generic depth-only shadow path. */
+export function createChunkLODBeautyWarmup(): { object: THREE.Mesh; dispose(): void } {
+  const arrays = emptyArrays();
+  appendPrism({
+    i: -1,
+    id: -1,
+    poly: [[0, 0], [1, 0], [1, 1], [0, 1]],
+    base: 0,
+    top: 3,
+    archetype: "victorian",
+    seed: 1,
+  }, arrays);
+  const geometry = geometryFrom(arrays);
+  const material = lodMaterial().clone();
+  const object = new THREE.Mesh(geometry, material);
+  object.name = "cityGenChunkLOD.warmup";
+  object.castShadow = false;
+  object.receiveShadow = false;
+  object.frustumCulled = false;
+  object.matrixAutoUpdate = false;
+  return {
+    object,
+    dispose() {
+      object.removeFromParent();
+      geometry.dispose();
+      material.dispose();
+    },
+  };
+}
+
 export function buildChunkLOD(specs: BuildingSpec[], opts?: ChunkLODOptions): ChunkLOD {
   const arr: PrismArrays = emptyArrays();
   const ground = opts?.groundHeight;
   const vertexRanges = new Map<number, { start: number; count: number }>();
   const hidden = new Set<number>();
   let cursor = 0;
+  let beautyMaterial: THREE.Material | null = null;
+  let cellShadowMaterial: THREE.Material | null = null;
   const chunk: ChunkLOD = {
     mesh: null,
     shadowMesh: null,
@@ -63,7 +98,12 @@ export function buildChunkLOD(specs: BuildingSpec[], opts?: ChunkLODOptions): Ch
       }
       if (cursor >= specs.length) {
         const g = geometryFrom(arr);
-        const mesh = new THREE.Mesh(g, lodMaterial());
+        // Renderer-common installs a dispose listener on a mesh's source
+        // material. Reusing the process-wide template across retired cell
+        // geometries would therefore retain every old RenderObject forever.
+        beautyMaterial = lodMaterial().clone();
+        cellShadowMaterial = shadowProxyMaterial.clone();
+        const mesh = new THREE.Mesh(g, beautyMaterial);
         mesh.name = "cityGenChunkLOD";
         mesh.castShadow = false;
         // Chunk prisms fill the skyline past the CSM far cascade (350 m) — receive
@@ -72,7 +112,7 @@ export function buildChunkLOD(specs: BuildingSpec[], opts?: ChunkLODOptions): Ch
         mesh.frustumCulled = true;
         mesh.matrixAutoUpdate = false; // geometry is world-space
         chunk.mesh = mesh;
-        const shadowMesh = new THREE.Mesh(g, shadowProxyMaterial);
+        const shadowMesh = new THREE.Mesh(g, cellShadowMaterial);
         shadowMesh.name = "cityGenChunkShadowProxy";
         shadowMesh.castShadow = true;
         shadowMesh.receiveShadow = false;
@@ -105,6 +145,10 @@ export function buildChunkLOD(specs: BuildingSpec[], opts?: ChunkLODOptions): Ch
       chunk.shadowMesh?.removeFromParent();
       chunk.shadowMesh = null;
       if (chunk.mesh) { chunk.mesh.geometry.dispose(); chunk.mesh = null; }
+      beautyMaterial?.dispose();
+      cellShadowMaterial?.dispose();
+      beautyMaterial = null;
+      cellShadowMaterial = null;
     },
   };
   return chunk;

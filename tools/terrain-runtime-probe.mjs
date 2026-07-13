@@ -219,7 +219,9 @@ async function main() {
 
       for (let i = 0; i < drive.steps; i++) {
         player.update(dt, input, sf.chase.yaw, aim);
-        physics.step(dt, player.position);
+        // This synthetic loop treats each iteration as one rendered frame.
+        physics.maintainStreaming(player.position);
+        physics.step(dt);
         player.afterSteps(1, 0);
         if (i % 30 === 0) {
           const body = physics.world.getBodyTransform(player.body);

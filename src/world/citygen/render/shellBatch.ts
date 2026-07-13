@@ -20,9 +20,11 @@
 // fade dithers in the OPAQUE pass via alphaHash (a==1 → no discard), staying in
 // visual step with the instanced window layer, which fades the same way.
 //
-// Freed instances are deleted (three reuses the geometry/instance slots); the
-// layer never compacts on the hot path. A batch that fills falls back to null so
-// the caller keeps the old per-building bundle for that one building.
+// BatchedMesh reuses deleted INSTANCE ids, but deleteGeometry does not reclaim
+// its append-only vertex/index arena until optimize() performs a whole-buffer
+// compaction. We therefore retain fixed geometry ranges as reusable slots and
+// replace their contents with setGeometryAt(). Streaming through new districts
+// remains bounded without ever compacting a live city in one visible frame.
 import * as THREE from "three/webgpu";
 import {
   float, int, ivec2, textureLoad, textureSize, instanceIndex, Fn,
@@ -57,7 +59,24 @@ export interface ShellBatchLayer {
     meshes: MeshData[],
     opts: { matrix: THREE.Matrix4; wallKind: WallKind; tint: THREE.Color; mats: Record<string, THREE.Material> },
   ): ShellHandle | null;
-  stats(): { batches: number; instances: number; capacity: number };
+  /** Compile the exact BatchedMesh owners that exterior streaming can publish.
+   *  Each owner is prepared separately and remains detached until it has a real
+   *  building, so this neither draws nor retains empty per-frame scene work. */
+  prepareExterior(
+    mats: Record<string, THREE.Material>,
+    prepare: (label: string, owner: THREE.Object3D) => Promise<boolean>,
+  ): Promise<void>;
+  stats(): {
+    batches: number;
+    attachedBatches: number;
+    preparedBatches: number;
+    instances: number;
+    capacity: number;
+    geometrySlots: number;
+    reusableSlots: number;
+    geometryVertexCapacity: number;
+    geometryIndexCapacity: number;
+  };
   dispose(): void;
 }
 
@@ -138,12 +157,25 @@ interface Batch {
   data: THREE.DataTexture;
   arr: Float32Array;
   cap: number;      // instances
+  vertexCapacity: number;
+  indexCapacity: number;
+  maxVertexCapacity: number;
+  maxIndexCapacity: number;
+  prepared: boolean;
   used: number;
+  slots: GeometrySlot[];
+  freeSlots: GeometrySlot[];
+}
+
+interface GeometrySlot {
+  geo: number;
+  reservedVertices: number;
+  reservedIndices: number;
 }
 
 // per-building record: which (batch, geometryId, instanceId) triples it owns,
 // split so door leaves can be toggled without touching the rest.
-interface Placement { batch: Batch; geo: number; inst: number; door: boolean; }
+interface Placement { batch: Batch; slot: GeometrySlot; inst: number; door: boolean; }
 
 function makeGeometry(md: MeshData): THREE.BufferGeometry {
   const g = new THREE.BufferGeometry();
@@ -160,8 +192,25 @@ export function createShellBatchLayer(
 ): ShellBatchLayer {
   const CAP = opts.capacity ?? 1400;               // instances per batch
   const VPB = opts.vertsPerBuilding ?? 900;        // vertex budget per instance
+  // BatchedMesh allocates its complete attribute/index arena on the FIRST
+  // addGeometry(). Starting at CAP*VPB made each newly encountered material
+  // allocate tens of MiB in one visible frame. Keep the same live BatchedMesh
+  // (and therefore the same warmed material/pipeline) while its arena grows in
+  // powers of two as geometry actually arrives.
+  const MAX_VERTICES = CAP * VPB;
+  const MAX_INDICES = MAX_VERTICES * 2;
+  // ~0.2 MiB with position/normal/uv/index: small across every prepared owner,
+  // but large enough that ordinary rowhouses do not resize on their first few
+  // placements.
+  const INITIAL_VERTICES = Math.min(MAX_VERTICES, 4096);
+  const INITIAL_INDICES = Math.min(MAX_INDICES, 8192);
   const batches = new Map<string, Batch>();        // key: `wall:kind` | materialId
   const _c = new THREE.Color();
+  const interactionOnlyMaterialIds = new Set([
+    "citygen.door.panel",
+    "citygen.door.hardware",
+    "citygen.room",
+  ]);
 
   const makeBatch = (key: string, wallKind: WallKind | null, base: THREE.Material | null): Batch => {
     const dataH = Math.ceil(CAP / DATA_W);
@@ -169,7 +218,7 @@ export function createShellBatchLayer(
     const data = new THREE.DataTexture(arr, DATA_W, dataH, THREE.RGBAFormat, THREE.FloatType);
     data.minFilter = THREE.NearestFilter; data.magFilter = THREE.NearestFilter; data.generateMipmaps = false;
     data.needsUpdate = true;
-    const mesh = new THREE.BatchedMesh(CAP, CAP * VPB, CAP * VPB * 2);
+    const mesh = new THREE.BatchedMesh(CAP, INITIAL_VERTICES, INITIAL_INDICES);
     mesh.name = `cityGenShellBatch.${key}`;
     mesh.frustumCulled = false;   // BatchedMesh does its OWN per-instance frustum cull
     // Stable chunk proxies own shadow massing; detail LOD never enters a map.
@@ -179,8 +228,14 @@ export function createShellBatchLayer(
     // world-space but three offsets by the instance matrix — opt out of raycast).
     mesh.raycast = () => {};
     mesh.material = wallKind ? makeWallBatchMaterial(wallKind, mesh, data) : makeStdBatchMaterial(base!, mesh, data);
-    scene.add(mesh);
-    const b: Batch = { mesh, data, arr, cap: CAP, used: 0 };
+    // Stay detached until the first real placement. Detached warmup compiles
+    // this exact owner directly; an empty warmed batch costs no scene traversal.
+    const b: Batch = {
+      mesh, data, arr, cap: CAP,
+      vertexCapacity: INITIAL_VERTICES, indexCapacity: INITIAL_INDICES,
+      maxVertexCapacity: MAX_VERTICES, maxIndexCapacity: MAX_INDICES,
+      prepared: false, used: 0, slots: [], freeSlots: [],
+    };
     batches.set(key, b);
     return b;
   };
@@ -198,14 +253,139 @@ export function createShellBatchLayer(
     b.data.needsUpdate = true;
   };
 
+  const reserveTo = (count: number, quantum: number) => Math.ceil(count / quantum) * quantum;
+  const ensureGeometryRoom = (b: Batch, vertices: number, indices: number) => {
+    const usedVertices = b.vertexCapacity - b.mesh.unusedVertexCount;
+    const usedIndices = b.indexCapacity - b.mesh.unusedIndexCount;
+    const requiredVertices = usedVertices + vertices;
+    const requiredIndices = usedIndices + indices;
+    let nextVertices = b.vertexCapacity;
+    let nextIndices = b.indexCapacity;
+    while (nextVertices < requiredVertices && nextVertices < b.maxVertexCapacity) {
+      nextVertices = Math.min(b.maxVertexCapacity, Math.max(requiredVertices, nextVertices * 2));
+    }
+    while (nextIndices < requiredIndices && nextIndices < b.maxIndexCapacity) {
+      nextIndices = Math.min(b.maxIndexCapacity, Math.max(requiredIndices, nextIndices * 2));
+    }
+    if (nextVertices < requiredVertices || nextIndices < requiredIndices) {
+      throw new RangeError(`CityGen shell batch geometry capacity exhausted (${requiredVertices}v/${requiredIndices}i)`);
+    }
+    if (nextVertices !== b.vertexCapacity || nextIndices !== b.indexCapacity) {
+      b.mesh.setGeometrySize(nextVertices, nextIndices);
+      b.vertexCapacity = nextVertices;
+      b.indexCapacity = nextIndices;
+    }
+  };
+  const takeGeometrySlot = (b: Batch, geometry: THREE.BufferGeometry): GeometrySlot => {
+    const vertices = geometry.getAttribute("position").count;
+    const indices = geometry.getIndex()?.count ?? 0;
+    // Best-fit avoids consuming a rare large range for a tiny trim/door mesh.
+    let best = -1;
+    let bestWaste = Infinity;
+    for (let index = 0; index < b.freeSlots.length; index++) {
+      const slot = b.freeSlots[index];
+      if (slot.reservedVertices < vertices || slot.reservedIndices < indices) continue;
+      const waste = slot.reservedVertices - vertices + slot.reservedIndices - indices;
+      if (waste < bestWaste) {
+        best = index;
+        bestWaste = waste;
+      }
+    }
+    if (best >= 0) {
+      const [slot] = b.freeSlots.splice(best, 1);
+      try {
+        b.mesh.setGeometryAt(slot.geo, geometry);
+        return slot;
+      } catch (error) {
+        b.freeSlots.push(slot);
+        throw error;
+      }
+    }
+
+    // Size classes trade a small fixed amount of slack for reliable reuse when
+    // the next district has a slightly different footprint or facade grammar.
+    const reservedVertices = reserveTo(vertices, 64);
+    const reservedIndices = reserveTo(indices, 128);
+    ensureGeometryRoom(b, reservedVertices, reservedIndices);
+    const slot = {
+      geo: b.mesh.addGeometry(geometry, reservedVertices, reservedIndices),
+      reservedVertices,
+      reservedIndices,
+    };
+    b.slots.push(slot);
+    return slot;
+  };
+
+  const releasePlacement = (placement: Placement) => {
+    try {
+      placement.batch.mesh.deleteInstance(placement.inst);
+    } catch {
+      return;
+    }
+    placement.batch.used = Math.max(0, placement.batch.used - 1);
+    placement.batch.freeSlots.push(placement.slot);
+    if (placement.batch.used === 0) placement.batch.mesh.removeFromParent();
+  };
+
+  const warmupMesh: MeshData = {
+    materialId: "citygen.warmup",
+    positions: new Float32Array([0, 0, 0, 0.02, 0, 0, 0, 0.02, 0]),
+    normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+    uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
+    indices: new Uint32Array([0, 1, 2]),
+  };
+  const primeBatch = (b: Batch): Placement => {
+    const geometry = makeGeometry(warmupMesh);
+    let slot: GeometrySlot;
+    try {
+      slot = takeGeometrySlot(b, geometry);
+    } finally {
+      geometry.dispose();
+    }
+    const inst = b.mesh.addInstance(slot.geo);
+    b.used++;
+    b.mesh.setMatrixAt(inst, new THREE.Matrix4());
+    // Fully discarded if an integration accidentally attaches it mid-prepare.
+    writeTexel(b, inst, 1, 1, 1, 0);
+    return { batch: b, slot, inst, door: false };
+  };
+
   return {
+    async prepareExterior(mats, prepare) {
+      const variants: Array<{ key: string; wallKind: WallKind | null; base: THREE.Material | null }> = [
+        ...(["clapboard", "brick", "stucco", "smooth"] as const).map((kind) => ({
+          key: `wall:${kind}`, wallKind: kind, base: null,
+        })),
+        // Every non-interior theme id is a possible exterior grammar bucket.
+        // Preparing exact owners (instead of assuming structurally-similar
+        // standard graphs dedupe) also makes future theme additions generic.
+        ...Object.keys(mats)
+          .filter((id) =>
+            !id.startsWith("wall.") &&
+            !id.startsWith("int.") &&
+            !interactionOnlyMaterialIds.has(id)
+          )
+          .sort()
+          .map((id) => ({ key: id, wallKind: null, base: mats[id] })),
+      ];
+      for (const variant of variants) {
+        const batch = batchFor(variant.key, variant.wallKind, variant.base);
+        if (batch.prepared) continue;
+        const dummy = primeBatch(batch);
+        try {
+          batch.prepared = await prepare(`shell:${variant.key}`, batch.mesh);
+        } finally {
+          releasePlacement(dummy);
+        }
+      }
+    },
     addBuilding(meshes, o) {
       // Try to place every mesh; if any batch is full, roll back and signal the
       // caller to keep the whole building on the bundle fallback (all-or-nothing
       // so a building is never split across both paths).
       const placed: Placement[] = [];
       const rollback = () => {
-        for (const p of placed) { try { p.batch.mesh.deleteInstance(p.inst); p.batch.mesh.deleteGeometry(p.geo); } catch { /* noop */ } }
+        for (const p of placed) releasePlacement(p);
       };
       for (const md of meshes) {
         const isWall = md.materialId.startsWith("wall.");
@@ -214,20 +394,35 @@ export function createShellBatchLayer(
         if (!isWall && !base) continue; // unknown id → skip (shouldn't happen; grammar ids are in mats)
         const b = batchFor(key, isWall ? o.wallKind : null, base);
         if (b.used >= b.cap) { rollback(); return null; }
-        let geo: number, inst: number;
+        let slot: GeometrySlot | null = null;
+        let inst: number;
         try {
           const g = makeGeometry(md);
-          geo = b.mesh.addGeometry(g);
-          inst = b.mesh.addInstance(geo);
-        } catch { rollback(); return null; }        // vertex/index budget exhausted
+          try {
+            slot = takeGeometrySlot(b, g);
+          } finally {
+            // BatchedMesh copies every attribute/index into its owned arena.
+            g.dispose();
+          }
+          inst = b.mesh.addInstance(slot.geo);
+        } catch {
+          if (slot) b.freeSlots.push(slot);
+          rollback();
+          return null;
+        }        // vertex/index budget exhausted
         b.used++;
         b.mesh.setMatrixAt(inst, o.matrix);
         const door = md.materialId === "citygen.doorleaf" || md.materialId === "citygen.doorback";
         if (isWall) { _c.copy(o.tint); writeTexel(b, inst, _c.r, _c.g, _c.b, 0.02); }
         else writeTexel(b, inst, 1, 1, 1, 0.02);    // born fading
-        placed.push({ batch: b, geo, inst, door });
+        placed.push({ batch: b, slot, inst, door });
       }
       if (!placed.length) return null;
+      // Publish only after every material placement succeeded, preserving the
+      // building's all-or-nothing attach contract.
+      for (const b of new Set(placed.map((p) => p.batch))) {
+        if (!b.mesh.parent) scene.add(b.mesh);
+      }
       let fade = 0.02;
       let freed = false;
       return {
@@ -244,19 +439,37 @@ export function createShellBatchLayer(
         free() {
           if (freed) return;
           freed = true;
-          for (const p of placed) {
-            try { p.batch.mesh.deleteInstance(p.inst); p.batch.mesh.deleteGeometry(p.geo); p.batch.used--; } catch { /* noop */ }
-          }
+          for (const p of placed) releasePlacement(p);
         },
       };
     },
     stats() {
-      let instances = 0, capacity = 0;
-      for (const b of batches.values()) { instances += b.used; capacity += b.cap; }
-      return { batches: batches.size, instances, capacity };
+      let attachedBatches = 0, preparedBatches = 0;
+      let instances = 0, capacity = 0, geometrySlots = 0, reusableSlots = 0;
+      let geometryVertexCapacity = 0, geometryIndexCapacity = 0;
+      for (const b of batches.values()) {
+        if (b.mesh.parent) attachedBatches++;
+        if (b.prepared) preparedBatches++;
+        instances += b.used;
+        capacity += b.cap;
+        geometrySlots += b.slots.length;
+        reusableSlots += b.freeSlots.length;
+        geometryVertexCapacity += b.vertexCapacity;
+        geometryIndexCapacity += b.indexCapacity;
+      }
+      return {
+        batches: batches.size, attachedBatches, preparedBatches,
+        instances, capacity, geometrySlots, reusableSlots,
+        geometryVertexCapacity, geometryIndexCapacity,
+      };
     },
     dispose() {
-      for (const b of batches.values()) { scene.remove(b.mesh); b.mesh.dispose(); b.data.dispose(); }
+      for (const b of batches.values()) {
+        b.mesh.removeFromParent();
+        b.mesh.dispose();
+        b.mesh.material.dispose();
+        b.data.dispose();
+      }
       batches.clear();
     },
   };

@@ -8,10 +8,13 @@ type InitMessage = {
   type: "init"
   width: number
   height: number
+  sourceWidth: number
+  sourceHeight: number
+  cellsPerTexel: number
   minX: number
   minZ: number
   texelSize: number
-  terrain: Float32Array
+  groundTops: Float32Array
   minimumSunSlope: number
   contactRadiusMeters: number
   contactHeightMeters: number
@@ -31,14 +34,39 @@ type BuildMessage = {
 
 type WorkerMessage = InitMessage | SetMessage | DeleteMessage | BuildMessage
 
-let config: Omit<InitMessage, "type" | "terrain"> | null = null
+let config: Omit<InitMessage, "type" | "groundTops" | "sourceWidth" | "sourceHeight" | "cellsPerTexel"> | null = null
 let terrain: Float32Array | null = null
 const occluderSets = new Map<string, PackedFarOccluders>()
 
 self.onmessage = (event: MessageEvent<WorkerMessage>) => {
   const message = event.data
   if (message.type === "init") {
-    const { terrain: nextTerrain, type: _type, ...nextConfig } = message
+    const {
+      groundTops,
+      sourceWidth,
+      sourceHeight,
+      cellsPerTexel,
+      type: _type,
+      ...nextConfig
+    } = message
+    const nextTerrain = new Float32Array(message.width * message.height)
+    for (let z = 0; z < message.height; z++) {
+      const sourceZ0 = z * cellsPerTexel
+      const sourceZ1 = Math.min(sourceHeight, sourceZ0 + cellsPerTexel)
+      for (let x = 0; x < message.width; x++) {
+        const sourceX0 = x * cellsPerTexel
+        const sourceX1 = Math.min(sourceWidth, sourceX0 + cellsPerTexel)
+        let maximum = -Infinity
+        for (let sourceZ = sourceZ0; sourceZ < sourceZ1; sourceZ++) {
+          const row = sourceZ * sourceWidth
+          for (let sourceX = sourceX0; sourceX < sourceX1; sourceX++) {
+            const value = groundTops[row + sourceX]
+            if (Number.isFinite(value) && value > maximum) maximum = value
+          }
+        }
+        nextTerrain[z * message.width + x] = Number.isFinite(maximum) ? maximum : 0
+      }
+    }
     terrain = nextTerrain
     config = nextConfig
     return

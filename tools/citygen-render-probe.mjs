@@ -96,7 +96,7 @@ async function main() {
     await c.send("Page.enable"); await c.send("Runtime.enable");
     await c.send("Network.enable"); await c.send("Network.setCacheDisabled", { cacheDisabled: true });
     await c.send("Emulation.setDeviceMetricsOverride", { width: W, height: H, deviceScaleFactor: 1, mobile: false });
-    await c.send("Page.navigate", { url: `${SERVER_URL}/?autostart=1&fullfps=1` });
+    await c.send("Page.navigate", { url: `${SERVER_URL}/?autostart=1&fullfps=1&citygendemo=1` });
     await waitEval(c, "Boolean(window.__sf && window.__sf.player && window.__sf.citygen)", 120000);
     console.log("[probe] app booted");
 

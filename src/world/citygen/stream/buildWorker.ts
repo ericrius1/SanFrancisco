@@ -18,11 +18,24 @@ interface BuildRequest {
 
 self.onmessage = (e: MessageEvent<BuildRequest>) => {
   const { id, spec } = e.data;
-  const { meshes, instances, matTable } = generate(spec);
-  const transfer: ArrayBuffer[] = [];
-  for (const m of meshes) {
-    transfer.push(m.positions.buffer as ArrayBuffer, m.normals.buffer as ArrayBuffer, m.uvs.buffer as ArrayBuffer, m.indices.buffer as ArrayBuffer);
+  try {
+    const { meshes, instances, matTable } = generate(spec);
+    const transfer: ArrayBuffer[] = [];
+    for (const m of meshes) {
+      transfer.push(m.positions.buffer as ArrayBuffer, m.normals.buffer as ArrayBuffer, m.uvs.buffer as ArrayBuffer, m.indices.buffer as ArrayBuffer);
+    }
+    // window instances are a few dozen tiny records — plain structured clone
+    (self as unknown as { postMessage(msg: unknown, transfer: ArrayBuffer[]): void }).postMessage(
+      { id, ok: true, meshes, instances, matTable },
+      transfer
+    );
+  } catch (error) {
+    // A malformed building is a per-request failure, not a reason to kill the
+    // shared worker and reintroduce synchronous 30–100 ms grammar work.
+    (self as unknown as Worker).postMessage({
+      id,
+      ok: false,
+      error: error instanceof Error ? error.message : String(error)
+    });
   }
-  // window instances are a few dozen tiny records — plain structured clone
-  (self as unknown as { postMessage(msg: unknown, transfer: ArrayBuffer[]): void }).postMessage({ id, meshes, instances, matTable }, transfer);
 };

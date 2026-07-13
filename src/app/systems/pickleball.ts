@@ -82,8 +82,6 @@ export class PickleballController {
   constructor(opts: {
     goldman: GoldmanSite | null;
     scene: THREE.Scene;
-    renderer: THREE.WebGPURenderer;
-    camera: THREE.PerspectiveCamera;
     nature: Nature;
     daylight: () => boolean;
     fx: FX;
@@ -139,7 +137,6 @@ export class PickleballController {
           });
           this.ambient.onSeatEvent = (event) => this.ui?.applyEvent(event, this.#ambientSide);
           opts.scene.add(this.ambient.group);
-          void opts.renderer.compileAsync(this.ambient.group, opts.camera, opts.scene);
         }
 
         const game = this.game;
@@ -175,6 +172,32 @@ export class PickleballController {
 
   get localPose(): PickleballLocalPose | null {
     return this.#localPose;
+  }
+
+  /** Prepare every normally sleeping court during the caller-owned quiet window. */
+  async prepareRender(
+    renderer: THREE.WebGPURenderer,
+    camera: THREE.PerspectiveCamera,
+    scene: THREE.Scene
+  ): Promise<void> {
+    const game = this.game;
+    if (!game) return;
+    const gameParent = game.root.parent;
+    const ambientParent = this.ambient?.group.parent ?? null;
+    game.root.removeFromParent();
+    this.ambient?.group.removeFromParent();
+    const gameWasActive = game.active;
+    const restoreAmbient = this.ambient?.prepareWarmup();
+    game.setActive(true);
+    try {
+      await renderer.compileAsync(game.root, camera, scene);
+      if (this.ambient) await renderer.compileAsync(this.ambient.group, camera, scene);
+    } finally {
+      game.setActive(gameWasActive);
+      restoreAmbient?.();
+      gameParent?.add(game.root);
+      if (this.ambient) ambientParent?.add(this.ambient.group);
+    }
   }
 
   syncSlots(

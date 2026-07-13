@@ -4,7 +4,7 @@ import { waterHeight } from "../../world/heightmap";
 import type { Input } from "../../core/input";
 import type { ModeController, ModeFrame, PlayerCtx } from "../../player/types";
 import { poseBone, type BirdRig } from "./mesh";
-import { featherWind } from "./feathers";
+import { featherWind } from "./wind";
 import { BIRD_TUNING } from "./tuning";
 import { TYPICAL_TREE_HEIGHT } from "../shared";
 

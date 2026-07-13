@@ -682,6 +682,7 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
     mesh.geometry.setAttribute("aBloom", bloom);
     mesh.geometry.setAttribute("aFlowerAnchor", anchor);
     mesh.count = 0;
+    mesh.visible = false;
     group.add(mesh);
     return mesh;
   });
@@ -767,6 +768,11 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
     count = 0;
     meshes.forEach((mesh, species) => {
       writeFlowerInstances(mesh, rows[species]);
+      // A zero-count InstancedMesh can still trigger WebGPU pipeline
+      // construction. This visibility gate belongs to the streaming ring:
+      // authored flower patches use the same writer and remain independently
+      // controllable by their owner.
+      mesh.visible = rows[species].length > 0;
       count += rows[species].length;
     });
   }
@@ -788,7 +794,10 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
       if (!nearAnyWildRegion(focus.x, focus.z, MAX_SAMPLE_REACH + 2)) {
         if (count > 0) {
           for (const list of rows) list.length = 0;
-          meshes.forEach((mesh, species) => writeFlowerInstances(mesh, rows[species]));
+          meshes.forEach((mesh, species) => {
+            writeFlowerInstances(mesh, rows[species]);
+            mesh.visible = false;
+          });
           count = 0;
         }
         return;

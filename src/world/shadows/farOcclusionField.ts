@@ -1,10 +1,6 @@
 import * as THREE from "three/webgpu"
 import { mix, positionWorld, renderGroup, smoothstep, texture, uniform } from "three/tsl"
-import {
-  FAR_NO_OCCLUSION_HEIGHT,
-  FAR_OCCLUDER_STRIDE,
-  floatToHalf
-} from "./farOcclusionCore"
+import { FAR_OCCLUDER_STRIDE } from "./farOcclusionCore"
 
 type N = any
 
@@ -118,7 +114,7 @@ type FieldAtlas = {
   minX: number
   minZ: number
   texelSize: number
-  terrain: Float32Array
+  cellsPerTexel: number
 }
 
 function finitePositive(value: number, name: string): number {
@@ -126,7 +122,7 @@ function finitePositive(value: number, name: string): number {
   return value
 }
 
-function buildTerrainAtlas(source: FarHeightFieldSource, options: FarOcclusionConfig): FieldAtlas {
+function describeTerrainAtlas(source: FarHeightFieldSource, options: FarOcclusionConfig): FieldAtlas {
   const grid = source.meta.grid
   if (!Number.isInteger(grid.width) || grid.width <= 1 || !Number.isInteger(grid.height) || grid.height <= 1) {
     throw new Error("FarOcclusionField requires a valid height grid")
@@ -148,27 +144,7 @@ function buildTerrainAtlas(source: FarHeightFieldSource, options: FarOcclusionCo
   const texelSize = cellsPerTexel * grid.cellSize
   const width = Math.ceil(grid.width / cellsPerTexel)
   const height = Math.ceil(grid.height / cellsPerTexel)
-  const terrain = new Float32Array(width * height)
-
-  for (let z = 0; z < height; z++) {
-    const sourceZ0 = z * cellsPerTexel
-    const sourceZ1 = Math.min(grid.height, sourceZ0 + cellsPerTexel)
-    for (let x = 0; x < width; x++) {
-      const sourceX0 = x * cellsPerTexel
-      const sourceX1 = Math.min(grid.width, sourceX0 + cellsPerTexel)
-      let maximum = -Infinity
-      for (let sourceZ = sourceZ0; sourceZ < sourceZ1; sourceZ++) {
-        const row = sourceZ * grid.width
-        for (let sourceX = sourceX0; sourceX < sourceX1; sourceX++) {
-          const value = source.groundTops[row + sourceX]
-          if (Number.isFinite(value) && value > maximum) maximum = value
-        }
-      }
-      terrain[z * width + x] = Number.isFinite(maximum) ? maximum : 0
-    }
-  }
-
-  return { width, height, minX: grid.minX, minZ: grid.minZ, texelSize, terrain }
+  return { width, height, minX: grid.minX, minZ: grid.minZ, texelSize, cellsPerTexel }
 }
 
 function validBox(box: FarBoxOccluder): boolean {
@@ -233,7 +209,9 @@ export class FarOcclusionField {
       throw new Error("fadeEndDistance must be greater than fadeStartDistance")
     }
 
-    const atlas = buildTerrainAtlas(source, this.options)
+    // Only dimension math runs here. The millions of source-height comparisons
+    // that build the terrain atlas now run in farOcclusionWorker.
+    const atlas = describeTerrainAtlas(source, this.options)
     const extentX = atlas.width * atlas.texelSize
     const extentZ = atlas.height * atlas.texelSize
     this.bounds = Object.freeze({
@@ -246,13 +224,12 @@ export class FarOcclusionField {
       new THREE.Vector4(atlas.minX, atlas.minZ, extentX, extentZ)
     ).setGroup(renderGroup)
 
+    // WebGPU textures cannot be resized in place. Starting at 1x1 and changing
+    // `texture.image.width/height` when the worker replied left Three's cached
+    // GPU allocation at 1x1, then attempted a full-atlas queue.writeTexture.
+    // Allocate the final shape once; availability remains zero until real data
+    // arrives, so the zero-filled bootstrap pixels are never visible.
     const initialData = new Uint16Array(atlas.width * atlas.height * 2)
-    const clearHeight = floatToHalf(FAR_NO_OCCLUSION_HEIGHT)
-    const openContact = clearHeight
-    for (let i = 0; i < atlas.width * atlas.height; i++) {
-      initialData[i * 2] = clearHeight
-      initialData[i * 2 + 1] = openContact
-    }
     this.texture = new THREE.DataTexture(
       initialData,
       atlas.width,
@@ -339,19 +316,23 @@ export class FarOcclusionField {
       this.#worker?.terminate()
       this.#worker = null
     }
+    const groundTops = source.groundTops.slice()
     this.#worker.postMessage({
       type: "init",
       width: atlas.width,
       height: atlas.height,
+      sourceWidth: source.meta.grid.width,
+      sourceHeight: source.meta.grid.height,
+      cellsPerTexel: atlas.cellsPerTexel,
       minX: atlas.minX,
       minZ: atlas.minZ,
       texelSize: atlas.texelSize,
-      terrain: atlas.terrain,
+      groundTops,
       minimumSunSlope: Math.tan(THREE.MathUtils.degToRad(this.options.minimumSunElevationDegrees)),
       contactRadiusMeters: this.options.contactRadiusMeters,
       contactHeightMeters: this.options.contactHeightMeters,
       contactClearanceMeters: this.options.contactClearanceMeters
-    }, [atlas.terrain.buffer])
+    }, [groundTops.buffer])
   }
 
   get stats(): Readonly<FarOcclusionStats> {
@@ -578,6 +559,8 @@ export class FarOcclusionField {
   #applyBuilt(message: WorkerBuiltMessage): void {
     const image = this.texture.image as { data: Uint16Array; width: number; height: number }
     image.data = message.data
+    image.width = this.#stats.width
+    image.height = this.#stats.height
     this.texture.needsUpdate = true
     this.#builtSun.set(message.sunX, message.sunY, message.sunZ).normalize()
     this.#hasBuilt = true

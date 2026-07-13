@@ -14,16 +14,16 @@
 // Nothing is destructible — buildings don't break; a crash just stops you.
 import * as THREE from "three/webgpu";
 import { buildingColliders, doorMetrics, doorEligible, roofColliderMesh, STOOP_MAX_RISE, stoopColliders } from "../core/collider";
-import { ensureCCW, streetEdgeIndex, edgeOutwardNormal, pointInPoly, signedDistToPoly } from "../core/footprint";
-import { buildBuilding, buildInterior, assembleBuilding, warmupMaterials } from "../render";
-import { buildChunkLOD, type ChunkLOD } from "../render/chunkLod";
+import { ensureCCW, streetEdgeIndex, edgeOutwardNormal, signedDistToPoly } from "../core/footprint";
+import { buildInterior, assembleBuilding } from "../render";
+import { buildChunkLOD, createChunkLODBeautyWarmup, type ChunkLOD } from "../render/chunkLod";
 import { createModuleLayer } from "../render/moduleLayer";
 import { createShellBatchLayer } from "../render/shellBatch";
-import { lodMaterial } from "../render/lod";
 import { buildCityGenMaterials } from "../theme/materials";
 import type { BuildingSpec, ColliderBox, ColliderMesh, MeshData, ModuleInstance } from "../core/types";
 import { CITYGEN_TUNING, CONFIG } from "../../../config";
 import { enableShadowLayer, SHADOW_LAYERS } from "../../shadows/shadowLayers";
+import type { CityGridIngestReply, PackedCityGrid } from "./ingestTypes";
 
 const READY = new Set(["victorian", "edwardian", "marina", "downtown", "soma"]);
 
@@ -38,6 +38,14 @@ const DETAIL_EXIT_MARGIN = 25; // detail fades back to the chunk prism this far 
 const DETAIL_BUDGET_FAST = 3; // dt < 1/50s (running >50fps): plenty of headroom
 const DETAIL_BUDGET_MED = 2;  // dt < 1/30s (running >30fps): some headroom
 const DETAIL_BUDGET_SLOW = 1; // else: frame is tight, stay conservative
+// The grammar worker is deliberately single-threaded and one building can take
+// 30-100 ms. Keep scheduler preparation, queued work, worker generation and
+// main-thread assembly under one bounded reservation set. Only ONE request is
+// ever posted into the worker's inaccessible FIFO; the other prepared requests
+// stay in a nearest-current-first main-thread queue, where a relocation can drop
+// them before they consume worker time. Thus a cut can wait behind at most the
+// one pure generation already executing, without reducing steady throughput.
+const DETAIL_BUILD_BACKLOG_MAX = 6;
 // Exact-collider tier: tight radius (you can only ever TOUCH a building a few
 // metres away — a wider band would just spawn hundreds of idle static walls).
 // 90 m + a 20/scan nearest-first fill beats even a fast approach (boost/board downhill)
@@ -60,6 +68,21 @@ const COLLIDER_R = 90;
 const COLLIDER_EXIT = 115; // hysteresis: drop back to baked only past here
 const COLLIDER_BUDGET = 20; // exact-collider swaps per scan (cheap: no mesh) — nearest first
 const CHUNK_BUDGET = 260;// buildings merged into chunk geometry per frame (no hitch)
+// Converting the packed worker payload into rich Entry/poly objects is allocation
+// heavy in a dense cell. Bound that work so a 1,600-building downtown cell never
+// becomes one GC-prone teleport frame. This is scheduling only; visual quality is
+// identical once the cell's atomic baked→chunk swap completes.
+const CELL_HYDRATE_SLICE = 96;
+// Far teleports can retire dozens of dense cells at once. Most entries only
+// flip a baked-mesh visibility bit; collider/detail owners are costlier, so cap
+// both the total entries and heavy owners handled by one scheduler slice.
+const CELL_RETIRE_SLICE = 48;
+const CELL_RETIRE_HEAVY_SLICE = 1;
+// Rich cells contain Entry objects, footprint tuples and live terrain samples.
+// Keep enough for the entire 7x7 visual ring plus backtracking headroom, but do
+// not retain every district visited during a long teleport session. The packed
+// worker payload remains the immutable source for cheap re-hydration.
+const MATERIALIZED_CELL_CACHE_MAX = 128;
 // Visual chunk LOD radius (m): shorter than the master tile/draw-distance stream so
 // far skyline stays on cheap baked OSM tiles instead of millions of citygen prism
 // tris. At Corona Heights probes chunkLOD alone was ~1M tris with a 6 km stream.
@@ -129,6 +152,7 @@ interface BuiltGroup {
 
 interface Entry extends BuildingSpec {
   key: string;
+  packedIndex: number;
   cx: number; cz: number;
   bb: { minx: number; maxx: number; minz: number; maxz: number };
   detail: BuiltGroup | null;
@@ -156,8 +180,8 @@ interface Entry extends BuildingSpec {
   // lazily-computed door runtime (world-space metrics cached once per entry +
   // swing animation state). undefined = never computed, null = edge takes no door.
   door?: DoorRt | null;
-  // a grammar-build request is in flight on the worker (counts against the
-  // detail cap; cleared on assemble, displacement is handled by normal eviction)
+  // detail preparation is queued or a grammar-build request is in flight on the
+  // worker (counts against the detail cap; cleared on assemble / cancellation)
   pendingBuild: boolean;
   /** facade-area admission cost (perimeter · storeys), computed lazily */
   cost?: number;
@@ -180,16 +204,21 @@ interface DoorRt {
   animating: boolean;
   needSolid: boolean;            // close finished but the solid-wall swap is deferred (player in gap)
   leaf: THREE.Group | null;      // dynamic hinged leaf (lives OUTSIDE the bundle)
+  leafMaterials: THREE.Material[]; // render-object owners; disposed with the live leaf
   bakedLeaf: THREE.Mesh | null;  // the bundle's merged "citygen.doorleaf" mesh
   bakedBack: THREE.Mesh | null;  // dedicated closed-only "citygen.doorback" occluder
 }
 
-interface CellState { key: string; ix: number; iz: number; entries: Entry[]; chunk: ChunkLOD | null; phase: "building" | "ready"; }
-
-function boundsOf(poly: readonly (readonly [number, number])[]) {
-  let x = 0, z = 0, minx = Infinity, maxx = -Infinity, minz = Infinity, maxz = -Infinity;
-  for (const [px, pz] of poly) { x += px; z += pz; if (px < minx) minx = px; if (px > maxx) maxx = px; if (pz < minz) minz = pz; if (pz > maxz) maxz = pz; }
-  return { cx: x / poly.length, cz: z / poly.length, minx, maxx, minz, maxz };
+interface CellState {
+  key: string;
+  ix: number;
+  iz: number;
+  entries: Entry[];
+  chunk: ChunkLOD | null;
+  /** A finished cell stays on the baked tile until its ACTUAL beauty owner has
+   *  been prepared in the live render context. Only `ready` may suppress baked
+   *  meshes or admit detail/collider work. */
+  phase: "building" | "awaiting-prepare" | "preparing" | "ready" | "fallback";
 }
 
 // Highest ground under a footprint (verts + edge midpoints), from live terrain.
@@ -214,11 +243,6 @@ function footprintGrade(
   // doors/storefronts meet it exactly; window sills clear it via aboveGrade()'s own
   // margin (so no +margin here, or entries would float above flat-lot sidewalks).
   return Math.min(Math.max(gmax, base), top - 1.5);
-}
-
-interface GridData {
-  tile: number; minX: number; minZ: number; tilesX: number; tilesZ: number;
-  cells: Record<string, (BuildingSpec & { i: number })[]>;
 }
 
 /** One faded-in detail building's street door, in world space — enough for a probe
@@ -256,7 +280,19 @@ export interface CityGenRing {
   count: number;
   update(playerPos: THREE.Vector3, dt: number): void;
   dispose(): void;
-  stats(): { total: number; cells: number; buildings: number; detail: number; interiors: number };
+  stats(): {
+    total: number;
+    cells: number;
+    buildings: number;
+    detail: number;
+    interiors: number;
+    exteriorPipelinesPrepared: number;
+    exteriorPipelinePrepareFailures: number;
+    shellBatches: number;
+    shellPreparedBatches: number;
+    shellGeometryVertexCapacity: number;
+    shellGeometryIndexCapacity: number;
+  };
   /** true while the player is inside a generated building (drives the indoor camera). */
   isPlayerInside(): boolean;
   debugBuildings(): { cx: number; cz: number; base: number; top: number; interior: boolean; bb: { minx: number; maxx: number; minz: number; maxz: number } }[];
@@ -282,52 +318,225 @@ export interface CityGenRing {
   toggleDoor(id: number): "opened" | "closed" | "blocked" | "gone";
 }
 
-async function fetchGrid(url: string): Promise<GridData | null> {
-  try { const r = await fetch(url, { cache: "force-cache" }); if (!r.ok) return null; return (await r.json()) as GridData; }
-  catch { return null; }
+async function fetchPackedGrid(url: string): Promise<PackedCityGrid | null> {
+  return new Promise((resolve) => {
+    let worker: Worker;
+    try {
+      worker = new Worker(new URL("./ingestWorker.ts", import.meta.url), { type: "module" });
+    } catch (error) {
+      console.warn("[citygen] ingestion worker unavailable — retaining baked city", error);
+      resolve(null);
+      return;
+    }
+    const id = 1;
+    let settled = false;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const finish = (grid: PackedCityGrid | null) => {
+      if (settled) return;
+      settled = true;
+      if (timeout !== undefined) clearTimeout(timeout);
+      worker.terminate();
+      resolve(grid);
+    };
+    timeout = setTimeout(() => {
+      console.warn("[citygen] ingestion timed out — retaining baked city");
+      finish(null);
+    }, 45_000);
+    worker.onmessage = (event: MessageEvent<CityGridIngestReply>) => {
+      if (event.data.id !== id) return;
+      if (event.data.error || !event.data.grid) {
+        console.warn("[citygen] ingestion failed — retaining baked city", event.data.error ?? "empty result");
+        finish(null);
+        return;
+      }
+      finish(event.data.grid);
+    };
+    worker.onerror = (error) => {
+      console.warn("[citygen] ingestion worker failed — retaining baked city", error);
+      finish(null);
+    };
+    worker.onmessageerror = (error) => {
+      console.warn("[citygen] ingestion reply could not be decoded — retaining baked city", error);
+      finish(null);
+    };
+    try {
+      worker.postMessage({ id, url });
+    } catch (error) {
+      console.warn("[citygen] ingestion request failed — retaining baked city", error);
+      finish(null);
+    }
+  });
 }
 
 export async function createCityGenRing(
   opts: { url?: string; excludeBuilding?: (key: string, index: number) => boolean },
-  ctx: { scene: THREE.Object3D; physics: { world: PhysWorld } & Partial<QuerySolidHost>; map: { groundHeight(x: number, z: number): number; surfaceType?(x: number, z: number): number }; tiles: Tiles; schedule?: ScheduleFn },
+  ctx: {
+    scene: THREE.Object3D;
+    physics: { world: PhysWorld } & Partial<QuerySolidHost>;
+    map: { groundHeight(x: number, z: number): number; surfaceType?(x: number, z: number): number };
+    tiles: Tiles;
+    schedule?: ScheduleFn;
+    /** Re-enter the host's quiet-work gate after async ingestion, immediately
+     * before this function creates any Three/WebGPU render owner. */
+    beforeRenderOwnership?: () => Promise<void>;
+    /** Prepare one detached render owner in the exact host render context. The
+     * production host uses WebGPURenderer.compileAsync(owner, camera, scene). */
+    prepareRenderOwner?: (owner: THREE.Object3D) => Promise<void>;
+  },
 ): Promise<CityGenRing> {
   const url = opts.url ?? "/citygen/buildings.json";
-  const grid = await fetchGrid(url);
+  const grid = await fetchPackedGrid(url);
+  await ctx.beforeRenderOwnership?.();
   const materials = buildCityGenMaterials();
+  // All always-on CityGen render owners live under one root that stays detached
+  // until their exact exterior pipelines have been prepared. compileAsync
+  // ignores invisible objects, so owners remain visible here; detachment is the
+  // publication boundary that guarantees no half-warm object reaches a frame.
+  const renderRoot = new THREE.Group();
+  renderRoot.name = "cityGenRenderOwners";
   // instanced kit-of-parts windows: every detail building's panes/frames draw
   // as a handful of city-wide instanced meshes (see render/moduleLayer.ts)
-  const moduleLayer = createModuleLayer(ctx.scene);
+  const moduleLayer = createModuleLayer(renderRoot);
   // batched building SHELLS: walls/roof/trim/stoop/doors of every detail building
   // draw as ~a dozen city-wide BatchedMesh draws (was ~2384 bundle sub-draws), and
   // frustum-cull per instance (see render/shellBatch.ts). Sized off the detail cap.
-  const shellBatch = createShellBatchLayer(ctx.scene, {
+  const shellBatch = createShellBatchLayer(renderRoot, {
     capacity: Math.max(768, Math.ceil(CT.maxDetail * 1.5)),
   });
+  let chunkLODBeautyWarmup: ReturnType<typeof createChunkLODBeautyWarmup> | null = null;
+  let exteriorPipelinesPrepared = 0;
+  let exteriorPipelinePrepareFailures = 0;
+  const prepareOwner = async (
+    label: string,
+    owner: THREE.Object3D,
+    isCurrent?: () => boolean,
+  ): Promise<boolean> => {
+    if (!ctx.prepareRenderOwner) return false;
+    if (isCurrent && !isCurrent()) return false;
+    try {
+      // A previous async compile can outlive the quiet decision that admitted
+      // it. Re-enter the movement/arrival gate before EVERY next driver request.
+      await ctx.beforeRenderOwnership?.();
+      // A teleport/unload can happen while the quiet gate is pending. Do not
+      // start driver work for an owner that has already lost publication rights.
+      if (isCurrent && !isCurrent()) return false;
+      await ctx.prepareRenderOwner(owner);
+      // compileAsync itself is not cancellable. Its late result may warm caches,
+      // but it must never publish a stale owner.
+      if (isCurrent && !isCurrent()) return false;
+      exteriorPipelinesPrepared++;
+      return true;
+    } catch (error) {
+      if (isCurrent && !isCurrent()) return false;
+      exteriorPipelinePrepareFailures++;
+      console.warn(`[citygen] detached exterior prepare failed (${label})`, error);
+      return false;
+    }
+  };
+  if (grid && ctx.prepareRenderOwner) {
+    // Prepare one exact owner at a time. This lets WebGPURenderer.compileAsync
+    // yield between node builds and prevents one multi-owner compile from
+    // becoming a single post-reveal multi-second task.
+    chunkLODBeautyWarmup = createChunkLODBeautyWarmup();
+    await prepareOwner("chunk-lod:beauty", chunkLODBeautyWarmup.object);
+    for (const owner of moduleLayer.warmupOwners()) {
+      await prepareOwner(owner.label, owner.object);
+    }
+    await shellBatch.prepareExterior(materials, prepareOwner);
+    if (exteriorPipelinePrepareFailures > 0) {
+      // Fail closed: the baked city is complete. Never publish an unprepared
+      // exterior owner and recreate the original first-visible-frame hitch.
+      moduleLayer.dispose();
+      shellBatch.dispose();
+      chunkLODBeautyWarmup.dispose();
+      chunkLODBeautyWarmup = null;
+      for (const material of new Set(Object.values(materials))) material.dispose();
+      throw new Error(`CityGen exterior preparation failed (${exteriorPipelinePrepareFailures} owner${exteriorPipelinePrepareFailures === 1 ? "" : "s"})`);
+    }
+  }
+  ctx.scene.add(renderRoot);
   // no host scheduler → run deferred work immediately (portable fallback)
   const schedule: ScheduleFn = ctx.schedule ?? ((_lane, job) => { let v = job(); let guard = 0; while (v === "again" && guard++ < 10000) v = job(); });
 
-  // materialize entries per cell (ready archetypes only)
-  const cellEntries = new Map<string, Entry[]>();
-  let total = 0;
+  // The worker transferred one compact citywide store. Hydrate Entry objects,
+  // footprint arrays, and live-terrain grade only when a cell first becomes
+  // relevant. This removes ~91k object allocations + terrain sampling from boot.
+  const cellRanges = new Map<string, readonly [number, number]>();
+  const materializedCells = new Map<string, Entry[]>();
   if (grid) {
-    for (const [key, list] of Object.entries(grid.cells)) {
-      const entries = list
-        .filter((b) =>
-          READY.has(b.archetype) &&
-          !ctx.tiles.isBuildingSuppressed?.(key, b.i) &&
-          !opts.excludeBuilding?.(key, b.i)
-        )
-        .map((b) => {
-        const g = boundsOf(b.poly);
-        const grade = footprintGrade(b.poly, b.base, b.top, ctx.map);
-        return { ...b, grade, key, cx: g.cx, cz: g.cz, bb: { minx: g.minx, maxx: g.maxx, minz: g.minz, maxz: g.maxz },
-          detail: null, fade: 0, fadeDir: 0, bodies: [] as number[], wallBoxes: [] as ColliderBox[], roofBody: 0, roofMesh: null,
-          interior: null, intBodies: [] as number[], intBoxes: [] as ColliderBox[],
-          state: "lod" as const, doorPending: false, pendingBuild: false } as Entry;
-        });
-      if (entries.length) { cellEntries.set(key, entries); total += entries.length; }
+    for (let i = 0; i < grid.cellKeys.length; i++) {
+      cellRanges.set(grid.cellKeys[i], [grid.cellStarts[i], grid.cellStarts[i + 1]]);
     }
   }
+  let total = grid?.readyCount ?? 0;
+  const excludedPacked = new Set<number>();
+  const polyAt = (packedIndex: number): [number, number][] => {
+    if (!grid) return [];
+    const start = grid.polyStarts[packedIndex];
+    const end = grid.polyStarts[packedIndex + 1];
+    const poly = new Array<[number, number]>(end - start);
+    for (let p = start; p < end; p++) poly[p - start] = [grid.polyXZ[p * 2], grid.polyXZ[p * 2 + 1]];
+    return poly;
+  };
+  const materializeBuilding = (key: string, packedIndex: number): Entry | null => {
+    if (!grid) return null;
+    const archetype = grid.archetypes[grid.archetypeCodes[packedIndex]];
+    if (!READY.has(archetype)) return null;
+    const i = grid.sourceIndices[packedIndex];
+    if (ctx.tiles.isBuildingSuppressed?.(key, i) || opts.excludeBuilding?.(key, i)) {
+      if (!excludedPacked.has(packedIndex)) {
+        excludedPacked.add(packedIndex);
+        total--;
+      }
+      return null;
+    }
+    const poly = polyAt(packedIndex);
+    const ho = packedIndex * 3;
+    const bo = packedIndex * 6;
+    const base = grid.heights[ho];
+    const top = grid.heights[ho + 1];
+    const h = grid.heights[ho + 2];
+    const spec: BuildingSpec = {
+      i,
+      id: grid.ids[packedIndex],
+      poly,
+      base,
+      top,
+      archetype,
+      seed: grid.seeds[packedIndex]
+    };
+    if (Number.isFinite(h)) spec.h = h;
+    // Live terrain is main-thread owned, so the worker cannot provide grade.
+    // Compute it inside the bounded cell slice before any detail ranking or
+    // street-edge analysis can observe the Entry.
+    spec.grade = footprintGrade(poly, base, top, ctx.map);
+    return {
+      ...spec,
+      key,
+      packedIndex,
+      cx: grid.bounds[bo],
+      cz: grid.bounds[bo + 1],
+      bb: {
+        minx: grid.bounds[bo + 2],
+        maxx: grid.bounds[bo + 3],
+        minz: grid.bounds[bo + 4],
+        maxz: grid.bounds[bo + 5]
+      },
+      detail: null,
+      fade: 0,
+      fadeDir: 0,
+      bodies: [],
+      wallBoxes: [],
+      roofBody: 0,
+      roofMesh: null,
+      interior: null,
+      intBodies: [],
+      intBoxes: [],
+      state: "lod",
+      doorPending: false,
+      pendingBuild: false
+    };
+  };
 
   // Resolve the entrance facade against the complete footprint set, including
   // archetypes this ring does not currently render. The longest-edge fallback is
@@ -335,32 +544,47 @@ export async function createCityGenRing(
   // with their neighbour. Sampling a few metres outward rejects those party walls
   // before one consistent edge is handed to massing, colliders, doors and rooms.
   //
-  // Footprints are indexed into every 32 m bin their AABB touches once at boot;
-  // resolving a newly loaded entry is therefore local rather than O(city size).
-  type StreetNeighbor = BuildingSpec & { cellKey: string };
+  // Footprints were indexed into every 32 m bin by the ingestion worker. Queries
+  // binary-search its sparse CSR arrays; the main thread never rebuilds a global
+  // Map or hydrates neighbour BuildingSpec objects.
   const STREET_BIN = 32;
-  const streetBins = new Map<string, StreetNeighbor[]>();
-  const streetBinKey = (ix: number, iz: number) => `${ix}_${iz}`;
-  if (grid) {
-    for (const [cellKey, list] of Object.entries(grid.cells)) for (const b of list) {
-      const bb = boundsOf(b.poly);
-      const neighbor = { ...b, cellKey } as StreetNeighbor;
-      const ix0 = Math.floor(bb.minx / STREET_BIN), ix1 = Math.floor(bb.maxx / STREET_BIN);
-      const iz0 = Math.floor(bb.minz / STREET_BIN), iz1 = Math.floor(bb.maxz / STREET_BIN);
-      for (let ix = ix0; ix <= ix1; ix++) for (let iz = iz0; iz <= iz1; iz++) {
-        const key = streetBinKey(ix, iz);
-        const bin = streetBins.get(key);
-        if (bin) bin.push(neighbor); else streetBins.set(key, [neighbor]);
-      }
+  const streetBinRange = (ix: number, iz: number): readonly [number, number] | null => {
+    if (!grid) return null;
+    let lo = 0;
+    let hi = grid.binStarts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      const bx = grid.binCoords[mid * 2];
+      const bz = grid.binCoords[mid * 2 + 1];
+      if (bx < ix || (bx === ix && bz < iz)) lo = mid + 1;
+      else hi = mid;
     }
-  }
+    if (lo >= grid.binStarts.length - 1) return null;
+    if (grid.binCoords[lo * 2] !== ix || grid.binCoords[lo * 2 + 1] !== iz) return null;
+    return [grid.binStarts[lo], grid.binStarts[lo + 1]];
+  };
+  const packedPointInPoly = (packedIndex: number, x: number, z: number): boolean => {
+    if (!grid) return false;
+    const start = grid.polyStarts[packedIndex];
+    const end = grid.polyStarts[packedIndex + 1];
+    let inside = false;
+    for (let i = start, j = end - 1; i < end; j = i++) {
+      const xi = grid.polyXZ[i * 2], zi = grid.polyXZ[i * 2 + 1];
+      const xj = grid.polyXZ[j * 2], zj = grid.polyXZ[j * 2 + 1];
+      if ((zi > z) !== (zj > z) && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi) inside = !inside;
+    }
+    return inside;
+  };
   const sampleBlockedByNeighbor = (e: Entry, x: number, z: number): boolean => {
-    const bin = streetBins.get(streetBinKey(Math.floor(x / STREET_BIN), Math.floor(z / STREET_BIN)));
-    if (!bin) return false;
-    for (const other of bin) {
-      if (other.cellKey === e.key && other.i === e.i) continue;
-      if (other.top <= e.base + 0.5 || e.top <= other.base + 0.5) continue;
-      if (pointInPoly(other.poly, x, z)) return true;
+    if (!grid) return false;
+    const range = streetBinRange(Math.floor(x / STREET_BIN), Math.floor(z / STREET_BIN));
+    if (!range) return false;
+    for (let k = range[0]; k < range[1]; k++) {
+      const other = grid.binMembers[k];
+      if (other === e.packedIndex) continue;
+      const ho = other * 3;
+      if (grid.heights[ho + 1] <= e.base + 0.5 || e.top <= grid.heights[ho] + 0.5) continue;
+      if (packedPointInPoly(other, x, z)) return true;
     }
     return false;
   };
@@ -441,11 +665,53 @@ export async function createCityGenRing(
     }
     return { edge: best, doorAllowed: bestScore > -Infinity && bestClearance === 14 };
   };
+  // Street-facing analysis is needed only by full-detail facades/doors. Keeping
+  // it lazy avoids doing thousands of terrain, road-raster, and neighbour probes
+  // merely to prepare a destination's low-detail skyline.
+  const resolveStreetEdge = (e: Entry) => {
+    if (e.streetEdge !== undefined) return;
+    const resolved = chooseExposedStreetEdge(e);
+    e.streetEdge = resolved.edge;
+    e.doorAllowed = resolved.doorAllowed;
+  };
   const tile = grid?.tile ?? 800;
   const minX = grid?.minX ?? 0, minZ = grid?.minZ ?? 0;
 
   const loaded = new Map<string, CellState>();
   const building: CellState[] = []; // cells still merging their chunk
+  // Cell hydration/chunk setup is scheduled center-out. A generation follows the
+  // player's tile so queued origin work becomes a cheap no-op after teleport.
+  type CellRequest = { key: string; ix: number; iz: number; d2: number; generation: number };
+  type CellHydration = CellRequest & { cursor: number; end: number; entries: Entry[] };
+  type CellRetirement = { cell: CellState; cursor: number };
+  const pendingCells = new Map<string, number>();
+  const cellQueue: CellRequest[] = [];
+  const retiringCells = new Map<string, CellRetirement>();
+  const retireQueue: CellRetirement[] = [];
+  let activeCellHydration: CellHydration | null = null;
+  let activeCellRetirement: CellRetirement | null = null;
+  let cellHydrationScheduled = false;
+  let cellRetirementScheduled = false;
+  let cellGeneration = 0;
+  let centerTileX = NaN;
+  let centerTileZ = NaN;
+  let activeCellLoad = 0;
+  let disposed = false;
+  type ActiveChunkPrepare = { cell: CellState; token: number; generation: number };
+  let activeChunkPrepare: ActiveChunkPrepare | null = null;
+  let nextChunkPrepareToken = 1;
+  const touchMaterializedCell = (key: string, entries: Entry[]): void => {
+    materializedCells.delete(key);
+    materializedCells.set(key, entries);
+  };
+  const trimMaterializedCells = (): void => {
+    if (materializedCells.size <= MATERIALIZED_CELL_CACHE_MAX) return;
+    for (const key of materializedCells.keys()) {
+      if (loaded.has(key) || retiringCells.has(key) || activeCellHydration?.key === key) continue;
+      materializedCells.delete(key);
+      if (materializedCells.size <= MATERIALIZED_CELL_CACHE_MAX) break;
+    }
+  };
   // Every entry that currently holds a detail mesh (≤ maxDetail + in-flight
   // fades). The per-frame loops (interior gate, fades) walk THIS, not every
   // loaded building — with a wide tileLoadRadius that's thousands of entries
@@ -570,7 +836,7 @@ export async function createCityGenRing(
     // idempotent alive-texel write + onBuildingAlive(true) re-fire (tiles.ts).
     e.state = "coll";
     schedule("physics", () => {
-      if (e.state !== "coll" || e.bodies.length) return; // stale/duplicate (dropped, unloaded, or upgraded to detail)
+      if (!loaded.has(e.key) || e.state !== "coll" || e.bodies.length) return; // stale/duplicate (dropped, unloaded, or upgraded)
       if (playerInsideBB(e, 3.5)) return "again";        // anti-wedge: retry next frame
       // ATOMIC: baked collider off (R=0) + exact walls on, in this same frame
       ctx.tiles.suppressBuilding(e.key, e.i);
@@ -621,7 +887,7 @@ export async function createCityGenRing(
         buildSolidWallsNow(e, true);
       }
       else schedule("physics", () => {
-        if (e.state !== "detail" || e.bodies.length) return; // stale/duplicate (dropped, unloaded, or walls landed elsewhere)
+        if (!loaded.has(e.key) || e.state !== "detail" || e.bodies.length) return; // stale/duplicate (dropped, unloaded, or walls landed elsewhere)
         if (playerInsideBB(e, 3.5)) return "again";          // anti-wedge: retry next frame
         ctx.tiles.suppressBuilding(e.key, e.i);
         buildSolidWallsNow(e, true);
@@ -633,37 +899,22 @@ export async function createCityGenRing(
     e.doorPending = true;
   };
   let buildWorker: Worker | null = null;
-  const pendingBuilds = new Map<number, Entry>();
-  let nextBuildId = 1;
-  try {
-    buildWorker = new Worker(new URL("./buildWorker.ts", import.meta.url), { type: "module" });
-    buildWorker.onmessage = (ev: MessageEvent<{ id: number; meshes: MeshData[]; instances?: ModuleInstance[]; matTable?: string[] }>) => {
-      const { id, meshes, instances, matTable } = ev.data;
-      const e = pendingBuilds.get(id);
-      pendingBuilds.delete(id);
-      if (!e || !e.pendingBuild) return; // cancelled while in flight
-      // assembly (geometry + materials + bundle) is main-thread but cheap-ish —
-      // still, keep it off loaded frames via the build lane, one building per job
-      schedule("build", () => {
-        e.pendingBuild = false;
-        if (e.detail || e.state === "detail" || !loaded.has(e.key)) return; // superseded
-        // stale reply: the player has driven well past this building while the
-        // worker chewed — materializing it now would just fade in and back out
-        const sdx = e.cx - lastPlayer.x, sdz = e.cz - lastPlayer.z;
-        const staleR = CT.detailRadius + 40;
-        if (sdx * sdx + sdz * sdz > staleR * staleR) return;
-        finishDetail(e, assembleBuilding(e as BuildingSpec, { meshes, instances, matTable }, materials, moduleLayer, shellBatch));
-      });
-    };
-    buildWorker.onerror = (err) => {
-      console.warn("[citygen] build worker failed — falling back to sync builds", err);
-      for (const e of pendingBuilds.values()) e.pendingBuild = false;
-      pendingBuilds.clear();
-      buildWorker = null;
-    };
-  } catch {
-    buildWorker = null;
-  }
+  const BUILD_WORKER_WATCHDOG_MS = 10_000;
+  type QueuedDetailBuild = { entry: Entry; spec: BuildingSpec; reservation: number };
+  type ActiveDetailBuild = QueuedDetailBuild & { id: number; timer: ReturnType<typeof setTimeout> };
+  const detailBuildQueue: QueuedDetailBuild[] = [];
+  let activeDetailBuild: ActiveDetailBuild | null = null;
+  const detailBuildReservations = new Set<Entry>();
+  const detailBuildReservationOf = new Map<Entry, number>();
+  let nextDetailBuildReservation = 1;
+  const releaseDetailBuild = (e: Entry, reservation?: number) => {
+    // An old scheduler/worker continuation must never clear a newer request for
+    // the same cached Entry after rapid away→back travel.
+    if (reservation !== undefined && detailBuildReservationOf.get(e) !== reservation) return;
+    detailBuildReservationOf.delete(e);
+    detailBuildReservations.delete(e);
+    e.pendingBuild = false;
+  };
   // the worker gets a PLAIN spec — Entry carries THREE objects/body handles that
   // must not (and cannot) cross the structured-clone boundary
   const specOf = (e: Entry): BuildingSpec => ({
@@ -671,19 +922,161 @@ export async function createCityGenRing(
     streetEdge: e.streetEdge, doorAllowed: e.doorAllowed,
     grade: e.grade, frontGround: e.frontGround, h: e.h, archetype: e.archetype, seed: e.seed,
   });
-  const requestDetail = (e: Entry) => {
-    // sample the live street terrain at the door front ONCE, before the mesh build:
-    // the visible stoop steps (frontStoop) and the walkable ramp collider
-    // (openDoorway → appendStoop) both read this same number, so steps ⟺ ramp.
-    if (e.frontGround === undefined) e.frontGround = frontGroundFor(e);
-    if (!buildWorker) {
-      finishDetail(e, buildBuilding(e as BuildingSpec, materials, moduleLayer, shellBatch)); // sync fallback
+  const detailBuildDistance2 = (e: Entry) => {
+    const dx = e.cx - lastPlayer.x, dz = e.cz - lastPlayer.z;
+    return dx * dx + dz * dz;
+  };
+  const detailBuildIsCurrent = (e: Entry, reservation?: number) => {
+    if (
+      (reservation !== undefined && detailBuildReservationOf.get(e) !== reservation) ||
+      !e.pendingBuild || e.detail || e.state === "detail" || !loaded.has(e.key)
+    ) return false;
+    // Fixed visual retention, not the speed-throttled NEW-admission band: work
+    // admitted while moving slowly may finish without a speed change cancelling
+    // it, but work from an actually departed district is discarded promptly.
+    const staleR = CT.detailRadius + 40;
+    return detailBuildDistance2(e) <= staleR * staleR;
+  };
+  let nextBuildId = 1;
+  const failBuildWorker = (reason: unknown) => {
+    console.warn("[citygen] build worker unavailable — keeping chunk LOD", reason);
+    if (activeDetailBuild) clearTimeout(activeDetailBuild.timer);
+    activeDetailBuild = null;
+    detailBuildQueue.length = 0;
+    // Includes preparation/assembly jobs already parked in the host scheduler.
+    // They re-check pendingBuild on entry and become cheap no-ops.
+    for (const entry of [...detailBuildReservations]) releaseDetailBuild(entry);
+    buildWorker?.terminate();
+    buildWorker = null;
+  };
+  const pumpDetailBuildWorker = () => {
+    if (!buildWorker || activeDetailBuild) return;
+    // Re-rank every time the worker frees up. At six reservations max this sort
+    // is trivial, and it makes a recently moved-to district win over old FIFO.
+    detailBuildQueue.sort((a, b) => detailBuildDistance2(a.entry) - detailBuildDistance2(b.entry));
+    while (detailBuildQueue.length) {
+      const queued = detailBuildQueue.shift()!;
+      if (!detailBuildIsCurrent(queued.entry, queued.reservation)) {
+        releaseDetailBuild(queued.entry, queued.reservation);
+        continue;
+      }
+      const id = nextBuildId++;
+      const timer = setTimeout(() => {
+        if (activeDetailBuild?.id !== id) return;
+        const stalled = activeDetailBuild;
+        activeDetailBuild = null;
+        releaseDetailBuild(stalled.entry, stalled.reservation);
+        failBuildWorker(new Error(`detail build worker made no progress for ${BUILD_WORKER_WATCHDOG_MS}ms`));
+      }, BUILD_WORKER_WATCHDOG_MS);
+      activeDetailBuild = { ...queued, id, timer };
+      try {
+        buildWorker.postMessage({ id, spec: queued.spec });
+      } catch (error) {
+        clearTimeout(timer);
+        activeDetailBuild = null;
+        releaseDetailBuild(queued.entry, queued.reservation);
+        failBuildWorker(error);
+      }
       return;
     }
+  };
+  const pruneDetailBuildBacklog = () => {
+    // Drop queued/preparation/assembly reservations that no longer belong to
+    // the current local ring. The one request already executing cannot be
+    // interrupted, but no second stale job has entered the worker FIFO.
+    for (let i = detailBuildQueue.length - 1; i >= 0; i--) {
+      const queued = detailBuildQueue[i];
+      if (detailBuildIsCurrent(queued.entry, queued.reservation)) continue;
+      detailBuildQueue.splice(i, 1);
+      releaseDetailBuild(queued.entry, queued.reservation);
+    }
+    for (const entry of [...detailBuildReservations]) {
+      const reservation = detailBuildReservationOf.get(entry);
+      if (
+        reservation !== undefined &&
+        ((activeDetailBuild?.entry === entry && activeDetailBuild.reservation === reservation) ||
+          detailBuildQueue.some((queued) => queued.entry === entry && queued.reservation === reservation))
+      ) continue;
+      if (!detailBuildIsCurrent(entry, reservation)) releaseDetailBuild(entry, reservation);
+    }
+    pumpDetailBuildWorker();
+  };
+  try {
+    buildWorker = new Worker(new URL("./buildWorker.ts", import.meta.url), { type: "module" });
+    buildWorker.onmessage = (ev: MessageEvent<
+      | { id: number; ok: true; meshes: MeshData[]; instances?: ModuleInstance[]; matTable?: string[] }
+      | { id: number; ok: false; error: string }
+    >) => {
+      const active = activeDetailBuild;
+      if (!active || active.id !== ev.data.id) return;
+      clearTimeout(active.timer);
+      activeDetailBuild = null;
+      const e = active.entry;
+      const id = ev.data.id;
+      if (!ev.data.ok) {
+        releaseDetailBuild(e, active.reservation);
+        console.warn(`[citygen] detail build ${id} failed; retaining chunk LOD: ${ev.data.error}`);
+        pumpDetailBuildWorker();
+        return;
+      }
+      const { meshes, instances, matTable } = ev.data;
+      if (!detailBuildIsCurrent(e, active.reservation)) {
+        releaseDetailBuild(e, active.reservation);
+        pumpDetailBuildWorker();
+        return; // cancelled while in flight
+      }
+      // assembly (geometry + materials + bundle) is main-thread but cheap-ish —
+      // still, keep it off loaded frames via the build lane, one building per job
+      schedule("build", () => {
+        try {
+          if (!detailBuildIsCurrent(e, active.reservation)) return; // superseded / departed before assembly
+          finishDetail(e, assembleBuilding(e as BuildingSpec, { meshes, instances, matTable }, materials, moduleLayer, shellBatch));
+        } finally {
+          releaseDetailBuild(e, active.reservation);
+        }
+      });
+      // Keep the pure worker saturated while main-thread assembly remains under
+      // the host scheduler. The shared reservation cap still bounds both phases.
+      pumpDetailBuildWorker();
+    };
+    buildWorker.onerror = failBuildWorker;
+    buildWorker.onmessageerror = failBuildWorker;
+  } catch {
+    buildWorker = null;
+  }
+  const requestDetail = (e: Entry): boolean => {
+    if (detailBuildReservations.size >= DETAIL_BUILD_BACKLOG_MAX) return false;
+    const reservation = nextDetailBuildReservation++;
+    detailBuildReservations.add(e);
+    detailBuildReservationOf.set(e, reservation);
     e.pendingBuild = true;
-    const id = nextBuildId++;
-    pendingBuilds.set(id, e);
-    buildWorker.postMessage({ id, spec: specOf(e) });
+    // Terrain grade, exposed-street resolution, and front-step sampling are live
+    // map queries and cannot cross the worker boundary. They are still deferred
+    // through the shared build lane so the scan itself remains allocation-free.
+    schedule("build", () => {
+      if (!e.pendingBuild || e.detail || e.state === "detail" || !loaded.has(e.key)) {
+        releaseDetailBuild(e, reservation);
+        return;
+      }
+      if (!detailBuildIsCurrent(e, reservation)) {
+        releaseDetailBuild(e, reservation);
+        return;
+      }
+      if (e.grade === undefined) e.grade = footprintGrade(e.poly, e.base, e.top, ctx.map);
+      resolveStreetEdge(e);
+      // Sample the live street terrain at the door front ONCE, before the mesh
+      // build. Visible stoop steps and their ramp collider share this value.
+      if (e.frontGround === undefined) e.frontGround = frontGroundFor(e);
+      if (!buildWorker) {
+        // Never run the documented 30–100 ms grammar generator in an
+        // interactive frame. The existing chunk prism is the safe fallback.
+        releaseDetailBuild(e, reservation);
+        return;
+      }
+      detailBuildQueue.push({ entry: e, spec: specOf(e), reservation });
+      pumpDetailBuildWorker();
+    });
+    return true;
   };
   // Live terrain height just outside the street door (for the stoop rise). Recomputes
   // the same street edge + door centre the collider does, then samples the street
@@ -776,7 +1169,7 @@ export async function createCityGenRing(
       baseYaw: Math.atan2(-uz, ux),
       w: 2 * halfW * 0.96, h: (openTop - sill) - 0.04,
       swing: 0, from: 0, to: 0, t: 1, animating: false, needSolid: false,
-      leaf: null, bakedLeaf: null, bakedBack: null,
+      leaf: null, leafMaterials: [], bakedLeaf: null, bakedBack: null,
     };
     e.door = rt;
     doorRegistry.set(rt.id, e);
@@ -822,11 +1215,24 @@ export async function createCityGenRing(
     e.detail!.setDoorLeavesVisible(false);
     rt.bakedLeaf = e.detail! as unknown as THREE.Mesh; // sentinel: leaves are hidden
     rt.bakedBack = null;
-    // SHARED door material (no per-building baked leaf to copy from now) → no new
-    // pipeline, and it must never be disposed with the leaf
-    const leafMat = materials["citygen.doorleaf"] ?? materials["citygen.door"];
-    const panelMat = materials["citygen.door.panel"] ?? leafMat;
-    const hardwareMat = materials["citygen.door.hardware"] ?? materials["int.frame"] ?? leafMat;
+    // Three's WebGPU source-material listeners otherwise make a process-wide
+    // shared material retain every retired dynamic door RenderObject. Clone the
+    // few templates per open door; programs remain shared, while disposal has a
+    // precise lifetime boundary.
+    const owned = new Map<THREE.Material, THREE.Material>();
+    const own = (source: THREE.Material): THREE.Material => {
+      let material = owned.get(source);
+      if (!material) {
+        material = source.clone();
+        owned.set(source, material);
+      }
+      return material;
+    };
+    const leafSource = materials["citygen.doorleaf"] ?? materials["citygen.door"];
+    const leafMat = own(leafSource);
+    const panelMat = own(materials["citygen.door.panel"] ?? leafSource);
+    const hardwareMat = own(materials["citygen.door.hardware"] ?? materials["int.frame"] ?? leafSource);
+    rt.leafMaterials = [...owned.values()];
     const leaf = new THREE.Group();
     leaf.name = `cityGenDoor.${rt.id}`;
     leaf.userData.citygenDoorId = rt.id;
@@ -875,7 +1281,12 @@ export async function createCityGenRing(
     rt.leaf = leaf;
   };
   const disposeLeaf = (rt: DoorRt) => {
-    if (rt.leaf) doorRoot.remove(rt.leaf);
+    if (rt.leaf) {
+      doorRoot.remove(rt.leaf);
+      rt.leaf.clear();
+    }
+    for (const material of rt.leafMaterials) material.dispose();
+    rt.leafMaterials.length = 0;
     rt.leaf = null;
   };
   // door-gapped walls out, SOLID walls back in — ATOMIC (same frame), and never
@@ -1077,12 +1488,13 @@ export async function createCityGenRing(
   };
 
   // ---- cell load / unload -----------------------------------------------------
+  const disposeCellChunk = (cell: CellState) => {
+    cell.chunk?.mesh?.removeFromParent();
+    cell.chunk?.shadowMesh?.removeFromParent();
+    cell.chunk?.dispose();
+    cell.chunk = null;
+  };
   const loadCell = (key: string, entries: Entry[]) => {
-    for (const e of entries) if (e.streetEdge === undefined) {
-      const resolved = chooseExposedStreetEdge(e);
-      e.streetEdge = resolved.edge;
-      e.doorAllowed = resolved.doorAllowed;
-    }
     const [ix, iz] = key.split("_").map(Number);
     const cell: CellState = { key, ix, iz, entries,
       // conform LOD chunk buildings to terrain (highest ground under each footprint
@@ -1092,91 +1504,322 @@ export async function createCityGenRing(
     loaded.set(key, cell);
     building.push(cell);
   };
-  const unloadCell = (cell: CellState) => {
-    for (const e of cell.entries) {
-      if (e.detail || e.state === "detail") dropDetail(e);
-      else if (e.state === "coll") dropExactCollider(e);
-      e.pendingBuild = false; // orphan any in-flight worker build (reply is dropped)
-      ctx.tiles.unsuppressBuildingMesh(e.key, e.i); // restore baked mesh
-      e.state = "lod";
-    }
-    if (cell.chunk?.mesh) ctx.scene.remove(cell.chunk.mesh);
-    if (cell.chunk?.shadowMesh) ctx.scene.remove(cell.chunk.shadowMesh);
-    cell.chunk?.dispose();
-    const idx = building.indexOf(cell); if (idx >= 0) building.splice(idx, 1);
-    loaded.delete(cell.key);
+  const retireEntry = (e: Entry) => {
+    if (e.detail || e.state === "detail") dropDetail(e);
+    else if (e.state === "coll") dropExactCollider(e);
+    e.pendingBuild = false; // orphan any in-flight worker build (reply is dropped)
+    ctx.tiles.unsuppressBuildingMesh(e.key, e.i); // restore baked mesh behind the chunk
+    e.state = "lod";
+    e.fade = 0;
+    e.fadeDir = 0;
+    e.doorPending = true;
+    if (e.door) doorRegistry.delete(e.door.id);
+    e.door = undefined;
   };
-  // finish a chunk: add its merged mesh + hide the baked MESH for every building
-  // in the cell (collider stays live). Atomic swap → no hole while it built.
-  const finishChunk = (cell: CellState) => {
-    if (cell.chunk?.mesh) ctx.scene.add(cell.chunk.mesh);
-    if (cell.chunk?.shadowMesh) ctx.scene.add(cell.chunk.shadowMesh);
-    for (const e of cell.entries) if (e.state === "lod") ctx.tiles.suppressBuildingMesh(e.key, e.i);
-    cell.phase = "ready";
+  const finishCellRetirement = (task: CellRetirement) => {
+    const { cell } = task;
+    // compileAsync is not cancellable. Do not dispose buffers/materials under
+    // an active driver request; its completion is invalidated by loaded identity
+    // and owns the final cleanup. Every non-active cell can retire immediately.
+    if (activeChunkPrepare?.cell !== cell) disposeCellChunk(cell);
+    retiringCells.delete(cell.key);
+    trimMaterializedCells();
+  };
+  const finishCellRetirementNow = (task: CellRetirement) => {
+    for (; task.cursor < task.cell.entries.length; task.cursor++) retireEntry(task.cell.entries[task.cursor]);
+    finishCellRetirement(task);
+  };
+  const pumpCellRetirement = (): void | "again" => {
+    if (disposed) {
+      activeCellRetirement = null;
+      retireQueue.length = 0;
+      cellRetirementScheduled = false;
+      return;
+    }
+    while (!activeCellRetirement) {
+      const task = retireQueue.shift();
+      if (!task) {
+        cellRetirementScheduled = false;
+        return;
+      }
+      if (retiringCells.get(task.cell.key) !== task) continue;
+      activeCellRetirement = task;
+    }
+    const task = activeCellRetirement;
+    let processed = 0;
+    let heavy = 0;
+    while (task.cursor < task.cell.entries.length && processed < CELL_RETIRE_SLICE) {
+      const e = task.cell.entries[task.cursor];
+      const isHeavy = !!e.detail || e.state === "detail" || e.state === "coll" || e.bodies.length > 0 || e.intBodies.length > 0;
+      if (isHeavy && heavy >= CELL_RETIRE_HEAVY_SLICE) break;
+      task.cursor++;
+      retireEntry(e);
+      processed++;
+      if (isHeavy) heavy++;
+    }
+    if (task.cursor < task.cell.entries.length) return "again";
+    finishCellRetirement(task);
+    activeCellRetirement = null;
+    if (retireQueue.length) return "again";
+    cellRetirementScheduled = false;
+    return;
+  };
+  const ensureCellRetirementPump = () => {
+    if (cellRetirementScheduled || disposed || (!activeCellRetirement && retireQueue.length === 0)) return;
+    cellRetirementScheduled = true;
+    schedule("physics", pumpCellRetirement);
+  };
+  const unloadCell = (cell: CellState) => {
+    if (retiringCells.has(cell.key)) return;
+    // Detach from all live scans/build queues immediately; expensive per-entry
+    // disposal and baked-mesh restoration then drain under the shared budget.
+    loaded.delete(cell.key);
+    // Stop old-region chunk draws immediately; resource destruction remains
+    // sliced below so a teleport never performs a dense teardown in one frame.
+    if (cell.chunk?.mesh) cell.chunk.mesh.visible = false;
+    if (cell.chunk?.shadowMesh) cell.chunk.shadowMesh.visible = false;
+    const idx = building.indexOf(cell);
+    if (idx >= 0) building.splice(idx, 1);
+    const task: CellRetirement = { cell, cursor: 0 };
+    retiringCells.set(cell.key, task);
+    retireQueue.push(task);
+    ensureCellRetirementPump();
+  };
+  const cellRequestWithinRange = (request: CellRequest) =>
+    !disposed &&
+    request.generation === cellGeneration &&
+    Math.abs(request.ix - centerTileX) <= activeCellLoad &&
+    Math.abs(request.iz - centerTileZ) <= activeCellLoad &&
+    !loaded.has(request.key);
+  const cellRequestIsCurrent = (request: CellRequest) =>
+    cellRequestWithinRange(request) && pendingCells.get(request.key) === request.generation;
+  const pumpCellHydration = (): void | "again" => {
+    if (disposed) {
+      activeCellHydration = null;
+      cellQueue.length = 0;
+      pendingCells.clear();
+      cellHydrationScheduled = false;
+      return;
+    }
+
+    // Skip requests made obsolete by a teleport/config range change. The packed
+    // source stays immutable, so abandoning a partially hydrated cell is safe.
+    if (activeCellHydration && !cellRequestIsCurrent(activeCellHydration)) {
+      if (pendingCells.get(activeCellHydration.key) === activeCellHydration.generation) {
+        pendingCells.delete(activeCellHydration.key);
+      }
+      activeCellHydration = null;
+    }
+    while (!activeCellHydration) {
+      const request = cellQueue.shift();
+      if (!request) {
+        cellHydrationScheduled = false;
+        return;
+      }
+      if (!cellRequestIsCurrent(request)) {
+        if (pendingCells.get(request.key) === request.generation) pendingCells.delete(request.key);
+        continue;
+      }
+      const cached = materializedCells.get(request.key);
+      if (cached) {
+        touchMaterializedCell(request.key, cached);
+        pendingCells.delete(request.key);
+        if (cached.length) loadCell(request.key, cached);
+        if (cellQueue.length) return "again";
+        cellHydrationScheduled = false;
+        return;
+      }
+      const range = cellRanges.get(request.key);
+      if (!range) {
+        pendingCells.delete(request.key);
+        continue;
+      }
+      activeCellHydration = { ...request, cursor: range[0], end: range[1], entries: [] };
+    }
+
+    const task = activeCellHydration;
+    const sliceEnd = Math.min(task.end, task.cursor + CELL_HYDRATE_SLICE);
+    for (; task.cursor < sliceEnd; task.cursor++) {
+      const entry = materializeBuilding(task.key, task.cursor);
+      if (entry) task.entries.push(entry);
+    }
+    if (task.cursor < task.end) return "again";
+
+    // Publish a cell only after every Entry is ready. Until then the baked tile
+    // remains visible, so sliced hydration cannot expose a partial block.
+    touchMaterializedCell(task.key, task.entries);
+    trimMaterializedCells();
+    activeCellHydration = null;
+    if (pendingCells.get(task.key) === task.generation) pendingCells.delete(task.key);
+    if (cellRequestWithinRange(task) && task.entries.length) loadCell(task.key, task.entries);
+    if (cellQueue.length) return "again";
+    cellHydrationScheduled = false;
+    return;
+  };
+  const ensureCellHydrationPump = () => {
+    if (cellHydrationScheduled || disposed || (!activeCellHydration && cellQueue.length === 0)) return;
+    cellHydrationScheduled = true;
+    schedule("build", pumpCellHydration);
+  };
+  const cellWithinCurrentPrepareRing = (cell: CellState) =>
+    loaded.get(cell.key) === cell &&
+    Math.abs(cell.ix - centerTileX) <= activeCellLoad &&
+    Math.abs(cell.iz - centerTileZ) <= activeCellLoad;
+  const chunkPrepareIsCurrent = (task: ActiveChunkPrepare) =>
+    !disposed &&
+    activeChunkPrepare === task &&
+    task.generation === cellGeneration &&
+    task.cell.phase === "preparing" &&
+    cellWithinCurrentPrepareRing(task.cell);
+
+  // Publish only after the ACTUAL cell beauty owner has compiled. The shadow
+  // proxy is deliberately not part of this prepare: it remains on the app's
+  // already-booted depth-only path and attaches in the same atomic swap.
+  const publishChunk = (cell: CellState) => {
+    if (!cell.chunk?.mesh) throw new Error(`finished CityGen cell ${cell.key} has no beauty mesh`);
+    const suppressed: Entry[] = [];
+    try {
+      ctx.scene.add(cell.chunk.mesh);
+      if (cell.chunk.shadowMesh) ctx.scene.add(cell.chunk.shadowMesh);
+      for (const e of cell.entries) if (e.state === "lod") {
+        ctx.tiles.suppressBuildingMesh(e.key, e.i);
+        suppressed.push(e);
+      }
+      cell.phase = "ready";
+    } catch (error) {
+      // Restore the complete baked side if any step of publication fails; a
+      // half-suppressed cell is worse than retaining its lower-quality tile.
+      cell.chunk.mesh.removeFromParent();
+      cell.chunk.shadowMesh?.removeFromParent();
+      for (const e of suppressed) ctx.tiles.unsuppressBuildingMesh(e.key, e.i);
+      throw error;
+    }
   };
 
-  // ---- pipeline warmup --------------------------------------------------------
-  // Compile every WebGPU pipeline a streamed building will ever need — pooled
-  // wall kinds (settled + alphaHash fade variants), glass zones, the chunk-LOD
-  // vertex-colour material — by drawing one hidden 2 cm triangle per material,
-  // ONE PER FRAME through the background lane. Each addition compiles inside
-  // that frame's render, so the cost is a dozen sub-frame compiles at ring boot
-  // instead of a hard stall on the first building you drive up to. The warm
-  // fade-clones are held (not disposed) so their pipelines stay cached.
-  let warmupStarted = false;
-  const warmHold: THREE.Material[] = [];
-  const startWarmup = (at: THREE.Vector3) => {
-    warmupStarted = true;
-    const mats = warmupMaterials(materials);
-    mats.push(lodMaterial());
-    warmHold.push(...mats);
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array([0, 0, 0, 0.02, 0, 0, 0, 0.02, 0]), 3));
-    geo.setAttribute("normal", new THREE.BufferAttribute(new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]), 3));
-    geo.setAttribute("uv", new THREE.BufferAttribute(new Float32Array([0, 0, 1, 0, 0, 1]), 2));
-    geo.setAttribute("color", new THREE.BufferAttribute(new Float32Array([1, 1, 1, 1, 1, 1, 1, 1, 1]), 3)); // lodMaterial reads vertex colour
-    geo.setAttribute("lodVisibility", new THREE.BufferAttribute(new Float32Array([1, 1, 1]), 1));
-    geo.setIndex(new THREE.BufferAttribute(new Uint32Array([0, 1, 2]), 1));
-    const group = new THREE.Group();
-    group.position.set(at.x, ctx.map.groundHeight(at.x, at.z) + 0.4, at.z);
-    ctx.scene.add(group);
-    let i = 0;
-    let settle = 0;
-    schedule("background", () => {
-      if (i < mats.length) {
-        const m = new THREE.Mesh(geo, mats[i++]);
-        // Detail beauty never casts; stable chunk proxies own static massing.
-        m.castShadow = false;
-        m.receiveShadow = true;
-        m.frustumCulled = false;
-        group.add(m);
-        return "again"; // next material next frame — one compile per frame
+  const completeChunkPrepare = (task: ActiveChunkPrepare, prepared: boolean) => {
+    if (activeChunkPrepare !== task) return;
+    const current = chunkPrepareIsCurrent(task);
+    activeChunkPrepare = null;
+    const { cell } = task;
+    if (prepared && current) {
+      try {
+        publishChunk(cell);
+      } catch (error) {
+        // Keep the complete baked fallback if publication itself cannot honor
+        // the atomic swap. This cell remains ineligible for detail/colliders.
+        cell.phase = "fallback";
+        disposeCellChunk(cell);
+        console.warn(`[citygen] prepared cell publication failed (${cell.key}); retaining baked city`, error);
       }
-      if (settle++ < 2) return "again"; // let the last mesh render (+ shadow pass) once
-      ctx.scene.remove(group);
-      geo.dispose();
-    });
+    } else if (current) {
+      // A genuine prepare failure while still current is terminal for this cell.
+      // Retrying a failing owner every scan would trade one hitch for a loop.
+      cell.phase = "fallback";
+      disposeCellChunk(cell);
+    } else if (!disposed && loaded.get(cell.key) === cell) {
+      // Teleport/latest-wins invalidated a non-cancellable compile. If the cell
+      // remains loaded, leave it detached and eligible for the newly centered
+      // nearest-first pass; otherwise retirement owns cleanup below.
+      cell.phase = "awaiting-prepare";
+    } else {
+      disposeCellChunk(cell);
+    }
+    pumpChunkPrepare();
+  };
+
+  // Exactly one cell prepare can exist at a time. Completed cells themselves
+  // are the bounded backlog (the loaded ring); no Promise/FIFO is created for
+  // every finish. Re-selecting nearest to the current center after each result
+  // makes a teleport latest-wins without special locations or device tuning.
+  function pumpChunkPrepare() {
+    if (disposed || activeChunkPrepare || !ctx.prepareRenderOwner) return;
+    // Loop only over malformed completed cells; valid work returns immediately
+    // after starting its sole Promise. This avoids recursive failure depth.
+    while (true) {
+      let nearest: CellState | null = null;
+      let nearestD2 = Infinity;
+      for (const cell of loaded.values()) {
+        if (cell.phase !== "awaiting-prepare" || !cellWithinCurrentPrepareRing(cell)) continue;
+        const d2 = (cell.ix - centerTileX) ** 2 + (cell.iz - centerTileZ) ** 2;
+        if (d2 < nearestD2) { nearest = cell; nearestD2 = d2; }
+      }
+      if (!nearest) return;
+      const mesh = nearest.chunk?.mesh;
+      if (!mesh) {
+        nearest.phase = "fallback";
+        disposeCellChunk(nearest);
+        continue; // a malformed cell must not strand valid cells behind it
+      }
+      nearest.phase = "preparing";
+      const task: ActiveChunkPrepare = {
+        cell: nearest,
+        token: nextChunkPrepareToken++,
+        generation: cellGeneration,
+      };
+      activeChunkPrepare = task;
+      void prepareOwner(`chunk-lod:cell:${nearest.key}:${task.token}`, mesh, () => chunkPrepareIsCurrent(task))
+        .then((prepared) => completeChunkPrepare(task, prepared), (error) => {
+          // prepareOwner catches host/gate failures, but keep this terminal handler
+          // so a future implementation change cannot create an unhandled Promise.
+          if (chunkPrepareIsCurrent(task)) {
+            exteriorPipelinePrepareFailures++;
+            console.warn(`[citygen] detached cell prepare rejected (${task.cell.key})`, error);
+          }
+          completeChunkPrepare(task, false);
+        });
+      return;
+    }
+  }
+
+  // A completed cell keeps its baked tile visible while the actual beauty mesh
+  // prepares detached. Hosts without a prepare callback retain the portable,
+  // immediate atomic swap used before this WebGPU-specific convergence gate.
+  const finishChunk = (cell: CellState) => {
+    if (!ctx.prepareRenderOwner) {
+      publishChunk(cell);
+      return;
+    }
+    cell.phase = "awaiting-prepare";
+    pumpChunkPrepare();
   };
 
   return {
-    count: total,
+    get count() { return total; },
     update(playerPos, dt) {
-      // smoothed player speed (m/s) — fast traversal (flying, boost) shrinks the
-      // effective detail radius below: at 400 m the ring would otherwise churn
-      // builds/fades for buildings that blur past (measured fly-leg hitching)
+      if (disposed) return;
+      const ptx = Math.floor((playerPos.x - minX) / tile);
+      const ptz = Math.floor((playerPos.z - minZ) / tile);
+      const destinationChanged = ptx !== centerTileX || ptz !== centerTileZ;
+      if (destinationChanged) {
+        centerTileX = ptx;
+        centerTileZ = ptz;
+        cellGeneration++;
+        // Invalidate origin work before ANY per-frame chunk/scheduler producer
+        // gets another turn. Force the relocation through the scan below instead
+        // of waiting up to SCAN_EVERY after a teleport.
+        cellQueue.length = 0;
+        activeCellHydration = null;
+        pendingCells.clear();
+        accum = SCAN_EVERY;
+        // Re-rank completed detached cells around the new destination. An
+        // in-flight old-generation prepare remains serialized but cannot publish.
+        pumpChunkPrepare();
+      }
+      // Smoothed player speed (m/s) throttles only NEW detail admission below.
+      // Existing detail remains at the fixed authored quality/radius, so speeding
+      // up cannot dissolve a district and slowing down cannot rebuild-wave it.
       if (dt > 1e-4) {
         const inst = lastPlayer.distanceTo(playerPos) / dt;
         if (inst < 200) speedEma += (inst - speedEma) * Math.min(1, dt * 2.5);
       }
       lastPlayer.copy(playerPos); // read by queued coll jobs (anti-wedge) + stale-build check
-      if (!warmupStarted) startWarmup(playerPos); // one-shot pipeline warmup rig
       // per-frame: interior gate + detail crossfade + chunk merging
       const previousInside = insideBuilding;
       insideBuilding = null;
       for (const e of detailSet) gateInterior(e, playerPos, e === previousInside);
       advanceFades(dt);
       advanceDoors(dt);
-      if (building.length) {
+      if (building.length && !destinationChanged) {
         const cell = building[0]; // one cell slice per frame (bounded, no hitch)
         cell.chunk!.pump(CHUNK_BUDGET);
         if (cell.chunk!.done) { finishChunk(cell); building.shift(); }
@@ -1186,8 +1829,6 @@ export async function createCityGenRing(
       if (accum < SCAN_EVERY) return;
       accum = 0;
 
-      const ptx = Math.floor((playerPos.x - minX) / tile);
-      const ptz = Math.floor((playerPos.z - minZ) / tile);
       // read the live-tunable knobs fresh each scan (dragging a "/" slider re-tunes now).
       // Chunk MESH reach is capped at CHUNK_VISUAL_RADIUS so a large draw-distance
       // vista doesn't stream hundreds of prism cells (Corona/meadow tris). Baked
@@ -1196,14 +1837,18 @@ export async function createCityGenRing(
         1,
         Math.floor(Math.min(CONFIG.tileLoadRadius, CHUNK_VISUAL_RADIUS) / tile)
       );
+      activeCellLoad = cellLoad;
+      pumpChunkPrepare();
       const cellUnload = cellLoad + 1;
-      // fast traversal shrinks the detail ring: above ~18 m/s taper toward a
-      // 160 m floor (street-level trim is unreadable at flight/boost speed, and
-      // the build/fade churn of a full-radius ring was the fly-leg hitch source)
-      const speedT = Math.min(1, Math.max(0, (speedEma - 18) / 22));
-      const detailR = Math.max(Math.min(160, CT.detailRadius), CT.detailRadius * (1 - speedT) + 160 * speedT);
-      const detailR2 = detailR * detailR;
+      // Fixed visual retention/exit band: no runtime quality contraction.
+      const detailR = CT.detailRadius;
       const detailExit = detailR + DETAIL_EXIT_MARGIN, detailExit2 = detailExit * detailExit;
+      // Fast traversal can still avoid starting work that will be passed before
+      // it finishes. This affects candidates only; holders use detailR/detailExit.
+      const speedT = Math.min(1, Math.max(0, (speedEma - 18) / 22));
+      const admissionFloor = Math.min(160, detailR);
+      const admissionR = detailR * (1 - speedT) + admissionFloor * speedT;
+      const admissionR2 = admissionR * admissionR;
       const maxDetail = CT.maxDetail;
       const collR2 = COLLIDER_R * COLLIDER_R, collExit2 = COLLIDER_EXIT * COLLIDER_EXIT;
       // headroom check for the detail budget below — dt is this frame's delta (update()
@@ -1215,17 +1860,30 @@ export async function createCityGenRing(
       for (const cell of [...loaded.values()]) {
         if (Math.abs(cell.ix - ptx) > cellUnload || Math.abs(cell.iz - ptz) > cellUnload) unloadCell(cell);
       }
-      // load cells in range
-      for (let cx = ptx - cellLoad; cx <= ptx + cellLoad; cx++) {
-        for (let cz = ptz - cellLoad; cz <= ptz + cellLoad; cz++) {
-          const key = `${cx}_${cz}`;
-          if (loaded.has(key)) continue;
-          const entries = cellEntries.get(key);
-          if (entries) loadCell(key, entries);
+      pruneDetailBuildBacklog();
+      // Queue cells center-out. Hydration computes live terrain grade only for
+      // destination cells, one host build-lane job at a time. A later teleport
+      // changes generation before stale jobs can materialize origin geometry.
+      const wantedCells: CellRequest[] = [];
+      for (let ix = ptx - cellLoad; ix <= ptx + cellLoad; ix++) {
+        for (let iz = ptz - cellLoad; iz <= ptz + cellLoad; iz++) {
+          const key = `${ix}_${iz}`;
+          if (!cellRanges.has(key) || loaded.has(key) || retiringCells.has(key)) continue;
+          if (materializedCells.has(key) && materializedCells.get(key)!.length === 0) continue;
+          if (pendingCells.get(key) === cellGeneration) continue;
+          wantedCells.push({ key, ix, iz, d2: (ix - ptx) ** 2 + (iz - ptz) ** 2, generation: cellGeneration });
         }
       }
+      wantedCells.sort((a, b) => a.d2 - b.d2);
+      for (const cellRequest of wantedCells) {
+        pendingCells.set(cellRequest.key, cellRequest.generation);
+        cellQueue.push(cellRequest);
+      }
+      ensureCellHydrationPump();
 
-      // two tiers within detailR: the nearest-N get the full grammar MESH (budgeted,
+      // Two tiers within the fixed detail ring: current holders retain authored
+      // quality throughout it, while only NEW candidates use admissionR. The
+      // nearest-N admitted candidates get the full grammar MESH (budgeted,
       // expensive); everyone else in range gets a tight exact-poly COLLIDER (cheap)
       // so the car never hits the loose baked box on a building drawn as its prism.
       //
@@ -1245,7 +1903,7 @@ export async function createCityGenRing(
           const d2 = dx * dx + dz * dz;
           if (e.detail) {
             haveDetail.push([e, d2]);
-          } else if (d2 < detailR2) {
+          } else if (d2 < admissionR2) {
             candidates.push([e, d2]);
           }
           if (!e.detail) {
@@ -1276,6 +1934,10 @@ export async function createCityGenRing(
       for (const [e] of haveDetail) if (playerOccupiesDetail(e)) keep.add(e);
       const costOf = (e: Entry): number => {
         if (e.cost === undefined) {
+          // Entry hydration normally guarantees this. Keep the cache invariant
+          // explicit so a future alternate source can never permanently price a
+          // sloped building from baked `base` before live grade is available.
+          if (e.grade === undefined) e.grade = footprintGrade(e.poly, e.base, e.top, ctx.map);
           let per = 0;
           for (let k = 0; k < e.poly.length; k++) {
             const [x0, z0] = e.poly[k], [x1, z1] = e.poly[(k + 1) % e.poly.length];
@@ -1301,7 +1963,7 @@ export async function createCityGenRing(
         // past the count cap.
         const holder = e.detail && e.fadeDir >= 0;
         if (!holder) {
-          if (d2 > detailR2) continue; // candidates need the entry band
+          if (d2 > admissionR2) continue; // new candidates need the speed-throttled entry band
           if (c > costLeft) continue; // facade-area budget spent — skip big, keep filling small
         }
         costLeft -= c;
@@ -1332,7 +1994,8 @@ export async function createCityGenRing(
       for (const [e] of ranked) {
         if (db <= 0 || detailCount >= maxDetail) break;
         if (!keep.has(e) || e.detail || e.pendingBuild) continue;
-        requestDetail(e); db--; detailCount++;
+        if (!requestDetail(e)) break;
+        db--; detailCount++;
       }
       // then tighten the nearest still-loose colliders (cheap; guard skips any that
       // just upgraded to detail this scan)
@@ -1341,13 +2004,37 @@ export async function createCityGenRing(
       for (const [e] of wantColl) { if (cb <= 0) break; if (e.state !== "lod") continue; ensureExactCollider(e); cb--; }
     },
     dispose() {
+      if (disposed) return;
+      disposed = true;
+      cellGeneration++;
+      cellQueue.length = 0;
+      activeCellHydration = null;
+      pendingCells.clear();
+      if (activeDetailBuild) clearTimeout(activeDetailBuild.timer);
+      activeDetailBuild = null;
+      detailBuildQueue.length = 0;
       buildWorker?.terminate();
       buildWorker = null;
-      pendingBuilds.clear();
-      for (const cell of [...loaded.values()]) unloadCell(cell); // → dropDetail → resetDoorRt per entry
+      for (const e of detailBuildReservations) e.pendingBuild = false;
+      detailBuildReservations.clear();
+      detailBuildReservationOf.clear();
+      // Teardown owns the whole world and must not leave scheduled bodies/meshes
+      // behind. Finish both live and already-sliced retirements synchronously.
+      for (const cell of [...loaded.values()]) finishCellRetirementNow({ cell, cursor: 0 });
+      for (const task of [...retiringCells.values()]) finishCellRetirementNow(task);
+      activeCellRetirement = null;
+      retireQueue.length = 0;
+      cellRetirementScheduled = false;
       moduleLayer.dispose();
       shellBatch.dispose();
+      renderRoot.removeFromParent();
+      chunkLODBeautyWarmup?.dispose();
+      chunkLODBeautyWarmup = null;
+      for (const material of new Set(Object.values(materials))) material.dispose();
       loaded.clear();
+      materializedCells.clear();
+      cellRanges.clear();
+      excludedPacked.clear();
       building.length = 0;
       activeDoors.length = 0;
       doorRegistry.clear();
@@ -1358,7 +2045,16 @@ export async function createCityGenRing(
     stats() {
       let buildings = 0, detail = 0, interiors = 0;
       for (const cell of loaded.values()) { buildings += cell.entries.length; for (const e of cell.entries) { if (e.detail) detail++; if (e.interior) interiors++; } }
-      return { total, cells: loaded.size, buildings, detail, interiors };
+      const shell = shellBatch.stats();
+      return {
+        total, cells: loaded.size, buildings, detail, interiors,
+        exteriorPipelinesPrepared,
+        exteriorPipelinePrepareFailures,
+        shellBatches: shell.batches,
+        shellPreparedBatches: shell.preparedBatches,
+        shellGeometryVertexCapacity: shell.geometryVertexCapacity,
+        shellGeometryIndexCapacity: shell.geometryIndexCapacity,
+      };
     },
     isPlayerInside() { return insideBuilding !== null; },
     debugBuildings() {

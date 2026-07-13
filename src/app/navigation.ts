@@ -1,4 +1,3 @@
-import type { ChaseCamera } from "../core/camera";
 import type { Player } from "../player/player";
 import type { PlayerMode } from "../player/types";
 import type { RemotePlayers } from "../net/remotes";
@@ -7,6 +6,7 @@ import type { TileStreamer } from "../world/tiles";
 import type { WorldMap } from "../world/heightmap";
 import { findOpenSpawn } from "../world/spawn";
 import type { EmbodimentController } from "./player/embodimentController";
+import type { WorldArrivalCoordinator } from "./worldArrival";
 
 type PlaceHistoryEntry = {
   x: number;
@@ -18,66 +18,45 @@ type PlaceHistoryEntry = {
 };
 
 const PLACE_HISTORY_LIMIT = 32;
+// Recovery helpers begin with 10–20 m probes. Treat any meaningful helper
+// relocation as an arrival cut so a short shore/deck correction can never
+// leak through the chase camera as a visible lerp.
+const COVERED_MODE_RELOCATION_DISTANCE = 8;
+const aborted = () => new DOMException("Navigation superseded", "AbortError");
 
 /** Teleport/mode history and remote-player navigation, isolated from UI wiring. */
 export class NavigationController {
   onTeleported: () => void = () => {};
 
   #player: Player;
-  #chase: ChaseCamera;
   #hud: HUD;
   #map: WorldMap;
   #tiles: TileStreamer;
   #remotes: RemotePlayers;
   #embodiments: EmbodimentController;
+  #arrival: WorldArrivalCoordinator;
   #releaseGameplay: () => void;
   #history: PlaceHistoryEntry[] = [];
   #historyIndex = -1;
 
   constructor(opts: {
     player: Player;
-    chase: ChaseCamera;
     hud: HUD;
     map: WorldMap;
     tiles: TileStreamer;
     remotes: RemotePlayers;
     embodiments: EmbodimentController;
+    arrival: WorldArrivalCoordinator;
     releaseGameplay: () => void;
   }) {
     this.#player = opts.player;
-    this.#chase = opts.chase;
     this.#hud = opts.hud;
     this.#map = opts.map;
     this.#tiles = opts.tiles;
     this.#remotes = opts.remotes;
     this.#embodiments = opts.embodiments;
+    this.#arrival = opts.arrival;
     this.#releaseGameplay = opts.releaseGameplay;
-  }
-
-  begin(label: string): void {
-    const current = this.#capture(label);
-    if (this.#historyIndex < 0) {
-      this.#history = [current];
-      this.#historyIndex = 0;
-    } else {
-      this.#history[this.#historyIndex] = current;
-      this.#history = this.#history.slice(0, this.#historyIndex + 1);
-    }
-    this.#updateHud();
-  }
-
-  finish(label: string): void {
-    const next = this.#capture(label);
-    if (this.#historyIndex >= 0 && this.#same(this.#history[this.#historyIndex], next)) {
-      this.#history[this.#historyIndex] = next;
-      this.#updateHud();
-      return;
-    }
-    this.#history = this.#history.slice(0, this.#historyIndex + 1);
-    this.#history.push(next);
-    if (this.#history.length > PLACE_HISTORY_LIMIT) this.#history.shift();
-    this.#historyIndex = this.#history.length - 1;
-    this.#updateHud();
   }
 
   applyHistory(step: -1 | 1): void {
@@ -87,82 +66,199 @@ export class NavigationController {
       this.#updateHud();
       return;
     }
-    this.#releaseGameplay();
-    if (this.#historyIndex >= 0) {
-      this.#history[this.#historyIndex] = this.#capture(this.#history[this.#historyIndex].label);
-    }
+    const origin = this.#capture(
+      this.#historyIndex >= 0 ? this.#history[this.#historyIndex].label : "Previous place"
+    );
     const spot = this.#history[nextIndex];
-    this.#embodiments.exitToWalk();
-    if (spot.mode === "drive") this.#player.setDriveStyle(null);
-    if (spot.mode === "drone") this.#player.clearDroneStyle();
-    this.#player.restoreState({
-      mode: spot.mode,
-      x: spot.x,
-      y: spot.y,
-      z: spot.z,
-      heading: spot.heading
+    void this.#arrival.arrive({
+      label: spot.label,
+      resolve: async (signal) => {
+        if (signal.aborted) throw aborted();
+        return {
+          x: spot.x,
+          y: spot.y,
+          z: spot.z,
+          cameraYaw: spot.heading + Math.PI,
+          commit: () => {
+            this.#releaseGameplay();
+            this.#embodiments.exitToWalk();
+            if (spot.mode === "drive") this.#player.setDriveStyle(null);
+            if (spot.mode === "drone") this.#player.clearDroneStyle();
+            this.#player.restoreState(spot);
+          }
+        };
+      },
+      onCommitted: () => {
+        if (this.#historyIndex >= 0) this.#history[this.#historyIndex] = origin;
+        this.#historyIndex = nextIndex;
+        this.#updateHud();
+        this.#hud.message(spot.label, 2.2);
+        this.onTeleported();
+      },
+      onVisualBlocked: () => this.#hud.message("This place is still loading — press M and choose another spot", 6),
+      onCollisionBlocked: () => this.#hud.message("Still settling the ground — movement is held safely", 3),
+      onError: () => this.#hud.message("That place could not be restored", 2.2)
     });
-    this.#chase.yaw = spot.heading + Math.PI;
-    this.#historyIndex = nextIndex;
-    this.#updateHud();
-    this.#hud.message(spot.label, 2.2);
   }
 
   switchMode(mode: PlayerMode): void {
-    if (mode === this.#player.mode) return;
+    if (mode === this.#player.mode || this.#arrival.active) return;
+    const relocation = this.#embodiments.modeSwitchRelocation(mode);
+    if (
+      relocation &&
+      Math.hypot(relocation.x - this.#player.position.x, relocation.z - this.#player.position.z) >=
+        COVERED_MODE_RELOCATION_DISTANCE
+    ) {
+      void this.#arrival.arrive({
+        label: relocation.label,
+        resolve: async (signal) => {
+          if (signal.aborted) throw aborted();
+          return {
+            x: relocation.x,
+            y: relocation.y,
+            z: relocation.z,
+            cameraYaw: this.#player.heading + Math.PI,
+            commit: () => {
+              this.#releaseGameplay();
+              // Seed the previewed destination first. The mode's own enter()
+              // still runs under cover and performs its exact wave/shore/body
+              // placement, but now sees the intended region as already local.
+              this.#player.position.set(relocation.x, relocation.y, relocation.z);
+              this.#embodiments.switchMode(mode);
+            }
+          };
+        },
+        onCommitted: () => this.onTeleported(),
+        onVisualBlocked: () => this.#hud.message("This place is still loading — press M and choose another spot", 6),
+        onCollisionBlocked: () => this.#hud.message("Still settling the ground — movement is held safely", 3),
+        onError: () => this.#hud.message("That mode could not find a safe starting place", 2.2)
+      });
+      return;
+    }
     this.#releaseGameplay();
     this.#embodiments.switchMode(mode);
   }
 
   teleportToTarget(x: number, z: number, toName?: string, playerId?: number): void {
-    this.#releaseGameplay();
-    void this.#teleport(x, z, toName, playerId);
-  }
-
-  async #teleport(x: number, z: number, toName?: string, playerId?: number): Promise<void> {
-    const target = playerId !== undefined ? this.#remotes.stateOf(playerId) : null;
-    if (playerId !== undefined && !target) {
+    if (playerId !== undefined && !this.#remotes.stateOf(playerId)) {
       this.#hud.message(`${toName ?? "Player"} is no longer available`, 2.2);
       return;
     }
-    this.begin("Previous place");
-    this.#embodiments.leaveRide();
-    const tx = target?.x ?? x;
-    const tz = target?.z ?? z;
-    const dx = tx - this.#player.position.x;
-    const dz = tz - this.#player.position.z;
-    const distance = Math.hypot(dx, dz) || 1;
-    const back = target ? Math.min(3, distance) : 0;
-    const heading = Math.atan2(-dx, -dz);
+    const origin = this.#capture("Previous place");
+    void this.#arrival.arrive({
+      label: toName,
+      resolve: async (signal) => {
+        const target = playerId !== undefined ? this.#remotes.stateOf(playerId) : null;
+        if (playerId !== undefined && !target) throw new Error(`${toName ?? "Player"} is no longer available`);
+        if (signal.aborted) throw aborted();
 
-    if (target) {
-      // Drop a local vehicle/surf session when it would otherwise stick across the
-      // jump (same idea as applyHistory). Keep the mode when joining the same one.
-      if (this.#player.mode !== "walk" && this.#player.mode !== target.mode) {
-        this.#embodiments.exitToWalk();
+        const tx = target?.x ?? x;
+        const tz = target?.z ?? z;
+        const dx = tx - this.#player.position.x;
+        const dz = tz - this.#player.position.z;
+        const distance = Math.hypot(dx, dz) || 1;
+        const back = target ? Math.min(3, distance) : 0;
+        const heading = Math.atan2(-dx, -dz);
+
+        if (target) {
+          const arrivalX = tx - (dx / distance) * back;
+          const arrivalZ = tz - (dz / distance) * back;
+          return {
+            x: arrivalX,
+            y: target.y,
+            z: arrivalZ,
+            cameraYaw: heading,
+            commit: () => {
+              this.#releaseGameplay();
+              this.#embodiments.leaveRide();
+              if (this.#player.mode !== "walk" && this.#player.mode !== target.mode) {
+                this.#embodiments.exitToWalk();
+              }
+              if (target.mode !== "drive") this.#embodiments.dropCurrentDriveMount();
+              this.#player.teleportTo({
+                x: arrivalX,
+                y: target.y,
+                z: arrivalZ,
+                facing: heading,
+                mode: target.mode
+              });
+            }
+          };
+        }
+
+        const open = await findOpenSpawn(
+          this.#map,
+          this.#tiles.manifest,
+          { x: tx, z: tz, heading },
+          12,
+          200,
+          { signal }
+        );
+        if (signal.aborted) throw aborted();
+        const faceDx = tx - open.x;
+        const faceDz = tz - open.z;
+        const faceHeading = Math.hypot(faceDx, faceDz) > 0.5
+          ? Math.atan2(-faceDx, -faceDz)
+          : open.heading;
+        return {
+          x: open.x,
+          z: open.z,
+          cameraYaw: faceHeading,
+          commit: () => {
+            this.#releaseGameplay();
+            this.#embodiments.leaveRide();
+            this.#embodiments.exitToWalk();
+            this.#player.respawn({ x: open.x, z: open.z, heading: faceHeading });
+          }
+        };
+      },
+      onCommitted: () => {
+        this.#commitNewPlace(origin, toName ?? "Teleported place");
+        this.#hud.message(toName ? `Teleported to ${toName}` : "Teleported", 2.4);
+        this.onTeleported();
+      },
+      onVisualBlocked: () => this.#hud.message("This place is still loading — press M and choose another spot", 6),
+      onCollisionBlocked: () => this.#hud.message("Still settling the ground — movement is held safely", 3),
+      onError: (error) => {
+        const message = error instanceof Error && error.message.includes("no longer available")
+          ? error.message
+          : "That destination could not be loaded";
+        this.#hud.message(message, 2.2);
       }
-      if (target.mode !== "drive") this.#embodiments.dropCurrentDriveMount();
-      this.#player.teleportTo({
-        x: tx - (dx / distance) * back,
-        y: target.y,
-        z: tz - (dz / distance) * back,
-        facing: heading,
-        mode: target.mode
-      });
-    } else {
-      // Landmark / map pin: end surf, vehicles, and rides first so we land on foot
-      // instead of staying strapped to a board at an inland spawn.
-      this.#embodiments.exitToWalk();
-      const open = await findOpenSpawn(this.#map, this.#tiles.manifest, { x: tx, z: tz, heading });
-      const faceDx = tx - open.x;
-      const faceDz = tz - open.z;
-      const faceHeading = Math.hypot(faceDx, faceDz) > 0.5 ? Math.atan2(-faceDx, -faceDz) : open.heading;
-      this.#player.respawn({ x: open.x, z: open.z, heading: faceHeading });
-    }
+    });
+  }
 
-    this.finish(toName ?? "Teleported place");
-    this.#hud.message(toName ? `Teleported to ${toName}` : "Teleported", 2.4);
-    this.onTeleported();
+  /** Route authored/tutorial relocation through the same atomic arrival path. */
+  teleportToPose(
+    target: { x: number; y: number; z: number; facing: number; mode: PlayerMode },
+    label = "Tutorial place"
+  ): void {
+    const origin = this.#capture("Previous place");
+    void this.#arrival.arrive({
+      label,
+      resolve: async (signal) => {
+        if (signal.aborted) throw aborted();
+        return {
+          x: target.x,
+          y: target.y,
+          z: target.z,
+          cameraYaw: target.facing,
+          commit: () => {
+            this.#releaseGameplay();
+            this.#embodiments.leaveRide();
+            this.#embodiments.dropCurrentDriveMount();
+            this.#player.teleportTo(target);
+          }
+        };
+      },
+      onCommitted: () => {
+        this.#commitNewPlace(origin, label);
+        this.onTeleported();
+      },
+      onVisualBlocked: () => this.#hud.message("This place is still loading — press M and choose another spot", 6),
+      onCollisionBlocked: () => this.#hud.message("Still settling the ground — movement is held safely", 3),
+      onError: () => this.#hud.message("That destination could not be loaded", 2.2)
+    });
   }
 
   #capture(label: string): PlaceHistoryEntry {
@@ -174,6 +270,27 @@ export class NavigationController {
       mode: this.#player.mode,
       label
     };
+  }
+
+  /** Apply the old begin+finish pair atomically after relocation commits. */
+  #commitNewPlace(origin: PlaceHistoryEntry, destinationLabel: string): void {
+    if (this.#historyIndex < 0) {
+      this.#history = [origin];
+      this.#historyIndex = 0;
+    } else {
+      this.#history[this.#historyIndex] = origin;
+      this.#history = this.#history.slice(0, this.#historyIndex + 1);
+    }
+
+    const destination = this.#capture(destinationLabel);
+    if (this.#same(this.#history[this.#historyIndex], destination)) {
+      this.#history[this.#historyIndex] = destination;
+    } else {
+      this.#history.push(destination);
+      if (this.#history.length > PLACE_HISTORY_LIMIT) this.#history.shift();
+      this.#historyIndex = this.#history.length - 1;
+    }
+    this.#updateHud();
   }
 
   #same(a: PlaceHistoryEntry, b: PlaceHistoryEntry): boolean {
@@ -191,4 +308,3 @@ export class NavigationController {
     );
   }
 }
-

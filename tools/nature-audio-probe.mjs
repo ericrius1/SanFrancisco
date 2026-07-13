@@ -154,7 +154,11 @@ async function main() {
   const dev = (devProc = await startDevIfNeeded());
   const chrome = findChrome();
   const port = await freePort();
-  const profile = path.join(ROOT, ".data", "nature-audio-chrome");
+  const profile = path.join(ROOT, ".data", `nature-audio-chrome-${process.pid}`);
+  const appUrl = new URL(SERVER_URL);
+  appUrl.searchParams.set("autostart", "1");
+  appUrl.searchParams.set("fullfps", "1");
+  appUrl.searchParams.set("profile", "1");
   const proc = (chromeProc = spawn(
     chrome,
     [
@@ -162,12 +166,16 @@ async function main() {
       "--headless=new",
       `--remote-debugging-port=${port}`,
       "--enable-unsafe-webgpu",
+      "--enable-features=WebGPUDeveloperFeatures,SharedArrayBuffer",
       "--use-angle=metal",
       "--autoplay-policy=no-user-gesture-required",
+      "--disable-background-timer-throttling",
+      "--disable-backgrounding-occluded-windows",
+      "--disable-renderer-backgrounding",
       "--mute-audio",
       "--hide-scrollbars",
       "--window-size=1280,720",
-      `${SERVER_URL}/?autostart&fullfps`
+      appUrl.href
     ],
     { cwd: ROOT, stdio: "ignore" }
   ));
@@ -195,7 +203,8 @@ async function main() {
   await c.send("Page.enable");
   await c.send("Runtime.enable");
 
-  console.log("[probe] waiting for __sf...");
+  const bootState = await ev(c, `({url:location.href,ready:document.readyState,title:document.title,body:(document.body?.innerText||"").slice(0,160),sf:!!window.__sf})`);
+  console.log("[probe] waiting for __sf...", JSON.stringify(bootState));
   const t0 = Date.now();
   let ready = false;
   while (Date.now() - t0 < 150000) {
