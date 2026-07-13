@@ -38,9 +38,8 @@ import type { TeaGardenTerrain } from "./layout";
  * back into their shoulders; short, capped settling then lets sharp cuts slump
  * into believable grains without turning into water.
  *
- * TSL storage buffers are used instead of storage textures so the exact same
- * code runs on Three's WebGPU backend and its WebGL2 transform-feedback/PBO
- * fallback. There are no CPU readbacks.
+ * TSL storage buffers keep the full simulation on WebGPU. There are no CPU
+ * readbacks and no compatibility path for another rendering backend.
  */
 
 const GRID_WIDTH = 192;
@@ -143,10 +142,6 @@ type QueuedStamp = {
 
 type SandStorageAttribute = THREE.StorageInstancedBufferAttribute | THREE.StorageBufferAttribute;
 
-type PboBackedAttribute = SandStorageAttribute & {
-  pbo?: THREE.Texture;
-};
-
 function normalised(point: SandSimulationPoint, fallbackX: number, fallbackZ: number): SandSimulationPoint {
   let x = point.x;
   let z = point.z;
@@ -217,9 +212,7 @@ function initialHeight(
 }
 
 function disposeStorageBuffer(node: { value: SandStorageAttribute }): void {
-  const attribute = node.value as PboBackedAttribute;
-  attribute.pbo?.dispose();
-  releaseRendererAttribute(attribute);
+  releaseRendererAttribute(node.value);
 }
 
 export function createSandSimulation(options: SandSimulationOptions): SandSimulation {
@@ -282,18 +275,17 @@ export function createSandSimulation(options: SandSimulationOptions): SandSimula
   geometry.computeBoundingSphere();
   if (geometry.boundingSphere) geometry.boundingSphere.radius += MAX_RENDER_RELIEF;
 
-  // vec4 is deliberate: Three r185 pads storage vec3 on WebGPU, while vec4 has
-  // identical alignment and fallback representation on both backends.
+  // vec4 keeps every cell naturally aligned to a 16-byte WebGPU storage slot.
   const initial = instancedArray(initialState, "vec4").toReadOnly();
   const stateA = instancedArray(CELL_COUNT, "vec4");
   const stateB = instancedArray(CELL_COUNT, "vec4");
   const flux = instancedArray(CELL_COUNT, "vec4");
 
-  // Arbitrary neighbour reads become storage-buffer loads on WebGPU and exact
-  // texelFetch PBO reads on WebGL2. All writes remain transform-feedback safe.
-  const stateARead = storage(stateA.value, "vec4", CELL_COUNT).setPBO(true).toReadOnly();
-  const stateBRead = storage(stateB.value, "vec4", CELL_COUNT).setPBO(true).toReadOnly();
-  const fluxRead = storage(flux.value, "vec4", CELL_COUNT).setPBO(true).toReadOnly();
+  // Separate read-only views permit arbitrary neighbour loads while the write
+  // nodes remain valid storage-buffer destinations in the compute pipelines.
+  const stateARead = storage(stateA.value, "vec4", CELL_COUNT).toReadOnly();
+  const stateBRead = storage(stateB.value, "vec4", CELL_COUNT).toReadOnly();
+  const fluxRead = storage(flux.value, "vec4", CELL_COUNT).toReadOnly();
 
   const reposeThresholdU = uniform(Math.tan(THREE.MathUtils.degToRad(32)) * meanCellSize);
   const avalancheRateU = uniform(0.46);
@@ -448,7 +440,7 @@ export function createSandSimulation(options: SandSimulationOptions): SandSimula
   const fluxBCompute = buildFlux(stateBRead);
   const integrateBACompute = buildIntegrate(stateBRead, stateA);
   const settleGroup = [fluxACompute, integrateABCompute, fluxBCompute, integrateBACompute];
-  const primeGroup = [...settleGroup, resetCompute];
+  const warmupGroup = [...settleGroup, resetCompute];
 
   const renderedState = vertexStage(
     Fn(() => stateARead.element(vertexIndex))()
@@ -499,7 +491,7 @@ export function createSandSimulation(options: SandSimulationOptions): SandSimula
   let accumulator = 0;
   let dirtySeconds = 0;
   let disposed = false;
-  let primed = false;
+  let warmed = false;
 
   const countDispatches = (count: number) => {
     stats.dispatches += count;
@@ -531,13 +523,12 @@ export function createSandSimulation(options: SandSimulationOptions): SandSimula
     stats.dispatches = 0;
     syncTuning();
 
-    if (!primed) {
-      // On WebGL2, compile neighbour-read PBO consumers before the final reset
-      // producer. This guarantees its first transform-feedback write is copied
-      // into every PBO; reset is last, so no warm-up state reaches the surface.
-      renderer.compute(primeGroup);
-      countDispatches(primeGroup.length);
-      primed = true;
+    if (!warmed) {
+      // Compile every WebGPU settle pipeline before the player's first rake.
+      // The reset dispatch runs last, so warm-up writes never reach the surface.
+      renderer.compute(warmupGroup);
+      countDispatches(warmupGroup.length);
+      warmed = true;
     } else {
       renderer.compute(resetCompute);
       countDispatches(1);

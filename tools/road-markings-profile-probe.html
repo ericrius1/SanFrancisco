@@ -10,7 +10,7 @@
 <body>
   <div id="status">loading</div>
   <script type="module">
-    import * as THREE from "/node_modules/three/build/three.module.js";
+    import * as THREE from "three/webgpu";
     import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
     import { MeshoptDecoder } from "three/addons/libs/meshopt_decoder.module.js";
     import { WorldMap } from "/src/world/heightmap.ts";
@@ -19,12 +19,17 @@
     const status = document.querySelector("#status");
     window.addEventListener("error", (e) => { status.textContent = `error: ${e.message}`; document.title = "road-markings-error"; });
     window.addEventListener("unhandledrejection", (e) => { status.textContent = `rejection: ${e.reason}`; document.title = "road-markings-error"; });
-    // The production material is a WebGPU NodeMaterial. This focused geometry
-    // probe uses WebGL and swaps in equivalent flat colours after construction,
-    // allowing it to run on CI/browser surfaces without WebGPU.
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    if (!navigator.gpu) throw new Error("WebGPU is required for this project probe");
+    const rendererOptions = { antialias: true, getFallback: null };
+    const renderer = new THREE.Renderer(
+      new THREE.WebGPUBackend(rendererOptions),
+      rendererOptions
+    );
+    renderer.library = new THREE.StandardNodeLibrary();
     renderer.setPixelRatio(1);
     renderer.setSize(innerWidth, innerHeight);
+    await renderer.init();
+    if (!renderer.backend.isWebGPUBackend) throw new Error("WebGPU backend initialization failed");
     document.body.append(renderer.domElement);
 
     const scene = new THREE.Scene();

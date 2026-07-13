@@ -1,4 +1,5 @@
 import * as THREE from "three/webgpu";
+import type { NatureSoundscape } from "../../audio";
 import type { Physics } from "../../core/physics";
 import type { VoiceOutput } from "../../gameplay/agents/dialogue";
 import type { GardenRakeMotion, GardenRakeTool } from "../../player/gardenRake";
@@ -19,6 +20,14 @@ import {
   type TeaGardenTerrain
 } from "./layout";
 import { createTeaGardenVegetation } from "./vegetation";
+import {
+  JapaneseTeaGardenStreamAudio,
+  TEA_GARDEN_STREAM_AUDIO_TUNING
+} from "./streamAudio";
+import {
+  createTeaGardenWaterSimulation,
+  type TeaGardenWaterDebugState
+} from "./waterSimulation";
 
 export {
   JAPANESE_TEA_GARDEN_CENTER,
@@ -48,12 +57,17 @@ export type JapaneseTeaGardenStats = {
   shrubs: number;
   grassClusters: number;
   rocks: number;
+  waterCells: number;
+  waterTriangles: number;
+  streamRocks: number;
 };
 
 export type JapaneseTeaGardenDebugState = {
   awake: boolean;
   foliageVisible: boolean;
   distanceToGarden: number;
+  water: TeaGardenWaterDebugState;
+  streamAudio: JapaneseTeaGardenStreamAudio["debugState"];
   dryLandscape: DryLandscapeDebugState;
   guide: TeaGardenGuideDebugState;
 };
@@ -73,6 +87,7 @@ export type JapaneseTeaGarden = {
 
 export type JapaneseTeaGardenOptions = {
   renderer: THREE.WebGPURenderer;
+  nature: NatureSoundscape;
   physics?: Physics;
   dialogueSource?: TeaGardenDialogueSource;
   voiceOutput?: VoiceOutput;
@@ -90,8 +105,8 @@ const WAKE_DISTANCE = 720;
 const SLEEP_DISTANCE = 860;
 
 /**
- * Complete, self-owned Tea Garden feature. The content is synchronous today,
- * but `ready` leaves room for streamed architecture/NPC assets later.
+ * Complete, self-owned Tea Garden feature. `ready` joins the streamed hero
+ * architecture textures and authored vegetation before deferred compilation.
  */
 export function createJapaneseTeaGarden(
   map: TeaGardenTerrain,
@@ -103,6 +118,10 @@ export function createJapaneseTeaGarden(
 
   const architecture = createTeaGardenArchitecture(map, options.physics);
   const vegetation = createTeaGardenVegetation(map);
+  const water = createTeaGardenWaterSimulation({ renderer: options.renderer, map });
+  const streamAudio = new JapaneseTeaGardenStreamAudio(options.nature, {
+    surfaceY: water.surfaceY
+  });
   const dryLandscape = createDryLandscape(map, {
     renderer: options.renderer,
     onCarryRake: options.onCarryRake,
@@ -116,7 +135,7 @@ export function createJapaneseTeaGarden(
     onCarryCup: options.onCarryCup
   });
   guide.setWorldVisible(false);
-  group.add(architecture.group, vegetation.group, dryLandscape.group, guide.group);
+  group.add(architecture.group, water.group, vegetation.group, dryLandscape.group, guide.group);
 
   let awake = false;
   let foliageVisible = true;
@@ -131,7 +150,10 @@ export function createJapaneseTeaGarden(
     trees: vegetation.stats.trees,
     shrubs: vegetation.stats.shrubs,
     grassClusters: vegetation.stats.grassClusters,
-    rocks: vegetation.stats.rocks
+    rocks: vegetation.stats.rocks,
+    waterCells: water.stats.activeCells,
+    waterTriangles: water.stats.triangles,
+    streamRocks: water.stats.rocks
   };
 
   const setAwake = (next: boolean) => {
@@ -143,7 +165,7 @@ export function createJapaneseTeaGarden(
 
   return {
     group,
-    ready: vegetation.ready,
+    ready: Promise.all([architecture.ready, vegetation.ready]).then(() => undefined),
     setFoliageVisible(visible: boolean) {
       foliageVisible = visible;
       vegetation.setVisible(visible);
@@ -156,8 +178,10 @@ export function createJapaneseTeaGarden(
       );
       if (!awake && distanceToGarden <= WAKE_DISTANCE) setAwake(true);
       else if (awake && distanceToGarden >= SLEEP_DISTANCE) setAwake(false);
+      streamAudio.update(dt, { playerPos: player });
       if (!awake) return;
       if (foliageVisible) vegetation.update(player);
+      water.update(dt, time, player);
       architecture.update(time);
       dryLandscape.update(dt, time, player, mode);
       guide.update(dt, time, player, camera);
@@ -173,17 +197,26 @@ export function createJapaneseTeaGarden(
     },
     tuningDescriptor() {
       return {
-        id: "japanese-tea-garden-sand",
-        title: "Japanese Tea Garden · GPU sand",
+        id: "japanese-tea-garden-simulations",
+        title: "Japanese Tea Garden · GPU simulations",
         build(folder) {
-          return { monitors: dryLandscape.addTuning(folder) };
+          const flowingWater = folder.addFolder({ title: "flowing water", expanded: true });
+          const sand = folder.addFolder({ title: "raked sand" });
+          const sound = folder.addFolder({ title: "stream sound" });
+          TEA_GARDEN_STREAM_AUDIO_TUNING.bind(sound);
+          return { monitors: [...water.addTuning(flowingWater), ...dryLandscape.addTuning(sand)] };
         },
-        sync: () => dryLandscape.syncTuning()
+        sync: () => {
+          water.syncTuning();
+          dryLandscape.syncTuning();
+        }
       };
     },
     dispose() {
       if (disposed) return;
       disposed = true;
+      streamAudio.dispose();
+      water.dispose();
       guide.dispose();
       dryLandscape.dispose();
       vegetation.dispose();
@@ -196,6 +229,8 @@ export function createJapaneseTeaGarden(
         awake,
         foliageVisible,
         distanceToGarden,
+        water: water.debugState(),
+        streamAudio: streamAudio.debugState,
         dryLandscape: dryLandscape.debugState(),
         guide: guide.debugState()
       };

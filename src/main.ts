@@ -352,7 +352,6 @@ async function boot() {
   };
   const ensureSurfRuntime = () => {
     const surfing = player.mode === "surf";
-    const nearShore = nearOceanBeachShore(player.position.x, player.position.z);
     // Face mesh can warm on the sand; SurfExperience only while actually surfing.
     if (oceanBeachWaves && (!surfing || surfExperience)) return Promise.resolve();
     if (surfRuntimeLoading) return surfRuntimeLoading;
@@ -1874,6 +1873,7 @@ async function boot() {
         const site = teaGardenMod.createJapaneseTeaGarden(map, {
           renderer,
           physics,
+          nature,
           // Conversation is gameplay-critical, so it must remain visible when
           // the optional HUD panels are faded with Tab.
           dialogueParent: document.body,

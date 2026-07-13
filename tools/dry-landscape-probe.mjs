@@ -169,6 +169,38 @@ try {
   // Phase three of the lazy-loading contract: the activity is already loaded;
   // one real rake action must dispatch compute without fetching another asset.
   const actionStart = requests.length;
+  await page.evaluate(({ center }) => {
+    const sf = window.__sf;
+    const z = center.z + 2.8;
+    sf.player.teleportTo({
+      x: center.x,
+      y: sf.map.effectiveGround(center.x, z) + 1.5,
+      z,
+      facing: 0,
+      mode: "walk"
+    });
+  }, { center: CENTER });
+  await page.waitForTimeout(700);
+  const realInputBefore = await page.evaluate(() => ({
+    x: window.__sf.player.renderPosition.x,
+    z: window.__sf.player.renderPosition.z,
+    dispatches: window.__sf.japaneseTeaGarden.debugState().dryLandscape.simulation.totalDispatches
+  }));
+  await page.keyboard.down("w");
+  await page.waitForFunction(() => window.__sf.japaneseTeaGarden.debugState().dryLandscape.raking, undefined, { timeout: 5000 });
+  await page.waitForTimeout(650);
+  await page.keyboard.up("w");
+  const realInputAfter = await page.evaluate(() => ({
+    x: window.__sf.player.renderPosition.x,
+    z: window.__sf.player.renderPosition.z,
+    dispatches: window.__sf.japaneseTeaGarden.debugState().dryLandscape.simulation.totalDispatches
+  }));
+  assert.ok(
+    Math.hypot(realInputAfter.x - realInputBefore.x, realInputAfter.z - realInputBefore.z) > 0.15,
+    "real W input did not move the held-rake player"
+  );
+  assert.ok(realInputAfter.dispatches > realInputBefore.dispatches, "real W input did not rake the GPU sand");
+
   // Feed a smooth S-curve through the same Player + public garden update paths
   // as the live loop. A second sync applies the exact contact packet this frame
   // so the pose audit is deterministic in a throttled headless tab.
@@ -217,6 +249,8 @@ try {
       rightGripError: world(rightGrip).distanceTo(pocket(handR)),
       leftGripError: world(leftGrip).distanceTo(pocket(handL)),
       renderer: {
+        backend: sf.renderer.backend?.constructor?.name ?? null,
+        webgpu: sf.renderer.backend?.isWebGPUBackend === true,
         calls: sf.renderer.info.render.calls,
         triangles: sf.renderer.info.render.triangles,
         geometries: sf.renderer.info.memory.geometries,
@@ -225,6 +259,7 @@ try {
     };
   });
   console.log("[dry-landscape] simulation", JSON.stringify(simulationAudit));
+  assert.equal(simulationAudit.renderer.webgpu, true, "garden did not run on the required WebGPU backend");
   assert.ok(simulationAudit.dry.simulation.totalDispatches > 40, "raking did not execute the granular GPU pipeline");
   assert.ok(simulationAudit.dry.simulation.revision > 10, "sand state did not advance while raking");
   assert.ok(simulationAudit.dry.simulation.queuedStamps <= 18, "bounded stamp queue overflowed");
@@ -269,6 +304,18 @@ try {
   const screenshot = await page.screenshot({ path: `${OUT}/raked-garden.png`, fullPage: false });
   const screenshotStats = await sharp(screenshot).stats();
   assert.ok(screenshotStats.entropy > 2, `dry-garden screenshot appears blank (${screenshotStats.entropy})`);
+  await page.evaluate(({ center }) => {
+    const sf = window.__sf;
+    const eyeX = center.x + 3.8;
+    const eyeZ = center.z + 10.8;
+    const eyeY = sf.map.groundTop(eyeX, eyeZ) + 5.2;
+    const targetY = sf.map.groundTop(center.x, center.z) + 0.75;
+    window.__sfFreeCam([eyeX, eyeY, eyeZ], [center.x, targetY, center.z]);
+  }, { center: CENTER });
+  await page.waitForTimeout(250);
+  const closeScreenshot = await page.screenshot({ path: `${OUT}/raked-garden-close.png`, fullPage: false });
+  const closeStats = await sharp(closeScreenshot).stats();
+  assert.ok(closeStats.entropy > 2, `close dry-garden screenshot appears blank (${closeStats.entropy})`);
 
   const gpuErrors = pageErrors.filter((message) => /WebGPU|GPUValidation|WGSL|storage|compute|render pipeline|bind group|vertex buffer|TypeError/i.test(message));
   assert.deepEqual(gpuErrors, [], `WebGPU errors: ${gpuErrors.join("\n")}`);
@@ -279,9 +326,11 @@ try {
     geometry: geometryAudit,
     pickup: pickupAudit,
     simulation: simulationAudit,
+    realInput: { before: realInputBefore, after: realInputAfter },
     tuning: tuningAudit,
     screenshotEntropy: screenshotStats.entropy,
-    pageErrors: pageErrors.length
+    closeScreenshotEntropy: closeStats.entropy,
+    pageErrors
   }, null, 2));
 } finally {
   await browser.close();

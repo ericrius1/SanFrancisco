@@ -63,7 +63,6 @@ export class SurfCameraController {
   #viewYaw = 0
   #viewPitch = 0
   #fov: number
-  #sightlineLift = 0
   #sightlineLiftSmooth = 0
   #waterClearance = 0
 
@@ -81,7 +80,6 @@ export class SurfCameraController {
     this.#viewYaw = 0
     this.#viewPitch = 0
     this.#fov = this.#baseFov
-    this.#sightlineLift = 0
     this.#sightlineLiftSmooth = 0
     this.#waterClearance = 0
   }
@@ -223,7 +221,6 @@ export class SurfCameraController {
         (rawLift - this.#sightlineLiftSmooth) *
         expSmooth(smoothDt, tuning.positionResponse)
     }
-    this.#sightlineLift = this.#sightlineLiftSmooth
     this.#position.copy(this.#basePosition)
     this.#position.y += this.#sightlineLiftSmooth
 

@@ -46,8 +46,11 @@ const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf
 const citygenSource = readFileSync(new URL("../src/world/citygen/stream/ring.ts", import.meta.url), "utf8");
 const tourSource = readFileSync(new URL("../src/world/japaneseTeaGarden/dialogue.ts", import.meta.url), "utf8");
 const architectureSource = readFileSync(new URL("../src/world/japaneseTeaGarden/architecture.ts", import.meta.url), "utf8");
+const teaGardenIndexSource = readFileSync(new URL("../src/world/japaneseTeaGarden/index.ts", import.meta.url), "utf8");
 const dryLandscapeSource = readFileSync(new URL("../src/world/japaneseTeaGarden/dryLandscape.ts", import.meta.url), "utf8");
 const sandSimulationSource = readFileSync(new URL("../src/world/japaneseTeaGarden/sandSimulation.ts", import.meta.url), "utf8");
+const waterSimulationSource = readFileSync(new URL("../src/world/japaneseTeaGarden/waterSimulation.ts", import.meta.url), "utf8");
+const streamAudioSource = readFileSync(new URL("../src/world/japaneseTeaGarden/streamAudio.ts", import.meta.url), "utf8");
 const vegetationSource = readFileSync(new URL("../src/world/japaneseTeaGarden/vegetation.ts", import.meta.url), "utf8");
 const clothSource = readFileSync(new URL("../src/fx/cloth.ts", import.meta.url), "utf8");
 const costumeSource = readFileSync(new URL("../src/world/japaneseTeaGarden/hiroCostume.ts", import.meta.url), "utf8");
@@ -72,9 +75,28 @@ for (const landmarkPart of [
   "drum_bridge_worn_stair_treads",
   "drum_bridge_six_laminated_arch_ribs",
   "drum_bridge_joined_upper_and_lower_rails",
-  "drum_bridge_square_balustrade_posts"
+  "drum_bridge_square_balustrade_posts",
+  "drum_bridge_layered_outer_arch_fascias",
+  "drum_bridge_round_handrails",
+  "drum_bridge_visible_joinery_pegs",
+  "drum_bridge_turned_landing_finials"
 ]) {
   assert.ok(architectureSource.includes(landmarkPart), `beauty-pass landmark part missing: ${landmarkPart}`);
+}
+assert.equal(architectureSource.includes("woodGrainTexture"), false, "procedural Drum Bridge grain returned");
+assert.match(architectureSource, /loadTexture\(`\$\{textureRoot\}\/painted-timber-basecolor`/, "painted bridge texture is not using the app loader");
+assert.match(teaGardenIndexSource, /Promise\.all\(\[architecture\.ready, vegetation\.ready\]\)/, "bridge texture readiness is not joined into the deferred site gate");
+for (const stem of [
+  "painted-timber-basecolor",
+  "painted-timber-normal",
+  "worn-timber-basecolor",
+  "worn-timber-normal"
+]) {
+  assert.ok(architectureSource.includes(stem), `Drum Bridge does not mount texture ${stem}`);
+  for (const extension of ["ktx2", "webp"]) {
+    const file = new URL(`../public/japanese-tea-garden/drum-bridge/${stem}.${extension}`, import.meta.url);
+    assert.ok(statSync(file).size > 100_000, `Drum Bridge runtime texture is missing or unexpectedly tiny: ${stem}.${extension}`);
+  }
 }
 assert.equal(architectureSource.includes("tea_house_core"), false, "sealed Tea House core collider returned");
 for (const art of ["misty-pines.webp", "drum-bridge-moon.webp", "koi-ginkgo.webp", "four-seasons.webp"]) {
@@ -112,6 +134,66 @@ assert.equal(sandSimulationSource.includes("readBuffer"), false, "GPU sand intro
 assert.equal(dryLandscapeSource.includes("dry_garden_player_rake_trails"), false, "legacy box-line rake trails returned");
 assert.match(vegetationSource, /inDryLandscape\(px, pz, 1\.2\)/, "Tea Garden grass can clip into the sand rim");
 assert.equal(mainSource.includes('from "./world/japaneseTeaGarden/dryLandscape"'), false, "rake activity leaked into the boot-critical main chunk");
+
+// Connected-water contract: one direct-WebGPU shallow-water field owns both
+// the Drum Bridge stream and south pond. The old concave centroid-scaled banks
+// and terrain-draped static sheets caused the asphalt wedge and water clipping
+// reported by players, so source-level regression checks intentionally reject
+// those implementation seams before the browser probe judges the live field.
+assert.match(architectureSource, /inTeaGardenWater\(x, z, waterMargin\)/, "Tea Garden paths can overlap the water again");
+assert.equal(architectureSource.includes("function ringMesh("), false, "malformed centroid-scaled stone banks returned");
+assert.equal(architectureSource.includes("_stone_bank"), false, "legacy asphalt-looking stone-bank mesh returned");
+assert.equal(architectureSource.includes("function shapeMesh("), false, "legacy terrain-draped static water returned");
+for (const identity of [
+  "japanese_tea_garden_unified_flowing_water",
+  "tea_garden_unified_webgpu_shallow_water_surface",
+  "tea_garden_narrow_green_shoreline_bank",
+  "tea_garden_stream_eddy_obstacle_rocks"
+]) {
+  assert.ok(waterSimulationSource.includes(identity), `connected-water identity missing: ${identity}`);
+}
+for (const seam of [
+  "instancedArray",
+  "storage(",
+  "renderer.compute(solverGroup)",
+  "derivatives",
+  "divergence",
+  "curl",
+  "vorticity",
+  "foam",
+  "releaseRendererAttribute",
+  "TEA_GARDEN_STREAM_AUDIO_ANCHORS.eddies.map"
+]) {
+  assert.ok(waterSimulationSource.includes(seam), `WebGPU shallow-water seam missing: ${seam}`);
+}
+for (const legacy of [".setPBO(", "readBuffer", "new THREE.WebGLRenderer", "WebGLBackend"]) {
+  assert.equal(waterSimulationSource.includes(legacy), false, `WebGPU water introduced a legacy/readback path: ${legacy}`);
+}
+assert.match(waterSimulationSource, /requires the WebGPU backend/, "water no longer fails clearly without WebGPU");
+assert.match(waterSimulationSource, /TEA_GARDEN_WATER_DROP = 0\.8/, "authored stream-to-pond grade disappeared");
+assert.match(waterSimulationSource, /WATER_TUNING_FOLDERS/, "water tuning metadata is no longer colocated with defaults");
+assert.match(teaGardenIndexSource, /createTeaGardenWaterSimulation/, "connected water is not integrated into the lazy Tea Garden");
+assert.match(teaGardenIndexSource, /water\.update\(dt, time, player\)/, "connected water is not advanced by the Tea Garden update");
+assert.match(teaGardenIndexSource, /surfaceY:\s*water\.surfaceY/, "water audio no longer shares the authored surface grade");
+assert.match(teaGardenIndexSource, /water\.addTuning/, "water controls are missing from the late Tweakpane registration");
+assert.equal(mainSource.includes('from "./world/japaneseTeaGarden/waterSimulation"'), false, "water solver leaked into the boot-critical main chunk");
+
+// Audio stays procedural and shares the one nature context/FX buses. It must
+// remain inert until approach, positional at bridge/pond/rocks, and bounded.
+for (const seam of [
+  "voiceBus()",
+  "alwaysBus",
+  "reverbSend",
+  "TEA_GARDEN_STREAM_AUDIO_ANCHORS",
+  "MAX_ACTIVE_EDDIES = 2",
+  "targetDistanceGain",
+  "#destroyGraph()"
+]) {
+  assert.ok(streamAudioSource.includes(seam), `procedural stream-audio seam missing: ${seam}`);
+}
+for (const eagerAudio of ["new AudioContext", "fetch(", "new Audio("]) {
+  assert.equal(streamAudioSource.includes(eagerAudio), false, `stream audio introduced its own/eager asset path: ${eagerAudio}`);
+}
 
 // The generic cloth path remains available to the world, while Hiro's current
 // look-first costume is an explicit static layer stack. Keep the identifying
@@ -162,5 +244,7 @@ console.log(JSON.stringify({
   replacements: TEA_GARDEN_SUPPRESSED_BUILDINGS.map((building) => `${building.key}:${building.index}`),
   tour: TEA_GARDEN_TOUR_STOPS.map((stop) => ({ id: stop.id, routePoints: stop.route.length })),
   art: ["misty-pines", "drum-bridge-moon", "koi-ginkgo", "four-seasons"],
+  drumBridgeTextures: ["painted timber color + normal", "worn timber color + normal", "KTX2 + WebP"],
+  water: ["WebGPU shallow-water field", "unified stream + pond", "five eddy rocks", "procedural positional audio"],
   cloth: ["shared-cloth-runtime", "static-layered-hiro-costume", "distance-driven-motion"]
 }, null, 2));

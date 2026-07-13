@@ -5,6 +5,13 @@
 - When testing a preview or production build, open it with `?autostart=1` (preserving any existing query parameters).
 - Use `?startscreen=1` only when the start/loading experience itself is under test.
 
+# Rendering platform
+
+- This project is WebGPU-only. Do not add, preserve, test, or recommend WebGL/WebGL2 fallback renderers, compatibility branches, transform-feedback/PBO paths, or duplicate shader implementations.
+- Start the renderer with a WebGPU backend directly and fail clearly when WebGPU, an adapter, or a device is unavailable. Never silently switch rendering APIs.
+- Optimize rendering and simulation work for WebGPU compute, storage buffers/textures, WGSL, and TSL without constraining designs around legacy graphics APIs.
+- Treat any newly introduced WebGL/WebGL2 fallback as a project-policy regression.
+
 # Runnable feature handoffs
 
 - When a feature is completed in a git worktree, keep a local preview running from that exact worktree and share a clickable `http://localhost:<port>/?autostart=1` link in the final response (verify it returns 200 first). A filesystem path, worktree path, screenshot, or render link is not a substitute for the running link.

@@ -1,10 +1,12 @@
 import * as THREE from "three/webgpu";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { BodyType, type Physics } from "../../core/physics";
+import { loadTexture } from "../../render/textures";
 import {
   TEA_GARDEN_BUILDINGS,
   TEA_GARDEN_PATHS,
   TEA_GARDEN_WATER_FEATURES,
+  inTeaGardenWater,
   type TeaGardenBuildingSpec,
   type TeaGardenTerrain,
   type TeaGardenXZ
@@ -22,12 +24,9 @@ const COLORS = {
   stone: 0x77766c,
   stoneDark: 0x4e504a,
   path: 0x8b8779,
-  pathEdge: 0x5e5d54,
-  water: 0x507f77,
-  waterDeep: 0x244d49
+  pathEdge: 0x5e5d54
 } as const;
 
-const WATER_RENDER_ORDER = 10.5;
 const WATER_EFFECTS_RENDER_ORDER = 12;
 
 function alphaSurface<T extends THREE.Material>(value: T): T {
@@ -50,6 +49,7 @@ type PhysicsBox = {
 export type TeaGardenArchitecture = {
   group: THREE.Group;
   waterGroup: THREE.Group;
+  ready: Promise<void>;
   update(time: number): void;
   dispose(): void;
   stats: { meshes: number; ponds: number; koi: number; physicsBodies: number };
@@ -57,37 +57,6 @@ export type TeaGardenArchitecture = {
 
 function material(color: number, roughness = 0.86, metalness = 0): THREE.MeshStandardMaterial {
   return new THREE.MeshStandardMaterial({ color, roughness, metalness });
-}
-
-/** Tiny deterministic grain map: enough directional breakup to stop hero
- * timber reading as flat plastic, but shared by every bridge member. */
-function woodGrainTexture(): THREE.DataTexture {
-  const width = 128;
-  const height = 64;
-  const data = new Uint8Array(width * height * 4);
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const index = (y * width + x) * 4;
-      const wave = Math.sin(x * 0.31 + Math.sin(y * 0.37) * 1.8) * 0.5 + 0.5;
-      const fine = Math.sin(x * 1.73 + y * 0.17) * 0.5 + 0.5;
-      const knotDx = x - 76;
-      const knotDy = (y - 31) * 2.2;
-      const knot = Math.max(0, 1 - Math.hypot(knotDx, knotDy) / 17);
-      const shade = Math.round(112 + wave * 34 + fine * 8 - knot * 38);
-      data[index] = shade;
-      data[index + 1] = Math.round(shade * 0.72);
-      data[index + 2] = Math.round(shade * 0.48);
-      data[index + 3] = 255;
-    }
-  }
-  const texture = new THREE.DataTexture(data, width, height, THREE.RGBAFormat);
-  texture.name = "tea_garden_weathered_timber_grain";
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.wrapS = THREE.RepeatWrapping;
-  texture.wrapT = THREE.RepeatWrapping;
-  texture.repeat.set(2.6, 1);
-  texture.needsUpdate = true;
-  return texture;
 }
 
 function centroid(points: readonly TeaGardenXZ[]): { x: number; z: number } {
@@ -803,6 +772,7 @@ function densify(points: readonly TeaGardenXZ[], spacing = 2): TeaGardenXZ[] {
 }
 
 function makePaths(map: TeaGardenTerrain, pathMat: THREE.Material, stepMat: THREE.Material): THREE.Group {
+  const waterMargin = 0.2;
   const group = new THREE.Group();
   group.name = "japanese_tea_garden_paths";
   for (const path of TEA_GARDEN_PATHS) {
@@ -824,9 +794,15 @@ function makePaths(map: TeaGardenTerrain, pathMat: THREE.Material, stepMat: THRE
         positions.push(x, map.groundTop(x, z) + 0.075, z);
       }
     }
+    const appendIfDry = (a: number, b: number, c: number) => {
+      const x = (positions[a * 3] + positions[b * 3] + positions[c * 3]) / 3;
+      const z = (positions[a * 3 + 2] + positions[b * 3 + 2] + positions[c * 3 + 2]) / 3;
+      if (!inTeaGardenWater(x, z, waterMargin)) indices.push(a, b, c);
+    };
     for (let i = 0; i + 1 < points.length; i++) {
       const base = i * 2;
-      indices.push(base, base + 1, base + 2, base + 1, base + 3, base + 2);
+      appendIfDry(base, base + 1, base + 2);
+      appendIfDry(base + 1, base + 3, base + 2);
     }
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
@@ -904,6 +880,10 @@ function makeDrumBridge(
   const treadGeometry = new THREE.BoxGeometry(1, 1, 1);
   const treads = new THREE.InstancedMesh(treadGeometry, mats.bridgeTimber, count);
   treads.name = "drum_bridge_worn_stair_treads";
+  const risers = new THREE.InstancedMesh(treadGeometry, mats.bridgeTimberPaint, count);
+  risers.name = "drum_bridge_painted_stair_risers";
+  const nosings = new THREE.InstancedMesh(treadGeometry, mats.bridgeTimberPaint, count);
+  nosings.name = "drum_bridge_rounded_stair_nosings";
   const dummy = new THREE.Object3D();
   for (let i = 0; i < count; i++) {
     const p0 = curvePoints[i];
@@ -918,22 +898,40 @@ function makeDrumBridge(
     dummy.scale.set(width, 0.14, length);
     dummy.updateMatrix();
     treads.setMatrixAt(i, dummy.matrix);
-    // Near-white instance colors preserve subtle board-to-board variation
-    // without multiplying the shared grain map into black.
-    treads.setColorAt(i, new THREE.Color(i % 3 === 0 ? 0xfff5eb : i % 2 ? 0xead9c9 : 0xd9c3af));
+    treads.setColorAt(i, new THREE.Color(i % 3 === 0 ? 0xffffff : i % 2 ? 0xf5f0e9 : 0xeae3da));
+
+    const high = p1.y >= p0.y ? p1 : p0;
+    const low = high === p1 ? p0 : p1;
+    const towardLow = high === p1 ? -1 : 1;
+    const riserHeight = Math.max(0.08, high.y - low.y - 0.04);
+    dummy.position.copy(high).addScaledVector(forward, towardLow * 0.035);
+    dummy.position.y = high.y - riserHeight / 2 - 0.055;
+    dummy.quaternion.copy(treadQuaternion);
+    dummy.scale.set(width - 0.08, riserHeight, 0.085);
+    dummy.updateMatrix();
+    risers.setMatrixAt(i, dummy.matrix);
+
+    dummy.position.copy(high).addScaledVector(forward, towardLow * 0.015);
+    dummy.position.y = high.y - 0.005;
+    dummy.scale.set(width + 0.045, 0.085, 0.12);
+    dummy.updateMatrix();
+    nosings.setMatrixAt(i, dummy.matrix);
+
     const q = [treadQuaternion.x, treadQuaternion.y, treadQuaternion.z, treadQuaternion.w] as const;
     addPhysicsBox(physics, bodies, { x: mid.x, y: mid.y, z: mid.z, hx: width / 2, hy: 0.08, hz: length / 2, quat: q });
   }
-  treads.instanceMatrix.needsUpdate = true;
+  for (const mesh of [treads, risers, nosings]) {
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.computeBoundingSphere();
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    group.add(mesh);
+  }
   if (treads.instanceColor) treads.instanceColor.needsUpdate = true;
-  treads.computeBoundingSphere();
-  treads.castShadow = true;
-  treads.receiveShadow = true;
-  group.add(treads);
 
   // Six laminated load-bearing ribs are the bridge's defining underside.
   const ribCurve = new THREE.CatmullRomCurve3(
-    curvePoints.map((point) => point.clone().add(new THREE.Vector3(0, -0.31, 0)))
+    curvePoints.map((point) => point.clone().add(new THREE.Vector3(0, -0.34, 0)))
   );
   const rectangularPathGeometry = (
     curve: THREE.Curve<THREE.Vector3>,
@@ -952,10 +950,10 @@ function makeDrumBridge(
       extrudePath: curve
     });
   };
-  const ribGeometry = rectangularPathGeometry(ribCurve, 0.16, 0.22);
+  const ribGeometry = rectangularPathGeometry(ribCurve, 0.12, 0.24);
   const ribs = new THREE.InstancedMesh(ribGeometry, mats.bridgeTimberDark, 6);
   ribs.name = "drum_bridge_six_laminated_arch_ribs";
-  [-0.72, -0.43, -0.14, 0.14, 0.43, 0.72].forEach((offset, index) => {
+  [-0.7, -0.42, -0.14, 0.14, 0.42, 0.7].forEach((offset, index) => {
     dummy.position.copy(right).multiplyScalar(offset);
     dummy.quaternion.identity();
     dummy.scale.setScalar(1);
@@ -968,46 +966,147 @@ function makeDrumBridge(
   ribs.receiveShadow = true;
   group.add(ribs);
 
-  // Upper handrail and lower side rail are rectangular laminated timbers, not
-  // round pipes. They still share one geometry and one instanced draw.
-  const railGeometry = rectangularPathGeometry(new THREE.CatmullRomCurve3(curvePoints), 0.13, 0.15);
-  const rails = new THREE.InstancedMesh(railGeometry, mats.bridgeTimberDark, 4);
-  rails.name = "drum_bridge_joined_upper_and_lower_rails";
-  let railIndex = 0;
+  // Broad outer arch fascias frame the six structural laminations in profile,
+  // matching the bridge's recognisable layered silhouette from the stream.
+  const fasciaGeometry = rectangularPathGeometry(ribCurve, 0.2, 0.36);
+  const fascias = new THREE.InstancedMesh(fasciaGeometry, mats.bridgeTimberPaint, 2);
+  fascias.name = "drum_bridge_layered_outer_arch_fascias";
   for (const sign of [-1, 1]) {
-    for (const height of [0.55, 1.02]) {
-      dummy.position.copy(right).multiplyScalar(sign * (width / 2 + 0.09));
-      dummy.position.y = height;
-      dummy.quaternion.identity();
-      dummy.scale.setScalar(1);
-      dummy.updateMatrix();
-      rails.setMatrixAt(railIndex++, dummy.matrix);
-    }
+    dummy.position.copy(right).multiplyScalar(sign * (width / 2 - 0.02));
+    dummy.quaternion.identity();
+    dummy.scale.setScalar(1);
+    dummy.updateMatrix();
+    fascias.setMatrixAt(sign === -1 ? 0 : 1, dummy.matrix);
   }
-  rails.instanceMatrix.needsUpdate = true;
-  rails.computeBoundingSphere();
-  rails.castShadow = true;
+  fascias.instanceMatrix.needsUpdate = true;
+  fascias.computeBoundingSphere();
+  fascias.castShadow = true;
+  fascias.receiveShadow = true;
+  group.add(fascias);
+
+  // The real upper rails are rounded where hands touch them; the lower rails
+  // remain rectangular laminated members connected into the post joinery.
+  const rails = new THREE.Group();
+  rails.name = "drum_bridge_joined_upper_and_lower_rails";
+  const railCurve = new THREE.CatmullRomCurve3(curvePoints);
+  const handrailGeometry = new THREE.TubeGeometry(railCurve, 72, 0.075, 10, false);
+  const handrails = new THREE.InstancedMesh(handrailGeometry, mats.bridgeTimberPaint, 2);
+  handrails.name = "drum_bridge_round_handrails";
+  const lowerRailGeometry = rectangularPathGeometry(railCurve, 0.12, 0.15);
+  const lowerRails = new THREE.InstancedMesh(lowerRailGeometry, mats.bridgeTimberPaint, 2);
+  lowerRails.name = "drum_bridge_laminated_lower_rails";
+  for (const sign of [-1, 1]) {
+    const index = sign === -1 ? 0 : 1;
+    dummy.position.copy(right).multiplyScalar(sign * (width / 2 + 0.1));
+    dummy.position.y = 1.06;
+    dummy.quaternion.identity();
+    dummy.scale.setScalar(1);
+    dummy.updateMatrix();
+    handrails.setMatrixAt(index, dummy.matrix);
+    dummy.position.y = 0.55;
+    dummy.updateMatrix();
+    lowerRails.setMatrixAt(index, dummy.matrix);
+  }
+  for (const mesh of [handrails, lowerRails]) {
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.computeBoundingSphere();
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    rails.add(mesh);
+  }
   group.add(rails);
 
   const postCountPerSide = Math.floor(count / 2) + 1;
-  const posts = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), mats.bridgeTimberDark, postCountPerSide * 2);
+  const posts = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), mats.bridgeTimberPaint, postCountPerSide * 2);
   posts.name = "drum_bridge_square_balustrade_posts";
+  const postCaps = new THREE.InstancedMesh(
+    new THREE.CylinderGeometry(0.115, 0.145, 0.065, 10),
+    mats.bridgeTimberPaint,
+    postCountPerSide * 2
+  );
+  postCaps.name = "drum_bridge_post_joinery_caps";
+  const postPoints: { point: THREE.Vector3; sign: number }[] = [];
   let postIndex = 0;
   for (const sign of [-1, 1]) {
     for (let i = 0; i <= count; i += 2) {
       const point = curvePoints[i];
+      postPoints.push({ point, sign });
       dummy.position.copy(point).addScaledVector(right, sign * (width / 2 + 0.09));
-      dummy.position.y += 0.74;
+      dummy.position.y += 0.54;
       dummy.quaternion.identity();
-      dummy.scale.set(0.14, 0.96, 0.14);
+      dummy.scale.set(0.16, 0.9, 0.16);
       dummy.updateMatrix();
-      posts.setMatrixAt(postIndex++, dummy.matrix);
+      posts.setMatrixAt(postIndex, dummy.matrix);
+      dummy.position.y = point.y + 1.005;
+      dummy.scale.setScalar(1);
+      dummy.updateMatrix();
+      postCaps.setMatrixAt(postIndex, dummy.matrix);
+      postIndex++;
     }
   }
-  posts.instanceMatrix.needsUpdate = true;
-  posts.computeBoundingSphere();
-  posts.castShadow = true;
-  group.add(posts);
+  for (const mesh of [posts, postCaps]) {
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.computeBoundingSphere();
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    group.add(mesh);
+  }
+
+  // Recessed wooden peg heads make the post/rail joinery legible in close tour
+  // shots without adding a separate draw for every fastener.
+  const pegs = new THREE.InstancedMesh(
+    new THREE.CylinderGeometry(0.034, 0.034, 0.028, 9),
+    mats.bridgeTimberDark,
+    postPoints.length * 2
+  );
+  pegs.name = "drum_bridge_visible_joinery_pegs";
+  let pegIndex = 0;
+  for (const { point, sign } of postPoints) {
+    const outward = right.clone().multiplyScalar(sign);
+    const pegQuaternion = new THREE.Quaternion().setFromUnitVectors(upAxis, outward);
+    for (const height of [0.55, 0.91]) {
+      dummy.position.copy(point).addScaledVector(right, sign * (width / 2 + 0.185));
+      dummy.position.y += height;
+      dummy.quaternion.copy(pegQuaternion);
+      dummy.scale.setScalar(1);
+      dummy.updateMatrix();
+      pegs.setMatrixAt(pegIndex++, dummy.matrix);
+    }
+  }
+  pegs.instanceMatrix.needsUpdate = true;
+  pegs.computeBoundingSphere();
+  pegs.castShadow = true;
+  group.add(pegs);
+
+  // Four turned finials terminate the handrails at the landings, echoing the
+  // original bridge's welcoming ball-capped entrance posts.
+  const finialProfile = [
+    new THREE.Vector2(0.085, 0),
+    new THREE.Vector2(0.115, 0.055),
+    new THREE.Vector2(0.082, 0.105),
+    new THREE.Vector2(0.105, 0.15),
+    new THREE.Vector2(0.145, 0.225),
+    new THREE.Vector2(0.11, 0.3),
+    new THREE.Vector2(0.055, 0.345),
+    new THREE.Vector2(0, 0.36)
+  ];
+  const finials = new THREE.InstancedMesh(new THREE.LatheGeometry(finialProfile, 14), mats.bridgeTimberPaint, 4);
+  finials.name = "drum_bridge_turned_landing_finials";
+  let finialIndex = 0;
+  for (const point of [curvePoints[0], curvePoints[count]]) {
+    for (const sign of [-1, 1]) {
+      dummy.position.copy(point).addScaledVector(right, sign * (width / 2 + 0.09));
+      dummy.position.y += 0.965;
+      dummy.quaternion.identity();
+      dummy.scale.setScalar(1);
+      dummy.updateMatrix();
+      finials.setMatrixAt(finialIndex++, dummy.matrix);
+    }
+  }
+  finials.instanceMatrix.needsUpdate = true;
+  finials.computeBoundingSphere();
+  finials.castShadow = true;
+  group.add(finials);
 
   // Damp, irregular abutment stones conceal the rib ends in the planting.
   const rockGeometry = new THREE.DodecahedronGeometry(1, 0);
@@ -1036,108 +1135,14 @@ function makeDrumBridge(
   return group;
 }
 
-function scaledOutline(points: readonly TeaGardenXZ[], scale: number): TeaGardenXZ[] {
-  const c = centroid(points);
-  return points.map(([x, z]) => [c.x + (x - c.x) * scale, c.z + (z - c.z) * scale] as const);
-}
-
-function shapeMesh(
-  map: TeaGardenTerrain,
-  name: string,
-  outline: readonly TeaGardenXZ[],
-  lift: number,
-  mat: THREE.Material
-): THREE.Mesh {
-  const c = centroid(outline);
-  const shape = new THREE.Shape();
-  outline.forEach(([x, z], i) => {
-    const lx = x - c.x;
-    const lz = -(z - c.z);
-    if (i === 0) shape.moveTo(lx, lz);
-    else shape.lineTo(lx, lz);
-  });
-  shape.closePath();
-  const geometry = new THREE.ShapeGeometry(shape, 12);
-  geometry.rotateX(-Math.PI / 2);
-  const positions = geometry.getAttribute("position") as THREE.BufferAttribute;
-  for (let i = 0; i < positions.count; i++) {
-    const worldX = c.x + positions.getX(i);
-    const worldZ = c.z + positions.getZ(i);
-    positions.setY(i, map.groundTop(worldX, worldZ) + lift);
-  }
-  positions.needsUpdate = true;
-  geometry.computeVertexNormals();
-  geometry.computeBoundingBox();
-  geometry.computeBoundingSphere();
-  const mesh = new THREE.Mesh(geometry, mat);
-  mesh.name = name;
-  mesh.position.set(c.x, 0, c.z);
-  mesh.receiveShadow = true;
-  return mesh;
-}
-
-function ringMesh(
-  map: TeaGardenTerrain,
-  name: string,
-  outline: readonly TeaGardenXZ[],
-  lift: number,
-  mat: THREE.Material
-): THREE.Mesh {
-  const outer = scaledOutline(outline, 1.09);
-  const c = centroid(outline);
-  const shape = new THREE.Shape();
-  outer.forEach(([x, z], i) => {
-    if (i === 0) shape.moveTo(x - c.x, -(z - c.z));
-    else shape.lineTo(x - c.x, -(z - c.z));
-  });
-  shape.closePath();
-  const hole = new THREE.Path();
-  [...outline].reverse().forEach(([x, z], i) => {
-    if (i === 0) hole.moveTo(x - c.x, -(z - c.z));
-    else hole.lineTo(x - c.x, -(z - c.z));
-  });
-  hole.closePath();
-  shape.holes.push(hole);
-  const geometry = new THREE.ShapeGeometry(shape, 12);
-  geometry.rotateX(-Math.PI / 2);
-  const positions = geometry.getAttribute("position") as THREE.BufferAttribute;
-  for (let i = 0; i < positions.count; i++) {
-    const worldX = c.x + positions.getX(i);
-    const worldZ = c.z + positions.getZ(i);
-    positions.setY(i, map.groundTop(worldX, worldZ) + lift);
-  }
-  positions.needsUpdate = true;
-  geometry.computeVertexNormals();
-  geometry.computeBoundingBox();
-  geometry.computeBoundingSphere();
-  const mesh = new THREE.Mesh(geometry, mat);
-  mesh.name = name;
-  mesh.position.set(c.x, 0, c.z);
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-  return mesh;
-}
-
 type KoiRuntime = { mesh: THREE.InstancedMesh; center: THREE.Vector3; rx: number; rz: number };
 
-function createPonds(map: TeaGardenTerrain, mats: ReturnType<typeof createMaterials>): { group: THREE.Group; koi: KoiRuntime[] } {
+function createPondLife(): { group: THREE.Group; koi: KoiRuntime[] } {
   const group = new THREE.Group();
-  group.name = "japanese_tea_garden_ponds";
-  const outlines = TEA_GARDEN_WATER_FEATURES.map((feature) => ({
-    name: feature.name.toLowerCase().replaceAll(" ", "_"),
-    outline: [...feature.outline]
-  }));
+  group.name = "japanese_tea_garden_pond_life";
   const koi: KoiRuntime[] = [];
-  outlines.forEach(({ name, outline }, pondIndex) => {
-    group.add(ringMesh(map, `${name}_stone_bank`, outline, 0.055, mats.stoneDark));
-    // The committed terrain has no separately carved basin. Keep the connected
-    // shallow water just above local grade instead of floating across the slope.
-    // Lift a little higher than the bank so the transparent sheet clears the
-    // ground depth buffer — WebGPU z-fights a hairline film into invisibility.
-    const water = shapeMesh(map, `${name}_water`, outline, 0.16, mats.water);
-    water.renderOrder = WATER_RENDER_ORDER;
-    water.frustumCulled = false;
-    group.add(water);
+  TEA_GARDEN_WATER_FEATURES.forEach((feature, pondIndex) => {
+    const name = feature.name.toLowerCase().replaceAll(" ", "_");
     const c = pondIndex === 0 ? { x: -2288.7, z: 2219.2 } : { x: -2274.2, z: 2193.2 };
     const rx = pondIndex === 0 ? 7.4 : 1.45;
     const rz = pondIndex === 0 ? 8.2 : 2.25;
@@ -1159,7 +1164,62 @@ function createPonds(map: TeaGardenTerrain, mats: ReturnType<typeof createMateri
 }
 
 function createMaterials() {
-  const grain = woodGrainTexture();
+  const bridgeTimber = new THREE.MeshStandardMaterial({
+    color: 0xb5aaa0,
+    roughness: 0.96,
+    metalness: 0,
+    vertexColors: true
+  });
+  const bridgeTimberPaint = new THREE.MeshStandardMaterial({
+    color: 0x8d5b4c,
+    roughness: 0.84,
+    metalness: 0
+  });
+  const bridgeTimberDark = new THREE.MeshStandardMaterial({
+    color: 0x5f4038,
+    roughness: 0.92,
+    metalness: 0
+  });
+  const textureRoot = "/japanese-tea-garden/drum-bridge";
+  const configure = (texture: THREE.Texture, name: string, repeatX: number, repeatY: number) => {
+    texture.name = name;
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.repeat.set(repeatX, repeatY);
+    texture.needsUpdate = true;
+  };
+  const ready = Promise.all([
+    loadTexture(`${textureRoot}/painted-timber-basecolor`, { srgb: true, anisotropy: 8 }),
+    loadTexture(`${textureRoot}/painted-timber-normal`, { srgb: false, anisotropy: 8 }),
+    loadTexture(`${textureRoot}/worn-timber-basecolor`, { srgb: true, anisotropy: 8 }),
+    loadTexture(`${textureRoot}/worn-timber-normal`, { srgb: false, anisotropy: 8 })
+  ]).then(([paintedColor, paintedNormal, wornColor, wornNormal]) => {
+    configure(paintedColor, "drum_bridge_painted_timber_basecolor", 4.25, 1.6);
+    configure(paintedNormal, "drum_bridge_painted_timber_normal", 4.25, 1.6);
+    configure(wornColor, "drum_bridge_worn_timber_basecolor", 3.25, 1.35);
+    configure(wornNormal, "drum_bridge_worn_timber_normal", 3.25, 1.35);
+
+    bridgeTimber.color.setHex(0xffffff);
+    bridgeTimber.map = wornColor;
+    bridgeTimber.normalMap = wornNormal;
+    bridgeTimber.normalScale.set(0.42, 0.42);
+    bridgeTimber.needsUpdate = true;
+
+    bridgeTimberPaint.color.setHex(0xffffff);
+    bridgeTimberPaint.map = paintedColor;
+    bridgeTimberPaint.normalMap = paintedNormal;
+    bridgeTimberPaint.normalScale.set(0.5, 0.5);
+    bridgeTimberPaint.needsUpdate = true;
+
+    bridgeTimberDark.color.setHex(0xa58c82);
+    bridgeTimberDark.map = paintedColor;
+    bridgeTimberDark.normalMap = paintedNormal;
+    bridgeTimberDark.normalScale.set(0.38, 0.38);
+    bridgeTimberDark.needsUpdate = true;
+  }).catch((error) => {
+    console.warn("[tea-garden] drum bridge texture load failed; keeping material fallbacks:", error);
+  });
+
   return {
     vermilion: material(COLORS.vermilion, 0.72),
     vermilionDark: material(COLORS.vermilionDark, 0.76),
@@ -1176,30 +1236,10 @@ function createMaterials() {
     bronze: material(0x8a6b31, 0.48, 0.44),
     iron: material(0x272625, 0.5, 0.45),
     tatami: material(0xb4a46f, 0.98),
-    bridgeTimber: new THREE.MeshStandardMaterial({
-      color: 0xa98669,
-      map: grain,
-      roughness: 0.9,
-      metalness: 0,
-      vertexColors: true
-    }),
-    bridgeTimberDark: new THREE.MeshStandardMaterial({
-      color: 0x80624c,
-      map: grain,
-      roughness: 0.94,
-      metalness: 0
-    }),
-    // MeshStandard — not Physical. Classic MeshPhysicalMaterial + transmission
-    // draws invisible under this WebGPU path (palace lagoon uses a NodePhysical
-    // material; bay water already standardized on Standard for the same reason).
-    water: alphaSurface(new THREE.MeshStandardMaterial({
-      color: COLORS.waterDeep,
-      roughness: 0.24,
-      metalness: 0,
-      opacity: 0.86,
-      side: THREE.DoubleSide,
-      envMapIntensity: 0.7
-    }))
+    bridgeTimber,
+    bridgeTimberPaint,
+    bridgeTimberDark,
+    ready
   };
 }
 
@@ -1282,8 +1322,8 @@ export function createTeaGardenArchitecture(
   const bodies: number[] = [];
 
   group.add(makePaths(map, mats.path, mats.pathEdge));
-  const ponds = createPonds(map, mats);
-  group.add(ponds.group);
+  const pondLife = createPondLife();
+  group.add(pondLife.group);
   group.add(makeStraightBridge(map, mats, physics, bodies));
   group.add(makeDrumBridge(map, mats, physics, bodies));
 
@@ -1314,7 +1354,7 @@ export function createTeaGardenArchitecture(
 
   const dummy = new THREE.Object3D();
   const update = (time: number) => {
-    ponds.koi.forEach((pond, pondIndex) => {
+    pondLife.koi.forEach((pond, pondIndex) => {
       for (let i = 0; i < pond.mesh.count; i++) {
         const speed = 0.11 + (i % 4) * 0.018;
         const angle = time * speed + (i / pond.mesh.count) * Math.PI * 2 + pondIndex * 0.7;
@@ -1345,7 +1385,10 @@ export function createTeaGardenArchitecture(
 
   return {
     group,
-    waterGroup: ponds.group,
+    // Compatibility alias for callers that previously addressed the authored
+    // static water group; the group now contains only pond life.
+    waterGroup: pondLife.group,
+    ready: mats.ready,
     update,
     dispose() {
       const geometries = new Set<THREE.BufferGeometry>();
@@ -1358,8 +1401,14 @@ export function createTeaGardenArchitecture(
         const list = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
         for (const entry of list) {
           materials.add(entry);
-          const map = (entry as THREE.Material & { map?: THREE.Texture | null }).map;
-          if (map) textures.add(map);
+          const textured = entry as THREE.Material & {
+            map?: THREE.Texture | null;
+            normalMap?: THREE.Texture | null;
+            roughnessMap?: THREE.Texture | null;
+          };
+          if (textured.map) textures.add(textured.map);
+          if (textured.normalMap) textures.add(textured.normalMap);
+          if (textured.roughnessMap) textures.add(textured.roughnessMap);
         }
       });
       for (const geometry of geometries) geometry.dispose();
@@ -1376,8 +1425,8 @@ export function createTeaGardenArchitecture(
     },
     stats: {
       meshes: meshCount,
-      ponds: ponds.koi.length,
-      koi: ponds.koi.reduce((sum, pond) => sum + pond.mesh.count, 0),
+      ponds: pondLife.koi.length,
+      koi: pondLife.koi.reduce((sum, pond) => sum + pond.mesh.count, 0),
       physicsBodies: bodies.length
     }
   };

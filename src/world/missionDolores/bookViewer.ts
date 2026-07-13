@@ -7,7 +7,7 @@
 // Layered like a HUD: every mesh is MeshBasicMaterial with depthTest off, so
 // nothing z-fights the frozen world behind it; paint order is guaranteed by
 // strictly increasing renderOrder (scrim < book body/spine < pages < flip),
-// per WebGLRenderLists' painterSortStable, which sorts by renderOrder before
+// per the common renderer's painterSortStable, which sorts by renderOrder before
 // material/depth. Art loads as GPU-compressed KTX2 via loadTexture(); page
 // text is baked into a small offscreen <canvas> → CanvasTexture (never
 // attached to the document). Positioned every frame 1m in front of the

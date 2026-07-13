@@ -133,12 +133,16 @@
           return;
         }
 
-        const renderer = new THREE.WebGPURenderer({ antialias: false });
+        const rendererOptions = { antialias: false, getFallback: null };
+        const renderer = new THREE.Renderer(
+          new THREE.WebGPUBackend(rendererOptions),
+          rendererOptions
+        );
+        renderer.library = new THREE.StandardNodeLibrary();
         renderer.setPixelRatio(1);
         renderer.setSize(W, H, false);
         renderer.setClearColor(0x000000, 1);
         renderer.toneMapping = THREE.NoToneMapping;
-        document.body.appendChild(renderer.domElement);
         await renderer.init();
 
         if (!renderer.backend?.isWebGPUBackend) {
@@ -150,6 +154,7 @@
           renderer.dispose();
           return;
         }
+        document.body.appendChild(renderer.domElement);
 
         const scene = new THREE.Scene();
         scene.background = new THREE.Color(0x000000);

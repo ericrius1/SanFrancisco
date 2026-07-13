@@ -75,18 +75,28 @@ type ActiveEddy = {
   expires: number;
 };
 
-const BRIDGE_ANCHOR: WaterAnchor = { x: -2274.2, z: 2193.2 };
-const POND_ENTRY_ANCHOR: WaterAnchor = { x: -2290.4, z: 2202.4 };
-
 // Small Tatsuyama-style stones along the authored stream trace. Accents hop
 // between these anchors so the turbulence reads as water moving around rocks,
 // rather than a mono loop pinned under the bridge.
-const EDDY_ANCHORS: readonly WaterAnchor[] = [
-  { x: -2268.2, z: 2188.9 },
-  { x: -2273.9, z: 2194.2 },
-  { x: -2280.8, z: 2198.1 },
-  { x: -2286.8, z: 2200.5 }
-] as const;
+export const TEA_GARDEN_STREAM_AUDIO_ANCHORS = {
+  bridge: { x: -2274.2, z: 2193.2 },
+  pondEntry: { x: -2290.4, z: 2202.4 },
+  eddies: [
+    { x: -2265.8, z: 2186.8 },
+    { x: -2267, z: 2187.4 },
+    { x: -2280.6, z: 2197.4 },
+    { x: -2283.8, z: 2198 },
+    { x: -2288.2, z: 2200.6 }
+  ]
+} as const satisfies {
+  bridge: WaterAnchor;
+  pondEntry: WaterAnchor;
+  eddies: readonly WaterAnchor[];
+};
+
+const BRIDGE_ANCHOR = TEA_GARDEN_STREAM_AUDIO_ANCHORS.bridge;
+const POND_ENTRY_ANCHOR = TEA_GARDEN_STREAM_AUDIO_ANCHORS.pondEntry;
+const EDDY_ANCHORS = TEA_GARDEN_STREAM_AUDIO_ANCHORS.eddies;
 
 const EPS = 0.0001;
 const MAX_ACTIVE_EDDIES = 2;
@@ -95,8 +105,9 @@ const PARK_THRESHOLD = 0.0015;
 /**
  * Lazy, procedural, positional stream/pond audio.
  *
- * Call update after NatureSoundscape.update so its shared listener and buses
- * already reflect the current camera, visibility, FX level and mute state.
+ * Call once per frame near NatureSoundscape.update. Calling first lets the
+ * shared context observe this feature's awake request in the same frame; the
+ * nature pass then refreshes listener orientation, visibility and FX/mute state.
  */
 export class JapaneseTeaGardenStreamAudio {
   #nature: NatureSoundscape;

@@ -37,7 +37,9 @@ export function applyBundleOrderPatch(renderer: THREE.WebGPURenderer): void {
     get(object: object): RenderContextDataLike & { bundleGPU?: object };
     addBundle(renderContext: object, bundle: object): void;
   };
-  if (typeof backend.addBundle !== "function") return; // WebGL fallback — no bundles
+  if (typeof backend.addBundle !== "function") {
+    throw new Error("WebGPU render-bundle support is unavailable.");
+  }
 
   backend.addBundle = function (renderContext: object, bundle: object): void {
     const renderContextData = this.get(renderContext);
