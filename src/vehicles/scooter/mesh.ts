@@ -3,6 +3,7 @@ import { LIGHT_SCALE } from "../../config";
 import { lightAnchor } from "../../player/lightPool";
 import type { Cockpit } from "../../player/types";
 import { applyVehicleShadowPolicy } from "../shadows";
+import { rideHeightFromContact } from "../shared";
 import {
   normalizeScooterConfig,
   scooterPaintHex,
@@ -17,6 +18,13 @@ export type ScooterAnim = {
   handlebar: THREE.Group;
   battery: THREE.MeshStandardMaterial;
 };
+
+/** Wheel hub Y and tire outer radius (torus major + tube) in mesh space. */
+export const SCOOTER_WHEEL_HUB_Y = 0.03;
+export const SCOOTER_WHEEL_OUTER_RADIUS = 0.37 + 0.105;
+/** Lowest tire contact in mesh space; chassis origin stays at body centre. */
+export const SCOOTER_CONTACT_Y = SCOOTER_WHEEL_HUB_Y - SCOOTER_WHEEL_OUTER_RADIUS;
+export const SCOOTER_RIDE_HEIGHT = rideHeightFromContact(SCOOTER_CONTACT_Y);
 
 function roundedBox(w: number, h: number, d: number, r: number): THREE.ExtrudeGeometry {
   const shape = new THREE.Shape();
@@ -87,7 +95,7 @@ export function buildScooterMesh(raw?: ScooterConfig): THREE.Group {
   const wheels: THREE.Group[] = [];
   for (const z of [-0.98, 0.98]) {
     const wheel = new THREE.Group();
-    wheel.position.set(0, 0.03, z);
+    wheel.position.set(0, SCOOTER_WHEEL_HUB_Y, z);
     root.add(wheel);
     const tireGeo = new THREE.TorusGeometry(0.37, 0.105, 10, 24);
     tireGeo.rotateY(Math.PI / 2);
@@ -169,6 +177,7 @@ export function buildScooterMesh(raw?: ScooterConfig): THREE.Group {
     for (const z of [-0.22, 0.22]) box(trim, 0.7, 0.4, 0.045, 0, 0, z, basket);
   }
 
+  root.userData.contactY = SCOOTER_CONTACT_Y;
   root.userData.cockpit = { seat: [0, 1.05, 0.12] } satisfies Cockpit;
   root.userData.passengerSeat = [0, 1.08, 0.82] as [number, number, number];
   const petSeat = new THREE.Group();
