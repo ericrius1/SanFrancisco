@@ -21,7 +21,7 @@ import {
   type GrassEntry
 } from "../groundcover/bladeGrass";
 import { fitGroundY } from "../groundcover/grounding";
-import { GRASS_TUNING } from "./grassTuning";
+import { BOTANICAL_GRASS_TUNING } from "./grassTuning";
 
 export type BotanicalGrassStats = {
   baseLow: number;
@@ -100,7 +100,7 @@ function createTreeInfluence(trees: GardenTree[]) {
         if (!list) continue;
         for (const tree of list) {
           const species = GARDEN_SPECIES[tree.species];
-          const trunkClear = species.trunkR * tree.scale + GRASS_TUNING.values.treeClearance;
+          const trunkClear = species.trunkR * tree.scale + BOTANICAL_GRASS_TUNING.values.treeClearance;
           const d = Math.hypot(x - tree.x, z - tree.z);
           if (d < trunkClear) return -1;
           shade = Math.max(shade, 1 - smoothstep(trunkClear, trunkClear + 4.5, d));
@@ -113,7 +113,7 @@ function createTreeInfluence(trees: GardenTree[]) {
 
 
 function sampleGrassEntries(map: GardenTerrain, trees: GardenTree[], options: GrassSampleOptions) {
-  const values = GRASS_TUNING.values;
+  const values = BOTANICAL_GRASS_TUNING.values;
   const treeInfluenceAt = createTreeInfluence(trees);
   const low: GrassEntry[] = [];
   const tall: GrassEntry[] = [];
@@ -259,7 +259,7 @@ export class BotanicalGrassController extends THREE.Group {
   rebuild() {
     this.#clearGroup(this.#baseGroup);
     this.#baseChunks.length = 0;
-    const values = GRASS_TUNING.values;
+    const values = BOTANICAL_GRASS_TUNING.values;
     const base = sampleGrassEntries(this.#map, this.#trees, { spacing: values.spacing });
     const baseFade = Math.max(80, Number(values.baseViewDistance));
     if (values.showLow) this.#buildBaseChunks("low", base.low, this.#lowGeometryFar, baseFade);
@@ -296,7 +296,7 @@ export class BotanicalGrassController extends THREE.Group {
   }
 
   updateFocus(focus: GrassFocus, force = false) {
-    const values = GRASS_TUNING.values;
+    const values = BOTANICAL_GRASS_TUNING.values;
     this.#focus = { x: focus.x, z: focus.z };
     this.#materialState.focus.set(focus.x, focus.z);
 

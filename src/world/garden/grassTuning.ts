@@ -6,7 +6,7 @@ import { tunables } from "../../core/persist";
 import { foliageBrightness } from "../vegetation/appearance";
 import { windSpeed, windStrength } from "../vegetation/wind";
 
-export const GRASS_TUNING = tunables("grass", {
+export const BOTANICAL_GRASS_TUNING = tunables("botanicalGrass", {
   // 2026-07 FPS pass: meadow probes hit ~4M garden tris / ~24 fps @ 2560×1600.
   // Wider spacing + shorter rings keep the lawn reading dense at the feet while
   // capping the live triangle budget (see botanicalGrass MAX_LIVE_*).
@@ -36,7 +36,7 @@ export const GRASS_TUNING = tunables("grass", {
   leafBrightness: { v: 0.44, min: 0.2, max: 1.2, step: 0.01, label: "tree leaf brightness" }
 });
 
-export const GRASS_SCATTER_KEYS = [
+export const BOTANICAL_GRASS_SCATTER_KEYS = [
   "spacing",
   "nearSpacing",
   "nearRadius",
@@ -59,10 +59,8 @@ export const GRASS_SCATTER_KEYS = [
   "showTall"
 ] as const;
 
-export const GRASS_LIVE_KEYS = ["windStrength", "windSpeed", "trampleStrength", "leafBrightness"] as const;
-
 export function applyGrassTuning() {
-  const v = GRASS_TUNING.values;
+  const v = BOTANICAL_GRASS_TUNING.values;
   windStrength.value = v.windStrength;
   windSpeed.value = v.windSpeed;
   foliageBrightness.value = v.leafBrightness;

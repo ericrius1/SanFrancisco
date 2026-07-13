@@ -24,7 +24,7 @@ import {
   type BotanicalGrassStats,
   type GrassDisplacer
 } from "./botanicalGrass";
-import { updateWindGusts, windGustValue } from "./wind";
+import { updateWindGusts, windGustValue } from "../vegetation/wind";
 import {
   BOTANICAL_GARDEN_BOUNDS,
   GARDEN_MEADOW,

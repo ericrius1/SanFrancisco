@@ -147,8 +147,8 @@ type TunableGroupRecord = {
 
 // Keyed by persisted path + schema keys so a hot-evaluated feature reuses the
 // exact values object that existing Tweakpane bindings already reference. The
-// schema suffix matters because a couple of legacy groups intentionally share
-// a storage path (notably the global and garden `grass` controls).
+// schema suffix keeps hot-evaluated groups with different control shapes from
+// accidentally sharing a live values object.
 const groups = new Map<string, TunableGroupRecord>();
 
 /**
