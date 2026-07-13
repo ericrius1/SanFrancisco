@@ -27,10 +27,9 @@ import { EXPOSURE_REBASE, LIGHT_SCALE } from "../config";
 const PALACE_LAGOON_SEGMENTS = 112;
 const PALACE_LAGOON_RINGS = 18;
 const NEAR_PATCH_SIZE = 560;
-// 96 segments = 5.8 m spacing over the patch. The normal bay swell needs less,
-// but Ocean Beach's 8.5 m shoreward face needs the extra samples to keep its
-// crest rounded instead of forming a broad low-poly shelf.
-const NEAR_PATCH_SEGMENTS = 96;
+// 128 segments ≈ 4.4 m spacing — enough to resolve Ocean Beach's ~5 m shoreward
+// face without the low-poly shelf the old 96-seg grid left on tall crests.
+const NEAR_PATCH_SEGMENTS = 128;
 const NEAR_PATCH_MASK_OUTER = 276;
 const NEAR_PATCH_MASK_INNER = 210;
 const NEAR_PATCH_FADE_START_HEIGHT = 5;
@@ -365,12 +364,12 @@ export class Water {
     scene.add(this.far, this.near, this.palaceLagoon, this.underside);
   }
 
-  update(t: number, camPos: THREE.Vector3, playerPos: THREE.Vector3) {
+  update(t: number, camPos: THREE.Vector3, playerPos: THREE.Vector3, surfing = false) {
     this.#uTime.value = t;
 
     // show the underside ceiling only while the camera is below the surface,
     // parked at the camera's XZ so its Snell window stays centred overhead
-    const camUnder = camPos.y < waterHeight(camPos.x, camPos.z, t);
+    const camUnder = camPos.y < waterHeight(camPos.x, camPos.z, t) - 0.35;
     this.underside.visible = camUnder;
     if (camUnder) {
       this.underside.position.set(camPos.x, -0.05, camPos.z);
@@ -383,6 +382,14 @@ export class Water {
     this.near.position.z = Math.round(playerPos.z / snap) * snap;
     this.#uOrigin.value.set(this.near.position.x, this.near.position.z);
     this.#uNearRect.value.set(this.near.position.x, this.near.position.z, NEAR_PATCH_MASK_OUTER);
+    // Tall Ocean Beach faces put the board ~12 m above sea level; that clearance
+    // used to fade the near patch to the flat far sheet mid-ride. Keep it fully
+    // visible while surfing so CPU floor and GPU swell stay matched.
+    if (surfing) {
+      this.#uNearVisibility.value = 1;
+      this.near.visible = true;
+      return;
+    }
     const clearance = playerPos.y - waterHeight(playerPos.x, playerPos.z, t);
     this.#uNearVisibility.value = THREE.MathUtils.clamp(
       (NEAR_PATCH_FADE_END_HEIGHT - clearance) / (NEAR_PATCH_FADE_END_HEIGHT - NEAR_PATCH_FADE_START_HEIGHT),

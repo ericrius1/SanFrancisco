@@ -84,6 +84,15 @@ const CARRY_BOARD_GRIP: GripSpec = {
 };
 const CARRY_BOARD_SCALE = 0.82; // matches the old fixed-offset prop's scale
 
+/** The garden rake is built lazily by the Tea Garden activity. Its bamboo
+ * shaft runs mostly down item-local -Y, like the golf club, so this grip puts
+ * the upper handle across the curled right mitt without importing the optional
+ * activity into the boot-critical Player module. */
+const GARDEN_RAKE_GRIP: GripSpec = {
+  position: [0, -0.18, 0.06],
+  rotation: [0.08, 0, Math.PI / 2]
+};
+
 /**
  * The player: one physics body + one visible embodiment at a time. Each mode's
  * behavior (body shape, entry rules, per-step control) lives in its own
@@ -179,6 +188,9 @@ export class Player {
   #carryBoard!: THREE.Group; // surfboard tucked under the arm while on the beach
   #heldCarryBoard: HeldItem | null = null; // grip attachment into the walk rig's hand
   #carryingBoard = false; // true once setCarryingBoard(true) has ever attached the board
+  #gardenRake: THREE.Group | null = null;
+  #heldGardenRake: HeldItem | null = null;
+  #gardenRaking = false;
   #defaultDriveMesh!: THREE.Group;
   #defaultDroneMesh!: THREE.Group;
   #broomRigAttached = false;
@@ -700,6 +712,29 @@ export class Player {
     this.#carryBoard.visible = on && this.mode === "walk";
   }
 
+  /** Attach an activity-owned rake to the walk rig. Passing null releases it;
+   * the activity immediately reparents the same object onto its little stand. */
+  setGardenRake(rake: THREE.Group | null) {
+    if (rake === this.#gardenRake) {
+      if (rake) rake.visible = this.mode === "walk";
+      return;
+    }
+    this.#heldGardenRake?.release();
+    this.#heldGardenRake = null;
+    this.#gardenRake = rake;
+    this.#gardenRaking = false;
+    if (rake) {
+      this.#heldGardenRake = attachToHand(this.#walkRig, "R", rake, GARDEN_RAKE_GRIP);
+      rake.visible = this.mode === "walk";
+    }
+  }
+
+  /** A restrained carry pose outside the sand becomes a gentle sweeping pose
+   * while the activity is actually writing grooves. */
+  setGardenRaking(active: boolean) {
+    this.#gardenRaking = active && !!this.#gardenRake && this.mode === "walk";
+  }
+
   /** Windup→release arm swing, `t` 0..1 (0 = idle, adds nothing). #animate lays
    *  the overlay on top of the base walk/idle pose while t > 0. */
   setThrowAnim(t: number) {
@@ -1016,6 +1051,24 @@ export class Player {
   }
 
   /**
+   * Collapse render interpolation onto the live body/position. Used after surf
+   * pocket teleports so the board and chase camera do not smear the jump.
+   */
+  snapRenderPose() {
+    if (this.body) {
+      const t = this.physics.world.getBodyTransform(this.body);
+      this.position.set(t.position[0], t.position[1], t.position[2]);
+      this.quaternion.set(t.rotation[0], t.rotation[1], t.rotation[2], t.rotation[3]);
+    }
+    this.#currPosition.copy(this.position);
+    this.#prevPosition.copy(this.position);
+    this.renderPosition.copy(this.position);
+    this.#currQuaternion.copy(this.quaternion);
+    this.#prevQuaternion.copy(this.quaternion);
+    this.renderQuaternion.copy(this.quaternion);
+  }
+
+  /**
    * Called once per rendered frame, after the fixed-step loop. Advances the
    * interpolated render transform: `stepped` is how many physics steps ran this
    * frame, `alpha` is accumulator/fixedTimeStep in [0,1).
@@ -1079,7 +1132,7 @@ export class Player {
       setHandPose(
         r,
         "R",
-        golfing || this.#ballHeld || this.#carryingBoard || (archering && this.#archerPose.draw > 0.05) ? 1 : 0
+        golfing || this.#ballHeld || this.#carryingBoard || this.#gardenRake || (archering && this.#archerPose.draw > 0.05) ? 1 : 0
       );
       if (!golfing && !archering) {
         // only poseGolf/poseArcher rotate the wrist groups; neutralise them
@@ -1114,6 +1167,15 @@ export class Player {
         } else {
           poseIdle(r, this.#animT);
         }
+      }
+      if (this.#gardenRake && !golfing && !archering && !walk.swimming) {
+        this.#gardenRake.visible = true;
+        const sweep = this.#gardenRaking ? Math.sin(this.#animT * 2.3) * 0.2 : 0;
+        r.armR.rotation.x -= 0.42;
+        r.armR.rotation.z -= 0.34 - sweep;
+        r.foreR.rotation.x -= 0.48;
+        r.handR.rotation.x += 0.12;
+        r.torso.rotation.y += sweep * 0.18;
       }
       // throw swing: an additive overlay on the right arm + torso, layered AFTER
       // the base pose so it rides on top of walk/idle without a dedicated pose fn.

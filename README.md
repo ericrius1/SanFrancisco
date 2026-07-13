@@ -100,10 +100,10 @@ Open the map (`M`) and teleport, or just wander. A few of the denser spots:
   a dog park just below, and a **jammer trio** (ukulele, handpan, flute) perched
   on a boulder. Stand nearby to hear their original songbook rotate with a
   natural quiet break between tunes. Throw the ball tool for the dogs.
-- **Buena Vista · Afterlight** — a hidden wind observatory in the treeless
-  summit clearing. Meet Mara and Sol at the loom, press `E`, then gather five
-  wandering light-echoes before the fog closes. Restoring the tune calls
-  something enormous out of the canopy. The map pin drops you beside the grove.
+- **Afterlight** (Buena Vista summit) — a hidden wind observatory in the treeless
+  summit clearing west of Corona Heights. Meet Mara and Sol at the loom, press `E`,
+  then gather five wandering light-echoes before the fog closes. Restoring the tune
+  calls something enormous out of the canopy. Map pin: **Afterlight**.
 - **Botanical Garden** — San Francisco Botanical Garden in Golden Gate Park:
   unified trees, curved blade grass, leaf-spray shrubs, dimensional flower
   clumps, and a shared wind envelope. The nature soundscape thickens here.
@@ -132,7 +132,7 @@ Nothing here is required — it's a list of things people tend to find fun.
   above the fog. The whole city is easiest to orient from the air.
 - **Hang with the jammers.** Spawn is already on Corona Heights — walk to the
   boulder, listen for a while, then toss a ball for the dogs.
-- **Wake the Afterlight.** Map → **Buena Vista · Afterlight**. Ask Mara about
+- **Wake the Afterlight.** Map → **Afterlight** (west of Corona Heights). Ask Mara about
   the quiet sky, chase the five colored echoes around the summit, and look up
   when the last note reaches the loom.
 - **Walk the Botanical Garden.** Map → **Botanical Garden**. Grass tramples under

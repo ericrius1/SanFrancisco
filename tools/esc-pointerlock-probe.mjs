@@ -1,14 +1,22 @@
 // Background-browser probe: Escape must ALWAYS exit pointer lock.
 // Regression tests for the ways Esc used to lose:
 //   0. ordinary locked gameplay must unlock on the first trusted Escape
-//   A. late-grant race — releaseLock() while a requestLock grant is in flight
-//      must leave the pointer unlocked (the stale grant is dropped on arrival)
+//   A. a direct programmatic unlock must remain unlocked after async handlers
 //   B. stale free cursor + Escape keydown must NOT heal-and-relock (input.ts
 //      keydown path used to call #endFreeCursor(true) for every key incl. Esc)
 //   C. overlay open (expanded minimap) + locked — Esc still releases the lock
 //      in the same press, whether or not Chrome delivers it onward to the modal
 //   D. a focused tuning field that consumes Escape must not bypass the earlier
 //      input-layer capture listener
+//   E. Escape while primary fire is held must not let the trailing mouse-up
+//      complete a canvas click that immediately captures the pointer again
+//   F. Fullscreen and pointer lock together must still release pointer lock on
+//      the first Escape, whichever browser-owned state Escape dismisses first
+//   G. Escape normalization must honor event.key when event.code is absent, so
+//      chat blur cannot request pointer lock again during the same Escape event
+//   H. A delivered Escape keyup must release even when the browser reserved the
+//      corresponding keydown while pointer lock was active
+//   I. Escape's re-lock barrier must survive pointerlockchange until keyup
 // Plus controls proving the lock plumbing itself works in background Chrome
 // (click locks, exit+request relocks) so a pass is meaningful.
 //
@@ -85,9 +93,21 @@ async function click(c, x, y) {
   await c.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
   await c.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
 }
-async function pressEscape(c) {
+async function mouseDown(c, x, y) {
+  await c.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
+}
+async function mouseUp(c, x, y) {
+  await c.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+}
+async function escapeDown(c) {
   await c.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 });
+}
+async function escapeUp(c) {
   await c.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 });
+}
+async function pressEscape(c) {
+  await escapeDown(c);
+  await escapeUp(c);
 }
 const lockState = `(()=>({el:!!document.pointerLockElement,locked:window.__sf.input.locked,free:window.__sf.input.freeCursor}))()`;
 async function waitLock(c, want, ms = 3000) {
@@ -98,6 +118,14 @@ async function waitLock(c, want, ms = 3000) {
     await sleep(100);
   }
   return ev(c, lockState);
+}
+async function waitFor(c, expr, ms = 3000) {
+  const t = Date.now();
+  while (Date.now() - t < ms) {
+    if (await ev(c, expr)) return true;
+    await sleep(100);
+  }
+  return Boolean(await ev(c, expr));
 }
 
 const results = [];
@@ -228,25 +256,37 @@ async function main() {
   // ---- 0. Real broken path: one trusted Escape from ordinary gameplay must
   // release pointer lock and stay released after async lock-change handlers run.
   console.log("[probe] test 0: first Escape unlocks gameplay");
+  const focusBeforeEscape = await ev(c, `(()=>{window.__esc0Trace={start:performance.now(),blurAt:null,unlockAt:null};window.__escBlurWatch=()=>{window.__esc0Trace.blurAt??=performance.now()-window.__esc0Trace.start};window.__escLockWatch=()=>{if(!document.pointerLockElement)window.__esc0Trace.unlockAt??=performance.now()-window.__esc0Trace.start};window.addEventListener('blur',window.__escBlurWatch);document.addEventListener('pointerlockchange',window.__escLockWatch);return document.hasFocus();})()`);
   await pressEscape(c);
-  await sleep(1200);
+  const promptlyUnlocked = await waitLock(c, false, 500);
+  await sleep(700);
   s = await ev(c, lockState);
-  push("0-first-esc-unlocks", !s.el && !s.locked, `after one Esc: el=${s.el} locked=${s.locked}`);
+  const escapeTrace = await ev(c, `(()=>{window.removeEventListener('blur',window.__escBlurWatch);document.removeEventListener('pointerlockchange',window.__escLockWatch);const r={focused:document.hasFocus(),...window.__esc0Trace};delete window.__escBlurWatch;delete window.__escLockWatch;delete window.__esc0Trace;return r;})()`);
+  const unlockedBeforeBlur = escapeTrace.unlockAt !== null && (escapeTrace.blurAt === null || escapeTrace.unlockAt <= escapeTrace.blurAt);
+  push(
+    "0-first-esc-unlocks",
+    focusBeforeEscape && unlockedBeforeBlur && !promptlyUnlocked.el && !promptlyUnlocked.locked && !s.el && !s.locked,
+    `after one Esc: promptEl=${promptlyUnlocked.el} promptLocked=${promptlyUnlocked.locked}; finalEl=${s.el} finalLocked=${s.locked}; unlockAt=${escapeTrace.unlockAt}ms blurAt=${escapeTrace.blurAt}ms focused=${escapeTrace.focused}`
+  );
 
   // ---- A. ISOLATION: bare exitPointerLock() then sample. Proves whether the app
   // re-locks on its own (which would explain "Esc sometimes doesn't unlock").
   console.log("[probe] test A: bare exitPointerLock isolation");
   try {
-    await pressEscape(c); await sleep(400);
-    await click(c, W / 2, H / 2); await waitLock(c, true);
-    // install a pointerlockchange tracer to see every transition
-    await ev(c, `(()=>{window.__lc=[];document.addEventListener('pointerlockchange',()=>window.__lc.push(!!document.pointerLockElement),{once:false});return true;})()`);
-    await ev(c, `(()=>{document.exitPointerLock();return true;})()`);
-    const samples = [];
-    for (const ms of [0, 150, 400, 900, 1600]) { await sleep(ms === 0 ? 30 : ms - (samples.length ? [0,150,400,900,1600][samples.length-1] : 0)); samples.push((await ev(c, lockState)).el); }
-    const trace = await ev(c, `window.__lc`);
-    s = await ev(c, lockState);
-    push("A-bare-exit-stays-unlocked", !s.el && !s.locked, `bare exitPointerLock: final el=${s.el} locked=${s.locked}; samples=[${samples}]; lockchange-trace=[${trace}]`);
+    const beforeExit = await lockViaClick();
+    if (!beforeExit.el || !beforeExit.locked) {
+      push("A-bare-exit-stays-unlocked", false, `lock precondition failed: el=${beforeExit.el} locked=${beforeExit.locked}`);
+    } else {
+      // install a pointerlockchange tracer to see every transition
+      await ev(c, `(()=>{window.__lc=[];window.__lcHandler=()=>window.__lc.push(!!document.pointerLockElement);document.addEventListener('pointerlockchange',window.__lcHandler);return true;})()`);
+      await ev(c, `(()=>{document.exitPointerLock();return true;})()`);
+      const samples = [];
+      for (const ms of [0, 150, 400, 900, 1600]) { await sleep(ms === 0 ? 30 : ms - (samples.length ? [0,150,400,900,1600][samples.length-1] : 0)); samples.push((await ev(c, lockState)).el); }
+      const trace = await ev(c, `window.__lc`);
+      s = await ev(c, lockState);
+      push("A-bare-exit-stays-unlocked", !s.el && !s.locked, `bare exitPointerLock: final el=${s.el} locked=${s.locked}; samples=[${samples}]; lockchange-trace=[${trace}]`);
+      await ev(c, `document.removeEventListener('pointerlockchange',window.__lcHandler)`);
+    }
   } catch (e) { push("A-bare-exit-stays-unlocked", false, `errored: ${String(e).slice(0, 120)}`); }
 
   // ---- B. stale free cursor + Escape must stay unlocked (no heal-and-relock)
@@ -313,9 +353,150 @@ async function main() {
       const queryAfter = await ev(c, `document.querySelector('input[aria-label="Search tweaks"]')?.value`);
       s = await ev(c, lockState);
       push("D-focused-field-esc-unlocks", focusedAfter === "Search tweaks" && queryAfter === "" && !s.el && !s.locked, `active before=${focusedBefore}; after one Esc: active=${focusedAfter} query=${JSON.stringify(queryAfter)} el=${s.el} locked=${s.locked}`);
+      await ev(c, `window.dispatchEvent(new KeyboardEvent('keyup',{key:'Escape',code:'Escape',bubbles:true,cancelable:true}))`);
     }
     await ev(c, `(()=>{const d=window.__sf.debugPanel;if(d.visible)d.toggle();return true;})()`);
   } catch (e) { push("D-focused-field-esc-unlocks", false, `errored: ${String(e).slice(0, 120)}`); }
+
+  // ---- E. A mouse-up after Escape still completes the click whose down event
+  // began while locked. That old click must not be treated as a fresh intent to
+  // capture the pointer again.
+  console.log("[probe] test E: held primary + Esc stays unlocked after mouse-up");
+  try {
+    s = await lockViaClick();
+    if (!s.el) {
+      push("E-held-primary-esc-stays-unlocked", false, "could not re-lock for held-primary test");
+    } else {
+      await ev(c, `(()=>{const i=window.__sf.input;const canvas=document.querySelector('canvas');window.__escEOriginalRequestLock=i.requestLock;window.__escERequestLockCalls=0;window.__escEClickEvents=0;window.__escEClickHandler=()=>window.__escEClickEvents++;i.requestLock=function(...args){window.__escERequestLockCalls++;return window.__escEOriginalRequestLock.apply(this,args);};canvas.addEventListener('click',window.__escEClickHandler);return true;})()`);
+      await mouseDown(c, W / 2, H / 2);
+      await escapeDown(c);
+      const afterEscape = await waitLock(c, false, 3000);
+      await mouseUp(c, W / 2, H / 2);
+      await ev(c, `document.querySelector('canvas').dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,button:0}))`);
+      const clickContract = await ev(c, `({clicks:window.__escEClickEvents,requests:window.__escERequestLockCalls})`);
+      await escapeUp(c);
+      await sleep(1200);
+      s = await ev(c, lockState);
+      push(
+        "E-held-primary-esc-stays-unlocked",
+        !afterEscape.el && !afterEscape.locked && clickContract.clicks >= 1 && clickContract.requests === 0 && !s.el && !s.locked,
+        `after Esc: el=${afterEscape.el} locked=${afterEscape.locked}; clickEvents=${clickContract.clicks} requestLockCalls=${clickContract.requests}; after mouse-up: el=${s.el} locked=${s.locked}`
+      );
+      await ev(c, `(()=>{const i=window.__sf.input;const canvas=document.querySelector('canvas');if(window.__escEOriginalRequestLock)i.requestLock=window.__escEOriginalRequestLock;if(window.__escEClickHandler)canvas.removeEventListener('click',window.__escEClickHandler);delete window.__escEOriginalRequestLock;delete window.__escERequestLockCalls;delete window.__escEClickEvents;delete window.__escEClickHandler;return true;})()`);
+    }
+  } catch (e) {
+    try { await ev(c, `(()=>{const i=window.__sf?.input;const canvas=document.querySelector('canvas');if(i&&window.__escEOriginalRequestLock)i.requestLock=window.__escEOriginalRequestLock;if(canvas&&window.__escEClickHandler)canvas.removeEventListener('click',window.__escEClickHandler);return true;})()`); } catch {}
+    push("E-held-primary-esc-stays-unlocked", false, `errored: ${String(e).slice(0, 120)}`);
+  }
+
+  // ---- F. Chrome can arbitrate Escape between fullscreen and pointer lock.
+  // The app's fullscreenchange safety net must make pointer release invariant.
+  console.log("[probe] test F: fullscreen + Esc unlocks on first press");
+  try {
+    const entered = await evGesture(c, `(async()=>{try{await document.documentElement.requestFullscreen();return !!document.fullscreenElement;}catch(e){return false;}})()`);
+    const fullscreen = entered && await waitFor(c, `!!document.fullscreenElement`, 3000);
+    if (!fullscreen) {
+      push("F-fullscreen-esc-unlocks", false, "could not enter Fullscreen API state");
+    } else {
+      s = await lockViaClick();
+      if (!s.el) {
+        push("F-fullscreen-esc-unlocks", false, "could not lock while fullscreen");
+      } else {
+        await pressEscape(c);
+        await sleep(1200);
+        s = await ev(c, lockState);
+        const stillFullscreen = await ev(c, `!!document.fullscreenElement`);
+        push(
+          "F-fullscreen-esc-unlocks",
+          !s.el && !s.locked,
+          `after one Esc: fullscreen=${stillFullscreen} el=${s.el} locked=${s.locked}`
+        );
+      }
+    }
+    if (await ev(c, `!!document.fullscreenElement`)) {
+      await ev(c, `document.exitFullscreen()`);
+      await waitFor(c, `!document.fullscreenElement`, 3000);
+    }
+  } catch (e) { push("F-fullscreen-esc-unlocks", false, `errored: ${String(e).slice(0, 120)}`); }
+
+  // ---- G. Some input paths provide key="Escape" without code="Escape".
+  // Count requestLock calls directly because a synthetic event has no user
+  // activation and Chrome could otherwise hide the bug by rejecting the grant.
+  console.log("[probe] test G: code-less chat Escape never requests re-lock");
+  try {
+    await ev(c, `(()=>{const i=window.__sf.input;const q=document.querySelector('input[aria-label="Chat message"]');if(!q)return false;q.focus();window.__escOriginalRequestLock=i.requestLock;window.__escRequestLockCalls=0;i.requestLock=function(...args){window.__escRequestLockCalls++;return window.__escOriginalRequestLock.apply(this,args);};return document.activeElement===q;})()`);
+    await c.send("Page.bringToFront");
+    await evGesture(c, `(()=>{window.__sf.input.requestLock();return true;})()`);
+    s = await waitLock(c, true, 3000);
+    if (!s.el) {
+      push("G-codeless-chat-esc-no-relock", false, "could not lock with chat focused");
+    } else {
+      await ev(c, `(()=>{window.__escRequestLockCalls=0;const q=document.querySelector('input[aria-label="Chat message"]');return q?.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'',bubbles:true,cancelable:true}));})()`);
+      const afterCodeLessEscape = await waitLock(c, false, 500);
+      await sleep(500);
+      const requestCalls = await ev(c, `window.__escRequestLockCalls`);
+      const focused = await ev(c, `document.activeElement?.getAttribute?.('aria-label')`);
+      s = await ev(c, lockState);
+      push(
+        "G-codeless-chat-esc-no-relock",
+        requestCalls === 0 && !afterCodeLessEscape.el && !afterCodeLessEscape.locked && !s.el && !s.locked,
+        `requestLock calls=${requestCalls}; active=${focused}; promptEl=${afterCodeLessEscape.el} promptLocked=${afterCodeLessEscape.locked}; finalEl=${s.el} finalLocked=${s.locked}`
+      );
+      await ev(c, `window.dispatchEvent(new KeyboardEvent('keyup',{key:'Escape',code:'',bubbles:true,cancelable:true}))`);
+    }
+    await ev(c, `(()=>{const i=window.__sf.input;if(window.__escOriginalRequestLock)i.requestLock=window.__escOriginalRequestLock;delete window.__escOriginalRequestLock;delete window.__escRequestLockCalls;document.querySelector('input[aria-label="Chat message"]')?.blur();return true;})()`);
+  } catch (e) {
+    try { await ev(c, `(()=>{const i=window.__sf?.input;if(i&&window.__escOriginalRequestLock)i.requestLock=window.__escOriginalRequestLock;delete window.__escOriginalRequestLock;delete window.__escRequestLockCalls;return true;})()`); } catch {}
+    push("G-codeless-chat-esc-no-relock", false, `errored: ${String(e).slice(0, 120)}`);
+  }
+
+  // ---- H. Chromium/Firefox may consume the locked keydown but later expose a
+  // keyup. A synthetic keyup has no browser default, so this isolates the app's
+  // fallback instead of passing on the UA's eventual native unlock.
+  console.log("[probe] test H: keyup-only Escape releases pointer lock");
+  try {
+    s = await lockViaClick();
+    if (!s.el) {
+      push("H-keyup-only-esc-unlocks", false, "could not re-lock for keyup-only test");
+    } else {
+      await ev(c, `window.dispatchEvent(new KeyboardEvent('keyup',{key:'Escape',code:'Escape',bubbles:true,cancelable:true}))`);
+      const afterKeyup = await waitLock(c, false, 500);
+      await sleep(800);
+      s = await ev(c, lockState);
+      push(
+        "H-keyup-only-esc-unlocks",
+        !afterKeyup.el && !afterKeyup.locked && !s.el && !s.locked,
+        `after Escape keyup only: promptEl=${afterKeyup.el} promptLocked=${afterKeyup.locked}; finalEl=${s.el} finalLocked=${s.locked}`
+      );
+    }
+  } catch (e) { push("H-keyup-only-esc-unlocks", false, `errored: ${String(e).slice(0, 120)}`); }
+
+  // ---- I. pointerlockchange may arrive before keyup. It cancels old intent but
+  // must not end the Escape transaction or let an async callback request again.
+  console.log("[probe] test I: Escape barrier survives unlock until keyup");
+  try {
+    s = await lockViaClick();
+    if (!s.el) {
+      push("I-esc-barrier-survives-unlock", false, "could not re-lock for Escape barrier test");
+    } else {
+      await ev(c, `(()=>{const canvas=document.querySelector('canvas');window.__escIOriginalPointerLock=canvas.requestPointerLock;window.__escIPointerLockCalls=0;canvas.requestPointerLock=function(...args){window.__escIPointerLockCalls++;return window.__escIOriginalPointerLock.apply(this,args);};window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',bubbles:true,cancelable:true}));return true;})()`);
+      const afterDown = await waitLock(c, false, 500);
+      await ev(c, `window.__sf.input.requestLock()`);
+      await sleep(200);
+      const requests = await ev(c, `window.__escIPointerLockCalls`);
+      s = await ev(c, lockState);
+      await ev(c, `window.dispatchEvent(new KeyboardEvent('keyup',{key:'Escape',code:'Escape',bubbles:true,cancelable:true}))`);
+      push(
+        "I-esc-barrier-survives-unlock",
+        !afterDown.el && !afterDown.locked && requests === 0 && !s.el && !s.locked,
+        `after keydown: el=${afterDown.el} locked=${afterDown.locked}; requestPointerLock calls before keyup=${requests}; finalEl=${s.el} finalLocked=${s.locked}`
+      );
+      await ev(c, `(()=>{const canvas=document.querySelector('canvas');if(window.__escIOriginalPointerLock)canvas.requestPointerLock=window.__escIOriginalPointerLock;delete window.__escIOriginalPointerLock;delete window.__escIPointerLockCalls;return true;})()`);
+    }
+  } catch (e) {
+    try { await ev(c, `(()=>{const canvas=document.querySelector('canvas');if(canvas&&window.__escIOriginalPointerLock)canvas.requestPointerLock=window.__escIOriginalPointerLock;return true;})()`); } catch {}
+    push("I-esc-barrier-survives-unlock", false, `errored: ${String(e).slice(0, 120)}`);
+  }
 
   return finish();
 

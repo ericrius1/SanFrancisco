@@ -77,35 +77,45 @@ async function main() {
     await sleep(2500); // let the first frames stream tiles around the spawn
     console.log("[swim] booted; searching for bay water NEAR the spawn (keeps tiles/GPU warm)...");
 
-    // Search rings around the actual spawn for interior bay water of a real,
-    // moderate depth. Staying near the spawn avoids teleporting into an unloaded
-    // far-map corner (which dropped the WebGPU context last run).
+    // Prefer calm interior bay water. Spawn sits on Ocean Beach, whose 12 m
+    // shoaling train makes absolute y≈0 assertions and dive thresholds lie —
+    // skip that strip and search rings (and a known bay fallback) instead.
     const spot = await evaluate(c, `(()=>{const s=window.__sf,m=s.map,p=s.player;
+      const inOceanBeach=(x,z)=>x>-6325&&x<-5720&&z>1280&&z<4920;
       const ox=p.position.x, oz=p.position.z; let best=null;
-      for(let r=60;r<=600;r+=40) for(let a=0;a<6.2832;a+=Math.PI/12){
-        const x=ox+Math.cos(a)*r, z=oz+Math.sin(a)*r;
-        if(!m.isWater(x,z)) continue; const g=m.groundHeight(x,z);
-        if(g<-40||g>-4) continue;                         // real bathymetry band
-        if(!m.isWater(x+40,z)||!m.isWater(x-40,z)||!m.isWater(x,z+40)||!m.isWater(x,z-40)) continue; // interior
+      const consider=(x,z)=>{
+        if(inOceanBeach(x,z)||!m.isWater(x,z)) return;
+        const g=m.groundHeight(x,z);
+        if(g<-40||g>-4) return;
+        if(!m.isWater(x+40,z)||!m.isWater(x-40,z)||!m.isWater(x,z+40)||!m.isWater(x,z-40)) return;
         if(!best||g<best.g) best={x:+x.toFixed(1),z:+z.toFixed(1),g:+g.toFixed(2)};
-      } return best;})()`);
+      };
+      for(let r=80;r<=2400;r+=80) for(let a=0;a<6.2832;a+=Math.PI/10) consider(ox+Math.cos(a)*r, oz+Math.sin(a)*r);
+      for(const [x,z] of [[3000,-2600],[2500,-2200],[1800,-2800],[-2000,-2500]]) consider(x,z);
+      return best;})()`);
     if (!spot) { console.log("[swim] no interior bay water near spawn — FAIL"); check(false, "found bay water near spawn"); throw new Error("no water"); }
     console.log(`[swim] bay water @ (${spot.x}, ${spot.z})  seabed y=${spot.g.toFixed(2)}`);
     check(spot.g < -6, `found deep bay water near spawn (seabed ${spot.g.toFixed(1)}m, need < -6)`);
 
     // Put the player in the water. swimEnter=true makes walk.enter drop us at the
     // waterline instead of hopping to the nearest shore (the boat-exit path).
+    // trySwitch no-ops when already in walk, so bounce through bird first.
     const setup = await evaluate(c, `(()=>{const s=window.__sf,p=s.player;
       s.sky.cycleEnabled=false; s.input.suspended=false;
       p.position.set(${spot.x},0,${spot.z}); p.renderPosition.set(${spot.x},0,${spot.z});
+      if(p.mode==='walk') p.trySwitch('bird');
       p.swimEnter=true; p.trySwitch('walk'); s.chase.pitch=0.15;
-      return {mode:p.mode, y:+p.position.y.toFixed(2)};})()`);
-    console.log(`[swim] entered water, mode=${setup.mode}, y=${setup.y}`);
+      return {mode:p.mode, y:+p.position.y.toFixed(2),
+        water:!!s.map.isWater(p.position.x,p.position.z),
+        seabed:+s.map.groundHeight(p.position.x,p.position.z).toFixed(2)};})()`);
+    console.log(`[swim] entered water, mode=${setup.mode}, y=${setup.y}, water=${setup.water}, seabed=${setup.seabed}`);
     // fail fast if the entry hopped us onto land instead of into the water
     await sleep(800);
-    const settled = await evaluate(c, `(()=>{const p=window.__sf.player;
-      return {cy:+p.position.y.toFixed(2), seabed:+window.__sf.map.groundHeight(p.position.x,p.position.z).toFixed(2)};})()`);
-    check(settled.seabed < -4 && settled.cy < 1.5, `stayed in the water, not hopped to shore (y=${settled.cy}, seabed=${settled.seabed})`);
+    const settled = await evaluate(c, `(()=>{const p=window.__sf.player,m=window.__sf.map;
+      return {cy:+p.position.y.toFixed(2), seabed:+m.groundHeight(p.position.x,p.position.z).toFixed(2),
+        water:!!m.isWater(p.position.x,p.position.z), swimming:!!p.swimming};})()`);
+    check(settled.water && settled.seabed < -4 && settled.cy < 1.5,
+      `stayed in the water, not hopped to shore (y=${settled.cy}, seabed=${settled.seabed}, water=${settled.water}, swimming=${settled.swimming})`);
 
     const clearKeys = `window.__sf.input.keys.clear(); window.__sf.input.mouseDX=0; window.__sf.input.mouseDY=0;`;
     // capsule centre y, chase-camera y, seabed under the camera + under the player.
@@ -114,7 +124,7 @@ async function main() {
     // the exact surface, plus the absolute camera-underwater threshold vs the old
     // sea-level clamp (0.7).
     const readState = `(()=>{const s=window.__sf,p=s.player; const cx=p.position.x, cz=p.position.z;
-      return {cy:p.position.y, camY:s.camera.position.y,
+      return {cy:p.position.y, camY:s.camera.position.y, swimming:!!p.swimming,
         camFloorG:s.map.effectiveGround(s.camera.position.x,s.camera.position.z),
         seabed:s.map.groundHeight(cx,cz)};})()`;
 
@@ -128,6 +138,31 @@ async function main() {
     check(idle.cy < 0.2, `idle: body centre at/under the surface (y=${idle.cy.toFixed(2)} ≤ ~0), not floating on top`);
     check(idleTop > -0.6 && idleTop < 1.4, `idle: head near the waterline (top=${idleTop.toFixed(2)}), not sunk, not perched high`);
     check(idleBottom > idle.seabed + 0.3, `idle: buoyancy holds you off the seabed (bottom=${idleBottom.toFixed(2)} > seabed ${idle.seabed.toFixed(2)})`);
+    // Surface swim: chase cam stays above the live waterline at the camera XZ.
+    const camClear = await evaluate(c, `(async()=>{
+      const { waterHeight } = await import('/src/world/heightmap.ts');
+      const s=window.__sf, cam=s.camera;
+      const wy=waterHeight(cam.position.x,cam.position.z,s.player.time);
+      return {camY:cam.position.y, wy, clear:cam.position.y - wy};
+    })()`);
+    console.log(`[swim] IDLE cam clearance=${camClear.clear.toFixed(2)} (cam ${camClear.camY.toFixed(2)} vs water ${camClear.wy.toFixed(2)})`);
+    check(camClear.clear > 0.4, `idle: camera stays above water (clearance=${camClear.clear.toFixed(2)} > 0.4)`);
+
+    // Looking "up" (negative pitch) drops the chase boom; must not dunk under water.
+    await evaluate(c, `${clearKeys} window.__sf.chase.pitch=-0.55;`);
+    await sleep(900);
+    const lookDown = await evaluate(c, `(async()=>{
+      const { waterHeight } = await import('/src/world/heightmap.ts');
+      const s=window.__sf,p=s.player,cam=s.camera;
+      const wy=waterHeight(cam.position.x,cam.position.z,p.time);
+      return {cy:p.position.y, camY:cam.position.y, wy, clear:cam.position.y-wy, swimming:!!p.swimming};
+    })()`);
+    console.log(`[swim] LOWPIT centre y=${lookDown.cy.toFixed(2)}  camera y=${lookDown.camY.toFixed(2)}  clear=${lookDown.clear.toFixed(2)}`);
+    check(lookDown.clear > 0.4, `surface low pitch: camera stays above water (clearance=${lookDown.clear.toFixed(2)} > 0.4)`);
+    const ovIdle = await evaluate(c, `(()=>{const r=document.getElementById('uw-root'); return r?getComputedStyle(r).visibility:'none';})()`);
+    check(ovIdle === "hidden", `surface low pitch: underwater overlay stays off (visibility=${ovIdle})`);
+    await evaluate(c, `window.__sf.chase.pitch=0.15;`);
+    await sleep(400);
 
     // 2) DIVE — hold Shift (descend); expect to sink well below idle and stay under.
     // Keep pitch low so the chase cam trails just above the diver and follows under.
@@ -160,11 +195,20 @@ async function main() {
     console.log(`[swim] water underside: ${JSON.stringify(lid)}`);
     check(lid && lid.visible, `water surface underside (ceiling) is drawn while submerged`);
 
-    // 3) RELEASE — let go, buoyancy floats you back up toward the surface
+    // 3) RELEASE — let go of Shift and hold Space (swim up); buoyancy + boost
+    // return you to the surface rest, and the chase cam must clear the waterline.
+    await evaluate(c, `${clearKeys}
+      window.__sf.input.keys.delete('ShiftLeft');
+      window.__sf.input.keys.delete('ShiftRight');
+      window.__sf.input.keys.add('Space');
+      window.__sf.chase.pitch=0.15;
+      const p=window.__sf.player;
+      if(p.body) window.__sf.physics.world.setBodyAwake(p.body,true);`);
+    await sleep(3500);
     await evaluate(c, clearKeys);
-    await sleep(2500);
+    await sleep(1200);
     const up = await evaluate(c, readState);
-    console.log(`[swim] RISE   centre y=${up.cy.toFixed(2)}  camera y=${up.camY.toFixed(2)}`);
+    console.log(`[swim] RISE   centre y=${up.cy.toFixed(2)}  camera y=${up.camY.toFixed(2)} swimming=${up.swimming}`);
     check(up.cy > dive.cy + 1.0, `release: buoyancy floats you back up (centre ${up.cy.toFixed(2)} > dive ${dive.cy.toFixed(2)} + 1.0)`);
     check(Math.abs(up.cy - idle.cy) < 0.8, `release: returns near the idle surface rest (${up.cy.toFixed(2)} ≈ ${idle.cy.toFixed(2)})`);
     check(up.camY > dive.camY + 0.5, `camera rose back with you (${up.camY.toFixed(2)} > ${dive.camY.toFixed(2)})`);

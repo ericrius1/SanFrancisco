@@ -114,7 +114,7 @@ export class OceanBeachWaves {
     this.#face = this.#buildFaceMesh();
     this.group.add(this.#face);
 
-    const sprayCount = 640;
+    const sprayCount = 220;
     this.#sprayPositions = new Float32Array(sprayCount * 3);
     this.#sprayVelocity = new Float32Array(sprayCount * 3);
     const sprayGeo = new THREE.BufferGeometry();
@@ -140,7 +140,7 @@ export class OceanBeachWaves {
     // It is intentionally visual-only: authoritative surf physics remains the
     // deterministic analytic surface, so multiplayer never depends on GPU/FX
     // state or readback.
-    const foamCount = 520;
+    const foamCount = 280;
     this.#foamPositions = new Float32Array(foamCount * 3);
     this.#foamVelocity = new Float32Array(foamCount * 2);
     this.#foamLife = new Float32Array(foamCount);
@@ -207,23 +207,27 @@ export class OceanBeachWaves {
     // deep trough → mid sea green → bright translucent emerald on the standing
     // face; the pitching lip and spent whitewater go white.
     const bodyGreen = mix(color(0x0a5a48), color(0x1ba06f), clamp(f.height.mul(0.32).add(0.35), 0, 1));
-    const faceGreen = mix(bodyGreen, color(0x3fe08a), f.face.mul(0.9));
-    const foam = clamp(f.lip.mul(1.1).add(f.white.mul(0.85)), 0, 1).toVar();
+    const faceGreen = mix(bodyGreen, color(0x3fe08a), f.face.mul(0.95));
+    const foam = clamp(f.lip.mul(1.25).add(f.white.mul(0.9)), 0, 1).toVar();
     mat.colorNode = mix(faceGreen, color(0xf3fffa), foam);
 
     // SSS backlight: the thin, steep face glows emerald where the sun rakes
     // through it (stylized — KSPS look, not a physical transmission model).
-    const glow = f.face.mul(f.face).mul(0.5 * LIGHT_SCALE);
-    mat.emissiveNode = vec3(0.12, 0.62, 0.34).mul(glow).add(vec3(0.9, 1.0, 0.96).mul(foam.mul(0.06 * LIGHT_SCALE)));
+    const glow = f.face.mul(f.face).mul(0.72 * LIGHT_SCALE);
+    mat.emissiveNode = vec3(0.12, 0.62, 0.34).mul(glow).add(vec3(0.9, 1.0, 0.96).mul(foam.mul(0.08 * LIGHT_SCALE)));
 
     // ripple bump from the wave height + a little chop so the face isn't glassy
     const chop = mx_noise_float(vec3(wx.mul(0.22), wz.mul(0.22), t.mul(0.6))).mul(0.12);
     mat.normalNode = bumpNormal(f.height.add(chop).mul(0.5));
 
-    // shallow face is translucent (green water you see through), foam opaque
-    const alpha = clamp(mix(float(0.7), float(0.95), max(f.face, f.height.mul(0.2))).add(foam.mul(0.3)), 0, 1);
+    // Keep the wall dense enough that it never reads as a missing ocean sheet.
+    const alpha = clamp(
+      mix(float(0.82), float(0.98), max(f.face, f.height.mul(0.25))).add(foam.mul(0.35)),
+      0,
+      1
+    );
     mat.opacityNode = alpha.mul(stripFade).mul(zRim);
-    mat.envMapIntensity = 0.2;
+    mat.envMapIntensity = 0.28;
 
     const mesh = new THREE.Mesh(geo, mat);
     mesh.name = "ocean_beach_surf_face";
@@ -276,12 +280,13 @@ export class OceanBeachWaves {
       const gust = oceanBeachFoamNoise(z, time, i % 13);
       // Birth on the live surface so spray never reads as mid-air puffs above a
       // flat bay sheet — the crest height comes from waterHeight(), not a free Y.
+      // Keep spray short-lived and low so it reads as lip mist, not floating blobs.
       const surfaceY = waterHeight(crestX + 1.2, z, time);
-      sv[k] = 2.3 + gust * 2.2;
-      sv[k + 1] = 1.8 + gust * 2.4;
-      sv[k + 2] = Math.sin(i * 9.17) * 1.8;
-      sp[k] = crestX + 2 + sv[k] * life;
-      sp[k + 1] = surfaceY + 0.15 + sv[k + 1] * life - 3.2 * life * life;
+      sv[k] = 1.6 + gust * 1.4;
+      sv[k + 1] = 0.9 + gust * 1.2;
+      sv[k + 2] = Math.sin(i * 9.17) * 1.1;
+      sp[k] = crestX + 1.4 + sv[k] * life;
+      sp[k + 1] = surfaceY + 0.08 + sv[k + 1] * life - 2.4 * life * life;
       sp[k + 2] = z + sv[k + 2] * life;
     }
     (this.#spray.geometry.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;

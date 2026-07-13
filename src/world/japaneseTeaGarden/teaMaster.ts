@@ -10,6 +10,7 @@ import {
   type Rig
 } from "../../player/rig";
 import { setHandTarget } from "../../player/handIK";
+import { enableShadowLayer, SHADOW_LAYERS } from "../shadows/shadowLayers";
 import { createIrohCostume } from "./irohCostume";
 import { createTeaSteam } from "./teaSteam";
 
@@ -52,11 +53,15 @@ export type TeaMasterVisualDebugState = {
 // cream shawl, pale grey-tan sleeves, gold topknot tie, navy shoes.
 const PALETTE = {
   sleeve: 0xcfc6b0,
-  navy: 0x232a42,
-  hair: 0xc3c5be,
+  navy: 0x171d32,
+  hair: 0x8b9390,
   skin: 0xd7a17b,
   gold: 0xc9a24b,
-  shoe: 0x222a40,
+  shoe: 0x1b2035,
+  sole: 0xeee8d8,
+  sclera: 0xded4c5,
+  iris: 0x57402e,
+  pupil: 0x211a17,
   tea: 0x7a4b20,
   cup: 0xdcc8a0
 } as const;
@@ -79,6 +84,8 @@ function createTeaCup(geometries: THREE.BufferGeometry[], materials: THREE.Mater
   const bowl = new THREE.Mesh(bowlGeometry, ceramic);
   bowl.name = "tea_cup_bowl";
   bowl.castShadow = true;
+  bowl.receiveShadow = true;
+  enableShadowLayer(bowl, SHADOW_LAYERS.HERO_DYNAMIC);
   group.add(bowl);
   const base = new THREE.Mesh(baseGeometry, ceramic);
   base.name = "tea_cup_foot";
@@ -96,8 +103,19 @@ function createTeaCup(geometries: THREE.BufferGeometry[], materials: THREE.Mater
 
 function hideStockFaceAndCostume(rig: Rig): void {
   for (const item of [...rig.avatar.allHair, ...rig.avatar.allHats, ...rig.avatar.allOutfits]) item.visible = false;
+  rig.avatar.headBlock.visible = false;
   for (const child of rig.head.children) {
     if (child instanceof THREE.Mesh && child.material === rig.avatar.materials.visor) child.visible = false;
+    // The stock block nose belongs to the same material as the neck and head.
+    // Hide only the forward detail; the neck remains useful beneath the collar.
+    if (
+      child instanceof THREE.Mesh &&
+      child.material === rig.avatar.materials.skin &&
+      child !== rig.avatar.headBlock &&
+      child.position.z < -0.1
+    ) {
+      child.visible = false;
+    }
   }
 }
 
@@ -109,14 +127,17 @@ export function createTeaMasterVisual(): TeaMasterVisual {
   rig.avatar.materials.sleeve.color.set(PALETTE.sleeve);
   rig.avatar.materials.pants.color.set(PALETTE.navy);
   rig.avatar.materials.shoe.color.set(PALETTE.shoe);
+  rig.avatar.materials.sole.color.set(PALETTE.sole);
   rig.avatar.materials.hair.color.set(PALETTE.hair);
-  rig.avatar.torsoBlock.scale.set(1.32, 1.06, 1.16);
-  rig.avatar.hipBlock.scale.set(1.34, 1.05, 1.18);
-  for (const arm of rig.avatar.armBlocks) arm.scale.set(1.12, 1.02, 1.12);
+  rig.avatar.torsoBlock.scale.set(1.2, 1.08, 1.12);
+  rig.avatar.hipBlock.scale.set(1.2, 1.04, 1.12);
+  for (const arm of rig.avatar.armBlocks) arm.scale.set(1.02, 1.04, 1.02);
 
   const group = new THREE.Group();
   group.name = "tea_master_iroh";
-  group.scale.setScalar(1.12);
+  // Preserve Iroh's grounded, generous build while lengthening the silhouette.
+  // Non-uniform root scale also keeps the shoulder yoke from reading as a ball.
+  group.scale.set(1.06, 1.24, 1.06);
   rig.group.position.y = 0.9;
   group.add(rig.group);
 
@@ -130,10 +151,9 @@ export function createTeaMasterVisual(): TeaMasterVisual {
   const skin = rig.avatar.materials.skin;
   const hair = lambert(PALETTE.hair);
   const gold = lambert(PALETTE.gold);
-  const ink = new THREE.MeshBasicMaterial({ color: 0x17212a });
-  const amber = new THREE.MeshBasicMaterial({ color: 0x815c2d });
-  const eyeWhite = new THREE.MeshBasicMaterial({ color: 0xf6eddd });
-  materials.push(ink, amber, eyeWhite);
+  const ink = lambert(PALETTE.pupil);
+  const iris = lambert(PALETTE.iris);
+  const eyeWhite = lambert(PALETTE.sclera);
 
   const addMesh = (
     parent: THREE.Object3D,
@@ -146,60 +166,137 @@ export function createTeaMasterVisual(): TeaMasterVisual {
     const mesh = new THREE.Mesh(geometry, mat);
     mesh.name = name;
     mesh.position.set(position[0], position[1], position[2]);
-    mesh.castShadow = true;
+    geometry.computeBoundingBox();
+    const bounds = geometry.boundingBox;
+    const volume = bounds
+      ? (bounds.max.x - bounds.min.x) * (bounds.max.y - bounds.min.y) * (bounds.max.z - bounds.min.z)
+      : 0;
+    mesh.castShadow = volume >= 1.5e-3;
+    if (mesh.castShadow) enableShadowLayer(mesh, SHADOW_LAYERS.HERO_DYNAMIC);
+    mesh.receiveShadow = true;
     parent.add(mesh);
     return mesh;
   };
 
   const costume = createIrohCostume(rig);
 
-  // Bald crown, grey wing-like side hair, topknot, side beard and goatee.
+  // Replace the stock cube with a warm, low-poly oval. At gameplay distance the
+  // softer silhouette matters more than extra facial polygons.
+  const face = addMesh(
+    rig.head,
+    new THREE.SphereGeometry(0.175, 14, 9),
+    skin,
+    [0, 0.2, 0],
+    "tea_master_round_face"
+  );
+  face.scale.set(0.94, 1.05, 0.89);
+  for (const side of [-1, 1]) {
+    const ear = addMesh(
+      rig.head,
+      new THREE.SphereGeometry(0.038, 8, 6),
+      skin,
+      [side * 0.169, 0.2, 0.005],
+      "tea_master_ear"
+    );
+    ear.scale.set(0.55, 1, 0.72);
+  }
+  const nose = addMesh(
+    rig.head,
+    new THREE.SphereGeometry(0.036, 9, 6),
+    skin,
+    [0, 0.188, -0.15],
+    "tea_master_nose"
+  );
+  nose.scale.set(0.8, 0.68, 0.58);
+
+  // Bald crown, connected swept-back side hair, flattened topknot, beard and
+  // goatee. The darker blue-grey stays distinct from both skin and ivory cloth.
+  const backHair = addMesh(
+    rig.head,
+    new THREE.SphereGeometry(0.17, 12, 8),
+    hair,
+    [0, 0.22, 0.075],
+    "tea_master_back_hair"
+  );
+  backHair.scale.set(0.92, 1.02, 0.56);
   for (const side of [-1, 1]) {
     const sideHair = addMesh(
       rig.head,
-      new THREE.DodecahedronGeometry(0.11, 0),
+      new THREE.SphereGeometry(0.105, 10, 7),
       hair,
-      [side * 0.17, 0.2, 0.015],
+      [side * 0.145, 0.18, 0.005],
       "tea_master_side_hair"
     );
-    sideHair.scale.set(0.85, 1.55, 0.75);
-    sideHair.rotation.z = side * 0.32;
+    sideHair.scale.set(0.58, 1.45, 0.88);
+    sideHair.rotation.z = side * 0.18;
     // Fuller sideburns that sweep down the jaw toward the beard, framing the face.
-    const whisker = addMesh(rig.head, new THREE.ConeGeometry(0.072, 0.3, 7), hair, [side * 0.115, 0.075, -0.1], "tea_master_beard_wing");
-    whisker.rotation.z = side * 0.28;
+    const whisker = addMesh(
+      rig.head,
+      new THREE.ConeGeometry(0.05, 0.205, 7),
+      hair,
+      [side * 0.112, 0.073, -0.112],
+      "tea_master_beard_wing"
+    );
+    whisker.rotation.z = side * 0.32;
   }
-  const topknot = addMesh(rig.head, new THREE.SphereGeometry(0.09, 10, 7), hair, [0, 0.43, 0.02], "tea_master_topknot");
-  topknot.scale.set(0.8, 1.1, 0.8);
-  addMesh(rig.head, new THREE.CylinderGeometry(0.075, 0.07, 0.055, 10), gold, [0, 0.38, 0.02], "tea_master_topknot_band");
+  addMesh(
+    rig.head,
+    new THREE.CylinderGeometry(0.024, 0.03, 0.075, 9),
+    gold,
+    [0, 0.43, 0.02],
+    "tea_master_topknot_stem"
+  );
+  const topknot = addMesh(
+    rig.head,
+    new THREE.SphereGeometry(0.061, 10, 7),
+    hair,
+    [0, 0.488, 0.02],
+    "tea_master_topknot"
+  );
+  topknot.scale.set(1.12, 0.36, 0.74);
   // Iroh's signature: a long grey mustache over a full pointed beard hanging
   // well below the chin. A jaw pad joins the sideburns so the beard reads as one
   // connected mass rather than a floating spike.
-  const beardPad = addMesh(rig.head, new THREE.SphereGeometry(0.11, 10, 8), hair, [0, 0.04, -0.135], "tea_master_beard_pad");
-  beardPad.scale.set(1.05, 0.72, 0.62);
-  const goatee = addMesh(rig.head, new THREE.ConeGeometry(0.088, 0.36, 8), hair, [0, -0.02, -0.15], "tea_master_goatee");
+  const beardPad = addMesh(rig.head, new THREE.SphereGeometry(0.09, 10, 8), hair, [0, 0.052, -0.142], "tea_master_beard_pad");
+  beardPad.scale.set(1.02, 0.58, 0.55);
+  const goatee = addMesh(rig.head, new THREE.ConeGeometry(0.062, 0.235, 8), hair, [0, 0.012, -0.162], "tea_master_goatee");
   goatee.rotation.z = Math.PI;
   goatee.rotation.x = -0.12; // tip drifts forward, not tucked into the chest
   for (const side of [-1, 1]) {
-    const mustache = addMesh(rig.head, new THREE.ConeGeometry(0.03, 0.13, 6), hair, [side * 0.05, 0.11, -0.168], "tea_master_mustache");
+    const mustache = addMesh(rig.head, new THREE.ConeGeometry(0.025, 0.115, 6), hair, [side * 0.047, 0.12, -0.17], "tea_master_mustache");
     mustache.rotation.z = side * 1.9;
     mustache.rotation.x = 0.2;
   }
 
-  // Welcoming face: bright eyes, warm pupils, soft brows, cheeks and a clear smile.
+  // Calm half-lidded eyes: lit warm sclera, small dark irises, heavier brows and
+  // no self-illuminated white orbs. The slight inward gaze feels attentive.
   for (const side of [-1, 1]) {
-    const eye = addMesh(rig.head, new THREE.SphereGeometry(0.034, 10, 7), eyeWhite, [side * 0.065, 0.235, -0.142], "tea_master_eye");
-    eye.scale.set(1.25, 0.72, 0.5);
-    const pupil = addMesh(rig.head, new THREE.SphereGeometry(0.018, 8, 6), amber, [side * 0.064, 0.234, -0.164], "tea_master_pupil");
-    pupil.scale.set(0.82, 0.92, 0.5);
-    const brow = addMesh(rig.head, new THREE.BoxGeometry(0.07, 0.013, 0.012), hair, [side * 0.066, 0.29, -0.151], "tea_master_soft_brow");
+    const eye = addMesh(rig.head, new THREE.CircleGeometry(0.03, 12), eyeWhite, [side * 0.057, 0.235, -0.148], "tea_master_eye");
+    eye.rotation.y = Math.PI;
+    eye.scale.set(1.05, 0.34, 1);
+    const irisMesh = addMesh(rig.head, new THREE.CircleGeometry(0.01, 10), iris, [side * 0.054, 0.2325, -0.15], "tea_master_iris");
+    irisMesh.rotation.y = Math.PI;
+    irisMesh.scale.set(0.8, 0.62, 1);
+    const pupilMesh = addMesh(rig.head, new THREE.CircleGeometry(0.004, 9), ink, [side * 0.0535, 0.232, -0.152], "tea_master_pupil");
+    pupilMesh.rotation.y = Math.PI;
+    pupilMesh.scale.set(0.78, 0.68, 1);
+    const upperLid = addMesh(
+      rig.head,
+      new THREE.BoxGeometry(0.064, 0.009, 0.004),
+      skin,
+      [side * 0.057, 0.242, -0.151],
+      "tea_master_upper_lid"
+    );
+    upperLid.rotation.z = side * 0.035;
+    const brow = addMesh(rig.head, new THREE.BoxGeometry(0.078, 0.014, 0.011), hair, [side * 0.06, 0.276, -0.153], "tea_master_soft_brow");
     brow.rotation.z = side * 0.11;
-    const cheek = addMesh(rig.head, new THREE.SphereGeometry(0.038, 8, 6), skin, [side * 0.095, 0.16, -0.146], "tea_master_cheek");
-    cheek.scale.set(1.25, 0.58, 0.4);
+    const cheek = addMesh(rig.head, new THREE.SphereGeometry(0.034, 8, 6), skin, [side * 0.102, 0.155, -0.137], "tea_master_cheek");
+    cheek.scale.set(1.05, 0.45, 0.28);
   }
-  const smile = addMesh(rig.head, new THREE.TorusGeometry(0.064, 0.009, 5, 16, Math.PI), ink, [0, 0.138, -0.16], "tea_master_smile");
+  const smile = addMesh(rig.head, new THREE.TorusGeometry(0.043, 0.006, 5, 14, Math.PI), ink, [0, 0.132, -0.169], "tea_master_smile");
   smile.rotation.z = Math.PI;
-  const mouthOpen = addMesh(rig.head, new THREE.SphereGeometry(0.036, 10, 6), ink, [0, 0.12, -0.158], "tea_master_mouth_open");
-  mouthOpen.scale.set(1.25, 0.62, 0.35);
+  const mouthOpen = addMesh(rig.head, new THREE.SphereGeometry(0.026, 10, 6), ink, [0, 0.116, -0.168], "tea_master_mouth_open");
+  mouthOpen.scale.set(1.1, 0.48, 0.3);
   mouthOpen.visible = false;
 
   const cupAnchor = new THREE.Group();

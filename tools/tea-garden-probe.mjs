@@ -46,6 +46,8 @@ const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf
 const citygenSource = readFileSync(new URL("../src/world/citygen/stream/ring.ts", import.meta.url), "utf8");
 const tourSource = readFileSync(new URL("../src/world/japaneseTeaGarden/dialogue.ts", import.meta.url), "utf8");
 const architectureSource = readFileSync(new URL("../src/world/japaneseTeaGarden/architecture.ts", import.meta.url), "utf8");
+const dryLandscapeSource = readFileSync(new URL("../src/world/japaneseTeaGarden/dryLandscape.ts", import.meta.url), "utf8");
+const vegetationSource = readFileSync(new URL("../src/world/japaneseTeaGarden/vegetation.ts", import.meta.url), "utf8");
 const clothSource = readFileSync(new URL("../src/fx/cloth.ts", import.meta.url), "utf8");
 const costumeSource = readFileSync(new URL("../src/world/japaneseTeaGarden/irohCostume.ts", import.meta.url), "utf8");
 const guideSource = readFileSync(new URL("../src/world/japaneseTeaGarden/guide.ts", import.meta.url), "utf8");
@@ -80,12 +82,39 @@ for (const art of ["misty-pines.webp", "drum-bridge-moon.webp", "koi-ginkgo.webp
   assert.ok(architectureSource.includes(`/art/tea-house/${art}`), `Tea House does not mount artwork: ${art}`);
 }
 
-// The generic material owns palette maps, motion and collision projection;
-// Iroh's authored garment shape stays in the feature module.
+// Dry-landscape activity contract: the sand follows terrain, the optional rake
+// remains inside the Tea Garden chunk, trails use a bounded instance buffer,
+// and authored grass leaves a full wind-safe margin around the stone rim.
+for (const part of [
+  "dry_garden_terrain_conforming_sand",
+  "dry_landscape_hand_set_stone_rim",
+  "dry_landscape_little_rake",
+  "dry_garden_player_rake_trails",
+  "TRAIL_GROOVE_CAPACITY = 2400",
+  "onCarryRake",
+  "onRakingChange"
+]) {
+  assert.ok(dryLandscapeSource.includes(part), `dry-landscape activity part missing: ${part}`);
+}
+assert.match(vegetationSource, /inDryLandscape\(px, pz, 1\.2\)/, "Tea Garden grass can clip into the sand rim");
+assert.equal(mainSource.includes('from "./world/japaneseTeaGarden/dryLandscape"'), false, "rake activity leaked into the boot-critical main chunk");
+
+// The generic cloth path remains available to the world, while Iroh's current
+// look-first costume is an explicit static layer stack. Keep the identifying
+// pieces separate so the White Lotus silhouette cannot regress to one gradient
+// tube or an oversized collision-projected poncho.
 for (const seam of ["ClothColliders", "collisionIterations", "map?: THREE.Texture", "pushOutOfColliders"]) {
   assert.ok(clothSource.includes(seam), `reusable cloth seam missing: ${seam}`);
 }
-for (const garment of ["iroh_collision_aware_flowing_robe", "iroh_arm_cut_flowing_mantle", "iroh_flowing_sleeve_"]) {
+for (const garment of [
+  "iroh_stone_under_robe",
+  "iroh_navy_open_over_robe",
+  "iroh_navy_front_apron",
+  "iroh_white_lotus_mantle",
+  "iroh_stone_bell_sleeve_",
+  "iroh_wide_obi",
+  "iroh_slipper_strap_"
+]) {
   assert.ok(costumeSource.includes(garment), `Iroh garment missing: ${garment}`);
 }
 assert.match(teaMasterSource, /stridePhase \+ Math\.max\(0, travelDistance\)/, "Iroh gait is no longer distance-driven");
@@ -119,5 +148,5 @@ console.log(JSON.stringify({
   replacements: TEA_GARDEN_SUPPRESSED_BUILDINGS.map((building) => `${building.key}:${building.index}`),
   tour: TEA_GARDEN_TOUR_STOPS.map((stop) => ({ id: stop.id, routePoints: stop.route.length })),
   art: ["misty-pines", "drum-bridge-moon", "koi-ginkgo", "four-seasons"],
-  cloth: ["palette-map", "capsule-collision", "distance-driven-motion"]
+  cloth: ["shared-cloth-runtime", "static-layered-iroh-costume", "distance-driven-motion"]
 }, null, 2));

@@ -2,6 +2,10 @@ import * as THREE from "three/webgpu";
 import type { Physics } from "../../core/physics";
 import type { VoiceOutput } from "../../gameplay/agents/dialogue";
 import { createTeaGardenArchitecture } from "./architecture";
+import {
+  createDryLandscape,
+  type DryLandscapeDebugState
+} from "./dryLandscape";
 import type { TeaGardenDialogueSource } from "./dialogue";
 import {
   createTeaGardenGuide,
@@ -48,6 +52,7 @@ export type JapaneseTeaGardenDebugState = {
   awake: boolean;
   foliageVisible: boolean;
   distanceToGarden: number;
+  dryLandscape: DryLandscapeDebugState;
   guide: TeaGardenGuideDebugState;
 };
 
@@ -55,7 +60,7 @@ export type JapaneseTeaGarden = {
   group: THREE.Group;
   ready: Promise<void>;
   setFoliageVisible(visible: boolean): void;
-  update(dt: number, time: number, player: TeaGardenPlayerPosition, camera: THREE.Camera): void;
+  update(dt: number, time: number, player: TeaGardenPlayerPosition, camera: THREE.Camera, mode?: string): void;
   project(camera: THREE.Camera): void;
   interact(player: TeaGardenPlayerPosition, mode: string): boolean;
   dispose(): void;
@@ -70,6 +75,10 @@ export type JapaneseTeaGardenOptions = {
   dialogueParent?: HTMLElement;
   /** Show/hide a tea bowl in the player's own hand when Iroh hands off the tea. */
   onCarryCup?: (holding: boolean) => void;
+  /** Attach/detach the activity-owned rake without eagerly importing it into Player. */
+  onCarryRake?: (rake: THREE.Group | null) => void;
+  onRakingChange?: (raking: boolean) => void;
+  notify?: (message: string, seconds?: number) => void;
 };
 
 const WAKE_DISTANCE = 720;
@@ -89,6 +98,11 @@ export function createJapaneseTeaGarden(
 
   const architecture = createTeaGardenArchitecture(map, options.physics);
   const vegetation = createTeaGardenVegetation(map);
+  const dryLandscape = createDryLandscape(map, {
+    onCarryRake: options.onCarryRake,
+    onRakingChange: options.onRakingChange,
+    notify: options.notify
+  });
   const guide = createTeaGardenGuide(map, {
     dialogueSource: options.dialogueSource,
     voiceOutput: options.voiceOutput,
@@ -96,7 +110,7 @@ export function createJapaneseTeaGarden(
     onCarryCup: options.onCarryCup
   });
   guide.setWorldVisible(false);
-  group.add(architecture.group, vegetation.group, guide.group);
+  group.add(architecture.group, vegetation.group, dryLandscape.group, guide.group);
 
   let awake = false;
   let foliageVisible = true;
@@ -128,7 +142,7 @@ export function createJapaneseTeaGarden(
       foliageVisible = visible;
       vegetation.setVisible(visible);
     },
-    update(dt: number, time: number, player: TeaGardenPlayerPosition, camera: THREE.Camera) {
+    update(dt: number, time: number, player: TeaGardenPlayerPosition, camera: THREE.Camera, mode = "walk") {
       if (disposed) return;
       distanceToGarden = Math.hypot(
         player.x - JAPANESE_TEA_GARDEN_CENTER.x,
@@ -139,6 +153,7 @@ export function createJapaneseTeaGarden(
       if (!awake) return;
       if (foliageVisible) vegetation.update(player);
       architecture.update(time);
+      dryLandscape.update(dt, time, player, mode);
       guide.update(dt, time, player, camera);
     },
     project(camera: THREE.Camera) {
@@ -147,12 +162,14 @@ export function createJapaneseTeaGarden(
     },
     interact(player: TeaGardenPlayerPosition, mode: string): boolean {
       if (disposed || !awake) return false;
+      if (dryLandscape.interact(player, mode)) return true;
       return guide.interact(player, mode);
     },
     dispose() {
       if (disposed) return;
       disposed = true;
       guide.dispose();
+      dryLandscape.dispose();
       vegetation.dispose();
       architecture.dispose();
       group.removeFromParent();
@@ -163,6 +180,7 @@ export function createJapaneseTeaGarden(
         awake,
         foliageVisible,
         distanceToGarden,
+        dryLandscape: dryLandscape.debugState(),
         guide: guide.debugState()
       };
     }

@@ -1,429 +1,448 @@
 import * as THREE from "three/webgpu";
-import {
-  flowingClothMaterial,
-  type Capsule,
-  type FlowingClothMotion
-} from "../../fx/cloth";
 import type { Rig } from "../../player/rig";
+import { enableShadowLayer, SHADOW_LAYERS } from "../shadows/shadowLayers";
 
 export type IrohCostume = {
   update(dt: number, motion: number, turn: number): void;
   dispose(): void;
 };
 
-// Uncle Iroh reference palette: cream shoulder shawl, dark-navy tunic, a warm
-// tan under-robe/skirt under the navy cloak, pale grey-tan sleeves, a pale
-// cream obi. (The vertex-colour arrays baked into the geometry are unused — the
-// cloth materials sample the palette DataTextures below — but are kept in sync.)
-const COLORS = {
-  navy: new THREE.Color(0x232a42),
-  navyDeep: new THREE.Color(0x1a2036),
-  cream: new THREE.Color(0xe9e2d0),
-  creamShade: new THREE.Color(0xcbc3ad),
-  tan: new THREE.Color(0xccbb96),
-  sleeve: 0xcfc6b0,
-  sash: 0xd3ccb8
+// White Lotus Iroh is identified by the garment hierarchy, not by a blended
+// texture: ivory shoulder yoke, navy over-robe, stone inner robe, broad obi and
+// pale bell sleeves. Keep these colors together so every procedural layer stays
+// coordinated when the art direction changes.
+const PALETTE = {
+  navy: 0x171d32,
+  navyLift: 0x252d49,
+  ivory: 0xeee8d8,
+  ivoryShade: 0xd8d2c3,
+  stone: 0xd3cab6,
+  stoneShade: 0xaaa99e
 } as const;
 
-type Rgb = readonly [number, number, number];
-const RGB = {
-  navy: [35, 42, 66],
-  navyDeep: [26, 32, 54],
-  cream: [233, 226, 208],
-  creamShade: [203, 195, 173],
-  tan: [204, 187, 150]
-} as const satisfies Record<string, Rgb>;
+type Point2 = readonly [x: number, y: number];
 
-function mixRgb(a: Rgb, b: Rgb, t: number): Rgb {
-  const amount = THREE.MathUtils.clamp(t, 0, 1);
-  return [
-    Math.round(THREE.MathUtils.lerp(a[0], b[0], amount)),
-    Math.round(THREE.MathUtils.lerp(a[1], b[1], amount)),
-    Math.round(THREE.MathUtils.lerp(a[2], b[2], amount))
-  ];
+function meshMaterial(color: number): THREE.MeshLambertMaterial {
+  return new THREE.MeshLambertMaterial({ color, side: THREE.DoubleSide });
 }
 
-function paletteTexture(
-  name: string,
-  width: number,
-  height: number,
-  sample: (u: number, v: number) => Rgb
-): THREE.DataTexture {
-  const data = new Uint8Array(width * height * 4);
-  for (let y = 0; y < height; y++) {
-    const v = y / (height - 1);
-    for (let x = 0; x < width; x++) {
-      const [r, g, b] = sample(x / (width - 1), v);
-      const offset = (y * width + x) * 4;
-      data[offset] = r;
-      data[offset + 1] = g;
-      data[offset + 2] = b;
-      data[offset + 3] = 255;
-    }
-  }
-  const texture = new THREE.DataTexture(data, width, height, THREE.RGBAFormat);
-  texture.name = name;
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.wrapS = THREE.RepeatWrapping;
-  texture.wrapT = THREE.ClampToEdgeWrapping;
-  texture.magFilter = THREE.LinearFilter;
-  texture.minFilter = THREE.LinearFilter;
-  texture.needsUpdate = true;
-  return texture;
+function panelGeometry(points: readonly Point2[], z: number): THREE.BufferGeometry {
+  const positions: number[] = [];
+  const indices: number[] = [];
+  for (const [x, y] of points) positions.push(x, y, z);
+  for (let index = 1; index < points.length - 1; index++) indices.push(0, index, index + 1);
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  geometry.computeBoundingBox();
+  geometry.computeBoundingSphere();
+  return geometry;
 }
 
-function robePaletteTexture(): THREE.DataTexture {
-  return paletteTexture("iroh_robe_woven_palette", 64, 32, (u, v) => {
-    const angle = u * Math.PI * 2;
-    const frontness = Math.max(0, -Math.sin(angle)); // 1 at front centre (-Z), 0 at sides/back
-    // Dark navy cloak up top; the warm tan under-robe shows lower. The navy
-    // front apron hangs lower down the centre than the sides do, so the tan
-    // reads first on the flanks — matching the reference silhouette.
-    const tanStart = 0.44 + frontness * 0.3;
-    let t = THREE.MathUtils.clamp((v - tanStart) / 0.2, 0, 1);
-    t = t * t * (3 - 2 * t);
-    let color = mixRgb(RGB.navy, RGB.tan, t);
-    if (v > 0.93) color = mixRgb(color, RGB.cream, (v - 0.93) / 0.07); // cream hem trim
-    return color;
-  });
-}
-
-function mantlePaletteTexture(): THREE.DataTexture {
-  // The big shoulder shawl: warm ivory throughout, easing to a soft grey-cream
-  // shade at the draped outer edge so the folds read.
-  return paletteTexture("iroh_mantle_woven_palette", 4, 32, (_u, v) =>
-    mixRgb(RGB.cream, RGB.creamShade, v * 0.7)
+function ribbonGeometry(a: Point2, b: Point2, width: number, z: number): THREE.BufferGeometry {
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  const length = Math.hypot(dx, dy) || 1;
+  const ox = (-dy / length) * width * 0.5;
+  const oy = (dx / length) * width * 0.5;
+  return panelGeometry(
+    [
+      [a[0] + ox, a[1] + oy],
+      [a[0] - ox, a[1] - oy],
+      [b[0] - ox, b[1] - oy],
+      [b[0] + ox, b[1] + oy]
+    ],
+    z
   );
 }
 
-function addVertex(
-  positions: number[],
-  normals: number[],
-  uvs: number[],
-  colors: number[],
-  position: THREE.Vector3,
-  normal: THREE.Vector3,
-  u: number,
-  v: number,
-  color: THREE.Color
-): void {
-  positions.push(position.x, position.y, position.z);
-  normals.push(normal.x, normal.y, normal.z);
-  uvs.push(u, v);
-  colors.push(color.r, color.g, color.b);
-}
-
-/** Closed, generously flared envelope. The authored surface already clears the
- * full leg swing; live capsules are a second line of defence for extreme poses. */
-function createRobeGeometry(): THREE.BufferGeometry {
-  const radial = 28;
-  const vertical = 10;
+function skirtGeometry(options: {
+  topY: number;
+  bottomY: number;
+  topRadius: readonly [x: number, z: number];
+  bottomRadius: readonly [x: number, z: number];
+  startAngle?: number;
+  endAngle?: number;
+  segments?: number;
+  rows?: number;
+}): THREE.BufferGeometry {
+  const {
+    topY,
+    bottomY,
+    topRadius,
+    bottomRadius,
+    startAngle = -Math.PI / 2,
+    endAngle = startAngle + Math.PI * 2,
+    segments = 28,
+    rows = 4
+  } = options;
   const positions: number[] = [];
-  const normals: number[] = [];
   const uvs: number[] = [];
-  const colors: number[] = [];
   const indices: number[] = [];
-  const p = new THREE.Vector3();
-  const n = new THREE.Vector3();
-  const c = new THREE.Color();
 
-  for (let iy = 0; iy <= vertical; iy++) {
-    const v = iy / vertical;
+  for (let row = 0; row <= rows; row++) {
+    const v = row / rows;
     const eased = v * v * (3 - 2 * v);
-    const y = 0.08 - v * 0.92;
-    // A dignified column, not a bell tent: the hem falls close to the body with
-    // only a soft kimono flare (was 0.67/0.52 — a ~1.5 m-wide cone).
-    const rx = THREE.MathUtils.lerp(0.34, 0.44, eased);
-    const rz = THREE.MathUtils.lerp(0.27, 0.36, eased);
-    for (let ix = 0; ix <= radial; ix++) {
-      const u = ix / radial;
-      const angle = u * Math.PI * 2;
-      const ca = Math.cos(angle);
-      const sa = Math.sin(angle);
-      p.set(ca * rx, y, sa * rz);
-      n.set(ca / rx, 0.16 + v * 0.18, sa / rz).normalize();
-
-      // Navy cloak up top easing to the warm tan under-robe lower down, with a
-      // cream hem — mirrors robePaletteTexture (which is what actually shades
-      // the cloth; these vertex colours are kept in sync but unused).
-      const frontness = Math.max(0, -sa);
-      const tanStart = 0.44 + frontness * 0.3;
-      let t = THREE.MathUtils.clamp((v - tanStart) / 0.2, 0, 1);
-      t = t * t * (3 - 2 * t);
-      c.copy(COLORS.navy).lerp(COLORS.tan, t);
-      if (v > 0.93) c.lerp(COLORS.cream, (v - 0.93) / 0.07);
-      addVertex(positions, normals, uvs, colors, p, n, u, v, c);
+    const rx = THREE.MathUtils.lerp(topRadius[0], bottomRadius[0], eased);
+    const rz = THREE.MathUtils.lerp(topRadius[1], bottomRadius[1], eased);
+    const y = THREE.MathUtils.lerp(topY, bottomY, v);
+    for (let column = 0; column <= segments; column++) {
+      const u = column / segments;
+      const angle = THREE.MathUtils.lerp(startAngle, endAngle, u);
+      positions.push(Math.cos(angle) * rx, y, Math.sin(angle) * rz);
+      uvs.push(u, v);
     }
   }
 
-  const row = radial + 1;
-  for (let iy = 0; iy < vertical; iy++) {
-    for (let ix = 0; ix < radial; ix++) {
-      const a = iy * row + ix;
+  const stride = segments + 1;
+  for (let row = 0; row < rows; row++) {
+    for (let column = 0; column < segments; column++) {
+      const a = row * stride + column;
       const b = a + 1;
-      const d = (iy + 1) * row + ix;
-      const e = d + 1;
-      indices.push(a, b, d, b, e, d);
+      const c = (row + 1) * stride + column;
+      const d = c + 1;
+      indices.push(a, b, c, b, d, c);
     }
   }
 
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-  geometry.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
   geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
-  geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
   geometry.setIndex(indices);
+  geometry.computeVertexNormals();
   geometry.computeBoundingBox();
   geometry.computeBoundingSphere();
-  geometry.boundingBox?.expandByScalar(0.16);
-  if (geometry.boundingSphere) geometry.boundingSphere.radius += 0.16;
   return geometry;
 }
 
-/** A shoulder yoke in two cloth arcs. The gaps at local ±X are real armholes,
- * not alpha tricks, so no serving or pointing pose can drive an arm through it. */
-function createMantleGeometry(): THREE.BufferGeometry {
-  // More radial resolution lets the yoke settle into a rounded shoulder cape
-  // instead of reading as a pair of flat, angular plates. It remains one draw
-  // and only adds 140 authored vertices before GPU deformation.
-  const segments = 24;
-  const radial = 6;
+function mantleGeometry(inner = 0, outer = 1): THREE.BufferGeometry {
+  const segmentsPerArc = 18;
+  const bands = 5;
   const positions: number[] = [];
-  const normals: number[] = [];
-  const uvs: number[] = [];
-  const colors: number[] = [];
   const indices: number[] = [];
-  const p = new THREE.Vector3();
-  const n = new THREE.Vector3();
-  const c = new THREE.Color();
-  const arcs: readonly [number, number][] = [
-    [0.66, Math.PI - 0.66],
-    [Math.PI + 0.66, Math.PI * 2 - 0.66]
+  const innerX = 0.13;
+  const innerZ = 0.105;
+  const outerX = 0.43;
+  const outerZ = 0.31;
+  // Front and back arcs leave true ±X armholes. The static yoke can therefore
+  // stay broad while every cup, welcome and pointing pose passes cleanly through
+  // the garment instead of intersecting a hidden full-circle annulus.
+  const armGap = 0.48;
+  const arcs: readonly [start: number, end: number][] = [
+    [armGap, Math.PI - armGap],
+    [Math.PI + armGap, Math.PI * 2 - armGap]
   ];
+  const stride = bands + 1;
 
   for (const [start, end] of arcs) {
     const base = positions.length / 3;
-    for (let ia = 0; ia <= segments; ia++) {
-      const u = ia / segments;
-      const angle = THREE.MathUtils.lerp(start, end, u);
+    for (let segment = 0; segment <= segmentsPerArc; segment++) {
+      const angle = THREE.MathUtils.lerp(start, end, segment / segmentsPerArc);
       const ca = Math.cos(angle);
       const sa = Math.sin(angle);
-      for (let ir = 0; ir <= radial; ir++) {
-        const v = ir / radial;
-        const eased = v * v * (3 - 2 * v);
-        // A modest shoulder cape, not a chin-high ruff: smaller outer radius,
-        // and it starts lower (0.36 vs 0.47) and drapes harder so the navy tunic
-        // shows in the centre front the way the reference shawl does.
-        const rx = THREE.MathUtils.lerp(0.15, 0.31, eased);
-        const rz = THREE.MathUtils.lerp(0.13, 0.25, eased);
-        const frontDrape = Math.max(0, -sa) * eased * 0.14;
-        const backDrape = Math.max(0, sa) * eased * 0.06;
-        p.set(ca * rx, 0.36 - eased * 0.3 - v * v * 0.05 - frontDrape - backDrape, sa * rz);
-        n.set(ca * (0.2 + eased * 0.22), 1, sa * (0.2 + eased * 0.22)).normalize();
-        c.copy(COLORS.cream).lerp(COLORS.creamShade, eased * 0.7);
-        addVertex(positions, normals, uvs, colors, p, n, u, v, c);
+      const front = Math.max(0, -sa);
+      const back = Math.max(0, sa);
+      for (let band = 0; band <= bands; band++) {
+        const t = THREE.MathUtils.lerp(inner, outer, band / bands);
+        const eased = t * t * (3 - 2 * t);
+        const rx = THREE.MathUtils.lerp(innerX, outerX, eased);
+        const rz = THREE.MathUtils.lerp(innerZ, outerZ, eased);
+        // The front becomes a broad shallow bib; the back remains short enough
+        // to frame the head rather than swallowing it from three-quarter views.
+        const edgeY = 0.3 - front * 0.13 - back * 0.05;
+        const y = THREE.MathUtils.lerp(0.455, edgeY, eased) - Math.sin(t * Math.PI) * 0.012;
+        positions.push(ca * rx, y, sa * rz);
       }
     }
-    const row = radial + 1;
-    for (let ia = 0; ia < segments; ia++) {
-      for (let ir = 0; ir < radial; ir++) {
-        const a = base + ia * row + ir;
+
+    for (let segment = 0; segment < segmentsPerArc; segment++) {
+      for (let band = 0; band < bands; band++) {
+        const a = base + segment * stride + band;
         const b = a + 1;
-        const d = base + (ia + 1) * row + ir;
-        const e = d + 1;
-        indices.push(a, d, b, b, d, e);
+        const c = base + (segment + 1) * stride + band;
+        const d = c + 1;
+        indices.push(a, c, b, b, c, d);
       }
     }
   }
 
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-  geometry.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
-  geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
-  geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
   geometry.setIndex(indices);
+  geometry.computeVertexNormals();
   geometry.computeBoundingBox();
   geometry.computeBoundingSphere();
-  geometry.boundingBox?.expandByScalar(0.11);
-  if (geometry.boundingSphere) geometry.boundingSphere.radius += 0.11;
   return geometry;
-}
-
-function localPoint(
-  inverseMeshWorld: THREE.Matrix4,
-  object: THREE.Object3D,
-  point: THREE.Vector3,
-  out: THREE.Vector3
-): THREE.Vector3 {
-  return out.copy(point).applyMatrix4(object.matrixWorld).applyMatrix4(inverseMeshWorld);
 }
 
 export function createIrohCostume(rig: Rig): IrohCostume {
   const geometries: THREE.BufferGeometry[] = [];
-  const materials: THREE.Material[] = [];
-  const textures: THREE.Texture[] = [];
+  const materials = {
+    navy: meshMaterial(PALETTE.navy),
+    navyLift: meshMaterial(PALETTE.navyLift),
+    ivory: meshMaterial(PALETTE.ivory),
+    ivoryShade: meshMaterial(PALETTE.ivoryShade),
+    mantle: meshMaterial(PALETTE.ivory),
+    mantleShade: meshMaterial(PALETTE.ivoryShade),
+    stone: meshMaterial(PALETTE.stone),
+    stoneShade: meshMaterial(PALETTE.stoneShade)
+  };
+  // The tea-house eaves put the horizontal yoke into deep shadow. A controlled
+  // ambient lift preserves its defining ivory color without flattening the
+  // vertical trim, sleeves, or under-robe.
+  materials.mantle.emissive.set(0x8c877b);
+  materials.mantle.emissiveIntensity = 0.52;
+  materials.mantleShade.emissive.set(0x777268);
+  materials.mantleShade.emissiveIntensity = 0.45;
+  const meshes: THREE.Mesh[] = [];
 
-  const robePalette = robePaletteTexture();
-  const mantlePalette = mantlePaletteTexture();
-  textures.push(robePalette, mantlePalette);
-
-  const robeState = flowingClothMaterial({
-    color: 0xffffff,
-    map: robePalette,
-    roughness: 0.91,
-    amplitude: 0.07,
-    speed: 2.1,
-    phase: 0.35
-  });
-  const robe = new THREE.Mesh(createRobeGeometry(), robeState.material);
-  robe.name = "iroh_collision_aware_flowing_robe";
-  robe.castShadow = true;
-  robe.receiveShadow = true;
-  rig.hips.add(robe);
-  geometries.push(robe.geometry);
-  materials.push(robeState.material);
-
-  const mantleState = flowingClothMaterial({
-    color: 0xffffff,
-    map: mantlePalette,
-    roughness: 0.89,
-    amplitude: 0.028,
-    speed: 1.75,
-    phase: 1.7
-  });
-  const mantle = new THREE.Mesh(createMantleGeometry(), mantleState.material);
-  mantle.name = "iroh_arm_cut_flowing_mantle";
-  mantle.castShadow = true;
-  mantle.receiveShadow = true;
-  rig.torso.add(mantle);
-  geometries.push(mantle.geometry);
-  materials.push(mantleState.material);
-
-  // Sleeves move in their owning shoulder frames. Their generous frusta clear
-  // the stock arm blocks, while the mantle's true armholes keep the systems
-  // from competing for the same volume.
-  const sleeveState = flowingClothMaterial({
-    color: COLORS.sleeve,
-    roughness: 0.9,
-    amplitude: 0.024,
-    speed: 2.5,
-    phase: 2.4,
-    collisionIterations: 0
-  });
-  materials.push(sleeveState.material);
-  const sleeveGeometry = new THREE.CylinderGeometry(0.16, 0.255, 0.43, 14, 4, true);
-  // CylinderGeometry authors v=1 at the shoulder. The cloth contract pins
-  // v=0, so reverse it once: shoulder stays sewn down, cuff is the free edge.
-  const sleeveUv = sleeveGeometry.getAttribute("uv") as THREE.BufferAttribute;
-  for (let index = 0; index < sleeveUv.count; index++) sleeveUv.setY(index, 1 - sleeveUv.getY(index));
-  sleeveUv.needsUpdate = true;
-  sleeveGeometry.computeBoundingBox();
-  sleeveGeometry.computeBoundingSphere();
-  sleeveGeometry.boundingBox?.expandByScalar(0.05);
-  if (sleeveGeometry.boundingSphere) sleeveGeometry.boundingSphere.radius += 0.05;
-  geometries.push(sleeveGeometry);
-  const sleeves: THREE.Mesh[] = [];
-  for (const [side, arm] of [["L", rig.armL], ["R", rig.armR]] as const) {
-    const sleeve = new THREE.Mesh(sleeveGeometry, sleeveState.material);
-    sleeve.name = `iroh_flowing_sleeve_${side}`;
-    sleeve.position.y = -0.15;
-    sleeve.castShadow = true;
-    arm.add(sleeve);
-    sleeves.push(sleeve);
-  }
-
-  const sashMaterial = new THREE.MeshStandardMaterial({ color: COLORS.sash, roughness: 0.78 });
-  const sashGeometry = new THREE.CylinderGeometry(0.405, 0.405, 0.105, 20);
-  const sash = new THREE.Mesh(sashGeometry, sashMaterial);
-  sash.name = "iroh_blue_sash";
-  sash.scale.z = 0.88;
-  sash.position.y = 0.035;
-  sash.castShadow = true;
-  rig.hips.add(sash);
-  geometries.push(sashGeometry);
-  materials.push(sashMaterial);
-
-  const skirtCaps: Capsule[] = [
-    { a: new THREE.Vector3(), b: new THREE.Vector3(), radius: 0.32, skin: 0.025 },
-    { a: new THREE.Vector3(), b: new THREE.Vector3(), radius: 0.14, skin: 0.022 },
-    { a: new THREE.Vector3(), b: new THREE.Vector3(), radius: 0.14, skin: 0.022 },
-    { a: new THREE.Vector3(), b: new THREE.Vector3(), radius: 0.19, skin: 0.025 }
-  ];
-  const mantleCaps: Capsule[] = [
-    { a: new THREE.Vector3(), b: new THREE.Vector3(), radius: 0.31, skin: 0.02 },
-    { a: new THREE.Vector3(), b: new THREE.Vector3(), radius: 0.17, skin: 0.02 },
-    { a: new THREE.Vector3(), b: new THREE.Vector3(), radius: 0.17, skin: 0.02 },
-    { a: new THREE.Vector3(), b: new THREE.Vector3(), radius: 0.16, skin: 0.02 }
-  ];
-  const zero = new THREE.Vector3();
-  const pelvisRoot = new THREE.Vector3(0, -0.08, 0);
-  const torsoTop = new THREE.Vector3(0, 0.48, 0);
-  const legTip = new THREE.Vector3(0, -0.35, 0);
-  const armTip = new THREE.Vector3(0, -0.27, 0);
-  const neckTop = new THREE.Vector3(0, 0.16, 0);
-  const inverseRobeWorld = new THREE.Matrix4();
-  const inverseMantleWorld = new THREE.Matrix4();
-  const sharedMotion: FlowingClothMotion = { motion: 0, turn: 0, breeze: 0.18 };
-  const mantleMotion: FlowingClothMotion = { motion: 0, turn: 0, breeze: 0.18 };
-  const sleeveMotion: FlowingClothMotion = { motion: 0, turn: 0, breeze: 0.18 };
-  let smoothedMotion = 0;
-  let smoothedTurn = 0;
-
-  const syncColliders = () => {
-    rig.group.updateWorldMatrix(true, true);
-    inverseRobeWorld.copy(robe.matrixWorld).invert();
-    inverseMantleWorld.copy(mantle.matrixWorld).invert();
-
-    localPoint(inverseRobeWorld, rig.hips, pelvisRoot, skirtCaps[0].a);
-    localPoint(inverseRobeWorld, rig.torso, torsoTop, skirtCaps[0].b);
-    localPoint(inverseRobeWorld, rig.legL, zero, skirtCaps[1].a);
-    localPoint(inverseRobeWorld, rig.shinL, legTip, skirtCaps[1].b);
-    localPoint(inverseRobeWorld, rig.legR, zero, skirtCaps[2].a);
-    localPoint(inverseRobeWorld, rig.shinR, legTip, skirtCaps[2].b);
-    localPoint(inverseRobeWorld, rig.legL, zero, skirtCaps[3].a);
-    localPoint(inverseRobeWorld, rig.legR, zero, skirtCaps[3].b);
-    robeState.colliders.set(skirtCaps);
-
-    localPoint(inverseMantleWorld, rig.torso, zero, mantleCaps[0].a);
-    localPoint(inverseMantleWorld, rig.torso, torsoTop, mantleCaps[0].b);
-    localPoint(inverseMantleWorld, rig.armL, zero, mantleCaps[1].a);
-    localPoint(inverseMantleWorld, rig.foreL, armTip, mantleCaps[1].b);
-    localPoint(inverseMantleWorld, rig.armR, zero, mantleCaps[2].a);
-    localPoint(inverseMantleWorld, rig.foreR, armTip, mantleCaps[2].b);
-    localPoint(inverseMantleWorld, rig.torso, torsoTop, mantleCaps[3].a);
-    localPoint(inverseMantleWorld, rig.head, neckTop, mantleCaps[3].b);
-    mantleState.colliders.set(mantleCaps);
+  const add = (
+    parent: THREE.Object3D,
+    geometry: THREE.BufferGeometry,
+    material: THREE.Material,
+    name: string,
+    position: readonly [number, number, number] = [0, 0, 0]
+  ): THREE.Mesh => {
+    geometries.push(geometry);
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.name = name;
+    mesh.position.set(...position);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    enableShadowLayer(mesh, SHADOW_LAYERS.HERO_DYNAMIC);
+    parent.add(mesh);
+    meshes.push(mesh);
+    return mesh;
   };
 
-  syncColliders();
+  // Full stone under-robe. It ends above the slippers instead of pooling on the
+  // ground, which restores Iroh's feet and makes the whole figure read taller.
+  add(
+    rig.hips,
+    skirtGeometry({
+      topY: 0.055,
+      bottomY: -0.72,
+      topRadius: [0.285, 0.225],
+      bottomRadius: [0.35, 0.285]
+    }),
+    materials.stone,
+    "iroh_stone_under_robe"
+  );
+
+  // Navy over-robe wraps the sides and back but leaves a real opening at the
+  // front. This is deliberately geometry, not a color gradient, so the stone
+  // garment remains legible under every light and camera distance.
+  const frontGap = 0.58;
+  add(
+    rig.hips,
+    skirtGeometry({
+      topY: 0.065,
+      bottomY: -0.565,
+      topRadius: [0.325, 0.255],
+      bottomRadius: [0.405, 0.315],
+      startAngle: -Math.PI / 2 + frontGap,
+      endAngle: (Math.PI * 3) / 2 - frontGap,
+      segments: 26
+    }),
+    materials.navy,
+    "iroh_navy_open_over_robe"
+  );
+  const overRobeStart = -Math.PI / 2 + frontGap;
+  const overRobeEnd = (Math.PI * 3) / 2 - frontGap;
+  for (const [side, angle] of [
+    ["R", overRobeStart],
+    ["L", overRobeEnd]
+  ] as const) {
+    const edge = new THREE.LineCurve3(
+      new THREE.Vector3(Math.cos(angle) * 0.329, 0.066, Math.sin(angle) * 0.259),
+      new THREE.Vector3(Math.cos(angle) * 0.409, -0.568, Math.sin(angle) * 0.319)
+    );
+    add(
+      rig.hips,
+      new THREE.TubeGeometry(edge, 5, 0.011, 6, false),
+      materials.ivory,
+      `iroh_over_robe_opening_trim_${side}`
+    );
+  }
+  const hemPoints: THREE.Vector3[] = [];
+  for (let index = 0; index <= 28; index++) {
+    const angle = THREE.MathUtils.lerp(overRobeStart, overRobeEnd, index / 28);
+    hemPoints.push(new THREE.Vector3(Math.cos(angle) * 0.409, -0.568, Math.sin(angle) * 0.319));
+  }
+  add(
+    rig.hips,
+    new THREE.TubeGeometry(new THREE.CatmullRomCurve3(hemPoints), 32, 0.011, 6, false),
+    materials.ivory,
+    "iroh_over_robe_hem_trim"
+  );
+
+  // The central armor-like apron and crisp ivory piping are the most readable
+  // White Lotus cues in the supplied reference.
+  const apronPoints: readonly Point2[] = [
+    [-0.205, 0.035],
+    [0.205, 0.035],
+    [0.19, -0.53],
+    [-0.19, -0.53]
+  ];
+  add(rig.hips, panelGeometry(apronPoints, -0.292), materials.navyLift, "iroh_navy_front_apron");
+  add(rig.hips, ribbonGeometry(apronPoints[0], apronPoints[3], 0.026, -0.299), materials.ivory, "iroh_apron_trim_left");
+  add(rig.hips, ribbonGeometry(apronPoints[1], apronPoints[2], 0.026, -0.299), materials.ivory, "iroh_apron_trim_right");
+  add(rig.hips, ribbonGeometry(apronPoints[3], apronPoints[2], 0.026, -0.299), materials.ivory, "iroh_apron_trim_bottom");
+  for (const side of [-1, 1] as const) {
+    add(
+      rig.hips,
+      ribbonGeometry([side * 0.12, -0.54], [side * 0.15, -0.705], 0.014, -0.292),
+      materials.stoneShade,
+      `iroh_under_robe_fold_${side < 0 ? "R" : "L"}`
+    );
+  }
+
+  // Long navy cape tails sit behind the articulated sleeves. They create the
+  // reference's dark shoulder-to-hip sweep without constraining arm poses.
+  for (const side of [-1, 1] as const) {
+    const cape = panelGeometry(
+      [
+        [side * 0.15, 0.32],
+        [side * 0.335, 0.29],
+        [side * 0.39, -0.05],
+        [side * 0.355, -0.29],
+        [side * 0.24, -0.245]
+      ],
+      0.07
+    );
+    add(rig.torso, cape, materials.navy, `iroh_navy_cape_tail_${side < 0 ? "R" : "L"}`);
+  }
+
+  // A clean navy chest panel hides the stock block seams. Paired ivory lapels
+  // make the V-shaped wrap visible beneath the mantle and above the obi.
+  add(
+    rig.torso,
+    panelGeometry(
+      [
+        [-0.205, 0.395],
+        [0.205, 0.395],
+        [0.235, -0.015],
+        [-0.235, -0.015]
+      ],
+      -0.158
+    ),
+    materials.navy,
+    "iroh_navy_tunic_front"
+  );
+  add(rig.torso, ribbonGeometry([-0.04, 0.405], [-0.19, 0.015], 0.027, -0.169), materials.ivory, "iroh_lapel_left");
+  add(rig.torso, ribbonGeometry([0.04, 0.405], [0.19, 0.015], 0.027, -0.169), materials.ivory, "iroh_lapel_right");
+
+  // Navy upper sleeves beneath pale, flared fore-sleeves reproduce the split
+  // seen in the reference instead of turning both arms into one white poncho.
+  const upperSleeveGeometry = new THREE.CylinderGeometry(0.13, 0.16, 0.34, 12, 2, true);
+  geometries.push(upperSleeveGeometry);
+  const bellSleeveGeometry = new THREE.CylinderGeometry(0.115, 0.18, 0.32, 12, 2, true);
+  geometries.push(bellSleeveGeometry);
+  const cuffGeometry = new THREE.CylinderGeometry(0.183, 0.183, 0.028, 12, 1, true);
+  geometries.push(cuffGeometry);
+  for (const [side, upperArm, forearm] of [
+    ["L", rig.armL, rig.foreL],
+    ["R", rig.armR, rig.foreR]
+  ] as const) {
+    const upper = new THREE.Mesh(upperSleeveGeometry, materials.navy);
+    upper.name = `iroh_navy_upper_sleeve_${side}`;
+    upper.position.y = -0.145;
+    upper.castShadow = true;
+    upper.receiveShadow = true;
+    enableShadowLayer(upper, SHADOW_LAYERS.HERO_DYNAMIC);
+    upperArm.add(upper);
+    meshes.push(upper);
+
+    const bell = new THREE.Mesh(bellSleeveGeometry, materials.stone);
+    bell.name = `iroh_stone_bell_sleeve_${side}`;
+    bell.position.y = -0.115;
+    bell.castShadow = true;
+    bell.receiveShadow = true;
+    enableShadowLayer(bell, SHADOW_LAYERS.HERO_DYNAMIC);
+    forearm.add(bell);
+    meshes.push(bell);
+
+    const cuff = new THREE.Mesh(cuffGeometry, materials.stoneShade);
+    cuff.name = `iroh_bell_sleeve_cuff_${side}`;
+    cuff.position.y = -0.274;
+    cuff.castShadow = true;
+    cuff.receiveShadow = true;
+    enableShadowLayer(cuff, SHADOW_LAYERS.HERO_DYNAMIC);
+    forearm.add(cuff);
+    meshes.push(cuff);
+  }
+
+  // Broad ivory yoke, darker outer binding and raised inner collar. The layers
+  // are separated by a few millimetres to avoid coplanar shimmer under WebGPU.
+  const mantle = add(rig.torso, mantleGeometry(), materials.mantle, "iroh_white_lotus_mantle");
+  mantle.position.z = -0.03;
+  const mantleBinding = add(rig.torso, mantleGeometry(0.89, 1), materials.mantleShade, "iroh_mantle_outer_binding");
+  mantleBinding.position.y = -0.004;
+  mantleBinding.position.z = -0.03;
+  const collar = add(
+    rig.torso,
+    new THREE.TorusGeometry(0.145, 0.022, 7, 24),
+    materials.mantleShade,
+    "iroh_raised_inner_collar",
+    [0, 0.445, 0]
+  );
+  collar.rotation.x = Math.PI / 2;
+  collar.scale.y = 0.78;
+
+  // A flatter, snugger obi replaces the old oversized circular ring. The
+  // folded front face and bow remain visible even when both hands hold the cup.
+  const obi = add(
+    rig.hips,
+    new THREE.CylinderGeometry(0.342, 0.342, 0.145, 20),
+    materials.ivoryShade,
+    "iroh_wide_obi",
+    [0, 0.035, 0]
+  );
+  obi.scale.z = 0.78;
+  add(rig.hips, new THREE.BoxGeometry(0.54, 0.088, 0.028), materials.stoneShade, "iroh_obi_front_fold", [0, 0.035, -0.275]);
+  add(rig.hips, new THREE.SphereGeometry(0.035, 8, 6), materials.ivory, "iroh_obi_knot", [0, 0.035, -0.306]);
+  for (const side of [-1, 1] as const) {
+    const bow = add(
+      rig.hips,
+      panelGeometry(
+        [
+          [0, 0.025],
+          [side * 0.125, 0.075],
+          [side * 0.115, -0.035]
+        ],
+        -0.309
+      ),
+      materials.ivory,
+      `iroh_obi_bow_${side < 0 ? "R" : "L"}`
+    );
+    bow.position.y = 0.035;
+  }
+
+  // Navy slippers with ivory soles already come from the shared rig. Add one
+  // bold instep strap per foot so they do not disappear beneath the robe hem.
+  for (const [side, shin] of [
+    ["L", rig.shinL],
+    ["R", rig.shinR]
+  ] as const) {
+    const strap = add(
+      shin,
+      new THREE.BoxGeometry(0.028, 0.022, 0.21),
+      materials.ivory,
+      `iroh_slipper_strap_${side}`,
+      [0, -0.31, -0.075]
+    );
+    strap.rotation.x = -0.12;
+  }
 
   return {
-    update(dt, motion, turn) {
-      const safeDt = Math.min(Math.max(dt, 0), 0.1);
-      smoothedMotion = THREE.MathUtils.damp(smoothedMotion, THREE.MathUtils.clamp(motion, 0, 1), 6.5, safeDt);
-      smoothedTurn = THREE.MathUtils.damp(smoothedTurn, THREE.MathUtils.clamp(turn, -1, 1), 8.5, safeDt);
-      sharedMotion.motion = smoothedMotion;
-      sharedMotion.turn = smoothedTurn;
-      sharedMotion.breeze = 0.18 + smoothedMotion * 0.17;
-      mantleMotion.motion = smoothedMotion * 0.45;
-      mantleMotion.turn = smoothedTurn * 0.55;
-      mantleMotion.breeze = sharedMotion.breeze;
-      sleeveMotion.motion = smoothedMotion * 0.6;
-      sleeveMotion.turn = smoothedTurn * 0.35;
-      sleeveMotion.breeze = sharedMotion.breeze;
-      robeState.setMotion(sharedMotion);
-      mantleState.setMotion(mantleMotion);
-      sleeveState.setMotion(sleeveMotion);
-      syncColliders();
-    },
+    // The authored pieces follow their owning joints. Cloth dynamics can be
+    // layered back in later without changing this visual hierarchy.
+    update() {},
     dispose() {
+      for (const mesh of meshes) mesh.removeFromParent();
       for (const geometry of new Set(geometries)) geometry.dispose();
-      for (const material of new Set(materials)) material.dispose();
-      for (const texture of new Set(textures)) texture.dispose();
-      robe.removeFromParent();
-      mantle.removeFromParent();
-      sash.removeFromParent();
-      for (const sleeve of sleeves) sleeve.removeFromParent();
+      for (const material of Object.values(materials)) material.dispose();
     }
   };
 }

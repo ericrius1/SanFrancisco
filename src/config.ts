@@ -88,7 +88,7 @@ export const DRAW_DISTANCE_DEFAULT = 3500
 export const WORLD_TUNING = tunables("world", {
   radius: {
     v: DRAW_DISTANCE_DEFAULT,
-    min: 1200,
+    min: 5,
     max: DRAW_DISTANCE_MAX,
     step: 100,
     label: "draw distance (m)"

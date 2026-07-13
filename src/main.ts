@@ -351,14 +351,20 @@ async function boot() {
     if (hooks) Object.assign(hooks, { oceanBeachWaves, surfExperience });
   };
   const ensureSurfRuntime = () => {
-    if ((oceanBeachWaves && surfExperience) || surfRuntimeLoading) return surfRuntimeLoading;
+    const surfing = player.mode === "surf";
+    const nearShore = nearOceanBeachShore(player.position.x, player.position.z);
+    // Face mesh can warm on the sand; SurfExperience only while actually surfing.
+    if (oceanBeachWaves && (!surfing || surfExperience)) return Promise.resolve();
+    if (surfRuntimeLoading) return surfRuntimeLoading;
     surfRuntimeLoading = import("./gameplay/surfing")
       .then(({ OceanBeachWaves, SurfExperience }) => {
-        // A quick E/B tap may finish before the chunk arrives. Do not resurrect
-        // an inactive activity after that race; the cached module is instant next time.
-        if (player.mode !== "surf") return;
+        const stillSurfing = player.mode === "surf";
+        const stillNear = nearOceanBeachShore(player.position.x, player.position.z);
+        // Drop the construct if the player left the break before the chunk arrived;
+        // the cached module is instant on the next E / shore approach.
+        if (!stillSurfing && !stillNear) return;
         oceanBeachWaves ??= new OceanBeachWaves(scene);
-        surfExperience ??= new SurfExperience(vehicleAudio);
+        if (stillSurfing) surfExperience ??= new SurfExperience(vehicleAudio);
         refreshSurfDebug();
       })
       .catch((error) => console.warn("[surf] runtime failed to load", error))
@@ -447,7 +453,8 @@ async function boot() {
       leaveCameraModeForSurf();
       void chase.ensureSurfCamera();
       void ensureSurfRuntime();
-    } else {
+    } else if (!nearOceanBeachShore(player.position.x, player.position.z)) {
+      // Keep the face mesh warm while still on the sand so E re-entry is instant.
       releaseSurfVisual();
     }
     setRemoteSurfboardAssetsActive(mode === "surf");
@@ -1322,9 +1329,6 @@ async function boot() {
   if (palaceReverie) {
     minimap.addLandmark(REVERIE_CENTER.x, REVERIE_CENTER.z, "Palace Reverie");
   }
-  if (afterlight) {
-    minimap.addLandmark(AFTERLIGHT_ARRIVAL.x, AFTERLIGHT_ARRIVAL.z, "Buena Vista · Afterlight");
-  }
   // Ocean Beach surf break. Teleporting arrives on foot at the waterline;
   // one E press enters the live face already standing and moving.
   {
@@ -1392,7 +1396,7 @@ async function boot() {
   window.addEventListener(
     "keydown",
     (e) => {
-      if (e.code !== "Escape" || e.repeat) return;
+      if ((e.code !== "Escape" && e.key !== "Escape") || e.repeat) return;
       // Input owns this invariant in an earlier capture listener. Keep this
       // idempotent call here too so UI routing can never precede the unlock.
       input.releaseLock();
@@ -1761,6 +1765,9 @@ async function boot() {
   minimap.addLandmark(GARDEN_XZ.x, GARDEN_XZ.z, "Botanical Garden");
   minimap.addLandmark(GOLF_XZ.x, GOLF_XZ.z, "Presidio Golf");
   minimap.addLandmark(CORONA_HEIGHTS_SUMMIT.x, CORONA_HEIGHTS_SUMMIT.z, "Corona Heights");
+  // Buena Vista summit clearing — west of Corona Heights. Static pin so the
+  // quest stays findable even if the site-gated experience fails to boot.
+  minimap.addLandmark(AFTERLIGHT_ARRIVAL.x, AFTERLIGHT_ARRIVAL.z, "Afterlight");
   const missionDoloresSpawn = SPAWN_POINTS.missionDolores;
   minimap.addLandmark(missionDoloresSpawn.x, missionDoloresSpawn.z, missionDoloresSpawn.label);
   const touchesBounds = (
@@ -1868,7 +1875,10 @@ async function boot() {
           physics,
           // Conversation is gameplay-critical, so it must remain visible when
           // the optional HUD panels are faded with Tab.
-          dialogueParent: document.body
+          dialogueParent: document.body,
+          onCarryRake: (rake) => player.setGardenRake(rake),
+          onRakingChange: (raking) => player.setGardenRaking(raking),
+          notify: (message, seconds) => hud.message(message, seconds)
         });
         japaneseTeaGarden = site;
         site.setFoliageVisible(foliageOn);
@@ -1893,7 +1903,7 @@ async function boot() {
         const site = await buildTeaGarden();
         scene.add(site.group);
         site.update(0, 0, player.renderPosition, camera);
-        if (autoStartIrohTour) site.interact(player.position, player.mode);
+        if (autoStartIrohTour) site.interact(player.renderPosition, player.mode);
         await site.ready;
       })();
     } else {
@@ -1914,7 +1924,7 @@ async function boot() {
             }
             scene.add(site.group);
             site.update(0, 0, player.renderPosition, camera);
-            if (autoStartIrohTour) site.interact(player.position, player.mode);
+            if (autoStartIrohTour) site.interact(player.renderPosition, player.mode);
           })().catch((err) => console.warn("[tea-garden] first-approach construction failed:", err));
         };
       });
@@ -2645,11 +2655,13 @@ async function boot() {
     // back to the conversation once the player is on foot; requiring a second
     // press made Iroh's visible prompt appear unresponsive.
     const interactPressed = !pickleballEConsumed && input.pressed("KeyE");
+    // Use the same position the tea-garden prompt distance is measured against
+    // (renderPosition), so a visible "Talk" prompt always accepts the matching E.
     let teaGardenEConsumed = interactPressed
-      && (japaneseTeaGarden?.interact(player.position, player.mode) ?? false);
+      && (japaneseTeaGarden?.interact(player.renderPosition, player.mode) ?? false);
     const exitedToWalk = interactPressed && !teaGardenEConsumed && exitToWalk();
     if (exitedToWalk) {
-      teaGardenEConsumed = japaneseTeaGarden?.interact(player.position, player.mode) ?? false;
+      teaGardenEConsumed = japaneseTeaGarden?.interact(player.renderPosition, player.mode) ?? false;
     }
     if (
       !pickleballEConsumed &&
@@ -3027,7 +3039,7 @@ async function boot() {
     gardenDisplacer.z = player.renderPosition.z;
     updateVegetationEnvironment(frameDt, foliageOn ? gardenDisplacers : undefined);
     buskers.update(frameDt, camera, windGustValue(), sky.sunElevation);
-    japaneseTeaGarden?.update(frameDt, elapsed, player.renderPosition, camera);
+    japaneseTeaGarden?.update(frameDt, elapsed, player.renderPosition, camera, player.mode);
     // MASTER foliage gate: when the "/" panel's foliage switch is OFF, every
     // vegetation group is already hidden (setFoliageVisible) — skip all its
     // per-frame work too so it costs near zero. We STILL advance the shared wind
@@ -3141,8 +3153,23 @@ async function boot() {
     // left Iroh's card one camera frame behind and visibly jittering.
     japaneseTeaGarden?.project(camera);
     sky.update(elapsed, camera.position, player.renderPosition);
-    water.update(elapsed, camera.position, player.renderPosition);
+    water.update(elapsed, camera.position, player.renderPosition, player.mode === "surf");
     oceanBeachWaves?.update(elapsed, player.renderPosition);
+    // Safety net + shore warm: rebuild the face mesh while surfing or standing
+    // at the waterline so the first E never lands on an empty bay sheet.
+    if (
+      !oceanBeachWaves &&
+      (player.mode === "surf" ||
+        (player.mode === "walk" && nearOceanBeachShore(player.position.x, player.position.z)))
+    ) {
+      void ensureSurfRuntime();
+    } else if (
+      oceanBeachWaves &&
+      player.mode !== "surf" &&
+      !nearOceanBeachShore(player.position.x, player.position.z)
+    ) {
+      releaseSurfVisual();
+    }
     underwater.update(camera, elapsed);
     seaPillars.update(player.renderPosition, elapsed);
     fx.update(frameDt);

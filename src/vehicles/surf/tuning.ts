@@ -8,30 +8,34 @@ import { tunables } from "../../core/persist";
 export const SURF_TUNING = tunables("movement.surf", {
   // The rider starts already standing and moving; a short window softens the
   // first carve so the dedicated camera can settle.
-  entryAssistDuration: { v: 0.35, min: 0, max: 2, step: 0.05, label: "entry assist" },
-  trimSpeed: { v: 16, min: 5, max: 30, step: 0.5, label: "neutral cruise" },
-  pumpBoost: { v: 11, min: 0, max: 28, step: 0.5, label: "W / RT boost" },
+  entryAssistDuration: { v: 0.22, min: 0, max: 2, step: 0.05, label: "entry assist" },
+  trimSpeed: { v: 17.5, min: 5, max: 30, step: 0.5, label: "neutral cruise" },
+  pumpBoost: { v: 12, min: 0, max: 28, step: 0.5, label: "W / RT boost" },
   stallSpeed: { v: 7.5, min: 3, max: 14, step: 0.25, label: "S / LT floor" },
-  maxTrim: { v: 30, min: 12, max: 48, step: 0.5, label: "max line speed" },
-  pumpResponse: { v: 5.5, min: 1, max: 14, step: 0.25, label: "pump response" },
-  speedResponse: { v: 2.8, min: 0.5, max: 8, step: 0.1, label: "speed response" },
+  maxTrim: { v: 32, min: 12, max: 48, step: 0.5, label: "max line speed" },
+  pumpResponse: { v: 6, min: 1, max: 14, step: 0.25, label: "pump response" },
+  speedResponse: { v: 3.2, min: 0.5, max: 8, step: 0.1, label: "speed response" },
   stallResponse: { v: 6.5, min: 1, max: 16, step: 0.25, label: "stall response" },
-  // Kelly-Slater carve: A/D yaw the board on screen; face magnet keeps the pocket.
-  yawRate: { v: 2.35, min: 0.5, max: 4.5, step: 0.05, label: "A/D yaw rate" },
-  carveResponse: { v: 8.5, min: 1, max: 18, step: 0.25, label: "carve lean response" },
-  carveFaceRange: { v: 6.5, min: 0.5, max: 12, step: 0.1, label: "carve face range" },
+  // Kelly-Slater carve: A/D yaw hard and readable; magnet yields while carving.
+  yawRate: { v: 2.85, min: 0.5, max: 4.5, step: 0.05, label: "A/D yaw rate" },
+  carveResponse: { v: 10, min: 1, max: 18, step: 0.25, label: "carve lean response" },
+  carveFaceRange: { v: 5.5, min: 0.5, max: 12, step: 0.1, label: "carve face range" },
+  // How much a held A/D release softens the face magnet (1 = full release).
+  carveMagnetYield: { v: 0.78, min: 0, max: 1, step: 0.02, label: "carve magnet yield" },
 
-  // moving-face grip; soft X magnet holds the pocket while A/D yaw freely.
-  faceOffset: { v: 6.5, min: 1.5, max: 16, step: 0.1, label: "pocket depth" },
-  faceTrack: { v: 1.65, min: 0.2, max: 6, step: 0.05, label: "face magnet" },
-  recoveryFaceTrack: { v: 2.4, min: 0.5, max: 8, step: 0.1, label: "recovery magnet" },
-  maxFaceCorrection: { v: 14, min: 4, max: 30, step: 0.5, label: "face correction" },
-  waveCarry: { v: 0.55, min: 0, max: 1, step: 0.05, label: "wave carry blend" },
+  // Soft pocket grip — strong enough to stay on the wall, soft enough for fun A/D.
+  faceOffset: { v: 5.8, min: 1.5, max: 16, step: 0.1, label: "pocket depth" },
+  faceTrack: { v: 1.35, min: 0.2, max: 6, step: 0.05, label: "face magnet" },
+  recoveryFaceTrack: { v: 2.2, min: 0.5, max: 8, step: 0.1, label: "recovery magnet" },
+  maxFaceCorrection: { v: 11, min: 4, max: 30, step: 0.5, label: "face correction" },
+  waveCarry: { v: 0.38, min: 0, max: 1, step: 0.05, label: "wave carry blend" },
   boundaryMargin: { v: 34, min: 10, max: 120, step: 1, label: "cutback margin" },
-  waveResetMargin: { v: 92, min: 45, max: 160, step: 1, label: "next-wave margin" },
-  railHeight: { v: 0.28, min: 0.12, max: 1, step: 0.01, label: "surface clearance" },
-  carveLean: { v: 0.85, min: 0.1, max: 1.3, step: 0.02, label: "carve lean" },
-  leanResponse: { v: 9, min: 2, max: 18, step: 0.25, label: "lean response" },
+  waveResetMargin: { v: 48, min: 45, max: 160, step: 1, label: "next-wave margin" },
+  railHeight: { v: 0.55, min: 0.12, max: 1, step: 0.01, label: "surface clearance" },
+  // Cap vertical catch-up so trough/crest transitions never read as teleports.
+  maxSurfaceVy: { v: 28, min: 8, max: 80, step: 1, label: "max surface climb" },
+  carveLean: { v: 0.95, min: 0.1, max: 1.3, step: 0.02, label: "carve lean" },
+  leanResponse: { v: 11, min: 2, max: 18, step: 0.25, label: "lean response" },
   pitchSampleDistance: { v: 2.2, min: 0.6, max: 6, step: 0.1, label: "pitch sample" },
   pitchFollow: { v: 0.82, min: 0, max: 1.5, step: 0.02, label: "pitch follow" },
   pitchResponse: { v: 8, min: 2, max: 18, step: 0.25, label: "pitch response" },
@@ -46,8 +50,8 @@ export const SURF_TUNING = tunables("movement.surf", {
   launchLipLift: { v: 3.2, min: 0, max: 8, step: 0.1, label: "lip lift" },
   launchCooldown: { v: 1.35, min: 0.3, max: 4, step: 0.05, label: "launch cooldown" },
   gravity: { v: 15.5, min: 6, max: 30, step: 0.25, label: "air gravity" },
-  airYawStyle: { v: 0.55, min: 0, max: 1.2, step: 0.02, label: "air yaw style" },
-  airRollStyle: { v: 0.72, min: 0, max: 1.5, step: 0.02, label: "air roll style" },
+  airYawStyle: { v: 0.7, min: 0, max: 1.2, step: 0.02, label: "air yaw style" },
+  airRollStyle: { v: 0.85, min: 0, max: 1.5, step: 0.02, label: "air roll style" },
   airAlignResponse: { v: 7.5, min: 2, max: 18, step: 0.25, label: "air auto-align" },
 
   // forgiving magnetic landing + on-surface recovery

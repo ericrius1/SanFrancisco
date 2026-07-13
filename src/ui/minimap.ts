@@ -75,7 +75,6 @@ const LANDMARK_LABELS: Record<string, string> = {
   ferry: "Ferry Building",
   alcatraz: "Alcatraz",
   sutro: "Sutro Tower",
-  palaceFineArts: "Palace of Fine Arts",
   coronaHeights: "Corona Heights Park"
 };
 
@@ -223,11 +222,14 @@ export class Minimap {
     this.#getSelf = getSelf;
     this.#getRemotes = getRemotes;
     this.#paintWorld();
-    this.#landmarks = Object.entries(this.#map.meta.landmarks).map(([key, pos]) => ({
-      x: pos.x,
-      z: pos.z,
-      name: LANDMARK_LABELS[key] ?? key
-    }));
+    // Skip palaceFineArts — Palace Reverie is the dedicated pin for that site.
+    this.#landmarks = Object.entries(this.#map.meta.landmarks)
+      .filter(([key]) => key !== "palaceFineArts")
+      .map(([key, pos]) => ({
+        x: pos.x,
+        z: pos.z,
+        name: LANDMARK_LABELS[key] ?? key
+      }));
     // Pin the Golden Gate Bridge at its main-span midpoint (between the two
     // towers) so it gets a landmark dot + label + teleport like the rest.
     const ggb = this.#map.meta.bridges.find((b) => b.name === "Golden Gate Bridge");
@@ -254,8 +256,9 @@ export class Minimap {
     // labelled dot + teleport. The pin is a hand-picked point that lands you IN
     // the foliage (a grove or bloom drift on plantable ground), NOT the raw
     // region centre, which can fall on a road, rooftop or the bay.
+    // Skip ggpark — Botanical Garden, Japanese Tea Garden, and Archery Range
+    // already cover Golden Gate Park with activity-specific pins.
     const NATURE_ANCHORS: { id: string; name: string; x: number; z: number }[] = [
-      { id: "ggpark", name: "Golden Gate Park", x: -3050, z: 2000 }, // dense central forest
       { id: "presidio", name: "The Presidio", x: -1820, z: -1520 }, // cypress ridge grove
       { id: "marin", name: "Marin Headlands", x: -4450, z: -6250 }, // poppy hills + groves
       { id: "twinpeaks", name: "Mount Sutro", x: -782, z: 3846 } // Sutro cloud-forest under the tower

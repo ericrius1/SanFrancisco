@@ -27,6 +27,7 @@ import {
   collectTeaGardenPlanting,
   type TeaGardenShrubPalette
 } from "./planting";
+import { inDryLandscape } from "./dryLandscape";
 
 export type TeaGardenVegetation = {
   group: THREE.Group;
@@ -137,6 +138,9 @@ function collectGrass(map: TeaGardenTerrain): GrassEntry[] {
       if (!inJapaneseTeaGarden(px, pz, -0.6)) continue;
       if (inTeaGardenWater(px, pz, 0.75) || inTeaGardenBuilding(px, pz, 0.85)) continue;
       if (distanceToTeaGardenPaths(px, pz) < 0.82) continue;
+      // The dry garden owns a raised stone rim. Keep every blade comfortably
+      // outside it so neither stems nor their wind bend can clip through sand.
+      if (inDryLandscape(px, pz, 1.2)) continue;
       if (map.isWater(px, pz) || hash(gx, gz, 227) > 0.78) continue;
       const mossy = hash(gx, gz, 229);
       const tint = new THREE.Color().setHSL(0.23 + mossy * 0.055, 0.42, 0.46 + mossy * 0.08);
@@ -224,50 +228,6 @@ function createRocks(map: TeaGardenTerrain): { group: THREE.Group; count: number
   return { group, count: placements.length };
 }
 
-function createDryLandscape(map: TeaGardenTerrain): THREE.Group {
-  const group = new THREE.Group();
-  group.name = "japanese_tea_garden_dry_landscape";
-  const x = -2344;
-  const z = 2166.5;
-  const y = map.groundTop(x, z) + 0.1;
-  const gravel = new THREE.Mesh(
-    new THREE.CircleGeometry(1, 48),
-    new THREE.MeshStandardMaterial({ color: 0xc6bfae, roughness: 1, metalness: 0 })
-  );
-  gravel.name = "dry_garden_gravel";
-  gravel.rotation.x = -Math.PI / 2;
-  gravel.scale.set(10.8, 6.4, 1);
-  gravel.position.set(x, y, z);
-  gravel.receiveShadow = true;
-  group.add(gravel);
-
-  const lineMat = new THREE.MeshStandardMaterial({ color: 0x918b7d, roughness: 1 });
-  for (let ring = 0; ring < 6; ring++) {
-    const points: THREE.Vector3[] = [];
-    const radius = 2.8 + ring * 1.08;
-    for (let i = 0; i <= 48; i++) {
-      const angle = (i / 48) * Math.PI * 2;
-      points.push(new THREE.Vector3(x + Math.cos(angle) * radius * 1.45, y + 0.025, z + Math.sin(angle) * radius * 0.78));
-    }
-    const line = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(points, true), 72, 0.025, 4, true), lineMat);
-    line.name = "dry_garden_rake_line";
-    group.add(line);
-  }
-  const rockMat = new THREE.MeshStandardMaterial({ color: 0x66665e, roughness: 1 });
-  for (const [rx, rz, scale] of [
-    [-2346.8, 2165.3, 1.3], [-2342.4, 2168.1, 0.95], [-2341.2, 2164.4, 0.72]
-  ] as const) {
-    const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(scale, 0), rockMat);
-    rock.name = "dry_garden_stone";
-    rock.scale.set(1.25, 0.82, 1);
-    rock.position.set(rx, map.groundTop(rx, rz) + scale * 0.45, rz);
-    rock.rotation.y = scale * 1.7;
-    rock.castShadow = true;
-    group.add(rock);
-  }
-  return group;
-}
-
 function createBuddha(map: TeaGardenTerrain): THREE.Group {
   const x = -2289.7;
   const z = 2177.3;
@@ -332,7 +292,7 @@ export function createTeaGardenVegetation(map: TeaGardenTerrain): TeaGardenVeget
   const grass = createGrass(map);
   const rocks = createRocks(map);
   plants.add(trees.group, shrubs.group, grass.group);
-  landmarks.add(rocks.group, createDryLandscape(map), createBuddha(map));
+  landmarks.add(rocks.group, createBuddha(map));
   group.add(plants, landmarks);
 
   return {

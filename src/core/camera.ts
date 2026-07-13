@@ -3,6 +3,7 @@ import type { Input } from "./input"
 import type { Player } from "../player/player"
 import type { PlayerMode } from "../player/types"
 import { waterHeight, type WorldMap } from "../world/heightmap"
+import { oceanBeachWaveHeight } from "../world/oceanBeachWaves"
 import type { Physics } from "./physics"
 import { CAMERA_TUNING } from "../config"
 import {
@@ -379,18 +380,28 @@ export class ChaseCamera {
     // the player underwater; the seabed clamp still stops it clipping through.
     const floor = this.#map.effectiveGround(cx, cz) + 0.7
     if (this.#chasePos.y < floor) this.#chasePos.y = floor
-    // When you're swimming BELOW the surface, duck the camera under with you.
-    // The `up` offset otherwise keeps the eye above the waterline on a shallow
-    // dive, so you'd watch yourself through the surface instead of being under
-    // it — the underwater world (surface ceiling, tint) never reads. Only kicks
-    // in over water deep enough to submerge the rig, never at the surface rest.
+    // Swim camera: surface rest stays above the live waterline (a low boom must
+    // not flash the underwater overlay); a committed dive still ducks under.
+    // Dive detection uses the calm/mean surface — Ocean Beach crests otherwise
+    // spike waterY by metres and false-trigger the underwater path while the
+    // body is still surface-swimming. Clearance sits above the overlay
+    // hysteresis (~0.45 m) so swell bob doesn't flicker the tint.
+    let surfaceSwimCam = false
     if (player.mode === "walk") {
       const waterY = waterHeight(anchor.x, anchor.z, player.time)
+      const calmY =
+        waterY - oceanBeachWaveHeight(anchor.x, anchor.z, player.time)
       const seabed = this.#map.effectiveGround(anchor.x, anchor.z)
-      // threshold sits well below the surface-swim rest (~0.8 m down) so bobbing
+      // threshold sits well below the surface-swim rest (~0.5 m down) so bobbing
       // at the top keeps the eye above water; only a committed dive ducks it under
-      if (anchor.y < waterY - 1.6 && seabed < waterY - 2.5) {
+      const deepDive = anchor.y < calmY - 1.6 && seabed < calmY - 2.5
+      if (deepDive) {
         this.#chasePos.y = Math.min(this.#chasePos.y, waterY - 0.8)
+      } else if (player.swimming) {
+        surfaceSwimCam = true
+        const camWater =
+          waterHeight(this.#chasePos.x, this.#chasePos.z, player.time) + 0.55
+        if (this.#chasePos.y < camWater) this.#chasePos.y = camWater
       }
     }
 
@@ -464,6 +475,18 @@ export class ChaseCamera {
       this.#firstPersonPos,
       firstPersonBlend
     )
+
+    // Hard floor after orbit lag: a low boom while surface-swimming lifts the
+    // chase endpoint immediately, but the smoothed orbit can trail below the
+    // waterline for a few frames and flash the underwater overlay.
+    if (surfaceSwimCam && firstPersonBlend < 0.5) {
+      const camWater =
+        waterHeight(this.camera.position.x, this.camera.position.z, player.time) +
+        0.55
+      if (this.camera.position.y < camWater) this.camera.position.y = camWater
+      if (this.#orbitViewPos.y < camWater) this.#orbitViewPos.y = camWater
+      if (this.#orbitPos.y < camWater) this.#orbitPos.y = camWater
+    }
 
     if (this.shakeAmount > 0.002) {
       // shake position and look-target together so it reads as a jolt, not a wobble

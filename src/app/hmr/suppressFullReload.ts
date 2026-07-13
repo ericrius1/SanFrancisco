@@ -1,10 +1,14 @@
 /**
  * Soft-HMR-only guard: keep in-place module swaps, skip Vite full page reloads.
- * Set SF_FULL_RELOAD=1 to restore automatic structural reloads.
+ * Set SF_FULL_RELOAD=1 (`npm run dev:hmr`) to restore automatic structural reloads.
+ * Set SF_HMR=0 (`npm run dev:play`) to disable the HMR websocket entirely.
  *
  * Vite 6 only reloads when payload.path is missing or matches the current HTML
  * page; forcing a non-matching .html path skips pageReload() after listeners run.
+ * Server-side soft-hmr also drops full-reload WS payloads and neuters the Vite
+ * client's location.reload() (disconnect / circular-import paths).
  */
+
 export const suppressesFullReload =
   import.meta.env.DEV && import.meta.env.SF_FULL_RELOAD !== true;
 

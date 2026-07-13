@@ -52,6 +52,11 @@ export interface PlayerCtx {
   driveSpec: DriveSpec;
   /** Set before switching to walk from a water vehicle exit — skip the shore hop. */
   swimEnter?: boolean;
+  /**
+   * Optional: collapse render interpolation to the live body pose. Surf wave
+   * resets call this so a pocket teleport never smears across frames.
+   */
+  snapRenderPose?(): void;
 }
 
 export type BodyVel = { linear: number[]; angular: number[] };

@@ -6,6 +6,8 @@ import { waterHeight } from "../../world/heightmap";
 import {
   OCEAN_BEACH_SURF,
   nearestOceanBeachCrest,
+  oceanBeachApproxShoreX,
+  oceanBeachCrestX,
   oceanBeachMask,
   sampleOceanBeachWave
 } from "../../world/oceanBeachWaves";
@@ -140,6 +142,8 @@ export class SurfController implements ModeController {
   #flow = 0;
   #flowTimer = 0;
   #flowRequest = 0;
+  /** Locked crest slot so nearest-crest flips never yank the face magnet. */
+  #crestSlot: number | null = null;
 
   setConfig(config: SurfboardConfig) {
     this.#config = normalizeSurfboardConfig(config);
@@ -270,29 +274,22 @@ export class SurfController implements ModeController {
     const tb = SURF_TUNING.values;
     const shape = surfboardHandling(this.#config);
     const p = ctx.position;
-    if (
-      p.x > OCEAN_BEACH_SURF.maxX - tb.waveResetMargin ||
-      p.x < OCEAN_BEACH_SURF.minX + 18 ||
-      oceanBeachMask(p.x, p.z) < 0.02
-    ) {
+    if (this.#shouldResetWave(p.x, p.z, tb.waveResetMargin)) {
       this.#placeOnWave(ctx, true, true);
     }
-    const sample = sampleOceanBeachWave(p.x, p.z, ctx.time);
+    const sample = this.#sampleLockedCrest(p.x, p.z, ctx.time);
 
-    // A/D = screen-left / screen-right yaw. When the locked shore camera faces
-    // the same way as the board, +yaw is screen-left (A). If the assisted line
-    // has the camera looking the opposite way, flip so A stays visually left.
+    // A/D = screen-left / screen-right yaw. Shore camera looks along ±Z; with the
+    // standard yaw convention, `yaw -= steer` makes A turn toward screen-left
+    // whether the assisted line runs north or south — no lineDirection flip.
     const entryBlend =
       tb.entryAssistDuration > 0
         ? THREE.MathUtils.clamp(1 - this.#entryAssist / tb.entryAssistDuration, 0.45, 1)
         : 1;
-    const align = Math.cos(shortestAngle(this.yaw, frame.camYaw));
-    const turnSign = align >= 0 ? 1 : -1;
-    this.yaw -= steer * turnSign * tb.yawRate * shape.carve * entryBlend * motionDt;
-    // Lean follows steer for readable body language (A leans left on screen).
-    const leanSteer = -steer * turnSign;
+    this.yaw -= steer * tb.yawRate * shape.carve * entryBlend * motionDt;
+    // Lean follows steer for readable body language (A leans screen-left).
     this.#carve +=
-      (leanSteer - this.#carve) *
+      (-steer - this.#carve) *
       (1 - Math.exp(-motionDt * tb.carveResponse * shape.carve));
 
     this.#pump += (Math.max(0, throttle) - this.#pump) * Math.min(1, motionDt * tb.pumpResponse);
@@ -303,20 +300,24 @@ export class SurfController implements ModeController {
     const response = throttle < -0.1 ? tb.stallResponse : tb.speedResponse * shape.acceleration;
     this.#lineSpeed += (targetSpeed - this.#lineSpeed) * Math.min(1, motionDt * response);
 
-    // Travel follows board yaw. Soft face magnet + wave carry keep the pocket
-    // without fighting left/right intent.
+    // Travel follows board yaw. Soft face magnet yields while carving so A/D
+    // actually opens the face instead of fighting a hard X lock.
     const speed = this.#lineSpeed * riderRate;
     let vx = -Math.sin(this.yaw) * speed;
     let vz = -Math.cos(this.yaw) * speed;
     const desiredFaceOffset = tb.faceOffset + this.#carve * tb.carveFaceRange * 0.35;
     const faceError = desiredFaceOffset - sample.crestDistance;
+    const magnetScale =
+      shape.grip * (1 - Math.min(1, Math.abs(steer)) * tb.carveMagnetYield);
     const facePull = THREE.MathUtils.clamp(
-      faceError * tb.faceTrack * shape.grip,
+      faceError * tb.faceTrack * magnetScale,
       -tb.maxFaceCorrection,
       tb.maxFaceCorrection
     );
     vx += facePull;
-    vx += (OCEAN_BEACH_SURF.speed - vx) * tb.waveCarry;
+    // Wave carry only while not carving hard — otherwise the swell fights yaw.
+    const carry = tb.waveCarry * (1 - Math.min(1, Math.abs(steer)) * 0.65);
+    vx += (OCEAN_BEACH_SURF.speed - vx) * carry;
 
     this.#lineDirection = vz >= 0 ? 1 : -1;
     const nextZ = p.z + vz * dt;
@@ -339,7 +340,8 @@ export class SurfController implements ModeController {
 
     const y = this.#safeY(ctx, tb.railHeight);
     const nextFloor = this.#surface(nx, nz, ctx.time, tb.railHeight);
-    const vy = (nextFloor - y) / Math.max(dt, 1e-4);
+    const rawVy = (nextFloor - y) / Math.max(dt, 1e-4);
+    const vy = THREE.MathUtils.clamp(rawVy, -tb.maxSurfaceVy, tb.maxSurfaceVy);
     const totalSpeed = Math.hypot(vx, vz);
     const fastEnough = totalSpeed >= tb.launchMinSpeed * (2 - shape.launch);
     const lipEnergy = THREE.MathUtils.clamp(
@@ -422,13 +424,9 @@ export class SurfController implements ModeController {
       vz *= riderRate;
     }
     const vy = this.#airVy * riderRate;
-    // Air input adds style inside a narrow envelope; screen-relative A/D so
-    // left stays left through takeoff.
-    const align = Math.cos(shortestAngle(this.yaw, frame.camYaw));
-    const turnSign = align >= 0 ? 1 : -1;
-    const styleSteer = -steer * turnSign;
-    this.yaw -= steer * turnSign * tb.airYawStyle * shape.carve * motionDt;
-    const targetLean = styleSteer * tb.airRollStyle;
+    // Air A/D stays screen-relative with the same fixed sign as ride.
+    this.yaw -= steer * tb.airYawStyle * shape.carve * motionDt;
+    const targetLean = -steer * tb.airRollStyle;
     this.lean +=
       (targetLean - this.lean) *
       (1 - Math.exp(-motionDt * tb.airAlignResponse * 0.72));
@@ -509,12 +507,9 @@ export class SurfController implements ModeController {
     const tb = SURF_TUNING.values;
     const p = ctx.position;
     this.#recoveryTimer = Math.max(0, this.#recoveryTimer - dt);
-    const align = Math.cos(shortestAngle(this.yaw, frame.camYaw));
-    const turnSign = align >= 0 ? 1 : -1;
-    this.yaw -= steer * turnSign * tb.yawRate * 0.55 * motionDt;
-    const leanSteer = -steer * turnSign;
-    this.#carve += (leanSteer - this.#carve) * (1 - Math.exp(-motionDt * tb.carveResponse));
-    const sample = sampleOceanBeachWave(p.x, p.z, ctx.time);
+    this.yaw -= steer * tb.yawRate * 0.55 * motionDt;
+    this.#carve += (-steer - this.#carve) * (1 - Math.exp(-motionDt * tb.carveResponse));
+    const sample = this.#sampleLockedCrest(p.x, p.z, ctx.time);
     const speed = tb.recoverySpeed * riderRate;
     let vx = -Math.sin(this.yaw) * speed;
     let vz = -Math.cos(this.yaw) * speed;
@@ -525,7 +520,8 @@ export class SurfController implements ModeController {
     this.#lineDirection = vz >= 0 ? 1 : -1;
     const y = this.#safeY(ctx, tb.railHeight);
     const nextFloor = this.#surface(p.x + vx * dt, p.z + vz * dt, ctx.time, tb.railHeight);
-    const vy = (nextFloor - y) / Math.max(dt, 1e-4);
+    const rawVy = (nextFloor - y) / Math.max(dt, 1e-4);
+    const vy = THREE.MathUtils.clamp(rawVy, -tb.maxSurfaceVy, tb.maxSurfaceVy);
 
     this.lean += (0 - this.lean) * Math.min(1, motionDt * 7);
     this.pitch += (0 - this.pitch) * Math.min(1, motionDt * 6);
@@ -537,11 +533,49 @@ export class SurfController implements ModeController {
 
   // --- helpers ----------------------------------------------------------------
 
+  #shouldResetWave(x: number, z: number, waveResetMargin: number): boolean {
+    // Shore wash-in / blown out the back of the set. Do NOT reset on a brief mask
+    // dip mid-face — that used to teleport the rider onto the next crest nearby.
+    if (x > OCEAN_BEACH_SURF.maxX - waveResetMargin) return true;
+    if (x < OCEAN_BEACH_SURF.minX + 18) return true;
+    const shore = oceanBeachApproxShoreX(z);
+    return x > shore - 10 && oceanBeachMask(x, z) < 0.015;
+  }
+
+  /**
+   * Sample the locked crest when possible so a nearest-crest flip mid-pocket
+   * cannot yank faceDistance by a full spacing (and feel like a teleport).
+   */
+  #sampleLockedCrest(x: number, z: number, time: number) {
+    const nearest = nearestOceanBeachCrest(x, z, time);
+    if (this.#crestSlot == null) this.#crestSlot = nearest.slot;
+    const lockedX = oceanBeachCrestX(this.#crestSlot, z, time);
+    const lockedDist = x - lockedX;
+    // Retarget only when clearly closer to a neighbour / washed past the face.
+    if (
+      Math.abs(nearest.distance) + 18 < Math.abs(lockedDist) ||
+      lockedDist > SURF_TUNING.values.faceOffset + 22
+    ) {
+      this.#crestSlot = nearest.slot;
+    }
+    const slot = this.#crestSlot;
+    const crestX = oceanBeachCrestX(slot, z, time);
+    const crestDistance = x - crestX;
+    const base = sampleOceanBeachWave(x, z, time);
+    return {
+      ...base,
+      crestDistance,
+      crestX,
+      slot
+    };
+  }
+
   #surface(x: number, z: number, time: number, clearance: number): number {
-    // Ride the wave where it stands above the sea, but never sink below the flat
-    // ocean between sets: the analytic trough dips below 0, and tracking it put the
-    // board (and the chase eye) underwater. Sea level (0) is the hard floor.
-    return Math.max(waterHeight(x, z, time), 0) + clearance;
+    // Follow the live analytic surface, including shallow troughs. A hard sea-level
+    // clamp (max 0) caused vertical teleports; a mild trough floor keeps the deck
+    // from reading as sunk against the flat far sheet between sets.
+    const TROUGHS_FLOOR = -0.2;
+    return Math.max(waterHeight(x, z, time), TROUGHS_FLOOR) + clearance;
   }
 
   /** Immediate correction for any stale/low body pose before the next physics step. */
@@ -551,10 +585,13 @@ export class SurfController implements ModeController {
   }
 
   #commit(ctx: PlayerCtx, y: number, vx: number, vy: number, vz: number) {
+    const floor = this.#surface(ctx.position.x, ctx.position.z, ctx.time, SURF_TUNING.values.railHeight);
+    const safeY = Math.max(y, floor);
     const q = ctx.quaternion.setFromEuler(V.euler.set(this.pitch, this.yaw, this.lean, "YXZ"));
     const w = ctx.physics.world;
-    w.setBodyTransform(ctx.body, [ctx.position.x, y, ctx.position.z], [q.x, q.y, q.z, q.w]);
+    w.setBodyTransform(ctx.body, [ctx.position.x, safeY, ctx.position.z], [q.x, q.y, q.z, q.w]);
     w.setBodyVelocity(ctx.body, [vx, vy, vz], [0, 0, 0]);
+    ctx.position.y = safeY;
     ctx.heading = this.yaw + Math.PI;
   }
 
@@ -606,7 +643,18 @@ export class SurfController implements ModeController {
     const z = keepZ
       ? THREE.MathUtils.clamp(p.z, b.minZ + tb.boundaryMargin + 4, b.maxZ - tb.boundaryMargin - 4)
       : b.entryZ;
-    const crest = nearestOceanBeachCrest(b.entryX, z, ctx.time);
+    // Prefer the player's local crest. On wash-in, step one slot offshore so the
+    // reset is a nearby next-wave hop rather than a jump to entryX's pocket.
+    let crest = nearestOceanBeachCrest(keepZ ? p.x : b.entryX, z, ctx.time);
+    if (nextWave && keepZ && p.x > crest.crestX + tb.faceOffset * 0.35) {
+      const slot = crest.slot - 1;
+      crest = {
+        slot,
+        crestX: oceanBeachCrestX(slot, z, ctx.time),
+        distance: p.x - oceanBeachCrestX(slot, z, ctx.time)
+      };
+    }
+    this.#crestSlot = crest.slot;
     const x = crest.crestX + tb.faceOffset;
     if (!nextWave) {
       const northRun = z - (b.minZ + tb.boundaryMargin);
@@ -661,6 +709,7 @@ export class SurfController implements ModeController {
       ctx.physics.world.setBodyTransform(ctx.body, [p.x, p.y, p.z], [q.x, q.y, q.z, q.w]);
       ctx.physics.world.setBodyVelocity(ctx.body, [vx, 0, vz], [0, 0, 0]);
     }
+    ctx.snapRenderPose?.();
   }
 
   #syncTelemetry(

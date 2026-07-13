@@ -82,7 +82,9 @@ export class UnderwaterOverlay {
     // only over actual water — land dipping just below y=0 near shore isn't "underwater"
     const overWater = this.#map.isWater(cx, cz);
     const wy = waterHeight(cx, cz, timeSec);
-    const depth = overWater ? wy - camera.position.y : -1; // >0 = camera submerged
+    // Small hysteresis so a crest cresting under a high surf eye does not flash
+    // the underwater overlay when clearance is only centimetres.
+    const depth = overWater ? wy - camera.position.y - 0.45 : -1; // >0 = camera submerged
 
     const target = depth > 0 ? 1 : 0;
     this.#ease += (target - this.#ease) * 0.18;

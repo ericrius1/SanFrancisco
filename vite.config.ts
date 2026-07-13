@@ -4,8 +4,8 @@ import { defineConfig, type Plugin } from "vite";
 
 // Soft HMR is the default: in-place module swaps work, full page reloads are
 // suppressed so multi-agent edits do not interrupt a play session.
-//   SF_FULL_RELOAD=1 — restore Vite automatic full reloads
-//   SF_HMR=0         — disable the HMR websocket entirely (no soft swaps)
+//   SF_FULL_RELOAD=1 — restore Vite automatic full reloads (`npm run dev:hmr`)
+//   SF_HMR=0         — disable the HMR websocket entirely (`npm run dev:play`)
 const HMR_ENABLED = process.env.SF_HMR !== "0";
 const FULL_RELOAD_ENABLED = process.env.SF_FULL_RELOAD === "1";
 
@@ -53,7 +53,13 @@ const relayPlugin = (): Plugin => ({
   }
 });
 
-/** Drop Vite full-reload WS payloads unless SF_FULL_RELOAD=1. Soft updates pass through. */
+/**
+ * Soft HMR: keep in-place module swaps, block every automatic full page reload.
+ *
+ * Vite still reloads on (1) full-reload WS messages, (2) HMR websocket reconnect
+ * after a server restart, and (3) circular-import HMR failures via location.reload.
+ * (1) is dropped on the server; (2)+(3) are neutered by rewriting the Vite client.
+ */
 const softHmrPlugin = (): Plugin => ({
   name: "sf-soft-hmr",
   configureServer(server) {
@@ -75,6 +81,17 @@ const softHmrPlugin = (): Plugin => ({
       }
       return (send as (...a: unknown[]) => unknown)(payload, ...args);
     }) as typeof server.ws.send;
+  },
+  transform(code, id) {
+    if (FULL_RELOAD_ENABLED || !HMR_ENABLED) return null;
+    // @vite/client — also match query-suffixed / Windows paths
+    const bare = id.split("?", 1)[0].replace(/\\/g, "/");
+    if (!bare.endsWith("/vite/dist/client/client.mjs")) return null;
+    if (!code.includes("location.reload()")) return null;
+    return code.replaceAll(
+      "location.reload()",
+      '(console.info("[sf] automatic reload suppressed — refresh manually when ready"), undefined)'
+    );
   }
 });
 
@@ -126,6 +143,10 @@ export default defineConfig({
     // pre-transform the module graph on boot instead of paying it on first page load
     warmup: {
       clientFiles: ["./src/**/*.ts"]
+    },
+    // Playwright profiles, probes, and agent scratch under .data must not trigger HMR
+    watch: {
+      ignored: ["**/.data/**", "**/node_modules/**", "**/.git/**"]
     },
     // same-origin app services in every environment: dev proxies to the local
     // relay, prod serves everything from the same Node process as the static files

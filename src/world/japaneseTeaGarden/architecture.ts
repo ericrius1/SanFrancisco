@@ -1132,8 +1132,11 @@ function createPonds(map: TeaGardenTerrain, mats: ReturnType<typeof createMateri
     group.add(ringMesh(map, `${name}_stone_bank`, outline, 0.055, mats.stoneDark));
     // The committed terrain has no separately carved basin. Keep the connected
     // shallow water just above local grade instead of floating across the slope.
-    const water = shapeMesh(map, `${name}_water`, outline, 0.085, mats.water);
+    // Lift a little higher than the bank so the transparent sheet clears the
+    // ground depth buffer — WebGPU z-fights a hairline film into invisibility.
+    const water = shapeMesh(map, `${name}_water`, outline, 0.16, mats.water);
     water.renderOrder = WATER_RENDER_ORDER;
+    water.frustumCulled = false;
     group.add(water);
     const c = pondIndex === 0 ? { x: -2288.7, z: 2219.2 } : { x: -2274.2, z: 2193.2 };
     const rx = pondIndex === 0 ? 7.4 : 1.45;
@@ -1186,13 +1189,16 @@ function createMaterials() {
       roughness: 0.94,
       metalness: 0
     }),
-    water: alphaSurface(new THREE.MeshPhysicalMaterial({
-      color: 0x203d35,
-      roughness: 0.16,
+    // MeshStandard — not Physical. Classic MeshPhysicalMaterial + transmission
+    // draws invisible under this WebGPU path (palace lagoon uses a NodePhysical
+    // material; bay water already standardized on Standard for the same reason).
+    water: alphaSurface(new THREE.MeshStandardMaterial({
+      color: COLORS.waterDeep,
+      roughness: 0.24,
       metalness: 0,
-      transmission: 0.04,
-      opacity: 0.82,
-      side: THREE.DoubleSide
+      opacity: 0.86,
+      side: THREE.DoubleSide,
+      envMapIntensity: 0.7
     }))
   };
 }
@@ -1249,12 +1255,13 @@ function makeWaterfall(map: TeaGardenTerrain, mats: ReturnType<typeof createMate
     rock.receiveShadow = true;
     group.add(rock);
   }
-  const fallMat = alphaSurface(new THREE.MeshPhysicalMaterial({
+  const fallMat = alphaSurface(new THREE.MeshStandardMaterial({
     color: 0xa7d6d1,
-    roughness: 0.08,
-    opacity: 0.78,
-    transmission: 0.18,
-    side: THREE.DoubleSide
+    roughness: 0.18,
+    metalness: 0,
+    opacity: 0.82,
+    side: THREE.DoubleSide,
+    envMapIntensity: 0.4
   }));
   for (let i = 0; i < 3; i++) {
     const fall = makeBox("waterfall_ribbon", [0.48 + i * 0.2, 2.4 - i * 0.35, 0.055], fallMat, [x - 0.55 + i * 0.52, base + 1.55 - i * 0.28, z - 0.45 + i * 0.28], 0.28);
@@ -1316,7 +1323,7 @@ export function createTeaGardenArchitecture(
         const z = pond.center.z + Math.sin(angle) * pond.rz * wobble;
         dummy.position.set(
           x,
-          map.groundTop(x, z) + 0.12 + Math.sin(angle * 2.1 + i) * 0.025,
+          map.groundTop(x, z) + 0.1 + Math.sin(angle * 2.1 + i) * 0.02,
           z
         );
         dummy.rotation.set(0, -angle + Math.PI / 2, 0);
