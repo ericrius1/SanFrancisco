@@ -36,18 +36,18 @@ self.onmessage = (event: MessageEvent<PaintRequest>) => {
       let b: number;
       if (isWater) {
         const t = Math.min(1, Math.max(0, s === 3 ? -h / 16 : 0.18));
-        r = 24 + (1 - t) * 20;
-        g = 88 + (1 - t) * 46;
-        b = 112 + (1 - t) * 42;
+        r = 96 + (1 - t) * 30;
+        g = 132 + (1 - t) * 33;
+        b = 139 + (1 - t) * 27;
       } else {
         if (s === 1) {
-          r = 52; g = 92; b = 60;
+          r = 117; g = 128; b = 89;
         } else if (s === 2) {
-          r = 158; g = 142; b = 104;
+          r = 187; g = 157; b = 105;
         } else if (s === 4) {
-          r = 111; g = 124; b = 123;
+          r = 203; g = 188; b = 154;
         } else {
-          r = 62; g = 74; b = 86;
+          r = 190; g = 174; b = 142;
         }
         const hx = heights[i + (x < width - 1 ? 1 : 0)] - h;
         const hy = heights[i + (y < height - 1 ? width : 0)] - h;
