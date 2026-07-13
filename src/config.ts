@@ -238,7 +238,7 @@ export const GRASS_TUNING = tunables("grass", {
  */
 export const START_DEFAULTS = {
   // Ocean Beach surf pin — a code spawn (src/world/spawnPoints.ts). Sand at the
-  // waterline facing the swell; board underarm, ready to paddle out.
+  // waterline facing the swell; board underarm, ready to start surfing.
   spawn: "oceanBeach",
   mode: "walk" as PlayerMode
 }

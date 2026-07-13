@@ -20,7 +20,8 @@ export class SurfExperience {
   #turnCooldown = 0;
   #eventTimer = 0;
   #landingSerial = 0;
-  #wipeoutSerial = 0;
+  #assistSerial = 0;
+  #waveSerial = 0;
   #flowSerial = 0;
   #flowDuration = 1;
   #launchSerial = 0;
@@ -37,9 +38,9 @@ export class SurfExperience {
       <div class="surf-score"><span data-surf-score>0</span><small>POINTS</small></div>
       <div class="surf-combo" data-surf-combo>x1</div>
       <div class="surf-status" data-surf-status>DROP IN</div>
-      <div class="surf-meter surf-flow-meter"><span>FLOW</span><i data-surf-meter></i><b>X</b></div>
+      <div class="surf-meter surf-flow-meter"><span>FLOW</span><i data-surf-meter></i><b>SPACE / A</b></div>
       <div class="surf-meter surf-launch-meter"><span>LIP</span><i data-surf-launch></i><b>AUTO</b></div>
-      <div class="surf-controls">W pump · S stall · A/D choose your line · X flow</div>`;
+      <div class="surf-controls">A/D carve · W pump · S stall · E exit · camera locked</div>`;
     this.#scoreEl = this.root.querySelector("[data-surf-score]")!;
     this.#comboEl = this.root.querySelector("[data-surf-combo]")!;
     this.#statusEl = this.root.querySelector("[data-surf-status]")!;
@@ -64,7 +65,7 @@ export class SurfExperience {
       this.#active = active;
       this.root.classList.toggle("on", active);
       if (active) {
-        this.#status("PADDLE IN", "good");
+        this.#status("ALREADY RIDING", "good");
         this.root.classList.add("pulse");
       }
     }
@@ -114,12 +115,15 @@ export class SurfExperience {
       this.#status("LIFT OFF", "air");
       this.#eventTimer = 0.8;
     }
-    if (surf.wipeoutSerial !== this.#wipeoutSerial) {
-      this.#wipeoutSerial = surf.wipeoutSerial;
-      this.#combo = Math.max(1, this.#combo - 1);
-      this.#status("SURFACE SAVE", "good");
-      this.#eventTimer = 0.9;
-      this.#audio.surfEvent("wipeout", 0.35);
+    if (surf.waveSerial !== this.#waveSerial) {
+      this.#waveSerial = surf.waveSerial;
+      this.#status("NEXT CLEAN WAVE", "good");
+      this.#eventTimer = 1.0;
+      this.#audio.surfEvent("carve", 0.55);
+    } else if (surf.assistSerial !== this.#assistSerial) {
+      this.#assistSerial = surf.assistSerial;
+      this.#status("AUTO SAVE", "good");
+      this.#eventTimer = 0.75;
     } else if (this.#eventTimer > 0) {
       // Hold trick/landing copy long enough to read before live wave status resumes.
     } else if (surf.flowActive) {
@@ -127,7 +131,7 @@ export class SurfExperience {
     } else if (surf.airborne) {
       this.#status(`AIR ${surf.airTime.toFixed(1)}s`, "air");
     } else if (surf.flowReady) {
-      this.#status("X — ENTER FLOW", "flow");
+      this.#status("SPACE / A — FLOW", "flow");
     } else if (surf.autoLaunchCharge > 0.08) {
       this.#status(`LIP ENERGY ${Math.round(surf.autoLaunchCharge * 100)}%`, "air");
     } else if (surf.stalling) {

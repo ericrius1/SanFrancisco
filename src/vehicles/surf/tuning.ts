@@ -2,28 +2,22 @@ import { tunables } from "../../core/persist";
 
 /**
  * One current arcade-surf schema. The controller is velocity-owned and samples
- * one authoritative `waterHeight()` floor in paddle, ride, air landing and
+ * one authoritative `waterHeight()` floor in ride, air landing and
  * recovery. Values intentionally favour readable, forgiving play over weight.
  */
 export const SURF_TUNING = tunables("movement.surf", {
-  // paddle + catch
-  paddleSpeed: { v: 8.5, min: 3, max: 18, step: 0.25, label: "paddle speed" },
-  paddleAccel: { v: 4.8, min: 1, max: 12, step: 0.1, label: "paddle response" },
-  paddleBrake: { v: 7, min: 1, max: 16, step: 0.25, label: "paddle brake" },
-  paddleTurn: { v: 2.45, min: 0.5, max: 5, step: 0.05, label: "paddle turn" },
-  proneHeight: { v: 0.24, min: 0.08, max: 0.65, step: 0.01, label: "prone clearance" },
-  catchDelay: { v: 0.28, min: 0, max: 1.2, step: 0.02, label: "catch delay" },
-  catchFace: { v: 0.3, min: 0.08, max: 0.9, step: 0.02, label: "catch steepness" },
-
-  // direct down-line carving + speed
-  trimSpeed: { v: 14, min: 5, max: 30, step: 0.5, label: "trim speed" },
-  pumpBoost: { v: 12, min: 0, max: 28, step: 0.5, label: "W pump boost" },
-  stallSpeed: { v: 4.5, min: 1, max: 12, step: 0.25, label: "S stall speed" },
+  // The rider starts here at neutral input: already standing, already moving,
+  // and protected briefly while the dedicated camera establishes the shot.
+  entryAssistDuration: { v: 0.65, min: 0, max: 2, step: 0.05, label: "entry assist" },
+  trimSpeed: { v: 15, min: 5, max: 30, step: 0.5, label: "neutral cruise" },
+  pumpBoost: { v: 10, min: 0, max: 28, step: 0.5, label: "W / RT boost" },
+  stallSpeed: { v: 7.5, min: 3, max: 14, step: 0.25, label: "S / LT floor" },
   maxTrim: { v: 30, min: 12, max: 48, step: 0.5, label: "max line speed" },
   pumpResponse: { v: 5.5, min: 1, max: 14, step: 0.25, label: "pump response" },
   speedResponse: { v: 2.8, min: 0.5, max: 8, step: 0.1, label: "speed response" },
   stallResponse: { v: 6.5, min: 1, max: 16, step: 0.25, label: "stall response" },
-  carveResponse: { v: 7.5, min: 1, max: 18, step: 0.25, label: "direction carve" },
+  carveResponse: { v: 7.5, min: 1, max: 18, step: 0.25, label: "carve response" },
+  carveFaceRange: { v: 4.6, min: 0.5, max: 8, step: 0.1, label: "carve face range" },
 
   // moving-face grip; X rides the world-time crest while Z is rider-owned. The
   // offset sets the rider DOWN in the pocket (not on the crest) so the steep face
@@ -34,6 +28,7 @@ export const SURF_TUNING = tunables("movement.surf", {
   recoveryFaceTrack: { v: 3.2, min: 0.5, max: 8, step: 0.1, label: "recovery magnet" },
   maxFaceCorrection: { v: 16, min: 4, max: 30, step: 0.5, label: "face correction" },
   boundaryMargin: { v: 34, min: 10, max: 120, step: 1, label: "cutback margin" },
+  waveResetMargin: { v: 92, min: 45, max: 160, step: 1, label: "next-wave margin" },
   railHeight: { v: 0.48, min: 0.18, max: 1, step: 0.01, label: "surface clearance" },
   carveLean: { v: 0.78, min: 0.1, max: 1.3, step: 0.02, label: "carve lean" },
   leanResponse: { v: 8.5, min: 2, max: 18, step: 0.25, label: "lean response" },
@@ -51,15 +46,16 @@ export const SURF_TUNING = tunables("movement.surf", {
   launchLipLift: { v: 3.2, min: 0, max: 8, step: 0.1, label: "lip lift" },
   launchCooldown: { v: 1.15, min: 0.3, max: 4, step: 0.05, label: "launch cooldown" },
   gravity: { v: 15.5, min: 6, max: 30, step: 0.25, label: "air gravity" },
-  airSpinRate: { v: 3.1, min: 0.5, max: 8, step: 0.1, label: "air spin" },
-  airRollRate: { v: 1.55, min: 0, max: 5, step: 0.05, label: "air roll" },
+  airYawStyle: { v: 0.42, min: 0, max: 1.2, step: 0.02, label: "air yaw style" },
+  airRollStyle: { v: 0.72, min: 0, max: 1.5, step: 0.02, label: "air roll style" },
+  airAlignResponse: { v: 7.5, min: 2, max: 18, step: 0.25, label: "air auto-align" },
 
   // forgiving magnetic landing + on-surface recovery
   landingMagnet: { v: 1.05, min: 0.2, max: 2.5, step: 0.05, label: "landing magnet" },
   softLandingSpeed: { v: 11, min: 3, max: 24, step: 0.5, label: "soft landing" },
-  hardLandingRange: { v: 20, min: 5, max: 40, step: 0.5, label: "landing forgiveness" },
-  recoveryQuality: { v: 0.22, min: 0, max: 0.75, step: 0.01, label: "recovery threshold" },
-  recoveryDuration: { v: 0.75, min: 0.2, max: 2.5, step: 0.05, label: "skim recovery" },
+  hardLandingRange: { v: 34, min: 5, max: 50, step: 0.5, label: "landing forgiveness" },
+  recoveryQuality: { v: 0.08, min: 0, max: 0.75, step: 0.01, label: "assist threshold" },
+  recoveryDuration: { v: 0.48, min: 0.15, max: 2.5, step: 0.05, label: "auto-save time" },
   recoverySpeed: { v: 9, min: 3, max: 18, step: 0.25, label: "recovery speed" },
   recoveryLaunchLock: { v: 0.85, min: 0.2, max: 2, step: 0.05, label: "recovery launch lock" },
 

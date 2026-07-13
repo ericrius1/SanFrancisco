@@ -47,6 +47,7 @@ import {
 } from "../vehicles/surf";
 import { animateScooter, buildScooterMesh, ScooterController, type ScooterConfig } from "../vehicles/scooter";
 import { buildBirdMesh, BirdController } from "../vehicles/bird";
+import { setEmbodimentVisible } from "./embodimentVisibility";
 
 const V = {
   tmp: new THREE.Vector3(),
@@ -78,22 +79,6 @@ const CARRY_BOARD_GRIP: GripSpec = {
   rotation: [Math.PI / 2, 0, 0]
 };
 const CARRY_BOARD_SCALE = 0.82; // matches the old fixed-offset prop's scale
-
-/**
- * Show/hide an embodiment's visual meshes. Embodiments carry no Light objects
- * of their own — their lamps are lightAnchor markers served by the shared
- * LightPool, which keeps the scene's light set a constant size (adding or
- * removing a light rebuilds every lit pipeline in the scene: the old 7s
- * first-switch-into-the-boat freeze).
- */
-function setEmbodimentVisible(root: THREE.Group, on: boolean) {
-  // flag survives on the group so async-loaded meshes (bird GLB) can match
-  // the current state when they resolve
-  root.userData.embodimentVisible = on;
-  root.traverse((o) => {
-    if ((o as THREE.Mesh).isMesh) o.visible = on;
-  });
-}
 
 /**
  * The player: one physics body + one visible embodiment at a time. Each mode's
@@ -160,8 +145,8 @@ export class Player {
   #archerPose = { active: false, draw: 0, pitch: 0 };
   #bowCarried = false; // bow visible + left mitt curled while merely walking around
   // ball tool: a tennis ball riding the right mitt, shown while held. The clasp
-  // + prop visibility are driven every walk frame in #animate (setEmbodimentVisible
-  // re-shows every walk mesh on a mode return, so #ballHeld is the true owner).
+  // + prop visibility are driven every walk frame in #animate; embodiment mode
+  // visibility is root-only and deliberately preserves these child-owned states.
   #ballProp: THREE.Mesh;
   #ballMaterial: THREE.MeshStandardMaterial;
   #ballHeld = false;
@@ -271,7 +256,7 @@ export class Player {
     this.#surfRig.group.position.y = 0.93;
     this.meshes.surf.add(this.#surfRig.group);
     // A surfboard tucked upright under the arm, shown on foot at the beach so
-    // you arrive "holding your board, ready to paddle out". Built here but not
+    // you arrive holding your board, ready to start the surf activity. Built here but not
     // parented yet — setCarryingBoard grips it into the walk rig's hand (the
     // golf-club/bow pattern) on first use, so it swings with the arm instead
     // of floating at a fixed offset off the mesh root.
@@ -1045,7 +1030,7 @@ export class Player {
       r.group.position.set(this.#golfMeshShift.x, 0, this.#golfMeshShift.z);
       // both mitts curl over the grip while golfing; the right mitt also curls
       // over a held tennis ball. #ballHeld owns the ball prop's visibility since
-      // setEmbodimentVisible re-shows every walk mesh whenever we return on foot.
+      // Prop visibility is explicitly refreshed every walk frame.
       // the left mitt also wraps a held bow (archery); the string hand curls
       // only while actually pulling
       setHandPose(r, "L", golfing || archering || this.#bowCarried ? 1 : 0);
@@ -1099,14 +1084,10 @@ export class Player {
       animateBoard(this.meshes.board, dt, this.#animT, board.horizontalSpeed, board.boosting);
     } else if (this.mode === "surf") {
       const surf = this.#modes.surf;
-      const paddling = surf.telemetry.phase === "paddle";
-      const crouch = paddling
-        ? 1 // hunched low over the deck while paddling
-        : Math.min(1, this.speed / SURF_TUNING.values.maxTrim + Math.abs(surf.lean) * 0.5);
+      const crouch = Math.min(1, this.speed / SURF_TUNING.values.maxTrim + Math.abs(surf.lean) * 0.5);
       poseRide(this.#surfRig, surf.lean, crouch, !surf.grounded, this.#animT);
       this.#surfRig.group.rotation.z = surf.lean * 0.34;
-      // lean forward onto the board while paddling out
-      this.#surfRig.group.rotation.x = paddling ? 0.6 : 0;
+      this.#surfRig.group.rotation.x = 0;
       animateSurfboard(this.meshes.surf, dt, this.#animT);
     } else if (this.mode === "scooter") {
       const scooter = this.#modes.scooter;

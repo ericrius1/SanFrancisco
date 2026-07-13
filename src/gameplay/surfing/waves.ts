@@ -107,6 +107,7 @@ export class OceanBeachWaves {
   #face: THREE.Mesh;
   #uTime = uniform(0);
   #uOrigin = uniform(new THREE.Vector2(FACE_CENTER_X, OCEAN_BEACH_SURF.centerZ));
+  #disposed = false;
 
   constructor(scene: THREE.Scene) {
     this.group.name = "ocean_beach_breaking_waves";
@@ -244,6 +245,8 @@ export class OceanBeachWaves {
   }
 
   update(time: number, focus?: { x: number; z: number }) {
+    if (this.#disposed) return;
+
     const dt = Math.min(0.05, Math.max(0, time - this.#lastTime));
     this.#lastTime = time;
     this.#uTime.value = time;
@@ -322,5 +325,44 @@ export class OceanBeachWaves {
       fp[k + 1] = waterHeight(fp[k], fp[k + 2], time) + 0.1;
     }
     (this.#foam.geometry.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;
+  }
+
+  dispose(): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
+
+    this.group.removeFromParent();
+
+    const geometries = new Set<THREE.BufferGeometry>();
+    const materials = new Set<THREE.Material>();
+    const textures = new Set<THREE.Texture>();
+    this.group.traverse((object) => {
+      const renderable = object as THREE.Object3D & {
+        geometry?: THREE.BufferGeometry;
+        material?: THREE.Material | THREE.Material[];
+      };
+      if (renderable.geometry) geometries.add(renderable.geometry);
+      if (renderable.material) {
+        const entries = Array.isArray(renderable.material)
+          ? renderable.material
+          : [renderable.material];
+        for (const material of entries) {
+          materials.add(material);
+          for (const value of Object.values(material)) {
+            if (value instanceof THREE.Texture) textures.add(value);
+            if (Array.isArray(value)) {
+              for (const entry of value) {
+                if (entry instanceof THREE.Texture) textures.add(entry);
+              }
+            }
+          }
+        }
+      }
+    });
+
+    for (const geometry of geometries) geometry.dispose();
+    for (const material of materials) material.dispose();
+    for (const texture of textures) texture.dispose();
+    this.group.clear();
   }
 }

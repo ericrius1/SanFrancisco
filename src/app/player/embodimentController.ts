@@ -5,6 +5,7 @@ import type { Player } from "../../player/player";
 import type { PlayerMode } from "../../player/types";
 import type { HUD } from "../../ui/hud";
 import { waterHeight } from "../../world/heightmap";
+import { OCEAN_BEACH_SURF } from "../../world/oceanBeachWaves";
 
 export type ReleaseMotion = {
   linear: [number, number, number];
@@ -96,6 +97,27 @@ export class EmbodimentController {
     if (player.mode === "walk") return false;
 
     const exitMode = player.mode;
+    if (exitMode === "surf") {
+      // Surf is an activity, not a mount. Exit atomically to the sand: no
+      // abandoned board, swimming interlude, paddle-out, or stale surf body.
+      const b = OCEAN_BEACH_SURF;
+      const z = Math.max(b.minZ + 30, Math.min(b.maxZ - 30, player.position.z));
+      let x = b.maxX - 30;
+      for (let shoreward = 0; shoreward <= 180; shoreward += 4) {
+        const candidate = b.maxX - 30 + shoreward;
+        if (!player.map.isWater(candidate, z)) {
+          x = candidate + 2;
+          break;
+        }
+      }
+      player.position.set(x, player.map.effectiveGround(x, z) + 1.5, z);
+      player.heading = Math.PI * 1.5; // face offshore toward the break
+      player.swimEnter = false;
+      player.trySwitch("walk");
+      this.#hud.message("Back on the beach — E to surf again", 2.2);
+      return true;
+    }
+
     const clearance = this.#exitClearance(exitMode);
     const motion = this.readMotion();
     const handedToWorld = this.dropCurrentDriveMount(motion);
@@ -109,8 +131,8 @@ export class EmbodimentController {
       });
     }
 
-    if (exitMode === "boat" || exitMode === "speedboat" || exitMode === "surf") {
-      const side = exitMode === "surf" ? 1.35 : 2.2;
+    if (exitMode === "boat" || exitMode === "speedboat") {
+      const side = 2.2;
       player.position.x += Math.sin(player.heading) * side;
       player.position.z += Math.cos(player.heading) * side;
       player.position.y = waterHeight(player.position.x, player.position.z, player.time) + 0.45;
@@ -149,8 +171,7 @@ export class EmbodimentController {
   #exitClearance(mode: PlayerMode): number {
     if (mode === "drive" && this.currentAnimal) return this.currentAnimal === "bear" ? 3 : 2.4;
     if (mode === "plane" || mode === "boat" || mode === "bird") return 6.5;
-    if (mode === "drone" || mode === "board" || mode === "surf" || mode === "scooter") return 2.8;
+    if (mode === "drone" || mode === "board" || mode === "scooter") return 2.8;
     return 2.4;
   }
 }
-

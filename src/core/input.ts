@@ -87,6 +87,7 @@ export class Input {
   #padFireHeld = false;
   #mapPadAxes: MapPadAxes = { lx: 0, ly: 0, rx: 0, ry: 0, lt: 0, rt: 0 };
   #triggerRoute: "plane" | "bird" | "drone" | null = null; // plane: ↑/↓ throttle; bird: LB/RB twirl; drone: Q/U vertical
+  #mode: PlayerMode = "walk";
 
   constructor(el: HTMLElement) {
     this.#el = el;
@@ -174,11 +175,11 @@ export class Input {
     el.addEventListener("mousedown", (e) => {
       // captured: fire the held tool. free cursor: a single click-to-inspect
       // (no held auto-fire — the world stays put while you point at things).
-      if (e.button === 0 && this.locked) {
+      if (e.button === 0 && this.locked && this.#mode !== "surf") {
         this.firePressed = true;
         this.fireHeld = true;
         this.#setDevice("kb");
-      } else if (e.button === 0 && this.freeCursor) {
+      } else if (e.button === 0 && this.freeCursor && this.#mode !== "surf") {
         this.firePressed = true;
         this.#setDevice("kb");
       }
@@ -192,8 +193,12 @@ export class Input {
       // Pointer-lock look, or Z-held time scrub (works unlocked in camera-orbit
       // mode where the chase cam has released the pointer).
       if (this.locked || this.keys.has("KeyZ")) {
-        this.mouseDX += e.movementX;
-        this.mouseDY += e.movementY;
+        // Surf owns a locked authored camera. Pointer lock can stay captured, but
+        // physical mouse motion must be a mathematical no-op for that activity.
+        if (this.#mode !== "surf" || this.keys.has("KeyZ")) {
+          this.mouseDX += e.movementX;
+          this.mouseDY += e.movementY;
+        }
         if (this.locked) return;
       }
       // stale free cursor (lost Meta keyup): metaKey is authoritative, so drop
@@ -223,6 +228,12 @@ export class Input {
 
   /** Per-mode pad routing: fly → ↑/↓ throttle, bird → LB/RB twirl, drone → Q/U vertical. */
   setMode(mode: PlayerMode) {
+    this.#mode = mode;
+    this.mouseDX = 0;
+    this.mouseDY = 0;
+    this.firePressed = false;
+    this.fireHeld = false;
+    this.#padFireHeld = false;
     this.#triggerRoute =
       mode === "plane" ? "plane" : mode === "bird" ? "bird" : mode === "drone" ? "drone" : null;
   }
@@ -259,7 +270,7 @@ export class Input {
           held.add(code);
           if (!this.#padPrev[i]) this.#justPressed.add(code);
         }
-      } else if (i === 2) {
+      } else if (i === 2 && this.#mode !== "surf") {
         if (on && !this.#padPrev[i]) this.firePressed = true;
         this.#padFireHeld = on;
       }
@@ -308,7 +319,7 @@ export class Input {
 
     // right stick = mouselook; works without pointer lock. Pitch polarity is
     // the global INPUT_TUNING toggle — same for walk and every vehicle.
-    if (!this.suspended) {
+    if (!this.suspended && this.#mode !== "surf") {
       this.mouseDX += rx * Math.abs(rx) * LOOK_X * dt;
       const pitchStick = INPUT_TUNING.values.invertPadLookY ? -ry : ry;
       this.mouseDY += pitchStick * Math.abs(pitchStick) * LOOK_Y * dt;
@@ -398,7 +409,12 @@ export class Input {
   }
 
   get firing() {
-    return !this.suspended && (this.fireHeld || this.#padFireHeld);
+    return this.#mode !== "surf" && !this.suspended && (this.fireHeld || this.#padFireHeld);
+  }
+
+  /** Diagnostics/QA contract: surf never forwards pointer/right-stick look. */
+  get cameraLookLocked() {
+    return this.#mode === "surf";
   }
 
   /** Call once per frame after consuming state. */

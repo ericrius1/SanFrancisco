@@ -173,6 +173,31 @@ async function main() {
   })()`);
   console.log("[setup]", JSON.stringify(setup));
 
+  // Embodiment visibility and avatar-variant visibility are independent layers.
+  // A warmup/mode switch may toggle the walk root, but must never rewrite the
+  // selected hair/hat/outfit meshes living below it.
+  const localVisibility = await ev(c, `(()=>{
+    const sf = window.__sf;
+    const root = sf.player.meshes.walk;
+    const childFlags = () => {
+      let visible = 0, hidden = 0;
+      root.traverse((o) => { if (o.isMesh) o.visible ? visible++ : hidden++; });
+      return {visible, hidden};
+    };
+    const before = childFlags();
+    sf.player.warmup("all");
+    const duringWarmup = childFlags();
+    sf.player.warmup();
+    const afterRestore = childFlags();
+    return {before, duringWarmup, afterRestore};
+  })()`);
+  console.log("[local-variant-visibility]", JSON.stringify(localVisibility));
+  for (const state of [localVisibility.duringWarmup, localVisibility.afterRestore]) {
+    if (state.visible !== localVisibility.before.visible || state.hidden !== localVisibility.before.hidden) {
+      throw new Error(`embodiment toggle rewrote local avatar variants: ${JSON.stringify(localVisibility)}`);
+    }
+  }
+
   // analytic coplanar audit over the player mesh subtree
   const audit = await ev(c, `(async()=>{ ${P}
     await tick(2);
@@ -241,9 +266,19 @@ async function main() {
     sf.remotes.sample(777,{t:t+600000,mode:'walk',x:p.x,y:p.y,z:p.z,qx:q.x,qy:q.y,qz:q.z,qw:q.w,speed:0});
     const start = {x:p.x, z:p.z};
     await tick(20);
-    return { ok: sf.remotes.avatars.has(777), start };
+    const remote = sf.remotes.avatars.get(777);
+    const rig = remote?.rig;
+    const variants = rig ? {
+      hair: rig.avatar.allHair.filter((o) => o.visible).length,
+      hats: rig.avatar.allHats.filter((o) => o.visible).length,
+      outfits: rig.avatar.allOutfits.filter((o) => o.visible).length
+    } : null;
+    return { ok: !!remote, start, variants };
   })()`);
   console.log("[twin]", JSON.stringify(twin));
+  if (!twin.variants || twin.variants.hair !== 0 || twin.variants.hats !== 2 || twin.variants.outfits !== 3) {
+    throw new Error(`remote embodiment exposed unselected avatar variants: ${JSON.stringify(twin.variants)}`);
+  }
 
   // drive ~3 s of frames and watch the player step out of the twin
   const sep = await ev(c, `(async()=>{ ${P}

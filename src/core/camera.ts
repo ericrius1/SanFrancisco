@@ -9,6 +9,7 @@ import {
   clearCameraCutaway,
   updateCameraCutaway
 } from "../render/cameraCutaway"
+import { SurfCameraController } from "../vehicles/surf/camera"
 
 const OFFSETS: Record<PlayerMode, { back: number; up: number; look: number }> =
   {
@@ -99,10 +100,7 @@ export class ChaseCamera {
   #externallyOwned = false
   #holdOrbitPose = false
   #lastMode: PlayerMode | null = null
-  #surfFlow = 0
-  #surfFlowSerial = 0
-  #surfFlowDuration = 1
-  #surfFlowOrbit = 0
+  #surfCamera: SurfCameraController
   #outdoorFov: number
   #map: WorldMap
   #physics: Physics
@@ -112,6 +110,7 @@ export class ChaseCamera {
     this.#outdoorFov = camera.fov
     this.#map = map
     this.#physics = physics
+    this.#surfCamera = new SurfCameraController(camera.fov)
   }
 
   shake(amount: number) {
@@ -126,6 +125,10 @@ export class ChaseCamera {
       safeBoomDistance: this.#safeBoomDistance,
       cutaway: this.#cutaway
     }
+  }
+
+  surfCameraDiagnostics() {
+    return this.#surfCamera.diagnostics()
   }
 
   /** Eased first-person contribution, used by interaction rays and diagnostics. */
@@ -149,7 +152,10 @@ export class ChaseCamera {
 
   /** Hand camera ownership to orbit/cinematics and restore the local avatar. */
   suspend(player: Player) {
-    if (!this.#externallyOwned) this.#externallyOwned = true
+    if (!this.#externallyOwned) {
+      this.#externallyOwned = true
+      this.#surfCamera.reset()
+    }
     this.#indoor = 0
     this.#holdOrbitPose = false
     this.#firstPersonAvatarHidden = false
@@ -185,25 +191,31 @@ export class ChaseCamera {
 
   update(dt: number, player: Player, input: Input) {
     this.#resume(player)
-    const surf = player.mode === "surf" ? player.surfTelemetry : null
-    const flowTarget = surf?.flowActive ? 1 : 0
-    this.#surfFlow +=
-      (flowTarget - this.#surfFlow) *
-      (1 - Math.exp(-Math.min(dt, 0.1) * (flowTarget > this.#surfFlow ? 7 : 2.4)))
-    let flowOrbitDelta = 0
-    if (surf && surf.flowSerial !== this.#surfFlowSerial) {
-      this.#surfFlowSerial = surf.flowSerial
-      this.#surfFlowDuration = Math.max(0.001, surf.flowTimeRemaining)
-      this.#surfFlowOrbit = 0
+    if (player.mode === "surf") {
+      // Surf is a complete camera context. It deliberately consumes no Input,
+      // orbit/zoom state, board roll, or Flow hero-shot rotation.
+      this.#indoor = 0
+      this.#holdOrbitPose = false
+      this.#firstPersonAvatarHidden = false
+      this.#safeBoomDistance = 0
+      this.#cutaway = 0
+      this.#buildingBlocked = false
+      this.#lastHitDistance = Infinity
+      player.setFirstPersonView(false)
+      clearCameraCutaway()
+      this.#surfCamera.update(dt, this.camera, player)
+      this.yaw = this.#surfCamera.viewYaw
+      this.pitch = this.#surfCamera.viewPitch
+      this.#lastMode = "surf"
+      return
     }
-    if (surf && this.#surfFlowSerial > 0 && this.#surfFlowOrbit < Math.PI * 2 - 1e-5) {
-      const progress = surf.flowActive
-        ? THREE.MathUtils.clamp(1 - surf.flowTimeRemaining / this.#surfFlowDuration, 0, 1)
-        : 1
-      const eased = progress * progress * (3 - 2 * progress)
-      const targetOrbit = eased * Math.PI * 2
-      flowOrbitDelta = targetOrbit - this.#surfFlowOrbit
-      this.#surfFlowOrbit = targetOrbit
+    if (this.#lastMode === "surf") {
+      // Re-enter the world camera from the rendered surf eye, without leaking
+      // any of the surf rig's own damping or composition state.
+      this.#orbitPos.copy(this.camera.position)
+      this.#firstPersonPos.copy(this.camera.position)
+      this.#initialized = true
+      this.#surfCamera.reset()
     }
     const indoorTarget = (this.indoor || this.activityFirstPerson) && player.mode === "walk" ? 1 : 0
     this.#indoor +=
@@ -212,7 +224,7 @@ export class ChaseCamera {
     // A vehicle switch must drop the active eye rig immediately. The stored
     // scalar may decay in the background so returning to walk remains smooth.
     const firstPersonBlend = player.mode === "walk" ? this.firstPersonBlend : 0
-    this.#applyFov(firstPersonBlend, this.#surfFlow)
+    this.#applyFov(firstPersonBlend)
     // Hide late on entry, after the avatar nearly fills the frame, and restore
     // farther back on exit. The hysteresis avoids both clipped self-geometry and
     // a visible on/off flutter around the threshold.
@@ -242,7 +254,6 @@ export class ChaseCamera {
       this.pitch += (targetPitch - this.pitch) * follow
     } else {
       this.yaw -= input.mouseDX * 0.0032
-      this.yaw += flowOrbitDelta
       // Orbit mode keeps framing-safe limits. The range widens almost to vertical
       // as first person takes over, then contracts with the same smooth blend on
       // exit so an extreme indoor pitch never snaps back in one frame.
@@ -273,11 +284,9 @@ export class ChaseCamera {
     }
 
     const o = OFFSETS[player.mode]
-    const backBase = o.back * this.zoom * (1 + this.#surfFlow * 0.22)
+    const backBase = o.back * this.zoom
     let back = backBase
-    // Flow is the surfing hero-shot moment. Lift and widen its 360° orbit so
-    // the shoreward half clears the pitching face instead of filming through it.
-    let up = o.up * this.zoom + this.#surfFlow * 3.2
+    let up = o.up * this.zoom
     // bigger phoenix needs more boom; tuck/stoop adds a little more so the mount
     // stays in frame instead of filling the viewport at triple speed
     if (player.mode === "bird") {
@@ -303,14 +312,6 @@ export class ChaseCamera {
     // the player underwater; the seabed clamp still stops it clipping through.
     const floor = this.#map.effectiveGround(cx, cz) + 0.7
     if (this.#chasePos.y < floor) this.#chasePos.y = floor
-    // Ocean Beach crests are several metres tall. A normal chase boom can sit
-    // inside the next ridge and trigger the full underwater overlay, hiding the
-    // very wave the player is reading. Surf mode skims above the local crest.
-    if (player.mode === "surf") {
-      const water = Math.max(waterHeight(cx, cz, player.time), 0) + 1.35
-      if (this.#chasePos.y < water) this.#chasePos.y = water
-    }
-
     // When you're swimming BELOW the surface, duck the camera under with you.
     // The `up` offset otherwise keeps the eye above the waterline on a shallow
     // dive, so you'd watch yourself through the surface instead of being under
@@ -378,11 +379,6 @@ export class ChaseCamera {
         1 - Math.exp(-smoothDt * orbitStiff)
       )
     }
-    // Clamp the actual smoothed surf-camera pose, not just its desired endpoint.
-    // Follow lag can otherwise carry the rendered eye through a moving crest.
-    if (player.mode === "surf") {
-      this.#clearSurfSightline(this.#orbitPos, this.#target, player.time)
-    }
     this.#firstPersonPos.lerp(
       this.#eyePos,
       1 - Math.exp(-smoothDt * VIEW.firstPersonFollow)
@@ -396,9 +392,6 @@ export class ChaseCamera {
       indoorTarget === 1,
       this.#orbitViewPos
     )
-    if (player.mode === "surf") {
-      this.#clearSurfSightline(this.#orbitViewPos, this.#target, player.time)
-    }
     this.camera.position.lerpVectors(
       this.#orbitViewPos,
       this.#firstPersonPos,
@@ -420,14 +413,6 @@ export class ChaseCamera {
       this.#target.y += sy * 0.6
       this.#target.z += sz * 0.6
       this.shakeAmount *= Math.exp(-dt * 6)
-    }
-
-    // Absolute last-line guarantee: the surf eye never sits below the live water
-    // surface (nor sea level), so the underwater tint/ceiling can never flash on
-    // while riding — smoothing lag and shake are already applied here.
-    if (player.mode === "surf") {
-      const minY = Math.max(waterHeight(this.camera.position.x, this.camera.position.z, player.time), 0) + 1.1
-      if (this.camera.position.y < minY) this.camera.position.y = minY
     }
 
     // Build complete rotations for both rigs. Orbit preserves the original
@@ -453,26 +438,6 @@ export class ChaseCamera {
       (OCCLUSION[player.mode].cutRadius * CAMERA_TUNING.values.cutawayRadiusScale),
       this.#cutaway * (1 - firstPersonBlend)
     )
-  }
-
-  /**
-   * Raise a surf camera just enough for its entire target ray to clear the live
-   * analytic wave plus the visual lip curl. A local height clamp alone cannot
-   * stop the tall face between a shoreward camera and the rider from filling
-   * the frame during a 360° flow orbit.
-   */
-  #clearSurfSightline(candidate: THREE.Vector3, target: THREE.Vector3, time: number) {
-    // Never below the flat sea level: the wave TROUGH dips below 0, and clamping
-    // to that raw (negative) height would license the eye underwater between sets.
-    candidate.y = Math.max(candidate.y, Math.max(waterHeight(candidate.x, candidate.z, time), 0) + 1.35)
-    for (let i = 1; i <= 5; i++) {
-      const t = i / 6
-      const x = THREE.MathUtils.lerp(candidate.x, target.x, t)
-      const z = THREE.MathUtils.lerp(candidate.z, target.z, t)
-      const rayY = THREE.MathUtils.lerp(candidate.y, target.y, t)
-      const requiredY = Math.max(waterHeight(x, z, time), 0) + 1.15
-      if (rayY < requiredY) candidate.y += (requiredY - rayY) / Math.max(0.15, 1 - t)
-    }
   }
 
   /** Resolve the smoothed orbit pose, so follow-lag can never carry the rendered
@@ -548,8 +513,8 @@ export class ChaseCamera {
     )
   }
 
-  #applyFov(blend: number, surfFlow = 0) {
-    const fov = this.#outdoorFov + VIEW.firstPersonFovBoost * blend - surfFlow * 4.5
+  #applyFov(blend: number) {
+    const fov = this.#outdoorFov + VIEW.firstPersonFovBoost * blend
     if (Math.abs(this.camera.fov - fov) < 1e-4) return
     this.camera.fov = fov
     this.camera.updateProjectionMatrix()

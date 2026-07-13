@@ -72,12 +72,12 @@ const KB: Record<PlayerMode, Row[]> = {
     { c: ["Click"], label: "shoot" }
   ],
   surf: [
-    { c: ["Mouse"], label: "look" },
+    { c: ["Locked"], label: "camera follows the wave" },
     { c: ["W", "S"], label: "pump · stall" },
-    { c: ["A", "D"], label: "choose line" },
-    { c: ["X"], label: "flow state" },
+    { c: ["A", "D"], label: "carve the face" },
+    { c: ["Space"], label: "flow when ready" },
     { c: ["Auto"], label: "lip launch" },
-    { c: ["E"], label: "kick out" }
+    { c: ["E"], label: "exit to beach" }
   ],
   bird: [
     { c: ["Mouse"], label: "aim" },
@@ -158,11 +158,12 @@ const PAD: Record<PlayerMode, Row[]> = {
     { c: ["X"], label: "shoot" }
   ],
   surf: [
-    { c: ["RS"], label: "look" },
+    { c: ["Locked"], label: "camera follows the wave" },
     { c: ["RT", "LT"], label: "pump · stall" },
-    { c: ["LS"], label: "choose line" },
+    { c: ["LS"], label: "carve the face" },
+    { c: ["A"], label: "flow when ready" },
     { c: ["Auto"], label: "lip launch" },
-    { c: ["B"], label: "kick out" }
+    { c: ["B"], label: "exit to beach" }
   ],
   bird: [
     { c: ["RS"], label: "aim" },
@@ -180,7 +181,7 @@ const TIPS: Partial<Record<PlayerMode, string>> = {
   drive: "Handbrake (Space) drifts · Shift boosts",
   scooter: "Ramps launch cleanly · rear seat fits a friend or your pet",
   board: "White glow = nose · surfs streets, hills and the bay",
-  surf: "Pump through the bright lip to auto-launch · fill Flow, then press X",
+  surf: "Neutral input keeps you riding · mouse and right stick cannot move this camera",
   bird: "Look down + Shift to stoop — skim the bay for spray"
 }
 
@@ -326,6 +327,7 @@ export class HUD {
           { c: ["F"], label: "fullscreen" }
         ]
     )
+      .filter((r) => this.#current !== "surf" || r.label !== "camera")
       .map(
         (r) =>
           `<div class="keys">${chips(r.c, pad)}</div>` +

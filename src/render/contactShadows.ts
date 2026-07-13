@@ -18,6 +18,7 @@ import {
   vec3,
   vec4
 } from "three/tsl"
+import { SHADOW_DEFAULTS } from "../world/shadows/tuning"
 
 /**
  * A deliberately small complement to the clipmap shadows. It covers the
@@ -32,14 +33,14 @@ import {
  * frame state.
  */
 export const CONTACT_SHADOW_DEFAULTS = Object.freeze({
-  resolutionScale: 0.5,
-  maxDistance: 0.8,
-  thickness: 0.12,
-  intensity: 0.14,
-  fadeStart: 10,
-  fadeEnd: 18,
-  normalBias: 0.012,
-  samples: 6 as ContactShadowSampleCount
+  resolutionScale: SHADOW_DEFAULTS.contactResolutionScale,
+  maxDistance: SHADOW_DEFAULTS.contactMaxDistance,
+  thickness: SHADOW_DEFAULTS.contactThickness,
+  intensity: SHADOW_DEFAULTS.contactIntensity,
+  fadeStart: SHADOW_DEFAULTS.contactFadeStart,
+  fadeEnd: SHADOW_DEFAULTS.contactFadeEnd,
+  normalBias: SHADOW_DEFAULTS.contactNormalBias,
+  samples: SHADOW_DEFAULTS.contactSamples as ContactShadowSampleCount
 })
 
 /** Fixed stability shaping, deliberately not another set of runtime knobs. */
@@ -110,6 +111,8 @@ export type ContactShadowComplement = {
   apply(sceneColor: any, sampleUv?: any): any
   /** Update live uniforms and resolution without rebuilding the node graph. */
   configure(options: Partial<ContactShadowRuntimeOptions>): void
+  /** Neutralize once, then skip the fullscreen pass until re-enabled. */
+  setEnabled(enabled: boolean): void
   dispose(): void
 }
 
@@ -211,6 +214,8 @@ export class ContactShadowPassNode extends THREE.TempNode {
   readonly #size = new THREE.Vector2()
   #rendererState: any = undefined
   #disposed = false
+  #enabled = true
+  #neutralClearPending = false
 
   constructor(
     depthNode: any,
@@ -280,8 +285,15 @@ export class ContactShadowPassNode extends THREE.TempNode {
     this.normalBias.value = normalized.normalBias
   }
 
+  setEnabled(enabled: boolean) {
+    if (this.#enabled === enabled) return
+    this.#enabled = enabled
+    if (!enabled) this.#neutralClearPending = true
+  }
+
   updateBefore(frame: any): boolean | undefined {
     if (this.#disposed) return undefined
+    if (!this.#enabled && !this.#neutralClearPending) return undefined
     const renderer = frame.renderer as THREE.WebGPURenderer
     const size = renderer.getDrawingBufferSize(this.#size)
     const width = Math.max(1, Math.round(size.x * this.resolutionScale))
@@ -300,10 +312,12 @@ export class ContactShadowPassNode extends THREE.TempNode {
       // Discarded sky/far pixels remain neutral white.
       renderer.setClearColor(0xffffff, 1)
       renderer.setRenderTarget(this.#renderTarget)
-      this.#quad.render(renderer)
+      if (this.#enabled) this.#quad.render(renderer)
+      else renderer.clear()
     } finally {
       THREE.RendererUtils.restoreRendererState(renderer, this.#rendererState)
     }
+    this.#neutralClearPending = false
     return undefined
   }
 
@@ -475,6 +489,7 @@ const unavailableComplement = (reason: string): ContactShadowComplement => {
     sample: () => neutral,
     apply: (sceneColor: any) => sceneColor,
     configure: () => undefined,
+    setEnabled: () => undefined,
     dispose: () => undefined
   }
 }
@@ -538,6 +553,7 @@ export function createContactShadowComplement(
     apply: (sceneColor: any, sampleUv?: any) =>
       sceneColor.mul(vec4(vec3(sample(sampleUv)), 1)),
     configure: (runtimeOptions) => pass.configure(runtimeOptions),
+    setEnabled: (enabled) => pass.setEnabled(enabled),
     dispose: () => pass.dispose()
   }
 }

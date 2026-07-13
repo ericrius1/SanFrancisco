@@ -17,6 +17,7 @@ import {
 import { animateScooter, buildScooterMesh, normalizeScooterConfig, scooterFromSeed, scooterKey, type ScooterConfig } from "../vehicles/scooter";
 import type { Cockpit, PlayerMode } from "../player/types";
 import type { NetSample, RemoteInfo } from "./net";
+import { setEmbodimentVisible } from "../player/embodimentVisibility";
 
 /**
  * Visuals for everyone else in the world: one avatar per remote player, driven
@@ -122,13 +123,6 @@ const TMP = {
   qa: new THREE.Quaternion(),
   qb: new THREE.Quaternion()
 };
-
-function setVisibleDeep(root: THREE.Object3D, on: boolean) {
-  root.userData.embodimentVisible = on; // async bird meshes read this when they resolve
-  root.traverse((o) => {
-    if ((o as THREE.Mesh).isMesh) o.visible = on;
-  });
-}
 
 function avatarForInfo(info: RemoteInfo): AvatarTraits {
   return info.avatar ?? avatarFromSeed(info.id);
@@ -467,7 +461,7 @@ export class RemotePlayers {
     if (a.mode === mode) return;
     if (a.mode) {
       const prev = a.bodies[a.mode];
-      if (prev) setVisibleDeep(prev, false);
+      if (prev) setEmbodimentVisible(prev, false);
     }
     a.mode = mode;
     a.rig = null;
@@ -477,7 +471,7 @@ export class RemotePlayers {
       a.bodies[mode] = body;
       a.root.add(body);
     }
-    setVisibleDeep(body, true);
+    setEmbodimentVisible(body, true);
     a.rig = (body.userData.remoteRig as Rig) ?? null;
     a.tag.position.y = TAG_Y[mode];
   }

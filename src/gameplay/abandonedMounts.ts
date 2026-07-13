@@ -13,6 +13,7 @@ import { buildBirdMesh, type BirdRig } from "../vehicles/bird";
 import { buildSurfboardMesh } from "../vehicles/surf";
 import { buildScooterMesh, localScooterConfig } from "../vehicles/scooter";
 import { poseBone } from "../vehicles/bird/mesh";
+import { setEmbodimentVisible } from "../player/embodimentVisibility";
 
 type MountMode = Exclude<PlayerMode, "walk">;
 
@@ -178,13 +179,6 @@ const V = {
   euler: new THREE.Euler(0, 0, 0, "YXZ")
 };
 
-function showEmbodiment(root: THREE.Group) {
-  root.userData.embodimentVisible = true;
-  root.traverse((o) => {
-    if ((o as THREE.Mesh).isMesh) o.visible = true;
-  });
-}
-
 function disposeObject(root: THREE.Object3D) {
   const geometries = new Set<THREE.BufferGeometry>();
   const materials = new Set<THREE.Material>();
@@ -266,7 +260,7 @@ export class AbandonedMounts {
   spawn(mode: MountMode, pose: ReleasePose, opts?: { persistent?: boolean }) {
     const spec = SPECS[mode];
     const mesh = spec.build();
-    showEmbodiment(mesh);
+    setEmbodimentVisible(mesh, true);
     mesh.position.copy(pose.position);
     mesh.quaternion.copy(pose.quaternion);
     this.#scene.add(mesh);

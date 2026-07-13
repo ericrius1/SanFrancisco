@@ -7,7 +7,7 @@ import { DRONE_TUNING } from "../vehicles/drone";
 import { BOARD_TUNING } from "../vehicles/board";
 import { BOARD_EFFECT_TUNING, HALO_TUNING } from "../vehicles/board/tuning";
 import { BIRD_TUNING } from "../vehicles/bird";
-import { SURF_TUNING } from "../vehicles/surf";
+import { SURF_CAMERA_TUNING, SURF_TUNING } from "../vehicles/surf";
 import { SCOOTER_TUNING } from "../vehicles/scooter";
 import type { PlayerMode } from "./types";
 
@@ -55,7 +55,8 @@ export function addMovementTuning(pane: Pane | FolderApi): Record<PlayerMode, Fo
   BOARD_TUNING.bind(folders.board);
   BOARD_EFFECT_TUNING.bind(folders.board.addFolder({ title: "effects" }));
   HALO_TUNING.bind(folders.board.addFolder({ title: "halo comet" }));
-  SURF_TUNING.bind(folders.surf);
+  SURF_TUNING.bind(folders.surf.addFolder({ title: "ride" }));
+  SURF_CAMERA_TUNING.bind(folders.surf.addFolder({ title: "locked camera" }));
   BIRD_TUNING.bind(folders.bird);
   return folders;
 }

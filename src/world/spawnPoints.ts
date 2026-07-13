@@ -60,7 +60,7 @@ export const SPAWN_POINTS: Record<string, SpawnPoint> = {
   },
   // Ocean Beach surf pin — same sand spot as the map landmark (just inside the
   // waterline, facing the swell). Arrive on foot with the board underarm, ready
-  // to press E and paddle out. Far from every heavy park region.
+  // to press E and start riding immediately. Far from every heavy park region.
   oceanBeach: {
     key: "oceanBeach",
     label: "Ocean Beach · Surf",

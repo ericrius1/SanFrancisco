@@ -54,6 +54,7 @@ export function poseBone(c: BoneCtl, x: number, y: number, z: number) {
 export function buildBirdMesh(): THREE.Group {
   const g = new THREE.Group();
   g.userData.embodimentVisible = false;
+  g.visible = false;
 
   const loader = new GLTFLoader();
   loader.setMeshoptDecoder(MeshoptDecoder);
@@ -67,9 +68,10 @@ export function buildBirdMesh(): THREE.Group {
       if ((o as THREE.Bone).isBone) bones[o.name] = o as THREE.Bone;
       if ((o as THREE.Mesh).isMesh) {
         const m = o as THREE.Mesh;
-        // the load can resolve while another embodiment is active — match the
-        // flag player.ts maintains instead of defaulting to visible
-        m.visible = g.userData.embodimentVisible === true;
+        // The embodiment root is the sole visibility owner. Children stay
+        // renderable so a model that resolves while hidden can be shown later
+        // without recursively rewriting authored child visibility.
+        m.visible = true;
         // skinned bounds don't follow the flap; one mesh, skip culling
         m.frustumCulled = false;
         // The source GLB is one skinned mesh (four material groups), making it
@@ -112,7 +114,7 @@ export function buildBirdMesh(): THREE.Group {
 
     // plumage placement converts rig-space directions through rest world
     // quaternions, so it must run before the wrapper flip/scale below
-    g.userData.trailPoints = dressPhoenix(bones, g.userData.embodimentVisible === true);
+    g.userData.trailPoints = dressPhoenix(bones, true);
 
     scene.rotation.y = Math.PI;
     scene.scale.setScalar(PHOENIX_SCALE);
