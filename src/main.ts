@@ -37,6 +37,7 @@ import {
   isTeaGardenBuilding
 } from "./world/japaneseTeaGarden/layout";
 import { CoronaHeightsPark, prepareCoronaHeightsGround } from "./world/coronaHeights";
+import { CORONA_HEIGHTS_SUMMIT } from "./world/coronaHeights/layout";
 import type { MissionDoloresMuseum } from "./world/missionDolores";
 import { MD_CENTER as MISSION_DOLORES_CENTER } from "./world/missionDolores/layout";
 import { OceanBeachWaves, SurfExperience } from "./gameplay/surfing";
@@ -1582,6 +1583,17 @@ async function boot() {
     z: (BOTANICAL_GARDEN_BOUNDS.minZ + BOTANICAL_GARDEN_BOUNDS.maxZ) / 2
   };
   const GOLF_XZ = { x: -1979, z: -194 }; // Presidio course centroid (golf.json tee coords)
+
+  // Landmark + minigame map pins are registered EAGERLY at boot from static
+  // coords, independent of the lazy region builds — the pin is always on the map
+  // and clickable (teleport), while the heavy assets stream in only when you
+  // approach or teleport there. Names dedupe, so a lazy build re-adding the same
+  // name just refines the pin's coords (e.g. golf snaps to the first tee on load).
+  minimap.addLandmark(JAPANESE_TEA_GARDEN_ENTRANCE.x, JAPANESE_TEA_GARDEN_ENTRANCE.z, "Japanese Tea Garden");
+  minimap.addLandmark(GARDEN_XZ.x, GARDEN_XZ.z, "Botanical Garden");
+  minimap.addLandmark(GOLF_XZ.x, GOLF_XZ.z, "Presidio Golf");
+  minimap.addLandmark(CORONA_HEIGHTS_SUMMIT.x, CORONA_HEIGHTS_SUMMIT.z, "Corona Heights");
+  minimap.addLandmark(MISSION_DOLORES_CENTER.x, MISSION_DOLORES_CENTER.z, "Mission Dolores · Saint Francis");
   const touchesBounds = (
     x: number,
     z: number,
@@ -1868,7 +1880,9 @@ async function boot() {
           .compileAsync(game.root, camera, scene)
           .catch((err) => console.warn("[golf] deferred compile failed:", err));
         const first = loadedGolfCourse.holes.find((h2) => h2.ref === 1) ?? loadedGolfCourse.holes[0];
-        if (first) minimap.addLandmark(first.teeXZ[0], first.teeXZ[1], "Presidio Golf · Hole 1");
+        // Refine the eager "Presidio Golf" pin (dropped at the course centroid at
+        // boot) to the actual first tee now that the course data has loaded.
+        if (first) minimap.addLandmark(first.teeXZ[0], first.teeXZ[1], "Presidio Golf");
         const gh = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
         if (gh) Object.assign(gh, { golf: game });
         // Welcome can arrive before this lands; hydrate any peer golf states Net
