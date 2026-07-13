@@ -3,8 +3,9 @@
 This is the long-term film layer for the live San Francisco world. Shots use the
 real scene, actors, vehicles, physics, lighting, and WebGPU renderer; the
 cinematic code only stages those systems, drives a deterministic timeline, and
-owns the camera. The current reference productions are a 15-second hoverboard
-customization film and an 11-second sunset dog-park film.
+owns the camera. The reference productions include a 15-second hoverboard
+customization film, an 11-second sunset dog-park film, and the eight-shot,
+55-second **Summer in Motion** stress test.
 
 ## Pipeline at a glance
 
@@ -16,7 +17,9 @@ customization film and an 11-second sunset dog-park film.
 | `tools/cinematic/capture.mjs` | Private Vite/Chrome launch, fixed-time replay, WebGPU-safe frame capture, encode, review artifacts, and technical audit. |
 | `tools/cinematic/audio.mjs` | Picture-locked, seeded 48 kHz stereo score and sound-design render. |
 | `tools/cinematic/transition.mjs` | Deterministic picture/audio transition and final assembly. |
+| `tools/cinematic/delivery.mjs` | Platform delivery derivatives, validation, and quality-comparison manifests. |
 | `tools/render-cinematic.mjs` | CLI orchestration and process cleanup. |
+| `tools/render-twitter-summer.mjs` | Eight independently renderable shots, exact-duration assembly, seven motivated transitions, review artifacts, and X derivatives. |
 
 The pipeline has two output tiers. The archival master captures a lossless PNG
 sequence and encodes H.264 CRF 15. The fast renderer reads the same final WebGPU
@@ -40,17 +43,31 @@ npm run render:cinematic -- dog-park --stills
 # Fast, audited review films. These are the normal choice while iterating.
 npm run render:hoverboard:fast
 npm run render:dog-park:fast
+npm run render:roqn-open-road:fast
 npm run render:cinematics:fast
 
 # Audited individual masters.
 npm run render:hoverboard
 npm run render:dog-park
+npm run render:roqn-open-road
 
 # Render both, then create the combined plume-to-play film.
 npm run render:cinematics
 
 # Rebuild only the combined film from existing individual masters.
 npm run render:cinematic -- --combine
+
+# Make the conservative X upload derivative from any finished internal film.
+npm run deliver:x -- .data/cinematics/review/roqn-open-road/roqn-open-road-fast.mp4
+
+# Also make the tweet-suggested 2x upscale as an experimental A/B candidate.
+npm run deliver:x -- .data/cinematics/review/roqn-open-road/roqn-open-road-fast.mp4 --experimental-4k
+
+# Render the 55-second, eight-shot Summer in Motion stress test and X derivative.
+npm run render:twitter-summer
+
+# Reassemble from audited shot files and include the experimental 2x X candidate.
+npm run render:twitter-summer -- --reuse-shots --experimental-4k
 ```
 
 Use `--fast` with any production for an audited review render without a PNG
@@ -64,7 +81,65 @@ Run `npm run render:cinematic -- --help` for resolution, fps, frame format,
 quality, take-name, seed, and settle-frame overrides. Environment equivalents
 use the `SF_CINE_*` prefix. Settings intentionally have one current schema; add
 new defaults directly to `tools/cinematic/productions.mjs` rather than adding
-legacy migrations.
+legacy migrations. `SF_CINE_PUBLISH_DIR` may override the final MP4 directory;
+the default is `/Users/eric/videos/my creations/sf/renders/cinematics`.
+
+## X delivery
+
+Keep the audited 1080p60 film as the archive master. `npm run deliver:x` creates
+a separate 1080p derivative at no more than 30 fps using software `libx264` at
+High profile, CRF 15, a 24 Mbps ceiling, a closed two-second GOP, square pixels,
+progressive `yuv420p`, explicit limited-range BT.709 tags, AAC-LC 192 kbps audio,
+and a fast-start MP4 index. Dropping a 60 fps master to 30 fps is intentional:
+when the platform chooses a bitrate-limited rendition, it leaves roughly twice
+as many bits for each displayed frame and usually helps foliage, water,
+particles, fireworks, and fast global camera motion survive recompression.
+
+X's public documentation is internally inconsistent by upload surface. Its
+current Media API accepts 30 or 60 fps and says subscribed users can receive
+1080p playback, while the generic web-upload help still lists a 40 fps ceiling.
+The 1080p30 preset is therefore the conservative common denominator. X also
+says uploaded media is processed for optimization, so no local setting can
+prevent a server transcode.
+
+`--experimental-4k` additionally makes an exact 2x Lanczos upscale at 30 fps.
+This captures the social-media trick from the supplied tweet as a repeatable
+A/B test, but it is deliberately not the default: X does not publicly promise
+4K uploads or a better encoding ladder for 4K input, and upscaling creates no
+new detail. Do not use 8K; it sits outside the published upload guidance and
+multiplies encode and upload cost. Test the two files in otherwise identical
+posts on the actual account, then compare fine foliage, particles, gradients,
+water, and motion after X finishes processing.
+
+Approved MP4s publish directly into `/Users/eric/videos/my
+creations/sf/renders/cinematics` with technical names such as
+`*-social-1080p30.mp4`; there is no platform-specific publish folder. Internal
+delivery files live under `.data/cinematics/review/delivery/x/`. Every run keeps
+its JSON manifest, technical audit, file sizes, and informational SSIM there.
+SSIM measures local generation loss; it does not simulate X's undisclosed
+transcoder. The exporter never adds text, titles, bars, logos, or other overlays.
+
+Compression-aware shot design matters more than a magic FFmpeg flag. Prefer
+larger and fewer particles, deterministic temporal seeds, motion blur instead
+of subpixel shimmer, and stable gradients; avoid delivery-time grain,
+oversharpening, one-pixel sparks, and dense random confetti. Upload the validated
+MP4 directly from desktop/web or Media Studio instead of round-tripping through
+a mobile editor.
+
+The Summer in Motion review exposed two transition-specific failure modes worth
+keeping as permanent rules. First, validate transition midpoints as individual
+full-resolution frames: a technically valid FFmpeg transition can still produce
+an unintended flat-color frame. Second, avoid random-pixel dissolves for social
+delivery. Their high-frequency noise is expensive to encode and becomes
+blocky after platform recompression; broad wipes, blurs, irises, and other
+spatially coherent motion survive much better. The final film uses seven unique
+low-frequency transition grammars and equal-power audio crossfades.
+
+Current primary references: [X Media API video recommendations](https://docs.x.com/x-api/media/quickstart/best-practices),
+[X web/Premium upload help](https://help.x.com/en/using-x/x-videos),
+[X Ads creative specifications](https://business.x.com/en/help/campaign-setup/creative-ad-specifications),
+[X Media Studio specifications](https://help.x.com/en/using-x/media-studio-faqs),
+and [FFmpeg codec documentation](https://ffmpeg.org/ffmpeg-codecs.html).
 
 ## Authoring a production
 
@@ -117,10 +192,12 @@ occlusion is fixed in the authored rig so capture does not acquire collision
 jitter. Treat any camera-audit issue as a composition review item even when it
 is not a technical failure.
 
-`cleanPlate` removes app/loading chrome. `CinematicOverlay` then adds only the
-film layer: safe-area cards, chapter/progress treatment, and letterbox bars. All
-overlay transforms and opacity are derived from the current frame time; there
-are no CSS animations for the capture clock to race.
+`cleanPlate` removes app/loading chrome. Productions are clean-plate by default:
+no titles, captions, progress treatment, or letterbox bars. Supplying explicit
+`overlay` cues opts a production into `CinematicOverlay`; its transforms and
+opacity are derived from current frame time, with no CSS animations for the
+capture clock to race. The transparent mirror canvas remains available when
+there are no cues so the fast compositor still has a stable input contract.
 
 ## Audio, assembly, and QA
 
@@ -133,24 +210,32 @@ the visual transition.
 
 Work files live under `.data/cinematics/<production>/<take>/` and include the
 frame manifest, PCM audio, and either master frames or the fast Annex-B H.264
-bitstream. Review and delivery artifacts live under `renders/cinematics/`:
+bitstream. Review, audit, and delivery artifacts remain internal:
 
 ```text
-renders/cinematics/<production>/<production>-<take>.mp4
-renders/cinematics/<production>/<production>-<take>.poster.jpg
-renders/cinematics/<production>/<production>-<take>.contact.jpg
-renders/cinematics/<production>/<production>-<take>.audit.json
-renders/cinematics/<production>/<production>-<take>.frames.json
-renders/cinematics/combined/hoverboard-to-dog-park-<take>.*
+.data/cinematics/review/<production>/<production>-<take>.*
+.data/cinematics/review/combined/hoverboard-to-dog-park-<take>.*
+.data/cinematics/review/twitter-summer/twitter-summer-master.*
+.data/cinematics/review/twitter-summer/transition-review/*-mid.jpg
+.data/cinematics/review/delivery/x/*
 ```
 
-The audit verifies dimensions, fps, duration, exact frame count, codecs, pixel
-format, BT.709 tags, and non-silent audio. It fully decodes the film for black
+The publish tree contains MP4 files only:
+
+```text
+/Users/eric/videos/my creations/sf/renders/cinematics/<film>.mp4
+/Users/eric/videos/my creations/sf/renders/cinematics/<film>-social-1080p30.mp4
+```
+
+The audit verifies dimensions, fps, duration, exact frame count, codecs, H.264
+profile, progressive square-pixel `yuv420p`, BT.709 limited-range tags, and
+non-silent audio. It fully decodes the film for black
 segments and long freezes and measures final-mix RMS/peak. The manifest also
 captures the source Git revision/dirty state and browser console, exception, and
 network diagnostics. Technical success is necessary but not sufficient: always
 review the poster, 12-frame contact sheet, cuts, action peaks, title-safe text,
-and transition frames at full resolution.
+and the start, midpoint, and end of every transition at full resolution. A clean
+overall contact sheet is not a substitute for transition-specific frame review.
 
 On the reference development machine, the 15-second hoverboard production at
 1080p60 captured in 46.20 seconds with the fast backend versus 253.07 seconds

@@ -11,8 +11,7 @@
 //   SF_PROBE_URL  existing vite (default http://127.0.0.1:5191)
 //   SF_TIME       time of day hours (default 15.0)
 //   SF_VIEWS      comma list of view names (default all)
-//   SF_SONG       songbook index (default 0 = Fog Rolls Home; Corona Wind
-//                 is authored but not in the live songbook)
+//   SF_SONG       songbook index (default 0 = Fog Rolls Home; 1 = Corona Wind)
 
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
@@ -58,7 +57,7 @@ const VIEWS = [
   { name: "gg_background", focus: "group", dist: -2, lateral: 8, up: 4.5, targetUp: 3.2, seekBeat: 30.0 }
 ];
 
-// "Fog Rolls Home" (SF_SONG=1) — a 7-bar refrain (~22s): staggered entrances
+// "Fog Rolls Home" (SF_SONG=0) — a 7-bar refrain (~22s): staggered entrances
 // (uke bar 1 → handpan bar 2 → flute bar 3), the flute motif, the bar-6 fill
 // run into the landing everyone rings out together.
 // Damped animation scalars (flute lift, hand hovers) need wall-clock to
@@ -163,23 +162,59 @@ async function checkAssembly(c) {
   if (stats.missing) throw new Error("__sf.buskers missing");
   if (stats.children < 4) throw new Error(`expected platform + 3 musicians, got ${stats.children} children`);
   if (stats.meshes < 30) throw new Error(`suspiciously few meshes (${stats.meshes}) — musicians missing?`);
-  // phase machine sanity: seek near the last beat, run → rest. (clock is only
-  // synced inside update(), so tick once after seek before sampling.)
-  const phases = await ev(c, `(()=>{
-    const b = window.__sf.buskers;
-    b.seek(128);
-    window.__sf.tick(1/30);
-    const seen = [b.clock.phase];
-    for (let i = 0; i < 30 * 14; i++) { window.__sf.tick(1/30); const p = b.clock.phase; if (seen[seen.length-1] !== p) seen.push(p); }
-    return seen;
+
+  // Put the listener out of earshot so TrioAudio suspends and the deterministic
+  // frame clock owns the transport during this accelerated rotation check.
+  await ev(c, `(()=>{
+    const sf=window.__sf,p=sf.buskers.group.position,x=p.x+500,z=p.z+500;
+    sf.player.teleportTo({x,y:sf.map.groundHeight(x,z)+1.5,z,facing:0,mode:'walk'});
+    const eye=[x,p.y+100,z];
+    sf.camera.position.set(...eye);sf.camera.lookAt(p);sf.camera.updateMatrixWorld();
+    window.__sfFreeCam(eye,[p.x,p.y,p.z]);return true;
   })()`);
-  console.log("[probe] phase walk:", JSON.stringify(phases));
-  // Note: once the AudioContext is live it's authoritative over the transport,
-  // so a *synchronous* tick loop (no wall-clock advance) can't drive it into
-  // "rest". We only assert the seek lands in "playing" here; song.ts length and
-  // the playing→rest→countin loop are covered by tools/buskers-song-probe.mjs
-  // and the running app.
-  if (phases[0] !== "playing") throw new Error(`phase machine broken: ${phases}`);
+  await tick(c, 0);
+  await sleep(150);
+  await tick(c, 0);
+
+  const rotation = await ev(c, `(()=>{
+    const b = window.__sf.buskers;
+    const tickFrames = (seconds) => {
+      for (let i = 0; i < Math.ceil((seconds + 0.1) * 30); i++) window.__sf.tick(1/30);
+    };
+    // Drive one natural end-of-song → rest → countin → playing rotation.
+    const before = b.current.songName;
+    b.seek(9999);
+    window.__sf.tick(1/30);
+    const rest = b.current.snapshotState();
+    tickFrames(rest.restSeconds);
+    const countin = b.current.snapshotState();
+    const after = b.current.songName;
+    tickFrames(4 * 60 / 76);
+    const playing = b.current.snapshotState();
+    // Advance once more so the book wraps back to song 0 for the shots below.
+    b.seek(9999);
+    window.__sf.tick(1/30);
+    tickFrames(b.current.snapshotState().restSeconds);
+    tickFrames(4 * 60 / 76);
+    return {
+      before,
+      after,
+      restPhase: rest.phase,
+      countinPhase: countin.phase,
+      playingPhase: playing.phase,
+      nextSongIndex: countin.songIndex,
+      totalSilence: rest.restSeconds + 4 * 60 / 76
+    };
+  })()`);
+  console.log("[probe] automatic rotation:", JSON.stringify(rotation));
+  if (rotation.restPhase !== "rest") throw new Error(`song did not enter rest: ${JSON.stringify(rotation)}`);
+  if (rotation.countinPhase !== "countin" || rotation.nextSongIndex !== 1 || rotation.before === rotation.after) {
+    throw new Error(`songbook did not advance during the break: ${JSON.stringify(rotation)}`);
+  }
+  if (rotation.playingPhase !== "playing") throw new Error(`next song did not start: ${JSON.stringify(rotation)}`);
+  if (rotation.totalSilence < 10 || rotation.totalSilence > 22) {
+    throw new Error(`randomized silence outside 10–22s: ${JSON.stringify(rotation)}`);
+  }
 }
 
 async function main() {
@@ -240,20 +275,26 @@ async function main() {
   await teleport(c, 340, 2840, Math.PI);
   await settle(c, 2);
 
-  // cycle the songbook to the requested song (boot default is index 0)
+  // Advance through natural end-of-song rests to the requested song (boot = 0).
   if (SONG_IDX > 0) {
     const name = await ev(c, `(()=>{
       const b = window.__sf.buskers;
-      let n = b.songName;
-      for (let i = 0; i < ${SONG_IDX}; i++) n = b.cycleSong(0);
-      window.__sf.tick(1/30);
-      return n;
+      const tickFrames = (seconds) => {
+        for (let i = 0; i < Math.ceil((seconds + 0.1) * 30); i++) window.__sf.tick(1/30);
+      };
+      for (let i = 0; i < ${SONG_IDX}; i++) {
+        b.seek(9999);
+        window.__sf.tick(1/30);
+        tickFrames(b.current.snapshotState().restSeconds);
+        tickFrames(4 * 60 / 76);
+      }
+      return b.current.songName;
     })()`);
     console.log(`[probe] song: ${name}`);
   }
 
   let failedViews = 0;
-  for (const v of (SONG_IDX === 1 ? FOG_VIEWS : VIEWS)) {
+  for (const v of (SONG_IDX === 0 ? FOG_VIEWS : VIEWS)) {
     if (ONLY.length && !ONLY.includes(v.name)) continue;
     try {
       if (v.seekBeat != null) await ev(c, `(window.__sf.buskers.seek(${v.seekBeat}), true)`);

@@ -8,6 +8,7 @@ import {
 } from "./physics";
 import { PickleballPlayerRig } from "./playerRig";
 import type { AvatarTraits } from "../../player/avatar";
+import { enableShadowLayer, SHADOW_LAYERS } from "../../world/shadows/shadowLayers";
 import {
   applyBallGlow,
   PICKLE_BALL_COLOR,
@@ -140,6 +141,7 @@ export class PickleballGame {
     this.#ballMesh = new THREE.Mesh(this.#ballGeometry, this.#ballMaterial);
     this.#ballMesh.name = "pickleball-ball";
     this.#ballMesh.castShadow = true;
+    enableShadowLayer(this.#ballMesh, SHADOW_LAYERS.HERO_DYNAMIC);
     this.root.add(this.#ballMesh);
 
     this.#posePlayers(0);

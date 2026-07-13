@@ -2,6 +2,7 @@ import * as THREE from "three/webgpu";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { WorldMap } from "../heightmap";
 import type { GoldmanXZ } from "./layout";
+import { enableLocalFarShadowLayers } from "../shadows/shadowLayers";
 
 /**
  * Taube Family Clubhouse — enterable rebuild of EHDD's low horizontal pavilion
@@ -226,6 +227,7 @@ export function buildClubhouse(map: WorldMap): ClubhouseBuild {
   roof.name = "goldman_clubhouse_low_roof";
   roof.position.set(0.5, WALL_TOP + 0.16, 0); // extra eave toward the courts
   roof.castShadow = true;
+  enableLocalFarShadowLayers(roof);
   frame.add(roof);
 
   // interior slab, visually distinct from the court paths
@@ -339,6 +341,7 @@ export function buildClubhouse(map: WorldMap): ClubhouseBuild {
 
   const wallMesh = merged(walls, MAT_WALL, "goldman_clubhouse_walls");
   wallMesh.castShadow = true;
+  enableLocalFarShadowLayers(wallMesh);
   wallMesh.receiveShadow = true;
   const floorMesh = merged(floors, MAT_FLOOR, "goldman_clubhouse_floor");
   floorMesh.receiveShadow = true;
@@ -377,6 +380,7 @@ export function buildClubhouse(map: WorldMap): ClubhouseBuild {
   const annex = new THREE.Mesh(annexGeo, MAT_WALL);
   annex.name = "goldman_clubhouse_annex";
   annex.castShadow = true;
+  enableLocalFarShadowLayers(annex);
   annex.receiveShadow = true;
   root.add(annex);
 

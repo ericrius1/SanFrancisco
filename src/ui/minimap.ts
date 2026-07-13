@@ -46,6 +46,9 @@ const MINI_ZOOM_SPEED = 0.0012;
 const MINI_DRAG_PX = 4;
 const BIG_ZOOM_SPEED = 0.0012;
 const BIG_MIN_SPAN = 260;
+const PAD_PAN_SPEED = 1.35; // view-spans per second at full stick
+const PAD_ZOOM_SPEED = 1.6; // exp rate per second at full trigger
+const PAD_CURSOR_SPEED = 1.15; // normalized half-widths per second
 const DOT_HIT_PX = 14; // expanded-map click tolerance around a player dot
 const PLACE_HIT_PX = 13;
 const GROUND_TARGET_NAME = "Selected spot";
@@ -155,7 +158,9 @@ export class Minimap {
   #bigRecenter: HTMLButtonElement | null = null;
   #bigTeleWrap: HTMLDivElement | null = null;
   #bigTeleName: HTMLSpanElement | null = null;
-  #dpr = Math.min(window.devicePixelRatio || 1, 2);
+  #bigPadHint: HTMLSpanElement | null = null;
+  #device: "kb" | "pad" = "kb";
+  #dpr = 1;
   #layers: MapLayer[] = [];
   #layerButtons = new Map<MapLayerId, HTMLButtonElement>();
   #selectedPlaceId: string | null = null;
@@ -187,6 +192,9 @@ export class Minimap {
       }
     | null = null;
   #bigSuppressClick = false;
+  // Gamepad selection cursor on the expanded map, in normalized canvas coords
+  // (−0.5..0.5 from center). Drawn as a crosshair; A selects under it.
+  #padCursor: { nx: number; ny: number } | null = null;
   // expanded-map dot hit-boxes rebuilt every draw: [screenX, screenY, remote]
   #hits: [number, number, MapRemote][] = [];
   #miniPlaceHits: [number, number, MapLayerPoint][] = [];
@@ -1169,6 +1177,16 @@ export class Minimap {
         this.#bigTeleWrap.style.display = "none";
       }
     }
+    if (this.#bigPadHint) {
+      this.#bigPadHint.hidden = !(name && this.#device === "pad");
+    }
+  }
+
+  /** Swap pad vs keyboard chrome on the expanded map (teleport hint). */
+  setDevice(device: "kb" | "pad") {
+    if (device === this.#device) return;
+    this.#device = device;
+    if (this.#bigPadHint) this.#bigPadHint.hidden = !(this.#selected && device === "pad");
   }
 
   /* --------------------------------------------------- expanded map */
@@ -1187,13 +1205,127 @@ export class Minimap {
     this.expanded = on;
     if (on) {
       this.#centerBigOnSelf(true);
+      this.#padCursor = { nx: 0, ny: 0 };
       if (!this.#bigWrap) this.#buildBig();
       this.#bigWrap!.style.display = "flex";
       this.#drawBig();
     } else if (this.#bigWrap) {
       this.#bigWrap.style.display = "none";
+      this.#padCursor = null;
     }
     this.onExpandChange(on);
+  }
+
+  /** Left stick: pan the expanded map. No-op when collapsed. */
+  padPan(lx: number, ly: number, dt: number) {
+    if (!this.expanded || (lx === 0 && ly === 0)) return;
+    const { spanX, spanZ } = this.#bigView();
+    const center = this.#bigCenter ?? this.#mapCenter();
+    this.#bigCenter = this.#clampBigCenter({
+      x: center.x + lx * spanX * PAD_PAN_SPEED * dt,
+      z: center.z + ly * spanZ * PAD_PAN_SPEED * dt
+    });
+  }
+
+  /** RT − LT: zoom the expanded map toward the selection cursor (or view center). */
+  padZoom(zoomAxis: number, dt: number) {
+    if (!this.expanded || Math.abs(zoomAxis) < 0.02) return;
+    const cursor = this.#padCursor ?? { nx: 0, ny: 0 };
+    const { center, spanX, spanZ } = this.#bigView();
+    const worldX = center.x + cursor.nx * spanX;
+    const worldZ = center.z + cursor.ny * spanZ;
+    // Positive zoomAxis (RT) zooms in; LT zooms out — matches wheel invert feel.
+    const nextSpan = this.#clampBigSpan(this.#bigSpan * Math.exp(-zoomAxis * PAD_ZOOM_SPEED * dt));
+    if (nextSpan === this.#bigSpan) return;
+    this.#bigSpan = nextSpan;
+    this.#bigCenter = this.#clampBigCenter({
+      x: worldX - cursor.nx * this.#bigSpan,
+      z: worldZ - cursor.ny * (this.#bigSpan / this.#bigAspect())
+    });
+  }
+
+  /** Right stick: move the selection cursor on the expanded map. */
+  padMoveCursor(rx: number, ry: number, dt: number) {
+    if (!this.expanded || (rx === 0 && ry === 0)) return;
+    const cur = this.#padCursor ?? { nx: 0, ny: 0 };
+    this.#padCursor = {
+      nx: Math.max(-0.5, Math.min(0.5, cur.nx + rx * PAD_CURSOR_SPEED * dt)),
+      ny: Math.max(-0.5, Math.min(0.5, cur.ny + ry * PAD_CURSOR_SPEED * dt))
+    };
+  }
+
+  /** A: select the pin / ground under the gamepad cursor. */
+  padSelectAtCursor() {
+    if (!this.expanded || !this.#big || !this.#padCursor) return;
+    const canvas = this.#big;
+    const mx = (this.#padCursor.nx + 0.5) * canvas.width;
+    const my = (this.#padCursor.ny + 0.5) * canvas.height;
+    this.#selectAtCanvasPx(mx, my);
+  }
+
+  /** X: teleport to the current selection (same as the Teleport button). */
+  padTeleport() {
+    if (!this.expanded) return;
+    const target = this.#resolveSelected();
+    if (!target) return;
+    this.onTeleport(target.x, target.z, target.toName, target.playerId);
+    this.#clearSelection();
+    this.setExpanded(false);
+  }
+
+  /** D-pad ◀/▶: cycle landmark + player pins. `dir` is −1 or +1. */
+  padCyclePins(dir: number) {
+    if (!this.expanded || !dir) return;
+    const pins = this.#cyclePins();
+    if (!pins.length) return;
+    const cur = this.#selected;
+    let idx = -1;
+    if (cur?.kind === "player") idx = pins.findIndex((p) => p.kind === "player" && p.id === cur.id);
+    else if (cur?.kind === "fixed") {
+      idx = pins.findIndex(
+        (p) => p.kind === "fixed" && p.name === cur.name && Math.hypot(p.x - cur.x, p.z - cur.z) < 1
+      );
+    }
+    const next = pins[(idx + dir + pins.length * 8) % pins.length]!;
+    if (next.kind === "player") {
+      this.#selectedPlaceId = null;
+      this.#selected = { kind: "player", id: next.id, name: next.name };
+    } else {
+      this.#selectedPlaceId = null;
+      this.#selected = { kind: "fixed", x: next.x, z: next.z, name: next.name, toName: next.name };
+    }
+    this.#nudgeCursorToWorld(next.x, next.z);
+    this.update();
+  }
+
+  #cyclePins(): Array<
+    | { kind: "player"; id: number; name: string; x: number; z: number }
+    | { kind: "fixed"; name: string; x: number; z: number }
+  > {
+    const out: Array<
+      | { kind: "player"; id: number; name: string; x: number; z: number }
+      | { kind: "fixed"; name: string; x: number; z: number }
+    > = [];
+    for (const lm of this.#landmarks) out.push({ kind: "fixed", name: lm.name, x: lm.x, z: lm.z });
+    for (const r of this.#getRemotes()) out.push({ kind: "player", id: r.id, name: r.name, x: r.x, z: r.z });
+    return out;
+  }
+
+  #nudgeCursorToWorld(x: number, z: number) {
+    const { center, spanX, spanZ } = this.#bigView();
+    let nx = (x - center.x) / spanX;
+    let ny = (z - center.z) / spanZ;
+    // If the pin sits outside the view, pan so it lands near center first.
+    if (Math.abs(nx) > 0.45 || Math.abs(ny) > 0.45) {
+      this.#bigCenter = this.#clampBigCenter({ x, z });
+      const view = this.#bigView();
+      nx = (x - view.center.x) / view.spanX;
+      ny = (z - view.center.z) / view.spanZ;
+    }
+    this.#padCursor = {
+      nx: Math.max(-0.5, Math.min(0.5, nx)),
+      ny: Math.max(-0.5, Math.min(0.5, ny))
+    };
   }
 
   /** Read-only diagnostics used by browser probes and the existing __sf hook. */
@@ -1271,8 +1403,13 @@ export class Minimap {
       this.#clearSelection();
       this.setExpanded(false);
     });
+    const padHint = document.createElement("span");
+    padHint.className = "bigmap-pad-hint";
+    padHint.hidden = true;
+    padHint.innerHTML = `<span class="k f fx">X</span><span class="bigmap-pad-hint-lbl">to teleport</span>`;
     action.appendChild(targetName);
     action.appendChild(teleportBtn);
+    action.appendChild(padHint);
     mapFrame.append(canvas, recenter);
     inner.appendChild(mapFrame);
     inner.appendChild(action);
@@ -1367,6 +1504,7 @@ export class Minimap {
     this.#bigRecenter = recenter;
     this.#bigTeleWrap = action;
     this.#bigTeleName = targetName;
+    this.#bigPadHint = padHint;
   }
 
   #tryBigSelect(e: MouseEvent, canvas: HTMLCanvasElement) {
@@ -1376,6 +1514,13 @@ export class Minimap {
     const rect = canvas.getBoundingClientRect();
     const mx = (e.clientX - rect.left) * (canvas.width / rect.width);
     const my = (e.clientY - rect.top) * (canvas.height / rect.height);
+    this.#selectAtCanvasPx(mx, my);
+  }
+
+  /** Shared hit-test for mouse clicks and the gamepad selection cursor. */
+  #selectAtCanvasPx(mx: number, my: number) {
+    const canvas = this.#big;
+    if (!canvas) return;
     const dotR = DOT_HIT_PX * this.#dpr;
 
     let bestPlayer: MapRemote | null = null;
@@ -1564,7 +1709,36 @@ export class Minimap {
     }
 
     this.#drawBigSelection(ctx, px, pz, canvas.width, canvas.height);
+    this.#drawPadCursor(ctx, canvas.width, canvas.height);
     this.#syncTeleport(this.#resolveSelected());
+  }
+
+  #drawPadCursor(ctx: CanvasRenderingContext2D, width: number, height: number) {
+    const cur = this.#padCursor;
+    if (!cur) return;
+    const dpr = this.#dpr;
+    const x = (cur.nx + 0.5) * width;
+    const y = (cur.ny + 0.5) * height;
+    const arm = 11 * dpr;
+    const gap = 3.5 * dpr;
+    ctx.save();
+    ctx.strokeStyle = "rgba(255,255,255,0.92)";
+    ctx.lineWidth = 1.6 * dpr;
+    ctx.beginPath();
+    ctx.moveTo(x - arm, y);
+    ctx.lineTo(x - gap, y);
+    ctx.moveTo(x + gap, y);
+    ctx.lineTo(x + arm, y);
+    ctx.moveTo(x, y - arm);
+    ctx.lineTo(x, y - gap);
+    ctx.moveTo(x, y + gap);
+    ctx.lineTo(x, y + arm);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(x, y, 2.2 * dpr, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(111,215,196,0.95)";
+    ctx.fill();
+    ctx.restore();
   }
 
   #drawSelfLabel(

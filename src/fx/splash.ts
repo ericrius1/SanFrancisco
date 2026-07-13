@@ -15,7 +15,7 @@ import { LIGHT_SCALE } from "../config";
  * along the surface sheds a lighter skim-spray by distance travelled.
  */
 
-const SPLASH_MODES = new Set(["bird", "plane", "drone", "board"]);
+const SPLASH_MODES = new Set(["bird", "plane", "drone", "board", "surf"]);
 
 type Drop = {
   sprite: THREE.Sprite;
@@ -100,9 +100,14 @@ export class WaterSplashes {
     this.#drops.push({ sprite, vel, life, maxLife: life, grow, drag, grav });
   }
 
-  /** The full three-layer hit. `energy` ≈ 0.3 gentle graze … 1.6 full stoop. */
-  splash(x: number, y: number, z: number, elapsed: number, energy: number) {
+  /**
+   * The full three-layer hit. `energy` ≈ 0.3 gentle graze … 1.6 full stoop.
+   * `visualScale` lets close chase-camera activities keep the hit lively without
+   * filling the whole frame; the default preserves every existing caller.
+   */
+  splash(x: number, y: number, z: number, elapsed: number, energy: number, visualScale = 1) {
     const e = THREE.MathUtils.clamp(energy, 0.3, 1.6);
+    const vs = THREE.MathUtils.clamp(visualScale, 0.25, 1.5);
     const p = new THREE.Vector3(x, y + 0.15, z);
 
     this.#wake.burst(x, z, elapsed, 6 + e * 13);
@@ -112,10 +117,10 @@ export class WaterSplashes {
       this.#spawn(
         this.#sprayMat,
         p,
-        0.9 + e * 1.3 + i * 0.4,
+        (0.9 + e * 1.3 + i * 0.4) * vs,
         new THREE.Vector3((Math.random() - 0.5) * 2, (9 + e * 9) * (1 - i * 0.22), (Math.random() - 0.5) * 2),
         0.65 + e * 0.25,
-        4.5 + e * 3,
+        (4.5 + e * 3) * vs,
         0.86,
         20
       );
@@ -128,10 +133,10 @@ export class WaterSplashes {
       this.#spawn(
         this.#dropMat,
         p,
-        0.5 + Math.random() * 0.5 + e * 0.3,
+        (0.5 + Math.random() * 0.5 + e * 0.3) * vs,
         new THREE.Vector3(Math.cos(a) * r, 5.5 + Math.random() * 3.5 + e * 4, Math.sin(a) * r),
         0.8 + Math.random() * 0.4,
-        0.8,
+        0.8 * vs,
         0.985,
         24
       );
@@ -140,10 +145,10 @@ export class WaterSplashes {
     this.#spawn(
       this.#sprayMat,
       p,
-      2.2 + e * 2.2,
+      (2.2 + e * 2.2) * vs,
       new THREE.Vector3(0, 1.6, 0),
       1.5 + e * 0.5,
-      6 + e * 4,
+      (6 + e * 4) * vs,
       0.92,
       1.5
     );
@@ -165,6 +170,11 @@ export class WaterSplashes {
   }
 
   update(dt: number, elapsed: number, player: Player) {
+    // Flow state is composed as a rider hero shot. Keep the ring and moving
+    // spray, but make any lingering landing plume translucent so a random
+    // activation frame can never turn the surfer into a white silhouette.
+    const presentationAlpha =
+      player.mode === "surf" && player.surfTelemetry.flowActive ? 0.16 : 1;
     // particles first so a splash spawned below still gets its first full frame
     for (let i = this.#drops.length - 1; i >= 0; i--) {
       const d = this.#drops[i];
@@ -180,7 +190,7 @@ export class WaterSplashes {
       d.vel.multiplyScalar(d.drag);
       d.sprite.scale.addScalar(d.grow * dt);
       const t = d.life / d.maxLife;
-      (d.sprite.material as THREE.SpriteMaterial).opacity = Math.min(1, t * 1.8) * 0.9;
+      (d.sprite.material as THREE.SpriteMaterial).opacity = Math.min(1, t * 1.8) * 0.9 * presentationAlpha;
     }
 
     this.#cooldown -= dt;
@@ -198,10 +208,19 @@ export class WaterSplashes {
     // drone's floor clamps 0.6 m short of the swell, so it never crosses;
     // the board hover-springs to ~1.05 m with a ±0.08 bob, so its band sits
     // well above the wobble and only an ollie landing dips through it)
-    const off = player.mode === "drone" ? 0.75 : player.mode === "board" ? 1.5 : 0.3;
+    const off =
+      player.mode === "drone"
+        ? 0.75
+        : player.mode === "board"
+          ? 1.5
+          : player.mode === "surf"
+            ? 0.58
+            : 0.3;
     const crossed = this.#prevY > h + off && p.y <= h + off && vy < 1;
     const slammed = vy < -7 && p.y < h + 1.2;
-    if ((crossed || slammed) && this.#cooldown <= 0) {
+    // SurfController emits launch/landing impulses explicitly; keep this generic
+    // crossing detector for the other embodiments so surf does not double-burst.
+    if (player.mode !== "surf" && (crossed || slammed) && this.#cooldown <= 0) {
       this.#cooldown = 0.9;
       const energy = 0.25 + hSpeed / 70 + Math.abs(Math.min(vy, 0)) / 26;
       this.splash(p.x, h, p.z, elapsed, energy);
@@ -210,10 +229,11 @@ export class WaterSplashes {
     // skim: racing along just over the swell sheds spray by distance travelled,
     // with a small wake ring every few puffs (not for the board — its wake is
     // the twin rail streams, and sprite puffs on top just read as clutter)
-    if (player.mode !== "board" && p.y < h + 1.0 && hSpeed > 15) {
+    if (player.mode !== "board" && p.y < h + 1.0 && hSpeed > (player.mode === "surf" ? 8 : 15)) {
       this.#skimAcc += hSpeed * dt;
-      if (this.#skimAcc >= 4) {
-        this.#skimAcc -= 4;
+      const spacing = player.mode === "surf" ? 2.4 : 4;
+      if (this.#skimAcc >= spacing) {
+        this.#skimAcc -= spacing;
         this.#skimSpray(p.x, h, p.z, hSpeed);
         if (++this.#skimCount % 3 === 0) this.#wake.burst(p.x, p.z, elapsed, 3.4, 1);
       }

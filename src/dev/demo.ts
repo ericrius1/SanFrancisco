@@ -23,6 +23,7 @@ import type { CoronaHeightsPark } from "../world/coronaHeights";
 import type { LandsEndRegion } from "../world/landsEnd";
 import type { WorldQueries } from "../core/worldQueries";
 import type { BoardConfig } from "../vehicles/board";
+import type { Fireworks } from "../fx/fireworks";
 
 /**
  * Everything a demo can reach. main.ts builds one of these and passes it to
@@ -58,6 +59,7 @@ export type DemoContext = {
   fetchBall?: FetchBall;
   coronaHeights?: CoronaHeightsPark;
   landsEnd?: LandsEndRegion;
+  fireworks?: Fireworks;
   worldQueries?: WorldQueries;
   setTool?: (tool: string) => void;
   /** Apply a local, non-persisted board configuration for demos and capture. */
@@ -78,15 +80,33 @@ export type Demo = {
 import { buskersCinematic } from "./demos/buskersCinematic";
 import { hoverboardCinematic } from "./demos/hoverboardCinematic";
 import { dogParkCinematic } from "./demos/dogParkCinematic";
+import { roqnOpenRoadCinematic } from "./demos/roqnOpenRoadCinematic";
 import { palaceShowcase } from "./demos/palaceShowcase";
 import { landsEndCinematic } from "./demos/landsEndCinematic";
+import { twitterSummerShot01 } from "./demos/twitterSummerShot01";
+import { twitterSummerShot02 } from "./demos/twitterSummerShot02";
+import { twitterSummerShot03 } from "./demos/twitterSummerShot03";
+import { twitterSummerShot04 } from "./demos/twitterSummerShot04";
+import { twitterSummerShot05 } from "./demos/twitterSummerShot05";
+import { twitterSummerShot06 } from "./demos/twitterSummerShot06";
+import { twitterSummerShot07 } from "./demos/twitterSummerShot07";
+import { twitterSummerShot08 } from "./demos/twitterSummerShot08";
 
 const DEMOS: Record<string, Demo> = {
   [buskersCinematic.name]: buskersCinematic,
   [hoverboardCinematic.name]: hoverboardCinematic,
   [dogParkCinematic.name]: dogParkCinematic,
+  [roqnOpenRoadCinematic.name]: roqnOpenRoadCinematic,
   [palaceShowcase.name]: palaceShowcase,
-  [landsEndCinematic.name]: landsEndCinematic
+  [landsEndCinematic.name]: landsEndCinematic,
+  [twitterSummerShot01.name]: twitterSummerShot01,
+  [twitterSummerShot02.name]: twitterSummerShot02,
+  [twitterSummerShot03.name]: twitterSummerShot03,
+  [twitterSummerShot04.name]: twitterSummerShot04,
+  [twitterSummerShot05.name]: twitterSummerShot05,
+  [twitterSummerShot06.name]: twitterSummerShot06,
+  [twitterSummerShot07.name]: twitterSummerShot07,
+  [twitterSummerShot08.name]: twitterSummerShot08
 };
 
 export function runDemo(name: string, ctx: DemoContext) {

@@ -3,9 +3,9 @@ import { INPUT_TUNING } from "../config";
 
 /**
  * Pointer-lock game input. Clicking the canvas captures the mouse; mouselook
- * deltas accumulate only while locked. Escape is owned by main.ts (overlay
- * dismiss → then releaseLock); the browser also exits lock on Esc. The game
- * keeps simulating while unlocked. While `suspended` (camera-orbit mode)
+ * deltas accumulate only while locked. Escape release is an input-layer
+ * invariant; main.ts separately decides which overlay Escape dismisses. The
+ * game keeps simulating while unlocked. While `suspended` (camera-orbit mode)
  * all game inputs read as idle so the player coasts. Global holds that must
  * still work there (Z time-scrub) use `holding()` instead of `down()`.
  *
@@ -32,7 +32,7 @@ const LOOK_Y = 720;
 const PAD_BUTTONS: Record<number, string> = {
   0: "Space", //     A: jump / ollie / drift / air brake / hover
   1: "KeyE", //      B: enter-exit vehicle
-  // 3 Y: unbound
+  3: "KeyM", //      Y: map toggle
   4: "KeyQ", //      LB: drone down / bird twirl left
   // 5 RB: bird twirl right — routed via pad axis (not KeyE, which exits)
   7: "ShiftLeft", // RT: boost / run / tuck
@@ -45,6 +45,8 @@ const PAD_BUTTONS: Record<number, string> = {
   14: "PadModePrev", // dpad left/right: cycle travel modes
   15: "PadModeNext"
 };
+
+export type MapPadAxes = { lx: number; ly: number; rx: number; ry: number; lt: number; rt: number };
 
 export class Input {
   keys = new Set<string>();
@@ -83,10 +85,22 @@ export class Input {
   #padPrev: boolean[] = [];
   #padAxes = new Map<string, number>();
   #padFireHeld = false;
+  #mapPadAxes: MapPadAxes = { lx: 0, ly: 0, rx: 0, ry: 0, lt: 0, rt: 0 };
   #triggerRoute: "plane" | "bird" | "drone" | null = null; // plane: ↑/↓ throttle; bird: LB/RB twirl; drone: Q/U vertical
 
   constructor(el: HTMLElement) {
     this.#el = el;
+
+    // This runs in capture phase and is registered before any UI is built.
+    // Focused fields and modals may consume Escape for their own close/clear
+    // behavior, but none of them may keep (or later restore) pointer lock.
+    window.addEventListener(
+      "keydown",
+      (e) => {
+        if (e.code === "Escape" || e.key === "Escape") this.releaseLock();
+      },
+      true
+    );
 
     window.addEventListener("keydown", (e) => {
       // typing into a DOM field (e.g. the "/" tuning panel) must not drive the game
@@ -228,6 +242,7 @@ export class Input {
         this.#padAxes.clear();
         this.#padPrev.length = 0;
         this.#padFireHeld = false;
+        this.#mapPadAxes = { lx: 0, ly: 0, rx: 0, ry: 0, lt: 0, rt: 0 };
       }
       return;
     }
@@ -288,6 +303,9 @@ export class Input {
     }
     if (lx !== 0 || ly !== 0 || rx !== 0 || ry !== 0 || lt > 0.02 || rt > 0.02 || lb || rb) active = true;
 
+    // Raw sticks/triggers for the expanded map (readable while suspended).
+    this.#mapPadAxes = { lx, ly, rx, ry, lt, rt };
+
     // right stick = mouselook; works without pointer lock. Pitch polarity is
     // the global INPUT_TUNING toggle — same for walk and every vehicle.
     if (!this.suspended) {
@@ -297,6 +315,11 @@ export class Input {
     }
 
     if (active) this.#setDevice("pad");
+  }
+
+  /** Left/right sticks + triggers, ignoring `suspended` — for expanded-map navigation. */
+  mapPadAxes(): MapPadAxes {
+    return this.#mapPadAxes;
   }
 
   #endFreeCursor(relock: boolean) {
@@ -316,8 +339,10 @@ export class Input {
   releaseLock() {
     // Unconditional: `this.locked` lags reality (pointerlockchange is async) and
     // a pending requestLock grant may still be in flight — clearing the intent
-    // flag makes the pointerlockchange handler drop that late grant too.
+    // flag makes the pointerlockchange handler drop that late grant too. End a
+    // temporary Command cursor as well, otherwise its later keyup could re-lock.
     this.#wantLocked = false;
+    if (this.freeCursor) this.#endFreeCursor(false);
     document.exitPointerLock();
   }
 

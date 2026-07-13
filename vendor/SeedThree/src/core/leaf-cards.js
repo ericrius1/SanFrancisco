@@ -14,6 +14,8 @@ import {
 } from 'three/webgpu';
 import { positionWorld, normalView, mix, normalize, uniform, texture, attribute, float, normalMap, cameraViewMatrix, vec3, vec4, luminance, color } from 'three/tsl';
 import { foliageWindPosition, WIND_DIR } from './wind.js';
+import { foliageBrightness } from '../../../../src/world/vegetation/appearance.ts';
+export { foliageBrightness };
 
 // Per-instance random "thickness" (0.4–1) so leaves don't all transmit identically
 // when backlit — the key fix for uniform-glow (Unreal PerInstanceRandom style).
@@ -97,8 +99,6 @@ const DEFAULTS = {
 // for the dome normals is updated per rebuild instead.
 // Global canopy albedo multiplier (linear space), shared by every foliage
 // material — the "trees blow out at noon" knob. 1 = authored look.
-export const foliageBrightness = uniform(1.0);
-
 export function makeFoliageMaterial(assets, cfg) {
   const c = { ...DEFAULTS, ...cfg };
   // Cluster mode is only the no-bakes fallback now (LOD cards bake from LOD0),

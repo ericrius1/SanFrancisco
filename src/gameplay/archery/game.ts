@@ -378,6 +378,12 @@ export class ArcheryGame {
     }
   }
 
+  /** Teleport / place-history: rack the bow immediately instead of waiting a frame. */
+  releaseForNavigation(player: Player): void {
+    if (!this.#holding) return;
+    this.#putBack(player);
+  }
+
   #resetEnd() {
     this.#endScores.fill(-1);
     this.#shotIdx = 0;

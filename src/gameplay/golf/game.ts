@@ -442,6 +442,12 @@ export class GolfGame {
     this.onNet({ k: "quit" });
   }
 
+  /** Quiet teardown for teleport / place-history — no toast, same as a jumped round. */
+  abandonForNavigation(hud: HUD): void {
+    if (!this.active) return;
+    this.#endRound(hud, true);
+  }
+
   #finishRound(hud: HUD) {
     this.active = false;
     this.#roundComplete = true;

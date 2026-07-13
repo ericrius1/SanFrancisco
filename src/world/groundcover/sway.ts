@@ -13,15 +13,12 @@
 // foliage gets the one canonical, harmonised wind for free.
 
 import { mix, mx_noise_float, sin, time, vec2 } from "three/tsl";
-import * as THREE from "three/webgpu";
-import { windSpeed, windStrength } from "../../../vendor/SeedThree/src/core/wind.js";
-import { windGustGlobal } from "./wind";
+import { WIND_DIR, windGustGlobal, windSpeed, windStrength } from "../vegetation/wind";
 
-// TSL's d.ts narrows chained vector nodes too aggressively for vendored JS uniforms.
+// TSL's d.ts narrows chained vector nodes too aggressively for shared uniforms.
 type TslNode = any;
 
-/** Prevailing wind direction on the XZ plane — every foliage layer leans along it. */
-export const WIND_DIR = new THREE.Vector3(0.85, 0, 0.53).normalize();
+export { WIND_DIR };
 
 const windSpeedNode = windSpeed as TslNode;
 const windStrengthNode = windStrength as TslNode;

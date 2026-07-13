@@ -1,8 +1,30 @@
+import type * as THREE from "three/webgpu";
 import { waterHeight } from "../world/heightmap";
 import type { PlayerCtx } from "../player/types";
 
 /** Typical tall park/street canopy (m). Plane/phoenix launches clear ~2× this. */
 export const TYPICAL_TREE_HEIGHT = 28;
+
+/**
+ * Arcade driveables sit on a scripted ride spring (`ground + rideHeight`), not
+ * tire solvers. `rideHeight` must equal `-contactY`: the mesh-local Y of the
+ * intended ground contact (wheel bottoms / feet), with mesh origin at the
+ * chassis centre. Prefer an authored `userData.contactY` over full AABB so
+ * cargo, mirrors, and antennas cannot poison seating.
+ */
+export function rideHeightFromContact(contactY: number): number {
+  return -contactY;
+}
+
+/** Read authored mesh contact, or fall back to an explicit contact Y. */
+export function rideHeightFromMesh(
+  mesh: THREE.Object3D | null | undefined,
+  fallbackContactY: number
+): number {
+  const authored = mesh?.userData?.contactY;
+  const contactY = typeof authored === "number" && Number.isFinite(authored) ? authored : fallbackContactY;
+  return rideHeightFromContact(contactY);
+}
 
 /** Hull hard-beaches above this ground height (matches BoatController). */
 const BOAT_NAV_DEPTH = -1.0;

@@ -22,6 +22,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { rm, readdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { publishVideo } from "./cinematic/capture.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const MODE = process.argv[2]; // undefined | "stills" | "debug"
@@ -36,8 +37,8 @@ const SERVER_URL = process.env.SF_BV_URL ?? "http://127.0.0.1:5193";
 const TIME = Number(process.env.SF_BV_TIME ?? 20.15);
 const WORK = path.join(ROOT, ".data", "board-video");
 const RAW = path.join(WORK, "raw");
-// default output lives OUTSIDE the repo — dist/ gets wiped by vite builds
-const OUT_DIR = "/Users/eric/videos/my creations/sf/InProgress";
+// Encode internally; publish the approved MP4 through the shared video policy.
+const OUT_DIR = WORK;
 const OUT_MP4 = process.env.SF_BV_OUT ? path.resolve(ROOT, process.env.SF_BV_OUT) : path.join(OUT_DIR, "board-customizer-15s.mp4");
 // preview stills sampled across the timeline (frame indices)
 const STILL_FRAMES = [12, 70, 140, 230, 310, 330, 420, 470, 540, 585, 615, 665, 700, 770, 820, 880];
@@ -457,7 +458,8 @@ async function main() {
     if (n < TOTAL * 0.98) throw new Error(`only ${n}/${TOTAL} frames`);
     console.log(`[bv] captured ${n} frames; encoding`);
     await encode();
-    console.log(`[bv] wrote ${path.relative(ROOT, OUT_MP4)}`);
+    const published = await publishVideo(OUT_MP4, { filename: path.basename(OUT_MP4), log: (message) => console.log(`[bv] ${message}`) });
+    console.log(`[bv] wrote ${published.file}`);
   } else {
     console.log(`[bv] stills in ${WORK}`);
   }

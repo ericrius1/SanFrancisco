@@ -40,10 +40,8 @@ async function main() {
     await c.send("Page.navigate", { url: `http://127.0.0.1:${vitePort}/?autostart=1&fullfps=1` });
     await waitEval(c, "Boolean(window.__sf && window.__sf.citygenRing && window.__sf.citygenRing.current)", 120000);
     const noFog = process.env.PROBE_NOFOG !== "0";
-    const noDyn = process.env.PROBE_NODYN !== "0";
     await evaluate(c, `(()=>{const s=window.__sf; s.sky.cycleEnabled=false; s.sky.setTimeOfDay(10.5);
       if(${noFog}){const wt=s.WORLD_TUNING.values; wt.fogBank=0; wt.fogNoise=0; wt.fog=0; s.sky.applyFogParams();}
-      if(${noDyn}){s.dynRes.sample=()=>{};} // pin resolution (syncToCap() would resize and stall headless presentation)
       if(!window.__f){window.__f=1;s.chase.update=()=>{};s.player.update=()=>{};} return 1;})()`);
     const gy = await evaluate(c, "window.__sf.map.groundHeight(900,2400)");
     await evaluate(c, `(()=>{const s=window.__sf,p=s.player;const y=${gy}+2;p.position.set(900,y,2400);p.renderPosition.copy(p.position);s.physics.world.setBodyTransform(p.body,[900,y,2400],[0,0,0,1]);return 1;})()`);
@@ -53,7 +51,7 @@ async function main() {
     for (let i = 0; i < 30; i++) await tick(c, 0.05); // post-warmup: let fades/streams settle again
     const camY = gy + 16;
     const setCam = () => evaluate(c, `(()=>{const c=window.__sf.camera;c.position.set(880,${camY},2385);c.lookAt(930,${gy + 8},2410);return 1;})()`);
-    console.log("[probe] state:", JSON.stringify(await evaluate(c, `(()=>{const s=window.__sf;return{cam:s.camera.position.toArray().map(v=>Math.round(v)),player:s.player.position.toArray().map(v=>Math.round(v)),gy:${gy},dyn:s.dynRes.state?s.dynRes.state():null}})()`)));
+    console.log("[probe] state:", JSON.stringify(await evaluate(c, `(()=>{const s=window.__sf;return{cam:s.camera.position.toArray().map(v=>Math.round(v)),player:s.player.position.toArray().map(v=>Math.round(v)),gy:${gy},pixelRatio:s.RENDER_TUNING.values.pixelRatio}})()`)));
     // setCam FIRST, then tick renders a frame with that camera, then capture.
     // (captureScreenshot returns the last PRESENTED frame; nothing re-renders
     // between a JS-only camera write and the screenshot.)

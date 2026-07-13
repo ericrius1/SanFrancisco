@@ -50,7 +50,47 @@ const DEFINITIONS = Object.freeze({
       profile: "landsend",
       description: "Marine drone and surf, glassy chimes as the spiral lights, a warm bloom as the lanterns rise."
     })
-  })
+  }),
+  "roqn-open-road": Object.freeze({
+    id: "roqn-open-road",
+    demo: "roqn-open-road",
+    title: "Open Road, Open Sky",
+    duration: 30,
+    seed: 0x4f_50_45_4e,
+    posterAt: 28.4,
+    stillTimes: Object.freeze([0.4, 1.8, 3.4, 5.2, 6.4, 8.1, 9.5, 11.4, 12.4, 14.2, 15.5, 17.3, 18.4, 20.1, 21.5, 23.3, 24.5, 26.2, 27.7, 29.4]),
+    audio: Object.freeze({
+      profile: "roqn-open-road",
+      description: "An airy travel score moving from garden wings to city streets, bridge wind, speedboat wake, and a bay-light finale."
+    })
+  }),
+  ...Object.fromEntries([
+    [1, "Ocean Beach Sunrise Surf"],
+    [2, "Golden Gate Scooter Ribbon"],
+    [3, "Presidio Phoenix Canopy"],
+    [4, "Palace Drone Orbit"],
+    [5, "Embarcadero Sports-Car Chase"],
+    [6, "Botanical Hoverboard Bloom"],
+    [7, "Bay Bridge Speedboat Blue Hour"],
+    [8, "Downtown Drone Constellation"]
+  ].map(([index, title]) => {
+    const suffix = String(index).padStart(2, "0");
+    const id = `twitter-summer-${suffix}`;
+    return [id, Object.freeze({
+      id,
+      demo: id,
+      title,
+      duration: 7.5,
+      seed: (0x54_57_00_00 + index * 0x101) >>> 0,
+      posterAt: 5.8,
+      stillTimes: Object.freeze([0.25, 1.35, 2.65, 3.85, 5.05, 6.25, 7.2]),
+      audio: Object.freeze({
+        profile: "twitter-summer",
+        index,
+        description: `Movement ${index} of the continuous summer-city score.`
+      })
+    })];
+  }))
 });
 
 function envNumber(env, key, fallback) {

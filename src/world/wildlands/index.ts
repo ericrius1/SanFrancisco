@@ -1,12 +1,11 @@
-// Wildlands — designed SeedThree foliage across Golden Gate Park, the Presidio,
+// Wildlands — designed unified foliage across Golden Gate Park, the Presidio,
 // and the Marin Headlands. Groves, cypress windrows, oak savannas, and
 // noise-banded wildflower drifts, all deterministic (layout.ts) and rendered
 // through the chunked seedForest engine + a player-following flower ring.
 //
 // Public surface mirrors the botanical garden: hand it a terrain sampler, add
-// the group, tick update() with a focus point. The old stylized trees suppress
-// themselves inside these regions via wildlandsSuppressesTree (see wiring in
-// main.ts / flora.ts / forest.ts).
+// the groups, tick update() with a focus point. All outdoor tree beauty uses the
+// same SeedForest runtime; layout owns only deterministic planting intent.
 
 import type * as THREE from "three/webgpu";
 import { createSeedForest, type SeedForest } from "../seedForest";
@@ -15,7 +14,7 @@ import { createWildGrass, type WildGrass } from "./grassField";
 import { collectWildTrees, wildRegionAt, WILD_TREE_DESIGNS, type WildTree } from "./layout";
 import type { GardenTerrain } from "../garden/layout";
 
-export { wildlandsSuppressesTree, wildRegionAt, WILD_REGIONS } from "./layout";
+export { wildRegionAt, WILD_REGIONS } from "./layout";
 
 // The three wildlands layers stay separate + independently toggleable (each owns
 // its group); they only share the ground-cover infra (wind, displacers, chunked
@@ -45,7 +44,7 @@ export type Wildlands = {
 export type WildlandsExclusions = {
   /** Keep animated blades and flowers off authored play surfaces. */
   groundcover?: (x: number, z: number) => boolean;
-  /** Keep procedural trees off tees/fairways/greens while retaining rough trees. */
+  /** Keep authored trees off tees/fairways/greens while retaining rough trees. */
   trees?: (x: number, z: number) => boolean;
 };
 
@@ -61,7 +60,6 @@ export function createWildlands(map: GardenTerrain, exclusions: WildlandsExclusi
     name: "wildlands_trees",
     chunkSize: 176,
     visibleDistance: 380, // small trees at range read as noise; cull tighter for GPU
-    farCastShadow: false,
     // Kill LOD pop: the near hero clones reach OUT PAST lod2Dist (78 m), so by
     // the time a clone hands off to the instanced far tier it is already showing
     // the same LOD2 geometry — the swap is invisible. Clones on LOD2 are cheap
@@ -75,7 +73,6 @@ export function createWildlands(map: GardenTerrain, exclusions: WildlandsExclusi
     name: "buena_vista_trees",
     chunkSize: 150,
     visibleDistance: 1050,
-    farCastShadow: false,
     nearRadius: 96,
     nearExitRadius: 110,
     nearMax: 36

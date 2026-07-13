@@ -14,8 +14,8 @@
       // an InstancedMesh's instance matrix before positionNode, so fading with
       // `positionLocal * fade` also scales the absolute instance translation. At a
       // large coordinate the half-faded blade/bloom then flies thousands of metres
-      // toward the origin. This fixture renders the real app grass, flower, and
-      // vendored grass positionNode graphs at fade = 1, 0.5, and 0.
+      // toward the origin. This fixture renders the real shared grass and flower
+      // positionNode graphs at fade = 1, 0.5, and 0.
       import * as THREE from "three/webgpu";
       import { color } from "three/tsl";
       import {
@@ -25,7 +25,6 @@
         writeGrassMesh
       } from "/src/world/groundcover/bladeGrass.ts";
       import { createFlowerRing } from "/src/world/wildlands/flowerRing.ts";
-      import { buildGrass as buildVendorGrass } from "/vendor/SeedThree/src/core/grass.js";
 
       const W = 320;
       const H = 320;
@@ -233,41 +232,6 @@
         flower.count = 1;
         scene.add(flowers.group);
 
-        // Vendored SeedThree had the same stale origin-scaling expression. Its
-        // density fade is rank-based rather than reach-based, but we can drive
-        // the exact production graph deterministically through the exposed dev
-        // field and its production per-instance attributes.
-        const vendorGrass = buildVendorGrass({
-          sampler: { heightAt: () => 0, rocknessAt: () => 0, R: 8 },
-          budget: 64,
-          densityCeiling: 1,
-          clearRadius: 0,
-          cellSize: 8,
-          dynamic: false
-        });
-        const vendorField = window.__grassFields.at(-1);
-        const vendorMeshes = vendorGrass.children.filter((child) => child.isInstancedMesh);
-        const vendor = vendorMeshes[0];
-        for (const mesh of vendorMeshes) mesh.count = 0;
-        vendor.material.colorNode = color(0x46d8ff);
-        vendor.material.emissiveNode = color(0x46d8ff);
-        const vendorDummy = new THREE.Object3D();
-        vendorDummy.position.copy(ANCHOR);
-        vendorDummy.rotation.y = -0.39;
-        vendorDummy.scale.set(1.5, 1.3, 1.5);
-        vendorDummy.updateMatrix();
-        vendorDummy.matrix.toArray(vendor.instanceMatrix.array, 0);
-        vendor.instanceMatrix.needsUpdate = true;
-        const vendorTint = vendor.geometry.getAttribute("aTint");
-        const vendorAnchor = vendor.geometry.getAttribute("aGrassAnchor");
-        vendorTint.setXYZW(0, 1, 1, 1, 0);
-        vendorAnchor.setXYZW(0, ANCHOR.x, ANCHOR.y, ANCHOR.z, 0);
-        vendorTint.needsUpdate = true;
-        vendorAnchor.needsUpdate = true;
-        vendorField.camXZU.value.set(ANCHOR.x, ANCHOR.z);
-        vendor.count = 1;
-        scene.add(vendorGrass);
-
         const target = new THREE.RenderTarget(W, H, {
           type: THREE.UnsignedByteType,
           colorSpace: THREE.SRGBColorSpace,
@@ -277,7 +241,6 @@
         async function renderSample(system, fade) {
           grass.visible = system === "grass";
           flowers.group.visible = system === "flower";
-          vendorGrass.visible = system === "vendor";
           if (system === "grass") {
             const focus = focusForFade(GRASS_REACH, fade);
             grassState.focus.copy(focus);
@@ -286,12 +249,6 @@
             // update() always moves the private per-ring focus uniform before its
             // resample throttle / outside-region early return.
             flowers.update({ x: focus.x, z: focus.y });
-          } else {
-            // At zero distance the default first density ring is 0.9 and this
-            // fixture's density ceiling is 1. Fade = (.9-rank)/(.9*.15).
-            const rank = fade >= 1 ? 0 : 0.9 * (1 - fade * 0.15);
-            vendorTint.setW(0, rank);
-            vendorTint.needsUpdate = true;
           }
           renderer.setRenderTarget(target);
           await renderer.renderAsync(scene, camera);
@@ -301,16 +258,13 @@
 
         const grassSamples = [];
         const flowerSamples = [];
-        const vendorSamples = [];
         for (const fade of [1, 0.5, 0]) grassSamples.push(await renderSample("grass", fade));
         for (const fade of [1, 0.5, 0]) flowerSamples.push(await renderSample("flower", fade));
-        for (const fade of [1, 0.5, 0]) vendorSamples.push(await renderSample("vendor", fade));
 
         renderer.setRenderTarget(null);
         const systems = [
           verifyTriplet("grass", grassSamples),
-          verifyTriplet("flower", flowerSamples),
-          verifyTriplet("vendor grass", vendorSamples)
+          verifyTriplet("flower", flowerSamples)
         ];
         const result = {
           ok: systems.every((system) => system.ok),
@@ -326,7 +280,6 @@
 
         target.dispose();
         grassGeometry.dispose();
-        vendorGrass.userData.dispose?.();
         renderer.dispose();
       }
 

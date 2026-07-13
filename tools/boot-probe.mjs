@@ -118,7 +118,9 @@ async function runOnce(chrome, serverUrl, runIdx) {
     await c.send("Emulation.setDeviceMetricsOverride", { width: W, height: H, deviceScaleFactor: 1, mobile: false });
     await c.send("Page.addScriptToEvaluateOnNewDocument", { source: POLLER });
     // fullfps: webdriver rAF throttle would slow the settle drain to 20fps
-    await c.send("Page.navigate", { url: `${serverUrl}/?startscreen=1&fullfps` });
+    // `profile` enables low-overhead subsystem timing such as render-warmup
+    // stage marks without changing the boot or rendering path.
+    await c.send("Page.navigate", { url: `${serverUrl}/?startscreen=1&fullfps&profile` });
 
     const t0 = Date.now();
     let ready = null;
@@ -139,7 +141,7 @@ async function runOnce(chrome, serverUrl, runIdx) {
     }))`);
     const nav = await ev(c, `(() => { const n = performance.getEntriesByType('navigation')[0]; return n ? { ttfb: Math.round(n.responseStart), domInteractive: Math.round(n.domInteractive) } : null; })()`);
     const boots = consoleLog
-      .filter((l) => l.txt.startsWith("[boot]"))
+      .filter((l) => l.txt.startsWith("[boot]") || l.txt.startsWith("[warmup]"))
       .map((l) => ({ rel: timeOrigin ? Math.round(l.ts - timeOrigin) : null, txt: l.txt }));
     const errors = consoleLog.filter((l) => l.type === "error" || l.type === "exception").map((l) => l.txt);
     c.close();

@@ -2,6 +2,7 @@ import type * as THREE from "three/webgpu";
 import type { Physics } from "../core/physics";
 import type { WorldMap } from "../world/heightmap";
 import type { Input } from "../core/input";
+import { CAR_RIDE_HEIGHT } from "../vehicles/car/mesh";
 
 export type PlayerMode = "walk" | "drive" | "scooter" | "plane" | "boat" | "speedboat" | "drone" | "board" | "surf" | "bird";
 
@@ -13,7 +14,8 @@ export type Cockpit = {
 };
 
 /** Body + handling of whatever the player is currently driving (default sports
- * car, or a ridden animal — factors scale the drive tunables). */
+ * car, or a ridden animal — factors scale the drive tunables).
+ * `rideHeight` is `-mesh.userData.contactY` (chassis centre above ground). */
 export type DriveSpec = {
   halfExtents: [number, number, number];
   rideHeight: number;
@@ -26,7 +28,7 @@ export type DriveSpec = {
 
 export const DEFAULT_DRIVE_SPEC: DriveSpec = {
   halfExtents: [1.15, 0.45, 2.3],
-  rideHeight: 0.85,
+  rideHeight: CAR_RIDE_HEIGHT,
   maxFactor: 1,
   accelFactor: 1,
   steerFactor: 1

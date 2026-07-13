@@ -1,5 +1,6 @@
 import * as THREE from "three/webgpu";
 import { LIGHT_SCALE } from "../../config";
+import { applyVehicleShadowPolicy } from "../shadows";
 
 // Camera drone, front is local -Z. Rotor groups live in userData.rotors with a
 // per-rotor spin sign in userData.dir; DroneController spins them. Firework
@@ -18,6 +19,9 @@ export function buildDroneMesh(): THREE.Group {
   // body: flat pod with a raised spine, battery bulge at the rear
   const body = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.28, 1.15), shell);
   g.add(body);
+  // Body + four arms describe the complete quad silhouette in five cheap
+  // opaque draws. Rotor discs/blades, launch hardware, and lamps stay out.
+  const shadowCasters: THREE.Mesh[] = [body];
   const spine = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.12, 0.9), shell);
   spine.position.y = 0.2;
   g.add(spine);
@@ -52,6 +56,7 @@ export function buildDroneMesh(): THREE.Group {
     arm.position.set(ax * 0.55, 0.02, az * 0.55);
     arm.rotation.y = Math.atan2(ax, az);
     g.add(arm);
+    shadowCasters.push(arm);
     const pod = new THREE.Mesh(podGeo, dark);
     pod.position.set(ax, 0.08, az);
     g.add(pod);
@@ -101,5 +106,6 @@ export function buildDroneMesh(): THREE.Group {
   }
   g.userData.rotors = rotors;
   g.userData.fireworkMounts = fireworkMounts;
+  applyVehicleShadowPolicy(g, shadowCasters);
   return g;
 }

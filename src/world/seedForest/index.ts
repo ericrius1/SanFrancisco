@@ -8,8 +8,8 @@
 //  · slots are grouped into CHUNKS (~176 m): one instanced far set per chunk,
 //    with a real per-mesh boundingSphere so regular frustum culling works,
 //    plus a distance cutoff so a hillside grove 2 km away costs nothing.
-//  · far tier casts NO shadows by default (shadows are this app's #1 GPU cost;
-//    the few near hero clones still cast, which is what your eye checks).
+//  · beauty LODs never cast. A separate static trunk+crown proxy follows the
+//    same chunk visibility gate and remains unchanged across near/far rebins.
 //  · the near-tier rebin self-drives off a tiny always-rendered driver mesh
 //    (the garden drove off a frustumCulled=false far mesh; chunked meshes can
 //    all be culled while near clones must still manage themselves).
@@ -17,6 +17,12 @@
 // Consumers hand in designs + slot lists; the engine owns rendering + LOD.
 
 import * as THREE from "three/webgpu";
+import {
+  createTreeShadowProxy,
+  measureTreeShadowProfile,
+  type TreeShadowInstance,
+  type TreeShadowProxy
+} from "../shadows/treeShadowProxy";
 import { growTemplate, type GrownTemplate, type SeedTreeDesignSpec } from "./templates";
 
 export type { SeedTreeDesignSpec } from "./templates";
@@ -29,6 +35,8 @@ export type SeedForestSlot = {
   scale: number;
   /** index into the designs array passed to createSeedForest */
   design: number;
+  /** false keeps this individual in the instanced tier at every distance. */
+  nearClone?: boolean;
 };
 
 export type SeedForestOptions = {
@@ -37,11 +45,14 @@ export type SeedForestOptions = {
   chunkSize?: number;
   /** chunks beyond this distance from the camera are hidden entirely (default 520) */
   visibleDistance?: number;
-  /** far tier shadow casting (default false — near clones always cast) */
-  farCastShadow?: boolean;
   nearRadius?: number; // default 58
   nearExitRadius?: number; // default 66
   nearMax?: number; // default 24
+  /** Optional instanced-far geometry diet. Hero tree geometry is untouched. */
+  farCardKeep?: number;
+  farConeKeep?: number;
+  farBarkKeep?: number;
+  farBarkAreaFloor?: number;
 };
 
 export type SeedForest = {
@@ -50,6 +61,8 @@ export type SeedForest = {
   ready: Promise<void>;
   /** call once per frame with the view position — drives chunk distance culling */
   update(focus: { x: number; z: number }): void;
+  /** Dispose per-forest far geometry, shadow proxies and driver resources. */
+  dispose(): void;
   stats: { designs: number; instances: number; chunks: number; farTriangles: number; nearActive(): number };
 };
 
@@ -74,6 +87,68 @@ type FarBranchBucket = { im: THREE.InstancedMesh; base: THREE.Matrix4 };
 type FarCardBucket = { im: THREE.InstancedMesh; k: number; base: THREE.Matrix4; cardMats: Float32Array };
 type FarSet = { branches: FarBranchBucket[]; cards: FarCardBucket[]; triangles: number };
 
+type FarGeometryPolicy = {
+  cardKeep: number;
+  coneKeep: number;
+  barkKeep: number;
+  barkAreaFloor: number;
+};
+
+function pickFarSubset(count: number, keep: number): number[] {
+  const selected: number[] = [];
+  for (let index = 0; index < count; index++) {
+    if (((index * 0.6180339887498949) % 1) < keep) selected.push(index);
+  }
+  return selected.length > 0 ? selected : [0];
+}
+
+const _areaA = new THREE.Vector3();
+const _areaB = new THREE.Vector3();
+const _areaC = new THREE.Vector3();
+
+function decimateFarBark(
+  source: THREE.BufferGeometry,
+  keepFraction: number,
+  areaFloor: number
+): THREE.BufferGeometry {
+  const geometry = source.clone();
+  const index = geometry.index;
+  const position = geometry.getAttribute("position") as THREE.BufferAttribute | undefined;
+  if (!index || !position || keepFraction >= 1) return geometry;
+  const triangleCount = index.count / 3;
+  const areas = new Float32Array(triangleCount);
+  let totalArea = 0;
+  for (let triangle = 0; triangle < triangleCount; triangle++) {
+    _areaA.fromBufferAttribute(position, index.getX(triangle * 3));
+    _areaB.fromBufferAttribute(position, index.getX(triangle * 3 + 1)).sub(_areaA);
+    _areaC.fromBufferAttribute(position, index.getX(triangle * 3 + 2)).sub(_areaA);
+    const area = _areaB.cross(_areaC).length() * 0.5;
+    areas[triangle] = area;
+    totalArea += area;
+  }
+  const order = Array.from({ length: triangleCount }, (_, triangle) => triangle)
+    .sort((a, b) => areas[b] - areas[a]);
+  const minimum = Math.ceil(triangleCount * keepFraction);
+  const targetArea = totalArea * areaFloor;
+  let kept = 0;
+  let accumulated = 0;
+  while (kept < triangleCount && (kept < minimum || accumulated < targetArea)) {
+    accumulated += areas[order[kept]];
+    kept++;
+  }
+  if (kept >= triangleCount) return geometry;
+  const sourceIndex = index.array;
+  const compact = new (sourceIndex.constructor as new (length: number) => typeof sourceIndex)(kept * 3);
+  for (let target = 0; target < kept; target++) {
+    const sourceOffset = order[target] * 3;
+    compact[target * 3] = sourceIndex[sourceOffset];
+    compact[target * 3 + 1] = sourceIndex[sourceOffset + 1];
+    compact[target * 3 + 2] = sourceIndex[sourceOffset + 2];
+  }
+  geometry.setIndex(new THREE.BufferAttribute(compact, 1));
+  return geometry;
+}
+
 const _wSlot = new THREE.Matrix4();
 const _wTmp = new THREE.Matrix4();
 const _wCard = new THREE.Matrix4();
@@ -92,9 +167,9 @@ function buildFarSet(
   lod2: THREE.Object3D,
   slots: Slot[],
   name: string,
-  castShadow: boolean,
   sphere: THREE.Sphere,
-  parent: THREE.Group
+  parent: THREE.Group,
+  policy: FarGeometryPolicy
 ): FarSet {
   const N = slots.length;
   const branches: FarBranchBucket[] = [];
@@ -112,36 +187,56 @@ function buildFarSet(
 
     if ((mesh as THREE.InstancedMesh).isInstancedMesh) {
       const src = mesh as THREE.InstancedMesh;
-      const k = src.count;
+      const sourceCount = src.count;
+      const isCards = mesh.name === "foliage";
+      const isCone = /^cone\d+$/.test(mesh.name);
+      const keep = isCards ? policy.cardKeep : isCone ? policy.coneKeep : 1;
+      const selected = keep < 1 ? pickFarSubset(sourceCount, keep) : null;
+      const k = selected?.length ?? sourceCount;
       const total = k * N;
       const geo = src.geometry.clone();
+      if (isCards && selected) {
+        const grow = 1 / Math.sqrt(Math.max(0.01, policy.cardKeep));
+        geo.scale(grow, grow, grow);
+      }
       for (const [attrName, attr] of Object.entries(src.geometry.attributes)) {
         const a = attr as THREE.InstancedBufferAttribute;
         if (!a.isInstancedBufferAttribute) continue;
+        const one = new (a.array.constructor as new (n: number) => typeof a.array)(k * a.itemSize);
+        for (let item = 0; item < k; item++) {
+          const sourceItem = selected?.[item] ?? item;
+          const sourceOffset = sourceItem * a.itemSize;
+          for (let component = 0; component < a.itemSize; component++) {
+            one[item * a.itemSize + component] = a.array[sourceOffset + component];
+          }
+        }
         const arr = new (a.array.constructor as new (n: number) => typeof a.array)(total * a.itemSize);
         for (let slot = 0; slot < N; slot++) {
-          arr.set(a.array.subarray(0, k * a.itemSize), slot * k * a.itemSize);
+          arr.set(one, slot * k * a.itemSize);
         }
         geo.setAttribute(attrName, new THREE.InstancedBufferAttribute(arr, a.itemSize));
       }
       const cardMats = new Float32Array(k * 16);
       for (let j = 0; j < k; j++) {
-        src.getMatrixAt(j, card);
+        src.getMatrixAt(selected?.[j] ?? j, card);
         cardMats.set(card.elements, j * 16);
       }
       const im = new THREE.InstancedMesh(geo, src.material, total);
       const bucket: FarCardBucket = { im, k, base: mesh.matrixWorld.clone(), cardMats };
       for (let slot = 0; slot < N; slot++) writeFarCardSlot(bucket, slots[slot], slot, false);
       im.name = `${name}_${mesh.name || "cards"}`;
-      im.castShadow = castShadow;
-      im.receiveShadow = true;
+      // Alpha/card geometry is both unstable in wind and expensive in depth.
+      // The static tree proxy owns shadow casting and far cards do not sample it.
+      im.castShadow = false;
+      im.receiveShadow = false;
       im.boundingSphere = sphere.clone(); // per-chunk sphere → real frustum culling
       im.frustumCulled = true;
       parent.add(im);
       cards.push(bucket);
       triangles += geoTris * total;
     } else {
-      const im = new THREE.InstancedMesh(mesh.geometry, mesh.material, N);
+      const farGeometry = decimateFarBark(mesh.geometry, policy.barkKeep, policy.barkAreaFloor);
+      const im = new THREE.InstancedMesh(farGeometry, mesh.material, N);
       const bucket: FarBranchBucket = { im, base: mesh.matrixWorld.clone() };
       for (let slot = 0; slot < N; slot++) {
         slotMatrix(slots[slot], slotM, slots[slot].scale);
@@ -149,13 +244,14 @@ function buildFarSet(
         im.setMatrixAt(slot, tmp);
       }
       im.name = `${name}_${mesh.name || "bark"}`;
-      im.castShadow = castShadow;
+      im.castShadow = false;
       im.receiveShadow = true;
       im.boundingSphere = sphere.clone();
       im.frustumCulled = true;
       parent.add(im);
       branches.push(bucket);
-      triangles += geoTris * N;
+      const farTris = (farGeometry.index ? farGeometry.index.count : farGeometry.attributes.position.count) / 3;
+      triangles += farTris * N;
     }
   });
   return { branches, cards, triangles };
@@ -185,6 +281,7 @@ type Chunk = {
   cz: number;
   /** per design id: the slots of that design in this chunk (chunk-local order) */
   byDesign: Map<number, { slots: Slot[]; farSet: FarSet }>;
+  shadowProxy: TreeShadowProxy | null;
 };
 
 // ---- public --------------------------------------------------------------------
@@ -199,9 +296,16 @@ export function createSeedForest(
   const nearRadius = options.nearRadius ?? 58;
   const nearExit = options.nearExitRadius ?? 66;
   const nearMax = options.nearMax ?? 24;
+  const farPolicy: FarGeometryPolicy = {
+    cardKeep: THREE.MathUtils.clamp(options.farCardKeep ?? 1, 0.01, 1),
+    coneKeep: THREE.MathUtils.clamp(options.farConeKeep ?? 1, 0.01, 1),
+    barkKeep: THREE.MathUtils.clamp(options.farBarkKeep ?? 1, 0.01, 1),
+    barkAreaFloor: THREE.MathUtils.clamp(options.farBarkAreaFloor ?? 1, 0.01, 1)
+  };
 
   const group = new THREE.Group();
   group.name = options.name;
+  let disposed = false;
 
   const stats = {
     designs: 0,
@@ -273,6 +377,9 @@ export function createSeedForest(
         console.error(`[seedForest:${options.name}] design ${designs[d].species} failed to grow:`, e);
       }
     }
+    const shadowProfiles = templates.map((template) =>
+      template ? measureTreeShadowProfile(template.lod2) : null
+    );
     let instances = 0;
     let tris = 0;
     let designUsed = new Set<number>();
@@ -282,7 +389,8 @@ export function createSeedForest(
         group: new THREE.Group(),
         cx: 0,
         cz: 0,
-        byDesign: new Map()
+        byDesign: new Map(),
+        shadowProxy: null
       };
       chunk.group.name = `${options.name}_${key}`;
       // chunk bounding sphere over slot extents (+canopy headroom)
@@ -303,6 +411,7 @@ export function createSeedForest(
       );
 
       const byDesign = new Map<number, Slot[]>();
+      const shadowInstances: TreeShadowInstance[] = [];
       for (const s of list) {
         const arr = byDesign.get(s.design);
         if (arr) arr.push(s);
@@ -311,25 +420,59 @@ export function createSeedForest(
       for (const [d, dSlots] of byDesign) {
         const t = templates[d];
         if (!t) continue;
+        const shadowProfile = shadowProfiles[d];
         dSlots.forEach((s, i) => (s.index = i));
         const farSet = buildFarSet(
           t.lod2,
           dSlots,
           `${options.name}_${designs[d].species}`,
-          options.farCastShadow ?? false,
           sphere,
-          chunk.group
+          chunk.group,
+          farPolicy
         );
         chunk.byDesign.set(d, { slots: dSlots, farSet });
         instances += dSlots.length;
         tris += farSet.triangles;
         designUsed.add(d);
+        if (shadowProfile) {
+          for (const slot of dSlots) {
+            shadowInstances.push({
+              x: slot.x,
+              y: slot.y,
+              z: slot.z,
+              yaw: slot.yaw,
+              scale: slot.scale,
+              profile: shadowProfile
+            });
+          }
+        }
         if (t.design.nearClones !== false) {
-          for (const s of dSlots) allNearSlots.push({ slot: s, chunk });
+          for (const s of dSlots) {
+            if (s.nearClone !== false) allNearSlots.push({ slot: s, chunk });
+          }
         }
       }
-      chunks.push(chunk);
-      group.add(chunk.group);
+      if (shadowInstances.length > 0) {
+        chunk.shadowProxy = createTreeShadowProxy({
+          name: `${options.name}_shadow_${key}`,
+          instances: shadowInstances,
+          cellSize: Math.min(96, chunkSize)
+        });
+        // Child placement preserves both the forest master gate and the
+        // existing chunk distance gate. Its own microcells remain frustum-cullable.
+        chunk.group.add(chunk.shadowProxy.group);
+      }
+      if (disposed) {
+        for (const { farSet } of chunk.byDesign.values()) {
+          for (const branch of farSet.branches) branch.im.geometry.dispose();
+          for (const cards of farSet.cards) cards.im.geometry.dispose();
+        }
+        chunk.shadowProxy?.dispose();
+        chunk.group.clear();
+      } else {
+        chunks.push(chunk);
+        group.add(chunk.group);
+      }
     }
     stats.designs = designUsed.size;
     stats.instances = instances;
@@ -421,6 +564,9 @@ export function createSeedForest(
     }
   };
   group.add(driver);
+  group.userData.disposeTreeShadowProxies = () => {
+    for (const chunk of chunks) chunk.shadowProxy?.dispose();
+  };
 
   // ---- chunk distance culling --------------------------------------------------
 
@@ -437,7 +583,26 @@ export function createSeedForest(
     group,
     ready,
     update(focus) {
+      if (disposed) return;
       applyDistanceCull(focus.x, focus.z);
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      for (const chunk of chunks) {
+        for (const { farSet } of chunk.byDesign.values()) {
+          for (const branch of farSet.branches) branch.im.geometry.dispose();
+          for (const cards of farSet.cards) cards.im.geometry.dispose();
+        }
+        chunk.shadowProxy?.dispose();
+      }
+      driver.geometry.dispose();
+      const driverMaterials = Array.isArray(driver.material) ? driver.material : [driver.material];
+      for (const material of driverMaterials) material.dispose();
+      active.clear();
+      for (const pool of pools) pool.length = 0;
+      group.removeFromParent();
+      group.clear();
     },
     stats
   };

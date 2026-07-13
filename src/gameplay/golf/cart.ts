@@ -1,6 +1,7 @@
 import * as THREE from "three/webgpu";
 import { LIGHT_SCALE } from "../../config";
 import type { Cockpit, DriveSpec } from "../../player/types";
+import { enableShadowLayer, SHADOW_LAYERS } from "../../world/shadows/shadowLayers";
 
 /**
  * A stylized two-seat electric golf cart, built to ride the shared drive
@@ -232,6 +233,10 @@ export function buildGolfCartMesh(): THREE.Group {
   // driver sits left cushion; passenger right. Wheel is at the driver's hands.
   g.userData.cockpit = { seat: [-0.29, 0.42, 0.2], wheel: [0.34, 0.56, 0.02] } satisfies Cockpit;
   g.userData.passengerSeat = [0.29, 0.42, 0.2];
+  g.traverse((object) => {
+    const mesh = object as THREE.Mesh;
+    if (mesh.isMesh && mesh.castShadow) enableShadowLayer(mesh, SHADOW_LAYERS.HERO_DYNAMIC);
+  });
   return g;
 }
 

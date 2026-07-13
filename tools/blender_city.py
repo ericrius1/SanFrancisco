@@ -81,6 +81,7 @@ ALC_RUST = srgb_to_linear((152, 108, 82))
 ALC_DARK = srgb_to_linear((90, 84, 74))
 
 DATA = {}
+TERRAIN_HEIGHT_PROCESS_VERSION = 1
 
 
 def log(msg):
@@ -107,8 +108,115 @@ def load_data():
     sf = np.fromfile(SURFACE_BIN, dtype=np.uint8).reshape(H, W)
     DATA["height"] = hm
     DATA["surface"] = sf
+    # Ocean Beach used to be relaxed only in Blender memory, so the beauty GLB
+    # could differ by metres from the runtime heightmap/collision surface. Bake
+    # that operation into the committed heightmap exactly once, then immediately
+    # decode the quantized result back into DATA so every exported vertex matches
+    # what WorldMap will sample.
+    if terrain_meta.get("heightProcessVersion") != TERRAIN_HEIGHT_PROCESS_VERSION:
+        smooth_coast()
+        persist_processed_heightmap()
+    else:
+        DATA["coast_smoothed"] = True
+        log(f"terrain height process v{TERRAIN_HEIGHT_PROCESS_VERSION}: already canonical")
     log(f"loaded city.json tiles={len(DATA['city']['tiles'])} heightmap {W}x{H} in {time.time()-t0:.1f}s")
     return {"tiles": len(DATA["city"]["tiles"])}
+
+
+def _dilate(mask):
+    """4-neighbour binary dilation (no scipy dependency)."""
+    out = mask.copy()
+    out[1:, :] |= mask[:-1, :]
+    out[:-1, :] |= mask[1:, :]
+    out[:, 1:] |= mask[:, :-1]
+    out[:, :-1] |= mask[:, 1:]
+    return out
+
+
+def _box_blur(a, radius=1):
+    """Separable box blur over a float array, `radius` cells each way, edge-clamped."""
+    out = a.astype(np.float32)
+    for _ in range(radius):
+        acc = out.copy()
+        acc[1:, :] += out[:-1, :]
+        acc[:-1, :] += out[1:, :]
+        acc[:, 1:] += out[:, :-1]
+        acc[:, :-1] += out[:, 1:]
+        cnt = np.full(out.shape, 5.0, np.float32)
+        cnt[0, :] -= 1; cnt[-1, :] -= 1; cnt[:, 0] -= 1; cnt[:, -1] -= 1
+        out = acc / cnt
+    return out
+
+
+# Coastal relax: how far to grow the sand band, how hard to smooth, and the
+# height window it applies over (never touch the deep bay floor or high bluffs).
+COAST_DILATE = 7
+COAST_SMOOTH_ITERS = 5
+COAST_HEIGHT_WINDOW = 20.0
+
+
+def smooth_coast():
+    """Relax the height field across the sandy coastal band so beaches read as a
+    clean shoaling slope instead of blocky 8/16 m steps — the low-poly beach that
+    lets the flat ocean clip through. Localized to sand plus the adjacent shallow
+    water and backshore, feathered so inland terrain and the deep bay are left
+    exactly as-is. Idempotent + cached. Feeds BOTH the visual terrain mesh and
+    (when re-encoded) the physics heightmap, so ground and water stay matched."""
+    if DATA.get("coast_smoothed"):
+        return DATA["coast_band"]
+    hm = DATA["height"]
+    sf = DATA["surface"]
+    band = sf == 2  # sand
+    for _ in range(COAST_DILATE):
+        band = _dilate(band)
+    band &= np.abs(hm) < COAST_HEIGHT_WINDOW  # keep off the deep bay + tall bluffs
+    feather = _box_blur(band.astype(np.float32), 3)  # soft 0..1 edge
+    sm = hm
+    for _ in range(COAST_SMOOTH_ITERS):
+        sm = _box_blur(sm, 1)
+    DATA["height"] = hm * (1 - feather) + sm * feather
+    DATA["coast_band"] = band
+    DATA["coast_smoothed"] = True
+    log(f"coast smooth: relaxed {int(band.sum())} coastal cells")
+    return band
+
+
+def persist_processed_heightmap():
+    """Atomically commit Blender's processed height surface for runtime parity.
+
+    This is part of the terrain bake, not a legacy migration: prepare-city emits
+    a fresh unprocessed DEM and removes the marker; the next Blender terrain bake
+    applies the one current process and writes the current schema again.
+    """
+    terrain = DATA["meta"].setdefault("terrain", {})
+    hm = DATA["height"]
+    encoding = terrain.get("heightEncoding")
+    height_tmp = HEIGHT_BIN + ".tmp"
+    if encoding == "int16":
+        base = float(terrain["heightBase"])
+        quant = float(terrain["heightQuant"])
+        encoded = np.rint((hm - base) / quant)
+        if encoded.min() < np.iinfo(np.int16).min or encoded.max() > np.iinfo(np.int16).max:
+            raise ValueError("processed heightfield exceeds int16 terrain encoding")
+        encoded = encoded.astype(np.int16)
+        encoded.tofile(height_tmp)
+        # Use the exact quantized samples for the mesh that runtime will decode.
+        DATA["height"] = base + encoded.astype(np.float32) * quant
+    else:
+        np.asarray(hm, dtype=np.float32).tofile(height_tmp)
+        DATA["height"] = np.asarray(hm, dtype=np.float32)
+    os.replace(height_tmp, HEIGHT_BIN)
+
+    terrain["heightProcessVersion"] = TERRAIN_HEIGHT_PROCESS_VERSION
+    meta_tmp = META_JSON + ".tmp"
+    with open(meta_tmp, "w") as f:
+        json.dump(DATA["meta"], f, indent=2)
+        f.write("\n")
+    os.replace(meta_tmp, META_JSON)
+    log(
+        f"terrain height process v{TERRAIN_HEIGHT_PROCESS_VERSION}: "
+        "committed canonical visual/physics heightmap"
+    )
 
 
 def sample_height(xs, zs):
@@ -166,10 +274,22 @@ def ensure_collection(name, parent=None):
     return coll
 
 
-def make_mesh_object(name, verts, faces, corner_colors, collection, vert_bids=None):
+def make_mesh_object(
+    name,
+    verts,
+    faces,
+    corner_colors,
+    collection,
+    vert_bids=None,
+    smooth_face_count=0,
+    corner_normals=None,
+):
     """verts: [(bx,by,bz)...] blender coords; faces: index lists;
     corner_colors: flat list of (r,g,b,1) per face corner, same order as faces.
-    vert_bids: optional per-vertex float building index -> exported as _BID."""
+    vert_bids: optional per-vertex float building index -> exported as _BID.
+    smooth_face_count: leading polygons that use interpolated/custom normals.
+    corner_normals: optional per-face-corner custom normals, aligned with loops.
+    """
     mesh = bpy.data.meshes.new(name)
     mesh.from_pydata(verts, [], faces)
     mesh.update()
@@ -180,6 +300,18 @@ def make_mesh_object(name, verts, faces, corner_colors, collection, vert_bids=No
     if vert_bids is not None:
         attr = mesh.attributes.new("_BID", "FLOAT", "POINT")
         attr.data.foreach_set("value", np.asarray(vert_bids, dtype=np.float32))
+    if smooth_face_count:
+        for poly in mesh.polygons:
+            poly.use_smooth = poly.index < smooth_face_count
+    if corner_normals is not None:
+        if len(corner_normals) != len(mesh.loops):
+            raise ValueError(
+                f"{name}: {len(corner_normals)} custom corner normals != {len(mesh.loops)} loops"
+            )
+        # Zero vectors preserve Blender's generated face normal, which is what
+        # the hard chunk skirts want. Terrain top loops carry deterministic
+        # global heightfield normals so adjacent chunks shade identically.
+        mesh.normals_split_custom_set(corner_normals)
     mesh.materials.append(get_material())
     obj = bpy.data.objects.new(name, mesh)
     collection.objects.link(obj)
@@ -440,81 +572,24 @@ def build_tile(key, collection=None):
 # ------------------------------------------------------------------- terrain
 
 TERRAIN_CHUNK = 3200
-TERRAIN_STEP = 16
-# Refinement: a 16m quad splits into four 8m quads when the heightmap's odd
-# (8m) samples deviate from the quad's own linear surface by more than this.
-# The physics ground follows the 8m heightmap exactly, so unrefined error is
-# what the player feels as floating/sinking against the visual mesh.
-REFINE_ERR = 0.25
-# park overlays drape 0.15 above the heightmap — terrain under them must stay
-# tighter than the lift or it pokes through the lawn
-REFINE_ERR_PARK = 0.12
-
-
-def _quad_refine_flags():
-    """Per-16m-quad split decision on the *global* quad grid — a pure function
-    of the heightmap, so neighbouring chunks agree about their shared border
-    and T-junction snapping stays crack-free across chunk seams. Cached."""
-    if "refine" in DATA:
-        return DATA["refine"]
-    hm = DATA["height"]
-    sf = DATA["surface"]
-    H, W = hm.shape
-    QX = (W - 1) // 2
-    QY = (H - 1) // 2
-    h00 = hm[0 : 2 * QY : 2, 0 : 2 * QX : 2]
-    h20 = hm[0 : 2 * QY : 2, 2 : 2 * QX + 2 : 2]
-    h02 = hm[2 : 2 * QY + 2 : 2, 0 : 2 * QX : 2]
-    h22 = hm[2 : 2 * QY + 2 : 2, 2 : 2 * QX + 2 : 2]
-    m10 = hm[0 : 2 * QY : 2, 1 : 2 * QX + 1 : 2]
-    m12 = hm[2 : 2 * QY + 2 : 2, 1 : 2 * QX + 1 : 2]
-    m01 = hm[1 : 2 * QY + 1 : 2, 0 : 2 * QX : 2]
-    m21 = hm[1 : 2 * QY + 1 : 2, 2 : 2 * QX + 2 : 2]
-    m11 = hm[1 : 2 * QY + 1 : 2, 1 : 2 * QX + 1 : 2]
-    err = np.maximum.reduce(
-        [
-            np.abs(m10 - (h00 + h20) / 2),
-            np.abs(m12 - (h02 + h22) / 2),
-            np.abs(m01 - (h00 + h02) / 2),
-            np.abs(m21 - (h20 + h22) / 2),
-            np.abs(m11 - (h00 + h20 + h02 + h22) / 4),
-        ]
-    )
-    s00 = sf[0 : 2 * QY : 2, 0 : 2 * QX : 2]
-    s20 = sf[0 : 2 * QY : 2, 2 : 2 * QX + 2 : 2]
-    s02 = sf[2 : 2 * QY + 2 : 2, 0 : 2 * QX : 2]
-    s22 = sf[2 : 2 * QY + 2 : 2, 2 : 2 * QX + 2 : 2]
-    s10 = sf[0 : 2 * QY : 2, 1 : 2 * QX + 1 : 2]
-    s12 = sf[2 : 2 * QY + 2 : 2, 1 : 2 * QX + 1 : 2]
-    s01 = sf[1 : 2 * QY + 1 : 2, 0 : 2 * QX : 2]
-    s21 = sf[1 : 2 * QY + 1 : 2, 2 : 2 * QX + 2 : 2]
-    s11 = sf[1 : 2 * QY + 1 : 2, 1 : 2 * QX + 1 : 2]
-    # all 9 samples must be water — a pier strip one cell wide can cross a quad
-    # whose four corners are all bay, and skipping refinement there flattens
-    # the pier's deck row out of the terrain
-    all_water = (
-        (s00 == 3) & (s20 == 3) & (s02 == 3) & (s22 == 3)
-        & (s10 == 3) & (s12 == 3) & (s01 == 3) & (s21 == 3) & (s11 == 3)
-    )
-    any_park = (s00 == 1) | (s20 == 1) | (s02 == 1) | (s22 == 1) | (s11 == 1)
-    thresh = np.where(any_park, REFINE_ERR_PARK, REFINE_ERR)
-    refine = (err > thresh) & ~all_water
-    DATA["refine"] = refine
-    log(f"terrain refine: {int(refine.sum())}/{refine.size} quads split to 8m")
-    return refine
+TERRAIN_STEP = 8
 
 
 def build_terrain_chunk(cx, cz, collection):
-    """cx, cz: chunk index. 16m grid mesh with per-quad 8m refinement where
-    the heightmap curves (T-junction midpoints snap onto the coarse neighbour's
-    straight edge so seams stay closed), plus skirts + vertex colors."""
+    """One full-resolution 8 m heightfield chunk with skirts + vertex colors.
+
+    Every top vertex is a canonical runtime heightmap sample. Custom normals use
+    global central differences, so the top shades smoothly without the per-face
+    normal splits that previously quadrupled many exported positions, and chunk
+    edges receive the same normal from both neighbours. Skirts remain hard/flat.
+    """
     grid = DATA["grid"]
     minx, minz, cell = grid["minX"], grid["minZ"], grid["cellSize"]
     W, H = grid["width"], grid["height"]
     hm = DATA["height"]
     sf = DATA["surface"]
-    refine = _quad_refine_flags()
-    QY, QX = refine.shape
+    QX = W - 1
+    QY = H - 1
     quads_per_chunk = TERRAIN_CHUNK // TERRAIN_STEP
     q0x = cx * quads_per_chunk
     q0y = cz * quads_per_chunk
@@ -526,15 +601,24 @@ def build_terrain_chunk(cx, cz, collection):
     verts = []
     faces = []
     colors = []
+    corner_normals = []
+    vertex_normals = []
     vidx = {}
 
-    def vert(ix, iy, h_override=None):
+    def vert(ix, iy):
         """ix, iy: heightmap (8m) lattice indices. Dedupes shared corners."""
         k = vidx.get((ix, iy))
         if k is None:
-            h = float(hm[iy, ix]) if h_override is None else h_override
             k = len(verts)
-            verts.append((minx + ix * cell, -(minz + iy * cell), h))
+            verts.append((minx + ix * cell, -(minz + iy * cell), float(hm[iy, ix])))
+            x0, x1 = max(0, ix - 1), min(W - 1, ix + 1)
+            y0, y1 = max(0, iy - 1), min(H - 1, iy + 1)
+            dhdx = float(hm[iy, x1] - hm[iy, x0]) / ((x1 - x0) * cell)
+            dhdz = float(hm[y1, ix] - hm[y0, ix]) / ((y1 - y0) * cell)
+            # Blender frame is (game X, -game Z, game Y).
+            nx, ny, nz = -dhdx, dhdz, 1.0
+            inv = 1.0 / math.sqrt(nx * nx + ny * ny + nz * nz)
+            vertex_normals.append((nx * inv, ny * inv, nz * inv))
             vidx[(ix, iy)] = k
         return k
 
@@ -557,41 +641,26 @@ def build_terrain_chunk(cx, cz, collection):
             return (ROCK_COLOR[0], ROCK_COLOR[1], ROCK_COLOR[2], 1.0)
         return (URBAN_GROUND[0], URBAN_GROUND[1], URBAN_GROUND[2], 1.0)
 
-    def is_refined(qx, qy):
-        return 0 <= qx < QX and 0 <= qy < QY and bool(refine[qy, qx])
-
     def emit_quad(ax, ay, bx, by, cx_, cy_, dx, dy):
         # winding matches the old grid: (i,j) (i,j+1) (i+1,j+1) (i+1,j) in
         # blender's mirrored frame keeps normals up
-        faces.append((vert(ax, ay), vert(bx, by), vert(cx_, cy_), vert(dx, dy)))
+        face = (vert(ax, ay), vert(bx, by), vert(cx_, cy_), vert(dx, dy))
+        faces.append(face)
         colors.extend([col_at(ax, ay), col_at(bx, by), col_at(cx_, cy_), col_at(dx, dy)])
+        corner_normals.extend(vertex_normals[i] for i in face)
 
     for qy in range(q0y, q1y):
         for qx in range(q0x, q1x):
-            gx = 2 * qx
-            gy = 2 * qy
-            if not refine[qy, qx]:
-                emit_quad(gx, gy, gx, gy + 2, gx + 2, gy + 2, gx + 2, gy)
-                continue
-            # edge midpoints: true height only if the neighbour across that
-            # edge is refined too; otherwise snap to the straight coarse edge
-            if not is_refined(qx, qy - 1):
-                vert(gx + 1, gy, (float(hm[gy, gx]) + float(hm[gy, gx + 2])) / 2)
-            if not is_refined(qx, qy + 1):
-                vert(gx + 1, gy + 2, (float(hm[gy + 2, gx]) + float(hm[gy + 2, gx + 2])) / 2)
-            if not is_refined(qx - 1, qy):
-                vert(gx, gy + 1, (float(hm[gy, gx]) + float(hm[gy + 2, gx])) / 2)
-            if not is_refined(qx + 1, qy):
-                vert(gx + 2, gy + 1, (float(hm[gy, gx + 2]) + float(hm[gy + 2, gx + 2])) / 2)
-            for sx, sy in ((0, 0), (1, 0), (0, 1), (1, 1)):
-                ix = gx + sx
-                iy = gy + sy
-                emit_quad(ix, iy, ix, iy + 1, ix + 1, iy + 1, ix + 1, iy)
+            emit_quad(qx, qy, qx, qy + 1, qx + 1, qy + 1, qx + 1, qy)
 
     if not faces:
         return None
 
-    # skirts hang from the chunk border ring (including any refined midpoints)
+    top_face_count = len(faces)
+
+    # Skirts hang from the chunk border ring. Their zero custom normals preserve
+    # Blender's hard face normals instead of blending the vertical wall into the
+    # smoothly shaded terrain top.
     skirt_drop = 40.0
 
     def add_skirt(border_keys):
@@ -608,24 +677,33 @@ def build_terrain_chunk(cx, cz, collection):
             c, d = base_idx + t + 1, base_idx + t
             faces.append((d, c, b, a))
             colors.extend([col] * 4)
+            corner_normals.extend([(0.0, 0.0, 0.0)] * 4)
 
-    ix0 = 2 * q0x
-    ix1 = 2 * q1x
-    iy0 = 2 * q0y
-    iy1 = 2 * q1y
+    ix0 = q0x
+    ix1 = q1x
+    iy0 = q0y
+    iy1 = q1y
     add_skirt([(ix, iy0) for ix in range(ix0, ix1 + 1)])
     add_skirt([(ix, iy1) for ix in range(ix0, ix1 + 1)])
     add_skirt([(ix0, iy) for iy in range(iy0, iy1 + 1)])
     add_skirt([(ix1, iy) for iy in range(iy0, iy1 + 1)])
 
-    return make_mesh_object(f"terrain_{cx}_{cz}", verts, faces, colors, collection)
+    return make_mesh_object(
+        f"terrain_{cx}_{cz}",
+        verts,
+        faces,
+        colors,
+        collection,
+        smooth_face_count=top_face_count,
+        corner_normals=corner_normals,
+    )
 
 
 def build_terrain(collection=None):
     grid = DATA["grid"]
     coll = collection or ensure_collection("terrain")
-    n_cx = math.ceil((grid["width"] * grid["cellSize"]) / TERRAIN_CHUNK)
-    n_cz = math.ceil((grid["height"] * grid["cellSize"]) / TERRAIN_CHUNK)
+    n_cx = math.ceil(((grid["width"] - 1) * grid["cellSize"]) / TERRAIN_CHUNK)
+    n_cz = math.ceil(((grid["height"] - 1) * grid["cellSize"]) / TERRAIN_CHUNK)
     made = 0
     for cz in range(int(n_cz)):
         for cx in range(int(n_cx)):
@@ -1555,6 +1633,20 @@ def export_glb(objects, path):
     )
 
 
+def export_terrain():
+    """Export only terrain chunks after a terrain-only rebuild."""
+    os.makedirs(TILES_OUT, exist_ok=True)
+    tcoll = bpy.data.collections.get("terrain")
+    if not tcoll:
+        return 0
+    count = 0
+    for obj in tcoll.objects:
+        export_glb([obj], os.path.join(TILES_OUT, f"{obj.name}.glb"))
+        count += 1
+    log(f"terrain export: {count} chunks")
+    return count
+
+
 def export_all():
     os.makedirs(TILES_OUT, exist_ok=True)
     t0 = time.time()
@@ -1565,10 +1657,7 @@ def export_all():
             continue
         export_glb(list(coll.objects), os.path.join(TILES_OUT, f"tile_{key}.glb"))
     # terrain chunks individually
-    tcoll = bpy.data.collections.get("terrain")
-    if tcoll:
-        for obj in tcoll.objects:
-            export_glb([obj], os.path.join(TILES_OUT, f"{obj.name}.glb"))
+    export_terrain()
     wcoll = bpy.data.collections.get("water")
     if wcoll and wcoll.objects:
         export_glb(list(wcoll.objects), os.path.join(TILES_OUT, "water.glb"))

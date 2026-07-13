@@ -1,6 +1,6 @@
 import { Pane } from "tweakpane";
 import type { BladeApi, FolderApi } from "tweakpane";
-import type * as THREE from "three/webgpu";
+import * as THREE from "three/webgpu";
 import {
   CAMERA_TUNING,
   CONFIG,
@@ -26,8 +26,9 @@ import type { Fireworks } from "../fx/fireworks";
 import type { TileStreamer } from "../world/tiles";
 import { TUNABLES_UPDATED_EVENT, withTweakBindingEventsSuppressed, saveTweak } from "../core/persist";
 import { BUSKER_FIREFLY_TUNING } from "../gameplay/buskers/tuning";
+import { VEGETATION_TUNING, applyVegetationTuning } from "../world/vegetation/tuning";
+import type { ShadowDiagnosticsSnapshot } from "../world/shadows/diagnostics";
 
-type WireframeMaterial = THREE.Material & { wireframe: boolean };
 
 function isFolderApi(blade: BladeApi): blade is FolderApi {
   return "children" in blade && "title" in blade && "expanded" in blade;
@@ -78,10 +79,6 @@ function filterPane(blade: BladeApi, query: string): boolean {
   return childMatch;
 }
 
-function isWireframeMaterial(material: THREE.Material): material is WireframeMaterial {
-  return "wireframe" in material && typeof (material as WireframeMaterial).wireframe === "boolean";
-}
-
 /**
  * Tweakpane debug panel, toggled with "/". Built lazily on first open so it costs
  * nothing until asked for. Opening releases pointer lock (the pane needs the mouse);
@@ -107,13 +104,16 @@ export class DebugPanel {
   #refreshGrass: () => void;
   #toggleProfiler: () => boolean;
   #lastRefresh = 0;
-  #lastWireframeScan = 0;
-  #wireframeOriginals = new Map<WireframeMaterial, boolean>();
+  /** Shared override — O(1) wireframe toggle, covers streamed content automatically. */
+  #wireframeMaterial: THREE.MeshBasicMaterial | null = null;
   #wireframeActive = false;
+  #wireframeBindings: { refresh(): void }[] = [];
   // pane bindings must not round-trip into sky.timeOfDay while the cycle runs
   #lightingView: Record<string, unknown> | null = null;
   #lightingBindings: { refresh(): void }[] = [];
   #monitorBindings: { refresh(): void }[] = [];
+  #shadowMonitorSnapshot: ShadowDiagnosticsSnapshot | null = null;
+  #shadowMonitorView: Record<string, string> | null = null;
   #syncingFromSky = false;
   #syncingPane = false;
 
@@ -142,6 +142,8 @@ export class DebugPanel {
     this.#refreshGrass = refreshGrass;
     this.#toggleProfiler = toggleProfiler;
     window.addEventListener(TUNABLES_UPDATED_EVENT, () => this.#refreshAllBindings());
+    // Honor a persisted wireframe flag immediately (no wait for first refresh).
+    if (RENDER_TUNING.values.wireframe) this.#applyWireframe(true);
   }
 
   toggle() {
@@ -183,10 +185,20 @@ export class DebugPanel {
     }
   }
 
+  /** R key / pane checkbox — flip wireframe instantly via scene.overrideMaterial. */
+  toggleWireframe() {
+    const next = !RENDER_TUNING.values.wireframe;
+    RENDER_TUNING.values.wireframe = next;
+    saveTweak("render.wireframe", next);
+    this.#applyWireframe(next);
+    this.#refreshWireframeBindings();
+  }
+
   /** Keep the pane in sync with the running day/night cycle (call per frame; throttled). */
   refresh() {
-    if (RENDER_TUNING.values.wireframe) this.#applyWireframe(true);
-    else if (this.#wireframeActive || this.#wireframeOriginals.size) this.#applyWireframe(false, true);
+    if (RENDER_TUNING.values.wireframe !== this.#wireframeActive) {
+      this.#applyWireframe(RENDER_TUNING.values.wireframe);
+    }
     if (!this.visible || !this.#pane) return;
     const now = performance.now();
     if (now - this.#lastRefresh < 250) return;
@@ -195,12 +207,12 @@ export class DebugPanel {
       this.#syncingFromSky = true;
       this.#lightingView.timeOfDay = this.#sky.timeOfDay;
       this.#lightingView.realTime = this.#sky.realTime;
-      this.#lightingView.cycleEnabled = this.#sky.cycleEnabled;
       this.#lightingView.nightBrightness = this.#sky.nightBrightness;
     }
     this.#syncingPane = true;
     try {
       withTweakBindingEventsSuppressed(() => {
+        this.#refreshShadowMonitor(now);
         for (const binding of this.#lightingBindings) binding.refresh();
         for (const binding of this.#monitorBindings) binding.refresh();
       });
@@ -210,16 +222,29 @@ export class DebugPanel {
     }
   }
 
+  #refreshShadowMonitor(now: number) {
+    const snapshot = this.#shadowMonitorSnapshot;
+    const view = this.#shadowMonitorView;
+    if (!snapshot || !view) return;
+    this.#sky.shadowDiagnostics.writeSnapshot(snapshot, now);
+    for (const domain of snapshot.domains) {
+      const prefix = domain.id;
+      view[`${prefix} age`] = Number.isFinite(domain.ageFrames) ? `${domain.ageFrames} frames` : "pending";
+      view[`${prefix} rate`] = `${domain.updateHz.toFixed(1)} Hz`;
+      view[`${prefix} texel`] = `${(domain.texelMeters * 100).toFixed(1)} cm`;
+      view[`${prefix} reason`] = domain.reason;
+    }
+  }
+
   /** Re-read every binding now — call after "." resets values behind the pane's back. */
   syncNow() {
-    this.#applyWireframe(RENDER_TUNING.values.wireframe, true);
+    this.#applyWireframe(RENDER_TUNING.values.wireframe);
     this.#setFoliageVisible(Boolean(FOLIAGE_TUNING.values.visible));
     if (this.#lightingView) {
       this.#syncingFromSky = true;
       this.#lightingView.timeOfDay = this.#sky.timeOfDay;
       this.#lightingView.realTime = this.#sky.realTime;
-      this.#lightingView.cycleEnabled = this.#sky.cycleEnabled;
-      this.#lightingView.cycleDuration = this.#sky.cycleDuration;
+      this.#lightingView.timeRatePercent = this.#sky.timeRatePercent;
       this.#lightingView.nightBrightness = this.#sky.nightBrightness;
     }
     try {
@@ -239,50 +264,34 @@ export class DebugPanel {
     }
   }
 
-  #applyWireframe(on: boolean, force = false) {
-    if (!this.#scene) return;
-    const now = performance.now();
-    if (on && !force && this.#wireframeActive && now - this.#lastWireframeScan < 500) return;
-    if (!on && !force && !this.#wireframeActive && !this.#wireframeOriginals.size) return;
-    this.#lastWireframeScan = now;
-
-    if (!on) {
-      for (const [material, original] of this.#wireframeOriginals) {
-        if (material.wireframe !== original) {
-          material.wireframe = original;
-          material.needsUpdate = true;
-        }
-      }
-      this.#wireframeOriginals.clear();
-      // streamed tiles can pick up wireframe between scans; sweep anything still on
-      this.#scene.traverse((object) => {
-        const mesh = object as THREE.Mesh;
-        if (!mesh.isMesh) return;
-        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-        for (const material of materials) {
-          if (!isWireframeMaterial(material) || !material.wireframe) continue;
-          material.wireframe = false;
-          material.needsUpdate = true;
-        }
+  #refreshWireframeBindings() {
+    if (!this.#wireframeBindings.length) return;
+    this.#syncingPane = true;
+    try {
+      withTweakBindingEventsSuppressed(() => {
+        for (const binding of this.#wireframeBindings) binding.refresh();
       });
-      this.#wireframeActive = false;
-      return;
+    } finally {
+      this.#syncingPane = false;
     }
+  }
 
-    this.#wireframeActive = true;
-    this.#scene.traverse((object) => {
-      const mesh = object as THREE.Mesh;
-      if (!mesh.isMesh) return;
-      const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-      for (const material of materials) {
-        if (!isWireframeMaterial(material)) continue;
-        if (!this.#wireframeOriginals.has(material)) this.#wireframeOriginals.set(material, material.wireframe);
-        if (!material.wireframe) {
-          material.wireframe = true;
-          material.needsUpdate = true;
-        }
+  /** Instant scene-wide wireframe via overrideMaterial (no per-mesh walk). */
+  #applyWireframe(on: boolean) {
+    if (!this.#scene) return;
+    if (on) {
+      if (!this.#wireframeMaterial) {
+        this.#wireframeMaterial = new THREE.MeshBasicMaterial({
+          color: 0xcccccc,
+          wireframe: true,
+          toneMapped: false
+        });
       }
-    });
+      this.#scene.overrideMaterial = this.#wireframeMaterial;
+    } else {
+      this.#scene.overrideMaterial = null;
+    }
+    this.#wireframeActive = on;
   }
 
   #build() {
@@ -333,20 +342,36 @@ export class DebugPanel {
     const pane = new Pane({ container: root, title: "tuning — / to close" });
     this.#pane = pane;
 
-    // MASTER foliage switch — the very first control in the panel. One checkbox
-    // hides AND stops per-frame work for the ENTIRE vegetation system (all trees,
-    // grass, flowers, shrubs, everywhere). Off = invisible + near-zero cost.
-    FOLIAGE_TUNING.bind(pane, {
+    // Shadows first — open by default so clipmap telemetry is the first thing
+    // you see when pressing "/". Allocation-free; refreshed at the pane's 4 Hz
+    // monitor cadence.
+    const shadows = pane.addFolder({ title: "shadows", expanded: true });
+    this.#shadowMonitorSnapshot = this.#sky.shadowDiagnostics.createSnapshotBuffer();
+    this.#shadowMonitorView = {};
+    for (const { id } of this.#shadowMonitorSnapshot.domains) {
+      for (const suffix of ["age", "rate", "texel", "reason"]) {
+        const key = `${id} ${suffix}`;
+        this.#shadowMonitorView[key] = "pending";
+        this.#monitorBindings.push(
+          shadows.addBinding(this.#shadowMonitorView, key, { readonly: true, label: key })
+        );
+      }
+    }
+
+    // Session meta — foliage / draw distance / day cycle. Open, right under
+    // shadows; everything else starts collapsed.
+    const meta = pane.addFolder({ title: "meta", expanded: true });
+
+    // MASTER foliage switch. One checkbox hides AND stops per-frame work for
+    // the ENTIRE vegetation system (all trees, grass, flowers, shrubs).
+    FOLIAGE_TUNING.bind(meta, {
       onChange: (_key, value) => this.#setFoliageVisible(Boolean(value))
     });
 
-    // MASTER draw distance — one top-level slider for how far the world draws.
-    // Drives the tile streaming radii (unload trails load by a fixed hysteresis
-    // margin so tiles never thrash at the boundary), moves only the narrow cull
-    // fade at the streamed edge (broad haze is independent), and the citygen ring
-    // derives its chunk reach from it each scan.
+    // MASTER draw distance — drives tile streaming radii (unload trails load
+    // by a fixed hysteresis), the narrow cull fade, and citygen chunk reach.
     // forceScan makes it take effect now instead of on the next 30-frame scan.
-    WORLD_TUNING.bind(pane, {
+    WORLD_TUNING.bind(meta, {
       keys: ["radius"],
       onChange: (key, value, last) => {
         if (key !== "radius") return;
@@ -357,14 +382,11 @@ export class DebugPanel {
       }
     });
 
-    // basics live at the root — the handful of things touched every session;
-    // buildings (citygen) sits here too; everything else tucks into "advanced".
     // proxy so tweakpane's slider step never quantizes the live cycle clock
     const lightingView = {
       timeOfDay: this.#sky.timeOfDay,
       realTime: this.#sky.realTime,
-      cycleEnabled: this.#sky.cycleEnabled,
-      cycleDuration: this.#sky.cycleDuration,
+      timeRatePercent: this.#sky.timeRatePercent,
       nightBrightness: this.#sky.nightBrightness
     };
     this.#lightingView = lightingView;
@@ -375,38 +397,25 @@ export class DebugPanel {
         lightingView.realTime = false;
         SKY_TUNING.values.realTime = false;
         saveTweak("sky.realTime", false);
+        // keep the day cycle running so unchecking real-time (via scrub) still
+        // advances; demos/probes that need a freeze set cycleEnabled=false
+        this.#sky.cycleEnabled = true;
         this.#refreshLightingBindings();
         return;
       }
       if (key === "realTime") {
         if (value) {
           this.#sky.followRealTime();
-          // real-time mode wins over the demo cycle — keep the pane honest
-          this.#sky.cycleEnabled = false;
-          lightingView.cycleEnabled = false;
-          SKY_TUNING.values.cycleEnabled = false;
-          saveTweak("sky.cycleEnabled", false);
         } else {
+          // unchecking real SF time starts the local day cycle at the slider %
           this.#sky.realTime = false;
+          this.#sky.cycleEnabled = true;
         }
         this.#refreshLightingBindings();
         return;
       }
-      if (key === "cycleEnabled") {
-        this.#sky.cycleEnabled = value as boolean;
-        if (value) {
-          // cycle can't run while tracking real time — drop it immediately so
-          // the next refresh doesn't snap the checkbox back off
-          this.#sky.realTime = false;
-          lightingView.realTime = false;
-          SKY_TUNING.values.realTime = false;
-          saveTweak("sky.realTime", false);
-        }
-        this.#refreshLightingBindings();
-        return;
-      }
-      if (key === "cycleDuration") {
-        this.#sky.cycleDuration = value as number;
+      if (key === "timeRatePercent") {
+        this.#sky.timeRatePercent = value as number;
         return;
       }
       if (key === "nightBrightness") {
@@ -414,24 +423,44 @@ export class DebugPanel {
         return;
       }
     };
-    this.#lightingBindings = SKY_TUNING.bind(pane, {
+    this.#lightingBindings = SKY_TUNING.bind(meta, {
       target: lightingView,
-      keys: ["timeOfDay", "realTime", "cycleEnabled", "cycleDuration", "nightBrightness"],
+      keys: ["timeOfDay", "realTime", "timeRatePercent", "nightBrightness"],
       onChange: onSkyChange
+    });
+
+    this.#wireframeBindings = RENDER_TUNING.bind(meta, {
+      keys: ["wireframe"],
+      onChange: (_key, value) => {
+        if (this.#syncingPane) return;
+        this.#applyWireframe(Boolean(value));
+      }
+    });
+
+    // Render knobs live under meta (not buried in advanced). Fog nests here.
+    const rendering = pane.addFolder({ title: "rendering", expanded: false });
+    RENDER_TUNING.bind(rendering, {
+      keys: ["pixelRatio"],
+      onChange: (_key, value) => {
+        this.#renderer.setPixelRatio(value as number);
+        this.#renderer.setSize(window.innerWidth, window.innerHeight);
+      }
+    });
+    // collider x-ray: persisted toggle only — main's tick polls the live value
+    // each frame, gathers active colliders and drives the overlay.
+    RENDER_TUNING.bind(rendering, { keys: ["colliderDebug"] });
+    const fog = rendering.addFolder({ title: "fog", expanded: false });
+    WORLD_TUNING.bind(fog, {
+      keys: ["fogEnabled", "fogTop", "fogBank", "fogNoise", "fogDrift", "fog"],
+      onChange: () => this.#sky.applyFogParams()
     });
 
     // procedural building DETAIL (src/world/citygen) — how many nearby buildings get
     // the full grammar mesh. Reach comes from the top-level draw-distance slider.
     // The ring reads these live each scan, so no onChange side-effect is needed —
     // drag + watch the fps counter and the near-detail band move.
-    const citygenF = pane.addFolder({ title: "buildings (citygen)", expanded: true });
+    const citygenF = pane.addFolder({ title: "buildings (citygen)", expanded: false });
     CITYGEN_TUNING.bind(citygenF, { onChange: () => {} });
-
-    const fog = pane.addFolder({ title: "fog", expanded: false });
-    WORLD_TUNING.bind(fog, {
-      keys: ["fogEnabled", "fogTop", "fogBank", "fogNoise", "fogDrift", "fog"],
-      onChange: () => this.#sky.applyFogParams()
-    });
 
     // Stylized post effects: toggles select retained shader variants; sliders
     // are live uniforms — see render/postfx.ts.
@@ -467,18 +496,6 @@ export class DebugPanel {
       onChange: () => this.#sky.applyLightGrade()
     });
 
-    const render = advanced.addFolder({ title: "render" });
-    RENDER_TUNING.bind(render, {
-      keys: ["wireframe"],
-      onChange: (_key, value) => {
-        if (this.#syncingPane) return;
-        this.#applyWireframe(Boolean(value), true);
-      }
-    });
-    // collider x-ray: persisted toggle only — main's tick polls the live value
-    // each frame, gathers active colliders and drives the overlay.
-    RENDER_TUNING.bind(render, { keys: ["colliderDebug"] });
-
     // free-orbit camera (C): duration of the O-key 180° flip around the target
     const cameraF = advanced.addFolder({ title: "camera" });
     CAMERA_TUNING.bind(cameraF);
@@ -487,8 +504,12 @@ export class DebugPanel {
     const controls = advanced.addFolder({ title: "controls" });
     INPUT_TUNING.bind(controls);
 
-    // foliage detail knobs (the master on/off lives at the very top of the pane).
+    // foliage detail knobs (the master on/off lives in the meta folder above).
     const foliage = advanced.addFolder({ title: "foliage" });
+    const sharedVegetation = foliage.addFolder({ title: "shared wind + canopy" });
+    VEGETATION_TUNING.bind(sharedVegetation, {
+      onChange: () => applyVegetationTuning()
+    });
     // Wildflower ring: density + clump↔scatter shaping. The ring reads these live on
     // its next re-scatter; force one now (on slider RELEASE only, `last`) so the edit
     // shows without waiting for the player to walk.
@@ -549,7 +570,7 @@ export class DebugPanel {
     const particles = advanced.addFolder({ title: "particles" });
     const fireflies = particles.addFolder({ title: "busker fireflies" });
     BUSKER_FIREFLY_TUNING.bind(fireflies);
-    this.#monitorBindings = this.#fireworks?.addTuning(particles) ?? [];
+    this.#monitorBindings.push(...(this.#fireworks?.addTuning(particles) ?? []));
 
     // Full GPU profiler (three.js Inspector: FPS/CPU/GPU graph, timing, memory).
     // Heavy — per-frame GPU timestamp queries + canvas redraw — so it's OFF by

@@ -8,7 +8,7 @@ import { enterOnLand } from "../vehicles/shared";
 
 export const WALK_TUNING = tunables("movement.walk", {
   speed: { v: 5.2, min: 1, max: 20, step: 0.1, label: "walk speed" },
-  runSpeed: { v: 10, min: 2, max: 30, step: 0.1, label: "run speed" },
+  runSpeed: { v: 13.5, min: 2, max: 30, step: 0.1, label: "run speed" },
   jump: { v: 7.2, min: 2, max: 20, step: 0.1, label: "jump" },
   swimFactor: { v: 0.45, min: 0.1, max: 1, step: 0.05, label: "swim speed ×" },
   swimBoost: { v: 2, min: 0, max: 8, step: 0.1, label: "swim boost" }

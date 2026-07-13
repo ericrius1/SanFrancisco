@@ -1,30 +1,25 @@
-// SF Botanical Garden — public surface. A self-contained, portable vegetation
-// module: trees (SeedThree hero growth + near/far instanced LOD), procedural
-// blade grass (terrain-clamped base layer + moving near-detail ring + trample),
-// zone-paletted shrubs, ground flora, colliders, and a shared wind envelope.
+// SF Botanical Garden — public surface. A garden placement/controller module:
+// shared trees (hero growth + near/far instanced LOD), shared curved blade grass
+// (terrain-clamped base + moving near-detail ring + trample), shared leaf-spray
+// shrubs and dimensional flowers, plus garden colliders. Sandbox-wide geometry,
+// wind and interaction state live in ../vegetation; this module owns garden work.
 //
-// Drop the whole `garden/` folder into any three/webgpu project. The ONLY things
-// it needs from the host are:
+// Its host contract is:
 //   • a terrain sampler implementing `GardenTerrain` (groundHeight/surfaceType/isWater)
-//   • the vendored SeedThree checkout at <repo>/vendor/SeedThree/src
-//   • the staged tree textures at <public>/seedthree  (optional — trees fall back
-//     to procedural materials if the PNGs 404)
+//   • the sandbox vegetation tree facade (which currently owns the transitional
+//     generator adapter and its staged tree textures)
 //   • src/core/persist `tunables()` for the live-tunable grass sliders
 //
-// Everything else (layout math, LOD, wind) lives behind this index. Layout is in
+// Garden layout math and rendering live behind this index. Layout is in
 // ./layout with NO three dependency, so a headless trainer can reconstruct the
 // identical obstacle set.
 
 import type * as THREE from "three/webgpu";
 import { createGardenVegetation, type GardenVegetation } from "./gardenVegetation";
 import {
-  MAX_GRASS_DISPLACERS,
-  setGrassDisplacers,
   type BotanicalGrassController,
-  type BotanicalGrassStats,
-  type GrassDisplacer
+  type BotanicalGrassStats
 } from "./botanicalGrass";
-import { updateWindGusts, windGustValue } from "./wind";
 import {
   BOTANICAL_GARDEN_BOUNDS,
   GARDEN_MEADOW,
@@ -33,9 +28,7 @@ import {
   type GardenTerrain
 } from "./layout";
 
-const NO_DISPLACERS: readonly GrassDisplacer[] = [];
-
-// Whole-garden visibility gate. The SeedThree far tier is frustumCulled=false
+// Whole-garden visibility gate. The legacy garden far tier spans the full site,
 // (its instanced bounds span the whole garden), so those triangles would draw from
 // ANYWHERE in the city without this. Gate the ENTIRE garden group by distance to
 // the garden's bounding circle — Corona Heights / downtown must never pay for GG
@@ -55,7 +48,7 @@ const GARDEN_GATE = (() => {
 export type BotanicalGarden = {
   /** Add to your scene. Trees stream in asynchronously; grass is live at once. */
   group: THREE.Group;
-  /** Resolves after the asynchronous SeedThree trees are attached. */
+  /** Resolves after the asynchronous shared trees are attached. */
   ready: Promise<void>;
   /** Combine the master foliage switch with the garden's distance gate. */
   setVisible(visible: boolean, focus: { x: number; z: number }): void;
@@ -70,12 +63,10 @@ export type BotanicalGarden = {
   stats: GardenVegetation["stats"];
   /**
    * Call once per frame.
-   *  • advances the shared wind-gust envelope (grass sway + any wind audio)
    *  • moves the near-grass detail ring to `focus` (usually the camera/player)
-   *  • writes trample displacers that flatten grass under the player/creatures
-   * SeedThree tree LOD self-drives off the render loop — nothing else to tick.
+   * Tree LOD self-drives off the render loop — nothing else to tick.
    */
-  update(dt: number, focus: { x: number; z: number }, displacers?: readonly GrassDisplacer[]): void;
+  update(focus: { x: number; z: number }): void;
 };
 
 /** Build the whole garden over a host terrain. Synchronous; trees populate as
@@ -107,15 +98,7 @@ export function createBotanicalGarden(map: GardenTerrain): BotanicalGarden {
     grass: veg.grass,
     colliders: veg.colliders,
     stats: veg.stats,
-    update(dt, focus, displacers) {
-      // Shared ground-cover meta-modules must advance regardless of the garden's
-      // own visibility: the wind-gust envelope also drives the wildlands foliage
-      // sway + the nature soundscape, and the trample field is read by the
-      // wildlands grass/flowers too — and the garden is their sole per-frame
-      // driver. Freezing them here would stall wind/trample across the whole city.
-      updateWindGusts(dt);
-      setGrassDisplacers(displacers ?? NO_DISPLACERS);
-
+    update(focus) {
       // Whole-garden distance gate (see GARDEN_GATE). Hiding the group stops the
       // far-tier trees from rendering AND parks the self-driven tree LOD rebin
       // (its driver meshes no longer render, so onBeforeRender stops firing); the
@@ -130,20 +113,16 @@ export function createBotanicalGarden(map: GardenTerrain): BotanicalGarden {
       }
 
       veg.grass.updateFocus(focus);
+      veg.update(focus);
     }
   };
 }
 
-// Host wiring / debug helpers.
 export {
-  MAX_GRASS_DISPLACERS,
-  setGrassDisplacers,
-  updateWindGusts,
-  windGustValue,
   BOTANICAL_GARDEN_BOUNDS,
   GARDEN_MEADOW,
   inBotanicalGarden
 };
 export { createGardenVegetation, type GardenVegetation } from "./gardenVegetation";
-export { SEED_TREE_DESIGNS, type SeedTreeDesign } from "./seedTreeGarden";
-export type { BotanicalGrassController, BotanicalGrassStats, GrassDisplacer, GardenCollider, GardenTerrain };
+export { SEED_TREE_DESIGNS, type SeedTreeDesign } from "./treeDesigns";
+export type { BotanicalGrassController, BotanicalGrassStats, GardenCollider, GardenTerrain };

@@ -9,6 +9,7 @@ import {
   type AvatarOutfit,
   type AvatarTraits
 } from "./avatar";
+import { enableShadowLayer, SHADOW_LAYERS } from "../world/shadows/shadowLayers";
 
 /**
  * The player character: a chunky stylized figure with real joints — neck,
@@ -104,6 +105,10 @@ function part(parent: THREE.Object3D, mat: THREE.Material, w: number, h: number,
   // trim) is invisible at CSM resolution, yet every caster re-encodes into
   // each shadow cascade — and this rig exists per player AND per busker.
   m.castShadow = w * h * d >= 1.5e-3;
+  if (m.castShadow) enableShadowLayer(m, SHADOW_LAYERS.HERO_DYNAMIC);
+  // Receiving does not add caster draws, so every visible opaque rig surface
+  // can carry self-shadow and shade from the vehicle/world at close range.
+  m.receiveShadow = true;
   parent.add(m);
   return m;
 }
@@ -439,6 +444,10 @@ export function buildSteeringWheel(): { group: THREE.Group; spin: THREE.Group } 
   const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.05, 10), STATIC_MAT.sole);
   hub.rotation.x = Math.PI / 2;
   spin.add(hub);
+  group.traverse((object) => {
+    const mesh = object as THREE.Mesh;
+    if (mesh.isMesh) mesh.receiveShadow = true;
+  });
   return { group, spin };
 }
 
@@ -487,23 +496,33 @@ export function poseIdle(r: Rig, t: number) {
   set(r.foreR, 0.14, 0, 0);
 }
 
-/** Walk↔run cycle; `t` is the stride phase, `run` blends 0..1 into a sprint. */
+/** Walk↔run cycle; `t` is the stride phase, `run` blends 0..1 into a sprint.
+ *  Athletic forward lean (neg X — torso tips toward face/-Z). Old pose leaned
+ *  *back* into the sprint which read as flailing; this tips into the run like
+ *  a Nike spot — hips drive, chest over the lead foot, high knees, tight arms. */
 export function poseWalk(r: Rig, t: number, run: number) {
-  const swing = 0.55 + run * 0.5;
+  const swing = 0.58 + run * 0.72; // longer stride at sprint
   const sL = Math.sin(t);
   const sR = Math.sin(t + Math.PI);
-  r.hips.position.y = -(0.02 + run * 0.045) * (0.5 - 0.5 * Math.cos(2 * t));
-  set(r.hips, 0, 0, 0);
-  set(r.torso, 0.07 + run * 0.22, sL * 0.07, 0);
-  set(r.head, -(0.04 + run * 0.12), sL * 0.04, 0); // keep the gaze level against the lean
-  set(r.legL, sL * swing, 0, 0);
-  set(r.legR, sR * swing, 0, 0);
-  set(r.shinL, -Math.max(0, Math.sin(t + Math.PI * 0.6)) * (0.5 + run * 0.7), 0, 0);
-  set(r.shinR, -Math.max(0, Math.sin(t + Math.PI * 1.6)) * (0.5 + run * 0.7), 0, 0);
-  set(r.armL, sR * swing * 0.8, 0, 0.06);
-  set(r.armR, sL * swing * 0.8, 0, -0.06);
-  set(r.foreL, 0.25 + run * 0.55 + Math.max(0, sR) * 0.2, 0, 0);
-  set(r.foreR, 0.25 + run * 0.55 + Math.max(0, sL) * 0.2, 0, 0);
+  // push-off bob: deeper at sprint so the silhouette loads then springs
+  r.hips.position.y = -(0.02 + run * 0.06) * (0.5 - 0.5 * Math.cos(2 * t));
+  // whole-hip tip into the run + a touch of counter-rotate with the stride
+  const lean = -0.05 - run * 0.32; // walk slight forward → sprint aggressive
+  set(r.hips, lean * 0.4, sL * 0.05 * run, 0);
+  set(r.torso, lean * 0.7, sL * (0.06 + run * 0.08), 0);
+  // lift the head against the lean so eyes stay on the horizon
+  set(r.head, -lean * 0.55 - run * 0.05, sL * 0.03, 0);
+  set(r.legL, sL * swing, 0, 0.015 * run);
+  set(r.legR, sR * swing, 0, -0.015 * run);
+  // higher knee drive when sprinting
+  set(r.shinL, -Math.max(0, Math.sin(t + Math.PI * 0.55)) * (0.55 + run * 1.0), 0, 0);
+  set(r.shinR, -Math.max(0, Math.sin(t + Math.PI * 1.55)) * (0.55 + run * 1.0), 0, 0);
+  // tight opposite arm pump, elbows tucked; ~90° forearms at full sprint
+  const armSwing = swing * (0.7 + run * 0.35);
+  set(r.armL, sR * armSwing, 0, 0.07 + run * 0.05);
+  set(r.armR, sL * armSwing, 0, -(0.07 + run * 0.05));
+  set(r.foreL, 0.4 + run * 0.5 + Math.max(0, sR) * 0.12, 0, 0);
+  set(r.foreR, 0.4 + run * 0.5 + Math.max(0, sL) * 0.12, 0, 0);
 }
 
 /** Golf address/swing pose. `swing` runs -1 (full backswing), through 0

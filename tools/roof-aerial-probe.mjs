@@ -40,7 +40,6 @@ async function main() {
     await waitEval(c, "Boolean(window.__sf && window.__sf.citygenRing && window.__sf.citygenRing.current)", 120000);
     await evaluate(c, `(()=>{const s=window.__sf; s.sky.cycleEnabled=false; s.sky.setTimeOfDay(10.5);
       const wt=s.WORLD_TUNING.values; wt.fogBank=0; wt.fogNoise=0; wt.fog=0.00004; s.sky.applyFogParams();
-      s.dynRes.sample=()=>{};
       if(!window.__f){window.__f=1;s.chase.update=()=>{};s.player.update=()=>{};} return 1;})()`);
     const SPOTS = [
       { name: "castro", x: 420, z: 2620 },   // Corona/Castro hillside (user report area)
