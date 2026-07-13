@@ -30,6 +30,7 @@ import {
   GOLDMAN_SUPPRESSED_BUILDINGS,
 } from "./world/goldenGateTennis";
 import { CoronaHeightsPark, prepareCoronaHeightsGround } from "./world/coronaHeights";
+import { createMissionDoloresMuseum, type MissionDoloresMuseum } from "./world/missionDolores";
 import { OceanBeachWaves, SurfExperience } from "./gameplay/surfing";
 import { findOpenSpawn } from "./world/spawn";
 import { resolveSpawnPoint, type RegionKey } from "./world/spawnPoints";
@@ -416,6 +417,8 @@ async function boot() {
   // first tick wakes any the player already stands in.
   const siteGate = createSiteGate();
   let coronaHeights: CoronaHeightsPark | null = null;
+  let missionDolores: MissionDoloresMuseum | null = null;
+  let museumBookOpen = false;
   let windGustValue: (() => number) | null = null;
   let advanceWind: ((dt: number) => void) | null = null;
   const gardenDisplacer: GrassDisplacer = { x: 0, z: 0, radius: 1.6, strength: 1 };
@@ -540,6 +543,22 @@ async function boot() {
     scene.add(coronaHeights.group);
   } catch (err) {
     console.warn("[boot] corona heights unavailable:", err);
+  }
+  try {
+    // Mission San Francisco de Asís (Mission Dolores) — the founding Franciscan
+    // mission the city is named for, rebuilt basilica-scale and turned into a
+    // walkable museum of Saint Francis. The Canticle book (E at the pedestal)
+    // freezes the world exactly like the behind-the-scenes reader.
+    missionDolores = createMissionDoloresMuseum(map, physics, {
+      onBookToggle: (open) => {
+        museumBookOpen = open;
+        app.classList.toggle("world-dimmed", open);
+        input.suspended = open || cameraMode;
+        if (open) input.releaseLock();
+      }
+    }).addTo(scene);
+  } catch (err) {
+    console.warn("[boot] Mission Dolores museum unavailable:", err);
   }
   // Fetch-the-ball loop: hold-to-throw (ball + overhand windup start immediately;
   // release before 1s stows, hold longer for power). Walk up and press E to pick
@@ -1004,6 +1023,12 @@ async function boot() {
       // Esc ALWAYS frees the mouse, whatever else it also dismisses below.
       // releaseLock is unconditional and cancels any in-flight relock grant.
       input.releaseLock();
+      if (missionDolores?.bookOpen) {
+        missionDolores.closeBook();
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        return;
+      }
       if (behindTheScenes?.isOpen) {
         behindTheScenes.setOpen(false);
         e.preventDefault();
@@ -1724,7 +1749,7 @@ async function boot() {
     // render. The canvas keeps its last frame (dimmed via CSS) so nothing
     // flickers behind the modal; the panel's own diagrams animate on their own
     // rAF, independent of this loop. Resumes cleanly the frame it's closed.
-    if (btsReading) {
+    if (btsReading || museumBookOpen) {
       input.endFrame();
       return;
     }
@@ -1869,7 +1894,7 @@ async function boot() {
       // stuck in the previous indoor/outdoor mode.
       citygenRing.current?.update(player.position, frameDt);
       if (cameraMode) { chase.suspend(player); orbit.update(frameDt); }
-      else { chase.indoor = citygenRing.current?.isPlayerInside() ?? false; chase.update(frameDt, player, input); }
+      else { chase.indoor = (citygenRing.current?.isPlayerInside() ?? false) || (missionDolores?.isPlayerInside(player.position) ?? false); chase.update(frameDt, player, input); }
       // keep the vehicle hum, ambience and social presence alive like full pause
       vehicleAudio.update(frameDt, {
         mode: player.mode,
@@ -1970,7 +1995,8 @@ async function boot() {
       input.pressed("KeyE") &&
       !exitToWalk() &&
       !golf?.tryStartAtTee(player, hud) &&
-      !archery?.tryInteract(player, hud, chase)
+      !archery?.tryInteract(player, hud, chase) &&
+      !missionDolores?.tryInteract(player.position, player.mode, hud)
     ) {
       const nearOceanBeach =
         player.mode === "walk" &&
@@ -2318,6 +2344,8 @@ async function boot() {
     archery?.update(frameDt, elapsed, { player, input, hud, chase, camera });
     // Goldman clubhouse NPCs: one-hypot early return when far — safe every frame
     goldenGateTennis?.update(frameDt, elapsed, player.position);
+    // Mission Dolores museum: book proximity prompt + exhibit animation (cheap far away)
+    missionDolores?.update(frameDt, elapsed, player.position, player.mode, hud);
 
     // "hop in" nudge when standing near a ride (friend → wildlife)
     if (player.mode === "walk" && embodiments.passengerOf === null) {
@@ -2367,7 +2395,7 @@ async function boot() {
       chase.suspend(player);
       orbit.update(frameDt);
     } else {
-      chase.indoor = citygenRing.current?.isPlayerInside() ?? false; // blend into the indoor eye rig
+      chase.indoor = (citygenRing.current?.isPlayerInside() ?? false) || (missionDolores?.isPlayerInside(player.position) ?? false); // blend into the indoor eye rig
       chase.update(frameDt, player, input);
     }
     sky.update(elapsed, camera.position);
@@ -2590,7 +2618,7 @@ async function boot() {
       // deferred render warmup runs, tick() early-returns without rendering, so
       // screenshots would capture a stale boot-pose frame no matter what the
       // camera was set to.
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, goldenGateTennis, pickleball: pickleballController.game, pickleballAmbient: pickleballController.ambient, pickleballAudio: pickleballController.audio, pickleballUI: pickleballController.ui, pickleballController, coronaHeights, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, siteGate,
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, goldenGateTennis, pickleball: pickleballController.game, pickleballAmbient: pickleballController.ambient, pickleballAudio: pickleballController.audio, pickleballUI: pickleballController.ui, pickleballController, coronaHeights, missionDolores, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, siteGate,
         TSL,
         renderIdle: () => modulesReady && !lateRenderWarmupActive }
     });
