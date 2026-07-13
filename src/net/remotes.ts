@@ -153,11 +153,14 @@ export class RemotePlayers {
   selfId = 0;
   /** The local player's car mesh while driving (null otherwise), set by main. */
   localDriveMesh: () => THREE.Group | null = () => null;
+  /** Local render position for distance-gating optional remote cosmetics. */
+  localPlayerPosition: () => THREE.Vector3 | null = () => null;
 
   #scene: THREE.Scene;
   #protos: Partial<Record<PlayerMode, THREE.Group>> = {};
   #passengerSeat = new THREE.Vector3(0.42, 0.55, 0.66); // driver seat mirrored across x
   #tagsVisible = true;
+  #surfAssetsEnabled = false;
 
   constructor(scene: THREE.Scene) {
     this.#scene = scene;
@@ -295,6 +298,15 @@ export class RemotePlayers {
     if (this.#tagsVisible === on) return;
     this.#tagsVisible = on;
     for (const a of this.avatars.values()) a.tag.visible = on;
+  }
+
+  /**
+   * Unlock remote surfboard art only after this client activates surfing.
+   * Individual boards still hydrate only inside the immediate 180 m space;
+   * distant roster entries keep their procedural fallback and request nothing.
+   */
+  enableSurfboardAssets() {
+    this.#surfAssetsEnabled = true;
   }
 
   add(info: RemoteInfo) {
@@ -499,9 +511,8 @@ export class RemotePlayers {
       // Fresh build: surfboard materials may contain player-selected generated
       // textures/decals and the root's dispose callback owns those resources.
       const g = buildSurfboardMesh(a.surfboard);
-      // Roster hydration stays allocation-only. Image loading starts only when
-      // this remote first enters surf mode and needs a visible board.
-      void activateSurfboardAssets(g);
+      // Roster/embodiment hydration stays allocation-only. Optional PNG art is
+      // distance-gated in update() after the local surfing experience unlocks it.
       const rig = buildRig(a.avatar);
       rig.group.rotation.order = "ZYX";
       rig.group.rotation.y = 1.05;
@@ -578,6 +589,20 @@ export class RemotePlayers {
         a.root.quaternion.copy(TMP.qa);
       }
       a.root.visible = true;
+
+      if (a.mode === "surf" && this.#surfAssetsEnabled) {
+        const local = this.localPlayerPosition();
+        const body = a.bodies.surf;
+        if (
+          local &&
+          body &&
+          !body.userData.surfAssetsActivated &&
+          a.root.position.distanceToSquared(local) <= 180 * 180
+        ) {
+          body.userData.surfAssetsActivated = true;
+          void activateSurfboardAssets(body);
+        }
+      }
 
       // motion estimate for animation (from the buffer, not frame deltas)
       a.speed = b.speed;

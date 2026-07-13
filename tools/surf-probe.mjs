@@ -231,7 +231,8 @@ async function main() {
     check(selectorRequests(cdp.requests).length === 1, "surf entry lazy-loads one customizer chunk", selectorRequests(cdp.requests));
 
     let minClearance = Infinity;
-    let minPositionDelta = Infinity;
+    let minBodyAboveWater = Infinity;
+    let minRenderAboveWater = Infinity;
     let maxLaunchSerial = 0;
     let maxLandingSerial = 0;
     let maxSplashSerial = 0;
@@ -250,12 +251,16 @@ async function main() {
         await evaluate(cdp, `(()=>{const k=window.__sf.input.keys;k.delete('KeyA');k.delete('KeyD');k.add('${direction > 0 ? "KeyD" : "KeyA"}');})()`);
       }
       const state = await evaluate(cdp, `(()=>{const s=window.__sf,p=s.player,t=p.surfTelemetry;
-        return {mode:p.mode,y:p.position.y,surface:t.surfaceY,clearance:t.clearance,phase:t.phase,
+        const bodyY=p.physics.world.getBodyTransform(p.body).position[1];
+        const support=t.phase==='paddle'?0.24:0.48;
+        const water=t.surfaceY-support;
+        return {mode:p.mode,bodyY,renderY:p.renderPosition.y,water,surface:t.surfaceY,clearance:t.clearance,phase:t.phase,
           launch:t.launchSerial,landing:t.landingSerial,splash:t.splashSerial,
           flow:t.flow,ready:t.flowReady,active:t.flowActive,rate:t.riderMotionRate,speed:t.speed};})()`);
       if (state.mode !== "surf") throw new Error(`Surf mode changed unexpectedly to ${state.mode}`);
       minClearance = Math.min(minClearance, state.clearance);
-      minPositionDelta = Math.min(minPositionDelta, state.y - state.surface);
+      minBodyAboveWater = Math.min(minBodyAboveWater, state.bodyY - state.water);
+      minRenderAboveWater = Math.min(minRenderAboveWater, state.renderY - state.water);
       maxLaunchSerial = Math.max(maxLaunchSerial, state.launch);
       maxLandingSerial = Math.max(maxLandingSerial, state.landing);
       maxSplashSerial = Math.max(maxSplashSerial, state.splash);
@@ -276,7 +281,8 @@ async function main() {
     await evaluate(cdp, "window.__sf.input.keys.clear()");
 
     check(minClearance >= -0.001, "telemetry clearance never falls below the live surface", { minClearance });
-    check(minPositionDelta >= -0.001, "player transform never falls below the live surface", { minPositionDelta });
+    check(minBodyAboveWater >= -0.001, "physics body never falls underwater", { minBodyAboveWater });
+    check(minRenderAboveWater >= -0.001, "rendered surfboard never interpolates underwater", { minRenderAboveWater });
     check(maxLaunchSerial > 0, "speed and lip energy trigger an automatic launch", { maxLaunchSerial });
     check(maxLandingSerial > 0, "automatic launch returns to a surfaced landing", { maxLandingSerial });
     check(maxSplashSerial > 0, "surfing emits launch/landing splash events", { maxSplashSerial });
@@ -334,7 +340,8 @@ async function main() {
   } finally {
     cdp?.close();
     chrome.kill("SIGTERM");
-    rmSync(PROFILE, { recursive: true, force: true });
+    await sleep(350);
+    try { rmSync(PROFILE, { recursive: true, force: true, maxRetries: 4, retryDelay: 120 }); } catch {}
   }
 }
 

@@ -1,9 +1,5 @@
 import type * as THREE from "three/webgpu";
-
-type DynamicResolution = {
-  readonly ratio: number;
-  sample(frameMs: number): void;
-};
+import { RENDER_TUNING } from "../config";
 
 type FrameTracer = {
   frame(frameMs: number): void;
@@ -25,11 +21,10 @@ export function startFrameDriver(opts: {
   camera: THREE.PerspectiveCamera;
   app: HTMLElement;
   tick: (forcedDt?: number) => void;
-  dynamicResolution: DynamicResolution;
   tracer: FrameTracer;
   isRevealed: () => boolean;
 }): FrameDriver {
-  const { renderer, camera, app, tick, dynamicResolution, tracer, isRevealed } = opts;
+  const { renderer, camera, app, tick, tracer, isRevealed } = opts;
   const throttleRaf = navigator.webdriver && !new URLSearchParams(location.search).has("fullfps");
   let lastLoop = performance.now();
   let manual = false;
@@ -40,10 +35,7 @@ export function startFrameDriver(opts: {
     const frameMs = now - lastLoop;
     lastLoop = now;
     tick();
-    if (isRevealed()) {
-      dynamicResolution.sample(frameMs);
-      tracer.frame(frameMs);
-    }
+    if (isRevealed()) tracer.frame(frameMs);
   };
 
   const setManual = (enabled: boolean) => {
@@ -54,7 +46,7 @@ export function startFrameDriver(opts: {
   const resize = () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
-    renderer.setPixelRatio(dynamicResolution.ratio);
+    renderer.setPixelRatio(RENDER_TUNING.values.pixelRatio);
     renderer.setSize(window.innerWidth, window.innerHeight);
   };
 

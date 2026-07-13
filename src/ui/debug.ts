@@ -482,6 +482,13 @@ export class DebugPanel {
 
     const render = advanced.addFolder({ title: "render" });
     RENDER_TUNING.bind(render, {
+      keys: ["pixelRatio"],
+      onChange: (_key, value) => {
+        this.#renderer.setPixelRatio(value as number);
+        this.#renderer.setSize(window.innerWidth, window.innerHeight);
+      }
+    });
+    RENDER_TUNING.bind(render, {
       keys: ["wireframe"],
       onChange: (_key, value) => {
         if (this.#syncingPane) return;

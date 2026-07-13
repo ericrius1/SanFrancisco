@@ -85,7 +85,6 @@ import { PauseToggle } from "./ui/pauseToggle";
 import { parseReadLink, openReadLink } from "./ui/deepLinks";
 import { Tutorial } from "./ui/tutorial";
 import { createRenderPipeline } from "./render/pipeline";
-import { createDynamicResolution } from "./render/dynamicRes";
 import { POSTFX_TUNING, setFlowPostFx } from "./render/postfx";
 import { DebugPanel } from "./ui/debug";
 import { ColliderDebug, type DebugBox, type DebugMesh } from "./ui/colliderDebug";
@@ -301,6 +300,7 @@ async function boot() {
   // is rebound after networking exists; the early no-op keeps the mode callback
   // safe during startup/restores.
   let ensureSurfboardCustomizer: () => void = () => {};
+  let enableRemoteSurfboardAssets: () => void = () => {};
   const birdTrails = new BirdTrails(scene, player.meshes.bird);
   const droneFireworkMounts = player.meshes.drone.userData.fireworkMounts as THREE.Object3D[] | undefined;
   const startMode = spawnPoint?.mode ?? START.mode;
@@ -346,6 +346,7 @@ async function boot() {
     applySurfCull(mode === "surf");
     if (mode === "surf") {
       ensureSurfboardCustomizer();
+      enableRemoteSurfboardAssets();
       // Drop straight into a readable down-the-line shot: the board travels
       // south while the wave face peels along the player's left shoulder.
       chase.yaw = Math.PI - 0.38;
@@ -725,22 +726,6 @@ async function boot() {
   // post-processing: scene pass AA + optional stylized screen effects
   const pipeline = createRenderPipeline(renderer, scene, camera);
 
-  // Dynamic-resolution governor: watches the real rAF cadence and steps the
-  // drawing-buffer pixel ratio between RENDER_MODE.minPixelRatio and
-  // RENDER_MODE.pixelRatioCap to hold the frame budget on weaker GPUs.
-  // Currently off (cap == floor == 1); kept wired so re-enabling is a config flip.
-  // The apply path is exactly what boot + resize do (setPixelRatio + setSize);
-  // the WebGPU pass targets re-derive from the drawing-buffer on the next
-  // render, so nothing else needs a resize hook.
-  const applyPixelRatio = (ratio: number) => {
-    renderer.setPixelRatio(ratio);
-    renderer.setSize(window.innerWidth, window.innerHeight);
-  };
-  const dynRes = createDynamicResolution({
-    apply: applyPixelRatio,
-    readRatio: () => renderer.getPixelRatio()
-  });
-
   // ---- multiplayer: presence relay (src/net/net.ts) + remote avatars +
   // minimap. Drop-in social layer: movement stays client-authoritative, the
   // server only relays poses, and losing the socket never breaks single-player.
@@ -755,6 +740,10 @@ async function boot() {
     savedSurfboard ?? undefined
   );
   const remotes = new RemotePlayers(scene);
+  remotes.localPlayerPosition = () => player.renderPosition;
+  enableRemoteSurfboardAssets = () => remotes.enableSurfboardAssets();
+  // Startup/invite can enter surf before networking and its remote-art gate exist.
+  if (player.mode === "surf") enableRemoteSurfboardAssets();
   const pickleballController = new PickleballController({
     goldman: goldenGateTennis,
     scene,
@@ -2213,7 +2202,8 @@ async function boot() {
       START.mode = START_DEFAULTS.mode;
       // re-apply the side effects the pane's onChange handlers normally push.
       renderer.toneMappingExposure = RENDER_TUNING.values.exposure;
-      dynRes.syncToCap();
+      renderer.setPixelRatio(RENDER_TUNING.values.pixelRatio);
+      renderer.setSize(window.innerWidth, window.innerHeight);
       CONFIG.tileLoadRadius = WORLD_TUNING.values.radius;
       CONFIG.tileUnloadRadius = WORLD_TUNING.values.radius + 400;
       setFoliageVisible(FOLIAGE_TUNING.values.visible);
@@ -2564,7 +2554,10 @@ async function boot() {
         waterHeight(player.renderPosition.x, player.renderPosition.z, elapsed),
         player.renderPosition.z,
         elapsed,
-        player.surfTelemetry.splashEnergy
+        player.surfTelemetry.splashEnergy,
+        // Surf uses a close chase/orbit camera. Keep the authored spray layers
+        // and ring energy, but size the sprites for readable rider hero shots.
+        0.4
       );
     }
     updateSurfPresentation(frameDt);
@@ -2742,7 +2735,6 @@ async function boot() {
     camera,
     app,
     tick,
-    dynamicResolution: dynRes,
     tracer,
     isRevealed: () => revealed
   });
@@ -2778,7 +2770,7 @@ async function boot() {
       // deferred render warmup runs, tick() early-returns without rendering, so
       // screenshots would capture a stale boot-pose frame no matter what the
       // camera was set to.
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController.game, pickleballAmbient: pickleballController.ambient, pickleballAudio: pickleballController.audio, pickleballUI: pickleballController.ui, pickleballController, coronaHeights, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate,
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController.game, pickleballAmbient: pickleballController.ambient, pickleballAudio: pickleballController.audio, pickleballUI: pickleballController.ui, pickleballController, coronaHeights, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate,
         TSL,
         renderIdle: () => modulesReady && !lateRenderWarmupActive }
     });
