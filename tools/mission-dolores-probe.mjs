@@ -1,6 +1,5 @@
-// Mission Dolores museum probe: spawns its own vite + headless WebGPU Chrome,
-// teleports to the basilica, and shoots the façade, the nave toward the altar,
-// the nave toward the rose window, a 3/4 aerial, and the opened Canticle book.
+// Mission Dolores museum probe: verifies clean-boot/code/art loading boundaries,
+// then shoots the façade, nave, mounted galleries, rebuilt apse, and DOM book.
 //   node tools/mission-dolores-probe.mjs
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
@@ -46,6 +45,10 @@ async function main() {
   const dport = await freePort();
   let chrome;
   const consoleErrors = [];
+  const requestFailures = [];
+  const CX = 1560, CZ = 3235;
+  let phase = "boot";
+  const phaseRequests = { boot: [], approach: [], interior: [], apse: [], bookOpen: [], bookPage: [], bookPage2: [] };
   try {
     await waitHttp(SERVER_URL, 90000);
     chrome = spawn(chromePath, [`--remote-debugging-port=${dport}`, `--user-data-dir=${path.join(OUT, "chrome-" + Date.now())}`, "--headless=new", "--no-first-run", "--mute-audio", "--enable-features=SharedArrayBuffer", "--use-angle=metal", "--enable-unsafe-webgpu", "--enable-gpu", "--enable-features=WebGPUDeveloperFeatures", `--window-size=${W},${H}`, "--force-device-scale-factor=1", "about:blank"], { stdio: "ignore" });
@@ -55,26 +58,56 @@ async function main() {
     c.onEvent = (method, params) => {
       if (method === "Runtime.exceptionThrown") consoleErrors.push(`[exception] ${params.exceptionDetails?.text ?? ""} ${params.exceptionDetails?.exception?.description ?? ""}`);
       if (method === "Runtime.consoleAPICalled" && params.type === "error") consoleErrors.push(`[console.error] ${(params.args ?? []).map((a) => a.value ?? a.description ?? "").join(" ")}`);
+      if (method === "Network.requestWillBeSent") phaseRequests[phase].push(params.request.url);
+      if (method === "Network.loadingFailed" && !params.canceled) requestFailures.push(`${params.errorText ?? "failed"}: ${params.blockedReason ?? ""}`);
     };
     await c.send("Page.enable"); await c.send("Runtime.enable"); await c.send("Network.enable"); await c.send("Network.setCacheDisabled", { cacheDisabled: true });
     await c.send("Emulation.setDeviceMetricsOverride", { width: W, height: H, deviceScaleFactor: 1, mobile: false });
     await c.send("Page.navigate", { url: `${SERVER_URL}/?autostart=1&fullfps=1` });
-    await waitEval(c, "Boolean(window.__sf && window.__sf.player && window.__sf.missionDolores)", 120000);
+    await waitEval(c, "Boolean(window.__sf && window.__sf.player)", 120000);
+    await waitEval(c, "window.__sf.renderIdle && window.__sf.renderIdle()", 120000);
+    await sleep(600);
+
+    const featureCode = (urls) => urls.filter((url) => /\/src\/world\/missionDolores\/(?:index|ctx|shell|exhibits)\b/.test(url));
+    const francisMedia = (urls) => urls.filter((url) => url.includes("/francis/"));
+    const francisArtStems = (urls) => [...new Set(francisMedia(urls).map((url) => new URL(url).pathname.replace(/\.(ktx2|webp)$/, "")))].sort();
+    if (featureCode(phaseRequests.boot).length || francisMedia(phaseRequests.boot).length) {
+      throw new Error(`clean boot fetched Mission Dolores: ${[...featureCode(phaseRequests.boot), ...francisMedia(phaseRequests.boot)].join(", ")}`);
+    }
 
     // freeze the world for deterministic shots, warm midday light
     await evaluate(c, `(()=>{const s=window.__sf; s.sky.cycleEnabled=false; s.sky.setTimeOfDay(14.0);
       if(!window.__f){window.__f=1; s.chase.update=()=>{}; s.player.update=()=>{};} return 1;})()`);
 
+    // First-use code/shell gate, still far enough that no exhibit art is useful.
+    phase = "approach";
+    const approachY = await evaluate(c, "window.__sf.player.position.y");
+    await evaluate(c, `(()=>{const s=window.__sf,p=s.player; p.position.set(${CX},${approachY},${CZ - 120}); p.renderPosition.copy(p.position); s.physics.world.setBodyTransform(p.body,[${CX},${approachY},${CZ - 120}],[0,0,0,1]); return 1;})()`);
+    for (let i = 0; i < 35; i++) await tick(c);
+    await waitEval(c, "Boolean(window.__sf.missionDolores && window.__sf.missionDolores.group.children.length)", 120000);
+    if (francisMedia(phaseRequests.approach).length) {
+      throw new Error(`distant shell activation fetched art: ${francisMedia(phaseRequests.approach).join(", ")}`);
+    }
+
     const floorTop = await evaluate(c, "window.__sf.missionDolores.floorTop");
-    const CX = 1560, CZ = 3235;
     console.log("[probe] museum floorTop:", floorTop);
 
     // teleport the player into the nave so terrain around the church streams
+    phase = "interior";
     await evaluate(c, `(()=>{const s=window.__sf,p=s.player; const y=${floorTop}+1.6; p.position.set(${CX},y,${CZ - 20}); p.renderPosition.copy(p.position); s.physics.world.setBodyTransform(p.body,[${CX},y,${CZ - 20}],[0,0,0,1]); return 1;})()`);
     for (let i = 0; i < 70; i++) await tick(c);
     await waitEval(c, "window.__sf.renderIdle && window.__sf.renderIdle()", 120000);
     await sleep(2500); // let plaque/rose textures finish loading
     for (let i = 0; i < 20; i++) await tick(c);
+    const interiorStems = francisArtStems(phaseRequests.interior);
+    if (!interiorStems.length || interiorStems.length >= 20) {
+      throw new Error(`interior should load a nearby subset of art, got ${interiorStems.length}`);
+    }
+    console.log("[probe] waterfall:", JSON.stringify({
+      cleanBootFrancis: francisMedia(phaseRequests.boot).length,
+      approachFrancis: francisMedia(phaseRequests.approach).length,
+      interiorArtStems: interiorStems.length
+    }));
     console.log("[probe] isPlayerInside:", await evaluate(c, `window.__sf.missionDolores.isPlayerInside(window.__sf.player.position)`));
 
     const setCam = (px, py, pz, lx, ly, lz) => evaluate(c, `(()=>{const c=window.__sf.camera; c.position.set(${px},${py},${pz}); c.lookAt(${lx},${ly},${lz}); return 1;})()`);
@@ -100,24 +133,55 @@ async function main() {
     // 8. upward at an angle (offset so lookAt isn't degenerate) — vault ceiling check
     await frame("md_8_ceiling.jpg", [CX - 5, F + 2, CZ - 10], [CX + 3, F + 13, CZ + 2]);
 
-    // 6. open the Canticle book at the pedestal and shoot the WebGPU reader.
-    // The book is a 3D quad drawn in front of the camera, so we must keep TICKING
-    // after opening (the tick's book branch renders it + glues it to the camera).
+    // Walk the visitor into the sanctuary art wake radius, then inspect the
+    // centered hierarchy and both curved-wall mounts at grazing angles.
+    phase = "apse";
+    await evaluate(c, `(()=>{const s=window.__sf,p=s.player; const y=${F}+1.6; p.position.set(${CX},y,${CZ + 18}); p.renderPosition.copy(p.position); s.physics.world.setBodyTransform(p.body,[${CX},y,${CZ + 18}],[0,0,0,1]); return 1;})()`);
+    for (let i = 0; i < 24; i++) await tick(c);
+    await sleep(1000);
+    await frame("md_9_apse_center.jpg", [CX, F + 2.3, CZ + 17], [CX, F + 3.2, CZ + 34]);
+    await frame("md_10_apse_west.jpg", [CX - 6.5, F + 2.5, CZ + 26], [CX, F + 3.2, CZ + 34]);
+    await frame("md_11_apse_east.jpg", [CX + 6.5, F + 2.5, CZ + 26], [CX, F + 3.2, CZ + 34]);
+
+    // 6. Open the DOM Canticle reader. It may request only the current spread.
+    phase = "bookOpen";
     const opened = await evaluate(c, `(()=>{const s=window.__sf,p=s.player; const y=${F}+1.6; p.position.set(${CX},y,${CZ - 28}); p.renderPosition.copy(p.position); s.physics.world.setBodyTransform(p.body,[${CX},y,${CZ - 28}],[0,0,0,1]);
       s.camera.position.set(${CX}, y, ${CZ - 24}); s.camera.lookAt(${CX}, y, ${CZ + 10});
       s.missionDolores.tryInteract(p.position, 'walk', { message(){} }); return s.missionDolores.bookOpen; })()`);
     console.log("[probe] book opened:", opened, "museumBookOpen(render branch active):", await evaluate(c, `!!window.__sf.missionDolores.bookOpen`));
     for (let i = 0; i < 12; i++) await tick(c);
+    await sleep(250);
+    const bookOpenStems = francisArtStems(phaseRequests.bookOpen);
+    if (bookOpenStems.length !== 1 || bookOpenStems[0] !== "/francis/art/canticle-cover") {
+      throw new Error(`opening the Canticle should request only its cover art, got ${bookOpenStems.join(", ") || "nothing"}`);
+    }
     console.log("[probe] bookdbg:", JSON.stringify(await evaluate(c, `(()=>{const s=window.__sf; const cam=s.camera; const found=[]; s.scene.traverse(o=>{ if(o.renderOrder>=990){ const wp=new s.THREE.Vector3(); o.getWorldPosition(wp); found.push({n:o.name||o.type, ro:o.renderOrder, vis:o.visible, wp:[+wp.x.toFixed(1),+wp.y.toFixed(1),+wp.z.toFixed(1)], mat:o.material&&o.material.type}); } }); const cp=cam.position; return {count:found.length, cam:[+cp.x.toFixed(1),+cp.y.toFixed(1),+cp.z.toFixed(1)], sample:found.slice(0,4)}; })()`)));
     await sleep(600);
     await shot(c, "md_6_book_cover.jpg");
-    // turn a few pages via the reader's own arrow-key handler
-    await evaluate(c, `(()=>{for(let i=0;i<2;i++) window.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight'})); return 1;})()`);
+    // Each page turn is its own waterfall phase: selecting one spread must
+    // request exactly that spread, never the rest of the Canticle catalog.
+    phase = "bookPage";
+    await evaluate(c, `(()=>{window.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight'})); return 1;})()`);
     for (let i = 0; i < 12; i++) await tick(c);
     await sleep(500);
     await shot(c, "md_7_book_page.jpg");
+    const bookPageStems = francisArtStems(phaseRequests.bookPage);
+    if (bookPageStems.length !== 1 || bookPageStems[0] !== "/francis/art/francis-portrait") {
+      throw new Error(`first page turn should request only the Francis portrait, got ${bookPageStems.join(", ") || "nothing"}`);
+    }
+
+    phase = "bookPage2";
+    await evaluate(c, `(()=>{window.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight'})); return 1;})()`);
+    for (let i = 0; i < 12; i++) await tick(c);
+    await sleep(500);
+    await shot(c, "md_7b_book_brother_sun.jpg");
+    const bookPage2Stems = francisArtStems(phaseRequests.bookPage2);
+    if (bookPage2Stems.length !== 1 || bookPage2Stems[0] !== "/francis/art/canticle-brother-sun") {
+      throw new Error(`second page turn should request only Brother Sun, got ${bookPage2Stems.join(", ") || "nothing"}`);
+    }
 
     console.log("[probe] console errors:", consoleErrors.length ? "\n  " + consoleErrors.slice(0, 20).join("\n  ") : "(none)");
+    if (consoleErrors.length || requestFailures.length) throw new Error(`browser errors=${consoleErrors.length}, request failures=${requestFailures.length}`);
     c.close();
     console.log("[probe] done");
   } finally {

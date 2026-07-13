@@ -1,7 +1,17 @@
 import * as THREE from "three/webgpu";
-import { buildRig, poseIdle, poseWalk, setRigClasp, type Rig } from "../../player/rig";
-import { applyArmPose, solveArmPose, type ArmPose } from "../../gameplay/buskers/armIk";
+import {
+  buildRig,
+  poseIdle,
+  poseWalk,
+  setHandPose,
+  HAND_CUP,
+  HAND_POINT,
+  HAND_RELAXED,
+  type Rig
+} from "../../player/rig";
+import { setHandTarget } from "../../player/handIK";
 import { createIrohCostume } from "./irohCostume";
+import { createTeaSteam } from "./teaSteam";
 
 export type TeaMasterAction = "idle" | "welcome" | "serve" | "walk" | "talk" | "point";
 
@@ -10,6 +20,9 @@ export type TeaMasterVisual = {
   dialogueAnchor: THREE.Object3D;
   cupAnchor: THREE.Object3D;
   setAction(action: TeaMasterAction): void;
+  /** Whether the master still holds the tea bowl (both hands cradle it). Set
+   *  false when the player takes the tea, freeing his arms to gesture. */
+  setCarryingCup(has: boolean): void;
   update(
     dt: number,
     time: number,
@@ -28,24 +41,25 @@ export type TeaMasterVisualDebugState = {
   stridePhase: number;
   cupToLeftHand: number;
   cupToRightHand: number;
+  hasCup: boolean;
+  presentT: number;
+  ikError: string;
+  cupWorldPos: [number, number, number];
+  yaw: number;
 };
 
+// Uncle Iroh reference tones: silver hair/beard, warm skin, navy tunic under a
+// cream shawl, pale grey-tan sleeves, gold topknot tie, navy shoes.
 const PALETTE = {
-  paleBlue: 0xc9d8df,
-  indigo: 0x1b2d47,
-  hair: 0x6f8794,
+  sleeve: 0xcfc6b0,
+  navy: 0x232a42,
+  hair: 0xc3c5be,
   skin: 0xd7a17b,
-  gold: 0xb9934d,
-  shoe: 0x182436,
+  gold: 0xc9a24b,
+  shoe: 0x222a40,
   tea: 0x7a4b20,
-  cup: 0xd9c38c
+  cup: 0xdcc8a0
 } as const;
-
-function alphaSurface<T extends THREE.Material>(value: T): T {
-  value.transparent = true;
-  value.depthWrite = false;
-  return value;
-}
 
 function setRotation(group: THREE.Group, x: number, y: number, z: number): void {
   group.rotation.set(x, y, z);
@@ -56,8 +70,7 @@ function createTeaCup(geometries: THREE.BufferGeometry[], materials: THREE.Mater
   group.name = "tea_master_cup";
   const ceramic = new THREE.MeshStandardMaterial({ color: PALETTE.cup, roughness: 0.72, metalness: 0 });
   const tea = new THREE.MeshStandardMaterial({ color: PALETTE.tea, roughness: 0.35, metalness: 0 });
-  const steam = alphaSurface(new THREE.MeshBasicMaterial({ color: 0xf3f6ee, opacity: 0.52 }));
-  materials.push(ceramic, tea, steam);
+  materials.push(ceramic, tea);
 
   const bowlGeometry = new THREE.CylinderGeometry(0.11, 0.085, 0.105, 14, 1, true);
   const baseGeometry = new THREE.CylinderGeometry(0.075, 0.075, 0.025, 14);
@@ -76,21 +89,8 @@ function createTeaCup(geometries: THREE.BufferGeometry[], materials: THREE.Mater
   surface.rotation.x = -Math.PI / 2;
   surface.position.y = 0.053;
   group.add(surface);
-
-  for (let i = 0; i < 3; i++) {
-    const curve = new THREE.CatmullRomCurve3([
-      new THREE.Vector3((i - 1) * 0.035, 0.07, 0),
-      new THREE.Vector3((i - 1) * 0.045 + 0.025, 0.18, 0.01),
-      new THREE.Vector3((i - 1) * 0.025 - 0.015, 0.29, -0.005),
-      new THREE.Vector3((i - 1) * 0.04 + 0.02, 0.4, 0)
-    ]);
-    const geometry = new THREE.TubeGeometry(curve, 12, 0.006, 5, false);
-    geometries.push(geometry);
-    const wisp = new THREE.Mesh(geometry, steam);
-    wisp.name = `tea_steam_${i}`;
-    wisp.userData.phase = i * 2.1;
-    group.add(wisp);
-  }
+  // Steam is a stylized soft-sprite plume (teaSteam.ts), added by the caller so
+  // it can be updated/paused with the ceremony.
   return group;
 }
 
@@ -105,9 +105,9 @@ export function createTeaMasterVisual(): TeaMasterVisual {
   const rig = buildRig({ skin: 2, hair: "buzz", hat: "none", outfit: "jacket", color: 5, accent: 6 });
   hideStockFaceAndCostume(rig);
   rig.avatar.materials.skin.color.set(PALETTE.skin);
-  rig.avatar.materials.jacket.color.set(PALETTE.indigo);
-  rig.avatar.materials.sleeve.color.set(PALETTE.paleBlue);
-  rig.avatar.materials.pants.color.set(PALETTE.indigo);
+  rig.avatar.materials.jacket.color.set(PALETTE.navy);
+  rig.avatar.materials.sleeve.color.set(PALETTE.sleeve);
+  rig.avatar.materials.pants.color.set(PALETTE.navy);
   rig.avatar.materials.shoe.color.set(PALETTE.shoe);
   rig.avatar.materials.hair.color.set(PALETTE.hair);
   rig.avatar.torsoBlock.scale.set(1.32, 1.06, 1.16);
@@ -164,14 +164,26 @@ export function createTeaMasterVisual(): TeaMasterVisual {
     );
     sideHair.scale.set(0.85, 1.55, 0.75);
     sideHair.rotation.z = side * 0.32;
-    const whisker = addMesh(rig.head, new THREE.ConeGeometry(0.085, 0.22, 7), hair, [side * 0.1, 0.095, -0.105], "tea_master_beard_wing");
-    whisker.rotation.z = side * 0.36;
+    // Fuller sideburns that sweep down the jaw toward the beard, framing the face.
+    const whisker = addMesh(rig.head, new THREE.ConeGeometry(0.072, 0.3, 7), hair, [side * 0.115, 0.075, -0.1], "tea_master_beard_wing");
+    whisker.rotation.z = side * 0.28;
   }
   const topknot = addMesh(rig.head, new THREE.SphereGeometry(0.09, 10, 7), hair, [0, 0.43, 0.02], "tea_master_topknot");
   topknot.scale.set(0.8, 1.1, 0.8);
   addMesh(rig.head, new THREE.CylinderGeometry(0.075, 0.07, 0.055, 10), gold, [0, 0.38, 0.02], "tea_master_topknot_band");
-  const goatee = addMesh(rig.head, new THREE.ConeGeometry(0.075, 0.28, 8), hair, [0, 0.01, -0.145], "tea_master_goatee");
+  // Iroh's signature: a long grey mustache over a full pointed beard hanging
+  // well below the chin. A jaw pad joins the sideburns so the beard reads as one
+  // connected mass rather than a floating spike.
+  const beardPad = addMesh(rig.head, new THREE.SphereGeometry(0.11, 10, 8), hair, [0, 0.04, -0.135], "tea_master_beard_pad");
+  beardPad.scale.set(1.05, 0.72, 0.62);
+  const goatee = addMesh(rig.head, new THREE.ConeGeometry(0.088, 0.36, 8), hair, [0, -0.02, -0.15], "tea_master_goatee");
   goatee.rotation.z = Math.PI;
+  goatee.rotation.x = -0.12; // tip drifts forward, not tucked into the chest
+  for (const side of [-1, 1]) {
+    const mustache = addMesh(rig.head, new THREE.ConeGeometry(0.03, 0.13, 6), hair, [side * 0.05, 0.11, -0.168], "tea_master_mustache");
+    mustache.rotation.z = side * 1.9;
+    mustache.rotation.x = 0.2;
+  }
 
   // Welcoming face: bright eyes, warm pupils, soft brows, cheeks and a clear smile.
   for (const side of [-1, 1]) {
@@ -196,33 +208,8 @@ export function createTeaMasterVisual(): TeaMasterVisual {
   rig.torso.add(cupAnchor);
   const cup = createTeaCup(geometries, materials);
   cupAnchor.add(cup);
-
-  // Solve the two-hand serving station once against the live rig. The hands
-  // land at opposite points on the 22 cm bowl instead of hovering 30 cm away;
-  // runtime only blends six cached angles per arm.
-  poseIdle(rig, 0);
-  rig.group.updateWorldMatrix(true, true);
-  const serveTargetL = new THREE.Vector3(0.105, 0.08, -0.5);
-  const serveTargetR = new THREE.Vector3(-0.105, 0.08, -0.5);
-  rig.torso.localToWorld(serveTargetL);
-  rig.torso.localToWorld(serveTargetR);
-  const servePoseL = solveArmPose(
-    rig.armL,
-    rig.foreL,
-    rig.handL,
-    serveTargetL,
-    [0.98, -0.18, 0.18, 0.78, 0.08, 0] as ArmPose,
-    { side: 1, elbowClearance: 0.2 }
-  );
-  const servePoseR = solveArmPose(
-    rig.armR,
-    rig.foreR,
-    rig.handR,
-    serveTargetR,
-    [0.98, 0.18, -0.18, 0.78, -0.08, 0] as ArmPose,
-    { side: -1, elbowClearance: 0.2 }
-  );
-  poseIdle(rig, 0);
+  const steam = createTeaSteam();
+  cup.add(steam.group);
 
   const dialogueAnchor = new THREE.Object3D();
   dialogueAnchor.name = "tea_master_dialogue_anchor";
@@ -233,15 +220,34 @@ export function createTeaMasterVisual(): TeaMasterVisual {
   let actionTime = 0;
   let stridePhase = 0;
   let walkBlend = 0;
-  let handClasp = 0;
   let mouthBlend = 0;
+  let hasCup = true; // both hands cradle the bowl until the player takes the tea
+  let presentT = 0; // 0 = held at the chest, 1 = offered forward (the "serve" beat)
+  let ikError = "";
   let previousHeading = group.rotation.y;
   const headTarget = new THREE.Vector3();
   const localTarget = new THREE.Vector3();
   const handLWorld = new THREE.Vector3();
   const handRWorld = new THREE.Vector3();
-  const cupTarget = new THREE.Vector3();
   const cupWorld = new THREE.Vector3();
+
+  // Two-hand cradle, all in torso-local space. The bowl centre sits in front of
+  // the chest; each hand targets a point just below and outboard of it so the
+  // fingers close up around the bowl. `serve` eases the whole cradle forward.
+  const cupHold = new THREE.Vector3(0, 0.28, -0.42);
+  const cupOffer = new THREE.Vector3(0, 0.33, -0.52);
+  const cupLocal = new THREE.Vector3();
+  const handOffL = new THREE.Vector3(0.088, -0.055, 0.03);
+  const handOffR = new THREE.Vector3(-0.088, -0.055, 0.03);
+  const targetWorldL = new THREE.Vector3();
+  const targetWorldR = new THREE.Vector3();
+  // Palms tilt up and angle toward each other so the bowl reads as cradled, not
+  // pinched. Applied on top of the torso's world orientation each frame.
+  const tiltL = new THREE.Quaternion().setFromEuler(new THREE.Euler(1.32, -0.34, 0.16));
+  const tiltR = new THREE.Quaternion().setFromEuler(new THREE.Euler(1.32, 0.34, -0.16));
+  const torsoQuat = new THREE.Quaternion();
+  const aimL = new THREE.Quaternion();
+  const aimR = new THREE.Quaternion();
   const poseJoints = [
     rig.hips,
     rig.torso,
@@ -320,63 +326,86 @@ export function createTeaMasterVisual(): TeaMasterVisual {
       rig.legR.rotation.x *= 0.7;
       rig.shinL.rotation.x *= 0.78;
       rig.shinR.rotation.x *= 0.78;
-      rig.armL.rotation.x *= 0.64;
-      rig.armR.rotation.x *= 0.64;
       rig.torso.rotation.y *= 0.62;
+      // While he still cradles the cup the arms are IK-driven below, so hold
+      // them close; once the tea is handed off his arms are free to swing.
+      if (hasCup) {
+        rig.armL.rotation.x *= 0.6;
+        rig.armR.rotation.x *= 0.6;
+      } else {
+        rig.armL.rotation.x *= 1.02;
+        rig.armR.rotation.x *= 1.02;
+      }
+    } else {
+      poseIdle(rig, time);
     }
-    else poseIdle(rig, time);
 
+    // A warm little bow whenever he greets — reads on both the cup-in-hand
+    // welcome and the free-armed farewell.
     if (action === "welcome") {
-      setRotation(rig.armL, -0.25, 0, 1.05);
-      setRotation(rig.foreL, 0.45, 0, 0);
-      setRotation(rig.armR, 0.28, 0, -0.16);
-      setRotation(rig.foreR, 0.78, 0, 0);
-      rig.torso.rotation.x += Math.sin(Math.min(1, actionTime * 2.4) * Math.PI) * 0.08;
-    } else if (action === "serve") {
-      applyArmPose(rig.armL, rig.foreL, servePoseL);
-      applyArmPose(rig.armR, rig.foreR, servePoseR);
-    } else if (action === "talk") {
-      const gesture = 0.55 + Math.sin(time * 1.35) * 0.12;
-      setRotation(rig.armL, 0.2, 0, 0.72);
-      setRotation(rig.foreL, gesture, 0, 0.08);
-      setRotation(rig.armR, 0.4, 0, -0.2);
-      setRotation(rig.foreR, 0.75, 0, 0);
-    } else if (action === "point") {
-      setRotation(rig.armL, 1.12, 0.08, 0.38);
-      setRotation(rig.foreL, 0.12, 0, 0);
-      setRotation(rig.armR, 0.35, 0, -0.18);
-      setRotation(rig.foreR, 0.68, 0, 0);
+      rig.torso.rotation.x += Math.sin(Math.min(1, actionTime * 2.4) * Math.PI) * 0.07;
     }
+
+    // Free-arm gestures — only once the tea has been handed off. While he holds
+    // the cup the arms belong to the IK cradle and these are skipped.
+    if (!hasCup) {
+      if (action === "welcome") {
+        setRotation(rig.armL, -0.12, 0, 0.98);
+        setRotation(rig.foreL, 0.5, 0, 0.1);
+        setRotation(rig.armR, -0.12, 0, -0.98);
+        setRotation(rig.foreR, 0.5, 0, -0.1);
+      } else if (action === "talk") {
+        const g = 0.5 + Math.sin(time * 1.4) * 0.16;
+        setRotation(rig.armL, 0.24, 0.1, 0.68 + Math.sin(time * 1.1) * 0.12);
+        setRotation(rig.foreL, g, 0, 0.1);
+        setRotation(rig.armR, 0.3, -0.1, -0.6 - Math.sin(time * 1.1 + 1) * 0.12);
+        setRotation(rig.foreR, g * 0.9, 0, 0);
+      } else if (action === "point") {
+        // The wise elder points the way: left arm out toward the landmark with
+        // the index extended, alive with a slow lift.
+        const lift = 0.92 + Math.sin(time * 1.6) * 0.12;
+        setRotation(rig.armL, lift, 0.2, 0.4);
+        setRotation(rig.foreL, 0.06, 0, 0);
+        setRotation(rig.armR, 0.32, 0, -0.2);
+        setRotation(rig.foreR, 0.6, 0, 0);
+      }
+    }
+
     capturePose(targetPose);
     blendToTargetPose(safeDt);
-    handClasp = THREE.MathUtils.damp(handClasp, action === "serve" ? 0.72 : 0, 10, safeDt);
-    setRigClasp(rig, "L", handClasp);
-    setRigClasp(rig, "R", handClasp);
 
-    // During service the bowl follows the midpoint between both articulated
-    // hands. At rest it eases back to a sash cradle; every axis is damped so the
-    // prop never teleports when dialogue changes action.
-    if (action === "serve") {
+    // ---- hands + cup ----
+    presentT = THREE.MathUtils.damp(presentT, action === "serve" ? 1 : 0, 6, safeDt);
+    if (hasCup) {
       rig.group.updateWorldMatrix(true, true);
-      rig.handL.getWorldPosition(handLWorld);
-      rig.handR.getWorldPosition(handRWorld);
-      cupTarget.copy(handLWorld).add(handRWorld).multiplyScalar(0.5);
-      rig.torso.worldToLocal(cupTarget);
-      cupTarget.y += 0.035;
-      cupTarget.z -= 0.03;
+      cupLocal.lerpVectors(cupHold, cupOffer, presentT);
+      cupLocal.y += Math.sin(time * 1.5) * 0.006; // a soft breath keeps it alive
+      cupAnchor.position.copy(cupLocal);
+      cupAnchor.rotation.set(0, 0, 0);
+      // Hand targets sit just below and outboard of the bowl (world space); the
+      // runtime 2-bone IK reaches both mitts there and HAND_CUP curls the
+      // fingers up around it. The cup rides between them.
+      rig.torso.localToWorld(targetWorldL.copy(cupLocal).add(handOffL));
+      rig.torso.localToWorld(targetWorldR.copy(cupLocal).add(handOffR));
+      rig.torso.getWorldQuaternion(torsoQuat);
+      aimL.copy(torsoQuat).multiply(tiltL);
+      aimR.copy(torsoQuat).multiply(tiltR);
+      try {
+        setHandTarget(rig, "L", { pos: targetWorldL, aim: aimL, hand: HAND_CUP });
+        setHandTarget(rig, "R", { pos: targetWorldR, aim: aimR, hand: HAND_CUP });
+        ikError = "";
+      } catch (e) {
+        ikError = String((e as Error)?.message ?? e).slice(0, 120);
+      }
+    } else if (action === "point") {
+      setHandPose(rig, "L", HAND_POINT); // index leads
+      setHandPose(rig, "R", HAND_RELAXED);
     } else {
-      cupTarget.set(0, action === "walk" ? 0.09 : 0.18, action === "walk" ? -0.36 : -0.43);
+      setHandPose(rig, "L", HAND_RELAXED);
+      setHandPose(rig, "R", HAND_RELAXED);
     }
-    cupAnchor.position.x = THREE.MathUtils.damp(cupAnchor.position.x, cupTarget.x, 8, safeDt);
-    cupAnchor.position.y = THREE.MathUtils.damp(cupAnchor.position.y, cupTarget.y, 8, safeDt);
-    cupAnchor.position.z = THREE.MathUtils.damp(cupAnchor.position.z, cupTarget.z, 8, safeDt);
-    cupAnchor.rotation.x = THREE.MathUtils.damp(cupAnchor.rotation.x, action === "walk" ? -0.16 : 0, 8, safeDt);
-    cup.children.forEach((child) => {
-      if (!child.name.startsWith("tea_steam")) return;
-      const phase = Number(child.userData.phase ?? 0);
-      child.position.x = Math.sin(time * 1.2 + phase) * 0.015;
-      child.scale.y = 0.88 + Math.sin(time * 1.6 + phase) * 0.1;
-    });
+    cup.visible = hasCup;
+    steam.update(safeDt, hasCup);
 
     const speaking = action === "talk" || action === "point" || action === "welcome";
     const syllable = speaking ? 0.18 + (Math.sin(time * 7.1) * 0.5 + 0.5) * 0.72 : 0;
@@ -412,6 +441,9 @@ export function createTeaMasterVisual(): TeaMasterVisual {
     dialogueAnchor,
     cupAnchor,
     setAction,
+    setCarryingCup(has: boolean) {
+      hasCup = has;
+    },
     update,
     debugState() {
       capturePose(currentPose);
@@ -426,11 +458,17 @@ export function createTeaMasterVisual(): TeaMasterVisual {
         walkBlend,
         stridePhase,
         cupToLeftHand: cupWorld.distanceTo(handLWorld),
-        cupToRightHand: cupWorld.distanceTo(handRWorld)
+        cupToRightHand: cupWorld.distanceTo(handRWorld),
+        hasCup,
+        presentT,
+        ikError,
+        cupWorldPos: cupWorld.toArray() as [number, number, number],
+        yaw: group.rotation.y
       };
     },
     dispose() {
       costume.dispose();
+      steam.dispose();
       for (const geometry of geometries) geometry.dispose();
       for (const value of materials) value.dispose();
       for (const value of Object.values(rig.avatar.materials)) value.dispose();

@@ -571,7 +571,7 @@ export class GoldenGateTennisSite {
 
   setFoliageVisible(visible: boolean) {
     // Compatibility surface for the app-wide foliage toggle. Goldman/Hippie
-    // Hill trees are owned by the deferred wildlands SeedForest now, so the
+    // Hill trees are owned by the deferred wildlands NativeTreeForest now, so the
     // site itself has no foliage subtree to toggle.
     void visible;
   }

@@ -22,6 +22,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createBrotliCompress, createGzip, constants as zlibConstants } from "node:zlib";
 import { WebSocketServer } from "ws";
+import { weatherNumber } from "./weather-utils.mjs";
 
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -36,9 +37,239 @@ const PICKLEBALL_VALUE_LIMIT = 1_000_000;
 const MSG_MAX_BYTES = 16384; // fits a WebRTC SDP offer (voice signaling); poses are ~100 B
 const MSG_BUDGET_PER_SEC = 80; // state at 12 Hz + several simultaneous RTC negotiations; flooders get cut
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // no state for 5 min → drop
+const WEATHER_TIMEOUT_MS = 4000;
+const WEATHER_STALE_MS = 3 * 60 * 60 * 1000;
+const WEATHER_MAX_BYTES = 5 * 1024 * 1024;
+const WEATHER_USER_AGENT =
+  process.env.SF_WEATHER_USER_AGENT ||
+  "sanfrancisco-open-world/0.1 (live fog; set SF_WEATHER_USER_AGENT for operator contact)";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const DIST = path.join(ROOT, "..", "dist");
+
+/* ---------------------------------------------------------- live fog weather */
+
+const FOG_STATIONS = [
+  { id: "KHAF", role: "coast" },
+  { id: "KSFO", role: "southBay" },
+  { id: "KOAK", role: "eastBay" }
+];
+
+// Stable NWS MTR grid points nearest Ocean Beach, downtown, and the east Bay.
+// Avoiding a serial /points lookup keeps the whole adapter within one 4s budget.
+const FOG_GRID_POINTS = [
+  { role: "west", url: "https://api.weather.gov/gridpoints/MTR/81,105" },
+  { role: "center", url: "https://api.weather.gov/gridpoints/MTR/85,105" },
+  { role: "bay", url: "https://api.weather.gov/gridpoints/MTR/88,106" }
+];
+
+const weatherCache = new Map();
+const weatherInflight = new Map();
+let lastWeatherFailureLog = 0;
+
+async function weatherJson(url) {
+  const response = await fetch(url, {
+    headers: {
+      accept: "application/geo+json, application/json",
+      "user-agent": WEATHER_USER_AGENT
+    },
+    redirect: "error",
+    signal: AbortSignal.timeout(WEATHER_TIMEOUT_MS)
+  });
+  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+  const declared = weatherNumber(response.headers.get("content-length"));
+  if (declared !== null && declared > WEATHER_MAX_BYTES) throw new Error("weather response too large");
+  const text = await response.text();
+  if (Buffer.byteLength(text) > WEATHER_MAX_BYTES) throw new Error("weather response too large");
+  return JSON.parse(text);
+}
+
+async function cachedWeatherProvider(key, ttlMs, load) {
+  const now = Date.now();
+  const cached = weatherCache.get(key);
+  if (cached && now - cached.at < ttlMs) return { ...cached, stale: false };
+  const active = weatherInflight.get(key);
+  if (active) return active;
+  const pending = (async () => {
+    try {
+      const value = await load();
+      const next = { value, at: Date.now() };
+      weatherCache.set(key, next);
+      return { ...next, stale: false };
+    } catch (error) {
+      if (cached && now - cached.at < WEATHER_STALE_MS) return { ...cached, stale: true };
+      throw error;
+    } finally {
+      weatherInflight.delete(key);
+    }
+  })();
+  weatherInflight.set(key, pending);
+  return pending;
+}
+
+function parseVisibilityMiles(value) {
+  if (typeof value === "string") {
+    const normalized = value.trim().replace("+", "");
+    const fraction = /^(?:(\d+)\s+)?(\d+)\/(\d+)$/.exec(normalized);
+    if (fraction) {
+      value = Number(fraction[1] ?? 0) + Number(fraction[2]) / Number(fraction[3]);
+    } else {
+      value = normalized;
+    }
+  }
+  const miles = weatherNumber(value);
+  return miles === null ? null : miles * 1609.344;
+}
+
+function normalizeMetar(row, spec) {
+  const windKnots = weatherNumber(row.wspd);
+  const obsSeconds = weatherNumber(row.obsTime);
+  return {
+    role: spec.role,
+    id: spec.id,
+    observedAt:
+      obsSeconds === null
+        ? typeof row.reportTime === "string" ? row.reportTime : null
+        : new Date(obsSeconds * 1000).toISOString(),
+    visibilityM: parseVisibilityMiles(row.visib),
+    temperatureC: weatherNumber(row.temp),
+    dewpointC: weatherNumber(row.dewp),
+    windFromDeg: weatherNumber(row.wdir),
+    windSpeedMps: windKnots === null ? null : windKnots * 0.514444,
+    weather: typeof row.wxString === "string" ? row.wxString : null,
+    clouds: Array.isArray(row.clouds)
+      ? row.clouds.map((cloud) => {
+          const feet = weatherNumber(cloud.base);
+          return {
+            cover: typeof cloud.cover === "string" ? cloud.cover : "",
+            baseM: feet === null ? null : feet * 0.3048
+          };
+        })
+      : []
+  };
+}
+
+async function fetchFogMetars() {
+  const ids = FOG_STATIONS.map(({ id }) => id).join(",");
+  const rows = await weatherJson(
+    `https://aviationweather.gov/api/data/metar?ids=${encodeURIComponent(ids)}&format=json`
+  );
+  if (!Array.isArray(rows)) throw new Error("unexpected METAR payload");
+  const byId = new Map(rows.map((row) => [row.icaoId, row]));
+  const stations = FOG_STATIONS.flatMap((spec) => {
+    const row = byId.get(spec.id);
+    return row ? [normalizeMetar(row, spec)] : [];
+  });
+  if (!stations.length) throw new Error("no METAR stations available");
+  return stations;
+}
+
+function durationMs(isoDuration) {
+  const match = /^P(?:(\d+(?:\.\d+)?)D)?(?:T(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?)?$/.exec(
+    isoDuration ?? ""
+  );
+  if (!match) return 0;
+  return (
+    Number(match[1] ?? 0) * 86400000 +
+    Number(match[2] ?? 0) * 3600000 +
+    Number(match[3] ?? 0) * 60000 +
+    Number(match[4] ?? 0) * 1000
+  );
+}
+
+function gridEntryAt(property, now = Date.now()) {
+  if (!property || !Array.isArray(property.values)) return { value: null, validAt: null };
+  let nearest = null;
+  let nearestDistance = Infinity;
+  for (const entry of property.values) {
+    const [startRaw, durationRaw] = String(entry.validTime ?? "").split("/");
+    const start = Date.parse(startRaw);
+    if (!Number.isFinite(start)) continue;
+    const selected = { value: weatherNumber(entry.value), validAt: new Date(start).toISOString() };
+    const end = start + durationMs(durationRaw);
+    if (now >= start && now < end) return selected;
+    const distance = Math.abs(start - now);
+    if (distance < nearestDistance) {
+      nearestDistance = distance;
+      nearest = selected;
+    }
+  }
+  return nearest ?? { value: null, validAt: null };
+}
+
+function windMps(property, value) {
+  if (value === null) return null;
+  const unit = String(property?.uom ?? property?.unitCode ?? "");
+  if (/km_h-1|km\/h/i.test(unit)) return value / 3.6;
+  if (/kn|knot/i.test(unit)) return value * 0.514444;
+  return value;
+}
+
+async function fetchFogGrid() {
+  const results = await Promise.allSettled(FOG_GRID_POINTS.map((point) => weatherJson(point.url)));
+  const rows = [];
+  for (let i = 0; i < results.length; i++) {
+    const result = results[i];
+    if (result.status !== "fulfilled") continue;
+    const properties = result.value?.properties ?? {};
+    const visibility = gridEntryAt(properties.visibility);
+    const ceiling = gridEntryAt(properties.ceilingHeight);
+    const humidity = gridEntryAt(properties.relativeHumidity);
+    const skyCover = gridEntryAt(properties.skyCover);
+    const windDirection = gridEntryAt(properties.windDirection);
+    const windSpeed = gridEntryAt(properties.windSpeed);
+    const relevant = [visibility.value, ceiling.value, humidity.value, skyCover.value];
+    if (relevant.every((value) => value === null)) continue;
+    rows.push({
+      role: FOG_GRID_POINTS[i].role,
+      issuedAt: typeof properties.updateTime === "string" ? properties.updateTime : null,
+      validAt:
+        visibility.validAt ?? ceiling.validAt ?? humidity.validAt ?? skyCover.validAt ?? null,
+      visibilityM: visibility.value,
+      ceilingM: ceiling.value,
+      humidityPct: humidity.value,
+      skyCoverPct: skyCover.value,
+      windFromDeg: windDirection.value,
+      windSpeedMps: windMps(properties.windSpeed, windSpeed.value)
+    });
+  }
+  if (!rows.length) throw new Error("no usable NWS grid points available");
+  return rows;
+}
+
+async function liveFogPayload() {
+  const [metarResult, gridResult] = await Promise.allSettled([
+    cachedWeatherProvider("fog-metars", 5 * 60 * 1000, fetchFogMetars),
+    cachedWeatherProvider("fog-nws-grid", 30 * 60 * 1000, fetchFogGrid)
+  ]);
+  const generatedAt = new Date().toISOString();
+  const metar = metarResult.status === "fulfilled" ? metarResult.value : null;
+  const grid = gridResult.status === "fulfilled" ? gridResult.value : null;
+  if (!metar && !grid) throw new Error("live fog providers unavailable");
+  return {
+    version: 1,
+    generatedAt,
+    stale: Boolean(metar?.stale || grid?.stale),
+    sources: {
+      metar: metar
+        ? { ok: true, fetchedAt: new Date(metar.at).toISOString(), detail: metar.stale ? "cached" : "live" }
+        : { ok: false, detail: String(metarResult.reason?.message ?? "unavailable") },
+      nwsGrid: grid
+        ? { ok: true, fetchedAt: new Date(grid.at).toISOString(), detail: grid.stale ? "cached" : "live" }
+        : { ok: false, detail: String(gridResult.reason?.message ?? "unavailable") }
+    },
+    stations: metar?.value ?? [],
+    grid: grid?.value ?? [],
+    // NOAA's operational FLS data is NetCDF distributed through NCEI/CLASS,
+    // not a request-path JSON feed. The contract is ready for a future scheduled
+    // preprocessor; ordinary satellite RGB is not treated as a fog sensor.
+    satellite: {
+      available: false,
+      detail: "awaiting preprocessed NOAA GOES Fog/Low Stratus mask",
+      product: "NOAA GOES-R ABI-L2-GFLS"
+    }
+  };
+}
 
 const getUrlPath = (url = "/") => {
   try {
@@ -61,18 +292,26 @@ const MIME = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".webp": "image/webp",
+  ".ktx2": "image/ktx2",
   ".svg": "image/svg+xml",
   ".ico": "image/x-icon",
   ".woff2": "font/woff2"
 };
 
 const COMPRESSIBLE_DYNAMIC = new Set([".html", ".js", ".css", ".json", ".bin", ".svg"]);
-const WORLD_ASSET_PREFIXES = ["/data/", "/tiles/", "/models/", "/seedthree/", "/buildinggen/", "/citygen/", "/audio/"];
+const WORLD_ASSET_PREFIXES = ["/data/", "/tiles/", "/models/", "/native-foliage/", "/buildinggen/", "/citygen/", "/audio/"];
 
 const acceptsEncoding = (req, token) => String(req.headers["accept-encoding"] ?? "").includes(token);
 const weakEtag = (st) => `W/"${st.size.toString(16)}-${Math.trunc(st.mtimeMs).toString(16)}"`;
 const cacheControlFor = (urlPath) => {
   if (urlPath.startsWith("/assets/")) return "public, max-age=31536000, immutable";
+  if (/^\/native-foliage\/materials\/.+-[a-f0-9]{16}\.ktx2$/.test(urlPath)) {
+    return "public, max-age=31536000, immutable";
+  }
+  if (urlPath.startsWith("/native-foliage/basis-r185/")) {
+    return "public, max-age=31536000, immutable";
+  }
+  if (urlPath === "/native-foliage/manifest.json") return "no-cache";
   if (WORLD_ASSET_PREFIXES.some((prefix) => urlPath.startsWith(prefix))) {
     return "public, max-age=86400, stale-while-revalidate=2592000";
   }
@@ -117,6 +356,39 @@ const server = http.createServer(async (req, res) => {
   if (urlPath === "/healthz") {
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ ok: true, players: players.size }));
+    return;
+  }
+  if (urlPath === "/api/weather/fog") {
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      res.writeHead(405, { allow: "GET, HEAD", "cache-control": "no-store" });
+      res.end();
+      return;
+    }
+    try {
+      const payload = await liveFogPayload();
+      const body = JSON.stringify(payload);
+      res.writeHead(200, {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "public, max-age=60, stale-while-revalidate=900",
+        "content-length": Buffer.byteLength(body)
+      });
+      if (req.method === "HEAD") res.end();
+      else res.end(body);
+    } catch (error) {
+      const now = Date.now();
+      if (now - lastWeatherFailureLog > 60_000) {
+        lastWeatherFailureLog = now;
+        console.warn("[weather] live fog providers unavailable:", error);
+      }
+      const body = JSON.stringify({ ok: false, error: "live fog unavailable" });
+      res.writeHead(503, {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "no-store",
+        "content-length": Buffer.byteLength(body)
+      });
+      if (req.method === "HEAD") res.end();
+      else res.end(body);
+    }
     return;
   }
   if (!existsSync(DIST)) {

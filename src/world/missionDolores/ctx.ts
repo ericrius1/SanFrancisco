@@ -33,6 +33,17 @@ export interface MdPlaqueOpts {
 }
 
 const ART_BASE = "/francis/art/";
+const ART_WAKE_DISTANCE = 26;
+
+interface DeferredArt {
+  mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>;
+  material: THREE.MeshStandardMaterial;
+  name: string;
+  localPosition: readonly [number, number, number];
+  maxDistanceSq: number;
+  requested: boolean;
+  fit: "contain" | "stretch";
+}
 
 /**
  * MuseumCtx — the frozen toolkit every Mission Dolores exhibit builds against.
@@ -51,6 +62,8 @@ export class MuseumCtx {
   #placeholder?: THREE.Texture;
   #registerCollider: (box: MdWorldBox) => void;
   #disposables: { dispose(): void }[] = [];
+  #deferredArt: DeferredArt[] = [];
+  #disposed = false;
 
   constructor(opts: {
     root: THREE.Group;
@@ -82,12 +95,68 @@ export class MuseumCtx {
     if (cached) return cached;
     const p = loadTexture(`${ART_BASE}${name}`)
       .then((tex) => {
+        if (this.#disposed) {
+          tex.dispose();
+          throw new Error(`museum disposed before art resolved: ${name}`);
+        }
         this.#disposables.push(tex);
         return tex;
       })
-      .catch(() => this.#placeholderTex());
+      .catch((err) => {
+        if (this.#disposed) throw err;
+        return this.#placeholderTex();
+      });
     this.#artCache.set(name, p);
     return p;
+  }
+
+  /**
+   * Bind authored art to a mesh without fetching it until the visitor reaches
+   * that part of the museum. The shared texture is never mutated; CONTAIN is
+   * implemented by scaling only this mesh over its warm matte.
+   */
+  bindArt(
+    mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>,
+    material: THREE.MeshStandardMaterial,
+    name: string,
+    localPosition: readonly [number, number, number],
+    opts: { wakeDistance?: number; fit?: "contain" | "stretch" } = {}
+  ): void {
+    const wakeDistance = opts.wakeDistance ?? ART_WAKE_DISTANCE;
+    mesh.name = `md_art_${name}`;
+    mesh.visible = false;
+    this.#deferredArt.push({
+      mesh,
+      material,
+      name,
+      localPosition,
+      maxDistanceSq: wakeDistance * wakeDistance,
+      requested: false,
+      fit: opts.fit ?? "contain"
+    });
+  }
+
+  /** Wake only the art surfaces close enough to matter to the current visit. */
+  updateArt(playerPos: THREE.Vector3): void {
+    if (this.#disposed) return;
+    for (const art of this.#deferredArt) {
+      if (art.requested) continue;
+      const world = this.toWorld(art.localPosition[0], art.localPosition[1], art.localPosition[2]);
+      if (playerPos.distanceToSquared(world) > art.maxDistanceSq) continue;
+      art.requested = true;
+      void this.loadArt(art.name)
+        .then((tex) => {
+          if (this.#disposed) return;
+          art.material.map = tex;
+          art.material.emissiveMap = tex;
+          art.material.needsUpdate = true;
+          if (art.fit === "contain") this.#containArt(art.mesh, tex);
+          art.mesh.visible = true;
+        })
+        .catch(() => {
+          // Teardown can legitimately win a race with a texture request.
+        });
+    }
   }
 
   #placeholderTex(): THREE.Texture {
@@ -179,6 +248,7 @@ export class MuseumCtx {
     });
     this.#disposables.push(frameMat);
     const board = new THREE.Mesh(new THREE.BoxGeometry(W, H, 0.14), frameMat);
+    board.name = `${grp.name}_frame`;
     board.castShadow = false;
     board.receiveShadow = true;
     grp.add(board);
@@ -244,27 +314,36 @@ export class MuseumCtx {
     this.#disposables.push(panelMat);
     const panel = new THREE.Mesh(new THREE.PlaneGeometry(innerW, textH), panelMat);
     panel.position.set(0, textTop - textH / 2, 0.08);
+    panel.name = `${grp.name}_text`;
     grp.add(panel);
 
     // ---- art plane (top) — filled in when the texture loads ----
     if (hasArt) {
       const artH = innerH * artFrac;
       const artMat = new THREE.MeshStandardMaterial({
-        color: 0xffffff,
-        emissive: 0xffffff,
-        emissiveIntensity: 0.55,
+        color: 0xf3e5c8,
+        emissive: 0xf3e5c8,
+        emissiveIntensity: 0.35,
         roughness: 0.9,
         metalness: 0
       });
       this.#disposables.push(artMat);
-      const art = new THREE.Mesh(new THREE.PlaneGeometry(innerW, artH), artMat);
-      art.position.set(0, innerH / 2 - artH / 2, 0.08);
-      grp.add(art);
-      void this.loadArt(opts.art!).then((tex) => {
-        artMat.map = tex;
-        artMat.emissiveMap = tex;
-        artMat.needsUpdate = true;
+      const matteMat = new THREE.MeshStandardMaterial({
+        color: 0xd7c39c,
+        emissive: 0xd7c39c,
+        emissiveIntensity: 0.16,
+        roughness: 0.94,
+        metalness: 0
       });
+      this.#disposables.push(matteMat);
+      const matte = new THREE.Mesh(new THREE.PlaneGeometry(innerW, artH), matteMat);
+      matte.position.set(0, innerH / 2 - artH / 2, 0.08);
+      matte.name = `${grp.name}_art_matte`;
+      grp.add(matte);
+      const art = new THREE.Mesh(new THREE.PlaneGeometry(innerW, artH), artMat);
+      art.position.set(0, innerH / 2 - artH / 2, 0.084);
+      grp.add(art);
+      this.bindArt(art, artMat, opts.art!, opts.pos);
     }
 
     return grp;
@@ -290,8 +369,25 @@ export class MuseumCtx {
     return y;
   }
 
+  #containArt(mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>, tex: THREE.Texture): void {
+    const image = tex.image as { width?: number; height?: number } | undefined;
+    const iw = image?.width ?? 0;
+    const ih = image?.height ?? 0;
+    const geo = (mesh.geometry as THREE.PlaneGeometry).parameters;
+    if (!(iw > 0 && ih > 0 && geo?.width > 0 && geo?.height > 0)) return;
+    const imageAspect = iw / ih;
+    const slotAspect = geo.width / geo.height;
+    if (imageAspect > slotAspect) mesh.scale.set(1, slotAspect / imageAspect, 1);
+    else mesh.scale.set(imageAspect / slotAspect, 1, 1);
+    mesh.updateMatrix();
+    mesh.updateMatrixWorld(true);
+  }
+
   dispose(): void {
+    this.#disposed = true;
+    this.#deferredArt.length = 0;
     for (const d of this.#disposables) d.dispose();
     this.#disposables.length = 0;
+    this.#artCache.clear();
   }
 }

@@ -8,7 +8,7 @@ import { windSpeed, windStrength } from "./wind";
 export const VEGETATION_TUNING = tunables("vegetation", {
   windStrength: { v: 0.42, min: 0, max: 1, step: 0.01, label: "wind strength" },
   windSpeed: { v: 0.92, min: 0, max: 3, step: 0.05, label: "wind tempo" },
-  leafBrightness: { v: 0.44, min: 0.2, max: 1.2, step: 0.01, label: "tree leaf brightness" }
+  leafBrightness: { v: 1.05, min: 0.3, max: 1.6, step: 0.01, label: "tree leaf brightness" }
 });
 
 export function applyVegetationTuning() {

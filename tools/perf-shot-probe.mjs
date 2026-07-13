@@ -13,6 +13,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const requestedOut = process.env.SF_PROBE_OUT ?? path.join(process.env.TMPDIR ?? "/tmp", "sf-perf-shot");
 const OUT = path.isAbsolute(requestedOut) ? requestedOut : path.resolve(ROOT, requestedOut);
 const SERVER_URL = process.env.SF_PROBE_URL ?? "http://127.0.0.1:5199";
+const FIXED_TIME = process.env.SF_TIME === undefined ? null : Number(process.env.SF_TIME);
 const W = Number(process.env.SF_W ?? 1600), H = Number(process.env.SF_H ?? 1000);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let liveDev = null;
@@ -115,6 +116,9 @@ async function main() {
   while (Date.now() - t0 < 180000) { try { if (await ev(c, `!!(window.__sf&&window.__sf.player&&window.__sf.renderer&&window.__sf.renderer.backend&&window.__sf.renderer.backend.device&&window.__sf.renderIdle?.())`)) { ready = true; break; } } catch {} await sleep(600); }
   if (!ready) throw new Error("app never ready");
   await ev(c, `window.__sfManual&&window.__sfManual(true)`);
+  if (Number.isFinite(FIXED_TIME)) {
+    await ev(c, `(()=>{const sky=window.__sf.sky;sky.cycleEnabled=false;sky.setTimeOfDay(${FIXED_TIME});return true;})()`);
+  }
   await ev(c, `(()=>{const sf=window.__sf;sf.hud?.setHidden?.(true);sf.remotes?.setTagsVisible?.(false);for(const avatar of sf.remotes?.avatars?.values?.()??[])avatar.root.visible=false;const loading=document.getElementById('loading');if(loading)loading.style.display='none';return true;})()`);
   if (STOP) await ev(c, `(()=>{const sf=window.__sf;const gy=sf.map.groundTop(${STOP.x},${STOP.z});sf.player.teleportTo({x:${STOP.x},y:gy+1.1,z:${STOP.z},facing:${STOP.facing},mode:'walk'});sf.chase.yaw=${STOP.facing};sf.chase.pitch=0.26;sf.chase.zoom=0.82;return true;})()`);
   // settle with fence-yields so streaming completes

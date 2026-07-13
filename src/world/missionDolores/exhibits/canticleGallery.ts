@@ -1,11 +1,12 @@
 import type { MuseumCtx } from "../ctx";
 import type { MdExhibit } from "./index";
+import { WALL_ART_X, WALL_INNER_FACE_X } from "../layout";
 
 // West-aisle "Canticle of the Creatures" gallery — seven wall plaques telling
 // the verses of Francis's 1225 Canticle, descending the west wall from the
 // narthex toward the altar, with a carved header sign and warm wall sconces.
 
-const WALL_X = -13.05; // plaque centre-line, mounted flush on the west outer wall (x = -13.5)
+const WALL_X = -WALL_ART_X;
 const BOARD_W = 2.2;
 const BOARD_H = 3.0;
 const BOARD_Y = 2.6;
@@ -117,11 +118,11 @@ export function createCanticleGallery(ctx: MuseumCtx): MdExhibit {
     new THREE.BoxGeometry(0.12, 0.3, railLen),
     ctx.glowMat(WOOD, 0.12, 0.85)
   );
-  baseboard.position.set(WALL_X - 0.06, 0.15, railCenterZ);
+  baseboard.position.set(-WALL_INNER_FACE_X + 0.06, 0.15, railCenterZ);
   grp.add(baseboard);
 
   const rail = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.09, railLen), ctx.glowMat(TRIM, 0.16, 0.6));
-  rail.position.set(WALL_X - 0.05, 4.3, railCenterZ);
+  rail.position.set(-WALL_INNER_FACE_X + 0.05, 4.3, railCenterZ);
   grp.add(rail);
 
   // ---- warm wall sconces between the plaques (emissive only — never a THREE light) ----

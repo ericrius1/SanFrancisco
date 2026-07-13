@@ -11,22 +11,27 @@ export type IrohCostume = {
   dispose(): void;
 };
 
+// Uncle Iroh reference palette: cream shoulder shawl, dark-navy tunic, a warm
+// tan under-robe/skirt under the navy cloak, pale grey-tan sleeves, a pale
+// cream obi. (The vertex-colour arrays baked into the geometry are unused — the
+// cloth materials sample the palette DataTextures below — but are kept in sync.)
 const COLORS = {
-  indigo: new THREE.Color(0x1b2d47),
-  indigoLight: new THREE.Color(0x315c78),
-  paleBlue: new THREE.Color(0xc9d8df),
-  white: new THREE.Color(0xe8ece7),
-  hem: new THREE.Color(0x91aec0),
-  sash: 0x315c78
+  navy: new THREE.Color(0x232a42),
+  navyDeep: new THREE.Color(0x1a2036),
+  cream: new THREE.Color(0xe9e2d0),
+  creamShade: new THREE.Color(0xcbc3ad),
+  tan: new THREE.Color(0xccbb96),
+  sleeve: 0xcfc6b0,
+  sash: 0xd3ccb8
 } as const;
 
 type Rgb = readonly [number, number, number];
 const RGB = {
-  indigo: [27, 45, 71],
-  indigoLight: [49, 92, 120],
-  paleBlue: [201, 216, 223],
-  white: [232, 236, 231],
-  hem: [145, 174, 192]
+  navy: [35, 42, 66],
+  navyDeep: [26, 32, 54],
+  cream: [233, 226, 208],
+  creamShade: [203, 195, 173],
+  tan: [204, 187, 150]
 } as const satisfies Record<string, Rgb>;
 
 function mixRgb(a: Rgb, b: Rgb, t: number): Rgb {
@@ -70,20 +75,25 @@ function paletteTexture(
 function robePaletteTexture(): THREE.DataTexture {
   return paletteTexture("iroh_robe_woven_palette", 64, 32, (u, v) => {
     const angle = u * Math.PI * 2;
-    const front = Math.max(0, -Math.sin(angle));
-    const panel = Math.pow(front, 5) * (0.52 + v * 0.35);
-    let color = mixRgb(RGB.indigo, RGB.paleBlue, panel);
-    if (v > 0.88) color = mixRgb(color, RGB.hem, (v - 0.88) / 0.12);
+    const frontness = Math.max(0, -Math.sin(angle)); // 1 at front centre (-Z), 0 at sides/back
+    // Dark navy cloak up top; the warm tan under-robe shows lower. The navy
+    // front apron hangs lower down the centre than the sides do, so the tan
+    // reads first on the flanks — matching the reference silhouette.
+    const tanStart = 0.44 + frontness * 0.3;
+    let t = THREE.MathUtils.clamp((v - tanStart) / 0.2, 0, 1);
+    t = t * t * (3 - 2 * t);
+    let color = mixRgb(RGB.navy, RGB.tan, t);
+    if (v > 0.93) color = mixRgb(color, RGB.cream, (v - 0.93) / 0.07); // cream hem trim
     return color;
   });
 }
 
 function mantlePaletteTexture(): THREE.DataTexture {
-  return paletteTexture("iroh_mantle_woven_palette", 4, 32, (_u, v) => {
-    let color = mixRgb(RGB.white, RGB.paleBlue, v * 0.24);
-    if (v > 0.28) color = mixRgb(color, RGB.indigoLight, (v - 0.28) / 0.72);
-    return color;
-  });
+  // The big shoulder shawl: warm ivory throughout, easing to a soft grey-cream
+  // shade at the draped outer edge so the folds read.
+  return paletteTexture("iroh_mantle_woven_palette", 4, 32, (_u, v) =>
+    mixRgb(RGB.cream, RGB.creamShade, v * 0.7)
+  );
 }
 
 function addVertex(
@@ -121,8 +131,10 @@ function createRobeGeometry(): THREE.BufferGeometry {
     const v = iy / vertical;
     const eased = v * v * (3 - 2 * v);
     const y = 0.08 - v * 0.92;
-    const rx = THREE.MathUtils.lerp(0.39, 0.67, eased);
-    const rz = THREE.MathUtils.lerp(0.31, 0.52, eased);
+    // A dignified column, not a bell tent: the hem falls close to the body with
+    // only a soft kimono flare (was 0.67/0.52 — a ~1.5 m-wide cone).
+    const rx = THREE.MathUtils.lerp(0.34, 0.44, eased);
+    const rz = THREE.MathUtils.lerp(0.27, 0.36, eased);
     for (let ix = 0; ix <= radial; ix++) {
       const u = ix / radial;
       const angle = u * Math.PI * 2;
@@ -131,13 +143,15 @@ function createRobeGeometry(): THREE.BufferGeometry {
       p.set(ca * rx, y, sa * rz);
       n.set(ca / rx, 0.16 + v * 0.18, sa / rz).normalize();
 
-      // Front (-Z) is a pale blue wrap panel; the indigo sides/back keep the
-      // strong white-and-blue silhouette from the references without another
-      // coplanar overlay that could intersect or z-fight.
-      const front = Math.max(0, -sa);
-      const panel = Math.pow(front, 5) * (0.52 + v * 0.35);
-      c.copy(COLORS.indigo).lerp(COLORS.paleBlue, panel);
-      if (v > 0.88) c.lerp(COLORS.hem, (v - 0.88) / 0.12);
+      // Navy cloak up top easing to the warm tan under-robe lower down, with a
+      // cream hem — mirrors robePaletteTexture (which is what actually shades
+      // the cloth; these vertex colours are kept in sync but unused).
+      const frontness = Math.max(0, -sa);
+      const tanStart = 0.44 + frontness * 0.3;
+      let t = THREE.MathUtils.clamp((v - tanStart) / 0.2, 0, 1);
+      t = t * t * (3 - 2 * t);
+      c.copy(COLORS.navy).lerp(COLORS.tan, t);
+      if (v > 0.93) c.lerp(COLORS.cream, (v - 0.93) / 0.07);
       addVertex(positions, normals, uvs, colors, p, n, u, v, c);
     }
   }
@@ -197,14 +211,16 @@ function createMantleGeometry(): THREE.BufferGeometry {
       for (let ir = 0; ir <= radial; ir++) {
         const v = ir / radial;
         const eased = v * v * (3 - 2 * v);
-        const rx = THREE.MathUtils.lerp(0.19, 0.45, eased);
-        const rz = THREE.MathUtils.lerp(0.16, 0.37, eased);
-        const frontDrape = Math.max(0, -sa) * eased * 0.1;
-        const backDrape = Math.max(0, sa) * eased * 0.04;
-        p.set(ca * rx, 0.47 - eased * 0.25 - v * v * 0.055 - frontDrape - backDrape, sa * rz);
+        // A modest shoulder cape, not a chin-high ruff: smaller outer radius,
+        // and it starts lower (0.36 vs 0.47) and drapes harder so the navy tunic
+        // shows in the centre front the way the reference shawl does.
+        const rx = THREE.MathUtils.lerp(0.15, 0.31, eased);
+        const rz = THREE.MathUtils.lerp(0.13, 0.25, eased);
+        const frontDrape = Math.max(0, -sa) * eased * 0.14;
+        const backDrape = Math.max(0, sa) * eased * 0.06;
+        p.set(ca * rx, 0.36 - eased * 0.3 - v * v * 0.05 - frontDrape - backDrape, sa * rz);
         n.set(ca * (0.2 + eased * 0.22), 1, sa * (0.2 + eased * 0.22)).normalize();
-        c.copy(COLORS.white).lerp(COLORS.paleBlue, eased * 0.24);
-        if (v > 0.28) c.lerp(COLORS.indigoLight, (v - 0.28) / 0.72);
+        c.copy(COLORS.cream).lerp(COLORS.creamShade, eased * 0.7);
         addVertex(positions, normals, uvs, colors, p, n, u, v, c);
       }
     }
@@ -287,7 +303,7 @@ export function createIrohCostume(rig: Rig): IrohCostume {
   // the stock arm blocks, while the mantle's true armholes keep the systems
   // from competing for the same volume.
   const sleeveState = flowingClothMaterial({
-    color: COLORS.paleBlue.getHex(),
+    color: COLORS.sleeve,
     roughness: 0.9,
     amplitude: 0.024,
     speed: 2.5,

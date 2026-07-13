@@ -20,7 +20,7 @@ import {
   type GardenTree
 } from "./layout";
 import { buildBotanicalGrass, type BotanicalGrassController } from "./botanicalGrass";
-import { SEED_TREE_DESIGNS } from "./treeDesigns";
+import { NATIVE_TREE_DESIGNS } from "./treeDesigns";
 import { setLocalFarShadowOnly } from "../shadows/shadowLayers";
 import {
   createAuthoredFlowerPatch,
@@ -136,7 +136,7 @@ export function createGardenVegetation(map: GardenTerrain): GardenVegetation {
 
   const treeArchetypes: AuthoredTreeArchetype[] = [];
   const archetypeBySpecies = new Map<number, string>();
-  SEED_TREE_DESIGNS.forEach((design, species) => {
+  NATIVE_TREE_DESIGNS.forEach((design, species) => {
     if (!design) return;
     const id = `sfbg-species-${species}`;
     archetypeBySpecies.set(species, id);
@@ -152,7 +152,7 @@ export function createGardenVegetation(map: GardenTerrain): GardenVegetation {
         yaw: tree.yaw,
         scale: tree.scale,
         archetype,
-        nearClone: tree.nearClone
+        nearDetail: tree.nearDetail
       }]
       : [];
   });
@@ -163,17 +163,14 @@ export function createGardenVegetation(map: GardenTerrain): GardenVegetation {
     nearRadius: 58,
     nearExitRadius: 66,
     nearMax: 24,
-    farCardKeep: 0.57,
-    farConeKeep: 0.72,
-    farBarkKeep: 0.4,
-    farBarkAreaFloor: 0.88
+    horizonDistance: 520
   });
   group.add(treePatch.group);
 
   // Tree ferns use the same leaf-spray + shared-wind renderer as fern
   // understory, with a trunk authored into the shared fern profile. Their
   // stable low-poly proxy remains the dedicated distant shadow caster.
-  const treeFerns = trees.filter((tree) => !SEED_TREE_DESIGNS[tree.species]);
+  const treeFerns = trees.filter((tree) => !NATIVE_TREE_DESIGNS[tree.species]);
   const fernPatch = createAuthoredShrubPatch(treeFerns.map(authoredTreeFern), {
     name: "sfbg_tree_ferns",
     palettes: SHRUB_PALETTES

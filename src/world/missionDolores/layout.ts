@@ -27,6 +27,7 @@ export const APSE_RADIUS = 9; // semicircular altar niche beyond Z_APSE
 export const WALL_H = 11; // side-wall height to the vault springline
 export const VAULT_APEX = 14; // barrel-vault crown height (kept below the roof ridge)
 export const TOWER_H = 24; // bell-tower height at the façade
+export const WALL_THICKNESS = 0.6;
 
 // central portal (entrance) — a walkable wall gap on the −z façade
 export const PORTAL_HALF_W = 3;
@@ -36,6 +37,42 @@ export const PORTAL_H = 6.5;
 export const FOOT_HALF_W = 13.5;
 export const FOOT_Z0 = -36;
 export const FOOT_Z1 = 40; // includes the apse bulge
+export const WALL_INNER_FACE_X = FOOT_HALF_W - WALL_THICKNESS / 2;
+/** Centre of a 14 cm-deep framed board whose back sits on the inner wall. */
+export const WALL_ART_X = WALL_INNER_FACE_X - 0.07;
+
+export interface MdApseWallSegment {
+  readonly x: number;
+  readonly z: number;
+  readonly length: number;
+  /** Local yaw for a box whose long axis starts on +x. */
+  readonly yaw: number;
+}
+
+/**
+ * Rear sanctuary wall, sampled from the east shoulder to the west shoulder.
+ * Keeping this construction in one pure helper makes the visible wall and its
+ * collision proxy share the exact same arc.
+ */
+export function createApseWallSegments(count = 12): MdApseWallSegment[] {
+  if (!Number.isInteger(count) || count < 2) throw new Error("apse wall needs at least two segments");
+  const out: MdApseWallSegment[] = [];
+  for (let i = 0; i < count; i++) {
+    const a0 = (Math.PI * i) / count;
+    const a1 = (Math.PI * (i + 1)) / count;
+    const x0 = Math.cos(a0) * APSE_RADIUS;
+    const z0 = Z_APSE + Math.sin(a0) * APSE_RADIUS;
+    const x1 = Math.cos(a1) * APSE_RADIUS;
+    const z1 = Z_APSE + Math.sin(a1) * APSE_RADIUS;
+    out.push({
+      x: (x0 + x1) / 2,
+      z: (z0 + z1) / 2,
+      length: Math.hypot(x1 - x0, z1 - z0) + 0.05,
+      yaw: -Math.atan2(z1 - z0, x1 - x0)
+    });
+  }
+  return out;
+}
 
 /** Museum-local → world position (accounts for CENTER + YAW; floorTop added by caller). */
 export function mdToWorldXZ(lx: number, lz: number): { x: number; z: number } {

@@ -68,6 +68,8 @@ export type JapaneseTeaGardenOptions = {
   dialogueSource?: TeaGardenDialogueSource;
   voiceOutput?: VoiceOutput;
   dialogueParent?: HTMLElement;
+  /** Show/hide a tea bowl in the player's own hand when Iroh hands off the tea. */
+  onCarryCup?: (holding: boolean) => void;
 };
 
 const WAKE_DISTANCE = 720;
@@ -90,7 +92,8 @@ export function createJapaneseTeaGarden(
   const guide = createTeaGardenGuide(map, {
     dialogueSource: options.dialogueSource,
     voiceOutput: options.voiceOutput,
-    dialogueParent: options.dialogueParent
+    dialogueParent: options.dialogueParent,
+    onCarryCup: options.onCarryCup
   });
   guide.setWorldVisible(false);
   group.add(architecture.group, vegetation.group, guide.group);

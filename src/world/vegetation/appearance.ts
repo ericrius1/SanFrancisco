@@ -1,6 +1,4 @@
-// Sandbox-owned vegetation appearance state. Tree materials still built by the
-// transitional SeedThree adapter read this same uniform until the in-repo
-// foliage material replaces them.
+// Sandbox-owned appearance state shared by every native tree material grade.
 
 import { uniform } from "three/tsl";
 

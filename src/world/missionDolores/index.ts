@@ -192,6 +192,7 @@ export class MissionDoloresMuseum {
       this.#promptShown = true;
     }
     if (!near) this.#promptShown = false;
+    this.#ctx?.updateArt(playerPos);
     for (const ex of this.#exhibits) ex.update?.(dt, elapsed, playerPos);
   }
 

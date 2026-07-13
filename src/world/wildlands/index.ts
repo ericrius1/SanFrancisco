@@ -1,17 +1,17 @@
 // Wildlands — designed unified foliage across Golden Gate Park, the Presidio,
 // and the Marin Headlands. Groves, cypress windrows, oak savannas, and
 // noise-banded wildflower drifts, all deterministic (layout.ts) and rendered
-// through the chunked seedForest engine + a player-following flower ring.
+// through the chunked nativeTreeForest engine + a player-following flower ring.
 //
 // Public surface mirrors the botanical garden: hand it a terrain sampler, add
 // the groups, tick update() with a focus point. All outdoor tree beauty uses the
-// same SeedForest runtime; layout owns only deterministic planting intent.
+// same NativeTreeForest runtime; layout owns only deterministic planting intent.
 
 import type * as THREE from "three/webgpu";
-import { createSeedForest, type SeedForest } from "../seedForest";
+import { createNativeTreeForest, type NativeTreeForest } from "../nativeTreeForest";
 import { createFlowerRing, type FlowerRing } from "./flowerRing";
 import { createWildGrass, type WildGrass } from "./grassField";
-import { collectWildTrees, wildRegionAt, WILD_TREE_DESIGNS, type WildTree } from "./layout";
+import { collectWildTrees, WILD_TREE_DESIGNS, type WildRegionId } from "./layout";
 import type { GardenTerrain } from "../garden/layout";
 
 export { wildRegionAt, WILD_REGIONS } from "./layout";
@@ -20,12 +20,10 @@ export { wildRegionAt, WILD_REGIONS } from "./layout";
 // its group); they only share the ground-cover infra (wind, displacers, chunked
 // LOD). Toggle a layer via `wildlands.<layer>.group.visible`.
 export type Wildlands = {
-  trees: SeedForest;
-  /** Long-range canopy kept resident for the Corona Heights cinematic. */
-  buenaVistaTrees: SeedForest;
+  trees: NativeTreeForest;
   flowers: FlowerRing;
   grass: WildGrass;
-  /** Resolves after the asynchronous SeedForest designs/chunks are attached. */
+  /** Resolves after the asynchronous NativeTreeForest designs/chunks are attached. */
   ready: Promise<void>;
   /** add all layer groups to the scene */
   groups: THREE.Group[];
@@ -48,56 +46,49 @@ export type WildlandsExclusions = {
   trees?: (x: number, z: number) => boolean;
 };
 
-export function createWildlands(map: GardenTerrain, exclusions: WildlandsExclusions = {}): Wildlands {
-  const allTreeSlots: WildTree[] = collectWildTrees(map, exclusions.trees);
-  // Buena Vista needs to read from Corona Heights, roughly 450–750 m away. Keep
-  // it in its own forest so that longer reach does not multiply the resident
-  // chunks across Golden Gate Park, the Presidio, Marin, and Mount Sutro.
-  const buenaVistaSlots = allTreeSlots.filter((tree) => wildRegionAt(tree.x, tree.z)?.id === "buenavista");
-  const treeSlots = allTreeSlots.filter((tree) => wildRegionAt(tree.x, tree.z)?.id !== "buenavista");
+const PRIMARY_WILD_REGIONS: ReadonlySet<WildRegionId> = new Set([
+  "ggpark",
+  "presidio",
+  "marin",
+  "twinpeaks"
+]);
 
-  const trees = createSeedForest(WILD_TREE_DESIGNS, treeSlots, {
+export function createWildlands(map: GardenTerrain, exclusions: WildlandsExclusions = {}): Wildlands {
+  // Buena Vista is a separate first-approach owner because it is visible from
+  // Corona Heights while every primary Wildlands region is still distant.
+  // Keeping that canopy out of this owner prevents either side from waking the
+  // other's compiler prototypes and material sets.
+  const treeSlots = collectWildTrees(map, exclusions.trees, PRIMARY_WILD_REGIONS);
+  const trees = createNativeTreeForest(WILD_TREE_DESIGNS, treeSlots, {
     name: "wildlands_trees",
     chunkSize: 176,
     visibleDistance: 380, // small trees at range read as noise; cull tighter for GPU
-    // Kill LOD pop: the near hero clones reach OUT PAST lod2Dist (78 m), so by
-    // the time a clone hands off to the instanced far tier it is already showing
-    // the same LOD2 geometry — the swap is invisible. Clones on LOD2 are cheap
-    // (flat cards), so a big budget is affordable; only the few within ~46 m are
-    // full geometry. Hysteresis on the exit radius stops boundary flicker.
+    // Keep enough individually selected close trees beyond the landscape handoff
+    // for a stable crown silhouette. Both the near pool and chunk tier are native
+    // whole-tree batches; entry/exit hysteresis prevents boundary flicker.
     nearRadius: 96,
     nearExitRadius: 110,
     nearMax: 46
-  });
-  const buenaVistaTrees = createSeedForest(WILD_TREE_DESIGNS, buenaVistaSlots, {
-    name: "buena_vista_trees",
-    chunkSize: 150,
-    visibleDistance: 1050,
-    nearRadius: 96,
-    nearExitRadius: 110,
-    nearMax: 36
   });
   const flowers = createFlowerRing(map, exclusions.groundcover); // player-following ring, like the grass
   const grass = createWildGrass(map, exclusions.groundcover); // player-following ring; free off green (grows in city parks too)
 
   return {
     trees,
-    buenaVistaTrees,
     flowers,
     grass,
-    ready: Promise.all([trees.ready, buenaVistaTrees.ready]).then(() => undefined),
-    groups: [trees.group, buenaVistaTrees.group, flowers.group, grass.group],
+    ready: trees.ready,
+    groups: [trees.group, flowers.group, grass.group],
     update(ringFocus, cullFocus = ringFocus) {
       trees.update(cullFocus); // distance-cull to what the camera sees
-      buenaVistaTrees.update(cullFocus); // longer reach is isolated to this compact park
       flowers.update(ringFocus); // rings stay centred on the player, not the camera
       grass.update(ringFocus);
     },
     get stats() {
       return {
-        trees: allTreeSlots.length,
+        trees: treeSlots.length,
         flowers: flowers.stats.count, // live: the ring re-scatters as the player moves
-        treeChunks: trees.stats.chunks + buenaVistaTrees.stats.chunks
+        treeChunks: trees.stats.chunks
       };
     }
   };

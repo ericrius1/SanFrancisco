@@ -1,13 +1,14 @@
 import * as THREE from "three/webgpu";
 import type { MuseumCtx } from "../ctx";
 import type { MdExhibit } from "./index";
+import { WALL_ART_X } from "../layout";
 
 // East-aisle "Life & Legacy" timeline — seven biographical stations hung on
 // the east wall (x ≈ +11.55), read from the entrance (-z) toward the altar
 // (+z): a chronological walk through the life of Francis of Assisi and the
 // mission that carries his name.
 
-const WALL_X = 13.05; // plaque board centre, mounted flush on the east outer wall (x = 13.5)
+const WALL_X = WALL_ART_X;
 const RAIL_X = 12.9; // the bronze timeline rail + date medallions, slightly proud of the wall
 const BOARD_W = 2.2;
 const BOARD_H = 3.0;

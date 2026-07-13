@@ -42,3 +42,12 @@ export function groundSway(anchorWorldXZ: TslNode): TslNode {
   const gustEnvelope = (windGustGlobal as TslNode).mul(1.3).add(0.3);
   return mix(sine, gust, 0.55).mul(windStrengthNode.mul(0.34)).mul(gustEnvelope);
 }
+
+/** One-sine distance grade: same direction, speed, strength and gust envelope. */
+export function groundSwayLite(anchorWorldXZ: TslNode): TslNode {
+  const t = time.mul(windSpeedNode);
+  const phase = anchorWorldXZ.x.mul(0.35).add(anchorWorldXZ.y.mul(0.27)).mul(2.2);
+  const sine = sin(t.mul(1.15).add(phase));
+  const gustEnvelope = (windGustGlobal as TslNode).mul(1.3).add(0.3);
+  return sine.mul(windStrengthNode.mul(0.34)).mul(gustEnvelope);
+}

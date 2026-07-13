@@ -12,6 +12,7 @@ export const SF_LON = -122.444
 
 const DEG = Math.PI / 180
 const RAD = 180 / Math.PI
+const CIVIL_DAY_MS = 24 * 60 * 60 * 1000
 
 export type SfCivilTime = {
   year: number
@@ -30,6 +31,34 @@ export type SolarPosition = {
   x: number
   y: number
   z: number
+}
+
+/**
+ * Continuous modern San-Francisco civil-day coordinate. The integer portion
+ * is a Gregorian calendar day and the fraction is local wall-clock time. Every
+ * simulated day is deliberately 24 hours; DST belongs to real-time acquisition,
+ * not to the accelerated game clock.
+ */
+export function sfCivilScalarDays(civil: SfCivilTime): number {
+  return Date.UTC(civil.year, civil.month - 1, civil.day) / CIVIL_DAY_MS + civil.hour / 24
+}
+
+/** Inverse of sfCivilScalarDays(), including month/year/leap-day rollover. */
+export function sfCivilFromScalarDays(value: number): SfCivilTime {
+  const wholeDay = Math.floor(value)
+  const fraction = value - wholeDay
+  const date = new Date(wholeDay * CIVIL_DAY_MS)
+  return {
+    year: date.getUTCFullYear(),
+    month: date.getUTCMonth() + 1,
+    day: date.getUTCDate(),
+    hour: fraction * 24
+  }
+}
+
+/** Advance a simulated SF civil instant without introducing DST-sized days. */
+export function addSfCivilHours(civil: SfCivilTime, hours: number): SfCivilTime {
+  return sfCivilFromScalarDays(sfCivilScalarDays(civil) + hours / 24)
 }
 
 const SF_PARTS_FMT = new Intl.DateTimeFormat("en-US", {
@@ -71,23 +100,39 @@ export function sanFranciscoTimeOfDay(at = new Date()): number {
  * Convert SF civil wall time → UTC milliseconds.
  * Iterates once off a UTC guess so DST (PST/PDT) is handled by Intl.
  */
-export function sfCivilToUtcMs(civil: SfCivilTime): number {
+export function sfCivilToUtcMs(civil: SfCivilTime, fixedUtcOffsetHours?: number): number {
   const h = Math.floor(civil.hour)
   const minF = (civil.hour - h) * 60
   const min = Math.floor(minF)
   const sec = (minF - min) * 60
+  const localAsUtc = Date.UTC(civil.year, civil.month - 1, civil.day, h, min, sec)
+  if (fixedUtcOffsetHours !== undefined) {
+    return localAsUtc - fixedUtcOffsetHours * 3600 * 1000
+  }
   // Pacific is UTC−7/−8; start near UTC−8 then correct from what LA actually shows.
   let utc = Date.UTC(civil.year, civil.month - 1, civil.day, h + 8, min, sec)
   for (let i = 0; i < 3; i++) {
     const shown = sanFranciscoCivilNow(new Date(utc))
-    const wantDay = civil.year * 10000 + civil.month * 100 + civil.day
-    const gotDay = shown.year * 10000 + shown.month * 100 + shown.day
-    const daySkew = wantDay - gotDay // −1 / 0 / +1 in practice
+    // Calendar ordinals, not YYYYMMDD integers: July 31 → August 1 is one day,
+    // not 70. Accelerated time now exercises this path at every month boundary.
+    const wantDay = Date.UTC(civil.year, civil.month - 1, civil.day) / CIVIL_DAY_MS
+    const gotDay = Date.UTC(shown.year, shown.month - 1, shown.day) / CIVIL_DAY_MS
+    const daySkew = wantDay - gotDay
     const hourSkew = civil.hour - shown.hour + daySkew * 24
     if (Math.abs(hourSkew) < 1 / 3600) break
     utc += hourSkew * 3600 * 1000
   }
   return utc
+}
+
+/** Actual Pacific UTC offset at a valid SF wall-clock instant. */
+export function sfUtcOffsetHours(civil: SfCivilTime): number {
+  const h = Math.floor(civil.hour)
+  const minF = (civil.hour - h) * 60
+  const min = Math.floor(minF)
+  const sec = (minF - min) * 60
+  const localAsUtc = Date.UTC(civil.year, civil.month - 1, civil.day, h, min, sec)
+  return (localAsUtc - sfCivilToUtcMs(civil)) / 3600000
 }
 
 /** Julian centuries since J2000.0 from a UTC unix ms timestamp. */
@@ -100,8 +145,13 @@ function julianCenturies(utcMs: number): number {
  * Sun direction / elevation / azimuth for a San-Francisco civil instant.
  * Declination tracks the day-of-year, so winter noon sits much lower than summer.
  */
-export function solarPosition(civil: SfCivilTime, lat = SF_LAT, lon = SF_LON): SolarPosition {
-  const utcMs = sfCivilToUtcMs(civil)
+export function solarPosition(
+  civil: SfCivilTime,
+  lat = SF_LAT,
+  lon = SF_LON,
+  fixedUtcOffsetHours?: number
+): SolarPosition {
+  const utcMs = sfCivilToUtcMs(civil, fixedUtcOffsetHours)
   const T = julianCenturies(utcMs)
 
   // Pacific UTC offset (hours, e.g. −7 PDT / −8 PST) from the civil→UTC solve
@@ -110,7 +160,7 @@ export function solarPosition(civil: SfCivilTime, lat = SF_LAT, lon = SF_LON): S
   const min = Math.floor(minF)
   const sec = (minF - min) * 60
   const localAsUtc = Date.UTC(civil.year, civil.month - 1, civil.day, h, min, sec)
-  const tzHours = (localAsUtc - utcMs) / 3600000
+  const tzHours = fixedUtcOffsetHours ?? (localAsUtc - utcMs) / 3600000
 
   // Geometric mean longitude & anomaly of the sun (degrees)
   let L0 = (280.46646 + T * (36000.76983 + T * 0.0003032)) % 360

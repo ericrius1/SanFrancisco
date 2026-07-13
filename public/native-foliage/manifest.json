@@ -1,0 +1,1092 @@
+{
+  "schemaVersion": 1,
+  "generator": "tools/build-native-foliage-textures.mjs",
+  "sourcePolicy": "deterministic-procedural-no-vendor-dependency",
+  "contract": {
+    "textureFormat": "KTX2 / Basis Universal",
+    "basisTranscoder": "/native-foliage/basis-r185/",
+    "uvOrigin": "lower-left; foliage v=0 is branch/base and v=1 is tip",
+    "colorAlpha": {
+      "colorSpace": "srgb",
+      "channels": {
+        "rgb": "baseColor",
+        "a": "opacity"
+      }
+    },
+    "leafSurface": {
+      "colorSpace": "linear",
+      "channels": {
+        "r": "normal.x",
+        "g": "normal.y",
+        "b": "roughness",
+        "a": "translucency"
+      },
+      "normalDecode": "xy = rg * 2 - 1; z = sqrt(max(0, 1 - dot(xy, xy)))"
+    },
+    "barkSurface": {
+      "colorSpace": "linear",
+      "channels": {
+        "r": "normal.x",
+        "g": "normal.y",
+        "b": "roughness"
+      },
+      "normalDecode": "xy = rg * 2 - 1; z = sqrt(max(0, 1 - dot(xy, xy)))"
+    }
+  },
+  "aliases": {
+    "native": {
+      "coast-redwood": "coast-redwood",
+      "redwood": "coast-redwood",
+      "monterey-cypress": "monterey-cypress",
+      "cypress": "monterey-cypress",
+      "coast-live-oak": "coast-live-oak",
+      "oak": "coast-live-oak",
+      "corona_coast_live_oak": "coast-live-oak",
+      "eucalyptus": "eucalyptus",
+      "japanese-black-pine": "japanese-black-pine",
+      "black-pine": "japanese-black-pine",
+      "japanese-maple": "japanese-maple",
+      "flowering-cherry": "flowering-cherry",
+      "ginkgo": "ginkgo",
+      "survivor-ginkgo": "ginkgo",
+      "magnolia": "magnolia",
+      "chilean-palm": "chilean-palm"
+    }
+  },
+  "materialSets": {
+    "coast-redwood": {
+      "leafStyle": {
+        "alphaCutoff": 0.4,
+        "translucency": 0.35,
+        "twoSided": true
+      },
+      "textures": {
+        "leaf": {
+          "color": {
+            "uri": "/native-foliage/materials/coast-redwood/leaf-color-5c32df5917e5f754.ktx2",
+            "colorSpace": "srgb",
+            "channels": "rgba",
+            "codec": "uastc",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 89472,
+            "sha256": "5c32df5917e5f7549d67aaf536780cd4aef1e21c1f8a4c47d9ca55c155968d32",
+            "uncompressedMipBytes": 1398100,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "leaf:redwood-spray:color",
+              "seed": 1103
+            },
+            "alphaMode": "cutout",
+            "alphaCutoff": 0.4,
+            "alphaCoverage": 0.2136,
+            "mipPolicy": "coverage-preserving-lanczos3"
+          },
+          "surface": {
+            "uri": "/native-foliage/materials/coast-redwood/leaf-surface-cbed1d6aa26bfeb5.ktx2",
+            "colorSpace": "linear",
+            "channels": "rgba",
+            "codec": "uastc",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 160509,
+            "sha256": "cbed1d6aa26bfeb593f43ae3b06338f23acbda4a87966ab5ba30881eb7c0bea7",
+            "uncompressedMipBytes": 1398100,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "leaf:redwood-spray:normalXY-roughness-translucency",
+              "seed": 1103
+            }
+          },
+          "colorVariants": {
+            "new-growth": {
+              "uri": "/native-foliage/materials/coast-redwood/leaf-color-new-growth-c22e919548716523.ktx2",
+              "colorSpace": "srgb",
+              "channels": "rgba",
+              "codec": "uastc",
+              "width": 512,
+              "height": 512,
+              "mipLevels": 10,
+              "orientation": "S=r,T=u",
+              "bytes": 108380,
+              "sha256": "c22e919548716523cc7e0f279e70a0d47ef24d241f45acc2b7b8f5e5636ef932",
+              "uncompressedMipBytes": 1398100,
+              "provenance": {
+                "kind": "procedural",
+                "generator": "leaf:redwood-spray:color:new-growth",
+                "seed": 1103
+              },
+              "alphaMode": "cutout",
+              "alphaCutoff": 0.4,
+              "alphaCoverage": 0.2136,
+              "mipPolicy": "coverage-preserving-lanczos3"
+            }
+          }
+        },
+        "bark": {
+          "color": {
+            "uri": "/native-foliage/materials/coast-redwood/bark-color-e5605b41026aa1d0.ktx2",
+            "colorSpace": "srgb",
+            "channels": "rgb",
+            "codec": "etc1s",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 55633,
+            "sha256": "e5605b41026aa1d0b1d7072b4bc48190510d943f3d3d36863441773b5b4f1c75",
+            "uncompressedMipBytes": 1048575,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "bark:fibrous-redwood:color",
+              "seed": 1103
+            }
+          },
+          "surface": {
+            "uri": "/native-foliage/materials/coast-redwood/bark-surface-55eb241452a85ade.ktx2",
+            "colorSpace": "linear",
+            "channels": "rgb",
+            "codec": "uastc",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 234289,
+            "sha256": "55eb241452a85ade2009f9986452efa3319dcb1ce5b21b5e875f0b054f35f1aa",
+            "uncompressedMipBytes": 1048575,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "bark:fibrous-redwood:normalXY-roughness",
+              "seed": 1103
+            }
+          }
+        }
+      }
+    },
+    "monterey-cypress": {
+      "leafStyle": {
+        "alphaCutoff": 0.42,
+        "translucency": 0.52,
+        "twoSided": true
+      },
+      "textures": {
+        "leaf": {
+          "color": {
+            "uri": "/native-foliage/materials/monterey-cypress/leaf-color-2a0b65da3c3ccbe5.ktx2",
+            "colorSpace": "srgb",
+            "channels": "rgba",
+            "codec": "uastc",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 96523,
+            "sha256": "2a0b65da3c3ccbe54687da7cdbebd5981c7261d2680ca328ebc88f61215e6a2f",
+            "uncompressedMipBytes": 1398100,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "leaf:cypress-spray:color",
+              "seed": 1201
+            },
+            "alphaMode": "cutout",
+            "alphaCutoff": 0.42,
+            "alphaCoverage": 0.243347,
+            "mipPolicy": "coverage-preserving-lanczos3"
+          },
+          "surface": {
+            "uri": "/native-foliage/materials/monterey-cypress/leaf-surface-a3a08da491fbf41d.ktx2",
+            "colorSpace": "linear",
+            "channels": "rgba",
+            "codec": "uastc",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 183559,
+            "sha256": "a3a08da491fbf41d407152fb993d3d0b81b639f4e7a6028644b7d3f164ca7001",
+            "uncompressedMipBytes": 1398100,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "leaf:cypress-spray:normalXY-roughness-translucency",
+              "seed": 1201
+            }
+          }
+        },
+        "bark": {
+          "color": {
+            "uri": "/native-foliage/materials/monterey-cypress/bark-color-49288817c596da2e.ktx2",
+            "colorSpace": "srgb",
+            "channels": "rgb",
+            "codec": "etc1s",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 53488,
+            "sha256": "49288817c596da2e0bfda6f28416056d1d044fb2a1e8ac56f5fbd48f15dd166c",
+            "uncompressedMipBytes": 1048575,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "bark:twisted-cypress:color",
+              "seed": 1201
+            }
+          },
+          "surface": {
+            "uri": "/native-foliage/materials/monterey-cypress/bark-surface-1ab5906c2ebf9dbc.ktx2",
+            "colorSpace": "linear",
+            "channels": "rgb",
+            "codec": "uastc",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 259885,
+            "sha256": "1ab5906c2ebf9dbc30a0f4c1c1e9409b52e5eb89602db1370b822d698d085243",
+            "uncompressedMipBytes": 1048575,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "bark:twisted-cypress:normalXY-roughness",
+              "seed": 1201
+            }
+          }
+        }
+      }
+    },
+    "coast-live-oak": {
+      "leafStyle": {
+        "alphaCutoff": 0.5,
+        "translucency": 0.62,
+        "twoSided": true
+      },
+      "textures": {
+        "leaf": {
+          "color": {
+            "uri": "/native-foliage/materials/coast-live-oak/leaf-color-2ba81c59ceb76569.ktx2",
+            "colorSpace": "srgb",
+            "channels": "rgba",
+            "codec": "uastc",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 76525,
+            "sha256": "2ba81c59ceb7656958e4e82e8bb0cf40219bc7b19dc04efd7d9d322984a6761d",
+            "uncompressedMipBytes": 1398100,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "leaf:live-oak:color",
+              "seed": 1301
+            },
+            "alphaMode": "cutout",
+            "alphaCutoff": 0.5,
+            "alphaCoverage": 0.358086,
+            "mipPolicy": "coverage-preserving-lanczos3"
+          },
+          "surface": {
+            "uri": "/native-foliage/materials/coast-live-oak/leaf-surface-d7b520f0f1959b0c.ktx2",
+            "colorSpace": "linear",
+            "channels": "rgba",
+            "codec": "uastc",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 182598,
+            "sha256": "d7b520f0f1959b0cddf30251361619c840dad3ced57f01a29cb6ec7c805f9aad",
+            "uncompressedMipBytes": 1398100,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "leaf:live-oak:normalXY-roughness-translucency",
+              "seed": 1301
+            }
+          }
+        },
+        "bark": {
+          "color": {
+            "uri": "/native-foliage/materials/coast-live-oak/bark-color-e6595d2c6880b3bb.ktx2",
+            "colorSpace": "srgb",
+            "channels": "rgb",
+            "codec": "etc1s",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 54903,
+            "sha256": "e6595d2c6880b3bbfbdbee56ce541da1a8ceabd4bfc69b25f6121a92ae2d34b9",
+            "uncompressedMipBytes": 1048575,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "bark:blocky-oak:color",
+              "seed": 1301
+            }
+          },
+          "surface": {
+            "uri": "/native-foliage/materials/coast-live-oak/bark-surface-796626e8e6fc5dec.ktx2",
+            "colorSpace": "linear",
+            "channels": "rgb",
+            "codec": "uastc",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 289675,
+            "sha256": "796626e8e6fc5decde05225777820f6bd738803fa19346e872a4a558309beac1",
+            "uncompressedMipBytes": 1048575,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "bark:blocky-oak:normalXY-roughness",
+              "seed": 1301
+            }
+          }
+        }
+      }
+    },
+    "eucalyptus": {
+      "leafStyle": {
+        "alphaCutoff": 0.47,
+        "translucency": 0.78,
+        "twoSided": true
+      },
+      "textures": {
+        "leaf": {
+          "color": {
+            "uri": "/native-foliage/materials/eucalyptus/leaf-color-04927d3733c75fde.ktx2",
+            "colorSpace": "srgb",
+            "channels": "rgba",
+            "codec": "uastc",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 87221,
+            "sha256": "04927d3733c75fde928ef79b3ef02e197886bc1e0ec92955758772345dd8277f",
+            "uncompressedMipBytes": 1398100,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "leaf:eucalyptus:color",
+              "seed": 1409
+            },
+            "alphaMode": "cutout",
+            "alphaCutoff": 0.47,
+            "alphaCoverage": 0.234512,
+            "mipPolicy": "coverage-preserving-lanczos3"
+          },
+          "surface": {
+            "uri": "/native-foliage/materials/eucalyptus/leaf-surface-9dd5dc6000bbe939.ktx2",
+            "colorSpace": "linear",
+            "channels": "rgba",
+            "codec": "uastc",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 161118,
+            "sha256": "9dd5dc6000bbe939f58d049dfcea3415eea8114e3f1366533fd0171940854003",
+            "uncompressedMipBytes": 1398100,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "leaf:eucalyptus:normalXY-roughness-translucency",
+              "seed": 1409
+            }
+          },
+          "colorVariants": {
+            "juvenile": {
+              "uri": "/native-foliage/materials/eucalyptus/leaf-color-juvenile-6c8ba0afc94b150a.ktx2",
+              "colorSpace": "srgb",
+              "channels": "rgba",
+              "codec": "uastc",
+              "width": 512,
+              "height": 512,
+              "mipLevels": 10,
+              "orientation": "S=r,T=u",
+              "bytes": 66635,
+              "sha256": "6c8ba0afc94b150a4492539a2fa30981eae28bab6a5540886fcdcd3bbddde834",
+              "uncompressedMipBytes": 1398100,
+              "provenance": {
+                "kind": "procedural",
+                "generator": "leaf:eucalyptus:color:juvenile",
+                "seed": 1409
+              },
+              "alphaMode": "cutout",
+              "alphaCutoff": 0.47,
+              "alphaCoverage": 0.234512,
+              "mipPolicy": "coverage-preserving-lanczos3"
+            }
+          }
+        },
+        "bark": {
+          "color": {
+            "uri": "/native-foliage/materials/eucalyptus/bark-color-f9beb51a98af2caa.ktx2",
+            "colorSpace": "srgb",
+            "channels": "rgb",
+            "codec": "etc1s",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 32041,
+            "sha256": "f9beb51a98af2caaa906b33fb49cbf91e4f7159970f76a688ec65a43197a8605",
+            "uncompressedMipBytes": 1048575,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "bark:mottled-eucalyptus:color",
+              "seed": 1409
+            }
+          },
+          "surface": {
+            "uri": "/native-foliage/materials/eucalyptus/bark-surface-1698109033575dc8.ktx2",
+            "colorSpace": "linear",
+            "channels": "rgb",
+            "codec": "uastc",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 220059,
+            "sha256": "1698109033575dc81205644f484599af2d2f6dee676efe956c538e5517b38fd7",
+            "uncompressedMipBytes": 1048575,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "bark:mottled-eucalyptus:normalXY-roughness",
+              "seed": 1409
+            }
+          }
+        }
+      }
+    },
+    "japanese-black-pine": {
+      "leafStyle": {
+        "alphaCutoff": 0.38,
+        "translucency": 0.28,
+        "twoSided": true
+      },
+      "textures": {
+        "leaf": {
+          "color": {
+            "uri": "/native-foliage/materials/japanese-black-pine/leaf-color-bdf2415a59c3c48e.ktx2",
+            "colorSpace": "srgb",
+            "channels": "rgba",
+            "codec": "uastc",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 90991,
+            "sha256": "bdf2415a59c3c48efff05c071913b29981f54d09c406e966f8cca5fea86dd970",
+            "uncompressedMipBytes": 1398100,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "leaf:pine-tuft:color",
+              "seed": 1501
+            },
+            "alphaMode": "cutout",
+            "alphaCutoff": 0.38,
+            "alphaCoverage": 0.164257,
+            "mipPolicy": "coverage-preserving-lanczos3"
+          },
+          "surface": {
+            "uri": "/native-foliage/materials/japanese-black-pine/leaf-surface-2c6ab54d895d19ef.ktx2",
+            "colorSpace": "linear",
+            "channels": "rgba",
+            "codec": "uastc",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 156930,
+            "sha256": "2c6ab54d895d19ef24e465f94890b27522ddf8e53f65c064015581bec17d6c61",
+            "uncompressedMipBytes": 1398100,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "leaf:pine-tuft:normalXY-roughness-translucency",
+              "seed": 1501
+            }
+          }
+        },
+        "bark": {
+          "color": {
+            "uri": "/native-foliage/materials/japanese-black-pine/bark-color-0f4f984d7806d4ad.ktx2",
+            "colorSpace": "srgb",
+            "channels": "rgb",
+            "codec": "etc1s",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 52300,
+            "sha256": "0f4f984d7806d4ad8d79e4fa8f66651b97b52ee3ba42d0c2406e79c3a1658ab1",
+            "uncompressedMipBytes": 1048575,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "bark:plated-black-pine:color",
+              "seed": 1501
+            }
+          },
+          "surface": {
+            "uri": "/native-foliage/materials/japanese-black-pine/bark-surface-617b87e2626ba5f5.ktx2",
+            "colorSpace": "linear",
+            "channels": "rgb",
+            "codec": "uastc",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 280241,
+            "sha256": "617b87e2626ba5f591a20a84a929acf9af9acc1b33ef868fc42e8fb1c6ebff37",
+            "uncompressedMipBytes": 1048575,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "bark:plated-black-pine:normalXY-roughness",
+              "seed": 1501
+            }
+          }
+        }
+      }
+    },
+    "japanese-maple": {
+      "leafStyle": {
+        "alphaCutoff": 0.49,
+        "translucency": 0.63,
+        "twoSided": true
+      },
+      "textures": {
+        "leaf": {
+          "color": {
+            "uri": "/native-foliage/materials/japanese-maple/leaf-color-5c8de1b144aecef1.ktx2",
+            "colorSpace": "srgb",
+            "channels": "rgba",
+            "codec": "uastc",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 85902,
+            "sha256": "5c8de1b144aecef1f7cacaae47aa096807b8a84e1866961eb32f1455fa1e0abd",
+            "uncompressedMipBytes": 1398100,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "leaf:maple:color",
+              "seed": 1607
+            },
+            "alphaMode": "cutout",
+            "alphaCutoff": 0.49,
+            "alphaCoverage": 0.301559,
+            "mipPolicy": "coverage-preserving-lanczos3"
+          },
+          "surface": {
+            "uri": "/native-foliage/materials/japanese-maple/leaf-surface-4482c02cc2614e2a.ktx2",
+            "colorSpace": "linear",
+            "channels": "rgba",
+            "codec": "uastc",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 175139,
+            "sha256": "4482c02cc2614e2a9e0518f91b9990893e4c4c59676de6176d8d413e85b7daa5",
+            "uncompressedMipBytes": 1398100,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "leaf:maple:normalXY-roughness-translucency",
+              "seed": 1607
+            }
+          },
+          "colorVariants": {
+            "autumn": {
+              "uri": "/native-foliage/materials/japanese-maple/leaf-color-autumn-4e923043827b30ee.ktx2",
+              "colorSpace": "srgb",
+              "channels": "rgba",
+              "codec": "uastc",
+              "width": 512,
+              "height": 512,
+              "mipLevels": 10,
+              "orientation": "S=r,T=u",
+              "bytes": 111027,
+              "sha256": "4e923043827b30eeef212f4d3fc791139fc71ddbc2cf4714d7dc910bf3f745dd",
+              "uncompressedMipBytes": 1398100,
+              "provenance": {
+                "kind": "procedural",
+                "generator": "leaf:maple:color:autumn",
+                "seed": 1607
+              },
+              "alphaMode": "cutout",
+              "alphaCutoff": 0.49,
+              "alphaCoverage": 0.301559,
+              "mipPolicy": "coverage-preserving-lanczos3"
+            }
+          }
+        },
+        "bark": {
+          "color": {
+            "uri": "/native-foliage/materials/japanese-maple/bark-color-96ceb1c7fceab3e6.ktx2",
+            "colorSpace": "srgb",
+            "channels": "rgb",
+            "codec": "etc1s",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 35127,
+            "sha256": "96ceb1c7fceab3e609c3ddd901b1fa6fbb42e077b7305e61e21a470b26eaf030",
+            "uncompressedMipBytes": 1048575,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "bark:smooth-maple:color",
+              "seed": 1607
+            }
+          },
+          "surface": {
+            "uri": "/native-foliage/materials/japanese-maple/bark-surface-02ea3ad76452d643.ktx2",
+            "colorSpace": "linear",
+            "channels": "rgb",
+            "codec": "uastc",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 246457,
+            "sha256": "02ea3ad76452d643af910880fb443b0de4e5a00d98c671e0e97d6215bf2e75ae",
+            "uncompressedMipBytes": 1048575,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "bark:smooth-maple:normalXY-roughness",
+              "seed": 1607
+            }
+          }
+        }
+      }
+    },
+    "flowering-cherry": {
+      "leafStyle": {
+        "alphaCutoff": 0.49,
+        "translucency": 0.7,
+        "twoSided": true
+      },
+      "textures": {
+        "leaf": {
+          "color": {
+            "uri": "/native-foliage/materials/flowering-cherry/leaf-color-7fcc3d706180697c.ktx2",
+            "colorSpace": "srgb",
+            "channels": "rgba",
+            "codec": "uastc",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 76791,
+            "sha256": "7fcc3d706180697ca2ce7fdea301f9fa7a1dbc3ab10fbe5bd04a67ea2af7c476",
+            "uncompressedMipBytes": 1398100,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "leaf:cherry:color",
+              "seed": 1709
+            },
+            "alphaMode": "cutout",
+            "alphaCutoff": 0.49,
+            "alphaCoverage": 0.375496,
+            "mipPolicy": "coverage-preserving-lanczos3"
+          },
+          "surface": {
+            "uri": "/native-foliage/materials/flowering-cherry/leaf-surface-f7cc859c9c53fc74.ktx2",
+            "colorSpace": "linear",
+            "channels": "rgba",
+            "codec": "uastc",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 185898,
+            "sha256": "f7cc859c9c53fc74b827c179c1e7804f25c1c56d90c12d241a9577bac0b03e36",
+            "uncompressedMipBytes": 1398100,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "leaf:cherry:normalXY-roughness-translucency",
+              "seed": 1709
+            }
+          },
+          "colorVariants": {
+            "blossom": {
+              "uri": "/native-foliage/materials/flowering-cherry/leaf-color-blossom-ada18aeec9bd1be7.ktx2",
+              "colorSpace": "srgb",
+              "channels": "rgba",
+              "codec": "uastc",
+              "width": 512,
+              "height": 512,
+              "mipLevels": 10,
+              "orientation": "S=r,T=u",
+              "bytes": 144574,
+              "sha256": "ada18aeec9bd1be78c5bdec6698cf032f038cca06daea4c2a070e24ac94d1c0c",
+              "uncompressedMipBytes": 1398100,
+              "provenance": {
+                "kind": "procedural",
+                "generator": "leaf:cherry:color:blossom",
+                "seed": 1709
+              },
+              "alphaMode": "cutout",
+              "alphaCutoff": 0.49,
+              "alphaCoverage": 0.375496,
+              "mipPolicy": "coverage-preserving-lanczos3"
+            }
+          }
+        },
+        "bark": {
+          "color": {
+            "uri": "/native-foliage/materials/flowering-cherry/bark-color-58ba08e9f9deca9a.ktx2",
+            "colorSpace": "srgb",
+            "channels": "rgb",
+            "codec": "etc1s",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 29389,
+            "sha256": "58ba08e9f9deca9a75c7c1fff4fc0dbe97ed5231113ed01d0c0afd8bc6e3e5e1",
+            "uncompressedMipBytes": 1048575,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "bark:lenticel-cherry:color",
+              "seed": 1709
+            }
+          },
+          "surface": {
+            "uri": "/native-foliage/materials/flowering-cherry/bark-surface-81e4435c15953c46.ktx2",
+            "colorSpace": "linear",
+            "channels": "rgb",
+            "codec": "uastc",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 201333,
+            "sha256": "81e4435c15953c46315d202399ef0de73fd93e0116079bd074c93da124145270",
+            "uncompressedMipBytes": 1048575,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "bark:lenticel-cherry:normalXY-roughness",
+              "seed": 1709
+            }
+          }
+        }
+      }
+    },
+    "ginkgo": {
+      "leafStyle": {
+        "alphaCutoff": 0.48,
+        "translucency": 0.74,
+        "twoSided": true
+      },
+      "textures": {
+        "leaf": {
+          "color": {
+            "uri": "/native-foliage/materials/ginkgo/leaf-color-12804617019d3a4e.ktx2",
+            "colorSpace": "srgb",
+            "channels": "rgba",
+            "codec": "uastc",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 82399,
+            "sha256": "12804617019d3a4e6dbef293c747c5e4bfee64cc37f9a0a139e88f85dd0d938c",
+            "uncompressedMipBytes": 1398100,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "leaf:ginkgo:color",
+              "seed": 1801
+            },
+            "alphaMode": "cutout",
+            "alphaCutoff": 0.48,
+            "alphaCoverage": 0.234596,
+            "mipPolicy": "coverage-preserving-lanczos3"
+          },
+          "surface": {
+            "uri": "/native-foliage/materials/ginkgo/leaf-surface-c4fe5787e6f25508.ktx2",
+            "colorSpace": "linear",
+            "channels": "rgba",
+            "codec": "uastc",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 148037,
+            "sha256": "c4fe5787e6f25508be518f49fc7f7135711be18c3530b7b38920f43eb097a789",
+            "uncompressedMipBytes": 1398100,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "leaf:ginkgo:normalXY-roughness-translucency",
+              "seed": 1801
+            }
+          },
+          "colorVariants": {
+            "autumn": {
+              "uri": "/native-foliage/materials/ginkgo/leaf-color-autumn-037257c35c28a0b2.ktx2",
+              "colorSpace": "srgb",
+              "channels": "rgba",
+              "codec": "uastc",
+              "width": 512,
+              "height": 512,
+              "mipLevels": 10,
+              "orientation": "S=r,T=u",
+              "bytes": 78806,
+              "sha256": "037257c35c28a0b2642c56348ebe777f9fe52aa1b3dcb6faffc9234adf001395",
+              "uncompressedMipBytes": 1398100,
+              "provenance": {
+                "kind": "procedural",
+                "generator": "leaf:ginkgo:color:autumn",
+                "seed": 1801
+              },
+              "alphaMode": "cutout",
+              "alphaCutoff": 0.48,
+              "alphaCoverage": 0.234596,
+              "mipPolicy": "coverage-preserving-lanczos3"
+            }
+          }
+        },
+        "bark": {
+          "color": {
+            "uri": "/native-foliage/materials/ginkgo/bark-color-b27a9ec4ad4f6817.ktx2",
+            "colorSpace": "srgb",
+            "channels": "rgb",
+            "codec": "etc1s",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 53868,
+            "sha256": "b27a9ec4ad4f6817d2a1bbe8cc9a09b98c944452ab5bc4181a7120a750dba0ff",
+            "uncompressedMipBytes": 1048575,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "bark:furrowed-ginkgo:color",
+              "seed": 1801
+            }
+          },
+          "surface": {
+            "uri": "/native-foliage/materials/ginkgo/bark-surface-b9c11e8eb8fee59f.ktx2",
+            "colorSpace": "linear",
+            "channels": "rgb",
+            "codec": "uastc",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 240575,
+            "sha256": "b9c11e8eb8fee59ff2375e6fcd200e8e68d4f84de08cad8a02d324b544c4afaa",
+            "uncompressedMipBytes": 1048575,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "bark:furrowed-ginkgo:normalXY-roughness",
+              "seed": 1801
+            }
+          }
+        }
+      }
+    },
+    "magnolia": {
+      "leafStyle": {
+        "alphaCutoff": 0.5,
+        "translucency": 0.68,
+        "twoSided": true
+      },
+      "textures": {
+        "leaf": {
+          "color": {
+            "uri": "/native-foliage/materials/magnolia/leaf-color-88741ee0cca347d9.ktx2",
+            "colorSpace": "srgb",
+            "channels": "rgba",
+            "codec": "uastc",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 89585,
+            "sha256": "88741ee0cca347d915ebaca3972ce3bcc730d4e4817c7a93bda79c84ad7f4abb",
+            "uncompressedMipBytes": 1398100,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "leaf:magnolia:color",
+              "seed": 1901
+            },
+            "alphaMode": "cutout",
+            "alphaCutoff": 0.5,
+            "alphaCoverage": 0.43383,
+            "mipPolicy": "coverage-preserving-lanczos3"
+          },
+          "surface": {
+            "uri": "/native-foliage/materials/magnolia/leaf-surface-e78066129a40cab0.ktx2",
+            "colorSpace": "linear",
+            "channels": "rgba",
+            "codec": "uastc",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 192822,
+            "sha256": "e78066129a40cab0256cc67248ba41f05f43bcda6d86069ccbdf8028943b1679",
+            "uncompressedMipBytes": 1398100,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "leaf:magnolia:normalXY-roughness-translucency",
+              "seed": 1901
+            }
+          }
+        },
+        "bark": {
+          "color": {
+            "uri": "/native-foliage/materials/magnolia/bark-color-93f3fa5b7844338e.ktx2",
+            "colorSpace": "srgb",
+            "channels": "rgb",
+            "codec": "etc1s",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 37701,
+            "sha256": "93f3fa5b7844338ea86a592ae730a96348e5a8940148e535b8129999d2b45036",
+            "uncompressedMipBytes": 1048575,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "bark:smooth-magnolia:color",
+              "seed": 1901
+            }
+          },
+          "surface": {
+            "uri": "/native-foliage/materials/magnolia/bark-surface-7f6a1c22229d7f0e.ktx2",
+            "colorSpace": "linear",
+            "channels": "rgb",
+            "codec": "uastc",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 246255,
+            "sha256": "7f6a1c22229d7f0e246c918e3bb023789060341184f33ef5dd7ac7b00aa1b981",
+            "uncompressedMipBytes": 1048575,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "bark:smooth-magnolia:normalXY-roughness",
+              "seed": 1901
+            }
+          }
+        }
+      }
+    },
+    "chilean-palm": {
+      "leafStyle": {
+        "alphaCutoff": 0.4,
+        "translucency": 0.42,
+        "twoSided": true
+      },
+      "textures": {
+        "leaf": {
+          "color": {
+            "uri": "/native-foliage/materials/chilean-palm/leaf-color-6f5cf705c57e8a3c.ktx2",
+            "colorSpace": "srgb",
+            "channels": "rgba",
+            "codec": "uastc",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 89863,
+            "sha256": "6f5cf705c57e8a3cadb3a2ee0ac09ba277ceae96da0c966d4855742bbb3268d0",
+            "uncompressedMipBytes": 1398100,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "leaf:palm-frond:color",
+              "seed": 2003
+            },
+            "alphaMode": "cutout",
+            "alphaCutoff": 0.4,
+            "alphaCoverage": 0.140282,
+            "mipPolicy": "coverage-preserving-lanczos3"
+          },
+          "surface": {
+            "uri": "/native-foliage/materials/chilean-palm/leaf-surface-df0bae3b63d0741b.ktx2",
+            "colorSpace": "linear",
+            "channels": "rgba",
+            "codec": "uastc",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 149795,
+            "sha256": "df0bae3b63d0741ba15ee9f2d4f5997e8a63fbb3ba6872763df953696905b2b3",
+            "uncompressedMipBytes": 1398100,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "leaf:palm-frond:normalXY-roughness-translucency",
+              "seed": 2003
+            }
+          },
+          "colorVariants": {
+            "dry": {
+              "uri": "/native-foliage/materials/chilean-palm/leaf-color-dry-135f3719e68862a5.ktx2",
+              "colorSpace": "srgb",
+              "channels": "rgba",
+              "codec": "uastc",
+              "width": 512,
+              "height": 512,
+              "mipLevels": 10,
+              "orientation": "S=r,T=u",
+              "bytes": 104205,
+              "sha256": "135f3719e68862a54ef11e771d86b5e7fdae8c949d87ce8792d0639adcaf5994",
+              "uncompressedMipBytes": 1398100,
+              "provenance": {
+                "kind": "procedural",
+                "generator": "leaf:palm-frond:color:dry",
+                "seed": 2003
+              },
+              "alphaMode": "cutout",
+              "alphaCutoff": 0.4,
+              "alphaCoverage": 0.140282,
+              "mipPolicy": "coverage-preserving-lanczos3"
+            }
+          }
+        },
+        "bark": {
+          "color": {
+            "uri": "/native-foliage/materials/chilean-palm/bark-color-ef89afdd69a83876.ktx2",
+            "colorSpace": "srgb",
+            "channels": "rgb",
+            "codec": "etc1s",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 52165,
+            "sha256": "ef89afdd69a83876d8ff57040023ddd54e667529b408a44b96cfbaf178290cd4",
+            "uncompressedMipBytes": 1048575,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "bark:ringed-palm:color",
+              "seed": 2003
+            }
+          },
+          "surface": {
+            "uri": "/native-foliage/materials/chilean-palm/bark-surface-aeecc4bec00e9eea.ktx2",
+            "colorSpace": "linear",
+            "channels": "rgb",
+            "codec": "uastc",
+            "width": 512,
+            "height": 512,
+            "mipLevels": 10,
+            "orientation": "S=r,T=u",
+            "bytes": 214270,
+            "sha256": "aeecc4bec00e9eea2501ab1cf3b6295c5f0f2c87bfc04c9bfee294071b3284f1",
+            "uncompressedMipBytes": 1048575,
+            "provenance": {
+              "kind": "procedural",
+              "generator": "bark:ringed-palm:normalXY-roughness",
+              "seed": 2003
+            }
+          }
+        }
+      }
+    }
+  }
+}

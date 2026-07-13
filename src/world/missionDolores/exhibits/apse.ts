@@ -10,7 +10,8 @@ import type { MdExhibit } from "./index";
 // ---------------------------------------------------------------------------
 
 const SHRINE_X = 0;
-const SHRINE_Z = 26;
+const SHRINE_Z = 33.2;
+const ALTAR_Z = 29.1;
 
 const STATUE_STONE = 0xcdb79a; // warm pale stone — the statue body
 const STATUE_TRIM = 0xe8d9bd; // slightly lighter trim — dove, feather details
@@ -42,6 +43,57 @@ export function createApseShrine(ctx: MuseumCtx): MdExhibit {
     mats.push(m);
     return m;
   };
+
+  // ---------------- sanctuary floor: a quiet, concentric pilgrimage path ----------------
+  // Thin inlays keep the floor fully walkable while making the apse read as a
+  // deliberate sacred destination from the far end of the nave.
+  const sanctuaryOuterMat = trackMat(ctx.glowMat(0x8f5a3c, 0.13, 0.9));
+  const sanctuaryInnerMat = trackMat(ctx.glowMat(0xd8c49f, 0.16, 0.88));
+  const outerInlayGeo = track(new THREE.RingGeometry(4.7, 7.15, 48, 1, Math.PI, Math.PI));
+  outerInlayGeo.rotateX(-Math.PI / 2);
+  const outerInlay = new THREE.Mesh(outerInlayGeo, sanctuaryOuterMat);
+  outerInlay.position.set(0, 0.018, 30);
+  outerInlay.name = "md_apse_floor_outer_inlay";
+  grp.add(outerInlay);
+
+  const innerInlayGeo = track(new THREE.CircleGeometry(4.5, 48, Math.PI, Math.PI));
+  innerInlayGeo.rotateX(-Math.PI / 2);
+  const innerInlay = new THREE.Mesh(innerInlayGeo, sanctuaryInnerMat);
+  innerInlay.position.set(0, 0.02, 30);
+  innerInlay.name = "md_apse_floor_inner_inlay";
+  grp.add(innerInlay);
+
+  // ---------------- altar: stone table, linen frontal, Franciscan Tau ----------------
+  const altarStoneMat = trackMat(ctx.glowMat(0xcdb79a, 0.2, 0.8));
+  const altarLinenMat = trackMat(ctx.glowMat(0xf0e4ca, 0.26, 0.88));
+  const altarWoodMat = trackMat(ctx.glowMat(0x6a4427, 0.18, 0.72));
+  const altarBase = new THREE.Mesh(track(new THREE.BoxGeometry(3.9, 0.16, 1.42)), altarStoneMat);
+  altarBase.position.set(0, 0.08, ALTAR_Z);
+  altarBase.name = "md_apse_altar_base";
+  grp.add(altarBase);
+  for (const x of [-1.15, 1.15]) {
+    const support = new THREE.Mesh(track(new THREE.BoxGeometry(0.42, 0.9, 0.72)), altarStoneMat);
+    support.position.set(x, 0.58, ALTAR_Z);
+    support.name = "md_apse_altar_support";
+    grp.add(support);
+  }
+  const mensa = new THREE.Mesh(track(new THREE.BoxGeometry(3.5, 0.18, 1.16)), altarStoneMat);
+  mensa.position.set(0, 1.12, ALTAR_Z);
+  mensa.name = "md_apse_altar_mensa";
+  grp.add(mensa);
+  const frontal = new THREE.Mesh(track(new THREE.PlaneGeometry(1.28, 0.72)), altarLinenMat);
+  frontal.rotation.y = Math.PI;
+  frontal.position.set(0, 0.7, ALTAR_Z - 0.59);
+  frontal.name = "md_apse_altar_linen";
+  grp.add(frontal);
+  const tauStem = new THREE.Mesh(track(new THREE.BoxGeometry(0.09, 0.42, 0.035)), altarWoodMat);
+  tauStem.position.set(0, 0.7, ALTAR_Z - 0.615);
+  tauStem.name = "md_apse_tau_cross";
+  grp.add(tauStem);
+  const tauArm = new THREE.Mesh(track(new THREE.BoxGeometry(0.34, 0.09, 0.035)), altarWoodMat);
+  tauArm.position.set(0, 0.87, ALTAR_Z - 0.615);
+  tauArm.name = "md_apse_tau_cross";
+  grp.add(tauArm);
 
   // ---------------- stepped stone plinth ----------------
   const plinthMat = trackMat(ctx.glowMat(PLINTH_STONE, 0.14, 0.85));
@@ -90,12 +142,12 @@ export function createApseShrine(ctx: MuseumCtx): MdExhibit {
   grp.add(belt);
   const cordGeo = track(new THREE.CylinderGeometry(0.018, 0.018, 0.42, 6));
   const cord = new THREE.Mesh(cordGeo, ropeMat);
-  cord.position.set(SHRINE_X + 0.32, plinthTop + 1.3 - 0.24, SHRINE_Z + 0.3);
+  cord.position.set(SHRINE_X + 0.32, plinthTop + 1.3 - 0.24, SHRINE_Z - 0.3);
   grp.add(cord);
   const knotGeo = track(new THREE.SphereGeometry(0.032, 8, 8));
   for (let i = 0; i < 3; i++) {
     const knot = new THREE.Mesh(knotGeo, ropeMat);
-    knot.position.set(SHRINE_X + 0.32, plinthTop + 1.3 - 0.42 - i * 0.14, SHRINE_Z + 0.3);
+    knot.position.set(SHRINE_X + 0.32, plinthTop + 1.3 - 0.42 - i * 0.14, SHRINE_Z - 0.3);
     grp.add(knot);
   }
 
@@ -151,29 +203,47 @@ export function createApseShrine(ctx: MuseumCtx): MdExhibit {
     new THREE.MeshStandardMaterial({
       color: 0xffffff,
       emissive: 0xffffff,
-      emissiveIntensity: 1.3,
+      emissiveIntensity: 1.2,
       roughness: 0.4,
       side: THREE.DoubleSide
     })
   );
   const roseGeo = track(new THREE.CircleGeometry(2.6, 48));
   const rose = new THREE.Mesh(roseGeo, roseMat);
-  rose.position.set(0, 8.6, 38.6);
-  rose.rotation.y = Math.PI;
+  const roseGroup = new THREE.Group();
+  // A flat oculus must sit slightly forward of the curved masonry or the wall
+  // swallows its outer petals. The second ring reaches back into that reveal.
+  roseGroup.position.set(0, 8.55, 38.05);
+  roseGroup.rotation.y = Math.PI;
+  roseGroup.name = "md_apse_rose_window_assembly";
+  rose.position.z = 0.035;
   rose.name = "md_apse_rose_window";
-  grp.add(rose);
-  void ctx.loadArt("glass-rose").then((tex) => {
-    roseMat.map = tex;
-    roseMat.emissiveMap = tex;
-    roseMat.needsUpdate = true;
-  });
+  roseGroup.add(rose);
+  const roseFrameMat = trackMat(ctx.glowMat(0x8a6a3a, 0.24, 0.55));
+  const roseFrameGeo = track(new THREE.TorusGeometry(2.78, 0.22, 12, 64));
+  const roseFrame = new THREE.Mesh(roseFrameGeo, roseFrameMat);
+  roseFrame.name = "md_apse_rose_window_frame";
+  roseGroup.add(roseFrame);
+  const roseRearFrame = new THREE.Mesh(roseFrameGeo, roseFrameMat);
+  roseRearFrame.position.z = -0.34;
+  roseRearFrame.name = "md_apse_rose_window_reveal";
+  roseGroup.add(roseRearFrame);
+  const roseBoss = new THREE.Mesh(track(new THREE.CylinderGeometry(0.16, 0.16, 0.09, 16)), roseFrameMat);
+  roseBoss.rotation.x = Math.PI / 2;
+  roseBoss.position.z = 0.08;
+  roseGroup.add(roseBoss);
+  grp.add(roseGroup);
+  ctx.bindArt(rose, roseMat, "glass-rose", [0, 8.55, 38.05], { wakeDistance: 72, fit: "stretch" });
 
   // ---------------- two flanking lancet windows, mounted on the apse's curved wall ----------------
   // Apse wall = semicircle radius ~9 centred at (0, SHRINE_Z+4). Seat each lancet
   // ON that curve (just inside it) and face it inward toward the nave.
-  const APSE_WALL_R = 8.7;
+  const APSE_WALL_R = 8.64;
   const APSE_WALL_CZ = 30; // matches Z_APSE in the shell
-  const lancetGeo = track(new THREE.PlaneGeometry(1.5, 3.6));
+  const LANCET_W = 2.15;
+  const LANCET_H = 3.35;
+  const lancetGeo = track(new THREE.PlaneGeometry(LANCET_W, LANCET_H));
+  const lancetFrameMat = trackMat(ctx.glowMat(0x8a6a3a, 0.22, 0.58));
   for (const xSign of [-1, 1]) {
     const phi = xSign * 0.9; // ~51° off the centre line
     const lx = APSE_WALL_R * Math.sin(phi);
@@ -182,21 +252,33 @@ export function createApseShrine(ctx: MuseumCtx): MdExhibit {
       new THREE.MeshStandardMaterial({
         color: 0xffffff,
         emissive: 0xffffff,
-        emissiveIntensity: 1.15,
+        emissiveIntensity: 1.05,
         roughness: 0.45,
         side: THREE.DoubleSide
       })
     );
     const mesh = new THREE.Mesh(lancetGeo, lancetMat);
-    mesh.position.set(lx, 6, lz - 0.15);
-    mesh.rotation.y = Math.PI - phi; // face inward, back toward the nave
+    const assembly = new THREE.Group();
+    assembly.position.set(lx, 6, lz);
+    assembly.rotation.y = Math.PI + phi; // inward normal toward the nave centre
+    assembly.name = `md_apse_lancet_assembly_${xSign < 0 ? "west" : "east"}`;
+    mesh.position.z = 0.04;
     mesh.name = "md_apse_lancet";
-    grp.add(mesh);
-    void ctx.loadArt("glass-francis").then((tex) => {
-      lancetMat.map = tex;
-      lancetMat.emissiveMap = tex;
-      lancetMat.needsUpdate = true;
-    });
+    assembly.add(mesh);
+    const frameT = 0.16;
+    for (const sx of [-1, 1]) {
+      const side = new THREE.Mesh(track(new THREE.BoxGeometry(frameT, LANCET_H + 0.34, 0.14)), lancetFrameMat);
+      side.position.x = sx * (LANCET_W / 2 + frameT / 2);
+      assembly.add(side);
+    }
+    for (const sy of [-1, 1]) {
+      const cap = new THREE.Mesh(track(new THREE.BoxGeometry(LANCET_W + 0.48, frameT, 0.14)), lancetFrameMat);
+      cap.position.y = sy * (LANCET_H / 2 + frameT / 2);
+      assembly.add(cap);
+    }
+    grp.add(assembly);
+    const artName = xSign < 0 ? "glass-birds" : "glass-wolf";
+    ctx.bindArt(mesh, lancetMat, artName, [lx, 6, lz], { wakeDistance: 64, fit: "stretch" });
   }
 
   // ---------------- ring of candles before the statue ----------------
@@ -220,24 +302,21 @@ export function createApseShrine(ctx: MuseumCtx): MdExhibit {
     candles.push({ mat: flameMat, base: 1.1, amp: 0.35, speed: 3.1 + (i % 3) * 0.5, phase: i * 1.7 });
   }
 
-  // ---------------- dedication plaque ----------------
+  // ---------------- dedication tablet, physically joined to the altar ----------------
   grp.add(
     ctx.makePlaque({
-      title: "Saint Francis of Assisi",
-      body:
-        "Brother to sun and moon, wolf and sparrow; poor man of Assisi, peacemaker, " +
-        "lover of all creation — for whom this city is named. c. 1181–1226.",
-      art: "francis-portrait",
-      caption: '"Pace e bene" — Peace and good, the friars’ ancient greeting.',
-      w: 2.2,
-      h: 2.8,
-      pos: [0, 1.55, 23],
+      title: "Pace e bene",
+      body: "Saint Francis of Assisi · c. 1181–1226 · Peace and good",
+      w: 2.35,
+      h: 0.72,
+      pos: [0, 0.7, ALTAR_Z - 0.65],
       faceYaw: Math.PI,
       accent: 0xd9a93b
     })
   );
 
-  // keep the approach clear: a single collider around the plinth only
+  // Keep the approach clear while making both sacred furnishings tangible.
+  ctx.addCollider({ lx: 0, ly: 0.58, lz: ALTAR_Z, hx: 1.95, hy: 0.58, hz: 0.72 });
   ctx.addCollider({ lx: SHRINE_X, ly: plinthTop / 2, lz: SHRINE_Z, hx: 1.15, hy: plinthTop / 2, hz: 1.15 });
 
   const shrineWorld = ctx.toWorld(SHRINE_X, 0, SHRINE_Z);
