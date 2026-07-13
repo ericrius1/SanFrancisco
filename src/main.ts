@@ -1856,6 +1856,9 @@ async function boot() {
     CONFIG.tileLoadRadius = fullTileRadius;
     progress(100, "ready");
     bootScreen.markReady();
+    // Procedural weather has rendered from frame one. Only after reveal may the
+    // optional live adapter/chunk request observations.
+    sky.enableLiveFogAfterReveal();
     // Cache world assets for instant repeat loads. Post-reveal on purpose — it
     // must not compete with the boot fetches it is meant to make free next time.
     if (import.meta.env.PROD && "serviceWorker" in navigator) {
@@ -2408,6 +2411,7 @@ async function boot() {
       sky.nightBrightness = SKY_TUNING.values.nightBrightness;
       sky.followRealTime(); // default: back to mirroring the real SF clock
       sky.applyFogParams();
+      sky.refreshFogWeatherSource();
       debugPanel.syncNow();
       hud.message("Tweaks back to source defaults", 3);
     }
@@ -2542,7 +2546,7 @@ async function boot() {
       }
       // shortest way around the 24h wrap, critically-damped ease
       const d = ((((timeScrub.target - sky.timeOfDay) % 24) + 36) % 24) - 12;
-      sky.setTimeOfDay(sky.timeOfDay + d * (1 - Math.exp(-frameDt * 10)));
+      sky.advanceCivilHours(d * (1 - Math.exp(-frameDt * 10)));
       hud.message(clock12(sky.timeOfDay), 0.8);
       if (!scrubHeld && Math.abs(d) < 0.01) {
         sky.cycleEnabled = timeScrub.wasCycling;

@@ -38,6 +38,7 @@
     "test:shadows:temporal": "node tools/shadow-temporal-probe.mjs",
     "test:shadows:far-field": "node tools/far-occlusion-field-test.mjs",
     "test:shadows:contact": "node tools/contact-shadow-contract-test.mjs",
+    "test:fog-weather": "node --experimental-strip-types tools/fog-weather-test.mjs",
     "profile:shadows": "node tools/shadow-performance-probe.mjs",
     "test:hmr": "node --experimental-strip-types tools/hmr-lifecycle-probe.mjs",
     "test:hmr:browser": "node tools/hmr-browser-probe.mjs",

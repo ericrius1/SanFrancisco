@@ -7,6 +7,7 @@
 // Env:
 //   SF_PROBE_OUT  out dir (default .data/fog-probe)
 //   SF_PROBE_URL  existing vite (default http://127.0.0.1:5190)
+//   SF_DATE       simulated civil date YYYY-MM-DD (default 2026-07-13)
 //   SF_TIME       time of day hours (default 13.5; also try 17.8 golden hour)
 //   SF_FOG        JSON of WORLD_TUNING fog overrides, e.g. '{"fog":0.0007,"fogBank":2}'
 //   SF_VIEWS      comma list of view names to render (default all)
@@ -21,6 +22,7 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const OUT = path.resolve(ROOT, process.env.SF_PROBE_OUT ?? ".data/fog-probe");
 const SERVER_URL = process.env.SF_PROBE_URL ?? "http://127.0.0.1:5190";
+const DATE = process.env.SF_DATE ?? "2026-07-13";
 const TIME = Number(process.env.SF_TIME ?? 13.5);
 const FOG = process.env.SF_FOG ?? "";
 const MOTION_SECONDS = Math.max(0, Number(process.env.SF_MOTION_SECONDS ?? 0));
@@ -192,8 +194,11 @@ async function main() {
   console.log(`[probe] __sf ready in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
   await ev(c, `window.__sfManual&&window.__sfManual(true)`); // freeze wall clock
 
-  // stop the day/night cycle and pin the time so screenshots are comparable
-  await ev(c, `(()=>{const s=window.__sf.sky;s.cycleEnabled=false;s.setTimeOfDay(${TIME});return true;})()`);
+  // Pin date and time: procedural weather is civil-date deterministic, so an
+  // hour-only pin would still make screenshots change depending on run date.
+  const [year, month, day] = DATE.split("-").map(Number);
+  if (![year, month, day, TIME].every(Number.isFinite)) throw new Error(`invalid SF_DATE/SF_TIME: ${DATE} ${TIME}`);
+  await ev(c, `(()=>{window.__sf.sky.setCivilTime({year:${year},month:${month},day:${day},hour:${TIME}});return true;})()`);
   // apply fog param overrides live
   if (FOG) {
     await ev(c, `(()=>{const v=window.__sf.WORLD_TUNING.values;Object.assign(v,${FOG});window.__sf.sky.applyFogParams();return true;})()`);

@@ -107,7 +107,8 @@ export default defineConfig({
     // same-origin app services in every environment: dev proxies to the local
     // relay, prod serves everything from the same Node process as the static files
     proxy: {
-      "/ws": { target: RELAY_WS, ws: true }
+      "/ws": { target: RELAY_WS, ws: true },
+      "/api/weather": { target: `http://localhost:${RELAY_PORT}` }
     },
     fs: {
       allow: [

@@ -114,6 +114,7 @@ export class DebugPanel {
   #monitorBindings: { refresh(): void }[] = [];
   #shadowMonitorSnapshot: ShadowDiagnosticsSnapshot | null = null;
   #shadowMonitorView: Record<string, string> | null = null;
+  #fogMonitorView: Record<string, string> | null = null;
   #syncingFromSky = false;
   #syncingPane = false;
 
@@ -213,6 +214,7 @@ export class DebugPanel {
     try {
       withTweakBindingEventsSuppressed(() => {
         this.#refreshShadowMonitor(now);
+        this.#refreshFogWeatherMonitor();
         for (const binding of this.#lightingBindings) binding.refresh();
         for (const binding of this.#monitorBindings) binding.refresh();
       });
@@ -234,6 +236,10 @@ export class DebugPanel {
       view[`${prefix} texel`] = `${(domain.texelMeters * 100).toFixed(1)} cm`;
       view[`${prefix} reason`] = domain.reason;
     }
+  }
+
+  #refreshFogWeatherMonitor() {
+    if (this.#fogMonitorView) this.#sky.writeFogWeatherDiagnostics(this.#fogMonitorView);
   }
 
   /** Re-read every binding now — call after "." resets values behind the pane's back. */
@@ -258,7 +264,10 @@ export class DebugPanel {
     if (!this.#pane) return;
     this.#syncingPane = true;
     try {
-      withTweakBindingEventsSuppressed(() => this.#pane?.refresh());
+      withTweakBindingEventsSuppressed(() => {
+        this.#refreshFogWeatherMonitor();
+        this.#pane?.refresh();
+      });
     } finally {
       this.#syncingPane = false;
     }
@@ -411,6 +420,7 @@ export class DebugPanel {
           this.#sky.realTime = false;
           this.#sky.cycleEnabled = true;
         }
+        this.#sky.refreshFogWeatherSource();
         this.#refreshLightingBindings();
         return;
       }
@@ -451,9 +461,42 @@ export class DebugPanel {
     RENDER_TUNING.bind(rendering, { keys: ["colliderDebug"] });
     const fog = rendering.addFolder({ title: "fog", expanded: false });
     WORLD_TUNING.bind(fog, {
-      keys: ["fogEnabled", "fogTop", "fogBank", "fogNoise", "fogDrift", "fog"],
-      onChange: () => this.#sky.applyFogParams()
+      keys: [
+        "fogEnabled",
+        "fogMaster",
+        "fogWeather",
+        "fogLiveInfluence",
+        "fogTop",
+        "fogBank",
+        "fogNoise",
+        "fogDrift",
+        "fog"
+      ],
+      onChange: (key) => {
+        this.#sky.applyFogParams();
+        if (key === "fogWeather" || key === "fogLiveInfluence") {
+          this.#sky.refreshFogWeatherSource();
+        }
+      }
     });
+    this.#fogMonitorView = {};
+    for (const key of [
+      "driver",
+      "SF date",
+      "live mix",
+      "bank / haze",
+      "coastal front",
+      "observations",
+      "detail",
+      "satellite",
+      "received"
+    ]) {
+      this.#fogMonitorView[key] = "pending";
+      this.#monitorBindings.push(
+        fog.addBinding(this.#fogMonitorView, key, { readonly: true, label: key })
+      );
+    }
+    this.#refreshFogWeatherMonitor();
 
     // procedural building DETAIL (src/world/citygen) — how many nearby buildings get
     // the full grammar mesh. Reach comes from the top-level draw-distance slider.
