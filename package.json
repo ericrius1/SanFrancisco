@@ -25,6 +25,7 @@
     "audit:traffic": "node --experimental-strip-types tools/audit-traffic-system.mjs",
     "test:golf": "node --experimental-strip-types tools/golf-logic-probe.mjs",
     "test:golf:terrain": "node --experimental-strip-types tools/golf-terrain-probe.mjs",
+    "test:tea-garden": "node --experimental-strip-types tools/tea-garden-probe.mjs",
     "test:car-jump": "node --experimental-strip-types tools/car-jump-physics-probe.mjs",
     "test:roof-collision": "node tools/roof-collision-probe.mjs",
     "test:roof-visuals": "node tools/citygen-roof-visual-probe.mjs",

@@ -29,6 +29,11 @@ import {
   createGoldenGateTennisSite,
   GOLDMAN_SUPPRESSED_BUILDINGS,
 } from "./world/goldenGateTennis";
+import {
+  JAPANESE_TEA_GARDEN_ENTRANCE,
+  TEA_GARDEN_SUPPRESSED_BUILDINGS,
+  isTeaGardenBuilding
+} from "./world/japaneseTeaGarden/layout";
 import { CoronaHeightsPark, prepareCoronaHeightsGround } from "./world/coronaHeights";
 import { OceanBeachWaves, SurfExperience } from "./gameplay/surfing";
 import { findOpenSpawn } from "./world/spawn";
@@ -210,19 +215,28 @@ async function boot() {
   // regions it needs before reveal; default is the Corona Heights summit. Falls
   // back to the baked spawn, then Golden Gate. Nudged onto open ground — never
   // under (or inside) a building. (Resume/invite paths override this entirely.)
-  const spawnPoint = resolveSpawnPoint(START.spawn) ?? resolveSpawnPoint(START_DEFAULTS.spawn);
-  const startAt = spawnPoint ?? map.meta.spawns[START.spawn] ?? map.meta.spawns[START_DEFAULTS.spawn];
+  // `?spawn=<code-or-baked-key>` is a non-persisting place link used by QA and
+  // future location sharing. An unknown key safely falls back to the saved/default
+  // start without changing settings.
+  const requestedSpawn = new URLSearchParams(location.search).get("spawn")?.trim();
+  const autoStartIrohTour = new URLSearchParams(location.search).get("tour") === "iroh";
+  const spawnKey = requestedSpawn && (resolveSpawnPoint(requestedSpawn) || map.meta.spawns[requestedSpawn])
+    ? requestedSpawn
+    : START.spawn;
+  const spawnPoint = resolveSpawnPoint(spawnKey) ?? resolveSpawnPoint(START_DEFAULTS.spawn);
+  const startAt = spawnPoint ?? map.meta.spawns[spawnKey] ?? map.meta.spawns[START_DEFAULTS.spawn];
   // Per-session scatter: every fresh session lands a stride or two off the
   // registered point, so two players (or two tabs) never boot into the exact
-  // same spot — co-located avatars interpenetrate and read as z-fighting.
+  // same spot — co-located avatars interpenetrate and read as z-fighting. An
+  // explicit place link is exact so authored interaction ranges remain reliable.
   // findOpenSpawn validates the scattered point like any other candidate.
   const scatterA = Math.random() * Math.PI * 2;
-  const scatterR = 0.8 + Math.random() * 1.6;
+  const scatterR = requestedSpawn ? 0 : 0.8 + Math.random() * 1.6;
   const spawn = await findOpenSpawn(map, tiles.manifest, {
     ...startAt,
     x: startAt.x + Math.cos(scatterA) * scatterR,
     z: startAt.z + Math.sin(scatterA) * scatterR
-  });
+  }, requestedSpawn ? 1.5 : 12, requestedSpawn ? 36 : 200);
   // Lean-boot spawns cap the draw radius while the cover is up: only the near
   // district (tiles + citygen cells, both keyed off CONFIG.tileLoadRadius) gates
   // the reveal. The first covered tile scan runs after this, so the cap takes
@@ -414,6 +428,7 @@ async function boot() {
     update: (pos: THREE.Vector3, cam: THREE.Vector3) => void;
   } | null = null;
   let goldenGateTennis: ReturnType<typeof createGoldenGateTennisSite> | null = null;
+  let japaneseTeaGarden: import("./world/japaneseTeaGarden").JapaneseTeaGarden | null = null;
   // Universal minigame site gate: each located game (pickleball, golf, soon
   // archery) registers a footprint + pads; one cheap update per tick flips
   // them awake only while the player is nearby. Sites register asleep — the
@@ -431,6 +446,7 @@ async function boot() {
     garden?.setVisible(visible, player.position);
     if (wildlands) for (const g of wildlands.groups) g.visible = visible;
     goldenGateTennis?.setFoliageVisible(visible);
+    japaneseTeaGarden?.setFoliageVisible(visible);
     coronaHeights?.setFoliageVisible(visible);
   };
   const islands = new Islands(physics, map, scene);
@@ -522,6 +538,13 @@ async function boot() {
       tiles.unsuppressBuildingMesh(building.key, building.index);
     }
     console.warn("[boot] Goldman Tennis Center unavailable:", err);
+  }
+  // The seven mapped Tea Garden buildings are replaced by authored, walkable
+  // structures. Hide both baked prisms and their generic colliders up front;
+  // the garden module owns the replacement collision and restores these on a
+  // construction failure.
+  for (const building of TEA_GARDEN_SUPPRESSED_BUILDINGS) {
+    tiles.suppressBuilding(building.key, building.index);
   }
   try {
     // Archery range in GG Park's NW corner. Born hidden (site-gated); a live
@@ -1103,7 +1126,7 @@ async function boot() {
   // Vite structural reload additionally restores the exact chase-camera view.
   // (after the debug panel exists — restoreState can fire onModeChange).
   // An invite link wins over the saved session — the click's intent is explicit.
-  const resumed = invite ? null : (devReload?.player ?? loadPlayerState());
+  const resumed = invite || requestedSpawn ? null : (devReload?.player ?? loadPlayerState());
   if (resumed) {
     player.restoreState(resumed);
     modeDiscovery.discover(resumed.mode);
@@ -1356,10 +1379,11 @@ async function boot() {
     forest = new forestMod.Forest(map, scene);
 
     // Garden + Wildlands: botanical garden grass + designed SeedThree groves
-    const [gardenMod, wildlandsMod, golfMod] = await Promise.all([
+    const [gardenMod, wildlandsMod, golfMod, teaGardenMod] = await Promise.all([
       import("./world/garden"),
       import("./world/wildlands"),
-      import("./gameplay/golf")
+      import("./gameplay/golf"),
+      import("./world/japaneseTeaGarden")
     ]);
     // Botanical garden (heaviest single park: SeedThree trees + textures). Gate
     // it only when the spawn is near; otherwise build it AFTER the cover lifts,
@@ -1389,6 +1413,60 @@ async function boot() {
           console.warn("[garden] deferred compile failed:", err);
         }
         g.setVisible(foliageOn, player.position);
+      });
+    }
+
+    // Japanese Tea Garden: exact OSM footprint with authored gates, Tea House,
+    // pagoda, ponds, bridges, specimen planting and Iroh's walkable guided tour.
+    // It shares the Botanical Garden region gate because the two sites touch;
+    // distant boots compile it after reveal so it never delays first play.
+    const buildTeaGarden = () => {
+      try {
+        const site = teaGardenMod.createJapaneseTeaGarden(map, {
+          physics,
+          // Conversation is gameplay-critical, so it must remain visible when
+          // the optional HUD panels are faded with Tab.
+          dialogueParent: document.body
+        });
+        japaneseTeaGarden = site;
+        site.setFoliageVisible(foliageOn);
+        minimap.addLandmark(
+          JAPANESE_TEA_GARDEN_ENTRANCE.x,
+          JAPANESE_TEA_GARDEN_ENTRANCE.z,
+          "Japanese Tea Garden"
+        );
+        const h = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
+        if (h) Object.assign(h, { japaneseTeaGarden: site });
+        return site;
+      } catch (err) {
+        for (const building of TEA_GARDEN_SUPPRESSED_BUILDINGS) {
+          tiles.unsuppressBuilding(building.key, building.index);
+        }
+        throw err;
+      }
+    };
+    let teaGardenReady: Promise<unknown> | null = null;
+    if (gardenGates) {
+      const site = buildTeaGarden();
+      scene.add(site.group);
+      site.update(0, 0, player.renderPosition, camera);
+      if (autoStartIrohTour) site.interact(player.position, player.mode);
+      teaGardenReady = site.ready;
+    } else {
+      void revealedPromise.then(async () => {
+        const site = buildTeaGarden();
+        site.group.visible = false;
+        await site.ready;
+        try {
+          await renderer.compileAsync(site.group, camera, scene);
+        } catch (err) {
+          console.warn("[tea-garden] deferred compile failed:", err);
+        }
+        scene.add(site.group);
+        site.update(0, 0, player.renderPosition, camera);
+        if (autoStartIrohTour) site.interact(player.position, player.mode);
+      }).catch((err) => {
+        console.warn("[tea-garden] deferred construction failed:", err);
       });
     }
 
@@ -1483,7 +1561,7 @@ async function boot() {
 
     // Gate the reveal on whatever is near; deferred regions run post-reveal and
     // are intentionally excluded here so they never hold the cover.
-    await Promise.all([gardenReady, wildlandsGolfReady].filter(Boolean));
+    await Promise.all([gardenReady, teaGardenReady, wildlandsGolfReady].filter(Boolean));
 
     // CityGen: procedural building ring + demo. Awaited (not fire-and-forget)
     // so modulesReady only flips once the ring exists — its cell builds land in
@@ -1493,7 +1571,10 @@ async function boot() {
       import("./world/citygen/demo")
     ]);
     citygen = citygenDemoMod.createCityGenDemo({ scene, map }) as NonNullable<typeof citygen>;
-    citygenRing.current = await citygenMod.createCityGenRing({}, { scene, physics, map, tiles, schedule: scheduler.schedule });
+    citygenRing.current = await citygenMod.createCityGenRing(
+      { excludeBuilding: isTeaGardenBuilding },
+      { scene, physics, map, tiles, schedule: scheduler.schedule }
+    );
 
     // BehindTheScenes: the "how it was made" reading overlay.
     // Closing does not re-lock — Esc (and backdrop/close) leave the cursor free.
@@ -1506,7 +1587,14 @@ async function boot() {
     });
 
   })()
-    .catch((err) => console.warn("[sf] deferred module load failed:", err))
+    .catch((err) => {
+      if (!japaneseTeaGarden) {
+        for (const building of TEA_GARDEN_SUPPRESSED_BUILDINGS) {
+          tiles.unsuppressBuilding(building.key, building.index);
+        }
+      }
+      console.warn("[sf] deferred module load failed:", err);
+    })
     .finally(() => {
       // The animation loop owns the renderer, so it starts the second warmup at
       // a frame boundary after deferred construction/scheduler work has settled.
@@ -1964,8 +2052,12 @@ async function boot() {
     // E: exit any vehicle/creature, pick up a thrown tennis ball, or on foot
     // hop into the nearest ride (a friend's passenger seat, a rideable animal,
     // or a mount you left behind)
+    const teaGardenEConsumed = !pickleballEConsumed
+      && input.pressed("KeyE")
+      && (japaneseTeaGarden?.interact(player.position, player.mode) ?? false);
     if (
       !pickleballEConsumed &&
+      !teaGardenEConsumed &&
       input.pressed("KeyE") &&
       !exitToWalk() &&
       !golf?.tryStartAtTee(player, hud) &&
@@ -2279,6 +2371,7 @@ async function boot() {
     gardenDisplacer.z = player.renderPosition.z;
     updateVegetationEnvironment(frameDt, foliageOn ? gardenDisplacers : undefined);
     buskers.update(frameDt, camera, windGustValue(), sky.sunElevation);
+    japaneseTeaGarden?.update(frameDt, elapsed, player.renderPosition, camera);
     // MASTER foliage gate: when the "/" panel's foliage switch is OFF, every
     // vegetation group is already hidden (setFoliageVisible) — skip all its
     // per-frame work too so it costs near zero. We STILL advance the shared wind
@@ -2368,6 +2461,10 @@ async function boot() {
       chase.indoor = citygenRing.current?.isPlayerInside() ?? false; // blend into the indoor eye rig
       chase.update(frameDt, player, input);
     }
+    // World-anchored dialogue must project after the chase/orbit/cinematic has
+    // committed this frame's final camera pose; projecting during simulation
+    // left Iroh's card one camera frame behind and visibly jittering.
+    japaneseTeaGarden?.project(camera);
     sky.update(elapsed, camera.position);
     water.update(elapsed, camera.position, player.renderPosition);
     oceanBeachWaves.update(elapsed, player.renderPosition);
@@ -2588,7 +2685,7 @@ async function boot() {
       // deferred render warmup runs, tick() early-returns without rendering, so
       // screenshots would capture a stale boot-pose frame no matter what the
       // camera was set to.
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, goldenGateTennis, pickleball: pickleballController.game, pickleballAmbient: pickleballController.ambient, pickleballAudio: pickleballController.audio, pickleballUI: pickleballController.ui, pickleballController, coronaHeights, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, siteGate,
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController.game, pickleballAmbient: pickleballController.ambient, pickleballAudio: pickleballController.audio, pickleballUI: pickleballController.ui, pickleballController, coronaHeights, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, siteGate,
         TSL,
         renderIdle: () => modulesReady && !lateRenderWarmupActive }
     });
