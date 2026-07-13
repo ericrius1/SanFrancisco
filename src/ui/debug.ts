@@ -1,6 +1,6 @@
 import { Pane } from "tweakpane";
 import type { BladeApi, FolderApi } from "tweakpane";
-import type * as THREE from "three/webgpu";
+import * as THREE from "three/webgpu";
 import {
   CAMERA_TUNING,
   CONFIG,
@@ -17,7 +17,7 @@ import type { PlayerMode } from "../player/types";
 import { CROWN_SLIDERS, CROWN_TUNING } from "../world/salesforceCrown";
 import { BAY_LIGHTS_SLIDERS, BAY_LIGHTS_TUNING } from "../world/bayLights";
 import { GOLDEN_GATE_LIGHTS_SLIDERS, GOLDEN_GATE_LIGHTS_TUNING } from "../world/goldenGateLights";
-import { SKY_TUNING, SHADOW_TUNING, type Sky } from "../world/sky";
+import { SKY_TUNING, type Sky } from "../world/sky";
 import { POSTFX_TUNING, POSTFX_TOGGLES, POSTFX_QUALITY_KEYS, applyPostFxParams } from "../render/postfx";
 import { VOICE_TUNING } from "../net/voice";
 import { NATURE_AUDIO_TUNING } from "../audio";
@@ -27,8 +27,8 @@ import type { TileStreamer } from "../world/tiles";
 import { TUNABLES_UPDATED_EVENT, withTweakBindingEventsSuppressed, saveTweak } from "../core/persist";
 import { BUSKER_FIREFLY_TUNING } from "../gameplay/buskers/tuning";
 import { VEGETATION_TUNING, applyVegetationTuning } from "../world/vegetation/tuning";
+import type { ShadowDiagnosticsSnapshot } from "../world/shadows/diagnostics";
 
-type WireframeMaterial = THREE.Material & { wireframe: boolean };
 
 function isFolderApi(blade: BladeApi): blade is FolderApi {
   return "children" in blade && "title" in blade && "expanded" in blade;
@@ -79,10 +79,6 @@ function filterPane(blade: BladeApi, query: string): boolean {
   return childMatch;
 }
 
-function isWireframeMaterial(material: THREE.Material): material is WireframeMaterial {
-  return "wireframe" in material && typeof (material as WireframeMaterial).wireframe === "boolean";
-}
-
 /**
  * Tweakpane debug panel, toggled with "/". Built lazily on first open so it costs
  * nothing until asked for. Opening releases pointer lock (the pane needs the mouse);
@@ -108,13 +104,16 @@ export class DebugPanel {
   #refreshGrass: () => void;
   #toggleProfiler: () => boolean;
   #lastRefresh = 0;
-  #lastWireframeScan = 0;
-  #wireframeOriginals = new Map<WireframeMaterial, boolean>();
+  /** Shared override — O(1) wireframe toggle, covers streamed content automatically. */
+  #wireframeMaterial: THREE.MeshBasicMaterial | null = null;
   #wireframeActive = false;
+  #wireframeBindings: { refresh(): void }[] = [];
   // pane bindings must not round-trip into sky.timeOfDay while the cycle runs
   #lightingView: Record<string, unknown> | null = null;
   #lightingBindings: { refresh(): void }[] = [];
   #monitorBindings: { refresh(): void }[] = [];
+  #shadowMonitorSnapshot: ShadowDiagnosticsSnapshot | null = null;
+  #shadowMonitorView: Record<string, string> | null = null;
   #syncingFromSky = false;
   #syncingPane = false;
 
@@ -143,6 +142,8 @@ export class DebugPanel {
     this.#refreshGrass = refreshGrass;
     this.#toggleProfiler = toggleProfiler;
     window.addEventListener(TUNABLES_UPDATED_EVENT, () => this.#refreshAllBindings());
+    // Honor a persisted wireframe flag immediately (no wait for first refresh).
+    if (RENDER_TUNING.values.wireframe) this.#applyWireframe(true);
   }
 
   toggle() {
@@ -184,10 +185,20 @@ export class DebugPanel {
     }
   }
 
+  /** R key / pane checkbox — flip wireframe instantly via scene.overrideMaterial. */
+  toggleWireframe() {
+    const next = !RENDER_TUNING.values.wireframe;
+    RENDER_TUNING.values.wireframe = next;
+    saveTweak("render.wireframe", next);
+    this.#applyWireframe(next);
+    this.#refreshWireframeBindings();
+  }
+
   /** Keep the pane in sync with the running day/night cycle (call per frame; throttled). */
   refresh() {
-    if (RENDER_TUNING.values.wireframe) this.#applyWireframe(true);
-    else if (this.#wireframeActive || this.#wireframeOriginals.size) this.#applyWireframe(false, true);
+    if (RENDER_TUNING.values.wireframe !== this.#wireframeActive) {
+      this.#applyWireframe(RENDER_TUNING.values.wireframe);
+    }
     if (!this.visible || !this.#pane) return;
     const now = performance.now();
     if (now - this.#lastRefresh < 250) return;
@@ -202,6 +213,7 @@ export class DebugPanel {
     this.#syncingPane = true;
     try {
       withTweakBindingEventsSuppressed(() => {
+        this.#refreshShadowMonitor(now);
         for (const binding of this.#lightingBindings) binding.refresh();
         for (const binding of this.#monitorBindings) binding.refresh();
       });
@@ -211,9 +223,23 @@ export class DebugPanel {
     }
   }
 
+  #refreshShadowMonitor(now: number) {
+    const snapshot = this.#shadowMonitorSnapshot;
+    const view = this.#shadowMonitorView;
+    if (!snapshot || !view) return;
+    this.#sky.shadowDiagnostics.writeSnapshot(snapshot, now);
+    for (const domain of snapshot.domains) {
+      const prefix = domain.id;
+      view[`${prefix} age`] = Number.isFinite(domain.ageFrames) ? `${domain.ageFrames} frames` : "pending";
+      view[`${prefix} rate`] = `${domain.updateHz.toFixed(1)} Hz`;
+      view[`${prefix} texel`] = `${(domain.texelMeters * 100).toFixed(1)} cm`;
+      view[`${prefix} reason`] = domain.reason;
+    }
+  }
+
   /** Re-read every binding now — call after "." resets values behind the pane's back. */
   syncNow() {
-    this.#applyWireframe(RENDER_TUNING.values.wireframe, true);
+    this.#applyWireframe(RENDER_TUNING.values.wireframe);
     this.#setFoliageVisible(Boolean(FOLIAGE_TUNING.values.visible));
     if (this.#lightingView) {
       this.#syncingFromSky = true;
@@ -240,50 +266,34 @@ export class DebugPanel {
     }
   }
 
-  #applyWireframe(on: boolean, force = false) {
-    if (!this.#scene) return;
-    const now = performance.now();
-    if (on && !force && this.#wireframeActive && now - this.#lastWireframeScan < 500) return;
-    if (!on && !force && !this.#wireframeActive && !this.#wireframeOriginals.size) return;
-    this.#lastWireframeScan = now;
-
-    if (!on) {
-      for (const [material, original] of this.#wireframeOriginals) {
-        if (material.wireframe !== original) {
-          material.wireframe = original;
-          material.needsUpdate = true;
-        }
-      }
-      this.#wireframeOriginals.clear();
-      // streamed tiles can pick up wireframe between scans; sweep anything still on
-      this.#scene.traverse((object) => {
-        const mesh = object as THREE.Mesh;
-        if (!mesh.isMesh) return;
-        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-        for (const material of materials) {
-          if (!isWireframeMaterial(material) || !material.wireframe) continue;
-          material.wireframe = false;
-          material.needsUpdate = true;
-        }
+  #refreshWireframeBindings() {
+    if (!this.#wireframeBindings.length) return;
+    this.#syncingPane = true;
+    try {
+      withTweakBindingEventsSuppressed(() => {
+        for (const binding of this.#wireframeBindings) binding.refresh();
       });
-      this.#wireframeActive = false;
-      return;
+    } finally {
+      this.#syncingPane = false;
     }
+  }
 
-    this.#wireframeActive = true;
-    this.#scene.traverse((object) => {
-      const mesh = object as THREE.Mesh;
-      if (!mesh.isMesh) return;
-      const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-      for (const material of materials) {
-        if (!isWireframeMaterial(material)) continue;
-        if (!this.#wireframeOriginals.has(material)) this.#wireframeOriginals.set(material, material.wireframe);
-        if (!material.wireframe) {
-          material.wireframe = true;
-          material.needsUpdate = true;
-        }
+  /** Instant scene-wide wireframe via overrideMaterial (no per-mesh walk). */
+  #applyWireframe(on: boolean) {
+    if (!this.#scene) return;
+    if (on) {
+      if (!this.#wireframeMaterial) {
+        this.#wireframeMaterial = new THREE.MeshBasicMaterial({
+          color: 0xcccccc,
+          wireframe: true,
+          toneMapped: false
+        });
       }
-    });
+      this.#scene.overrideMaterial = this.#wireframeMaterial;
+    } else {
+      this.#scene.overrideMaterial = null;
+    }
+    this.#wireframeActive = on;
   }
 
   #build() {
@@ -334,19 +344,21 @@ export class DebugPanel {
     const pane = new Pane({ container: root, title: "tuning — / to close" });
     this.#pane = pane;
 
-    // Shadows first — open by default. Live CSM knobs; map-size edits realloc
-    // depth textures (fine while tuning; reload if a stale render-bundle bind
-    // group starts complaining).
+    // Shadows first — open by default so clipmap telemetry is the first thing
+    // you see when pressing "/". Allocation-free; refreshed at the pane's 4 Hz
+    // monitor cadence.
     const shadows = pane.addFolder({ title: "shadows", expanded: true });
-    SHADOW_TUNING.bind(shadows, {
-      onChange: (_key, _value, last) => {
-        if (this.#syncingPane) return;
-        // Map size changes are expensive / realloc — wait for release. Bias /
-        // split / far update live so you can scrub them.
-        if (!last && (_key === "nearMapSize" || _key === "farMapSize")) return;
-        this.#sky.applyShadowParams();
+    this.#shadowMonitorSnapshot = this.#sky.shadowDiagnostics.createSnapshotBuffer();
+    this.#shadowMonitorView = {};
+    for (const { id } of this.#shadowMonitorSnapshot.domains) {
+      for (const suffix of ["age", "rate", "texel", "reason"]) {
+        const key = `${id} ${suffix}`;
+        this.#shadowMonitorView[key] = "pending";
+        this.#monitorBindings.push(
+          shadows.addBinding(this.#shadowMonitorView, key, { readonly: true, label: key })
+        );
       }
-    });
+    }
 
     // Session meta — foliage / draw distance / day cycle. Open, right under
     // shadows; everything else starts collapsed.
@@ -433,18 +445,38 @@ export class DebugPanel {
       onChange: onSkyChange
     });
 
+    this.#wireframeBindings = RENDER_TUNING.bind(meta, {
+      keys: ["wireframe"],
+      onChange: (_key, value) => {
+        if (this.#syncingPane) return;
+        this.#applyWireframe(Boolean(value));
+      }
+    });
+
+    // Render knobs live under meta (not buried in advanced). Fog nests here.
+    const rendering = pane.addFolder({ title: "rendering", expanded: false });
+    RENDER_TUNING.bind(rendering, {
+      keys: ["pixelRatio"],
+      onChange: (_key, value) => {
+        this.#renderer.setPixelRatio(value as number);
+        this.#renderer.setSize(window.innerWidth, window.innerHeight);
+      }
+    });
+    // collider x-ray: persisted toggle only — main's tick polls the live value
+    // each frame, gathers active colliders and drives the overlay.
+    RENDER_TUNING.bind(rendering, { keys: ["colliderDebug"] });
+    const fog = rendering.addFolder({ title: "fog", expanded: false });
+    WORLD_TUNING.bind(fog, {
+      keys: ["fogEnabled", "fogTop", "fogBank", "fogNoise", "fogDrift", "fog"],
+      onChange: () => this.#sky.applyFogParams()
+    });
+
     // procedural building DETAIL (src/world/citygen) — how many nearby buildings get
     // the full grammar mesh. Reach comes from the top-level draw-distance slider.
     // The ring reads these live each scan, so no onChange side-effect is needed —
     // drag + watch the fps counter and the near-detail band move.
     const citygenF = pane.addFolder({ title: "buildings (citygen)", expanded: false });
     CITYGEN_TUNING.bind(citygenF, { onChange: () => {} });
-
-    const fog = pane.addFolder({ title: "fog", expanded: false });
-    WORLD_TUNING.bind(fog, {
-      keys: ["fogEnabled", "fogTop", "fogBank", "fogNoise", "fogDrift", "fog"],
-      onChange: () => this.#sky.applyFogParams()
-    });
 
     // Stylized post effects: toggles select retained shader variants; sliders
     // are live uniforms — see render/postfx.ts.
@@ -479,25 +511,6 @@ export class DebugPanel {
       keys: ["sunDay", "hemiDay"],
       onChange: () => this.#sky.applyLightGrade()
     });
-
-    const render = advanced.addFolder({ title: "render" });
-    RENDER_TUNING.bind(render, {
-      keys: ["pixelRatio"],
-      onChange: (_key, value) => {
-        this.#renderer.setPixelRatio(value as number);
-        this.#renderer.setSize(window.innerWidth, window.innerHeight);
-      }
-    });
-    RENDER_TUNING.bind(render, {
-      keys: ["wireframe"],
-      onChange: (_key, value) => {
-        if (this.#syncingPane) return;
-        this.#applyWireframe(Boolean(value), true);
-      }
-    });
-    // collider x-ray: persisted toggle only — main's tick polls the live value
-    // each frame, gathers active colliders and drives the overlay.
-    RENDER_TUNING.bind(render, { keys: ["colliderDebug"] });
 
     // free-orbit camera (C): duration of the O-key 180° flip around the target
     const cameraF = advanced.addFolder({ title: "camera" });
@@ -573,7 +586,7 @@ export class DebugPanel {
     const particles = advanced.addFolder({ title: "particles" });
     const fireflies = particles.addFolder({ title: "busker fireflies" });
     BUSKER_FIREFLY_TUNING.bind(fireflies);
-    this.#monitorBindings = this.#fireworks?.addTuning(particles) ?? [];
+    this.#monitorBindings.push(...(this.#fireworks?.addTuning(particles) ?? []));
 
     // Full GPU profiler (three.js Inspector: FPS/CPU/GPU graph, timing, memory).
     // Heavy — per-frame GPU timestamp queries + canvas redraw — so it's OFF by

@@ -16,6 +16,7 @@ import { buildInterior as buildInteriorParts } from "./interior/interior";
 import type { ColliderBox, MeshData, ModuleInstance } from "./core/types";
 import type { ModuleLayer } from "./render/moduleLayer";
 import type { ShellBatchLayer, ShellHandle } from "./render/shellBatch";
+import { enableLocalFarShadowLayers } from "../shadows/shadowLayers";
 
 // SF "painted lady" body colours — mid-saturated so the bright white trim reads
 // as the classic Victorian contrast (bodies vary building-to-building).
@@ -91,10 +92,6 @@ export interface BuiltBuilding {
    *  dynamic swinging leaf while these are hidden). Works on both the batched
    *  shell and the per-building bundle fallback. */
   setDoorLeavesVisible(vis: boolean): void;
-  /** distance-gated shadow casting: with frustumCulled=false bundle children,
-   *  every detail building renders into every CSM cascade — the ring turns far
-   *  ones off (one bundle re-record per band crossing, ~free). */
-  setCastShadow(cast: boolean): void;
   dispose(): void;
 }
 
@@ -276,7 +273,6 @@ function assembleBuildingMeshes(
         setGlassHidden(hidden: boolean) { moduleHandle?.setGlassHidden(hidden); },
         setShellHidden(hidden: boolean) { shellHandle.setShellHidden(hidden); winHandle?.setShellHidden(hidden); },
         setDoorLeavesVisible(vis: boolean) { shellHandle.setDoorLeavesVisible(vis); },
-        setCastShadow(cast: boolean) { shellHandle.setCastShadow(cast); winHandle?.setCastShadow(cast); },
         setOpacity(o: number) { moduleHandle?.setFade(o); shellHandle.setFade(o); winHandle?.setFade(o); },
         dispose() { moduleHandle?.free(); shellHandle.free(); winHandle?.free(); group.clear(); },
       };
@@ -311,7 +307,8 @@ function assembleBuildingMeshes(
     if (!fade) { fade = acquireFadeClone(settled); borrowed.set(settled, fade); }
     const mesh = new THREE.Mesh(g, fade); // born fading (ring fades every build in)
     mesh.name = md.materialId; // lets probes tell a wall/base panel from door/glass
-    mesh.castShadow = true;
+    // Stable chunk proxies own shadow massing across every beauty/detail LOD.
+    mesh.castShadow = false;
     mesh.receiveShadow = true;
     mesh.frustumCulled = false;
     group.add(mesh);
@@ -347,7 +344,7 @@ function assembleBuildingMeshes(
       if (!fade) { fade = acquireFadeClone(settled); borrowed!.set(settled, fade); }
       const mesh = new THREE.Mesh(g, fade);
       mesh.name = md.materialId;
-      mesh.castShadow = true;
+      mesh.castShadow = false;
       mesh.receiveShadow = true;
       mesh.frustumCulled = false;
       group.add(mesh);
@@ -360,7 +357,6 @@ function assembleBuildingMeshes(
     for (const [settled, clone] of borrowed) releaseFadeClone(settled, clone);
     borrowed = null;
   };
-  let castingShadow = true;
   return {
     group, triangles,
     windows: moduleHandle && modules ? modules.instances : [],
@@ -374,12 +370,6 @@ function assembleBuildingMeshes(
       let changed = false;
       for (const m of doorMeshes) if (m.visible !== vis) { m.visible = vis; changed = true; }
       if (changed) group.needsUpdate = true;
-    },
-    setCastShadow(cast: boolean) {
-      if (cast === castingShadow) return;
-      castingShadow = cast;
-      for (const p of parts) p.mesh.castShadow = cast;
-      group.needsUpdate = true;
     },
     setOpacity(o: number) {
       moduleHandle?.setFade(o); // instanced windows dither in step (one texel write)
@@ -488,6 +478,7 @@ export function buildCityGenGroup(
       const mat = md.materialId.startsWith("wall.") ? wallMat : (mats[md.materialId] ?? wallMat);
       const mesh = new THREE.Mesh(g, mat);
       mesh.castShadow = cast;
+      if (cast) enableLocalFarShadowLayers(mesh);
       mesh.receiveShadow = true;
       mesh.name = "cityGenBuilding";
       group.add(mesh);

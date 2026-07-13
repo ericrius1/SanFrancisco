@@ -8,8 +8,8 @@
 //  · slots are grouped into CHUNKS (~176 m): one instanced far set per chunk,
 //    with a real per-mesh boundingSphere so regular frustum culling works,
 //    plus a distance cutoff so a hillside grove 2 km away costs nothing.
-//  · far tier casts NO shadows by default (shadows are this app's #1 GPU cost;
-//    the few near hero clones still cast, which is what your eye checks).
+//  · beauty LODs never cast. A separate static trunk+crown proxy follows the
+//    same chunk visibility gate and remains unchanged across near/far rebins.
 //  · the near-tier rebin self-drives off a tiny always-rendered driver mesh
 //    (the garden drove off a frustumCulled=false far mesh; chunked meshes can
 //    all be culled while near clones must still manage themselves).
@@ -17,6 +17,12 @@
 // Consumers hand in designs + slot lists; the engine owns rendering + LOD.
 
 import * as THREE from "three/webgpu";
+import {
+  createTreeShadowProxy,
+  measureTreeShadowProfile,
+  type TreeShadowInstance,
+  type TreeShadowProxy
+} from "../shadows/treeShadowProxy";
 import { growTemplate, type GrownTemplate, type SeedTreeDesignSpec } from "./templates";
 
 export type { SeedTreeDesignSpec } from "./templates";
@@ -37,8 +43,6 @@ export type SeedForestOptions = {
   chunkSize?: number;
   /** chunks beyond this distance from the camera are hidden entirely (default 520) */
   visibleDistance?: number;
-  /** far tier shadow casting (default false — near clones always cast) */
-  farCastShadow?: boolean;
   nearRadius?: number; // default 58
   nearExitRadius?: number; // default 66
   nearMax?: number; // default 24
@@ -92,7 +96,6 @@ function buildFarSet(
   lod2: THREE.Object3D,
   slots: Slot[],
   name: string,
-  castShadow: boolean,
   sphere: THREE.Sphere,
   parent: THREE.Group
 ): FarSet {
@@ -133,8 +136,10 @@ function buildFarSet(
       const bucket: FarCardBucket = { im, k, base: mesh.matrixWorld.clone(), cardMats };
       for (let slot = 0; slot < N; slot++) writeFarCardSlot(bucket, slots[slot], slot, false);
       im.name = `${name}_${mesh.name || "cards"}`;
-      im.castShadow = castShadow;
-      im.receiveShadow = true;
+      // Alpha/card geometry is both unstable in wind and expensive in depth.
+      // The static tree proxy owns shadow casting and far cards do not sample it.
+      im.castShadow = false;
+      im.receiveShadow = false;
       im.boundingSphere = sphere.clone(); // per-chunk sphere → real frustum culling
       im.frustumCulled = true;
       parent.add(im);
@@ -149,7 +154,7 @@ function buildFarSet(
         im.setMatrixAt(slot, tmp);
       }
       im.name = `${name}_${mesh.name || "bark"}`;
-      im.castShadow = castShadow;
+      im.castShadow = false;
       im.receiveShadow = true;
       im.boundingSphere = sphere.clone();
       im.frustumCulled = true;
@@ -185,6 +190,7 @@ type Chunk = {
   cz: number;
   /** per design id: the slots of that design in this chunk (chunk-local order) */
   byDesign: Map<number, { slots: Slot[]; farSet: FarSet }>;
+  shadowProxy: TreeShadowProxy | null;
 };
 
 // ---- public --------------------------------------------------------------------
@@ -273,6 +279,9 @@ export function createSeedForest(
         console.error(`[seedForest:${options.name}] design ${designs[d].species} failed to grow:`, e);
       }
     }
+    const shadowProfiles = templates.map((template) =>
+      template ? measureTreeShadowProfile(template.lod2) : null
+    );
     let instances = 0;
     let tris = 0;
     let designUsed = new Set<number>();
@@ -282,7 +291,8 @@ export function createSeedForest(
         group: new THREE.Group(),
         cx: 0,
         cz: 0,
-        byDesign: new Map()
+        byDesign: new Map(),
+        shadowProxy: null
       };
       chunk.group.name = `${options.name}_${key}`;
       // chunk bounding sphere over slot extents (+canopy headroom)
@@ -303,6 +313,7 @@ export function createSeedForest(
       );
 
       const byDesign = new Map<number, Slot[]>();
+      const shadowInstances: TreeShadowInstance[] = [];
       for (const s of list) {
         const arr = byDesign.get(s.design);
         if (arr) arr.push(s);
@@ -311,12 +322,12 @@ export function createSeedForest(
       for (const [d, dSlots] of byDesign) {
         const t = templates[d];
         if (!t) continue;
+        const shadowProfile = shadowProfiles[d];
         dSlots.forEach((s, i) => (s.index = i));
         const farSet = buildFarSet(
           t.lod2,
           dSlots,
           `${options.name}_${designs[d].species}`,
-          options.farCastShadow ?? false,
           sphere,
           chunk.group
         );
@@ -324,9 +335,31 @@ export function createSeedForest(
         instances += dSlots.length;
         tris += farSet.triangles;
         designUsed.add(d);
+        if (shadowProfile) {
+          for (const slot of dSlots) {
+            shadowInstances.push({
+              x: slot.x,
+              y: slot.y,
+              z: slot.z,
+              yaw: slot.yaw,
+              scale: slot.scale,
+              profile: shadowProfile
+            });
+          }
+        }
         if (t.design.nearClones !== false) {
           for (const s of dSlots) allNearSlots.push({ slot: s, chunk });
         }
+      }
+      if (shadowInstances.length > 0) {
+        chunk.shadowProxy = createTreeShadowProxy({
+          name: `${options.name}_shadow_${key}`,
+          instances: shadowInstances,
+          cellSize: Math.min(96, chunkSize)
+        });
+        // Child placement preserves both the forest master gate and the
+        // existing chunk distance gate. Its own microcells remain frustum-cullable.
+        chunk.group.add(chunk.shadowProxy.group);
       }
       chunks.push(chunk);
       group.add(chunk.group);
@@ -421,6 +454,9 @@ export function createSeedForest(
     }
   };
   group.add(driver);
+  group.userData.disposeTreeShadowProxies = () => {
+    for (const chunk of chunks) chunk.shadowProxy?.dispose();
+  };
 
   // ---- chunk distance culling --------------------------------------------------
 

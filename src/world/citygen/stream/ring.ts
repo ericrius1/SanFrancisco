@@ -23,6 +23,7 @@ import { lodMaterial } from "../render/lod";
 import { buildCityGenMaterials } from "../theme/materials";
 import type { BuildingSpec, ColliderBox, ColliderMesh, MeshData, ModuleInstance } from "../core/types";
 import { CITYGEN_TUNING, CONFIG } from "../../../config";
+import { enableShadowLayer, SHADOW_LAYERS } from "../../shadows/shadowLayers";
 
 const READY = new Set(["victorian", "edwardian", "marina", "downtown", "soma"]);
 
@@ -48,10 +49,6 @@ const DETAIL_BUDGET_SLOW = 1; // else: frame is tight, stay conservative
 // #buildingBodies bookkeeping for baked-tile OBBs) — so the wider ring/budget costs
 // effectively nothing extra. Own radius, NOT detailR (which is 150 m for the mesh and
 // would over-spawn).
-// Detail buildings cast shadows only inside this radius (+30 m exit hysteresis).
-// The far CSM cascade ends at 350 m and reads through marine haze well before
-// that; casters past ~220 m cost full cascade re-renders for invisible shadows.
-const SHADOW_CAST_R = 220;
 // Facade-area admission budget (Σ perimeter·storeys over the kept detail set).
 // maxDetail counts BUILDINGS, but a large-commercial tower costs ~8-10x a
 // victorian rowhouse in baked wall/pier triangles — downtown at a 250-building
@@ -122,7 +119,6 @@ interface BuiltGroup {
    *  look-out feature aligns its wall holes to these. */
   windows: readonly ModuleInstance[];
   setOpacity(o: number): void;
-  setCastShadow(cast: boolean): void;
   setGlassHidden(hidden: boolean): void;
   /** hide/show the whole exterior shell while the player is inside (see
    *  render.ts BuiltBuilding.setShellHidden) */
@@ -842,6 +838,7 @@ export async function createCityGenRing(
       const mesh = new THREE.Mesh(doorBoxGeo, mat);
       mesh.name = name;
       mesh.castShadow = true;
+      enableShadowLayer(mesh, SHADOW_LAYERS.HERO_DYNAMIC);
       mesh.receiveShadow = true;
       mesh.position.set(x, y, z);
       mesh.scale.set(w, h, d);
@@ -862,6 +859,7 @@ export async function createCityGenRing(
       const knob = new THREE.Mesh(doorKnobGeo, hardwareMat);
       knob.name = side < 0 ? "citygen.door.hardware.outer" : "citygen.door.hardware.inner";
       knob.castShadow = true;
+      enableShadowLayer(knob, SHADOW_LAYERS.HERO_DYNAMIC);
       knob.position.set(handleX, handleY, side * (DOOR_LEAF_T / 2 + knobR * 0.65));
       knob.scale.setScalar(knobR);
       leaf.add(knob);
@@ -1103,6 +1101,7 @@ export async function createCityGenRing(
       e.state = "lod";
     }
     if (cell.chunk?.mesh) ctx.scene.remove(cell.chunk.mesh);
+    if (cell.chunk?.shadowMesh) ctx.scene.remove(cell.chunk.shadowMesh);
     cell.chunk?.dispose();
     const idx = building.indexOf(cell); if (idx >= 0) building.splice(idx, 1);
     loaded.delete(cell.key);
@@ -1111,6 +1110,7 @@ export async function createCityGenRing(
   // in the cell (collider stays live). Atomic swap → no hole while it built.
   const finishChunk = (cell: CellState) => {
     if (cell.chunk?.mesh) ctx.scene.add(cell.chunk.mesh);
+    if (cell.chunk?.shadowMesh) ctx.scene.add(cell.chunk.shadowMesh);
     for (const e of cell.entries) if (e.state === "lod") ctx.tiles.suppressBuildingMesh(e.key, e.i);
     cell.phase = "ready";
   };
@@ -1145,7 +1145,8 @@ export async function createCityGenRing(
     schedule("background", () => {
       if (i < mats.length) {
         const m = new THREE.Mesh(geo, mats[i++]);
-        m.castShadow = true;
+        // Detail beauty never casts; stable chunk proxies own static massing.
+        m.castShadow = false;
         m.receiveShadow = true;
         m.frustumCulled = false;
         group.add(m);
@@ -1305,18 +1306,6 @@ export async function createCityGenRing(
         }
         costLeft -= c;
         keep.add(e);
-      }
-      // Shadow-caster diet: bundle children are frustumCulled=false, so every
-      // detail building would re-render into every CSM cascade — beyond the far
-      // cascade's readable range that's pure GPU burn (measured: the wall that
-      // capped the detail ring at a few hundred buildings). Gate per building
-      // with hysteresis; each flip is one cheap bundle re-record.
-      const shadowR2 = SHADOW_CAST_R * SHADOW_CAST_R;
-      const shadowExit2 = (SHADOW_CAST_R + 30) * (SHADOW_CAST_R + 30);
-      for (const [e, d2] of haveDetail) {
-        if (!e.detail) continue;
-        if (d2 < shadowR2) e.detail.setCastShadow(true);
-        else if (d2 > shadowExit2) e.detail.setCastShadow(false);
       }
       // Drive fade direction from keep membership (not a separate distance hysteresis
       // that would fight eviction and flicker opacity every scan).

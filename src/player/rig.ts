@@ -9,6 +9,7 @@ import {
   type AvatarOutfit,
   type AvatarTraits
 } from "./avatar";
+import { enableShadowLayer, SHADOW_LAYERS } from "../world/shadows/shadowLayers";
 
 /**
  * The player character: a chunky stylized figure with real joints — neck,
@@ -104,6 +105,10 @@ function part(parent: THREE.Object3D, mat: THREE.Material, w: number, h: number,
   // trim) is invisible at CSM resolution, yet every caster re-encodes into
   // each shadow cascade — and this rig exists per player AND per busker.
   m.castShadow = w * h * d >= 1.5e-3;
+  if (m.castShadow) enableShadowLayer(m, SHADOW_LAYERS.HERO_DYNAMIC);
+  // Receiving does not add caster draws, so every visible opaque rig surface
+  // can carry self-shadow and shade from the vehicle/world at close range.
+  m.receiveShadow = true;
   parent.add(m);
   return m;
 }
@@ -439,6 +444,10 @@ export function buildSteeringWheel(): { group: THREE.Group; spin: THREE.Group } 
   const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.05, 10), STATIC_MAT.sole);
   hub.rotation.x = Math.PI / 2;
   spin.add(hub);
+  group.traverse((object) => {
+    const mesh = object as THREE.Mesh;
+    if (mesh.isMesh) mesh.receiveShadow = true;
+  });
   return { group, spin };
 }
 

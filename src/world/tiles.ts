@@ -9,6 +9,18 @@ import { createCrownMaterial } from "./salesforceCrown";
 import { applyLandmarkFixes } from "./landmarkFixes";
 import type { WorldMap } from "./heightmap";
 import { prefetched } from "./heightmap";
+import { createTileShadowProxy, type TileShadowProxy } from "./shadows/tileShadowProxy";
+import {
+  createLandmarkShadowProxy,
+  type LandmarkShadowCollider,
+  type LandmarkShadowProxy
+} from "./shadows/landmarkShadowProxy";
+import { enableShadowLayer, SHADOW_LAYERS } from "./shadows/shadowLayers";
+import type { StaticShadowScope } from "./shadows/clipmapShadowNode";
+
+// Includes the 48 m local receiver square plus low-sun caster reach and one
+// microcell. Changes beyond this cannot affect the cached local projection.
+const LOCAL_SHADOW_INVALIDATE_RADIUS = 220;
 
 export type BuildingCollider = {
   i: number;
@@ -45,6 +57,7 @@ type LoadedTile = {
   group: THREE.Group;
   slot: FacadeSlot | null;
   colliders: BuildingCollider[] | null;
+  shadowProxy: TileShadowProxy | null;
   // meshes not yet attached to the group: a whole tile uploading its geometry in
   // one frame is a visible spike, so children re-attach one per frame instead
   pendingParts?: THREE.Object3D[];
@@ -226,17 +239,86 @@ function createGoldenGateRoadSurface(map: WorldMap): THREE.Mesh | null {
   return mesh;
 }
 
+function landmarkColliderClass(meshName: string): string | null {
+  if (meshName.startsWith("lm_bridge_goldengate")) return "goldengate";
+  if (meshName.startsWith("lm_bridge_bay")) return "baybridge";
+  if (meshName.startsWith("lm_salesforce")) return "salesforce";
+  if (meshName.startsWith("lm_coit")) return "coit";
+  if (meshName.startsWith("lm_palace")) return "palace";
+  if (meshName.startsWith("lm_transamerica")) return "transamerica";
+  if (meshName.startsWith("lm_ferry")) return "ferry";
+  if (meshName.startsWith("lm_sutro")) return "sutro";
+  if (meshName.startsWith("lm_alcatraz")) return "alcatraz";
+  if (meshName.startsWith("lm_dragon_gate")) return "dragon_gate";
+  return null;
+}
+
+/** Fill any collider-data coverage hole with one conservative world AABB.
+ * Dragon Gate currently needs this path; grouping by class also degrades safely
+ * if a future partial bake omits another landmark. */
+function completeLandmarkShadowColliders(
+  root: THREE.Object3D,
+  colliders: readonly LandmarkShadowCollider[]
+): LandmarkShadowCollider[] {
+  const complete = [...colliders];
+  const represented = new Set(
+    colliders.map((collider) => collider.lm).filter((id): id is string => !!id)
+  );
+  const missingBounds = new Map<string, THREE.Box3>();
+  root.updateMatrixWorld(true);
+  root.traverse((object) => {
+    const mesh = object as THREE.Mesh;
+    if (!mesh.isMesh || !mesh.castShadow) return;
+    const id = landmarkColliderClass(mesh.name);
+    if (!id || represented.has(id)) return;
+    const bounds = new THREE.Box3().setFromObject(mesh, true);
+    if (bounds.isEmpty()) return;
+    const aggregate = missingBounds.get(id);
+    if (aggregate) aggregate.union(bounds);
+    else missingBounds.set(id, bounds);
+  });
+  const center = new THREE.Vector3();
+  const size = new THREE.Vector3();
+  for (const [lm, bounds] of missingBounds) {
+    bounds.getCenter(center);
+    bounds.getSize(size);
+    complete.push({
+      lm,
+      x: center.x,
+      y: center.y,
+      z: center.z,
+      hx: Math.max(0.25, size.x * 0.5),
+      hy: Math.max(0.25, size.y * 0.5),
+      hz: Math.max(0.25, size.z * 0.5),
+      yaw: 0
+    });
+  }
+  return complete;
+}
+
+/** Keep beauty geometry in LOCAL; FAR is retained only as the failure fallback. */
+function setLandmarkBeautyFarFallback(root: THREE.Object3D, enabled: boolean): void {
+  root.traverse((object) => {
+    const mesh = object as THREE.Mesh;
+    if (!mesh.isMesh || !mesh.castShadow) return;
+    if (enabled) enableShadowLayer(mesh, SHADOW_LAYERS.FAR_PROXY);
+    else mesh.layers.disable(SHADOW_LAYERS.FAR_PROXY);
+  });
+}
+
 export class TileStreamer {
   manifest!: Manifest;
   loaded = new Map<string, LoadedTile>();
   terrain = new Map<string, THREE.Object3D>();
   landmarks: THREE.Object3D | null = null;
+  landmarkShadowProxy: LandmarkShadowProxy | null = null;
   onTileColliders: (key: string, colliders: BuildingCollider[]) => void = () => {};
   onTileUnload: (key: string) => void = () => {};
   // fired when a building's SOLID state flips at runtime (full suppress / revive)
   // so the physics query world can add or drop its collider. Mesh-only
   // suppression keeps the collider, so it does NOT fire this.
   onBuildingAlive: (key: string, index: number, alive: boolean) => void = () => {};
+  onShadowCastersChanged: (scope?: StaticShadowScope) => void = () => {};
 
   #loader = new GLTFLoader();
   #scene: THREE.Scene;
@@ -276,6 +358,7 @@ export class TileStreamer {
 
   // landmarks GLB still in flight (counts toward `busy` for the boot settle gate)
   #landmarksPending = false;
+  #landmarkShadowProxyPending = false;
 
   // terrain chunks: 5×5 grid, loaded/unloaded by player distance
   #terrainEntries: { name: string; cx: number; cz: number }[] = [];
@@ -300,40 +383,89 @@ export class TileStreamer {
     for (const t of Object.values(this.manifest.tiles)) {
       this.#aliveW = Math.max(this.#aliveW, t.b);
     }
-    // landmarks always resident (includes GG bridge at ~0.8 MB)
+    // Landmarks are always resident (includes GG bridge at ~0.8 MB). Beauty
+    // meshes initially retain FAR as a conservative fallback. Only after the
+    // collider proxy is fully built do we atomically hand FAR ownership over.
     this.#landmarksPending = true;
-    this.#loader.load("/tiles/landmarks.glb", (gltf) => {
-      this.#landmarksPending = false;
-      gltf.scene.traverse((o) => {
-        const mesh = o as THREE.Mesh;
-        if (!mesh.isMesh) return;
-        if (mesh.name === "lm_salesforce_crown") {
-          // the crown's LED display is world-position keyed; its bbox gives the
-          // cylinder axis + display height range
-          mesh.geometry.computeBoundingBox();
-          mesh.material = createCrownMaterial(mesh.geometry.boundingBox!);
-        } else if (mesh.name === "lm_bridge_goldengate") {
-          mesh.material = goldenGateMat;
-        } else {
-          mesh.material = mesh.name.startsWith("lm_palace_")
-            ? palaceMat
-            : mesh.name.startsWith("lm_sutro_")
-              ? sutroMat
-              : plainMat;
-        }
-        mesh.castShadow = true;
-        mesh.receiveShadow = true;
+    this.#landmarkShadowProxyPending = true;
+    const landmarksReady = new Promise<THREE.Object3D | null>((resolve) => {
+      this.#loader.load("/tiles/landmarks.glb", (gltf) => {
+        this.#landmarksPending = false;
+        gltf.scene.traverse((o) => {
+          const mesh = o as THREE.Mesh;
+          if (!mesh.isMesh) return;
+          if (mesh.name === "lm_salesforce_crown") {
+            // the crown's LED display is world-position keyed; its bbox gives the
+            // cylinder axis + display height range
+            mesh.geometry.computeBoundingBox();
+            mesh.material = createCrownMaterial(mesh.geometry.boundingBox!);
+          } else if (mesh.name === "lm_bridge_goldengate") {
+            mesh.material = goldenGateMat;
+          } else {
+            mesh.material = mesh.name.startsWith("lm_palace_")
+              ? palaceMat
+              : mesh.name.startsWith("lm_sutro_")
+                ? sutroMat
+                : plainMat;
+          }
+          mesh.castShadow = true;
+          mesh.receiveShadow = true;
+          enableShadowLayer(mesh, SHADOW_LAYERS.LOCAL_STATIC);
+          enableShadowLayer(mesh, SHADOW_LAYERS.FAR_PROXY);
+        });
+        applyLandmarkFixes(gltf.scene, map);
+        const goldenGateRoad = createGoldenGateRoadSurface(map);
+        if (goldenGateRoad) gltf.scene.add(goldenGateRoad);
+        // applyLandmarkFixes may add a new local caster (Coit footing).
+        setLandmarkBeautyFarFallback(gltf.scene, true);
+        this.landmarks = gltf.scene;
+        this.#scene.add(gltf.scene);
+        this.onShadowCastersChanged("all");
+        resolve(gltf.scene);
+      }, undefined, (err) => {
+        // missing landmarks never wedge the boot settle gate (see `busy`)
+        this.#landmarksPending = false;
+        console.warn("[tiles] landmarks unavailable", err);
+        resolve(null);
       });
-      applyLandmarkFixes(gltf.scene, map);
-      const goldenGateRoad = createGoldenGateRoadSurface(map);
-      if (goldenGateRoad) gltf.scene.add(goldenGateRoad);
-      this.landmarks = gltf.scene;
-      this.#scene.add(gltf.scene);
-    }, undefined, (err) => {
-      // missing landmarks never wedge the boot settle gate (see `busy`)
-      this.#landmarksPending = false;
-      console.warn("[tiles] landmarks unavailable", err);
     });
+    const landmarkCollidersReady = prefetched("/data/landmark-colliders.json")
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`landmark colliders HTTP ${response.status}`);
+        const payload: unknown = await response.json();
+        if (!Array.isArray(payload)) throw new Error("landmark collider payload is not an array");
+        if (payload.length === 0) throw new Error("landmark collider payload is empty");
+        return payload as LandmarkShadowCollider[];
+      });
+    void Promise.all([landmarksReady, landmarkCollidersReady])
+      .then(([landmarkRoot, bakedColliders]) => {
+        // A collider-only silhouette with no corresponding beauty landmark
+        // would be a ghost shadow, so proxy ownership requires the GLB too.
+        if (!landmarkRoot) throw new Error("landmark GLB unavailable");
+        const colliders = completeLandmarkShadowColliders(landmarkRoot, bakedColliders);
+        const proxy = createLandmarkShadowProxy({ colliders });
+        const stats = proxy.stats();
+        if (stats.rejectedBoxes > 0) {
+          proxy.dispose();
+          throw new Error(`landmark proxy rejected ${stats.rejectedBoxes} collider boxes`);
+        }
+        this.landmarkShadowProxy?.dispose();
+        this.landmarkShadowProxy = proxy;
+        this.#scene.add(proxy.group);
+        setLandmarkBeautyFarFallback(landmarkRoot, false);
+        this.#landmarkShadowProxyPending = false;
+        console.info(
+          `[shadows] landmark proxy: ${stats.boxes} boxes / ${stats.cells} cells / ` +
+          `${stats.trianglesPerShadowPass} triangles`
+        );
+        this.onShadowCastersChanged("far");
+      })
+      .catch((err) => {
+        // Beauty meshes were never removed from FAR, so this is a quality-safe
+        // performance fallback rather than a missing-shadow failure.
+        this.#landmarkShadowProxyPending = false;
+        console.warn("[shadows] landmark proxy unavailable — retaining beauty FAR casters", err);
+      });
 
     // Pre-compute the world-space centre of each 5×5 terrain chunk so
     // update() can distance-cull them without parsing tile names each frame.
@@ -367,8 +499,8 @@ export class TileStreamer {
   /**
    * Outstanding streaming work, for the boot settle gate: queued/in-flight
    * loads, parsed-but-unfinalized tiles, meshes still attaching, pending
-   * disposals, terrain chunks and the landmarks GLB. Reports 1 before the
-   * first scan so a just-constructed streamer never reads as settled.
+   * disposals, terrain chunks, landmarks GLB and landmark shadow proxy. Reports
+   * 1 before the first scan so a just-constructed streamer never reads as settled.
    * Intentionally excludes #deferred — that's park detail held back by design
    * while the player is high, not work in progress.
    */
@@ -381,7 +513,8 @@ export class TileStreamer {
       this.#attaching.length +
       this.#unloads.size +
       this.#terrainPending.size +
-      (this.#landmarksPending ? 1 : 0)
+      (this.#landmarksPending ? 1 : 0) +
+      (this.#landmarkShadowProxyPending ? 1 : 0)
     );
   }
 
@@ -699,7 +832,9 @@ export class TileStreamer {
         if (bid) {
           if (!lowerBid) mesh.geometry.setAttribute("_bid", bid); // normalize an uppercase _BID
           mesh.material = bMat;
-          mesh.castShadow = true;
+          // Beauty facade bundles are deliberately excluded from selective
+          // shadow cameras. Cullable collider microproxies own their massing.
+          mesh.castShadow = false;
           mesh.receiveShadow = true;
         } else if (mesh.name.startsWith("road_")) {
           mesh.material = roadMat;
@@ -739,17 +874,34 @@ export class TileStreamer {
       const bundle = new THREE.BundleGroup();
       bundle.name = `tile_${key}`;
       this.#scene.add(bundle);
+      const shadowProxy = colliders.length > 0
+        ? createTileShadowProxy({
+            tileKey: key,
+            colliders,
+            buildingCount: nB,
+            isBuildingVisible: (index) => this.#shadowBuildingVisible(key, index)
+          })
+        : null;
+      if (shadowProxy) this.#scene.add(shadowProxy.group);
       this.loaded.set(key, {
         key,
         group: bundle,
         slot,
         colliders,
+        shadowProxy,
         pendingParts: core,
         detailParts: detail.length ? detail : undefined
       });
+      if (shadowProxy) this.onShadowCastersChanged(this.#shadowScopeForTile(key));
       this.#attaching.push(key);
     } else {
-      this.loaded.set(key, { key, group: new THREE.Group(), slot, colliders });
+      this.loaded.set(key, {
+        key,
+        group: new THREE.Group(),
+        slot,
+        colliders,
+        shadowProxy: null
+      });
     }
     this.onTileColliders(key, colliders);
     return true;
@@ -823,6 +975,11 @@ export class TileStreamer {
     this.loaded.delete(key);
     this.onTileUnload(key);
     this.#scene.remove(tile.group);
+    if (tile.shadowProxy) {
+      tile.shadowProxy.dispose();
+      tile.shadowProxy = null;
+      this.onShadowCastersChanged(this.#shadowScopeForTile(key));
+    }
     tile.group.traverse((o) => {
       const mesh = o as THREE.Mesh;
       if (mesh.isMesh) {
@@ -859,6 +1016,41 @@ export class TileStreamer {
   // accurate baked collider still catches cars + the player (no oversized proxy).
   #meshSuppressed = new Set<string>();
 
+  #shadowBuildingVisible(key: string, index: number): boolean {
+    const id = `${key}:${index}`;
+    return !this.#suppressed.has(id) && !this.#meshSuppressed.has(id);
+  }
+
+  #syncShadowBuilding(key: string, index: number): void {
+    this.loaded
+      .get(key)
+      ?.shadowProxy?.setBuildingVisible(index, this.#shadowBuildingVisible(key, index));
+  }
+
+  #shadowScopeForTile(key: string): StaticShadowScope {
+    const [cx, cz] = this.keyToCenter(key);
+    const halfDiagonal = this.manifest.tile / Math.SQRT2;
+    return Math.hypot(this.#px - cx, this.#pz - cz) <=
+      halfDiagonal + LOCAL_SHADOW_INVALIDATE_RADIUS
+      ? "all"
+      : "far";
+  }
+
+  #shadowScopeForBuilding(key: string, index: number): StaticShadowScope {
+    const colliders = this.loaded.get(key)?.colliders;
+    if (colliders) {
+      const radiusSq = LOCAL_SHADOW_INVALIDATE_RADIUS * LOCAL_SHADOW_INVALIDATE_RADIUS;
+      for (const collider of colliders) {
+        if (collider.i !== index) continue;
+        const dx = collider.x - this.#px;
+        const dz = collider.z - this.#pz;
+        if (dx * dx + dz * dz <= radiusSq) return "all";
+      }
+      return "far";
+    }
+    return this.#shadowScopeForTile(key);
+  }
+
   /** Permanently hide a building (mesh + colliders) — survives tile reloads. */
   suppressBuilding(key: string, index: number) {
     this.#suppressed.add(`${key}:${index}`);
@@ -867,6 +1059,8 @@ export class TileStreamer {
       tile.slot.data[index * 4] = 0;
       tile.slot.tex.needsUpdate = true;
     }
+    this.#syncShadowBuilding(key, index);
+    this.onShadowCastersChanged(this.#shadowScopeForBuilding(key, index));
     this.onBuildingAlive(key, index, false);
   }
 
@@ -886,6 +1080,8 @@ export class TileStreamer {
       tile.slot.data[index * 4] = 1;
       tile.slot.tex.needsUpdate = true;
     }
+    this.#syncShadowBuilding(key, index);
+    this.onShadowCastersChanged(this.#shadowScopeForBuilding(key, index));
   }
 
   /** Undo suppressBuildingMesh — restore the baked mesh (alive flag → 255). */
@@ -896,6 +1092,8 @@ export class TileStreamer {
       tile.slot.data[index * 4] = 255;
       tile.slot.tex.needsUpdate = true;
     }
+    this.#syncShadowBuilding(key, index);
+    this.onShadowCastersChanged(this.#shadowScopeForBuilding(key, index));
   }
 
   /** Undo suppressBuilding — restores the baked mesh + colliders. Used by the
@@ -909,6 +1107,8 @@ export class TileStreamer {
       tile.slot.data[index * 4] = 255;
       tile.slot.tex.needsUpdate = true;
     }
+    this.#syncShadowBuilding(key, index);
+    this.onShadowCastersChanged(this.#shadowScopeForBuilding(key, index));
     this.onBuildingAlive(key, index, true);
   }
 

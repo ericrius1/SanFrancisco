@@ -13,6 +13,7 @@ import {
   POSTFX_TUNING,
   POSTFX_VARIANT_MASKS
 } from "./postfx";
+import { createContactShadowComplement } from "./contactShadows";
 
 type SceneSamples = 0 | 4;
 /** "boot": compile only the active sample mode + active post-FX variant (fast,
@@ -49,7 +50,8 @@ const effectiveSceneSamples = (value: unknown): SceneSamples => Number(value) >=
 export function createRenderPipeline(
   renderer: THREE.WebGPURenderer,
   scene: THREE.Scene,
-  camera: THREE.Camera
+  camera: THREE.Camera,
+  directionalLight: THREE.DirectionalLight | null = null
 ) {
   // Beauty sees the ordinary world plus ephemeral hashed markers. The ink
   // prepass below deliberately stays on layer 0 so alpha-hash grain cannot
@@ -80,6 +82,14 @@ export function createRenderPipeline(
   // Lit scene pass. This is where geometry AA happens; the canvas stays 1x.
   const scenePass = pass(scene, camera, { samples: activeSceneSamples });
   const sceneColor = scenePass.getTextureNode();
+  // Reuse the lit pass depth so the close-contact complement adds only its
+  // half-resolution six-tap fullscreen pass—not a second geometry prepass.
+  const contactShadows = createContactShadowComplement({
+    depthTex: scenePass.getTextureNode("depth"),
+    camera,
+    light: directionalLight,
+    normalTex: null
+  });
   const runtimeScenePass = scenePass as typeof scenePass & RuntimePassOptions;
   const setScenePassSamples = (samples: SceneSamples) => {
     runtimeScenePass.options.samples = samples;
@@ -92,7 +102,10 @@ export function createRenderPipeline(
     sceneTex: sceneColor,
     normalTex: prePass.getTextureNode(),
     depthTex: prePassDepth,
-    camera
+    camera,
+    contactFactorAt: contactShadows.available
+      ? (sampleUv) => contactShadows.sample(sampleUv)
+      : undefined
   });
 
   const variants = new Map<number, THREE.RenderPipeline>();
@@ -243,9 +256,22 @@ export function createRenderPipeline(
    * it while the loading cover is visible and no animation render is running.
    */
   let warmupInFlight: Promise<void> | null = null;
+  let warmupRun = 0;
   const warmupOnce = async (scope: WarmupScope) => {
+    const profileWarmup = new URLSearchParams(location.search).has("profile");
+    const run = ++warmupRun;
+    const startedAt = performance.now();
+    let stageStartedAt = startedAt;
+    const stages: string[] = [];
+    const markStage = (label: string) => {
+      if (!profileWarmup) return;
+      const now = performance.now();
+      stages.push(`${label} ${Math.round(now - stageStartedAt)}ms`);
+      stageStartedAt = now;
+    };
     const sceneUpdateType = scenePass.updateBeforeType;
     const prePassUpdateType = prePass.updateBeforeType;
+    const contactUpdateType = contactShadows.pass?.updateBeforeType;
     const renderTarget = renderer.getRenderTarget();
     const activeCubeFace = renderer.getActiveCubeFace();
     const activeMipmapLevel = renderer.getActiveMipmapLevel();
@@ -256,8 +282,18 @@ export function createRenderPipeline(
     // mode actually executes its pass and records its own BundleGroups.
     scenePass.updateBeforeType = NodeUpdateType.RENDER;
     prePass.updateBeforeType = NodeUpdateType.RENDER;
+    // Contact samples scenePass depth from a nested QuadMesh render. Leaving it
+    // render-scoped here would retrigger the entire scene under a second render
+    // context and record duplicate BundleGroups. Its target was initialized by
+    // the covered pre-warm render (and by live frames before a late warmup), so
+    // frozen contact pixels are sufficient while the loading cover is opaque.
+    if (contactShadows.pass) contactShadows.pass.updateBeforeType = NodeUpdateType.NONE;
     try {
-      await compilePass(prePass);
+      const needsInkWarmup = scope === "full" || (activeVariantMask & INK_VARIANT_MASK) !== 0;
+      if (needsInkWarmup) {
+        await compilePass(prePass);
+        markStage("outline-compile");
+      }
 
       // "boot": compile only the mode the canvas is about to show. The other
       // MSAA mode and the seven inactive post-FX variants are debug-panel toggles
@@ -268,28 +304,35 @@ export function createRenderPipeline(
       for (const samples of sampleOrder) {
         setScenePassSamples(samples);
         await compilePass(scenePass);
+        markStage(`scene-${samples || 1}x-compile`);
         // compileAsync does not record BundleGroups. A covered render does so
         // without retaining a second target when the next mode replaces it.
         activePipeline.render();
+        markStage(`scene-${samples || 1}x-record`);
       }
 
       await compilePostFxVariants(scope === "boot" ? [activeVariantMask & 7] : POSTFX_VARIANT_MASKS);
+      markStage("output-compile");
 
       // Explicitly visit an ink pipeline: deferred BundleGroup contents need
       // recording in the normal/depth MRT even after the quad's GPU program was
       // already warm. In "boot" scope only bother when ink IS the active look
       // (its prepass BundleGroups otherwise record on first toggle). Finish with
       // the selected look on the canvas.
-      if (scope === "full" || activeVariantMask & INK_VARIANT_MASK) {
+      if (needsInkWarmup) {
         setScenePassSamples(activeSceneSamples);
         const inkPipeline = getVariantPipeline(INK_VARIANT_MASK);
         inkPipeline.render();
         if (inkPipeline !== activePipeline) activePipeline.render();
+        markStage("ink-record");
       }
     } finally {
       setScenePassSamples(activeSceneSamples);
       scenePass.updateBeforeType = sceneUpdateType;
       prePass.updateBeforeType = prePassUpdateType;
+      if (contactShadows.pass && contactUpdateType !== undefined) {
+        contactShadows.pass.updateBeforeType = contactUpdateType;
+      }
       renderer.setRenderTarget(renderTarget, activeCubeFace, activeMipmapLevel);
       renderer.setMRT(renderMRT);
     }
@@ -299,6 +342,12 @@ export function createRenderPipeline(
     // pending until that work is genuinely complete; otherwise the first live
     // toggle inherits the tail of the warmup queue and looks falsely slow.
     await (renderer as QueueBackedRenderer).backend.device?.queue.onSubmittedWorkDone();
+    markStage("gpu-drain");
+    if (profileWarmup) {
+      console.info(
+        `[warmup] run ${run} ${scope}: ${stages.join(" · ")} = ${Math.round(performance.now() - startedAt)}ms`
+      );
+    }
   };
   const warmup = (scope: WarmupScope = "full") => {
     if (warmupInFlight !== null) return warmupInFlight;
@@ -392,6 +441,8 @@ export function createRenderPipeline(
     drainFastFrame,
     fastCaptureSize: fastCaptureTarget ? [fastCaptureTarget.width, fastCaptureTarget.height] as const : null,
     /** Precompile scene/sample/effect variants; safe to repeat after new loads. */
-    warmup
+    warmup,
+    /** Stable half-resolution close-contact complement and live controls. */
+    contactShadows
   };
 }

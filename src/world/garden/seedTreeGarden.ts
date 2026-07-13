@@ -12,6 +12,8 @@
 //    shared with the template), so up close you get LOD0/LOD1 with the app's
 //    real leaf/bark materials and distance switching for free. Their far-tier
 //    instance is zero-scaled while the clone exists.
+//  · SHADOW TIER — static low-poly trunk+crown instances never participate in
+//    beauty LOD swaps, so wind and near/far promotion cannot pop the depth map.
 //
 // WIND IS ON (SeedThree default strength). Why this works without the app's
 // forest twin materials:
@@ -29,6 +31,11 @@
 
 import * as THREE from "three/webgpu";
 import { createLegacySeedTree } from "../vegetation/legacySeedTree";
+import {
+  createTreeShadowProxy,
+  measureTreeShadowProfile,
+  type TreeShadowInstance
+} from "../shadows/treeShadowProxy";
 import { type GardenTree } from "./layout";
 
 // garden species id → SeedThree design. tree_fern (id 3) has no SeedThree
@@ -286,9 +293,9 @@ function buildFarSet(lod2: THREE.Object3D, slots: Slot[], name: string): FarSet 
       im.name = `${name}_${mesh.name || "cards"}`;
       // far tier never casts: at 66m+ a 2048-map cascade resolves no card shadow,
       // but 240 instanced draws x 3 cascades of encode was the meadow CPU bill.
-      // Near hero clones still cast.
+      // The stable trunk+crown proxy casts at every beauty distance instead.
       im.castShadow = false;
-      im.receiveShadow = true;
+      im.receiveShadow = false;
       geo.boundingSphere = sphere.clone();
       im.boundingSphere = sphere.clone();
       im.frustumCulled = false; // bundle child: culled at the group level (cullFarSets)
@@ -453,6 +460,7 @@ export async function buildSeedTreeGarden(trees: GardenTree[]): Promise<SeedTree
   const group = new THREE.Group();
   group.name = "sfbg_seedthree_trees";
   const runtimes: SpeciesRuntime[] = [];
+  const shadowInstances: TreeShadowInstance[] = [];
   let instances = 0;
   let farTriangles = 0;
   let speciesBuilt = 0;
@@ -472,6 +480,12 @@ export async function buildSeedTreeGarden(trees: GardenTree[]): Promise<SeedTree
       lod: LOD_OPTS,
       foliageGrade: FOLIAGE_GRADE
     });
+    template.traverse((object) => {
+      const mesh = object as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      mesh.castShadow = false;
+      mesh.receiveShadow = true;
+    });
 
     const slots: Slot[] = list.map((t, i) => ({
       species: id,
@@ -484,12 +498,33 @@ export async function buildSeedTreeGarden(trees: GardenTree[]): Promise<SeedTree
       nearClone: t.nearClone !== false
     }));
     const farSet = buildFarSet(lod2, slots, `sfbg_far_${design.species}`);
+    const shadowProfile = measureTreeShadowProfile(lod2);
+    for (const slot of slots) {
+      shadowInstances.push({
+        x: slot.x,
+        y: slot.y,
+        z: slot.z,
+        yaw: slot.yaw,
+        scale: slot.scale,
+        profile: shadowProfile
+      });
+    }
     group.add(farSet.group);
     runtimes[id] = { template, farSet, slots, pool: [], nearClones: design.nearClones !== false };
     instances += slots.length;
     farTriangles += farSet.triangles;
     speciesBuilt++;
   }
+
+  const shadowProxy = createTreeShadowProxy({
+    name: "sfbg_seedthree_tree_shadows",
+    instances: shadowInstances,
+    cellSize: 96
+  });
+  // Direct child of the SeedThree garden root: the botanical master visibility
+  // gate still wins, while shadow-camera frusta cull the proxy microcells.
+  group.add(shadowProxy.group);
+  group.userData.disposeTreeShadowProxy = () => shadowProxy.dispose();
 
   const near = new NearTierManager(runtimes, group);
   // Per-species far-tier frustum cull. The far meshes are bundle children

@@ -3,6 +3,7 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
 import { LIGHT_SCALE } from "../../config";
 import { dressPhoenix } from "./feathers";
+import { applyVehicleShadowPolicy } from "../shadows";
 
 /**
  * Playable phoenix, loaded from /models/phoenix.glb. The GLB faces +Z so the
@@ -61,6 +62,7 @@ export function buildBirdMesh(): THREE.Group {
     scene.updateMatrixWorld(true);
 
     const bones: Record<string, THREE.Bone> = {};
+    const shadowCasters: THREE.Mesh[] = [];
     scene.traverse((o) => {
       if ((o as THREE.Bone).isBone) bones[o.name] = o as THREE.Bone;
       if ((o as THREE.Mesh).isMesh) {
@@ -70,8 +72,9 @@ export function buildBirdMesh(): THREE.Group {
         m.visible = g.userData.embodimentVisible === true;
         // skinned bounds don't follow the flap; one mesh, skip culling
         m.frustumCulled = false;
-        m.castShadow = false;
-        m.receiveShadow = false;
+        // The source GLB is one skinned mesh (four material groups), making it
+        // the cheapest coherent animated caster for body, wings, and tail.
+        shadowCasters.push(m);
         const mats = (Array.isArray(m.material) ? m.material : [m.material]) as THREE.MeshStandardMaterial[];
         for (const mat of mats) {
           if (!mat.emissive || mat.emissive.getHex() === 0) continue;
@@ -81,6 +84,7 @@ export function buildBirdMesh(): THREE.Group {
         }
       }
     });
+    applyVehicleShadowPolicy(scene, shadowCasters);
 
     // capture rig-space axes before the wrapper flip so the controller's
     // frame stays the GLB's own (+Z beak, +X left wing)

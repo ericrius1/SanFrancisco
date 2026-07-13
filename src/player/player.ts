@@ -212,6 +212,9 @@ export class Player {
     this.#ballMaterial = new THREE.MeshStandardMaterial({ color: TENNIS_BALL_COLOR, roughness: 0.62 });
     prepareBallGlowMaterial(this.#ballMaterial);
     this.#ballProp = new THREE.Mesh(new THREE.SphereGeometry(0.11, 12, 10), this.#ballMaterial);
+    // Physical surface can receive when its glow is dimmed; the held-ball glow
+    // deliberately does not become another tiny animated shadow caster.
+    this.#ballProp.receiveShadow = true;
     this.#ballProp.position.set(0, -0.02, -0.05); // cupped in the curled fingers
     this.#ballProp.visible = false;
     this.#walkRig.handR.add(this.#ballProp);

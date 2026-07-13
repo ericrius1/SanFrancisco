@@ -1,5 +1,6 @@
 import * as THREE from "three/webgpu";
 import { PICKLEBALL_COURT as C } from "./constants";
+import { enableLocalShadowLayer } from "../../world/shadows/shadowLayers";
 
 type Disposable = { dispose(): void };
 
@@ -127,6 +128,7 @@ export class PickleballCourtView {
       post.name = "pickleball-net-post";
       post.position.set(x, (C.netSidelineHeight + 0.12) / 2, 0);
       post.castShadow = true;
+      enableLocalShadowLayer(post);
       this.group.add(post);
     }
 
@@ -137,6 +139,7 @@ export class PickleballCourtView {
     net.name = "pickleball-net-mesh";
     net.position.y = C.netCentreHeight / 2;
     net.castShadow = true;
+    enableLocalShadowLayer(net);
     this.group.add(net);
 
     // Segmented top tape follows the 34-in centre / 36-in sideline sag.
@@ -155,6 +158,7 @@ export class PickleballCourtView {
       tape.position.set(mid, (h0 + h1) / 2, 0);
       tape.rotation.z = Math.atan2(h1 - h0, x1 - x0);
       tape.castShadow = true;
+      enableLocalShadowLayer(tape);
       this.group.add(tape);
     }
   }

@@ -13,6 +13,7 @@ import {
   surfboardSurfacePaintKey
 } from "./surfaceTexture";
 import { surfboardAssetsReady } from "./assets";
+import { applyVehicleShadowPolicy } from "../shadows";
 
 type ShapeProfile = {
   halfLength: number;
@@ -294,6 +295,9 @@ export function buildSurfboardMesh(raw?: SurfboardConfig): THREE.Group {
     for (const material of materials) material.dispose();
     texture.dispose();
   };
+  // The closed deck already carries the complete board silhouette. Fins,
+  // decals, and leash receive but do not multiply shadow-map draws.
+  applyVehicleShadowPolicy(group, [deck]);
   return group;
 }
 
