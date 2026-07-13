@@ -68,6 +68,7 @@ import { Hunt } from "./gameplay/hunt";
 import { FetchBall } from "./gameplay/fetchBall";
 import { createSiteGate } from "./gameplay/siteGate";
 import { createArchery, ARCHERY_CENTER, type ArcheryGame } from "./gameplay/archery";
+import { createPalaceReverie, REVERIE_CENTER, type PalaceReverieGame } from "./gameplay/palaceReverie";
 import { Satchel } from "./ui/satchel";
 import { HUD } from "./ui/hud";
 import { ShareButton } from "./ui/share";
@@ -423,6 +424,8 @@ async function boot() {
   let golf: import("./gameplay/golf").GolfGame | null = null;
   // Golden Gate Park archery range — NW corner of the park; site-gated like golf.
   let archery: ArcheryGame | null = null;
+  // Palace of Fine Arts blue-hour art quest (site-gated around the lagoon).
+  let palaceReverie: PalaceReverieGame | null = null;
   const hunt = new Hunt(map, scene);
   hunt.onCatch = (kind) => {
     satchel.add(kind);
@@ -493,6 +496,15 @@ async function boot() {
     void renderer.compileAsync(archery.root, camera, scene);
   } catch (err) {
     console.warn("[boot] archery range unavailable:", err);
+  }
+  try {
+    // Palace Reverie — floating lanterns, memory lamps, and two keepers around
+    // the Fine Arts lagoon. Born hidden; wakes when you wander near.
+    palaceReverie = createPalaceReverie(map, scene);
+    siteGate.register(palaceReverie.siteHooks());
+    void renderer.compileAsync(palaceReverie.root, camera, scene);
+  } catch (err) {
+    console.warn("[boot] palace reverie unavailable:", err);
   }
   try {
     coronaHeights = new CoronaHeightsPark(map, physics);
@@ -909,6 +921,9 @@ async function boot() {
   // the range is asleep. Marks the field + gives a teleport like golf/tennis.
   if (archery) {
     minimap.addLandmark(ARCHERY_CENTER.x, ARCHERY_CENTER.z, "Archery Range");
+  }
+  if (palaceReverie) {
+    minimap.addLandmark(REVERIE_CENTER.x, REVERIE_CENTER.z, "Palace Reverie");
   }
   // Ocean Beach surf break. The pin sits just inside the waterline so a teleport
   // (or a shared ?j= link) drops you on the sand at the shore, facing the swell,
@@ -1930,7 +1945,8 @@ async function boot() {
       input.pressed("KeyE") &&
       !exitToWalk() &&
       !golf?.tryStartAtTee(player, hud) &&
-      !archery?.tryInteract(player, hud, chase)
+      !archery?.tryInteract(player, hud, chase) &&
+      !palaceReverie?.tryInteract(player, hud)
     ) {
       const nearOceanBeach =
         player.mode === "walk" &&
@@ -2274,6 +2290,11 @@ async function boot() {
     citygenRing.current?.update(player.position, frameDt);
     if (!highUp) hunt.update(frameDt, elapsed, player.position);
     golf?.update(frameDt, elapsed, { player, input, hud, chase, camera });
+    palaceReverie?.update(frameDt, elapsed, player.position, hud);
+    {
+      const welcome = palaceReverie?.takeWelcome();
+      if (welcome) hud.message(welcome, 6.2);
+    }
     // Archery: site-gated, one boolean early-return when asleep with nothing live
     archery?.update(frameDt, elapsed, { player, input, hud, chase, camera });
     // Goldman clubhouse NPCs: one-hypot early return when far — safe every frame
@@ -2290,14 +2311,24 @@ async function boot() {
         player.position.x < OCEAN_BEACH_SURF.maxX + 280 &&
         player.position.z > OCEAN_BEACH_SURF.minZ - 120 &&
         player.position.z < OCEAN_BEACH_SURF.maxZ + 120;
-      if ((drv || nearAnimal || nearSurfBreak) && !ridePromptShown) {
+      const reveriePrompt =
+        !drv && !nearAnimal && !nearSurfBreak
+          ? palaceReverie?.nearbyPrompt(player.position.x, player.position.z) ?? null
+          : null;
+      if ((drv || nearAnimal || nearSurfBreak || reveriePrompt) && !ridePromptShown) {
         hud.message(
-          drv ? `E — ride with ${drv.name}` : nearAnimal ? `E — ride the ${nearAnimal.label}` : "E — paddle out at Ocean Beach",
+          drv
+            ? `E — ride with ${drv.name}`
+            : nearAnimal
+              ? `E — ride the ${nearAnimal.label}`
+              : nearSurfBreak
+                ? "E — paddle out at Ocean Beach"
+                : (reveriePrompt as string),
           1.8
         );
         ridePromptShown = true;
       }
-      if (!drv && !nearAnimal && !nearSurfBreak) ridePromptShown = false;
+      if (!drv && !nearAnimal && !nearSurfBreak && !reveriePrompt) ridePromptShown = false;
       // "open the door" nudge — same one-shot pattern; the ride prompt wins
       // when both are in range. nearestDoor is alloc-light but not free, so
       // it runs every 6th frame (prompt latency ~0.1 s) and only on foot.
@@ -2549,7 +2580,7 @@ async function boot() {
       // deferred render warmup runs, tick() early-returns without rendering, so
       // screenshots would capture a stale boot-pose frame no matter what the
       // camera was set to.
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, goldenGateTennis, pickleball: pickleballController.game, pickleballAmbient: pickleballController.ambient, pickleballAudio: pickleballController.audio, pickleballUI: pickleballController.ui, pickleballController, coronaHeights, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, siteGate,
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, goldenGateTennis, pickleball: pickleballController.game, pickleballAmbient: pickleballController.ambient, pickleballAudio: pickleballController.audio, pickleballUI: pickleballController.ui, pickleballController, coronaHeights, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, siteGate, palaceReverie,
         TSL,
         renderIdle: () => modulesReady && !lateRenderWarmupActive }
     });
@@ -2573,6 +2604,7 @@ async function boot() {
       buskers,
       fetchBall: fetchBall ?? undefined,
       coronaHeights: coronaHeights ?? undefined,
+      palaceReverie: palaceReverie ?? undefined,
       worldQueries,
       setTool: (t: string) => setTool(t as ToolName),
       setBoardConfig: (config: typeof boardConfig) => {

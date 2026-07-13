@@ -58,6 +58,17 @@ export const SPAWN_POINTS: Record<string, SpawnPoint> = {
     // From 150 m up, the near hillside + immediate blocks are what reads; the
     // dense Mission/Castro grid beyond streams in over the next second or two.
     bootTileRadius: 700
+  },
+  // Palace of Fine Arts lagoon shore — blue-hour Reverie quest start.
+  palaceReverie: {
+    key: "palaceReverie",
+    label: "Palace Reverie",
+    x: -248,
+    z: -1410,
+    heading: -2.35,
+    mode: "walk",
+    gates: [],
+    bootTileRadius: 800
   }
 };
 

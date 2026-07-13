@@ -16,6 +16,8 @@
     "render:hoverboard:fast": "node tools/render-cinematic.mjs hoverboard --fast",
     "render:dog-park": "node tools/render-cinematic.mjs dog-park --full",
     "render:dog-park:fast": "node tools/render-cinematic.mjs dog-park --fast",
+    "render:palace-reverie": "node tools/render-cinematic.mjs palace-reverie --full",
+    "render:palace-reverie:fast": "node tools/render-cinematic.mjs palace-reverie --fast",
     "preview": "vite preview",
     "server": "node server/server.mjs",
     "start": "node server/server.mjs",

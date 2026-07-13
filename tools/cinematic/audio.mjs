@@ -12,7 +12,8 @@ const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 
 const PRODUCTION_DURATIONS = Object.freeze({
   hoverboard: 15,
-  "dog-park": 11
+  "dog-park": 11,
+  "palace-reverie": 15
 });
 
 /**
@@ -36,12 +37,25 @@ export const CINEMATIC_AUDIO_PLANS = Object.freeze({
     { time: 4.83, id: "bounce-2", description: "second ball bounce" },
     { time: 4.5, id: "chase", description: "dog chase begins" },
     { time: 9.3, id: "resolve", description: "sunset wide resolve" }
+  ]),
+  "palace-reverie": Object.freeze([
+    { time: 0.4, id: "arrive", description: "soft shore presence" },
+    { time: 4.2, id: "lamp-a", description: "first lamps awaken" },
+    { time: 8.0, id: "lamp-b", description: "colonnade warms" },
+    { time: 11.2, id: "bloom", description: "rotunda aurora bloom" },
+    { time: 13.6, id: "resolve", description: "blue-hour hold" }
   ])
 });
 
 const DEFAULT_DOG_PARK_BEDS = Object.freeze([
   { path: "public/audio/nature/wind-grass.mp3", volume: 0.055, offset: 11.7 },
   { path: "public/audio/nature/forest-birds.mp3", volume: 0.035, offset: 17.3 }
+]);
+
+const DEFAULT_PALACE_BEDS = Object.freeze([
+  { path: "public/audio/nature/wind-grass.mp3", volume: 0.04, offset: 8.2 },
+  { path: "public/audio/nature/night-crickets.mp3", volume: 0.045, offset: 2.1 },
+  { path: "public/audio/nature/wind-tree.mp3", volume: 0.03, offset: 14.5 }
 ]);
 
 /**
@@ -88,6 +102,14 @@ export async function renderCinematicAudio(production, outputPath) {
 
   if (id === "hoverboard") {
     scoreHoverboard(mix);
+  } else if (id === "palace-reverie") {
+    scorePalaceReverie(mix);
+    const bedPlan = Array.isArray(production.audio?.beds)
+      ? production.audio.beds
+      : DEFAULT_PALACE_BEDS;
+    for (let i = 0; i < bedPlan.length; i += 1) {
+      beds.push(mixNatureBed(mix, bedPlan[i], i));
+    }
   } else {
     scoreDogPark(mix);
     const bedPlan = Array.isArray(production.audio?.beds)
@@ -314,6 +336,87 @@ function scoreDogPark(mix) {
   addChime(mix, { start: 7.02, midi: 83, duration: 1.55, gain: 0.042, pan: -0.27 });
   addChime(mix, { start: 9.31, midi: 76, duration: 1.6, gain: 0.055, pan: -0.2 });
   addChime(mix, { start: 9.48, midi: 81, duration: 1.45, gain: 0.049, pan: 0.28 });
+}
+
+function scorePalaceReverie(mix) {
+  // Blue-hour wash: slow pads, soft lamp chimes, a bloom swell at 11.2s.
+  addPad(mix, {
+    start: 0,
+    duration: 15,
+    notes: [45, 52, 57, 64],
+    gain: 0.052,
+    pan: -0.04,
+    brightness: 0.24
+  });
+  addPad(mix, {
+    start: 3.4,
+    duration: 5.2,
+    notes: [48, 55, 60],
+    gain: 0.028,
+    pan: 0.08,
+    brightness: 0.2
+  });
+  addPad(mix, {
+    start: 7.5,
+    duration: 7.5,
+    notes: [50, 57, 60, 69],
+    gain: 0.045,
+    pan: 0.06,
+    brightness: 0.3
+  });
+  addAir(mix, { start: 0, duration: 15, gain: 0.016, panDrift: 0.36 });
+  addAir(mix, { start: 10.8, duration: 4.2, gain: 0.012, panDrift: 0.5 });
+
+  // Shore arrival breath
+  addChime(mix, { start: 0.55, midi: 76, duration: 2.0, gain: 0.032, pan: -0.18 });
+  addWhoosh(mix, {
+    start: 3.35,
+    duration: 1.2,
+    gain: 0.055,
+    panFrom: 0.35,
+    panTo: -0.2,
+    direction: "out"
+  });
+
+  // Lamp awaken chimes — staggered with visual cues
+  addChime(mix, { start: 4.2, midi: 81, duration: 1.8, gain: 0.052, pan: -0.3 });
+  addChime(mix, { start: 4.45, midi: 88, duration: 1.5, gain: 0.038, pan: 0.25 });
+  addChime(mix, { start: 6.1, midi: 79, duration: 1.4, gain: 0.036, pan: 0.12 });
+  addChime(mix, { start: 8.0, midi: 76, duration: 1.7, gain: 0.05, pan: 0.2 });
+  addChime(mix, { start: 8.22, midi: 83, duration: 1.6, gain: 0.042, pan: -0.22 });
+  addChime(mix, { start: 9.6, midi: 85, duration: 1.5, gain: 0.038, pan: -0.08 });
+  addChime(mix, { start: 10.85, midi: 79, duration: 1.3, gain: 0.04, pan: 0.15 });
+
+  addWhoosh(mix, {
+    start: 10.85,
+    duration: 1.7,
+    gain: 0.11,
+    panFrom: -0.45,
+    panTo: 0.45,
+    direction: "out"
+  });
+  addPad(mix, {
+    start: 11.15,
+    duration: 3.85,
+    notes: [52, 57, 64, 69, 76],
+    gain: 0.078,
+    pan: 0,
+    brightness: 0.42
+  });
+  addPad(mix, {
+    start: 12.6,
+    duration: 2.4,
+    notes: [60, 67, 72],
+    gain: 0.035,
+    pan: 0.04,
+    brightness: 0.3
+  });
+  addChime(mix, { start: 11.3, midi: 88, duration: 2.3, gain: 0.06, pan: -0.15 });
+  addChime(mix, { start: 11.5, midi: 93, duration: 2.1, gain: 0.05, pan: 0.2 });
+  addChime(mix, { start: 12.15, midi: 95, duration: 1.8, gain: 0.034, pan: 0.05 });
+  addChime(mix, { start: 13.4, midi: 81, duration: 1.6, gain: 0.044, pan: 0.05 });
+  addChime(mix, { start: 14.15, midi: 76, duration: 1.0, gain: 0.03, pan: -0.1 });
+  addChime(mix, { start: 14.45, midi: 69, duration: 0.7, gain: 0.022, pan: 0.08 });
 }
 
 function createMix(duration, seed) {

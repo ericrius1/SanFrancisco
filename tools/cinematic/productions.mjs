@@ -37,6 +37,20 @@ const DEFINITIONS = Object.freeze({
       profile: "dog-park",
       description: "Golden-hour park ambience, a playful throw, paws, panting, and soft city air."
     })
+  }),
+  "palace-reverie": Object.freeze({
+    id: "palace-reverie",
+    demo: "palace-reverie",
+    title: "Palace Reverie · Blue Hour",
+    duration: 15,
+    seed: 0x50_46_41_52,
+    posterAt: 14.0,
+    stillTimes: Object.freeze([0.6, 2.2, 4.4, 5.9, 8.4, 10.2, 11.8, 13.0, 14.0, 14.7]),
+    audio: Object.freeze({
+      profile: "palace-reverie",
+      description:
+        "Blue-hour pads, lagoon hush, staggered lamp chimes, and a bloom swell when the palace remembers."
+    })
   })
 });
 

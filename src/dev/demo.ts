@@ -22,6 +22,7 @@ import type { FetchBall } from "../gameplay/fetchBall";
 import type { CoronaHeightsPark } from "../world/coronaHeights";
 import type { WorldQueries } from "../core/worldQueries";
 import type { BoardConfig } from "../vehicles/board";
+import type { PalaceReverieGame } from "../gameplay/palaceReverie";
 
 /**
  * Everything a demo can reach. main.ts builds one of these and passes it to
@@ -56,6 +57,7 @@ export type DemoContext = {
   buskers?: BuskerTrioApi;
   fetchBall?: FetchBall;
   coronaHeights?: CoronaHeightsPark;
+  palaceReverie?: PalaceReverieGame;
   worldQueries?: WorldQueries;
   setTool?: (tool: string) => void;
   /** Apply a local, non-persisted board configuration for demos and capture. */
@@ -77,12 +79,14 @@ import { buskersCinematic } from "./demos/buskersCinematic";
 import { hoverboardCinematic } from "./demos/hoverboardCinematic";
 import { dogParkCinematic } from "./demos/dogParkCinematic";
 import { palaceShowcase } from "./demos/palaceShowcase";
+import { palaceReverieCinematic } from "./demos/palaceReverieCinematic";
 
 const DEMOS: Record<string, Demo> = {
   [buskersCinematic.name]: buskersCinematic,
   [hoverboardCinematic.name]: hoverboardCinematic,
   [dogParkCinematic.name]: dogParkCinematic,
-  [palaceShowcase.name]: palaceShowcase
+  [palaceShowcase.name]: palaceShowcase,
+  [palaceReverieCinematic.name]: palaceReverieCinematic
 };
 
 export function runDemo(name: string, ctx: DemoContext) {
