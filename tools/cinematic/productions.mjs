@@ -50,7 +50,34 @@ const DEFINITIONS = Object.freeze({
       profile: "roqn-open-road",
       description: "An airy travel score moving from garden wings to city streets, bridge wind, speedboat wake, and a bay-light finale."
     })
-  })
+  }),
+  ...Object.fromEntries([
+    [1, "Ocean Beach Sunrise Surf"],
+    [2, "Golden Gate Scooter Ribbon"],
+    [3, "Presidio Phoenix Canopy"],
+    [4, "Palace Drone Orbit"],
+    [5, "Embarcadero Sports-Car Chase"],
+    [6, "Botanical Hoverboard Bloom"],
+    [7, "Bay Bridge Speedboat Blue Hour"],
+    [8, "Downtown Drone Constellation"]
+  ].map(([index, title]) => {
+    const suffix = String(index).padStart(2, "0");
+    const id = `twitter-summer-${suffix}`;
+    return [id, Object.freeze({
+      id,
+      demo: id,
+      title,
+      duration: 7.5,
+      seed: (0x54_57_00_00 + index * 0x101) >>> 0,
+      posterAt: 5.8,
+      stillTimes: Object.freeze([0.25, 1.35, 2.65, 3.85, 5.05, 6.25, 7.2]),
+      audio: Object.freeze({
+        profile: "twitter-summer",
+        index,
+        description: `Movement ${index} of the continuous summer-city score.`
+      })
+    })];
+  }))
 });
 
 function envNumber(env, key, fallback) {

@@ -13,7 +13,11 @@ const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const PRODUCTION_DURATIONS = Object.freeze({
   hoverboard: 15,
   "dog-park": 11,
-  "roqn-open-road": 30
+  "roqn-open-road": 30,
+  ...Object.fromEntries(Array.from({ length: 8 }, (_, index) => [
+    `twitter-summer-${String(index + 1).padStart(2, "0")}`,
+    7.5
+  ]))
 });
 
 /**
@@ -47,7 +51,15 @@ export const CINEMATIC_AUDIO_PLANS = Object.freeze({
     { time: 25.25, id: "shell-one", description: "first bay shell" },
     { time: 27.8, id: "burst", description: "Bay Lights firework bloom" },
     { time: 29.3, id: "resolve", description: "open-water resolve" }
-  ])
+  ]),
+  ...Object.fromEntries(Array.from({ length: 8 }, (_, index) => {
+    const shot = index + 1;
+    return [`twitter-summer-${String(shot).padStart(2, "0")}`, Object.freeze([
+      { time: 0, id: "arrive", description: `summer movement ${shot} arrives` },
+      { time: 3.25, id: "lift", description: `summer movement ${shot} camera/action lift` },
+      { time: 6.55, id: "handoff", description: `summer movement ${shot} transition handoff` }
+    ])];
+  }))
 });
 
 const DEFAULT_DOG_PARK_BEDS = Object.freeze([
@@ -59,7 +71,7 @@ const DEFAULT_DOG_PARK_BEDS = Object.freeze([
  * Render the score and sound design for one cinematic production.
  *
  * @param {{
- *   id: 'hoverboard'|'dog-park'|'roqn-open-road',
+ *   id: 'hoverboard'|'dog-park'|'roqn-open-road'|`twitter-summer-${string}`,
  *   duration?: number,
  *   fps?: number,
  *   seed?: number,
@@ -107,11 +119,13 @@ export async function renderCinematicAudio(production, outputPath) {
     for (let i = 0; i < bedPlan.length; i += 1) {
       beds.push(mixNatureBed(mix, bedPlan[i], i));
     }
-  } else {
+  } else if (id === "roqn-open-road") {
     scoreRoqnOpenRoad(mix);
+  } else {
+    scoreTwitterSummerShot(mix, Number(id.slice(-2)));
   }
 
-  const levels = masterAndLimit(mix, id === "dog-park" ? 2 : id === "roqn-open-road" ? 1.65 : 1.35);
+  const levels = masterAndLimit(mix, id === "dog-park" ? 2 : id === "roqn-open-road" ? 1.65 : id.startsWith("twitter-summer-") ? 1.55 : 1.35);
   const absoluteOutput = path.resolve(outputPath);
   const wav = encodePcm16Wav(mix.left, mix.right, SAMPLE_RATE);
   await atomicWrite(absoluteOutput, wav);
@@ -191,6 +205,40 @@ export async function renderTransitionAudio(options = {}, outputPath) {
     rmsDb: levels.rmsDb,
     beds: []
   };
+}
+
+function scoreTwitterSummerShot(mix, shot) {
+  const chords = [
+    [45, 52, 57, 61, 64],
+    [47, 54, 59, 62, 66],
+    [48, 55, 60, 64, 69],
+    [50, 57, 62, 66, 71],
+    [52, 59, 64, 67, 71],
+    [53, 60, 65, 69, 74],
+    [50, 57, 62, 66, 71],
+    [45, 52, 57, 61, 66, 73]
+  ];
+  const notes = chords[Math.max(0, Math.min(chords.length - 1, shot - 1))];
+  addPad(mix, { start: 0, duration: 7.5, notes, gain: 0.052, pan: (shot % 2 ? -1 : 1) * 0.045, brightness: 0.36 + shot * 0.035 });
+  addAir(mix, { start: 0, duration: 7.5, gain: 0.014, panDrift: 0.35 + shot * 0.045 });
+  addChime(mix, { start: 0.42, midi: 72 + shot, duration: 1.5, gain: 0.045, pan: -0.28 });
+  addChime(mix, { start: 3.18, midi: 79 + (shot % 5), duration: 1.75, gain: 0.052, pan: 0.3 });
+  addChime(mix, { start: 6.32, midi: 84 + (shot % 4), duration: 1.1, gain: 0.04, pan: shot % 2 ? 0.42 : -0.42 });
+  addWhoosh(mix, { start: 0.08, duration: 1.25, gain: 0.052, panFrom: -0.55, panTo: 0.25, direction: "out" });
+  addWhoosh(mix, { start: 3.0, duration: 1.4, gain: 0.065, panFrom: shot % 2 ? 0.6 : -0.6, panTo: shot % 2 ? -0.5 : 0.5, direction: "in" });
+  addWhoosh(mix, { start: 6.15, duration: 1.28, gain: 0.058, panFrom: -0.18, panTo: 0.58, direction: "out" });
+
+  if ([1, 5, 7].includes(shot)) {
+    addPropulsion(mix, { start: 0.35, duration: 7.0, fromHz: 55 + shot * 2, toHz: 104 + shot * 3, gain: 0.058 });
+    addSub(mix, { start: 3.32, duration: 0.72, fromHz: 54, toHz: 38, gain: 0.075 });
+  } else if ([2, 6].includes(shot)) {
+    addFoley(mix, { start: 0.2, duration: 7.05, gain: 0.026, pan: 0, character: "board" });
+    addPropulsion(mix, { start: 0.4, duration: 6.8, fromHz: 78, toHz: 132, gain: 0.046 });
+  } else if (shot === 3) {
+    addFoley(mix, { start: 0.15, duration: 7.1, gain: 0.023, pan: -0.08, character: "grass" });
+  } else if (shot === 8) {
+    addSub(mix, { start: 5.95, duration: 1.25, fromHz: 48, toHz: 33, gain: 0.095 });
+  }
 }
 
 function scoreRoqnOpenRoad(mix) {

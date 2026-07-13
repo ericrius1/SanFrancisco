@@ -80,13 +80,29 @@ import { hoverboardCinematic } from "./demos/hoverboardCinematic";
 import { dogParkCinematic } from "./demos/dogParkCinematic";
 import { roqnOpenRoadCinematic } from "./demos/roqnOpenRoadCinematic";
 import { palaceShowcase } from "./demos/palaceShowcase";
+import { twitterSummerShot01 } from "./demos/twitterSummerShot01";
+import { twitterSummerShot02 } from "./demos/twitterSummerShot02";
+import { twitterSummerShot03 } from "./demos/twitterSummerShot03";
+import { twitterSummerShot04 } from "./demos/twitterSummerShot04";
+import { twitterSummerShot05 } from "./demos/twitterSummerShot05";
+import { twitterSummerShot06 } from "./demos/twitterSummerShot06";
+import { twitterSummerShot07 } from "./demos/twitterSummerShot07";
+import { twitterSummerShot08 } from "./demos/twitterSummerShot08";
 
 const DEMOS: Record<string, Demo> = {
   [buskersCinematic.name]: buskersCinematic,
   [hoverboardCinematic.name]: hoverboardCinematic,
   [dogParkCinematic.name]: dogParkCinematic,
   [roqnOpenRoadCinematic.name]: roqnOpenRoadCinematic,
-  [palaceShowcase.name]: palaceShowcase
+  [palaceShowcase.name]: palaceShowcase,
+  [twitterSummerShot01.name]: twitterSummerShot01,
+  [twitterSummerShot02.name]: twitterSummerShot02,
+  [twitterSummerShot03.name]: twitterSummerShot03,
+  [twitterSummerShot04.name]: twitterSummerShot04,
+  [twitterSummerShot05.name]: twitterSummerShot05,
+  [twitterSummerShot06.name]: twitterSummerShot06,
+  [twitterSummerShot07.name]: twitterSummerShot07,
+  [twitterSummerShot08.name]: twitterSummerShot08
 };
 
 export function runDemo(name: string, ctx: DemoContext) {

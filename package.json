@@ -18,6 +18,7 @@
     "render:dog-park:fast": "node tools/render-cinematic.mjs dog-park --fast",
     "render:roqn-open-road": "node tools/render-cinematic.mjs roqn-open-road --full",
     "render:roqn-open-road:fast": "node tools/render-cinematic.mjs roqn-open-road --fast",
+    "render:twitter-summer": "node tools/render-twitter-summer.mjs",
     "deliver:x": "node tools/export-cinematic.mjs",
     "preview": "vite preview",
     "server": "node server/server.mjs",
