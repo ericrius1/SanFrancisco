@@ -419,12 +419,14 @@ async function boot() {
 
   // Traffic lights: procedural signals along the road graph. The road graph
   // loads off the boot path; once it's ready the light rigs pool into the scene
-  // and their state machine cycles (see world/traffic/). Failures leave the city
-  // without signals but never block boot.
+  // and their state machine cycles (see world/traffic/). The same decoded graph
+  // later paints the map roads, avoiding another request/parse. Failures leave
+  // the city without signals but never block boot.
   let trafficLights: TrafficLightView | null = null;
   let streetLamps: StreetLamps | null = null;
   auxPending++;
-  void RoadGraph.load()
+  const roadGraphPromise = RoadGraph.load();
+  void roadGraphPromise
     .then((roads) => {
       trafficLights = new TrafficLightView(scene, map, roads);
       // fake night-street lighting: reuse the just-loaded graph (no second fetch)
@@ -1185,6 +1187,9 @@ async function boot() {
     },
     () => remotes.positions()
   );
+  // The coarse surface mask already makes streets visible immediately. Upgrade
+  // it with the exact shared graph as soon as the traffic load finishes.
+  void roadGraphPromise.then((roads) => minimap.setRoadGraph(roads)).catch(() => {});
   if (goldenGateTennis) {
     minimap.addLandmark(
       goldenGateTennis.gameplayAnchor.x,
@@ -2581,7 +2586,7 @@ async function boot() {
       hud.message("Tweaks back to source defaults", 3);
     }
     if (input.pressed("KeyC")) setCameraMode(!cameraMode);
-    // R: wireframe overlay (unused elsewhere — instant scene.overrideMaterial flip)
+    // R: wireframe overlay (unused elsewhere — retained pass override + camera)
     if (input.pressed("KeyR")) {
       debugPanel.toggleWireframe();
       hud.message(RENDER_TUNING.values.wireframe ? "Wireframe on (R)" : "Wireframe off (R)", 1.4);

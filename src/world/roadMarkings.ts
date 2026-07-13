@@ -41,12 +41,13 @@ function makeMarkingMaterial(colorHex: number, opacity: number): THREE.MeshBasic
     side: THREE.DoubleSide
   });
   mat.toneMapped = false;
-  // True decal: bias the depth test toward the camera so the marking wins
-  // against the coincident road surface without any physical lift, and never
-  // z-fights the asphalt on a slope.
+  // The renderer uses reversed depth, so positive bias moves the decal toward
+  // the camera (the conventional negative sign moves it behind the asphalt).
+  // Getting this sign wrong makes the 2.5 cm lift win only at close range,
+  // which looks like whole stretches of paint drawing in ahead of the player.
   mat.polygonOffset = true;
-  mat.polygonOffsetFactor = -2;
-  mat.polygonOffsetUnits = -2;
+  mat.polygonOffsetFactor = 2;
+  mat.polygonOffsetUnits = 2;
   // Authored against the reference exposure (toneMapped=false is a no-op here —
   // the render pipeline tone-maps in its output pass, not per material), so the
   // paint rebases with the rest of the unlit world (config.EXPOSURE_REBASE).

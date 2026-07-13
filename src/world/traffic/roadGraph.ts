@@ -47,6 +47,17 @@ export type NearestRoadPoint = Projection & {
   distance: number;
 };
 
+/** Read-only segment visitor used by lightweight consumers such as the map.
+ *  The shared coordinate arrays must not be mutated by the visitor. */
+export type RoadSegmentVisitor = (
+  pointsX: Float32Array,
+  pointsZ: Float32Array,
+  start: number,
+  count: number,
+  width: number,
+  roadClass: number
+) => void;
+
 const CELL = 64; // spatial-hash cell size (m); project() search radius (40 m) < CELL
 const MAX_PROJECT_DIST = 40; // nearest-road cap (m)
 const HOP_DIST = 15; // max gap to jump across at a polyline end (m)
@@ -194,6 +205,22 @@ export class RoadGraph {
     if (!res.ok) throw new Error(`RoadGraph: failed to load ${url} (${res.status})`);
     const json = (await res.json()) as RoadsJson;
     return new RoadGraph(json);
+  }
+
+  /** Visit each decoded road polyline without copying its point data. This is
+   *  deliberately read-only so the traffic graph can also feed the 2D map
+   *  without a second fetch or a second JSON parse. */
+  forEachSegment(visitor: RoadSegmentVisitor): void {
+    for (let seg = 0; seg < this.segCount; seg++) {
+      visitor(
+        this.px,
+        this.pz,
+        this.segStart[seg],
+        this.segNum[seg],
+        this.segW[seg],
+        this.segClass[seg]
+      );
+    }
   }
 
   /**

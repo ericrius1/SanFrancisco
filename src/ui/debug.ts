@@ -97,15 +97,17 @@ export class DebugPanel {
   #onOpen: () => void;
   #fireworks: Fireworks | null;
   #tiles: TileStreamer | null;
-  #scene: THREE.Scene | null;
-  #postfx: { applyPostFx: () => void; applyPostQuality: () => void } | null;
+  #postfx: {
+    applyPostFx: () => void;
+    applyPostQuality: () => void;
+    setWireframe: (on: boolean) => void;
+  } | null;
   #setFoliageVisible: (visible: boolean) => void;
   #refreshFlowers: () => void;
   #refreshGrass: () => void;
   #toggleProfiler: () => boolean;
   #lastRefresh = 0;
-  /** Shared override — O(1) wireframe toggle, covers streamed content automatically. */
-  #wireframeMaterial: THREE.MeshBasicMaterial | null = null;
+  /** Tracks the last applied wireframe flag so refresh() can catch external flips. */
   #wireframeActive = false;
   #wireframeBindings: { refresh(): void }[] = [];
   // pane bindings must not round-trip into sky.timeOfDay while the cycle runs
@@ -124,8 +126,12 @@ export class DebugPanel {
     onOpen: () => void = () => {},
     fireworks: Fireworks | null = null,
     tiles: TileStreamer | null = null,
-    scene: THREE.Scene | null = null,
-    postfx: { applyPostFx: () => void; applyPostQuality: () => void } | null = null,
+    _scene: THREE.Scene | null = null,
+    postfx: {
+      applyPostFx: () => void;
+      applyPostQuality: () => void;
+      setWireframe: (on: boolean) => void;
+    } | null = null,
     setFoliageVisible: (visible: boolean) => void = () => {},
     refreshFlowers: () => void = () => {},
     refreshGrass: () => void = () => {},
@@ -136,7 +142,6 @@ export class DebugPanel {
     this.#onOpen = onOpen;
     this.#fireworks = fireworks;
     this.#tiles = tiles;
-    this.#scene = scene;
     this.#postfx = postfx;
     this.#setFoliageVisible = setFoliageVisible;
     this.#refreshFlowers = refreshFlowers;
@@ -186,7 +191,7 @@ export class DebugPanel {
     }
   }
 
-  /** R key / pane checkbox — flip wireframe instantly via scene.overrideMaterial. */
+  /** R key / pane checkbox — flip wireframe via the retained pass override. */
   toggleWireframe() {
     const next = !RENDER_TUNING.values.wireframe;
     RENDER_TUNING.values.wireframe = next;
@@ -285,21 +290,13 @@ export class DebugPanel {
     }
   }
 
-  /** Instant scene-wide wireframe via overrideMaterial (no per-mesh walk). */
+  /**
+   * Instant scene-wide wireframe via the render pipeline's PassNode override.
+   * Uses a cloned camera so BundleGroup command caches for tiles/buildings are
+   * not overwritten by the wireframe draw path (see pipeline.setWireframe).
+   */
   #applyWireframe(on: boolean) {
-    if (!this.#scene) return;
-    if (on) {
-      if (!this.#wireframeMaterial) {
-        this.#wireframeMaterial = new THREE.MeshBasicMaterial({
-          color: 0xcccccc,
-          wireframe: true,
-          toneMapped: false
-        });
-      }
-      this.#scene.overrideMaterial = this.#wireframeMaterial;
-    } else {
-      this.#scene.overrideMaterial = null;
-    }
+    this.#postfx?.setWireframe(on);
     this.#wireframeActive = on;
   }
 

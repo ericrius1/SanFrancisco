@@ -96,6 +96,31 @@ export function createRenderPipeline(
     scenePass.renderTarget.samples = samples;
   };
 
+  // Wireframe debug: PassNode.overrideMaterial + a retained camera clone.
+  // BundleGroups (tiles, citygen, traffic lights) key their WebGPU command
+  // caches by camera identity. Mutating scene.overrideMaterial on the live
+  // camera re-records those bundles as line lists and leaves them stuck after
+  // the toggle clears. A separate camera keeps normal and wireframe caches
+  // side by side so off restores solid materials instantly.
+  const wireframeMaterial = new THREE.MeshBasicNodeMaterial();
+  wireframeMaterial.name = "debug-wireframe-override";
+  wireframeMaterial.color.set(0xcccccc);
+  wireframeMaterial.wireframe = true;
+  wireframeMaterial.toneMapped = false;
+  const wireframeCamera = camera.clone();
+  const syncWireframeCamera = () => wireframeCamera.copy(camera, false);
+  let wireframeActive = false;
+  const applyWireframeOverride = (on: boolean) => {
+    scenePass.overrideMaterial = on ? wireframeMaterial : null;
+    scenePass.camera = on ? wireframeCamera : camera;
+  };
+  const setWireframe = (on: boolean) => {
+    if (wireframeActive === on) return;
+    wireframeActive = on;
+    if (on) syncWireframeCamera();
+    applyWireframeOverride(on);
+  };
+
   // Stylized effects apply renderOutput inside their custom shaders. The zero
   // mask uses RenderPipeline's automatic output transform instead.
   const postfx = createPostFx({
@@ -301,15 +326,26 @@ export function createRenderPipeline(
       // tinkerer ever triggers), keeping the covered boot warmup minimal.
       const sampleOrder: SceneSamples[] =
         scope === "boot" ? [activeSceneSamples] : activeSceneSamples === 0 ? [4, 0] : [0, 4];
-      for (const samples of sampleOrder) {
-        setScenePassSamples(samples);
-        await compilePass(scenePass);
-        markStage(`scene-${samples || 1}x-compile`);
-        // compileAsync does not record BundleGroups. A covered render does so
-        // without retaining a second target when the next mode replaces it.
-        activePipeline.render();
-        markStage(`scene-${samples || 1}x-record`);
+      // Visit both retained camera identities so normal and wireframe command
+      // bundles coexist; finish on the live mode.
+      const selectedWireframeAtStart = wireframeActive;
+      const wireframeModes =
+        scope === "full" ? [!selectedWireframeAtStart, selectedWireframeAtStart] : [selectedWireframeAtStart];
+      for (const wireframe of wireframeModes) {
+        if (wireframe) syncWireframeCamera();
+        applyWireframeOverride(wireframe);
+        for (const samples of sampleOrder) {
+          setScenePassSamples(samples);
+          await compilePass(scenePass);
+          markStage(`scene-${samples || 1}x-wf${wireframe ? 1 : 0}-compile`);
+          // compileAsync does not record BundleGroups. A covered render does so
+          // without retaining a second target when the next mode replaces it.
+          activePipeline.render();
+          markStage(`scene-${samples || 1}x-wf${wireframe ? 1 : 0}-record`);
+        }
       }
+      if (wireframeActive) syncWireframeCamera();
+      applyWireframeOverride(wireframeActive);
 
       await compilePostFxVariants(scope === "boot" ? [activeVariantMask & 7] : POSTFX_VARIANT_MASKS);
       markStage("output-compile");
@@ -328,6 +364,8 @@ export function createRenderPipeline(
       }
     } finally {
       setScenePassSamples(activeSceneSamples);
+      if (wireframeActive) syncWireframeCamera();
+      applyWireframeOverride(wireframeActive);
       scenePass.updateBeforeType = sceneUpdateType;
       prePass.updateBeforeType = prePassUpdateType;
       if (contactShadows.pass && contactUpdateType !== undefined) {
@@ -360,6 +398,7 @@ export function createRenderPipeline(
   applyPostFx();
 
   const render = () => {
+    if (wireframeActive) syncWireframeCamera();
     if (!fastCaptureTarget) {
       activePipeline.render();
       return;
@@ -436,6 +475,8 @@ export function createRenderPipeline(
     applyPostQuality,
     /** Select the cached post-FX graph after a toggle change. */
     applyPostFx,
+    /** Swap the scene pass to/from the retained wireframe override + camera. */
+    setWireframe,
     /** Browser-native review capture reads the final post-FX texture here. */
     queueFastFrame,
     drainFastFrame,

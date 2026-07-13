@@ -3,6 +3,7 @@ import type { PlayerMode } from "../player/types";
 import { BOTANICAL_GARDEN_BOUNDS } from "../world/garden/layout";
 import { WILD_REGIONS } from "../world/wildlands/regions";
 import { SPAWN_POINTS } from "../world/spawnPoints";
+import type { RoadGraph } from "../world/traffic/roadGraph";
 
 /**
  * Minimap (top-left, always on) + full-city map (M or click to expand).
@@ -62,6 +63,10 @@ const BRIDGE_COLORS: Record<string, string> = {
 };
 const BRIDGE_FALLBACK_COLOR = "#c85a2a";
 const LAYERS_ENABLED = false; // art/science/music layers parked for now
+// OSM road classes: living street, residential, tertiary, secondary,
+// primary/trunk, motorway. Higher classes get progressively warmer/brighter so
+// the street hierarchy reads at a glance without overwhelming player pins.
+const ROAD_COLORS = ["#748384", "#829091", "#95a29f", "#abb2a8", "#d0c7ad", "#dfba70"] as const;
 
 const LANDMARK_LABELS: Record<string, string> = {
   transamerica: "Transamerica",
@@ -149,6 +154,7 @@ export class Minimap {
   #getRemotes: () => MapRemote[];
 
   #world!: HTMLCanvasElement; // pre-rendered terrain, 1 grid cell = 1 px
+  #roadsPainted = false;
   #mini!: HTMLCanvasElement;
   #count!: HTMLSpanElement;
   #teleWrap!: HTMLDivElement;
@@ -326,6 +332,13 @@ export class Minimap {
             r = 158;
             g = 142;
             b = 104; // sand
+          } else if (s === 4) {
+            // The surface grid is a coarse but immediate road fallback. The
+            // shared vector road graph paints the crisp hierarchy over it once
+            // the traffic system's existing load resolves.
+            r = 111;
+            g = 124;
+            b = 123;
           } else {
             r = 62;
             g = 74;
@@ -349,6 +362,51 @@ export class Minimap {
     }
     ctx.putImageData(img, 0, 0);
     this.#world = c;
+  }
+
+  /** Paint the traffic system's already-decoded road graph into the persistent
+   * terrain canvas. This is one-time CPU canvas work; map redraws remain a
+   * single cropped drawImage instead of walking thousands of roads per frame. */
+  setRoadGraph(roads: RoadGraph) {
+    if (this.#roadsPainted) return;
+    this.#roadsPainted = true;
+
+    const { cellSize, minX, minZ } = this.#map.meta.grid;
+    const paths = new Map<string, { path: Path2D; width: number; roadClass: number }>();
+    roads.forEachSegment((pointsX, pointsZ, start, count, width, roadClass) => {
+      if (count < 2) return;
+      const cls = Math.max(0, Math.min(ROAD_COLORS.length - 1, roadClass));
+      const key = `${cls}:${width}`;
+      let group = paths.get(key);
+      if (!group) {
+        group = { path: new Path2D(), width, roadClass: cls };
+        paths.set(key, group);
+      }
+      group.path.moveTo((pointsX[start] - minX) / cellSize, (pointsZ[start] - minZ) / cellSize);
+      for (let i = 1; i < count; i++) {
+        const p = start + i;
+        group.path.lineTo((pointsX[p] - minX) / cellSize, (pointsZ[p] - minZ) / cellSize);
+      }
+    });
+
+    const ctx = this.#world.getContext("2d")!;
+    ctx.save();
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    // A dark casing separates streets from both urban terrain and parks, then
+    // the class colour supplies the navigational hierarchy.
+    ctx.strokeStyle = "rgba(18, 29, 35, 0.92)";
+    for (const { path, width } of paths.values()) {
+      ctx.lineWidth = Math.max(1.35, width / cellSize + 1.05);
+      ctx.stroke(path);
+    }
+    for (const { path, width, roadClass } of paths.values()) {
+      ctx.strokeStyle = ROAD_COLORS[roadClass];
+      ctx.lineWidth = Math.max(0.72, width / cellSize);
+      ctx.stroke(path);
+    }
+    ctx.restore();
+    this.update();
   }
 
   /** world metres → world-canvas px */
@@ -1345,7 +1403,8 @@ export class Minimap {
       self: { x: self.x, z: self.z, name: self.name },
       spanX,
       spanZ,
-      centered: Math.hypot(center.x - self.x, center.z - self.z) < 0.5
+      centered: Math.hypot(center.x - self.x, center.z - self.z) < 0.5,
+      roadsPainted: this.#roadsPainted
     };
   }
 

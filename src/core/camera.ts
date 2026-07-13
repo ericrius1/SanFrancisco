@@ -307,7 +307,7 @@ export class ChaseCamera {
     // inside the next ridge and trigger the full underwater overlay, hiding the
     // very wave the player is reading. Surf mode skims above the local crest.
     if (player.mode === "surf") {
-      const water = waterHeight(cx, cz, player.time) + 1.35
+      const water = Math.max(waterHeight(cx, cz, player.time), 0) + 1.35
       if (this.#chasePos.y < water) this.#chasePos.y = water
     }
 
@@ -422,6 +422,14 @@ export class ChaseCamera {
       this.shakeAmount *= Math.exp(-dt * 6)
     }
 
+    // Absolute last-line guarantee: the surf eye never sits below the live water
+    // surface (nor sea level), so the underwater tint/ceiling can never flash on
+    // while riding — smoothing lag and shake are already applied here.
+    if (player.mode === "surf") {
+      const minY = Math.max(waterHeight(this.camera.position.x, this.camera.position.z, player.time), 0) + 1.1
+      if (this.camera.position.y < minY) this.camera.position.y = minY
+    }
+
     // Build complete rotations for both rigs. Orbit preserves the original
     // look-at framing; FPS uses the same canonical yaw/pitch as lookDir(), so the
     // rendered centre ray, movement heading and tools all agree. Nothing calls
@@ -454,13 +462,15 @@ export class ChaseCamera {
    * the frame during a 360° flow orbit.
    */
   #clearSurfSightline(candidate: THREE.Vector3, target: THREE.Vector3, time: number) {
-    candidate.y = Math.max(candidate.y, waterHeight(candidate.x, candidate.z, time) + 1.35)
+    // Never below the flat sea level: the wave TROUGH dips below 0, and clamping
+    // to that raw (negative) height would license the eye underwater between sets.
+    candidate.y = Math.max(candidate.y, Math.max(waterHeight(candidate.x, candidate.z, time), 0) + 1.35)
     for (let i = 1; i <= 5; i++) {
       const t = i / 6
       const x = THREE.MathUtils.lerp(candidate.x, target.x, t)
       const z = THREE.MathUtils.lerp(candidate.z, target.z, t)
       const rayY = THREE.MathUtils.lerp(candidate.y, target.y, t)
-      const requiredY = waterHeight(x, z, time) + 1.15
+      const requiredY = Math.max(waterHeight(x, z, time), 0) + 1.15
       if (rayY < requiredY) candidate.y += (requiredY - rayY) / Math.max(0.15, 1 - t)
     }
   }

@@ -222,7 +222,10 @@ export class SurfController implements ModeController {
     if (!nearBreak) ctx.position.set(b.entryX, 0, b.entryZ);
     this.#phase = "paddle";
     this.#toLineup(ctx, nearBreak);
-    return Math.PI / 2;
+    // Face SHOREWARD by default: paddling in (W) drops you into the wave you're
+    // sitting on within a stroke. Turn offshore to paddle OUT (the catch gate then
+    // lets you stroke through the sets without being swept back in).
+    return -Math.PI / 2;
   }
 
   update(ctx: PlayerCtx, dt: number, input: Input, frame: ModeFrame) {
@@ -290,8 +293,13 @@ export class SurfController implements ModeController {
     const sample = sampleOceanBeachWave(p.x, p.z, ctx.time);
     this.#paddleTime += dt;
 
+    // Only a wave you're NOT paddling away from can catch you: stroking offshore
+    // (vx strongly negative) lets you paddle out through the sets without being
+    // swept straight back in. Idle or paddling shoreward, the next wave picks you up.
+    const paddlingOut = vx < -1.5;
     if (
       !beached &&
+      !paddlingOut &&
       this.#paddleTime > tb.catchDelay &&
       sample.face > tb.catchFace &&
       sample.crestDistance > -8 &&
@@ -570,7 +578,10 @@ export class SurfController implements ModeController {
   // --- helpers ----------------------------------------------------------------
 
   #surface(x: number, z: number, time: number, clearance: number): number {
-    return waterHeight(x, z, time) + clearance;
+    // Ride the wave where it stands above the sea, but never sink below the flat
+    // ocean between sets: the analytic trough dips below 0, and tracking it put the
+    // board (and the chase eye) underwater. Sea level (0) is the hard floor.
+    return Math.max(waterHeight(x, z, time), 0) + clearance;
   }
 
   /** Immediate correction for any stale/low body pose before the next physics step. */
@@ -624,7 +635,7 @@ export class SurfController implements ModeController {
     const z = keepZ ? THREE.MathUtils.clamp(p.z, b.minZ + 40, b.maxZ - 40) : b.entryZ;
     const crest = nearestOceanBeachCrest(b.entryX + 20, z, ctx.time);
     p.set(crest.crestX + 6, this.#surface(crest.crestX + 6, z, ctx.time, SURF_TUNING.values.proneHeight), z);
-    this.yaw = Math.PI / 2;
+    this.yaw = -Math.PI / 2; // face shoreward — paddle in to drop into the wave
     this.#paddleTime = 0;
     this.#paddleSpeed = 0;
     this.#airVy = 0;
