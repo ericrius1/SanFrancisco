@@ -45,6 +45,38 @@ type DebugRenderPipeline = {
   contactShadows: Pick<ContactShadowComplement, "configure" | "setEnabled">;
 };
 
+export type DebugMonitorBinding = { refresh(): void };
+
+export type DebugFeatureTuningBuildResult = {
+  /** Read-only bindings refreshed with the panel's existing 4 Hz monitor pass. */
+  monitors?: DebugMonitorBinding[];
+  /** Optional cleanup for listeners or other UI-only resources created by build. */
+  dispose?: () => void;
+};
+
+/**
+ * A feature-owned tuning surface. The panel owns the top-level folder while the
+ * feature owns its contents, live side effects, and optional cleanup. Keeping
+ * the callback here (rather than importing a feature module) preserves deferred
+ * feature chunks such as the Japanese Tea Garden.
+ */
+export type DebugFeatureTuningRegistration = {
+  /** Stable identity; registering the same id replaces the earlier surface. */
+  id: string;
+  /** Title of the collapsed top-level folder created when the pane exists. */
+  title: string;
+  build: (folder: FolderApi) => DebugFeatureTuningBuildResult | void;
+  /** Re-apply non-live side effects after the "." factory reset. */
+  sync?: () => void;
+};
+
+type DebugFeatureTuningRecord = {
+  registration: DebugFeatureTuningRegistration;
+  folder: FolderApi | null;
+  monitors: DebugMonitorBinding[];
+  dispose: (() => void) | null;
+};
+
 function isFolderApi(blade: BladeApi): blade is FolderApi {
   return "children" in blade && "title" in blade && "expanded" in blade;
 }
@@ -124,7 +156,8 @@ export class DebugPanel {
   // pane bindings must not round-trip into sky.timeOfDay while the cycle runs
   #lightingView: Record<string, unknown> | null = null;
   #lightingBindings: { refresh(): void }[] = [];
-  #monitorBindings: { refresh(): void }[] = [];
+  #monitorBindings: DebugMonitorBinding[] = [];
+  #featureTunings = new Map<string, DebugFeatureTuningRecord>();
   #shadowMonitorSnapshot: ShadowDiagnosticsSnapshot | null = null;
   #shadowMonitorView: Record<string, string> | null = null;
   #fogMonitorView: Record<string, string> | null = null;
@@ -171,6 +204,34 @@ export class DebugPanel {
   setMode(mode: PlayerMode) {
     this.#mode = mode;
     this.#applyFilter();
+  }
+
+  /**
+   * Register a deferred feature's tuning surface without importing that feature
+   * into this boot-critical module. Registration may happen before or after the
+   * pane is first opened. The returned function unregisters only this exact
+   * record, so a stale disposer cannot remove a newer replacement with the same
+   * id (useful for HMR and feature recreation).
+   */
+  registerFeatureTuning(registration: DebugFeatureTuningRegistration): () => void {
+    const previous = this.#featureTunings.get(registration.id);
+    if (previous) this.#removeFeatureTuning(previous);
+
+    const record: DebugFeatureTuningRecord = {
+      registration,
+      folder: null,
+      monitors: [],
+      dispose: null
+    };
+    this.#featureTunings.set(registration.id, record);
+    this.#buildFeatureTuning(record);
+
+    return () => {
+      if (this.#featureTunings.get(registration.id) !== record) return;
+      this.#featureTunings.delete(registration.id);
+      this.#removeFeatureTuning(record);
+      this.#applyFilter();
+    };
   }
 
   /** Hide/show blades by the live search query, then re-assert mode-only movement. */
@@ -276,6 +337,13 @@ export class DebugPanel {
     this.#applyWireframe(RENDER_TUNING.values.wireframe);
     this.#setFoliageVisible(Boolean(FOLIAGE_TUNING.values.visible));
     this.#applyShadowTuning();
+    for (const record of this.#featureTunings.values()) {
+      try {
+        record.registration.sync?.();
+      } catch (error) {
+        console.warn(`[debug] feature tuning sync failed (${record.registration.id})`, error);
+      }
+    }
     if (this.#lightingView) {
       this.#syncingFromSky = true;
       this.#lightingView.timeOfDay = this.#sky.timeOfDay;
@@ -312,6 +380,45 @@ export class DebugPanel {
       });
     } finally {
       this.#syncingPane = false;
+    }
+  }
+
+  #buildFeatureTuning(record: DebugFeatureTuningRecord) {
+    const pane = this.#pane;
+    if (!pane || record.folder) return;
+
+    const folder = pane.addFolder({ title: record.registration.title, expanded: false });
+    record.folder = folder;
+    try {
+      const result = record.registration.build(folder);
+      record.monitors = result?.monitors ? [...result.monitors] : [];
+      record.dispose = result?.dispose ?? null;
+      this.#monitorBindings.push(...record.monitors);
+    } catch (error) {
+      pane.remove(folder);
+      folder.dispose();
+      record.folder = null;
+      console.warn(`[debug] feature tuning build failed (${record.registration.id})`, error);
+    }
+    this.#applyFilter();
+  }
+
+  #removeFeatureTuning(record: DebugFeatureTuningRecord) {
+    if (record.monitors.length > 0) {
+      const removed = new Set(record.monitors);
+      this.#monitorBindings = this.#monitorBindings.filter((binding) => !removed.has(binding));
+      record.monitors = [];
+    }
+    try {
+      record.dispose?.();
+    } catch (error) {
+      console.warn(`[debug] feature tuning cleanup failed (${record.registration.id})`, error);
+    }
+    record.dispose = null;
+    if (record.folder) {
+      this.#pane?.remove(record.folder);
+      record.folder.dispose();
+      record.folder = null;
     }
   }
 
@@ -647,6 +754,11 @@ export class DebugPanel {
     const fireflies = particles.addFolder({ title: "busker fireflies" });
     BUSKER_FIREFLY_TUNING.bind(fireflies);
     this.#monitorBindings.push(...(this.#fireworks?.addTuning(particles) ?? []));
+
+    // Optional feature modules register callbacks rather than being imported by
+    // this file. Materialize any surfaces that arrived before the first `/` now;
+    // later registrations build immediately in registerFeatureTuning().
+    for (const record of this.#featureTunings.values()) this.#buildFeatureTuning(record);
 
     // Full GPU profiler (three.js Inspector: FPS/CPU/GPU graph, timing, memory).
     // Heavy — per-frame GPU timestamp queries + canvas redraw — so it's OFF by

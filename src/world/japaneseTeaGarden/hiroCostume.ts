@@ -2,12 +2,12 @@ import * as THREE from "three/webgpu";
 import type { Rig } from "../../player/rig";
 import { enableShadowLayer, SHADOW_LAYERS } from "../shadows/shadowLayers";
 
-export type IrohCostume = {
+export type HiroCostume = {
   update(dt: number, motion: number, turn: number): void;
   dispose(): void;
 };
 
-// White Lotus Iroh is identified by the garment hierarchy, not by a blended
+// White Lotus Hiro is identified by the garment hierarchy, not by a blended
 // texture: ivory shoulder yoke, navy over-robe, stone inner robe, broad obi and
 // pale bell sleeves. Keep these colors together so every procedural layer stays
 // coordinated when the art direction changes.
@@ -176,7 +176,7 @@ function mantleGeometry(inner = 0, outer = 1): THREE.BufferGeometry {
   return geometry;
 }
 
-export function createIrohCostume(rig: Rig): IrohCostume {
+export function createHiroCostume(rig: Rig): HiroCostume {
   const geometries: THREE.BufferGeometry[] = [];
   const materials = {
     navy: meshMaterial(PALETTE.navy),
@@ -217,7 +217,7 @@ export function createIrohCostume(rig: Rig): IrohCostume {
   };
 
   // Full stone under-robe. It ends above the slippers instead of pooling on the
-  // ground, which restores Iroh's feet and makes the whole figure read taller.
+  // ground, which restores Hiro's feet and makes the whole figure read taller.
   add(
     rig.hips,
     skirtGeometry({
@@ -227,7 +227,7 @@ export function createIrohCostume(rig: Rig): IrohCostume {
       bottomRadius: [0.35, 0.285]
     }),
     materials.stone,
-    "iroh_stone_under_robe"
+    "hiro_stone_under_robe"
   );
 
   // Navy over-robe wraps the sides and back but leaves a real opening at the
@@ -246,7 +246,7 @@ export function createIrohCostume(rig: Rig): IrohCostume {
       segments: 26
     }),
     materials.navy,
-    "iroh_navy_open_over_robe"
+    "hiro_navy_open_over_robe"
   );
   const overRobeStart = -Math.PI / 2 + frontGap;
   const overRobeEnd = (Math.PI * 3) / 2 - frontGap;
@@ -262,7 +262,7 @@ export function createIrohCostume(rig: Rig): IrohCostume {
       rig.hips,
       new THREE.TubeGeometry(edge, 5, 0.011, 6, false),
       materials.ivory,
-      `iroh_over_robe_opening_trim_${side}`
+      `hiro_over_robe_opening_trim_${side}`
     );
   }
   const hemPoints: THREE.Vector3[] = [];
@@ -274,7 +274,7 @@ export function createIrohCostume(rig: Rig): IrohCostume {
     rig.hips,
     new THREE.TubeGeometry(new THREE.CatmullRomCurve3(hemPoints), 32, 0.011, 6, false),
     materials.ivory,
-    "iroh_over_robe_hem_trim"
+    "hiro_over_robe_hem_trim"
   );
 
   // The central armor-like apron and crisp ivory piping are the most readable
@@ -285,16 +285,16 @@ export function createIrohCostume(rig: Rig): IrohCostume {
     [0.19, -0.53],
     [-0.19, -0.53]
   ];
-  add(rig.hips, panelGeometry(apronPoints, -0.292), materials.navyLift, "iroh_navy_front_apron");
-  add(rig.hips, ribbonGeometry(apronPoints[0], apronPoints[3], 0.026, -0.299), materials.ivory, "iroh_apron_trim_left");
-  add(rig.hips, ribbonGeometry(apronPoints[1], apronPoints[2], 0.026, -0.299), materials.ivory, "iroh_apron_trim_right");
-  add(rig.hips, ribbonGeometry(apronPoints[3], apronPoints[2], 0.026, -0.299), materials.ivory, "iroh_apron_trim_bottom");
+  add(rig.hips, panelGeometry(apronPoints, -0.292), materials.navyLift, "hiro_navy_front_apron");
+  add(rig.hips, ribbonGeometry(apronPoints[0], apronPoints[3], 0.026, -0.299), materials.ivory, "hiro_apron_trim_left");
+  add(rig.hips, ribbonGeometry(apronPoints[1], apronPoints[2], 0.026, -0.299), materials.ivory, "hiro_apron_trim_right");
+  add(rig.hips, ribbonGeometry(apronPoints[3], apronPoints[2], 0.026, -0.299), materials.ivory, "hiro_apron_trim_bottom");
   for (const side of [-1, 1] as const) {
     add(
       rig.hips,
       ribbonGeometry([side * 0.12, -0.54], [side * 0.15, -0.705], 0.014, -0.292),
       materials.stoneShade,
-      `iroh_under_robe_fold_${side < 0 ? "R" : "L"}`
+      `hiro_under_robe_fold_${side < 0 ? "R" : "L"}`
     );
   }
 
@@ -311,7 +311,7 @@ export function createIrohCostume(rig: Rig): IrohCostume {
       ],
       0.07
     );
-    add(rig.torso, cape, materials.navy, `iroh_navy_cape_tail_${side < 0 ? "R" : "L"}`);
+    add(rig.torso, cape, materials.navy, `hiro_navy_cape_tail_${side < 0 ? "R" : "L"}`);
   }
 
   // A clean navy chest panel hides the stock block seams. Paired ivory lapels
@@ -328,10 +328,10 @@ export function createIrohCostume(rig: Rig): IrohCostume {
       -0.158
     ),
     materials.navy,
-    "iroh_navy_tunic_front"
+    "hiro_navy_tunic_front"
   );
-  add(rig.torso, ribbonGeometry([-0.04, 0.405], [-0.19, 0.015], 0.027, -0.169), materials.ivory, "iroh_lapel_left");
-  add(rig.torso, ribbonGeometry([0.04, 0.405], [0.19, 0.015], 0.027, -0.169), materials.ivory, "iroh_lapel_right");
+  add(rig.torso, ribbonGeometry([-0.04, 0.405], [-0.19, 0.015], 0.027, -0.169), materials.ivory, "hiro_lapel_left");
+  add(rig.torso, ribbonGeometry([0.04, 0.405], [0.19, 0.015], 0.027, -0.169), materials.ivory, "hiro_lapel_right");
 
   // Navy upper sleeves beneath pale, flared fore-sleeves reproduce the split
   // seen in the reference instead of turning both arms into one white poncho.
@@ -346,7 +346,7 @@ export function createIrohCostume(rig: Rig): IrohCostume {
     ["R", rig.armR, rig.foreR]
   ] as const) {
     const upper = new THREE.Mesh(upperSleeveGeometry, materials.navy);
-    upper.name = `iroh_navy_upper_sleeve_${side}`;
+    upper.name = `hiro_navy_upper_sleeve_${side}`;
     upper.position.y = -0.145;
     upper.castShadow = true;
     upper.receiveShadow = true;
@@ -355,7 +355,7 @@ export function createIrohCostume(rig: Rig): IrohCostume {
     meshes.push(upper);
 
     const bell = new THREE.Mesh(bellSleeveGeometry, materials.stone);
-    bell.name = `iroh_stone_bell_sleeve_${side}`;
+    bell.name = `hiro_stone_bell_sleeve_${side}`;
     bell.position.y = -0.115;
     bell.castShadow = true;
     bell.receiveShadow = true;
@@ -364,7 +364,7 @@ export function createIrohCostume(rig: Rig): IrohCostume {
     meshes.push(bell);
 
     const cuff = new THREE.Mesh(cuffGeometry, materials.stoneShade);
-    cuff.name = `iroh_bell_sleeve_cuff_${side}`;
+    cuff.name = `hiro_bell_sleeve_cuff_${side}`;
     cuff.position.y = -0.274;
     cuff.castShadow = true;
     cuff.receiveShadow = true;
@@ -375,16 +375,16 @@ export function createIrohCostume(rig: Rig): IrohCostume {
 
   // Broad ivory yoke, darker outer binding and raised inner collar. The layers
   // are separated by a few millimetres to avoid coplanar shimmer under WebGPU.
-  const mantle = add(rig.torso, mantleGeometry(), materials.mantle, "iroh_white_lotus_mantle");
+  const mantle = add(rig.torso, mantleGeometry(), materials.mantle, "hiro_white_lotus_mantle");
   mantle.position.z = -0.03;
-  const mantleBinding = add(rig.torso, mantleGeometry(0.89, 1), materials.mantleShade, "iroh_mantle_outer_binding");
+  const mantleBinding = add(rig.torso, mantleGeometry(0.89, 1), materials.mantleShade, "hiro_mantle_outer_binding");
   mantleBinding.position.y = -0.004;
   mantleBinding.position.z = -0.03;
   const collar = add(
     rig.torso,
     new THREE.TorusGeometry(0.145, 0.022, 7, 24),
     materials.mantleShade,
-    "iroh_raised_inner_collar",
+    "hiro_raised_inner_collar",
     [0, 0.445, 0]
   );
   collar.rotation.x = Math.PI / 2;
@@ -396,12 +396,12 @@ export function createIrohCostume(rig: Rig): IrohCostume {
     rig.hips,
     new THREE.CylinderGeometry(0.342, 0.342, 0.145, 20),
     materials.ivoryShade,
-    "iroh_wide_obi",
+    "hiro_wide_obi",
     [0, 0.035, 0]
   );
   obi.scale.z = 0.78;
-  add(rig.hips, new THREE.BoxGeometry(0.54, 0.088, 0.028), materials.stoneShade, "iroh_obi_front_fold", [0, 0.035, -0.275]);
-  add(rig.hips, new THREE.SphereGeometry(0.035, 8, 6), materials.ivory, "iroh_obi_knot", [0, 0.035, -0.306]);
+  add(rig.hips, new THREE.BoxGeometry(0.54, 0.088, 0.028), materials.stoneShade, "hiro_obi_front_fold", [0, 0.035, -0.275]);
+  add(rig.hips, new THREE.SphereGeometry(0.035, 8, 6), materials.ivory, "hiro_obi_knot", [0, 0.035, -0.306]);
   for (const side of [-1, 1] as const) {
     const bow = add(
       rig.hips,
@@ -414,7 +414,7 @@ export function createIrohCostume(rig: Rig): IrohCostume {
         -0.309
       ),
       materials.ivory,
-      `iroh_obi_bow_${side < 0 ? "R" : "L"}`
+      `hiro_obi_bow_${side < 0 ? "R" : "L"}`
     );
     bow.position.y = 0.035;
   }
@@ -429,7 +429,7 @@ export function createIrohCostume(rig: Rig): IrohCostume {
       shin,
       new THREE.BoxGeometry(0.028, 0.022, 0.21),
       materials.ivory,
-      `iroh_slipper_strap_${side}`,
+      `hiro_slipper_strap_${side}`,
       [0, -0.31, -0.075]
     );
     strap.rotation.x = -0.12;

@@ -19,6 +19,27 @@ import { enableShadowLayer, SHADOW_LAYERS } from "../world/shadows/shadowLayers"
  *  the proximal+distal curl closes against the thumb. */
 const HAND_GRIP = new THREE.Vector3(0, -0.05, -0.038);
 
+/**
+ * Convert a world-space grip-pocket frame into the wrist-origin target expected
+ * by setHandTarget(). Kept here so two-handed/world-constrained props use the
+ * exact same pocket as attachToHand, including per-outfit hand scaling.
+ */
+export function wristTargetForGrip(
+  rig: Rig,
+  side: "L" | "R",
+  gripWorld: THREE.Vector3,
+  aimWorld: THREE.Quaternion,
+  out: THREE.Vector3
+): THREE.Vector3 {
+  const hand = side === "R" ? rig.handR : rig.handL;
+  return out
+    .copy(HAND_GRIP)
+    .multiplyScalar(hand.scale.x)
+    .applyQuaternion(aimWorld)
+    .multiplyScalar(-1)
+    .add(gripWorld);
+}
+
 export type GripSpec = {
   /** Grip point in item-local coordinates. */
   position: [number, number, number];

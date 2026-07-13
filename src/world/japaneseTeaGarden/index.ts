@@ -1,6 +1,8 @@
 import * as THREE from "three/webgpu";
 import type { Physics } from "../../core/physics";
 import type { VoiceOutput } from "../../gameplay/agents/dialogue";
+import type { GardenRakeMotion, GardenRakeTool } from "../../player/gardenRake";
+import type { DebugFeatureTuningRegistration } from "../../ui/debug";
 import { createTeaGardenArchitecture } from "./architecture";
 import {
   createDryLandscape,
@@ -63,21 +65,24 @@ export type JapaneseTeaGarden = {
   update(dt: number, time: number, player: TeaGardenPlayerPosition, camera: THREE.Camera, mode?: string): void;
   project(camera: THREE.Camera): void;
   interact(player: TeaGardenPlayerPosition, mode: string): boolean;
+  tuningDescriptor(): DebugFeatureTuningRegistration;
   dispose(): void;
   stats: JapaneseTeaGardenStats;
   debugState(): JapaneseTeaGardenDebugState;
 };
 
 export type JapaneseTeaGardenOptions = {
+  renderer: THREE.WebGPURenderer;
   physics?: Physics;
   dialogueSource?: TeaGardenDialogueSource;
   voiceOutput?: VoiceOutput;
   dialogueParent?: HTMLElement;
-  /** Show/hide a tea bowl in the player's own hand when Iroh hands off the tea. */
+  /** Show/hide a tea bowl in the player's own hand when Hiro hands off the tea. */
   onCarryCup?: (holding: boolean) => void;
   /** Attach/detach the activity-owned rake without eagerly importing it into Player. */
-  onCarryRake?: (rake: THREE.Group | null) => void;
-  onRakingChange?: (raking: boolean) => void;
+  onCarryRake?: (rake: GardenRakeTool | null) => void;
+  /** One exact world contact drives both the granular brush and the avatar pose. */
+  onRakeMotion?: (motion: Readonly<GardenRakeMotion> | null) => void;
   notify?: (message: string, seconds?: number) => void;
 };
 
@@ -90,7 +95,7 @@ const SLEEP_DISTANCE = 860;
  */
 export function createJapaneseTeaGarden(
   map: TeaGardenTerrain,
-  options: JapaneseTeaGardenOptions = {}
+  options: JapaneseTeaGardenOptions
 ): JapaneseTeaGarden {
   const group = new THREE.Group();
   group.name = "japanese_tea_garden";
@@ -99,8 +104,9 @@ export function createJapaneseTeaGarden(
   const architecture = createTeaGardenArchitecture(map, options.physics);
   const vegetation = createTeaGardenVegetation(map);
   const dryLandscape = createDryLandscape(map, {
+    renderer: options.renderer,
     onCarryRake: options.onCarryRake,
-    onRakingChange: options.onRakingChange,
+    onRakeMotion: options.onRakeMotion,
     notify: options.notify
   });
   const guide = createTeaGardenGuide(map, {
@@ -164,6 +170,16 @@ export function createJapaneseTeaGarden(
       if (disposed || !awake) return false;
       if (dryLandscape.interact(player, mode)) return true;
       return guide.interact(player, mode);
+    },
+    tuningDescriptor() {
+      return {
+        id: "japanese-tea-garden-sand",
+        title: "Japanese Tea Garden · GPU sand",
+        build(folder) {
+          return { monitors: dryLandscape.addTuning(folder) };
+        },
+        sync: () => dryLandscape.syncTuning()
+      };
     },
     dispose() {
       if (disposed) return;

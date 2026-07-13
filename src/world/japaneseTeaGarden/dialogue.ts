@@ -7,8 +7,8 @@ import {
 import type { TeaGardenTourStopId } from "./layout";
 
 export const TEA_MASTER_SPEAKER: DialogueSpeaker = {
-  id: "tea-master-iroh",
-  name: "Iroh",
+  id: "tea-master-hiro",
+  name: "Hiro",
   title: "Tea master · garden keeper"
 } as const;
 
@@ -32,7 +32,7 @@ function turns(chapter: TeaGardenDialogueChapter, entries: readonly ScriptTurn[]
 const WELCOME = turns("welcome", [
   {
     id: "welcome-1",
-    text: "Welcome, traveler. I am Iroh. This garden has been expecting your footsteps, though it is far too polite to say so aloud.",
+    text: "Welcome, traveler. I am Hiro. This garden has been expecting your footsteps, though it is far too polite to say so aloud.",
     metadata: {
       topic: "A bowl before the path",
       nextHint: "E · Accept tea",
@@ -199,7 +199,7 @@ const FAREWELL = turns("farewell", [
     text: "Thank you for walking with me. Wander as long as you like. I will return to the Tea House, where the kettle and I will be practicing patience.",
     metadata: {
       topic: "The path continues",
-      nextHint: "E · Let Iroh return",
+      nextHint: "E · Let Hiro return",
       tags: ["action:talk"]
     }
   }

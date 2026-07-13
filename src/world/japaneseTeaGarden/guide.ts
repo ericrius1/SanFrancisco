@@ -37,7 +37,7 @@ export type TeaGardenGuideDebugState = {
   playerDistance: number;
   busy: boolean;
   worldVisible: boolean;
-  iroh: TeaMasterVisualDebugState;
+  hiro: TeaMasterVisualDebugState;
 };
 
 export type TeaGardenGuide = {
@@ -54,7 +54,7 @@ export type TeaGardenGuideOptions = {
   dialogueSource?: TeaGardenDialogueSource;
   voiceOutput?: VoiceOutput;
   dialogueParent?: HTMLElement;
-  /** Called when the player takes the tea from Iroh (holding=true) and when he
+  /** Called when the player takes the tea from Hiro (holding=true) and when he
    *  reclaims it on returning home (holding=false), so the host app can show a
    *  cup in the player's own hand for the walk. */
   onCarryCup?: (holding: boolean) => void;
@@ -141,13 +141,13 @@ export function createTeaGardenGuide(
 
   const showIdlePrompt = () => {
     if (uiPresentation === "prompt:idle") return;
-    ui.showPrompt({ speaker: TEA_MASTER_SPEAKER, key: "E", label: "Share tea with Iroh" });
+    ui.showPrompt({ speaker: TEA_MASTER_SPEAKER, key: "E", label: "Share tea with Hiro" });
     uiPresentation = "prompt:idle";
   };
 
   const showBusyPrompt = () => {
     if (uiPresentation === "prompt:busy") return;
-    ui.showPrompt({ speaker: TEA_MASTER_SPEAKER, key: "", label: "Iroh listens to the kettle…" });
+    ui.showPrompt({ speaker: TEA_MASTER_SPEAKER, key: "", label: "Hiro listens to the kettle…" });
     uiPresentation = "prompt:busy";
   };
 
@@ -235,7 +235,7 @@ export function createTeaGardenGuide(
   const requestNextTurn = async () => {
     if (!provider || busy || disposed) return;
     // The moment the player advances past the "share tea" (serve) beat, the tea
-    // has changed hands: free Iroh's arms and hand the cup to the player.
+    // has changed hands: free Hiro's arms and hand the cup to the player.
     if (!cupHandedOff && currentTurn?.metadata?.tags?.some((tag) => tag === "action:serve")) {
       cupHandedOff = true;
       visual.setCarryingCup(false);
@@ -281,7 +281,7 @@ export function createTeaGardenGuide(
     } catch (error: unknown) {
       if (!controller.signal.aborted) {
         console.warn("[tea-garden] Dialogue provider failed", error);
-        ui.showPrompt({ speaker: TEA_MASTER_SPEAKER, key: "E", label: "Ask Iroh again" });
+        ui.showPrompt({ speaker: TEA_MASTER_SPEAKER, key: "E", label: "Ask Hiro again" });
         uiPresentation = "prompt:error";
       }
     } finally {
@@ -317,7 +317,7 @@ export function createTeaGardenGuide(
     // Falling behind can pause an active tour, but distance alone must never
     // turn the initial idle prompt into a route state. A map teleport arrives at
     // the garden entrance outside WAIT_DISTANCE; corrupting idle -> waiting there
-    // leaves Iroh "walking" an empty route when the player finally approaches.
+    // leaves Hiro "walking" an empty route when the player finally approaches.
     if (phase === "walking" && playerDistance > WAIT_DISTANCE) phase = "waiting";
     if (phase === "waiting") {
       if (playerDistance <= RESUME_DISTANCE) phase = "walking";
@@ -391,7 +391,7 @@ export function createTeaGardenGuide(
       // Ground convergence belongs to the outer update, not locomotion: arrival
       // can switch to speaking on the same frame and waiting can last minutes.
       // Keeping this live in every phase prevents a partially converged slope
-      // sample from freezing Iroh above or below the path.
+      // sample from freezing Hiro above or below the path.
       visual.group.position.y = THREE.MathUtils.damp(
         visual.group.position.y,
         map.groundTop(visual.group.position.x, visual.group.position.z),
@@ -442,7 +442,7 @@ export function createTeaGardenGuide(
         playerDistance,
         busy,
         worldVisible,
-        iroh: visual.debugState()
+        hiro: visual.debugState()
       };
     },
     dispose() {

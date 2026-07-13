@@ -16,10 +16,22 @@ import {
   poseSwim,
   poseWalk,
   rigHandWorld,
+  HAND_GRIP,
   setHandPose,
   type Rig
 } from "./rig";
-import { attachToHand, buildBow, buildGolfClub, secondHandCurl, GOLF_CLUB_GRIP, type GripSpec, type HeldItem } from "./held";
+import {
+  attachToHand,
+  buildBow,
+  buildGolfClub,
+  secondHandCurl,
+  wristTargetForGrip,
+  GOLF_CLUB_GRIP,
+  type GripSpec,
+  type HeldItem
+} from "./held";
+import { setHandTarget } from "./handIK";
+import type { GardenRakeMotion, GardenRakeTool } from "./gardenRake";
 import { ARCHER_BOW_GRIP, poseArcher } from "../gameplay/archery/poses";
 import { avatarFromSeed, normalizeAvatarTraits, type AvatarTraits } from "./avatar";
 import { DEFAULT_DRIVE_SPEC, type Cockpit, type DriveSpec, type PlayerMode } from "./types";
@@ -49,11 +61,51 @@ import { animateScooter, buildScooterMesh, ScooterController, type ScooterConfig
 import { buildBirdMesh, BirdController } from "../vehicles/bird";
 import { setEmbodimentVisible } from "./embodimentVisibility";
 
+export type { GardenRakeMotion, GardenRakeTool } from "./gardenRake";
+
 const V = {
   tmp: new THREE.Vector3(),
   tmp2: new THREE.Vector3(),
   up: new THREE.Vector3(0, 1, 0),
   quat: new THREE.Quaternion()
+};
+
+const GARDEN_RAKE_DEFAULT_ELEVATION = THREE.MathUtils.degToRad(50);
+const GARDEN_RAKE_CARRY_ELEVATION = THREE.MathUtils.degToRad(78);
+const GARDEN_RAKE_DEFAULT_BODY_LEAN = 0.24;
+const GARDEN_RAKE_LEGACY_SAND_LIFT = 0.12;
+const GARDEN_RAKE_LEGACY_CONTACT_BACK = 0.92;
+const GARDEN_RAKE_GRIP_TILT = -Math.atan2(0.5, 1.52);
+
+// One local player, one rake. All per-frame pose math reuses this scratch so
+// dragging a GPU brush never creates a parallel stream of short-lived vectors.
+const RAKE = {
+  localAcross: new THREE.Vector3(),
+  localShaft: new THREE.Vector3(),
+  localBinormal: new THREE.Vector3(),
+  pull: new THREE.Vector3(),
+  normal: new THREE.Vector3(),
+  across: new THREE.Vector3(),
+  shaft: new THREE.Vector3(),
+  binormal: new THREE.Vector3(),
+  contact: new THREE.Vector3(),
+  rootPosition: new THREE.Vector3(),
+  offset: new THREE.Vector3(),
+  gripPosition: new THREE.Vector3(),
+  gripAim: new THREE.Quaternion(),
+  wristTarget: new THREE.Vector3(),
+  worldQuaternion: new THREE.Quaternion(),
+  localBasis: new THREE.Matrix4(),
+  localBasisInverse: new THREE.Matrix4(),
+  worldBasis: new THREE.Matrix4(),
+  rotationMatrix: new THREE.Matrix4(),
+  desiredWorld: new THREE.Matrix4(),
+  parentInverse: new THREE.Matrix4(),
+  localMatrix: new THREE.Matrix4(),
+  rootInverse: new THREE.Matrix4(),
+  unitScale: new THREE.Vector3(1, 1, 1),
+  forwardLocal: new THREE.Vector3(0, 0, -1),
+  halfTurnX: new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI)
 };
 
 // A missed streamed-surface handoff must degrade into a short reset, never an
@@ -83,15 +135,6 @@ const CARRY_BOARD_GRIP: GripSpec = {
   rotation: [Math.PI / 2, 0, 0]
 };
 const CARRY_BOARD_SCALE = 0.82; // matches the old fixed-offset prop's scale
-
-/** The garden rake is built lazily by the Tea Garden activity. Its bamboo
- * shaft runs mostly down item-local -Y, like the golf club, so this grip puts
- * the upper handle across the curled right mitt without importing the optional
- * activity into the boot-critical Player module. */
-const GARDEN_RAKE_GRIP: GripSpec = {
-  position: [0, -0.18, 0.06],
-  rotation: [0.08, 0, Math.PI / 2]
-};
 
 /**
  * The player: one physics body + one visible embodiment at a time. Each mode's
@@ -188,9 +231,28 @@ export class Player {
   #carryBoard!: THREE.Group; // surfboard tucked under the arm while on the beach
   #heldCarryBoard: HeldItem | null = null; // grip attachment into the walk rig's hand
   #carryingBoard = false; // true once setCarryingBoard(true) has ever attached the board
-  #gardenRake: THREE.Group | null = null;
-  #heldGardenRake: HeldItem | null = null;
+  #gardenRakeTool: GardenRakeTool | null = null;
+  #gardenRakeLegacy = false;
   #gardenRaking = false;
+  #gardenRakeMotion: GardenRakeMotion = {
+    engaged: false,
+    dragging: false,
+    contactX: 0,
+    contactY: 0,
+    contactZ: 0,
+    pullX: 0,
+    pullZ: -1,
+    normalX: 0,
+    normalY: 1,
+    normalZ: 0,
+    shaftElevation: GARDEN_RAKE_DEFAULT_ELEVATION,
+    bodyLean: GARDEN_RAKE_DEFAULT_BODY_LEAN
+  };
+  #gardenRakeContactLocal = new THREE.Vector3();
+  #gardenRakeRightGripLocal = new THREE.Vector3();
+  #gardenRakeLocalAcross = new THREE.Vector3(1, 0, 0);
+  #gardenRakeLocalShaft = new THREE.Vector3(0, 1.52, -0.5).normalize();
+  #gardenRakeLastPull = new THREE.Vector3(0, 0, -1);
   #defaultDriveMesh!: THREE.Group;
   #defaultDroneMesh!: THREE.Group;
   #broomRigAttached = false;
@@ -712,27 +774,267 @@ export class Player {
     this.#carryBoard.visible = on && this.mode === "walk";
   }
 
-  /** Attach an activity-owned rake to the walk rig. Passing null releases it;
-   * the activity immediately reparents the same object onto its little stand. */
-  setGardenRake(rake: THREE.Group | null) {
-    if (rake === this.#gardenRake) {
-      if (rake) rake.visible = this.mode === "walk";
+  /**
+   * Take/release an activity-owned rake. Unlike single-hand props, the rake is
+   * parented to the walk root: its tine contact owns the tool transform and both
+   * hands reach to it. On release the activity immediately reparents `root` to
+   * its rack, so this method deliberately leaves it detached.
+   */
+  setGardenRakeTool(tool: GardenRakeTool | null) {
+    if (tool === this.#gardenRakeTool) {
+      if (tool) tool.root.visible = this.mode === "walk";
       return;
     }
-    this.#heldGardenRake?.release();
-    this.#heldGardenRake = null;
-    this.#gardenRake = rake;
+
+    const previous = this.#gardenRakeTool;
+    this.#gardenRakeTool = null;
+    if (previous) previous.root.removeFromParent();
+    this.#gardenRakeLegacy = false;
     this.#gardenRaking = false;
-    if (rake) {
-      this.#heldGardenRake = attachToHand(this.#walkRig, "R", rake, GARDEN_RAKE_GRIP);
-      rake.visible = this.mode === "walk";
+    this.#gardenRakeMotion.engaged = false;
+    this.#gardenRakeMotion.dragging = false;
+
+    if (!tool) {
+      this.#walkRig.handL.rotation.set(0, 0, 0);
+      this.#walkRig.handR.rotation.set(0, 0, 0);
+      setHandPose(this.#walkRig, "L", 0);
+      setHandPose(this.#walkRig, "R", 0);
+      return;
+    }
+
+    // Snapshot the authored anchors in root-local space before reparenting. It
+    // remains correct for nested anchors and for a rack with its own transform.
+    tool.root.updateWorldMatrix(true, true);
+    RAKE.rootInverse.copy(tool.root.matrixWorld).invert();
+    tool.contact.getWorldPosition(this.#gardenRakeContactLocal).applyMatrix4(RAKE.rootInverse);
+    tool.rightGrip.getWorldPosition(this.#gardenRakeRightGripLocal).applyMatrix4(RAKE.rootInverse);
+
+    const across = tool.localAcross ?? [1, 0, 0];
+    const shaft = tool.localShaft ?? [0, 1.52, -0.5];
+    this.#gardenRakeLocalAcross.set(across[0], across[1], across[2]);
+    if (this.#gardenRakeLocalAcross.lengthSq() < 1e-6) this.#gardenRakeLocalAcross.set(1, 0, 0);
+    this.#gardenRakeLocalAcross.normalize();
+    this.#gardenRakeLocalShaft.set(shaft[0], shaft[1], shaft[2]);
+    this.#gardenRakeLocalShaft.addScaledVector(
+      this.#gardenRakeLocalAcross,
+      -this.#gardenRakeLocalShaft.dot(this.#gardenRakeLocalAcross)
+    );
+    if (this.#gardenRakeLocalShaft.lengthSq() < 1e-6) this.#gardenRakeLocalShaft.set(0, 1, 0);
+    this.#gardenRakeLocalShaft.normalize();
+
+    this.#gardenRakeTool = tool;
+    tool.root.removeFromParent();
+    tool.root.matrixAutoUpdate = true;
+    tool.root.scale.setScalar(1);
+    this.meshes.walk.add(tool.root);
+    tool.root.visible = this.mode === "walk";
+  }
+
+  /** Copy a reusable sand-contact packet; Player never retains the caller's object. */
+  setGardenRakeMotion(motion: Readonly<GardenRakeMotion> | null) {
+    this.#gardenRakeLegacy = false;
+    const target = this.#gardenRakeMotion;
+    if (!motion) {
+      target.engaged = false;
+      target.dragging = false;
+      return;
+    }
+    const number = (value: number | undefined, fallback: number) =>
+      value !== undefined && Number.isFinite(value) ? value : fallback;
+    target.engaged = motion.engaged;
+    target.dragging = motion.dragging;
+    target.contactX = number(motion.contactX, target.contactX);
+    target.contactY = number(motion.contactY, target.contactY);
+    target.contactZ = number(motion.contactZ, target.contactZ);
+    target.pullX = number(motion.pullX, target.pullX);
+    target.pullZ = number(motion.pullZ, target.pullZ);
+    target.normalX = number(motion.normalX, 0);
+    target.normalY = number(motion.normalY, 1);
+    target.normalZ = number(motion.normalZ, 0);
+    target.shaftElevation = number(motion.shaftElevation, GARDEN_RAKE_DEFAULT_ELEVATION);
+    target.bodyLean = number(motion.bodyLean, GARDEN_RAKE_DEFAULT_BODY_LEAN);
+  }
+
+  /**
+   * Temporary compatibility for the old bare-Group callback. It adds invisible
+   * authoring anchors at the current rake geometry's exact grip/contact points;
+   * new callers should construct and pass a GardenRakeTool directly.
+   */
+  setGardenRake(rake: THREE.Group | null) {
+    if (!rake) {
+      this.setGardenRakeTool(null);
+      return;
+    }
+    const anchor = (name: string) => {
+      const existing = rake.getObjectByName(name);
+      if (existing) return existing;
+      const created = new THREE.Object3D();
+      created.name = name;
+      rake.add(created);
+      return created;
+    };
+    const contact = anchor("garden_rake_tine_contact");
+    contact.position.set(0, -1.777, 0.54);
+    contact.quaternion.identity();
+    const rightGrip = anchor("garden_rake_grip_right");
+    rightGrip.position.set(0, -0.456, 0.15);
+    rightGrip.rotation.set(GARDEN_RAKE_GRIP_TILT, 0, Math.PI / 2);
+    const leftGrip = anchor("garden_rake_grip_left");
+    leftGrip.position.set(0, -0.182, 0.06);
+    leftGrip.quaternion.copy(rightGrip.quaternion).multiply(RAKE.halfTurnX);
+    this.setGardenRakeTool({
+      root: rake,
+      contact,
+      rightGrip,
+      leftGrip,
+      localAcross: [1, 0, 0],
+      localShaft: [0, 1.52, -0.5]
+    });
+    this.#gardenRakeLegacy = true;
+  }
+
+  /** Temporary boolean alias; the exact-motion integration supersedes it. */
+  setGardenRaking(active: boolean) {
+    this.#gardenRaking = active && !!this.#gardenRakeTool && this.mode === "walk";
+    if (this.#gardenRakeLegacy) {
+      this.#gardenRakeMotion.engaged = this.#gardenRaking;
+      this.#gardenRakeMotion.dragging = this.#gardenRaking;
     }
   }
 
-  /** A restrained carry pose outside the sand becomes a gentle sweeping pose
-   * while the activity is actually writing grooves. */
-  setGardenRaking(active: boolean) {
-    this.#gardenRaking = active && !!this.#gardenRake && this.mode === "walk";
+  /** Synthesize the old callback's missing contact/normal until main is rewired. */
+  #updateLegacyGardenRakeMotion() {
+    const motion = this.#gardenRakeMotion;
+    motion.engaged = this.#gardenRaking;
+    motion.dragging = this.#gardenRaking;
+    if (!this.#gardenRaking) return;
+
+    const speed = Math.hypot(this.velocity.x, this.velocity.z);
+    if (speed > 0.05) {
+      RAKE.pull.set(this.velocity.x / speed, 0, this.velocity.z / speed);
+    } else {
+      this.meshes.walk.getWorldQuaternion(RAKE.gripAim);
+      RAKE.pull.copy(RAKE.forwardLocal).applyQuaternion(RAKE.gripAim).setY(0).normalize();
+    }
+    this.#gardenRakeLastPull.copy(RAKE.pull);
+    motion.pullX = RAKE.pull.x;
+    motion.pullZ = RAKE.pull.z;
+    motion.contactX = this.renderPosition.x - RAKE.pull.x * GARDEN_RAKE_LEGACY_CONTACT_BACK;
+    motion.contactZ = this.renderPosition.z - RAKE.pull.z * GARDEN_RAKE_LEGACY_CONTACT_BACK;
+    motion.contactY = this.map.groundTop(motion.contactX, motion.contactZ) + GARDEN_RAKE_LEGACY_SAND_LIFT;
+
+    const eps = 0.35;
+    const hL = this.map.groundTop(motion.contactX - eps, motion.contactZ);
+    const hR = this.map.groundTop(motion.contactX + eps, motion.contactZ);
+    const hD = this.map.groundTop(motion.contactX, motion.contactZ - eps);
+    const hU = this.map.groundTop(motion.contactX, motion.contactZ + eps);
+    RAKE.normal.set(hL - hR, eps * 2, hD - hU).normalize();
+    motion.normalX = RAKE.normal.x;
+    motion.normalY = RAKE.normal.y;
+    motion.normalZ = RAKE.normal.z;
+  }
+
+  /** Build the rake-root quaternion from authored local axes and a terrain frame. */
+  #gardenRakeWorldFrame(elevation: number): THREE.Quaternion {
+    RAKE.normal.normalize();
+    RAKE.pull.addScaledVector(RAKE.normal, -RAKE.pull.dot(RAKE.normal));
+    if (RAKE.pull.lengthSq() < 1e-6) {
+      RAKE.pull.copy(this.#gardenRakeLastPull);
+      RAKE.pull.addScaledVector(RAKE.normal, -RAKE.pull.dot(RAKE.normal));
+    }
+    if (RAKE.pull.lengthSq() < 1e-6) RAKE.pull.set(0, 0, -1);
+    RAKE.pull.normalize();
+    this.#gardenRakeLastPull.copy(RAKE.pull);
+
+    RAKE.localAcross.copy(this.#gardenRakeLocalAcross);
+    RAKE.localShaft.copy(this.#gardenRakeLocalShaft);
+    RAKE.localBinormal.crossVectors(RAKE.localAcross, RAKE.localShaft).normalize();
+    RAKE.localShaft.crossVectors(RAKE.localBinormal, RAKE.localAcross).normalize();
+
+    RAKE.across.crossVectors(RAKE.normal, RAKE.pull).normalize();
+    const angle = THREE.MathUtils.clamp(elevation, THREE.MathUtils.degToRad(25), THREE.MathUtils.degToRad(84));
+    RAKE.shaft.copy(RAKE.pull).multiplyScalar(Math.cos(angle)).addScaledVector(RAKE.normal, Math.sin(angle)).normalize();
+    RAKE.binormal.crossVectors(RAKE.across, RAKE.shaft).normalize();
+    RAKE.shaft.crossVectors(RAKE.binormal, RAKE.across).normalize();
+
+    RAKE.localBasis.makeBasis(RAKE.localAcross, RAKE.localShaft, RAKE.localBinormal);
+    RAKE.localBasisInverse.copy(RAKE.localBasis).invert();
+    RAKE.worldBasis.makeBasis(RAKE.across, RAKE.shaft, RAKE.binormal);
+    RAKE.rotationMatrix.multiplyMatrices(RAKE.worldBasis, RAKE.localBasisInverse);
+    return RAKE.worldQuaternion.setFromRotationMatrix(RAKE.rotationMatrix);
+  }
+
+  /** Position an authored local anchor at an exact world target. */
+  #placeGardenRakeRoot(localAnchor: THREE.Vector3, worldTarget: THREE.Vector3) {
+    const tool = this.#gardenRakeTool;
+    if (!tool) return;
+    RAKE.offset.copy(localAnchor).applyQuaternion(RAKE.worldQuaternion);
+    RAKE.rootPosition.copy(worldTarget).sub(RAKE.offset);
+    RAKE.desiredWorld.compose(RAKE.rootPosition, RAKE.worldQuaternion, RAKE.unitScale);
+    const parent = this.meshes.walk;
+    parent.updateWorldMatrix(true, false);
+    RAKE.parentInverse.copy(parent.matrixWorld).invert();
+    RAKE.localMatrix.multiplyMatrices(RAKE.parentInverse, RAKE.desiredWorld);
+    RAKE.localMatrix.decompose(tool.root.position, tool.root.quaternion, tool.root.scale);
+    tool.root.updateMatrix();
+    tool.root.updateWorldMatrix(false, true);
+  }
+
+  #targetGardenRakeHand(rig: Rig, side: "L" | "R", anchor: THREE.Object3D) {
+    anchor.getWorldPosition(RAKE.gripPosition);
+    anchor.getWorldQuaternion(RAKE.gripAim);
+    wristTargetForGrip(rig, side, RAKE.gripPosition, RAKE.gripAim, RAKE.wristTarget);
+    setHandTarget(rig, side, {
+      pos: RAKE.wristTarget,
+      aim: RAKE.gripAim,
+      hand: HAND_GRIP,
+      reach: 0.99
+    });
+  }
+
+  /** Tool-first pose: exact tine contact, then independent two-arm IK. */
+  #poseGardenRake(rig: Rig, engaged: boolean) {
+    const tool = this.#gardenRakeTool;
+    if (!tool) return;
+    tool.root.visible = true;
+
+    if (engaged) {
+      const motion = this.#gardenRakeMotion;
+      RAKE.normal.set(motion.normalX, motion.normalY, motion.normalZ);
+      if (RAKE.normal.lengthSq() < 1e-6) RAKE.normal.set(0, 1, 0);
+      RAKE.pull.set(motion.pullX, 0, motion.pullZ);
+      this.#gardenRakeWorldFrame(motion.shaftElevation ?? GARDEN_RAKE_DEFAULT_ELEVATION);
+      RAKE.contact.set(motion.contactX, motion.contactY, motion.contactZ);
+      this.#placeGardenRakeRoot(this.#gardenRakeContactLocal, RAKE.contact);
+
+      const lean = THREE.MathUtils.clamp(motion.bodyLean ?? GARDEN_RAKE_DEFAULT_BODY_LEAN, 0, 0.55);
+      rig.torso.rotation.x -= lean;
+      rig.head.rotation.x += lean * 0.62;
+      rig.hips.position.y -= 0.03;
+      rig.group.updateWorldMatrix(true, true);
+      tool.root.updateWorldMatrix(true, true);
+      this.#targetGardenRakeHand(rig, "R", tool.rightGrip);
+      this.#targetGardenRakeHand(rig, "L", tool.leftGrip);
+      return;
+    }
+
+    // Upright one-hand carry: correct shaft alignment and a low head, without
+    // pretending the tines are dragging outside the sand activity.
+    RAKE.normal.set(0, 1, 0);
+    this.meshes.walk.getWorldQuaternion(RAKE.gripAim);
+    RAKE.pull.copy(RAKE.forwardLocal).applyQuaternion(RAKE.gripAim).setY(0);
+    if (RAKE.pull.lengthSq() < 1e-6) RAKE.pull.copy(this.#gardenRakeLastPull).setY(0);
+    RAKE.pull.normalize();
+    this.#gardenRakeWorldFrame(GARDEN_RAKE_CARRY_ELEVATION);
+    RAKE.gripPosition
+      .copy(this.renderPosition)
+      .addScaledVector(RAKE.across, 0.34)
+      .addScaledVector(RAKE.normal, 0.65)
+      .addScaledVector(RAKE.pull, 0.03);
+    this.#placeGardenRakeRoot(this.#gardenRakeRightGripLocal, RAKE.gripPosition);
+    rig.group.updateWorldMatrix(true, true);
+    tool.root.updateWorldMatrix(true, true);
+    this.#targetGardenRakeHand(rig, "R", tool.rightGrip);
   }
 
   /** Windup→release arm swing, `t` 0..1 (0 = idle, adds nothing). #animate lays
@@ -1111,6 +1413,9 @@ export class Player {
       const walk = this.#modes.walk;
       const golfing = this.#golfPose.active && walk.grounded && !walk.swimming;
       const archering = !golfing && this.#archerPose.active && walk.grounded && !walk.swimming;
+      if (this.#gardenRakeTool && this.#gardenRakeLegacy) this.#updateLegacyGardenRakeMotion();
+      const gardenPoseAllowed = !!this.#gardenRakeTool && !golfing && !archering && !walk.swimming;
+      const gardenEngaged = gardenPoseAllowed && walk.grounded && this.#gardenRakeMotion.engaged;
       // golf stance shift: the rig root (not the capsule) eases sideways to
       // stand beside the ball, and eases home again when the pose drops
       if (golfing && this.#golfAddressSet) {
@@ -1128,11 +1433,11 @@ export class Player {
       // Prop visibility is explicitly refreshed every walk frame.
       // the left mitt also wraps a held bow (archery); the string hand curls
       // only while actually pulling
-      setHandPose(r, "L", golfing || archering || this.#bowCarried ? 1 : 0);
+      setHandPose(r, "L", golfing || archering || this.#bowCarried || gardenEngaged ? 1 : 0);
       setHandPose(
         r,
         "R",
-        golfing || this.#ballHeld || this.#carryingBoard || this.#gardenRake || (archering && this.#archerPose.draw > 0.05) ? 1 : 0
+        golfing || this.#ballHeld || this.#carryingBoard || gardenPoseAllowed || (archering && this.#archerPose.draw > 0.05) ? 1 : 0
       );
       if (!golfing && !archering) {
         // only poseGolf/poseArcher rotate the wrist groups; neutralise them
@@ -1168,18 +1473,13 @@ export class Player {
           poseIdle(r, this.#animT);
         }
       }
-      if (this.#gardenRake && !golfing && !archering && !walk.swimming) {
-        this.#gardenRake.visible = true;
-        const sweep = this.#gardenRaking ? Math.sin(this.#animT * 2.3) * 0.2 : 0;
-        r.armR.rotation.x -= 0.42;
-        r.armR.rotation.z -= 0.34 - sweep;
-        r.foreR.rotation.x -= 0.48;
-        r.handR.rotation.x += 0.12;
-        r.torso.rotation.y += sweep * 0.18;
+      if (this.#gardenRakeTool) {
+        this.#gardenRakeTool.root.visible = gardenPoseAllowed;
+        if (gardenPoseAllowed) this.#poseGardenRake(r, gardenEngaged);
       }
       // throw swing: an additive overlay on the right arm + torso, layered AFTER
       // the base pose so it rides on top of walk/idle without a dedicated pose fn.
-      if (this.#throwT > 0 && !golfing) this.#applyThrowSwing(r);
+      if (this.#throwT > 0 && !golfing && !this.#gardenRakeTool) this.#applyThrowSwing(r);
     } else if (this.mode === "board") {
       const board = this.#modes.board;
       const crouch = Math.min(1, this.speed / BOARD_TUNING.values.boostMaxSpeed + Math.abs(board.lean) * 0.6);

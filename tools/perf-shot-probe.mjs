@@ -127,7 +127,7 @@ async function main() {
     await sleep(250);
   }
   if (WHERE === "tea" || WHERE === "teaMotion" || WHERE === "teaServe") {
-    await ev(c, `(()=>{const sf=window.__sf;const o=sf.scene.getObjectByName('tea_master_iroh');if(!o)return false;const p=o.getWorldPosition(new sf.THREE.Vector3());const gy=sf.map.groundTop(p.x,p.z);const eye=[p.x-3.25,gy+1.95,p.z+1.8],target=[p.x,gy+1.2,p.z];window.__probeView={eye,target};window.__sfFreeCam?.(eye,target);return true;})()`);
+    await ev(c, `(()=>{const sf=window.__sf;const o=sf.scene.getObjectByName('tea_master_hiro');if(!o)return false;const p=o.getWorldPosition(new sf.THREE.Vector3());const gy=sf.map.groundTop(p.x,p.z);const eye=[p.x-3.25,gy+1.95,p.z+1.8],target=[p.x,gy+1.2,p.z];window.__probeView={eye,target};window.__sfFreeCam?.(eye,target);return true;})()`);
   } else if (WHERE === "teaBridge") {
     await ev(c, `(()=>{const sf=window.__sf;const o=sf.scene.getObjectByName('japanese_tea_garden_drum_bridge');if(!o)return false;const box=new sf.THREE.Box3().setFromObject(o);const p=box.getCenter(new sf.THREE.Vector3());const eye=[p.x+7.5,p.y+3.2,p.z+7.4],target=[p.x,p.y+0.55,p.z];window.__probeView={eye,target};window.__sfFreeCam?.(eye,target);return true;})()`);
   } else if (WHERE === "teaInterior") {
@@ -140,16 +140,16 @@ async function main() {
   if (WHERE === "teaMotion") {
     await ev(c, `(async()=>{
       const sf=window.__sf,dev=sf.renderer.backend.device,guide=()=>sf.japaneseTeaGarden.debugState().guide;
-      const actor=sf.scene.getObjectByName('tea_master_iroh');
+      const actor=sf.scene.getObjectByName('tea_master_hiro');
       const playerState=()=>({x:sf.player.position.x,y:sf.player.position.y,z:sf.player.position.z});
       const interact=()=>sf.japaneseTeaGarden.interact(playerState(),'walk');
-      let prev=guide().iroh,maxJointStep=0,maxRootStep=0,serveEnd=null;
+      let prev=guide().hiro,maxJointStep=0,maxRootStep=0,serveEnd=null;
       const phases=new Set([guide().phase]),actions=new Set([prev.action]);
       interact();
       for(let frame=0;frame<390;frame++){
         if(frame===70||frame===140||frame===210)interact();
         await Promise.resolve();sf.tick(1/60);await dev.queue.onSubmittedWorkDone();
-        const state=guide(),now=state.iroh;phases.add(state.phase);actions.add(now.action);
+        const state=guide(),now=state.hiro;phases.add(state.phase);actions.add(now.action);
         for(let i=0;i<now.joints.length;i++){const d=Math.atan2(Math.sin(now.joints[i]-prev.joints[i]),Math.cos(now.joints[i]-prev.joints[i]));maxJointStep=Math.max(maxJointStep,Math.abs(d));}
         maxRootStep=Math.max(maxRootStep,Math.hypot(now.position[0]-prev.position[0],now.position[2]-prev.position[2]));
         if(now.action==='serve')serveEnd={left:now.cupToLeftHand,right:now.cupToRightHand};

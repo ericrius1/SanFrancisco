@@ -1,16 +1,24 @@
 import * as THREE from "three/webgpu";
+import type { FolderApi } from "tweakpane";
+import type { DebugMonitorBinding } from "../../ui/debug";
+import type { GardenRakeMotion, GardenRakeTool } from "../../player/gardenRake";
 import type { TeaGardenTerrain } from "./layout";
+import {
+  createSandSimulation,
+  type SandSimulation,
+  type SandSimulationStats
+} from "./sandSimulation";
 
 export const DRY_LANDSCAPE_CENTER = { x: -2344, z: 2166.5 } as const;
 export const DRY_LANDSCAPE_RADII = { x: 10.8, z: 6.4 } as const;
 
 const SAND_LIFT = 0.12;
 const RIM_STONES = 96;
-const STATIC_GROOVE_CAPACITY = 720;
-const TRAIL_GROOVE_CAPACITY = 2400;
-const TRAIL_SPACING = 0.19;
 const PICKUP_RANGE = 3.7;
 const RETURN_RANGE = 29;
+const RAKE_CONTACT_BACK = 0.92;
+const RAKE_STAMP_MIN_DISTANCE = 0.018;
+const RAKE_CONTACT_EPSILON = 0.28;
 const RAKE_RACK = { x: -2354.45, z: 2169.15 } as const;
 
 const ROCKS = [
@@ -22,30 +30,30 @@ const ROCKS = [
   { x: -2345.05, z: 2169.1, scale: 0.76, yaw: 1.76 }
 ] as const;
 
-const GROOVE_DUMMY = new THREE.Object3D();
-const GROOVE_DIRECTION = new THREE.Vector3();
-const GROOVE_FORWARD = new THREE.Vector3(0, 0, 1);
-
 export type DryLandscapeDebugState = {
   held: boolean;
   raking: boolean;
+  rakeEngaged: boolean;
   insideSand: boolean;
   distanceToRake: number;
-  trailSegments: number;
-  trailCapacity: number;
+  contact: { x: number; y: number; z: number };
+  simulation: SandSimulationStats;
 };
 
 export type DryLandscape = {
   group: THREE.Group;
   update(dt: number, time: number, player: { x: number; y: number; z: number }, mode: string): void;
   interact(player: { x: number; y: number; z: number }, mode: string): boolean;
+  addTuning(folder: FolderApi): DebugMonitorBinding[];
+  syncTuning(): void;
   dispose(): void;
   debugState(): DryLandscapeDebugState;
 };
 
 export type DryLandscapeOptions = {
-  onCarryRake?: (rake: THREE.Group | null) => void;
-  onRakingChange?: (raking: boolean) => void;
+  renderer: THREE.WebGPURenderer;
+  onCarryRake?: (rake: GardenRakeTool | null) => void;
+  onRakeMotion?: (motion: Readonly<GardenRakeMotion> | null) => void;
   notify?: (message: string, seconds?: number) => void;
 };
 
@@ -63,72 +71,6 @@ function hash(index: number, salt: number): number {
   value = Math.imul(value ^ (value >>> 16), 0x45d9f3b);
   value ^= value >>> 16;
   return (value >>> 0) / 4294967296;
-}
-
-function sandTexture(): THREE.DataTexture {
-  const size = 128;
-  const data = new Uint8Array(size * size * 4);
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const i = (y * size + x) * 4;
-      const fine = hash(x + y * size, 901);
-      const wave = Math.sin(x * 0.25 + Math.sin(y * 0.18) * 1.7) * 0.5 + 0.5;
-      const value = Math.round(199 + fine * 22 + wave * 9);
-      data[i] = value;
-      data[i + 1] = Math.round(value * 0.9);
-      data[i + 2] = Math.round(value * 0.72);
-      data[i + 3] = 255;
-    }
-  }
-  const texture = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
-  texture.name = "dry_landscape_warm_granite_grain";
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.wrapS = THREE.RepeatWrapping;
-  texture.wrapT = THREE.RepeatWrapping;
-  texture.repeat.set(5.4, 3.2);
-  texture.needsUpdate = true;
-  return texture;
-}
-
-/** Concentric rings give the surface enough vertices to hug the real slope. */
-function sandGeometry(map: TeaGardenTerrain): THREE.BufferGeometry {
-  const radialSegments = 12;
-  const angularSegments = 96;
-  const positions: number[] = [];
-  const uvs: number[] = [];
-  const indices: number[] = [];
-  const { x: cx, z: cz } = DRY_LANDSCAPE_CENTER;
-  positions.push(cx, map.groundTop(cx, cz) + SAND_LIFT, cz);
-  uvs.push(0.5, 0.5);
-  for (let ring = 1; ring <= radialSegments; ring++) {
-    const radius = ring / radialSegments;
-    for (let segment = 0; segment < angularSegments; segment++) {
-      const angle = (segment / angularSegments) * Math.PI * 2;
-      const x = cx + Math.cos(angle) * DRY_LANDSCAPE_RADII.x * radius;
-      const z = cz + Math.sin(angle) * DRY_LANDSCAPE_RADII.z * radius;
-      positions.push(x, map.groundTop(x, z) + SAND_LIFT, z);
-      uvs.push(0.5 + Math.cos(angle) * radius * 0.5, 0.5 + Math.sin(angle) * radius * 0.5);
-    }
-  }
-  for (let segment = 0; segment < angularSegments; segment++) {
-    indices.push(0, 1 + segment, 1 + ((segment + 1) % angularSegments));
-  }
-  for (let ring = 1; ring < radialSegments; ring++) {
-    const inner = 1 + (ring - 1) * angularSegments;
-    const outer = 1 + ring * angularSegments;
-    for (let segment = 0; segment < angularSegments; segment++) {
-      const next = (segment + 1) % angularSegments;
-      indices.push(inner + segment, outer + segment, outer + next);
-      indices.push(inner + segment, outer + next, inner + next);
-    }
-  }
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-  geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
-  geometry.setIndex(indices);
-  geometry.computeVertexNormals();
-  geometry.computeBoundingSphere();
-  return geometry;
 }
 
 function createRim(map: TeaGardenTerrain): THREE.InstancedMesh {
@@ -206,9 +148,9 @@ function cylinderBetween(a: THREE.Vector3, b: THREE.Vector3, radius: number, mat
   return mesh;
 }
 
-function createRake(): THREE.Group {
-  const group = new THREE.Group();
-  group.name = "dry_landscape_little_rake";
+function createRake(): GardenRakeTool {
+  const root = new THREE.Group();
+  root.name = "dry_landscape_little_rake";
   const bamboo = new THREE.MeshStandardMaterial({ color: 0xc18a43, roughness: 0.82 });
   const darkBamboo = new THREE.MeshStandardMaterial({ color: 0x7c512b, roughness: 0.9 });
   const cord = new THREE.MeshStandardMaterial({ color: 0xb5392f, roughness: 0.84 });
@@ -218,30 +160,56 @@ function createRake(): THREE.Group {
   handle.name = "garden_rake_bamboo_handle";
   handle.castShadow = true;
   handle.receiveShadow = true;
-  group.add(handle);
+  root.add(handle);
   const bar = new THREE.Mesh(new THREE.BoxGeometry(1.04, 0.09, 0.1), darkBamboo);
   bar.name = "garden_rake_head_bar";
   bar.position.copy(head);
   bar.castShadow = true;
   bar.receiveShadow = true;
-  group.add(bar);
+  root.add(bar);
   for (let i = 0; i < 7; i++) {
     const tine = new THREE.Mesh(new THREE.BoxGeometry(0.034, 0.25, 0.045), darkBamboo);
     tine.name = "garden_rake_tine";
     tine.position.set(-0.45 + i * 0.15, head.y - 0.13, head.z + 0.04);
     tine.rotation.x = -0.18;
     tine.receiveShadow = true;
-    group.add(tine);
+    root.add(tine);
   }
   const tie = new THREE.Mesh(new THREE.TorusGeometry(0.055, 0.012, 5, 10), cord);
   tie.name = "garden_rake_vermilion_wish_cord";
   tie.rotation.x = Math.PI / 2;
   tie.position.set(0, -0.23, 0.075);
-  group.add(tie);
-  return group;
+  root.add(tie);
+
+  // These anchors are the contract between the activity, the GPU brush, and
+  // the Player's two-hand IK. The visible rake can be restyled without ever
+  // reintroducing a guessed trail point or a floating head.
+  const gripTilt = -Math.atan2(0.5, 1.52);
+  const contact = new THREE.Object3D();
+  contact.name = "garden_rake_tine_contact";
+  contact.position.set(0, -1.777, 0.54);
+  const rightGrip = new THREE.Object3D();
+  rightGrip.name = "garden_rake_grip_right";
+  rightGrip.position.set(0, -0.456, 0.15);
+  rightGrip.rotation.set(gripTilt, 0, Math.PI / 2);
+  const leftGrip = new THREE.Object3D();
+  leftGrip.name = "garden_rake_grip_left";
+  leftGrip.position.set(0, -0.182, 0.06);
+  leftGrip.quaternion.copy(rightGrip.quaternion).multiply(
+    new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI)
+  );
+  root.add(contact, rightGrip, leftGrip);
+  return {
+    root,
+    contact,
+    rightGrip,
+    leftGrip,
+    localAcross: [1, 0, 0],
+    localShaft: [0, 1.52, -0.5]
+  };
 }
 
-function createRakeRack(map: TeaGardenTerrain, rake: THREE.Group): THREE.Group {
+function createRakeRack(map: TeaGardenTerrain, rake: GardenRakeTool): THREE.Group {
   const group = new THREE.Group();
   group.name = "dry_landscape_rake_rack";
   const y = map.groundTop(RAKE_RACK.x, RAKE_RACK.z);
@@ -261,93 +229,14 @@ function createRakeRack(map: TeaGardenTerrain, rake: THREE.Group): THREE.Group {
   rest.castShadow = true;
   rest.receiveShadow = true;
   group.add(rest);
-  group.add(rake);
-  rake.position.set(0.1, 1.92, -0.05);
-  rake.rotation.set(0.08, 0.08, -0.12);
+  group.add(rake.root);
+  rake.root.position.set(0.1, 1.92, -0.05);
+  rake.root.rotation.set(0.08, 0.08, -0.12);
   return group;
 }
 
 function nearRock(x: number, z: number, clearance = 0.25): boolean {
   return ROCKS.some((rock) => Math.hypot(x - rock.x, z - rock.z) < rock.scale * 1.15 + clearance);
-}
-
-function addGrooveSegment(
-  mesh: THREE.InstancedMesh,
-  index: number,
-  map: TeaGardenTerrain,
-  ax: number,
-  az: number,
-  bx: number,
-  bz: number,
-  width: number
-): void {
-  const dx = bx - ax;
-  const dz = bz - az;
-  const ay = map.groundTop(ax, az) + SAND_LIFT + 0.018;
-  const by = map.groundTop(bx, bz) + SAND_LIFT + 0.018;
-  const dy = by - ay;
-  const length = Math.hypot(dx, dy, dz);
-  if (length < 0.01) return;
-  const x = (ax + bx) * 0.5;
-  const z = (az + bz) * 0.5;
-  GROOVE_DUMMY.position.set(x, (ay + by) * 0.5, z);
-  GROOVE_DIRECTION.set(dx, dy, dz).normalize();
-  GROOVE_DUMMY.quaternion.setFromUnitVectors(GROOVE_FORWARD, GROOVE_DIRECTION);
-  GROOVE_DUMMY.scale.set(width, 0.01, length + 0.07);
-  GROOVE_DUMMY.updateMatrix();
-  mesh.setMatrixAt(index, GROOVE_DUMMY.matrix);
-}
-
-function createGrooveMesh(name: string, capacity: number, color: number): THREE.InstancedMesh {
-  const mesh = new THREE.InstancedMesh(
-    new THREE.BoxGeometry(1, 1, 1),
-    new THREE.MeshStandardMaterial({ color, roughness: 1, metalness: 0 }),
-    capacity
-  );
-  mesh.name = name;
-  mesh.count = 0;
-  mesh.receiveShadow = true;
-  mesh.frustumCulled = false;
-  return mesh;
-}
-
-function fillQuietPattern(mesh: THREE.InstancedMesh, map: TeaGardenTerrain): number {
-  let index = 0;
-  const add = (ax: number, az: number, bx: number, bz: number, width = 0.043) => {
-    if (index >= STATIC_GROOVE_CAPACITY) return;
-    if (!inDryLandscape(ax, az, -0.34) || !inDryLandscape(bx, bz, -0.34)) return;
-    if (nearRock((ax + bx) * 0.5, (az + bz) * 0.5, 0.16)) return;
-    addGrooveSegment(mesh, index++, map, ax, az, bx, bz, width);
-  };
-  // Long, gently breathing currents replace the old perfect concentric target.
-  for (let row = 0; row < 13; row++) {
-    const baseZ = DRY_LANDSCAPE_CENTER.z - 4.85 + row * 0.78;
-    let previous: { x: number; z: number } | null = null;
-    for (let step = 0; step <= 56; step++) {
-      const x = DRY_LANDSCAPE_CENTER.x - 10.2 + (step / 56) * 20.4;
-      const z = baseZ + Math.sin((x - DRY_LANDSCAPE_CENTER.x) * 0.34 + row * 0.58) * 0.22;
-      if (previous) add(previous.x, previous.z, x, z);
-      previous = { x, z };
-    }
-  }
-  // A few close ripples let each stone read as an island in imagined water.
-  for (const island of [ROCKS[0], ROCKS[3], ROCKS[5]]) {
-    for (let ring = 0; ring < 3; ring++) {
-      const rx = island.scale * (1.34 + ring * 0.32);
-      const rz = island.scale * (1.05 + ring * 0.28);
-      let previous: { x: number; z: number } | null = null;
-      for (let step = 0; step <= 38; step++) {
-        const angle = (step / 38) * Math.PI * 2;
-        const x = island.x + Math.cos(angle) * rx;
-        const z = island.z + Math.sin(angle) * rz;
-        if (previous) add(previous.x, previous.z, x, z, 0.038);
-        previous = { x, z };
-      }
-    }
-  }
-  mesh.count = index;
-  mesh.instanceMatrix.needsUpdate = true;
-  return index;
 }
 
 function createLeafScatter(map: TeaGardenTerrain): THREE.InstancedMesh {
@@ -383,30 +272,23 @@ function createLeafScatter(map: TeaGardenTerrain): THREE.InstancedMesh {
   return mesh;
 }
 
-export function createDryLandscape(map: TeaGardenTerrain, options: DryLandscapeOptions = {}): DryLandscape {
+export function createDryLandscape(map: TeaGardenTerrain, options: DryLandscapeOptions): DryLandscape {
   const group = new THREE.Group();
   group.name = "japanese_tea_garden_dry_landscape";
 
-  const grain = sandTexture();
-  const sand = new THREE.Mesh(
-    sandGeometry(map),
-    new THREE.MeshStandardMaterial({
-      color: 0xfff1d4,
-      map: grain,
-      roughness: 0.98,
-      metalness: 0,
-      emissive: 0x2b1d0e,
-      emissiveIntensity: 0.055
-    })
-  );
-  sand.name = "dry_garden_terrain_conforming_sand";
-  sand.receiveShadow = true;
-  group.add(sand, createRim(map), createRockIslands(map), createLeafScatter(map));
-
-  const quietGrooves = createGrooveMesh("dry_garden_quiet_current_grooves", STATIC_GROOVE_CAPACITY, 0x887960);
-  fillQuietPattern(quietGrooves, map);
-  const trailGrooves = createGrooveMesh("dry_garden_player_rake_trails", TRAIL_GROOVE_CAPACITY, 0x71634f);
-  group.add(quietGrooves, trailGrooves);
+  const simulation: SandSimulation = createSandSimulation({
+    renderer: options.renderer,
+    map,
+    center: DRY_LANDSCAPE_CENTER,
+    radii: DRY_LANDSCAPE_RADII,
+    sandLift: SAND_LIFT,
+    rocks: ROCKS.map((rock) => ({
+      x: rock.x,
+      z: rock.z,
+      radius: rock.scale * 1.15 + 0.16
+    }))
+  });
+  group.add(simulation.mesh, createRim(map), createRockIslands(map), createLeafScatter(map));
 
   const rake = createRake();
   const rack = createRakeRack(map, rake);
@@ -414,69 +296,82 @@ export function createDryLandscape(map: TeaGardenTerrain, options: DryLandscapeO
 
   let held = false;
   let raking = false;
+  let rakeEngaged = false;
   let insideSand = false;
   let distanceToRake = Number.POSITIVE_INFINITY;
-  let trailSegments = 0;
-  let trailWrite = 0;
   let promptVisible = false;
   let previousPlayer: { x: number; z: number } | null = null;
-  let previousTrail: { x: number; z: number; dx: number; dz: number } | null = null;
+  let previousContactValid = false;
+  let previousContactX = 0;
+  let previousContactZ = 0;
+  let pullX = 0;
+  let pullZ = -1;
   let disposed = false;
 
+  const motion: GardenRakeMotion = {
+    engaged: false,
+    dragging: false,
+    contactX: RAKE_RACK.x,
+    contactY: map.groundTop(RAKE_RACK.x, RAKE_RACK.z) + SAND_LIFT,
+    contactZ: RAKE_RACK.z,
+    pullX,
+    pullZ,
+    normalX: 0,
+    normalY: 1,
+    normalZ: 0,
+    shaftElevation: THREE.MathUtils.degToRad(50),
+    bodyLean: 0.24
+  };
+  const stamp = {
+    previous: { x: 0, z: 0 },
+    current: { x: 0, z: 0 },
+    across: { x: 1, z: 0 },
+    pull: { x: 0, z: -1 }
+  };
+
   const resetRakePose = () => {
-    rack.add(rake);
-    rake.position.set(0.1, 1.92, -0.05);
-    rake.rotation.set(0.08, 0.08, -0.12);
-    rake.scale.setScalar(1);
-    rake.visible = true;
+    rack.add(rake.root);
+    rake.root.position.set(0.1, 1.92, -0.05);
+    rake.root.rotation.set(0.08, 0.08, -0.12);
+    rake.root.scale.setScalar(1);
+    rake.root.visible = true;
   };
 
   const setRaking = (next: boolean) => {
     if (raking === next) return;
     raking = next;
-    options.onRakingChange?.(next);
+  };
+
+  const publishMotion = (engaged: boolean, dragging: boolean) => {
+    rakeEngaged = engaged;
+    motion.engaged = engaged;
+    motion.dragging = dragging;
+    motion.pullX = pullX;
+    motion.pullZ = pullZ;
+    options.onRakeMotion?.(motion);
   };
 
   const setHeld = (next: boolean, message?: string) => {
     if (held === next) return;
     held = next;
     setRaking(false);
-    previousTrail = null;
+    rakeEngaged = false;
+    previousContactValid = false;
     previousPlayer = null;
     if (next) {
-      rake.removeFromParent();
+      rake.root.removeFromParent();
       options.onCarryRake?.(rake);
     } else {
+      options.onRakeMotion?.(null);
       options.onCarryRake?.(null);
       resetRakePose();
     }
     if (message) options.notify?.(message, 3.3);
   };
 
-  const writeTrail = (from: { x: number; z: number; dx: number; dz: number }, to: { x: number; z: number; dx: number; dz: number }) => {
-    const perpAX = -from.dz;
-    const perpAZ = from.dx;
-    const perpBX = -to.dz;
-    const perpBZ = to.dx;
-    for (let tine = -2; tine <= 2; tine++) {
-      const offset = tine * 0.17;
-      const ax = from.x + perpAX * offset;
-      const az = from.z + perpAZ * offset;
-      const bx = to.x + perpBX * offset;
-      const bz = to.z + perpBZ * offset;
-      if (!inDryLandscape(ax, az, -0.38) || !inDryLandscape(bx, bz, -0.38)) continue;
-      if (nearRock((ax + bx) * 0.5, (az + bz) * 0.5, 0.22)) continue;
-      addGrooveSegment(trailGrooves, trailWrite, map, ax, az, bx, bz, 0.052);
-      trailWrite = (trailWrite + 1) % TRAIL_GROOVE_CAPACITY;
-      trailSegments = Math.min(TRAIL_GROOVE_CAPACITY, trailSegments + 1);
-    }
-    trailGrooves.count = trailSegments;
-    trailGrooves.instanceMatrix.needsUpdate = true;
-  };
-
   return {
     group,
-    update(_dt, _time, player, mode) {
+    update(dt, _time, player, mode) {
       if (disposed) return;
       distanceToRake = Math.hypot(player.x - RAKE_RACK.x, player.z - RAKE_RACK.z);
       insideSand = inDryLandscape(player.x, player.z, -0.55);
@@ -487,84 +382,126 @@ export function createDryLandscape(map: TeaGardenTerrain, options: DryLandscapeO
         } else if (distanceToRake > PICKUP_RANGE + 1.8) {
           promptVisible = false;
         }
+        simulation.update(dt);
         return;
       }
       if (mode !== "walk" || Math.hypot(player.x - DRY_LANDSCAPE_CENTER.x, player.z - DRY_LANDSCAPE_CENTER.z) > RETURN_RANGE) {
         setHeld(false, "The rake has returned to its garden stand.");
+        simulation.update(dt);
         return;
       }
       if (!previousPlayer) {
         previousPlayer = { x: player.x, z: player.z };
+        publishMotion(false, false);
+        simulation.update(dt);
         return;
       }
       const moveX = player.x - previousPlayer.x;
       const moveZ = player.z - previousPlayer.z;
       const moved = Math.hypot(moveX, moveZ);
-      previousPlayer = { x: player.x, z: player.z };
-      if (!insideSand || moved < 0.025) {
-        setRaking(false);
-        previousTrail = null;
+      previousPlayer.x = player.x;
+      previousPlayer.z = player.z;
+      if (moved >= RAKE_STAMP_MIN_DISTANCE) {
+        pullX = moveX / moved;
+        pullZ = moveZ / moved;
+      }
+
+      motion.contactX = player.x - pullX * RAKE_CONTACT_BACK;
+      motion.contactZ = player.z - pullZ * RAKE_CONTACT_BACK;
+      motion.contactY = map.groundTop(motion.contactX, motion.contactZ) + SAND_LIFT + 0.006;
+      const hL = map.groundTop(motion.contactX - RAKE_CONTACT_EPSILON, motion.contactZ);
+      const hR = map.groundTop(motion.contactX + RAKE_CONTACT_EPSILON, motion.contactZ);
+      const hD = map.groundTop(motion.contactX, motion.contactZ - RAKE_CONTACT_EPSILON);
+      const hU = map.groundTop(motion.contactX, motion.contactZ + RAKE_CONTACT_EPSILON);
+      const nx = hL - hR;
+      const ny = RAKE_CONTACT_EPSILON * 2;
+      const nz = hD - hU;
+      const normalLength = Math.hypot(nx, ny, nz) || 1;
+      motion.normalX = nx / normalLength;
+      motion.normalY = ny / normalLength;
+      motion.normalZ = nz / normalLength;
+
+      const engaged =
+        insideSand &&
+        inDryLandscape(motion.contactX, motion.contactZ, -0.4) &&
+        !nearRock(motion.contactX, motion.contactZ, 0.22);
+      const dragging = engaged && moved >= RAKE_STAMP_MIN_DISTANCE;
+      publishMotion(engaged, dragging);
+      setRaking(dragging);
+
+      if (!engaged) {
+        previousContactValid = false;
+        simulation.update(dt);
         return;
       }
-      const dx = moveX / moved;
-      const dz = moveZ / moved;
-      const current = { x: player.x - dx * 0.92, z: player.z - dz * 0.92, dx, dz };
-      if (!previousTrail) {
-        previousTrail = current;
-        setRaking(true);
-        return;
+
+      if (dragging && previousContactValid) {
+        const contactDistance = Math.hypot(
+          motion.contactX - previousContactX,
+          motion.contactZ - previousContactZ
+        );
+        // A teleport or tab-resume must not carve a stripe across the garden.
+        if (contactDistance <= 1.35 && contactDistance >= RAKE_STAMP_MIN_DISTANCE * 0.45) {
+          stamp.previous.x = previousContactX;
+          stamp.previous.z = previousContactZ;
+          stamp.current.x = motion.contactX;
+          stamp.current.z = motion.contactZ;
+          stamp.across.x = pullZ;
+          stamp.across.z = -pullX;
+          stamp.pull.x = pullX;
+          stamp.pull.z = pullZ;
+          simulation.queueStamp(stamp);
+        }
       }
-      const trailDistance = Math.hypot(current.x - previousTrail.x, current.z - previousTrail.z);
-      if (trailDistance < TRAIL_SPACING) return;
-      const steps = Math.min(8, Math.floor(trailDistance / TRAIL_SPACING));
-      let from = previousTrail;
-      for (let step = 1; step <= steps; step++) {
-        const t = step / steps;
-        const to = {
-          x: THREE.MathUtils.lerp(previousTrail.x, current.x, t),
-          z: THREE.MathUtils.lerp(previousTrail.z, current.z, t),
-          dx: THREE.MathUtils.lerp(previousTrail.dx, current.dx, t),
-          dz: THREE.MathUtils.lerp(previousTrail.dz, current.dz, t)
-        };
-        const directionLength = Math.hypot(to.dx, to.dz) || 1;
-        to.dx /= directionLength;
-        to.dz /= directionLength;
-        writeTrail(from, to);
-        from = to;
-      }
-      previousTrail = current;
-      setRaking(true);
+      previousContactX = motion.contactX;
+      previousContactZ = motion.contactZ;
+      previousContactValid = true;
+      simulation.update(dt);
     },
     interact(player, mode) {
       if (disposed) return false;
       if (held) {
-        setHeld(false, "Rake returned. Your sand trails will remain awhile.");
+        setHeld(false, "Rake returned. The sand will remember your strokes and softly settle.");
         return true;
       }
       if (mode !== "walk" || Math.hypot(player.x - RAKE_RACK.x, player.z - RAKE_RACK.z) > PICKUP_RANGE) return false;
-      setHeld(true, "Rake in hand — walk across the sand to draw five gentle trails. E sets it down.");
+      setHeld(true, "Rake in both hands — walk through the sand to sculpt seven real furrows. E returns it.");
       return true;
+    },
+    addTuning(folder) {
+      return simulation.addTuning(folder);
+    },
+    syncTuning() {
+      simulation.syncTuning();
     },
     dispose() {
       if (disposed) return;
       disposed = true;
       if (held) setHeld(false);
+      simulation.dispose();
       const geometries = new Set<THREE.BufferGeometry>();
       const materials = new Set<THREE.Material>();
       group.traverse((object) => {
         const mesh = object as THREE.Mesh;
-        if (!mesh.isMesh) return;
+        if (!mesh.isMesh || mesh === simulation.mesh) return;
         geometries.add(mesh.geometry);
         const list = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
         for (const material of list) materials.add(material);
       });
       for (const geometry of geometries) geometry.dispose();
       for (const material of materials) material.dispose();
-      grain.dispose();
       group.removeFromParent();
     },
     debugState() {
-      return { held, raking, insideSand, distanceToRake, trailSegments, trailCapacity: TRAIL_GROOVE_CAPACITY };
+      return {
+        held,
+        raking,
+        rakeEngaged,
+        insideSand,
+        distanceToRake,
+        contact: { x: motion.contactX, y: motion.contactY, z: motion.contactZ },
+        simulation: simulation.stats
+      };
     }
   };
 }

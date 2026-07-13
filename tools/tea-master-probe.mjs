@@ -1,5 +1,5 @@
-// Tea-master (Iroh) hand/cup/costume probe. Boots headless, teleports to the
-// Japanese Tea Garden, waits for Iroh to build, and screenshots the two-hand
+// Tea-master (Hiro) hand/cup/costume probe. Boots headless, teleports to the
+// Japanese Tea Garden, waits for Hiro to build, and screenshots the two-hand
 // cup cradle, the costume, the steam, and the free-armed state after the tea is
 // handed off. Also reads cupToLeftHand/cupToRightHand from debugState as the
 // numeric grasp truth.
@@ -112,12 +112,12 @@ async function shot(c, name) {
   console.log(`[probe] shot ${name} idle=${idle} cam=${JSON.stringify(cam)}`);
 }
 
-/** Frame the camera in front of Iroh using his live cup position + facing from
+/** Frame the camera in front of Hiro using his live cup position + facing from
  *  debugState (robust — no scene lookups). `dist` = m in front of the cup, `up`
  *  = m above the look target, `focusUp` raises the look target off the cup. */
 async function frameOn(c, dist, up, focusUp = 0) {
   return ev(c, `(()=>{
-    const d = window.__sf.japaneseTeaGarden.debugState().guide.iroh;
+    const d = window.__sf.japaneseTeaGarden.debugState().guide.hiro;
     const p = d.cupWorldPos, yaw = d.yaw;
     // rig faces local -Z; world front = (-sin(yaw), 0, -cos(yaw))
     const fx = -Math.sin(yaw), fz = -Math.cos(yaw);
@@ -130,8 +130,8 @@ async function frameOn(c, dist, up, focusUp = 0) {
   })()`);
 }
 
-async function irohState(c) {
-  return ev(c, `(()=>{ const d = window.__sf.japaneseTeaGarden.debugState(); const i = d.guide.iroh; return {
+async function hiroState(c) {
+  return ev(c, `(()=>{ const d = window.__sf.japaneseTeaGarden.debugState(); const i = d.guide.hiro; return {
     awake: d.awake, phase: d.guide.phase, action: i.action,
     cupL: Math.round(i.cupToLeftHand*1000)/1000,
     cupR: Math.round(i.cupToRightHand*1000)/1000,
@@ -142,24 +142,24 @@ async function irohState(c) {
 
 async function costumeContract(c) {
   return ev(c, `(()=>{
-    const actor=window.__sf.scene.getObjectByName('tea_master_iroh');
-    if(!actor)throw new Error('Iroh runtime actor missing');
+    const actor=window.__sf.scene.getObjectByName('tea_master_hiro');
+    if(!actor)throw new Error('Hiro runtime actor missing');
     const required=[
-      'iroh_stone_under_robe','iroh_navy_open_over_robe','iroh_navy_front_apron',
-      'iroh_white_lotus_mantle','iroh_stone_bell_sleeve_L','iroh_stone_bell_sleeve_R',
-      'iroh_wide_obi','tea_master_round_face'
+      'hiro_stone_under_robe','hiro_navy_open_over_robe','hiro_navy_front_apron',
+      'hiro_white_lotus_mantle','hiro_stone_bell_sleeve_L','hiro_stone_bell_sleeve_R',
+      'hiro_wide_obi','tea_master_round_face'
     ];
     const heroMask=1<<10, result={};
     for(const name of required){
       const mesh=actor.getObjectByName(name);
-      if(!mesh?.isMesh)throw new Error('Iroh runtime garment missing: '+name);
+      if(!mesh?.isMesh)throw new Error('Hiro runtime garment missing: '+name);
       const position=mesh.geometry?.attributes?.position;
-      if(!position?.count)throw new Error('Iroh garment has no vertices: '+name);
+      if(!position?.count)throw new Error('Hiro garment has no vertices: '+name);
       mesh.geometry.computeBoundingBox();
       const box=mesh.geometry.boundingBox;
       const bounds=[box.min.x,box.min.y,box.min.z,box.max.x,box.max.y,box.max.z];
-      if(!bounds.every(Number.isFinite))throw new Error('Iroh garment has invalid bounds: '+name);
-      if(mesh.castShadow&&(mesh.layers.mask&heroMask)===0)throw new Error('Iroh caster missing HERO_DYNAMIC layer: '+name);
+      if(!bounds.every(Number.isFinite))throw new Error('Hiro garment has invalid bounds: '+name);
+      if(mesh.castShadow&&(mesh.layers.mask&heroMask)===0)throw new Error('Hiro caster missing HERO_DYNAMIC layer: '+name);
       result[name]={vertices:position.count,heroShadow:!!(mesh.layers.mask&heroMask)};
     }
     return result;
@@ -174,7 +174,7 @@ function teaFeatureUrls(urls) {
   return urls.filter((url) =>
     (
       url.includes("japaneseTeaGarden") ||
-      url.includes("irohCostume") ||
+      url.includes("hiroCostume") ||
       url.includes("teaMaster")
     ) && !url.includes("/layout.ts")
   );
@@ -183,9 +183,9 @@ function teaFeatureUrls(urls) {
 async function dumpHands(c) {
   return ev(c, `(()=>{
     const s = window.__sf, T = s.THREE;
-    const iroh = s.scene.getObjectByName('tea_master_iroh');
-    if (!iroh) return 'no iroh';
-    const find = (n) => { let f=null; iroh.traverse(o=>{ if(o.name===n && !f) f=o; }); return f; };
+    const hiro = s.scene.getObjectByName('tea_master_hiro');
+    if (!hiro) return 'no hiro';
+    const find = (n) => { let f=null; hiro.traverse(o=>{ if(o.name===n && !f) f=o; }); return f; };
     const wp = (o) => { if(!o) return null; const v=new T.Vector3(); o.getWorldPosition(v); return v.toArray().map(x=>Math.round(x*100)/100); };
     const rot = (o) => o ? [o.rotation.x,o.rotation.y,o.rotation.z].map(x=>Math.round(x*100)/100) : null;
     const cup = find('tea_master_cup');
@@ -193,7 +193,7 @@ async function dumpHands(c) {
       cup: wp(cup), cupVisible: cup ? cup.visible : null,
       handL: wp(find('hand-L')), handR: wp(find('hand-R')),
       armL: rot(find('hand-L')?.parent?.parent), foreL: rot(find('hand-L')?.parent),
-      armLrot: rot(iroh.getObjectByName ? null : null)
+      armLrot: rot(hiro.getObjectByName ? null : null)
     });
   })()`);
 }
@@ -261,14 +261,14 @@ async function main() {
     const loading=document.getElementById('loading'); if(loading)loading.style.display='none';
     return true;})()`);
 
-  // The Tea Garden and Iroh must stay off a clean distant boot. This procedural
+  // The Tea Garden and Hiro must stay off a clean distant boot. This procedural
   // costume adds no media requests, but its code must still cross the existing
   // first-approach dynamic-import gate.
   const bootTeaRequests = teaFeatureUrls(await resourceUrls(c));
   if (bootTeaRequests.length) throw new Error(`Tea Garden loaded eagerly at boot: ${bootTeaRequests.join(", ")}`);
   await ev(c, `(()=>{performance.clearResourceTimings();return true;})()`);
 
-  // Teleport ~3.4 m in front of Iroh so the garden wakes and he's in start range.
+  // Teleport ~3.4 m in front of Hiro so the garden wakes and he's in start range.
   await ev(c, `(()=>{const s=window.__sf;const x=${HOME.x},z=${HOME.z}+3.4;const y=s.map.effectiveGround(x,z)+1.2;s.player.teleportTo({x,y,z,facing:Math.PI,mode:"walk"});return true;})()`);
   // The tea garden is DEFERRED: being within 900 m of the entrance + one tick
   // fires wakeDeferredTeaGarden, then buildTeaGarden() runs async (module import
@@ -292,7 +292,7 @@ async function main() {
   console.log("[probe] tea garden in scene");
   // Headless manual-tick flow does not reliably run the garden's distance-driven
   // wake, so the garden group can stay visible=false (invisible) even standing
-  // beside Iroh. Force the subtree visible + compiled so the render is honest.
+  // beside Hiro. Force the subtree visible + compiled so the render is honest.
   console.log("[probe] force-visible:", await ev(c, `(async()=>{
     const s = window.__sf;
     const g = s.scene.getObjectByName('japanese_tea_garden');
@@ -301,11 +301,11 @@ async function main() {
     try { await s.renderer.compileAsync(g, s.camera, s.scene); } catch (e) { return 'compile-fail:' + e; }
     return 'ok visible=' + g.visible;
   })()`));
-  // let the garden wake + Iroh build + poses settle, and any region warmup clear
+  // let the garden wake + Hiro build + poses settle, and any region warmup clear
   await settle(c, 40);
   await ticks(c, 90, 1 / 30);
   for (let i = 0; i < 60 && !(await ev(c, "window.__sf.renderIdle()")); i++) await tick(c, 1 / 30);
-  console.log("[probe] state after wake:", JSON.stringify(await irohState(c)));
+  console.log("[probe] state after wake:", JSON.stringify(await hiroState(c)));
   console.log("[probe] costume contract:", JSON.stringify(await costumeContract(c)));
 
   // ---- idle: both hands cradle the bowl ----
@@ -313,7 +313,7 @@ async function main() {
   await ticks(c, 20, 1 / 30);
   console.log("[cam after tick]", await ev(c, `(()=>{const p=window.__sf.camera.position;return JSON.stringify([p.x,p.y,p.z].map(x=>Math.round(x)));})()`));
   await shot(c, "grasp_close");
-  console.log("[grasp idle]", JSON.stringify(await irohState(c)));
+  console.log("[grasp idle]", JSON.stringify(await hiroState(c)));
   console.log("[hands idle]", await dumpHands(c));
 
   await frameOn(c, 3.0, 0.7, -0.15); // full costume
@@ -327,29 +327,29 @@ async function main() {
   await ticks(c, 45, 1 / 30);
   await frameOn(c, 1.15, 0.2, 0.05); // offering
   await shot(c, "welcome");
-  console.log("[welcome]", JSON.stringify(await irohState(c)));
+  console.log("[welcome]", JSON.stringify(await hiroState(c)));
 
   // advance to the serve (offer) beat
   await ev(c, `window.__sf.japaneseTeaGarden.interact(window.__sf.player.position, window.__sf.player.mode)`);
   await ticks(c, 45, 1 / 30);
   await shot(c, "serve_offer");
-  console.log("[serve]", JSON.stringify(await irohState(c)));
+  console.log("[serve]", JSON.stringify(await hiroState(c)));
   console.log("[hands serve]", await dumpHands(c));
 
   // advance PAST serve → tea handed off → his arms free up
   await ev(c, `window.__sf.japaneseTeaGarden.interact(window.__sf.player.position, window.__sf.player.mode)`);
   await ticks(c, 60, 1 / 30);
-  // This frame exists to inspect Iroh's free-arm silhouette; the dialogue card
+  // This frame exists to inspect Hiro's free-arm silhouette; the dialogue card
   // otherwise covers his head, shoulder yoke and most of both sleeves.
   await ev(c, `(()=>{for(const el of document.querySelectorAll('.projected-dialogue'))el.style.visibility='hidden';return true;})()`);
   await frameOn(c, 3.0, 0.7, -0.1); // free-armed after handoff
   await shot(c, "handoff_freearm");
-  console.log("[handoff]", JSON.stringify(await irohState(c)));
+  console.log("[handoff]", JSON.stringify(await hiroState(c)));
 
   const activationSet = new Set(activationTeaRequests);
   const subsequentTeaRequests = teaFeatureUrls(await resourceUrls(c)).filter((url) => !activationSet.has(url));
   if (subsequentTeaRequests.length) {
-    throw new Error(`Iroh interactions fetched unexpected feature modules: ${subsequentTeaRequests.join(", ")}`);
+    throw new Error(`Hiro interactions fetched unexpected feature modules: ${subsequentTeaRequests.join(", ")}`);
   }
   console.log(`[probe] lazy requests boot=0 activation=${activationTeaRequests.length} subsequent=0`);
 

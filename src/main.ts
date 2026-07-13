@@ -281,7 +281,7 @@ async function boot() {
   // future location sharing. An unknown key safely falls back to the saved/default
   // start without changing settings.
   const requestedSpawn = new URLSearchParams(location.search).get("spawn")?.trim();
-  const autoStartIrohTour = new URLSearchParams(location.search).get("tour") === "iroh";
+  const autoStartHiroTour = new URLSearchParams(location.search).get("tour") === "hiro";
   const spawnKey = requestedSpawn && (resolveSpawnPoint(requestedSpawn) || map.meta.spawns[requestedSpawn])
     ? requestedSpawn
     : START.spawn;
@@ -1865,22 +1865,24 @@ async function boot() {
     }
 
     // Japanese Tea Garden: exact OSM footprint with authored gates, Tea House,
-    // pagoda, ponds, bridges, specimen planting and Iroh's walkable guided tour.
+    // pagoda, ponds, bridges, specimen planting and Hiro's walkable guided tour.
     // It shares the Botanical Garden region gate because the two sites touch;
     // distant boots compile it after reveal so it never delays first play.
     const buildTeaGarden = async () => {
       const teaGardenMod = await loadTeaGardenMod();
       try {
         const site = teaGardenMod.createJapaneseTeaGarden(map, {
+          renderer,
           physics,
           // Conversation is gameplay-critical, so it must remain visible when
           // the optional HUD panels are faded with Tab.
           dialogueParent: document.body,
-          onCarryRake: (rake) => player.setGardenRake(rake),
-          onRakingChange: (raking) => player.setGardenRaking(raking),
+          onCarryRake: (rake) => player.setGardenRakeTool(rake),
+          onRakeMotion: (motion) => player.setGardenRakeMotion(motion),
           notify: (message, seconds) => hud.message(message, seconds)
         });
         japaneseTeaGarden = site;
+        debugPanel.registerFeatureTuning(site.tuningDescriptor());
         site.setFoliageVisible(foliageOn);
         minimap.addLandmark(
           JAPANESE_TEA_GARDEN_ENTRANCE.x,
@@ -1903,7 +1905,7 @@ async function boot() {
         const site = await buildTeaGarden();
         scene.add(site.group);
         site.update(0, 0, player.renderPosition, camera);
-        if (autoStartIrohTour) site.interact(player.renderPosition, player.mode);
+        if (autoStartHiroTour) site.interact(player.renderPosition, player.mode);
         await site.ready;
       })();
     } else {
@@ -1924,7 +1926,7 @@ async function boot() {
             }
             scene.add(site.group);
             site.update(0, 0, player.renderPosition, camera);
-            if (autoStartIrohTour) site.interact(player.renderPosition, player.mode);
+            if (autoStartHiroTour) site.interact(player.renderPosition, player.mode);
           })().catch((err) => console.warn("[tea-garden] first-approach construction failed:", err));
         };
       });
@@ -2653,7 +2655,7 @@ async function boot() {
     // E / pad B: nearby conversations get first refusal. When the prompt was
     // reached on a vehicle or creature, the same press dismounts and is handed
     // back to the conversation once the player is on foot; requiring a second
-    // press made Iroh's visible prompt appear unresponsive.
+    // press made Hiro's visible prompt appear unresponsive.
     const interactPressed = !pickleballEConsumed && input.pressed("KeyE");
     // Use the same position the tea-garden prompt distance is measured against
     // (renderPosition), so a visible "Talk" prompt always accepts the matching E.
@@ -3150,7 +3152,7 @@ async function boot() {
     }
     // World-anchored dialogue must project after the chase/orbit/cinematic has
     // committed this frame's final camera pose; projecting during simulation
-    // left Iroh's card one camera frame behind and visibly jittering.
+    // left Hiro's card one camera frame behind and visibly jittering.
     japaneseTeaGarden?.project(camera);
     sky.update(elapsed, camera.position, player.renderPosition);
     water.update(elapsed, camera.position, player.renderPosition, player.mode === "surf");

@@ -52,7 +52,7 @@ try {
   });
 
   // Reproduce the player report from a clean distant boot: select the real
-  // minimap landmark, teleport to the entrance, approach Iroh, then press E.
+  // minimap landmark, teleport to the entrance, approach Hiro, then press E.
   await page.goto(`${SERVER_URL}/?autostart=1&fullfps=1`, {
     waitUntil: "domcontentloaded",
     timeout: 120_000
@@ -78,8 +78,13 @@ try {
     undefined,
     { timeout: 150_000 }
   );
+  await page.waitForFunction(
+    () => window.__sf.japaneseTeaGarden.group.parent === window.__sf.scene,
+    undefined,
+    { timeout: 150_000 }
+  );
   const atEntrance = await page.evaluate(() => window.__sf.japaneseTeaGarden.debugState().guide);
-  assert.equal(atEntrance.phase, "idle", "the entrance teleport corrupted Iroh's idle interaction state");
+  assert.equal(atEntrance.phase, "idle", "the entrance teleport corrupted Hiro's idle interaction state");
   assert.ok(atEntrance.playerDistance > 12.5, "the teleport did not exercise the far entrance state");
   assert.ok(
     teaRequests.some((url) => url.includes("/japaneseTeaGarden/index.ts")),
@@ -89,10 +94,12 @@ try {
   // Move to the endpoint of the user's walk. The state transition and real E
   // event are what regressed; respawning here keeps the browser probe quick and
   // deterministic without bypassing the minimap/lazy-activation path.
-  const irohPosition = atEntrance.iroh.position;
+  const hiroPosition = atEntrance.hiro.position;
   await page.evaluate(([x, , z]) => {
     window.__sf.player.respawn({ x: x - 3.7, z, heading: -Math.PI / 2 });
-  }, irohPosition);
+    window.__sf.chase.yaw = -Math.PI / 2;
+    window.__sf.chase.pitch = 0.18;
+  }, hiroPosition);
   console.log("[probe] waiting for the Tea Master interaction state");
   await page.waitForFunction(
     () => {
@@ -110,7 +117,7 @@ try {
 
   // The prompt is distance-driven and remains visible while mounted. This is
   // the regression path: one E/B press must dismount and immediately hand the
-  // same interaction intent to Iroh instead of requiring an unexplained second
+  // same interaction intent to Hiro instead of requiring an unexplained second
   // press.
   await page.evaluate(() => window.__sf.player.trySwitch("drive"));
   assert.equal(await page.evaluate(() => window.__sf.player.mode), "drive");
@@ -181,9 +188,9 @@ try {
   console.log("[probe] controller result", JSON.stringify({
     device: controllerSnapshot.device,
     padConnected: controllerSnapshot.padConnected,
-    action: controllerSnapshot.guide.iroh.action
+    action: controllerSnapshot.guide.hiro.action
   }));
-  assert.equal(controllerSnapshot.guide.iroh.action, "serve", "controller B did not advance the Tea Master conversation");
+  assert.equal(controllerSnapshot.guide.hiro.action, "serve", "controller B did not advance the Tea Master conversation");
   await page.evaluate(() => {
     const button = window.__teaGardenProbePad.buttons[1];
     button.pressed = false;
@@ -194,7 +201,7 @@ try {
 
   const afterController = await page.evaluate(() => window.__sf.japaneseTeaGarden.debugState().guide);
   const interactionRequests = teaRequests.slice(interactionRequestStart);
-  assert.deepEqual(interactionRequests, [], "interacting with Iroh fetched additional Tea Garden modules");
+  assert.deepEqual(interactionRequests, [], "interacting with Hiro fetched additional Tea Garden modules");
   const screenshot = await page.screenshot({ path: `${OUT}/interaction.png`, fullPage: false });
   const screenshotStats = await sharp(screenshot).stats();
   assert.ok(screenshotStats.entropy > 1, `browser screenshot appears blank (entropy ${screenshotStats.entropy})`);
@@ -203,7 +210,7 @@ try {
   console.log(JSON.stringify({
     ok: true,
     keyboard: { phase: afterKeyboard.phase, chapter: afterKeyboard.chapter },
-    controller: { action: afterController.iroh.action, device: "standard B" },
+    controller: { action: afterController.hiro.action, device: "standard B" },
     playerDistance: afterController.playerDistance,
     requests: { boot: 0, activation: interactionRequestStart, interaction: interactionRequests.length },
     screenshotEntropy: screenshotStats.entropy,

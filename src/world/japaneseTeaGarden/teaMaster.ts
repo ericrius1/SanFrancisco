@@ -11,7 +11,7 @@ import {
 } from "../../player/rig";
 import { setHandTarget } from "../../player/handIK";
 import { enableShadowLayer, SHADOW_LAYERS } from "../shadows/shadowLayers";
-import { createIrohCostume } from "./irohCostume";
+import { createHiroCostume } from "./hiroCostume";
 import { createTeaSteam } from "./teaSteam";
 
 export type TeaMasterAction = "idle" | "welcome" | "serve" | "walk" | "talk" | "point";
@@ -49,7 +49,7 @@ export type TeaMasterVisualDebugState = {
   yaw: number;
 };
 
-// Uncle Iroh reference tones: silver hair/beard, warm skin, navy tunic under a
+// Uncle Hiro reference tones: silver hair/beard, warm skin, navy tunic under a
 // cream shawl, pale grey-tan sleeves, gold topknot tie, navy shoes.
 const PALETTE = {
   sleeve: 0xcfc6b0,
@@ -134,8 +134,8 @@ export function createTeaMasterVisual(): TeaMasterVisual {
   for (const arm of rig.avatar.armBlocks) arm.scale.set(1.02, 1.04, 1.02);
 
   const group = new THREE.Group();
-  group.name = "tea_master_iroh";
-  // Preserve Iroh's grounded, generous build while lengthening the silhouette.
+  group.name = "tea_master_hiro";
+  // Preserve Hiro's grounded, generous build while lengthening the silhouette.
   // Non-uniform root scale also keeps the shoulder yoke from reading as a ball.
   group.scale.set(1.06, 1.24, 1.06);
   rig.group.position.y = 0.9;
@@ -178,7 +178,7 @@ export function createTeaMasterVisual(): TeaMasterVisual {
     return mesh;
   };
 
-  const costume = createIrohCostume(rig);
+  const costume = createHiroCostume(rig);
 
   // Replace the stock cube with a warm, low-poly oval. At gameplay distance the
   // softer silhouette matters more than extra facial polygons.
@@ -254,7 +254,7 @@ export function createTeaMasterVisual(): TeaMasterVisual {
     "tea_master_topknot"
   );
   topknot.scale.set(1.12, 0.36, 0.74);
-  // Iroh's signature: a long grey mustache over a full pointed beard hanging
+  // Hiro's signature: a long grey mustache over a full pointed beard hanging
   // well below the chin. A jaw pad joins the sideburns so the beard reads as one
   // connected mass rather than a floating spike.
   const beardPad = addMesh(rig.head, new THREE.SphereGeometry(0.09, 10, 8), hair, [0, 0.052, -0.142], "tea_master_beard_pad");
@@ -372,7 +372,7 @@ export function createTeaMasterVisual(): TeaMasterVisual {
   };
 
   const blendToTargetPose = (safeDt: number) => {
-    // Deliberately slower than the player rig: Iroh settles into gestures like
+    // Deliberately slower than the player rig: Hiro settles into gestures like
     // a practiced host. At 60 Hz even the largest scripted transition stays
     // below a visually jarring one-frame snap.
     const response = action === "walk" ? 7.5 : 6;
@@ -416,7 +416,7 @@ export function createTeaMasterVisual(): TeaMasterVisual {
     capturePose(currentPose);
     if (action === "walk") {
       poseWalk(rig, stridePhase, 0);
-      // Iroh walks with a short, grounded tea-master stride. Besides reading as
+      // Hiro walks with a short, grounded tea-master stride. Besides reading as
       // calmer, this keeps the hidden legs well inside the robe's authored
       // envelope so capsule projection remains a safety net, not the silhouette.
       rig.legL.rotation.x *= 0.7;
