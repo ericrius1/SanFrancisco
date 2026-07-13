@@ -3,6 +3,7 @@ import { fract, max, mix, sin, step, time, uv, vec2, vec3 } from "three/tsl";
 import { LIGHT_SCALE } from "../../config";
 import { lightAnchor } from "../../player/lightPool";
 import type { Cockpit } from "../../player/types";
+import { applyVehicleShadowPolicy } from "../shadows";
 
 /**
  * Animated parts of a plane mesh. Rediscovered by node name (not userData —
@@ -48,6 +49,8 @@ function solarMaterial(): THREE.MeshStandardNodeMaterial {
  */
 export function buildPlaneMesh(): THREE.Group {
   const g = new THREE.Group();
+  const shadowCasters: THREE.Mesh[] = [];
+  const shadowReceivers: THREE.Mesh[] = [];
 
   const ivory = new THREE.MeshLambertMaterial({ color: 0xf3eee1 });
   const copper = new THREE.MeshLambertMaterial({ color: 0xa95f33 });
@@ -113,8 +116,8 @@ export function buildPlaneMesh(): THREE.Group {
 
   // hull: copper cowl, ivory cabin barrel tapering into a copper tail cone
   tube(copper, 0.42, 0.6, -3.1, -2.35);
-  tube(ivory, 0.6, 0.58, -2.35, 0.0);
-  tube(ivory, 0.58, 0.3, 0.0, 2.1);
+  shadowCasters.push(tube(ivory, 0.6, 0.58, -2.35, 0.0));
+  shadowCasters.push(tube(ivory, 0.58, 0.3, 0.0, 2.1));
   tube(copper, 0.3, 0.1, 2.1, 3.15);
   tube(verdigris, 0.615, 0.615, -2.42, -2.3); // cowl seam band
   tube(verdigris, 0.6, 0.585, -0.06, 0.06); // cabin seam band
@@ -150,7 +153,7 @@ export function buildPlaneMesh(): THREE.Group {
   g.userData.cockpit = { seat: [0, 0.62, 0.3], wheel: [0, 0.73, -0.24] } satisfies Cockpit;
 
   // canard foreplane at the nose — the dragonfly silhouette
-  box(ivory, 2.5, 0.07, 0.5, 0, 0.16, -2.5);
+  shadowCasters.push(box(ivory, 2.5, 0.07, 0.5, 0, 0.16, -2.5));
   box(verdigris, 0.2, 0.075, 0.5, 1.34, 0.16, -2.5);
   box(verdigris, 0.2, 0.075, 0.5, -1.34, 0.16, -2.5);
 
@@ -161,13 +164,15 @@ export function buildPlaneMesh(): THREE.Group {
     wing.position.set(s * 0.35, 0.05, -0.55);
     wing.rotation.z = s * 0.06;
     g.add(wing);
-    box(ivory, 2.55, 0.15, 1.75, s * 1.35, 0, 0, wing);
-    box(ivory, 1.95, 0.11, 1.2, s * 3.55, 0.01, 0.12, wing);
+    shadowCasters.push(box(ivory, 2.55, 0.15, 1.75, s * 1.35, 0, 0, wing));
+    shadowCasters.push(box(ivory, 1.95, 0.11, 1.2, s * 3.55, 0.01, 0.12, wing));
     const tip = new THREE.Mesh(new THREE.CylinderGeometry(0.6, 0.6, 0.1, 14), ivory);
     tip.position.set(s * 4.52, 0.02, 0.12);
     wing.add(tip);
-    box(solar, 2.35, 0.03, 1.5, s * 1.35, 0.085, 0, wing);
-    box(solar, 1.7, 0.03, 1.0, s * 3.5, 0.07, 0.12, wing);
+    // These are physical wing skins with only a faint dusk sheen, not glow FX:
+    // force receiving so the pilot/fuselage shadow is not cut out of the deck.
+    shadowReceivers.push(box(solar, 2.35, 0.03, 1.5, s * 1.35, 0.085, 0, wing));
+    shadowReceivers.push(box(solar, 1.7, 0.03, 1.0, s * 3.5, 0.07, 0.12, wing));
     box(copper, 2.55, 0.08, 0.08, s * 1.35, 0, -0.9, wing);
     box(copper, 1.95, 0.06, 0.07, s * 3.55, 0.01, -0.5, wing);
     box(s > 0 ? navGreen : navRed, 0.14, 0.08, 0.3, s * 4.62, 0.03, 0.1, wing);
@@ -190,7 +195,7 @@ export function buildPlaneMesh(): THREE.Group {
 
   // tail: ivory plane with verdigris elevator, swept verdigris fin with copper
   // leading rib, teak rudder, round tip cap with the beacon on it
-  box(ivory, 3.6, 0.09, 0.85, 0, 0.32, 2.55);
+  shadowCasters.push(box(ivory, 3.6, 0.09, 0.85, 0, 0.32, 2.55));
   box(verdigris, 3.4, 0.07, 0.3, 0, 0.32, 3.05);
   box(verdigris, 0.08, 0.8, 0.9, 0, 0.75, 2.6);
   box(verdigris, 0.07, 0.62, 0.62, 0, 1.36, 2.76);
@@ -230,5 +235,9 @@ export function buildPlaneMesh(): THREE.Group {
   g.add(lightAnchor({ color: 0xcdd8ff, intensity: 10, distance: 12 }, -2.6, 0.5, -0.6));
   g.add(lightAnchor({ color: 0xfff0d0, intensity: 7, distance: 8 }, 0, 1.75, 2.82));
 
+  // Eight structural pieces preserve the full dragonfly planform: two cabin
+  // barrels, canard, four wing panels, and tailplane. Thin solar skins, props,
+  // bracing, gear detail, transparent discs, and lamps stay out of CSM draws.
+  applyVehicleShadowPolicy(g, shadowCasters, shadowReceivers);
   return g;
 }

@@ -17,32 +17,18 @@ export const EXPOSURE_REBASE = 0.13
 export const LIGHT_SCALE = (100 / 6) * EXPOSURE_REBASE
 
 /**
- * The one universal render mode: the fixed, measurement-tuned settings every
- * session runs. Replaces the old three-tier quality preset system (performance /
- * balanced / high) and its separate shadow-quality tiers, both removed 2026-07 —
- * there is no user-facing quality switch any more. The two other universal-mode
- * values live with the systems they configure: scene AA (single-sample by
- * default, optional 4x MSAA for profiling) in POSTFX_TUNING.sceneSamples
- * (render/postfx.ts), and the always-on CSM shadow config as named constants
- * near the setup in world/sky.ts.
+ * Universal render settings live with the systems they configure: drawing-buffer
+ * pixel ratio in RENDER_TUNING (default 1, slider 0.5–2; devicePixelRatio is
+ * ignored), scene AA in POSTFX_TUNING.sceneSamples (render/postfx.ts), and CSM
+ * shadow knobs via SHADOW_TUNING (world/sky.ts). The old quality-preset /
+ * dynamic-res governor stack was removed — one default, optional "/" overrides.
  */
-export const RENDER_MODE = {
-  // drawing-buffer cap on devicePixelRatio. The scene is fragment-bound: retina
-  // dpr 2 costs ~2× the frame time of 1.5 for a near-invisible sharpness delta
-  // (measured 17.1 → 8.6 ms p50 at 2560×1600). dpr-1 displays are unaffected —
-  // the cap only ever lowers the ratio.
-  pixelRatioCap: 1.5,
-  // Dynamic-resolution governor (src/render/dynamicRes.ts): under sustained
-  // frame pressure the drawing-buffer pixel ratio steps down from the ceiling
-  // — min(devicePixelRatio, pixelRatioCap) — toward minPixelRatio, and back up
-  // when there's headroom, so weaker GPUs hold the display's frame budget.
-  dynamicRes: true,
-  // Lowest pixel ratio the governor will drop to under sustained load.
-  minPixelRatio: 1.0
-} as const
 
-/** Renderer grading, bound in the "/" panel's lighting folder. */
+/** Renderer grading + drawing buffer, bound in the "/" panel. */
 export const RENDER_TUNING = tunables("render", {
+  // Drawing-buffer pixel ratio. Default 1 for a low-fi / fragment-cheap look
+  // (devicePixelRatio is ignored, including retina Macs). Slider for profiling.
+  pixelRatio: { v: 1, min: 0.5, max: 2, step: 0.05, label: "pixel ratio" },
   // Anchored at 1.0 — a ±half-stop-ish artistic trim, NOT the day-brightness
   // control (that's sky.ts sunDay/hemiDay). Night, emissives and fog are all
   // balanced against the anchor, so big moves here shift everything at once.
@@ -50,7 +36,7 @@ export const RENDER_TUNING = tunables("render", {
   // grey-card calibration chart (src/ui/calibrationChart.ts): camera-locked row
   // of matte spheres at 5/18/50/90% albedo — the referee for any grading change.
   greyCards: { v: false, label: "grey cards (5·18·50·90%)" },
-  wireframe: { v: false, label: "wireframe mode" },
+  wireframe: { v: false, label: "wireframe mode (R)" },
   // collider x-ray: draw every active physics collider as a wireframe box (red =
   // baked body, orange = citywide index, green = walk-in wall, blue = interior).
   // Diagnoses "invisible collision" — a box that sits where no mesh is drawn.
@@ -108,6 +94,36 @@ export const WORLD_TUNING = tunables("world", {
     label: "draw distance (m)"
   },
   fogEnabled: { v: true, label: "all fog" },
+  // Artistic output gain after the authored trims and living-weather driver.
+  // The default opens the entire city slightly; the streamed edge veil remains
+  // independent because it hides unloaded tiles rather than depicting weather.
+  fogMaster: {
+    v: 0.85,
+    min: 0,
+    max: 1.5,
+    step: 0.01,
+    format: (v: number) => `${Math.round(v * 100)}%`,
+    label: "master density"
+  },
+  // Procedural SF is always available. Live observations are eligible only
+  // while the sky follows the actual SF clock.
+  fogWeather: {
+    v: "blend",
+    options: {
+      "procedural SF": "procedural",
+      "procedural + live": "blend",
+      "live SF": "live"
+    },
+    label: "weather source"
+  },
+  fogLiveInfluence: {
+    v: 0.7,
+    min: 0,
+    max: 1,
+    step: 0.05,
+    format: (v: number) => `${Math.round(v * 100)}%`,
+    label: "live influence"
+  },
   // The five fog controls. Shape, colour, octave scales, path accumulation and
   // cull-edge calibration live together in sky.ts beside the r185 reference graph.
   //
@@ -221,10 +237,10 @@ export const GRASS_TUNING = tunables("grass", {
  * Where and how a fresh session starts. Editable in the Tab panel (persisted);
  */
 export const START_DEFAULTS = {
-  // Corona Heights summit — a code spawn (src/world/spawnPoints.ts), not a baked
-  // meta.json one. Scenic and cheap to boot: it gates no heavy foliage region.
-  spawn: "coronaHeights",
-  mode: "board" as PlayerMode
+  // Ocean Beach surf pin — a code spawn (src/world/spawnPoints.ts). Sand at the
+  // waterline facing the swell; board underarm, ready to paddle out.
+  spawn: "oceanBeach",
+  mode: "walk" as PlayerMode
 }
 
 export const START = {

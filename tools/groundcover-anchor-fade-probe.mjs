@@ -1,6 +1,6 @@
 // Drives the WebGPU-only rendered regression in groundcover-anchor-fade-probe.html.
 // It launches an isolated Vite server and Chrome profile, then fails unless the
-// production app grass, flower, and vendored grass positionNode graphs retain
+// production shared grass and flower positionNode graphs retain
 // full/half/zero pixels at a large world coordinate.
 //
 //   node tools/groundcover-anchor-fade-probe.mjs

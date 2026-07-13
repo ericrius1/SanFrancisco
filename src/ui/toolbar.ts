@@ -25,6 +25,11 @@ type FocusRow = "vehicles" | "tools" | "swatches";
  * when the spray can is out. The vehicle row above it mirrors the travel-mode
  * cycle. Pure DOM inside #hud (pointer-events: none — toolbar opts in).
  *
+ * Layout: the rows are stacked and share a left edge; a vertical ↑/↓ pad
+ * ("vnav") sits to the LEFT of them so it reads as the between-rows axis, while
+ * the per-row ←/→ hints on the right read as the within-row axis. Left edges
+ * stay aligned as the bottom row grows or its contents change.
+ *
  * Arrow keys: ↑/↓ move the keyboard focus between rows; ←/→ cycle the focused
  * row (and apply the selection). Number keys still jump vehicles; Ctrl+number
  * still jumps tools as a shortcut.
@@ -77,8 +82,7 @@ export class Toolbar {
       this.#vehicleBtns.set(mode, b);
       vehicles.appendChild(b);
     }
-    vehicles.appendChild(keyHint(["↑", "↓", "←", "→"]));
-    this.#root.appendChild(vehicles);
+    vehicles.appendChild(keyHint(["←", "→"]));
 
     const tools = document.createElement("div");
     tools.className = "tools";
@@ -96,7 +100,6 @@ export class Toolbar {
       tools.appendChild(b);
     }
     tools.appendChild(keyHint(["←", "→"]));
-    this.#root.appendChild(tools);
 
     this.#swatchRow = document.createElement("div");
     this.#swatchRow.className = "swatches";
@@ -113,7 +116,30 @@ export class Toolbar {
       this.#swatchBtns.push(b);
       this.#swatchRow.appendChild(b);
     }
-    this.#root.appendChild(this.#swatchRow);
+
+    // Vertical nav affordance: ↑/↓ hop between the stacked rows. Accent-tinted
+    // and parked on the LEFT so it reads as a different axis from the per-row
+    // ←/→ cycle hints; space-around (in CSS) lines each arrow up with its row.
+    const vnav = document.createElement("div");
+    vnav.className = "vnav";
+    vnav.setAttribute("aria-hidden", "true");
+    for (const glyph of ["↑", "↓"]) {
+      const k = document.createElement("span");
+      k.className = "vk";
+      k.textContent = glyph;
+      vnav.appendChild(k);
+    }
+
+    // Rows share a left edge (the stack column) so the whole cluster stays
+    // lined up as the bottom row grows or its contents change.
+    const stack = document.createElement("div");
+    stack.className = "stack";
+    stack.append(vehicles, tools, this.#swatchRow);
+
+    const primary = document.createElement("div");
+    primary.className = "primary";
+    primary.append(vnav, stack);
+    this.#root.appendChild(primary);
 
     this.#hud.appendChild(this.#root);
     this.#renderFocus();

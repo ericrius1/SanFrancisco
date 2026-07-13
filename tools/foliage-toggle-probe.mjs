@@ -29,6 +29,7 @@ const VIEWS = [
   ["city_park", 900, 2400, 0.6, 14, 4.0, true]
 ];
 const ONLY = process.env.SF_PROBE_VIEW ?? null; // run a single view by name
+const REQUEST_AUDIT = process.env.SF_REQUEST_AUDIT === "1";
 
 async function isFile(p) { try { return existsSync(p); } catch { return false; } }
 async function findChrome() {
@@ -99,7 +100,22 @@ async function setFoliage(c, on) {
   await ev(c, `window.__sf.setFoliageVisible(${on})`);
 }
 async function readFoliageState(c) {
-  return await ev(c, `(()=>{const g=window.__sf.garden.group.visible;const w=window.__sf.wildlands.groups.map(x=>x.visible);return{garden:g,wildlands:w,tuning:window.__sf.FOLIAGE_TUNING.values.visible};})()`);
+  return await ev(c, `(()=>{
+    const sf=window.__sf,scene=sf.scene;
+    return {
+      garden:sf.garden.group.visible,
+      wildlands:sf.wildlands.groups.map(x=>x.visible),
+      tea:scene.getObjectByName('japanese_tea_garden_live_plants')?.visible??null,
+      corona:sf.coronaHeights?.foliage?.visible??null,
+      islands:scene.getObjectByName('floating_island_trees')?.visible??null,
+      tuning:sf.FOLIAGE_TUNING.values.visible
+    };
+  })()`);
+}
+
+function visibleFlags(state) {
+  return [state.garden, ...state.wildlands, state.tea, state.corona, state.islands]
+    .filter((value) => value !== null);
 }
 async function teleport(c, x, z, facing) {
   await ev(c, `(()=>{const m=window.__sf.map,p=window.__sf.player;const y=m.groundHeight(${x},${z});p.teleportTo({x:${x},y:y+1.5,z:${z},facing:${facing},mode:'walk'});return true;})()`);
@@ -153,13 +169,60 @@ async function main() {
   console.log("[probe] waiting for __sf...");
   const t0 = Date.now();
   let ready = false;
-  while (Date.now() - t0 < 150000) { try { if (await ev(c, `!!(window.__sf&&window.__sf.wildlands&&window.__sf.garden&&window.__sf.setFoliageVisible&&window.__sf.player)`)) { ready = true; break; } } catch {} await sleep(600); }
+  while (Date.now() - t0 < 150000) { try { if (await ev(c, `!!(window.__sf&&window.__sf.setFoliageVisible&&window.__sf.player)`)) { ready = true; break; } } catch {} await sleep(600); }
   if (!ready) throw new Error("__sf never ready");
   console.log(`[probe] __sf ready in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
   await ev(c, `window.__sfManual&&window.__sfManual(true)`);
   await settle(c, 12);
 
+  if (REQUEST_AUDIT) {
+    await ev(c, `performance.setResourceTimingBufferSize(10000)`);
+    const regionRequests = async () => ev(c, `performance.getEntriesByType('resource').map(e=>e.name).filter(n=>[
+      '/src/world/japaneseTeaGarden/index.ts','/src/world/japaneseTeaGarden/vegetation.ts',
+      '/src/world/garden/index.ts','/src/world/garden/gardenVegetation.ts',
+      '/src/world/wildlands/index.ts','/src/world/wildlands/flowerRing.ts',
+      '/src/gameplay/golf/index.ts'
+    ].some(p=>n.includes(p)))`);
+    const cleanBoot = await regionRequests();
+    if (cleanBoot.length) throw new Error(`optional region requests leaked into clean boot: ${JSON.stringify(cleanBoot)}`);
+    await ev(c, `performance.clearResourceTimings()`);
+
+    await teleport(c, -2280, 2185, 1.88);
+    const deadline = Date.now() + 150000;
+    while (Date.now() < deadline) {
+      const ready = await ev(c, `!!(window.__sf.japaneseTeaGarden&&window.__sf.garden)`);
+      if (ready) break;
+      await tick(c, 0);
+      await sleep(350);
+    }
+    if (!(await ev(c, `!!(window.__sf.japaneseTeaGarden&&window.__sf.garden)`))) {
+      throw new Error("Tea/Garden first-approach chunks did not become ready");
+    }
+    const firstApproach = await regionRequests();
+    if (!firstApproach.some((name) => name.includes("/src/world/japaneseTeaGarden/index.ts"))) {
+      const relevant = await ev(c, `performance.getEntriesByType('resource').map(e=>e.name).filter(n=>/garden|wildlands|golf|vegetation/i.test(n))`);
+      throw new Error(`Tea first-approach request missing: ${JSON.stringify({ firstApproach, relevant })}`);
+    }
+    if (!firstApproach.some((name) => name.includes("/src/world/garden/index.ts"))) {
+      throw new Error(`nearby Botanical Garden request missing: ${JSON.stringify(firstApproach)}`);
+    }
+    if (firstApproach.some((name) => name.includes("/src/world/wildlands/index.ts") || name.includes("/src/gameplay/golf/index.ts"))) {
+      throw new Error(`unrelated Wildlands/Golf requested at Tea activation: ${JSON.stringify(firstApproach)}`);
+    }
+
+    await teleport(c, -2300, 2200, 2.2);
+    await settle(c, 20);
+    const subsequentMove = await regionRequests();
+    if (subsequentMove.length !== firstApproach.length) {
+      throw new Error(`nearby Tea movement fetched another region chunk: ${JSON.stringify({ firstApproach, subsequentMove })}`);
+    }
+    console.log("[request-audit]", JSON.stringify({ cleanBoot, firstApproach, subsequentMove }));
+    c.close(); proc.kill(); if (dev) dev.kill();
+    process.exit(0);
+  }
+
   const report = {};
+  let failure = null;
   for (const [name, x0, z0, facing, back, up, findPark] of VIEWS) {
     if (ONLY && name !== ONLY) continue;
     try {
@@ -179,6 +242,17 @@ async function main() {
       else console.log(`[park] no park surface near (${x0}, ${z0}) — using nominal spot`);
     }
     await teleport(c, x, z, facing);
+    // Garden/wildlands are true first-approach chunks now. Teleport triggers
+    // their one-shot gates; wait until both public controllers exist.
+    const regionDeadline = Date.now() + 150000;
+    while (Date.now() < regionDeadline) {
+      if (await ev(c, `!!(window.__sf.garden&&window.__sf.wildlands)`)) break;
+      await tick(c, 0);
+      await sleep(400);
+    }
+    if (!(await ev(c, `!!(window.__sf.garden&&window.__sf.wildlands)`))) {
+      throw new Error("first-approach garden/wildlands chunks never became ready");
+    }
     await settle(c, 16);
     await freeCam(c, x, z, facing, back, up);
     for (let i = 0; i < 24; i++) { await tick(c, 1 / 60); await sleep(25); }
@@ -203,6 +277,14 @@ async function main() {
     await shot(c, `${name}_restored`);
     const onPerf = await measureP50(c);
 
+    const offFlags = visibleFlags(offState);
+    if (offFlags.some(Boolean)) throw new Error(`master foliage OFF left a visible subsystem: ${JSON.stringify(offState)}`);
+    const onFlags = visibleFlags(onState);
+    const restoredFlags = visibleFlags(restoredState);
+    if (onFlags.length !== restoredFlags.length || onFlags.some((value, index) => value !== restoredFlags[index])) {
+      throw new Error(`master foliage restore mismatch: ${JSON.stringify({ onState, restoredState })}`);
+    }
+
     report[name] = {
       onState, offState, restoredState,
       offP50ms: +offPerf.p50.toFixed(2), offCalls: offPerf.calls, offTris: offPerf.tris,
@@ -211,6 +293,7 @@ async function main() {
     console.log(`[${name}]`, JSON.stringify(report[name]));
     } catch (e) {
       report[name] = { error: String(e).slice(0, 200) };
+      failure = e;
       console.log(`[view-fail] ${name}: ${String(e).slice(0, 160)}`);
       break; // tab likely gone — stop rather than cascade
     }
@@ -218,6 +301,7 @@ async function main() {
   writeFileSync(path.join(OUT, "report.json"), JSON.stringify(report, null, 2));
   console.log(`[probe] shots + report.json in ${OUT}`);
   c.close(); proc.kill(); if (dev) dev.kill();
+  if (failure) throw failure;
   process.exit(0);
 }
 main().catch((e) => { console.error("[probe] FAIL", e); process.exit(1); });

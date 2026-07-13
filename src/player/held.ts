@@ -1,5 +1,6 @@
 import * as THREE from "three/webgpu";
-import { setHandPose, type Rig } from "./rig";
+import { setHandPose, HAND_GRIP as GRIP_POSE, type HandPose, type Rig } from "./rig";
+import { enableShadowLayer, SHADOW_LAYERS } from "../world/shadows/shadowLayers";
 
 /**
  * Grip system: puts items (clubs, paddles, bows, arrows, anything) into a
@@ -25,8 +26,10 @@ export type GripSpec = {
    *  must run along the item's handle (the bar the fingers wrap). Rotating the
    *  frame about its own X spins the item around the grip bar. */
   rotation?: [number, number, number];
-  /** Hand curl applied on attach (default 1 = fully closed). */
-  curl?: number;
+  /** Finger shape applied on attach. A scalar 0..1 curls the whole mitt (the
+   *  old behaviour); a {@link HandPose} lets a grip pick per-finger shapes
+   *  (e.g. a loose wrap vs a pinch). Default: {@link HAND_GRIP} (wrap a bar). */
+  curl?: number | HandPose;
 };
 
 export type HeldItem = {
@@ -61,7 +64,7 @@ export function attachToHand(rig: Rig, side: "L" | "R", object: THREE.Object3D, 
   S.vec.set(spec.position[0], spec.position[1], spec.position[2]).applyQuaternion(S.quat).multiplyScalar(invScale);
   object.position.copy(HAND_GRIP).sub(S.vec);
   hand.add(object);
-  setHandPose(rig, side, spec.curl ?? 1);
+  setHandPose(rig, side, spec.curl ?? GRIP_POSE);
   return {
     object,
     side,
@@ -77,8 +80,10 @@ export function attachToHand(rig: Rig, side: "L" | "R", object: THREE.Object3D, 
 
 /** Curl the OTHER hand as if gripping the same handle (two-handed holds: golf
  *  trail hand, bow draw hand). The pose fn is responsible for actually placing
- *  that hand on the item — this only closes the fingers. */
-export function secondHandCurl(rig: Rig, side: "L" | "R", curl = 1): void {
+ *  that hand on the item — this only closes the fingers. For a two-handed hold
+ *  where the off hand should also LAND on a second grip point, drive it with
+ *  setHandTarget (handIK.ts) each frame instead. */
+export function secondHandCurl(rig: Rig, side: "L" | "R", curl: number | HandPose = GRIP_POSE): void {
   setHandPose(rig, side, curl);
 }
 
@@ -126,7 +131,11 @@ export function buildGolfClub(): THREE.Group {
   const sole = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.02, 0.23), MAT.dark);
   sole.position.set(-0.005, -1.157, -0.06);
   for (const mesh of [grip, shaft, head, face, sole]) {
-    mesh.castShadow = true;
+    // Shaft + head define the readable club shadow. Grip, face plate, and sole
+    // still receive but are sub-texel duplicate caster work.
+    mesh.castShadow = mesh === shaft || mesh === head;
+    if (mesh.castShadow) enableShadowLayer(mesh, SHADOW_LAYERS.HERO_DYNAMIC);
+    mesh.receiveShadow = true;
     group.add(mesh);
   }
   group.visible = false;
@@ -162,7 +171,10 @@ export function buildPickleballPaddle(): THREE.Group {
   face.position.y = -0.31;
   face.scale.y = 1.18;
   for (const mesh of [handle, edge, face]) {
-    mesh.castShadow = true;
+    // The inset face covers essentially the same projection as the edge.
+    mesh.castShadow = mesh === handle || mesh === face;
+    if (mesh.castShadow) enableShadowLayer(mesh, SHADOW_LAYERS.HERO_DYNAMIC);
+    mesh.receiveShadow = true;
     group.add(mesh);
   }
   return group;
@@ -184,6 +196,8 @@ export function buildBow(): THREE.Group {
   group.name = "bow";
   const riser = new THREE.Mesh(new THREE.BoxGeometry(0.038, 0.3, 0.055), MAT.bowWood);
   riser.castShadow = true;
+  enableShadowLayer(riser, SHADOW_LAYERS.HERO_DYNAMIC);
+  riser.receiveShadow = true;
   group.add(riser);
   // each limb = two angled segments curving back toward +Z at the tip (recurve)
   for (const dir of [1, -1]) {
@@ -195,6 +209,8 @@ export function buildBow(): THREE.Group {
     outer.rotation.x = -dir * 0.38; // recurves back toward the string
     for (const m of [inner, outer]) {
       m.castShadow = true;
+      enableShadowLayer(m, SHADOW_LAYERS.HERO_DYNAMIC);
+      m.receiveShadow = true;
       group.add(m);
     }
   }
@@ -202,6 +218,7 @@ export function buildBow(): THREE.Group {
   const string = new THREE.Mesh(new THREE.CylinderGeometry(0.004, 0.004, 1.24, 4), MAT.bowString);
   string.position.set(0, 0, 0.055);
   string.name = "bow-string";
+  string.receiveShadow = true;
   group.add(string);
   return group;
 }
@@ -219,10 +236,13 @@ export function buildArrow(): THREE.Group {
   group.name = "arrow";
   const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.007, 0.007, 0.66, 5), MAT.arrowShaft);
   shaft.position.y = 0.35;
-  shaft.castShadow = true;
+  // Seven-millimetre arrow parts are below the useful CSM texel scale. They
+  // receive close shade but intentionally add no shadow-pass draws.
+  shaft.receiveShadow = true;
   group.add(shaft);
   const tip = new THREE.Mesh(new THREE.ConeGeometry(0.014, 0.06, 5), MAT.arrowTip);
   tip.position.y = 0.7;
+  tip.receiveShadow = true;
   group.add(tip);
   // three fletch fins around the nock end
   for (let i = 0; i < 3; i++) {
@@ -230,6 +250,7 @@ export function buildArrow(): THREE.Group {
     fin.position.set(0, 0.075, 0);
     fin.rotation.y = (i / 3) * Math.PI * 2;
     fin.translateZ(0.016);
+    fin.receiveShadow = true;
     group.add(fin);
   }
   return group;

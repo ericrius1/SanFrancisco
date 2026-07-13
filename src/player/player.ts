@@ -35,7 +35,16 @@ import { buildPlaneMesh, collectPlaneAnim, FlyController, type PlaneAnim } from 
 import { buildBoatMesh, buildSpeedboatMesh, BoatController, BOAT_TUNING, SPEEDBOAT_TUNING, type BoatSailRig } from "../vehicles/boat";
 import { buildDroneMesh, DroneController } from "../vehicles/drone";
 import { buildBoardMesh, animateBoard, updateBoardSurface, BoardController, BOARD_TUNING, type BoardConfig } from "../vehicles/board";
-import { buildSurfboardMesh, SurfController, SURF_TUNING, type SurfTelemetry } from "../vehicles/surf";
+import {
+  activateSurfboardAssets,
+  animateSurfboard,
+  buildSurfboardMesh,
+  updateSurfboardSurface,
+  SurfController,
+  SURF_TUNING,
+  type SurfboardConfig,
+  type SurfTelemetry
+} from "../vehicles/surf";
 import { animateScooter, buildScooterMesh, ScooterController, type ScooterConfig } from "../vehicles/scooter";
 import { buildBirdMesh, BirdController } from "../vehicles/bird";
 
@@ -56,6 +65,19 @@ type GolfTune = { gripX?: number; gripY?: number; gripZ?: number; gripRX?: numbe
 /** DEV-only live archery bow-grip tuning (window.__archeryTune) — same idea
  *  as GolfTune: presence re-solves the attach every setArcherPose call. */
 type ArcheryTune = { bx?: number; by?: number; bz?: number; brx?: number; bry?: number; brz?: number };
+
+/** Carried surfboard grip: item space is X = width (rail to rail), Y = thin
+ *  deck normal, Z = length with the nose at -Z (see buildSurfboardMesh — same
+ *  -Z-front convention as the avatar). The grip point sits near the rail at
+ *  board centre; rotating +90° about item-local X (the axis that stays put as
+ *  the hand's grip-bar axis) swings the length axis (Z) up into the hand's
+ *  local +Y — nose up, tucked against the body — while leaving the thin deck
+ *  normal facing fore/aft, edge toward the camera, like a board under the arm. */
+const CARRY_BOARD_GRIP: GripSpec = {
+  position: [0.4, 0.04, 0],
+  rotation: [Math.PI / 2, 0, 0]
+};
+const CARRY_BOARD_SCALE = 0.82; // matches the old fixed-offset prop's scale
 
 /**
  * Show/hide an embodiment's visual meshes. Embodiments carry no Light objects
@@ -166,6 +188,8 @@ export class Player {
   driveSpec: DriveSpec = DEFAULT_DRIVE_SPEC;
   swimEnter = false;
   #carryBoard!: THREE.Group; // surfboard tucked under the arm while on the beach
+  #heldCarryBoard: HeldItem | null = null; // grip attachment into the walk rig's hand
+  #carryingBoard = false; // true once setCarryingBoard(true) has ever attached the board
   #defaultDriveMesh!: THREE.Group;
   #defaultDroneMesh!: THREE.Group;
   #broomRigAttached = false;
@@ -181,7 +205,8 @@ export class Player {
     spawn: { x: number; z: number; heading: number },
     avatar: AvatarTraits = avatarFromSeed("local-default"),
     board?: BoardConfig,
-    scooter?: ScooterConfig
+    scooter?: ScooterConfig,
+    surfboard?: SurfboardConfig
   ) {
     this.physics = physics;
     this.map = map;
@@ -202,6 +227,9 @@ export class Player {
     this.#ballMaterial = new THREE.MeshStandardMaterial({ color: TENNIS_BALL_COLOR, roughness: 0.62 });
     prepareBallGlowMaterial(this.#ballMaterial);
     this.#ballProp = new THREE.Mesh(new THREE.SphereGeometry(0.11, 12, 10), this.#ballMaterial);
+    // Physical surface can receive when its glow is dimmed; the held-ball glow
+    // deliberately does not become another tiny animated shadow caster.
+    this.#ballProp.receiveShadow = true;
     this.#ballProp.position.set(0, -0.02, -0.05); // cupped in the curled fingers
     this.#ballProp.visible = false;
     this.#walkRig.handR.add(this.#ballProp);
@@ -214,7 +242,7 @@ export class Player {
       speedboat: buildSpeedboatMesh(),
       drone: buildDroneMesh(),
       board: buildBoardMesh(board),
-      surf: buildSurfboardMesh(),
+      surf: buildSurfboardMesh(surfboard),
       bird: buildBirdMesh()
     };
     this.#modes = {
@@ -229,6 +257,7 @@ export class Player {
       surf: new SurfController(),
       bird: new BirdController(this.meshes.bird)
     };
+    this.#modes.surf.setConfig(surfboard ?? this.#modes.surf.config);
     // surf stance across the deck; ZYX order so the carve lean (z) rolls the
     // already-yawed stance around the board's long axis
     this.#riderRig = buildRig(this.#avatar);
@@ -241,14 +270,13 @@ export class Player {
     this.#surfRig.group.rotation.y = 1.05;
     this.#surfRig.group.position.y = 0.93;
     this.meshes.surf.add(this.#surfRig.group);
-    // A surfboard tucked upright under the right arm, shown on foot at the beach
-    // so you arrive "holding your board, ready to paddle out".
-    this.#carryBoard = buildSurfboardMesh();
-    this.#carryBoard.scale.setScalar(0.82);
-    this.#carryBoard.position.set(0.62, 1.0, -0.05);
-    this.#carryBoard.rotation.set(0.05, 0, Math.PI * 0.52);
+    // A surfboard tucked upright under the arm, shown on foot at the beach so
+    // you arrive "holding your board, ready to paddle out". Built here but not
+    // parented yet — setCarryingBoard grips it into the walk rig's hand (the
+    // golf-club/bow pattern) on first use, so it swings with the arm instead
+    // of floating at a fixed offset off the mesh root.
+    this.#carryBoard = buildSurfboardMesh(surfboard);
     this.#carryBoard.visible = false;
-    this.meshes.walk.add(this.#carryBoard);
     this.#scooterRig = buildRig(this.#avatar);
     const scooterCockpit = this.meshes.scooter.userData.cockpit as Cockpit;
     this.#scooterRig.group.position.set(...scooterCockpit.seat);
@@ -353,6 +381,9 @@ export class Player {
     for (const [k, m] of Object.entries(this.meshes)) {
       setEmbodimentVisible(m, k === mode);
     }
+    // Surf art is intentionally absent from boot. The active board requests
+    // only its selected surface/decal the first time surfing actually starts.
+    if (mode === "surf") void activateSurfboardAssets(this.meshes.surf);
     this.#lightPool.claim(this.meshes[mode]);
     this.onModeChange(mode);
   }
@@ -379,9 +410,11 @@ export class Player {
     this.#spawnBody(mode, facing);
   }
 
+  /** Landmark teleport landing — always on foot. Callers should exitToWalk first
+   *  so surf/vehicles leave an abandoned mount and fire mode-change cleanup. */
   respawn(spawn: { x: number; z: number; heading: number }) {
     this.position.set(spawn.x, this.map.effectiveGround(spawn.x, spawn.z) + 1.5, spawn.z);
-    this.#spawnBody(this.mode === "boat" ? "walk" : this.mode, spawn.heading);
+    this.#spawnBody("walk", spawn.heading);
   }
 
   /**
@@ -525,6 +558,11 @@ export class Player {
     if (this.mode === "surf") this.#modes.surf.requestJump();
   }
 
+  requestSurfFlow() {
+    if (this.mode === "surf") return this.#modes.surf.requestFlow();
+    return false;
+  }
+
   get surfTelemetry(): SurfTelemetry {
     return this.#modes.surf.telemetry;
   }
@@ -536,6 +574,11 @@ export class Player {
   /** Air/landing state for probes and the window.__sf diagnostics surface. */
   get driveJumpState() {
     return this.#modes.drive.jumpDebug;
+  }
+
+  /** One-shot landing telemetry; main owns the camera/audio/VFX consumers. */
+  get driveLandingFeedback() {
+    return this.#modes.drive.landingFeedback;
   }
 
   get scooterJumpState() {
@@ -618,8 +661,15 @@ export class Player {
     setHandPose(this.#walkRig, "R", held ? 1 : 0);
   }
 
-  /** Carry a surfboard under the arm while on foot at the beach (visual only). */
+  /** Carry a surfboard under the arm while on foot at the beach (visual only).
+   *  Grips into the walk rig's right hand on first use (attach once, toggle
+   *  visibility after — the golf-club/bow pattern) so it tracks the arm. */
   setCarryingBoard(on: boolean) {
+    if (on && !this.#heldCarryBoard) {
+      this.#heldCarryBoard = attachToHand(this.#walkRig, "R", this.#carryBoard, CARRY_BOARD_GRIP);
+      this.#carryBoard.scale.multiplyScalar(CARRY_BOARD_SCALE);
+    }
+    this.#carryingBoard = on;
     this.#carryBoard.visible = on && this.mode === "walk";
   }
 
@@ -841,6 +891,46 @@ export class Player {
     if (this.mode === "board") this.#lightPool.claim(next);
   }
 
+  /** Rebuild both the ridden and carried surfboards from one identity. */
+  setSurfboardConfig(config: SurfboardConfig) {
+    this.#modes.surf.setConfig(config);
+
+    const old = this.meshes.surf;
+    const next = buildSurfboardMesh(config);
+    next.position.copy(old.position);
+    next.quaternion.copy(old.quaternion);
+    this.#surfRig.group.removeFromParent();
+    this.#surfRig.group.rotation.order = "ZYX";
+    this.#surfRig.group.rotation.set(0, 1.05, 0);
+    this.#surfRig.group.position.set(0, 0.93, 0);
+    next.add(this.#surfRig.group);
+    setEmbodimentVisible(old, false);
+    this.#scene.remove(old);
+    (old.userData.dispose as (() => void) | undefined)?.();
+    this.#scene.add(next);
+    this.meshes.surf = next;
+    setEmbodimentVisible(next, this.mode === "surf");
+    if (this.mode === "surf") {
+      this.#lightPool.claim(next);
+      void activateSurfboardAssets(next);
+    }
+
+    const oldCarry = this.#carryBoard;
+    const carry = buildSurfboardMesh(config);
+    carry.visible = oldCarry.visible;
+    if (this.#heldCarryBoard) {
+      // already gripped into the hand — release the old mesh and re-grip the
+      // rebuilt one with the same spec so it keeps tracking the arm
+      this.#heldCarryBoard.release();
+      this.#heldCarryBoard = attachToHand(this.#walkRig, "R", carry, CARRY_BOARD_GRIP);
+      carry.scale.multiplyScalar(CARRY_BOARD_SCALE);
+    }
+    // not yet carried: oldCarry was never parented anywhere, so there's
+    // nothing to remove from the scene graph before disposing it
+    (oldCarry.userData.dispose as (() => void) | undefined)?.();
+    this.#carryBoard = carry;
+  }
+
   /** Rebuild the cosmetic scooter shell without disturbing its live pose. */
   setScooterConfig(config: ScooterConfig) {
     const old = this.meshes.scooter;
@@ -864,6 +954,13 @@ export class Player {
   /** Lightweight local-only preview used while the deck XY pad is held. */
   previewBoardSurface(config: BoardConfig) {
     updateBoardSurface(this.meshes.board, config);
+  }
+
+  /** Lightweight local preview; shape clicks commit through setSurfboardConfig. */
+  previewSurfboardSurface(config: SurfboardConfig) {
+    updateSurfboardSurface(this.meshes.surf, config);
+    updateSurfboardSurface(this.#carryBoard, config);
+    this.#modes.surf.setConfig(config);
   }
 
   /**
@@ -952,7 +1049,11 @@ export class Player {
       // the left mitt also wraps a held bow (archery); the string hand curls
       // only while actually pulling
       setHandPose(r, "L", golfing || archering || this.#bowCarried ? 1 : 0);
-      setHandPose(r, "R", golfing || this.#ballHeld || (archering && this.#archerPose.draw > 0.05) ? 1 : 0);
+      setHandPose(
+        r,
+        "R",
+        golfing || this.#ballHeld || this.#carryingBoard || (archering && this.#archerPose.draw > 0.05) ? 1 : 0
+      );
       if (!golfing && !archering) {
         // only poseGolf/poseArcher rotate the wrist groups; neutralise them
         // here so the last swing frame doesn't linger into walk/idle
@@ -973,8 +1074,16 @@ export class Player {
       } else {
         const h = Math.hypot(this.velocity.x, this.velocity.z);
         if (h > 0.35) {
-          this.#strideT += dt * (3.2 + h * 1.15);
-          poseWalk(r, this.#strideT, THREE.MathUtils.clamp((h - WALK_TUNING.values.speed) / 4.8, 0, 1));
+          const tw = WALK_TUNING.values;
+          // cadence scales with speed so the athletic sprint doesn't look like
+          // moonwalk-slow legs under a fast capsule
+          this.#strideT += dt * (3.5 + h * 1.35);
+          const runBlend = THREE.MathUtils.clamp(
+            (h - tw.speed) / Math.max(0.1, tw.runSpeed - tw.speed),
+            0,
+            1
+          );
+          poseWalk(r, this.#strideT, runBlend);
         } else {
           poseIdle(r, this.#animT);
         }
@@ -998,6 +1107,7 @@ export class Player {
       this.#surfRig.group.rotation.z = surf.lean * 0.34;
       // lean forward onto the board while paddling out
       this.#surfRig.group.rotation.x = paddling ? 0.6 : 0;
+      animateSurfboard(this.meshes.surf, dt, this.#animT);
     } else if (this.mode === "scooter") {
       const scooter = this.#modes.scooter;
       const airborne = scooter.jumpDebug.airborne;

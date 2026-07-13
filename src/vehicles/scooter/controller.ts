@@ -1,6 +1,7 @@
 import type { Input } from "../../core/input";
 import type { DriveSpec, ModeController, ModeFrame, PlayerCtx } from "../../player/types";
 import { CarController } from "../car";
+import { SCOOTER_RIDE_HEIGHT } from "./mesh";
 import { SCOOTER_TUNING } from "./tuning";
 
 /**
@@ -10,7 +11,8 @@ import { SCOOTER_TUNING } from "./tuning";
  * the allocation-free airborne attitude assist.
  */
 export class ScooterController implements ModeController {
-  readonly spawnLift = 0.8;
+  /** Match mesh contact so teleports settle near the road, not a car-height float. */
+  readonly spawnLift = SCOOTER_RIDE_HEIGHT;
   #drive = new CarController();
 
   get steerVis(): number {
@@ -25,7 +27,8 @@ export class ScooterController implements ModeController {
     const t = SCOOTER_TUNING.values;
     return {
       halfExtents: [0.52, 0.42, 1.35],
-      rideHeight: 0.78,
+      // Chassis centre above road = -mesh contactY (tire bottoms), not a vibe float.
+      rideHeight: SCOOTER_RIDE_HEIGHT,
       maxFactor: t.maxFactor,
       accelFactor: t.accelFactor,
       steerFactor: t.steerFactor,

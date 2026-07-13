@@ -22,6 +22,10 @@ export type VehicleSignals = {
   grounded: boolean; // board only — everything else passes true
   /** Surf-only proximity to the steep wave face/lip (0..1). */
   surfFace?: number;
+  /** Local presentation-only surf flow envelope (0..1). */
+  surfFlow?: number;
+  /** Rider motion rate; world/audio clock itself remains unscaled. */
+  surfMotionRate?: number;
   /** When mode is drive: combustion car vs electric cart (etc). */
   driveVoice?: "engine" | "electric";
 };
@@ -170,6 +174,8 @@ export class VehicleAudio {
   #boardRuntime: BoardRuntimeState = { response: 0, detuneCents: 0, cutoffHz: 300, airGain: 0 };
   #applyBoardStyle: (() => void) | null = null; // bound once the voice exists
   #previewT: number | null = null; // seconds into a customizer audition swell
+  #carLandingEvents = 0;
+  #lastCarLandingStrength = 0;
 
   constructor() {
     // autoplay policy: same unlock dance as the fireworks — build + resume on
@@ -193,6 +199,8 @@ export class VehicleAudio {
       master: this.#masterLevel,
       boardStyle: { ...this.#boardStyle },
       boardRuntime: { ...this.#boardRuntime },
+      carLandingEvents: this.#carLandingEvents,
+      lastCarLandingStrength: this.#lastCarLandingStrength,
       voices: this.#voices.map((v) => ({ mode: v.mode, level: v.level }))
     };
   }
@@ -231,7 +239,7 @@ export class VehicleAudio {
   }
 
   /** One-shot surf feedback through the existing FX mix and unlock policy. */
-  surfEvent(kind: "carve" | "landing" | "wipeout", strength = 1) {
+  surfEvent(kind: "carve" | "landing" | "wipeout" | "flow", strength = 1) {
     const ctx = this.#ensure();
     if (!ctx) return;
     if (ctx.state === "suspended") void ctx.resume();
@@ -240,6 +248,30 @@ export class VehicleAudio {
     const out = ctx.createGain();
     out.gain.setValueAtTime(0.0001, now);
     out.connect(this.#master);
+
+    if (kind === "flow") {
+      // A small sea-glass chord: whimsical lift rather than sci-fi time warp.
+      const filter = ctx.createBiquadFilter();
+      filter.type = "lowpass";
+      filter.frequency.setValueAtTime(1800, now);
+      filter.frequency.exponentialRampToValueAtTime(620, now + 1.15);
+      filter.connect(out);
+      const notes = [220, 330, 440];
+      for (let i = 0; i < notes.length; i++) {
+        const tone = ctx.createOscillator();
+        const voice = ctx.createGain();
+        tone.type = i === 1 ? "triangle" : "sine";
+        tone.frequency.setValueAtTime(notes[i], now);
+        tone.frequency.exponentialRampToValueAtTime(notes[i] * 0.72, now + 1.2);
+        voice.gain.value = 0.38 / (i + 1);
+        tone.connect(voice).connect(filter);
+        tone.start(now + i * 0.035);
+        tone.stop(now + 1.28);
+      }
+      out.gain.exponentialRampToValueAtTime(0.16 + amount * 0.08, now + 0.025);
+      out.gain.exponentialRampToValueAtTime(0.0001, now + 1.25);
+      return;
+    }
 
     if (kind === "landing") {
       const thump = ctx.createOscillator();
@@ -267,6 +299,53 @@ export class VehicleAudio {
     out.gain.exponentialRampToValueAtTime(0.0001, now + duration);
     src.start(now, Math.random() * 1.2, duration);
     src.stop(now + duration + 0.02);
+  }
+
+  /**
+   * Car-to-road touchdown: a short filtered tyre/chassis slap over a low
+   * suspension thump. Strength lowers the pitch, lengthens the tail, and raises
+   * the transient; level is the car-folder authoring range chosen by main.
+   */
+  carLanding(strength: number, level = 1) {
+    const ctx = this.#ensure();
+    if (!ctx) return;
+    if (ctx.state === "suspended") void ctx.resume();
+    const amount = clamp01(strength);
+    const trim = Math.max(0, Math.min(2, level));
+    if (amount <= 0 || trim <= 0) return;
+    this.#carLandingEvents += 1;
+    this.#lastCarLandingStrength = amount;
+
+    const now = ctx.currentTime;
+    const duration = 0.2 + amount * 0.16;
+    const out = ctx.createGain();
+    out.gain.setValueAtTime(0.0001, now);
+    out.gain.exponentialRampToValueAtTime((0.11 + amount * 0.2) * trim, now + 0.009);
+    out.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+    out.connect(this.#master);
+
+    const thump = ctx.createOscillator();
+    thump.type = "sine";
+    thump.frequency.setValueAtTime(94 - amount * 22, now);
+    thump.frequency.exponentialRampToValueAtTime(40 - amount * 5, now + duration * 0.82);
+    const thumpGain = ctx.createGain();
+    thumpGain.gain.value = 0.72;
+    thump.connect(thumpGain).connect(out);
+    thump.start(now);
+    thump.stop(now + duration + 0.02);
+
+    const slap = ctx.createBufferSource();
+    slap.buffer = this.#noise;
+    const slapFilter = ctx.createBiquadFilter();
+    slapFilter.type = "bandpass";
+    slapFilter.frequency.value = 520 + (1 - amount) * 380;
+    slapFilter.Q.value = 0.7;
+    const slapGain = ctx.createGain();
+    slapGain.gain.setValueAtTime(0.62 + amount * 0.18, now);
+    slapGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.075 + amount * 0.045);
+    slap.connect(slapFilter).connect(slapGain).connect(out);
+    slap.start(now, Math.random() * 1.4, 0.14);
+    slap.stop(now + 0.15);
   }
 
   /** Per rendered frame. `sig` null (paused) fades every voice out. */
@@ -368,11 +447,13 @@ export class VehicleAudio {
       drive: (sig) => {
         const speed = clamp01(sig.speed / 30);
         const face = clamp01(sig.surfFace ?? 0);
-        rail.filter.frequency.value = 680 + speed * 1250;
+        const flow = clamp01(sig.surfFlow ?? 0);
+        const rate = THREE_MATH_SQRT_RATE(sig.surfMotionRate ?? 1);
+        rail.filter.frequency.value = (680 + speed * 1250) * rate;
         rail.gain.gain.value = 0.08 + speed * 0.32;
-        breaker.filter.frequency.value = 300 + face * 440;
-        breaker.gain.gain.value = 0.08 + face * 0.48;
-        return 0.12 + speed * 0.22 + face * 0.3;
+        breaker.filter.frequency.value = (300 + face * 440) * rate;
+        breaker.gain.gain.value = 0.08 + face * 0.48 + flow * 0.08;
+        return 0.12 + speed * 0.22 + face * 0.3 + flow * 0.08;
       }
     };
   }
@@ -726,4 +807,8 @@ export class VehicleAudio {
       }
     };
   }
+}
+
+function THREE_MATH_SQRT_RATE(value: number): number {
+  return Math.sqrt(Math.min(1, Math.max(0.18, Number.isFinite(value) ? value : 1)));
 }

@@ -22,6 +22,8 @@ const OUT = path.resolve(ROOT, process.env.SF_PROBE_OUT ?? ".data/corona-summit-
 const SERVER_URL = process.env.SF_PROBE_URL ?? "http://127.0.0.1:5190";
 const TIME = Number(process.env.SF_TIME ?? 13.5);
 const ONLY = (process.env.SF_VIEWS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+const FOLIAGE_ONLY = process.env.SF_FOLIAGE_ONLY === "1";
+const VISUAL_ONLY = process.env.SF_VISUAL_ONLY === "1";
 const W = 1280, H = 720;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -143,6 +145,7 @@ async function checkSummitAssets(c) {
     if (v === -1) throw new Error(`missing summit object: ${k}`);
     if (v === 0) throw new Error(`empty geometry: ${k}`);
   }
+  if (FOLIAGE_ONLY || VISUAL_ONLY) return;
   // Hero crag collider: a level ray from the platform toward the main crag must
   // hit the query world well before the crag centre (i.e. the box is there).
   const ray = await ev(c, `(()=>{
@@ -155,6 +158,34 @@ async function checkSummitAssets(c) {
   if (!ray || ray.d > 8.5) throw new Error(`hero crag collider missing or too far: ${JSON.stringify(ray)}`);
 }
 
+async function checkUnifiedFoliage(c) {
+  // Corona planting lazy-loads on first approach. Wait for the authored tree
+  // patch too, not merely the synchronous grass/flower/shrub attachment.
+  const deadline = Date.now() + 90000;
+  let stats = null;
+  while (Date.now() < deadline) {
+    stats = await ev(c, `(()=>{
+      const scene=window.__sf.scene;
+      const root=scene.getObjectByName('corona_heights_unified_foliage');
+      const trees=scene.getObjectByName('corona_heights_trees');
+      const names=['corona_heights_grass','corona_heights_flowers','corona_heights_shrubs','corona_heights_trees'];
+      const found=Object.fromEntries(names.map(n=>[n,!!scene.getObjectByName(n)]));
+      let instances=0,draws=0;
+      root?.traverse(o=>{if(o.isInstancedMesh){instances+=o.count;draws++;}});
+      const legacy=['corona_heights_grass_tufts','corona_flower_stems','corona_flower_blooms','corona_heights_tree_trunks','corona_heights_tree_crowns'].filter(n=>scene.getObjectByName(n));
+      return {root:!!root,found,instances,draws,legacy,treesBuilt:!!trees&&trees.children.length>0};
+    })()`);
+    if (stats?.root && stats.treesBuilt) break;
+    await tick(c, 0);
+    await sleep(250);
+  }
+  console.log('[probe] unified foliage:', JSON.stringify(stats));
+  if (!stats?.root || !Object.values(stats.found).every(Boolean)) throw new Error(`unified Corona foliage incomplete: ${JSON.stringify(stats)}`);
+  if (!stats.treesBuilt) throw new Error('unified Corona tree patch never became ready');
+  if (stats.legacy.length) throw new Error(`legacy Corona foliage still present: ${stats.legacy.join(', ')}`);
+  if (stats.instances < 100) throw new Error(`unified Corona foliage unexpectedly sparse: ${stats.instances} instances`);
+}
+
 async function main() {
   mkdirSync(OUT, { recursive: true });
   const dev = await startDevIfNeeded();
@@ -165,7 +196,7 @@ async function main() {
   const proc = spawn(chrome, [
     `--user-data-dir=${profile}`, "--headless=new", `--remote-debugging-port=${port}`,
     "--enable-unsafe-webgpu", "--enable-features=WebGPUDeveloperFeatures", "--use-angle=metal",
-    "--hide-scrollbars", "--mute-audio", `--window-size=${W},${H}`, `${SERVER_URL}/?autostart&fullfps`
+    "--hide-scrollbars", "--mute-audio", `--window-size=${W},${H}`, `${SERVER_URL}/?autostart=1&profile=1&fullfps=1&spawn=coronaHeights`
   ], { cwd: ROOT, stdio: "ignore" });
   chromeProc = proc;
   await sleep(2500);
@@ -203,7 +234,13 @@ async function main() {
   await ev(c, `(()=>{const s=window.__sf.sky;s.cycleEnabled=false;s.setTimeOfDay(${TIME});return true;})()`);
   await settle(c, 12);
 
+  await checkUnifiedFoliage(c);
   await checkSummitAssets(c);
+  if (FOLIAGE_ONLY) {
+    console.log("[probe] unified foliage regression passed");
+    cleanup();
+    return;
+  }
 
   // A concurrent editing session can push a Vite full-reload mid-run, dropping
   // window.__sf until the app reboots. Re-arm the frozen clock and retry the

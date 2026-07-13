@@ -65,7 +65,6 @@ Press `Shift`+`1`–`7` to switch how you get around. Each one has its own feel:
 | `Shift` | Run / boost |
 | `Space` | Jump / drift / ollie / flap / pickleball swing (depends on the mode) |
 | `E` | Mount/dismount a nearby ride, pick up a returned fetch ball, start golf from a glowing tee, or claim/leave a pickleball side |
-| `Q` | Cycle the Corona Heights jammer trio to the next song |
 | `1`–`9` | Teleport to the numbered player next to you (or pick a golf club while playing) |
 | `M` | **Full-city map** — drag/scroll to pan/zoom, click a landmark or spot, press Teleport |
 | Left click | Use the current tool; near your golf ball, hold to draw back and release to swing |
@@ -98,11 +97,11 @@ Open the map (`M`) and teleport, or just wander. A few of the denser spots:
 
 - **Corona Heights** — default spawn. Red-chert summit, downtown/Mission vista,
   a dog park just below, and a **jammer trio** (ukulele, handpan, flute) perched
-  on a boulder. Stand nearby to hear them; press `Q` to cycle songs. Throw the
-  ball tool for the dogs.
+  on a boulder. Stand nearby to hear their original songbook rotate with a
+  natural quiet break between tunes. Throw the ball tool for the dogs.
 - **Botanical Garden** — San Francisco Botanical Garden in Golden Gate Park:
-  SeedThree trees, blade grass, shrubs, and a shared wind envelope. The nature
-  soundscape thickens here.
+  unified trees, curved blade grass, leaf-spray shrubs, dimensional flower
+  clumps, and a shared wind envelope. The nature soundscape thickens here.
 - **Goldman Tennis & Pickleball** — Golden Gate Park courts. Walk up to a
   pickleball athlete and press `E` to take a side (near/far). `WASD` moves,
   click/`Space` swings, `E` again leaves. Online play is slot-arbitrated so two
@@ -111,9 +110,9 @@ Open the map (`M`) and teleport, or just wander. A few of the denser spots:
   Teleport to **Presidio Golf · Hole 1**, or find any glowing tee and press `E`.
   Aim with the camera, clubs with `1`–`9`, hold/release click to swing; `G`
   twice abandons a round. Ball and score state are shared online.
-- **Wildlands** — SeedThree groves across Golden Gate Park, the Presidio, Marin
-  Headlands, Mount Sutro / Buena Vista, with player-following wildflower and
-  grass rings.
+- **Wildlands** — chunked unified groves across Golden Gate Park, the Presidio,
+  Marin Headlands, Mount Sutro / Buena Vista, with player-following wildflower
+  and grass rings.
 - **Skyline landmarks** — Golden Gate, Bay Bridge, Transamerica, Salesforce
   Tower, Coit Tower, the Ferry Building, Sutro Tower, the Palace of Fine Arts,
   Alcatraz — plus floating balloon islands if you can reach them.
@@ -127,7 +126,7 @@ Nothing here is required — it's a list of things people tend to find fun.
 - **Fly up first.** Switch to fly or bird (`Shift`+`3` / `Shift`+`7`) and get
   above the fog. The whole city is easiest to orient from the air.
 - **Hang with the jammers.** Spawn is already on Corona Heights — walk to the
-  boulder, listen, hit `Q` for another tune, then toss a ball for the dogs.
+  boulder, listen for a while, then toss a ball for the dogs.
 - **Walk the Botanical Garden.** Map → **Botanical Garden**. Grass tramples under
   you; trees stream in as you arrive.
 - **Play pickleball.** Map → **Goldman Tennis & Pickleball**, press `E` on an
@@ -194,9 +193,10 @@ Protocol details live at the top of `server/server.mjs` and `src/net/net.ts`.
   WebAssembly bindings for [Box3D](https://github.com/erincatto/box3d) (Erin
   Catto's 3D rigid-body engine). The app imports `box3d.js/inline` through
   `src/core/box3dWorld.ts`.
-- **Rendering:** three.js (WebGPU). City geometry is authored procedurally in
-  Blender, exported as GLB tiles, then quantized + meshopt-compressed (~8x
-  smaller) for streaming.
+- **Rendering:** three.js (WebGPU). OSM city geometry is built procedurally in
+  Blender; signature landmarks can be edited directly in the master scene.
+  Everything exports as GLB tiles, then gets quantized + meshopt-compressed
+  (~8x smaller) for streaming.
 - **Multiplayer:** a tiny WebSocket relay (`server/server.mjs`) — anyone can
   join, no accounts.
 
@@ -220,7 +220,8 @@ Protocol details live at the top of `server/server.mjs` and `src/net/net.ts`.
 - **`src/world/goldenGateTennis/`** + **`src/gameplay/pickleball/`** — Goldman courts and
   the shared pickleball game.
 - **`src/gameplay/golf/`** — Presidio Golf Club, 18 holes with shared ball/score state.
-- **`src/world/wildlands/`** — SeedThree foliage across GG Park / Presidio / Marin / Sutro.
+- **`src/world/vegetation/`** + **`src/world/wildlands/`** — the shared outdoor
+  plant runtime and its deferred GG Park / Presidio / Marin / Sutro placement layer.
 - **`server/server.mjs`** + **`src/net/`** — multiplayer relay, remote-avatar interpolation,
   and the minimap/full-map UI (`src/ui/minimap.ts`).
 
@@ -232,7 +233,9 @@ reference films plus their transition:
 ```bash
 npm run render:hoverboard:fast
 npm run render:dog-park:fast
+npm run render:roqn-open-road:fast
 npm run render:cinematics:fast
+npm run render:twitter-summer -- --reuse-shots
 npm run render:hoverboard
 npm run render:dog-park
 npm run render:cinematics
@@ -241,6 +244,15 @@ npm run render:cinematics
 See [Cinematic rendering](docs/CINEMATICS.md) for probe renders, shot authoring,
 the fast WebCodecs review backend, archival fixed-frame capture, camera
 preflight, audio, outputs, and QA.
+
+Approved videos publish as MP4-only files in
+`/Users/eric/videos/my creations/sf/renders/cinematics`. Contacts, manifests,
+audits, frames, and temporary encodes stay under `.data/cinematics/`.
+
+Create an X-ready derivative of any finished film with
+`npm run deliver:x -- <video.mp4>`. The opt-in `--experimental-4k` flag also
+makes a labeled 2x upscale for account-level A/B testing without changing the
+archive master.
 
 ---
 
@@ -373,14 +385,42 @@ Then, with Blender open and the MCP add-on connected, run `tools/blender_city.py
 ```python
 import sys; sys.path.insert(0, "<repo>/tools")
 import blender_city as bc
-bc.load_data()          # read city.json + heightmap
+bc.load_data()          # read data; apply/version the canonical coastal height process
 bc.build_all_tiles()    # extruded buildings + roads + parks, per 800m tile
-bc.build_terrain()      # DEM mesh chunks with vertex-color surface classes
+bc.build_terrain()      # full-8m DEM chunks, shared smooth normals + hard skirts
 bc.build_water()        # flat WATER_bay marker plane (replaced by the shader at runtime)
-bc.build_landmarks()    # Golden Gate + Bay Bridge, Transamerica, Salesforce Tower,
-                        # Coit, Ferry Building, Sutro Tower, Palace of Fine Arts, Alcatraz
+bc.build_landmarks()    # baseline procedural landmark set
 bc.export_all()         # -> public/tiles/*.glb
 ```
+
+For a terrain-only rebake, call `bc.build_terrain(); bc.export_terrain()`, then
+run `npm run optimize:tiles`. The first bake after `prepare:city` commits the
+versioned coastal relaxation back into `heightmap.bin`; Blender immediately
+re-decodes that quantized result, so visual vertices and runtime collision share
+one height authority. `npm run test:terrain-assets` audits all 25 GLBs for full
+8 m coverage, height parity, normal sharing, and cross-chunk normal continuity.
+
+`sanfrancisco.blend` is the editable master after the baseline bake. The Palace
+of Fine Arts and Sutro Tower are authored meshes in their geographic tile
+collections, not runtime-generated replacements. To reapply that authored pass
+to an open baseline scene and export only its affected tiles:
+
+```python
+import sys; sys.path.insert(0, "<repo>/tools")
+import blender_landmark_upgrade as landmarks
+landmarks.upgrade_scene(export_root="<repo>", save=True)
+```
+
+Then destructively remove the superseded Palace OSM records from the committed
+CityGen/collider payloads:
+
+```bash
+npm run landmarks:apply
+```
+
+Do not run `bc.clear_city()` on the edited master unless you intentionally want
+to return to the generated baseline; it removes all tile and landmark objects.
+The original OSM scene can always be rebuilt from `data/raw`.
 
 Then compress the exported tiles in place (quantization + meshopt, ~8x smaller):
 
@@ -448,7 +488,7 @@ whole city, and ~25x less for a dense downtown tile**:
 | --- | --- | --- | --- |
 | Whole city (232 tiles) | ~474 MB | ~61 MB | ~27 MB |
 | `tile_4_14.glb` (dense downtown) | 16.6 MB | 1.65 MB | 0.59 MB |
-| `terrain_0_0.glb` (DEM chunk) | 19.8 MB | 2.27 MB | 0.81 MB |
+| `terrain_0_0.glb` (full-8m smooth DEM chunk) | 9.78 MB | 0.98 MB | 0.38 MB |
 
 The right-hand column is the number the player feels. Streaming the tiles around
 you pulls tens of megabytes instead of hundreds, so tiles pop in fast enough to

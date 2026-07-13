@@ -13,7 +13,13 @@ const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const PRODUCTION_DURATIONS = Object.freeze({
   hoverboard: 15,
   "dog-park": 11,
-  "palace-reverie": 15
+  "palace-reverie": 15,
+  landsend: 15,
+  "roqn-open-road": 30,
+  ...Object.fromEntries(Array.from({ length: 8 }, (_, index) => [
+    `twitter-summer-${String(index + 1).padStart(2, "0")}`,
+    7.5
+  ]))
 });
 
 /**
@@ -44,7 +50,32 @@ export const CINEMATIC_AUDIO_PLANS = Object.freeze({
     { time: 8.0, id: "lamp-b", description: "colonnade warms" },
     { time: 11.2, id: "bloom", description: "rotunda aurora bloom" },
     { time: 13.6, id: "resolve", description: "blue-hour hold" }
-  ])
+  ]),
+  landsend: Object.freeze([
+    { time: 0, id: "arrival", description: "marine drone + surf wash establishes" },
+    { time: 2.6, id: "walk", description: "the light-wave begins threading inward" },
+    { time: 7, id: "awaken", description: "the spiral comes fully alight" },
+    { time: 10.7, id: "release", description: "gold flood + sea-lanterns lift off" },
+    { time: 13.2, id: "resolve", description: "lanterns drift out over the Pacific" }
+  ]),
+  "roqn-open-road": Object.freeze([
+    { time: 0, id: "garden", description: "Botanical Garden dawn flight" },
+    { time: 6, id: "car", description: "Embarcadero street run" },
+    { time: 12, id: "palace", description: "Palace lagoon drone reveal" },
+    { time: 18, id: "golden-gate", description: "Golden Gate bird pass" },
+    { time: 24, id: "speedboat", description: "Bay Bridge speedboat run" },
+    { time: 25.25, id: "shell-one", description: "first bay shell" },
+    { time: 27.8, id: "burst", description: "Bay Lights firework bloom" },
+    { time: 29.3, id: "resolve", description: "open-water resolve" }
+  ]),
+  ...Object.fromEntries(Array.from({ length: 8 }, (_, index) => {
+    const shot = index + 1;
+    return [`twitter-summer-${String(shot).padStart(2, "0")}`, Object.freeze([
+      { time: 0, id: "arrive", description: `summer movement ${shot} arrives` },
+      { time: 3.25, id: "lift", description: `summer movement ${shot} camera/action lift` },
+      { time: 6.55, id: "handoff", description: `summer movement ${shot} transition handoff` }
+    ])];
+  }))
 });
 
 const DEFAULT_DOG_PARK_BEDS = Object.freeze([
@@ -62,7 +93,7 @@ const DEFAULT_PALACE_BEDS = Object.freeze([
  * Render the score and sound design for one cinematic production.
  *
  * @param {{
- *   id: 'hoverboard'|'dog-park',
+ *   id: 'hoverboard'|'dog-park'|'roqn-open-road'|`twitter-summer-${string}`,
  *   duration?: number,
  *   fps?: number,
  *   seed?: number,
@@ -110,7 +141,9 @@ export async function renderCinematicAudio(production, outputPath) {
     for (let i = 0; i < bedPlan.length; i += 1) {
       beds.push(mixNatureBed(mix, bedPlan[i], i));
     }
-  } else {
+  } else if (id === "landsend") {
+    scoreLandsEnd(mix);
+  } else if (id === "dog-park") {
     scoreDogPark(mix);
     const bedPlan = Array.isArray(production.audio?.beds)
       ? production.audio.beds
@@ -118,9 +151,13 @@ export async function renderCinematicAudio(production, outputPath) {
     for (let i = 0; i < bedPlan.length; i += 1) {
       beds.push(mixNatureBed(mix, bedPlan[i], i));
     }
+  } else if (id === "roqn-open-road") {
+    scoreRoqnOpenRoad(mix);
+  } else {
+    scoreTwitterSummerShot(mix, Number(id.slice(-2)));
   }
 
-  const levels = masterAndLimit(mix, id === "dog-park" ? 2 : 1.35);
+  const levels = masterAndLimit(mix, id === "dog-park" ? 2 : id === "roqn-open-road" ? 1.65 : id.startsWith("twitter-summer-") ? 1.55 : 1.35);
   const absoluteOutput = path.resolve(outputPath);
   const wav = encodePcm16Wav(mix.left, mix.right, SAMPLE_RATE);
   await atomicWrite(absoluteOutput, wav);
@@ -200,6 +237,119 @@ export async function renderTransitionAudio(options = {}, outputPath) {
     rmsDb: levels.rmsDb,
     beds: []
   };
+}
+
+function scoreLandsEnd(mix) {
+  // A deep, patient marine drone (D aeolian) under an endless surf/wind wash;
+  // glassy chimes ring as the light-wave winds inward, then a warm chord and a
+  // spray of high bells bloom as the sea-lanterns lift off.
+  addPad(mix, { start: 0, duration: 11.6, notes: [38, 45, 50, 57], gain: 0.05, pan: -0.05, brightness: 0.2 });
+  addPad(mix, { start: 8.4, duration: 6.6, notes: [43, 50, 55, 62, 67], gain: 0.062, pan: 0.05, brightness: 0.52 });
+  addAir(mix, { start: 0, duration: 15, gain: 0.032, panDrift: 0.6 });
+
+  // distant foghorn swells
+  addSub(mix, { start: 1.1, duration: 2.5, fromHz: 70, toHz: 57, gain: 0.08 });
+  addSub(mix, { start: 6.0, duration: 2.6, fromHz: 66, toHz: 53, gain: 0.075 });
+
+  // the walk-in: sparse glassy chimes climbing as the spiral lights
+  const walkNotes = [69, 72, 76, 79, 81];
+  for (let i = 0; i < walkNotes.length; i += 1) {
+    addChime(mix, {
+      start: 3.3 + i * 1.5,
+      midi: walkNotes[i],
+      duration: 1.7,
+      gain: 0.05,
+      pan: mix.rng.range(-0.5, 0.5)
+    });
+  }
+
+  // the release: an upward swell + a rising spray of bells (lanterns climbing)
+  addWhoosh(mix, { start: 10.45, duration: 2.3, gain: 0.075, panFrom: -0.45, panTo: 0.55, direction: "out" });
+  addSub(mix, { start: 10.55, duration: 1.5, fromHz: 58, toHz: 92, gain: 0.06 });
+  const bloom = [76, 81, 84, 88, 91, 96];
+  for (let i = 0; i < bloom.length; i += 1) {
+    addChime(mix, {
+      start: 10.85 + i * 0.19 + mix.rng.range(-0.03, 0.03),
+      midi: bloom[i],
+      duration: 2.1,
+      gain: 0.046,
+      pan: mix.rng.range(-0.85, 0.85)
+    });
+  }
+}
+
+function scoreTwitterSummerShot(mix, shot) {
+  const chords = [
+    [45, 52, 57, 61, 64],
+    [47, 54, 59, 62, 66],
+    [48, 55, 60, 64, 69],
+    [50, 57, 62, 66, 71],
+    [52, 59, 64, 67, 71],
+    [53, 60, 65, 69, 74],
+    [50, 57, 62, 66, 71],
+    [45, 52, 57, 61, 66, 73]
+  ];
+  const notes = chords[Math.max(0, Math.min(chords.length - 1, shot - 1))];
+  addPad(mix, { start: 0, duration: 7.5, notes, gain: 0.052, pan: (shot % 2 ? -1 : 1) * 0.045, brightness: 0.36 + shot * 0.035 });
+  addAir(mix, { start: 0, duration: 7.5, gain: 0.014, panDrift: 0.35 + shot * 0.045 });
+  addChime(mix, { start: 0.42, midi: 72 + shot, duration: 1.5, gain: 0.045, pan: -0.28 });
+  addChime(mix, { start: 3.18, midi: 79 + (shot % 5), duration: 1.75, gain: 0.052, pan: 0.3 });
+  addChime(mix, { start: 6.32, midi: 84 + (shot % 4), duration: 1.1, gain: 0.04, pan: shot % 2 ? 0.42 : -0.42 });
+  addWhoosh(mix, { start: 0.08, duration: 1.25, gain: 0.052, panFrom: -0.55, panTo: 0.25, direction: "out" });
+  addWhoosh(mix, { start: 3.0, duration: 1.4, gain: 0.065, panFrom: shot % 2 ? 0.6 : -0.6, panTo: shot % 2 ? -0.5 : 0.5, direction: "in" });
+  addWhoosh(mix, { start: 6.15, duration: 1.28, gain: 0.058, panFrom: -0.18, panTo: 0.58, direction: "out" });
+
+  if ([1, 5, 7].includes(shot)) {
+    addPropulsion(mix, { start: 0.35, duration: 7.0, fromHz: 55 + shot * 2, toHz: 104 + shot * 3, gain: 0.058 });
+    addSub(mix, { start: 3.32, duration: 0.72, fromHz: 54, toHz: 38, gain: 0.075 });
+  } else if ([2, 6].includes(shot)) {
+    addFoley(mix, { start: 0.2, duration: 7.05, gain: 0.026, pan: 0, character: "board" });
+    addPropulsion(mix, { start: 0.4, duration: 6.8, fromHz: 78, toHz: 132, gain: 0.046 });
+  } else if (shot === 3) {
+    addFoley(mix, { start: 0.15, duration: 7.1, gain: 0.023, pan: -0.08, character: "grass" });
+  } else if (shot === 8) {
+    addSub(mix, { start: 5.95, duration: 1.25, fromHz: 48, toHz: 33, gain: 0.095 });
+  }
+}
+
+function scoreRoqnOpenRoad(mix) {
+  addPad(mix, { start: 0, duration: 12.3, notes: [48, 55, 60, 64, 69], gain: 0.044, pan: -0.08, brightness: 0.38 });
+  addPad(mix, { start: 11.5, duration: 12.8, notes: [50, 57, 62, 66, 71], gain: 0.049, pan: 0.08, brightness: 0.5 });
+  addPad(mix, { start: 23.4, duration: 6.6, notes: [45, 52, 57, 61, 66, 73], gain: 0.064, pan: 0, brightness: 0.65 });
+  addAir(mix, { start: 0, duration: 30, gain: 0.016, panDrift: 0.72 });
+
+  const notes = [76, 81, 83, 88, 79, 86, 90, 83, 88, 93];
+  const times = [0.6, 3.25, 5.1, 7.1, 10.1, 12.35, 15.25, 18.35, 21.15, 24.15];
+  for (let i = 0; i < notes.length; i += 1) {
+    addChime(mix, { start: times[i], midi: notes[i], duration: 1.55, gain: 0.046, pan: Math.sin(i * 1.3) * 0.55 });
+  }
+
+  addWhoosh(mix, { start: 0.08, duration: 1.5, gain: 0.055, panFrom: -0.6, panTo: 0.35, direction: "out" });
+  addFoley(mix, { start: 0.2, duration: 5.6, gain: 0.024, pan: -0.08, character: "grass" });
+  addWhoosh(mix, { start: 3.1, duration: 1.25, gain: 0.075, panFrom: 0.55, panTo: -0.45, direction: "in" });
+  addSub(mix, { start: 4.5, duration: 0.9, fromHz: 52, toHz: 39, gain: 0.065 });
+
+  addClick(mix, { start: 5.98, gain: 0.14, pan: -0.2, toneHz: 760 });
+  addPropulsion(mix, { start: 6.02, duration: 5.85, fromHz: 72, toHz: 138, gain: 0.068 });
+  addFoley(mix, { start: 6.05, duration: 5.8, gain: 0.026, pan: 0.05, character: "board" });
+  addWhoosh(mix, { start: 8.65, duration: 1.25, gain: 0.06, panFrom: -0.5, panTo: 0.62, direction: "out" });
+
+  addWhoosh(mix, { start: 11.72, duration: 1.1, gain: 0.048, panFrom: 0.4, panTo: -0.35, direction: "in" });
+  addChime(mix, { start: 12.1, midi: 74, duration: 2.4, gain: 0.062, pan: -0.2 });
+  addChime(mix, { start: 15.05, midi: 81, duration: 2.25, gain: 0.058, pan: 0.28 });
+
+  addSub(mix, { start: 17.72, duration: 0.9, fromHz: 46, toHz: 58, gain: 0.08 });
+  addWhoosh(mix, { start: 18, duration: 5.8, gain: 0.068, panFrom: -0.7, panTo: 0.72, direction: "out" });
+  addFoley(mix, { start: 18.15, duration: 5.45, gain: 0.02, pan: 0, character: "grass" });
+  addWhoosh(mix, { start: 21.25, duration: 1.15, gain: 0.085, panFrom: 0.65, panTo: -0.65, direction: "in" });
+
+  addSub(mix, { start: 23.78, duration: 0.82, fromHz: 44, toHz: 67, gain: 0.105 });
+  addPropulsion(mix, { start: 24, duration: 6, fromHz: 54, toHz: 98, gain: 0.075 });
+  addWhoosh(mix, { start: 24.05, duration: 5.75, gain: 0.045, panFrom: -0.25, panTo: 0.32, direction: "out" });
+  for (const [start, pan, midi] of [[26.6, -0.35, 86], [27.65, 0.38, 90], [28.55, -0.18, 93], [29.15, 0.22, 97]]) {
+    addSub(mix, { start: start - 0.08, duration: Math.min(0.75, 30 - start + 0.08), fromHz: 58, toHz: 35, gain: 0.08 });
+    addChime(mix, { start, midi, duration: Math.min(1.4, 30 - start), gain: 0.065, pan });
+  }
 }
 
 function scoreHoverboard(mix) {

@@ -1,0 +1,75 @@
+// Lands End region — Archetype A (always in scene, distance-LOD self-gating).
+// The cliff-top Labyrinth, a lantern-keeper at its mouth, wind-bent cypress on
+// the rim, and drifting sea-mist motes overhead. Beyond DETAIL_RANGE the whole
+// group hides and update() early-returns.
+
+import * as THREE from "three/webgpu";
+import type { WorldMap } from "../heightmap";
+import { Labyrinth } from "./labyrinth";
+import { LanternKeeper } from "./lanternKeeper";
+import { SeaMotes } from "./motes";
+import { buildCypressGrove } from "./cypress";
+import { LABYRINTH, LANDS_END_CENTER } from "./layout";
+
+export { LABYRINTH, LANDS_END_CENTER, KEEPER, RUINS, inLandsEnd, distToLabyrinth } from "./layout";
+export { Labyrinth } from "./labyrinth";
+export { LanternKeeper } from "./lanternKeeper";
+
+const DETAIL_RANGE = 760; // m from the headland centre — draw nothing beyond
+
+export class LandsEndRegion {
+  readonly group = new THREE.Group();
+  readonly foliage = new THREE.Group();
+  #labyrinth: Labyrinth;
+  #keeper: LanternKeeper;
+  #motes: SeaMotes;
+  #wasNear = true;
+
+  constructor(map: WorldMap) {
+    this.group.name = "landsEnd";
+    this.foliage.name = "landsEnd.foliage";
+
+    this.#labyrinth = new Labyrinth(map);
+    this.#keeper = new LanternKeeper(map);
+    this.#motes = new SeaMotes(map.groundTop(LABYRINTH.x, LABYRINTH.z));
+    this.foliage.add(buildCypressGrove(map));
+
+    // static subtrees (frozen after one flush)
+    this.group.add(this.#labyrinth.group);
+    this.group.add(this.foliage);
+    // live subtrees (kept unfrozen so their per-frame transforms take effect)
+    const live = new Set<THREE.Object3D>([this.#labyrinth.activity, this.#keeper.group, this.#motes.group]);
+    for (const o of live) this.group.add(o);
+
+    for (const child of this.group.children) {
+      if (live.has(child)) continue;
+      child.updateMatrixWorld(true);
+      child.matrixWorldAutoUpdate = false;
+    }
+  }
+
+  get labyrinth(): Labyrinth {
+    return this.#labyrinth;
+  }
+
+  get keeper(): LanternKeeper {
+    return this.#keeper;
+  }
+
+  setFoliageVisible(visible: boolean) {
+    this.foliage.visible = visible;
+  }
+
+  update(dt: number, elapsed: number, playerPos: { x: number; z: number }) {
+    const dist = Math.hypot(playerPos.x - LANDS_END_CENTER.x, playerPos.z - LANDS_END_CENTER.z);
+    const near = dist < DETAIL_RANGE;
+    if (near !== this.#wasNear) {
+      this.group.visible = near;
+      this.#wasNear = near;
+    }
+    if (!near) return;
+    this.#labyrinth.update(dt, playerPos.x, playerPos.z);
+    this.#keeper.update(dt, elapsed);
+    this.#motes.update(dt, elapsed);
+  }
+}

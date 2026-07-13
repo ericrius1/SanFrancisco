@@ -19,13 +19,14 @@ export const OCEAN_BEACH_SURF = {
   // up head-high-plus on the shoreward face.
   spacing: 150,
   speed: 9.2,
-  amplitude: 8.5,
+  amplitude: 12,
   offshoreCrest: -6310,
   // Shoaling profile widths (metres): a broad offshore shoulder feeds a steep,
   // narrow shoreward face. Shared by the CPU sampler AND the GPU twin
-  // (tslUtil.oceanBeachSurfField) — change here, both follow.
-  shoulderWidth: 29,
-  faceWidth: 7.5
+  // (tslUtil.oceanBeachSurfField) — change here, both follow. Narrow face =
+  // a steep, near-vertical wall that towers over a rider set in the pocket.
+  shoulderWidth: 30,
+  faceWidth: 5.0
 } as const;
 
 const TAU = Math.PI * 2;
@@ -126,8 +127,11 @@ export function sampleOceanBeachWave(x: number, z: number, time: number): OceanB
   const slopeX =
     (oceanBeachWaveHeight(x + eps, z, time) - oceanBeachWaveHeight(x - eps, z, time)) /
     (2 * eps);
-  const face = mask * Math.exp(-0.5 * ((crest.distance - 4) / 15) ** 2);
-  const lip = mask * Math.exp(-0.5 * ((crest.distance - 1) / 5.5) ** 2);
+  // These gameplay channels deliberately match oceanBeachSurfField()'s visible
+  // green wall and white lip. A wider invisible scoring band made the board
+  // report "on the lip" while the rendered crest was several metres away.
+  const face = mask * Math.exp(-0.5 * ((crest.distance - 4) / 5.5) ** 2);
+  const lip = mask * Math.exp(-0.5 * ((crest.distance - 1) / 2.6) ** 2);
   return {
     height,
     slopeX,

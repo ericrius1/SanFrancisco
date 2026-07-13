@@ -1,0 +1,320 @@
+/**
+ * Surfboard identity and handling. Cosmetic values are deliberately compact and
+ * quantized so another client can reconstruct the same board from a small relay
+ * message. Handling is derived from the selected real-world shape; only the
+ * shape id travels over the wire.
+ */
+
+export type SurfboardShape = "shortboard" | "fish" | "longboard";
+export type SurfboardSurface =
+  | "kelp-ribbons"
+  | "sunset-caustics"
+  | "fog-topography"
+  | "tidepool-terrazzo"
+  | "moon-jelly-dream"
+  | "golden-gate-bloom"
+  | "pacific-postcard";
+export type SurfboardDecal = "none" | "happy-sun" | "sea-otter" | "comet-shell";
+
+export type SurfboardConfig = {
+  shape: SurfboardShape;
+  base: number;
+  rail: number;
+  accent: number;
+  baseHex: number | null;
+  railHex: number | null;
+  accentHex: number | null;
+  surface: SurfboardSurface;
+  textureZoom: number;
+  textureRotation: number;
+  textureOffsetX: number;
+  textureOffsetY: number;
+  surfaceMotion: number;
+  surfaceShimmer: number;
+  decal: SurfboardDecal;
+  decalScale: number;
+  decalRotation: number;
+  decalX: number;
+  decalY: number;
+};
+
+/** Multipliers applied to the common arcade surf tuning by SurfController. */
+export type SurfboardHandlingProfile = {
+  speed: number;
+  acceleration: number;
+  carve: number;
+  grip: number;
+  launch: number;
+  stability: number;
+  landingAssist: number;
+};
+
+export const SURFBOARD_HANDLING: Record<SurfboardShape, SurfboardHandlingProfile> = {
+  // Narrow, low-volume and responsive: quick rail changes and the best pop,
+  // trading away passive stability and a little low-speed drive.
+  shortboard: {
+    speed: 1,
+    acceleration: 0.96,
+    carve: 1.2,
+    grip: 0.92,
+    launch: 1.2,
+    stability: 0.84,
+    landingAssist: 0.9
+  },
+  // Wide planing area and a swallow tail: generates speed easily in softer
+  // water and draws a loose, playful arc without becoming twitchy.
+  fish: {
+    speed: 1.08,
+    acceleration: 1.15,
+    carve: 1.06,
+    grip: 0.9,
+    launch: 1.02,
+    stability: 0.97,
+    landingAssist: 1
+  },
+  // Length and rail line carry momentum smoothly. Slowest to rotate, easiest to
+  // balance and recover, and intentionally less eager to leave the water.
+  longboard: {
+    speed: 0.94,
+    acceleration: 0.86,
+    carve: 0.78,
+    grip: 1.14,
+    launch: 0.78,
+    stability: 1.28,
+    landingAssist: 1.24
+  }
+};
+
+export const SURFBOARD_STORAGE_KEY = "sf-surfboard-v1";
+
+export const SURFBOARD_SHAPES: { id: SurfboardShape; label: string; note: string }[] = [
+  { id: "shortboard", label: "shortboard", note: "quick carve · high pop" },
+  { id: "fish", label: "fish", note: "fast glide · loose arc" },
+  { id: "longboard", label: "longboard", note: "smooth · forgiving" }
+];
+
+export const SURFBOARD_SURFACES: {
+  id: SurfboardSurface;
+  label: string;
+  kind: "texture" | "art";
+  url: string;
+}[] = [
+  { id: "kelp-ribbons", label: "kelp ribbons", kind: "texture", url: "/surfboards/textures/kelp-ribbons.png" },
+  { id: "sunset-caustics", label: "sunset caustics", kind: "texture", url: "/surfboards/textures/sunset-caustics.png" },
+  { id: "fog-topography", label: "fog topography", kind: "texture", url: "/surfboards/textures/fog-topography.png" },
+  { id: "tidepool-terrazzo", label: "tidepool terrazzo", kind: "texture", url: "/surfboards/textures/tidepool-terrazzo.png" },
+  { id: "moon-jelly-dream", label: "moon jelly dream", kind: "art", url: "/surfboards/art/moon-jelly-dream.png" },
+  { id: "golden-gate-bloom", label: "golden gate bloom", kind: "art", url: "/surfboards/art/golden-gate-bloom.png" },
+  { id: "pacific-postcard", label: "pacific postcard", kind: "art", url: "/surfboards/art/pacific-postcard.png" }
+];
+
+export const SURFBOARD_DECALS: { id: SurfboardDecal; label: string; url: string | null }[] = [
+  { id: "none", label: "clean", url: null },
+  { id: "happy-sun", label: "happy sun", url: "/surfboards/decals/happy-sun.png" },
+  { id: "sea-otter", label: "sea otter", url: "/surfboards/decals/sea-otter.png" },
+  { id: "comet-shell", label: "comet shell", url: "/surfboards/decals/comet-shell.png" }
+];
+
+export const SURFBOARD_COLORS = [
+  { label: "warm cloud", color: 0xf2ead7 },
+  { label: "pacific teal", color: 0x168e9f },
+  { label: "sunrise coral", color: 0xf06f55 },
+  { label: "kelp green", color: 0x2f765f },
+  { label: "marigold", color: 0xe8b442 },
+  { label: "fog blue", color: 0x8eb7c7 },
+  { label: "midnight", color: 0x1c2b3a },
+  { label: "jelly pink", color: 0xd8639a }
+] as const;
+
+const DEFAULT_SURFBOARD: SurfboardConfig = {
+  shape: "shortboard",
+  base: 0,
+  rail: 1,
+  accent: 2,
+  baseHex: null,
+  railHex: null,
+  accentHex: null,
+  surface: "kelp-ribbons",
+  textureZoom: 46,
+  textureRotation: 50,
+  textureOffsetX: 50,
+  textureOffsetY: 50,
+  surfaceMotion: 20,
+  surfaceShimmer: 34,
+  decal: "none",
+  decalScale: 44,
+  decalRotation: 50,
+  decalX: 50,
+  decalY: 35
+};
+
+const SHAPES = SURFBOARD_SHAPES.map((entry) => entry.id);
+const SURFACES = SURFBOARD_SURFACES.map((entry) => entry.id);
+const DECALS = SURFBOARD_DECALS.map((entry) => entry.id);
+
+function oneOf<T extends string>(value: unknown, options: readonly T[], fallback: T): T {
+  return typeof value === "string" && (options as readonly string[]).includes(value) ? (value as T) : fallback;
+}
+
+function int(value: unknown, max: number, fallback: number): number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value < max ? value : fallback;
+}
+
+function hexOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 0xffffff ? value : null;
+}
+
+export function normalizeSurfboardConfig(raw: unknown): SurfboardConfig {
+  const value = (raw ?? {}) as Partial<SurfboardConfig>;
+  return {
+    shape: oneOf(value.shape, SHAPES, DEFAULT_SURFBOARD.shape),
+    base: int(value.base, SURFBOARD_COLORS.length, DEFAULT_SURFBOARD.base),
+    rail: int(value.rail, SURFBOARD_COLORS.length, DEFAULT_SURFBOARD.rail),
+    accent: int(value.accent, SURFBOARD_COLORS.length, DEFAULT_SURFBOARD.accent),
+    baseHex: hexOrNull(value.baseHex),
+    railHex: hexOrNull(value.railHex),
+    accentHex: hexOrNull(value.accentHex),
+    surface: oneOf(value.surface, SURFACES, DEFAULT_SURFBOARD.surface),
+    textureZoom: int(value.textureZoom, 101, DEFAULT_SURFBOARD.textureZoom),
+    textureRotation: int(value.textureRotation, 101, DEFAULT_SURFBOARD.textureRotation),
+    textureOffsetX: int(value.textureOffsetX, 101, DEFAULT_SURFBOARD.textureOffsetX),
+    textureOffsetY: int(value.textureOffsetY, 101, DEFAULT_SURFBOARD.textureOffsetY),
+    surfaceMotion: int(value.surfaceMotion, 101, DEFAULT_SURFBOARD.surfaceMotion),
+    surfaceShimmer: int(value.surfaceShimmer, 101, DEFAULT_SURFBOARD.surfaceShimmer),
+    decal: oneOf(value.decal, DECALS, DEFAULT_SURFBOARD.decal),
+    decalScale: int(value.decalScale, 101, DEFAULT_SURFBOARD.decalScale),
+    decalRotation: int(value.decalRotation, 101, DEFAULT_SURFBOARD.decalRotation),
+    decalX: int(value.decalX, 101, DEFAULT_SURFBOARD.decalX),
+    decalY: int(value.decalY, 101, DEFAULT_SURFBOARD.decalY)
+  };
+}
+
+function hashSeed(seed: string | number): number {
+  const text = String(seed);
+  let hash = 2166136261;
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function lcg(seed: number) {
+  let state = seed || 0x9e3779b9;
+  return () => {
+    state = Math.imul(1664525, state) + 1013904223;
+    return (state >>> 0) / 0x100000000;
+  };
+}
+
+function pick<T>(items: readonly T[], roll: () => number): T {
+  return items[Math.floor(roll() * items.length) % items.length];
+}
+
+export function surfboardFromSeed(seed: string | number): SurfboardConfig {
+  const roll = lcg(hashSeed(seed));
+  const base = Math.floor(roll() * SURFBOARD_COLORS.length) % SURFBOARD_COLORS.length;
+  let rail = Math.floor(roll() * SURFBOARD_COLORS.length) % SURFBOARD_COLORS.length;
+  if (rail === base) rail = (rail + 3) % SURFBOARD_COLORS.length;
+  let accent = Math.floor(roll() * SURFBOARD_COLORS.length) % SURFBOARD_COLORS.length;
+  if (accent === base || accent === rail) accent = (accent + 2) % SURFBOARD_COLORS.length;
+  return {
+    shape: pick(SHAPES, roll),
+    base,
+    rail,
+    accent,
+    baseHex: null,
+    railHex: null,
+    accentHex: null,
+    surface: pick(SURFACES, roll),
+    textureZoom: 25 + Math.floor(roll() * 56),
+    textureRotation: Math.floor(roll() * 101),
+    textureOffsetX: 22 + Math.floor(roll() * 57),
+    textureOffsetY: 22 + Math.floor(roll() * 57),
+    surfaceMotion: 8 + Math.floor(roll() * 43),
+    surfaceShimmer: 18 + Math.floor(roll() * 55),
+    decal: pick(DECALS, roll),
+    decalScale: 28 + Math.floor(roll() * 47),
+    decalRotation: Math.floor(roll() * 101),
+    decalX: 24 + Math.floor(roll() * 53),
+    decalY: 20 + Math.floor(roll() * 61)
+  };
+}
+
+export function randomSurfboardConfig(): SurfboardConfig {
+  return surfboardFromSeed(`${Date.now()}:${Math.random()}`);
+}
+
+export function surfboardKey(config: SurfboardConfig): string {
+  const value = normalizeSurfboardConfig(config);
+  return [
+    value.shape,
+    value.base,
+    value.rail,
+    value.accent,
+    value.baseHex,
+    value.railHex,
+    value.accentHex,
+    value.surface,
+    value.textureZoom,
+    value.textureRotation,
+    value.textureOffsetX,
+    value.textureOffsetY,
+    value.surfaceMotion,
+    value.surfaceShimmer,
+    value.decal,
+    value.decalScale,
+    value.decalRotation,
+    value.decalX,
+    value.decalY
+  ].join("|");
+}
+
+export const surfboardVisualKey = surfboardKey;
+
+export function surfboardShapeKey(config: SurfboardConfig): string {
+  return normalizeSurfboardConfig(config).shape;
+}
+
+export function surfboardHandling(config: Pick<SurfboardConfig, "shape">): SurfboardHandlingProfile {
+  return SURFBOARD_HANDLING[config.shape] ?? SURFBOARD_HANDLING.shortboard;
+}
+
+export function surfboardBaseHex(config: SurfboardConfig): number {
+  return config.baseHex ?? SURFBOARD_COLORS[config.base]?.color ?? SURFBOARD_COLORS[0].color;
+}
+
+export function surfboardRailHex(config: SurfboardConfig): number {
+  return config.railHex ?? SURFBOARD_COLORS[config.rail]?.color ?? SURFBOARD_COLORS[1].color;
+}
+
+export function surfboardAccentHex(config: SurfboardConfig): number {
+  return config.accentHex ?? SURFBOARD_COLORS[config.accent]?.color ?? SURFBOARD_COLORS[2].color;
+}
+
+export function isDefaultSurfboard(config: SurfboardConfig): boolean {
+  return surfboardKey(config) === surfboardKey(DEFAULT_SURFBOARD);
+}
+
+export function loadSavedSurfboard(): SurfboardConfig | null {
+  try {
+    const raw = localStorage.getItem(SURFBOARD_STORAGE_KEY);
+    return raw ? normalizeSurfboardConfig(JSON.parse(raw)) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveSurfboardConfig(config: SurfboardConfig): void {
+  localStorage.setItem(SURFBOARD_STORAGE_KEY, JSON.stringify(normalizeSurfboardConfig(config)));
+}
+
+let localSurfboard = DEFAULT_SURFBOARD;
+
+export function setLocalSurfboardConfig(config: SurfboardConfig): void {
+  localSurfboard = normalizeSurfboardConfig(config);
+}
+
+export function localSurfboardConfig(): SurfboardConfig {
+  return localSurfboard;
+}

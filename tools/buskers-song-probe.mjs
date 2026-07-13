@@ -8,9 +8,33 @@
 //
 //   node --experimental-strip-types tools/buskers-song-probe.mjs
 
-import { SONGS, BEATS_PER_BAR, SEC_PER_BEAT } from "../src/gameplay/buskers/song.ts";
+import {
+  SONGS,
+  BEATS_PER_BAR,
+  SEC_PER_BEAT,
+  SILENCE_SECONDS_MIN,
+  SILENCE_SECONDS_MAX,
+  sampleSilenceSeconds
+} from "../src/gameplay/buskers/song.ts";
 
 let failures = 0;
+
+if (SONGS.length < 2) {
+  failures++;
+  console.error("FAIL [songbook]: rotation needs at least two songs");
+}
+if (new Set(SONGS.map((song) => song.name)).size !== SONGS.length) {
+  failures++;
+  console.error("FAIL [songbook]: song names must be unique");
+}
+if (sampleSilenceSeconds(() => 0) !== SILENCE_SECONDS_MIN) {
+  failures++;
+  console.error("FAIL [transport]: random silence lower bound is incorrect");
+}
+if (sampleSilenceSeconds(() => 1) !== SILENCE_SECONDS_MAX) {
+  failures++;
+  console.error("FAIL [transport]: random silence upper bound is incorrect");
+}
 
 const pc = (midi) => ((midi % 12) + 12) % 12;
 const NAMES = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];

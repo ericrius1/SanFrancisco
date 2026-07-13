@@ -25,11 +25,11 @@ const roadClearance = await loadRoadClearanceIndexFromRoadsJson(new URL("public/
 
 await mkdir(new URL("colliders/", PUB), { recursive: true });
 
-// Hand-built landmarks (landmarks.glb) live outside the OSM tile pipeline, so
-// their physics proxies come from data/landmark-colliders.json (emitted by
-// blender_city.py build_landmarks). Boxes are bucketed into the per-tile
-// collider files; i >= LM_BASE marks them for the runtime as always-alive and
-// never fracturable, and the huge vol makes chip damage a no-op regardless.
+// Authored landmarks use explicit physics proxies from
+// data/landmark-colliders.json. Some geometry remains in landmarks.glb; Palace
+// and Sutro now live in geographic tile GLBs. Either way the boxes are bucketed
+// into per-tile collider files; i >= LM_BASE marks them always-alive and never
+// fracturable, and the huge vol makes chip damage a no-op regardless.
 const LM_BASE = 100000;
 const meta = JSON.parse(await readFile(new URL("public/data/meta.json", ROOT), "utf8"));
 const lmByTile = new Map();

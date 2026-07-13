@@ -39,7 +39,7 @@ export const ANIMALS: Record<
 };
 
 // Marin: everything north of the Golden Gate's landfall at (-3150, -5100).
-// (Trees here are now grown by the wildlands SeedThree layer; Forest only owns
+// (Trees here are now grown by the native wildlands layer; Forest only owns
 // the rideable animals + gummy launcher.)
 const FOREST = { minX: -6300, maxX: -2700, minZ: -7800, maxZ: -5000 };
 const FOREST_CENTER = { x: -4400, z: -6300 };
@@ -86,7 +86,8 @@ function buildBoxes(boxes: BoxSpec[]): THREE.BufferGeometry {
   return merged;
 }
 
-// tree geometry lives in world/flora.ts now — the forest just plants the bank
+// Outdoor tree beauty lives in the unified world vegetation runtime. This
+// gameplay forest module owns animals and ride interactions only.
 
 // animal geometry is authored feet-at-y=0, nose toward -Z (drive-forward)
 function bearBoxes(): BoxSpec[] {

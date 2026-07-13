@@ -20,7 +20,11 @@ import {
   type CoronaXZ
 } from "./layout";
 import { makeSummitCrags, summitKeepOut, summitPlatformLift } from "./summitCrags";
-import { fitGroundY } from "../groundcover/grounding";
+import {
+  enableShadowLayer,
+  SHADOW_LAYERS
+} from "../shadows/shadowLayers";
+import type { CoronaHeightsFoliage } from "./vegetation";
 
 const DETAIL_RANGE = 1450;
 const ACTIVITY_RANGE = 420;
@@ -32,6 +36,13 @@ const FOLIAGE_RANGE = 900;
 // Parts smaller than this never shadow-cast — invisible at CSM resolution,
 // but every casting mesh re-encodes into each shadow cascade.
 const CASTER_MIN_VOLUME = 1.5e-3; // m³
+/** Coarse, silhouette-scale classes admitted to the one-metre/texel far map.
+ * Everything else static remains local-only, regardless of aggregate instance
+ * spread, so a field of tiny props cannot qualify merely by covering an area. */
+const FAR_STATIC_CASTER_NAMES = new Set([
+  "corona_heights_chert_outcrops",
+  "corona_summit_chert_crags"
+]);
 const HILL_RX = 118;
 const HILL_RZ = 126;
 const HILL_STEP = 4;
@@ -530,207 +541,6 @@ function makeRockField(map: WorldMap, physics: Physics) {
   mesh.receiveShadow = true;
   mesh.frustumCulled = false;
   return mesh;
-}
-
-function makeTuftGeometry() {
-  const positions: number[] = [];
-  const normals: number[] = [];
-  const indices: number[] = [];
-  for (let q = 0; q < 3; q++) {
-    const a = (q / 3) * Math.PI;
-    const dx = Math.cos(a) * 0.5;
-    const dz = Math.sin(a) * 0.5;
-    const base = q * 5;
-    positions.push(-dx, 0, -dz, dx, 0, dz, dx * 0.55, 0.72, dz * 0.55, 0, 1.05, 0, -dx * 0.55, 0.72, -dz * 0.55);
-    for (let i = 0; i < 5; i++) normals.push(0, 1, 0);
-    indices.push(base, base + 1, base + 2, base, base + 2, base + 4, base + 4, base + 2, base + 3);
-  }
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-  geometry.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
-  geometry.setIndex(indices);
-  geometry.computeBoundingSphere();
-  return geometry;
-}
-
-function makeHillGrass(map: WorldMap) {
-  const geometry = makeTuftGeometry();
-  const material = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.98, side: THREE.DoubleSide });
-  const capacity = 960;
-  const mesh = new THREE.InstancedMesh(geometry, material, capacity);
-  mesh.name = "corona_heights_grass_tufts";
-  const dummy = new THREE.Object3D();
-  const color = new THREE.Color();
-  const normal = new THREE.Vector3();
-  const sampleGroundTop = (x: number, z: number) => map.groundTop(x, z);
-  let count = 0;
-  for (let gz = -49; gz <= 49 && count < capacity; gz++) {
-    for (let gx = -46; gx <= 46 && count < capacity; gx++) {
-      const x = CORONA_HEIGHTS_SUMMIT.x + gx * 2.55 + (hash2(gx, gz, 3) - 0.5) * 2.1;
-      const z = CORONA_HEIGHTS_SUMMIT.z + 8 + gz * 2.55 + (hash2(gx, gz, 5) - 0.5) * 2.1;
-      const q = ((x - CORONA_HEIGHTS_SUMMIT.x) / HILL_RX) ** 2 + ((z - CORONA_HEIGHTS_SUMMIT.z - 8) / HILL_RZ) ** 2;
-      if (q > 0.94 || hash2(gx, gz, 7) > 0.22) continue;
-      if (pointInPolygon(x, z, CORONA_DOG_PARK) || distanceToTrails(x, z) < 2.7) continue;
-      if (summitKeepOut(x, z, 1)) continue;
-      const centerY = map.groundTop(x, z);
-      map.normal(x, z, normal, 2);
-      if (normal.y < 0.86 || (centerY > 140 && hash2(gx, gz, 11) > 0.48)) continue;
-      const s = 0.45 + hash2(gx, gz, 13) * 0.9;
-      const scaleX = s * (0.72 + hash2(gx, gz, 19) * 0.5);
-      const scaleZ = s * (0.72 + hash2(gx, gz, 23) * 0.5);
-      const groundY = fitGroundY(sampleGroundTop, x, z, 0.5 * Math.max(scaleX, scaleZ), 0.85, 0.045);
-      if (groundY === null) continue;
-      dummy.position.set(x, groundY, z);
-      dummy.rotation.set(0, hash2(gx, gz, 17) * Math.PI * 2, 0);
-      dummy.scale.set(scaleX, s, scaleZ);
-      dummy.updateMatrix();
-      mesh.setMatrixAt(count, dummy.matrix);
-      color.setHex(hash2(gx, gz, 29) > 0.45 ? 0x7c7d34 : 0x536f35).offsetHSL((hash2(gx, gz, 31) - 0.5) * 0.05, 0, (hash2(gx, gz, 37) - 0.5) * 0.12);
-      mesh.setColorAt(count, color);
-      count++;
-    }
-  }
-  mesh.count = count;
-  mesh.instanceMatrix.needsUpdate = true;
-  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-  mesh.castShadow = false;
-  mesh.receiveShadow = false;
-  mesh.frustumCulled = false;
-  return mesh;
-}
-
-function makeWildflowers(map: WorldMap) {
-  const group = new THREE.Group();
-  group.name = "corona_heights_wildflowers";
-  const capacity = 220;
-  const stems = new THREE.InstancedMesh(
-    new THREE.CylinderGeometry(0.025, 0.035, 1, 5),
-    new THREE.MeshStandardMaterial({ color: 0x45642d, roughness: 1 }),
-    capacity
-  );
-  const blooms = new THREE.InstancedMesh(
-    new THREE.IcosahedronGeometry(1, 1),
-    new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9 }),
-    capacity
-  );
-  stems.name = "corona_flower_stems";
-  blooms.name = "corona_flower_blooms";
-  const stemDummy = new THREE.Object3D();
-  const bloomDummy = new THREE.Object3D();
-  const bloomColor = new THREE.Color();
-  const palettes = [0xf0a134, 0xd9652f, 0x7c6ec8, 0xf2d457];
-  let count = 0;
-  for (let i = 0; i < 1800 && count < capacity; i++) {
-    const a = hash2(i, 1, 71) * Math.PI * 2;
-    const r = Math.sqrt(hash2(i, 2, 73));
-    const x = CORONA_HEIGHTS_SUMMIT.x + Math.cos(a) * HILL_RX * r;
-    const z = CORONA_HEIGHTS_SUMMIT.z + 8 + Math.sin(a) * HILL_RZ * r;
-    if (hash2(i, 3, 79) > 0.18 || pointInPolygon(x, z, CORONA_DOG_PARK) || distanceToTrails(x, z) < 3.2) continue;
-    const y = map.groundTop(x, z);
-    if (y > 145 || summitKeepOut(x, z, 1.5)) continue;
-    const h = 0.28 + hash2(i, 5, 83) * 0.55;
-    stemDummy.position.set(x, y + h / 2 + 0.04, z);
-    stemDummy.scale.set(1, h, 1);
-    stemDummy.updateMatrix();
-    stems.setMatrixAt(count, stemDummy.matrix);
-    bloomDummy.position.set(x, y + h + 0.05, z);
-    bloomDummy.rotation.set(hash2(i, 7) * 0.4, hash2(i, 11) * Math.PI * 2, 0);
-    bloomDummy.scale.setScalar(0.075 + hash2(i, 13) * 0.07);
-    bloomDummy.updateMatrix();
-    blooms.setMatrixAt(count, bloomDummy.matrix);
-    bloomColor.setHex(palettes[Math.floor(hash2(i, 17) * palettes.length) % palettes.length]);
-    blooms.setColorAt(count, bloomColor);
-    count++;
-  }
-  stems.count = blooms.count = count;
-  stems.instanceMatrix.needsUpdate = true;
-  blooms.instanceMatrix.needsUpdate = true;
-  if (blooms.instanceColor) blooms.instanceColor.needsUpdate = true;
-  stems.frustumCulled = blooms.frustumCulled = false;
-  group.add(stems, blooms);
-  return group;
-}
-
-function makeShrubsAndTrees(map: WorldMap) {
-  const group = new THREE.Group();
-  group.name = "corona_heights_shrubs_and_trees";
-  const shrubCapacity = 72;
-  const shrubs = new THREE.InstancedMesh(
-    new THREE.IcosahedronGeometry(1, 1),
-    new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.98 }),
-    shrubCapacity
-  );
-  const dummy = new THREE.Object3D();
-  const color = new THREE.Color();
-  let shrubsCount = 0;
-  for (let i = 0; i < 420 && shrubsCount < shrubCapacity; i++) {
-    const a = hash2(i, 2, 91) * Math.PI * 2;
-    const r = 0.72 + hash2(i, 3, 97) * 0.28;
-    const x = CORONA_HEIGHTS_SUMMIT.x + Math.cos(a) * HILL_RX * r;
-    const z = CORONA_HEIGHTS_SUMMIT.z + 8 + Math.sin(a) * HILL_RZ * r;
-    if (hash2(i, 5, 101) > 0.27 || distanceToTrails(x, z) < 3 || pointInPolygon(x, z, CORONA_DOG_PARK)) continue;
-    const s = 0.7 + hash2(i, 7, 103) * 1.35;
-    dummy.position.set(x, map.groundTop(x, z) + s * 0.4, z);
-    dummy.rotation.set(0, hash2(i, 11) * Math.PI * 2, 0);
-    dummy.scale.set(s * 1.25, s * 0.7, s);
-    dummy.updateMatrix();
-    shrubs.setMatrixAt(shrubsCount, dummy.matrix);
-    color.setHex(hash2(i, 13) > 0.3 ? 0x3f5e32 : 0x6b6a34).offsetHSL(0, 0, (hash2(i, 17) - 0.5) * 0.1);
-    shrubs.setColorAt(shrubsCount, color);
-    shrubsCount++;
-  }
-  shrubs.count = shrubsCount;
-  shrubs.instanceMatrix.needsUpdate = true;
-  if (shrubs.instanceColor) shrubs.instanceColor.needsUpdate = true;
-  shrubs.castShadow = true;
-  shrubs.receiveShadow = true;
-  shrubs.frustumCulled = false;
-
-  const treeSpots: readonly [number, number, number, number][] = [
-    [331, 2675, 5.4, 0.62],
-    [346, 2673, 6.6, 0.72],
-    [365, 2670, 7.1, 0.78],
-    [384, 2668, 6.2, 0.68],
-    [404, 2668, 7.6, 0.82],
-    [424, 2674, 5.8, 0.66],
-    [462, 2719, 5.1, 0.58],
-    [490, 2738, 6.4, 0.7],
-    [505, 2774, 5.3, 0.62]
-  ];
-  const trunks = new THREE.InstancedMesh(
-    new THREE.CylinderGeometry(1, 1, 1, 7),
-    new THREE.MeshStandardMaterial({ color: 0x5b4632, roughness: 1 }),
-    treeSpots.length
-  );
-  const crowns = new THREE.InstancedMesh(
-    new THREE.IcosahedronGeometry(1, 1),
-    new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.96 }),
-    treeSpots.length
-  );
-  treeSpots.forEach(([x, z, h, spread], i) => {
-    const y = map.groundTop(x, z);
-    dummy.position.set(x, y + h * 0.43, z);
-    dummy.rotation.set(0, hash2(i, 3, 107) * Math.PI * 2, 0);
-    dummy.scale.set(spread * 0.28, h * 0.86, spread * 0.28);
-    dummy.updateMatrix();
-    trunks.setMatrixAt(i, dummy.matrix);
-    dummy.position.set(x + spread * 0.55, y + h * 0.82, z);
-    dummy.rotation.set(0, hash2(i, 5, 109) * Math.PI * 2, 0.08);
-    dummy.scale.set(spread * 3.2, h * 0.48, spread * 2.2);
-    dummy.updateMatrix();
-    crowns.setMatrixAt(i, dummy.matrix);
-    color.setHex(i % 3 === 0 ? 0x4b603a : 0x596b3c).offsetHSL(0, 0, (hash2(i, 7) - 0.5) * 0.08);
-    crowns.setColorAt(i, color);
-  });
-  for (const mesh of [trunks, crowns]) {
-    mesh.instanceMatrix.needsUpdate = true;
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    mesh.frustumCulled = false;
-  }
-  if (crowns.instanceColor) crowns.instanceColor.needsUpdate = true;
-  group.add(shrubs, trunks, crowns);
-  return group;
 }
 
 function polygonSurface(map: WorldMap, polygon: readonly CoronaXZ[]) {
@@ -1418,7 +1228,7 @@ function driveDogJaw(dog: ParkDog, target: number, dt: number) {
  * frustum culling (their bounds are valid — only instanced fields whose
  * instances spread far from the mesh origin need the always-draw escape) and
  * drop shadow casting on parts too small to read at CSM resolution. */
-function tunePropRendering(root: THREE.Object3D) {
+function tunePropRendering(root: THREE.Object3D, dynamicRoot: THREE.Object3D) {
   const size = new THREE.Vector3();
   const scale = new THREE.Vector3();
   root.updateMatrixWorld(true);
@@ -1435,7 +1245,29 @@ function tunePropRendering(root: THREE.Object3D) {
     geo.boundingBox!.getSize(size);
     mesh.getWorldScale(scale);
     const volume = Math.abs(size.x * scale.x) * Math.abs(size.y * scale.y) * Math.abs(size.z * scale.z);
-    if (volume < CASTER_MIN_VOLUME) mesh.castShadow = false;
+    if (volume < CASTER_MIN_VOLUME) {
+      mesh.castShadow = false;
+      return;
+    }
+    let cursor: THREE.Object3D | null = mesh;
+    let dynamic = false;
+    while (cursor && cursor !== root) {
+      if (cursor === dynamicRoot) {
+        dynamic = true;
+        break;
+      }
+      cursor = cursor.parent;
+    }
+    if (dynamic) enableShadowLayer(mesh, SHADOW_LAYERS.HERO_DYNAMIC);
+    else {
+      enableShadowLayer(mesh, SHADOW_LAYERS.LOCAL_STATIC);
+      // Explicit class admission is deliberate: geometry bounds do not include
+      // InstancedMesh transforms, while aggregate instance bounds would let a
+      // widely distributed field of tiny steps/shrubs qualify as one big mass.
+      if (FAR_STATIC_CASTER_NAMES.has(mesh.name)) {
+        enableShadowLayer(mesh, SHADOW_LAYERS.FAR_PROXY);
+      }
+    }
   });
 }
 
@@ -1445,10 +1277,18 @@ export class CoronaHeightsPark {
   readonly foliage = new THREE.Group();
   readonly props = new THREE.Group();
   #foliageOn = true;
+  #foliageRuntime: CoronaHeightsFoliage | null = null;
+  #foliageLoading: Promise<void> | null = null;
+  #foliageFocus: { x: number; z: number } = {
+    x: CORONA_HEIGHTS_SUMMIT.x,
+    z: CORONA_HEIGHTS_SUMMIT.z
+  };
   readonly dogs: ParkDog[];
   readonly owners: ParkOwner[];
   readonly stats: CoronaHeightsStats;
   readonly summit = CORONA_HEIGHTS_SUMMIT;
+  /** Main-owned detached shader preparation before lazy foliage attaches. */
+  prepareFoliage: ((group: THREE.Group) => Promise<void>) | null = null;
   onDogAudioCue: ((dog: ParkDog, cue: DogFetchAudioCue) => void) | null = null;
 
   /** Elapsed-time stamp of the latest ball/frisbee release (audio hook). */
@@ -1511,7 +1351,6 @@ export class CoronaHeightsPark {
     this.group.add(makeTrails(map));
     this.group.add(makeRockField(map, physics));
     this.group.add(makeSummitCrags(map, physics));
-    this.foliage.add(makeHillGrass(map), makeWildflowers(map), makeShrubsAndTrees(map));
     this.group.add(this.foliage);
     this.props.add(makeDogPark(map, physics));
     this.props.add(makeBench(map, 430, 2751, Math.PI * 0.44));
@@ -1573,7 +1412,7 @@ export class CoronaHeightsPark {
       { mode: "roam", tx: 384, tz: 2696, timer: 0, dur: 1 }
     ];
     this.stats = { dogs: this.dogs.length, owners: this.owners.length, summit: CORONA_HEIGHTS_SUMMIT };
-    tunePropRendering(this.group);
+    tunePropRendering(this.group, this.activity);
     // Static subtrees leave the scene's per-frame matrix pass; activity (dogs,
     // owners, ball, frisbee) keeps animating. Anything later parented under a
     // frozen subtree needs a manual updateMatrixWorld(true).
@@ -1582,6 +1421,36 @@ export class CoronaHeightsPark {
       child.updateMatrixWorld(true);
       child.matrixWorldAutoUpdate = false;
     }
+  }
+
+  #ensureFoliage() {
+    if (this.#foliageRuntime || this.#foliageLoading) return;
+    // Keep the optional tree/flower code and template assets out of clean boot.
+    // The park's gameplay is always available; its live planting wakes only on
+    // first approach while the master foliage toggle is enabled.
+    this.#foliageLoading = import("./vegetation")
+      .then(async ({ createCoronaHeightsFoliage }) => {
+        const patch = createCoronaHeightsFoliage(this.#map, {
+          hash: hash2,
+          inDogPark: (x, z) => pointInPolygon(x, z, CORONA_DOG_PARK),
+          distanceToTrails
+        });
+        patch.update(this.#foliageFocus);
+        await patch.ready;
+        patch.update(this.#foliageFocus);
+        // The patch remains detached and visible while the app compiles it;
+        // Three skips hidden roots, and attaching first would hitch a live frame.
+        await this.prepareFoliage?.(patch.group);
+        this.#foliageRuntime = patch;
+        this.foliage.add(patch.group);
+        // `foliage` was frozen with the other static Corona subtrees before
+        // this lazy child existed, so explicitly establish its first world matrix.
+        this.foliage.updateMatrixWorld(true);
+      })
+      .catch((error) => {
+        this.#foliageLoading = null;
+        console.warn("[corona heights] unified foliage unavailable:", error);
+      });
   }
 
   setFoliageVisible(visible: boolean) {
@@ -1593,11 +1462,20 @@ export class CoronaHeightsPark {
     const distance = Math.hypot(viewPos.x - CORONA_HEIGHTS_SUMMIT.x, viewPos.z - CORONA_HEIGHTS_SUMMIT.z);
     this.group.visible = distance < DETAIL_RANGE;
     if (!this.group.visible) {
+      // Keep child state truthful as well as effectively hidden by the parent;
+      // master-toggle OFF/ON then restores symmetrically while far from Corona.
+      this.foliage.visible = false;
       applyBallGlow(this.#ballMaterial, 0);
       return;
     }
     this.props.visible = distance < PROPS_RANGE;
     this.foliage.visible = this.#foliageOn && distance < FOLIAGE_RANGE;
+    if (this.foliage.visible) {
+      this.#foliageFocus.x = viewPos.x;
+      this.#foliageFocus.z = viewPos.z;
+      this.#ensureFoliage();
+      this.#foliageRuntime?.update(this.#foliageFocus);
+    }
     this.activity.visible = distance < ACTIVITY_RANGE;
     if (!this.activity.visible) {
       applyBallGlow(this.#ballMaterial, 0);

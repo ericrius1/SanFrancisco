@@ -3,10 +3,11 @@ import { BodyType } from "../core/physics";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { Physics } from "../core/physics";
 import type { WorldMap } from "../world/heightmap";
+import { enableLocalFarShadowLayers } from "../world/shadows/shadowLayers";
 
 /**
  * Floating islands drifting over the city — little grass discs with a dirt
- * underbelly, a lone tree, gems, and a bunch of balloons tied to the edge.
+ * underbelly, a unified-system tree, gems, and balloons tied to the edge.
  * Visible from blocks away, so they pull you across the map; each has a static
  * slab body, so anything that can reach one (drone, plane bail-out, a bold
  * rooftop jump) can LAND on it. One merged mesh per island + one shared
@@ -57,15 +58,6 @@ function islandGeometry(r: number, seed: number): THREE.BufferGeometry {
   dirt.rotateX(Math.PI);
   dirt.translate(0, -0.8 - r * 0.42, 0);
   parts.push(dirt);
-  // lone tree
-  const tx = (Math.sin(seed * 12.9898) * 0.5) * r * 0.5;
-  const tz = (Math.sin(seed * 78.233) * 0.5) * r * 0.5;
-  const trunk = paint(new THREE.CylinderGeometry(0.22, 0.3, 2.6, 8), 0x7a5230);
-  trunk.translate(tx, 2.0, tz);
-  parts.push(trunk);
-  const leaves = paint(new THREE.ConeGeometry(1.9, 3.4, 10), 0x4d8f4a);
-  leaves.translate(tx, 4.6, tz);
-  parts.push(leaves);
   // scattered gems catching the light
   for (let i = 0; i < 3; i++) {
     const a = seed * 5 + i * 2.1;
@@ -88,6 +80,20 @@ export class Islands {
   #pos = new THREE.Vector3();
   #quat = new THREE.Quaternion();
   #scale = new THREE.Vector3();
+  #treeRoots: { x: number; y: number; z: number; yaw: number; scale: number; archetype: string }[] = [];
+  #treePatch: {
+    group: THREE.Group;
+    update(focus: { x: number; z: number }): void;
+    dispose(): void;
+  } | null = null;
+  #foliageVisible = true;
+  #foliagePrepared = false;
+  #foliageLoad: Promise<void> | null = null;
+  #foliageArm: {
+    scene: THREE.Scene;
+    prepare?: (group: THREE.Group) => Promise<void>;
+  } | null = null;
+  #foliageFocus = { x: 0, z: 0 };
 
   constructor(physics: Physics, map: WorldMap, scene: THREE.Scene) {
     const bodyMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85 });
@@ -99,8 +105,20 @@ export class Islands {
       const mesh = new THREE.Mesh(islandGeometry(r, i + 1), bodyMat);
       mesh.position.set(x, y, z);
       mesh.castShadow = true;
+      enableLocalFarShadowLayers(mesh);
       mesh.receiveShadow = true;
       scene.add(mesh);
+      const seed = i + 1;
+      const tx = (Math.sin(seed * 12.9898) * 0.5) * r * 0.5;
+      const tz = (Math.sin(seed * 78.233) * 0.5) * r * 0.5;
+      this.#treeRoots.push({
+        x: x + tx,
+        y: y + 0.72,
+        z: z + tz,
+        yaw: seed * 1.927,
+        scale: 0.5 + (i % 3) * 0.06,
+        archetype: i % 2 === 0 ? "island-pine" : "island-maple"
+      });
 
       // landing slab (thin, flush with the grass top) — lives for the whole
       // session inside the physics world, so we don't retain a handle
@@ -159,7 +177,105 @@ export class Islands {
     scene.add(this.#strings);
   }
 
-  update(elapsed: number) {
+  /**
+   * Load island trees after the world is revealed. The dynamic boundary keeps
+   * NativeTreeForest and tree generation out of clean boot while still routing these
+   * far-flung landmarks through the one shared tree runtime.
+   */
+  loadVegetation(
+    scene: THREE.Scene,
+    prepare?: (group: THREE.Group) => Promise<void>
+  ): Promise<void> {
+    if (this.#foliageLoad) return this.#foliageLoad;
+    this.#foliageLoad = (async () => {
+      const { createAuthoredTreePatch } = await import("../world/vegetation/authoredTrees");
+      const patch = createAuthoredTreePatch(
+        [
+          {
+            id: "island-pine",
+            design: {
+              species: "monterey-cypress",
+              seed: 811,
+              controls: {
+                height: 8,
+                crownDensity: 0.9,
+                crownWidth: 0.8,
+                foliageColor: 0x4c8247,
+                foliageTint: 0x77a85c
+              },
+              sink: 0.18
+            }
+          },
+          {
+            id: "island-maple",
+            design: {
+              species: "japanese-maple",
+              seed: 823,
+              controls: {
+                height: 7.5,
+                crownDensity: 1.05,
+                crownWidth: 0.78,
+                foliageColor: 0x5f914c,
+                foliageTint: 0x91b969,
+                leafColorVariant: null
+              },
+              sink: 0.16
+            }
+          }
+        ],
+        this.#treeRoots,
+        {
+          name: "floating_island_trees",
+          chunkSize: 280,
+          visibleDistance: 1250,
+          nearRadius: 64,
+          nearExitRadius: 74,
+          nearMax: 4
+        }
+      );
+      this.#treePatch = patch;
+      await patch.ready;
+      patch.update(this.#foliageFocus);
+      // Compile while detached but visible: Three skips visible=false roots.
+      // Attach only after preparation so no live frame sees an uncompiled tree.
+      if (prepare) await prepare(patch.group);
+      this.#foliagePrepared = true;
+      patch.group.visible = this.#foliageVisible;
+      scene.add(patch.group);
+    })().catch((error) => {
+      this.#treePatch?.dispose();
+      this.#treePatch = null;
+      console.warn("[islands] unified tree patch unavailable:", error);
+    });
+    return this.#foliageLoad;
+  }
+
+  /** Enable first-approach loading without fetching the tree chunk yet. */
+  armVegetation(scene: THREE.Scene, prepare?: (group: THREE.Group) => Promise<void>) {
+    this.#foliageArm = { scene, prepare };
+  }
+
+  setFoliageVisible(visible: boolean) {
+    this.#foliageVisible = visible;
+    if (this.#treePatch && this.#foliagePrepared) this.#treePatch.group.visible = visible;
+  }
+
+  update(elapsed: number, focus?: { x: number; z: number }) {
+    if (focus) {
+      this.#foliageFocus.x = focus.x;
+      this.#foliageFocus.z = focus.z;
+    }
+    if (focus && this.#foliageVisible && this.#foliageArm && !this.#foliageLoad) {
+      const nearIsland = this.#islands.some((island) =>
+        Math.hypot(focus.x - island.x, focus.z - island.z) < 1550
+      );
+      if (nearIsland) {
+        const arm = this.#foliageArm;
+        this.#foliageArm = null;
+        void this.loadVegetation(arm.scene, arm.prepare);
+      }
+    }
+    if (focus && this.#foliageVisible) this.#treePatch?.update(focus);
     const attr = this.#strings.geometry.getAttribute("position") as THREE.BufferAttribute;
     const arr = attr.array as Float32Array;
     let i = 0;

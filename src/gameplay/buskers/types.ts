@@ -4,8 +4,9 @@ import type * as THREE from "three/webgpu";
  * Busker trio — shared contracts.
  *
  * Three seated musicians (ukulele / handpan / flute) perched on a flat-topped
- * chert boulder (see ./perchRock.ts), playing one authored song together (see
- * ./song.ts), then resting in the wind between passes. The module is fully
+ * chert boulder (see ./perchRock.ts), playing an original authored songbook
+ * together (see ./song.ts), then resting in the wind between songs. The
+ * module is fully
  * self-positioned: nothing in here knows about Corona Heights or any other
  * landmark — `createBuskerTrio` takes a world position and can be re-placed
  * later with `setPlacement`.
@@ -96,14 +97,15 @@ export interface Musician {
    */
   schedule(events: NoteEvent[], atTime: (beat: number) => number): void;
   /**
-   * Swap in a different song's part (Q cycles the songbook). Called while the
-   * transport is outside "playing" — rebuild any part-derived state (cursors,
+   * Swap in a different song's part (the transport advances the songbook
+   * automatically between performances). Called while the transport is
+   * outside "playing" — rebuild any part-derived state (cursors,
    * choreography maps) so the next pass animates the new score.
    */
   setPart(part: NoteEvent[]): void;
   /**
-   * Hard-stop any ringing or lookahead-scheduled voices. Used when Q cycles
-   * the songbook so mid-song tails can't bleed into the silent gap.
+   * Hard-stop any ringing or lookahead-scheduled voices. Used when a film
+   * cue forces a silent gap so mid-song tails can't bleed into it.
    */
   cutAudio(): void;
   /** Remove/disconnect everything this musician created. Do NOT dispose

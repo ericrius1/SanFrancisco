@@ -3,6 +3,7 @@
 
 import {
   CarJumpState,
+  landingImpactStrength,
   smoothstep01,
   stepAirAttitude
 } from "../src/vehicles/car/jumpPhysics.ts";
@@ -169,12 +170,37 @@ function verifyEdgeCases() {
   return { perchAirborne: perch.airborne, impactAirborne: impact.airborne, maxSpinDelta: delta };
 }
 
+function verifyLandingFeedbackScale() {
+  const params = {
+    minHeight: 0.65,
+    maxHeight: 6.5,
+    minFallDistance: 0.5,
+    maxFallDistance: 6,
+    heightWeight: 0.4,
+    responseCurve: 0.7
+  };
+  const tiny = landingImpactStrength(0.4, 0.3, params);
+  const medium = landingImpactStrength(3, 2.5, params);
+  const high = landingImpactStrength(20, 20, params);
+  const moreHeight = landingImpactStrength(4, 2, params);
+  const lessHeight = landingImpactStrength(2, 2, params);
+  const moreFall = landingImpactStrength(2, 4, params);
+  const lessFall = landingImpactStrength(2, 2, params);
+  assert(tiny === 0, `sub-threshold landing produced strength ${tiny}`);
+  assert(medium > 0 && medium < 1, `medium landing was not inside the response range: ${medium}`);
+  assert(high === 1, `large landing did not clamp to one: ${high}`);
+  assert(moreHeight > lessHeight, "landing response ignored jump height");
+  assert(moreFall > lessFall, "landing response ignored fall distance");
+  return { tiny, medium, high, moreHeight, moreFall };
+}
+
 const legacyCrossings = legacyOscillation();
 const fixed60 = simulateAttitude(60);
 const rampKick = simulateAttitude(60, 1);
 const rates = [30, 60, 120].map((hz) => ({ hz, ...simulateAttitude(hz) }));
 const transitions = verifyPhaseLatch();
 const edgeCases = verifyEdgeCases();
+const landingFeedback = verifyLandingFeedbackScale();
 
 assert(legacyCrossings >= 8, `legacy reproduction unexpectedly crossed only ${legacyCrossings} times`);
 assert(fixed60.crossings <= 1, `new assist oscillated ${fixed60.crossings} times`);
@@ -197,6 +223,13 @@ console.log(
         perchAirborne: edgeCases.perchAirborne,
         impactLanded: !edgeCases.impactAirborne,
         maxSpinDelta: Number(edgeCases.maxSpinDelta.toFixed(8))
+      },
+      landingFeedback: {
+        tiny: landingFeedback.tiny,
+        medium: Number(landingFeedback.medium.toFixed(3)),
+        high: landingFeedback.high,
+        heightSensitive: Number(landingFeedback.moreHeight.toFixed(3)),
+        fallSensitive: Number(landingFeedback.moreFall.toFixed(3))
       },
       rampKickPeakDeg: Number(rampKick.peakDeg.toFixed(2)),
       rateFinalPitchDeg: rates.map((r) => ({ hz: r.hz, pitch: Number(r.finalDeg.toFixed(3)) })),

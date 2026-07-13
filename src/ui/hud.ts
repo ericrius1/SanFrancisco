@@ -74,9 +74,9 @@ const KB: Record<PlayerMode, Row[]> = {
   surf: [
     { c: ["Mouse"], label: "look" },
     { c: ["W", "S"], label: "pump · stall" },
-    { c: ["A", "D"], label: "carve" },
-    { c: ["Space"], label: "launch" },
-    { c: ["Shift"], label: "tuck" },
+    { c: ["A", "D"], label: "choose line" },
+    { c: ["X"], label: "flow state" },
+    { c: ["Auto"], label: "lip launch" },
     { c: ["E"], label: "kick out" }
   ],
   bird: [
@@ -160,9 +160,8 @@ const PAD: Record<PlayerMode, Row[]> = {
   surf: [
     { c: ["RS"], label: "look" },
     { c: ["RT", "LT"], label: "pump · stall" },
-    { c: ["LS"], label: "carve" },
-    { c: ["A"], label: "launch" },
-    { c: ["RT"], label: "tuck" },
+    { c: ["LS"], label: "choose line" },
+    { c: ["Auto"], label: "lip launch" },
     { c: ["B"], label: "kick out" }
   ],
   bird: [
@@ -181,7 +180,7 @@ const TIPS: Partial<Record<PlayerMode, string>> = {
   drive: "Handbrake (Space) drifts · Shift boosts",
   scooter: "Ramps launch cleanly · rear seat fits a friend or your pet",
   board: "White glow = nose · surfs streets, hills and the bay",
-  surf: "Stay near the steep green face · alternate carves to build combo",
+  surf: "Pump through the bright lip to auto-launch · fill Flow, then press X",
   bird: "Look down + Shift to stoop — skim the bay for spray"
 }
 
@@ -311,6 +310,7 @@ export class HUD {
 
     const extraRows = (pad
       ? [
+          { c: ["Y"], label: "map" },
           { c: ["R3"], label: "camera" },
           { c: ["▲"], label: "fireworks" },
           { c: ["Start"], label: "pause" },

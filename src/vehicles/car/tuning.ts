@@ -45,3 +45,27 @@ export const CAR_TUNING = tunables("movement.drive", {
   airYawDamping: { v: 2.5 },
   airYawAcceleration: { v: 3.5, min: 0, max: 10, step: 0.25, label: "air steer" }
 });
+
+// A confirmed touchdown is converted into one normalized 0..1 impact. Height
+// measures the largest suspension clearance during the jump; fall distance is
+// the apex-to-touchdown drop. Presentation systems consume the resulting event,
+// but all of their authoring ranges live here in the car's own tuning folder.
+export const CAR_LANDING_TUNING = tunables("movement.drive.landingFeedback", {
+  enabled: { v: true, label: "enabled" },
+  minHeight: { v: 0.65, min: 0, max: 4, step: 0.05, label: "min jump height" },
+  maxHeight: { v: 6.5, min: 1, max: 20, step: 0.25, label: "max jump height" },
+  minFallDistance: { v: 0.5, min: 0, max: 4, step: 0.05, label: "min fall distance" },
+  maxFallDistance: { v: 6, min: 1, max: 20, step: 0.25, label: "max fall distance" },
+  heightWeight: { v: 0.4, min: 0, max: 1, step: 0.05, label: "height influence" },
+  responseCurve: { v: 0.7, min: 0.25, max: 2.5, step: 0.05, label: "impact curve" },
+  shakeMin: { v: 0.05, min: 0, max: 0.5, step: 0.01, label: "shake min" },
+  shakeMax: { v: 0.48, min: 0, max: 1.6, step: 0.02, label: "shake max" },
+  soundMin: { v: 0.35, min: 0, max: 1.5, step: 0.05, label: "sound min" },
+  soundMax: { v: 1, min: 0, max: 2, step: 0.05, label: "sound max" },
+  smokeMin: { v: 2, min: 0, max: 12, step: 1, label: "smoke puffs min" },
+  smokeMax: { v: 7, min: 0, max: 18, step: 1, label: "smoke puffs max" },
+  smokeScaleMin: { v: 0.55, min: 0.1, max: 3, step: 0.05, label: "smoke size min" },
+  smokeScaleMax: { v: 1.35, min: 0.1, max: 5, step: 0.05, label: "smoke size max" },
+  smokeSpread: { v: 2.2, min: 0, max: 5, step: 0.1, label: "smoke spread" },
+  smokeLife: { v: 0.8, min: 0.2, max: 2.5, step: 0.05, label: "smoke life" }
+});

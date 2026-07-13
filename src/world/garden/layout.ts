@@ -1,6 +1,7 @@
-// San Francisco Botanical Garden — deterministic layout math. Self-contained and
-// dependency-free (no three, no host-project imports) so the exact same tree /
-// shrub / flora placement, collider boxes, and BVH proxy geometry can be
+import { inJapaneseTeaGarden } from "../japaneseTeaGarden/layout";
+
+// San Francisco Botanical Garden — deterministic layout math. Renderer-free so
+// the same tree/shrub/flora placement, collider boxes, and BVH proxy geometry can be
 // reconstructed by a headless trainer or ported into another world untouched.
 //
 // Everything that affects colliders / BVH proxies (tree positions, species,
@@ -336,7 +337,7 @@ export type GardenTree = {
   scale: number;
   yaw: number;
   species: number;
-  nearClone?: boolean;
+  nearDetail?: boolean;
 };
 
 export type GardenShrub = {
@@ -380,7 +381,7 @@ const MEADOW_SHADE_AVOID = [
 ] as const;
 
 function placeable(map: GardenTerrain, x: number, z: number): boolean {
-  return inBotanicalGarden(x, z) && map.surfaceType(x, z) === 1 && !map.isWater(x, z);
+  return inBotanicalGarden(x, z) && !inJapaneseTeaGarden(x, z, 5) && map.surfaceType(x, z) === 1 && !map.isWater(x, z);
 }
 
 function appendMeadowShadeTrees(map: GardenTerrain, trees: GardenTree[]) {
@@ -405,7 +406,7 @@ function appendMeadowShadeTrees(map: GardenTerrain, trees: GardenTree[]) {
       scale: scale * (1.12 + gardenHash(i, 0, 587) * 0.24),
       yaw: gardenHash(i, 0, 593) * Math.PI * 2,
       species,
-      nearClone: false
+      nearDetail: false
     });
     added++;
   }

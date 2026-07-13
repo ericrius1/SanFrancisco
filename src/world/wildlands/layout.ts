@@ -12,70 +12,34 @@
 //  · FLOWER DRIFT — an ellipse of wildflowers with NOISE BANDING, so each
 //                 drift streaks like a real superbloom instead of a disc
 //
-// Species use the SeedThree designs staged for the botanical garden (same
-// public/seedthree textures): douglasFir (redwood/fir), pine (Monterey
-// cypress read), whiteOak, americanBeech (eucalyptus read).
+// Species use shared authored-tree designs: douglasFir (redwood/fir), pine
+// (Monterey cypress read), whiteOak, americanBeech (eucalyptus read).
 //
 // Real-geography anchors (x=(lon+122.444)*87972, z=(37.79-lat)*110574):
 //  GG Park   x[-5920,-760]  z[1780,2860]
 //  Presidio  x[-3035,-200]  z[-2250,180]
 //  Marin     x[-6300,-2700] z[-7800,-5000]
 
-import type { SeedTreeDesignSpec } from "../seedForest/templates";
+import type { NativeTreeDesignSpec } from "../nativeTreeForest/templates";
 import { BOTANICAL_GARDEN_BOUNDS, inBotanicalGarden, type GardenTerrain } from "../garden/layout";
-import { BUENA_VISTA_REGION, BUENA_VISTA_SUMMIT_CLEARING, inBuenaVistaPark } from "../buenaVista";
+import { BUENA_VISTA_SUMMIT_CLEARING, inBuenaVistaPark } from "../buenaVista";
 import { inGoldmanTennisSite, inGoldmanVegetationZone } from "../goldenGateTennis/layout";
+import { inJapaneseTeaGarden } from "../japaneseTeaGarden/layout";
 import { inArcheryRange } from "../../gameplay/archery/layout";
+import {
+  WILD_REGIONS,
+  wildRegionAt,
+  type WildRegion,
+  type WildRegionId
+} from "./regions";
 
-export type WildRegionId = "ggpark" | "presidio" | "marin" | "twinpeaks" | "buenavista";
-
-export type WildRegion = {
-  id: WildRegionId;
-  minX: number;
-  maxX: number;
-  minZ: number;
-  maxZ: number;
-  /** which surface classes are plantable here (GG Park/Presidio lawns = 1;
-   *  Marin's golden hills are class 0 open ground) */
-  plantClasses: readonly number[];
-  /** minimum ground height (Marin shoreline gate, matches flora.ts) */
-  minGround: number;
-};
-
-export const WILD_REGIONS: readonly WildRegion[] = [
-  { id: "ggpark", minX: -5920, maxX: -760, minZ: 1780, maxZ: 2860, plantClasses: [1], minGround: -Infinity },
-  // Presidio's historic cypress/eucalyptus plantations sit on ground this map
-  // classes as 0 (developed post), so plant on 0+1 like Marin — the designed
-  // groves keep it in the wooded areas, avoid zones keep it off the anchorage.
-  { id: "presidio", minX: -3035, maxX: -200, minZ: -2250, maxZ: 180, plantClasses: [0, 1], minGround: -Infinity },
-  { id: "marin", minX: -6300, maxX: -2700, minZ: -7800, maxZ: -5000, plantClasses: [0, 1], minGround: 2 },
-  // Central hills — Mount Sutro (dense eucalyptus cloud-forest), Mount Davidson
-  // (forested), Twin Peaks (open grassy summit). plantClasses=[1] keeps the
-  // canopy on the actual parkland, not the surrounding neighborhoods (class 0).
-  { id: "twinpeaks", minX: -1500, maxX: 350, minZ: 3150, maxZ: 4650, plantClasses: [1], minGround: -Infinity },
-  // Buena Vista Park — the wooded hill directly north of the Corona Heights
-  // buskers. Park-only planting follows its irregular OSM class-1 footprint;
-  // the authored summit meadow below preserves the real opening at the crown.
-  { id: "buenavista", ...BUENA_VISTA_REGION, plantClasses: [1], minGround: -Infinity }
-] as const;
-
-export function wildRegionAt(x: number, z: number): WildRegion | null {
-  for (const r of WILD_REGIONS) {
-    if (x >= r.minX && x <= r.maxX && z >= r.minZ && z <= r.maxZ) return r;
-  }
-  return null;
-}
-
-/** True when the disc (x,z,reach) touches ANY wild region's AABB. The cheap
- *  early-out for the player-following scatter rings: outside every region
- *  nothing can grow, so their whole grid re-scan (thousands of hash/terrain
- *  samples every few metres of travel) is skipped across most of the city. */
-export function nearAnyWildRegion(x: number, z: number, reach: number): boolean {
-  for (const r of WILD_REGIONS) {
-    if (x >= r.minX - reach && x <= r.maxX + reach && z >= r.minZ - reach && z <= r.maxZ + reach) return true;
-  }
-  return false;
-}
+export {
+  WILD_REGIONS,
+  wildRegionAt,
+  nearAnyWildRegion,
+  type WildRegion,
+  type WildRegionId
+} from "./regions";
 
 // --- keep-out zones (existing world content owns these) --------------------------
 
@@ -128,6 +92,7 @@ function inAvoidCorridor(x: number, z: number, pad = 0): boolean {
 }
 
 function inAvoid(x: number, z: number, pad = 0): boolean {
+  if (inJapaneseTeaGarden(x, z, 12 + pad)) return true;
   if (
     x >= BOTANICAL_GARDEN_BOUNDS.minX - 14 - pad &&
     x <= BOTANICAL_GARDEN_BOUNDS.maxX + 14 + pad &&
@@ -139,9 +104,9 @@ function inAvoid(x: number, z: number, pad = 0): boolean {
   for (const a of AVOID) {
     if (Math.hypot(x - a.x, z - a.z) < a.r + pad) return true;
   }
-  // The authored Goldman Tennis Center owns its court-edge/Hippie Hill trees.
-  // Keep the region-wide forest matrix from planting through courts, paths, or
-  // the deliberately arranged perimeter canopy.
+  // Reserve the court edge/Hippie Hill for the explicit Goldman slots appended
+  // after the generic collectors below. This stops the region-wide matrix from
+  // planting through courts, paths, or the deliberately arranged canopy.
   if (inGoldmanVegetationZone(x, z)) return true;
   // GG Park archery field: no canopy over the shooting lanes (wide pad so a
   // grown crown never leans across an arrow's arc)
@@ -182,54 +147,132 @@ function smoothstep(a: number, b: number, t: number): number {
 
 // --- tree species (indices into WILD_TREE_DESIGNS) --------------------------------
 
-// Fuller + shorter than a first pass: the far tier renders LOD2, which keeps the
-// trunk but thins the foliage cards, so tall trees read as bare poles at range.
-// High leavesPerBranch/branchDensity + lower heights + a low baseSize (crown
-// clothes more of the trunk) fatten the far-tier silhouette into real canopy.
-export const WILD_TREE_DESIGNS: readonly SeedTreeDesignSpec[] = [
+// Native archetypes preserve the local botanical silhouette while their stable
+// shared-skeleton LODs keep crowns coherent from close canopy to the horizon.
+export const WILD_TREE_DESIGNS: readonly NativeTreeDesignSpec[] = [
   // 0 redwood/fir — valley forests and grove hearts. Fullness balanced against
   // far-tier triangle cost: enough leaf density to kill the bare-pole read, not
   // so much that a compact dense stand blows the GPU budget.
   {
-    species: "douglasFir",
+    species: "coast-redwood",
     seed: 911,
     // firs are the poliest + costliest at the far tier — keep them shorter and
     // the fullest of the four so a distant grove still reads as canopy not masts
-    controls: { height: 18, branchDensity: 46, leavesPerBranch: 36, leafColorize: 0x44603a, leafTintAmount: 0.44 },
+    controls: { height: 18, crownDensity: 0.8, crownWidth: 0.9, foliageColor: 0x44603a },
     sink: 0.3
   },
   // 1 Monterey cypress read — windrows and crest stands, fat rounded crown
   {
-    species: "pine",
+    species: "monterey-cypress",
     seed: 922,
-    controls: { height: 11, branchDensity: 40, leavesPerBranch: 26, leafColorize: 0x3e5c33, leafTintAmount: 0.46 },
+    controls: { height: 11, crownDensity: 0.82, crownWidth: 0.9, foliageColor: 0x3e5c33 },
     sink: 0.28
   },
   // 2 coast live oak — savanna loners and east-park woodland, broad round head
   {
-    species: "whiteOak",
+    species: "coast-live-oak",
     seed: 933,
-    controls: { height: 9.5, branchDensity: 32, leavesPerBranch: 26, leafColorize: 0x4d6a34, leafTintAmount: 0.5 },
+    controls: { height: 9.5, crownDensity: 0.78, crownWidth: 0.9, foliageColor: 0x4d6a34 },
     sink: 0.26
   },
   // 3 eucalyptus read — tall pale stands, but not a flagpole
   {
-    species: "americanBeech",
+    species: "eucalyptus",
     seed: 944,
-    controls: { height: 15, branchDensity: 34, leavesPerBranch: 26, leafColorize: 0x5c6e40, leafTintAmount: 0.5 },
+    controls: { height: 15, crownDensity: 0.8, crownWidth: 0.88, foliageColor: 0x5c6e40 },
     sink: 0.28
   }
 ] as const;
 
 export const WILD_SPECIES = { redwood: 0, cypress: 1, oak: 2, eucalyptus: 3 } as const;
 
-// per-species instance scale range (multiplies the SeedThree hero)
+// Per-species instance scale range, applied to the native whole-tree prototype.
 const SPECIES_SCALE: readonly [number, number][] = [
   [0.95, 1.5],
   [0.85, 1.25],
   [0.85, 1.25],
   [0.9, 1.35]
 ];
+
+type GoldmanTreePlacement = {
+  x: number;
+  z: number;
+  yaw: number;
+  size: number;
+  design: number;
+};
+
+function goldmanHash(index: number, salt: number): number {
+  let h = Math.imul(index + salt * 1013, 0x45d9f3b);
+  h = Math.imul(h ^ (h >>> 16), 0x45d9f3b);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+
+function appendGoldmanEllipse(
+  out: GoldmanTreePlacement[],
+  cx: number,
+  cz: number,
+  rx: number,
+  rz: number,
+  count: number,
+  salt: number,
+  design: number,
+  ring = false
+) {
+  for (let i = 0; i < count; i++) {
+    const angle = goldmanHash(i, salt) * Math.PI * 2;
+    const radial = ring
+      ? 0.72 + goldmanHash(i, salt + 1) * 0.28
+      : Math.sqrt(goldmanHash(i, salt + 1));
+    out.push({
+      x: cx + Math.cos(angle) * rx * radial,
+      z: cz + Math.sin(angle) * rz * radial,
+      yaw: goldmanHash(i, salt + 3) * Math.PI * 2,
+      size: 0.82 + goldmanHash(i, salt + 2) * 0.52,
+      design
+    });
+  }
+}
+
+/** Authored Goldman Tennis perimeter and Hippie Hill canopy. These are the
+ * exact deterministic ellipses the site used before tree beauty moved into the
+ * unified NativeTreeForest. Keeping the recipe here lets the site own courts and
+ * gameplay only, while one deferred renderer owns every GG Park tree. */
+function collectGoldmanTrees(
+  map: GardenTerrain,
+  excluded?: (x: number, z: number) => boolean
+): WildTree[] {
+  const candidates: GoldmanTreePlacement[] = [];
+  appendGoldmanEllipse(candidates, -1411, 2192, 22, 65, 24, 11, WILD_SPECIES.cypress);
+  appendGoldmanEllipse(candidates, -1335, 2283, 82, 12, 25, 23, WILD_SPECIES.cypress);
+  appendGoldmanEllipse(candidates, -1271, 2203, 15, 58, 18, 37, WILD_SPECIES.eucalyptus);
+  appendGoldmanEllipse(candidates, -1227, 2228, 67, 54, 24, 51, WILD_SPECIES.oak, true);
+
+  const placements = candidates.filter((tree) => {
+    if (excluded?.(tree.x, tree.z)) return false;
+    const surface = map.surfaceType(tree.x, tree.z);
+    return surface !== 3 && surface !== SURFACE_ROAD && !inGoldmanTennisSite(tree.x, tree.z, 3.5);
+  });
+
+  return placements.map((tree, index) => {
+    // Preserve the former authored height distribution while expressing it as
+    // a scale over the selected unified archetype's source-code height.
+    const oldHeight = (8.5 + goldmanHash(index, 71) * 5.5) * tree.size;
+    const archetypeHeight = tree.design === WILD_SPECIES.eucalyptus
+      ? 15
+      : tree.design === WILD_SPECIES.oak
+        ? 9.5
+        : 11;
+    return {
+      x: tree.x,
+      y: map.groundHeight(tree.x, tree.z),
+      z: tree.z,
+      yaw: tree.yaw,
+      scale: Math.min(1.65, Math.max(0.68, oldHeight / archetypeHeight)),
+      design: tree.design
+    };
+  });
+}
 
 // --- designed content --------------------------------------------------------------
 
@@ -486,6 +529,7 @@ const SURFACE_ROAD = 4;
  */
 export function grassyGround(map: GardenTerrain, x: number, z: number): boolean {
   if (inBotanicalGarden(x, z, 6)) return false; // the garden plants its own flora
+  if (inJapaneseTeaGarden(x, z, 4)) return false; // the Tea Garden owns its clipped moss, ponds and paths
   if (inGoldmanTennisSite(x, z, 2)) return false; // hard courts/path aprons own this footprint
   if (inArcheryRange(x, z, 1)) return false; // archery lanes stay mown flat
   if (map.isWater(x, z)) return false;
@@ -506,34 +550,34 @@ export function grassyGround(map: GardenTerrain, x: number, z: number): boolean 
   return dx <= 6 && dz <= 6;
 }
 
-// --- suppression exports (old simple trees die inside the wildlands) ----------------
-
-/**
- * True where the old stylized tree systems (flora.ts park scatter + Marin
- * pools, forest.ts redwoods) must NOT plant trees — the wildlands owns all
- * trees in its three regions. Bushes/grass/ground cover stay.
- */
-export function wildlandsSuppressesTree(x: number, z: number): boolean {
-  return wildRegionAt(x, z) !== null;
-}
-
 // --- collectors ----------------------------------------------------------------------
 
 export type WildTree = { x: number; y: number; z: number; yaw: number; scale: number; design: number };
+export type WildTreeExclusion = (x: number, z: number) => boolean;
+export type WildTreeRegionFilter = ReadonlySet<WildRegionId>;
 
 const TREE_CELL = 8;
 const TREE_MIN_SPACING = 5.5;
 
-export function collectWildTrees(map: GardenTerrain, excluded?: (x: number, z: number) => boolean): WildTree[] {
+export function collectWildTrees(
+  map: GardenTerrain,
+  excluded?: WildTreeExclusion,
+  includedRegions?: WildTreeRegionFilter
+): WildTree[] {
   const trees: WildTree[] = [];
   // spatial hash for min spacing across overlapping features
   const taken = new Set<string>();
   const takenKey = (x: number, z: number) => `${Math.round(x / TREE_MIN_SPACING)}:${Math.round(z / TREE_MIN_SPACING)}`;
+  const includesRegion = (region: WildRegionId) => !includedRegions || includedRegions.has(region);
+  const includesFeatureAt = (x: number, z: number) => {
+    const region = wildRegionAt(x, z);
+    return region !== null && includesRegion(region.id);
+  };
 
   const push = (x: number, z: number, species: number, sBoost: number, salt: number, gx: number, gz: number) => {
     if (excluded?.(x, z)) return false;
     const region = wildRegionAt(x, z);
-    if (!region || !plantable(map, region, x, z)) return false;
+    if (!region || !includesRegion(region.id) || !plantable(map, region, x, z)) return false;
     if (inFlowerMeadow(x, z) || inMeadow(x, z)) return false;
     if (!slopeOk(map, x, z, 8.5)) return false;
     const k = takenKey(x, z);
@@ -553,6 +597,7 @@ export function collectWildTrees(map: GardenTerrain, excluded?: (x: number, z: n
 
   // GROVES — gaussian falloff × clump noise, denser hearts, feathered edges
   GROVES.forEach((g, gi) => {
+    if (!includesFeatureAt(g.cx, g.cz)) return;
     const salt = 1000 + gi * 37;
     const cells = Math.ceil((g.r * 2) / TREE_CELL);
     for (let iz = 0; iz <= cells; iz++) {
@@ -572,6 +617,7 @@ export function collectWildTrees(map: GardenTerrain, excluded?: (x: number, z: n
 
   // WINDROWS — evenly spaced with jitter; skips gaps where terrain refuses
   WINDROWS.forEach((w, wi) => {
+    if (!includesFeatureAt(w.ax, w.az)) return;
     const salt = 4000 + wi * 41;
     const len = Math.hypot(w.bx - w.ax, w.bz - w.az);
     const n = Math.floor(len / w.spacing);
@@ -587,6 +633,7 @@ export function collectWildTrees(map: GardenTerrain, excluded?: (x: number, z: n
   // FOREST MATRIX — region-wide canopy (GG Park + Presidio). Dense stands where
   // the low-freq stand-noise says wood, feathered edges, open clearings between.
   WILD_REGIONS.forEach((region) => {
+    if (!includesRegion(region.id)) return;
     const spec = MATRIX[region.id];
     if (!spec) return; // Marin: no matrix, stays open
     const salt = 6000 + region.id.length * 17;
@@ -609,6 +656,7 @@ export function collectWildTrees(map: GardenTerrain, excluded?: (x: number, z: n
   // SAVANNAS — rare loners over the whole region, clump-noise gated so pairs
   // and small families happen
   SAVANNAS.forEach((s, si) => {
+    if (!includesRegion(s.region)) return;
     const salt = 7000 + si * 53;
     const region = WILD_REGIONS.find((r) => r.id === s.region)!;
     const cell = 26;
@@ -625,6 +673,11 @@ export function collectWildTrees(map: GardenTerrain, excluded?: (x: number, z: n
       }
     }
   });
+
+  // The broad Goldman ownership mask above keeps the region-wide matrix out of
+  // the courts and Hippie Hill. Add its intentional perimeter recipe only after
+  // every generic collector has run, preserving the old overlapping clusters.
+  if (includesRegion("ggpark")) trees.push(...collectGoldmanTrees(map, excluded));
 
   return trees;
 }

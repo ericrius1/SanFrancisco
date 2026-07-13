@@ -1,6 +1,7 @@
 import * as THREE from "three/webgpu";
 import { BodyType, type Physics } from "../../core/physics";
 import type { GroundTopOverlay, WorldMap } from "../heightmap";
+import { enableLocalShadowLayer } from "../shadows/shadowLayers";
 import { buildClubhouse, type ClubhouseBuild } from "./clubhouse";
 import { createClubhouseNpcs, type ClubhouseNpcs } from "./npcs";
 import {
@@ -10,7 +11,6 @@ import {
   GOLDMAN_PATHS,
   GOLDMAN_SITE_OUTLINE,
   HIPPIE_HILL_OUTLINE,
-  inGoldmanTennisSite,
   type GoldmanCourtRef,
   type GoldmanCourtSpec,
   type GoldmanPathSpec,
@@ -41,7 +41,6 @@ export type GoldenGateTennisSiteOptions = {
    * omitted. `undefined` reserves 14B; `null` renders every decorative court.
    */
   reservedCourtRef?: GoldmanPickleballCourtRef | null;
-  includeTrees?: boolean;
   /** Optional stepped/query physics for perimeter fences and court nets. */
   physics?: Physics;
   /** Day/night provider for the clubhouse crowd; omitted = always day. */
@@ -268,6 +267,8 @@ function makeNets(specs: readonly GoldmanCourtSpec[], anchors: ReadonlyMap<Goldm
   posts.computeBoundingSphere();
   panels.castShadow = true;
   posts.castShadow = true;
+  enableLocalShadowLayer(panels);
+  enableLocalShadowLayer(posts);
   return [panels, posts] as const;
 }
 
@@ -457,99 +458,6 @@ function registerSiteColliders(
   }
 }
 
-type TreePlacement = { x: number; z: number; scale: number; yaw: number; crown: number };
-
-function hash(index: number, salt: number) {
-  let h = Math.imul(index + salt * 1013, 0x45d9f3b);
-  h = Math.imul(h ^ (h >>> 16), 0x45d9f3b);
-  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
-}
-
-function ellipseTrees(
-  out: TreePlacement[],
-  cx: number,
-  cz: number,
-  rx: number,
-  rz: number,
-  count: number,
-  salt: number,
-  ring = false
-) {
-  for (let i = 0; i < count; i++) {
-    const angle = hash(i, salt) * Math.PI * 2;
-    const radial = ring ? 0.72 + hash(i, salt + 1) * 0.28 : Math.sqrt(hash(i, salt + 1));
-    out.push({
-      x: cx + Math.cos(angle) * rx * radial,
-      z: cz + Math.sin(angle) * rz * radial,
-      scale: 0.82 + hash(i, salt + 2) * 0.52,
-      yaw: hash(i, salt + 3) * Math.PI * 2,
-      crown: hash(i, salt + 4)
-    });
-  }
-}
-
-function makeTrees(map: WorldMap) {
-  const candidates: TreePlacement[] = [];
-  // Dense mature perimeter mass in the built aerial: strongest west + south,
-  // sparse on the Pelosi Drive entry, then a loose ring preserving Hippie
-  // Hill's open central lawn.
-  ellipseTrees(candidates, -1411, 2192, 22, 65, 24, 11);
-  ellipseTrees(candidates, -1335, 2283, 82, 12, 25, 23);
-  ellipseTrees(candidates, -1271, 2203, 15, 58, 18, 37);
-  ellipseTrees(candidates, -1227, 2228, 67, 54, 24, 51, true);
-  // Cluster ellipses intentionally overlap the fence line so the canopy reads
-  // continuous; reject their inward half so no trunk lands on a play surface.
-  const placements = candidates.filter((tree) => {
-    const surface = map.surfaceType(tree.x, tree.z);
-    return surface !== 3 && surface !== 4 && !inGoldmanTennisSite(tree.x, tree.z, 3.5);
-  });
-
-  const trunks = new THREE.InstancedMesh(
-    new THREE.CylinderGeometry(0.46, 0.34, 1, 6),
-    new THREE.MeshStandardMaterial({ color: 0x594534, roughness: 1, metalness: 0 }),
-    placements.length
-  );
-  trunks.name = "goldman_hill_tree_trunks";
-  const crowns = new THREE.InstancedMesh(
-    new THREE.IcosahedronGeometry(1, 1),
-    new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.98, metalness: 0 }),
-    placements.length
-  );
-  crowns.name = "goldman_hill_tree_crowns";
-  const matrix = new THREE.Matrix4();
-  const color = new THREE.Color();
-  for (let i = 0; i < placements.length; i++) {
-    const tree = placements[i];
-    const ground = map.groundTop(tree.x, tree.z);
-    const height = (8.5 + hash(i, 71) * 5.5) * tree.scale;
-    composeBoxMatrix(matrix, tree.x, ground + height * 0.37, tree.z, tree.yaw, tree.scale, height * 0.74, tree.scale);
-    trunks.setMatrixAt(i, matrix);
-    composeBoxMatrix(
-      matrix,
-      tree.x,
-      ground + height * 0.78,
-      tree.z,
-      tree.yaw,
-      height * (0.25 + tree.crown * 0.06),
-      height * (0.34 + tree.crown * 0.08),
-      height * (0.23 + tree.crown * 0.06)
-    );
-    crowns.setMatrixAt(i, matrix);
-    color.setHSL(0.27 + tree.crown * 0.035, 0.32, 0.23 + tree.crown * 0.11);
-    crowns.setColorAt(i, color);
-  }
-  trunks.instanceMatrix.needsUpdate = true;
-  crowns.instanceMatrix.needsUpdate = true;
-  if (crowns.instanceColor) crowns.instanceColor.needsUpdate = true;
-  trunks.computeBoundingSphere();
-  crowns.computeBoundingSphere();
-  trunks.castShadow = true;
-  crowns.castShadow = true;
-  trunks.receiveShadow = true;
-  crowns.receiveShadow = true;
-  return [trunks, crowns] as const;
-}
-
 function makeHippieHillEdge(map: WorldMap) {
   const path: GoldmanPathSpec = {
     name: "Hippie Hill edge",
@@ -563,7 +471,6 @@ function makeHippieHillEdge(map: WorldMap) {
 
 export class GoldenGateTennisSite {
   readonly group = new THREE.Group();
-  readonly vegetation = new THREE.Group();
   readonly courtAnchors: ReadonlyMap<GoldmanCourtRef, GoldmanCourtAnchor>;
   readonly gameplayAnchor: GoldmanCourtAnchor;
   readonly reservedCourtRef: GoldmanPickleballCourtRef | null;
@@ -575,7 +482,6 @@ export class GoldenGateTennisSite {
 
   constructor(map: WorldMap, options: GoldenGateTennisSiteOptions = {}) {
     this.group.name = "goldman_tennis_center";
-    this.vegetation.name = "goldman_tennis_vegetation";
     this.#map = map;
     this.reservedCourtRef = options.reservedCourtRef === undefined ? DEFAULT_GAMEPLAY_COURT_REF : options.reservedCourtRef;
     this.#physics = options.physics;
@@ -618,8 +524,6 @@ export class GoldenGateTennisSite {
     );
     this.group.add(makeHippieHillEdge(map));
 
-    if (options.includeTrees !== false) this.vegetation.add(...makeTrees(map));
-    this.group.add(this.vegetation);
     if (this.#physics) {
       try {
         registerSiteColliders(map, this.#physics, anchors, this.#bodies);
@@ -666,7 +570,10 @@ export class GoldenGateTennisSite {
   }
 
   setFoliageVisible(visible: boolean) {
-    this.vegetation.visible = visible;
+    // Compatibility surface for the app-wide foliage toggle. Goldman/Hippie
+    // Hill trees are owned by the deferred wildlands NativeTreeForest now, so the
+    // site itself has no foliage subtree to toggle.
+    void visible;
   }
 
   addTo(scene: THREE.Scene): this {

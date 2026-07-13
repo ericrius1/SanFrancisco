@@ -1,12 +1,15 @@
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
-import { access, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 export const WORK_ROOT = path.join(ROOT, ".data", "cinematics");
-export const OUTPUT_ROOT = path.join(ROOT, "renders", "cinematics");
+export const REVIEW_ROOT = path.join(WORK_ROOT, "review");
+export const PUBLISH_ROOT = path.resolve(
+  process.env.SF_CINE_PUBLISH_DIR ?? "/Users/eric/videos/my creations/sf/renders/cinematics"
+);
 
 const activeChildren = new Set();
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -34,7 +37,36 @@ export async function stopCinematicProcesses() {
 }
 
 export function relativeToRoot(file) {
-  return path.relative(ROOT, file) || ".";
+  const resolved = path.resolve(file);
+  const relative = path.relative(ROOT, resolved);
+  return relative === "" ? "." : relative.startsWith(`..${path.sep}`) || relative === ".." ? resolved : relative;
+}
+
+export async function publishVideo(sourceFile, {
+  filename = path.basename(sourceFile),
+  publishDir = PUBLISH_ROOT,
+  log = defaultLog
+} = {}) {
+  if (path.basename(filename) !== filename || path.extname(filename).toLowerCase() !== ".mp4") {
+    throw new Error(`published filename must be one .mp4 path component (received ${JSON.stringify(filename)})`);
+  }
+  const source = path.resolve(sourceFile);
+  if (!(await fileExists(source))) throw new Error(`cannot publish missing video ${relativeToRoot(source)}`);
+  const destinationDir = path.resolve(publishDir);
+  const destination = path.join(destinationDir, filename);
+  const temporary = path.join(destinationDir, `.${filename}.${process.pid}.tmp`);
+  await mkdir(destinationDir, { recursive: true });
+  await rm(temporary, { force: true });
+  try {
+    await copyFile(source, temporary);
+    await rename(temporary, destination);
+  } catch (error) {
+    await rm(temporary, { force: true });
+    throw error;
+  }
+  const info = await stat(destination);
+  log(`published ${relativeToRoot(destination)}`);
+  return { file: destination, bytes: info.size };
 }
 
 export async function fileExists(file) {
@@ -364,7 +396,7 @@ async function launchChrome({ production, profileDir, log = defaultLog }) {
 
 export function cinematicPaths(production) {
   const workDir = path.join(WORK_ROOT, production.id, production.take);
-  const outputDir = path.join(OUTPUT_ROOT, production.id);
+  const outputDir = path.join(REVIEW_ROOT, production.id);
   const baseName = `${production.id}-${production.take}`;
   return {
     workDir,
@@ -1260,7 +1292,7 @@ export async function ffprobeVideo(videoFile, { ffprobe = process.env.FFPROBE_BI
     "-v", "error",
     "-count_frames",
     "-show_entries",
-    "format=duration,size,bit_rate:stream=index,codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate,nb_frames,nb_read_frames,duration,color_space,color_transfer,color_primaries,color_range,bit_rate,sample_rate,channels,channel_layout",
+    "format=duration,size,bit_rate:stream=index,codec_type,codec_name,profile,level,pix_fmt,width,height,sample_aspect_ratio,field_order,avg_frame_rate,r_frame_rate,nb_frames,nb_read_frames,duration,color_space,color_transfer,color_primaries,color_range,bit_rate,sample_rate,channels,channel_layout",
     "-of", "json",
     videoFile
   ], { capture: true, log: () => {} });
@@ -1334,6 +1366,10 @@ export async function auditVideo({
   if (!video) errors.push("missing video stream");
   if (!audio) errors.push("missing audio stream");
   if (video && video.codec_name !== "h264") errors.push(`video codec is ${video.codec_name}, expected h264`);
+  if (video && video.profile !== "High") errors.push(`H.264 profile is ${video.profile ?? "unset"}, expected High`);
+  if (video && video.pix_fmt !== "yuv420p") errors.push(`pixel format is ${video.pix_fmt ?? "unset"}, expected yuv420p`);
+  if (video?.sample_aspect_ratio && video.sample_aspect_ratio !== "1:1") errors.push(`sample aspect ratio is ${video.sample_aspect_ratio}, expected 1:1`);
+  if (video?.field_order && video.field_order !== "progressive") errors.push(`field order is ${video.field_order}, expected progressive`);
   if (audio && audio.codec_name !== "aac") errors.push(`audio codec is ${audio.codec_name}, expected aac`);
   if (audio && Number(audio.sample_rate) !== 48_000) errors.push(`audio sample rate is ${audio.sample_rate}, expected 48000`);
   if (audio && Number(audio.channels) !== 2) errors.push(`audio has ${audio.channels} channels, expected stereo`);
@@ -1347,6 +1383,7 @@ export async function auditVideo({
     ]) {
       if (value !== "bt709") errors.push(`${field} is ${value ?? "unset"}, expected bt709`);
     }
+    if (video.color_range !== "tv") errors.push(`color_range is ${video.color_range ?? "unset"}, expected tv/limited`);
   }
 
   if (expected && video) {

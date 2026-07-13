@@ -13,15 +13,12 @@
 // foliage gets the one canonical, harmonised wind for free.
 
 import { mix, mx_noise_float, sin, time, vec2 } from "three/tsl";
-import * as THREE from "three/webgpu";
-import { windSpeed, windStrength } from "../../../vendor/SeedThree/src/core/wind.js";
-import { windGustGlobal } from "./wind";
+import { WIND_DIR, windGustGlobal, windSpeed, windStrength } from "../vegetation/wind";
 
-// TSL's d.ts narrows chained vector nodes too aggressively for vendored JS uniforms.
+// TSL's d.ts narrows chained vector nodes too aggressively for shared uniforms.
 type TslNode = any;
 
-/** Prevailing wind direction on the XZ plane — every foliage layer leans along it. */
-export const WIND_DIR = new THREE.Vector3(0.85, 0, 0.53).normalize();
+export { WIND_DIR };
 
 const windSpeedNode = windSpeed as TslNode;
 const windStrengthNode = windStrength as TslNode;
@@ -44,4 +41,13 @@ export function groundSway(anchorWorldXZ: TslNode): TslNode {
   // wind audio — swells you hear are swells you see.
   const gustEnvelope = (windGustGlobal as TslNode).mul(1.3).add(0.3);
   return mix(sine, gust, 0.55).mul(windStrengthNode.mul(0.34)).mul(gustEnvelope);
+}
+
+/** One-sine distance grade: same direction, speed, strength and gust envelope. */
+export function groundSwayLite(anchorWorldXZ: TslNode): TslNode {
+  const t = time.mul(windSpeedNode);
+  const phase = anchorWorldXZ.x.mul(0.35).add(anchorWorldXZ.y.mul(0.27)).mul(2.2);
+  const sine = sin(t.mul(1.15).add(phase));
+  const gustEnvelope = (windGustGlobal as TslNode).mul(1.3).add(0.3);
+  return sine.mul(windStrengthNode.mul(0.34)).mul(gustEnvelope);
 }

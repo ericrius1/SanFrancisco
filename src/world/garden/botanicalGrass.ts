@@ -9,7 +9,7 @@ import {
   type GardenTerrain,
   type GardenTree
 } from "./layout";
-import { MAX_DISPLACERS, setGroundDisplacers, type GroundDisplacer } from "../groundcover/displacers";
+import { inJapaneseTeaGarden } from "../japaneseTeaGarden/layout";
 // The blade geometry + SSS material + instance-write all come from the shared
 // ground-cover grass primitive now — the garden keeps only its own SAMPLING
 // (footprint base layer + near-detail ring, tree clearance, paths, meadow).
@@ -21,7 +21,7 @@ import {
   type GrassEntry
 } from "../groundcover/bladeGrass";
 import { fitGroundY } from "../groundcover/grounding";
-import { GRASS_TUNING } from "./grassTuning";
+import { BOTANICAL_GRASS_TUNING } from "./grassTuning";
 
 export type BotanicalGrassStats = {
   baseLow: number;
@@ -42,14 +42,6 @@ type GrassSampleOptions = {
 
 const TREE_BUCKET = 18;
 const DETAIL_SALT = 1307;
-// Player/creature trample now lives in the SHARED ground-cover displacer field
-// (../groundcover/displacers) so the wildlands grass + wildflowers bend to the
-// same points. Re-exported here under the historical names so garden/index and
-// main keep importing them from the grass module.
-export const MAX_GRASS_DISPLACERS = MAX_DISPLACERS;
-export type GrassDisplacer = GroundDisplacer;
-export const setGrassDisplacers = setGroundDisplacers;
-
 function hash(ix: number, iz: number, salt: number): number {
   let h = (Math.imul(ix, 374761393) + Math.imul(iz, 668265263) + Math.imul(salt, 2246822519)) | 0;
   h = Math.imul(h ^ (h >>> 15), 2246822519);
@@ -100,7 +92,7 @@ function createTreeInfluence(trees: GardenTree[]) {
         if (!list) continue;
         for (const tree of list) {
           const species = GARDEN_SPECIES[tree.species];
-          const trunkClear = species.trunkR * tree.scale + GRASS_TUNING.values.treeClearance;
+          const trunkClear = species.trunkR * tree.scale + BOTANICAL_GRASS_TUNING.values.treeClearance;
           const d = Math.hypot(x - tree.x, z - tree.z);
           if (d < trunkClear) return -1;
           shade = Math.max(shade, 1 - smoothstep(trunkClear, trunkClear + 4.5, d));
@@ -113,7 +105,7 @@ function createTreeInfluence(trees: GardenTree[]) {
 
 
 function sampleGrassEntries(map: GardenTerrain, trees: GardenTree[], options: GrassSampleOptions) {
-  const values = GRASS_TUNING.values;
+  const values = BOTANICAL_GRASS_TUNING.values;
   const treeInfluenceAt = createTreeInfluence(trees);
   const low: GrassEntry[] = [];
   const tall: GrassEntry[] = [];
@@ -140,7 +132,12 @@ function sampleGrassEntries(map: GardenTerrain, trees: GardenTree[], options: Gr
       const z = b.minZ + gz * spacing;
       const px = x + (hash(gx, gz, 11 + salt) - 0.5) * spacing * 0.85;
       const pz = z + (hash(gx, gz, 17 + salt) - 0.5) * spacing * 0.85;
-      if (!inBotanicalGarden(px, pz) || map.surfaceType(px, pz) !== 1 || map.isWater(px, pz)) continue;
+      if (
+        !inBotanicalGarden(px, pz) ||
+        inJapaneseTeaGarden(px, pz, 4) ||
+        map.surfaceType(px, pz) !== 1 ||
+        map.isWater(px, pz)
+      ) continue;
 
       let focusWeight = 1;
       if (options.focus) {
@@ -259,7 +256,7 @@ export class BotanicalGrassController extends THREE.Group {
   rebuild() {
     this.#clearGroup(this.#baseGroup);
     this.#baseChunks.length = 0;
-    const values = GRASS_TUNING.values;
+    const values = BOTANICAL_GRASS_TUNING.values;
     const base = sampleGrassEntries(this.#map, this.#trees, { spacing: values.spacing });
     const baseFade = Math.max(80, Number(values.baseViewDistance));
     if (values.showLow) this.#buildBaseChunks("low", base.low, this.#lowGeometryFar, baseFade);
@@ -296,7 +293,7 @@ export class BotanicalGrassController extends THREE.Group {
   }
 
   updateFocus(focus: GrassFocus, force = false) {
-    const values = GRASS_TUNING.values;
+    const values = BOTANICAL_GRASS_TUNING.values;
     this.#focus = { x: focus.x, z: focus.z };
     this.#materialState.focus.set(focus.x, focus.z);
 

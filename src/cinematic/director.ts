@@ -46,7 +46,15 @@ export function armCinematic(ctx: DemoContext, definition: CinematicDefinition) 
     worldQueries: ctx.worldQueries,
     shots: definition.shots
   });
-  const overlay = new CinematicOverlay(definition.name, definition.overlay ?? [], definition.letterbox);
+  // Film chrome is opt-in. A transparent canvas still exists for the fast
+  // compositor, but clean-plate productions get no bars, cards, text or meter.
+  const overlayEnabled = Boolean(definition.overlay?.length);
+  const overlay = new CinematicOverlay(
+    definition.name,
+    definition.overlay ?? [],
+    overlayEnabled ? definition.letterbox : 0,
+    overlayEnabled
+  );
   const cues = [...(definition.cues ?? [])].sort((a, b) => a.at - b.at);
   const fired = new Set<string>();
   let previous = -1e-6;
