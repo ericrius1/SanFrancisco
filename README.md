@@ -234,6 +234,7 @@ npm run render:hoverboard:fast
 npm run render:dog-park:fast
 npm run render:roqn-open-road:fast
 npm run render:cinematics:fast
+npm run render:twitter-summer -- --reuse-shots
 npm run render:hoverboard
 npm run render:dog-park
 npm run render:cinematics

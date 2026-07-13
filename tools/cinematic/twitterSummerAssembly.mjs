@@ -7,8 +7,8 @@ export const TWITTER_SUMMER_TRANSITIONS = Object.freeze([
   Object.freeze({ id: "cable-slice", duration: 0.7, xfade: "hlslice", description: "Golden Gate suspenders cut the frame into the Presidio canopy." }),
   Object.freeze({ id: "feather-iris", duration: 0.8, xfade: "circleopen", description: "The phoenix feather fan opens into the Palace rotunda." }),
   Object.freeze({ id: "sun-flare-burn", duration: 0.7, xfade: "fadewhite", description: "A physical sun alignment burns through to the Embarcadero." }),
-  Object.freeze({ id: "speed-tunnel", duration: 0.8, xfade: "zoomin", description: "The car's vanishing point pulls into the hoverboard macro." }),
-  Object.freeze({ id: "petal-scatter", duration: 0.7, xfade: "dissolve", description: "Broad floral colors scatter into blue-hour water highlights." }),
+  Object.freeze({ id: "speed-smear", duration: 0.8, xfade: "hblur", description: "The car's lateral speed smears into the hoverboard macro." }),
+  Object.freeze({ id: "petal-sweep", duration: 0.7, xfade: "wipetl", description: "A broad diagonal petal sweep reveals the blue-hour water." }),
   Object.freeze({ id: "constellation-burst", duration: 0.7, xfade: "radial", description: "Firework points sweep radially into the night skyline finale." })
 ]);
 
@@ -154,4 +154,39 @@ export async function assembleTwitterSummer({
     offsets,
     transitions: TWITTER_SUMMER_TRANSITIONS.map((transition, index) => ({ ...transition, offset: offsets[index] }))
   };
+}
+
+export async function createTwitterSummerTransitionReview({
+  videoFile,
+  outputDir,
+  transitions,
+  ffmpeg = process.env.FFMPEG_BIN ?? process.env.FFMPEG_PATH ?? "ffmpeg",
+  log = (message) => console.log(`[twitter-summer] ${message}`)
+}) {
+  const resolvedVideo = path.resolve(videoFile);
+  const resolvedOutputDir = path.resolve(outputDir);
+  await mkdir(resolvedOutputDir, { recursive: true });
+  const frames = [];
+  for (let index = 0; index < transitions.length; index += 1) {
+    const transition = transitions[index];
+    const midpoint = Number((transition.offset + transition.duration / 2).toFixed(6));
+    const outputFile = path.join(
+      resolvedOutputDir,
+      `transition-${String(index + 1).padStart(2, "0")}-${transition.id}-mid.jpg`
+    );
+    await runCommand(ffmpeg, [
+      "-hide_banner", "-loglevel", "error", "-y",
+      "-ss", decimal(midpoint),
+      "-i", resolvedVideo,
+      "-frames:v", "1",
+      "-q:v", "2",
+      outputFile
+    ], { log });
+    frames.push({
+      id: transition.id,
+      midpoint,
+      file: relativeToRoot(outputFile)
+    });
+  }
+  return frames;
 }

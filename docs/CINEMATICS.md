@@ -3,8 +3,9 @@
 This is the long-term film layer for the live San Francisco world. Shots use the
 real scene, actors, vehicles, physics, lighting, and WebGPU renderer; the
 cinematic code only stages those systems, drives a deterministic timeline, and
-owns the camera. The current reference productions are a 15-second hoverboard
-customization film and an 11-second sunset dog-park film.
+owns the camera. The reference productions include a 15-second hoverboard
+customization film, an 11-second sunset dog-park film, and the eight-shot,
+55-second **Summer in Motion** stress test.
 
 ## Pipeline at a glance
 
@@ -18,6 +19,7 @@ customization film and an 11-second sunset dog-park film.
 | `tools/cinematic/transition.mjs` | Deterministic picture/audio transition and final assembly. |
 | `tools/cinematic/delivery.mjs` | Platform delivery derivatives, validation, and quality-comparison manifests. |
 | `tools/render-cinematic.mjs` | CLI orchestration and process cleanup. |
+| `tools/render-twitter-summer.mjs` | Eight independently renderable shots, exact-duration assembly, seven motivated transitions, review artifacts, and X derivatives. |
 
 The pipeline has two output tiers. The archival master captures a lossless PNG
 sequence and encodes H.264 CRF 15. The fast renderer reads the same final WebGPU
@@ -60,6 +62,12 @@ npm run deliver:x -- renders/cinematics/roqn-open-road/roqn-open-road-fast.mp4
 
 # Also make the tweet-suggested 2x upscale as an experimental A/B candidate.
 npm run deliver:x -- renders/cinematics/roqn-open-road/roqn-open-road-fast.mp4 --experimental-4k
+
+# Render the 55-second, eight-shot Summer in Motion stress test and X derivative.
+npm run render:twitter-summer
+
+# Reassemble from audited shot files and include the experimental 2x X candidate.
+npm run render:twitter-summer -- --reuse-shots --experimental-4k
 ```
 
 Use `--fast` with any production for an audited review render without a PNG
@@ -114,6 +122,15 @@ of subpixel shimmer, and stable gradients; avoid delivery-time grain,
 oversharpening, one-pixel sparks, and dense random confetti. Upload the validated
 MP4 directly from desktop/web or Media Studio instead of round-tripping through
 a mobile editor.
+
+The Summer in Motion review exposed two transition-specific failure modes worth
+keeping as permanent rules. First, validate transition midpoints as individual
+full-resolution frames: a technically valid FFmpeg transition can still produce
+an unintended flat-color frame. Second, avoid random-pixel dissolves for social
+delivery. Their high-frequency noise is expensive to encode and becomes
+blocky after platform recompression; broad wipes, blurs, irises, and other
+spatially coherent motion survive much better. The final film uses seven unique
+low-frequency transition grammars and equal-power audio crossfades.
 
 Current primary references: [X Media API video recommendations](https://docs.x.com/x-api/media/quickstart/best-practices),
 [X web/Premium upload help](https://help.x.com/en/using-x/x-videos),
@@ -199,6 +216,9 @@ renders/cinematics/<production>/<production>-<take>.contact.jpg
 renders/cinematics/<production>/<production>-<take>.audit.json
 renders/cinematics/<production>/<production>-<take>.frames.json
 renders/cinematics/combined/hoverboard-to-dog-park-<take>.*
+renders/cinematics/twitter-summer/twitter-summer-master.*
+renders/cinematics/twitter-summer/transition-review/*-mid.jpg
+renders/cinematics/delivery/x/twitter-summer-master-x-1080p30.mp4
 ```
 
 The audit verifies dimensions, fps, duration, exact frame count, codecs, H.264
@@ -208,7 +228,8 @@ segments and long freezes and measures final-mix RMS/peak. The manifest also
 captures the source Git revision/dirty state and browser console, exception, and
 network diagnostics. Technical success is necessary but not sufficient: always
 review the poster, 12-frame contact sheet, cuts, action peaks, title-safe text,
-and transition frames at full resolution.
+and the start, midpoint, and end of every transition at full resolution. A clean
+overall contact sheet is not a substitute for transition-specific frame review.
 
 On the reference development machine, the 15-second hoverboard production at
 1080p60 captured in 46.20 seconds with the fast backend versus 253.07 seconds

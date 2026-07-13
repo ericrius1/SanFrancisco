@@ -18,7 +18,11 @@ import {
 } from "./cinematic/capture.mjs";
 import { exportXDelivery } from "./cinematic/delivery.mjs";
 import { resolveProduction } from "./cinematic/productions.mjs";
-import { TWITTER_SUMMER_TRANSITIONS, assembleTwitterSummer } from "./cinematic/twitterSummerAssembly.mjs";
+import {
+  TWITTER_SUMMER_TRANSITIONS,
+  assembleTwitterSummer,
+  createTwitterSummerTransitionReview
+} from "./cinematic/twitterSummerAssembly.mjs";
 
 const IDS = Object.freeze(Array.from({ length: 8 }, (_, index) => `twitter-summer-${String(index + 1).padStart(2, "0")}`));
 const FINAL_DURATION = 55;
@@ -140,12 +144,23 @@ async function main() {
   const runStartedAt = new Date();
   const runClock = performance.now();
   const productions = IDS.map((id) => resolveProduction(id, { overrides: { take: "fast" } }));
-  const vite = await startVite({ log });
   const shots = [];
+  let vite = null;
   try {
-    for (const production of productions) shots.push(await renderShot(production, vite.url, options));
+    for (const production of productions) {
+      if (options.reuseShots) {
+        const reused = await reusableShot(production, cinematicPaths(production));
+        if (reused) {
+          log(`${production.id}: reusing ${relativeToRoot(reused.videoFile)}`);
+          shots.push(reused);
+          continue;
+        }
+      }
+      vite ??= await startVite({ log });
+      shots.push(await renderShot(production, vite.url, { ...options, reuseShots: false }));
+    }
   } finally {
-    await vite.close();
+    await vite?.close();
   }
 
   const paths = finalPaths();
@@ -166,6 +181,12 @@ async function main() {
     contactFile: paths.contactFile,
     duration: FINAL_DURATION,
     posterAt: 49.2,
+    log
+  });
+  const transitionReview = await createTwitterSummerTransitionReview({
+    videoFile: paths.videoFile,
+    outputDir: path.join(paths.outputDir, "transition-review"),
+    transitions: assembly.transitions,
     log
   });
   const audit = await auditVideo({
@@ -206,6 +227,7 @@ async function main() {
     cleanPlate: true,
     shots: shots.map((shot, index) => ({ ...shot, index: index + 1, videoFile: path.relative(ROOT, shot.videoFile) })),
     transitions: TWITTER_SUMMER_TRANSITIONS,
+    transitionReview,
     assembly: { ...assembly, wallSeconds: assemblyWallSeconds },
     master: {
       file: path.relative(ROOT, paths.videoFile),
