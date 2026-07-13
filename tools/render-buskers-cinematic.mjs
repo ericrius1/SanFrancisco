@@ -23,7 +23,7 @@
 //
 // Env (all optional):
 //   SF_W (1920)  SF_H (1080)  SF_FPS (60)  SF_SECONDS (30)  SF_TAKE (take1)
-//   SF_OUT (renders/buskers-cinematic-<take>-<W>x<H>.mp4)
+//   SF_OUT (.data/buskers-cine/<take>/review/buskers-cinematic-<take>-<W>x<H>.mp4)
 //   SF_JPEG_Q (92)   SF_FX_VOL (0.9  — seeded effects volume for a hot, clean take)
 //   SF_SKIP_AUDIO=1   video only, silent AAC track
 //   SF_SKIP_CAPTURE=1 reuse existing frames + audio, re-encode/remux only (seconds)
@@ -34,7 +34,7 @@
 //   SF_SETTLE (55)    tick(0) settle iterations before frame 0 (tiles / shader warmup)
 //   CHROME_BIN        override the Chrome binary path
 //
-// Output under renders/:  <out>.mp4  <out>.poster.jpg  <out>.contact.jpg
+// Internal review output stays under .data; only the approved MP4 publishes.
 
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
@@ -51,6 +51,7 @@ import {
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { publishVideo } from "./cinematic/capture.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -79,7 +80,7 @@ const META_FILE = path.join(WORK_DIR, "meta.json");
 const CHROME_PROFILE_V = path.join(WORK_DIR, "chrome-video");
 const CHROME_PROFILE_A = path.join(WORK_DIR, "chrome-audio");
 
-const OUT_DIR = path.join(ROOT, "renders");
+const OUT_DIR = path.join(WORK_DIR, "review");
 const OUT_MP4 = process.env.SF_OUT
   ? path.resolve(ROOT, process.env.SF_OUT)
   : path.join(OUT_DIR, `buskers-cinematic-${TAKE}-${W}x${H}.mp4`);
@@ -607,6 +608,7 @@ async function main() {
   await mux();
   const dur = await probeDuration(OUT_MP4);
   const sizeMB = ((await stat(OUT_MP4)).size / 1e6).toFixed(1);
+  const published = await publishVideo(OUT_MP4, { filename: path.basename(OUT_MP4), log });
 
   // if audio wasn't (re)recorded this run but a file exists, report its loudness
   if (!audioStats && !SKIP_AUDIO && (await isFile(AUDIO_FILE))) {
@@ -617,9 +619,7 @@ async function main() {
   console.log("\n" + "─".repeat(64));
   console.log("  BUSKERS CINEMATIC — done");
   console.log("─".repeat(64));
-  console.log(`  output      ${rel(OUT_MP4)}`);
-  console.log(`  poster      ${rel(OUT_POSTER)}`);
-  console.log(`  contact     ${rel(OUT_CONTACT)}`);
+  console.log(`  output      ${published.file}`);
   console.log(`  resolution  ${W}x${H} @ ${FPS}fps`);
   console.log(`  duration    ${dur.toFixed(2)}s   (${nFrames} frames)`);
   console.log(`  size        ${sizeMB} MB`);

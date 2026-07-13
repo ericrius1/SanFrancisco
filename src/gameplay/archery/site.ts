@@ -1,6 +1,7 @@
 import * as THREE from "three/webgpu";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { buildBow } from "../../player/held";
+import { enableLocalShadowLayer } from "../../world/shadows/shadowLayers";
 import {
   ARCHERY_DIR,
   ARCHERY_LAT,
@@ -236,6 +237,7 @@ export function buildArcherySite(map: Ground): {
     for (const g of geos) g.dispose();
     const mesh = new THREE.Mesh(merged, mat);
     mesh.castShadow = CASTING.has(mat);
+    if (mesh.castShadow) enableLocalShadowLayer(mesh);
     mesh.receiveShadow = true;
     group.add(mesh);
   }

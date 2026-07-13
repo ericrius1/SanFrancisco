@@ -492,18 +492,73 @@
       #hud .player-locator-marker.edge .pl-arrow {
         display: inline-block;
       }
+      /* Full-width rail so the cluster can be centred, yet the flexible spacer
+         pseudo-elements below keep it from ever sliding under the bottom-left
+         audio panel: they grow equally (→ centred) until the left one hits its
+         min-width floor, after which the cluster shifts right instead. */
       #hud .toolbar {
         position: absolute;
         bottom: 16px;
-        left: 50%;
-        transform: translateX(-50%);
+        left: 0;
+        right: 0;
+        display: flex;
+        align-items: flex-end;
+        justify-content: center;
+        pointer-events: none;
+      }
+      #hud .toolbar::before,
+      #hud .toolbar::after {
+        content: "";
+        flex: 1 1 0;
+      }
+      #hud .toolbar::before {
+        min-width: 250px;
+      }
+      #hud .toolbar::after {
+        min-width: 16px;
+      }
+      /* vnav (↑/↓) + the stacked rows, sharing a left edge */
+      #hud .toolbar .primary {
+        display: flex;
+        align-items: stretch;
+        gap: 7px;
+        flex: 0 0 auto;
+        max-width: 100%;
+        pointer-events: auto;
+      }
+      #hud .toolbar .stack {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 6px;
+        min-width: 0;
+      }
+      /* between-rows axis: hop focus up/down. Accent-tinted so it reads as a
+         different axis from the neutral per-row ←/→ cycle hints. */
+      #hud .toolbar .vnav {
         display: flex;
         flex-direction: column;
         align-items: center;
+        justify-content: space-around;
+        align-self: stretch;
         gap: 6px;
-        width: calc(100vw - 32px);
-        max-width: 860px;
-        pointer-events: auto;
+        flex: 0 0 auto;
+      }
+      #hud .toolbar .vnav .vk {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 21px;
+        height: 20px;
+        border-radius: var(--r-xs);
+        background: rgba(22, 64, 70, 0.66);
+        border: 1px solid var(--accent-line);
+        color: var(--accent-strong);
+        font: 700 12px var(--font);
+        line-height: 1;
+        box-shadow:
+          0 1px 0 rgba(190, 225, 240, 0.1),
+          inset 0 0 0 1px rgba(111, 215, 196, 0.06);
       }
       #hud .toolbar .vehicles,
       #hud .toolbar .tools,
@@ -660,7 +715,8 @@
         );
       }
       @media (max-width: 820px) {
-        #hud .toolbar .hint {
+        #hud .toolbar .hint,
+        #hud .toolbar .vnav {
           display: none;
         }
         #hud .toolbar .vehicle {
@@ -3154,6 +3210,39 @@
       .bigmap-teleport-btn:hover {
         filter: brightness(1.08);
         transform: translateY(-1px);
+      }
+      .bigmap-pad-hint {
+        flex: 0 0 auto;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        margin-left: 2px;
+        color: var(--text-dim);
+        font:
+          600 11px var(--font);
+        letter-spacing: 0.01em;
+        user-select: none;
+      }
+      .bigmap-pad-hint[hidden] {
+        display: none !important;
+      }
+      .bigmap-pad-hint .k {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 18px;
+        height: 18px;
+        padding: 0 4px;
+        border-radius: 50%;
+        border: 1px solid #6aaaff;
+        background: rgba(12, 20, 32, 0.9);
+        color: #a9ccff;
+        font-size: 10px;
+        font-weight: 800;
+        line-height: 1;
+      }
+      .bigmap-pad-hint-lbl {
+        white-space: nowrap;
       }
       .bigmap-hint {
         color: var(--text-dim);

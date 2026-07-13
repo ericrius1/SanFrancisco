@@ -1,5 +1,5 @@
 import * as THREE from "three/webgpu";
-import { CONFIG, RENDER_MODE, RENDER_TUNING } from "../config";
+import { CONFIG, RENDER_TUNING } from "../config";
 import { applyBundleOrderPatch } from "../render/bundleOrderPatch";
 
 export type RenderCore = {
@@ -18,7 +18,7 @@ export async function createRenderCore(app: HTMLElement): Promise<RenderCore> {
   // 24 km far plane. Canvas AA stays off because every pixel routes through the
   // post pipeline, which owns the scene sample count.
   const renderer = new THREE.WebGPURenderer({ antialias: false, reversedDepthBuffer: true });
-  renderer.setPixelRatio(RENDER_MODE.pixelRatioCap);
+  renderer.setPixelRatio(RENDER_TUNING.values.pixelRatio);
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = RENDER_TUNING.values.exposure;

@@ -192,6 +192,7 @@
     "formatVersion": 1,
     "heightEncoding": "int16",
     "heightBase": -60,
-    "heightQuant": 0.02
+    "heightQuant": 0.02,
+    "heightProcessVersion": 1
   }
 }

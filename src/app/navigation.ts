@@ -136,6 +136,11 @@ export class NavigationController {
     const heading = Math.atan2(-dx, -dz);
 
     if (target) {
+      // Drop a local vehicle/surf session when it would otherwise stick across the
+      // jump (same idea as applyHistory). Keep the mode when joining the same one.
+      if (this.#player.mode !== "walk" && this.#player.mode !== target.mode) {
+        this.#embodiments.exitToWalk();
+      }
       if (target.mode !== "drive") this.#embodiments.dropCurrentDriveMount();
       this.#player.teleportTo({
         x: tx - (dx / distance) * back,
@@ -145,6 +150,9 @@ export class NavigationController {
         mode: target.mode
       });
     } else {
+      // Landmark / map pin: end surf, vehicles, and rides first so we land on foot
+      // instead of staying strapped to a board at an inland spawn.
+      this.#embodiments.exitToWalk();
       const open = await findOpenSpawn(this.#map, this.#tiles.manifest, { x: tx, z: tz, heading });
       const faceDx = tx - open.x;
       const faceDz = tz - open.z;

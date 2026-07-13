@@ -85,10 +85,6 @@ export class BuskersSystem implements BuskerTrioApi {
     return this.current.restartSong(...args);
   }
 
-  cycleSong(...args: Parameters<BuskerTrio["cycleSong"]>) {
-    return this.current.cycleSong(...args);
-  }
-
   cueShow(...args: Parameters<BuskerTrio["cueShow"]>) {
     return this.current.cueShow(...args);
   }

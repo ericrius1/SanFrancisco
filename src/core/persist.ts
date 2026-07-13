@@ -3,15 +3,13 @@ import type { PlayerMode } from "../player/types";
 
 /**
  * localStorage persistence for tweakpane values and the player's last state.
- * One current tweak schema only: when the source defaults/ranges/pane shape
- * change, stale stored values are discarded instead of migrated.
+ * Each `tunables()` group is fingerprinted from its durable definition; when that
+ * shape/defaults/ranges change, that group's stored overrides are discarded and
+ * values fall back to source defaults. No manual schema bumps or migrations.
  */
 
 const TWEAKS_KEY = "sf-tweaks";
 const TWEAKS_SCHEMA_KEY = "sf-tweaks-schema";
-// One current schema only: the vegetation system and rewritten surf movement /
-// auto-launch / flow-state ranges changed together. Discard stale overrides.
-const TWEAKS_SCHEMA = "2026-07-vegetation-surf-flow";
 const PLAYER_KEY = "sf-player";
 export const TUNABLES_UPDATED_EVENT = "sf:tunables-updated";
 
@@ -23,13 +21,81 @@ type IdleWindow = Window & {
   cancelIdleCallback?: (handle: number) => void;
 };
 
-const saved: Record<string, unknown> = (() => {
+/** One tunable value: the default plus its tweakpane options, all on one line. */
+type TunableValue = number | boolean | string;
+type TunableSpec = {
+  v: TunableValue;
+  min?: number;
+  max?: number;
+  step?: number;
+  options?: Record<string, TunableValue>;
+  label?: string;
+  format?: (v: number) => string;
+};
+
+type WidenTunable<T extends TunableValue> = T extends boolean ? boolean : T extends number ? number : string;
+type Values<S extends Record<string, TunableSpec>> = { [K in keyof S]: WidenTunable<S[K]["v"]> };
+type RefreshableBinding = { refresh(): void };
+
+type TunableGroupRecord = {
+  spec: Record<string, TunableSpec>;
+  values: Record<string, TunableValue>;
+};
+
+/** Stable fingerprint of a group's durable definition (skips `format` functions). */
+function fingerprintSpec(spec: Record<string, TunableSpec>): string {
+  const keys = Object.keys(spec).sort();
+  const parts = keys.map((k) => {
+    const s = spec[k];
+    const entry: Record<string, unknown> = { v: s.v };
+    if (s.min !== undefined) entry.min = s.min;
+    if (s.max !== undefined) entry.max = s.max;
+    if (s.step !== undefined) entry.step = s.step;
+    if (s.label !== undefined) entry.label = s.label;
+    if (s.options) {
+      const optKeys = Object.keys(s.options).sort();
+      entry.options = Object.fromEntries(optKeys.map((ok) => [ok, s.options![ok]]));
+    }
+    return [k, entry];
+  });
+  return JSON.stringify(parts);
+}
+
+function isFingerprintMap(value: unknown): value is Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  for (const v of Object.values(value as Record<string, unknown>)) {
+    if (typeof v !== "string") return false;
+  }
+  return true;
+}
+
+/** Load path→fingerprint map. Legacy dated schema strings trigger a one-time wipe. */
+function loadSchemaFingerprints(): Record<string, string> {
   try {
-    if (localStorage.getItem(TWEAKS_SCHEMA_KEY) !== TWEAKS_SCHEMA) {
+    const raw = localStorage.getItem(TWEAKS_SCHEMA_KEY);
+    if (raw == null) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (!isFingerprintMap(parsed)) {
       localStorage.removeItem(TWEAKS_KEY);
-      localStorage.setItem(TWEAKS_SCHEMA_KEY, TWEAKS_SCHEMA);
+      localStorage.setItem(TWEAKS_SCHEMA_KEY, "{}");
       return {};
     }
+    return { ...parsed };
+  } catch {
+    try {
+      localStorage.removeItem(TWEAKS_KEY);
+      localStorage.setItem(TWEAKS_SCHEMA_KEY, "{}");
+    } catch {
+      // Storage can be unavailable.
+    }
+    return {};
+  }
+}
+
+const schemaFingerprints: Record<string, string> = loadSchemaFingerprints();
+
+const saved: Record<string, unknown> = (() => {
+  try {
     return JSON.parse(localStorage.getItem(TWEAKS_KEY) ?? "{}") as Record<string, unknown>;
   } catch {
     return {};
@@ -60,7 +126,7 @@ export function flushTweakPersistence() {
   cancelScheduledTweakFlush();
   if (!tweakPersistenceDirty) return;
   try {
-    localStorage.setItem(TWEAKS_SCHEMA_KEY, TWEAKS_SCHEMA);
+    localStorage.setItem(TWEAKS_SCHEMA_KEY, JSON.stringify(schemaFingerprints));
     localStorage.setItem(TWEAKS_KEY, JSON.stringify(saved));
     tweakPersistenceDirty = false;
   } catch {
@@ -101,6 +167,34 @@ export function saveTweak(path: string, value: unknown) {
 }
 
 /**
+ * Drop persisted overrides that belong directly to `path` (one path segment after
+ * the group prefix). Nested groups like `movement.drive.landingFeedback` are left
+ * alone when `movement.drive` is invalidated.
+ */
+function clearGroupOverrides(path: string) {
+  const prefix = `${path}.`;
+  for (const key of Object.keys(saved)) {
+    if (!key.startsWith(prefix)) continue;
+    if (!key.slice(prefix.length).includes(".")) delete saved[key];
+  }
+}
+
+/**
+ * Compare this group's definition fingerprint to the stored one. On mismatch,
+ * clear that group's overrides and record the new fingerprint. Returns true when
+ * overrides were discarded.
+ */
+function ensureGroupSchema(path: string, spec: Record<string, TunableSpec>): boolean {
+  const fp = fingerprintSpec(spec);
+  if (schemaFingerprints[path] === fp) return false;
+  clearGroupOverrides(path);
+  schemaFingerprints[path] = fp;
+  tweakPersistenceDirty = true;
+  scheduleTweakFlush();
+  return true;
+}
+
+/**
  * Ignore generic binding events emitted synchronously by a programmatic pane
  * refresh. Callers have already updated the live state and re-apply any needed
  * side effects explicitly; running change hooks here would duplicate expensive
@@ -124,27 +218,6 @@ if (typeof document !== "undefined") {
   });
 }
 
-/** One tunable value: the default plus its tweakpane options, all on one line. */
-type TunableValue = number | boolean | string;
-type TunableSpec = {
-  v: TunableValue;
-  min?: number;
-  max?: number;
-  step?: number;
-  options?: Record<string, TunableValue>;
-  label?: string;
-  format?: (v: number) => string;
-};
-
-type WidenTunable<T extends TunableValue> = T extends boolean ? boolean : T extends number ? number : string;
-type Values<S extends Record<string, TunableSpec>> = { [K in keyof S]: WidenTunable<S[K]["v"]> };
-type RefreshableBinding = { refresh(): void };
-
-type TunableGroupRecord = {
-  spec: Record<string, TunableSpec>;
-  values: Record<string, TunableValue>;
-};
-
 // Keyed by persisted path + schema keys so a hot-evaluated feature reuses the
 // exact values object that existing Tweakpane bindings already reference. The
 // schema suffix keeps hot-evaluated groups with different control shapes from
@@ -159,6 +232,7 @@ const groups = new Map<string, TunableGroupRecord>();
  * Entries with only a `v` (no range/label) are plain tuned constants — no control.
  */
 export function tunables<S extends Record<string, TunableSpec>>(path: string, spec: S) {
+  const definitionChanged = ensureGroupSchema(path, spec);
   const groupKey = `${path}\u0000${Object.keys(spec).sort().join("\u0000")}`;
   let group = groups.get(groupKey);
   if (!group) {
@@ -167,12 +241,16 @@ export function tunables<S extends Record<string, TunableSpec>>(path: string, sp
     group = { spec, values };
     groups.set(groupKey, group);
   } else {
-    const previousSpec = group.spec;
-    for (const k in spec) {
-      if (previousSpec[k] && Object.is(group.values[k], previousSpec[k].v)) {
-        // If the value was still at the old source default, adopt a newly edited
-        // default live. Explicit pane/persisted values remain untouched.
-        group.values[k] = spec[k].v;
+    if (definitionChanged) {
+      for (const k in spec) group.values[k] = spec[k].v;
+    } else {
+      const previousSpec = group.spec;
+      for (const k in spec) {
+        if (previousSpec[k] && Object.is(group.values[k], previousSpec[k].v)) {
+          // If the value was still at the old source default, adopt a newly edited
+          // default live. Explicit pane/persisted values remain untouched.
+          group.values[k] = spec[k].v;
+        }
       }
     }
     group.spec = spec;
@@ -225,15 +303,25 @@ export function tunables<S extends Record<string, TunableSpec>>(path: string, sp
  * effects the pane's onChange
  * handlers normally push (uniforms, exposure, fog…) are the caller's to
  * re-apply; see the Period handler in main.ts.
+ *
+ * Definition fingerprints are kept (and rewritten from currently registered
+ * groups) so the next load does not treat every group as changed.
  */
 export function resetAllTweaks() {
   cancelScheduledTweakFlush();
   tweakPersistenceDirty = false;
   for (const k in saved) delete saved[k];
-  localStorage.removeItem(TWEAKS_KEY);
-  localStorage.setItem(TWEAKS_SCHEMA_KEY, TWEAKS_SCHEMA);
-  for (const g of groups.values()) {
+  for (const k of Object.keys(schemaFingerprints)) delete schemaFingerprints[k];
+  for (const [groupKey, g] of groups) {
+    const path = groupKey.slice(0, groupKey.indexOf("\u0000"));
+    schemaFingerprints[path] = fingerprintSpec(g.spec);
     for (const k in g.spec) g.values[k] = g.spec[k].v;
+  }
+  try {
+    localStorage.removeItem(TWEAKS_KEY);
+    localStorage.setItem(TWEAKS_SCHEMA_KEY, JSON.stringify(schemaFingerprints));
+  } catch {
+    // Storage can be unavailable.
   }
 }
 

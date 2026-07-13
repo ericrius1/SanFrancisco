@@ -32,6 +32,12 @@ import {
   type ColliderAnchor,
   type BodyTileSource
 } from "./buildingBodies";
+import {
+  buildTerrainCollisionPatch,
+  terrainPatchAnchor,
+  terrainPatchCovers,
+  type TerrainCollisionPatch
+} from "./terrainCollisionPatch";
 
 const pointScratch = new THREE.Vector3();
 const slabUp = new THREE.Vector3(0, 1, 0);
@@ -70,6 +76,12 @@ export class Physics {
   #carpetCX = NaN;
   #carpetCZ = NaN;
   #carpetGroundRevision = -1;
+  // One indexed, shared-edge surface replaces the ordinary overlapping carpet
+  // boxes. The boxes remain pooled as a capability/discontinuity fallback.
+  #terrainPatchBody: number | null = null;
+  #terrainPatch: TerrainCollisionPatch | null = null;
+  #terrainPatchGroundRevision = -1;
+  #terrainPatchAvailable = true;
 
   // one entry per materialised BOX — concave buildings bake to several boxes
   // sharing an `i` (tiles.ts patches in the sub-ordinal `s`), so bodies key by
@@ -218,6 +230,7 @@ export class Physics {
 
   step(dt: number, playerPos: THREE.Vector3) {
     this.#tick++;
+    this.#updateTerrainPatch(playerPos);
     this.#updateCarpet(playerPos);
     this.#drainRefine();
     this.#drainTileSolids();
@@ -233,6 +246,64 @@ export class Physics {
 
   // ------------------------------------------------------------------ ground
 
+  /**
+   * Rebuild only after the player crosses a coarse anchor boundary (or a runtime
+   * ground overlay changes). The new body is created before the old one is
+   * destroyed, so the stepped world never observes a frame with no near ground.
+   * A platform/mesh failure permanently falls back to the established box carpet
+   * for this session rather than making boot or movement fatal.
+   */
+  #updateTerrainPatch(playerPos: THREE.Vector3) {
+    if (!this.#terrainPatchAvailable) return;
+    const cx = terrainPatchAnchor(playerPos.x);
+    const cz = terrainPatchAnchor(playerPos.z);
+    const revision = this.map.groundRevision;
+    const current = this.#terrainPatch;
+    if (
+      current &&
+      current.centerX === cx &&
+      current.centerZ === cz &&
+      revision === this.#terrainPatchGroundRevision
+    ) {
+      return;
+    }
+
+    try {
+      // groundTop deliberately excludes bridge decks: their authored, permanent
+      // landmark bodies remain the collision authority while terrain continues
+      // underneath. Sampling effectiveGround here would ramp the mesh from the
+      // hillside/water up to a deck at each corridor edge.
+      const next = buildTerrainCollisionPatch(this.map, cx, cz);
+      if (next.indices.length < 3) throw new Error("terrain patch contained no safe triangles");
+      const nextBody = this.world.createStaticMesh({
+        position: [cx, 0, cz],
+        vertices: next.vertices,
+        indices: next.indices,
+        friction: 0.8
+      });
+      const previousBody = this.#terrainPatchBody;
+      this.#terrainPatchBody = nextBody;
+      this.#terrainPatch = next;
+      this.#terrainPatchGroundRevision = revision;
+      if (previousBody !== null) this.world.destroyBody(previousBody);
+      // Coverage/fallback decisions may change without the 8 m carpet anchor
+      // changing, so force #updateCarpet to park or restore its pooled boxes.
+      this.#carpetCX = NaN;
+      this.#carpetCZ = NaN;
+      tracer.count("terrainPatchBuild");
+      tracer.count("terrainPatchTriangles", next.indices.length / 3);
+      if (next.holeCount) tracer.count("terrainPatchHoles", next.holeCount);
+    } catch (error) {
+      if (this.#terrainPatchBody !== null) this.world.destroyBody(this.#terrainPatchBody);
+      this.#terrainPatchBody = null;
+      this.#terrainPatch = null;
+      this.#terrainPatchAvailable = false;
+      this.#carpetCX = NaN;
+      this.#carpetCZ = NaN;
+      console.warn("[physics] shared-edge terrain patch unavailable — retaining box carpet", error);
+    }
+  }
+
   #updateCarpet(playerPos: THREE.Vector3) {
     const cell = CONFIG.carpetCell;
     const cx = Math.round(playerPos.x / cell);
@@ -243,9 +314,20 @@ export class Physics {
     this.#carpetCZ = cz;
     this.#carpetGroundRevision = revision;
 
-    // pass 1: every 8m cell gets its plane slab. Refined cells keep it too —
-    // a sunk backstop underneath, so pool exhaustion degrades instead of
-    // opening a hole in the floor.
+    // Any refinements left from the previous anchor must leave immediately when
+    // the shared mesh now covers them; otherwise a stale 4m box can reintroduce
+    // the very seam the patch removes. At most 240 pooled transforms move here.
+    this.#refineQueue.length = 0;
+    for (let i = 0; i < this.#carpetSubUsed; i++) this.#parkSubSlab(this.#carpetSub[i], i, false);
+    for (let i = 0; i < this.#carpetSub2Used; i++) this.#parkSubSlab(this.#carpetSub2[i], i, true);
+    this.#carpetSubUsed = 0;
+    this.#carpetSub2Used = 0;
+    this.#refineSub = 0;
+    this.#refineSub2 = 0;
+
+    // Pass 1: ordinary cells are covered by one shared-edge mesh and their old
+    // boxes are parked. Only a patch hole/boundary (or total mesh fallback) keeps
+    // an 8m plane slab. Refined fallback cells keep that slab as a sunk backstop.
     const half = (CONFIG.carpetSize - 1) / 2;
     const needy: { wx: number; wz: number; d: number }[] = [];
     let k = 0;
@@ -253,6 +335,12 @@ export class Physics {
       for (let gx = -half; gx <= half; gx++) {
         const wx = (cx + gx) * cell;
         const wz = (cz + gz) * cell;
+        const patch = this.#terrainPatch;
+        if (patch && terrainPatchCovers(patch, wx, wz, cell * 0.62)) {
+          this.#parkBaseSlab(this.#carpet[k], k);
+          k++;
+          continue;
+        }
         const sink = this.#placeSlab(this.#carpet[k], wx, wz, cell);
         if (sink > CARPET_SINK_CAP) {
           const dx = wx - playerPos.x;
@@ -272,6 +360,15 @@ export class Physics {
     this.#refineQueue = needy;
     this.#refineSub = 0;
     this.#refineSub2 = 0;
+  }
+
+  #parkBaseSlab(handle: number, index: number): void {
+    this.world.setBodyTransform(handle, [0, -500 - index * 5, 0], [0, 0, 0, 1]);
+  }
+
+  #parkSubSlab(handle: number, index: number, secondTier: boolean): void {
+    const y = secondTier ? -6000 - index * 5 : -3000 - index * 5;
+    this.world.setBodyTransform(handle, [0, y, 0], [0, 0, 0, 1]);
   }
 
   // re-cover the worst cells nearest the player with 4m slabs; quarters that
@@ -311,10 +408,10 @@ export class Physics {
     if (queue.length === 0) {
       // drain complete: park the tail of a previous, larger refinement
       for (let i = sub; i < this.#carpetSubUsed; i++) {
-        this.world.setBodyTransform(this.#carpetSub[i], [0, -3000 - i * 5, 0], [0, 0, 0, 1]);
+        this.#parkSubSlab(this.#carpetSub[i], i, false);
       }
       for (let i = sub2; i < this.#carpetSub2Used; i++) {
-        this.world.setBodyTransform(this.#carpetSub2[i], [0, -6000 - i * 5, 0], [0, 0, 0, 1]);
+        this.#parkSubSlab(this.#carpetSub2[i], i, true);
       }
       this.#carpetSubUsed = sub;
       this.#carpetSub2Used = sub2;
@@ -390,6 +487,25 @@ export class Physics {
     scan(this.#carpet, this.#carpet.length, CONFIG.carpetCell * 0.62, "cell");
     scan(this.#carpetSub, this.#carpetSubUsed, CONFIG.carpetCell * 0.31, "sub");
     scan(this.#carpetSub2, this.#carpetSub2Used, CONFIG.carpetCell * 0.155, "sub2");
+  }
+
+  /** Read-only terrain-patch telemetry for window.__sf.physics diagnostics. */
+  get terrainPatchDebug() {
+    const patch = this.#terrainPatch;
+    return patch
+      ? {
+          active: true,
+          centerX: patch.centerX,
+          centerZ: patch.centerZ,
+          step: patch.step,
+          halfSize: patch.halfSize,
+          vertices: patch.vertices.length / 3,
+          triangles: patch.indices.length / 3,
+          holes: patch.holeCount,
+          minY: patch.minY,
+          maxY: patch.maxY
+        }
+      : { active: false };
   }
 
   /** A building box by identity, from the visual tiles first then the index. */

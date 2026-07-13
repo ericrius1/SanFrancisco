@@ -25,8 +25,11 @@ export const SURF_TUNING = tunables("movement.surf", {
   stallResponse: { v: 6.5, min: 1, max: 16, step: 0.25, label: "stall response" },
   carveResponse: { v: 7.5, min: 1, max: 18, step: 0.25, label: "direction carve" },
 
-  // moving-face grip; X rides the world-time crest while Z is rider-owned
-  faceOffset: { v: 3.2, min: 1.5, max: 14, step: 0.1, label: "lip line" },
+  // moving-face grip; X rides the world-time crest while Z is rider-owned. The
+  // offset sets the rider DOWN in the pocket (not on the crest) so the steep face
+  // towers overhead — the Kelly-Slater wall. Climbing to the lip is a control, not
+  // the resting spot, so the auto-launch no longer fires every wave.
+  faceOffset: { v: 7, min: 1.5, max: 16, step: 0.1, label: "pocket depth" },
   faceTrack: { v: 2.4, min: 0.4, max: 6, step: 0.1, label: "face magnet" },
   recoveryFaceTrack: { v: 3.2, min: 0.5, max: 8, step: 0.1, label: "recovery magnet" },
   maxFaceCorrection: { v: 16, min: 4, max: 30, step: 0.5, label: "face correction" },

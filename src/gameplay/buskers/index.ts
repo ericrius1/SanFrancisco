@@ -11,16 +11,16 @@ import { BuskerFireflies } from "./fireflies";
 // Side-effect: installs window.__sfRenderTrioAudio for the render tool's
 // deterministic offline audio pass. No live-game behavior; safe to always load.
 import "./offlineRender";
+import { enableShadowLayer, SHADOW_LAYERS } from "../../world/shadows/shadowLayers";
 
 /**
  * The busker trio: three musicians perched on a flat-topped chert boulder
  * (perchRock.ts) playing through a small songbook together (song.ts) — the
- * songbook advances after every performance, while Q skips ahead manually —
- * with an unhurried, randomized rest in the wind between songs. Deliberately
- * placeless — createBuskerTrio() drops it at any world position and
- * setPlacement() moves it later (it re-grounds itself), so it can live on
- * the Corona Heights summit today and be nudged when that hill's detail
- * pass lands.
+ * songbook advances automatically after every performance, with an unhurried,
+ * randomized rest in the wind between songs. Deliberately placeless —
+ * createBuskerTrio() drops it at any world position and setPlacement() moves
+ * it later (it re-grounds itself), so it can live on the Corona Heights
+ * summit today and be nudged when that hill's detail pass lands.
  *
  *   const trio = createBuskerTrio({ x, z, yaw, groundHeight, physics });
  *   scene.add(trio.group);
@@ -94,7 +94,7 @@ export class BuskerTrio {
   #phaseTime = 0;
   #elapsed = 0;
   #anchor = 0; // AudioContext time that maps to song beat 0
-  /** Wall-clock silence before the next downbeat (Q cycle / film cue). */
+  /** Wall-clock silence before the next downbeat (film cue / forced gap). */
   #silenceRemaining = 0;
   /** Rest portion of the natural inter-song gap (the count-in is separate). */
   #restSeconds = sampleSilenceSeconds() - COUNTIN_SECONDS;
@@ -154,17 +154,6 @@ export class BuskerTrio {
 
   /** Name of the song the transport is currently cycling. */
   get songName(): string {
-    return this.#song.name;
-  }
-
-  /**
-   * Q: advance to the next song in the songbook and cue it up —
-   * `leadInSeconds` of hard silence before the downbeat. Mid-song tails are
-   * cut so the new tune starts clean. Returns the new song's name.
-   */
-  cycleSong(leadInSeconds = 2): string {
-    this.#selectSong((this.#songIdx + 1) % SONGS.length);
-    this.cueShow(leadInSeconds);
     return this.#song.name;
   }
 
@@ -380,7 +369,6 @@ export type BuskerTrioApi = Pick<
   | "clock"
   | "setPlacement"
   | "restartSong"
-  | "cycleSong"
   | "cueShow"
   | "seek"
   | "captureStream"
@@ -416,7 +404,13 @@ function applyShadowDiet(root: THREE.Object3D) {
     geo.boundingBox!.getSize(size);
     mesh.getWorldScale(scale);
     const volume = Math.abs(size.x * scale.x) * Math.abs(size.y * scale.y) * Math.abs(size.z * scale.z);
-    if (volume < CASTER_MIN_VOLUME) mesh.castShadow = false;
+    if (volume < CASTER_MIN_VOLUME) {
+      mesh.castShadow = false;
+      return;
+    }
+    // The whole act can be re-grounded/repositioned at runtime; keep even its
+    // perch in the every-frame hero domain so cached maps never retain a ghost.
+    enableShadowLayer(mesh, SHADOW_LAYERS.HERO_DYNAMIC);
   });
 }
 

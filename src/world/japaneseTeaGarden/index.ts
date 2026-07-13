@@ -120,7 +120,7 @@ export function createJapaneseTeaGarden(
 
   return {
     group,
-    ready: Promise.resolve(),
+    ready: vegetation.ready,
     setFoliageVisible(visible: boolean) {
       foliageVisible = visible;
       vegetation.setVisible(visible);
@@ -134,6 +134,7 @@ export function createJapaneseTeaGarden(
       if (!awake && distanceToGarden <= WAKE_DISTANCE) setAwake(true);
       else if (awake && distanceToGarden >= SLEEP_DISTANCE) setAwake(false);
       if (!awake) return;
+      if (foliageVisible) vegetation.update(player);
       architecture.update(time);
       guide.update(dt, time, player, camera);
     },

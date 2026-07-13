@@ -56,15 +56,15 @@ const TAB_WORLD = `
 
   <section>
     <h3><span class="bts-ic">🧊</span> Authoring in Blender, over a bridge</h3>
-    <p>The geometry you actually see is authored <em>procedurally in Blender</em> — but not by hand in
-    the Blender UI. A Python script (<code>tools/blender_city.py</code>) drives Blender over an MCP
-    bridge, reading the prepared city data and building the world in code: extruded buildings, roads
-    and parks draped onto the terrain, a DEM mesh for the hills, and a set of hand-detailed landmarks —
-    the Golden Gate and Bay Bridge, Transamerica, Salesforce Tower, Coit Tower, the Ferry Building,
-    Sutro Tower, the Palace of Fine Arts, Alcatraz. Blender then exports it all as GLB tiles.</p>
-    <p>Doing it this way means the entire city is reproducible from data. Change the map extent or
-    re-fetch OSM, re-run the script, and the world rebuilds — no thousands of manual edits to keep in
-    sync. It's also how the fiddly problems get solved once and apply everywhere: the same pass that
+    <p>The city starts <em>procedurally in Blender</em>. A Python script
+    (<code>tools/blender_city.py</code>) drives Blender over an MCP bridge, reading the prepared city
+    data and building extruded buildings, roads and parks draped onto the terrain, a DEM mesh for the
+    hills, and a baseline landmark set. Signature places can then graduate into authored Blender
+    meshes: the Palace of Fine Arts and Sutro Tower live directly in their 800 m streaming tiles,
+    while their animated lights remain lightweight WebGPU effects. Blender exports the result as GLB tiles.</p>
+    <p>The data-driven baseline remains reproducible: change the map extent or re-fetch OSM and the city
+    can be rebuilt, while the edited master scene carries the bespoke landmark pass. It's also how the
+    fiddly citywide problems get solved once and apply everywhere: the same procedural pass that
     extrudes a footprint fits its physics box, splits an L-shaped or courtyard block into several boxes
     so the hole stays hollow, and severs the occasional building that a careless merge would otherwise
     weld onto the bridge — decisions that would be maddening to make by hand across an entire city.</p>
@@ -86,9 +86,10 @@ const TAB_WORLD = `
     <p>The runtime cost is one line — <code>GLTFLoader.setMeshoptDecoder(...)</code>, and the decoder
     ships inside three.js, so there's no new dependency. Two things are deliberately left uncompressed:
     the per-vertex <strong>building id</strong> stays exact float32 (quantizing it would round
-    neighbouring buildings into each other and break single-building demolition), and
-    <code>landmarks.glb</code> skips quantization because the Salesforce crown reads its mesh's bounding
-    box in world metres to place its LED display.</p>
+    neighbouring buildings into each other and break single-building demolition), and the remaining
+    always-resident <code>landmarks.glb</code> skips quantization because the Salesforce crown reads its
+    mesh's bounding box in world metres to place its LED display. Tiled Palace and Sutro geometry gets
+    the normal 16-bit position quantization.</p>
     <p>The pass is also <strong>idempotent</strong>, which matters more than it sounds: it reads each
     file's header, skips anything already compressed, and verifies the rewritten file still decodes to
     the exact same vertex count before it replaces the original. So after tweaking a single
@@ -114,16 +115,16 @@ const TAB_WORLD = `
 
   <section>
     <h3><span class="bts-ic">🌳</span> A city that grows</h3>
-    <p>The greenery is three cooperating systems sharing one small library of hand-shaped low-poly
-    trees — conifer and redwood, Monterey cypress, coast live oak, eucalyptus, palm. Their crowns
-    aren't blobs: they're airy branch lattices under alpha-tested <strong>leaf cards</strong> drawn from
-    a procedural texture atlas, so up close you see actual limbs carrying the foliage.</p>
-    <p>A near-field densifier follows you around the Marin headlands, thickening the far forest only
-    where you can actually make out trunks; every streamed park tile brings its own merged tree mesh
-    that comes and goes with the tile; and a field of wind-blown grass tufts and wildflowers is rebuilt
-    around the camera as you move — golden-green over Marin, lush where a park mask says lawn. It's all
-    cosmetic (no physics), all deterministic so every player sees the same trees, and all pure
-    mix-style shader math with no branches, which this renderer punishes hard.</p>
+    <p>Every outdoor plant now enters one sandbox-owned vegetation runtime. Places still own their
+    horticulture — the Tea Garden chooses pruned pines and azaleas, Corona chooses coastal scrub, and
+    Hippie Hill chooses its perimeter canopy — but they submit those placements to shared tree,
+    leaf-spray shrub, curved-blade grass, and dimensional flower renderers. That is why a garden can
+    keep its own identity without quietly bringing back a second foliage look.</p>
+    <p>Trees grow once per design, then a chunked far forest and a small pool of nearby hero trees share
+    the result. Grass, shrub leaves, and 3–5-stem flower clumps bend to the same gust and interaction
+    field, while distance gates and first-approach imports keep distant parks and their assets out of a
+    clean boot. Placement is deterministic, so every player sees the same planting; rendering cost is
+    bounded by instancing, chunk culling, and near-detail pools instead of the size of the whole city.</p>
   </section>
 
   <section>
@@ -195,8 +196,8 @@ const TAB_LIFE = `
     season it actually is in SF right now is the light you see, wherever in the world you're playing
     from. The sun follows its true astronomical path for the city's latitude, so a July noon sits high
     and bright while a December afternoon stays low and long. Hold <strong>Z</strong> and drag the
-    trackpad to scrub to any hour you like (just for you), or flip on the fast day/night cycle in the
-    tuning panel.</p>
+    trackpad to scrub to any hour you like (just for you), or uncheck follow-real-SF-time in the
+    tuning panel and set how fast the day runs as a percent of real time.</p>
     <p>As the light dims, the landmark <strong>light installations</strong> come up, all driven by that
     one sky-brightness value so they fade in together: the Bay Bridge's shimmering Bay Lights (a field
     of instanced sprite LEDs), Sutro Tower's red aviation beacons blinking up its masts, the Salesforce
@@ -268,7 +269,7 @@ const TAB_LIFE = `
   <section>
     <h3><span class="bts-ic">⚡</span> Keeping the frame rate up</h3>
     <p>All of this has to stay smooth on an ordinary laptop, so the whole engine is built around a
-    budget. Device pixel ratio is locked at 1, the pre-pass runs at half resolution, and the light count is
+    budget. Device pixel ratio defaults to 1 (slider in the debug panel), the pre-pass runs at half resolution, and the light count is
     kept small and fixed — every extra light taxes every pixel, and in this renderer <em>changing</em>
     the count rebuilds every shader pipeline (a multi-second freeze), which is the real reason glowing
     things are emissive materials and never new lamps. Physics runs a small fixed number of substeps,

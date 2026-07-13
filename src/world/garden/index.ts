@@ -1,15 +1,13 @@
-// SF Botanical Garden — public surface. A self-contained, portable vegetation
-// module: trees (SeedThree hero growth + near/far instanced LOD), procedural
-// blade grass (terrain-clamped base layer + moving near-detail ring + trample),
-// zone-paletted shrubs, ground flora, and colliders. Sandbox-wide wind and
-// interaction state live in ../vegetation; this module only owns garden work.
+// SF Botanical Garden — public surface. A garden placement/controller module:
+// shared trees (hero growth + near/far instanced LOD), shared curved blade grass
+// (terrain-clamped base + moving near-detail ring + trample), shared leaf-spray
+// shrubs and dimensional flowers, plus garden colliders. Sandbox-wide geometry,
+// wind and interaction state live in ../vegetation; this module owns garden work.
 //
-// Drop the whole `garden/` folder into any three/webgpu project. The ONLY things
-// it needs from the host are:
+// Its host contract is:
 //   • a terrain sampler implementing `GardenTerrain` (groundHeight/surfaceType/isWater)
-//   • the vendored SeedThree checkout at <repo>/vendor/SeedThree/src
-//   • the staged tree textures at <public>/seedthree  (optional — trees fall back
-//     to procedural materials if the PNGs 404)
+//   • the sandbox vegetation tree facade (which currently owns the transitional
+//     generator adapter and its staged tree textures)
 //   • src/core/persist `tunables()` for the live-tunable grass sliders
 //
 // Garden layout math and rendering live behind this index. Layout is in
@@ -30,7 +28,7 @@ import {
   type GardenTerrain
 } from "./layout";
 
-// Whole-garden visibility gate. The SeedThree far tier is frustumCulled=false
+// Whole-garden visibility gate. The legacy garden far tier spans the full site,
 // (its instanced bounds span the whole garden), so those triangles would draw from
 // ANYWHERE in the city without this. Gate the ENTIRE garden group by distance to
 // the garden's bounding circle — Corona Heights / downtown must never pay for GG
@@ -50,7 +48,7 @@ const GARDEN_GATE = (() => {
 export type BotanicalGarden = {
   /** Add to your scene. Trees stream in asynchronously; grass is live at once. */
   group: THREE.Group;
-  /** Resolves after the asynchronous SeedThree trees are attached. */
+  /** Resolves after the asynchronous shared trees are attached. */
   ready: Promise<void>;
   /** Combine the master foliage switch with the garden's distance gate. */
   setVisible(visible: boolean, focus: { x: number; z: number }): void;
@@ -66,7 +64,7 @@ export type BotanicalGarden = {
   /**
    * Call once per frame.
    *  • moves the near-grass detail ring to `focus` (usually the camera/player)
-   * SeedThree tree LOD self-drives off the render loop — nothing else to tick.
+   * Tree LOD self-drives off the render loop — nothing else to tick.
    */
   update(focus: { x: number; z: number }): void;
 };
@@ -115,6 +113,7 @@ export function createBotanicalGarden(map: GardenTerrain): BotanicalGarden {
       }
 
       veg.grass.updateFocus(focus);
+      veg.update(focus);
     }
   };
 }
@@ -125,5 +124,5 @@ export {
   inBotanicalGarden
 };
 export { createGardenVegetation, type GardenVegetation } from "./gardenVegetation";
-export { SEED_TREE_DESIGNS, type SeedTreeDesign } from "./seedTreeGarden";
+export { SEED_TREE_DESIGNS, type SeedTreeDesign } from "./treeDesigns";
 export type { BotanicalGrassController, BotanicalGrassStats, GardenCollider, GardenTerrain };

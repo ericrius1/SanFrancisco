@@ -6,6 +6,7 @@ import * as THREE from "three/webgpu";
 import { BodyType, type Physics } from "../../core/physics";
 import type { WorldMap } from "../heightmap";
 import { CORONA_DOG_GATE, CORONA_DOG_PARK, type CoronaXZ } from "./layout";
+import { enableLocalShadowLayer } from "../shadows/shadowLayers";
 
 const GATE_TRIM = 1.1;
 const PIECE_LENGTH = 4.5;
@@ -188,6 +189,7 @@ function makeGateLeaf(length: number, material: THREE.MeshStandardMaterial) {
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material);
     mesh.position.set(x, y, z);
     mesh.castShadow = true;
+    enableLocalShadowLayer(mesh);
     mesh.receiveShadow = true;
     mesh.frustumCulled = false;
     gate.add(mesh);
@@ -280,6 +282,7 @@ export function makeDogParkFence(map: WorldMap, physics: Physics): THREE.Group {
     mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     mesh.castShadow = true;
+    enableLocalShadowLayer(mesh);
     mesh.receiveShadow = true;
     mesh.frustumCulled = false;
   }

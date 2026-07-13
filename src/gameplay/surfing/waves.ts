@@ -29,9 +29,62 @@ const SLOTS = 7;
 // low-poly shelf); it only builds/updates near Ocean Beach.
 const FACE_CENTER_X = -6045;
 const FACE_WIDTH_X = 600; // covers offshoreCrest−30 … maxX+15
-const FACE_WINDOW_Z = 460; // player-following window down the beach
-const FACE_SEG_X = 256; // ~2.3 m — 3 verts across the breaking face
-const FACE_SEG_Z = 60;
+const FACE_WINDOW_Z = 520; // player-following window down the beach
+const FACE_SEG_X = 340; // ~1.75 m — resolves the steep shoreward face crisply
+const FACE_SEG_Z = 168; // graded (below): ~1.4 m at the rider, ~5 m at the rim
+
+/**
+ * Player-following face grid with **graded Z resolution**: vertices bunch tight
+ * around the rider (window centre) and smoothly spread toward the rim. Because
+ * the whole patch re-centres on the surfer every frame, this reads as one
+ * continuous sheet that is dense exactly where you look and coarsens with
+ * distance — no discrete LOD, no seam. X stays uniform (the break's steep face
+ * needs even sampling across its whole width).
+ */
+function buildGradedFaceGeometry(): THREE.BufferGeometry {
+  const nx = FACE_SEG_X + 1;
+  const nz = FACE_SEG_Z + 1;
+  const halfZ = FACE_WINDOW_Z / 2;
+  const pos = new Float32Array(nx * nz * 3);
+  const uvs = new Float32Array(nx * nz * 2);
+  const idx: number[] = [];
+  // centred, symmetric bunching: blend linear + cubic so ~⅓ of the rows sit in
+  // the middle ~15 % of the window (dense) while the rim stays gentle (coarse).
+  const gradeZ = (t: number) => {
+    const u = t * 2 - 1; // [-1,1]
+    const s = Math.sign(u);
+    const a = Math.abs(u);
+    return s * (0.32 * a + 0.68 * a * a * a); // dense centre, coarse rim
+  };
+  for (let j = 0; j < nz; j++) {
+    const z = gradeZ(j / FACE_SEG_Z) * halfZ;
+    for (let i = 0; i < nx; i++) {
+      const x = (i / FACE_SEG_X - 0.5) * FACE_WIDTH_X;
+      const k = (j * nx + i) * 3;
+      pos[k] = x;
+      pos[k + 1] = 0;
+      pos[k + 2] = z;
+      const uk = (j * nx + i) * 2;
+      uvs[uk] = i / FACE_SEG_X;
+      uvs[uk + 1] = j / FACE_SEG_Z;
+    }
+  }
+  for (let j = 0; j < FACE_SEG_Z; j++) {
+    for (let i = 0; i < FACE_SEG_X; i++) {
+      const a = j * nx + i;
+      const b = a + 1;
+      const c = a + nx;
+      const d = c + 1;
+      idx.push(a, c, b, b, c, d);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  return geo;
+}
 
 /**
  * Kelly-Slater-style breaking swell for Ocean Beach: a translucent emerald wall
@@ -116,8 +169,7 @@ export class OceanBeachWaves {
   }
 
   #buildFaceMesh(): THREE.Mesh {
-    const geo = new THREE.PlaneGeometry(FACE_WIDTH_X, FACE_WINDOW_Z, FACE_SEG_X, FACE_SEG_Z);
-    geo.rotateX(-Math.PI / 2); // local x → world X (across break), local z → world Z (down beach)
+    const geo = buildGradedFaceGeometry(); // local x → world X (break), local z → world Z (beach)
 
     const mat = new THREE.MeshStandardNodeMaterial({
       roughness: 0.24,
@@ -138,8 +190,10 @@ export class OceanBeachWaves {
       .mul(sin(wx.mul(0.19).add(t.mul(1.3))))
       .mul(f.face)
       .mul(0.24);
-    const curl = f.lip.mul(1.35);
-    mat.positionNode = positionLocal.add(vec3(curl, f.height.add(faceChop).add(f.lip.mul(0.42)), 0));
+    // The lip throws SHOREWARD (+X) and slightly up as it pitches — a stronger
+    // overhang now that the wall stands taller. curl on X + a small lift.
+    const curl = f.lip.mul(2.4);
+    mat.positionNode = positionLocal.add(vec3(curl, f.height.add(faceChop).add(f.lip.mul(0.6)), 0));
 
     // strip + window feathering so the patch melts into the flat bay water
     const stripFade = f.mask; // already 0 outside the break, feathered inside
@@ -152,22 +206,28 @@ export class OceanBeachWaves {
     // --- colour: chlorophyll green, backlit face, breaking foam ---------------
     // deep trough → mid sea green → bright translucent emerald on the standing
     // face; the pitching lip and spent whitewater go white.
-    const bodyGreen = mix(color(0x0a5a48), color(0x1ba06f), clamp(f.height.mul(0.32).add(0.35), 0, 1));
-    const faceGreen = mix(bodyGreen, color(0x3fe08a), f.face.mul(0.9));
-    const foam = clamp(f.lip.mul(1.1).add(f.white.mul(0.85)), 0, 1).toVar();
-    mat.colorNode = mix(faceGreen, color(0xf3fffa), foam);
+    // Contrast is what makes a wall read as a WALL: a dark emerald trough at the
+    // base rising to a vivid, near-opaque green face, with a hot backlit lip. The
+    // dark-to-bright vertical gradient (height-driven) gives the standing face
+    // real depth instead of a flat pale sheet.
+    const bodyGreen = mix(color(0x053626), color(0x12b463), clamp(f.height.mul(0.16).add(0.22), 0, 1));
+    const faceGreen = mix(bodyGreen, color(0x4bf0a2), f.face.mul(0.95));
+    const foam = clamp(f.lip.mul(1.2).add(f.white.mul(0.9)), 0, 1).toVar();
+    mat.colorNode = mix(faceGreen, color(0xf4fff8), foam);
 
     // SSS backlight: the thin, steep face glows emerald where the sun rakes
-    // through it (stylized — KSPS look, not a physical transmission model).
-    const glow = f.face.mul(f.face).mul(0.5 * LIGHT_SCALE);
-    mat.emissiveNode = vec3(0.12, 0.62, 0.34).mul(glow).add(vec3(0.9, 1.0, 0.96).mul(foam.mul(0.06 * LIGHT_SCALE)));
+    // through it, plus a hot white rim right at the pitching lip (KSPS look).
+    const glow = f.face.mul(f.face).mul(0.85 * LIGHT_SCALE);
+    mat.emissiveNode = vec3(0.14, 0.72, 0.42).mul(glow)
+      .add(vec3(0.85, 1.0, 0.92).mul(f.lip.mul(f.lip).mul(0.5 * LIGHT_SCALE)));
 
     // ripple bump from the wave height + a little chop so the face isn't glassy
     const chop = mx_noise_float(vec3(wx.mul(0.22), wz.mul(0.22), t.mul(0.6))).mul(0.12);
     mat.normalNode = bumpNormal(f.height.add(chop).mul(0.5));
 
-    // shallow face is translucent (green water you see through), foam opaque
-    const alpha = clamp(mix(float(0.7), float(0.95), max(f.face, f.height.mul(0.2))).add(foam.mul(0.3)), 0, 1);
+    // The standing face reads near-opaque (a wall you can't see the sky through);
+    // only the thin shallow toe stays a little translucent.
+    const alpha = clamp(mix(float(0.86), float(0.99), max(f.face, f.height.mul(0.14))).add(foam.mul(0.15)), 0, 1);
     mat.opacityNode = alpha.mul(stripFade).mul(zRim);
     mat.envMapIntensity = 0.2;
 

@@ -174,6 +174,8 @@ export class VehicleAudio {
   #boardRuntime: BoardRuntimeState = { response: 0, detuneCents: 0, cutoffHz: 300, airGain: 0 };
   #applyBoardStyle: (() => void) | null = null; // bound once the voice exists
   #previewT: number | null = null; // seconds into a customizer audition swell
+  #carLandingEvents = 0;
+  #lastCarLandingStrength = 0;
 
   constructor() {
     // autoplay policy: same unlock dance as the fireworks — build + resume on
@@ -197,6 +199,8 @@ export class VehicleAudio {
       master: this.#masterLevel,
       boardStyle: { ...this.#boardStyle },
       boardRuntime: { ...this.#boardRuntime },
+      carLandingEvents: this.#carLandingEvents,
+      lastCarLandingStrength: this.#lastCarLandingStrength,
       voices: this.#voices.map((v) => ({ mode: v.mode, level: v.level }))
     };
   }
@@ -295,6 +299,53 @@ export class VehicleAudio {
     out.gain.exponentialRampToValueAtTime(0.0001, now + duration);
     src.start(now, Math.random() * 1.2, duration);
     src.stop(now + duration + 0.02);
+  }
+
+  /**
+   * Car-to-road touchdown: a short filtered tyre/chassis slap over a low
+   * suspension thump. Strength lowers the pitch, lengthens the tail, and raises
+   * the transient; level is the car-folder authoring range chosen by main.
+   */
+  carLanding(strength: number, level = 1) {
+    const ctx = this.#ensure();
+    if (!ctx) return;
+    if (ctx.state === "suspended") void ctx.resume();
+    const amount = clamp01(strength);
+    const trim = Math.max(0, Math.min(2, level));
+    if (amount <= 0 || trim <= 0) return;
+    this.#carLandingEvents += 1;
+    this.#lastCarLandingStrength = amount;
+
+    const now = ctx.currentTime;
+    const duration = 0.2 + amount * 0.16;
+    const out = ctx.createGain();
+    out.gain.setValueAtTime(0.0001, now);
+    out.gain.exponentialRampToValueAtTime((0.11 + amount * 0.2) * trim, now + 0.009);
+    out.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+    out.connect(this.#master);
+
+    const thump = ctx.createOscillator();
+    thump.type = "sine";
+    thump.frequency.setValueAtTime(94 - amount * 22, now);
+    thump.frequency.exponentialRampToValueAtTime(40 - amount * 5, now + duration * 0.82);
+    const thumpGain = ctx.createGain();
+    thumpGain.gain.value = 0.72;
+    thump.connect(thumpGain).connect(out);
+    thump.start(now);
+    thump.stop(now + duration + 0.02);
+
+    const slap = ctx.createBufferSource();
+    slap.buffer = this.#noise;
+    const slapFilter = ctx.createBiquadFilter();
+    slapFilter.type = "bandpass";
+    slapFilter.frequency.value = 520 + (1 - amount) * 380;
+    slapFilter.Q.value = 0.7;
+    const slapGain = ctx.createGain();
+    slapGain.gain.setValueAtTime(0.62 + amount * 0.18, now);
+    slapGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.075 + amount * 0.045);
+    slap.connect(slapFilter).connect(slapGain).connect(out);
+    slap.start(now, Math.random() * 1.4, 0.14);
+    slap.stop(now + 0.15);
   }
 
   /** Per rendered frame. `sig` null (paused) fades every voice out. */

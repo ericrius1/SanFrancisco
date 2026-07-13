@@ -178,18 +178,24 @@ async function checkAssembly(c) {
 
   const rotation = await ev(c, `(()=>{
     const b = window.__sf.buskers;
+    const tickFrames = (seconds) => {
+      for (let i = 0; i < Math.ceil((seconds + 0.1) * 30); i++) window.__sf.tick(1/30);
+    };
+    // Drive one natural end-of-song → rest → countin → playing rotation.
     const before = b.current.songName;
     b.seek(9999);
     window.__sf.tick(1/30);
     const rest = b.current.snapshotState();
-    for (let i = 0; i < Math.ceil((rest.restSeconds + 0.1) * 30); i++) window.__sf.tick(1/30);
+    tickFrames(rest.restSeconds);
     const countin = b.current.snapshotState();
     const after = b.current.songName;
-    for (let i = 0; i < Math.ceil((4 * 60 / 76 + 0.1) * 30); i++) window.__sf.tick(1/30);
+    tickFrames(4 * 60 / 76);
     const playing = b.current.snapshotState();
-    // Return to song 0 so the view-selection setup below remains authoritative.
-    b.cycleSong(0);
+    // Advance once more so the book wraps back to song 0 for the shots below.
+    b.seek(9999);
     window.__sf.tick(1/30);
+    tickFrames(b.current.snapshotState().restSeconds);
+    tickFrames(4 * 60 / 76);
     return {
       before,
       after,
@@ -269,14 +275,20 @@ async function main() {
   await teleport(c, 340, 2840, Math.PI);
   await settle(c, 2);
 
-  // cycle the songbook to the requested song (boot default is index 0)
+  // Advance through natural end-of-song rests to the requested song (boot = 0).
   if (SONG_IDX > 0) {
     const name = await ev(c, `(()=>{
       const b = window.__sf.buskers;
-      let n = b.songName;
-      for (let i = 0; i < ${SONG_IDX}; i++) n = b.cycleSong(0);
-      window.__sf.tick(1/30);
-      return n;
+      const tickFrames = (seconds) => {
+        for (let i = 0; i < Math.ceil((seconds + 0.1) * 30); i++) window.__sf.tick(1/30);
+      };
+      for (let i = 0; i < ${SONG_IDX}; i++) {
+        b.seek(9999);
+        window.__sf.tick(1/30);
+        tickFrames(b.current.snapshotState().restSeconds);
+        tickFrames(4 * 60 / 76);
+      }
+      return b.current.songName;
     })()`);
     console.log(`[probe] song: ${name}`);
   }

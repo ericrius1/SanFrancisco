@@ -100,9 +100,14 @@ export class WaterSplashes {
     this.#drops.push({ sprite, vel, life, maxLife: life, grow, drag, grav });
   }
 
-  /** The full three-layer hit. `energy` ≈ 0.3 gentle graze … 1.6 full stoop. */
-  splash(x: number, y: number, z: number, elapsed: number, energy: number) {
+  /**
+   * The full three-layer hit. `energy` ≈ 0.3 gentle graze … 1.6 full stoop.
+   * `visualScale` lets close chase-camera activities keep the hit lively without
+   * filling the whole frame; the default preserves every existing caller.
+   */
+  splash(x: number, y: number, z: number, elapsed: number, energy: number, visualScale = 1) {
     const e = THREE.MathUtils.clamp(energy, 0.3, 1.6);
+    const vs = THREE.MathUtils.clamp(visualScale, 0.25, 1.5);
     const p = new THREE.Vector3(x, y + 0.15, z);
 
     this.#wake.burst(x, z, elapsed, 6 + e * 13);
@@ -112,10 +117,10 @@ export class WaterSplashes {
       this.#spawn(
         this.#sprayMat,
         p,
-        0.9 + e * 1.3 + i * 0.4,
+        (0.9 + e * 1.3 + i * 0.4) * vs,
         new THREE.Vector3((Math.random() - 0.5) * 2, (9 + e * 9) * (1 - i * 0.22), (Math.random() - 0.5) * 2),
         0.65 + e * 0.25,
-        4.5 + e * 3,
+        (4.5 + e * 3) * vs,
         0.86,
         20
       );
@@ -128,10 +133,10 @@ export class WaterSplashes {
       this.#spawn(
         this.#dropMat,
         p,
-        0.5 + Math.random() * 0.5 + e * 0.3,
+        (0.5 + Math.random() * 0.5 + e * 0.3) * vs,
         new THREE.Vector3(Math.cos(a) * r, 5.5 + Math.random() * 3.5 + e * 4, Math.sin(a) * r),
         0.8 + Math.random() * 0.4,
-        0.8,
+        0.8 * vs,
         0.985,
         24
       );
@@ -140,10 +145,10 @@ export class WaterSplashes {
     this.#spawn(
       this.#sprayMat,
       p,
-      2.2 + e * 2.2,
+      (2.2 + e * 2.2) * vs,
       new THREE.Vector3(0, 1.6, 0),
       1.5 + e * 0.5,
-      6 + e * 4,
+      (6 + e * 4) * vs,
       0.92,
       1.5
     );
@@ -165,6 +170,11 @@ export class WaterSplashes {
   }
 
   update(dt: number, elapsed: number, player: Player) {
+    // Flow state is composed as a rider hero shot. Keep the ring and moving
+    // spray, but make any lingering landing plume translucent so a random
+    // activation frame can never turn the surfer into a white silhouette.
+    const presentationAlpha =
+      player.mode === "surf" && player.surfTelemetry.flowActive ? 0.16 : 1;
     // particles first so a splash spawned below still gets its first full frame
     for (let i = this.#drops.length - 1; i >= 0; i--) {
       const d = this.#drops[i];
@@ -180,7 +190,7 @@ export class WaterSplashes {
       d.vel.multiplyScalar(d.drag);
       d.sprite.scale.addScalar(d.grow * dt);
       const t = d.life / d.maxLife;
-      (d.sprite.material as THREE.SpriteMaterial).opacity = Math.min(1, t * 1.8) * 0.9;
+      (d.sprite.material as THREE.SpriteMaterial).opacity = Math.min(1, t * 1.8) * 0.9 * presentationAlpha;
     }
 
     this.#cooldown -= dt;

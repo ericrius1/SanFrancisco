@@ -20,7 +20,7 @@ const OFFSETS: Record<PlayerMode, { back: number; up: number; look: number }> =
     speedboat: { back: 11, up: 3.6, look: 0.7 },
     drone: { back: 7, up: 1.9, look: 0.4 },
     board: { back: 7.5, up: 2.6, look: 1.3 },
-    surf: { back: 9.8, up: 3.15, look: 1.15 },
+    surf: { back: 9.2, up: 1.65, look: 2.6 },
     bird: { back: 15, up: 3.1, look: 0.55 }
   }
 
@@ -273,9 +273,11 @@ export class ChaseCamera {
     }
 
     const o = OFFSETS[player.mode]
-    const backBase = o.back * this.zoom * (1 + this.#surfFlow * 0.14)
+    const backBase = o.back * this.zoom * (1 + this.#surfFlow * 0.22)
     let back = backBase
-    let up = o.up * this.zoom + this.#surfFlow * 0.45
+    // Flow is the surfing hero-shot moment. Lift and widen its 360° orbit so
+    // the shoreward half clears the pitching face instead of filming through it.
+    let up = o.up * this.zoom + this.#surfFlow * 3.2
     // bigger phoenix needs more boom; tuck/stoop adds a little more so the mount
     // stays in frame instead of filling the viewport at triple speed
     if (player.mode === "bird") {
@@ -287,6 +289,8 @@ export class ChaseCamera {
     // anchor on the interpolated render transform — the raw physics transform
     // only advances at the fixed step and stutters at high refresh rates
     const anchor = player.renderPosition
+    this.#target.copy(anchor)
+    this.#target.y += o.look
     const cx = anchor.x + Math.sin(this.yaw) * Math.cos(this.pitch) * back
     const cz = anchor.z + Math.cos(this.yaw) * Math.cos(this.pitch) * back
     const cy = anchor.y + up + Math.sin(this.pitch) * back
@@ -303,7 +307,7 @@ export class ChaseCamera {
     // inside the next ridge and trigger the full underwater overlay, hiding the
     // very wave the player is reading. Surf mode skims above the local crest.
     if (player.mode === "surf") {
-      const water = waterHeight(cx, cz, player.time) + 1.1
+      const water = waterHeight(cx, cz, player.time) + 1.35
       if (this.#chasePos.y < water) this.#chasePos.y = water
     }
 
@@ -377,16 +381,13 @@ export class ChaseCamera {
     // Clamp the actual smoothed surf-camera pose, not just its desired endpoint.
     // Follow lag can otherwise carry the rendered eye through a moving crest.
     if (player.mode === "surf") {
-      const water = waterHeight(this.#orbitPos.x, this.#orbitPos.z, player.time) + 1.1
-      if (this.#orbitPos.y < water) this.#orbitPos.y = water
+      this.#clearSurfSightline(this.#orbitPos, this.#target, player.time)
     }
     this.#firstPersonPos.lerp(
       this.#eyePos,
       1 - Math.exp(-smoothDt * VIEW.firstPersonFollow)
     )
 
-    this.#target.copy(anchor)
-    this.#target.y += o.look
     this.#orbitViewPos.copy(this.#orbitPos)
     this.#resolveBuildingOcclusion(
       smoothDt,
@@ -396,8 +397,7 @@ export class ChaseCamera {
       this.#orbitViewPos
     )
     if (player.mode === "surf") {
-      const water = waterHeight(this.#orbitViewPos.x, this.#orbitViewPos.z, player.time) + 1.1
-      if (this.#orbitViewPos.y < water) this.#orbitViewPos.y = water
+      this.#clearSurfSightline(this.#orbitViewPos, this.#target, player.time)
     }
     this.camera.position.lerpVectors(
       this.#orbitViewPos,
@@ -445,6 +445,24 @@ export class ChaseCamera {
       (OCCLUSION[player.mode].cutRadius * CAMERA_TUNING.values.cutawayRadiusScale),
       this.#cutaway * (1 - firstPersonBlend)
     )
+  }
+
+  /**
+   * Raise a surf camera just enough for its entire target ray to clear the live
+   * analytic wave plus the visual lip curl. A local height clamp alone cannot
+   * stop the tall face between a shoreward camera and the rider from filling
+   * the frame during a 360° flow orbit.
+   */
+  #clearSurfSightline(candidate: THREE.Vector3, target: THREE.Vector3, time: number) {
+    candidate.y = Math.max(candidate.y, waterHeight(candidate.x, candidate.z, time) + 1.35)
+    for (let i = 1; i <= 5; i++) {
+      const t = i / 6
+      const x = THREE.MathUtils.lerp(candidate.x, target.x, t)
+      const z = THREE.MathUtils.lerp(candidate.z, target.z, t)
+      const rayY = THREE.MathUtils.lerp(candidate.y, target.y, t)
+      const requiredY = waterHeight(x, z, time) + 1.15
+      if (rayY < requiredY) candidate.y += (requiredY - rayY) / Math.max(0.15, 1 - t)
+    }
   }
 
   /** Resolve the smoothed orbit pose, so follow-lag can never carry the rendered

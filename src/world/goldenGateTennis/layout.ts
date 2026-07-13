@@ -321,9 +321,10 @@ export function inGoldmanTennisSite(x: number, z: number, pad = 0): boolean {
 }
 
 /**
- * Wider authored-vegetation ownership zone. Use this as the wildlands tree
- * exclusion when the site's deterministic perimeter/Hippie-Hill trees render;
- * keep ground-cover exclusion on `inGoldmanTennisSite` so the hill stays grassy.
+ * Wider authored-vegetation ownership zone. The wildlands collector excludes
+ * generic matrix trees here, then appends the deterministic Goldman perimeter
+ * and Hippie Hill slots into its unified SeedForest. Ground cover uses only the
+ * tighter `inGoldmanTennisSite` exclusion so the hill stays grassy.
  */
 export function inGoldmanVegetationZone(x: number, z: number): boolean {
   if (inGoldmanTennisSite(x, z, 18)) return true;

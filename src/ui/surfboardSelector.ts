@@ -342,9 +342,13 @@ export class SurfboardSelector {
         const shimmer = this.#config.surfaceShimmer / 100;
         const glow = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
         const p = ((time * 0.00008) % 1) * 1.4 - 0.2;
-        glow.addColorStop(Math.max(0, p - 0.18), "rgba(255,255,255,0)");
-        glow.addColorStop(Math.max(0, Math.min(1, p)), `rgba(255,255,255,${0.08 + shimmer * 0.28})`);
-        glow.addColorStop(Math.min(1, p + 0.18), "rgba(255,255,255,0)");
+        // The animated highlight intentionally travels beyond both edges, but
+        // CanvasGradient rejects even a tiny out-of-range stop. Clamp every
+        // stop (not only the centre) so long-open shaping rooms stay exception-free.
+        const stop = (value: number) => Math.max(0, Math.min(1, value));
+        glow.addColorStop(stop(p - 0.18), "rgba(255,255,255,0)");
+        glow.addColorStop(stop(p), `rgba(255,255,255,${0.08 + shimmer * 0.28})`);
+        glow.addColorStop(stop(p + 0.18), "rgba(255,255,255,0)");
         ctx.fillStyle = glow;
         ctx.fillRect(0, 0, canvas.width, canvas.height);
       }

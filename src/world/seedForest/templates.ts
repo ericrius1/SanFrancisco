@@ -1,14 +1,14 @@
-// Grow-once SeedThree hero cache. Every consumer (wildlands regions, future
-// city scatter) asks for a design; each distinct design grows exactly once per
-// session no matter how many forests use it. createTree is CPU-heavy (hundreds
-// of ms), so growth is serialized through one chain — parallel growth just
-// thrashes the main thread.
-//
-// The botanical garden still grows its own heroes (different seeds/controls —
-// no sharing win); unifying it onto this cache is a later cleanup.
+// Grow-once tree-template cache shared by every authored park and landmark.
+// Each distinct design/generation policy grows exactly once per session.
+// Growth is CPU-heavy, so it is serialized; parallel growth only thrashes the
+// main thread. Vendor-specific construction stays behind legacySeedTree until
+// the sandbox-native compiler replaces that final transitional boundary.
 
 import * as THREE from "three/webgpu";
-import { createLegacySeedTree } from "../vegetation/legacySeedTree";
+import {
+  createLegacySeedTree,
+  type LegacySeedTreeFoliageGrade
+} from "../vegetation/legacySeedTree";
 
 export type SeedTreeDesignSpec = {
   species: string;
@@ -18,11 +18,16 @@ export type SeedTreeDesignSpec = {
   sink: number;
   /** false → never promote to a hero clone (rosette species: 16s clone stall) */
   nearClones?: boolean;
+  /** Optional generation policy for a biome with a deliberately lean far LOD. */
+  generation?: {
+    lod?: Record<string, unknown>;
+    foliageGrade?: LegacySeedTreeFoliageGrade;
+  };
 };
 
 export type GrownTemplate = {
   design: SeedTreeDesignSpec;
-  /** hero THREE.LOD (LOD0/1/2 baked in, shadows on, foliage shaded) */
+  /** hero THREE.LOD (LOD0/1/2 beauty geometry, foliage shaded) */
   template: THREE.LOD;
   /** the LOD2 level — source for instanced far tiers */
   lod2: THREE.Object3D;
@@ -42,7 +47,7 @@ const cache = new Map<string, Promise<GrownTemplate>>();
 let growthChain: Promise<unknown> = Promise.resolve();
 
 function designKey(d: SeedTreeDesignSpec): string {
-  return `${d.species}:${d.seed}:${JSON.stringify(d.controls ?? {})}`;
+  return `${d.species}:${d.seed}:${JSON.stringify(d.controls ?? {})}:${JSON.stringify(d.generation ?? {})}`;
 }
 
 export function growTemplate(design: SeedTreeDesignSpec): Promise<GrownTemplate> {
@@ -54,8 +59,14 @@ export function growTemplate(design: SeedTreeDesignSpec): Promise<GrownTemplate>
       species: design.species,
       seed: design.seed,
       controls: design.controls ?? {},
-      lod: LOD_OPTS,
-      foliageGrade: FOLIAGE_GRADE
+      lod: design.generation?.lod ?? LOD_OPTS,
+      foliageGrade: design.generation?.foliageGrade ?? FOLIAGE_GRADE
+    });
+    template.traverse((object) => {
+      const mesh = object as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      mesh.castShadow = false;
+      mesh.receiveShadow = true;
     });
     return { design, template, lod2 };
   });

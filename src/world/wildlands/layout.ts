@@ -12,9 +12,8 @@
 //  · FLOWER DRIFT — an ellipse of wildflowers with NOISE BANDING, so each
 //                 drift streaks like a real superbloom instead of a disc
 //
-// Species use the SeedThree designs staged for the botanical garden (same
-// public/seedthree textures): douglasFir (redwood/fir), pine (Monterey
-// cypress read), whiteOak, americanBeech (eucalyptus read).
+// Species use shared authored-tree designs: douglasFir (redwood/fir), pine
+// (Monterey cypress read), whiteOak, americanBeech (eucalyptus read).
 //
 // Real-geography anchors (x=(lon+122.444)*87972, z=(37.79-lat)*110574):
 //  GG Park   x[-5920,-760]  z[1780,2860]
@@ -39,7 +38,7 @@ export type WildRegion = {
   /** which surface classes are plantable here (GG Park/Presidio lawns = 1;
    *  Marin's golden hills are class 0 open ground) */
   plantClasses: readonly number[];
-  /** minimum ground height (Marin shoreline gate, matches flora.ts) */
+  /** minimum ground height for the Marin shoreline planting gate */
   minGround: number;
 };
 
@@ -141,9 +140,9 @@ function inAvoid(x: number, z: number, pad = 0): boolean {
   for (const a of AVOID) {
     if (Math.hypot(x - a.x, z - a.z) < a.r + pad) return true;
   }
-  // The authored Goldman Tennis Center owns its court-edge/Hippie Hill trees.
-  // Keep the region-wide forest matrix from planting through courts, paths, or
-  // the deliberately arranged perimeter canopy.
+  // Reserve the court edge/Hippie Hill for the explicit Goldman slots appended
+  // after the generic collectors below. This stops the region-wide matrix from
+  // planting through courts, paths, or the deliberately arranged canopy.
   if (inGoldmanVegetationZone(x, z)) return true;
   // GG Park archery field: no canopy over the shooting lanes (wide pad so a
   // grown crown never leans across an arrow's arc)
@@ -232,6 +231,86 @@ const SPECIES_SCALE: readonly [number, number][] = [
   [0.85, 1.25],
   [0.9, 1.35]
 ];
+
+type GoldmanTreePlacement = {
+  x: number;
+  z: number;
+  yaw: number;
+  size: number;
+  design: number;
+};
+
+function goldmanHash(index: number, salt: number): number {
+  let h = Math.imul(index + salt * 1013, 0x45d9f3b);
+  h = Math.imul(h ^ (h >>> 16), 0x45d9f3b);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+
+function appendGoldmanEllipse(
+  out: GoldmanTreePlacement[],
+  cx: number,
+  cz: number,
+  rx: number,
+  rz: number,
+  count: number,
+  salt: number,
+  design: number,
+  ring = false
+) {
+  for (let i = 0; i < count; i++) {
+    const angle = goldmanHash(i, salt) * Math.PI * 2;
+    const radial = ring
+      ? 0.72 + goldmanHash(i, salt + 1) * 0.28
+      : Math.sqrt(goldmanHash(i, salt + 1));
+    out.push({
+      x: cx + Math.cos(angle) * rx * radial,
+      z: cz + Math.sin(angle) * rz * radial,
+      yaw: goldmanHash(i, salt + 3) * Math.PI * 2,
+      size: 0.82 + goldmanHash(i, salt + 2) * 0.52,
+      design
+    });
+  }
+}
+
+/** Authored Goldman Tennis perimeter and Hippie Hill canopy. These are the
+ * exact deterministic ellipses the site used before tree beauty moved into the
+ * unified SeedForest. Keeping the recipe here lets the site own courts and
+ * gameplay only, while one deferred renderer owns every GG Park tree. */
+function collectGoldmanTrees(
+  map: GardenTerrain,
+  excluded?: (x: number, z: number) => boolean
+): WildTree[] {
+  const candidates: GoldmanTreePlacement[] = [];
+  appendGoldmanEllipse(candidates, -1411, 2192, 22, 65, 24, 11, WILD_SPECIES.cypress);
+  appendGoldmanEllipse(candidates, -1335, 2283, 82, 12, 25, 23, WILD_SPECIES.cypress);
+  appendGoldmanEllipse(candidates, -1271, 2203, 15, 58, 18, 37, WILD_SPECIES.eucalyptus);
+  appendGoldmanEllipse(candidates, -1227, 2228, 67, 54, 24, 51, WILD_SPECIES.oak, true);
+
+  const placements = candidates.filter((tree) => {
+    if (excluded?.(tree.x, tree.z)) return false;
+    const surface = map.surfaceType(tree.x, tree.z);
+    return surface !== 3 && surface !== SURFACE_ROAD && !inGoldmanTennisSite(tree.x, tree.z, 3.5);
+  });
+
+  return placements.map((tree, index) => {
+    // Preserve the former authored height distribution while expressing it as
+    // a scale over the selected unified archetype's source-code height.
+    const oldHeight = (8.5 + goldmanHash(index, 71) * 5.5) * tree.size;
+    const archetypeHeight = tree.design === WILD_SPECIES.eucalyptus
+      ? 15
+      : tree.design === WILD_SPECIES.oak
+        ? 9.5
+        : 11;
+    return {
+      x: tree.x,
+      y: map.groundHeight(tree.x, tree.z),
+      z: tree.z,
+      yaw: tree.yaw,
+      scale: Math.min(1.65, Math.max(0.68, oldHeight / archetypeHeight)),
+      design: tree.design
+    };
+  });
+}
 
 // --- designed content --------------------------------------------------------------
 
@@ -509,17 +588,6 @@ export function grassyGround(map: GardenTerrain, x: number, z: number): boolean 
   return dx <= 6 && dz <= 6;
 }
 
-// --- suppression exports (old simple trees die inside the wildlands) ----------------
-
-/**
- * True where the old stylized tree systems (flora.ts park scatter + Marin
- * pools, forest.ts redwoods) must NOT plant trees — the wildlands owns all
- * trees in its three regions. Bushes/grass/ground cover stay.
- */
-export function wildlandsSuppressesTree(x: number, z: number): boolean {
-  return wildRegionAt(x, z) !== null;
-}
-
 // --- collectors ----------------------------------------------------------------------
 
 export type WildTree = { x: number; y: number; z: number; yaw: number; scale: number; design: number };
@@ -628,6 +696,11 @@ export function collectWildTrees(map: GardenTerrain, excluded?: (x: number, z: n
       }
     }
   });
+
+  // The broad Goldman ownership mask above keeps the region-wide matrix out of
+  // the courts and Hippie Hill. Add its intentional perimeter recipe only after
+  // every generic collector has run, preserving the old overlapping clusters.
+  trees.push(...collectGoldmanTrees(map, excluded));
 
   return trees;
 }

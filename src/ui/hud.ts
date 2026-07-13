@@ -161,7 +161,6 @@ const PAD: Record<PlayerMode, Row[]> = {
     { c: ["RS"], label: "look" },
     { c: ["RT", "LT"], label: "pump · stall" },
     { c: ["LS"], label: "choose line" },
-    { c: ["Y"], label: "flow state" },
     { c: ["Auto"], label: "lip launch" },
     { c: ["B"], label: "kick out" }
   ],
@@ -311,6 +310,7 @@ export class HUD {
 
     const extraRows = (pad
       ? [
+          { c: ["Y"], label: "map" },
           { c: ["R3"], label: "camera" },
           { c: ["▲"], label: "fireworks" },
           { c: ["Start"], label: "pause" },

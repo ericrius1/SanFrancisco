@@ -17,29 +17,18 @@ export const EXPOSURE_REBASE = 0.13
 export const LIGHT_SCALE = (100 / 6) * EXPOSURE_REBASE
 
 /**
- * The one universal render mode: the fixed, measurement-tuned settings every
- * session runs. Replaces the old three-tier quality preset system (performance /
- * balanced / high) and its separate shadow-quality tiers, both removed 2026-07 —
- * there is no user-facing quality switch any more. The two other universal-mode
- * values live with the systems they configure: scene AA (single-sample by
- * default, optional 4x MSAA for profiling) in POSTFX_TUNING.sceneSamples
- * (render/postfx.ts), and CSM shadow knobs via SHADOW_TUNING (world/sky.ts).
+ * Universal render settings live with the systems they configure: drawing-buffer
+ * pixel ratio in RENDER_TUNING (default 1, slider 0.5–2; devicePixelRatio is
+ * ignored), scene AA in POSTFX_TUNING.sceneSamples (render/postfx.ts), and CSM
+ * shadow knobs via SHADOW_TUNING (world/sky.ts). The old quality-preset /
+ * dynamic-res governor stack was removed — one default, optional "/" overrides.
  */
-export const RENDER_MODE = {
-  // Fixed drawing-buffer pixel ratio. Always 1 — including retina Macs —
-  // for a stable low-fi look and predictable fragment cost. The scene is
-  // fragment-bound; retina dpr 2 was ~2× the frame time of 1.5 for a near-
-  // invisible sharpness delta (measured 17.1 → 8.6 ms p50 at 2560×1600).
-  pixelRatioCap: 1,
-  // Dynamic-resolution governor left off: floor == ceiling == 1, so there is
-  // nothing to step. Kept as a switch in case a higher fixed cap returns later.
-  dynamicRes: false,
-  // Floor for the governor when dynamicRes is re-enabled; unused while off.
-  minPixelRatio: 1.0
-} as const
 
-/** Renderer grading, bound in the "/" panel's lighting folder. */
+/** Renderer grading + drawing buffer, bound in the "/" panel. */
 export const RENDER_TUNING = tunables("render", {
+  // Drawing-buffer pixel ratio. Default 1 for a low-fi / fragment-cheap look
+  // (devicePixelRatio is ignored, including retina Macs). Slider for profiling.
+  pixelRatio: { v: 1, min: 0.5, max: 2, step: 0.05, label: "pixel ratio" },
   // Anchored at 1.0 — a ±half-stop-ish artistic trim, NOT the day-brightness
   // control (that's sky.ts sunDay/hemiDay). Night, emissives and fog are all
   // balanced against the anchor, so big moves here shift everything at once.
@@ -47,7 +36,7 @@ export const RENDER_TUNING = tunables("render", {
   // grey-card calibration chart (src/ui/calibrationChart.ts): camera-locked row
   // of matte spheres at 5/18/50/90% albedo — the referee for any grading change.
   greyCards: { v: false, label: "grey cards (5·18·50·90%)" },
-  wireframe: { v: false, label: "wireframe mode" },
+  wireframe: { v: false, label: "wireframe mode (R)" },
   // collider x-ray: draw every active physics collider as a wireframe box (red =
   // baked body, orange = citywide index, green = walk-in wall, blue = interior).
   // Diagnoses "invisible collision" — a box that sits where no mesh is drawn.
@@ -218,10 +207,10 @@ export const GRASS_TUNING = tunables("grass", {
  * Where and how a fresh session starts. Editable in the Tab panel (persisted);
  */
 export const START_DEFAULTS = {
-  // Corona Heights summit — a code spawn (src/world/spawnPoints.ts), not a baked
-  // meta.json one. Scenic and cheap to boot: it gates no heavy foliage region.
-  spawn: "coronaHeights",
-  mode: "board" as PlayerMode
+  // Ocean Beach surf pin — a code spawn (src/world/spawnPoints.ts). Sand at the
+  // waterline facing the swell; board underarm, ready to paddle out.
+  spawn: "oceanBeach",
+  mode: "walk" as PlayerMode
 }
 
 export const START = {
