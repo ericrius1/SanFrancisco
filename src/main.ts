@@ -3246,6 +3246,7 @@ async function boot() {
       buskers,
       fetchBall: fetchBall ?? undefined,
       coronaHeights: coronaHeights ?? undefined,
+      fireworks,
       worldQueries,
       setTool: (t: string) => setTool(t as ToolName),
       setBoardConfig: (config: typeof boardConfig) => {

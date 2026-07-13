@@ -232,6 +232,7 @@ reference films plus their transition:
 ```bash
 npm run render:hoverboard:fast
 npm run render:dog-park:fast
+npm run render:roqn-open-road:fast
 npm run render:cinematics:fast
 npm run render:hoverboard
 npm run render:dog-park
@@ -241,6 +242,11 @@ npm run render:cinematics
 See [Cinematic rendering](docs/CINEMATICS.md) for probe renders, shot authoring,
 the fast WebCodecs review backend, archival fixed-frame capture, camera
 preflight, audio, outputs, and QA.
+
+Create an X-ready derivative of any finished film with
+`npm run deliver:x -- <video.mp4>`. The opt-in `--experimental-4k` flag also
+makes a labeled 2x upscale for account-level A/B testing without changing the
+archive master.
 
 ---
 

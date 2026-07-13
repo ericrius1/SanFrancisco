@@ -22,6 +22,7 @@ import type { FetchBall } from "../gameplay/fetchBall";
 import type { CoronaHeightsPark } from "../world/coronaHeights";
 import type { WorldQueries } from "../core/worldQueries";
 import type { BoardConfig } from "../vehicles/board";
+import type { Fireworks } from "../fx/fireworks";
 
 /**
  * Everything a demo can reach. main.ts builds one of these and passes it to
@@ -56,6 +57,7 @@ export type DemoContext = {
   buskers?: BuskerTrio;
   fetchBall?: FetchBall;
   coronaHeights?: CoronaHeightsPark;
+  fireworks?: Fireworks;
   worldQueries?: WorldQueries;
   setTool?: (tool: string) => void;
   /** Apply a local, non-persisted board configuration for demos and capture. */
@@ -76,11 +78,13 @@ export type Demo = {
 import { buskersCinematic } from "./demos/buskersCinematic";
 import { hoverboardCinematic } from "./demos/hoverboardCinematic";
 import { dogParkCinematic } from "./demos/dogParkCinematic";
+import { roqnOpenRoadCinematic } from "./demos/roqnOpenRoadCinematic";
 
 const DEMOS: Record<string, Demo> = {
   [buskersCinematic.name]: buskersCinematic,
   [hoverboardCinematic.name]: hoverboardCinematic,
-  [dogParkCinematic.name]: dogParkCinematic
+  [dogParkCinematic.name]: dogParkCinematic,
+  [roqnOpenRoadCinematic.name]: roqnOpenRoadCinematic
 };
 
 export function runDemo(name: string, ctx: DemoContext) {

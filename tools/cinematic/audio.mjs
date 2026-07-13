@@ -12,7 +12,8 @@ const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 
 const PRODUCTION_DURATIONS = Object.freeze({
   hoverboard: 15,
-  "dog-park": 11
+  "dog-park": 11,
+  "roqn-open-road": 30
 });
 
 /**
@@ -36,6 +37,16 @@ export const CINEMATIC_AUDIO_PLANS = Object.freeze({
     { time: 4.83, id: "bounce-2", description: "second ball bounce" },
     { time: 4.5, id: "chase", description: "dog chase begins" },
     { time: 9.3, id: "resolve", description: "sunset wide resolve" }
+  ]),
+  "roqn-open-road": Object.freeze([
+    { time: 0, id: "garden", description: "Botanical Garden dawn flight" },
+    { time: 6, id: "car", description: "Embarcadero street run" },
+    { time: 12, id: "palace", description: "Palace lagoon drone reveal" },
+    { time: 18, id: "golden-gate", description: "Golden Gate bird pass" },
+    { time: 24, id: "speedboat", description: "Bay Bridge speedboat run" },
+    { time: 25.25, id: "shell-one", description: "first bay shell" },
+    { time: 27.8, id: "burst", description: "Bay Lights firework bloom" },
+    { time: 29.3, id: "resolve", description: "open-water resolve" }
   ])
 });
 
@@ -48,7 +59,7 @@ const DEFAULT_DOG_PARK_BEDS = Object.freeze([
  * Render the score and sound design for one cinematic production.
  *
  * @param {{
- *   id: 'hoverboard'|'dog-park',
+ *   id: 'hoverboard'|'dog-park'|'roqn-open-road',
  *   duration?: number,
  *   fps?: number,
  *   seed?: number,
@@ -88,7 +99,7 @@ export async function renderCinematicAudio(production, outputPath) {
 
   if (id === "hoverboard") {
     scoreHoverboard(mix);
-  } else {
+  } else if (id === "dog-park") {
     scoreDogPark(mix);
     const bedPlan = Array.isArray(production.audio?.beds)
       ? production.audio.beds
@@ -96,9 +107,11 @@ export async function renderCinematicAudio(production, outputPath) {
     for (let i = 0; i < bedPlan.length; i += 1) {
       beds.push(mixNatureBed(mix, bedPlan[i], i));
     }
+  } else {
+    scoreRoqnOpenRoad(mix);
   }
 
-  const levels = masterAndLimit(mix, id === "dog-park" ? 2 : 1.35);
+  const levels = masterAndLimit(mix, id === "dog-park" ? 2 : id === "roqn-open-road" ? 1.65 : 1.35);
   const absoluteOutput = path.resolve(outputPath);
   const wav = encodePcm16Wav(mix.left, mix.right, SAMPLE_RATE);
   await atomicWrite(absoluteOutput, wav);
@@ -178,6 +191,46 @@ export async function renderTransitionAudio(options = {}, outputPath) {
     rmsDb: levels.rmsDb,
     beds: []
   };
+}
+
+function scoreRoqnOpenRoad(mix) {
+  addPad(mix, { start: 0, duration: 12.3, notes: [48, 55, 60, 64, 69], gain: 0.044, pan: -0.08, brightness: 0.38 });
+  addPad(mix, { start: 11.5, duration: 12.8, notes: [50, 57, 62, 66, 71], gain: 0.049, pan: 0.08, brightness: 0.5 });
+  addPad(mix, { start: 23.4, duration: 6.6, notes: [45, 52, 57, 61, 66, 73], gain: 0.064, pan: 0, brightness: 0.65 });
+  addAir(mix, { start: 0, duration: 30, gain: 0.016, panDrift: 0.72 });
+
+  const notes = [76, 81, 83, 88, 79, 86, 90, 83, 88, 93];
+  const times = [0.6, 3.25, 5.1, 7.1, 10.1, 12.35, 15.25, 18.35, 21.15, 24.15];
+  for (let i = 0; i < notes.length; i += 1) {
+    addChime(mix, { start: times[i], midi: notes[i], duration: 1.55, gain: 0.046, pan: Math.sin(i * 1.3) * 0.55 });
+  }
+
+  addWhoosh(mix, { start: 0.08, duration: 1.5, gain: 0.055, panFrom: -0.6, panTo: 0.35, direction: "out" });
+  addFoley(mix, { start: 0.2, duration: 5.6, gain: 0.024, pan: -0.08, character: "grass" });
+  addWhoosh(mix, { start: 3.1, duration: 1.25, gain: 0.075, panFrom: 0.55, panTo: -0.45, direction: "in" });
+  addSub(mix, { start: 4.5, duration: 0.9, fromHz: 52, toHz: 39, gain: 0.065 });
+
+  addClick(mix, { start: 5.98, gain: 0.14, pan: -0.2, toneHz: 760 });
+  addPropulsion(mix, { start: 6.02, duration: 5.85, fromHz: 72, toHz: 138, gain: 0.068 });
+  addFoley(mix, { start: 6.05, duration: 5.8, gain: 0.026, pan: 0.05, character: "board" });
+  addWhoosh(mix, { start: 8.65, duration: 1.25, gain: 0.06, panFrom: -0.5, panTo: 0.62, direction: "out" });
+
+  addWhoosh(mix, { start: 11.72, duration: 1.1, gain: 0.048, panFrom: 0.4, panTo: -0.35, direction: "in" });
+  addChime(mix, { start: 12.1, midi: 74, duration: 2.4, gain: 0.062, pan: -0.2 });
+  addChime(mix, { start: 15.05, midi: 81, duration: 2.25, gain: 0.058, pan: 0.28 });
+
+  addSub(mix, { start: 17.72, duration: 0.9, fromHz: 46, toHz: 58, gain: 0.08 });
+  addWhoosh(mix, { start: 18, duration: 5.8, gain: 0.068, panFrom: -0.7, panTo: 0.72, direction: "out" });
+  addFoley(mix, { start: 18.15, duration: 5.45, gain: 0.02, pan: 0, character: "grass" });
+  addWhoosh(mix, { start: 21.25, duration: 1.15, gain: 0.085, panFrom: 0.65, panTo: -0.65, direction: "in" });
+
+  addSub(mix, { start: 23.78, duration: 0.82, fromHz: 44, toHz: 67, gain: 0.105 });
+  addPropulsion(mix, { start: 24, duration: 6, fromHz: 54, toHz: 98, gain: 0.075 });
+  addWhoosh(mix, { start: 24.05, duration: 5.75, gain: 0.045, panFrom: -0.25, panTo: 0.32, direction: "out" });
+  for (const [start, pan, midi] of [[26.6, -0.35, 86], [27.65, 0.38, 90], [28.55, -0.18, 93], [29.15, 0.22, 97]]) {
+    addSub(mix, { start: start - 0.08, duration: Math.min(0.75, 30 - start + 0.08), fromHz: 58, toHz: 35, gain: 0.08 });
+    addChime(mix, { start, midi, duration: Math.min(1.4, 30 - start), gain: 0.065, pan });
+  }
 }
 
 function scoreHoverboard(mix) {
