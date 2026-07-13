@@ -7,10 +7,19 @@ import * as THREE from "three/webgpu";
 import type { BuildingSpec } from "../core/types";
 import { appendPrism, emptyArrays, geometryFrom, lodMaterial, type PrismArrays } from "./lod";
 import { footprintGrade, type GroundSampler } from "./foundation";
+import { setLocalFarShadowOnly } from "../../shadows/shadowLayers";
+
+// All chunks share one unlit depth-only material. The proxy meshes never enter
+// the beauty camera, and their geometry is shared with the merged LOD mesh.
+const shadowProxyMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff });
+shadowProxyMaterial.name = "cityGenChunkShadowProxy.depth";
+shadowProxyMaterial.toneMapped = false;
 
 export interface ChunkLOD {
   /** finished merged mesh, or null while still building */
   mesh: THREE.Mesh | null;
+  /** stable shadow-only massing, independent of beauty/detail visibility */
+  shadowMesh: THREE.Mesh | null;
   done: boolean;
   /** append up to `budget` more buildings; sets mesh + done when finished */
   pump(budget: number): void;
@@ -39,6 +48,7 @@ export function buildChunkLOD(specs: BuildingSpec[], opts?: ChunkLODOptions): Ch
   let cursor = 0;
   const chunk: ChunkLOD = {
     mesh: null,
+    shadowMesh: null,
     done: specs.length === 0,
     pump(budget: number) {
       if (chunk.done) return;
@@ -62,6 +72,14 @@ export function buildChunkLOD(specs: BuildingSpec[], opts?: ChunkLODOptions): Ch
         mesh.frustumCulled = true;
         mesh.matrixAutoUpdate = false; // geometry is world-space
         chunk.mesh = mesh;
+        const shadowMesh = new THREE.Mesh(g, shadowProxyMaterial);
+        shadowMesh.name = "cityGenChunkShadowProxy";
+        shadowMesh.castShadow = true;
+        shadowMesh.receiveShadow = false;
+        shadowMesh.frustumCulled = true;
+        shadowMesh.matrixAutoUpdate = false; // geometry is world-space
+        setLocalFarShadowOnly(shadowMesh);
+        chunk.shadowMesh = shadowMesh;
         const visibility = g.getAttribute("lodVisibility") as THREE.BufferAttribute;
         visibility.setUsage(THREE.DynamicDrawUsage);
         for (const index of hidden) {
@@ -84,6 +102,8 @@ export function buildChunkLOD(specs: BuildingSpec[], opts?: ChunkLODOptions): Ch
       attr.needsUpdate = true;
     },
     dispose() {
+      chunk.shadowMesh?.removeFromParent();
+      chunk.shadowMesh = null;
       if (chunk.mesh) { chunk.mesh.geometry.dispose(); chunk.mesh = null; }
     },
   };

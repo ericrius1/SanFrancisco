@@ -15,6 +15,7 @@ import { UnderwaterOverlay } from "./fx/underwater";
 import { syncBallGlowNight } from "./fx/ballGlow";
 import { SeaPillars } from "./world/seaPillars";
 import { TileStreamer } from "./world/tiles";
+import { FarOcclusionField } from "./world/shadows/farOcclusionField";
 import { createRoadMarkings } from "./world/roadMarkings";
 import { RoadGraph } from "./world/traffic/roadGraph";
 import { TrafficLightView } from "./world/traffic/trafficLights";
@@ -119,7 +120,8 @@ async function boot() {
   const { renderer, scene, camera } = await createRenderCore(app);
   bootMark("gpu");
 
-  const sky = new Sky(scene);
+  const farOcclusion = new FarOcclusionField(map);
+  const sky = new Sky(scene, farOcclusion);
   const water = new Water(scene, map);
   const oceanBeachWaves = new OceanBeachWaves(scene);
   const underwater = new UnderwaterOverlay(app, map);
@@ -127,6 +129,7 @@ async function boot() {
 
   progress(40, "streaming the city");
   const tiles = new TileStreamer(scene);
+  tiles.onShadowCastersChanged = (scope) => sky.invalidateStaticShadows(scope);
   await tiles.init(map);
   bootMark("tiles");
   // off-boot-path loads (lane markings, the road graph's signals + lamps)
@@ -143,6 +146,38 @@ async function boot() {
     .finally(() => auxPending--);
 
   const physics = await Physics.create(map, tiles);
+  // Physics owns the primary tile callbacks. Chain the far field after it so
+  // streamed collider massing feeds both systems without changing ownership.
+  const syncFarTile = (key: string, colliders = tiles.loaded.get(key)?.colliders) => {
+    if (!colliders) return;
+    farOcclusion.setBoxOccluders(
+      `tile:${key}`,
+      colliders.filter((collider) => tiles.isAlive(key, collider.i))
+    );
+  };
+  const physicsTileColliders = tiles.onTileColliders;
+  tiles.onTileColliders = (key, colliders) => {
+    physicsTileColliders(key, colliders);
+    syncFarTile(key, colliders);
+  };
+  const physicsTileUnload = tiles.onTileUnload;
+  tiles.onTileUnload = (key) => {
+    physicsTileUnload(key);
+    farOcclusion.deleteOccluders(`tile:${key}`);
+  };
+  const physicsBuildingAlive = tiles.onBuildingAlive;
+  tiles.onBuildingAlive = (key, index, alive) => {
+    physicsBuildingAlive(key, index, alive);
+    // Mesh-only CityGen swaps remain alive and retain canonical massing. Full
+    // authored suppression/revival refreshes the atlas without ghost blockers.
+    syncFarTile(key);
+  };
+  // Open-water bridge spans and landmark boxes do not belong to streamed
+  // visual tiles. Feed their existing physics proxy set into the same field.
+  void fetch("/data/landmark-colliders.json")
+    .then((response) => response.ok ? response.json() : [])
+    .then((colliders) => farOcclusion.setBoxOccluders("landmarks", colliders))
+    .catch(() => {});
   bootMark("physics");
 
   progress(62, "waking up san francisco");
@@ -390,6 +425,7 @@ async function boot() {
     if (wildlands) for (const g of wildlands.groups) g.visible = visible;
     goldenGateTennis?.setFoliageVisible(visible);
     coronaHeights?.setFoliageVisible(visible);
+    sky.invalidateStaticShadows();
   };
   const islands = new Islands(physics, map, scene);
 
@@ -630,7 +666,7 @@ async function boot() {
   hud.setMode(player.mode);
 
   // post-processing: scene pass AA + optional stylized screen effects
-  const pipeline = createRenderPipeline(renderer, scene, camera);
+  const pipeline = createRenderPipeline(renderer, scene, camera, sky.sun);
 
   // Dynamic-resolution governor: watches the real rAF cadence and steps the
   // drawing-buffer pixel ratio between RENDER_MODE.minPixelRatio and the boot
@@ -1200,9 +1236,8 @@ async function boot() {
   let throwZoomBase = -1;
 
   // Warm the GPU pipelines while the loading screen still covers the canvas.
-  // First render lets the CSM shadow node build its cascade lights (that build
-  // changes the scene light set once, and anything compiled before it would
-  // need a second compile after). Then one render with EVERY mode's meshes
+  // First render lets the clipmap shadow node build its three projection maps
+  // and the close-contact target. Then one render with EVERY mode's meshes
   // visible compiles all eight vehicles in a single covered pass — the compile
   // stall lands behind the opaque backdrop where nobody can see it, so the
   // old post-reveal idle-warm chain (one visible hitch per mode) is gone and
@@ -1211,7 +1246,7 @@ async function boot() {
   // Culling is off so meshes parked at the origin still draw.
   bootMark("world");
   progress(88, "warming up the vehicles");
-  sky.update(0, camera.position);
+  sky.update(0, camera.position, player.renderPosition);
   syncBallGlowNight(sky.sunElevation);
   // The small debug overlays are normally hidden, which used to leave their
   // line/standard-material pipelines cold until the first checkbox click.
@@ -1324,6 +1359,7 @@ async function boot() {
     const buildGarden = () => {
       const g = gardenMod.createBotanicalGarden(map);
       garden = g;
+      void g.ready.then(() => sky.invalidateStaticShadows(), () => {});
       const h = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
       if (h) Object.assign(h, { garden: g });
       return g;
@@ -1385,6 +1421,7 @@ async function boot() {
       const h = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
       if (h) Object.assign(h, { wildlands: _wildlands });
       await _wildlands.ready;
+      sky.invalidateStaticShadows();
       if (deferred) {
         // Compile each grove group before it is ever shown, so a live frame
         // never draws an uncompiled tree (no first-look hitch).
@@ -1395,7 +1432,14 @@ async function boot() {
             console.warn("[wildlands] deferred compile failed:", err);
           }
         }
-        if (foliageOn) for (const g of _wildlands.groups) g.visible = true;
+        if (foliageOn) {
+          for (const g of _wildlands.groups) g.visible = true;
+          // The earlier ready invalidation may have been consumed while every
+          // deferred grove/proxy was hidden during compileAsync. Refresh after
+          // the atomic reveal so the first visible frame cannot retain a map
+          // that omits the newly enabled tree massing.
+          sky.invalidateStaticShadows();
+        }
       }
       // Presidio golf game. Own guard — a bad golf.json must not take the
       // groves/city down with it.
@@ -1775,6 +1819,9 @@ async function boot() {
       voice.update(camera); // keep talking while paused — it's a social feature
       minimap.update();
       playerLocator.update(camera, player.position, remotes.locatorTargets());
+      // Social/remount poses can still move while the simulation clock is
+      // frozen. Keep the full-rate hero map aligned before drawing this frame.
+      sky.update(elapsed, camera.position, player.renderPosition);
       input.endFrame();
       pipeline.render();
       return;
@@ -1856,6 +1903,9 @@ async function boot() {
       // paused-but-roaming still streams tiles/citygen — keep their deferred
       // assembly draining so the frozen city fills in around the live player
       scheduler.run(frameDt < 1 / 55 ? 3 : 1.5);
+      // The world clock stays frozen, but the player and camera can move in this
+      // branch. Keep shadow coverage and the every-frame subject map current.
+      sky.update(elapsed, camera.position, player.renderPosition);
       input.endFrame();
       pipeline.render();
       return;
@@ -2326,7 +2376,7 @@ async function boot() {
       chase.indoor = citygenRing.current?.isPlayerInside() ?? false; // blend into the indoor eye rig
       chase.update(frameDt, player, input);
     }
-    sky.update(elapsed, camera.position);
+    sky.update(elapsed, camera.position, player.renderPosition);
     water.update(elapsed, camera.position, player.renderPosition);
     oceanBeachWaves.update(elapsed, player.renderPosition);
     underwater.update(camera, elapsed);
@@ -2503,10 +2553,11 @@ async function boot() {
   // Deterministic capture stops the wall-clock loop so tools can drive tick(dt).
   (window as never as { __sfManual: (on: boolean) => void }).__sfManual = frameDriver.setManual;
 
-  // Dev-only free camera for headless render probes: locks the camera to a fixed
-  // eye→target via the cine hook (owns pose+camera, so chase can't fight it).
-  // Pass null to release back to the chase camera.
-  if (import.meta.env.DEV) {
+  // Dev/profile-only free camera for headless render probes: locks the camera
+  // to a fixed eye→target via the cine hook (owns pose+camera, so chase can't
+  // fight it). `profile` makes the production-preview probe path functional;
+  // ordinary production sessions expose nothing. Pass null to release.
+  if (import.meta.env.DEV || new URLSearchParams(location.search).has("profile")) {
     (window as never as { __sfFreeCam: (eye: [number, number, number] | null, target?: [number, number, number]) => void }).__sfFreeCam = (
       eye,
       target = [0, 0, 0]
@@ -2532,7 +2583,7 @@ async function boot() {
       // deferred render warmup runs, tick() early-returns without rendering, so
       // screenshots would capture a stale boot-pose frame no matter what the
       // camera was set to.
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, goldenGateTennis, pickleball: pickleballController.game, pickleballAmbient: pickleballController.ambient, pickleballAudio: pickleballController.audio, pickleballUI: pickleballController.ui, pickleballController, coronaHeights, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, siteGate,
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, goldenGateTennis, pickleball: pickleballController.game, pickleballAmbient: pickleballController.ambient, pickleballAudio: pickleballController.audio, pickleballUI: pickleballController.ui, pickleballController, coronaHeights, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, siteGate,
         TSL,
         renderIdle: () => modulesReady && !lateRenderWarmupActive }
     });

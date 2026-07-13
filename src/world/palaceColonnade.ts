@@ -1,6 +1,11 @@
 import * as THREE from "three/webgpu";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { PALACE_LAGOON, type WorldMap } from "./heightmap";
+import {
+  enableLocalShadowLayer,
+  setShadowOnlyLayer,
+  SHADOW_LAYERS
+} from "./shadows/shadowLayers";
 
 // Palace of Fine Arts centre (game frame), mirrors blender_city.py.
 const CX = -388;
@@ -40,6 +45,14 @@ const CAP_TOP = 15.4;
 const ENTAB_TOP = 17.6;
 const CORNICE_TOP = 18.3;
 const ATTIC_TOP = 20.8;
+
+type PeristylePoint = { x: number; z: number; t: number; cluster: boolean };
+
+// One unlit material serves the shadow-only far massing. The proxy never enters
+// the beauty camera; ShadowNode replaces its color path and consumes only depth.
+const FAR_SHADOW_MATERIAL = new THREE.MeshBasicMaterial({ color: 0xffffff });
+FAR_SHADOW_MATERIAL.name = "palace_far_shadow.depth";
+FAR_SHADOW_MATERIAL.toneMapped = false;
 
 /** Append a solid-colour vertical (or tilted) cylinder to the soup. */
 function tube(
@@ -189,6 +202,141 @@ function colPoint(t: number): { x: number; z: number } {
   };
 }
 
+function proxyBox(
+  out: THREE.BufferGeometry[],
+  x: number,
+  y: number,
+  z: number,
+  sx: number,
+  sy: number,
+  sz: number,
+  yaw = 0
+) {
+  const geo = new THREE.BoxGeometry(sx, sy, sz).toNonIndexed();
+  if (yaw) geo.rotateY(yaw);
+  geo.translate(x, y, z);
+  out.push(geo);
+}
+
+function proxyCylinder(
+  out: THREE.BufferGeometry[],
+  x: number,
+  y: number,
+  z: number,
+  radius: number,
+  height: number,
+  radialSegments: number
+) {
+  const geo = new THREE.CylinderGeometry(radius, radius, height, radialSegments, 1, false).toNonIndexed();
+  geo.translate(x, y, z);
+  out.push(geo);
+}
+
+/**
+ * Metre-scale shadow representation for the 1024 m far domain. Regular columns
+ * stay separate so the two wings remain recognisably open; four-column pavilion
+ * clusters collapse to one block, paired bays share one chord, and the rotunda
+ * keeps eight large arch gaps under a low-poly drum/dome. All high-frequency
+ * classical ornament and planting remains exclusively in the local map.
+ */
+function createPalaceFarShadowProxy(
+  map: WorldMap,
+  g0: number,
+  spans: readonly (readonly PeristylePoint[])[]
+): THREE.Mesh {
+  const parts: THREE.BufferGeometry[] = [];
+  const columnTop = g0 + CAP_TOP + 0.36;
+
+  for (const span of spans) {
+    for (const p of span) {
+      const base = Math.min(map.effectiveGround(p.x, p.z), g0 + 0.5) - 0.8;
+      const height = columnTop - base;
+      if (p.cluster) {
+        // At 1 m/texel the four overlapping 2.5 m shafts read as one pavilion
+        // mass. Preserve its wider footprint without submitting four columns.
+        proxyBox(parts, p.x, base + height / 2, p.z, 6.4, height, 5.7, -(p.t + Math.PI / 2));
+      } else {
+        proxyBox(parts, p.x, base + height / 2, p.z, 2.4, height, 2.4);
+      }
+    }
+
+    // Two authored bays per proxy chord: the sag from the 112 m arc is well
+    // below one far texel, halving entablature geometry without straightening
+    // the wing's visible sweep.
+    for (let k = 0; k < span.length - 1; k += 2) {
+      const a = span[k];
+      const b = span[Math.min(k + 2, span.length - 1)];
+      const mx = (a.x + b.x) / 2;
+      const mz = (a.z + b.z) / 2;
+      const length = Math.hypot(b.x - a.x, b.z - a.z) + 1.8;
+      const yaw = -Math.atan2(b.z - a.z, b.x - a.x);
+      proxyBox(
+        parts,
+        mx,
+        g0 + (CAP_TOP + CORNICE_TOP) / 2,
+        mz,
+        length,
+        CORNICE_TOP - CAP_TOP,
+        2.7,
+        yaw
+      );
+    }
+
+    for (const p of span) {
+      if (!p.cluster) continue;
+      const yaw = -(p.t + Math.PI / 2);
+      proxyBox(
+        parts,
+        p.x,
+        g0 + (CORNICE_TOP + ATTIC_TOP + 1.1) / 2,
+        p.z,
+        7.5,
+        ATTIC_TOP + 1.1 - CORNICE_TOP,
+        5.7,
+        yaw
+      );
+      // The planter figures form a deliberate skyline cadence and remain just
+      // large enough to affect a 1 m texel as one coarse finial block.
+      proxyBox(parts, p.x, g0 + ATTIC_TOP + 2.1, p.z, 1.1, 2.2, 1.1, yaw);
+    }
+  }
+
+  // Rotunda: a shallow plinth and eight broad piers retain the large arch gaps;
+  // a low-poly cornice and hemisphere carry the iconic upper silhouette.
+  proxyCylinder(parts, CX, g0 + 1.2, CZ, 13.4, 3.4, 12);
+  for (let k = 0; k < 8; k++) {
+    const a = (k / 8) * Math.PI * 2;
+    proxyBox(
+      parts,
+      CX + Math.cos(a) * 14.6,
+      g0 + 14.4,
+      CZ + Math.sin(a) * 14.6,
+      4.8,
+      23.6,
+      3.8,
+      -(a + Math.PI / 2)
+    );
+  }
+  proxyCylinder(parts, CX, g0 + 28.45, CZ, 17.45, 4.9, 16);
+  const dome = new THREE.SphereGeometry(1, 16, 5, 0, Math.PI * 2, 0, Math.PI / 2).toNonIndexed();
+  dome.scale(16.9, 16.4, 16.9);
+  dome.translate(CX, g0 + 30.7, CZ);
+  parts.push(dome);
+
+  const geometry = mergeGeometries(parts, false)!;
+  for (const part of parts) part.dispose();
+  geometry.computeBoundingBox();
+  geometry.computeBoundingSphere();
+
+  const proxy = new THREE.Mesh(geometry, FAR_SHADOW_MATERIAL);
+  proxy.name = "palace_far_shadow_proxy";
+  proxy.castShadow = true;
+  proxy.receiveShadow = false;
+  proxy.matrixAutoUpdate = false; // geometry is already in world coordinates
+  setShadowOnlyLayer(proxy, SHADOW_LAYERS.FAR_PROXY);
+  return proxy;
+}
+
 /**
  * Runtime Palace of Fine Arts peristyle — the grand curved colonnade that in
  * real life sweeps around the lagoon behind the rotunda. The OSM data carries
@@ -212,7 +360,6 @@ export function createPalaceColonnade(map: WorldMap): THREE.Group {
   const stone: THREE.BufferGeometry[] = [];
   const planting: THREE.BufferGeometry[] = [];
 
-  type PeristylePoint = { x: number; z: number; t: number; cluster: boolean };
   const spans: PeristylePoint[][] = PERISTYLE_SPANS.map((span) => {
     const mid = Math.floor((span.columns - 1) / 2);
     const pts: PeristylePoint[] = [];
@@ -429,13 +576,17 @@ export function createPalaceColonnade(map: WorldMap): THREE.Group {
   const mesh = new THREE.Mesh(mergeGeometries(stone, false)!, mat);
   mesh.name = "palace_peristyle_stone";
   mesh.castShadow = true;
+  enableLocalShadowLayer(mesh);
   mesh.receiveShadow = true;
   group.add(mesh);
+
+  group.add(createPalaceFarShadowProxy(map, g0, spans));
 
   const plantMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.96, metalness: 0, side: THREE.DoubleSide });
   const plantMesh = new THREE.Mesh(mergeGeometries(planting, false)!, plantMat);
   plantMesh.name = "palace_garden_planting";
   plantMesh.castShadow = true;
+  enableLocalShadowLayer(plantMesh);
   plantMesh.receiveShadow = true;
   group.add(plantMesh);
 

@@ -9,14 +9,14 @@
 // holding every building's geometry for that material as a separate BatchedMesh
 // geometry+instance. On this Metal/WebGPU backend BatchedMesh's multi-draw path
 // renders N unique geometries far faster than N meshes (spike: 300 uniques at
-// 2 ms vs 21 ms), AND — unlike the frustumCulled=false bundles — it frustum- and
-// shadow-culls per instance, so off-screen buildings stop being paid for. Both
+// 2 ms vs 21 ms), AND — unlike the frustumCulled=false bundles — it frustum-culls
+// per instance, so off-screen buildings stop being paid for. Both
 // together break the linear-in-building-count wall so the detail COUNT can grow.
 //
 // Per-building CROSSFADE + body TINT ride a per-batch RGBA DataTexture indexed by
 // the batch's own indirect draw id (getIndirectIndex, exactly as three's `batch`
-// node maps it): rgb = painted-lady tint (walls), a = fade. Fading a building is
-// one texel write per material it uses — no material clones, no re-record. The
+// node maps it): rgb = painted-lady tint (walls), a = fade. Fading is one texel
+// write per material it uses — no material clones, no re-record. The
 // fade dithers in the OPAQUE pass via alphaHash (a==1 → no discard), staying in
 // visual step with the instanced window layer, which fades the same way.
 //
@@ -39,8 +39,6 @@ const DATA_W = 128; // data texture width; height grows with capacity
 export interface ShellHandle {
   /** dithered crossfade: o<1 → alphaHash-discarded toward invisible; o≥1 opaque */
   setFade(o: number): void;
-  /** distance-gated shadow casting (whole building) */
-  setCastShadow(cast: boolean): void;
   /** show/hide the baked door leaf+back instances when the player opens the door */
   setDoorLeavesVisible(vis: boolean): void;
   /** hide/show EVERY instance this building owns in the batch (walls/roof/trim/
@@ -80,12 +78,21 @@ function indirectId(mesh: THREE.BatchedMesh): N {
   })();
 }
 
-/** sample this instance's (tint.rgb, fade.a) from the batch data texture */
-function instanceData(mesh: THREE.BatchedMesh, dataTex: THREE.DataTexture): { tint: N; fade: N } {
+/** Sample this instance's tint, visual fade and independent shadow gate. Packing
+ *  the two scalar controls into alpha keeps the existing one-texel hot update. */
+function instanceData(
+  mesh: THREE.BatchedMesh,
+  dataTex: THREE.DataTexture,
+): { tint: N; fade: N; castsShadow: N } {
   const id = indirectId(mesh);
   const w = int(DATA_W);
   const texel = textureLoad(dataTex as N, ivec2(id.mod(w), id.div(w)));
-  return { tint: texel.xyz as N, fade: texel.w as N };
+  const packed = texel.w as N;
+  return {
+    tint: texel.xyz as N,
+    fade: packed.mod(2),
+    castsShadow: packed.greaterThanEqual(2),
+  };
 }
 
 // ---- batch materials -------------------------------------------------------------
@@ -93,11 +100,14 @@ function instanceData(mesh: THREE.BatchedMesh, dataTex: THREE.DataTexture): { ti
 function makeWallBatchMaterial(kind: WallKind, mesh: THREE.BatchedMesh, dataTex: THREE.DataTexture): THREE.MeshStandardNodeMaterial {
   const m = new THREE.MeshStandardNodeMaterial({ roughness: 0.92, metalness: 0, side: THREE.DoubleSide });
   m.envMapIntensity = 5.5;
-  const { tint, fade } = instanceData(mesh, dataTex);
+  const { tint, fade, castsShadow } = instanceData(mesh, dataTex);
   const tinted = (wallPattern(kind) as N).mul(tint); // grayscale pattern × per-instance body colour
   m.colorNode = tinted;
   m.emissiveNode = tinted.mul(float(WALL_EMISSIVE)); // faint self-lit tint (near-zero ambient world)
   m.opacityNode = fade.mul(cameraCutawayVisibility());
+  m.maskShadowNode = castsShadow
+    .and(fade.greaterThanEqual(0.5))
+    .and(cameraCutawayVisibility().greaterThanEqual(0.5));
   m.alphaHash = true;
   return m;
 }
@@ -112,8 +122,11 @@ function makeStdBatchMaterial(base: THREE.Material, mesh: THREE.BatchedMesh, dat
   });
   m.envMapIntensity = s.envMapIntensity ?? 5.5;
   if (s.emissive) { m.emissive = s.emissive.clone(); m.emissiveIntensity = s.emissiveIntensity ?? 1; }
-  const { fade } = instanceData(mesh, dataTex);
+  const { fade, castsShadow } = instanceData(mesh, dataTex);
   m.opacityNode = fade.mul(cameraCutawayVisibility());
+  m.maskShadowNode = castsShadow
+    .and(fade.greaterThanEqual(0.5))
+    .and(cameraCutawayVisibility().greaterThanEqual(0.5));
   m.alphaHash = true;
   return m;
 }
@@ -159,7 +172,8 @@ export function createShellBatchLayer(
     const mesh = new THREE.BatchedMesh(CAP, CAP * VPB, CAP * VPB * 2);
     mesh.name = `cityGenShellBatch.${key}`;
     mesh.frustumCulled = false;   // BatchedMesh does its OWN per-instance frustum cull
-    mesh.castShadow = true;
+    // Stable chunk proxies own shadow massing; detail LOD never enters a map.
+    mesh.castShadow = false;
     mesh.receiveShadow = true;
     // paint/cursor rays land on the prism/refiner, not this batch (its geometry is
     // world-space but three offsets by the instance matrix — opt out of raycast).
@@ -179,8 +193,8 @@ export function createShellBatchLayer(
     b.arr[o] = r; b.arr[o + 1] = g; b.arr[o + 2] = bl; b.arr[o + 3] = a;
     b.data.needsUpdate = true;
   };
-  const writeFade = (b: Batch, inst: number, a: number) => {
-    b.arr[inst * 4 + 3] = a;
+  const writeFade = (b: Batch, inst: number, fade: number) => {
+    b.arr[inst * 4 + 3] = fade;
     b.data.needsUpdate = true;
   };
 
@@ -210,22 +224,16 @@ export function createShellBatchLayer(
         b.mesh.setMatrixAt(inst, o.matrix);
         const door = md.materialId === "citygen.doorleaf" || md.materialId === "citygen.doorback";
         if (isWall) { _c.copy(o.tint); writeTexel(b, inst, _c.r, _c.g, _c.b, 0.02); }
-        else writeTexel(b, inst, 1, 1, 1, 0.02);    // born fading (ring fades every build in)
+        else writeTexel(b, inst, 1, 1, 1, 0.02);    // born fading
         placed.push({ batch: b, geo, inst, door });
       }
       if (!placed.length) return null;
-      let castShadow = true;
+      let fade = 0.02;
       let freed = false;
       return {
-        setFade(fade: number) { for (const p of placed) writeFade(p.batch, p.inst, fade); },
-        setCastShadow(cast: boolean) {
-          if (cast === castShadow) return;
-          castShadow = cast;
-          // BatchedMesh has one castShadow for the whole mesh; per-building shadow
-          // gating is handled by hiding this building's instances from the shadow
-          // pass via a zero-fade... no — instead rely on the batch's per-instance
-          // frustum/distance cull. This hook is kept for API parity; a future
-          // near/far split batch can honour it. (No-op keeps shadows correct.)
+        setFade(nextFade: number) {
+          fade = nextFade;
+          for (const p of placed) writeFade(p.batch, p.inst, fade);
         },
         setDoorLeavesVisible(vis: boolean) {
           for (const p of placed) if (p.door) p.batch.mesh.setVisibleAt(p.inst, vis);

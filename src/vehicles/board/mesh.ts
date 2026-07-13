@@ -2,6 +2,7 @@ import * as THREE from "three/webgpu";
 import { abs, cos, float, length, mix, normalView, positionViewDirection, sin, smoothstep, texture, uniform, uv, vec2, vec3 } from "three/tsl";
 import { LIGHT_SCALE } from "../../config";
 import { lightAnchor, type LightAnchorSpec } from "../../player/lightPool";
+import { applyVehicleShadowPolicy } from "../shadows";
 import {
   boardGlowHex,
   boardPlumeHex,
@@ -670,6 +671,10 @@ export function buildBoardMesh(config?: BoardConfig): THREE.Group {
   const anim: BoardAnim = { spinners, pulseMat, pulseBase, lights, surface: surfaceState, halo, plume };
   g.userData.boardAnim = anim;
   g.userData.boardSurface = surfaceState;
+  // The closed deck shell is the single physical caster. Matte hardware can
+  // receive, while basic-material rails, lights, halo, plumes, and motes remain
+  // intentionally shadowless.
+  applyVehicleShadowPolicy(g, [shell]);
   g.userData.dispose = () => {
     for (const x of geos) x.dispose();
     for (const x of mats) x.dispose();

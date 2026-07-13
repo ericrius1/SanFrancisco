@@ -61,7 +61,6 @@ export function createWildlands(map: GardenTerrain, exclusions: WildlandsExclusi
     name: "wildlands_trees",
     chunkSize: 176,
     visibleDistance: 380, // small trees at range read as noise; cull tighter for GPU
-    farCastShadow: false,
     // Kill LOD pop: the near hero clones reach OUT PAST lod2Dist (78 m), so by
     // the time a clone hands off to the instanced far tier it is already showing
     // the same LOD2 geometry — the swap is invisible. Clones on LOD2 are cheap
@@ -75,7 +74,6 @@ export function createWildlands(map: GardenTerrain, exclusions: WildlandsExclusi
     name: "buena_vista_trees",
     chunkSize: 150,
     visibleDistance: 1050,
-    farCastShadow: false,
     nearRadius: 96,
     nearExitRadius: 110,
     nearMax: 36

@@ -1,5 +1,6 @@
 import * as THREE from "three/webgpu";
 import { lightAnchor } from "../../player/lightPool";
+import { applyVehicleShadowPolicy } from "../shadows";
 
 /**
  * A sleek open-cockpit speedboat — the fast cousin of the day-sailer. Front is
@@ -134,5 +135,9 @@ export function buildSpeedboatMesh(): THREE.Group {
   // helm crew seat + wheel anchor (player.ts seats the driver rig here)
   g.userData.cockpit = { seat: [0, 0.5, 0.62], wheel: [0, 0.72, 0.12] };
 
+  // The closed hull supplies almost the entire water/ground silhouette; the
+  // outboard cowl is the one meaningful overhang. All interior matte surfaces
+  // receive, while the transparent windscreen stays shadowless.
+  applyVehicleShadowPolicy(g, [hull, cowl]);
   return g;
 }

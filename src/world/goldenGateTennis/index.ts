@@ -1,6 +1,7 @@
 import * as THREE from "three/webgpu";
 import { BodyType, type Physics } from "../../core/physics";
 import type { GroundTopOverlay, WorldMap } from "../heightmap";
+import { enableLocalFarShadowLayers, enableLocalShadowLayer } from "../shadows/shadowLayers";
 import { buildClubhouse, type ClubhouseBuild } from "./clubhouse";
 import { createClubhouseNpcs, type ClubhouseNpcs } from "./npcs";
 import {
@@ -268,6 +269,8 @@ function makeNets(specs: readonly GoldmanCourtSpec[], anchors: ReadonlyMap<Goldm
   posts.computeBoundingSphere();
   panels.castShadow = true;
   posts.castShadow = true;
+  enableLocalShadowLayer(panels);
+  enableLocalShadowLayer(posts);
   return [panels, posts] as const;
 }
 
@@ -545,6 +548,8 @@ function makeTrees(map: WorldMap) {
   crowns.computeBoundingSphere();
   trunks.castShadow = true;
   crowns.castShadow = true;
+  enableLocalFarShadowLayers(trunks);
+  enableLocalFarShadowLayers(crowns);
   trunks.receiveShadow = true;
   crowns.receiveShadow = true;
   return [trunks, crowns] as const;

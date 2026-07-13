@@ -1,5 +1,6 @@
 import * as THREE from "three/webgpu";
 import { float, normalLocal, positionLocal, sin, texture, time, uniform, uv, vec3 } from "three/tsl";
+import { enableShadowLayer, SHADOW_LAYERS } from "../world/shadows/shadowLayers";
 
 /**
  * ───────────────────────────────────────────────────────────────────────────
@@ -243,6 +244,7 @@ export function buildDrape(opts: { w?: number; h?: number; seg?: number; amp?: n
   const mat = rippleMaterial({ colorNode: texture(map, uv()), amp, speed, phase, pinTop: true });
   const m = new THREE.Mesh(geo, mat);
   m.castShadow = true;
+  enableShadowLayer(m, SHADOW_LAYERS.HERO_DYNAMIC);
   return m;
 }
 
@@ -324,6 +326,7 @@ export function buildFlag(opts: {
   const mat = rippleMaterial({ colorNode: texture(map, uv()), amp, speed, phase });
   const m = new THREE.Mesh(geo, mat);
   m.castShadow = true;
+  enableShadowLayer(m, SHADOW_LAYERS.HERO_DYNAMIC);
   return m;
 }
 

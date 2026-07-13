@@ -3,6 +3,7 @@ import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js
 import { float, instancedArray, instanceIndex, saturate, sin, uniform, uv, vec2, vec3, vec4, vertexStage } from "three/tsl";
 import { tunables } from "../core/persist";
 import type { WorldMap } from "./heightmap";
+import { enableLocalFarShadowLayers, enableLocalShadowLayer } from "./shadows/shadowLayers";
 
 // TSL node generics fight composition; any is the idiom here (see facade.ts)
 type N = any;
@@ -209,12 +210,17 @@ export function createSutroTower(map: WorldMap): THREE.Group {
   const shell = new THREE.Mesh(mergeGeometries(striped, false)!, shellMat);
   shell.name = "sutro_shell";
   shell.castShadow = true;
+  enableLocalFarShadowLayers(shell);
   shell.receiveShadow = true;
   group.add(shell);
 
   const braces = new THREE.Mesh(mergeGeometries(steel, false)!, steelMat);
   braces.name = "sutro_braces";
   braces.castShadow = true;
+  // Ring/X bracing and the six long guy wires remain readable in the 6.25 cm
+  // local map, but collapse into unstable sub-texel lines at the far map's
+  // 1 m resolution. The striped legs/decks/masts above own the far silhouette.
+  enableLocalShadowLayer(braces);
   braces.receiveShadow = true;
   group.add(braces);
 

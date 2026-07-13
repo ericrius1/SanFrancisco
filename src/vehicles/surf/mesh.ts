@@ -1,4 +1,5 @@
 import * as THREE from "three/webgpu";
+import { applyVehicleShadowPolicy } from "../shadows";
 
 function finGeometry() {
   const shape = new THREE.Shape();
@@ -66,5 +67,8 @@ export function buildSurfboardMesh(): THREE.Group {
   leash.rotation.x = Math.PI / 2;
   leash.position.set(0.25, 0.02, 1.55);
   group.add(leash);
+  // The closed deck already carries the complete board silhouette. Fins,
+  // decals, and leash receive but do not multiply shadow-map draws.
+  applyVehicleShadowPolicy(group, [deck]);
   return group;
 }

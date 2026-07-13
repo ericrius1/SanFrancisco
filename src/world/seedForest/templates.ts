@@ -23,7 +23,7 @@ export type SeedTreeDesignSpec = {
 
 export type GrownTemplate = {
   design: SeedTreeDesignSpec;
-  /** hero THREE.LOD (LOD0/1/2 baked in, shadows on, foliage shaded) */
+  /** hero THREE.LOD (LOD0/1/2 beauty geometry, foliage shaded) */
   template: THREE.LOD;
   /** the LOD2 level — source for instanced far tiers */
   lod2: THREE.Object3D;
@@ -123,7 +123,9 @@ function prepareTemplate(lodGroup: THREE.Object3D): THREE.LOD {
   lod.traverse((o) => {
     const m = o as THREE.Mesh;
     if (m.isMesh) {
-      m.castShadow = true;
+      // Stable shadow massing is supplied by treeShadowProxy. Keeping every
+      // hero/card tier non-casting removes wind shimmer and LOD handoff pops.
+      m.castShadow = false;
       m.receiveShadow = true;
     }
   });

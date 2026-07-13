@@ -21,6 +21,10 @@ import {
 } from "./layout";
 import { makeSummitCrags, summitKeepOut, summitPlatformLift } from "./summitCrags";
 import { fitGroundY } from "../groundcover/grounding";
+import {
+  enableShadowLayer,
+  SHADOW_LAYERS
+} from "../shadows/shadowLayers";
 
 const DETAIL_RANGE = 1450;
 const ACTIVITY_RANGE = 420;
@@ -32,6 +36,15 @@ const FOLIAGE_RANGE = 900;
 // Parts smaller than this never shadow-cast — invisible at CSM resolution,
 // but every casting mesh re-encodes into each shadow cascade.
 const CASTER_MIN_VOLUME = 1.5e-3; // m³
+/** Coarse, silhouette-scale classes admitted to the one-metre/texel far map.
+ * Everything else static remains local-only, regardless of aggregate instance
+ * spread, so a field of tiny props cannot qualify merely by covering an area. */
+const FAR_STATIC_CASTER_NAMES = new Set([
+  "corona_heights_chert_outcrops",
+  "corona_heights_tree_trunks",
+  "corona_heights_tree_crowns",
+  "corona_summit_chert_crags"
+]);
 const HILL_RX = 118;
 const HILL_RZ = 126;
 const HILL_STEP = 4;
@@ -660,6 +673,7 @@ function makeShrubsAndTrees(map: WorldMap) {
     new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.98 }),
     shrubCapacity
   );
+  shrubs.name = "corona_heights_shrubs";
   const dummy = new THREE.Object3D();
   const color = new THREE.Color();
   let shrubsCount = 0;
@@ -707,6 +721,8 @@ function makeShrubsAndTrees(map: WorldMap) {
     new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.96 }),
     treeSpots.length
   );
+  trunks.name = "corona_heights_tree_trunks";
+  crowns.name = "corona_heights_tree_crowns";
   treeSpots.forEach(([x, z, h, spread], i) => {
     const y = map.groundTop(x, z);
     dummy.position.set(x, y + h * 0.43, z);
@@ -1418,7 +1434,7 @@ function driveDogJaw(dog: ParkDog, target: number, dt: number) {
  * frustum culling (their bounds are valid — only instanced fields whose
  * instances spread far from the mesh origin need the always-draw escape) and
  * drop shadow casting on parts too small to read at CSM resolution. */
-function tunePropRendering(root: THREE.Object3D) {
+function tunePropRendering(root: THREE.Object3D, dynamicRoot: THREE.Object3D) {
   const size = new THREE.Vector3();
   const scale = new THREE.Vector3();
   root.updateMatrixWorld(true);
@@ -1435,7 +1451,29 @@ function tunePropRendering(root: THREE.Object3D) {
     geo.boundingBox!.getSize(size);
     mesh.getWorldScale(scale);
     const volume = Math.abs(size.x * scale.x) * Math.abs(size.y * scale.y) * Math.abs(size.z * scale.z);
-    if (volume < CASTER_MIN_VOLUME) mesh.castShadow = false;
+    if (volume < CASTER_MIN_VOLUME) {
+      mesh.castShadow = false;
+      return;
+    }
+    let cursor: THREE.Object3D | null = mesh;
+    let dynamic = false;
+    while (cursor && cursor !== root) {
+      if (cursor === dynamicRoot) {
+        dynamic = true;
+        break;
+      }
+      cursor = cursor.parent;
+    }
+    if (dynamic) enableShadowLayer(mesh, SHADOW_LAYERS.HERO_DYNAMIC);
+    else {
+      enableShadowLayer(mesh, SHADOW_LAYERS.LOCAL_STATIC);
+      // Explicit class admission is deliberate: geometry bounds do not include
+      // InstancedMesh transforms, while aggregate instance bounds would let a
+      // widely distributed field of tiny steps/shrubs qualify as one big mass.
+      if (FAR_STATIC_CASTER_NAMES.has(mesh.name)) {
+        enableShadowLayer(mesh, SHADOW_LAYERS.FAR_PROXY);
+      }
+    }
   });
 }
 
@@ -1573,7 +1611,7 @@ export class CoronaHeightsPark {
       { mode: "roam", tx: 384, tz: 2696, timer: 0, dur: 1 }
     ];
     this.stats = { dogs: this.dogs.length, owners: this.owners.length, summit: CORONA_HEIGHTS_SUMMIT };
-    tunePropRendering(this.group);
+    tunePropRendering(this.group, this.activity);
     // Static subtrees leave the scene's per-frame matrix pass; activity (dogs,
     // owners, ball, frisbee) keeps animating. Anything later parented under a
     // frozen subtree needs a manual updateMatrixWorld(true).

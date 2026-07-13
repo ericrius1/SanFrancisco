@@ -11,6 +11,7 @@ import { BuskerFireflies } from "./fireflies";
 // Side-effect: installs window.__sfRenderTrioAudio for the render tool's
 // deterministic offline audio pass. No live-game behavior; safe to always load.
 import "./offlineRender";
+import { enableShadowLayer, SHADOW_LAYERS } from "../../world/shadows/shadowLayers";
 
 /**
  * The busker trio: three musicians perched on a flat-topped chert boulder
@@ -397,7 +398,13 @@ function applyShadowDiet(root: THREE.Object3D) {
     geo.boundingBox!.getSize(size);
     mesh.getWorldScale(scale);
     const volume = Math.abs(size.x * scale.x) * Math.abs(size.y * scale.y) * Math.abs(size.z * scale.z);
-    if (volume < CASTER_MIN_VOLUME) mesh.castShadow = false;
+    if (volume < CASTER_MIN_VOLUME) {
+      mesh.castShadow = false;
+      return;
+    }
+    // The whole act can be re-grounded/repositioned at runtime; keep even its
+    // perch in the every-frame hero domain so cached maps never retain a ghost.
+    enableShadowLayer(mesh, SHADOW_LAYERS.HERO_DYNAMIC);
   });
 }
 

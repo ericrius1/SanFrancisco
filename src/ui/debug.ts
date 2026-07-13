@@ -26,6 +26,7 @@ import type { Fireworks } from "../fx/fireworks";
 import type { TileStreamer } from "../world/tiles";
 import { TUNABLES_UPDATED_EVENT, withTweakBindingEventsSuppressed, saveTweak } from "../core/persist";
 import { BUSKER_FIREFLY_TUNING } from "../gameplay/buskers/tuning";
+import type { ShadowDiagnosticsSnapshot } from "../world/shadows/diagnostics";
 
 type WireframeMaterial = THREE.Material & { wireframe: boolean };
 
@@ -114,6 +115,8 @@ export class DebugPanel {
   #lightingView: Record<string, unknown> | null = null;
   #lightingBindings: { refresh(): void }[] = [];
   #monitorBindings: { refresh(): void }[] = [];
+  #shadowMonitorSnapshot: ShadowDiagnosticsSnapshot | null = null;
+  #shadowMonitorView: Record<string, string> | null = null;
   #syncingFromSky = false;
   #syncingPane = false;
 
@@ -201,12 +204,27 @@ export class DebugPanel {
     this.#syncingPane = true;
     try {
       withTweakBindingEventsSuppressed(() => {
+        this.#refreshShadowMonitor(now);
         for (const binding of this.#lightingBindings) binding.refresh();
         for (const binding of this.#monitorBindings) binding.refresh();
       });
     } finally {
       this.#syncingPane = false;
       this.#syncingFromSky = false;
+    }
+  }
+
+  #refreshShadowMonitor(now: number) {
+    const snapshot = this.#shadowMonitorSnapshot;
+    const view = this.#shadowMonitorView;
+    if (!snapshot || !view) return;
+    this.#sky.shadowDiagnostics.writeSnapshot(snapshot, now);
+    for (const domain of snapshot.domains) {
+      const prefix = domain.id;
+      view[`${prefix} age`] = Number.isFinite(domain.ageFrames) ? `${domain.ageFrames} frames` : "pending";
+      view[`${prefix} rate`] = `${domain.updateHz.toFixed(1)} Hz`;
+      view[`${prefix} texel`] = `${(domain.texelMeters * 100).toFixed(1)} cm`;
+      view[`${prefix} reason`] = domain.reason;
     }
   }
 
@@ -333,20 +351,36 @@ export class DebugPanel {
     const pane = new Pane({ container: root, title: "tuning — / to close" });
     this.#pane = pane;
 
-    // MASTER foliage switch — the very first control in the panel. One checkbox
-    // hides AND stops per-frame work for the ENTIRE vegetation system (all trees,
-    // grass, flowers, shrubs, everywhere). Off = invisible + near-zero cost.
-    FOLIAGE_TUNING.bind(pane, {
+    // Shadows first — open by default so clipmap telemetry is the first thing
+    // you see when pressing "/". Allocation-free; refreshed at the pane's 4 Hz
+    // monitor cadence.
+    const shadows = pane.addFolder({ title: "shadows", expanded: true });
+    this.#shadowMonitorSnapshot = this.#sky.shadowDiagnostics.createSnapshotBuffer();
+    this.#shadowMonitorView = {};
+    for (const { id } of this.#shadowMonitorSnapshot.domains) {
+      for (const suffix of ["age", "rate", "texel", "reason"]) {
+        const key = `${id} ${suffix}`;
+        this.#shadowMonitorView[key] = "pending";
+        this.#monitorBindings.push(
+          shadows.addBinding(this.#shadowMonitorView, key, { readonly: true, label: key })
+        );
+      }
+    }
+
+    // Session meta — foliage / draw distance / day cycle. Open, right under
+    // shadows; everything else starts collapsed.
+    const meta = pane.addFolder({ title: "meta", expanded: true });
+
+    // MASTER foliage switch. One checkbox hides AND stops per-frame work for
+    // the ENTIRE vegetation system (all trees, grass, flowers, shrubs).
+    FOLIAGE_TUNING.bind(meta, {
       onChange: (_key, value) => this.#setFoliageVisible(Boolean(value))
     });
 
-    // MASTER draw distance — one top-level slider for how far the world draws.
-    // Drives the tile streaming radii (unload trails load by a fixed hysteresis
-    // margin so tiles never thrash at the boundary), moves only the narrow cull
-    // fade at the streamed edge (broad haze is independent), and the citygen ring
-    // derives its chunk reach from it each scan.
+    // MASTER draw distance — drives tile streaming radii (unload trails load
+    // by a fixed hysteresis), the narrow cull fade, and citygen chunk reach.
     // forceScan makes it take effect now instead of on the next 30-frame scan.
-    WORLD_TUNING.bind(pane, {
+    WORLD_TUNING.bind(meta, {
       keys: ["radius"],
       onChange: (key, value, last) => {
         if (key !== "radius") return;
@@ -357,8 +391,6 @@ export class DebugPanel {
       }
     });
 
-    // basics live at the root — the handful of things touched every session;
-    // buildings (citygen) sits here too; everything else tucks into "advanced".
     // proxy so tweakpane's slider step never quantizes the live cycle clock
     const lightingView = {
       timeOfDay: this.#sky.timeOfDay,
@@ -414,7 +446,7 @@ export class DebugPanel {
         return;
       }
     };
-    this.#lightingBindings = SKY_TUNING.bind(pane, {
+    this.#lightingBindings = SKY_TUNING.bind(meta, {
       target: lightingView,
       keys: ["timeOfDay", "realTime", "cycleEnabled", "cycleDuration", "nightBrightness"],
       onChange: onSkyChange
@@ -424,7 +456,7 @@ export class DebugPanel {
     // the full grammar mesh. Reach comes from the top-level draw-distance slider.
     // The ring reads these live each scan, so no onChange side-effect is needed —
     // drag + watch the fps counter and the near-detail band move.
-    const citygenF = pane.addFolder({ title: "buildings (citygen)", expanded: true });
+    const citygenF = pane.addFolder({ title: "buildings (citygen)", expanded: false });
     CITYGEN_TUNING.bind(citygenF, { onChange: () => {} });
 
     const fog = pane.addFolder({ title: "fog", expanded: false });
@@ -487,7 +519,7 @@ export class DebugPanel {
     const controls = advanced.addFolder({ title: "controls" });
     INPUT_TUNING.bind(controls);
 
-    // foliage detail knobs (the master on/off lives at the very top of the pane).
+    // foliage detail knobs (the master on/off lives in the meta folder above).
     const foliage = advanced.addFolder({ title: "foliage" });
     // Wildflower ring: density + clump↔scatter shaping. The ring reads these live on
     // its next re-scatter; force one now (on slider RELEASE only, `last`) so the edit
@@ -549,7 +581,7 @@ export class DebugPanel {
     const particles = advanced.addFolder({ title: "particles" });
     const fireflies = particles.addFolder({ title: "busker fireflies" });
     BUSKER_FIREFLY_TUNING.bind(fireflies);
-    this.#monitorBindings = this.#fireworks?.addTuning(particles) ?? [];
+    this.#monitorBindings.push(...(this.#fireworks?.addTuning(particles) ?? []));
 
     // Full GPU profiler (three.js Inspector: FPS/CPU/GPU graph, timing, memory).
     // Heavy — per-frame GPU timestamp queries + canvas redraw — so it's OFF by

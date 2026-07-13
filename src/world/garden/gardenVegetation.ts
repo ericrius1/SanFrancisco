@@ -23,6 +23,7 @@ import {
 import { buildBotanicalGrass, type BotanicalGrassController } from "./botanicalGrass";
 import { compileTree, GARDEN_TREE_PRESETS } from "./proceduralTrees";
 import { buildSeedTreeGarden, SEED_TREE_DESIGNS } from "./seedTreeGarden";
+import { setLocalFarShadowOnly } from "../shadows/shadowLayers";
 
 export type GardenVegetation = {
   group: THREE.Group;
@@ -111,7 +112,8 @@ function createTreeMeshes(trees: GardenTree[]): { group: THREE.Group; drawCalls:
     });
     if (leaves.instanceColor) leaves.instanceColor.needsUpdate = true;
     for (const mesh of [branches, leaves]) {
-      mesh.castShadow = true;
+      // A merged trunk+crown shadow proxy below owns the procedural fern set.
+      mesh.castShadow = false;
       mesh.receiveShadow = true;
       // instance matrices span the garden; local geometry bounds would cull wrong
       mesh.frustumCulled = false;
@@ -157,7 +159,9 @@ function createShrubMesh(shrubs: GardenShrub[]): THREE.InstancedMesh {
     mesh.setColorAt(i, color);
   });
   mesh.instanceColor!.needsUpdate = true;
-  mesh.castShadow = true;
+  // The all-garden instance draw is larger than any readable shrub shadow and
+  // cannot cull per instance; nearby tree/contact shadows provide the grounding.
+  mesh.castShadow = false;
   mesh.receiveShadow = true;
   mesh.frustumCulled = false;
   return mesh;
@@ -231,6 +235,17 @@ export function createGardenVegetation(map: GardenTerrain): GardenVegetation {
   const proceduralTrees = trees.filter((t) => !SEED_TREE_DESIGNS[t.species]);
   const treeMeshes = createTreeMeshes(proceduralTrees);
   group.add(treeMeshes.group);
+  if (proceduralTrees.length > 0) {
+    const proceduralShadow = new THREE.Mesh(
+      buildProxyGeometry(proceduralTrees),
+      new THREE.MeshBasicMaterial({ color: 0xffffff })
+    );
+    proceduralShadow.name = "sfbg_procedural_fern_shadow_proxy";
+    proceduralShadow.castShadow = true;
+    proceduralShadow.receiveShadow = false;
+    setLocalFarShadowOnly(proceduralShadow);
+    group.add(proceduralShadow);
+  }
 
   // SeedThree textured trees stream in asynchronously (texture loads + growth);
   // colliders/proxy below come from the full layout list and are live

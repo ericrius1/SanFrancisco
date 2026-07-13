@@ -121,8 +121,10 @@ export function createPostFx(deps: {
   /** outline prepass depth texture */
   depthTex: any;
   camera: THREE.Camera;
+  /** Optional deterministic contact factor sampled in the same UV space. */
+  contactFactorAt?: (uv: any) => any;
 }) {
-  const { sceneTex, normalTex, depthTex, camera } = deps;
+  const { sceneTex, normalTex, depthTex, camera, contactFactorAt } = deps;
 
   // object-reference uniform: uploads the camera's current inverse projection
   // every frame, reversed-z included
@@ -165,6 +167,7 @@ export function createPostFx(deps: {
       } else {
         lin = sceneTex.sample(uv).rgb;
       }
+      if (contactFactorAt) lin = lin.mul(contactFactorAt(uv));
 
       const c = renderOutput(vec4(lin, 1)).rgb.toVar();
 

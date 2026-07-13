@@ -1,5 +1,6 @@
 import * as THREE from "three/webgpu";
 import type { WorldMap } from "./heightmap";
+import { enableLocalFarShadowLayers } from "./shadows/shadowLayers";
 
 const COIT_BASE = 0xbdb5a4;
 
@@ -43,6 +44,7 @@ export function applyLandmarkFixes(root: THREE.Object3D, map: WorldMap) {
   skirt.name = "lm_coit_footing";
   skirt.position.set(x, bottom + h / 2, z);
   skirt.castShadow = true;
+  enableLocalFarShadowLayers(skirt);
   skirt.receiveShadow = true;
   root.add(skirt);
 }
