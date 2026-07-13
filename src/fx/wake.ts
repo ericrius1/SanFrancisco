@@ -182,6 +182,7 @@ type BoardState = {
   velocity: THREE.Vector3;
   speed: number;
   boardGrounded: boolean;
+  surfTelemetry?: { grounded: boolean };
 };
 
 type RibbonOpts = {
@@ -504,9 +505,11 @@ export class BoardWake {
     const p = board.renderPosition;
     const v = board.velocity;
     const h = Math.hypot(v.x, v.z);
+    const groundedWaterRide =
+      (board.mode === "board" && board.boardGrounded) ||
+      (board.mode === "surf" && (board.surfTelemetry?.grounded ?? false));
     const surfing =
-      board.mode === "board" &&
-      board.boardGrounded &&
+      groundedWaterRide &&
       this.#map.isWater(p.x, p.z) &&
       p.y - waterHeight(p.x, p.z, elapsed) < BW_SURF_HEIGHT;
 

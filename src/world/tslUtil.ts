@@ -77,7 +77,7 @@ export function oceanBeachSurfField(x: any, z: any, t: any) {
   const amp = float(b.amplitude).mul(setPulse).mul(sandbar);
   const height = ridge.sub(trough).mul(amp).mul(mask);
   // steep translucent wall: a band just shoreward of the crest where the face stands up
-  const faceD = d.sub(3.0).div(5.5);
+  const faceD = d.sub(4.0).div(5.5);
   const face = mask.mul(exp(faceD.mul(faceD).mul(-0.5)));
   // pitching lip: tight bright band right at the crest
   const lipD = d.sub(1.0).div(2.6);

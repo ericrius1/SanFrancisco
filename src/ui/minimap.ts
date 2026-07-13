@@ -155,7 +155,7 @@ export class Minimap {
   #bigRecenter: HTMLButtonElement | null = null;
   #bigTeleWrap: HTMLDivElement | null = null;
   #bigTeleName: HTMLSpanElement | null = null;
-  #dpr = Math.min(window.devicePixelRatio || 1, 2);
+  #dpr = 1;
   #layers: MapLayer[] = [];
   #layerButtons = new Map<MapLayerId, HTMLButtonElement>();
   #selectedPlaceId: string | null = null;

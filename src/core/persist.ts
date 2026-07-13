@@ -9,9 +9,9 @@ import type { PlayerMode } from "../player/types";
 
 const TWEAKS_KEY = "sf-tweaks";
 const TWEAKS_SCHEMA_KEY = "sf-tweaks-schema";
-// One current schema only: draw-distance default (3.5 km), haze, and garden
-// grass budgets changed together — discard incompatible saved tweaks.
-const TWEAKS_SCHEMA = "2026-07-vegetation-system";
+// One current schema only: the vegetation system and rewritten surf movement /
+// auto-launch / flow-state ranges changed together. Discard stale overrides.
+const TWEAKS_SCHEMA = "2026-07-vegetation-surf-flow";
 const PLAYER_KEY = "sf-player";
 export const TUNABLES_UPDATED_EVENT = "sf:tunables-updated";
 

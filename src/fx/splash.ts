@@ -15,7 +15,7 @@ import { LIGHT_SCALE } from "../config";
  * along the surface sheds a lighter skim-spray by distance travelled.
  */
 
-const SPLASH_MODES = new Set(["bird", "plane", "drone", "board"]);
+const SPLASH_MODES = new Set(["bird", "plane", "drone", "board", "surf"]);
 
 type Drop = {
   sprite: THREE.Sprite;
@@ -198,10 +198,19 @@ export class WaterSplashes {
     // drone's floor clamps 0.6 m short of the swell, so it never crosses;
     // the board hover-springs to ~1.05 m with a ±0.08 bob, so its band sits
     // well above the wobble and only an ollie landing dips through it)
-    const off = player.mode === "drone" ? 0.75 : player.mode === "board" ? 1.5 : 0.3;
+    const off =
+      player.mode === "drone"
+        ? 0.75
+        : player.mode === "board"
+          ? 1.5
+          : player.mode === "surf"
+            ? 0.58
+            : 0.3;
     const crossed = this.#prevY > h + off && p.y <= h + off && vy < 1;
     const slammed = vy < -7 && p.y < h + 1.2;
-    if ((crossed || slammed) && this.#cooldown <= 0) {
+    // SurfController emits launch/landing impulses explicitly; keep this generic
+    // crossing detector for the other embodiments so surf does not double-burst.
+    if (player.mode !== "surf" && (crossed || slammed) && this.#cooldown <= 0) {
       this.#cooldown = 0.9;
       const energy = 0.25 + hSpeed / 70 + Math.abs(Math.min(vy, 0)) / 26;
       this.splash(p.x, h, p.z, elapsed, energy);
@@ -210,10 +219,11 @@ export class WaterSplashes {
     // skim: racing along just over the swell sheds spray by distance travelled,
     // with a small wake ring every few puffs (not for the board — its wake is
     // the twin rail streams, and sprite puffs on top just read as clutter)
-    if (player.mode !== "board" && p.y < h + 1.0 && hSpeed > 15) {
+    if (player.mode !== "board" && p.y < h + 1.0 && hSpeed > (player.mode === "surf" ? 8 : 15)) {
       this.#skimAcc += hSpeed * dt;
-      if (this.#skimAcc >= 4) {
-        this.#skimAcc -= 4;
+      const spacing = player.mode === "surf" ? 2.4 : 4;
+      if (this.#skimAcc >= spacing) {
+        this.#skimAcc -= spacing;
         this.#skimSpray(p.x, h, p.z, hSpeed);
         if (++this.#skimCount % 3 === 0) this.#wake.burst(p.x, p.z, elapsed, 3.4, 1);
       }

@@ -98,8 +98,9 @@ Open the map (`M`) and teleport, or just wander. A few of the denser spots:
 
 - **Corona Heights** — default spawn. Red-chert summit, downtown/Mission vista,
   a dog park just below, and a **jammer trio** (ukulele, handpan, flute) perched
-  on a boulder. Stand nearby to hear them; press `Q` to cycle songs. Throw the
-  ball tool for the dogs.
+  on a boulder. Stand nearby to hear their original songbook rotate with a
+  natural quiet break between tunes; press `Q` to skip ahead. Throw the ball
+  tool for the dogs.
 - **Botanical Garden** — San Francisco Botanical Garden in Golden Gate Park:
   SeedThree trees, blade grass, shrubs, and a shared wind envelope. The nature
   soundscape thickens here.

@@ -2169,6 +2169,17 @@
       #hud .scooter-ui {
         right: max(128px, calc(env(safe-area-inset-right) + 128px));
       }
+      #hud .surfboard-ui {
+        right: max(182px, calc(env(safe-area-inset-right) + 182px));
+      }
+      #hud .surfboard-panel {
+        width: min(430px, calc(100vw - 24px));
+        max-height: min(80vh, 680px);
+        overscroll-behavior: contain;
+        scrollbar-gutter: stable;
+        background: linear-gradient(145deg, rgba(7, 52, 59, 0.95), rgba(10, 27, 39, 0.97));
+        border-color: rgba(121, 235, 214, 0.28);
+      }
       #hud .scooter-toggle .scooter-ic-body {
         position: absolute;
         left: 13px;
@@ -3440,13 +3451,22 @@
       #hud .surf-status[data-tone="good"] { color: #8ff1d5; }
       #hud .surf-status[data-tone="air"] { color: #ffe69a; }
       #hud .surf-status[data-tone="bad"] { color: #ff8d83; }
-      #hud .surf-meter { grid-column: 1 / 4; height: 4px; border-radius: 3px; background: rgba(255,255,255,0.09); overflow: hidden; }
-      #hud .surf-meter i { display: block; width: 100%; height: 100%; transform: scaleX(0); transform-origin: left; background: linear-gradient(90deg, #36bfc1, #9df5dc, #fff1a7); transition: transform 90ms linear; }
+      #hud .surf-status[data-tone="flow"] { color: #b9ffe8; text-shadow: 0 0 12px rgba(92,255,210,.52); }
+      #hud .surf-meter { grid-column: 1 / 4; position: relative; display: grid; grid-template-columns: 38px 1fr 34px; align-items: center; gap: 7px; height: 8px; overflow: visible; color: rgba(225,250,247,.58); font-size: 7px; font-weight: 800; letter-spacing: .13em; }
+      #hud .surf-meter::before { content: ""; position: absolute; left: 45px; right: 41px; height: 4px; border-radius: 3px; background: rgba(255,255,255,0.09); }
+      #hud .surf-meter i { z-index: 1; grid-column: 2; display: block; width: 100%; height: 4px; border-radius: 3px; transform: scaleX(0); transform-origin: left; background: linear-gradient(90deg, #36bfc1, #9df5dc, #fff1a7); transition: transform 90ms linear; }
+      #hud .surf-meter span, #hud .surf-meter b { z-index: 1; font: inherit; }
+      #hud .surf-meter b { text-align: right; color: rgba(255,240,178,.72); }
+      #hud .surf-launch-meter i { background: linear-gradient(90deg, #2a9db3, #69dfd0, #ffd67a); }
       #hud .surf-controls { grid-column: 1 / 4; text-align: center; color: rgba(219, 242, 244, 0.48); font-size: 8px; letter-spacing: 0.06em; }
       #hud .surf-hud.pulse { animation: surf-pulse 240ms ease-out; }
       #hud .surf-hud.wipeout { animation: surf-wipeout 420ms ease-out; }
+      #hud .surf-hud.flow-ready { border-color: rgba(255,228,145,.62); box-shadow: 0 14px 38px rgba(0,12,20,.32), 0 0 22px rgba(255,210,104,.15), inset 0 1px rgba(255,255,255,.14); }
+      #hud .surf-hud.flow-active { border-color: rgba(132,255,224,.7); background: linear-gradient(135deg, rgba(7,55,60,.94), rgba(38,88,82,.82)); }
+      #hud .surf-hud.flow-on { animation: surf-flow-on 900ms ease-out; }
       @keyframes surf-pulse { 50% { transform: translate(-50%, 0) scale(1.025); filter: brightness(1.15); } }
       @keyframes surf-wipeout { 35% { transform: translate(-50%, 0) rotate(-1.2deg); border-color: rgba(255, 107, 95, 0.65); } }
+      @keyframes surf-flow-on { 28% { transform: translate(-50%, 0) scale(1.045); filter: brightness(1.28) saturate(1.22); } }
       @media (max-width: 620px) {
         #hud .surf-hud { top: max(10px, env(safe-area-inset-top)); padding: 9px 12px 8px; }
         #hud .surf-controls { display: none; }

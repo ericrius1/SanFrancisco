@@ -87,7 +87,7 @@ import { parseReadLink, openReadLink } from "./ui/deepLinks";
 import { Tutorial } from "./ui/tutorial";
 import { createRenderPipeline } from "./render/pipeline";
 import { createDynamicResolution } from "./render/dynamicRes";
-import { POSTFX_TUNING } from "./render/postfx";
+import { POSTFX_TUNING, setFlowPostFx } from "./render/postfx";
 import { DebugPanel } from "./ui/debug";
 import { ColliderDebug, type DebugBox, type DebugMesh } from "./ui/colliderDebug";
 import { CalibrationChart } from "./ui/calibrationChart";
@@ -99,6 +99,15 @@ import { PlayerLocator } from "./ui/playerLocator";
 import { avatarFromSeed, loadSavedAvatar, randomAvatarTraits, saveAvatarTraits } from "./player/avatar";
 import { boardFromSeed, boardVisualKey, loadSavedBoard, randomBoardConfig, saveBoardConfig, setLocalBoardConfig } from "./vehicles/board";
 import { loadSavedScooter, randomScooterConfig, saveScooterConfig, scooterFromSeed, scooterKey, setLocalScooterConfig } from "./vehicles/scooter";
+import {
+  loadSavedSurfboard,
+  randomSurfboardConfig,
+  saveSurfboardConfig,
+  setLocalSurfboardConfig,
+  surfboardFromSeed,
+  surfboardVisualKey,
+  type SurfboardConfig
+} from "./vehicles/surf";
 import { MENU_MODES, ModeDiscovery, ALL_MODES } from "./player/discovery";
 import { BootScreen } from "./app/bootScreen";
 import { createRenderCore } from "./app/renderCore";
@@ -263,9 +272,36 @@ async function boot() {
   let scooterCustomized = savedScooter !== null;
   let scooterConfig = savedScooter ?? randomScooterConfig();
   setLocalScooterConfig(scooterConfig);
+  // Surfboard identity follows the same explicit-choice/per-id-seed contract,
+  // but its PNG art remains completely unloaded until surfing or the lab starts.
+  const savedSurfboard = loadSavedSurfboard();
+  let surfboardCustomized = savedSurfboard !== null;
+  let surfboardConfig = savedSurfboard ?? randomSurfboardConfig();
+  setLocalSurfboardConfig(surfboardConfig);
   vehicleAudio.setBoardStyle(boardConfig);
-  const player = new Player(physics, map, scene, spawn, avatarTraits, boardConfig, scooterConfig);
+  const player = new Player(physics, map, scene, spawn, avatarTraits, boardConfig, scooterConfig, surfboardConfig);
   const surfExperience = new SurfExperience(vehicleAudio);
+  let surfFlowFx = 0;
+  let surfFlowPhase = 0;
+  let surfFlowSerial = 0;
+  let surfSplashSerial = 0;
+  const updateSurfPresentation = (dt: number) => {
+    const surf = player.surfTelemetry;
+    const active = player.mode === "surf" && surf.flowActive;
+    const response = active ? 8 : 2.6;
+    surfFlowFx += ((active ? 1 : 0) - surfFlowFx) * (1 - Math.exp(-Math.min(dt, 0.1) * response));
+    if (surf.flowSerial !== surfFlowSerial) {
+      surfFlowSerial = surf.flowSerial;
+      surfFlowPhase = 0;
+    } else {
+      surfFlowPhase += dt;
+    }
+    setFlowPostFx(surfFlowFx, surfFlowPhase);
+  };
+  // The customizer module itself is deferred until surf first activates. This
+  // is rebound after networking exists; the early no-op keeps the mode callback
+  // safe during startup/restores.
+  let ensureSurfboardCustomizer: () => void = () => {};
   const birdTrails = new BirdTrails(scene, player.meshes.bird);
   const droneFireworkMounts = player.meshes.drone.userData.fireworkMounts as THREE.Object3D[] | undefined;
   const startMode = spawnPoint?.mode ?? START.mode;
@@ -310,6 +346,7 @@ async function boot() {
     debugPanel.setMode(mode); // tuning pane shows only the active mode's movement folder
     applySurfCull(mode === "surf");
     if (mode === "surf") {
+      ensureSurfboardCustomizer();
       // Drop straight into a readable down-the-line shot: the board travels
       // south while the wave face peels along the player's left shoulder.
       chase.yaw = Math.PI - 0.38;
@@ -698,12 +735,12 @@ async function boot() {
   const pipeline = createRenderPipeline(renderer, scene, camera);
 
   // Dynamic-resolution governor: watches the real rAF cadence and steps the
-  // drawing-buffer pixel ratio between RENDER_MODE.minPixelRatio and the boot
-  // ceiling — min(devicePixelRatio, RENDER_MODE.pixelRatioCap) — to hold the
-  // frame budget on weaker GPUs. The apply path is exactly what boot + resize
-  // do (setPixelRatio + setSize); the WebGPU pass targets re-derive from the
-  // drawing-buffer on the next render, so nothing else needs a resize hook.
-  // Starts at the ceiling boot already applied above.
+  // drawing-buffer pixel ratio between RENDER_MODE.minPixelRatio and
+  // RENDER_MODE.pixelRatioCap to hold the frame budget on weaker GPUs.
+  // Currently off (cap == floor == 1); kept wired so re-enabling is a config flip.
+  // The apply path is exactly what boot + resize do (setPixelRatio + setSize);
+  // the WebGPU pass targets re-derive from the drawing-buffer on the next
+  // render, so nothing else needs a resize hook.
   const applyPixelRatio = (ratio: number) => {
     renderer.setPixelRatio(ratio);
     renderer.setSize(window.innerWidth, window.innerHeight);
@@ -719,7 +756,13 @@ async function boot() {
   // Send a custom avatar only if the player actually chose one; a null avatar
   // lets the server keep its per-id seed (server.mjs), so un-customized players
   // stay distinct instead of all sending the same saved blob.
-  const net = new Net(suggestedName, savedAvatar ?? undefined, savedBoard ?? undefined, savedScooter ?? undefined);
+  const net = new Net(
+    suggestedName,
+    savedAvatar ?? undefined,
+    savedBoard ?? undefined,
+    savedScooter ?? undefined,
+    savedSurfboard ?? undefined
+  );
   const remotes = new RemotePlayers(scene);
   const pickleballController = new PickleballController({
     goldman: goldenGateTennis,
@@ -801,6 +844,40 @@ async function boot() {
       if (player.mode !== "scooter" && !player.riding) player.trySwitch("scooter");
     }
   );
+  const applySurfboardConfig = (config: SurfboardConfig) => {
+    const changed = surfboardVisualKey(config) !== surfboardVisualKey(surfboardConfig);
+    surfboardConfig = config;
+    setLocalSurfboardConfig(config);
+    if (changed) player.setSurfboardConfig(config);
+    else player.previewSurfboardSurface(config);
+  };
+  let surfboardSelector: { setConfig(config: SurfboardConfig): void } | null = null;
+  let surfboardSelectorLoading: Promise<void> | null = null;
+  ensureSurfboardCustomizer = () => {
+    if (surfboardSelector || surfboardSelectorLoading) return;
+    surfboardSelectorLoading = import("./ui/surfboardSelector")
+      .then(({ SurfboardSelector }) => {
+        surfboardSelector = new SurfboardSelector(
+          surfboardConfig,
+          (config) => {
+            surfboardCustomized = true;
+            saveSurfboardConfig(config);
+            applySurfboardConfig(config);
+            net.setSurfboard(config);
+          },
+          (config) => player.previewSurfboardSurface(config),
+          () => {
+            if (player.mode !== "surf" && !player.riding) player.trySwitch("surf");
+          }
+        );
+      })
+      .catch((error) => console.warn("[surf] shaping room failed to load", error))
+      .finally(() => {
+        surfboardSelectorLoading = null;
+      });
+  };
+  // Startup can already be in surf mode before onModeChange is wired.
+  if (player.mode === "surf") ensureSurfboardCustomizer();
   net.onWelcome = () => {
     avatarSelector.setName(net.name); // server may canonicalize a duplicate/invalid name
     if (customized) {
@@ -827,6 +904,13 @@ async function boot() {
       player.setScooterConfig(scooterConfig);
       scooterSelector.setConfig(scooterConfig);
     }
+    if (surfboardCustomized) {
+      net.setSurfboard(surfboardConfig);
+    } else {
+      const seeded = surfboardFromSeed(net.selfId);
+      applySurfboardConfig(seeded);
+      surfboardSelector?.setConfig(seeded);
+    }
     golf?.syncNetState();
     net.replayGolf();
     pickleballController.onWelcome();
@@ -840,6 +924,7 @@ async function boot() {
         remotes.updateAvatar(info);
         remotes.updateBoard(info);
         remotes.updateScooter(info);
+        remotes.updateSurfboard(info);
       }
     }
     pickleballController.syncSlots();
@@ -1906,6 +1991,7 @@ async function boot() {
       voice.update(camera); // keep talking while paused — it's a social feature
       minimap.update();
       playerLocator.update(camera, player.position, remotes.locatorTargets());
+      updateSurfPresentation(frameDt);
       input.endFrame();
       pipeline.render();
       return;
@@ -1920,7 +2006,7 @@ async function boot() {
       accumulator += frameDt; // no elapsed++ — the world clock stays frozen
       if (player.mode === "plane") player.steerFly(input, frameDt);
       if (!playingPickleball && !input.suspended && player.mode === "board" && input.pressed("Space")) player.requestBoardJump();
-      if (!playingPickleball && !input.suspended && player.mode === "surf" && input.pressed("Space")) player.requestSurfJump();
+      if (!playingPickleball && !input.suspended && player.mode === "surf" && input.pressed("KeyX")) player.requestSurfFlow();
       if (!playingPickleball && !input.suspended && player.mode === "walk" && input.pressed("Space")) player.requestWalkJump();
       chase.lookDir(aim);
       let steps = 0;
@@ -1965,6 +2051,8 @@ async function boot() {
         boost: input.down("ShiftLeft"),
         grounded: player.mode !== "board" || player.boardGrounded,
         surfFace: player.mode === "surf" ? player.surfTelemetry.face : 0,
+        surfFlow: player.mode === "surf" && player.surfTelemetry.flowActive ? 1 : 0,
+        surfMotionRate: player.mode === "surf" ? player.surfTelemetry.riderMotionRate : 1,
         driveVoice: player.driveSpec.voice ?? "engine"
       });
       swimAudio.update(frameDt, {
@@ -1987,6 +2075,7 @@ async function boot() {
       // paused-but-roaming still streams tiles/citygen — keep their deferred
       // assembly draining so the frozen city fills in around the live player
       scheduler.run(frameDt < 1 / 55 ? 3 : 1.5);
+      updateSurfPresentation(frameDt);
       input.endFrame();
       pipeline.render();
       return;
@@ -2289,7 +2378,7 @@ async function boot() {
     // frame can render without a fixed physics step, so `pressed()` would be gone
     // before #updateBoard saw it.
     if (!playingPickleball && !input.suspended && player.mode === "board" && input.pressed("Space")) player.requestBoardJump();
-    if (!playingPickleball && !input.suspended && player.mode === "surf" && input.pressed("Space")) player.requestSurfJump();
+    if (!playingPickleball && !input.suspended && player.mode === "surf" && input.pressed("KeyX")) player.requestSurfFlow();
     if (!playingPickleball && !input.suspended && player.mode === "walk" && input.pressed("Space")) player.requestWalkJump();
 
     chase.lookDir(aim); // drone moves along the true view direction (no shot bias)
@@ -2477,6 +2566,17 @@ async function boot() {
     birdTrails.update(elapsed, player);
     splashes.update(frameDt, elapsed, player);
     surfExperience.update(frameDt, player.mode, player.surfTelemetry);
+    if (player.mode === "surf" && player.surfTelemetry.splashSerial !== surfSplashSerial) {
+      surfSplashSerial = player.surfTelemetry.splashSerial;
+      splashes.splash(
+        player.renderPosition.x,
+        waterHeight(player.renderPosition.x, player.renderPosition.z, elapsed),
+        player.renderPosition.z,
+        elapsed,
+        player.surfTelemetry.splashEnergy
+      );
+    }
+    updateSurfPresentation(frameDt);
     waveAudio.update(frameDt, oceanWaveEnergyAt(map, player.position.x, player.position.z, elapsed));
     // Ride ends on the sand: stand up, board in hand (you can only surf in the water).
     if (player.mode === "surf" && player.surfTelemetry.beached) {
@@ -2498,6 +2598,8 @@ async function boot() {
       boost: input.down("ShiftLeft"),
       grounded: player.mode !== "board" || player.boardGrounded,
       surfFace: player.mode === "surf" ? player.surfTelemetry.face : 0,
+      surfFlow: player.mode === "surf" && player.surfTelemetry.flowActive ? 1 : 0,
+      surfMotionRate: player.mode === "surf" ? player.surfTelemetry.riderMotionRate : 1,
       driveVoice: player.driveSpec.voice ?? "engine"
     });
     swimAudio.update(frameDt, {
@@ -2685,7 +2787,7 @@ async function boot() {
       // deferred render warmup runs, tick() early-returns without rendering, so
       // screenshots would capture a stale boot-pose frame no matter what the
       // camera was set to.
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController.game, pickleballAmbient: pickleballController.ambient, pickleballAudio: pickleballController.audio, pickleballUI: pickleballController.ui, pickleballController, coronaHeights, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, siteGate,
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController.game, pickleballAmbient: pickleballController.ambient, pickleballAudio: pickleballController.audio, pickleballUI: pickleballController.ui, pickleballController, coronaHeights, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate,
         TSL,
         renderIdle: () => modulesReady && !lateRenderWarmupActive }
     });

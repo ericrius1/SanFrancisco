@@ -99,6 +99,10 @@ export class ChaseCamera {
   #externallyOwned = false
   #holdOrbitPose = false
   #lastMode: PlayerMode | null = null
+  #surfFlow = 0
+  #surfFlowSerial = 0
+  #surfFlowDuration = 1
+  #surfFlowOrbit = 0
   #outdoorFov: number
   #map: WorldMap
   #physics: Physics
@@ -181,6 +185,26 @@ export class ChaseCamera {
 
   update(dt: number, player: Player, input: Input) {
     this.#resume(player)
+    const surf = player.mode === "surf" ? player.surfTelemetry : null
+    const flowTarget = surf?.flowActive ? 1 : 0
+    this.#surfFlow +=
+      (flowTarget - this.#surfFlow) *
+      (1 - Math.exp(-Math.min(dt, 0.1) * (flowTarget > this.#surfFlow ? 7 : 2.4)))
+    let flowOrbitDelta = 0
+    if (surf && surf.flowSerial !== this.#surfFlowSerial) {
+      this.#surfFlowSerial = surf.flowSerial
+      this.#surfFlowDuration = Math.max(0.001, surf.flowTimeRemaining)
+      this.#surfFlowOrbit = 0
+    }
+    if (surf && this.#surfFlowSerial > 0 && this.#surfFlowOrbit < Math.PI * 2 - 1e-5) {
+      const progress = surf.flowActive
+        ? THREE.MathUtils.clamp(1 - surf.flowTimeRemaining / this.#surfFlowDuration, 0, 1)
+        : 1
+      const eased = progress * progress * (3 - 2 * progress)
+      const targetOrbit = eased * Math.PI * 2
+      flowOrbitDelta = targetOrbit - this.#surfFlowOrbit
+      this.#surfFlowOrbit = targetOrbit
+    }
     const indoorTarget = (this.indoor || this.activityFirstPerson) && player.mode === "walk" ? 1 : 0
     this.#indoor +=
       (indoorTarget - this.#indoor) *
@@ -188,7 +212,7 @@ export class ChaseCamera {
     // A vehicle switch must drop the active eye rig immediately. The stored
     // scalar may decay in the background so returning to walk remains smooth.
     const firstPersonBlend = player.mode === "walk" ? this.firstPersonBlend : 0
-    this.#applyFov(firstPersonBlend)
+    this.#applyFov(firstPersonBlend, this.#surfFlow)
     // Hide late on entry, after the avatar nearly fills the frame, and restore
     // farther back on exit. The hysteresis avoids both clipped self-geometry and
     // a visible on/off flutter around the threshold.
@@ -218,6 +242,7 @@ export class ChaseCamera {
       this.pitch += (targetPitch - this.pitch) * follow
     } else {
       this.yaw -= input.mouseDX * 0.0032
+      this.yaw += flowOrbitDelta
       // Orbit mode keeps framing-safe limits. The range widens almost to vertical
       // as first person takes over, then contracts with the same smooth blend on
       // exit so an extreme indoor pitch never snaps back in one frame.
@@ -248,9 +273,9 @@ export class ChaseCamera {
     }
 
     const o = OFFSETS[player.mode]
-    const backBase = o.back * this.zoom
+    const backBase = o.back * this.zoom * (1 + this.#surfFlow * 0.14)
     let back = backBase
-    let up = o.up * this.zoom
+    let up = o.up * this.zoom + this.#surfFlow * 0.45
     // bigger phoenix needs more boom; tuck/stoop adds a little more so the mount
     // stays in frame instead of filling the viewport at triple speed
     if (player.mode === "bird") {
@@ -349,6 +374,12 @@ export class ChaseCamera {
         1 - Math.exp(-smoothDt * orbitStiff)
       )
     }
+    // Clamp the actual smoothed surf-camera pose, not just its desired endpoint.
+    // Follow lag can otherwise carry the rendered eye through a moving crest.
+    if (player.mode === "surf") {
+      const water = waterHeight(this.#orbitPos.x, this.#orbitPos.z, player.time) + 1.1
+      if (this.#orbitPos.y < water) this.#orbitPos.y = water
+    }
     this.#firstPersonPos.lerp(
       this.#eyePos,
       1 - Math.exp(-smoothDt * VIEW.firstPersonFollow)
@@ -364,6 +395,10 @@ export class ChaseCamera {
       indoorTarget === 1,
       this.#orbitViewPos
     )
+    if (player.mode === "surf") {
+      const water = waterHeight(this.#orbitViewPos.x, this.#orbitViewPos.z, player.time) + 1.1
+      if (this.#orbitViewPos.y < water) this.#orbitViewPos.y = water
+    }
     this.camera.position.lerpVectors(
       this.#orbitViewPos,
       this.#firstPersonPos,
@@ -485,8 +520,8 @@ export class ChaseCamera {
     )
   }
 
-  #applyFov(blend: number) {
-    const fov = this.#outdoorFov + VIEW.firstPersonFovBoost * blend
+  #applyFov(blend: number, surfFlow = 0) {
+    const fov = this.#outdoorFov + VIEW.firstPersonFovBoost * blend - surfFlow * 4.5
     if (Math.abs(this.camera.fov - fov) < 1e-4) return
     this.camera.fov = fov
     this.camera.updateProjectionMatrix()

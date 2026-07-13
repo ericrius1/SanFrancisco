@@ -87,8 +87,18 @@ const U = {
   dreamFringe: uniform(POSTFX_TUNING.values.dreamFringe),
   retroPixel: uniform(POSTFX_TUNING.values.retroPixel),
   retroLevels: uniform(POSTFX_TUNING.values.retroLevels),
-  retroScan: uniform(POSTFX_TUNING.values.retroScan)
+  retroScan: uniform(POSTFX_TUNING.values.retroScan),
+  // Runtime-only surf flow state. These are intentionally not persisted or
+  // exposed in Tweakpane: gameplay owns the envelope and every cached post-FX
+  // graph reads the same uniforms without recompilation.
+  flowAmount: uniform(0),
+  flowPhase: uniform(0)
 };
+
+export function setFlowPostFx(amount: number, phase: number) {
+  U.flowAmount.value = Math.min(1, Math.max(0, amount));
+  U.flowPhase.value = Number.isFinite(phase) ? phase : 0;
+}
 
 /** Push the pane's slider values into the live uniforms. */
 export function applyPostFxParams() {
@@ -145,25 +155,41 @@ export function createPostFx(deps: {
       const grid = screenSize.div(U.retroPixel);
       const cell = screenUV.mul(grid).floor();
       const uv = retro ? cell.add(0.5).div(grid) : screenUV;
+      // Cozy flow-state lens: one warped scene lookup, even in the default
+      // zero-effect graph. At amount=0 this is exactly the original UV, so the
+      // inactive cost is arithmetic only—not additional texture taps.
+      const flowCentre = screenUV.sub(0.5).toVar();
+      const flowDist = flowCentre.length().toVar();
+      const flowFall = smoothstep(0.08, 0.78, flowDist).oneMinus();
+      const flowRipple = flowDist
+        .mul(35)
+        .sub(U.flowPhase.mul(5.2))
+        .sin()
+        .mul(flowFall)
+        .mul(U.flowAmount);
+      const flowTangent = vec2(flowCentre.y.negate(), flowCentre.x);
+      const sampleUv = uv
+        .add(flowTangent.mul(flowRipple.mul(0.008)))
+        .sub(flowCentre.mul(flowFall).mul(U.flowAmount).mul(0.006));
 
       // ---- linear-light stage: scene taps (+ dream's halation & fringe)
       let lin: any;
       if (dream) {
         // radial color fringe: R/B pulled apart along the from-center axis
         const off = screenUV.sub(0.5).mul(U.dreamFringe.mul(0.0035));
-        const center = sceneTex.sample(uv);
-        const ca = vec3(sceneTex.sample(uv.add(off)).r, center.g, sceneTex.sample(uv.sub(off)).b);
+        const center = sceneTex.sample(sampleUv);
+        const ca = vec3(sceneTex.sample(sampleUv.add(off)).r, center.g, sceneTex.sample(sampleUv.sub(off)).b);
         // 4-tap diagonal halation, blended in linear light so highlights glow
         const d = vec2(2.5).div(screenSize);
         const blur = sceneTex
-          .sample(uv.add(d))
-          .rgb.add(sceneTex.sample(uv.sub(d)).rgb)
-          .add(sceneTex.sample(uv.add(vec2(d.x, d.y.negate()))).rgb)
-          .add(sceneTex.sample(uv.add(vec2(d.x.negate(), d.y))).rgb)
+          .sample(sampleUv.add(d))
+          .rgb.add(sceneTex.sample(sampleUv.sub(d)).rgb)
+          .add(sceneTex.sample(sampleUv.add(vec2(d.x, d.y.negate()))).rgb)
+          .add(sceneTex.sample(sampleUv.add(vec2(d.x.negate(), d.y))).rgb)
           .mul(0.25);
         lin = mix(ca, blur, U.dreamAmount.mul(0.5));
       } else {
-        lin = sceneTex.sample(uv).rgb;
+        lin = sceneTex.sample(sampleUv).rgb;
       }
 
       const c = renderOutput(vec4(lin, 1)).rgb.toVar();
@@ -205,6 +231,23 @@ export function createPostFx(deps: {
         c.mulAssign(float(1).sub(smoothstep(0.55, 1.15, dist).mul(a).mul(0.35)));
         c.addAssign(grainNoise(screenCoordinate.xy.floor()).sub(0.5).mul(a).mul(0.045));
       }
+
+      // Sea-glass tri-tone, pearlescent caustic ring and a warm sun flash.
+      // Presentation time stays unscaled while only the local rider slows.
+      const flow = U.flowAmount;
+      const flowGrade = c
+        .mul(vec3(0.9, 1.075, 1.045))
+        .add(vec3(0.025, 0.045, 0.032));
+      c.assign(mix(c, flowGrade, flow.mul(0.78)));
+      c.assign(saturation(c, float(1).add(flow.mul(0.14))));
+      const ringRadius = U.flowPhase.mul(0.11).fract().mul(0.72).add(0.08);
+      const pearlRing = smoothstep(0.0, 0.065, flowDist.sub(ringRadius).abs())
+        .oneMinus()
+        .mul(flowFall)
+        .mul(flow);
+      c.addAssign(vec3(0.2, 0.88, 0.72).mul(pearlRing).mul(0.17));
+      const sunPulse = U.flowPhase.mul(2.3).sin().mul(0.5).add(0.5).pow(5).mul(flow);
+      c.addAssign(vec3(1.0, 0.52, 0.22).mul(sunPulse).mul(0.045));
 
       // ---- retro crt: dithered quantize on the virtual grid + scanlines
       if (retro) {

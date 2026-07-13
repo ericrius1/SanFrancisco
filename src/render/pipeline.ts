@@ -102,13 +102,11 @@ export function createRenderPipeline(
     if (variant !== undefined) return variant;
 
     variant = new THREE.RenderPipeline(renderer);
-    if (mask === 0) {
-      variant.outputColorTransform = true;
-      variant.outputNode = sceneColor;
-    } else {
-      variant.outputColorTransform = false;
-      variant.outputNode = postfx.get(mask);
-    }
+    // The zero-style graph still owns the runtime surf-flow lens. It resolves
+    // to the original scene sample while inactive, and avoids a shader compile
+    // hitch on the first flow-state activation.
+    variant.outputColorTransform = false;
+    variant.outputNode = postfx.get(mask);
     variants.set(mask, variant);
     return variant;
   };
