@@ -26,6 +26,7 @@ import type { Fireworks } from "../fx/fireworks";
 import type { TileStreamer } from "../world/tiles";
 import { TUNABLES_UPDATED_EVENT, withTweakBindingEventsSuppressed, saveTweak } from "../core/persist";
 import { BUSKER_FIREFLY_TUNING } from "../gameplay/buskers/tuning";
+import { VEGETATION_TUNING, applyVegetationTuning } from "../world/vegetation/tuning";
 
 type WireframeMaterial = THREE.Material & { wireframe: boolean };
 
@@ -501,6 +502,10 @@ export class DebugPanel {
 
     // foliage detail knobs (the master on/off lives in the meta folder above).
     const foliage = advanced.addFolder({ title: "foliage" });
+    const sharedVegetation = foliage.addFolder({ title: "shared wind + canopy" });
+    VEGETATION_TUNING.bind(sharedVegetation, {
+      onChange: () => applyVegetationTuning()
+    });
     // Wildflower ring: density + clump↔scatter shaping. The ring reads these live on
     // its next re-scatter; force one now (on slider RELEASE only, `last`) so the edit
     // shows without waiting for the player to walk.

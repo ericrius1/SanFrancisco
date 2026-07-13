@@ -30,7 +30,6 @@
 import * as THREE from "three/webgpu";
 import { createLegacySeedTree } from "../vegetation/legacySeedTree";
 import { type GardenTree } from "./layout";
-import { applyGrassTuning } from "./grassTuning";
 
 // garden species id → SeedThree design. tree_fern (id 3) has no SeedThree
 // analog and keeps the in-repo procedural mesh; its entry here is null.
@@ -446,10 +445,6 @@ export type SeedTreeGardenResult = {
  * clone manager. Entries with a null design (tree fern) are procedural.
  */
 export async function buildSeedTreeGarden(trees: GardenTree[]): Promise<SeedTreeGardenResult> {
-  // Wind uniforms (shared by trees + grass) come from the persisted grass
-  // tuning group — one source, so the debug sliders and reloads agree.
-  applyGrassTuning();
-
   const bySpecies: GardenTree[][] = SEED_TREE_DESIGNS.map(() => []);
   for (const t of trees) {
     if (SEED_TREE_DESIGNS[t.species]) bySpecies[t.species]?.push(t);

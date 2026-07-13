@@ -233,7 +233,7 @@ type ClumpFlower = {
   windGain?: number;
 };
 
-/** Merge several complete flowers into one instanced clump. aWindOffset deliberately
+/** Merge several complete flowers into one instanced clump. The packed wind offset
  *  samples the canonical ground-cover sway at a slightly different phase per stem,
  *  so stalks breathe together with the grass without moving as a rigid bouquet. */
 function flowerClump(flowers: ClumpFlower[]): THREE.BufferGeometry {

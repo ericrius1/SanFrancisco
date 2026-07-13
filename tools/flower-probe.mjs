@@ -92,13 +92,21 @@ async function freeCam(c, x, z, facing, back, up) {
     window.__sfFreeCam(eye,[${x}+dx*20, gy+${Math.max(1.5, up * 0.4)}, ${z}+dz*20]);return true;})()`);
 }
 async function flowerStats(c) {
-  return ev(c, `(()=>{const f=window.__sf.wildlands.flowers;const per=f.group.children.map(m=>m.count||0);
+  return ev(c, `(()=>{const f=window.__sf.wildlands.flowers,s=f.stats;const per=f.group.children.map(m=>m.count||0);
     const g=window.__sf.wildlands.grass.group;let grass=0;for(const m of g.children)if(m.isInstancedMesh)grass+=m.count;
-    return{flowers:f.stats.count,perSpecies:per,grass};})()`);
+    return{flowers:s.count,heads:s.heads,submittedTriangles:s.submittedTriangles,
+      trianglesPerClump:s.trianglesPerClump,instanceCapPerSpecies:s.instanceCapPerSpecies,perSpecies:per,grass};})()`);
 }
 async function setTuning(c, obj) {
   const sets = Object.entries(obj).map(([k, v]) => `t.${k}=${v};`).join("");
-  return ev(c, `(()=>{const t=window.__sf.FLOWER_TUNING.values;${sets}window.__sf.wildlands.flowers.refresh();return{density:t.density,clumpiness:t.clumpiness,clumpSize:t.clumpSize,reach:t.reach,count:window.__sf.wildlands.flowers.stats.count};})()`);
+  return ev(c, `(()=>{const t=window.__sf.FLOWER_TUNING.values;${sets}window.__sf.wildlands.flowers.refresh();const s=window.__sf.wildlands.flowers.stats;return{density:t.density,clumpiness:t.clumpiness,clumpSize:t.clumpSize,reach:t.reach,count:s.count,heads:s.heads,submittedTriangles:s.submittedTriangles};})()`);
+}
+async function measure(c) {
+  return ev(c, `(async()=>{const sf=window.__sf,r=sf.renderer,dev=r.backend&&r.backend.device;
+    const sync=async()=>{if(dev?.queue?.onSubmittedWorkDone)await dev.queue.onSubmittedWorkDone();};
+    for(let i=0;i<5;i++){sf.tick(1/60);await sync();}
+    const samples=[];for(let i=0;i<18;i++){const t=performance.now();sf.tick(1/60);await sync();samples.push(performance.now()-t);}
+    samples.sort((a,b)=>a-b);return{p50:+samples[samples.length>>1].toFixed(2),calls:r.info.render.calls??0};})()`);
 }
 async function shoot(c, name) {
   const shot = await c.send("Page.captureScreenshot", { format: "jpeg", quality: 88, fromSurface: true });
@@ -114,7 +122,7 @@ async function main() {
   const proc = spawn(chrome, [
     `--user-data-dir=${profile}`, "--headless=new", `--remote-debugging-port=${port}`,
     "--enable-unsafe-webgpu", "--enable-features=WebGPUDeveloperFeatures", "--use-angle=metal",
-    "--hide-scrollbars", "--mute-audio", `--window-size=${W},${H}`, `${SERVER_URL}/?autostart&fullfps`
+    "--hide-scrollbars", "--mute-audio", `--window-size=${W},${H}`, `${SERVER_URL}/?autostart=1&fullfps=1`
   ], { cwd: ROOT, stdio: "ignore" });
   await sleep(2500);
   let page;
@@ -157,9 +165,15 @@ async function main() {
       await freeCam(c, x, z, facing, back, up);
       for (let i = 0; i < 16; i++) await tick(c, 1 / 60); // ring re-scatters + wind rolls
       const st = await flowerStats(c);
-      console.log(`[flowers] ${name}`, JSON.stringify(st));
-      summary.push({ view: name, ...st });
       await shoot(c, name);
+      const on = await measure(c);
+      await ev(c, `window.__sf.wildlands.flowers.group.visible=false`);
+      const off = await measure(c);
+      await ev(c, `window.__sf.wildlands.flowers.group.visible=true`);
+      const perf = { frameOnP50: on.p50, frameOffP50: off.p50, flowerP50: +(on.p50 - off.p50).toFixed(2), callsOn: on.calls, callsOff: off.calls };
+      console.log(`[flowers] ${name}`, JSON.stringify(st));
+      console.log(`[perf] ${name}`, JSON.stringify(perf));
+      summary.push({ view: name, ...st, ...perf });
     } catch (e) {
       console.log(`[view-fail] ${name}: ${String(e).slice(0, 160)}`);
     }

@@ -9,7 +9,6 @@ import {
   type GardenTerrain,
   type GardenTree
 } from "./layout";
-import { MAX_DISPLACERS, setGroundDisplacers, type GroundDisplacer } from "../groundcover/displacers";
 // The blade geometry + SSS material + instance-write all come from the shared
 // ground-cover grass primitive now — the garden keeps only its own SAMPLING
 // (footprint base layer + near-detail ring, tree clearance, paths, meadow).
@@ -42,14 +41,6 @@ type GrassSampleOptions = {
 
 const TREE_BUCKET = 18;
 const DETAIL_SALT = 1307;
-// Player/creature trample now lives in the SHARED ground-cover displacer field
-// (../groundcover/displacers) so the wildlands grass + wildflowers bend to the
-// same points. Re-exported here under the historical names so garden/index and
-// main keep importing them from the grass module.
-export const MAX_GRASS_DISPLACERS = MAX_DISPLACERS;
-export type GrassDisplacer = GroundDisplacer;
-export const setGrassDisplacers = setGroundDisplacers;
-
 function hash(ix: number, iz: number, salt: number): number {
   let h = (Math.imul(ix, 374761393) + Math.imul(iz, 668265263) + Math.imul(salt, 2246822519)) | 0;
   h = Math.imul(h ^ (h >>> 15), 2246822519);

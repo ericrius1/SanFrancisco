@@ -61,7 +61,11 @@ import { WaveAudio, oceanWaveEnergyAt } from "./audio/waveAudio";
 import { AbandonedMounts } from "./gameplay/abandonedMounts";
 import type { Creatures } from "./gameplay/creatures";
 import type { Forest, AnimalKind } from "./gameplay/forest";
-import type { GrassDisplacer } from "./world/garden";
+import {
+  updateVegetationEnvironment,
+  windGustValue,
+  type GroundDisplacer
+} from "./world/vegetation/runtime";
 import { BOTANICAL_GARDEN_BOUNDS } from "./world/garden/layout";
 import type { CityGenRing, ColliderBox, ColliderMesh } from "./world/citygen";
 import { Islands } from "./gameplay/islands";
@@ -400,7 +404,7 @@ async function boot() {
     group: THREE.Group;
     ready: Promise<void>;
     setVisible: (visible: boolean, focus: { x: number; z: number }) => void;
-    update: (dt: number, pos: THREE.Vector3, d: GrassDisplacer[]) => void;
+    update: (pos: THREE.Vector3) => void;
   } | null = null;
   let wildlands: {
     groups: THREE.Group[];
@@ -416,9 +420,7 @@ async function boot() {
   // first tick wakes any the player already stands in.
   const siteGate = createSiteGate();
   let coronaHeights: CoronaHeightsPark | null = null;
-  let windGustValue: (() => number) | null = null;
-  let advanceWind: ((dt: number) => void) | null = null;
-  const gardenDisplacer: GrassDisplacer = { x: 0, z: 0, radius: 1.6, strength: 1 };
+  const gardenDisplacer: GroundDisplacer = { x: 0, z: 0, radius: 1.6, strength: 1 };
   const gardenDisplacers = [gardenDisplacer];
   // Master foliage switch (bound at the top of the "/" panel). When off, every
   // vegetation group is hidden AND its per-frame update is skipped in the loop
@@ -1359,9 +1361,6 @@ async function boot() {
       import("./world/wildlands"),
       import("./gameplay/golf")
     ]);
-    windGustValue = gardenMod.windGustValue;
-    advanceWind = gardenMod.updateWindGusts; // keep the wind envelope live when foliage is toggled off
-
     // Botanical garden (heaviest single park: SeedThree trees + textures). Gate
     // it only when the spawn is near; otherwise build it AFTER the cover lifts,
     // hidden until compiled, so its trees never sit on the boot path.
@@ -1803,7 +1802,7 @@ async function boot() {
       nature.update(frameDt, {
         playerPos: player.renderPosition,
         camera,
-        gust: windGustValue?.() ?? 0,
+        gust: windGustValue(),
         timeOfDay: sky.timeOfDay
       });
       // stay social while frozen: peers keep moving, our keepalive keeps flowing
@@ -1888,7 +1887,7 @@ async function boot() {
       nature.update(frameDt, {
         playerPos: player.renderPosition,
         camera,
-        gust: windGustValue?.() ?? 0,
+        gust: windGustValue(),
         timeOfDay: sky.timeOfDay
       });
       sendLocalPresence();
@@ -2276,34 +2275,34 @@ async function boot() {
         throwZoomBase = -1;
       }
     }
-    buskers.update(frameDt, camera, windGustValue?.() ?? 0, sky.sunElevation);
+    gardenDisplacer.x = player.renderPosition.x;
+    gardenDisplacer.z = player.renderPosition.z;
+    updateVegetationEnvironment(frameDt, foliageOn ? gardenDisplacers : undefined);
+    buskers.update(frameDt, camera, windGustValue(), sky.sunElevation);
     // MASTER foliage gate: when the "/" panel's foliage switch is OFF, every
     // vegetation group is already hidden (setFoliageVisible) — skip all its
     // per-frame work too so it costs near zero. We STILL advance the shared wind
     // envelope (cheap CPU math, no rendering) because the nature soundscape below
     // reads its gust value for wind audio.
     if (foliageOn) {
-      // garden: advance wind, move the near-grass detail ring to the player, and
-      // flatten grass under them. Cheap when the player is nowhere near the garden
+      // Garden moves its near-grass detail ring to the player. Shared wind and
+      // displacement were already advanced by the root vegetation runtime above.
+      // Cheap when the player is nowhere near the garden
       // (updateFocus distance-culls base chunks and skips the near ring).
-      gardenDisplacer.x = player.renderPosition.x;
-      gardenDisplacer.z = player.renderPosition.z;
-      garden?.update(frameDt, player.renderPosition, gardenDisplacers);
+      garden?.update(player.renderPosition);
       // wildlands: the grass + flower rings follow the PLAYER (like the garden ring
       // above) so they stay put when you just look around — the chase camera orbits
       // the player, and anchoring the rings to it slid the whole field around you.
       // Tree distance-culling still follows the camera so off-screen groves drop.
       wildlands?.update(player.renderPosition, camera.position);
-    } else {
-      advanceWind?.(frameDt); // foliage hidden: keep only the wind gust envelope ticking for nature audio
     }
-    // nature soundscape rides the same gust envelope garden.update just advanced,
+    // Nature soundscape rides the same root vegetation gust envelope,
     // and reads the sky clock for dawn choruses / night owls. Cheap out in the
     // city (suspends), so it's safe to tick unconditionally.
     nature.update(frameDt, {
       playerPos: player.renderPosition,
       camera,
-      gust: windGustValue?.() ?? 0,
+      gust: windGustValue(),
       timeOfDay: sky.timeOfDay
     });
     // live loop only: the dogs freeze during pause, so barking there would lie
