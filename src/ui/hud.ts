@@ -74,7 +74,7 @@ const KB: Record<PlayerMode, Row[]> = {
   surf: [
     { c: ["Locked"], label: "camera follows the wave" },
     { c: ["W", "S"], label: "pump · stall" },
-    { c: ["A", "D"], label: "carve the face" },
+    { c: ["A", "D"], label: "carve left / right" },
     { c: ["Space"], label: "flow when ready" },
     { c: ["Auto"], label: "lip launch" },
     { c: ["E"], label: "exit to beach" }
@@ -160,7 +160,7 @@ const PAD: Record<PlayerMode, Row[]> = {
   surf: [
     { c: ["Locked"], label: "camera follows the wave" },
     { c: ["RT", "LT"], label: "pump · stall" },
-    { c: ["LS"], label: "carve the face" },
+    { c: ["LS"], label: "carve left / right" },
     { c: ["A"], label: "flow when ready" },
     { c: ["Auto"], label: "lip launch" },
     { c: ["B"], label: "exit to beach" }

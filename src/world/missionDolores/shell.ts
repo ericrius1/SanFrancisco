@@ -1,10 +1,11 @@
 import * as THREE from "three/webgpu";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { WorldMap } from "../heightmap";
-import type { MdWorldBox } from "./ctx";
+import type { MdWorldBox, MdWorldMesh } from "./ctx";
 import {
   APSE_RADIUS,
   createApseWallSegments,
+  createMuseumFloorCollisionMesh,
   FOOT_HALF_W,
   FOOT_Z0,
   FOOT_Z1,
@@ -38,7 +39,20 @@ interface ShellBuild {
   group: THREE.Group;
   floorTop: number;
   colliders: MdWorldBox[];
+  floorColliders: MdWorldMesh[];
+  radialSurfaces: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>[];
   groundTopAt(x: number, z: number, base: number): number | null;
+}
+
+interface GlassSpec {
+  x: number;
+  y: number;
+  z: number;
+  w: number;
+  h: number;
+  ry: number;
+  kind: "amber" | "rose";
+  radialRays: boolean;
 }
 
 /** Per-vertex weathering so big adobe faces don't read as flat "clay": a subtle
@@ -149,13 +163,13 @@ export function buildBasilicaShell(map: WorldMap): ShellBuild {
   const vault: THREE.BufferGeometry[] = [];
   const roofG: THREE.BufferGeometry[] = [];
   const woodG: THREE.BufferGeometry[] = [];
-  const glass: { x: number; y: number; z: number; w: number; h: number; ry: number; kind: "amber" | "rose" }[] = [];
+  const glass: GlassSpec[] = [];
 
   const naveLen = Z_APSE - Z_ENTRANCE; // 64
   const naveMidZ = (Z_ENTRANCE + Z_APSE) / 2;
 
   /* ---------------- floor ---------------- */
-  box(floors, 0, -0.2, naveMidZ, FOOT_HALF_W * 2, 0.4, naveLen + 4, STONE_FLOOR);
+  box(floors, 0, -0.2, naveMidZ, FOOT_HALF_W * 2, 0.4, naveLen, STONE_FLOOR);
   // a runner of inlay tiles down the central aisle
   for (let z = Z_ENTRANCE + 3; z < Z_APSE; z += 3) {
     box(floors, 0, 0.011, z, 3.2, 0.02, 1.4, FLOOR_INLAY);
@@ -172,11 +186,13 @@ export function buildBasilicaShell(map: WorldMap): ShellBuild {
   }
 
   /* ---------------- foundation apron (fills the downhill gap on the park slope) ---------------- */
-  box(stone, 0, -skirtDepth / 2 + 0.05, naveMidZ, FOOT_HALF_W * 2 + 0.5, skirtDepth + 0.1, naveLen + 4.5, ADOBE);
+  // Keep the apron below the semantic y=0 stone floor; its old +10 cm top
+  // depth-occluded the floor and made correctly grounded feet look sunken.
+  box(stone, 0, -skirtDepth / 2 - 0.055, naveMidZ, FOOT_HALF_W * 2 + 0.5, skirtDepth + 0.1, naveLen + 4.5, ADOBE);
   {
     const g = new THREE.CylinderGeometry(APSE_RADIUS + 0.25, APSE_RADIUS + 0.25, skirtDepth + 0.1, 24, 1, false, -Math.PI / 2, Math.PI).toNonIndexed();
     paint(g, ADOBE);
-    g.translate(0, -skirtDepth / 2 + 0.05, Z_APSE);
+    g.translate(0, -skirtDepth / 2 - 0.055, Z_APSE);
     stone.push(g);
   }
 
@@ -188,7 +204,7 @@ export function buildBasilicaShell(map: WorldMap): ShellBuild {
     for (let z = Z_ENTRANCE + 5; z <= Z_APSE - 4; z += 6.4) {
       box(stone, wx - sx * 0.15, WALL_H * 0.62, z, 0.5, WALL_H * 0.7, 1.0, ADOBE_TRIM); // pilaster
       // window: amber emissive on the interior face
-      glass.push({ x: wx - sx * 0.34, y: 5.4, z: z + 3.2, w: 1.7, h: 4.4, ry: sx > 0 ? -Math.PI / 2 : Math.PI / 2, kind: "amber" });
+      glass.push({ x: wx - sx * 0.34, y: 5.4, z: z + 3.2, w: 1.7, h: 4.4, ry: sx > 0 ? -Math.PI / 2 : Math.PI / 2, kind: "amber", radialRays: true });
     }
     // cornice
     box(trim, wx, WALL_H + 0.25, naveMidZ, WALL_T + 0.35, 0.5, naveLen, ADOBE_TRIM);
@@ -211,7 +227,7 @@ export function buildBasilicaShell(map: WorldMap): ShellBuild {
   box(trim, 0, facadeTop + 0.4, facadeZ, 8, 0.8, WALL_T + 0.2, ADOBE_TRIM);
   tube(trim, 0, facadeTop + 0.8, facadeZ, facadeTop + 2.4, 1.7, 0.2, ADOBE_TRIM, 16);
   // rose window over the portal (emissive stained glass)
-  glass.push({ x: 0, y: 9.4, z: facadeZ + 0.32, w: 3.4, h: 3.4, ry: 0, kind: "rose" });
+  glass.push({ x: 0, y: 9.4, z: facadeZ + 0.32, w: 3.4, h: 3.4, ry: 0, kind: "rose", radialRays: true });
   // decorative portal surround
   box(trim, 0, PORTAL_H + 0.2, facadeZ + 0.05, PORTAL_HALF_W * 2 + 0.8, 0.5, 0.3, ADOBE_TRIM);
   for (const sx of [-1, 1]) box(trim, sx * (PORTAL_HALF_W + 0.35), PORTAL_H / 2, facadeZ + 0.05, 0.4, PORTAL_H, 0.3, ADOBE_TRIM);
@@ -227,7 +243,7 @@ export function buildBasilicaShell(map: WorldMap): ShellBuild {
     box(stone, tx, TOWER_H / 2, facadeZ, 3.4, TOWER_H, 3.4, ADOBE);
     box(trim, tx, TOWER_H + 0.2, facadeZ, 3.9, 0.5, 3.9, ADOBE_TRIM); // cornice
     // bell openings (emissive amber) on the front + sides
-    glass.push({ x: tx, y: TOWER_H - 3, z: facadeZ - 1.75, w: 1.5, h: 2.6, ry: 0, kind: "amber" });
+    glass.push({ x: tx, y: TOWER_H - 3, z: facadeZ - 1.75, w: 1.5, h: 2.6, ry: 0, kind: "amber", radialRays: false });
     // pyramidal / domed cap
     tube(roofG, tx, TOWER_H + 0.4, facadeZ, TOWER_H + 3.4, 2.5, 0.15, TERRACOTTA, 4);
     tube(trim, tx, TOWER_H + 3.3, facadeZ, TOWER_H + 3.9, 0.28, 0.15, ADOBE_TRIM, 8);
@@ -378,13 +394,17 @@ export function buildBasilicaShell(map: WorldMap): ShellBuild {
   }
 
   /* ---------------- stained-glass windows (emissive, self-lit) ---------------- */
-  group.add(buildGlass(glass));
+  const builtGlass = buildGlass(glass);
+  group.add(builtGlass.group);
 
   /* ---------------- colliders (world space) ---------------- */
   const colliders: MdWorldBox[] = [];
   const pushWall = (lx: number, lz: number, hx: number, hz: number, lyaw = 0) => {
     const w = mdToWorldXZ(lx, lz);
-    colliders.push({ x: w.x, y: floorTop + WALL_H / 2, z: w.z, hx, hy: WALL_H / 2, hz, yaw: MD_YAW + lyaw });
+    // Structural walls continue through the visible foundation. Otherwise a
+    // capsule that reaches the old coarse edge slope can slip underneath them.
+    const hy = (WALL_H + skirtDepth) / 2;
+    colliders.push({ x: w.x, y: floorTop + (WALL_H - skirtDepth) / 2, z: w.z, hx, hy, hz, yaw: MD_YAW + lyaw });
   };
   pushWall(-FOOT_HALF_W, naveMidZ, WALL_T / 2, naveLen / 2); // west
   pushWall(FOOT_HALF_W, naveMidZ, WALL_T / 2, naveLen / 2); // east
@@ -426,12 +446,15 @@ export function buildBasilicaShell(map: WorldMap): ShellBuild {
     const dx = x - MD_CENTER.x;
     const dz = z - MD_CENTER.z;
     if (dx * dx + dz * dz > 3600) return null; // 60 m broad-phase
-    if (mdInsideFootprint(x, z)) return floorTop;
-    // ramp up to the portal from the −z (entrance) side
     const c = Math.cos(MD_YAW);
     const s = Math.sin(MD_YAW);
     const lx = dx * c - dz * s;
     const lz = dx * s + dz * c;
+    // The walkable floor begins at the portal. FOOT_Z0 includes the exterior
+    // foundation apron, so testing the broad footprint first used to shadow
+    // two metres of this ramp and manufacture a sharp collision step.
+    if (lz >= Z_ENTRANCE && mdInsideFootprint(x, z)) return floorTop;
+    // ramp up to the portal from the −z (entrance) side
     if (Math.abs(lx) <= PORTAL_HALF_W + 0.6 && lz < Z_ENTRANCE && lz >= Z_ENTRANCE - RAMP) {
       const t = (Z_ENTRANCE - lz) / RAMP;
       return Math.max(base, floorTop + (base - floorTop) * t);
@@ -439,7 +462,24 @@ export function buildBasilicaShell(map: WorldMap): ShellBuild {
     return null;
   };
 
-  return { group, floorTop, colliders, groundTopAt };
+  const floorGeometry = createMuseumFloorCollisionMesh();
+  const floorColliders: MdWorldMesh[] = [{
+    x: MD_CENTER.x,
+    y: floorTop + 0.005,
+    z: MD_CENTER.z,
+    yaw: MD_YAW,
+    vertices: floorGeometry.vertices,
+    indices: floorGeometry.indices
+  }];
+
+  return {
+    group,
+    floorTop,
+    colliders,
+    floorColliders,
+    radialSurfaces: builtGlass.radialSurfaces,
+    groundTopAt
+  };
 }
 
 /** A terracotta roof shell that clears the interior vault, plus an apse cap. */
@@ -500,22 +540,33 @@ function buildGableRoof(out: THREE.BufferGeometry[], midZ: number, len: number) 
 }
 
 /** Emissive stained-glass panes (procedural leaded-glass look, self-lit). */
-function buildGlass(specs: { x: number; y: number; z: number; w: number; h: number; ry: number; kind: "amber" | "rose" }[]): THREE.Group {
+function buildGlass(specs: GlassSpec[]): {
+  group: THREE.Group;
+  radialSurfaces: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>[];
+} {
   const g = new THREE.Group();
   g.name = "md_stained_glass";
+  const radialSurfaces: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>[] = [];
   for (const s of specs) {
-    if (s.kind === "rose") {
-      g.add(buildRosePane(s.x, s.y, s.z, Math.min(s.w, s.h) / 2, s.ry));
-    } else {
-      g.add(buildAmberPane(s.x, s.y, s.z, s.w, s.h, s.ry));
-    }
+    const pane = s.kind === "rose"
+      ? buildRosePane(s.x, s.y, s.z, Math.min(s.w, s.h) / 2, s.ry)
+      : buildAmberPane(s.x, s.y, s.z, s.w, s.h, s.ry);
+    g.add(pane);
+    if (s.radialRays) radialSurfaces.push(pane);
   }
-  return g;
+  return { group: g, radialSurfaces };
 }
 
 const GLASS_COLORS = [0xffcf6b, 0xe8834a, 0x6fae8f, 0x5a86c4, 0xc36f9a, 0xe0c04a];
 
-function buildAmberPane(x: number, y: number, z: number, w: number, h: number, ry: number): THREE.Mesh {
+function buildAmberPane(
+  x: number,
+  y: number,
+  z: number,
+  w: number,
+  h: number,
+  ry: number
+): THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial> {
   const canvas = document.createElement("canvas");
   canvas.width = 128;
   canvas.height = 256;
@@ -537,7 +588,13 @@ function buildAmberPane(x: number, y: number, z: number, w: number, h: number, r
   return mesh;
 }
 
-function buildRosePane(x: number, y: number, z: number, r: number, ry: number): THREE.Mesh {
+function buildRosePane(
+  x: number,
+  y: number,
+  z: number,
+  r: number,
+  ry: number
+): THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial> {
   const canvas = document.createElement("canvas");
   canvas.width = canvas.height = 256;
   const c = canvas.getContext("2d")!;

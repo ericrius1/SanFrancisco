@@ -5,7 +5,7 @@ import type { Player } from "../../player/player";
 import type { PlayerMode } from "../../player/types";
 import type { HUD } from "../../ui/hud";
 import { waterHeight } from "../../world/heightmap";
-import { OCEAN_BEACH_SURF } from "../../world/oceanBeachWaves";
+import { oceanBeachShoreline } from "../../world/oceanBeachWaves";
 
 export type ReleaseMotion = {
   linear: [number, number, number];
@@ -100,17 +100,12 @@ export class EmbodimentController {
     if (exitMode === "surf") {
       // Surf is an activity, not a mount. Exit atomically to the sand: no
       // abandoned board, swimming interlude, paddle-out, or stale surf body.
-      const b = OCEAN_BEACH_SURF;
-      const z = Math.max(b.minZ + 30, Math.min(b.maxZ - 30, player.position.z));
-      let x = b.maxX - 30;
-      for (let shoreward = 0; shoreward <= 180; shoreward += 4) {
-        const candidate = b.maxX - 30 + shoreward;
-        if (!player.map.isWater(candidate, z)) {
-          x = candidate + 2;
-          break;
-        }
-      }
-      player.position.set(x, player.map.effectiveGround(x, z) + 1.5, z);
+      const shore = oceanBeachShoreline(player.map, player.position.z, 3);
+      player.position.set(
+        shore.x,
+        player.map.effectiveGround(shore.x, shore.z) + 1.5,
+        shore.z
+      );
       player.heading = Math.PI * 1.5; // face offshore toward the break
       player.swimEnter = false;
       player.trySwitch("walk");

@@ -56,7 +56,7 @@ function createUnitTreeGeometry(): THREE.BufferGeometry {
   const joinRings = (lower: number, upper: number, sides: number) => {
     for (let i = 0; i < sides; i++) {
       const next = (i + 1) % sides
-      indices.push(lower + i, upper + i, lower + next, lower + next, upper + i, upper + next)
+      indices.push(lower + i, lower + next, upper + next, lower + i, upper + next, upper + i)
     }
   }
 

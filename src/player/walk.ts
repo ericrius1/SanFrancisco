@@ -25,6 +25,9 @@ const COYOTE_TIME = 0.12;
 // capsule is ~1.8 m tall (centre = bottom + 0.9), so a 1.4 m rest sink puts the
 // waterline at the chest/shoulders — swimming *in* the water, not standing on it.
 const SWIM_REST_DEPTH = 1.4;
+export const WALK_CAPSULE_HALF_HEIGHT = 0.55;
+export const WALK_CAPSULE_RADIUS = 0.35;
+export const WALK_CAPSULE_HALF_EXTENT = WALK_CAPSULE_HALF_HEIGHT + WALK_CAPSULE_RADIUS;
 
 const V = {
   tmp: new THREE.Vector3(),
@@ -46,8 +49,8 @@ export class WalkController implements ModeController {
     ctx.body = ctx.physics.world.createCapsule({
       type: BodyType.Dynamic,
       position: [p.x, p.y + 0.4, p.z],
-      halfHeight: 0.55,
-      radius: 0.35,
+      halfHeight: WALK_CAPSULE_HALF_HEIGHT,
+      radius: WALK_CAPSULE_RADIUS,
       density: 160,
       friction: 0.05,
       restitution: 0

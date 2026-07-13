@@ -23,7 +23,7 @@ import { attachToHand, buildBow, buildGolfClub, secondHandCurl, GOLF_CLUB_GRIP, 
 import { ARCHER_BOW_GRIP, poseArcher } from "../gameplay/archery/poses";
 import { avatarFromSeed, normalizeAvatarTraits, type AvatarTraits } from "./avatar";
 import { DEFAULT_DRIVE_SPEC, type Cockpit, type DriveSpec, type PlayerMode } from "./types";
-import { WalkController, WALK_TUNING } from "./walk";
+import { WalkController, WALK_CAPSULE_HALF_EXTENT, WALK_TUNING } from "./walk";
 import { LightPool } from "./lightPool";
 import {
   applyBallGlow,
@@ -55,6 +55,10 @@ const V = {
   up: new THREE.Vector3(0, 1, 0),
   quat: new THREE.Quaternion()
 };
+
+// A missed streamed-surface handoff must degrade into a short reset, never an
+// endless fall. Large enough not to catch normal jumps or steep-slope travel.
+const WALK_BELOW_GROUND_RECOVERY_DEPTH = 12;
 
 /** DEV-only live golf-pose tuning (window.__golfTune), consumed by the golf
  *  grip + poseGolf so tools/golf-pose-probe.mjs can sweep in one boot. The
@@ -403,6 +407,36 @@ export class Player {
   }
 
   /**
+   * Complete a streamed walk-surface handoff without recreating the body. This
+   * is intentionally lift-only: visitors already above the floor keep their
+   * jump/fall, while a capsule caught underneath a newly loaded surface is
+   * placed exactly on top with interpolation and downward velocity reset.
+   */
+  recoverOntoWalkSurface(surfaceY: number): boolean {
+    if (this.mode !== "walk" || this.riding || !this.body || !Number.isFinite(surfaceY)) return false;
+    const w = this.physics.world;
+    const t = w.getBodyTransform(this.body);
+    const minY = surfaceY + WALK_CAPSULE_HALF_EXTENT + 0.02;
+    if (t.position[1] >= minY) return false;
+    const v = w.getBodyVelocity(this.body);
+    const position: [number, number, number] = [t.position[0], minY, t.position[2]];
+    w.setBodyTransform(this.body, position, t.rotation);
+    w.setBodyVelocity(this.body, [v.linear[0], 0, v.linear[2]], [0, 0, 0]);
+    w.setBodyAwake(this.body, true);
+
+    this.position.set(...position);
+    this.renderPosition.copy(this.position);
+    this.#currPosition.copy(this.position);
+    this.#prevPosition.copy(this.position);
+    this.quaternion.set(t.rotation[0], t.rotation[1], t.rotation[2], t.rotation[3]);
+    this.renderQuaternion.copy(this.quaternion);
+    this.#currQuaternion.copy(this.quaternion);
+    this.#prevQuaternion.copy(this.quaternion);
+    this.velocity.set(v.linear[0], 0, v.linear[2]);
+    return true;
+  }
+
+  /**
    * Teleport to another player: their spot INCLUDING altitude, adopting their
    * mode so the reunion sticks (arrive flying next to a flyer instead of
    * watching them shrink from the street). Spawns ~2 m above the target pose:
@@ -531,6 +565,14 @@ export class Player {
     this.quaternion.set(t.rotation[0], t.rotation[1], t.rotation[2], t.rotation[3]);
     this.velocity.set(v.linear[0], v.linear[1], v.linear[2]);
     this.speed = this.velocity.length();
+
+    if (
+      this.mode === "walk" &&
+      this.position.y < this.map.baseGroundTop(this.position.x, this.position.z) - WALK_BELOW_GROUND_RECOVERY_DEPTH
+    ) {
+      this.respawn({ x: this.position.x, z: this.position.z, heading: this.heading - Math.PI });
+      return;
+    }
 
     this.#modes[this.mode].update(this, dt, input, { camYaw, aim, v });
   }

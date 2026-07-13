@@ -233,7 +233,11 @@ export function createApseShrine(ctx: MuseumCtx): MdExhibit {
   roseBoss.position.z = 0.08;
   roseGroup.add(roseBoss);
   grp.add(roseGroup);
-  ctx.bindArt(rose, roseMat, "glass-rose", [0, 8.55, 38.05], { wakeDistance: 72, fit: "stretch" });
+  ctx.bindArt(rose, roseMat, "glass-rose", [0, 8.55, 38.05], {
+    wakeDistance: 72,
+    fit: "stretch",
+    radialRays: true
+  });
 
   // ---------------- two flanking lancet windows, mounted on the apse's curved wall ----------------
   // Apse wall = semicircle radius ~9 centred at (0, SHRINE_Z+4). Seat each lancet
@@ -278,7 +282,11 @@ export function createApseShrine(ctx: MuseumCtx): MdExhibit {
     }
     grp.add(assembly);
     const artName = xSign < 0 ? "glass-birds" : "glass-wolf";
-    ctx.bindArt(mesh, lancetMat, artName, [lx, 6, lz], { wakeDistance: 64, fit: "stretch" });
+    ctx.bindArt(mesh, lancetMat, artName, [lx, 6, lz], {
+      wakeDistance: 64,
+      fit: "stretch",
+      radialRays: true
+    });
   }
 
   // ---------------- ring of candles before the statue ----------------

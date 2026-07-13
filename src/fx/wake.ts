@@ -508,9 +508,13 @@ export class BoardWake {
     const groundedWaterRide =
       (board.mode === "board" && board.boardGrounded) ||
       (board.mode === "surf" && (board.surfTelemetry?.grounded ?? false));
+    // Surf always rides the analytic ocean surface; don't require surface-type
+    // water cells (the break mask can sit a few metres inside the sand edge).
+    const onWater =
+      board.mode === "surf" || this.#map.isWater(p.x, p.z);
     const surfing =
       groundedWaterRide &&
-      this.#map.isWater(p.x, p.z) &&
+      onWater &&
       p.y - waterHeight(p.x, p.z, elapsed) < BW_SURF_HEIGHT;
 
     const fwd = this.#fwd.set(0, 0, -1).applyQuaternion(board.renderQuaternion);

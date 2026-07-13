@@ -165,7 +165,9 @@ export class Minimap {
   #bigRecenter: HTMLButtonElement | null = null;
   #bigTeleWrap: HTMLDivElement | null = null;
   #bigTeleName: HTMLSpanElement | null = null;
-  #bigPadHint: HTMLSpanElement | null = null;
+  /** Floating “Enter/X to teleport” callout anchored to the selection marker. */
+  #bigPinHint: HTMLDivElement | null = null;
+  #pinHintKey: string | null = null;
   #device: "kb" | "pad" = "kb";
   #dpr = 1;
   #layers: MapLayer[] = [];
@@ -1242,16 +1244,15 @@ export class Minimap {
         this.#bigTeleWrap.style.display = "none";
       }
     }
-    if (this.#bigPadHint) {
-      this.#bigPadHint.hidden = !(name && this.#device === "pad");
-    }
+    if (!name) this.#hidePinTeleportHint();
   }
 
   /** Swap pad vs keyboard chrome on the expanded map (teleport hint). */
   setDevice(device: "kb" | "pad") {
     if (device === this.#device) return;
     this.#device = device;
-    if (this.#bigPadHint) this.#bigPadHint.hidden = !(this.#selected && device === "pad");
+    // Force the pin callout to rebuild its key chip on the next draw.
+    this.#pinHintKey = null;
   }
 
   /* --------------------------------------------------- expanded map */
@@ -1469,14 +1470,13 @@ export class Minimap {
       this.#clearSelection();
       this.setExpanded(false);
     });
-    const padHint = document.createElement("span");
-    padHint.className = "bigmap-pad-hint";
-    padHint.hidden = true;
-    padHint.innerHTML = `<span class="k f fx">X</span><span class="bigmap-pad-hint-lbl">to teleport</span>`;
     action.appendChild(targetName);
     action.appendChild(teleportBtn);
-    action.appendChild(padHint);
-    mapFrame.append(canvas, recenter);
+    const pinHint = document.createElement("div");
+    pinHint.className = "bigmap-pin-hint";
+    pinHint.hidden = true;
+    pinHint.setAttribute("aria-hidden", "true");
+    mapFrame.append(canvas, recenter, pinHint);
     inner.appendChild(mapFrame);
     inner.appendChild(action);
     inner.appendChild(hint);
@@ -1570,7 +1570,7 @@ export class Minimap {
     this.#bigRecenter = recenter;
     this.#bigTeleWrap = action;
     this.#bigTeleName = targetName;
-    this.#bigPadHint = padHint;
+    this.#bigPinHint = pinHint;
   }
 
   #tryBigSelect(e: MouseEvent, canvas: HTMLCanvasElement) {
@@ -1888,12 +1888,18 @@ export class Minimap {
     height: number
   ) {
     const target = this.#resolveSelected();
-    if (!target) return;
+    if (!target) {
+      this.#hidePinTeleportHint();
+      return;
+    }
     const dpr = this.#dpr;
     const x = px(target.x);
     const y = pz(target.z);
     const margin = 20 * dpr;
-    if (x < -margin || y < -margin || x > width + margin || y > height + margin) return;
+    if (x < -margin || y < -margin || x > width + margin || y > height + margin) {
+      this.#hidePinTeleportHint();
+      return;
+    }
 
     ctx.save();
     ctx.beginPath();
@@ -1915,6 +1921,58 @@ export class Minimap {
     ctx.strokeStyle = "rgba(6,14,20,0.78)";
     ctx.stroke();
     ctx.restore();
+
+    this.#syncPinTeleportHint(x, y, width);
+  }
+
+  #hidePinTeleportHint() {
+    if (!this.#bigPinHint) return;
+    this.#bigPinHint.hidden = true;
+    this.#bigPinHint.classList.remove("pop", "flip-x", "flip-y");
+    this.#pinHintKey = null;
+  }
+
+  /** Anchor Enter/X “to teleport” beside the selection ring; pop when the target changes. */
+  #syncPinTeleportHint(canvasX: number, canvasY: number, width: number) {
+    const el = this.#bigPinHint;
+    if (!el) return;
+    const s = this.#selected;
+    if (!s) {
+      this.#hidePinTeleportHint();
+      return;
+    }
+    const key =
+      s.kind === "player"
+        ? `p:${s.id}:${this.#device}`
+        : `f:${s.x.toFixed(1)}:${s.z.toFixed(1)}:${this.#device}`;
+    const changed = key !== this.#pinHintKey;
+    if (changed) {
+      this.#pinHintKey = key;
+      const chip =
+        this.#device === "pad"
+          ? `<span class="k f fx">X</span>`
+          : `<span class="k">Enter</span>`;
+      el.innerHTML =
+        `<div class="bigmap-pin-hint-inner">${chip}` +
+        `<span class="bigmap-pin-hint-lbl">to teleport</span></div>`;
+      el.classList.remove("pop");
+      // Retrigger the entrance animation on a new selection.
+      void el.offsetWidth;
+      el.classList.add("pop");
+    }
+
+    const dpr = this.#dpr;
+    const cssX = canvasX / dpr;
+    const cssY = canvasY / dpr;
+    const cw = width / dpr;
+    // Prefer above-right of the pin; flip when near the canvas edge.
+    const flipX = cssX > cw * 0.62;
+    const flipY = cssY < 48;
+    el.classList.toggle("flip-x", flipX);
+    el.classList.toggle("flip-y", flipY);
+    el.style.left = `${cssX}px`;
+    el.style.top = `${cssY}px`;
+    el.hidden = false;
   }
 
   #placeLabel(

@@ -138,6 +138,40 @@ function assertFinite(prototype: CompiledTreePrototype): void {
   }
 }
 
+/** Face winding must agree with authored outward vertex normals (FrontSide bark). */
+function assertBranchWindingOutward(prototype: CompiledTreePrototype): void {
+  for (const lod of prototype.lods) {
+    const { vertices, indices } = lod.branch;
+    const stride = BRANCH_VERTEX_STRIDE_FLOATS;
+    let checked = 0;
+    for (let i = 0; i + 2 < indices.length; i += 3) {
+      const i0 = indices[i]! * stride;
+      const i1 = indices[i + 1]! * stride;
+      const i2 = indices[i + 2]! * stride;
+      const ax = vertices[i0]!;
+      const ay = vertices[i0 + 1]!;
+      const az = vertices[i0 + 2]!;
+      const e1x = vertices[i1]! - ax;
+      const e1y = vertices[i1 + 1]! - ay;
+      const e1z = vertices[i1 + 2]! - az;
+      const e2x = vertices[i2]! - ax;
+      const e2y = vertices[i2 + 1]! - ay;
+      const e2z = vertices[i2 + 2]! - az;
+      const fx = e1y * e2z - e1z * e2y;
+      const fy = e1z * e2x - e1x * e2z;
+      const fz = e1x * e2y - e1y * e2x;
+      const nx = (vertices[i0 + 3]! + vertices[i1 + 3]! + vertices[i2 + 3]!) / 3;
+      const ny = (vertices[i0 + 4]! + vertices[i1 + 4]! + vertices[i2 + 4]!) / 3;
+      const nz = (vertices[i0 + 5]! + vertices[i1 + 5]! + vertices[i2 + 5]!) / 3;
+      const align = fx * nx + fy * ny + fz * nz;
+      assert(align > 0, `${lod.name} branch triangle ${i / 3} faces inward (dot=${align})`);
+      checked++;
+      if (checked >= 64) break;
+    }
+    assert(checked > 0, `${lod.name} branch has no triangles to check`);
+  }
+}
+
 const first = compileTree(testRecipe("leaf"), 0x5eed1234);
 const repeated = compileTree(testRecipe("leaf"), 0x5eed1234);
 const changed = compileTree(testRecipe("leaf"), 0x5eed1235);
@@ -162,6 +196,7 @@ assert(first.bounds.sphereRadius > 0, "tree bounds are empty");
 assert(first.shadow.canopyRadii.every((radius) => radius > 0), "shadow canopy is empty");
 assert(treePrototypeTransferables(first).length === 19, "unexpected transferable buffer count");
 assertFinite(first);
+assertBranchWindingOutward(first);
 
 const needle = compileTree(testRecipe("needle"), 0xabc123);
 const rosette = compileTree(testRecipe("rosette"), 0xabc123);

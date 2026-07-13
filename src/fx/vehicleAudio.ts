@@ -176,6 +176,8 @@ export class VehicleAudio {
   #previewT: number | null = null; // seconds into a customizer audition swell
   #carLandingEvents = 0;
   #lastCarLandingStrength = 0;
+  #lastCarLandingLevel = 0;
+  #lastCarLandingPeak = 0;
 
   constructor() {
     // autoplay policy: same unlock dance as the fireworks — build + resume on
@@ -201,6 +203,8 @@ export class VehicleAudio {
       boardRuntime: { ...this.#boardRuntime },
       carLandingEvents: this.#carLandingEvents,
       lastCarLandingStrength: this.#lastCarLandingStrength,
+      lastCarLandingLevel: this.#lastCarLandingLevel,
+      lastCarLandingPeak: this.#lastCarLandingPeak,
       voices: this.#voices.map((v) => ({ mode: v.mode, level: v.level }))
     };
   }
@@ -311,16 +315,19 @@ export class VehicleAudio {
     if (!ctx) return;
     if (ctx.state === "suspended") void ctx.resume();
     const amount = clamp01(strength);
-    const trim = Math.max(0, Math.min(2, level));
+    const trim = Math.max(0, Math.min(3, level));
     if (amount <= 0 || trim <= 0) return;
     this.#carLandingEvents += 1;
     this.#lastCarLandingStrength = amount;
+    this.#lastCarLandingLevel = trim;
 
     const now = ctx.currentTime;
-    const duration = 0.2 + amount * 0.16;
+    const duration = 0.24 + amount * 0.18;
+    const peak = (0.22 + amount * 0.34) * trim;
+    this.#lastCarLandingPeak = peak;
     const out = ctx.createGain();
     out.gain.setValueAtTime(0.0001, now);
-    out.gain.exponentialRampToValueAtTime((0.11 + amount * 0.2) * trim, now + 0.009);
+    out.gain.exponentialRampToValueAtTime(peak, now + 0.007);
     out.gain.exponentialRampToValueAtTime(0.0001, now + duration);
     out.connect(this.#master);
 
@@ -329,10 +336,24 @@ export class VehicleAudio {
     thump.frequency.setValueAtTime(94 - amount * 22, now);
     thump.frequency.exponentialRampToValueAtTime(40 - amount * 5, now + duration * 0.82);
     const thumpGain = ctx.createGain();
-    thumpGain.gain.value = 0.72;
+    thumpGain.gain.value = 0.92;
     thump.connect(thumpGain).connect(out);
     thump.start(now);
     thump.stop(now + duration + 0.02);
+
+    // The low thump supplies weight, but small speakers can barely reproduce it.
+    // This short suspension/chassis knock puts the touchdown in the midrange so
+    // it remains unmistakable without turning the whole FX bus up.
+    const knock = ctx.createOscillator();
+    knock.type = "triangle";
+    knock.frequency.setValueAtTime(205 - amount * 35, now);
+    knock.frequency.exponentialRampToValueAtTime(92 - amount * 8, now + 0.105);
+    const knockGain = ctx.createGain();
+    knockGain.gain.setValueAtTime(0.72 + amount * 0.18, now);
+    knockGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.12);
+    knock.connect(knockGain).connect(out);
+    knock.start(now);
+    knock.stop(now + 0.13);
 
     const slap = ctx.createBufferSource();
     slap.buffer = this.#noise;
@@ -341,8 +362,8 @@ export class VehicleAudio {
     slapFilter.frequency.value = 520 + (1 - amount) * 380;
     slapFilter.Q.value = 0.7;
     const slapGain = ctx.createGain();
-    slapGain.gain.setValueAtTime(0.62 + amount * 0.18, now);
-    slapGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.075 + amount * 0.045);
+    slapGain.gain.setValueAtTime(0.82 + amount * 0.24, now);
+    slapGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.1 + amount * 0.055);
     slap.connect(slapFilter).connect(slapGain).connect(out);
     slap.start(now, Math.random() * 1.4, 0.14);
     slap.stop(now + 0.15);

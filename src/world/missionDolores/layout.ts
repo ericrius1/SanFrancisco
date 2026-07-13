@@ -74,6 +74,51 @@ export function createApseWallSegments(count = 12): MdApseWallSegment[] {
   return out;
 }
 
+export interface MdFloorCollisionMesh {
+  readonly vertices: Float32Array;
+  readonly indices: Uint32Array;
+}
+
+/**
+ * Exact, upward-wound walk surface for the authored nave rectangle and apse fan.
+ * The generic terrain collider samples every 8 m, so it cannot represent this
+ * hard-edged elevated floor without inventing slopes beside the gallery walls.
+ */
+export function createMuseumFloorCollisionMesh(apseSegments = 24): MdFloorCollisionMesh {
+  if (!Number.isInteger(apseSegments) || apseSegments < 4) {
+    throw new Error("museum floor needs at least four apse segments");
+  }
+
+  const vertices: number[] = [
+    -FOOT_HALF_W, 0, Z_ENTRANCE,
+    -FOOT_HALF_W, 0, Z_APSE,
+    FOOT_HALF_W, 0, Z_APSE,
+    FOOT_HALF_W, 0, Z_ENTRANCE,
+    0, 0, Z_APSE
+  ];
+  const indices: number[] = [0, 1, 2, 0, 2, 3];
+  const center = 4;
+  const arcStart = 5;
+
+  // West-to-east order makes center→arc[i]→arc[i+1] wind toward +Y.
+  for (let i = 0; i <= apseSegments; i++) {
+    const angle = Math.PI - (Math.PI * i) / apseSegments;
+    vertices.push(
+      Math.cos(angle) * APSE_RADIUS,
+      0,
+      Z_APSE + Math.sin(angle) * APSE_RADIUS
+    );
+  }
+  for (let i = 0; i < apseSegments; i++) {
+    indices.push(center, arcStart + i, arcStart + i + 1);
+  }
+
+  return {
+    vertices: Float32Array.from(vertices),
+    indices: Uint32Array.from(indices)
+  };
+}
+
 /** Museum-local → world position (accounts for CENTER + YAW; floorTop added by caller). */
 export function mdToWorldXZ(lx: number, lz: number): { x: number; z: number } {
   const c = Math.cos(MD_YAW);

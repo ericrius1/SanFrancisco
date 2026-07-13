@@ -10,7 +10,7 @@ import { tracer } from "./core/hitchTracer";
 import { bootMarkStart, bootMark, bootMarkSummary, persistBootHistory } from "./core/bootMarks";
 import { createFrameScheduler } from "./core/frameBudget";
 import { WorldMap, waterHeight } from "./world/heightmap";
-import { OCEAN_BEACH_SURF } from "./world/oceanBeachWaves";
+import { OCEAN_BEACH_SURF, oceanBeachShoreline, nearOceanBeachShore } from "./world/oceanBeachWaves";
 import { Sky, SKY_TUNING } from "./world/sky";
 import { Water } from "./world/water";
 import { UnderwaterOverlay } from "./fx/underwater";
@@ -41,7 +41,7 @@ import { CORONA_HEIGHTS_SUMMIT } from "./world/coronaHeights/layout";
 import type { MissionDoloresMuseum } from "./world/missionDolores";
 import { MD_CENTER as MISSION_DOLORES_CENTER } from "./world/missionDolores/layout";
 import { findOpenSpawn } from "./world/spawn";
-import { resolveSpawnPoint, type RegionKey } from "./world/spawnPoints";
+import { resolveSpawnPoint, SPAWN_POINTS, type RegionKey } from "./world/spawnPoints";
 import { WILD_REGIONS } from "./world/wildlands/regions";
 import { BUENA_VISTA_REGION } from "./world/buenaVista";
 import { Player } from "./player/player";
@@ -286,6 +286,13 @@ async function boot() {
     ? requestedSpawn
     : START.spawn;
   const spawnPoint = resolveSpawnPoint(spawnKey) ?? resolveSpawnPoint(START_DEFAULTS.spawn);
+  // Snap the Ocean Beach pin to the live isWater shoreline once the map exists.
+  // The static approx in SPAWN_POINTS is only a boot fallback.
+  if (spawnPoint?.key === "oceanBeach") {
+    const shore = oceanBeachShoreline(map, spawnPoint.z, 3);
+    spawnPoint.x = shore.x;
+    spawnPoint.z = shore.z;
+  }
   const startAt = spawnPoint ?? map.meta.spawns[spawnKey] ?? map.meta.spawns[START_DEFAULTS.spawn];
   // Per-session scatter: every fresh session lands a stride or two off the
   // registered point, so two players (or two tabs) never boot into the exact
@@ -1318,9 +1325,12 @@ async function boot() {
   if (afterlight) {
     minimap.addLandmark(AFTERLIGHT_ARRIVAL.x, AFTERLIGHT_ARRIVAL.z, "Buena Vista · Afterlight");
   }
-  // Ocean Beach surf break. Teleporting arrives on foot at the start marker;
+  // Ocean Beach surf break. Teleporting arrives on foot at the waterline;
   // one E press enters the live face already standing and moving.
-  minimap.addLandmark(OCEAN_BEACH_SURF.maxX - 26, OCEAN_BEACH_SURF.entryZ, "Ocean Beach · Surf");
+  {
+    const shore = oceanBeachShoreline(map, OCEAN_BEACH_SURF.entryZ, 3);
+    minimap.addLandmark(shore.x, shore.z, "Ocean Beach · Surf");
+  }
   minimap.addLandmark(LANDS_END_CENTER.x, LANDS_END_CENTER.z, "Lands End · Labyrinth");
   const playerLocator = new PlayerLocator();
   const navigation = new NavigationController({
@@ -1751,7 +1761,8 @@ async function boot() {
   minimap.addLandmark(GARDEN_XZ.x, GARDEN_XZ.z, "Botanical Garden");
   minimap.addLandmark(GOLF_XZ.x, GOLF_XZ.z, "Presidio Golf");
   minimap.addLandmark(CORONA_HEIGHTS_SUMMIT.x, CORONA_HEIGHTS_SUMMIT.z, "Corona Heights");
-  minimap.addLandmark(MISSION_DOLORES_CENTER.x, MISSION_DOLORES_CENTER.z, "Mission Dolores · Saint Francis");
+  const missionDoloresSpawn = SPAWN_POINTS.missionDolores;
+  minimap.addLandmark(missionDoloresSpawn.x, missionDoloresSpawn.z, missionDoloresSpawn.label);
   const touchesBounds = (
     x: number,
     z: number,
@@ -2400,6 +2411,7 @@ async function boot() {
       minimap.padMoveCursor(axes.rx, axes.ry, frameDt);
       if (input.pressed("Space")) minimap.padSelectAtCursor();
       if (input.firePressed) minimap.padTeleport();
+      if (input.pressed("Enter") || input.pressed("NumpadEnter")) minimap.padTeleport();
       const mapPadCycle =
         (input.pressed("PadModeNext") ? 1 : 0) - (input.pressed("PadModePrev") ? 1 : 0);
       if (mapPadCycle) minimap.padCyclePins(mapPadCycle);
@@ -2651,24 +2663,14 @@ async function boot() {
       !missionDolores?.tryInteract(player.position, player.mode, hud) &&
       !afterlight?.tryInteract(player, hud)
     ) {
-      const nearOceanBeach =
-        player.mode === "walk" &&
-        player.position.x > OCEAN_BEACH_SURF.minX - 180 &&
-        player.position.x < OCEAN_BEACH_SURF.maxX + 280 && // beach exit remains inside the activity gate
-        player.position.z > OCEAN_BEACH_SURF.minZ - 120 &&
-        player.position.z < OCEAN_BEACH_SURF.maxZ + 120;
+      const nearOceanBeach = player.mode === "walk" && nearOceanBeachShore(player.position.x, player.position.z);
       if (nearOceanBeach) {
         // Load the exclusive rig before changing embodiment, so even the first
         // visible surf frame uses the locked shot rather than world-camera state.
         const request = ++surfEntryRequest;
         void chase.ensureSurfCamera().then(() => {
           if (request !== surfEntryRequest || player.mode !== "walk") return;
-          const stillNearOceanBeach =
-            player.position.x > OCEAN_BEACH_SURF.minX - 180 &&
-            player.position.x < OCEAN_BEACH_SURF.maxX + 280 &&
-            player.position.z > OCEAN_BEACH_SURF.minZ - 120 &&
-            player.position.z < OCEAN_BEACH_SURF.maxZ + 120;
-          if (!stillNearOceanBeach) return;
+          if (!nearOceanBeachShore(player.position.x, player.position.z)) return;
           player.trySwitch("surf");
           hud.message("You're surfing — A/D carve · W pump · S stall · E exits to the beach", 4);
         });
@@ -3075,18 +3077,15 @@ async function boot() {
     // Mission Dolores: dynamic code gate first, then shell/art proximity gates.
     ensureMissionDolores(player.position);
     missionDolores?.update(frameDt, elapsed, player.position, player.mode, hud);
+    const museumFloorHandoff = missionDolores?.takeFloorHandoffHeight(player.position, player.mode);
+    if (museumFloorHandoff != null) player.recoverOntoWalkSurface(museumFloorHandoff);
 
     // "hop in" nudge when standing near a ride (friend → wildlife)
     if (player.mode === "walk" && embodiments.passengerOf === null) {
       const drv = remotes.nearestDriver(player.position, 5.5);
       const nearAnimal = drv ? null : forest?.nearest(player.position, 5);
       const nearSurfBreak =
-        !drv &&
-        !nearAnimal &&
-        player.position.x > OCEAN_BEACH_SURF.minX - 180 &&
-        player.position.x < OCEAN_BEACH_SURF.maxX + 280 &&
-        player.position.z > OCEAN_BEACH_SURF.minZ - 120 &&
-        player.position.z < OCEAN_BEACH_SURF.maxZ + 120;
+        !drv && !nearAnimal && nearOceanBeachShore(player.position.x, player.position.z);
       const reveriePrompt =
         !drv && !nearAnimal && !nearSurfBreak
           ? palaceReverie?.nearbyPrompt(player.position.x, player.position.z) ?? null
@@ -3181,11 +3180,7 @@ async function boot() {
     }
     // On foot at Ocean Beach you carry your board, ready to start the activity.
     player.setCarryingBoard(
-      player.mode === "walk" &&
-        player.position.x > OCEAN_BEACH_SURF.minX - 40 &&
-        player.position.x < OCEAN_BEACH_SURF.maxX + 110 &&
-        player.position.z > OCEAN_BEACH_SURF.minZ - 60 &&
-        player.position.z < OCEAN_BEACH_SURF.maxZ + 60
+      player.mode === "walk" && nearOceanBeachShore(player.position.x, player.position.z)
     );
     vehicleAudio.update(frameDt, {
       mode: player.mode,

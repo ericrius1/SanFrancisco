@@ -61,7 +61,7 @@ export const POSTFX_TUNING = tunables("postfx", {
   retroPixel: { v: 3, min: 1, max: 8, step: 1, label: "· pixel size" },
   retroLevels: { v: 6, min: 2, max: 10, step: 1, label: "· color steps" },
   retroScan: { v: 0.35, min: 0, max: 1, step: 0.05, label: "· scanlines" },
-  museumRays: { v: true, label: "museum · painting rays" },
+  museumRays: { v: true, label: "museum · stained-glass rays" },
   museumRaysIntensity: { v: 0.62, min: 0, max: 1.5, step: 0.02, label: "museum · ray strength" },
   museumRaysWeight: { v: 0.9, min: 0, max: 1, step: 0.01, label: "museum · sample weight" },
   museumRaysDecay: { v: 0.96, min: 0.85, max: 1, step: 0.005, label: "museum · decay" },

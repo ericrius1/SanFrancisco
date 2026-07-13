@@ -8,7 +8,7 @@
 // its own immediate surroundings cost — never the whole city's foliage.
 
 import type { PlayerMode } from "../player/types";
-import { OCEAN_BEACH_SURF } from "./oceanBeachWaves";
+import { OCEAN_BEACH_SURF, oceanBeachApproxShoreX } from "./oceanBeachWaves";
 import { mdToWorldXZ, Z_ENTRANCE } from "./missionDolores/layout";
 
 const MISSION_DOLORES_ENTRY = mdToWorldXZ(0, Z_ENTRANCE - 8);
@@ -58,13 +58,12 @@ export const SPAWN_POINTS: Record<string, SpawnPoint> = {
     gates: [],
     bootTileRadius: 700
   },
-  // Ocean Beach surf pin — same sand spot as the map landmark (just inside the
-  // waterline, facing the swell). Arrive on foot with the board underarm, ready
-  // to press E and start riding immediately. Far from every heavy park region.
+  // Ocean Beach surf pin — dry sand at the live waterline (approx until map
+  // resolves the exact edge via oceanBeachShoreline), facing the swell.
   oceanBeach: {
     key: "oceanBeach",
     label: "Ocean Beach · Surf",
-    x: OCEAN_BEACH_SURF.maxX - 26,
+    x: oceanBeachApproxShoreX(OCEAN_BEACH_SURF.entryZ) + 4,
     z: OCEAN_BEACH_SURF.entryZ,
     heading: Math.PI / 2, // west into the break
     mode: "walk",

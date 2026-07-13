@@ -16,11 +16,11 @@ import { radialBlur } from "three/addons/tsl/display/radialBlur.js";
 import type { RadialLightParams, RadialLightSource } from "./radialLightTypes";
 
 /**
- * Optional painting-light graph. This file is deliberately reached only through
+ * Optional stained-glass light graph. This file is deliberately reached only through
  * dynamic import: the radial helper's 16–64 tap loop must not join clean boot.
  *
- * The source scene contains only authored painting proxies. A half-resolution
- * visibility pass rejects paintings hidden by the beauty pass depth before the
+ * The source scene contains only stained-glass proxies. A half-resolution
+ * visibility pass rejects windows hidden by the beauty pass depth before the
  * official Three radialBlur() helper turns their colour into screen-space rays.
  */
 export function createRadialLightShafts(opts: {
@@ -32,7 +32,7 @@ export function createRadialLightShafts(opts: {
   const { camera, sceneDepth, source } = opts;
 
   const sourcePass = pass(source.scene, camera, { samples: 0 });
-  sourcePass.name = "radial-light-painting-source";
+  sourcePass.name = "radial-light-stained-glass-source";
   sourcePass.transparent = false;
   sourcePass.getTexture("output").type = THREE.HalfFloatType;
 
@@ -50,7 +50,7 @@ export function createRadialLightShafts(opts: {
     const visible = smoothstep(tolerance.negate(), float(0), artViewZ.sub(sceneViewZ));
     return vec4(art.rgb.mul(visible), art.a.mul(visible));
   })();
-  visibleSourceNode.name = "radial-light-visible-paintings";
+  visibleSourceNode.name = "radial-light-visible-stained-glass";
 
   const visibleSource = rtt(visibleSourceNode);
   visibleSource.name = "radial-light-visible-source-rtt";
@@ -81,7 +81,7 @@ export function createRadialLightShafts(opts: {
       const base = vec4(baseNode).toVar();
       const sourceSample = visibleSource.sample(screenUV).rgb;
       // radialBlur returns source + rays. Remove the source so compositing does
-      // not double-light the paintings already present in the beauty pass.
+      // not double-light the windows already present in the beauty pass.
       const raysLinear = (blurred as any).rgb.sub(sourceSample).max(vec3(0));
       const raysDisplay = renderOutput(vec4(raysLinear.mul(vec3(1.04, 0.99, 0.9)), 1)).rgb;
       const color = base.rgb.add(raysDisplay.mul(U.intensity)).clamp(0, 1);

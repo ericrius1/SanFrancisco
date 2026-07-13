@@ -21,7 +21,7 @@ import {
   mx_noise_float
 } from "three/tsl";
 import { PALACE_LAGOON, palaceLagoonMask, waterHeight, type WorldMap } from "./heightmap";
-import { bumpNormal, chopZoneMask, swellBase, swellChop } from "./tslUtil";
+import { bumpNormal, chopZoneMask, oceanBeachSwell, swellBase, swellChop } from "./tslUtil";
 import { EXPOSURE_REBASE, LIGHT_SCALE } from "../config";
 
 const PALACE_LAGOON_SEGMENTS = 112;
@@ -106,12 +106,12 @@ export class Water {
         // steps off the flat far sheet (nothing physical reads water height
         // that far from the player)
         const rim = smoothstep(276, 200, positionLocal.xz.length());
-        // Ocean Beach's breaking shape is owned by the high-res translucent
-        // overlay in gameplay/surfing/waves.ts. This fundamental bay sheet stays
-        // underneath as a continuous ocean surface, so the gameplay visibility
-        // fade can never reveal a rectangular hole or bare sea floor.
+        // Ocean Beach swell matches CPU waterHeight() so board rails, wake, and
+        // the near patch share one surface. The lazy high-res face mesh adds the
+        // crisp emerald wall on top without punching a hole in this sheet.
         const swell = swellBase(lx, lz, t)
-          .add(swellChop(lx, lz, t).mul(chopZoneMask(lx, lz).mul(rim)));
+          .add(swellChop(lx, lz, t).mul(chopZoneMask(lx, lz).mul(rim)))
+          .add(oceanBeachSwell(lx, lz, t).mul(rim));
         mat.positionNode = positionLocal.add(vec3(0, swell.mul(displace), 0));
       }
 
@@ -178,7 +178,13 @@ export class Water {
       const foam = foamBand.mul(smoothstep(0.45, 0.75, foamNoise.mul(0.75).add(lap.mul(0.35)))).mul(0.85)
         .add(zoneF.mul(smoothstep(0.6, 0.86, foamNoise)).mul(0.34))
         .toVar();
-      const foamTotal = clamp(foam, 0, 1).toVar();
+      // Ocean Beach face tint: the tall authored swell keeps the same water
+      // shader, but its lifted green wall and breaking crown need to read
+      // against the darker Pacific at a glance.
+      const surfWave = oceanBeachSwell(pxz.x, pxz.y, t).toVar();
+      const surfFaceTint = smoothstep(0.3, 2.45, surfWave).mul(0.82);
+      const surfCrest = smoothstep(2.2, 3.2, surfWave).mul(0.82);
+      const foamTotal = clamp(foam.add(surfCrest), 0, 1).toVar();
       // ripple bump: stylized directional wavelets (sum of sines) replace the old
       // 2×3-octave FBM — a fraction of the per-pixel ALU on the biggest surface on
       // screen, while reading crisper/wavier. Still faded out with distance to kill
@@ -198,9 +204,11 @@ export class Water {
       // reflection carries the broad sunset sheen, so this stays subtle on top.
       const sparkNoise = mx_noise_float(vec3(p.mul(2.2), t.mul(0.8)));
       const spark = smoothstep(0.78, 0.97, sparkNoise).mul(detail.mul(detail)).mul(foamTotal.oneMinus());
-      mat.emissiveNode = vec3(1.0, 0.95, 0.82).mul(spark.mul(0.035 * LIGHT_SCALE));
+      mat.emissiveNode = vec3(1.0, 0.95, 0.82).mul(spark.mul(0.035 * LIGHT_SCALE))
+        .add(vec3(0.06, 0.34, 0.28).mul(surfFaceTint.mul(0.14 * LIGHT_SCALE)));
 
-      mat.colorNode = mix(waterCol, color(0xf3faf6), foamTotal);
+      const faceCol = mix(waterCol, color(0x2bb9a9), surfFaceTint);
+      mat.colorNode = mix(faceCol, color(0xf3faf6), foamTotal);
       // roughness rises as the ripple bump fades (Toksvig-style): distant water
       // spreads the sun path into a soft band instead of a mirror streak
       const baseRough = mix(float(0.76), float(0.42), detail);

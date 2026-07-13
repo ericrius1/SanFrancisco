@@ -172,7 +172,7 @@ export function createRenderPipeline(
   let activeVariantMask = getPostFxVariantMask();
   let activePipeline = getVariantPipeline(activeVariantMask);
 
-  // The expensive radial helper and its painting-only passes are a nested lazy
+  // The expensive radial helper and its stained-glass-only passes are a nested lazy
   // feature. Nothing below imports/builds them until a source crosses an
   // interior gate; outside, activePipeline is always one of the base variants.
   let radialSource: RadialLightSource | null = null;
@@ -265,7 +265,7 @@ export function createRenderPipeline(
         radialRuntimeSource = requestedSource;
         selectActivePipeline();
       })
-      .catch((err) => console.warn("[render] radial painting light unavailable:", err))
+      .catch((err) => console.warn("[render] radial stained-glass light unavailable:", err))
       .finally(() => {
         if (radialBuildPending?.source === requestedSource && radialBuildPending.epoch === epoch) {
           radialBuildPending = null;

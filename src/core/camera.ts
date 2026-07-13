@@ -46,6 +46,13 @@ const VIEW = {
 
 const smoothstep = (t: number) => t * t * (3 - 2 * t)
 
+// A continuous vehicle can cover this distance only over many rendered frames.
+// Crossing it in one camera sample is therefore a world-space relocation, not
+// follow motion. Keep this local fallback even when the normal teleport caller
+// uses cutTo(), so restores/invites cannot accidentally fly the camera across SF.
+const TELEPORT_SNAP_DISTANCE = 45
+const TELEPORT_SNAP_DISTANCE_SQ = TELEPORT_SNAP_DISTANCE * TELEPORT_SNAP_DISTANCE
+
 // Per-mode camera volume and minimum readable framing. `comfort` is the nearest
 // boom distance we keep once the cutaway takes over; `cutRadius` is the visual
 // tunnel radius around the sight line. Large/faster mounts need more context.
@@ -103,6 +110,9 @@ export class ChaseCamera {
   #initialized = false
   #externallyOwned = false
   #holdOrbitPose = false
+  #lastAnchor = new THREE.Vector3()
+  #hasLastAnchor = false
+  #cutOnResume = false
   #lastMode: PlayerMode | null = null
   #surfCamera: SurfCameraController | null = null
   #surfCameraLoading: Promise<void> | null = null

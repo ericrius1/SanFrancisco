@@ -8,7 +8,9 @@
 
 export const OCEAN_BEACH_SURF = {
   minX: -6325,
-  maxX: -5765,
+  // Shoreward bound of the activity strip (sand side). The live waterline is
+  // further west — see oceanBeachApproxShoreX / oceanBeachShoreline.
+  maxX: -5720,
   minZ: 1280,
   maxZ: 4920,
   centerZ: 3100,
@@ -40,10 +42,45 @@ function smooth01(v: number) {
   return t * t * (3 - 2 * t);
 }
 
+/**
+ * Approximate dry-sand waterline X along Ocean Beach (no map required).
+ * Fit from baked surface.bin so CPU/GPU masks stay aligned without isWater.
+ * Positive error = a few metres onto sand; the feather below eats that.
+ */
+export function oceanBeachApproxShoreX(z: number): number {
+  return -6323 + 0.08504 * z + 0.00000743 * z * z;
+}
+
+/** Dry-sand pad just east of the live waterline at this Z. */
+export type OceanBeachShoreline = { x: number; z: number; waterX: number };
+
+/**
+ * Walk shoreward from the break until `isWater` flips false. Spawn/exit use this
+ * so the player stands on the actual edge, not 50–150 m inland of the surf mask.
+ */
+export function oceanBeachShoreline(
+  map: { isWater(x: number, z: number): boolean },
+  z: number,
+  pad = 4
+): OceanBeachShoreline {
+  const b = OCEAN_BEACH_SURF;
+  const zz = Math.min(b.maxZ - 30, Math.max(b.minZ + 30, z));
+  const startX = Math.min(oceanBeachApproxShoreX(zz) - 80, b.entryX);
+  let waterX = startX;
+  for (let x = startX; x < b.maxX + 220; x += 2) {
+    if (map.isWater(x, zz)) waterX = x;
+    else {
+      return { x: x + pad, z: zz, waterX };
+    }
+  }
+  return { x: oceanBeachApproxShoreX(zz) + pad, z: zz, waterX };
+}
+
 /** 0 outside Ocean Beach, feathered across the authored surf strip. */
 export function oceanBeachMask(x: number, z: number): number {
   const b = OCEAN_BEACH_SURF;
-  const xIn = smooth01((x - b.minX) / 70) * smooth01((b.maxX - x) / 85);
+  const shore = Math.min(b.maxX, oceanBeachApproxShoreX(z));
+  const xIn = smooth01((x - b.minX) / 70) * smooth01((shore - x) / 70);
   const zIn = smooth01((z - b.minZ) / 180) * smooth01((b.maxZ - z) / 180);
   return xIn * zIn;
 }
@@ -142,6 +179,21 @@ export function sampleOceanBeachWave(x: number, z: number, time: number): OceanB
     slot: crest.slot,
     mask
   };
+}
+
+/** True when the player is close enough to the waterline to start surfing / carry a board. */
+export function nearOceanBeachShore(
+  x: number,
+  z: number,
+  opts: { shorePad?: number; inlandPad?: number; zPad?: number } = {}
+): boolean {
+  const b = OCEAN_BEACH_SURF;
+  const shorePad = opts.shorePad ?? 90;
+  const inlandPad = opts.inlandPad ?? 55;
+  const zPad = opts.zPad ?? 80;
+  if (z < b.minZ - zPad || z > b.maxZ + zPad) return false;
+  const shore = oceanBeachApproxShoreX(z);
+  return x > shore - shorePad && x < shore + inlandPad;
 }
 
 /** A deterministic little break-up used by spray/foam without allocating RNG state. */

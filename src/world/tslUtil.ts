@@ -57,8 +57,11 @@ export function swellChop(x: any, z: any, t: any): any {
  */
 export function oceanBeachSurfField(x: any, z: any, t: any) {
   const b = OCEAN_BEACH_SURF;
+  // Twin of oceanBeachApproxShoreX(z) — keep coefficients in lockstep.
+  const shore = float(-6323).add(z.mul(0.08504)).add(z.mul(z).mul(0.00000743));
+  const shoreCap = shore; // CPU also min()'s with maxX; maxX is always shoreward of the fit.
   const xMask = smoothstep(b.minX, b.minX + 70, x)
-    .mul(smoothstep(b.maxX - 85, b.maxX, x).oneMinus());
+    .mul(smoothstep(shoreCap.sub(70), shoreCap, x).oneMinus());
   const zMask = smoothstep(b.minZ, b.minZ + 180, z)
     .mul(smoothstep(b.maxZ - 180, b.maxZ, z).oneMinus());
   const mask = xMask.mul(zMask).toVar();

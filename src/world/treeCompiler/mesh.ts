@@ -216,12 +216,13 @@ export function buildBranchMesh(
       const ring0 = baseVertex + span * ringSize;
       const ring1 = ring0 + ringSize;
       for (let side = 0; side < lod.radialSegments; side++) {
+        // CCW when viewed from outside (matches outward vertex normals + FrontSide).
         indices[indexCursor++] = ring0 + side;
-        indices[indexCursor++] = ring1 + side;
         indices[indexCursor++] = ring0 + side + 1;
-        indices[indexCursor++] = ring0 + side + 1;
-        indices[indexCursor++] = ring1 + side;
         indices[indexCursor++] = ring1 + side + 1;
+        indices[indexCursor++] = ring0 + side;
+        indices[indexCursor++] = ring1 + side + 1;
+        indices[indexCursor++] = ring1 + side;
       }
     }
   }

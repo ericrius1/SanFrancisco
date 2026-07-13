@@ -174,6 +174,14 @@ async function main() {
       high.audio.lastCarLandingStrength > medium.audio.lastCarLandingStrength,
       "procedural landing audio strength did not scale"
     );
+    assert(
+      high.audio.lastCarLandingLevel > medium.audio.lastCarLandingLevel,
+      "procedural landing audio level did not scale"
+    );
+    assert(
+      medium.audio.lastCarLandingPeak >= 0.5 && high.audio.lastCarLandingPeak >= 1,
+      `landing mix is too quiet (${medium.audio.lastCarLandingPeak} / ${high.audio.lastCarLandingPeak})`
+    );
 
     // Capture while the high-drop smoke pool is still live, in authored daylight.
     const screenshotPath = path.join(OUT, "landing-feedback.png");
@@ -212,6 +220,7 @@ async function main() {
             height: Number(medium.landing.height.toFixed(2)),
             fallDistance: Number(medium.landing.fallDistance.toFixed(2)),
             strength: Number(medium.landing.strength.toFixed(3)),
+            soundPeak: Number(medium.audio.lastCarLandingPeak.toFixed(3)),
             maxShake: Number(medium.maxShake.toFixed(3)),
             maxSmoke: medium.maxSmoke
           },
@@ -219,6 +228,7 @@ async function main() {
             height: Number(high.landing.height.toFixed(2)),
             fallDistance: Number(high.landing.fallDistance.toFixed(2)),
             strength: Number(high.landing.strength.toFixed(3)),
+            soundPeak: Number(high.audio.lastCarLandingPeak.toFixed(3)),
             maxShake: Number(high.maxShake.toFixed(3)),
             maxSmoke: high.maxSmoke
           },

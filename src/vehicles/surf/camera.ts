@@ -169,6 +169,14 @@ export class SurfCameraController {
       anchor.x + MIN_SHORE_CLEARANCE
     )
 
+    // Aim never dips the look-at under the live surface — keeps the rider and
+    // the wave face above the waterline in every frame.
+    const targetFloor = Math.max(
+      waterHeight(this.#target.x, this.#target.z, player.time),
+      0
+    ) + 0.35
+    if (this.#target.y < targetFloor) this.#target.y = targetFloor
+
     this.#sightlineLift = this.#clearWaveSightline(
       this.#position,
       this.#target,
@@ -176,6 +184,13 @@ export class SurfCameraController {
       tuning.waterClearance,
       tuning.sightlineClearance
     )
+
+    // Final hard floor: eye must stay above water after every correction.
+    const hardFloor = Math.max(
+      waterHeight(this.#position.x, this.#position.z, player.time),
+      0
+    ) + tuning.waterClearance
+    if (this.#position.y < hardFloor) this.#position.y = hardFloor
 
     const localWater = Math.max(
       waterHeight(this.#position.x, this.#position.z, player.time),

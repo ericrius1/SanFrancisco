@@ -15,6 +15,16 @@ export interface MdWorldBox {
   yaw: number;
 }
 
+/** A yawed static triangle mesh in WORLD space (vertices remain body-local). */
+export interface MdWorldMesh {
+  x: number;
+  y: number;
+  z: number;
+  yaw: number;
+  vertices: Float32Array;
+  indices: Uint32Array;
+}
+
 export interface MdPlaqueOpts {
   title: string;
   body: string;
@@ -44,8 +54,12 @@ interface DeferredArt {
   maxDistanceSq: number;
   requested: boolean;
   fit: "contain" | "stretch";
-  radialRays: boolean;
-  radialProxy: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicNodeMaterial> | null;
+  radialSurface: RadialSurface | null;
+}
+
+interface RadialSurface {
+  mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>;
+  proxy: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicNodeMaterial> | null;
 }
 
 interface RadialSourceState {
@@ -79,6 +93,7 @@ export class MuseumCtx {
   #registerCollider: (box: MdWorldBox) => void;
   #disposables: { dispose(): void }[] = [];
   #deferredArt: DeferredArt[] = [];
+  #radialSurfaces: RadialSurface[] = [];
   #radial: RadialSourceState | null = null;
   #radialSource: RadialLightSource | null = null;
   #disposed = false;
@@ -143,7 +158,7 @@ export class MuseumCtx {
     const wakeDistance = opts.wakeDistance ?? ART_WAKE_DISTANCE;
     mesh.name = `md_art_${name}`;
     mesh.visible = false;
-    this.#deferredArt.push({
+    const art: DeferredArt = {
       mesh,
       material,
       name,
@@ -151,9 +166,24 @@ export class MuseumCtx {
       maxDistanceSq: wakeDistance * wakeDistance,
       requested: false,
       fit: opts.fit ?? "contain",
-      radialRays: opts.radialRays ?? false,
-      radialProxy: null
-    });
+      radialSurface: null
+    };
+    this.#deferredArt.push(art);
+    if (opts.radialRays) art.radialSurface = this.registerRadialSurface(mesh);
+  }
+
+  /** Register a visible stained-glass pane as an optional radial-light source. */
+  registerRadialSurface(
+    mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>
+  ): RadialSurface {
+    const existing = this.#radialSurfaces.find((surface) => surface.mesh === mesh);
+    if (existing) return existing;
+    const surface: RadialSurface = { mesh, proxy: null };
+    this.#radialSurfaces.push(surface);
+    if (this.#radial && mesh.visible && mesh.material.map) {
+      this.#addRadialSurface(surface, mesh.material.map);
+    }
+    return surface;
   }
 
   /** Wake only the art surfaces close enough to matter to the current visit. */
@@ -172,10 +202,10 @@ export class MuseumCtx {
           art.material.needsUpdate = true;
           if (art.fit === "contain") this.#containArt(art.mesh, tex);
           art.mesh.visible = true;
-          // Keep the optional proxy scene genuinely interior-only: paintings
-          // can load on approach, but gain a second material/mesh only while
+          // Keep the optional proxy scene genuinely interior-only: glass art
+          // can load on approach, but gains a second material/mesh only while
           // the visitor has actually activated the effect.
-          if (art.radialRays && this.#radial) this.#addRadialPainting(art, tex);
+          if (art.radialSurface && this.#radial) this.#addRadialSurface(art.radialSurface, tex);
         })
         .catch(() => {
           // Teardown can legitimately win a race with a texture request.
@@ -367,10 +397,7 @@ export class MuseumCtx {
       const art = new THREE.Mesh(new THREE.PlaneGeometry(innerW, artH), artMat);
       art.position.set(0, innerH / 2 - artH / 2, 0.084);
       grp.add(art);
-      // Only authored paintings seed this effect. bindArt() is also used by
-      // the apse stained glass, which is intentionally reserved for a later
-      // city-wide interior treatment.
-      this.bindArt(art, artMat, opts.art!, opts.pos, { radialRays: true });
+      this.bindArt(art, artMat, opts.art!, opts.pos);
     }
 
     return grp;
@@ -410,13 +437,13 @@ export class MuseumCtx {
     mesh.updateMatrixWorld(true);
   }
 
-  /** Allocate the painting-only source scene on first use inside the museum. */
+  /** Allocate the stained-glass source scene on first use inside the museum. */
   acquireRadialLightSource(): RadialLightSource {
     if (this.#disposed) throw new Error("cannot acquire radial source from a disposed museum");
     if (this.#radial && this.#radialSource) return this.#radialSource;
 
     const scene = new THREE.Scene();
-    scene.name = "mission-dolores-painting-light-sources";
+    scene.name = "mission-dolores-stained-glass-light-sources";
     scene.background = new THREE.Color(0x000000);
     const state: RadialSourceState = {
       scene,
@@ -437,9 +464,9 @@ export class MuseumCtx {
       update: (camera) => this.#updateRadialCenter(state, camera)
     };
 
-    for (const art of this.#deferredArt) {
-      if (art.radialRays && art.mesh.visible && art.material.map) {
-        this.#addRadialPainting(art, art.material.map);
+    for (const surface of this.#radialSurfaces) {
+      if (surface.mesh.visible && surface.mesh.material.map) {
+        this.#addRadialSurface(surface, surface.mesh.material.map);
       }
     }
     return this.#radialSource;
@@ -448,11 +475,11 @@ export class MuseumCtx {
   /** Release all optional proxy materials immediately on exit or toggle-off. */
   releaseRadialLightSource(): void {
     if (!this.#radial) return;
-    for (const art of this.#deferredArt) {
-      if (!art.radialProxy) continue;
-      art.radialProxy.removeFromParent();
-      art.radialProxy.material.dispose();
-      art.radialProxy = null;
+    for (const surface of this.#radialSurfaces) {
+      if (!surface.proxy) continue;
+      surface.proxy.removeFromParent();
+      surface.proxy.material.dispose();
+      surface.proxy = null;
     }
     this.#radial.scene.clear();
     this.#radial.candidates.length = 0;
@@ -460,14 +487,17 @@ export class MuseumCtx {
     this.#radialSource = null;
   }
 
-  /** Mirror one loaded painting into the black, proxy-only radial source scene. */
-  #addRadialPainting(art: DeferredArt, tex: THREE.Texture): void {
+  /** Mirror one stained-glass pane into the black, proxy-only source scene. */
+  #addRadialSurface(surface: RadialSurface, tex: THREE.Texture): void {
     const state = this.#radial;
-    if (this.#disposed || !state || art.radialProxy) return;
-    const mesh = art.mesh;
+    if (this.#disposed || !state || surface.proxy) return;
+    const mesh = surface.mesh;
     const material = new THREE.MeshBasicNodeMaterial({ map: tex });
     material.name = `${mesh.name}_radial_source`;
     material.toneMapped = false;
+    material.side = mesh.material.side;
+    material.transparent = mesh.material.transparent;
+    material.alphaTest = mesh.material.alphaTest;
 
     mesh.updateWorldMatrix(true, false);
     const proxy = new THREE.Mesh(mesh.geometry, material);
@@ -477,10 +507,10 @@ export class MuseumCtx {
     proxy.receiveShadow = false;
     state.scene.add(proxy);
     state.candidates.push(proxy);
-    art.radialProxy = proxy;
+    surface.proxy = proxy;
   }
 
-  /** Smooth the helper's one screen-space origin toward the visible art cluster. */
+  /** Smooth the helper's one screen-space origin toward the visible glass cluster. */
   #updateRadialCenter(state: RadialSourceState, camera: THREE.Camera): void {
     camera.updateMatrixWorld();
     camera.getWorldPosition(state.cameraWorld);
@@ -488,9 +518,9 @@ export class MuseumCtx {
     let y = 0;
     let weightSum = 0;
 
-    for (const painting of state.candidates) {
-      painting.getWorldPosition(state.world);
-      state.normal.set(0, 0, 1).applyQuaternion(painting.quaternion);
+    for (const pane of state.candidates) {
+      pane.getWorldPosition(state.world);
+      state.normal.set(0, 0, 1).applyQuaternion(pane.quaternion);
       state.toCamera.copy(state.cameraWorld).sub(state.world).normalize();
       if (state.normal.dot(state.toCamera) <= 0.05) continue;
       state.view.copy(state.world).applyMatrix4(camera.matrixWorldInverse);
@@ -517,6 +547,7 @@ export class MuseumCtx {
     this.releaseRadialLightSource();
     this.#disposed = true;
     this.#deferredArt.length = 0;
+    this.#radialSurfaces.length = 0;
     for (const d of this.#disposables) d.dispose();
     this.#disposables.length = 0;
     this.#artCache.clear();

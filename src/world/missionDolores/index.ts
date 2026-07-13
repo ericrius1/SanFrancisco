@@ -1,7 +1,7 @@
 import * as THREE from "three/webgpu";
 import { BodyType, type Physics } from "../../core/physics";
 import type { GroundTopOverlay, WorldMap } from "../heightmap";
-import { MuseumCtx, type MdWorldBox } from "./ctx";
+import { MuseumCtx, type MdWorldBox, type MdWorldMesh } from "./ctx";
 import { basilicaFloorTop, buildBasilicaShell } from "./shell";
 import { createCanticleBook, type CanticleBook } from "../../ui/canticleBook";
 import { MD_CENTER, mdInsideFootprint, mdInsideInterior, mdToWorldXZ } from "./layout";
@@ -47,6 +47,7 @@ export class MissionDoloresMuseum {
   #ctx: MuseumCtx | null = null;
   #exhibits: MdExhibit[] = [];
   #shell: THREE.Group | null = null;
+  #floorHandoffPending = false;
 
   constructor(map: WorldMap, physics: Physics, options: MissionDoloresOptions) {
     this.#map = map;
@@ -68,6 +69,7 @@ export class MissionDoloresMuseum {
     const shell = buildBasilicaShell(this.#map);
     this.#shell = shell.group;
     this.group.add(shell.group);
+    for (const floor of shell.floorColliders) this.#registerStaticMesh(floor);
     for (const box of shell.colliders) this.#registerStaticBox(box);
     this.#overlay = (x, z, base) => shell.groundTopAt(x, z, base) ?? base;
     this.#map.setGroundTopOverlay(this.#overlay);
@@ -77,6 +79,7 @@ export class MissionDoloresMuseum {
       floorTop: shell.floorTop,
       registerCollider: (b) => this.#registerStaticBox(b)
     });
+    for (const surface of shell.radialSurfaces) this.#ctx.registerRadialSurface(surface);
     this.#buildPedestal(this.#ctx);
     try {
       this.#exhibits = createExhibits(this.#ctx);
@@ -84,6 +87,7 @@ export class MissionDoloresMuseum {
       console.warn("[mission dolores] exhibits unavailable:", err);
     }
     this.#built = true;
+    this.#floorHandoffPending = true;
     // compile the hidden-until-now geometry off the critical path so the first
     // frame after arrival doesn't hitch on shader/pipeline creation.
     void this.#opts.renderer.compileAsync(shell.group, this.#opts.camera, this.#opts.scene);
@@ -108,6 +112,7 @@ export class MissionDoloresMuseum {
     if (this.#overlay) this.#map.clearGroundTopOverlay(this.#overlay);
     this.#overlay = null;
     this.#built = false;
+    this.#floorHandoffPending = false;
   }
 
   #registerStaticBox(box: MdWorldBox) {
@@ -120,6 +125,20 @@ export class MissionDoloresMuseum {
     const quat: [number, number, number, number] = [0, Math.sin(box.yaw / 2), 0, Math.cos(box.yaw / 2)];
     this.#physics.world.setBodyTransform(body, [box.x, box.y, box.z], quat);
     this.#physics.addQuerySolid(body, box);
+    this.#bodies.push(body);
+  }
+
+  #registerStaticMesh(mesh: MdWorldMesh) {
+    const body = this.#physics.world.createStaticMesh({
+      position: [mesh.x, mesh.y, mesh.z],
+      vertices: mesh.vertices,
+      indices: mesh.indices,
+      friction: 0.8
+    });
+    const quat: [number, number, number, number] = [0, Math.sin(mesh.yaw / 2), 0, Math.cos(mesh.yaw / 2)];
+    this.#physics.world.setBodyTransform(body, [mesh.x, mesh.y, mesh.z], quat);
+    // The height overlay remains the query/raycast authority. Mirroring this
+    // top-only contact mesh would make the cursor classify the floor as a wall.
     this.#bodies.push(body);
   }
 
@@ -165,6 +184,18 @@ export class MissionDoloresMuseum {
 
   isPlayerInside(pos: THREE.Vector3): boolean {
     return mdInsideFootprint(pos.x, pos.z, 0.5) && Math.abs(pos.y - this.floorTop) < 6;
+  }
+
+  /**
+   * Consume the one-shot lazy-build floor handoff once a walking visitor is
+   * actually over the interior. Main lifts an already-below capsule before the
+   * next physics step replaces the old terrain patch with the raised overlay.
+   */
+  takeFloorHandoffHeight(pos: THREE.Vector3, playerMode: string): number | null {
+    if (!this.#floorHandoffPending || !this.#built || playerMode !== "walk") return null;
+    if (!mdInsideInterior(pos.x, pos.z, 0.1)) return null;
+    this.#floorHandoffPending = false;
+    return this.floorTop;
   }
 
   /** Strict doorway/interior gate used by optional museum-only render work. */

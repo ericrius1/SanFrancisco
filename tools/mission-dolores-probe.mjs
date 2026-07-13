@@ -51,7 +51,7 @@ async function assertVisibleRays(onFile, offFile) {
   const meanAbs = difference / on.length;
   const changedFraction = changed / on.length;
   if (meanAbs < 0.4 || changedFraction < 0.01 || meanAbs > 30) {
-    throw new Error(`painting-ray A/B outside visual bounds: meanAbs=${meanAbs.toFixed(2)}, changed=${(changedFraction * 100).toFixed(1)}%`);
+    throw new Error(`stained-glass-ray A/B outside visual bounds: meanAbs=${meanAbs.toFixed(2)}, changed=${(changedFraction * 100).toFixed(1)}%`);
   }
   console.log("[probe] ray A/B:", JSON.stringify({ meanAbs: +meanAbs.toFixed(2), changedPct: +(changedFraction * 100).toFixed(1) }));
 }
@@ -69,7 +69,7 @@ async function main() {
   const requestFailures = [];
   const CX = 1560, CZ = 3235;
   let phase = "boot";
-  const phaseRequests = { boot: [], approach: [], interior: [], exit: [], reentry: [], apse: [], bookOpen: [], bookPage: [], bookPage2: [] };
+  const phaseRequests = { boot: [], approach: [], interior: [], exit: [], reentry: [], apse: [], bookOpen: [], bookPage: [], bookPage2: [], collision: [] };
   try {
     await waitHttp(SERVER_URL, 90000);
     chrome = spawn(chromePath, [`--remote-debugging-port=${dport}`, `--user-data-dir=${path.join(OUT, "chrome-" + Date.now())}`, "--headless=new", "--no-first-run", "--mute-audio", "--enable-features=SharedArrayBuffer", "--use-angle=metal", "--enable-unsafe-webgpu", "--enable-gpu", "--enable-features=WebGPUDeveloperFeatures", `--window-size=${W},${H}`, "--force-device-scale-factor=1", "about:blank"], { stdio: "ignore" });
@@ -109,7 +109,7 @@ async function main() {
 
     // freeze the world for deterministic shots, warm midday light
     await evaluate(c, `(()=>{const s=window.__sf; s.sky.cycleEnabled=false; s.sky.setTimeOfDay(14.0);
-      if(!window.__f){window.__f=1; s.chase.update=()=>{}; s.player.update=()=>{};} return 1;})()`);
+      if(!window.__f){window.__f=1; window.__mdPlayerUpdate=s.player.update.bind(s.player); s.chase.update=()=>{}; s.player.update=()=>{};} return 1;})()`);
 
     // First-use code/shell gate, still far enough that no exhibit art is useful.
     phase = "approach";
@@ -137,9 +137,17 @@ async function main() {
     for (let i = 0; i < 70; i++) await tick(c);
     await waitEval(c, "window.__sf.renderIdle && window.__sf.renderIdle()", 120000);
     await waitEval(c, "window.__sf.missionDolores.isPlayerInInterior(window.__sf.player.position) && window.__sf.pipeline.radialLightState.active && window.__sf.pipeline.radialLightState.loaded", 120000);
-    await sleep(2500); // let plaque/rose textures finish loading
+    await sleep(2500); // let nearby exhibit and authored glass textures finish loading
     for (let i = 0; i < 20; i++) await tick(c);
     await waitEval(c, "window.__sf.missionDolores.radialLightSource.scene.children.length > 0", 120000);
+    const radialNames = await evaluate(c, "window.__sf.missionDolores.radialLightSource.scene.children.map((o)=>o.name)");
+    const invalidRadialNames = radialNames.filter((name) => !/^(?:md_window|md_rose_window|md_art_glass-(?:rose|birds|wolf))_radial_source$/.test(name));
+    if (invalidRadialNames.length) {
+      throw new Error(`non-glass radial sources found: ${invalidRadialNames.join(", ")}`);
+    }
+    if (radialNames.length < 19 || radialNames.length > 22) {
+      throw new Error(`expected 19-22 interior stained-glass sources, got ${radialNames.length}`);
+    }
     const interiorStems = francisArtStems(phaseRequests.interior);
     if (!interiorStems.length || interiorStems.length >= 20) {
       throw new Error(`interior should load a nearby subset of art, got ${interiorStems.length}`);
@@ -177,14 +185,14 @@ async function main() {
     await frame("md_3_nave_altar.jpg", [CX, F + 2.6, CZ - 26], [CX, F + 3.5, CZ + 32]);
     // 4. nave interior looking back toward the rose window over the portal
     await frame("md_4_nave_rose.jpg", [CX, F + 3.2, CZ + 12], [CX, F + 8.5, CZ - 35]);
-    // 5. side view down a colonnade aisle (west gallery) toward the altar
-    await frame("md_5_west_aisle_rays_on.jpg", [CX - 10, F + 2.4, CZ - 24], [CX - 10, F + 2.6, CZ + 20]);
+    // 5. authored apse glass — the A/B must move only window-emitted streaks.
+    await frame("md_5_stained_glass_rays_on.jpg", [CX, F + 2.6, CZ + 11], [CX, F + 8.0, CZ + 38]);
     const raysOnFrames = await evaluate(c, "window.__sf.pipeline.radialLightState.renderedFrames");
     await evaluate(c, "(()=>{const s=window.__sf;s.POSTFX_TUNING.values.museumRays=false;s.pipeline.applyRadialLightFx();return s.pipeline.radialLightState;})()");
-    await frame("md_5_west_aisle_rays_off.jpg", [CX - 10, F + 2.4, CZ - 24], [CX - 10, F + 2.6, CZ + 20]);
+    await frame("md_5_stained_glass_rays_off.jpg", [CX, F + 2.6, CZ + 11], [CX, F + 8.0, CZ + 38]);
     await assertVisibleRays(
-      path.join(OUT, "md_5_west_aisle_rays_on.jpg"),
-      path.join(OUT, "md_5_west_aisle_rays_off.jpg")
+      path.join(OUT, "md_5_stained_glass_rays_on.jpg"),
+      path.join(OUT, "md_5_stained_glass_rays_off.jpg")
     );
     const raysOff = await evaluate(c, "window.__sf.pipeline.radialLightState");
     if (raysOff.active || raysOff.loaded || raysOff.renderedFrames !== raysOnFrames) {
@@ -277,6 +285,47 @@ async function main() {
     if (bookPage2Stems.length !== 1 || bookPage2Stems[0] !== "/francis/art/canticle-brother-sun") {
       throw new Error(`second page turn should request only Brother Sun, got ${bookPage2Stems.join(", ") || "nothing"}`);
     }
+
+    // Restore live player physics for the regressions the deterministic camera
+    // phase intentionally suppresses. Rebuild from far away, then cold-respawn
+    // at the old bad centre target to exercise the lazy floor handoff.
+    phase = "collision";
+    await evaluate(c, `(()=>{const s=window.__sf; s.missionDolores.closeBook(); if(window.__mdPlayerUpdate)s.player.update=window.__mdPlayerUpdate;
+      s.player.respawn({x:${CX},z:${CZ - 300},heading:0}); return 1;})()`);
+    for (let i = 0; i < 12; i++) await tick(c);
+    await waitEval(c, "window.__sf.missionDolores.group.children.length === 0", 30000);
+    const coldStartY = await evaluate(c, `(()=>{const s=window.__sf; s.player.respawn({x:${CX},z:${CZ},heading:0}); return s.physics.world.getBodyTransform(s.player.body).position[1];})()`);
+    if (coldStartY >= F + 0.9) throw new Error(`cold centre setup did not begin below museum floor: y=${coldStartY}, floor=${F}`);
+    for (let i = 0; i < 12; i++) await tick(c);
+    await waitEval(c, "window.__sf.missionDolores.group.children.length > 0", 30000);
+    let minCenterY = Infinity;
+    for (let i = 0; i < 100; i++) {
+      await tick(c);
+      minCenterY = Math.min(minCenterY, await evaluate(c, "window.__sf.physics.world.getBodyTransform(window.__sf.player.body).position[1]"));
+    }
+    const coldLanding = await evaluate(c, `(()=>{const s=window.__sf,t=s.physics.world.getBodyTransform(s.player.body),v=s.physics.world.getBodyVelocity(s.player.body); return {x:t.position[0],y:t.position[1],z:t.position[2],vy:v.linear[1]};})()`);
+    if (Math.abs((coldLanding.y - 0.9) - F) > 0.08 || minCenterY < F + 0.84 || Math.abs(coldLanding.vy) > 0.08) {
+      throw new Error(`cold centre floor handoff failed: start=${coldStartY}, min=${minCenterY}, final=${JSON.stringify(coldLanding)}, floor=${F}`);
+    }
+
+    const settle = async (lx, lz, label) => {
+      await evaluate(c, `(()=>{const s=window.__sf,p=s.player,y=${F}+2.2,x=${CX}+${lx},z=${CZ}+${lz};
+        s.physics.world.setBodyTransform(p.body,[x,y,z],[0,0,0,1]); s.physics.world.setBodyVelocity(p.body,[0,0,0],[0,0,0]); return 1;})()`);
+      for (let i = 0; i < 100; i++) await tick(c);
+      const landed = await evaluate(c, `(()=>{const s=window.__sf,t=s.physics.world.getBodyTransform(s.player.body),v=s.physics.world.getBodyVelocity(s.player.body); return {x:t.position[0],y:t.position[1],z:t.position[2],vy:v.linear[1]};})()`);
+      const floorError = (landed.y - 0.9) - F;
+      if (Math.abs(floorError) > 0.08 || Math.abs(landed.x - (CX + lx)) > 0.3 || Math.abs(landed.vy) > 0.08) {
+        throw new Error(`${label} floor collision failed: ${JSON.stringify({ landed, floorError })}`);
+      }
+      return { label, floorError: +floorError.toFixed(4), xDrift: +(landed.x - (CX + lx)).toFixed(4) };
+    };
+    const floorResults = [];
+    for (const lz of [-15, 0, 15]) {
+      floorResults.push(await settle(-12.8, lz, `west wall z=${lz}`));
+      floorResults.push(await settle(12.8, lz, `east wall z=${lz}`));
+    }
+    floorResults.push(await settle(0, 38.15, "apse crown"));
+    console.log("[probe] collision:", JSON.stringify({ coldStartY, minCenterY, coldLanding, floorResults }));
 
     console.log("[probe] console errors:", consoleErrors.length ? "\n  " + consoleErrors.slice(0, 20).join("\n  ") : "(none)");
     if (consoleErrors.length || requestFailures.length) throw new Error(`browser errors=${consoleErrors.length}, request failures=${requestFailures.length}`);

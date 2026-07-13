@@ -1,8 +1,6 @@
 import * as THREE from "three/webgpu";
 import {
-  cameraPosition,
   positionLocal,
-  positionWorld,
   uniform,
   vec3,
   color,
@@ -10,6 +8,7 @@ import {
   mix,
   smoothstep,
   clamp,
+  max,
   sin,
   mx_noise_float
 } from "three/tsl";
@@ -24,16 +23,15 @@ import { waterHeight } from "../../world/heightmap";
 
 const SLOTS = 7;
 
-// High-res single-wave ribbon. It follows the active rider in both X and Z and
-// covers only the immediate playable crest; broad feathered rims blend into the
-// continuous bay water below. Keeping the locked camera outside this compact
-// patch prevents any displaced carrier triangle from crossing its near plane.
-const FACE_WIDTH_X = 52;
-const FACE_SHORE_OVERHANG = 10;
-const FACE_CENTER_X = OCEAN_BEACH_SURF.entryX - FACE_WIDTH_X * 0.5 + FACE_SHORE_OVERHANG;
-const FACE_WINDOW_Z = 180; // compact player-following window down the beach
-const FACE_SEG_X = 64; // <1 m — resolves the steep shoreward face crisply
-const FACE_SEG_Z = 96; // graded (below): dense at the rider, soft at the rim
+// High-res green face patch. The strip runs the break in X and follows the
+// surfer along the beach (Z). Fine X tessellation resolves the steep ~7.5 m
+// shoreward face crisply (the old shared 96-seg bay patch smeared it into a
+// low-poly shelf); it only builds/updates near Ocean Beach.
+const FACE_CENTER_X = -6045;
+const FACE_WIDTH_X = 600; // covers offshoreCrest−30 … maxX+15
+const FACE_WINDOW_Z = 520; // player-following window down the beach
+const FACE_SEG_X = 340; // ~1.75 m — resolves the steep shoreward face crisply
+const FACE_SEG_Z = 168; // graded (below): ~1.4 m at the rider, ~5 m at the rim
 
 /**
  * Player-following face grid with **graded Z resolution**: vertices bunch tight
@@ -109,7 +107,6 @@ export class OceanBeachWaves {
   #face: THREE.Mesh;
   #uTime = uniform(0);
   #uOrigin = uniform(new THREE.Vector2(FACE_CENTER_X, OCEAN_BEACH_SURF.centerZ));
-  #disposed = false;
 
   constructor(scene: THREE.Scene) {
     this.group.name = "ocean_beach_breaking_waves";
@@ -205,69 +202,34 @@ export class OceanBeachWaves {
       float(FACE_WINDOW_Z * 0.5),
       positionLocal.z.abs()
     ).oneMinus();
-    const xRim = smoothstep(
-      float(-FACE_WIDTH_X * 0.5),
-      float(-FACE_WIDTH_X * 0.5 + 10),
-      positionLocal.x
-    ).mul(
-      smoothstep(
-        float(FACE_WIDTH_X * 0.5 - 8),
-        float(FACE_WIDTH_X * 0.5),
-        positionLocal.x
-      ).oneMinus()
-    );
 
     // --- colour: chlorophyll green, backlit face, breaking foam ---------------
     // deep trough → mid sea green → bright translucent emerald on the standing
     // face; the pitching lip and spent whitewater go white.
-    // Contrast is what makes a wall read as a WALL: a dark emerald trough at the
-    // base rising to a vivid, near-opaque green face, with a hot backlit lip. The
-    // dark-to-bright vertical gradient (height-driven) gives the standing face
-    // real depth instead of a flat pale sheet.
-    const bodyGreen = mix(color(0x053626), color(0x12b463), clamp(f.height.mul(0.16).add(0.22), 0, 1));
-    const faceGreen = mix(bodyGreen, color(0x4bf0a2), f.face.mul(0.95));
-    const foam = clamp(f.lip.mul(1.2).add(f.white.mul(0.9)), 0, 1).toVar();
-    mat.colorNode = mix(faceGreen, color(0xf4fff8), foam);
+    const bodyGreen = mix(color(0x0a5a48), color(0x1ba06f), clamp(f.height.mul(0.32).add(0.35), 0, 1));
+    const faceGreen = mix(bodyGreen, color(0x3fe08a), f.face.mul(0.9));
+    const foam = clamp(f.lip.mul(1.1).add(f.white.mul(0.85)), 0, 1).toVar();
+    mat.colorNode = mix(faceGreen, color(0xf3fffa), foam);
 
     // SSS backlight: the thin, steep face glows emerald where the sun rakes
-    // through it, plus a hot white rim right at the pitching lip (KSPS look).
-    const glow = f.face.mul(f.face).mul(0.85 * LIGHT_SCALE);
-    mat.emissiveNode = vec3(0.14, 0.72, 0.42).mul(glow)
-      .add(vec3(0.85, 1.0, 0.92).mul(f.lip.mul(f.lip).mul(0.5 * LIGHT_SCALE)));
+    // through it (stylized — KSPS look, not a physical transmission model).
+    const glow = f.face.mul(f.face).mul(0.5 * LIGHT_SCALE);
+    mat.emissiveNode = vec3(0.12, 0.62, 0.34).mul(glow).add(vec3(0.9, 1.0, 0.96).mul(foam.mul(0.06 * LIGHT_SCALE)));
 
     // ripple bump from the wave height + a little chop so the face isn't glassy
     const chop = mx_noise_float(vec3(wx.mul(0.22), wz.mul(0.22), t.mul(0.6))).mul(0.12);
     mat.normalNode = bumpNormal(f.height.add(chop).mul(0.5));
 
-    // The continuous bay water owns the broad body. This lazy layer contributes
-    // only a restrained crest/face tint; turning the full displaced carrier
-    // opaque is what previously made one triangle swallow the arcade camera.
-    const alpha = clamp(
-      f.lip.mul(0.16)
-        .add(f.face.mul(0.015)),
-      0,
-      0.17
-    );
-    // The face is a 600 x 520 m player-following sheet. At full opacity its
-    // steep triangles can cross the close arcade-camera frustum and turn into
-    // screen-sized white wedges even when the centre sightline is clear. Keep a
-    // soft visibility bubble around the eye: never punch a hard hole (the bay
-    // water is deliberately cut out below this mesh), but let the rider and
-    // board read through the local wall before it becomes solid in the distance.
-    const eyeDistance = positionWorld.distance(cameraPosition);
-    const cameraVisibility = mix(
-      float(0),
-      float(1),
-      smoothstep(float(6), float(18), eyeDistance)
-    );
-    mat.opacityNode = alpha.mul(stripFade).mul(xRim).mul(zRim).mul(cameraVisibility);
+    // shallow face is translucent (green water you see through), foam opaque
+    const alpha = clamp(mix(float(0.7), float(0.95), max(f.face, f.height.mul(0.2))).add(foam.mul(0.3)), 0, 1);
+    mat.opacityNode = alpha.mul(stripFade).mul(zRim);
     mat.envMapIntensity = 0.2;
 
     const mesh = new THREE.Mesh(geo, mat);
     mesh.name = "ocean_beach_surf_face";
-    // The update loop moves this local ribbon with the rider. uOrigin receives
-    // the same snapped centre so the shader's analytic world coordinates and
-    // rendered geometry remain identical.
+    // Fixed strip in X (the break doesn't move), player-following in Z. World X =
+    // FACE_CENTER_X + localX, matching the shader's uOrigin.x so geometry and the
+    // sampled wave field line up.
     mesh.position.x = FACE_CENTER_X;
     mesh.position.y = 0.04; // just above the bay near-patch (0.02) where they meet
     mesh.renderOrder = 12; // after bay water (far 10 / lagoon 10.5 / near 11)
@@ -276,8 +238,6 @@ export class OceanBeachWaves {
   }
 
   update(time: number, focus?: { x: number; z: number }) {
-    if (this.#disposed) return;
-
     const dt = Math.min(0.05, Math.max(0, time - this.#lastTime));
     this.#lastTime = time;
     this.#uTime.value = time;
@@ -292,19 +252,13 @@ export class OceanBeachWaves {
     this.group.visible = near;
     if (!near) return;
 
-    // Slide the ribbon with the surfer, snapped to its own grids so vertices do
-    // not swim under the analytic crest. The default camera stays beyond the
-    // shore rim; the distance fade remains a second guard for custom tuning.
+    // slide the face patch down the beach with the surfer, snapped to its own Z
+    // grid so vertices don't swim under the analytic crest
     if (focus) {
-      const snapX = FACE_WIDTH_X / FACE_SEG_X;
       const snap = FACE_WINDOW_Z / FACE_SEG_Z;
-      const x = Math.round(
-        (focus.x - FACE_WIDTH_X * 0.5 + FACE_SHORE_OVERHANG) / snapX
-      ) * snapX;
       const z = Math.round(THREE.MathUtils.clamp(focus.z, b.minZ, b.maxZ) / snap) * snap;
-      this.#face.position.x = x;
       this.#face.position.z = z;
-      this.#uOrigin.value.set(x, z);
+      this.#uOrigin.value.set(FACE_CENTER_X, z);
     }
 
     const focusZ = focus && focus.z > b.minZ - 600 && focus.z < b.maxZ + 600 ? focus.z : b.entryZ;
@@ -319,13 +273,15 @@ export class OceanBeachWaves {
       const z = THREE.MathUtils.lerp(stripMinZ, stripMaxZ, ((i * 0.6180339) % 1 + time * 0.006) % 1);
       const slot = (i % SLOTS) - 1;
       const crestX = oceanBeachCrestX(slot, z, time);
-      const amp = b.amplitude * (0.78 + Math.sin(z * 0.0041 + time * 0.1) * 0.12);
       const gust = oceanBeachFoamNoise(z, time, i % 13);
+      // Birth on the live surface so spray never reads as mid-air puffs above a
+      // flat bay sheet — the crest height comes from waterHeight(), not a free Y.
+      const surfaceY = waterHeight(crestX + 1.2, z, time);
       sv[k] = 2.3 + gust * 2.2;
-      sv[k + 1] = 3.1 + gust * 4.6;
+      sv[k + 1] = 1.8 + gust * 2.4;
       sv[k + 2] = Math.sin(i * 9.17) * 1.8;
       sp[k] = crestX + 2 + sv[k] * life;
-      sp[k + 1] = amp * 0.95 + sv[k + 1] * life - 5.9 * life * life;
+      sp[k + 1] = surfaceY + 0.15 + sv[k + 1] * life - 3.2 * life * life;
       sp[k + 2] = z + sv[k + 2] * life;
     }
     (this.#spray.geometry.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;
@@ -365,14 +321,9 @@ export class OceanBeachWaves {
   }
 
   dispose(): void {
-    if (this.#disposed) return;
-    this.#disposed = true;
-
     this.group.removeFromParent();
-
     const geometries = new Set<THREE.BufferGeometry>();
     const materials = new Set<THREE.Material>();
-    const textures = new Set<THREE.Texture>();
     this.group.traverse((object) => {
       const renderable = object as THREE.Object3D & {
         geometry?: THREE.BufferGeometry;
@@ -383,23 +334,11 @@ export class OceanBeachWaves {
         const entries = Array.isArray(renderable.material)
           ? renderable.material
           : [renderable.material];
-        for (const material of entries) {
-          materials.add(material);
-          for (const value of Object.values(material)) {
-            if (value instanceof THREE.Texture) textures.add(value);
-            if (Array.isArray(value)) {
-              for (const entry of value) {
-                if (entry instanceof THREE.Texture) textures.add(entry);
-              }
-            }
-          }
-        }
+        for (const material of entries) materials.add(material);
       }
     });
-
     for (const geometry of geometries) geometry.dispose();
     for (const material of materials) material.dispose();
-    for (const texture of textures) texture.dispose();
     this.group.clear();
   }
 }
