@@ -9,8 +9,8 @@ export const TWITTER_SUMMER_SHOT_01_SECONDS = 7.5;
 const DRIVEN_KEYS = ["KeyW", "KeyA", "KeyD", "ShiftLeft", "Space"] as const;
 
 /**
- * Ocean Beach at summer sunrise: a broad drop-in reveal becomes a close,
- * waterline rail track. The real surf controller and authored breaking-wave
+ * Ocean Beach at summer sunrise: a broad drop-in reveal becomes an elevated,
+ * down-the-line rail track. The real surf controller and authored breaking-wave
  * field stay live; only the tiny crest-spray points are hidden so a social
  * transcode sees coherent foam masses instead of hundreds of isolated pixels.
  */
@@ -68,13 +68,15 @@ export const twitterSummerShot01: Demo = {
           safety: { floorClearance: 1 },
           camera: (sample, out) => {
             const u = easeInOutCubic(sample.u);
-            offset.set(mix(-46, -24, u), mix(17, 7.8, u), mix(35, 21, u));
+            // +X is shoreward at Ocean Beach. Stay well east of the rider and
+            // look west across them, keeping the crest behind the silhouette.
+            offset.set(mix(55, 42, u), mix(24, 20, u), mix(24, 15, u));
             eye.copy(focus).add(offset);
             target.copy(focus);
-            target.x += mix(2.5, 1, u);
-            target.y += mix(0.3, 0.08, u);
-            target.z -= mix(8, 5, u);
-            setPose(out, eye, target, mix(39, 55, u), mix(-0.018, 0.012, u));
+            target.x -= 1.5;
+            target.y += mix(6.2, 5.2, u);
+            target.z -= mix(3, 4.5, u);
+            setPose(out, eye, target, mix(60, 70, u), mix(-0.008, 0.006, u));
           }
         },
         {
@@ -84,28 +86,26 @@ export const twitterSummerShot01: Demo = {
           safety: { floorClearance: 0.8 },
           camera: (sample, out) => {
             const u = smoothstep(sample.u);
-            // Stay just offshore of the green wall, easing from a trailing
-            // three-quarter into a close side profile without crossing it.
-            offset.set(mix(-12, -8, u), mix(4.6, 3.1, u), mix(14, -3.5, u));
+            // Continue shoreward and above the crest, arcing gently down the line.
+            // The longer working distance preserves the full rider+board shape
+            // and leaves room for horizon, whitewater and sun path around it.
+            offset.set(mix(42, 52, u), mix(20, 22, u), mix(18, -8, u));
             eye.copy(focus).add(offset);
             target.copy(focus);
-            target.x += 0.8;
-            target.y += 0.12;
-            target.z -= mix(4.2, 6.5, u);
-            setPose(out, eye, target, mix(61, 50, u), mix(0.008, -0.014, u));
+            target.x -= 1.8;
+            target.y += mix(5.2, 5.8, u);
+            target.z -= mix(4, 5, u);
+            setPose(out, eye, target, mix(70, 64, u), mix(0.005, -0.006, u));
           }
         }
       ],
       frame: (time) => {
         for (const key of DRIVEN_KEYS) ctx.input.keys.delete(key);
 
-        // A clean drop-in, one climb toward the luminous lip, then a lower
-        // shoulder line. No aerial: coherent water movement survives X better
-        // than a frame full of short-lived splash sprites.
+        // A straight, pumped line keeps the procedural rider securely seated.
+        // No carve, tuck or aerial inputs: the silhouette stays coherent and
+        // broad water movement survives X better than splash-heavy tricks.
         ctx.input.keys.add("KeyW");
-        if (time > 0.9 && time < 2.45) ctx.input.keys.add("KeyD");
-        if (time >= 2.45 && time < 4.35) ctx.input.keys.add("KeyA");
-        if (time > 4.5) ctx.input.keys.add("ShiftLeft");
 
         focus.copy(ctx.player.renderPosition);
         focus.y += 0.82;
