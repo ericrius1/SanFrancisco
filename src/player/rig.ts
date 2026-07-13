@@ -667,3 +667,23 @@ export function poseDrive(r: Rig, steer: number, t: number, hasWheel: boolean) {
     set(r.foreR, 0.5, 0, 0);
   }
 }
+
+/** Upright scooter stance: hands wide on the bar, knees tucked around the
+ * step-through shield, and the rider leaning naturally into steering. */
+export function poseScooter(r: Rig, steer: number, t: number, airborne: boolean) {
+  const bounce = airborne ? -0.08 : Math.sin(t * 5.2) * 0.008;
+  r.hips.position.y = bounce;
+  set(r.hips, airborne ? 0.12 : 0, 0, -steer * 0.05);
+  set(r.torso, 0.08 + (airborne ? 0.12 : 0), steer * 0.08, -steer * 0.2);
+  set(r.head, airborne ? -0.1 : 0, steer * 0.3, steer * 0.08);
+  set(r.legL, 1.08 + (airborne ? 0.16 : 0), 0, 0.12);
+  set(r.legR, 1.08 + (airborne ? 0.08 : 0), 0, -0.12);
+  set(r.shinL, -0.82, 0, 0);
+  set(r.shinR, -0.82, 0, 0);
+  set(r.armL, 1.0 + steer * 0.13, -0.2, 0.28);
+  set(r.armR, 1.0 - steer * 0.13, 0.2, -0.28);
+  set(r.foreL, 0.38 - steer * 0.08, 0, 0.08);
+  set(r.foreR, 0.38 + steer * 0.08, 0, -0.08);
+  setHandPose(r, "L", 0.8);
+  setHandPose(r, "R", 0.8);
+}

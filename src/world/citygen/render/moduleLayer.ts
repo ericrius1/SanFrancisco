@@ -40,6 +40,7 @@ import { MODULE_KIND_COUNT, type ModuleInstance } from "../core/types";
 import { MODULE_TRIM_HEX } from "../theme/materials";
 import { ZONES, type ParallaxZone } from "../theme/parallaxWindow";
 import { rng } from "../core/rng";
+import { cameraCutawayVisibility } from "../../../render/cameraCutaway";
 
 // TSL node generics fight composition; `any` is this app's node-code idiom.
 type N = any;
@@ -133,7 +134,7 @@ function makeTrimMaterial(fadeTex: THREE.DataTexture): THREE.MeshStandardNodeMat
   m.colorNode = nodes.tint;
   // same faint self-lit tint as the theme's shared trim materials (emissive 0.16)
   m.emissiveNode = nodes.tint.mul(float(0.16 * EXPOSURE_REBASE));
-  m.opacityNode = nodes.fade;
+  m.opacityNode = nodes.fade.mul(cameraCutawayVisibility());
   m.alphaHash = true; // dithered crossfade in the opaque pass (fade=1 → no discard)
   return m;
 }
@@ -161,7 +162,9 @@ function makeGlassMaterial(fadeTex: THREE.DataTexture): THREE.MeshStandardNodeMa
   m.emissiveNode = nodes.glow.mul(float(2.0 * LIGHT_SCALE)).mul(glowGraze).mul(WINDOW_GLOW_W as N);
   m.metalnessNode = float(0.0);
   // fade × the hide-glass flag (interior look-out dithers the pane fully away)
-  m.opacityNode = nodes.fade.mul(step(nodes.glassHidden, float(0.001)));
+  m.opacityNode = nodes.fade
+    .mul(step(nodes.glassHidden, float(0.001)))
+    .mul(cameraCutawayVisibility());
   m.alphaHash = true;
   return m;
 }

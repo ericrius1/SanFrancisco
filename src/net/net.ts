@@ -2,6 +2,7 @@ import type * as THREE from "three/webgpu";
 import type { PlayerMode } from "../player/types";
 import { avatarFromSeed, isDefaultAvatar, normalizeAvatarTraits, type AvatarTraits } from "../player/avatar";
 import { boardFromSeed, isDefaultBoard, normalizeBoardConfig, type BoardConfig } from "../vehicles/board/config";
+import { isDefaultScooter, normalizeScooterConfig, scooterFromSeed, type ScooterConfig } from "../vehicles/scooter";
 
 /**
  * Client side of the multiplayer presence relay (server/server.mjs).
@@ -42,12 +43,12 @@ import { boardFromSeed, isDefaultBoard, normalizeBoardConfig, type BoardConfig }
  */
 
 /** Wire order for modes — index into this array is what goes over the socket. */
-export const NET_MODES: PlayerMode[] = ["walk", "drive", "plane", "boat", "drone", "board", "bird"];
+export const NET_MODES: PlayerMode[] = ["walk", "drive", "plane", "boat", "drone", "board", "bird", "surf", "scooter"];
 
 export type RemoteGolfState = { d: number[]; h: number; p: number; s: number; r: number };
 export type PickleballSlot = 0 | 1;
 export type RemotePickleballState = { id: number; d: number[] };
-export type RemoteInfo = { id: number; name: string; hue: number; avatar?: AvatarTraits; board?: BoardConfig; golf?: RemoteGolfState | null };
+export type RemoteInfo = { id: number; name: string; hue: number; avatar?: AvatarTraits; board?: BoardConfig; scooter?: ScooterConfig; golf?: RemoteGolfState | null };
 
 /** One interpolation sample for a remote player, timestamped in local ms. */
 export type NetSample = {
@@ -211,6 +212,14 @@ function rosterBoard(id: number, raw: unknown): BoardConfig {
   return boardFromSeed(id);
 }
 
+function rosterScooter(id: number, raw: unknown): ScooterConfig {
+  if (raw) {
+    const config = normalizeScooterConfig(raw);
+    if (!isDefaultScooter(config)) return config;
+  }
+  return scooterFromSeed(id);
+}
+
 export class Net {
   /** My server-assigned identity (0 until welcomed). */
   selfId = 0;
@@ -263,14 +272,16 @@ export class Net {
   #lastSentAt = 0;
   #avatar: AvatarTraits | null;
   #board: BoardConfig | null;
+  #scooter: ScooterConfig | null;
   // serverTs → local-clock mapping (EWMA of arrival offset; interp buffer
   // absorbs the residual jitter)
   #clockOffset: number | null = null;
 
-  constructor(name = pickName(), avatar?: AvatarTraits, board?: BoardConfig) {
+  constructor(name = pickName(), avatar?: AvatarTraits, board?: BoardConfig, scooter?: ScooterConfig) {
     this.name = name;
     this.#avatar = avatar ? normalizeAvatarTraits(avatar) : null;
     this.#board = board ? normalizeBoardConfig(board) : null;
+    this.#scooter = scooter ? normalizeScooterConfig(scooter) : null;
     const envUrl = import.meta.env.VITE_WS_URL as string | undefined;
     const proto = location.protocol === "https:" ? "wss" : "ws";
     this.#url = envUrl || `${proto}://${location.host}/ws`;
@@ -357,7 +368,7 @@ export class Net {
     this.#ws = ws;
     ws.onopen = () => {
       this.#retryMs = 1000;
-      ws.send(JSON.stringify({ t: "hi", name: this.name, avatar: this.#avatar, board: this.#board }));
+      ws.send(JSON.stringify({ t: "hi", name: this.name, avatar: this.#avatar, board: this.#board, scooter: this.#scooter }));
     };
     ws.onmessage = (ev) => this.#handle(String(ev.data));
     ws.onclose = () => {
@@ -406,7 +417,7 @@ export class Net {
         this.selfHue = msg.hue as number;
         this.name = msg.name as string; // server-sanitized
         for (const p of msg.players as RemoteInfo[]) {
-          this.roster.set(p.id, { ...p, avatar: rosterAvatar(p.id, p.avatar), board: rosterBoard(p.id, p.board) });
+          this.roster.set(p.id, { ...p, avatar: rosterAvatar(p.id, p.avatar), board: rosterBoard(p.id, p.board), scooter: rosterScooter(p.id, p.scooter) });
           if (p.golf) this.golfStates.set(p.id, p.golf);
         }
         this.#hydratePickleball(msg.pickle);
@@ -421,7 +432,8 @@ export class Net {
           name: msg.name as string,
           hue: msg.hue as number,
           avatar: rosterAvatar(msg.id as number, msg.avatar),
-          board: rosterBoard(msg.id as number, msg.board)
+          board: rosterBoard(msg.id as number, msg.board),
+          scooter: rosterScooter(msg.id as number, msg.scooter)
         });
         this.onRoster();
         break;
@@ -455,6 +467,14 @@ export class Net {
         const p = this.roster.get(msg.id as number);
         if (p) {
           p.board = rosterBoard(p.id, msg.board);
+          this.onRoster();
+        }
+        break;
+      }
+      case "scooter": {
+        const p = this.roster.get(msg.id as number);
+        if (p) {
+          p.scooter = rosterScooter(p.id, msg.scooter);
           this.onRoster();
         }
         break;
@@ -680,6 +700,11 @@ export class Net {
   setBoard(board: BoardConfig) {
     this.#board = normalizeBoardConfig(board);
     if (this.#ws?.readyState === WebSocket.OPEN) this.#ws.send(JSON.stringify({ t: "board", board: this.#board }));
+  }
+
+  setScooter(scooter: ScooterConfig) {
+    this.#scooter = normalizeScooterConfig(scooter);
+    if (this.#ws?.readyState === WebSocket.OPEN) this.#ws.send(JSON.stringify({ t: "scooter", scooter: this.#scooter }));
   }
 
   /**

@@ -219,6 +219,7 @@ export class PickleballUI {
   #hintsPad = false;
   #score: [number, number] = [-1, -1];
   #bannerTimer: ReturnType<typeof setTimeout> | null = null;
+  #gamePointTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor() {
     const hud = document.querySelector("#hud")!;
@@ -303,6 +304,10 @@ export class PickleballUI {
    *  personalizes the copy when the player is seated. */
   applyEvent(event: PickleballEvent, localSide: PickleballSide | null = null): void {
     if (event.kind === "point") {
+      if (this.#gamePointTimer) {
+        clearTimeout(this.#gamePointTimer);
+        this.#gamePointTimer = null;
+      }
       const label = event.winner === localSide ? "YOUR POINT!" : event.loser === localSide ? FAULT_LABEL[event.reason] ?? "POINT" : null;
       if (event.scoringSide === null) {
         this.banner("sideout", "SIDE OUT");
@@ -314,9 +319,16 @@ export class PickleballUI {
       // game point next rally? side-out scoring: only the server can score
       const lead = event.score[event.winner] - event.score[event.loser];
       if (event.score[event.winner] >= 10 && lead >= 1) {
-        setTimeout(() => this.banner("gamepoint", "GAME POINT"), 1200);
+        this.#gamePointTimer = setTimeout(() => {
+          this.#gamePointTimer = null;
+          this.banner("gamepoint", "GAME POINT");
+        }, 1200);
       }
     } else if (event.kind === "game") {
+      if (this.#gamePointTimer) {
+        clearTimeout(this.#gamePointTimer);
+        this.#gamePointTimer = null;
+      }
       const who = event.winner === localSide ? "YOU WIN!" : `${event.winner === 0 ? "NEAR" : "FAR"} SIDE WINS`;
       this.banner("game", `GAME — ${who} ${event.score[0]}–${event.score[1]}`);
     }
@@ -324,6 +336,8 @@ export class PickleballUI {
 
   dispose(): void {
     if (this.#bannerTimer) clearTimeout(this.#bannerTimer);
+    if (this.#gamePointTimer) clearTimeout(this.#gamePointTimer);
+    this.setSeated(false);
     this.#card.remove();
     this.#banner.remove();
     this.#hints.remove();

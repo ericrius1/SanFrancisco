@@ -1,8 +1,7 @@
 import * as THREE from "three/webgpu";
-import { abs, cos, float, length, mix, sin, smoothstep, texture, uniform, uv, vec2, vec3 } from "three/tsl";
+import { abs, cos, float, length, mix, normalView, positionViewDirection, sin, smoothstep, texture, uniform, uv, vec2, vec3 } from "three/tsl";
 import { LIGHT_SCALE } from "../../config";
 import { lightAnchor, type LightAnchorSpec } from "../../player/lightPool";
-import { applyMaterialPolicy, clampCoverage, fresnelCoverage, tagTransparency } from "../../render/transparency";
 import {
   boardGlowHex,
   boardPlumeHex,
@@ -303,7 +302,9 @@ function buildPlumeMaterial(u: PlumeUniforms) {
     // both cylinder walls and roughly double their energy through the rider.
     side: THREE.FrontSide
   });
-  applyMaterialPolicy(material, "additiveWorld");
+  material.transparent = true;
+  material.blending = THREE.AdditiveBlending;
+  material.depthWrite = false;
   const time = u.uPlumeTime as unknown as ReturnType<typeof float>;
   const strength = u.uPlumeStrength as unknown as ReturnType<typeof float>;
   const shimmer = u.uPlumeShimmer as unknown as ReturnType<typeof float>;
@@ -321,8 +322,10 @@ function buildPlumeMaterial(u: PlumeUniforms) {
   const fade = smoothstep(0.0, 0.45, vuv.y); // dissolves toward the tip
   // Suppress face-on coverage while retaining a small core; clamping prevents
   // boost + live intensity tuning from feeding >1 coverage into the blend.
-  const fresnel = fresnelCoverage(fresnelPower, 0.08);
-  material.opacityNode = clampCoverage(banded.mul(fade).mul(strength).mul(fresnel));
+  const facing = normalView.normalize().dot(positionViewDirection.normalize()).abs().clamp(0, 1);
+  const rim = facing.oneMinus().pow(fresnelPower.max(0));
+  const fresnel = float(0.08).add(rim.mul(0.92)).clamp(0, 1);
+  material.opacityNode = banded.mul(fade).mul(strength).mul(fresnel).clamp(0, 1);
   return material;
 }
 
@@ -492,8 +495,12 @@ export function buildBoardMesh(config?: BoardConfig): THREE.Group {
     uPlumeColor: uniform(new THREE.Color(plumeHexNow))
   };
   const plumeMat = mat(buildPlumeMaterial(plumeUniforms)); // ONE material, all pods
-  const moteMat = mat(new THREE.MeshBasicMaterial({ color: new THREE.Color(plumeHexNow).multiplyScalar(LIGHT_SCALE) }));
-  applyMaterialPolicy(moteMat, "additiveWorld");
+  const moteMat = mat(new THREE.MeshBasicMaterial({
+    color: new THREE.Color(plumeHexNow).multiplyScalar(LIGHT_SCALE),
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false
+  }));
   const plumeCones: THREE.Mesh[] = [];
   const plumeMotes: BoardPlume["motes"] = [];
   const plumeLen0 = PLUME_MIN_LEN + (cfg.plumeReach / 100) * (PLUME_MAX_LEN - PLUME_MIN_LEN);
@@ -529,7 +536,6 @@ export function buildBoardMesh(config?: BoardConfig): THREE.Group {
     spinners.push({ obj: turbine, axis: "y", rate: pod.spinRate });
     const cone = new THREE.Mesh(plumeGeo, plumeMat);
     cone.scale.y = plumeLen0;
-    tagTransparency(cone, { profile: "additiveWorld" });
     root.add(cone);
     plumeCones.push(cone);
     for (let k = 0; k < 3; k++) {
@@ -537,7 +543,6 @@ export function buildBoardMesh(config?: BoardConfig): THREE.Group {
       const phase = pod.motePhase + k * 2.1;
       mote.position.set(Math.cos(phase) * 0.05, -((k + 0.5) / 3) * plumeLen0, Math.sin(phase) * 0.05);
       mote.visible = cfg.plumeSparks;
-      tagTransparency(mote, { profile: "additiveWorld" });
       root.add(mote);
       plumeMotes.push({ mesh: mote, phase });
     }

@@ -13,7 +13,6 @@ import {
   POSTFX_TUNING,
   POSTFX_VARIANT_MASKS
 } from "./postfx";
-import { INK_EXCLUDED_LAYER } from "./transparency";
 
 type SceneSamples = 0 | 4;
 /** "boot": compile only the active sample mode + active post-FX variant (fast,
@@ -31,6 +30,7 @@ type QueueBackedRenderer = THREE.WebGPURenderer & {
 
 const OUTLINE_PREPASS_SCALE = 0.5;
 const INK_VARIANT_MASK = 1;
+const BEAUTY_ONLY_LAYER = 31;
 // WebGPU enum values are stable; TypeScript's DOM lib still omits their names.
 const GPU_BUFFER_USAGE_MAP_READ = 0x0001;
 const GPU_BUFFER_USAGE_COPY_DST = 0x0008;
@@ -54,7 +54,7 @@ export function createRenderPipeline(
   // Beauty sees the ordinary world plus ephemeral hashed markers. The ink
   // prepass below deliberately stays on layer 0 so alpha-hash grain cannot
   // become a noisy normal/depth outline.
-  camera.layers.enable(INK_EXCLUDED_LAYER);
+  camera.layers.enable(BEAUTY_ONLY_LAYER);
 
   // cheap outline prepass: view-space normals (packed to 8-bit) + depth, opaque only.
   // Geometry normals, not material normals: normalView pulls in each material's

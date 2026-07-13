@@ -1,7 +1,6 @@
 import * as THREE from "three/webgpu";
 import { LIGHT_SCALE } from "../../config";
-import { tunables } from "../../core/persist";
-import { applyMaterialPolicy, RenderBand, tagTransparency } from "../../render/transparency";
+import { BUSKER_FIREFLY_TUNING } from "./tuning";
 
 /**
  * A small firefly swarm for the trio. Visible insects drift in a gentle 3D
@@ -10,13 +9,7 @@ import { applyMaterialPolicy, RenderBand, tagTransparency } from "../../render/t
  * WebGPU: changing it at runtime invalidates every lit pipeline.
  */
 
-export const BUSKER_FIREFLY_TUNING = tunables("busker.fireflies", {
-  enabled: { v: true, label: "enabled" },
-  brightness: { v: 1, min: 0, max: 2.5, step: 0.05, label: "light strength" },
-  drift: { v: 1, min: 0, max: 2, step: 0.05, label: "flight speed" },
-  pulse: { v: 0.14, min: 0, max: 0.35, step: 0.005, label: "flicker depth" },
-  glowSize: { v: 1, min: 0.5, max: 1.8, step: 0.05, label: "glow size" }
-});
+export { BUSKER_FIREFLY_TUNING } from "./tuning";
 
 const TAU = Math.PI * 2;
 const ACTIVE_RANGE = 90;
@@ -95,19 +88,18 @@ export class BuskerFireflies {
       const material = new THREE.SpriteMaterial({
         map: this.#texture,
         color: new THREE.Color(0xf2ff7a).multiplyScalar(LIGHT_SCALE * 0.78),
-        opacity: 0
+        opacity: 0,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false
       });
-      applyMaterialPolicy(material, "additiveWorld");
       material.fog = false;
 
       const sprite = new THREE.Sprite(material);
       sprite.name = `busker-firefly-${i + 1}`;
       sprite.frustumCulled = false;
-      tagTransparency(sprite, {
-        profile: "additiveWorld",
-        renderBand: RenderBand.WORLD_ADDITIVE_FRONT,
-        ink: false
-      });
+      sprite.renderOrder = 91;
+      sprite.layers.set(31); // beauty-only: keep glow quads out of the ink prepass
       this.group.add(sprite);
       this.#sprites.push(sprite);
       this.#materials.push(material);

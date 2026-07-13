@@ -14,6 +14,7 @@ import * as THREE from "three/webgpu";
 import { materialColor, uv, float, fract, floor as tslFloor, mod, mix, step, smoothstep, positionWorld, mx_noise_float } from "three/tsl";
 import { EXPOSURE_REBASE } from "../../../config";
 import { makeParallaxGlass } from "./parallaxWindow";
+import { cameraCutawayMask } from "../../../render/cameraCutaway";
 
 const ENV = 5.5;
 const UV_SCALE = 3.0; // MUST match core/facade.ts (metric UVs = metres / UV_SCALE)
@@ -22,13 +23,14 @@ const UV_SCALE = 3.0; // MUST match core/facade.ts (metric UVs = metres / UV_SCA
 export type WallKind = "clapboard" | "brick" | "stucco" | "smooth";
 
 /** A plain, DoubleSide standard material with a faint self-lit tint. */
-function standard(col: number, roughness: number, opts: { metalness?: number; emissive?: number } = {}): THREE.MeshStandardMaterial {
-  const m = new THREE.MeshStandardMaterial({ color: col, roughness, metalness: opts.metalness ?? 0, side: THREE.DoubleSide });
+function standard(col: number, roughness: number, opts: { metalness?: number; emissive?: number } = {}): THREE.MeshStandardNodeMaterial {
+  const m = new THREE.MeshStandardNodeMaterial({ color: col, roughness, metalness: opts.metalness ?? 0, side: THREE.DoubleSide });
   m.envMapIntensity = ENV;
   m.emissive = new THREE.Color(col);
   // self-lit tints were authored against the reference exposure — rebased so
   // they render identically at the 1.0 anchor (see config.EXPOSURE_REBASE)
   m.emissiveIntensity = (opts.emissive ?? 0.22) * EXPOSURE_REBASE;
+  m.maskNode = cameraCutawayMask();
   return m;
 }
 
@@ -115,6 +117,7 @@ export function makeWallMaterial(hex: number, kind: WallKind = "smooth"): THREE.
   const g = wallNodes(kind);
   m.colorNode = g.color;
   m.emissiveNode = g.emissive;
+  m.maskNode = cameraCutawayMask();
   m.color.set(hex); // read by materialColor inside the shared graph — a uniform
   return m;
 }

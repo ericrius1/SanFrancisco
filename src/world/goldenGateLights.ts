@@ -17,7 +17,6 @@ import {
   vertexStage
 } from "three/tsl";
 import { tunables } from "../core/persist";
-import { applyMaterialPolicy, RenderBand, tagTransparency } from "../render/transparency";
 import type { WorldMap } from "./heightmap";
 
 // TSL node generics fight composition; any is the idiom here (see bayLights.ts)
@@ -229,13 +228,15 @@ function createGoldenGateMaterial(posK: number[], info: number[]) {
       .mul(GOLDEN_GATE_LIGHTS_TUNING.brightness),
     1
   );
-  applyMaterialPolicy(material, "additiveWorld");
+  material.transparent = true;
+  material.blending = THREE.AdditiveBlending;
+  material.depthWrite = false;
   material.fog = false;
 
   const sprite = new THREE.Sprite(material);
   sprite.count = count;
   sprite.frustumCulled = false;
-  tagTransparency(sprite, { profile: "additiveWorld", renderBand: RenderBand.WORLD_ADDITIVE_FRONT });
+  sprite.renderOrder = 91;
   sprite.name = "golden_gate_lights";
   return sprite;
 }

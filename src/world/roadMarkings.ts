@@ -1,6 +1,5 @@
 import * as THREE from "three/webgpu";
 import { EXPOSURE_REBASE } from "../config";
-import { applyMaterialPolicy, RenderBand, tagTransparency } from "../render/transparency";
 import type { WorldMap } from "./heightmap";
 
 type RoadsJson = {
@@ -19,46 +18,28 @@ type RoadSegmentJson = {
 };
 
 const ROAD_MARKING_VERSION = 3;
-// Decal lift: sit a hair above the asphalt only to defeat coincident-plane
-// z-fighting. The heavy lifting is done by depthWrite:false + polygonOffset, so
-// this can stay tiny — a couple of cm keeps the marking glued to the road and
-// far below the avatar's body, so it can never plane through the player the way
-// the old 45cm lift did (the quad floated up to shin height on slopes).
-const LIFT_M = 0.025;
+// MUST match build_tile_roads in tools/blender_city.py. Asphalt is baked from
+// raw terrain at <=12m centerline samples, lifted 30cm, and held flat across
+// the road width. It is not the runtime groundTop grid.
+const ROAD_LIFT_M = 0.3;
+const ROAD_MIN_H = 0.15;
+const ROAD_SUBSTEP_M = 12;
+// prepare-city splits long OSM edges before the Blender bake. Repeating that
+// split preserves the exact sample cadence and piecewise-linear road profile.
+const ROAD_BAKE_SPLIT_M = 200;
+const MARKING_LIFT_M = 0.025;
 const EDGE_INSET = 0.55;
 const DASH_M = 4.6;
 const GAP_M = 6.4;
 const MIN_EDGE_M = 0.4;
 const WHITE_W = 0.52;
 const YELLOW_W = 0.62;
-// Re-drape long strips: sampling ground only at a strip's endpoints lets it
-// float above convex hills or sink into valleys (the yellow centre line runs a
-// whole OSM polyline segment, often tens of metres). We PROBE the draped centre
-// line finely (PROBE_STEP_M) but only KEEP a node where a straight chord across
-// the terrain would drift from the ground by more than DRAPE_TOL_M — so flat
-// streets collapse back to two nodes (one quad) while hills keep exactly the
-// density the slope demands. Uniform 2.5m subdivision on every strip ballooned
-// markings to ~1M tris for no visual gain.
-//
-// Probe step is decoupled from the (former, uniform) 2.5m emit step on purpose:
-// a coarse 2.5m probe steps clean over sub-2.5m ground undulations (SF streets
-// carry ~10cm bumps between hydro-flattened samples), leaving the chord to miss
-// them. Probing at ~1.5m lets the greedy actually SEE those bends and drop a
-// node on them, so the adaptive strip is flusher than the old dense one while
-// still collapsing the long flat runs that dominate the triangle bill.
-const PROBE_STEP_M = 1.0;
-// Longitudinal chord tolerance for the adaptive keep-test: insert an interior
-// node once the piecewise-linear reconstruction of the draped centre line would
-// err past this. Kept well under the decal's own 2.5cm lift so the marking never
-// visibly lifts off or sinks into a slope.
-const DRAPE_TOL_M = 0.045;
 
 function makeMarkingMaterial(colorHex: number, opacity: number): THREE.MeshBasicNodeMaterial {
-  const mat = applyMaterialPolicy(new THREE.MeshBasicNodeMaterial({
+  const mat = new THREE.MeshBasicNodeMaterial({
     color: colorHex,
-    opacity,
     side: THREE.DoubleSide
-  }), "alphaSurface");
+  });
   mat.toneMapped = false;
   // True decal: bias the depth test toward the camera so the marking wins
   // against the coincident road surface without any physical lift, and never
@@ -69,7 +50,10 @@ function makeMarkingMaterial(colorHex: number, opacity: number): THREE.MeshBasic
   // Authored against the reference exposure (toneMapped=false is a no-op here —
   // the render pipeline tone-maps in its output pass, not per material), so the
   // paint rebases with the rest of the unlit world (config.EXPOSURE_REBASE).
-  mat.color.multiplyScalar(EXPOSURE_REBASE);
+  // Preserve the old slightly weathered value in the colour itself. Nearly
+  // opaque blending made the paint depend on transparent-pass ordering; opaque
+  // depth writes make every accepted marking pixel stable.
+  mat.color.multiplyScalar(EXPOSURE_REBASE * opacity);
   return mat;
 }
 
@@ -80,116 +64,154 @@ function clampLaneCount(n: number, fallback: number): number {
   return Math.max(1, Math.min(8, Math.round(Number.isFinite(n) ? n : fallback)));
 }
 
-function pushStrip(
-  out: number[],
-  map: WorldMap,
-  ax: number,
-  az: number,
-  bx: number,
-  bz: number,
-  offset: number,
-  width: number
-): void {
+type RoadProfileNode = { d: number; y: number };
+type RoadProfile = {
+  ax: number;
+  az: number;
+  ux: number;
+  uz: number;
+  nx: number;
+  nz: number;
+  len: number;
+  nodes: RoadProfileNode[];
+};
+
+const round1 = (value: number): number => Math.round(value * 10) / 10;
+
+function bakedRoadY(map: WorldMap, x: number, z: number): number {
+  return Math.max(map.groundHeight(x, z), ROAD_MIN_H) + ROAD_LIFT_M;
+}
+
+/** Reconstruct the longitudinal height samples used by the asphalt bake. */
+function buildRoadProfile(map: WorldMap, ax: number, az: number, bx: number, bz: number): RoadProfile | null {
   const dx = bx - ax;
   const dz = bz - az;
   const len = Math.hypot(dx, dz);
-  if (len < MIN_EDGE_M) return;
-  const nx = -dz / len;
-  const nz = dx / len;
-  const wx = nx * width * 0.5;
-  const wz = nz * width * 0.5;
+  if (len < MIN_EDGE_M) return null;
+  const ux = dx / len, uz = dz / len;
+  const nodes: RoadProfileNode[] = [];
+  const bakeSplits = Math.max(1, Math.ceil(len / ROAD_BAKE_SPLIT_M));
 
-  // Probe the offset centre line at PROBE_STEP_M resolution, then greedily keep
-  // only the nodes the terrain actually needs: a node survives when a straight
-  // chord from the previous kept node would miss the draped ground by more than
-  // DRAPE_TOL_M at some sample in between (a Douglas-Peucker-style walk along the
-  // strip). Flat streets keep just the two endpoints; hills keep their bends.
-  const fine = Math.max(1, Math.ceil(len / PROBE_STEP_M));
-  // Draped centre-line height at each fine probe — the curvature signal that
-  // drives subdivision. (Edges are re-draped per kept node below for camber.)
-  const h = new Float64Array(fine + 1);
-  for (let k = 0; k <= fine; k++) {
-    const t = k / fine;
-    h[k] = map.effectiveGround(ax + dx * t + nx * offset, az + dz * t + nz * offset);
-  }
-  // Greedy chord simplification over the fine probes → indices to keep.
-  const keep: number[] = [0];
-  let anchor = 0;
-  let cand = 2;
-  while (cand <= fine) {
-    let ok = true;
-    const h0 = h[anchor];
-    const slope = (h[cand] - h0) / (cand - anchor);
-    for (let j = anchor + 1; j < cand; j++) {
-      if (Math.abs(h0 + slope * (j - anchor) - h[j]) > DRAPE_TOL_M) { ok = false; break; }
-    }
-    if (ok) {
-      cand++;
-    } else {
-      keep.push(cand - 1);
-      anchor = cand - 1;
-      cand = anchor + 2;
+  for (let split = 0; split < bakeSplits; split++) {
+    const t0 = split / bakeSplits;
+    const t1 = (split + 1) / bakeSplits;
+    const sax = round1(ax + dx * t0), saz = round1(az + dz * t0);
+    const sbx = round1(ax + dx * t1), sbz = round1(az + dz * t1);
+    const sdx = sbx - sax, sdz = sbz - saz;
+    const substeps = Math.max(1, Math.ceil(Math.hypot(sdx, sdz) / ROAD_SUBSTEP_M));
+    for (let step = split === 0 ? 0 : 1; step <= substeps; step++) {
+      const t = step / substeps;
+      const x = sax + sdx * t;
+      const z = saz + sdz * t;
+      const d = THREE.MathUtils.clamp((x - ax) * ux + (z - az) * uz, 0, len);
+      const y = bakedRoadY(map, x, z);
+      const prev = nodes[nodes.length - 1];
+      if (prev && d - prev.d < 1e-5) prev.y = y;
+      else nodes.push({ d, y });
     }
   }
-  if (keep[keep.length - 1] !== fine) keep.push(fine);
+  nodes[0].d = 0;
+  nodes[nodes.length - 1].d = len;
+  return { ax, az, ux, uz, nx: -uz, nz: ux, len, nodes };
+}
 
-  // Emit one quad per kept span. Both edges of every kept node are draped
-  // independently, so the strip still follows the street's cross-camber and each
-  // corner sits exactly LIFT_M above the road it covers.
-  const nodeAt = (idx: number) => {
-    const t = idx / fine;
-    const ncx = ax + dx * t + nx * offset;
-    const ncz = az + dz * t + nz * offset;
-    const lx = ncx - wx, lz = ncz - wz;
-    const rx = ncx + wx, rz = ncz + wz;
-    return { lx, lz, ly: map.effectiveGround(lx, lz) + LIFT_M, rx, rz, ry: map.effectiveGround(rx, rz) + LIFT_M };
+function profilePoint(profile: RoadProfile, d: number): { x: number; y: number; z: number } {
+  d = THREE.MathUtils.clamp(d, 0, profile.len);
+  const nodes = profile.nodes;
+  let hi = 1;
+  while (hi < nodes.length && nodes[hi].d < d) hi++;
+  if (hi >= nodes.length) hi = nodes.length - 1;
+  const lo = Math.max(0, hi - 1);
+  const span = nodes[hi].d - nodes[lo].d;
+  const t = span > 1e-6 ? (d - nodes[lo].d) / span : 0;
+  return {
+    x: profile.ax + profile.ux * d,
+    y: THREE.MathUtils.lerp(nodes[lo].y, nodes[hi].y, t) + MARKING_LIFT_M,
+    z: profile.az + profile.uz * d
   };
-  let prev = nodeAt(keep[0]);
-  for (let n = 1; n < keep.length; n++) {
-    const cur = nodeAt(keep[n]);
+}
+
+function pushProfileSpan(
+  out: number[],
+  profile: RoadProfile,
+  from: number,
+  to: number,
+  offset: number,
+  width: number
+): void {
+  if (to - from < MIN_EDGE_M) return;
+  const distances = [from];
+  for (const node of profile.nodes) {
+    if (node.d > from + 1e-5 && node.d < to - 1e-5) distances.push(node.d);
+  }
+  distances.push(to);
+  const lateralL = offset - width * 0.5;
+  const lateralR = offset + width * 0.5;
+  let prev = profilePoint(profile, distances[0]);
+  for (let n = 1; n < distances.length; n++) {
+    const cur = profilePoint(profile, distances[n]);
     out.push(
-      prev.lx, prev.ly, prev.lz,
-      cur.lx, cur.ly, cur.lz,
-      cur.rx, cur.ry, cur.rz,
-      prev.lx, prev.ly, prev.lz,
-      cur.rx, cur.ry, cur.rz,
-      prev.rx, prev.ry, prev.rz
+      prev.x + profile.nx * lateralL, prev.y, prev.z + profile.nz * lateralL,
+      cur.x + profile.nx * lateralL, cur.y, cur.z + profile.nz * lateralL,
+      cur.x + profile.nx * lateralR, cur.y, cur.z + profile.nz * lateralR,
+      prev.x + profile.nx * lateralL, prev.y, prev.z + profile.nz * lateralL,
+      cur.x + profile.nx * lateralR, cur.y, cur.z + profile.nz * lateralR,
+      prev.x + profile.nx * lateralR, prev.y, prev.z + profile.nz * lateralR
     );
     prev = cur;
   }
 }
 
-function pushDashedLine(
+/** Fill the bevel at a polyline node. Solid yellow always joins; a dashed white
+ * line joins only when its dash phase actually crosses the node. */
+function pushJoin(
   out: number[],
   map: WorldMap,
   ax: number,
   az: number,
+  px: number,
+  pz: number,
   bx: number,
   bz: number,
+  offset: number,
+  width: number
+): void {
+  const adx = px - ax, adz = pz - az;
+  const bdx = bx - px, bdz = bz - pz;
+  const al = Math.hypot(adx, adz), bl = Math.hypot(bdx, bdz);
+  if (al < MIN_EDGE_M || bl < MIN_EDGE_M) return;
+  const anx = -adz / al, anz = adx / al;
+  const bnx = -bdz / bl, bnz = bdx / bl;
+  if (Math.hypot(anx - bnx, anz - bnz) < 1e-4 || (adx * bdx + adz * bdz) / (al * bl) < -0.9) return;
+  const hw = width * 0.5;
+  const alx = px + anx * (offset - hw), alz = pz + anz * (offset - hw);
+  const arx = px + anx * (offset + hw), arz = pz + anz * (offset + hw);
+  const blx = px + bnx * (offset - hw), blz = pz + bnz * (offset - hw);
+  const brx = px + bnx * (offset + hw), brz = pz + bnz * (offset + hw);
+  const y = bakedRoadY(map, px, pz) + MARKING_LIFT_M;
+  out.push(
+    alx, y, alz,
+    blx, y, blz,
+    brx, y, brz,
+    alx, y, alz,
+    brx, y, brz,
+    arx, y, arz
+  );
+}
+
+function pushDashedLine(
+  out: number[],
+  profile: RoadProfile,
   offset: number,
   phase: number,
   width: number
 ): number {
-  const dx = bx - ax;
-  const dz = bz - az;
-  const len = Math.hypot(dx, dz);
-  if (len < MIN_EDGE_M) return phase;
+  const len = profile.len;
   const cycle = DASH_M + GAP_M;
   const startPhase = ((phase % cycle) + cycle) % cycle;
   const emitDash = (from: number, to: number) => {
     if (to - from < MIN_EDGE_M) return;
-    const t0 = from / len;
-    const t1 = to / len;
-    pushStrip(
-      out,
-      map,
-      ax + dx * t0,
-      az + dz * t0,
-      ax + dx * t1,
-      az + dz * t1,
-      offset,
-      width
-    );
+    pushProfileSpan(out, profile, from, to, offset, width);
   };
 
   let d: number;
@@ -239,9 +261,24 @@ function addRoadLines(seg: RoadSegmentJson, map: WorldMap, white: number[], yell
     const az = points[i + 1] / 10;
     const bx = points[i + 2] / 10;
     const bz = points[i + 3] / 10;
-    if (drawYellow) pushStrip(yellow, map, ax, az, bx, bz, 0, YELLOW_W);
+    const profile = buildRoadProfile(map, ax, az, bx, bz);
+    if (!profile) continue;
+    if (drawYellow) pushProfileSpan(yellow, profile, 0, profile.len, 0, YELLOW_W);
     for (let j = 0; j < whiteOffsets.length; j++) {
-      phases[j] = pushDashedLine(white, map, ax, az, bx, bz, whiteOffsets[j], phases[j], WHITE_W);
+      phases[j] = pushDashedLine(white, profile, whiteOffsets[j], phases[j], WHITE_W);
+    }
+
+    // The next OSM edge starts at (bx,bz). Fill only markings that continue
+    // through that node; deliberate dash gaps remain untouched.
+    if (i + 4 < points.length) {
+      const nx = points[i + 4] / 10;
+      const nz = points[i + 5] / 10;
+      if (drawYellow) pushJoin(yellow, map, ax, az, bx, bz, nx, nz, 0, YELLOW_W);
+      for (let j = 0; j < whiteOffsets.length; j++) {
+        if (phases[j] > 1e-4 && phases[j] < DASH_M - 1e-4) {
+          pushJoin(white, map, ax, az, bx, bz, nx, nz, whiteOffsets[j], WHITE_W);
+        }
+      }
     }
   }
 }
@@ -254,7 +291,7 @@ function meshFromPositions(name: string, positions: number[], mat: THREE.Materia
   const mesh = new THREE.Mesh(geo, mat);
   mesh.name = name;
   // Draw after the road surface (renderOrder 0) so the decal composites on top.
-  tagTransparency(mesh, { profile: "alphaSurface", renderBand: RenderBand.DECALS });
+  mesh.renderOrder = 20;
   mesh.frustumCulled = true;
   // Paint should take the road's shadow but never cast one of its own. (The
   // MeshBasicNodeMaterial does not sample lighting, so receiveShadow is intent

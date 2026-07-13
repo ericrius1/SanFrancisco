@@ -19,7 +19,7 @@ import type { GardenTerrain } from "../garden/layout";
 import { grassyGround, nearAnyWildRegion } from "./layout";
 import { GRASS_TUNING } from "../../config";
 
-const RING_RADIUS = 52; // dense grass within this of the player; fades at the rim
+const RING_RADIUS = 44; // dense grass within this of the player; fades at the rim
 const RESAMPLE_STEP = 8; // re-scatter after the focus moves this far (m)
 const SPACING = 0.95;
 

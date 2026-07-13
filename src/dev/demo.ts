@@ -17,7 +17,7 @@ import type { Player } from "../player/player";
 import type { Physics } from "../core/physics";
 import type { ChaseCamera } from "../core/camera";
 import type { WorldMap } from "../world/heightmap";
-import type { BuskerTrio } from "../gameplay/buskers";
+import type { BuskerTrioApi } from "../gameplay/buskers";
 import type { FetchBall } from "../gameplay/fetchBall";
 import type { CoronaHeightsPark } from "../world/coronaHeights";
 import type { WorldQueries } from "../core/worldQueries";
@@ -54,7 +54,7 @@ export type DemoContext = {
     setExpanded: (on: boolean) => void;
   };
   map?: WorldMap;
-  buskers?: BuskerTrio;
+  buskers?: BuskerTrioApi;
   fetchBall?: FetchBall;
   coronaHeights?: CoronaHeightsPark;
   fireworks?: Fireworks;
@@ -79,12 +79,14 @@ import { buskersCinematic } from "./demos/buskersCinematic";
 import { hoverboardCinematic } from "./demos/hoverboardCinematic";
 import { dogParkCinematic } from "./demos/dogParkCinematic";
 import { roqnOpenRoadCinematic } from "./demos/roqnOpenRoadCinematic";
+import { palaceShowcase } from "./demos/palaceShowcase";
 
 const DEMOS: Record<string, Demo> = {
   [buskersCinematic.name]: buskersCinematic,
   [hoverboardCinematic.name]: hoverboardCinematic,
   [dogParkCinematic.name]: dogParkCinematic,
-  [roqnOpenRoadCinematic.name]: roqnOpenRoadCinematic
+  [roqnOpenRoadCinematic.name]: roqnOpenRoadCinematic,
+  [palaceShowcase.name]: palaceShowcase
 };
 
 export function runDemo(name: string, ctx: DemoContext) {

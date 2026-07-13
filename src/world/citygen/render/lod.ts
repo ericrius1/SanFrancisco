@@ -14,6 +14,7 @@ import { WINDOW_GLOW_W } from "../../facade";
 import { ensureCCW, triangulate } from "../core/footprint";
 import { bodyColour } from "../render";
 import { specFor } from "../theme/archetypes";
+import { cameraCutawayMask } from "../../../render/cameraCutaway";
 
 // Target window spacing; the actual grid is SNAPPED per wall (integer columns,
 // integer storeys) in appendPrism, so the shader receives UVs already in "cell"
@@ -43,6 +44,7 @@ export function lodMaterial(): THREE.MeshStandardNodeMaterial {
   // selective discard without rebuilding indices or splitting the chunk.
   m.opacityNode = attribute("lodVisibility", "float");
   m.alphaTest = 0.5;
+  m.maskNode = cameraCutawayMask();
   const body = attribute("color", "vec3") as unknown as ReturnType<typeof color>;
   const isRoof = step(0.5, normalWorld.y.abs());
   const u = uv().x, v = uv().y;              // already in window-cell units

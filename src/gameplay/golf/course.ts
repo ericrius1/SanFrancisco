@@ -7,7 +7,9 @@ import {
   mix,
   mx_fractal_noise_float,
   mx_noise_float,
+  normalView,
   positionLocal,
+  positionViewDirection,
   positionWorld,
   smoothstep,
   uniform,
@@ -15,12 +17,6 @@ import {
   vec3
 } from "three/tsl";
 import { LIGHT_SCALE } from "../../config";
-import {
-  applyMaterialPolicy,
-  clampCoverage,
-  fresnelCoverage,
-  tagTransparency
-} from "../../render/transparency";
 import { bumpNormal } from "../../world/tslUtil";
 import type { WorldMap } from "../../world/heightmap";
 import { GolfCourse, type GolfPoly, type GolfSurface } from "./data";
@@ -406,7 +402,9 @@ export class GolfCourseView {
     const webU = uv().x as N;
     const webV = uv().y as N;
     const vfade = webV.oneMinus().pow(0.7).mul(0.62).add(0.38);
-    const fresnel = fresnelCoverage(fresnelPower, 0.18) as N;
+    const facing = (normalView as N).normalize().dot((positionViewDirection as N).normalize()).abs().clamp(0, 1);
+    const rim = facing.oneMinus().pow((fresnelPower as N).max(0));
+    const fresnel = float(0.18).add(rim.mul(0.82)).clamp(0, 1) as N;
     const spokeCell = webU.mul(14).fract();
     const spokeDist = spokeCell.sub(0.5).abs();
     const spokeCore = smoothstep(float(0.015), float(0.055), spokeDist).oneMinus();
@@ -423,22 +421,22 @@ export class GolfCourseView {
     const pulse = t.mul(1.6).add(seed.mul(2.1)).sin().mul(0.1).add(0.92);
     const blue = mix(vec3(0.003, 0.035, 0.65), vec3(0.01, 0.27, 1.0), webCore);
     curtain.colorNode = blue.mul(webCore.mul(0.48).add(0.52)).mul(LIGHT_SCALE * 0.8);
-    curtain.opacityNode = clampCoverage(
-      vfade
-        .mul(fresnel.mul(0.45).add(0.55))
-        .mul(webCore.mul(0.6).add(webGlow.mul(0.28)))
-        .mul(pulse)
-        .mul(boost)
-        .mul(alpha)
-    );
+    curtain.opacityNode = vfade
+      .mul(fresnel.mul(0.45).add(0.55))
+      .mul(webCore.mul(0.6).add(webGlow.mul(0.28)))
+      .mul(pulse)
+      .mul(boost)
+      .mul(alpha)
+      .clamp(0, 1);
     // Normal alpha keeps the electric-blue core saturated against bright sky
     // and grass; the broad low-coverage strands still read as a soft glow.
-    applyMaterialPolicy(curtain, "alphaSurface");
+    curtain.transparent = true;
+    curtain.depthWrite = false;
     curtain.side = THREE.DoubleSide;
     curtain.fog = true;
     const curtains = new THREE.InstancedMesh(curtainGeo, curtain, n);
     curtains.name = "golf-tee-curtains";
-    tagTransparency(curtains, { profile: "alphaSurface", ink: false });
+    curtains.layers.set(31);
 
     // — ground halo ring
     const haloGeo = new THREE.RingGeometry(3.4, 5.1, 36);
@@ -450,11 +448,12 @@ export class GolfCourseView {
     const rad = (positionLocal as N).xz.length().sub(3.4).div(1.7).sub(0.5).abs().mul(2).oneMinus().max(0).pow(1.8);
     halo.colorNode = mix(vec3(0.003, 0.045, 0.65), vec3(0.012, 0.3, 1.0), rad).mul(LIGHT_SCALE * 0.86);
     halo.opacityNode = rad.mul(pulse).mul(boost).mul(alpha).mul(1.15);
-    applyMaterialPolicy(halo, "additiveWorld");
+    halo.transparent = true;
+    halo.blending = THREE.AdditiveBlending;
+    halo.depthWrite = false;
     halo.fog = true;
     const halos = new THREE.InstancedMesh(haloGeo, halo, n);
     halos.name = "golf-tee-halos";
-    tagTransparency(halos, { profile: "additiveWorld" });
 
     // — sky beam: a tall soft shaft over ONLY the active tee, the long-range
     // "the hole you're playing is over here" cue. Idle tees show none of it.
@@ -462,23 +461,23 @@ export class GolfCourseView {
     beamGeo.translate(0, 17, 0);
     const beam = new THREE.MeshBasicNodeMaterial();
     const bFade = (uv().y as N).oneMinus().pow(1.5); // solid at the grass, feathering to nothing up high
-    const bFres = fresnelCoverage(fresnelPower, 0.06) as N;
+    const bFres = float(0.06).add(rim.mul(0.94)).clamp(0, 1) as N;
     const bPulse = t.mul(2.3).add(seed.mul(1.1)).sin().mul(0.18).add(0.82);
     beam.colorNode = mix(vec3(0.003, 0.055, 0.7), vec3(0.012, 0.32, 1.0), (uv().y as N)).mul(LIGHT_SCALE * 0.88);
-    beam.opacityNode = clampCoverage(
-      bFade
-        .mul(bFres)
-        .mul(bPulse)
-        .mul(isActive)
-        .mul(alpha)
-        .mul(0.82)
-    ); // isActive gate → only the current tee
-    applyMaterialPolicy(beam, "alphaSurface");
+    beam.opacityNode = bFade
+      .mul(bFres)
+      .mul(bPulse)
+      .mul(isActive)
+      .mul(alpha)
+      .mul(0.82)
+      .clamp(0, 1); // isActive gate → only the current tee
+    beam.transparent = true;
+    beam.depthWrite = false;
     beam.side = THREE.DoubleSide;
     beam.fog = true;
     const beams = new THREE.InstancedMesh(beamGeo, beam, n);
     beams.name = "golf-tee-active-beams";
-    tagTransparency(beams, { profile: "alphaSurface", ink: false });
+    beams.layers.set(31);
 
     for (let i = 0; i < n; i++) {
       course.teeSpot(i, tee);

@@ -10,6 +10,8 @@ import { buildBoatMesh, buildSpeedboatMesh } from "../vehicles/boat";
 import { buildDroneMesh } from "../vehicles/drone";
 import { buildBoardMesh, localBoardConfig } from "../vehicles/board";
 import { buildBirdMesh, type BirdRig } from "../vehicles/bird";
+import { buildSurfboardMesh } from "../vehicles/surf";
+import { buildScooterMesh, localScooterConfig } from "../vehicles/scooter";
 import { poseBone } from "../vehicles/bird/mesh";
 
 type MountMode = Exclude<PlayerMode, "walk">;
@@ -74,6 +76,17 @@ const SPECS: Record<MountMode, MountSpec> = {
     angularDrag: 1.8,
     maxSpeed: 70
   },
+  scooter: {
+    build: () => buildScooterMesh(localScooterConfig()),
+    halfExtents: [0.52, 0.42, 1.35],
+    density: 72,
+    friction: 0.4,
+    restitution: 0.06,
+    gravityScale: 1,
+    linearDrag: 0.25,
+    angularDrag: 2.2,
+    maxSpeed: 58
+  },
   plane: {
     build: buildPlaneMesh,
     halfExtents: [1.1, 0.5, 2.6],
@@ -131,6 +144,17 @@ const SPECS: Record<MountMode, MountSpec> = {
     linearDrag: 0.55,
     angularDrag: 1.8,
     maxSpeed: 60
+  },
+  surf: {
+    build: buildSurfboardMesh,
+    halfExtents: [0.5, 0.16, 1.55],
+    density: 48,
+    friction: 0.08,
+    restitution: 0.04,
+    gravityScale: 0,
+    linearDrag: 0.8,
+    angularDrag: 2.1,
+    maxSpeed: 42
   },
   bird: {
     build: buildBirdMesh,
@@ -349,6 +373,9 @@ export class AbandonedMounts {
         );
         const targetY = surf + 1.0;
         vy = t.position[1] < targetY + 4 ? THREE.MathUtils.clamp((targetY - t.position[1]) * 9 + vy * 0.18, -10, 14) : vy - 16 * dt;
+      } else if (item.mode === "surf") {
+        const targetY = waterHeight(t.position[0], t.position[2], this.#time) + 0.2;
+        vy = THREE.MathUtils.clamp((targetY - t.position[1]) * 8 + vy * 0.15, -9, 12);
       }
 
       w.setBodyVelocity(

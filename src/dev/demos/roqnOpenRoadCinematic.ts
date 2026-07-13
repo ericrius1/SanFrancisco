@@ -47,6 +47,15 @@ export const roqnOpenRoadCinematic: Demo = {
     const eye = new THREE.Vector3();
     const target = new THREE.Vector3();
     const offset = new THREE.Vector3();
+    // The multiplayer wire format is also the public deterministic launch
+    // seam, so cinematic shells survive Fireworks' GPU-internal refactors.
+    const launchFirework = (origin: THREE.Vector3, apex: THREE.Vector3, flightTime: number, palette: number, size: number) => {
+      fireworks.launchRemote([[
+        origin.x, origin.y, origin.z,
+        apex.x, apex.y, apex.z,
+        flightTime, palette, size
+      ]]);
+    };
 
     armCinematic(ctx, {
       name: "roqn-open-road",
@@ -221,10 +230,10 @@ export const roqnOpenRoadCinematic: Demo = {
             fireworks.params.intensity = 1.55;
           }
         },
-        { id: "bay-shell-one", at: 25.25, run: () => fireworks.launchShell(new THREE.Vector3(5230, 1, -600), new THREE.Vector3(5350, 118, -350), 1.35, 2, 1.2) },
-        { id: "bay-shell-two", at: 26.2, run: () => fireworks.launchShell(new THREE.Vector3(5280, 1, -520), new THREE.Vector3(5490, 138, -520), 1.45, 4, 1.35) },
-        { id: "bay-burst-three", at: 27.8, run: () => fireworks.burstAt(new THREE.Vector3(5350, 92, -350), { secondary: 5, sizeScale: 2.1 }) },
-        { id: "bay-burst-four", at: 28.65, run: () => fireworks.burstAt(new THREE.Vector3(5490, 108, -520), { secondary: 6, sizeScale: 2.25 }) }
+        { id: "bay-shell-one", at: 25.25, run: () => launchFirework(new THREE.Vector3(5230, 1, -600), new THREE.Vector3(5350, 118, -350), 1.35, 2, 1.2) },
+        { id: "bay-shell-two", at: 26.2, run: () => launchFirework(new THREE.Vector3(5280, 1, -520), new THREE.Vector3(5490, 138, -520), 1.45, 4, 1.35) },
+        { id: "bay-shell-three", at: 26.55, run: () => launchFirework(new THREE.Vector3(5200, 1, -430), new THREE.Vector3(5350, 92, -350), 1.25, 0, 1.55) },
+        { id: "bay-shell-four", at: 27.35, run: () => launchFirework(new THREE.Vector3(5310, 1, -650), new THREE.Vector3(5490, 108, -520), 1.3, 3, 1.7) }
       ],
       frame: (time) => {
         for (const key of drivenKeys) ctx.input.keys.delete(key);

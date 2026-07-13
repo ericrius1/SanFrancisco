@@ -654,6 +654,15 @@ export class Sky {
     )
   }
 
+  /** When set, the cull-edge fade pulls in to this radius instead of the streamed
+   *  draw radius — lets surf mode tighten tile streaming without a hard seam
+   *  popping at the (much closer) unload distance. null restores the default. */
+  #cullRadiusOverride: number | null = null
+  setCullRadiusOverride(r: number | null) {
+    this.#cullRadiusOverride = r
+    this.applyFogParams()
+  }
+
   applyFogParams() {
     const v = WORLD_TUNING.values
     // Atmospheric perspective is an artistic/physical property, not a streaming
@@ -661,13 +670,14 @@ export class Sky {
     // turn exponentially whiter, so players had to select absurd 60–300 km radii
     // just to see across an 11 km city. Only the narrow cull-edge fade follows the
     // streamed radius; broad haze and the height bank stay in physical metres.
+    const edgeR = this.#cullRadiusOverride ?? v.radius
     this.#uFogDensity.value = v.fog
     this.#uFogTop.value = v.fogTop
     this.#uFogBank.value = v.fogBank
     this.#uFogNoise.value = v.fogNoise
     this.#uFogDrift.value = v.fogDrift
-    this.#uFogEdgeStart.value = v.radius * FOG_EDGE_START
-    this.#uFogEdgeEnd.value = v.radius * FOG_EDGE_END
+    this.#uFogEdgeStart.value = edgeR * FOG_EDGE_START
+    this.#uFogEdgeEnd.value = edgeR * FOG_EDGE_END
     this.#uFogEnabled.value = v.fogEnabled ? 1 : 0
     this.#uFogBackdrop.value = v.fogEnabled ? 1 : 0
   }

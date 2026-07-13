@@ -655,6 +655,7 @@ export const buildFlutist: MusicianBuilder = (audio, part) => {
       group.parent?.remove(group);
       for (const g of ownGeos) g.dispose();
       for (const m of ownMats) m.dispose();
+      for (const m of Object.values(rig.avatar.materials)) m.dispose();
     }
   };
 };

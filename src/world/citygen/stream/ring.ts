@@ -107,6 +107,9 @@ interface Tiles {
   unsuppressBuilding(key: string, index: number): void;
   suppressBuildingMesh(key: string, index: number): void;
   unsuppressBuildingMesh(key: string, index: number): void;
+  /** Authored replacements (landmarks, bespoke sites) own these footprints and
+   *  must never be materialized or revived by the procedural building ring. */
+  isBuildingSuppressed?(key: string, index: number): boolean;
 }
 // Optional host frame-budget scheduler (SF's core/frameBudget.ts): deferrable
 // bursty work — physics body batches, mesh assembly, material warmups — queues
@@ -312,14 +315,16 @@ export async function createCityGenRing(
   let total = 0;
   if (grid) {
     for (const [key, list] of Object.entries(grid.cells)) {
-      const entries = list.filter((b) => READY.has(b.archetype)).map((b) => {
+      const entries = list
+        .filter((b) => READY.has(b.archetype) && !ctx.tiles.isBuildingSuppressed?.(key, b.i))
+        .map((b) => {
         const g = boundsOf(b.poly);
         const grade = footprintGrade(b.poly, b.base, b.top, ctx.map);
         return { ...b, grade, key, cx: g.cx, cz: g.cz, bb: { minx: g.minx, maxx: g.maxx, minz: g.minz, maxz: g.maxz },
           detail: null, fade: 0, fadeDir: 0, bodies: [] as number[], wallBoxes: [] as ColliderBox[], roofBody: 0, roofMesh: null,
           interior: null, intBodies: [] as number[], intBoxes: [] as ColliderBox[],
           state: "lod" as const, doorPending: false, pendingBuild: false } as Entry;
-      });
+        });
       if (entries.length) { cellEntries.set(key, entries); total += entries.length; }
     }
   }

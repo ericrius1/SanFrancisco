@@ -38,6 +38,7 @@ import {
 } from "three/tsl";
 import { LIGHT_SCALE } from "../../../config";
 import { WINDOW_GLOW_W } from "../../facade";
+import { cameraCutawayMask } from "../../../render/cameraCutaway";
 
 // TSL node generics fight composition; `any` is the idiom used across this app's
 // node-material code (see facade.ts).
@@ -146,5 +147,6 @@ export function makeParallaxGlass(
   mat.colorNode = surface;
   mat.emissiveNode = emissive;
   mat.metalnessNode = float(0.0);
+  mat.maskNode = cameraCutawayMask();
   return mat;
 }

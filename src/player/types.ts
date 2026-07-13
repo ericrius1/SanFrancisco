@@ -3,7 +3,7 @@ import type { Physics } from "../core/physics";
 import type { WorldMap } from "../world/heightmap";
 import type { Input } from "../core/input";
 
-export type PlayerMode = "walk" | "drive" | "plane" | "boat" | "speedboat" | "drone" | "board" | "bird";
+export type PlayerMode = "walk" | "drive" | "scooter" | "plane" | "boat" | "speedboat" | "drone" | "board" | "surf" | "bird";
 
 /** Where the driver rig + steering wheel sit inside a drive mesh (mesh-local). */
 export type Cockpit = {

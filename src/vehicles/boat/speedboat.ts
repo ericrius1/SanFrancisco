@@ -1,7 +1,5 @@
 import * as THREE from "three/webgpu";
 import { lightAnchor } from "../../player/lightPool";
-import { GuitaristStand, LauncherRig, RocketBattery, buildGuitarPlayer } from "../../gameplay/launchers";
-import { applyMaterialPolicy, tagTransparency } from "../../render/transparency";
 
 /**
  * A sleek open-cockpit speedboat — the fast cousin of the day-sailer. Front is
@@ -24,10 +22,12 @@ export function buildSpeedboatMesh(): THREE.Group {
   const deckTan = new THREE.MeshLambertMaterial({ color: 0xb9987a });
   const trim = new THREE.MeshLambertMaterial({ color: 0x1a1c22 });
   const chrome = new THREE.MeshLambertMaterial({ color: 0x9aa3ad });
-  const glass = applyMaterialPolicy(
-    new THREE.MeshLambertMaterial({ color: 0x0e1a24, opacity: 0.55 }),
-    "alphaSurface"
-  );
+  const glass = new THREE.MeshLambertMaterial({
+    color: 0x0e1a24,
+    opacity: 0.55,
+    transparent: true,
+    depthWrite: false
+  });
 
   // hull silhouette (top-down): pointed bow at -Z, transom at +Z. Shape is laid
   // out in X (beam) / Y (length) then rotated so length runs along Z and the
@@ -84,7 +84,6 @@ export function buildSpeedboatMesh(): THREE.Group {
   console_.position.set(0, 0.42, -0.2);
   g.add(console_);
   const screen = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.34, 0.06), glass);
-  tagTransparency(screen, { profile: "alphaSurface" });
   screen.position.set(0, 0.66, -0.42);
   screen.rotation.x = -0.5;
   g.add(screen);
@@ -134,19 +133,6 @@ export function buildSpeedboatMesh(): THREE.Group {
 
   // helm crew seat + wheel anchor (player.ts seats the driver rig here)
   g.userData.cockpit = { seat: [0, 0.5, 0.62], wheel: [0, 0.72, 0.12] };
-
-  // --- the show: a rack of patriotic rockets sits in the aft cockpit well (one
-  // trigger launches the whole red/white/blue barrage forward over the water)
-  // and a guitarist jams up on the foredeck. The launchers hang off a
-  // LauncherRig on userData.launcherRig; the host stays dependency-free — main.ts
-  // injects the fireworks/rocket-rider systems at fire time, the exact same rig
-  // that rides the Freedom Truck.
-  const rig = new LauncherRig(g);
-  const battery = rig.add(new RocketBattery(), [0, 0.42, 0.75], [0, 0, 0]);
-  battery.group.scale.setScalar(0.72); // shrink the truck-bed rack to the cockpit well
-  const guitarist = rig.add(new GuitaristStand({ buildRider: buildGuitarPlayer }), [0, 0.37, -1.4], [0, 0, 0]);
-  guitarist.group.scale.setScalar(1.0); // human-sized on the foredeck (feet on the 0.32 m deck cap)
-  g.userData.launcherRig = rig;
 
   return g;
 }

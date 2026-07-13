@@ -8,6 +8,7 @@ import {
   FOLIAGE_TUNING,
   GRASS_TUNING,
   CITYGEN_TUNING,
+  INPUT_TUNING,
   RENDER_TUNING,
   WORLD_TUNING
 } from "../config";
@@ -21,11 +22,10 @@ import { POSTFX_TUNING, POSTFX_TOGGLES, POSTFX_QUALITY_KEYS, applyPostFxParams }
 import { VOICE_TUNING } from "../net/voice";
 import { NATURE_AUDIO_TUNING } from "../audio";
 import { TEE_BEACON_TUNING } from "../gameplay/golf/tuning";
-import { auditSceneTransparency } from "../render/transparency";
 import type { Fireworks } from "../fx/fireworks";
 import type { TileStreamer } from "../world/tiles";
-import { withTweakBindingEventsSuppressed, saveTweak } from "../core/persist";
-import { BUSKER_FIREFLY_TUNING } from "../gameplay/buskers/fireflies";
+import { TUNABLES_UPDATED_EVENT, withTweakBindingEventsSuppressed, saveTweak } from "../core/persist";
+import { BUSKER_FIREFLY_TUNING } from "../gameplay/buskers/tuning";
 
 type WireframeMaterial = THREE.Material & { wireframe: boolean };
 
@@ -141,6 +141,7 @@ export class DebugPanel {
     this.#refreshFlowers = refreshFlowers;
     this.#refreshGrass = refreshGrass;
     this.#toggleProfiler = toggleProfiler;
+    window.addEventListener(TUNABLES_UPDATED_EVENT, () => this.#refreshAllBindings());
   }
 
   toggle() {
@@ -221,12 +222,20 @@ export class DebugPanel {
       this.#lightingView.cycleDuration = this.#sky.cycleDuration;
       this.#lightingView.nightBrightness = this.#sky.nightBrightness;
     }
+    try {
+      this.#refreshAllBindings();
+    } finally {
+      this.#syncingFromSky = false;
+    }
+  }
+
+  #refreshAllBindings() {
+    if (!this.#pane) return;
     this.#syncingPane = true;
     try {
       withTweakBindingEventsSuppressed(() => this.#pane?.refresh());
     } finally {
       this.#syncingPane = false;
-      this.#syncingFromSky = false;
     }
   }
 
@@ -474,6 +483,10 @@ export class DebugPanel {
     const cameraF = advanced.addFolder({ title: "camera" });
     CAMERA_TUNING.bind(cameraF);
 
+    // gamepad look polarity — master switch for every mode (walk + vehicles)
+    const controls = advanced.addFolder({ title: "controls" });
+    INPUT_TUNING.bind(controls);
+
     // foliage detail knobs (the master on/off lives at the very top of the pane).
     const foliage = advanced.addFolder({ title: "foliage" });
     // Wildflower ring: density + clump↔scatter shaping. The ring reads these live on
@@ -519,43 +532,6 @@ export class DebugPanel {
     // frame, so both the coverage and Fresnel rim can be judged in place.
     const golfBeacons = advanced.addFolder({ title: "golf tee beacons" });
     TEE_BEACON_TUNING.bind(golfBeacons);
-
-    // Policy adoption is inspected from the live scene because deferred world
-    // modules and imported assets do not all exist at boot. This remains an
-    // explicit scan so opening the pane never turns a full traversal into a
-    // recurring frame cost.
-    const transparency = advanced.addFolder({ title: "transparency" });
-    const transparencyStats = {
-      tagged: 0,
-      untagged: 0,
-      hashed: 0,
-      blended: 0,
-      warnings: 0
-    };
-    const transparencyBindings = [
-      transparency.addBinding(transparencyStats, "tagged", { readonly: true }),
-      transparency.addBinding(transparencyStats, "untagged", { readonly: true }),
-      transparency.addBinding(transparencyStats, "hashed", { readonly: true }),
-      transparency.addBinding(transparencyStats, "blended", { readonly: true }),
-      transparency.addBinding(transparencyStats, "warnings", { readonly: true })
-    ];
-    const scanTransparency = (log: boolean) => {
-      if (!this.#scene) return;
-      const report = auditSceneTransparency(this.#scene);
-      transparencyStats.tagged = report.counts.taggedObjects;
-      transparencyStats.untagged = report.counts.untaggedTransparentMaterials + report.counts.untaggedHashedMaterials;
-      transparencyStats.hashed = report.counts.hashedMaterials;
-      transparencyStats.blended = report.counts.transparentMaterials;
-      transparencyStats.warnings = report.counts.warningCount;
-      for (const binding of transparencyBindings) binding.refresh();
-      if (log) {
-        console.info("[transparency] scene audit", report.counts);
-        if (report.warnings.length > 0) console.table(report.warnings);
-      }
-    };
-    const scanTransparencyButton = transparency.addButton({ title: "scan scene", label: "audit" });
-    scanTransparencyButton.on("click", () => scanTransparency(true));
-    scanTransparency(false);
 
     // proximity voice chat: Voice.update polls these live every frame, so
     // plain persisted bindings are enough — no onChange side effects

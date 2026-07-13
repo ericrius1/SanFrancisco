@@ -12,6 +12,7 @@ import {
   poseIdle,
   poseGolf,
   poseRide,
+  poseScooter,
   poseSwim,
   poseWalk,
   rigHandWorld,
@@ -34,6 +35,8 @@ import { buildPlaneMesh, collectPlaneAnim, FlyController, type PlaneAnim } from 
 import { buildBoatMesh, buildSpeedboatMesh, BoatController, BOAT_TUNING, SPEEDBOAT_TUNING, type BoatSailRig } from "../vehicles/boat";
 import { buildDroneMesh, DroneController } from "../vehicles/drone";
 import { buildBoardMesh, animateBoard, updateBoardSurface, BoardController, BOARD_TUNING, type BoardConfig } from "../vehicles/board";
+import { buildSurfboardMesh, SurfController, SURF_TUNING, type SurfTelemetry } from "../vehicles/surf";
+import { animateScooter, buildScooterMesh, ScooterController, type ScooterConfig } from "../vehicles/scooter";
 import { buildBirdMesh, BirdController } from "../vehicles/bird";
 
 const V = {
@@ -109,11 +112,13 @@ export class Player {
   #modes: {
     walk: WalkController;
     drive: CarController;
+    scooter: ScooterController;
     plane: FlyController;
     boat: BoatController;
     speedboat: BoatController;
     drone: DroneController;
     board: BoardController;
+    surf: SurfController;
     bird: BirdController;
   };
 
@@ -140,6 +145,8 @@ export class Player {
   #ballHeld = false;
   #throwT = 0; // 0 = idle; >0 drives an additive windup→release arm swing
   #riderRig: Rig;
+  #surfRig: Rig;
+  #scooterRig: Rig;
   #driverRig: Rig;
   #wheel: { group: THREE.Group; spin: THREE.Group };
   #helmRig: Rig; // boat crew: the boat never swaps meshes, so it keeps its own
@@ -158,6 +165,7 @@ export class Player {
   // what the player is currently driving; swapped when mounting a ridden animal
   driveSpec: DriveSpec = DEFAULT_DRIVE_SPEC;
   swimEnter = false;
+  #carryBoard!: THREE.Group; // surfboard tucked under the arm while on the beach
   #defaultDriveMesh!: THREE.Group;
   #defaultDroneMesh!: THREE.Group;
   #broomRigAttached = false;
@@ -172,7 +180,8 @@ export class Player {
     scene: THREE.Scene,
     spawn: { x: number; z: number; heading: number },
     avatar: AvatarTraits = avatarFromSeed("local-default"),
-    board?: BoardConfig
+    board?: BoardConfig,
+    scooter?: ScooterConfig
   ) {
     this.physics = physics;
     this.map = map;
@@ -199,21 +208,25 @@ export class Player {
     this.meshes = {
       walk: walkGroup,
       drive: buildCarMesh(),
+      scooter: buildScooterMesh(scooter),
       plane: buildPlaneMesh(),
       boat: buildBoatMesh(),
       speedboat: buildSpeedboatMesh(),
       drone: buildDroneMesh(),
       board: buildBoardMesh(board),
+      surf: buildSurfboardMesh(),
       bird: buildBirdMesh()
     };
     this.#modes = {
       walk: new WalkController(),
       drive: new CarController(),
+      scooter: new ScooterController(),
       plane: new FlyController(),
       boat: new BoatController(),
       speedboat: new BoatController(SPEEDBOAT_TUNING),
       drone: new DroneController(this.meshes.drone),
       board: new BoardController(),
+      surf: new SurfController(),
       bird: new BirdController(this.meshes.bird)
     };
     // surf stance across the deck; ZYX order so the carve lean (z) rolls the
@@ -223,6 +236,23 @@ export class Player {
     this.#riderRig.group.rotation.y = 1.05;
     this.#riderRig.group.position.y = 0.93; // soles on the deck top
     this.meshes.board.add(this.#riderRig.group);
+    this.#surfRig = buildRig(this.#avatar);
+    this.#surfRig.group.rotation.order = "ZYX";
+    this.#surfRig.group.rotation.y = 1.05;
+    this.#surfRig.group.position.y = 0.93;
+    this.meshes.surf.add(this.#surfRig.group);
+    // A surfboard tucked upright under the right arm, shown on foot at the beach
+    // so you arrive "holding your board, ready to paddle out".
+    this.#carryBoard = buildSurfboardMesh();
+    this.#carryBoard.scale.setScalar(0.82);
+    this.#carryBoard.position.set(0.62, 1.0, -0.05);
+    this.#carryBoard.rotation.set(0.05, 0, Math.PI * 0.52);
+    this.#carryBoard.visible = false;
+    this.meshes.walk.add(this.#carryBoard);
+    this.#scooterRig = buildRig(this.#avatar);
+    const scooterCockpit = this.meshes.scooter.userData.cockpit as Cockpit;
+    this.#scooterRig.group.position.set(...scooterCockpit.seat);
+    this.meshes.scooter.add(this.#scooterRig.group);
     this.#driverRig = buildRig(this.#avatar);
     this.#wheel = buildSteeringWheel();
     // helmsman on the stern bench, hands on a wheel at the console (same
@@ -264,6 +294,8 @@ export class Player {
     this.#avatar = normalizeAvatarTraits(avatar);
     applyAvatarToRig(this.#walkRig, this.#avatar);
     applyAvatarToRig(this.#riderRig, this.#avatar);
+    applyAvatarToRig(this.#surfRig, this.#avatar);
+    applyAvatarToRig(this.#scooterRig, this.#avatar);
     applyAvatarToRig(this.#driverRig, this.#avatar);
     applyAvatarToRig(this.#helmRig, this.#avatar);
     applyAvatarToRig(this.#speedRig, this.#avatar);
@@ -489,6 +521,14 @@ export class Player {
     if (this.mode === "board") this.#modes.board.requestJump();
   }
 
+  requestSurfJump() {
+    if (this.mode === "surf") this.#modes.surf.requestJump();
+  }
+
+  get surfTelemetry(): SurfTelemetry {
+    return this.#modes.surf.telemetry;
+  }
+
   requestWalkJump() {
     if (this.mode === "walk") this.#modes.walk.requestJump();
   }
@@ -496,6 +536,10 @@ export class Player {
   /** Air/landing state for probes and the window.__sf diagnostics surface. */
   get driveJumpState() {
     return this.#modes.drive.jumpDebug;
+  }
+
+  get scooterJumpState() {
+    return this.#modes.scooter.jumpDebug;
   }
 
   /** Gameplay-owned golfer pose; the normal walk/idle animator resumes when off. */
@@ -574,6 +618,11 @@ export class Player {
     setHandPose(this.#walkRig, "R", held ? 1 : 0);
   }
 
+  /** Carry a surfboard under the arm while on foot at the beach (visual only). */
+  setCarryingBoard(on: boolean) {
+    this.#carryBoard.visible = on && this.mode === "walk";
+  }
+
   /** Windup→release arm swing, `t` 0..1 (0 = idle, adds nothing). #animate lays
    *  the overlay on top of the base walk/idle pose while t > 0. */
   setThrowAnim(t: number) {
@@ -586,47 +635,113 @@ export class Player {
     return rigHandWorld(this.#walkRig, "R", out);
   }
 
-  /** Additive baseball-style overhand: cock the arm high behind the head through
-   *  t≈0.4, whip over the top at t≈0.5, settle through follow-through by t=1.
+  /** Additive baseball-style overhand: cock the ball behind the throwing ear,
+   *  drive through a straight high release, then finish across the body.
    *  Deltas taper to 0 at both ends so the base pose shows through when idle. */
   #applyThrowSwing(r: Rig) {
     const t = this.#throwT;
-    let armX: number, armZ: number, foreX: number, twist: number, lean: number;
+    let armX: number, armY: number, armZ: number, foreX: number;
+    let gloveX: number, gloveY: number, gloveZ: number, gloveForeX: number;
+    let twist: number, lean: number, hipTwist: number, hipDrop: number;
+    let strideL: number, strideR: number, kneeL: number, kneeR: number;
     if (t < 0.4) {
-      // Pitcher windup: raise + coil — arm high behind the head, elbow cocked.
+      // Pitcher set: elbow at shoulder height, forearm folded UP so the ball
+      // sits behind the throwing ear. The old positive elbow bend folded the
+      // hand down beside the ribs, which read as a side-arm push.
       const k = THREE.MathUtils.smoothstep(t, 0, 0.4);
-      armX = -2.15 * k;
-      armZ = -1.25 * k;
-      foreX = 1.65 * k;
-      twist = 0.62 * k;
-      lean = -0.14 * k;
-    } else if (t < 0.58) {
-      // Over-the-top release: uncoil and whip the arm forward/down.
-      const k = THREE.MathUtils.smoothstep(t, 0.4, 0.58);
-      armX = THREE.MathUtils.lerp(-2.15, 2.55, k);
-      armZ = THREE.MathUtils.lerp(-1.25, 0.2, k);
-      foreX = THREE.MathUtils.lerp(1.65, 0.08, k);
-      twist = THREE.MathUtils.lerp(0.62, -0.55, k);
-      lean = THREE.MathUtils.lerp(-0.14, 0.28, k);
+      armX = -0.7 * k;
+      armY = 0.35 * k;
+      armZ = -1.8 * k;
+      foreX = -1.5 * k;
+      gloveX = 1.05 * k;
+      gloveY = -0.18 * k;
+      gloveZ = 1.1 * k;
+      gloveForeX = 0.18 * k;
+      twist = 0.68 * k;
+      lean = -0.1 * k;
+      hipTwist = 0.24 * k;
+      hipDrop = 0.05 * k;
+      strideL = 0.38 * k;
+      strideR = -0.18 * k;
+      kneeL = -0.45 * k;
+      kneeR = -0.16 * k;
+    } else if (t < 0.56) {
+      // Elbow leads and the arm straightens into a genuinely overhead slot.
+      // The ball leaves near the end of this phase, above and ahead of the head.
+      const k = THREE.MathUtils.smoothstep(t, 0.4, 0.56);
+      armX = THREE.MathUtils.lerp(-0.7, -0.8, k);
+      armY = THREE.MathUtils.lerp(0.35, 0, k);
+      armZ = THREE.MathUtils.lerp(-1.8, -2.6, k);
+      foreX = THREE.MathUtils.lerp(-1.5, 0, k);
+      gloveX = THREE.MathUtils.lerp(1.05, 0.55, k);
+      gloveY = THREE.MathUtils.lerp(-0.18, -0.3, k);
+      gloveZ = THREE.MathUtils.lerp(1.1, 0.25, k);
+      gloveForeX = THREE.MathUtils.lerp(0.18, 1.2, k);
+      twist = THREE.MathUtils.lerp(0.68, -0.18, k);
+      lean = THREE.MathUtils.lerp(-0.1, 0.22, k);
+      hipTwist = THREE.MathUtils.lerp(0.24, -0.22, k);
+      hipDrop = THREE.MathUtils.lerp(0.05, 0.09, k);
+      strideL = THREE.MathUtils.lerp(0.38, 0.85, k);
+      strideR = THREE.MathUtils.lerp(-0.18, -0.35, k);
+      kneeL = THREE.MathUtils.lerp(-0.45, -0.18, k);
+      kneeR = THREE.MathUtils.lerp(-0.16, -0.12, k);
+    } else if (t < 0.72) {
+      // Pronate and pull the throwing hand across the lead side after release.
+      const k = THREE.MathUtils.smoothstep(t, 0.56, 0.72);
+      armX = THREE.MathUtils.lerp(-0.8, 1.5, k);
+      armY = 0;
+      armZ = THREE.MathUtils.lerp(-2.6, 1, k);
+      foreX = THREE.MathUtils.lerp(0, 0.25, k);
+      gloveX = THREE.MathUtils.lerp(0.55, 0.25, k);
+      gloveY = THREE.MathUtils.lerp(-0.3, 0, k);
+      gloveZ = THREE.MathUtils.lerp(0.25, 0.15, k);
+      gloveForeX = THREE.MathUtils.lerp(1.2, 0.55, k);
+      twist = THREE.MathUtils.lerp(-0.18, -0.58, k);
+      lean = THREE.MathUtils.lerp(0.22, 0.34, k);
+      hipTwist = THREE.MathUtils.lerp(-0.22, -0.38, k);
+      hipDrop = THREE.MathUtils.lerp(0.09, 0.04, k);
+      strideL = THREE.MathUtils.lerp(0.85, 0.55, k);
+      strideR = THREE.MathUtils.lerp(-0.35, -0.16, k);
+      kneeL = THREE.MathUtils.lerp(-0.18, -0.08, k);
+      kneeR = THREE.MathUtils.lerp(-0.12, -0.06, k);
     } else {
-      // Follow-through across the body, then relax.
-      const k = THREE.MathUtils.smoothstep(t, 0.58, 1);
-      armX = THREE.MathUtils.lerp(2.55, 0, k);
-      armZ = THREE.MathUtils.lerp(0.2, 0, k);
-      foreX = THREE.MathUtils.lerp(0.08, 0, k);
-      twist = THREE.MathUtils.lerp(-0.55, 0, k);
-      lean = THREE.MathUtils.lerp(0.28, 0, k);
+      // Hold the finish for a beat, then hand control back to walk/idle.
+      const k = THREE.MathUtils.smoothstep(t, 0.72, 1);
+      const relax = 1 - k;
+      armX = 1.5 * relax;
+      armY = 0;
+      armZ = 1 * relax;
+      foreX = 0.25 * relax;
+      gloveX = 0.25 * relax;
+      gloveY = 0;
+      gloveZ = 0.15 * relax;
+      gloveForeX = 0.55 * relax;
+      twist = -0.58 * relax;
+      lean = 0.34 * relax;
+      hipTwist = -0.38 * relax;
+      hipDrop = 0.04 * relax;
+      strideL = 0.55 * relax;
+      strideR = -0.16 * relax;
+      kneeL = -0.08 * relax;
+      kneeR = -0.06 * relax;
     }
     r.armR.rotation.x += armX;
+    r.armR.rotation.y += armY;
     r.armR.rotation.z += armZ;
     r.foreR.rotation.x += foreX;
+    r.armL.rotation.x += gloveX;
+    r.armL.rotation.y += gloveY;
+    r.armL.rotation.z += gloveZ;
+    r.foreL.rotation.x += gloveForeX;
     r.torso.rotation.y += twist;
     r.torso.rotation.x += lean;
     r.head.rotation.y += twist * 0.35;
-    // Glove-side balance arm drifts out a little during the coil.
-    const balance = t < 0.4 ? THREE.MathUtils.smoothstep(t, 0, 0.4) : t < 0.58 ? 1 - THREE.MathUtils.smoothstep(t, 0.4, 0.58) : 0;
-    r.armL.rotation.z += 0.55 * balance;
-    r.armL.rotation.x += 0.25 * balance;
+    r.hips.rotation.y += hipTwist;
+    r.hips.position.y -= hipDrop;
+    r.legL.rotation.x += strideL;
+    r.legR.rotation.x += strideR;
+    r.shinL.rotation.x += kneeL;
+    r.shinR.rotation.x += kneeR;
   }
 
   /** Board airborne state — the hoverboard hum softens in the air. */
@@ -724,6 +839,26 @@ export class Player {
     this.meshes.board = next;
     setEmbodimentVisible(next, this.mode === "board");
     if (this.mode === "board") this.#lightPool.claim(next);
+  }
+
+  /** Rebuild the cosmetic scooter shell without disturbing its live pose. */
+  setScooterConfig(config: ScooterConfig) {
+    const old = this.meshes.scooter;
+    const next = buildScooterMesh(config);
+    next.position.copy(old.position);
+    next.quaternion.copy(old.quaternion);
+    this.#scooterRig.group.removeFromParent();
+    const cockpit = next.userData.cockpit as Cockpit;
+    this.#scooterRig.group.position.set(...cockpit.seat);
+    this.#scooterRig.group.rotation.set(0, 0, 0);
+    next.add(this.#scooterRig.group);
+    setEmbodimentVisible(old, false);
+    this.#scene.remove(old);
+    (old.userData.dispose as (() => void) | undefined)?.();
+    this.#scene.add(next);
+    this.meshes.scooter = next;
+    setEmbodimentVisible(next, this.mode === "scooter");
+    if (this.mode === "scooter") this.#lightPool.claim(next);
   }
 
   /** Lightweight local-only preview used while the deck XY pad is held. */
@@ -853,6 +988,27 @@ export class Player {
       poseRide(this.#riderRig, board.lean, crouch, !board.grounded, this.#animT);
       this.#riderRig.group.rotation.z = board.lean * 0.4; // whole-body dip on top of the deck roll
       animateBoard(this.meshes.board, dt, this.#animT, board.horizontalSpeed, board.boosting);
+    } else if (this.mode === "surf") {
+      const surf = this.#modes.surf;
+      const paddling = surf.telemetry.phase === "paddle";
+      const crouch = paddling
+        ? 1 // hunched low over the deck while paddling
+        : Math.min(1, this.speed / SURF_TUNING.values.maxTrim + Math.abs(surf.lean) * 0.5);
+      poseRide(this.#surfRig, surf.lean, crouch, !surf.grounded, this.#animT);
+      this.#surfRig.group.rotation.z = surf.lean * 0.34;
+      // lean forward onto the board while paddling out
+      this.#surfRig.group.rotation.x = paddling ? 0.6 : 0;
+    } else if (this.mode === "scooter") {
+      const scooter = this.#modes.scooter;
+      const airborne = scooter.jumpDebug.airborne;
+      poseScooter(this.#scooterRig, scooter.steerVis, this.#animT, airborne);
+      animateScooter(
+        this.meshes.scooter,
+        dt,
+        Math.hypot(this.velocity.x, this.velocity.z),
+        scooter.steerVis,
+        this.speed > 34
+      );
     } else if (this.mode === "drone" && this.#broomRigAttached) {
       const lean = THREE.MathUtils.clamp(this.velocity.x * 0.04, -0.5, 0.5);
       const crouch = Math.min(1, this.speed / 28);
