@@ -60,15 +60,17 @@ export function obbContainsXZ(c: ColliderOBB, x: number, z: number, margin: numb
 }
 
 /** Does an anchor overlap a building box closely enough that creating the box
- * now could trap its dynamic body? Altitude-less anchors stay conservative;
- * player anchors carry Y so flying over a roof is not mistaken for being inside. */
+ * now could trap its dynamic body? Altitude-less anchors stay conservative.
+ * The lower bound keeps its safety margin, but the top face does not: an anchor
+ * on a roof or bridge deck needs that box materialized as support, not deferred
+ * as though it were embedded inside a wall. */
 export function anchorInsideCollider(
   c: ColliderOBB & { y: number; hy: number },
   a: ColliderAnchor,
   margin: number
 ): boolean {
   if (!obbContainsXZ(c, a.x, a.z, margin)) return false;
-  return a.y === undefined || (a.y > c.y - c.hy - margin && a.y < c.y + c.hy + margin);
+  return a.y === undefined || (a.y > c.y - c.hy - margin && a.y < c.y + c.hy);
 }
 
 /**

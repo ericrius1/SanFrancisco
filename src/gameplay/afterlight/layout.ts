@@ -1,21 +1,12 @@
-import { BUENA_VISTA_SUMMIT_CLEARING } from "../../world/buenaVista";
+import { AFTERLIGHT_CENTER } from "./meta";
+
+export { AFTERLIGHT_ARRIVAL, AFTERLIGHT_CENTER } from "./meta";
 
 /**
  * Afterlight lives in the deliberately empty crown of Buena Vista Park. Keep
  * every authored position here so the quest, capture demo, minimap pin, and
  * site gate cannot drift apart while the experience is tuned.
  */
-export const AFTERLIGHT_CENTER = {
-  x: BUENA_VISTA_SUMMIT_CLEARING.x - 4,
-  z: BUENA_VISTA_SUMMIT_CLEARING.z + 6
-} as const;
-
-/** A clear approach point for minimap travel, safely outside the loom plinth. */
-export const AFTERLIGHT_ARRIVAL = {
-  x: AFTERLIGHT_CENTER.x,
-  z: AFTERLIGHT_CENTER.z + 16
-} as const;
-
 /** Keep the authored installation readable without sterilising the whole meadow. */
 export function inAfterlightGroundcoverClear(x: number, z: number, pad = 0): boolean {
   const rx = 14.5 + Math.max(0, pad);

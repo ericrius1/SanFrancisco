@@ -5,6 +5,7 @@ import { lightAnchor, type LightAnchorSpec } from "../../player/lightPool";
 import { applyVehicleShadowPolicy } from "../shadows";
 import {
   boardGlowHex,
+  boardDeckHex,
   boardPlumeHex,
   boardTrimHex,
   normalizeBoardConfig,
@@ -183,6 +184,10 @@ type BoardSurfaceState = {
   flow: number; // 0..1 tempo of every surface motion
   fx: number; // 0..1 strength of the chosen effect
   fxKind: BoardFx;
+  deferredConfig: BoardConfig | null;
+  pendingKey: string | null;
+  pending: Promise<void> | null;
+  disposed: boolean;
   phase: number; // seed-derived offset so identical boards don't sync up
   clock: number; // accumulated flow-scaled animation time (edits never snap it)
   scroll: number; // accumulated artwork travel along the deck
@@ -376,7 +381,7 @@ export type BoardAnim = {
   plume: BoardPlume;
 };
 
-export function buildBoardMesh(config?: BoardConfig): THREE.Group {
+export function buildBoardMesh(config?: BoardConfig, options: { deferSurface?: boolean } = {}): THREE.Group {
   const cfg = normalizeBoardConfig(config ?? {});
   const p = PROFILES[cfg.shape];
   // resolved through config.ts helpers so custom paint overrides land on the
@@ -408,7 +413,15 @@ export function buildBoardMesh(config?: BoardConfig): THREE.Group {
   const surfaceCanvas = document.createElement("canvas");
   surfaceCanvas.width = 128;
   surfaceCanvas.height = 256;
-  paintBoardSurface(surfaceCanvas, cfg);
+  if (options.deferSurface) {
+    const placeholder = surfaceCanvas.getContext("2d");
+    if (placeholder) {
+      placeholder.fillStyle = `#${boardDeckHex(cfg).toString(16).padStart(6, "0")}`;
+      placeholder.fillRect(0, 0, surfaceCanvas.width, surfaceCanvas.height);
+    }
+  } else {
+    paintBoardSurface(surfaceCanvas, cfg);
+  }
   const surfaceTexture = new THREE.CanvasTexture(surfaceCanvas);
   surfaceTexture.colorSpace = THREE.SRGBColorSpace;
   surfaceTexture.anisotropy = 4;
@@ -655,10 +668,14 @@ export function buildBoardMesh(config?: BoardConfig): THREE.Group {
   const surfaceState: BoardSurfaceState = {
     canvas: surfaceCanvas,
     texture: surfaceTexture,
-    paintKey: surfacePaintKey(cfg),
+    paintKey: options.deferSurface ? "" : surfacePaintKey(cfg),
     flow: cfg.surfaceFlow / 100,
     fx: cfg.surfaceFx / 100,
     fxKind: cfg.surfaceFxKind,
+    deferredConfig: options.deferSurface ? cfg : null,
+    pendingKey: null,
+    pending: null,
+    disposed: false,
     phase: (cfg.surfaceSeed / 65536) * Math.PI * 2,
     clock: 0,
     scroll: 0,
@@ -676,12 +693,97 @@ export function buildBoardMesh(config?: BoardConfig): THREE.Group {
   // intentionally shadowless.
   applyVehicleShadowPolicy(g, [shell]);
   g.userData.dispose = () => {
+    surfaceState.disposed = true;
     for (const x of geos) x.dispose();
     for (const x of mats) x.dispose();
     surfaceTexture.dispose();
   };
   // the rider rig is added by Player/remotes (they own and animate the joints)
   return g;
+}
+
+let surfaceWorker: Worker | null = null;
+let surfaceRequestId = 0;
+const surfaceWaiters = new Map<
+  number,
+  { resolve: (bitmap: ImageBitmap) => void; reject: (error: unknown) => void }
+>();
+
+function rejectSurfaceWaiters(error: unknown): void {
+  for (const waiter of surfaceWaiters.values()) waiter.reject(error);
+  surfaceWaiters.clear();
+  surfaceWorker?.terminate();
+  surfaceWorker = null;
+}
+
+function boardSurfaceWorker(): Worker {
+  if (surfaceWorker) return surfaceWorker;
+  const worker = new Worker(new URL("./surfaceWorker.ts", import.meta.url), { type: "module" });
+  worker.onmessage = (event: MessageEvent<{ id: number; bitmap: ImageBitmap }>) => {
+    const waiter = surfaceWaiters.get(event.data.id);
+    surfaceWaiters.delete(event.data.id);
+    if (waiter) waiter.resolve(event.data.bitmap);
+    else event.data.bitmap.close();
+  };
+  worker.onerror = (event) => {
+    event.preventDefault();
+    rejectSurfaceWaiters(event.error ?? new Error(event.message || "Board surface worker failed"));
+  };
+  worker.onmessageerror = () => rejectSurfaceWaiters(new Error("Board surface reply could not be decoded"));
+  surfaceWorker = worker;
+  return worker;
+}
+
+function requestBoardSurface(config: BoardConfig): Promise<ImageBitmap> {
+  const id = ++surfaceRequestId;
+  return new Promise((resolve, reject) => {
+    surfaceWaiters.set(id, { resolve, reject });
+    try {
+      boardSurfaceWorker().postMessage({ id, config });
+    } catch (error) {
+      surfaceWaiters.delete(id);
+      reject(error);
+    }
+  });
+}
+
+/** Hydrate the local board's selected procedural artwork off the main thread. */
+export function activateBoardSurface(board: THREE.Group): Promise<void> {
+  const state = board.userData.boardSurface as BoardSurfaceState | undefined;
+  if (!state || state.disposed || !state.deferredConfig) return Promise.resolve();
+  if (state.pending) return state.pending;
+  const config = state.deferredConfig;
+  const key = surfacePaintKey(config);
+  state.pendingKey = key;
+  state.pending = requestBoardSurface(config)
+    .then((bitmap) => {
+      if (state.disposed || state.pendingKey !== key) {
+        bitmap.close();
+        return;
+      }
+      const context = state.canvas.getContext("2d");
+      if (!context) throw new Error("Board surface canvas unavailable");
+      context.clearRect(0, 0, state.canvas.width, state.canvas.height);
+      context.drawImage(bitmap, 0, 0);
+      bitmap.close();
+      state.texture.needsUpdate = true;
+      state.paintKey = key;
+      state.deferredConfig = null;
+    })
+    .catch(() => {
+      if (state.disposed || state.pendingKey !== key) return;
+      // Restrictive embeds may lack OffscreenCanvas. Preserve exact quality via
+      // the established synchronous painter only on that uncommon first use.
+      paintBoardSurface(state.canvas, config);
+      state.texture.needsUpdate = true;
+      state.paintKey = key;
+      state.deferredConfig = null;
+    })
+    .finally(() => {
+      if (state.pendingKey === key) state.pendingKey = null;
+      state.pending = null;
+    });
+  return state.pending;
 }
 
 /** Update a live editor preview; motion/effect edits avoid a canvas upload
@@ -692,6 +794,8 @@ export function updateBoardSurface(board: THREE.Group, config: BoardConfig) {
   const cfg = normalizeBoardConfig(config);
   const paintKey = surfacePaintKey(cfg);
   if (paintKey !== state.paintKey) {
+    state.pendingKey = null;
+    state.deferredConfig = null;
     paintBoardSurface(state.canvas, cfg);
     state.texture.needsUpdate = true;
     state.paintKey = paintKey;

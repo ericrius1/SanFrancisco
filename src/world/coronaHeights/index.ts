@@ -19,12 +19,19 @@ import {
   type CoronaTrail,
   type CoronaXZ
 } from "./layout";
-import { makeSummitCrags, summitKeepOut, summitPlatformLift } from "./summitCrags";
+import {
+  CORONA_HILL_RADIUS_X as HILL_RX,
+  CORONA_HILL_RADIUS_Z as HILL_RZ,
+  summitPlatformLift
+} from "./ground";
+import { makeSummitCrags, summitKeepOut } from "./summitCrags";
 import {
   enableShadowLayer,
   SHADOW_LAYERS
 } from "../shadows/shadowLayers";
 import type { CoronaHeightsFoliage } from "./vegetation";
+
+export { prepareCoronaHeightsGround } from "./ground";
 
 const DETAIL_RANGE = 1450;
 const ACTIVITY_RANGE = 420;
@@ -43,12 +50,8 @@ const FAR_STATIC_CASTER_NAMES = new Set([
   "corona_heights_chert_outcrops",
   "corona_summit_chert_crags"
 ]);
-const HILL_RX = 118;
-const HILL_RZ = 126;
 const HILL_STEP = 4;
 const DOG_SURFACE_LIFT = 0.04;
-const DOG_QUERY_LIFT = 0.14;
-const CORONA_GROUND_LIFT = 0.38;
 const DOG_ACCEL = 10;
 const DOG_ARRIVE = 2.5; // arrival slow-down radius so dogs ease in instead of teleport-stopping
 const OWNER_CLEARANCE = 0.85; // dogs never crowd inside this ring around a human
@@ -56,7 +59,6 @@ const BALL_R = 0.16;
 const RECEIVE_TIME = 0.55; // dog-to-hand ball handoff: reach, clasp, jaw release
 const THROW_RELEASE = 0.3; // seconds into the throw animation when the prop leaves the hand
 const THROW_ANIM_LEN = 0.85;
-const preparedMaps = new WeakSet<WorldMap>();
 
 type TrailSample = { x: number; z: number; tx: number; tz: number };
 type OwnerAction = "watch" | "ball" | "frisbee";
@@ -159,42 +161,6 @@ function valueNoise(x: number, z: number, cell: number, salt: number) {
   const a = lerp(hash2(ix, iz, salt), hash2(ix + 1, iz, salt), ax);
   const b = lerp(hash2(ix, iz + 1, salt), hash2(ix + 1, iz + 1, salt), ax);
   return lerp(a, b, az);
-}
-
-/**
- * The shipped Corona Heights lawn is a constrained-Delaunay overlay while
- * WorldMap queries are bilinear. On the hill's sharp folds those two surfaces
- * can differ by almost 30 cm, enough for either the lawn or the player to poke
- * through an authored detail skin. Raise the query carpet beneath the authored
- * hill, then feather it outside the visible skin. This is deliberately called
- * immediately after WorldMap.load(), before physics and world props are built.
- */
-export function prepareCoronaHeightsGround(map: WorldMap) {
-  if (preparedMaps.has(map)) return;
-  preparedMaps.add(map);
-  const { cellSize, width, height, minX, minZ } = map.meta.grid;
-  const cx = CORONA_HEIGHTS_SUMMIT.x;
-  const cz = CORONA_HEIGHTS_SUMMIT.z + 8;
-  const minGX = Math.max(0, Math.floor((cx - HILL_RX * 1.12 - minX) / cellSize));
-  const maxGX = Math.min(width - 1, Math.ceil((cx + HILL_RX * 1.12 - minX) / cellSize));
-  const minGZ = Math.max(0, Math.floor((cz - HILL_RZ * 1.12 - minZ) / cellSize));
-  const maxGZ = Math.min(height - 1, Math.ceil((cz + HILL_RZ * 1.12 - minZ) / cellSize));
-  for (let gz = minGZ; gz <= maxGZ; gz++) {
-    const z = minZ + gz * cellSize;
-    for (let gx = minGX; gx <= maxGX; gx++) {
-      const x = minX + gx * cellSize;
-      const q = ((x - cx) / HILL_RX) ** 2 + ((z - cz) / HILL_RZ) ** 2;
-      if (q >= 1.12) continue;
-      const feather = 1 - smooth01((q - 0.9) / 0.22);
-      // The summit platform lift is part of the WALK surface, not a floating
-      // skin: bake it into the query carpet so avatars stand on the dirt pad
-      // (and on anything placed at groundTop on it) instead of shin-deep in it.
-      map.groundTops[gz * width + gx] +=
-        CORONA_GROUND_LIFT * feather +
-        summitPlatformLift(x, z) +
-        (pointInPolygon(x, z, CORONA_DOG_PARK) ? DOG_QUERY_LIFT : 0);
-    }
-  }
 }
 
 function pointInPolygon(x: number, z: number, polygon: readonly CoronaXZ[]) {

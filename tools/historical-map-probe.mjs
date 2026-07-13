@@ -75,7 +75,9 @@ async function main() {
     });
     page.on("pageerror", (error) => pageErrors.push(String(error)));
 
-    await page.goto(`${BASE_URL}/?autostart=1&fullfps=1`, {
+    // Production previews expose the read-only QA hooks only behind `profile`;
+    // development servers expose them automatically.
+    await page.goto(`${BASE_URL}/?autostart=1&fullfps=1&profile=1`, {
       waitUntil: "domcontentloaded",
       timeout: 90_000
     });

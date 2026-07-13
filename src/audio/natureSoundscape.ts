@@ -22,6 +22,7 @@
 import * as THREE from "three/webgpu";
 import { tunables } from "../core/persist";
 import { effectsAudioLevel } from "../core/audioSettings";
+import type { NatureBufferResult } from "./natureBuffersWorker";
 import { ProceduralWindSynth } from "./proceduralWind";
 import { VOICE_LIB, RESPONDER_KINDS, type NatureVoiceKind } from "./voices";
 import {
@@ -76,6 +77,8 @@ export class NatureSoundscape {
   #voices: ActiveVoice[] = [];
   #unlocked = false;
   #loading = false;
+  #bufferPreparation: Promise<void> | null = null;
+  #buffersReady = false;
   #masterLevel = 0;
   #presence = 0;
   #voiceTimer = 0.8;
@@ -86,16 +89,12 @@ export class NatureSoundscape {
 
   constructor() {
     const unlock = () => {
-      const ctx = this.#ensure();
-      if (!ctx) return;
-      if (ctx.state === "suspended") void ctx.resume();
       this.#unlocked = true;
-      this.#startBeds();
-      if (ctx.state === "running") {
-        window.removeEventListener("pointerdown", unlock);
-        window.removeEventListener("keydown", unlock);
-        window.removeEventListener("touchstart", unlock);
-      }
+      const ctx = this.#ctx;
+      if (ctx?.state === "suspended") void ctx.resume();
+      window.removeEventListener("pointerdown", unlock);
+      window.removeEventListener("keydown", unlock);
+      window.removeEventListener("touchstart", unlock);
     };
     window.addEventListener("pointerdown", unlock, { passive: true });
     window.addEventListener("keydown", unlock);
@@ -123,15 +122,13 @@ export class NatureSoundscape {
     if (!ctx) return;
     if (ctx.state !== "running") await ctx.resume().catch(() => {});
     this.#unlocked = true;
-    this.#startBeds();
   }
 
-  /** Build the context, buses and synth buffers (convolver impulse, wind noise)
-   *  off the first-gesture path — boot idle calls this so the ~tens-of-ms of
-   *  buffer synthesis never lands in the first-keydown frame. The context stays
-   *  suspended until a real gesture resumes it; beds stay silent until unlock. */
+  /** Build the lightweight graph early when a caller wants it. Long procedural
+   *  buffers are always synthesized in a worker and may arrive after unlock. */
   prewarm(): void {
-    this.#ensure();
+    const ctx = this.#ensure();
+    if (ctx) void this.#prepareBuffers(ctx);
   }
 
   /** Minimal handle for sibling ambient layers (the dog park): the shared
@@ -141,8 +138,13 @@ export class NatureSoundscape {
   voiceBus():
     | { ctx: AudioContext; bus: GainNode; alwaysBus: GainNode; reverbSend: GainNode; noise: AudioBuffer }
     | null {
+    // Audio is optional world content. Until a real gesture (or an explicit
+    // headless-test unlock) has crossed the browser's audio gate, do not create
+    // the context, synth buffers, or fetch/decode the four sampled nature beds.
+    // Callers already tolerate a null bus and retry when they are actually live.
+    if (!this.#unlocked) return null;
     const ctx = this.#ensure();
-    if (!ctx) return null;
+    if (!ctx || !this.#buffersReady) return null;
     return { ctx, bus: this.#bus, alwaysBus: this.#alwaysBus, reverbSend: this.#reverbSend, noise: this.#noise };
   }
 
@@ -157,10 +159,16 @@ export class NatureSoundscape {
 
   update(
     dt: number,
-    o: { playerPos: { x: number; y: number; z: number }; camera: THREE.Camera; gust: number; timeOfDay: number }
+    o: {
+      playerPos: { x: number; y: number; z: number };
+      camera: THREE.Camera;
+      gust: number;
+      timeOfDay: number;
+      /** Existing ambience may keep mixing, but destination-critical work can
+       * defer the first sampled-bed fetch/decode until its visual prime settles. */
+      allowNewLoads?: boolean;
+    }
   ): void {
-    const ctx = this.#ctx;
-    if (!ctx) return;
     const T = NATURE_AUDIO_TUNING.values;
 
     // ---- region influences + blended character ---------------------------
@@ -182,6 +190,18 @@ export class NatureSoundscape {
     if (infSum > 0) {
       windBias /= infSum;
       fog /= infSum;
+    }
+    let ctx = this.#ctx;
+    if (!ctx && this.#unlocked && (presence > 0.02 || this.#externalAwake)) {
+      ctx = this.#ensure();
+    }
+    if (!ctx) return;
+    // Sampled ambience is first-approach content. A city keydown unlocks the
+    // graph and starts worker synthesis, but does not fetch/decode four nature
+    // beds until the listener is actually close enough to hear them.
+    if (this.#unlocked && presence > 0.02) {
+      if (o.allowNewLoads !== false) void this.#loadBeds();
+      this.#startBeds();
     }
 
     const visible = document.visibilityState === "visible";
@@ -311,6 +331,7 @@ export class NatureSoundscape {
     if (typeof AudioContext === "undefined") return null;
     const ctx = new AudioContext();
     this.#ctx = ctx;
+    void this.#prepareBuffers(ctx);
 
     const limiter = ctx.createDynamicsCompressor();
     limiter.threshold.value = -14;
@@ -333,16 +354,14 @@ export class NatureSoundscape {
     this.#alwaysBus.gain.value = 0;
     this.#alwaysBus.connect(limiter);
 
-    // shared 2s white noise for voice synthesis
+    // Worker-generated buffers replace these silent fallbacks asynchronously.
+    // Audio is allowed to stream in after the gesture; input is never held up.
     const sr = ctx.sampleRate;
-    this.#noise = ctx.createBuffer(1, sr * 2, sr);
-    const nd = this.#noise.getChannelData(0);
-    for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+    this.#noise = ctx.createBuffer(1, 1, sr);
 
     // reverb: a generated exponential-decay impulse gives the open-canyon /
     // enclosed-garden "space" without any IR asset. One convolver, per-source send.
     this.#convolver = ctx.createConvolver();
-    this.#convolver.buffer = makeImpulse(ctx, 2.2, 2.6);
     const reverbReturn = ctx.createGain();
     reverbReturn.gain.value = 0.9;
     this.#reverbSend = ctx.createGain();
@@ -367,8 +386,45 @@ export class NatureSoundscape {
       gain.connect(send).connect(this.#reverbSend);
       this.#beds.set(id, { source: null, filter, gain, panLfo: null, level: 0 });
     }
-    void this.#loadBeds();
     return ctx;
+  }
+
+  #prepareBuffers(ctx: AudioContext): Promise<void> {
+    if (this.#bufferPreparation) return this.#bufferPreparation;
+    const task = new Promise<NatureBufferResult>((resolve, reject) => {
+      const worker = new Worker(new URL("./natureBuffersWorker.ts", import.meta.url), {
+        type: "module"
+      });
+      const finish = () => worker.terminate();
+      worker.onmessage = (event: MessageEvent<NatureBufferResult>) => {
+        finish();
+        resolve(event.data);
+      };
+      worker.onerror = (event) => {
+        finish();
+        reject(new Error(event.message || "nature buffer worker failed"));
+      };
+      worker.postMessage({ sampleRate: ctx.sampleRate });
+    }).then((result) => {
+      if (this.#ctx !== ctx || ctx.state === "closed") return;
+      const makeBuffer = (channels: readonly ArrayBuffer[]): AudioBuffer => {
+        const length = channels[0]?.byteLength ? channels[0].byteLength / Float32Array.BYTES_PER_ELEMENT : 1;
+        const buffer = ctx.createBuffer(channels.length, length, ctx.sampleRate);
+        channels.forEach((channel, index) => buffer.copyToChannel(new Float32Array(channel), index));
+        return buffer;
+      };
+      this.#noise = makeBuffer([result.voiceNoise]);
+      this.#convolver.buffer = makeBuffer([result.impulseLeft, result.impulseRight]);
+      this.#wind?.setNoiseBuffer(makeBuffer([result.windLeft, result.windRight]));
+      this.#buffersReady = true;
+    }).catch((error) => {
+      // Optional ambience may stay silent, but a worker failure must never put
+      // procedural buffer loops back on the main/input thread.
+      console.warn("[nature-audio] procedural buffers unavailable:", error);
+      this.#bufferPreparation = null;
+    });
+    this.#bufferPreparation = task;
+    return task;
   }
 
   async #loadBeds(): Promise<void> {
@@ -586,18 +642,6 @@ function pickVoice(region: NatureRegionSpec, day: number, forceSameAs?: number):
     if (r <= 0) return kind;
   }
   return null;
-}
-
-function makeImpulse(ctx: AudioContext, seconds: number, decay: number): AudioBuffer {
-  const len = Math.floor(ctx.sampleRate * seconds);
-  const buf = ctx.createBuffer(2, len, ctx.sampleRate);
-  for (let ch = 0; ch < 2; ch++) {
-    const d = buf.getChannelData(ch);
-    for (let i = 0; i < len; i++) {
-      d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, decay);
-    }
-  }
-  return buf;
 }
 
 function setPannerPos(p: PannerNode, ctx: AudioContext, x: number, y: number, z: number): void {

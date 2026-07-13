@@ -152,7 +152,9 @@ async function main() {
   const proc = spawn(chrome, [
     `--user-data-dir=${profileDir}`, "--headless=new", `--remote-debugging-port=${port}`,
     "--enable-unsafe-webgpu", "--enable-features=WebGPUDeveloperFeatures", "--use-angle=metal",
-    "--hide-scrollbars", "--mute-audio", `--window-size=${W},${H}`, `${SERVER_URL}/?autostart&fullfps&profile`
+    "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding", "--hide-scrollbars", "--mute-audio",
+    `--window-size=${W},${H}`, `${SERVER_URL}/?autostart&fullfps&profile`
   ], { cwd: ROOT, stdio: "ignore" });
   await sleep(2500);
   let page;
@@ -248,12 +250,16 @@ async function main() {
     const a0 = leg.anchors[0];
     await ev(c, `window.__tp(${a0.x}, ${a0.z}, ${a0.facing}, '${leg.mode}', ${a0.alt ?? "undefined"})`);
     await sleep(4000);
+    const citygenBefore = await ev(c, `window.__sf.citygenRing?.current?.stats?.() ?? null`);
 
-    // clear recorder, align clocks, start profiler, hold W
-    await ev(c, `(()=>{const r=window.__rec; r.t.length=r.geo.length=r.tex.length=r.calls.length=r.dpr.length=r.px.length=r.pz.length=0; r.on=true; return true;})()`);
+    // Start CDP sampling outside the measured rAF window: Chrome can spend
+    // ~200ms bringing the profiler online, which is tooling overhead rather
+    // than an app hitch. Two unrecorded frames let that transition settle.
     const page0 = await ev(c, `performance.now()`);
     await c.send("Profiler.start");
     const profWall0 = Date.now();
+    await ev(c, `new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+    await ev(c, `(()=>{const r=window.__rec; r.t.length=r.geo.length=r.tex.length=r.calls.length=r.dpr.length=r.px.length=r.pz.length=0; r.on=true; return true;})()`);
     await ev(c, `window.__key('KeyW', true) ?? true`);
 
     // during the leg: watchdog re-teleports a stuck car to the next anchor
@@ -276,9 +282,11 @@ async function main() {
       }
     }
     await ev(c, `window.__key('KeyW', false) ?? true`);
-    const { profile } = await c.send("Profiler.stop");
+    // Likewise, stop recording before Profiler.stop serializes its result.
     await ev(c, `(()=>{window.__rec.on=false; return true;})()`);
+    const { profile } = await c.send("Profiler.stop");
     const rec = await ev(c, `window.__rec`);
+    const citygenAfter = await ev(c, `window.__sf.citygenRing?.current?.stats?.() ?? null`);
 
     // ---------- analyze ----------
     const t = rec.t;
@@ -331,10 +339,16 @@ async function main() {
       fpsMean: +(dts.length / secs).toFixed(1),
       p50: q(0.5), p95: q(0.95), p99: q(0.99), max: +Math.max(0, ...dts).toFixed(1),
       hitches: { over20ms: count(20), over33ms: count(33), over50ms: count(50), perMinOver33: +(count(33) / (secs / 60)).toFixed(1) },
-      spikes: spikeRows, legTop, profWall0
+      spikes: spikeRows, legTop, profWall0, citygenBefore, citygenAfter
     };
     legReports.push(report);
     console.log(`  frames=${report.frames} p50=${report.p50} p95=${report.p95} p99=${report.p99} max=${report.max}  >33ms:${report.hitches.over33ms} (${report.hitches.perMinOver33}/min)`);
+    if (citygenAfter) {
+      console.log(
+        `  citygen detail=${citygenBefore?.detail ?? 0}→${citygenAfter.detail} ` +
+        `shellArena=${citygenBefore?.shellGeometryVertexCapacity ?? 0}→${citygenAfter.shellGeometryVertexCapacity}v`
+      );
+    }
     for (const s of spikeRows.slice(0, 8)) {
       console.log(`   spike +${s.atSec}s ${s.dt}ms [${s.cls}] cpu≈${s.cpuMsSampled} gc≈${s.gcMs} Δgeo=${s.dGeo} Δtex=${s.dTex} Δcalls=${s.dCalls} ${s.dDpr} :: ${s.top.join(" | ")}`);
     }

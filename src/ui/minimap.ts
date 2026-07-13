@@ -1,4 +1,4 @@
-import { palaceLagoonMask, type WorldMap } from "../world/heightmap";
+import type { WorldMap } from "../world/heightmap";
 import type { PlayerMode } from "../player/types";
 import { BOTANICAL_GARDEN_BOUNDS } from "../world/garden/layout";
 import { WILD_REGIONS } from "../world/wildlands/regions";
@@ -236,7 +236,7 @@ export class Minimap {
     // The map is a DOM canvas, not the WebGPU surface, so it must opt into
     // Retina resolution itself. Cap at 2x to avoid pathological mobile DPRs.
     this.#dpr = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
-    this.#paintWorld();
+    this.#paintWorldOffThread();
     // Skip palaceFineArts — Palace Reverie is the dedicated pin for that site.
     this.#landmarks = Object.entries(this.#map.meta.landmarks)
       .filter(([key]) => key !== "palaceFineArts")
@@ -319,69 +319,41 @@ export class Minimap {
 
   /* ------------------------------------------------ terrain backdrop */
 
-  #paintWorld() {
+  #paintWorldOffThread() {
     const { width: W, height: H, cellSize, minX, minZ } = this.#map.meta.grid;
-    const heights = this.#map.heights;
-    const surface = this.#map.surface;
     const c = document.createElement("canvas");
     c.width = W;
     c.height = H;
     const ctx = c.getContext("2d")!;
-    const img = ctx.createImageData(W, H);
-    const d = img.data;
-    for (let y = 0; y < H; y++) {
-      for (let x = 0; x < W; x++) {
-        const i = y * W + x;
-        const o = i * 4;
-        const s = surface[i];
-        const h = heights[i];
-        const isWater = s === 3 || palaceLagoonMask(minX + x * cellSize, minZ + y * cellSize) > 0.08;
-        let r: number, g: number, b: number;
-        if (isWater) {
-          // Muted blue-green engraving wash: deeper water is slightly darker.
-          const t = Math.min(1, Math.max(0, s === 3 ? -h / 16 : 0.18));
-          r = 96 + (1 - t) * 30;
-          g = 132 + (1 - t) * 33;
-          b = 139 + (1 - t) * 27;
-        } else {
-          if (s === 1) {
-            r = 117;
-            g = 128;
-            b = 89; // parks: hand-tinted moss
-          } else if (s === 2) {
-            r = 187;
-            g = 157;
-            b = 105; // sand
-          } else if (s === 4) {
-            // The surface grid is a coarse but immediate road fallback. The
-            // shared vector graph paints the crisp hierarchy over it once the
-            // traffic system's existing load resolves.
-            r = 203;
-            g = 188;
-            b = 154;
-          } else {
-            r = 190;
-            g = 174;
-            b = 142; // warm survey-paper urban wash
-          }
-          // NW hillshade from the height gradient
-          const hx = heights[i + (x < W - 1 ? 1 : 0)] - h;
-          const hy = heights[i + (y < H - 1 ? W : 0)] - h;
-          const shade = Math.min(1.25, Math.max(0.62, 1 - (hx + hy) * 0.02));
-          // subtle altitude lift so the hills read even face-on
-          const lift = 1 + Math.min(0.35, Math.max(0, h) * 0.0016);
-          r *= shade * lift;
-          g *= shade * lift;
-          b *= shade * lift;
-        }
-        d[o] = r;
-        d[o + 1] = g;
-        d[o + 2] = b;
-        d[o + 3] = 255;
-      }
-    }
-    ctx.putImageData(img, 0, 0);
+    // Immediate period-paper fallback while the full terrain wash is painted
+    // off-thread. This avoids both a blank first draw and main-thread pixel work.
+    ctx.fillStyle = "#beae8e";
+    ctx.fillRect(0, 0, W, H);
     this.#world = c;
+    try {
+      const worker = new Worker(new URL("./minimapWorldWorker.ts", import.meta.url), { type: "module" });
+      worker.onmessage = (event: MessageEvent<{ bitmap: ImageBitmap }>) => {
+        worker.terminate();
+        ctx.clearRect(0, 0, W, H);
+        ctx.drawImage(event.data.bitmap, 0, 0);
+        event.data.bitmap.close();
+        if (this.#mini) this.update();
+      };
+      worker.onerror = (event) => {
+        event.preventDefault();
+        worker.terminate();
+        console.warn("[minimap] terrain worker unavailable; using plain backdrop");
+        if (this.#mini) this.update();
+      };
+      const heights = this.#map.heights.slice();
+      const surface = this.#map.surface.slice();
+      worker.postMessage(
+        { width: W, height: H, cellSize, minX, minZ, heights, surface },
+        [heights.buffer, surface.buffer]
+      );
+    } catch {
+      console.warn("[minimap] terrain worker unavailable; using plain backdrop");
+    }
   }
 
   /** Retain the traffic system's already-decoded road graph as grouped Path2D
@@ -392,7 +364,7 @@ export class Minimap {
     this.#roadsPainted = true;
 
     const { cellSize, minX, minZ } = this.#map.meta.grid;
-    const paths = new Map<string, { path: Path2D; width: number; roadClass: number }>();
+    const paths = new Map<string, RoadPaintGroup>();
     roads.forEachSegment((pointsX, pointsZ, start, count, width, roadClass) => {
       if (count < 2) return;
       const cls = Math.max(0, Math.min(ROAD_COLORS.length - 1, roadClass));

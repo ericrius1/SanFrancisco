@@ -9,7 +9,7 @@ import { createCrownMaterial } from "./salesforceCrown";
 import { applyLandmarkFixes } from "./landmarkFixes";
 import type { WorldMap } from "./heightmap";
 import { prefetched } from "./heightmap";
-import { createTileShadowProxy, type TileShadowProxy } from "./shadows/tileShadowProxy";
+import { createTileShadowProxyAsync, type TileShadowProxy } from "./shadows/tileShadowProxy";
 import {
   createLandmarkShadowProxy,
   type LandmarkShadowCollider,
@@ -56,8 +56,14 @@ type LoadedTile = {
   key: string;
   group: THREE.Group;
   slot: FacadeSlot | null;
+  materials: TileMaterialSet | null;
   colliders: BuildingCollider[] | null;
   shadowProxy: TileShadowProxy | null;
+  /** Arrival generation that most recently adopted this tile. */
+  generation: number;
+  /** Unique visual request id, used to reject a late collider reply after reload. */
+  loadId: number;
+  loadToken: TileLoadToken;
   // meshes not yet attached to the group: a whole tile uploading its geometry in
   // one frame is a visible spike, so children re-attach one per frame instead
   pendingParts?: THREE.Object3D[];
@@ -68,88 +74,161 @@ type LoadedTile = {
   detailParts?: THREE.Object3D[];
 };
 
-// a pooled facade material + its alive texture: the facade shader is by far the
-// most expensive node graph in the scene, and the node-builder cache is keyed by
-// material *instance* — a fresh material per tile means a full WGSL codegen every
-// time a tile streams in. Pooled slots are reused across tiles so steady-state
-// flying compiles nothing. The texture is fixed at the manifest-wide max building
-// count so any tile fits any slot. Each slot holds NEAR (brick/weather noise) and
-// FAR (flat masonry) materials sharing one alive texture; tiles swap by distance.
+type TileLoadToken = {
+  id: number;
+  generation: number;
+  attempt: number;
+  visualInFlight: boolean;
+  colliderSettled: boolean;
+  colliders: BuildingCollider[] | null;
+  finalized: boolean;
+  discarded: boolean;
+  collidersApplied: boolean;
+  collidersPublished: boolean;
+  colliderRetained: boolean;
+  abortController: AbortController | null;
+};
+
+/** Structural interface implemented by BuildingColliderIndex. Keeping this
+ * type here avoids a runtime import cycle while giving visuals and physics one
+ * canonical decoded array per tile. */
+export type TileColliderSource = {
+  getTile(key: string): BuildingCollider[] | undefined;
+  retainTile(key: string): void;
+  releaseTile(key: string): void;
+  subscribe(listener: (key: string, colliders: BuildingCollider[]) => void): () => void;
+};
+
+// A facade slot owns the tiny mutable alive texture used by one resident tile.
+// Textures/data are pooled, but material instances are deliberately retired on
+// every unload. WebGPU's render-object cache is keyed by material *and* geometry;
+// keeping a material alive while feeding it hundreds of freshly parsed tile
+// geometries retained the old pipelines/render objects after long-distance
+// teleports. Rebuilding the two materials when a slot is recycled gives the
+// renderer an explicit disposal boundary while preserving the cheap data pool.
 type FacadeSlot = {
   tex: THREE.DataTexture;
   data: Uint8Array;
-  matNear: THREE.MeshStandardNodeMaterial;
-  matFar: THREE.MeshStandardNodeMaterial;
+  matNear: THREE.MeshStandardNodeMaterial | null;
+  matFar: THREE.MeshStandardNodeMaterial | null;
   /** Which material is currently bound to this tile's building meshes. */
   far: boolean;
+};
+
+type TileMaterialSet = {
+  road: THREE.Material;
+  park: THREE.Material;
+  plain: THREE.Material;
+  palace: THREE.Material;
+  sutro: THREE.Material;
+  all: THREE.Material[];
 };
 
 // Swap facade detail material past this distance (m). Hysteresis avoids flicker.
 const FACADE_FAR_ENTER = 280;
 const FACADE_FAR_EXIT = 240;
+// A healthy residency set is much smaller than this. The cap prevents unusual
+// radius/settings changes from turning the pool into an unbounded session cache.
+const MAX_FACADE_SLOT_POOL = 64;
 
-// a parsed tile waiting for its main-thread finalize (materials, scene add = GPU
-// upload); drained one per frame so a burst of finished loads can't stack several
-// uploads into a single frame
-type ReadyTile = { key: string; group: THREE.Group | null; colliders: BuildingCollider[] };
+// A parsed tile waiting for its main-thread finalize (materials, scene add = GPU
+// upload). Collider decode is intentionally independent: destination visuals must
+// never wait for physics data.
+type ReadyTile = { key: string; group: THREE.Group | null; token: TileLoadToken };
+
+type TerrainEntry = { name: string; cx: number; cz: number; hx: number; hz: number };
+type TerrainLoadToken = {
+  generation: number;
+  inFlight: boolean;
+  discarded: boolean;
+  abortController: AbortController | null;
+};
+type ReadyTerrain = {
+  name: string;
+  group: THREE.Group | null;
+  token: TerrainLoadToken;
+};
+type ReadyColliders = {
+  key: string;
+  token: TileLoadToken;
+  colliderCursor: number;
+  topOf: Map<number, number>;
+  topEntries: [number, number][] | null;
+  topCursor: number;
+};
+type ReadyShadowProxy = { key: string; token: TileLoadToken };
+
+export type TileVisualPrimeResult = {
+  generation: number;
+  status: "ready" | "failed" | "superseded";
+  requiredTileKeys: readonly string[];
+  requiredTerrainKeys: readonly string[];
+};
+
+export type TileVisualPrime = {
+  generation: number;
+  requiredTileKeys: readonly string[];
+  requiredTerrainKeys: readonly string[];
+  ready: Promise<TileVisualPrimeResult>;
+};
+
+type ActiveVisualPrime = {
+  generation: number;
+  focusX: number;
+  focusZ: number;
+  requiredTileKeys: string[];
+  requiredTileSet: Set<string>;
+  requiredTerrainKeys: string[];
+  requiredTerrainSet: Set<string>;
+  settledTerrain: Set<string>;
+  resolve: (result: TileVisualPrimeResult) => void;
+  settled: boolean;
+};
 
 // precomputed per-manifest-tile scan entry (avoids Object.keys + string parsing every scan)
 type TileEntry = { key: string; cx: number; cz: number; d2: number };
+type TileVisualFailure = {
+  generation: number;
+  attempts: number;
+  retryAt: number;
+  terminal: boolean;
+  reason: string;
+};
 
 // concurrent GLB loads: meshopt decode rides a 4-worker pool (see useWorkers below),
 // so this caps how many decodes can be queued on it at once
-const MAX_IN_FLIGHT = 4;
+const MAX_IN_FLIGHT = 2;
 // raised in-flight cap while the player is moving fast (see #fastStream) — at
 // plane/boost speed the ~1150m fog veil can otherwise be outrun before tiles land
-const MAX_IN_FLIGHT_FAST = 6;
+const MAX_IN_FLIGHT_FAST = 4;
 // boot turbo (behind the opaque loading cover): saturate the network + decode
 // pool — nothing is on screen, so decode-queue pressure can't hitch anything
-const MAX_IN_FLIGHT_TURBO = 8;
+const MAX_IN_FLIGHT_TURBO = 4;
+// Soft cap across every arrival generation. A tiny, separately bounded reserve
+// is available only to the current generation. Discontinuous arrivals abort
+// stale fetches before parse when possible; the cap still bounds a decode that
+// had already entered Meshopt/GLTF parsing when superseded.
+const MAX_IN_FLIGHT_GLOBAL = MAX_IN_FLIGHT_TURBO + 2;
+const MIN_CURRENT_IN_FLIGHT_RESERVE = 2;
+const MAX_IN_FLIGHT_ABSOLUTE = MAX_IN_FLIGHT_GLOBAL + MIN_CURRENT_IN_FLIGHT_RESERVE;
+const TILE_FETCH_TIMEOUT_MS = 15_000;
+const TERRAIN_FETCH_TIMEOUT_MS = 15_000;
+const TILE_RETRY_DELAYS_MS = [250, 800] as const;
+const TILE_MAX_ATTEMPTS = TILE_RETRY_DELAYS_MS.length + 1;
+// A first destination frame needs the tile cells intersecting the immediate
+// camera/player neighbourhood, not the complete multi-kilometre draw ring.
+// Staying just inside half a tile gives one cell at its centre, two across an edge and
+// four around a corner, while still covering a useful local bubble.
+const MINIMUM_VISUAL_RADIUS_CAP = 360;
+// The far selective map covers 512 m from focus; include collider overhang and
+// a handoff margin. Citywide farOcclusion handles everything beyond this local
+// proxy residency without constructing dozens of invisible InstancedMeshes.
+const SHADOW_PROXY_RADIUS = 680;
+const SHADOW_PROXY_EXIT_RADIUS = 900;
+const COLLIDER_METADATA_SLICE = 256;
 // meshopt decompression workers: without them decodeGltfBufferAsync runs the WASM
 // decode synchronously on the main thread — the biggest single hitch per tile load
 MeshoptDecoder.useWorkers(4);
-
-// collider JSON parse lives in its own worker (see colliderWorker.ts); replies
-// come back as transferred Float64Arrays keyed by request id
-const COLLIDER_FIELDS = 13;
-const colliderWorker = new Worker(new URL("./colliderWorker.ts", import.meta.url), { type: "module" });
-const colliderWaiters = new Map<number, (list: BuildingCollider[]) => void>();
-let colliderReqId = 0;
-colliderWorker.onmessage = (e: MessageEvent<{ id: number; buf: Float64Array | null }>) => {
-  const { id, buf } = e.data;
-  const resolve = colliderWaiters.get(id);
-  colliderWaiters.delete(id);
-  if (!resolve) return;
-  if (!buf) return resolve([]);
-  const n = (buf.length / COLLIDER_FIELDS) | 0;
-  const list: BuildingCollider[] = new Array(n);
-  for (let k = 0; k < n; k++) {
-    const o = k * COLLIDER_FIELDS;
-    list[k] = {
-      i: buf[o],
-      p: buf[o + 1],
-      x: buf[o + 2],
-      y: buf[o + 3],
-      z: buf[o + 4],
-      hx: buf[o + 5],
-      hy: buf[o + 6],
-      hz: buf[o + 7],
-      yaw: buf[o + 8],
-      cosYaw: buf[o + 9],
-      sinYaw: buf[o + 10],
-      s: buf[o + 11],
-      vol: buf[o + 12]
-    };
-  }
-  resolve(list);
-};
-function fetchColliders(url: string): Promise<BuildingCollider[]> {
-  return new Promise((resolve) => {
-    const id = ++colliderReqId;
-    colliderWaiters.set(id, resolve);
-    colliderWorker.postMessage({ id, url });
-  });
-}
 
 // terrain / landmarks: PBR standard so the SkyMesh IBL and AO read on them.
 // the bake palette is near-paper-white (~0.9); under the reference's photometric
@@ -182,6 +261,19 @@ const goldenGateMat = new THREE.MeshStandardMaterial({
 // one shared TSL material per surface family (world-position keyed, so sharing is free)
 const roadMat = createRoadMaterial();
 const parkMat = createParkMaterial();
+
+function createTileMaterialSet(): TileMaterialSet {
+  // Three's WebGPU RenderObject registers a dispose listener on every source
+  // material. A process-wide shared material therefore retains every streamed
+  // mesh/render object ever paired with it. Per-residency clones preserve the
+  // same shader/pipeline cache key while giving unload an exact release signal.
+  const road = roadMat.clone();
+  const park = parkMat.clone();
+  const plain = plainMat.clone();
+  const palace = palaceMat.clone();
+  const sutro = sutroMat.clone();
+  return { road, park, plain, palace, sutro, all: [road, park, plain, palace, sutro] };
+}
 
 const GOLDEN_GATE_ROAD_INSET = 1.15;
 const BRIDGE_ROAD_SURFACE_OFFSET = 0.12;
@@ -320,13 +412,36 @@ export class TileStreamer {
   onBuildingAlive: (key: string, index: number, alive: boolean) => void = () => {};
   onShadowCastersChanged: (scope?: StaticShadowScope) => void = () => {};
 
+  // terrain load radius: slightly larger than building tiles so the ground
+  // backdrop is always present before buildings pop in. Declared at the top of
+  // the class so esbuild's private-field transform always sees the declaration
+  // before any `TileStreamer.#TERRAIN_*` use in methods below.
+  static readonly #TERRAIN_LOAD_R = 3200;
+  static readonly #TERRAIN_UNLOAD_R = 4000;
+  static readonly #TERRAIN_MAX_IN_FLIGHT = 2;
+  // One reserve slot keeps a destination moving when the previous generation
+  // occupied both ordinary terrain slots, while still imposing a hard cap.
+  static readonly #TERRAIN_MAX_IN_FLIGHT_GLOBAL = TileStreamer.#TERRAIN_MAX_IN_FLIGHT + 1;
+  static readonly #TERRAIN_MAX_IN_FLIGHT_ABSOLUTE = TileStreamer.#TERRAIN_MAX_IN_FLIGHT_GLOBAL + 1;
+
   #loader = new GLTFLoader();
   #scene: THREE.Scene;
-  #pending = new Set<string>();
+  #pending = new Map<string, TileLoadToken>();
+  // A fetch can be aborted, but GLTFLoader.parseAsync/Meshopt decode cannot.
+  // Superseded tokens that already crossed that boundary stay counted here
+  // until their parse settles. Otherwise every rapid arrival can start another
+  // decode pool and turn latest-wins navigation into unbounded hidden work.
+  #orphanTileLoads = new Set<TileLoadToken>();
+  // Failed GLBs are never materialized as empty resident tiles. Required cells
+  // get a bounded retry cycle and then fail the arrival explicitly; a new
+  // arrival generation gets a fresh cycle.
+  #visualFailures = new Map<string, TileVisualFailure>();
+  #generation = 0;
+  #nextLoadId = 0;
+  #visualPrime: ActiveVisualPrime | null = null;
   #tick = 0;
   #entries: TileEntry[] = [];
   #queue: TileEntry[] = [];
-  #inFlight = 0;
   #px = 0;
   #pz = 0;
   // previous-frame position, for a speed estimate (see #fastStream in update())
@@ -336,6 +451,11 @@ export class TileStreamer {
   #hasScanned = false;
   // parsed tiles awaiting finalize, drained one per frame
   #ready: ReadyTile[] = [];
+  #colliderReady: ReadyColliders[] = [];
+  #shadowProxyReady: ReadyShadowProxy[] = [];
+  #shadowProxyBuildActive = false;
+  #colliderSource: TileColliderSource | null = null;
+  #unsubscribeColliderSource: (() => void) | null = null;
   // tiles with pendingParts still attaching, one mesh per frame
   #attaching: string[] = [];
   // tiles whose dense park-surface detail is held back until the player descends
@@ -361,11 +481,13 @@ export class TileStreamer {
   #landmarkShadowProxyPending = false;
 
   // terrain chunks: 5×5 grid, loaded/unloaded by player distance
-  #terrainEntries: { name: string; cx: number; cz: number }[] = [];
-  #terrainPending = new Set<string>();
-  #terrainInFlight = 0;
-  // max concurrent terrain loads (separate budget from building tiles)
-  static readonly #TERRAIN_MAX_IN_FLIGHT = 2;
+  #terrainEntries: TerrainEntry[] = [];
+  #terrainPending = new Map<string, TerrainLoadToken>();
+  #orphanTerrainLoads = new Set<TerrainLoadToken>();
+  #terrainReady: ReadyTerrain[] = [];
+  #terrainUnloads = new Set<string>();
+  #terrainFailedGeneration = new Map<string, number>();
+  // max concurrent terrain loads: see #TERRAIN_MAX_IN_FLIGHT above
 
   constructor(scene: THREE.Scene) {
     this.#scene = scene;
@@ -484,7 +606,9 @@ export class TileStreamer {
         this.#terrainEntries.push({
           name: `terrain_${tcx}_${tcz}`,
           cx: gMinX + tcx * TERRAIN_CHUNK + chunkW * 0.5,
-          cz: gMinZ + tcz * TERRAIN_CHUNK + chunkH * 0.5
+          cz: gMinZ + tcz * TERRAIN_CHUNK + chunkH * 0.5,
+          hx: chunkW * 0.5,
+          hz: chunkH * 0.5
         });
       }
     }
@@ -500,22 +624,53 @@ export class TileStreamer {
   }
 
   /**
-   * Outstanding streaming work, for the boot settle gate: queued/in-flight
-   * loads, parsed-but-unfinalized tiles, meshes still attaching, pending
+   * Connect the one canonical collider service after Physics initializes it.
+   * Only finalized, live visual residencies hold a low-priority lease. Canonical
+   * callbacks are staged through #colliderReady and revalidated by loadId before
+   * any visual/physics/far-field observer is notified.
+   */
+  setColliderSource(source: TileColliderSource): void {
+    if (this.#colliderSource === source) return;
+    if (this.#colliderSource) {
+      for (const tile of this.loaded.values()) {
+        if (!tile.loadToken.colliderRetained) continue;
+        this.#colliderSource.releaseTile(tile.key);
+        tile.loadToken.colliderRetained = false;
+      }
+    }
+    this.#unsubscribeColliderSource?.();
+    this.#colliderSource = source;
+    this.#unsubscribeColliderSource = source.subscribe((key, colliders) => {
+      this.#receiveCanonicalColliders(key, colliders);
+    });
+    for (const tile of this.loaded.values()) this.#retainCanonicalColliders(tile.key, tile.loadToken);
+  }
+
+  /**
+   * Outstanding visual streaming work, for the boot settle gate: queued/in-flight
+   * GLBs, parsed-but-unfinalized tiles, meshes still attaching, pending
    * disposals, terrain chunks, landmarks GLB and landmark shadow proxy. Reports
    * 1 before the first scan so a just-constructed streamer never reads as settled.
-   * Intentionally excludes #deferred — that's park detail held back by design
-   * while the player is high, not work in progress.
+   * Intentionally excludes #deferred and does not wait on an in-flight collider
+   * worker after its visual GLB finalized. Completed collider/shadow apply jobs
+   * remain counted while queued so steady-state diagnostics still see them.
    */
   get busy(): number {
     if (!this.#hasScanned) return 1;
     return (
       this.#queue.length +
       this.#pending.size +
+      this.#orphanTileLoads.size +
       this.#ready.length +
+      this.#colliderReady.length +
+      this.#shadowProxyReady.length +
+      (this.#shadowProxyBuildActive ? 1 : 0) +
       this.#attaching.length +
       this.#unloads.size +
       this.#terrainPending.size +
+      this.#orphanTerrainLoads.size +
+      this.#terrainReady.length +
+      this.#terrainUnloads.size +
       (this.#landmarksPending ? 1 : 0) +
       (this.#landmarkShadowProxyPending ? 1 : 0)
     );
@@ -523,17 +678,23 @@ export class TileStreamer {
 
   update(px: number, pz: number, highUp = false, turbo = false) {
     this.#tick++;
-    this.#px = px;
-    this.#pz = pz;
+    // While a relocation is preparing, the authoritative player intentionally
+    // remains frozen at the origin. Keep every scan, late-completion check and
+    // distance priority focused on the destination until visual readiness hands
+    // control back to the coordinator for the atomic commit.
+    const focusX = this.#visualPrime?.focusX ?? px;
+    const focusZ = this.#visualPrime?.focusZ ?? pz;
+    this.#px = focusX;
+    this.#pz = focusZ;
     // speed estimate (world units/sec): update() carries no dt, so this assumes
     // a steady ~60fps between calls — good enough to gate cadence, not physics
     if (this.#hasPrevPos) {
-      const speed = Math.hypot(px - this.#prevPx, pz - this.#prevPz) * 60;
+      const speed = Math.hypot(focusX - this.#prevPx, focusZ - this.#prevPz) * 60;
       this.#fastStream = this.#fastStream ? speed > 28 : speed > 40;
       this.#maxInFlight = turbo ? MAX_IN_FLIGHT_TURBO : this.#fastStream ? MAX_IN_FLIGHT_FAST : MAX_IN_FLIGHT;
     }
-    this.#prevPx = px;
-    this.#prevPz = pz;
+    this.#prevPx = focusX;
+    this.#prevPz = focusZ;
     this.#hasPrevPos = true;
     if (highUp !== this.#highUp) {
       this.#highUp = highUp;
@@ -548,8 +709,8 @@ export class TileStreamer {
     // building-tile scan: every 30 ticks (~0.5s) normally, every 10 while
     // #fastStream — otherwise plane/boost speed can outrun the ~1150m fog veil
     // and tiles pop in inside visible range
-    if (this.#tick % (turbo ? 5 : this.#fastStream ? 10 : 30) === 1) this.#scan(px, pz);
-    if (this.#tick % (turbo ? 15 : 60) === 2) this.#scanTerrain(px, pz);
+    if (this.#tick % (turbo ? 5 : this.#fastStream ? 10 : 30) === 1) this.#scan(focusX, focusZ);
+    if (this.#tick % (turbo ? 15 : 60) === 2) this.#scanTerrain(focusX, focusZ);
     // TURBO (boot, behind the opaque loading cover): nothing on screen, so
     // per-frame smoothness doesn't matter — drain finalizes/attaches/disposals
     // under a flat ms budget instead of one per frame, and let the scan above
@@ -557,8 +718,13 @@ export class TileStreamer {
     if (turbo) {
       const deadline = performance.now() + 10;
       while (performance.now() < deadline) {
-        if (!this.#drainAttach() && !this.#drainReady() && !this.#drainUnload()) break;
+        let drained = this.#drainTerrainReady() || this.#drainAttach() || this.#drainReady();
+        if (!drained && !this.#visualPrime) {
+          drained = this.#drainColliderReady() || this.#drainTerrainUnload() || this.#drainUnload();
+        }
+        if (!drained) break;
       }
+      this.#checkVisualPrime();
       return;
     }
     // one mesh attach (GPU upload) OR one finalize OR one dispose per frame,
@@ -566,12 +732,36 @@ export class TileStreamer {
     // bursts. Exception: while #catchingUp, drain up to 4/frame so a
     // post-descent detail backlog (see #resumeDetail) clears in a handful of
     // frames instead of trickling in one mesh at a time.
-    let attached = false;
-    for (let i = 0, n = this.#catchingUp ? 4 : 1; i < n; i++) {
-      if (!this.#drainAttach()) { this.#catchingUp = false; break; }
-      attached = true;
+    let spent = this.#drainTerrainReady();
+    // Once the local visual minimum is ready, interleave old-region retirement
+    // and deferred collider/shadow application with remaining visual uploads.
+    // Neither can starve behind the full draw ring or re-form a burst.
+    if (!spent && !this.#visualPrime && this.#tick % 4 === 0) {
+      spent = this.#drainTerrainUnload() || this.#drainUnload();
     }
-    if (!attached && !this.#drainReady()) this.#drainUnload();
+    if (!spent && !this.#visualPrime && this.#tick % 2 === 0) {
+      spent = this.#drainColliderReady();
+    }
+    if (!spent) {
+      for (let i = 0, n = this.#catchingUp ? 4 : 1; i < n; i++) {
+        if (!this.#drainAttach()) { this.#catchingUp = false; break; }
+        spent = true;
+      }
+    }
+    if (!spent) spent = this.#drainReady();
+    if (!spent && !this.#visualPrime) spent = this.#drainColliderReady();
+    if (!spent && !this.#visualPrime) spent = this.#drainTerrainUnload();
+    if (!spent && !this.#visualPrime) this.#drainUnload();
+    // Latest-wins cuts may leave already-decoded work from an older generation.
+    // Retire one stale/hidden unit at a low cadence under the opaque cover so it
+    // cannot accumulate into a cleanup burst immediately after reveal.
+    if (!spent && this.#visualPrime && this.#tick % 8 === 0) {
+      this.#discardOneStaleTerrainReady() ||
+        this.#discardOneStaleTileReady() ||
+        this.#drainTerrainUnload() ||
+        this.#drainUnload();
+    }
+    this.#checkVisualPrime();
   }
 
   /** Re-evaluate load/unload immediately (e.g. after a draw-distance change). */
@@ -579,67 +769,408 @@ export class TileStreamer {
     if (this.#hasScanned) this.#scan(this.#px, this.#pz);
   }
 
-  // terrain load radius: slightly larger than building tiles so the ground
-  // backdrop is always present before buildings pop in
-  static readonly #TERRAIN_LOAD_R = 3200;
-  static readonly #TERRAIN_UNLOAD_R = 4000;
+  /**
+   * Release a completed destination-minimum hold and resume the ordinary fixed
+   * draw ring. World arrival calls this only after reveal and collision release,
+   * so background Meshopt/decode work cannot steal the final interaction frames.
+   */
+  resumeBackgroundStreaming(): void {
+    const prime = this.#visualPrime;
+    if (!prime?.settled || prime.generation !== this.#generation) return;
+    this.#visualPrime = null;
+    this.#scan(prime.focusX, prime.focusZ);
+    this.#scanTerrain(prime.focusX, prime.focusZ);
+  }
+
+  /**
+   * Begin a destination-first visual arrival. This bypasses periodic movement
+   * scans, gives the destination a fresh monotonic generation, and returns a
+   * promise for only the local visual minimum. The caller releases the full
+   * fixed-radius stream after its covered reveal/interaction milestone through
+   * `resumeBackgroundStreaming()`.
+   *
+   * Collider JSON, shadow proxies and park detail deliberately do not gate the
+   * promise. Callers can reveal a correct destination frame, hold movement, and
+   * let the independently coordinated collision arrival unlock interaction.
+   */
+  primeAt(px: number, pz: number): TileVisualPrime {
+    const previous = this.#visualPrime;
+    if (previous && !previous.settled) this.#resolveVisualPrime(previous, "superseded");
+
+    const generation = ++this.#generation;
+    this.#px = px;
+    this.#pz = pz;
+    // A discontinuous relocation is not fast travel through every point between
+    // the old and new positions. Reset the speed estimator so it cannot trigger
+    // movement-stream heuristics or intermediate-region work.
+    this.#prevPx = px;
+    this.#prevPz = pz;
+    this.#hasPrevPos = true;
+    this.#fastStream = false;
+    this.#maxInFlight = MAX_IN_FLIGHT;
+
+    const minimumRadius = Math.min(MINIMUM_VISUAL_RADIUS_CAP, this.manifest.tile * 0.45);
+    const radiusSq = minimumRadius * minimumRadius;
+    const requiredTileKeys = this.#entries
+      .filter((entry) => this.#distanceToTileBoundsSq(px, pz, entry) <= radiusSq)
+      .sort((a, b) => {
+        const ad = (px - a.cx) * (px - a.cx) + (pz - a.cz) * (pz - a.cz);
+        const bd = (px - b.cx) * (px - b.cx) + (pz - b.cz) * (pz - b.cz);
+        return ad - bd;
+      })
+      .map((entry) => entry.key);
+    const requiredTerrainKeys = this.#terrainEntries
+      .filter((entry) => this.#distanceToTerrainBoundsSq(px, pz, entry) <= radiusSq)
+      .sort((a, b) => {
+        const ad = (px - a.cx) * (px - a.cx) + (pz - a.cz) * (pz - a.cz);
+        const bd = (px - b.cx) * (px - b.cx) + (pz - b.cz) * (pz - b.cz);
+        return ad - bd;
+      })
+      .map((entry) => entry.name);
+
+    let resolve!: (result: TileVisualPrimeResult) => void;
+    const ready = new Promise<TileVisualPrimeResult>((done) => { resolve = done; });
+    const state: ActiveVisualPrime = {
+      generation,
+      focusX: px,
+      focusZ: pz,
+      requiredTileKeys,
+      requiredTileSet: new Set(requiredTileKeys),
+      requiredTerrainKeys,
+      requiredTerrainSet: new Set(requiredTerrainKeys),
+      settledTerrain: new Set(),
+      resolve,
+      settled: false
+    };
+    this.#visualPrime = state;
+
+    this.#adoptDestinationWork(px, pz, generation);
+    this.#scan(px, pz);
+    this.#scanTerrain(px, pz);
+    this.#checkVisualPrime();
+
+    return {
+      generation,
+      requiredTileKeys: [...requiredTileKeys],
+      requiredTerrainKeys: [...requiredTerrainKeys],
+      ready
+    };
+  }
+
+  #adoptDestinationWork(px: number, pz: number, generation: number): void {
+    const prime = this.#visualPrime?.generation === generation ? this.#visualPrime : null;
+    if (!prime) return;
+    const tileLoadRadiusSq = CONFIG.tileLoadRadius * CONFIG.tileLoadRadius;
+    for (const [key, token] of this.#pending) {
+      // A pending full-ring request can occupy both current-generation decode
+      // slots and delay the one-to-four cells that actually gate the cut. Reuse
+      // overlapping minimum work; retire everything else until the prime lands.
+      if (prime.requiredTileSet.has(key)) {
+        token.generation = generation;
+      } else {
+        this.#cancelTileLoad(key, token);
+      }
+    }
+    for (const tile of this.loaded.values()) {
+      const [cx, cz] = this.keyToCenter(tile.key);
+      const dx = px - cx;
+      const dz = pz - cz;
+      const destinationRelevant = dx * dx + dz * dz <= tileLoadRadiusSq;
+      tile.group.visible = destinationRelevant;
+      if (tile.shadowProxy) tile.shadowProxy.group.visible = destinationRelevant;
+      if (!destinationRelevant) continue;
+      tile.generation = generation;
+      tile.loadToken.generation = generation;
+      this.#queueColliderApply(tile.key, tile.loadToken);
+    }
+
+    const terrainLoadRadiusSq = TileStreamer.#TERRAIN_LOAD_R * TileStreamer.#TERRAIN_LOAD_R;
+    for (const [name, token] of this.#terrainPending) {
+      if (prime.requiredTerrainSet.has(name)) {
+        token.generation = generation;
+      } else {
+        this.#cancelTerrainLoad(name, token);
+      }
+    }
+    for (const [name, object] of this.terrain) {
+      const entry = this.#terrainEntries.find((candidate) => candidate.name === name);
+      if (!entry) continue;
+      const dx = px - entry.cx;
+      const dz = pz - entry.cz;
+      object.visible = dx * dx + dz * dz <= terrainLoadRadiusSq;
+    }
+  }
+
+  #distanceToTileBoundsSq(px: number, pz: number, entry: TileEntry): number {
+    const half = this.manifest.tile * 0.5;
+    const dx = Math.max(0, Math.abs(px - entry.cx) - half);
+    const dz = Math.max(0, Math.abs(pz - entry.cz) - half);
+    return dx * dx + dz * dz;
+  }
+
+  #distanceToTerrainBoundsSq(px: number, pz: number, entry: TerrainEntry): number {
+    const dx = Math.max(0, Math.abs(px - entry.cx) - entry.hx);
+    const dz = Math.max(0, Math.abs(pz - entry.cz) - entry.hz);
+    return dx * dx + dz * dz;
+  }
+
+  #checkVisualPrime(): void {
+    const prime = this.#visualPrime;
+    if (!prime || prime.settled || prime.generation !== this.#generation) return;
+    for (const key of prime.requiredTileKeys) {
+      const failure = this.#visualFailures.get(key);
+      if (failure?.generation === prime.generation && failure.terminal) {
+        this.#resolveVisualPrime(prime, "failed");
+        return;
+      }
+      const tile = this.loaded.get(key);
+      if (!tile || (tile.pendingParts?.length ?? 0) > 0) return;
+    }
+    for (const name of prime.requiredTerrainKeys) {
+      if (!this.terrain.has(name) && !prime.settledTerrain.has(name)) return;
+    }
+    this.#resolveVisualPrime(prime, "ready");
+  }
+
+  #resolveVisualPrime(prime: ActiveVisualPrime, status: TileVisualPrimeResult["status"]): void {
+    if (prime.settled) return;
+    prime.settled = true;
+    // A successful minimum remains the current required-only hold until the
+    // coordinator finishes reveal and collision release. Failed/old generations
+    // cannot own future streaming and are cleared immediately.
+    if (status !== "ready" && this.#visualPrime === prime) this.#visualPrime = null;
+    prime.resolve({
+      generation: prime.generation,
+      status,
+      requiredTileKeys: [...prime.requiredTileKeys],
+      requiredTerrainKeys: [...prime.requiredTerrainKeys]
+    });
+  }
+
+  #disposeObjectGeometry(object: THREE.Object3D | null): void {
+    object?.traverse((child) => {
+      const mesh = child as THREE.Mesh;
+      if (mesh.isMesh) mesh.geometry.dispose();
+    });
+  }
 
   #scanTerrain(px: number, pz: number) {
     const loadR2 = TileStreamer.#TERRAIN_LOAD_R * TileStreamer.#TERRAIN_LOAD_R;
     const unloadR2 = TileStreamer.#TERRAIN_UNLOAD_R * TileStreamer.#TERRAIN_UNLOAD_R;
+    const required = this.#visualPrime?.generation === this.#generation
+      ? this.#visualPrime.requiredTerrainSet
+      : null;
+    const candidates: TerrainEntry[] = [];
     for (const e of this.#terrainEntries) {
       const d2 = (px - e.cx) * (px - e.cx) + (pz - e.cz) * (pz - e.cz);
       const loaded = this.terrain.has(e.name);
       const pending = this.#terrainPending.has(e.name);
-      if (d2 < loadR2 && !loaded && !pending) {
-        this.#loadTerrainChunk(e.name);
+      if (d2 < loadR2) {
+        const loadedObject = this.terrain.get(e.name);
+        if (loadedObject) loadedObject.visible = true;
+        this.#terrainUnloads.delete(e.name);
+        if (
+          !loaded &&
+          !pending &&
+          this.#terrainFailedGeneration.get(e.name) !== this.#generation &&
+          (!required || required.has(e.name))
+        ) candidates.push(e);
       } else if (d2 > unloadR2 && loaded) {
-        const obj = this.terrain.get(e.name)!;
-        this.terrain.delete(e.name);
-        this.#scene.remove(obj);
-        obj.traverse((o) => {
-          if ((o as THREE.Mesh).isMesh) (o as THREE.Mesh).geometry.dispose();
-        });
+        // Queue disposal so a relocation never tears down several ~1 MB terrain
+        // meshes synchronously inside its immediate scan.
+        this.#terrainUnloads.add(e.name);
       }
+    }
+    candidates.sort((a, b) => {
+      const ar = required?.has(a.name) ? 0 : 1;
+      const br = required?.has(b.name) ? 0 : 1;
+      if (ar !== br) return ar - br;
+      const ad = (px - a.cx) * (px - a.cx) + (pz - a.cz) * (pz - a.cz);
+      const bd = (px - b.cx) * (px - b.cx) + (pz - b.cz) * (pz - b.cz);
+      return ad - bd;
+    });
+    let { current, total } = this.#terrainInFlightCounts();
+    for (const entry of candidates) {
+      // Launch-site guard: even a stale candidate list cannot spend an active
+      // prime's terrain slots on the eventual background ring.
+      if (required && !required.has(entry.name)) break;
+      if (
+        current >= TileStreamer.#TERRAIN_MAX_IN_FLIGHT ||
+        (
+          total >= TileStreamer.#TERRAIN_MAX_IN_FLIGHT_GLOBAL &&
+          (current >= 1 || total >= TileStreamer.#TERRAIN_MAX_IN_FLIGHT_ABSOLUTE)
+        )
+      ) break;
+      this.#loadTerrainChunk(entry.name, this.#generation);
+      current++;
+      total++;
     }
   }
 
-  #loadTerrainChunk(name: string) {
-    if (this.#terrainInFlight >= TileStreamer.#TERRAIN_MAX_IN_FLIGHT) return;
+  #loadTerrainChunk(name: string, generation: number) {
+    if (this.#terrainPending.has(name)) return;
+    const controller = new AbortController();
+    const token: TerrainLoadToken = {
+      generation,
+      inFlight: true,
+      discarded: false,
+      abortController: controller
+    };
     // mark pending before the load so a slow GLB isn't re-queued every scan
-    this.#terrainPending.add(name);
-    this.#terrainInFlight++;
-    this.#loader.load(
-      `/tiles/${name}.glb`,
-      (gltf) => {
-        this.#terrainInFlight--;
-        this.#terrainPending.delete(name);
-        // flown out of range while decoding? drop without attaching
-        if (!this.#terrainWanted(name)) {
-          gltf.scene.traverse((o) => {
-            if ((o as THREE.Mesh).isMesh) (o as THREE.Mesh).geometry.dispose();
-          });
+    this.#terrainPending.set(name, token);
+    const fetchTimer = setTimeout(() => controller.abort(), TERRAIN_FETCH_TIMEOUT_MS);
+    void fetch(`/tiles/${name}.glb`, { signal: controller.signal })
+      .then((response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.arrayBuffer();
+      })
+      .then((buffer) => {
+        clearTimeout(fetchTimer);
+        if (token.discarded) return null;
+        return this.#loader.parseAsync(buffer, "/tiles/");
+      })
+      .then((gltf) => {
+        token.inFlight = false;
+        token.abortController = null;
+        this.#orphanTerrainLoads.delete(token);
+        if (token.discarded) {
+          this.#disposeObjectGeometry(gltf?.scene ?? null);
           this.#scanTerrain(this.#px, this.#pz);
           return;
         }
-        gltf.scene.traverse((o) => {
-          if ((o as THREE.Mesh).isMesh) {
-            (o as THREE.Mesh).material = plainMat;
-            o.receiveShadow = true;
-          }
-        });
-        this.terrain.set(name, gltf.scene);
-        this.#scene.add(gltf.scene);
-        // retry others that were deferred by the in-flight cap
+        this.#terrainReady.push({ name, group: gltf?.scene ?? null, token });
+        // Fill the freed decode slot; scene attachment remains frame-bounded in
+        // #drainTerrainReady.
         this.#scanTerrain(this.#px, this.#pz);
-      },
-      undefined,
-      () => {
-        // missing chunk is non-fatal (ocean / out-of-coverage cells)
-        this.#terrainInFlight--;
-        this.#terrainPending.delete(name);
+      })
+      .catch(() => {
+        clearTimeout(fetchTimer);
+        token.inFlight = false;
+        token.abortController = null;
+        this.#orphanTerrainLoads.delete(token);
+        if (token.discarded) {
+          this.#scanTerrain(this.#px, this.#pz);
+          return;
+        }
+        // Missing chunks remain a non-fatal terminal for this generation.
+        this.#terrainReady.push({ name, group: null, token });
+        this.#scanTerrain(this.#px, this.#pz);
+      });
+  }
+
+  #cancelTerrainLoad(name: string, token: TerrainLoadToken): void {
+    if (token.discarded) return;
+    token.discarded = true;
+    token.abortController?.abort();
+    token.abortController = null;
+    if (this.#terrainPending.get(name) === token) this.#terrainPending.delete(name);
+    if (token.inFlight) this.#orphanTerrainLoads.add(token);
+  }
+
+  #terrainInFlightCounts(): { current: number; total: number } {
+    let current = 0;
+    let total = 0;
+    for (const token of this.#terrainPending.values()) {
+      if (!token.inFlight) continue;
+      total++;
+      if (token.generation === this.#generation) current++;
+    }
+    for (const token of this.#orphanTerrainLoads) {
+      if (token.inFlight) total++;
+    }
+    return { current, total };
+  }
+
+  /** Attach or discard one decoded terrain chunk. */
+  #drainTerrainReady(): boolean {
+    const index = this.#bestTerrainReadyIndex();
+    if (index < 0) return false;
+    const [{ name, group, token }] = this.#terrainReady.splice(index, 1);
+    if (this.#terrainPending.get(name) === token) this.#terrainPending.delete(name);
+
+    const current = token.generation === this.#generation;
+    if (!current || !this.#terrainWanted(name)) {
+      this.#disposeObjectGeometry(group);
+      this.#scanTerrain(this.#px, this.#pz);
+      return true;
+    }
+
+    if (group) {
+      const terrainMaterial = plainMat.clone();
+      group.traverse((o) => {
+        if ((o as THREE.Mesh).isMesh) {
+          (o as THREE.Mesh).material = terrainMaterial;
+          o.receiveShadow = true;
+        }
+      });
+      group.userData.streamOwnedMaterials = [terrainMaterial];
+      this.terrain.set(name, group);
+      this.#scene.add(group);
+    } else {
+      // A missing terrain GLB must not wedge visual arrival or churn a retry on
+      // every frame. A later arrival generation gets one fresh attempt.
+      this.#terrainFailedGeneration.set(name, this.#generation);
+    }
+    const prime = this.#visualPrime;
+    if (prime?.generation === this.#generation && prime.requiredTerrainSet.has(name)) {
+      prime.settledTerrain.add(name);
+    }
+    this.#scanTerrain(this.#px, this.#pz);
+    return true;
+  }
+
+  #discardOneStaleTerrainReady(): boolean {
+    const index = this.#terrainReady.findIndex((item) => item.token.generation !== this.#generation);
+    if (index < 0) return false;
+    const [{ name, group, token }] = this.#terrainReady.splice(index, 1);
+    if (this.#terrainPending.get(name) === token) this.#terrainPending.delete(name);
+    token.discarded = true;
+    this.#disposeObjectGeometry(group);
+    this.#scanTerrain(this.#px, this.#pz);
+    return true;
+  }
+
+  #bestTerrainReadyIndex(): number {
+    if (this.#terrainReady.length === 0) return -1;
+    const required = this.#visualPrime?.generation === this.#generation
+      ? this.#visualPrime.requiredTerrainSet
+      : null;
+    let best = 0;
+    let bestRank = Infinity;
+    for (let i = 0; i < this.#terrainReady.length; i++) {
+      const item = this.#terrainReady[i];
+      const rank = item.token.generation === this.#generation
+        ? (required?.has(item.name) ? 0 : 1)
+        : 2;
+      if (rank < bestRank) {
+        best = i;
+        bestRank = rank;
+        if (rank === 0) break;
       }
-    );
+    }
+    if (this.#visualPrime && bestRank >= 2) return -1;
+    return best;
+  }
+
+  #drainTerrainUnload(): boolean {
+    const unloadR2 = TileStreamer.#TERRAIN_UNLOAD_R * TileStreamer.#TERRAIN_UNLOAD_R;
+    for (const name of this.#terrainUnloads) {
+      this.#terrainUnloads.delete(name);
+      const entry = this.#terrainEntries.find((candidate) => candidate.name === name);
+      const object = this.terrain.get(name);
+      if (!entry || !object) continue;
+      const dx = this.#px - entry.cx;
+      const dz = this.#pz - entry.cz;
+      if (dx * dx + dz * dz < unloadR2) continue;
+      this.terrain.delete(name);
+      this.#scene.remove(object);
+      const materials = object.userData.streamOwnedMaterials as THREE.Material[] | undefined;
+      for (const material of materials ?? []) material.dispose();
+      delete object.userData.streamOwnedMaterials;
+      this.#disposeObjectGeometry(object);
+      return true;
+    }
+    return false;
   }
 
   /** Still inside the unload radius? Used to abandon late-arriving terrain GLBs. */
@@ -657,19 +1188,45 @@ export class TileStreamer {
     this.#hasScanned = true;
     const loadR2 = CONFIG.tileLoadRadius * CONFIG.tileLoadRadius;
     const unloadR2 = CONFIG.tileUnloadRadius * CONFIG.tileUnloadRadius;
+    const required = this.#visualPrime?.generation === this.#generation
+      ? this.#visualPrime.requiredTileSet
+      : null;
     this.#queue.length = 0;
+    const now = performance.now();
     for (const e of this.#entries) {
       e.d2 = (px - e.cx) * (px - e.cx) + (pz - e.cz) * (pz - e.cz);
+      const loadedTile = this.loaded.get(e.key);
+      if (loadedTile && e.d2 < loadR2 && loadedTile.generation !== this.#generation) {
+        loadedTile.group.visible = true;
+        if (loadedTile.shadowProxy) loadedTile.shadowProxy.group.visible = true;
+        loadedTile.generation = this.#generation;
+        loadedTile.loadToken.generation = this.#generation;
+        this.#queueColliderApply(e.key, loadedTile.loadToken);
+      }
       const isLoaded = this.loaded.has(e.key) || this.#pending.has(e.key);
-      if (e.d2 < loadR2 && !isLoaded) {
+      const failure = this.#visualFailures.get(e.key);
+      const retryEligible =
+        !failure ||
+        failure.generation !== this.#generation ||
+        (!failure.terminal && now >= failure.retryAt);
+      if (
+        e.d2 < loadR2 &&
+        !isLoaded &&
+        retryEligible &&
+        (!required || required.has(e.key))
+      ) {
         this.#queue.push(e);
       } else if (e.d2 > unloadR2 && this.loaded.has(e.key)) {
         this.#unloads.add(e.key);
       }
     }
-    // nearest first, drained #maxInFlight at a time as loads finish (raised
-    // while #fastStream — see update())
-    this.#queue.sort((a, b) => a.d2 - b.d2);
+    // An active prime admits only destination-minimum cells. Once it resolves,
+    // the rebuilt fixed-radius queue remains nearest-first and place-agnostic.
+    this.#queue.sort((a, b) => {
+      const ar = required?.has(a.key) ? 0 : 1;
+      const br = required?.has(b.key) ? 0 : 1;
+      return ar === br ? a.d2 - b.d2 : ar - br;
+    });
     this.#pump();
     // Facade near/far material swap: far tiles drop brick/weather noise ALU.
     // Hysteresis on enter/exit; BundleGroup re-records only when the bind changes.
@@ -681,47 +1238,161 @@ export class TileStreamer {
       if (this.#applyFacadeLod(tile, wantFar)) {
         (tile.group as THREE.BundleGroup).needsUpdate = true;
       }
+      if (tile.shadowProxy && !this.#shadowProxyWanted(tile.key, SHADOW_PROXY_EXIT_RADIUS)) {
+        tile.shadowProxy.dispose();
+        tile.shadowProxy = null;
+        this.onShadowCastersChanged(this.#shadowScopeForTile(tile.key));
+      } else if (!tile.shadowProxy) {
+        this.#queueShadowProxy(tile.key, tile.loadToken);
+      }
     }
   }
 
   #pump() {
     const loadR2 = CONFIG.tileLoadRadius * CONFIG.tileLoadRadius;
-    while (this.#inFlight < this.#maxInFlight && this.#queue.length > 0) {
-      const e = this.#queue.shift()!;
+    const required = this.#visualPrime?.generation === this.#generation
+      ? this.#visualPrime.requiredTileSet
+      : null;
+    let { current, total } = this.#tileInFlightCounts();
+    while (
+      current < this.#maxInFlight &&
+      (
+        total < MAX_IN_FLIGHT_GLOBAL ||
+        (current < MIN_CURRENT_IN_FLIGHT_RESERVE && total < MAX_IN_FLIGHT_ABSOLUTE)
+      ) &&
+      this.#queue.length > 0
+    ) {
+      const e = this.#queue[0];
+      // #scan already filters this queue. Keep the launch boundary defensive so
+      // an async completion can never pump stale full-ring work during a prime.
+      if (required && !required.has(e.key)) break;
+      this.#queue.shift();
       if (this.loaded.has(e.key) || this.#pending.has(e.key)) continue;
       // the queue can be stale (player moved, radius shrank) — re-check before fetching
       const d2 = (this.#px - e.cx) * (this.#px - e.cx) + (this.#pz - e.cz) * (this.#pz - e.cz);
       if (d2 > loadR2) continue;
-      this.#loadTile(e.key);
+      this.#loadTile(e.key, this.#generation);
+      current++;
+      total++;
     }
   }
 
-  #loadTile(key: string) {
-    this.#pending.add(key);
-    this.#inFlight++;
+  #tileInFlightCounts(): { current: number; total: number } {
+    let current = 0;
+    let total = 0;
+    for (const token of this.#pending.values()) {
+      if (!token.visualInFlight) continue;
+      total++;
+      if (token.generation === this.#generation) current++;
+    }
+    for (const token of this.#orphanTileLoads) {
+      if (token.visualInFlight) total++;
+    }
+    return { current, total };
+  }
 
-    // fetch+decode done (workers) — the main-thread finalize waits its turn in
-    // #ready; free the in-flight slot now so the network pipeline keeps moving
-    const enqueue = (group: THREE.Group | null, colliders: BuildingCollider[]) => {
-      this.#inFlight--;
-      this.#ready.push({ key, group, colliders });
+  #loadTile(key: string, generation: number) {
+    const controller = new AbortController();
+    const priorFailure = this.#visualFailures.get(key);
+    const attempt = priorFailure?.generation === generation ? priorFailure.attempts + 1 : 1;
+    const token: TileLoadToken = {
+      id: ++this.#nextLoadId,
+      generation,
+      attempt,
+      visualInFlight: true,
+      colliderSettled: false,
+      colliders: null,
+      finalized: false,
+      discarded: false,
+      collidersApplied: false,
+      collidersPublished: false,
+      colliderRetained: false,
+      abortController: controller
+    };
+    this.#pending.set(key, token);
+
+    // Visual fetch/decode and canonical collider loading are independent. The
+    // main-thread visual finalize can reach the destination frame while physics
+    // data continues in its bounded worker service.
+    const enqueueVisual = (group: THREE.Group | null) => {
+      token.visualInFlight = false;
+      token.abortController = null;
+      this.#orphanTileLoads.delete(token);
+      if (token.discarded) {
+        this.#disposeObjectGeometry(group);
+        this.#pump();
+        return;
+      }
+      this.#visualFailures.delete(key);
+      this.#ready.push({ key, group, token });
       this.#pump();
     };
 
-    // fetch + parse + trig patch all happen in the collider worker; this promise
-    // never rejects (worker replies with an empty list on any failure)
-    const colliderReq = fetchColliders(`/data/colliders/tile_${key}.json`);
-    this.#loader.load(
-      `/tiles/tile_${key}.glb`,
-      async (gltf) => enqueue(gltf.scene, await colliderReq),
-      undefined,
-      async () => enqueue(null, await colliderReq)
-    );
+    const fetchTimer = setTimeout(() => controller.abort(), TILE_FETCH_TIMEOUT_MS);
+    void fetch(`/tiles/tile_${key}.glb`, { signal: controller.signal })
+      .then((response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.arrayBuffer();
+      })
+      .then((buffer) => {
+        clearTimeout(fetchTimer);
+        if (token.discarded) return null;
+        return this.#loader.parseAsync(buffer, "/tiles/");
+      })
+      .then((gltf) => enqueueVisual(gltf?.scene ?? null))
+      .catch((error: unknown) => {
+        clearTimeout(fetchTimer);
+        // Abort-before-parse and failures during parse both have to release the
+        // global decode slot. A discarded token still owns that slot until here.
+        if (token.discarded) {
+          enqueueVisual(null);
+          return;
+        }
+        this.#recordVisualFailure(key, token, error);
+      });
+  }
+
+  #recordVisualFailure(key: string, token: TileLoadToken, error: unknown): void {
+    token.visualInFlight = false;
+    token.abortController = null;
+    token.discarded = true;
+    this.#orphanTileLoads.delete(token);
+    if (this.#pending.get(key) === token) this.#pending.delete(key);
+    const terminal = token.attempt >= TILE_MAX_ATTEMPTS;
+    const retryDelay = terminal ? 0 : TILE_RETRY_DELAYS_MS[token.attempt - 1];
+    const reason = error instanceof Error ? error.message : String(error);
+    this.#visualFailures.set(key, {
+      generation: token.generation,
+      attempts: token.attempt,
+      retryAt: performance.now() + retryDelay,
+      terminal,
+      reason
+    });
+    if (terminal) {
+      console.warn(`[tiles] ${key} unavailable after ${token.attempt} attempts: ${reason}`);
+    }
+    this.#checkVisualPrime();
+    this.#pump();
+  }
+
+  #cancelTileLoad(key: string, token: TileLoadToken): void {
+    if (token.discarded) return;
+    token.discarded = true;
+    token.abortController?.abort();
+    token.abortController = null;
+    if (this.#pending.get(key) === token) this.#pending.delete(key);
+    if (token.visualInFlight) this.#orphanTileLoads.add(token);
   }
 
   #takeSlot(): FacadeSlot {
     const pooled = this.#slotPool.pop();
-    if (pooled) return pooled;
+    if (pooled) {
+      // Recreate node graphs only for a slot that is actually being reused.
+      // Retirement itself stays allocation-free after disposal.
+      pooled.matNear = createFacadeMaterial(pooled.tex, this.#aliveW, { detail: true });
+      pooled.matFar = createFacadeMaterial(pooled.tex, this.#aliveW, { detail: false });
+      return pooled;
+    }
     const data = new Uint8Array(this.#aliveW * 4);
     const tex = new THREE.DataTexture(data, this.#aliveW, 1, THREE.RGBAFormat, THREE.UnsignedByteType);
     return {
@@ -733,6 +1404,22 @@ export class TileStreamer {
     };
   }
 
+  #recycleSlot(slot: FacadeSlot): void {
+    // Dispose the exact materials that were paired with this tile's geometries
+    // before those geometries become unreachable. Three's WebGPU backend uses
+    // this signal to release its material/geometry render-object associations.
+    slot.matNear?.dispose();
+    slot.matFar?.dispose();
+    slot.matNear = null;
+    slot.matFar = null;
+    slot.far = false;
+    if (this.#slotPool.length >= MAX_FACADE_SLOT_POOL) {
+      slot.tex.dispose();
+      return;
+    }
+    this.#slotPool.push(slot);
+  }
+
   /** Bind near or far facade material on every building mesh in a tile. Returns
    *  true when the binding changed (caller must re-record the BundleGroup). */
   #applyFacadeLod(tile: LoadedTile, wantFar: boolean): boolean {
@@ -740,6 +1427,7 @@ export class TileStreamer {
     if (!slot || slot.far === wantFar) return false;
     slot.far = wantFar;
     const mat = wantFar ? slot.matFar : slot.matNear;
+    if (!mat) return false;
     tile.group.traverse((o) => {
       const mesh = o as THREE.Mesh;
       if (!mesh.isMesh) return;
@@ -763,23 +1451,47 @@ export class TileStreamer {
     return true;
   }
 
+  #bestReadyIndex(): number {
+    if (this.#ready.length === 0) return -1;
+    const required = this.#visualPrime?.generation === this.#generation
+      ? this.#visualPrime.requiredTileSet
+      : null;
+    let best = 0;
+    let bestRank = Infinity;
+    let bestDistance = Infinity;
+    for (let i = 0; i < this.#ready.length; i++) {
+      const item = this.#ready[i];
+      const current = item.token.generation === this.#generation;
+      const rank = current ? (required?.has(item.key) ? 0 : 1) : 2;
+      const [cx, cz] = this.keyToCenter(item.key);
+      const distance = (this.#px - cx) * (this.#px - cx) + (this.#pz - cz) * (this.#pz - cz);
+      if (rank < bestRank || (rank === bestRank && distance < bestDistance)) {
+        best = i;
+        bestRank = rank;
+        bestDistance = distance;
+      }
+    }
+    if (this.#visualPrime && bestRank >= 2) return -1;
+    return best;
+  }
+
   /** Finalize one parsed tile: alive texture, materials, scene add. Returns false when idle. */
   #drainReady(): boolean {
-    const item = this.#ready.shift();
-    if (!item) return false;
-    const { key, group, colliders } = item;
-    this.#pending.delete(key);
+    const index = this.#bestReadyIndex();
+    if (index < 0) return false;
+    const [{ key, group, token }] = this.#ready.splice(index, 1);
+    if (this.#pending.get(key) === token) this.#pending.delete(key);
     // flown past while it sat in the queue? skip the scene add / GPU upload
     // entirely — the next scan reloads it if the player comes back
     const [cx, cz] = this.keyToCenter(key);
     const d2 = (this.#px - cx) * (this.#px - cx) + (this.#pz - cz) * (this.#pz - cz);
-    if (group && d2 > CONFIG.tileUnloadRadius * CONFIG.tileUnloadRadius) {
-      group.traverse((o) => {
-        const mesh = o as THREE.Mesh;
-        if (mesh.isMesh) mesh.geometry.dispose();
-      });
+    if (token.generation !== this.#generation || d2 > CONFIG.tileUnloadRadius * CONFIG.tileUnloadRadius) {
+      token.discarded = true;
+      this.#disposeObjectGeometry(group);
+      this.#pump();
       return true;
     }
+    const colliders = token.colliderSettled ? (token.colliders ?? []) : null;
     const nB = Math.max(4, this.manifest.tiles[key].b);
     let slot: FacadeSlot | null = null;
     if (group) {
@@ -798,7 +1510,7 @@ export class TileStreamer {
       // historical anchor), top = tallest box, so the parapet window mask
       // never triggers below a real roof
       const topOf = new Map<number, number>();
-      for (const c of colliders) {
+      for (const c of colliders ?? []) {
         if (c.i < 0 || c.i >= nB) continue;
         const enc = Math.max(0, Math.min(65535, Math.round((c.y - c.hy + BASEY_OFFSET) * BASEY_SCALE)));
         aliveData[c.i * 4 + 1] = enc >> 8;
@@ -821,7 +1533,8 @@ export class TileStreamer {
       const [tcx, tcz] = this.keyToCenter(key);
       const td = Math.hypot(this.#px - tcx, this.#pz - tcz);
       slot.far = td >= FACADE_FAR_ENTER;
-      const bMat = slot.far ? slot.matFar : slot.matNear;
+      const bMat = slot.far ? slot.matFar! : slot.matNear!;
+      const materials = createTileMaterialSet();
       group.traverse((o) => {
         const mesh = o as THREE.Mesh;
         if (!mesh.isMesh) return;
@@ -840,24 +1553,24 @@ export class TileStreamer {
           mesh.castShadow = false;
           mesh.receiveShadow = true;
         } else if (mesh.name.startsWith("road_")) {
-          mesh.material = roadMat;
+          mesh.material = materials.road;
           mesh.receiveShadow = true;
         } else if (mesh.name.startsWith("grn_")) {
-          mesh.material = parkMat;
+          mesh.material = materials.park;
           mesh.receiveShadow = true;
         } else if (mesh.name.startsWith("lm_")) {
           // Authored landmarks now live in their geographic tile instead of
           // the always-resident landmark bundle. Palace keeps its warm stone
           // multiplier; Sutro stays near-neutral so its safety stripes read.
           mesh.material = mesh.name.startsWith("lm_palace_")
-            ? palaceMat
+            ? materials.palace
             : mesh.name.startsWith("lm_sutro_")
-              ? sutroMat
-              : plainMat;
+              ? materials.sutro
+              : materials.plain;
           mesh.castShadow = true;
           mesh.receiveShadow = true;
         } else {
-          mesh.material = plainMat;
+          mesh.material = materials.plain;
           mesh.receiveShadow = true;
         }
       });
@@ -877,49 +1590,237 @@ export class TileStreamer {
       const bundle = new THREE.BundleGroup();
       bundle.name = `tile_${key}`;
       this.#scene.add(bundle);
-      const shadowProxy = colliders.length > 0
-        ? createTileShadowProxy({
-            tileKey: key,
-            colliders,
-            buildingCount: nB,
-            isBuildingVisible: (index) => this.#shadowBuildingVisible(key, index)
-          })
-        : null;
-      if (shadowProxy) this.#scene.add(shadowProxy.group);
       this.loaded.set(key, {
         key,
         group: bundle,
         slot,
-        colliders,
-        shadowProxy,
+        materials,
+        colliders: null,
+        shadowProxy: null,
+        generation: token.generation,
+        loadId: token.id,
+        loadToken: token,
         pendingParts: core,
         detailParts: detail.length ? detail : undefined
       });
-      if (shadowProxy) this.onShadowCastersChanged(this.#shadowScopeForTile(key));
       this.#attaching.push(key);
     } else {
       this.loaded.set(key, {
         key,
         group: new THREE.Group(),
         slot,
-        colliders,
-        shadowProxy: null
+        materials: null,
+        colliders: null,
+        shadowProxy: null,
+        generation: token.generation,
+        loadId: token.id,
+        loadToken: token
       });
     }
-    this.onTileColliders(key, colliders);
+    token.finalized = true;
+    this.#retainCanonicalColliders(key, token);
+    this.#queueColliderApply(key, token);
+    this.#pump();
     return true;
+  }
+
+  #discardOneStaleTileReady(): boolean {
+    const index = this.#ready.findIndex((item) => item.token.generation !== this.#generation);
+    if (index < 0) return false;
+    const [{ key, group, token }] = this.#ready.splice(index, 1);
+    if (this.#pending.get(key) === token) this.#pending.delete(key);
+    token.discarded = true;
+    this.#disposeObjectGeometry(group);
+    this.#pump();
+    return true;
+  }
+
+  #queueColliderApply(key: string, token: TileLoadToken): void {
+    if (
+      !token.colliderSettled ||
+      !token.finalized ||
+      token.discarded ||
+      token.collidersApplied ||
+      this.#colliderReady.some((item) => item.token === token)
+    ) return;
+    this.#colliderReady.push({
+      key,
+      token,
+      colliderCursor: 0,
+      topOf: new Map(),
+      topEntries: null,
+      topCursor: 0
+    });
+  }
+
+  #retainCanonicalColliders(key: string, token: TileLoadToken): void {
+    const source = this.#colliderSource;
+    const tile = this.loaded.get(key);
+    if (!source || !tile || tile.loadId !== token.id || token.discarded) return;
+    if (!token.colliderRetained) {
+      token.colliderRetained = true;
+      source.retainTile(key);
+    }
+    const colliders = source.getTile(key);
+    if (colliders) this.#receiveCanonicalColliders(key, colliders);
+  }
+
+  #receiveCanonicalColliders(key: string, colliders: BuildingCollider[]): void {
+    const tile = this.loaded.get(key);
+    if (!tile) return;
+    const token = tile.loadToken;
+    if (token.discarded || tile.loadId !== token.id || !token.colliderRetained) return;
+    token.colliderSettled = true;
+    token.colliders = colliders;
+    this.#queueColliderApply(key, token);
+  }
+
+  /** Apply one bounded phase of a canonical collider payload. */
+  #drainColliderReady(): boolean {
+    if (this.#colliderReady.length === 0) return false;
+    let index = this.#colliderReady.findIndex((item) => item.token.generation === this.#generation);
+    if (index < 0) index = 0;
+    const [work] = this.#colliderReady.splice(index, 1);
+    const { key, token } = work;
+    const tile = this.loaded.get(key);
+    if (token.discarded || token.collidersApplied || !tile || tile.loadId !== token.id) {
+      token.discarded = true;
+      return true;
+    }
+    if (token.generation !== this.#generation || tile.generation !== token.generation) {
+      // Keep the decoded payload dormant on its loaded tile. If normal movement
+      // or a later prime makes that tile relevant again, #scan adopts and queues
+      // this same token without another fetch.
+      return true;
+    }
+
+    const colliders = token.colliders ?? [];
+    if (!token.collidersPublished) {
+      // Publish the canonical array alias first so physics/query safety does not
+      // wait for cosmetic facade/shadow preparation. Far-field packing is a
+      // separate callback phase from the work below.
+      tile.colliders = colliders;
+      token.collidersPublished = true;
+      this.onTileColliders(key, colliders);
+      this.#colliderReady.push(work);
+      return true;
+    }
+
+    if (tile.slot && work.colliderCursor < colliders.length) {
+      const data = tile.slot.data;
+      const buildingCount = Math.max(4, this.manifest.tiles[key].b);
+      const end = Math.min(colliders.length, work.colliderCursor + COLLIDER_METADATA_SLICE);
+      for (; work.colliderCursor < end; work.colliderCursor++) {
+        const collider = colliders[work.colliderCursor];
+        if (collider.i < 0 || collider.i >= buildingCount) continue;
+        const encodedBase = Math.max(
+          0,
+          Math.min(65535, Math.round((collider.y - collider.hy + BASEY_OFFSET) * BASEY_SCALE))
+        );
+        data[collider.i * 4 + 1] = encodedBase >> 8;
+        data[collider.i * 4 + 2] = encodedBase & 255;
+        work.topOf.set(
+          collider.i,
+          Math.max(work.topOf.get(collider.i) ?? -Infinity, collider.y + collider.hy)
+        );
+      }
+      this.#colliderReady.push(work);
+      return true;
+    }
+
+    if (tile.slot) {
+      const data = tile.slot.data;
+      work.topEntries ??= [...work.topOf];
+      const end = Math.min(work.topEntries.length, work.topCursor + COLLIDER_METADATA_SLICE);
+      for (; work.topCursor < end; work.topCursor++) {
+        const [buildingIndex, top] = work.topEntries[work.topCursor];
+        const offset = buildingIndex * 4;
+        const base = (((data[offset + 1] << 8) | data[offset + 2]) / BASEY_SCALE) - BASEY_OFFSET;
+        data[offset + 3] = Math.max(1, Math.min(254, Math.round((top - base) / TOPH_SCALE)));
+      }
+      if (work.topCursor < work.topEntries.length) {
+        this.#colliderReady.push(work);
+        return true;
+      }
+      tile.slot.tex.needsUpdate = true;
+    }
+
+    token.collidersApplied = true;
+    this.#queueShadowProxy(key, token);
+    return true;
+  }
+
+  #shadowProxyWanted(key: string, radius = SHADOW_PROXY_RADIUS): boolean {
+    const [cx, cz] = this.keyToCenter(key);
+    const half = this.manifest.tile * 0.5;
+    const dx = Math.max(0, Math.abs(cx - this.#px) - half);
+    const dz = Math.max(0, Math.abs(cz - this.#pz) - half);
+    return dx * dx + dz * dz <= radius * radius;
+  }
+
+  #queueShadowProxy(key: string, token: TileLoadToken): void {
+    const tile = this.loaded.get(key);
+    if (
+      !tile || tile.loadId !== token.id || token.discarded || !token.collidersApplied ||
+      !token.colliders?.length || tile.shadowProxy || !this.#shadowProxyWanted(key) ||
+      this.#shadowProxyReady.some((item) => item.token === token)
+    ) return;
+    this.#shadowProxyReady.push({ key, token });
+    this.#pumpShadowProxyBuild();
+  }
+
+  #pumpShadowProxyBuild(): void {
+    if (this.#shadowProxyBuildActive) return;
+    let work: ReadyShadowProxy | undefined;
+    while ((work = this.#shadowProxyReady.shift())) {
+      const tile = this.loaded.get(work.key);
+      if (
+        tile && tile.loadId === work.token.id && !work.token.discarded &&
+        !tile.shadowProxy && this.#shadowProxyWanted(work.key)
+      ) break;
+      work = undefined;
+    }
+    if (!work) return;
+    const { key, token } = work;
+    const colliders = token.colliders ?? [];
+    this.#shadowProxyBuildActive = true;
+    void createTileShadowProxyAsync({
+      tileKey: key,
+      colliders,
+      buildingCount: Math.max(4, this.manifest.tiles[key].b),
+      isBuildingVisible: (buildingIndex) => this.#shadowBuildingVisible(key, buildingIndex)
+    }).then((proxy) => {
+      const tile = this.loaded.get(key);
+      if (
+        !tile || tile.loadId !== token.id || token.discarded || tile.shadowProxy ||
+        !this.#shadowProxyWanted(key, SHADOW_PROXY_EXIT_RADIUS)
+      ) {
+        proxy.dispose();
+        return;
+      }
+      tile.shadowProxy = proxy;
+      this.#scene.add(proxy.group);
+      this.onShadowCastersChanged(this.#shadowScopeForTile(key));
+    }).catch((error) => {
+      console.warn(`[tiles] shadow proxy ${key} unavailable`, error);
+    }).finally(() => {
+      this.#shadowProxyBuildActive = false;
+      this.#pumpShadowProxyBuild();
+    });
   }
 
   /** Attach one pending mesh (one GPU upload) per frame. Returns false when idle. */
   #drainAttach(): boolean {
     while (this.#attaching.length > 0) {
-      const key = this.#attaching[0];
+      const attachIndex = this.#bestAttachIndex();
+      const key = this.#attaching[attachIndex];
       const tile = this.loaded.get(key);
       if (!tile) {
         // unloaded mid-attach (dispose handled by #unloadTile)
-        this.#attaching.shift();
+        this.#attaching.splice(attachIndex, 1);
         continue;
       }
+      if (this.#visualPrime && tile.generation !== this.#generation) return false;
       // 1) core meshes (buildings/roads): one GPU upload per frame
       if (tile.pendingParts && tile.pendingParts.length > 0) {
         tile.group.add(tile.pendingParts.shift()!);
@@ -939,13 +1840,46 @@ export class TileStreamer {
       // 3) high, but park detail still owed: park the tile until descent
       if (this.#highUp && tile.detailParts && tile.detailParts.length > 0) {
         this.#deferred.add(key);
-        this.#attaching.shift();
+        this.#attaching.splice(attachIndex, 1);
         continue;
       }
       // 4) tile whole
-      this.#attaching.shift();
+      this.#attaching.splice(attachIndex, 1);
     }
     return false;
+  }
+
+  #bestAttachIndex(): number {
+    const required = this.#visualPrime?.generation === this.#generation
+      ? this.#visualPrime.requiredTileSet
+      : null;
+    let best = 0;
+    let bestRank = Infinity;
+    let bestDistance = Infinity;
+    for (let i = 0; i < this.#attaching.length; i++) {
+      const key = this.#attaching[i];
+      const tile = this.loaded.get(key);
+      const requiredHere = required?.has(key) === true;
+      const corePending = (tile?.pendingParts?.length ?? 0) > 0;
+      const current = tile?.generation === this.#generation;
+      const rank = corePending && requiredHere
+        ? 0
+        : corePending && current
+          ? 1
+          : requiredHere
+            ? 2
+            : current
+              ? 3
+              : 4;
+      const [cx, cz] = this.keyToCenter(key);
+      const distance = (this.#px - cx) * (this.#px - cx) + (this.#pz - cz) * (this.#pz - cz);
+      if (rank < bestRank || (rank === bestRank && distance < bestDistance)) {
+        best = i;
+        bestRank = rank;
+        bestDistance = distance;
+      }
+    }
+    return best;
   }
 
   /** Descended: re-queue every tile whose dense park detail was held back. */
@@ -976,6 +1910,11 @@ export class TileStreamer {
     const tile = this.loaded.get(key);
     if (!tile) return;
     this.loaded.delete(key);
+    tile.loadToken.discarded = true;
+    if (tile.loadToken.colliderRetained) {
+      this.#colliderSource?.releaseTile(key);
+      tile.loadToken.colliderRetained = false;
+    }
     this.onTileUnload(key);
     this.#scene.remove(tile.group);
     if (tile.shadowProxy) {
@@ -1002,12 +1941,13 @@ export class TileStreamer {
     tile.pendingParts = undefined;
     tile.detailParts = undefined;
     this.#deferred.delete(key);
-    // the alive texture + facade materials go back to the pool — reusing the
-    // material instances keeps the node-builder cache hot (see FacadeSlot)
+    // Keep only the tiny texture/data allocation. The material lifecycle is
+    // per-residency so the WebGPU renderer can release old geometry pairings.
     if (tile.slot) {
-      tile.slot.far = false;
-      this.#slotPool.push(tile.slot);
+      this.#recycleSlot(tile.slot);
     }
+    for (const material of tile.materials?.all ?? []) material.dispose();
+    tile.materials = null;
   }
 
   // buildings permanently replaced by custom layers (the Exploratorium builds

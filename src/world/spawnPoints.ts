@@ -1,23 +1,12 @@
-// Code-level spawn registry. Baked spawns live in meta.json (map.meta.spawns);
-// these sit on top of them and carry the extra per-location knobs that make a
-// spawn cheap to boot: which heavy park regions must be ready when the cover
-// lifts, versus which stream in afterwards while the player takes in the view.
-//
-// This is the abstraction the whole "optimize for a specific place" idea rests
-// on: adding a great spawn is a few lines here, and its boot cost is whatever
-// its own immediate surroundings cost — never the whole city's foliage.
+// Code-level spawn registry. Baked spawns live in meta.json (map.meta.spawns).
+// Entries describe authored arrival poses only; loading policy is deliberately
+// generic and proximity-driven, never customized per landmark.
 
 import type { PlayerMode } from "../player/types";
 import { OCEAN_BEACH_SURF, oceanBeachApproxShoreX } from "./oceanBeachWaves";
 import { mdToWorldXZ, Z_ENTRANCE } from "./missionDolores/layout";
 
 const MISSION_DOLORES_ENTRY = mdToWorldXZ(0, Z_ENTRANCE - 8);
-
-/** Heavy park regions built lazily off the boot path (own Vite chunks). A spawn
- * either GATES a region (built before reveal) or lets it stream in after. */
-export type RegionKey = "garden" | "wildlands" | "golf";
-
-export const ALL_REGIONS: readonly RegionKey[] = ["garden", "wildlands", "golf"];
 
 export type SpawnPoint = {
   key: string;
@@ -28,20 +17,6 @@ export type SpawnPoint = {
   heading: number;
   /** Embodiment to arrive in. Omit to keep the session default (START.mode). */
   mode?: PlayerMode;
-  /** Regions that MUST finish before the loading cover lifts. Anything omitted
-   * streams in after reveal (hidden → compileAsync → shown), so it never delays
-   * first play. `undefined` = distance-based default (a region gates only when
-   * the spawn sits within NEAR_GATE of its footprint). An explicit list — `[]`
-   * included — overrides distance, which is how a scenic-but-treeless spot like
-   * Corona Heights opts into the leanest possible boot. */
-  gates?: readonly RegionKey[];
-  /** Draw radius (m) loaded BEFORE reveal. Only the near district — baked tiles
-   * AND procedural citygen cells, both keyed off CONFIG.tileLoadRadius — gates
-   * the cover; the full draw distance is restored the instant it lifts and the
-   * rest of the city streams in behind the distance fog. Omit for no cap (a
-   * dense spawn then waits for its whole neighbourhood). This is the lever for
-   * "load Mission/Castro in after you're already standing on the hill". */
-  bootTileRadius?: number;
 };
 
 export const SPAWN_POINTS: Record<string, SpawnPoint> = {
@@ -54,9 +29,7 @@ export const SPAWN_POINTS: Record<string, SpawnPoint> = {
     x: MISSION_DOLORES_ENTRY.x,
     z: MISSION_DOLORES_ENTRY.z,
     heading: Math.PI, // local +z, through the portal toward the apse
-    mode: "walk",
-    gates: [],
-    bootTileRadius: 700
+    mode: "walk"
   },
   // Ocean Beach surf pin — dry sand at the live waterline (approx until map
   // resolves the exact edge via oceanBeachShoreline), facing the swell.
@@ -66,9 +39,7 @@ export const SPAWN_POINTS: Record<string, SpawnPoint> = {
     x: oceanBeachApproxShoreX(OCEAN_BEACH_SURF.entryZ) + 4,
     z: OCEAN_BEACH_SURF.entryZ,
     heading: Math.PI / 2, // west into the break
-    mode: "walk",
-    gates: [],
-    bootTileRadius: 700
+    mode: "walk"
   },
   // Main entrance to the Japanese Tea Garden. The authored garden is coupled to
   // the Botanical Garden region so both designed landscapes are ready before a
@@ -79,9 +50,7 @@ export const SPAWN_POINTS: Record<string, SpawnPoint> = {
     x: -2239.8,
     z: 2196.5,
     heading: 0.78,
-    mode: "walk",
-    gates: ["garden"],
-    bootTileRadius: 700
+    mode: "walk"
   },
   teaGardenGuide: {
     key: "teaGardenGuide",
@@ -89,9 +58,7 @@ export const SPAWN_POINTS: Record<string, SpawnPoint> = {
     x: -2282.4,
     z: 2171.4,
     heading: -1.57,
-    mode: "walk",
-    gates: ["garden"],
-    bootTileRadius: 700
+    mode: "walk"
   },
   teaGardenPagoda: {
     key: "teaGardenPagoda",
@@ -99,9 +66,7 @@ export const SPAWN_POINTS: Record<string, SpawnPoint> = {
     x: -2280,
     z: 2185,
     heading: 1.88,
-    mode: "walk",
-    gates: ["garden"],
-    bootTileRadius: 700
+    mode: "walk"
   },
   teaGardenDrumBridge: {
     key: "teaGardenDrumBridge",
@@ -109,27 +74,18 @@ export const SPAWN_POINTS: Record<string, SpawnPoint> = {
     x: -2280,
     z: 2195,
     heading: -1.25,
-    mode: "walk",
-    gates: ["garden"],
-    bootTileRadius: 700
+    mode: "walk"
   },
   // Corona Heights summit — the busker trio on the SE rim, the dog park just
   // below, red-chert crags underfoot, and the whole downtown/Mission skyline
-  // dropping away to the east. Nothing tree-heavy sits at the spawn itself (the
-  // hill's own grass/crags/dog park are built with the world), so it gates
-  // NOTHING: garden, wildlands and golf all stream in after reveal while the
-  // player reads the name gate and looks at the view. The leanest boot we have.
+  // dropping away to the east.
   coronaHeights: {
     key: "coronaHeights",
     label: "Corona Heights",
     x: 398,
     z: 2752,
     heading: -2.1, // faces SE over the buskers toward the Mission and downtown
-    mode: "walk",
-    gates: [],
-    // From 150 m up, the near hillside + immediate blocks are what reads; the
-    // dense Mission/Castro grid beyond streams in over the next second or two.
-    bootTileRadius: 700
+    mode: "walk"
   },
   // Palace of Fine Arts lagoon shore — blue-hour Reverie quest start.
   palaceReverie: {
@@ -138,22 +94,17 @@ export const SPAWN_POINTS: Record<string, SpawnPoint> = {
     x: -248,
     z: -1410,
     heading: -2.35,
-    mode: "walk",
-    gates: [],
-    bootTileRadius: 800
+    mode: "walk"
   },
   // Lands End — the NW headland. Arrive on the cliff plateau beside the stone
-  // Labyrinth, the open Pacific dropping away to the WNW. Treeless clifftop, so
-  // it gates nothing: the city and parks stream in behind you after reveal.
+  // Labyrinth, the open Pacific dropping away to the WNW.
   landsEnd: {
     key: "landsEnd",
     label: "Lands End",
     x: -5872,
     z: 792,
     heading: 2.0, // faces WNW over the labyrinth toward the open ocean
-    mode: "walk",
-    gates: [],
-    bootTileRadius: 700
+    mode: "walk"
   }
 };
 

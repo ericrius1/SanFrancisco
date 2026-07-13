@@ -17,34 +17,12 @@
 import * as THREE from "three/webgpu";
 import { WIND_DIR, windStrength } from "../world/vegetation/wind";
 
-const NOISE_SECONDS = 4;
 const tmpQuat = new THREE.Quaternion();
-
-function createNoiseBuffer(ctx: BaseAudioContext): AudioBuffer {
-  const length = Math.floor(ctx.sampleRate * NOISE_SECONDS);
-  const buffer = ctx.createBuffer(2, length, ctx.sampleRate);
-  for (let ch = 0; ch < 2; ch++) {
-    const data = buffer.getChannelData(ch);
-    // Pink-ish noise (Paul Kellet's economy filter): white noise is too hissy
-    // for wind body; this tilts energy toward the low end.
-    let b0 = 0;
-    let b1 = 0;
-    let b2 = 0;
-    for (let i = 0; i < length; i++) {
-      const white = Math.random() * 2 - 1;
-      b0 = 0.99765 * b0 + white * 0.099046;
-      b1 = 0.963 * b1 + white * 0.2965164;
-      b2 = 0.57 * b2 + white * 1.0526913;
-      data[i] = (b0 + b1 + b2 + white * 0.1848) * 0.25;
-    }
-  }
-  return buffer;
-}
 
 export class ProceduralWindSynth {
   #ctx: AudioContext;
   #source: AudioBufferSourceNode | null = null;
-  #noise: AudioBuffer;
+  #noise: AudioBuffer | null = null;
   #howlFilter: BiquadFilterNode;
   #howlGain: GainNode;
   #rustleFilter: BiquadFilterNode;
@@ -56,7 +34,6 @@ export class ProceduralWindSynth {
 
   constructor(ctx: AudioContext, destination: AudioNode) {
     this.#ctx = ctx;
-    this.#noise = createNoiseBuffer(ctx);
 
     this.#howlFilter = ctx.createBiquadFilter();
     this.#howlFilter.type = "bandpass";
@@ -81,22 +58,39 @@ export class ProceduralWindSynth {
     this.#panner.connect(this.#out).connect(destination);
   }
 
+  /** Installs worker-generated pink noise. Until it arrives the graph remains
+   * silent instead of synthesizing four seconds of stereo noise on a keydown. */
+  setNoiseBuffer(buffer: AudioBuffer): void {
+    this.#noise = buffer;
+    if (this.#running) this.#restartSource();
+  }
+
   setRunning(on: boolean): void {
     if (on === this.#running) return;
     this.#running = on;
     if (on) {
-      const source = this.#ctx.createBufferSource();
-      source.buffer = this.#noise;
-      source.loop = true;
-      source.connect(this.#howlFilter);
-      source.connect(this.#rustleFilter);
-      source.start(0, Math.random() * NOISE_SECONDS);
-      this.#source = source;
+      this.#restartSource();
     } else if (this.#source) {
       this.#source.stop();
       this.#source.disconnect();
       this.#source = null;
     }
+  }
+
+  #restartSource(): void {
+    if (this.#source) {
+      this.#source.stop();
+      this.#source.disconnect();
+      this.#source = null;
+    }
+    if (!this.#noise) return;
+    const source = this.#ctx.createBufferSource();
+    source.buffer = this.#noise;
+    source.loop = true;
+    source.connect(this.#howlFilter);
+    source.connect(this.#rustleFilter);
+    source.start(0, Math.random() * this.#noise.duration);
+    this.#source = source;
   }
 
   /**

@@ -4,32 +4,9 @@
 // keeping them here makes the renderer deterministic and independent of the
 // network at runtime.
 
-export type CoronaXZ = readonly [x: number, z: number];
+import { CORONA_DOG_PARK, type CoronaXZ } from "./meta";
 
-/** Highest rendered point in the shipped heightfield, not the nearby OSM peak
- * node (the 8 m DEM puts that node a few metres lower). The map landmark uses
- * this exact spot so the player arrives at the top of the hill. */
-export const CORONA_HEIGHTS_SUMMIT = { x: 408, z: 2760 } as const;
-
-/** OSM way 38025784 — Corona Heights Dog Play Area. The first point is its
- * signed gate on the southwest corner; the closing point is implicit. */
-export const CORONA_DOG_PARK: readonly CoronaXZ[] = [
-  [325.72, 2728.49],
-  [330.12, 2729.44],
-  [339.39, 2730.28],
-  [358.81, 2718.47],
-  [387.78, 2707.78],
-  [401.72, 2705.57],
-  [410.71, 2706.15],
-  [405.81, 2695.76],
-  [410.34, 2682.36],
-  [408.82, 2678.87],
-  [399.63, 2678.48],
-  [386.37, 2682.08],
-  [358.43, 2694.09],
-  [341.07, 2707.59],
-  [330.49, 2720.34]
-] as const;
+export { CORONA_DOG_PARK, CORONA_HEIGHTS_SUMMIT, type CoronaXZ } from "./meta";
 
 export type CoronaTrail = {
   name: string;
@@ -138,4 +115,3 @@ export const CORONA_TRAILS: readonly CoronaTrail[] = [
 ] as const;
 
 export const CORONA_DOG_GATE = CORONA_DOG_PARK[0];
-

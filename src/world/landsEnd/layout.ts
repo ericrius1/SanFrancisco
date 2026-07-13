@@ -7,12 +7,13 @@
 // from one source of truth; the arc-length parameter `t` (0 at the entrance,
 // 1 at the centre) is what the bioluminescent light-wave rides.
 
+import { LANDS_END_CENTER } from "./meta";
+
+export { LANDS_END_CENTER } from "./meta";
+
 export type XZ = { x: number; z: number };
 export type PathSample = { x: number; z: number; t: number };
 export type StonePlacement = { x: number; z: number; t: number; scale: number; yaw: number; side: number };
-
-/** Headland reference point (near the labyrinth), used for distance LOD. */
-export const LANDS_END_CENTER: XZ = { x: -5920, z: 760 };
 
 /** The cliff-top labyrinth. A flat sculpted terrace on the plateau (natural
  *  ground ≈71 m there, slope ≈2°) overlooking the open ocean to the WNW. */

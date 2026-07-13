@@ -34,7 +34,14 @@ export class TrioAudio {
   #reverbIn: GainNode | null = null; // shared wet bus → convolver → master
   #convolver: ConvolverNode | null = null;
   #captureDest: MediaStreamAudioDestinationNode | null = null;
-  #channels = new Map<BuskerId, { gain: GainNode; panner: PannerNode; reverb: GainNode }>();
+  #channels = new Map<BuskerId, {
+    tap: MusicianAudio;
+    gain: GainNode | null;
+    panner: PannerNode | null;
+    reverb: GainNode | null;
+    position: [number, number, number];
+  }>();
+  #impulseWorker: Worker | null = null;
   #retryAt = 0;
   #wantSuspend = false;
   /** Force master gain to 0 (film cue: kill mid-song tails before the next pass). */
@@ -58,6 +65,7 @@ export class TrioAudio {
    * Web Audio is unavailable (headless test contexts).
    */
   captureStream(): MediaStream | null {
+    this.#ensureLiveContext();
     const ctx = this.#ctx;
     const comp = this.#comp;
     if (!ctx || !comp) return null;
@@ -95,16 +103,24 @@ export class TrioAudio {
    * Omit it and the live game gets exactly the same `new AudioContext()` as before.
    */
   constructor(injectedCtx?: BaseAudioContext) {
-    let ctx: AudioContext;
     if (injectedCtx) {
       // OfflineAudioContext exposes every create*/gain method the graph uses;
       // the AudioContext-only bits (suspend, resume, createMediaStreamDestination)
       // are simply never called offline.
-      ctx = injectedCtx as unknown as AudioContext;
-    } else {
-      if (typeof AudioContext === "undefined") return;
-      ctx = new AudioContext();
+      this.#initialize(injectedCtx as unknown as AudioContext, true);
     }
+  }
+
+  #ensureLiveContext(): void {
+    if (this.#ctx || typeof AudioContext === "undefined") return;
+    // Do not create a heavyweight audio graph during boot or headless autostart.
+    // The Start click (or any earlier real gesture) unlocks it; distance gating
+    // in update() ensures a distant trio still costs nothing.
+    if (typeof navigator !== "undefined" && navigator.userActivation?.hasBeenActive !== true) return;
+    this.#initialize(new AudioContext(), false);
+  }
+
+  #initialize(ctx: AudioContext, synchronousImpulse: boolean): void {
     this.#ctx = ctx;
     const master = ctx.createGain();
     master.gain.value = 0;
@@ -127,48 +143,112 @@ export class TrioAudio {
     const reverbIn = ctx.createGain();
     reverbIn.gain.value = 1;
     const convolver = ctx.createConvolver();
-    convolver.buffer = buildImpulse(ctx, 2.7, 3.2);
+    if (synchronousImpulse) convolver.buffer = buildImpulse(ctx, 2.7, 3.2);
+    else this.#buildImpulseOffThread(ctx, convolver, 2.7, 3.2);
     const wetReturn = ctx.createGain();
     wetReturn.gain.value = 0.9;
     reverbIn.connect(convolver).connect(wetReturn).connect(master);
     this.#reverbIn = reverbIn;
     this.#convolver = convolver;
+    for (const [id, channel] of this.#channels) this.#materializeChannel(id, channel);
+  }
+
+  #buildImpulseOffThread(
+    ctx: AudioContext,
+    convolver: ConvolverNode,
+    seconds: number,
+    decay: number
+  ): void {
+    try {
+      const worker = new Worker(new URL("./audioImpulseWorker.ts", import.meta.url), { type: "module" });
+      this.#impulseWorker = worker;
+      worker.onmessage = (event: MessageEvent<{ left: Float32Array; right: Float32Array }>) => {
+        worker.terminate();
+        if (this.#impulseWorker === worker) this.#impulseWorker = null;
+        if (this.#ctx !== ctx || this.#convolver !== convolver) return;
+        const { left, right } = event.data;
+        const buffer = ctx.createBuffer(2, left.length, ctx.sampleRate);
+        buffer.getChannelData(0).set(left);
+        buffer.getChannelData(1).set(right);
+        convolver.buffer = buffer;
+      };
+      worker.onerror = () => {
+        worker.terminate();
+        if (this.#impulseWorker === worker) this.#impulseWorker = null;
+        // Dry audio is a quality-safe fallback; never block play on reverb.
+      };
+      worker.postMessage({ sampleRate: ctx.sampleRate, seconds, decay });
+    } catch {
+      // Worker creation can be unavailable in restrictive embeds. Keep dry mix.
+    }
   }
 
   /** The per-musician tap. Creates the spatial chain on first request. */
   channel(id: BuskerId): MusicianAudio | null {
+    let ch = this.#channels.get(id);
+    if (!ch) {
+      const tap = {
+        ctx: null as unknown as AudioContext,
+        out: null as unknown as GainNode,
+        reverb: null as unknown as GainNode
+      };
+      ch = { tap, gain: null, panner: null, reverb: null, position: [0, 0, 0] };
+      this.#channels.set(id, ch);
+      if (this.#ctx) this.#materializeChannel(id, ch);
+    }
+    return ch.tap;
+  }
+
+  #materializeChannel(
+    _id: BuskerId,
+    channel: {
+      tap: MusicianAudio;
+      gain: GainNode | null;
+      panner: PannerNode | null;
+      reverb: GainNode | null;
+      position: [number, number, number];
+    }
+  ): void {
     const ctx = this.#ctx;
     const master = this.#master;
     const reverbIn = this.#reverbIn;
-    if (!ctx || !master || !reverbIn) return null;
-    let ch = this.#channels.get(id);
-    if (!ch) {
-      const panner = ctx.createPanner();
-      panner.panningModel = "HRTF";
-      panner.distanceModel = "inverse";
-      panner.refDistance = 7;
-      panner.rolloffFactor = 1.05;
-      panner.maxDistance = 140;
-      const gain = ctx.createGain();
-      gain.gain.value = 1;
-      gain.connect(panner).connect(master);
-      // wet send node the musician connects voices to; routes into the shared
-      // reverb bus. Its own gain is 1 — musicians decide how much to send.
-      const reverb = ctx.createGain();
-      reverb.gain.value = 1;
-      reverb.connect(reverbIn);
-      ch = { gain, panner, reverb };
-      this.#channels.set(id, ch);
+    if (!ctx || !master || !reverbIn || channel.gain) return;
+    const panner = ctx.createPanner();
+    panner.panningModel = "HRTF";
+    panner.distanceModel = "inverse";
+    panner.refDistance = 7;
+    panner.rolloffFactor = 1.05;
+    panner.maxDistance = 140;
+    const gain = ctx.createGain();
+    gain.gain.value = 1;
+    gain.connect(panner).connect(master);
+    const reverb = ctx.createGain();
+    reverb.gain.value = 1;
+    reverb.connect(reverbIn);
+    channel.gain = gain;
+    channel.panner = panner;
+    channel.reverb = reverb;
+    channel.tap.ctx = ctx;
+    channel.tap.out = gain;
+    channel.tap.reverb = reverb;
+    const [x, y, z] = channel.position;
+    if (panner.positionX) {
+      panner.positionX.value = x;
+      panner.positionY.value = y;
+      panner.positionZ.value = z;
+    } else {
+      (panner as unknown as { setPosition(x: number, y: number, z: number): void }).setPosition(x, y, z);
     }
-    return { ctx, out: ch.gain, reverb: ch.reverb };
   }
 
   /** World position of a musician's sound source (chest height at the seat). */
   setChannelPosition(id: BuskerId, x: number, y: number, z: number) {
-    const ctx = this.#ctx;
     const ch = this.#channels.get(id);
-    if (!ctx || !ch) return;
+    if (!ch) return;
+    ch.position = [x, y, z];
+    const ctx = this.#ctx;
     const p = ch.panner;
+    if (!ctx || !p) return;
     if (p.positionX) {
       const t = ctx.currentTime;
       p.positionX.setTargetAtTime(x, t, 0.05);
@@ -184,6 +264,7 @@ export class TrioAudio {
    * suspend/resume with distance. `distance` = camera → platform centre.
    */
   update(camera: THREE.Camera, distance: number, elapsed: number) {
+    if (!this.#ctx && distance < AUDIBLE_RADIUS - RESUME_HYSTERESIS) this.#ensureLiveContext();
     const ctx = this.#ctx;
     const master = this.#master;
     if (!ctx || !master) return;
@@ -240,10 +321,12 @@ export class TrioAudio {
   }
 
   dispose() {
+    this.#impulseWorker?.terminate();
+    this.#impulseWorker = null;
     for (const ch of this.#channels.values()) {
-      ch.gain.disconnect();
-      ch.panner.disconnect();
-      ch.reverb.disconnect();
+      ch.gain?.disconnect();
+      ch.panner?.disconnect();
+      ch.reverb?.disconnect();
     }
     this.#channels.clear();
     this.#reverbIn?.disconnect();

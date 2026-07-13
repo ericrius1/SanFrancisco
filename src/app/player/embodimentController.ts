@@ -6,6 +6,8 @@ import type { PlayerMode } from "../../player/types";
 import type { HUD } from "../../ui/hud";
 import { waterHeight } from "../../world/heightmap";
 import { oceanBeachShoreline } from "../../world/oceanBeachWaves";
+import { findLand, findWater } from "../../vehicles/shared";
+import { oceanBeachSurfEntryPose } from "../../vehicles/surf/entry";
 
 export type ReleaseMotion = {
   linear: [number, number, number];
@@ -161,6 +163,60 @@ export class EmbodimentController {
     if (mode === "drive" && !this.currentAnimal) player.setDriveStyle(null);
     if (mode === "drone") player.clearDroneStyle();
     player.trySwitch(mode);
+  }
+
+  /**
+   * Pure preview of mode-entry helpers that would move X/Z discontinuously.
+   * Navigation uses this to cover/prime the destination before trySwitch runs;
+   * local same-place embodiment swaps stay immediate.
+   */
+  modeSwitchRelocation(mode: PlayerMode): { x: number; y: number; z: number; label: string } | null {
+    const player = this.#player;
+    const p = player.position;
+    if (mode === "surf") {
+      return { ...oceanBeachSurfEntryPose(p.x, p.z, player.time), label: "Ocean Beach" };
+    }
+    if (mode === "boat" || mode === "speedboat") {
+      const openHere =
+        player.map.isWater(p.x, p.z) &&
+        player.map.bridgeDeck(p.x, p.z) === -Infinity &&
+        player.map.groundHeight(p.x, p.z) <= -1;
+      if (!openHere) {
+        const spot = findWater(player);
+        if (spot) {
+          return {
+            x: spot.x,
+            y: waterHeight(spot.x, spot.z, player.time) + 0.5,
+            z: spot.z,
+            label: "Open water"
+          };
+        }
+      }
+    }
+    if (mode === "drive" || mode === "scooter") {
+      const onBridge = player.map.bridgeDeck(p.x, p.z) > -Infinity;
+      if (!onBridge && player.map.isWater(p.x, p.z)) {
+        const spot = findLand(player);
+        if (spot) {
+          return {
+            x: spot.x,
+            y: player.map.effectiveGround(spot.x, spot.z) + 1.2,
+            z: spot.z,
+            label: "Nearest road"
+          };
+        }
+      }
+    }
+    if (mode === "walk" && player.mode === "surf") {
+      const shore = oceanBeachShoreline(player.map, p.z, 3);
+      return {
+        x: shore.x,
+        y: player.map.effectiveGround(shore.x, shore.z) + 1.5,
+        z: shore.z,
+        label: "Ocean Beach shore"
+      };
+    }
+    return null;
   }
 
   #exitClearance(mode: PlayerMode): number {

@@ -29,6 +29,7 @@ import {
   selectBodyCandidates,
   anchorInsideCollider,
   anchorHold,
+  obbPlanarDistance,
   type ColliderAnchor,
   type BodyTileSource
 } from "./buildingBodies";
@@ -53,6 +54,61 @@ const CARPET_SINK_CAP = 0.35;
 const CARPET_SUB_SLABS = 144; // 4m slabs -> 36 refinable 8m cells
 const CARPET_SUB2_SLABS = 96; // 2m slabs -> 24 refinable 4m quarters
 
+// Teleport arrival needs only a movement-safe local bubble before controls
+// unlock. The rest of the steady 260 m gameplay neighborhood can fill behind it.
+const ARRIVAL_COLLISION_RADIUS = 72;
+// Owner tiles contain baked OBBs that can extend ~102 m past their 800 m cell.
+// Requiring every manifest cell within 200 m of an arrival covers those boxes
+// while the actual body-safety disk remains the intentionally small 72 m.
+const ARRIVAL_COLLIDER_OWNER_REACH = 200;
+
+// Visual tiles span kilometres; camera/cursor/paint queries do not. Keep baked
+// visual-tile OBB mirrors in a compact local bubble with hysteresis.
+const QUERY_SOLID_LOAD_RADIUS = 340;
+const QUERY_SOLID_EVICT_RADIUS = 430;
+const QUERY_FOCUS_STEP = 24;
+
+// Authoritative Box3D mutations stay on the main thread in strict count + time
+// batches. Count limits prevent fast machines from creating an avalanche inside
+// a permissive wall-time sample.
+const BODY_ATTACH_PER_FRAME = 10;
+const BODY_RETIRE_PER_FRAME = 16;
+const BODY_MUTATION_MS = 0.8;
+const QUERY_ATTACH_PER_FRAME = 10;
+const QUERY_RETIRE_PER_FRAME = 20;
+const QUERY_MUTATION_MS = 0.65;
+
+export type CollisionArrivalStatus = Readonly<{
+  epoch: number;
+  current: boolean;
+  active: boolean;
+  groundReady: boolean;
+  colliderDataReady: boolean;
+  buildingBodiesReady: boolean;
+  ready: boolean;
+  pendingColliderTiles: number;
+  failedColliderTiles: number;
+  pendingBuildingBodies: number;
+}>;
+
+type CollisionArrival = {
+  epoch: number;
+  x: number;
+  y: number;
+  z: number;
+  active: boolean;
+  requiredTiles: string[];
+};
+
+type BodyAttach = { id: string; key: string; c: BuildingCollider; d: number };
+type QuerySolidAttach = {
+  generation: number;
+  id: string;
+  key: string;
+  c: BuildingCollider;
+  d: number;
+};
+
 // One baked always-resident box (bridge deck/rail segment, or a landmark proxy)
 // as served by data/landmark-colliders.json.
 type LandmarkBox = { x: number; y: number; z: number; hx: number; hy: number; hz: number; yaw?: number };
@@ -69,7 +125,7 @@ export class Physics {
   #carpetSubUsed = 0; // high-water of currently-placed (non-parked) sub slabs
   #carpetSub2Used = 0;
   // cells awaiting refinement + placement cursors: pass 2 drains ~1ms per
-  // frame from step() instead of all at once on the recenter frame
+  // rendered frame from maintainStreaming() instead of all at once on recenter
   #refineQueue: { wx: number; wz: number; d: number }[] = [];
   #refineSub = 0;
   #refineSub2 = 0;
@@ -89,8 +145,13 @@ export class Physics {
   #buildingBodies = new Map<number, { key: string; i: number; s: number }>();
   #bodyByBuilding = new Map<string, number>(); // "key:i:s" -> handle
   #tileColliders = new Map<string, BuildingCollider[]>();
+  #desiredBodyIds = new Set<string>();
+  #bodyAttachQueue: BodyAttach[] = []; // descending distance; nearest pops first
+  #bodyRetireQueue: number[] = [];
+  #bodyRetireSet = new Set<number>();
+  #buildingPlanDirty = true;
 
-  // Query-only world of static SOLIDS — every alive building box, plus the
+  // Query-only world of static SOLIDS — nearby alive building boxes, plus the
   // always-resident bridge + landmark boxes. Never stepped: box3d seeds a body's
   // broadphase AABB at shape-create time, so castRayClosest answers immediately
   // (verified). This is the single geometry authority behind raycastWorld — the
@@ -98,13 +159,20 @@ export class Physics {
   // than a heightfield plane, so shots hit its deck/rails/underside at any angle.
   #solids!: PhysicsWorld;
   #solidByBuilding = new Map<string, number[]>(); // "key:i" -> its sub-box handles
-  #solidTileIndex = new Map<string, string[]>(); // tile key -> "key:i" it owns (bulk unload)
-  // freshly streamed tiles whose query solids are still materializing — drained
-  // ~0.8 ms/frame in step() so a dense tile's hundreds of createBox calls never
-  // land in the arrival frame (measured hitch). `started` marks buildings this
-  // batch created, so a runtime alive-flip that raced ahead isn't double-added.
-  #solidQueue: { key: string; colliders: BuildingCollider[]; cursor: number; started: Set<string> }[] = [];
-  #landmarkSolids: number[] = []; // boot-resident bridge + landmark box handles
+  #solidByCollider = new Map<string, number>(); // "key:i:s" -> handle
+  #solidOwner = new Map<number, { id: string; key: string; i: number; s: number; c: BuildingCollider }>();
+  #solidTileIndex = new Map<string, Set<number>>(); // tile key -> handles it owns
+  #solidQueue: QuerySolidAttach[] = []; // descending distance; nearest pops first
+  #solidQueuedIds = new Set<string>();
+  #solidRetireQueue: number[] = [];
+  #solidRetireSet = new Set<number>();
+  #solidGeneration = 0;
+  #queryFocusX = NaN;
+  #queryFocusZ = NaN;
+  // Query-world mirrors used by raycasts. Stepped landmark/bridge support comes
+  // from the same boxes in canonical per-tile collider data (including b=0
+  // open-water bridge cells), so arrival readiness is owned by that one stream.
+  #landmarkSolids: number[] = [];
   #solidRay: RayCastHit = { handle: 0, px: 0, py: 0, pz: 0, nx: 0, ny: 0, nz: 0, distance: 0 };
   // CityGen exact-poly wall + interior boxes are created on the STEPPED world
   // (world/citygen/stream/ring.ts), so they're invisible to #solids — the query
@@ -128,8 +196,16 @@ export class Physics {
   // visual tile stream (see buildingColliderIndex.ts). Null until create()
   // finishes loading the manifest.
   #colliderIndex: BuildingColliderIndex | null = null;
+  #colliderIndexRevision = -1;
   #anchorList: ColliderAnchor[] = []; // reused per body update — no per-tick alloc
+  #indexAnchorList: ColliderAnchor[] = []; // active focus + prepared destination
   #bodyTiles: BodyTileSource<BuildingCollider>[] = []; // reused merged tile source
+  #collisionEpoch = 0;
+  #arrival: CollisionArrival | null = null;
+  #arrivalSelectionEpoch = -1;
+  #arrivalSelectionComplete = false;
+  #arrivalSafeBodyIds = new Set<string>();
+  #activeFocus = { x: NaN, y: NaN, z: NaN };
   #tick = 0;
 
   private constructor(map: WorldMap, tiles: TileStreamer) {
@@ -179,63 +255,237 @@ export class Physics {
       );
     }
 
-    tiles.onTileColliders = (key, colliders) => {
-      p.#tileColliders.set(key, colliders);
-      // solids materialize over the NEXT frames (see #drainTileSolids) — the
-      // synchronous whole-tile createBox burst was a measured arrival-frame hitch
-      p.#solidQueue.push({ key, colliders, cursor: 0, started: new Set() });
-    };
-    tiles.onTileUnload = (key) => {
-      p.#tileColliders.delete(key);
-      p.#removeTileSolids(key);
-      for (const [handle, info] of p.#buildingBodies) {
-        if (info.key === key) {
-          p.world.destroyBody(handle);
-          p.#buildingBodies.delete(handle);
-          p.#bodyByBuilding.delete(`${info.key}:${info.i}:${info.s}`);
-        }
-      }
-    };
-    // runtime solid add/drop on full suppress or revive (mesh-only suppression
-    // keeps the collider, so tiles never fires it for that)
-    tiles.onBuildingAlive = (key, index, alive) => p.#setBuildingSolidAlive(key, index, alive);
+    // Wire tile hooks from instance methods so private fields are only touched via
+    // `this.#…`. esbuild rejects `p.#private` inside static-create arrow callbacks.
+    p.#wireTileStreamerHooks(tiles);
 
-    // always-resident bridge + landmark solids: a fixed ~860-box set that no
-    // longer rides the per-tile stream, so open-water bridge spans (whose tiles
-    // aren't in the manifest) get a real collider. Best-effort — a failed fetch
-    // just leaves them ghost, exactly as before this system existed.
+    // Always-resident bridge + landmark mirrors for the never-stepped query
+    // world. Movement physics is deliberately not sourced here: the bake also
+    // emits these boxes into canonical collider tiles, including explicit b=0
+    // manifest cells over open-water bridge spans. That bounded tile stream is
+    // therefore the single arrival-readiness and stepped-body authority.
+    const landmarkController = new AbortController();
+    const landmarkTimer = setTimeout(() => landmarkController.abort(), 4_000);
     try {
-      const res = await fetch("/data/landmark-colliders.json");
+      const res = await fetch("/data/landmark-colliders.json", { signal: landmarkController.signal });
       if (res.ok) {
         for (const b of (await res.json()) as LandmarkBox[]) {
           p.#landmarkSolids.push(p.#makeSolid(b.x, b.y, b.z, b.hx, b.hy, b.hz, b.yaw ?? 0));
         }
       }
     } catch (err) {
-      console.warn("[physics] landmark/bridge solids unavailable — bridge stays ghost", err);
+      console.warn("[physics] landmark/bridge query mirrors unavailable", err);
+    } finally {
+      clearTimeout(landmarkTimer);
     }
 
-    // citywide collider index: baked OBBs around every anchor, decoupled from the
-    // visual tile stream. Best-effort — a failed manifest load just leaves the
-    // index null and physics falls back to visual-only (the prior behaviour).
-    try {
-      const index = new BuildingColliderIndex();
-      await index.init();
-      p.#colliderIndex = index;
-    } catch (err) {
-      console.warn("[physics] collider index disabled — visual-only building bodies", err);
-    }
+    // One canonical service owns both physics and visual collider metadata. It
+    // initializes from TileStreamer's already-loaded manifest, so there is no
+    // second boot request and no misleading "visual-only" state after removing
+    // the duplicate visual worker. Individual tile/network failures remain
+    // explicit, retryable, and fail closed through the arrival status.
+    const index = new BuildingColliderIndex();
+    await index.init(tiles.manifest);
+    p.#colliderIndex = index;
+    tiles.setColliderSource(index);
     return p;
   }
 
-  step(dt: number, playerPos: THREE.Vector3) {
+  /** Bind TileStreamer callbacks with `this.#` access (safe for esbuild). */
+  #wireTileStreamerHooks(tiles: TileStreamer): void {
+    tiles.onTileColliders = (key, colliders) => {
+      this.#tileColliders.set(key, colliders);
+      this.#buildingPlanDirty = true;
+      // A visual tile can be kilometres away. Only enqueue OBBs intersecting the
+      // current local query bubble.
+      this.#enqueueLocalQueryTile(key, colliders);
+    };
+    tiles.onTileUnload = (key) => {
+      this.#tileColliders.delete(key);
+      this.#buildingPlanDirty = true;
+      this.#retireTileSolids(key);
+      for (const [handle, info] of this.#buildingBodies) {
+        if (info.key === key) this.#queueBodyRetire(handle);
+      }
+    };
+    // runtime solid add/drop on full suppress or revive (mesh-only suppression
+    // keeps the collider, so tiles never fires it for that)
+    tiles.onBuildingAlive = (key, index, alive) => {
+      this.#buildingPlanDirty = true;
+      this.#setBuildingSolidAlive(key, index, alive);
+    };
+  }
+
+  /**
+   * Prime destination collider data without moving the live collision focus.
+   * Calling again supersedes the prior arrival; epochs never repeat within this
+   * Physics instance, so stale async transition work cannot unlock a newer one.
+   */
+  prepareCollisionArrival(destination: Readonly<{ x: number; y?: number; z: number }>): number {
+    const epoch = ++this.#collisionEpoch;
+    const x = destination.x;
+    const z = destination.z;
+    const requiredTiles = this.#arrivalTileKeys(x, z);
+    this.#arrival = {
+      epoch,
+      x,
+      y: destination.y ?? this.map.effectiveGround(x, z),
+      z,
+      active: false,
+      requiredTiles
+    };
+    // Terminal failures stay explicit so an arrival can fail closed, but a new
+    // user-initiated attempt gets a fresh bounded retry instead of inheriting a
+    // dead tile forever.
+    for (const key of requiredTiles) {
+      if (this.#colliderIndex?.didTileFail(key)) this.#colliderIndex.retryTile(key);
+    }
+    this.#arrivalSelectionEpoch = -1;
+    this.#arrivalSelectionComplete = false;
+    this.#arrivalSafeBodyIds.clear();
+    this.#updateColliderIndex(this.#activeFocus);
+    tracer.count("collisionArrivalPrepare");
+    return epoch;
+  }
+
+  /** Switch the local collision focus after the player/camera teleport commit. */
+  activateCollisionArrival(epoch: number): boolean {
+    const arrival = this.#arrival;
+    if (!arrival || arrival.epoch !== epoch) return false;
+    arrival.active = true;
+    this.#activeFocus.x = arrival.x;
+    this.#activeFocus.y = arrival.y;
+    this.#activeFocus.z = arrival.z;
+    this.#arrivalSelectionEpoch = -1;
+    this.#arrivalSelectionComplete = false;
+    this.#arrivalSafeBodyIds.clear();
+    this.#desiredBodyIds.clear();
+    this.#bodyAttachQueue.length = 0;
+    this.#buildingPlanDirty = true;
+    this.#updateQuerySolidNeighborhood(this.#activeFocus, true);
+    tracer.count("collisionArrivalActivate");
+    return true;
+  }
+
+  /** Poll while controls are held; `ready` means ground + local building safety. */
+  collisionArrivalStatus(epoch: number): CollisionArrivalStatus {
+    const arrival = this.#arrival;
+    const current = !!arrival && arrival.epoch === epoch;
+    if (!arrival || !current) {
+      return {
+        epoch,
+        current: false,
+        active: false,
+        groundReady: false,
+        colliderDataReady: false,
+        buildingBodiesReady: false,
+        ready: false,
+        pendingColliderTiles: 0,
+        failedColliderTiles: 0,
+        pendingBuildingBodies: 0
+      };
+    }
+
+    let pendingColliderTiles = 0;
+    let failedColliderTiles = 0;
+    for (const key of arrival.requiredTiles) {
+      if (this.#hasColliderTile(key)) continue;
+      pendingColliderTiles++;
+      if (this.#colliderIndex?.didTileFail(key)) failedColliderTiles++;
+    }
+    const colliderDataReady = pendingColliderTiles === 0;
+    const groundReady = arrival.active && this.#groundReadyAt(arrival.x, arrival.z);
+    let pendingBuildingBodies = 0;
+    for (const id of this.#arrivalSafeBodyIds) {
+      const handle = this.#bodyByBuilding.get(id);
+      if (handle === undefined || this.#bodyRetireSet.has(handle)) pendingBuildingBodies++;
+    }
+    const buildingBodiesReady =
+      arrival.active &&
+      colliderDataReady &&
+      this.#arrivalSelectionEpoch === epoch &&
+      this.#arrivalSelectionComplete &&
+      pendingBuildingBodies === 0;
+    return {
+      epoch,
+      current: true,
+      active: arrival.active,
+      groundReady,
+      colliderDataReady,
+      buildingBodiesReady,
+      ready: groundReady && buildingBodiesReady,
+      pendingColliderTiles,
+      failedColliderTiles,
+      pendingBuildingBodies
+    };
+  }
+
+  isCollisionArrivalReady(epoch: number): boolean {
+    return this.collisionArrivalStatus(epoch).ready;
+  }
+
+  /**
+   * Retire a successful one-shot arrival milestone before movement resumes.
+   * Keeping the fixed destination alive after the player walks away makes its
+   * ground test fail and incorrectly turns normal streaming into an every-frame
+   * "pending arrival" rebuild. The steady player focus owns residency from this
+   * point onward; already-created local bodies remain available to that plan.
+   */
+  completeCollisionArrival(epoch: number): boolean {
+    const status = this.collisionArrivalStatus(epoch);
+    if (!status.current || !status.ready) return false;
+    this.#arrival = null;
+    this.#arrivalSelectionEpoch = -1;
+    this.#arrivalSelectionComplete = false;
+    this.#arrivalSafeBodyIds.clear();
+    this.#buildingPlanDirty = true;
+    tracer.count("collisionArrivalComplete");
+    return true;
+  }
+
+  /** Retry only terminally failed tiles for the current arrival. Each index
+   * request keeps its own bounded attempt policy; callers also bound how many
+   * fresh request cycles they initiate. */
+  retryCollisionArrival(epoch: number): number {
+    const arrival = this.#arrival;
+    const index = this.#colliderIndex;
+    if (!arrival || arrival.epoch !== epoch || !index) return 0;
+    let restarted = 0;
+    for (const key of arrival.requiredTiles) {
+      if (index.didTileFail(key) && index.retryTile(key)) restarted++;
+    }
+    if (restarted > 0) this.#buildingPlanDirty = true;
+    return restarted;
+  }
+
+  /**
+   * Advance bounded collision-streaming work once per rendered frame. Keep this
+   * outside the fixed-step catch-up loop: a slow frame may simulate three ticks,
+   * but it must not also triple body/query creation or rebuild the arrival plan
+   * three times. Calling this even when no fixed tick is due lets arrival
+   * collision continue converging on high-refresh displays.
+   */
+  maintainStreaming(playerPos: THREE.Vector3): void {
     this.#tick++;
+    this.#activeFocus.x = playerPos.x;
+    this.#activeFocus.y = playerPos.y;
+    this.#activeFocus.z = playerPos.z;
+    this.#updateColliderIndex(playerPos);
     this.#updateTerrainPatch(playerPos);
     this.#updateCarpet(playerPos);
     this.#drainRefine();
+    this.#updateQuerySolidNeighborhood(playerPos);
+    const arrival = this.#arrival;
+    const arrivalPending = !!arrival && arrival.active && !this.isCollisionArrivalReady(arrival.epoch);
+    if (this.#buildingPlanDirty || arrivalPending || this.#tick % 12 === 0) {
+      this.#updateBuildingBodies(playerPos);
+    }
+    this.#drainBuildingMutations();
     this.#drainTileSolids();
-    if (this.#tick % 12 === 0) this.#updateBuildingBodies(playerPos);
+  }
 
+  /** Advance only the deterministic stepped physics world. */
+  step(dt: number): void {
     // 2 solver substeps: every mover here is velocity-driven (cars, player,
     // boat springs), so the solver only reconciles contacts — 4 substeps was
     // a 240 Hz solver nobody could see, at double the wasm cost. A crash into a
@@ -443,6 +693,62 @@ export class Physics {
 
   // -------------------------------------------------------------- buildings
 
+  /** Manifest cells whose baked building OBBs can intersect the safety disk. */
+  #arrivalTileKeys(x: number, z: number): string[] {
+    const out: string[] = [];
+    const half = this.tiles.manifest.tile * 0.5;
+    for (const key of Object.keys(this.tiles.manifest.tiles)) {
+      const [cx, cz] = this.tiles.keyToCenter(key);
+      const dx = Math.max(0, Math.abs(cx - x) - half);
+      const dz = Math.max(0, Math.abs(cz - z) - half);
+      if (dx * dx + dz * dz <= ARRIVAL_COLLIDER_OWNER_REACH * ARRIVAL_COLLIDER_OWNER_REACH) out.push(key);
+    }
+    return out;
+  }
+
+  #hasColliderTile(key: string): boolean {
+    const visual = this.#tileColliders.get(key);
+    if (visual) return true;
+    return this.#colliderIndex?.isTileReady(key) ?? false;
+  }
+
+  /** The patch supplies ordinary ground and the recentered carpet covers holes. */
+  #groundReadyAt(x: number, z: number): boolean {
+    const carpetReady =
+      this.#carpetCX === Math.round(x / CONFIG.carpetCell) &&
+      this.#carpetCZ === Math.round(z / CONFIG.carpetCell) &&
+      this.#carpetGroundRevision === this.map.groundRevision;
+    if (!carpetReady) return false;
+    if (!this.#terrainPatchAvailable) return true;
+    return (
+      !!this.#terrainPatch &&
+      this.#terrainPatch.centerX === terrainPatchAnchor(x) &&
+      this.#terrainPatch.centerZ === terrainPatchAnchor(z) &&
+      this.#terrainPatchGroundRevision === this.map.groundRevision
+    );
+  }
+
+  /** During preparation retain the active origin and prime the destination. */
+  #updateColliderIndex(playerPos: Readonly<{ x: number; y?: number; z: number }>): void {
+    const index = this.#colliderIndex;
+    if (!index) return;
+    const anchors = this.#indexAnchorList;
+    anchors.length = 0;
+    if (Number.isFinite(playerPos.x) && Number.isFinite(playerPos.z)) {
+      anchors.push({ x: playerPos.x, y: playerPos.y, z: playerPos.z, r: CONFIG.colliderRadius });
+    }
+    const arrival = this.#arrival;
+    if (arrival && !arrival.active) {
+      anchors.push({ x: arrival.x, y: arrival.y, z: arrival.z, r: ARRIVAL_COLLISION_RADIUS });
+    }
+    index.update(anchors);
+    if (this.#colliderIndexRevision !== index.revision) {
+      this.#colliderIndexRevision = index.revision;
+      this.#buildingPlanDirty = true;
+      this.#updateQuerySolidNeighborhood(this.#activeFocus, true);
+    }
+  }
+
   /** Player collider anchor (#0, full radius). Reused array — no per-tick alloc. */
   #gatherAnchors(playerPos: THREE.Vector3): ColliderAnchor[] {
     const out = this.#anchorList;
@@ -518,6 +824,14 @@ export class Physics {
     return this.#colliderIndex?.tiles.get(key)?.find((col) => col.i === i && col.s === s);
   }
 
+  #hasColliderSource(key: string): boolean {
+    return this.#tileColliders.has(key) || this.#colliderIndex?.tiles.has(key) === true;
+  }
+
+  #collidersForKey(key: string): BuildingCollider[] | undefined {
+    return this.#tileColliders.get(key) ?? this.#colliderIndex?.tiles.get(key);
+  }
+
   /** Merged tile source for a body/sweep query: visual tiles (alive-gated) plus
    *  index tiles for keys the player can't see. Reused array — no per-tick alloc. */
   #mergedBodyTiles(): BodyTileSource<BuildingCollider>[] {
@@ -530,7 +844,7 @@ export class Physics {
     const idx = this.#colliderIndex;
     if (idx) {
       for (const [key, colliders] of idx.tiles) {
-        if (this.#tileColliders.has(key)) continue; // visual copy already added (and alive-gated)
+        if (this.#tileColliders.has(key)) continue; // canonical alias already added (alive-gated)
         const [cx, cz] = this.tiles.keyToCenter(key);
         src.push({ key, cx, cz, colliders });
       }
@@ -538,26 +852,28 @@ export class Physics {
     return src;
   }
 
-  /** A building is alive when its visual tile says so; index-only tiles (no one
-   *  looking) can't have been suppressed, so they're always alive. */
+  /** Visual residency, not callback timing, makes suppression authoritative. */
   #bodyIsAlive = (key: string, i: number): boolean =>
-    this.#tileColliders.has(key) ? this.tiles.isAlive(key, i) : true;
+    this.tiles.loaded.has(key) ? this.tiles.isAlive(key, i) : true;
 
   #updateBuildingBodies(playerPos: THREE.Vector3) {
+    this.#buildingPlanDirty = false;
     const budget = CONFIG.maxActiveBuildingBodies;
     const anchors = this.#gatherAnchors(playerPos);
-    // stream baked OBBs around the player anchor so nearby buildings have data
-    this.#colliderIndex?.update(anchors);
 
     // rank every alive building within the anchor's radius by min wall distance
-    // (footprint edge, not centre) so the closest facades get a static body.
+    // (footprint edge, not centre). Ask for one overflow record so arrival never
+    // claims its safety bubble is complete when the global cap cuts through it.
     const tiles = this.#mergedBodyTiles();
-    const kept = selectBodyCandidates(anchors, tiles, budget, this.#bodyIsAlive, this.tiles.manifest.tile);
+    const ranked = selectBodyCandidates(anchors, tiles, budget + 1, this.#bodyIsAlive, this.tiles.manifest.tile);
+    const overflow = ranked.length > budget;
+    const kept = overflow ? ranked.slice(0, budget) : ranked;
 
     // when the budget saturates, everything past the cutoff is fair game to
     // evict — with hysteresis so bodies don't churn at the boundary
     const cutoff = kept.length === budget && budget > 0 ? kept[kept.length - 1].d : Infinity;
-    const wanted = new Set<string>();
+    const wanted = this.#desiredBodyIds;
+    wanted.clear();
     for (const cand of kept) wanted.add(`${cand.key}:${cand.c.i}:${cand.c.s}`);
 
     for (const [handle, info] of this.#buildingBodies) {
@@ -575,17 +891,35 @@ export class Physics {
       // death, not just distance, so the baked body is gone the instant the exact
       // walls take over and returns when the ring retires them (alive→1/255).
       if (!c || hold === Infinity || !this.#bodyIsAlive(info.key, info.i) || (!wanted.has(id) && hold > cutoff * 1.2 + 10)) {
-        this.world.destroyBody(handle);
-        this.#buildingBodies.delete(handle);
-        this.#bodyByBuilding.delete(id);
-      }
+        this.#queueBodyRetire(handle);
+      } else this.#bodyRetireSet.delete(handle); // focus came back before retirement
     }
 
+    const arrival = this.#arrival;
+    const arrivalDataReady =
+      !!arrival &&
+      arrival.active &&
+      arrival.requiredTiles.every((key) => this.#hasColliderTile(key));
+    if (arrivalDataReady) {
+      this.#arrivalSafeBodyIds.clear();
+      this.#arrivalSelectionEpoch = arrival.epoch;
+      this.#arrivalSelectionComplete = !overflow || ranked[budget].d > ARRIVAL_COLLISION_RADIUS;
+    } else {
+      this.#arrivalSelectionEpoch = -1;
+      this.#arrivalSelectionComplete = false;
+      this.#arrivalSafeBodyIds.clear();
+    }
+
+    const nextAttach: BodyAttach[] = [];
     for (const cand of kept) {
-      if (this.#buildingBodies.size >= budget) return;
       const { key, c } = cand;
       const id = `${key}:${c.i}:${c.s}`;
-      if (this.#bodyByBuilding.has(id)) continue;
+      const existing = this.#bodyByBuilding.get(id);
+      if (existing !== undefined) {
+        this.#bodyRetireSet.delete(existing);
+        if (arrivalDataReady && cand.d <= ARRIVAL_COLLISION_RADIUS) this.#arrivalSafeBodyIds.add(id);
+        continue;
+      }
       // Never materialise a box around an anchor actually inside its 3D volume:
       // some OBBs overhang plazas, and a dynamic body spawned inside a static box
       // gets pinned by the solver. This used to test XZ only, so an airborne board
@@ -600,6 +934,57 @@ export class Physics {
         }
       }
       if (insideAny) continue;
+      if (arrivalDataReady && cand.d <= ARRIVAL_COLLISION_RADIUS) this.#arrivalSafeBodyIds.add(id);
+      nextAttach.push({ id, key, c, d: cand.d });
+    }
+    // pop() returns nearest first without O(n) shifts.
+    nextAttach.sort((a, b) => b.d - a.d);
+    this.#bodyAttachQueue = nextAttach;
+  }
+
+  #queueBodyRetire(handle: number): void {
+    if (!this.#buildingBodies.has(handle) || this.#bodyRetireSet.has(handle)) return;
+    this.#bodyRetireSet.add(handle);
+    this.#bodyRetireQueue.push(handle);
+  }
+
+  /** Incrementally swap origin bodies for destination bodies. Retirement gets a
+   * short first slice to free budget, leaving the majority for nearest attaches. */
+  #drainBuildingMutations(): void {
+    const t0 = performance.now();
+    let retired = 0;
+    while (
+      retired < BODY_RETIRE_PER_FRAME &&
+      this.#bodyRetireQueue.length > 0 &&
+      performance.now() - t0 < BODY_MUTATION_MS * 0.38
+    ) {
+      const handle = this.#bodyRetireQueue.pop()!;
+      if (!this.#bodyRetireSet.delete(handle)) continue;
+      const info = this.#buildingBodies.get(handle);
+      if (!info) continue;
+      const id = `${info.key}:${info.i}:${info.s}`;
+      if (this.#desiredBodyIds.has(id) && this.#bodyIsAlive(info.key, info.i)) continue;
+      this.world.destroyBody(handle);
+      this.#buildingBodies.delete(handle);
+      this.#bodyByBuilding.delete(id);
+      retired++;
+      tracer.count("buildingBodyRetire");
+    }
+
+    let attached = 0;
+    while (
+      attached < BODY_ATTACH_PER_FRAME &&
+      this.#bodyAttachQueue.length > 0 &&
+      performance.now() - t0 < BODY_MUTATION_MS
+    ) {
+      const job = this.#bodyAttachQueue.pop()!;
+      if (!this.#desiredBodyIds.has(job.id) || this.#bodyByBuilding.has(job.id)) continue;
+      if (!this.#bodyIsAlive(job.key, job.c.i)) continue;
+      if (this.#buildingBodies.size >= CONFIG.maxActiveBuildingBodies) {
+        this.#bodyAttachQueue.push(job);
+        break;
+      }
+      const c = job.c;
       const yaw = c.yaw;
       const handle = this.world.createBox({
         type: BodyType.Static,
@@ -608,9 +993,12 @@ export class Physics {
         friction: 0.7
       });
       this.world.setBodyTransform(handle, [c.x, c.y, c.z], [0, Math.sin(yaw / 2), 0, Math.cos(yaw / 2)]);
-      this.#buildingBodies.set(handle, { key, i: c.i, s: c.s });
-      this.#bodyByBuilding.set(id, handle);
+      this.#buildingBodies.set(handle, { key: job.key, i: c.i, s: c.s });
+      this.#bodyByBuilding.set(job.id, handle);
+      attached++;
+      tracer.count("buildingBodyAttach");
     }
+    if (this.#bodyAttachQueue.length) tracer.count("buildingBodyQ", this.#bodyAttachQueue.length);
   }
 
   /** Highest alive-building rooftop within `radius` of (x, z); -Infinity if none. */
@@ -797,6 +1185,20 @@ export class Physics {
       bestT = sHit.distance;
       bestN = [sHit.nx, sHit.ny, sHit.nz];
     }
+    let bestHandle: number | undefined = sHit?.handle;
+
+    // Rare long interactions (notably camera-mode double-click at up to 2.5 km)
+    // still need distant visible buildings even though they no longer deserve
+    // thousands of resident Box3D query bodies. Use the old exact OBB slab math
+    // only for those long casts; ordinary per-frame gameplay stays on broadphase.
+    if (maxDist > QUERY_SOLID_EVICT_RADIUS) {
+      const far = this.#castVisualTileObbs(origin, dir, Math.min(maxDist, bestT));
+      if (far && far.distance < bestT) {
+        bestT = far.distance;
+        bestN = far.normal;
+        bestHandle = undefined;
+      }
+    }
 
     // --- terrain: coarse march + bisection refine on the sign flip. Marches the
     // rendered top-ground surface (map.groundTop = terrain + draped park lawns),
@@ -846,7 +1248,78 @@ export class Physics {
       return { point, normal, kind, distance: groundT };
     }
     const point = new THREE.Vector3(origin.x + dir.x * bestT, origin.y + dir.y * bestT, origin.z + dir.z * bestT);
-    return { point, normal: new THREE.Vector3(...bestN!), kind: "building", distance: bestT, handle: this.#solidRay.handle };
+    return { point, normal: new THREE.Vector3(...bestN!), kind: "building", distance: bestT, handle: bestHandle };
+  }
+
+  /** On-demand distant OBB cast. This preserves long camera-mode picking without
+   * paying for far Box3D bodies during normal rendering or movement. */
+  #castVisualTileObbs(
+    origin: THREE.Vector3,
+    dir: THREE.Vector3,
+    maxDist: number
+  ): { distance: number; normal: [number, number, number] } | null {
+    let bestT = maxDist;
+    let bestN: [number, number, number] | null = null;
+    const midX = origin.x + (dir.x * maxDist) / 2;
+    const midZ = origin.z + (dir.z * maxDist) / 2;
+    for (const [key, colliders] of this.#tileColliders) {
+      const [tcx, tcz] = this.tiles.keyToCenter(key);
+      if (Math.hypot(tcx - midX, tcz - midZ) > this.tiles.manifest.tile * 0.75 + maxDist / 2 + 120) continue;
+      for (const c of colliders) {
+        const cdx = c.x - midX;
+        const cdz = c.z - midZ;
+        const reach = c.hx + c.hz + maxDist / 2;
+        if (cdx * cdx + cdz * cdz > reach * reach || !this.tiles.isAlive(key, c.i)) continue;
+
+        const cos = c.cosYaw;
+        const sin = c.sinYaw;
+        const ox = (origin.x - c.x) * cos - (origin.z - c.z) * sin;
+        const oy = origin.y - c.y;
+        const oz = (origin.x - c.x) * sin + (origin.z - c.z) * cos;
+        const dx = dir.x * cos - dir.z * sin;
+        const dy = dir.y;
+        const dz = dir.x * sin + dir.z * cos;
+        let tmin = 0;
+        let tmax = bestT;
+        let axis = -1;
+        let sign = 1;
+        let miss = false;
+        for (const [o, d, half, ax] of [
+          [ox, dx, c.hx, 0],
+          [oy, dy, c.hy, 1],
+          [oz, dz, c.hz, 2]
+        ] as const) {
+          if (Math.abs(d) < 1e-9) {
+            if (Math.abs(o) > half) miss = true;
+            if (miss) break;
+            continue;
+          }
+          let t0 = (-half - o) / d;
+          let t1 = (half - o) / d;
+          const entrySign = d > 0 ? -1 : 1;
+          if (t0 > t1) [t0, t1] = [t1, t0];
+          if (t0 > tmin) {
+            tmin = t0;
+            axis = ax;
+            sign = entrySign;
+          }
+          tmax = Math.min(tmax, t1);
+          if (tmin > tmax) {
+            miss = true;
+            break;
+          }
+        }
+        if (miss || axis < 0 || tmin >= bestT) continue;
+        bestT = tmin;
+        if (axis === 1) bestN = [0, sign, 0];
+        else {
+          const lnx = axis === 0 ? sign : 0;
+          const lnz = axis === 2 ? sign : 0;
+          bestN = [lnx * cos + lnz * sin, 0, -lnx * sin + lnz * cos];
+        }
+      }
+    }
+    return bestN ? { distance: bestT, normal: bestN } : null;
   }
 
   // ------------------------------------------------- world-solid query bodies
@@ -861,91 +1334,173 @@ export class Physics {
     return h;
   }
 
-  /** Mirror freshly streamed tiles' ALIVE building colliders into #solids,
-   * budgeted (~0.8 ms/frame): a dense downtown tile carries hundreds of boxes and
-   * creating them all in the arrival frame was a measured hitch. Landmark boxes
-   * (i beyond the OSM building count) are skipped — boot-resident. A building the
-   * runtime alive-flip already materialized (or killed) while its tile sat in the
-   * queue is left alone: only buildings THIS batch `started` accept more boxes. */
-  #drainTileSolids(): void {
-    const queue = this.#solidQueue;
-    if (queue.length === 0) return;
-    const t0 = performance.now();
-    while (queue.length > 0) {
-      const job = queue[0];
-      const nB = this.tiles.manifest.tiles[job.key]?.b ?? 0;
-      while (job.cursor < job.colliders.length) {
-        if (performance.now() - t0 > 0.8) {
-          tracer.count("tileSolidQ", queue.length);
-          return; // resume next step
-        }
-        const c = job.colliders[job.cursor++];
-        if (c.i >= nB) continue; // landmark — boot-resident
-        if (!this.tiles.isAlive(job.key, c.i)) continue; // suppressed / dead at load
-        const bk = `${job.key}:${c.i}`;
-        let arr = this.#solidByBuilding.get(bk);
-        if (!arr) {
-          this.#solidByBuilding.set(bk, (arr = []));
-          job.started.add(bk);
-          const owned = this.#solidTileIndex.get(job.key);
-          if (owned) owned.push(bk);
-          else this.#solidTileIndex.set(job.key, [bk]);
-        } else if (!job.started.has(bk)) {
-          continue; // alive-flip materialized this building first — don't double-add
-        }
-        const h = this.#makeSolid(c.x, c.y, c.z, c.hx, c.hy, c.hz, c.yaw);
-        arr.push(h);
-        this.#solidTag.set(h, { key: job.key, i: c.i });
-        tracer.count("tileSolids");
+  /** Rebuild the pending local set only after meaningful movement or a teleport. */
+  #updateQuerySolidNeighborhood(focus: Readonly<{ x: number; z: number }>, force = false): void {
+    if (!Number.isFinite(focus.x) || !Number.isFinite(focus.z)) return;
+    const moved = Math.hypot(focus.x - this.#queryFocusX, focus.z - this.#queryFocusZ);
+    if (!force && moved < QUERY_FOCUS_STEP) return;
+    this.#queryFocusX = focus.x;
+    this.#queryFocusZ = focus.z;
+    this.#solidGeneration++;
+    this.#solidQueue.length = 0;
+    this.#solidQueuedIds.clear();
+
+    // Existing bodies get a generous outer band so ordinary motion does not
+    // churn them. Destruction is queued, never performed in this scan.
+    for (const [handle, owner] of this.#solidOwner) {
+      if (
+        !this.#hasColliderSource(owner.key) ||
+        !this.#bodyIsAlive(owner.key, owner.i) ||
+        obbPlanarDistance(owner.c, focus.x, focus.z) > QUERY_SOLID_EVICT_RADIUS
+      ) {
+        this.#queueSolidRetire(handle);
+      } else {
+        this.#solidRetireSet.delete(handle);
       }
-      queue.shift();
     }
+    for (const [key, colliders] of this.#tileColliders) this.#enqueueLocalQueryTile(key, colliders, undefined, false);
+    const index = this.#colliderIndex;
+    if (index) {
+      for (const [key, colliders] of index.tiles) {
+        if (!this.#tileColliders.has(key)) this.#enqueueLocalQueryTile(key, colliders, undefined, false);
+      }
+    }
+    this.#solidQueue.sort((a, b) => b.d - a.d);
   }
 
-  /** Drop every building solid a tile owns when it unloads (and abandon any
-   * still-queued materialization for it). */
-  #removeTileSolids(key: string): void {
+  /** Enqueue only boxes inside the active local query disk, nearest first. */
+  #enqueueLocalQueryTile(
+    key: string,
+    colliders: BuildingCollider[],
+    onlyBuilding?: number,
+    sort = true
+  ): void {
+    if (!Number.isFinite(this.#queryFocusX) || !Number.isFinite(this.#queryFocusZ)) return;
+    const [tcx, tcz] = this.tiles.keyToCenter(key);
+    const half = this.tiles.manifest.tile * 0.5;
+    const dx = Math.max(0, Math.abs(tcx - this.#queryFocusX) - half);
+    const dz = Math.max(0, Math.abs(tcz - this.#queryFocusZ) - half);
+    const tileReach = QUERY_SOLID_LOAD_RADIUS + 120; // tolerate large edge-crossing footprints
+    if (dx * dx + dz * dz > tileReach * tileReach) return;
+    for (const c of colliders) {
+      if (onlyBuilding !== undefined && c.i !== onlyBuilding) continue;
+      const d = obbPlanarDistance(c, this.#queryFocusX, this.#queryFocusZ);
+      if (d > QUERY_SOLID_LOAD_RADIUS || !this.#bodyIsAlive(key, c.i)) continue;
+      const id = `${key}:${c.i}:${c.s}`;
+      const existing = this.#solidByCollider.get(id);
+      if (existing !== undefined) {
+        this.#solidRetireSet.delete(existing);
+        continue;
+      }
+      if (this.#solidQueuedIds.has(id)) continue;
+      this.#solidQueuedIds.add(id);
+      this.#solidQueue.push({ generation: this.#solidGeneration, id, key, c, d });
+    }
+    if (sort) this.#solidQueue.sort((a, b) => b.d - a.d);
+  }
+
+  #queueSolidRetire(handle: number): void {
+    if (!this.#solidOwner.has(handle) || this.#solidRetireSet.has(handle)) return;
+    this.#solidRetireSet.add(handle);
+    this.#solidRetireQueue.push(handle);
+  }
+
+  /** Tile unload only schedules retirement; a dense origin tile never dies in one frame. */
+  #retireTileSolids(key: string): void {
     for (let i = this.#solidQueue.length - 1; i >= 0; i--) {
-      if (this.#solidQueue[i].key === key) this.#solidQueue.splice(i, 1);
+      const job = this.#solidQueue[i];
+      if (job.key !== key) continue;
+      this.#solidQueuedIds.delete(job.id);
+      this.#solidQueue.splice(i, 1);
     }
     const owned = this.#solidTileIndex.get(key);
-    if (!owned) return;
-    for (const bk of owned) {
-      const arr = this.#solidByBuilding.get(bk);
-      if (arr) for (const h of arr) { this.#solids.destroyBody(h); this.#solidTag.delete(h); }
-      this.#solidByBuilding.delete(bk);
-    }
-    this.#solidTileIndex.delete(key);
+    if (owned) for (const handle of owned) this.#queueSolidRetire(handle);
   }
 
-  /** Add/drop a single building's solid when its alive state flips at runtime
-   * (full suppress or revive). Keeps #solids in step with the visual
-   * alive flags the old per-ray isAlive test used to consult. */
-  #setBuildingSolidAlive(key: string, i: number, alive: boolean): void {
-    const bk = `${key}:${i}`;
+  #destroyTileSolid(handle: number): void {
+    const owner = this.#solidOwner.get(handle);
+    if (!owner) return;
+    this.#solids.destroyBody(handle);
+    this.#solidOwner.delete(handle);
+    this.#solidByCollider.delete(owner.id);
+    this.#solidTag.delete(handle);
+    const bk = `${owner.key}:${owner.i}`;
     const arr = this.#solidByBuilding.get(bk);
-    if (alive) {
-      if (arr && arr.length) return; // already present
-      const cols = this.#tileColliders.get(key);
-      if (!cols) return;
-      const fresh: number[] = [];
-      for (const c of cols) if (c.i === i) {
-        const h = this.#makeSolid(c.x, c.y, c.z, c.hx, c.hy, c.hz, c.yaw);
-        fresh.push(h);
-        this.#solidTag.set(h, { key, i });
-      }
-      if (fresh.length) {
-        this.#solidByBuilding.set(bk, fresh);
-        const owned = this.#solidTileIndex.get(key) ?? [];
-        if (!owned.includes(bk)) {
-          owned.push(bk);
-          this.#solidTileIndex.set(key, owned);
-        }
-      }
-    } else if (arr) {
-      for (const h of arr) { this.#solids.destroyBody(h); this.#solidTag.delete(h); }
-      this.#solidByBuilding.set(bk, []); // keep the entry so the tile index still owns it
+    if (arr) {
+      const at = arr.indexOf(handle);
+      if (at >= 0) arr.splice(at, 1);
+      if (arr.length === 0) this.#solidByBuilding.delete(bk);
     }
+    const owned = this.#solidTileIndex.get(owner.key);
+    if (owned) {
+      owned.delete(handle);
+      if (owned.size === 0) this.#solidTileIndex.delete(owner.key);
+    }
+  }
+
+  /** Drain local query creates and stale destroys in bounded, main-thread batches. */
+  #drainTileSolids(): void {
+    const t0 = performance.now();
+    let retired = 0;
+    while (
+      retired < QUERY_RETIRE_PER_FRAME &&
+      this.#solidRetireQueue.length > 0 &&
+      performance.now() - t0 < QUERY_MUTATION_MS * 0.35
+    ) {
+      const handle = this.#solidRetireQueue.pop()!;
+      if (!this.#solidRetireSet.delete(handle)) continue;
+      const owner = this.#solidOwner.get(handle);
+      if (!owner) continue;
+      if (
+        this.#hasColliderSource(owner.key) &&
+        this.#bodyIsAlive(owner.key, owner.i) &&
+        obbPlanarDistance(owner.c, this.#queryFocusX, this.#queryFocusZ) <= QUERY_SOLID_EVICT_RADIUS
+      ) {
+        continue;
+      }
+      this.#destroyTileSolid(handle);
+      retired++;
+      tracer.count("tileSolidRetire");
+    }
+
+    let attached = 0;
+    while (
+      attached < QUERY_ATTACH_PER_FRAME &&
+      this.#solidQueue.length > 0 &&
+      performance.now() - t0 < QUERY_MUTATION_MS
+    ) {
+      const job = this.#solidQueue.pop()!;
+      this.#solidQueuedIds.delete(job.id);
+      if (job.generation !== this.#solidGeneration || !this.#hasColliderSource(job.key)) continue;
+      if (this.#solidByCollider.has(job.id) || !this.#bodyIsAlive(job.key, job.c.i)) continue;
+      if (obbPlanarDistance(job.c, this.#queryFocusX, this.#queryFocusZ) > QUERY_SOLID_LOAD_RADIUS) continue;
+      const c = job.c;
+      const h = this.#makeSolid(c.x, c.y, c.z, c.hx, c.hy, c.hz, c.yaw);
+      this.#solidByCollider.set(job.id, h);
+      this.#solidOwner.set(h, { id: job.id, key: job.key, i: c.i, s: c.s, c });
+      const bk = `${job.key}:${c.i}`;
+      const arr = this.#solidByBuilding.get(bk) ?? [];
+      arr.push(h);
+      this.#solidByBuilding.set(bk, arr);
+      const owned = this.#solidTileIndex.get(job.key) ?? new Set<number>();
+      owned.add(h);
+      this.#solidTileIndex.set(job.key, owned);
+      this.#solidTag.set(h, { key: job.key, i: c.i });
+      attached++;
+      tracer.count("tileSolids");
+    }
+    if (this.#solidQueue.length) tracer.count("tileSolidQ", this.#solidQueue.length);
+  }
+
+  /** Alive flips share the same bounded local queues; no synchronous bursts. */
+  #setBuildingSolidAlive(key: string, i: number, alive: boolean): void {
+    const arr = this.#solidByBuilding.get(`${key}:${i}`);
+    if (!alive) {
+      if (arr) for (const handle of arr) this.#queueSolidRetire(handle);
+      return;
+    }
+    const cols = this.#collidersForKey(key);
+    if (cols) this.#enqueueLocalQueryTile(key, cols, i);
   }
 
   /**

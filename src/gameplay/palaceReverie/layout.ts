@@ -1,15 +1,12 @@
 import { PALACE_FINE_ARTS, PALACE_LAGOON } from "../../world/heightmap";
 
+export { REVERIE_CENTER } from "./meta";
+
 /**
  * Palace Reverie — a blue-hour art experience at the Palace of Fine Arts.
  * Every authored world position lives here so the quest, minimap pin, site
  * gate, NPCs, and cinematic cannot drift apart while the piece is tuned.
  */
-
-export const REVERIE_CENTER = {
-  x: PALACE_LAGOON.x - 18,
-  z: PALACE_LAGOON.z + 8
-} as const;
 
 /** Rotunda / palace landmark for camera look-ats. */
 export const REVERIE_ROTUNDA = {

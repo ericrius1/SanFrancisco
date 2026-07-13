@@ -88,7 +88,9 @@ async function runOnce(chrome, serverUrl, runIdx) {
   const proc = spawn(chrome, [
     `--user-data-dir=${profileDir}`, "--headless=new", `--remote-debugging-port=${port}`,
     "--enable-unsafe-webgpu", "--enable-features=WebGPUDeveloperFeatures", "--use-angle=metal",
-    "--hide-scrollbars", "--mute-audio", `--window-size=${W},${H}`, "about:blank"
+    "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding", "--hide-scrollbars", "--mute-audio",
+    `--window-size=${W},${H}`, "about:blank"
   ], { cwd: ROOT, stdio: "ignore" });
   try {
     let page;

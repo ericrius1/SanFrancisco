@@ -1,6 +1,7 @@
 import * as THREE from "three/webgpu";
-import { float, instanceIndex, mix, positionLocal, sin, time, uniform, uv, vec3 } from "three/tsl";
+import { float, instanceIndex, mix, positionLocal, sin, time, uv, vec3 } from "three/tsl";
 import { LIGHT_SCALE } from "../../config";
+import { featherWind } from "./wind";
 
 /**
  * Plumage layer for the phoenix: solid leathery wing membranes plus fans of
@@ -17,9 +18,6 @@ import { LIGHT_SCALE } from "../../config";
  * quaternion — so it must run while the GLB is still unflipped/unscaled,
  * right after load.
  */
-
-/** 0..1 flutter strength, written by BirdController from airspeed + wingbeat. */
-export const featherWind = uniform(0.3);
 
 const BACK = new THREE.Vector3(0, 0, -1); // trailing edge (beak is +Z)
 const UP = new THREE.Vector3(0, 1, 0);
