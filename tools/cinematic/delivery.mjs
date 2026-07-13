@@ -1,17 +1,19 @@
 import { mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
-  OUTPUT_ROOT,
+  PUBLISH_ROOT,
+  REVIEW_ROOT,
   ROOT,
   auditVideo,
   ffprobeVideo,
   fileExists,
+  publishVideo,
   relativeToRoot,
   runCommand
 } from "./capture.mjs";
 
 export const X_DELIVERY_SCHEMA = 1;
-export const X_DELIVERY_DIR = path.join(OUTPUT_ROOT, "delivery", "x");
+export const X_DELIVERY_REVIEW_DIR = path.join(REVIEW_ROOT, "delivery", "x");
 
 const defaultLog = (message) => console.log(`[delivery:x] ${message}`);
 
@@ -87,7 +89,8 @@ function encodeArgs(inputFile, outputFile, variant) {
     `fps=${variant.fps}`,
     `scale=${variant.width}:${variant.height}:flags=lanczos+accurate_rnd+full_chroma_int`,
     "setsar=1",
-    "format=yuv420p"
+    "format=yuv420p",
+    "setparams=range=limited:color_primaries=bt709:color_trc=bt709:colorspace=bt709"
   ].join(",");
   return [
     "-hide_banner", "-y",
@@ -239,7 +242,8 @@ async function encodeVariant({ inputFile, outputDir, stem, source, id, ffmpeg, f
 
 export async function exportXDelivery({
   inputFile,
-  outputDir = X_DELIVERY_DIR,
+  reviewDir = X_DELIVERY_REVIEW_DIR,
+  publishDir = PUBLISH_ROOT,
   experimental4k = false,
   force = false,
   ffmpeg = process.env.FFMPEG_BIN ?? process.env.FFMPEG_PATH ?? "ffmpeg",
@@ -248,18 +252,19 @@ export async function exportXDelivery({
 }) {
   const resolvedInput = path.resolve(ROOT, inputFile);
   if (!(await fileExists(resolvedInput))) throw new Error(`input does not exist: ${relativeToRoot(resolvedInput)}`);
-  const resolvedOutputDir = path.resolve(ROOT, outputDir);
-  await mkdir(resolvedOutputDir, { recursive: true });
+  const resolvedReviewDir = path.resolve(ROOT, reviewDir);
+  await mkdir(resolvedReviewDir, { recursive: true });
   const sourceProbe = await ffprobeVideo(resolvedInput, { ffprobe });
   const source = sourceInfo(sourceProbe, relativeToRoot(resolvedInput));
   const sourceStat = await stat(resolvedInput);
   const stem = path.basename(resolvedInput, path.extname(resolvedInput));
+  const publishStem = stem.replace(/-(?:master|fast)$/, "");
   const ids = ["x-1080p30", ...(experimental4k ? ["x-4k30-experimental"] : [])];
   const variants = [];
   for (const id of ids) {
     variants.push(await encodeVariant({
       inputFile: resolvedInput,
-      outputDir: resolvedOutputDir,
+      outputDir: resolvedReviewDir,
       stem,
       source,
       id,
@@ -269,7 +274,17 @@ export async function exportXDelivery({
       force
     }));
   }
-  const manifestFile = path.join(resolvedOutputDir, `${stem}-x-delivery.json`);
+  const publishedVariants = [];
+  for (const variant of variants) {
+    const suffix = variant.experimental ? "upscale-4k30-experimental" : "social-1080p30";
+    const published = await publishVideo(variant.outputFile, {
+      filename: `${publishStem}-${suffix}.mp4`,
+      publishDir,
+      log
+    });
+    publishedVariants.push({ ...variant, publishedFile: published.file });
+  }
+  const manifestFile = path.join(resolvedReviewDir, `${stem}-x-delivery.json`);
   const report = {
     schema: X_DELIVERY_SCHEMA,
     platform: "X",
@@ -289,13 +304,14 @@ export async function exportXDelivery({
         : "Not requested. Pass --experimental-4k to generate a 2x Lanczos A/B candidate.",
       overlays: "No delivery-time overlays or text are added."
     },
-    variants: variants.map((variant) => ({
+    variants: publishedVariants.map((variant) => ({
       ...variant,
       outputFile: path.relative(ROOT, variant.outputFile),
-      auditFile: path.relative(ROOT, variant.auditFile)
+      auditFile: path.relative(ROOT, variant.auditFile),
+      publishedFile: variant.publishedFile
     }))
   };
   await writeFile(manifestFile, `${JSON.stringify(report, null, 2)}\n`);
   log(`manifest ${relativeToRoot(manifestFile)}`);
-  return { ...report, manifestFile, variants };
+  return { ...report, manifestFile, variants: publishedVariants };
 }

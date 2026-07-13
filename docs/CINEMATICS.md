@@ -57,11 +57,11 @@ npm run render:cinematics
 # Rebuild only the combined film from existing individual masters.
 npm run render:cinematic -- --combine
 
-# Make the conservative X upload derivative from any finished film.
-npm run deliver:x -- renders/cinematics/roqn-open-road/roqn-open-road-fast.mp4
+# Make the conservative X upload derivative from any finished internal film.
+npm run deliver:x -- .data/cinematics/review/roqn-open-road/roqn-open-road-fast.mp4
 
 # Also make the tweet-suggested 2x upscale as an experimental A/B candidate.
-npm run deliver:x -- renders/cinematics/roqn-open-road/roqn-open-road-fast.mp4 --experimental-4k
+npm run deliver:x -- .data/cinematics/review/roqn-open-road/roqn-open-road-fast.mp4 --experimental-4k
 
 # Render the 55-second, eight-shot Summer in Motion stress test and X derivative.
 npm run render:twitter-summer
@@ -81,7 +81,8 @@ Run `npm run render:cinematic -- --help` for resolution, fps, frame format,
 quality, take-name, seed, and settle-frame overrides. Environment equivalents
 use the `SF_CINE_*` prefix. Settings intentionally have one current schema; add
 new defaults directly to `tools/cinematic/productions.mjs` rather than adding
-legacy migrations.
+legacy migrations. `SF_CINE_PUBLISH_DIR` may override the final MP4 directory;
+the default is `/Users/eric/videos/my creations/sf/renders/cinematics`.
 
 ## X delivery
 
@@ -110,11 +111,13 @@ multiplies encode and upload cost. Test the two files in otherwise identical
 posts on the actual account, then compare fine foliage, particles, gradients,
 water, and motion after X finishes processing.
 
-Delivery files live in `renders/cinematics/delivery/x/`. Every run writes a JSON
-manifest with the exact policy/encoder settings, technical audit, file sizes,
-and an informational SSIM comparison against the source. SSIM measures local
-generation loss; it does not simulate X's undisclosed transcoder. The exporter
-never adds text, titles, bars, logos, or other overlays.
+Approved MP4s publish directly into `/Users/eric/videos/my
+creations/sf/renders/cinematics` with technical names such as
+`*-social-1080p30.mp4`; there is no platform-specific publish folder. Internal
+delivery files live under `.data/cinematics/review/delivery/x/`. Every run keeps
+its JSON manifest, technical audit, file sizes, and informational SSIM there.
+SSIM measures local generation loss; it does not simulate X's undisclosed
+transcoder. The exporter never adds text, titles, bars, logos, or other overlays.
 
 Compression-aware shot design matters more than a magic FFmpeg flag. Prefer
 larger and fewer particles, deterministic temporal seeds, motion blur instead
@@ -207,18 +210,21 @@ the visual transition.
 
 Work files live under `.data/cinematics/<production>/<take>/` and include the
 frame manifest, PCM audio, and either master frames or the fast Annex-B H.264
-bitstream. Review and delivery artifacts live under `renders/cinematics/`:
+bitstream. Review, audit, and delivery artifacts remain internal:
 
 ```text
-renders/cinematics/<production>/<production>-<take>.mp4
-renders/cinematics/<production>/<production>-<take>.poster.jpg
-renders/cinematics/<production>/<production>-<take>.contact.jpg
-renders/cinematics/<production>/<production>-<take>.audit.json
-renders/cinematics/<production>/<production>-<take>.frames.json
-renders/cinematics/combined/hoverboard-to-dog-park-<take>.*
-renders/cinematics/twitter-summer/twitter-summer-master.*
-renders/cinematics/twitter-summer/transition-review/*-mid.jpg
-renders/cinematics/delivery/x/twitter-summer-master-x-1080p30.mp4
+.data/cinematics/review/<production>/<production>-<take>.*
+.data/cinematics/review/combined/hoverboard-to-dog-park-<take>.*
+.data/cinematics/review/twitter-summer/twitter-summer-master.*
+.data/cinematics/review/twitter-summer/transition-review/*-mid.jpg
+.data/cinematics/review/delivery/x/*
+```
+
+The publish tree contains MP4 files only:
+
+```text
+/Users/eric/videos/my creations/sf/renders/cinematics/<film>.mp4
+/Users/eric/videos/my creations/sf/renders/cinematics/<film>-social-1080p30.mp4
 ```
 
 The audit verifies dimensions, fps, duration, exact frame count, codecs, H.264

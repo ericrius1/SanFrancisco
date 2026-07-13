@@ -4,7 +4,7 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { renderCinematicAudio } from "./cinematic/audio.mjs";
 import {
-  OUTPUT_ROOT,
+  REVIEW_ROOT,
   ROOT,
   auditVideo,
   captureFastProduction,
@@ -12,6 +12,7 @@ import {
   createReviewArtifacts,
   fileExists,
   muxFastProduction,
+  publishVideo,
   relativeToRoot,
   startVite,
   stopCinematicProcesses
@@ -123,7 +124,7 @@ async function renderShot(production, viteUrl, { reuseShots }) {
 }
 
 function finalPaths() {
-  const outputDir = path.join(OUTPUT_ROOT, "twitter-summer");
+  const outputDir = path.join(REVIEW_ROOT, "twitter-summer");
   const base = path.join(outputDir, "twitter-summer-master");
   return {
     outputDir,
@@ -202,6 +203,10 @@ async function main() {
     log
   });
   const masterInfo = await stat(paths.videoFile);
+  const publishedMaster = await publishVideo(paths.videoFile, {
+    filename: "twitter-summer-master.mp4",
+    log
+  });
 
   let delivery = null;
   if (!options.skipDelivery) {
@@ -231,6 +236,7 @@ async function main() {
     assembly: { ...assembly, wallSeconds: assemblyWallSeconds },
     master: {
       file: path.relative(ROOT, paths.videoFile),
+      published: publishedMaster.file,
       bytes: masterInfo.size,
       poster: path.relative(ROOT, paths.posterFile),
       contact: path.relative(ROOT, paths.contactFile),
@@ -241,7 +247,7 @@ async function main() {
       manifest: path.relative(ROOT, delivery.manifestFile),
       variants: delivery.variants.map((variant) => ({
         id: variant.id,
-        file: path.relative(ROOT, variant.outputFile),
+        file: variant.publishedFile,
         bytes: variant.bytes,
         ssim: variant.similarity.ssim
       }))
@@ -255,8 +261,8 @@ async function main() {
     console.log(`${shot.id.padEnd(20)} capture ${shot.captureWallSeconds.toFixed(1).padStart(6)}s  ${shot.reused ? "reused" : shot.auditStatus}`);
   }
   console.log(`${"assembly".padEnd(20)} ${assemblyWallSeconds.toFixed(1).padStart(6)}s  ${audit.status}`);
-  console.log(`${"master".padEnd(20)} ${relativeToRoot(paths.videoFile)}`);
-  if (delivery) for (const variant of delivery.variants) console.log(`${variant.id.padEnd(20)} ${relativeToRoot(variant.outputFile)}`);
+  console.log(`${"master".padEnd(20)} ${relativeToRoot(publishedMaster.file)}`);
+  if (delivery) for (const variant of delivery.variants) console.log(`${variant.id.padEnd(20)} ${relativeToRoot(variant.publishedFile)}`);
   console.log(`${"total wall".padEnd(20)} ${report.wallSeconds.toFixed(1)}s`);
   console.log(`${"─".repeat(76)}\n`);
 }

@@ -244,6 +244,10 @@ See [Cinematic rendering](docs/CINEMATICS.md) for probe renders, shot authoring,
 the fast WebCodecs review backend, archival fixed-frame capture, camera
 preflight, audio, outputs, and QA.
 
+Approved videos publish as MP4-only files in
+`/Users/eric/videos/my creations/sf/renders/cinematics`. Contacts, manifests,
+audits, frames, and temporary encodes stay under `.data/cinematics/`.
+
 Create an X-ready derivative of any finished film with
 `npm run deliver:x -- <video.mp4>`. The opt-in `--experimental-4k` flag also
 makes a labeled 2x upscale for account-level A/B testing without changing the

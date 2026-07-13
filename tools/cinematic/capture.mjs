@@ -1,12 +1,15 @@
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
-import { access, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 export const WORK_ROOT = path.join(ROOT, ".data", "cinematics");
-export const OUTPUT_ROOT = path.join(ROOT, "renders", "cinematics");
+export const REVIEW_ROOT = path.join(WORK_ROOT, "review");
+export const PUBLISH_ROOT = path.resolve(
+  process.env.SF_CINE_PUBLISH_DIR ?? "/Users/eric/videos/my creations/sf/renders/cinematics"
+);
 
 const activeChildren = new Set();
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -34,7 +37,36 @@ export async function stopCinematicProcesses() {
 }
 
 export function relativeToRoot(file) {
-  return path.relative(ROOT, file) || ".";
+  const resolved = path.resolve(file);
+  const relative = path.relative(ROOT, resolved);
+  return relative === "" ? "." : relative.startsWith(`..${path.sep}`) || relative === ".." ? resolved : relative;
+}
+
+export async function publishVideo(sourceFile, {
+  filename = path.basename(sourceFile),
+  publishDir = PUBLISH_ROOT,
+  log = defaultLog
+} = {}) {
+  if (path.basename(filename) !== filename || path.extname(filename).toLowerCase() !== ".mp4") {
+    throw new Error(`published filename must be one .mp4 path component (received ${JSON.stringify(filename)})`);
+  }
+  const source = path.resolve(sourceFile);
+  if (!(await fileExists(source))) throw new Error(`cannot publish missing video ${relativeToRoot(source)}`);
+  const destinationDir = path.resolve(publishDir);
+  const destination = path.join(destinationDir, filename);
+  const temporary = path.join(destinationDir, `.${filename}.${process.pid}.tmp`);
+  await mkdir(destinationDir, { recursive: true });
+  await rm(temporary, { force: true });
+  try {
+    await copyFile(source, temporary);
+    await rename(temporary, destination);
+  } catch (error) {
+    await rm(temporary, { force: true });
+    throw error;
+  }
+  const info = await stat(destination);
+  log(`published ${relativeToRoot(destination)}`);
+  return { file: destination, bytes: info.size };
 }
 
 export async function fileExists(file) {
@@ -364,7 +396,7 @@ async function launchChrome({ production, profileDir, log = defaultLog }) {
 
 export function cinematicPaths(production) {
   const workDir = path.join(WORK_ROOT, production.id, production.take);
-  const outputDir = path.join(OUTPUT_ROOT, production.id);
+  const outputDir = path.join(REVIEW_ROOT, production.id);
   const baseName = `${production.id}-${production.take}`;
   return {
     workDir,

@@ -4,7 +4,7 @@ import { mkdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { renderCinematicAudio } from "./cinematic/audio.mjs";
 import {
-  OUTPUT_ROOT,
+  REVIEW_ROOT,
   ROOT,
   WORK_ROOT,
   auditVideo,
@@ -15,6 +15,7 @@ import {
   encodeProduction,
   fileExists,
   muxFastProduction,
+  publishVideo,
   relativeToRoot,
   startVite,
   stopCinematicProcesses
@@ -60,7 +61,8 @@ Settings (environment equivalents use SF_CINE_*):
   --url <vite-url>     Use an existing Vite instead of a private server
   --help               Show this help
 
-Outputs: renders/cinematics/**    Work/master frames: .data/cinematics/**
+Final MP4s: /Users/eric/videos/my creations/sf/renders/cinematics
+Internal review/work files: .data/cinematics/**
 `.trim();
 }
 
@@ -198,7 +200,9 @@ async function renderFull(production, viteUrl, { fast = false } = {}) {
     auditFile: paths.auditFile,
     log
   });
-  return { production, paths, audio, encoded, audit };
+  if (audit.status === "failed") throw new Error(`${production.id} technical audit failed; refusing to publish`);
+  const published = await publishVideo(encoded.file, { filename: path.basename(paths.videoFile), log });
+  return { production, paths, audio, encoded, audit, published };
 }
 
 async function runCaptures(options, productions) {
@@ -227,7 +231,7 @@ async function runCaptures(options, productions) {
 }
 
 function combinedPaths(take) {
-  const outputDir = path.join(OUTPUT_ROOT, "combined");
+  const outputDir = path.join(REVIEW_ROOT, "combined");
   const workDir = path.join(WORK_ROOT, "combined", take);
   const baseName = `hoverboard-to-dog-park-${take}`;
   return {
@@ -291,12 +295,15 @@ async function combineRendered(productionMap) {
     auditFile: paths.auditFile,
     log
   });
+  if (audit.status === "failed") throw new Error("combined film technical audit failed; refusing to publish");
+  const published = await publishVideo(paths.videoFile, { filename: path.basename(paths.videoFile), log });
   const info = await stat(paths.videoFile);
   await writeJson(paths.manifestFile, {
     schema: 1,
     id: "hoverboard-to-dog-park",
     sources: [path.relative(ROOT, hoverPaths.videoFile), path.relative(ROOT, dogPaths.videoFile)],
     output: path.relative(ROOT, paths.videoFile),
+    published: published.file,
     bytes: info.size,
     width: hoverboard.width,
     height: hoverboard.height,
@@ -306,7 +313,7 @@ async function combineRendered(productionMap) {
     transition,
     audit: { file: path.relative(ROOT, paths.auditFile), status: audit.status }
   });
-  return { paths, transition, audit };
+  return { paths, transition, audit, published };
 }
 
 function printSummary(results, combined) {
@@ -315,16 +322,14 @@ function printSummary(results, combined) {
   console.log("─".repeat(72));
   for (const result of results) {
     if (result.encoded) {
-      console.log(`${result.production.id.padEnd(12)} ${relativeToRoot(result.paths.videoFile)}`);
-      console.log(`${"".padEnd(12)} poster ${relativeToRoot(result.paths.posterFile)}`);
-      console.log(`${"".padEnd(12)} contact ${relativeToRoot(result.paths.contactFile)}`);
+      console.log(`${result.production.id.padEnd(12)} ${relativeToRoot(result.published.file)}`);
       console.log(`${"".padEnd(12)} audit ${result.audit.status}, audio ${result.audit.measured.audioRmsDb.toFixed(1)} dB RMS`);
     } else {
       console.log(`${result.production.id.padEnd(12)} ${result.capture.manifest.capture.mode}: ${relativeToRoot(result.capture.captureDir)}`);
     }
   }
   if (combined) {
-    console.log(`${"combined".padEnd(12)} ${relativeToRoot(combined.paths.videoFile)}`);
+    console.log(`${"combined".padEnd(12)} ${relativeToRoot(combined.published.file)}`);
     console.log(`${"".padEnd(12)} transition ${combined.transition.transitionDuration.toFixed(2)}s, audit ${combined.audit.status}`);
   }
   console.log(`${"─".repeat(72)}\n`);
