@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:hmr": "SF_FULL_RELOAD=1 vite",
     "dev:play": "SF_HMR=0 vite",
     "build": "tsc --noEmit && vite build && node tools/precompress-dist.mjs",
     "precompress": "node tools/precompress-dist.mjs",

@@ -190,8 +190,10 @@ export class OceanBeachWaves {
       .mul(sin(wx.mul(0.19).add(t.mul(1.3))))
       .mul(f.face)
       .mul(0.24);
-    const curl = f.lip.mul(1.35);
-    mat.positionNode = positionLocal.add(vec3(curl, f.height.add(faceChop).add(f.lip.mul(0.42)), 0));
+    // The lip throws SHOREWARD (+X) and slightly up as it pitches — a stronger
+    // overhang now that the wall stands taller. curl on X + a small lift.
+    const curl = f.lip.mul(2.4);
+    mat.positionNode = positionLocal.add(vec3(curl, f.height.add(faceChop).add(f.lip.mul(0.6)), 0));
 
     // strip + window feathering so the patch melts into the flat bay water
     const stripFade = f.mask; // already 0 outside the break, feathered inside

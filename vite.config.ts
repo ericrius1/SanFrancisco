@@ -2,9 +2,12 @@ import { createServer } from "node:net";
 import { fileURLToPath, URL } from "node:url";
 import { defineConfig, type Plugin } from "vite";
 
-// HMR is the default development workflow. Set SF_HMR=0 for long play sessions
-// where even structural edits should wait for a manual browser refresh.
+// Soft HMR is the default: in-place module swaps work, full page reloads are
+// suppressed so multi-agent edits do not interrupt a play session.
+//   SF_FULL_RELOAD=1 — restore Vite automatic full reloads
+//   SF_HMR=0         — disable the HMR websocket entirely (no soft swaps)
 const HMR_ENABLED = process.env.SF_HMR !== "0";
+const FULL_RELOAD_ENABLED = process.env.SF_FULL_RELOAD === "1";
 
 const RELAY_PORT = process.env.SF_RELAY_PORT || "8787";
 const RELAY_WS = `ws://localhost:${RELAY_PORT}`;
@@ -49,12 +52,40 @@ const relayPlugin = (): Plugin => ({
   }
 });
 
+/** Drop Vite full-reload WS payloads unless SF_FULL_RELOAD=1. Soft updates pass through. */
+const softHmrPlugin = (): Plugin => ({
+  name: "sf-soft-hmr",
+  configureServer(server) {
+    if (FULL_RELOAD_ENABLED || !HMR_ENABLED) return;
+    const send = server.ws.send.bind(server.ws);
+    server.ws.send = ((payload: unknown, ...args: unknown[]) => {
+      if (
+        payload &&
+        typeof payload === "object" &&
+        "type" in payload &&
+        (payload as { type?: string }).type === "full-reload"
+      ) {
+        const path =
+          "path" in payload && typeof (payload as { path?: unknown }).path === "string"
+            ? (payload as { path: string }).path
+            : "";
+        console.info(`[sf] full reload suppressed${path ? ` (${path})` : ""} — refresh manually when ready`);
+        return;
+      }
+      return (send as (...a: unknown[]) => unknown)(payload, ...args);
+    }) as typeof server.ws.send;
+  }
+});
+
 // The whole app runs on the WebGPU build of three. Addons (GLTFLoader, SkyMesh,
 // PointerLockControls) and camera-controls import the bare "three" specifier;
 // alias it to the WebGPU build so there is a single module/class instance and no
 // duplicate-three "instanceof" breakage.
 export default defineConfig({
-  plugins: [relayPlugin()],
+  plugins: [relayPlugin(), softHmrPlugin()],
+  define: {
+    "import.meta.env.SF_FULL_RELOAD": FULL_RELOAD_ENABLED
+  },
   resolve: {
     alias: [{ find: /^three$/, replacement: "three/webgpu" }],
     dedupe: ["three", "three/webgpu", "three/tsl"]

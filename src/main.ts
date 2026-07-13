@@ -1,3 +1,5 @@
+// Soft-HMR guard must register before any other import.meta.hot listeners.
+import { suppressesFullReload } from "./app/hmr/suppressFullReload";
 import * as THREE from "three/webgpu";
 import * as TSL from "three/tsl";
 import CameraControls from "camera-controls";
@@ -1956,9 +1958,12 @@ async function boot() {
         camera: { yaw: chase.yaw, pitch: chase.pitch, zoom: chase.zoom }
       });
     };
-    import.meta.hot.on("vite:beforeFullReload", captureDevReload);
+    // Soft-HMR mode suppresses the reload, so skip writing a one-shot snapshot.
+    if (!suppressesFullReload) {
+      import.meta.hot.on("vite:beforeFullReload", captureDevReload);
+    }
     // Vite reconnect/server-restart reloads do not emit beforeFullReload, but
-    // still pass through the browser lifecycle.
+    // still pass through the browser lifecycle. Manual refresh also lands here.
     window.addEventListener("beforeunload", captureDevReload);
   }
 
