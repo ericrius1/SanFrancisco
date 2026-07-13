@@ -100,14 +100,21 @@ async function main() {
     // 8. upward at an angle (offset so lookAt isn't degenerate) — vault ceiling check
     await frame("md_8_ceiling.jpg", [CX - 5, F + 2, CZ - 10], [CX + 3, F + 13, CZ + 2]);
 
-    // 6. open the Canticle book at the pedestal and shoot the reader
-    await evaluate(c, `(()=>{const s=window.__sf,p=s.player; const y=${F}+1.6; p.position.set(${CX},y,${CZ - 28}); p.renderPosition.copy(p.position); s.physics.world.setBodyTransform(p.body,[${CX},y,${CZ - 28}],[0,0,0,1]);
+    // 6. open the Canticle book at the pedestal and shoot the WebGPU reader.
+    // The book is a 3D quad drawn in front of the camera, so we must keep TICKING
+    // after opening (the tick's book branch renders it + glues it to the camera).
+    const opened = await evaluate(c, `(()=>{const s=window.__sf,p=s.player; const y=${F}+1.6; p.position.set(${CX},y,${CZ - 28}); p.renderPosition.copy(p.position); s.physics.world.setBodyTransform(p.body,[${CX},y,${CZ - 28}],[0,0,0,1]);
+      s.camera.position.set(${CX}, y, ${CZ - 24}); s.camera.lookAt(${CX}, y, ${CZ + 10});
       s.missionDolores.tryInteract(p.position, 'walk', { message(){} }); return s.missionDolores.bookOpen; })()`);
-    await sleep(1200);
+    console.log("[probe] book opened:", opened, "museumBookOpen(render branch active):", await evaluate(c, `!!window.__sf.missionDolores.bookOpen`));
+    for (let i = 0; i < 12; i++) await tick(c);
+    console.log("[probe] bookdbg:", JSON.stringify(await evaluate(c, `(()=>{const s=window.__sf; const cam=s.camera; const found=[]; s.scene.traverse(o=>{ if(o.renderOrder>=990){ const wp=new s.THREE.Vector3(); o.getWorldPosition(wp); found.push({n:o.name||o.type, ro:o.renderOrder, vis:o.visible, wp:[+wp.x.toFixed(1),+wp.y.toFixed(1),+wp.z.toFixed(1)], mat:o.material&&o.material.type}); } }); const cp=cam.position; return {count:found.length, cam:[+cp.x.toFixed(1),+cp.y.toFixed(1),+cp.z.toFixed(1)], sample:found.slice(0,4)}; })()`)));
+    await sleep(600);
     await shot(c, "md_6_book_cover.jpg");
-    // turn a few pages via the reader's arrow-key handler
-    await evaluate(c, `(()=>{for(let i=0;i<2;i++) window.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true})); return 1;})()`);
-    await sleep(900);
+    // turn a few pages via the reader's own arrow-key handler
+    await evaluate(c, `(()=>{for(let i=0;i<2;i++) window.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight'})); return 1;})()`);
+    for (let i = 0; i < 12; i++) await tick(c);
+    await sleep(500);
     await shot(c, "md_7_book_page.jpg");
 
     console.log("[probe] console errors:", consoleErrors.length ? "\n  " + consoleErrors.slice(0, 20).join("\n  ") : "(none)");

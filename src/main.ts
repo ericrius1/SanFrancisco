@@ -112,6 +112,7 @@ import {
 import { MENU_MODES, ModeDiscovery, ALL_MODES } from "./player/discovery";
 import { BootScreen } from "./app/bootScreen";
 import { createRenderCore } from "./app/renderCore";
+import { initTextures } from "./render/textures";
 import { createBuskersSystem } from "./app/systems/buskers";
 import { createSessionPersistence } from "./app/sessionPersistence";
 import { startFrameDriver } from "./app/frameDriver";
@@ -137,6 +138,7 @@ async function boot() {
 
   progress(18, "waking the gpu");
   const { renderer, scene, camera } = await createRenderCore(app);
+  initTextures(renderer); // wire the KTX2 transcoder now that the renderer is initialized
   bootMark("gpu");
 
   const sky = new Sky(scene);
@@ -609,16 +611,20 @@ async function boot() {
   try {
     // Mission San Francisco de Asís (Mission Dolores) — the founding Franciscan
     // mission the city is named for, rebuilt basilica-scale and turned into a
-    // walkable museum of Saint Francis. The Canticle book (E at the pedestal)
-    // freezes the world exactly like the behind-the-scenes reader.
+    // walkable museum of Saint Francis. Heavy shell + KTX2 exhibits build lazily
+    // on approach. The Canticle book (E at the pedestal) freezes the world like
+    // the behind-the-scenes reader while its storybook overlay is open.
     missionDolores = createMissionDoloresMuseum(map, physics, {
+      scene,
+      renderer,
+      camera,
       onBookToggle: (open) => {
         museumBookOpen = open;
         app.classList.toggle("world-dimmed", open);
         input.suspended = open || cameraMode;
         if (open) input.releaseLock();
       }
-    }).addTo(scene);
+    });
   } catch (err) {
     console.warn("[boot] Mission Dolores museum unavailable:", err);
   }
@@ -1921,6 +1927,9 @@ async function boot() {
     // render. The canvas keeps its last frame (dimmed via CSS) so nothing
     // flickers behind the modal; the panel's own diagrams animate on their own
     // rAF, independent of this loop. Resumes cleanly the frame it's closed.
+    // Behind-the-scenes and the Canticle book both freeze the world completely —
+    // no sim, no render; the canvas keeps its last frame (dimmed via CSS) behind
+    // the DOM overlay, whose own animation runs on its own rAF.
     if (btsReading || museumBookOpen) {
       input.endFrame();
       return;

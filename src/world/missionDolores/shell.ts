@@ -38,13 +38,31 @@ interface ShellBuild {
   groundTopAt(x: number, z: number, base: number): number | null;
 }
 
-function paint(geo: THREE.BufferGeometry, c: THREE.Color) {
-  const n = geo.attributes.position.count;
+/** Per-vertex weathering so big adobe faces don't read as flat "clay": a subtle
+ *  value jitter keyed on position + a gentle grime gradient toward the base. */
+function paint(geo: THREE.BufferGeometry, c: THREE.Color, weather = 0.07) {
+  const pos = geo.attributes.position;
+  const n = pos.count;
   const col = new Float32Array(n * 3);
+  let minY = Infinity;
+  let maxY = -Infinity;
   for (let v = 0; v < n; v++) {
-    col[v * 3] = c.r;
-    col[v * 3 + 1] = c.g;
-    col[v * 3 + 2] = c.b;
+    const y = pos.getY(v);
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+  const span = Math.max(0.001, maxY - minY);
+  for (let v = 0; v < n; v++) {
+    const px = pos.getX(v);
+    const py = pos.getY(v);
+    const pz = pos.getZ(v);
+    const h = Math.sin(px * 12.9898 + py * 78.233 + pz * 37.719) * 43758.5453;
+    const jitter = (h - Math.floor(h) - 0.5) * 2 * weather; // ±weather
+    const grime = -(1 - (py - minY) / span) * weather * 0.9; // darker toward the base
+    const f = Math.max(0.6, 1 + jitter + grime);
+    col[v * 3] = c.r * f;
+    col[v * 3 + 1] = c.g * f;
+    col[v * 3 + 2] = c.b * f;
   }
   geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
 }
@@ -96,9 +114,9 @@ function arch(out: THREE.BufferGeometry[], x: number, y: number, z0: number, z1:
   out.push(g);
 }
 
-export function buildBasilicaShell(map: WorldMap): ShellBuild {
-  // Floor terrace: sit above the highest baked-terrain sample under the footprint;
-  // track the lowest too so the foundation skirt can reach below the downhill side.
+/** Cheap terrace sampling — the museum manager needs floorTop before it commits
+ *  to building the (heavy) shell, so this is split out and reused by the build. */
+export function basilicaFloorTop(map: WorldMap): { floorTop: number; skirtDepth: number } {
   let grade = -Infinity;
   let gradeMin = Infinity;
   for (let lz = FOOT_Z0; lz <= FOOT_Z1; lz += 3) {
@@ -111,6 +129,11 @@ export function buildBasilicaShell(map: WorldMap): ShellBuild {
   }
   const floorTop = grade + 0.35;
   const skirtDepth = Math.min(9, Math.max(1.5, floorTop - gradeMin + 1.5));
+  return { floorTop, skirtDepth };
+}
+
+export function buildBasilicaShell(map: WorldMap): ShellBuild {
+  const { floorTop, skirtDepth } = basilicaFloorTop(map);
 
   const group = new THREE.Group();
   group.name = "mission_dolores_basilica";

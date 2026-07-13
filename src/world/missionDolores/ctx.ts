@@ -1,6 +1,7 @@
 import * as THREE from "three/webgpu";
 import type { WorldMap } from "../heightmap";
 import { MD_YAW } from "./layout";
+import { loadTexture } from "../../render/textures";
 
 /** A yawed static collider box in WORLD space (what registerStaticBox consumes). */
 export interface MdWorldBox {
@@ -74,17 +75,13 @@ export class MuseumCtx {
     );
   }
 
-  /** Load /francis/art/<name>.png as an sRGB texture. Cached; resolves to a
-   *  warm placeholder if the file is missing so exhibits never hard-fail. */
+  /** Load /francis/art/<name> as a GPU-compressed KTX2 texture (WebP fallback).
+   *  Cached per museum; resolves to a warm placeholder if missing. */
   loadArt(name: string): Promise<THREE.Texture> {
     const cached = this.#artCache.get(name);
     if (cached) return cached;
-    const p = new THREE.TextureLoader()
-      .loadAsync(`${ART_BASE}${name}.png`)
+    const p = loadTexture(`${ART_BASE}${name}`)
       .then((tex) => {
-        tex.colorSpace = THREE.SRGBColorSpace;
-        tex.anisotropy = 4;
-        tex.needsUpdate = true;
         this.#disposables.push(tex);
         return tex;
       })

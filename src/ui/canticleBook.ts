@@ -218,7 +218,7 @@ export function createCanticleBook(opts: { onToggle: (open: boolean) => void }):
 
   function render(dir: number) {
     const s = SPREADS[idx];
-    artEl.style.backgroundImage = `url('${ART}${s.art}.png')`;
+    artEl.style.backgroundImage = `url('${ART}${s.art}.webp')`;
     const cover = s.kind === "cover";
     if (cover) {
       textEl.innerHTML = `<div class="cb-title cb-cover-title">${esc(s.title)}</div><div class="cb-verse cb-cover-sub">${esc(s.verse)}</div>${s.note ? `<div class="cb-note" style="text-align:center;border:none">${esc(s.note)}</div>` : ""}`;

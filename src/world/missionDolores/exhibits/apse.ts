@@ -168,9 +168,16 @@ export function createApseShrine(ctx: MuseumCtx): MdExhibit {
     roseMat.needsUpdate = true;
   });
 
-  // ---------------- two flanking lancet windows ----------------
-  const lancetGeo = track(new THREE.PlaneGeometry(1.6, 4));
+  // ---------------- two flanking lancet windows, mounted on the apse's curved wall ----------------
+  // Apse wall = semicircle radius ~9 centred at (0, SHRINE_Z+4). Seat each lancet
+  // ON that curve (just inside it) and face it inward toward the nave.
+  const APSE_WALL_R = 8.7;
+  const APSE_WALL_CZ = 30; // matches Z_APSE in the shell
+  const lancetGeo = track(new THREE.PlaneGeometry(1.5, 3.6));
   for (const xSign of [-1, 1]) {
+    const phi = xSign * 0.9; // ~51° off the centre line
+    const lx = APSE_WALL_R * Math.sin(phi);
+    const lz = APSE_WALL_CZ + APSE_WALL_R * Math.cos(phi);
     const lancetMat = trackMat(
       new THREE.MeshStandardMaterial({
         color: 0xffffff,
@@ -181,8 +188,8 @@ export function createApseShrine(ctx: MuseumCtx): MdExhibit {
       })
     );
     const mesh = new THREE.Mesh(lancetGeo, lancetMat);
-    mesh.position.set(xSign * 5.5, 6, 34);
-    mesh.rotation.y = xSign > 0 ? -Math.PI / 2 - 0.35 : Math.PI / 2 + 0.35;
+    mesh.position.set(lx, 6, lz - 0.15);
+    mesh.rotation.y = Math.PI - phi; // face inward, back toward the nave
     mesh.name = "md_apse_lancet";
     grp.add(mesh);
     void ctx.loadArt("glass-francis").then((tex) => {

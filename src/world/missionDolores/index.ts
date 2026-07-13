@@ -2,9 +2,9 @@ import * as THREE from "three/webgpu";
 import { BodyType, type Physics } from "../../core/physics";
 import type { GroundTopOverlay, WorldMap } from "../heightmap";
 import { MuseumCtx, type MdWorldBox } from "./ctx";
-import { buildBasilicaShell } from "./shell";
+import { basilicaFloorTop, buildBasilicaShell } from "./shell";
 import { createCanticleBook, type CanticleBook } from "../../ui/canticleBook";
-import { mdInsideFootprint } from "./layout";
+import { MD_CENTER, mdInsideFootprint, mdToWorldXZ } from "./layout";
 import { createExhibits, type MdExhibit } from "./exhibits";
 
 export * from "./layout";
@@ -15,61 +15,98 @@ interface MdHud {
 }
 
 export interface MissionDoloresOptions {
+  scene: THREE.Scene;
+  renderer: THREE.WebGPURenderer;
+  camera: THREE.PerspectiveCamera;
   /** Called when the Canticle book opens/closes so the host can freeze the world. */
   onBookToggle?: (open: boolean) => void;
 }
 
 const BOOK_LOCAL = { x: 0, y: 0, z: -28 } as const; // pedestal on the centre line, in the narthex
 const BOOK_REACH = 3.0;
+// Lazy-load hysteresis: the heavy shell + exhibits + KTX2 textures only build when
+// the player comes near, and tear down (freeing the VRAM) when they wander far.
+const BUILD_DIST = 150;
+const DISPOSE_DIST = 240;
 
 export class MissionDoloresMuseum {
   readonly group = new THREE.Group();
   readonly floorTop: number;
   #map: WorldMap;
   #physics: Physics;
-  #bodies: number[] = [];
-  #overlay: GroundTopOverlay;
-  #ctx: MuseumCtx;
-  #exhibits: MdExhibit[] = [];
+  #opts: MissionDoloresOptions;
   #book: CanticleBook;
   #bookWorld: THREE.Vector3;
   #promptShown = false;
 
-  constructor(map: WorldMap, physics: Physics, options: MissionDoloresOptions = {}) {
+  // built lazily on approach:
+  #built = false;
+  #bodies: number[] = [];
+  #overlay: GroundTopOverlay | null = null;
+  #ctx: MuseumCtx | null = null;
+  #exhibits: MdExhibit[] = [];
+  #shell: THREE.Group | null = null;
+
+  constructor(map: WorldMap, physics: Physics, options: MissionDoloresOptions) {
     this.#map = map;
     this.#physics = physics;
+    this.#opts = options;
     this.group.name = "mission_dolores_museum";
+    this.floorTop = basilicaFloorTop(map).floorTop;
+    options.scene.add(this.group);
+    // the Canticle book reader (WebP-illustrated storybook overlay)
+    this.#book = createCanticleBook({ onToggle: (open) => options.onBookToggle?.(open) });
+    const w = mdToWorldXZ(BOOK_LOCAL.x, BOOK_LOCAL.z);
+    this.#bookWorld = new THREE.Vector3(w.x, this.floorTop + 1.05, w.z);
+  }
 
-    const shell = buildBasilicaShell(map);
-    this.floorTop = shell.floorTop;
+  /* ------------------------------------------------ lazy build / teardown */
+
+  #build() {
+    if (this.#built) return;
+    const shell = buildBasilicaShell(this.#map);
+    this.#shell = shell.group;
     this.group.add(shell.group);
-
-    // wall + column colliders
     for (const box of shell.colliders) this.#registerStaticBox(box);
-
-    // walkable floor + portal ramp (composes with other site overlays)
     this.#overlay = (x, z, base) => shell.groundTopAt(x, z, base) ?? base;
-    map.setGroundTopOverlay(this.#overlay);
-
-    // shared toolkit for the exhibits, rooted at the (positioned + rotated) shell group
+    this.#map.setGroundTopOverlay(this.#overlay);
     this.#ctx = new MuseumCtx({
       root: shell.group,
-      map,
+      map: this.#map,
       floorTop: shell.floorTop,
       registerCollider: (b) => this.#registerStaticBox(b)
     });
-
-    // the Canticle book + its pedestal
-    this.#book = createCanticleBook({ onToggle: (open) => options.onBookToggle?.(open) });
-    this.#bookWorld = this.#ctx.toWorld(BOOK_LOCAL.x, 1.05, BOOK_LOCAL.z);
-    this.#buildPedestal();
-
-    // exhibits (each self-contained, built against the frozen ctx)
+    this.#buildPedestal(this.#ctx);
     try {
       this.#exhibits = createExhibits(this.#ctx);
     } catch (err) {
       console.warn("[mission dolores] exhibits unavailable:", err);
     }
+    this.#built = true;
+    // compile the hidden-until-now geometry off the critical path so the first
+    // frame after arrival doesn't hitch on shader/pipeline creation.
+    void this.#opts.renderer.compileAsync(shell.group, this.#opts.camera, this.#opts.scene);
+  }
+
+  #teardown() {
+    if (!this.#built) return;
+    for (const ex of this.#exhibits) ex.dispose?.();
+    this.#exhibits = [];
+    this.#ctx?.dispose();
+    this.#ctx = null;
+    if (this.#shell) {
+      disposeTree(this.#shell);
+      this.group.remove(this.#shell);
+      this.#shell = null;
+    }
+    for (const body of this.#bodies) {
+      this.#physics.removeQuerySolid(body);
+      this.#physics.world.destroyBody(body);
+    }
+    this.#bodies.length = 0;
+    if (this.#overlay) this.#map.clearGroundTopOverlay(this.#overlay);
+    this.#overlay = null;
+    this.#built = false;
   }
 
   #registerStaticBox(box: MdWorldBox) {
@@ -85,8 +122,7 @@ export class MissionDoloresMuseum {
     this.#bodies.push(body);
   }
 
-  #buildPedestal() {
-    const c = this.#ctx;
+  #buildPedestal(c: MuseumCtx) {
     const g = new THREE.Group();
     g.name = "md_book_pedestal";
     g.position.set(BOOK_LOCAL.x, 0, BOOK_LOCAL.z);
@@ -101,7 +137,7 @@ export class MissionDoloresMuseum {
     // a closed book resting on a slight slant, glowing to invite the reader
     const bookGrp = new THREE.Group();
     bookGrp.position.set(0, 1.02, 0);
-    bookGrp.rotation.x = -0.32; // tilt toward an approaching visitor from −z
+    bookGrp.rotation.x = -0.32;
     const cover = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.07, 0.46), c.glowMat(0x7a3b26, 0.45, 0.55));
     const pages = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.06, 0.4), c.glowMat(0xf4e8cf, 0.6, 0.9));
     pages.position.y = 0.03;
@@ -109,14 +145,15 @@ export class MissionDoloresMuseum {
     clasp.position.y = 0.02;
     bookGrp.add(cover, pages, clasp);
     g.add(bookGrp);
-    this.#ctx.root.add(g);
-    // pedestal collider
-    this.#ctx.addCollider({ lx: BOOK_LOCAL.x, ly: 0.55, lz: BOOK_LOCAL.z, hx: 0.6, hy: 0.6, hz: 0.6 });
+    c.root.add(g);
+    c.addCollider({ lx: BOOK_LOCAL.x, ly: 0.55, lz: BOOK_LOCAL.z, hx: 0.6, hy: 0.6, hz: 0.6 });
   }
+
+  /* ------------------------------------------------------------- interaction */
 
   /** E-chain hook: open the book when a walking player stands at the pedestal. */
   tryInteract(playerPos: THREE.Vector3, playerMode: string, hud: MdHud): boolean {
-    if (playerMode !== "walk") return false;
+    if (!this.#built || playerMode !== "walk") return false;
     if (playerPos.distanceTo(this.#bookWorld) > BOOK_REACH) return false;
     if (!this.#book.isOpen) {
       this.#book.open();
@@ -138,7 +175,17 @@ export class MissionDoloresMuseum {
   }
 
   update(dt: number, elapsed: number, playerPos: THREE.Vector3, playerMode: string, hud: MdHud): void {
-    // proximity prompt latch for the book pedestal
+    const dx = playerPos.x - MD_CENTER.x;
+    const dz = playerPos.z - MD_CENTER.z;
+    const d2 = dx * dx + dz * dz;
+    if (!this.#built) {
+      if (d2 < BUILD_DIST * BUILD_DIST) this.#build();
+      else return;
+    } else if (!this.#book.isOpen && d2 > DISPOSE_DIST * DISPOSE_DIST) {
+      this.#teardown();
+      return;
+    }
+
     const near = playerMode === "walk" && !this.#book.isOpen && playerPos.distanceTo(this.#bookWorld) < BOOK_REACH + 0.4;
     if (near && !this.#promptShown) {
       hud.message("E — read the Canticle of the Creatures", 1.8);
@@ -148,33 +195,23 @@ export class MissionDoloresMuseum {
     for (const ex of this.#exhibits) ex.update?.(dt, elapsed, playerPos);
   }
 
-  addTo(scene: THREE.Scene): this {
-    scene.add(this.group);
-    return this;
-  }
-
   dispose(): void {
-    for (const ex of this.#exhibits) ex.dispose?.();
-    this.#exhibits.length = 0;
+    this.#teardown();
     this.#book.dispose();
-    this.#ctx.dispose();
-    this.group.traverse((o) => {
-      if (o instanceof THREE.Mesh) {
-        o.geometry.dispose();
-        const mats = Array.isArray(o.material) ? o.material : [o.material];
-        for (const m of mats) m.dispose();
-      }
-    });
-    for (const body of this.#bodies) {
-      this.#physics.removeQuerySolid(body);
-      this.#physics.world.destroyBody(body);
-    }
-    this.#bodies.length = 0;
-    this.#map.clearGroundTopOverlay(this.#overlay);
     this.group.removeFromParent();
   }
 }
 
-export function createMissionDoloresMuseum(map: WorldMap, physics: Physics, options?: MissionDoloresOptions) {
+function disposeTree(root: THREE.Object3D) {
+  root.traverse((o) => {
+    if (o instanceof THREE.Mesh) {
+      o.geometry.dispose();
+      const mats = Array.isArray(o.material) ? o.material : [o.material];
+      for (const m of mats) m.dispose();
+    }
+  });
+}
+
+export function createMissionDoloresMuseum(map: WorldMap, physics: Physics, options: MissionDoloresOptions) {
   return new MissionDoloresMuseum(map, physics, options);
 }

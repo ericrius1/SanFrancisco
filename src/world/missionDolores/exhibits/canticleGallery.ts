@@ -5,7 +5,7 @@ import type { MdExhibit } from "./index";
 // the verses of Francis's 1225 Canticle, descending the west wall from the
 // narthex toward the altar, with a carved header sign and warm wall sconces.
 
-const WALL_X = -11.55; // plaque centre-line, hugging the west wall (x <= -8.4 zone limit)
+const WALL_X = -13.05; // plaque centre-line, mounted flush on the west outer wall (x = -13.5)
 const BOARD_W = 2.2;
 const BOARD_H = 3.0;
 const BOARD_Y = 2.6;

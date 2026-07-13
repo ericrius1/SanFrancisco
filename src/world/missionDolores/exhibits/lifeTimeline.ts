@@ -7,8 +7,8 @@ import type { MdExhibit } from "./index";
 // (+z): a chronological walk through the life of Francis of Assisi and the
 // mission that carries his name.
 
-const WALL_X = 11.55; // plaque board centre (flat against the east wall)
-const RAIL_X = 11.32; // the bronze timeline rail + date medallions, slightly proud of the wall
+const WALL_X = 13.05; // plaque board centre, mounted flush on the east outer wall (x = 13.5)
+const RAIL_X = 12.9; // the bronze timeline rail + date medallions, slightly proud of the wall
 const BOARD_W = 2.2;
 const BOARD_H = 3.0;
 const BOARD_LY = 2.6; // board centre height
