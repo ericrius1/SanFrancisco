@@ -194,9 +194,10 @@ Protocol details live at the top of `server/server.mjs` and `src/net/net.ts`.
   WebAssembly bindings for [Box3D](https://github.com/erincatto/box3d) (Erin
   Catto's 3D rigid-body engine). The app imports `box3d.js/inline` through
   `src/core/box3dWorld.ts`.
-- **Rendering:** three.js (WebGPU). City geometry is authored procedurally in
-  Blender, exported as GLB tiles, then quantized + meshopt-compressed (~8x
-  smaller) for streaming.
+- **Rendering:** three.js (WebGPU). OSM city geometry is built procedurally in
+  Blender; signature landmarks can be edited directly in the master scene.
+  Everything exports as GLB tiles, then gets quantized + meshopt-compressed
+  (~8x smaller) for streaming.
 - **Multiplayer:** a tiny WebSocket relay (`server/server.mjs`) — anyone can
   join, no accounts.
 
@@ -377,10 +378,31 @@ bc.load_data()          # read city.json + heightmap
 bc.build_all_tiles()    # extruded buildings + roads + parks, per 800m tile
 bc.build_terrain()      # DEM mesh chunks with vertex-color surface classes
 bc.build_water()        # flat WATER_bay marker plane (replaced by the shader at runtime)
-bc.build_landmarks()    # Golden Gate + Bay Bridge, Transamerica, Salesforce Tower,
-                        # Coit, Ferry Building, Sutro Tower, Palace of Fine Arts, Alcatraz
+bc.build_landmarks()    # baseline procedural landmark set
 bc.export_all()         # -> public/tiles/*.glb
 ```
+
+`sanfrancisco.blend` is the editable master after the baseline bake. The Palace
+of Fine Arts and Sutro Tower are authored meshes in their geographic tile
+collections, not runtime-generated replacements. To reapply that authored pass
+to an open baseline scene and export only its affected tiles:
+
+```python
+import sys; sys.path.insert(0, "<repo>/tools")
+import blender_landmark_upgrade as landmarks
+landmarks.upgrade_scene(export_root="<repo>", save=True)
+```
+
+Then destructively remove the superseded Palace OSM records from the committed
+CityGen/collider payloads:
+
+```bash
+npm run landmarks:apply
+```
+
+Do not run `bc.clear_city()` on the edited master unless you intentionally want
+to return to the generated baseline; it removes all tile and landmark objects.
+The original OSM scene can always be rebuilt from `data/raw`.
 
 Then compress the exported tiles in place (quantization + meshopt, ~8x smaller):
 

@@ -23,8 +23,7 @@ import { Physics } from "./core/physics";
 import { updateCrownDisplay, resetCrownTweaks } from "./world/salesforceCrown";
 import { createBayLights, updateBayLights, resetBayLightsTweaks } from "./world/bayLights";
 import { createGoldenGateLights, updateGoldenGateLights, resetGoldenGateLightsTweaks } from "./world/goldenGateLights";
-import { createPalaceColonnade, PALACE_RING_BUILDINGS } from "./world/palaceColonnade";
-import { createSutroTower, updateSutroTower, resetSutroLightsTweaks } from "./world/sutroTower";
+import { createSutroBeacons, updateSutroTower, resetSutroLightsTweaks } from "./world/sutroTower";
 import {
   createGoldenGateTennisSite,
   GOLDMAN_SUPPRESSED_BUILDINGS,
@@ -451,17 +450,9 @@ async function boot() {
     console.warn("[boot] golden gate lights unavailable:", err);
   }
   try {
-    // Palace of Fine Arts peristyle: the OSM data carries the curved colonnade as
-    // ordinary windowed buildings, so swap them for a real open row of columns.
-    for (const b of PALACE_RING_BUILDINGS) tiles.suppressBuilding(b.key, b.index);
-    scene.add(createPalaceColonnade(map));
+    scene.add(createSutroBeacons(map));
   } catch (err) {
-    console.warn("[boot] palace colonnade unavailable:", err);
-  }
-  try {
-    scene.add(createSutroTower(map));
-  } catch (err) {
-    console.warn("[boot] sutro tower unavailable:", err);
+    console.warn("[boot] sutro beacons unavailable:", err);
   }
   try {
     // Replace the generic extruded OSM clubhouse mesh but retain its accurate

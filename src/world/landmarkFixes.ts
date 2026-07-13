@@ -18,11 +18,6 @@ function groundMin(map: WorldMap, x: number, z: number, radius: number, n = 24):
  * leaves a visible gap under the base — a wide footing skirt fills it in.
  */
 export function applyLandmarkFixes(root: THREE.Object3D, map: WorldMap) {
-  // the crude baked Sutro Tower is superseded by the detailed runtime rig in
-  // sutroTower.ts (createSutroTower); hide it so they do not z-fight.
-  const sutro = root.getObjectByName("lm_sutro");
-  if (sutro) sutro.visible = false;
-
   const coit = root.getObjectByName("lm_coit");
   if (!coit) return;
 

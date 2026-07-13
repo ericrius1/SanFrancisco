@@ -148,6 +148,18 @@ const plainMat = new THREE.MeshStandardMaterial({
   roughness: 0.92,
   metalness: 0
 });
+const palaceMat = new THREE.MeshStandardMaterial({
+  color: 0xd8c8b4,
+  vertexColors: true,
+  roughness: 0.88,
+  metalness: 0
+});
+const sutroMat = new THREE.MeshStandardMaterial({
+  color: 0xe4e1dc,
+  vertexColors: true,
+  roughness: 0.76,
+  metalness: 0.12
+});
 const goldenGateMat = new THREE.MeshStandardMaterial({
   color: 0xffb18a,
   vertexColors: true,
@@ -303,7 +315,11 @@ export class TileStreamer {
         } else if (mesh.name === "lm_bridge_goldengate") {
           mesh.material = goldenGateMat;
         } else {
-          mesh.material = plainMat;
+          mesh.material = mesh.name.startsWith("lm_palace_")
+            ? palaceMat
+            : mesh.name.startsWith("lm_sutro_")
+              ? sutroMat
+              : plainMat;
         }
         mesh.castShadow = true;
         mesh.receiveShadow = true;
@@ -690,6 +706,17 @@ export class TileStreamer {
           mesh.receiveShadow = true;
         } else if (mesh.name.startsWith("grn_")) {
           mesh.material = parkMat;
+          mesh.receiveShadow = true;
+        } else if (mesh.name.startsWith("lm_")) {
+          // Authored landmarks now live in their geographic tile instead of
+          // the always-resident landmark bundle. Palace keeps its warm stone
+          // multiplier; Sutro stays near-neutral so its safety stripes read.
+          mesh.material = mesh.name.startsWith("lm_palace_")
+            ? palaceMat
+            : mesh.name.startsWith("lm_sutro_")
+              ? sutroMat
+              : plainMat;
+          mesh.castShadow = true;
           mesh.receiveShadow = true;
         } else {
           mesh.material = plainMat;
