@@ -7,7 +7,13 @@ import { buildBoatMesh, buildSpeedboatMesh } from "../vehicles/boat";
 import { buildDroneMesh } from "../vehicles/drone";
 import { buildBoardMesh, animateBoard, boardFromSeed, boardVisualKey, normalizeBoardConfig, type BoardConfig } from "../vehicles/board";
 import { buildBirdMesh } from "../vehicles/bird";
-import { buildSurfboardMesh } from "../vehicles/surf";
+import { activateSurfboardAssets, animateSurfboard, buildSurfboardMesh } from "../vehicles/surf";
+import {
+  normalizeSurfboardConfig,
+  surfboardFromSeed,
+  surfboardVisualKey,
+  type SurfboardConfig
+} from "../vehicles/surf/config";
 import { animateScooter, buildScooterMesh, normalizeScooterConfig, scooterFromSeed, scooterKey, type ScooterConfig } from "../vehicles/scooter";
 import type { Cockpit, PlayerMode } from "../player/types";
 import type { NetSample, RemoteInfo } from "./net";
@@ -19,10 +25,11 @@ import type { NetSample, RemoteInfo } from "./net";
  * Rendering rules (hard-won, see lightPool.ts): remote avatars carry NO
  * THREE.Light objects — adding/removing a light rebuilds every lit pipeline in
  * the scene (a multi-second freeze). Emissive headlight materials on the
- * cloned vehicle meshes still glow for free. Vehicle meshes are deep-cloned
- * from shared prototypes so every remote shares the local player's material
- * instances — join/mode-switch never compiles a new pipeline. Character rigs
- * are built per remote (they share module-level materials already).
+ * cloned vehicle meshes still glow for free. Fixed vehicles are deep-cloned
+ * from shared prototypes. Customizable hoverboards, scooters, and surfboards
+ * are fresh per-player builds because their generated resources and userData
+ * ownership contracts cannot safely be cloned. Character rigs are built per
+ * remote (they share module-level materials already).
  *
  * Interpolation: samples arrive ~12 Hz timestamped on the server clock
  * (mapped to local time by Net). We render INTERP_DELAY behind the newest
@@ -105,6 +112,8 @@ type Avatar = {
   boardKey: string;
   scooter: ScooterConfig;
   scooterKey: string;
+  surfboard: SurfboardConfig;
+  surfboardKey: string;
 };
 
 const TMP = {
@@ -133,6 +142,10 @@ function scooterForInfo(info: RemoteInfo): ScooterConfig {
   return info.scooter ? normalizeScooterConfig(info.scooter) : scooterFromSeed(info.id);
 }
 
+function surfboardForInfo(info: RemoteInfo): SurfboardConfig {
+  return info.surfboard ? normalizeSurfboardConfig(info.surfboard) : surfboardFromSeed(info.id);
+}
+
 export class RemotePlayers {
   readonly avatars = new Map<number, Avatar>();
 
@@ -157,8 +170,7 @@ export class RemotePlayers {
       plane: buildPlaneMesh(),
       boat: buildBoatMesh(),
       speedboat: buildSpeedboatMesh(),
-      drone: buildDroneMesh(),
-      surf: buildSurfboardMesh()
+      drone: buildDroneMesh()
     };
     const c = this.#protos.drive!.userData.cockpit as Cockpit | undefined;
     if (c) this.#passengerSeat.set(-c.seat[0], c.seat[1], c.seat[2]);
@@ -297,6 +309,7 @@ export class RemotePlayers {
     const av = avatarForInfo(info);
     const bd = boardForInfo(info);
     const sc = scooterForInfo(info);
+    const surf = surfboardForInfo(info);
     this.avatars.set(info.id, {
       info,
       root,
@@ -315,7 +328,9 @@ export class RemotePlayers {
       board: bd,
       boardKey: boardVisualKey(bd),
       scooter: sc,
-      scooterKey: scooterKey(sc)
+      scooterKey: scooterKey(sc),
+      surfboard: surf,
+      surfboardKey: surfboardVisualKey(surf)
     });
   }
 
@@ -390,6 +405,29 @@ export class RemotePlayers {
     }
   }
 
+  /** They changed their surfboard. Surfboards are built per remote rather than
+   * cloned from a prototype so userData, generated decals, and owned GPU
+   * resources cannot leak between players. */
+  updateSurfboard(info: RemoteInfo) {
+    const a = this.avatars.get(info.id);
+    if (!a) return;
+    a.info = info;
+    const next = surfboardForInfo(info);
+    const key = surfboardVisualKey(next);
+    a.surfboard = next;
+    if (key === a.surfboardKey) return;
+    a.surfboardKey = key;
+    const old = a.bodies.surf;
+    if (!old) return;
+    a.root.remove(old);
+    (old.userData.dispose as (() => void) | undefined)?.();
+    delete a.bodies.surf;
+    if (a.mode === "surf") {
+      a.mode = null;
+      this.#embody(a, "surf");
+    }
+  }
+
   remove(id: number) {
     const a = this.avatars.get(id);
     if (!a) return;
@@ -397,9 +435,10 @@ export class RemotePlayers {
     this.#scene.remove(a.root);
     a.tag.material.map?.dispose();
     a.tag.material.dispose();
-    // Per-player board/scooter builds own their resources.
+    // Per-player board/scooter/surfboard builds own their resources.
     (a.bodies.board?.userData.dispose as (() => void) | undefined)?.();
     (a.bodies.scooter?.userData.dispose as (() => void) | undefined)?.();
+    (a.bodies.surf?.userData.dispose as (() => void) | undefined)?.();
   }
 
   sample(id: number, s: NetSample) {
@@ -457,7 +496,12 @@ export class RemotePlayers {
       return g;
     }
     if (mode === "surf") {
-      const g = this.#protos.surf!.clone(true);
+      // Fresh build: surfboard materials may contain player-selected generated
+      // textures/decals and the root's dispose callback owns those resources.
+      const g = buildSurfboardMesh(a.surfboard);
+      // Roster hydration stays allocation-only. Image loading starts only when
+      // this remote first enters surf mode and needs a visible board.
+      void activateSurfboardAssets(g);
       const rig = buildRig(a.avatar);
       rig.group.rotation.order = "ZYX";
       rig.group.rotation.y = 1.05;
@@ -547,6 +591,10 @@ export class RemotePlayers {
     if (a.mode === "plane") {
       const anim = a.bodies.plane?.userData.planeAnim as PlaneAnim | undefined;
       if (anim) for (const p of anim.props) p.rotation.z += dt * (7 + a.speed * 0.55);
+    }
+    if (a.mode === "surf") {
+      const body = a.bodies.surf;
+      if (body) animateSurfboard(body, dt, a.animT);
     }
     const rig = a.rig;
     if (!rig || !a.mode) return;

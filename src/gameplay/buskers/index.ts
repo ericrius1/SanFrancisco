@@ -2,7 +2,7 @@ import * as THREE from "three/webgpu";
 import type { Physics } from "../../core/physics";
 import { TrioAudio } from "./audio";
 import { buildPerchRock, PERCH } from "./perchRock";
-import { COUNTIN_BEATS, REST_SECONDS, SEC_PER_BEAT, SONGS } from "./song";
+import { COUNTIN_BEATS, sampleSilenceSeconds, SEC_PER_BEAT, SONGS } from "./song";
 import type { BuskerId, Musician, MusicianBuilder, NoteEvent, TrioClock, TrioPhase } from "./types";
 import { buildFlutist } from "./flutist";
 import { buildHandpanist } from "./handpanist";
@@ -15,9 +15,9 @@ import "./offlineRender";
 /**
  * The busker trio: three musicians perched on a flat-topped chert boulder
  * (perchRock.ts) playing through a small songbook together (song.ts) — the
- * current song loops, Q cycles to the next one — resting in the wind
- * between passes. Deliberately placeless — createBuskerTrio() drops it at any
- * world position and
+ * songbook advances after every performance, while Q skips ahead manually —
+ * with an unhurried, randomized rest in the wind between songs. Deliberately
+ * placeless — createBuskerTrio() drops it at any world position and
  * setPlacement() moves it later (it re-grounds itself), so it can live on
  * the Corona Heights summit today and be nudged when that hill's detail
  * pass lands.
@@ -69,13 +69,14 @@ export type BuskerTrioOptions = {
 };
 
 export type BuskerTrioState = {
-  version: 1;
+  version: 2;
   placement: { x: number; z: number; yaw: number };
   visible: boolean;
   songIndex: number;
   phase: TrioPhase;
   phaseTime: number;
   silenceRemaining: number;
+  restSeconds: number;
   elapsed: number;
 };
 
@@ -95,6 +96,8 @@ export class BuskerTrio {
   #anchor = 0; // AudioContext time that maps to song beat 0
   /** Wall-clock silence before the next downbeat (Q cycle / film cue). */
   #silenceRemaining = 0;
+  /** Rest portion of the natural inter-song gap (the count-in is separate). */
+  #restSeconds = sampleSilenceSeconds() - COUNTIN_SECONDS;
   #songIdx = 0;
   #song = SONGS[0];
   #songSeconds = SONGS[0].beats * SEC_PER_BEAT;
@@ -160,10 +163,7 @@ export class BuskerTrio {
    * cut so the new tune starts clean. Returns the new song's name.
    */
   cycleSong(leadInSeconds = 2): string {
-    this.#songIdx = (this.#songIdx + 1) % SONGS.length;
-    this.#song = SONGS[this.#songIdx];
-    this.#songSeconds = this.#song.beats * SEC_PER_BEAT;
-    for (const [id, musician] of this.#musicians) musician.setPart(this.#song.parts[id]);
+    this.#selectSong((this.#songIdx + 1) % SONGS.length);
     this.cueShow(leadInSeconds);
     return this.#song.name;
   }
@@ -228,13 +228,14 @@ export class BuskerTrio {
 
   snapshotState(): BuskerTrioState {
     return {
-      version: 1,
+      version: 2,
       placement: { x: this.group.position.x, z: this.group.position.z, yaw: this.group.rotation.y },
       visible: this.group.visible,
       songIndex: this.#songIdx,
       phase: this.#phase,
       phaseTime: this.#phaseTime,
       silenceRemaining: this.#silenceRemaining,
+      restSeconds: this.#restSeconds,
       elapsed: this.#elapsed
     };
   }
@@ -263,9 +264,17 @@ export class BuskerTrio {
         this.#silenceRemaining = 0;
         this.#enterPhase("playing");
       }
-    } else if (this.#phase === "playing" && this.#phaseTime >= this.#songSeconds) this.#enterPhase("rest");
-    else if (this.#phase === "rest" && this.#phaseTime >= REST_SECONDS) this.#enterPhase("countin");
-    else if (this.#phase === "countin" && this.#phaseTime >= COUNTIN_SECONDS) this.#enterPhase("playing");
+    } else if (this.#phase === "playing" && this.#phaseTime >= this.#songSeconds) {
+      // Sample once at the end of each performance. Subtract the silent
+      // count-in so the complete gap stays inside the public 10–22s range.
+      this.#restSeconds = sampleSilenceSeconds() - COUNTIN_SECONDS;
+      this.#enterPhase("rest");
+    } else if (this.#phase === "rest" && this.#phaseTime >= this.#restSeconds) {
+      this.#selectSong((this.#songIdx + 1) % SONGS.length);
+      this.#enterPhase("countin");
+    } else if (this.#phase === "countin" && this.#phaseTime >= COUNTIN_SECONDS) {
+      this.#enterPhase("playing");
+    }
 
     const clock = this.#clock;
     clock.phase = this.#phase;
@@ -337,6 +346,13 @@ export class BuskerTrio {
     }
   }
 
+  #selectSong(index: number) {
+    this.#songIdx = index;
+    this.#song = SONGS[index];
+    this.#songSeconds = this.#song.beats * SEC_PER_BEAT;
+    for (const [id, musician] of this.#musicians) musician.setPart(this.#song.parts[id]);
+  }
+
   #restoreState(state: BuskerTrioState) {
     this.setPlacement(state.placement.x, state.placement.z, state.placement.yaw);
     this.group.visible = state.visible;
@@ -347,6 +363,9 @@ export class BuskerTrio {
     this.#phase = state.phase;
     this.#phaseTime = Math.max(0, state.phaseTime);
     this.#silenceRemaining = Math.max(0, state.silenceRemaining);
+    this.#restSeconds = Number.isFinite(state.restSeconds)
+      ? Math.max(0, state.restSeconds)
+      : sampleSilenceSeconds() - COUNTIN_SECONDS;
     this.#elapsed = Math.max(0, state.elapsed);
     this.#schedIdx = { ukulele: 0, handpan: 0, flute: 0 };
     this.#audio.holdSilent(this.#silenceRemaining > 0);

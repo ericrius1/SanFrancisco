@@ -28,10 +28,8 @@
 // vendor/SeedThree/assets — both gitignored).
 
 import * as THREE from "three/webgpu";
-import { uniform } from "three/tsl";
-import { createTree } from "../../../vendor/SeedThree/src/api/seedthree.js";
+import { createLegacySeedTree } from "../vegetation/legacySeedTree";
 import { type GardenTree } from "./layout";
-import { applyGrassTuning } from "./grassTuning";
 
 // garden species id → SeedThree design. tree_fern (id 3) has no SeedThree
 // analog and keeps the in-repo procedural mesh; its entry here is null.
@@ -166,79 +164,7 @@ const REBIN_MS = 250;
 const REBIN_MOVE_SQ = 4;
 
 const ZERO_SCALE = 1e-6; // far-slot "hidden" scale (0 breaks normal matrices)
-const FOLIAGE_MESH_RE = /leaf|foliage|card|cluster|rosette|frond/i;
-const FAR_CARD_TINT = new THREE.Color(0x4e623a);
-
-type ShadeableFoliageMaterial = THREE.Material & {
-  color?: THREE.Color;
-  roughness?: number;
-  metalness?: number;
-  thicknessColorNode?: { mul?: (v: number) => unknown };
-  thicknessDistortionNode?: unknown;
-  thicknessAmbientNode?: unknown;
-  thicknessPowerNode?: unknown;
-  thicknessScaleNode?: unknown;
-};
-
-function shadeSeedTreeFoliage(root: THREE.Object3D) {
-  const seen = new Set<THREE.Material>();
-  root.traverse((object) => {
-    const mesh = object as THREE.Mesh;
-    if (!mesh.isMesh) return;
-    const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-    const foliageLike =
-      FOLIAGE_MESH_RE.test(mesh.name) ||
-      materials.some((material) => {
-        const m = material as ShadeableFoliageMaterial;
-        return FOLIAGE_MESH_RE.test(m.name) || Boolean(m.thicknessColorNode || m.userData?.gltfDiffuseTransmission);
-      });
-    if (!foliageLike) return;
-    for (const raw of materials) {
-      if (seen.has(raw)) continue;
-      seen.add(raw);
-      const material = raw as ShadeableFoliageMaterial;
-
-      if (material.color?.isColor) {
-        material.color.multiplyScalar(0.5).lerp(FAR_CARD_TINT, 0.45);
-      }
-      if (typeof material.roughness === "number") material.roughness = Math.max(material.roughness, 0.96);
-      if (typeof material.metalness === "number") material.metalness = 0;
-      if (material.thicknessColorNode?.mul) {
-        material.thicknessColorNode = material.thicknessColorNode.mul(0.3) as ShadeableFoliageMaterial["thicknessColorNode"];
-      }
-      if ("thicknessDistortionNode" in material) material.thicknessDistortionNode = uniform(0.18);
-      if ("thicknessAmbientNode" in material) material.thicknessAmbientNode = uniform(0.025);
-      if ("thicknessPowerNode" in material) material.thicknessPowerNode = uniform(8.5);
-      if ("thicknessScaleNode" in material) material.thicknessScaleNode = uniform(0.75);
-      material.needsUpdate = true;
-    }
-  });
-}
-
-const textureLoader = new THREE.TextureLoader();
-async function loadTexture(path: string, { srgb }: { srgb: boolean }): Promise<THREE.Texture | null> {
-  const apply = (t: THREE.Texture) => {
-    t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
-    t.wrapS = t.wrapT = THREE.RepeatWrapping;
-    t.anisotropy = 4;
-    return t;
-  };
-  // Prefer the smaller .webp sibling (tools/optimize-seedthree.mjs); fall back to
-  // the source PNG for any map that has no webp yet.
-  const webp = path.replace(/\.(png|jpg)$/i, ".webp");
-  if (webp !== path) {
-    try {
-      return apply(await textureLoader.loadAsync(`/${webp}`));
-    } catch {
-      // no webp sibling — try the original below
-    }
-  }
-  try {
-    return apply(await textureLoader.loadAsync(`/${path}`));
-  } catch {
-    return null; // optional maps 404 → material factories handle it
-  }
-}
+const FOLIAGE_GRADE = { colorScale: 0.5, tint: 0x4e623a, tintMix: 0.45 };
 
 type Slot = {
   species: number;
@@ -437,26 +363,6 @@ type SpeciesRuntime = {
   nearClones: boolean;
 };
 
-function prepareTemplate(lodGroup: THREE.Object3D): THREE.LOD {
-  const lod = lodGroup as THREE.LOD;
-  // headless growth has no baked billboard, but filter defensively; also drop
-  // app-only preview levels if any slipped through
-  if (lod.levels) {
-    for (let i = lod.levels.length - 1; i >= 0; i--) {
-      const o = lod.levels[i].object;
-      if (o.userData?.isBillboard || o.userData?.appOnly) lod.levels.splice(i, 1);
-    }
-  }
-  lod.traverse((o) => {
-    const m = o as THREE.Mesh;
-    if (m.isMesh) {
-      m.castShadow = true;
-      m.receiveShadow = true;
-    }
-  });
-  return lod;
-}
-
 class NearTierManager {
   /** indexed by species id — entries for unmapped species are undefined */
   #runtimes: (SpeciesRuntime | undefined)[];
@@ -539,10 +445,6 @@ export type SeedTreeGardenResult = {
  * clone manager. Entries with a null design (tree fern) are procedural.
  */
 export async function buildSeedTreeGarden(trees: GardenTree[]): Promise<SeedTreeGardenResult> {
-  // Wind uniforms (shared by trees + grass) come from the persisted grass
-  // tuning group — one source, so the debug sliders and reloads agree.
-  applyGrassTuning();
-
   const bySpecies: GardenTree[][] = SEED_TREE_DESIGNS.map(() => []);
   for (const t of trees) {
     if (SEED_TREE_DESIGNS[t.species]) bySpecies[t.species]?.push(t);
@@ -563,20 +465,13 @@ export async function buildSeedTreeGarden(trees: GardenTree[]): Promise<SeedTree
       runtimes.push(undefined as unknown as SpeciesRuntime); // keep index = species id
       continue;
     }
-    const { group: lodGroup } = await createTree({
+    const { template, lod2 } = await createLegacySeedTree({
       species: design.species,
       seed: design.seed,
       controls: design.controls ?? {},
       lod: LOD_OPTS,
-      loadTexture,
-      assetsDir: "seedthree"
+      foliageGrade: FOLIAGE_GRADE
     });
-    const template = prepareTemplate(lodGroup);
-    shadeSeedTreeFoliage(template);
-    const lod2 =
-      template.levels?.find((l) => l.object.userData?.lodName === "LOD2")?.object ??
-      template.levels?.[template.levels.length - 1]?.object ??
-      template;
 
     const slots: Slot[] = list.map((t, i) => ({
       species: id,

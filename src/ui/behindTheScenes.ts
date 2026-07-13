@@ -269,7 +269,7 @@ const TAB_LIFE = `
   <section>
     <h3><span class="bts-ic">⚡</span> Keeping the frame rate up</h3>
     <p>All of this has to stay smooth on an ordinary laptop, so the whole engine is built around a
-    budget. Device pixel ratio is capped, the pre-pass runs at half resolution, and the light count is
+    budget. Device pixel ratio is locked at 1, the pre-pass runs at half resolution, and the light count is
     kept small and fixed — every extra light taxes every pixel, and in this renderer <em>changing</em>
     the count rebuilds every shader pipeline (a multi-second freeze), which is the real reason glowing
     things are emissive materials and never new lamps. Physics runs a small fixed number of substeps,

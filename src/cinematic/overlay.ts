@@ -41,9 +41,11 @@ export class CinematicOverlay {
   #views: CueView[];
   #mirror = document.createElement("canvas");
   #letterbox: number;
+  #chrome: boolean;
 
-  constructor(name: string, cues: readonly OverlayCue[], letterbox = 0.055) {
+  constructor(name: string, cues: readonly OverlayCue[], letterbox = 0.055, chrome = true) {
     this.#letterbox = letterbox;
+    this.#chrome = chrome;
     this.#root.className = "cine-overlay";
     this.#root.dataset.cinematic = name;
     this.#root.style.setProperty("--cine-letterbox", `${letterbox * 100}vh`);
@@ -80,7 +82,7 @@ export class CinematicOverlay {
     track.className = "cine-progress-track";
     this.#progress.className = "cine-progress";
     track.appendChild(this.#progress);
-    this.#root.append(top, bottom, this.#chapter, track);
+    if (chrome) this.#root.append(top, bottom, this.#chapter, track);
 
     this.#views = cues.map((cue) => {
       const root = document.createElement("div");
@@ -107,8 +109,10 @@ export class CinematicOverlay {
   }
 
   update(time: number, duration: number, chapter: string) {
-    this.#chapter.textContent = chapter.replaceAll("-", "  ·  ");
-    this.#progress.style.width = `${clamp01(time / duration) * 100}%`;
+    if (this.#chrome) {
+      this.#chapter.textContent = chapter.replaceAll("-", "  ·  ");
+      this.#progress.style.width = `${clamp01(time / duration) * 100}%`;
+    }
     for (const { cue, root } of this.#views) {
       const fade = Math.min(cue.fade ?? 0.32, (cue.end - cue.start) * 0.4);
       const enter = smoothstep((time - cue.start) / Math.max(0.001, fade));
@@ -141,9 +145,11 @@ export class CinematicOverlay {
     ctx.clearRect(0, 0, width, height);
 
     const barHeight = this.#letterbox * height;
-    ctx.fillStyle = "#050709";
-    ctx.fillRect(0, 0, width, barHeight);
-    ctx.fillRect(0, height - barHeight, width, barHeight);
+    if (this.#chrome) {
+      ctx.fillStyle = "#050709";
+      ctx.fillRect(0, 0, width, barHeight);
+      ctx.fillRect(0, height - barHeight, width, barHeight);
+    }
 
     const cardWidth = Math.min(width * 0.37, 660);
     const paddingX = 26;
@@ -217,6 +223,7 @@ export class CinematicOverlay {
       ctx.restore();
     }
 
+    if (!this.#chrome) return;
     const safe = width * 0.052;
     const trackY = height - barHeight - 9;
     ctx.fillStyle = "rgba(255,255,255,.18)";

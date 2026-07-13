@@ -244,6 +244,21 @@ const BOARD_HUMS = ["hum", "crystal", "deep", "choir", "retro"];
 const BOARD_DECK_COUNT = 8;
 const BOARD_GLOW_COUNT = 8;
 const BOARD_PITCH_COUNT = 5;
+// surfboard customization — mirrors src/vehicles/surf/config.ts exactly.
+// Lists, defaults, field ranges, and seed draw order are the current wire
+// schema; unknown/legacy fields are intentionally ignored rather than migrated.
+const SURFBOARD_SHAPES = ["shortboard", "fish", "longboard"];
+const SURFBOARD_SURFACES = [
+  "kelp-ribbons",
+  "sunset-caustics",
+  "fog-topography",
+  "tidepool-terrazzo",
+  "moon-jelly-dream",
+  "golden-gate-bloom",
+  "pacific-postcard"
+];
+const SURFBOARD_DECALS = ["none", "happy-sun", "sea-otter", "comet-shell"];
+const SURFBOARD_COLOR_COUNT = 8;
 const SCOOTER_BODIES = ["classic", "sport", "touring"];
 const SCOOTER_SEATS = ["bench", "saddle", "petpad"];
 const SCOOTER_SCREENS = ["none", "fly", "touring"];
@@ -427,6 +442,91 @@ const sanitizeBoard = (raw) => {
   };
 };
 
+const DEFAULT_SURFBOARD = {
+  shape: "shortboard",
+  base: 0,
+  rail: 1,
+  accent: 2,
+  baseHex: null,
+  railHex: null,
+  accentHex: null,
+  surface: "kelp-ribbons",
+  textureZoom: 46,
+  textureRotation: 50,
+  textureOffsetX: 50,
+  textureOffsetY: 50,
+  surfaceMotion: 20,
+  surfaceShimmer: 34,
+  decal: "none",
+  decalScale: 44,
+  decalRotation: 50,
+  decalX: 50,
+  decalY: 35
+};
+
+// Identical FNV-1a/LCG draw order to surfboardFromSeed. Changing the order on
+// either side would make independent clients disagree about the same player's
+// seeded board, so keep this beside the strict sanitizer below.
+const surfboardFromSeed = (seed) => {
+  const roll = lcg(hashSeed(seed));
+  const base = Math.floor(roll() * SURFBOARD_COLOR_COUNT) % SURFBOARD_COLOR_COUNT;
+  let rail = Math.floor(roll() * SURFBOARD_COLOR_COUNT) % SURFBOARD_COLOR_COUNT;
+  if (rail === base) rail = (rail + 3) % SURFBOARD_COLOR_COUNT;
+  let accent = Math.floor(roll() * SURFBOARD_COLOR_COUNT) % SURFBOARD_COLOR_COUNT;
+  if (accent === base || accent === rail) accent = (accent + 2) % SURFBOARD_COLOR_COUNT;
+  return {
+    shape: pick(SURFBOARD_SHAPES, roll),
+    base,
+    rail,
+    accent,
+    baseHex: null,
+    railHex: null,
+    accentHex: null,
+    surface: pick(SURFBOARD_SURFACES, roll),
+    textureZoom: 25 + Math.floor(roll() * 56),
+    textureRotation: Math.floor(roll() * 101),
+    textureOffsetX: 22 + Math.floor(roll() * 57),
+    textureOffsetY: 22 + Math.floor(roll() * 57),
+    surfaceMotion: 8 + Math.floor(roll() * 43),
+    surfaceShimmer: 18 + Math.floor(roll() * 55),
+    decal: pick(SURFBOARD_DECALS, roll),
+    decalScale: 28 + Math.floor(roll() * 47),
+    decalRotation: Math.floor(roll() * 101),
+    decalX: 24 + Math.floor(roll() * 53),
+    decalY: 20 + Math.floor(roll() * 61)
+  };
+};
+
+const surfboardKey = (b) =>
+  `${b.shape}|${b.base}|${b.rail}|${b.accent}|${b.baseHex}|${b.railHex}|${b.accentHex}|${b.surface}|${b.textureZoom}|${b.textureRotation}|${b.textureOffsetX}|${b.textureOffsetY}|${b.surfaceMotion}|${b.surfaceShimmer}|${b.decal}|${b.decalScale}|${b.decalRotation}|${b.decalX}|${b.decalY}`;
+
+const isDefaultSurfboard = (b) => surfboardKey(b) === surfboardKey(DEFAULT_SURFBOARD);
+
+const sanitizeSurfboard = (raw) => {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  return {
+    shape: oneOf(raw.shape, SURFBOARD_SHAPES, DEFAULT_SURFBOARD.shape),
+    base: intRange(raw.base, SURFBOARD_COLOR_COUNT, DEFAULT_SURFBOARD.base),
+    rail: intRange(raw.rail, SURFBOARD_COLOR_COUNT, DEFAULT_SURFBOARD.rail),
+    accent: intRange(raw.accent, SURFBOARD_COLOR_COUNT, DEFAULT_SURFBOARD.accent),
+    baseHex: hexOrNull(raw.baseHex),
+    railHex: hexOrNull(raw.railHex),
+    accentHex: hexOrNull(raw.accentHex),
+    surface: oneOf(raw.surface, SURFBOARD_SURFACES, DEFAULT_SURFBOARD.surface),
+    textureZoom: intRange(raw.textureZoom, 101, DEFAULT_SURFBOARD.textureZoom),
+    textureRotation: intRange(raw.textureRotation, 101, DEFAULT_SURFBOARD.textureRotation),
+    textureOffsetX: intRange(raw.textureOffsetX, 101, DEFAULT_SURFBOARD.textureOffsetX),
+    textureOffsetY: intRange(raw.textureOffsetY, 101, DEFAULT_SURFBOARD.textureOffsetY),
+    surfaceMotion: intRange(raw.surfaceMotion, 101, DEFAULT_SURFBOARD.surfaceMotion),
+    surfaceShimmer: intRange(raw.surfaceShimmer, 101, DEFAULT_SURFBOARD.surfaceShimmer),
+    decal: oneOf(raw.decal, SURFBOARD_DECALS, DEFAULT_SURFBOARD.decal),
+    decalScale: intRange(raw.decalScale, 101, DEFAULT_SURFBOARD.decalScale),
+    decalRotation: intRange(raw.decalRotation, 101, DEFAULT_SURFBOARD.decalRotation),
+    decalX: intRange(raw.decalX, 101, DEFAULT_SURFBOARD.decalX),
+    decalY: intRange(raw.decalY, 101, DEFAULT_SURFBOARD.decalY)
+  };
+};
+
 const DEFAULT_SCOOTER = {
   body: "classic", seat: "bench", screen: "fly", cargo: "rack",
   paint: 0, trim: 0, upholstery: 0,
@@ -568,6 +668,7 @@ wss.on("connection", (ws) => {
     avatar: avatarFromSeed(id),
     board: boardFromSeed(id),
     scooter: scooterFromSeed(id),
+    surfboard: surfboardFromSeed(id),
     alive: true,
     budget: MSG_BUDGET_PER_SEC,
     lastState: Date.now(),
@@ -594,6 +695,8 @@ wss.on("connection", (ws) => {
       if (customBoard && !isDefaultBoard(customBoard)) p.board = customBoard;
       const customScooter = sanitizeScooter(msg.scooter);
       if (customScooter && !isDefaultScooter(customScooter)) p.scooter = customScooter;
+      const customSurfboard = sanitizeSurfboard(msg.surfboard);
+      if (customSurfboard && !isDefaultSurfboard(customSurfboard)) p.surfboard = customSurfboard;
       send(ws, {
         t: "welcome",
         id,
@@ -601,10 +704,31 @@ wss.on("connection", (ws) => {
         name: p.name,
         players: [...players.values()]
           .filter((o) => o.id !== id)
-          .map((o) => ({ id: o.id, name: o.name, hue: o.hue, avatar: o.avatar, board: o.board, scooter: o.scooter, golf: o.golf })),
+          .map((o) => ({
+            id: o.id,
+            name: o.name,
+            hue: o.hue,
+            avatar: o.avatar,
+            board: o.board,
+            scooter: o.scooter,
+            surfboard: o.surfboard,
+            golf: o.golf
+          })),
         pickle: pickleballWelcome()
       });
-      broadcast({ t: "join", id, name: p.name, hue: p.hue, avatar: p.avatar, board: p.board, scooter: p.scooter }, id);
+      broadcast(
+        {
+          t: "join",
+          id,
+          name: p.name,
+          hue: p.hue,
+          avatar: p.avatar,
+          board: p.board,
+          scooter: p.scooter,
+          surfboard: p.surfboard
+        },
+        id
+      );
       console.log(`[sf-server] join #${id} "${p.name}" (${players.size} online)`);
     } else if (msg.t === "s" && Array.isArray(msg.d) && (msg.d.length === 9 || msg.d.length === 10)) {
       // [modeIndex, x, y, z, qx, qy, qz, qw, speed, ride?] — validate finite numbers
@@ -630,6 +754,12 @@ wss.on("connection", (ws) => {
       const custom = sanitizeScooter(msg.scooter);
       p.scooter = custom && !isDefaultScooter(custom) ? custom : scooterFromSeed(id);
       broadcast({ t: "scooter", id, scooter: p.scooter }, id);
+    } else if (msg.t === "surfboard") {
+      // Current schema only: malformed/default data resets to this player's
+      // deterministic seed instead of preserving or migrating old fields.
+      const custom = sanitizeSurfboard(msg.surfboard);
+      p.surfboard = custom && !isDefaultSurfboard(custom) ? custom : surfboardFromSeed(id);
+      broadcast({ t: "surfboard", id, surfboard: p.surfboard }, id);
     } else if (msg.t === "paint" && Array.isArray(msg.d) && msg.d.length === 7) {
       // paintball shot: [x,y,z,vx,vy,vz,rgb] — pure relay, every client
       // simulates the flight and splats locally

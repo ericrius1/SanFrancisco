@@ -1,9 +1,9 @@
 import type { BuskerId, NoteEvent } from "./types";
 
 /**
- * The trio's songbook — authored songs sharing one harmonic vocabulary,
- * cycled with Q (BuskerTrio.cycleSong). Live playlist is Fog Rolls Home only;
- * Corona Wind stays authored below but is not in SONGS for now.
+ * The trio's songbook — original authored songs sharing one harmonic
+ * vocabulary. The live transport advances through the book after every
+ * performance; Q remains a manual skip (BuskerTrio.cycleSong).
  *
  * 1. "Fog Rolls Home" — a ~22-second folk refrain: staggered entrances, one
  *    pass of the motif, and out together. The long rest between plays reads
@@ -18,7 +18,7 @@ import type { BuskerId, NoteEvent } from "./types";
  *                   folk groove with a fill run into the landing
  *      bar   7      landing — one long D minor, all rung out together
  *
- * 2. "Corona Wind" (disabled) — warm folk riff in D minor. Handpan states the
+ * 2. "Corona Wind" — warm folk riff in D minor. Handpan states the
  *    pulse alone, ukulele joins, flute carries the tune. Cycle Dm | Bb | F | C.
  *
  *      bars  1-4    handpan alone — sparse ostinato states the pulse
@@ -35,9 +35,9 @@ import type { BuskerId, NoteEvent } from "./types";
  * Every pitch sits inside the D Kurd handpan scale (D3 A3 Bb3 C4 D4 E4 F4 G4
  * A4) or the ukulele's re-entrant gCEA voicings, and every chord (Dm Bb F C
  * Gm Am) is diatonic to D natural minor, so any simultaneity is consonant by
- * construction. After a song the three rest in the wind (REST_SECONDS), the
- * handpan player nods a silent four-beat count-in, and the same song loops
- * (Q advances to the next one).
+ * construction. After a song the three rest in the wind for a freshly sampled
+ * interval, the handpan player nods a silent four-beat count-in, and the next
+ * song begins. The complete quiet gap is intentionally allowed to breathe.
  *
  * All authored times are in BEATS from song start; the transport owns the
  * mapping onto real time.
@@ -46,8 +46,16 @@ import type { BuskerId, NoteEvent } from "./types";
 export const TEMPO_BPM = 76;
 export const SEC_PER_BEAT = 60 / TEMPO_BPM;
 export const BEATS_PER_BAR = 4;
-export const REST_SECONDS = 12;
 export const COUNTIN_BEATS = 4;
+/** Total silence from one song's ending to the next song's downbeat. */
+export const SILENCE_SECONDS_MIN = 10;
+export const SILENCE_SECONDS_MAX = 22;
+
+/** Pick once per inter-song break, never once per frame. */
+export function sampleSilenceSeconds(random: () => number = Math.random): number {
+  const unit = Math.min(1, Math.max(0, random()));
+  return SILENCE_SECONDS_MIN + unit * (SILENCE_SECONDS_MAX - SILENCE_SECONDS_MIN);
+}
 
 export type ChordName = "Dm" | "Bb" | "F" | "C" | "Gm" | "Am";
 
@@ -390,11 +398,9 @@ const FOG_ROLLS_HOME: TrioSong = {
 
 /* ----------------------------------------------------------------- songs */
 
-// Corona Wind stays authored above; drop it back into this array to re-enable.
-export const SONGS: readonly TrioSong[] = [FOG_ROLLS_HOME];
+export const SONGS: readonly TrioSong[] = [FOG_ROLLS_HOME, CORONA_WIND];
 
-// The transport relies on each part being onset-sorted. Sort Corona Wind too
-// so re-enabling it is a one-line change.
-for (const song of [FOG_ROLLS_HOME, CORONA_WIND]) {
+// The transport relies on each part being onset-sorted.
+for (const song of SONGS) {
   for (const part of Object.values(song.parts)) part.sort((a, b) => a.beat - b.beat);
 }

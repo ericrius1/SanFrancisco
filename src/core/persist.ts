@@ -9,9 +9,9 @@ import type { PlayerMode } from "../player/types";
 
 const TWEAKS_KEY = "sf-tweaks";
 const TWEAKS_SCHEMA_KEY = "sf-tweaks-schema";
-// One current schema only: draw-distance default (3.5 km), haze, and garden
-// grass budgets changed together — discard incompatible saved tweaks.
-const TWEAKS_SCHEMA = "2026-07-camera-occlusion";
+// One current schema only: the vegetation system and rewritten surf movement /
+// auto-launch / flow-state ranges changed together. Discard stale overrides.
+const TWEAKS_SCHEMA = "2026-07-vegetation-surf-flow";
 const PLAYER_KEY = "sf-player";
 export const TUNABLES_UPDATED_EVENT = "sf:tunables-updated";
 
@@ -147,8 +147,8 @@ type TunableGroupRecord = {
 
 // Keyed by persisted path + schema keys so a hot-evaluated feature reuses the
 // exact values object that existing Tweakpane bindings already reference. The
-// schema suffix matters because a couple of legacy groups intentionally share
-// a storage path (notably the global and garden `grass` controls).
+// schema suffix keeps hot-evaluated groups with different control shapes from
+// accidentally sharing a live values object.
 const groups = new Map<string, TunableGroupRecord>();
 
 /**

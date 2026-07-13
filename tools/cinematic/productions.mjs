@@ -37,6 +37,19 @@ const DEFINITIONS = Object.freeze({
       profile: "dog-park",
       description: "Golden-hour park ambience, a playful throw, paws, panting, and soft city air."
     })
+  }),
+  "roqn-open-road": Object.freeze({
+    id: "roqn-open-road",
+    demo: "roqn-open-road",
+    title: "Open Road, Open Sky",
+    duration: 30,
+    seed: 0x4f_50_45_4e,
+    posterAt: 28.4,
+    stillTimes: Object.freeze([0.4, 1.8, 3.4, 5.2, 6.4, 8.1, 9.5, 11.4, 12.4, 14.2, 15.5, 17.3, 18.4, 20.1, 21.5, 23.3, 24.5, 26.2, 27.7, 29.4]),
+    audio: Object.freeze({
+      profile: "roqn-open-road",
+      description: "An airy travel score moving from garden wings to city streets, bridge wind, speedboat wake, and a bay-light finale."
+    })
   })
 });
 

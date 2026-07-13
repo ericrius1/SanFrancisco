@@ -9,6 +9,7 @@ import {
   smoothstep,
   clamp,
   max,
+  sin,
   mx_noise_float
 } from "three/tsl";
 import {
@@ -18,6 +19,7 @@ import {
 } from "../../world/oceanBeachWaves";
 import { oceanBeachSurfField, bumpNormal } from "../../world/tslUtil";
 import { LIGHT_SCALE } from "../../config";
+import { waterHeight } from "../../world/heightmap";
 
 const SLOTS = 7;
 
@@ -44,6 +46,11 @@ export class OceanBeachWaves {
   #spray: THREE.Points;
   #sprayPositions: Float32Array;
   #sprayVelocity: Float32Array;
+  #foam: THREE.Points;
+  #foamPositions: Float32Array;
+  #foamVelocity: Float32Array;
+  #foamLife: Float32Array;
+  #lastTime = 0;
   #face: THREE.Mesh;
   #uTime = uniform(0);
   #uOrigin = uniform(new THREE.Vector2(FACE_CENTER_X, OCEAN_BEACH_SURF.centerZ));
@@ -75,6 +82,35 @@ export class OceanBeachWaves {
     this.#spray.renderOrder = 100;
     this.group.add(this.#spray);
 
+    // Persistent Lagrangian whitewater. These flecks are born at compressed
+    // crest fronts, advect shoreward, curl down the line and slowly dissolve.
+    // It is intentionally visual-only: authoritative surf physics remains the
+    // deterministic analytic surface, so multiplayer never depends on GPU/FX
+    // state or readback.
+    const foamCount = 520;
+    this.#foamPositions = new Float32Array(foamCount * 3);
+    this.#foamVelocity = new Float32Array(foamCount * 2);
+    this.#foamLife = new Float32Array(foamCount);
+    const foamGeo = new THREE.BufferGeometry();
+    foamGeo.setAttribute("position", new THREE.BufferAttribute(this.#foamPositions, 3));
+    foamGeo.boundingSphere = new THREE.Sphere(
+      new THREE.Vector3(FACE_CENTER_X, 2, OCEAN_BEACH_SURF.centerZ),
+      2600
+    );
+    const foamMat = new THREE.PointsMaterial({
+      color: 0xd9fff3,
+      size: 0.62,
+      transparent: true,
+      opacity: 0.66,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      sizeAttenuation: true
+    });
+    this.#foam = new THREE.Points(foamGeo, foamMat);
+    this.#foam.name = "ocean_beach_advected_foam";
+    this.#foam.renderOrder = 101;
+    this.group.add(this.#foam);
+
     scene.add(this.group);
     this.update(0);
   }
@@ -95,11 +131,23 @@ export class OceanBeachWaves {
     const f = oceanBeachSurfField(wx, wz, t);
 
     // --- vertex: lift by the analytic wave height -----------------------------
-    mat.positionNode = positionLocal.add(vec3(0, f.height, 0));
+    // A small visual-only orbital/curl displacement makes the lip pitch forward
+    // instead of reading as a static Gaussian hill. Fine crossing ripples keep
+    // the translucent face breathing between the larger authored sets.
+    const faceChop = sin(wz.mul(0.082).sub(t.mul(1.85)))
+      .mul(sin(wx.mul(0.19).add(t.mul(1.3))))
+      .mul(f.face)
+      .mul(0.24);
+    const curl = f.lip.mul(1.35);
+    mat.positionNode = positionLocal.add(vec3(curl, f.height.add(faceChop).add(f.lip.mul(0.42)), 0));
 
     // strip + window feathering so the patch melts into the flat bay water
     const stripFade = f.mask; // already 0 outside the break, feathered inside
-    const zRim = smoothstep(float(FACE_WINDOW_Z * 0.5), float(FACE_WINDOW_Z * 0.5 - 60), positionLocal.z.abs());
+    const zRim = smoothstep(
+      float(FACE_WINDOW_Z * 0.5 - 60),
+      float(FACE_WINDOW_Z * 0.5),
+      positionLocal.z.abs()
+    ).oneMinus();
 
     // --- colour: chlorophyll green, backlit face, breaking foam ---------------
     // deep trough → mid sea green → bright translucent emerald on the standing
@@ -136,6 +184,8 @@ export class OceanBeachWaves {
   }
 
   update(time: number, focus?: { x: number; z: number }) {
+    const dt = Math.min(0.05, Math.max(0, time - this.#lastTime));
+    this.#lastTime = time;
     this.#uTime.value = time;
     const b = OCEAN_BEACH_SURF;
 
@@ -179,5 +229,38 @@ export class OceanBeachWaves {
       sp[k + 2] = z + sv[k + 2] * life;
     }
     (this.#spray.geometry.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;
+
+    const fp = this.#foamPositions;
+    const fv = this.#foamVelocity;
+    const fl = this.#foamLife;
+    const foamCount = fl.length;
+    for (let i = 0; i < foamCount; i++) {
+      const k = i * 3;
+      const vk = i * 2;
+      fl[i] -= dt;
+      if (fl[i] <= 0 || fp[k] > b.maxX - 3 || fp[k + 2] < stripMinZ || fp[k + 2] > stripMaxZ) {
+        // Low-discrepancy births avoid obvious rows while remaining deterministic.
+        const u = (i * 0.61803398875 + time * 0.013) % 1;
+        const z = THREE.MathUtils.lerp(stripMinZ, stripMaxZ, u);
+        const slot = (i % SLOTS) - 1;
+        const crestX = oceanBeachCrestX(slot, z, time);
+        const spent = 2 + ((i * 17) % 31) * 0.72;
+        fp[k] = crestX + spent;
+        fp[k + 2] = z;
+        fp[k + 1] = waterHeight(fp[k], z, time) + 0.12;
+        fv[vk] = 3.4 + (i % 9) * 0.31;
+        fv[vk + 1] = Math.sin(i * 12.9898) * 0.9;
+        fl[i] = 2.8 + (i % 11) * 0.23;
+        continue;
+      }
+      // Semi-Lagrangian-looking surface advection with a cheap curl field.
+      const curl = Math.sin(fp[k] * 0.031 + fp[k + 2] * 0.019 + time * 1.15);
+      fv[vk] += (1.8 - fv[vk]) * dt * 0.35;
+      fv[vk + 1] += (curl * 1.5 - fv[vk + 1]) * dt * 1.6;
+      fp[k] += fv[vk] * dt;
+      fp[k + 2] += fv[vk + 1] * dt;
+      fp[k + 1] = waterHeight(fp[k], fp[k + 2], time) + 0.1;
+    }
+    (this.#foam.geometry.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;
   }
 }

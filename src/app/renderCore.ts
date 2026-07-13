@@ -18,7 +18,7 @@ export async function createRenderCore(app: HTMLElement): Promise<RenderCore> {
   // 24 km far plane. Canvas AA stays off because every pixel routes through the
   // post pipeline, which owns the scene sample count.
   const renderer = new THREE.WebGPURenderer({ antialias: false, reversedDepthBuffer: true });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, RENDER_MODE.pixelRatioCap));
+  renderer.setPixelRatio(RENDER_MODE.pixelRatioCap);
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = RENDER_TUNING.values.exposure;

@@ -15,8 +15,10 @@
 // LOOK (chasing momentchan/false-earth's luminous roses, our own wildflowers): real
 // 3D curved layered petals with true normals + a translucent MeshSSS material + a
 // fresnel rim glow + a pale-centre→saturated-edge colour ramp, so blooms read as
-// dimensional, back-lit, glowing cups — not flat cards. Plus per-clump + per-rotation
-// colour variation so a patch isn't copy-pasted.
+// dimensional, back-lit, glowing cups — not flat cards. Each GPU instance is a small
+// 3–5-stem botanical clump: substantially more visible flower heads for the same four
+// draws, with the old single-bloom triangle budget redistributed across hero + simpler
+// satellite blooms instead of multiplying the scatter count.
 
 import * as THREE from "three/webgpu";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
@@ -160,6 +162,39 @@ function makeStem(h: number, w: number): THREE.BufferGeometry[] {
   return parts;
 }
 
+/** A tiny faceted 3D flower disc. Six top triangles and twelve side triangles give
+ *  poppies and daisies a readable pollen centre without spending sphere geometry. */
+function makeCentre(radius: number, y: number, height = radius * 0.42): THREE.BufferGeometry {
+  const sides = 6;
+  const pos: number[] = [0, y + height, 0];
+  const idx: number[] = [];
+  for (let i = 0; i < sides; i++) {
+    const a = (i / sides) * Math.PI * 2;
+    pos.push(Math.sin(a) * radius, y, Math.cos(a) * radius);
+  }
+  for (let i = 0; i < sides; i++) {
+    const next = (i + 1) % sides;
+    idx.push(0, 1 + i, 1 + next);
+  }
+  // A narrower lower ring makes the disc a shallow pollen dome, not a flat hexagon.
+  const lowerStart = pos.length / 3;
+  for (let i = 0; i < sides; i++) {
+    const a = (i / sides) * Math.PI * 2;
+    pos.push(Math.sin(a) * radius * 0.72, y - height * 0.36, Math.cos(a) * radius * 0.72);
+  }
+  for (let i = 0; i < sides; i++) {
+    const next = (i + 1) % sides;
+    idx.push(1 + i, lowerStart + i, lowerStart + next, 1 + i, lowerStart + next, 1 + next);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute("aHead", new THREE.Float32BufferAttribute(new Float32Array(pos.length / 3).fill(1), 1));
+  g.setAttribute("aG", new THREE.Float32BufferAttribute(new Float32Array(pos.length / 3).fill(0.04), 1));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+
 /** Merge the parts, bias petal normals toward the sky (so cupped petals still catch
  *  skylight instead of going black — same trick the grass uses), and bake aSway. */
 function finalizeBloom(parts: THREE.BufferGeometry[], totalH: number): THREE.BufferGeometry {
@@ -168,10 +203,12 @@ function finalizeBloom(parts: THREE.BufferGeometry[], totalH: number): THREE.Buf
   const pos = g.getAttribute("position");
   const nor = g.getAttribute("normal");
   const head = g.getAttribute("aHead");
-  const sway = new Float32Array(pos.count);
+  // xyz = tip weight, wind sample offset x, wind sample offset z. Packing the
+  // per-stem phase beside tip weight keeps the WebGPU pipeline at eight buffers.
+  const sway = new Float32Array(pos.count * 3);
   for (let i = 0; i < pos.count; i++) {
     const t = Math.min(1, Math.max(0, pos.getY(i) / totalH));
-    sway[i] = t * t;
+    sway[i * 3] = t * t;
     if (head.getX(i) > 0.5) {
       // lift toward +Y so the petal reads dimensional (keeps some of its own tilt for
       // the fresnel rim) but is lit by the sky rather than shadowed to black
@@ -182,47 +219,106 @@ function finalizeBloom(parts: THREE.BufferGeometry[], totalH: number): THREE.Buf
       nor.setXYZ(i, nx * inv, ny * inv, nz * inv);
     }
   }
-  g.setAttribute("aSway", new THREE.Float32BufferAttribute(sway, 1));
+  g.setAttribute("aSway", new THREE.Float32BufferAttribute(sway, 3));
   return g;
 }
 
-/** 0 poppy — the hero: a lush, many-petalled, layered ranunculus-form bloom. Five
- *  rings of small cupped petals, each ring tighter + more upright toward the centre,
- *  spun by irregular offsets so the packing reads natural, not radially symmetric. */
-function poppyGeometry(): THREE.BufferGeometry {
-  const stemH = 0.5;
+type ClumpFlower = {
+  geometry: THREE.BufferGeometry;
+  x: number;
+  z: number;
+  scale?: number;
+  yaw?: number;
+  windPhase?: number;
+  windGain?: number;
+};
+
+/** Merge several complete flowers into one instanced clump. The packed wind offset
+ *  samples the canonical ground-cover sway at a slightly different phase per stem,
+ *  so stalks breathe together with the grass without moving as a rigid bouquet. */
+function flowerClump(flowers: ClumpFlower[]): THREE.BufferGeometry {
+  for (const [i, flower] of flowers.entries()) {
+    const g = flower.geometry;
+    const scale = flower.scale ?? 1;
+    g.scale(scale, scale, scale);
+    g.rotateY(flower.yaw ?? 0);
+    g.translate(flower.x, 0, flower.z);
+
+    const sway = g.getAttribute("aSway");
+    const gain = flower.windGain ?? 1;
+    // This is a phase-space offset, not a positional deformation. A few metres is
+    // enough to separate the dual-frequency sway while retaining the shared gust.
+    const phase = flower.windPhase ?? i * 1.7;
+    for (let v = 0; v < sway.count; v++) {
+      sway.setXYZ(v, sway.getX(v) * gain, Math.cos(phase) * 1.8, Math.sin(phase) * 1.8);
+    }
+  }
+  const merged = mergeGeometries(flowers.map((f) => f.geometry));
+  for (const flower of flowers) flower.geometry.dispose();
+  merged.computeBoundingBox();
+  merged.computeBoundingSphere();
+  return merged;
+}
+
+/** A poppy bloom, with detail concentrated in the nearby hero and cheaper satellite
+ *  flowers. Both remain genuinely curved, layered 3D geometry. */
+function singlePoppy(stemH: number, hero: boolean): THREE.BufferGeometry {
   const parts = makeStem(stemH, 0.032);
-  bloomRings(parts, stemH + 0.02, [
-    { count: 8, pitch: 0.12, len: 0.2, wid: 0.17, rise: 0.32, close: 0.12, cup: 0.5, out: 0.022 },
-    { count: 8, pitch: 0.42, len: 0.16, wid: 0.14, rise: 0.46, close: 0.26, cup: 0.7, out: 0.016, spin: 0.4 },
-    { count: 7, pitch: 0.78, len: 0.13, wid: 0.12, rise: 0.58, close: 0.36, cup: 0.9, out: 0.011, spin: 0.85 },
-    { count: 6, pitch: 1.12, len: 0.095, wid: 0.1, rise: 0.7, close: 0.46, cup: 1.1, out: 0.007, spin: 0.25 },
-    { count: 5, pitch: 1.45, len: 0.06, wid: 0.08, rise: 0.8, close: 0.55, cup: 1.3, out: 0.004, spin: 0.6 }
-  ], 4);
+  if (hero) {
+    bloomRings(parts, stemH + 0.02, [
+      { count: 8, pitch: 0.15, len: 0.2, wid: 0.17, rise: 0.34, close: 0.12, cup: 0.55, out: 0.022 },
+      { count: 7, pitch: 0.58, len: 0.145, wid: 0.13, rise: 0.5, close: 0.28, cup: 0.78, out: 0.013, spin: 0.4 },
+      { count: 5, pitch: 1.08, len: 0.09, wid: 0.09, rise: 0.7, close: 0.48, cup: 1.1, out: 0.006, spin: 0.85 }
+    ], 3);
+    parts.push(makeCentre(0.037, stemH + 0.025));
+  } else {
+    bloomRings(parts, stemH + 0.015, [
+      { count: 7, pitch: 0.2, len: 0.17, wid: 0.145, rise: 0.36, close: 0.14, cup: 0.58, out: 0.018 },
+      { count: 5, pitch: 0.84, len: 0.1, wid: 0.09, rise: 0.62, close: 0.38, cup: 0.9, out: 0.007, spin: 0.5 }
+    ], 2);
+    parts.push(makeCentre(0.032, stemH + 0.02));
+  }
   return finalizeBloom(parts, stemH + 0.24);
 }
 
-/** 1 lupine — tall spike of stacked cupped florets. */
-function lupineGeometry(): THREE.BufferGeometry {
-  const stemH = 0.34, spikeH = 0.44, tiers = 8;
+/** 0 poppy — an asymmetric three-bloom clump: one layered hero plus two lighter,
+ *  differently tilted satellites. It costs slightly less than the old one-head mesh. */
+function poppyGeometry(): THREE.BufferGeometry {
+  return flowerClump([
+    { geometry: singlePoppy(0.5, true), x: 0, z: 0, yaw: 0.2, windPhase: 0.3, windGain: 1.02 },
+    { geometry: singlePoppy(0.44, false), x: 0.22, z: 0.1, scale: 0.86, yaw: 2.4, windPhase: 2.2, windGain: 0.84 },
+    { geometry: singlePoppy(0.4, false), x: -0.17, z: 0.16, scale: 0.79, yaw: 4.6, windPhase: 4.4, windGain: 1.14 }
+  ]);
+}
+
+/** One lupine spike. Satellite spikes use fewer tiers and lower-order curved florets. */
+function singleLupine(stemH: number, spikeH: number, tiers: number, petals: number, segs: number): THREE.BufferGeometry {
   const parts = makeStem(stemH, 0.03);
-  const floret = makePetal(0.075, 0.07, 0.55, 0.35, 0.7, 3);
+  const floret = makePetal(0.075, 0.07, 0.55, 0.35, 0.7, segs);
   for (let t = 0; t < tiers; t++) {
     const frac = t / (tiers - 1);
     const y = stemH + frac * spikeH;
     const r = 0.018 + 0.05 * (1 - frac * 0.7);
-    for (let i = 0; i < 5; i++) parts.push(layPetal(floret, 0.65, (i / 5) * Math.PI * 2 + t * 0.7, y, r));
+    for (let i = 0; i < petals; i++) parts.push(layPetal(floret, 0.65, (i / petals) * Math.PI * 2 + t * 0.7, y, r));
   }
   floret.dispose();
   return finalizeBloom(parts, stemH + spikeH);
 }
 
-/** 2 yarrow — short stem + a domed umbel of tiny florets. */
-function yarrowGeometry(): THREE.BufferGeometry {
-  const stemH = 0.3;
+/** 1 lupine — three differently tall spikes, cheaper overall than the former single
+ *  40-floret spike but much fuller in silhouette. */
+function lupineGeometry(): THREE.BufferGeometry {
+  return flowerClump([
+    { geometry: singleLupine(0.34, 0.44, 7, 4, 2), x: 0, z: 0, yaw: 0.1, windPhase: 0.5, windGain: 1.12 },
+    { geometry: singleLupine(0.3, 0.34, 5, 4, 1), x: 0.18, z: 0.1, scale: 0.88, yaw: 2.2, windPhase: 2.6, windGain: 0.86 },
+    { geometry: singleLupine(0.28, 0.31, 5, 4, 1), x: -0.16, z: 0.14, scale: 0.82, yaw: 4.4, windPhase: 4.8, windGain: 1.2 }
+  ]);
+}
+
+/** One yarrow stem + domed umbel of tiny florets. */
+function singleYarrow(stemH: number, n: number, segs: number): THREE.BufferGeometry {
   const parts = makeStem(stemH, 0.028);
-  const flo = makePetal(0.05, 0.05, 0.3, 0.2, 0.5, 2);
-  const n = 13;
+  const flo = makePetal(0.05, 0.05, 0.3, 0.2, 0.5, segs);
   for (let i = 0; i < n; i++) {
     const a = i * 2.399; // golden-angle spread
     const rr = 0.015 + 0.075 * Math.sqrt(i / n);
@@ -232,18 +328,40 @@ function yarrowGeometry(): THREE.BufferGeometry {
   return finalizeBloom(parts, stemH + 0.08);
 }
 
-/** 3 goldfield — low daisy for carpeting drifts: a small cupped gold star. */
-function goldfieldGeometry(): THREE.BufferGeometry {
-  const stemH = 0.16;
+/** 2 yarrow — three airy umbels at staggered heights. The satellites have fewer
+ *  length segments, which is invisible at their scale but preserves real 3D scoops. */
+function yarrowGeometry(): THREE.BufferGeometry {
+  return flowerClump([
+    { geometry: singleYarrow(0.34, 9, 2), x: 0, z: 0, windPhase: 0.7, windGain: 1.08 },
+    { geometry: singleYarrow(0.29, 6, 1), x: 0.18, z: 0.08, scale: 0.87, yaw: 2.1, windPhase: 2.7, windGain: 0.82 },
+    { geometry: singleYarrow(0.27, 6, 1), x: -0.15, z: 0.14, scale: 0.8, yaw: 4.2, windPhase: 4.9, windGain: 1.16 }
+  ]);
+}
+
+/** One goldfield daisy. Satellites keep a 3-column scoop but only one length segment. */
+function singleGoldfield(stemH: number, petals: number, segs: number, hero: boolean): THREE.BufferGeometry {
   const parts = makeStem(stemH, 0.024);
   bloomRings(parts, stemH + 0.005, [
-    { count: 11, pitch: 0.18, len: 0.075, wid: 0.045, rise: 0.28, close: 0.05, cup: 0.5, out: 0.006 },
-    { count: 8, pitch: 0.5, len: 0.05, wid: 0.038, rise: 0.45, close: 0.2, cup: 0.7, out: 0.004, spin: 0.4 }
-  ], 3);
+    { count: petals, pitch: hero ? 0.2 : 0.26, len: hero ? 0.08 : 0.068, wid: hero ? 0.048 : 0.044, rise: 0.3, close: 0.06, cup: 0.55, out: 0.006 }
+  ], segs);
+  parts.push(makeCentre(hero ? 0.033 : 0.028, stemH + 0.012));
   return finalizeBloom(parts, stemH + 0.07);
 }
 
+/** 3 goldfield — five small daisies make a carpeting tuft. Its five-head silhouette
+ *  costs only ~36% more triangles than the old single two-ring daisy. */
+function goldfieldGeometry(): THREE.BufferGeometry {
+  return flowerClump([
+    { geometry: singleGoldfield(0.19, 10, 2, true), x: 0, z: 0, yaw: 0.2, windPhase: 0.2, windGain: 1.0 },
+    { geometry: singleGoldfield(0.16, 6, 1, false), x: 0.14, z: 0.06, scale: 0.88, yaw: 1.5, windPhase: 1.6, windGain: 0.8 },
+    { geometry: singleGoldfield(0.15, 6, 1, false), x: -0.12, z: 0.1, scale: 0.82, yaw: 2.8, windPhase: 2.9, windGain: 1.14 },
+    { geometry: singleGoldfield(0.14, 6, 1, false), x: 0.07, z: -0.13, scale: 0.78, yaw: 4.1, windPhase: 4.2, windGain: 0.92 },
+    { geometry: singleGoldfield(0.13, 6, 1, false), x: -0.12, z: -0.1, scale: 0.74, yaw: 5.4, windPhase: 5.5, windGain: 1.2 }
+  ]);
+}
+
 const BUILDERS = [poppyGeometry, lupineGeometry, yarrowGeometry, goldfieldGeometry];
+const HEADS_PER_CLUMP = [3, 3, 3, 5] as const;
 
 // Flower heads remain clearly readable nearby, where their movement spans
 // several pixels. Farther out, even a few centimetres of sway makes the bright
@@ -269,7 +387,9 @@ function flowerMaterial(): FlowerMaterialState {
   mat.side = THREE.DoubleSide;
   mat.roughness = 0.5;
   mat.metalness = 0;
-  const swayW: N = attribute("aSway", "float");
+  const swayData: N = attribute("aSway", "vec3");
+  const swayW: N = swayData.x;
+  const windOffset: N = swayData.yz;
   const headMask: N = attribute("aHead", "float");
   const grad: N = attribute("aG", "float"); // 0 bloom centre → 1 petal tip
   const bloom: N = attribute("aBloom", "vec3"); // per-instance bloom colour
@@ -327,7 +447,9 @@ function flowerMaterial(): FlowerMaterialState {
 
   // SHARED wind — form every offset in world space, then map that VECTOR (w=0)
   // through only the mesh world inverse. The instance transform already ran.
-  const swayAmt: N = groundSway(anchorWorld.xz);
+  // Every stalk in a clump still uses the one canonical grass/flower wind, but its
+  // baked phase-space offset prevents all 3–5 stems from behaving like one rigid mesh.
+  const swayAmt: N = groundSway(anchorWorld.xz.add(windOffset));
   const windDamp: N = float(1).sub(crush.mul(0.7));
   const windLod: N = anchorWorld
     .distance(cameraPosition)
@@ -382,7 +504,17 @@ export type FlowerRing = {
   update(focus: { x: number; z: number }): void;
   /** force an immediate re-scatter at the last focus (debug panel calls this on a slider change) */
   refresh(): void;
-  stats: { count: number };
+  stats: {
+    /** GPU clump instances (kept as `count` for existing diagnostics). */
+    count: number;
+    /** Apparent flower heads/spikes/umbels represented by those clump instances. */
+    heads: number;
+    /** Instanced geometry triangles submitted by live clumps, before clipping. */
+    submittedTriangles: number;
+    /** Static triangles in one clump mesh for each of the four species. */
+    trianglesPerClump: readonly number[];
+    instanceCapPerSpecies: number;
+  };
 };
 
 export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: number) => boolean): FlowerRing {
@@ -391,6 +523,7 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
   const materialState = flowerMaterial();
   const material = materialState.material;
   const geoms = BUILDERS.map((b) => b());
+  const trianglesPerClump = geoms.map((g) => (g.index?.count ?? g.getAttribute("position").count) / 3);
 
   const cellsAcross = (MAX_SAMPLE_REACH * 2) / SPACING;
   const capPerSpecies = Math.ceil(cellsAcross * cellsAcross * 0.5);
@@ -554,7 +687,13 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
       if (last.x < 1e8) resample(last.x, last.z);
     },
     get stats() {
-      return { count };
+      let heads = 0;
+      let submittedTriangles = 0;
+      for (let species = 0; species < rows.length; species++) {
+        heads += rows[species].length * HEADS_PER_CLUMP[species];
+        submittedTriangles += rows[species].length * trianglesPerClump[species];
+      }
+      return { count, heads, submittedTriangles, trianglesPerClump, instanceCapPerSpecies: capPerSpecies };
     }
   };
 }

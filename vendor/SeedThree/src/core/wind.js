@@ -32,12 +32,11 @@
 
 import { Vector3 } from 'three/webgpu';
 import { uniform, time, sin, mix, normalize, positionLocal, positionWorld, positionGeometry, attribute, float, vec2, vec3, vec4, modelWorldMatrix, mx_noise_float } from 'three/tsl';
+import { WIND_DIR, windStrength, windSpeed } from '../../../../src/world/vegetation/wind.ts';
 
-export const windStrength = uniform(0.5); // 0..1 (GUI)
-export const windSpeed = uniform(1.0);    // gust tempo multiplier (GUI)
-// Fixed heading, exported so instance builders can pre-transform it into each
-// instance's local frame (see aWindVec above).
-export const WIND_DIR = new Vector3(0.85, 0, 0.53).normalize();
+// Transitional exports: the sandbox owns these values while the current tree
+// materials continue to consume the SeedThree wind-node helpers below.
+export { WIND_DIR, windStrength, windSpeed };
 const windDir = uniform(WIND_DIR.clone());
 
 // Shared sun direction (main.js updateSun writes it) — lets far materials that

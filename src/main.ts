@@ -28,6 +28,11 @@ import {
   createGoldenGateTennisSite,
   GOLDMAN_SUPPRESSED_BUILDINGS,
 } from "./world/goldenGateTennis";
+import {
+  JAPANESE_TEA_GARDEN_ENTRANCE,
+  TEA_GARDEN_SUPPRESSED_BUILDINGS,
+  isTeaGardenBuilding
+} from "./world/japaneseTeaGarden/layout";
 import { CoronaHeightsPark, prepareCoronaHeightsGround } from "./world/coronaHeights";
 import { OceanBeachWaves, SurfExperience } from "./gameplay/surfing";
 import { findOpenSpawn } from "./world/spawn";
@@ -56,10 +61,15 @@ import { Chat } from "./ui/chat";
 import { VehicleAudio } from "./fx/vehicleAudio";
 import { SwimAudio } from "./fx/swimAudio";
 import { createNatureSoundscape, DogParkAudio } from "./audio";
+import { WaveAudio, oceanWaveEnergyAt } from "./audio/waveAudio";
 import { AbandonedMounts } from "./gameplay/abandonedMounts";
 import type { Creatures } from "./gameplay/creatures";
 import type { Forest, AnimalKind } from "./gameplay/forest";
-import type { GrassDisplacer } from "./world/garden";
+import {
+  updateVegetationEnvironment,
+  windGustValue,
+  type GroundDisplacer
+} from "./world/vegetation/runtime";
 import { BOTANICAL_GARDEN_BOUNDS } from "./world/garden/layout";
 import type { CityGenRing, ColliderBox, ColliderMesh } from "./world/citygen";
 import { Islands } from "./gameplay/islands";
@@ -76,7 +86,7 @@ import { parseReadLink, openReadLink } from "./ui/deepLinks";
 import { Tutorial } from "./ui/tutorial";
 import { createRenderPipeline } from "./render/pipeline";
 import { createDynamicResolution } from "./render/dynamicRes";
-import { POSTFX_TUNING } from "./render/postfx";
+import { POSTFX_TUNING, setFlowPostFx } from "./render/postfx";
 import { DebugPanel } from "./ui/debug";
 import { ColliderDebug, type DebugBox, type DebugMesh } from "./ui/colliderDebug";
 import { CalibrationChart } from "./ui/calibrationChart";
@@ -88,6 +98,15 @@ import { PlayerLocator } from "./ui/playerLocator";
 import { avatarFromSeed, loadSavedAvatar, randomAvatarTraits, saveAvatarTraits } from "./player/avatar";
 import { boardFromSeed, boardVisualKey, loadSavedBoard, randomBoardConfig, saveBoardConfig, setLocalBoardConfig } from "./vehicles/board";
 import { loadSavedScooter, randomScooterConfig, saveScooterConfig, scooterFromSeed, scooterKey, setLocalScooterConfig } from "./vehicles/scooter";
+import {
+  loadSavedSurfboard,
+  randomSurfboardConfig,
+  saveSurfboardConfig,
+  setLocalSurfboardConfig,
+  surfboardFromSeed,
+  surfboardVisualKey,
+  type SurfboardConfig
+} from "./vehicles/surf";
 import { MENU_MODES, ModeDiscovery, ALL_MODES } from "./player/discovery";
 import { BootScreen } from "./app/bootScreen";
 import { createRenderCore } from "./app/renderCore";
@@ -195,25 +214,37 @@ async function boot() {
   // / Marin): sampled beds + gust-locked wind synth + spatial animal calls, all
   // fading in per region. Suspends itself when the player is out in the city.
   const nature = createNatureSoundscape();
+  // Reusable ocean-wave layer (breaking surf at Ocean Beach + shoreline wash
+  // anywhere near water); rides the nature AudioContext.
+  const waveAudio = new WaveAudio(nature);
 
   // Where a fresh session begins. Code spawns (src/world/spawnPoints.ts) win
   // over the baked meta.json table so a location can declare which heavy foliage
   // regions it needs before reveal; default is the Corona Heights summit. Falls
   // back to the baked spawn, then Golden Gate. Nudged onto open ground — never
   // under (or inside) a building. (Resume/invite paths override this entirely.)
-  const spawnPoint = resolveSpawnPoint(START.spawn) ?? resolveSpawnPoint(START_DEFAULTS.spawn);
-  const startAt = spawnPoint ?? map.meta.spawns[START.spawn] ?? map.meta.spawns[START_DEFAULTS.spawn];
+  // `?spawn=<code-or-baked-key>` is a non-persisting place link used by QA and
+  // future location sharing. An unknown key safely falls back to the saved/default
+  // start without changing settings.
+  const requestedSpawn = new URLSearchParams(location.search).get("spawn")?.trim();
+  const autoStartIrohTour = new URLSearchParams(location.search).get("tour") === "iroh";
+  const spawnKey = requestedSpawn && (resolveSpawnPoint(requestedSpawn) || map.meta.spawns[requestedSpawn])
+    ? requestedSpawn
+    : START.spawn;
+  const spawnPoint = resolveSpawnPoint(spawnKey) ?? resolveSpawnPoint(START_DEFAULTS.spawn);
+  const startAt = spawnPoint ?? map.meta.spawns[spawnKey] ?? map.meta.spawns[START_DEFAULTS.spawn];
   // Per-session scatter: every fresh session lands a stride or two off the
   // registered point, so two players (or two tabs) never boot into the exact
-  // same spot — co-located avatars interpenetrate and read as z-fighting.
+  // same spot — co-located avatars interpenetrate and read as z-fighting. An
+  // explicit place link is exact so authored interaction ranges remain reliable.
   // findOpenSpawn validates the scattered point like any other candidate.
   const scatterA = Math.random() * Math.PI * 2;
-  const scatterR = 0.8 + Math.random() * 1.6;
+  const scatterR = requestedSpawn ? 0 : 0.8 + Math.random() * 1.6;
   const spawn = await findOpenSpawn(map, tiles.manifest, {
     ...startAt,
     x: startAt.x + Math.cos(scatterA) * scatterR,
     z: startAt.z + Math.sin(scatterA) * scatterR
-  });
+  }, requestedSpawn ? 1.5 : 12, requestedSpawn ? 36 : 200);
   // Lean-boot spawns cap the draw radius while the cover is up: only the near
   // district (tiles + citygen cells, both keyed off CONFIG.tileLoadRadius) gates
   // the reveal. The first covered tile scan runs after this, so the cap takes
@@ -240,20 +271,81 @@ async function boot() {
   let scooterCustomized = savedScooter !== null;
   let scooterConfig = savedScooter ?? randomScooterConfig();
   setLocalScooterConfig(scooterConfig);
+  // Surfboard identity follows the same explicit-choice/per-id-seed contract,
+  // but its PNG art remains completely unloaded until surfing or the lab starts.
+  const savedSurfboard = loadSavedSurfboard();
+  let surfboardCustomized = savedSurfboard !== null;
+  let surfboardConfig = savedSurfboard ?? randomSurfboardConfig();
+  setLocalSurfboardConfig(surfboardConfig);
   vehicleAudio.setBoardStyle(boardConfig);
-  const player = new Player(physics, map, scene, spawn, avatarTraits, boardConfig, scooterConfig);
+  const player = new Player(physics, map, scene, spawn, avatarTraits, boardConfig, scooterConfig, surfboardConfig);
   const surfExperience = new SurfExperience(vehicleAudio);
+  let surfFlowFx = 0;
+  let surfFlowPhase = 0;
+  let surfFlowSerial = 0;
+  let surfSplashSerial = 0;
+  const updateSurfPresentation = (dt: number) => {
+    const surf = player.surfTelemetry;
+    const active = player.mode === "surf" && surf.flowActive;
+    const response = active ? 8 : 2.6;
+    surfFlowFx += ((active ? 1 : 0) - surfFlowFx) * (1 - Math.exp(-Math.min(dt, 0.1) * response));
+    if (surf.flowSerial !== surfFlowSerial) {
+      surfFlowSerial = surf.flowSerial;
+      surfFlowPhase = 0;
+    } else {
+      surfFlowPhase += dt;
+    }
+    setFlowPostFx(surfFlowFx, surfFlowPhase);
+  };
+  // The customizer module itself is deferred until surf first activates. This
+  // is rebound after networking exists; the early no-op keeps the mode callback
+  // safe during startup/restores.
+  let ensureSurfboardCustomizer: () => void = () => {};
   const birdTrails = new BirdTrails(scene, player.meshes.bird);
   const droneFireworkMounts = player.meshes.drone.userData.fireworkMounts as THREE.Object3D[] | undefined;
   const startMode = spawnPoint?.mode ?? START.mode;
   if (startMode !== "walk" && ALL_MODES.includes(startMode)) player.trySwitch(startMode);
+  // Surf-mode far-cull (perf audit's #1 win): a west-facing surfer never sees the
+  // city behind them, but streamed tiles + citygen chunks are frustumCulled=false
+  // — they pay GPU draw cost every frame regardless of view, cleared only by
+  // distance-unload. So while surfing we shrink the streamed radius + citygen
+  // detail and pull the fog cull-edge in to hide the closer unload seam, then
+  // restore on the way out. Mutating .values directly does NOT persist (only the
+  // tweakpane onChange path does), so no saved-tweak pollution.
+  let surfCullStash: { load: number; unload: number; detail: number; maxDetail: number } | null = null;
+  const applySurfCull = (on: boolean) => {
+    if (on && !surfCullStash) {
+      surfCullStash = {
+        load: CONFIG.tileLoadRadius,
+        unload: CONFIG.tileUnloadRadius,
+        detail: CITYGEN_TUNING.values.detailRadius,
+        maxDetail: CITYGEN_TUNING.values.maxDetail
+      };
+      CONFIG.tileLoadRadius = Math.min(CONFIG.tileLoadRadius, 2000);
+      CONFIG.tileUnloadRadius = 2400;
+      CITYGEN_TUNING.values.detailRadius = Math.min(CITYGEN_TUNING.values.detailRadius, 140);
+      CITYGEN_TUNING.values.maxDetail = Math.min(CITYGEN_TUNING.values.maxDetail, 40);
+      sky.setCullRadiusOverride(2000);
+      tiles.forceScan();
+    } else if (!on && surfCullStash) {
+      CONFIG.tileLoadRadius = surfCullStash.load;
+      CONFIG.tileUnloadRadius = surfCullStash.unload;
+      CITYGEN_TUNING.values.detailRadius = surfCullStash.detail;
+      CITYGEN_TUNING.values.maxDetail = surfCullStash.maxDetail;
+      surfCullStash = null;
+      sky.setCullRadiusOverride(null);
+      tiles.forceScan();
+    }
+  };
   player.onModeChange = (mode) => {
     const fresh = modeDiscovery.discover(mode);
     hud.setMode(mode);
     toolbar.setVehicle(mode);
     input.setMode(mode); // trigger routing (fly puts them on the ↑/↓ throttle)
     debugPanel.setMode(mode); // tuning pane shows only the active mode's movement folder
+    applySurfCull(mode === "surf");
     if (mode === "surf") {
+      ensureSurfboardCustomizer();
       // Drop straight into a readable down-the-line shot: the board travels
       // south while the wave face peels along the player's left shoulder.
       chase.yaw = Math.PI - 0.38;
@@ -267,6 +359,9 @@ async function boot() {
   };
   input.setMode(player.mode);
   toolbar.setVehicle(player.mode);
+  // onModeChange is wired after the startup trySwitch, so a boot straight into
+  // surf (spawnPoint/invite) needs the cull applied once explicitly.
+  if (player.mode === "surf") applySurfCull(true);
   // controller: swap the help labels to whichever device was touched last
   input.onDeviceChange = (device) => hud.setDevice(device);
   window.addEventListener("gamepadconnected", () => hud.message("Controller connected", 2.4));
@@ -359,7 +454,7 @@ async function boot() {
     group: THREE.Group;
     ready: Promise<void>;
     setVisible: (visible: boolean, focus: { x: number; z: number }) => void;
-    update: (dt: number, pos: THREE.Vector3, d: GrassDisplacer[]) => void;
+    update: (pos: THREE.Vector3) => void;
   } | null = null;
   let wildlands: {
     groups: THREE.Group[];
@@ -369,15 +464,14 @@ async function boot() {
     update: (pos: THREE.Vector3, cam: THREE.Vector3) => void;
   } | null = null;
   let goldenGateTennis: ReturnType<typeof createGoldenGateTennisSite> | null = null;
+  let japaneseTeaGarden: import("./world/japaneseTeaGarden").JapaneseTeaGarden | null = null;
   // Universal minigame site gate: each located game (pickleball, golf, soon
   // archery) registers a footprint + pads; one cheap update per tick flips
   // them awake only while the player is nearby. Sites register asleep — the
   // first tick wakes any the player already stands in.
   const siteGate = createSiteGate();
   let coronaHeights: CoronaHeightsPark | null = null;
-  let windGustValue: (() => number) | null = null;
-  let advanceWind: ((dt: number) => void) | null = null;
-  const gardenDisplacer: GrassDisplacer = { x: 0, z: 0, radius: 1.6, strength: 1 };
+  const gardenDisplacer: GroundDisplacer = { x: 0, z: 0, radius: 1.6, strength: 1 };
   const gardenDisplacers = [gardenDisplacer];
   // Master foliage switch (bound at the top of the "/" panel). When off, every
   // vegetation group is hidden AND its per-frame update is skipped in the loop
@@ -388,6 +482,7 @@ async function boot() {
     garden?.setVisible(visible, player.position);
     if (wildlands) for (const g of wildlands.groups) g.visible = visible;
     goldenGateTennis?.setFoliageVisible(visible);
+    japaneseTeaGarden?.setFoliageVisible(visible);
     coronaHeights?.setFoliageVisible(visible);
   };
   const islands = new Islands(physics, map, scene);
@@ -471,6 +566,13 @@ async function boot() {
       tiles.unsuppressBuildingMesh(building.key, building.index);
     }
     console.warn("[boot] Goldman Tennis Center unavailable:", err);
+  }
+  // The seven mapped Tea Garden buildings are replaced by authored, walkable
+  // structures. Hide both baked prisms and their generic colliders up front;
+  // the garden module owns the replacement collision and restores these on a
+  // construction failure.
+  for (const building of TEA_GARDEN_SUPPRESSED_BUILDINGS) {
+    tiles.suppressBuilding(building.key, building.index);
   }
   try {
     // Archery range in GG Park's NW corner. Born hidden (site-gated); a live
@@ -624,12 +726,12 @@ async function boot() {
   const pipeline = createRenderPipeline(renderer, scene, camera);
 
   // Dynamic-resolution governor: watches the real rAF cadence and steps the
-  // drawing-buffer pixel ratio between RENDER_MODE.minPixelRatio and the boot
-  // ceiling — min(devicePixelRatio, RENDER_MODE.pixelRatioCap) — to hold the
-  // frame budget on weaker GPUs. The apply path is exactly what boot + resize
-  // do (setPixelRatio + setSize); the WebGPU pass targets re-derive from the
-  // drawing-buffer on the next render, so nothing else needs a resize hook.
-  // Starts at the ceiling boot already applied above.
+  // drawing-buffer pixel ratio between RENDER_MODE.minPixelRatio and
+  // RENDER_MODE.pixelRatioCap to hold the frame budget on weaker GPUs.
+  // Currently off (cap == floor == 1); kept wired so re-enabling is a config flip.
+  // The apply path is exactly what boot + resize do (setPixelRatio + setSize);
+  // the WebGPU pass targets re-derive from the drawing-buffer on the next
+  // render, so nothing else needs a resize hook.
   const applyPixelRatio = (ratio: number) => {
     renderer.setPixelRatio(ratio);
     renderer.setSize(window.innerWidth, window.innerHeight);
@@ -645,7 +747,13 @@ async function boot() {
   // Send a custom avatar only if the player actually chose one; a null avatar
   // lets the server keep its per-id seed (server.mjs), so un-customized players
   // stay distinct instead of all sending the same saved blob.
-  const net = new Net(suggestedName, savedAvatar ?? undefined, savedBoard ?? undefined, savedScooter ?? undefined);
+  const net = new Net(
+    suggestedName,
+    savedAvatar ?? undefined,
+    savedBoard ?? undefined,
+    savedScooter ?? undefined,
+    savedSurfboard ?? undefined
+  );
   const remotes = new RemotePlayers(scene);
   const pickleballController = new PickleballController({
     goldman: goldenGateTennis,
@@ -727,6 +835,40 @@ async function boot() {
       if (player.mode !== "scooter" && !player.riding) player.trySwitch("scooter");
     }
   );
+  const applySurfboardConfig = (config: SurfboardConfig) => {
+    const changed = surfboardVisualKey(config) !== surfboardVisualKey(surfboardConfig);
+    surfboardConfig = config;
+    setLocalSurfboardConfig(config);
+    if (changed) player.setSurfboardConfig(config);
+    else player.previewSurfboardSurface(config);
+  };
+  let surfboardSelector: { setConfig(config: SurfboardConfig): void } | null = null;
+  let surfboardSelectorLoading: Promise<void> | null = null;
+  ensureSurfboardCustomizer = () => {
+    if (surfboardSelector || surfboardSelectorLoading) return;
+    surfboardSelectorLoading = import("./ui/surfboardSelector")
+      .then(({ SurfboardSelector }) => {
+        surfboardSelector = new SurfboardSelector(
+          surfboardConfig,
+          (config) => {
+            surfboardCustomized = true;
+            saveSurfboardConfig(config);
+            applySurfboardConfig(config);
+            net.setSurfboard(config);
+          },
+          (config) => player.previewSurfboardSurface(config),
+          () => {
+            if (player.mode !== "surf" && !player.riding) player.trySwitch("surf");
+          }
+        );
+      })
+      .catch((error) => console.warn("[surf] shaping room failed to load", error))
+      .finally(() => {
+        surfboardSelectorLoading = null;
+      });
+  };
+  // Startup can already be in surf mode before onModeChange is wired.
+  if (player.mode === "surf") ensureSurfboardCustomizer();
   net.onWelcome = () => {
     avatarSelector.setName(net.name); // server may canonicalize a duplicate/invalid name
     if (customized) {
@@ -753,6 +895,13 @@ async function boot() {
       player.setScooterConfig(scooterConfig);
       scooterSelector.setConfig(scooterConfig);
     }
+    if (surfboardCustomized) {
+      net.setSurfboard(surfboardConfig);
+    } else {
+      const seeded = surfboardFromSeed(net.selfId);
+      applySurfboardConfig(seeded);
+      surfboardSelector?.setConfig(seeded);
+    }
     golf?.syncNetState();
     net.replayGolf();
     pickleballController.onWelcome();
@@ -766,6 +915,7 @@ async function boot() {
         remotes.updateAvatar(info);
         remotes.updateBoard(info);
         remotes.updateScooter(info);
+        remotes.updateSurfboard(info);
       }
     }
     pickleballController.syncSlots();
@@ -901,6 +1051,10 @@ async function boot() {
   if (archery) {
     minimap.addLandmark(ARCHERY_CENTER.x, ARCHERY_CENTER.z, "Archery Range");
   }
+  // Ocean Beach surf break. The pin sits just inside the waterline so a teleport
+  // (or a shared ?j= link) drops you on the sand at the shore, facing the swell,
+  // board in hand — ready to press E and paddle out.
+  minimap.addLandmark(OCEAN_BEACH_SURF.maxX - 26, OCEAN_BEACH_SURF.entryZ, "Ocean Beach · Surf");
   const playerLocator = new PlayerLocator();
   const navigation = new NavigationController({
     player,
@@ -940,6 +1094,9 @@ async function boot() {
     "keydown",
     (e) => {
       if (e.code !== "Escape" || e.repeat) return;
+      // Input owns this invariant in an earlier capture listener. Keep this
+      // idempotent call here too so UI routing can never precede the unlock.
+      input.releaseLock();
       const t = e.target;
       // Debug search / other fields keep their own Esc behavior.
       if (
@@ -948,9 +1105,6 @@ async function boot() {
       ) {
         return;
       }
-      // Esc ALWAYS frees the mouse, whatever else it also dismisses below.
-      // releaseLock is unconditional and cancels any in-flight relock grant.
-      input.releaseLock();
       if (behindTheScenes?.isOpen) {
         behindTheScenes.setOpen(false);
         e.preventDefault();
@@ -1048,7 +1202,7 @@ async function boot() {
   // Vite structural reload additionally restores the exact chase-camera view.
   // (after the debug panel exists — restoreState can fire onModeChange).
   // An invite link wins over the saved session — the click's intent is explicit.
-  const resumed = invite ? null : (devReload?.player ?? loadPlayerState());
+  const resumed = invite || requestedSpawn ? null : (devReload?.player ?? loadPlayerState());
   if (resumed) {
     player.restoreState(resumed);
     modeDiscovery.discover(resumed.mode);
@@ -1301,14 +1455,12 @@ async function boot() {
     forest = new forestMod.Forest(map, scene);
 
     // Garden + Wildlands: botanical garden grass + designed SeedThree groves
-    const [gardenMod, wildlandsMod, golfMod] = await Promise.all([
+    const [gardenMod, wildlandsMod, golfMod, teaGardenMod] = await Promise.all([
       import("./world/garden"),
       import("./world/wildlands"),
-      import("./gameplay/golf")
+      import("./gameplay/golf"),
+      import("./world/japaneseTeaGarden")
     ]);
-    windGustValue = gardenMod.windGustValue;
-    advanceWind = gardenMod.updateWindGusts; // keep the wind envelope live when foliage is toggled off
-
     // Botanical garden (heaviest single park: SeedThree trees + textures). Gate
     // it only when the spawn is near; otherwise build it AFTER the cover lifts,
     // hidden until compiled, so its trees never sit on the boot path.
@@ -1337,6 +1489,60 @@ async function boot() {
           console.warn("[garden] deferred compile failed:", err);
         }
         g.setVisible(foliageOn, player.position);
+      });
+    }
+
+    // Japanese Tea Garden: exact OSM footprint with authored gates, Tea House,
+    // pagoda, ponds, bridges, specimen planting and Iroh's walkable guided tour.
+    // It shares the Botanical Garden region gate because the two sites touch;
+    // distant boots compile it after reveal so it never delays first play.
+    const buildTeaGarden = () => {
+      try {
+        const site = teaGardenMod.createJapaneseTeaGarden(map, {
+          physics,
+          // Conversation is gameplay-critical, so it must remain visible when
+          // the optional HUD panels are faded with Tab.
+          dialogueParent: document.body
+        });
+        japaneseTeaGarden = site;
+        site.setFoliageVisible(foliageOn);
+        minimap.addLandmark(
+          JAPANESE_TEA_GARDEN_ENTRANCE.x,
+          JAPANESE_TEA_GARDEN_ENTRANCE.z,
+          "Japanese Tea Garden"
+        );
+        const h = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
+        if (h) Object.assign(h, { japaneseTeaGarden: site });
+        return site;
+      } catch (err) {
+        for (const building of TEA_GARDEN_SUPPRESSED_BUILDINGS) {
+          tiles.unsuppressBuilding(building.key, building.index);
+        }
+        throw err;
+      }
+    };
+    let teaGardenReady: Promise<unknown> | null = null;
+    if (gardenGates) {
+      const site = buildTeaGarden();
+      scene.add(site.group);
+      site.update(0, 0, player.renderPosition, camera);
+      if (autoStartIrohTour) site.interact(player.position, player.mode);
+      teaGardenReady = site.ready;
+    } else {
+      void revealedPromise.then(async () => {
+        const site = buildTeaGarden();
+        site.group.visible = false;
+        await site.ready;
+        try {
+          await renderer.compileAsync(site.group, camera, scene);
+        } catch (err) {
+          console.warn("[tea-garden] deferred compile failed:", err);
+        }
+        scene.add(site.group);
+        site.update(0, 0, player.renderPosition, camera);
+        if (autoStartIrohTour) site.interact(player.position, player.mode);
+      }).catch((err) => {
+        console.warn("[tea-garden] deferred construction failed:", err);
       });
     }
 
@@ -1431,7 +1637,7 @@ async function boot() {
 
     // Gate the reveal on whatever is near; deferred regions run post-reveal and
     // are intentionally excluded here so they never hold the cover.
-    await Promise.all([gardenReady, wildlandsGolfReady].filter(Boolean));
+    await Promise.all([gardenReady, teaGardenReady, wildlandsGolfReady].filter(Boolean));
 
     // CityGen: procedural building ring + demo. Awaited (not fire-and-forget)
     // so modulesReady only flips once the ring exists — its cell builds land in
@@ -1441,7 +1647,10 @@ async function boot() {
       import("./world/citygen/demo")
     ]);
     citygen = citygenDemoMod.createCityGenDemo({ scene, map }) as NonNullable<typeof citygen>;
-    citygenRing.current = await citygenMod.createCityGenRing({}, { scene, physics, map, tiles, schedule: scheduler.schedule });
+    citygenRing.current = await citygenMod.createCityGenRing(
+      { excludeBuilding: isTeaGardenBuilding },
+      { scene, physics, map, tiles, schedule: scheduler.schedule }
+    );
 
     // BehindTheScenes: the "how it was made" reading overlay.
     // Closing does not re-lock — Esc (and backdrop/close) leave the cursor free.
@@ -1454,7 +1663,14 @@ async function boot() {
     });
 
   })()
-    .catch((err) => console.warn("[sf] deferred module load failed:", err))
+    .catch((err) => {
+      if (!japaneseTeaGarden) {
+        for (const building of TEA_GARDEN_SUPPRESSED_BUILDINGS) {
+          tiles.unsuppressBuilding(building.key, building.index);
+        }
+      }
+      console.warn("[sf] deferred module load failed:", err);
+    })
     .finally(() => {
       // The animation loop owns the renderer, so it starts the second warmup at
       // a frame boundary after deferred construction/scheduler work has settled.
@@ -1750,7 +1966,7 @@ async function boot() {
       nature.update(frameDt, {
         playerPos: player.renderPosition,
         camera,
-        gust: windGustValue?.() ?? 0,
+        gust: windGustValue(),
         timeOfDay: sky.timeOfDay
       });
       // stay social while frozen: peers keep moving, our keepalive keeps flowing
@@ -1766,6 +1982,7 @@ async function boot() {
       voice.update(camera); // keep talking while paused — it's a social feature
       minimap.update();
       playerLocator.update(camera, player.position, remotes.locatorTargets());
+      updateSurfPresentation(frameDt);
       input.endFrame();
       pipeline.render();
       return;
@@ -1780,7 +1997,7 @@ async function boot() {
       accumulator += frameDt; // no elapsed++ — the world clock stays frozen
       if (player.mode === "plane") player.steerFly(input, frameDt);
       if (!playingPickleball && !input.suspended && player.mode === "board" && input.pressed("Space")) player.requestBoardJump();
-      if (!playingPickleball && !input.suspended && player.mode === "surf" && input.pressed("Space")) player.requestSurfJump();
+      if (!playingPickleball && !input.suspended && player.mode === "surf" && input.pressed("KeyX")) player.requestSurfFlow();
       if (!playingPickleball && !input.suspended && player.mode === "walk" && input.pressed("Space")) player.requestWalkJump();
       chase.lookDir(aim);
       let steps = 0;
@@ -1825,6 +2042,8 @@ async function boot() {
         boost: input.down("ShiftLeft"),
         grounded: player.mode !== "board" || player.boardGrounded,
         surfFace: player.mode === "surf" ? player.surfTelemetry.face : 0,
+        surfFlow: player.mode === "surf" && player.surfTelemetry.flowActive ? 1 : 0,
+        surfMotionRate: player.mode === "surf" ? player.surfTelemetry.riderMotionRate : 1,
         driveVoice: player.driveSpec.voice ?? "engine"
       });
       swimAudio.update(frameDt, {
@@ -1835,7 +2054,7 @@ async function boot() {
       nature.update(frameDt, {
         playerPos: player.renderPosition,
         camera,
-        gust: windGustValue?.() ?? 0,
+        gust: windGustValue(),
         timeOfDay: sky.timeOfDay
       });
       sendLocalPresence();
@@ -1847,6 +2066,7 @@ async function boot() {
       // paused-but-roaming still streams tiles/citygen — keep their deferred
       // assembly draining so the frozen city fills in around the live player
       scheduler.run(frameDt < 1 / 55 ? 3 : 1.5);
+      updateSurfPresentation(frameDt);
       input.endFrame();
       pipeline.render();
       return;
@@ -1912,8 +2132,12 @@ async function boot() {
     // E: exit any vehicle/creature, pick up a thrown tennis ball, or on foot
     // hop into the nearest ride (a friend's passenger seat, a rideable animal,
     // or a mount you left behind)
+    const teaGardenEConsumed = !pickleballEConsumed
+      && input.pressed("KeyE")
+      && (japaneseTeaGarden?.interact(player.position, player.mode) ?? false);
     if (
       !pickleballEConsumed &&
+      !teaGardenEConsumed &&
       input.pressed("KeyE") &&
       !exitToWalk() &&
       !golf?.tryStartAtTee(player, hud) &&
@@ -1922,12 +2146,12 @@ async function boot() {
       const nearOceanBeach =
         player.mode === "walk" &&
         player.position.x > OCEAN_BEACH_SURF.minX - 180 &&
-        player.position.x < OCEAN_BEACH_SURF.maxX + 280 &&
+        player.position.x < OCEAN_BEACH_SURF.maxX + 60 && // must be at the waterline, not inland
         player.position.z > OCEAN_BEACH_SURF.minZ - 120 &&
         player.position.z < OCEAN_BEACH_SURF.maxZ + 120;
       if (nearOceanBeach) {
         player.trySwitch("surf");
-        hud.message("Paddle out — chase the green face!", 3);
+        hud.message("Paddle out (W) — carve the green face with A/D, Space off the lip!", 4);
       } else if (!fetchBall?.tryPickup(player.position)) {
         const drv = remotes.nearestDriver(player.position, 5.5);
         const animal = drv ? null : forest?.nearest(player.position, 5);
@@ -1988,8 +2212,6 @@ async function boot() {
       START.spawn = START_DEFAULTS.spawn;
       START.mode = START_DEFAULTS.mode;
       // re-apply the side effects the pane's onChange handlers normally push.
-      // Pixel ratio + shadows are no longer tweakable (universal render mode);
-      // the reset just re-asserts the dynamic-res governor's ceiling.
       renderer.toneMappingExposure = RENDER_TUNING.values.exposure;
       dynRes.syncToCap();
       CONFIG.tileLoadRadius = WORLD_TUNING.values.radius;
@@ -1997,6 +2219,7 @@ async function boot() {
       setFoliageVisible(FOLIAGE_TUNING.values.visible);
       tiles.forceScan();
       sky.applyFogParams();
+      sky.applyShadowParams();
       pipeline.applyPostFx(); // toggles back off + sliders back to defaults
       sky.cycleEnabled = SKY_TUNING.values.cycleEnabled;
       sky.cycleDuration = SKY_TUNING.values.cycleDuration;
@@ -2146,7 +2369,7 @@ async function boot() {
     // frame can render without a fixed physics step, so `pressed()` would be gone
     // before #updateBoard saw it.
     if (!playingPickleball && !input.suspended && player.mode === "board" && input.pressed("Space")) player.requestBoardJump();
-    if (!playingPickleball && !input.suspended && player.mode === "surf" && input.pressed("Space")) player.requestSurfJump();
+    if (!playingPickleball && !input.suspended && player.mode === "surf" && input.pressed("KeyX")) player.requestSurfFlow();
     if (!playingPickleball && !input.suspended && player.mode === "walk" && input.pressed("Space")) player.requestWalkJump();
 
     chase.lookDir(aim); // drone moves along the true view direction (no shot bias)
@@ -2224,34 +2447,35 @@ async function boot() {
         throwZoomBase = -1;
       }
     }
-    buskers.update(frameDt, camera, windGustValue?.() ?? 0, sky.sunElevation);
+    gardenDisplacer.x = player.renderPosition.x;
+    gardenDisplacer.z = player.renderPosition.z;
+    updateVegetationEnvironment(frameDt, foliageOn ? gardenDisplacers : undefined);
+    buskers.update(frameDt, camera, windGustValue(), sky.sunElevation);
+    japaneseTeaGarden?.update(frameDt, elapsed, player.renderPosition, camera);
     // MASTER foliage gate: when the "/" panel's foliage switch is OFF, every
     // vegetation group is already hidden (setFoliageVisible) — skip all its
     // per-frame work too so it costs near zero. We STILL advance the shared wind
     // envelope (cheap CPU math, no rendering) because the nature soundscape below
     // reads its gust value for wind audio.
     if (foliageOn) {
-      // garden: advance wind, move the near-grass detail ring to the player, and
-      // flatten grass under them. Cheap when the player is nowhere near the garden
+      // Garden moves its near-grass detail ring to the player. Shared wind and
+      // displacement were already advanced by the root vegetation runtime above.
+      // Cheap when the player is nowhere near the garden
       // (updateFocus distance-culls base chunks and skips the near ring).
-      gardenDisplacer.x = player.renderPosition.x;
-      gardenDisplacer.z = player.renderPosition.z;
-      garden?.update(frameDt, player.renderPosition, gardenDisplacers);
+      garden?.update(player.renderPosition);
       // wildlands: the grass + flower rings follow the PLAYER (like the garden ring
       // above) so they stay put when you just look around — the chase camera orbits
       // the player, and anchoring the rings to it slid the whole field around you.
       // Tree distance-culling still follows the camera so off-screen groves drop.
       wildlands?.update(player.renderPosition, camera.position);
-    } else {
-      advanceWind?.(frameDt); // foliage hidden: keep only the wind gust envelope ticking for nature audio
     }
-    // nature soundscape rides the same gust envelope garden.update just advanced,
+    // Nature soundscape rides the same root vegetation gust envelope,
     // and reads the sky clock for dawn choruses / night owls. Cheap out in the
     // city (suspends), so it's safe to tick unconditionally.
     nature.update(frameDt, {
       playerPos: player.renderPosition,
       camera,
-      gust: windGustValue?.() ?? 0,
+      gust: windGustValue(),
       timeOfDay: sky.timeOfDay
     });
     // live loop only: the dogs freeze during pause, so barking there would lie
@@ -2317,6 +2541,10 @@ async function boot() {
       chase.indoor = citygenRing.current?.isPlayerInside() ?? false; // blend into the indoor eye rig
       chase.update(frameDt, player, input);
     }
+    // World-anchored dialogue must project after the chase/orbit/cinematic has
+    // committed this frame's final camera pose; projecting during simulation
+    // left Iroh's card one camera frame behind and visibly jittering.
+    japaneseTeaGarden?.project(camera);
     sky.update(elapsed, camera.position);
     water.update(elapsed, camera.position, player.renderPosition);
     oceanBeachWaves.update(elapsed, player.renderPosition);
@@ -2329,6 +2557,31 @@ async function boot() {
     birdTrails.update(elapsed, player);
     splashes.update(frameDt, elapsed, player);
     surfExperience.update(frameDt, player.mode, player.surfTelemetry);
+    if (player.mode === "surf" && player.surfTelemetry.splashSerial !== surfSplashSerial) {
+      surfSplashSerial = player.surfTelemetry.splashSerial;
+      splashes.splash(
+        player.renderPosition.x,
+        waterHeight(player.renderPosition.x, player.renderPosition.z, elapsed),
+        player.renderPosition.z,
+        elapsed,
+        player.surfTelemetry.splashEnergy
+      );
+    }
+    updateSurfPresentation(frameDt);
+    waveAudio.update(frameDt, oceanWaveEnergyAt(map, player.position.x, player.position.z, elapsed));
+    // Ride ends on the sand: stand up, board in hand (you can only surf in the water).
+    if (player.mode === "surf" && player.surfTelemetry.beached) {
+      player.trySwitch("walk");
+      hud.message("Back on the beach — E to paddle out again", 2.4);
+    }
+    // On foot at Ocean Beach you carry your board, ready to paddle out.
+    player.setCarryingBoard(
+      player.mode === "walk" &&
+        player.position.x > OCEAN_BEACH_SURF.minX - 40 &&
+        player.position.x < OCEAN_BEACH_SURF.maxX + 110 &&
+        player.position.z > OCEAN_BEACH_SURF.minZ - 60 &&
+        player.position.z < OCEAN_BEACH_SURF.maxZ + 60
+    );
     vehicleAudio.update(frameDt, {
       mode: player.mode,
       speed: player.speed,
@@ -2336,6 +2589,8 @@ async function boot() {
       boost: input.down("ShiftLeft"),
       grounded: player.mode !== "board" || player.boardGrounded,
       surfFace: player.mode === "surf" ? player.surfTelemetry.face : 0,
+      surfFlow: player.mode === "surf" && player.surfTelemetry.flowActive ? 1 : 0,
+      surfMotionRate: player.mode === "surf" ? player.surfTelemetry.riderMotionRate : 1,
       driveVoice: player.driveSpec.voice ?? "engine"
     });
     swimAudio.update(frameDt, {
@@ -2523,7 +2778,7 @@ async function boot() {
       // deferred render warmup runs, tick() early-returns without rendering, so
       // screenshots would capture a stale boot-pose frame no matter what the
       // camera was set to.
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, goldenGateTennis, pickleball: pickleballController.game, pickleballAmbient: pickleballController.ambient, pickleballAudio: pickleballController.audio, pickleballUI: pickleballController.ui, pickleballController, coronaHeights, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, siteGate,
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController.game, pickleballAmbient: pickleballController.ambient, pickleballAudio: pickleballController.audio, pickleballUI: pickleballController.ui, pickleballController, coronaHeights, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate,
         TSL,
         renderIdle: () => modulesReady && !lateRenderWarmupActive }
     });
@@ -2547,6 +2802,7 @@ async function boot() {
       buskers,
       fetchBall: fetchBall ?? undefined,
       coronaHeights: coronaHeights ?? undefined,
+      fireworks,
       worldQueries,
       setTool: (t: string) => setTool(t as ToolName),
       setBoardConfig: (config: typeof boardConfig) => {

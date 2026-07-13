@@ -35,7 +35,16 @@ import { buildPlaneMesh, collectPlaneAnim, FlyController, type PlaneAnim } from 
 import { buildBoatMesh, buildSpeedboatMesh, BoatController, BOAT_TUNING, SPEEDBOAT_TUNING, type BoatSailRig } from "../vehicles/boat";
 import { buildDroneMesh, DroneController } from "../vehicles/drone";
 import { buildBoardMesh, animateBoard, updateBoardSurface, BoardController, BOARD_TUNING, type BoardConfig } from "../vehicles/board";
-import { buildSurfboardMesh, SurfController, SURF_TUNING, type SurfTelemetry } from "../vehicles/surf";
+import {
+  activateSurfboardAssets,
+  animateSurfboard,
+  buildSurfboardMesh,
+  updateSurfboardSurface,
+  SurfController,
+  SURF_TUNING,
+  type SurfboardConfig,
+  type SurfTelemetry
+} from "../vehicles/surf";
 import { animateScooter, buildScooterMesh, ScooterController, type ScooterConfig } from "../vehicles/scooter";
 import { buildBirdMesh, BirdController } from "../vehicles/bird";
 
@@ -165,6 +174,7 @@ export class Player {
   // what the player is currently driving; swapped when mounting a ridden animal
   driveSpec: DriveSpec = DEFAULT_DRIVE_SPEC;
   swimEnter = false;
+  #carryBoard!: THREE.Group; // surfboard tucked under the arm while on the beach
   #defaultDriveMesh!: THREE.Group;
   #defaultDroneMesh!: THREE.Group;
   #broomRigAttached = false;
@@ -180,7 +190,8 @@ export class Player {
     spawn: { x: number; z: number; heading: number },
     avatar: AvatarTraits = avatarFromSeed("local-default"),
     board?: BoardConfig,
-    scooter?: ScooterConfig
+    scooter?: ScooterConfig,
+    surfboard?: SurfboardConfig
   ) {
     this.physics = physics;
     this.map = map;
@@ -213,7 +224,7 @@ export class Player {
       speedboat: buildSpeedboatMesh(),
       drone: buildDroneMesh(),
       board: buildBoardMesh(board),
-      surf: buildSurfboardMesh(),
+      surf: buildSurfboardMesh(surfboard),
       bird: buildBirdMesh()
     };
     this.#modes = {
@@ -228,6 +239,7 @@ export class Player {
       surf: new SurfController(),
       bird: new BirdController(this.meshes.bird)
     };
+    this.#modes.surf.setConfig(surfboard ?? this.#modes.surf.config);
     // surf stance across the deck; ZYX order so the carve lean (z) rolls the
     // already-yawed stance around the board's long axis
     this.#riderRig = buildRig(this.#avatar);
@@ -240,6 +252,14 @@ export class Player {
     this.#surfRig.group.rotation.y = 1.05;
     this.#surfRig.group.position.y = 0.93;
     this.meshes.surf.add(this.#surfRig.group);
+    // A surfboard tucked upright under the right arm, shown on foot at the beach
+    // so you arrive "holding your board, ready to paddle out".
+    this.#carryBoard = buildSurfboardMesh(surfboard);
+    this.#carryBoard.scale.setScalar(0.82);
+    this.#carryBoard.position.set(0.62, 1.0, -0.05);
+    this.#carryBoard.rotation.set(0.05, 0, Math.PI * 0.52);
+    this.#carryBoard.visible = false;
+    this.meshes.walk.add(this.#carryBoard);
     this.#scooterRig = buildRig(this.#avatar);
     const scooterCockpit = this.meshes.scooter.userData.cockpit as Cockpit;
     this.#scooterRig.group.position.set(...scooterCockpit.seat);
@@ -344,6 +364,9 @@ export class Player {
     for (const [k, m] of Object.entries(this.meshes)) {
       setEmbodimentVisible(m, k === mode);
     }
+    // Surf art is intentionally absent from boot. The active board requests
+    // only its selected surface/decal the first time surfing actually starts.
+    if (mode === "surf") void activateSurfboardAssets(this.meshes.surf);
     this.#lightPool.claim(this.meshes[mode]);
     this.onModeChange(mode);
   }
@@ -516,6 +539,11 @@ export class Player {
     if (this.mode === "surf") this.#modes.surf.requestJump();
   }
 
+  requestSurfFlow() {
+    if (this.mode === "surf") return this.#modes.surf.requestFlow();
+    return false;
+  }
+
   get surfTelemetry(): SurfTelemetry {
     return this.#modes.surf.telemetry;
   }
@@ -607,6 +635,11 @@ export class Player {
     this.#ballHeld = held;
     this.#ballProp.visible = held && this.mode === "walk";
     setHandPose(this.#walkRig, "R", held ? 1 : 0);
+  }
+
+  /** Carry a surfboard under the arm while on foot at the beach (visual only). */
+  setCarryingBoard(on: boolean) {
+    this.#carryBoard.visible = on && this.mode === "walk";
   }
 
   /** Windup→release arm swing, `t` 0..1 (0 = idle, adds nothing). #animate lays
@@ -827,6 +860,42 @@ export class Player {
     if (this.mode === "board") this.#lightPool.claim(next);
   }
 
+  /** Rebuild both the ridden and carried surfboards from one identity. */
+  setSurfboardConfig(config: SurfboardConfig) {
+    this.#modes.surf.setConfig(config);
+
+    const old = this.meshes.surf;
+    const next = buildSurfboardMesh(config);
+    next.position.copy(old.position);
+    next.quaternion.copy(old.quaternion);
+    this.#surfRig.group.removeFromParent();
+    this.#surfRig.group.rotation.order = "ZYX";
+    this.#surfRig.group.rotation.set(0, 1.05, 0);
+    this.#surfRig.group.position.set(0, 0.93, 0);
+    next.add(this.#surfRig.group);
+    setEmbodimentVisible(old, false);
+    this.#scene.remove(old);
+    (old.userData.dispose as (() => void) | undefined)?.();
+    this.#scene.add(next);
+    this.meshes.surf = next;
+    setEmbodimentVisible(next, this.mode === "surf");
+    if (this.mode === "surf") {
+      this.#lightPool.claim(next);
+      void activateSurfboardAssets(next);
+    }
+
+    const oldCarry = this.#carryBoard;
+    const carry = buildSurfboardMesh(config);
+    carry.scale.setScalar(0.82);
+    carry.position.set(0.62, 1.0, -0.05);
+    carry.rotation.set(0.05, 0, Math.PI * 0.52);
+    carry.visible = oldCarry.visible;
+    this.meshes.walk.remove(oldCarry);
+    (oldCarry.userData.dispose as (() => void) | undefined)?.();
+    this.meshes.walk.add(carry);
+    this.#carryBoard = carry;
+  }
+
   /** Rebuild the cosmetic scooter shell without disturbing its live pose. */
   setScooterConfig(config: ScooterConfig) {
     const old = this.meshes.scooter;
@@ -850,6 +919,13 @@ export class Player {
   /** Lightweight local-only preview used while the deck XY pad is held. */
   previewBoardSurface(config: BoardConfig) {
     updateBoardSurface(this.meshes.board, config);
+  }
+
+  /** Lightweight local preview; shape clicks commit through setSurfboardConfig. */
+  previewSurfboardSurface(config: SurfboardConfig) {
+    updateSurfboardSurface(this.meshes.surf, config);
+    updateSurfboardSurface(this.#carryBoard, config);
+    this.#modes.surf.setConfig(config);
   }
 
   /**
@@ -976,9 +1052,15 @@ export class Player {
       animateBoard(this.meshes.board, dt, this.#animT, board.horizontalSpeed, board.boosting);
     } else if (this.mode === "surf") {
       const surf = this.#modes.surf;
-      const crouch = Math.min(1, this.speed / SURF_TUNING.values.maxSpeed + Math.abs(surf.lean) * 0.5);
+      const paddling = surf.telemetry.phase === "paddle";
+      const crouch = paddling
+        ? 1 // hunched low over the deck while paddling
+        : Math.min(1, this.speed / SURF_TUNING.values.maxTrim + Math.abs(surf.lean) * 0.5);
       poseRide(this.#surfRig, surf.lean, crouch, !surf.grounded, this.#animT);
       this.#surfRig.group.rotation.z = surf.lean * 0.34;
+      // lean forward onto the board while paddling out
+      this.#surfRig.group.rotation.x = paddling ? 0.6 : 0;
+      animateSurfboard(this.meshes.surf, dt, this.#animT);
     } else if (this.mode === "scooter") {
       const scooter = this.#modes.scooter;
       const airborne = scooter.jumpDebug.airborne;

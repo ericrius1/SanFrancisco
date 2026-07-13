@@ -8,7 +8,7 @@ import { RENDER_MODE } from "../config";
  * The scene is fragment-bound (see RENDER_MODE.pixelRatioCap), so pixel ratio
  * is the cheapest, most linear lever on frame time.
  *
- *   ceiling  = the boot cap  min(devicePixelRatio, RENDER_MODE.pixelRatioCap)
+ *   ceiling  = RENDER_MODE.pixelRatioCap (fixed; devicePixelRatio ignored)
  *   floor    = RENDER_MODE.minPixelRatio (clamped to never exceed the ceiling)
  *   ladder   = ceiling → intermediate stops → floor (see STEP_STOPS)
  *
@@ -82,7 +82,8 @@ export function createDynamicResolution(opts: {
 }): DynamicResolution {
   const { apply, readRatio } = opts;
 
-  const cap = () => Math.min(window.devicePixelRatio || 1, RENDER_MODE.pixelRatioCap);
+  // Fixed cap — ignore devicePixelRatio so retina displays stay at 1.
+  const cap = () => RENDER_MODE.pixelRatioCap;
   const floor = () => Math.min(RENDER_MODE.minPixelRatio, cap());
 
   let ratio = readRatio(); // boot already applied the ceiling

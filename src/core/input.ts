@@ -3,9 +3,9 @@ import { INPUT_TUNING } from "../config";
 
 /**
  * Pointer-lock game input. Clicking the canvas captures the mouse; mouselook
- * deltas accumulate only while locked. Escape is owned by main.ts (overlay
- * dismiss → then releaseLock); the browser also exits lock on Esc. The game
- * keeps simulating while unlocked. While `suspended` (camera-orbit mode)
+ * deltas accumulate only while locked. Escape release is an input-layer
+ * invariant; main.ts separately decides which overlay Escape dismisses. The
+ * game keeps simulating while unlocked. While `suspended` (camera-orbit mode)
  * all game inputs read as idle so the player coasts. Global holds that must
  * still work there (Z time-scrub) use `holding()` instead of `down()`.
  *
@@ -32,7 +32,7 @@ const LOOK_Y = 720;
 const PAD_BUTTONS: Record<number, string> = {
   0: "Space", //     A: jump / ollie / drift / air brake / hover
   1: "KeyE", //      B: enter-exit vehicle
-  // 3 Y: unbound
+  3: "KeyX", //      Y: surf flow state
   4: "KeyQ", //      LB: drone down / bird twirl left
   // 5 RB: bird twirl right — routed via pad axis (not KeyE, which exits)
   7: "ShiftLeft", // RT: boost / run / tuck
@@ -87,6 +87,17 @@ export class Input {
 
   constructor(el: HTMLElement) {
     this.#el = el;
+
+    // This runs in capture phase and is registered before any UI is built.
+    // Focused fields and modals may consume Escape for their own close/clear
+    // behavior, but none of them may keep (or later restore) pointer lock.
+    window.addEventListener(
+      "keydown",
+      (e) => {
+        if (e.code === "Escape" || e.key === "Escape") this.releaseLock();
+      },
+      true
+    );
 
     window.addEventListener("keydown", (e) => {
       // typing into a DOM field (e.g. the "/" tuning panel) must not drive the game
@@ -316,8 +327,10 @@ export class Input {
   releaseLock() {
     // Unconditional: `this.locked` lags reality (pointerlockchange is async) and
     // a pending requestLock grant may still be in flight — clearing the intent
-    // flag makes the pointerlockchange handler drop that late grant too.
+    // flag makes the pointerlockchange handler drop that late grant too. End a
+    // temporary Command cursor as well, otherwise its later keyup could re-lock.
     this.#wantLocked = false;
+    if (this.freeCursor) this.#endFreeCursor(false);
     document.exitPointerLock();
   }
 
