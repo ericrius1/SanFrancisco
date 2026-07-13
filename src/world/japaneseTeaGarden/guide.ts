@@ -314,8 +314,11 @@ export function createTeaGardenGuide(
   };
 
   const updateWalking = (dt: number, player: TeaGardenPlayerPosition): number => {
-    const returning = phase === "returning";
-    if (!returning && playerDistance > WAIT_DISTANCE) phase = "waiting";
+    // Falling behind can pause an active tour, but distance alone must never
+    // turn the initial idle prompt into a route state. A map teleport arrives at
+    // the garden entrance outside WAIT_DISTANCE; corrupting idle -> waiting there
+    // leaves Iroh "walking" an empty route when the player finally approaches.
+    if (phase === "walking" && playerDistance > WAIT_DISTANCE) phase = "waiting";
     if (phase === "waiting") {
       if (playerDistance <= RESUME_DISTANCE) phase = "walking";
       else return 0;

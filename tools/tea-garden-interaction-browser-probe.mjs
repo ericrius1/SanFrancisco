@@ -39,15 +39,60 @@ try {
   mkdirSync(OUT, { recursive: true });
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   const pageErrors = [];
+  const teaRequests = [];
   page.on("pageerror", (error) => pageErrors.push(String(error)));
   page.on("console", (message) => {
     if (message.type() === "error") pageErrors.push(message.text());
   });
+  page.on("request", (request) => {
+    const url = request.url();
+    if (url.includes("/src/world/japaneseTeaGarden/") && !url.endsWith("/layout.ts")) {
+      teaRequests.push(url);
+    }
+  });
 
-  await page.goto(`${SERVER_URL}/?autostart=1&fullfps=1&spawn=teaGardenGuide`, {
+  // Reproduce the player report from a clean distant boot: select the real
+  // minimap landmark, teleport to the entrance, approach Iroh, then press E.
+  await page.goto(`${SERVER_URL}/?autostart=1&fullfps=1`, {
     waitUntil: "domcontentloaded",
     timeout: 120_000
   });
+  await page.waitForFunction(
+    () => window.__sf?.player && document.body.classList.contains("started"),
+    undefined,
+    { timeout: 150_000 }
+  );
+  assert.deepEqual(teaRequests, [], "clean distant boot eagerly requested the Tea Garden");
+
+  console.log("[probe] teleporting from the minimap to the Tea Garden entrance");
+  const target = await page.evaluate(() => window.__sf.minimap.focusLandmark("Japanese Tea Garden"));
+  assert.ok(target, "Tea Garden minimap landmark is missing");
+  await page.locator(".bigmap-teleport-btn").click();
+  await page.waitForFunction(
+    ({ x, z }) => Math.hypot(window.__sf.player.position.x - x, window.__sf.player.position.z - z) < 25,
+    target,
+    { timeout: 30_000 }
+  );
+  await page.waitForFunction(
+    () => window.__sf?.japaneseTeaGarden?.debugState?.().awake,
+    undefined,
+    { timeout: 150_000 }
+  );
+  const atEntrance = await page.evaluate(() => window.__sf.japaneseTeaGarden.debugState().guide);
+  assert.equal(atEntrance.phase, "idle", "the entrance teleport corrupted Iroh's idle interaction state");
+  assert.ok(atEntrance.playerDistance > 12.5, "the teleport did not exercise the far entrance state");
+  assert.ok(
+    teaRequests.some((url) => url.includes("/japaneseTeaGarden/index.ts")),
+    "first approach did not request the Tea Garden feature"
+  );
+
+  // Move to the endpoint of the user's walk. The state transition and real E
+  // event are what regressed; respawning here keeps the browser probe quick and
+  // deterministic without bypassing the minimap/lazy-activation path.
+  const irohPosition = atEntrance.iroh.position;
+  await page.evaluate(([x, , z]) => {
+    window.__sf.player.respawn({ x: x - 3.7, z, heading: -Math.PI / 2 });
+  }, irohPosition);
   console.log("[probe] waiting for the Tea Master interaction state");
   await page.waitForFunction(
     () => {
@@ -61,6 +106,7 @@ try {
 
   const initial = await page.evaluate(() => window.__sf.japaneseTeaGarden.debugState().guide);
   assert.equal(initial.phase, "idle");
+  const interactionRequestStart = teaRequests.length;
 
   // The prompt is distance-driven and remains visible while mounted. This is
   // the regression path: one E/B press must dismount and immediately hand the
@@ -147,6 +193,8 @@ try {
   });
 
   const afterController = await page.evaluate(() => window.__sf.japaneseTeaGarden.debugState().guide);
+  const interactionRequests = teaRequests.slice(interactionRequestStart);
+  assert.deepEqual(interactionRequests, [], "interacting with Iroh fetched additional Tea Garden modules");
   const screenshot = await page.screenshot({ path: `${OUT}/interaction.png`, fullPage: false });
   const screenshotStats = await sharp(screenshot).stats();
   assert.ok(screenshotStats.entropy > 1, `browser screenshot appears blank (entropy ${screenshotStats.entropy})`);
@@ -157,6 +205,7 @@ try {
     keyboard: { phase: afterKeyboard.phase, chapter: afterKeyboard.chapter },
     controller: { action: afterController.iroh.action, device: "standard B" },
     playerDistance: afterController.playerDistance,
+    requests: { boot: 0, activation: interactionRequestStart, interaction: interactionRequests.length },
     screenshotEntropy: screenshotStats.entropy,
     pageErrors: pageErrors.length
   }, null, 2));

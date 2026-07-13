@@ -75,8 +75,8 @@ function sandTexture(): THREE.DataTexture {
       const wave = Math.sin(x * 0.25 + Math.sin(y * 0.18) * 1.7) * 0.5 + 0.5;
       const value = Math.round(199 + fine * 22 + wave * 9);
       data[i] = value;
-      data[i + 1] = Math.round(value * 0.96);
-      data[i + 2] = Math.round(value * 0.86);
+      data[i + 1] = Math.round(value * 0.9);
+      data[i + 2] = Math.round(value * 0.72);
       data[i + 3] = 255;
     }
   }
@@ -172,7 +172,7 @@ function createRockIslands(map: TeaGardenTerrain): THREE.Group {
     new THREE.MeshStandardMaterial({ color: 0x77776f, roughness: 0.98, flatShading: true }),
     new THREE.MeshStandardMaterial({ color: 0x5c605b, roughness: 0.94, flatShading: true })
   ];
-  const moss = new THREE.MeshStandardMaterial({ color: 0x63704d, roughness: 1, flatShading: true });
+  const moss = new THREE.MeshStandardMaterial({ color: 0x758651, roughness: 1, flatShading: true });
   const rockGeometry = new THREE.IcosahedronGeometry(1, 1);
   const capGeometry = new THREE.SphereGeometry(1, 14, 7, 0, Math.PI * 2, 0, Math.PI * 0.48);
   ROCKS.forEach((spec, index) => {
@@ -188,7 +188,7 @@ function createRockIslands(map: TeaGardenTerrain): THREE.Group {
     if (index === 0 || index === 3 || index === 5) {
       const cap = new THREE.Mesh(capGeometry, moss);
       cap.name = "dry_landscape_velvet_moss_cap";
-      cap.position.set(spec.x - spec.scale * 0.1, y + spec.scale * 0.93, spec.z + spec.scale * 0.04);
+      cap.position.set(spec.x - spec.scale * 0.1, y + spec.scale * 1.14, spec.z + spec.scale * 0.04);
       cap.rotation.y = spec.yaw;
       cap.scale.set(spec.scale * 0.73, spec.scale * 0.18, spec.scale * 0.62);
       cap.receiveShadow = true;
@@ -391,12 +391,12 @@ export function createDryLandscape(map: TeaGardenTerrain, options: DryLandscapeO
   const sand = new THREE.Mesh(
     sandGeometry(map),
     new THREE.MeshStandardMaterial({
-      color: 0xffe9bd,
+      color: 0xfff1d4,
       map: grain,
       roughness: 0.98,
       metalness: 0,
       emissive: 0x2b1d0e,
-      emissiveIntensity: 0.035
+      emissiveIntensity: 0.055
     })
   );
   sand.name = "dry_garden_terrain_conforming_sand";

@@ -180,6 +180,14 @@ try {
 
   await page.evaluate(({ center }) => {
     const sf = window.__sf;
+    const playerZ = center.z + 4.4;
+    sf.player.teleportTo({
+      x: center.x,
+      y: sf.map.effectiveGround(center.x, playerZ) + 1.5,
+      z: playerZ,
+      facing: 0,
+      mode: "walk"
+    });
     const eyeX = center.x - 1;
     const eyeZ = center.z + 16.5;
     const eyeY = sf.map.groundTop(eyeX, eyeZ) + 12.5;
