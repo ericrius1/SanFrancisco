@@ -23,6 +23,7 @@ const SERVER_URL = process.env.SF_PROBE_URL ?? "http://127.0.0.1:5190";
 const TIME = Number(process.env.SF_TIME ?? 13.5);
 const ONLY = (process.env.SF_VIEWS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 const FOLIAGE_ONLY = process.env.SF_FOLIAGE_ONLY === "1";
+const VISUAL_ONLY = process.env.SF_VISUAL_ONLY === "1";
 const W = 1280, H = 720;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -144,7 +145,7 @@ async function checkSummitAssets(c) {
     if (v === -1) throw new Error(`missing summit object: ${k}`);
     if (v === 0) throw new Error(`empty geometry: ${k}`);
   }
-  if (FOLIAGE_ONLY) return;
+  if (FOLIAGE_ONLY || VISUAL_ONLY) return;
   // Hero crag collider: a level ray from the platform toward the main crag must
   // hit the query world well before the crag centre (i.e. the box is there).
   const ray = await ev(c, `(()=>{
@@ -195,7 +196,7 @@ async function main() {
   const proc = spawn(chrome, [
     `--user-data-dir=${profile}`, "--headless=new", `--remote-debugging-port=${port}`,
     "--enable-unsafe-webgpu", "--enable-features=WebGPUDeveloperFeatures", "--use-angle=metal",
-    "--hide-scrollbars", "--mute-audio", `--window-size=${W},${H}`, `${SERVER_URL}/?autostart&fullfps`
+    "--hide-scrollbars", "--mute-audio", `--window-size=${W},${H}`, `${SERVER_URL}/?autostart=1&profile=1&fullfps=1&spawn=coronaHeights`
   ], { cwd: ROOT, stdio: "ignore" });
   chromeProc = proc;
   await sleep(2500);

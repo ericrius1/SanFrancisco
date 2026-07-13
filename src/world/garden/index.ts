@@ -124,5 +124,5 @@ export {
   inBotanicalGarden
 };
 export { createGardenVegetation, type GardenVegetation } from "./gardenVegetation";
-export { SEED_TREE_DESIGNS, type SeedTreeDesign } from "./treeDesigns";
+export { NATIVE_TREE_DESIGNS, type NativeTreeDesign } from "./treeDesigns";
 export type { BotanicalGrassController, BotanicalGrassStats, GardenCollider, GardenTerrain };

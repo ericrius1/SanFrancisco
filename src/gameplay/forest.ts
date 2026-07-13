@@ -39,7 +39,7 @@ export const ANIMALS: Record<
 };
 
 // Marin: everything north of the Golden Gate's landfall at (-3150, -5100).
-// (Trees here are now grown by the wildlands SeedThree layer; Forest only owns
+// (Trees here are now grown by the native wildlands layer; Forest only owns
 // the rideable animals + gummy launcher.)
 const FOREST = { minX: -6300, maxX: -2700, minZ: -7800, maxZ: -5000 };
 const FOREST_CENTER = { x: -4400, z: -6300 };

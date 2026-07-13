@@ -179,7 +179,7 @@ export class Islands {
 
   /**
    * Load island trees after the world is revealed. The dynamic boundary keeps
-   * SeedForest and tree generation out of clean boot while still routing these
+   * NativeTreeForest and tree generation out of clean boot while still routing these
    * far-flung landmarks through the one shared tree runtime.
    */
   loadVegetation(
@@ -194,14 +194,14 @@ export class Islands {
           {
             id: "island-pine",
             design: {
-              species: "pine",
+              species: "monterey-cypress",
               seed: 811,
               controls: {
                 height: 8,
-                branchDensity: 26,
-                leavesPerBranch: 18,
-                leafColorize: 0x4c8247,
-                leafTintAmount: 0.54
+                crownDensity: 0.9,
+                crownWidth: 0.8,
+                foliageColor: 0x4c8247,
+                foliageTint: 0x77a85c
               },
               sink: 0.18
             }
@@ -209,12 +209,15 @@ export class Islands {
           {
             id: "island-maple",
             design: {
-              species: "redMaple",
+              species: "japanese-maple",
               seed: 823,
               controls: {
                 height: 7.5,
-                leafColorize: 0x5f914c,
-                leafTintAmount: 0.58
+                crownDensity: 1.05,
+                crownWidth: 0.78,
+                foliageColor: 0x5f914c,
+                foliageTint: 0x91b969,
+                leafColorVariant: null
               },
               sink: 0.16
             }

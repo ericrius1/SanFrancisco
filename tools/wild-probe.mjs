@@ -110,7 +110,7 @@ async function measure(c) {
   return s;
 }
 async function setWild(c, on) {
-  await ev(c, `(()=>{for(const g of window.__sf.wildlands.groups)g.visible=${on};return true;})()`);
+  await ev(c, `(()=>{const sf=window.__sf;if(sf.wildlands)for(const g of sf.wildlands.groups)g.visible=${on};if(sf.buenaVistaTrees)sf.buenaVistaTrees.group.visible=${on};return true;})()`);
 }
 async function setGarden(c, on) {
   await ev(c, `(()=>{const sf=window.__sf,p=sf.player.renderPosition??sf.player.position;sf.garden.setVisible(${on},p);return true;})()`);
@@ -218,7 +218,7 @@ async function main() {
       for (let i = 0; i < 6; i++) await tick(c, 1 / 60);
       // let the rebin run a few real frames from this eye, then read near-clone count
       for (let i = 0; i < 20; i++) { await tick(c, 1 / 60); await sleep(30); }
-      const diag = name === "tea_garden" ? {} : await ev(c, `(()=>{const w=window.__sf.wildlands;const read=(s)=>({nearActive:s.nearActive(),instances:s.instances,chunks:s.chunks,designs:s.designs});return{main:read(w.trees.stats),buenaVista:read(w.buenaVistaTrees.stats)};})()`);
+      const diag = name === "tea_garden" ? {} : await ev(c, `(()=>{const sf=window.__sf,w=sf.wildlands;const read=(s)=>s?({nearActive:s.nearActive(),instances:s.instances,chunks:s.chunks,designs:s.designs}):null;return{main:read(w?.trees?.stats),buenaVista:read(sf.buenaVistaTrees?.stats)};})()`);
       console.log(`[diag] ${name}`, JSON.stringify(diag));
       const gdiag = name === "tea_garden" ? {} : await ev(c, `(()=>{const g=window.__sf.wildlands.grass.group;const m=g.children.find(o=>o.isInstancedMesh);if(!m)return{grass:'none'};const a=m.instanceMatrix.array;let n=m.count,lo=1e9,hi=-1e9;for(let i=0;i<n;i++){const y=a[i*16+13];if(y<lo)lo=y;if(y>hi)hi=y;}const cam=window.__sf.camera.position;const gh=window.__sf.map.groundHeight(cam.x,cam.z);return{count:n,yLo:+lo.toFixed(1),yHi:+hi.toFixed(1),camGround:+gh.toFixed(1),camY:+cam.y.toFixed(1)};})()`);
       console.log(`[grass] ${name}`, JSON.stringify(gdiag));

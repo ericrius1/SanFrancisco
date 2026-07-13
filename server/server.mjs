@@ -61,18 +61,26 @@ const MIME = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".webp": "image/webp",
+  ".ktx2": "image/ktx2",
   ".svg": "image/svg+xml",
   ".ico": "image/x-icon",
   ".woff2": "font/woff2"
 };
 
 const COMPRESSIBLE_DYNAMIC = new Set([".html", ".js", ".css", ".json", ".bin", ".svg"]);
-const WORLD_ASSET_PREFIXES = ["/data/", "/tiles/", "/models/", "/seedthree/", "/buildinggen/", "/citygen/", "/audio/"];
+const WORLD_ASSET_PREFIXES = ["/data/", "/tiles/", "/models/", "/native-foliage/", "/buildinggen/", "/citygen/", "/audio/"];
 
 const acceptsEncoding = (req, token) => String(req.headers["accept-encoding"] ?? "").includes(token);
 const weakEtag = (st) => `W/"${st.size.toString(16)}-${Math.trunc(st.mtimeMs).toString(16)}"`;
 const cacheControlFor = (urlPath) => {
   if (urlPath.startsWith("/assets/")) return "public, max-age=31536000, immutable";
+  if (/^\/native-foliage\/materials\/.+-[a-f0-9]{16}\.ktx2$/.test(urlPath)) {
+    return "public, max-age=31536000, immutable";
+  }
+  if (urlPath.startsWith("/native-foliage/basis-r185/")) {
+    return "public, max-age=31536000, immutable";
+  }
+  if (urlPath === "/native-foliage/manifest.json") return "no-cache";
   if (WORLD_ASSET_PREFIXES.some((prefix) => urlPath.startsWith(prefix))) {
     return "public, max-age=86400, stale-while-revalidate=2592000";
   }

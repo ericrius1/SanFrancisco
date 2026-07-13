@@ -40,7 +40,8 @@ import { CoronaHeightsPark, prepareCoronaHeightsGround } from "./world/coronaHei
 import { OceanBeachWaves, SurfExperience } from "./gameplay/surfing";
 import { findOpenSpawn } from "./world/spawn";
 import { resolveSpawnPoint, type RegionKey } from "./world/spawnPoints";
-import { nearAnyWildRegion } from "./world/wildlands/layout";
+import { WILD_REGIONS } from "./world/wildlands/regions";
+import { BUENA_VISTA_REGION } from "./world/buenaVista";
 import { Player } from "./player/player";
 import type { PlayerMode } from "./player/types";
 import { ChaseCamera } from "./core/camera";
@@ -502,10 +503,16 @@ async function boot() {
     grass: { refresh: () => void };
     update: (pos: THREE.Vector3, cam: THREE.Vector3) => void;
   } | null = null;
+  let buenaVistaTrees: {
+    group: THREE.Group;
+    ready: Promise<void>;
+    update: (focus: { x: number; z: number }) => void;
+  } | null = null;
   let goldenGateTennis: ReturnType<typeof createGoldenGateTennisSite> | null = null;
   let japaneseTeaGarden: import("./world/japaneseTeaGarden").JapaneseTeaGarden | null = null;
   let wakeDeferredGarden: (() => void) | null = null;
   let wakeDeferredTeaGarden: (() => void) | null = null;
+  let wakeDeferredBuenaVistaTrees: (() => void) | null = null;
   let wakeDeferredWildlandsGolf: (() => void) | null = null;
   // Universal minigame site gate: each located game (pickleball, golf, soon
   // archery) registers a footprint + pads; one cheap update per tick flips
@@ -523,6 +530,7 @@ async function boot() {
     foliageOn = visible;
     garden?.setVisible(visible, player.position);
     if (wildlands) for (const g of wildlands.groups) g.visible = visible;
+    if (buenaVistaTrees) buenaVistaTrees.group.visible = visible;
     goldenGateTennis?.setFoliageVisible(visible);
     japaneseTeaGarden?.setFoliageVisible(visible);
     coronaHeights?.setFoliageVisible(visible);
@@ -1519,11 +1527,25 @@ async function boot() {
     z: (BOTANICAL_GARDEN_BOUNDS.minZ + BOTANICAL_GARDEN_BOUNDS.maxZ) / 2
   };
   const GOLF_XZ = { x: -1979, z: -194 }; // Presidio course centroid (golf.json tee coords)
+  const touchesBounds = (
+    x: number,
+    z: number,
+    reach: number,
+    bounds: { minX: number; maxX: number; minZ: number; maxZ: number }
+  ): boolean =>
+    x >= bounds.minX - reach && x <= bounds.maxX + reach &&
+    z >= bounds.minZ - reach && z <= bounds.maxZ + reach;
+  const nearPrimaryWildRegion = (x: number, z: number, reach: number): boolean =>
+    WILD_REGIONS.some((region) =>
+      region.id !== "buenavista" && touchesBounds(x, z, reach, region)
+    );
+  const nearBuenaVista = (x: number, z: number, reach: number): boolean =>
+    touchesBounds(x, z, reach, BUENA_VISTA_REGION);
   const nearRegionByDistance = (r: RegionKey): boolean => {
     const p = player.position;
     if (r === "garden") return Math.hypot(p.x - GARDEN_XZ.x, p.z - GARDEN_XZ.z) < NEAR_GATE;
     if (r === "golf") return Math.hypot(p.x - GOLF_XZ.x, p.z - GOLF_XZ.z) < NEAR_GATE;
-    return nearAnyWildRegion(p.x, p.z, NEAR_GATE);
+    return nearPrimaryWildRegion(p.x, p.z, NEAR_GATE);
   };
   const spawnGates = spawnPoint?.gates;
   const regionGates = (r: RegionKey): boolean =>
@@ -1532,6 +1554,8 @@ async function boot() {
   // the pair always builds together and in the same order (course data → grove
   // masks → course meshes), gating iff EITHER is near.
   const gardenGates = regionGates("garden");
+  const buenaVistaGates = nearBuenaVista(player.position.x, player.position.z, NEAR_GATE) &&
+    (spawnGates ? spawnGates.includes("wildlands") : true);
   const wildlandsGolfGates = regionGates("wildlands") || regionGates("golf");
   void (async () => {
     // Forest + Creatures: ambient wildlife and rideable animals
@@ -1548,13 +1572,15 @@ async function boot() {
     // coordinator itself is running.
     let gardenModPromise: Promise<typeof import("./world/garden")> | null = null;
     let teaGardenModPromise: Promise<typeof import("./world/japaneseTeaGarden")> | null = null;
+    let buenaVistaTreesModPromise: Promise<typeof import("./world/wildlands/buenaVistaTrees")> | null = null;
     let wildlandsModPromise: Promise<typeof import("./world/wildlands")> | null = null;
     let golfModPromise: Promise<typeof import("./gameplay/golf")> | null = null;
     const loadGardenMod = () => gardenModPromise ??= import("./world/garden");
     const loadTeaGardenMod = () => teaGardenModPromise ??= import("./world/japaneseTeaGarden");
+    const loadBuenaVistaTreesMod = () => buenaVistaTreesModPromise ??= import("./world/wildlands/buenaVistaTrees");
     const loadWildlandsMod = () => wildlandsModPromise ??= import("./world/wildlands");
     const loadGolfMod = () => golfModPromise ??= import("./gameplay/golf");
-    // Botanical garden (heaviest single park: SeedThree trees + textures). Gate
+    // Botanical garden (heaviest single park: native trees + textures). Gate
     // it only when the spawn is near; otherwise build it AFTER the cover lifts,
     // hidden until compiled, so its trees never sit on the boot path.
     const buildGarden = async () => {
@@ -1654,6 +1680,49 @@ async function boot() {
             site.update(0, 0, player.renderPosition, camera);
             if (autoStartIrohTour) site.interact(player.position, player.mode);
           })().catch((err) => console.warn("[tea-garden] first-approach construction failed:", err));
+        };
+      });
+    }
+
+    // Buena Vista's skyline canopy is visible from Corona Heights, but it does
+    // not own the citywide Wildlands, flower rings, or Presidio golf. Give this
+    // compact forest its own first-approach gate so a Corona visit cannot grow
+    // or texture distant redwoods in Golden Gate Park, Marin, or Mount Sutro.
+    const buildBuenaVistaTrees = async (deferred: boolean) => {
+      const mod = await loadBuenaVistaTreesMod();
+      const forest = mod.createBuenaVistaTrees(map);
+      buenaVistaTrees = forest;
+      forest.group.visible = true;
+      if (!deferred) scene.add(forest.group);
+      await forest.ready;
+      forest.update(camera.position);
+      if (deferred) {
+        try {
+          // The master toggle may have changed while the prototypes grew.
+          // Three skips hidden roots, so force visibility only for warmup and
+          // restore the current user setting after the detached compile.
+          forest.group.visible = true;
+          await renderer.compileAsync(forest.group, camera, scene);
+        } catch (err) {
+          console.warn("[buena-vista] deferred tree compile failed:", err);
+        }
+        scene.add(forest.group);
+      }
+      forest.group.visible = foliageOn;
+      sky.invalidateStaticShadows();
+      const h = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
+      if (h) Object.assign(h, { buenaVistaTrees: forest });
+    };
+    let buenaVistaTreesReady: Promise<unknown> | null = null;
+    if (buenaVistaGates) {
+      buenaVistaTreesReady = buildBuenaVistaTrees(false);
+    } else {
+      void revealedPromise.then(() => {
+        wakeDeferredBuenaVistaTrees = () => {
+          wakeDeferredBuenaVistaTrees = null;
+          void buildBuenaVistaTrees(true).catch((err) => {
+            console.warn("[buena-vista] first-approach construction failed:", err);
+          });
         };
       });
     }
@@ -1768,7 +1837,12 @@ async function boot() {
 
     // Gate the reveal on whatever is near; deferred regions run post-reveal and
     // are intentionally excluded here so they never hold the cover.
-    await Promise.all([gardenReady, teaGardenReady, wildlandsGolfReady].filter(Boolean));
+    await Promise.all([
+      gardenReady,
+      teaGardenReady,
+      buenaVistaTreesReady,
+      wildlandsGolfReady
+    ].filter(Boolean));
 
     // CityGen: procedural building ring + demo. Awaited (not fire-and-forget)
     // so modulesReady only flips once the ring exists — its cell builds land in
@@ -2623,9 +2697,19 @@ async function boot() {
       wake();
     }
     if (
+      wakeDeferredBuenaVistaTrees &&
+      nearBuenaVista(player.position.x, player.position.z, 1150)
+    ) {
+      const wake = wakeDeferredBuenaVistaTrees;
+      wakeDeferredBuenaVistaTrees = null;
+      wake();
+    }
+    if (
       wakeDeferredWildlandsGolf &&
       (
-        nearAnyWildRegion(player.position.x, player.position.z, 600) ||
+        // Buena Vista owns the Corona skyline separately. Wake the primary
+        // Wildlands only on a real approach to one of its four regions.
+        nearPrimaryWildRegion(player.position.x, player.position.z, 320) ||
         Math.hypot(player.position.x - GOLF_XZ.x, player.position.z - GOLF_XZ.z) < 700
       )
     ) {
@@ -2688,6 +2772,7 @@ async function boot() {
       // the player, and anchoring the rings to it slid the whole field around you.
       // Tree distance-culling still follows the camera so off-screen groves drop.
       wildlands?.update(player.renderPosition, camera.position);
+      buenaVistaTrees?.update(camera.position);
     }
     // Nature soundscape rides the same root vegetation gust envelope,
     // and reads the sky clock for dawn choruses / night owls. Cheap out in the
@@ -3017,7 +3102,7 @@ async function boot() {
       // deferred render warmup runs, tick() early-returns without rendering, so
       // screenshots would capture a stale boot-pose frame no matter what the
       // camera was set to.
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController.game, pickleballAmbient: pickleballController.ambient, pickleballAudio: pickleballController.audio, pickleballUI: pickleballController.ui, pickleballController, coronaHeights, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate,
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController.game, pickleballAmbient: pickleballController.ambient, pickleballAudio: pickleballController.audio, pickleballUI: pickleballController.ui, pickleballController, coronaHeights, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate,
         TSL,
         renderIdle: () => modulesReady && !lateRenderWarmupActive }
     });

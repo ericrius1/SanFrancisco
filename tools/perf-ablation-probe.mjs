@@ -167,11 +167,11 @@ async function main() {
   // foliage off (scene-side hide of garden/wildlands groups via names)
   const hid = await ev(c, `(()=>{
     const sf=window.__sf; let n=0;
-    sf.scene.traverse(o=>{ if(o.name==="botanical-garden"||o.name==="wildlands"||/seedForest|grass|flower/i.test(o.name)){ if(o.parent===sf.scene||o.name==="botanical-garden"||o.name==="wildlands"){o.visible=false;n++;} } });
+    sf.scene.traverse(o=>{ if(o.name==="botanical-garden"||o.name==="wildlands"||/nativeTreeForest|grass|flower/i.test(o.name)){ if(o.parent===sf.scene||o.name==="botanical-garden"||o.name==="wildlands"){o.visible=false;n++;} } });
     return n;
   })()`);
   await run(`foliage OFF (hid ${hid} roots)`);
-  await ev(c, `(()=>{const sf=window.__sf; sf.scene.traverse(o=>{ if(o.name==="botanical-garden"||o.name==="wildlands"||/seedForest|grass|flower/i.test(o.name)){ o.visible=true; } }); return true;})()`);
+  await ev(c, `(()=>{const sf=window.__sf; sf.scene.traverse(o=>{ if(o.name==="botanical-garden"||o.name==="wildlands"||/nativeTreeForest|grass|flower/i.test(o.name)){ o.visible=true; } }); return true;})()`);
   // combined candidate: dpr1.5 + MSAA2
   await ev(c, `(()=>{const sf=window.__sf; sf.renderer.setPixelRatio(1.5); sf.renderer.setSize(window.innerWidth, window.innerHeight); sf.POSTFX_TUNING.values.sceneSamples=2; sf.pipeline.applyPostQuality(); return true;})()`);
   await run("CANDIDATE dpr1.5 + MSAA2 (no shadows)");

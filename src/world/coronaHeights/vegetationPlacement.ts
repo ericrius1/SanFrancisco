@@ -5,6 +5,7 @@
 import * as THREE from "three/webgpu";
 import type { WorldMap } from "../heightmap";
 import { fitGroundY } from "../groundcover/grounding";
+import type { NativeTreeDesignSpec } from "../nativeTreeForest";
 import { CORONA_HEIGHTS_SUMMIT } from "./layout";
 import { summitKeepOut } from "./summitCrags";
 
@@ -54,12 +55,7 @@ export type CoronaShrubPlacement = {
 
 export type CoronaTreeArchetype = {
   id: string;
-  design: {
-    species: string;
-    seed: number;
-    controls: Record<string, unknown>;
-    sink: number;
-  };
+  design: NativeTreeDesignSpec;
 };
 
 export type CoronaTreePlacement = {
@@ -79,21 +75,19 @@ export type CoronaVegetationPlacements = {
   trees: CoronaTreePlacement[];
 };
 
-// The old crowns were broad and low.  A coast-live-oak design preserves that
-// authored silhouette while replacing the cylinder + icosahedron construction
-// with the same tree pipeline used by the rest of the world.
+// A broad, low coast-live-oak design carries the summit's authored shelter-belt
+// silhouette through the same tree pipeline used by the rest of the world.
 const TREE_ARCHETYPES: readonly CoronaTreeArchetype[] = [
   {
     id: "corona_coast_live_oak",
     design: {
-      species: "whiteOak",
+      species: "coast-live-oak",
       seed: 1933,
       controls: {
         height: 8,
-        branchDensity: 34,
-        leavesPerBranch: 28,
-        leafColorize: 0x526b38,
-        leafTintAmount: 0.48
+        crownDensity: 0.95,
+        crownWidth: 0.72,
+        foliageColor: 0x526b38
       },
       sink: 0.24
     }

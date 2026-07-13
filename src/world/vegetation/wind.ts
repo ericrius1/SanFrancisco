@@ -1,9 +1,7 @@
 // Sandbox-wide vegetation wind state.
 //
-// Trees, grass, flowers, and procedural wind audio all read these uniforms and
-// this heading. The current SeedThree-backed tree materials temporarily import
-// the same values while their geometry/material pipeline is replaced, so there
-// is one runtime owner throughout the migration rather than two wind systems.
+// Trees, grass, flowers, shrubs, and procedural wind audio all read these
+// uniforms and this heading, so the whole botanical layer breathes together.
 
 import * as THREE from "three/webgpu";
 import { uniform } from "three/tsl";

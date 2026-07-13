@@ -50,14 +50,13 @@ const TREE_ARCHETYPES: readonly AuthoredTreeArchetype[] = [
   {
     id: "black-pine",
     design: {
-      species: "pine",
+      species: "japanese-black-pine",
       seed: 4101,
       controls: {
         height: 9.5,
-        branchDensity: 28,
-        leavesPerBranch: 18,
-        leafColorize: 0x385d34,
-        leafTintAmount: 0.5
+        crownDensity: 1.25,
+        crownWidth: 0.78,
+        foliageColor: 0x385d34
       },
       sink: 0.2
     }
@@ -65,12 +64,15 @@ const TREE_ARCHETYPES: readonly AuthoredTreeArchetype[] = [
   {
     id: "japanese-maple",
     design: {
-      species: "redMaple",
+      species: "japanese-maple",
       seed: 4102,
       controls: {
         height: 7.2,
-        leafColorize: 0x8a513e,
-        leafTintAmount: 0.5
+        crownDensity: 1.2,
+        crownWidth: 0.72,
+        foliageColor: 0x8a513e,
+        foliageTint: 0xc17054,
+        leafColorVariant: "autumn"
       },
       sink: 0.16
     }
@@ -78,12 +80,15 @@ const TREE_ARCHETYPES: readonly AuthoredTreeArchetype[] = [
   {
     id: "flowering-cherry",
     design: {
-      species: "tulipPoplar",
+      species: "flowering-cherry",
       seed: 4103,
       controls: {
         height: 7.8,
-        leafColorize: 0xb66f7f,
-        leafTintAmount: 0.62
+        crownDensity: 1.25,
+        crownWidth: 0.72,
+        foliageColor: 0xb66f7f,
+        foliageTint: 0xf0b4c3,
+        leafColorVariant: "blossom"
       },
       sink: 0.16
     }
@@ -91,12 +96,15 @@ const TREE_ARCHETYPES: readonly AuthoredTreeArchetype[] = [
   {
     id: "survivor-ginkgo",
     design: {
-      species: "tulipPoplar",
+      species: "ginkgo",
       seed: 4104,
       controls: {
         height: 9,
-        leafColorize: 0x9ba850,
-        leafTintAmount: 0.62
+        crownDensity: 1.15,
+        crownWidth: 0.78,
+        foliageColor: 0x9ba850,
+        foliageTint: 0xd0bd58,
+        leafColorVariant: "autumn"
       },
       sink: 0.12
     }
