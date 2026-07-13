@@ -631,6 +631,13 @@ async function boot() {
   }
   try {
     coronaHeights = new CoronaHeightsPark(map, physics);
+    coronaHeights.prepareFoliage = async (group) => {
+      try {
+        await renderer.compileAsync(group, camera, scene);
+      } catch (err) {
+        console.warn("[corona heights] deferred foliage compile failed:", err);
+      }
+    };
     coronaHeights.setFoliageVisible(foliageOn);
     scene.add(coronaHeights.group);
   } catch (err) {
@@ -1533,6 +1540,7 @@ async function boot() {
           void (async () => {
             const g = await buildGarden();
             await g.ready;
+            g.update(player.renderPosition);
             try {
               // Detached + visible: compileAsync skips visible=false roots.
               await renderer.compileAsync(g.group, camera, scene);
@@ -1592,6 +1600,7 @@ async function boot() {
           void (async () => {
             const site = await buildTeaGarden();
             await site.ready;
+            site.update(0, 0, player.renderPosition, camera);
             try {
               // The site is born asleep/hidden. Compile its detached subtree
               // while temporarily visible because Three skips hidden roots.
@@ -1600,7 +1609,6 @@ async function boot() {
             } catch (err) {
               console.warn("[tea-garden] deferred compile failed:", err);
             }
-            site.group.visible = false;
             scene.add(site.group);
             site.update(0, 0, player.renderPosition, camera);
             if (autoStartIrohTour) site.interact(player.position, player.mode);
@@ -1643,6 +1651,7 @@ async function boot() {
       const h = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
       if (h) Object.assign(h, { wildlands: _wildlands });
       await _wildlands.ready;
+      _wildlands.update(player.renderPosition, camera.position);
       sky.invalidateStaticShadows();
       if (deferred) {
         // Compile each grove group before it is ever shown, so a live frame
@@ -2549,7 +2558,10 @@ async function boot() {
     highUp = highUp ? altitude > 110 : altitude > 150;
     // Optional park chunks remain unfetched until first approach. Capture the
     // callback before invoking it because each loader clears its own one-shot.
-    if (wakeDeferredGarden && nearRegionByDistance("garden")) {
+    if (
+      wakeDeferredGarden &&
+      Math.hypot(player.position.x - GARDEN_XZ.x, player.position.z - GARDEN_XZ.z) < 900
+    ) {
       const wake = wakeDeferredGarden;
       wakeDeferredGarden = null;
       wake();
@@ -2559,7 +2571,7 @@ async function boot() {
       Math.hypot(
         player.position.x - JAPANESE_TEA_GARDEN_ENTRANCE.x,
         player.position.z - JAPANESE_TEA_GARDEN_ENTRANCE.z
-      ) < 900
+      ) < 700
     ) {
       const wake = wakeDeferredTeaGarden;
       wakeDeferredTeaGarden = null;
@@ -2567,7 +2579,10 @@ async function boot() {
     }
     if (
       wakeDeferredWildlandsGolf &&
-      (nearRegionByDistance("wildlands") || nearRegionByDistance("golf"))
+      (
+        nearAnyWildRegion(player.position.x, player.position.z, 600) ||
+        Math.hypot(player.position.x - GOLF_XZ.x, player.position.z - GOLF_XZ.z) < 700
+      )
     ) {
       const wake = wakeDeferredWildlandsGolf;
       wakeDeferredWildlandsGolf = null;

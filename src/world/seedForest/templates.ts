@@ -1,11 +1,8 @@
-// Grow-once SeedThree hero cache. Every consumer (wildlands regions, future
-// city scatter) asks for a design; each distinct design grows exactly once per
-// session no matter how many forests use it. createTree is CPU-heavy (hundreds
-// of ms), so growth is serialized through one chain — parallel growth just
-// thrashes the main thread.
-//
-// The botanical garden still grows its own heroes (different seeds/controls —
-// no sharing win); unifying it onto this cache is a later cleanup.
+// Grow-once tree-template cache shared by every authored park and landmark.
+// Each distinct design/generation policy grows exactly once per session.
+// Growth is CPU-heavy, so it is serialized; parallel growth only thrashes the
+// main thread. Vendor-specific construction stays behind legacySeedTree until
+// the sandbox-native compiler replaces that final transitional boundary.
 
 import * as THREE from "three/webgpu";
 import {

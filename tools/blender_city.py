@@ -107,8 +107,67 @@ def load_data():
     sf = np.fromfile(SURFACE_BIN, dtype=np.uint8).reshape(H, W)
     DATA["height"] = hm
     DATA["surface"] = sf
+    smooth_coast()
     log(f"loaded city.json tiles={len(DATA['city']['tiles'])} heightmap {W}x{H} in {time.time()-t0:.1f}s")
     return {"tiles": len(DATA["city"]["tiles"])}
+
+
+def _dilate(mask):
+    """4-neighbour binary dilation (no scipy dependency)."""
+    out = mask.copy()
+    out[1:, :] |= mask[:-1, :]
+    out[:-1, :] |= mask[1:, :]
+    out[:, 1:] |= mask[:, :-1]
+    out[:, :-1] |= mask[:, 1:]
+    return out
+
+
+def _box_blur(a, radius=1):
+    """Separable box blur over a float array, `radius` cells each way, edge-clamped."""
+    out = a.astype(np.float32)
+    for _ in range(radius):
+        acc = out.copy()
+        acc[1:, :] += out[:-1, :]
+        acc[:-1, :] += out[1:, :]
+        acc[:, 1:] += out[:, :-1]
+        acc[:, :-1] += out[:, 1:]
+        cnt = np.full(out.shape, 5.0, np.float32)
+        cnt[0, :] -= 1; cnt[-1, :] -= 1; cnt[:, 0] -= 1; cnt[:, -1] -= 1
+        out = acc / cnt
+    return out
+
+
+# Coastal relax: how far to grow the sand band, how hard to smooth, and the
+# height window it applies over (never touch the deep bay floor or high bluffs).
+COAST_DILATE = 7
+COAST_SMOOTH_ITERS = 5
+COAST_HEIGHT_WINDOW = 20.0
+
+
+def smooth_coast():
+    """Relax the height field across the sandy coastal band so beaches read as a
+    clean shoaling slope instead of blocky 8/16 m steps — the low-poly beach that
+    lets the flat ocean clip through. Localized to sand plus the adjacent shallow
+    water and backshore, feathered so inland terrain and the deep bay are left
+    exactly as-is. Idempotent + cached. Feeds BOTH the visual terrain mesh and
+    (when re-encoded) the physics heightmap, so ground and water stay matched."""
+    if DATA.get("coast_smoothed"):
+        return DATA["coast_band"]
+    hm = DATA["height"]
+    sf = DATA["surface"]
+    band = sf == 2  # sand
+    for _ in range(COAST_DILATE):
+        band = _dilate(band)
+    band &= np.abs(hm) < COAST_HEIGHT_WINDOW  # keep off the deep bay + tall bluffs
+    feather = _box_blur(band.astype(np.float32), 3)  # soft 0..1 edge
+    sm = hm
+    for _ in range(COAST_SMOOTH_ITERS):
+        sm = _box_blur(sm, 1)
+    DATA["height"] = hm * (1 - feather) + sm * feather
+    DATA["coast_band"] = band
+    DATA["coast_smoothed"] = True
+    log(f"coast smooth: relaxed {int(band.sum())} coastal cells")
+    return band
 
 
 def sample_height(xs, zs):
@@ -499,6 +558,19 @@ def _quad_refine_flags():
     any_park = (s00 == 1) | (s20 == 1) | (s02 == 1) | (s22 == 1) | (s11 == 1)
     thresh = np.where(any_park, REFINE_ERR_PARK, REFINE_ERR)
     refine = (err > thresh) & ~all_water
+    # Always refine the coastal band to the full 8 m grid: the smoothed beach is a
+    # gentle slope (low curvature → the error test would leave it coarse 16 m),
+    # but the shoreline is where low-poly steps read worst and the ocean clips.
+    band = DATA.get("coast_band")
+    if band is not None:
+        coastal_quad = (
+            band[0 : 2 * QY : 2, 0 : 2 * QX : 2]
+            | band[0 : 2 * QY : 2, 2 : 2 * QX + 2 : 2]
+            | band[2 : 2 * QY + 2 : 2, 0 : 2 * QX : 2]
+            | band[2 : 2 * QY + 2 : 2, 2 : 2 * QX + 2 : 2]
+            | band[1 : 2 * QY + 1 : 2, 1 : 2 * QX + 1 : 2]
+        )
+        refine = refine | coastal_quad
     DATA["refine"] = refine
     log(f"terrain refine: {int(refine.sum())}/{refine.size} quads split to 8m")
     return refine

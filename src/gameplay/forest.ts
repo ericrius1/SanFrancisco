@@ -86,7 +86,8 @@ function buildBoxes(boxes: BoxSpec[]): THREE.BufferGeometry {
   return merged;
 }
 
-// tree geometry lives in world/flora.ts now — the forest just plants the bank
+// Outdoor tree beauty lives in the unified world vegetation runtime. This
+// gameplay forest module owns animals and ride interactions only.
 
 // animal geometry is authored feet-at-y=0, nose toward -Z (drive-forward)
 function bearBoxes(): BoxSpec[] {

@@ -93,6 +93,7 @@ export class Islands {
     scene: THREE.Scene;
     prepare?: (group: THREE.Group) => Promise<void>;
   } | null = null;
+  #foliageFocus = { x: 0, z: 0 };
 
   constructor(physics: Physics, map: WorldMap, scene: THREE.Scene) {
     const bodyMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85 });
@@ -231,6 +232,7 @@ export class Islands {
       );
       this.#treePatch = patch;
       await patch.ready;
+      patch.update(this.#foliageFocus);
       // Compile while detached but visible: Three skips visible=false roots.
       // Attach only after preparation so no live frame sees an uncompiled tree.
       if (prepare) await prepare(patch.group);
@@ -256,6 +258,10 @@ export class Islands {
   }
 
   update(elapsed: number, focus?: { x: number; z: number }) {
+    if (focus) {
+      this.#foliageFocus.x = focus.x;
+      this.#foliageFocus.z = focus.z;
+    }
     if (focus && this.#foliageVisible && this.#foliageArm && !this.#foliageLoad) {
       const nearIsland = this.#islands.some((island) =>
         Math.hypot(focus.x - island.x, focus.z - island.z) < 1550

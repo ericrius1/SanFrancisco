@@ -12,9 +12,8 @@
 //  · FLOWER DRIFT — an ellipse of wildflowers with NOISE BANDING, so each
 //                 drift streaks like a real superbloom instead of a disc
 //
-// Species use the SeedThree designs staged for the botanical garden (same
-// public/seedthree textures): douglasFir (redwood/fir), pine (Monterey
-// cypress read), whiteOak, americanBeech (eucalyptus read).
+// Species use shared authored-tree designs: douglasFir (redwood/fir), pine
+// (Monterey cypress read), whiteOak, americanBeech (eucalyptus read).
 //
 // Real-geography anchors (x=(lon+122.444)*87972, z=(37.79-lat)*110574):
 //  GG Park   x[-5920,-760]  z[1780,2860]
@@ -39,7 +38,7 @@ export type WildRegion = {
   /** which surface classes are plantable here (GG Park/Presidio lawns = 1;
    *  Marin's golden hills are class 0 open ground) */
   plantClasses: readonly number[];
-  /** minimum ground height (Marin shoreline gate, matches flora.ts) */
+  /** minimum ground height for the Marin shoreline planting gate */
   minGround: number;
 };
 
@@ -587,17 +586,6 @@ export function grassyGround(map: GardenTerrain, x: number, z: number): boolean 
   const dx = Math.abs(map.groundHeight(x + 5, z) - map.groundHeight(x - 5, z));
   const dz = Math.abs(map.groundHeight(x, z + 5) - map.groundHeight(x, z - 5));
   return dx <= 6 && dz <= 6;
-}
-
-// --- suppression exports (old simple trees die inside the wildlands) ----------------
-
-/**
- * True where the old stylized tree systems (flora.ts park scatter + Marin
- * pools, forest.ts redwoods) must NOT plant trees — the wildlands owns all
- * trees in its three regions. Bushes/grass/ground cover stay.
- */
-export function wildlandsSuppressesTree(x: number, z: number): boolean {
-  return wildRegionAt(x, z) !== null;
 }
 
 // --- collectors ----------------------------------------------------------------------

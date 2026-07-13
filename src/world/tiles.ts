@@ -338,7 +338,7 @@ export class TileStreamer {
   #ready: ReadyTile[] = [];
   // tiles with pendingParts still attaching, one mesh per frame
   #attaching: string[] = [];
-  // tiles whose park detail + tree scatter is held back until the player descends
+  // tiles whose dense park-surface detail is held back until the player descends
   #deferred = new Set<string>();
   // true when the player is high enough that only buildings/roads should stream
   #highUp = false;
@@ -534,7 +534,7 @@ export class TileStreamer {
     this.#hasPrevPos = true;
     if (highUp !== this.#highUp) {
       this.#highUp = highUp;
-      // descended: re-queue every tile whose park detail / tree scatter was
+      // descended: re-queue every tile whose dense park-surface detail was
       // held, and catch that backlog up faster than the usual 1/frame drain so
       // it doesn't visibly roll in tile by tile as the ground approaches
       if (!highUp) {
@@ -945,7 +945,7 @@ export class TileStreamer {
     return false;
   }
 
-  /** Descended: re-queue every tile whose park detail / tree scatter was held back. */
+  /** Descended: re-queue every tile whose dense park detail was held back. */
   #resumeDetail() {
     for (const key of this.#deferred) {
       if (this.loaded.has(key)) this.#attaching.push(key);
