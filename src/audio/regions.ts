@@ -192,6 +192,30 @@ export const NATURE_REGIONS: NatureRegionSpec[] = [
     density: 9,
     character: { windBias: 0.86, fog: 0.62, reverb: 0.58 },
     windAltitude: { y0: 30, y1: 74, boost: 0.5 }
+  },
+  {
+    // Buena Vista's compact summit forest: close, damp canopy around a bare
+    // crown. This also gives the Afterlight wind-harp a real regional bus to
+    // inhabit instead of waking an effects context from elsewhere in the city.
+    id: "buenavista",
+    label: "Buena Vista Park",
+    bounds: wild("buenavista"),
+    fade: 74,
+    beds: { forestBirds: 0.68, windGrass: 0.36, windTree: 0.92, nightCrickets: 0.82 },
+    day: [
+      { kind: "songbird", w: 3 },
+      { kind: "dove", w: 2 },
+      { kind: "woodpecker", w: 2 },
+      { kind: "crow", w: 1 }
+    ],
+    night: [
+      { kind: "owl", w: 3 },
+      { kind: "cricketChirp", w: 3 },
+      { kind: "frog", w: 1 }
+    ],
+    density: 14,
+    character: { windBias: 0.64, fog: 0.72, reverb: 0.58 },
+    windAltitude: { y0: 95, y1: 174, boost: 0.38 }
   }
 ];
 

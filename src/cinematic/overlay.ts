@@ -11,6 +11,12 @@ type CinematicOverlayWindow = Window &
     __sfCinematicOverlayCanvas?: HTMLCanvasElement;
   };
 
+export type CinematicOverlayOptions = {
+  letterbox?: number;
+  /** Render film bars, cards, chapter text, and progress treatment. Defaults to true. */
+  chrome?: boolean;
+};
+
 function wrappedLines(ctx: CanvasRenderingContext2D, text: string, maxWidth: number) {
   const lines: string[] = [];
   for (const paragraph of text.split("\n")) {
@@ -49,6 +55,13 @@ export class CinematicOverlay {
     this.#root.className = "cine-overlay";
     this.#root.dataset.cinematic = name;
     this.#root.style.setProperty("--cine-letterbox", `${letterbox * 100}vh`);
+    this.#mirror.dataset.cinematicMirror = name;
+    (window as CinematicOverlayWindow).__sfCinematicOverlayCanvas = this.#mirror;
+
+    if (!chrome) {
+      this.#views = [];
+      return;
+    }
 
     const style = document.createElement("style");
     style.dataset.cinematicStyle = "true";
@@ -104,8 +117,6 @@ export class CinematicOverlay {
       return { cue, root };
     });
     document.body.appendChild(this.#root);
-    this.#mirror.dataset.cinematicMirror = name;
-    (window as CinematicOverlayWindow).__sfCinematicOverlayCanvas = this.#mirror;
   }
 
   update(time: number, duration: number, chapter: string) {
@@ -143,6 +154,7 @@ export class CinematicOverlay {
     const ctx = this.#mirror.getContext("2d", { alpha: true });
     if (!ctx) return;
     ctx.clearRect(0, 0, width, height);
+    if (!this.#chrome) return;
 
     const barHeight = this.#letterbox * height;
     if (this.#chrome) {

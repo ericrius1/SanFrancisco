@@ -10,6 +10,8 @@ export type CinematicDefinition = {
   cues?: readonly CinematicCue[];
   overlay?: readonly OverlayCue[];
   letterbox?: number;
+  /** Set false for a clean plate without film chrome. Defaults to true. */
+  chrome?: boolean;
   /** Runs once after the director is installed and before frame zero. */
   begin?: () => void;
   /** Runs once per rendered frame after timeline cues, before the camera pose. */

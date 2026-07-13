@@ -64,7 +64,8 @@ Press `Shift`+`1`–`7` to switch how you get around. Each one has its own feel:
 | `W A S D` | Move / drive / steer (depends on the mode) |
 | `Shift` | Run / boost |
 | `Space` | Jump / drift / ollie / flap / pickleball swing (depends on the mode) |
-| `E` | Mount/dismount a nearby ride, pick up a returned fetch ball, start golf from a glowing tee, or claim/leave a pickleball side |
+| `E` | Mount/dismount a nearby ride, pick up a returned fetch ball, start a nearby activity, or interact with its people and props |
+| `Q` | Cycle the Corona Heights jammer trio to the next song |
 | `1`–`9` | Teleport to the numbered player next to you (or pick a golf club while playing) |
 | `M` | **Full-city map** — drag/scroll to pan/zoom, click a landmark or spot, press Teleport |
 | Left click | Use the current tool; near your golf ball, hold to draw back and release to swing |
@@ -99,6 +100,10 @@ Open the map (`M`) and teleport, or just wander. A few of the denser spots:
   a dog park just below, and a **jammer trio** (ukulele, handpan, flute) perched
   on a boulder. Stand nearby to hear their original songbook rotate with a
   natural quiet break between tunes. Throw the ball tool for the dogs.
+- **Buena Vista · Afterlight** — a hidden wind observatory in the treeless
+  summit clearing. Meet Mara and Sol at the loom, press `E`, then gather five
+  wandering light-echoes before the fog closes. Restoring the tune calls
+  something enormous out of the canopy. The map pin drops you beside the grove.
 - **Botanical Garden** — San Francisco Botanical Garden in Golden Gate Park:
   unified trees, curved blade grass, leaf-spray shrubs, dimensional flower
   clumps, and a shared wind envelope. The nature soundscape thickens here.
@@ -127,6 +132,9 @@ Nothing here is required — it's a list of things people tend to find fun.
   above the fog. The whole city is easiest to orient from the air.
 - **Hang with the jammers.** Spawn is already on Corona Heights — walk to the
   boulder, listen for a while, then toss a ball for the dogs.
+- **Wake the Afterlight.** Map → **Buena Vista · Afterlight**. Ask Mara about
+  the quiet sky, chase the five colored echoes around the summit, and look up
+  when the last note reaches the loom.
 - **Walk the Botanical Garden.** Map → **Botanical Garden**. Grass tramples under
   you; trees stream in as you arrive.
 - **Play pickleball.** Map → **Goldman Tennis & Pickleball**, press `E` on an
@@ -216,6 +224,8 @@ Protocol details live at the top of `server/server.mjs` and `src/net/net.ts`.
   texture, gentle Gerstner-ish swell, fresnel sky reflection, sun sparkle, and shore foam.
 - **`src/world/coronaHeights/`** + **`src/gameplay/buskers/`** — summit park, dog park,
   fetch loop, and the jammer trio.
+- **`src/gameplay/afterlight/`** — Buena Vista's gated light-gathering quest,
+  procedural wind-harp audio, responsive quest HUD, TSL loom, and sky-whale performance.
 - **`src/world/garden/`** — San Francisco Botanical Garden vegetation module.
 - **`src/world/goldenGateTennis/`** + **`src/gameplay/pickleball/`** — Goldman courts and
   the shared pickleball game.

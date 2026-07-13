@@ -25,6 +25,7 @@ import type { WorldQueries } from "../core/worldQueries";
 import type { BoardConfig } from "../vehicles/board";
 import type { PalaceReverieGame } from "../gameplay/palaceReverie";
 import type { Fireworks } from "../fx/fireworks";
+import type { AfterlightExperience } from "../gameplay/afterlight";
 
 /**
  * Everything a demo can reach. main.ts builds one of these and passes it to
@@ -62,6 +63,7 @@ export type DemoContext = {
   palaceReverie?: PalaceReverieGame;
   landsEnd?: LandsEndRegion;
   fireworks?: Fireworks;
+  afterlight?: AfterlightExperience;
   worldQueries?: WorldQueries;
   setTool?: (tool: string) => void;
   /** Apply a local, non-persisted board configuration for demos and capture. */
@@ -94,6 +96,7 @@ import { twitterSummerShot05 } from "./demos/twitterSummerShot05";
 import { twitterSummerShot06 } from "./demos/twitterSummerShot06";
 import { twitterSummerShot07 } from "./demos/twitterSummerShot07";
 import { twitterSummerShot08 } from "./demos/twitterSummerShot08";
+import { afterlightCinematic } from "./demos/afterlightCinematic";
 
 const DEMOS: Record<string, Demo> = {
   [buskersCinematic.name]: buskersCinematic,
@@ -110,7 +113,8 @@ const DEMOS: Record<string, Demo> = {
   [twitterSummerShot05.name]: twitterSummerShot05,
   [twitterSummerShot06.name]: twitterSummerShot06,
   [twitterSummerShot07.name]: twitterSummerShot07,
-  [twitterSummerShot08.name]: twitterSummerShot08
+  [twitterSummerShot08.name]: twitterSummerShot08,
+  [afterlightCinematic.name]: afterlightCinematic
 };
 
 export function runDemo(name: string, ctx: DemoContext) {

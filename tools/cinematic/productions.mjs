@@ -12,6 +12,19 @@ const DEFAULTS = Object.freeze({
 });
 
 const DEFINITIONS = Object.freeze({
+  afterlight: Object.freeze({
+    id: "afterlight",
+    demo: "afterlight",
+    title: "Afterlight at Buena Vista",
+    duration: 15,
+    seed: 0x41_46_54_52,
+    posterAt: 12.4,
+    stillTimes: Object.freeze([0.35, 1.5, 2.2, 3.05, 4.5, 5.9, 6.78, 7.35, 8.55, 10.3, 12.4, 14.55]),
+    audio: Object.freeze({
+      profile: "afterlight",
+      description: "A quiet loom, five returning echoes, and the breath of a whale above the canopy."
+    })
+  }),
   hoverboard: Object.freeze({
     id: "hoverboard",
     demo: "hoverboard",

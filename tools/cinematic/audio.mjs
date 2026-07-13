@@ -11,6 +11,7 @@ const TARGET_PEAK = 0.92;
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
 const PRODUCTION_DURATIONS = Object.freeze({
+  afterlight: 15,
   hoverboard: 15,
   "dog-park": 11,
   "palace-reverie": 15,
@@ -27,6 +28,15 @@ const PRODUCTION_DURATIONS = Object.freeze({
  * straightforward to retime both score and sound design when a shot changes.
  */
 export const CINEMATIC_AUDIO_PLANS = Object.freeze({
+  afterlight: Object.freeze([
+    { time: 3, id: "echo-1", description: "first echo begins its return" },
+    { time: 3.72, id: "echo-2", description: "second echo begins its return" },
+    { time: 4.44, id: "echo-3", description: "third echo begins its return" },
+    { time: 5.16, id: "echo-4", description: "fourth echo begins its return" },
+    { time: 5.88, id: "echo-5", description: "final echo begins its return" },
+    { time: 6.74, id: "loom", description: "the restored loom blooms" },
+    { time: 7.15, id: "whale", description: "the sky whale rises" }
+  ]),
   hoverboard: Object.freeze([
     { time: 2.4, id: "shape", description: "shape customization click" },
     { time: 4.8, id: "surface", description: "surface/material shimmer" },
@@ -93,7 +103,7 @@ const DEFAULT_PALACE_BEDS = Object.freeze([
  * Render the score and sound design for one cinematic production.
  *
  * @param {{
- *   id: 'hoverboard'|'dog-park'|'roqn-open-road'|`twitter-summer-${string}`,
+ *   id: 'afterlight'|'hoverboard'|'dog-park'|'roqn-open-road'|`twitter-summer-${string}`,
  *   duration?: number,
  *   fps?: number,
  *   seed?: number,
@@ -131,7 +141,9 @@ export async function renderCinematicAudio(production, outputPath) {
   const mix = createMix(expectedDuration, seed);
   const beds = [];
 
-  if (id === "hoverboard") {
+  if (id === "afterlight") {
+    scoreAfterlight(mix);
+  } else if (id === "hoverboard") {
     scoreHoverboard(mix);
   } else if (id === "palace-reverie") {
     scorePalaceReverie(mix);
@@ -157,7 +169,7 @@ export async function renderCinematicAudio(production, outputPath) {
     scoreTwitterSummerShot(mix, Number(id.slice(-2)));
   }
 
-  const levels = masterAndLimit(mix, id === "dog-park" ? 2 : id === "roqn-open-road" ? 1.65 : id.startsWith("twitter-summer-") ? 1.55 : 1.35);
+  const levels = masterAndLimit(mix, id === "dog-park" ? 2 : id === "roqn-open-road" ? 1.65 : id.startsWith("twitter-summer-") ? 1.55 : id === "afterlight" ? 1.45 : 1.35);
   const absoluteOutput = path.resolve(outputPath);
   const wav = encodePcm16Wav(mix.left, mix.right, SAMPLE_RATE);
   await atomicWrite(absoluteOutput, wav);
@@ -435,6 +447,64 @@ function scoreHoverboard(mix) {
   addChime(mix, { start: 12.41, midi: 88, duration: 1.62, gain: 0.068, pan: 0.12 });
   addChime(mix, { start: 13.54, midi: 81, duration: 1.3, gain: 0.052, pan: -0.38 });
   addChime(mix, { start: 13.69, midi: 86, duration: 1.2, gain: 0.048, pan: 0.4 });
+}
+
+function scoreAfterlight(mix) {
+  // Two quiet harmonic fields crossfade as the grove moves from an intimate
+  // human ritual into the open sky. The restrained mix leaves the luminous
+  // motion room to carry the film while remaining precisely picture-locked.
+  addPad(mix, {
+    start: 0,
+    duration: 8.2,
+    notes: [45, 52, 57, 62],
+    gain: 0.04,
+    pan: -0.08,
+    brightness: 0.2
+  });
+  addPad(mix, {
+    start: 6.55,
+    duration: 8.45,
+    notes: [50, 57, 62, 66],
+    gain: 0.052,
+    pan: 0.08,
+    brightness: 0.34
+  });
+  addAir(mix, { start: 0, duration: 15, gain: 0.012, panDrift: 0.42 });
+
+  const returns = [
+    [3, 74, -0.58],
+    [3.72, 78, -0.24],
+    [4.44, 81, 0.08],
+    [5.16, 85, 0.35],
+    [5.88, 88, 0.58]
+  ];
+  for (const [start, midi, pan] of returns) {
+    addChime(mix, { start, midi, duration: 1.42, gain: 0.058, pan });
+  }
+
+  addWhoosh(mix, {
+    start: 6.52,
+    duration: 1.82,
+    gain: 0.082,
+    panFrom: 0.52,
+    panTo: -0.36,
+    direction: "in"
+  });
+  addSub(mix, { start: 6.66, duration: 1.16, fromHz: 58, toHz: 39, gain: 0.13 });
+  addChime(mix, { start: 6.76, midi: 76, duration: 2.2, gain: 0.075, pan: 0 });
+
+  addWhoosh(mix, {
+    start: 7.06,
+    duration: 3.3,
+    gain: 0.112,
+    panFrom: -0.42,
+    panTo: 0.62,
+    direction: "out"
+  });
+  addSub(mix, { start: 7.14, duration: 1.46, fromHz: 49, toHz: 33, gain: 0.16 });
+  addChime(mix, { start: 9.38, midi: 69, duration: 2.6, gain: 0.052, pan: -0.22 });
+  addChime(mix, { start: 11.7, midi: 81, duration: 2.2, gain: 0.046, pan: 0.34 });
+  addChime(mix, { start: 13.45, midi: 86, duration: 1.5, gain: 0.04, pan: -0.12 });
 }
 
 function scoreDogPark(mix) {

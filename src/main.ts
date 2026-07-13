@@ -85,6 +85,12 @@ import { createSiteGate } from "./gameplay/siteGate";
 import { createArchery, ARCHERY_CENTER, type ArcheryGame } from "./gameplay/archery";
 import { createPalaceReverie, REVERIE_CENTER, type PalaceReverieGame } from "./gameplay/palaceReverie";
 import { LandsEndRegion, LANDS_END_CENTER } from "./world/landsEnd";
+import {
+  createAfterlight,
+  AFTERLIGHT_ARRIVAL,
+  inAfterlightGroundcoverClear,
+  type AfterlightExperience
+} from "./gameplay/afterlight";
 import { Satchel } from "./ui/satchel";
 import { HUD } from "./ui/hud";
 import { ShareButton } from "./ui/share";
@@ -677,6 +683,9 @@ async function boot() {
   // Lands End — the NW headland: a cliff-top Labyrinth you light by walking,
   // Sutro Baths ruins, cypress and a lantern-keeper. Distance-LOD region.
   let landsEnd: LandsEndRegion | null = null;
+  // Buena Vista's hidden summit ritual: five wandering echoes and a sky-scale
+  // finale, asleep outside its clearing like the other located activities.
+  let afterlight: AfterlightExperience | null = null;
   const hunt = new Hunt(map, scene);
   hunt.onCatch = (kind) => {
     satchel.add(kind);
@@ -755,6 +764,12 @@ async function boot() {
     void renderer.compileAsync(palaceReverie.root, camera, scene);
   } catch (err) {
     console.warn("[boot] palace reverie unavailable:", err);
+  }
+  try {
+    afterlight = createAfterlight(map, scene, nature);
+    siteGate.register(afterlight.siteHooks());
+  } catch (err) {
+    console.warn("[boot] Afterlight grove unavailable:", err);
   }
   try {
     coronaHeights = new CoronaHeightsPark(map, physics);
@@ -1300,6 +1315,9 @@ async function boot() {
   if (palaceReverie) {
     minimap.addLandmark(REVERIE_CENTER.x, REVERIE_CENTER.z, "Palace Reverie");
   }
+  if (afterlight) {
+    minimap.addLandmark(AFTERLIGHT_ARRIVAL.x, AFTERLIGHT_ARRIVAL.z, "Buena Vista · Afterlight");
+  }
   // Ocean Beach surf break. Teleporting arrives on foot at the start marker;
   // one E press enters the live face already standing and moving.
   minimap.addLandmark(OCEAN_BEACH_SURF.maxX - 26, OCEAN_BEACH_SURF.entryZ, "Ocean Beach · Surf");
@@ -1661,7 +1679,15 @@ async function boot() {
     });
   }
   progress(90, "warming render paths");
-  await pipeline.warmup("boot");
+  // Afterlight is normally detached while asleep. Temporarily expose every
+  // finale state under the opaque cover so its TSL pipelines are genuinely hot
+  // before the first visit, then restore the exact authored visibility state.
+  const finishAfterlightWarmup = afterlight?.prepareWarmup();
+  try {
+    await pipeline.warmup("boot");
+  } finally {
+    finishAfterlightWarmup?.();
+  }
   bootMark("warmup");
   colliderDebug.setVisible(warmColliderDebug);
   calibrationChart.sync(camera, warmGreyCards);
@@ -1941,19 +1967,17 @@ async function boot() {
         // load if a deploy is missing golf.json.
         console.warn("[golf] course unavailable:", err);
       }
-      const _wildlands = wildlandsMod.createWildlands(
-        map,
-        loadedGolfCourse
-          ? {
-              // No animated blade clusters or flowers inside the course; its own
-              // smooth rough/fairway/green materials own that footprint.
-              groundcover: (x: number, z: number) => loadedGolfCourse!.contains(x, z, 1.2),
-              // Keep the wooded rough character, but never procedural-tree a play
-              // surface or the graded apron around greens/tee pads.
-              trees: (x: number, z: number) => loadedGolfCourse!.clearsProceduralTrees(x, z)
-            }
+      const _wildlands = wildlandsMod.createWildlands(map, {
+        // Keep animated blades and flowers off the compact installation as well
+        // as the golf surfaces. The wider Buena Vista meadow stays untouched.
+        groundcover: (x: number, z: number) =>
+          inAfterlightGroundcoverClear(x, z, 1.2) || (loadedGolfCourse?.contains(x, z, 1.2) ?? false),
+        // Keep the wooded rough character, but never procedural-tree a play
+        // surface or the graded apron around greens/tee pads.
+        trees: loadedGolfCourse
+          ? (x: number, z: number) => loadedGolfCourse!.clearsProceduralTrees(x, z)
           : undefined
-      );
+      });
       wildlands = _wildlands;
       const showFoliage = foliageOn && !deferred;
       for (const g of _wildlands.groups) g.visible = deferred ? true : showFoliage;
@@ -2622,10 +2646,10 @@ async function boot() {
       !exitedToWalk &&
       !golf?.tryStartAtTee(player, hud) &&
       !archery?.tryInteract(player, hud, chase) &&
-      !archery?.tryInteract(player, hud, chase) &&
       !palaceReverie?.tryInteract(player, hud) &&
       !landsEnd?.keeper.tryInteract(player, hud) &&
-      !missionDolores?.tryInteract(player.position, player.mode, hud)
+      !missionDolores?.tryInteract(player.position, player.mode, hud) &&
+      !afterlight?.tryInteract(player, hud)
     ) {
       const nearOceanBeach =
         player.mode === "walk" &&
@@ -3043,6 +3067,9 @@ async function boot() {
     }
     // Archery: site-gated, one boolean early-return when asleep with nothing live
     archery?.update(frameDt, elapsed, { player, input, hud, chase, camera });
+    // Afterlight: proximity collectibles, return flights, quest clock and the
+    // completed sky performance; site-gated to a single asleep early return.
+    afterlight?.update(frameDt, elapsed, player, hud);
     // Goldman clubhouse NPCs: one-hypot early return when far — safe every frame
     goldenGateTennis?.update(frameDt, elapsed, player.position);
     // Mission Dolores: dynamic code gate first, then shell/art proximity gates.
@@ -3361,7 +3388,7 @@ async function boot() {
       // deferred render warmup runs, tick() early-returns without rendering, so
       // screenshots would capture a stale boot-pose frame no matter what the
       // camera was set to.
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController.game, pickleballAmbient: pickleballController.ambient, pickleballAudio: pickleballController.audio, pickleballUI: pickleballController.ui, pickleballController, coronaHeights, missionDolores, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, ensureSurfRuntime, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate, palaceReverie, landsEnd,
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController.game, pickleballAmbient: pickleballController.ambient, pickleballAudio: pickleballController.audio, pickleballUI: pickleballController.ui, pickleballController, coronaHeights, missionDolores, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, ensureSurfRuntime, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate, palaceReverie, landsEnd, afterlight,
         TSL,
         renderIdle: () => modulesReady && !lateRenderWarmupActive }
     });
@@ -3383,6 +3410,7 @@ async function boot() {
       minimap,
       map,
       buskers,
+      afterlight: afterlight ?? undefined,
       fetchBall: fetchBall ?? undefined,
       coronaHeights: coronaHeights ?? undefined,
       palaceReverie: palaceReverie ?? undefined,
