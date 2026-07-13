@@ -1,6 +1,7 @@
 import * as THREE from "three/webgpu";
 import { BodyType } from "../core/physics";
 import { tunables } from "../core/persist";
+import { INPUT_TUNING } from "../config";
 import { waterHeight } from "../world/heightmap";
 import type { Input } from "../core/input";
 import type { ModeController, ModeFrame, PlayerCtx } from "./types";
@@ -95,7 +96,8 @@ export class WalkController implements ModeController {
     const iz = input.axis("KeyS", "KeyW");
     const run = input.down("ShiftLeft") || input.down("ShiftRight");
     const tw = WALK_TUNING.values;
-    const speed = run ? tw.runSpeed : tw.speed;
+    const speedScale = INPUT_TUNING.values.moveSpeedScale;
+    const speed = (run ? tw.runSpeed : tw.speed) * speedScale;
 
     const dir = V.tmp.set(ix, 0, -iz);
     if (dir.lengthSq() > 0) {
@@ -113,7 +115,7 @@ export class WalkController implements ModeController {
     if (swimming) {
       // --- swimming: bob at the surface, dive when you look/press down ------
       // Horizontal glide (run key is repurposed as dive, so use base speed).
-      const swimSpeed = tw.speed * tw.swimFactor;
+      const swimSpeed = tw.speed * tw.swimFactor * speedScale;
       vx = dir.x * swimSpeed;
       vz = dir.z * swimSpeed;
       // Vertical command: look-pitch dive while swimming forward (nose down + W

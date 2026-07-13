@@ -5,7 +5,7 @@ import type { PlayerMode } from "../player/types"
 import { waterHeight, type WorldMap } from "../world/heightmap"
 import { oceanBeachWaveHeight } from "../world/oceanBeachWaves"
 import type { Physics } from "./physics"
-import { CAMERA_TUNING } from "../config"
+import { CAMERA_TUNING, INPUT_TUNING } from "../config"
 import {
   clearCameraCutaway,
   updateCameraCutaway
@@ -81,6 +81,8 @@ export class ChaseCamera {
   indoor = false
   /** Activities such as archery can request the same eye rig outdoors. */
   activityFirstPerson = false
+  /** User-selected first-person view (C cycle). Same eye rig as indoor/archery. */
+  manualFirstPerson = false
   #indoor = 0 // smoothed 0..1
 
   #chasePos = new THREE.Vector3()
@@ -275,7 +277,11 @@ export class ChaseCamera {
       this.#initialized = true
       this.#surfCamera?.reset()
     }
-    const indoorTarget = (this.indoor || this.activityFirstPerson) && player.mode === "walk" ? 1 : 0
+    const indoorTarget =
+      (this.indoor || this.activityFirstPerson || this.manualFirstPerson) &&
+      player.mode === "walk"
+        ? 1
+        : 0
     this.#indoor +=
       (indoorTarget - this.#indoor) *
       (1 - Math.exp(-Math.min(dt, 0.1) * VIEW.transitionRate))
@@ -311,7 +317,8 @@ export class ChaseCamera {
       this.yaw += dYaw * follow
       this.pitch += (targetPitch - this.pitch) * follow
     } else {
-      this.yaw -= input.mouseDX * 0.0032
+      const sens = INPUT_TUNING.values.lookSensitivity
+      this.yaw -= input.mouseDX * 0.0032 * sens
       // Orbit mode keeps framing-safe limits. The range widens almost to vertical
       // as first person takes over, then contracts with the same smooth blend on
       // exit so an extreme indoor pitch never snaps back in one frame.
@@ -326,7 +333,7 @@ export class ChaseCamera {
         firstPersonBlend
       )
       this.pitch = THREE.MathUtils.clamp(
-        this.pitch + input.mouseDY * 0.0026,
+        this.pitch + input.mouseDY * 0.0026 * sens,
         pitchMin,
         pitchMax
       )

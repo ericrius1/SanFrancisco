@@ -3,8 +3,8 @@ import { suppressesFullReload } from "./app/hmr/suppressFullReload";
 import * as THREE from "three/webgpu";
 import * as TSL from "three/tsl";
 import CameraControls from "camera-controls";
-import { CAMERA_TUNING, CITYGEN_TUNING, CONFIG, FLOWER_TUNING, FOLIAGE_TUNING, RENDER_TUNING, START, START_DEFAULTS, WORLD_TUNING } from "./config";
-import { loadPlayerState, resetAllTweaks } from "./core/persist";
+import { CAMERA_TUNING, CITYGEN_TUNING, CONFIG, FLOWER_TUNING, FOLIAGE_TUNING, INPUT_TUNING, RENDER_TUNING, START, START_DEFAULTS, WORLD_TUNING } from "./config";
+import { loadPlayerState, resetAllTweaks, saveTweak } from "./core/persist";
 import { Input } from "./core/input";
 import { tracer } from "./core/hitchTracer";
 import { bootMarkStart, bootMark, bootMarkSummary, persistBootHistory } from "./core/bootMarks";
@@ -516,7 +516,10 @@ async function boot() {
   const leaveRide = () => embodiments.leaveRide();
   const exitToWalk = () => embodiments.exitToWalk();
   const dropCurrentDriveMount = () => embodiments.dropCurrentDriveMount();
-  let cameraMode = false;
+  type ViewMode = "third" | "first" | "orbit";
+  const VIEW_CYCLE: ViewMode[] = ["third", "first", "orbit"];
+  let viewMode: ViewMode = "third";
+  const inOrbit = () => viewMode === "orbit";
   // scatter boardable boats around the bay — walk/swim up + E to drive one off.
   // persistent: they wait at their spot no matter how far you roam.
   const scatterBoat = (mode: "boat" | "speedboat", x: number, z: number, heading: number) => {
@@ -611,7 +614,7 @@ async function boot() {
           onBookToggle: (open) => {
             museumBookOpen = open;
             app.classList.toggle("world-dimmed", open);
-            input.suspended = open || cameraMode;
+            input.suspended = open || inOrbit();
             if (open) input.releaseLock();
           }
         });
@@ -908,11 +911,13 @@ async function boot() {
   };
   const BUSKER_PICK_R = 0.65;
 
-  const setCameraMode = (on: boolean) => {
-    cameraMode = on;
-    input.suspended = on;
-    orbit.enabled = on;
-    if (on) {
+  const setViewMode = (mode: ViewMode) => {
+    viewMode = mode;
+    chase.manualFirstPerson = mode === "first";
+    const orbitOn = mode === "orbit";
+    input.suspended = orbitOn;
+    orbit.enabled = orbitOn;
+    if (orbitOn) {
       chase.suspend(player); // orbit owns the camera and should show the local avatar
       input.releaseLock();
       orbit.setLookAt(
@@ -924,22 +929,31 @@ async function boot() {
         player.position.z,
         false
       );
-      hud.message("Camera mode — drag to orbit, double-click to retarget, O for 180°, C to return", 3.5);
+      hud.message("Camera mode — drag to orbit, double-click to retarget, O for 180°, C to cycle", 3.5);
     } else {
       orbitFlip = null;
-      hud.message("");
+      hud.message(
+        mode === "first"
+          ? "First person — C cycles third / first / camera"
+          : "Third person — C cycles third / first / camera",
+        2.4
+      );
       input.requestLock();
     }
   };
+  const cycleViewMode = () => {
+    const i = VIEW_CYCLE.indexOf(viewMode);
+    setViewMode(VIEW_CYCLE[(i + 1) % VIEW_CYCLE.length]!);
+  };
   leaveCameraModeForSurf = () => {
-    if (cameraMode) setCameraMode(false);
+    if (viewMode === "orbit") setViewMode("third");
   };
 
   // Double-click any surface in camera mode → that point becomes the new orbit target
   // (camera stays put; orbit/dolly continue around the new look-at).
   // Busker hits snap to the musician's chest so the orbit centers on the singer.
   renderer.domElement.addEventListener("dblclick", (e) => {
-    if (!cameraMode || e.button !== 0) return;
+    if (!inOrbit() || e.button !== 0) return;
     const rect = renderer.domElement.getBoundingClientRect();
     const ndcX = ((e.clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1;
     const ndcY = -(((e.clientY - rect.top) / Math.max(1, rect.height)) * 2 - 1);
@@ -1223,7 +1237,7 @@ async function boot() {
         skipChatRelock = false;
         return;
       }
-      if (!cameraMode && document.body.classList.contains("started") && !input.suspended) {
+      if (!inOrbit() && document.body.classList.contains("started") && !input.suspended) {
         input.requestLock();
       }
     }
@@ -1232,7 +1246,7 @@ async function boot() {
   // golf: friends' swings/balls/scores replay here (owner-simulated snapshots)
   net.onGolf = (id, m) => golf?.handleNet(id, m, hud, net.roster.get(id)?.name ?? "Player");
   input.onLockChange = (locked) => {
-    if (!locked && !cameraMode && !input.freeCursor && !chat.focused) {
+    if (!locked && !inOrbit() && !input.freeCursor && !chat.focused) {
       hud.message("Click to capture the mouse · Esc releases it", 2.8);
     }
   };
@@ -1378,7 +1392,7 @@ async function boot() {
     hud.message(`${layer}: ${place.title}`, 2.4);
   };
   minimap.onExpandChange = (on) => {
-    input.suspended = on || cameraMode; // camera mode owns suspension when the map closes
+    input.suspended = on || inOrbit(); // camera mode owns suspension when the map closes
     // Open always frees the pointer. Collapse does not re-lock here — Esc-dismiss
     // must leave the cursor free; M-toggle re-locks in the tick below.
     if (on) input.releaseLock();
@@ -2111,7 +2125,7 @@ async function boot() {
     behindTheScenes = new BehindTheScenes((open: boolean) => {
       btsReading = open;
       app.classList.toggle("world-dimmed", open);
-      input.suspended = open || cameraMode;
+      input.suspended = open || inOrbit();
       if (open) input.releaseLock();
     });
 
@@ -2411,7 +2425,7 @@ async function boot() {
     if (input.pressed("KeyM")) {
       const closing = minimap.expanded;
       minimap.setExpanded(!minimap.expanded);
-      if (closing && !cameraMode) input.requestLock();
+      if (closing && !inOrbit()) input.requestLock();
     }
 
     // Expanded map: gamepad pan / zoom / cursor / select / teleport / pin cycle.
@@ -2552,7 +2566,7 @@ async function boot() {
       // and streaming focus current so crossing a doorway cannot leave the camera
       // stuck in the previous indoor/outdoor mode.
       citygenRing.current?.update(player.position, frameDt);
-      if (cameraMode) { chase.suspend(player); orbit.update(frameDt); }
+      if (inOrbit()) { chase.suspend(player); orbit.update(frameDt); }
       else { chase.indoor = (citygenRing.current?.isPlayerInside() ?? false) || (missionDolores?.isPlayerInside(player.position) ?? false); chase.update(frameDt, player, input); }
       // keep the vehicle hum, ambience and social presence alive like full pause
       vehicleAudio.update(frameDt, {
@@ -2761,7 +2775,7 @@ async function boot() {
     }
     if (input.pressed("KeyC")) {
       if (player.mode === "surf") hud.message("Surf camera locked to the wave — E to exit", 1.8);
-      else setCameraMode(!cameraMode);
+      else cycleViewMode();
     }
     // R: wireframe overlay (unused elsewhere — retained pass override + camera)
     if (input.pressed("KeyR")) {
@@ -2769,7 +2783,7 @@ async function boot() {
       hud.message(RENDER_TUNING.values.wireframe ? "Wireframe on (R)" : "Wireframe off (R)", 1.4);
     }
     // O: 180° orbit flip around the current look target (camera mode only)
-    if (cameraMode && input.pressed("KeyO")) {
+    if (inOrbit() && input.pressed("KeyO")) {
       const duration = Math.max(0.05, CAMERA_TUNING.values.orbitFlipSec);
       const delta = CAMERA_TUNING.values.orbitFlipCCW ? Math.PI : -Math.PI;
       const startDist = orbit.distance;
@@ -2870,9 +2884,11 @@ async function boot() {
     // mouseDX/wheelX before the fly controller and chase camera see them, so
     // the view holds still while the light sweeps. Uses holding() so it still
     // works in camera-orbit mode (where input is otherwise suspended).
+    // N (hold): horizontal trackpad → look sensitivity; vertical → move speed.
     const scrubHeld = input.holding("KeyZ");
+    const adjustHeld = input.holding("KeyN");
     const flipping = orbitFlip !== null;
-    if (cameraMode) orbit.enabled = !scrubHeld && !flipping; // don't let orbit eat the drag/wheel
+    if (inOrbit()) orbit.enabled = !scrubHeld && !adjustHeld && !flipping; // don't let orbit eat the drag/wheel
     if (orbitFlip) {
       orbitFlip.t += frameDt;
       const u = Math.min(1, orbitFlip.t / orbitFlip.duration);
@@ -2899,6 +2915,35 @@ async function boot() {
         sky.cycleEnabled = timeScrub.wasCycling;
         timeScrub = null;
       }
+    }
+    if (adjustHeld) {
+      const look = INPUT_TUNING.values;
+      const nextLook = THREE.MathUtils.clamp(
+        look.lookSensitivity + input.mouseDX * 0.002 + input.wheelX * 0.001,
+        0.25,
+        3
+      );
+      const nextSpeed = THREE.MathUtils.clamp(
+        look.moveSpeedScale - input.mouseDY * 0.002 - input.wheel * 0.001,
+        0.4,
+        2.5
+      );
+      if (nextLook !== look.lookSensitivity) {
+        look.lookSensitivity = nextLook;
+        saveTweak("input.lookSensitivity", nextLook);
+      }
+      if (nextSpeed !== look.moveSpeedScale) {
+        look.moveSpeedScale = nextSpeed;
+        saveTweak("input.moveSpeedScale", nextSpeed);
+      }
+      input.mouseDX = 0;
+      input.mouseDY = 0;
+      input.wheelX = 0;
+      input.wheel = 0;
+      hud.message(
+        `Look ${look.lookSensitivity.toFixed(2)}× · Move ${look.moveSpeedScale.toFixed(2)}×`,
+        0.8
+      );
     }
 
     // fly: mouse steers the plane at frame rate; W/S throttle happens in the fixed step
@@ -3143,7 +3188,7 @@ async function boot() {
     } else if (golf?.updateBallCam(frameDt, camera)) {
       chase.suspend(player);
       // golf flight cam: chases the ball until it settles, then hands back
-    } else if (cameraMode) {
+    } else if (inOrbit()) {
       chase.suspend(player);
       orbit.update(frameDt);
     } else {
@@ -3300,7 +3345,7 @@ async function boot() {
       const cursorLive =
         document.body.classList.contains("started") &&
         player.mode !== "surf" &&
-        !cameraMode &&
+        !inOrbit() &&
         !input.suspended &&
         !cineHook &&
         !(paused && freezePlayer);

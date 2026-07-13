@@ -7,7 +7,7 @@ import { INPUT_TUNING } from "../config";
  * invariant; main.ts separately decides which overlay Escape dismisses. The
  * game keeps simulating while unlocked. While `suspended` (camera-orbit mode)
  * all game inputs read as idle so the player coasts. Global holds that must
- * still work there (Z time-scrub) use `holding()` instead of `down()`.
+ * still work there (Z time-scrub, N look/speed) use `holding()` instead of `down()`.
  *
  * A gamepad (Xbox standard mapping) rides the same logical rails: pollPad()
  * translates buttons into the key codes the game already reads (A→Space,
@@ -39,7 +39,7 @@ const PAD_BUTTONS: Record<number, string> = {
   8: "KeyI", //      Back: hide UI
   9: "KeyP", //      Start: pause
   10: "ShiftLeft", //L3: boost too
-  11: "KeyC", //     R3: camera orbit
+  11: "KeyC", //     R3: cycle third / first / camera-controls
   12: "KeyB", //     dpad up: fireworks (held)
   13: "KeyG", //     dpad down: zero-g
   14: "PadModePrev", // dpad left/right: cycle travel modes
@@ -225,12 +225,13 @@ export class Input {
     el.addEventListener("contextmenu", (e) => e.preventDefault());
 
     window.addEventListener("mousemove", (e) => {
-      // Pointer-lock look, or Z-held time scrub (works unlocked in camera-orbit
+      // Pointer-lock look, or Z/N-held scrub (works unlocked in camera-orbit
       // mode where the chase cam has released the pointer).
-      if (this.locked || this.keys.has("KeyZ")) {
+      const holdScrub = this.keys.has("KeyZ") || this.keys.has("KeyN");
+      if (this.locked || holdScrub) {
         // Surf owns a locked authored camera. Pointer lock can stay captured, but
         // physical mouse motion must be a mathematical no-op for that activity.
-        if (this.#mode !== "surf" || this.keys.has("KeyZ")) {
+        if (this.#mode !== "surf" || holdScrub) {
           this.mouseDX += e.movementX;
           this.mouseDY += e.movementY;
         }
@@ -372,9 +373,10 @@ export class Input {
     // right stick = mouselook; works without pointer lock except in surf's
     // authored camera. Pitch polarity is the global INPUT_TUNING toggle.
     if (!this.suspended && this.#mode !== "surf") {
-      this.mouseDX += rx * Math.abs(rx) * LOOK_X * dt;
+      const sens = INPUT_TUNING.values.lookSensitivity;
+      this.mouseDX += rx * Math.abs(rx) * LOOK_X * sens * dt;
       const pitchStick = INPUT_TUNING.values.invertPadLookY ? -ry : ry;
-      this.mouseDY += pitchStick * Math.abs(pitchStick) * LOOK_Y * dt;
+      this.mouseDY += pitchStick * Math.abs(pitchStick) * LOOK_Y * sens * dt;
     }
 
     if (active) this.#setDevice("pad");

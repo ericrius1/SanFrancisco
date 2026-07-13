@@ -64,11 +64,14 @@ export const CAMERA_TUNING = tunables("camera", {
   cutawayResponse: { v: 18, min: 4, max: 40, step: 1, label: "cutaway response" }
 })
 
-/** Gamepad look. Bound under advanced → controls in the "/" panel. Applies to
- * every mode (walk + all vehicles) — right-stick pitch only; mouse is untouched. */
+/** Look / move feel. Bound under advanced → controls in the "/" panel.
+ * `lookSensitivity` scales mouse and right-stick look; `moveSpeedScale` scales
+ * on-foot walk/run/swim. Both are also live-adjustable with N + trackpad. */
 export const INPUT_TUNING = tunables("input", {
   // true = stick-up raises the chase cam / pitches the plane nose up (default).
-  invertPadLookY: { v: true, label: "invert pad look Y" }
+  invertPadLookY: { v: true, label: "invert pad look Y" },
+  lookSensitivity: { v: 1, min: 0.25, max: 3, step: 0.05, label: "look sensitivity" },
+  moveSpeedScale: { v: 1, min: 0.4, max: 2.5, step: 0.05, label: "move speed ×" }
 })
 
 /** The committed heightfield is 15.1 × 13.9 km (20.5 km corner-to-corner).

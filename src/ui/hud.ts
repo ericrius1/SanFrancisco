@@ -312,7 +312,7 @@ export class HUD {
     const extraRows = (pad
       ? [
           { c: ["Y"], label: "map" },
-          { c: ["R3"], label: "camera" },
+          { c: ["R3"], label: "view" },
           { c: ["▲"], label: "fireworks" },
           { c: ["Start"], label: "pause" },
           { c: ["Back"], label: "immersive" }
@@ -320,14 +320,15 @@ export class HUD {
       : [
           { c: ["B"], label: "fireworks" },
           { c: ["Z"], label: "hold — time of day" },
+          { c: ["N"], label: "hold — look / speed" },
           { c: ["P"], label: "pause" },
-          { c: ["C"], label: "camera" },
+          { c: ["C"], label: "view" },
           { c: ["/"], label: "debug" },
           { c: ["I"], label: "immersive" },
           { c: ["F"], label: "fullscreen" }
         ]
     )
-      .filter((r) => this.#current !== "surf" || r.label !== "camera")
+      .filter((r) => this.#current !== "surf" || r.label !== "view")
       .map(
         (r) =>
           `<div class="keys">${chips(r.c, pad)}</div>` +
