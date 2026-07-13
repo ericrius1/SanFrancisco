@@ -8,6 +8,7 @@
 // its own immediate surroundings cost — never the whole city's foliage.
 
 import type { PlayerMode } from "../player/types";
+import { OCEAN_BEACH_SURF } from "./oceanBeachWaves";
 
 /** Heavy park regions built lazily off the boot path (own Vite chunks). A spawn
  * either GATES a region (built before reveal) or lets it stream in after. */
@@ -41,6 +42,19 @@ export type SpawnPoint = {
 };
 
 export const SPAWN_POINTS: Record<string, SpawnPoint> = {
+  // Ocean Beach surf pin — same sand spot as the map landmark (just inside the
+  // waterline, facing the swell). Arrive on foot with the board underarm, ready
+  // to press E and paddle out. Far from every heavy park region.
+  oceanBeach: {
+    key: "oceanBeach",
+    label: "Ocean Beach · Surf",
+    x: OCEAN_BEACH_SURF.maxX - 26,
+    z: OCEAN_BEACH_SURF.entryZ,
+    heading: Math.PI / 2, // west into the break
+    mode: "walk",
+    gates: [],
+    bootTileRadius: 700
+  },
   // Main entrance to the Japanese Tea Garden. The authored garden is coupled to
   // the Botanical Garden region so both designed landscapes are ready before a
   // direct-location boot reveals the world.

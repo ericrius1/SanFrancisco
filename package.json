@@ -29,6 +29,8 @@
     "test:golf:terrain": "node --experimental-strip-types tools/golf-terrain-probe.mjs",
     "test:tea-garden": "node --experimental-strip-types tools/tea-garden-probe.mjs",
     "test:car-jump": "node --experimental-strip-types tools/car-jump-physics-probe.mjs",
+    "test:terrain-collision": "node tools/terrain-collision-probe.mjs",
+    "test:terrain-assets": "node tools/terrain-asset-probe.mjs",
     "test:roof-collision": "node tools/roof-collision-probe.mjs",
     "test:roof-visuals": "node tools/citygen-roof-visual-probe.mjs",
     "test:shadows:analysis": "node tools/shadow-temporal-analysis-test.mjs",

@@ -99,6 +99,7 @@ import { Minimap } from "./ui/minimap";
 import { PlayerLocator } from "./ui/playerLocator";
 import { avatarFromSeed, loadSavedAvatar, randomAvatarTraits, saveAvatarTraits } from "./player/avatar";
 import { boardFromSeed, boardVisualKey, loadSavedBoard, randomBoardConfig, saveBoardConfig, setLocalBoardConfig } from "./vehicles/board";
+import { CAR_LANDING_TUNING } from "./vehicles/car";
 import { loadSavedScooter, randomScooterConfig, saveScooterConfig, scooterFromSeed, scooterKey, setLocalScooterConfig } from "./vehicles/scooter";
 import {
   loadSavedSurfboard,
@@ -689,6 +690,40 @@ async function boot() {
   // seed the camera above the local ground — hilltop spawns sit well over y=30
   camera.position.set(spawn.x + 20, map.effectiveGround(spawn.x, spawn.z) + 30, spawn.z + 20);
 
+  // Car physics publishes one stable landing event; presentation consumes each
+  // serial exactly once. The controller stays independent from camera/audio/VFX,
+  // while every authored range remains together under movement > car > landing.
+  let consumedCarLandingSerial = player.driveLandingFeedback.serial;
+  const carLandingPosition = new THREE.Vector3();
+  const consumeCarLandingFeedback = () => {
+    const landing = player.driveLandingFeedback;
+    if (landing.serial === consumedCarLandingSerial) return;
+    consumedCarLandingSerial = landing.serial;
+    const tuning = CAR_LANDING_TUNING.values;
+    if (
+      player.mode !== "drive" ||
+      embodiments.currentAnimal ||
+      !tuning.enabled ||
+      landing.strength <= 0
+    ) return;
+
+    const amount = THREE.MathUtils.clamp(landing.strength, 0, 1);
+    const ranged = (a: number, b: number) =>
+      THREE.MathUtils.lerp(Math.min(a, b), Math.max(a, b), amount);
+    chase.shake(ranged(tuning.shakeMin, tuning.shakeMax));
+    vehicleAudio.carLanding(amount, ranged(tuning.soundMin, tuning.soundMax));
+    carLandingPosition.set(landing.x, landing.y, landing.z);
+    fx.carLandingPuff(
+      carLandingPosition,
+      landing.yaw,
+      amount,
+      Math.round(ranged(tuning.smokeMin, tuning.smokeMax)),
+      ranged(tuning.smokeScaleMin, tuning.smokeScaleMax),
+      tuning.smokeSpread,
+      tuning.smokeLife
+    );
+  };
+
   // free-orbit inspection camera (C toggles); pointer lock is the game default
   const orbit = new CameraControls(camera, renderer.domElement);
   orbit.enabled = false;
@@ -812,7 +847,11 @@ async function boot() {
     embodiments,
     getAvatar: () => avatarTraits
   });
-  const releasePickleballForNavigation = () => pickleballController.releaseForNavigation();
+  const releaseGameplayForNavigation = () => {
+    pickleballController.releaseForNavigation();
+    golf?.abandonForNavigation(hud);
+    archery?.releaseForNavigation(player);
+  };
   const avatarSelector = new AvatarSelector(
     avatarTraits,
     net.name,
@@ -1103,7 +1142,7 @@ async function boot() {
     tiles,
     remotes,
     embodiments,
-    releaseGameplay: releasePickleballForNavigation
+    releaseGameplay: releaseGameplayForNavigation
   });
   const beginPlaceNavigation = (label: string) => navigation.begin(label);
   const finishPlaceNavigation = (label: string) => navigation.finish(label);
@@ -2171,6 +2210,7 @@ async function boot() {
         player.syncMesh(frameDt);
       }
       applyPickleballPlayerPose();
+      consumeCarLandingFeedback();
       const altitude = player.position.y - map.groundHeight(player.position.x, player.position.z);
       highUp = highUp ? altitude > 110 : altitude > 150;
       tiles.update(player.position.x, player.position.z, highUp);
@@ -2364,8 +2404,7 @@ async function boot() {
       sky.applyFogParams();
       sky.invalidateStaticShadows("all");
       pipeline.applyPostFx(); // toggles back off + sliders back to defaults
-      sky.cycleEnabled = SKY_TUNING.values.cycleEnabled;
-      sky.cycleDuration = SKY_TUNING.values.cycleDuration;
+      sky.timeRatePercent = SKY_TUNING.values.timeRatePercent;
       sky.nightBrightness = SKY_TUNING.values.nightBrightness;
       sky.followRealTime(); // default: back to mirroring the real SF clock
       sky.applyFogParams();
@@ -2559,6 +2598,7 @@ async function boot() {
       player.syncMesh(frameDt);
     }
     applyPickleballPlayerPose();
+    consumeCarLandingFeedback();
     const altitude = player.position.y - map.groundHeight(player.position.x, player.position.z);
     highUp = highUp ? altitude > 110 : altitude > 150;
     // Optional park chunks remain unfetched until first approach. Capture the
@@ -2753,9 +2793,21 @@ async function boot() {
     updateSurfPresentation(frameDt);
     waveAudio.update(frameDt, oceanWaveEnergyAt(map, player.position.x, player.position.z, elapsed));
     // Ride ends on the sand: stand up, board in hand (you can only surf in the water).
-    if (player.mode === "surf" && player.surfTelemetry.beached) {
-      player.trySwitch("walk");
-      hud.message("Back on the beach — E to paddle out again", 2.4);
+    // Also end the session if something moved us far from the break (teleport that
+    // bypassed NavigationController, invite link, etc.) so the board never sticks.
+    if (player.mode === "surf") {
+      const b = OCEAN_BEACH_SURF;
+      const farFromBreak =
+        player.position.x < b.minX - 500 ||
+        player.position.x > b.maxX + 500 ||
+        player.position.z < b.minZ - 500 ||
+        player.position.z > b.maxZ + 500;
+      if (player.surfTelemetry.beached) {
+        player.trySwitch("walk");
+        hud.message("Back on the beach — E to paddle out again", 2.4);
+      } else if (farFromBreak) {
+        player.trySwitch("walk");
+      }
     }
     // On foot at Ocean Beach you carry your board, ready to paddle out.
     player.setCarryingBoard(
@@ -2965,7 +3017,7 @@ async function boot() {
       // deferred render warmup runs, tick() early-returns without rendering, so
       // screenshots would capture a stale boot-pose frame no matter what the
       // camera was set to.
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController.game, pickleballAmbient: pickleballController.ambient, pickleballAudio: pickleballController.audio, pickleballUI: pickleballController.ui, pickleballController, coronaHeights, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate,
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController.game, pickleballAmbient: pickleballController.ambient, pickleballAudio: pickleballController.audio, pickleballUI: pickleballController.ui, pickleballController, coronaHeights, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate,
         TSL,
         renderIdle: () => modulesReady && !lateRenderWarmupActive }
     });

@@ -385,13 +385,20 @@ Then, with Blender open and the MCP add-on connected, run `tools/blender_city.py
 ```python
 import sys; sys.path.insert(0, "<repo>/tools")
 import blender_city as bc
-bc.load_data()          # read city.json + heightmap
+bc.load_data()          # read data; apply/version the canonical coastal height process
 bc.build_all_tiles()    # extruded buildings + roads + parks, per 800m tile
-bc.build_terrain()      # DEM mesh chunks with vertex-color surface classes
+bc.build_terrain()      # full-8m DEM chunks, shared smooth normals + hard skirts
 bc.build_water()        # flat WATER_bay marker plane (replaced by the shader at runtime)
 bc.build_landmarks()    # baseline procedural landmark set
 bc.export_all()         # -> public/tiles/*.glb
 ```
+
+For a terrain-only rebake, call `bc.build_terrain(); bc.export_terrain()`, then
+run `npm run optimize:tiles`. The first bake after `prepare:city` commits the
+versioned coastal relaxation back into `heightmap.bin`; Blender immediately
+re-decodes that quantized result, so visual vertices and runtime collision share
+one height authority. `npm run test:terrain-assets` audits all 25 GLBs for full
+8 m coverage, height parity, normal sharing, and cross-chunk normal continuity.
 
 `sanfrancisco.blend` is the editable master after the baseline bake. The Palace
 of Fine Arts and Sutro Tower are authored meshes in their geographic tile
@@ -481,7 +488,7 @@ whole city, and ~25x less for a dense downtown tile**:
 | --- | --- | --- | --- |
 | Whole city (232 tiles) | ~474 MB | ~61 MB | ~27 MB |
 | `tile_4_14.glb` (dense downtown) | 16.6 MB | 1.65 MB | 0.59 MB |
-| `terrain_0_0.glb` (DEM chunk) | 19.8 MB | 2.27 MB | 0.81 MB |
+| `terrain_0_0.glb` (full-8m smooth DEM chunk) | 9.78 MB | 0.98 MB | 0.38 MB |
 
 The right-hand column is the number the player feels. Streaming the tiles around
 you pulls tens of megabytes instead of hundreds, so tiles pop in fast enough to

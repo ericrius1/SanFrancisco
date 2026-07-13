@@ -410,9 +410,11 @@ export class Player {
     this.#spawnBody(mode, facing);
   }
 
+  /** Landmark teleport landing — always on foot. Callers should exitToWalk first
+   *  so surf/vehicles leave an abandoned mount and fire mode-change cleanup. */
   respawn(spawn: { x: number; z: number; heading: number }) {
     this.position.set(spawn.x, this.map.effectiveGround(spawn.x, spawn.z) + 1.5, spawn.z);
-    this.#spawnBody(this.mode === "boat" ? "walk" : this.mode, spawn.heading);
+    this.#spawnBody("walk", spawn.heading);
   }
 
   /**
@@ -572,6 +574,11 @@ export class Player {
   /** Air/landing state for probes and the window.__sf diagnostics surface. */
   get driveJumpState() {
     return this.#modes.drive.jumpDebug;
+  }
+
+  /** One-shot landing telemetry; main owns the camera/audio/VFX consumers. */
+  get driveLandingFeedback() {
+    return this.#modes.drive.landingFeedback;
   }
 
   get scooterJumpState() {

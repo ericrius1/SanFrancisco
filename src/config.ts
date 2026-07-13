@@ -207,10 +207,10 @@ export const GRASS_TUNING = tunables("grass", {
  * Where and how a fresh session starts. Editable in the Tab panel (persisted);
  */
 export const START_DEFAULTS = {
-  // Corona Heights summit — a code spawn (src/world/spawnPoints.ts), not a baked
-  // meta.json one. Scenic and cheap to boot: it gates no heavy foliage region.
-  spawn: "coronaHeights",
-  mode: "board" as PlayerMode
+  // Ocean Beach surf pin — a code spawn (src/world/spawnPoints.ts). Sand at the
+  // waterline facing the swell; board underarm, ready to paddle out.
+  spawn: "oceanBeach",
+  mode: "walk" as PlayerMode
 }
 
 export const START = {

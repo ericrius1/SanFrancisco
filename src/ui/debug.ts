@@ -207,7 +207,6 @@ export class DebugPanel {
       this.#syncingFromSky = true;
       this.#lightingView.timeOfDay = this.#sky.timeOfDay;
       this.#lightingView.realTime = this.#sky.realTime;
-      this.#lightingView.cycleEnabled = this.#sky.cycleEnabled;
       this.#lightingView.nightBrightness = this.#sky.nightBrightness;
     }
     this.#syncingPane = true;
@@ -245,8 +244,7 @@ export class DebugPanel {
       this.#syncingFromSky = true;
       this.#lightingView.timeOfDay = this.#sky.timeOfDay;
       this.#lightingView.realTime = this.#sky.realTime;
-      this.#lightingView.cycleEnabled = this.#sky.cycleEnabled;
-      this.#lightingView.cycleDuration = this.#sky.cycleDuration;
+      this.#lightingView.timeRatePercent = this.#sky.timeRatePercent;
       this.#lightingView.nightBrightness = this.#sky.nightBrightness;
     }
     try {
@@ -388,8 +386,7 @@ export class DebugPanel {
     const lightingView = {
       timeOfDay: this.#sky.timeOfDay,
       realTime: this.#sky.realTime,
-      cycleEnabled: this.#sky.cycleEnabled,
-      cycleDuration: this.#sky.cycleDuration,
+      timeRatePercent: this.#sky.timeRatePercent,
       nightBrightness: this.#sky.nightBrightness
     };
     this.#lightingView = lightingView;
@@ -400,38 +397,25 @@ export class DebugPanel {
         lightingView.realTime = false;
         SKY_TUNING.values.realTime = false;
         saveTweak("sky.realTime", false);
+        // keep the day cycle running so unchecking real-time (via scrub) still
+        // advances; demos/probes that need a freeze set cycleEnabled=false
+        this.#sky.cycleEnabled = true;
         this.#refreshLightingBindings();
         return;
       }
       if (key === "realTime") {
         if (value) {
           this.#sky.followRealTime();
-          // real-time mode wins over the demo cycle — keep the pane honest
-          this.#sky.cycleEnabled = false;
-          lightingView.cycleEnabled = false;
-          SKY_TUNING.values.cycleEnabled = false;
-          saveTweak("sky.cycleEnabled", false);
         } else {
+          // unchecking real SF time starts the local day cycle at the slider %
           this.#sky.realTime = false;
+          this.#sky.cycleEnabled = true;
         }
         this.#refreshLightingBindings();
         return;
       }
-      if (key === "cycleEnabled") {
-        this.#sky.cycleEnabled = value as boolean;
-        if (value) {
-          // cycle can't run while tracking real time — drop it immediately so
-          // the next refresh doesn't snap the checkbox back off
-          this.#sky.realTime = false;
-          lightingView.realTime = false;
-          SKY_TUNING.values.realTime = false;
-          saveTweak("sky.realTime", false);
-        }
-        this.#refreshLightingBindings();
-        return;
-      }
-      if (key === "cycleDuration") {
-        this.#sky.cycleDuration = value as number;
+      if (key === "timeRatePercent") {
+        this.#sky.timeRatePercent = value as number;
         return;
       }
       if (key === "nightBrightness") {
@@ -441,7 +425,7 @@ export class DebugPanel {
     };
     this.#lightingBindings = SKY_TUNING.bind(meta, {
       target: lightingView,
-      keys: ["timeOfDay", "realTime", "cycleEnabled", "cycleDuration", "nightBrightness"],
+      keys: ["timeOfDay", "realTime", "timeRatePercent", "nightBrightness"],
       onChange: onSkyChange
     });
 

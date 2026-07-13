@@ -53,22 +53,32 @@ export { sanFranciscoTimeOfDay }
 // The default sky follows the real SF clock (see sanFranciscoTimeOfDay / followRealTime).
 export const PRE_SUNSET_TIME = 15.48
 
+/** Wall-clock seconds in a real 24h day — the 100% reference for timeRatePercent. */
+export const REAL_DAY_SECONDS = 24 * 60 * 60
+
+/** Real seconds for one in-game 24h lap at `percent` of real time (0 → frozen). */
+export function cycleDurationFromPercent(percent: number): number {
+  return REAL_DAY_SECONDS * (Math.max(0, percent) / 100)
+}
+
 // Day/night cycle tuning, bound in the "/" panel's lighting folder (persisted).
 // timeOfDay: hours 0..24 on the current SF calendar date — the sun follows the
 // real astronomical path for that day (seasonal elevation + azimuth), not a
-// stylized arc. cycleDuration: real seconds for a full 24h lap.
+// stylized arc. timeRatePercent: when not following real SF time, how long one
+// in-game day takes as a % of a real 24h (slider capped at 10% for fine control
+// of short cycles; 100% ≡ real time is the "follow real SF time" checkbox).
 export const SKY_TUNING = tunables("sky", {
   timeOfDay: { v: 18.48, min: 0, max: 24, step: 0.01, label: "time of day" },
   // default: mirror the real SF wall clock. Scrubbing (Z), dragging the time
-  // slider, or turning on the cycle drops this off — a personal, local override.
+  // slider, or unchecking this starts the local day cycle — personal override.
   realTime: { v: true, label: "follow real SF time" },
-  cycleEnabled: { v: false, label: "fast day/night cycle" },
-  cycleDuration: {
-    v: 1500,
-    min: 30,
-    max: 2800,
-    step: 1,
-    label: "day length (s)"
+  timeRatePercent: {
+    v: 2,
+    min: 0,
+    max: 10,
+    step: 0.05,
+    label: "% of real time",
+    format: (v: number) => `${v.toFixed(2)}%`
   },
   // scales the low-sun/night fill (moon key, hemi fill, sky/IBL night palette,
   // moon disc) so full dark and late twilight stay readable; 1 = authored look
@@ -183,8 +193,8 @@ const FOG_NIGHT_LIGHT = 0.12 // moonlit bank without a daylight-white night seam
  *
  * The sun follows the real astronomical path for San Francisco (lat/lon + current
  * civil date), so noon elevation and sunset bearing shift with the seasons.
- * `cycleEnabled`/`cycleDuration` scrub hours on today's SF date; `setTimeOfDay`
- * jumps the hour directly.
+ * When not following real SF time, `cycleEnabled`/`timeRatePercent` scrub hours
+ * on today's SF date; `setTimeOfDay` jumps the hour directly.
  */
 export class Sky {
   mesh: THREE.Mesh
@@ -196,11 +206,15 @@ export class Sky {
   /** Compass degrees clockwise from north (0=N, 90=E, 180=S, 270=W). */
   sunAzimuth = 0
   // When set, the sky tracks the real SF wall clock every frame (the default).
-  // A manual override (scrub / setTimeOfDay / enabling the cycle) clears it, and
+  // A manual override (scrub / setTimeOfDay / unchecking real-time) clears it, and
   // only affects this player — time of day is never sent over the network.
   realTime: boolean = SKY_TUNING.values.realTime
-  cycleEnabled: boolean = SKY_TUNING.values.cycleEnabled // fast demo cycle; off unless opted in
-  cycleDuration = SKY_TUNING.values.cycleDuration
+  // Programmatic pause for demos/probes/Z-scrub — not a panel toggle. When the
+  // player unchecks "follow real SF time", the panel turns this on so the day
+  // advances at timeRatePercent.
+  cycleEnabled = !SKY_TUNING.values.realTime
+  /** In-game day length as % of a real 24h (0 = freeze). Panel range is 0..10. */
+  timeRatePercent = SKY_TUNING.values.timeRatePercent
 
   #sunVec = new THREE.Vector3() // true sun direction (may point below the horizon)
   // Calendar day the scrubbed/cycled hour is evaluated against. Real-time mode
@@ -302,9 +316,9 @@ export class Sky {
     scene.fogNode = this.#fogNode
     this.applyFogParams()
 
-    // Prefer a persisted fast cycle over the wall clock; otherwise mirror SF time.
-    if (this.cycleEnabled) this.realTime = false
-    else this.followRealTime()
+    // Prefer a persisted local override over the wall clock; otherwise mirror SF time.
+    if (this.realTime) this.followRealTime()
+    else this.cycleEnabled = true
   }
 
   /**
@@ -637,7 +651,7 @@ export class Sky {
   }
 
   /** Pin a fixed hour on today's SF calendar date. Stops tracking the real
-   *  SF clock (the fast cycle keeps running only if it was already on). */
+   *  SF clock (the day cycle keeps running only if it was already on). */
   setTimeOfDay(hours: number) {
     this.realTime = false
     this.timeOfDay = ((hours % 24) + 24) % 24
@@ -648,6 +662,7 @@ export class Sky {
    *  the default sky. Wherever the player is, the game reads the SF wall clock. */
   followRealTime() {
     this.realTime = true
+    this.cycleEnabled = false
     const now = sanFranciscoCivilNow()
     this.#civilDate = { year: now.year, month: now.month, day: now.day }
     this.timeOfDay = now.hour
@@ -760,9 +775,9 @@ export class Sky {
       this.#civilDate = { year: now.year, month: now.month, day: now.day }
       this.timeOfDay = now.hour
       this.#applySun() // the analytic env reads #uSun, so the IBL tracks for free
-    } else if (this.cycleEnabled && dt > 0) {
-      this.timeOfDay =
-        (this.timeOfDay + (dt / Math.max(this.cycleDuration, 5)) * 24) % 24
+    } else if (this.cycleEnabled && this.timeRatePercent > 0 && dt > 0) {
+      const duration = cycleDurationFromPercent(this.timeRatePercent)
+      this.timeOfDay = (this.timeOfDay + (dt / duration) * 24) % 24
       this.#applySun()
     }
 

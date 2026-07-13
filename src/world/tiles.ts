@@ -467,21 +467,24 @@ export class TileStreamer {
         console.warn("[shadows] landmark proxy unavailable — retaining beauty FAR casters", err);
       });
 
-    // Pre-compute the world-space centre of each 5×5 terrain chunk so
-    // update() can distance-cull them without parsing tile names each frame.
-    // The 5×5 grid evenly partitions the map AABB from meta.grid.
-    const TERRAIN_GRID = 5;
+    // Pre-compute the real world-space centre of each Blender terrain chunk so
+    // update() can distance-cull it without parsing tile names each frame. The
+    // final row/column are narrower than 3.2 km; treating the 5×5 set as an even
+    // partition displaced their centres by up to hundreds of metres.
+    const TERRAIN_CHUNK = 3200; // must match tools/blender_city.py
     const { minX: gMinX, minZ: gMinZ, width: gW, height: gH, cellSize } = map.meta.grid;
-    const terrWorldW = gW * cellSize;
-    const terrWorldH = gH * cellSize;
-    const chunkW = terrWorldW / TERRAIN_GRID;
-    const chunkH = terrWorldH / TERRAIN_GRID;
-    for (let tcx = 0; tcx < TERRAIN_GRID; tcx++) {
-      for (let tcz = 0; tcz < TERRAIN_GRID; tcz++) {
+    const terrWorldW = (gW - 1) * cellSize;
+    const terrWorldH = (gH - 1) * cellSize;
+    const terrainX = Math.ceil(terrWorldW / TERRAIN_CHUNK);
+    const terrainZ = Math.ceil(terrWorldH / TERRAIN_CHUNK);
+    for (let tcx = 0; tcx < terrainX; tcx++) {
+      for (let tcz = 0; tcz < terrainZ; tcz++) {
+        const chunkW = Math.min(TERRAIN_CHUNK, terrWorldW - tcx * TERRAIN_CHUNK);
+        const chunkH = Math.min(TERRAIN_CHUNK, terrWorldH - tcz * TERRAIN_CHUNK);
         this.#terrainEntries.push({
           name: `terrain_${tcx}_${tcz}`,
-          cx: gMinX + (tcx + 0.5) * chunkW,
-          cz: gMinZ + (tcz + 0.5) * chunkH
+          cx: gMinX + tcx * TERRAIN_CHUNK + chunkW * 0.5,
+          cz: gMinZ + tcz * TERRAIN_CHUNK + chunkH * 0.5
         });
       }
     }
