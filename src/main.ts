@@ -37,6 +37,8 @@ import {
   isTeaGardenBuilding
 } from "./world/japaneseTeaGarden/layout";
 import { CoronaHeightsPark, prepareCoronaHeightsGround } from "./world/coronaHeights";
+import type { MissionDoloresMuseum } from "./world/missionDolores";
+import { MD_CENTER as MISSION_DOLORES_CENTER } from "./world/missionDolores/layout";
 import { OceanBeachWaves, SurfExperience } from "./gameplay/surfing";
 import { findOpenSpawn } from "./world/spawn";
 import { resolveSpawnPoint, type RegionKey } from "./world/spawnPoints";
@@ -114,6 +116,7 @@ import {
 import { MENU_MODES, ModeDiscovery, ALL_MODES } from "./player/discovery";
 import { BootScreen } from "./app/bootScreen";
 import { createRenderCore } from "./app/renderCore";
+import { initTextures } from "./render/textures";
 import { createBuskersSystem } from "./app/systems/buskers";
 import { createSessionPersistence } from "./app/sessionPersistence";
 import { startFrameDriver } from "./app/frameDriver";
@@ -139,6 +142,7 @@ async function boot() {
 
   progress(18, "waking the gpu");
   const { renderer, scene, camera } = await createRenderCore(app);
+  initTextures(renderer); // wire the KTX2 transcoder now that the renderer is initialized
   bootMark("gpu");
 
   const farOcclusion = new FarOcclusionField(map);
@@ -520,6 +524,34 @@ async function boot() {
   // first tick wakes any the player already stands in.
   const siteGate = createSiteGate();
   let coronaHeights: CoronaHeightsPark | null = null;
+  let missionDolores: MissionDoloresMuseum | null = null;
+  let missionDoloresLoading: Promise<void> | null = null;
+  let museumBookOpen = false;
+  const ensureMissionDolores = (playerPos: THREE.Vector3): void => {
+    if (missionDolores || missionDoloresLoading) return;
+    const dx = playerPos.x - MISSION_DOLORES_CENTER.x;
+    const dz = playerPos.z - MISSION_DOLORES_CENTER.z;
+    if (dx * dx + dz * dz > 190 * 190) return;
+    missionDoloresLoading = import("./world/missionDolores")
+      .then(({ createMissionDoloresMuseum }) => {
+        missionDolores = createMissionDoloresMuseum(map, physics, {
+          scene,
+          renderer,
+          camera,
+          onBookToggle: (open) => {
+            museumBookOpen = open;
+            app.classList.toggle("world-dimmed", open);
+            input.suspended = open || cameraMode;
+            if (open) input.releaseLock();
+          }
+        });
+        const debug = (window as unknown as { __sf?: { missionDolores: MissionDoloresMuseum | null } }).__sf;
+        if (debug) debug.missionDolores = missionDolores;
+      })
+      .catch((err) => {
+        console.warn("[boot] Mission Dolores museum unavailable:", err);
+      });
+  };
   const gardenDisplacer: GroundDisplacer = { x: 0, z: 0, radius: 1.6, strength: 1 };
   const gardenDisplacers = [gardenDisplacer];
   // Master foliage switch (bound at the top of the "/" panel). When off, every
@@ -654,6 +686,9 @@ async function boot() {
   } catch (err) {
     console.warn("[boot] corona heights unavailable:", err);
   }
+  // Mission San Francisco de Asís is a first-use region. Its module, hidden
+  // reader UI, procedural shell, exhibits, and art all stay out of clean boot;
+  // ensureMissionDolores() crosses the code gate only on physical approach.
   // Fetch-the-ball loop: hold-to-throw (ball + overhand windup start immediately;
   // release before 1s stows, hold longer for power). Walk up and press E to pick
   // one up, or take it from a waiting dog. A free dog in the Corona Heights park
@@ -1194,6 +1229,12 @@ async function boot() {
         (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement) &&
         !chat.focused
       ) {
+        return;
+      }
+      if (missionDolores?.bookOpen) {
+        missionDolores.closeBook();
+        e.preventDefault();
+        e.stopImmediatePropagation();
         return;
       }
       if (behindTheScenes?.isOpen) {
@@ -2113,7 +2154,10 @@ async function boot() {
     // render. The canvas keeps its last frame (dimmed via CSS) so nothing
     // flickers behind the modal; the panel's own diagrams animate on their own
     // rAF, independent of this loop. Resumes cleanly the frame it's closed.
-    if (btsReading) {
+    // Behind-the-scenes and the Canticle book both freeze the world completely —
+    // no sim, no render; the canvas keeps its last frame (dimmed via CSS) behind
+    // the DOM overlay, whose own animation runs on its own rAF.
+    if (btsReading || museumBookOpen) {
       input.endFrame();
       return;
     }
@@ -2296,7 +2340,7 @@ async function boot() {
       // stuck in the previous indoor/outdoor mode.
       citygenRing.current?.update(player.position, frameDt);
       if (cameraMode) { chase.suspend(player); orbit.update(frameDt); }
-      else { chase.indoor = citygenRing.current?.isPlayerInside() ?? false; chase.update(frameDt, player, input); }
+      else { chase.indoor = (citygenRing.current?.isPlayerInside() ?? false) || (missionDolores?.isPlayerInside(player.position) ?? false); chase.update(frameDt, player, input); }
       // keep the vehicle hum, ambience and social presence alive like full pause
       vehicleAudio.update(frameDt, {
         mode: player.mode,
@@ -2407,7 +2451,8 @@ async function boot() {
       input.pressed("KeyE") &&
       !exitToWalk() &&
       !golf?.tryStartAtTee(player, hud) &&
-      !archery?.tryInteract(player, hud, chase)
+      !archery?.tryInteract(player, hud, chase) &&
+      !missionDolores?.tryInteract(player.position, player.mode, hud)
     ) {
       const nearOceanBeach =
         player.mode === "walk" &&
@@ -2798,6 +2843,9 @@ async function boot() {
     archery?.update(frameDt, elapsed, { player, input, hud, chase, camera });
     // Goldman clubhouse NPCs: one-hypot early return when far — safe every frame
     goldenGateTennis?.update(frameDt, elapsed, player.position);
+    // Mission Dolores: dynamic code gate first, then shell/art proximity gates.
+    ensureMissionDolores(player.position);
+    missionDolores?.update(frameDt, elapsed, player.position, player.mode, hud);
 
     // "hop in" nudge when standing near a ride (friend → wildlife)
     if (player.mode === "walk" && embodiments.passengerOf === null) {
@@ -2847,7 +2895,7 @@ async function boot() {
       chase.suspend(player);
       orbit.update(frameDt);
     } else {
-      chase.indoor = citygenRing.current?.isPlayerInside() ?? false; // blend into the indoor eye rig
+      chase.indoor = (citygenRing.current?.isPlayerInside() ?? false) || (missionDolores?.isPlayerInside(player.position) ?? false); // blend into the indoor eye rig
       chase.update(frameDt, player, input);
     }
     // World-anchored dialogue must project after the chase/orbit/cinematic has
@@ -3106,7 +3154,7 @@ async function boot() {
       // deferred render warmup runs, tick() early-returns without rendering, so
       // screenshots would capture a stale boot-pose frame no matter what the
       // camera was set to.
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController.game, pickleballAmbient: pickleballController.ambient, pickleballAudio: pickleballController.audio, pickleballUI: pickleballController.ui, pickleballController, coronaHeights, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate,
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController.game, pickleballAmbient: pickleballController.ambient, pickleballAudio: pickleballController.audio, pickleballUI: pickleballController.ui, pickleballController, coronaHeights, missionDolores, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate,
         TSL,
         renderIdle: () => modulesReady && !lateRenderWarmupActive }
     });

@@ -9,6 +9,9 @@
 
 import type { PlayerMode } from "../player/types";
 import { OCEAN_BEACH_SURF } from "./oceanBeachWaves";
+import { mdToWorldXZ, Z_ENTRANCE } from "./missionDolores/layout";
+
+const MISSION_DOLORES_ENTRY = mdToWorldXZ(0, Z_ENTRANCE - 8);
 
 /** Heavy park regions built lazily off the boot path (own Vite chunks). A spawn
  * either GATES a region (built before reveal) or lets it stream in after. */
@@ -42,6 +45,19 @@ export type SpawnPoint = {
 };
 
 export const SPAWN_POINTS: Record<string, SpawnPoint> = {
+  // Exterior forecourt, eight metres before the open west doors. The museum's
+  // dynamic proximity gate wakes immediately, while the player begins on real
+  // park ground and walks naturally into the raised sanctuary floor.
+  missionDolores: {
+    key: "missionDolores",
+    label: "Mission Dolores · Saint Francis",
+    x: MISSION_DOLORES_ENTRY.x,
+    z: MISSION_DOLORES_ENTRY.z,
+    heading: Math.PI, // local +z, through the portal toward the apse
+    mode: "walk",
+    gates: [],
+    bootTileRadius: 700
+  },
   // Ocean Beach surf pin — same sand spot as the map landmark (just inside the
   // waterline, facing the swell). Arrive on foot with the board underarm, ready
   // to press E and paddle out. Far from every heavy park region.
