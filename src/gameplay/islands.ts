@@ -93,6 +93,7 @@ export class Islands {
     scene: THREE.Scene;
     prepare?: (group: THREE.Group) => Promise<void>;
   } | null = null;
+  #foliageFocus = { x: 0, z: 0 };
 
   constructor(physics: Physics, map: WorldMap, scene: THREE.Scene) {
     const bodyMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85 });
@@ -178,7 +179,7 @@ export class Islands {
 
   /**
    * Load island trees after the world is revealed. The dynamic boundary keeps
-   * SeedForest and tree generation out of clean boot while still routing these
+   * NativeTreeForest and tree generation out of clean boot while still routing these
    * far-flung landmarks through the one shared tree runtime.
    */
   loadVegetation(
@@ -193,14 +194,14 @@ export class Islands {
           {
             id: "island-pine",
             design: {
-              species: "pine",
+              species: "monterey-cypress",
               seed: 811,
               controls: {
                 height: 8,
-                branchDensity: 26,
-                leavesPerBranch: 18,
-                leafColorize: 0x4c8247,
-                leafTintAmount: 0.54
+                crownDensity: 0.9,
+                crownWidth: 0.8,
+                foliageColor: 0x4c8247,
+                foliageTint: 0x77a85c
               },
               sink: 0.18
             }
@@ -208,12 +209,15 @@ export class Islands {
           {
             id: "island-maple",
             design: {
-              species: "redMaple",
+              species: "japanese-maple",
               seed: 823,
               controls: {
                 height: 7.5,
-                leafColorize: 0x5f914c,
-                leafTintAmount: 0.58
+                crownDensity: 1.05,
+                crownWidth: 0.78,
+                foliageColor: 0x5f914c,
+                foliageTint: 0x91b969,
+                leafColorVariant: null
               },
               sink: 0.16
             }
@@ -231,6 +235,7 @@ export class Islands {
       );
       this.#treePatch = patch;
       await patch.ready;
+      patch.update(this.#foliageFocus);
       // Compile while detached but visible: Three skips visible=false roots.
       // Attach only after preparation so no live frame sees an uncompiled tree.
       if (prepare) await prepare(patch.group);
@@ -256,6 +261,10 @@ export class Islands {
   }
 
   update(elapsed: number, focus?: { x: number; z: number }) {
+    if (focus) {
+      this.#foliageFocus.x = focus.x;
+      this.#foliageFocus.z = focus.z;
+    }
     if (focus && this.#foliageVisible && this.#foliageArm && !this.#foliageLoad) {
       const nearIsland = this.#islands.some((island) =>
         Math.hypot(focus.x - island.x, focus.z - island.z) < 1550

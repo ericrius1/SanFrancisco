@@ -20,7 +20,7 @@ const OFFSETS: Record<PlayerMode, { back: number; up: number; look: number }> =
     speedboat: { back: 11, up: 3.6, look: 0.7 },
     drone: { back: 7, up: 1.9, look: 0.4 },
     board: { back: 7.5, up: 2.6, look: 1.3 },
-    surf: { back: 9.8, up: 3.15, look: 1.15 },
+    surf: { back: 9.2, up: 1.65, look: 2.6 },
     bird: { back: 15, up: 3.1, look: 0.55 }
   }
 

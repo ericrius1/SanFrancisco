@@ -124,7 +124,7 @@ await rm(profile, { recursive: true, force: true });
 const viteBin = path.join(ROOT, "node_modules", "vite", "bin", "vite.js");
 const vite = spawn(process.execPath, [viteBin, "--host", "127.0.0.1", "--port", String(vitePort)], {
   cwd: ROOT,
-  env: { ...process.env, SF_HMR: "1", SF_RELAY_PORT: String(relayPort) },
+  env: { ...process.env, SF_HMR: "1", SF_FULL_RELOAD: "1", SF_RELAY_PORT: String(relayPort) },
   stdio: ["ignore", "pipe", "pipe"]
 });
 const viteOutput = [];

@@ -1,3 +1,5 @@
+// Soft-HMR guard must register before any other import.meta.hot listeners.
+import { suppressesFullReload } from "./app/hmr/suppressFullReload";
 import * as THREE from "three/webgpu";
 import * as TSL from "three/tsl";
 import CameraControls from "camera-controls";
@@ -35,10 +37,13 @@ import {
   isTeaGardenBuilding
 } from "./world/japaneseTeaGarden/layout";
 import { CoronaHeightsPark, prepareCoronaHeightsGround } from "./world/coronaHeights";
+import type { MissionDoloresMuseum } from "./world/missionDolores";
+import { MD_CENTER as MISSION_DOLORES_CENTER } from "./world/missionDolores/layout";
 import { OceanBeachWaves, SurfExperience } from "./gameplay/surfing";
 import { findOpenSpawn } from "./world/spawn";
 import { resolveSpawnPoint, type RegionKey } from "./world/spawnPoints";
-import { nearAnyWildRegion } from "./world/wildlands/layout";
+import { WILD_REGIONS } from "./world/wildlands/regions";
+import { BUENA_VISTA_REGION } from "./world/buenaVista";
 import { Player } from "./player/player";
 import type { PlayerMode } from "./player/types";
 import { ChaseCamera } from "./core/camera";
@@ -97,6 +102,7 @@ import { Minimap } from "./ui/minimap";
 import { PlayerLocator } from "./ui/playerLocator";
 import { avatarFromSeed, loadSavedAvatar, randomAvatarTraits, saveAvatarTraits } from "./player/avatar";
 import { boardFromSeed, boardVisualKey, loadSavedBoard, randomBoardConfig, saveBoardConfig, setLocalBoardConfig } from "./vehicles/board";
+import { CAR_LANDING_TUNING } from "./vehicles/car";
 import { loadSavedScooter, randomScooterConfig, saveScooterConfig, scooterFromSeed, scooterKey, setLocalScooterConfig } from "./vehicles/scooter";
 import {
   loadSavedSurfboard,
@@ -110,6 +116,7 @@ import {
 import { MENU_MODES, ModeDiscovery, ALL_MODES } from "./player/discovery";
 import { BootScreen } from "./app/bootScreen";
 import { createRenderCore } from "./app/renderCore";
+import { initTextures } from "./render/textures";
 import { createBuskersSystem } from "./app/systems/buskers";
 import { createSessionPersistence } from "./app/sessionPersistence";
 import { startFrameDriver } from "./app/frameDriver";
@@ -135,6 +142,7 @@ async function boot() {
 
   progress(18, "waking the gpu");
   const { renderer, scene, camera } = await createRenderCore(app);
+  initTextures(renderer); // wire the KTX2 transcoder now that the renderer is initialized
   bootMark("gpu");
 
   const farOcclusion = new FarOcclusionField(map);
@@ -499,10 +507,16 @@ async function boot() {
     grass: { refresh: () => void };
     update: (pos: THREE.Vector3, cam: THREE.Vector3) => void;
   } | null = null;
+  let buenaVistaTrees: {
+    group: THREE.Group;
+    ready: Promise<void>;
+    update: (focus: { x: number; z: number }) => void;
+  } | null = null;
   let goldenGateTennis: ReturnType<typeof createGoldenGateTennisSite> | null = null;
   let japaneseTeaGarden: import("./world/japaneseTeaGarden").JapaneseTeaGarden | null = null;
   let wakeDeferredGarden: (() => void) | null = null;
   let wakeDeferredTeaGarden: (() => void) | null = null;
+  let wakeDeferredBuenaVistaTrees: (() => void) | null = null;
   let wakeDeferredWildlandsGolf: (() => void) | null = null;
   // Universal minigame site gate: each located game (pickleball, golf, soon
   // archery) registers a footprint + pads; one cheap update per tick flips
@@ -510,6 +524,34 @@ async function boot() {
   // first tick wakes any the player already stands in.
   const siteGate = createSiteGate();
   let coronaHeights: CoronaHeightsPark | null = null;
+  let missionDolores: MissionDoloresMuseum | null = null;
+  let missionDoloresLoading: Promise<void> | null = null;
+  let museumBookOpen = false;
+  const ensureMissionDolores = (playerPos: THREE.Vector3): void => {
+    if (missionDolores || missionDoloresLoading) return;
+    const dx = playerPos.x - MISSION_DOLORES_CENTER.x;
+    const dz = playerPos.z - MISSION_DOLORES_CENTER.z;
+    if (dx * dx + dz * dz > 190 * 190) return;
+    missionDoloresLoading = import("./world/missionDolores")
+      .then(({ createMissionDoloresMuseum }) => {
+        missionDolores = createMissionDoloresMuseum(map, physics, {
+          scene,
+          renderer,
+          camera,
+          onBookToggle: (open) => {
+            museumBookOpen = open;
+            app.classList.toggle("world-dimmed", open);
+            input.suspended = open || cameraMode;
+            if (open) input.releaseLock();
+          }
+        });
+        const debug = (window as unknown as { __sf?: { missionDolores: MissionDoloresMuseum | null } }).__sf;
+        if (debug) debug.missionDolores = missionDolores;
+      })
+      .catch((err) => {
+        console.warn("[boot] Mission Dolores museum unavailable:", err);
+      });
+  };
   const gardenDisplacer: GroundDisplacer = { x: 0, z: 0, radius: 1.6, strength: 1 };
   const gardenDisplacers = [gardenDisplacer];
   // Master foliage switch (bound at the top of the "/" panel). When off, every
@@ -520,6 +562,7 @@ async function boot() {
     foliageOn = visible;
     garden?.setVisible(visible, player.position);
     if (wildlands) for (const g of wildlands.groups) g.visible = visible;
+    if (buenaVistaTrees) buenaVistaTrees.group.visible = visible;
     goldenGateTennis?.setFoliageVisible(visible);
     japaneseTeaGarden?.setFoliageVisible(visible);
     coronaHeights?.setFoliageVisible(visible);
@@ -631,11 +674,21 @@ async function boot() {
   }
   try {
     coronaHeights = new CoronaHeightsPark(map, physics);
+    coronaHeights.prepareFoliage = async (group) => {
+      try {
+        await renderer.compileAsync(group, camera, scene);
+      } catch (err) {
+        console.warn("[corona heights] deferred foliage compile failed:", err);
+      }
+    };
     coronaHeights.setFoliageVisible(foliageOn);
     scene.add(coronaHeights.group);
   } catch (err) {
     console.warn("[boot] corona heights unavailable:", err);
   }
+  // Mission San Francisco de Asís is a first-use region. Its module, hidden
+  // reader UI, procedural shell, exhibits, and art all stay out of clean boot;
+  // ensureMissionDolores() crosses the code gate only on physical approach.
   // Fetch-the-ball loop: hold-to-throw (ball + overhand windup start immediately;
   // release before 1s stows, hold longer for power). Walk up and press E to pick
   // one up, or take it from a waiting dog. A free dog in the Corona Heights park
@@ -679,6 +732,40 @@ async function boot() {
   chase.yaw = spawn.heading; // behind the player, looking the way they face (spawn.heading is raw facing)
   // seed the camera above the local ground — hilltop spawns sit well over y=30
   camera.position.set(spawn.x + 20, map.effectiveGround(spawn.x, spawn.z) + 30, spawn.z + 20);
+
+  // Car physics publishes one stable landing event; presentation consumes each
+  // serial exactly once. The controller stays independent from camera/audio/VFX,
+  // while every authored range remains together under movement > car > landing.
+  let consumedCarLandingSerial = player.driveLandingFeedback.serial;
+  const carLandingPosition = new THREE.Vector3();
+  const consumeCarLandingFeedback = () => {
+    const landing = player.driveLandingFeedback;
+    if (landing.serial === consumedCarLandingSerial) return;
+    consumedCarLandingSerial = landing.serial;
+    const tuning = CAR_LANDING_TUNING.values;
+    if (
+      player.mode !== "drive" ||
+      embodiments.currentAnimal ||
+      !tuning.enabled ||
+      landing.strength <= 0
+    ) return;
+
+    const amount = THREE.MathUtils.clamp(landing.strength, 0, 1);
+    const ranged = (a: number, b: number) =>
+      THREE.MathUtils.lerp(Math.min(a, b), Math.max(a, b), amount);
+    chase.shake(ranged(tuning.shakeMin, tuning.shakeMax));
+    vehicleAudio.carLanding(amount, ranged(tuning.soundMin, tuning.soundMax));
+    carLandingPosition.set(landing.x, landing.y, landing.z);
+    fx.carLandingPuff(
+      carLandingPosition,
+      landing.yaw,
+      amount,
+      Math.round(ranged(tuning.smokeMin, tuning.smokeMax)),
+      ranged(tuning.smokeScaleMin, tuning.smokeScaleMax),
+      tuning.smokeSpread,
+      tuning.smokeLife
+    );
+  };
 
   // free-orbit inspection camera (C toggles); pointer lock is the game default
   const orbit = new CameraControls(camera, renderer.domElement);
@@ -803,7 +890,11 @@ async function boot() {
     embodiments,
     getAvatar: () => avatarTraits
   });
-  const releasePickleballForNavigation = () => pickleballController.releaseForNavigation();
+  const releaseGameplayForNavigation = () => {
+    pickleballController.releaseForNavigation();
+    golf?.abandonForNavigation(hud);
+    archery?.releaseForNavigation(player);
+  };
   const avatarSelector = new AvatarSelector(
     avatarTraits,
     net.name,
@@ -1094,7 +1185,7 @@ async function boot() {
     tiles,
     remotes,
     embodiments,
-    releaseGameplay: releasePickleballForNavigation
+    releaseGameplay: releaseGameplayForNavigation
   });
   const beginPlaceNavigation = (label: string) => navigation.begin(label);
   const finishPlaceNavigation = (label: string) => navigation.finish(label);
@@ -1138,6 +1229,12 @@ async function boot() {
         (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement) &&
         !chat.focused
       ) {
+        return;
+      }
+      if (missionDolores?.bookOpen) {
+        missionDolores.closeBook();
+        e.preventDefault();
+        e.stopImmediatePropagation();
         return;
       }
       if (behindTheScenes?.isOpen) {
@@ -1471,11 +1568,25 @@ async function boot() {
     z: (BOTANICAL_GARDEN_BOUNDS.minZ + BOTANICAL_GARDEN_BOUNDS.maxZ) / 2
   };
   const GOLF_XZ = { x: -1979, z: -194 }; // Presidio course centroid (golf.json tee coords)
+  const touchesBounds = (
+    x: number,
+    z: number,
+    reach: number,
+    bounds: { minX: number; maxX: number; minZ: number; maxZ: number }
+  ): boolean =>
+    x >= bounds.minX - reach && x <= bounds.maxX + reach &&
+    z >= bounds.minZ - reach && z <= bounds.maxZ + reach;
+  const nearPrimaryWildRegion = (x: number, z: number, reach: number): boolean =>
+    WILD_REGIONS.some((region) =>
+      region.id !== "buenavista" && touchesBounds(x, z, reach, region)
+    );
+  const nearBuenaVista = (x: number, z: number, reach: number): boolean =>
+    touchesBounds(x, z, reach, BUENA_VISTA_REGION);
   const nearRegionByDistance = (r: RegionKey): boolean => {
     const p = player.position;
     if (r === "garden") return Math.hypot(p.x - GARDEN_XZ.x, p.z - GARDEN_XZ.z) < NEAR_GATE;
     if (r === "golf") return Math.hypot(p.x - GOLF_XZ.x, p.z - GOLF_XZ.z) < NEAR_GATE;
-    return nearAnyWildRegion(p.x, p.z, NEAR_GATE);
+    return nearPrimaryWildRegion(p.x, p.z, NEAR_GATE);
   };
   const spawnGates = spawnPoint?.gates;
   const regionGates = (r: RegionKey): boolean =>
@@ -1484,6 +1595,8 @@ async function boot() {
   // the pair always builds together and in the same order (course data → grove
   // masks → course meshes), gating iff EITHER is near.
   const gardenGates = regionGates("garden");
+  const buenaVistaGates = nearBuenaVista(player.position.x, player.position.z, NEAR_GATE) &&
+    (spawnGates ? spawnGates.includes("wildlands") : true);
   const wildlandsGolfGates = regionGates("wildlands") || regionGates("golf");
   void (async () => {
     // Forest + Creatures: ambient wildlife and rideable animals
@@ -1500,13 +1613,15 @@ async function boot() {
     // coordinator itself is running.
     let gardenModPromise: Promise<typeof import("./world/garden")> | null = null;
     let teaGardenModPromise: Promise<typeof import("./world/japaneseTeaGarden")> | null = null;
+    let buenaVistaTreesModPromise: Promise<typeof import("./world/wildlands/buenaVistaTrees")> | null = null;
     let wildlandsModPromise: Promise<typeof import("./world/wildlands")> | null = null;
     let golfModPromise: Promise<typeof import("./gameplay/golf")> | null = null;
     const loadGardenMod = () => gardenModPromise ??= import("./world/garden");
     const loadTeaGardenMod = () => teaGardenModPromise ??= import("./world/japaneseTeaGarden");
+    const loadBuenaVistaTreesMod = () => buenaVistaTreesModPromise ??= import("./world/wildlands/buenaVistaTrees");
     const loadWildlandsMod = () => wildlandsModPromise ??= import("./world/wildlands");
     const loadGolfMod = () => golfModPromise ??= import("./gameplay/golf");
-    // Botanical garden (heaviest single park: SeedThree trees + textures). Gate
+    // Botanical garden (heaviest single park: native trees + textures). Gate
     // it only when the spawn is near; otherwise build it AFTER the cover lifts,
     // hidden until compiled, so its trees never sit on the boot path.
     const buildGarden = async () => {
@@ -1533,6 +1648,7 @@ async function boot() {
           void (async () => {
             const g = await buildGarden();
             await g.ready;
+            g.update(player.renderPosition);
             try {
               // Detached + visible: compileAsync skips visible=false roots.
               await renderer.compileAsync(g.group, camera, scene);
@@ -1592,6 +1708,7 @@ async function boot() {
           void (async () => {
             const site = await buildTeaGarden();
             await site.ready;
+            site.update(0, 0, player.renderPosition, camera);
             try {
               // The site is born asleep/hidden. Compile its detached subtree
               // while temporarily visible because Three skips hidden roots.
@@ -1600,11 +1717,53 @@ async function boot() {
             } catch (err) {
               console.warn("[tea-garden] deferred compile failed:", err);
             }
-            site.group.visible = false;
             scene.add(site.group);
             site.update(0, 0, player.renderPosition, camera);
             if (autoStartIrohTour) site.interact(player.position, player.mode);
           })().catch((err) => console.warn("[tea-garden] first-approach construction failed:", err));
+        };
+      });
+    }
+
+    // Buena Vista's skyline canopy is visible from Corona Heights, but it does
+    // not own the citywide Wildlands, flower rings, or Presidio golf. Give this
+    // compact forest its own first-approach gate so a Corona visit cannot grow
+    // or texture distant redwoods in Golden Gate Park, Marin, or Mount Sutro.
+    const buildBuenaVistaTrees = async (deferred: boolean) => {
+      const mod = await loadBuenaVistaTreesMod();
+      const forest = mod.createBuenaVistaTrees(map);
+      buenaVistaTrees = forest;
+      forest.group.visible = true;
+      if (!deferred) scene.add(forest.group);
+      await forest.ready;
+      forest.update(camera.position);
+      if (deferred) {
+        try {
+          // The master toggle may have changed while the prototypes grew.
+          // Three skips hidden roots, so force visibility only for warmup and
+          // restore the current user setting after the detached compile.
+          forest.group.visible = true;
+          await renderer.compileAsync(forest.group, camera, scene);
+        } catch (err) {
+          console.warn("[buena-vista] deferred tree compile failed:", err);
+        }
+        scene.add(forest.group);
+      }
+      forest.group.visible = foliageOn;
+      sky.invalidateStaticShadows();
+      const h = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
+      if (h) Object.assign(h, { buenaVistaTrees: forest });
+    };
+    let buenaVistaTreesReady: Promise<unknown> | null = null;
+    if (buenaVistaGates) {
+      buenaVistaTreesReady = buildBuenaVistaTrees(false);
+    } else {
+      void revealedPromise.then(() => {
+        wakeDeferredBuenaVistaTrees = () => {
+          wakeDeferredBuenaVistaTrees = null;
+          void buildBuenaVistaTrees(true).catch((err) => {
+            console.warn("[buena-vista] first-approach construction failed:", err);
+          });
         };
       });
     }
@@ -1643,6 +1802,7 @@ async function boot() {
       const h = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
       if (h) Object.assign(h, { wildlands: _wildlands });
       await _wildlands.ready;
+      _wildlands.update(player.renderPosition, camera.position);
       sky.invalidateStaticShadows();
       if (deferred) {
         // Compile each grove group before it is ever shown, so a live frame
@@ -1718,7 +1878,12 @@ async function boot() {
 
     // Gate the reveal on whatever is near; deferred regions run post-reveal and
     // are intentionally excluded here so they never hold the cover.
-    await Promise.all([gardenReady, teaGardenReady, wildlandsGolfReady].filter(Boolean));
+    await Promise.all([
+      gardenReady,
+      teaGardenReady,
+      buenaVistaTreesReady,
+      wildlandsGolfReady
+    ].filter(Boolean));
 
     // CityGen: procedural building ring + demo. Awaited (not fire-and-forget)
     // so modulesReady only flips once the ring exists — its cell builds land in
@@ -1806,6 +1971,9 @@ async function boot() {
     CONFIG.tileLoadRadius = fullTileRadius;
     progress(100, "ready");
     bootScreen.markReady();
+    // Procedural weather has rendered from frame one. Only after reveal may the
+    // optional live adapter/chunk request observations.
+    sky.enableLiveFogAfterReveal();
     // Cache world assets for instant repeat loads. Post-reveal on purpose — it
     // must not compete with the boot fetches it is meant to make free next time.
     if (import.meta.env.PROD && "serviceWorker" in navigator) {
@@ -1947,9 +2115,12 @@ async function boot() {
         camera: { yaw: chase.yaw, pitch: chase.pitch, zoom: chase.zoom }
       });
     };
-    import.meta.hot.on("vite:beforeFullReload", captureDevReload);
+    // Soft-HMR mode suppresses the reload, so skip writing a one-shot snapshot.
+    if (!suppressesFullReload) {
+      import.meta.hot.on("vite:beforeFullReload", captureDevReload);
+    }
     // Vite reconnect/server-restart reloads do not emit beforeFullReload, but
-    // still pass through the browser lifecycle.
+    // still pass through the browser lifecycle. Manual refresh also lands here.
     window.addEventListener("beforeunload", captureDevReload);
   }
 
@@ -1983,7 +2154,10 @@ async function boot() {
     // render. The canvas keeps its last frame (dimmed via CSS) so nothing
     // flickers behind the modal; the panel's own diagrams animate on their own
     // rAF, independent of this loop. Resumes cleanly the frame it's closed.
-    if (btsReading) {
+    // Behind-the-scenes and the Canticle book both freeze the world completely —
+    // no sim, no render; the canvas keeps its last frame (dimmed via CSS) behind
+    // the DOM overlay, whose own animation runs on its own rAF.
+    if (btsReading || museumBookOpen) {
       input.endFrame();
       return;
     }
@@ -2157,6 +2331,7 @@ async function boot() {
         player.syncMesh(frameDt);
       }
       applyPickleballPlayerPose();
+      consumeCarLandingFeedback();
       const altitude = player.position.y - map.groundHeight(player.position.x, player.position.z);
       highUp = highUp ? altitude > 110 : altitude > 150;
       tiles.update(player.position.x, player.position.z, highUp);
@@ -2165,7 +2340,7 @@ async function boot() {
       // stuck in the previous indoor/outdoor mode.
       citygenRing.current?.update(player.position, frameDt);
       if (cameraMode) { chase.suspend(player); orbit.update(frameDt); }
-      else { chase.indoor = citygenRing.current?.isPlayerInside() ?? false; chase.update(frameDt, player, input); }
+      else { chase.indoor = (citygenRing.current?.isPlayerInside() ?? false) || (missionDolores?.isPlayerInside(player.position) ?? false); chase.update(frameDt, player, input); }
       // keep the vehicle hum, ambience and social presence alive like full pause
       vehicleAudio.update(frameDt, {
         mode: player.mode,
@@ -2276,7 +2451,8 @@ async function boot() {
       input.pressed("KeyE") &&
       !exitToWalk() &&
       !golf?.tryStartAtTee(player, hud) &&
-      !archery?.tryInteract(player, hud, chase)
+      !archery?.tryInteract(player, hud, chase) &&
+      !missionDolores?.tryInteract(player.position, player.mode, hud)
     ) {
       const nearOceanBeach =
         player.mode === "walk" &&
@@ -2350,11 +2526,11 @@ async function boot() {
       sky.applyFogParams();
       sky.invalidateStaticShadows("all");
       pipeline.applyPostFx(); // toggles back off + sliders back to defaults
-      sky.cycleEnabled = SKY_TUNING.values.cycleEnabled;
-      sky.cycleDuration = SKY_TUNING.values.cycleDuration;
+      sky.timeRatePercent = SKY_TUNING.values.timeRatePercent;
       sky.nightBrightness = SKY_TUNING.values.nightBrightness;
       sky.followRealTime(); // default: back to mirroring the real SF clock
       sky.applyFogParams();
+      sky.refreshFogWeatherSource();
       debugPanel.syncNow();
       hud.message("Tweaks back to source defaults", 3);
     }
@@ -2489,7 +2665,7 @@ async function boot() {
       }
       // shortest way around the 24h wrap, critically-damped ease
       const d = ((((timeScrub.target - sky.timeOfDay) % 24) + 36) % 24) - 12;
-      sky.setTimeOfDay(sky.timeOfDay + d * (1 - Math.exp(-frameDt * 10)));
+      sky.advanceCivilHours(d * (1 - Math.exp(-frameDt * 10)));
       hud.message(clock12(sky.timeOfDay), 0.8);
       if (!scrubHeld && Math.abs(d) < 0.01) {
         sky.cycleEnabled = timeScrub.wasCycling;
@@ -2545,11 +2721,15 @@ async function boot() {
       player.syncMesh(frameDt);
     }
     applyPickleballPlayerPose();
+    consumeCarLandingFeedback();
     const altitude = player.position.y - map.groundHeight(player.position.x, player.position.z);
     highUp = highUp ? altitude > 110 : altitude > 150;
     // Optional park chunks remain unfetched until first approach. Capture the
     // callback before invoking it because each loader clears its own one-shot.
-    if (wakeDeferredGarden && nearRegionByDistance("garden")) {
+    if (
+      wakeDeferredGarden &&
+      Math.hypot(player.position.x - GARDEN_XZ.x, player.position.z - GARDEN_XZ.z) < 900
+    ) {
       const wake = wakeDeferredGarden;
       wakeDeferredGarden = null;
       wake();
@@ -2559,15 +2739,28 @@ async function boot() {
       Math.hypot(
         player.position.x - JAPANESE_TEA_GARDEN_ENTRANCE.x,
         player.position.z - JAPANESE_TEA_GARDEN_ENTRANCE.z
-      ) < 900
+      ) < 700
     ) {
       const wake = wakeDeferredTeaGarden;
       wakeDeferredTeaGarden = null;
       wake();
     }
     if (
+      wakeDeferredBuenaVistaTrees &&
+      nearBuenaVista(player.position.x, player.position.z, 1150)
+    ) {
+      const wake = wakeDeferredBuenaVistaTrees;
+      wakeDeferredBuenaVistaTrees = null;
+      wake();
+    }
+    if (
       wakeDeferredWildlandsGolf &&
-      (nearRegionByDistance("wildlands") || nearRegionByDistance("golf"))
+      (
+        // Buena Vista owns the Corona skyline separately. Wake the primary
+        // Wildlands only on a real approach to one of its four regions.
+        nearPrimaryWildRegion(player.position.x, player.position.z, 320) ||
+        Math.hypot(player.position.x - GOLF_XZ.x, player.position.z - GOLF_XZ.z) < 700
+      )
     ) {
       const wake = wakeDeferredWildlandsGolf;
       wakeDeferredWildlandsGolf = null;
@@ -2628,6 +2821,7 @@ async function boot() {
       // the player, and anchoring the rings to it slid the whole field around you.
       // Tree distance-culling still follows the camera so off-screen groves drop.
       wildlands?.update(player.renderPosition, camera.position);
+      buenaVistaTrees?.update(camera.position);
     }
     // Nature soundscape rides the same root vegetation gust envelope,
     // and reads the sky clock for dawn choruses / night owls. Cheap out in the
@@ -2649,6 +2843,9 @@ async function boot() {
     archery?.update(frameDt, elapsed, { player, input, hud, chase, camera });
     // Goldman clubhouse NPCs: one-hypot early return when far — safe every frame
     goldenGateTennis?.update(frameDt, elapsed, player.position);
+    // Mission Dolores: dynamic code gate first, then shell/art proximity gates.
+    ensureMissionDolores(player.position);
+    missionDolores?.update(frameDt, elapsed, player.position, player.mode, hud);
 
     // "hop in" nudge when standing near a ride (friend → wildlife)
     if (player.mode === "walk" && embodiments.passengerOf === null) {
@@ -2698,7 +2895,7 @@ async function boot() {
       chase.suspend(player);
       orbit.update(frameDt);
     } else {
-      chase.indoor = citygenRing.current?.isPlayerInside() ?? false; // blend into the indoor eye rig
+      chase.indoor = (citygenRing.current?.isPlayerInside() ?? false) || (missionDolores?.isPlayerInside(player.position) ?? false); // blend into the indoor eye rig
       chase.update(frameDt, player, input);
     }
     // World-anchored dialogue must project after the chase/orbit/cinematic has
@@ -2733,9 +2930,21 @@ async function boot() {
     updateSurfPresentation(frameDt);
     waveAudio.update(frameDt, oceanWaveEnergyAt(map, player.position.x, player.position.z, elapsed));
     // Ride ends on the sand: stand up, board in hand (you can only surf in the water).
-    if (player.mode === "surf" && player.surfTelemetry.beached) {
-      player.trySwitch("walk");
-      hud.message("Back on the beach — E to paddle out again", 2.4);
+    // Also end the session if something moved us far from the break (teleport that
+    // bypassed NavigationController, invite link, etc.) so the board never sticks.
+    if (player.mode === "surf") {
+      const b = OCEAN_BEACH_SURF;
+      const farFromBreak =
+        player.position.x < b.minX - 500 ||
+        player.position.x > b.maxX + 500 ||
+        player.position.z < b.minZ - 500 ||
+        player.position.z > b.maxZ + 500;
+      if (player.surfTelemetry.beached) {
+        player.trySwitch("walk");
+        hud.message("Back on the beach — E to paddle out again", 2.4);
+      } else if (farFromBreak) {
+        player.trySwitch("walk");
+      }
     }
     // On foot at Ocean Beach you carry your board, ready to paddle out.
     player.setCarryingBoard(
@@ -2945,7 +3154,7 @@ async function boot() {
       // deferred render warmup runs, tick() early-returns without rendering, so
       // screenshots would capture a stale boot-pose frame no matter what the
       // camera was set to.
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController.game, pickleballAmbient: pickleballController.ambient, pickleballAudio: pickleballController.audio, pickleballUI: pickleballController.ui, pickleballController, coronaHeights, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate,
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController.game, pickleballAmbient: pickleballController.ambient, pickleballAudio: pickleballController.audio, pickleballUI: pickleballController.ui, pickleballController, coronaHeights, missionDolores, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate,
         TSL,
         renderIdle: () => modulesReady && !lateRenderWarmupActive }
     });

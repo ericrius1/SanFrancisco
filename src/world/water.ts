@@ -257,8 +257,8 @@ export class Water {
       // shore cut: the lagoon ellipse spills east onto higher urban ground, so
       // hide water wherever the bay-floor rises to (or above) the pond waterline.
       // This carves the sheet down to the true low basin — no water draped over
-      // roads/houses — while the low park basin stays flooded. Matches the flora
-      // exclusion in flora.ts (WorldMap.lagoonWater).
+      // roads/houses — while the low park basin stays flooded. The same
+      // WorldMap.lagoonWater mask keeps outdoor planting out of the basin.
       const fuv = p.sub(vec2(scale.x, scale.y)).div(vec2(scale.z, scale.w));
       const floorH = texture(tex, fuv).r;
       const shoreCut = smoothstep(PALACE_LAGOON.surfaceY + 0.45, PALACE_LAGOON.surfaceY - 0.05, floorH).toVar();

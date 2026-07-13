@@ -43,9 +43,21 @@ import type { FarOcclusionField } from "./shadows/farOcclusionField"
 import {
   sanFranciscoCivilNow,
   sanFranciscoTimeOfDay,
+  sfCivilFromScalarDays,
+  sfCivilScalarDays,
+  sfUtcOffsetHours,
   solarPosition,
   type SfCivilTime
 } from "./solar"
+import {
+  blendFogWeather,
+  effectiveLiveWeight,
+  sampleProceduralFog,
+  type FogWeatherMode,
+  type FogWeatherState,
+  type LiveFogBias
+} from "./fogWeather"
+import type { LiveFogFeedMeta } from "./liveFog"
 
 export { sanFranciscoTimeOfDay }
 
@@ -53,22 +65,32 @@ export { sanFranciscoTimeOfDay }
 // The default sky follows the real SF clock (see sanFranciscoTimeOfDay / followRealTime).
 export const PRE_SUNSET_TIME = 15.48
 
+/** Wall-clock seconds in a real 24h day — the 100% reference for timeRatePercent. */
+export const REAL_DAY_SECONDS = 24 * 60 * 60
+
+/** Real seconds for one in-game 24h lap at `percent` of real time (0 → frozen). */
+export function cycleDurationFromPercent(percent: number): number {
+  return REAL_DAY_SECONDS * (Math.max(0, percent) / 100)
+}
+
 // Day/night cycle tuning, bound in the "/" panel's lighting folder (persisted).
 // timeOfDay: hours 0..24 on the current SF calendar date — the sun follows the
 // real astronomical path for that day (seasonal elevation + azimuth), not a
-// stylized arc. cycleDuration: real seconds for a full 24h lap.
+// stylized arc. timeRatePercent: when not following real SF time, how long one
+// in-game day takes as a % of a real 24h (slider capped at 10% for fine control
+// of short cycles; 100% ≡ real time is the "follow real SF time" checkbox).
 export const SKY_TUNING = tunables("sky", {
   timeOfDay: { v: 18.48, min: 0, max: 24, step: 0.01, label: "time of day" },
   // default: mirror the real SF wall clock. Scrubbing (Z), dragging the time
-  // slider, or turning on the cycle drops this off — a personal, local override.
+  // slider, or unchecking this starts the local day cycle — personal override.
   realTime: { v: true, label: "follow real SF time" },
-  cycleEnabled: { v: false, label: "fast day/night cycle" },
-  cycleDuration: {
-    v: 1500,
-    min: 30,
-    max: 2800,
-    step: 1,
-    label: "day length (s)"
+  timeRatePercent: {
+    v: 2,
+    min: 0,
+    max: 10,
+    step: 0.05,
+    label: "% of real time",
+    format: (v: number) => `${v.toFixed(2)}%`
   },
   // scales the low-sun/night fill (moon key, hemi fill, sky/IBL night palette,
   // moon disc) so full dark and late twilight stay readable; 1 = authored look
@@ -171,6 +193,10 @@ const FOG_EDGE_END = 0.98
 const FOG_SKY_BLEND_HEIGHT = 0.08 // match the visible horizon over its lowest ~5°
 const FOG_GOLD_LIGHT = 0.48 // neutral dusk fog: dimmer, never orange/grey
 const FOG_NIGHT_LIGHT = 0.12 // moonlit bank without a daylight-white night seam
+const FOG_WEATHER_UPDATE_SECONDS = 0.2
+const LIVE_FOG_BLEND_HALFLIFE_SECONDS = 90
+const LIVE_FOG_TARGET_HALFLIFE_SECONDS = 180
+const LIVE_FOG_EXIT_HALFLIFE_SECONDS = 2.5
 
 /**
  * A custom analytic sky driving both the backdrop and the image-based lighting.
@@ -183,32 +209,39 @@ const FOG_NIGHT_LIGHT = 0.12 // moonlit bank without a daylight-white night seam
  *
  * The sun follows the real astronomical path for San Francisco (lat/lon + current
  * civil date), so noon elevation and sunset bearing shift with the seasons.
- * `cycleEnabled`/`cycleDuration` scrub hours on today's SF date; `setTimeOfDay`
- * jumps the hour directly.
+ * When not following real SF time, `cycleEnabled`/`timeRatePercent` scrub hours
+ * on today's SF date; `setTimeOfDay` jumps the hour directly.
  */
 export class Sky {
   mesh: THREE.Mesh
   sun: THREE.DirectionalLight
   hemi: THREE.HemisphereLight
-  timeOfDay = PRE_SUNSET_TIME
+  timeOfDay = SKY_TUNING.values.timeOfDay
   /** Degrees above the horizon; negative when the sun is down. */
   sunElevation = 0
   /** Compass degrees clockwise from north (0=N, 90=E, 180=S, 270=W). */
   sunAzimuth = 0
   // When set, the sky tracks the real SF wall clock every frame (the default).
-  // A manual override (scrub / setTimeOfDay / enabling the cycle) clears it, and
+  // A manual override (scrub / setTimeOfDay / unchecking real-time) clears it, and
   // only affects this player — time of day is never sent over the network.
   realTime: boolean = SKY_TUNING.values.realTime
-  cycleEnabled: boolean = SKY_TUNING.values.cycleEnabled // fast demo cycle; off unless opted in
-  cycleDuration = SKY_TUNING.values.cycleDuration
+  // Programmatic pause for demos/probes/Z-scrub — not a panel toggle. When the
+  // player unchecks "follow real SF time", the panel turns this on so the day
+  // advances at timeRatePercent.
+  cycleEnabled = !SKY_TUNING.values.realTime
+  /** In-game day length as % of a real 24h (0 = freeze). Panel range is 0..10. */
+  timeRatePercent = SKY_TUNING.values.timeRatePercent
 
   #sunVec = new THREE.Vector3() // true sun direction (may point below the horizon)
-  // Calendar day the scrubbed/cycled hour is evaluated against. Real-time mode
-  // refreshes this every frame; manual mode keeps the SF date from the last
-  // followRealTime / construction so season stays coherent while scrubbing hours.
-  #civilDate: Pick<SfCivilTime, "year" | "month" | "day"> = (() => {
+  // Continuous civil time lets accelerated/manual play advance the date as well
+  // as the hour, which drives both the astronomical sun and multi-day weather.
+  #civilDay = (() => {
     const n = sanFranciscoCivilNow()
-    return { year: n.year, month: n.month, day: n.day }
+    return sfCivilScalarDays({ ...n, hour: SKY_TUNING.values.timeOfDay })
+  })()
+  #simulatedUtcOffsetHours = (() => {
+    const now = sanFranciscoCivilNow()
+    return sfUtcOffsetHours({ ...now, hour: 12 })
   })()
 
   // sky shader uniforms
@@ -221,16 +254,42 @@ export class Sky {
   #uFogTop = uniform(WORLD_TUNING.values.fogTop)
   #uFogBank = uniform(WORLD_TUNING.values.fogBank)
   #uFogNoise = uniform(WORLD_TUNING.values.fogNoise)
-  #uFogDrift = uniform(WORLD_TUNING.values.fogDrift)
-  // Explicit elapsed-time uniform: the same seconds and octave speeds as the
-  // reference, but deterministic for fixed-step captures and frozen with P.
-  #uFogTime = uniform(0)
+  #uFogPhase = uniform(0)
+  #uFogAdvection = uniform(new THREE.Vector3())
+  #uFogFrontX = uniform(-2500)
+  #uFogFrontWidth = uniform(1200)
+  #uFogFrontSkew = uniform(0)
+  #uFogMacroPhase = uniform(0)
+  #uFogInlandFloor = uniform(0.12)
+  #uFogGateReach = uniform(1800)
+  #uFogLocalScale = uniform(WORLD_TUNING.values.fogMaster)
   #uFogLight = uniform(1)
   #uFogEdgeStart = uniform(WORLD_TUNING.values.radius * FOG_EDGE_START)
   #uFogEdgeEnd = uniform(WORLD_TUNING.values.radius * FOG_EDGE_END)
   #uFogEnabled = uniform(WORLD_TUNING.values.fogEnabled ? 1 : 0)
   #uFogBackdrop = uniform(WORLD_TUNING.values.fogEnabled ? 1 : 0)
   #fogNode: N | null = null
+
+  #proceduralFog = sampleProceduralFog(sfCivilFromScalarDays(this.#civilDay))
+  #effectiveFog: FogWeatherState = { ...this.#proceduralFog }
+  #liveFogBias: LiveFogBias | null = null
+  #liveFogCurrent: FogWeatherState | null = null
+  #liveFogTarget: FogWeatherState | null = null
+  #liveFogMix = 0
+  #liveFogStatus: "procedural" | "loading" | "live" | "stale" | "offline" = "procedural"
+  #liveFogDetail = "deterministic SF weather"
+  #liveFogSource = "none"
+  #liveFogSatellite = "GOES mask pending"
+  #liveFogReceivedAt = 0
+  #liveFogRevealReady = false
+  #liveFogStarting = false
+  #liveFogStop: (() => void) | null = null
+  #fogWeatherElapsed = 0
+  #lastFogWeatherWallMs = performance.now()
+  #fogMotionPhase = 0
+  #fogDriftRate = WORLD_TUNING.values.fogDrift
+  #fogWindX = 0
+  #fogWindZ = 0
 
   // night-only brightness multiplier (the "/" panel's night brightness slider);
   // the setter re-applies so edits land even while the cycle is paused
@@ -300,11 +359,11 @@ export class Sky {
     this.#fogNode = this.#buildFogNode()
     scene.fog = null
     scene.fogNode = this.#fogNode
-    this.applyFogParams()
 
-    // Prefer a persisted fast cycle over the wall clock; otherwise mirror SF time.
-    if (this.cycleEnabled) this.realTime = false
-    else this.followRealTime()
+    // Prefer a persisted local override over the wall clock; otherwise mirror SF time.
+    if (this.realTime) this.followRealTime()
+    else this.cycleEnabled = true
+    this.#updateFogWeather(true)
   }
 
   /**
@@ -456,20 +515,57 @@ export class Sky {
     const base = float(FOG_BASE) as N
     const y = (positionWorld as N).y
 
-    // Exact reference spatial octaves and timing. At the default 1× motion this
-    // evolves at the same restrained pace as the supplied official-example video.
-    const nTime = (this.#uFogTime as N).mul(this.#uFogDrift as N)
+    // The retained reference octaves use integrated phase/advection. Updating a
+    // weather rate therefore changes future motion without retroactively moving
+    // the entire texture by rate × total session time.
+    const nTime = this.#uFogPhase as N
+    const fogPosition = (positionWorld as N).sub(this.#uFogAdvection as N)
     const noiseA = triNoise3D(
-      (positionWorld as N).mul(FOG_NOISE_SCALE_A),
+      fogPosition.mul(FOG_NOISE_SCALE_A),
       FOG_NOISE_SPEED,
       nTime
     )
     const noiseB = triNoise3D(
-      (positionWorld as N).mul(FOG_NOISE_SCALE_B),
+      fogPosition.mul(FOG_NOISE_SCALE_B),
       FOG_NOISE_SPEED,
       nTime.mul(1.2)
     )
     const fogNoise = noiseA.add(noiseB)
+
+    // Stable macro coverage: a west-to-east Pacific front plus a soft tongue
+    // through the Golden Gate. This analytic XZ meander exactly matches the CPU
+    // diagnostic/test helper and avoids another noise sample or render pass.
+    const frontMeander = sin(
+      (positionWorld as N).z.mul(0.00072).add(this.#uFogMacroPhase as N)
+    ).mul(430)
+    const frontCoord = (positionWorld as N).x
+      .add((positionWorld as N).z.mul(this.#uFogFrontSkew as N))
+      .add(frontMeander)
+    const pacific = smoothstep(
+      (this.#uFogFrontX as N).sub(this.#uFogFrontWidth as N),
+      (this.#uFogFrontX as N).add(this.#uFogFrontWidth as N),
+      frontCoord
+    ).oneMinus()
+    const gateAlong = (positionWorld as N).x.add(3000)
+    const gateAcross = (positionWorld as N).z
+      .add(2700)
+      .sub(gateAlong.mul(0.12))
+      .abs()
+    const gate = smoothstep(float(-300), float(450), gateAlong)
+      .mul(
+        smoothstep(
+          this.#uFogGateReach as N,
+          (this.#uFogGateReach as N).add(900),
+          gateAlong
+        ).oneMinus()
+      )
+      .mul(smoothstep(float(350), float(1350), gateAcross).oneMinus())
+    const macroCoverage = pacific.oneMinus().mul(gate.oneMinus()).oneMinus()
+    const regionalDensity = mix(
+      this.#uFogInlandFloor as N,
+      float(1),
+      macroCoverage
+    )
 
     // A compact patch bank threaded through Buena Vista's canopy. This is a
     // separate, bounded opacity term rather than a raised global bank ceiling:
@@ -521,6 +617,7 @@ export class Sky {
       .mul(mistPockets)
       .mul(smoothstep(float(24), float(210), dist))
       .mul(BUENA_VISTA_MIST.strength)
+      .mul(this.#uFogLocalScale as N)
 
     // The official noisy ceiling: a fixed-altitude marine bank whose upper edge
     // continually reforms into 100–200 m billows while hills and towers rise clear.
@@ -563,6 +660,7 @@ export class Sky {
       .mul(0.5)
       .mul(inLayerFraction)
       .mul(densityShape)
+      .mul(regionalDensity)
     const opticalDepth = dist
       .mul(meanRayDensity)
       .mul(this.#uFogBank as N)
@@ -607,21 +705,189 @@ export class Sky {
 
   applyFogParams() {
     const v = WORLD_TUNING.values
+    const weather = this.#effectiveFog
+    const master = Math.max(0, v.fogMaster)
     // Atmospheric perspective is an artistic/physical property, not a streaming
     // control. Coupling density inversely to the draw radius made a smaller world
     // turn exponentially whiter, so players had to select absurd 60–300 km radii
     // just to see across an 11 km city. Only the narrow cull-edge fade follows the
     // streamed radius; broad haze and the height bank stay in physical metres.
     const edgeR = this.#cullRadiusOverride ?? v.radius
-    this.#uFogDensity.value = v.fog
-    this.#uFogTop.value = v.fogTop
-    this.#uFogBank.value = v.fogBank
-    this.#uFogNoise.value = v.fogNoise
-    this.#uFogDrift.value = v.fogDrift
+    // densityFogFactor is exp², so sqrt keeps master/weather linear in optical
+    // effect. The bank is already a Beer-Lambert path integral.
+    this.#uFogDensity.value = v.fog * Math.sqrt(master * weather.hazeScale)
+    this.#uFogTop.value = v.fogTop + weather.topOffsetM
+    this.#uFogBank.value = v.fogBank * master * weather.bankScale
+    this.#uFogNoise.value = v.fogNoise * weather.billowScale
+    this.#uFogFrontX.value = weather.frontX
+    this.#uFogFrontWidth.value = weather.frontWidthM
+    this.#uFogFrontSkew.value = weather.frontSkew
+    this.#uFogMacroPhase.value = weather.macroPhase
+    this.#uFogInlandFloor.value = weather.inlandFloor
+    this.#uFogGateReach.value = weather.gateReachM
+    this.#uFogLocalScale.value = master * weather.bankScale
+    this.#fogDriftRate = v.fogDrift * weather.driftScale
+    this.#fogWindX = weather.windX * v.fogDrift
+    this.#fogWindZ = weather.windZ * v.fogDrift
     this.#uFogEdgeStart.value = edgeR * FOG_EDGE_START
     this.#uFogEdgeEnd.value = edgeR * FOG_EDGE_END
     this.#uFogEnabled.value = v.fogEnabled ? 1 : 0
     this.#uFogBackdrop.value = v.fogEnabled ? 1 : 0
+  }
+
+  #fogWeatherMode(): FogWeatherMode {
+    const requested = WORLD_TUNING.values.fogWeather
+    return requested === "live" || requested === "procedural" ? requested : "blend"
+  }
+
+  #updateFogWeather(force = false) {
+    if (!force && this.#fogWeatherElapsed < FOG_WEATHER_UPDATE_SECONDS) return
+    this.#fogWeatherElapsed = 0
+    const wallNow = performance.now()
+    const wallDt = Math.min(2, Math.max(0, (wallNow - this.#lastFogWeatherWallMs) / 1000))
+    this.#lastFogWeatherWallMs = wallNow
+
+    sampleProceduralFog(this.civilTime, this.#proceduralFog)
+    if (this.#liveFogCurrent && this.#liveFogTarget && wallDt > 0) {
+      const targetAlpha = 1 - Math.exp(
+        (-Math.LN2 * wallDt) / LIVE_FOG_TARGET_HALFLIFE_SECONDS
+      )
+      blendFogWeather(
+        this.#liveFogCurrent,
+        this.#liveFogTarget,
+        targetAlpha,
+        this.#liveFogCurrent
+      )
+    }
+
+    const mode = this.#fogWeatherMode()
+    const targetMix = effectiveLiveWeight(
+      mode,
+      WORLD_TUNING.values.fogLiveInfluence,
+      this.realTime,
+      this.#liveFogBias,
+      Date.now()
+    )
+    if (wallDt > 0) {
+      const halfLife = !this.realTime || mode === "procedural"
+        ? LIVE_FOG_EXIT_HALFLIFE_SECONDS
+        : LIVE_FOG_BLEND_HALFLIFE_SECONDS
+      const mixAlpha = 1 - Math.exp(
+        (-Math.LN2 * wallDt) / halfLife
+      )
+      this.#liveFogMix += (targetMix - this.#liveFogMix) * mixAlpha
+      if (this.#liveFogMix < 0.0001 && targetMix === 0) this.#liveFogMix = 0
+    }
+
+    if (this.#liveFogCurrent) {
+      blendFogWeather(
+        this.#proceduralFog,
+        this.#liveFogCurrent,
+        this.#liveFogMix,
+        this.#effectiveFog
+      )
+    } else {
+      blendFogWeather(
+        this.#proceduralFog,
+        this.#proceduralFog,
+        0,
+        this.#effectiveFog
+      )
+    }
+    this.applyFogParams()
+  }
+
+  /** Live data module sink: values have already been normalized and aged. */
+  acceptLiveFog(bias: LiveFogBias, meta: LiveFogFeedMeta) {
+    this.#liveFogBias = bias
+    if (!this.#liveFogCurrent) this.#liveFogCurrent = { ...bias.state }
+    this.#liveFogTarget = { ...bias.state }
+    this.#liveFogSource = meta.source
+    this.#liveFogSatellite = meta.satellite
+    this.#liveFogReceivedAt = meta.receivedAtMs
+    this.#updateFogWeather(true)
+  }
+
+  setLiveFogStatus(
+    status: "procedural" | "loading" | "live" | "stale" | "offline",
+    detail: string
+  ) {
+    this.#liveFogStatus = status
+    this.#liveFogDetail = detail
+  }
+
+  /** Main calls this once after reveal; a procedural-only setting loads nothing. */
+  enableLiveFogAfterReveal() {
+    this.#liveFogRevealReady = true
+    this.#reconcileLiveFogFeed()
+  }
+
+  /** Called after the weather-source selector changes. */
+  refreshFogWeatherSource() {
+    this.#updateFogWeather(true)
+    this.#reconcileLiveFogFeed()
+  }
+
+  #reconcileLiveFogFeed() {
+    if (!this.#liveFogRevealReady) return
+    if (!this.realTime || this.#fogWeatherMode() === "procedural") {
+      this.#liveFogStop?.()
+      this.#liveFogStop = null
+      this.setLiveFogStatus(
+        "procedural",
+        this.realTime
+          ? "live feed disabled · deterministic SF weather"
+          : "simulated clock · deterministic SF weather"
+      )
+      return
+    }
+    if (this.#liveFogStop || this.#liveFogStarting) return
+    this.#liveFogStarting = true
+    this.setLiveFogStatus("loading", "procedural now · loading SF observations")
+    void import("./liveFog")
+      .then(({ startLiveFogFeed }) => {
+        this.#liveFogStarting = false
+        if (!this.#liveFogRevealReady || !this.realTime || this.#fogWeatherMode() === "procedural") return
+        this.#liveFogStop = startLiveFogFeed(this)
+      })
+      .catch((error) => {
+        this.#liveFogStarting = false
+        this.setLiveFogStatus(
+          "offline",
+          `procedural fallback · ${error instanceof Error ? error.message : "feed unavailable"}`
+        )
+      })
+  }
+
+  /** Allocation-free diagnostics writer for the 4 Hz Tweakpane monitor. */
+  writeFogWeatherDiagnostics(out: Record<string, string>, nowMs = Date.now()) {
+    const civil = this.civilTime
+    const liveEligible = this.realTime && this.#fogWeatherMode() !== "procedural"
+    const minutes = Math.floor(civil.hour * 60 + 0.5) % (24 * 60)
+    const hh = String(Math.floor(minutes / 60)).padStart(2, "0")
+    const mm = String(minutes % 60).padStart(2, "0")
+    const ageMinutes = liveEligible && this.#liveFogBias
+      ? Math.max(0, (nowMs - this.#liveFogBias.observedAtMs) / 60000)
+      : null
+    out.driver = !this.realTime
+      ? this.#liveFogMix > 0.005
+        ? "transition → procedural · simulated clock"
+        : "procedural · simulated clock"
+      : this.#liveFogMix > 0.005
+        ? `procedural + ${this.#liveFogSource}`
+        : "procedural"
+    out["SF date"] = `${civil.year}-${String(civil.month).padStart(2, "0")}-${String(civil.day).padStart(2, "0")} ${hh}:${mm}`
+    out["live mix"] = `${Math.round(this.#liveFogMix * 100)}%`
+    out["bank / haze"] = `${this.#effectiveFog.bankScale.toFixed(2)}× / ${this.#effectiveFog.hazeScale.toFixed(2)}×`
+    out["coastal front"] = `${Math.round(this.#effectiveFog.frontX)} m · gate ${Math.round(this.#effectiveFog.gateReachM)} m`
+    out.observations = liveEligible
+      ? `${this.#liveFogStatus}${ageMinutes === null ? "" : ` · ${Math.round(ageMinutes)} min old`}`
+      : "procedural"
+    out.detail = this.#liveFogDetail
+    out.satellite = liveEligible ? this.#liveFogSatellite : "inactive"
+    out.received = liveEligible && this.#liveFogReceivedAt
+      ? `${Math.max(0, Math.round((nowMs - this.#liveFogReceivedAt) / 60000))} min ago`
+      : liveEligible ? "not yet" : "not active"
   }
 
   /** Environment radiance for the IBL: no point features, roughness-softened. */
@@ -636,27 +902,76 @@ export class Sky {
     this.#applySun()
   }
 
-  /** Pin a fixed hour on today's SF calendar date. Stops tracking the real
-   *  SF clock (the fast cycle keeps running only if it was already on). */
+  /** Current continuous simulated/real San-Francisco civil instant. */
+  get civilTime(): SfCivilTime {
+    return sfCivilFromScalarDays(this.#civilDay)
+  }
+
+  /** Deterministic probe/demo hook: pin both date and time and freeze cycling. */
+  setCivilTime(civil: SfCivilTime) {
+    this.realTime = false
+    this.cycleEnabled = false
+    // This hook is used by deterministic captures/tests: never let a
+    // network/cache race contaminate a pinned procedural instant.
+    this.#liveFogMix = 0
+    this.#simulatedUtcOffsetHours = sfUtcOffsetHours({ ...civil, hour: 12 })
+    this.#civilDay = sfCivilScalarDays(civil)
+    this.timeOfDay = this.civilTime.hour
+    this.#applySun()
+    this.#updateFogWeather(true)
+    this.#reconcileLiveFogFeed()
+  }
+
+  /** Move the simulated calendar continuously, including date/year rollover. */
+  advanceCivilHours(hours: number) {
+    if (!Number.isFinite(hours) || hours === 0) return
+    if (this.realTime) {
+      this.#simulatedUtcOffsetHours = sfUtcOffsetHours({ ...this.civilTime, hour: 12 })
+    }
+    this.realTime = false
+    this.#civilDay += hours / 24
+    this.timeOfDay = this.civilTime.hour
+    this.#applySun()
+    this.#updateFogWeather(true)
+    this.#reconcileLiveFogFeed()
+  }
+
+  /** Pin a fixed hour on the current SF calendar date. Stops tracking the real
+   *  SF clock (the day cycle keeps running only if it was already on). */
   setTimeOfDay(hours: number) {
+    if (this.realTime) {
+      this.#simulatedUtcOffsetHours = sfUtcOffsetHours({ ...this.civilTime, hour: 12 })
+    }
     this.realTime = false
     this.timeOfDay = ((hours % 24) + 24) % 24
+    this.#civilDay = Math.floor(this.#civilDay) + this.timeOfDay / 24
     this.#applySun()
+    this.#updateFogWeather(true)
+    this.#reconcileLiveFogFeed()
   }
 
   /** Snap to the current real SF date+time and keep mirroring it every frame —
    *  the default sky. Wherever the player is, the game reads the SF wall clock. */
   followRealTime() {
     this.realTime = true
+    this.cycleEnabled = false
     const now = sanFranciscoCivilNow()
-    this.#civilDate = { year: now.year, month: now.month, day: now.day }
+    this.#simulatedUtcOffsetHours = sfUtcOffsetHours({ ...now, hour: 12 })
+    this.#civilDay = sfCivilScalarDays(now)
     this.timeOfDay = now.hour
     this.#applySun()
+    this.#updateFogWeather(true)
+    this.#reconcileLiveFogFeed()
   }
 
   #applySun() {
-    const civil: SfCivilTime = { ...this.#civilDate, hour: this.timeOfDay }
-    const pos = solarPosition(civil)
+    const civil = this.civilTime
+    const pos = solarPosition(
+      civil,
+      undefined,
+      undefined,
+      this.realTime ? undefined : this.#simulatedUtcOffsetHours
+    )
     this.sunElevation = pos.elevation
     this.sunAzimuth = pos.azimuth
     this.#sunVec.set(pos.x, pos.y, pos.z)
@@ -749,22 +1064,31 @@ export class Sky {
     cameraPos: THREE.Vector3,
     shadowFocus: THREE.Vector3 = cameraPos
   ) {
-    this.#uFogTime.value = elapsed
     const dt =
       this.#lastElapsed < 0 ? 0 : Math.min(elapsed - this.#lastElapsed, 0.1)
     this.#lastElapsed = elapsed
+    if (dt > 0) {
+      this.#fogMotionPhase += dt * this.#fogDriftRate
+      this.#uFogPhase.value = this.#fogMotionPhase
+      const advection = this.#uFogAdvection.value as THREE.Vector3
+      advection.x += dt * this.#fogWindX * 0.08
+      advection.z += dt * this.#fogWindZ * 0.08
+    }
 
     if (this.realTime) {
       // default: mirror the real San-Francisco date + clock, wherever the player is
       const now = sanFranciscoCivilNow()
-      this.#civilDate = { year: now.year, month: now.month, day: now.day }
+      this.#civilDay = sfCivilScalarDays(now)
       this.timeOfDay = now.hour
       this.#applySun() // the analytic env reads #uSun, so the IBL tracks for free
-    } else if (this.cycleEnabled && dt > 0) {
-      this.timeOfDay =
-        (this.timeOfDay + (dt / Math.max(this.cycleDuration, 5)) * 24) % 24
+    } else if (this.cycleEnabled && this.timeRatePercent > 0 && dt > 0) {
+      const duration = cycleDurationFromPercent(this.timeRatePercent)
+      this.#civilDay += dt / duration
+      this.timeOfDay = this.civilTime.hour
       this.#applySun()
     }
+    this.#fogWeatherElapsed += dt
+    this.#updateFogWeather()
 
     this.mesh.position.copy(cameraPos)
 

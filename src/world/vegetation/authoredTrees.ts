@@ -1,35 +1,35 @@
 // Authored-tree adapter for landmarks and compact parks.
 //
 // Parks own only botanical intent (archetype + rooted transform). The shared
-// SeedForest renderer owns growth, wind-shaded foliage, near/far LOD, chunk
-// culling, shadow proxies, warmup and the session-wide template cache.
+// NativeTreeForest owns compilation, shared geometry, wind-shaded foliage, LOD,
+// chunk culling, shadow proxies and the session-wide prototype cache.
 
 import * as THREE from "three/webgpu";
 import {
-  createSeedForest,
-  type SeedForestOptions,
-  type SeedForestSlot,
-  type SeedTreeDesignSpec
-} from "../seedForest";
+  createNativeTreeForest,
+  type NativeTreeForestOptions,
+  type NativeTreeSlot,
+  type NativeTreeDesignSpec
+} from "../nativeTreeForest";
 
 export type AuthoredTreeArchetype = {
   id: string;
-  design: SeedTreeDesignSpec;
+  design: NativeTreeDesignSpec;
 };
 
 export type AuthoredTreePlacement = {
   x: number;
-  /** Root surface height. The archetype's sink is applied by SeedForest. */
+  /** Root surface height. The archetype's sink is applied by NativeTreeForest. */
   y: number;
   z: number;
   yaw: number;
   scale: number;
   archetype: string;
-  /** false keeps this individual in the instanced tier at every distance. */
-  nearClone?: boolean;
+  /** False keeps this individual in landscape LOD at every distance. */
+  nearDetail?: boolean;
 };
 
-export type AuthoredTreePatchOptions = Omit<SeedForestOptions, "name"> & {
+export type AuthoredTreePatchOptions = Omit<NativeTreeForestOptions, "name"> & {
   name: string;
 };
 
@@ -52,7 +52,7 @@ export function createAuthoredTreePatch(
   options: AuthoredTreePatchOptions
 ): AuthoredTreePatch {
   const indexById = new Map<string, number>();
-  const designs: SeedTreeDesignSpec[] = [];
+  const designs: NativeTreeDesignSpec[] = [];
   for (const archetype of archetypes) {
     if (indexById.has(archetype.id)) {
       throw new Error(`[vegetation:${options.name}] duplicate tree archetype '${archetype.id}'`);
@@ -61,7 +61,7 @@ export function createAuthoredTreePatch(
     designs.push(archetype.design);
   }
 
-  const slots: SeedForestSlot[] = placements.map((placement) => {
+  const slots: NativeTreeSlot[] = placements.map((placement) => {
     const design = indexById.get(placement.archetype);
     if (design === undefined) {
       throw new Error(
@@ -75,11 +75,11 @@ export function createAuthoredTreePatch(
       yaw: placement.yaw,
       scale: placement.scale,
       design,
-      nearClone: placement.nearClone
+      nearDetail: placement.nearDetail
     };
   });
 
-  const forest = createSeedForest(designs, slots, options);
+  const forest = createNativeTreeForest(designs, slots, options);
   let disposed = false;
   return {
     group: forest.group,
@@ -88,8 +88,7 @@ export function createAuthoredTreePatch(
     dispose() {
       if (disposed) return;
       disposed = true;
-      // SeedForest disposes only per-patch far geometry/proxies/driver state;
-      // session-cached template geometry and materials remain shared.
+      // Session-cached compiler prototypes remain bounded and shared.
       forest.dispose();
     },
     stats: {

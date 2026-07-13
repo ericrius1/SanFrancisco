@@ -5,14 +5,16 @@ import type { ModeController, ModeFrame, PlayerCtx } from "../../player/types";
 import { enterOnLand } from "../shared";
 import {
   CarJumpState,
+  landingImpactStrength,
   smoothstep01,
   stepAirAttitude,
   type AirAttitudeParams,
   type JumpSample,
   type JumpStateParams,
+  type LandingImpactParams,
   type MutableVec3
 } from "./jumpPhysics";
-import { CAR_TUNING } from "./tuning";
+import { CAR_LANDING_TUNING, CAR_TUNING } from "./tuning";
 
 const V = {
   tmp2: new THREE.Vector3(),
@@ -28,6 +30,21 @@ const V = {
   airAngular: [0, 0, 0] as MutableVec3
 };
 
+export type CarLandingFeedback = {
+  /** Monotonic event id; presentation systems consume each landing once. */
+  serial: number;
+  /** Largest chassis clearance above its normal road ride target, in metres. */
+  height: number;
+  /** Vertical distance from the jump apex to touchdown, in metres. */
+  fallDistance: number;
+  /** Height/fall-distance response mapped into the authored 0..1 range. */
+  strength: number;
+  x: number;
+  y: number;
+  z: number;
+  yaw: number;
+};
+
 export class CarController implements ModeController {
   readonly spawnLift = 0.8;
   steerVis = 0; // smoothed steer input, read by the driver-arm/wheel animation
@@ -36,6 +53,19 @@ export class CarController implements ModeController {
   #groundNormal = new THREE.Vector3(0, 1, 0);
   #groundBlend = 1;
   #supportClearance = 0;
+  #positionYForDebug = 0;
+  #jumpPeakY = 0;
+  #jumpMaxClearance = 0;
+  #landingFeedback: CarLandingFeedback = {
+    serial: 0,
+    height: 0,
+    fallDistance: 0,
+    strength: 0,
+    x: 0,
+    y: 0,
+    z: 0,
+    yaw: 0
+  };
   #jumpSample: JumpSample = {
     supportClearance: 0,
     verticalSpeed: 0,
@@ -57,6 +87,14 @@ export class CarController implements ModeController {
     yawDamping: 0,
     yawAcceleration: 0
   };
+  #landingImpactParams: LandingImpactParams = {
+    minHeight: 0,
+    maxHeight: 0,
+    minFallDistance: 0,
+    maxFallDistance: 0,
+    heightWeight: 0,
+    responseCurve: 1
+  };
 
   /** Read-only runtime state for the existing window.__sf diagnostics surface. */
   get jumpDebug() {
@@ -65,8 +103,17 @@ export class CarController implements ModeController {
       airTime: this.#jump.airTime,
       supportClearance: this.#supportClearance,
       landingSteps: this.#jump.landingSteps,
-      readyForTakeoff: this.#jump.readyForTakeoff
+      readyForTakeoff: this.#jump.readyForTakeoff,
+      jumpHeight: this.#jumpMaxClearance,
+      jumpFallDistance: Math.max(0, this.#jumpPeakY - this.#positionYForDebug),
+      landingSerial: this.#landingFeedback.serial,
+      landingStrength: this.#landingFeedback.strength
     };
+  }
+
+  /** Stable, read-only event buffer for camera/audio/VFX presentation. */
+  get landingFeedback(): Readonly<CarLandingFeedback> {
+    return this.#landingFeedback;
   }
 
   spawnBody(ctx: PlayerCtx, facing: number): number {
@@ -75,6 +122,11 @@ export class CarController implements ModeController {
     this.#jump.reset(facing);
     this.#groundBlend = 1;
     this.#supportClearance = 0;
+    this.#jumpPeakY = p.y;
+    this.#jumpMaxClearance = 0;
+    this.#landingFeedback.height = 0;
+    this.#landingFeedback.fallDistance = 0;
+    this.#landingFeedback.strength = 0;
     this.#sampleGroundNormal(ctx, p.x, p.z, this.#groundNormal);
     // box stops at the rocker panels (y half 0.45, not 0.6): the ride spring
     // holds the centre at ground+0.85, so a taller box left only 0.25 m of
@@ -117,9 +169,41 @@ export class CarController implements ModeController {
     ).normalize();
   }
 
+  #beginJump(worldY: number) {
+    this.#jumpPeakY = worldY;
+    this.#jumpMaxClearance = Math.max(0, this.#supportClearance);
+  }
+
+  #trackJump(worldY: number) {
+    this.#jumpPeakY = Math.max(this.#jumpPeakY, worldY);
+    this.#jumpMaxClearance = Math.max(this.#jumpMaxClearance, this.#supportClearance);
+  }
+
+  #commitLanding(ctx: PlayerCtx, ground: number, yaw: number) {
+    const tuning = CAR_LANDING_TUNING.values;
+    const p = this.#landingImpactParams;
+    p.minHeight = tuning.minHeight;
+    p.maxHeight = Math.max(tuning.minHeight + 1e-4, tuning.maxHeight);
+    p.minFallDistance = tuning.minFallDistance;
+    p.maxFallDistance = Math.max(tuning.minFallDistance + 1e-4, tuning.maxFallDistance);
+    p.heightWeight = tuning.heightWeight;
+    p.responseCurve = tuning.responseCurve;
+
+    const event = this.#landingFeedback;
+    event.serial += 1;
+    event.height = Math.max(0, this.#jumpMaxClearance);
+    event.fallDistance = Math.max(0, this.#jumpPeakY - ctx.position.y);
+    event.strength = landingImpactStrength(event.height, event.fallDistance, p);
+    event.x = ctx.position.x;
+    event.y = ground + 0.12;
+    event.z = ctx.position.z;
+    event.yaw = yaw;
+  }
+
   update(ctx: PlayerCtx, dt: number, input: Input, frame: ModeFrame) {
     const w = ctx.physics.world;
     const v = frame.v;
+    this.#positionYForDebug = ctx.position.y;
     const q = ctx.quaternion;
     const fwd = V.fwd.set(0, 0, -1).applyQuaternion(q);
     fwd.y = 0;
@@ -219,6 +303,9 @@ export class CarController implements ModeController {
     js.yaw = yaw;
     const transition = this.#jump.update(js, dt, jp);
     if (transition !== "none") this.#groundBlend = 0;
+    if (transition === "takeoff") this.#beginJump(ctx.position.y);
+    if (this.#jump.airborne) this.#trackJump(ctx.position.y);
+    else if (transition === "landing") this.#commitLanding(ctx, ground, yaw);
 
     const grounded = !this.#jump.airborne && nearGround && up.y > 0.35;
     if (grounded) {
@@ -278,7 +365,11 @@ export class CarController implements ModeController {
       // The phase is latched even if the car rolls past the upright threshold.
       // Linear momentum remains purely ballistic; only attitude gets an arcade
       // assist, after a brief hold that lets the ramp's nose-up launch read.
-      this.#jump.forceAir(yaw);
+      if (!this.#jump.airborne) {
+        this.#jump.forceAir(yaw);
+        this.#beginJump(ctx.position.y);
+      }
+      this.#trackJump(ctx.position.y);
       const fade = smoothstep01(
         (this.#jump.airTime - td.airHold) / Math.max(td.airBlendTime, 1e-4)
       );

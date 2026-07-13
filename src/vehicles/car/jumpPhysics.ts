@@ -165,3 +165,32 @@ export function smoothstep01(value: number): number {
   const t = Math.max(0, Math.min(1, value));
   return t * t * (3 - 2 * t);
 }
+
+export type LandingImpactParams = {
+  minHeight: number;
+  maxHeight: number;
+  minFallDistance: number;
+  maxFallDistance: number;
+  heightWeight: number;
+  responseCurve: number;
+};
+
+/**
+ * Convert authored jump height + apex-to-touchdown fall distance into a bounded
+ * presentation strength. Each signal gets its own smooth range before the two
+ * are blended, so changing the height influence never changes either range.
+ */
+export function landingImpactStrength(
+  height: number,
+  fallDistance: number,
+  p: LandingImpactParams
+): number {
+  const heightRange = Math.max(1e-4, p.maxHeight - p.minHeight);
+  const fallRange = Math.max(1e-4, p.maxFallDistance - p.minFallDistance);
+  const heightAmount = smoothstep01((height - p.minHeight) / heightRange);
+  const fallAmount = smoothstep01((fallDistance - p.minFallDistance) / fallRange);
+  const heightWeight = Math.max(0, Math.min(1, p.heightWeight));
+  const combined = heightAmount * heightWeight + fallAmount * (1 - heightWeight);
+  if (combined <= 0) return 0;
+  return Math.pow(combined, Math.max(0.05, p.responseCurve));
+}

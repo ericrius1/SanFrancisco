@@ -196,8 +196,8 @@ const TAB_LIFE = `
     season it actually is in SF right now is the light you see, wherever in the world you're playing
     from. The sun follows its true astronomical path for the city's latitude, so a July noon sits high
     and bright while a December afternoon stays low and long. Hold <strong>Z</strong> and drag the
-    trackpad to scrub to any hour you like (just for you), or flip on the fast day/night cycle in the
-    tuning panel.</p>
+    trackpad to scrub to any hour you like (just for you), or uncheck follow-real-SF-time in the
+    tuning panel and set how fast the day runs as a percent of real time.</p>
     <p>As the light dims, the landmark <strong>light installations</strong> come up, all driven by that
     one sky-brightness value so they fade in together: the Bay Bridge's shimmering Bay Lights (a field
     of instanced sprite LEDs), Sutro Tower's red aviation beacons blinking up its masts, the Salesforce

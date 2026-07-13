@@ -2,12 +2,16 @@ import { createServer } from "node:net";
 import { fileURLToPath, URL } from "node:url";
 import { defineConfig, type Plugin } from "vite";
 
-// HMR is the default development workflow. Set SF_HMR=0 for long play sessions
-// where even structural edits should wait for a manual browser refresh.
+// Soft HMR is the default: in-place module swaps work, full page reloads are
+// suppressed so multi-agent edits do not interrupt a play session.
+//   SF_FULL_RELOAD=1 — restore Vite automatic full reloads
+//   SF_HMR=0         — disable the HMR websocket entirely (no soft swaps)
 const HMR_ENABLED = process.env.SF_HMR !== "0";
+const FULL_RELOAD_ENABLED = process.env.SF_FULL_RELOAD === "1";
 
 const RELAY_PORT = process.env.SF_RELAY_PORT || "8787";
 const RELAY_WS = `ws://localhost:${RELAY_PORT}`;
+const NATIVE_BASIS_PATH = "/native-foliage/basis-r185/";
 
 /** True if nothing is listening on the relay port (best-effort; race still handled in server.mjs). */
 function relayPortFree(port: number): Promise<boolean> {
@@ -49,12 +53,62 @@ const relayPlugin = (): Plugin => ({
   }
 });
 
+/** Drop Vite full-reload WS payloads unless SF_FULL_RELOAD=1. Soft updates pass through. */
+const softHmrPlugin = (): Plugin => ({
+  name: "sf-soft-hmr",
+  configureServer(server) {
+    if (FULL_RELOAD_ENABLED || !HMR_ENABLED) return;
+    const send = server.ws.send.bind(server.ws);
+    server.ws.send = ((payload: unknown, ...args: unknown[]) => {
+      if (
+        payload &&
+        typeof payload === "object" &&
+        "type" in payload &&
+        (payload as { type?: string }).type === "full-reload"
+      ) {
+        const path =
+          "path" in payload && typeof (payload as { path?: unknown }).path === "string"
+            ? (payload as { path: string }).path
+            : "";
+        console.info(`[sf] full reload suppressed${path ? ` (${path})` : ""} — refresh manually when ready`);
+        return;
+      }
+      return (send as (...a: unknown[]) => unknown)(payload, ...args);
+    }) as typeof server.ws.send;
+  }
+});
+
+/**
+ * Three's KTX2 loader contains static new URL() fallbacks, so Rollup otherwise
+ * emits a second unused Basis JS/WASM pair even when setTranscoderPath() points
+ * at our versioned public copy. Rewrite those two fallback constants as well;
+ * fail the build if a Three upgrade changes the pinned r185 source contract.
+ */
+const nativeFoliageBasisPlugin = (): Plugin => ({
+  name: "sf-native-foliage-basis",
+  enforce: "pre",
+  transform(source, id) {
+    if (!id.split("?", 1)[0].endsWith("/three/examples/jsm/loaders/KTX2Loader.js")) return null;
+    const wasmSource = "const WASM_BIN_URL = new URL( '../libs/basis/basis_transcoder.wasm', import.meta.url ).toString();";
+    const jsSource = "const WASM_JS_URL = new URL( '../libs/basis/basis_transcoder.js', import.meta.url ).toString();";
+    if (!source.includes(wasmSource) || !source.includes(jsSource)) {
+      throw new Error("Three KTX2Loader Basis URL contract changed; update the pinned native foliage transform");
+    }
+    return source
+      .replace(wasmSource, `const WASM_BIN_URL = '${NATIVE_BASIS_PATH}basis_transcoder.wasm';`)
+      .replace(jsSource, `const WASM_JS_URL = '${NATIVE_BASIS_PATH}basis_transcoder.js';`);
+  }
+});
+
 // The whole app runs on the WebGPU build of three. Addons (GLTFLoader, SkyMesh,
 // PointerLockControls) and camera-controls import the bare "three" specifier;
 // alias it to the WebGPU build so there is a single module/class instance and no
 // duplicate-three "instanceof" breakage.
 export default defineConfig({
-  plugins: [relayPlugin()],
+  plugins: [relayPlugin(), softHmrPlugin(), nativeFoliageBasisPlugin()],
+  define: {
+    "import.meta.env.SF_FULL_RELOAD": FULL_RELOAD_ENABLED
+  },
   resolve: {
     alias: [{ find: /^three$/, replacement: "three/webgpu" }],
     dedupe: ["three", "three/webgpu", "three/tsl"]
@@ -76,7 +130,8 @@ export default defineConfig({
     // same-origin app services in every environment: dev proxies to the local
     // relay, prod serves everything from the same Node process as the static files
     proxy: {
-      "/ws": { target: RELAY_WS, ws: true }
+      "/ws": { target: RELAY_WS, ws: true },
+      "/api/weather": { target: `http://localhost:${RELAY_PORT}` }
     },
     fs: {
       allow: [

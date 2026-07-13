@@ -1,0 +1,62 @@
+/**
+ * Production-archetype probe:
+ *   node --experimental-strip-types src/world/vegetation/nativeTreeRecipes.probe.ts
+ */
+
+import { compileTree } from "../treeCompiler/index.ts";
+import {
+  NATIVE_TREE_SPECIES,
+  createNativeTreeArchetype
+} from "./nativeTreeRecipes.ts";
+
+function assert(condition: unknown, message: string): asserts condition {
+  if (!condition) throw new Error(`Native tree archetype probe failed: ${message}`);
+}
+
+const report = [];
+
+for (let speciesIndex = 0; speciesIndex < NATIVE_TREE_SPECIES.length; speciesIndex++) {
+  const species = NATIVE_TREE_SPECIES[speciesIndex];
+  const archetype = createNativeTreeArchetype(species);
+  const prototype = compileTree(archetype.recipe, 0x51f15e + speciesIndex * 977);
+  const totalAnchors = prototype.stats.foliageAnchors;
+
+  assert(totalAnchors > 0, `${species} generated no crown anchors`);
+  assert(prototype.lods.length === archetype.recipe.lods.length, `${species} lost an LOD`);
+
+  for (let lodIndex = 0; lodIndex < prototype.lods.length; lodIndex++) {
+    const lod = prototype.lods[lodIndex];
+    const recipeLod = archetype.recipe.lods[lodIndex];
+    const silhouetteFloor = archetype.recipe.foliage.kind === "rosette" ? Math.min(3, totalAnchors) : 1;
+    const expected = Math.max(silhouetteFloor, Math.ceil(totalAnchors * recipeLod.foliageRetention));
+    assert(lod.stats.foliageAnchors === expected, `${species}/${lod.name} retained ${lod.stats.foliageAnchors}, expected ${expected}`);
+    assert(lod.foliage.vertices.length > 0, `${species}/${lod.name} crown geometry is empty`);
+    assert(lod.bounds.sphereRadius > 0, `${species}/${lod.name} bounds are empty`);
+    if (lodIndex > 0) {
+      const previous = prototype.lods[lodIndex - 1];
+      assert(previous.stats.foliageAnchors >= lod.stats.foliageAnchors, `${species}/${lod.name} is not nested`);
+      assert(previous.stats.triangles >= lod.stats.triangles, `${species}/${lod.name} exceeds the previous triangle budget`);
+    }
+  }
+
+  if (archetype.recipe.foliage.kind === "rosette") {
+    const near = prototype.lods[0].foliage.bounds;
+    const horizon = prototype.lods.at(-1)?.foliage.bounds;
+    assert(horizon, `${species} has no horizon foliage bounds`);
+    const nearHorizontal = Math.min(near.max[0] - near.min[0], near.max[2] - near.min[2]);
+    const horizonHorizontal = Math.min(horizon.max[0] - horizon.min[0], horizon.max[2] - horizon.min[2]);
+    assert(horizonHorizontal >= nearHorizontal * 0.45, `${species} horizon rosette collapsed edge-on`);
+  }
+
+  report.push({
+    species,
+    anchors: totalAnchors,
+    lods: prototype.lods.map((lod) => ({
+      name: lod.name,
+      foliage: lod.stats.foliageAnchors,
+      triangles: lod.stats.triangles
+    }))
+  });
+}
+
+console.log(JSON.stringify({ ok: true, species: report }, null, 2));

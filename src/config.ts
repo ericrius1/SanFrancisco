@@ -94,6 +94,36 @@ export const WORLD_TUNING = tunables("world", {
     label: "draw distance (m)"
   },
   fogEnabled: { v: true, label: "all fog" },
+  // Artistic output gain after the authored trims and living-weather driver.
+  // The default opens the entire city slightly; the streamed edge veil remains
+  // independent because it hides unloaded tiles rather than depicting weather.
+  fogMaster: {
+    v: 0.85,
+    min: 0,
+    max: 1.5,
+    step: 0.01,
+    format: (v: number) => `${Math.round(v * 100)}%`,
+    label: "master density"
+  },
+  // Procedural SF is always available. Live observations are eligible only
+  // while the sky follows the actual SF clock.
+  fogWeather: {
+    v: "blend",
+    options: {
+      "procedural SF": "procedural",
+      "procedural + live": "blend",
+      "live SF": "live"
+    },
+    label: "weather source"
+  },
+  fogLiveInfluence: {
+    v: 0.7,
+    min: 0,
+    max: 1,
+    step: 0.05,
+    format: (v: number) => `${Math.round(v * 100)}%`,
+    label: "live influence"
+  },
   // The five fog controls. Shape, colour, octave scales, path accumulation and
   // cull-edge calibration live together in sky.ts beside the r185 reference graph.
   //
@@ -207,10 +237,10 @@ export const GRASS_TUNING = tunables("grass", {
  * Where and how a fresh session starts. Editable in the Tab panel (persisted);
  */
 export const START_DEFAULTS = {
-  // Corona Heights summit — a code spawn (src/world/spawnPoints.ts), not a baked
-  // meta.json one. Scenic and cheap to boot: it gates no heavy foliage region.
-  spawn: "coronaHeights",
-  mode: "board" as PlayerMode
+  // Ocean Beach surf pin — a code spawn (src/world/spawnPoints.ts). Sand at the
+  // waterline facing the swell; board underarm, ready to paddle out.
+  spawn: "oceanBeach",
+  mode: "walk" as PlayerMode
 }
 
 export const START = {

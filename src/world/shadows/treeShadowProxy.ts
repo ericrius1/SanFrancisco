@@ -128,7 +128,7 @@ export function measureTreeShadowProfile(root: THREE.Object3D): TreeShadowProfil
 }
 
 /**
- * Static tree shadow massing independent of SeedThree's beauty LOD switches.
+ * Static tree shadow massing independent of the beauty-tree LOD switches.
  * Instances are split into world-space microcells so both local and far shadow
  * cameras can reject whole groves before vertex work. There are no per-frame
  * writes and no beauty-camera draw calls.

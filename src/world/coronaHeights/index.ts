@@ -1287,6 +1287,8 @@ export class CoronaHeightsPark {
   readonly owners: ParkOwner[];
   readonly stats: CoronaHeightsStats;
   readonly summit = CORONA_HEIGHTS_SUMMIT;
+  /** Main-owned detached shader preparation before lazy foliage attaches. */
+  prepareFoliage: ((group: THREE.Group) => Promise<void>) | null = null;
   onDogAudioCue: ((dog: ParkDog, cue: DogFetchAudioCue) => void) | null = null;
 
   /** Elapsed-time stamp of the latest ball/frisbee release (audio hook). */
@@ -1427,22 +1429,23 @@ export class CoronaHeightsPark {
     // The park's gameplay is always available; its live planting wakes only on
     // first approach while the master foliage toggle is enabled.
     this.#foliageLoading = import("./vegetation")
-      .then(({ createCoronaHeightsFoliage }) => {
+      .then(async ({ createCoronaHeightsFoliage }) => {
         const patch = createCoronaHeightsFoliage(this.#map, {
           hash: hash2,
           inDogPark: (x, z) => pointInPolygon(x, z, CORONA_DOG_PARK),
           distanceToTrails
         });
+        patch.update(this.#foliageFocus);
+        await patch.ready;
+        patch.update(this.#foliageFocus);
+        // The patch remains detached and visible while the app compiles it;
+        // Three skips hidden roots, and attaching first would hitch a live frame.
+        await this.prepareFoliage?.(patch.group);
         this.#foliageRuntime = patch;
         this.foliage.add(patch.group);
-        patch.update(this.#foliageFocus);
         // `foliage` was frozen with the other static Corona subtrees before
         // this lazy child existed, so explicitly establish its first world matrix.
         this.foliage.updateMatrixWorld(true);
-        void patch.ready.then(
-          () => this.foliage.updateMatrixWorld(true),
-          (error) => console.warn("[corona heights] tree foliage unavailable:", error)
-        );
       })
       .catch((error) => {
         this.#foliageLoading = null;
