@@ -1,5 +1,5 @@
 import * as THREE from "three/webgpu";
-import { setHandPose, type Rig } from "./rig";
+import { setHandPose, HAND_GRIP as GRIP_POSE, type HandPose, type Rig } from "./rig";
 import { enableShadowLayer, SHADOW_LAYERS } from "../world/shadows/shadowLayers";
 
 /**
@@ -26,8 +26,10 @@ export type GripSpec = {
    *  must run along the item's handle (the bar the fingers wrap). Rotating the
    *  frame about its own X spins the item around the grip bar. */
   rotation?: [number, number, number];
-  /** Hand curl applied on attach (default 1 = fully closed). */
-  curl?: number;
+  /** Finger shape applied on attach. A scalar 0..1 curls the whole mitt (the
+   *  old behaviour); a {@link HandPose} lets a grip pick per-finger shapes
+   *  (e.g. a loose wrap vs a pinch). Default: {@link HAND_GRIP} (wrap a bar). */
+  curl?: number | HandPose;
 };
 
 export type HeldItem = {
@@ -62,7 +64,7 @@ export function attachToHand(rig: Rig, side: "L" | "R", object: THREE.Object3D, 
   S.vec.set(spec.position[0], spec.position[1], spec.position[2]).applyQuaternion(S.quat).multiplyScalar(invScale);
   object.position.copy(HAND_GRIP).sub(S.vec);
   hand.add(object);
-  setHandPose(rig, side, spec.curl ?? 1);
+  setHandPose(rig, side, spec.curl ?? GRIP_POSE);
   return {
     object,
     side,
@@ -78,8 +80,10 @@ export function attachToHand(rig: Rig, side: "L" | "R", object: THREE.Object3D, 
 
 /** Curl the OTHER hand as if gripping the same handle (two-handed holds: golf
  *  trail hand, bow draw hand). The pose fn is responsible for actually placing
- *  that hand on the item — this only closes the fingers. */
-export function secondHandCurl(rig: Rig, side: "L" | "R", curl = 1): void {
+ *  that hand on the item — this only closes the fingers. For a two-handed hold
+ *  where the off hand should also LAND on a second grip point, drive it with
+ *  setHandTarget (handIK.ts) each frame instead. */
+export function secondHandCurl(rig: Rig, side: "L" | "R", curl: number | HandPose = GRIP_POSE): void {
   setHandPose(rig, side, curl);
 }
 

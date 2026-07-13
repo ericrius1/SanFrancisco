@@ -35,12 +35,20 @@ export type Rig = {
   handL: THREE.Group; // mitt group at the wrist tip (grip frame for held items)
   handR: THREE.Group;
   // articulated mitt joints, cached at build so setHandPose is lookup-free.
-  // fingers = proximal hinge at the palm's front-bottom edge; fingersTip nests
-  // inside it; thumb hinges on the inner palm edge and sweeps across to oppose.
+  // The finger row is split into two independently-hinged 2-segment chains so
+  // the hand can POINT (index out, rest curled) as well as grip/open: `index`
+  // is the narrow thumb-side finger, `fingers` the fused middle+ring+pinky
+  // block. Each has a proximal hinge at the palm's front-bottom edge and a
+  // distal `…Tip` nested inside. `thumb` hinges on the inner palm edge and
+  // sweeps across to oppose.
   fingersL: THREE.Group;
   fingersR: THREE.Group;
   fingersTipL: THREE.Group;
   fingersTipR: THREE.Group;
+  indexL: THREE.Group;
+  indexR: THREE.Group;
+  indexTipL: THREE.Group;
+  indexTipR: THREE.Group;
   thumbL: THREE.Group;
   thumbR: THREE.Group;
   legL: THREE.Group;
@@ -310,22 +318,37 @@ export function buildRig(avatar: AvatarTraits = DEFAULT_RIG_AVATAR): Rig {
     hand.name = side === 1 ? "hand-L" : "hand-R";
     fore.add(hand);
     part(hand, materials.skin, 0.09, 0.1, 0.11, 0, 0, 0); // palm
+    // Finger row split into two independent 2-segment chains. `fingers` is the
+    // fused middle+ring+pinky block (outer ~3/4 of the row, biased away from the
+    // thumb); `index` is the narrow thumb-side finger that can extend to point
+    // while the rest curl. Both hinge at the same palm front-bottom edge as the
+    // old single block, so a grip bar on hand local-X still closes inside them.
     const fingers = new THREE.Group(); // proximal hinge, front-bottom of palm
     fingers.name = side === 1 ? "fingers-L" : "fingers-R";
-    fingers.position.set(0, -0.038, -0.05);
+    fingers.position.set(-side * 0.016, -0.038, -0.05);
     hand.add(fingers);
-    part(fingers, materials.skin, 0.088, 0.028, 0.06, 0, -0.006, -0.022); // proximal segment
+    part(fingers, materials.skin, 0.056, 0.028, 0.06, 0, -0.006, -0.022); // proximal segment
     const fingersTip = new THREE.Group(); // distal hinge at the proximal's far edge
     fingersTip.name = side === 1 ? "fingersTip-L" : "fingersTip-R";
     fingersTip.position.set(0, -0.006, -0.05);
     fingers.add(fingersTip);
-    part(fingersTip, materials.skin, 0.084, 0.026, 0.048, 0, 0, -0.018); // distal segment
+    part(fingersTip, materials.skin, 0.052, 0.026, 0.048, 0, 0, -0.018); // distal segment
+    const index = new THREE.Group(); // thumb-side pointer finger, own hinge
+    index.name = side === 1 ? "index-L" : "index-R";
+    index.position.set(side * 0.028, -0.038, -0.05);
+    hand.add(index);
+    part(index, materials.skin, 0.026, 0.028, 0.062, 0, -0.006, -0.023); // proximal segment
+    const indexTip = new THREE.Group();
+    indexTip.name = side === 1 ? "indexTip-L" : "indexTip-R";
+    indexTip.position.set(0, -0.006, -0.052);
+    index.add(indexTip);
+    part(indexTip, materials.skin, 0.024, 0.026, 0.05, 0, 0, -0.019); // distal segment
     const thumb = new THREE.Group(); // inner-edge hinge, opposes across the palm front
     thumb.name = side === 1 ? "thumb-L" : "thumb-R";
     thumb.position.set(side * 0.045, -0.025, -0.04);
     hand.add(thumb);
     part(thumb, materials.skin, 0.028, 0.032, 0.055, side * 0.004, -0.004, -0.02);
-    return { shoulder, fore, hand, fingers, fingersTip, thumb };
+    return { shoulder, fore, hand, fingers, fingersTip, index, indexTip, thumb };
   };
   const aL = arm(1);
   const aR = arm(-1);
@@ -361,6 +384,10 @@ export function buildRig(avatar: AvatarTraits = DEFAULT_RIG_AVATAR): Rig {
     fingersR: aR.fingers,
     fingersTipL: aL.fingersTip,
     fingersTipR: aR.fingersTip,
+    indexL: aL.index,
+    indexR: aR.index,
+    indexTipL: aL.indexTip,
+    indexTipR: aR.indexTip,
     thumbL: aL.thumb,
     thumbR: aR.thumb,
     legL: lL.hip,
@@ -386,25 +413,66 @@ export function buildRig(avatar: AvatarTraits = DEFAULT_RIG_AVATAR): Rig {
   return rig;
 }
 
-/** Curl a mitt around a grip. Pure visual, layered AFTER the pose fns each
- *  frame: poses overwrite joint rotations but never touch the hand children,
- *  so there's no conflict. `curl`: 0 = open flat mitt (a relaxed rest bias
- *  keeps open fingers from reading as a rigid plank), 1 = closed — proximal
- *  ~55°, distal ~75°, thumb swept ~45° to oppose, sized so a 0.03–0.05 m bar
- *  at the grip frame (see held.ts) sits enclosed. Allocation-free. */
-export function setHandPose(rig: Rig, side: "L" | "R", curl: number): void {
-  const c = Math.min(1, Math.max(0, curl));
+/** Per-finger closure for a stylized mitt. Each channel is 0 (extended) → 1
+ *  (fully curled). Omitted channels inherit `fingers`, so a bare `{ fingers: 1 }`
+ *  still makes a fist. `spread` splays the index away from the block for open or
+ *  cradling gestures. Passing a plain number curls every channel equally (the
+ *  original single-scalar behaviour). */
+export type HandPose = {
+  /** Middle+ring+pinky block. */
+  fingers?: number;
+  /** Thumb-side pointer finger; defaults to `fingers`. */
+  index?: number;
+  /** Opposing thumb; defaults to `fingers`. */
+  thumb?: number;
+  /** 0 = index tucked against the block, 1 = index splayed outboard. */
+  spread?: number;
+};
+
+const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
+
+/** Named hand shapes for the common gestures. Reuse these instead of magic
+ *  numbers so grips/poses across the app read the same. */
+export const HAND_OPEN: HandPose = { fingers: 0, index: 0, thumb: 0 };
+export const HAND_FIST: HandPose = { fingers: 1, index: 1, thumb: 1 };
+/** Wrap a 0.03–0.05 m bar at the grip frame (see held.ts). */
+export const HAND_GRIP: HandPose = { fingers: 0.92, index: 0.92, thumb: 0.95 };
+/** Index extended, the rest curled — the wise-elder point. */
+export const HAND_POINT: HandPose = { fingers: 1, index: 0.05, thumb: 0.55 };
+/** Soft natural rest so open hands never read as rigid planks. */
+export const HAND_RELAXED: HandPose = { fingers: 0.3, index: 0.24, thumb: 0.2 };
+/** Shallow splayed cradle for holding a bowl/cup between the palms. */
+export const HAND_CUP: HandPose = { fingers: 0.5, index: 0.48, thumb: 0.55, spread: 0.5 };
+
+/** Curl a mitt. `pose` is either a single 0..1 scalar (curls the whole hand
+ *  uniformly — the old behaviour) or a {@link HandPose} for per-finger control
+ *  (point, cup, pinch…). Pure visual, layered AFTER the pose fns each frame:
+ *  poses overwrite joint rotations but never touch the hand children, so
+ *  there's no conflict. Allocation-free. */
+export function setHandPose(rig: Rig, side: "L" | "R", pose: number | HandPose): void {
   const right = side === "R";
+  const scalar = typeof pose === "number";
+  const fCurl = clamp01(scalar ? (pose as number) : (pose as HandPose).fingers ?? 0);
+  const iCurl = scalar ? fCurl : clamp01((pose as HandPose).index ?? fCurl);
+  const tCurl = scalar ? fCurl : clamp01((pose as HandPose).thumb ?? fCurl);
+  const spread = scalar ? 0 : clamp01((pose as HandPose).spread ?? 0);
+  const sideSign = right ? -1 : 1;
+
   const fingers = right ? rig.fingersR : rig.fingersL;
-  const tip = right ? rig.fingersTipR : rig.fingersTipL;
+  const fingersTip = right ? rig.fingersTipR : rig.fingersTipL;
+  const index = right ? rig.indexR : rig.indexL;
+  const indexTip = right ? rig.indexTipR : rig.indexTipL;
   const thumb = right ? rig.thumbR : rig.thumbL;
-  fingers.rotation.x = -0.3 - 0.96 * c; // rest slope + ~55° curl
-  tip.rotation.x = -0.12 - 1.31 * c; // + ~75°
+
+  fingers.rotation.x = -0.3 - 0.96 * fCurl; // rest slope + ~55° curl
+  fingersTip.rotation.x = -0.12 - 1.31 * fCurl; // + ~75°
+  index.rotation.x = -0.3 - 0.96 * iCurl;
+  index.rotation.y = sideSign * spread * 0.42; // splay the pointer outboard
+  indexTip.rotation.x = -0.12 - 1.31 * iCurl;
   // thumb hinges on the inner edge (+X for L, -X for R) and yaws across the
   // palm front to press the bar; a small x-curl drops it onto the grip
-  const sideSign = right ? -1 : 1;
-  thumb.rotation.y = sideSign * 0.8 * c;
-  thumb.rotation.x = -0.4 * c;
+  thumb.rotation.y = sideSign * 0.8 * tCurl;
+  thumb.rotation.x = -0.4 * tCurl;
 }
 
 /** Back-compat alias for the old single-flap clasp API (fetchBall, buskers). */

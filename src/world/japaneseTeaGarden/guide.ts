@@ -54,6 +54,10 @@ export type TeaGardenGuideOptions = {
   dialogueSource?: TeaGardenDialogueSource;
   voiceOutput?: VoiceOutput;
   dialogueParent?: HTMLElement;
+  /** Called when the player takes the tea from Iroh (holding=true) and when he
+   *  reclaims it on returning home (holding=false), so the host app can show a
+   *  cup in the player's own hand for the walk. */
+  onCarryCup?: (holding: boolean) => void;
 };
 
 const START_RANGE = 5.4;
@@ -127,6 +131,7 @@ export function createTeaGardenGuide(
   let arrival: (() => void) | null = null;
   const history: DialogueTurn[] = [];
   const returnPath = returnRoute();
+  let cupHandedOff = false; // becomes true when the player takes the tea (serve beat)
 
   const hideUi = () => {
     if (uiPresentation === "hidden") return;
@@ -206,6 +211,13 @@ export function createTeaGardenGuide(
         route = [];
         routePoint = 0;
         visual.group.rotation.y = GUIDE_HOME.heading;
+        // Back at the tea house he takes up a fresh bowl; the player sets theirs
+        // down, ready for the next guest.
+        if (cupHandedOff) {
+          cupHandedOff = false;
+          visual.setCarryingCup(true);
+          options.onCarryCup?.(false);
+        }
       });
       return;
     }
@@ -222,6 +234,13 @@ export function createTeaGardenGuide(
 
   const requestNextTurn = async () => {
     if (!provider || busy || disposed) return;
+    // The moment the player advances past the "share tea" (serve) beat, the tea
+    // has changed hands: free Iroh's arms and hand the cup to the player.
+    if (!cupHandedOff && currentTurn?.metadata?.tags?.some((tag) => tag === "action:serve")) {
+      cupHandedOff = true;
+      visual.setCarryingCup(false);
+      options.onCarryCup?.(true);
+    }
     busy = true;
     stopVoice();
     requestAbort?.abort();
