@@ -46,7 +46,7 @@ export const afterlightCinematic: Demo = {
       sky.cycleEnabled = false;
       sky.setTimeOfDay(20.25);
       ctx.setExposure(1.1);
-      ctx.setPostFx({ sceneSamples: 4, ink: false, dream: false, retro: false });
+      ctx.setPostFx({ ink: false, dream: false, retro: false });
       ctx.input.suspended = true;
       afterlight.resetForCinematic(1);
 

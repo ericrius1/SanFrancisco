@@ -24,9 +24,8 @@ import type { RadialLightParams } from "./radialLightTypes";
 
 /**
  * Stylized post effects, all OFF by default, toggled in the "/" panel's
- * "post fx" folder. The scene-AA-samples knob (first in the folder) sets the
- * render pipeline's MSAA level; each stylized effect is an independent
- * per-pixel stage so they stack:
+ * "post fx" folder. Each stylized effect is an independent per-pixel stage so
+ * they stack:
  *
  *  - ink & wash: pen outlines from the outline prepass's normals + depth, plus a
  *    soft luminance posterize — storybook illustration.
@@ -42,15 +41,6 @@ import type { RadialLightParams } from "./radialLightTypes";
  * JS branches only, so the mx_noise branch-corruption hazard never applies.
  */
 export const POSTFX_TUNING = tunables("postfx", {
-  sceneSamples: {
-    // WebGPU exposes only single-sample or 4x MSAA. Three maps 1/2/3 to one
-    // sample, so presenting those values only caused expensive no-op churn.
-    // The old default was 2, which was single-sample in practice; 0 preserves
-    // that rendered baseline while describing it honestly.
-    v: 0,
-    options: { Off: 0, "4×": 4 },
-    label: "scene AA samples"
-  },
   ink: { v: false, label: "ink & wash" },
   inkStrength: { v: 0.65, min: 0, max: 1, step: 0.05, label: "· ink strength" },
   inkWidth: { v: 1.5, min: 1, max: 4, step: 0.5, label: "· line width (px)" },
@@ -76,7 +66,6 @@ export const POSTFX_TUNING = tunables("postfx", {
 
 /** The keys that change the shader itself (everything else is a live uniform). */
 export const POSTFX_TOGGLES = ["ink", "dream", "retro"] as const;
-export const POSTFX_QUALITY_KEYS = ["sceneSamples"] as const;
 export const POSTFX_RADIAL_LIGHT_KEYS = [
   "museumRays",
   "museumRaysIntensity",

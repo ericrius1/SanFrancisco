@@ -30,7 +30,7 @@ export const twitterSummerShot03: Demo = {
     sky.cycleEnabled = false;
     sky.setTimeOfDay(17.62);
     ctx.setExposure(1.1);
-    ctx.setPostFx({ sceneSamples: 4, ink: false, dream: false, retro: false });
+    ctx.setPostFx({ ink: false, dream: false, retro: false });
     ctx.input.suspended = false;
 
     const drivenKeys = ["KeyW", "KeyA", "KeyD", "Space", "ShiftLeft", "KeyQ", "KeyE"];

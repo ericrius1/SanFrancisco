@@ -11,13 +11,13 @@ import { INPUT_TUNING } from "../config";
  *
  * A gamepad (Xbox standard mapping) rides the same logical rails: pollPad()
  * translates buttons into the key codes the game already reads (A→Space,
- * Y→E interact/mount like RDR2, L3→Shift boost/run, Back→map, …), the left
+ * Y→E interact/mount like RDR2, L3/LT→Shift boost/run, Back→map, …), the left
  * stick into the WASD axis pairs (radial deadzone + move curve from
  * INPUT_TUNING), the right stick into mouselook deltas outside the locked surf
  * activity (same deadzone + look curve), RT into the selected tool while walking
  * or flying as a bird (mouse-hold fire — ball / paint / bubbles; vehicles keep
  * RT as throttle and fire on X), and the triggers into the active mode's
- * throttle — fly routes them to ↑/↓, bird routes LB/RB to Q/E twirl,
+ * throttle — fly routes RT to ↑ (LT is boost), bird routes LB/RB to Q/E twirl,
  * drive/scooter map LB/RB to PadSlideLeft/Right for bumper power-slides —
  * so modes/camera never see a second input path. `device` tracks
  * whichever input was touched last; the HUD swaps its control labels off it.
@@ -54,17 +54,19 @@ function shapeAxis(v: number, deadzone: number, curve: number): number {
 
 // button index (standard mapping) → key code it impersonates. X (2) and RT (7)
 // are fire (mouse-hold equivalent for the selected tool), handled separately.
-// Dpad ↑/↓/◀/▶ emit synthetic toolbar-nav codes main.ts reads (row focus +
-// within-row cycle; map pin cycle reuses ◀/▶ while expanded). Face layout
-// follows RDR2 conventions where they map cleanly: Y is the world interact /
-// mount / dismount button (keyboard E). Boost/run/tuck live on L3 only so RT
-// can own the tool action.
+// LT (6) is boost alongside L3 (also handled in pollPad so it stays out of
+// the analog throttle). Dpad ↑/↓/◀/▶ emit synthetic toolbar-nav codes main.ts
+// reads (row focus + within-row cycle; map pin cycle reuses ◀/▶ while expanded).
+// Face layout follows RDR2 conventions where they map cleanly: Y is the world
+// interact / mount / dismount button (keyboard E). Boost/run/tuck live on L3
+// and LT so RT can own the tool action on foot.
 const PAD_BUTTONS: Record<number, string> = {
   0: "Space", //     A: jump / ollie / drift / air brake / hover
   // 1 B: unbound
   3: "KeyE", //      Y: interact / enter-exit vehicle (RDR2-style)
   4: "KeyQ", //      LB: drone down / bird twirl left / (drive also gets PadSlideLeft)
   // 5 RB: bird twirl right / drive PadSlideRight — axis/synthetic (not KeyE, which exits)
+  // 6 LT: boost / run / tuck — see pollPad (not in this table; must leave throttle)
   // 7 RT: fire — selected tool (ball / paint / bubbles); see pollPad
   8: "KeyM", //      Back/View: map (RDR2 holds Select for map; tap here)
   9: "KeyP", //      Start: pause
@@ -414,6 +416,9 @@ export class Input {
     // RT owns the selected tool on foot / as a bird. Elsewhere it is throttle
     // (drive, board, plane, …) — those modes keep fire on X.
     const rtFiresTool = this.#mode === "walk" || this.#mode === "bird";
+    // LT mirrors L3 as boost/run/tuck everywhere except surf (which still uses
+    // LT as stall) so it must not also subtract from analog throttle.
+    const ltIsBoost = this.#mode !== "surf";
     const held = new Set<string>();
     for (let i = 0; i < gp.buttons.length; i++) {
       const on = gp.buttons[i].pressed || gp.buttons[i].value > 0.5;
@@ -428,6 +433,12 @@ export class Input {
         // X: fire + map teleport
         if (on && !this.#padPrev[i]) this.firePressed = true;
         if (on) padFire = true;
+      } else if (i === 6 && ltIsBoost && !this.suspended) {
+        // LT: boost / run / tuck (same rail as L3 → ShiftLeft)
+        if (on) {
+          held.add("ShiftLeft");
+          if (!this.#padPrev[i]) this.#justPressed.add("ShiftLeft");
+        }
       } else if (i === 7 && rtFiresTool && !this.suspended) {
         // RT: selected tool (mouse-hold). Skipped while suspended — expanded map
         // uses RT for zoom, and orbit/UI should not paint.
@@ -447,7 +458,8 @@ export class Input {
     const lt = gp.buttons[6]?.value ?? 0;
     const rt = gp.buttons[7]?.value ?? 0;
     // Walk: stick-only move so holding RT to throw/paint does not also shove forward.
-    const trig = this.#mode === "walk" ? 0 : rt - lt;
+    // When LT is boost, only RT feeds forward throttle (stick back still brakes).
+    const trig = this.#mode === "walk" ? 0 : rt - (ltIsBoost ? 0 : lt);
     // bumpers: bird twirl (RB is axis-only so it doesn't impersonate KeyE / exit);
     // drive/scooter power-slide uses synthetic codes so RB never aliases KeyE.
     const lb = gp.buttons[4]?.pressed || (gp.buttons[4]?.value ?? 0) > 0.5 ? 1 : 0;

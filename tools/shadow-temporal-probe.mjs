@@ -193,7 +193,6 @@ async function configureScene(page) {
     sf.POSTFX_TUNING.values.ink = false;
     sf.POSTFX_TUNING.values.dream = false;
     sf.POSTFX_TUNING.values.retro = false;
-    sf.POSTFX_TUNING.values.sceneSamples = 0;
     sf.pipeline.applyPostFx();
     sf.WORLD_TUNING.values.fogEnabled = false;
     sf.WORLD_TUNING.values.fog = 0;

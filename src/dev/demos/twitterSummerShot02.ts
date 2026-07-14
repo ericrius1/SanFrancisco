@@ -30,7 +30,7 @@ export const twitterSummerShot02: Demo = {
     sky.cycleEnabled = false;
     sky.setTimeOfDay(16.35);
     ctx.setExposure(1.08);
-    ctx.setPostFx({ sceneSamples: 4, ink: false, dream: false, retro: false });
+    ctx.setPostFx({ ink: false, dream: false, retro: false });
     ctx.input.suspended = false;
 
     // The broad, opaque buttercup/cream blocks stay legible after a social

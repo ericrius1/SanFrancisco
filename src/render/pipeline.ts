@@ -20,11 +20,10 @@ import type { RadialLightParams, RadialLightSource } from "./radialLightTypes";
 import type { ProjectedSurfaceLightSource } from "./projectedSurfaceLightTypes";
 
 type SceneSamples = 0 | 4;
-/** "boot": compile only the active sample mode + active post-FX variant (fast,
- * covered). "full": every sample mode and all eight variants (revisit for
- * deferred-module materials). */
-type WarmupScope = "boot" | "full";
 type RuntimePassOptions = { options: { samples?: number } };
+/** "boot": compile only the active post-FX variant (fast, covered). "full":
+ * compile all eight variants (revisit for deferred-module materials). */
+type WarmupScope = "boot" | "full";
 type WarmableRenderPipeline = THREE.RenderPipeline & {
   _update: () => void;
   _quadMesh: THREE.QuadMesh;
@@ -53,11 +52,8 @@ const GPU_BUFFER_USAGE_MAP_READ = 0x0001;
 const GPU_BUFFER_USAGE_COPY_DST = 0x0008;
 const GPU_MAP_MODE_READ = 0x0001;
 
-/** WebGPU supports one effective sample or 4x MSAA; all other values are 1x. */
-const effectiveSceneSamples = (value: unknown): SceneSamples => Number(value) >= 4 ? 4 : 0;
-
 /**
- * WebGPU render graph: a scene pass owns color/MSAA, and a lightweight
+ * WebGPU render graph: a scene pass owns color/depth, and a lightweight
  * normal+depth prepass is referenced only by ink-outline variants. Each of the
  * eight post-FX combinations owns a persistent RenderPipeline/material while
  * sharing these two pass targets, so toggles select an already-built graph
@@ -79,8 +75,7 @@ export function createRenderPipeline(
   // normalNode chain (the facade's brick-bump fractal noise), re-running it over
   // the frame just to feed edge detection that does not need material-scale
   // bumps. The vertex normal is free and visually identical here.
-  // samples: 0 — multisampling this half-resolution lookup is pure bandwidth.
-  const prePass = pass(scene, camera, { samples: 0 });
+  const prePass = pass(scene, camera);
   prePass.transparent = false;
   const inkLayers = new THREE.Layers();
   inkLayers.set(0);
@@ -91,12 +86,10 @@ export function createRenderPipeline(
 
   const prePassDepth = prePass.getTextureNode("depth");
 
-  let activeSceneSamples = effectiveSceneSamples(POSTFX_TUNING.values.sceneSamples);
-  // Normalize a stale persisted 1/2/3 before Tweakpane binds to this object.
-  POSTFX_TUNING.values.sceneSamples = activeSceneSamples;
-
-  // Lit scene pass. This is where geometry AA happens; the canvas stays 1x.
-  const scenePass = pass(scene, camera, { samples: activeSceneSamples });
+  // Live play is permanently single-sample. The dev-only cinematic entry point
+  // may opt this beauty pass into 4x sampling before an offline capture; it is
+  // intentionally not a persisted setting or debug-panel control.
+  const scenePass = pass(scene, camera, { samples: 0 });
   const sceneColor = scenePass.getTextureNode();
   const sceneDepth = scenePass.getTextureNode("depth");
   // Reuse the lit pass depth so the close-contact complement adds only its
@@ -118,7 +111,11 @@ export function createRenderPipeline(
   });
   contactShadows.setEnabled(SHADOW_TUNING.values.enabled && SHADOW_TUNING.values.contactEnabled);
   const runtimeScenePass = scenePass as typeof scenePass & RuntimePassOptions;
-  const setScenePassSamples = (samples: SceneSamples) => {
+  let activeSceneSamples: SceneSamples = 0;
+  const setCinematicMultisampling = (enabled: boolean) => {
+    const samples: SceneSamples = enabled ? 4 : 0;
+    if (samples === activeSceneSamples) return;
+    activeSceneSamples = samples;
     runtimeScenePass.options.samples = samples;
     scenePass.renderTarget.samples = samples;
   };
@@ -457,20 +454,8 @@ export function createRenderPipeline(
     };
   }
 
-  const applyPostQuality = () => {
-    const samples = effectiveSceneSamples(POSTFX_TUNING.values.sceneSamples);
-    POSTFX_TUNING.values.sceneSamples = samples;
-    if (samples === activeSceneSamples) return;
-
-    activeSceneSamples = samples;
-    setScenePassSamples(samples);
-    // The scene target/pipelines necessarily change sample count. The separate
-    // fullscreen output material does not, so none of the variants is dirtied.
-  };
-
   const applyPostFx = () => {
     applyPostFxParams();
-    applyPostQuality();
     const mask = getPostFxVariantMask();
     if (mask !== activeVariantMask) activeVariantMask = mask;
     applyRadialLightFx();
@@ -541,11 +526,9 @@ export function createRenderPipeline(
   };
 
   /**
-   * Precompile both effective scene sample modes and all post-FX variants.
-   * This intentionally renders covered warmup frames so BundleGroups are also
-   * recorded for 1x, 4x, and the ink MRT context. It mutates one shared scene
-   * target sequentially and restores the selected mode last, so it does not
-   * retain duplicate full-resolution MSAA targets.
+   * Precompile the scene and post-FX variants. This intentionally renders
+   * covered warmup frames so BundleGroups are also recorded for the beauty and
+   * ink MRT contexts.
    *
    * Calls are coalesced only while running; invoking warmup again revisits the
    * scene so materials added by deferred world modules are compiled too. Call
@@ -575,7 +558,7 @@ export function createRenderPipeline(
 
     // Several warmup renders may happen before the animation loop advances its
     // frame token. Render-scoped updates guarantee that each requested sample
-    // mode actually executes its pass and records its own BundleGroups.
+    // pass actually executes and records its BundleGroups.
     scenePass.updateBeforeType = NodeUpdateType.RENDER;
     prePass.updateBeforeType = NodeUpdateType.RENDER;
     // Contact samples scenePass depth from a nested QuadMesh render. Leaving it
@@ -591,12 +574,6 @@ export function createRenderPipeline(
         markStage("outline-compile");
       }
 
-      // "boot": compile only the mode the canvas is about to show. The other
-      // MSAA mode and the seven inactive post-FX variants are debug-panel toggles
-      // — they compile lazily on first use (a single one-off hitch nobody but a
-      // tinkerer ever triggers), keeping the covered boot warmup minimal.
-      const sampleOrder: SceneSamples[] =
-        scope === "boot" ? [activeSceneSamples] : activeSceneSamples === 0 ? [4, 0] : [0, 4];
       // Visit both retained camera identities so normal and wireframe command
       // bundles coexist; finish on the live mode.
       const selectedWireframeAtStart = wireframeActive;
@@ -605,15 +582,11 @@ export function createRenderPipeline(
       for (const wireframe of wireframeModes) {
         if (wireframe) syncWireframeCamera();
         applyWireframeOverride(wireframe);
-        for (const samples of sampleOrder) {
-          setScenePassSamples(samples);
-          await compilePass(scenePass);
-          markStage(`scene-${samples || 1}x-wf${wireframe ? 1 : 0}-compile`);
-          // compileAsync does not record BundleGroups. A covered render does so
-          // without retaining a second target when the next mode replaces it.
-          activePipeline.render();
-          markStage(`scene-${samples || 1}x-wf${wireframe ? 1 : 0}-record`);
-        }
+        await compilePass(scenePass);
+        markStage(`scene-${activeSceneSamples || 1}x-wf${wireframe ? 1 : 0}-compile`);
+        // compileAsync does not record BundleGroups. A covered render does.
+        activePipeline.render();
+        markStage(`scene-${activeSceneSamples || 1}x-wf${wireframe ? 1 : 0}-record`);
       }
       if (wireframeActive) syncWireframeCamera();
       applyWireframeOverride(wireframeActive);
@@ -627,14 +600,12 @@ export function createRenderPipeline(
       // (its prepass BundleGroups otherwise record on first toggle). Finish with
       // the selected look on the canvas.
       if (needsInkWarmup) {
-        setScenePassSamples(activeSceneSamples);
         const inkPipeline = getVariantPipeline(INK_VARIANT_MASK);
         inkPipeline.render();
         if (inkPipeline !== activePipeline) activePipeline.render();
         markStage("ink-record");
       }
     } finally {
-      setScenePassSamples(activeSceneSamples);
       if (wireframeActive) syncWireframeCamera();
       applyWireframeOverride(wireframeActive);
       scenePass.updateBeforeType = sceneUpdateType;
@@ -670,6 +641,7 @@ export function createRenderPipeline(
 
   const render = () => {
     if (wireframeActive) syncWireframeCamera();
+    projectedSource?.setViewPosition(camera.position as THREE.Vector3);
     if (projectedSource?.active) ensureProjectedRuntime();
     else if (projectedActive) selectActivePipeline();
     if (projectedActive) {
@@ -752,10 +724,10 @@ export function createRenderPipeline(
     get pipeline() {
       return activePipeline;
     },
-    /** Apply live scene AA changes without rebuilding the output material. */
-    applyPostQuality,
     /** Select the cached post-FX graph after a toggle change. */
     applyPostFx,
+    /** Dev-capture only: opt the beauty pass into 4x sampling for film renders. */
+    setCinematicMultisampling,
     /** Attach/detach an optional interior-only radial-light source. */
     setRadialLightSource,
     /** Attach/detach a bounded, lazy close-range surface-light source. */
@@ -784,8 +756,10 @@ export function createRenderPipeline(
     queueFastFrame,
     drainFastFrame,
     fastCaptureSize: fastCaptureTarget ? [fastCaptureTarget.width, fastCaptureTarget.height] as const : null,
-    /** Precompile scene/sample/effect variants; safe to repeat after new loads. */
+    /** Precompile scene/effect variants; safe to repeat after new loads. */
     warmup,
+    /** Compile every retained post-FX style graph so "/" toggles stay hitch-free. */
+    warmupPostFx: () => compilePostFxVariants(POSTFX_VARIANT_MASKS),
     /** Stable half-resolution close-contact complement and live controls. */
     contactShadows
   };

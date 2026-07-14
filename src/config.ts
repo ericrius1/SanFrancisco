@@ -19,8 +19,7 @@ export const LIGHT_SCALE = (100 / 6) * EXPOSURE_REBASE
 /**
  * Universal render settings live with the systems they configure: drawing-buffer
  * pixel ratio in RENDER_TUNING (default 1, slider 0.5–2; devicePixelRatio is
- * ignored), scene AA in POSTFX_TUNING.sceneSamples (render/postfx.ts), and CSM
- * shadow knobs via SHADOW_TUNING (world/sky.ts). The old quality-preset /
+ * ignored), and CSM shadow knobs via SHADOW_TUNING (world/sky.ts). The old quality-preset /
  * dynamic-res governor stack was removed — one default, optional "/" overrides.
  */
 

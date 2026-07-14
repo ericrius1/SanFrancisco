@@ -34,7 +34,7 @@ export const palaceReverieCinematic: Demo = {
     ctx.sky.cycleEnabled = false;
     ctx.sky.setTimeOfDay(19.92);
     ctx.setExposure(1.1);
-    ctx.setPostFx({ sceneSamples: 4, ink: false, dream: true, retro: false });
+    ctx.setPostFx({ ink: false, dream: true, retro: false });
     ctx.input.suspended = true;
     ctx.minimap?.setExpanded(false);
 

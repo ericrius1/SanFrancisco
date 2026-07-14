@@ -32,7 +32,7 @@ export const twitterSummerShot01: Demo = {
     sky.cycleEnabled = false;
     sky.setTimeOfDay(6.72);
     ctx.setExposure(1.16);
-    ctx.setPostFx({ sceneSamples: 4, ink: false, dream: false, retro: false });
+    ctx.setPostFx({ ink: false, dream: false, retro: false });
     ctx.input.suspended = false;
     for (const key of DRIVEN_KEYS) ctx.input.keys.delete(key);
 

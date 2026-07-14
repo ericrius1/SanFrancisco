@@ -21,7 +21,6 @@ import { SKY_TUNING, type Sky } from "../world/sky";
 import {
   POSTFX_TUNING,
   POSTFX_TOGGLES,
-  POSTFX_QUALITY_KEYS,
   POSTFX_RADIAL_LIGHT_KEYS,
   applyPostFxParams
 } from "../render/postfx";
@@ -40,9 +39,9 @@ import type { OverlayContextFlags } from "./overlays/manager";
 
 type DebugRenderPipeline = {
   applyPostFx: () => void;
-  applyPostQuality: () => void;
   applyRadialLightFx: () => void;
   setWireframe: (on: boolean) => void;
+  warmupPostFx?: () => Promise<void>;
   contactShadows: Pick<ContactShadowComplement, "configure" | "setEnabled">;
 };
 
@@ -198,7 +197,14 @@ export class DebugPanel {
     this.visible = !this.visible;
     if (this.visible && !this.#pane) this.#build();
     if (this.#root) this.#root.style.display = this.visible ? "" : "none";
-    if (this.visible) this.#onOpen();
+    if (this.visible) {
+      this.#onOpen();
+      // Boot only warms the active look; finish the other seven in the background
+      // so ink/dream/retro toggles swap retained pipelines without a compile hitch.
+      void this.#postfx?.warmupPostFx?.().catch((err) => {
+        console.warn("[debug] post-fx warmup failed:", err);
+      });
+    }
   }
 
   /** Movement tuning is context-dependent — only the active mode's folder shows. */
@@ -461,14 +467,18 @@ export class DebugPanel {
   }
 
   #build() {
-    // Tweakpane checkboxes put an SVG checkmark mark over a zero-size <input>.
-    // Clicks on that SVG do not activate the <label> (SVG hit-testing quirk), so
-    // the visible box looks dead — especially when unchecked (invisible path
-    // still captures the pointer). Let clicks fall through to the label/wrap.
+    // Tweakpane checkboxes: the real <input> is opacity:0 and 0×0, while the
+    // visible mark sits in a sibling. Label mousedown calls preventDefault (to
+    // avoid text selection), which also cancels the label→input activation, so
+    // clicks on the visible box do nothing. Size the input to the mark and make
+    // the decorative sibling ignore pointers so the input receives the click.
     if (!document.getElementById("sf-tp-checkbox-fix")) {
       const style = document.createElement("style");
       style.id = "sf-tp-checkbox-fix";
-      style.textContent = ".tp-ckbv_w svg{pointer-events:none}";
+      style.textContent = [
+        ".tp-ckbv_i{width:var(--cnt-usz,20px);height:var(--cnt-usz,20px);z-index:1;cursor:pointer}",
+        ".tp-ckbv_w,.tp-ckbv_w *{pointer-events:none}"
+      ].join("");
       document.head.appendChild(style);
     }
 
@@ -695,9 +705,6 @@ export class DebugPanel {
       onChange: (key, _value, last) => {
         if (this.#syncingPane) return;
         if ((POSTFX_TOGGLES as readonly string[]).includes(key)) this.#postfx?.applyPostFx();
-        else if ((POSTFX_QUALITY_KEYS as readonly string[]).includes(key)) {
-          if (last) this.#postfx?.applyPostQuality();
-        }
         else if ((POSTFX_RADIAL_LIGHT_KEYS as readonly string[]).includes(key)) {
           if (key !== "museumRaysResolution" || last) this.#postfx?.applyRadialLightFx();
         } else applyPostFxParams();

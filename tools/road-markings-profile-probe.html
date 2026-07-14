@@ -20,7 +20,7 @@
     window.addEventListener("error", (e) => { status.textContent = `error: ${e.message}`; document.title = "road-markings-error"; });
     window.addEventListener("unhandledrejection", (e) => { status.textContent = `rejection: ${e.reason}`; document.title = "road-markings-error"; });
     if (!navigator.gpu) throw new Error("WebGPU is required for this project probe");
-    const rendererOptions = { antialias: true, getFallback: null };
+        const rendererOptions = { getFallback: null };
     const renderer = new THREE.Renderer(
       new THREE.WebGPUBackend(rendererOptions),
       rendererOptions

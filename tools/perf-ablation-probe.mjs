@@ -1,12 +1,11 @@
-// GPU/quality ablation: at a fixed stop, toggle one thing at a time and measure
-// the GPU-synced frame delta. Isolates: fog node, MSAA samples, dpr, shadow
-// quality (fresh boot per shadow config to dodge the destroyed-texture bug),
-// foliage visibility, water visibility.
+// Drawing-buffer resolution probe at a fixed stop. Each candidate is measured
+// between two DPR-1 control runs so thermal/load drift does not masquerade as a
+// resolution cost.
 //
 //   node tools/perf-ablation-probe.mjs [downtown|meadow]
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -141,60 +140,41 @@ async function main() {
   console.log(`[ablate:${WHERE}] settled ~${draws} draws/frame`);
 
   const rows = [];
-  const run = async (label) => {
+  const run = async (label, dpr) => {
+    const size = await ev(c, `(()=>{const sf=window.__sf;
+      sf.renderer.setPixelRatio(${dpr});
+      sf.renderer.setSize(window.innerWidth, window.innerHeight);
+      const out=sf.renderer.getDrawingBufferSize(new sf.THREE.Vector2());
+      return { width: out.x, height: out.y };
+    })()`);
     const m = await ev(c, timeExpr(MEASURE));
-    rows.push({ label, ...m });
-    console.log(`  ${label.padEnd(34)} frame p50 ${String(m.tot).padStart(6)}ms  cpu ${String(m.cpu).padStart(6)}ms`);
+    const row = { label, dpr, ...size, ...m, gpuResidue: +(m.tot - m.cpu).toFixed(2) };
+    rows.push(row);
+    console.log(`  ${label.padEnd(24)} ${String(size.width + "x" + size.height).padStart(10)}  frame ${String(m.tot).padStart(6)}ms  cpu ${String(m.cpu).padStart(6)}ms`);
+    return row;
   };
 
-  await run("BASE dpr1 samples? fog-on foliage-on");
-  // fog off
-  await ev(c, `(()=>{const sf=window.__sf; sf.WORLD_TUNING.values.fogEnabled=false; sf.sky.applyFogParams(); return true;})()`);
-  await run("fog OFF");
-  await ev(c, `(()=>{const sf=window.__sf; sf.WORLD_TUNING.values.fogEnabled=true; sf.sky.applyFogParams(); return true;})()`);
-  // MSAA sweep
-  for (const s of [2, 4]) {
-    await ev(c, `(()=>{const sf=window.__sf; sf.POSTFX_TUNING.values.sceneSamples=${s}; sf.pipeline.applyPostQuality(); return true;})()`);
-    await run(`MSAA ${s}`);
+  const comparisons = [];
+  for (const dpr of [1.25, 1.5, 2]) {
+    const before = await run(`control before ${dpr}`, 1);
+    const candidate = await run(`candidate dpr ${dpr}`, dpr);
+    const after = await run(`control after ${dpr}`, 1);
+    const baseFrame = (before.tot + after.tot) / 2;
+    const baseGpu = (before.gpuResidue + after.gpuResidue) / 2;
+    comparisons.push({
+      dpr,
+      pixelMultiplier: +(dpr * dpr).toFixed(4),
+      frameDeltaMs: +(candidate.tot - baseFrame).toFixed(2),
+      gpuResidueDeltaMs: +(candidate.gpuResidue - baseGpu).toFixed(2)
+    });
   }
-  await ev(c, `(()=>{const sf=window.__sf; sf.POSTFX_TUNING.values.sceneSamples=0; sf.pipeline.applyPostQuality(); return true;})()`);
-  // dpr sweep
-  for (const d of [1.25, 1.5]) {
-    await ev(c, `(()=>{const sf=window.__sf; sf.renderer.setPixelRatio(${d}); sf.renderer.setSize(window.innerWidth, window.innerHeight); return true;})()`);
-    await run(`dpr ${d}`);
-  }
-  await ev(c, `(()=>{const sf=window.__sf; sf.renderer.setPixelRatio(1); sf.renderer.setSize(window.innerWidth, window.innerHeight); return true;})()`);
-  // foliage off (scene-side hide of garden/wildlands groups via names)
-  const hid = await ev(c, `(()=>{
-    const sf=window.__sf; let n=0;
-    sf.scene.traverse(o=>{ if(o.name==="botanical-garden"||o.name==="wildlands"||/nativeTreeForest|grass|flower/i.test(o.name)){ if(o.parent===sf.scene||o.name==="botanical-garden"||o.name==="wildlands"){o.visible=false;n++;} } });
-    return n;
-  })()`);
-  await run(`foliage OFF (hid ${hid} roots)`);
-  await ev(c, `(()=>{const sf=window.__sf; sf.scene.traverse(o=>{ if(o.name==="botanical-garden"||o.name==="wildlands"||/nativeTreeForest|grass|flower/i.test(o.name)){ o.visible=true; } }); return true;})()`);
-  // combined candidate: dpr1.5 + MSAA2
-  await ev(c, `(()=>{const sf=window.__sf; sf.renderer.setPixelRatio(1.5); sf.renderer.setSize(window.innerWidth, window.innerHeight); sf.POSTFX_TUNING.values.sceneSamples=2; sf.pipeline.applyPostQuality(); return true;})()`);
-  await run("CANDIDATE dpr1.5 + MSAA2 (no shadows)");
   c.close(); proc.kill();
 
-  // ---- session 2: shadows on, fresh boot. Shadow quality is fixed now
-  // (universal render mode) — the old low/high tiers are gone, so this is a
-  // single measurement of the shipping shadowed frame. Shadows are on at boot,
-  // so no setShadowQuality poke (that API is gone anyway).
-  for (const sq of ["on"]) {
-    const { c: c2, proc: p2 } = await bootPage(chrome, `chrome-${sq}`);
-    await ev(c2, `(()=>{const sf=window.__sf;
-      sf.renderer.shadowMap.enabled = true;
-      sf.renderer.setPixelRatio(1.5); sf.renderer.setSize(window.innerWidth, window.innerHeight);
-      sf.POSTFX_TUNING.values.sceneSamples=2; sf.pipeline.applyPostQuality();
-      return true;})()`);
-    await settle(c2);
-    const m = await ev(c2, timeExpr(MEASURE));
-    rows.push({ label: `CANDIDATE + shadows ${sq}`, ...m });
-    console.log(`  ${("CANDIDATE + shadows " + sq).padEnd(34)} frame p50 ${String(m.tot).padStart(6)}ms  cpu ${String(m.cpu).padStart(6)}ms`);
-    c2.close(); p2.kill();
+  writeFileSync(path.join(OUT, "results.json"), JSON.stringify({ where: WHERE, width: W, height: H, stop: STOP, rows, comparisons }, null, 2));
+  console.log("\n[drift-controlled DPR deltas]");
+  for (const row of comparisons) {
+    console.log(`  dpr ${row.dpr.toFixed(2)} (${row.pixelMultiplier.toFixed(2)}x pixels): frame ${row.frameDeltaMs >= 0 ? "+" : ""}${row.frameDeltaMs}ms, gpu residue ${row.gpuResidueDeltaMs >= 0 ? "+" : ""}${row.gpuResidueDeltaMs}ms`);
   }
-
   console.log("\n[ablate] done");
   if (dev) dev.kill();
   process.exit(0);

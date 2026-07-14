@@ -150,7 +150,7 @@
           return;
         }
 
-        const rendererOptions = { antialias: false, getFallback: null };
+        const rendererOptions = { getFallback: null };
         const renderer = new THREE.Renderer(
           new THREE.WebGPUBackend(rendererOptions),
           rendererOptions

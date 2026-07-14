@@ -20,9 +20,15 @@ import {
   type ProjectedSurfaceLightSource
 } from "./projectedSurfaceLightTypes";
 
-const RESOLUTION_SCALE = 0.5;
-const HEIGHT_FADE_START = 1.8;
-const HEIGHT_FADE_END = 3.2;
+// These are broad, low-frequency six-metre pools. One-third resolution plus
+// hardware bilinear upsampling preserves the gradient while keeping the hero
+// complement well below the cost of another full scene-lighting path.
+const RESOLUTION_SCALE = 0.35;
+// SF's road/sidewalk meshes can be separate sloped ribbons whose interpolated
+// elevations differ at a segment seam. Horizontal XZ projection bridges those
+// ribbons; this vertical band still prevents roofs above a lamp from glowing.
+const HEIGHT_FADE_START = 2;
+const HEIGHT_FADE_END = 4;
 
 /**
  * Fixed-budget close lighting complement. It reconstructs the already-visible
@@ -168,8 +174,11 @@ class ProjectedSurfaceLightPassNode extends THREE.TempNode {
         const normalAndWeight: any = this.#normalsNode.element(i);
         const lightNormal = normalAndWeight.xyz.normalize();
         const delta = receiverWorld.sub(positionAndRadius.xyz).toVar();
-        const height = delta.dot(lightNormal);
-        const planarDistance = delta.sub(lightNormal.mul(height)).length();
+        const height = delta.y;
+        // Use the map's common horizontal coordinates rather than one ribbon's
+        // tangent plane. That is the seam-proof part: adjacent road/sidewalk
+        // meshes may disagree on slope/elevation but agree on XZ coverage.
+        const planarDistance = delta.xz.length();
         const radial = saturate(planarDistance.div(positionAndRadius.w.max(0.01)))
           .oneMinus()
           .pow(2);
@@ -178,12 +187,10 @@ class ProjectedSurfaceLightPassNode extends THREE.TempNode {
           HEIGHT_FADE_END,
           height.abs()
         ).oneMinus();
-        // Upward/terrain-aligned receivers participate; façades and the sides
-        // of curbs/vehicles do not turn into glowing vertical billboards.
         const facing = smoothstep(
           0.08,
           0.58,
-          receiverNormal.dot(lightNormal)
+          receiverNormal.dot(lightNormal).abs()
         );
         accumulated.addAssign(
           color(0xffb866)

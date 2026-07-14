@@ -97,57 +97,58 @@ const PAD: Record<PlayerMode, Row[]> = {
   walk: [
     { c: ["RS"], label: "look" },
     { c: ["LS"], label: "move" },
-    { c: ["L3"], label: "run" },
+    { c: ["L3", "LT"], label: "run" },
     { c: ["A"], label: "jump" },
     { c: ["Y"], label: "hop on a ride" },
     { c: ["RT"], label: "shoot" }
   ],
   drive: [
     { c: ["RS"], label: "look" },
-    { c: ["RT", "LT"], label: "gas · brake" },
+    { c: ["RT"], label: "gas" },
     { c: ["LS"], label: "steer" },
     { c: ["LB", "RB"], label: "power slide" },
     { c: ["A"], label: "handbrake" },
-    { c: ["L3"], label: "boost" },
+    { c: ["L3", "LT"], label: "boost" },
     { c: ["Y"], label: "get out" },
     { c: ["X"], label: "shoot" }
   ],
   scooter: [
     { c: ["RS"], label: "look" },
-    { c: ["RT", "LT"], label: "go · reverse" },
+    { c: ["RT"], label: "go" },
     { c: ["LS"], label: "steer" },
     { c: ["LB", "RB"], label: "power slide" },
     { c: ["A"], label: "handbrake" },
-    { c: ["L3"], label: "boost" },
+    { c: ["L3", "LT"], label: "boost" },
     { c: ["Y"], label: "hop off" }
   ],
   plane: [
     { c: ["RS"], label: "aim nose" },
     { c: ["LS"], label: "turn" },
-    { c: ["RT", "LT"], label: "throttle" },
-    { c: ["L3"], label: "boost" },
+    { c: ["RT"], label: "throttle" },
+    { c: ["L3", "LT"], label: "boost" },
     { c: ["A"], label: "air brake" },
     { c: ["X"], label: "shoot" }
   ],
   boat: [
     { c: ["RS"], label: "look" },
-    { c: ["RT", "LT"], label: "throttle" },
+    { c: ["RT"], label: "throttle" },
     { c: ["LS"], label: "steer" },
-    { c: ["L3"], label: "boost" },
+    { c: ["L3", "LT"], label: "boost" },
     { c: ["X"], label: "shoot" }
   ],
   speedboat: [
     { c: ["RS"], label: "look" },
-    { c: ["RT", "LT"], label: "throttle" },
+    { c: ["RT"], label: "throttle" },
     { c: ["LS"], label: "steer" },
-    { c: ["L3"], label: "boost" },
+    { c: ["L3", "LT"], label: "boost" },
     { c: ["Y"], label: "get out" },
     { c: ["X"], label: "shoot" }
   ],
   drone: [
     { c: ["RS"], label: "aim" },
     { c: ["LS"], label: "move" },
-    { c: ["RT", "LT"], label: "up · down" },
+    { c: ["RT", "LB"], label: "up · down" },
+    { c: ["L3", "LT"], label: "boost" },
     { c: ["A"], label: "hover" },
     { c: ["Y"], label: "land" },
     { c: ["X"], label: "shoot" }
@@ -156,10 +157,9 @@ const PAD: Record<PlayerMode, Row[]> = {
     { c: ["RS ↔"], label: "look" },
     { c: ["RS ↕"], label: "pitch · hold to flip" },
     { c: ["RT"], label: "push" },
-    { c: ["LT"], label: "reverse" },
     { c: ["LS"], label: "carve" },
     { c: ["A"], label: "ollie" },
-    { c: ["L3"], label: "boost" },
+    { c: ["L3", "LT"], label: "boost" },
     { c: ["X"], label: "shoot" }
   ],
   surf: [
@@ -174,7 +174,7 @@ const PAD: Record<PlayerMode, Row[]> = {
     { c: ["RS"], label: "aim" },
     { c: ["LS"], label: "move" },
     { c: ["A"], label: "flap · climb" },
-    { c: ["L3"], label: "tuck dive" },
+    { c: ["L3", "LT"], label: "tuck dive" },
     { c: ["LB", "RB"], label: "twirl" },
     { c: ["RT"], label: "shoot" }
   ]

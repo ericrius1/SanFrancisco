@@ -22,10 +22,13 @@ const W = 1600, H = 1000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // [name, x, z, facing(rad)]
-const VIEWS = [
+const ALL_VIEWS = [
   ["fidi", 4260, 420, -2.4],
   ["residential", 900, 2400, 0.8]
 ];
+const VIEWS = process.env.SF_PROBE_ONE
+  ? ALL_VIEWS.filter(([name]) => name === process.env.SF_PROBE_ONE)
+  : ALL_VIEWS;
 
 async function isFile(p) { try { return existsSync(p); } catch { return false; } }
 async function findChrome() {
@@ -83,9 +86,9 @@ async function settle(c, n) { for (let i = 0; i < n; i++) { await ev(c, frame(0)
 // is swamped by the shadow throttle's per-frame cascade-parity swing (±100 draws,
 // several ms). Toggling the lamp group ON then OFF every iteration and taking the
 // median of each cancels that slow drift, so the median-difference isolates the
-// lamp meshes' own cost. The 3 InstancedMeshes are exactly 3 draw calls; their
-// triangles are computed analytically (resident × per-lamp tris) since the WebGPU
-// info.triangles counter reads 0 here.
+// lamp system's total cost, including the lazy projected pass. Its retained
+// geometry remains exactly 3 InstancedMesh draws; those triangles are computed
+// analytically (resident × per-lamp tris) since WebGPU info.triangles reads 0.
 async function measure(c) {
   return await ev(c, `(async()=>{
     const r=window.__sf.renderer, dev=r.backend&&r.backend.device, sl=window.__sf.streetLamps;
@@ -93,11 +96,12 @@ async function measure(c) {
     const geoTris=(m)=>{const g=m.geometry;return g.index?g.index.count/3:g.attributes.position.count/3;};
     const meshes=sl.group.children;
     const perLampTris=meshes.reduce((s,m)=>s+geoTris(m),0);
-    for(let i=0;i<8;i++){window.__sf.tick(1/60);await sync();}
+    for(let i=0;i<8;i++){sl.group.visible=(i&1)===0;window.__sf.tick(1/60);await sync();}
     const on=[],off=[];const N=60;
     for(let i=0;i<N;i++){
-      sl.group.visible=true;  let a=performance.now(); window.__sf.tick(1/60); await sync(); on.push(performance.now()-a);
-      sl.group.visible=false; let b=performance.now(); window.__sf.tick(1/60); await sync(); off.push(performance.now()-b);
+      const sample=async(visible,bucket)=>{sl.group.visible=visible;const t=performance.now();window.__sf.tick(1/60);await sync();bucket.push(performance.now()-t);};
+      if((i&1)===0){await sample(true,on);await sample(false,off);}
+      else{await sample(false,off);await sample(true,on);}
     }
     sl.group.visible=true;
     const med=(xs)=>{xs=[...xs].sort((p,q)=>p-q);return +xs[xs.length>>1].toFixed(2);};
@@ -121,7 +125,6 @@ async function shot(c, name) {
   writeFileSync(file, Buffer.from(s.data, "base64"));
   return file;
 }
-
 async function main() {
   mkdirSync(OUT, { recursive: true });
   const dev = await startDevIfNeeded();
@@ -144,16 +147,19 @@ async function main() {
   }
   if (!page) throw new Error("no app page target");
   const c = new Cdp(page.webSocketDebuggerUrl);
+  const networkRequests = [];
   c.onEvent = (m) => {
     if (m.method === "Runtime.exceptionThrown") {
       const d = m.params.exceptionDetails;
       console.log("[page-exception]", (d.exception && (d.exception.description || d.exception.value)) || d.text);
     } else if (m.method === "Inspector.targetCrashed") {
       console.log("[TARGET CRASHED]");
+    } else if (m.method === "Network.requestWillBeSent") {
+      networkRequests.push(m.params.request.url);
     }
   };
   await c.open();
-  await c.send("Page.enable"); await c.send("Runtime.enable"); await c.send("Inspector.enable");
+  await c.send("Page.enable"); await c.send("Runtime.enable"); await c.send("Inspector.enable"); await c.send("Network.enable");
   await c.send("Emulation.setDeviceMetricsOverride", { width: W, height: H, deviceScaleFactor: 1, mobile: false });
 
   console.log("[probe] waiting for __sf...");
@@ -166,6 +172,8 @@ async function main() {
   await settle(c, 10);
 
   const report = {};
+  const projectedRequests = () => networkRequests.filter((url) => url.includes("projectedSurfaceLights"));
+  const bootProjectedRequests = projectedRequests();
   for (const [name, x, z, facing] of VIEWS) {
     try {
       await teleport(c, x, z, facing);
@@ -175,6 +183,7 @@ async function main() {
       await ev(c, `window.__sf.sky.setTimeOfDay(23)`);
       for (let i = 0; i < 20; i++) { await tick(c, 1 / 60); await sleep(20); }
       const night = await lampState(c);
+      const nightProjectedRequests = projectedRequests();
       const nightFile = await shot(c, `${name}-night`);
 
       // cost: paired on/off frame timing + deterministic draws/tris
@@ -184,6 +193,7 @@ async function main() {
       await ev(c, `window.__sf.sky.setTimeOfDay(13)`);
       for (let i = 0; i < 20; i++) { await tick(c, 1 / 60); await sleep(20); }
       const day = await lampState(c);
+      const dayProjectedRequests = projectedRequests();
       const dayFile = await shot(c, `${name}-day`);
 
       report[name] = {
@@ -191,6 +201,11 @@ async function main() {
         nightDiscVisible: night.discVisible, dayDiscVisible: day.discVisible,
         projected: night.projected, projectedSourceActive: night.sourceActive,
         projectedSourceCount: night.sourceCount, projectedSourceIntensity: night.sourceIntensity,
+        lazyRequests: {
+          boot: bootProjectedRequests,
+          firstNight: nightProjectedRequests,
+          subsequentDay: dayProjectedRequests
+        },
         drawsAdded: cost.draws, perLampTris: cost.perLampTris, trisAdded: cost.tris,
         onP50: cost.onP50, offP50: cost.offP50, dMs: cost.dMs,
         night: nightFile, day: dayFile

@@ -153,8 +153,8 @@ export class StreetLamps {
     { length: MAX_PROJECTED_SURFACE_LIGHTS },
     () => new THREE.Vector4(0, 1, 0, 0)
   );
-  #playerX = Infinity;
-  #playerZ = Infinity;
+  #viewX = Infinity;
+  #viewZ = Infinity;
 
   constructor(scene: THREE.Scene, map: WorldMap, roads: RoadGraph) {
     this.#map = map;
@@ -172,6 +172,10 @@ export class StreetLamps {
       },
       copyLight(index, positionAndRadius, normalAndWeight) {
         owner.#copyProjectedLight(index, positionAndRadius, normalAndWeight);
+      },
+      setViewPosition(position) {
+        owner.#viewX = position.x;
+        owner.#viewZ = position.z;
       },
       setProjectionReady(ready) {
         owner.#projectionReady.value = ready ? 1 : 0;
@@ -360,8 +364,6 @@ export class StreetLamps {
   }
 
   update(playerPos: THREE.Vector3): void {
-    this.#playerX = playerPos.x;
-    this.#playerZ = playerPos.z;
     // no additive draw by day — the intensity uniform is the on/off switch
     this.#discs.visible = STREET_LAMPS_INTENSITY.value > 0.01;
     if (this.#count === 0) return;
@@ -491,8 +493,8 @@ export class StreetLamps {
     const end2 = HERO_END_R * HERO_END_R;
     for (let i = 0; i < this.#heroCount; i++) {
       const p = this.#heroPositions[i];
-      const dx = p.x - this.#playerX;
-      const dz = p.z - this.#playerZ;
+      const dx = p.x - this.#viewX;
+      const dz = p.z - this.#viewZ;
       if (dx * dx + dz * dz < end2) return true;
     }
     return false;
@@ -505,8 +507,8 @@ export class StreetLamps {
   ): void {
     positionAndRadius.copy(this.#heroPositions[index]);
     normalAndWeight.copy(this.#heroNormals[index]);
-    const dx = positionAndRadius.x - this.#playerX;
-    const dz = positionAndRadius.z - this.#playerZ;
+    const dx = positionAndRadius.x - this.#viewX;
+    const dz = positionAndRadius.z - this.#viewZ;
     const distance = Math.hypot(dx, dz);
     const t = THREE.MathUtils.clamp(
       (distance - HERO_FULL_R) / (HERO_END_R - HERO_FULL_R),

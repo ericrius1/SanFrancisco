@@ -16,6 +16,8 @@ export interface ProjectedSurfaceLightSource {
     positionAndRadius: THREE.Vector4,
     normalAndWeight: THREE.Vector4
   ): void;
+  /** Updates camera-relative activation/crossfade without allocating light data. */
+  setViewPosition(position: THREE.Vector3): void;
   /** Keeps the cheap geometry fallback visible until the render graph is ready. */
   setProjectionReady(ready: boolean): void;
 }

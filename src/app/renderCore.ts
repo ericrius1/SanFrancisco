@@ -38,10 +38,8 @@ export async function createRenderCore(app: HTMLElement): Promise<RenderCore> {
   }
 
   // Reversed float depth keeps distant near-coplanar facades stable out to the
-  // 24 km far plane. Canvas AA stays off because every pixel routes through the
-  // post pipeline, which owns the scene sample count.
+  // 24 km far plane. Every pixel routes through the post pipeline.
   const renderer: THREE.WebGPURenderer = new WebGPUOnlyRenderer({
-    antialias: false,
     reversedDepthBuffer: true
   });
   renderer.setPixelRatio(RENDER_TUNING.values.pixelRatio);

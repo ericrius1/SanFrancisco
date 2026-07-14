@@ -25,7 +25,7 @@ export const roqnOpenRoadCinematic: Demo = {
     sky.cycleEnabled = false;
     sky.setTimeOfDay(7.15);
     ctx.setExposure(1.12);
-    ctx.setPostFx({ sceneSamples: 4, ink: false, dream: false, retro: false });
+    ctx.setPostFx({ ink: false, dream: false, retro: false });
     ctx.input.suspended = false;
     const drivenKeys = ["KeyW", "KeyA", "KeyD", "KeyQ", "KeyE", "ShiftLeft", "Space"];
     for (const key of drivenKeys) ctx.input.keys.delete(key);

@@ -27,7 +27,7 @@ export const hoverboardCinematic: Demo = {
     ctx.sky.cycleEnabled = false;
     ctx.sky.setTimeOfDay(19.15);
     ctx.setExposure(1.08);
-    ctx.setPostFx({ sceneSamples: 4, ink: false, dream: false, retro: false });
+    ctx.setPostFx({ ink: false, dream: false, retro: false });
     ctx.input.suspended = false;
     ctx.input.keys.delete("KeyW");
     ctx.input.keys.delete("ShiftLeft");

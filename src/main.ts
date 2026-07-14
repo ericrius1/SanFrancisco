@@ -4308,6 +4308,11 @@ async function boot() {
     };
     const runDevDemo = async (name: string): Promise<void> => {
       await ensureDemoSite(name);
+      // Cinematic pages trade throughput for cleaner geometry edges. This is
+      // deliberately outside persisted render settings and never runs during
+      // ordinary real-time play.
+      pipeline.setCinematicMultisampling(true);
+      await pipeline.warmup("boot");
       const { runDemo } = await import("./dev/demo");
       runDemo(name, demoCtx);
     };

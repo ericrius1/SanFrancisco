@@ -26,7 +26,7 @@ export const dogParkCinematic: Demo = {
     ctx.sky.cycleEnabled = false;
     ctx.sky.setTimeOfDay(18.72);
     ctx.setExposure(1.14);
-    ctx.setPostFx({ sceneSamples: 4, ink: false, dream: false, retro: false });
+    ctx.setPostFx({ ink: false, dream: false, retro: false });
     ctx.setTool?.("ball");
     ctx.input.suspended = false;
     fetch.resetForCinematic();

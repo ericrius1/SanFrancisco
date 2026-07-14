@@ -4,10 +4,7 @@
 //   cpuMs    — performance.now() around tick() alone (CPU: sim + encode)
 //   frameMs  — tick() + queue.onSubmittedWorkDone() (serialized CPU+GPU)
 //   gpu≈     — frameMs − cpuMs (rough GPU-side residue)
-// at three quality tiers (emulating the old presets):
-//   P: dpr 1.0, shadows off,  samples 0   (old "performance" default)
-//   B: dpr 1.5, shadows low,  samples 2   (old "balanced" — user reports 20-30fps)
-//   H: dpr 1.5, shadows high, samples 4   (old "high")
+// across representative drawing-buffer ratios, with a shadow-off control.
 // plus renderer.info draw calls / triangles per stop.
 //
 //   node tools/perf-baseline-probe.mjs
@@ -37,9 +34,10 @@ const STOPS = [
 ];
 
 const TIERS = [
-  { key: "P dpr1 sh-off s0", dpr: 1.0, shadows: "off", samples: 0 },
-  { key: "B dpr1.5 sh-low s2", dpr: 1.5, shadows: "low", samples: 2 },
-  { key: "H dpr1.5 sh-high s4", dpr: 1.5, shadows: "high", samples: 4 }
+  { key: "dpr1 shadows off", dpr: 1.0, shadows: "off" },
+  { key: "dpr1 shadows on", dpr: 1.0, shadows: "on" },
+  { key: "dpr1.25 shadows on", dpr: 1.25, shadows: "on" },
+  { key: "dpr1.5 shadows on", dpr: 1.5, shadows: "on" }
 ];
 
 async function isFile(p) { try { return existsSync(p); } catch { return false; } }
@@ -136,15 +134,13 @@ async function main() {
   await ev(c, `window.__sfManual&&window.__sfManual(true)`);
 
   // tier switcher installed in-page. Mirrors what the "/" panel preset onChange does.
-  await ev(c, `window.__tier = async (dpr, shadows, samples) => {
+  await ev(c, `window.__tier = async (dpr, shadows) => {
     const sf = window.__sf;
     sf.renderer.setPixelRatio(dpr);
     sf.renderer.setSize(window.innerWidth, window.innerHeight);
     // shadow quality is fixed now (universal render mode) — there are no more
     // low/high tiers, but we can still A/B the renderer-level shadow pass on/off.
     sf.renderer.shadowMap.enabled = shadows !== "off";
-    sf.POSTFX_TUNING.values.sceneSamples = samples;
-    sf.pipeline.applyPostQuality ? sf.pipeline.applyPostQuality() : null;
     return true;
   }; true`);
 
@@ -182,7 +178,7 @@ async function main() {
 
     const stopRow = { name: stop.name, tiers: {} };
     for (const tier of TIERS) {
-      await ev(c, `window.__tier(${tier.dpr}, "${tier.shadows}", ${tier.samples})`);
+      await ev(c, `window.__tier(${tier.dpr}, "${tier.shadows}")`);
       // let the pipeline rebuild + shadow maps settle
       await ev(c, `(async()=>{for(let i=0;i<${WARM};i++){window.__sf.tick(1/60);} return true;})()`);
       const m = await ev(c, timeExpr(MEASURE, 1 / 60));
