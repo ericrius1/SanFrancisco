@@ -1668,6 +1668,84 @@ async function boot() {
   );
   debugPanel.setMode(player.mode);
 
+  // Ocean Beach ambient life is an optional, fully procedural chunk. Resolve
+  // its anchor against the real shoreline now (cheap), but do not request its
+  // person/cloth/behavior code until a post-reveal approach. Loading well before
+  // the encounter's own wake radius leaves time for detached WebGPU compilation.
+  const oceanKiteSite = oceanBeachShoreline(map, OCEAN_BEACH_SURF.entryZ + 45, 20);
+  const OCEAN_KITE_LOAD_DISTANCE = 650;
+  let oceanBeachKite: import("./world/oceanBeachKite").OceanBeachKiteEncounter | null = null;
+  let oceanBeachKiteLoading: Promise<void> | null = null;
+  let unregisterOceanKiteTuning: (() => void) | null = null;
+  let oceanKiteGeneration = 0;
+  const refreshOceanKiteDebug = () => {
+    const hooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
+    if (hooks) Object.assign(hooks, { oceanBeachKite, ensureOceanBeachKite });
+  };
+  const ensureOceanBeachKite = () => {
+    if (oceanBeachKite || oceanBeachKiteLoading) return oceanBeachKiteLoading ?? Promise.resolve();
+    const generation = oceanKiteGeneration;
+    const loading = import("./world/oceanBeachKite")
+      .then(async ({ createOceanBeachKiteEncounter }) => {
+        if (generation !== oceanKiteGeneration) return;
+        const distance = Math.hypot(
+          player.position.x - oceanKiteSite.x,
+          player.position.z - oceanKiteSite.z
+        );
+        // The player can teleport away while the split chunk is in flight.
+        if (distance > OCEAN_KITE_LOAD_DISTANCE) return;
+        const encounter = createOceanBeachKiteEncounter(map, oceanKiteSite);
+        // compileAsync skips invisible roots. Prepare the feature while detached,
+        // and temporarily un-cull its descendants so an approach from outside
+        // the current camera frustum still warms the rig and node cloth.
+        encounter.group.visible = true;
+        const culling = new Map<THREE.Object3D, boolean>();
+        encounter.group.traverse((object) => {
+          culling.set(object, object.frustumCulled);
+          object.frustumCulled = false;
+        });
+        try {
+          await renderer.compileAsync(encounter.group, camera, scene);
+        } catch (error) {
+          console.warn("[ocean kite] detached shader warmup failed", error);
+        } finally {
+          for (const [object, frustumCulled] of culling) object.frustumCulled = frustumCulled;
+        }
+        if (generation !== oceanKiteGeneration) {
+          encounter.dispose();
+          return;
+        }
+        const stillNear = Math.hypot(
+          player.position.x - oceanKiteSite.x,
+          player.position.z - oceanKiteSite.z
+        ) <= OCEAN_KITE_LOAD_DISTANCE;
+        if (!stillNear) {
+          encounter.dispose();
+          return;
+        }
+        encounter.group.visible = false;
+        scene.add(encounter.group);
+        oceanBeachKite = encounter;
+        unregisterOceanKiteTuning = debugPanel.registerFeatureTuning(encounter.tuningDescriptor());
+        refreshOceanKiteDebug();
+      })
+      .catch((error) => console.warn("[ocean kite] encounter failed to load", error))
+      .finally(() => {
+        if (oceanBeachKiteLoading === loading) oceanBeachKiteLoading = null;
+      });
+    oceanBeachKiteLoading = loading;
+    return loading;
+  };
+  const disposeOceanBeachKite = () => {
+    oceanKiteGeneration++;
+    unregisterOceanKiteTuning?.();
+    unregisterOceanKiteTuning = null;
+    oceanBeachKite?.dispose();
+    oceanBeachKite = null;
+    refreshOceanKiteDebug();
+  };
+  import.meta.hot?.dispose(disposeOceanBeachKite);
+
   // Resume last session: position, heading and vehicle survive a refresh. A
   // Vite structural reload additionally restores the exact chase-camera view.
   // (after the debug panel exists — restoreState can fire onModeChange).
@@ -3599,6 +3677,18 @@ async function boot() {
     gardenDisplacer.x = player.renderPosition.x;
     gardenDisplacer.z = player.renderPosition.z;
     updateVegetationEnvironment(frameDt, foliageOn ? gardenDisplacers : undefined);
+    const oceanKiteDx = player.position.x - oceanKiteSite.x;
+    const oceanKiteDz = player.position.z - oceanKiteSite.z;
+    if (
+      revealed &&
+      !oceanBeachKite &&
+      !oceanBeachKiteLoading &&
+      oceanKiteDx * oceanKiteDx + oceanKiteDz * oceanKiteDz <
+        OCEAN_KITE_LOAD_DISTANCE * OCEAN_KITE_LOAD_DISTANCE
+    ) {
+      void ensureOceanBeachKite();
+    }
+    oceanBeachKite?.update(frameDt, elapsed, player.renderPosition, windGustValue());
     buskers.update(frameDt, camera, windGustValue(), sky.sunElevation);
     if (!worldArrival.active) {
       japaneseTeaGarden?.update(frameDt, elapsed, player.renderPosition, camera, player.mode);
@@ -4000,7 +4090,14 @@ async function boot() {
         ) }
     });
     const hooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
-    if (hooks) hooks.worldArrival = worldArrival;
+    if (hooks) {
+      Object.assign(hooks, {
+        worldArrival,
+        oceanBeachKite,
+        ensureOceanBeachKite,
+        oceanKiteSite
+      });
+    }
   };
   if (import.meta.env.DEV || new URLSearchParams(location.search).has("profile")) {
     exposeDebugHooks();
