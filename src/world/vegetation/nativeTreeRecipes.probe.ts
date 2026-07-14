@@ -5,6 +5,7 @@
 
 import { compileTree } from "../treeCompiler/index.ts";
 import {
+  FOLIAGE_VERTEX_STRIDE_FLOATS,
   collectFoliageSupportBranchIds,
   selectLodBranches,
   selectLodFoliageAnchors
@@ -71,6 +72,47 @@ for (let speciesIndex = 0; speciesIndex < NATIVE_TREE_SPECIES.length; speciesInd
     assert(lod.stats.foliageAnchors === expected, `${species}/${lod.name} retained ${lod.stats.foliageAnchors}, expected ${expected}`);
     assert(lod.foliage.vertices.length > 0, `${species}/${lod.name} crown geometry is empty`);
     assert(lod.bounds.sphereRadius > 0, `${species}/${lod.name} bounds are empty`);
+    if (archetype.recipe.foliage.kind === "leaf") {
+      const close = lodIndex <= 1;
+      const verticesPerAnchor = close ? 16 : 8;
+      const trianglesPerAnchor = close ? 8 : 6;
+      assert(
+        lod.foliage.vertices.length / FOLIAGE_VERTEX_STRIDE_FLOATS === expected * verticesPerAnchor,
+        `${species}/${lod.name} broadleaf vertex budget changed`
+      );
+      assert(
+        lod.foliage.indices.length / 3 === expected * trianglesPerAnchor,
+        `${species}/${lod.name} broadleaf triangle budget changed`
+      );
+      if (close) {
+        // Each close anchor is four distinct leaflets staggered along one tiny
+        // implied twig rather than coincident cards forming one dark rosette.
+        // The fixed stride makes this a deterministic compiler contract rather
+        // than a screenshot-only assertion.
+        const vertices = lod.foliage.vertices;
+        const position = (vertex: number) => [
+          vertices[vertex * FOLIAGE_VERTEX_STRIDE_FLOATS],
+          vertices[vertex * FOLIAGE_VERTEX_STRIDE_FLOATS + 1],
+          vertices[vertex * FOLIAGE_VERTEX_STRIDE_FLOATS + 2]
+        ] as const;
+        const leafletAnchor = (vertex: number) => [
+          vertices[vertex * FOLIAGE_VERTEX_STRIDE_FLOATS + 8],
+          vertices[vertex * FOLIAGE_VERTEX_STRIDE_FLOATS + 9],
+          vertices[vertex * FOLIAGE_VERTEX_STRIDE_FLOATS + 10]
+        ] as const;
+        const distance = (a: readonly number[], b: readonly number[]) => Math.hypot(
+          a[0] - b[0],
+          a[1] - b[1],
+          a[2] - b[2]
+        );
+        const roots = [leafletAnchor(0), leafletAnchor(4), leafletAnchor(8), leafletAnchor(12)];
+        const tips = [position(2), position(6), position(10), position(14)];
+        assert(distance(roots[0], roots[1]) > 0.01 && distance(roots[0], roots[3]) < 0.4,
+          `${species}/${lod.name} close leaflet roots lost their compact stagger`);
+        assert(distance(tips[0], tips[1]) > 0.02 && distance(tips[2], tips[3]) > 0.02,
+          `${species}/${lod.name} close leaflets collapsed into one card`);
+      }
+    }
     const selectedAnchors = selectLodFoliageAnchors(archetype.recipe, skeleton.foliageAnchors, recipeLod);
     const supports = collectFoliageSupportBranchIds(skeleton.branches, selectedAnchors);
     const selectedBranches = selectLodBranches(skeleton.branches, recipeLod, supports).selectedIds;
