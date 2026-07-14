@@ -71,7 +71,7 @@ import { VehicleAudio } from "./fx/vehicleAudio";
 import { SwimAudio } from "./fx/swimAudio";
 import { createNatureSoundscape, DogParkAudio } from "./audio";
 import { WaveAudio, oceanWaveEnergyAt } from "./audio/waveAudio";
-import { AbandonedMounts } from "./gameplay/abandonedMounts";
+import { AbandonedMounts, ABANDONED_MOUNT_PROMPT } from "./gameplay/abandonedMounts";
 import type { Creatures } from "./gameplay/creatures";
 import type { Forest, AnimalKind } from "./gameplay/forest";
 import {
@@ -3766,28 +3766,34 @@ async function boot() {
       : missionDolores?.takeFloorHandoffHeight(player.position, player.mode);
     if (museumFloorHandoff != null) player.recoverOntoWalkSurface(museumFloorHandoff);
 
-    // "hop in" nudge when standing near a ride (friend → wildlife)
+    // "hop in" nudge when standing near a ride (friend → wildlife → parked mount)
     if (!worldArrival.active && player.mode === "walk" && embodiments.passengerOf === null) {
       const drv = remotes.nearestDriver(player.position, 5.5);
       const nearAnimal = drv ? null : forest?.nearest(player.position, 5);
+      const nearMount =
+        !drv && !nearAnimal
+          ? abandonedMounts.nearest(player.position.x, player.position.z, 5.5)
+          : null;
       const nearSurfBreak =
-        !drv && !nearAnimal && nearOceanBeachShore(player.position.x, player.position.z);
+        !drv && !nearAnimal && !nearMount && nearOceanBeachShore(player.position.x, player.position.z);
       const reveriePrompt =
-        !drv && !nearAnimal && !nearSurfBreak
+        !drv && !nearAnimal && !nearMount && !nearSurfBreak
           ? palaceReverie?.nearbyPrompt(player.position.x, player.position.z) ?? null
           : null;
-      if ((drv || nearAnimal || nearSurfBreak || reveriePrompt) && !ridePromptShown) {
+      if ((drv || nearAnimal || nearMount || nearSurfBreak || reveriePrompt) && !ridePromptShown) {
         const rideCopy = drv
           ? formatInteractPrompt(`ride with ${drv.name}`, input.device)
           : nearAnimal
             ? formatInteractPrompt(`ride the ${nearAnimal.label}`, input.device)
-            : nearSurfBreak
-              ? formatInteractPrompt("start surfing at Ocean Beach", input.device)
-              : localizeInteractText(reveriePrompt as string, input.device);
+            : nearMount
+              ? formatInteractPrompt(ABANDONED_MOUNT_PROMPT[nearMount.mode], input.device)
+              : nearSurfBreak
+                ? formatInteractPrompt("start surfing at Ocean Beach", input.device)
+                : localizeInteractText(reveriePrompt as string, input.device);
         hud.message(rideCopy, 1.8);
         ridePromptShown = true;
       }
-      if (!drv && !nearAnimal && !nearSurfBreak && !reveriePrompt) ridePromptShown = false;
+      if (!drv && !nearAnimal && !nearMount && !nearSurfBreak && !reveriePrompt) ridePromptShown = false;
       // "open the door" nudge — same one-shot pattern; the ride prompt wins
       // when both are in range. nearestDoor is alloc-light but not free, so
       // it runs every 6th frame (prompt latency ~0.1 s) and only on foot.
@@ -3797,7 +3803,7 @@ async function boot() {
       }
       const door = doorScanHit;
       const nearClosedDoor = !!door && !door.open && door.dist < 3.2;
-      if (nearClosedDoor && !drv && !nearAnimal && !doorPromptShown) {
+      if (nearClosedDoor && !drv && !nearAnimal && !nearMount && !doorPromptShown) {
         hud.message(formatInteractPrompt("open the door", input.device), 1.8);
         doorPromptShown = true;
       }

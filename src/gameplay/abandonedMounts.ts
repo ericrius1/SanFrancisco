@@ -65,6 +65,19 @@ const DESPAWN_DISTANCE = 520;
 // stop tracking them than a parked car does
 const BIRD_DESPAWN_DISTANCE = 1400;
 
+/** Short verb phrase for `formatInteractPrompt` ("E — board the car"). */
+export const ABANDONED_MOUNT_PROMPT: Record<MountMode, string> = {
+  drive: "board the car",
+  scooter: "hop on the scooter",
+  plane: "board the plane",
+  boat: "board the boat",
+  speedboat: "board the speedboat",
+  drone: "board the drone",
+  board: "hop on the hoverboard",
+  surf: "hop on the surfboard",
+  bird: "ride the phoenix"
+};
+
 const SPECS: Record<MountMode, MountSpec> = {
   drive: {
     build: buildCarMesh,
@@ -223,6 +236,15 @@ export class AbandonedMounts {
   }
 
   /**
+   * Peek at the nearest parked/roaming mount within `radius` (XZ) without
+   * claiming it — used for the walk-up "E — board …" proximity nudge.
+   */
+  nearest(x: number, z: number, radius: number): { mode: MountMode } | null {
+    const best = this.#findNearest(x, z, radius);
+    return best ? { mode: best.mode } : null;
+  }
+
+  /**
    * Walk-up re-board: the nearest parked/roaming mount of ANY kind within
    * `radius`, removed from the world and handed back as a spawn pose so the
    * caller can `trySwitch` into it (same as hopping into a parked car).
@@ -232,6 +254,12 @@ export class AbandonedMounts {
     z: number,
     radius: number
   ): { mode: MountMode; x: number; y: number; z: number; heading: number } | null {
+    const best = this.#findNearest(x, z, radius);
+    if (!best) return null;
+    return this.#takePose(best);
+  }
+
+  #findNearest(x: number, z: number, radius: number): AbandonedMount | null {
     let best: AbandonedMount | null = null;
     let bestD = radius;
     for (const item of this.#items) {
@@ -242,8 +270,7 @@ export class AbandonedMounts {
         best = item;
       }
     }
-    if (!best) return null;
-    return this.#takePose(best);
+    return best;
   }
 
   #takePose(item: AbandonedMount): { mode: MountMode; x: number; y: number; z: number; heading: number } {
