@@ -112,17 +112,14 @@ const WATER_TUNING_FOLDERS: readonly {
 }[] = [
   {
     title: "shallow-water field",
-    expanded: true,
     keys: ["enabled", "flow", "depth", "pressure", "viscosity", "damping", "vorticity", "substeps", "rockSlip"]
   },
   {
     title: "interaction ripples",
-    expanded: true,
     keys: ["interactionScale", "interactionRadius", "wakeResponse", "interactionFoam"]
   },
   {
     title: "celadon surface",
-    expanded: true,
     keys: ["relief", "normal", "waveContrast", "ripple", "streak", "foam", "opacity", "palette"]
   }
 ];
@@ -1387,11 +1384,14 @@ export function createTeaGardenWaterSimulation(
 
   const addTuning = (folder: FolderApi): TeaGardenWaterTuningMonitor[] => {
     for (const descriptor of WATER_TUNING_FOLDERS) {
-      const child = folder.addFolder({ title: descriptor.title, expanded: descriptor.expanded });
+      const child = folder.addFolder({
+        title: descriptor.title,
+        expanded: descriptor.expanded ?? false
+      });
       WATER_TUNING.bind(child, { keys: descriptor.keys, onChange: () => syncTuning() });
     }
     folder.addButton({ title: "reset water field", label: "water" }).on("click", reset);
-    const debug = folder.addFolder({ title: "GPU field · debug" });
+    const debug = folder.addFolder({ title: "GPU field · debug", expanded: false });
     return [
       debug.addBinding(stats, "backend", { readonly: true, label: "backend" }),
       debug.addBinding(stats, "grid", { readonly: true, label: "spatial grid" }),

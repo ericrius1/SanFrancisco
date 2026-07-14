@@ -736,7 +736,7 @@ export class Fireworks {
   }
 
   addTuning(pane: Pane | FolderApi) {
-    const f = pane.addFolder({ title: "fireworks (F)" });
+    const f = pane.addFolder({ title: "fireworks (F)", expanded: false });
     FIREWORKS_TUNING.bind(f);
     AUDIO_TUNING.bind(f);
     const alive = f.addBinding(this.stats, "alive", { readonly: true, format: (v: number) => `${Math.round(v)}`, label: "≈alive" });

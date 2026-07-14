@@ -284,6 +284,9 @@ export class Sky {
   #liveFogRevealReady = false
   #liveFogStarting = false
   #liveFogStop: (() => void) | null = null
+  #starlink: import("./starlinkSky").StarlinkSky | null = null
+  #starlinkStarting = false
+  #scene: THREE.Scene
   #fogWeatherElapsed = 0
   #lastFogWeatherWallMs = performance.now()
   #fogMotionPhase = 0
@@ -322,6 +325,7 @@ export class Sky {
   }
 
   constructor(scene: THREE.Scene, farOcclusion: FarOcclusionField | null = null) {
+    this.#scene = scene
     scene.environmentIntensity = 0.075 // a hint of sky in the reflections; the diffuse fill is the hemi's job
 
     this.mesh = new THREE.Mesh(
@@ -825,6 +829,7 @@ export class Sky {
   enableLiveFogAfterReveal() {
     this.#liveFogRevealReady = true
     this.#reconcileLiveFogFeed()
+    this.#reconcileStarlinkSky()
   }
 
   /** Called after the weather-source selector changes. */
@@ -860,6 +865,29 @@ export class Sky {
         this.setLiveFogStatus(
           "offline",
           `procedural fallback · ${error instanceof Error ? error.message : "feed unavailable"}`
+        )
+      })
+  }
+
+  /** Real-time night sky only: lazy-load Starlink GP → SGP4 points. */
+  #reconcileStarlinkSky() {
+    if (!this.#liveFogRevealReady || !this.realTime) {
+      // Keep the catalog warm; update() hides the sprites when ineligible.
+      return
+    }
+    if (this.#starlink || this.#starlinkStarting) return
+    this.#starlinkStarting = true
+    void import("./starlinkSky")
+      .then(({ StarlinkSky }) => {
+        this.#starlinkStarting = false
+        if (!this.#liveFogRevealReady || !this.realTime || this.#starlink) return
+        this.#starlink = new StarlinkSky(this.#scene)
+      })
+      .catch((error) => {
+        this.#starlinkStarting = false
+        console.warn(
+          "[starlink] module unavailable:",
+          error instanceof Error ? error.message : error
         )
       })
   }
@@ -925,6 +953,7 @@ export class Sky {
     this.#applySun()
     this.#updateFogWeather(true)
     this.#reconcileLiveFogFeed()
+    this.#reconcileStarlinkSky()
   }
 
   /** Move the simulated calendar continuously, including date/year rollover. */
@@ -939,6 +968,7 @@ export class Sky {
     this.#applySun()
     this.#updateFogWeather(true)
     this.#reconcileLiveFogFeed()
+    this.#reconcileStarlinkSky()
   }
 
   /** Pin a fixed hour on the current SF calendar date. Stops tracking the real
@@ -953,6 +983,7 @@ export class Sky {
     this.#applySun()
     this.#updateFogWeather(true)
     this.#reconcileLiveFogFeed()
+    this.#reconcileStarlinkSky()
   }
 
   /** Snap to the current real SF date+time and keep mirroring it every frame —
@@ -967,6 +998,7 @@ export class Sky {
     this.#applySun()
     this.#updateFogWeather(true)
     this.#reconcileLiveFogFeed()
+    this.#reconcileStarlinkSky()
   }
 
   #applySun() {
@@ -1096,6 +1128,8 @@ export class Sky {
     this.#updateFogWeather()
 
     this.mesh.position.copy(cameraPos)
+
+    this.#starlink?.update(this, cameraPos)
 
     // The visible key remains camera-relative to preserve directional-light
     // precision. Its custom shadow node uses the independent stable subject

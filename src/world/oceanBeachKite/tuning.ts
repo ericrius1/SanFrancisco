@@ -43,17 +43,14 @@ const OCEAN_KITE_TUNING_FOLDERS: readonly {
 }[] = [
   {
     title: "wind",
-    expanded: true,
     keys: ["enabled", "windStrength", "gustResponse", "lift", "drag"]
   },
   {
     title: "tether & reel",
-    expanded: true,
     keys: ["lineTautness", "minLineLength", "maxLineLength", "reelRate"]
   },
   {
     title: "purple cloth · GPU",
-    expanded: true,
     keys: ["clothTautness", "clothBillow", "clothRipple", "clothFrequency", "clothSpeed"]
   },
   {

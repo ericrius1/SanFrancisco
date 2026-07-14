@@ -57,6 +57,52 @@ const relayPlugin = (): Plugin => ({
 });
 
 /**
+ * Same-origin Starlink GP feed in dev. Handled here (not only via relay proxy)
+ * so an already-running older relay on 8787 still leaves /api/starlink working.
+ */
+const starlinkApiPlugin = (): Plugin => ({
+  name: "sf-starlink-api",
+  configureServer(server) {
+    server.middlewares.use((req, res, next) => {
+      const url = req.url?.split("?", 1)[0] ?? "";
+      if (url !== "/api/starlink") {
+        next();
+        return;
+      }
+      if (req.method !== "GET" && req.method !== "HEAD") {
+        res.statusCode = 405;
+        res.setHeader("allow", "GET, HEAD");
+        res.setHeader("cache-control", "no-store");
+        res.end();
+        return;
+      }
+      void import("./server/starlink.mjs")
+        .then(({ starlinkGpPayload }) => starlinkGpPayload())
+        .then((payload) => {
+          res.statusCode = 200;
+          res.setHeader("content-type", "application/json; charset=utf-8");
+          res.setHeader("cache-control", "public, max-age=600, stale-while-revalidate=7200");
+          res.setHeader("x-starlink-source", payload.source);
+          res.setHeader("x-starlink-count", String(payload.count));
+          res.setHeader("x-starlink-stale", payload.stale ? "1" : "0");
+          res.setHeader("content-length", Buffer.byteLength(payload.body));
+          if (req.method === "HEAD") res.end();
+          else res.end(payload.body);
+        })
+        .catch(() => {
+          const body = JSON.stringify({ ok: false, error: "starlink GP unavailable" });
+          res.statusCode = 503;
+          res.setHeader("content-type", "application/json; charset=utf-8");
+          res.setHeader("cache-control", "no-store");
+          res.setHeader("content-length", Buffer.byteLength(body));
+          if (req.method === "HEAD") res.end();
+          else res.end(body);
+        });
+    });
+  }
+});
+
+/**
  * Soft HMR: keep in-place module swaps, block every automatic full page reload.
  *
  * Vite still reloads on (1) full-reload WS messages, (2) HMR websocket reconnect
@@ -186,7 +232,7 @@ const inGameShotPlugin = (): Plugin => ({
 // alias it to the WebGPU build so there is a single module/class instance and no
 // duplicate-three "instanceof" breakage.
 export default defineConfig({
-  plugins: [relayPlugin(), softHmrPlugin(), nativeFoliageBasisPlugin(), inGameShotPlugin()],
+  plugins: [relayPlugin(), starlinkApiPlugin(), softHmrPlugin(), nativeFoliageBasisPlugin(), inGameShotPlugin()],
   define: {
     "import.meta.env.SF_FULL_RELOAD": FULL_RELOAD_ENABLED
   },
@@ -216,7 +262,8 @@ export default defineConfig({
     // relay, prod serves everything from the same Node process as the static files
     proxy: {
       "/ws": { target: RELAY_WS, ws: true },
-      "/api/weather": { target: `http://localhost:${RELAY_PORT}` }
+      "/api/weather": { target: `http://localhost:${RELAY_PORT}` },
+      "/api/starlink": { target: `http://localhost:${RELAY_PORT}` }
     },
     fs: {
       allow: [

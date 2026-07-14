@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 import { createBrotliCompress, createGzip, constants as zlibConstants } from "node:zlib";
 import { WebSocketServer } from "ws";
 import { weatherNumber } from "./weather-utils.mjs";
+import { starlinkGpPayload } from "./starlink.mjs";
 
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -381,6 +382,36 @@ const server = http.createServer(async (req, res) => {
         console.warn("[weather] live fog providers unavailable:", error);
       }
       const body = JSON.stringify({ ok: false, error: "live fog unavailable" });
+      res.writeHead(503, {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "no-store",
+        "content-length": Buffer.byteLength(body)
+      });
+      if (req.method === "HEAD") res.end();
+      else res.end(body);
+    }
+    return;
+  }
+  if (urlPath === "/api/starlink") {
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      res.writeHead(405, { allow: "GET, HEAD", "cache-control": "no-store" });
+      res.end();
+      return;
+    }
+    try {
+      const payload = await starlinkGpPayload();
+      res.writeHead(200, {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "public, max-age=600, stale-while-revalidate=7200",
+        "x-starlink-source": payload.source,
+        "x-starlink-count": String(payload.count),
+        "x-starlink-stale": payload.stale ? "1" : "0",
+        "content-length": Buffer.byteLength(payload.body)
+      });
+      if (req.method === "HEAD") res.end();
+      else res.end(payload.body);
+    } catch {
+      const body = JSON.stringify({ ok: false, error: "starlink GP unavailable" });
       res.writeHead(503, {
         "content-type": "application/json; charset=utf-8",
         "cache-control": "no-store",

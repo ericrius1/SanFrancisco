@@ -69,6 +69,7 @@
     "box3d.js": "^0.0.2",
     "camera-controls": "^3.1.2",
     "lil-gui": "^0.21.0",
+    "satellite.js": "^6.0.2",
     "three": "^0.185.1",
     "tweakpane": "^4.0.5",
     "ws": "^8.21.0"

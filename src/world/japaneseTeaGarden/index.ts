@@ -514,9 +514,9 @@ export function createJapaneseTeaGarden(
         id: "japanese-tea-garden-simulations",
         title: "Japanese Tea Garden · GPU simulations",
         build(folder) {
-          const flowingWater = folder.addFolder({ title: "flowing water", expanded: true });
-          const sand = folder.addFolder({ title: "raked sand" });
-          const sound = folder.addFolder({ title: "stream sound" });
+          const flowingWater = folder.addFolder({ title: "flowing water", expanded: false });
+          const sand = folder.addFolder({ title: "raked sand", expanded: false });
+          const sound = folder.addFolder({ title: "stream sound", expanded: false });
           TEA_GARDEN_STREAM_AUDIO_TUNING.bind(sound);
           return { monitors: [...water.addTuning(flowingWater), ...dryLandscape.addTuning(sand)] };
         },

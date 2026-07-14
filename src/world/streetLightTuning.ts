@@ -8,7 +8,7 @@ import { tunables } from "../core/persist";
  */
 export const STREET_LIGHT_TUNING = tunables("lighting.streetLights", {
   resolutionScale: {
-    v: 0.35,
+    v: 0.55,
     min: 0.25,
     max: 1,
     step: 0.05,

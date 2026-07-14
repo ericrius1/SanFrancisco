@@ -32,33 +32,33 @@ export const MOVEMENT_TUNING = {
 /** Movement tuning is context-dependent: all six mode folders are built once,
  * and DebugPanel.setMode hides every folder except the active mode's. */
 export function addMovementTuning(pane: Pane | FolderApi): Record<PlayerMode, Folder> {
-  const movement = pane.addFolder({ title: "movement" });
+  const movement = pane.addFolder({ title: "movement", expanded: false });
   const folders: Record<PlayerMode, Folder> = {
-    walk: movement.addFolder({ title: "walk" }),
-    drive: movement.addFolder({ title: "car" }),
-    scooter: movement.addFolder({ title: "scooter" }),
-    plane: movement.addFolder({ title: "plane" }),
-    boat: movement.addFolder({ title: "boat" }),
-    speedboat: movement.addFolder({ title: "speedboat" }),
-    drone: movement.addFolder({ title: "drone" }),
-    board: movement.addFolder({ title: "board" }),
-    surf: movement.addFolder({ title: "surf" }),
-    bird: movement.addFolder({ title: "bird" })
+    walk: movement.addFolder({ title: "walk", expanded: false }),
+    drive: movement.addFolder({ title: "car", expanded: false }),
+    scooter: movement.addFolder({ title: "scooter", expanded: false }),
+    plane: movement.addFolder({ title: "plane", expanded: false }),
+    boat: movement.addFolder({ title: "boat", expanded: false }),
+    speedboat: movement.addFolder({ title: "speedboat", expanded: false }),
+    drone: movement.addFolder({ title: "drone", expanded: false }),
+    board: movement.addFolder({ title: "board", expanded: false }),
+    surf: movement.addFolder({ title: "surf", expanded: false }),
+    bird: movement.addFolder({ title: "bird", expanded: false })
   };
   WALK_TUNING.bind(folders.walk);
   CAR_TUNING.bind(folders.drive);
-  CAR_LANDING_TUNING.bind(folders.drive.addFolder({ title: "landing feedback" }));
-  CAR_SKID_TUNING.bind(folders.drive.addFolder({ title: "skid marks · audio" }));
+  CAR_LANDING_TUNING.bind(folders.drive.addFolder({ title: "landing feedback", expanded: false }));
+  CAR_SKID_TUNING.bind(folders.drive.addFolder({ title: "skid marks · audio", expanded: false }));
   SCOOTER_TUNING.bind(folders.scooter);
   PLANE_TUNING.bind(folders.plane);
   BOAT_TUNING.bind(folders.boat);
   SPEEDBOAT_TUNING.bind(folders.speedboat);
   DRONE_TUNING.bind(folders.drone);
   BOARD_TUNING.bind(folders.board);
-  BOARD_EFFECT_TUNING.bind(folders.board.addFolder({ title: "effects" }));
-  HALO_TUNING.bind(folders.board.addFolder({ title: "halo comet" }));
-  SURF_TUNING.bind(folders.surf.addFolder({ title: "ride" }));
-  SURF_CAMERA_TUNING.bind(folders.surf.addFolder({ title: "locked camera" }));
+  BOARD_EFFECT_TUNING.bind(folders.board.addFolder({ title: "effects", expanded: false }));
+  HALO_TUNING.bind(folders.board.addFolder({ title: "halo comet", expanded: false }));
+  SURF_TUNING.bind(folders.surf.addFolder({ title: "ride", expanded: false }));
+  SURF_CAMERA_TUNING.bind(folders.surf.addFolder({ title: "locked camera", expanded: false }));
   BIRD_TUNING.bind(folders.bird);
   return folders;
 }

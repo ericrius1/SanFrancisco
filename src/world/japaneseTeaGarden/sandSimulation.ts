@@ -760,7 +760,7 @@ export function createSandSimulation(options: SandSimulationOptions): SandSimula
   };
 
   const addTuning = (folder: FolderApi): SandTuningMonitor[] => {
-    const granular = folder.addFolder({ title: "granular settling", expanded: true });
+    const granular = folder.addFolder({ title: "granular settling", expanded: false });
     SAND_TUNING.bind(granular, {
       keys: ["reposeDeg", "avalancheRate", "maxTransfer", "settleIterations", "settleTime", "memoryFade"],
       onChange: () => {
@@ -768,12 +768,12 @@ export function createSandSimulation(options: SandSimulationOptions): SandSimula
         dirtySeconds = Math.max(dirtySeconds, SAND_TUNING.values.settleTime);
       }
     });
-    const rake = folder.addFolder({ title: "seven-tine rake", expanded: true });
+    const rake = folder.addFolder({ title: "seven-tine rake", expanded: false });
     SAND_TUNING.bind(rake, {
       keys: ["rakeDepth", "tineRadius", "tineSpacing", "shoulderLift", "compaction"],
       onChange: () => syncTuning()
     });
-    const appearance = folder.addFolder({ title: "sand appearance" });
+    const appearance = folder.addFolder({ title: "sand appearance", expanded: false });
     SAND_TUNING.bind(appearance, {
       keys: ["surfaceSmoothing", "heightScale", "normalStrength", "microRelief", "compactionTint"],
       onChange: () => syncTuning()
