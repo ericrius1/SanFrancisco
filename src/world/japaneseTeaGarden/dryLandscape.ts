@@ -16,7 +16,9 @@ const SAND_LIFT = 0.12;
 const RIM_STONES = 96;
 const PICKUP_RANGE = 3.7;
 const RETURN_RANGE = 29;
-const RAKE_CONTACT_BACK = 0.92;
+// Far enough ahead that the handle top and both grips remain in front of the
+// torso at the authored shaft elevation—not merely the tine head.
+const RAKE_CONTACT_FORWARD = 1.55;
 const RAKE_STAMP_MIN_DISTANCE = 0.018;
 const RAKE_CONTACT_EPSILON = 0.28;
 const RAKE_RACK = { x: -2354.45, z: 2169.15 } as const;
@@ -319,8 +321,8 @@ export function createDryLandscape(map: TeaGardenTerrain, options: DryLandscapeO
     normalX: 0,
     normalY: 1,
     normalZ: 0,
-    shaftElevation: THREE.MathUtils.degToRad(50),
-    bodyLean: 0.24
+    shaftElevation: THREE.MathUtils.degToRad(46),
+    bodyLean: 0.34
   };
   const stamp = {
     previous: { x: 0, z: 0 },
@@ -402,12 +404,14 @@ export function createDryLandscape(map: TeaGardenTerrain, options: DryLandscapeO
       previousPlayer.x = player.x;
       previousPlayer.z = player.z;
       if (moved >= RAKE_STAMP_MIN_DISTANCE) {
-        pullX = moveX / moved;
-        pullZ = moveZ / moved;
+        // GardenRakeMotion.pull is head→player. The player is pushing the rake,
+        // so it points opposite travel and places the grounded head in front.
+        pullX = -moveX / moved;
+        pullZ = -moveZ / moved;
       }
 
-      motion.contactX = player.x - pullX * RAKE_CONTACT_BACK;
-      motion.contactZ = player.z - pullZ * RAKE_CONTACT_BACK;
+      motion.contactX = player.x - pullX * RAKE_CONTACT_FORWARD;
+      motion.contactZ = player.z - pullZ * RAKE_CONTACT_FORWARD;
       motion.contactY = map.groundTop(motion.contactX, motion.contactZ) + SAND_LIFT + 0.006;
       const hL = map.groundTop(motion.contactX - RAKE_CONTACT_EPSILON, motion.contactZ);
       const hR = map.groundTop(motion.contactX + RAKE_CONTACT_EPSILON, motion.contactZ);
@@ -448,8 +452,10 @@ export function createDryLandscape(map: TeaGardenTerrain, options: DryLandscapeO
           stamp.current.z = motion.contactZ;
           stamp.across.x = pullZ;
           stamp.across.z = -pullX;
-          stamp.pull.x = pullX;
-          stamp.pull.z = pullZ;
+          // Sand stores the actual tool-travel direction for directional
+          // shading, which is opposite the shaft's head→player pose axis.
+          stamp.pull.x = -pullX;
+          stamp.pull.z = -pullZ;
           simulation.queueStamp(stamp);
         }
       }

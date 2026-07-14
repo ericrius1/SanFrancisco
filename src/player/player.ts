@@ -70,11 +70,11 @@ const V = {
   quat: new THREE.Quaternion()
 };
 
-const GARDEN_RAKE_DEFAULT_ELEVATION = THREE.MathUtils.degToRad(50);
+const GARDEN_RAKE_DEFAULT_ELEVATION = THREE.MathUtils.degToRad(46);
 const GARDEN_RAKE_CARRY_ELEVATION = THREE.MathUtils.degToRad(78);
-const GARDEN_RAKE_DEFAULT_BODY_LEAN = 0.24;
+const GARDEN_RAKE_DEFAULT_BODY_LEAN = 0.34;
 const GARDEN_RAKE_LEGACY_SAND_LIFT = 0.12;
-const GARDEN_RAKE_LEGACY_CONTACT_BACK = 0.92;
+const GARDEN_RAKE_LEGACY_CONTACT_FORWARD = 1.55;
 const GARDEN_RAKE_GRIP_TILT = -Math.atan2(0.5, 1.52);
 
 // One local player, one rake. All per-frame pose math reuses this scratch so
@@ -976,16 +976,18 @@ export class Player {
 
     const speed = Math.hypot(this.velocity.x, this.velocity.z);
     if (speed > 0.05) {
-      RAKE.pull.set(this.velocity.x / speed, 0, this.velocity.z / speed);
+      // `pull` is the shaft's head→player direction. While pushing, that is
+      // opposite the avatar/tool travel direction.
+      RAKE.pull.set(-this.velocity.x / speed, 0, -this.velocity.z / speed);
     } else {
       this.meshes.walk.getWorldQuaternion(RAKE.gripAim);
-      RAKE.pull.copy(RAKE.forwardLocal).applyQuaternion(RAKE.gripAim).setY(0).normalize();
+      RAKE.pull.copy(RAKE.forwardLocal).applyQuaternion(RAKE.gripAim).setY(0).normalize().negate();
     }
     this.#gardenRakeLastPull.copy(RAKE.pull);
     motion.pullX = RAKE.pull.x;
     motion.pullZ = RAKE.pull.z;
-    motion.contactX = this.renderPosition.x - RAKE.pull.x * GARDEN_RAKE_LEGACY_CONTACT_BACK;
-    motion.contactZ = this.renderPosition.z - RAKE.pull.z * GARDEN_RAKE_LEGACY_CONTACT_BACK;
+    motion.contactX = this.renderPosition.x - RAKE.pull.x * GARDEN_RAKE_LEGACY_CONTACT_FORWARD;
+    motion.contactZ = this.renderPosition.z - RAKE.pull.z * GARDEN_RAKE_LEGACY_CONTACT_FORWARD;
     motion.contactY = this.map.groundTop(motion.contactX, motion.contactZ) + GARDEN_RAKE_LEGACY_SAND_LIFT;
 
     const eps = 0.35;
@@ -1074,8 +1076,17 @@ export class Player {
 
       const lean = THREE.MathUtils.clamp(motion.bodyLean ?? GARDEN_RAKE_DEFAULT_BODY_LEAN, 0, 0.55);
       rig.torso.rotation.x -= lean;
+      rig.hips.rotation.x -= lean * 0.28;
       rig.head.rotation.x += lean * 0.62;
-      rig.hips.position.y -= 0.03;
+      // Load the legs and send the hips back as the chest reaches over the
+      // handle. This keeps the silhouette balanced instead of reading as an
+      // ordinary walk cycle with two IK arms pasted on top.
+      rig.hips.position.y -= 0.075;
+      rig.hips.position.z += 0.045;
+      rig.legL.rotation.x += 0.08;
+      rig.legR.rotation.x += 0.08;
+      rig.shinL.rotation.x -= 0.18;
+      rig.shinR.rotation.x -= 0.18;
       rig.group.updateWorldMatrix(true, true);
       tool.root.updateWorldMatrix(true, true);
       this.#targetGardenRakeHand(rig, "R", tool.rightGrip);

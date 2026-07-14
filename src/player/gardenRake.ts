@@ -27,7 +27,8 @@ export type GardenRakeTool = {
  * Allocation-free activity → avatar pose packet. The sand simulation should
  * reuse one object and overwrite its fields each update. `contact*` is the
  * exact world-space point stamped by the simulation, `pull*` points from the
- * tine head toward the player, and `normal*` is the sand surface normal there.
+ * tine head back toward the player (opposite tool travel while pushing), and
+ * `normal*` is the sand surface normal there.
  */
 export type GardenRakeMotion = {
   /** Keep the tine head lowered even while the player pauses between strokes. */
@@ -42,9 +43,8 @@ export type GardenRakeMotion = {
   normalX: number;
   normalY: number;
   normalZ: number;
-  /** Shaft elevation above the surface tangent, in radians. Default: 50°. */
+  /** Shaft elevation above the surface tangent, in radians. Default: 46°. */
   shaftElevation?: number;
-  /** Additive forward torso hinge, in radians. Default: 0.24. */
+  /** Additive forward torso hinge, in radians. Default: 0.34. */
   bodyLean?: number;
 };
-
