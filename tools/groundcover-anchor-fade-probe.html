@@ -10,23 +10,26 @@
   </head>
   <body>
     <script type="module">
-      // Rendered regression for large-coordinate anchor fades. Grass now uses
-      // compact InstancedBufferGeometry attributes and reconstructs its transform
-      // in positionNode; flowers retain InstancedMesh. Both must collapse around
-      // their explicit anchor at fade = 1, 0.5, and 0.
+      // Rendered regression for large-coordinate anchor fades. Streamed grass
+      // reconstructs its compact transform but extinguishes deterministic whole
+      // blades instead of scaling the field into the floor. Flowers retain their
+      // existing anchored scale handoff.
       import * as THREE from "three/webgpu";
       import { color } from "three/tsl";
       import {
-        createBladeClusterGeometry,
         createGrassMaterial,
         createGrassMesh,
+        createMicroBladeClusterGeometry,
         writeGrassMesh
       } from "/src/world/groundcover/bladeGrass.ts";
       import {
+        WILD_GRASS_LAYER_SPECS,
+        WILD_GRASS_RING_RADIUS,
         WILD_GRASS_SPACING,
         WILD_GRASS_TILE_SIZE,
+        wildGrassBladeDensityAt,
         wildGrassLayerKeep,
-        wildGrassLod
+        wildGrassLayersAt
       } from "/src/world/wildlands/grassField.ts";
       import { createFlowerRing } from "/src/world/wildlands/flowerRing.ts";
 
@@ -34,6 +37,7 @@
       const H = 320;
       const ANCHOR = new THREE.Vector3(8192, 0, 8192);
       const GRASS_REACH = 20;
+      const GRASS_FADE_BAND_METRES = 8;
       const FLOWER_HERO_FADE_START = 13;
       const FLOWER_HERO_FADE_END = 19;
       const FADE_BAND = 0.16;
@@ -43,10 +47,9 @@
         console.log("PROBE_RESULT " + JSON.stringify(result, null, 1));
       }
 
-      function focusForFade(reach, fade) {
-        // Production fade: clamp((reach - distance) / max(reach * .16, 1)).
+      function focusForFade(reach, fade, band = Math.max(reach * FADE_BAND, 1)) {
+        // Production coverage: clamp((reach - distance) / absoluteFadeBand).
         // Moving focus on +X keeps the rendered instance fixed at the large anchor.
-        const band = Math.max(reach * FADE_BAND, 1);
         const distance = fade >= 1 ? 0 : reach - fade * band;
         return new THREE.Vector2(ANCHOR.x + distance, ANCHOR.z);
       }
@@ -190,17 +193,19 @@
         const expectedAnchor = anchorPixel(camera);
 
         // Grass: public production factory + the production attribute writer.
-        const grassState = createGrassMaterial();
+        const grassState = createGrassMaterial({
+          fadeMode: "rank",
+          fadeBand: GRASS_FADE_BAND_METRES
+        });
         // Make fragment output deterministic while retaining the production
         // positionNode object verbatim (the only graph this probe exercises).
         grassState.material.colorNode = color(0x82ff45);
         grassState.material.emissiveNode = color(0x82ff45);
-        const grassGeometry = createBladeClusterGeometry({
-          blades: 7,
-          segments: 5,
-          width: 0.15,
-          radius: 0.11,
-          curvature: 0.24
+        const grassGeometry = createMicroBladeClusterGeometry({
+          blades: 24,
+          width: 0.11,
+          radius: 0.18,
+          lean: 0.22
         });
         const grass = createGrassMesh("anchor_probe_grass", 1, grassGeometry, grassState.material, false);
         writeGrassMesh(grass, [{
@@ -251,9 +256,25 @@
             detail: `${WILD_GRASS_SPACING} m spacing / ${WILD_GRASS_TILE_SIZE} m tiles`
           },
           {
-            name: "grass: distance grades cover near, mid, and far",
-            pass: wildGrassLod(0) === "near" && wildGrassLod(24) === "mid" && wildGrassLod(48) === "far",
-            detail: `${wildGrassLod(0)} / ${wildGrassLod(24)} / ${wildGrassLod(48)}`
+            name: "grass: pointed microblades submit one triangle each",
+            pass: (grassGeometry.index?.count ?? 0) / 3 === 24,
+            detail: `${(grassGeometry.index?.count ?? 0) / 3} triangles / 24 blades`
+          },
+          {
+            name: "grass: additive layers retain a far base under close detail",
+            pass:
+              wildGrassLayersAt(0).join(",") === "far,mid,near,hero" &&
+              wildGrassLayersAt(40).join(",") === "far,mid" &&
+              wildGrassLayersAt(90).join(",") === "far",
+            detail: `${wildGrassLayersAt(0).join("+")} → ${wildGrassLayersAt(40).join("+")} → ${wildGrassLayersAt(90).join("+")}`
+          },
+          {
+            name: "grass: far reach and close density meet the field contract",
+            pass:
+              WILD_GRASS_RING_RADIUS === 110 &&
+              WILD_GRASS_LAYER_SPECS.far.visibleRadius === 110 &&
+              wildGrassBladeDensityAt(0) >= 23,
+            detail: `${WILD_GRASS_RING_RADIUS} m / ${wildGrassBladeDensityAt(0).toFixed(2)} blades·m⁻²`
           }
         ];
         scene.add(grass);
@@ -316,7 +337,7 @@
           grass.visible = system === "grass";
           flowers.group.visible = system === "flower";
           if (system === "grass") {
-            const focus = focusForFade(GRASS_REACH, fade);
+            const focus = focusForFade(GRASS_REACH, fade, GRASS_FADE_BAND_METRES);
             grassState.focus.copy(focus);
           } else if (system === "flower") {
             const focus = focusForFlowerHeroFade(fade);

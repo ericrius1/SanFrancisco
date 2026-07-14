@@ -53,6 +53,31 @@ const CENTROID = `(() => {
   return { grassCentroid: n?[Math.round(sx/n), Math.round(sz/n)]:null, grassN: n, camXZ:[Math.round(cam.x),Math.round(cam.z)], playerXZ:[Math.round(pl.x),Math.round(pl.z)] };
 })()`;
 
+const GRASS_STATE = `(() => {
+  const group = window.__sf?.wildlands?.grass?.group;
+  if (!group) return null;
+  const meshes = [];
+  group.traverse((object) => {
+    if (!/wildlands_grass_/i.test(object.name) || !object.isMesh) return;
+    let effectiveVisible = object.visible;
+    for (let parent = object.parent; parent; parent = parent.parent) effectiveVisible &&= parent.visible;
+    meshes.push({
+      name: object.name,
+      count: object.geometry?.instanceCount ?? object.count ?? 0,
+      visible: object.visible,
+      effectiveVisible
+    });
+  });
+  return {
+    groupVisible: group.visible,
+    meshes: meshes.length,
+    visible: meshes.filter((mesh) => mesh.effectiveVisible && mesh.count > 0).length,
+    hidden: meshes.filter((mesh) => !mesh.effectiveVisible && mesh.count > 0).map((mesh) => mesh.name),
+    instances: meshes.reduce((sum, mesh) => sum + mesh.count, 0),
+    stats: group.userData.grassStats ?? null
+  };
+})()`;
+
 async function main() {
   mkdirSync(OUT, { recursive: true });
   const dev = await startDevIfNeeded();
@@ -86,6 +111,20 @@ async function main() {
   if (!(await ev(c, `!!window.__sf.wildlands?.grass?.group`).catch(() => false))) {
     throw new Error("wildlands lazy owner never activated after entering Golden Gate Park");
   }
+  const grassReadyStart = Date.now();
+  let grassState = await ev(c, GRASS_STATE);
+  console.log("[probe] grass owner attached", JSON.stringify(grassState));
+  while (
+    Date.now() - grassReadyStart < 120000 &&
+    (!grassState?.meshes || grassState.visible !== grassState.meshes)
+  ) {
+    await settle(c, 4);
+    grassState = await ev(c, GRASS_STATE);
+  }
+  if (!grassState?.meshes || grassState.visible !== grassState.meshes) {
+    throw new Error(`wildlands grass meshes never became renderable: ${JSON.stringify(grassState)}`);
+  }
+  console.log(`[probe] all grass meshes renderable after ${Date.now() - grassReadyStart}ms`, JSON.stringify(grassState));
 
   // orbit the free camera AROUND the stationary player; look inward.
   // If the grass centroid tracks the camera, the ring is camera-locked.

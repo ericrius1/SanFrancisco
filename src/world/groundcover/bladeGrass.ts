@@ -27,6 +27,7 @@ import {
   normalGeometry,
   positionGeometry,
   sin,
+  step,
   uniform,
   vec2,
   vec3,
@@ -60,6 +61,10 @@ export type GrassMaterialOptions = {
   wind?: "full" | "lite";
   /** Compile-time interaction budget. Far grass uses zero; nearby grass keeps all 12. */
   interactionSlots?: number;
+  /** Legacy site grass scales down; streamed fields extinguish stable whole blades. */
+  fadeMode?: "scale" | "rank";
+  /** Absolute world-space width of a rank fade. Only used by `fadeMode: "rank"`. */
+  fadeBand?: number;
 };
 
 /**
@@ -71,6 +76,13 @@ export type GrassMesh = THREE.Mesh<THREE.InstancedBufferGeometry, THREE.Material
 
 // TSL's d.ts narrows chained vector nodes too aggressively for vendored JS uniforms.
 type TslNode = any;
+
+function bladeRank(blade: number): number {
+  // Irrational stride: every authored blade gets a stable, well-spaced rank.
+  // Keep it strictly inside (0, 1) so coverage=0 rejects all and coverage=1
+  // retains all blades.
+  return 0.002 + (((blade + 1) * 0.6180339887498949) % 1) * 0.996;
+}
 
 export function createBladeClusterGeometry({
   blades,
@@ -89,6 +101,7 @@ export function createBladeClusterGeometry({
   const normals: number[] = [];
   const colors: number[] = [];
   const uvs: number[] = [];
+  const ranks: number[] = [];
   const indices: number[] = [];
   let base = 0;
 
@@ -104,6 +117,7 @@ export function createBladeClusterGeometry({
     const sideZ = dirX;
     const bend = curvature * (0.7 + 0.45 * ((blade * 2.23) % 1));
     const bladeWidth = width * (0.75 + 0.42 * ((blade * 3.31) % 1));
+    const rank = bladeRank(blade);
 
     for (let i = 0; i <= segments; i++) {
       const t = i / segments;
@@ -122,6 +136,7 @@ export function createBladeClusterGeometry({
       const tipWarmth = 0.72 + t * 0.28;
       colors.push(rootShade, rootShade, tipWarmth, rootShade, rootShade, tipWarmth);
       uvs.push(0, t, 1, t);
+      ranks.push(rank, rank);
     }
 
     for (let i = 0; i < segments; i++) {
@@ -136,6 +151,7 @@ export function createBladeClusterGeometry({
     normals.push(tipNormal.x, tipNormal.y, tipNormal.z);
     colors.push(1, 1, 0.88);
     uvs.push(0.5, 1);
+    ranks.push(rank);
     const last = base + segments * 2;
     indices.push(last, last + 1, tip);
     base = tip + 1;
@@ -146,6 +162,76 @@ export function createBladeClusterGeometry({
   geometry.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
   geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
   geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+  geometry.setAttribute("aGrassBladeRank", new THREE.Float32BufferAttribute(ranks, 1));
+  geometry.setIndex(indices);
+  geometry.computeBoundingSphere();
+  return geometry;
+}
+
+/**
+ * A dense grass silhouette without dense geometry: every blade is one narrow,
+ * pointed triangle. The tip leans in the authored blade plane, then the shared
+ * material adds wind/trample deformation. Compared with a segmented ribbon this
+ * puts several times more distinct blades on screen for fewer submitted
+ * triangles, and the pointed outline never turns into the old rectangular board.
+ */
+export function createMicroBladeClusterGeometry({
+  blades,
+  width,
+  radius,
+  lean
+}: {
+  blades: number;
+  width: number;
+  radius: number;
+  lean: number;
+}): THREE.BufferGeometry {
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const colors: number[] = [];
+  const uvs: number[] = [];
+  const ranks: number[] = [];
+  const indices: number[] = [];
+  const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+
+  for (let blade = 0; blade < blades; blade++) {
+    const rank = bladeRank(blade);
+    const yaw = blade * goldenAngle + rank * 1.73;
+    const rootAngle = yaw + 1.19 + rank * 2.1;
+    const rootRadius = radius * Math.sqrt((blade + 0.35) / Math.max(1, blades));
+    const rootX = Math.cos(rootAngle) * rootRadius;
+    const rootZ = Math.sin(rootAngle) * rootRadius;
+    const dirX = Math.cos(yaw);
+    const dirZ = Math.sin(yaw);
+    const sideX = -dirZ;
+    const sideZ = dirX;
+    const bladeWidth = width * (0.78 + rank * 0.38);
+    const halfWidth = bladeWidth * 0.5;
+    const bladeLean = lean * (0.68 + rank * 0.5);
+
+    const left = new THREE.Vector3(rootX - sideX * halfWidth, 0, rootZ - sideZ * halfWidth);
+    const right = new THREE.Vector3(rootX + sideX * halfWidth, 0, rootZ + sideZ * halfWidth);
+    const tip = new THREE.Vector3(rootX + dirX * bladeLean, 1.03, rootZ + dirZ * bladeLean);
+    const normal = new THREE.Vector3()
+      .subVectors(right, left)
+      .cross(new THREE.Vector3().subVectors(tip, left))
+      .normalize();
+    const base = positions.length / 3;
+
+    positions.push(left.x, left.y, left.z, right.x, right.y, right.z, tip.x, tip.y, tip.z);
+    normals.push(normal.x, normal.y, normal.z, normal.x, normal.y, normal.z, normal.x, normal.y, normal.z);
+    colors.push(0.56, 0.56, 0.72, 0.56, 0.56, 0.72, 1, 1, 0.88);
+    uvs.push(0, 0, 1, 0, 0.5, 1);
+    ranks.push(rank, rank, rank);
+    indices.push(base, base + 1, base + 2);
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
+  geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+  geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+  geometry.setAttribute("aGrassBladeRank", new THREE.Float32BufferAttribute(ranks, 1));
   geometry.setIndex(indices);
   geometry.computeBoundingSphere();
   return geometry;
@@ -177,7 +263,24 @@ export function createGrassMaterial(options: GrassMaterialOptions = {}): GrassMa
   const anchorLocal = transform.xyz;
   const anchorWorld = instanceAnchorWorld(anchorLocal);
   const dist = anchorWorld.xz.sub(focusU).length();
-  const fade = fadeRadius.sub(dist).div(fadeRadius.mul(GRASS_FADE_BAND).max(1)).clamp(0, 1);
+  const rankFade = options.fadeMode === "rank";
+  const fadeBand = rankFade
+    ? float(Math.max(1, Number(options.fadeBand ?? 12)))
+    : fadeRadius.mul(GRASS_FADE_BAND).max(1);
+  const fade = fadeRadius.sub(dist).div(fadeBand).clamp(0, 1);
+
+  // A moving field must not visibly sink into the floor. Streamed layers use a
+  // deterministic rank carried by the instance byte plus a constant rank on
+  // each authored blade. Coverage removes whole full-height blades in a broad,
+  // spatially staggered band; no screen-space dither crawls while wind moves.
+  let deformationFade: TslNode = fade;
+  if (rankFade) {
+    const authoredRank = attribute("aGrassBladeRank", "float") as TslNode;
+    const stableRank = tint.w.mul(0.754877666).add(authoredRank).fract().mul(0.996).add(0.002);
+    mat.opacityNode = step(stableRank, fade);
+    mat.alphaTestNode = float(0.5);
+    deformationFade = float(1);
+  }
 
   // Compact instance transform: position/rotation + shape replace a 16-float
   // matrix. This is 36 bytes/cluster including normalized RGBA, down from 96.
@@ -190,7 +293,7 @@ export function createGrassMaterial(options: GrassMaterialOptions = {}): GrassMa
     shaped.y.add(anchorLocal.y),
     shaped.x.mul(yawSin).add(shaped.z.mul(yawCos)).add(anchorLocal.z)
   );
-  const scaled = fadeAroundInstanceAnchor(placed, anchorLocal, fade);
+  const scaled = rankFade ? placed : fadeAroundInstanceAnchor(placed, anchorLocal, fade);
 
   // Trample: accumulate world-space push away from each displacer plus a
   // "crush" factor that flattens blades and damps their wind response.
@@ -216,7 +319,7 @@ export function createGrassMaterial(options: GrassMaterialOptions = {}): GrassMa
   const crushed = crush.min(1);
   const pushLen = push.length();
   const pushXZ = push.mul(pushLen.min(1).div(pushLen.max(1e-4))).mul(0.85);
-  const trampleT: TslNode = bladeT.pow(1.35).mul(fade);
+  const trampleT: TslNode = bladeT.pow(1.35).mul(deformationFade);
   const trampleWorld = vec3(pushXZ.x, crushed.mul(-0.42), pushXZ.y).mul(trampleT);
   const localTrample = worldOffsetToModelLocal(trampleWorld);
 
@@ -225,7 +328,7 @@ export function createGrassMaterial(options: GrassMaterialOptions = {}): GrassMa
   const bendWorld = vec3(WIND_DIR.x, 0, WIND_DIR.z)
     .mul(shape.z)
     .mul(sway)
-    .mul(bladeT.pow(2.05).mul(fade))
+    .mul(bladeT.pow(2.05).mul(deformationFade))
     .mul(windDamp);
   const bendLocal = worldOffsetToModelLocal(bendWorld);
   mat.positionNode = scaled.add(bendLocal).add(localTrample);
@@ -358,7 +461,18 @@ export function writeGrassMesh(mesh: GrassMesh, entries: GrassEntry[], fadeRadiu
     colors[offset] = Math.round(THREE.MathUtils.clamp(entry.color.r, 0, 1) * 255);
     colors[offset + 1] = Math.round(THREE.MathUtils.clamp(entry.color.g, 0, 1) * 255);
     colors[offset + 2] = Math.round(THREE.MathUtils.clamp(entry.color.b, 0, 1) * 255);
-    colors[offset + 3] = 255;
+    // Stable per-instance fade rank in the byte that was previously unused.
+    // Integer hashing avoids large-world floating-point drift and remains
+    // deterministic across refreshes, tile sizes, and additive render layers.
+    let rankHash = (
+      Math.imul(Math.round(entry.x * 100), 374761393) +
+      Math.imul(Math.round(entry.z * 100), 668265263) +
+      Math.imul(Math.round(entry.yaw * 1000), 2246822519)
+    ) | 0;
+    rankHash = Math.imul(rankHash ^ (rankHash >>> 15), 2246822519);
+    rankHash = Math.imul(rankHash ^ (rankHash >>> 13), 3266489917);
+    rankHash ^= rankHash >>> 16;
+    colors[offset + 3] = 1 + ((rankHash >>> 0) % 254);
   });
   mesh.userData.grassLastCount = entries.length;
   setGrassMeshCount(mesh, entries.length);
