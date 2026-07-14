@@ -3,10 +3,11 @@
 // Boots Ocean Beach in headless Chrome/WebGPU and verifies the player-facing
 // contract rather than reaching into Player.trySwitch():
 //   - clean boot requests no surf runtime, customizer, or optional board art,
-//   - keyboard E starts an already-standing, already-moving surf session,
+//   - keyboard E on a racked shack board starts an already-standing, already-moving
+//     surf session (surf is not on the vehicle toolbar),
 //   - neutral input survives a deterministic endless-wave run,
 //   - mouse and right-stick look cannot move the authored surf camera,
-//   - keyboard E and gamepad Y exit onto sand without abandoning a board,
+//   - keyboard E and gamepad Y exit onto the shack apron without abandoning a board,
 //   - standard-gamepad LS/triggers/A map to carve/pump/stall/Flow,
 //   - the shaping room and each cosmetic image remain first-use lazy,
 //   - desktop active play and the mobile shaping panel render nonblank.

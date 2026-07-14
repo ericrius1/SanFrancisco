@@ -66,7 +66,7 @@ export const POSTFX_TUNING = tunables("postfx", {
   }
 });
 
-/** Toggles that select retained render graphs (everything else is a live uniform). */
+/** Toggles that require a pipeline selection/update (everything else is a live uniform). */
 export const POSTFX_TOGGLES = ["fxaa", "ink", "dream", "retro"] as const;
 export const POSTFX_RADIAL_LIGHT_KEYS = [
   "museumRays",

@@ -536,6 +536,7 @@ async function boot() {
     if (surfShack) return;
     surfShack = createSurfShack(map);
     scene.add(surfShack.group);
+    refreshSurfDebug();
   };
   const refreshSurfDebug = () => {
     const hooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;

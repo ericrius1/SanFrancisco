@@ -605,6 +605,38 @@
         border: 1px solid var(--hairline);
         box-shadow: var(--shadow-sm), var(--edge-hi);
         backdrop-filter: blur(var(--blur));
+        transition:
+          background var(--dur) var(--ease),
+          border-color var(--dur) var(--ease),
+          box-shadow var(--dur) var(--ease),
+          opacity var(--dur) var(--ease);
+      }
+      /* Active row plate — soft gas-lamp teal wash so ↑/↓ focus reads as a
+         whole rail, not just the selected chip inside an otherwise identical panel. */
+      #hud .toolbar .vehicles:not(.focused),
+      #hud .toolbar .tools:not(.focused),
+      #hud .toolbar .swatches:not(.focused) {
+        opacity: 0.72;
+      }
+      #hud .toolbar .vehicles.focused,
+      #hud .toolbar .tools.focused,
+      #hud .toolbar .swatches.focused {
+        background:
+          linear-gradient(
+            180deg,
+            rgba(158, 242, 223, 0.2) 0%,
+            rgba(22, 64, 70, 0.82) 42%,
+            rgba(8, 26, 36, 0.88) 100%
+          );
+        border-color: rgba(158, 242, 223, 0.55);
+        box-shadow:
+          var(--shadow-sm),
+          var(--edge-hi),
+          0 0 0 1px rgba(111, 215, 196, 0.22),
+          0 0 28px rgba(111, 215, 196, 0.38),
+          0 0 8px rgba(158, 242, 223, 0.2),
+          inset 0 1px 0 rgba(190, 250, 235, 0.28),
+          inset 0 -1px 0 rgba(111, 215, 196, 0.08);
       }
       #hud .toolbar .vehicles {
         flex-wrap: nowrap;

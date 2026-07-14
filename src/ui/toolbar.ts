@@ -43,6 +43,8 @@ function keyHint(keys: string[]): HTMLElement {
 
 export class Toolbar {
   #root: HTMLElement;
+  #vehicleRow: HTMLElement;
+  #toolRow: HTMLElement;
   #swatchRow: HTMLElement;
   #vehicleBtns = new Map<PlayerMode, HTMLButtonElement>();
   #toolBtns = new Map<ToolName, HTMLButtonElement>();
@@ -65,8 +67,8 @@ export class Toolbar {
     this.#root = document.createElement("div");
     this.#root.className = "toolbar";
 
-    const vehicles = document.createElement("div");
-    vehicles.className = "vehicles";
+    this.#vehicleRow = document.createElement("div");
+    this.#vehicleRow.className = "vehicles";
     for (const [i, mode] of MENU_MODES.entries()) {
       const meta = MODE_META[mode];
       const b = document.createElement("button");
@@ -80,12 +82,12 @@ export class Toolbar {
         this.#onVehicle(mode);
       });
       this.#vehicleBtns.set(mode, b);
-      vehicles.appendChild(b);
+      this.#vehicleRow.appendChild(b);
     }
-    vehicles.appendChild(keyHint(["←", "→"]));
+    this.#vehicleRow.appendChild(keyHint(["←", "→"]));
 
-    const tools = document.createElement("div");
-    tools.className = "tools";
+    this.#toolRow = document.createElement("div");
+    this.#toolRow.className = "tools";
     for (const t of TOOL_ORDER) {
       const b = document.createElement("button");
       b.type = "button";
@@ -97,9 +99,9 @@ export class Toolbar {
         this.#onTool(t);
       });
       this.#toolBtns.set(t, b);
-      tools.appendChild(b);
+      this.#toolRow.appendChild(b);
     }
-    tools.appendChild(keyHint(["←", "→"]));
+    this.#toolRow.appendChild(keyHint(["←", "→"]));
 
     this.#swatchRow = document.createElement("div");
     this.#swatchRow.className = "swatches";
@@ -134,7 +136,7 @@ export class Toolbar {
     // lined up as the bottom row grows or its contents change.
     const stack = document.createElement("div");
     stack.className = "stack";
-    stack.append(vehicles, tools, this.#swatchRow);
+    stack.append(this.#vehicleRow, this.#toolRow, this.#swatchRow);
 
     const primary = document.createElement("div");
     primary.className = "primary";
@@ -223,6 +225,10 @@ export class Toolbar {
   }
 
   #renderFocus() {
+    this.#vehicleRow.classList.toggle("focused", this.#focusRow === "vehicles");
+    this.#toolRow.classList.toggle("focused", this.#focusRow === "tools");
+    this.#swatchRow.classList.toggle("focused", this.#focusRow === "swatches");
+
     for (const b of this.#vehicleBtns.values()) b.classList.remove("kbd");
     for (const b of this.#toolBtns.values()) b.classList.remove("kbd");
     for (const b of this.#swatchBtns) b.classList.remove("kbd");

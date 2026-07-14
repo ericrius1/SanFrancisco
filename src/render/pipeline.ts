@@ -480,6 +480,9 @@ export function createRenderPipeline(
     const sourceTarget = new THREE.RenderTarget(1, 1, {
       format: THREE.RGBAFormat,
       type: THREE.UnsignedByteType,
+      // The active graph has already produced display-referred sRGB. An sRGB
+      // attachment preserves that value through WebGPU's write/sample roundtrip
+      // so FXAA sees the expected luminance without shifting the final image.
       colorSpace: THREE.SRGBColorSpace,
       depthBuffer: false,
       stencilBuffer: false,
@@ -941,7 +944,7 @@ export function createRenderPipeline(
     fastCaptureSize: fastCaptureTarget ? [fastCaptureTarget.width, fastCaptureTarget.height] as const : null,
     /** Precompile scene/effect variants; safe to repeat after new loads. */
     warmup,
-    /** Compile every retained post-FX style graph so "/" toggles stay hitch-free. */
+    /** Compile every retained style graph plus the first-use FXAA pass. */
     warmupPostFx: async () => {
       await compilePostFxVariants(POSTFX_VARIANT_MASKS);
       await compileFxaaPipeline();
