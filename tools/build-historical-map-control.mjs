@@ -85,8 +85,11 @@ function segmentVisible(points) {
 async function main() {
   const meta = JSON.parse(await readFile(new URL("public/data/meta.json", ROOT), "utf8"));
   const surface = new Uint8Array(await readFile(new URL("public/data/surface.bin", ROOT)));
+  const heightBytes = await readFile(new URL("public/data/heightmap.bin", ROOT));
   const encodedHeight = new Int16Array(
-    (await readFile(new URL("public/data/heightmap.bin", ROOT))).buffer
+    heightBytes.buffer,
+    heightBytes.byteOffset,
+    heightBytes.byteLength / Int16Array.BYTES_PER_ELEMENT
   );
   const roads = JSON.parse(await readFile(new URL("public/data/roads.json", ROOT), "utf8"));
   const grid = meta.grid;

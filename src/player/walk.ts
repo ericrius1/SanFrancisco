@@ -97,13 +97,16 @@ export class WalkController implements ModeController {
     const run = input.down("ShiftLeft") || input.down("ShiftRight");
     const tw = WALK_TUNING.values;
     const speedScale = INPUT_TUNING.values.moveSpeedScale;
-    const speed = (run ? tw.runSpeed : tw.speed) * speedScale;
-
+    // Stick magnitude (already deadzoned + curved in pollPad) scales speed so a
+    // light press creeps and full deflection hits walk/run. Keyboard stays at 1.
     const dir = V.tmp.set(ix, 0, -iz);
+    const intent = Math.min(1, Math.hypot(ix, iz));
     if (dir.lengthSq() > 0) {
       dir.normalize().applyAxisAngle(V.up, camYaw);
       ctx.heading = Math.atan2(-dir.x, -dir.z) + Math.PI;
     }
+    const topSpeed = (run ? tw.runSpeed : tw.speed) * speedScale;
+    const speed = topSpeed * intent;
 
     const waterY = waterHeight(ctx.position.x, ctx.position.z, ctx.time);
     const swimming = ground < waterY - 1.0 && bottom < waterY;
@@ -115,12 +118,14 @@ export class WalkController implements ModeController {
     if (swimming) {
       // --- swimming: bob at the surface, dive when you look/press down ------
       // Horizontal glide (run key is repurposed as dive, so use base speed).
-      const swimSpeed = tw.speed * tw.swimFactor * speedScale;
+      const swimSpeed = tw.speed * tw.swimFactor * speedScale * intent;
       vx = dir.x * swimSpeed;
       vz = dir.z * swimSpeed;
       // Vertical command: look-pitch dive while swimming forward (nose down + W
       // = go under), plus explicit Space=up / Shift=down for fine control.
-      let vSwim = frame.aim.y * swimSpeed * iz;
+      // Use unit forward (iz/intent) so dive strength tracks swim speed, not intent².
+      const forward = intent > 1e-6 ? iz / intent : 0;
+      let vSwim = frame.aim.y * swimSpeed * forward;
       if (input.down("Space")) vSwim += tw.swimBoost;
       if (run) vSwim -= tw.swimBoost;
       // Buoyancy floats you back to the waterline when idle; suppressed while
