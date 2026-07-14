@@ -51,6 +51,8 @@ export interface PlayerCtx {
   time: number; // sim seconds, advanced by fixed steps
   /** True while inside a building — walk/run use indoorSpeed. */
   indoor: boolean;
+  /** True while carrying the garden rake — walk/run halve to a deliberate pace. */
+  raking: boolean;
   driveSpec: DriveSpec;
   /** Set before switching to walk from a water vehicle exit — skip the shore hop. */
   swimEnter?: boolean;

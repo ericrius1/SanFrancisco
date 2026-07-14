@@ -71,16 +71,16 @@ const SAND_TUNING = tunables("teaGarden.sandSimulation", {
   settleIterations: { v: 1, min: 0, max: 3, step: 1, label: "settle iterations" },
   settleTime: { v: 1.25, min: 0.1, max: 4, step: 0.05, label: "settle time (s)" },
   memoryFade: { v: 0.035, min: 0, max: 0.4, step: 0.005, label: "mark fade (/s)" },
-  rakeDepth: { v: 0.052, min: 0.008, max: 0.11, step: 0.002, label: "rake depth (m)" },
+  rakeDepth: { v: 0.078, min: 0.008, max: 0.11, step: 0.002, label: "rake depth (m)" },
   tineRadius: { v: 0.042, min: 0.018, max: 0.09, step: 0.002, label: "tine radius (m)" },
   tineSpacing: { v: 0.15, min: 0.08, max: 0.24, step: 0.005, label: "tine spacing (m)" },
-  shoulderLift: { v: 0.64, min: 0.15, max: 1.1, step: 0.01, label: "shoulder lift" },
+  shoulderLift: { v: 0.74, min: 0.15, max: 1.1, step: 0.01, label: "shoulder lift" },
   compaction: { v: 0.14, min: 0, max: 0.5, step: 0.01, label: "compaction / pass" },
   surfaceSmoothing: { v: 0.72, min: 0, max: 1, step: 0.01, label: "surface smoothing" },
   heightScale: { v: 1, min: 0.25, max: MAX_HEIGHT_SCALE, step: 0.05, label: "height relief" },
-  normalStrength: { v: 0.82, min: 0, max: 2, step: 0.02, label: "relief shading" },
+  normalStrength: { v: 1.08, min: 0, max: 2, step: 0.02, label: "relief shading" },
   microRelief: { v: 0.00022, min: 0, max: 0.002, step: 0.00002, label: "grain relief" },
-  compactionTint: { v: 0.18, min: 0, max: 0.4, step: 0.01, label: "rake mark contrast" }
+  compactionTint: { v: 0.3, min: 0, max: 0.4, step: 0.01, label: "rake mark contrast" }
 });
 
 export type SandSimulationPoint = { x: number; z: number };

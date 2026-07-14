@@ -170,6 +170,8 @@ export class Player {
   time = 0; // sim seconds, advanced by fixed steps (controllers read this)
   /** Set by main from the indoor camera gate; walk/run scale by indoorSpeed. */
   indoor = false;
+  /** True while carrying the garden rake; walk/run drop to a deliberate half pace. */
+  raking = false;
 
   // physics runs on a fixed 60 Hz step but the display can render faster
   // (120 Hz ProMotion). Rendering the raw body transform makes the world stutter
@@ -887,6 +889,7 @@ export class Player {
     this.#gardenRakeMotion.dragging = false;
 
     if (!tool) {
+      this.raking = false;
       this.#walkRig.hips.position.z = 0;
       this.#walkRig.handL.rotation.set(0, 0, 0);
       this.#walkRig.handR.rotation.set(0, 0, 0);
@@ -916,6 +919,7 @@ export class Player {
     this.#gardenRakeLocalShaft.normalize();
 
     this.#gardenRakeTool = tool;
+    this.raking = true;
     tool.root.removeFromParent();
     tool.root.matrixAutoUpdate = true;
     tool.root.scale.setScalar(1);

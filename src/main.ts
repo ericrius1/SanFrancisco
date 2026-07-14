@@ -3306,9 +3306,9 @@ async function boot() {
     if (minimap.expanded) {
       const axes = input.mapPadAxes();
       minimap.padPan(axes.lx, axes.ly, frameDt);
-      // RT/LT and right-stick Y both zoom (stick up = in, matching RT).
-      minimap.padZoom(axes.rt - axes.lt - axes.ry, frameDt);
-      minimap.padMoveCursor(axes.rx, 0, frameDt);
+      // RT zooms in, LT zooms out. Right stick moves the selection cursor.
+      minimap.padZoom(axes.rt - axes.lt, frameDt);
+      minimap.padMoveCursor(axes.rx, axes.ry, frameDt);
       if (input.pressedRaw("Space")) minimap.padSelectAtCursor();
       if (input.firePressed) minimap.padTeleport();
       if (input.pressedRaw("Enter") || input.pressedRaw("NumpadEnter")) minimap.padTeleport();

@@ -12,6 +12,8 @@ export const WALK_TUNING = tunables("movement.walk", {
   runSpeed: { v: 11.5, min: 2, max: 30, step: 0.1, label: "run speed" },
   // Interiors feel large at outdoor paces; keep foot speed ~60% while inside.
   indoorSpeed: { v: 0.6, min: 0.2, max: 1, step: 0.05, label: "indoor speed ×" },
+  // Raking the zen garden is deliberate; halve foot speed at every tier.
+  rakeSpeed: { v: 0.5, min: 0.2, max: 1, step: 0.05, label: "rake speed ×" },
   jump: { v: 7.2, min: 2, max: 20, step: 0.1, label: "jump" },
   swimFactor: { v: 0.45, min: 0.1, max: 1, step: 0.05, label: "swim speed ×" },
   swimBoost: { v: 2, min: 0, max: 8, step: 0.1, label: "swim boost" }
@@ -100,6 +102,7 @@ export class WalkController implements ModeController {
     const tw = WALK_TUNING.values;
     const speedScale = INPUT_TUNING.values.moveSpeedScale;
     const indoorScale = ctx.indoor ? tw.indoorSpeed : 1;
+    const rakeScale = ctx.raking ? tw.rakeSpeed : 1;
     // Stick magnitude (already deadzoned + curved in pollPad) scales speed so a
     // light press creeps and full deflection hits walk/run. Keyboard stays at 1.
     const dir = V.tmp.set(ix, 0, -iz);
@@ -108,7 +111,7 @@ export class WalkController implements ModeController {
       dir.normalize().applyAxisAngle(V.up, camYaw);
       ctx.heading = Math.atan2(-dir.x, -dir.z) + Math.PI;
     }
-    const topSpeed = (run ? tw.runSpeed : tw.speed) * speedScale * indoorScale;
+    const topSpeed = (run ? tw.runSpeed : tw.speed) * speedScale * indoorScale * rakeScale;
     const speed = topSpeed * intent;
 
     const waterY = waterHeight(ctx.position.x, ctx.position.z, ctx.time);

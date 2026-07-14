@@ -1658,7 +1658,7 @@ export class Minimap {
   }
 
   /** Zoom the expanded map toward the selection cursor (or view center).
-   *  Positive zoomAxis zooms in — callers pass RT−LT and/or −rightStickY. */
+   *  Positive zoomAxis zooms in — callers pass RT−LT. */
   padZoom(zoomAxis: number, dt: number) {
     if (!this.expanded || Math.abs(zoomAxis) < 0.02) return;
     const cursor = this.#padCursor ?? { nx: 0, ny: 0 };
@@ -1675,7 +1675,7 @@ export class Minimap {
     });
   }
 
-  /** Right stick X: move the selection cursor horizontally (Y is used for zoom). */
+  /** Right stick: move the selection cursor. */
   padMoveCursor(rx: number, ry: number, dt: number) {
     if (!this.expanded || (rx === 0 && ry === 0)) return;
     const cur = this.#padCursor ?? { nx: 0, ny: 0 };
