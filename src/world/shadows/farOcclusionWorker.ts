@@ -47,6 +47,15 @@ self.onmessage = (event: MessageEvent<WorkerMessage>) => {
       type: _type,
       ...nextConfig
     } = message
+    // Downsample groundTops into the coarse field as the terrain RECEIVER base
+    // (it also seeds the sweep as a self-shadow surface). Reduce with MINIMUM,
+    // not maximum: MAX-pool let a single tall source sample inside a 16 m block
+    // (a curb, retaining wall, or structure edge baked into groundTops) lift the
+    // whole texel's ground, which then propagated a hard, 16 m-quantized core
+    // shadow ceiling onto genuinely flat road/ground downstream — a dark patch
+    // with no visible caster. The lowest sample is the best estimate of the
+    // walkable surface, so flat ground stays flat and never self-shadows; real
+    // buildings still cast via the explicit occluder envelopes.
     const nextTerrain = new Float32Array(message.width * message.height)
     for (let z = 0; z < message.height; z++) {
       const sourceZ0 = z * cellsPerTexel
@@ -54,15 +63,15 @@ self.onmessage = (event: MessageEvent<WorkerMessage>) => {
       for (let x = 0; x < message.width; x++) {
         const sourceX0 = x * cellsPerTexel
         const sourceX1 = Math.min(sourceWidth, sourceX0 + cellsPerTexel)
-        let maximum = -Infinity
+        let minimum = Infinity
         for (let sourceZ = sourceZ0; sourceZ < sourceZ1; sourceZ++) {
           const row = sourceZ * sourceWidth
           for (let sourceX = sourceX0; sourceX < sourceX1; sourceX++) {
             const value = groundTops[row + sourceX]
-            if (Number.isFinite(value) && value > maximum) maximum = value
+            if (Number.isFinite(value) && value < minimum) minimum = value
           }
         }
-        nextTerrain[z * message.width + x] = Number.isFinite(maximum) ? maximum : 0
+        nextTerrain[z * message.width + x] = Number.isFinite(minimum) ? minimum : 0
       }
     }
     terrain = nextTerrain

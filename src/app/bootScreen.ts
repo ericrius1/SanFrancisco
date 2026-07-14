@@ -34,6 +34,9 @@ export class BootScreen {
 
     window.addEventListener("keydown", (event) => {
       if (event.key !== "Enter" || event.repeat || this.loading.classList.contains("done")) return;
+      // A shared ?read= link opens the reading panel over the start screen; Enter
+      // there belongs to the reading, not to entering the world.
+      if (document.body.classList.contains("reading")) return;
       const target = event.target;
       if (target === this.#startButton) return; // native click/submit handles this
       if (target instanceof HTMLTextAreaElement) return;

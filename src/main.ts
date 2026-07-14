@@ -2097,7 +2097,36 @@ async function boot() {
   // and the frozen canvas dims a touch, so no live frames flicker behind the read.
   // Esc-dismiss stays unlocked (click to capture); see Escape priority stack.
   let btsReading = false;
-  // BehindTheScenes is constructed after progress(100) in the deferred loader
+  // BehindTheScenes is built lazily. Both the deferred boot loader and a shared
+  // `?read=` link route through ensureBehindTheScenes so it's constructed exactly
+  // once, sharing one toggle.
+  const onBtsToggle = (open: boolean) => {
+    btsReading = open;
+    app.classList.toggle("world-dimmed", open);
+    input.suspended = open || inOrbit();
+    if (open) input.releaseLock();
+    // A shared reading link opens the panel before the player has entered; closing
+    // it drops back to the normal start screen instead of leaving them mid-modal.
+    if (!open) document.body.classList.remove("reading");
+  };
+  let btsCtor: Promise<void> | null = null;
+  const ensureBehindTheScenes = (): Promise<void> => {
+    if (behindTheScenes) return Promise.resolve();
+    if (!btsCtor) {
+      btsCtor = import("./ui/behindTheScenes").then(({ BehindTheScenes }) => {
+        if (!behindTheScenes) behindTheScenes = new BehindTheScenes(onBtsToggle);
+      });
+    }
+    return btsCtor;
+  };
+  // `?read=bts.<tab>` — a shared reading link. Drop straight into the panel with the
+  // world still streaming behind it (no game entry, no name gate); closing it lands
+  // on the normal start screen. Build the panel ASAP instead of waiting for the
+  // deferred loader, and let `body.reading` reveal just the modal over the folio.
+  if (parseReadLink(location.search)) {
+    document.body.classList.add("reading");
+    void ensureBehindTheScenes().then(() => openReadLink());
+  }
 
   // Debug overlays ("/" → overlays). Off unless toggled; tick gathers active
   // physics / raycast / context-sensitive site overlays into WebGPU line buffers.
@@ -3238,15 +3267,10 @@ async function boot() {
       wildlandsGolfReady
     ].filter(Boolean));
 
-    // BehindTheScenes: the "how it was made" reading overlay.
+    // BehindTheScenes: the "how it was made" reading overlay (built once; a
+    // ?read= link may have already constructed it — see ensureBehindTheScenes).
     // Closing does not re-lock — Esc (and backdrop/close) leave the cursor free.
-    const { BehindTheScenes } = await import("./ui/behindTheScenes");
-    behindTheScenes = new BehindTheScenes((open: boolean) => {
-      btsReading = open;
-      app.classList.toggle("world-dimmed", open);
-      input.suspended = open || inOrbit();
-      if (open) input.releaseLock();
-    });
+    await ensureBehindTheScenes();
 
   })()
     .catch((err) => {
@@ -3376,15 +3400,10 @@ async function boot() {
     revealWorld("skip-gate");
   }
 
-  // `?read=<modal>[.<sub>]` — a shared "reading" link (e.g. ?read=bts.sound for
-  // the soundscape chapter). Drop straight into the reading: no name gate, a fun
-  // sample name handed out automatically, and the modal opened on its sub-view.
-  // Closing it lands the player in the live city with nothing left to fill in.
-  if (parseReadLink(location.search)) {
-    revealWorld("read-link"); // reading mode starts immediately — the modal covers any late streaming
-    bootScreen.startNow(suggestedName, { lock: false });
-    openReadLink(); // opens the registered modal + strips ?read= from the URL
-  }
+  // A shared `?read=` link is handled earlier (see ensureBehindTheScenes): the
+  // panel is already opening over the loading folio while the world settles here
+  // in the background. No auto-enter — the visitor meets the start screen only
+  // when they close the panel.
 
   const timer = new THREE.Timer();
   let accumulator = 0;
@@ -3532,7 +3551,11 @@ async function boot() {
     // Behind-the-scenes and the Canticle book both freeze the world completely —
     // no sim, no render; the canvas keeps its last frame (dimmed via CSS) behind
     // the DOM overlay, whose own animation runs on its own rAF.
-    if (btsReading || museumBookOpen) {
+    // Freeze the world (no sim, no render) while a reading overlay is open DURING
+    // play. Before the player has entered (a shared ?read= link opens the panel
+    // over the loading folio), keep ticking so the world keeps streaming in behind
+    // the modal — otherwise it would never finish loading while you read.
+    if ((btsReading && document.body.classList.contains("started")) || museumBookOpen) {
       input.endFrame();
       return;
     }
@@ -4839,6 +4862,13 @@ async function boot() {
         renderer.toneMappingExposure = v;
       },
       setPostFx: (values: Record<string, number | boolean>) => {
+        // sceneSamples is a render-target knob, not a POSTFX uniform: route it to
+        // the pipeline's multisampling toggle. 0 = single-sampled (a resolvable
+        // depth texture; matches real-time play), >0 = MSAA for cleaner edges.
+        if ("sceneSamples" in values) {
+          pipeline.setCinematicMultisampling(Number(values.sceneSamples) > 0);
+          delete values.sceneSamples;
+        }
         Object.assign(POSTFX_TUNING.values, values);
         pipeline.applyPostFx(); // select the retained toggle variant + push uniforms
       }

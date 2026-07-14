@@ -50,18 +50,17 @@ export function buildReadUrl(id: string, sub?: string): string {
 }
 
 /**
- * If the URL carries a `?read=` link for a registered modal, open it and strip
- * the param (so a refresh just resumes normal play). Returns true if one was
- * applied — main.ts uses that to know it should keep the game running behind it.
+ * If the URL carries a `?read=` link for a registered modal, open it. Returns
+ * true if one was applied — main.ts uses that to know it should keep the game
+ * running behind it. The modal owns the address bar from here on: it keeps
+ * `?read=<id>.<sub>` in sync with the tab on screen (so the URL is always
+ * shareable) and strips it when closed (so a refresh resumes normal play).
  */
 export function openReadLink(): boolean {
   const link = parseReadLink(location.search);
   const modal = link && registry.get(link.id);
   if (!link || !modal) return false;
   modal.open(link.sub);
-  const q = new URLSearchParams(location.search);
-  q.delete(READ_PARAM);
-  history.replaceState(null, "", location.pathname + (q.size ? `?${q}` : ""));
   return true;
 }
 

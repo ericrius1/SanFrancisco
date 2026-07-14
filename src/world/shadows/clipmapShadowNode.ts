@@ -372,8 +372,13 @@ export class ClipmapShadowNode extends THREE.ShadowBaseNode {
       // the local guard band; the far raster remains the exact fallback while
       // atlas availability or its edge guard fades in, and when the pane turns
       // atlas strength down.
+      // Saturate the retire weight: once the world atlas has any real coverage
+      // it should fully own the far domain, so the coarse 1 m far raster cannot
+      // bleed a stepped, self-shadowed patch through a merely-partial (overcast,
+      // low/stale-sun, mid-rebuild) linear dip. Near-zero coverage still keeps
+      // the raster as the genuine fallback.
       const atlasOwnership = farField
-        ? farField.coverage.mul(farFieldStrength)
+        ? smoothstep(0, 0.6, farField.coverage as N).mul(farFieldStrength)
         : null
       const composeWithFarField = (rasterVisibility: N, rasterRetireWeight: N) => {
         if (!farFieldBase) return rasterVisibility

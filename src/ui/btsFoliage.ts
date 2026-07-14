@@ -82,7 +82,7 @@ function createLodDial(): FoliageToy {
          aria-label="A tree dropping through four level-of-detail tiers as it recedes, and a forest collapsing to a couple of draw calls">
       <line x1="34" y1="220" x2="300" y2="220" stroke="rgba(190,225,240,0.16)"/>
       <ellipse cx="150" cy="221" rx="70" ry="7" fill="rgba(18,40,56,0.6)"/>
-      <text class="ss-sub" x="150" y="240" text-anchor="middle">hero pool · full detail</text>
+      <text class="ss-sub" x="150" y="240" text-anchor="middle" data-el="herolabel">up close · every leaf</text>
 
       <g data-el="hero">
         <g data-el="h-canopy">
@@ -151,6 +151,14 @@ function createLodDial(): FoliageToy {
     const autoBtn = root.querySelector<HTMLButtonElement>('[data-el="auto"]')!;
     const stagBtn = root.querySelector<HTMLButtonElement>('[data-el="stag"]')!;
     const read = root.querySelector<HTMLElement>('[data-el="read"]')!;
+    const heroLabel = root.querySelector<SVGTextElement>('[data-el="herolabel"]')!;
+    const HEROLBL = [
+      "up close · every leaf",
+      "a little out · fewer clusters",
+      "farther · flat cards",
+      "far off · one silhouette",
+      "gone · culled",
+    ];
 
     // tier model — distances/tri magnitudes per the foliage FACTS
     const B0 = 96, B1 = 160, B2 = 220, B3 = 520;
@@ -239,6 +247,8 @@ function createLodDial(): FoliageToy {
     let walkPhase = 0;
     let lastT = 0;
     let lastReadKey = "";
+    const heroVis = [1, 0, 0, 0]; // eased per-tier opacity — only one is ever ~1
+    let lastHeroTier = 0;
 
     // staggered -> per-chunk hash bias ±12 m so the grid never flips along one circle
     const biasOf = (i: number): number => (staggered ? hash2(i, 7, 3) * 24 - 12 : 0);
@@ -269,6 +279,7 @@ function createLodDial(): FoliageToy {
     return (t: number): void => {
       const dt = lastT ? Math.min(0.05, t - lastT) : 0.016;
       lastT = t;
+      const ease = Math.min(1, dt * 9); // shared time-based crossfade rate
 
       if (auto) {
         walkPhase += dt * 0.34;
@@ -276,20 +287,25 @@ function createLodDial(): FoliageToy {
         slider.value = String(Math.round(dist));
       }
 
-      // hero tree: crossfade the four tiers by distance, shrink as it recedes
-      const canO = 1 - smoothstep(B0 - 13, B0 + 13, dist);
-      const groO = smoothstep(B0 - 13, B0 + 13, dist) * (1 - smoothstep(B1 - 13, B1 + 13, dist));
-      const lanO = smoothstep(B1 - 13, B1 + 13, dist) * (1 - smoothstep(B2 - 13, B2 + 13, dist));
-      const horO = smoothstep(B2 - 13, B2 + 13, dist) * (1 - smoothstep(B3 - 13, B3 + 13, dist));
-      hCanopy.setAttribute("opacity", canO.toFixed(3));
-      hGrove.setAttribute("opacity", groO.toFixed(3));
-      hLand.setAttribute("opacity", lanO.toFixed(3));
-      hHoriz.setAttribute("opacity", horO.toFixed(3));
+      // hero tree: show exactly ONE tier, eased in time (not blended by distance).
+      // Hovering inside a tier lets the opacities settle to a clean 1/0, so two
+      // silhouettes never sit ghosted over each other mid-drag — that overlap was the
+      // "glitch". Crossing a boundary is a quick clean dissolve. Sways from its base.
+      const curTier = tierAt(dist);
+      const hTiers = [hCanopy, hGrove, hLand, hHoriz];
+      for (let k = 0; k < 4; k++) {
+        heroVis[k] += ((curTier === k ? 1 : 0) - heroVis[k]) * ease;
+        hTiers[k].setAttribute("opacity", heroVis[k].toFixed(3));
+      }
+      if (curTier !== lastHeroTier) {
+        lastHeroTier = curTier;
+        heroLabel.textContent = HEROLBL[curTier];
+      }
       const hs = lerp(1.18, 0.36, clamp(dist / 520));
       const hFade = 1 - smoothstep(500, 560, dist);
-      const hSway = 2 * Math.sin(t * 0.7);
+      const hSway = 1.4 * Math.sin(t * 0.7);
       heroG.setAttribute("opacity", hFade.toFixed(3));
-      heroG.setAttribute("transform", `translate(150,216) scale(${hs.toFixed(3)}) skewX(${hSway.toFixed(2)})`);
+      heroG.setAttribute("transform", `translate(150,216) rotate(${hSway.toFixed(2)}) scale(${hs.toFixed(3)})`);
 
       // readout (only rebuild the string when it actually changes)
       const hTier = tierAt(dist);
@@ -302,7 +318,6 @@ function createLodDial(): FoliageToy {
 
       // receding row: staggered soft frontier vs synchronized pop
       const off = dist - 40;
-      const ease = Math.min(1, dt * 9);
       for (let i = 0; i < N; i++) {
         const eff = gbase[i] + off + biasOf(i);
         const tier = tierAt(eff);
@@ -341,9 +356,9 @@ function createLodDial(): FoliageToy {
         const treeO = 1 - smoothstep(505, 565, eff);
         const g = rtrees[i];
         g.setAttribute("opacity", treeO.toFixed(3));
-        const a = 2.2 * Math.sin(t * 0.9 + i * 0.7);
+        const a = 1.6 * Math.sin(t * 0.9 + i * 0.7);
         const s = gsc[i] * popScale;
-        g.setAttribute("transform", `translate(${gx[i].toFixed(1)},${gy[i].toFixed(1)}) scale(${s.toFixed(3)}) skewX(${a.toFixed(2)})`);
+        g.setAttribute("transform", `translate(${gx[i].toFixed(1)},${gy[i].toFixed(1)}) rotate(${a.toFixed(2)}) scale(${s.toFixed(3)})`);
       }
     };
   }

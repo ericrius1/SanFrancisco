@@ -51,6 +51,7 @@ const BIG_ZOOM_SPEED = 0.0012;
 /** Closest expanded-map zoom (metres across). Stops short of the atlas
  *  upsampling into mush — roughly a neighborhood of city blocks. */
 const BIG_MIN_SPAN = 1200;
+const BIG_RECENTER_MS = 420;
 const PAD_PAN_SPEED = 0.7; // view-spans per second at full stick
 const PAD_ZOOM_SPEED = 1.6; // exp rate per second at full trigger
 const PAD_CURSOR_SPEED = 1.15; // normalized half-widths per second
@@ -292,6 +293,17 @@ export class Minimap {
   #miniSuppressClick = false;
   #bigSpan = 0;
   #bigCenter: { x: number; z: number } | null = null;
+  /** Smooth pan+zoom toward the local player after clicking recenter. */
+  #bigRecenterAnim: {
+    t0: number;
+    duration: number;
+    fromX: number;
+    fromZ: number;
+    fromSpan: number;
+    toX: number;
+    toZ: number;
+    toSpan: number;
+  } | null = null;
   #bigDrag:
     | {
         pointerId: number;
@@ -1004,6 +1016,45 @@ export class Minimap {
     return Math.min(Math.max(BIG_MIN_SPAN, span), this.#bigMaxSpan());
   }
 
+  /**
+   * Largest view span that still lets world (x,z) sit at the true viewport
+   * center — past this, `#clampBigCenter` pulls the pin off-middle near edges.
+   */
+  #maxSpanForTrueCenter(x: number, z: number) {
+    const g = this.#map.meta.grid;
+    const worldW = g.width * g.cellSize;
+    const worldH = g.height * g.cellSize;
+    const halfFactor = 0.5 - BIG_EDGE_BLEED;
+    if (halfFactor <= 1e-6) return BIG_MIN_SPAN;
+    const distX = Math.max(0, Math.min(x - g.minX, g.minX + worldW - x));
+    const distZ = Math.max(0, Math.min(z - g.minZ, g.minZ + worldH - z));
+    // inset = spanAxis * halfFactor must stay ≤ distance to that map edge.
+    const maxFromX = distX / halfFactor;
+    const maxFromZ = (distZ * this.#bigAspect()) / halfFactor;
+    return this.#clampBigSpan(Math.min(maxFromX, maxFromZ, this.#bigMaxSpan()));
+  }
+
+  #cancelBigRecenterAnim() {
+    this.#bigRecenterAnim = null;
+  }
+
+  #tickBigRecenterAnim() {
+    const anim = this.#bigRecenterAnim;
+    if (!anim) return;
+    const u = Math.min(1, (performance.now() - anim.t0) / anim.duration);
+    const e = 1 - (1 - u) ** 3; // ease-out cubic
+    this.#bigSpan = this.#clampBigSpan(anim.fromSpan + (anim.toSpan - anim.fromSpan) * e);
+    this.#bigCenter = this.#clampBigCenter({
+      x: anim.fromX + (anim.toX - anim.fromX) * e,
+      z: anim.fromZ + (anim.toZ - anim.fromZ) * e
+    });
+    if (u >= 1) {
+      this.#bigRecenterAnim = null;
+      this.#bigSpan = this.#clampBigSpan(anim.toSpan);
+      this.#bigCenter = this.#clampBigCenter({ x: anim.toX, z: anim.toZ });
+    }
+  }
+
   #clampBigCenter(center: { x: number; z: number }) {
     const g = this.#map.meta.grid;
     const worldW = g.width * g.cellSize;
@@ -1618,12 +1669,37 @@ export class Minimap {
 
   /* --------------------------------------------------- expanded map */
 
-  #centerBigOnSelf(resetZoom = false) {
+  #centerBigOnSelf(resetZoom = false, animate = false) {
     const self = this.#getSelf();
+    // Near the map rim a wide span can't place the player in the middle —
+    // pull in just far enough that edge clamp no longer offsets them.
+    const maxForCenter = this.#maxSpanForTrueCenter(self.x, self.z);
+    let targetSpan: number;
     if (resetZoom) {
-      const maxSpan = this.#bigMaxSpan();
-      this.#bigSpan = (maxSpan + BIG_MIN_SPAN) / 2;
+      targetSpan = Math.min((this.#bigMaxSpan() + BIG_MIN_SPAN) / 2, maxForCenter);
+    } else {
+      const current = this.#bigSpan || this.#bigMaxSpan();
+      targetSpan = Math.min(current, maxForCenter);
     }
+    targetSpan = this.#clampBigSpan(targetSpan);
+
+    if (animate) {
+      const from = this.#bigView();
+      this.#bigRecenterAnim = {
+        t0: performance.now(),
+        duration: BIG_RECENTER_MS,
+        fromX: from.center.x,
+        fromZ: from.center.z,
+        fromSpan: from.spanX,
+        toX: self.x,
+        toZ: self.z,
+        toSpan: targetSpan
+      };
+      return;
+    }
+
+    this.#cancelBigRecenterAnim();
+    this.#bigSpan = targetSpan;
     this.#bigCenter = this.#clampBigCenter({ x: self.x, z: self.z });
   }
 
@@ -1640,6 +1716,7 @@ export class Minimap {
       this.#bigWrap!.style.display = "flex";
       this.#drawBig();
     } else if (this.#bigWrap) {
+      this.#cancelBigRecenterAnim();
       this.#bigWrap.style.display = "none";
       this.#padCursor = null;
     }
@@ -1649,6 +1726,7 @@ export class Minimap {
   /** Left stick: pan the expanded map. No-op when collapsed. */
   padPan(lx: number, ly: number, dt: number) {
     if (!this.expanded || (lx === 0 && ly === 0)) return;
+    this.#cancelBigRecenterAnim();
     const { spanX, spanZ } = this.#bigView();
     const center = this.#bigCenter ?? this.#mapCenter();
     this.#bigCenter = this.#clampBigCenter({
@@ -1661,6 +1739,7 @@ export class Minimap {
    *  Positive zoomAxis zooms in — callers pass RT−LT. */
   padZoom(zoomAxis: number, dt: number) {
     if (!this.expanded || Math.abs(zoomAxis) < 0.02) return;
+    this.#cancelBigRecenterAnim();
     const cursor = this.#padCursor ?? { nx: 0, ny: 0 };
     const { center, spanX, spanZ } = this.#bigView();
     const worldX = center.x + cursor.nx * spanX;
@@ -1751,6 +1830,7 @@ export class Minimap {
     let ny = (z - center.z) / spanZ;
     // If the pin sits outside the view, pan so it lands near center first.
     if (Math.abs(nx) > 0.45 || Math.abs(ny) > 0.45) {
+      this.#cancelBigRecenterAnim();
       this.#bigCenter = this.#clampBigCenter({ x, z });
       const view = this.#bigView();
       nx = (x - view.center.x) / view.spanX;
@@ -1825,11 +1905,9 @@ export class Minimap {
       `</svg>`;
     recenter.addEventListener("click", (e) => {
       e.stopPropagation();
-      this.#centerBigOnSelf();
+      this.#centerBigOnSelf(false, true);
       this.#drawBig();
     });
-    const sideControls = document.createElement("div");
-    sideControls.className = "bigmap-side-controls";
     const layers = document.createElement("div");
     layers.className = "bigmap-layers";
     layers.setAttribute("role", "group");
@@ -1857,13 +1935,15 @@ export class Minimap {
       layers.appendChild(button);
       this.#overlayButtons.set(def.id, button);
     }
-    sideControls.append(layers, recenter);
+    const sideControls = document.createElement("div");
+    sideControls.className = "bigmap-side-controls";
+    sideControls.append(recenter);
     const pinHint = document.createElement("div");
     pinHint.className = "bigmap-pin-hint";
     pinHint.hidden = true;
     pinHint.setAttribute("aria-hidden", "true");
     mapFrame.append(canvas, sideControls, pinHint);
-    inner.appendChild(mapFrame);
+    inner.append(layers, mapFrame);
     wrap.appendChild(inner);
     document.body.appendChild(wrap);
     // click outside the map closes; the canvas itself owns selection/pan/zoom
@@ -1894,6 +1974,7 @@ export class Minimap {
         const nextSpan = this.#clampBigSpan(this.#bigSpan * Math.exp(e.deltaY * BIG_ZOOM_SPEED));
         if (nextSpan === this.#bigSpan) return;
 
+        this.#cancelBigRecenterAnim();
         this.#bigSpan = nextSpan;
         this.#bigCenter = this.#clampBigCenter({
           x: worldX - nx * this.#bigSpan,
@@ -1905,6 +1986,7 @@ export class Minimap {
     );
     canvas.addEventListener("pointerdown", (e) => {
       if (e.button !== 0) return;
+      this.#cancelBigRecenterAnim();
       const { center, spanZ } = this.#bigView();
       this.#bigDrag = {
         pointerId: e.pointerId,
@@ -2034,6 +2116,7 @@ export class Minimap {
 
   #drawBig() {
     const canvas = this.#big!;
+    this.#tickBigRecenterAnim();
     const { width: W, height: H } = this.#map.meta.grid;
     const dpr = this.#dpr;
     // fit the viewport, keep the world aspect
@@ -2058,10 +2141,9 @@ export class Minimap {
     this.#maybeLoadHistoricalRegions(center, spanX, spanZ);
     this.#maybeLoadHistoricalDetail(center, spanX, spanZ);
     const self = this.#getSelf();
-    const focusedSelf = this.#clampBigCenter({ x: self.x, z: self.z });
     this.#bigRecenter?.classList.toggle(
       "centered",
-      Math.hypot(center.x - focusedSelf.x, center.z - focusedSelf.z) < 0.5
+      Math.hypot(center.x - self.x, center.z - self.z) < 0.5
     );
     const cell = this.#map.meta.grid.cellSize;
     ctx.drawImage(
