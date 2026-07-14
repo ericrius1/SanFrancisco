@@ -19,6 +19,7 @@ import { SHADOW_LAYERS, type ShadowLayer } from "./shadowLayers"
 import type { FarOcclusionField } from "./farOcclusionField"
 import { SHADOW_DEFAULTS } from "./defaults"
 import { SHADOW_TUNING } from "./tuning"
+import { composeRasterAtlasVisibility } from "./visibilityComposition"
 
 export const CLIPMAP_SHADOW_CONFIG = {
   hero: {
@@ -320,30 +321,46 @@ export class ClipmapShadowNode extends THREE.ShadowBaseNode {
       const farFieldVisibility = farField
         ? mix(1, farField.visibility as N, farFieldStrength)
         : null
+      // Coverage includes atlas availability and its world-edge guard. Fold it
+      // into a neutral-to-atlas base once, then keep that base continuous under
+      // both raster domains. `min` unions duplicated caster representations;
+      // multiplying them here would darken buildings twice.
+      const farFieldBase = farField && farFieldVisibility
+        ? mix(1, farFieldVisibility as N, farField.coverage)
+        : null
+      const composeWithFarField = (rasterVisibility: N, rasterRetireWeight: N) => {
+        if (!farFieldBase) return rasterVisibility
+        return composeRasterAtlasVisibility(
+          rasterVisibility,
+          farFieldBase as N,
+          rasterRetireWeight,
+          (a, b) => (a as N).min(b as N),
+          (a, b, weight) => (mix as N)(a, b, weight)
+        )
+      }
 
       If(localRadius.lessThan(42), () => {
-        visibility.mulAssign(local as N)
+        visibility.mulAssign(composeWithFarField(local as N, 0 as N))
       }).ElseIf(localRadius.lessThan(48), () => {
         const farWeight = smoothstep(42, 48, localRadius)
-        visibility.mulAssign(mix(local as N, far as N, farWeight))
+        const rasterVisibility = mix(local as N, far as N, farWeight)
+        visibility.mulAssign(composeWithFarField(rasterVisibility as N, 0 as N))
       }).Else(() => {
-        if (!farField || !farFieldVisibility) {
+        if (!farField || !farFieldBase) {
           visibility.mulAssign(far as N)
         } else {
           If(farRadius.lessThan(420), () => {
-            visibility.mulAssign(far as N)
+            visibility.mulAssign(composeWithFarField(far as N, 0 as N))
           }).ElseIf(farRadius.lessThan(500), () => {
             const handoff = smoothstep(420, 500, farRadius).mul(farField.coverage)
-            visibility.mulAssign((mix as N)(far as N, farFieldVisibility as N, handoff))
+            visibility.mulAssign(composeWithFarField(far as N, handoff as N))
           }).Else(() => {
             // Stable interior pixels use only the atlas. During revision fades
             // or at atlas edges, retain the raster map as a correctness fallback.
             If(farField.coverage.greaterThan(0.995), () => {
-              visibility.mulAssign(farFieldVisibility as N)
+              visibility.mulAssign(farFieldBase as N)
             }).Else(() => {
-              visibility.mulAssign(
-                (mix as N)(far as N, farFieldVisibility as N, farField.coverage)
-              )
+              visibility.mulAssign(composeWithFarField(far as N, farField.coverage as N))
             })
           })
         }

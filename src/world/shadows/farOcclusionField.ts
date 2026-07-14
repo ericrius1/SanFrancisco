@@ -500,7 +500,7 @@ export class FarOcclusionField {
     return mix(1, rawDirectional.mul(rawContact), coverage.mul(distanceWeight))
   }
 
-  /** Raw field plus validity weight for replacing—not multiplying—the raster far map. */
+  /** Raw field plus validity weight for a continuous base/detail raster union. */
   replacementSampleNode(worldPositionNode: N = positionWorld): { visibility: N; coverage: N } {
     const { rawDirectional, rawContact, coverage } = this.#visibilityContext(worldPositionNode)
     return { visibility: rawDirectional.mul(rawContact), coverage }

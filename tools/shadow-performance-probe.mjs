@@ -100,7 +100,7 @@ async function profileTarget(executablePath, target) {
       sf.POSTFX_TUNING.values.retro = false
       sf.POSTFX_TUNING.values.sceneSamples = 0
       sf.pipeline.applyPostFx()
-      sf.dynRes.sample = () => {}
+      if (sf.dynRes) sf.dynRes.sample = () => {}
       sf.renderer.setPixelRatio(dpr)
       sf.renderer.setSize(viewport.width, viewport.height)
       const y = sf.map.groundHeight(world.x, world.z)
