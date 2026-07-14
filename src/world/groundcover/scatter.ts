@@ -37,6 +37,34 @@ export function smoothstep(a: number, b: number, t: number): number {
   return u * u * (3 - 2 * u);
 }
 
+// R2 low-discrepancy (Roberts' plastic-constant) constants. `1/φ₂` and `1/φ₂²`
+// where φ₂ ≈ 1.3247179572 is the plastic number — the 2-D generalisation of the
+// golden ratio, and the vector that minimises 2-D lattice discrepancy.
+const R2_A1 = 0.7548776662466927; // 1 / φ₂
+const R2_A2 = 0.5698402909980532; // 1 / φ₂²
+
+/**
+ * Low-discrepancy per-cell offset in [0,1)², a blue-noise-ish drop-in for the
+ * `hash2`-based jitter grass and flowers use to un-grid their placement.
+ *
+ * A raw hash gives each cell an *independent uniform* offset, so neighbouring
+ * cells routinely clump (two points nearly touching) or gap (a bald patch) — the
+ * variance real meadows don't have. Advancing each cell's offset by the plastic
+ * vector (R2) instead makes adjacent cells step to well-separated positions, so
+ * nearest-neighbour spacing tightens toward even without going regular. A small
+ * hash dither keeps it from reading as a lattice. Deterministic in (gx,gz,salt),
+ * and — crucially for the tile-ownership contract — always inside the unit cell.
+ */
+export function r2Offset(gx: number, gz: number, salt: number): { ox: number; oz: number } {
+  // A hash gives each cell a distinct, decorrelated seed; folding it through the
+  // plastic constants spreads those seeds as an R2 set rather than white noise.
+  const h = hash2(gx, gz, salt);
+  const hz = hash2(gx, gz, salt + 977);
+  const ox = (gx * R2_A1 + gz * R2_A2 + h * 0.5) % 1;
+  const oz = (gx * R2_A2 + gz * R2_A1 + hz * 0.5) % 1;
+  return { ox: ox < 0 ? ox + 1 : ox, oz: oz < 0 ? oz + 1 : oz };
+}
+
 export type Clump = {
   /** distance (m) to the nearest clump centre */
   d: number;

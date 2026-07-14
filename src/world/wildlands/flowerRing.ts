@@ -34,13 +34,14 @@ import {
   positionViewDirection,
   smoothstep as smoothstepNode,
   uniform,
+  vec2,
   vec3
 } from "three/tsl";
-import { groundSway, groundSwayLite, WIND_DIR } from "../groundcover/sway";
+import { groundSway, groundSwayFlow, groundSwayLite, WIND_DIR } from "../groundcover/sway";
 import { DISPLACERS, MAX_DISPLACERS } from "../groundcover/displacers";
 import { fadeAroundInstanceAnchor, instanceAnchorWorld, worldOffsetToModelLocal } from "../groundcover/instanceDeform";
 import { fitGroundY } from "../groundcover/grounding";
-import { hash2, smoothstep, worleyClump } from "../groundcover/scatter";
+import { hash2, r2Offset, smoothstep, worleyClump } from "../groundcover/scatter";
 import { flowerDriftAt, grassyGround, nearAnyWildRegion, wildRegionAt } from "./layout";
 import type { GardenTerrain } from "../garden/layout";
 import { EXPOSURE_REBASE, FLOWER_TUNING } from "../../config";
@@ -611,8 +612,12 @@ function flowerMaterial(tier: FlowerRenderTier): FlowerMaterialState {
         .clamp(0, 1)
         .oneMinus()
     : float(1);
-  const windWorld: N = vec3(WIND_DIR.x, 0, WIND_DIR.z)
-    .mul(swayAmt)
+  // Hero/authored blooms ride the swirling flow field; the cheaper mid/far tiers
+  // keep the single prevailing heading (far's amplitude is 0 anyway).
+  const flowXZ: N = tier === "mid" || tier === "far"
+    ? vec2(WIND_DIR.x, WIND_DIR.z).mul(swayAmt)
+    : groundSwayFlow(anchorWorld.xz.add(windOffset));
+  const windWorld: N = vec3(flowXZ.x, 0, flowXZ.y)
     .mul(tier === "mid" ? 0.065 : tier === "far" ? 0 : 0.11)
     .mul(swayW)
     .mul(windDamp)
@@ -1030,8 +1035,9 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
 
     for (let gx = gx0; gx <= gx1; gx++) {
       for (let gz = gz0; gz <= gz1; gz++) {
-        const px = gx * SPACING + (hash2(gx, gz, 11) - 0.5) * SPACING * 0.9;
-        const pz = gz * SPACING + (hash2(gx, gz, 17) - 0.5) * SPACING * 0.9;
+        const jitter = r2Offset(gx, gz, 11);
+        const px = gx * SPACING + (jitter.ox - 0.5) * SPACING * 0.9;
+        const pz = gz * SPACING + (jitter.oz - 0.5) * SPACING * 0.9;
         const dx = px - fx, dz = pz - fz;
         if (dx * dx + dz * dz > r2) continue;
 

@@ -33,7 +33,7 @@ import {
   vec3,
   vec4
 } from "three/tsl";
-import { groundSway, groundSwayLite, WIND_DIR } from "./sway";
+import { groundSwayFlow, groundSwayLite, WIND_DIR } from "./sway";
 import { DISPLACERS, MAX_DISPLACERS } from "./displacers";
 import { fadeAroundInstanceAnchor, instanceAnchorWorld, worldOffsetToModelLocal } from "./instanceDeform";
 
@@ -324,10 +324,13 @@ export function createGrassMaterial(options: GrassMaterialOptions = {}): GrassMa
   const localTrample = worldOffsetToModelLocal(trampleWorld);
 
   const windDamp = float(1).sub(crushed.mul(0.75));
-  const sway = options.wind === "lite" ? groundSwayLite(anchorWorld.xz) : groundSway(anchorWorld.xz);
-  const bendWorld = vec3(WIND_DIR.x, 0, WIND_DIR.z)
+  // Near/hero grass rides the swirling flow field (direction varies across the
+  // meadow); the cheap "lite" distance grade keeps the single prevailing heading.
+  const flowXZ = options.wind === "lite"
+    ? vec2(WIND_DIR.x, WIND_DIR.z).mul(groundSwayLite(anchorWorld.xz))
+    : groundSwayFlow(anchorWorld.xz);
+  const bendWorld = vec3(flowXZ.x, 0, flowXZ.y)
     .mul(shape.z)
-    .mul(sway)
     .mul(bladeT.pow(2.05).mul(deformationFade))
     .mul(windDamp);
   const bendLocal = worldOffsetToModelLocal(bendWorld);

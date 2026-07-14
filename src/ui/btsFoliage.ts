@@ -1258,6 +1258,15 @@ export const FOLIAGE_TAB_HTML = `
     <strong>hysteresis</strong> — a tree that just became a silhouette won't become a card again until you
     step meaningfully closer — stops a camera that's jittering on a boundary from strobing the whole wood
     back and forth. The result is a frontier of detail that dissolves rather than snaps.</p>
+    <p>There's a second, quieter tell to a distant tree. Those simplified crowns are really a handful of
+    crossed leaf cards, and a flat card lit off its own facing normal shades like cardboard — one side
+    catches the sun, the other falls dead black. So the far and horizon crowns now borrow a trick from
+    <a href="https://github.com/SkyeShark/SeedThree" target="_blank" rel="noopener noreferrer">SeedThree</a>
+    (and SpeedTree before it) called <strong>dome-normal shading</strong>: each leaf is lit not by the card
+    it sits on but as if it were a point on a sphere wrapped around the canopy's centre, tilted a little
+    toward the sky. The same normal lights both faces, so nothing blacks out, and a stand on a far hillside
+    reads as rounded, sunlit masses instead of flat green stamps — for a few extra maths ops and not one
+    extra triangle.</p>
   </section>
 
   <section>
@@ -1330,6 +1339,12 @@ export const FOLIAGE_TAB_HTML = `
     instead of a thousand things twitching independently. And that same gust value drives the wind you
     <em>hear</em> — so the swell that rolls across the grass is the swell that rises in the audio. Drag the
     gust, or leave it breathing on its own.</p>
+    <p>That shared wind recently gained a twist. Close to you the bend <em>direction</em> no longer points
+    the one identical way; it follows a <strong>curl-noise flow field</strong> — the curl of a slowly
+    scrolling noise, which is divergence-free by construction, so the meadow swirls in gusting arcs and
+    eddies with no tell-tale "everything sucking toward a point". It's still one field, still the same gust
+    magnitude you hear, still a single extra noise tap on the near blades only — just a wind with a little
+    weather in it instead of a flag-day breeze.</p>
     ${oneWind.html}
     <p>Footfalls work the same way. Instead of every layer running its own collision, there's one shared
     <strong>trample field</strong> — a short list of up to a dozen "displacers" (you, and any nearby
@@ -1370,15 +1385,25 @@ export const FOLIAGE_TAB_HTML = `
     itself under the teleport cover — compiled and warmed before it's shown — so arriving in a park no longer
     means watching it grow in. Density went <em>up</em> (a good deal denser grass and flowers) while the cost
     of a frame went down; that's the whole scorecard.</p>
+    <p>The most recent pass went back to
+    <a href="https://github.com/SkyeShark/SeedThree" target="_blank" rel="noopener noreferrer">SeedThree</a>
+    itself — the library these trees descend from — to see what it does <em>now</em>, and brought home three
+    ideas that raise quality without costing a frame. Distant crowns got the <strong>dome-normal shading</strong>
+    above, so far stands finally read as volumes rather than cardboard. The one shared wind became a
+    <strong>curl-noise flow field</strong>, so meadows swirl instead of leaning. And the placement jitter under
+    the grass and flowers was swapped from a plain hash to a low-discrepancy <strong>R2 (plastic-ratio)
+    sequence</strong> — the same in-cell budget, but with about a quarter as many near-touching clumps, so a
+    meadow spaces itself the even-yet-random way a real one does. All three are additive and free at the
+    triangle level; the only thing they cost was the thinking.</p>
   </section>
 
   <!-- WEB-DEPENDENT: future improvements to try next pass -->
   <section>
     <h3><span class="bts-ic">🔭</span> Next pass — ideas worth trying</h3>
-    <p>None of this is finished; it's just where the trade-offs currently sit. If you (or a future agent
-    reading this) want to push it further, here are the threads most worth pulling — a mix of well-worn
-    graphics techniques this project doesn't yet use and small experiments that fit its WebGPU-only,
-    compute-friendly grain.</p>
+    <p>None of this is finished; it's just where the trade-offs currently sit. The last pass pulled three of
+    these threads all the way through — the dome normals, the wind flow field and blue-noise placement, all
+    described above. Here are the ones still worth pulling: a mix of well-worn graphics techniques this
+    project doesn't yet use and small experiments that fit its WebGPU-only, compute-friendly grain.</p>
     <div>
       <p><strong>Octahedral impostors for the far tier.</strong> Instead of a flat card, bake each tree
       into a small atlas of views from every angle and blend between them at runtime — a billboard that
@@ -1396,16 +1421,11 @@ export const FOLIAGE_TAB_HTML = `
       foliage could ride the same structure — a texture that says how much grass, which species, how tall —
       turning placement into a texture lookup and turning authored gardens into something you paint rather
       than code.</p>
-      <p><strong>Cross-fade the swaps, not just stagger them.</strong> The LOD transitions are spread out in
-      space; they could also be dithered in time — a quick screen-door blend between two tiers over a few
-      frames — so even a single tree's swap becomes invisible instead of merely spread thin.</p>
-      <p><strong>Make the wind a flow field.</strong> One global gust value is coherent but simple. A
-      scrolling curl-noise flow texture, sampled by everything, would let gusts swirl and eddy around
-      buildings and gust within gusts — still one shared field for grass, petals and audio, just a much
-      richer one, and still a single texture read per blade.</p>
-      <p><strong>Blue-noise the scatter.</strong> The jittered grid is cheap but faintly regular close up. A
-      blue-noise or Halton distribution gives the even-yet-random spacing real meadows have, with no lattice
-      hiding under the flowers when you kneel down to look.</p>
+      <p><strong>The one we deliberately did <em>not</em> do: dither the LOD swaps.</strong> A screen-door
+      blend between two tiers is the obvious way to hide a single tree's pop — but this world's whole
+      grass-and-tree LOD design is built to avoid exactly the crawling, shimmering dither pattern a moving
+      camera exposes. A temporal cross-fade would fight the thing it's meant to help, so it's left here as a
+      road not taken, on purpose.</p>
       <p><strong>And eventually, continuous LOD.</strong> Unreal's Nanite treats geometry as streamable
       micro-clusters with no discrete levels at all. A full version isn't a browser thing yet, but the
       direction — seamless, continuous detail instead of four steps and a clever way to hide the seams

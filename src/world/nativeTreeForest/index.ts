@@ -642,7 +642,11 @@ export function createNativeTreeForest(
         releaseNativeTreeMaterialSet(detailAssets);
         return;
       }
-      const detailMaterials = createNativeTreeMaterials(template.archetype.style, detailAssets);
+      const detailMaterials = createNativeTreeMaterials(
+        template.archetype.style,
+        detailAssets,
+        template.geometry.shadow.canopyCenter
+      );
       nearAssets[design] = detailAssets;
       nearMaterials[design] = detailMaterials;
       const pool = nearPools.get(design);
@@ -1519,7 +1523,11 @@ export function createNativeTreeForest(
           leafColorVariant: template.archetype.style.leafColorVariant,
           detail: "silhouette"
         });
-        const materialPack = createNativeTreeMaterials(template.archetype.style, materialAssets);
+        const materialPack = createNativeTreeMaterials(
+          template.archetype.style,
+          materialAssets,
+          template.geometry.shadow.canopyCenter
+        );
         return { index, template, materialAssets, materialPack };
       } catch (error) {
         template?.release();
