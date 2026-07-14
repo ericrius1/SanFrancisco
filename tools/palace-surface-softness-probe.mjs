@@ -263,6 +263,7 @@ async function main() {
     sf.WORLD_TUNING.values.fogMaster=0.22;
     sf.sky.applyFogParams();
     sf.renderer.toneMappingExposure=1.1;
+    sf.pipeline.setCinematicMultisampling(true);
     Object.assign(sf.POSTFX_TUNING.values,{ink:false,dream:true,retro:false});
     sf.pipeline.applyPostFx();
     sf.palaceReverie.setCinematicProgress(5,true);

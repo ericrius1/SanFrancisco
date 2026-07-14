@@ -275,8 +275,9 @@ const TAB_LIFE = `
     things are emissive materials and never new lamps. Physics runs a small fixed number of substeps,
     the ground carpet refines a little each frame instead of all at once, and the water is split
     cheap-far / rich-near.</p>
-    <p>The traps hide in the details: a lighting probe was re-baking every frame; a stray branch in a
-    shader once blanked out every distant window light,
+    <p>The traps hide in the details: an anti-aliasing pass silently inherited the renderer's MSAA
+    sample count and quietly quadrupled its own cost until it was pinned down; a lighting probe was
+    re-baking every frame; a stray branch in a shader once blanked out every distant window light,
     because on this renderer a conditional inside a noise function corrupts the pixels it skips. Hunting
     those down is most of what "make it fast" actually means — and the target is a steady 120 frames a
     second where the hardware allows.</p>

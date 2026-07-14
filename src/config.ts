@@ -246,8 +246,13 @@ export const GRASS_TUNING = tunables("grass", {
  * Where and how a fresh session starts. Editable in the Tab panel (persisted);
  */
 export const START_DEFAULTS = {
-  // Ocean Beach surf pin — a code spawn (src/world/spawnPoints.ts). Sand at the
-  // waterline facing the swell; board underarm, ready to start surfing.
+  // A fresh session (no resumable localStorage position, no invite/?spawn=) drops
+  // the player at a RANDOM landmark from spawnPoints.LANDMARK_POOL — main.ts boot
+  // triggers the random pick whenever START.spawn still equals this default. The
+  // value below is therefore the "not pinned" sentinel + the hard fallback if a
+  // spawn key ever fails to resolve; set START.spawn to any concrete key to pin
+  // the start to one place instead. Ocean Beach: sand at the waterline, board
+  // underarm, ready to surf.
   spawn: "oceanBeach",
   mode: "walk" as PlayerMode
 }

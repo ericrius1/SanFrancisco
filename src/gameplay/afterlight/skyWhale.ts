@@ -13,6 +13,7 @@ import {
   positionGeometry,
   positionLocal,
   positionWorld,
+  sin,
   smoothstep,
   time,
   uniform,
@@ -41,74 +42,171 @@ function seeded(index: number, salt: number): number {
 function whaleMaterial(reveal: N, fadeAmount: N, shell: boolean): THREE.MeshBasicNodeMaterial {
   const material = new THREE.MeshBasicNodeMaterial();
   const view = normalize(cameraPosition.sub(positionWorld)) as N;
-  const fresnel = float(1).sub((normalWorld as N).dot(view).abs()).pow(shell ? 1.45 : 2.4) as N;
+  const nDotV = clamp((normalWorld as N).dot(view).abs(), 0, 1) as N;
+  // Tight rim for the shell glow; softer falloff on the body so the centre stays readable.
+  const fresnel = float(1).sub(nDotV).pow(shell ? 1.4 : 2.7) as N;
+  const softRim = float(1).sub(nDotV).pow(shell ? 0.9 : 1.8) as N;
+
+  const pulseA = sin(time.mul(0.16)).mul(0.5).add(0.5) as N;
+  const pulseB = sin(time.mul(0.1).add(1.9)).mul(0.5).add(0.5) as N;
+  const pulseC = sin(time.mul(0.07).add(3.4)).mul(0.5).add(0.5) as N;
+
+  const along = smoothstep(-11.5, 11.5, (positionLocal as N).z) as N;
+  const belly = smoothstep(1.2, -2.4, (positionLocal as N).y) as N;
+
   const drift = mx_noise_float(
     (positionWorld as N)
-      .mul(shell ? 0.095 : 0.055)
-      .add(vec3(time.mul(shell ? 0.055 : -0.035), time.mul(0.02), time.mul(0.045)))
+      .mul(shell ? 0.07 : 0.04)
+      .add(vec3(time.mul(shell ? 0.035 : -0.025), time.mul(0.014), time.mul(0.028)))
   )
     .mul(0.5)
     .add(0.5) as N;
-  const crown = smoothstep(-1.0, 0.8, (positionLocal as N).y) as N;
-  const cyan = color(shell ? 0x83fff0 : 0x56bcd5) as N;
-  const pearl = color(shell ? 0xf8e6ff : 0xa4d8ff) as N;
-  const rose = color(0xff9fcf) as N;
-  const palette = mix(mix(cyan, pearl, crown), rose, drift.pow(3).mul(shell ? 0.34 : 0.16)) as N;
-  const brightness = shell
-    ? fresnel.mul(1.35).add(drift.mul(0.28)).add(0.08)
-    : fresnel.mul(0.48).add(drift.mul(0.22)).add(0.16);
 
-  material.colorNode = palette
+  // Saturated aurora stops — keep the core deep so Fresnel rims can bloom without washing white.
+  const deep = color(shell ? 0x3d8f9e : 0x247889) as N;
+  const cyan = color(shell ? 0x6ef0e4 : 0x4ec9d6) as N;
+  const violet = color(shell ? 0xc9a5ff : 0x8f6fd0) as N;
+  const rose = color(shell ? 0xff9ece : 0xe07aae) as N;
+  const mint = color(shell ? 0x9bffe0 : 0x62d9b8) as N;
+
+  const headWash = mix(cyan, violet, pulseA) as N;
+  const tailWash = mix(rose, mint, pulseB) as N;
+  const core = mix(mix(deep, headWash, 0.55), mix(deep, tailWash, 0.65), along) as N;
+  const rim = mix(mix(cyan, mint, pulseC), mix(violet, rose, pulseA), along.mul(0.7).add(pulseB.mul(0.3))) as N;
+  const bellyTint = mix(core, rose, belly.mul(0.35).mul(pulseB.add(0.25))) as N;
+  const living = mix(bellyTint, rim, softRim.mul(shell ? 0.95 : 0.72).add(fresnel.mul(0.35))) as N;
+  const shimmer = mix(living, mix(violet, mint, pulseA), drift.pow(2.8).mul(shell ? 0.28 : 0.14)) as N;
+
+  const brightness = shell
+    ? fresnel.mul(1.15).add(softRim.mul(0.35)).add(0.04)
+    : fresnel.mul(0.42).add(softRim.mul(0.22)).add(0.34);
+
+  material.colorNode = shimmer
     .mul(brightness)
     .mul(fadeAmount)
-    .mul(LIGHT_SCALE * (shell ? 1.22 : 0.82));
+    .mul(LIGHT_SCALE * (shell ? 1.2 : 0.68));
   material.opacityNode = reveal
     .mul(fadeAmount)
-    .mul(shell ? fresnel.mul(0.52).add(0.08) : fresnel.mul(0.18).add(0.2));
+    .mul(shell ? fresnel.mul(0.92).add(softRim.mul(0.08)).add(0.02) : fresnel.mul(0.38).add(softRim.mul(0.14)).add(0.28));
   material.transparent = true;
   material.depthWrite = false;
-  material.side = shell ? THREE.BackSide : THREE.DoubleSide;
+  // FrontSide avoids muddy double-hit through the translucent volume.
+  material.side = shell ? THREE.BackSide : THREE.FrontSide;
   material.blending = shell ? THREE.AdditiveBlending : THREE.NormalBlending;
   material.fog = false;
   return material;
 }
 
-function finGeometry(side: -1 | 1): THREE.BufferGeometry {
+type HullStation = { z: number; rx: number; ry: number; cy: number };
+
+/** One continuous hull: elliptical rings lofted along a sculpted spine. */
+function whaleHullGeometry(radialSegments = 36): THREE.BufferGeometry {
+  const key: HullStation[] = [
+    { z: -12.0, rx: 0.04, ry: 0.03, cy: -0.08 },
+    { z: -11.35, rx: 1.15, ry: 0.85, cy: -0.18 },
+    { z: -10.4, rx: 2.55, ry: 1.95, cy: -0.05 },
+    { z: -9.2, rx: 3.55, ry: 2.55, cy: 0.1 },
+    { z: -7.6, rx: 4.15, ry: 2.7, cy: 0.16 },
+    { z: -5.4, rx: 4.55, ry: 2.62, cy: 0.08 },
+    { z: -2.6, rx: 4.85, ry: 2.72, cy: -0.02 },
+    { z: 0.4, rx: 4.95, ry: 2.78, cy: -0.08 },
+    { z: 3.4, rx: 4.55, ry: 2.55, cy: -0.04 },
+    { z: 6.2, rx: 3.55, ry: 2.15, cy: 0.04 },
+    { z: 8.6, rx: 2.35, ry: 1.5, cy: 0.12 },
+    { z: 10.2, rx: 1.45, ry: 1.05, cy: 0.18 },
+    { z: 11.5, rx: 0.85, ry: 0.72, cy: 0.22 },
+    { z: 12.4, rx: 0.28, ry: 0.32, cy: 0.24 }
+  ];
+
+  const samples = 48;
+  const curvePoints = key.map((s) => new THREE.Vector3(s.rx, s.ry, s.z));
+  const centerCurve = new THREE.CatmullRomCurve3(key.map((s) => new THREE.Vector3(0, s.cy, s.z)));
+  const widthCurve = new THREE.CatmullRomCurve3(curvePoints);
+  const stations: HullStation[] = [];
+  for (let i = 0; i <= samples; i++) {
+    const t = i / samples;
+    const w = widthCurve.getPoint(t);
+    const c = centerCurve.getPoint(t);
+    stations.push({ z: w.z, rx: Math.max(0.02, w.x), ry: Math.max(0.02, w.y), cy: c.y });
+  }
+
+  const positions: number[] = [];
+  const indices: number[] = [];
+  for (let s = 0; s < stations.length; s++) {
+    const station = stations[s];
+    const taper = 1 - Math.abs(station.z) / 13.5;
+    for (let r = 0; r <= radialSegments; r++) {
+      const theta = (r / radialSegments) * Math.PI * 2;
+      const cos = Math.cos(theta);
+      const sinT = Math.sin(theta);
+      // Soft belly drop + gentle dorsal ridge so it reads as flesh, not a tube.
+      const belly = Math.max(0, -sinT);
+      const dorsum = Math.max(0, sinT);
+      const rx = station.rx * (1 + belly * 0.1 - dorsum * 0.04);
+      const ry = station.ry * (1 + belly * 0.18 + dorsum * 0.06 * taper);
+      positions.push(cos * rx, station.cy + sinT * ry, station.z);
+    }
+  }
+
+  const ring = radialSegments + 1;
+  for (let s = 0; s < stations.length - 1; s++) {
+    for (let r = 0; r < radialSegments; r++) {
+      const a = s * ring + r;
+      const b = a + 1;
+      const c = a + ring;
+      const d = c + 1;
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+
   const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute(
-    "position",
-    new THREE.Float32BufferAttribute(
-      [
-        0, 0, -2.2,
-        side * 8.1, -0.9, 1.0,
-        side * 2.2, 0.45, 3.5,
-        0, 0, -2.2,
-        side * 2.2, 0.45, 3.5,
-        side * 0.8, -0.25, 4.7
-      ],
-      3
-    )
-  );
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setIndex(indices);
   geometry.computeVertexNormals();
   return geometry;
 }
 
-function flukeGeometry(side: -1 | 1): THREE.BufferGeometry {
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute(
-    "position",
-    new THREE.Float32BufferAttribute(
-      [
-        0, 0, 0,
-        side * 6.1, 0.35, 2.5,
-        side * 4.2, -0.25, -1.8,
-        0, 0, 0,
-        side * 4.2, -0.25, -1.8,
-        side * 1.1, 0.25, -2.5
-      ],
-      3
-    )
-  );
+function sculptedFinGeometry(side: -1 | 1, kind: "pectoral" | "fluke"): THREE.BufferGeometry {
+  const shape = new THREE.Shape();
+  if (kind === "pectoral") {
+    // Compact flipper: broad root, swept tip, soft trailing edge.
+    shape.moveTo(0, -0.85);
+    shape.bezierCurveTo(1.1, -1.55, 2.4, -2.35, 3.9, -2.7);
+    shape.bezierCurveTo(4.7, -2.8, 5.15, -2.25, 4.95, -1.55);
+    shape.bezierCurveTo(4.7, -0.55, 3.5, 0.45, 2.05, 0.75);
+    shape.bezierCurveTo(1.0, 0.9, 0.3, 0.45, 0, 0.1);
+    shape.closePath();
+  } else {
+    // Crescent fluke half — wide, short, horizontal.
+    shape.moveTo(0, 0.2);
+    shape.bezierCurveTo(1.2, 0.55, 2.8, 0.95, 4.4, 1.05);
+    shape.bezierCurveTo(5.2, 1.05, 5.55, 0.55, 5.25, 0.05);
+    shape.bezierCurveTo(4.85, -0.55, 3.5, -1.15, 2.1, -1.25);
+    shape.bezierCurveTo(1.0, -1.3, 0.3, -0.75, 0, -0.2);
+    shape.closePath();
+  }
+
+  const geometry = new THREE.ExtrudeGeometry(shape, {
+    depth: kind === "pectoral" ? 0.22 : 0.16,
+    bevelEnabled: true,
+    bevelThickness: kind === "pectoral" ? 0.12 : 0.09,
+    bevelSize: kind === "pectoral" ? 0.18 : 0.14,
+    bevelSegments: 4,
+    curveSegments: 24
+  });
+  geometry.translate(0, 0, kind === "pectoral" ? -0.11 : -0.08);
+  geometry.rotateX(-Math.PI / 2);
+  if (side < 0) {
+    geometry.scale(-1, 1, 1);
+    const index = geometry.getIndex();
+    if (index) {
+      for (let i = 0; i < index.count; i += 3) {
+        const a = index.getX(i);
+        index.setX(i, index.getX(i + 1));
+        index.setX(i + 1, a);
+      }
+    }
+  }
   geometry.computeVertexNormals();
   return geometry;
 }
@@ -256,7 +354,7 @@ class AfterlightRibbon {
   }
 }
 
-/** A translucent sky-whale assembled from authored primitives and TSL light. */
+/** A translucent sky-whale with a continuous sculpted hull and TSL light. */
 export class AfterlightSkyWhale {
   readonly root = new THREE.Group();
 
@@ -264,6 +362,8 @@ export class AfterlightSkyWhale {
   #tail = new THREE.Group();
   #finL = new THREE.Mesh();
   #finR = new THREE.Mesh();
+  #flukeL = new THREE.Mesh();
+  #flukeR = new THREE.Mesh();
   #anchors: THREE.Object3D[] = [];
   #ribbons: AfterlightRibbon[] = [];
   #reveal = uniform(0);
@@ -287,44 +387,40 @@ export class AfterlightSkyWhale {
 
     const inner = whaleMaterial(this.#reveal as N, this.#fade as N, false);
     const shell = whaleMaterial(this.#reveal as N, this.#fade as N, true);
-    const bodyGeometry = new THREE.SphereGeometry(1, 32, 20);
-    const body = new THREE.Mesh(bodyGeometry, inner);
-    body.scale.set(4.8, 2.6, 8.8);
+    const hullGeometry = whaleHullGeometry();
+
+    const body = new THREE.Mesh(hullGeometry, inner);
     this.#whale.add(body);
-    const bodyShell = new THREE.Mesh(bodyGeometry, shell);
-    bodyShell.scale.set(5.18, 2.84, 9.42);
+    const bodyShell = new THREE.Mesh(hullGeometry, shell);
+    bodyShell.scale.setScalar(1.05);
     this.#whale.add(bodyShell);
+    // Soft outer aura — kept close so the halo reads as light, not a second shell.
+    const aura = new THREE.Mesh(hullGeometry, shell);
+    aura.scale.setScalar(1.09);
+    this.#whale.add(aura);
 
-    const headGeometry = new THREE.SphereGeometry(1, 28, 16);
-    const head = new THREE.Mesh(headGeometry, inner);
-    head.position.z = -6.5;
-    head.scale.set(4.65, 2.72, 4.5);
-    this.#whale.add(head);
-    const headShell = new THREE.Mesh(headGeometry, shell);
-    headShell.position.copy(head.position);
-    headShell.scale.set(4.98, 2.96, 4.82);
-    this.#whale.add(headShell);
+    // Additive fins stay luminous through the translucent hull and never punch dark holes.
+    const finMat = whaleMaterial(this.#reveal as N, this.#fade as N, true);
+    finMat.side = THREE.DoubleSide;
 
-    const jaw = new THREE.Mesh(new THREE.SphereGeometry(1, 24, 12), inner);
-    jaw.position.set(0, -1.1, -8.45);
-    jaw.scale.set(3.65, 1.05, 2.25);
-    this.#whale.add(jaw);
-
-    this.#finL = new THREE.Mesh(finGeometry(-1), inner);
-    this.#finR = new THREE.Mesh(finGeometry(1), inner);
-    this.#finL.position.set(-2.4, -0.35, -1.4);
-    this.#finR.position.set(2.4, -0.35, -1.4);
+    this.#finL = new THREE.Mesh(sculptedFinGeometry(-1, "pectoral"), finMat);
+    this.#finR = new THREE.Mesh(sculptedFinGeometry(1, "pectoral"), finMat);
+    // Sit on the hull surface and sweep outward/back — avoid folding into the volume.
+    this.#finL.position.set(-4.55, -0.35, -0.9);
+    this.#finR.position.set(4.55, -0.35, -0.9);
+    this.#finL.rotation.set(0.22, 0.12, -0.55);
+    this.#finR.rotation.set(0.22, -0.12, 0.55);
     this.#whale.add(this.#finL, this.#finR);
 
-    const tailStalk = new THREE.Mesh(new THREE.CylinderGeometry(0.75, 1.75, 5.5, 16), inner);
-    tailStalk.rotation.x = Math.PI / 2;
-    tailStalk.position.z = 2.6;
-    this.#tail.position.z = 7.8;
-    this.#tail.add(tailStalk);
-    const flukeL = new THREE.Mesh(flukeGeometry(-1), inner);
-    const flukeR = new THREE.Mesh(flukeGeometry(1), inner);
-    flukeL.position.z = flukeR.position.z = 5.2;
-    this.#tail.add(flukeL, flukeR);
+    this.#tail.position.z = 11.45;
+    this.#flukeL = new THREE.Mesh(sculptedFinGeometry(-1, "fluke"), finMat);
+    this.#flukeR = new THREE.Mesh(sculptedFinGeometry(1, "fluke"), finMat);
+    this.#flukeL.position.set(-0.12, 0.04, 0.2);
+    this.#flukeR.position.set(0.12, 0.04, 0.2);
+    // Keep flukes mostly horizontal so they read as a crescent, not a spike.
+    this.#flukeL.rotation.set(0.05, 0.05, -0.05);
+    this.#flukeR.rotation.set(0.05, -0.05, 0.05);
+    this.#tail.add(this.#flukeL, this.#flukeR);
     this.#whale.add(this.#tail);
 
     const eyeMaterial = new THREE.MeshBasicNodeMaterial();
@@ -332,10 +428,10 @@ export class AfterlightSkyWhale {
       .mul(LIGHT_SCALE * 1.9)
       .mul(this.#reveal as N)
       .mul(this.#fade as N);
-    const eyeGeometry = new THREE.SphereGeometry(0.22, 12, 8);
-    for (const side of [-1, 1]) {
+    const eyeGeometry = new THREE.SphereGeometry(0.2, 12, 8);
+    for (const side of [-1, 1] as const) {
       const eye = new THREE.Mesh(eyeGeometry, eyeMaterial);
-      eye.position.set(side * 3.55, 0.54, -8.25);
+      eye.position.set(side * 3.15, 0.42, -9.05);
       this.#whale.add(eye);
     }
 
@@ -364,9 +460,9 @@ export class AfterlightSkyWhale {
     this.#whale.add(this.#motes);
 
     const anchorOffsets: readonly [number, number, number][] = [
-      [-3.2, 0.25, 7.2],
-      [0, 0.8, 7.8],
-      [3.2, 0.25, 7.2]
+      [-1.15, 0.15, 0.85],
+      [0, 0.35, 1.15],
+      [1.15, 0.15, 0.85]
     ];
     for (const [x, y, z] of anchorOffsets) {
       const anchor = new THREE.Object3D();
@@ -470,13 +566,21 @@ export class AfterlightSkyWhale {
       this.#whale.scale.setScalar(1);
     }
 
-    const swim = Math.sin(t * 1.55);
-    this.#tail.rotation.y = swim * 0.22;
-    this.#tail.rotation.x = Math.sin(t * 1.1 + 0.8) * 0.06;
-    this.#finL.rotation.z = -0.13 + Math.sin(t * 0.72) * 0.09;
-    this.#finR.rotation.z = 0.13 - Math.sin(t * 0.72 + 0.45) * 0.09;
-    this.#finL.rotation.x = 0.12 + Math.sin(t * 0.66 + 0.4) * 0.1;
-    this.#finR.rotation.x = 0.12 + Math.sin(t * 0.66 + 0.9) * 0.1;
+    const swim = Math.sin(t * 1.2);
+    const flap = Math.sin(t * 0.78);
+    const flapDelay = Math.sin(t * 0.78 + 0.45);
+    this.#tail.rotation.y = swim * 0.16;
+    this.#tail.rotation.x = Math.sin(t * 0.9 + 0.8) * 0.07;
+    this.#finL.rotation.z = -0.55 + flap * 0.28;
+    this.#finR.rotation.z = 0.55 - flapDelay * 0.28;
+    this.#finL.rotation.x = 0.22 + Math.sin(t * 0.55 + 0.4) * 0.14;
+    this.#finR.rotation.x = 0.22 + Math.sin(t * 0.55 + 0.95) * 0.14;
+    this.#finL.rotation.y = 0.12 + Math.sin(t * 0.42) * 0.08;
+    this.#finR.rotation.y = -0.12 - Math.sin(t * 0.42 + 0.3) * 0.08;
+    this.#flukeL.rotation.x = 0.05 + Math.sin(t * 1.05) * 0.18;
+    this.#flukeR.rotation.x = 0.05 + Math.sin(t * 1.05 + 0.18) * 0.18;
+    this.#flukeL.rotation.z = -0.05 + swim * 0.1;
+    this.#flukeR.rotation.z = 0.05 - swim * 0.1;
     this.#motes.rotation.z = t * 0.035;
     this.#motes.rotation.y = -t * 0.055;
   }

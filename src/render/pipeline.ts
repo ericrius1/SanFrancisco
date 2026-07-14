@@ -728,6 +728,10 @@ export function createRenderPipeline(
     applyPostFx,
     /** Dev-capture only: opt the beauty pass into 4x sampling for film renders. */
     setCinematicMultisampling,
+    /** Read-only diagnostics for probes; normal play remains at one sample. */
+    get sceneSampleCount() {
+      return activeSceneSamples || 1;
+    },
     /** Attach/detach an optional interior-only radial-light source. */
     setRadialLightSource,
     /** Attach/detach a bounded, lazy close-range surface-light source. */

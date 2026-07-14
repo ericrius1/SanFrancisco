@@ -44,7 +44,7 @@ import { CORONA_HEIGHTS_SUMMIT } from "./world/coronaHeights/meta";
 import type { MissionDoloresMuseum } from "./world/missionDolores";
 import { MD_CENTER as MISSION_DOLORES_CENTER } from "./world/missionDolores/layout";
 import { findOpenSpawn } from "./world/spawn";
-import { resolveSpawnPoint, SPAWN_POINTS } from "./world/spawnPoints";
+import { pickLandmarkSpawn, resolveSpawnPoint, SAFE_SPAWN_FALLBACK, SPAWN_POINTS } from "./world/spawnPoints";
 import { WILD_REGIONS } from "./world/wildlands/regions";
 import { BUENA_VISTA_REGION } from "./world/buenaVista";
 import { Player } from "./player/player";
@@ -263,7 +263,18 @@ async function boot() {
     const resumed = invite || requestedSpawn ? null : (devReload?.player ?? loadPlayerState());
     const requestedCodeSpawn = requestedSpawn ? resolveSpawnPoint(requestedSpawn) : undefined;
     const requestedBakedSpawn = requestedSpawn ? map.meta.spawns[requestedSpawn] : undefined;
-    const spawnKey = requestedCodeSpawn || requestedBakedSpawn ? requestedSpawn! : START.spawn;
+    // Default arrival — no ?spawn=, no invite, no resumable position — drops a
+    // fresh visitor at a random landmark from LANDMARK_POOL. A resumed player is
+    // placed at their saved spot instead (resumeStart wins downstream), and a
+    // start location the user has pinned (START.spawn ≠ the default) is honored.
+    const spawnKey =
+      requestedCodeSpawn || requestedBakedSpawn
+        ? requestedSpawn!
+        : resumed || invite
+          ? START.spawn
+          : START.spawn === START_DEFAULTS.spawn
+            ? pickLandmarkSpawn()
+            : START.spawn;
     const spawnPoint = requestedCodeSpawn ?? (
       requestedBakedSpawn
         ? undefined
@@ -302,17 +313,34 @@ async function boot() {
     const scatterR = requestedSpawn || inviteStart || resumeStart
       ? 0
       : 0.8 + Math.random() * 1.6;
-    const spawn = inviteStart ?? resumeStart ?? await findOpenSpawn(
-      map,
-      tiles.manifest,
-      {
+    const openSpawnOrFallback = async () => {
+      const scattered = {
         ...startAt,
         x: startAt.x + Math.cos(scatterA) * scatterR,
         z: startAt.z + Math.sin(scatterA) * scatterR
-      },
-      requestedSpawn ? 1.5 : 12,
-      requestedSpawn ? 36 : 200
-    );
+      };
+      try {
+        return await findOpenSpawn(
+          map,
+          tiles.manifest,
+          scattered,
+          requestedSpawn ? 1.5 : 12,
+          requestedSpawn ? 36 : 200
+        );
+      } catch (err) {
+        // A random landmark with no movement-safe ground nearby must not crash
+        // boot — retire to a guaranteed-open spawn instead of rejecting.
+        console.warn(`[spawn] no open ground near "${spawnKey}"; using fallback`, err);
+        const fallback = resolveSpawnPoint(SAFE_SPAWN_FALLBACK) ?? startAt;
+        return await findOpenSpawn(map, tiles.manifest, fallback, 12, 400);
+      }
+    };
+    const spawn = inviteStart ?? resumeStart ?? await openSpawnOrFallback();
+
+    // Arrival breadcrumb: which pool landmark (or resume/invite) placed the
+    // player, and where they actually landed after the open-ground search.
+    const arrivalOrigin = resumed ? "resume" : invite ? "invite" : spawnKey;
+    console.info(`[spawn] arrival "${arrivalOrigin}" → ${Math.round(spawn.x)}, ${Math.round(spawn.z)}`);
 
     // Same materials and geometry, smaller initial residency. The normal draw
     // ring expands after the first playable frame; this is not adaptive quality.

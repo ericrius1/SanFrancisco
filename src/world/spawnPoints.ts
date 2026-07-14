@@ -105,8 +105,160 @@ export const SPAWN_POINTS: Record<string, SpawnPoint> = {
     z: 792,
     heading: 2.0, // faces WNW over the labyrinth toward the open ocean
     mode: "walk"
+  },
+
+  // --- Iconic landmark arrivals for the random boot pool (LANDMARK_POOL) ------
+  // Several mirror authored baked poses in map.meta.spawns so the whole pool is
+  // resolvable through resolveSpawnPoint alone (the default-arrival path never
+  // consults the baked table). Headings computed to look at the landmark:
+  // forward = (−sinθ, −cosθ), so θ = atan2(−dx, −dz) toward the target.
+  goldenGate: {
+    key: "goldenGate",
+    label: "Golden Gate Bridge",
+    x: -2982,
+    z: -2798,
+    heading: 0.07, // onto the deck toward the north tower
+    mode: "walk"
+  },
+  coit: {
+    key: "coit",
+    label: "Coit Tower",
+    x: 3366,
+    z: -1405,
+    heading: Math.PI, // up Telegraph Hill toward the tower
+    mode: "walk"
+  },
+  transamerica: {
+    key: "transamerica",
+    label: "Transamerica Pyramid",
+    x: 3680,
+    z: 120,
+    heading: 0, // north up the block at the pyramid
+    mode: "walk"
+  },
+  salesforce: {
+    key: "salesforce",
+    label: "Salesforce Tower",
+    x: 4117,
+    z: 130,
+    heading: 0, // north toward the tower + its crown
+    mode: "walk"
+  },
+  embarcadero: {
+    key: "embarcadero",
+    label: "Ferry Building · Embarcadero",
+    x: 4340,
+    z: -380,
+    heading: 1.8,
+    mode: "walk"
+  },
+  downtown: {
+    key: "downtown",
+    label: "Downtown · Financial District",
+    x: 3900,
+    z: 200,
+    heading: 0.5,
+    mode: "walk"
+  },
+  bayfront: {
+    key: "bayfront",
+    label: "Bayfront",
+    x: 3000,
+    z: -2600,
+    heading: 2.4,
+    mode: "walk"
+  },
+  marinaGreen: {
+    key: "marinaGreen",
+    label: "Marina Green",
+    x: -700,
+    z: -2350,
+    heading: 0,
+    mode: "walk"
+  },
+  presidio: {
+    key: "presidio",
+    label: "The Presidio",
+    x: -2275,
+    z: -640,
+    heading: 1.22,
+    mode: "walk"
+  },
+  // Mount Sutro summit at the foot of the tower's tripod; findOpenSpawn spirals
+  // out to the nearest cleared pad through the eucalyptus.
+  sutroTower: {
+    key: "sutroTower",
+    label: "Sutro Tower",
+    x: -720,
+    z: 3846,
+    heading: Math.PI / 2, // west, up at the three-legged mast
+    mode: "walk"
+  },
+  botanicalGarden: {
+    key: "botanicalGarden",
+    label: "SF Botanical Garden",
+    x: -2290,
+    z: 2470,
+    heading: -0.72,
+    mode: "walk"
+  },
+  archeryRange: {
+    key: "archeryRange",
+    label: "Golden Gate Park · Archery",
+    x: -5547,
+    z: 2079,
+    heading: -Math.PI / 2, // downrange, east along the dune shelf
+    mode: "walk"
+  },
+  // North across the bridge — the Marin redwood grove with its rideable bears.
+  marinRedwoods: {
+    key: "marinRedwoods",
+    label: "Marin Redwoods",
+    x: -3150,
+    z: -5100,
+    heading: 0.81, // SW into the grove toward the herd
+    mode: "walk"
   }
 };
+
+/**
+ * The curated "coolest landmarks" pool. A fresh session with no resumable
+ * localStorage position drops the player at a random one of these (see
+ * main.ts boot + START_DEFAULTS.spawn). Every key must exist in SPAWN_POINTS.
+ * Spread from the Golden Gate NW to Sutro/Corona SE, mixing real icons with our
+ * own gameplay spots (buskers, archery, garden, Marin bears).
+ */
+export const LANDMARK_POOL = [
+  "goldenGate",
+  "coit",
+  "transamerica",
+  "salesforce",
+  "embarcadero",
+  "downtown",
+  "bayfront",
+  "marinaGreen",
+  "palaceReverie",
+  "presidio",
+  "missionDolores",
+  "coronaHeights",
+  "sutroTower",
+  "oceanBeach",
+  "landsEnd",
+  "japaneseTeaGarden",
+  "teaGardenDrumBridge",
+  "botanicalGarden",
+  "archeryRange",
+  "marinRedwoods"
+] as const;
+
+/** A guaranteed-open spawn used if a random landmark has no movement-safe
+ *  ground nearby (findOpenSpawn throws) — an open hilltop that always clears. */
+export const SAFE_SPAWN_FALLBACK = "coronaHeights";
+
+/** Pick a random landmark spawn key from LANDMARK_POOL. */
+export function pickLandmarkSpawn(): string {
+  return LANDMARK_POOL[Math.floor(Math.random() * LANDMARK_POOL.length)];
+}
 
 /** A code spawn if one is registered for `key`, else null (fall back to the
  * baked meta.json spawn table). */
