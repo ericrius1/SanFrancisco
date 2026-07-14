@@ -6,7 +6,6 @@ import {
   normalView,
   oneMinus,
   positionViewDirection,
-  saturate,
   uniform
 } from "three/tsl";
 import { BodyType, type Physics } from "../../core/physics";
