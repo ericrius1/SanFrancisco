@@ -4,14 +4,16 @@ import { BOTANICAL_GARDEN_BOUNDS } from "../world/garden/layout";
 import { WILD_REGIONS } from "../world/wildlands/regions";
 import { SPAWN_POINTS } from "../world/spawnPoints";
 import type { RoadGraph } from "../world/traffic/roadGraph";
+import { CANVAS_FONT_FAMILY } from "../core/typography";
 
 /**
  * Minimap (top-left, always on) + full-city map (M or click to expand).
  *
- * The terrain backdrop is painted once from the heightmap + surface-class
- * grids the game already ships (8 m/px): water shaded by bay depth, land by
- * class (urban/park/sand) with a cheap NW hillshade. No tiles, no GPU work —
- * everything here is 2D canvas.
+ * The immediate terrain backdrop is painted from the heightmap + surface-class
+ * grids the game already ships (8 m/px). The expanded map then first-use loads
+ * period-cartography plates, including a smaller detail tile only at close
+ * zoom. Authoritative roads/bridges stay as live vectors above the artwork.
+ * Everything here is 2D canvas; the WebGPU world renderer remains untouched.
  *
  * Multiplayer: every remote player is a colored dot (their server-assigned
  * hue, same as their name tag). On the minimap, players outside the view are
@@ -38,9 +40,7 @@ type LandmarkLabelPlacement = {
   pill?: { x: number; y: number; w: number; h: number };
 };
 
-// Canvas 2D can't read CSS custom properties, so mirror the --font stack here
-// for the labels painted straight onto the map.
-const MAP_FONT = "'InterVariable', Inter, system-ui, -apple-system, sans-serif";
+const MAP_FONT = CANVAS_FONT_FAMILY;
 const MINI_SIZE = 236; // css px
 const MINI_SPAN = 1400; // metres across the minimap view
 const MINI_MIN_SPAN = 260;
@@ -68,12 +68,20 @@ const LAYERS_ENABLED = false; // art/science/music layers parked for now
 // survey-map treatment while keeping the hierarchy readable under player pins.
 const ROAD_COLORS = ["#e4d7b8", "#dfcfaa", "#d7bd8d", "#cea66e", "#c58d52", "#bd7541"] as const;
 const HISTORICAL_PILOT_URL = "/map/golden-gate-historical-pilot.webp";
+const HISTORICAL_DETAIL_URL = "/map/golden-gate-historical-detail.webp";
 const HISTORICAL_PILOT_BOUNDS = {
   minX: -5800,
   maxX: -1600,
   minZ: -3900,
   maxZ: 2400
 } as const;
+const HISTORICAL_DETAIL_BOUNDS = {
+  minX: -3232,
+  maxX: -2732,
+  minZ: -3172.5,
+  maxZ: -2422.5
+} as const;
+const HISTORICAL_DETAIL_LOAD_SPAN = 900;
 
 type RoadPaintGroup = { path: Path2D; width: number; roadClass: number };
 
@@ -166,6 +174,8 @@ export class Minimap {
   #roadPaths: RoadPaintGroup[] = [];
   #historicalPilot: HTMLCanvasElement | null = null;
   #historicalPilotStarted = false;
+  #historicalDetail: HTMLCanvasElement | null = null;
+  #historicalDetailStarted = false;
   #mini!: HTMLCanvasElement;
   #count!: HTMLSpanElement;
   #teleWrap!: HTMLDivElement;
@@ -393,31 +403,9 @@ export class Minimap {
     image.addEventListener(
       "load",
       () => {
-        const canvas = document.createElement("canvas");
-        canvas.width = image.naturalWidth;
-        canvas.height = image.naturalHeight;
-        const ctx = canvas.getContext("2d")!;
-        ctx.drawImage(image, 0, 0);
-
         // Feather the pilot into the city-wide procedural period palette. A
         // later tiled atlas can use hard shared edges instead.
-        ctx.globalCompositeOperation = "destination-in";
-        const gx = ctx.createLinearGradient(0, 0, canvas.width, 0);
-        gx.addColorStop(0, "rgba(0,0,0,0)");
-        gx.addColorStop(0.035, "rgba(0,0,0,1)");
-        gx.addColorStop(0.965, "rgba(0,0,0,1)");
-        gx.addColorStop(1, "rgba(0,0,0,0)");
-        ctx.fillStyle = gx;
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        const gy = ctx.createLinearGradient(0, 0, 0, canvas.height);
-        gy.addColorStop(0, "rgba(0,0,0,0)");
-        gy.addColorStop(0.025, "rgba(0,0,0,1)");
-        gy.addColorStop(0.975, "rgba(0,0,0,1)");
-        gy.addColorStop(1, "rgba(0,0,0,0)");
-        ctx.fillStyle = gy;
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-        this.#historicalPilot = canvas;
+        this.#historicalPilot = this.#featherHistoricalImage(image, 0.025);
         this.update();
       },
       { once: true }
@@ -425,17 +413,89 @@ export class Minimap {
     image.src = HISTORICAL_PILOT_URL;
   }
 
+  #loadHistoricalDetail() {
+    if (this.#historicalDetailStarted) return;
+    this.#historicalDetailStarted = true;
+    const image = new Image();
+    image.decoding = "async";
+    image.addEventListener(
+      "load",
+      () => {
+        this.#historicalDetail = this.#featherHistoricalImage(image, 0.035);
+        this.update();
+      },
+      { once: true }
+    );
+    image.src = HISTORICAL_DETAIL_URL;
+  }
+
+  #featherHistoricalImage(image: HTMLImageElement, verticalFade: number) {
+    const canvas = document.createElement("canvas");
+    canvas.width = image.naturalWidth;
+    canvas.height = image.naturalHeight;
+    const ctx = canvas.getContext("2d")!;
+    ctx.drawImage(image, 0, 0);
+    ctx.globalCompositeOperation = "destination-in";
+    const gx = ctx.createLinearGradient(0, 0, canvas.width, 0);
+    gx.addColorStop(0, "rgba(0,0,0,0)");
+    gx.addColorStop(0.035, "rgba(0,0,0,1)");
+    gx.addColorStop(0.965, "rgba(0,0,0,1)");
+    gx.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = gx;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    const gy = ctx.createLinearGradient(0, 0, 0, canvas.height);
+    gy.addColorStop(0, "rgba(0,0,0,0)");
+    gy.addColorStop(verticalFade, "rgba(0,0,0,1)");
+    gy.addColorStop(1 - verticalFade, "rgba(0,0,0,1)");
+    gy.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = gy;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    return canvas;
+  }
+
+  #maybeLoadHistoricalDetail(center: { x: number; z: number }, spanX: number, spanZ: number) {
+    if (spanX > HISTORICAL_DETAIL_LOAD_SPAN || this.#historicalDetailStarted) return;
+    const minX = center.x - spanX / 2;
+    const maxX = center.x + spanX / 2;
+    const minZ = center.z - spanZ / 2;
+    const maxZ = center.z + spanZ / 2;
+    const intersects = !(
+      maxX < HISTORICAL_DETAIL_BOUNDS.minX ||
+      minX > HISTORICAL_DETAIL_BOUNDS.maxX ||
+      maxZ < HISTORICAL_DETAIL_BOUNDS.minZ ||
+      minZ > HISTORICAL_DETAIL_BOUNDS.maxZ
+    );
+    if (intersects) this.#loadHistoricalDetail();
+  }
+
   #drawHistoricalPilot(
     ctx: CanvasRenderingContext2D,
     px: (x: number) => number,
     pz: (z: number) => number
   ) {
-    const tile = this.#historicalPilot;
+    this.#drawHistoricalTile(ctx, this.#historicalPilot, HISTORICAL_PILOT_BOUNDS, px, pz);
+  }
+
+  #drawHistoricalDetail(
+    ctx: CanvasRenderingContext2D,
+    px: (x: number) => number,
+    pz: (z: number) => number
+  ) {
+    this.#drawHistoricalTile(ctx, this.#historicalDetail, HISTORICAL_DETAIL_BOUNDS, px, pz);
+  }
+
+  #drawHistoricalTile(
+    ctx: CanvasRenderingContext2D,
+    tile: HTMLCanvasElement | null,
+    bounds: { minX: number; maxX: number; minZ: number; maxZ: number },
+    px: (x: number) => number,
+    pz: (z: number) => number
+  ) {
     if (!tile) return;
-    const x = px(HISTORICAL_PILOT_BOUNDS.minX);
-    const y = pz(HISTORICAL_PILOT_BOUNDS.minZ);
-    const w = px(HISTORICAL_PILOT_BOUNDS.maxX) - x;
-    const h = pz(HISTORICAL_PILOT_BOUNDS.maxZ) - y;
+    const x = px(bounds.minX);
+    const y = pz(bounds.minZ);
+    const w = px(bounds.maxX) - x;
+    const h = pz(bounds.maxZ) - y;
     ctx.drawImage(tile, x, y, w, h);
   }
 
@@ -785,6 +845,7 @@ export class Minimap {
     const miniPx = (x: number) => mc + (x - center.x) * pxPerM;
     const miniPz = (z: number) => mc + (z - center.z) * pxPerM;
     this.#drawHistoricalPilot(ctx, miniPx, miniPz);
+    this.#drawHistoricalDetail(ctx, miniPx, miniPz);
     this.#drawVectorRoads(ctx, center, mc, mc, pxPerM);
     this.#drawBridges(
       ctx,
@@ -1136,7 +1197,9 @@ export class Minimap {
       if (!line || line.length < 2) continue;
       const color = (br.color && BRIDGE_COLORS[br.color]) || BRIDGE_FALLBACK_COLOR;
       // deck thickness in screen px, tracking real width but clamped for reads
-      const deckPx = Math.max(2.2 * dpr, Math.min(br.width * pxPerM, 9 * dpr));
+      // Preserve physical width when zoomed in; only cap the extreme close-up
+      // so the deck cannot consume the whole canvas.
+      const deckPx = Math.max(2.2 * dpr, Math.min(br.width * pxPerM, 24 * dpr));
       ctx.save();
       ctx.lineJoin = "round";
       ctx.lineCap = "round";
@@ -1748,6 +1811,7 @@ export class Minimap {
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     const { center, spanX, spanZ } = this.#bigView();
+    this.#maybeLoadHistoricalDetail(center, spanX, spanZ);
     const self = this.#getSelf();
     this.#bigRecenter?.classList.toggle(
       "centered",
@@ -1776,6 +1840,7 @@ export class Minimap {
     // GPT-painted detail is only an underlay. Authoritative vector streets and
     // bridges are redrawn above it at the current screen resolution.
     this.#drawHistoricalPilot(ctx, px, pz);
+    this.#drawHistoricalDetail(ctx, px, pz);
     this.#drawVectorRoads(ctx, center, canvas.width / 2, canvas.height / 2, sx, sy);
 
     // bridge decks under the pins

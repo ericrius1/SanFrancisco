@@ -18,6 +18,7 @@ import { animateScooter, buildScooterMesh, normalizeScooterConfig, scooterFromSe
 import type { Cockpit, PlayerMode } from "../player/types";
 import type { NetSample, RemoteInfo } from "./net";
 import { setEmbodimentVisible } from "../player/embodimentVisibility";
+import { CANVAS_FONT_FAMILY } from "../core/typography";
 
 /**
  * Visuals for everyone else in the world: one avatar per remote player, driven
@@ -47,8 +48,7 @@ const BUFFER_KEEP_MS = 1200;
 function makeTag(name: string, hue: number): THREE.Sprite {
   const ss = 3; // supersample so text stays crisp when viewed close
   const pad = 14 * ss;
-  // mirror the UI --font stack (canvas 2D can't read CSS custom properties)
-  const font = `600 ${34 * ss}px 'InterVariable', Inter, system-ui, -apple-system, sans-serif`;
+  const font = `600 ${34 * ss}px ${CANVAS_FONT_FAMILY}`;
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d")!;
   ctx.font = font;

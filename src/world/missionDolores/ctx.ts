@@ -3,6 +3,7 @@ import type { WorldMap } from "../heightmap";
 import { MD_YAW } from "./layout";
 import { loadTexture } from "../../render/textures";
 import type { RadialLightSource } from "../../render/radialLightTypes";
+import { CANVAS_FONT_FAMILY } from "../../core/typography";
 
 /** A yawed static collider box in WORLD space (what registerStaticBox consumes). */
 export interface MdWorldBox {
@@ -330,7 +331,7 @@ export class MuseumCtx {
     pg.textAlign = "center";
     pg.textBaseline = "top";
     pg.fillStyle = "#5a3d1e";
-    pg.font = "600 62px Georgia, 'Times New Roman', serif";
+    pg.font = `600 62px ${CANVAS_FONT_FAMILY}`;
     let ty = 26;
     ty = this.#wrapText(pg, opts.title, panelCanvas.width / 2, ty, panelCanvas.width - 80, 66);
     ty += 12;
@@ -344,13 +345,13 @@ export class MuseumCtx {
     ty += 24;
     // body
     pg.fillStyle = "#3f2f1c";
-    pg.font = "400 40px Georgia, 'Times New Roman', serif";
+    pg.font = `400 40px ${CANVAS_FONT_FAMILY}`;
     ty = this.#wrapText(pg, opts.body, panelCanvas.width / 2, ty, panelCanvas.width - 90, 52);
     // caption (italic)
     if (opts.caption) {
       ty += 18;
       pg.fillStyle = "#7a5a2e";
-      pg.font = "italic 34px Georgia, 'Times New Roman', serif";
+      pg.font = `italic 34px ${CANVAS_FONT_FAMILY}`;
       this.#wrapText(pg, opts.caption, panelCanvas.width / 2, ty, panelCanvas.width - 90, 44);
     }
     const panelTex = new THREE.CanvasTexture(panelCanvas);

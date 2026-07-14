@@ -11,8 +11,10 @@ import { INPUT_TUNING } from "../config";
  *
  * A gamepad (Xbox standard mapping) rides the same logical rails: pollPad()
  * translates buttons into the key codes the game already reads (A→Space,
- * B→E, RT→Shift, …), the left stick into the WASD axis pairs, the right stick
- * into mouselook deltas outside the locked surf activity, and the triggers into the active mode's throttle —
+ * B→E, RT→Shift, …), the left stick into the WASD axis pairs (radial deadzone
+ * + move curve from INPUT_TUNING), the right stick into mouselook deltas
+ * outside the locked surf activity (same deadzone + look curve), and the
+ * triggers into the active mode's throttle —
  * fly routes them to ↑/↓, bird routes LB/RB to Q/E twirl —
  * so modes/camera/fireworks never see a second input path. `device` tracks
  * whichever input was touched last; the HUD swaps its control labels off it.
@@ -21,11 +23,20 @@ import { INPUT_TUNING } from "../config";
  * free-camera mode, including ones added later) — mouse look is never flipped here.
  */
 
-const DEADZONE = 0.16;
-// right-stick look speed, mouse-pixel-equivalents per second at full
-// deflection (squared response, so half deflection aims at quarter speed)
+// right-stick look speed, mouse-pixel-equivalents per second at full deflection
+// after deadzone + response curve (curve lives in INPUT_TUNING.lookResponse)
 const LOOK_X = 1150;
 const LOOK_Y = 720;
+
+/** Radial deadzone then optional power curve. Keeps direction; remaps magnitude. */
+function shapeStick(x: number, y: number, deadzone: number, curve: number): [number, number] {
+  const mag = Math.hypot(x, y);
+  if (mag < deadzone || mag < 1e-8) return [0, 0];
+  const remapped = Math.min(1, (mag - deadzone) / (1 - deadzone));
+  const shaped = Math.pow(remapped, Math.max(1, curve));
+  const scale = shaped / mag;
+  return [x * scale, y * scale];
+}
 
 // button index (standard mapping) → key code it impersonates. X (2) is fire,
 // handled separately. Dpad ◀/▶ emit synthetic mode-cycle codes main.ts reads.
@@ -368,14 +379,13 @@ export class Input {
     }
     this.#padHeld = held;
 
-    const dz = (v: number) => {
-      const a = Math.abs(v);
-      return a < DEADZONE ? 0 : (Math.sign(v) * (a - DEADZONE)) / (1 - DEADZONE);
-    };
-    const lx = dz(gp.axes[0] ?? 0);
-    const ly = dz(gp.axes[1] ?? 0);
-    const rx = dz(gp.axes[2] ?? 0);
-    const ry = dz(gp.axes[3] ?? 0);
+    const tune = INPUT_TUNING.values;
+    const deadzone = tune.stickDeadzone;
+    // Left stick: deadzone + move curve (vehicles/walk read these axes analog).
+    const [lx, ly] = shapeStick(gp.axes[0] ?? 0, gp.axes[1] ?? 0, deadzone, tune.moveResponse);
+    // Right stick: deadzone only here — look curve applied when writing mouse deltas
+    // so map-cursor mode still gets linear post-deadzone motion.
+    const [rxLin, ryLin] = shapeStick(gp.axes[2] ?? 0, gp.axes[3] ?? 0, deadzone, 1);
     const lt = gp.buttons[6]?.value ?? 0;
     const rt = gp.buttons[7]?.value ?? 0;
     const trig = rt - lt;
@@ -402,18 +412,22 @@ export class Input {
       this.#padAxes.delete("KeyQ|KeyE");
       this.#padAxes.delete("KeyQ|KeyU");
     }
-    if (lx !== 0 || ly !== 0 || rx !== 0 || ry !== 0 || lt > 0.02 || rt > 0.02 || lb || rb) active = true;
+    if (lx !== 0 || ly !== 0 || rxLin !== 0 || ryLin !== 0 || lt > 0.02 || rt > 0.02 || lb || rb) {
+      active = true;
+    }
 
-    // Raw sticks/triggers for the expanded map (readable while suspended).
-    this.#mapPadAxes = { lx, ly, rx, ry, lt, rt };
+    // Post-deadzone sticks/triggers for the expanded map (readable while suspended).
+    this.#mapPadAxes = { lx, ly, rx: rxLin, ry: ryLin, lt, rt };
 
     // right stick = mouselook; works without pointer lock except in surf's
     // authored camera. Pitch polarity is the global INPUT_TUNING toggle.
+    // Sensitivity is applied once in ChaseCamera (same path as mouse) — do not
+    // multiply it here or pad look scales with lookSensitivity².
     if (!this.suspended && this.#mode !== "surf") {
-      const sens = INPUT_TUNING.values.lookSensitivity;
-      this.mouseDX += rx * Math.abs(rx) * LOOK_X * sens * dt;
-      const pitchStick = INPUT_TUNING.values.invertPadLookY ? -ry : ry;
-      this.mouseDY += pitchStick * Math.abs(pitchStick) * LOOK_Y * sens * dt;
+      const [rx, ry] = shapeStick(rxLin, ryLin, 0, tune.lookResponse);
+      this.mouseDX += rx * LOOK_X * dt;
+      const pitchStick = tune.invertPadLookY ? -ry : ry;
+      this.mouseDY += pitchStick * LOOK_Y * dt;
     }
 
     if (active) this.#setDevice("pad");

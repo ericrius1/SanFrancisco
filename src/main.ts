@@ -181,6 +181,14 @@ function parseInviteIntent(search: string): InviteIntent | null {
 
 async function boot() {
   const bootT0 = performance.now();
+  // Wireframe is a transient inspection view, never a valid play-session
+  // startup mode. Clear an old persisted toggle before the render pipeline is
+  // created so boot warms and reveals the solid-material path (`wf0`) instead
+  // of compiling a debug line-list world and carrying it through Start.
+  if (RENDER_TUNING.values.wireframe) {
+    RENDER_TUNING.values.wireframe = false;
+    saveTweak("render.wireframe", false);
+  }
   bootMarkStart();
   progress(8, "reading the map");
   const map = await WorldMap.load();
@@ -3275,8 +3283,10 @@ async function boot() {
       if (player.mode === "surf") hud.message("Surf camera locked to the wave — E to exit", 1.8);
       else cycleViewMode();
     }
-    // R: wireframe overlay (unused elsewhere — retained pass override + camera)
-    if (input.pressed("KeyR")) {
+    // R: wireframe overlay (unused elsewhere — retained pass override + camera).
+    // Keep transient debug presentation changes behind the identity/loading gate
+    // so a key pressed before Start cannot become the first playable frame.
+    if (document.body.classList.contains("started") && input.pressed("KeyR")) {
       debugPanel.toggleWireframe();
       hud.message(RENDER_TUNING.values.wireframe ? "Wireframe on (R)" : "Wireframe off (R)", 1.4);
     }

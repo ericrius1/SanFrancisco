@@ -10,6 +10,21 @@
       );
     </script>
     <title>San Francisco</title>
+    <link rel="preload" href="/ui/san-francisco-survey-map.webp" as="image" type="image/webp" />
+    <link
+      rel="preload"
+      href="/fonts/Newsreader-Variable.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link
+      rel="preload"
+      href="/fonts/Newsreader-VariableItalic.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
     <link
       rel="icon"
       href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌉</text></svg>"
@@ -17,22 +32,28 @@
     <style>
 
       /* ============================================================
-         DESIGN TOKENS — one cohesive glassmorphism system.
-         Self-hosted font (offline; no CDN), semantic colors, radii,
-         elevation, motion, and a single z-index scale. Migrate values
-         here rather than sprinkling literals.
+         DESIGN TOKENS — shared period typography with restrained glass
+         surfaces for live gameplay. Self-hosted font (offline; no CDN),
+         semantic colors, radii, elevation, motion, and one z-index scale.
          ============================================================ */
       @font-face {
-        font-family: "InterVariable";
+        font-family: "Newsreader";
         font-style: normal;
-        font-weight: 100 900;
+        font-weight: 200 800;
         font-display: swap;
-        src: url("/fonts/InterVariable.woff2") format("woff2");
+        src: url("/fonts/Newsreader-Variable.woff2") format("woff2-variations");
+      }
+      @font-face {
+        font-family: "Newsreader";
+        font-style: italic;
+        font-weight: 200 800;
+        font-display: swap;
+        src: url("/fonts/Newsreader-VariableItalic.woff2") format("woff2-variations");
       }
       :root {
         /* type */
-        --font: "InterVariable", Inter, -apple-system, "SF Pro Text",
-          "Segoe UI", Roboto, sans-serif;
+        --font: "Newsreader", "Iowan Old Style", "Palatino Linotype", Palatino,
+          Georgia, serif;
         --font-mono: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, monospace;
 
         /* accent — teal → mint */
@@ -108,6 +129,14 @@
         height: 100%;
         overflow: hidden;
         background: #0b1520;
+        font-family: var(--font);
+        font-optical-sizing: auto;
+      }
+      button,
+      input,
+      textarea,
+      select {
+        font-family: inherit;
       }
       #app {
         position: fixed;
@@ -3348,27 +3377,56 @@
       #loading {
         position: fixed;
         inset: 0;
-        display: flex;
-        flex-direction: column;
+        box-sizing: border-box;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
         align-items: center;
-        justify-content: center;
-        gap: 14px;
-        /* soft central glow over the tint focuses the eye on the name form */
-        background:
-          radial-gradient(
-            120% 85% at 50% 42%,
-            rgba(24, 52, 74, 0.5),
-            rgba(8, 20, 34, 0) 60%
-          ),
-          rgba(8, 20, 34, 0.62);
-        backdrop-filter: blur(2px) saturate(0.7);
-        color: var(--text-soft);
+        justify-items: center;
+        gap: 0;
+        padding:
+          max(30px, env(safe-area-inset-top))
+          max(34px, env(safe-area-inset-right))
+          max(30px, env(safe-area-inset-bottom))
+          max(34px, env(safe-area-inset-left));
+        overflow: hidden;
+        background: radial-gradient(circle at center, #d2c39f 0, #c8b995 74%);
+        color: #34372e;
         font-family: var(--font);
-        transition: opacity 0.6s ease;
+        font-optical-sizing: auto;
+        transition: opacity 0.7s ease;
         z-index: var(--z-loading);
       }
+      /* The title gate is a survey folio, not a floating web card. The supplied
+         city map remains the opaque boot cover until the player enters. */
+      #loading::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        z-index: -2;
+        background-image: url("/ui/san-francisco-survey-map.webp");
+        background-repeat: no-repeat;
+        background-position: center 48%;
+        background-size: max(820px, 76vw) auto;
+        filter: saturate(0.82) contrast(0.94);
+      }
+      #loading::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        z-index: -1;
+        pointer-events: none;
+        background:
+          radial-gradient(ellipse at center, rgba(236, 223, 187, 0.04) 0 38%, rgba(64, 53, 37, 0.22) 100%),
+          repeating-linear-gradient(0deg, rgba(69, 62, 44, 0.025) 0 1px, transparent 1px 4px),
+          radial-gradient(circle at 17% 16%, transparent 0 34%, rgba(236, 223, 187, 0.1) 76%);
+        box-shadow:
+          inset 0 0 0 1px rgba(57, 58, 45, 0.42),
+          inset 0 0 0 8px rgba(220, 206, 169, 0.58),
+          inset 0 0 0 10px rgba(74, 69, 50, 0.34);
+        mix-blend-mode: multiply;
+      }
       /* keep the HUD (center messages, minimap) out of sight behind the start
-         gate — otherwise "Online as …" bleeds through the translucent tint */
+         gate — otherwise "Online as …" bleeds through the survey folio */
       #hud {
         transition: opacity 0.4s ease;
       }
@@ -3376,191 +3434,507 @@
         opacity: 0;
         pointer-events: none;
       }
-      /* opaque backdrop while tiles stream in; once the city is ready it fades,
-         leaving the translucent tint above with the name form over the live city */
-      #loading::before {
+      #loading .map-folio {
+        position: absolute;
+        inset:
+          max(30px, env(safe-area-inset-top))
+          max(34px, env(safe-area-inset-right))
+          max(30px, env(safe-area-inset-bottom))
+          max(34px, env(safe-area-inset-left));
+        min-width: 0;
+        pointer-events: none;
+        color: rgba(55, 69, 59, 0.82);
+        font-weight: 650;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+      #loading .folio-kicker,
+      #loading .folio-number {
+        position: absolute;
+        top: 2px;
+        font-size: 10px;
+        line-height: 1.35;
+        text-shadow: 0 1px rgba(236, 225, 194, 0.62);
+      }
+      #loading .folio-kicker {
+        left: 0;
+      }
+      #loading .folio-number {
+        right: 0;
+      }
+      #loading .ocean-label {
+        position: absolute;
+        left: 8%;
+        top: 43%;
+        writing-mode: vertical-rl;
+        transform: rotate(180deg);
+        font-style: italic;
+        font-size: clamp(13px, 1.25vw, 18px);
+        font-weight: 500;
+        letter-spacing: 0.28em;
+        opacity: 0.56;
+      }
+      #loading .map-caption {
+        position: absolute;
+        left: 0;
+        bottom: 2px;
+        max-width: 310px;
+        font-size: 9px;
+        line-height: 1.55;
+        letter-spacing: 0.1em;
+      }
+      #loading .compass {
+        position: absolute;
+        left: 18%;
+        bottom: 12%;
+        width: 70px;
+        height: 70px;
+        display: grid;
+        place-items: center;
+        border: 1px solid rgba(64, 75, 62, 0.46);
+        border-radius: 50%;
+        font-size: 9px;
+        letter-spacing: 0.06em;
+        opacity: 0.66;
+      }
+      #loading .compass::before,
+      #loading .compass::after {
         content: "";
         position: absolute;
-        inset: 0;
-        z-index: -1;
-        background: linear-gradient(180deg, #14283a 0%, #0b1520 100%);
-        transition: opacity 0.9s ease;
+        background: rgba(64, 75, 62, 0.52);
       }
-      #loading.ready::before {
-        opacity: 0;
+      #loading .compass::before {
+        width: 1px;
+        height: 88px;
+      }
+      #loading .compass::after {
+        width: 88px;
+        height: 1px;
+      }
+      #loading .compass span {
+        transform: translateY(-28px);
+      }
+      #loading .start-card {
+        position: relative;
+        width: min(100%, 500px);
+        max-height: 100%;
+        justify-self: center;
+        box-sizing: border-box;
+        padding: clamp(32px, 4vw, 56px) clamp(28px, 4.2vw, 58px) clamp(26px, 3.3vw, 46px);
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        color: #36372f;
+        background:
+          repeating-linear-gradient(0deg, rgba(74, 67, 49, 0.026) 0 1px, transparent 1px 4px),
+          linear-gradient(145deg, rgba(235, 224, 195, 0.98), rgba(218, 202, 164, 0.97));
+        border: 1px solid rgba(74, 70, 52, 0.76);
+        box-shadow:
+          0 28px 70px rgba(57, 48, 33, 0.28),
+          0 3px 12px rgba(57, 48, 33, 0.22),
+          inset 0 0 0 5px rgba(232, 219, 184, 0.8),
+          inset 0 0 0 6px rgba(85, 75, 53, 0.42);
+        animation: folio-in 0.65s var(--ease) both;
+      }
+      #loading .start-card::before,
+      #loading .start-card::after {
+        content: "";
+        position: absolute;
+        left: 18px;
+        right: 18px;
+        height: 5px;
+        border-top: 1px solid rgba(100, 75, 49, 0.62);
+        border-bottom: 1px solid rgba(100, 75, 49, 0.32);
+        pointer-events: none;
+      }
+      #loading .start-card::before {
+        top: 18px;
+      }
+      #loading .start-card::after {
+        bottom: 18px;
+      }
+      @keyframes folio-in {
+        from {
+          opacity: 0;
+          transform: translateY(10px) rotate(0.15deg);
+        }
+      }
+      #loading .plate-number {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: clamp(18px, 2.3vh, 28px);
+        color: #76513a;
+        font-size: 9px;
+        font-weight: 750;
+        letter-spacing: 0.19em;
+        text-transform: uppercase;
+      }
+      #loading .plate-number::before,
+      #loading .plate-number::after {
+        content: "";
+        height: 1px;
+        flex: 1;
+        background: rgba(118, 81, 58, 0.48);
+      }
+      #loading .title-eyebrow {
+        margin-bottom: 5px;
+        color: #53645a;
+        font-size: 11px;
+        font-weight: 650;
+        letter-spacing: 0.2em;
+        text-align: center;
+        text-transform: uppercase;
       }
       #loading h1 {
-        margin: 0 0 2px;
-        font-size: clamp(24px, 4.4vw, 34px);
-        letter-spacing: 0.34em;
-        /* optical: uppercase tracking pushes the last glyph right, so pull it
-           back with an equal indent to keep the title centered */
-        text-indent: 0.34em;
-        font-weight: 600;
-        text-transform: uppercase;
-        color: var(--text);
-        text-shadow: 0 2px 18px rgba(0, 8, 14, 0.75);
+        margin: 0;
+        color: #303a35;
+        font-size: clamp(46px, 5.5vw, 72px);
+        font-weight: 640;
+        font-variation-settings: "opsz" 72;
+        letter-spacing: 0.015em;
+        line-height: 0.86;
+        text-align: center;
+        text-shadow: 0 1px rgba(255, 248, 225, 0.65);
       }
-      /* slim accent rule under the title — a premium anchor, hidden once ready
-         so it doesn't linger over the form */
-      #loading h1::after {
-        content: "";
+      #loading h1 span {
         display: block;
-        width: 46px;
-        height: 2px;
-        margin: 12px auto 0;
-        border-radius: var(--r-pill);
-        background: linear-gradient(90deg, transparent, var(--accent), transparent);
-        opacity: 0.9;
-        transition: opacity 0.5s ease;
       }
-      #loading.ready h1::after {
-        opacity: 0;
+      #loading h1 span:last-child {
+        color: #78513b;
+        font-size: 0.87em;
+        font-style: italic;
+        font-weight: 560;
+      }
+      #loading .coordinates {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin: 17px 0 0;
+        color: rgba(62, 71, 61, 0.7);
+        font-size: 8.5px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+      #loading .coordinates::before,
+      #loading .coordinates::after {
+        content: "";
+        height: 3px;
+        flex: 1;
+        border-top: 1px solid rgba(65, 79, 68, 0.56);
+        border-bottom: 1px solid rgba(65, 79, 68, 0.25);
+      }
+      #loading .start-lede {
+        margin: clamp(16px, 2.2vh, 24px) auto clamp(17px, 2.3vh, 26px);
+        max-width: 310px;
+        color: #515144;
+        font-size: clamp(15px, 1.3vw, 17px);
+        font-style: italic;
+        font-weight: 440;
+        line-height: 1.35;
+        text-align: center;
+      }
+      #loading .loading-status {
+        display: grid;
+        gap: 7px;
+        min-height: 25px;
+        margin: 0 auto 18px;
+        transition:
+          opacity 0.25s ease,
+          visibility 0.25s ease;
       }
       #loading .bar {
-        width: 260px;
-        height: 4px;
-        background: rgba(255, 255, 255, 0.12);
-        border-radius: var(--r-pill);
-        overflow: hidden;
+        width: 100%;
+        height: 5px;
+        padding: 2px 0;
+        overflow: visible;
+        border-top: 1px solid rgba(79, 81, 64, 0.42);
+        border-bottom: 1px solid rgba(79, 81, 64, 0.42);
+        background: transparent;
       }
       #loading .bar > div {
         height: 100%;
         width: 0%;
-        border-radius: inherit;
-        background: linear-gradient(90deg, var(--accent), var(--accent-strong));
-        box-shadow: 0 0 12px var(--accent-glow);
+        background:
+          repeating-linear-gradient(135deg, rgba(255, 245, 217, 0.18) 0 2px, transparent 2px 4px),
+          #9b573f;
+        box-shadow: 0 1px rgba(255, 245, 217, 0.35);
         transition: width 0.3s var(--ease);
       }
       #loading [data-loading-label] {
+        color: #5f685a;
+        font-size: 10px;
+        font-style: italic;
+        font-weight: 560;
+        letter-spacing: 0.08em;
+        text-align: center;
         font-variant-numeric: tabular-nums;
       }
       #loading.done {
         opacity: 0;
         pointer-events: none;
       }
-      /* name gate: shows up front so you can type a name while the city streams
-         in; the Start button stays disabled until load completes (.ready) */
       #loading .start-form {
-        display: flex;
-        margin-top: 6px;
-        gap: 10px;
-        align-items: center;
-        animation: startin 0.35s var(--ease);
+        display: grid;
+        gap: 7px;
+        margin: 0;
       }
-      #loading.ready .bar,
-      #loading.ready [data-loading-label] {
-        display: none;
+      #loading .start-form label {
+        color: #4f574b;
+        font-size: 9px;
+        font-weight: 750;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
       }
-      @keyframes startin {
-        from {
-          opacity: 0;
-          transform: translateY(8px);
-        }
+      #loading .form-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 9px;
       }
       #loading .start-form input {
-        width: 210px;
-        height: 40px;
+        min-width: 0;
+        width: 100%;
+        height: 46px;
         box-sizing: border-box;
-        padding: 0 14px;
-        border-radius: var(--r-md);
+        padding: 0 13px;
+        border-radius: 1px;
         outline: none;
-        background: var(--surface-sunken);
-        color: var(--text);
-        border: 1px solid var(--hairline-strong);
-        font: 600 14px var(--font);
-        letter-spacing: 0.02em;
-        text-align: center;
+        background: rgba(246, 237, 208, 0.64);
+        color: #313a33;
+        border: 1px solid rgba(71, 76, 63, 0.64);
+        box-shadow: inset 0 0 0 3px rgba(221, 209, 176, 0.5);
+        font: 650 16px var(--font);
+        font-variation-settings: "opsz" 16;
+        letter-spacing: 0.01em;
+        text-align: left;
         transition:
           border-color var(--dur) var(--ease),
           box-shadow var(--dur) var(--ease),
           background var(--dur) var(--ease);
       }
       #loading .start-form input:focus {
-        border-color: var(--accent);
-        background: var(--surface-strong);
-        box-shadow: 0 0 0 3px var(--accent-soft);
+        border-color: #8c4e39;
+        background: rgba(250, 242, 217, 0.9);
+        box-shadow:
+          inset 0 0 0 3px rgba(221, 209, 176, 0.52),
+          0 0 0 2px rgba(140, 78, 57, 0.18);
       }
       #loading .start-form input::placeholder {
-        color: rgba(234, 244, 248, 0.38);
+        color: rgba(52, 58, 49, 0.48);
       }
       #loading .start-form button {
-        height: 40px;
-        padding: 0 24px;
-        border-radius: var(--r-md);
+        min-width: 130px;
+        height: 46px;
+        padding: 0 16px;
+        border-radius: 1px;
         cursor: pointer;
-        background: linear-gradient(180deg, var(--accent-strong), var(--accent));
-        color: var(--on-accent);
-        border: none;
-        font: 700 13px var(--font);
-        letter-spacing: 0.1em;
+        background: #8d503b;
+        color: #f4e8c8;
+        border: 1px solid #70402f;
+        font: 740 12px var(--font);
+        letter-spacing: 0.08em;
         text-transform: uppercase;
         box-shadow:
-          var(--edge-hi),
-          0 6px 18px rgba(87, 199, 176, 0.32);
+          inset 0 0 0 3px rgba(244, 232, 200, 0.12),
+          0 4px 9px rgba(73, 53, 38, 0.2);
         transition:
           transform 0.12s var(--ease),
           filter var(--dur) var(--ease),
           box-shadow var(--dur) var(--ease);
       }
       #loading .start-form button:hover:not(:disabled) {
-        filter: brightness(1.06);
+        filter: brightness(1.08) saturate(1.04);
         transform: translateY(-1px);
-        box-shadow:
-          var(--edge-hi),
-          0 8px 22px rgba(87, 199, 176, 0.42);
       }
       #loading .start-form button:active:not(:disabled) {
         transform: translateY(0);
       }
       #loading .start-form button:focus-visible {
-        outline: 2px solid var(--accent-strong);
-        outline-offset: 3px;
+        outline: 2px solid #415c50;
+        outline-offset: 2px;
       }
       #loading .start-form button:disabled {
-        background: rgba(111, 215, 196, 0.22);
-        color: rgba(11, 21, 32, 0.55);
+        background: rgba(96, 94, 75, 0.26);
+        color: rgba(61, 61, 50, 0.48);
+        border-color: rgba(74, 72, 58, 0.28);
         box-shadow: none;
         cursor: default;
       }
       #loading .start-hint {
+        margin-top: 8px;
+        color: rgba(66, 68, 57, 0.75);
         font-size: 11px;
-        color: var(--text-dim);
-        opacity: 0.75;
-        text-shadow: 0 1px 4px rgba(0, 8, 14, 0.8);
+        font-style: italic;
+        line-height: 1.25;
       }
       #loading .controls-hint {
-        margin-top: 18px;
+        margin-top: clamp(16px, 2.2vh, 24px);
         display: flex;
-        flex-direction: column;
-        gap: 8px;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 8px 16px;
         align-items: center;
-        font-size: 12px;
-        color: var(--text-dim);
-        opacity: 0.9;
-        text-shadow: 0 1px 4px rgba(0, 8, 14, 0.8);
+        color: rgba(63, 68, 58, 0.78);
+        font-size: 10px;
       }
       #loading .controls-hint .row {
         display: inline-flex;
         align-items: center;
-        gap: 8px;
+        gap: 6px;
       }
       #loading .controls-hint .k {
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        min-width: 10px;
-        height: 18px;
-        padding: 0 6px;
-        border-radius: var(--r-xs);
-        background: var(--surface-raised);
-        border: 1px solid var(--hairline-strong);
-        box-shadow: 0 1px 0 rgba(190, 225, 240, 0.16);
-        color: var(--text);
-        font-size: 10.5px;
-        font-weight: 600;
-        letter-spacing: 0.02em;
+        min-width: 12px;
+        height: 19px;
+        padding: 0 5px;
+        border-radius: 1px;
+        background: rgba(237, 226, 195, 0.5);
+        border: 1px solid rgba(67, 72, 61, 0.46);
+        box-shadow: inset 0 0 0 2px rgba(199, 186, 151, 0.38);
+        color: #424a40;
+        font-size: 9px;
+        font-weight: 700;
+        letter-spacing: 0.03em;
         line-height: 1;
+      }
+      #loading .start-imprint {
+        margin-top: 16px;
+        padding-top: 10px;
+        border-top: 1px solid rgba(78, 76, 59, 0.26);
+        color: rgba(71, 70, 56, 0.62);
+        font-size: 8px;
+        font-weight: 700;
+        letter-spacing: 0.14em;
+        text-align: center;
+        text-transform: uppercase;
+      }
+      #loading.ready .loading-status {
+        opacity: 0;
+        visibility: hidden;
+      }
+      @media (max-width: 820px) {
+        #loading {
+          grid-template-columns: 1fr;
+          justify-items: center;
+          gap: 0;
+          padding:
+            max(20px, env(safe-area-inset-top))
+            max(14px, env(safe-area-inset-right))
+            max(20px, env(safe-area-inset-bottom))
+            max(14px, env(safe-area-inset-left));
+          background: #c6b792;
+        }
+        #loading::before {
+          background-position: center 48%;
+          background-size: auto max(100%, 920px);
+        }
+        #loading::after {
+          background:
+            linear-gradient(rgba(76, 65, 46, 0.06), rgba(76, 65, 46, 0.24)),
+            repeating-linear-gradient(0deg, rgba(69, 62, 44, 0.025) 0 1px, transparent 1px 4px);
+        }
+        #loading .map-folio {
+          position: absolute;
+          inset: max(22px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) max(22px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
+        }
+        #loading .folio-number,
+        #loading .ocean-label,
+        #loading .compass {
+          display: none;
+        }
+        #loading .map-caption {
+          max-width: 220px;
+          font-size: 7.5px;
+        }
+        #loading .start-card {
+          width: min(100%, 440px);
+          justify-self: center;
+          padding: 36px clamp(24px, 8vw, 44px) 30px;
+        }
+        #loading h1 {
+          font-size: clamp(46px, 15vw, 64px);
+        }
+      }
+      @media (max-width: 520px) {
+        #loading .form-row {
+          grid-template-columns: 1fr;
+        }
+        #loading .start-form button {
+          width: 100%;
+        }
+        #loading .start-lede {
+          font-size: 15px;
+        }
+      }
+      @media (max-height: 700px) {
+        #loading .start-card {
+          padding-top: 30px;
+          padding-bottom: 26px;
+        }
+        #loading .plate-number,
+        #loading .start-imprint {
+          margin-bottom: 10px;
+        }
+        #loading .start-lede,
+        #loading .controls-hint {
+          margin-top: 12px;
+          margin-bottom: 12px;
+        }
+      }
+      @media (max-height: 480px) and (orientation: landscape) {
+        #loading {
+          padding:
+            max(16px, env(safe-area-inset-top))
+            max(28px, env(safe-area-inset-right))
+            max(16px, env(safe-area-inset-bottom))
+            max(28px, env(safe-area-inset-left));
+          gap: 20px;
+        }
+        #loading .folio-number,
+        #loading .compass {
+          display: none;
+        }
+        #loading .start-card {
+          width: min(100%, 430px);
+          padding: 24px 34px 22px;
+          overflow: hidden;
+        }
+        #loading .start-card::before {
+          top: 10px;
+        }
+        #loading .start-card::after {
+          bottom: 10px;
+        }
+        #loading .plate-number {
+          margin-bottom: 7px;
+        }
+        #loading .title-eyebrow {
+          margin-bottom: 2px;
+          font-size: 9px;
+        }
+        #loading h1 {
+          font-size: 44px;
+          line-height: 0.78;
+        }
+        #loading .coordinates {
+          margin-top: 10px;
+        }
+        #loading .start-lede,
+        #loading .controls-hint,
+        #loading .start-imprint {
+          display: none;
+        }
+        #loading .loading-status {
+          min-height: 20px;
+          margin: 10px auto 9px;
+        }
+        #loading .start-hint {
+          margin-top: 5px;
+          font-size: 10px;
+        }
       }
       /* Ocean Beach surf challenge — compact arcade scorecard, hidden unless
          the dedicated surf vehicle is active. */
@@ -3656,30 +4030,45 @@
       </button>
     </div>
     <div id="loading">
-      <h1>San Francisco</h1>
-      <div class="bar"><div data-loading-bar></div></div>
-      <div data-loading-label style="font-size: 12px; opacity: 0.7"></div>
-      <form class="start-form" data-start-form>
-        <input
-          data-name-input
-          type="text"
-          maxlength="20"
-          autocomplete="off"
-          spellcheck="false"
-          aria-label="Your name"
-          autofocus
-        />
-        <button type="submit" disabled>Start</button>
-      </form>
-      <div class="start-hint">
-        pick a name, or roll with the one we gave you
+      <div class="map-folio" aria-hidden="true">
+        <span class="folio-kicker">United States Coast Survey<br />San Francisco Peninsula</span>
+        <span class="folio-number">Plate I · 37° 46′ N</span>
+        <span class="ocean-label">Pacific Ocean</span>
+        <span class="compass"><span>N</span></span>
+        <span class="map-caption">Drawn from field notes, local stories, weather, light, and the wandering of every visitor.</span>
       </div>
-      <div class="controls-hint" aria-label="Essential controls">
-        <div class="row"><span class="k">Tab</span><span>toggle UI</span></div>
-        <div class="row">
-          <span class="k">Esc</span><span>release mouse</span>
+      <main class="start-card">
+        <div class="plate-number">City edition · 1776</div>
+        <div class="title-eyebrow">A living atlas of</div>
+        <h1><span>San</span><span>Francisco</span></h1>
+        <div class="coordinates"><span>37° 46′ N · 122° 25′ W</span></div>
+        <p class="start-lede">Walk the hills. Follow the fog.<br />Make the city yours.</p>
+        <div class="loading-status" aria-live="polite">
+          <div class="bar"><div data-loading-bar></div></div>
+          <div data-loading-label></div>
         </div>
-      </div>
+        <form class="start-form" data-start-form>
+          <label for="traveler-name">Traveler’s name</label>
+          <div class="form-row">
+            <input
+              id="traveler-name"
+              data-name-input
+              type="text"
+              maxlength="20"
+              autocomplete="off"
+              spellcheck="false"
+              autofocus
+            />
+            <button type="submit" disabled>Enter the city</button>
+          </div>
+        </form>
+        <div class="start-hint">Keep the name we chose, or write your own.</div>
+        <div class="controls-hint" aria-label="Essential controls">
+          <div class="row"><span class="k">Tab</span><span>show or hide the folio</span></div>
+          <div class="row"><span class="k">Esc</span><span>release the mouse</span></div>
+        </div>
+        <div class="start-imprint">Pacific coast · A city in motion</div>
+      </main>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

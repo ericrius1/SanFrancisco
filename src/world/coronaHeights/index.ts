@@ -30,6 +30,7 @@ import {
   SHADOW_LAYERS
 } from "../shadows/shadowLayers";
 import type { CoronaHeightsFoliage } from "./vegetation";
+import { CANVAS_FONT_FAMILY } from "../../core/typography";
 
 export { prepareCoronaHeightsGround } from "./ground";
 
@@ -763,13 +764,13 @@ function dogParkSignTexture() {
   // Type-forward layout — title owns the board.
   ctx.textAlign = "center";
   ctx.fillStyle = "#e0d2a4";
-  ctx.font = "700 92px system-ui, sans-serif";
+  ctx.font = `700 92px ${CANVAS_FONT_FAMILY}`;
   ctx.fillText("CORONA HEIGHTS", W / 2, 210);
   ctx.fillStyle = "#5eb8a6";
-  ctx.font = "650 58px system-ui, sans-serif";
+  ctx.font = `650 58px ${CANVAS_FONT_FAMILY}`;
   ctx.fillText("DOG PLAY AREA", W / 2, 300);
   ctx.fillStyle = "#b8a67a";
-  ctx.font = "500 32px system-ui, sans-serif";
+  ctx.font = `500 32px ${CANVAS_FONT_FAMILY}`;
   ctx.fillText("OFF-LEASH  ·  5 AM–MIDNIGHT", W * 0.42, H - 72);
 
   const texture = new THREE.CanvasTexture(canvas);

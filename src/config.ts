@@ -66,12 +66,19 @@ export const CAMERA_TUNING = tunables("camera", {
 
 /** Look / move feel. Bound under advanced → controls in the "/" panel.
  * `lookSensitivity` scales mouse and right-stick look; `moveSpeedScale` scales
- * on-foot walk/run/swim. Both are also live-adjustable with N + trackpad. */
+ * on-foot walk/run/swim. Both are also live-adjustable with N + trackpad.
+ * Stick deadzone / response curves shape gamepad analog feel (radial deadzone,
+ * then ease-in so light presses stay gentle). */
 export const INPUT_TUNING = tunables("input", {
   // true = stick-up raises the chase cam / pitches the plane nose up (default).
   invertPadLookY: { v: true, label: "invert pad look Y" },
   lookSensitivity: { v: 1, min: 0.25, max: 3, step: 0.05, label: "look sensitivity" },
-  moveSpeedScale: { v: 1, min: 0.4, max: 2.5, step: 0.05, label: "move speed ×" }
+  moveSpeedScale: { v: 1, min: 0.4, max: 2.5, step: 0.05, label: "move speed ×" },
+  // Ignore stick noise inside this radius, then remap the rest to 0..1.
+  stickDeadzone: { v: 0.18, min: 0.05, max: 0.4, step: 0.01, label: "stick deadzone" },
+  // >1 eases in: half stick is slower than half speed (fine control near center).
+  moveResponse: { v: 1.45, min: 1, max: 3, step: 0.05, label: "move stick curve" },
+  lookResponse: { v: 2, min: 1, max: 3, step: 0.05, label: "look stick curve" }
 })
 
 /** The committed heightfield is 15.1 × 13.9 km (20.5 km corner-to-corner).

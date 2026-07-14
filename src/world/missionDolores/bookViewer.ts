@@ -15,6 +15,7 @@
 // the same camera-lock pattern elsewhere in this codebase).
 import * as THREE from "three/webgpu";
 import { loadTexture } from "../../render/textures";
+import { CANVAS_FONT_FAMILY } from "../../core/typography";
 
 export interface CanticleBookOptions {
   onToggle: (open: boolean) => void;
@@ -151,7 +152,7 @@ const FLIP_SCALE_FROM = 0.94;
 // Small text canvas — well under the 512x768 budget.
 const TEXT_W = 480;
 const TEXT_H = 620;
-const TEXT_FONT = "Georgia, 'Times New Roman', serif";
+const TEXT_FONT = CANVAS_FONT_FAMILY;
 
 const TMP_FORWARD = new THREE.Vector3();
 
