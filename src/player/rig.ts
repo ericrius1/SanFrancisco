@@ -81,6 +81,8 @@ export type RigAvatarState = {
   armBlocks: THREE.Mesh[];
   legBlocks: THREE.Mesh[];
   hair: Record<AvatarHair, THREE.Object3D[]>;
+  /** Top-of-head hair slabs that sit under fitted hats (cap/beanie). */
+  hairCrowns: THREE.Object3D[];
   hats: Record<AvatarHat, THREE.Object3D[]>;
   outfits: Record<AvatarOutfit, THREE.Object3D[]>;
   allHair: THREE.Object3D[];
@@ -191,7 +193,14 @@ export function applyAvatarToRig(rig: Rig, avatar: AvatarTraits) {
   setVisible(s.allHair, false);
   setVisible(s.allHats, false);
   setVisible(s.allOutfits, false);
-  setVisible(s.hair[avatar.hair], avatar.hair === "long" || avatar.hat === "none" || avatar.hat === "visor" || avatar.hat === "crown");
+  // Long hair keeps side/back locks under any hat; other styles only show when
+  // the hat leaves the scalp open (none / visor / crown).
+  const showHair =
+    avatar.hair === "long" || avatar.hat === "none" || avatar.hat === "visor" || avatar.hat === "crown";
+  setVisible(s.hair[avatar.hair], showHair);
+  // Fitted hats own the scalp — hide crown slabs so they don't share a plane
+  // with the hat (long+cap/beanie used to z-fight along the hat band).
+  if (avatar.hat === "cap" || avatar.hat === "beanie") setVisible(s.hairCrowns, false);
   setVisible(s.hats[avatar.hat], true);
   setVisible(s.outfits[avatar.outfit], true);
 
@@ -234,6 +243,7 @@ export function buildRig(avatar: AvatarTraits = DEFAULT_RIG_AVATAR): Rig {
   const materials = makeAvatarMaterials();
   const group = new THREE.Group();
   const hair: RigAvatarState["hair"] = { short: [], bob: [], mohawk: [], buzz: [], long: [] };
+  const hairCrowns: THREE.Object3D[] = [];
   const hats: RigAvatarState["hats"] = { none: [], cap: [], beanie: [], visor: [], crown: [] };
   const outfits: RigAvatarState["outfits"] = { jacket: [], hoodie: [], tee: [], overalls: [], dress: [] };
   const allHair: THREE.Object3D[] = [];
@@ -241,6 +251,10 @@ export function buildRig(avatar: AvatarTraits = DEFAULT_RIG_AVATAR): Rig {
   const allOutfits: THREE.Object3D[] = [];
   const armBlocks: THREE.Mesh[] = [];
   const legBlocks: THREE.Mesh[] = [];
+  const crown = <T extends THREE.Object3D>(item: T): T => {
+    hairCrowns.push(item);
+    return item;
+  };
 
   const hips = new THREE.Group();
   group.add(hips);
@@ -276,25 +290,31 @@ export function buildRig(avatar: AvatarTraits = DEFAULT_RIG_AVATAR): Rig {
   const headBlock = part(head, materials.skin, 0.26, 0.26, 0.26, 0, 0.2, 0);
   part(head, materials.visor, 0.24, 0.07, 0.03, 0, 0.23, -0.145); // shades
   part(head, materials.skin, 0.05, 0.06, 0.05, 0, 0.15, -0.15); // nose
-  push(hair.short, part(head, materials.hair, 0.29, 0.08, 0.28, 0, 0.34, 0));
-  push(hair.buzz, part(head, materials.hair, 0.28, 0.045, 0.28, 0, 0.325, 0));
-  push(hair.bob, part(head, materials.hair, 0.3, 0.08, 0.28, 0, 0.34, 0));
+  // Hair crowns sit flush on the scalp (head top y=0.33) so their bottom face
+  // doesn't share a plane with the head block. Height is short enough that a
+  // forehead visor clears below them.
+  push(hair.short, crown(part(head, materials.hair, 0.29, 0.05, 0.28, 0, 0.365, 0)));
+  push(hair.buzz, crown(part(head, materials.hair, 0.28, 0.024, 0.28, 0, 0.342, 0)));
+  push(hair.bob, crown(part(head, materials.hair, 0.3, 0.05, 0.28, 0, 0.365, 0)));
   push(hair.bob, part(head, materials.hair, 0.07, 0.22, 0.12, -0.17, 0.21, 0.03));
   push(hair.bob, part(head, materials.hair, 0.07, 0.22, 0.12, 0.17, 0.21, 0.03));
-  push(hair.long, part(head, materials.hair, 0.3, 0.08, 0.28, 0, 0.34, 0));
+  push(hair.long, crown(part(head, materials.hair, 0.3, 0.05, 0.28, 0, 0.365, 0)));
   push(hair.long, part(head, materials.hair, 0.24, 0.28, 0.08, 0, 0.16, 0.16));
   push(hair.long, part(head, materials.hair, 0.055, 0.24, 0.08, -0.17, 0.18, 0.08));
   push(hair.long, part(head, materials.hair, 0.055, 0.24, 0.08, 0.17, 0.18, 0.08));
-  push(hair.mohawk, part(head, materials.hair, 0.09, 0.18, 0.32, 0, 0.39, 0));
+  push(hair.mohawk, crown(part(head, materials.hair, 0.09, 0.18, 0.32, 0, 0.39, 0)));
   allHair.push(...hair.short, ...hair.bob, ...hair.mohawk, ...hair.buzz, ...hair.long);
-  push(hats.cap, part(head, materials.hat, 0.28, 0.1, 0.28, 0, 0.335, 0));
-  push(hats.cap, part(head, materials.hat, 0.26, 0.03, 0.16, 0, 0.31, -0.2)); // brim
-  push(hats.beanie, part(head, materials.hat, 0.29, 0.12, 0.29, 0, 0.35, 0));
-  push(hats.beanie, part(head, materials.trim, 0.31, 0.04, 0.3, 0, 0.29, 0));
-  push(hats.visor, part(head, materials.hat, 0.3, 0.045, 0.29, 0, 0.31, 0));
-  push(hats.visor, part(head, materials.hat, 0.28, 0.03, 0.18, 0, 0.3, -0.2));
-  push(hats.crown, part(head, materials.hat, 0.3, 0.045, 0.3, 0, 0.34, 0));
-  for (const x of [-0.11, 0, 0.11]) push(hats.crown, part(head, materials.trim, 0.055, 0.13, 0.055, x, 0.42, -0.08));
+  // Hats sit a few mm proud of the scalp / hair crown so opaque boxes don't
+  // share a depth plane (reversed-z prefers spatial separation over polygonOffset).
+  push(hats.cap, part(head, materials.hat, 0.28, 0.1, 0.28, 0, 0.355, 0));
+  push(hats.cap, part(head, materials.hat, 0.26, 0.03, 0.16, 0, 0.32, -0.2)); // brim
+  push(hats.beanie, part(head, materials.hat, 0.29, 0.12, 0.29, 0, 0.365, 0));
+  push(hats.beanie, part(head, materials.trim, 0.31, 0.04, 0.3, 0, 0.305, 0));
+  push(hats.visor, part(head, materials.hat, 0.3, 0.045, 0.29, 0, 0.318, 0));
+  push(hats.visor, part(head, materials.hat, 0.28, 0.03, 0.18, 0, 0.305, -0.2));
+  // Crown band sits above the hair crown top (~0.39) so both can stay visible.
+  push(hats.crown, part(head, materials.hat, 0.3, 0.045, 0.3, 0, 0.42, 0));
+  for (const x of [-0.11, 0, 0.11]) push(hats.crown, part(head, materials.trim, 0.055, 0.13, 0.055, x, 0.48, -0.08));
   allHats.push(...hats.cap, ...hats.beanie, ...hats.visor, ...hats.crown);
 
   const arm = (side: 1 | -1) => {
@@ -402,6 +422,7 @@ export function buildRig(avatar: AvatarTraits = DEFAULT_RIG_AVATAR): Rig {
       armBlocks,
       legBlocks,
       hair,
+      hairCrowns,
       hats,
       outfits,
       allHair,
