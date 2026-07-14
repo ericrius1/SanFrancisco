@@ -55,6 +55,8 @@ export type Rig = {
   legR: THREE.Group;
   shinL: THREE.Group;
   shinR: THREE.Group;
+  soleL: THREE.Mesh;
+  soleR: THREE.Mesh;
   avatar: RigAvatarState;
 };
 
@@ -363,8 +365,9 @@ export function buildRig(avatar: AvatarTraits = DEFAULT_RIG_AVATAR): Rig {
     hip.add(shin);
     legBlocks.push(part(shin, materials.pants, 0.14, 0.3, 0.15, 0, -0.15, 0));
     part(shin, materials.shoe, 0.15, 0.09, 0.3, 0, -0.35, -0.06); // toe forward
-    part(shin, materials.sole, 0.16, 0.03, 0.31, 0, -0.41, -0.06);
-    return { hip, shin };
+    const sole = part(shin, materials.sole, 0.16, 0.03, 0.31, 0, -0.41, -0.06);
+    sole.name = side === 1 ? "sole-L" : "sole-R";
+    return { hip, shin, sole };
   };
   const lL = leg(1);
   const lR = leg(-1);
@@ -394,6 +397,8 @@ export function buildRig(avatar: AvatarTraits = DEFAULT_RIG_AVATAR): Rig {
     legR: lR.hip,
     shinL: lL.shin,
     shinR: lR.shin,
+    soleL: lL.sole,
+    soleR: lR.sole,
     avatar: {
       materials,
       torsoBlock,
@@ -720,6 +725,60 @@ export function poseRide(r: Rig, lean: number, crouch: number, air: boolean, t: 
   set(r.shinL, -(0.55 + crouch * 0.6), 0, 0);
   set(r.shinR, -(0.45 + crouch * 0.55), 0, 0);
   // arms out like a wing that tips with the carve
+  set(r.armL, Math.sin(t * 1.3) * 0.05, 0, 0.85 + lean * 0.45);
+  set(r.armR, -Math.sin(t * 1.3) * 0.05, 0, -0.85 + lean * 0.45);
+  set(r.foreL, 0.22, 0, 0);
+  set(r.foreR, 0.22, 0, 0);
+}
+
+/**
+ * Surf stance with both soles planted on the surfboard deck.
+ *
+ * The regular hoverboard pose deliberately bobs and tucks its feet. A surfboard
+ * must instead remain attached to the rider through hard carves and aerials:
+ * equal-and-opposite hip/knee rotations keep each shoe flat, while the hips
+ * compensate for the shortened bent-leg height. With the surf rig root at
+ * 0.93 m, this places both sole bottoms at board-local y=0.108 m — 3 mm above
+ * the flat deck shell — for every crouch value from 0 through 1.
+ */
+export function poseSurfRide(
+  r: Rig,
+  lean: number,
+  crouch: number,
+  air: boolean,
+  t: number,
+  landingCompression = 0
+) {
+  const landingLoad = THREE.MathUtils.clamp(landingCompression, 0, 1);
+  const bend =
+    0.55 +
+    THREE.MathUtils.clamp(crouch, 0, 1) * 0.25 +
+    landingLoad * 0.42;
+
+  // Root 0.93 - hip pivot 0.08 - thigh 0.40*cos(bend) - sole 0.425
+  // must equal the 0.105 m deck top plus a visible 0.003 m safety gap.
+  r.hips.position.y = -0.317 + 0.4 * Math.cos(bend);
+  set(r.hips, 0, 0, 0);
+  set(r.legL, bend, 0, 0);
+  set(r.shinL, -bend, 0, 0);
+  set(r.legR, -bend, 0, 0);
+  set(r.shinR, bend, 0, 0);
+
+  if (air) {
+    // Keep the feet attached to the deck while the upper body sells the spin.
+    set(r.torso, 0.3, -0.45, lean * 0.2);
+    set(r.head, -0.2, -0.6, 0);
+    set(r.armL, -0.3, 0, 1.25);
+    set(r.armR, -0.3, 0, -1.25);
+    set(r.foreL, 0.3, 0, 0);
+    set(r.foreR, 0.3, 0, 0);
+    return;
+  }
+
+  // The board itself already banks into the live face. Keep the planted rider
+  // athletic but readable instead of stacking a second extreme layback.
+  set(r.torso, 0.14 + crouch * 0.2 + landingLoad * 0.2, -0.45, lean * 0.28);
+  set(r.head, -0.08, -0.6, lean * 0.12);
   set(r.armL, Math.sin(t * 1.3) * 0.05, 0, 0.85 + lean * 0.45);
   set(r.armR, -Math.sin(t * 1.3) * 0.05, 0, -0.85 + lean * 0.45);
   set(r.foreL, 0.22, 0, 0);

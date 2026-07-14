@@ -17,6 +17,7 @@ const PRODUCTION_DURATIONS = Object.freeze({
   "palace-reverie": 15,
   landsend: 15,
   "roqn-open-road": 30,
+  "surf-aerial": 7,
   ...Object.fromEntries(Array.from({ length: 8 }, (_, index) => [
     `twitter-summer-${String(index + 1).padStart(2, "0")}`,
     7.5
@@ -77,6 +78,13 @@ export const CINEMATIC_AUDIO_PLANS = Object.freeze({
     { time: 25.25, id: "shell-one", description: "first bay shell" },
     { time: 27.8, id: "burst", description: "Bay Lights firework bloom" },
     { time: 29.3, id: "resolve", description: "open-water resolve" }
+  ]),
+  "surf-aerial": Object.freeze([
+    { time: 0, id: "face", description: "rail sets into the emerald face" },
+    { time: 2.15, id: "takeoff", description: "lip releases the board" },
+    { time: 3.1, id: "rotation", description: "aerial rotation reaches its apex" },
+    { time: 4.05, id: "landing", description: "rails reconnect with the wave" },
+    { time: 6.35, id: "resolve", description: "down-face carve resolves" }
   ]),
   ...Object.fromEntries(Array.from({ length: 8 }, (_, index) => {
     const shot = index + 1;
@@ -165,6 +173,8 @@ export async function renderCinematicAudio(production, outputPath) {
     }
   } else if (id === "roqn-open-road") {
     scoreRoqnOpenRoad(mix);
+  } else if (id === "surf-aerial") {
+    scoreSurfAerial(mix);
   } else {
     scoreTwitterSummerShot(mix, Number(id.slice(-2)));
   }
@@ -189,6 +199,48 @@ export async function renderCinematicAudio(production, outputPath) {
     cues: CINEMATIC_AUDIO_PLANS[id],
     beds
   };
+}
+
+function scoreSurfAerial(mix) {
+  addPad(mix, {
+    start: 0,
+    duration: 7,
+    notes: [45, 52, 57, 61, 66, 73],
+    gain: 0.05,
+    pan: 0,
+    brightness: 0.58
+  });
+  addAir(mix, { start: 0, duration: 7, gain: 0.026, panDrift: 0.72 });
+  addFoley(mix, { start: 0.05, duration: 6.9, gain: 0.023, pan: 0, character: "board" });
+  addPropulsion(mix, { start: 0.12, duration: 2.25, fromHz: 58, toHz: 118, gain: 0.045 });
+  addWhoosh(mix, {
+    start: 1.78,
+    duration: 2.25,
+    gain: 0.105,
+    panFrom: -0.65,
+    panTo: 0.72,
+    direction: "out"
+  });
+  addSub(mix, { start: 2.04, duration: 0.66, fromHz: 64, toHz: 39, gain: 0.09 });
+  addChime(mix, { start: 2.72, midi: 81, duration: 1.55, gain: 0.055, pan: 0.34 });
+  addWhoosh(mix, {
+    start: 3.25,
+    duration: 1.18,
+    gain: 0.08,
+    panFrom: 0.52,
+    panTo: -0.28,
+    direction: "in"
+  });
+  addSoftThump(mix, { start: 4.0, gain: 0.13, pan: -0.05, pitchHz: 92 });
+  addChime(mix, { start: 4.08, midi: 76, duration: 1.5, gain: 0.045, pan: -0.24 });
+  addWhoosh(mix, {
+    start: 5.15,
+    duration: 1.7,
+    gain: 0.05,
+    panFrom: -0.25,
+    panTo: 0.45,
+    direction: "out"
+  });
 }
 
 /**

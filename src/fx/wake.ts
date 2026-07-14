@@ -15,7 +15,7 @@ import {
   vec3
 } from "three/tsl";
 import { waterHeight, type WorldMap } from "../world/heightmap";
-import { chopZoneMask, swellBase, swellChop } from "../world/tslUtil";
+import { chopZoneMask, oceanBeachSwell, swellBase, swellChop } from "../world/tslUtil";
 import { LIGHT_SCALE } from "../config";
 
 type N = any;
@@ -182,7 +182,11 @@ type BoardState = {
   velocity: THREE.Vector3;
   speed: number;
   boardGrounded: boolean;
-  surfTelemetry?: { grounded: boolean };
+  surfTelemetry?: {
+    grounded: boolean;
+    landingSerial?: number;
+    splashEnergy?: number;
+  };
 };
 
 type RibbonOpts = {
@@ -265,7 +269,10 @@ class WakeRibbon {
       .mul(mix(0.08, 1.0, cap)) as N;
     const px = positionGeometry.x.add(aData.x.mul(off)) as N;
     const pz = positionGeometry.z.add(aData.y.mul(off)) as N;
-    const py = swellBase(px, pz, t).add(swellChop(px, pz, t).mul(chopZoneMask(px, pz))).add(0.08);
+    const py = swellBase(px, pz, t)
+      .add(swellChop(px, pz, t).mul(chopZoneMask(px, pz)))
+      .add(oceanBeachSwell(px, pz, t))
+      .add(0.08);
     mat.positionNode = vec3(px, py, pz);
 
     const vAge = varying(age) as N;
@@ -353,10 +360,36 @@ type Surge = {
   scaleX: number; // quad width in metres; the band drifts/widens inside it in-shader
   len: number;
   life: number;
+  amp: number;
+  followRail: number | null;
+  followAlong: number;
+  followYaw: number;
   prog: number; // 0..1, kept ≥1 when dead
 };
 
+type SurfImpactStreak = {
+  ox: number;
+  oy: number;
+  oz: number;
+  rail: number;
+  along: number;
+  rx: number;
+  ry: number;
+  rz: number;
+  vx: number;
+  vy: number;
+  vz: number;
+  age: number;
+  life: number;
+  len: number;
+  width: number;
+  roll: number;
+};
+
 const BW_POOL = 16;
+const SURF_IMPACT_POOL = 24;
+const SURF_IMPACT_COUNT = 18;
+const SURF_IMPACT_GRAVITY = 7.5;
 const BW_SPACING = 1.7; // metres of travel between shed ribbon points
 const BW_MIN_SPEED = 2.5;
 const BW_SURF_HEIGHT = 2.6; // deck must hover this close to the swell to wake it
@@ -374,7 +407,13 @@ export class BoardWake {
   #mesh: THREE.InstancedMesh;
   #progAttr: THREE.InstancedBufferAttribute;
   #shapeAttr: THREE.InstancedBufferAttribute; // (w0n, wMaxN, driftN) per quad
+  #ampAttr: THREE.InstancedBufferAttribute;
   #surges: Surge[] = [];
+  #surfImpactMesh: THREE.Group;
+  #surfImpactJets: THREE.Mesh[] = [];
+  #surfImpactStreaks: SurfImpactStreak[] = [];
+  #surfImpactNext = 0;
+  #surfImpactSpawnSerial = 0;
   #next = 0;
   #distAcc = 0;
   #map: WorldMap;
@@ -385,6 +424,7 @@ export class BoardWake {
   #wasSurfing = false;
   #wasActive = false;
   #prevVy = 0;
+  #surfLandingSerial: number | null = null;
 
   constructor(scene: THREE.Scene, map: WorldMap, ripples: WakeRipples) {
     this.#map = map;
@@ -403,6 +443,8 @@ export class BoardWake {
     this.#progAttr.setUsage(THREE.DynamicDrawUsage);
     this.#shapeAttr = new THREE.InstancedBufferAttribute(new Float32Array(BW_POOL * 3), 3);
     this.#shapeAttr.setUsage(THREE.DynamicDrawUsage);
+    this.#ampAttr = new THREE.InstancedBufferAttribute(new Float32Array(BW_POOL).fill(1), 1);
+    this.#ampAttr.setUsage(THREE.DynamicDrawUsage);
 
     const mat = new THREE.MeshBasicNodeMaterial({
       transparent: true,
@@ -411,6 +453,7 @@ export class BoardWake {
     });
     const prog = varying(instancedBufferAttribute(this.#progAttr) as N) as N;
     const shape = varying(instancedBufferAttribute(this.#shapeAttr) as N) as N;
+    const amp = varying(instancedBufferAttribute(this.#ampAttr) as N) as N;
     const u = uv() as N;
 
     // band widens with age inside the fixed-width quad, drifting outward
@@ -426,20 +469,94 @@ export class BoardWake {
     mat.colorNode = (color(0x9beef0) as N)
       .mul(lat.mul(ends).mul(n.mul(0.45).add(0.7)))
       .mul(fade)
-      .mul(0.8 * 0.34 * LIGHT_SCALE);
+      .mul(amp.mul(0.8 * 0.34 * LIGHT_SCALE));
     mat.side = THREE.DoubleSide;
     mat.fog = false;
 
     this.#mesh = new THREE.InstancedMesh(geo, mat, BW_POOL);
     this.#mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.#mesh.frustumCulled = false;
-    this.#mesh.renderOrder = 12;
+    // The short landing wedges must composite after the semantic surf face,
+    // barrel roof, foam and crest spray (orders 12–16). Otherwise the nearly
+    // opaque face can erase the exact-contact wash in bright daylight.
+    this.#mesh.renderOrder = 17;
     const zero = new THREE.Matrix4().makeScale(0, 0, 0);
     for (let i = 0; i < BW_POOL; i++) {
       this.#mesh.setMatrixAt(i, zero);
-      this.#surges.push({ x: 0, z: 0, yaw: 0, scaleX: 1, len: 0, life: 1, prog: 1 });
+      this.#surges.push({
+        x: 0,
+        z: 0,
+        yaw: 0,
+        scaleX: 1,
+        len: 0,
+        life: 1,
+        amp: 1,
+        followRail: null,
+        followAlong: 0,
+        followYaw: 0,
+        prog: 1
+      });
     }
     scene.add(this.#mesh);
+
+    // Each pooled landing jet is two crossed, tapered world-space sheets. The
+    // cross gives the zero-thickness spray real projected area from normal
+    // gameplay cameras without ever turning it into a camera-facing sprite.
+    const impactGeo = new THREE.BufferGeometry();
+    impactGeo.setAttribute(
+      "position",
+      new THREE.Float32BufferAttribute(
+        [
+          -1, 0, 0, 1, 0, 0, -0.12, 0, 1, 0.12, 0, 1,
+          0, -1, 0, 0, 1, 0, 0, -0.12, 1, 0, 0.12, 1
+        ],
+        3
+      )
+    );
+    impactGeo.setIndex([0, 1, 2, 2, 1, 3, 4, 5, 6, 6, 5, 7]);
+    const impactMat = new THREE.MeshBasicMaterial({
+      color: 0xeafffb,
+      transparent: true,
+      opacity: 0.82,
+      depthTest: false,
+      depthWrite: false
+    });
+    impactMat.side = THREE.DoubleSide;
+    impactMat.fog = false;
+
+    this.#surfImpactMesh = new THREE.Group();
+    this.#surfImpactMesh.name = "surf_landing_impact_fan";
+    for (let i = 0; i < SURF_IMPACT_POOL; i++) {
+      const jet = new THREE.Mesh(impactGeo, impactMat);
+      jet.name = `surf_landing_impact_jet_${i}`;
+      jet.visible = false;
+      jet.matrixAutoUpdate = false;
+      jet.frustumCulled = false;
+      // Water/face layers intentionally do not write depth; draw the very
+      // short contact fan after them so a steep wall cannot erase it.
+      jet.renderOrder = 30;
+      this.#surfImpactJets.push(jet);
+      this.#surfImpactMesh.add(jet);
+      this.#surfImpactStreaks.push({
+        ox: 0,
+        oy: 0,
+        oz: 0,
+        rail: 0,
+        along: 0,
+        rx: 0,
+        ry: 0,
+        rz: 0,
+        vx: 0,
+        vy: 0,
+        vz: 0,
+        age: 1,
+        life: 1,
+        len: 0,
+        width: 0,
+        roll: 0
+      });
+    }
+    scene.add(this.#surfImpactMesh);
   }
 
   #mat4 = new THREE.Matrix4();
@@ -447,11 +564,235 @@ export class BoardWake {
   #p = new THREE.Vector3();
   #s = new THREE.Vector3();
   #fwd = new THREE.Vector3();
+  #surfaceNormal = new THREE.Vector3();
+  #surfaceTilt = new THREE.Quaternion();
+  #surfaceYaw = new THREE.Quaternion();
+  #impactForward = new THREE.Vector3();
+  #impactSide = new THREE.Vector3();
+  #impactVelocity = new THREE.Vector3();
+  #impactRoot = new THREE.Vector3();
+  #impactRoll = new THREE.Quaternion();
   static #UP = new THREE.Vector3(0, 1, 0);
+  static #IMPACT_AXIS = new THREE.Vector3(0, 0, 1);
+
+  #sampleSurfaceNormal(x: number, z: number, elapsed: number) {
+    const eps = 0.45;
+    const slopeX =
+      (waterHeight(x + eps, z, elapsed) - waterHeight(x - eps, z, elapsed)) /
+      (2 * eps);
+    const slopeZ =
+      (waterHeight(x, z + eps, elapsed) - waterHeight(x, z - eps, elapsed)) /
+      (2 * eps);
+    this.#surfaceNormal.set(-slopeX, 1, -slopeZ).normalize();
+  }
+
+  #seatSurge(surge: Surge, elapsed: number, index: number) {
+    this.#sampleSurfaceNormal(surge.x, surge.z, elapsed);
+    this.#surfaceTilt.setFromUnitVectors(BoardWake.#UP, this.#surfaceNormal);
+    this.#surfaceYaw.setFromAxisAngle(BoardWake.#UP, surge.yaw);
+    this.#q.copy(this.#surfaceTilt).multiply(this.#surfaceYaw);
+    this.#p
+      .set(surge.x, waterHeight(surge.x, surge.z, elapsed), surge.z)
+      .addScaledVector(this.#surfaceNormal, 0.13);
+    this.#mat4.compose(this.#p, this.#q, this.#s.set(surge.scaleX, 1, surge.len));
+    this.#mesh.setMatrixAt(index, this.#mat4);
+  }
+
+  static #impactNoise(serial: number, index: number, salt: number) {
+    let n = (Math.imul(serial | 0, -1640531527) + Math.imul(index + 1, -2048144789) + Math.imul(salt + 1, -1028477387)) | 0;
+    n ^= n >>> 16;
+    n = Math.imul(n, -2048144789);
+    n ^= n >>> 13;
+    n = Math.imul(n, -1028477387);
+    n ^= n >>> 16;
+    return (n >>> 0) / 4294967296;
+  }
+
+  #writeSurfImpactStreak(
+    index: number,
+    streak: SurfImpactStreak,
+    elapsed: number,
+    boardX: number,
+    boardZ: number,
+    forwardX: number,
+    forwardZ: number
+  ) {
+    const t = streak.age;
+    const prog = THREE.MathUtils.clamp(t / streak.life, 0, 1);
+    this.#impactVelocity.set(
+      streak.vx,
+      streak.vy - SURF_IMPACT_GRAVITY * t,
+      streak.vz
+    );
+    const speed = this.#impactVelocity.length();
+    if (speed < 1e-3) this.#impactVelocity.set(0, 1, 0);
+    else this.#impactVelocity.multiplyScalar(1 / speed);
+    // This is a continuing rail slap, not one frozen world-space puff: keep
+    // the very short-lived source on the moving contact patches while the
+    // tapered tips fan outward. A stationary source is several metres behind
+    // a fast board after a few frames and reads as a detached horizon streak.
+    this.#sampleSurfaceNormal(boardX, boardZ, elapsed);
+    this.#impactForward.set(forwardX, 0, forwardZ);
+    this.#impactForward.addScaledVector(
+      this.#surfaceNormal,
+      -this.#impactForward.dot(this.#surfaceNormal)
+    );
+    if (this.#impactForward.lengthSq() < 1e-6) this.#impactForward.set(0, 0, -1);
+    else this.#impactForward.normalize();
+    this.#impactSide.crossVectors(this.#surfaceNormal, this.#impactForward).normalize();
+    const rootX = boardX + this.#impactSide.x * streak.rail + this.#impactForward.x * streak.along;
+    const rootZ = boardZ + this.#impactSide.z * streak.rail + this.#impactForward.z * streak.along;
+    this.#sampleSurfaceNormal(rootX, rootZ, elapsed);
+    this.#impactRoot
+      .set(rootX, waterHeight(rootX, rootZ, elapsed), rootZ)
+      .addScaledVector(this.#surfaceNormal, 0.24);
+    streak.rx = this.#impactRoot.x;
+    streak.ry = this.#impactRoot.y;
+    streak.rz = this.#impactRoot.z;
+    const taper = Math.pow(1 - prog, 0.65);
+    // Keep tips compact. Long camera-directed triangles can cross the near
+    // plane and explode into a screen-wide slab in close chase cameras.
+    const stretch = Math.min(0.95, streak.len + speed * t * 0.28) * taper;
+    const rootWidth = streak.width * taper;
+    this.#q.setFromUnitVectors(BoardWake.#IMPACT_AXIS, this.#impactVelocity);
+    this.#impactRoll.setFromAxisAngle(BoardWake.#IMPACT_AXIS, streak.roll);
+    this.#q.multiply(this.#impactRoll);
+    this.#mat4.compose(
+      this.#impactRoot,
+      this.#q,
+      this.#s.set(rootWidth, rootWidth, Math.max(0.001, stretch))
+    );
+    const jet = this.#surfImpactJets[index];
+    jet.matrix.copy(this.#mat4);
+    jet.visible = true;
+  }
+
+  #spawnSurfImpactFan(
+    x: number,
+    z: number,
+    elapsed: number,
+    forwardX: number,
+    forwardZ: number,
+    impact: number,
+    landingSerial: number
+  ) {
+    this.#surfImpactSpawnSerial = landingSerial;
+    this.#sampleSurfaceNormal(x, z, elapsed);
+    this.#impactForward.set(forwardX, 0, forwardZ);
+    this.#impactForward.addScaledVector(
+      this.#surfaceNormal,
+      -this.#impactForward.dot(this.#surfaceNormal)
+    );
+    if (this.#impactForward.lengthSq() < 1e-6) this.#impactForward.set(0, 0, -1);
+    else this.#impactForward.normalize();
+    this.#impactSide.crossVectors(this.#surfaceNormal, this.#impactForward).normalize();
+    const force = 0.82 + impact * 0.2;
+    for (let j = 0; j < SURF_IMPACT_COUNT; j++) {
+      const index = this.#surfImpactNext;
+      this.#surfImpactNext = (this.#surfImpactNext + 1) % SURF_IMPACT_POOL;
+      const streak = this.#surfImpactStreaks[index];
+      const side = (j & 1) === 0 ? -1 : 1;
+      const a = BoardWake.#impactNoise(landingSerial, j, 0);
+      const b = BoardWake.#impactNoise(landingSerial, j, 1);
+      const c = BoardWake.#impactNoise(landingSerial, j, 2);
+      // Birth just outside the physical rails so the deck cannot hide the fan
+      // in a top-down landing shot. Variation then spreads it fore/aft.
+      const rail = side * (0.64 + a * 0.28);
+      const along = (b - 0.58) * 0.92;
+      streak.rail = rail;
+      streak.along = along;
+      streak.ox = x + this.#impactSide.x * rail + this.#impactForward.x * along;
+      streak.oz = z + this.#impactSide.z * rail + this.#impactForward.z * along;
+      streak.oy = waterHeight(streak.ox, streak.oz, elapsed);
+      const outward = side * (4.1 + b * 3.1) * force;
+      const fore = (c - 0.62) * 1.5;
+      const lift = (1.25 + a * 1.55) * force;
+      streak.vx =
+        this.#impactSide.x * outward +
+        this.#impactForward.x * fore +
+        this.#surfaceNormal.x * lift;
+      streak.vy =
+        this.#impactSide.y * outward +
+        this.#impactForward.y * fore +
+        this.#surfaceNormal.y * lift;
+      streak.vz =
+        this.#impactSide.z * outward +
+        this.#impactForward.z * fore +
+        this.#surfaceNormal.z * lift;
+      streak.age = 0;
+      streak.life = 0.22 + c * 0.07;
+      streak.len = (0.48 + b * 0.38) * (0.9 + impact * 0.1);
+      streak.width = 0.18 + a * 0.12;
+      streak.roll = b * Math.PI * 2;
+      this.#writeSurfImpactStreak(index, streak, elapsed, x, z, forwardX, forwardZ);
+    }
+
+  }
+
+  get surfImpactState() {
+    let activeStreaks = 0;
+    let x = 0;
+    let y = 0;
+    let z = 0;
+    for (const streak of this.#surfImpactStreaks) {
+      if (streak.age >= streak.life) continue;
+      activeStreaks++;
+      x += streak.rx;
+      y += streak.ry;
+      z += streak.rz;
+    }
+    const inv = activeStreaks > 0 ? 1 / activeStreaks : 0;
+    return {
+      spawnSerial: this.#surfImpactSpawnSerial,
+      activeStreaks,
+      center: { x: x * inv, y: y * inv, z: z * inv }
+    };
+  }
+
+  #updateSurfImpactFan(
+    dt: number,
+    elapsed: number,
+    boardX: number,
+    boardZ: number,
+    forwardX: number,
+    forwardZ: number
+  ) {
+    for (let i = 0; i < SURF_IMPACT_POOL; i++) {
+      const streak = this.#surfImpactStreaks[i];
+      if (streak.age >= streak.life) continue;
+      streak.age = Math.min(streak.life, streak.age + dt);
+      if (streak.age >= streak.life) {
+        this.#surfImpactJets[i].visible = false;
+      } else {
+        this.#writeSurfImpactStreak(
+          i,
+          streak,
+          elapsed,
+          boardX,
+          boardZ,
+          forwardX,
+          forwardZ
+        );
+      }
+    }
+  }
 
   /** `drift` is the outward speed along local x (signed). */
   #spawnSurge(
-    spec: { x: number; z: number; yaw: number; len: number; w0: number; widen: number; drift: number; life: number },
+    spec: {
+      x: number;
+      z: number;
+      yaw: number;
+      len: number;
+      w0: number;
+      widen: number;
+      drift: number;
+      life: number;
+      amp?: number;
+      followRail?: number;
+      followAlong?: number;
+      followYaw?: number;
+    },
     elapsed: number
   ) {
     const i = this.#next;
@@ -462,6 +803,10 @@ export class BoardWake {
     s.yaw = spec.yaw;
     s.len = spec.len;
     s.life = spec.life;
+    s.amp = spec.amp ?? 1;
+    s.followRail = spec.followRail ?? null;
+    s.followAlong = spec.followAlong ?? 0;
+    s.followYaw = spec.followYaw ?? 0;
     // quad wide enough to hold the band at max width AND max drift
     s.scaleX = spec.w0 + spec.widen + Math.abs(spec.drift) * spec.life;
     s.prog = 0;
@@ -470,16 +815,29 @@ export class BoardWake {
     shp[i * 3] = spec.w0 / s.scaleX;
     shp[i * 3 + 1] = (spec.w0 + spec.widen) / s.scaleX;
     shp[i * 3 + 2] = (spec.drift * spec.life) / s.scaleX;
+    (this.#ampAttr.array as Float32Array)[i] = s.amp;
     this.#shapeAttr.needsUpdate = true;
-    this.#mat4.compose(
-      this.#p.set(s.x, waterHeight(s.x, s.z, elapsed) + 0.08, s.z),
-      this.#q.setFromAxisAngle(BoardWake.#UP, s.yaw),
-      this.#s.set(s.scaleX, 1, s.len)
-    );
-    this.#mesh.setMatrixAt(i, this.#mat4);
+    this.#ampAttr.needsUpdate = true;
+    this.#seatSurge(s, elapsed, i);
+    // Landing events are detected after the normal pool-aging pass. Upload
+    // the new transform immediately so the wash begins on the actual contact
+    // frame instead of one rendered frame later.
+    this.#mesh.instanceMatrix.needsUpdate = true;
   }
 
   update(dt: number, elapsed: number, board: BoardState) {
+    const p = board.renderPosition;
+    const v = board.velocity;
+    const h = Math.hypot(v.x, v.z);
+    const fwd = this.#fwd.set(0, 0, -1).applyQuaternion(board.renderQuaternion);
+    fwd.y = 0;
+    if (fwd.lengthSq() > 1e-6) fwd.normalize();
+    else if (h > 0.3) fwd.set(v.x / h, 0, v.z / h);
+    else fwd.set(0, 0, -1);
+    const dx = fwd.x;
+    const dz = fwd.z;
+    const yaw = Math.atan2(dx, dz);
+
     // age the live surge quads and keep them seated on the moving swell
     const progArr = this.#progAttr.array as Float32Array;
     let touched = false;
@@ -491,9 +849,12 @@ export class BoardWake {
       if (s.prog >= 1) {
         this.#mesh.setMatrixAt(i, this.#mat4.makeScale(0, 0, 0));
       } else {
-        this.#mesh.getMatrixAt(i, this.#mat4);
-        this.#mat4.elements[13] = waterHeight(s.x, s.z, elapsed) + 0.08;
-        this.#mesh.setMatrixAt(i, this.#mat4);
+        if (s.followRail !== null) {
+          s.x = p.x - dz * s.followRail + dx * s.followAlong;
+          s.z = p.z + dx * s.followRail + dz * s.followAlong;
+          s.yaw = yaw + s.followYaw;
+        }
+        this.#seatSurge(s, elapsed, i);
       }
       touched = true;
     }
@@ -502,9 +863,6 @@ export class BoardWake {
       this.#progAttr.needsUpdate = true;
     }
 
-    const p = board.renderPosition;
-    const v = board.velocity;
-    const h = Math.hypot(v.x, v.z);
     const groundedWaterRide =
       (board.mode === "board" && board.boardGrounded) ||
       (board.mode === "surf" && (board.surfTelemetry?.grounded ?? false));
@@ -517,34 +875,97 @@ export class BoardWake {
       onWater &&
       p.y - waterHeight(p.x, p.z, elapsed) < BW_SURF_HEIGHT;
 
-    const fwd = this.#fwd.set(0, 0, -1).applyQuaternion(board.renderQuaternion);
-    fwd.y = 0;
-    if (fwd.lengthSq() > 1e-6) fwd.normalize();
-    else if (h > 0.3) fwd.set(v.x / h, 0, v.z / h);
-    else fwd.set(0, 0, -1);
-    const dx = fwd.x;
-    const dz = fwd.z;
-    const yaw = Math.atan2(dx, dz);
+    this.#updateSurfImpactFan(dt, elapsed, p.x, p.z, dx, dz);
 
-    // ollie landing: the downwash slaps the swell — hard outward surges off
-    // both rails plus a small ring burst rolling away from the touch-down
-    if (surfing && !this.#wasSurfing && this.#prevVy < -3) {
-      const impact = Math.min(1.6, 0.4 - this.#prevVy / 18);
-      this.#ripples.burst(p.x, p.z, elapsed, 3 + impact * 3, 2);
-      for (const side of [-1, 1]) {
-        this.#spawnSurge(
-          {
-            x: p.x - dz * side * 0.9,
-            z: p.z + dx * side * 0.9,
-            yaw,
-            len: 1.8,
-            w0: 0.6,
-            widen: 2.2,
-            drift: -side * (2.2 + impact), // outward = local -side·x
-            life: 0.65
-          },
-          elapsed
+    const surfLandingSerial =
+      board.mode === "surf" && typeof board.surfTelemetry?.landingSerial === "number"
+        ? board.surfTelemetry.landingSerial
+        : null;
+    const explicitSurfLanding =
+      board.mode === "surf" &&
+      surfLandingSerial !== null &&
+      this.#surfLandingSerial !== null &&
+      surfLandingSerial !== this.#surfLandingSerial;
+    if (surfLandingSerial !== null) this.#surfLandingSerial = surfLandingSerial;
+    else this.#surfLandingSerial = null;
+
+    // The surf controller owns exact contact timing, so its landing serial is
+    // authoritative. Keep the vertical-speed edge as the hoverboard fallback.
+    // The downwash slaps the swell with outward surges off both rails and a
+    // small ring burst rolling away from the touch-down.
+    const inferredBoardLanding =
+      board.mode !== "surf" && surfing && !this.#wasSurfing && this.#prevVy < -3;
+    if (explicitSurfLanding || inferredBoardLanding) {
+      const impact = explicitSurfLanding
+        ? THREE.MathUtils.clamp(0.45 + (board.surfTelemetry?.splashEnergy ?? 0.5) * 0.72, 0.55, 1.6)
+        : Math.min(1.6, 0.4 - this.#prevVy / 18);
+      if (explicitSurfLanding && surfLandingSerial !== null) {
+        this.#spawnSurfImpactFan(
+          p.x,
+          p.z,
+          elapsed,
+          dx,
+          dz,
+          impact,
+          surfLandingSerial
         );
+        // The face-contact wash uses the existing always-warm surge batch so
+        // it is immediately available in WebGPU's compiled scene pass. These
+        // four short wedges remain on the rail contact patches while they
+        // fade, then disappear before they can trail into a horizon slab.
+        for (const side of [-1, 1]) {
+          const rail = side * 0.72;
+          this.#spawnSurge(
+            {
+              x: p.x - dz * rail - dx * 0.12,
+              z: p.z + dx * rail - dz * 0.12,
+              yaw,
+              len: 1.45,
+              w0: 0.55,
+              widen: 1.05,
+              drift: -side * (2.4 + impact * 0.35),
+              life: 0.28,
+              amp: 2.35,
+              followRail: rail,
+              followAlong: -0.12
+            },
+            elapsed
+          );
+          this.#spawnSurge(
+            {
+              x: p.x - dz * (side * 0.86) - dx * 0.25,
+              z: p.z + dx * (side * 0.86) - dz * 0.25,
+              yaw: yaw + side * 0.16,
+              len: 1.0,
+              w0: 0.34,
+              widen: 0.68,
+              drift: -side * 1.9,
+              life: 0.22,
+              amp: 1.7,
+              followRail: side * 0.86,
+              followAlong: -0.25,
+              followYaw: side * 0.16
+            },
+            elapsed
+          );
+        }
+      } else {
+        this.#ripples.burst(p.x, p.z, elapsed, 3 + impact * 3, 2);
+        for (const side of [-1, 1]) {
+          this.#spawnSurge(
+            {
+              x: p.x - dz * side * 0.9,
+              z: p.z + dx * side * 0.9,
+              yaw,
+              len: 1.8,
+              w0: 0.6,
+              widen: 2.2,
+              drift: -side * (2.2 + impact), // outward = local -side·x
+              life: 0.65
+            },
+            elapsed
+          );
+        }
       }
     }
     this.#wasSurfing = surfing;

@@ -21,7 +21,7 @@ import {
   mx_noise_float
 } from "three/tsl";
 import { PALACE_LAGOON, palaceLagoonMask, waterHeight, type WorldMap } from "./heightmap";
-import { bumpNormal, chopZoneMask, oceanBeachSwell, swellBase, swellChop } from "./tslUtil";
+import { bumpNormal, chopZoneMask, oceanBeachSurfField, oceanBeachSwell, swellBase, swellChop } from "./tslUtil";
 import { EXPOSURE_REBASE, LIGHT_SCALE } from "../config";
 
 const PALACE_LAGOON_SEGMENTS = 112;
@@ -68,6 +68,7 @@ export class Water {
   #uTime = uniform(0);
   #uNearRect = uniform(new THREE.Vector3(0, 0, NEAR_PATCH_MASK_OUTER));
   #uNearVisibility = uniform(1);
+  #uSurfing = uniform(0);
   #uOrigin = uniform(new THREE.Vector2());
   #uCamXZ = uniform(new THREE.Vector2());
   #uCamY = uniform(0);
@@ -180,10 +181,38 @@ export class Water {
       // Ocean Beach face tint: the tall authored swell keeps the same water
       // shader, but its lifted green wall and breaking crown need to read
       // against the darker Pacific at a glance.
-      const surfWave = oceanBeachSwell(pxz.x, pxz.y, t).toVar();
-      const surfFaceTint = smoothstep(0.3, 2.45, surfWave).mul(0.82);
-      const surfCrest = smoothstep(2.2, 3.2, surfWave).mul(0.82);
-      const foamTotal = clamp(foam.add(surfCrest), 0, 1).toVar();
+      const surfField = oceanBeachSurfField(pxz.x, pxz.y, t);
+      // Saturate the authored face independently of the blue bay body. A
+      // thresholded mask preserves a dark Pacific base at noon while letting
+      // the steep wall reach a distinctly emerald read instead of a cyan wash.
+      // The flat far sheet must never paint an authored crest at sea level.
+      // Only the displaced near sheet participates in the Ocean Beach face;
+      // its coarse row is cut out below where the high-resolution surf sheet
+      // replaces it, preventing two transparent versions of the same wave.
+      const surfFaceTint = displace > 0
+        ? smoothstep(0.12, 0.82, surfField.face).toVar()
+        : float(0);
+      // Height alone used to bleach the entire upper half of every swell. The
+      // analytic lip/whitewater channels keep pale water confined to the thin
+      // pitching crown and the already-broken shoreward wash, leaving a dark
+      // emerald wall beneath it for the rider to carve against.
+      const crestRipple = sin(pxz.y.mul(0.47).sub(t.mul(2.1))).mul(0.5).add(0.5);
+      const crestBreakup = smoothstep(
+        0.68,
+        0.9,
+        foamNoise.mul(0.66).add(crestRipple.mul(0.34))
+      );
+      const surfCrest = displace > 0
+        ? smoothstep(0.66, 0.96, surfField.lip)
+            .mul(crestBreakup)
+            .mul(0.06)
+            .add(surfField.white.mul(0.035))
+        : float(0);
+      const foamTotal = clamp(
+        foam.mul(surfFaceTint.mul(0.85).oneMinus()).add(surfCrest),
+        0,
+        1
+      ).toVar();
       // ripple bump: stylized directional wavelets (sum of sines) replace the old
       // 2×3-octave FBM — a fraction of the per-pixel ALU on the biggest surface on
       // screen, while reading crisper/wavier. Still faded out with distance to kill
@@ -197,17 +226,28 @@ export class Water {
         rippleH = rippleH.add(mx_fractal_noise_float(vec3(p.mul(0.09), t.mul(0.06)), 2).mul(0.12));
       }
       rippleH = rippleH.mul(detail).mul(zoneF.mul(0.9).add(1));
-      mat.normalNode = bumpNormal(rippleH);
+      // positionNode displacement does not automatically rebuild the macro
+      // normal for this node material. Include the full analytic surf height
+      // so a standing wall shades as a wall rather than reflecting the bright
+      // sky as though it were a horizontal sheet.
+      mat.normalNode = bumpNormal(
+        displace > 0 ? rippleH.add(surfField.height) : rippleH
+      );
 
       // sun sparkle: occasional near-field flecks only; the env-mapped Fresnel
       // reflection carries the broad sunset sheen, so this stays subtle on top.
       const sparkNoise = mx_noise_float(vec3(p.mul(2.2), t.mul(0.8)));
       const spark = smoothstep(0.78, 0.97, sparkNoise).mul(detail.mul(detail)).mul(foamTotal.oneMinus());
+      const emeraldVein = smoothstep(0.82, 0.97, sparkNoise.mul(0.5).add(0.5))
+        .mul(surfFaceTint.mul(surfFaceTint).mul(surfFaceTint));
       mat.emissiveNode = vec3(1.0, 0.95, 0.82).mul(spark.mul(0.035 * LIGHT_SCALE))
-        .add(vec3(0.06, 0.34, 0.28).mul(surfFaceTint.mul(0.14 * LIGHT_SCALE)));
+        .add(vec3(0.03, 0.42, 0.2).mul(emeraldVein.mul(0.13 * LIGHT_SCALE)));
 
-      const faceCol = mix(waterCol, color(0x2bb9a9), surfFaceTint);
-      mat.colorNode = mix(faceCol, color(0xf3faf6), foamTotal);
+      // Ocean Beach gets an absorptive blue-green body. Brightness belongs to
+      // the thin emerald wall and cool lip in the first-use surf overlay; a
+      // globally cyan swell made every set dissolve into marine fog.
+      const faceCol = mix(waterCol, color(0x075940), surfFaceTint);
+      mat.colorNode = mix(faceCol, color(0xb8cecc), foamTotal);
       // roughness rises as the ripple bump fades (Toksvig-style): distant water
       // spreads the sun path into a soft band instead of a mirror streak
       const baseRough = mix(float(0.76), float(0.42), detail);
@@ -218,7 +258,23 @@ export class Water {
       // deep 1.0. Only the thin edges stay soft — the player-patch feather
       // (waterVisibility) and the land cutout (dry) — so no seams, no z-fight.
       const alpha = clamp(mix(0.82, 1.0, d2).add(foamTotal.mul(0.25)), 0, 1);
-      mat.opacityNode = alpha.mul(waterVisibility).mul(dry.oneMinus());
+      const surfPresence = max(max(surfField.face, surfField.lip), surfField.white);
+      // The lazy high-resolution face follows the player in a 420 m down-line
+      // window with a 60 m feather. Match its central replacement mask here:
+      // the base near sheet disappears only under strong semantic surf water,
+      // while both layers overlap softly at the perimeter.
+      const surfFaceWindow = displace > 0
+        ? smoothstep(150, 210, positionLocal.z.abs()).oneMinus()
+        : float(0);
+      const surfReplacement = displace > 0
+        ? smoothstep(0.12, 0.38, surfPresence)
+            .mul(surfFaceWindow)
+            .mul(this.#uSurfing)
+        : float(0);
+      mat.opacityNode = alpha
+        .mul(waterVisibility)
+        .mul(surfReplacement.oneMinus())
+        .mul(dry.oneMinus());
 
       mat.envMapIntensity = 0.25;
       return mat;
@@ -366,6 +422,7 @@ export class Water {
 
   update(t: number, camPos: THREE.Vector3, playerPos: THREE.Vector3, surfing = false) {
     this.#uTime.value = t;
+    this.#uSurfing.value = surfing ? 1 : 0;
 
     // show the underside ceiling only while the camera is below the surface,
     // parked at the camera's XZ so its Snell window stays centred overhead

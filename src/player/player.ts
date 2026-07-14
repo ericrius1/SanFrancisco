@@ -12,6 +12,7 @@ import {
   poseIdle,
   poseGolf,
   poseRide,
+  poseSurfRide,
   poseScooter,
   poseSwim,
   poseWalk,
@@ -53,6 +54,7 @@ import {
   buildSurfboardMesh,
   updateSurfboardSurface,
   SurfController,
+  SURFBOARD_FLAT_DECK_TOP,
   SURF_TUNING,
   type SurfboardConfig,
   type SurfTelemetry
@@ -69,6 +71,35 @@ const V = {
   up: new THREE.Vector3(0, 1, 0),
   quat: new THREE.Quaternion()
 };
+
+const SURF_FOOT = {
+  boardInverse: new THREE.Matrix4(),
+  soleToBoard: new THREE.Matrix4(),
+  corner: new THREE.Vector3()
+};
+
+function soleBottomInBoardSpace(sole: THREE.Mesh, board: THREE.Object3D): number {
+  const geometry = sole.geometry;
+  if (!geometry.boundingBox) geometry.computeBoundingBox();
+  const bounds = geometry.boundingBox;
+  if (!bounds) return Number.NaN;
+
+  board.updateWorldMatrix(true, false);
+  sole.updateWorldMatrix(true, false);
+  SURF_FOOT.boardInverse.copy(board.matrixWorld).invert();
+  SURF_FOOT.soleToBoard.multiplyMatrices(SURF_FOOT.boardInverse, sole.matrixWorld);
+
+  let minY = Number.POSITIVE_INFINITY;
+  for (const x of [bounds.min.x, bounds.max.x]) {
+    for (const y of [bounds.min.y, bounds.max.y]) {
+      for (const z of [bounds.min.z, bounds.max.z]) {
+        SURF_FOOT.corner.set(x, y, z).applyMatrix4(SURF_FOOT.soleToBoard);
+        minY = Math.min(minY, SURF_FOOT.corner.y);
+      }
+    }
+  }
+  return minY;
+}
 
 const GARDEN_RAKE_DEFAULT_ELEVATION = THREE.MathUtils.degToRad(50);
 const GARDEN_RAKE_CARRY_ELEVATION = THREE.MathUtils.degToRad(78);
@@ -135,6 +166,28 @@ const CARRY_BOARD_GRIP: GripSpec = {
   rotation: [Math.PI / 2, 0, 0]
 };
 const CARRY_BOARD_SCALE = 0.82; // matches the old fixed-offset prop's scale
+
+// Put only the ridden surf embodiment into the transparent queue after the
+// base/contact water and before the barrel roof. Transparent renderOrder stays
+// ascending even when the renderer uses a reversed-depth buffer.
+const SURF_HERO_RENDER_ORDER = 13;
+
+function prepareLocalSurfHero(root: THREE.Object3D): void {
+  root.traverse((object) => {
+    if (!(object instanceof THREE.Mesh)) return;
+    const landingFoam = object.userData.surfLandingFoam === true;
+    object.renderOrder = landingFoam ? 17 : SURF_HERO_RENDER_ORDER;
+    if (landingFoam) return;
+    const materials = Array.isArray(object.material) ? object.material : [object.material];
+    for (const material of materials) {
+      material.transparent = true;
+      material.opacity = 1;
+      material.depthTest = true;
+      material.depthWrite = true;
+      material.needsUpdate = true;
+    }
+  });
+}
 
 /**
  * The player: one physics body + one visible embodiment at a time. Each mode's
@@ -333,6 +386,7 @@ export class Player {
     this.#surfRig.group.rotation.y = 1.05;
     this.#surfRig.group.position.y = 0.93;
     this.meshes.surf.add(this.#surfRig.group);
+    prepareLocalSurfHero(this.meshes.surf);
     // A surfboard tucked upright under the arm, shown on foot at the beach so
     // you arrive holding your board, ready to start the surf activity. Built here but not
     // parented yet — setCarryingBoard grips it into the walk rig's hand (the
@@ -666,6 +720,14 @@ export class Player {
 
   get surfTelemetry(): SurfTelemetry {
     return this.#modes.surf.telemetry;
+  }
+
+  /** Exact sole-to-deck gaps used by surf QA and cinematic regression checks. */
+  get surfFootDeckClearance(): { left: number; right: number } {
+    return {
+      left: soleBottomInBoardSpace(this.#surfRig.soleL, this.meshes.surf) - SURFBOARD_FLAT_DECK_TOP,
+      right: soleBottomInBoardSpace(this.#surfRig.soleR, this.meshes.surf) - SURFBOARD_FLAT_DECK_TOP
+    };
   }
 
   requestWalkJump() {
@@ -1268,6 +1330,7 @@ export class Player {
     this.#surfRig.group.rotation.set(0, 1.05, 0);
     this.#surfRig.group.position.set(0, 0.93, 0);
     next.add(this.#surfRig.group);
+    prepareLocalSurfHero(next);
     setEmbodimentVisible(old, false);
     this.#scene.remove(old);
     (old.userData.dispose as (() => void) | undefined)?.();
@@ -1489,10 +1552,26 @@ export class Player {
     } else if (this.mode === "surf") {
       const surf = this.#modes.surf;
       const crouch = Math.min(1, this.speed / SURF_TUNING.values.maxTrim + Math.abs(surf.lean) * 0.5);
-      poseRide(this.#surfRig, surf.lean, crouch, !surf.grounded, this.#animT);
-      this.#surfRig.group.rotation.z = surf.lean * 0.34;
+      poseSurfRide(
+        this.#surfRig,
+        surf.lean,
+        crouch,
+        !surf.grounded,
+        this.#animT,
+        surf.telemetry.landingCompression
+      );
+      // The board already carries the wave bank. Rolling the whole rider again
+      // pivots around the hips and drives one foot through the deck; torso lean
+      // in poseSurfRide provides the carve silhouette without breaking contact.
+      this.#surfRig.group.rotation.z = 0;
       this.#surfRig.group.rotation.x = 0;
-      animateSurfboard(this.meshes.surf, dt, this.#animT);
+      animateSurfboard(
+        this.meshes.surf,
+        dt,
+        this.#animT,
+        surf.telemetry.landingCompression,
+        surf.telemetry.landingSerial
+      );
     } else if (this.mode === "scooter") {
       const scooter = this.#modes.scooter;
       const airborne = scooter.jumpDebug.airborne;
