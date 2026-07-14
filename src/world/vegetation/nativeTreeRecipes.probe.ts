@@ -20,6 +20,15 @@ function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(`Native tree archetype probe failed: ${message}`);
 }
 
+function assertNear(actual: number, expected: number, epsilon: number, message: string): void {
+  assert(Math.abs(actual - expected) <= epsilon, `${message}: ${actual} != ${expected}`);
+}
+
+const DISTANT_FOLIAGE_CONTRACT = Object.freeze({
+  landscape: Object.freeze({ retention: 0.53, coverage: 0.5 * 1.42 ** 2 }),
+  horizon: Object.freeze({ retention: 0.35, coverage: 0.32 * 1.65 ** 2 })
+});
+
 const report = [];
 
 for (let speciesIndex = 0; speciesIndex < NATIVE_TREE_SPECIES.length; speciesIndex++) {
@@ -40,6 +49,23 @@ for (let speciesIndex = 0; speciesIndex < NATIVE_TREE_SPECIES.length; speciesInd
   for (let lodIndex = 0; lodIndex < prototype.lods.length; lodIndex++) {
     const lod = prototype.lods[lodIndex];
     const recipeLod = archetype.recipe.lods[lodIndex];
+    const distantContract = DISTANT_FOLIAGE_CONTRACT[
+      recipeLod.name as keyof typeof DISTANT_FOLIAGE_CONTRACT
+    ];
+    if (distantContract) {
+      assertNear(
+        recipeLod.foliageRetention,
+        distantContract.retention,
+        Number.EPSILON,
+        `${species}/${lod.name} foliage retention changed`
+      );
+      assertNear(
+        recipeLod.foliageRetention * recipeLod.foliageScale ** 2,
+        distantContract.coverage,
+        1e-12,
+        `${species}/${lod.name} projected crown coverage changed`
+      );
+    }
     const silhouetteFloor = archetype.recipe.foliage.kind === "rosette" ? Math.min(3, totalAnchors) : 1;
     const expected = Math.max(silhouetteFloor, Math.ceil(totalAnchors * recipeLod.foliageRetention));
     assert(lod.stats.foliageAnchors === expected, `${species}/${lod.name} retained ${lod.stats.foliageAnchors}, expected ${expected}`);
@@ -77,13 +103,17 @@ for (let speciesIndex = 0; speciesIndex < NATIVE_TREE_SPECIES.length; speciesInd
   report.push({
     species,
     anchors: totalAnchors,
-    lods: prototype.lods.map((lod) => ({
-      name: lod.name,
-      foliage: lod.stats.foliageAnchors,
-      branches: lod.stats.branches,
-      orphanAnchors: 0,
-      triangles: lod.stats.triangles
-    }))
+    lods: prototype.lods.map((lod, lodIndex) => {
+      const recipeLod = archetype.recipe.lods[lodIndex];
+      return {
+        name: lod.name,
+        foliage: lod.stats.foliageAnchors,
+        branches: lod.stats.branches,
+        orphanAnchors: 0,
+        triangles: lod.stats.triangles,
+        projectedCoverage: recipeLod.foliageRetention * recipeLod.foliageScale ** 2
+      };
+    })
   });
 }
 

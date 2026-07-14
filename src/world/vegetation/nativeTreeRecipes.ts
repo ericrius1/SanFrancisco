@@ -46,6 +46,15 @@ export type NativeTreeArchetype = Readonly<{
   style: NativeTreeStyle;
 }>;
 
+// Preserve the established projected crown coverage while replacing a few
+// oversized distant shapes with more, smaller pieces. Keeping
+// `retention * scale²` fixed makes this primarily a silhouette/vertex-quality
+// trade instead of increasing opaque foliage fill-rate.
+const LANDSCAPE_FOLIAGE_RETENTION = 0.53;
+const LANDSCAPE_FOLIAGE_SCALE = Math.sqrt((0.5 * 1.42 ** 2) / LANDSCAPE_FOLIAGE_RETENTION);
+const HORIZON_FOLIAGE_RETENTION = 0.35;
+const HORIZON_FOLIAGE_SCALE = Math.sqrt((0.32 * 1.65 ** 2) / HORIZON_FOLIAGE_RETENTION);
+
 const LODS: readonly TreeLodRecipe[] = [
   {
     name: "canopy",
@@ -70,20 +79,20 @@ const LODS: readonly TreeLodRecipe[] = [
     branchRetention: 0.28,
     // More, smaller shapes read as a natural crown instead of oversized cards.
     // The compiler also retains every selected anchor's support hierarchy.
-    foliageRetention: 0.5,
+    foliageRetention: LANDSCAPE_FOLIAGE_RETENTION,
     maxBranchLevel: 2,
     radialSegments: 4,
     axialStride: 3,
-    foliageScale: 1.42
+    foliageScale: LANDSCAPE_FOLIAGE_SCALE
   },
   {
     name: "horizon",
     branchRetention: 0.14,
-    foliageRetention: 0.32,
+    foliageRetention: HORIZON_FOLIAGE_RETENTION,
     maxBranchLevel: 1,
     radialSegments: 3,
     axialStride: 4,
-    foliageScale: 1.65
+    foliageScale: HORIZON_FOLIAGE_SCALE
   }
 ];
 
