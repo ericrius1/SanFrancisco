@@ -27,7 +27,8 @@ export class ScooterController implements ModeController {
     const t = SCOOTER_TUNING.values;
     return {
       halfExtents: [0.52, 0.42, 1.35],
-      // Chassis centre above road = -mesh contactY (tire bottoms), not a vibe float.
+      // Chassis centre above road = -mesh contactY (tire bottoms). Vertical
+      // half-extent is clearance-clamped at spawn (see driveHalfExtentsWithClearance).
       rideHeight: SCOOTER_RIDE_HEIGHT,
       maxFactor: t.maxFactor,
       accelFactor: t.accelFactor,

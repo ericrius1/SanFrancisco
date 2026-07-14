@@ -35,6 +35,8 @@ import { BUSKER_FIREFLY_TUNING } from "../gameplay/buskers/tuning";
 import { VEGETATION_TUNING, applyVegetationTuning } from "../world/vegetation/tuning";
 import { SHADOW_TUNING } from "../world/shadows/tuning";
 import type { ContactShadowComplement } from "../render/contactShadows";
+import { OVERLAY_TUNING } from "./overlays/tuning";
+import type { OverlayContextFlags } from "./overlays/manager";
 
 type DebugRenderPipeline = {
   applyPostFx: () => void;
@@ -160,6 +162,8 @@ export class DebugPanel {
   #fogMonitorView: Record<string, string> | null = null;
   #syncingFromSky = false;
   #syncingPane = false;
+  #overlayContext: OverlayContextFlags = { teaGardenWater: false };
+  #overlayContextBlades: { teaGardenWater: { hidden: boolean } | null } = { teaGardenWater: null };
 
   constructor(
     renderer: THREE.WebGPURenderer,
@@ -204,6 +208,15 @@ export class DebugPanel {
   }
 
   /**
+   * Context-sensitive overlay bindings (tea garden water grid, …). Call when
+   * proximity flags change so site overlays appear only while relevant.
+   */
+  setOverlayContext(flags: OverlayContextFlags) {
+    this.#overlayContext = flags;
+    this.#applyOverlayContext();
+  }
+
+  /**
    * Register a deferred feature's tuning surface without importing that feature
    * into this boot-critical module. Registration may happen before or after the
    * pane is first opened. The returned function unregisters only this exact
@@ -242,6 +255,16 @@ export class DebugPanel {
       for (const [m, folder] of Object.entries(this.#moveFolders)) {
         folder.hidden = m !== this.#mode;
       }
+    }
+    this.#applyOverlayContext();
+  }
+
+  /** Site overlays stay hidden until the player is nearby (unless searching). */
+  #applyOverlayContext() {
+    const query = this.#searchQuery.trim();
+    const waterBlade = this.#overlayContextBlades.teaGardenWater;
+    if (waterBlade) {
+      waterBlade.hidden = query ? false : !this.#overlayContext.teaGardenWater;
     }
   }
 
@@ -690,9 +713,6 @@ export class DebugPanel {
         this.#renderer.setSize(window.innerWidth, window.innerHeight);
       }
     });
-    // collider x-ray: persisted toggle only — main's tick polls the live value
-    // each frame, gathers active colliders and drives the overlay.
-    RENDER_TUNING.bind(rendering, { keys: ["colliderDebug"] });
     const fog = rendering.addFolder({ title: "fog", expanded: false });
     WORLD_TUNING.bind(fog, {
       keys: [
@@ -731,6 +751,19 @@ export class DebugPanel {
       );
     }
     this.#refreshFogWeatherMonitor();
+
+    // Debug overlays — physics boxes, raycast, and context-sensitive site grids.
+    // Worldwide toggles always show; tea-garden water grid appears when nearby.
+    const overlays = pane.addFolder({ title: "overlays", expanded: false });
+    OVERLAY_TUNING.bind(overlays, {
+      keys: ["physicsColliders", "physicsCarpet", "playerBody", "raycast"]
+    });
+    const waterBindings = OVERLAY_TUNING.bind(overlays, {
+      keys: ["teaGardenWaterGrid"]
+    });
+    this.#overlayContextBlades.teaGardenWater =
+      (waterBindings[0] as unknown as { hidden: boolean } | undefined) ?? null;
+    this.#applyOverlayContext();
 
     // Strength + contact essentials only. Bias / fade minutiae stay off the pane.
     const shadows = pane.addFolder({ title: "shadows", expanded: false });

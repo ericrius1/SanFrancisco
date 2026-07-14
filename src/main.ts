@@ -80,7 +80,7 @@ import {
   type GroundDisplacer
 } from "./world/vegetation/runtime";
 import { BOTANICAL_GARDEN_BOUNDS } from "./world/garden/layout";
-import type { CityGenRing, ColliderBox, ColliderMesh } from "./world/citygen";
+import type { CityGenRing } from "./world/citygen";
 import { Islands } from "./gameplay/islands";
 import { Hunt } from "./gameplay/hunt";
 import { FetchBall } from "./gameplay/fetchBall";
@@ -104,7 +104,8 @@ import { createRenderPipeline } from "./render/pipeline";
 import { POSTFX_TUNING, setFlowPostFx } from "./render/postfx";
 import type { RadialLightSource } from "./render/radialLightTypes";
 import { DebugPanel } from "./ui/debug";
-import { ColliderDebug, type DebugBox, type DebugMesh } from "./ui/colliderDebug";
+import { DebugOverlays } from "./ui/overlays";
+import { OVERLAY_TUNING } from "./ui/overlays/tuning";
 import { CalibrationChart } from "./ui/calibrationChart";
 import { Net } from "./net/net";
 import { RemotePlayers } from "./net/remotes";
@@ -1849,37 +1850,42 @@ async function boot() {
   let btsReading = false;
   // BehindTheScenes is constructed after progress(100) in the deferred loader
 
-  // collider x-ray overlay (debug: "/" → collider x-ray). Off unless toggled;
-  // the tick gathers active colliders and drives it. Scratch arrays reused so an
-  // enabled overlay allocates nothing per frame.
-  const colliderDebug = new ColliderDebug(scene);
+  // Debug overlays ("/" → overlays). Off unless toggled; tick gathers active
+  // physics / raycast / context-sensitive site overlays into WebGPU line buffers.
+  const debugOverlays = new DebugOverlays(scene);
   // grey-card calibration chart ("/" → advanced → lighting → grey cards): a
   // camera-locked row of known-albedo spheres for reading the tone grade.
   const calibrationChart = new CalibrationChart(scene);
-  const colliderBoxes: DebugBox[] = [];
-  const colliderMeshes: DebugMesh[] = [];
-  const dbgBaked: { x: number; y: number; z: number; hx: number; hy: number; hz: number; yaw: number; index: boolean }[] = [];
-  const dbgWalls: ColliderBox[] = [];
-  const dbgInteriors: ColliderBox[] = [];
-  const dbgRoofs: ColliderMesh[] = [];
-  const syncColliderDebug = () => {
-    const on = Boolean(RENDER_TUNING.values.colliderDebug);
-    if (on !== colliderDebug.visible) colliderDebug.setVisible(on);
-    if (!on) return;
-    colliderBoxes.length = 0;
-    colliderMeshes.length = 0;
-    physics.debugBuildingBodies(dbgBaked);
-    for (const b of dbgBaked) {
-      // red = baked visual-tile body, orange = citywide-index body
-      colliderBoxes.push({ ...b, r: 1, g: b.index ? 0.55 : 0.12, b: 0.12 });
+  let overlayRayHit: { x: number; y: number; z: number } | null = null;
+  const syncDebugOverlays = () => {
+    const px = player.position.x;
+    const pz = player.position.z;
+    if (debugOverlays.updateContext(px, pz)) {
+      debugPanel.setOverlayContext(debugOverlays.context);
     }
-    if (citygenRing.current) {
-      citygenRing.current.debugColliders(dbgWalls, dbgInteriors, dbgRoofs);
-      for (const c of dbgWalls) colliderBoxes.push({ ...c, r: 0.15, g: 1, b: 0.3 });      // green = walk-in wall
-      for (const c of dbgInteriors) colliderBoxes.push({ ...c, r: 0.25, g: 0.55, b: 1 }); // blue = interior
-      for (const c of dbgRoofs) colliderMeshes.push({ ...c, r: 0.15, g: 1, b: 0.3 });      // green = walk-in roof
+    const v = OVERLAY_TUNING.values;
+    if (!v.physicsColliders && !v.physicsCarpet && !v.playerBody && !v.raycast && !v.teaGardenWaterGrid) {
+      debugOverlays.sync({ physics, player });
+      return;
     }
-    colliderDebug.sync(colliderBoxes, colliderMeshes);
+    debugOverlays.sync({
+      physics,
+      player,
+      citygenDebug: citygenRing.current
+        ? (walls, interiors, roofs) => {
+            citygenRing.current!.debugColliders(walls, interiors, roofs);
+          }
+        : undefined,
+      ray: v.raycast
+        ? {
+            origin: rayOrigin,
+            hit: overlayRayHit,
+            dir: aim,
+            maxDist: 60
+          }
+        : undefined,
+      sampleY: (x, z) => map.groundTop(x, z)
+    });
   };
 
   const aim = new THREE.Vector3();
@@ -3021,8 +3027,9 @@ async function boot() {
     if (minimap.expanded) {
       const axes = input.mapPadAxes();
       minimap.padPan(axes.lx, axes.ly, frameDt);
-      minimap.padZoom(axes.rt - axes.lt, frameDt);
-      minimap.padMoveCursor(axes.rx, axes.ry, frameDt);
+      // RT/LT and right-stick Y both zoom (stick up = in, matching RT).
+      minimap.padZoom(axes.rt - axes.lt - axes.ry, frameDt);
+      minimap.padMoveCursor(axes.rx, 0, frameDt);
       if (input.pressedRaw("Space")) minimap.padSelectAtCursor();
       if (input.firePressed) minimap.padTeleport();
       if (input.pressedRaw("Enter") || input.pressedRaw("NumpadEnter")) minimap.padTeleport();
@@ -3990,10 +3997,16 @@ async function boot() {
         // rest on the nearest thing the ray meets — entity, building, terrain
         // or water (never my own body) — for honest depth; else float ahead
         const hit = worldQueries.raycast(rayOrigin, aim, 60, { ignoreSelf: true });
-        if (hit) cursorPos.copy(hit.point);
-        else cursorPos.copy(rayOrigin).addScaledVector(aim, 22);
+        if (hit) {
+          cursorPos.copy(hit.point);
+          overlayRayHit = { x: hit.point.x, y: hit.point.y, z: hit.point.z };
+        } else {
+          cursorPos.copy(rayOrigin).addScaledVector(aim, 22);
+          overlayRayHit = null;
+        }
         worldCursor.update(frameDt, camera, cursorPos, 0, true);
       } else {
+        overlayRayHit = null;
         worldCursor.update(frameDt, camera, cursorPos, 0, false);
       }
     }
@@ -4004,7 +4017,7 @@ async function boot() {
 
     sessionPersistence.update(frameDt);
 
-    syncColliderDebug(); // debug x-ray of active colliders (no-op unless toggled)
+    syncDebugOverlays(); // "/" → overlays (no-op unless toggled)
     // grey cards ride the FINAL camera pose (chase or cine hook both settled above)
     calibrationChart.sync(camera, Boolean(RENDER_TUNING.values.greyCards));
     tracer.end("world");
@@ -4107,7 +4120,7 @@ async function boot() {
       // deferred render warmup runs, tick() early-returns without rendering, so
       // screenshots would capture a stale boot-pose frame no matter what the
       // camera was set to.
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController?.game ?? null, pickleballAmbient: pickleballController?.ambient ?? null, pickleballAudio: pickleballController?.audio ?? null, pickleballUI: pickleballController?.ui ?? null, pickleballController, coronaHeights, missionDolores, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, ensureSurfRuntime, roadMarkings, colliderDebug, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate, palaceReverie, landsEnd, afterlight, optionalWorldSites, ensureOptionalWorldSite,
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController?.game ?? null, pickleballAmbient: pickleballController?.ambient ?? null, pickleballAudio: pickleballController?.audio ?? null, pickleballUI: pickleballController?.ui ?? null, pickleballController, coronaHeights, missionDolores, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, ensureSurfRuntime, roadMarkings, debugOverlays, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate, palaceReverie, landsEnd, afterlight, optionalWorldSites, ensureOptionalWorldSite,
         TSL,
         renderIdle: () => modulesReady && !optionalWorldSites.some(
           (site) => site.state === "queued" || site.state === "loading"

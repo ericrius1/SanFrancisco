@@ -11,7 +11,9 @@ import { buildDroneMesh } from "../vehicles/drone";
 import { buildBoardMesh, localBoardConfig } from "../vehicles/board";
 import { buildBirdMesh, type BirdRig } from "../vehicles/bird";
 import { buildSurfboardMesh } from "../vehicles/surf";
-import { buildScooterMesh, localScooterConfig } from "../vehicles/scooter";
+import { buildScooterMesh, localScooterConfig, SCOOTER_RIDE_HEIGHT } from "../vehicles/scooter";
+import { CAR_RIDE_HEIGHT } from "../vehicles/car/mesh";
+import { driveHalfExtentsWithClearance } from "../vehicles/shared";
 import { poseBone } from "../vehicles/bird/mesh";
 import { setEmbodimentVisible } from "../player/embodimentVisibility";
 
@@ -81,7 +83,11 @@ export const ABANDONED_MOUNT_PROMPT: Record<MountMode, string> = {
 const SPECS: Record<MountMode, MountSpec> = {
   drive: {
     build: buildCarMesh,
-    halfExtents: [DEFAULT_DRIVE_SPEC.halfExtents[0], DEFAULT_DRIVE_SPEC.halfExtents[1], DEFAULT_DRIVE_SPEC.halfExtents[2]],
+    halfExtents: driveHalfExtentsWithClearance(CAR_RIDE_HEIGHT, [
+      DEFAULT_DRIVE_SPEC.halfExtents[0],
+      DEFAULT_DRIVE_SPEC.halfExtents[1],
+      DEFAULT_DRIVE_SPEC.halfExtents[2]
+    ]),
     density: 133,
     friction: 0.35,
     restitution: 0.1,
@@ -92,7 +98,9 @@ const SPECS: Record<MountMode, MountSpec> = {
   },
   scooter: {
     build: () => buildScooterMesh(localScooterConfig()),
-    halfExtents: [0.52, 0.42, 1.35],
+    // Match ridden ScooterController clearance clamp so parked bodies don't
+    // present a taller underbody lip than the driveable scooter.
+    halfExtents: driveHalfExtentsWithClearance(SCOOTER_RIDE_HEIGHT, [0.52, 0.42, 1.35]),
     density: 72,
     friction: 0.4,
     restitution: 0.06,

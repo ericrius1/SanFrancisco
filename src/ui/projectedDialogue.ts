@@ -90,6 +90,7 @@ export class ProjectedDialogueUI {
 
   #anchor: DialogueWorldAnchor
   #mode: ViewMode = "hidden"
+  #projectedOnce = false
   #disposed = false
 
   constructor(anchor: DialogueWorldAnchor, options: ProjectedDialogueOptions = {}) {
@@ -231,6 +232,7 @@ export class ProjectedDialogueUI {
   hide(): void {
     if (this.#disposed) return
     this.#mode = "hidden"
+    this.#projectedOnce = false
     this.#root.dataset.state = "hidden"
     this.#root.hidden = true
     this.#root.setAttribute("aria-hidden", "true")
@@ -301,12 +303,18 @@ export class ProjectedDialogueUI {
   }
 
   #setMode(mode: Exclude<ViewMode, "hidden">): void {
+    // Callers re-show the same mode every frame to refresh kb↔pad glyphs. Only a
+    // genuine (re)appearance should blank the panel until it is first projected;
+    // re-blanking every frame drags the 140ms opacity transition into a dark
+    // flicker (light card sampled at partial opacity over the night scene).
+    const modeChanged = this.#mode !== mode
     this.#mode = mode
     this.#root.dataset.state = mode
     this.#prompt.hidden = mode !== "prompt"
     this.#card.hidden = mode !== "turn"
     this.#root.hidden = false
-    this.#root.classList.add("is-unpositioned")
+    if (modeChanged) this.#projectedOnce = false
+    if (!this.#projectedOnce) this.#root.classList.add("is-unpositioned")
     this.#root.classList.remove("is-projection-hidden")
     this.#root.setAttribute("aria-hidden", "false")
   }
@@ -336,8 +344,16 @@ export class ProjectedDialogueUI {
   }
 
   #setProjectionVisible(visible: boolean): void {
-    this.#root.classList.toggle("is-projection-hidden", !visible)
-    this.#root.classList.toggle("is-unpositioned", !visible)
+    if (visible) {
+      this.#projectedOnce = true
+      this.#root.classList.remove("is-projection-hidden")
+      this.#root.classList.remove("is-unpositioned")
+    } else {
+      // A transient off-screen frame (head anchor briefly leaves the frustum)
+      // hides instantly via visibility only — never by fading opacity, which
+      // would read as the panel going dark and popping back.
+      this.#root.classList.add("is-projection-hidden")
+    }
     this.#root.setAttribute("aria-hidden", visible ? "false" : "true")
   }
 }

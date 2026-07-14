@@ -108,6 +108,12 @@ export function paintScooterSurface(canvas: HTMLCanvasElement, raw: ScooterConfi
   ctx.globalAlpha = 1;
   ctx.globalCompositeOperation = "source-over";
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+  // Lacquer inserts follow the rounded haunch rather than reading like a
+  // rectangular screen pasted onto the body.
+  const inset = Math.max(2, canvas.height * 0.018);
+  ctx.beginPath();
+  ctx.roundRect(inset, inset, canvas.width - inset * 2, canvas.height - inset * 2, canvas.height * 0.12);
+  ctx.clip();
   const base = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
   base.addColorStop(0, css(paint));
   base.addColorStop(0.62, css(paint));

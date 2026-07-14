@@ -269,7 +269,11 @@ export class Minimap {
   #dpr = 1;
   #layers: MapLayer[] = [];
   #layerButtons = new Map<MapLayerId, HTMLButtonElement>();
-  #overlays = new Map<MapOverlayId, boolean>(MAP_OVERLAY_DEFS.map((d) => [d.id, true]));
+  // Roads off by default — the parchment already shows the street grid, and
+  // Big Map use is landmark-oriented (toggle still available in the side tray).
+  #overlays = new Map<MapOverlayId, boolean>(
+    MAP_OVERLAY_DEFS.map((d) => [d.id, d.id !== "roads"])
+  );
   #overlayButtons = new Map<MapOverlayId, HTMLButtonElement>();
   #selectedPlaceId: string | null = null;
   expanded = false;
@@ -1461,10 +1465,11 @@ export class Minimap {
   }
 
   #drawMiniLandmarks(ctx: CanvasRenderingContext2D, center: { x: number; z: number }, pxPerM: number, size: number) {
+    this.#miniLandmarkHits = [];
+    if (!this.#overlayEnabled("landmarks")) return;
     const dpr = this.#dpr;
     const c = size / 2;
     const margin = 12 * dpr;
-    this.#miniLandmarkHits = [];
     const font = `600 ${9 * dpr}px ${MAP_FONT}`;
     const rad = 4.8 * dpr;
     const labelH = 11 * dpr;
@@ -1660,14 +1665,15 @@ export class Minimap {
     });
   }
 
-  /** RT − LT: zoom the expanded map toward the selection cursor (or view center). */
+  /** Zoom the expanded map toward the selection cursor (or view center).
+   *  Positive zoomAxis zooms in — callers pass RT−LT and/or −rightStickY. */
   padZoom(zoomAxis: number, dt: number) {
     if (!this.expanded || Math.abs(zoomAxis) < 0.02) return;
     const cursor = this.#padCursor ?? { nx: 0, ny: 0 };
     const { center, spanX, spanZ } = this.#bigView();
     const worldX = center.x + cursor.nx * spanX;
     const worldZ = center.z + cursor.ny * spanZ;
-    // Positive zoomAxis (RT) zooms in; LT zooms out — matches wheel invert feel.
+    // Positive zoomAxis zooms in — matches wheel invert feel.
     const nextSpan = this.#clampBigSpan(this.#bigSpan * Math.exp(-zoomAxis * PAD_ZOOM_SPEED * dt));
     if (nextSpan === this.#bigSpan) return;
     this.#bigSpan = nextSpan;
@@ -1677,7 +1683,7 @@ export class Minimap {
     });
   }
 
-  /** Right stick: move the selection cursor on the expanded map. */
+  /** Right stick X: move the selection cursor horizontally (Y is used for zoom). */
   padMoveCursor(rx: number, ry: number, dt: number) {
     if (!this.expanded || (rx === 0 && ry === 0)) return;
     const cur = this.#padCursor ?? { nx: 0, ny: 0 };
@@ -1739,7 +1745,10 @@ export class Minimap {
       | { kind: "player"; id: number; name: string; x: number; z: number }
       | { kind: "fixed"; name: string; x: number; z: number }
     > = [];
-    for (const lm of this.#landmarks) out.push({ kind: "fixed", name: lm.name, x: lm.x, z: lm.z });
+    for (const lm of this.#landmarks) {
+      if (!this.#overlayEnabled("landmarks")) break;
+      out.push({ kind: "fixed", name: lm.name, x: lm.x, z: lm.z });
+    }
     for (const r of this.#getRemotes()) out.push({ kind: "player", id: r.id, name: r.name, x: r.x, z: r.z });
     return out;
   }
@@ -2121,35 +2130,37 @@ export class Minimap {
 
     // landmarks — clickable teal dots
     this.#bigLandmarkHits = [];
-    const lmFont = `600 ${10.5 * dpr}px ${MAP_FONT}`;
-    const lmRad = 4.8 * dpr;
-    const lmLabelH = 14 * dpr;
-    const lmPillH = 16 * dpr;
-    const lmPillPadX = 7 * dpr;
-    const lmVisible: { lm: MiniLandmark; x: number; y: number; selected: boolean }[] = [];
-    for (const lm of this.#landmarks) {
-      const x = px(lm.x);
-      const y = pz(lm.z);
-      if (!visible(x, y, 30 * dpr)) continue;
-      lmVisible.push({ lm, x, y, selected: this.#landmarkSelected(lm.name) });
-    }
-    const lmLabels = this.#layoutLandmarkLabels(ctx, lmFont, lmVisible, lmRad, lmLabelH, lmPillPadX, lmPillH);
-    ctx.font = lmFont;
-    ctx.textBaseline = "middle";
-    for (const { lm, x, y, selected } of lmVisible) {
-      this.#landmarkDot(ctx, x, y, selected, lmRad);
-      const label = lmLabels.get(lm)!;
-      ctx.textAlign = label.align;
-      if (label.pill) {
-        ctx.fillStyle = "rgba(6,14,20,0.72)";
-        ctx.fillRect(label.pill.x, label.pill.y, label.pill.w, label.pill.h);
+    if (this.#overlayEnabled("landmarks")) {
+      const lmFont = `600 ${10.5 * dpr}px ${MAP_FONT}`;
+      const lmRad = 4.8 * dpr;
+      const lmLabelH = 14 * dpr;
+      const lmPillH = 16 * dpr;
+      const lmPillPadX = 7 * dpr;
+      const lmVisible: { lm: MiniLandmark; x: number; y: number; selected: boolean }[] = [];
+      for (const lm of this.#landmarks) {
+        const x = px(lm.x);
+        const y = pz(lm.z);
+        if (!visible(x, y, 30 * dpr)) continue;
+        lmVisible.push({ lm, x, y, selected: this.#landmarkSelected(lm.name) });
       }
-      ctx.fillStyle = selected ? LANDMARK_DOT_COLOR : "rgba(234,244,248,0.88)";
-      ctx.fillText(lm.name, label.textX, label.textY);
-      this.#bigLandmarkHits.push([x, y, lm]);
+      const lmLabels = this.#layoutLandmarkLabels(ctx, lmFont, lmVisible, lmRad, lmLabelH, lmPillPadX, lmPillH);
+      ctx.font = lmFont;
+      ctx.textBaseline = "middle";
+      for (const { lm, x, y, selected } of lmVisible) {
+        this.#landmarkDot(ctx, x, y, selected, lmRad);
+        const label = lmLabels.get(lm)!;
+        ctx.textAlign = label.align;
+        if (label.pill) {
+          ctx.fillStyle = "rgba(6,14,20,0.72)";
+          ctx.fillRect(label.pill.x, label.pill.y, label.pill.w, label.pill.h);
+        }
+        ctx.fillStyle = selected ? LANDMARK_DOT_COLOR : "rgba(234,244,248,0.88)";
+        ctx.fillText(lm.name, label.textX, label.textY);
+        this.#bigLandmarkHits.push([x, y, lm]);
+      }
+      ctx.textAlign = "left";
+      ctx.textBaseline = "alphabetic";
     }
-    ctx.textAlign = "left";
-    ctx.textBaseline = "alphabetic";
 
     if (LAYERS_ENABLED) this.#drawBigPlaces(ctx, px, pz, canvas.width, canvas.height);
 

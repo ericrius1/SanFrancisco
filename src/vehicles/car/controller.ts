@@ -2,7 +2,11 @@ import * as THREE from "three/webgpu";
 import { BodyType } from "../../core/physics";
 import type { Input } from "../../core/input";
 import type { ModeController, ModeFrame, PlayerCtx } from "../../player/types";
-import { enterOnLand } from "../shared";
+import {
+  driveGroundClearance,
+  driveHalfExtentsWithClearance,
+  enterOnLand
+} from "../shared";
 import {
   CarJumpState,
   landingImpactStrength,
@@ -128,13 +132,17 @@ export class CarController implements ModeController {
     this.#landingFeedback.fallDistance = 0;
     this.#landingFeedback.strength = 0;
     this.#sampleGroundNormal(ctx, p.x, p.z, this.#groundNormal);
-    // box stops at the rocker panels (y half 0.45, not 0.6): the ride spring
-    // holds the centre at ground+0.85, so a taller box left only 0.25 m of
-    // floor clearance — any carpet/heightmap mismatch buried it in the road
+    // Vertical half-extent is clamped so underbody clearance never drops below
+    // MIN_DRIVE_GROUND_CLEARANCE — scooters and future low vehicles inherit the
+    // same floor-lip budget the car learned the hard way on Castro hills.
+    const halfExtents = driveHalfExtentsWithClearance(
+      ctx.driveSpec.rideHeight,
+      ctx.driveSpec.halfExtents
+    );
     ctx.body = ctx.physics.world.createBox({
       type: BodyType.Dynamic,
       position: [p.x, p.y + 0.8, p.z],
-      halfExtents: ctx.driveSpec.halfExtents,
+      halfExtents,
       density: 133, // keeps the old box's mass despite the thinner profile
       friction: 0.35,
       restitution: 0.04
@@ -322,14 +330,22 @@ export class CarController implements ModeController {
         const slopeRate = THREE.MathUtils.clamp((rise / nose) * horiz, -14, 40);
         requestedVy = (rideY - ctx.position.y) * td.rideSpring + slopeRate;
         // Pinned against a terrain lip while still asking for real speed: add a
-        // small hop. This remains ground-only and cannot fire during a jump.
-        if (
+        // small hop. Threshold scales with underbody clearance so low vehicles
+        // escape earlier. Crush-velocity escape covers vertical faces the
+        // heightmap rise probe never sees (carpet lips, authored posts).
+        const clearance = driveGroundClearance(
+          spec.rideHeight,
+          driveHalfExtentsWithClearance(spec.rideHeight, spec.halfExtents)
+        );
+        const riseThreshold = Math.max(0.12, clearance * 0.75);
+        const pinned =
           throttle > 0 &&
-          rise > 0.3 &&
           Math.abs(fwdSpeed) < 3 &&
-          targetSpeed >= td.grindSpeed - 0.01
-        ) {
+          targetSpeed >= td.grindSpeed - 0.01;
+        if (pinned && rise > riseThreshold) {
           requestedVy = Math.max(requestedVy, rise * 5 + 4);
+        } else if (pinned && Math.abs(fwdSpeed) < Math.abs(targetSpeed) * 0.35) {
+          requestedVy = Math.max(requestedVy, 3.2 + clearance * 4);
         }
       }
 

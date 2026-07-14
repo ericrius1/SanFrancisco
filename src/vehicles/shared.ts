@@ -16,6 +16,36 @@ export function rideHeightFromContact(contactY: number): number {
   return -contactY;
 }
 
+/**
+ * Minimum underbody gap (m) between the physics box bottom and the ride
+ * surface. Carpet slab lips, terrain-patch seams, and low authored props sit
+ * in this band — a scooter with ~2 cm clearance snags them while a car with
+ * ~39 cm clears. Shrink vertical half-extent only; never raise rideHeight
+ * (that would float the visual mesh).
+ */
+export const MIN_DRIVE_GROUND_CLEARANCE = 0.18;
+
+/** `rideHeight - halfExtents[1]` — how far the box bottom sits above the road. */
+export function driveGroundClearance(
+  rideHeight: number,
+  halfExtents: readonly [number, number, number]
+): number {
+  return rideHeight - halfExtents[1];
+}
+
+/**
+ * Clamp authored chassis half-extents so ground driveables keep
+ * {@link MIN_DRIVE_GROUND_CLEARANCE}. Returns a new tuple when `hy` must shrink.
+ */
+export function driveHalfExtentsWithClearance(
+  rideHeight: number,
+  halfExtents: readonly [number, number, number]
+): [number, number, number] {
+  const maxHy = Math.max(0.08, rideHeight - MIN_DRIVE_GROUND_CLEARANCE);
+  if (halfExtents[1] <= maxHy) return [halfExtents[0], halfExtents[1], halfExtents[2]];
+  return [halfExtents[0], maxHy, halfExtents[2]];
+}
+
 /** Read authored mesh contact, or fall back to an explicit contact Y. */
 export function rideHeightFromMesh(
   mesh: THREE.Object3D | null | undefined,

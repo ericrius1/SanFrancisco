@@ -406,6 +406,60 @@ export function inTeaGardenWater(x: number, z: number, pad = 0): boolean {
   return false;
 }
 
+/** Matches the shallow-water simulation lattice in waterSimulation.ts. */
+export const TEA_GARDEN_WATER_GRID_WIDTH = 224;
+export const TEA_GARDEN_WATER_GRID_HEIGHT = 272;
+const TEA_GARDEN_WATER_BOUNDS_PAD = 0.36;
+
+/** Distance to nearest authored water feature edge (0 when inside). */
+export function teaGardenWaterDistance(x: number, z: number): number {
+  if (inTeaGardenWater(x, z)) return 0;
+  let distance = Infinity;
+  for (const feature of TEA_GARDEN_WATER_FEATURES) {
+    for (let i = 0; i < feature.outline.length; i++) {
+      distance = Math.min(
+        distance,
+        distanceToSegment(x, z, feature.outline[i], feature.outline[(i + 1) % feature.outline.length])
+      );
+    }
+  }
+  return distance;
+}
+
+/**
+ * Spatial-bin layout shared by the GPU water field and the debug overlay.
+ * Bounds/pad/grid must stay in lockstep with waterSimulation.ts.
+ */
+export function teaGardenWaterSpatialLayout() {
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minZ = Infinity;
+  let maxZ = -Infinity;
+  for (const feature of TEA_GARDEN_WATER_FEATURES) {
+    for (const [x, z] of feature.outline) {
+      minX = Math.min(minX, x);
+      maxX = Math.max(maxX, x);
+      minZ = Math.min(minZ, z);
+      maxZ = Math.max(maxZ, z);
+    }
+  }
+  minX -= TEA_GARDEN_WATER_BOUNDS_PAD;
+  maxX += TEA_GARDEN_WATER_BOUNDS_PAD;
+  minZ -= TEA_GARDEN_WATER_BOUNDS_PAD;
+  maxZ += TEA_GARDEN_WATER_BOUNDS_PAD;
+  return {
+    minX,
+    maxX,
+    minZ,
+    maxZ,
+    gridWidth: TEA_GARDEN_WATER_GRID_WIDTH,
+    gridHeight: TEA_GARDEN_WATER_GRID_HEIGHT,
+    cellSizeX: (maxX - minX) / (TEA_GARDEN_WATER_GRID_WIDTH - 1),
+    cellSizeZ: (maxZ - minZ) / (TEA_GARDEN_WATER_GRID_HEIGHT - 1),
+    outlines: TEA_GARDEN_WATER_FEATURES.map((f) => f.outline)
+  };
+}
+
 export function inTeaGardenBuilding(x: number, z: number, pad = 0): boolean {
   for (const building of TEA_GARDEN_BUILDINGS) {
     if (pointInTeaGardenPolygon(x, z, building.outline)) return true;

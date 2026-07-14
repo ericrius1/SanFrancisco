@@ -24,10 +24,17 @@
   display: none !important;
 }
 
-.projected-dialogue.is-projection-hidden,
+/* Pre-first-projection: blank so it never flashes at the unplaced origin.
+   Fades in (opacity transition) once the first frame projects it. */
 .projected-dialogue.is-unpositioned {
   visibility: hidden;
   opacity: 0;
+}
+
+/* Transient per-frame frustum cull of an already-shown panel: hide instantly,
+   keep opacity so re-appearing next frame does not fade dark. */
+.projected-dialogue.is-projection-hidden {
+  visibility: hidden;
 }
 
 .projected-dialogue,

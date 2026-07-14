@@ -30,6 +30,9 @@ import { tunables } from "../../core/persist";
 import {
   SOUTH_POND_OUTLINE,
   TEA_GARDEN_WATER_FEATURES,
+  TEA_GARDEN_WATER_GRID_HEIGHT,
+  TEA_GARDEN_WATER_GRID_WIDTH,
+  teaGardenWaterSpatialLayout,
   pointInTeaGardenPolygon,
   type TeaGardenTerrain,
   type TeaGardenXZ
@@ -49,8 +52,8 @@ import { TEA_GARDEN_STREAM_AUDIO_ANCHORS } from "./streamAudio";
  * renderer owns a native WebGPU backend.
  */
 
-const GRID_WIDTH = 224;
-const GRID_HEIGHT = 272;
+const GRID_WIDTH = TEA_GARDEN_WATER_GRID_WIDTH;
+const GRID_HEIGHT = TEA_GARDEN_WATER_GRID_HEIGHT;
 const CELL_COUNT = GRID_WIDTH * GRID_HEIGHT;
 const FIXED_STEP = 1 / 60;
 const MAX_TICKS_PER_FRAME = 2;
@@ -59,7 +62,6 @@ const MAX_SIM_SPEED = 2.4;
 const MIN_SIM_DEPTH = 0.08;
 const MAX_QUEUED_IMPULSES = 64;
 const MAX_IMPULSES_PER_DISPATCH = 24;
-const WATER_BOUNDS_PAD = 0.36;
 const BANK_INSET = 0.58;
 const BANK_WIDTH = 0.72;
 const WATER_LIFT = 0.22;
@@ -275,23 +277,12 @@ function smoothstep01(value: number): number {
 }
 
 function waterBounds() {
-  let minX = Infinity;
-  let maxX = -Infinity;
-  let minZ = Infinity;
-  let maxZ = -Infinity;
-  for (const feature of TEA_GARDEN_WATER_FEATURES) {
-    for (const [x, z] of feature.outline) {
-      minX = Math.min(minX, x);
-      maxX = Math.max(maxX, x);
-      minZ = Math.min(minZ, z);
-      maxZ = Math.max(maxZ, z);
-    }
-  }
+  const layout = teaGardenWaterSpatialLayout();
   return {
-    minX: minX - WATER_BOUNDS_PAD,
-    maxX: maxX + WATER_BOUNDS_PAD,
-    minZ: minZ - WATER_BOUNDS_PAD,
-    maxZ: maxZ + WATER_BOUNDS_PAD
+    minX: layout.minX,
+    maxX: layout.maxX,
+    minZ: layout.minZ,
+    maxZ: layout.maxZ
   };
 }
 

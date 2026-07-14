@@ -61,7 +61,7 @@ export type TeaGardenGuideOptions = {
   onCarryCup?: (holding: boolean) => void;
 };
 
-const START_RANGE = 5.4;
+const START_RANGE = 9.5;
 const CARD_RANGE = 17;
 const ACTIVE_RANGE = CARD_RANGE;
 const WAIT_DISTANCE = 12.5;

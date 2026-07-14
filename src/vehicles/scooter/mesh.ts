@@ -124,6 +124,8 @@ export function buildScooterMesh(raw?: ScooterConfig): THREE.Group {
     roughness: 0.42,
     metalness: 0.08,
     side: THREE.DoubleSide,
+    transparent: true,
+    alphaTest: 0.04,
     polygonOffset: true,
     polygonOffsetFactor: -1,
     polygonOffsetUnits: -1
