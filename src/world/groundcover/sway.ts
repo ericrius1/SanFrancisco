@@ -43,6 +43,41 @@ export function groundSway(anchorWorldXZ: TslNode): TslNode {
   return mix(sine, gust, 0.55).mul(windStrengthNode.mul(0.34)).mul(gustEnvelope);
 }
 
+// How far the local swirl pulls the bend direction off the prevailing WIND_DIR
+// (0 = today's single-heading look, 1 = pure eddies). Rampable for staged rollout.
+const WIND_FLOW_MIX = 0.5;
+
+/**
+ * Shared wind as a spatially-varying FLOW (vec2 x=worldX bend, y=worldZ bend),
+ * a drop-in for the old `WIND_DIR.mul(groundSway(xz))` term. Same magnitude and
+ * gust envelope as `groundSway` (so what you hear still matches what you see), but
+ * the *direction* now swirls: it is the prevailing heading blended with the CURL
+ * of the same scrolling noise the gust rides. Curl of a scalar potential ψ is
+ * `(∂ψ/∂z, −∂ψ/∂x)`, which is divergence-free — the meadow eddies and leans in
+ * gusting arcs instead of every blade tilting the one identical way, with no
+ * "sucking toward a point" a raw noise vector would give. Callers lift it to 3-D
+ * as `vec3(flow.x, 0, flow.y)`.
+ */
+export function groundSwayFlow(anchorWorldXZ: TslNode): TslNode {
+  const sway = groundSway(anchorWorldXZ); // unchanged scalar magnitude / envelope
+  const base = vec2(WIND_DIR.x, WIND_DIR.z);
+  const baseDir = base.div(base.length().max(1e-3));
+  // Low-frequency scrolling potential (bigger cells than the gust so eddies read
+  // as gusting arcs, not fizz), then central-difference its curl.
+  const t = time.mul(windSpeedNode);
+  const flowScale = 1 / 30;
+  const scroll = baseDir.mul(t.mul(0.55 * flowScale));
+  const p = anchorWorldXZ.mul(flowScale).sub(scroll);
+  const eps = 0.5;
+  const dPsiDz = mx_noise_float(p.add(vec2(0, eps))).sub(mx_noise_float(p.sub(vec2(0, eps))));
+  const dPsiDx = mx_noise_float(p.add(vec2(eps, 0))).sub(mx_noise_float(p.sub(vec2(eps, 0))));
+  const curl = vec2(dPsiDz, dPsiDx.negate());
+  const curlDir = curl.div(curl.length().max(1e-3));
+  const dir = mix(baseDir, curlDir, WIND_FLOW_MIX);
+  const dirN = dir.div(dir.length().max(1e-3));
+  return dirN.mul(sway);
+}
+
 /** One-sine distance grade: same direction, speed, strength and gust envelope. */
 export function groundSwayLite(anchorWorldXZ: TslNode): TslNode {
   const t = time.mul(windSpeedNode);

@@ -17,7 +17,7 @@ import {
 } from "../groundcover/bladeGrass";
 import { yieldToFrame } from "../../core/cooperativeWork";
 import { fitGroundY } from "../groundcover/grounding";
-import { hash2, valueNoise } from "../groundcover/scatter";
+import { hash2, r2Offset, valueNoise } from "../groundcover/scatter";
 import type { GardenTerrain } from "../garden/layout";
 import { grassyGround, nearAnyWildRegion } from "./layout";
 import { GRASS_TUNING } from "../../config";
@@ -430,8 +430,11 @@ export function createWildGrass(
     if (cache.has(key)) return cache.get(key) ?? null;
 
     const salt = densityLayer * 101;
-    const px = gx * WILD_GRASS_SPACING + (hash2(gx, gz, 11 + salt) - 0.5) * WILD_GRASS_SPACING * 0.86;
-    const pz = gz * WILD_GRASS_SPACING + (hash2(gx, gz, 17 + salt) - 0.5) * WILD_GRASS_SPACING * 0.86;
+    // R2 low-discrepancy jitter (was raw hash2) — same in-cell clamp, far fewer
+    // clumps/gaps between neighbouring blades. See scatter.r2Offset.
+    const jitter = r2Offset(gx, gz, 11 + salt);
+    const px = gx * WILD_GRASS_SPACING + (jitter.ox - 0.5) * WILD_GRASS_SPACING * 0.86;
+    const pz = gz * WILD_GRASS_SPACING + (jitter.oz - 0.5) * WILD_GRASS_SPACING * 0.86;
     if (!plantable(px, pz)) {
       cache.set(key, null);
       return null;
