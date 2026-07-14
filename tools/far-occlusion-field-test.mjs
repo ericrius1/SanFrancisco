@@ -18,7 +18,12 @@ try {
     format: "esm",
     logLevel: "error"
   })
-  const { buildFarOcclusionFloatField, floatToHalf, packFarOcclusionHalf } = await import(pathToFileURL(outfile).href)
+  const {
+    FAR_NO_OCCLUSION_HEIGHT,
+    buildFarOcclusionFloatField,
+    floatToHalf,
+    packFarOcclusionHalf
+  } = await import(pathToFileURL(outfile).href)
 
   const width = 16
   const height = 8
@@ -34,37 +39,81 @@ try {
       minZ: 0,
       texelSize: 1,
       terrain: terrainField,
-      occluderSets: sets,
+      occluderSets: sets.values(),
       sunX,
       sunY: 1,
       sunZ,
       minimumSunSlope: 0.2,
-      contactRadiusMeters: 3,
-      contactHeightMeters: 3,
-      contactClearanceMeters: 12
+      footprintHeightMeters: 3
     })
 
   const fromEast = buildField(1, 0)
-  const ceilingAt = (field, x, z) => field.data[(z * width + x) * 2]
-  const contactAt = (field, x, z) => field.data[(z * width + x) * 2 + 1]
-  assert(ceilingAt(fromEast, 7, 3) > 18, "east sun should cast west from the box")
-  assert(ceilingAt(fromEast, 6, 3) > 17, "shadow ceiling should propagate with solar slope")
-  assert(ceilingAt(fromEast, 9, 3) < 1, "up-sun ground must remain open")
-  assert(ceilingAt(fromEast, 7, height - 1) < 1, "axis sweep must preserve the boundary row")
-  assert(contactAt(fromEast, 8, 3) >= 2.99, "box footprint should raise the contact ceiling")
-  assert(contactAt(fromEast, 10, 3) < contactAt(fromEast, 8, 3), "contact ceiling should soften outward")
-  assert.equal(contactAt(fromEast, 15, 3), -12, "far ground should have a safely neutral contact ceiling")
+  const outerAt = (field, x, z) => field.data[(z * width + x) * 2]
+  const coreAt = (field, x, z) => field.data[(z * width + x) * 2 + 1]
+  assert(outerAt(fromEast, 7, 3) > 18, "padded envelope should cast west from the box")
+  assert(coreAt(fromEast, 7, 3) > 18, "tight core should cast west from the box")
+  assert(outerAt(fromEast, 6, 3) > 17, "outer shadow ceiling should propagate with solar slope")
+  assert(coreAt(fromEast, 6, 3) > 17, "core shadow ceiling should propagate with solar slope")
+  assert(outerAt(fromEast, 9, 3) < 1, "up-sun outer field must remain open")
+  assert(coreAt(fromEast, 9, 3) < 1, "up-sun core field must remain open")
+  assert(outerAt(fromEast, 7, height - 1) < 1, "axis sweep must preserve the boundary row")
+  assert(outerAt(fromEast, 8, 3) >= 2.99, "tight footprint should raise the weak outer base ceiling")
 
   const fromWest = buildField(-1, 0)
-  assert(ceilingAt(fromWest, 9, 3) > 18, "west sun should cast east from the box")
-  assert(ceilingAt(fromWest, 7, 3) < 1, "opposite side must remain open after sun flip")
+  assert(outerAt(fromWest, 9, 3) > 18, "west sun should cast the outer envelope east")
+  assert(coreAt(fromWest, 9, 3) > 18, "west sun should cast the tight core east")
+  assert(outerAt(fromWest, 7, 3) < 1, "opposite outer side must remain open after sun flip")
+  assert(coreAt(fromWest, 7, 3) < 1, "opposite core side must remain open after sun flip")
 
   const ridge = new Float32Array(width * height)
   for (let z = 0; z < height; z++) ridge[z * width + 8] = 24
   const terrainOnly = buildField(1, 0, ridge, [])
-  assert(ceilingAt(terrainOnly, 7, 4) > 22, "terrain ridge should cast into the far field")
+  assert(outerAt(terrainOnly, 7, 4) > 22, "terrain ridge should cast into the outer field")
+  assert(coreAt(terrainOnly, 7, 4) > 22, "terrain ridge must remain strong in the core field")
+  assert.equal(outerAt(terrainOnly, 7, 4), coreAt(terrainOnly, 7, 4))
   assert.equal(terrainOnly.occluders, 0)
   assert.equal(terrainOnly.occupiedTexels, 0)
+  assert.equal(terrainOnly.coreOccupiedTexels, 0)
+
+  const cornerBox = new Float32Array([
+    8, 3, 20, 0.05, 0.05, 1, 0
+  ])
+  const corner = buildField(1, 0, terrain, [cornerBox])
+  assert.equal(corner.coreOccupiedTexels, 1, "sub-texel core must select one deterministic owner cell")
+  assert.equal(corner.occupiedTexels, 4, "half-texel outer envelope should retain conservative coverage")
+  assert(coreAt(corner, 7, 3) > 18, "owner-cell fallback should cast from the tight core")
+  assert(coreAt(corner, 7, 2) < 1, "tight core must not inflate into the adjacent row")
+  assert(outerAt(corner, 7, 2) > 18, "weak outer envelope should preserve the adjacent padded row")
+
+  const diagonal = Math.SQRT1_2
+  const rotatedCornerBox = new Float32Array([
+    8, 3, 20, 0.01, 0.01, diagonal, diagonal
+  ])
+  const rotatedCorner = buildField(1, 0, terrain, [rotatedCornerBox])
+  assert.equal(rotatedCorner.coreOccupiedTexels, 1)
+  assert(coreAt(rotatedCorner, 7, 3) > 18, "rotated fallback must cast from its owner cell")
+
+  const zenith = buildField(0, 0, terrain, [cornerBox])
+  assert.equal(outerAt(zenith, 8, 3), 3, "weak outer channel should own tight base contact")
+  assert.equal(coreAt(zenith, 8, 3), FAR_NO_OCCLUSION_HEIGHT)
+  assert.equal(outerAt(zenith, 7, 2), FAR_NO_OCCLUSION_HEIGHT)
+
+  const assertOuterContainsCore = (field, label) => {
+    for (let i = 0; i < field.data.length; i += 2) {
+      assert(
+        field.data[i] >= field.data[i + 1] - 1e-6,
+        `${label} outer envelope must contain core at texel ${i / 2}`
+      )
+    }
+  }
+  for (const [label, field] of [
+    ["east", fromEast],
+    ["west", fromWest],
+    ["terrain", terrainOnly],
+    ["corner", corner],
+    ["rotated", rotatedCorner],
+    ["zenith", zenith]
+  ]) assertOuterContainsCore(field, label)
 
   const repeat = buildField(1, 0)
   assert.deepEqual(repeat.data, fromEast.data, "field builds must be deterministic")
@@ -103,21 +152,22 @@ try {
     sunY: 0.55,
     sunZ: -0.45,
     minimumSunSlope: Math.tan(7 * Math.PI / 180),
-    contactRadiusMeters: 30,
-    contactHeightMeters: 3,
-    contactClearanceMeters: 12
+    footprintHeightMeters: 3
   })
   const buildMs = performance.now() - largeStarted
+  assertOuterContainsCore(large, "production fixture")
   const packStarted = performance.now()
   const packed = packFarOcclusionHalf(large.data)
   const packMs = performance.now() - packStarted
   assert.equal(packed.byteLength, largeWidth * largeHeight * 4)
+  assert.equal(packed.byteLength, 3_277_568)
 
   console.log(JSON.stringify({
     status: "pass",
     dimensions: [width, height],
-    westShadowCeiling: ceilingAt(fromEast, 7, 3),
-    footprintContact: contactAt(fromEast, 8, 3),
+    westOuterCeiling: outerAt(fromEast, 7, 3),
+    westCoreCeiling: coreAt(fromEast, 7, 3),
+    footprintOuterCeiling: outerAt(fromEast, 8, 3),
     productionFixture: {
       dimensions: [largeWidth, largeHeight],
       occluders: large.occluders,

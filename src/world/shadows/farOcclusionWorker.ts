@@ -16,9 +16,7 @@ type InitMessage = {
   texelSize: number
   groundTops: Float32Array
   minimumSunSlope: number
-  contactRadiusMeters: number
-  contactHeightMeters: number
-  contactClearanceMeters: number
+  footprintHeightMeters: number
 }
 
 type SetMessage = { type: "set"; key: string; occluders: PackedFarOccluders }

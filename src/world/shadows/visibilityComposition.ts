@@ -16,3 +16,18 @@ export function composeRasterAtlasVisibility<T, W>(
   const detailedVisibility = darkest(rasterVisibility, atlasBaseVisibility)
   return blend(detailedVisibility, atlasBaseVisibility, rasterRetireWeight)
 }
+
+/** Decode weak conservative coverage plus a strong tight core from one sample. */
+export function composeDualEnvelopeVisibility<T, W>(
+  outerCeilingVisibility: T,
+  coreCeilingVisibility: T,
+  neutralVisibility: T,
+  outerStrength: W,
+  coreStrength: W,
+  blend: (a: T, b: T, weight: W) => T,
+  darkest: (a: T, b: T) => T,
+): T {
+  const outerVisibility = blend(neutralVisibility, outerCeilingVisibility, outerStrength)
+  const coreVisibility = blend(neutralVisibility, coreCeilingVisibility, coreStrength)
+  return darkest(outerVisibility, coreVisibility)
+}

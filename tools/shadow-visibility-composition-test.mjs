@@ -1,5 +1,8 @@
 import assert from "node:assert/strict"
-import { composeRasterAtlasVisibility } from "../src/world/shadows/visibilityComposition.ts"
+import {
+  composeDualEnvelopeVisibility,
+  composeRasterAtlasVisibility
+} from "../src/world/shadows/visibilityComposition.ts"
 
 const blend = (a, b, weight) => a + (b - a) * weight
 const compose = (raster, atlasBase, retire = 0) =>
@@ -35,5 +38,26 @@ for (const [index, expected] of [0.6, 0.625, 0.65, 0.675, 0.7].entries()) {
 // including the existing fully-lit result after the raster domain retires.
 assert.equal(compose(0.6, 1, 0), 0.6)
 assert.equal(compose(0.6, 1, 1), 1)
+
+const dualEnvelope = (outerCeilingVisibility, coreCeilingVisibility) =>
+  composeDualEnvelopeVisibility(
+    outerCeilingVisibility,
+    coreCeilingVisibility,
+    1,
+    0.18,
+    0.68,
+    blend,
+    Math.min
+  )
+const approximately = (actual, expected) => assert(Math.abs(actual - expected) < 1e-12)
+
+// The padded outer envelope can add only weak darkness; the tight core keeps
+// the full directional strength. Their overlap is a union, not multiplication.
+approximately(dualEnvelope(0, 1), 0.82)
+approximately(dualEnvelope(1, 0), 0.32)
+approximately(dualEnvelope(0, 0), 0.32)
+assert.equal(dualEnvelope(1, 1), 1)
+approximately(dualEnvelope(0.25, 0.5), 0.66)
+assert.notEqual(dualEnvelope(0, 0), 0.82 * 0.32)
 
 console.log("shadow visibility composition: pass")

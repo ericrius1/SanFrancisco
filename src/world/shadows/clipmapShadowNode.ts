@@ -289,9 +289,6 @@ export class ClipmapShadowNode extends THREE.ShadowBaseNode {
     const localCenter = this.#localCenterUniform
     const localRight = this.#localRightUniform
     const localUp = this.#localUpUniform
-    const farCenter = this.#farCenterUniform
-    const farRight = this.#farRightUniform
-    const farUp = this.#farUpUniform
     const enabled = this.#enabledUniform
     const farFieldStrength = this.#farFieldStrengthUniform
     const farField = this.#farOcclusion?.replacementSampleNode() ?? null
@@ -315,9 +312,6 @@ export class ClipmapShadowNode extends THREE.ShadowBaseNode {
       const localOffset = positionWorld.sub(localCenter)
       const localRadius = localOffset.dot(localRight).abs()
         .max(localOffset.dot(localUp).abs())
-      const farOffset = positionWorld.sub(farCenter)
-      const farRadius = farOffset.dot(farRight).abs()
-        .max(farOffset.dot(farUp).abs())
       const farFieldVisibility = farField
         ? mix(1, farField.visibility as N, farFieldStrength)
         : null
@@ -327,6 +321,16 @@ export class ClipmapShadowNode extends THREE.ShadowBaseNode {
       // multiplying them here would darken buildings twice.
       const farFieldBase = farField && farFieldVisibility
         ? mix(1, farFieldVisibility as N, farField.coverage)
+        : null
+      // A focus-relative far-map edge is itself a moving square. Retiring the
+      // raster only in that band made raster-only darkness appear/disappear as
+      // the projection recentered, even though the atlas underneath was stable.
+      // At full coverage the world-locked atlas therefore owns everything past
+      // the local guard band; the far raster remains the exact fallback while
+      // atlas availability or its edge guard fades in, and when the pane turns
+      // atlas strength down.
+      const atlasOwnership = farField
+        ? farField.coverage.mul(farFieldStrength)
         : null
       const composeWithFarField = (rasterVisibility: N, rasterRetireWeight: N) => {
         if (!farFieldBase) return rasterVisibility
@@ -338,31 +342,20 @@ export class ClipmapShadowNode extends THREE.ShadowBaseNode {
           (a, b, weight) => (mix as N)(a, b, weight)
         )
       }
-
       If(localRadius.lessThan(42), () => {
         visibility.mulAssign(composeWithFarField(local as N, 0 as N))
       }).ElseIf(localRadius.lessThan(48), () => {
         const farWeight = smoothstep(42, 48, localRadius)
         const rasterVisibility = mix(local as N, far as N, farWeight)
-        visibility.mulAssign(composeWithFarField(rasterVisibility as N, 0 as N))
+        const rasterRetire = atlasOwnership
+          ? farWeight.mul(atlasOwnership)
+          : 0 as N
+        visibility.mulAssign(composeWithFarField(rasterVisibility as N, rasterRetire))
       }).Else(() => {
-        if (!farField || !farFieldBase) {
+        if (!farField || !farFieldBase || !atlasOwnership) {
           visibility.mulAssign(far as N)
         } else {
-          If(farRadius.lessThan(420), () => {
-            visibility.mulAssign(composeWithFarField(far as N, 0 as N))
-          }).ElseIf(farRadius.lessThan(500), () => {
-            const handoff = smoothstep(420, 500, farRadius).mul(farField.coverage)
-            visibility.mulAssign(composeWithFarField(far as N, handoff as N))
-          }).Else(() => {
-            // Stable interior pixels use only the atlas. During revision fades
-            // or at atlas edges, retain the raster map as a correctness fallback.
-            If(farField.coverage.greaterThan(0.995), () => {
-              visibility.mulAssign(farFieldBase as N)
-            }).Else(() => {
-              visibility.mulAssign(composeWithFarField(far as N, farField.coverage as N))
-            })
-          })
+          visibility.mulAssign(composeWithFarField(far as N, atlasOwnership))
         }
       })
 
