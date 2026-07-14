@@ -58,6 +58,14 @@ const MAX_SIM_SPEED = 1.35;
 const POOL_EDGE_INSET = 0.1;
 const HYSTERESIS_METRES = 12;
 const PLAYER_WAKE_REACH = 3.6;
+// A bounded impulse queue injects gameplay wakes (thrown balls, the local
+// wader/swimmer, and remote bathers) without ever reading GPU state back. The
+// per-dispatch cap keeps one burst of events from growing compute work.
+const MAX_QUEUED_IMPULSES = 64;
+const MAX_IMPULSES_PER_DISPATCH = 24;
+const MAX_IMPULSE_RADIUS = 3.2;
+const DEFAULT_IMPULSE_RADIUS = 0.72;
+const DEFAULT_IMPULSE_STRENGTH = 0.024;
 
 const FIELD_BOUNDS = (() => {
   let minX = Number.POSITIVE_INFINITY;
@@ -82,6 +90,39 @@ export type SutroBathsWaterPlayer = {
   z: number;
 };
 
+/**
+ * A bounded, WORLD-space disturbance applied by a dedicated GPU pass before the
+ * solver runs. `strength` is signed surface displacement in metres (a positive
+ * value lifts a crest); the pass always balances it with a matching trough so a
+ * burst of impulses never just adds water. Horizontal velocity is metres/second
+ * in world axes, so moving feet, balls, and remote bathers leave directional
+ * wakes. `foam` seeds the field's energy channel for a brighter churn.
+ */
+export type SutroWaterImpulse = {
+  x: number;
+  z: number;
+  radius?: number;
+  strength?: number;
+  velocityX?: number;
+  velocityZ?: number;
+  foam?: number;
+};
+
+/** True when a WORLD-space point sits inside any of the seven pool rectangles. */
+export function isInsideSutroPool(x: number, z: number): boolean {
+  const local = sutroWorldToLocal(x, z);
+  return poolAtLocal(local.x, local.z, 0) !== null;
+}
+
+/**
+ * Flat authored surface height of the pool a WORLD-space point sits in, or NaN
+ * when the point is outside every pool. All seven basins share one still-water
+ * plane, so this is the single source of truth interaction code samples against.
+ */
+export function poolWaterY(x: number, z: number): number {
+  return isInsideSutroPool(x, z) ? SUTRO_BATHS.waterY : Number.NaN;
+}
+
 export type SutroBathsWaterStats = {
   backend: string;
   grid: string;
@@ -96,6 +137,11 @@ export type SutroBathsWaterStats = {
   substeps: number;
   running: boolean;
   playerDistance: number;
+  impulseCapacity: number;
+  queuedImpulses: number;
+  impulses: number;
+  totalImpulses: number;
+  droppedImpulses: number;
   revision: number;
 };
 
@@ -120,6 +166,9 @@ export type SutroBathsWaterSimulation = {
   setEnabled(enabled: boolean): void;
   syncTuning(): void;
   reset(): void;
+  /** Injects a bounded WORLD-space wake. Returns false for invalid/out-of-pool
+   * points or when the bounded queue is already full. */
+  queueImpulse(impulse: SutroWaterImpulse): boolean;
   readonly stats: SutroBathsWaterStats;
   debugState(): SutroBathsWaterDebugState;
   dispose(): void;
@@ -247,6 +296,15 @@ export function createSutroBathsWaterSimulation(
   const stateBRead = storage(stateB.value, "vec4", CELL_COUNT).toReadOnly();
   const derivativesRead = storage(derivatives.value, "vec4", CELL_COUNT).toReadOnly();
 
+  // header = (site-local x, site-local z, radius, signed height displacement)
+  // motion = (site-local x velocity, site-local z velocity, foam, unused)
+  const impulseHeaderData = new Float32Array(MAX_IMPULSES_PER_DISPATCH * 4);
+  const impulseMotionData = new Float32Array(MAX_IMPULSES_PER_DISPATCH * 4);
+  const impulseHeaders = instancedArray(impulseHeaderData, "vec4").toReadOnly();
+  const impulseMotions = instancedArray(impulseMotionData, "vec4").toReadOnly();
+  const impulseHeadersRead = storage(impulseHeaders.value, "vec4", MAX_IMPULSES_PER_DISPATCH).toReadOnly();
+  const impulseMotionsRead = storage(impulseMotions.value, "vec4", MAX_IMPULSES_PER_DISPATCH).toReadOnly();
+
   const stepDtU = uniform(FIXED_STEP / 4);
   const timeU = uniform(0);
   const pressureU = uniform(2.3);
@@ -260,11 +318,55 @@ export function createSutroBathsWaterSimulation(
   // xy = nearest wet point in site-local space; zw = local player velocity.
   const playerWakeU = uniform(new THREE.Vector4());
   const playerInfluenceU = uniform(0);
+  const impulseCountU = uniform(0, "uint");
 
   const resetCompute = Fn(() => {
     stateA.element(instanceIndex).assign(vec4(0));
     stateB.element(instanceIndex).assign(vec4(0));
     derivatives.element(instanceIndex).assign(vec4(0));
+  })().compute(CELL_COUNT, [WORKGROUP_SIZE]);
+
+  // A zero-net-volume Mexican-hat displacement writes a crest and matching
+  // trough rather than continuously adding water, and lays directional velocity
+  // into the field so a ball splash, wader footfall, or remote bather leaves a
+  // moving wake. The fixed loop is bounded so a gameplay burst never grows GPU
+  // work. Header/motion positions are site-local, matching the grid axes.
+  const impulseCompute = Fn(() => {
+    const gx = instanceIndex.mod(uint(GRID_WIDTH));
+    const gz = instanceIndex.div(uint(GRID_WIDTH));
+    const cell = vec2(
+      float(gx).mul(CELL_SIZE_X).add(FIELD_BOUNDS.minX),
+      float(gz).mul(CELL_SIZE_Z).add(FIELD_BOUNDS.minZ)
+    );
+    const meta = metadataRead.element(instanceIndex);
+    const value = stateA.element(instanceIndex);
+    const heightDelta = float(0).toVar();
+    const motionDelta = vec2(0).toVar();
+    const foamDelta = float(0).toVar();
+
+    for (let i = 0; i < MAX_IMPULSES_PER_DISPATCH; i++) {
+      const header = impulseHeadersRead.element(uint(i));
+      const motion = impulseMotionsRead.element(uint(i));
+      const enabled = select(uint(i).lessThan(impulseCountU), float(1), float(0));
+      const offset = cell.sub(header.xy);
+      const radius = header.z.max(Math.min(CELL_SIZE_X, CELL_SIZE_Z) * 1.5);
+      const radiusSquared = offset.dot(offset).div(radius.mul(radius));
+      const envelope = exp(radiusSquared.mul(-0.5)).mul(enabled);
+      const balancedWave = envelope.mul(float(1).sub(radiusSquared.mul(0.5)));
+      heightDelta.addAssign(balancedWave.mul(header.w));
+      motionDelta.addAssign(motion.xy.mul(envelope));
+      foamDelta.addAssign(motion.z.mul(envelope));
+    }
+
+    const nextHeight = clamp(value.x.add(heightDelta), -MAX_SIM_HEIGHT, MAX_SIM_HEIGHT);
+    const nextVelocity = value.yz.add(motionDelta);
+    const next = vec4(
+      nextHeight,
+      nextVelocity.x,
+      nextVelocity.y,
+      clamp(value.w.add(foamDelta), 0, 1)
+    );
+    value.assign(select(meta.x.greaterThan(0.5), next, vec4(0)));
   })().compute(CELL_COUNT, [WORKGROUP_SIZE]);
 
   const buildAnalyze = (source: typeof stateARead) =>
@@ -454,6 +556,11 @@ export function createSutroBathsWaterSimulation(
     substeps: 2,
     running: false,
     playerDistance: Number.POSITIVE_INFINITY,
+    impulseCapacity: MAX_QUEUED_IMPULSES,
+    queuedImpulses: 0,
+    impulses: 0,
+    totalImpulses: 0,
+    droppedImpulses: 0,
     revision: 0
   };
   group.userData.waterSimulation = stats;
@@ -466,6 +573,17 @@ export function createSutroBathsWaterSimulation(
   let accumulator = 0;
   let pendingReset = true;
   let previousPlayerLocal: { x: number; z: number } | null = null;
+  // Each entry already carries site-local coordinates and a site-local velocity,
+  // so packing into the GPU buffers stays a plain copy with no per-frame math.
+  const impulseQueue: {
+    localX: number;
+    localZ: number;
+    radius: number;
+    strength: number;
+    velocityX: number;
+    velocityZ: number;
+    foam: number;
+  }[] = [];
 
   const countDispatches = (count: number) => {
     stats.dispatches += count;
@@ -497,6 +615,82 @@ export function createSutroBathsWaterSimulation(
     if (disposed) return;
     accumulator = 0;
     pendingReset = true;
+    impulseQueue.length = 0;
+    stats.impulses = 0;
+    stats.queuedImpulses = 0;
+  };
+
+  const queueImpulse = (impulse: SutroWaterImpulse): boolean => {
+    if (disposed || impulseQueue.length >= MAX_QUEUED_IMPULSES) {
+      stats.droppedImpulses++;
+      return false;
+    }
+    if (!Number.isFinite(impulse.x) || !Number.isFinite(impulse.z)) {
+      stats.droppedImpulses++;
+      return false;
+    }
+    if (!isInsideSutroPool(impulse.x, impulse.z)) {
+      stats.droppedImpulses++;
+      return false;
+    }
+    const radius = THREE.MathUtils.clamp(
+      Number.isFinite(impulse.radius) ? impulse.radius! : DEFAULT_IMPULSE_RADIUS,
+      Math.min(CELL_SIZE_X, CELL_SIZE_Z) * 1.5,
+      MAX_IMPULSE_RADIUS
+    );
+    const local = sutroWorldToLocal(impulse.x, impulse.z);
+    // Only the rotation half of the world->local transform applies to a
+    // velocity vector; the grid axes are the site-local axes.
+    const c = Math.cos(SUTRO_BATHS.yaw);
+    const s = Math.sin(SUTRO_BATHS.yaw);
+    const worldVx = Number.isFinite(impulse.velocityX) ? impulse.velocityX! : 0;
+    const worldVz = Number.isFinite(impulse.velocityZ) ? impulse.velocityZ! : 0;
+    impulseQueue.push({
+      localX: local.x,
+      localZ: local.z,
+      radius,
+      strength: THREE.MathUtils.clamp(
+        Number.isFinite(impulse.strength) ? impulse.strength! : -DEFAULT_IMPULSE_STRENGTH,
+        -MAX_SIM_HEIGHT * 0.82,
+        MAX_SIM_HEIGHT * 0.82
+      ),
+      velocityX: THREE.MathUtils.clamp(c * worldVx - s * worldVz, -MAX_SIM_SPEED, MAX_SIM_SPEED),
+      velocityZ: THREE.MathUtils.clamp(s * worldVx + c * worldVz, -MAX_SIM_SPEED, MAX_SIM_SPEED),
+      foam: THREE.MathUtils.clamp(Number.isFinite(impulse.foam) ? impulse.foam! : 0.06, 0, 1)
+    });
+    stats.queuedImpulses = impulseQueue.length;
+    return true;
+  };
+
+  const applyQueuedImpulses = (): boolean => {
+    const count = Math.min(impulseQueue.length, MAX_IMPULSES_PER_DISPATCH);
+    if (count === 0) return false;
+    for (let i = 0; i < count; i++) {
+      const impulse = impulseQueue[i];
+      const offset = i * 4;
+      impulseHeaderData[offset] = impulse.localX;
+      impulseHeaderData[offset + 1] = impulse.localZ;
+      impulseHeaderData[offset + 2] = impulse.radius;
+      impulseHeaderData[offset + 3] = impulse.strength;
+      impulseMotionData[offset] = impulse.velocityX;
+      impulseMotionData[offset + 1] = impulse.velocityZ;
+      impulseMotionData[offset + 2] = impulse.foam;
+      impulseMotionData[offset + 3] = 0;
+    }
+    impulseHeaders.value.needsUpdate = true;
+    impulseMotions.value.needsUpdate = true;
+    impulseCountU.value = count;
+    renderer.compute(impulseCompute);
+    countDispatches(1);
+    impulseCountU.value = 0;
+    impulseQueue.splice(0, count);
+    stats.impulses += count;
+    stats.totalImpulses += count;
+    stats.queuedImpulses = impulseQueue.length;
+    // Guarantee at least one boundary-constrained solve this frame so the fresh
+    // wake starts propagating rather than sitting as a static bump.
+    accumulator = Math.max(accumulator, FIXED_STEP);
+    return true;
   };
 
   const warmup = async () => {
@@ -505,6 +699,7 @@ export function createSutroBathsWaterSimulation(
     // storage in its clean initial state. This is one initialization sequence,
     // not a simulation tick; normal proximity gating still owns all updates.
     await renderer.computeAsync(resetCompute);
+    await renderer.computeAsync(impulseCompute);
     await renderer.computeAsync(solverGroup);
     await renderer.computeAsync(resetCompute);
     pendingReset = false;
@@ -524,6 +719,7 @@ export function createSutroBathsWaterSimulation(
     const frameDt = Math.min(Math.max(Number.isFinite(dt) ? dt : 0, 0), 0.1);
     stats.dispatches = 0;
     stats.ticks = 0;
+    stats.impulses = 0;
     stats.playerDistance = distanceToSutroWater(player.x, player.z);
     timeU.value = Number.isFinite(time) ? time : 0;
     syncTuning();
@@ -563,10 +759,16 @@ export function createSutroBathsWaterSimulation(
     if (!proximityActive || !apiEnabled || !tuningEnabled) {
       accumulator = 0;
       stats.running = false;
+      // Drop wakes queued while the field is asleep so they cannot pile up to
+      // the cap and then start being rejected the moment a player returns.
+      impulseQueue.length = 0;
+      stats.queuedImpulses = 0;
       return;
     }
 
     if (pendingReset) performReset();
+    // Inject gameplay wakes into stateA before the ping-pong solver reads it.
+    const appliedImpulse = applyQueuedImpulses();
     accumulator = Math.min(accumulator + frameDt, FIXED_STEP * MAX_TICKS_PER_FRAME);
     while (accumulator >= FIXED_STEP && stats.ticks < MAX_TICKS_PER_FRAME) {
       for (let substep = 0; substep < stats.substeps; substep++) {
@@ -577,7 +779,7 @@ export function createSutroBathsWaterSimulation(
       stats.ticks++;
       stats.totalTicks++;
     }
-    stats.running = true;
+    stats.running = stats.ticks > 0 || appliedImpulse;
   };
 
   const debugState = (): SutroBathsWaterDebugState => {
@@ -601,6 +803,7 @@ export function createSutroBathsWaterSimulation(
     disposed = true;
     group.removeFromParent();
     resetCompute.dispose();
+    impulseCompute.dispose();
     analyzeACompute.dispose();
     integrateABCompute.dispose();
     analyzeBCompute.dispose();
@@ -611,6 +814,9 @@ export function createSutroBathsWaterSimulation(
     disposeStorageBuffer(stateA);
     disposeStorageBuffer(stateB);
     disposeStorageBuffer(derivatives);
+    disposeStorageBuffer(impulseHeaders);
+    disposeStorageBuffer(impulseMotions);
+    impulseQueue.length = 0;
   };
 
   syncTuning();
@@ -623,6 +829,7 @@ export function createSutroBathsWaterSimulation(
     setEnabled,
     syncTuning,
     reset,
+    queueImpulse,
     stats,
     debugState,
     dispose

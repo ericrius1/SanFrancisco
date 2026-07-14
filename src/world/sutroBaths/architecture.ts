@@ -1,4 +1,14 @@
 import * as THREE from "three/webgpu";
+import {
+  dot,
+  float,
+  mix,
+  normalView,
+  oneMinus,
+  positionViewDirection,
+  saturate,
+  uniform
+} from "three/tsl";
 import { BodyType, type Physics } from "../../core/physics";
 import { SUTRO_BATHS, SUTRO_POOLS, sutroLocalToWorld } from "./layout";
 
@@ -100,24 +110,61 @@ function standardMaterial(
   return new THREE.MeshStandardMaterial({ color, roughness, metalness });
 }
 
+/**
+ * A node glass material whose head-on opacity is very low (see-through to
+ * ocean/sky) while grazing angles keep a glassy sheen, via a fresnel term.
+ * `edgeOpacity` is a tunable uniform driven by the "/" panel glassOpacity.
+ */
+type GlassNodeMaterial = THREE.MeshStandardNodeMaterial & {
+  edgeOpacityUniform: { value: number };
+};
+
+/** Reference glassOpacity at which the edge targets below are hit exactly. */
+const GLASS_OPACITY_REF = 0.12;
+const FRESNEL_POWER = 3;
+
+function createGlassMaterial(opts: {
+  color: number;
+  roughness: number;
+  metalness: number;
+  /** Fixed head-on opacity floor (very clear). */
+  clearOpacity: number;
+  /** Grazing-angle opacity at the reference tuning value (tunable). */
+  edgeOpacity: number;
+}): GlassNodeMaterial {
+  const mat = new THREE.MeshStandardNodeMaterial({
+    color: opts.color,
+    roughness: opts.roughness,
+    metalness: opts.metalness,
+    transparent: true,
+    depthWrite: false,
+    side: THREE.DoubleSide
+  }) as GlassNodeMaterial;
+  const edgeOpacity = uniform(opts.edgeOpacity);
+  const clearOpacity = float(opts.clearOpacity);
+  // fresnel = pow(1 - saturate(dot(normalView, viewDir)), FRESNEL_POWER)
+  //  -> ~0 head-on (clear), ~1 at grazing angles (glassy sheen).
+  const facing = saturate(dot(normalView, positionViewDirection));
+  const fresnel = oneMinus(facing).pow(FRESNEL_POWER);
+  mat.opacityNode = mix(clearOpacity, edgeOpacity, fresnel);
+  mat.edgeOpacityUniform = edgeOpacity;
+  return mat;
+}
+
 function createMaterials() {
-  const roofGlass = new THREE.MeshStandardMaterial({
+  const roofGlass = createGlassMaterial({
     color: COLORS.glass,
     roughness: 0.2,
     metalness: 0.05,
-    transparent: true,
-    opacity: DEFAULT_TUNING.glassOpacity,
-    depthWrite: false,
-    side: THREE.DoubleSide
+    clearOpacity: 0.06,
+    edgeOpacity: 0.34
   });
-  const windowGlass = new THREE.MeshStandardMaterial({
+  const windowGlass = createGlassMaterial({
     color: COLORS.oceanGlass,
     roughness: 0.12,
     metalness: 0.02,
-    transparent: true,
-    opacity: Math.min(0.5, DEFAULT_TUNING.glassOpacity * 1.7),
-    depthWrite: false,
-    side: THREE.DoubleSide
+    clearOpacity: 0.05,
+    edgeOpacity: 0.3
   });
   const bulb = new THREE.MeshStandardMaterial({
     color: COLORS.lamp,
@@ -1327,8 +1374,19 @@ export function createSutroBathsArchitecture(
   let requestedLampIntensity = DEFAULT_TUNING.lampIntensity;
 
   const applyTuning = (values: SutroBathsArchitectureTuning) => {
-    mats.roofGlass.opacity = THREE.MathUtils.clamp(values.glassOpacity, 0.02, 0.78);
-    mats.windowGlass.opacity = THREE.MathUtils.clamp(values.glassOpacity * 1.7, 0.08, 0.72);
+    // glassOpacity scales the grazing-angle sheen; the head-on clear floor is
+    // fixed inside createGlassMaterial so the player always sees through.
+    const glassScale = Math.max(0, values.glassOpacity) / GLASS_OPACITY_REF;
+    mats.roofGlass.edgeOpacityUniform.value = THREE.MathUtils.clamp(
+      0.34 * glassScale,
+      0.04,
+      0.6
+    );
+    mats.windowGlass.edgeOpacityUniform.value = THREE.MathUtils.clamp(
+      0.3 * glassScale,
+      0.04,
+      0.55
+    );
     requestedLampIntensity = Math.max(0, values.lampIntensity);
     mats.bulb.emissiveIntensity = 0.55 + Math.min(3.8, requestedLampIntensity * 0.32);
   };
