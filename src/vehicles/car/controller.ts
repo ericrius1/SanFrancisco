@@ -55,7 +55,7 @@ export type CarSlideFeedback = {
   blend: number;
   /** Combined bumper + handbrake skid intensity for VFX/audio. */
   intensity: number;
-  /** −1 left bumper, +1 right, 0 none / handbrake-only. */
+  /** −1 left / +1 right slide side, 0 none / handbrake-only. */
   dir: number;
   /** Half track width / rear axle offset for tire mark placement. */
   track: number;
@@ -77,6 +77,8 @@ export class CarController implements ModeController {
   #slideBoost = 0;
   #skidIntensity = 0;
   #slideDir = 0;
+  /** Last non-zero steer side while LB slide is held (neutral stick keeps this). */
+  #slideSteerLatch = 0;
   #skidTrack = 0.9;
   #skidRear = 1.6;
   #supportClearance = 0;
@@ -164,6 +166,7 @@ export class CarController implements ModeController {
     this.#slideBoost = 0;
     this.#skidIntensity = 0;
     this.#slideDir = 0;
+    this.#slideSteerLatch = 0;
     this.#supportClearance = 0;
     this.#jumpPeakY = p.y;
     this.#jumpMaxClearance = 0;
@@ -275,13 +278,26 @@ export class CarController implements ModeController {
     const steer = input.axis("KeyD", "KeyA");
     const handbrake = input.down("Space");
     const boost = input.down("ShiftLeft");
-    // LB/RB (or [ / ]) pick a slide side; both cancel. Space stays classic omni drift.
-    const slideLeft =
-      input.down("PadSlideLeft") || input.down("BracketLeft") || input.down("KeyQ");
-    const slideRight = input.down("PadSlideRight") || input.down("BracketRight");
+    // Keyboard [ / ] (and Q) pick a side; pad LB slides whichever way you're
+    // steering. RB is intentionally unbound. Space stays classic omni drift.
+    const slideLeftKb = input.down("BracketLeft") || input.down("KeyQ");
+    const slideRightKb = input.down("BracketRight");
+    const slidePad = input.down("PadSlideLeft");
     let slideDir = 0;
-    if (slideLeft && !slideRight) slideDir = -1;
-    else if (slideRight && !slideLeft) slideDir = 1;
+    if (slideLeftKb && !slideRightKb) {
+      slideDir = -1;
+      this.#slideSteerLatch = 0;
+    } else if (slideRightKb && !slideLeftKb) {
+      slideDir = 1;
+      this.#slideSteerLatch = 0;
+    } else if (slidePad) {
+      // Same sign as steer so "steer into the slide" yaw bite still works.
+      if (Math.abs(steer) > 0.12) this.#slideSteerLatch = Math.sign(steer);
+      slideDir = this.#slideSteerLatch;
+    } else {
+      this.#slideSteerLatch = 0;
+    }
+    const slideHeld = slideLeftKb || slideRightKb || slidePad;
     this.steerVis += (steer - this.steerVis) * Math.min(1, dt * 9);
 
     const td = CAR_TUNING.values;
@@ -292,7 +308,7 @@ export class CarController implements ModeController {
     const fwdSpeed = ctx.velocity.dot(fwd);
     const maxSpeed = (boost ? td.boostMaxSpeed : td.maxSpeed) * spec.maxFactor;
     const speedOk = Math.abs(fwdSpeed) >= td.slideMinSpeed;
-    const bumperSlide = slideDir !== 0 && speedOk;
+    const bumperSlide = slideHeld && speedOk;
 
     // Soft engage/recover so bumper slip isn't binary ice ↔ glue.
     const slideTarget = bumperSlide ? 1 : 0;
@@ -302,7 +318,7 @@ export class CarController implements ModeController {
     if (this.#slideBlend < 1e-3) this.#slideBlend = 0;
 
     if (bumperSlide) this.#slideHold += dt;
-    else if (slideDir === 0) {
+    else if (!slideHeld) {
       // Award snap turbo only on bumper release (not when speed just dips).
       if (this.#slideHold >= td.slideBoostMinTime && td.slideBoostImpulse > 0) {
         this.#slideBoost = Math.max(this.#slideBoost, td.slideBoostImpulse);
@@ -393,6 +409,7 @@ export class CarController implements ModeController {
       this.#slideBoost = 0;
       this.#skidIntensity = 0;
       this.#slideDir = 0;
+      this.#slideSteerLatch = 0;
       return;
     }
 

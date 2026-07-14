@@ -1106,7 +1106,8 @@
         user-select: none;
         z-index: var(--z-hud-raised);
       }
-      #hud .car-launcher-ui[hidden] {
+      /* display:flex above beats the UA [hidden] rule; keep mode-gated ateliers off-screen */
+      #hud .avatar-ui[hidden] {
         display: none !important;
       }
       /* invite link button — sits under the avatar toggle; the open avatar
@@ -3563,9 +3564,20 @@
         z-index: -2;
         background-image: url("/ui/san-francisco-survey-map.webp");
         background-repeat: no-repeat;
-        background-position: center 48%;
-        background-size: max(820px, 76vw) auto;
+        background-position: 44% 47%;
+        background-size: max(900px, 80vw) auto;
         filter: saturate(0.82) contrast(0.94);
+        transform-origin: 62% 40%;
+        animation: atlas-drift 54s ease-in-out infinite alternate;
+        will-change: transform;
+      }
+      /* Slow "living atlas" push toward the Golden Gate. */
+      @keyframes atlas-drift {
+        from { transform: scale(1.015); }
+        to   { transform: scale(1.055); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #loading::before { animation: none; }
       }
       #loading::after {
         content: "";
@@ -3622,15 +3634,15 @@
       }
       #loading .ocean-label {
         position: absolute;
-        left: 8%;
-        top: 43%;
+        left: 50%;
+        top: 11%;
         writing-mode: vertical-rl;
         transform: rotate(180deg);
         font-style: italic;
-        font-size: clamp(13px, 1.25vw, 18px);
+        font-size: clamp(12px, 1.1vw, 16px);
         font-weight: 500;
-        letter-spacing: 0.28em;
-        opacity: 0.56;
+        letter-spacing: 0.3em;
+        opacity: 0.5;
       }
       #loading .map-caption {
         position: absolute;
@@ -3643,8 +3655,8 @@
       }
       #loading .compass {
         position: absolute;
-        left: 18%;
-        bottom: 12%;
+        left: 52%;
+        top: 58%;
         width: 70px;
         height: 70px;
         display: grid;
@@ -3672,11 +3684,55 @@
       #loading .compass span {
         transform: translateY(-28px);
       }
+      /* Ink annotations on the revealed coast — the folio pointing out its
+         landmarks now that the cartouche has stepped off them. */
+      #loading .map-pin {
+        position: absolute;
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        color: rgba(66, 55, 41, 0.82);
+        font-style: italic;
+        font-size: clamp(11px, 1vw, 15px);
+        font-weight: 600;
+        letter-spacing: 0.13em;
+        text-transform: uppercase;
+        text-shadow: 0 1px rgba(240, 228, 196, 0.72);
+        white-space: nowrap;
+        animation: pin-in 0.9s var(--ease) 0.5s both;
+      }
+      #loading .map-pin::before {
+        content: "";
+        flex: none;
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        border: 1px solid rgba(122, 63, 44, 0.9);
+        background: rgba(154, 84, 52, 0.42);
+        box-shadow: 0 0 0 3px rgba(154, 84, 52, 0.12);
+      }
+      #loading .pin-gate {
+        left: 60%;
+        top: 15%;
+        color: rgba(120, 61, 43, 0.92);
+      }
+      #loading .pin-presidio {
+        left: 72%;
+        top: 44%;
+      }
+      #loading .pin-landsend {
+        left: 52.5%;
+        top: 34%;
+      }
+      @keyframes pin-in {
+        from { opacity: 0; transform: translateY(-4px); }
+      }
       #loading .start-card {
         position: relative;
         width: min(100%, 500px);
         max-height: 100%;
-        justify-self: center;
+        justify-self: start;
+        margin-left: clamp(12px, 5.5vw, 104px);
         box-sizing: border-box;
         padding: clamp(32px, 4vw, 56px) clamp(28px, 4.2vw, 58px) clamp(26px, 3.3vw, 46px);
         overflow-y: auto;
@@ -4000,7 +4056,8 @@
         }
         #loading .folio-number,
         #loading .ocean-label,
-        #loading .compass {
+        #loading .compass,
+        #loading .map-pin {
           display: none;
         }
         #loading .map-caption {
@@ -4010,6 +4067,7 @@
         #loading .start-card {
           width: min(100%, 440px);
           justify-self: center;
+          margin-left: 0;
           padding: 36px clamp(24px, 8vw, 44px) 30px;
         }
         #loading h1 {
@@ -4193,6 +4251,9 @@
         <span class="folio-number">Plate I · 37° 46′ N</span>
         <span class="ocean-label">Pacific Ocean</span>
         <span class="compass"><span>N</span></span>
+        <span class="map-pin pin-gate">Golden Gate</span>
+        <span class="map-pin pin-presidio">The Presidio</span>
+        <span class="map-pin pin-landsend">Lands End</span>
         <span class="map-caption">Drawn from field notes, local stories, weather, light, and the wandering of every visitor.</span>
       </div>
       <main class="start-card">

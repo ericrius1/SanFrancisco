@@ -168,6 +168,8 @@ export class Player {
   heading = 0;
   speed = 0;
   time = 0; // sim seconds, advanced by fixed steps (controllers read this)
+  /** Set by main from the indoor camera gate; walk/run scale by indoorSpeed. */
+  indoor = false;
 
   // physics runs on a fixed 60 Hz step but the display can render faster
   // (120 Hz ProMotion). Rendering the raw body transform makes the world stutter

@@ -42,6 +42,7 @@ export class ScooterSelector {
   #toggle: HTMLButtonElement;
   #config: ScooterConfig;
   #open = false;
+  #visible = false;
   #onChange: (config: ScooterConfig) => void;
   #onPreview: (config: ScooterConfig) => void;
   #onOpen: () => void;
@@ -75,6 +76,7 @@ export class ScooterSelector {
   }
 
   setOpen(open: boolean): void {
+    if (open && !this.#visible) return;
     this.#open = open;
     this.#root.classList.toggle("open", open);
     this.#toggle.setAttribute("aria-expanded", String(open));
@@ -86,6 +88,7 @@ export class ScooterSelector {
 
   /** Scooter-mode slot only — hide when another (or no) customizer owns the HUD. */
   setVisible(visible: boolean): void {
+    this.#visible = visible;
     this.#root.hidden = !visible;
     if (!visible && this.#open) this.setOpen(false);
   }

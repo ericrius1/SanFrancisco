@@ -36,6 +36,7 @@ export class CarSelector {
   #toggle: HTMLButtonElement;
   #config: CarConfig;
   #open = false;
+  #visible = false;
   #onChange: (config: CarConfig) => void;
   #onPreview: (config: CarConfig) => void;
   #onOpen: () => void;
@@ -67,6 +68,7 @@ export class CarSelector {
   }
 
   setOpen(open: boolean): void {
+    if (open && !this.#visible) return;
     this.#open = open;
     this.#root.classList.toggle("open", open);
     this.#toggle.setAttribute("aria-expanded", String(open));
@@ -77,6 +79,7 @@ export class CarSelector {
 
   /** Drive-mode slot only — hide when another (or no) customizer owns the HUD. */
   setVisible(visible: boolean): void {
+    this.#visible = visible;
     this.#root.hidden = !visible;
     if (!visible && this.#open) this.setOpen(false);
   }

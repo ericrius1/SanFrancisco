@@ -20,9 +20,9 @@ export const CAR_TUNING = tunables("movement.drive", {
   rideSpring: { v: 10 },
   groundNormalResponse: { v: 12 },
 
-  // Bumper power-slide (LB/RB, keyboard [ / ]). Arcade slip with a soft engage /
-  // recover blend so it feels punchy rather than icy or binary. Space handbrake
-  // stays the looser classic drift; bumpers are the directional kart-style slide.
+  // Bumper power-slide (LB + steer, keyboard [ / ]). Arcade slip with a soft
+  // engage / recover blend so it feels punchy rather than icy or binary. Space
+  // handbrake stays the looser classic drift; LB is the directional kart slide.
   slideLat: { v: 0.4, min: 0.2, max: 0.95, step: 0.01, label: "slide slip" },
   slideYaw: { v: 0.7, min: 0, max: 4, step: 0.05, label: "slide yaw" },
   slideSteerRate: { v: 1.85, min: 0.5, max: 6, step: 0.05, label: "slide steer" },

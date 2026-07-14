@@ -50,6 +50,7 @@ export class SurfboardSelector {
   #onPreview: (config: SurfboardConfig) => void;
   #onOpen: () => void;
   #open = false;
+  #visible = false;
   #previewCanvases = new Map<PadKind, HTMLCanvasElement>();
   #surfaceSource = document.createElement("canvas");
   #previewFrame = 0;
@@ -87,6 +88,7 @@ export class SurfboardSelector {
   }
 
   setOpen(open: boolean): void {
+    if (open && !this.#visible) return;
     this.#open = open;
     this.#root.classList.toggle("open", open);
     this.#toggle.setAttribute("aria-expanded", String(open));
@@ -102,6 +104,7 @@ export class SurfboardSelector {
 
   /** The shaping room belongs exclusively to the surf activity context. */
   setVisible(visible: boolean): void {
+    this.#visible = visible;
     this.#root.hidden = !visible;
     if (!visible && this.#open) this.setOpen(false);
   }

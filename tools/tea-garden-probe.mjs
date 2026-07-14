@@ -43,6 +43,7 @@ for (const stop of TEA_GARDEN_TOUR_STOPS) {
 }
 
 const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+const viteConfigSource = readFileSync(new URL("../vite.config.ts", import.meta.url), "utf8");
 const citygenSource = readFileSync(new URL("../src/world/citygen/stream/ring.ts", import.meta.url), "utf8");
 const tourSource = readFileSync(new URL("../src/world/japaneseTeaGarden/dialogue.ts", import.meta.url), "utf8");
 const architectureSource = readFileSync(new URL("../src/world/japaneseTeaGarden/architecture.ts", import.meta.url), "utf8");
@@ -59,6 +60,16 @@ const guideSource = readFileSync(new URL("../src/world/japaneseTeaGarden/guide.t
 const teaMasterSource = readFileSync(new URL("../src/world/japaneseTeaGarden/teaMaster.ts", import.meta.url), "utf8");
 const teaGardenSources = [mainSource, tourSource, architectureSource, costumeSource, guideSource, teaMasterSource].join("\n");
 assert.match(mainSource, /excludeBuilding:\s*isTeaGardenBuilding/, "CityGen is not excluding authored Tea Garden buildings");
+assert.match(
+  viteConfigSource,
+  /if \(path === "\*"\)[\s\S]*module graph invalidated[\s\S]*return \(send/,
+  "Vite can strand a stale Three/TSL module graph after dependency optimization"
+);
+assert.equal(
+  viteConfigSource.includes('code.replaceAll(\n      "location.reload()"'),
+  false,
+  "Vite reconnect/HMR recovery reloads are disabled, which can duplicate Three/TSL state"
+);
 assert.match(mainSource, /tiles\.suppressBuilding\(building\.key, building\.index\)/, "baked Tea Garden colliders are not suppressed");
 assert.match(mainSource, /get\("tour"\) === "hiro"/, "Hiro deep-link contract disappeared");
 assert.match(citygenSource, /excludeBuilding\?\./, "CityGen exclusion seam disappeared");

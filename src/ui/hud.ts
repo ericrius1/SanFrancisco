@@ -106,7 +106,7 @@ const PAD: Record<PlayerMode, Row[]> = {
     { c: ["RS"], label: "look" },
     { c: ["RT"], label: "gas" },
     { c: ["LS"], label: "steer" },
-    { c: ["LB", "RB"], label: "power slide" },
+    { c: ["LB"], label: "power slide" },
     { c: ["A"], label: "handbrake" },
     { c: ["L3", "LT"], label: "boost" },
     { c: ["Y"], label: "get out" },
@@ -116,7 +116,7 @@ const PAD: Record<PlayerMode, Row[]> = {
     { c: ["RS"], label: "look" },
     { c: ["RT"], label: "go" },
     { c: ["LS"], label: "steer" },
-    { c: ["LB", "RB"], label: "power slide" },
+    { c: ["LB"], label: "power slide" },
     { c: ["A"], label: "handbrake" },
     { c: ["L3", "LT"], label: "boost" },
     { c: ["Y"], label: "hop off" }
@@ -183,8 +183,8 @@ const PAD: Record<PlayerMode, Row[]> = {
 // one-liner flavor tip under the controls
 const TIPS: Partial<Record<PlayerMode, string>> = {
   walk: "Every building has a front door — walk in and explore",
-  drive: "LB/RB power-slide · release for a snap boost · Space handbrake",
-  scooter: "LB/RB power-slide · ramps launch cleanly · rear seat fits a friend",
+  drive: "LB power-slide with steer · release for a snap boost · Space handbrake",
+  scooter: "LB power-slide with steer · ramps launch cleanly · rear seat fits a friend",
   board: "White glow = nose · pull right stick back in the air to flip",
   surf: "Neutral input keeps you riding · mouse and right stick cannot move this camera",
   bird: "Look down + Shift to stoop — skim the bay for spray"

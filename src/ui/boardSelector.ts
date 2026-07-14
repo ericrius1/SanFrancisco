@@ -109,6 +109,7 @@ export class BoardSelector {
   #onSoundEdit: () => void;
   #onOpen: () => void;
   #open = false;
+  #visible = false;
   #previewCanvases = new Map<LabKind, HTMLCanvasElement>();
   #surfaceSource = document.createElement("canvas");
   #previewFrame = 0;
@@ -152,6 +153,7 @@ export class BoardSelector {
   }
 
   setOpen(open: boolean) {
+    if (open && !this.#visible) return;
     this.#open = open;
     this.#root.classList.toggle("open", open);
     this.#toggle.setAttribute("aria-expanded", String(open));
@@ -166,6 +168,7 @@ export class BoardSelector {
 
   /** Board-mode slot only — hide when another (or no) customizer owns the HUD. */
   setVisible(visible: boolean): void {
+    this.#visible = visible;
     this.#root.hidden = !visible;
     if (!visible && this.#open) this.setOpen(false);
   }

@@ -1248,6 +1248,8 @@ async function boot() {
   carLauncher.appendChild(carLauncherButton);
   document.getElementById("hud")!.appendChild(carLauncher);
   const ensureCarCustomizer = (open = false) => {
+    // Drive-mode only — refuse open/load intent while another locomotion owns the slot.
+    if (open && player.mode !== "drive") return;
     if (open) openCarSelectorAfterLoad = true;
     if (carSelector) {
       if (open) carSelector.setOpen(true);
@@ -1315,6 +1317,8 @@ async function boot() {
     ensureSurfboardCustomizer(true);
   });
   ensureSurfboardCustomizer = (open = false) => {
+    // Surf-mode only — shaping room must never open from Drive/Walk/etc.
+    if (open && player.mode !== "surf") return;
     if (open) openSurfboardSelectorAfterLoad = true;
     if (surfboardSelector) {
       if (open) surfboardSelector.setOpen(true);
@@ -3360,7 +3364,12 @@ async function boot() {
       // stuck in the previous indoor/outdoor mode.
       if (!worldArrival.active) citygenRing.current?.update(player.position, frameDt);
       if (inOrbit()) { chase.suspend(player); orbit.update(frameDt); }
-      else { chase.indoor = (citygenRing.current?.isPlayerInside() ?? false) || (missionDolores?.isPlayerInside(player.position) ?? false); chase.update(frameDt, player, input); }
+      else {
+        player.indoor = chase.indoor =
+          (citygenRing.current?.isPlayerInside() ?? false) ||
+          (missionDolores?.isPlayerInside(player.position) ?? false);
+        chase.update(frameDt, player, input);
+      }
       // keep the vehicle hum, ambience and social presence alive like full pause
       vehicleAudio.update(frameDt, {
         mode: player.mode,
@@ -4049,7 +4058,9 @@ async function boot() {
       chase.suspend(player);
       orbit.update(frameDt);
     } else {
-      chase.indoor = (citygenRing.current?.isPlayerInside() ?? false) || (missionDolores?.isPlayerInside(player.position) ?? false); // blend into the indoor eye rig
+      player.indoor = chase.indoor =
+        (citygenRing.current?.isPlayerInside() ?? false) ||
+        (missionDolores?.isPlayerInside(player.position) ?? false); // blend into the indoor eye rig
       chase.update(frameDt, player, input);
     }
     // World-anchored dialogue must project after the chase/orbit/cinematic has

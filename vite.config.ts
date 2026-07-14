@@ -103,11 +103,15 @@ const starlinkApiPlugin = (): Plugin => ({
 });
 
 /**
- * Soft HMR: keep in-place module swaps, block every automatic full page reload.
+ * Soft HMR: keep in-place module swaps for ordinary source edits, but never
+ * preserve a page whose JavaScript module graph is no longer valid.
  *
- * Vite still reloads on (1) full-reload WS messages, (2) HMR websocket reconnect
- * after a server restart, and (3) circular-import HMR failures via location.reload.
- * (1) is dropped on the server; (2)+(3) are neutered by rewriting the Vite client.
+ * Vite uses a `full-reload` with path `*` when optimized dependencies change.
+ * Suppressing that message can leave two generations of Three/TSL in one tab:
+ * NodeBuilder then owns one TSL stack while node `.assign()` reads the other,
+ * producing hundreds of "No stack defined" errors and missing node materials.
+ * Server reconnects and failed HMR boundaries are likewise allowed to reload;
+ * only path-specific full reloads from otherwise soft source edits are blocked.
  */
 const softHmrPlugin = (): Plugin => ({
   name: "sf-soft-hmr",
@@ -125,22 +129,15 @@ const softHmrPlugin = (): Plugin => ({
           "path" in payload && typeof (payload as { path?: unknown }).path === "string"
             ? (payload as { path: string }).path
             : "";
+        if (path === "*") {
+          console.info("[sf] module graph invalidated — allowing required full reload");
+          return (send as (...a: unknown[]) => unknown)(payload, ...args);
+        }
         console.info(`[sf] full reload suppressed${path ? ` (${path})` : ""} — refresh manually when ready`);
         return;
       }
       return (send as (...a: unknown[]) => unknown)(payload, ...args);
     }) as typeof server.ws.send;
-  },
-  transform(code, id) {
-    if (FULL_RELOAD_ENABLED || !HMR_ENABLED) return null;
-    // @vite/client — also match query-suffixed / Windows paths
-    const bare = id.split("?", 1)[0].replace(/\\/g, "/");
-    if (!bare.endsWith("/vite/dist/client/client.mjs")) return null;
-    if (!code.includes("location.reload()")) return null;
-    return code.replaceAll(
-      "location.reload()",
-      '(console.info("[sf] automatic reload suppressed — refresh manually when ready"), undefined)'
-    );
   }
 });
 

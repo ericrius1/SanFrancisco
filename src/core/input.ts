@@ -18,7 +18,7 @@ import { INPUT_TUNING } from "../config";
  * or flying as a bird (mouse-hold fire — ball / paint / bubbles; vehicles keep
  * RT as throttle and fire on X), and the triggers into the active mode's
  * throttle — fly routes RT to ↑ (LT is boost), bird routes LB/RB to Q/E twirl,
- * drive/scooter map LB/RB to PadSlideLeft/Right for bumper power-slides —
+ * drive/scooter map LB to PadSlideLeft (slide follows steer; RB left free) —
  * so modes/camera never see a second input path. `device` tracks
  * whichever input was touched last; the HUD swaps its control labels off it.
  *
@@ -64,8 +64,8 @@ const PAD_BUTTONS: Record<number, string> = {
   0: "Space", //     A: jump / ollie / drift / air brake / hover
   // 1 B: unbound
   3: "KeyE", //      Y: interact / enter-exit vehicle (RDR2-style)
-  4: "KeyQ", //      LB: drone down / bird twirl left / (drive also gets PadSlideLeft)
-  // 5 RB: bird twirl right / drive PadSlideRight — axis/synthetic (not KeyE, which exits)
+  4: "KeyQ", //      LB: drone down / bird twirl left / (drive: PadSlideLeft only — see pollPad)
+  // 5 RB: bird twirl right; drive/scooter leave unbound for a later action
   // 6 LT: boost / run / tuck — see pollPad (not in this table; must leave throttle)
   // 7 RT: fire — selected tool (ball / paint / bubbles); see pollPad
   8: "KeyM", //      Back/View: map (RDR2 holds Select for map; tap here)
@@ -425,7 +425,10 @@ export class Input {
       if (on) active = true;
       const code = PAD_BUTTONS[i];
       if (code) {
-        if (on) {
+        // Drive/scooter: LB is PadSlideLeft only — skip KeyQ so it can't force a left slide.
+        if (i === 4 && (this.#mode === "drive" || this.#mode === "scooter")) {
+          // PadSlideLeft is added below; RB stays unbound on purpose.
+        } else if (on) {
           held.add(code);
           if (!this.#padPrev[i]) this.#justPressed.add(code);
         }
@@ -461,13 +464,11 @@ export class Input {
     // When LT is boost, only RT feeds forward throttle (stick back still brakes).
     const trig = this.#mode === "walk" ? 0 : rt - (ltIsBoost ? 0 : lt);
     // bumpers: bird twirl (RB is axis-only so it doesn't impersonate KeyE / exit);
-    // drive/scooter power-slide uses synthetic codes so RB never aliases KeyE.
+    // drive/scooter: LB → PadSlideLeft only (steer picks the slide side; RB stays free).
     const lb = gp.buttons[4]?.pressed || (gp.buttons[4]?.value ?? 0) > 0.5 ? 1 : 0;
     const rb = gp.buttons[5]?.pressed || (gp.buttons[5]?.value ?? 0) > 0.5 ? 1 : 0;
-    if (this.#mode === "drive" || this.#mode === "scooter") {
-      if (lb) held.add("PadSlideLeft");
-      if (rb) held.add("PadSlideRight");
-    }
+    const vehicleSlide = this.#mode === "drive" || this.#mode === "scooter";
+    if (vehicleSlide && lb) held.add("PadSlideLeft");
     this.#padHeld = held;
     this.#padAxes.set("KeyA|KeyD", lx);
     this.#padAxes.set("KeyS|KeyW", -ly + (this.#triggerRoute ? 0 : trig));

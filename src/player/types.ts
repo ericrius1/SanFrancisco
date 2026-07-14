@@ -49,6 +49,8 @@ export interface PlayerCtx {
   speed: number;
   heading: number; // storage convention: facing + π
   time: number; // sim seconds, advanced by fixed steps
+  /** True while inside a building — walk/run use indoorSpeed. */
+  indoor: boolean;
   driveSpec: DriveSpec;
   /** Set before switching to walk from a water vehicle exit — skip the shore hop. */
   swimEnter?: boolean;
