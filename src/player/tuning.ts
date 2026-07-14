@@ -1,6 +1,6 @@
 import type { FolderApi, Pane } from "tweakpane";
 import { WALK_TUNING } from "./walk";
-import { CAR_LANDING_TUNING, CAR_TUNING } from "../vehicles/car";
+import { CAR_LANDING_TUNING, CAR_SKID_TUNING, CAR_TUNING } from "../vehicles/car";
 import { PLANE_TUNING } from "../vehicles/plane";
 import { BOAT_TUNING, SPEEDBOAT_TUNING } from "../vehicles/boat";
 import { DRONE_TUNING } from "../vehicles/drone";
@@ -48,6 +48,7 @@ export function addMovementTuning(pane: Pane | FolderApi): Record<PlayerMode, Fo
   WALK_TUNING.bind(folders.walk);
   CAR_TUNING.bind(folders.drive);
   CAR_LANDING_TUNING.bind(folders.drive.addFolder({ title: "landing feedback" }));
+  CAR_SKID_TUNING.bind(folders.drive.addFolder({ title: "skid marks · audio" }));
   SCOOTER_TUNING.bind(folders.scooter);
   PLANE_TUNING.bind(folders.plane);
   BOAT_TUNING.bind(folders.boat);

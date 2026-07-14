@@ -1,3 +1,13 @@
-export { animateCar, buildCarMesh, collectCarAnim, CAR_CONTACT_Y, CAR_RIDE_HEIGHT, type CarAnim } from "./mesh";
+export {
+  activateCarAssets,
+  animateCar,
+  buildCarMesh,
+  collectCarAnim,
+  CAR_CONTACT_Y,
+  CAR_RIDE_HEIGHT,
+  type CarAnim
+} from "./mesh";
 export { CarController } from "./controller";
 export { CAR_LANDING_TUNING, CAR_SKID_TUNING, CAR_TUNING } from "./tuning";
+export * from "./config";
+export { paintCarDecal, paintCarSurface, prepareCarSurface } from "./surfaceTexture";

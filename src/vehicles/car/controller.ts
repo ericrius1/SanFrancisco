@@ -57,6 +57,9 @@ export type CarSlideFeedback = {
   intensity: number;
   /** −1 left bumper, +1 right, 0 none / handbrake-only. */
   dir: number;
+  /** Half track width / rear axle offset for tire mark placement. */
+  track: number;
+  rear: number;
 };
 
 export class CarController implements ModeController {
@@ -74,6 +77,8 @@ export class CarController implements ModeController {
   #slideBoost = 0;
   #skidIntensity = 0;
   #slideDir = 0;
+  #skidTrack = 0.9;
+  #skidRear = 1.6;
   #supportClearance = 0;
   #positionYForDebug = 0;
   #jumpPeakY = 0;
@@ -143,7 +148,9 @@ export class CarController implements ModeController {
     return {
       blend: this.#slideBlend,
       intensity: this.#skidIntensity,
-      dir: this.#slideDir
+      dir: this.#slideDir,
+      track: this.#skidTrack,
+      rear: this.#skidRear
     };
   }
 
@@ -279,6 +286,8 @@ export class CarController implements ModeController {
 
     const td = CAR_TUNING.values;
     const spec = ctx.driveSpec;
+    this.#skidTrack = spec.halfExtents[0] * 0.78;
+    this.#skidRear = spec.halfExtents[2] * 0.72;
     const ground = this.#ground(ctx, ctx.position.x, ctx.position.z);
     const fwdSpeed = ctx.velocity.dot(fwd);
     const maxSpeed = (boost ? td.boostMaxSpeed : td.maxSpeed) * spec.maxFactor;

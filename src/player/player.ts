@@ -42,7 +42,7 @@ import {
   prepareBallGlowMaterial,
   TENNIS_BALL_COLOR
 } from "../fx/ballGlow";
-import { animateCar, buildCarMesh, CarController } from "../vehicles/car";
+import { activateCarAssets, animateCar, buildCarMesh, CarController, type CarConfig } from "../vehicles/car";
 import { buildPlaneMesh, collectPlaneAnim, FlyController, type PlaneAnim } from "../vehicles/plane";
 import { buildBoatMesh, buildSpeedboatMesh, BoatController, BOAT_TUNING, SPEEDBOAT_TUNING, type BoatSailRig } from "../vehicles/boat";
 import { buildDroneMesh, DroneController } from "../vehicles/drone";
@@ -280,7 +280,8 @@ export class Player {
     avatar: AvatarTraits = avatarFromSeed("local-default"),
     board?: BoardConfig,
     scooter?: ScooterConfig,
-    surfboard?: SurfboardConfig
+    surfboard?: SurfboardConfig,
+    car?: CarConfig
   ) {
     this.physics = physics;
     this.map = map;
@@ -309,7 +310,7 @@ export class Player {
     this.#walkRig.handR.add(this.#ballProp);
     this.meshes = {
       walk: walkGroup,
-      drive: buildCarMesh(),
+      drive: buildCarMesh(car),
       scooter: buildScooterMesh(scooter),
       plane: buildPlaneMesh(),
       boat: buildBoatMesh(),
@@ -467,6 +468,7 @@ export class Player {
     if (mode === "surf") void activateSurfboardAssets(this.meshes.surf);
     if (mode === "board") void activateBoardSurface(this.meshes.board);
     if (mode === "scooter") void activateScooterAssets(this.meshes.scooter);
+    if (mode === "drive" && this.meshes.drive === this.#defaultDriveMesh) void activateCarAssets(this.meshes.drive);
     // Imported phoenix geometry/plumage is likewise first-use only. The stable
     // root and controller already exist, so switching remains synchronous while
     // the visual asset hydrates into that root.
@@ -754,6 +756,13 @@ export class Player {
   /** One-shot landing telemetry; main owns the camera/audio/VFX consumers. */
   get driveLandingFeedback() {
     return this.#modes.drive.landingFeedback;
+  }
+
+  /** Continuous skid intensity for tire marks + audio (drive or scooter). */
+  get driveSlideFeedback() {
+    return this.mode === "scooter"
+      ? this.#modes.scooter.slideFeedback
+      : this.#modes.drive.slideFeedback;
   }
 
   get scooterJumpState() {
@@ -1277,6 +1286,36 @@ export class Player {
   /** Plane forward (fly mode). */
   get flyForward(): THREE.Vector3 {
     return this.#modes.plane.fwd;
+  }
+
+  /**
+   * Rebuild the player's stock car while preserving its world pose. If another
+   * drive-style mount currently owns drive mode, the customized car waits
+   * hidden until that mount is released.
+   */
+  setCarConfig(config: CarConfig) {
+    const old = this.#defaultDriveMesh;
+    const wasSelected = this.meshes.drive === old;
+    const next = buildCarMesh(config);
+    next.position.copy(old.position);
+    next.quaternion.copy(old.quaternion);
+    setEmbodimentVisible(old, false);
+    this.#scene.remove(old);
+    (old.userData.dispose as (() => void) | undefined)?.();
+    this.#scene.add(next);
+    this.#defaultDriveMesh = next;
+    if (wasSelected) {
+      this.meshes.drive = next;
+      this.#seatDriver(next);
+      setEmbodimentVisible(next, this.mode === "drive");
+      this.driveSpec = DEFAULT_DRIVE_SPEC;
+      if (this.mode === "drive") {
+        this.#lightPool.claim(next);
+        void activateCarAssets(next);
+      }
+    } else {
+      setEmbodimentVisible(next, false);
+    }
   }
 
   /**

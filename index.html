@@ -2257,6 +2257,9 @@
       #hud .surfboard-ui {
         right: max(182px, calc(env(safe-area-inset-right) + 182px));
       }
+      #hud .car-ui {
+        right: max(236px, calc(env(safe-area-inset-right) + 236px));
+      }
       #hud .surfboard-panel {
         width: min(430px, calc(100vw - 24px));
         max-height: min(80vh, 680px);
@@ -2286,6 +2289,38 @@
       }
       #hud .scooter-toggle .scooter-ic-front { left: 8px; }
       #hud .scooter-toggle .scooter-ic-rear { right: 8px; }
+      #hud .car-toggle .car-ic-body {
+        position: absolute;
+        left: 8px;
+        top: 18px;
+        width: 30px;
+        height: 13px;
+        border: 1px solid;
+        border-radius: 11px 12px 4px 4px;
+        transform: skewX(-8deg);
+        box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.2);
+      }
+      #hud .car-toggle .car-ic-body::before {
+        content: "";
+        position: absolute;
+        left: 9px;
+        top: -7px;
+        width: 14px;
+        height: 8px;
+        border-radius: 7px 8px 0 0;
+        background: rgba(80, 126, 150, 0.9);
+      }
+      #hud .car-toggle .car-ic-wheel {
+        position: absolute;
+        top: 28px;
+        width: 9px;
+        height: 9px;
+        border: 3px solid;
+        border-radius: 50%;
+        background: #0a0d10;
+      }
+      #hud .car-toggle .car-ic-front { left: 9px; }
+      #hud .car-toggle .car-ic-rear { right: 9px; }
       #hud .scooter-panel {
         width: min(390px, calc(100vw - 24px));
         max-height: min(78vh, 650px);
@@ -2810,9 +2845,93 @@
         font: 750 9px ui-monospace, SFMono-Regular, Menlo, monospace;
         text-align: right;
       }
+      /* car atelier: wider visual workshop, still the same compact game UI
+         language as the board/scooter editors. Generated art appears only in
+         the selected finish preview after the editor or car is activated. */
+      #hud .board-panel.car-panel {
+        width: min(470px, calc(100vw - 24px));
+        max-height: min(84dvh, 760px);
+        background:
+          radial-gradient(circle at 94% 4%, rgba(228, 157, 83, 0.14), transparent 39%),
+          linear-gradient(145deg, rgba(31, 25, 24, 0.97), rgba(7, 16, 23, 0.98));
+        border-color: rgba(235, 179, 113, 0.31);
+        box-shadow:
+          0 20px 52px rgba(0, 5, 10, 0.58),
+          inset 0 1px 0 rgba(255, 255, 255, 0.075),
+          inset 3px 0 0 rgba(224, 145, 75, 0.13);
+      }
+      #hud .car-panel .board-panel-head > span {
+        color: #ffd0a1;
+      }
+      #hud .car-preview-frame {
+        position: relative;
+        overflow: hidden;
+        border-radius: 9px;
+        border: 1px solid rgba(236, 184, 126, 0.2);
+        background: #0a1117;
+        box-shadow:
+          inset 0 0 22px rgba(0, 0, 0, 0.38),
+          0 7px 18px rgba(0, 4, 8, 0.2);
+      }
+      #hud .car-preview {
+        display: block;
+        width: 100%;
+        height: auto;
+        aspect-ratio: 704 / 260;
+      }
+      #hud .car-form-choice {
+        flex: 1 1 calc(50% - 4px);
+        min-width: 130px;
+        min-height: 42px;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        justify-content: center;
+        line-height: 1.05;
+      }
+      #hud .car-form-choice small {
+        margin-top: 4px;
+        color: rgba(226, 237, 239, 0.47);
+        font: 650 8px var(--font);
+        letter-spacing: 0.035em;
+        text-transform: uppercase;
+      }
+      #hud .car-form-choice.on small {
+        color: rgba(255, 219, 180, 0.7);
+      }
+      #hud .car-slider-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 5px 12px;
+        padding: 8px;
+        border: 1px solid rgba(235, 179, 113, 0.16);
+        border-radius: 9px;
+        background: rgba(4, 10, 15, 0.46);
+      }
+      #hud .car-slider {
+        min-width: 0;
+      }
+      #hud .car-slider input[type="range"] {
+        accent-color: #e99855;
+      }
+      #hud .car-slider output {
+        color: #ffd0a1;
+      }
       @media (max-width: 480px) {
         #hud .board-panel.scooter-panel {
           width: min(430px, calc(100vw - 16px));
+        }
+        #hud .board-panel.car-panel {
+          width: calc(100vw - 16px);
+          max-height: min(78dvh, 720px);
+        }
+        #hud .car-slider-grid {
+          grid-template-columns: minmax(0, 1fr);
+        }
+      }
+      @media (max-width: 360px) {
+        #hud .car-form-choice {
+          flex-basis: 100%;
         }
       }
       #hud .chat {

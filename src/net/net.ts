@@ -2,6 +2,7 @@ import type * as THREE from "three/webgpu";
 import type { PlayerMode } from "../player/types";
 import { avatarFromSeed, isDefaultAvatar, normalizeAvatarTraits, type AvatarTraits } from "../player/avatar";
 import { boardFromSeed, isDefaultBoard, normalizeBoardConfig, type BoardConfig } from "../vehicles/board/config";
+import { carFromSeed, isDefaultCar, normalizeCarConfig, type CarConfig } from "../vehicles/car";
 import { isDefaultScooter, normalizeScooterConfig, scooterFromSeed, type ScooterConfig } from "../vehicles/scooter";
 import {
   isDefaultSurfboard,
@@ -20,9 +21,9 @@ import {
  * hosting (static files on a CDN, relay elsewhere).
  *
  * Protocol (JSON, one room):
- *   → {t:"hi", name, avatar, board, scooter, surfboard} on open
- *   ← {t:"welcome", id, hue, name, players:[{id,name,hue,avatar,board,scooter,surfboard}]}
- *   ← {t:"join"|{t:"leave"}|{t:"name"}|{t:"avatar"}|{t:"board"}|{t:"scooter"}|{t:"surfboard"} roster changes
+ *   → {t:"hi", name, avatar, board, scooter, surfboard, car} on open
+ *   ← {t:"welcome", id, hue, name, players:[{id,name,hue,avatar,board,scooter,surfboard,car}]}
+ *   ← {t:"join"|{t:"leave"}|{t:"name"}|{t:"avatar"}|{t:"board"}|{t:"scooter"}|{t:"surfboard"}|{t:"car"} roster changes
  *   → {t:"s", d:[mode,x,y,z,qx,qy,qz,qw,speed,ride?]}   ~12 Hz while moving
  *   ← {t:"snap", ts, ps:[[id,...d]]}    batched world snapshot, ~12 Hz
  *   → {t:"rtc", to, payload}            voice signaling to one peer
@@ -62,6 +63,7 @@ export type RemoteInfo = {
   board?: BoardConfig;
   scooter?: ScooterConfig;
   surfboard?: SurfboardConfig;
+  car?: CarConfig;
   golf?: RemoteGolfState | null;
 };
 
@@ -233,6 +235,14 @@ function rosterScooter(id: number, raw: unknown): ScooterConfig {
   return scooterFromSeed(id);
 }
 
+function rosterCar(id: number, raw: unknown): CarConfig {
+  if (raw) {
+    const config = normalizeCarConfig(raw);
+    if (!isDefaultCar(config)) return config;
+  }
+  return carFromSeed(id);
+}
+
 // Surfboards use the same presence rule as the other customizable vehicles:
 // missing/invalid data gets a stable per-player seeded board. The relay already
 // sanitizes current-schema messages; normalizing here keeps mixed-version
@@ -299,16 +309,25 @@ export class Net {
   #board: BoardConfig | null;
   #scooter: ScooterConfig | null;
   #surfboard: SurfboardConfig | null;
+  #car: CarConfig | null;
   // serverTs → local-clock mapping (EWMA of arrival offset; interp buffer
   // absorbs the residual jitter)
   #clockOffset: number | null = null;
 
-  constructor(name = pickName(), avatar?: AvatarTraits, board?: BoardConfig, scooter?: ScooterConfig, surfboard?: SurfboardConfig) {
+  constructor(
+    name = pickName(),
+    avatar?: AvatarTraits,
+    board?: BoardConfig,
+    scooter?: ScooterConfig,
+    surfboard?: SurfboardConfig,
+    car?: CarConfig
+  ) {
     this.name = name;
     this.#avatar = avatar ? normalizeAvatarTraits(avatar) : null;
     this.#board = board ? normalizeBoardConfig(board) : null;
     this.#scooter = scooter ? normalizeScooterConfig(scooter) : null;
     this.#surfboard = surfboard ? normalizeSurfboardConfig(surfboard) : null;
+    this.#car = car ? normalizeCarConfig(car) : null;
     const envUrl = import.meta.env.VITE_WS_URL as string | undefined;
     const proto = location.protocol === "https:" ? "wss" : "ws";
     this.#url = envUrl || `${proto}://${location.host}/ws`;
@@ -402,7 +421,8 @@ export class Net {
           avatar: this.#avatar,
           board: this.#board,
           scooter: this.#scooter,
-          surfboard: this.#surfboard
+          surfboard: this.#surfboard,
+          car: this.#car
         })
       );
     };
@@ -458,7 +478,8 @@ export class Net {
             avatar: rosterAvatar(p.id, p.avatar),
             board: rosterBoard(p.id, p.board),
             scooter: rosterScooter(p.id, p.scooter),
-            surfboard: rosterSurfboard(p.id, p.surfboard)
+            surfboard: rosterSurfboard(p.id, p.surfboard),
+            car: rosterCar(p.id, p.car)
           });
           if (p.golf) this.golfStates.set(p.id, p.golf);
         }
@@ -476,7 +497,8 @@ export class Net {
           avatar: rosterAvatar(msg.id as number, msg.avatar),
           board: rosterBoard(msg.id as number, msg.board),
           scooter: rosterScooter(msg.id as number, msg.scooter),
-          surfboard: rosterSurfboard(msg.id as number, msg.surfboard)
+          surfboard: rosterSurfboard(msg.id as number, msg.surfboard),
+          car: rosterCar(msg.id as number, msg.car)
         });
         this.onRoster();
         break;
@@ -526,6 +548,14 @@ export class Net {
         const p = this.roster.get(msg.id as number);
         if (p) {
           p.surfboard = rosterSurfboard(p.id, msg.surfboard);
+          this.onRoster();
+        }
+        break;
+      }
+      case "car": {
+        const p = this.roster.get(msg.id as number);
+        if (p) {
+          p.car = rosterCar(p.id, msg.car);
           this.onRoster();
         }
         break;
@@ -762,6 +792,13 @@ export class Net {
     this.#surfboard = normalizeSurfboardConfig(surfboard);
     if (this.#ws?.readyState === WebSocket.OPEN) {
       this.#ws.send(JSON.stringify({ t: "surfboard", surfboard: this.#surfboard }));
+    }
+  }
+
+  setCar(car: CarConfig) {
+    this.#car = normalizeCarConfig(car);
+    if (this.#ws?.readyState === WebSocket.OPEN) {
+      this.#ws.send(JSON.stringify({ t: "car", car: this.#car }));
     }
   }
 

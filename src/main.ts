@@ -52,6 +52,7 @@ import type { PlayerMode } from "./player/types";
 import { ChaseCamera } from "./core/camera";
 import { FX } from "./fx/fx";
 import { BoardWake, WakeRipples } from "./fx/wake";
+import { SkidMarks } from "./fx/skidMarks";
 import { BirdTrails } from "./fx/birdTrail";
 import { WaterSplashes } from "./fx/splash";
 import { Fireworks } from "./fx/fireworks";
@@ -114,7 +115,16 @@ import { Minimap } from "./ui/minimap";
 import { PlayerLocator } from "./ui/playerLocator";
 import { avatarFromSeed, loadSavedAvatar, randomAvatarTraits, saveAvatarTraits } from "./player/avatar";
 import { boardFromSeed, boardVisualKey, loadSavedBoard, randomBoardConfig, saveBoardConfig, setLocalBoardConfig } from "./vehicles/board";
-import { CAR_LANDING_TUNING } from "./vehicles/car";
+import {
+  CAR_LANDING_TUNING,
+  carFromSeed,
+  carKey,
+  loadSavedCar,
+  randomCarConfig,
+  saveCarConfig,
+  setLocalCarConfig,
+  type CarConfig
+} from "./vehicles/car";
 import { loadSavedScooter, randomScooterConfig, saveScooterConfig, scooterFromSeed, scooterKey, setLocalScooterConfig } from "./vehicles/scooter";
 import {
   loadSavedSurfboard,
@@ -388,6 +398,7 @@ async function boot() {
   const fx = new FX(scene);
   const wake = new WakeRipples(scene);
   const boardWake = new BoardWake(scene, map, wake);
+  const skidMarks = new SkidMarks(scene, map);
   const splashes = new WaterSplashes(scene, wake, map);
   const fireworks = new Fireworks(renderer, scene, map);
   // Building four audio graphs on the first movement key caused a visible cold
@@ -449,6 +460,10 @@ async function boot() {
   const savedAvatar = loadSavedAvatar();
   let customized = savedAvatar !== null;
   let avatarTraits = savedAvatar ?? randomAvatarTraits();
+  const savedCar = loadSavedCar();
+  let carCustomized = savedCar !== null;
+  let carConfig = savedCar ?? randomCarConfig();
+  setLocalCarConfig(carConfig);
   // Board identity follows the exact same contract as the avatar: saved means
   // chosen; otherwise a placeholder until the server's per-id seed arrives.
   const savedBoard = loadSavedBoard();
@@ -466,7 +481,7 @@ async function boot() {
   let surfboardConfig = savedSurfboard ?? randomSurfboardConfig();
   setLocalSurfboardConfig(surfboardConfig);
   vehicleAudio.setBoardStyle(boardConfig);
-  const player = new Player(physics, map, scene, spawn, avatarTraits, boardConfig, scooterConfig, surfboardConfig);
+  const player = new Player(physics, map, scene, spawn, avatarTraits, boardConfig, scooterConfig, surfboardConfig, carConfig);
   player.holdForWorldArrival("boot-arrival");
   let initialCollisionEpoch = physics.prepareCollisionArrival(player.position);
   physics.activateCollisionArrival(initialCollisionEpoch);
@@ -537,6 +552,7 @@ async function boot() {
   let setSurfboardCustomizerMode: (active: boolean) => void = () => {};
   let setRemoteSurfboardAssetsActive: (active: boolean) => void = () => {};
   let setRemoteScooterAssetsActive: (active: boolean) => void = () => {};
+  let setRemoteCarAssetsActive: (active: boolean) => void = () => {};
   let leaveCameraModeForSurf: () => void = () => {};
   const birdTrails = new BirdTrails(scene, player.meshes.bird);
   const droneFireworkMounts = player.meshes.drone.userData.fireworkMounts as THREE.Object3D[] | undefined;
@@ -594,6 +610,7 @@ async function boot() {
     }
     setRemoteSurfboardAssetsActive(mode === "surf");
     setRemoteScooterAssetsActive(mode === "scooter");
+    setRemoteCarAssetsActive(mode === "drive");
     setSurfboardLauncherVisible(mode === "surf");
     setSurfboardCustomizerMode(mode === "surf");
     if (fresh) {
@@ -1084,15 +1101,18 @@ async function boot() {
     savedAvatar ?? undefined,
     savedBoard ?? undefined,
     savedScooter ?? undefined,
-    savedSurfboard ?? undefined
+    savedSurfboard ?? undefined,
+    savedCar ?? undefined
   );
   const remotes = new RemotePlayers(scene);
   remotes.localPlayerPosition = () => player.renderPosition;
   setRemoteSurfboardAssetsActive = (active) => remotes.setSurfboardAssetsEnabled(active);
   setRemoteScooterAssetsActive = (active) => remotes.setScooterAssetsEnabled(active);
+  setRemoteCarAssetsActive = (active) => remotes.setCarAssetsEnabled(active);
   // Startup/invite can enter surf before networking and its remote-art gate exist.
   setRemoteSurfboardAssetsActive(player.mode === "surf");
   setRemoteScooterAssetsActive(player.mode === "scooter");
+  setRemoteCarAssetsActive(player.mode === "drive");
   // The controller statically owns every pickleball mesh, UI and audio class,
   // so even constructing an empty facade would pull the activity into boot.
   // It is installed together with the Goldman site on first approach.
@@ -1165,6 +1185,56 @@ async function boot() {
       if (player.mode !== "scooter" && !player.riding) switchModeFromToolbar("scooter");
     }
   );
+  let carSelector: { setConfig(config: CarConfig): void; setOpen(open: boolean): void } | null = null;
+  let carSelectorLoading: Promise<void> | null = null;
+  let openCarSelectorAfterLoad = false;
+  const carLauncher = document.createElement("div");
+  carLauncher.className = "avatar-ui car-ui car-launcher-ui";
+  const carLauncherButton = document.createElement("button");
+  carLauncherButton.type = "button";
+  carLauncherButton.className = "avatar-toggle car-toggle";
+  carLauncherButton.title = "Open car atelier";
+  carLauncherButton.setAttribute("aria-label", "Open car atelier");
+  carLauncherButton.innerHTML = '<span class="car-ic-body"></span><span class="car-ic-wheel car-ic-front"></span><span class="car-ic-wheel car-ic-rear"></span>';
+  carLauncher.appendChild(carLauncherButton);
+  document.getElementById("hud")!.appendChild(carLauncher);
+  const ensureCarCustomizer = (open = false) => {
+    if (open) openCarSelectorAfterLoad = true;
+    if (carSelector) {
+      if (open) carSelector.setOpen(true);
+      return;
+    }
+    if (carSelectorLoading) return;
+    carSelectorLoading = import("./ui/carSelector")
+      .then(({ CarSelector }) => {
+        carSelector = new CarSelector(
+          carConfig,
+          (config) => {
+            carCustomized = true;
+            const changed = carKey(config) !== carKey(carConfig);
+            carConfig = config;
+            setLocalCarConfig(config);
+            saveCarConfig(config);
+            if (changed) player.setCarConfig(config);
+            net.setCar(config);
+          },
+          () => {
+            if (player.mode !== "drive" && !player.riding) switchModeFromToolbar("drive");
+          }
+        );
+        carLauncher.hidden = true;
+        if (openCarSelectorAfterLoad) carSelector.setOpen(true);
+        openCarSelectorAfterLoad = false;
+      })
+      .catch((error) => console.warn("[car] atelier failed to load", error))
+      .finally(() => {
+        carSelectorLoading = null;
+      });
+  };
+  carLauncherButton.addEventListener("click", () => {
+    input.releaseLock();
+    ensureCarCustomizer(true);
+  });
   const applySurfboardConfig = (config: SurfboardConfig) => {
     const changed = surfboardVisualKey(config) !== surfboardVisualKey(surfboardConfig);
     surfboardConfig = config;
@@ -1257,6 +1327,14 @@ async function boot() {
       player.setScooterConfig(scooterConfig);
       scooterSelector.setConfig(scooterConfig);
     }
+    if (carCustomized) {
+      net.setCar(carConfig);
+    } else {
+      carConfig = carFromSeed(net.selfId);
+      setLocalCarConfig(carConfig);
+      player.setCarConfig(carConfig);
+      carSelector?.setConfig(carConfig);
+    }
     if (surfboardCustomized) {
       net.setSurfboard(surfboardConfig);
     } else {
@@ -1277,6 +1355,7 @@ async function boot() {
         remotes.updateAvatar(info);
         remotes.updateBoard(info);
         remotes.updateScooter(info);
+        remotes.updateCar(info);
         remotes.updateSurfboard(info);
       }
     }
@@ -3178,7 +3257,8 @@ async function boot() {
         surfFace: player.mode === "surf" ? player.surfTelemetry.face : 0,
         surfFlow: player.mode === "surf" && player.surfTelemetry.flowActive ? 1 : 0,
         surfMotionRate: player.mode === "surf" ? player.surfTelemetry.riderMotionRate : 1,
-        driveVoice: player.driveSpec.voice ?? "engine"
+        driveVoice: player.driveSpec.voice ?? "engine",
+        driveSlide: player.driveSlideFeedback.intensity
       });
       swimAudio.update(frameDt, {
         swimming: player.swimming,
@@ -3866,6 +3946,7 @@ async function boot() {
     bubbles.update(frameDt, elapsed);
     wake.update(frameDt, elapsed, player);
     boardWake.update(frameDt, elapsed, player);
+    skidMarks.update(frameDt, elapsed, player);
     birdTrails.update(elapsed, player);
     splashes.update(frameDt, elapsed, player);
     surfExperience?.update(frameDt, player.mode, player.surfTelemetry);
@@ -3908,7 +3989,8 @@ async function boot() {
       surfFace: player.mode === "surf" ? player.surfTelemetry.face : 0,
       surfFlow: player.mode === "surf" && player.surfTelemetry.flowActive ? 1 : 0,
       surfMotionRate: player.mode === "surf" ? player.surfTelemetry.riderMotionRate : 1,
-      driveVoice: player.driveSpec.voice ?? "engine"
+      driveVoice: player.driveSpec.voice ?? "engine",
+      driveSlide: player.driveSlideFeedback.intensity
     });
     swimAudio.update(frameDt, {
       swimming: player.swimming,

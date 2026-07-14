@@ -13,6 +13,7 @@
 import type { PlayerMode } from "../player/types";
 import { effectsAudioLevel } from "../core/audioSettings";
 import { BOARD_PITCHES, type BoardHum } from "../vehicles/board/config";
+import { CAR_SKID_TUNING } from "../vehicles/car/tuning";
 
 export type VehicleSignals = {
   mode: PlayerMode;
@@ -28,6 +29,8 @@ export type VehicleSignals = {
   surfMotionRate?: number;
   /** When mode is drive: combustion car vs electric cart (etc). */
   driveVoice?: "engine" | "electric";
+  /** Drive/scooter bumper-slide + handbrake intensity (0..1) for skid bed. */
+  driveSlide?: number;
 };
 
 type Voice = {
@@ -178,6 +181,10 @@ export class VehicleAudio {
   #lastCarLandingStrength = 0;
   #lastCarLandingLevel = 0;
   #lastCarLandingPeak = 0;
+  /** Chill lo-fi tire scrub — shared by car + scooter, outside mode voices. */
+  #skidGain: GainNode | null = null;
+  #skidFilter: BiquadFilterNode | null = null;
+  #skidLevel = 0;
 
   constructor() {
     // autoplay policy: same unlock dance as the fireworks — build + resume on
@@ -205,6 +212,7 @@ export class VehicleAudio {
       lastCarLandingStrength: this.#lastCarLandingStrength,
       lastCarLandingLevel: this.#lastCarLandingLevel,
       lastCarLandingPeak: this.#lastCarLandingPeak,
+      skidLevel: this.#skidLevel,
       voices: this.#voices.map((v) => ({ mode: v.mode, level: v.level }))
     };
   }
@@ -414,6 +422,26 @@ export class VehicleAudio {
       v.level = approach(v.level, target, dt, 4.5);
       v.gain.gain.value = v.level;
     }
+    this.#driveSkid(sig, dt);
+  }
+
+  /**
+   * Soft rubber scrub under bumper slides / handbrake. Warm lowpassed noise —
+   * no squeal — presence-faded like SwimAudio so it eases in and out.
+   */
+  #driveSkid(sig: VehicleSignals | null, dt: number) {
+    if (!this.#skidGain || !this.#skidFilter) return;
+    const sliding =
+      !!sig &&
+      (sig.mode === "drive" || sig.mode === "scooter") &&
+      (sig.driveSlide ?? 0) > 0.02;
+    const amount = sliding ? clamp01(sig!.driveSlide ?? 0) : 0;
+    const tune = CAR_SKID_TUNING.values;
+    // Quadratic so light slides stay nearly silent; full slide stays chill.
+    const target = amount * amount * tune.audioGain;
+    this.#skidLevel = approach(this.#skidLevel, target, dt, sliding ? 5 : 3.5);
+    this.#skidGain.gain.value = this.#skidLevel;
+    this.#skidFilter.frequency.value = Math.min(900, Math.max(120, tune.audioTone)) + amount * 90;
   }
 
   #ensure(): AudioContext | null {
@@ -440,6 +468,15 @@ export class VehicleAudio {
     const n = this.#noise.getChannelData(0);
     for (let i = 0; i < n.length; i++) n[i] = Math.random() * 2 - 1;
 
+    // Brown-ish bed for tire scrub — integrated noise, warmer than white.
+    const brownBuf = ctx.createBuffer(1, sr * 2, sr);
+    const b = brownBuf.getChannelData(0);
+    let last = 0;
+    for (let i = 0; i < b.length; i++) {
+      last = (last + (Math.random() * 2 - 1) * 0.02) * 0.996;
+      b[i] = last * 3.5;
+    }
+
     this.#voices = [
       this.#buildBoard(ctx),
       this.#buildSurf(ctx),
@@ -451,6 +488,30 @@ export class VehicleAudio {
       this.#buildBird(ctx)
     ];
     for (const v of this.#voices) v.gain.connect(this.#master);
+
+    // Lo-fi skid: brown noise → soft lowpass → quiet gain. Lives beside voices
+    // so both combustion and EV (and scooter) share the same chill scrub.
+    const skidSrc = ctx.createBufferSource();
+    skidSrc.buffer = brownBuf;
+    skidSrc.loop = true;
+    const skidLp = ctx.createBiquadFilter();
+    skidLp.type = "lowpass";
+    skidLp.frequency.value = 340;
+    skidLp.Q.value = 0.55;
+    const skidBp = ctx.createBiquadFilter();
+    skidBp.type = "bandpass";
+    skidBp.frequency.value = 280;
+    skidBp.Q.value = 0.7;
+    const skidGain = ctx.createGain();
+    skidGain.gain.value = 0;
+    skidSrc.connect(skidLp);
+    skidLp.connect(skidBp);
+    skidBp.connect(skidGain);
+    skidGain.connect(this.#master);
+    skidSrc.start(0, Math.random() * 1.5);
+    this.#skidFilter = skidLp;
+    this.#skidGain = skidGain;
+
     return ctx;
   }
 

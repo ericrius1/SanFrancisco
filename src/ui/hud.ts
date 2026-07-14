@@ -97,10 +97,10 @@ const PAD: Record<PlayerMode, Row[]> = {
   walk: [
     { c: ["RS"], label: "look" },
     { c: ["LS"], label: "move" },
-    { c: ["RT"], label: "run" },
+    { c: ["L3"], label: "run" },
     { c: ["A"], label: "jump" },
     { c: ["Y"], label: "hop on a ride" },
-    { c: ["X"], label: "shoot" }
+    { c: ["RT"], label: "shoot" }
   ],
   drive: [
     { c: ["RS"], label: "look" },
@@ -108,7 +108,7 @@ const PAD: Record<PlayerMode, Row[]> = {
     { c: ["LS"], label: "steer" },
     { c: ["LB", "RB"], label: "power slide" },
     { c: ["A"], label: "handbrake" },
-    { c: ["RT"], label: "boost" },
+    { c: ["L3"], label: "boost" },
     { c: ["Y"], label: "get out" },
     { c: ["X"], label: "shoot" }
   ],
@@ -118,14 +118,14 @@ const PAD: Record<PlayerMode, Row[]> = {
     { c: ["LS"], label: "steer" },
     { c: ["LB", "RB"], label: "power slide" },
     { c: ["A"], label: "handbrake" },
-    { c: ["RT"], label: "boost" },
+    { c: ["L3"], label: "boost" },
     { c: ["Y"], label: "hop off" }
   ],
   plane: [
     { c: ["RS"], label: "aim nose" },
     { c: ["LS"], label: "turn" },
     { c: ["RT", "LT"], label: "throttle" },
-    { c: ["RT"], label: "boost" },
+    { c: ["L3"], label: "boost" },
     { c: ["A"], label: "air brake" },
     { c: ["X"], label: "shoot" }
   ],
@@ -133,14 +133,14 @@ const PAD: Record<PlayerMode, Row[]> = {
     { c: ["RS"], label: "look" },
     { c: ["RT", "LT"], label: "throttle" },
     { c: ["LS"], label: "steer" },
-    { c: ["RT"], label: "boost" },
+    { c: ["L3"], label: "boost" },
     { c: ["X"], label: "shoot" }
   ],
   speedboat: [
     { c: ["RS"], label: "look" },
     { c: ["RT", "LT"], label: "throttle" },
     { c: ["LS"], label: "steer" },
-    { c: ["RT"], label: "boost" },
+    { c: ["L3"], label: "boost" },
     { c: ["Y"], label: "get out" },
     { c: ["X"], label: "shoot" }
   ],
@@ -159,7 +159,7 @@ const PAD: Record<PlayerMode, Row[]> = {
     { c: ["LT"], label: "reverse" },
     { c: ["LS"], label: "carve" },
     { c: ["A"], label: "ollie" },
-    { c: ["RT"], label: "boost" },
+    { c: ["L3"], label: "boost" },
     { c: ["X"], label: "shoot" }
   ],
   surf: [
@@ -174,9 +174,9 @@ const PAD: Record<PlayerMode, Row[]> = {
     { c: ["RS"], label: "aim" },
     { c: ["LS"], label: "move" },
     { c: ["A"], label: "flap · climb" },
-    { c: ["RT"], label: "tuck dive" },
+    { c: ["L3"], label: "tuck dive" },
     { c: ["LB", "RB"], label: "twirl" },
-    { c: ["X"], label: "shoot" }
+    { c: ["RT"], label: "shoot" }
   ]
 }
 
@@ -215,9 +215,10 @@ const PANELS: Record<string, string> = {
   chat: ".chat",
   minimap: ".minimap",
   history: ".place-history",
-  avatar: ".avatar-ui:not(.board-ui):not(.scooter-ui)",
+  avatar: ".avatar-ui:not(.board-ui):not(.scooter-ui):not(.car-ui)",
   board: ".board-ui",
   scooter: ".scooter-ui",
+  car: ".car-ui",
   satchel: ".satchel",
   share: ".share-ui",
   tutorial: ".tutorial-ui, .tutorial-panel",

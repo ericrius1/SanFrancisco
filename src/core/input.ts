@@ -11,12 +11,14 @@ import { INPUT_TUNING } from "../config";
  *
  * A gamepad (Xbox standard mapping) rides the same logical rails: pollPad()
  * translates buttons into the key codes the game already reads (A→Space,
- * Y→E interact/mount like RDR2, RT→Shift, Back→map, …), the left stick into
- * the WASD axis pairs (radial deadzone + move curve from INPUT_TUNING), the
- * right stick into mouselook deltas outside the locked surf activity (same
- * deadzone + look curve), and the triggers into the active mode's throttle —
- * fly routes them to ↑/↓, bird routes LB/RB to Q/E twirl, drive/scooter map
- * LB/RB to PadSlideLeft/Right for bumper power-slides —
+ * Y→E interact/mount like RDR2, L3→Shift boost/run, Back→map, …), the left
+ * stick into the WASD axis pairs (radial deadzone + move curve from
+ * INPUT_TUNING), the right stick into mouselook deltas outside the locked surf
+ * activity (same deadzone + look curve), RT into the selected tool while walking
+ * or flying as a bird (mouse-hold fire — ball / paint / bubbles; vehicles keep
+ * RT as throttle and fire on X), and the triggers into the active mode's
+ * throttle — fly routes them to ↑/↓, bird routes LB/RB to Q/E twirl,
+ * drive/scooter map LB/RB to PadSlideLeft/Right for bumper power-slides —
  * so modes/camera/fireworks never see a second input path. `device` tracks
  * whichever input was touched last; the HUD swaps its control labels off it.
  *
@@ -50,20 +52,22 @@ function shapeAxis(v: number, deadzone: number, curve: number): number {
   return Math.sign(v) * Math.pow(remapped, Math.max(1, curve));
 }
 
-// button index (standard mapping) → key code it impersonates. X (2) is fire,
-// handled separately. Dpad ◀/▶ emit synthetic mode-cycle codes main.ts reads.
-// Face layout follows RDR2 conventions where they map cleanly: Y is the world
-// interact / mount / dismount button (keyboard E), not B.
+// button index (standard mapping) → key code it impersonates. X (2) and RT (7)
+// are fire (mouse-hold equivalent for the selected tool), handled separately.
+// Dpad ◀/▶ emit synthetic mode-cycle codes main.ts reads. Face layout follows
+// RDR2 conventions where they map cleanly: Y is the world interact / mount /
+// dismount button (keyboard E), not B. Boost/run/tuck live on L3 only so RT
+// can own the tool action.
 const PAD_BUTTONS: Record<number, string> = {
   0: "Space", //     A: jump / ollie / drift / air brake / hover
   // 1 B: unbound (RDR2 reload/melee — unused here)
   3: "KeyE", //      Y: interact / enter-exit vehicle (RDR2-style)
   4: "KeyQ", //      LB: drone down / bird twirl left / (drive also gets PadSlideLeft)
   // 5 RB: bird twirl right / drive PadSlideRight — axis/synthetic (not KeyE, which exits)
-  7: "ShiftLeft", // RT: boost / run / tuck
+  // 7 RT: fire — selected tool (ball / paint / bubbles); see pollPad
   8: "KeyM", //      Back/View: map (RDR2 holds Select for map; tap here)
   9: "KeyP", //      Start: pause
-  10: "ShiftLeft", //L3: boost too
+  10: "ShiftLeft", //L3: boost / run / tuck
   11: "KeyC", //     R3: cycle third / first / camera-controls
   12: "KeyB", //     dpad up: fireworks (held)
   13: "KeyG", //     dpad down: zero-g
@@ -405,6 +409,10 @@ export class Input {
     this.padConnected = true;
 
     let active = false;
+    let padFire = false;
+    // RT owns the selected tool on foot / as a bird. Elsewhere it is throttle
+    // (drive, board, plane, …) — those modes keep fire on X.
+    const rtFiresTool = this.#mode === "walk" || this.#mode === "bird";
     const held = new Set<string>();
     for (let i = 0; i < gp.buttons.length; i++) {
       const on = gp.buttons[i].pressed || gp.buttons[i].value > 0.5;
@@ -416,11 +424,18 @@ export class Input {
           if (!this.#padPrev[i]) this.#justPressed.add(code);
         }
       } else if (i === 2 && this.#mode !== "surf") {
+        // X: fire + map teleport
         if (on && !this.#padPrev[i]) this.firePressed = true;
-        this.#padFireHeld = on;
+        if (on) padFire = true;
+      } else if (i === 7 && rtFiresTool && !this.suspended) {
+        // RT: selected tool (mouse-hold). Skipped while suspended — expanded map
+        // uses RT for zoom, and orbit/UI should not paint.
+        if (on && !this.#padPrev[i]) this.firePressed = true;
+        if (on) padFire = true;
       }
       this.#padPrev[i] = on;
     }
+    this.#padFireHeld = padFire;
     const tune = INPUT_TUNING.values;
     const deadzone = tune.stickDeadzone;
     // Left stick: deadzone + move curve (vehicles/walk read these axes analog).
@@ -430,7 +445,8 @@ export class Input {
     const [rxLin, ryLin] = shapeStick(gp.axes[2] ?? 0, gp.axes[3] ?? 0, deadzone, 1);
     const lt = gp.buttons[6]?.value ?? 0;
     const rt = gp.buttons[7]?.value ?? 0;
-    const trig = rt - lt;
+    // Walk: stick-only move so holding RT to throw/paint does not also shove forward.
+    const trig = this.#mode === "walk" ? 0 : rt - lt;
     // bumpers: bird twirl (RB is axis-only so it doesn't impersonate KeyE / exit);
     // drive/scooter power-slide uses synthetic codes so RB never aliases KeyE.
     const lb = gp.buttons[4]?.pressed || (gp.buttons[4]?.value ?? 0) > 0.5 ? 1 : 0;

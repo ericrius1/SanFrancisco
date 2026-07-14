@@ -4,9 +4,11 @@ import {
   float,
   materialOpacity,
   mix,
+  modelWorldMatrix,
   positionWorld,
   smoothstep,
-  uniform
+  uniform,
+  vertexStage
 } from "three/tsl";
 import type { WorldMap } from "../../world/heightmap";
 
@@ -81,7 +83,11 @@ export function createSurfaceSoftSpriteMaterial(
   const surfacePlane = options.surfacePlane.clone();
   const plane = uniform(surfacePlane) as N;
   const feather = float(Math.max(0.01, options.feather));
-  const distance = cameraPosition.sub(positionWorld).length();
+  // Object distance is constant across a billboard. Evaluate it on the four
+  // vertices instead of repeating a square root for every covered pixel.
+  const distance = vertexStage(
+    cameraPosition.sub((modelWorldMatrix as N)[3].xyz).length()
+  ) as N;
   const heroWeight = smoothstep(
     float(SURFACE_SOFT_SPRITE.heroFullDistance),
     float(SURFACE_SOFT_SPRITE.heroEndDistance),
@@ -99,6 +105,7 @@ export function createSurfaceSoftSpriteMaterial(
     opacity: options.opacity ?? 1,
     rotation: options.rotation ?? 0
   });
+  material.name = "palace-surface-soft-sprite";
   material.opacityNode = materialOpacity.mul(mix(float(1), surfaceFade, heroWeight));
 
   return { material, surfacePlane };
