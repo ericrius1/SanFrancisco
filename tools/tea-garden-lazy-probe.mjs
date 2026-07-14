@@ -33,6 +33,7 @@ const VIEWPORT = { width: 1280, height: 800 };
 const TEA_ENTRANCE = { x: -2248.8, z: 2187.2 };
 const FEATURE_IDLE_MS = 2_000;
 const FEATURE_TIMEOUT_MS = 180_000;
+const DESTINATION_ESSENTIAL_BUDGET_MS = 8_000;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const TEA_CHUNK_MARKERS = [
@@ -162,6 +163,22 @@ async function discoverProductionContract() {
   const teaChunk = teaChunks[0];
   if (!contentHashedAsset(teaChunk, "js")) throw new Error(`Tea Garden chunk is not content-hashed: ${teaChunk}`);
   const teaSource = jsSources.get(teaChunk);
+  // The Tea Garden sits inside Golden Gate Park, but its first activation must
+  // not wake the broader Wildlands/golf/Afterlight owner merely because their
+  // proximity bounds overlap. Discover those content hashes from stable
+  // compiled markers instead of hard-coding build output names.
+  const unrelatedRegionChunks = jsNames.filter((name) => {
+    const source = jsSources.get(name);
+    return source.includes("wildlands_grass") ||
+      source.includes("GOLF_SITE_PADS") ||
+      source.includes("inAfterlightGroundcoverClear");
+  });
+  if (unrelatedRegionChunks.length < 3) {
+    throw new Error(
+      `Could not discover the deferred Wildlands/golf/Afterlight chunks: ` +
+      unrelatedRegionChunks.join(", ")
+    );
+  }
 
   const cssNames = files.filter((entry) => entry.isFile() && entry.name.endsWith(".css")).map((entry) => entry.name).sort();
   const teaStyles = [];
@@ -215,6 +232,7 @@ async function discoverProductionContract() {
     scannedChunks: jsNames.length,
     teaChunk,
     teaStyles,
+    unrelatedRegionChunks,
     directLogical,
     directCatalog: [...new Set([...artCatalog, ...teaCatalog])].sort(),
     nativeSelections: native.selections,
@@ -225,6 +243,7 @@ async function discoverProductionContract() {
 
 function makeClassifier(contract) {
   const teaStyles = new Set(contract.teaStyles);
+  const unrelatedRegionChunks = new Set(contract.unrelatedRegionChunks);
   const directExpected = new Map();
   for (const logical of contract.directLogical) {
     for (const variant of logical.variants) directExpected.set(variant, logical);
@@ -245,6 +264,7 @@ function makeClassifier(contract) {
     if (basename === contract.mainEntry) kinds.push("main-entry");
     if (basename === contract.teaChunk) kinds.push("tea-feature-chunk");
     if (teaStyles.has(basename)) kinds.push("tea-feature-style");
+    if (unrelatedRegionChunks.has(basename)) kinds.push("unrelated-region-chunk");
 
     const direct = directExpected.get(pathname);
     if (direct) {
@@ -279,7 +299,10 @@ function isTeaRecord(record) {
 }
 
 function isTrackedRecord(record) {
-  return isTeaRecord(record) || record.kinds.includes("native-manifest") || record.kinds.includes("native-runtime");
+  return isTeaRecord(record) ||
+    record.kinds.includes("native-manifest") ||
+    record.kinds.includes("native-runtime") ||
+    record.kinds.includes("unrelated-region-chunk");
 }
 
 function publicRecord(record) {
@@ -367,6 +390,9 @@ async function worldState(page) {
       sitePresent: Boolean(site),
       siteAttached: Boolean(site?.group?.parent === sf.scene),
       siteState: site?.debugState?.() ?? null,
+      teaGardenTiming: sf.lazyRegionTimings?.["tea-garden"] ?? null,
+      teaGardenBuildingSwap: sf.teaGardenBuildingSwapState?.() ?? null,
+      wildlandsPresent: Boolean(sf.wildlands),
       adjacentGardenPresent: Boolean(sf.garden),
       renderIdle: sf.renderIdle?.() === true
     };
@@ -401,6 +427,8 @@ async function main() {
   const consoleMessages = [];
   const serviceWorkers = [];
   const startedAt = performance.now();
+  const phaseStartedAt = new Map();
+  const milestones = {};
   let phase = "boot";
   let bootUrl;
 
@@ -408,6 +436,7 @@ async function main() {
   const nowMs = () => Math.round(performance.now() - startedAt);
   const setPhase = (next) => {
     phase = next;
+    phaseStartedAt.set(next, nowMs());
     activityAt.set(next, performance.now());
     console.log(`[tea-garden-lazy] phase: ${next}`);
   };
@@ -518,9 +547,52 @@ async function main() {
     expect("boot-is-far-from-tea-garden", bootState.entranceDistance > 2_000, bootState);
     expect("boot-no-tea-garden-chunk-style-or-media", !boot.some(isTeaRecord),
       boot.filter(isTeaRecord).map(publicRecord));
+    expect("boot-no-overlapping-park-or-activity-chunk",
+      !boot.some((record) => hasKind(record, "unrelated-region-chunk")),
+      boot.filter((record) => hasKind(record, "unrelated-region-chunk")).map(publicRecord));
     expect("boot-no-tea-garden-instance", !bootState.sitePresent && !bootState.siteAttached, bootState);
+    expect("boot-no-wildlands-instance", !bootState.wildlandsPresent, bootState);
+    expect("boot-keeps-baked-tea-garden-fallback", Boolean(
+      bootState.teaGardenBuildingSwap &&
+      !bootState.teaGardenBuildingSwap.claimed &&
+      bootState.teaGardenBuildingSwap.buildings.every((building) => !building.suppressed)
+    ), bootState.teaGardenBuildingSwap);
 
     setPhase("activation");
+    const activationStartedAt = nowMs();
+    const markWhen = async (id, predicate, argument = null) => {
+      await page.waitForFunction(predicate, argument, { timeout: FEATURE_TIMEOUT_MS });
+      milestones[id] = nowMs() - activationStartedAt;
+    };
+    const activationMilestones = [
+      markWhen("arrivalCommittedMs", ({ entrance }) => {
+        const sf = window.__sf;
+        return !sf.worldArrival?.active &&
+          Math.hypot(sf.player.position.x - entrance.x, sf.player.position.z - entrance.z) < 250;
+      }, { entrance: TEA_ENTRANCE }),
+      markWhen("siteConstructedMs", () => Boolean(window.__sf?.japaneseTeaGarden)),
+      markWhen("teaHouseVisibleMs", () => {
+        const sf = window.__sf;
+        const object = sf?.scene?.getObjectByName("japanese_tea_garden_tea_house");
+        if (!object) return false;
+        for (let current = object; current; current = current.parent) if (!current.visible) return false;
+        return true;
+      }),
+      markWhen("hiroVisibleMs", () => {
+        const sf = window.__sf;
+        const object = sf?.scene?.getObjectByName("tea_master_hiro");
+        if (!object) return false;
+        for (let current = object; current; current = current.parent) if (!current.visible) return false;
+        return true;
+      }),
+      markWhen("groundcoverVisibleMs", () => {
+        const sf = window.__sf;
+        const object = sf?.scene?.getObjectByName("tea_garden_moss_grass");
+        if (!object) return false;
+        for (let current = object; current; current = current.parent) if (!current.visible) return false;
+        return true;
+      })
+    ];
     await page.evaluate(({ entrance }) => {
       window.__sf.teleportToTarget(entrance.x, entrance.z, "Japanese Tea Garden");
     }, { entrance: TEA_ENTRANCE });
@@ -551,14 +623,19 @@ async function main() {
             timer = setTimeout(() => reject(new Error("Timed out waiting for Japanese Tea Garden ready")), timeoutMs);
           })
         ]);
-        await Promise.race([
-          window.__sf.renderer.backend.device.queue.onSubmittedWorkDone(),
-          new Promise((resolve) => setTimeout(resolve, 5_000))
-        ]);
       } finally {
         clearTimeout(timer);
       }
     }, { timeoutMs: FEATURE_TIMEOUT_MS });
+    milestones.siteReadyMs = nowMs() - activationStartedAt;
+    await page.evaluate(async () => {
+      await Promise.race([
+        window.__sf.renderer.backend.device.queue.onSubmittedWorkDone(),
+        new Promise((resolve) => setTimeout(resolve, 5_000))
+      ]);
+    });
+    milestones.queueSettledMs = nowMs() - activationStartedAt;
+    await Promise.all(activationMilestones);
     await waitForTrackedQuiet("activation", FEATURE_IDLE_MS, FEATURE_TIMEOUT_MS);
     const activationState = await worldState(page);
     const activation = phaseRecords("activation");
@@ -570,12 +647,40 @@ async function main() {
       !activationState.worldArrival?.active, activationState);
     expect("activation-tea-garden-ready-attached-awake", activationState.sitePresent &&
       activationState.siteAttached && activationState.siteState?.awake, activationState);
+    expect("activation-does-not-construct-overlapping-wildlands", !activationState.wildlandsPresent,
+      activationState);
+    expect("activation-atomically-claims-baked-fallback", Boolean(
+      activationState.teaGardenBuildingSwap?.claimed &&
+      activationState.teaGardenBuildingSwap.buildings.every((building) => building.suppressed) &&
+      activationState.teaGardenTiming?.events.some((event) => event.phase === "baked-swap")
+    ), {
+      swap: activationState.teaGardenBuildingSwap,
+      timing: activationState.teaGardenTiming
+    });
+    expect("activation-destination-essentials-visible-within-budget", [
+      milestones.teaHouseVisibleMs,
+      milestones.hiroVisibleMs,
+      milestones.groundcoverVisibleMs
+    ].every((elapsed) => elapsed <= DESTINATION_ESSENTIAL_BUDGET_MS), {
+      budgetMs: DESTINATION_ESSENTIAL_BUDGET_MS,
+      teaHouseVisibleMs: milestones.teaHouseVisibleMs,
+      hiroVisibleMs: milestones.hiroVisibleMs,
+      groundcoverVisibleMs: milestones.groundcoverVisibleMs,
+      arrivalCommittedMs: milestones.arrivalCommittedMs
+    });
     expect("activation-webgpu-only", activationState.renderer.webgpu && activationState.renderer.hasDevice,
       activationState.renderer);
     expect("activation-loads-one-discovered-feature-chunk", chunkRequests.length === 1,
       { expected: contract.teaChunk, requests: chunkRequests.map(publicRecord) });
     expect("activation-loads-one-discovered-feature-style", styleRequests.length === 1,
       { expected: contract.teaStyles, requests: styleRequests.map(publicRecord) });
+    expect("activation-isolates-tea-from-wildlands-golf-and-afterlight",
+      !activation.some((record) => hasKind(record, "unrelated-region-chunk")), {
+        deferredChunks: contract.unrelatedRegionChunks,
+        requests: activation
+          .filter((record) => hasKind(record, "unrelated-region-chunk"))
+          .map(publicRecord)
+      });
     expect("activation-loads-one-selected-direct-variant-per-slot", directAudit.every((entry) => entry.pass), directAudit);
     expect("activation-loads-only-complete-nearby-native-packs", nativeAudit.every((entry) => entry.pass), nativeAudit);
     const manifestRequests = [...boot, ...activation].filter((record) => hasKind(record, "native-manifest"));
@@ -587,6 +692,28 @@ async function main() {
     expect("activation-no-unselected-tea-tree-variant",
       !activation.some((record) => hasKind(record, "tea-native-unselected-variant")),
       activation.filter((record) => hasKind(record, "tea-native-unselected-variant")).map(publicRecord));
+
+    await page.evaluate(async () => {
+      const sf = window.__sf;
+      sf.sky.cycleEnabled = false;
+      sf.sky.setTimeOfDay(13.5);
+      const house = sf.scene.getObjectByName("japanese_tea_garden_tea_house");
+      if (house && typeof window.__sfFreeCam === "function") {
+        const bounds = new sf.THREE.Box3().setFromObject(house);
+        const center = bounds.getCenter(new sf.THREE.Vector3());
+        window.__sfFreeCam(
+          [center.x + 22, center.y + 8, center.z + 24],
+          [center.x, center.y + 1.5, center.z]
+        );
+      }
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      await Promise.race([
+        sf.renderer.backend.device.queue.onSubmittedWorkDone(),
+        new Promise((resolve) => setTimeout(resolve, 5_000))
+      ]);
+    });
+    const activationScreenshot = path.join(OUT, "activation.png");
+    await page.screenshot({ path: activationScreenshot });
 
     setPhase("subsequent");
     const actionState = await page.evaluate(async () => {
@@ -613,6 +740,9 @@ async function main() {
     expect("subsequent-zero-native-manifest-refetch",
       !subsequent.some((record) => hasKind(record, "native-manifest")),
       subsequent.filter((record) => hasKind(record, "native-manifest")).map(publicRecord));
+    expect("subsequent-keeps-overlapping-region-owner-deferred",
+      !subsequent.some((record) => hasKind(record, "unrelated-region-chunk")),
+      subsequent.filter((record) => hasKind(record, "unrelated-region-chunk")).map(publicRecord));
 
     const featureFailures = records.filter((record) =>
       isTrackedRecord(record) && (record.failure || (record.status != null && record.status >= 400))
@@ -650,6 +780,18 @@ async function main() {
         },
         subsequent: { state: actionState, summary: summarize(subsequent), requests: subsequent.map(publicRecord) }
       },
+      timings: {
+        phaseStartedAtMs: Object.fromEntries(phaseStartedAt),
+        activation: {
+          ...milestones,
+          firstTeaRequestMs: Math.min(...activation.filter(isTeaRecord)
+            .map((record) => record.atMs - activationStartedAt)),
+          firstFeatureChunkRequestMs: Math.min(...chunkRequests
+            .map((record) => record.atMs - activationStartedAt)),
+          runtimeTrace: activationState.teaGardenTiming
+        }
+      },
+      artifacts: { activationScreenshot },
       pageErrors,
       consoleMessages,
       serviceWorkers
@@ -663,6 +805,7 @@ async function main() {
     console.log(`[tea-garden-lazy] boot ${summarize(boot).teaRequests} Tea request(s)`);
     console.log(`[tea-garden-lazy] activation ${summarize(activation).teaRequests} Tea request(s)`);
     console.log(`[tea-garden-lazy] subsequent ${summarize(subsequent).teaRequests} Tea request(s)`);
+    console.log(`[tea-garden-lazy] activation timings ${JSON.stringify(result.timings.activation)}`);
     console.log(`[tea-garden-lazy] report ${RESULT_PATH}`);
     if (!result.pass) process.exitCode = 1;
   } finally {

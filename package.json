@@ -12,6 +12,7 @@
     "check:native-foliage-textures": "node tools/build-native-foliage-textures.mjs --check",
     "build:drum-bridge-textures": "node tools/build-drum-bridge-textures.mjs",
     "test:native-trees": "node --experimental-strip-types src/world/treeCompiler/probe.ts && node --experimental-strip-types src/world/vegetation/nativeTreeRecipes.probe.ts",
+    "test:native-tree-lod-transition": "node --experimental-strip-types tools/native-tree-lod-transition-test.mjs",
     "precompress": "node tools/precompress-dist.mjs",
     "render:buskers": "node tools/render-buskers-cinematic.mjs",
     "render:cinematic": "node tools/render-cinematic.mjs",

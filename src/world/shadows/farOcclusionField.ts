@@ -1,6 +1,7 @@
 import * as THREE from "three/webgpu"
 import { mix, positionWorld, renderGroup, smoothstep, texture, uniform } from "three/tsl"
 import { FAR_OCCLUDER_STRIDE } from "./farOcclusionCore"
+import { composeDualEnvelopeVisibility } from "./visibilityComposition"
 
 type N = any
 
@@ -8,22 +9,18 @@ export const FAR_OCCLUSION_DEFAULTS = {
   /** 16 m resolves skyline-scale massing while keeping the full SF atlas < 4 MB. */
   targetTexelSize: 16,
   maxResolution: 1024,
-  /** The 1024 m clipmap is 512 m from centre to edge; overlap hides the handoff. */
-  fadeStartDistance: 420,
-  fadeEndDistance: 560,
-  shadowStrength: 0.68,
-  contactStrength: 0.16,
-  contactRadiusMeters: 16,
-  contactHeightMeters: 3,
-  // Larger than plausible 16 m-cell terrain relief, so an empty steep hillside
-  // remains neutral; only collider proximity raises the contact ceiling.
-  contactClearanceMeters: 32,
-  contactVerticalSoftnessMeters: 2,
+  /** Weak darkness for the conservative half-texel-padded outer envelope. */
+  outerShadowStrength: 0.18,
+  /** Full directional darkness for the tightly stamped core envelope. */
+  coreShadowStrength: 0.68,
+  /** Weak base contact merged only into tight occupied cells. */
+  footprintHeightMeters: 3,
+  outerVerticalSoftnessMeters: 2,
   receiverBiasMeters: 1.5,
   // Atlas filtering already supplies a ~one-texel horizontal penumbra. Keep
   // vertical softness tight so ordinary flat ground (the propagated ray sits
   // just below it) remains fully lit instead of receiving blanket grey AO.
-  verticalSoftnessMeters: 1.5,
+  coreVerticalSoftnessMeters: 1.5,
   edgeFadeTexels: 2,
   sunRebuildAngleDegrees: 2,
   sunStaleAngleDegrees: 7,
@@ -156,18 +153,17 @@ function validBox(box: FarBoxOccluder): boolean {
 /**
  * Whole-world, low-frequency directional occlusion with no render pass.
  *
- * The worker sweeps a downsampled terrain/collider height atlas in light-space
- * order. The resulting RG16F texture is world locked, so camera/FOV/shake never
- * move its texels. Stream changes and >=2 degree sun changes rebuild off-thread;
- * a stale field fades out rather than projecting in the wrong direction.
+ * The worker sweeps conservative and tight terrain/collider envelopes in
+ * light-space order. The resulting RG16F texture is world locked, so
+ * camera/FOV/shake never move its texels. Stream changes and >=2 degree sun
+ * changes rebuild off-thread; a stale field fades out rather than projecting
+ * in the wrong direction.
  *
  * Integration:
  * - construct once after WorldMap.load(): `new FarOcclusionField(map)`;
  * - feed tile colliders with `setBoxOccluders(key, colliders)` / `deleteOccluders`;
  * - call `update(SUN_DIR, player.renderPosition)` before render;
- * - crossfade `replacementSampleNode()` over the raster far domain at its edge;
- * - optionally compose `contactOcclusionNode()` as aoNode. Its height-aware
- *   ceiling affects ground/building bases but leaves upper facades/roofs clean.
+ * - let `replacementSampleNode()` own the far domain once the atlas is valid.
  */
 export class FarOcclusionField {
   readonly texture: THREE.DataTexture
@@ -176,7 +172,6 @@ export class FarOcclusionField {
 
   #worker: Worker | null = null
   #boundsUniform: N
-  #focusUniform = uniform(new THREE.Vector3()).setGroup(renderGroup)
   #availabilityUniform = uniform(0).setGroup(renderGroup)
   #stats: FarOcclusionStats
   #setCounts = new Map<string, number>()
@@ -205,10 +200,6 @@ export class FarOcclusionField {
     this.options = Object.freeze({ ...FAR_OCCLUSION_DEFAULTS, ...options })
     finitePositive(this.options.targetTexelSize, "targetTexelSize")
     finitePositive(this.options.maxResolution, "maxResolution")
-    if (this.options.fadeEndDistance <= this.options.fadeStartDistance) {
-      throw new Error("fadeEndDistance must be greater than fadeStartDistance")
-    }
-
     // Only dimension math runs here. The millions of source-height comparisons
     // that build the terrain atlas now run in farOcclusionWorker.
     const atlas = describeTerrainAtlas(source, this.options)
@@ -329,9 +320,7 @@ export class FarOcclusionField {
       texelSize: atlas.texelSize,
       groundTops,
       minimumSunSlope: Math.tan(THREE.MathUtils.degToRad(this.options.minimumSunElevationDegrees)),
-      contactRadiusMeters: this.options.contactRadiusMeters,
-      contactHeightMeters: this.options.contactHeightMeters,
-      contactClearanceMeters: this.options.contactClearanceMeters
+      footprintHeightMeters: this.options.footprintHeightMeters
     }, [groundTops.buffer])
   }
 
@@ -396,9 +385,8 @@ export class FarOcclusionField {
   }
 
   /** Hot-path scheduler: no rebuild work runs on the main thread. */
-  update(sunDirection: THREE.Vector3, focus: THREE.Vector3, nowMs = performance.now()): void {
+  update(sunDirection: THREE.Vector3, _focus: THREE.Vector3, nowMs = performance.now()): void {
     if (this.#disposed) return
-    this.#focusUniform.value.copy(focus)
     const length = Math.hypot(sunDirection.x, sunDirection.y, sunDirection.z)
     if (!Number.isFinite(length) || length < 1e-6 || sunDirection.y <= 0) {
       this.#targetAvailability = 0
@@ -463,69 +451,44 @@ export class FarOcclusionField {
     }
   }
 
-  /** Height-aware directional visibility; safe to multiply once into the final sun shadow factor. */
+  /** Combined weak outer plus strong core visibility from one RG16F sample. */
   shadowVisibilityNode(worldPositionNode: N = positionWorld): N {
-    const { field, coverage, distanceWeight } = this.#sampleContext(worldPositionNode)
-    const ceilingVisibility = smoothstep(
-      field.r.sub(this.options.verticalSoftnessMeters),
-      field.r.add(this.options.verticalSoftnessMeters),
-      worldPositionNode.y.add(this.options.receiverBiasMeters)
-    )
-    return mix(
-      1,
-      mix(1, ceilingVisibility, this.options.shadowStrength),
-      coverage.mul(distanceWeight)
-    )
+    const { rawVisibility, coverage } = this.#visibilityContext(worldPositionNode)
+    return mix(1, rawVisibility, coverage)
   }
 
-  /** Height-aware AO/contact factor: ground and bases darken, upper geometry stays neutral. */
-  contactOcclusionNode(worldPositionNode: N = positionWorld): N {
-    const { field, coverage, distanceWeight } = this.#sampleContext(worldPositionNode)
-    const contactVisibility = smoothstep(
-      field.g.sub(this.options.contactVerticalSoftnessMeters),
-      field.g.add(this.options.contactVerticalSoftnessMeters),
-      worldPositionNode.y.add(this.options.receiverBiasMeters)
-    )
-    return mix(
-      1,
-      mix(1, contactVisibility, this.options.contactStrength),
-      coverage.mul(distanceWeight)
-    )
-  }
-
-  /** One texture sample combining direct far shadow and ground contact. */
-  groundVisibilityNode(worldPositionNode: N = positionWorld): N {
-    const { rawDirectional, rawContact, coverage, distanceWeight } =
-      this.#visibilityContext(worldPositionNode)
-    return mix(1, rawDirectional.mul(rawContact), coverage.mul(distanceWeight))
-  }
-
-  /** Raw field plus validity weight for replacing—not multiplying—the raster far map. */
+  /** Raw field plus validity weight for a continuous base/detail raster union. */
   replacementSampleNode(worldPositionNode: N = positionWorld): { visibility: N; coverage: N } {
-    const { rawDirectional, rawContact, coverage } = this.#visibilityContext(worldPositionNode)
-    return { visibility: rawDirectional.mul(rawContact), coverage }
+    const { rawVisibility, coverage } = this.#visibilityContext(worldPositionNode)
+    return { visibility: rawVisibility, coverage }
   }
 
   #visibilityContext(worldPositionNode: N): {
-    rawDirectional: N
-    rawContact: N
+    rawVisibility: N
     coverage: N
-    distanceWeight: N
   } {
-    const { field, coverage, distanceWeight } = this.#sampleContext(worldPositionNode)
-    const ceilingVisibility = smoothstep(
-      field.r.sub(this.options.verticalSoftnessMeters),
-      field.r.add(this.options.verticalSoftnessMeters),
-      worldPositionNode.y.add(this.options.receiverBiasMeters)
+    const { field, coverage } = this.#sampleContext(worldPositionNode)
+    const receiverY = worldPositionNode.y.add(this.options.receiverBiasMeters)
+    const outerCeilingVisibility = smoothstep(
+      field.r.sub(this.options.outerVerticalSoftnessMeters),
+      field.r.add(this.options.outerVerticalSoftnessMeters),
+      receiverY
     )
-    const rawDirectional = mix(1, ceilingVisibility, this.options.shadowStrength)
-    const contactVisibility = smoothstep(
-      field.g.sub(this.options.contactVerticalSoftnessMeters),
-      field.g.add(this.options.contactVerticalSoftnessMeters),
-      worldPositionNode.y.add(this.options.receiverBiasMeters)
+    const coreCeilingVisibility = smoothstep(
+      field.g.sub(this.options.coreVerticalSoftnessMeters),
+      field.g.add(this.options.coreVerticalSoftnessMeters),
+      receiverY
     )
-    const rawContact = mix(1, contactVisibility, this.options.contactStrength)
-    return { rawDirectional, rawContact, coverage, distanceWeight }
+    const rawVisibility = composeDualEnvelopeVisibility(
+      outerCeilingVisibility as N,
+      coreCeilingVisibility as N,
+      1 as N,
+      this.options.outerShadowStrength as N,
+      this.options.coreShadowStrength as N,
+      (a, b, weight) => (mix as N)(a, b, weight),
+      (a, b) => (a as N).min(b as N)
+    )
+    return { rawVisibility, coverage }
   }
 
   dispose(): void {
@@ -537,22 +500,15 @@ export class FarOcclusionField {
     this.#setCounts.clear()
   }
 
-  #sampleContext(worldPositionNode: N): { field: N; coverage: N; distanceWeight: N } {
+  #sampleContext(worldPositionNode: N): { field: N; coverage: N } {
     const uv = worldPositionNode.xz.sub(this.#boundsUniform.xy).div(this.#boundsUniform.zw)
     const field = texture(this.texture, uv)
     const edgeDistance = uv.x.min(uv.y).min(uv.x.oneMinus()).min(uv.y.oneMinus())
     const edgeFadeUv = this.options.edgeFadeTexels / Math.min(this.#stats.width, this.#stats.height)
     const edgeWeight = smoothstep(0, edgeFadeUv, edgeDistance)
-    const distance = worldPositionNode.xz.sub(this.#focusUniform.xz).length()
-    const distanceWeight = smoothstep(
-      this.options.fadeStartDistance,
-      this.options.fadeEndDistance,
-      distance
-    )
     return {
       field,
-      coverage: edgeWeight.mul(this.#availabilityUniform),
-      distanceWeight
+      coverage: edgeWeight.mul(this.#availabilityUniform)
     }
   }
 

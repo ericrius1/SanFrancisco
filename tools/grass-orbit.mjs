@@ -53,12 +53,40 @@ const CENTROID = `(() => {
   return { grassCentroid: n?[Math.round(sx/n), Math.round(sz/n)]:null, grassN: n, camXZ:[Math.round(cam.x),Math.round(cam.z)], playerXZ:[Math.round(pl.x),Math.round(pl.z)] };
 })()`;
 
+const GRASS_STATE = `(() => {
+  const group = window.__sf?.wildlands?.grass?.group;
+  if (!group) return null;
+  const attached = group.parent === window.__sf.scene;
+  const meshes = [];
+  group.traverse((object) => {
+    if (!/wildlands_grass_/i.test(object.name) || !object.isMesh) return;
+    let effectiveVisible = attached && object.visible;
+    for (let parent = object.parent; parent; parent = parent.parent) effectiveVisible &&= parent.visible;
+    meshes.push({
+      name: object.name,
+      count: object.geometry?.instanceCount ?? object.count ?? 0,
+      visible: object.visible,
+      effectiveVisible
+    });
+  });
+  return {
+    attached,
+    groupVisible: group.visible,
+    meshes: meshes.length,
+    visible: meshes.filter((mesh) => mesh.effectiveVisible && mesh.count > 0).length,
+    hidden: meshes.filter((mesh) => !mesh.effectiveVisible && mesh.count > 0).map((mesh) => mesh.name),
+    instances: meshes.reduce((sum, mesh) => sum + mesh.count, 0),
+    stats: group.userData.grassStats ?? null,
+    streaming: group.userData.grassStreaming ?? null
+  };
+})()`;
+
 async function main() {
   mkdirSync(OUT, { recursive: true });
   const dev = await startDevIfNeeded();
   const chrome = await findChrome();
   const port = await freePort();
-  const proc = spawn(chrome, [`--user-data-dir=${path.join(OUT, "chrome")}`, "--headless=new", `--remote-debugging-port=${port}`, "--enable-unsafe-webgpu", "--enable-features=WebGPUDeveloperFeatures", "--use-angle=metal", "--hide-scrollbars", "--mute-audio", `--window-size=${W},${H}`, `${SERVER_URL}/?autostart&fullfps`], { cwd: ROOT, stdio: "ignore" });
+  const proc = spawn(chrome, [`--user-data-dir=${path.join(OUT, "chrome")}`, "--headless=new", `--remote-debugging-port=${port}`, "--enable-unsafe-webgpu", "--enable-features=WebGPUDeveloperFeatures", "--use-angle=metal", "--hide-scrollbars", "--mute-audio", `--window-size=${W},${H}`, `${SERVER_URL}/?autostart=1&fullfps=1&profile=1`], { cwd: ROOT, stdio: "ignore" });
   await sleep(2500);
   let page; for (let i = 0; i < 60; i++) { try { const list = await (await fetch(`http://127.0.0.1:${port}/json`)).json(); page = list.find((t) => t.type === "page" && t.url.includes("127.0.0.1") && t.webSocketDebuggerUrl); if (page) break; } catch {} await sleep(400); }
   if (!page) throw new Error("no page");
@@ -73,24 +101,80 @@ async function main() {
   while (Date.now() - t0 < 150000) { try { if (await ev(c, `!!(window.__sf&&window.__sf.player&&window.__sf.camera)`)) { ready = true; break; } } catch {} await sleep(600); }
   if (!ready) throw new Error("never ready");
   console.log("[probe] ready");
-  await ev(c, `window.__sfManual&&window.__sfManual(true)`);
   await ev(c, `(()=>{const s=window.__sf.sky;s.cycleEnabled=false;s.setTimeOfDay(${TIME});return true;})()`);
-  // teleport player to flat spot, DO NOT move again
-  await ev(c, `(()=>{const m=window.__sf.map,p=window.__sf.player;const y=m.groundHeight(${FX},${FZ});p.teleportTo({x:${FX},y:y+1.5,z:${FZ},facing:0,mode:'walk'});return true;})()`);
-  await settle(c, 30);
+  const bootState = await ev(c, `(()=>({
+    wildlandsPresent:!!window.__sf.wildlands,
+    trace:window.__sf.lazyRegionTimings?.wildlands??null,
+    generation:window.__sf.worldArrival.snapshot.generation
+  }))()`);
+  if (bootState.wildlandsPresent || bootState.trace) {
+    throw new Error(`wildlands was not lazy at clean boot: ${JSON.stringify(bootState)}`);
+  }
+  // Use the real covered destination coordinator. A direct player teleport can
+  // bypass terrain readiness and produce a visually meaningless white/empty
+  // meadow even when grass streaming itself is correct.
+  const activationStarted = Date.now();
+  await ev(c, `window.__sf.teleportToTarget(${FX},${FZ},'Wildlands grass probe')`);
   const regionStart = Date.now();
   while (Date.now() - regionStart < 90000) {
     if (await ev(c, `!!window.__sf.wildlands?.grass?.group`).catch(() => false)) break;
-    await settle(c, 4);
+    await sleep(100);
   }
   if (!(await ev(c, `!!window.__sf.wildlands?.grass?.group`).catch(() => false))) {
     throw new Error("wildlands lazy owner never activated after entering Golden Gate Park");
   }
+  const ownerObservedMs = Date.now() - activationStarted;
+  let grassState = await ev(c, GRASS_STATE);
+  console.log(`[probe] grass owner constructed after ${ownerObservedMs}ms`, JSON.stringify(grassState));
+
+  // The arrival handoff only waits for one dense, focus-containing tile from
+  // each visual layer. The rest of the outer ring is intentionally optional
+  // background work, so record both milestones instead of conflating them.
+  while (
+    Date.now() - activationStarted < 120000 &&
+    (!grassState?.attached ||
+      !grassState?.streaming?.criticalReady ||
+      grassState.streaming.criticalLayers < 4 ||
+      grassState.visible < 4)
+  ) {
+    await sleep(100);
+    grassState = await ev(c, GRASS_STATE);
+  }
+  if (!grassState?.attached || !grassState?.streaming?.criticalReady || grassState.visible < 4) {
+    throw new Error(`wildlands critical grass coverage never became renderable: ${JSON.stringify(grassState)}`);
+  }
+  const criticalRenderableMs = Date.now() - activationStarted;
+  const criticalGrassState = grassState;
+  const arrival = await ev(c, `({...window.__sf.worldArrival.snapshot})`);
+  if (arrival.state !== "idle" || arrival.active) {
+    throw new Error(`covered Wildlands arrival did not settle: ${JSON.stringify(arrival)}`);
+  }
+  console.log(`[probe] critical grass coverage attached + renderable ${criticalRenderableMs}ms after activation`, JSON.stringify(criticalGrassState));
+
+  while (
+    Date.now() - activationStarted < 120000 &&
+    (grassState?.streaming?.pendingJobs !== 0 ||
+      !grassState?.meshes ||
+      grassState.visible !== grassState.meshes)
+  ) {
+    await sleep(100);
+    grassState = await ev(c, GRASS_STATE);
+  }
+  if (grassState?.streaming?.pendingJobs !== 0 || !grassState?.meshes || grassState.visible !== grassState.meshes) {
+    throw new Error(`wildlands full grass ring never settled: ${JSON.stringify(grassState)}`);
+  }
+  const fullRenderableMs = Date.now() - activationStarted;
+  const lazyTrace = await ev(c, `window.__sf.lazyRegionTimings?.wildlands ?? null`);
+  console.log(`[probe] full grass ring settled + renderable ${fullRenderableMs}ms after activation`, JSON.stringify(grassState));
+  console.log(`[probe] wildlands trace ${JSON.stringify(lazyTrace)}`);
+
+  await ev(c, `window.__sfManual&&window.__sfManual(true)`);
 
   // orbit the free camera AROUND the stationary player; look inward.
   // If the grass centroid tracks the camera, the ring is camera-locked.
   console.log(`\nplayer held at ${FX},${FZ}. Orbiting camera; watch grassCentroid vs camXZ vs playerXZ:`);
   const R = 10; // camera boom radius
+  const orbit = [];
   for (const deg of [0, 90, 180, 270, 45, 225]) {
     const a = (deg * Math.PI) / 180;
     // place the eye on a circle of radius R around the player, looking at the player
@@ -101,8 +185,23 @@ async function main() {
     const shot = await c.send("Page.captureScreenshot", { format: "jpeg", quality: 84, fromSurface: true });
     writeFileSync(path.join(OUT, `orbit_${deg}.jpg`), Buffer.from(shot.data, "base64"));
     const drift = s.grassCentroid ? Math.hypot(s.grassCentroid[0] - FX, s.grassCentroid[1] - FZ) : -1;
+    orbit.push({ deg, ...s, drift });
     console.log(`  cam@${String(deg).padStart(3)}°  camXZ=${JSON.stringify(s.camXZ)} playerXZ=${JSON.stringify(s.playerXZ)}  grassCentroid=${JSON.stringify(s.grassCentroid)} (drift from player ${drift.toFixed(1)}m, n=${s.grassN})`);
   }
+  writeFileSync(path.join(OUT, "result.json"), `${JSON.stringify({
+    generatedAt: new Date().toISOString(),
+    serverUrl: SERVER_URL,
+    focus: { x: FX, z: FZ },
+    bootState,
+    arrival,
+    ownerObservedMs,
+    criticalRenderableMs,
+    fullRenderableMs,
+    criticalGrassState,
+    grassState,
+    lazyTrace,
+    orbit
+  }, null, 2)}\n`);
   console.log("\n=== orbit test done ===");
   c.close(); proc.kill(); if (dev) dev.kill(); process.exit(0);
 }

@@ -2,10 +2,11 @@
  * Pure CPU builder for the far-range occlusion field. Kept free of THREE/DOM so
  * the worker and headless regression probe execute exactly the same algorithm.
  *
- * Channel R is a world-space "shadow ceiling": a receiver below this height is
- * occluded from the directional key, while a roof/facade above it remains lit.
- * Channel G is a contact ceiling. Comparing receiver Y against a height (rather
- * than multiplying a 2D footprint mask) keeps upper facades and roofs clean.
+ * Channel R is a conservative directional ceiling built from half-texel-padded
+ * occluders. Runtime decodes it weakly, so tiny casters survive without turning
+ * whole 16 m cells fully dark. Channel G is a tightly stamped directional core
+ * decoded at full shadow strength. Both are world-space heights, which keeps
+ * roofs and upper facades clean without another texture sample.
  */
 
 export const FAR_OCCLUDER_STRIDE = 7
@@ -27,25 +28,17 @@ export type FarOcclusionBuildInput = Readonly<{
   sunZ: number
   /** Prevent near-horizon casters from darkening an unbounded portion of the map. */
   minimumSunSlope: number
-  contactRadiusMeters: number
-  contactHeightMeters: number
-  contactClearanceMeters: number
+  /** Low base ceiling merged into each occupied footprint in both envelopes. */
+  footprintHeightMeters: number
 }>
 
 export type FarOcclusionFloatField = Readonly<{
-  /** Interleaved shadow-ceiling/contact pairs. */
+  /** Interleaved conservative-outer/tight-core shadow ceilings. */
   data: Float32Array
   occluders: number
   occupiedTexels: number
+  coreOccupiedTexels: number
 }>
-
-const SQRT2 = Math.SQRT2
-const INF_DISTANCE = 1e9
-
-function smooth01(value: number): number {
-  const t = Math.max(0, Math.min(1, value))
-  return t * t * (3 - 2 * t)
-}
 
 function validInput(input: FarOcclusionBuildInput): void {
   if (!Number.isInteger(input.width) || input.width <= 0) throw new Error("width must be a positive integer")
@@ -54,14 +47,16 @@ function validInput(input: FarOcclusionBuildInput): void {
   if (!Number.isFinite(input.texelSize) || input.texelSize <= 0) throw new Error("texelSize must be finite and positive")
 }
 
-function stampOccluders(
-  surface: Float32Array,
-  occupied: Uint8Array,
+function stampOccluderEnvelopes(
+  outerSurface: Float32Array,
+  coreSurface: Float32Array,
+  outerOccupied: Uint8Array,
+  coreOccupied: Uint8Array,
   input: FarOcclusionBuildInput
-): { occluders: number; occupiedTexels: number } {
+): { occluders: number; occupiedTexels: number; coreOccupiedTexels: number } {
   const { width, height, minX, minZ, texelSize } = input
-  // Half a texel guarantees that a narrow but distant building survives the
-  // low-frequency raster. This field is deliberately conservative and soft.
+  const maxX = minX + width * texelSize
+  const maxZ = minZ + height * texelSize
   const footprintPad = texelSize * 0.5
   let occluders = 0
 
@@ -83,12 +78,17 @@ function stampOccluders(
       ) continue
 
       occluders++
-      const radiusX = Math.abs(cos) * hx + Math.abs(sin) * hz + footprintPad
-      const radiusZ = Math.abs(sin) * hx + Math.abs(cos) * hz + footprintPad
+      const outerHx = hx + footprintPad
+      const outerHz = hz + footprintPad
+      // Rotate the expanded OBB extents, rather than adding one world-axis pad
+      // after rotation (which under-bounds a diagonal conservative footprint).
+      const radiusX = Math.abs(cos) * outerHx + Math.abs(sin) * outerHz
+      const radiusZ = Math.abs(sin) * outerHx + Math.abs(cos) * outerHz
       const x0 = Math.max(0, Math.floor((x - radiusX - minX) / texelSize))
       const x1 = Math.min(width - 1, Math.floor((x + radiusX - minX) / texelSize))
       const z0 = Math.max(0, Math.floor((z - radiusZ - minZ) / texelSize))
       const z1 = Math.min(height - 1, Math.floor((z + radiusZ - minZ) / texelSize))
+      let coreHit = false
 
       for (let iz = z0; iz <= z1; iz++) {
         const worldZ = minZ + (iz + 0.5) * texelSize
@@ -99,18 +99,41 @@ function stampOccluders(
           // Inverse of the yaw convention used by tileShadowProxy/physics.
           const localX = dx * cos - dz * sin
           const localZ = dx * sin + dz * cos
-          if (Math.abs(localX) > hx + footprintPad || Math.abs(localZ) > hz + footprintPad) continue
           const index = iz * width + ix
-          if (top > surface[index]) surface[index] = top
-          occupied[index] = 1
+          if (Math.abs(localX) <= outerHx && Math.abs(localZ) <= outerHz) {
+            if (top > outerSurface[index]) outerSurface[index] = top
+            outerOccupied[index] = 1
+          }
+          if (Math.abs(localX) <= hx && Math.abs(localZ) <= hz) {
+            if (top > coreSurface[index]) coreSurface[index] = top
+            coreOccupied[index] = 1
+            coreHit = true
+          }
         }
+      }
+
+      // A tight sub-texel OBB may contain no atlas cell centre. Keep one
+      // deterministic core texel at the nearest cell so the caster survives,
+      // while the separate padded envelope remains the conservative fringe.
+      if (!coreHit && x >= minX && x < maxX && z >= minZ && z < maxZ) {
+        const ix = Math.floor((x - minX) / texelSize)
+        const iz = Math.floor((z - minZ) / texelSize)
+        const index = iz * width + ix
+        if (top > coreSurface[index]) coreSurface[index] = top
+        if (top > outerSurface[index]) outerSurface[index] = top
+        coreOccupied[index] = 1
+        outerOccupied[index] = 1
       }
     }
   }
 
   let occupiedTexels = 0
-  for (let i = 0; i < occupied.length; i++) occupiedTexels += occupied[i]
-  return { occluders, occupiedTexels }
+  let coreOccupiedTexels = 0
+  for (let i = 0; i < outerOccupied.length; i++) {
+    occupiedTexels += outerOccupied[i]
+    coreOccupiedTexels += coreOccupied[i]
+  }
+  return { occluders, occupiedTexels, coreOccupiedTexels }
 }
 
 function interpolateEnvelope(a: number, b: number, t: number): number {
@@ -124,12 +147,13 @@ function interpolateEnvelope(a: number, b: number, t: number): number {
 function sweepShadowCeiling(
   surfaceAndEnvelope: Float32Array,
   output: Float32Array,
-  input: FarOcclusionBuildInput
+  input: FarOcclusionBuildInput,
+  channel: 0 | 1
 ): void {
   const { width, height, texelSize } = input
   const horizontal = Math.hypot(input.sunX, input.sunZ)
   if (horizontal < 1e-5 || input.sunY <= 0) {
-    for (let i = 0; i < width * height; i++) output[i * 2] = FAR_NO_OCCLUSION_HEIGHT
+    for (let i = 0; i < width * height; i++) output[i * 2 + channel] = FAR_NO_OCCLUSION_HEIGHT
     return
   }
 
@@ -166,7 +190,7 @@ function sweepShadowCeiling(
             if (propagated > FAR_NO_OCCLUSION_HEIGHT + 1) propagated -= heightDrop
           }
         }
-        output[index * 2] = propagated
+        output[index * 2 + channel] = propagated
         const ownHeight = surfaceAndEnvelope[index]
         surfaceAndEnvelope[index] = Math.max(ownHeight, propagated)
       }
@@ -197,7 +221,7 @@ function sweepShadowCeiling(
             if (propagated > FAR_NO_OCCLUSION_HEIGHT + 1) propagated -= heightDrop
           }
         }
-        output[index * 2] = propagated
+        output[index * 2 + channel] = propagated
         const ownHeight = surfaceAndEnvelope[index]
         surfaceAndEnvelope[index] = Math.max(ownHeight, propagated)
       }
@@ -205,60 +229,40 @@ function sweepShadowCeiling(
   }
 }
 
-function buildContactField(occupied: Uint8Array, output: Float32Array, input: FarOcclusionBuildInput): void {
-  const { width, height, texelSize } = input
-  const count = width * height
-  const distance = new Float32Array(count)
-  for (let i = 0; i < count; i++) distance[i] = occupied[i] ? 0 : INF_DISTANCE
-
-  // Two-pass chamfer distance is O(texels), deterministic, and sufficient for
-  // a deliberately broad far-field contact lobe.
-  for (let z = 0; z < height; z++) {
-    for (let x = 0; x < width; x++) {
-      const i = z * width + x
-      let d = distance[i]
-      if (x > 0) d = Math.min(d, distance[i - 1] + 1)
-      if (z > 0) {
-        d = Math.min(d, distance[i - width] + 1)
-        if (x > 0) d = Math.min(d, distance[i - width - 1] + SQRT2)
-        if (x + 1 < width) d = Math.min(d, distance[i - width + 1] + SQRT2)
-      }
-      distance[i] = d
-    }
-  }
-  for (let z = height - 1; z >= 0; z--) {
-    for (let x = width - 1; x >= 0; x--) {
-      const i = z * width + x
-      let d = distance[i]
-      if (x + 1 < width) d = Math.min(d, distance[i + 1] + 1)
-      if (z + 1 < height) {
-        d = Math.min(d, distance[i + width] + 1)
-        if (x > 0) d = Math.min(d, distance[i + width - 1] + SQRT2)
-        if (x + 1 < width) d = Math.min(d, distance[i + width + 1] + SQRT2)
-      }
-      distance[i] = d
-    }
-  }
-
-  const radiusTexels = Math.max(0.001, input.contactRadiusMeters / texelSize)
-  const contactHeight = Math.max(0, input.contactHeightMeters)
-  const clearHeight = Math.max(0.001, input.contactClearanceMeters)
-  for (let i = 0; i < count; i++) {
-    const fade = smooth01(distance[i] / radiusTexels)
-    // At a footprint the ceiling sits a few metres above terrain, darkening
-    // only the base. Outside the lobe it sits safely below terrain (neutral).
-    output[i * 2 + 1] = input.terrain[i] + contactHeight * (1 - fade) - clearHeight * fade
+function mergeFootprintCeiling(
+  coreOccupied: Uint8Array,
+  output: Float32Array,
+  input: FarOcclusionBuildInput
+): void {
+  const footprintHeight = Math.max(0, input.footprintHeightMeters)
+  for (let i = 0; i < coreOccupied.length; i++) {
+    if (!coreOccupied[i]) continue
+    // The weak outer channel also owns base contact. Restricting it to tight
+    // occupancy replaces the old one-texel chamfer/padded block semantics.
+    output[i * 2] = Math.max(output[i * 2], input.terrain[i] + footprintHeight)
   }
 }
 
 export function buildFarOcclusionFloatField(input: FarOcclusionBuildInput): FarOcclusionFloatField {
   validInput(input)
-  const surface = new Float32Array(input.terrain)
-  const occupied = new Uint8Array(input.width * input.height)
-  const stamped = stampOccluders(surface, occupied, input)
-  const data = new Float32Array(input.width * input.height * 2)
-  sweepShadowCeiling(surface, data, input)
-  buildContactField(occupied, data, input)
+  const count = input.width * input.height
+  const outerSurface = new Float32Array(input.terrain)
+  const coreSurface = new Float32Array(input.terrain)
+  const outerOccupied = new Uint8Array(count)
+  const coreOccupied = new Uint8Array(count)
+  // `occluderSets` may be a worker Map iterator, so both envelopes must be
+  // stamped in this single traversal.
+  const stamped = stampOccluderEnvelopes(
+    outerSurface,
+    coreSurface,
+    outerOccupied,
+    coreOccupied,
+    input
+  )
+  const data = new Float32Array(count * 2)
+  sweepShadowCeiling(outerSurface, data, input, 0)
+  sweepShadowCeiling(coreSurface, data, input, 1)
+  mergeFootprintCeiling(coreOccupied, data, input)
   return { data, ...stamped }
 }
 

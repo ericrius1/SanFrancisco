@@ -33,6 +33,10 @@ export type TeaGardenVegetation = {
   group: THREE.Group;
   grassGroup: THREE.Group;
   ready: Promise<void>;
+  /** Keep native trees out of the destination-essential reveal/compile. */
+  deferTrees(): void;
+  /** Prepare and reveal deferred native trees after essential scenery is live. */
+  prepareTrees(prepare: (group: THREE.Group) => Promise<void>): Promise<void>;
   setVisible(visible: boolean): void;
   update(focus: { x: number; z: number }): void;
   dispose(): void;
@@ -294,13 +298,46 @@ export function createTeaGardenVegetation(map: TeaGardenTerrain): TeaGardenVeget
   plants.add(trees.group, shrubs.group, grass.group);
   landmarks.add(rocks.group, createBuddha(map));
   group.add(plants, landmarks);
+  let foliageVisible = true;
+  let treesDeferred = false;
+  let treesPrepared = false;
+  let treePreparation: Promise<void> | null = null;
+
+  const syncTreeVisibility = () => {
+    trees.group.visible = foliageVisible && (!treesDeferred || treesPrepared);
+  };
 
   return {
     group,
     grassGroup: grass.group,
     ready: trees.ready,
+    deferTrees() {
+      if (treesPrepared) return;
+      treesDeferred = true;
+      syncTreeVisibility();
+    },
+    prepareTrees(prepare) {
+      if (treesPrepared) return Promise.resolve();
+      if (treePreparation) return treePreparation;
+      treePreparation = (async () => {
+        await trees.ready;
+        const parent = trees.group.parent;
+        trees.group.removeFromParent();
+        trees.group.visible = true;
+        try {
+          await prepare(trees.group);
+        } finally {
+          parent?.add(trees.group);
+          treesPrepared = true;
+          syncTreeVisibility();
+        }
+      })();
+      return treePreparation;
+    },
     setVisible(visible: boolean) {
+      foliageVisible = visible;
       plants.visible = visible;
+      syncTreeVisibility();
     },
     update(focus) {
       trees.update(focus);

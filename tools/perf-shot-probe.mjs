@@ -1,6 +1,6 @@
 // Boot headless, settle at a stop, measure frame p50 + save a PNG screenshot.
 // Visual + timing sanity in one shot.
-//   node tools/perf-shot-probe.mjs [downtown|meadow|marina|tea|teaBridge|teaInterior|teaMotion|teaServe] [outName]
+//   node tools/perf-shot-probe.mjs [downtown|victorian|meadow|marina|tea|teaBridge|teaInterior|teaMotion|teaServe] [outName]
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
@@ -24,6 +24,7 @@ const WHERE = process.argv[2] ?? "downtown";
 const NAME = process.argv[3] ?? WHERE;
 const STOPS = {
   downtown: { x: 4117, z: 200, facing: Math.PI },
+  victorian: { x: 900, z: 2400, facing: 0.4 },
   meadow: { x: -2260, z: 2450, facing: 2.4 },
   marina: { x: -700, z: -2380, facing: 0.6 },
   embarcadero: { x: 3950, z: -1050, facing: 2.6 },
@@ -152,6 +153,11 @@ async function main() {
       await sleep(500);
     }
     if (!foliageReady) throw new Error("meadow foliage never joined the live scene");
+    // Progressive grass generation is deliberately frame-budgeted. Compare
+    // steady-state rendering only after the requested ring has finished; older
+    // baselines do not expose this method, so optional chaining keeps the same
+    // probe valid on both sides of the A/B.
+    await ev(c, `(async()=>{await window.__sf.wildlands?.grass?.whenSettled?.();return true;})()`);
   }
   await ev(c, `window.__sfManual&&window.__sfManual(true)`);
   if (Number.isFinite(FIXED_TIME)) {
@@ -209,15 +215,29 @@ async function main() {
       const b=performance.now(); await dev.queue.onSubmittedWorkDone();
       cpu.push(b-a); tot.push(performance.now()-a);
     }
-    const p50=(arr)=>{arr=[...arr].sort((x,y)=>x-y);return +arr[arr.length>>1].toFixed(2);};
+    const percentile=(arr,p)=>{arr=[...arr].sort((x,y)=>x-y);return +arr[Math.min(arr.length-1,Math.floor((arr.length-1)*p))].toFixed(2);};
     const sf=window.__sf;
     const root=sf.scene.getObjectByName('japanese_tea_garden');
     const geometries=new Set(),materials=new Set();let meshes=0,instances=0,triangles=0;
     root?.traverse((o)=>{if(!o.isMesh)return;meshes++;const g=o.geometry;const compactCount=g?.isInstancedBufferGeometry&&Number.isFinite(g.instanceCount)?g.instanceCount:1;const count=o.isInstancedMesh?o.count:compactCount;instances+=count;geometries.add(g.uuid);const ma=Array.isArray(o.material)?o.material:[o.material];for(const value of ma)materials.add(value.uuid);const base=g.index?g.index.count/3:(g.attributes.position?.count??0)/3;triangles+=base*count;});
+    const citygenStats=sf.citygenRing?.current?.stats?.()??null;
+    const citygenNear=sf.citygenRing?.current?.debugEntriesNear?.(
+      sf.player.position.x,
+      sf.player.position.z,
+      citygenStats?.detailCoreRadius??80
+    )??[];
     return {
-      cpu:p50(cpu), tot:p50(tot),
+      cpu:percentile(cpu,.5), cpuP90:percentile(cpu,.9),
+      tot:percentile(tot,.5), totP90:percentile(tot,.9),
       player:sf.player.position.toArray(), camera:sf.camera.position.toArray(),
       render:{...sf.renderer.info.render}, memory:{...sf.renderer.info.memory},
+      citygen:{
+        stats:citygenStats,
+        nearCount:citygenNear.length,
+        nearDetailed:citygenNear.filter((entry)=>entry.state==='detail').length,
+        nearMissing:citygenNear.filter((entry)=>entry.state!=='detail').length,
+        nearEntries:citygenNear
+      },
       garden:{meshes,instances,triangles:Math.round(triangles),geometries:geometries.size,materials:materials.size},
       tea:sf.japaneseTeaGarden?.debugState?.() ?? null,
       motion:window.__probeMotion??null
@@ -230,7 +250,7 @@ async function main() {
   const file = path.join(OUT, `${NAME}.png`);
   writeFileSync(file, Buffer.from(shot.data, "base64"));
   writeFileSync(path.join(OUT, `${NAME}.json`), JSON.stringify(m, null, 2));
-  console.log(`[shot:${WHERE}] frame p50 ${m.tot}ms  cpu p50 ${m.cpu}ms  -> ${file}`);
+  console.log(`[shot:${WHERE}] frame p50/p90 ${m.tot}/${m.totP90}ms  cpu ${m.cpu}/${m.cpuP90}ms  -> ${file}`);
   console.log(JSON.stringify(m));
   c.close(); proc.kill(); if (dev) dev.kill();
   liveCdp = null; liveChrome = null; liveDev = null;

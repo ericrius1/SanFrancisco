@@ -283,6 +283,34 @@ const LEAF_SHAPE: FoliageShape = {
   indices: [0, 1, 2, 1, 3, 2, 2, 3, 4, 3, 5, 4, 4, 5, 6, 5, 7, 6]
 };
 
+// Close broadleaf anchors are small four-leaf twig clusters rather than two
+// coincident full-size cards. Alpha supplies each botanical silhouette, so a
+// two-triangle quad is both cleaner and cheaper than tracing transparent texel
+// corners in geometry. Four half-scale leaves preserve projected surface area
+// with the former 16 vertices and fewer triangles.
+const CLOSE_LEAFLET_SHAPE: FoliageShape = {
+  vertices: [
+    [-0.5, 0, 0, 0],
+    [0.5, 0, 1, 0],
+    [-0.5, 1, 0, 1],
+    [0.5, 1, 1, 1]
+  ],
+  indices: [0, 1, 2, 1, 3, 2]
+};
+
+const CLOSE_LEAFLET_COUNT = 4;
+const CLOSE_LEAFLET_FAN_ANGLES = [-0.42, 0.34, -0.16, 0.12] as const;
+const CLOSE_LEAFLET_FAN_WEIGHTS = CLOSE_LEAFLET_FAN_ANGLES.map((angle) =>
+  [Math.cos(angle), Math.sin(angle)] as const
+);
+const CLOSE_LEAFLET_ROLL_ANGLES = [-0.48, 0.45, 0.13, -0.24] as const;
+const CLOSE_LEAFLET_LENGTH_SCALES = [0.54, 0.52, 0.51, 0.5] as const;
+const CLOSE_LEAFLET_WIDTH_SCALES = [0.51, 0.52, 0.53, 0.51] as const;
+const CLOSE_LEAFLET_ALONG_OFFSETS = [0, 0.12, 0.21, 0.32] as const;
+const CLOSE_LEAFLET_WIDTH_OFFSETS = [-0.05, 0.06, -0.04, 0.03] as const;
+const CLOSE_LEAFLET_PALETTE_OFFSETS = [-0.14, 0.1, -0.03, 0.16] as const;
+const CLOSE_LEAFLET_CAMBERS = [0.07, -0.06, 0.08, -0.07] as const;
+
 const BLADE_SHAPE: FoliageShape = {
   vertices: [
     [0, 0, 0.5, 0],
@@ -293,7 +321,7 @@ const BLADE_SHAPE: FoliageShape = {
   indices: [0, 1, 2, 1, 3, 2]
 };
 
-function usesDimensionalBroadleaves(recipe: TreeRecipe, lod: TreeLodRecipe): boolean {
+function usesCloseBroadleafCluster(recipe: TreeRecipe, lod: TreeLodRecipe): boolean {
   const index = recipe.lods.findIndex((candidate) => candidate === lod || candidate.name === lod.name);
   return recipe.foliage.kind === "leaf" && index >= 0 && index <= 1;
 }
@@ -305,8 +333,12 @@ function foliageElementsPerAnchor(
   switch (recipe.foliage.kind) {
     case "leaf":
       return {
-        vertices: LEAF_SHAPE.vertices.length * (usesDimensionalBroadleaves(recipe, lod) ? 2 : 1),
-        indices: LEAF_SHAPE.indices.length * (usesDimensionalBroadleaves(recipe, lod) ? 2 : 1)
+        vertices: usesCloseBroadleafCluster(recipe, lod)
+          ? CLOSE_LEAFLET_SHAPE.vertices.length * CLOSE_LEAFLET_COUNT
+          : LEAF_SHAPE.vertices.length,
+        indices: usesCloseBroadleafCluster(recipe, lod)
+          ? CLOSE_LEAFLET_SHAPE.indices.length * CLOSE_LEAFLET_COUNT
+          : LEAF_SHAPE.indices.length
       };
     case "needle": {
       const blades = recipe.foliage.needleBlades ?? 3;
@@ -337,7 +369,10 @@ function emitShape(
   lengthScale: number,
   widthScale: number,
   droop: number,
-  camber = 0
+  camber = 0,
+  sourcePosition: Vec3 = anchor.position,
+  sourceRadial: Vec3 = anchor.radial,
+  palette = anchor.palette
 ): void {
   const baseVertex = writer.vertexCursor;
   const faceNormal = normalize(normalHint, normalize(cross(widthAxis, alongAxis)));
@@ -348,14 +383,14 @@ function emitShape(
     const curved = scale(faceNormal, Math.sin(Math.PI * y) * centerBias * widthScale * camber);
     const position = add(
       add(
-        add(add(anchor.position, scale(alongAxis, lengthScale * y)), scale(widthAxis, widthScale * x)),
+        add(add(sourcePosition, scale(alongAxis, lengthScale * y)), scale(widthAxis, widthScale * x)),
         downward
       ),
       curved
     );
     // A gentle dome normal keeps a crown volumetric without extra geometry.
     const normal = normalize(
-      add(add(faceNormal, scale(anchor.radial, 0.22)), add(scale(VEC3_UP, 0.12), scale(widthAxis, x * 0.12)))
+      add(add(faceNormal, scale(sourceRadial, 0.22)), add(scale(VEC3_UP, 0.12), scale(widthAxis, x * 0.12)))
     );
     const offset = writer.vertexCursor * FOLIAGE_VERTEX_STRIDE_FLOATS;
     writer.vertices[offset] = position.x;
@@ -366,14 +401,14 @@ function emitShape(
     writer.vertices[offset + 5] = normal.z;
     writer.vertices[offset + 6] = u;
     writer.vertices[offset + 7] = v;
-    writer.vertices[offset + 8] = anchor.position.x;
-    writer.vertices[offset + 9] = anchor.position.y;
-    writer.vertices[offset + 10] = anchor.position.z;
+    writer.vertices[offset + 8] = sourcePosition.x;
+    writer.vertices[offset + 9] = sourcePosition.y;
+    writer.vertices[offset + 10] = sourcePosition.z;
     writer.vertices[offset + 11] = anchor.windPhase;
     writer.vertices[offset + 12] = anchor.stiffness;
     writer.vertices[offset + 13] = anchor.height01;
     writer.vertices[offset + 14] = y;
-    writer.vertices[offset + 15] = anchor.palette;
+    writer.vertices[offset + 15] = palette;
     writer.vertices[offset + 16] = 0.45 + y * 0.55;
     includePoint(writer.bounds, position);
     writer.vertexCursor++;
@@ -390,6 +425,55 @@ function emitLeaf(writer: FoliageWriter, recipe: TreeRecipe, lod: TreeLodRecipe,
   const detailScale = lodIndex === 0 ? 0.78 : lodIndex === 1 ? 0.86 : 1;
   const length = anchor.length * lod.foliageScale * detailScale;
   const leafWidth = anchor.width * lod.foliageScale * detailScale;
+
+  if (usesCloseBroadleafCluster(recipe, lod)) {
+    // One compiler anchor denotes a compact twig-tip cluster. Fan four smaller
+    // leaves from staggered points along that implied twig and roll their cards
+    // independently so nearby crowns retain negative space instead of merging
+    // into dark rosettes. The summed length/width products match the previous
+    // crossed-card pair's projected surface.
+    for (let index = 0; index < CLOSE_LEAFLET_COUNT; index++) {
+      const [alongWeight, widthWeight] = CLOSE_LEAFLET_FAN_WEIGHTS[index];
+      // `along`, `width`, and `normal` are an orthonormal frame, so these
+      // combinations are already unit length. Avoiding redundant per-leaflet
+      // normalization keeps the worker-side compile cost essentially flat.
+      const direction = {
+        x: along.x * alongWeight + width.x * widthWeight,
+        y: along.y * alongWeight + width.y * widthWeight,
+        z: along.z * alongWeight + width.z * widthWeight
+      };
+      const planarWidth = cross(direction, normal);
+      const leafletWidth = rotateAroundAxis(planarWidth, direction, CLOSE_LEAFLET_ROLL_ANGLES[index]);
+      const leafletNormal = cross(leafletWidth, direction);
+      const alongOffset = length * CLOSE_LEAFLET_ALONG_OFFSETS[index];
+      const widthOffset = leafWidth * CLOSE_LEAFLET_WIDTH_OFFSETS[index];
+      const leafletPosition = {
+        x: anchor.position.x + along.x * alongOffset + width.x * widthOffset,
+        y: anchor.position.y + along.y * alongOffset + width.y * widthOffset,
+        z: anchor.position.z + along.z * alongOffset + width.z * widthOffset
+      };
+      const leafletRadial = normalize(
+        add(scale(anchor.radial, 0.82), scale(leafletNormal, 0.18))
+      );
+      emitShape(
+        writer,
+        anchor,
+        CLOSE_LEAFLET_SHAPE,
+        direction,
+        leafletWidth,
+        leafletNormal,
+        length * CLOSE_LEAFLET_LENGTH_SCALES[index],
+        leafWidth * CLOSE_LEAFLET_WIDTH_SCALES[index],
+        recipe.foliage.droop * (index % 2 === 0 ? 1.04 : 0.92),
+        CLOSE_LEAFLET_CAMBERS[index],
+        leafletPosition,
+        leafletRadial,
+        clamp(anchor.palette + CLOSE_LEAFLET_PALETTE_OFFSETS[index], 0, 1)
+      );
+    }
+    return;
+  }
+
   emitShape(
     writer,
     anchor,
@@ -401,25 +485,6 @@ function emitLeaf(writer: FoliageWriter, recipe: TreeRecipe, lod: TreeLodRecipe,
     leafWidth,
     recipe.foliage.droop,
     lodIndex <= 1 ? 0.12 : 0.035
-  );
-
-  if (!usesDimensionalBroadleaves(recipe, lod)) return;
-  // A second, narrower leaf surface shares the exact branch attachment and
-  // bends around the midrib. This removes the single-card silhouette at close
-  // range without increasing instance attributes or draw calls.
-  const crossedWidth = normalize(rotateAroundAxis(width, along, Math.PI * 0.43));
-  const crossedNormal = normalize(cross(crossedWidth, along), anchor.radial);
-  emitShape(
-    writer,
-    anchor,
-    LEAF_SHAPE,
-    along,
-    crossedWidth,
-    crossedNormal,
-    length * 0.96,
-    leafWidth * 0.82,
-    recipe.foliage.droop * 0.9,
-    -0.075
   );
 }
 

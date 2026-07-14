@@ -383,7 +383,7 @@ const HEADS_PER_CLUMP = [3, 3, 3, 5] as const;
 // Geometry and deformation are now distance-graded. Hero clumps keep the full
 // curved, layered botanical meshes and interactive trample. Mid clumps keep a
 // recognizable species silhouette with 60–80% fewer triangles and one-sine
-// sway. The distant field is a shared 16-triangle static accent, where stems and
+// sway. The distant field is a shared 6-triangle static accent, where stems and
 // petal layering are sub-pixel anyway. Adjacent tiers overlap and scale through
 // noisy handoff bands in the shader instead of hard-switching at a ring edge.
 const HERO_FADE_START = 13;
@@ -441,22 +441,34 @@ function midGoldfieldGeometry(): THREE.BufferGeometry {
 
 const MID_BUILDERS = [midPoppyGeometry, midLupineGeometry, midYarrowGeometry, midGoldfieldGeometry];
 
-/** Two crossed stem strips plus two crossed bloom diamonds. At 50+ metres this
- *  retains a planted coloured fleck without carrying invisible petal topology. */
+/** Two crossed single-triangle stems plus two crossed bloom diamonds. At 50+
+ *  metres this retains a planted coloured fleck without carrying the twelve
+ *  subdivided stem triangles that were invisible at that screen size. */
 function farAccentGeometry(): THREE.BufferGeometry {
-  const parts = makeStem(0.38, 0.03);
   const pos = [
+    // Two tapered stem silhouettes (one triangle in each crossed plane).
+    -0.015, 0, 0, 0.015, 0, 0, 0, 0.39, 0,
+    0, 0, -0.015, 0, 0, 0.015, 0, 0.39, 0,
+    // Two crossed bloom diamonds.
     -0.09, 0.38, 0, 0, 0.43, 0, 0.09, 0.38, 0, 0, 0.33, 0,
     0, 0.38, -0.09, 0, 0.43, 0, 0, 0.38, 0.09, 0, 0.33, 0
   ];
-  const bloom = new THREE.BufferGeometry();
-  bloom.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
-  bloom.setAttribute("aHead", new THREE.Float32BufferAttribute(new Float32Array(8).fill(1), 1));
-  bloom.setAttribute("aG", new THREE.Float32BufferAttribute(new Float32Array(8).fill(0.72), 1));
-  bloom.setIndex([0, 3, 1, 1, 3, 2, 4, 7, 5, 5, 7, 6]);
-  bloom.computeVertexNormals();
-  parts.push(bloom);
-  return finalizeBloom(parts, 0.45);
+  const head = new Float32Array(14);
+  head.fill(1, 6);
+  const grad = new Float32Array(14);
+  grad.fill(0.72, 6);
+  const accent = new THREE.BufferGeometry();
+  accent.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  accent.setAttribute("aHead", new THREE.Float32BufferAttribute(head, 1));
+  accent.setAttribute("aG", new THREE.Float32BufferAttribute(grad, 1));
+  accent.setIndex([
+    0, 1, 2,
+    3, 4, 5,
+    6, 9, 7, 7, 9, 8,
+    10, 13, 11, 11, 13, 12
+  ]);
+  accent.computeVertexNormals();
+  return finalizeBloom([accent], 0.45);
 }
 
 // Flower heads remain clearly readable nearby, where their movement spans
@@ -465,6 +477,32 @@ function farAccentGeometry(): THREE.BufferGeometry {
 // away before the flowers become sub-pixel so they keep reading as planted.
 const FLOWER_WIND_FULL_DISTANCE = 14;
 const FLOWER_WIND_ZERO_DISTANCE = 46;
+
+// A flower's existing yaw-derived colour variance also gives every clump a free,
+// deterministic edge phase. Each clump fades through an 18 m window, while that
+// window ends at a different point across the outermost 8 m. The combined 26 m
+// transition dissolves into irregular singles instead of drawing a circular rim;
+// no bloom extends beyond the configured reach.
+export const FLOWER_ROTATION_SHADE_AMPLITUDE = 0.117;
+export const FLOWER_EDGE_FADE_BAND_METRES = 18;
+export const FLOWER_EDGE_STAGGER_METRES = 8;
+
+function flowerRotationShade(yaw: number): number {
+  return 1 + Math.cos(yaw) * 0.1 + Math.sin(yaw) * 0.06;
+}
+
+/** CPU mirror of the shader edge window, used by deterministic contracts and
+ *  visual probes. Production packs the same yaw shade into aFlowerAnchor.w. */
+export function flowerEdgeFadeWindow(reach: number, yaw: number): { start: number; end: number } {
+  const shade = flowerRotationShade(yaw);
+  const phase = THREE.MathUtils.clamp(
+    0.5 - ((shade - 1) / FLOWER_ROTATION_SHADE_AMPLITUDE) * 0.5,
+    0,
+    1
+  );
+  const end = reach - phase * FLOWER_EDGE_STAGGER_METRES;
+  return { start: end - FLOWER_EDGE_FADE_BAND_METRES, end };
+}
 
 // ---- material ------------------------------------------------------------------
 
@@ -503,7 +541,7 @@ function flowerMaterial(tier: FlowerRenderTier): FlowerMaterialState {
   const anchorWorld: N = instanceAnchorWorld(anchorLocal);
   const focus = new THREE.Vector2(1e6, 1e6);
   const focusU: N = uniform(focus);
-  const reachU: N = uniform(80);
+  const reachU: N = uniform(110);
 
   // COLOUR-FROM-ROTATION (the article's cheap-variation trick): a flower's yaw
   // nudges its brightness, so a patch of the same species + tint still varies bloom
@@ -581,18 +619,26 @@ function flowerMaterial(tier: FlowerRenderTier): FlowerMaterialState {
     .mul(windLod);
   const dipWorld: N = vec3(0, crush.mul(-0.4).mul(swayW), 0); // head sinks when stepped on
 
-  // Fade toward the ring rim (shared idea with the grass) so blooms shrink to nothing
-  // at the edge instead of popping in as the ring re-scatters.
   const dist: N = anchorWorld.xz.sub(focusU).length();
+  const rotationVariance: N = rotShade
+    .sub(1)
+    .div(FLOWER_ROTATION_SHADE_AMPLITUDE)
+    .clamp(-1, 1);
+
+  // Broad, staggered outer fade. Stable per-clump windows break the radial edge
+  // into scattered singles while keeping the configured reach a hard outer cap.
+  // Let the brighter rotation variants survive longest at the sparse horizon.
+  const edgePhase: N = rotationVariance.mul(-0.5).add(0.5);
+  const edgeEnd: N = reachU.sub(edgePhase.mul(FLOWER_EDGE_STAGGER_METRES));
   const ringFade: N = tier === "authored"
     ? float(1)
-    : reachU.sub(dist).div(reachU.mul(0.16).max(1)).clamp(0, 1);
+    : smoothstepNode(edgeEnd.sub(FLOWER_EDGE_FADE_BAND_METRES), edgeEnd, dist).oneMinus();
 
   // W is already a deterministic yaw-derived variance. Reuse it to slide the
   // LOD thresholds by ±1.5 m: the handoff is a noisy band, never a visible ring.
   // CPU tier membership is also focus-relative, so orbit/free cameras cannot
   // fade the only submitted tier away and open a flowerless hole at the player.
-  const lodNoise: N = rotShade.sub(1).div(0.117).clamp(-1, 1).mul(LOD_NOISE_METRES);
+  const lodNoise: N = rotationVariance.mul(LOD_NOISE_METRES);
   const lodFade: N = tier === "hero"
     ? smoothstepNode(float(HERO_FADE_START).add(lodNoise), float(HERO_FADE_END).add(lodNoise), dist).oneMinus()
     : tier === "mid"
@@ -654,7 +700,7 @@ function writeFlowerInstances(mesh: THREE.InstancedMesh, list: readonly Row[], c
     anchor[i * 4] = f.x;
     anchor[i * 4 + 1] = f.y;
     anchor[i * 4 + 2] = f.z;
-    anchor[i * 4 + 3] = 1 + Math.cos(f.yaw) * 0.1 + Math.sin(f.yaw) * 0.06;
+    anchor[i * 4 + 3] = flowerRotationShade(f.yaw);
   }
   mesh.count = list.length;
   mesh.instanceMatrix.needsUpdate = true;
