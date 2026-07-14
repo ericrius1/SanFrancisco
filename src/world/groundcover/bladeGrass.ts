@@ -435,20 +435,26 @@ export function setGrassMeshBounds(mesh: GrassMesh, entries: readonly GrassEntry
   mesh.geometry.boundingSphere = sphere;
 }
 
-/** Write `entries` into the compact transform/shape/color buffers.
- *  `fadeRadius` is the field radius the blades fade toward. */
-export function writeGrassMesh(mesh: GrassMesh, entries: GrassEntry[], fadeRadius: number) {
-  // never write past the mesh's fixed capacity — a high density knob can sample
-  // more blades than the buffers hold; the overflow is simply dropped.
+/** Write a bounded range without publishing the instance count. Streaming
+ *  builders use this to keep large buffer fills inside their frame slice. */
+export function writeGrassMeshRange(
+  mesh: GrassMesh,
+  entries: readonly GrassEntry[],
+  fadeRadius: number,
+  start = 0,
+  end = entries.length
+) {
   const capacity = grassMeshCapacity(mesh);
-  if (entries.length > capacity) entries = entries.slice(0, capacity);
+  const from = Math.max(0, Math.min(capacity, Math.floor(start)));
+  const to = Math.max(from, Math.min(capacity, entries.length, Math.floor(end)));
   const transformAttr = mesh.geometry.getAttribute("aGrassTransform") as THREE.InstancedBufferAttribute;
   const shapeAttr = mesh.geometry.getAttribute("aGrassShape") as THREE.InstancedBufferAttribute;
   const colorAttr = mesh.geometry.getAttribute("aGrassColor") as THREE.InstancedBufferAttribute;
   const transforms = transformAttr.array as Float32Array;
   const shapes = shapeAttr.array as Float32Array;
   const colors = colorAttr.array as Uint8Array;
-  entries.forEach((entry, i) => {
+  for (let i = from; i < to; i++) {
+    const entry = entries[i];
     const offset = i * 4;
     transforms[offset] = entry.x;
     transforms[offset + 1] = entry.y;
@@ -473,10 +479,26 @@ export function writeGrassMesh(mesh: GrassMesh, entries: GrassEntry[], fadeRadiu
     rankHash = Math.imul(rankHash ^ (rankHash >>> 13), 3266489917);
     rankHash ^= rankHash >>> 16;
     colors[offset + 3] = 1 + ((rankHash >>> 0) % 254);
-  });
-  mesh.userData.grassLastCount = entries.length;
-  setGrassMeshCount(mesh, entries.length);
+  }
+}
+
+/** Publish a completed compact-buffer write atomically. */
+export function finishGrassMeshWrite(mesh: GrassMesh, count: number) {
+  const finalCount = Math.max(0, Math.min(grassMeshCapacity(mesh), Math.floor(count)));
+  const transformAttr = mesh.geometry.getAttribute("aGrassTransform") as THREE.InstancedBufferAttribute;
+  const shapeAttr = mesh.geometry.getAttribute("aGrassShape") as THREE.InstancedBufferAttribute;
+  const colorAttr = mesh.geometry.getAttribute("aGrassColor") as THREE.InstancedBufferAttribute;
+  mesh.userData.grassLastCount = finalCount;
+  setGrassMeshCount(mesh, finalCount);
   transformAttr.needsUpdate = true;
   shapeAttr.needsUpdate = true;
   colorAttr.needsUpdate = true;
+}
+
+/** Write `entries` into the compact transform/shape/color buffers.
+ *  `fadeRadius` is the field radius the blades fade toward. */
+export function writeGrassMesh(mesh: GrassMesh, entries: GrassEntry[], fadeRadius: number) {
+  const count = Math.min(entries.length, grassMeshCapacity(mesh));
+  writeGrassMeshRange(mesh, entries, fadeRadius, 0, count);
+  finishGrassMeshWrite(mesh, count);
 }

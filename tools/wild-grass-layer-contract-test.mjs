@@ -41,6 +41,11 @@ const {
   wildGrassLayersAt
 } = await import("../src/world/wildlands/grassField.ts");
 const { createMicroBladeClusterGeometry } = await import("../src/world/groundcover/bladeGrass.ts");
+const {
+  createGroundcoverPreparationRegistry,
+  prepareGroundcoverRootPipelines
+} = await import("../src/world/wildlands/index.ts");
+const THREE = await import("three/webgpu");
 
 assert.equal(WILD_GRASS_RING_RADIUS, 110, "far field must reach 110m");
 assert.deepEqual(wildGrassLayersAt(0), ["far", "mid", "near", "hero"]);
@@ -75,12 +80,23 @@ for (const [name, spec] of Object.entries(WILD_GRASS_LAYER_SPECS)) {
 }
 
 const FOCUS = { x: -4000, z: 2440 };
+const scheduledGrassJobs = [];
+const scheduleGrass = (job) => scheduledGrassJobs.push(job);
+const drainGrass = () => {
+  let turns = 0;
+  while (scheduledGrassJobs.length > 0) {
+    const job = scheduledGrassJobs.shift();
+    if (job() === "again") scheduledGrassJobs.push(job);
+    assert(++turns < 100_000, "progressive grass jobs must settle");
+  }
+};
 const grass = createWildGrass({
   groundHeight: () => 75,
   surfaceType: () => 1,
   isWater: () => false
-});
+}, undefined, { schedule: scheduleGrass });
 grass.update(FOCUS);
+drainGrass();
 
 const initial = grass.stats;
 for (const name of ["far", "mid", "near", "hero"]) {
@@ -112,6 +128,36 @@ for (const mesh of populated) {
   assert.equal(bytes, 36, `${mesh.name} must retain the compact 36-byte instance payload`);
 }
 
+// Pipeline preparation is allowed to force an otherwise hidden root visible
+// only while that root is detached. It must restore both master visibility and
+// parent/sibling order before resolving.
+const preparationRegistry = createGroundcoverPreparationRegistry();
+const foliageParent = new THREE.Group();
+const beforeSibling = new THREE.Group();
+const afterSibling = new THREE.Group();
+foliageParent.add(beforeSibling, grass.group, afterSibling);
+grass.group.visible = false;
+let observedDetachedCompile = false;
+await prepareGroundcoverRootPipelines(
+  grass.group,
+  populated,
+  async (root) => {
+    observedDetachedCompile = true;
+    assert.equal(root.parent, null, "hidden root must compile while detached from the live scene");
+    assert.equal(root.visible, true, "detached root must be traversable during compile");
+  },
+  preparationRegistry
+);
+assert(observedDetachedCompile, "the first populated ring must warm its pipelines");
+assert.equal(grass.group.parent, foliageParent, "prepared root must return to its original parent");
+assert.equal(grass.group.visible, false, "prepared root must preserve the master foliage toggle");
+assert.deepEqual(
+  foliageParent.children,
+  [beforeSibling, grass.group, afterSibling],
+  "prepared root must return at its original sibling position"
+);
+grass.group.visible = true;
+
 const firstMesh = populated.find((mesh) => mesh.geometry.getAttribute("aGrassColor").count > 8);
 assert(firstMesh, "fixture needs one populated mesh for rank inspection");
 const rankBytes = firstMesh.geometry.getAttribute("aGrassColor").array;
@@ -123,12 +169,14 @@ assert(!observedRanks.has(0) && !observedRanks.has(255), "fade ranks must stay s
 // Below the 6m stream step, only focus uniforms move; every tile object stays.
 const beforeSmallMove = new Map(grass.group.children.map((mesh) => [mesh.name, mesh]));
 grass.update({ x: FOCUS.x + 3, z: FOCUS.z + 1 });
+drainGrass();
 assert.equal(grass.group.children.length, beforeSmallMove.size);
 for (const mesh of grass.group.children) assert.equal(mesh, beforeSmallMove.get(mesh.name));
 
 // Crossing the stream step may add/remove only entering/exiting tiles. Shared
 // world tiles retain object identity: there is no distance-band LOD replacement.
 grass.update({ x: FOCUS.x + 8, z: FOCUS.z + 1 });
+drainGrass();
 let stableSharedTiles = 0;
 for (const mesh of grass.group.children) {
   const previous = beforeSmallMove.get(mesh.name);
@@ -137,6 +185,21 @@ for (const mesh of grass.group.children) {
   stableSharedTiles++;
 }
 assert(stableSharedTiles > initial.draws * 0.6, "most shared streamed tiles should retain identity");
+
+// A real stream shift creates fresh mesh/buffer objects. Because each entering
+// tile reuses a warmed layer material + vertex layout, the reveal gate must
+// admit it immediately instead of launching another compile-and-reveal job.
+const beforeStreamShift = new Set(grass.group.children);
+grass.update({ x: FOCUS.x + 40, z: FOCUS.z + 1 });
+drainGrass();
+const enteringTiles = grass.group.children.filter((mesh) => !beforeStreamShift.has(mesh));
+assert(enteringTiles.length > 0, "fixture must stream at least one fresh grass tile");
+for (const mesh of enteringTiles) {
+  assert(
+    preparationRegistry.has(mesh),
+    `${mesh.name} must inherit the already-warmed pipeline/layout for its grass layer`
+  );
+}
 
 grass.dispose();
 assert.equal(grass.group.children.length, 0, "dispose must release every additive layer tile");

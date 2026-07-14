@@ -32,6 +32,10 @@ export type Wildlands = {
   ready: Promise<void>;
   /** add all layer groups to the scene */
   groups: THREE.Group[];
+  /** Prepare player-following flowers/grass without waiting for native trees. */
+  prepareGroundcover(prepare: NativeTreePrepareUnit): Promise<void>;
+  /** Prepare native-tree chunks independently after groundcover can reveal. */
+  prepareTrees(prepare: NativeTreePrepareUnit): Promise<void>;
   /** Prepare current tree chunks and player-following groundcover before reveal. */
   prepareVisible(prepare: NativeTreePrepareUnit): Promise<void>;
   /** Prime one boot/teleport destination without depending on the frame loop. */
@@ -59,7 +63,109 @@ export type WildlandsExclusions = {
   groundcover?: (x: number, z: number) => boolean;
   /** Keep authored trees off tees/fairways/greens while retaining rough trees. */
   trees?: (x: number, z: number) => boolean;
+  /** App-wide frame-budget lane used by progressive grass tile construction. */
+  scheduleGroundcoverBuild?: (job: () => void | "again") => void;
 };
+
+type GroundcoverRenderable = THREE.Object3D & {
+  isInstancedMesh?: boolean;
+  isMesh?: boolean;
+  material?: THREE.Material | THREE.Material[];
+  geometry?: THREE.BufferGeometry & { isInstancedBufferGeometry?: boolean };
+};
+
+/**
+ * WebGPU render pipelines are reusable across streamed groundcover objects when
+ * they share a material and vertex-buffer layout. Instance capacity/count are
+ * deliberately excluded: a newly entering grass tile has fresh buffers, but it
+ * does not need another shader/pipeline compile for the same layer.
+ */
+export function groundcoverPipelineLayoutKey(object: THREE.Object3D): string | null {
+  const renderable = object as GroundcoverRenderable;
+  if (!renderable.geometry || !renderable.material) return null;
+  const materials = Array.isArray(renderable.material)
+    ? renderable.material
+    : [renderable.material];
+  const attributes = Object.entries(renderable.geometry.attributes)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, attribute]) => {
+      const arrayName = attribute.array?.constructor?.name ?? "unknown";
+      const instanced = "isInstancedBufferAttribute" in attribute && attribute.isInstancedBufferAttribute
+        ? 1
+        : 0;
+      return `${name}:${attribute.itemSize}:${attribute.normalized ? 1 : 0}:${arrayName}:${instanced}`;
+    })
+    .join(",");
+  const indexArray = renderable.geometry.index?.array?.constructor?.name ?? "none";
+  const kind = renderable.isInstancedMesh
+    ? "instanced-mesh"
+    : renderable.geometry.isInstancedBufferGeometry
+      ? "instanced-geometry"
+      : renderable.isMesh
+        ? "mesh"
+        : object.type;
+  return `${kind}|${materials.map((material) => material.uuid).join(",")}|${indexArray}|${attributes}`;
+}
+
+/** @internal Exported so the streamed-tile contract can exercise admission. */
+export function createGroundcoverPreparationRegistry() {
+  const units = new WeakSet<THREE.Object3D>();
+  const layouts = new Set<string>();
+  return {
+    has(object: THREE.Object3D): boolean {
+      if (units.has(object)) return true;
+      const layout = groundcoverPipelineLayoutKey(object);
+      return layout !== null && layouts.has(layout);
+    },
+    mark(object: THREE.Object3D): void {
+      units.add(object);
+      const layout = groundcoverPipelineLayoutKey(object);
+      if (layout !== null) layouts.add(layout);
+    }
+  };
+}
+
+export type GroundcoverPreparationRegistry = ReturnType<typeof createGroundcoverPreparationRegistry>;
+
+/** @internal Compile a root off-scene while preserving its external visibility. */
+export async function prepareGroundcoverRootPipelines(
+  root: THREE.Object3D,
+  units: readonly THREE.Object3D[],
+  prepare: NativeTreePrepareUnit,
+  registry: GroundcoverPreparationRegistry
+): Promise<boolean> {
+  const pending = units.filter((unit) => !registry.has(unit));
+  if (pending.length === 0) {
+    // Cache the object identity too, so steady-state frame gates do not need to
+    // rebuild the structural key after layout-equivalent tiles are admitted.
+    for (const unit of units) registry.mark(unit);
+    return false;
+  }
+
+  const parent = root.parent;
+  const parentIndex = parent?.children.indexOf(root) ?? -1;
+  const rootWasVisible = root.visible;
+  if (parent) parent.remove(root);
+  root.visible = true;
+  for (const unit of pending) unit.visible = true;
+  try {
+    await prepare(root);
+    for (const unit of pending) registry.mark(unit);
+  } finally {
+    // Every input unit was non-empty when collected. Keep it locally revealable
+    // while the root's master visibility remains exactly what the caller chose.
+    for (const unit of pending) unit.visible = true;
+    root.visible = rootWasVisible;
+    if (parent) {
+      parent.add(root);
+      if (parentIndex >= 0 && parentIndex < parent.children.length - 1) {
+        parent.children.splice(parent.children.indexOf(root), 1);
+        parent.children.splice(parentIndex, 0, root);
+      }
+    }
+  }
+  return true;
+}
 
 const PRIMARY_WILD_REGIONS: ReadonlySet<WildRegionId> = new Set([
   "ggpark",
@@ -89,48 +195,75 @@ export function createWildlands(map: GardenTerrain, exclusions: WildlandsExclusi
     nearMax: 46
   });
   const flowers = createFlowerRing(map, exclusions.groundcover); // player-following ring, like the grass
-  const grass = createWildGrass(map, exclusions.groundcover); // player-following ring; free off green (grows in city parks too)
+  const grass = createWildGrass(map, exclusions.groundcover, {
+    schedule: exclusions.scheduleGroundcoverBuild,
+    // Completed tile buffers enter the group hidden. The preparation registry
+    // compiles the first material/layout before reveal; later equivalent tiles
+    // are admitted immediately from that warmed layout.
+    requirePreparation: true
+  }); // player-following ring; free off green (grows in city parks too)
   let groundcoverPreparer: NativeTreePrepareUnit | null = null;
   let groundcoverTail: Promise<void> = Promise.resolve();
   let groundcoverEpoch = 0;
-  const preparedGroundcover = new WeakSet<THREE.Object3D>();
+  const preparedGroundcover = createGroundcoverPreparationRegistry();
   const preparingGroundcover = new WeakMap<THREE.Object3D, Promise<void>>();
 
-  const groundcoverUnits = (): THREE.Object3D[] => {
+  const renderableCount = (object: THREE.Object3D): number => {
+    const renderable = object as THREE.Object3D & {
+      isInstancedMesh?: boolean;
+      count?: number;
+      isMesh?: boolean;
+      geometry?: { isInstancedBufferGeometry?: boolean; instanceCount?: number };
+    };
+    if (renderable.isInstancedMesh) return renderable.count ?? 0;
+    if (renderable.isMesh && renderable.geometry?.isInstancedBufferGeometry) {
+      return renderable.geometry.instanceCount ?? 0;
+    }
+    return 0;
+  };
+
+  const groundcoverUnits = (root?: THREE.Object3D): THREE.Object3D[] => {
     const units: THREE.Object3D[] = [];
-    for (const layer of [flowers.group, grass.group]) {
+    for (const layer of root ? [root] : [flowers.group, grass.group]) {
       layer.traverse((object) => {
-        const renderable = object as THREE.Object3D & {
-          isInstancedMesh?: boolean;
-          count?: number;
-        };
-        if (renderable.isInstancedMesh && (renderable.count ?? 0) > 0) units.push(object);
+        if (renderableCount(object) > 0) units.push(object);
       });
     }
     return units;
   };
 
   const queueGroundcoverPreparation = (unit: THREE.Object3D): Promise<void> => {
-    if (!groundcoverPreparer || preparedGroundcover.has(unit)) return Promise.resolve();
+    if (!groundcoverPreparer || preparedGroundcover.has(unit)) {
+      if (groundcoverPreparer) preparedGroundcover.mark(unit);
+      return Promise.resolve();
+    }
     const existing = preparingGroundcover.get(unit);
     if (existing) return existing;
     const revealEpoch = groundcoverEpoch;
     unit.visible = false;
     const queued = groundcoverTail.then(async () => {
       if (!groundcoverPreparer) return;
+      // Several freshly completed tiles can enter the gate in one frame. The
+      // first tile for a material/layout warms the pipeline; queued siblings
+      // must re-check that shared registry here instead of redundantly compiling
+      // every object that happened to be discovered before the first resolved.
+      if (preparedGroundcover.has(unit)) {
+        preparedGroundcover.mark(unit);
+        unit.visible = revealEpoch === groundcoverEpoch && renderableCount(unit) > 0;
+        return;
+      }
       const parent = unit.parent;
       if (parent) parent.remove(unit);
       unit.visible = true;
       try {
         await groundcoverPreparer(unit);
-        preparedGroundcover.add(unit);
+        preparedGroundcover.mark(unit);
       } finally {
         unit.visible = false;
         if (parent) parent.add(unit);
       }
       await yieldToFrame();
-      const mesh = unit as THREE.Object3D & { count?: number };
-      unit.visible = revealEpoch === groundcoverEpoch && (mesh.count ?? 0) > 0;
+      unit.visible = revealEpoch === groundcoverEpoch && renderableCount(unit) > 0;
     });
     let tracked: Promise<void>;
     tracked = queued.finally(() => {
@@ -148,6 +281,7 @@ export function createWildlands(map: GardenTerrain, exclusions: WildlandsExclusi
         unit.visible = false;
         jobs.push(queueGroundcoverPreparation(unit));
       } else {
+        if (groundcoverPreparer) preparedGroundcover.mark(unit);
         unit.visible = true;
       }
     }
@@ -168,6 +302,23 @@ export function createWildlands(map: GardenTerrain, exclusions: WildlandsExclusi
     }
   };
 
+  const prepareGroundcoverRoots = async (prepare: NativeTreePrepareUnit): Promise<void> => {
+    groundcoverPreparer = prepare;
+    // Await only the nearest completed tile from each additive grass layer.
+    // This gives the destination a dense far→hero surface under the arrival
+    // cover while the optional outer ring keeps streaming after reveal.
+    await grass.whenCriticalReady();
+    for (const root of [flowers.group, grass.group]) {
+      const units = groundcoverUnits(root);
+      // One detached-root compile warms every distinct material/layout in the
+      // current ring. Later streamed tiles sharing those layouts are admitted
+      // immediately instead of entering a serial compile-and-reveal queue.
+      if (await prepareGroundcoverRootPipelines(root, units, prepare, preparedGroundcover)) {
+        await yieldToFrame();
+      }
+    }
+  };
+
   const abortable = <T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> => {
     if (!signal) return promise;
     if (signal.aborted) return Promise.reject(destinationSuperseded());
@@ -184,12 +335,17 @@ export function createWildlands(map: GardenTerrain, exclusions: WildlandsExclusi
     grass,
     ready: trees.ready,
     groups: [trees.group, flowers.group, grass.group],
+    prepareGroundcover(prepare) {
+      return prepareGroundcoverRoots(prepare);
+    },
+    prepareTrees(prepare) {
+      return trees.prepareVisible(prepare);
+    },
     async prepareVisible(prepare) {
-      groundcoverPreparer = prepare;
+      // Destination-essential groundcover is admitted first. Native trees keep
+      // their independent optional preparation path and cannot hold it back.
+      await prepareGroundcoverRoots(prepare);
       await trees.prepareVisible(prepare);
-      // Only non-empty species/grass tiers are prepared. Empty pools stay truly
-      // lazy and gate themselves on their first later activation.
-      await Promise.all(gateGroundcover());
     },
     async prepareAt(focus, prepare, signal) {
       if (signal?.aborted) throw destinationSuperseded();
@@ -202,19 +358,25 @@ export function createWildlands(map: GardenTerrain, exclusions: WildlandsExclusi
       };
       signal?.addEventListener("abort", onAbort, { once: true });
       try {
-        // Scatter the exact destination ring synchronously, then hide any new
-        // unprepared pools before a render can traverse them under the cover.
+        // Retarget both destination rings immediately. Flowers update in place;
+        // grass only queues bounded nearest-first jobs, with every completed tile
+        // hidden until the shared preparation registry admits its layout.
         flowers.update(focus);
         grass.update(focus);
         for (const unit of groundcoverUnits()) {
           unit.visible = !groundcoverPreparer || preparedGroundcover.has(unit);
         }
 
-        // Tree preparation is internally sliced and serialized. Groundcover
-        // follows on the same callback to avoid competing compileAsync bursts.
-        await trees.prepareAt(focus, prepare, signal);
+        // Groundcover is the immediate destination surface; prepare it before
+        // the optional tree pipeline so a large grove cannot keep grass hidden.
+        if (groundcoverPreparer) {
+          await abortable(prepareGroundcoverRoots(groundcoverPreparer), signal);
+        } else {
+          await abortable(grass.whenCriticalReady(), signal);
+          await abortable(prepareCurrentGroundcover(epoch), signal);
+        }
         if (signal?.aborted || epoch !== groundcoverEpoch) throw destinationSuperseded();
-        await abortable(prepareCurrentGroundcover(epoch), signal);
+        await trees.prepareAt(focus, prepare, signal);
         if (signal?.aborted || epoch !== groundcoverEpoch) throw destinationSuperseded();
       } finally {
         signal?.removeEventListener("abort", onAbort);
