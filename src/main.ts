@@ -82,7 +82,7 @@ import { AudioControls } from "./ui/audioControls";
 import { Chat } from "./ui/chat";
 import { VehicleAudio } from "./fx/vehicleAudio";
 import { SwimAudio } from "./fx/swimAudio";
-import { createNatureSoundscape, DogParkAudio } from "./audio";
+import { createNatureSoundscape, DogParkAudio, BallImpactAudio, BALL_IMPACT_AUDIO_TUNING } from "./audio";
 import { WaveAudio, oceanWaveEnergyAt } from "./audio/waveAudio";
 import { AbandonedMounts, ABANDONED_MOUNT_PROMPT } from "./gameplay/abandonedMounts";
 import type { Creatures } from "./gameplay/creatures";
@@ -494,6 +494,10 @@ async function boot() {
   // Reusable ocean-wave layer (breaking surf at Ocean Beach + shoreline wash
   // anywhere near water); rides the nature AudioContext.
   const waveAudio = new WaveAudio(nature);
+  // Thrown-ball impact voices: a dry thud on the ground, a plonk in water. A
+  // splash in the Japanese Tea Garden's stream rings through a tunable feedback
+  // delay — the fey-realm "magic echo". Rides the nature context/effects bus.
+  const ballImpactAudio = new BallImpactAudio(nature);
 
   // Avatar identity: a saved avatar means the player chose one in the editor;
   // otherwise leave it to the server's per-id seed (adopted on welcome below) so
@@ -1002,7 +1006,13 @@ async function boot() {
       setThrowAnim: (t) => player.setThrowAnim(t),
       handWorldPos: (out) => player.handWorldPos(out)
     },
-    hud: { message: (t, s) => hud.message(t, s) }
+    hud: { message: (t, s) => hud.message(t, s) },
+    // A bounce on the tea-garden pond bottom is submerged — its plonk is voiced
+    // by the water feature, so skip the dry thud there.
+    onGroundImpact: (x, y, z, speed) => {
+      if (japaneseTeaGarden?.containsWater(x, z)) return;
+      ballImpactAudio.ground(x, y, z, speed);
+    }
   });
   // setTool ran before fetchBall existed — sync the held prop to the active tool
   fetchBall.setActive(tool === "ball");
@@ -1894,6 +1904,15 @@ async function boot() {
   );
   debugPanel.setMode(player.mode);
 
+  // Thrown-ball impact SFX + the fey-realm magic echo are adjustable at runtime.
+  debugPanel.registerFeatureTuning({
+    id: "ball-impact-audio",
+    title: "Ball impact sound · thud / water / magic echo",
+    build(folder) {
+      BALL_IMPACT_AUDIO_TUNING.bind(folder);
+    }
+  });
+
   // Kid-with-a-kite ambient life is an optional, fully procedural chunk. It
   // stands on the sandy NW-headland beach just south of Sutro Baths (roughly
   // between Sutro Baths and the Archery Range), where the player trolley passes.
@@ -2468,6 +2487,7 @@ async function boot() {
             ballSource: {
               visitFreeBalls: (visitor) => fetchBall?.visitFreeBalls(visitor)
             },
+            onBallWaterImpact: (x, y, z, speed) => ballImpactAudio.water(x, y, z, speed),
             onCarryRake: (rake) => player.setGardenRakeTool(rake),
             onRakeMotion: (motion) => player.setGardenRakeMotion(motion),
             notify: (message, seconds) => hud.message(message, seconds)
@@ -4353,6 +4373,9 @@ async function boot() {
     });
     // live loop only: the dogs freeze during pause, so barking there would lie
     dogParkAudio.update(frameDt, player.renderPosition);
+    // keeps the shared context awake for the magic-echo tail + applies live echo
+    // tuning; balls keep flying tool-agnostically, so run it every live frame
+    ballImpactAudio.update(frameDt);
     if (embodiments.currentAnimal) forest?.setRiddenSpeed(player.speed);
     if (!worldArrival.active) islands.update(elapsed, camera.position);
     // Baked destination tiles already provide the fixed-quality arrival view.
@@ -4762,7 +4785,7 @@ async function boot() {
       // deferred render warmup runs, tick() early-returns without rendering, so
       // screenshots would capture a stale boot-pose frame no matter what the
       // camera was set to.
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController?.game ?? null, pickleballAmbient: pickleballController?.ambient ?? null, pickleballAudio: pickleballController?.audio ?? null, pickleballUI: pickleballController?.ui ?? null, pickleballController, coronaHeights, missionDolores, sutroBaths, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, ensureSurfRuntime, roadMarkings, debugOverlays, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, ensureCarCustomizer, getCarSelector: () => carSelector, getCarConfig: () => ({ ...carConfig }), ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate, palaceReverie, landsEnd, afterlight, optionalWorldSites, ensureOptionalWorldSite,
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController?.game ?? null, pickleballAmbient: pickleballController?.ambient ?? null, pickleballAudio: pickleballController?.audio ?? null, pickleballUI: pickleballController?.ui ?? null, pickleballController, coronaHeights, missionDolores, sutroBaths, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, ballImpactAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, ensureSurfRuntime, roadMarkings, debugOverlays, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, ensureCarCustomizer, getCarSelector: () => carSelector, getCarConfig: () => ({ ...carConfig }), ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate, palaceReverie, landsEnd, afterlight, optionalWorldSites, ensureOptionalWorldSite,
         TSL,
         renderIdle: () => modulesReady && !optionalWorldSites.some(
           (site) => site.state === "queued" || site.state === "loading"

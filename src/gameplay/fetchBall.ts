@@ -20,7 +20,7 @@
 import * as THREE from "three/webgpu";
 import type { Physics } from "../core/physics";
 import type { WorldMap } from "../world/heightmap";
-import { stepBall, type BallSimCtx, type BallSimState } from "../world/coronaHeights/ballSim";
+import { stepBall, type BallSimCtx, type BallSimState, type BallStepImpact } from "../world/coronaHeights/ballSim";
 import type { CoronaHeightsPark, ParkDog } from "../world/coronaHeights";
 import { dogParkFenceSegments } from "../world/coronaHeights/dogParkFence";
 import {
@@ -59,6 +59,7 @@ const LEASH_MARGIN = 8; // a fetching dog this far outside the run = abandon bac
 const PET_TRAIL = 1.8; // pet trots this far behind the player
 const PICKUP_SPEED = 2.4; // dog grabs once the ball has slowed to this
 const PICKUP_RANGE = 0.55;
+const GROUND_SFX_MIN_SPEED = 1.2; // below this a bounce is an inaudible settle
 
 export interface PlayerBallView {
   /** Show/hide the tennis-ball prop clasped in the player's hand. */
@@ -80,6 +81,10 @@ export interface FetchBallDeps {
   park: () => CoronaHeightsPark | null; // getter (park is null until the hill is built)
   playerView: PlayerBallView;
   hud: FetchHud;
+  /** A free ball struck solid ground at `speed` m/s — voice a thud. Water
+   *  landings are voiced by the owning water feature, so the caller suppresses
+   *  this when the impact point is submerged. */
+  onGroundImpact?: (x: number, y: number, z: number, speed: number) => void;
 }
 
 /** Bottom-center charge bar: fill + threshold notch so the 1s throw gate reads. */
@@ -201,6 +206,7 @@ export class FetchBall {
 
   #spinAxis = new THREE.Vector3();
   #tmp = new THREE.Vector3();
+  #stepImpact: BallStepImpact = { groundSpeed: 0 };
 
   constructor(deps: FetchBallDeps) {
     this.#deps = deps;
@@ -657,7 +663,10 @@ export class FetchBall {
     const inPark = park?.isInsidePark(ball.state.x, ball.state.z) ?? false;
     const px = ball.state.x;
     const pz = ball.state.z;
-    stepBall(ball.state, inPark ? this.#ctxPark : this.#ctxOpen, dt);
+    stepBall(ball.state, inPark ? this.#ctxPark : this.#ctxOpen, dt, this.#stepImpact);
+    if (this.#stepImpact.groundSpeed >= GROUND_SFX_MIN_SPEED) {
+      this.#deps.onGroundImpact?.(ball.state.x, ball.state.y, ball.state.z, this.#stepImpact.groundSpeed);
+    }
     ball.mesh.position.set(ball.state.x, ball.state.y, ball.state.z);
     const dx = ball.state.x - px;
     const dz = ball.state.z - pz;

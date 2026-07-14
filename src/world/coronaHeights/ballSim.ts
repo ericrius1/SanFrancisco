@@ -22,6 +22,12 @@ export interface BallSimState {
   grounded: boolean;
 }
 
+/** Optional per-call impact report so callers can voice ground contacts. */
+export interface BallStepImpact {
+  /** Peak downward contact speed (m/s) of the hardest ground hit this call. */
+  groundSpeed: number;
+}
+
 export interface BallSimCtx {
   /** Caller supplies map.groundTop; the sim never touches the world directly. */
   groundTop(x: number, z: number): number;
@@ -37,8 +43,9 @@ export interface BallSimCtx {
 
 /** Advance the ball one frame (mutates `state` in place). g = -9.8, restitution
  *  0.55, woodchip friction 1.6, terrain-gradient drift 4.9, fence reflect 1.6·vn. */
-export function stepBall(state: BallSimState, ctx: BallSimCtx, dt: number): void {
+export function stepBall(state: BallSimState, ctx: BallSimCtx, dt: number, impact?: BallStepImpact): void {
   const { lift, radius } = ctx;
+  if (impact) impact.groundSpeed = 0;
   let remaining = Math.min(dt, 0.1);
   while (remaining > 1e-5) {
     const h = Math.min(remaining, 1 / 90);
@@ -51,6 +58,7 @@ export function stepBall(state: BallSimState, ctx: BallSimCtx, dt: number): void
       const gy = ctx.groundTop(state.x, state.z) + lift + radius;
       if (state.y <= gy && state.vy < 0) {
         state.y = gy;
+        if (impact) impact.groundSpeed = Math.max(impact.groundSpeed, -state.vy);
         state.vy = -state.vy * 0.55;
         state.vx *= 0.85;
         state.vz *= 0.85;

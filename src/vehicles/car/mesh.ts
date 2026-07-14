@@ -128,7 +128,31 @@ function profileGeometry(width: number, points: readonly (readonly [number, numb
   geometry.translate(0, 0, -width / 2);
   geometry.rotateY(Math.PI / 2);
   geometry.computeVertexNormals();
+  // ExtrudeGeometry emits UVs in world units (spans ~4.8 x 2.1 here). With a
+  // repeating paint canvas that tiles the finish 4-5x across the body. Remap to
+  // [0,1] so the lacquer maps exactly once across each silhouette panel.
+  remapUVToUnit(geometry);
   return geometry;
+}
+
+/** Rescale a geometry's UVs so its used range fills [0,1] (kills world-unit tiling). */
+function remapUVToUnit(geometry: THREE.BufferGeometry): void {
+  const uv = geometry.getAttribute("uv") as THREE.BufferAttribute | undefined;
+  if (!uv) return;
+  let minU = Infinity, minV = Infinity, maxU = -Infinity, maxV = -Infinity;
+  for (let i = 0; i < uv.count; i++) {
+    const u = uv.getX(i), v = uv.getY(i);
+    if (u < minU) minU = u;
+    if (v < minV) minV = v;
+    if (u > maxU) maxU = u;
+    if (v > maxV) maxV = v;
+  }
+  const spanU = maxU - minU || 1;
+  const spanV = maxV - minV || 1;
+  for (let i = 0; i < uv.count; i++) {
+    uv.setXY(i, (uv.getX(i) - minU) / spanU, (uv.getY(i) - minV) / spanV);
+  }
+  uv.needsUpdate = true;
 }
 
 function spokeCount(style: CarWheel): number {
@@ -151,7 +175,9 @@ export function buildCarMesh(raw?: CarConfig): THREE.Group {
   paintCarSurface(surfaceCanvas, config);
   const surfaceTexture = new THREE.CanvasTexture(surfaceCanvas);
   surfaceTexture.colorSpace = THREE.SRGBColorSpace;
-  surfaceTexture.wrapS = surfaceTexture.wrapT = THREE.RepeatWrapping;
+  // Body UVs are normalized to [0,1] (see remapUVToUnit); clamp so the paint
+  // finish never tiles across a panel.
+  surfaceTexture.wrapS = surfaceTexture.wrapT = THREE.ClampToEdgeWrapping;
   surfaceTexture.anisotropy = 4;
 
   const decalCanvas = document.createElement("canvas");
@@ -308,7 +334,10 @@ export function buildCarMesh(raw?: CarConfig): THREE.Group {
       arch.rotateY(Math.PI / 2);
       add(arch, paint, sideX, CAR_WHEEL_HUB_Y, wheelZ);
     }
-    const decal = add(new THREE.PlaneGeometry(1.95, 0.72), decalMaterial, sideX + side * 0.012, spec.decalY, spec.decalZ, 0, side * Math.PI / 2);
+    // Stand the decal clearly proud of the door face: rocker/crease trim boxes
+    // reach ~0.073m out from the flat side (sideX + 0.0275), so 0.012 let them
+    // poke through. 0.045 clears all side hardware without floating.
+    const decal = add(new THREE.PlaneGeometry(1.95, 0.72), decalMaterial, sideX + side * 0.045, spec.decalY, spec.decalZ, 0, side * Math.PI / 2);
     decal.scale.x = side;
   }
 

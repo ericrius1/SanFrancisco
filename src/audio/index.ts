@@ -23,3 +23,4 @@ export type { NatureRegionSpec, BedId, VoiceWeight } from "./regions";
 export type { NatureVoiceKind } from "./voices";
 export { DogParkAudio } from "./dogPark";
 export type { DogAudioCue, DogParkDog } from "./dogPark";
+export { BallImpactAudio, BALL_IMPACT_AUDIO_TUNING } from "./ballImpactAudio";

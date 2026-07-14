@@ -352,8 +352,12 @@ export class OceanBeachWaves {
       0.38,
       max(max(f.face, f.lip), f.white)
     ).mul(zRim);
-    mat.opacityNode = mix(alpha, float(1), replacementCore)
-      .mul(presence)
+    // The whole raised swell is opaque, not just the thin bright face band. The
+    // old alpha faded out across the crest, shoulder and back, so you saw the
+    // flat ocean and sky straight through the wave. Anywhere the wave stands up
+    // more than ~0.6 m it now fully occludes what is behind it.
+    const waveBody = smoothstep(float(0.6), float(2.6), f.height);
+    mat.opacityNode = max(mix(alpha, float(1), replacementCore).mul(presence), waveBody)
       .mul(contactEdge)
       .mul(stripFade)
       .mul(zRim);

@@ -125,6 +125,9 @@ export type JapaneseTeaGarden = {
   ): void;
   project(camera: THREE.Camera): void;
   interact(player: TeaGardenPlayerPosition, mode: string): boolean;
+  /** True when (x, z) is over an authored water feature (pond/stream). Lets the
+   *  ball tool suppress its dry ground thud for a bounce on the pond bottom. */
+  containsWater(x: number, z: number): boolean;
   tuningDescriptor(): DebugFeatureTuningRegistration;
   dispose(): void;
   stats: JapaneseTeaGardenStats;
@@ -146,6 +149,9 @@ export type JapaneseTeaGardenOptions = {
   onRakeMotion?: (motion: Readonly<GardenRakeMotion> | null) => void;
   /** Boot-resident ball state is sampled only while this lazy world feature is awake. */
   ballSource?: TeaGardenBallSource;
+  /** A thrown ball broke the tea water surface at `speed` m/s — voice a plonk +
+   *  the fey-realm magic echo. Fires only while the garden is awake. */
+  onBallWaterImpact?: (x: number, y: number, z: number, speed: number) => void;
   notify?: (message: string, seconds?: number) => void;
 };
 
@@ -378,6 +384,8 @@ export function createJapaneseTeaGarden(
           velocityZ: THREE.MathUtils.clamp(state.vz * 0.32, -3.2, 3.2),
           foam: THREE.MathUtils.clamp(0.18 + totalSpeed * 0.028, 0.18, 0.55)
         });
+        // The magic zen river is the fey realm's water: voice the plonk + echo.
+        options.onBallWaterImpact?.(impactX, water.surfaceY(impactX, impactZ), impactZ, totalSpeed);
         track.lastWakeX = impactX;
         track.lastWakeZ = impactZ;
       } else if (currentInWater && surfaceDelta <= 0.04 && horizontalSpeed > 0.22) {
@@ -520,6 +528,9 @@ export function createJapaneseTeaGarden(
       if (disposed || !awake) return false;
       if (dryLandscape.interact(player, mode)) return true;
       return guide.interact(player, mode);
+    },
+    containsWater(x: number, z: number): boolean {
+      return inTeaGardenWater(x, z);
     },
     tuningDescriptor() {
       return {

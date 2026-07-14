@@ -103,41 +103,54 @@ const TAB_WORLD = `
     The hard part isn't the streaming — it's doing it without a visible hitch <em>every single time</em>
     a tile arrives, because parsing geometry and uploading it to the GPU are exactly the kind of work
     that drops a frame.</p>
-    <p>So the work is spread thin and kept off the main thread. The meshopt decode runs on a pool of
-    <strong>worker threads</strong>; collider data is parsed on another worker and handed back as
-    transferable typed arrays (moved, not copied); a freshly-loaded tile attaches its meshes
-    <strong>one per frame</strong> rather than all at once; and facade materials are <strong>pooled and
-    reused</strong>, because giving each tile its own material would make the renderer regenerate shader
-    code per tile. Climb high above the city and a detail LOD quietly kicks in — the densest park lawns
-    (a single one can be hundreds of thousands of vertices) and the trees drop out while you're too far
-    up to notice, and stream back in as you descend.</p>
+    <p>So the work is spread thin and kept off the main thread: the compressed geometry is decoded on
+    worker threads and the collider data on another, a freshly-loaded tile attaches its meshes
+    <strong>one per frame</strong> rather than all at once, and facade materials are <strong>pooled and
+    reused</strong> (giving each tile its own would make the renderer regenerate shader code per tile).
+    All that per-frame drip is now metered by a single frame-budget scheduler, and the threads have a
+    chapter of their own — <a data-bts-tab="smooth" href="#">Making it smooth →</a>. The hills, meanwhile,
+    no longer stream at all: the terrain became a GPU clipmap that's always just <em>there</em>, so the
+    only things arriving over the network now are the buildings.</p>
   </section>
 
   <section>
     <h3><span class="bts-ic">🌳</span> A city that grows</h3>
-    <p>Every outdoor plant now enters one sandbox-owned vegetation runtime. Places still own their
-    horticulture — the Tea Garden chooses pruned pines and azaleas, Corona chooses coastal scrub, and
-    Hippie Hill chooses its perimeter canopy — but they submit those placements to shared tree,
-    leaf-spray shrub, curved-blade grass, and dimensional flower renderers. That is why a garden can
-    keep its own identity without quietly bringing back a second foliage look.</p>
-    <p>Trees grow once per design, then a chunked far forest and a small pool of nearby hero trees share
-    the result. Grass, shrub leaves, and 3–5-stem flower clumps bend to the same gust and interaction
-    field, while distance gates and first-approach imports keep distant parks and their assets out of a
-    clean boot. Placement is deterministic, so every player sees the same planting; rendering cost is
-    bounded by instancing, chunk culling, and near-detail pools instead of the size of the whole city.</p>
+    <p>Every outdoor plant enters one shared vegetation runtime. Places still own their horticulture — the
+    Tea Garden chooses its pruned pines and azaleas, and the wild regions (Golden Gate Park, the Presidio,
+    the Marin headlands, Mount Sutro) grow their own forest of Douglas fir, cypress, oak and eucalyptus —
+    but they all submit those placements to shared tree, grass and wildflower renderers, so a garden keeps
+    its own identity without quietly dragging a second foliage look along with it.</p>
+    <p>Trees grow once per design, then a chunked far forest and a small capped pool of nearby hero trees
+    share the result across four levels of detail. Grass and flowers ride a <strong>ring that follows
+    you</strong> — a carpet that streams in around wherever you are, so a meadow costs the same whether
+    the park is an acre or a mile — bending to one shared gust and one shared trample field. Placement is
+    deterministic, so every player sees the same planting. This whole layer recently got a lot denser
+    <em>and</em> a lot smoother without getting more expensive; how that's even possible is its own
+    chapter — <a data-bts-tab="smooth" href="#">Making it smooth →</a>.</p>
   </section>
 
   <section>
-    <h3><span class="bts-ic">⛰️</span> Draping a city onto hills</h3>
-    <p>San Francisco isn't flat, and neither is any of this. The terrain is a DEM mesh that
-    <strong>adaptively refines</strong> — coarse where the ground is smooth, down to a fine grid where
-    it bends — with T-junctions snapped so no cracks open between a coarse patch and a fine one. Roads
-    and parks are then draped over that surface: densified so they follow the curve of a hill instead of
-    cutting a flat ribbon through it, and lifted by a sub-centimetre hair so they don't z-fight the
-    ground underneath. (The streets get their look the same careful way — warm-grey patchwork asphalt,
-    oily wear, low wet patches that go glossy and mirror the sky, grit that only resolves near the
-    camera — and no painted lane lines, because real SF streets curve.)</p>
-    <p>The physics "carpet" of ground boxes does the same thing underneath you: where the land steps
+    <h3><span class="bts-ic">⛰️</span> A clipmap for the hills</h3>
+    <p>San Francisco isn't flat, and the ground you stand on is one of the quietest tricks in the whole
+    thing. It used to be two dozen chunks of terrain streamed off the network like the buildings — which
+    meant a hitch every time a fresh slab of hillside downloaded and uploaded to the GPU. Now the terrain
+    is a single <strong>GPU clipmap</strong>: seven nested rings of grid geometry centred on you, fine
+    right under your feet (a metre between vertices) and doubling in spacing outward to 64 m at the edge,
+    covering an <strong>8-kilometre</strong> square. The rings never reload and never move in memory; they
+    simply <strong>slide with you</strong> and read their elevation from a shared height texture <em>in
+    the vertex shader</em>, so the same handful of meshes becomes every hill in the city for the cost of
+    about <strong>seven draw calls</strong>.</p>
+    <p>The seams where a fine ring meets a coarse one would normally crack open or pop; instead each ring's
+    outer band <strong>morphs</strong> its heights to agree exactly with the coarser ring behind it, so the
+    ground stays continuous with no skirts and no T-junction fixups. Because nothing streams, the terrain
+    has <strong>no pop-in and constant memory</strong> — and when you teleport across the map it just
+    re-centres on the spot, with no hillside to wait for.</p>
+    <p>Roads and parks are still <strong>draped over</strong> that surface: densified so they follow the
+    curve of a hill instead of cutting a flat ribbon through it, and lifted by a sub-centimetre hair so
+    they don't z-fight the ground underneath. (The streets get their look the same careful way — warm-grey
+    patchwork asphalt, oily wear, low wet patches that go glossy and mirror the sky, grit that only
+    resolves near the camera — and no painted lane lines, because real SF streets curve.) And the physics
+    "carpet" of ground boxes samples that same elevation on the CPU underneath you: where the land steps
     down a terrace it refines into finer slabs with a backstop below, which is why you can walk
     <em>down</em> Lombard's switchbacks instead of dropping through the seams.</p>
   </section>
@@ -149,9 +162,11 @@ const TAB_LIFE = `
     <h3><span class="bts-ic">🎨</span> Rendering on WebGPU</h3>
     <p>${a("https://threejs.org/", "three.js")} on <strong>WebGPU</strong>, with shaders written in
     TSL (three's node shading language) rather than raw WGSL strings — so the same node graph drives
-    facades, water, foliage and particles. Sunlight casts <strong>cascaded shadow maps</strong> (three
-    depth slices near-to-far) so a crisp shadow under your feet and a soft one across a distant hill can
-    share one light. There are optional ink, dream and retro post-processing looks.</p>
+    facades, water, foliage and particles. Sunlight near you casts <strong>cascaded shadow maps</strong>
+    (nested depth slices, fine underfoot and coarser outward), while shadows far across the city come from
+    a <strong>world-locked occlusion field</strong> baked off to the side rather than re-rendered every
+    frame — so a crisp shadow at your feet and the massing of a distant hillside share one sun without the
+    far shadows swimming as you move. There are optional ink, dream and retro post-processing looks.</p>
     <p>The renderer is aggressively budgeted because whole tiles stream in behind you: device pixel
     ratio is capped, the scene runs a small <strong>fixed pool of lights</strong> (adding or removing a
     real light rebuilds every GPU pipeline in this renderer, so glowing things use emissive materials
@@ -266,23 +281,121 @@ const TAB_LIFE = `
     to a violet afterglow.</p>
   </section>
 
+`;
+
+const TAB_SMOOTH = `
   <section>
-    <h3><span class="bts-ic">⚡</span> Keeping the frame rate up</h3>
-    <p>All of this has to stay smooth on an ordinary laptop, so the whole engine is built around a
-    budget. Device pixel ratio defaults to 1 (slider in the debug panel), the pre-pass runs at half resolution, and the light count is
-    kept small and fixed — every extra light taxes every pixel, and in this renderer <em>changing</em>
-    the count rebuilds every shader pipeline (a multi-second freeze), which is the real reason glowing
-    things are emissive materials and never new lamps. Physics runs a small fixed number of substeps,
-    the ground carpet refines a little each frame instead of all at once, and the water is split
-    cheap-far / rich-near.</p>
-    <p>The traps hide in the details: an anti-aliasing pass silently inherited the renderer's MSAA
-    sample count and quietly quadrupled its own cost until it was pinned down; a lighting probe was
-    re-baking every frame; a stray branch in a shader once blanked out every distant window light,
-    because on this renderer a conditional inside a noise function corrupts the pixels it skips. Hunting
-    those down is most of what "make it fast" actually means — and the target is a steady 120 frames a
-    second where the hardware allows.</p>
+    <p class="bts-lede">A whole city — streaming buildings, a physics world, thousands of trees, other
+    players, weather and water — has to hold a steady frame on an ordinary laptop, and the enemy is almost
+    never the steady load. It's the <strong>hitch</strong>: one frame that takes 40&nbsp;ms instead of 8
+    because three unrelated systems all decided to do their heavy lifting at once. Most of what follows is
+    the machinery that stops that — a single budget every background job answers to, the hard work pushed
+    onto other threads, and the recent passes that made the world denser and teleporting near-instant while
+    the frame rate went <em>up</em>, not down.</p>
   </section>
 
+  <section>
+    <h3><span class="bts-ic">⏱️</span> One budget for all the work</h3>
+    <p>Every streaming system used to throttle itself — this one builds a few buildings per scan, that one
+    creates a handful of physics boxes per tile, another warms a material or two. Each cap looked
+    reasonable alone. The trouble is they can't see each other, so on the frame where all three fired at
+    once they <strong>stacked into a visible stutter</strong>. The fix is one place that <em>can</em> see
+    them: a <strong>frame-budget scheduler</strong>. Instead of doing bursty work inline, systems chop it
+    into tiny jobs — assemble one mesh, create one building's colliders, warm one shader — and hand them
+    over; once a frame the scheduler drains jobs in priority order (physics first, then visible world
+    assembly, then GPU uploads, then background chores) until a small time budget is spent.</p>
+    <p>That budget is <strong>scaled by real headroom</strong>: a frame that's already running long does
+    less background work, and a fast frame catches up — so the world fills in as quickly as the machine can
+    afford, never at the price of a dropped frame. A job that can't finish its slice just says "again" and
+    goes to the back of the queue for next frame. Riding alongside is an always-on <strong>hitch
+    tracer</strong> that brackets every frame into phases and counts what each system did; when a frame
+    runs long it snapshots exactly who was busy — so a newly added feature that starts hitching can't hide,
+    it shows up by name.</p>
+  </section>
+
+  <section>
+    <h3><span class="bts-ic">🧵</span> Off the main thread</h3>
+    <p>The main thread has one job — draw the next frame — so the expensive, frame-dropping work is exiled
+    to <strong>worker threads</strong> running in parallel. A pool of workers decodes the compressed
+    geometry of each building tile; another parses the collider data and hands it back as transferable
+    typed arrays (moved between threads, not copied); the procedural buildings are generated on a build
+    worker; spawn points resolve on their own; and the distant-shadow field further down this page is
+    rebuilt off to the side too. The rule is always the same — do the heavy thing somewhere the frame can't
+    feel it, then let the scheduler fold the finished result back in a sliver at a time.</p>
+  </section>
+
+  <section>
+    <h3><span class="bts-ic">🌲</span> Denser foliage, no hitch</h3>
+    <p>The trees, grass and wildflowers went through a big density-and-quality pass, and the whole point
+    was to add far <em>more</em> of them without adding cost you can feel. Two ideas do most of the work.
+    First, grass and flowers aren't strewn across the whole map — they ride a <strong>ring that follows
+    you</strong> and re-samples as you walk, so a meadow's cost is fixed no matter how large the region is,
+    and there's nothing to pay anywhere you aren't. Second, that ring is <strong>built through the
+    scheduler</strong>: a dense patch is sampled, allocated, uploaded and published a slice at a time,
+    budgeted to well under a millisecond a frame, nearest blades first so the ground under you is never
+    bare. The same grass generation that once blocked the main thread for <strong>~450&nbsp;ms</strong> in
+    one lump now costs <strong>under a millisecond</strong> per frame — and you never see the join.</p>
+    <p>Trees are instanced and batched across <strong>four levels of detail</strong> — lush and leafy up
+    close, then progressively cheaper cards out to the horizon. The hard part of any LOD system is the
+    <em>pop</em> when something swaps levels; here the swap distances are deliberately
+    <strong>staggered</strong>, so a stand converts a few trees at a time across a wide band instead of the
+    whole grid flipping at once along a circle, with a hysteresis margin so a jittering camera can't make
+    them flicker back and forth. Distant flower fields dissolve into scattered singles over a fading band
+    rather than ending on a hard rim. And so the shadows don't pop along with the trees, tree shadows are
+    cast by a separate <strong>static proxy</strong> that never switches levels at all — the massing on the
+    ground stays put while the trees themselves change detail in front of it.</p>
+  </section>
+
+  <section>
+    <h3><span class="bts-ic">🛬</span> Teleporting without the pop-in</h3>
+    <p>Press a number, click the map, follow an invite link — you can be dropped anywhere in the city, and
+    the arrival is orchestrated so you never land in a half-built world. The whole handoff happens
+    <strong>behind an opaque cover</strong>: the destination is resolved, its buildings and colliders are
+    primed, and its foliage is <strong>compiled and warmed on the GPU before it's ever added to the
+    scene</strong> — so the first frame you actually see has no shader stall and no bare-then-pop-in
+    landscape. Only once the destination reports ready does the cover lift.</p>
+    <p>A few things make that quick. The terrain is already there — it's a clipmap, so it just re-centres
+    on the spot instead of streaming a fresh hillside. The grass builder is handed a <strong>much fatter
+    time budget while the cover is up</strong> (there's no visible frame to protect yet), so the meadow
+    fills in fast in the dark and then drops back to its gentle per-frame trickle the instant you can see.
+    And each destination's activation is kept <strong>isolated</strong> — arriving at the Japanese Tea
+    Garden warms exactly the Tea Garden and doesn't drag in the far heavier wild-park foliage next door,
+    which stays asleep until you actually walk toward it.</p>
+  </section>
+
+  <section>
+    <h3><span class="bts-ic">🌑</span> Shadows that stop swimming</h3>
+    <p>Close-up shadows are ordinary shadow maps, but shadows stretching miles across the city can't be
+    re-rendered every frame — and the old approach, a big shadow map that <em>followed</em> you, had a
+    tell: because its edge was a moving square centred on the player, distant shadow darkness would subtly
+    <strong>swim and pop</strong> as you travelled through it. So it stopped moving. Distant shadows now
+    come from a <strong>world-locked occlusion field</strong> — a compact texture keyed to fixed world
+    coordinates that records how high the shadow ceiling sits over every patch of the city. It's built once
+    on a worker and rebuilt only when tiles stream or the sun swings more than a couple of degrees; the
+    camera shaking, turning or racing across town never disturbs it.</p>
+    <p>It stores the city twice over in that one texture: a <strong>conservative</strong> envelope, padded
+    and read weakly so a thin flagpole's shadow still survives, and a <strong>tight</strong> one read at
+    full strength for solid mass — the renderer samples both in a single tap and takes the darker, which
+    keeps roofs and upper storeys lit while the streets below stay shaded. If the field is ever stale it
+    fades out rather than drawing the wrong thing. The payoff is a skyline whose shadows sit perfectly
+    still while you fly straight through it.</p>
+  </section>
+
+  <section>
+    <h3><span class="bts-ic">⚡</span> The unglamorous half</h3>
+    <p>The rest is a hundred small disciplines. Device pixel ratio defaults to 1 (there's a slider), the
+    pre-pass runs at half resolution, and the light count is kept small and <strong>fixed</strong> — every
+    extra light taxes every pixel, and in this renderer <em>changing</em> the count rebuilds every shader
+    pipeline (a multi-second freeze), which is the real reason glowing things are emissive materials and
+    never new lamps. Physics runs a small fixed number of substeps, and the water is split
+    cheap-far / rich-near.</p>
+    <p>The nastiest bugs hide in the details: an anti-aliasing pass silently inherited the renderer's MSAA
+    sample count and quietly quadrupled its own cost until it was pinned down; a lighting probe was
+    re-baking every single frame; a stray branch in a shader once blanked out every distant window light,
+    because on this renderer a conditional inside a noise function corrupts the pixels it skips. Hunting
+    those down is most of what "make it fast" actually means — and the target is a steady <strong>120
+    frames a second</strong> wherever the hardware allows.</p>
+  </section>
 `;
 
 const TAB_PLAY = `
@@ -434,6 +547,7 @@ type Tab = { id: string; label: string; icon: string; html: string };
 const TABS: Tab[] = [
   { id: "world", label: "Building the world", icon: "🏗️", html: TAB_WORLD },
   { id: "life", label: "Bringing it to life", icon: "🌆", html: TAB_LIFE },
+  { id: "smooth", label: "Making it smooth", icon: "⚡", html: TAB_SMOOTH },
   { id: "play", label: "Playing in it", icon: "🎮", html: TAB_PLAY },
   { id: "sound", label: "The soundscape", icon: "🐦", html: SOUNDSCAPE_TAB_HTML }
 ];

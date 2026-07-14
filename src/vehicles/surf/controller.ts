@@ -184,6 +184,10 @@ export class SurfController implements ModeController {
   #config: SurfboardConfig = normalizeSurfboardConfig(null);
   #phase: SurfPhase = "ride";
   #lineDirection = 1;
+  /** 0 = one down-line direction, 1 = the other, 0.5 = angled up the face.
+   *  A/D slide this across the arc so a full carve reverses the line (cutback)
+   *  without ever spinning out. Kept in sync wherever lineDirection is set. */
+  #linePos = 1;
   #lineSpeed = 0;
   #pump = 0;
   #carve = 0;
@@ -360,11 +364,25 @@ export class SurfController implements ModeController {
       tb.entryAssistDuration > 0
         ? THREE.MathUtils.clamp(1 - this.#entryAssist / tb.entryAssistDuration, 0.45, 1)
         : 1;
-    const trimYaw = this.#lineDirection < 0 ? 0 : Math.PI;
-    const targetYaw = trimYaw + steer * tb.carveYawAngle * shape.carve * entryBlend;
-    this.yaw +=
-      shortestAngle(targetYaw, this.yaw) *
-      (1 - Math.exp(-motionDt * tb.yawResponse * shape.carve));
+    // A/D own the heading directly. The old model pinned yaw to a narrow cone
+    // around one fixed down-line trim, so the rider was railed one way and could
+    // never turn back — "on a track". Now steering turns the board continuously:
+    // hold a carve and the nose swings through the fall line into a real cutback
+    // the other way, with lineDirection following the resulting travel below.
+    // Neutral input eases toward whichever down-line trim is nearest, so you
+    // still settle onto a clean racing line instead of drifting or spinning.
+    this.#linePos = THREE.MathUtils.clamp(
+      this.#linePos + steer * tb.carveTurnRate * shape.carve * entryBlend * motionDt,
+      -0.08,
+      1.08
+    );
+    if (Math.abs(steer) < 0.15) {
+      // Neutral eases to the nearest down-line end so you keep cruising a clean
+      // line, instead of stalling straight up the face (linePos 0.5).
+      const end = this.#linePos < 0.5 ? 0 : 1;
+      this.#linePos += (end - this.#linePos) * (1 - Math.exp(-motionDt * tb.yawRecenter));
+    }
+    this.yaw = Math.PI * THREE.MathUtils.clamp(this.#linePos, 0, 1);
     // Lean follows steer for readable body language (A leans screen-left).
     this.#carve +=
       (-steer - this.#carve) *
@@ -401,13 +419,15 @@ export class SurfController implements ModeController {
     this.#lineDirection = vz >= 0 ? 1 : -1;
     const nextZ = p.z + vz * dt;
     if (nextZ < OCEAN_BEACH_SURF.minZ + tb.boundaryMargin && vz < 0) {
-      this.yaw = Math.PI - this.yaw;
+      this.#linePos = 1 - this.#linePos;
+      this.yaw = Math.PI * THREE.MathUtils.clamp(this.#linePos, 0, 1);
       vz = Math.abs(vz);
       this.#lineDirection = 1;
       this.telemetry.assistSerial++;
       this.#emitSplash(0.7);
     } else if (nextZ > OCEAN_BEACH_SURF.maxZ - tb.boundaryMargin && vz > 0) {
-      this.yaw = Math.PI - this.yaw;
+      this.#linePos = 1 - this.#linePos;
+      this.yaw = Math.PI * THREE.MathUtils.clamp(this.#linePos, 0, 1);
       vz = -Math.abs(vz);
       this.#lineDirection = -1;
       this.telemetry.assistSerial++;
@@ -855,7 +875,9 @@ export class SurfController implements ModeController {
     const slopeForward = slopeX * forwardX + slopeZ * forwardZ;
     const surfaceBank = Math.atan(slopeRight) * tb.surfaceBankFollow;
     const carveBank = -steer * tb.carveLean * shape.carve * 0.38;
-    const targetLean = THREE.MathUtils.clamp(surfaceBank + carveBank, -1.18, 1.18);
+    // Cap well short of horizontal: a planted surfer cants into the wall, never
+    // rolls onto their side (which read as a prone rider bleeding into the face).
+    const targetLean = THREE.MathUtils.clamp(surfaceBank + carveBank, -0.9, 0.9);
     this.lean += (targetLean - this.lean) * Math.min(1, motionDt * tb.leanResponse * shape.stability);
 
     const slopePitch = Math.atan(slopeForward) * tb.pitchFollow;
