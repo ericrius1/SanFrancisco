@@ -1,7 +1,7 @@
-// End-to-end terrain streaming + collision QA in the real headless WebGPU app.
+// End-to-end GPU terrain clipmap + collision QA in the real headless WebGPU app.
 //
 // Reuses a running preview when SF_PROBE_URL is set. The probe keeps the normal
-// app boot/streaming loop alive long enough to audit terrain requests, then
+// app boot loop alive long enough to reject legacy terrain requests, then
 // switches to deterministic stepping for a repeatable car drive over Marin.
 
 // Usage:
@@ -10,6 +10,7 @@
 // Artifacts:
 //   .data/terrain-runtime/result.json
 //   .data/terrain-runtime/terrain-runtime.png
+//   .data/terrain-runtime/terrain-runtime-lod.png
 
 
 import { access, mkdir, writeFile } from "node:fs/promises";
@@ -129,6 +130,7 @@ async function main() {
   });
 
   const pageErrors = [];
+  const consoleErrors = [];
   const terrainRequests = [];
   const observedTileRequests = [];
   let page;
@@ -141,6 +143,9 @@ async function main() {
     page = await context.newPage();
     const started = performance.now();
     page.on("pageerror", (error) => pageErrors.push(String(error)));
+    page.on("console", (message) => {
+      if (message.type() === "error") consoleErrors.push(message.text());
+    });
     // Count dispatches, not only completed responses: GLTFLoader can still be
     // decoding a large meshopt response when the boot systems report idle.
     page.on("request", (request) => {
@@ -156,8 +161,8 @@ async function main() {
       null,
       { timeout: 180_000 }
     );
-    // Terrain scans are intentionally cadence-limited. Drive enough deterministic
-    // boot frames to cross the first scan boundary even on a slow headless GPU.
+    // Drive enough deterministic boot frames to compile and submit every clipmap
+    // level even on a slow headless GPU.
     await page.evaluate(() => {
       window.__sfManual(true);
       for (let i = 0; i < 75; i++) window.__sf.tick(1 / 60);
@@ -166,21 +171,22 @@ async function main() {
     const bootSettle = await settleFrames(page);
     mergeObservedTerrain(observedTileRequests, terrainRequests, started);
     await mergePerformanceTerrain(page, terrainRequests, started);
-    console.log(`[terrain-probe] boot: ${terrainRequests.length} terrain request(s), ${bootSettle?.loadedTerrain ?? 0} loaded`);
-    if (terrainRequests.length === 0) {
-      const timingTiles = await page.evaluate(() =>
-        performance.getEntriesByType("resource").map((entry) => entry.name).filter((url) => url.includes("/tiles/"))
-      );
-      const loadedNames = await page.evaluate(() => [...window.__sf.tiles.terrain.keys()]);
-      console.log("[terrain-probe] request diagnostics", JSON.stringify({ observedTileRequests, timingTiles, loadedNames }));
-    }
+    console.log(`[terrain-probe] boot: ${terrainRequests.length} legacy terrain request(s), ${bootSettle?.loadedTerrain ?? 0} resident terrain root(s)`);
 
     const bootPatch = await page.evaluate(() => window.__sf.physics.terrainPatchDebug);
+    const bootClipmap = await page.evaluate(() => window.__sf.tiles.terrainClipmap?.stats() ?? null);
     const bootTerrain = [...new Set(terrainRequests.map((entry) => entry.name))];
     assert(bootPatch.step === 8, `runtime collision step is ${bootPatch.step}, expected 8 m`);
     assert(bootPatch.vertices === 1681, `runtime patch has ${bootPatch.vertices} vertices, expected 1681`);
     assert(bootPatch.triangles <= 3200, `runtime patch has ${bootPatch.triangles} triangles, expected at most 3200`);
-    assert(bootTerrain.length > 0 && bootTerrain.length < 25, `clean boot requested ${bootTerrain.length}/25 terrain chunks`);
+    assert(bootTerrain.length === 0, `clean boot requested ${bootTerrain.length} legacy terrain GLBs`);
+    assert(bootClipmap, "GPU terrain clipmap is not resident");
+    assert(bootClipmap.levels === 7, `runtime clipmap has ${bootClipmap.levels} levels`);
+    assert(bootClipmap.patches === 28, `runtime clipmap has ${bootClipmap.patches} patches`);
+    assert(bootClipmap.meshes === 7, `runtime clipmap submits ${bootClipmap.meshes} level meshes`);
+    assert(bootClipmap.triangles === 180224, `runtime clipmap has ${bootClipmap.triangles} triangles`);
+    assert(bootClipmap.nearSpacing === 1, `runtime near spacing is ${bootClipmap.nearSpacing} m`);
+    assert(bootClipmap.coverageRadius === 4096, `runtime coverage is ${bootClipmap.coverageRadius} m`);
     const terrainBeforeMarin = new Set(terrainRequests.map((entry) => entry.name));
 
     await page.evaluate((drive) => {
@@ -190,20 +196,37 @@ async function main() {
       const y = sf.map.groundTop(drive.x, drive.z);
       sf.player.teleportTo({ x: drive.x, y, z: drive.z, facing: drive.facing, mode: "drive" });
       sf.chase.yaw = drive.facing;
+      // The probe switched the app to deterministic/manual mode during boot,
+      // so explicitly advance the ordinary world update that recentres the GPU
+      // clipmap and refreshes the collision patch after teleport.
+      for (let i = 0; i < 15; i++) sf.tick(1 / 60);
     }, DRIVE);
-    await page.waitForFunction(
-      (drive) => {
-        const sf = window.__sf;
-        const patch = sf.physics.terrainPatchDebug;
-        return sf.player.mode === "drive" && patch.active && Math.hypot(patch.centerX - drive.x, patch.centerZ - drive.z) < 100;
+    const relocationState = await page.evaluate(() => ({
+      mode: window.__sf.player.mode,
+      player: {
+        x: window.__sf.player.position.x,
+        z: window.__sf.player.position.z
       },
-      DRIVE,
-      { timeout: 30_000 }
+      patch: { ...window.__sf.physics.terrainPatchDebug },
+      clipmap: window.__sf.tiles.terrainClipmap?.stats() ?? null
+    }));
+    console.log("[terrain-probe] relocation state", JSON.stringify(relocationState));
+    assert(relocationState.mode === "drive", `relocation mode is ${relocationState.mode}`);
+    assert(relocationState.patch.active, "collision patch is inactive after relocation");
+    assert(
+      Math.hypot(relocationState.patch.centerX - DRIVE.x, relocationState.patch.centerZ - DRIVE.z) < 100,
+      "collision patch did not follow the Marin relocation"
+    );
+    assert(relocationState.clipmap, "clipmap disappeared after relocation");
+    assert(
+      Math.hypot(relocationState.clipmap.centerX - DRIVE.x, relocationState.clipmap.centerZ - DRIVE.z) < 8,
+      "GPU clipmap did not follow the Marin relocation"
     );
     const marinSettle = await settleFrames(page);
     mergeObservedTerrain(observedTileRequests, terrainRequests, started);
     await mergePerformanceTerrain(page, terrainRequests, started);
-    console.log(`[terrain-probe] Marin: ${terrainRequests.length} total terrain request(s), ${marinSettle?.loadedTerrain ?? 0} loaded`);
+    const marinClipmap = await page.evaluate(() => window.__sf.tiles.terrainClipmap?.stats() ?? null);
+    console.log(`[terrain-probe] Marin: ${terrainRequests.length} legacy terrain request(s), ${marinSettle?.loadedTerrain ?? 0} resident terrain root(s)`);
 
     await page.evaluate(() => window.__sfManual(true));
     const driveResult = await page.evaluate((drive) => {
@@ -279,8 +302,11 @@ async function main() {
       const length = Math.hypot(dx, dz) || 1;
       const fx = dx / length;
       const fz = dz / length;
-      const eye = [tx - fx * 32 - fz * 16, targetY + 13, tz - fz * 32 + fx * 16];
-      window.__sfFreeCam(eye, [tx + fx * 18, targetY + 1.5, tz + fz * 18]);
+      // Elevated oblique view exposes several LOD rings and reads much better
+      // than a bumper-height shot when the drive ends against a Marin hillside.
+      const eye = [tx - fx * 170 - fz * 90, targetY + 125, tz - fz * 170 + fx * 90];
+      window.__sfFreeCam(eye, [tx + fx * 55, targetY + 8, tz + fz * 55]);
+      sf.tick(1 / 60);
       for (const selector of ["#hud", "#debug", ".tp-dfwv"]) {
         const element = document.querySelector(selector);
         if (element) element.style.display = "none";
@@ -289,19 +315,27 @@ async function main() {
     }, { end: driveResult.end, start: driveResult.start });
     await page.evaluate(() => window.__sf.renderer.backend.device.queue.onSubmittedWorkDone());
     await page.screenshot({ path: path.join(OUT, "terrain-runtime.png"), type: "png" });
+    await page.evaluate(() => {
+      window.__sf.tiles.terrainClipmap?.setLevelDebug(true);
+      window.__sf.pipeline.render();
+    });
+    await page.evaluate(() => window.__sf.renderer.backend.device.queue.onSubmittedWorkDone());
+    await page.screenshot({ path: path.join(OUT, "terrain-runtime-lod.png"), type: "png" });
+    await page.evaluate(() => window.__sf.tiles.terrainClipmap?.setLevelDebug(false));
 
     mergeObservedTerrain(observedTileRequests, terrainRequests, started);
     await mergePerformanceTerrain(page, terrainRequests, started);
     const allTerrain = [...new Set(terrainRequests.map((entry) => entry.name))];
     const newTerrain = allTerrain.filter((name) => !terrainBeforeMarin.has(name));
-    assert(allTerrain.length < 25, `runtime requested every terrain chunk (${allTerrain.length}/25)`);
-    assert(newTerrain.length > 0, "Marin move did not stream any newly nearby terrain chunk");
+    assert(allTerrain.length === 0, `runtime requested ${allTerrain.length} legacy terrain GLBs`);
+    assert(newTerrain.length === 0, `Marin move requested ${newTerrain.length} legacy terrain GLBs`);
     assert(pageErrors.length === 0, `${pageErrors.length} uncaught page error(s): ${pageErrors.join(" | ")}`);
+    assert(consoleErrors.length === 0, `${consoleErrors.length} console error(s): ${consoleErrors.join(" | ")}`);
 
     const result = {
       ok: true,
-      boot: { terrainChunks: bootTerrain.length, names: bootTerrain, patch: bootPatch },
-      stream: { totalTerrainChunks: allTerrain.length, newNearMarin: newTerrain },
+      boot: { legacyTerrainRequests: bootTerrain.length, clipmap: bootClipmap, collisionPatch: bootPatch },
+      relocation: { legacyTerrainRequests: allTerrain.length, clipmap: marinClipmap },
       drive: {
         displacement: Number(displacement.toFixed(2)),
         patchHandoffs: patchCenters.length - 1,
@@ -312,7 +346,8 @@ async function main() {
         activeFallbackSlabs: driveResult.carpet.length
       },
       pageErrors,
-      terrainRequests
+      consoleErrors,
+      legacyTerrainRequests: terrainRequests
     };
     await writeFile(path.join(OUT, "result.json"), `${JSON.stringify(result, null, 2)}\n`);
     console.log(JSON.stringify(result, null, 2));

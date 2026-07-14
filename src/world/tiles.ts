@@ -17,6 +17,7 @@ import {
 } from "./shadows/landmarkShadowProxy";
 import { enableShadowLayer, SHADOW_LAYERS } from "./shadows/shadowLayers";
 import type { StaticShadowScope } from "./shadows/clipmapShadowNode";
+import { TerrainClipmap } from "./terrainClipmap";
 
 // Includes the 48 m local receiver square plus low-sun caster reach and one
 // microcell. Changes beyond this cannot affect the cached local projection.
@@ -136,18 +137,6 @@ const MAX_FACADE_SLOT_POOL = 64;
 // never wait for physics data.
 type ReadyTile = { key: string; group: THREE.Group | null; token: TileLoadToken };
 
-type TerrainEntry = { name: string; cx: number; cz: number; hx: number; hz: number };
-type TerrainLoadToken = {
-  generation: number;
-  inFlight: boolean;
-  discarded: boolean;
-  abortController: AbortController | null;
-};
-type ReadyTerrain = {
-  name: string;
-  group: THREE.Group | null;
-  token: TerrainLoadToken;
-};
 type ReadyColliders = {
   key: string;
   token: TileLoadToken;
@@ -179,8 +168,6 @@ type ActiveVisualPrime = {
   requiredTileKeys: string[];
   requiredTileSet: Set<string>;
   requiredTerrainKeys: string[];
-  requiredTerrainSet: Set<string>;
-  settledTerrain: Set<string>;
   resolve: (result: TileVisualPrimeResult) => void;
   settled: boolean;
 };
@@ -212,7 +199,6 @@ const MAX_IN_FLIGHT_GLOBAL = MAX_IN_FLIGHT_TURBO + 2;
 const MIN_CURRENT_IN_FLIGHT_RESERVE = 2;
 const MAX_IN_FLIGHT_ABSOLUTE = MAX_IN_FLIGHT_GLOBAL + MIN_CURRENT_IN_FLIGHT_RESERVE;
 const TILE_FETCH_TIMEOUT_MS = 15_000;
-const TERRAIN_FETCH_TIMEOUT_MS = 15_000;
 const TILE_RETRY_DELAYS_MS = [250, 800] as const;
 const TILE_MAX_ATTEMPTS = TILE_RETRY_DELAYS_MS.length + 1;
 // A first destination frame needs the tile cells intersecting the immediate
@@ -402,6 +388,7 @@ export class TileStreamer {
   manifest!: Manifest;
   loaded = new Map<string, LoadedTile>();
   terrain = new Map<string, THREE.Object3D>();
+  terrainClipmap: TerrainClipmap | null = null;
   landmarks: THREE.Object3D | null = null;
   landmarkShadowProxy: LandmarkShadowProxy | null = null;
   onTileColliders: (key: string, colliders: BuildingCollider[]) => void = () => {};
@@ -411,18 +398,6 @@ export class TileStreamer {
   // suppression keeps the collider, so it does NOT fire this.
   onBuildingAlive: (key: string, index: number, alive: boolean) => void = () => {};
   onShadowCastersChanged: (scope?: StaticShadowScope) => void = () => {};
-
-  // terrain load radius: slightly larger than building tiles so the ground
-  // backdrop is always present before buildings pop in. Declared at the top of
-  // the class so esbuild's private-field transform always sees the declaration
-  // before any `TileStreamer.#TERRAIN_*` use in methods below.
-  static readonly #TERRAIN_LOAD_R = 3200;
-  static readonly #TERRAIN_UNLOAD_R = 4000;
-  static readonly #TERRAIN_MAX_IN_FLIGHT = 2;
-  // One reserve slot keeps a destination moving when the previous generation
-  // occupied both ordinary terrain slots, while still imposing a hard cap.
-  static readonly #TERRAIN_MAX_IN_FLIGHT_GLOBAL = TileStreamer.#TERRAIN_MAX_IN_FLIGHT + 1;
-  static readonly #TERRAIN_MAX_IN_FLIGHT_ABSOLUTE = TileStreamer.#TERRAIN_MAX_IN_FLIGHT_GLOBAL + 1;
 
   #loader = new GLTFLoader();
   #scene: THREE.Scene;
@@ -479,15 +454,6 @@ export class TileStreamer {
   // landmarks GLB still in flight (counts toward `busy` for the boot settle gate)
   #landmarksPending = false;
   #landmarkShadowProxyPending = false;
-
-  // terrain chunks: 5×5 grid, loaded/unloaded by player distance
-  #terrainEntries: TerrainEntry[] = [];
-  #terrainPending = new Map<string, TerrainLoadToken>();
-  #orphanTerrainLoads = new Set<TerrainLoadToken>();
-  #terrainReady: ReadyTerrain[] = [];
-  #terrainUnloads = new Set<string>();
-  #terrainFailedGeneration = new Map<string, number>();
-  // max concurrent terrain loads: see #TERRAIN_MAX_IN_FLIGHT above
 
   constructor(scene: THREE.Scene) {
     this.#scene = scene;
@@ -589,30 +555,13 @@ export class TileStreamer {
         console.warn("[shadows] landmark proxy unavailable — retaining beauty FAR casters", err);
       });
 
-    // Pre-compute the real world-space centre of each Blender terrain chunk so
-    // update() can distance-cull it without parsing tile names each frame. The
-    // final row/column are narrower than 3.2 km; treating the 5×5 set as an even
-    // partition displaced their centres by up to hundreds of metres.
-    const TERRAIN_CHUNK = 3200; // must match tools/blender_city.py
-    const { minX: gMinX, minZ: gMinZ, width: gW, height: gH, cellSize } = map.meta.grid;
-    const terrWorldW = (gW - 1) * cellSize;
-    const terrWorldH = (gH - 1) * cellSize;
-    const terrainX = Math.ceil(terrWorldW / TERRAIN_CHUNK);
-    const terrainZ = Math.ceil(terrWorldH / TERRAIN_CHUNK);
-    for (let tcx = 0; tcx < terrainX; tcx++) {
-      for (let tcz = 0; tcz < terrainZ; tcz++) {
-        const chunkW = Math.min(TERRAIN_CHUNK, terrWorldW - tcx * TERRAIN_CHUNK);
-        const chunkH = Math.min(TERRAIN_CHUNK, terrWorldH - tcz * TERRAIN_CHUNK);
-        this.#terrainEntries.push({
-          name: `terrain_${tcx}_${tcz}`,
-          cx: gMinX + tcx * TERRAIN_CHUNK + chunkW * 0.5,
-          cz: gMinZ + tcz * TERRAIN_CHUNK + chunkH * 0.5,
-          hx: chunkW * 0.5,
-          hz: chunkH * 0.5
-        });
-      }
-    }
-    // The first scan happens in update() once the player position is known.
+    // One persistent set of camera-centred GPU patches replaces the 25 streamed
+    // terrain GLBs. Gameplay continues to query WorldMap directly, so visual and
+    // collision heights still share the same canonical source.
+    this.terrainClipmap = new TerrainClipmap(map);
+    this.terrainClipmap.update(0, 0, true);
+    this.terrain.set("terrain_clipmap", this.terrainClipmap.group);
+    this.#scene.add(this.terrainClipmap.group);
   }
 
   keyToCenter(key: string): [number, number] {
@@ -649,7 +598,7 @@ export class TileStreamer {
   /**
    * Outstanding visual streaming work, for the boot settle gate: queued/in-flight
    * GLBs, parsed-but-unfinalized tiles, meshes still attaching, pending
-   * disposals, terrain chunks, landmarks GLB and landmark shadow proxy. Reports
+   * disposals, landmarks GLB and landmark shadow proxy. Reports
    * 1 before the first scan so a just-constructed streamer never reads as settled.
    * Intentionally excludes #deferred and does not wait on an in-flight collider
    * worker after its visual GLB finalized. Completed collider/shadow apply jobs
@@ -667,10 +616,6 @@ export class TileStreamer {
       (this.#shadowProxyBuildActive ? 1 : 0) +
       this.#attaching.length +
       this.#unloads.size +
-      this.#terrainPending.size +
-      this.#orphanTerrainLoads.size +
-      this.#terrainReady.length +
-      this.#terrainUnloads.size +
       (this.#landmarksPending ? 1 : 0) +
       (this.#landmarkShadowProxyPending ? 1 : 0)
     );
@@ -686,6 +631,7 @@ export class TileStreamer {
     const focusZ = this.#visualPrime?.focusZ ?? pz;
     this.#px = focusX;
     this.#pz = focusZ;
+    this.terrainClipmap?.update(focusX, focusZ);
     // speed estimate (world units/sec): update() carries no dt, so this assumes
     // a steady ~60fps between calls — good enough to gate cadence, not physics
     if (this.#hasPrevPos) {
@@ -710,7 +656,6 @@ export class TileStreamer {
     // #fastStream — otherwise plane/boost speed can outrun the ~1150m fog veil
     // and tiles pop in inside visible range
     if (this.#tick % (turbo ? 5 : this.#fastStream ? 10 : 30) === 1) this.#scan(focusX, focusZ);
-    if (this.#tick % (turbo ? 15 : 60) === 2) this.#scanTerrain(focusX, focusZ);
     // TURBO (boot, behind the opaque loading cover): nothing on screen, so
     // per-frame smoothness doesn't matter — drain finalizes/attaches/disposals
     // under a flat ms budget instead of one per frame, and let the scan above
@@ -718,9 +663,9 @@ export class TileStreamer {
     if (turbo) {
       const deadline = performance.now() + 10;
       while (performance.now() < deadline) {
-        let drained = this.#drainTerrainReady() || this.#drainAttach() || this.#drainReady();
+        let drained = this.#drainAttach() || this.#drainReady();
         if (!drained && !this.#visualPrime) {
-          drained = this.#drainColliderReady() || this.#drainTerrainUnload() || this.#drainUnload();
+          drained = this.#drainColliderReady() || this.#drainUnload();
         }
         if (!drained) break;
       }
@@ -732,12 +677,12 @@ export class TileStreamer {
     // bursts. Exception: while #catchingUp, drain up to 4/frame so a
     // post-descent detail backlog (see #resumeDetail) clears in a handful of
     // frames instead of trickling in one mesh at a time.
-    let spent = this.#drainTerrainReady();
+    let spent = false;
     // Once the local visual minimum is ready, interleave old-region retirement
     // and deferred collider/shadow application with remaining visual uploads.
     // Neither can starve behind the full draw ring or re-form a burst.
     if (!spent && !this.#visualPrime && this.#tick % 4 === 0) {
-      spent = this.#drainTerrainUnload() || this.#drainUnload();
+      spent = this.#drainUnload();
     }
     if (!spent && !this.#visualPrime && this.#tick % 2 === 0) {
       spent = this.#drainColliderReady();
@@ -750,23 +695,22 @@ export class TileStreamer {
     }
     if (!spent) spent = this.#drainReady();
     if (!spent && !this.#visualPrime) spent = this.#drainColliderReady();
-    if (!spent && !this.#visualPrime) spent = this.#drainTerrainUnload();
     if (!spent && !this.#visualPrime) this.#drainUnload();
     // Latest-wins cuts may leave already-decoded work from an older generation.
     // Retire one stale/hidden unit at a low cadence under the opaque cover so it
     // cannot accumulate into a cleanup burst immediately after reveal.
     if (!spent && this.#visualPrime && this.#tick % 8 === 0) {
-      this.#discardOneStaleTerrainReady() ||
-        this.#discardOneStaleTileReady() ||
-        this.#drainTerrainUnload() ||
-        this.#drainUnload();
+      this.#discardOneStaleTileReady() || this.#drainUnload();
     }
     this.#checkVisualPrime();
   }
 
   /** Re-evaluate load/unload immediately (e.g. after a draw-distance change). */
   forceScan() {
-    if (this.#hasScanned) this.#scan(this.#px, this.#pz);
+    if (this.#hasScanned) {
+      this.terrainClipmap?.update(this.#px, this.#pz, true);
+      this.#scan(this.#px, this.#pz);
+    }
   }
 
   /**
@@ -779,7 +723,6 @@ export class TileStreamer {
     if (!prime?.settled || prime.generation !== this.#generation) return;
     this.#visualPrime = null;
     this.#scan(prime.focusX, prime.focusZ);
-    this.#scanTerrain(prime.focusX, prime.focusZ);
   }
 
   /**
@@ -819,14 +762,7 @@ export class TileStreamer {
         return ad - bd;
       })
       .map((entry) => entry.key);
-    const requiredTerrainKeys = this.#terrainEntries
-      .filter((entry) => this.#distanceToTerrainBoundsSq(px, pz, entry) <= radiusSq)
-      .sort((a, b) => {
-        const ad = (px - a.cx) * (px - a.cx) + (pz - a.cz) * (pz - a.cz);
-        const bd = (px - b.cx) * (px - b.cx) + (pz - b.cz) * (pz - b.cz);
-        return ad - bd;
-      })
-      .map((entry) => entry.name);
+    const requiredTerrainKeys = this.terrainClipmap ? ["terrain_clipmap"] : [];
 
     let resolve!: (result: TileVisualPrimeResult) => void;
     const ready = new Promise<TileVisualPrimeResult>((done) => { resolve = done; });
@@ -837,16 +773,14 @@ export class TileStreamer {
       requiredTileKeys,
       requiredTileSet: new Set(requiredTileKeys),
       requiredTerrainKeys,
-      requiredTerrainSet: new Set(requiredTerrainKeys),
-      settledTerrain: new Set(),
       resolve,
       settled: false
     };
     this.#visualPrime = state;
 
+    this.terrainClipmap?.update(px, pz, true);
     this.#adoptDestinationWork(px, pz, generation);
     this.#scan(px, pz);
-    this.#scanTerrain(px, pz);
     this.#checkVisualPrime();
 
     return {
@@ -883,34 +817,12 @@ export class TileStreamer {
       tile.loadToken.generation = generation;
       this.#queueColliderApply(tile.key, tile.loadToken);
     }
-
-    const terrainLoadRadiusSq = TileStreamer.#TERRAIN_LOAD_R * TileStreamer.#TERRAIN_LOAD_R;
-    for (const [name, token] of this.#terrainPending) {
-      if (prime.requiredTerrainSet.has(name)) {
-        token.generation = generation;
-      } else {
-        this.#cancelTerrainLoad(name, token);
-      }
-    }
-    for (const [name, object] of this.terrain) {
-      const entry = this.#terrainEntries.find((candidate) => candidate.name === name);
-      if (!entry) continue;
-      const dx = px - entry.cx;
-      const dz = pz - entry.cz;
-      object.visible = dx * dx + dz * dz <= terrainLoadRadiusSq;
-    }
   }
 
   #distanceToTileBoundsSq(px: number, pz: number, entry: TileEntry): number {
     const half = this.manifest.tile * 0.5;
     const dx = Math.max(0, Math.abs(px - entry.cx) - half);
     const dz = Math.max(0, Math.abs(pz - entry.cz) - half);
-    return dx * dx + dz * dz;
-  }
-
-  #distanceToTerrainBoundsSq(px: number, pz: number, entry: TerrainEntry): number {
-    const dx = Math.max(0, Math.abs(px - entry.cx) - entry.hx);
-    const dz = Math.max(0, Math.abs(pz - entry.cz) - entry.hz);
     return dx * dx + dz * dz;
   }
 
@@ -927,7 +839,7 @@ export class TileStreamer {
       if (!tile || (tile.pendingParts?.length ?? 0) > 0) return;
     }
     for (const name of prime.requiredTerrainKeys) {
-      if (!this.terrain.has(name) && !prime.settledTerrain.has(name)) return;
+      if (!this.terrain.has(name)) return;
     }
     this.#resolveVisualPrime(prime, "ready");
   }
@@ -952,234 +864,6 @@ export class TileStreamer {
       const mesh = child as THREE.Mesh;
       if (mesh.isMesh) mesh.geometry.dispose();
     });
-  }
-
-  #scanTerrain(px: number, pz: number) {
-    const loadR2 = TileStreamer.#TERRAIN_LOAD_R * TileStreamer.#TERRAIN_LOAD_R;
-    const unloadR2 = TileStreamer.#TERRAIN_UNLOAD_R * TileStreamer.#TERRAIN_UNLOAD_R;
-    const required = this.#visualPrime?.generation === this.#generation
-      ? this.#visualPrime.requiredTerrainSet
-      : null;
-    const candidates: TerrainEntry[] = [];
-    for (const e of this.#terrainEntries) {
-      const d2 = (px - e.cx) * (px - e.cx) + (pz - e.cz) * (pz - e.cz);
-      const loaded = this.terrain.has(e.name);
-      const pending = this.#terrainPending.has(e.name);
-      if (d2 < loadR2) {
-        const loadedObject = this.terrain.get(e.name);
-        if (loadedObject) loadedObject.visible = true;
-        this.#terrainUnloads.delete(e.name);
-        if (
-          !loaded &&
-          !pending &&
-          this.#terrainFailedGeneration.get(e.name) !== this.#generation &&
-          (!required || required.has(e.name))
-        ) candidates.push(e);
-      } else if (d2 > unloadR2 && loaded) {
-        // Queue disposal so a relocation never tears down several ~1 MB terrain
-        // meshes synchronously inside its immediate scan.
-        this.#terrainUnloads.add(e.name);
-      }
-    }
-    candidates.sort((a, b) => {
-      const ar = required?.has(a.name) ? 0 : 1;
-      const br = required?.has(b.name) ? 0 : 1;
-      if (ar !== br) return ar - br;
-      const ad = (px - a.cx) * (px - a.cx) + (pz - a.cz) * (pz - a.cz);
-      const bd = (px - b.cx) * (px - b.cx) + (pz - b.cz) * (pz - b.cz);
-      return ad - bd;
-    });
-    let { current, total } = this.#terrainInFlightCounts();
-    for (const entry of candidates) {
-      // Launch-site guard: even a stale candidate list cannot spend an active
-      // prime's terrain slots on the eventual background ring.
-      if (required && !required.has(entry.name)) break;
-      if (
-        current >= TileStreamer.#TERRAIN_MAX_IN_FLIGHT ||
-        (
-          total >= TileStreamer.#TERRAIN_MAX_IN_FLIGHT_GLOBAL &&
-          (current >= 1 || total >= TileStreamer.#TERRAIN_MAX_IN_FLIGHT_ABSOLUTE)
-        )
-      ) break;
-      this.#loadTerrainChunk(entry.name, this.#generation);
-      current++;
-      total++;
-    }
-  }
-
-  #loadTerrainChunk(name: string, generation: number) {
-    if (this.#terrainPending.has(name)) return;
-    const controller = new AbortController();
-    const token: TerrainLoadToken = {
-      generation,
-      inFlight: true,
-      discarded: false,
-      abortController: controller
-    };
-    // mark pending before the load so a slow GLB isn't re-queued every scan
-    this.#terrainPending.set(name, token);
-    const fetchTimer = setTimeout(() => controller.abort(), TERRAIN_FETCH_TIMEOUT_MS);
-    void fetch(`/tiles/${name}.glb`, { signal: controller.signal })
-      .then((response) => {
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        return response.arrayBuffer();
-      })
-      .then((buffer) => {
-        clearTimeout(fetchTimer);
-        if (token.discarded) return null;
-        return this.#loader.parseAsync(buffer, "/tiles/");
-      })
-      .then((gltf) => {
-        token.inFlight = false;
-        token.abortController = null;
-        this.#orphanTerrainLoads.delete(token);
-        if (token.discarded) {
-          this.#disposeObjectGeometry(gltf?.scene ?? null);
-          this.#scanTerrain(this.#px, this.#pz);
-          return;
-        }
-        this.#terrainReady.push({ name, group: gltf?.scene ?? null, token });
-        // Fill the freed decode slot; scene attachment remains frame-bounded in
-        // #drainTerrainReady.
-        this.#scanTerrain(this.#px, this.#pz);
-      })
-      .catch(() => {
-        clearTimeout(fetchTimer);
-        token.inFlight = false;
-        token.abortController = null;
-        this.#orphanTerrainLoads.delete(token);
-        if (token.discarded) {
-          this.#scanTerrain(this.#px, this.#pz);
-          return;
-        }
-        // Missing chunks remain a non-fatal terminal for this generation.
-        this.#terrainReady.push({ name, group: null, token });
-        this.#scanTerrain(this.#px, this.#pz);
-      });
-  }
-
-  #cancelTerrainLoad(name: string, token: TerrainLoadToken): void {
-    if (token.discarded) return;
-    token.discarded = true;
-    token.abortController?.abort();
-    token.abortController = null;
-    if (this.#terrainPending.get(name) === token) this.#terrainPending.delete(name);
-    if (token.inFlight) this.#orphanTerrainLoads.add(token);
-  }
-
-  #terrainInFlightCounts(): { current: number; total: number } {
-    let current = 0;
-    let total = 0;
-    for (const token of this.#terrainPending.values()) {
-      if (!token.inFlight) continue;
-      total++;
-      if (token.generation === this.#generation) current++;
-    }
-    for (const token of this.#orphanTerrainLoads) {
-      if (token.inFlight) total++;
-    }
-    return { current, total };
-  }
-
-  /** Attach or discard one decoded terrain chunk. */
-  #drainTerrainReady(): boolean {
-    const index = this.#bestTerrainReadyIndex();
-    if (index < 0) return false;
-    const [{ name, group, token }] = this.#terrainReady.splice(index, 1);
-    if (this.#terrainPending.get(name) === token) this.#terrainPending.delete(name);
-
-    const current = token.generation === this.#generation;
-    if (!current || !this.#terrainWanted(name)) {
-      this.#disposeObjectGeometry(group);
-      this.#scanTerrain(this.#px, this.#pz);
-      return true;
-    }
-
-    if (group) {
-      const terrainMaterial = plainMat.clone();
-      group.traverse((o) => {
-        if ((o as THREE.Mesh).isMesh) {
-          (o as THREE.Mesh).material = terrainMaterial;
-          o.receiveShadow = true;
-        }
-      });
-      group.userData.streamOwnedMaterials = [terrainMaterial];
-      this.terrain.set(name, group);
-      this.#scene.add(group);
-    } else {
-      // A missing terrain GLB must not wedge visual arrival or churn a retry on
-      // every frame. A later arrival generation gets one fresh attempt.
-      this.#terrainFailedGeneration.set(name, this.#generation);
-    }
-    const prime = this.#visualPrime;
-    if (prime?.generation === this.#generation && prime.requiredTerrainSet.has(name)) {
-      prime.settledTerrain.add(name);
-    }
-    this.#scanTerrain(this.#px, this.#pz);
-    return true;
-  }
-
-  #discardOneStaleTerrainReady(): boolean {
-    const index = this.#terrainReady.findIndex((item) => item.token.generation !== this.#generation);
-    if (index < 0) return false;
-    const [{ name, group, token }] = this.#terrainReady.splice(index, 1);
-    if (this.#terrainPending.get(name) === token) this.#terrainPending.delete(name);
-    token.discarded = true;
-    this.#disposeObjectGeometry(group);
-    this.#scanTerrain(this.#px, this.#pz);
-    return true;
-  }
-
-  #bestTerrainReadyIndex(): number {
-    if (this.#terrainReady.length === 0) return -1;
-    const required = this.#visualPrime?.generation === this.#generation
-      ? this.#visualPrime.requiredTerrainSet
-      : null;
-    let best = 0;
-    let bestRank = Infinity;
-    for (let i = 0; i < this.#terrainReady.length; i++) {
-      const item = this.#terrainReady[i];
-      const rank = item.token.generation === this.#generation
-        ? (required?.has(item.name) ? 0 : 1)
-        : 2;
-      if (rank < bestRank) {
-        best = i;
-        bestRank = rank;
-        if (rank === 0) break;
-      }
-    }
-    if (this.#visualPrime && bestRank >= 2) return -1;
-    return best;
-  }
-
-  #drainTerrainUnload(): boolean {
-    const unloadR2 = TileStreamer.#TERRAIN_UNLOAD_R * TileStreamer.#TERRAIN_UNLOAD_R;
-    for (const name of this.#terrainUnloads) {
-      this.#terrainUnloads.delete(name);
-      const entry = this.#terrainEntries.find((candidate) => candidate.name === name);
-      const object = this.terrain.get(name);
-      if (!entry || !object) continue;
-      const dx = this.#px - entry.cx;
-      const dz = this.#pz - entry.cz;
-      if (dx * dx + dz * dz < unloadR2) continue;
-      this.terrain.delete(name);
-      this.#scene.remove(object);
-      const materials = object.userData.streamOwnedMaterials as THREE.Material[] | undefined;
-      for (const material of materials ?? []) material.dispose();
-      delete object.userData.streamOwnedMaterials;
-      this.#disposeObjectGeometry(object);
-      return true;
-    }
-    return false;
-  }
-
-  /** Still inside the unload radius? Used to abandon late-arriving terrain GLBs. */
-  #terrainWanted(name: string): boolean {
-    const e = this.#terrainEntries.find((t) => t.name === name);
-    if (!e) return false;
-    const dx = this.#px - e.cx;
-    const dz = this.#pz - e.cz;
-    return dx * dx + dz * dz < TileStreamer.#TERRAIN_UNLOAD_R * TileStreamer.#TERRAIN_UNLOAD_R;
   }
 
   #scan(px: number, pz: number) {

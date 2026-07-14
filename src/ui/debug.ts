@@ -34,6 +34,7 @@ import { TUNABLES_UPDATED_EVENT, withTweakBindingEventsSuppressed, saveTweak } f
 import { BUSKER_FIREFLY_TUNING } from "../gameplay/buskers/tuning";
 import { VEGETATION_TUNING, applyVegetationTuning } from "../world/vegetation/tuning";
 import { SHADOW_TUNING } from "../world/shadows/tuning";
+import { TERRAIN_CLIPMAP_TUNING } from "../world/terrainClipmapTuning";
 import type { ContactShadowComplement } from "../render/contactShadows";
 import { OVERLAY_TUNING } from "./overlays/tuning";
 import type { OverlayContextFlags } from "./overlays/manager";
@@ -348,6 +349,7 @@ export class DebugPanel {
   syncNow() {
     this.#applyWireframe(RENDER_TUNING.values.wireframe);
     this.#setFoliageVisible(Boolean(FOLIAGE_TUNING.values.visible));
+    this.#tiles?.terrainClipmap?.applyTuning();
     this.#applyShadowTuning();
     for (const record of this.#featureTunings.values()) {
       try {
@@ -763,6 +765,11 @@ export class DebugPanel {
       );
     }
     this.#refreshFogWeatherMonitor();
+
+    const terrain = pane.addFolder({ title: "terrain", expanded: false });
+    TERRAIN_CLIPMAP_TUNING.bind(terrain, {
+      onChange: () => this.#tiles?.terrainClipmap?.applyTuning()
+    });
 
     // Debug overlays — physics boxes, raycast, and context-sensitive site grids.
     // Worldwide toggles always show; tea-garden water grid appears when nearby.
