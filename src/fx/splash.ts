@@ -229,9 +229,12 @@ export class WaterSplashes {
     // skim: racing along just over the swell sheds spray by distance travelled,
     // with a small wake ring every few puffs (not for the board — its wake is
     // the twin rail streams, and sprite puffs on top just read as clutter)
-    if (player.mode !== "board" && p.y < h + 1.0 && hSpeed > (player.mode === "surf" ? 8 : 15)) {
+    // Surf owns a continuous analytic face, rail wake, and event rings. The
+    // generic camera-facing skim sprites read as floating cotton balls in its
+    // close chase camera, so reserve them for the other water-skimming modes.
+    if (player.mode !== "board" && player.mode !== "surf" && p.y < h + 1.0 && hSpeed > 15) {
       this.#skimAcc += hSpeed * dt;
-      const spacing = player.mode === "surf" ? 2.4 : 4;
+      const spacing = 4;
       if (this.#skimAcc >= spacing) {
         this.#skimAcc -= spacing;
         this.#skimSpray(p.x, h, p.z, hSpeed);

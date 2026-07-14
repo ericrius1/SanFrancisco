@@ -28,7 +28,22 @@ export const OCEAN_BEACH_SURF = {
   // (tslUtil.oceanBeachSurfField) — change here, both follow. Narrow face =
   // a steep, near-vertical wall that towers over a rider set in the pocket.
   shoulderWidth: 30,
-  faceWidth: 5.0
+  faceWidth: 5.0,
+
+  // Parametric barrel shared by CPU contact/camera queries and the lazy TSL
+  // roof shell. X is signed shoreward distance from the live crest. The roof
+  // starts at the crown, arches over the pocket, then falls into the pitching
+  // lip. Keeping this analytic is intentional: gameplay never reads GPU state.
+  tubeSpan: 14,
+  tubeLineOffset: 6.2,
+  tubeLineHalfWidth: 2.5,
+  tubeRoofControl1: 1.16,
+  tubeRoofControl2: 0.94,
+  tubeRoofEnd: 0.5,
+  // Long, slowly peeling barrel sections. Entry Z begins inside a clean window;
+  // riding down-line eventually reaches its shoulder and exit aperture.
+  barrelPeriod: 820,
+  barrelDrift: 0.024
 } as const;
 
 const TAU = Math.PI * 2;
@@ -128,6 +143,34 @@ function waveAmplitude(z: number, time: number, slot: number) {
   return b.amplitude * setPulse * sandbar;
 }
 
+/** 0..1 long-section envelope for the overhanging barrel roof. */
+export function oceanBeachBarrelEnvelope(z: number, time: number): number {
+  const b = OCEAN_BEACH_SURF;
+  const phase = Math.cos(((z - b.entryZ) / b.barrelPeriod) * TAU - time * b.barrelDrift);
+  return smooth01((phase - 0.05) / 0.55);
+}
+
+/** Cubic crown-to-lip roof height as a fraction of the live set amplitude. */
+export function oceanBeachTubeRoofFraction(crestDistance: number): number {
+  const b = OCEAN_BEACH_SURF;
+  const u = clamp01(crestDistance / b.tubeSpan);
+  const v = 1 - u;
+  return (
+    v * v * v +
+    3 * v * v * u * b.tubeRoofControl1 +
+    3 * v * u * u * b.tubeRoofControl2 +
+    u * u * u * b.tubeRoofEnd
+  );
+}
+
+/** Smooth signed-depth proxy: 1 on the authored tube line, 0 outside it. */
+function tubeLineDepth(crestDistance: number): number {
+  const b = OCEAN_BEACH_SURF;
+  const lineDistance = Math.abs(crestDistance - b.tubeLineOffset);
+  const t = clamp01((lineDistance - 0.35) / Math.max(0.01, b.tubeLineHalfWidth - 0.35));
+  return 1 - smooth01(t);
+}
+
 /**
  * Height contribution from the breaking swell (zero outside Ocean Beach).
  * The offshore shoulder is broad and the shoreward face is narrow: a cheap
@@ -147,37 +190,69 @@ export function oceanBeachWaveHeight(x: number, z: number, time: number): number
 export type OceanBeachWaveSample = {
   height: number;
   slopeX: number;
+  slopeZ: number;
   face: number;
   lip: number;
   crestDistance: number;
   crestX: number;
   slot: number;
   mask: number;
+  amplitude: number;
+  /** Roof-section availability at this along-beach location. */
+  barrel: number;
+  /** 0..1 position inside the surfable tube line. */
+  tubeDepth: number;
+  /** Absolute analytic roof height (sea-level frame; base chop is sub-metre). */
+  tubeRoofY: number;
 };
 
-/** Allocation-free-friendly analytic sample for surf physics and diagnostics. */
-export function sampleOceanBeachWave(x: number, z: number, time: number): OceanBeachWaveSample {
+/**
+ * Analytic sample for surf physics, camera and diagnostics. A locked slot keeps
+ * every semantic region attached to the crest the controller already owns.
+ */
+export function sampleOceanBeachWave(
+  x: number,
+  z: number,
+  time: number,
+  lockedSlot?: number
+): OceanBeachWaveSample {
   const mask = oceanBeachMask(x, z);
-  const crest = nearestOceanBeachCrest(x, z, time);
+  const nearest = nearestOceanBeachCrest(x, z, time);
+  const slot = lockedSlot ?? nearest.slot;
+  const crestX = lockedSlot === undefined ? nearest.crestX : oceanBeachCrestX(slot, z, time);
+  const crestDistance = x - crestX;
   const eps = 0.65;
+  const epsZ = 1.2;
   const height = oceanBeachWaveHeight(x, z, time);
   const slopeX =
     (oceanBeachWaveHeight(x + eps, z, time) - oceanBeachWaveHeight(x - eps, z, time)) /
     (2 * eps);
+  const slopeZ =
+    (oceanBeachWaveHeight(x, z + epsZ, time) - oceanBeachWaveHeight(x, z - epsZ, time)) /
+    (2 * epsZ);
+  const amplitude = waveAmplitude(z, time, slot);
   // These gameplay channels deliberately match oceanBeachSurfField()'s visible
   // green wall and white lip. A wider invisible scoring band made the board
   // report "on the lip" while the rendered crest was several metres away.
-  const face = mask * Math.exp(-0.5 * ((crest.distance - 4) / 5.5) ** 2);
-  const lip = mask * Math.exp(-0.5 * ((crest.distance - 1) / 2.6) ** 2);
+  const face = mask * Math.exp(-0.5 * ((crestDistance - 4) / 5.5) ** 2);
+  const lip = mask * Math.exp(-0.5 * ((crestDistance - 1) / 2.6) ** 2);
+  const barrel = mask * oceanBeachBarrelEnvelope(z, time);
+  const tubeDepth = barrel * tubeLineDepth(crestDistance);
+  const tubeRoofY = amplitude * mask * oceanBeachTubeRoofFraction(crestDistance);
   return {
     height,
     slopeX,
+    slopeZ,
     face,
     lip,
-    crestDistance: crest.distance,
-    crestX: crest.crestX,
-    slot: crest.slot,
-    mask
+    crestDistance,
+    crestX,
+    slot,
+    mask,
+    amplitude,
+    barrel,
+    tubeDepth,
+    tubeRoofY
   };
 }
 

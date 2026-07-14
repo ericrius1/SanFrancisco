@@ -91,6 +91,19 @@ const DEFINITIONS = Object.freeze({
       description: "An airy travel score moving from garden wings to city streets, bridge wind, speedboat wake, and a bay-light finale."
     })
   }),
+  "surf-aerial": Object.freeze({
+    id: "surf-aerial",
+    demo: "surf-aerial",
+    title: "Ocean Beach Aerial",
+    duration: 7,
+    seed: 0x53_55_52_46,
+    posterAt: 3.05,
+    stillTimes: Object.freeze([0.3, 1.35, 2.2, 2.8, 3.35, 4.05, 5.35, 6.75]),
+    audio: Object.freeze({
+      profile: "surf-aerial",
+      description: "Pacific rush, lip takeoff, one airy rotation, and a clean rail landing."
+    })
+  }),
   ...Object.fromEntries([
     [1, "Ocean Beach Sunrise Surf"],
     [2, "Golden Gate Scooter Ribbon"],

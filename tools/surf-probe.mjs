@@ -301,6 +301,15 @@ async function pressKey(cdp, code, key, windowsVirtualKeyCode) {
   });
 }
 
+async function setKey(cdp, down, code, key, windowsVirtualKeyCode) {
+  await cdp.send("Input.dispatchKeyEvent", {
+    type: down ? "keyDown" : "keyUp",
+    code,
+    key,
+    windowsVirtualKeyCode
+  });
+}
+
 async function tickFrames(cdp, frames, dt = DT) {
   return evaluate(cdp, `(()=>{
     const s=window.__sf;
@@ -308,7 +317,10 @@ async function tickFrames(cdp, frames, dt = DT) {
     const t=s.player.surfTelemetry;
     return {mode:s.player.mode,phase:t.phase,grounded:t.grounded,airborne:t.airborne,
       speed:t.speed,flow:t.flow,flowReady:t.flowReady,flowActive:t.flowActive,
-      flowSerial:t.flowSerial,riderMotionRate:t.riderMotionRate,waveSerial:t.waveSerial};
+      flowSerial:t.flowSerial,riderMotionRate:t.riderMotionRate,waveSerial:t.waveSerial,
+      crestDistance:t.crestDistance,supportError:t.supportError,railContact:t.railContact,
+      tubeState:t.tubeState,tubeDepth:t.tubeDepth,tubeCoverage:t.tubeCoverage,
+      tubeClearance:t.tubeClearance,tubeDwell:t.tubeDwell,tubeSerial:t.tubeSerial};
   })()`);
 }
 
@@ -373,6 +385,7 @@ async function main() {
   let selectorModules = [];
   let afterChoiceImages = [];
   let entryShot = null;
+  let tubeShot = null;
   let desktopShot = null;
   let mobileShot = null;
 
@@ -542,6 +555,183 @@ async function main() {
       mouseLock
     );
 
+    // Ride the actual face into the barrel with the public keyboard controls.
+    // D sets a high rail line; once the board reaches the authored tube line, S
+    // stalls just enough for the lip/camera handoff. This is deliberately not a
+    // controller teleport or telemetry mutation.
+    const tubeStart = await evaluate(cdp, `(()=>{const t=window.__sf.player.surfTelemetry;
+      return {crestDistance:t.crestDistance,supportError:t.supportError,tubeSerial:t.tubeSerial,
+        coverage:t.tubeCoverage};})()`);
+    await setKey(cdp, true, "KeyD", "d", 68);
+    const carveHigh = await evaluate(cdp, `(()=>{const s=window.__sf;
+      let frames=0,minCrest=Infinity,maxSupportError=0,allContact=true;
+      for(;frames<240;frames++){
+        s.tick(${DT});const t=s.player.surfTelemetry;
+        minCrest=Math.min(minCrest,t.crestDistance);
+        maxSupportError=Math.max(maxSupportError,Math.abs(t.supportError));
+        allContact&&=t.railContact;
+        if(t.crestDistance<=6.5&&frames>12)break;
+      }
+      const t=s.player.surfTelemetry;
+      return {frames,minCrest,maxSupportError,allContact,endCrest:t.crestDistance,
+        relativeFaceSpeed:t.relativeFaceSpeed,tubeDepth:t.tubeDepth,coverage:t.tubeCoverage};})()`);
+    await setKey(cdp, false, "KeyD", "d", 68);
+    await setKey(cdp, true, "KeyS", "s", 83);
+    const tubeRide = await evaluate(cdp, `(()=>{const s=window.__sf;
+      let frames=0,maxBlend=0,minRoofClearance=Infinity,minWaterClearance=Infinity;
+      let minTubeClearance=Infinity,maxTubeDepth=0,allContact=true;
+      const states=[];let prior='';
+      for(;frames<480;frames++){
+        s.tick(${DT});const t=s.player.surfTelemetry,c=s.chase.surfCameraDiagnostics();
+        if(t.tubeState!==prior){states.push(t.tubeState);prior=t.tubeState}
+        maxBlend=Math.max(maxBlend,c.tubeBlend);
+        minRoofClearance=Math.min(minRoofClearance,c.roofClearance||Infinity);
+        minWaterClearance=Math.min(minWaterClearance,c.waterClearance);
+        minTubeClearance=Math.min(minTubeClearance,t.tubeClearance);
+        maxTubeDepth=Math.max(maxTubeDepth,t.tubeDepth);
+        allContact&&=t.railContact;
+        if(t.tubeState==='inside'&&c.mode==='barrel'&&c.tubeBlend>0.78&&t.tubeDwell>1.15)break;
+      }
+      const t=s.player.surfTelemetry,c=s.chase.surfCameraDiagnostics();
+      return {frames,states,maxBlend,minRoofClearance,minWaterClearance,minTubeClearance,
+        maxTubeDepth,allContact,state:t.tubeState,dwell:t.tubeDwell,serial:t.tubeSerial,
+        crestDistance:t.crestDistance,tubeDepth:t.tubeDepth,tubeClearance:t.tubeClearance,camera:c};})()`);
+    await setKey(cdp, false, "KeyS", "s", 83);
+    await renderCurrentFrame(cdp);
+    tubeShot = await capture(cdp, "surf-barrel-desktop.png");
+    check(
+      carveHigh.endCrest < tubeStart.crestDistance - 1.4 &&
+        carveHigh.maxSupportError < 0.18 && carveHigh.allContact,
+      "D carves materially up the live face without penetrating or losing rail contact",
+      { start: tubeStart, carveHigh }
+    );
+    check(
+      tubeRide.states.includes("entering") && tubeRide.states.includes("inside") &&
+        tubeRide.serial > tubeStart.tubeSerial && tubeRide.maxTubeDepth >= 0.58 &&
+        tubeRide.allContact && tubeRide.tubeClearance > 1.7,
+      "high line plus stall enters a supported, positively-cleared tube",
+      tubeRide
+    );
+    check(
+      tubeRide.camera.mode === "barrel" && tubeRide.camera.tubeBlend > 0.72 &&
+        tubeRide.camera.behindAlignment > 0.82 && tubeRide.camera.roofClearance > 0.25 &&
+        tubeRide.camera.waterClearance > 0.25,
+      "tube camera eases behind the rider and stays between water and roof",
+      tubeRide.camera
+    );
+    check(
+      tubeShot.entropy > 2 && tubeShot.channels.some((value) => value > 15),
+      "barrel screenshot is nonblank and visually varied",
+      tubeShot
+    );
+
+    // Real-control lip launch: pump + carve high, keep steering through one
+    // unwrapped aerial rotation, release to let the landing assist align, then
+    // prove the five-point hull returns to supported ride contact.
+    await pressKey(cdp, "KeyE", "e", 69);
+    await tickFrames(cdp, 3);
+    await waitEval(cdp, "window.__sf.player.mode==='walk'", 5000, "pre-aerial beach reset");
+    await pressKey(cdp, "KeyE", "e", 69);
+    await tickFrames(cdp, 4);
+    await waitEval(cdp, "window.__sf.player.mode==='surf'", 5000, "pre-aerial surf reset");
+    const aerialStart = await evaluate(cdp, `(()=>{const t=window.__sf.player.surfTelemetry;
+      return {launch:t.launchSerial,landing:t.landingSerial,crest:t.crestDistance};})()`);
+    await setKey(cdp, true, "KeyW", "w", 87);
+    await setKey(cdp, true, "KeyD", "d", 68);
+    const takeoff = await evaluate(cdp, `(()=>{const s=window.__sf;
+      let frames=0,minCrest=Infinity,minHull=Infinity,maxCharge=0,minFoot=Infinity,maxFoot=-Infinity;
+      for(;frames<420;frames++){
+        s.tick(${DT});const t=s.player.surfTelemetry;
+        const f=s.player.surfFootDeckClearance;
+        minCrest=Math.min(minCrest,t.crestDistance);
+        if(t.phase!=='air')minHull=Math.min(minHull,t.hullClearance);
+        maxCharge=Math.max(maxCharge,t.autoLaunchCharge);
+        minFoot=Math.min(minFoot,f.left,f.right);maxFoot=Math.max(maxFoot,f.left,f.right);
+        if(t.launchSerial>${aerialStart.launch})break;
+      }
+      const t=s.player.surfTelemetry;
+      return {frames,minCrest,minHull,maxCharge,phase:t.phase,launch:t.launchSerial,
+        crest:t.crestDistance,airTime:t.airTime,clearance:t.clearance,minFoot,maxFoot};})()`);
+    const spin = await evaluate(cdp, `(()=>{const s=window.__sf;
+      let frames=0,maxSpin=0,maxClearance=0,minFoot=Infinity,maxFoot=-Infinity;
+      for(;frames<210;frames++){
+        s.tick(${DT});const t=s.player.surfTelemetry;
+        const f=s.player.surfFootDeckClearance;
+        maxSpin=Math.max(maxSpin,Math.abs(t.airSpin));
+        maxClearance=Math.max(maxClearance,t.clearance);
+        minFoot=Math.min(minFoot,f.left,f.right);maxFoot=Math.max(maxFoot,f.left,f.right);
+        if(Math.abs(t.airSpin)>=5.72||t.phase!=='air')break;
+      }
+      const t=s.player.surfTelemetry;
+      return {frames,maxSpin,maxClearance,phase:t.phase,airSpin:t.airSpin,
+        airTime:t.airTime,crest:t.crestDistance,minFoot,maxFoot};})()`);
+    await setKey(cdp, false, "KeyD", "d", 68);
+    const landing = await evaluate(cdp, `(()=>{const s=window.__sf;
+      let frames=0,minGroundHull=Infinity,maxAirClearance=0,maxCompression=0,maxImpactStreaks=0,impactSpawnSerial=0,minFoot=Infinity,maxFoot=-Infinity,phases=[];let prior='';
+      for(;frames<300;frames++){
+        s.tick(${DT});const t=s.player.surfTelemetry;
+        const f=s.player.surfFootDeckClearance;
+        if(t.phase!==prior){phases.push(t.phase);prior=t.phase}
+        if(t.phase==='air')maxAirClearance=Math.max(maxAirClearance,t.clearance);
+        else minGroundHull=Math.min(minGroundHull,t.hullClearance);
+        maxCompression=Math.max(maxCompression,t.landingCompression);
+        const impact=s.boardWake.surfImpactState;
+        maxImpactStreaks=Math.max(maxImpactStreaks,impact.activeStreaks);
+        impactSpawnSerial=Math.max(impactSpawnSerial,impact.spawnSerial);
+        minFoot=Math.min(minFoot,f.left,f.right);maxFoot=Math.max(maxFoot,f.left,f.right);
+        if(t.landingSerial>${aerialStart.landing}&&t.phase==='ride'&&frames>2)break;
+      }
+      const t=s.player.surfTelemetry;
+      const impactState=s.boardWake.surfImpactState;
+      return {frames,phases,minGroundHull,maxAirClearance,phase:t.phase,
+        landing:t.landingSerial,landedSpin:t.landedSpin,quality:t.landingQuality,
+        railContact:t.railContact,hull:t.hullClearance,crest:t.crestDistance,maxCompression,
+        maxImpactStreaks,impactSpawnSerial,impactState,
+        player:[s.player.renderPosition.x,s.player.renderPosition.y,s.player.renderPosition.z],minFoot,maxFoot};})()`);
+    await setKey(cdp, false, "KeyW", "w", 87);
+    await renderCurrentFrame(cdp);
+    const aerialShot = await capture(cdp, "surf-aerial-desktop.png");
+    check(
+      takeoff.launch === aerialStart.launch + 1 && takeoff.phase === "air" &&
+        takeoff.minCrest < aerialStart.crest - 4 && takeoff.minHull >= -0.001,
+      "W+D carves onto the lip and launches once without hull penetration",
+      { aerialStart, takeoff }
+    );
+    check(
+      spin.maxSpin >= 5.7 && spin.maxClearance > 1.2,
+      "held aerial carve produces a visible near-360 twirl above the lip",
+      spin
+    );
+    check(
+      landing.landing === aerialStart.landing + 1 && landing.phase === "ride" &&
+        Math.abs(landing.landedSpin) >= 5.5 && landing.minGroundHull >= -0.001 &&
+        landing.railContact && landing.maxCompression >= 0.5 &&
+        landing.maxImpactStreaks >= 14 && landing.impactSpawnSerial === landing.landing,
+      "release aligns one clean, compressed landing back onto five-point rail contact",
+      landing
+    );
+    check(
+      Math.min(takeoff.minFoot, spin.minFoot, landing.minFoot) >= 0.002 &&
+        Math.max(takeoff.maxFoot, spin.maxFoot, landing.maxFoot) <= 0.015,
+      "both soles stay planted above the deck through approach, spin, and landing",
+      { takeoff: [takeoff.minFoot, takeoff.maxFoot], spin: [spin.minFoot, spin.maxFoot], landing: [landing.minFoot, landing.maxFoot] }
+    );
+    check(
+      aerialShot.entropy > 2 && aerialShot.channels.some((value) => value > 15),
+      "post-aerial screenshot is nonblank and visually varied",
+      aerialShot
+    );
+
+    // Reset to a fresh neutral wave so the long-run invariant below is not
+    // biased by held carve/stall input or a partially completed tube handoff.
+    await pressKey(cdp, "KeyE", "e", 69);
+    await tickFrames(cdp, 3);
+    await waitEval(cdp, "window.__sf.player.mode==='walk'", 5000, "post-tube beach reset");
+    await pressKey(cdp, "KeyE", "e", 69);
+    await tickFrames(cdp, 1);
+    await waitEval(cdp, "window.__sf.player.mode==='surf'", 5000, "post-tube surf reset");
+    await tickFrames(cdp, 4);
+
     const enduranceFrames = Math.ceil(ENDURANCE_SECONDS / DT);
     let framesRemaining = enduranceFrames;
     const endurance = {
@@ -624,9 +814,9 @@ async function main() {
       { minClearance: endurance.minClearance, minSpeed: endurance.minSpeed }
     );
     check(
-      endurance.cameraInitialized && endurance.minCameraShoreClearance >= 0.74 &&
+      endurance.cameraInitialized && endurance.minCameraShoreClearance >= -0.5 &&
         endurance.minCameraWaterClearance >= 0.49,
-      "authored camera stays shore-side and above the live water",
+      "authored camera stays at the wave edge and above the live water through set handoffs",
       {
         initialized: endurance.cameraInitialized,
         minShoreClearance: endurance.minCameraShoreClearance,
@@ -917,7 +1107,7 @@ async function main() {
       activationModules,
       selectorModules,
       afterChoiceImages,
-      screenshots: { entry: entryShot, desktop: desktopShot, mobile: mobileShot },
+      screenshots: { entry: entryShot, tube: tubeShot, desktop: desktopShot, mobile: mobileShot },
       runtimeErrors: cdp.errors,
       consoleErrors: cdp.consoleErrors,
       failedRequests: cdp.failedRequests

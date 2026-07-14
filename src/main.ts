@@ -540,6 +540,7 @@ async function boot() {
   let surfExperience: import("./gameplay/surfing/game").SurfExperience | null = null;
   let surfRuntimeLoading: Promise<void> | null = null;
   let surfShack: SurfShack | null = null;
+  let surfEntryPreparations = 0;
   const ensureSurfShack = () => {
     if (surfShack) return;
     surfShack = createSurfShack(map);
@@ -550,21 +551,23 @@ async function boot() {
     const hooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
     if (hooks) Object.assign(hooks, { oceanBeachWaves, surfExperience, surfShack });
   };
-  const ensureSurfRuntime = () => {
-    ensureSurfShack();
+  const ensureSurfRuntime = (prepareEntry = false) => {
     const surfing = player.mode === "surf";
-    // Face mesh can warm on the sand; SurfExperience only while actually surfing.
-    if (oceanBeachWaves && (!surfing || surfExperience)) return Promise.resolve();
+    // The activity chunk is a first-use resource: merely visiting Ocean Beach on
+    // foot must not fetch or construct any of it. Entry preparation is the one
+    // intentional exception because the first visible surf frame needs both the
+    // authored break and its HUD ready.
+    if (!surfing && !prepareEntry) return Promise.resolve();
+    ensureSurfShack();
+    if (oceanBeachWaves && surfExperience) return Promise.resolve();
     if (surfRuntimeLoading) return surfRuntimeLoading;
     surfRuntimeLoading = import("./gameplay/surfing")
       .then(({ OceanBeachWaves, SurfExperience }) => {
-        const stillSurfing = player.mode === "surf";
-        const stillNear = nearOceanBeachShore(player.position.x, player.position.z);
-        // Drop the construct if the player left the break before the chunk arrived;
-        // the cached module is instant on the next E / shore approach.
-        if (!stillSurfing && !stillNear) return;
+        // A direct transition may have been canceled while the chunk was in
+        // flight. Do not resurrect the activity after its owner has left.
+        if (!prepareEntry && player.mode !== "surf" && surfEntryPreparations === 0) return;
         oceanBeachWaves ??= new OceanBeachWaves(scene);
-        if (stillSurfing) surfExperience ??= new SurfExperience(vehicleAudio);
+        surfExperience ??= new SurfExperience(vehicleAudio);
         refreshSurfDebug();
       })
       .catch((error) => console.warn("[surf] runtime failed to load", error))
@@ -577,6 +580,18 @@ async function boot() {
     oceanBeachWaves?.dispose();
     oceanBeachWaves = null;
     refreshSurfDebug();
+  };
+  const prepareSurfEntry = async () => {
+    surfEntryPreparations++;
+    try {
+      await Promise.all([chase.ensureSurfCamera(), ensureSurfRuntime(true)]);
+      return oceanBeachWaves !== null && surfExperience !== null;
+    } catch (error) {
+      console.warn("[surf] entry preparation failed", error);
+      return false;
+    } finally {
+      surfEntryPreparations--;
+    }
   };
   let surfFlowFx = 0;
   let surfFlowPhase = 0;
@@ -609,8 +624,7 @@ async function boot() {
   const droneFireworkMounts = player.meshes.drone.userData.fireworkMounts as THREE.Object3D[] | undefined;
   const startMode = invite || resumed ? "walk" : (spawnPoint?.mode ?? START.mode);
   if (startMode !== "walk" && ALL_MODES.includes(startMode)) {
-    if (startMode === "surf") await chase.ensureSurfCamera();
-    player.trySwitch(startMode);
+    if (startMode !== "surf" || await prepareSurfEntry()) player.trySwitch(startMode);
   }
   // Surf-mode far-cull (perf audit's #1 win): a west-facing surfer never sees the
   // city behind them, but streamed tiles + citygen chunks are frustumCulled=false
@@ -655,8 +669,8 @@ async function boot() {
       leaveCameraModeForSurf();
       void chase.ensureSurfCamera();
       void ensureSurfRuntime();
-    } else if (!nearOceanBeachShore(player.position.x, player.position.z)) {
-      // Keep the face mesh warm while still on the sand so E re-entry is instant.
+    } else {
+      // The high-resolution break belongs exclusively to the active surf session.
       releaseSurfVisual();
     }
     setRemoteSurfboardAssetsActive(mode === "surf");
@@ -1708,8 +1722,8 @@ async function boot() {
       return;
     }
     if (mode === "surf") {
-      void chase.ensureSurfCamera().then(() => {
-        if (request === surfEntryRequest && player.mode !== "surf") navigation.switchMode("surf");
+      void prepareSurfEntry().then((ready) => {
+        if (ready && request === surfEntryRequest && player.mode !== "surf") navigation.switchMode("surf");
       });
       return;
     }
@@ -1941,9 +1955,9 @@ async function boot() {
   // (after the debug panel exists — restoreState can fire onModeChange).
   // An invite link wins over the saved session — the click's intent is explicit.
   if (resumed) {
-    if (resumed.mode === "surf") await chase.ensureSurfCamera();
-    player.restoreState(resumed);
-    modeDiscovery.discover(resumed.mode);
+    const resumedMode = resumed.mode === "surf" && !(await prepareSurfEntry()) ? "walk" : resumed.mode;
+    player.restoreState({ ...resumed, mode: resumedMode });
+    modeDiscovery.discover(resumedMode);
     chase.yaw = devReload?.camera.yaw ?? resumed.heading + Math.PI;
     if (devReload) {
       chase.pitch = devReload.camera.pitch;
@@ -1969,7 +1983,7 @@ async function boot() {
     const side = mode === "boat" || mode === "plane" ? 7 : mode === "drive" ? 4 : 2.5;
     const jx = invite.x + Math.cos(invite.facing) * side;
     const jz = invite.z - Math.sin(invite.facing) * side;
-    if (mode === "surf") await chase.ensureSurfCamera();
+    if (mode === "surf" && !(await prepareSurfEntry())) mode = "walk";
     player.teleportTo({ x: jx, y: invite.y, z: jz, facing: invite.facing, mode });
     chase.yaw = invite.facing;
     chase.cutTo(player);
@@ -2419,13 +2433,43 @@ async function boot() {
     refreshOptionalSiteDebug();
   };
 
+  // Remote bathers rippling the Sutro pools: locatorTargets() gives world x/y/z
+  // but no velocity, so difference positions frame-to-frame into a reused
+  // scratch array (only touched while the player is near the baths water).
+  const sutroRemotePrev = new Map<number, { x: number; z: number; t: number }>();
+  const sutroRemoteScratch: { x: number; y: number; z: number; vx: number; vz: number }[] = [];
+  const getSutroRemotes = () => {
+    sutroRemoteScratch.length = 0;
+    const now = performance.now();
+    for (const r of remotes.locatorTargets()) {
+      const prev = sutroRemotePrev.get(r.id);
+      let vx = 0;
+      let vz = 0;
+      if (prev) {
+        const dtS = Math.max((now - prev.t) / 1000, 1e-3);
+        vx = (r.x - prev.x) / dtS;
+        vz = (r.z - prev.z) / dtS;
+      }
+      sutroRemotePrev.set(r.id, { x: r.x, z: r.z, t: now });
+      sutroRemoteScratch.push({ x: r.x, y: r.y, z: r.z, vx, vz });
+    }
+    return sutroRemoteScratch;
+  };
+
   const loadSutroBaths = async (): Promise<void> => {
     const { createSutroBaths } = await import("./world/sutroBaths");
     await waitForOptionalSiteStage();
     let candidate: import("./world/sutroBaths").SutroBaths | null = null;
     let suppressed = false;
     try {
-      candidate = createSutroBaths({ renderer, scene, physics, tiles });
+      candidate = createSutroBaths({
+        renderer,
+        scene,
+        physics,
+        tiles,
+        ballSource: { visitFreeBalls: (visitor) => fetchBall?.visitFreeBalls(visitor) },
+        getRemotes: getSutroRemotes
+      });
       // Compile the complete period hall, including its foliage, while detached.
       // The user's foliage preference is restored before the root is published.
       candidate.setFoliageVisible(true);
@@ -3591,7 +3635,20 @@ async function boot() {
         }) ?? false
       )
     ) {
-      if (!fetchBall?.tryPickup(player.position)) {
+      const nearOceanBeach = player.mode === "walk" && nearOceanBeachShore(player.position.x, player.position.z);
+      if (nearOceanBeach) {
+        // Load both exclusive camera and activity runtime before changing
+        // embodiment, so the first visible surf frame is already complete.
+        const request = ++surfEntryRequest;
+        void prepareSurfEntry().then((ready) => {
+          if (!ready || request !== surfEntryRequest || player.mode !== "walk") return;
+          if (!nearOceanBeachShore(player.position.x, player.position.z)) return;
+          player.trySwitch("surf");
+          // The persistent surf HUD already carries controls; keep this as a
+          // quick entry confirmation so it is gone before a fast tube line.
+          hud.message("You're surfing — A/D carve · W pump · S stall · E exits to the beach", 1);
+        });
+      } else if (!fetchBall?.tryPickup(player.position)) {
         const drv = remotes.nearestDriver(player.position, 5.5);
         const animal = drv ? null : forest?.nearest(player.position, 5);
         if (drv) {
@@ -4087,6 +4144,12 @@ async function boot() {
       ? null
       : missionDolores?.takeFloorHandoffHeight(player.position, player.mode);
     if (museumFloorHandoff != null) player.recoverOntoWalkSurface(museumFloorHandoff);
+    // Sutro Baths buries its footprint and floats the deck above the old ground.
+    // Same handoff: lift a capsule stranded beneath the freshly built deck.
+    const sutroFloorHandoff = worldArrival.active
+      ? null
+      : sutroBaths?.takeFloorHandoffHeight(player.position, player.mode);
+    if (sutroFloorHandoff != null) player.recoverOntoWalkSurface(sutroFloorHandoff);
 
     // "hop in" nudge when standing near a ride (friend → wildlife → parked mount)
     if (!worldArrival.active && player.mode === "walk" && embodiments.passengerOf === null) {
@@ -4158,20 +4221,31 @@ async function boot() {
     // left Hiro's card one camera frame behind and visibly jittering.
     japaneseTeaGarden?.project(camera);
     sky.update(elapsed, camera.position, player.renderPosition);
-    water.update(elapsed, camera.position, player.renderPosition, player.mode === "surf");
-    oceanBeachWaves?.update(elapsed, player.renderPosition);
-    // Safety net + shore warm: rebuild the face mesh while surfing or standing
-    // at the waterline so the first E never lands on an empty bay sheet.
-    if (
-      !oceanBeachWaves &&
-      (player.mode === "surf" ||
-        (player.mode === "walk" && nearOceanBeachShore(player.position.x, player.position.z)))
-    ) {
+    // Surf contact/camera use Player's fixed-step simulation clock. Feed that
+    // exact clock to the displaced ocean and lazy face/roof too; using render
+    // elapsed here let the visible crest and barrel envelope drift away after
+    // loading, pause, or deterministic headless stepping.
+    const surfaceTime = player.mode === "surf" ? player.time : elapsed;
+    water.update(surfaceTime, camera.position, player.renderPosition, player.mode === "surf");
+    const surfTubeState = player.surfTelemetry.tubeState;
+    const surfTubeVisibility =
+      surfTubeState === "inside"
+        ? 1
+        : surfTubeState === "entering"
+          ? 0.72
+          : surfTubeState === "exiting"
+            ? 0.32
+            : 0;
+    oceanBeachWaves?.update(surfaceTime, player.renderPosition, surfTubeVisibility);
+    // Safety net for restored/direct surf transitions. Entry preparation keeps
+    // its newly constructed mesh alive until the mode switch commits; otherwise
+    // the activity visual is disposed on the first non-surf frame.
+    if (!oceanBeachWaves && player.mode === "surf") {
       void ensureSurfRuntime();
     } else if (
       oceanBeachWaves &&
       player.mode !== "surf" &&
-      !nearOceanBeachShore(player.position.x, player.position.z)
+      surfEntryPreparations === 0
     ) {
       releaseSurfVisual();
     }
@@ -4179,23 +4253,24 @@ async function boot() {
     seaPillars.update(player.renderPosition, elapsed);
     fx.update(frameDt);
     bubbles.update(frameDt, elapsed);
-    wake.update(frameDt, elapsed, player);
-    boardWake.update(frameDt, elapsed, player);
+    wake.update(frameDt, surfaceTime, player);
+    boardWake.update(frameDt, surfaceTime, player);
     skidMarks.update(frameDt, elapsed, player);
     birdTrails.update(elapsed, player);
-    splashes.update(frameDt, elapsed, player);
+    splashes.update(frameDt, surfaceTime, player);
     surfExperience?.update(frameDt, player.mode, player.surfTelemetry);
     if (player.mode === "surf" && player.surfTelemetry.splashSerial !== surfSplashSerial) {
       surfSplashSerial = player.surfTelemetry.splashSerial;
-      splashes.splash(
+      // The generic entry plume is built from camera-facing mist sprites. At
+      // surf-camera distance those become large white puffs that obscure both
+      // rider and face. Surf already has analytic lip foam and twin rail wakes,
+      // so answer launch/landing impacts with low, wave-seated rings instead.
+      wake.burst(
         player.renderPosition.x,
-        waterHeight(player.renderPosition.x, player.renderPosition.z, elapsed),
         player.renderPosition.z,
-        elapsed,
-        player.surfTelemetry.splashEnergy,
-        // Surf uses a close chase/orbit camera. Keep the authored spray layers
-        // and ring energy, but size the sprites for readable rider hero shots.
-        0.4
+        surfaceTime,
+        3.2 + player.surfTelemetry.splashEnergy * 3.8,
+        2
       );
     }
     updateSurfPresentation(frameDt);
@@ -4410,7 +4485,12 @@ async function boot() {
     isRevealed: () => revealed
   });
   // Deterministic capture stops the wall-clock loop so tools can drive tick(dt).
-  (window as never as { __sfManual: (on: boolean) => void }).__sfManual = frameDriver.setManual;
+  // Discard any fractional wall-clock remainder on entry; otherwise identical
+  // fixed-step reels can interpolate from a different boot-time accumulator.
+  (window as never as { __sfManual: (on: boolean) => void }).__sfManual = (on) => {
+    if (on) accumulator = 0;
+    frameDriver.setManual(on);
+  };
 
   // Dev/profile-only free camera for headless render probes: locks the camera
   // to a fixed eye→target via the cine hook (owns pose+camera, so chase can't

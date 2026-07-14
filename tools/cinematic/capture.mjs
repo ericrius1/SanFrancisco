@@ -865,7 +865,10 @@ export async function captureProduction({
       `${production.demo} __sfReelArmed + WebGPU queue`
     );
 
-    await evaluate(client, `window.__sfManual(true); window.__sfReelStep(0); true`);
+    await evaluate(
+      client,
+      `window.__sfManual(true); window.__sfReelReset?.(); window.__sfReelStep(0); true`
+    );
     log(`${production.id}: pre-roll/settle at frame zero (${production.settleFrames} zero-dt frames)`);
     for (let index = 0; index < production.settleFrames; index++) {
       await stepFrame(client, 0, 0);
@@ -885,7 +888,6 @@ export async function captureProduction({
           `render-state drift at frame ${index}: expected ${time}, page rendered ${frameState.cinematicTime}`
         );
       }
-
       if (targetSet.has(index)) {
         const bytes = await captureScreenshot(client, production);
         const name = frameName(index, production.frameFormat);
@@ -1016,7 +1018,10 @@ export async function captureFastProduction({
       `${production.demo} cinematic + WebGPU + overlay mirror`
     );
 
-    await evaluate(client, `window.__sfManual(true); window.__sfReelStep(0); true`);
+    await evaluate(
+      client,
+      `window.__sfManual(true); window.__sfReelReset?.(); window.__sfReelStep(0); true`
+    );
     log(`${production.id}: fast pre-roll/settle at frame zero (${production.settleFrames} zero-dt frames)`);
     for (let index = 0; index < production.settleFrames; index++) {
       await stepFrame(client, 0, 0);

@@ -1,4 +1,4 @@
-import { positionView, normalView, sin, smoothstep, exp, fract, floor, mix, step, clamp, float } from "three/tsl";
+import { positionView, normalView, sin, cos, smoothstep, exp, fract, floor, mix, step, clamp, float } from "three/tsl";
 import { OCEAN_BEACH_SURF } from "./oceanBeachWaves";
 
 /**
@@ -41,6 +41,28 @@ export function swellChop(x: any, z: any, t: any): any {
   return sin(x.mul(0.1).add(t.mul(1.35))).mul(0.36)
     .add(sin(z.mul(0.083).sub(t.mul(1.1))).mul(0.29))
     .add(sin(x.add(z).mul(0.052).add(t.mul(0.8))).mul(0.24));
+}
+
+/** GPU twin of oceanBeachBarrelEnvelope(). */
+export function oceanBeachBarrelEnvelopeNode(z: any, t: any): any {
+  const b = OCEAN_BEACH_SURF;
+  const phase = cos(
+    z.sub(b.entryZ)
+      .mul((Math.PI * 2) / b.barrelPeriod)
+      .sub(t.mul(b.barrelDrift))
+  );
+  return smoothstep(0.05, 0.6, phase);
+}
+
+/** GPU twin of oceanBeachTubeRoofFraction(); u is crown 0 … lip 1. */
+export function oceanBeachTubeRoofFractionNode(u: any): any {
+  const b = OCEAN_BEACH_SURF;
+  const x = clamp(u, 0, 1).toVar();
+  const v = float(1).sub(x).toVar();
+  return v.mul(v).mul(v)
+    .add(v.mul(v).mul(x).mul(3 * b.tubeRoofControl1))
+    .add(v.mul(x).mul(x).mul(3 * b.tubeRoofControl2))
+    .add(x.mul(x).mul(x).mul(b.tubeRoofEnd));
 }
 
 /**
@@ -87,9 +109,10 @@ export function oceanBeachSurfField(x: any, z: any, t: any) {
   const lip = mask.mul(exp(lipD.mul(lipD).mul(-0.5)));
   // spent whitewater: everything shoreward of the face, fading toward the sand
   const white = mask
-    .mul(smoothstep(float(b.faceWidth).sub(1), float(b.faceWidth).add(7), d))
-    .mul(clamp(float(1).sub(d.sub(b.faceWidth).div(46)), 0, 1));
-  return { height, face, lip, white, mask, crestD: d };
+    .mul(smoothstep(float(b.faceWidth).add(5), float(b.faceWidth).add(14), d))
+    .mul(clamp(float(1).sub(d.sub(b.faceWidth).div(52)), 0, 1));
+  const barrel = mask.mul(oceanBeachBarrelEnvelopeNode(z, t));
+  return { height, face, lip, white, mask, crestD: d, amp, barrel };
 }
 
 /** WebGPU twin of oceanBeachWaveHeight(): periodic shoreward swell with a

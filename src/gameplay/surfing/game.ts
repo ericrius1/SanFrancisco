@@ -3,6 +3,7 @@ import type { SurfTelemetry } from "../../vehicles/surf";
 import type { VehicleAudio } from "../../fx/vehicleAudio";
 
 const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
+type SurfStatusTone = "" | "good" | "air" | "bad" | "flow" | "tube";
 
 /** Score/combo bridge for the surf controller. Simulation stays in the vehicle;
  * this class owns rewards, feedback, HUD pulses and audio events. */
@@ -26,6 +27,7 @@ export class SurfExperience {
   #flowSerial = 0;
   #flowDuration = 1;
   #launchSerial = 0;
+  #tubeSerial = 0;
   #active = false;
   #audio: VehicleAudio;
 
@@ -44,7 +46,7 @@ export class SurfExperience {
       <div class="surf-status" data-surf-status>DROP IN</div>
       <div class="surf-meter surf-flow-meter"><span>FLOW</span><i data-surf-meter></i><b>SPACE / A</b></div>
       <div class="surf-meter surf-launch-meter"><span>LIP</span><i data-surf-launch></i><b>AUTO</b></div>
-      <div class="surf-controls">A/D CARVE · W PUMP · S STALL · E EXIT · CAMERA LOCKED</div>`;
+      <div class="surf-controls">A/D CARVE · W PUMP · S STALL / TUBE · E EXIT · CAMERA LOCKED</div>`;
     this.#scoreEl = this.root.querySelector("[data-surf-score]")!;
     this.#comboEl = this.root.querySelector("[data-surf-combo]")!;
     this.#statusEl = this.root.querySelector("[data-surf-status]")!;
@@ -69,10 +71,15 @@ export class SurfExperience {
       this.#active = active;
       this.root.classList.toggle("on", active);
       if (active) {
+        // Surf runtime/HUD creation may happen after the controller has already
+        // entered a barrel. Seed the serial on activation so joining or resetting
+        // never pays a stale tube reward.
+        this.#tubeSerial = surf.tubeSerial;
         this.#status("ALREADY RIDING", "good");
         this.root.classList.add("pulse");
       } else {
         this.transition.classList.remove("on");
+        this.root.classList.remove("tube-active");
       }
     }
     if (!active) return;
@@ -121,6 +128,14 @@ export class SurfExperience {
       this.#status("LIFT OFF", "air");
       this.#eventTimer = 0.8;
     }
+    if (surf.tubeSerial < this.#tubeSerial) {
+      // Controller reset while the activity remains mounted.
+      this.#tubeSerial = surf.tubeSerial;
+    } else if (surf.tubeSerial > this.#tubeSerial) {
+      this.#tubeSerial = surf.tubeSerial;
+      const points = Math.round(650 + surf.speed * 9 + surf.tubeCoverage * 150);
+      this.#award(points, "TUBE RIDE", "carve", "tube");
+    }
     if (surf.waveSerial !== this.#waveSerial) {
       this.#waveSerial = surf.waveSerial;
       this.#status("NEXT CLEAN WAVE", "good");
@@ -138,6 +153,16 @@ export class SurfExperience {
       this.#eventTimer = 0.75;
     } else if (this.#eventTimer > 0) {
       // Hold trick/landing copy long enough to read before live wave status resumes.
+    } else if (surf.tubeState === "inside") {
+      this.#status(`BARREL  ${surf.tubeDwell.toFixed(1)}s`, "tube");
+    } else if (surf.tubeState === "entering") {
+      this.#status("S — HOLD THE TUBE LINE", "tube");
+    } else if (surf.tubeState === "exiting") {
+      this.#status("DRIVE THROUGH THE EXIT", "tube");
+    } else if (surf.tubeCoverage > 0.18 && surf.tubeClearance > 0 && surf.tubeDepth < 0.5) {
+      this.#status("CARVE HIGH FOR THE TUBE", "tube");
+    } else if (surf.tubeCoverage > 0.18 && surf.tubeClearance > 0) {
+      this.#status("S — STALL INTO THE TUBE", "tube");
     } else if (surf.flowActive) {
       this.#status(`FLOW  ${surf.riderMotionRate.toFixed(2)}×`, "flow");
     } else if (surf.airborne) {
@@ -166,23 +191,32 @@ export class SurfExperience {
     this.#launchEl.style.transform = `scaleX(${clamp01(surf.autoLaunchCharge)})`;
     this.root.classList.toggle("flow-ready", surf.flowReady && !surf.flowActive);
     this.root.classList.toggle("flow-active", surf.flowActive);
+    this.root.classList.toggle(
+      "tube-active",
+      surf.tubeState === "entering" || surf.tubeState === "inside" || surf.tubeState === "exiting"
+    );
     this.root.classList.remove("pulse");
   }
 
-  #award(points: number, label: string, sound: "carve" | "landing") {
+  #award(
+    points: number,
+    label: string,
+    sound: "carve" | "landing",
+    tone: SurfStatusTone = "good"
+  ) {
     this.#score += points * this.#combo;
     this.#combo = Math.min(8, this.#combo + 1);
     this.#comboTimer = 4.2;
     this.#turnCooldown = 0.38;
     this.#eventTimer = 1.15;
-    this.#status(`${label}  +${points * (this.#combo - 1)}`, "good");
+    this.#status(`${label}  +${points * (this.#combo - 1)}`, tone);
     this.#audio.surfEvent(sound, Math.min(1, points / 600));
     this.root.classList.remove("pulse");
     void this.root.offsetWidth;
     this.root.classList.add("pulse");
   }
 
-  #status(text: string, tone: "" | "good" | "air" | "bad" | "flow") {
+  #status(text: string, tone: SurfStatusTone) {
     this.#statusEl.textContent = text;
     this.#statusEl.dataset.tone = tone;
   }

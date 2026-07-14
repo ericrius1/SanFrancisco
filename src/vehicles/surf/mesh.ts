@@ -24,6 +24,9 @@ type ShapeProfile = {
   rockerSpan: number;
 };
 
+/** Flat center-section deck height in surfboard-local space. */
+export const SURFBOARD_FLAT_DECK_TOP = 0.105;
+
 const PROFILES: Record<SurfboardShape, ShapeProfile> = {
   shortboard: {
     halfLength: 1.65,
@@ -93,9 +96,13 @@ type SurfboardSurfaceState = {
   assetsPainted: boolean;
   disposed: boolean;
   reducedMotion: boolean;
+  landingFoam: THREE.Mesh[];
+  landingSerial: number;
+  landingAge: number;
 };
 
 const surfaceStates = new WeakMap<THREE.Group, SurfboardSurfaceState>();
+const LANDING_FOAM_COLOR = new THREE.Color(0xeafffb);
 
 function outline(profile: ShapeProfile): THREE.Vector2[] {
   const controls: THREE.Vector3[] = profile.points.map(([z, width]) => new THREE.Vector3(width, z, 0));
@@ -261,6 +268,34 @@ export function buildSurfboardMesh(raw?: SurfboardConfig): THREE.Group {
   leash.position.set(0.25, 0.02, profile.halfLength - 0.08);
   group.add(leash);
 
+  // Six tapered rail wedges live inside the already-rendered surfboard
+  // hierarchy. They stay at zero scale until the authoritative landing serial
+  // advances, then bloom for a third of a second from the real contact rails.
+  // Keeping them board-local avoids detached world-space splashes at surf
+  // speed and ensures they share the proven WebGPU beauty path of the board.
+  const landingFoamGeometry = ownGeometry(new THREE.BufferGeometry());
+  landingFoamGeometry.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute([0, 0, 0, 1, 0, 0.3, 1, 0, -0.3], 3)
+  );
+  landingFoamGeometry.setIndex([0, 1, 2]);
+  landingFoamGeometry.computeVertexNormals();
+  const landingFoam: THREE.Mesh[] = [];
+  for (const side of [-1, 1]) {
+    for (let lane = 0; lane < 3; lane++) {
+      const foam = new THREE.Mesh(landingFoamGeometry, railMaterial);
+      foam.name = `surfboard-landing-foam-${side < 0 ? "left" : "right"}-${lane}`;
+      foam.userData.surfLandingFoam = true;
+      foam.userData.foamLane = lane;
+      foam.position.set(side * (0.43 + lane * 0.055), 0.12, 0.12 + lane * 0.22);
+      foam.rotation.y = (side < 0 ? Math.PI : 0) + side * (lane - 1) * 0.11;
+      foam.scale.set(0.001, 0.001, 0.001);
+      foam.renderOrder = 17;
+      landingFoam.push(foam);
+      group.add(foam);
+    }
+  }
+
   const state: SurfboardSurfaceState = {
     canvas,
     texture,
@@ -277,7 +312,10 @@ export function buildSurfboardMesh(raw?: SurfboardConfig): THREE.Group {
     assetsPainted: false,
     disposed: false,
     reducedMotion:
-      typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches
+      typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+    landingFoam,
+    landingSerial: 0,
+    landingAge: 1
   };
   surfaceStates.set(group, state);
   paintState(state, config);
@@ -336,7 +374,13 @@ export async function activateSurfboardAssets(board: THREE.Group): Promise<void>
 }
 
 /** Gentle UV drift + pearlescent breathing; no canvas work or texture uploads. */
-export function animateSurfboard(board: THREE.Group, dt: number, elapsed?: number): void {
+export function animateSurfboard(
+  board: THREE.Group,
+  dt: number,
+  elapsed?: number,
+  landingCompression = 0,
+  landingSerial = 0
+): void {
   const state = surfaceStates.get(board);
   if (!state || state.disposed) return;
   const step = Math.min(Math.max(dt, 0), 0.05);
@@ -351,4 +395,29 @@ export function animateSurfboard(board: THREE.Group, dt: number, elapsed?: numbe
   const breathe = 0.5 + 0.5 * Math.sin(time * 1.4 + state.config.textureRotation * 0.07);
   state.surfaceMaterial.emissiveIntensity = 0.012 + state.shimmer * (0.035 + breathe * 0.075);
   state.surfaceMaterial.roughness = 0.44 - state.shimmer * (0.06 + breathe * 0.08);
+
+  if (landingSerial !== state.landingSerial) {
+    state.landingSerial = landingSerial;
+    state.landingAge = landingSerial > 0 ? 0 : 1;
+  } else {
+    state.landingAge += step;
+  }
+  const age = state.landingAge;
+  const birth = THREE.MathUtils.smoothstep(age, 0, 0.045);
+  const fade = 1 - THREE.MathUtils.smoothstep(age, 0.18, 0.34);
+  const envelope = birth * fade * THREE.MathUtils.clamp(0.45 + landingCompression * 0.75, 0, 1);
+  state.railMaterial.color.set(surfboardRailHex(state.config)).lerp(LANDING_FOAM_COLOR, envelope);
+  state.railMaterial.emissive.set(0xb9ffeb);
+  state.railMaterial.emissiveIntensity = 0.7 * envelope;
+  for (const foam of state.landingFoam) {
+    const lane = Number(foam.userData.foamLane ?? 0);
+    if (envelope <= 1e-4) {
+      foam.scale.set(0.001, 0.001, 0.001);
+      continue;
+    }
+    const laneLength = 1 - lane * 0.12;
+    const length = (0.48 + age * 5.1) * laneLength * birth;
+    const width = (0.66 + age * 0.7) * (1 - lane * 0.08) * Math.sqrt(fade);
+    foam.scale.set(Math.max(0.001, length), 1, Math.max(0.001, width));
+  }
 }
