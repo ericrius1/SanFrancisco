@@ -23,6 +23,10 @@ export class ScooterController implements ModeController {
     return this.#drive.jumpDebug;
   }
 
+  get slideFeedback() {
+    return this.#drive.slideFeedback;
+  }
+
   #spec(): DriveSpec {
     const t = SCOOTER_TUNING.values;
     return {

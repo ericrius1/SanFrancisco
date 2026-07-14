@@ -2,6 +2,11 @@ import * as THREE from "three/webgpu";
 import { LIGHT_SCALE } from "../../config";
 import { PALACE_LAGOON, type WorldMap } from "../../world/heightmap";
 import { REVERIE_TUNING } from "./layout";
+import {
+  createSurfaceSoftSpriteMaterial,
+  horizontalSurfacePlane,
+  SURFACE_SOFT_SPRITE
+} from "./surfaceSoftSprite";
 
 /**
  * Floating paper-lantern vessels on the Palace lagoon — always-on scenery for
@@ -22,7 +27,7 @@ type Vessel = {
   root: THREE.Group;
   bodyMat: THREE.MeshStandardNodeMaterial;
   halo: THREE.Sprite;
-  haloMat: THREE.SpriteMaterial;
+  haloMat: THREE.SpriteNodeMaterial;
 };
 
 function makeHaloTexture(): THREE.CanvasTexture {
@@ -85,16 +90,17 @@ export class LagoonLanterns {
       const root = new THREE.Group();
       root.add(body, rim, post);
 
-      const haloMat = new THREE.SpriteMaterial({
+      const haloMat = createSurfaceSoftSpriteMaterial({
         map: this.#haloTex,
         color: hue,
-        transparent: true,
-        depthWrite: false,
         blending: THREE.AdditiveBlending,
-        opacity: 0.55
-      });
+        opacity: 0.55,
+        surfacePlane: horizontalSurfacePlane(PALACE_LAGOON.surfaceY),
+        feather: 0.52
+      }).material;
       const halo = new THREE.Sprite(haloMat);
       halo.scale.set(1.8, 1.8, 1);
+      halo.renderOrder = SURFACE_SOFT_SPRITE.renderOrder;
 
       this.group.add(root, halo);
       this.#vessels.push({

@@ -2,6 +2,12 @@ import * as THREE from "three/webgpu";
 import { LIGHT_SCALE } from "../../config";
 import type { WorldMap } from "../../world/heightmap";
 import { LAMP_LAYOUT, REVERIE_TUNING } from "./layout";
+import {
+  createSurfaceSoftSpriteMaterial,
+  horizontalSurfacePlane,
+  SURFACE_SOFT_SPRITE,
+  terrainSurfacePlane
+} from "./surfaceSoftSprite";
 
 /**
  * Five memory lamps along the peristyle. Dim until awakened with E; each
@@ -18,14 +24,16 @@ export type MemoryLamp = {
   awakenT: number;
   root: THREE.Group;
   flameMat: THREE.MeshStandardNodeMaterial;
-  haloMat: THREE.SpriteMaterial;
+  haloMat: THREE.SpriteNodeMaterial;
+  surfacePlane: THREE.Vector4;
   light: THREE.PointLight;
   sparkBurst: number; // 1 → 0 after lighting
 };
 
 type Spark = {
   sprite: THREE.Sprite;
-  mat: THREE.SpriteMaterial;
+  mat: THREE.SpriteNodeMaterial;
+  surfacePlane: THREE.Vector4;
   vx: number;
   vy: number;
   vz: number;
@@ -67,23 +75,35 @@ export class MemoryLamps {
     });
 
     for (let i = 0; i < 48; i++) {
-      const mat = new THREE.SpriteMaterial({
+      const soft = createSurfaceSoftSpriteMaterial({
         map: this.#glowTex,
         color: 0xffe8b0,
-        transparent: true,
-        depthWrite: false,
         blending: THREE.AdditiveBlending,
-        opacity: 0
+        opacity: 0,
+        surfacePlane: horizontalSurfacePlane(0),
+        feather: 0.28
       });
+      const mat = soft.material;
       const sprite = new THREE.Sprite(mat);
       sprite.visible = false;
       sprite.scale.set(0.35, 0.35, 1);
+      sprite.renderOrder = SURFACE_SOFT_SPRITE.renderOrder;
       this.group.add(sprite);
-      this.#sparkPool.push({ sprite, mat, vx: 0, vy: 0, vz: 0, life: 0, maxLife: 1 });
+      this.#sparkPool.push({
+        sprite,
+        mat,
+        surfacePlane: soft.surfacePlane,
+        vx: 0,
+        vy: 0,
+        vz: 0,
+        life: 0,
+        maxLife: 1
+      });
     }
 
     for (const spec of LAMP_LAYOUT) {
       const ground = map.groundTop(spec.x, spec.z);
+      const surfacePlane = terrainSurfacePlane(map, spec.x, spec.z);
       const hue = new THREE.Color(spec.hue);
       const flameMat = new THREE.MeshStandardNodeMaterial({
         color: hue.clone().convertSRGBToLinear(),
@@ -100,17 +120,18 @@ export class MemoryLamps {
       flame.position.y = 0.78;
       flame.scale.set(1, 1.35, 1);
 
-      const haloMat = new THREE.SpriteMaterial({
+      const haloMat = createSurfaceSoftSpriteMaterial({
         map: this.#glowTex,
         color: hue,
-        transparent: true,
-        depthWrite: false,
         blending: THREE.AdditiveBlending,
-        opacity: 0.12
-      });
+        opacity: 0.12,
+        surfacePlane,
+        feather: 0.58
+      }).material;
       const halo = new THREE.Sprite(haloMat);
       halo.position.y = 0.9;
       halo.scale.set(1.2, 1.2, 1);
+      halo.renderOrder = SURFACE_SOFT_SPRITE.renderOrder;
 
       // Soft uplight wash on the nearby column face — taller gradient plane
       const wash = new THREE.Mesh(
@@ -167,6 +188,7 @@ export class MemoryLamps {
         root,
         flameMat,
         haloMat,
+        surfacePlane,
         light
       });
     }
@@ -264,6 +286,7 @@ export class MemoryLamps {
       if (!spark) break;
       spark.sprite.visible = true;
       spark.sprite.position.set(lamp.x, lamp.y + 0.9, lamp.z);
+      spark.surfacePlane.copy(lamp.surfacePlane);
       spark.mat.color.copy(i % 4 === 0 ? white : hue);
       spark.mat.opacity = 0.95;
       const a = Math.random() * Math.PI * 2;

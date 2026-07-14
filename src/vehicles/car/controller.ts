@@ -49,6 +49,16 @@ export type CarLandingFeedback = {
   yaw: number;
 };
 
+/** Continuous slide presentation for skid marks + audio (0..1). */
+export type CarSlideFeedback = {
+  /** Bumper-slide engage blend (0..1). */
+  blend: number;
+  /** Combined bumper + handbrake skid intensity for VFX/audio. */
+  intensity: number;
+  /** −1 left bumper, +1 right, 0 none / handbrake-only. */
+  dir: number;
+};
+
 export class CarController implements ModeController {
   readonly spawnLift = 0.8;
   steerVis = 0; // smoothed steer input, read by the driver-arm/wheel animation
@@ -56,6 +66,14 @@ export class CarController implements ModeController {
   #jump = new CarJumpState();
   #groundNormal = new THREE.Vector3(0, 1, 0);
   #groundBlend = 1;
+  /** 0 = glued tires, 1 = full bumper-slide slip. Soft blend avoids icy on/off. */
+  #slideBlend = 0;
+  /** Seconds the current bumper slide has been held (for snap turbo). */
+  #slideHold = 0;
+  /** Decaying forward speed pop after a bumper release. */
+  #slideBoost = 0;
+  #skidIntensity = 0;
+  #slideDir = 0;
   #supportClearance = 0;
   #positionYForDebug = 0;
   #jumpPeakY = 0;
@@ -120,11 +138,25 @@ export class CarController implements ModeController {
     return this.#landingFeedback;
   }
 
+  /** Continuous skid intensity for tire marks + audio. */
+  get slideFeedback(): Readonly<CarSlideFeedback> {
+    return {
+      blend: this.#slideBlend,
+      intensity: this.#skidIntensity,
+      dir: this.#slideDir
+    };
+  }
+
   spawnBody(ctx: PlayerCtx, facing: number): number {
     const p = ctx.position;
     this.steerVis = 0;
     this.#jump.reset(facing);
     this.#groundBlend = 1;
+    this.#slideBlend = 0;
+    this.#slideHold = 0;
+    this.#slideBoost = 0;
+    this.#skidIntensity = 0;
+    this.#slideDir = 0;
     this.#supportClearance = 0;
     this.#jumpPeakY = p.y;
     this.#jumpMaxClearance = 0;
@@ -236,6 +268,13 @@ export class CarController implements ModeController {
     const steer = input.axis("KeyD", "KeyA");
     const handbrake = input.down("Space");
     const boost = input.down("ShiftLeft");
+    // LB/RB (or [ / ]) pick a slide side; both cancel. Space stays classic omni drift.
+    const slideLeft =
+      input.down("PadSlideLeft") || input.down("BracketLeft") || input.down("KeyQ");
+    const slideRight = input.down("PadSlideRight") || input.down("BracketRight");
+    let slideDir = 0;
+    if (slideLeft && !slideRight) slideDir = -1;
+    else if (slideRight && !slideLeft) slideDir = 1;
     this.steerVis += (steer - this.steerVis) * Math.min(1, dt * 9);
 
     const td = CAR_TUNING.values;
@@ -243,6 +282,35 @@ export class CarController implements ModeController {
     const ground = this.#ground(ctx, ctx.position.x, ctx.position.z);
     const fwdSpeed = ctx.velocity.dot(fwd);
     const maxSpeed = (boost ? td.boostMaxSpeed : td.maxSpeed) * spec.maxFactor;
+    const speedOk = Math.abs(fwdSpeed) >= td.slideMinSpeed;
+    const bumperSlide = slideDir !== 0 && speedOk;
+
+    // Soft engage/recover so bumper slip isn't binary ice ↔ glue.
+    const slideTarget = bumperSlide ? 1 : 0;
+    const slideRate = bumperSlide ? td.slideEngage : td.slideRecover;
+    this.#slideBlend +=
+      (slideTarget - this.#slideBlend) * (1 - Math.exp(-slideRate * dt));
+    if (this.#slideBlend < 1e-3) this.#slideBlend = 0;
+
+    if (bumperSlide) this.#slideHold += dt;
+    else if (slideDir === 0) {
+      // Award snap turbo only on bumper release (not when speed just dips).
+      if (this.#slideHold >= td.slideBoostMinTime && td.slideBoostImpulse > 0) {
+        this.#slideBoost = Math.max(this.#slideBoost, td.slideBoostImpulse);
+      }
+      this.#slideHold = 0;
+    }
+    if (this.#slideBoost > 1e-3) {
+      this.#slideBoost *= Math.exp(-td.slideBoostDecay * dt);
+    } else this.#slideBoost = 0;
+
+    const speedNorm = Math.min(1, Math.abs(fwdSpeed) / Math.max(td.slideRefSpeed, 1e-4));
+    this.#slideDir = bumperSlide ? slideDir : 0;
+    const bumperSkid = this.#slideBlend * speedNorm;
+    const brakeSkid =
+      handbrake && speedOk ? 0.5 * speedNorm + 0.15 * Math.min(1, Math.abs(ctx.velocity.dot(right)) / 8) : 0;
+    this.#skidIntensity = Math.max(bumperSkid, brakeSkid);
+    if (this.#skidIntensity < 1e-3) this.#skidIntensity = 0;
 
     // Compute the ground-control request before deciding the phase. The same
     // nose probe defines the suspension target used for takeoff clearance, so a
@@ -257,11 +325,28 @@ export class CarController implements ModeController {
       targetSpeed = Math.max(-td.reverseMax, fwdSpeed - td.reverseAccel * dt);
       if (fwdSpeed < 0.5) targetSpeed = Math.min(targetSpeed, -td.reverseGrind);
     } else targetSpeed = fwdSpeed * (1 - td.coastDrag * dt);
+    if (this.#slideBoost > 0) {
+      targetSpeed = Math.min(td.boostMaxSpeed * spec.maxFactor, targetSpeed + this.#slideBoost);
+    }
 
     const latSpeed = ctx.velocity.dot(right);
-    const keepLat = handbrake ? td.driftLat : td.gripLat;
-    const newVx = fwd.x * targetSpeed + right.x * latSpeed * keepLat;
-    const newVz = fwd.z * targetSpeed + right.z * latSpeed * keepLat;
+    const sBlend = this.#slideBlend;
+    // Handbrake alone keeps the old loose drift; bumpers blend toward slideLat.
+    let keepLat = handbrake && sBlend < 0.05 ? td.driftLat : td.gripLat;
+    if (sBlend > 0) keepLat = THREE.MathUtils.lerp(keepLat, td.slideLat, sBlend);
+
+    let lat = latSpeed;
+    if (sBlend > 0.01 && slideDir !== 0) {
+      // Drive lateral velocity toward an outward slip target so initiation is
+      // punchy and framerate-stable (not a per-frame add that depends on dt).
+      const outward = slideDir * td.slideSlip * speedNorm;
+      const build = (1 - Math.exp(-td.slideBuild * dt)) * sBlend;
+      lat = lat + (outward - lat) * build;
+    }
+    lat *= keepLat;
+
+    const newVx = fwd.x * targetSpeed + right.x * lat;
+    const newVz = fwd.z * targetSpeed + right.z * lat;
     const travel = Math.sign(fwdSpeed) || (throttle > 0 ? 1 : throttle < 0 ? -1 : 1);
     const nose = spec.halfExtents[2] + 0.6;
     const ahead = this.#ground(
@@ -294,6 +379,11 @@ export class CarController implements ModeController {
       w.setBodyVelocity(ctx.body, [0, 0, 0], [0, 0, 0]);
       this.#jump.reset(face);
       this.#groundBlend = 1;
+      this.#slideBlend = 0;
+      this.#slideHold = 0;
+      this.#slideBoost = 0;
+      this.#skidIntensity = 0;
+      this.#slideDir = 0;
       return;
     }
 
@@ -312,8 +402,10 @@ export class CarController implements ModeController {
     const transition = this.#jump.update(js, dt, jp);
     if (transition !== "none") this.#groundBlend = 0;
     if (transition === "takeoff") this.#beginJump(ctx.position.y);
-    if (this.#jump.airborne) this.#trackJump(ctx.position.y);
-    else if (transition === "landing") this.#commitLanding(ctx, ground, yaw);
+    if (this.#jump.airborne) {
+      this.#trackJump(ctx.position.y);
+      this.#skidIntensity = 0;
+    } else if (transition === "landing") this.#commitLanding(ctx, ground, yaw);
 
     const grounded = !this.#jump.airborne && nearGround && up.y > 0.35;
     if (grounded) {
@@ -351,12 +443,23 @@ export class CarController implements ModeController {
 
       const dir = fwdSpeed >= -0.4 ? 1 : -1;
       const grip = Math.min(Math.abs(fwdSpeed) / 6, 1);
-      const steerRate =
-        steer *
-        dir *
-        grip *
-        (handbrake ? td.driftSteerRate : td.steerRate) *
-        spec.steerFactor;
+      const baseSteer =
+        handbrake && this.#slideBlend < 0.05
+          ? td.driftSteerRate
+          : THREE.MathUtils.lerp(td.steerRate, td.slideSteerRate, this.#slideBlend);
+      let steerRate = steer * dir * grip * baseSteer * spec.steerFactor;
+      if (this.#slideBlend > 0.01 && slideDir !== 0) {
+        // Bumper yaw bias + extra bite when steering into the slide (kart feel).
+        const into = Math.max(0, slideDir * steer * dir);
+        const yawBias =
+          slideDir *
+          dir *
+          td.slideYaw *
+          grip *
+          this.#slideBlend *
+          (1 + into * td.slideSteerInto);
+        steerRate += yawBias;
+      }
 
       V.qa.setFromAxisAngle(V.up, yaw);
       V.qb.setFromUnitVectors(V.up, this.#groundNormal).multiply(V.qa);

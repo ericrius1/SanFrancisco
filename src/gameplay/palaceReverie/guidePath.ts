@@ -1,6 +1,11 @@
 import * as THREE from "three/webgpu";
 import type { WorldMap } from "../../world/heightmap";
 import { LAMP_LAYOUT, NPC_LAYOUT, REVERIE_SPAWN } from "./layout";
+import {
+  createSurfaceSoftSpriteMaterial,
+  SURFACE_SOFT_SPRITE,
+  terrainSurfacePlane
+} from "./surfaceSoftSprite";
 
 /**
  * Soft stepping-stone glows from the shore greeting to the first memory lamp —
@@ -9,7 +14,7 @@ import { LAMP_LAYOUT, NPC_LAYOUT, REVERIE_SPAWN } from "./layout";
 export class GuidePath {
   readonly group = new THREE.Group();
   #sprites: THREE.Sprite[] = [];
-  #mats: THREE.SpriteMaterial[] = [];
+  #mats: THREE.SpriteNodeMaterial[] = [];
   #progress = 0;
   #tex: THREE.CanvasTexture;
 
@@ -41,16 +46,17 @@ export class GuidePath {
       const x = omu * omu * start.x + 2 * omu * u * mid.x + u * u * end.x;
       const z = omu * omu * start.z + 2 * omu * u * mid.z + u * u * end.z;
       const y = map.groundTop(x, z) + 0.12;
-      const mat = new THREE.SpriteMaterial({
+      const mat = createSurfaceSoftSpriteMaterial({
         map: this.#tex,
-        transparent: true,
-        depthWrite: false,
         blending: THREE.AdditiveBlending,
-        opacity: 0.35
-      });
+        opacity: 0.35,
+        surfacePlane: terrainSurfacePlane(map, x, z),
+        feather: 0.18
+      }).material;
       const sprite = new THREE.Sprite(mat);
       sprite.position.set(x, y, z);
       sprite.scale.set(1.4, 1.4, 1);
+      sprite.renderOrder = SURFACE_SOFT_SPRITE.renderOrder;
       this.group.add(sprite);
       this.#sprites.push(sprite);
       this.#mats.push(mat);

@@ -20,6 +20,24 @@ export const CAR_TUNING = tunables("movement.drive", {
   rideSpring: { v: 10 },
   groundNormalResponse: { v: 12 },
 
+  // Bumper power-slide (LB/RB, keyboard [ / ]). Arcade slip with a soft engage /
+  // recover blend so it feels punchy rather than icy or binary. Space handbrake
+  // stays the looser classic drift; bumpers are the directional kart-style slide.
+  slideLat: { v: 0.4, min: 0.2, max: 0.95, step: 0.01, label: "slide slip" },
+  slideYaw: { v: 0.7, min: 0, max: 4, step: 0.05, label: "slide yaw" },
+  slideSteerRate: { v: 1.85, min: 0.5, max: 6, step: 0.05, label: "slide steer" },
+  slideSlip: { v: 4.5, min: 0, max: 28, step: 0.5, label: "slide push" },
+  slideBuild: { v: 5, min: 1, max: 20, step: 0.5, label: "slide build" },
+  slideEngage: { v: 8, min: 2, max: 24, step: 0.5, label: "slide engage" },
+  slideRecover: { v: 10, min: 2, max: 24, step: 0.5, label: "slide recover" },
+  slideMinSpeed: { v: 6, min: 0, max: 20, step: 0.5, label: "slide min speed" },
+  slideRefSpeed: { v: 18, min: 4, max: 40, step: 0.5, label: "slide ref speed" },
+  slideSteerInto: { v: 0.3, min: 0, max: 1.5, step: 0.05, label: "steer-into boost" },
+  // Snap turbo: release a held bumper slide for a short speed pop.
+  slideBoostImpulse: { v: 4, min: 0, max: 25, step: 0.5, label: "snap boost" },
+  slideBoostMinTime: { v: 0.28, min: 0, max: 1.5, step: 0.02, label: "snap hold" },
+  slideBoostDecay: { v: 3.2, min: 0.5, max: 12, step: 0.1, label: "snap decay" },
+
   // Jump state hysteresis. Clearance is measured from the chassis centre to the
   // current ride target (road + rideHeight), not from the centre to raw terrain.
   // This keeps the nose-on-ramp phase supported, then latches one clean takeoff.
@@ -68,4 +86,15 @@ export const CAR_LANDING_TUNING = tunables("movement.drive.landingFeedback", {
   smokeScaleMax: { v: 1.35, min: 0.1, max: 5, step: 0.05, label: "smoke size max" },
   smokeSpread: { v: 2.2, min: 0, max: 5, step: 0.1, label: "smoke spread" },
   smokeLife: { v: 0.8, min: 0.2, max: 2.5, step: 0.05, label: "smoke life" }
+});
+
+/** Skid-mark + skid-audio presentation for bumper slides / handbrake. */
+export const CAR_SKID_TUNING = tunables("movement.drive.skid", {
+  markLife: { v: 5.5, min: 1, max: 14, step: 0.25, label: "mark life" },
+  markOpacity: { v: 0.42, min: 0.05, max: 1, step: 0.02, label: "mark opacity" },
+  markWidth: { v: 0.14, min: 0.05, max: 0.4, step: 0.01, label: "mark width" },
+  markLength: { v: 0.75, min: 0.2, max: 2, step: 0.05, label: "mark length" },
+  markSpacing: { v: 0.5, min: 0.15, max: 2, step: 0.05, label: "mark spacing" },
+  audioGain: { v: 0.11, min: 0, max: 0.4, step: 0.01, label: "skid volume" },
+  audioTone: { v: 340, min: 120, max: 900, step: 10, label: "skid tone Hz" }
 });

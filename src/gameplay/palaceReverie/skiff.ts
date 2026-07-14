@@ -1,6 +1,11 @@
 import * as THREE from "three/webgpu";
 import { LIGHT_SCALE } from "../../config";
 import { PALACE_LAGOON } from "../../world/heightmap";
+import {
+  createSurfaceSoftSpriteMaterial,
+  horizontalSurfacePlane,
+  SURFACE_SOFT_SPRITE
+} from "./surfaceSoftSprite";
 
 /** A quiet skiff drifting on the lagoon — one more warm light on the water. */
 export class LagoonSkiff {
@@ -8,7 +13,7 @@ export class LagoonSkiff {
   #hull: THREE.Group;
   #lampMat: THREE.MeshStandardNodeMaterial;
   #glow: THREE.Sprite;
-  #glowMat: THREE.SpriteMaterial;
+  #glowMat: THREE.SpriteNodeMaterial;
   #wakeMat: THREE.MeshBasicNodeMaterial;
   #wake: THREE.Mesh;
   #trailMat: THREE.MeshBasicNodeMaterial;
@@ -55,16 +60,17 @@ export class LagoonSkiff {
     gctx.fillRect(0, 0, 64, 64);
     const glowTex = new THREE.CanvasTexture(glowCanvas);
     glowTex.colorSpace = THREE.SRGBColorSpace;
-    this.#glowMat = new THREE.SpriteMaterial({
+    this.#glowMat = createSurfaceSoftSpriteMaterial({
       map: glowTex,
-      transparent: true,
-      depthWrite: false,
       blending: THREE.AdditiveBlending,
-      opacity: 0.55
-    });
+      opacity: 0.55,
+      surfacePlane: horizontalSurfacePlane(PALACE_LAGOON.surfaceY),
+      feather: 0.5
+    }).material;
     this.#glow = new THREE.Sprite(this.#glowMat);
     this.#glow.scale.set(2.4, 2.4, 1);
     this.#glow.position.set(0.3, 1.85, 0);
+    this.#glow.renderOrder = SURFACE_SOFT_SPRITE.renderOrder;
 
     this.#light = new THREE.PointLight(0xffb070, 0.55 * LIGHT_SCALE, 22, 2);
     this.#light.position.set(0.3, 1.85, 0);

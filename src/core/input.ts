@@ -15,7 +15,8 @@ import { INPUT_TUNING } from "../config";
  * the WASD axis pairs (radial deadzone + move curve from INPUT_TUNING), the
  * right stick into mouselook deltas outside the locked surf activity (same
  * deadzone + look curve), and the triggers into the active mode's throttle —
- * fly routes them to ↑/↓, bird routes LB/RB to Q/E twirl —
+ * fly routes them to ↑/↓, bird routes LB/RB to Q/E twirl, drive/scooter map
+ * LB/RB to PadSlideLeft/Right for bumper power-slides —
  * so modes/camera/fireworks never see a second input path. `device` tracks
  * whichever input was touched last; the HUD swaps its control labels off it.
  *
@@ -57,8 +58,8 @@ const PAD_BUTTONS: Record<number, string> = {
   0: "Space", //     A: jump / ollie / drift / air brake / hover
   // 1 B: unbound (RDR2 reload/melee — unused here)
   3: "KeyE", //      Y: interact / enter-exit vehicle (RDR2-style)
-  4: "KeyQ", //      LB: drone down / bird twirl left
-  // 5 RB: bird twirl right — routed via pad axis (not KeyE, which exits)
+  4: "KeyQ", //      LB: drone down / bird twirl left / (drive also gets PadSlideLeft)
+  // 5 RB: bird twirl right / drive PadSlideRight — axis/synthetic (not KeyE, which exits)
   7: "ShiftLeft", // RT: boost / run / tuck
   8: "KeyM", //      Back/View: map (RDR2 holds Select for map; tap here)
   9: "KeyP", //      Start: pause
@@ -420,8 +421,6 @@ export class Input {
       }
       this.#padPrev[i] = on;
     }
-    this.#padHeld = held;
-
     const tune = INPUT_TUNING.values;
     const deadzone = tune.stickDeadzone;
     // Left stick: deadzone + move curve (vehicles/walk read these axes analog).
@@ -432,9 +431,15 @@ export class Input {
     const lt = gp.buttons[6]?.value ?? 0;
     const rt = gp.buttons[7]?.value ?? 0;
     const trig = rt - lt;
-    // bumpers: bird twirl (RB is axis-only so it doesn't impersonate KeyE / exit)
+    // bumpers: bird twirl (RB is axis-only so it doesn't impersonate KeyE / exit);
+    // drive/scooter power-slide uses synthetic codes so RB never aliases KeyE.
     const lb = gp.buttons[4]?.pressed || (gp.buttons[4]?.value ?? 0) > 0.5 ? 1 : 0;
     const rb = gp.buttons[5]?.pressed || (gp.buttons[5]?.value ?? 0) > 0.5 ? 1 : 0;
+    if (this.#mode === "drive" || this.#mode === "scooter") {
+      if (lb) held.add("PadSlideLeft");
+      if (rb) held.add("PadSlideRight");
+    }
+    this.#padHeld = held;
     this.#padAxes.set("KeyA|KeyD", lx);
     this.#padAxes.set("KeyS|KeyW", -ly + (this.#triggerRoute ? 0 : trig));
     if (this.#triggerRoute === "plane") {

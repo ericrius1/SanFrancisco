@@ -1,12 +1,17 @@
 import * as THREE from "three/webgpu";
 import { PALACE_LAGOON } from "../../world/heightmap";
+import {
+  createSurfaceSoftSpriteMaterial,
+  horizontalSurfacePlane,
+  SURFACE_SOFT_SPRITE
+} from "./surfaceSoftSprite";
 
 /** Soft ground mist over the lagoon basin — cheap sprites that thicken with
  *  quest progress so the blue-hour read gets dreamier as lamps wake. */
 export class LagoonMist {
   readonly group = new THREE.Group();
   #sprites: THREE.Sprite[] = [];
-  #mats: THREE.SpriteMaterial[] = [];
+  #mats: THREE.SpriteNodeMaterial[] = [];
   #progress = 0;
   #tex: THREE.CanvasTexture;
 
@@ -27,13 +32,13 @@ export class LagoonMist {
     for (let i = 0; i < 22; i++) {
       const a = (i / 22) * Math.PI * 2;
       const r = 0.2 + (i % 7) * 0.1;
-      const mat = new THREE.SpriteMaterial({
+      const mat = createSurfaceSoftSpriteMaterial({
         map: this.#tex,
-        transparent: true,
-        depthWrite: false,
         opacity: 0.18,
-        color: new THREE.Color(0xd8e4ff)
-      });
+        color: new THREE.Color(0xd8e4ff),
+        surfacePlane: horizontalSurfacePlane(PALACE_LAGOON.surfaceY),
+        feather: 0.9
+      }).material;
       const sprite = new THREE.Sprite(mat);
       const s = 24 + (i % 5) * 7;
       sprite.scale.set(s, s * 0.35, 1);
@@ -43,6 +48,7 @@ export class LagoonMist {
         PALACE_LAGOON.surfaceY + 0.9 + layer * 1.1 + (i % 4) * 0.2,
         PALACE_LAGOON.z + Math.sin(a) * PALACE_LAGOON.radiusZ * r
       );
+      sprite.renderOrder = SURFACE_SOFT_SPRITE.renderOrder;
       this.group.add(sprite);
       this.#sprites.push(sprite);
       this.#mats.push(mat);
