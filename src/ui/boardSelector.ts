@@ -139,6 +139,7 @@ export class BoardSelector {
     this.#toggle.type = "button";
     this.#toggle.title = "Hoverboard lab";
     this.#toggle.setAttribute("aria-label", "Open hoverboard lab");
+    this.#toggle.innerHTML = '<img class="customizer-icon" src="/ui/customizer-icons/hoverboard.webp" alt="" draggable="false">';
     this.#toggle.addEventListener("click", () => this.setOpen(!this.#open));
     this.#root.appendChild(this.#toggle);
 
@@ -161,6 +162,12 @@ export class BoardSelector {
       cancelAnimationFrame(this.#previewFrame);
       this.#previewFrame = 0;
     }
+  }
+
+  /** Board-mode slot only — hide when another (or no) customizer owns the HUD. */
+  setVisible(visible: boolean): void {
+    this.#root.hidden = !visible;
+    if (!visible && this.#open) this.setOpen(false);
   }
 
   /** Reflect an externally-assigned board without firing edits. */
@@ -883,12 +890,6 @@ export class BoardSelector {
   }
 
   #render() {
-    const deckHex = hexString(boardDeckHex(this.#config));
-    const glowHex = hexString(boardGlowHex(this.#config));
-    this.#toggle.innerHTML =
-      `<span class="board-ic-deck" style="background:${deckHex}"></span>` +
-      `<span class="board-ic-rail" style="background:${glowHex};box-shadow:0 0 7px ${glowHex}"></span>`;
-
     this.#panel.innerHTML = "";
     this.#previewCanvases.clear();
     const header = document.createElement("header");

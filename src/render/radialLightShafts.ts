@@ -106,6 +106,9 @@ export function createRadialLightShafts(opts: {
 
   return {
     compose,
+    clearCompositions() {
+      outputs.clear();
+    },
     configure,
     update() {
       source.update(camera);

@@ -19,7 +19,7 @@ import { CANVAS_FONT_FAMILY } from "../core/typography";
  * Multiplayer: every remote player is a colored dot (their server-assigned
  * hue, same as their name tag). On the minimap, players outside the view are
  * clamped to the rim so you always know which way to head. The expanded map
- * can be panned/zoomed and uses the same select-then-teleport flow.
+ * can be panned/zoomed; pick a spot, then Enter / X to teleport.
  */
 
 export type MapSelf = { name: string; x: number; z: number; fx: number; fz: number; hue: number };
@@ -262,8 +262,6 @@ export class Minimap {
   #big: HTMLCanvasElement | null = null;
   #bigWrap: HTMLDivElement | null = null;
   #bigRecenter: HTMLButtonElement | null = null;
-  #bigTeleWrap: HTMLDivElement | null = null;
-  #bigTeleName: HTMLSpanElement | null = null;
   /** Floating “Enter/X to teleport” callout anchored to the selection marker. */
   #bigPinHint: HTMLDivElement | null = null;
   #pinHintKey: string | null = null;
@@ -1598,7 +1596,7 @@ export class Minimap {
     this.update();
   }
 
-  /** Reflect the resolved selection into the teleport bar (idempotent per frame). */
+  /** Reflect the resolved selection into the minimap teleport bar (idempotent per frame). */
   #syncTeleport(target: { name: string } | null) {
     const name = target?.name ?? null;
     if (name) {
@@ -1606,16 +1604,8 @@ export class Minimap {
       this.#teleWrap.style.display = "flex";
     } else {
       this.#teleWrap.style.display = "none";
+      this.#hidePinTeleportHint();
     }
-    if (this.#bigTeleWrap && this.#bigTeleName) {
-      if (name) {
-        this.#bigTeleName.textContent = name;
-        this.#bigTeleWrap.style.display = "flex";
-      } else {
-        this.#bigTeleWrap.style.display = "none";
-      }
-    }
-    if (!name) this.#hidePinTeleportHint();
   }
 
   /** Swap pad vs keyboard chrome on the expanded map (teleport hint). */
@@ -1704,7 +1694,7 @@ export class Minimap {
     this.#selectAtCanvasPx(mx, my);
   }
 
-  /** X: teleport to the current selection (same as the Teleport button). */
+  /** X / Enter: teleport to the current selection. */
   padTeleport() {
     if (!this.expanded) return;
     const target = this.#resolveSelected();
@@ -1788,8 +1778,8 @@ export class Minimap {
   }
 
   /** Demo/capture hook: open the full map centered on a named landmark and
-   *  pre-select it (selection ring + Teleport bar), as if the user clicked its
-   *  dot. Returns the landmark's world position. */
+   *  pre-select it (selection ring + pin teleport hint), as if the user clicked
+   *  its dot. Returns the landmark's world position. */
   focusLandmark(name: string): { x: number; z: number } | null {
     const lm = this.#landmarks.find((l) => l.name.toLowerCase() === name.toLowerCase());
     if (!lm) return null;
@@ -1868,36 +1858,12 @@ export class Minimap {
       this.#overlayButtons.set(def.id, button);
     }
     sideControls.append(layers, recenter);
-    const hint = document.createElement("div");
-    hint.className = "bigmap-hint";
-    hint.textContent = "Select a destination";
-    const action = document.createElement("div");
-    action.className = "bigmap-action";
-    action.style.display = "none";
-    const targetName = document.createElement("span");
-    targetName.className = "bigmap-target";
-    const teleportBtn = document.createElement("button");
-    teleportBtn.type = "button";
-    teleportBtn.className = "bigmap-teleport-btn";
-    teleportBtn.textContent = "Teleport";
-    teleportBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      const target = this.#resolveSelected();
-      if (!target) return;
-      this.onTeleport(target.x, target.z, target.toName, target.playerId);
-      this.#clearSelection();
-      this.setExpanded(false);
-    });
-    action.appendChild(targetName);
-    action.appendChild(teleportBtn);
     const pinHint = document.createElement("div");
     pinHint.className = "bigmap-pin-hint";
     pinHint.hidden = true;
     pinHint.setAttribute("aria-hidden", "true");
     mapFrame.append(canvas, sideControls, pinHint);
     inner.appendChild(mapFrame);
-    inner.appendChild(action);
-    inner.appendChild(hint);
     wrap.appendChild(inner);
     document.body.appendChild(wrap);
     // click outside the map closes; the canvas itself owns selection/pan/zoom
@@ -1986,8 +1952,6 @@ export class Minimap {
     this.#big = canvas;
     this.#bigWrap = wrap;
     this.#bigRecenter = recenter;
-    this.#bigTeleWrap = action;
-    this.#bigTeleName = targetName;
     this.#bigPinHint = pinHint;
   }
 

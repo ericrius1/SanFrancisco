@@ -67,7 +67,7 @@ try {
   console.log("[probe] teleporting from the minimap to the Tea Garden entrance");
   const target = await page.evaluate(() => window.__sf.minimap.focusLandmark("Japanese Tea Garden"));
   assert.ok(target, "Tea Garden minimap landmark is missing");
-  await page.locator(".bigmap-teleport-btn").click();
+  await page.keyboard.press("Enter");
   await page.waitForFunction(
     ({ x, z }) => Math.hypot(window.__sf.player.position.x - x, window.__sf.player.position.z - z) < 25,
     target,

@@ -371,7 +371,7 @@ const TAB_PLAY = `
     indicators out in the main view; press that number and you teleport straight to them. Anyone out of
     range is clamped to the minimap's rim, so you always know which way to head.</p>
     <p>Press M for the <strong>full-city map</strong>: drag and scroll to pan and zoom, click any
-    destination, hit Teleport, and you're there. It even adopts the target's altitude and mode — drop
+    destination, press Enter, and you're there. It even adopts the target's altitude and mode — drop
     onto a friend who's mid-flight and you arrive in the air beside them, instead of falling out of the
     sky.</p>
   </section>

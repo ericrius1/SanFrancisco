@@ -76,6 +76,7 @@ export class SurfboardSelector {
     this.#toggle.className = "avatar-toggle board-toggle surfboard-toggle";
     this.#toggle.title = "Surfboard shaping room";
     this.#toggle.setAttribute("aria-label", "Open surfboard shaping room");
+    this.#toggle.innerHTML = '<img class="customizer-icon" src="/ui/customizer-icons/surfboard.webp" alt="" draggable="false">';
     this.#toggle.addEventListener("click", () => this.setOpen(!this.#open));
 
     this.#panel = document.createElement("div");
@@ -385,11 +386,6 @@ export class SurfboardSelector {
   }
 
   #render(): void {
-    const base = css(surfboardBaseHex(this.#config));
-    const rail = css(surfboardRailHex(this.#config));
-    this.#toggle.innerHTML =
-      `<span class="board-ic-deck" style="background:${base};width:29px"></span>` +
-      `<span class="board-ic-rail" style="background:${rail};box-shadow:0 0 7px ${rail};width:25px"></span>`;
     this.#panel.replaceChildren();
     this.#previewCanvases.clear();
 

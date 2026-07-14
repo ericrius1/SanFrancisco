@@ -42,7 +42,14 @@ import {
   prepareBallGlowMaterial,
   TENNIS_BALL_COLOR
 } from "../fx/ballGlow";
-import { activateCarAssets, animateCar, buildCarMesh, CarController, type CarConfig } from "../vehicles/car";
+import {
+  activateCarAssets,
+  animateCar,
+  buildCarMesh,
+  previewCarConfig as previewCarAppearance,
+  CarController,
+  type CarConfig
+} from "../vehicles/car";
 import { buildPlaneMesh, collectPlaneAnim, FlyController, type PlaneAnim } from "../vehicles/plane";
 import { buildBoatMesh, buildSpeedboatMesh, BoatController, BOAT_TUNING, SPEEDBOAT_TUNING, type BoatSailRig } from "../vehicles/boat";
 import { buildDroneMesh, DroneController } from "../vehicles/drone";
@@ -1316,6 +1323,11 @@ export class Player {
     } else {
       setEmbodimentVisible(next, false);
     }
+  }
+
+  /** Held slider/color preview on the existing stock car, without rebuilding or broadcasting. */
+  previewCarConfig(config: CarConfig) {
+    previewCarAppearance(this.#defaultDriveMesh, config);
   }
 
   /**

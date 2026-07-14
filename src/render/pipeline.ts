@@ -17,6 +17,7 @@ import {
 import { createContactShadowComplement } from "./contactShadows";
 import { SHADOW_TUNING } from "../world/shadows/tuning";
 import type { RadialLightParams, RadialLightSource } from "./radialLightTypes";
+import type { ProjectedSurfaceLightSource } from "./projectedSurfaceLightTypes";
 
 type SceneSamples = 0 | 4;
 /** "boot": compile only the active sample mode + active post-FX variant (fast,
@@ -33,7 +34,13 @@ type QueueBackedRenderer = THREE.WebGPURenderer & {
 };
 type RadialLightRuntime = {
   compose(key: number, baseNode: any): any;
+  clearCompositions(): void;
   configure(params: RadialLightParams): void;
+  update(): void;
+  dispose(): void;
+};
+type ProjectedSurfaceLightRuntime = {
+  sample(sampleUv?: any): any;
   update(): void;
   dispose(): void;
 };
@@ -172,6 +179,34 @@ export function createRenderPipeline(
   let activeVariantMask = getPostFxVariantMask();
   let activePipeline = getVariantPipeline(activeVariantMask);
 
+  // Close projected surface lights are a second lazy graph. Their module,
+  // half-resolution target, depth reconstruction, and extra composite lookup
+  // do not exist during clean boot, daylight, or when no source is nearby.
+  let projectedSource: ProjectedSurfaceLightSource | null = null;
+  let projectedRuntime: ProjectedSurfaceLightRuntime | null = null;
+  let projectedRuntimeSource: ProjectedSurfaceLightSource | null = null;
+  let projectedModulePromise: Promise<typeof import("./projectedSurfaceLights")> | null = null;
+  let projectedBuildPending: { source: ProjectedSurfaceLightSource; epoch: number } | null = null;
+  let projectedEpoch = 0;
+  let projectedActive = false;
+  let projectedRenderedFrames = 0;
+  const projectedVariants = new Map<number, THREE.RenderPipeline>();
+
+  const getProjectedVariantPipeline = (requestedMask: number) => {
+    if (!projectedRuntime) return null;
+    const mask = requestedMask & 7;
+    let variant = projectedVariants.get(mask);
+    if (variant !== undefined) return variant;
+    variant = new THREE.RenderPipeline(renderer);
+    variant.outputColorTransform = false;
+    variant.outputNode = postfx.getWithSurfaceLight(
+      mask,
+      (sampleUv) => projectedRuntime!.sample(sampleUv)
+    );
+    projectedVariants.set(mask, variant);
+    return variant;
+  };
+
   // The expensive radial helper and its stained-glass-only passes are a nested lazy
   // feature. Nothing below imports/builds them until a source crosses an
   // interior gate; outside, activePipeline is always one of the base variants.
@@ -187,44 +222,142 @@ export function createRenderPipeline(
 
   const radialEnabled = () => Boolean(POSTFX_TUNING.values.museumRays);
 
-  const getRadialVariantPipeline = (requestedMask: number) => {
+  const getRadialVariantPipeline = (
+    requestedMask: number,
+    baseNode: any,
+    includesProjectedLights: boolean
+  ) => {
     if (!radialRuntime) return null;
     const mask = requestedMask & 7;
-    let variant = radialVariants.get(mask);
+    const key = mask | (includesProjectedLights ? 8 : 0);
+    let variant = radialVariants.get(key);
     if (variant !== undefined) return variant;
     variant = new THREE.RenderPipeline(renderer);
     variant.outputColorTransform = false;
-    variant.outputNode = radialRuntime.compose(mask, postfx.get(mask));
-    radialVariants.set(mask, variant);
+    variant.outputNode = radialRuntime.compose(key, baseNode);
+    radialVariants.set(key, variant);
     return variant;
   };
 
   const selectActivePipeline = () => {
+    const wantsProjected =
+      projectedSource !== null &&
+      projectedSource.active &&
+      projectedRuntime !== null &&
+      projectedRuntimeSource === projectedSource;
+    projectedSource?.setProjectionReady(wantsProjected);
+    projectedActive = wantsProjected;
+    const basePipeline = wantsProjected
+      ? getProjectedVariantPipeline(activeVariantMask)
+      : getVariantPipeline(activeVariantMask);
+    const baseNode = basePipeline?.outputNode ?? postfx.get(activeVariantMask);
+
     if (
       radialEnabled() &&
       radialSource !== null &&
       radialRuntime !== null &&
       radialRuntimeSource === radialSource
     ) {
-      const variant = getRadialVariantPipeline(activeVariantMask);
+      const variant = getRadialVariantPipeline(
+        activeVariantMask,
+        baseNode,
+        wantsProjected
+      );
       if (variant) {
         activePipeline = variant;
         radialActive = true;
         return;
       }
     }
-    activePipeline = getVariantPipeline(activeVariantMask);
+    activePipeline = basePipeline ?? getVariantPipeline(activeVariantMask);
     radialActive = false;
   };
 
+  const disposeProjectedRuntime = () => {
+    projectedSource?.setProjectionReady(false);
+    projectedActive = false;
+    for (const variant of projectedVariants.values()) variant.dispose();
+    projectedVariants.clear();
+    // Radial variants can wrap a projected base node, so invalidate only their
+    // retained compositions when that base graph changes.
+    for (const variant of radialVariants.values()) variant.dispose();
+    radialVariants.clear();
+    radialRuntime?.clearCompositions();
+    projectedRuntime?.dispose();
+    projectedRuntime = null;
+    projectedRuntimeSource = null;
+    selectActivePipeline();
+  };
+
+  const loadProjectedModule = () => {
+    if (!projectedModulePromise) {
+      projectedModulePromise = import("./projectedSurfaceLights").catch((err) => {
+        projectedModulePromise = null;
+        throw err;
+      });
+    }
+    return projectedModulePromise;
+  };
+
+  const ensureProjectedRuntime = () => {
+    const requestedSource = projectedSource;
+    if (!requestedSource || !requestedSource.active) {
+      selectActivePipeline();
+      return;
+    }
+    if (projectedRuntime && projectedRuntimeSource === requestedSource) {
+      selectActivePipeline();
+      return;
+    }
+
+    const epoch = projectedEpoch;
+    if (
+      projectedBuildPending?.source === requestedSource &&
+      projectedBuildPending.epoch === epoch
+    ) return;
+    projectedBuildPending = { source: requestedSource, epoch };
+    void loadProjectedModule()
+      .then(({ createProjectedSurfaceLights }) => {
+        if (projectedEpoch !== epoch || projectedSource !== requestedSource) return;
+        disposeProjectedRuntime();
+        projectedRuntime = createProjectedSurfaceLights({
+          camera,
+          sceneDepth,
+          source: requestedSource
+        });
+        projectedRuntimeSource = requestedSource;
+        selectActivePipeline();
+      })
+      .catch((err) => console.warn("[render] projected surface lights unavailable:", err))
+      .finally(() => {
+        if (
+          projectedBuildPending?.source === requestedSource &&
+          projectedBuildPending.epoch === epoch
+        ) projectedBuildPending = null;
+      });
+  };
+
+  const setProjectedSurfaceLightSource = (
+    source: ProjectedSurfaceLightSource | null
+  ) => {
+    if (source === projectedSource) return;
+    projectedSource?.setProjectionReady(false);
+    projectedEpoch += 1;
+    projectedBuildPending = null;
+    projectedSource = source;
+    if (projectedRuntimeSource !== source) disposeProjectedRuntime();
+    if (source?.active) ensureProjectedRuntime();
+    else selectActivePipeline();
+  };
+
   const disposeRadialRuntime = () => {
-    activePipeline = getVariantPipeline(activeVariantMask);
     radialActive = false;
     for (const variant of radialVariants.values()) variant.dispose();
     radialVariants.clear();
     radialRuntime?.dispose();
     radialRuntime = null;
     radialRuntimeSource = null;
+    selectActivePipeline();
   };
 
   const loadRadialModule = () => {
@@ -537,6 +670,12 @@ export function createRenderPipeline(
 
   const render = () => {
     if (wireframeActive) syncWireframeCamera();
+    if (projectedSource?.active) ensureProjectedRuntime();
+    else if (projectedActive) selectActivePipeline();
+    if (projectedActive) {
+      projectedRuntime?.update();
+      projectedRenderedFrames += 1;
+    }
     if (radialActive) {
       radialRuntime?.update();
       radialRenderedFrames += 1;
@@ -619,6 +758,8 @@ export function createRenderPipeline(
     applyPostFx,
     /** Attach/detach an optional interior-only radial-light source. */
     setRadialLightSource,
+    /** Attach/detach a bounded, lazy close-range surface-light source. */
+    setProjectedSurfaceLightSource,
     /** Push radial-light controls without adding them to the global style mask. */
     applyRadialLightFx,
     /** Probe-facing state; read-only and allocation-free until requested. */
@@ -627,6 +768,14 @@ export function createRenderPipeline(
         active: radialActive,
         loaded: radialRuntime !== null,
         renderedFrames: radialRenderedFrames
+      };
+    },
+    /** Probe-facing projected-light state. */
+    get projectedSurfaceLightState() {
+      return {
+        active: projectedActive,
+        loaded: projectedRuntime !== null,
+        renderedFrames: projectedRenderedFrames
       };
     },
     /** Swap the scene pass to/from the retained wireframe override + camera. */

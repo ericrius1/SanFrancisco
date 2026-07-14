@@ -46,6 +46,7 @@ type CarSurfaceState = {
   surfaceTexture: THREE.CanvasTexture;
   decalCanvas: HTMLCanvasElement;
   decalTexture: THREE.CanvasTexture;
+  paintMaterial: THREE.MeshPhysicalMaterial;
   decalMaterial: THREE.MeshBasicMaterial;
   config: CarConfig;
   surfaceKey: string;
@@ -423,6 +424,7 @@ export function buildCarMesh(raw?: CarConfig): THREE.Group {
     surfaceTexture,
     decalCanvas,
     decalTexture,
+    paintMaterial: paint,
     decalMaterial,
     config,
     surfaceKey: carSurfacePaintKey(config),
@@ -466,6 +468,25 @@ export async function activateCarAssets(root: THREE.Group): Promise<void> {
   state.surfaceTexture.needsUpdate = true;
   state.decalTexture.needsUpdate = true;
   state.decalMaterial.visible = state.config.decal !== "none";
+}
+
+/** Local-only held-control preview: update the live car without a rebuild or network broadcast. */
+export function previewCarConfig(root: THREE.Group, raw: CarConfig): void {
+  const state = surfaceStates.get(root);
+  if (!state || state.disposed) return;
+  const config = normalizeCarConfig(raw);
+  state.config = config;
+  state.surfaceKey = carSurfacePaintKey(config);
+  state.decalKey = carDecalPaintKey(config);
+  root.userData.carConfig = { ...config };
+  paintCarSurface(state.surfaceCanvas, config);
+  paintCarDecal(state.decalCanvas, config);
+  state.surfaceTexture.needsUpdate = true;
+  state.decalTexture.needsUpdate = true;
+  state.decalMaterial.visible = config.decal !== "none";
+  state.paintMaterial.roughness = 0.24 + (100 - config.clearcoat) * 0.0032;
+  state.paintMaterial.clearcoat = 0.25 + config.clearcoat * 0.0075;
+  if (state.assetsActivated) void activateCarAssets(root);
 }
 
 /** Visible spoke rotation and front-wheel steering for local and remote cars. */

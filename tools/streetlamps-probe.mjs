@@ -111,7 +111,9 @@ async function teleport(c, x, z, facing) {
 // disc = the additive (blending===2) instanced mesh; posts/bulbs are the rest
 async function lampState(c) {
   return await ev(c, `(()=>{const sl=window.__sf.streetLamps;const disc=sl.group.children.find(m=>m.material&&m.material.blending===2);
-    return{placed:sl.placedCount, resident:sl.residentCount, groupVisible:sl.group.visible, discVisible:disc?disc.visible:null, discCount:disc?disc.count:null};})()`);
+    const source=sl.projectedSurfaceLightSource,pipeline=window.__sf.pipeline;
+    return{placed:sl.placedCount, resident:sl.residentCount, groupVisible:sl.group.visible, discVisible:disc?disc.visible:null, discCount:disc?disc.count:null,
+      projected:pipeline.projectedSurfaceLightState, sourceActive:source.active, sourceCount:source.count, sourceIntensity:source.intensity};})()`);
 }
 async function shot(c, name) {
   const s = await c.send("Page.captureScreenshot", { format: "png", fromSurface: true });
@@ -187,11 +189,13 @@ async function main() {
       report[name] = {
         placed: night.placed, resident: night.resident,
         nightDiscVisible: night.discVisible, dayDiscVisible: day.discVisible,
+        projected: night.projected, projectedSourceActive: night.sourceActive,
+        projectedSourceCount: night.sourceCount, projectedSourceIntensity: night.sourceIntensity,
         drawsAdded: cost.draws, perLampTris: cost.perLampTris, trisAdded: cost.tris,
         onP50: cost.onP50, offP50: cost.offP50, dMs: cost.dMs,
         night: nightFile, day: dayFile
       };
-      console.log(`[${name}] placed ${night.placed} resident ${night.resident} | +${cost.draws} draws +${cost.tris} tris (${cost.perLampTris}/lamp) | on ${cost.onP50}ms off ${cost.offP50}ms (Δ${cost.dMs}ms) | disc night=${night.discVisible} day=${day.discVisible}`);
+      console.log(`[${name}] placed ${night.placed} resident ${night.resident} | +${cost.draws} draws +${cost.tris} tris (${cost.perLampTris}/lamp) | on ${cost.onP50}ms off ${cost.offP50}ms (Δ${cost.dMs}ms) | disc night=${night.discVisible} day=${day.discVisible} | projected=${JSON.stringify(night.projected)} source=${night.sourceActive}/${night.sourceCount}`);
       console.log(`  ${nightFile}`);
       console.log(`  ${dayFile}`);
     } catch (e) {

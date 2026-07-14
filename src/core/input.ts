@@ -19,7 +19,7 @@ import { INPUT_TUNING } from "../config";
  * RT as throttle and fire on X), and the triggers into the active mode's
  * throttle — fly routes them to ↑/↓, bird routes LB/RB to Q/E twirl,
  * drive/scooter map LB/RB to PadSlideLeft/Right for bumper power-slides —
- * so modes/camera/fireworks never see a second input path. `device` tracks
+ * so modes/camera never see a second input path. `device` tracks
  * whichever input was touched last; the HUD swaps its control labels off it.
  *
  * Board mode steals right-stick Y for deck pitch / air flips (stick back =
@@ -58,10 +58,10 @@ function shapeAxis(v: number, deadzone: number, curve: number): number {
 // within-row cycle; map pin cycle reuses ◀/▶ while expanded). Face layout
 // follows RDR2 conventions where they map cleanly: Y is the world interact /
 // mount / dismount button (keyboard E). Boost/run/tuck live on L3 only so RT
-// can own the tool action. Face B holds fireworks (keyboard B).
+// can own the tool action.
 const PAD_BUTTONS: Record<number, string> = {
   0: "Space", //     A: jump / ollie / drift / air brake / hover
-  1: "KeyB", //      B: fireworks (held)
+  // 1 B: unbound
   3: "KeyE", //      Y: interact / enter-exit vehicle (RDR2-style)
   4: "KeyQ", //      LB: drone down / bird twirl left / (drive also gets PadSlideLeft)
   // 5 RB: bird twirl right / drive PadSlideRight — axis/synthetic (not KeyE, which exits)

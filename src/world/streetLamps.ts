@@ -1,7 +1,23 @@
 import * as THREE from "three/webgpu";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
-import { color, mix, saturate, uniform, uv } from "three/tsl";
+import {
+  attribute,
+  cameraPosition,
+  color,
+  float,
+  mix,
+  positionWorld,
+  saturate,
+  smoothstep,
+  uniform,
+  uv,
+  vertexStage
+} from "three/tsl";
 import { LIGHT_SCALE } from "../config";
+import {
+  MAX_PROJECTED_SURFACE_LIGHTS,
+  type ProjectedSurfaceLightSource
+} from "../render/projectedSurfaceLightTypes";
 import type { WorldMap } from "./heightmap";
 import type { RoadGraph } from "./traffic/roadGraph";
 
@@ -37,6 +53,11 @@ const ROAD_CLEARANCE = 0.35; // pole-base clearance beyond every paved edge (m)
 const CAP = 1024; // per-mesh instance capacity; nearest lamps win the slots
 const REFRESH_MOVE = 30; // re-scan residency only after the player moves this far
 const RESIDENT_R = 500; // residency scan radius around the player
+const HERO_FULL_R = 55; // depth-projected lighting is fully weighted nearby
+const HERO_END_R = 85; // cheap disc has fully taken over by here
+// Include one residency-refresh movement of headroom so the same selected lamp
+// can cross the whole blend band without waiting for a rescan.
+const HERO_SELECT_R = HERO_END_R + REFRESH_MOVE;
 const FILL_PER_FRAME = 128; // amortized residency fill: lamps placed per frame (~8 frames per refresh)
 const RES_CELL = 64; // residency spatial-hash cell (m)
 const DEDUP_CELL = 16; // build-time dedup spatial-hash cell (m)
@@ -82,10 +103,13 @@ function buildPostGeo(): THREE.BufferGeometry {
  */
 export class StreetLamps {
   readonly group = new THREE.Group();
+  readonly projectedSurfaceLightSource: ProjectedSurfaceLightSource;
   #map: WorldMap;
   #posts: THREE.InstancedMesh;
   #bulbs: THREE.InstancedMesh;
   #discs: THREE.InstancedMesh;
+  #discProjected: THREE.InstancedBufferAttribute;
+  #projectionReady = uniform(0);
   // flat lamp store, stride 4: x, z, towardRoadX, towardRoadZ (all placed lamps)
   #lamps: Float32Array;
   #count: number;
@@ -111,10 +135,48 @@ export class StreetLamps {
   #order: number[] = [];
   #fillCursor = -1; // -1 = idle; else next #order rank to place
   #fillN = 0;
+  #heroCount = 0;
+  #nextHeroCount = 0;
+  #heroPositions = Array.from(
+    { length: MAX_PROJECTED_SURFACE_LIGHTS },
+    () => new THREE.Vector4()
+  );
+  #heroNormals = Array.from(
+    { length: MAX_PROJECTED_SURFACE_LIGHTS },
+    () => new THREE.Vector4(0, 1, 0, 0)
+  );
+  #nextHeroPositions = Array.from(
+    { length: MAX_PROJECTED_SURFACE_LIGHTS },
+    () => new THREE.Vector4()
+  );
+  #nextHeroNormals = Array.from(
+    { length: MAX_PROJECTED_SURFACE_LIGHTS },
+    () => new THREE.Vector4(0, 1, 0, 0)
+  );
+  #playerX = Infinity;
+  #playerZ = Infinity;
 
   constructor(scene: THREE.Scene, map: WorldMap, roads: RoadGraph) {
     this.#map = map;
     this.group.name = "StreetLamps";
+    const owner = this;
+    this.projectedSurfaceLightSource = {
+      get active() {
+        return owner.#projectedLightingActive();
+      },
+      get count() {
+        return owner.#heroCount;
+      },
+      get intensity() {
+        return Number(STREET_LAMPS_INTENSITY.value);
+      },
+      copyLight(index, positionAndRadius, normalAndWeight) {
+        owner.#copyProjectedLight(index, positionAndRadius, normalAndWeight);
+      },
+      setProjectionReady(ready) {
+        owner.#projectionReady.value = ready ? 1 : 0;
+      }
+    };
 
     // ---- placement: walk the graph, drop kerb-side posts, dedup intersections
     const out: number[] = []; // x, z, towardX, towardZ …
@@ -231,18 +293,39 @@ export class StreetLamps {
 
     // b. DISCS — additive ground pool, radial warm falloff scaled by intensity
     const discGeo = new THREE.CircleGeometry(POOL_R, 16);
+    this.#discProjected = new THREE.InstancedBufferAttribute(
+      new Float32Array(CAP),
+      1
+    );
+    discGeo.setAttribute("surfaceProjected", this.#discProjected);
     const discMat = new THREE.MeshBasicNodeMaterial();
     const d = uv().sub(0.5).length().mul(2); // 0 at centre → 1 at rim
     const falloff = saturate(d).oneMinus().pow(2) as N;
-    discMat.colorNode = color(0xffb866).mul(falloff).mul(STREET_LAMPS_INTENSITY) as N;
+    // For the selected close set, crossfade this geometry-only fallback out as
+    // the depth-aware pass fades in. Distance is evaluated at the vertices and
+    // interpolated across the 16-gon, avoiding a per-fragment square root.
+    const projected = attribute("surfaceProjected", "float") as N;
+    const distance = vertexStage(
+      (positionWorld as N).distance(cameraPosition)
+    ) as N;
+    const closeWeight = smoothstep(HERO_FULL_R, HERO_END_R, distance).oneMinus();
+    const discWeight = float(1).sub(
+      projected.mul(closeWeight).mul(this.#projectionReady as N)
+    );
+    discMat.colorNode = color(0xffb866)
+      .mul(falloff)
+      .mul(discWeight)
+      .mul(STREET_LAMPS_INTENSITY) as N;
     discMat.transparent = true;
     discMat.blending = THREE.AdditiveBlending;
     discMat.depthWrite = false;
     discMat.toneMapped = false;
     discMat.fog = false;
     discMat.polygonOffset = true;
-    discMat.polygonOffsetFactor = -2;
-    discMat.polygonOffsetUnits = -2;
+    // This renderer uses reversed depth: positive offset pulls the fallback
+    // toward the camera. Negative values pushed it into roads and sidewalks.
+    discMat.polygonOffsetFactor = 2;
+    discMat.polygonOffsetUnits = 2;
     this.#discs = new THREE.InstancedMesh(discGeo, discMat, CAP);
     // after road markings, still additive on top
     this.#discs.renderOrder = 21;
@@ -277,6 +360,8 @@ export class StreetLamps {
   }
 
   update(playerPos: THREE.Vector3): void {
+    this.#playerX = playerPos.x;
+    this.#playerZ = playerPos.z;
     // no additive draw by day — the intensity uniform is the on/off switch
     this.#discs.visible = STREET_LAMPS_INTENSITY.value > 0.01;
     if (this.#count === 0) return;
@@ -322,6 +407,14 @@ export class StreetLamps {
     // arm the amortized fill: placements (2 ground + 1 normal sample each) drain
     // over the next frames; the visible set holds the previous lamps meanwhile
     this.#fillN = Math.min(CAP, candI.length);
+    this.#nextHeroCount = 0;
+    const heroSelectR2 = HERO_SELECT_R * HERO_SELECT_R;
+    while (
+      this.#nextHeroCount < Math.min(MAX_PROJECTED_SURFACE_LIGHTS, this.#fillN) &&
+      candD2[order[this.#nextHeroCount]] <= heroSelectR2
+    ) {
+      this.#nextHeroCount++;
+    }
     this.#fillCursor = 0;
     this.#drainFill(); // first slice lands this frame
   }
@@ -359,6 +452,17 @@ export class StreetLamps {
       this.#quat.setFromUnitVectors(this.#up, this.#nrm);
       this.#mat.compose(this.#pos.set(gx, gy, gz), this.#quat, this.#scl);
       this.#discs.setMatrixAt(k, this.#mat);
+      const isHero = k < this.#nextHeroCount;
+      this.#discProjected.setX(k, isHero ? 1 : 0);
+      if (isHero) {
+        this.#nextHeroPositions[k].set(gx, gy, gz, POOL_R);
+        this.#nextHeroNormals[k].set(
+          this.#nrm.x,
+          this.#nrm.y,
+          this.#nrm.z,
+          0
+        );
+      }
     }
     this.#fillCursor = end;
     if (end < this.#fillN) return; // more slices next frames — no upload yet
@@ -367,8 +471,49 @@ export class StreetLamps {
     this.#posts.count = this.#fillN;
     this.#bulbs.count = this.#fillN;
     this.#discs.count = this.#fillN;
+    [this.#heroPositions, this.#nextHeroPositions] = [
+      this.#nextHeroPositions,
+      this.#heroPositions
+    ];
+    [this.#heroNormals, this.#nextHeroNormals] = [
+      this.#nextHeroNormals,
+      this.#heroNormals
+    ];
+    this.#heroCount = this.#nextHeroCount;
     this.#posts.instanceMatrix.needsUpdate = true;
     this.#bulbs.instanceMatrix.needsUpdate = true;
     this.#discs.instanceMatrix.needsUpdate = true;
+    this.#discProjected.needsUpdate = true;
+  }
+
+  #projectedLightingActive(): boolean {
+    if (!this.group.visible || Number(STREET_LAMPS_INTENSITY.value) <= 0.01) return false;
+    const end2 = HERO_END_R * HERO_END_R;
+    for (let i = 0; i < this.#heroCount; i++) {
+      const p = this.#heroPositions[i];
+      const dx = p.x - this.#playerX;
+      const dz = p.z - this.#playerZ;
+      if (dx * dx + dz * dz < end2) return true;
+    }
+    return false;
+  }
+
+  #copyProjectedLight(
+    index: number,
+    positionAndRadius: THREE.Vector4,
+    normalAndWeight: THREE.Vector4
+  ): void {
+    positionAndRadius.copy(this.#heroPositions[index]);
+    normalAndWeight.copy(this.#heroNormals[index]);
+    const dx = positionAndRadius.x - this.#playerX;
+    const dz = positionAndRadius.z - this.#playerZ;
+    const distance = Math.hypot(dx, dz);
+    const t = THREE.MathUtils.clamp(
+      (distance - HERO_FULL_R) / (HERO_END_R - HERO_FULL_R),
+      0,
+      1
+    );
+    const smooth = t * t * (3 - 2 * t);
+    normalAndWeight.w = 1 - smooth;
   }
 }

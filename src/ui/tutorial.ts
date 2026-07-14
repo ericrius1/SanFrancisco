@@ -127,8 +127,8 @@ const CHAPTERS: Chapter[] = [
     steps: [
       { keys: ["M"], text: "to open the city map", check: (c) => c.mapOpen() },
       {
-        text: "pick a landmark and hit Teleport",
-        hint: "drag pans · click a dot, then the Teleport button",
+        text: "pick a landmark and press Enter",
+        hint: "drag pans · click a spot, then Enter to teleport",
         check: (_c, _dt, _st, ev) => (ev.get("teleport") ?? 0) >= 1
       }
     ]

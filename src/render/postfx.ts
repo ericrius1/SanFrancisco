@@ -179,7 +179,7 @@ export function createPostFx(deps: {
   const variants = new Map<number, any>();
 
   /** Build one immutable specialization. The public getter retains the result. */
-  const build = (mask: number) => {
+  const build = (mask: number, surfaceLightAt?: (uv: any) => any) => {
     const ink = (mask & POSTFX_INK) !== 0;
     const dream = (mask & POSTFX_DREAM) !== 0;
     const retro = (mask & POSTFX_RETRO) !== 0;
@@ -227,6 +227,10 @@ export function createPostFx(deps: {
         lin = sceneTex.sample(sampleUv).rgb;
       }
       if (contactFactorAt) lin = lin.mul(contactFactorAt(uv));
+      // Optional close-range surface lighting is still linear HDR here. Add it
+      // before renderOutput so it follows the exact same tone mapping and
+      // stylized grading as the road/sidewalk pixels beneath it.
+      if (surfaceLightAt) lin = lin.add(surfaceLightAt(sampleUv));
 
       const c = renderOutput(vec4(lin, 1)).rgb.toVar();
 
@@ -311,5 +315,11 @@ export function createPostFx(deps: {
     return variant;
   };
 
-  return { get };
+  /** Build a light-aware specialization; the owning lazy runtime caches it. */
+  const getWithSurfaceLight = (
+    requestedMask: number,
+    surfaceLightAt: (uv: any) => any
+  ) => build(requestedMask & POSTFX_ALL, surfaceLightAt);
+
+  return { get, getWithSurfaceLight };
 }

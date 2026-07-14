@@ -48,6 +48,7 @@ export class AvatarSelector {
     this.#toggle.type = "button";
     this.#toggle.setAttribute("aria-controls", "avatar-editor");
     this.#toggle.setAttribute("aria-expanded", "false");
+    this.#toggle.innerHTML = '<img class="customizer-icon" src="/ui/customizer-icons/avatar.webp" alt="" draggable="false">';
     this.#toggle.addEventListener("click", () => this.setOpen(!this.#open));
     this.#root.appendChild(this.#toggle);
 
@@ -114,6 +115,12 @@ export class AvatarSelector {
     this.#toggle.setAttribute("aria-expanded", String(open));
   }
 
+  /** Walk-mode slot only — hide when another (or no) customizer owns the HUD. */
+  setVisible(visible: boolean): void {
+    this.#root.hidden = !visible;
+    if (!visible && this.#open) this.setOpen(false);
+  }
+
   /** Reflect an externally-assigned avatar (e.g. the server's per-id seed once
    * the player is welcomed) without firing onChange. */
   setTraits(traits: AvatarTraits) {
@@ -175,14 +182,6 @@ export class AvatarSelector {
   }
 
   #render() {
-    const skin = SKIN_TONES[this.#traits.skin].color;
-    const primary = CLOTHING_COLORS[this.#traits.color].color;
-    const accent = CLOTHING_COLORS[this.#traits.accent].color;
-    this.#toggle.innerHTML =
-      `<span class="avatar-head" style="background:#${skin.toString(16).padStart(6, "0")}"></span>` +
-      `<span class="avatar-shirt" style="background:#${primary.toString(16).padStart(6, "0")}"></span>` +
-      `<span class="avatar-dot" style="background:#${accent.toString(16).padStart(6, "0")}"></span>`;
-
     this.#traitsBody.innerHTML = "";
     this.#traitsBody.append(
       this.#row(

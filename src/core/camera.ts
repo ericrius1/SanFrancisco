@@ -45,6 +45,24 @@ const VIEW = {
   firstPersonFovBoost: 15
 } as const
 
+// Board is the one chase mode whose vertical stick is spent on deck flips, so
+// the camera can't hand pitch to the player. Instead it owns a fixed gentle
+// chase angle and lets the follow LAG on the vertical: a big ollie leaps up out
+// of frame and the camera catches up a beat later (same on the way down), which
+// reads as the board pulling the shot rather than a rigid overhead rig.
+//   pitch      — held chase pitch (small +ve = sit a touch above, look gently down)
+//   pitchFollow— rate the held pitch heals any residual drift toward `pitch`
+//   horizStiff — behind-the-rider follow on X/Z (kept tight so it stays centred)
+//   vertStiff  — height follow (looser than horiz → the delayed jump/fall trail)
+//   lookStiff  — orientation ease so the re-aim ("its slerp") also lags a touch
+const BOARD_CAM = {
+  pitch: 0.14,
+  pitchFollow: 5,
+  horizStiff: 11,
+  vertStiff: 5.5,
+  lookStiff: 9
+} as const
+
 const smoothstep = (t: number) => t * t * (3 - 2 * t)
 
 // A continuous vehicle can cover this distance only over many rendered frames.
@@ -102,6 +120,11 @@ export class ChaseCamera {
   #orbitQuat = new THREE.Quaternion()
   #heldOrbitQuat = new THREE.Quaternion()
   #firstPersonQuat = new THREE.Quaternion()
+  // Board's look orientation trails its own lookAt so the re-aim lags a touch on
+  // jumps/falls. Re-seeded from the live lookAt on any non-board frame (below),
+  // so entering board never slerps in from a stale walk/vehicle orientation.
+  #boardLookQuat = new THREE.Quaternion()
+  #boardLookInit = false
   #lookMatrix = new THREE.Matrix4()
   #firstPersonEuler = new THREE.Euler(0, 0, 0, "YXZ")
   #up = new THREE.Vector3(0, 1, 0)
@@ -182,6 +205,8 @@ export class ChaseCamera {
     this.#firstPersonEuler.set(-this.pitch, this.yaw, 0, "YXZ")
     this.#firstPersonQuat.setFromEuler(this.#firstPersonEuler)
     this.camera.quaternion.copy(this.#orbitQuat)
+    this.#boardLookQuat.copy(this.#orbitQuat)
+    this.#boardLookInit = player.mode === "board"
     this.#recordAnchor(player)
   }
 
@@ -239,6 +264,7 @@ export class ChaseCamera {
     this.#cutaway = 0
     this.#buildingBlocked = false
     this.#lastHitDistance = Infinity
+    this.#boardLookInit = false
     clearCameraCutaway()
     player.setFirstPersonView(false)
     this.#applyFov(0)
@@ -445,6 +471,22 @@ export class ChaseCamera {
       dYaw = Math.atan2(Math.sin(dYaw), Math.cos(dYaw)) // shortest way round
       this.yaw += dYaw * follow
       this.pitch += (targetPitch - this.pitch) * follow
+    } else if (player.mode === "board") {
+      // The right stick's Y is spent on deck flips (BoardController reads it as
+      // BoardNoseUp/Down), so the camera must own pitch itself — otherwise a pad
+      // player has no way to bring the view down and it stays stuck overhead.
+      // Hold a fixed gentle chase pitch; yaw still orbits via stick-X / mouse-X.
+      const sens = INPUT_TUNING.values.lookSensitivity
+      this.yaw -= input.mouseDX * 0.0032 * sens
+      if (this.#lastMode !== "board") {
+        // Snap on entry (from any pose, including a stuck overhead pitch) so the
+        // first airborne frames start behind the rider, not swinging down into place.
+        this.pitch = BOARD_CAM.pitch
+      } else {
+        this.pitch +=
+          (BOARD_CAM.pitch - this.pitch) *
+          (1 - Math.exp(-Math.min(dt, 0.1) * BOARD_CAM.pitchFollow))
+      }
     } else {
       const sens = INPUT_TUNING.values.lookSensitivity
       this.yaw -= input.mouseDX * 0.0032 * sens
@@ -523,6 +565,18 @@ export class ChaseCamera {
         this.#holdOrbitPose = false
         this.#orbitPos.copy(this.#chasePos)
       }
+    } else if (player.mode === "board") {
+      // Vertical LAGS behind horizontal: the boom stays right behind the rider on
+      // X/Z while its height trails a beat, so a big ollie leaps up out of frame
+      // and the camera catches up (and the same, inverted, on a fast fall). The
+      // look target below is the live rider, so this lag alone tilts the view up
+      // as it climbs after the jump / down as it drops after the fall.
+      this.#holdOrbitPose = false
+      const aH = 1 - Math.exp(-smoothDt * BOARD_CAM.horizStiff)
+      const aV = 1 - Math.exp(-smoothDt * BOARD_CAM.vertStiff)
+      this.#orbitPos.x += (this.#chasePos.x - this.#orbitPos.x) * aH
+      this.#orbitPos.z += (this.#chasePos.z - this.#orbitPos.z) * aH
+      this.#orbitPos.y += (this.#chasePos.y - this.#orbitPos.y) * aV
     } else {
       this.#holdOrbitPose = false
       this.#orbitPos.lerp(
@@ -588,13 +642,30 @@ export class ChaseCamera {
       this.#lookMatrix.lookAt(this.#orbitViewPos, this.#target, this.#up)
       this.#orbitQuat.setFromRotationMatrix(this.#lookMatrix)
     }
-    this.#firstPersonEuler.set(-this.pitch, this.yaw, 0, "YXZ")
-    this.#firstPersonQuat.setFromEuler(this.#firstPersonEuler)
-    this.camera.quaternion.slerpQuaternions(
-      this.#orbitQuat,
-      this.#firstPersonQuat,
-      firstPersonBlend
-    )
+    if (player.mode === "board") {
+      // Ease the orientation toward the live lookAt so the re-aim ("its slerp")
+      // lags a touch behind the vertical trail — the view keeps the rider framed
+      // but catches the jump/fall angle a beat late instead of snapping to it.
+      if (this.#boardLookInit) {
+        this.#boardLookQuat.slerp(
+          this.#orbitQuat,
+          1 - Math.exp(-smoothDt * BOARD_CAM.lookStiff)
+        )
+      } else {
+        this.#boardLookQuat.copy(this.#orbitQuat)
+        this.#boardLookInit = true
+      }
+      this.camera.quaternion.copy(this.#boardLookQuat)
+    } else {
+      this.#boardLookInit = false
+      this.#firstPersonEuler.set(-this.pitch, this.yaw, 0, "YXZ")
+      this.#firstPersonQuat.setFromEuler(this.#firstPersonEuler)
+      this.camera.quaternion.slerpQuaternions(
+        this.#orbitQuat,
+        this.#firstPersonQuat,
+        firstPersonBlend
+      )
+    }
     updateCameraCutaway(
       this.camera.position,
       this.#target,

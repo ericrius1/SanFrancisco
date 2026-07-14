@@ -139,6 +139,17 @@ async function main() {
     const boot = records.filter((entry) => entry.phase === "boot");
     check("clean-boot-no-car-art", !boot.some((entry) => entry.kind === "texture" || entry.kind === "decal"), boot);
     check("clean-boot-no-editor-chunk", !boot.some((entry) => entry.kind === "ui-chunk"), boot);
+    const icons = await page.evaluate(() => [...document.querySelectorAll(".customizer-icon")].map((icon) => ({
+      src: icon.getAttribute("src"),
+      complete: icon.complete,
+      width: icon.naturalWidth,
+      height: icon.naturalHeight
+    })));
+    check(
+      "generated-customizer-icons-ready",
+      icons.length === 5 && new Set(icons.map((icon) => icon.src)).size === 5 && icons.every((icon) => icon.complete && icon.width === 256 && icon.height === 256),
+      icons
+    );
 
     phase = "activate";
     await page.keyboard.press("Digit2");
@@ -197,6 +208,29 @@ async function main() {
     const editor = records.filter((entry) => entry.phase === "editor");
     check("editor-chunk-on-demand", editor.filter((entry) => entry.kind === "ui-chunk").length === 1, editor);
     check("editor-does-not-refetch-selected-art", !editor.some((entry) => entry.kind === "texture" || entry.kind === "decal"), editor);
+    check("abstract-car-preview-removed", await page.locator(".car-preview, .car-preview-frame").count() === 0, null);
+
+    const clearcoat = page.locator('input[aria-label="Clearcoat"]');
+    const previewBefore = await page.evaluate(() => ({
+      mesh: window.__sf.player.meshes.drive.userData.carConfig.clearcoat,
+      saved: JSON.parse(localStorage.getItem("sf-car-v1")).clearcoat
+    }));
+    await clearcoat.evaluate((input) => {
+      input.value = "91";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await page.waitForFunction(() => window.__sf.player.meshes.drive.userData.carConfig.clearcoat === 91, undefined, { timeout: 10_000 });
+    const previewHeld = await page.evaluate(() => ({
+      mesh: window.__sf.player.meshes.drive.userData.carConfig.clearcoat,
+      saved: JSON.parse(localStorage.getItem("sf-car-v1")).clearcoat
+    }));
+    check(
+      "held-slider-previews-live-car-only",
+      previewBefore.mesh === 72 && previewBefore.saved === 72 && previewHeld.mesh === 91 && previewHeld.saved === 72,
+      { before: previewBefore, held: previewHeld }
+    );
+    await clearcoat.evaluate((input) => input.dispatchEvent(new Event("change", { bubbles: true })));
+    await page.waitForFunction(() => window.__sf.getCarConfig().clearcoat === 91, undefined, { timeout: 10_000 });
 
     phase = "choice";
     await page.getByRole("button", { name: "sunset terrazzo", exact: true }).click();
@@ -240,6 +274,20 @@ async function main() {
       mobile
     );
     check("mobile-controls-remain-usable", mobile.minControlHeight >= 24, mobile);
+    const mobileIcons = await page.evaluate(() => [...document.querySelectorAll(".customizer-icon")]
+      .filter((icon) => icon.offsetParent !== null)
+      .map((icon) => {
+        const rect = icon.closest("button").getBoundingClientRect();
+        return { src: icon.getAttribute("src"), left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
+      }));
+    const iconsOverlap = mobileIcons.some((a, index) => mobileIcons.slice(index + 1).some((b) =>
+      a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top
+    ));
+    check(
+      "mobile-icon-grid-has-no-overlap",
+      mobileIcons.length === 5 && !iconsOverlap && mobileIcons.every((icon) => icon.left >= 0 && icon.right <= mobile.viewport.width),
+      mobileIcons
+    );
     await page.screenshot({ path: path.join(OUT, "car-atelier-mobile.png"), fullPage: false });
 
     check("runtime-no-errors", errors.length === 0, errors);

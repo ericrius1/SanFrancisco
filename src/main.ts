@@ -548,8 +548,8 @@ async function boot() {
   // the shaping room. This is rebound after networking exists; the early no-op
   // keeps the mode callback safe during startup/restores.
   let ensureSurfboardCustomizer: (open?: boolean) => void = () => {};
-  let setSurfboardLauncherVisible: (visible: boolean) => void = () => {};
-  let setSurfboardCustomizerMode: (active: boolean) => void = () => {};
+  // Rebound after the customizer roots exist; onModeChange may fire earlier.
+  let syncCustomizerForMode: (mode: PlayerMode) => void = () => {};
   let setRemoteSurfboardAssetsActive: (active: boolean) => void = () => {};
   let setRemoteScooterAssetsActive: (active: boolean) => void = () => {};
   let setRemoteCarAssetsActive: (active: boolean) => void = () => {};
@@ -611,8 +611,7 @@ async function boot() {
     setRemoteSurfboardAssetsActive(mode === "surf");
     setRemoteScooterAssetsActive(mode === "scooter");
     setRemoteCarAssetsActive(mode === "drive");
-    setSurfboardLauncherVisible(mode === "surf");
-    setSurfboardCustomizerMode(mode === "surf");
+    syncCustomizerForMode(mode);
     if (fresh) {
       const msg = modeDiscovery.revealMessage(mode);
       if (msg) hud.message(msg, 2.8);
@@ -654,6 +653,9 @@ async function boot() {
       trafficLights = new TrafficLightView(scene, map, roads);
       // fake night-street lighting: reuse the just-loaded graph (no second fetch)
       streetLamps = new StreetLamps(scene, map, roads);
+      pipeline.setProjectedSurfaceLightSource(
+        streetLamps.projectedSurfaceLightSource
+      );
       const sfHooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
       if (sfHooks) Object.assign(sfHooks, { streetLamps });
     })
@@ -1185,7 +1187,11 @@ async function boot() {
       if (player.mode !== "scooter" && !player.riding) switchModeFromToolbar("scooter");
     }
   );
-  let carSelector: { setConfig(config: CarConfig): void; setOpen(open: boolean): void } | null = null;
+  let carSelector: {
+    setConfig(config: CarConfig): void;
+    setOpen(open: boolean): void;
+    setVisible(visible: boolean): void;
+  } | null = null;
   let carSelectorLoading: Promise<void> | null = null;
   let openCarSelectorAfterLoad = false;
   const carLauncher = document.createElement("div");
@@ -1195,7 +1201,7 @@ async function boot() {
   carLauncherButton.className = "avatar-toggle car-toggle";
   carLauncherButton.title = "Open car atelier";
   carLauncherButton.setAttribute("aria-label", "Open car atelier");
-  carLauncherButton.innerHTML = '<span class="car-ic-body"></span><span class="car-ic-wheel car-ic-front"></span><span class="car-ic-wheel car-ic-rear"></span>';
+  carLauncherButton.innerHTML = '<img class="customizer-icon" src="/ui/customizer-icons/car.webp" alt="" draggable="false">';
   carLauncher.appendChild(carLauncherButton);
   document.getElementById("hud")!.appendChild(carLauncher);
   const ensureCarCustomizer = (open = false) => {
@@ -1218,12 +1224,14 @@ async function boot() {
             if (changed) player.setCarConfig(config);
             net.setCar(config);
           },
+          (config) => player.previewCarConfig(config),
           () => {
             if (player.mode !== "drive" && !player.riding) switchModeFromToolbar("drive");
           }
         );
         carLauncher.hidden = true;
-        if (openCarSelectorAfterLoad) carSelector.setOpen(true);
+        carSelector.setVisible(player.mode === "drive");
+        if (openCarSelectorAfterLoad && player.mode === "drive") carSelector.setOpen(true);
         openCarSelectorAfterLoad = false;
       })
       .catch((error) => console.warn("[car] atelier failed to load", error))
@@ -1256,16 +1264,9 @@ async function boot() {
   surfboardLauncherButton.className = "avatar-toggle board-toggle surfboard-toggle";
   surfboardLauncherButton.title = "Open surfboard shaping room";
   surfboardLauncherButton.setAttribute("aria-label", "Open surfboard shaping room");
-  surfboardLauncherButton.textContent = "🏄";
+  surfboardLauncherButton.innerHTML = '<img class="customizer-icon" src="/ui/customizer-icons/surfboard.webp" alt="" draggable="false">';
   surfboardLauncher.appendChild(surfboardLauncherButton);
   document.getElementById("hud")!.appendChild(surfboardLauncher);
-  setSurfboardLauncherVisible = (visible) => {
-    surfboardLauncher.hidden = !visible || surfboardSelector !== null;
-  };
-  setSurfboardCustomizerMode = (active) => {
-    if (!active) openSurfboardSelectorAfterLoad = false;
-    surfboardSelector?.setVisible(active);
-  };
   surfboardLauncherButton.addEventListener("click", () => {
     input.releaseLock();
     ensureSurfboardCustomizer(true);
@@ -1300,7 +1301,32 @@ async function boot() {
         surfboardSelectorLoading = null;
       });
   };
-  setSurfboardLauncherVisible(player.mode === "surf");
+  // One top-right customizer slot: show only the active mode's atelier (or none).
+  syncCustomizerForMode = (mode) => {
+    const showAvatar = mode === "walk";
+    const showBoard = mode === "board";
+    const showScooter = mode === "scooter";
+    const showCar = mode === "drive";
+    const showSurf = mode === "surf";
+    if (!showCar) openCarSelectorAfterLoad = false;
+    if (!showSurf) openSurfboardSelectorAfterLoad = false;
+    avatarSelector.setVisible(showAvatar);
+    boardSelector.setVisible(showBoard);
+    scooterSelector.setVisible(showScooter);
+    if (carSelector) {
+      carSelector.setVisible(showCar);
+      carLauncher.hidden = true;
+    } else {
+      carLauncher.hidden = !showCar;
+    }
+    if (surfboardSelector) {
+      surfboardSelector.setVisible(showSurf);
+      surfboardLauncher.hidden = true;
+    } else {
+      surfboardLauncher.hidden = !showSurf;
+    }
+  };
+  syncCustomizerForMode(player.mode);
   net.onWelcome = () => {
     avatarSelector.setName(net.name); // server may canonicalize a duplicate/invalid name
     if (customized) {
@@ -4011,10 +4037,10 @@ async function boot() {
       speed: Math.hypot(player.velocity.x, player.velocity.z),
       vspeed: player.velocity.y
     });
-    // B launches fireworks ahead of the player along the camera heading; airborne
-    // modes push them further out and up to the player's altitude
+    // Keep the sim ticking for remotes / drone salvo / future area shows — no
+    // player hold-to-fire binding (keyboard B / pad face B retired).
     fireworks.update(frameDt, {
-      hold: input.down("KeyB"),
+      hold: false,
       origin: player.renderPosition,
       yaw: chase.yaw,
       fly: player.mode === "plane" || player.mode === "drone" || player.mode === "bird",

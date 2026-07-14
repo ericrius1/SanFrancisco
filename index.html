@@ -1074,6 +1074,9 @@
         user-select: none;
         z-index: var(--z-hud-raised);
       }
+      #hud .car-launcher-ui[hidden] {
+        display: none !important;
+      }
       /* invite link button — sits under the avatar toggle; the open avatar
          panel (z-index above) slides over it */
       #hud .share-ui {
@@ -2055,6 +2058,22 @@
         transform: translateY(-1px);
         background: rgba(15, 33, 47, 0.85);
       }
+      #hud .customizer-icon {
+        width: 44px;
+        height: 44px;
+        display: block;
+        object-fit: contain;
+        pointer-events: none;
+        user-select: none;
+        filter: drop-shadow(0 3px 3px rgba(0, 4, 9, 0.44));
+        transform: scale(1.04);
+        transition: transform 0.14s var(--ease), filter 0.14s var(--ease);
+      }
+      #hud .avatar-toggle:hover .customizer-icon,
+      #hud .avatar-ui.open .customizer-icon {
+        filter: drop-shadow(0 4px 5px rgba(0, 4, 9, 0.52));
+        transform: scale(1.1) translateY(-1px);
+      }
       #hud .player-name-chip {
         box-sizing: border-box;
         max-width: min(190px, calc(100vw - 120px));
@@ -2073,33 +2092,6 @@
         font: 650 11.5px/22px var(--font);
         letter-spacing: 0.01em;
         text-shadow: 0 1px 3px rgba(0, 10, 20, 0.8);
-      }
-      #hud .avatar-head {
-        position: absolute;
-        left: 15px;
-        top: 8px;
-        width: 16px;
-        height: 16px;
-        border-radius: 5px;
-        box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.12);
-      }
-      #hud .avatar-shirt {
-        position: absolute;
-        left: 11px;
-        top: 24px;
-        width: 24px;
-        height: 15px;
-        border-radius: 5px 5px 7px 7px;
-        box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.18);
-      }
-      #hud .avatar-dot {
-        position: absolute;
-        right: 8px;
-        bottom: 8px;
-        width: 9px;
-        height: 9px;
-        border-radius: 50%;
-        border: 1px solid rgba(255, 255, 255, 0.7);
       }
       #hud .avatar-panel {
         box-sizing: border-box;
@@ -2246,20 +2238,7 @@
         text-transform: uppercase;
         letter-spacing: 0.05em;
       }
-      /* hoverboard garage — docked left of the avatar toggle, shares its
-         recipes (root carries both avatar-ui and board-ui classes) */
-      #hud .board-ui {
-        right: max(74px, calc(env(safe-area-inset-right) + 74px));
-      }
-      #hud .scooter-ui {
-        right: max(128px, calc(env(safe-area-inset-right) + 128px));
-      }
-      #hud .surfboard-ui {
-        right: max(182px, calc(env(safe-area-inset-right) + 182px));
-      }
-      #hud .car-ui {
-        right: max(236px, calc(env(safe-area-inset-right) + 236px));
-      }
+      /* Vehicle customizers share the avatar slot; only one root is visible. */
       #hud .surfboard-panel {
         width: min(430px, calc(100vw - 24px));
         max-height: min(80vh, 680px);
@@ -2267,66 +2246,6 @@
         scrollbar-gutter: stable;
         background: linear-gradient(145deg, rgba(7, 52, 59, 0.95), rgba(10, 27, 39, 0.97));
         border-color: rgba(121, 235, 214, 0.28);
-      }
-      #hud .scooter-toggle .scooter-ic-body {
-        position: absolute;
-        left: 13px;
-        top: 17px;
-        width: 22px;
-        height: 19px;
-        border-radius: 10px 10px 6px 6px;
-        transform: skewX(-8deg);
-        box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.2);
-      }
-      #hud .scooter-toggle .scooter-ic-wheel {
-        position: absolute;
-        top: 31px;
-        width: 10px;
-        height: 10px;
-        border: 3px solid;
-        border-radius: 50%;
-        background: #11181d;
-      }
-      #hud .scooter-toggle .scooter-ic-front { left: 8px; }
-      #hud .scooter-toggle .scooter-ic-rear { right: 8px; }
-      #hud .car-toggle .car-ic-body {
-        position: absolute;
-        left: 8px;
-        top: 18px;
-        width: 30px;
-        height: 13px;
-        border: 1px solid;
-        border-radius: 11px 12px 4px 4px;
-        transform: skewX(-8deg);
-        box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.2);
-      }
-      #hud .car-toggle .car-ic-body::before {
-        content: "";
-        position: absolute;
-        left: 9px;
-        top: -7px;
-        width: 14px;
-        height: 8px;
-        border-radius: 7px 8px 0 0;
-        background: rgba(80, 126, 150, 0.9);
-      }
-      #hud .car-toggle .car-ic-wheel {
-        position: absolute;
-        top: 28px;
-        width: 9px;
-        height: 9px;
-        border: 3px solid;
-        border-radius: 50%;
-        background: #0a0d10;
-      }
-      #hud .car-toggle .car-ic-front { left: 9px; }
-      #hud .car-toggle .car-ic-rear { right: 9px; }
-      #hud .car-launcher-ui .car-ic-body {
-        background: #d74432;
-        border-color: #707b82;
-      }
-      #hud .car-launcher-ui .car-ic-wheel {
-        border-color: #aab3b8;
       }
       #hud .scooter-panel {
         width: min(390px, calc(100vw - 24px));
@@ -2359,25 +2278,6 @@
         border-radius: 8px;
         border: 1px solid rgba(190, 225, 240, 0.3);
         background: rgba(18, 40, 56, 0.58);
-      }
-      #hud .board-toggle .board-ic-deck {
-        position: absolute;
-        left: 10px;
-        top: 18px;
-        width: 26px;
-        height: 8px;
-        border-radius: 4px;
-        transform: rotate(-14deg);
-        box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.22);
-      }
-      #hud .board-toggle .board-ic-rail {
-        position: absolute;
-        left: 12px;
-        top: 29px;
-        width: 22px;
-        height: 3px;
-        border-radius: 2px;
-        transform: rotate(-14deg);
       }
       #hud .board-panel .avatar-label {
         padding-top: 5px;
@@ -2852,9 +2752,8 @@
         font: 750 9px ui-monospace, SFMono-Regular, Menlo, monospace;
         text-align: right;
       }
-      /* car atelier: wider visual workshop, still the same compact game UI
-         language as the board/scooter editors. Generated art appears only in
-         the selected finish preview after the editor or car is activated. */
+      /* car atelier: compact live workshop. The real car in-world is the
+         preview, so the panel only carries actionable controls. */
       #hud .board-panel.car-panel {
         width: min(470px, calc(100vw - 24px));
         max-height: min(84dvh, 760px);
@@ -2869,22 +2768,6 @@
       }
       #hud .car-panel .board-panel-head > span {
         color: #ffd0a1;
-      }
-      #hud .car-preview-frame {
-        position: relative;
-        overflow: hidden;
-        border-radius: 9px;
-        border: 1px solid rgba(236, 184, 126, 0.2);
-        background: #0a1117;
-        box-shadow:
-          inset 0 0 22px rgba(0, 0, 0, 0.38),
-          0 7px 18px rgba(0, 4, 8, 0.2);
-      }
-      #hud .car-preview {
-        display: block;
-        width: 100%;
-        height: auto;
-        aspect-ratio: 704 / 260;
       }
       #hud .car-form-choice {
         flex: 1 1 calc(50% - 4px);
@@ -2925,8 +2808,26 @@
         color: #ffd0a1;
       }
       @media (max-width: 480px) {
-        #hud .car-ui {
+        #hud .avatar-ui {
           right: max(8px, env(safe-area-inset-right));
+        }
+        #hud .avatar-ui.board-ui:not(.scooter-ui):not(.surfboard-ui) {
+          right: max(58px, calc(env(safe-area-inset-right) + 58px));
+        }
+        #hud .avatar-ui.scooter-ui {
+          right: max(108px, calc(env(safe-area-inset-right) + 108px));
+        }
+        #hud .avatar-ui.surfboard-ui {
+          right: max(8px, calc(env(safe-area-inset-right) + 8px));
+          top: max(68px, calc(env(safe-area-inset-top) + 68px));
+        }
+        #hud .avatar-ui.car-ui {
+          right: max(58px, calc(env(safe-area-inset-right) + 58px));
+          top: max(68px, calc(env(safe-area-inset-top) + 68px));
+        }
+        #hud .car-ui .car-panel {
+          position: relative;
+          right: -50px;
         }
         #hud .board-panel.scooter-panel {
           width: min(430px, calc(100vw - 16px));
@@ -3471,49 +3372,6 @@
         border-color: rgba(111, 215, 196, 0.68);
         color: var(--accent-strong);
       }
-      .bigmap-action {
-        min-width: min(420px, calc(100vw - 48px));
-        max-width: calc(100vw - 48px);
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        padding: 8px 9px 8px 12px;
-        border-radius: 12px;
-        background: rgba(10, 24, 36, 0.82);
-        border: 1px solid var(--hairline-strong);
-        box-shadow:
-          inset 0 1px 0 rgba(255, 255, 255, 0.06),
-          0 10px 28px rgba(0, 0, 0, 0.28);
-      }
-      .bigmap-target {
-        flex: 1 1 auto;
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        color: var(--text);
-        font:
-          700 13px var(--font);
-      }
-      .bigmap-teleport-btn {
-        flex: 0 0 auto;
-        cursor: pointer;
-        padding: 7px 14px;
-        border-radius: 8px;
-        color: #062018;
-        background: var(--accent);
-        border: 1px solid var(--accent);
-        font:
-          800 12px var(--font);
-        letter-spacing: 0.02em;
-        transition:
-          filter 0.15s,
-          transform 0.12s;
-      }
-      .bigmap-teleport-btn:hover {
-        filter: brightness(1.08);
-        transform: translateY(-1px);
-      }
       .bigmap-pin-hint {
         position: absolute;
         z-index: 2;
@@ -3604,12 +3462,6 @@
       }
       .bigmap-pin-hint-lbl {
         white-space: nowrap;
-      }
-      .bigmap-hint {
-        color: var(--text-dim);
-        font-size: 12px;
-        opacity: 0.85;
-        text-shadow: 0 1px 3px rgba(0, 10, 20, 0.8);
       }
       @media (max-width: 480px) {
         /* Leave a real identity lane to the right of the map on phones. The
@@ -3873,6 +3725,14 @@
       }
       #loading h1 span {
         display: block;
+      }
+      /* Track the short first word ("San") out to sit flush with the long
+         italic line below it — turns the lopsided stack into a balanced,
+         atlas-masthead block. Trailing letter-spacing is trimmed at the
+         line end, so the word stays optically centred. em keeps the ratio
+         constant across every font-size clamp. */
+      #loading h1 span:first-child {
+        letter-spacing: 0.5em;
       }
       #loading h1 span:last-child {
         color: #78513b;

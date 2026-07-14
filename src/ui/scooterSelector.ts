@@ -65,6 +65,7 @@ export class ScooterSelector {
     this.#toggle.className = "avatar-toggle scooter-toggle";
     this.#toggle.title = "Electric scooter atelier";
     this.#toggle.setAttribute("aria-label", "Open electric scooter atelier");
+    this.#toggle.innerHTML = '<img class="customizer-icon" src="/ui/customizer-icons/scooter.webp" alt="" draggable="false">';
     this.#toggle.addEventListener("click", () => this.setOpen(!this.#open));
     this.#panel = document.createElement("div");
     this.#panel.className = "avatar-panel board-panel scooter-panel";
@@ -81,6 +82,12 @@ export class ScooterSelector {
       this.#onOpen();
       this.#loadSelectedAssets();
     }
+  }
+
+  /** Scooter-mode slot only — hide when another (or no) customizer owns the HUD. */
+  setVisible(visible: boolean): void {
+    this.#root.hidden = !visible;
+    if (!visible && this.#open) this.setOpen(false);
   }
 
   setConfig(config: ScooterConfig): void {
@@ -378,9 +385,6 @@ export class ScooterSelector {
   }
 
   #render(): void {
-    const paint = toCss(scooterPaintHex(this.#config));
-    const trim = toCss(scooterTrimHex(this.#config));
-    this.#toggle.innerHTML = `<span class="scooter-ic-body" style="background:${paint}"></span><span class="scooter-ic-wheel scooter-ic-front" style="border-color:${trim}"></span><span class="scooter-ic-wheel scooter-ic-rear" style="border-color:${trim}"></span>`;
     this.#panel.replaceChildren();
     this.#previewCanvases.clear();
     const header = document.createElement("header");

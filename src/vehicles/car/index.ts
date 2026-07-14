@@ -3,6 +3,7 @@ export {
   animateCar,
   buildCarMesh,
   collectCarAnim,
+  previewCarConfig,
   CAR_CONTACT_Y,
   CAR_RIDE_HEIGHT,
   type CarAnim
