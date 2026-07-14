@@ -192,6 +192,7 @@ check(tightCarsCovered, `even a tight 120 budget still covers every car (nearest
 // hoverboard over the same footprint must be allowed to materialise the roof.
 const guardBox = { i: 0, s: 0, x: 0, y: 5, z: 0, hx: 5, hy: 5, hz: 5, cosYaw: 1, sinYaw: 0 };
 check(anchorInsideCollider(guardBox, { x: 0, y: 5, z: 0, r: 260 }, 2.5), `embedded player defers building body creation`);
+check(!anchorInsideCollider(guardBox, { x: 0, y: 10, z: 0, r: 260 }, 2.5), `anchor on a roof/deck top materializes its support body`);
 check(!anchorInsideCollider(guardBox, { x: 0, y: 20, z: 0, r: 260 }, 2.5), `airborne player above roof does NOT defer body creation`);
 check(anchorInsideCollider(guardBox, { x: 0, z: 0, r: 60 }, 2.5), `altitude-less auxiliary anchor stays conservative`);
 

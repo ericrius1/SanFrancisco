@@ -65,7 +65,8 @@ export class Input {
   #escapeHeld = false;
   /** Prevents a swallowed keyup from leaving pointer capture disabled forever. */
   #escapeReleaseTimeout: number | null = null;
-  suspended = false;
+  #suspended = false;
+  #suspensionHolds = new Set<string>();
   padConnected = false;
   device: "kb" | "pad" = "kb";
 
@@ -79,6 +80,35 @@ export class Input {
   onLockChange: (locked: boolean) => void = () => {};
   onDeviceChange: (device: "kb" | "pad") => void = () => {};
   onFreeCursorChange: (free: boolean) => void = () => {};
+
+  /**
+   * Ordinary UI ownership continues to assign `suspended` directly. Long-lived
+   * asynchronous operations (notably world arrival) use named holds so a map
+   * close or camera-mode change cannot accidentally re-enable gameplay halfway
+   * through the operation.
+   */
+  get suspended(): boolean {
+    return this.#suspended || this.#suspensionHolds.size > 0;
+  }
+
+  set suspended(value: boolean) {
+    this.#suspended = value;
+  }
+
+  setSuspensionHold(reason: string, held: boolean): void {
+    if (held) {
+      this.#suspensionHolds.add(reason);
+      this.mouseDX = 0;
+      this.mouseDY = 0;
+      this.wheel = 0;
+      this.wheelX = 0;
+      this.firePressed = false;
+      this.fireHeld = false;
+      this.#padFireHeld = false;
+    } else {
+      this.#suspensionHolds.delete(reason);
+    }
+  }
 
   #justPressed = new Set<string>();
   #shiftedPresses = new Set<string>();
@@ -194,17 +224,18 @@ export class Input {
 
     el.addEventListener("mousedown", (e) => {
       if (e.button !== 0) return;
+      if (this.suspended) return;
       // Command released but its keyup never arrived (macOS Chrome swallows the
       // Meta keyup behind system shortcuts / Mission Control) — this new press's
       // metaKey is authoritative, so drop the stale free cursor and recapture.
-      if (!this.suspended && this.freeCursor && !e.metaKey) {
+      if (this.freeCursor && !e.metaKey) {
         this.#endFreeCursor(true);
         return;
       }
       // Capture on the fresh press, never on click: if Escape releases while a
       // button is held, that old pointer sequence's trailing mouse-up/click can
       // no longer undo the release.
-      if (!this.suspended && !this.locked && !this.freeCursor) {
+      if (!this.locked && !this.freeCursor) {
         this.requestLock();
         return;
       }
@@ -228,6 +259,7 @@ export class Input {
       // Pointer-lock look, or Z/N-held scrub (works unlocked in camera-orbit
       // mode where the chase cam has released the pointer).
       const holdScrub = this.keys.has("KeyZ") || this.keys.has("KeyN");
+      if (this.suspended && !holdScrub) return;
       if (this.locked || holdScrub) {
         // Surf owns a locked authored camera. Pointer lock can stay captured, but
         // physical mouse motion must be a mathematical no-op for that activity.
@@ -248,6 +280,11 @@ export class Input {
     el.addEventListener(
       "wheel",
       (e) => {
+        const holdScrub = this.keys.has("KeyZ") || this.keys.has("KeyN");
+        if (this.suspended && !holdScrub) {
+          e.preventDefault();
+          return;
+        }
         this.wheel += e.deltaY;
         this.wheelX += e.deltaX;
         e.preventDefault();
@@ -437,24 +474,33 @@ export class Input {
     return this.keys.has(code) || this.#padHeld.has(code);
   }
 
-  /** True on the frame the key went down. Reads through even while suspended for mode toggles. */
+  /**
+   * True on the frame the key went down. Ordinary UI suspension still permits
+   * mode toggles, but named asynchronous holds suppress edge actions across all
+   * gameplay systems so an arrival cannot be mutated out from under its pin.
+   */
   pressed(code: string) {
+    return this.#suspensionHolds.size === 0 && this.#justPressed.has(code);
+  }
+
+  /** UI escape hatches that intentionally read through a named hold. */
+  pressedRaw(code: string) {
     return this.#justPressed.has(code);
   }
 
   /** True when this keydown happened with Shift held on the event itself. */
   shiftedPress(code: string) {
-    return this.#shiftedPresses.has(code);
+    return this.#suspensionHolds.size === 0 && this.#shiftedPresses.has(code);
   }
 
   /** True when this keydown happened with Ctrl held on the event itself. */
   ctrlPressed(code: string) {
-    return this.#ctrlPresses.has(code);
+    return this.#suspensionHolds.size === 0 && this.#ctrlPresses.has(code);
   }
 
   /** True when this keydown happened with Alt held on the event itself. */
   altPressed(code: string) {
-    return this.#altPresses.has(code);
+    return this.#suspensionHolds.size === 0 && this.#altPresses.has(code);
   }
 
   /** −1..1: keyboard keys are digital, pad sticks/triggers merge in analog. */

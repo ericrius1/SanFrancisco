@@ -5,8 +5,6 @@ type CompileResponse =
   | { id: number; ok: false; error: { name: string; message: string; stack?: string } };
 
 type PendingCompile = {
-  recipe: TreeRecipe;
-  seed: number;
   resolve(prototype: CompiledTreePrototype): void;
   reject(error: Error): void;
 };
@@ -20,21 +18,6 @@ function rejectPending(reason: unknown): void {
   const error = reason instanceof Error ? reason : new Error(String(reason));
   for (const request of pending.values()) request.reject(error);
   pending.clear();
-}
-
-async function compileLocally(recipe: TreeRecipe, seed: number): Promise<CompiledTreePrototype> {
-  const { compileTree } = await import("../treeCompiler");
-  return compileTree(recipe, seed);
-}
-
-function retryPendingLocally(reason: unknown): void {
-  const requests = [...pending.values()];
-  pending.clear();
-  if (requests.length === 0) return;
-  console.warn("[native trees] compiler worker failed; retrying pending recipes locally", reason);
-  for (const request of requests) {
-    void compileLocally(request.recipe, request.seed).then(request.resolve, request.reject);
-  }
 }
 
 function getWorker(): Worker | null {
@@ -62,17 +45,17 @@ function getWorker(): Worker | null {
       workerFailed = true;
       worker?.terminate();
       worker = null;
-      retryPendingLocally(new Error(event.message || "Native tree compiler worker failed"));
+      rejectPending(new Error(event.message || "Native tree compiler worker failed"));
     };
     worker.onmessageerror = () => {
       workerFailed = true;
       worker?.terminate();
       worker = null;
-      retryPendingLocally(new Error("Native tree compiler worker returned an unreadable message"));
+      rejectPending(new Error("Native tree compiler worker returned an unreadable message"));
     };
   } catch (error) {
     workerFailed = true;
-    console.warn("[native trees] compiler worker unavailable; using the local compiler", error);
+    console.warn("[native trees] compiler worker unavailable; retaining fallback foliage", error);
   }
   return worker;
 }
@@ -80,15 +63,15 @@ function getWorker(): Worker | null {
 /** Compile off the render thread, transferring every typed array without a copy. */
 export async function compileTreeAsync(recipe: TreeRecipe, seed: number): Promise<CompiledTreePrototype> {
   const target = getWorker();
-  if (!target) return compileLocally(recipe, seed);
+  if (!target) throw new Error("Native tree compiler worker is unavailable");
   const id = nextId++;
   return new Promise<CompiledTreePrototype>((resolve, reject) => {
-    pending.set(id, { recipe, seed, resolve, reject });
+    pending.set(id, { resolve, reject });
     try {
       target.postMessage({ id, recipe, seed });
     } catch (error) {
       pending.delete(id);
-      void compileLocally(recipe, seed).then(resolve, reject);
+      reject(error instanceof Error ? error : new Error(String(error)));
     }
   });
 }

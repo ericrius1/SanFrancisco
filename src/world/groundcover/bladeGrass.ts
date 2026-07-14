@@ -292,6 +292,9 @@ export function createGrassMesh(
   mesh.geometry.setAttribute("aGrassShape", shapeAttr);
   mesh.geometry.setAttribute("aGrassColor", colorAttr);
   mesh.geometry.instanceCount = 0;
+  // Keep empty pools out of the render list. WebGPU otherwise still builds a
+  // node-material pipeline for a zero-instance draw during world arrival.
+  mesh.visible = false;
   mesh.userData.grassCapacity = capacity;
   mesh.userData.grassLastCount = 0;
   return mesh;
@@ -306,7 +309,9 @@ export function grassMeshCount(mesh: GrassMesh): number {
 }
 
 export function setGrassMeshCount(mesh: GrassMesh, count: number) {
-  mesh.geometry.instanceCount = Math.max(0, Math.min(grassMeshCapacity(mesh), Math.floor(count)));
+  const nextCount = Math.max(0, Math.min(grassMeshCapacity(mesh), Math.floor(count)));
+  mesh.geometry.instanceCount = nextCount;
+  mesh.visible = nextCount > 0;
 }
 
 /** Set a conservative local-space bound after placement so tiles can cull. */

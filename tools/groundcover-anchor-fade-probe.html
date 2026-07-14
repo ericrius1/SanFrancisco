@@ -300,6 +300,10 @@
         // injected instance's bound before testing the now-frustum-culled mesh.
         flower.computeBoundingSphere();
         flower.boundingSphere.radius += 0.65;
+        // Streaming flower pools deliberately start invisible while empty so
+        // WebGPU does not compile their pipelines at app reveal. This fixture
+        // manually bypasses the ring writer, so opt its injected instance in.
+        flower.visible = true;
         scene.add(flowers.group);
 
         const target = new THREE.RenderTarget(W, H, {

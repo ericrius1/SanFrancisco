@@ -39,7 +39,7 @@ export type NativeTreeGeometryPrototype = {
 };
 
 export type TreeInstanceGeometry = {
-  geometry: THREE.BufferGeometry;
+  geometry: THREE.InstancedBufferGeometry;
   root: THREE.StorageInstancedBufferAttribute;
   yaw: THREE.StorageInstancedBufferAttribute;
 };
@@ -137,7 +137,14 @@ export function createTreeInstanceGeometry(
   instanceAttributes?: Pick<TreeInstanceGeometry, "root" | "yaw">,
   instanceUsage: THREE.Usage = THREE.StaticDrawUsage
 ): TreeInstanceGeometry {
-  const geometry = new THREE.BufferGeometry();
+  // Deliberately use an InstancedBufferGeometry on a plain Mesh instead of an
+  // InstancedMesh. Three r185 keys every InstancedMesh NodeMaterial build by
+  // object UUID because its built-in instanceMatrix node captures that object's
+  // buffer. Native trees already carry their complete transform in the named
+  // root/yaw attributes, so keeping the transform in the geometry layout lets
+  // WebGPU safely reuse one NodeBuilder state and render pipeline across chunks.
+  const geometry = new THREE.InstancedBufferGeometry();
+  geometry.instanceCount = capacity;
   for (const [name, attribute] of Object.entries(shared.attributes)) {
     geometry.setAttribute(name, attribute);
   }

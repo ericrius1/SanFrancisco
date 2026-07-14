@@ -19,6 +19,7 @@ import {
   type SurfboardShape
 } from "./config";
 import { SURF_TUNING } from "./tuning";
+import { isOceanBeachSurfApproach } from "./entry";
 
 const V = {
   euler: new THREE.Euler(0, 0, 0, "YXZ")
@@ -169,9 +170,10 @@ export class SurfController implements ModeController {
   spawnBody(ctx: PlayerCtx, _facing: number): number {
     const p = ctx.position;
     const w = ctx.physics.world;
-    // `restoreState` and invites bypass enter(), so spawnBody independently
-    // enforces the same invariant: surf always begins standing in the pocket.
-    this.#placeOnWave(ctx, oceanBeachMask(p.x, p.z) > 0.03);
+    // Ordinary mode entry projects onto a crest in enter(), before this body is
+    // created. Restore/invite/history paths intentionally bypass enter() because
+    // their supplied pose is already authoritative; never silently relocate X/Z
+    // here and invalidate the visual/collision destination that was just primed.
     const y = this.#surface(p.x, p.z, ctx.time, SURF_TUNING.values.railHeight);
     p.y = y;
     ctx.body = w.createBox({
@@ -219,14 +221,7 @@ export class SurfController implements ModeController {
   }
 
   enter(ctx: PlayerCtx) {
-    const b = OCEAN_BEACH_SURF;
-    const nearBreak =
-      ctx.position.x > b.minX - 400 &&
-      ctx.position.x < b.maxX + 500 &&
-      ctx.position.z > b.minZ - 400 &&
-      ctx.position.z < b.maxZ + 400;
-    if (!nearBreak) ctx.position.set(b.entryX, 0, b.entryZ);
-    this.#placeOnWave(ctx, nearBreak);
+    this.#placeOnWave(ctx, isOceanBeachSurfApproach(ctx.position.x, ctx.position.z));
     const vx = OCEAN_BEACH_SURF.speed;
     const vz = this.#lineDirection * SURF_TUNING.values.trimSpeed;
     return Math.atan2(-vx, -vz);

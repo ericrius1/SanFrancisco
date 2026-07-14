@@ -10,6 +10,15 @@
 // - Built 16-tennis + five-mini-court count: https://sfrecpark.org/CivicAlerts.aspx?AID=1592&ARC=1749
 // - Low, linear clubhouse design intent: https://ehdd.com/project/golden-gate-park-tennis-center/
 
+import { GOLDMAN_GAMEPLAY_LANDMARK } from "./meta";
+
+export {
+  GOLDMAN_GAMEPLAY_LANDMARK,
+  GOLDMAN_SITE_BOUNDS,
+  GOLDMAN_SITE_CENTER,
+  GOLDMAN_SUPPRESSED_BUILDINGS
+} from "./meta";
+
 export type GoldmanXZ = readonly [x: number, z: number];
 export type GoldmanCourtKind = "tennis" | "pickleball";
 export type GoldmanTennisCourtRef =
@@ -107,7 +116,7 @@ export const GOLDMAN_COURTS: readonly GoldmanCourtSpec[] = [
   tennis("12", -1309.65, 2170.59, 3.01),
   tennis("13", -1294.78, 2169.82, 3.01),
   pickleball("14A", -1334.96, 2136.96, 93.22),
-  pickleball("14B", -1334.62, 2145.41, 93.22),
+  pickleball("14B", GOLDMAN_GAMEPLAY_LANDMARK.x, GOLDMAN_GAMEPLAY_LANDMARK.z, 93.22),
   pickleball("14C", -1316.79, 2135.92, 93.22),
   pickleball("14D", -1316.22, 2144.31, 93.22),
   pickleball("15", -1300.17, 2139.35, 3.56),
@@ -167,13 +176,6 @@ export const GOLDMAN_NORTHEAST_POD_OUTLINE: readonly GoldmanXZ[] = [
   [-1293.23, 2124.52],
   [-1294.42, 2128.62]
 ] as const;
-
-export const GOLDMAN_SITE_BOUNDS = {
-  minX: -1395,
-  maxX: -1238,
-  minZ: 2106,
-  maxZ: 2271
-} as const;
 
 /** Current Taube Family Clubhouse footprint (OSM way 959594549). */
 export const GOLDMAN_CLUBHOUSE_OUTLINE: readonly GoldmanXZ[] = [
@@ -332,8 +334,3 @@ export function inGoldmanVegetationZone(x: number, z: number): boolean {
   const hz = (z - 2228) / 59;
   return hx * hx + hz * hz < 1;
 }
-
-/** Baked generic clubhouse footprint to suppress before adding the authored pavilion. */
-export const GOLDMAN_SUPPRESSED_BUILDINGS: readonly { key: string; index: number }[] = [
-  { key: "7_13", index: 406 }
-] as const;

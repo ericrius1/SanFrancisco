@@ -141,6 +141,7 @@ export class TreeShadowProxy {
   readonly rejectedCount: number
 
   #ownsSharedResources = false
+  #ownedMaterial: THREE.MeshBasicMaterial | null = null
   #disposed = false
 
   constructor(options: TreeShadowProxyOptions) {
@@ -186,8 +187,14 @@ export class TreeShadowProxy {
     const meshes: THREE.InstancedMesh[] = []
     let treeCount = 0
     if (cells.size > 0) {
-      const [geometry, material] = acquireSharedResources()
+      const [geometry, materialTemplate] = acquireSharedResources()
       this.#ownsSharedResources = true
+      // All cells in one streamed proxy share a disposable clone. The template
+      // and unit geometry remain process-shared, while material.dispose gives
+      // Three's WebGPU backend the exact ownership boundary it listens for.
+      const material = materialTemplate.clone()
+      material.name = `${materialTemplate.name}:${options.name}`
+      this.#ownedMaterial = material
       const position = new THREE.Vector3()
       const rotation = new THREE.Quaternion()
       const scale = new THREE.Vector3()
@@ -235,6 +242,8 @@ export class TreeShadowProxy {
     this.group.removeFromParent()
     for (const mesh of this.meshes) mesh.dispose()
     this.group.clear()
+    this.#ownedMaterial?.dispose()
+    this.#ownedMaterial = null
     if (this.#ownsSharedResources) releaseSharedResources()
   }
 }

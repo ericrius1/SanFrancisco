@@ -1,5 +1,6 @@
 import * as THREE from "three/webgpu"
 import type { BuildingCollider } from "../tiles"
+import { yieldToFrame } from "../../core/cooperativeWork"
 import { setLocalFarShadowOnly } from "./shadowLayers"
 
 const DEFAULT_CELL_SIZE = 128
@@ -37,6 +38,21 @@ type RuntimeCell = {
   mesh: THREE.InstancedMesh
   baseMatrices: Float32Array
   dirty: boolean
+}
+
+type PreparedTileShadowProxy = {
+  cells: RuntimeCell[]
+  meshes: THREE.InstancedMesh[]
+  buildingVisible: Uint8Array
+  buildingOffsets: Uint32Array
+  buildingRefs: Uint32Array
+  refCell: Uint32Array
+  refSlot: Uint32Array
+  visibleBuildings: number
+  visibleBoxes: number
+  rejectedColliders: number
+  ownsSharedResources: boolean
+  ownedMaterial: THREE.MeshBasicMaterial | null
 }
 
 let sharedGeometry: THREE.BufferGeometry | null = null
@@ -152,8 +168,9 @@ export class TileShadowProxy {
   #rejectedColliders = 0
   #disposed = false
   #ownsSharedResources = false
+  #ownedMaterial: THREE.MeshBasicMaterial | null = null
 
-  constructor(options: TileShadowProxyOptions) {
+  constructor(options: TileShadowProxyOptions, prepared?: PreparedTileShadowProxy) {
     if (!options.tileKey) throw new Error("TileShadowProxy requires a tileKey")
     if (!Number.isInteger(options.buildingCount) || options.buildingCount < 0) {
       throw new Error("buildingCount must be a non-negative integer")
@@ -167,6 +184,23 @@ export class TileShadowProxy {
     this.group.name = `tileShadowProxy:${this.tileKey}`
     this.group.matrixAutoUpdate = false
     setLocalFarShadowOnly(this.group)
+
+    if (prepared) {
+      this.#cells = prepared.cells
+      this.meshes = prepared.meshes
+      this.#buildingVisible = prepared.buildingVisible
+      this.#buildingOffsets = prepared.buildingOffsets
+      this.#buildingRefs = prepared.buildingRefs
+      this.#refCell = prepared.refCell
+      this.#refSlot = prepared.refSlot
+      this.#visibleBuildings = prepared.visibleBuildings
+      this.#visibleBoxes = prepared.visibleBoxes
+      this.#rejectedColliders = prepared.rejectedColliders
+      this.#ownsSharedResources = prepared.ownsSharedResources
+      this.#ownedMaterial = prepared.ownedMaterial
+      for (const mesh of prepared.meshes) this.group.add(mesh)
+      return
+    }
 
     const buildingCount = options.buildingCount
     const buildingCounts = new Uint32Array(buildingCount)
@@ -211,8 +245,14 @@ export class TileShadowProxy {
     const cells: RuntimeCell[] = []
     const meshes: THREE.InstancedMesh[] = []
     if (validCount > 0) {
-      const [geometry, material] = acquireSharedResources()
+      const [geometry, materialTemplate] = acquireSharedResources()
       this.#ownsSharedResources = true
+      // Three WebGPU RenderObjects subscribe to material.dispose, not the
+      // InstancedMesh dispose event. One proxy-owned clone lets retirement
+      // release every microcell RenderObject without duplicating geometry.
+      const material = materialTemplate.clone()
+      material.name = `${materialTemplate.name}:${this.tileKey}`
+      this.#ownedMaterial = material
       const orderedCells = Array.from(buildCells.values()).sort((a, b) => a.z - b.z || a.x - b.x)
       for (let cellIndex = 0; cellIndex < orderedCells.length; cellIndex++) {
         const build = orderedCells[cellIndex]
@@ -328,6 +368,8 @@ export class TileShadowProxy {
     this.group.removeFromParent()
     for (let i = 0; i < this.#cells.length; i++) this.#cells[i].mesh.dispose()
     this.group.clear()
+    this.#ownedMaterial?.dispose()
+    this.#ownedMaterial = null
     if (this.#ownsSharedResources) releaseSharedResources()
   }
 
@@ -360,4 +402,140 @@ export class TileShadowProxy {
 
 export function createTileShadowProxy(options: TileShadowProxyOptions): TileShadowProxy {
   return new TileShadowProxy(options)
+}
+
+/**
+ * Build the same proxy without monopolising one displayed frame. Collider
+ * validation/binning, matrix population and per-cell bounds are checkpointed;
+ * the returned object is already complete and can be attached atomically.
+ */
+export async function createTileShadowProxyAsync(
+  options: TileShadowProxyOptions
+): Promise<TileShadowProxy> {
+  if (!options.tileKey) throw new Error("TileShadowProxy requires a tileKey")
+  if (!Number.isInteger(options.buildingCount) || options.buildingCount < 0) {
+    throw new Error("buildingCount must be a non-negative integer")
+  }
+  const cellSize = options.cellSize ?? DEFAULT_CELL_SIZE
+  if (!Number.isFinite(cellSize) || cellSize <= 0) throw new Error("cellSize must be finite and > 0")
+
+  let sliceStarted = performance.now()
+  const checkpoint = async () => {
+    if (performance.now() - sliceStarted < 1.5) return
+    await yieldToFrame()
+    sliceStarted = performance.now()
+  }
+
+  const buildingCount = options.buildingCount
+  const buildingCounts = new Uint32Array(buildingCount)
+  const buildCells = new Map<string, BuildCell>()
+  let validCount = 0
+  let rejectedColliders = 0
+  for (let i = 0; i < options.colliders.length; i++) {
+    const collider = options.colliders[i]
+    if (!validCollider(collider, buildingCount)) {
+      rejectedColliders++
+    } else {
+      const cellX = Math.floor(collider.x / cellSize)
+      const cellZ = Math.floor(collider.z / cellSize)
+      const key = `${cellX}:${cellZ}`
+      let cell = buildCells.get(key)
+      if (!cell) {
+        cell = { x: cellX, z: cellZ, entries: [] }
+        buildCells.set(key, cell)
+      }
+      cell.entries.push({ collider, ref: validCount })
+      buildingCounts[collider.i]++
+      validCount++
+    }
+    if ((i & 127) === 127) await checkpoint()
+  }
+
+  const buildingVisible = new Uint8Array(buildingCount)
+  const buildingOffsets = new Uint32Array(buildingCount + 1)
+  let visibleBuildings = 0
+  let visibleBoxes = 0
+  for (let i = 0; i < buildingCount; i++) {
+    buildingOffsets[i + 1] = buildingOffsets[i] + buildingCounts[i]
+    const visible = options.isBuildingVisible(i, options.tileKey)
+    buildingVisible[i] = visible ? 1 : 0
+    if (visible) {
+      visibleBuildings++
+      visibleBoxes += buildingCounts[i]
+    }
+    if ((i & 255) === 255) await checkpoint()
+  }
+
+  const buildingRefs = new Uint32Array(validCount)
+  const refCell = new Uint32Array(validCount)
+  const refSlot = new Uint32Array(validCount)
+  const cursors = buildingOffsets.slice(0, buildingCount)
+  const cells: RuntimeCell[] = []
+  const meshes: THREE.InstancedMesh[] = []
+  let ownsSharedResources = false
+  let ownedMaterial: THREE.MeshBasicMaterial | null = null
+
+  try {
+    if (validCount > 0) {
+      const [geometry, materialTemplate] = acquireSharedResources()
+      ownsSharedResources = true
+      ownedMaterial = materialTemplate.clone()
+      ownedMaterial.name = `${materialTemplate.name}:${options.tileKey}`
+      const orderedCells = Array.from(buildCells.values()).sort((a, b) => a.z - b.z || a.x - b.x)
+      for (let cellIndex = 0; cellIndex < orderedCells.length; cellIndex++) {
+        const build = orderedCells[cellIndex]
+        const mesh = new THREE.InstancedMesh(geometry, ownedMaterial, build.entries.length)
+        mesh.name = `tileShadowProxy:${options.tileKey}:${build.x}:${build.z}`
+        mesh.castShadow = true
+        mesh.receiveShadow = false
+        mesh.frustumCulled = true
+        mesh.matrixAutoUpdate = false
+        setLocalFarShadowOnly(mesh)
+        mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+        const matrices = mesh.instanceMatrix.array as Float32Array
+        const baseMatrices = new Float32Array(matrices.length)
+
+        for (let slot = 0; slot < build.entries.length; slot++) {
+          const entry = build.entries[slot]
+          const offset = slot * 16
+          writeColliderMatrix(baseMatrices, offset, entry.collider)
+          copyMatrix(matrices, offset, baseMatrices)
+          refCell[entry.ref] = cellIndex
+          refSlot[entry.ref] = slot
+          buildingRefs[cursors[entry.collider.i]++] = entry.ref
+        }
+        mesh.computeBoundingBox()
+        mesh.computeBoundingSphere()
+        for (let slot = 0; slot < build.entries.length; slot++) {
+          if (buildingVisible[build.entries[slot].collider.i] === 0) {
+            hideMatrix(matrices, slot * 16, baseMatrices)
+          }
+        }
+        mesh.instanceMatrix.needsUpdate = true
+        cells.push({ mesh, baseMatrices, dirty: false })
+        meshes.push(mesh)
+        await checkpoint()
+      }
+    }
+
+    return new TileShadowProxy(options, {
+      cells,
+      meshes,
+      buildingVisible,
+      buildingOffsets,
+      buildingRefs,
+      refCell,
+      refSlot,
+      visibleBuildings,
+      visibleBoxes,
+      rejectedColliders,
+      ownsSharedResources,
+      ownedMaterial
+    })
+  } catch (error) {
+    for (const cell of cells) cell.mesh.dispose()
+    ownedMaterial?.dispose()
+    if (ownsSharedResources) releaseSharedResources()
+    throw error
+  }
 }

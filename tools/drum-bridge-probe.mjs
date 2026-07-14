@@ -31,6 +31,8 @@ const browser = await chromium.launch({
     "--enable-unsafe-webgpu",
     "--enable-features=WebGPUDeveloperFeatures",
     "--use-angle=metal",
+    "--disable-background-timer-throttling",
+    "--disable-renderer-backgrounding",
     "--hide-scrollbars",
     "--mute-audio"
   ]
@@ -47,7 +49,7 @@ try {
     if (message.type() === "error") pageErrors.push(message.text());
   });
 
-  await page.goto(`${SERVER_URL}/?autostart=1&fullfps=1`, {
+  await page.goto(`${SERVER_URL}/?autostart=1&fullfps=1&profile=1`, {
     waitUntil: "domcontentloaded",
     timeout: 120_000
   });

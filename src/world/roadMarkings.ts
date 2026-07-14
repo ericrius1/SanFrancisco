@@ -1,11 +1,7 @@
 import * as THREE from "three/webgpu";
 import { EXPOSURE_REBASE } from "../config";
 import type { WorldMap } from "./heightmap";
-
-type RoadsJson = {
-  v: number;
-  segs: RoadSegmentJson[];
-};
+import { loadRoadsJson } from "./traffic/roadGraphLoader";
 
 type RoadSegmentJson = {
   p: number[];
@@ -307,9 +303,7 @@ export async function createRoadMarkings(scene: THREE.Scene, map: WorldMap, url 
   const existing = scene.getObjectByName("RoadMarkings");
   if (existing instanceof THREE.Group) return existing;
 
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`RoadMarkings: failed to load ${url} (${res.status})`);
-  const json = (await res.json()) as RoadsJson;
+  const json = await loadRoadsJson(url);
   if (json.v !== ROAD_MARKING_VERSION) {
     throw new Error(`RoadMarkings: expected roads schema v${ROAD_MARKING_VERSION}, got v${json.v}`);
   }

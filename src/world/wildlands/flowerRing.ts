@@ -857,6 +857,9 @@ function createFlowerBucket(
   mesh.layers.set(BEAUTY_ONLY_LAYER);
   mesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
   mesh.count = 0;
+  // Empty streaming pools stay out of the render list so WebGPU does not
+  // compile every flower-tier pipeline during the initial world reveal.
+  mesh.visible = false;
   mesh.boundingBox = new THREE.Box3().makeEmpty();
   mesh.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 0);
   group.add(mesh);
@@ -945,7 +948,10 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
   }
 
   function uploadRows() {
-    for (const bucket of allBuckets) writeFlowerInstances(bucket.mesh, bucket.rows, true);
+    for (const bucket of allBuckets) {
+      writeFlowerInstances(bucket.mesh, bucket.rows, true);
+      bucket.mesh.visible = bucket.rows.length > 0;
+    }
   }
 
   function pushRow(bucket: FlowerBucket, row: Row): boolean {

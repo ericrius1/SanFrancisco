@@ -14,7 +14,9 @@
  * probe confirmed the groundTop slope along that axis stays gentle.
  */
 
-export const ARCHERY_CENTER = { x: -5533, z: 2079 } as const;
+import { ARCHERY_CENTER } from "./meta";
+
+export { ARCHERY_CENTER } from "./meta";
 
 /** Downrange yaw: dir = (sin, cos) = +X (east). */
 export const ARCHERY_YAW = Math.PI / 2;

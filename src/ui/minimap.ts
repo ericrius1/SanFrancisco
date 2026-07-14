@@ -1,4 +1,4 @@
-import { palaceLagoonMask, type WorldMap } from "../world/heightmap";
+import type { WorldMap } from "../world/heightmap";
 import type { PlayerMode } from "../player/types";
 import { BOTANICAL_GARDEN_BOUNDS } from "../world/garden/layout";
 import { WILD_REGIONS } from "../world/wildlands/regions";
@@ -64,9 +64,18 @@ const BRIDGE_COLORS: Record<string, string> = {
 const BRIDGE_FALLBACK_COLOR = "#c85a2a";
 const LAYERS_ENABLED = false; // art/science/music layers parked for now
 // OSM road classes: living street, residential, tertiary, secondary,
-// primary/trunk, motorway. Higher classes get progressively warmer/brighter so
-// the street hierarchy reads at a glance without overwhelming player pins.
-const ROAD_COLORS = ["#748384", "#829091", "#95a29f", "#abb2a8", "#d0c7ad", "#dfba70"] as const;
+// primary/trunk, motorway. The warm progression belongs to the historical
+// survey-map treatment while keeping the hierarchy readable under player pins.
+const ROAD_COLORS = ["#e4d7b8", "#dfcfaa", "#d7bd8d", "#cea66e", "#c58d52", "#bd7541"] as const;
+const HISTORICAL_PILOT_URL = "/map/golden-gate-historical-pilot.webp";
+const HISTORICAL_PILOT_BOUNDS = {
+  minX: -5800,
+  maxX: -1600,
+  minZ: -3900,
+  maxZ: 2400
+} as const;
+
+type RoadPaintGroup = { path: Path2D; width: number; roadClass: number };
 
 const LANDMARK_LABELS: Record<string, string> = {
   transamerica: "Transamerica",
@@ -154,6 +163,9 @@ export class Minimap {
 
   #world!: HTMLCanvasElement; // pre-rendered terrain, 1 grid cell = 1 px
   #roadsPainted = false;
+  #roadPaths: RoadPaintGroup[] = [];
+  #historicalPilot: HTMLCanvasElement | null = null;
+  #historicalPilotStarted = false;
   #mini!: HTMLCanvasElement;
   #count!: HTMLSpanElement;
   #teleWrap!: HTMLDivElement;
@@ -221,7 +233,10 @@ export class Minimap {
     this.#map = map;
     this.#getSelf = getSelf;
     this.#getRemotes = getRemotes;
-    this.#paintWorld();
+    // The map is a DOM canvas, not the WebGPU surface, so it must opt into
+    // Retina resolution itself. Cap at 2x to avoid pathological mobile DPRs.
+    this.#dpr = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
+    this.#paintWorldOffThread();
     // Skip palaceFineArts — Palace Reverie is the dedicated pin for that site.
     this.#landmarks = Object.entries(this.#map.meta.landmarks)
       .filter(([key]) => key !== "palaceFineArts")
@@ -304,80 +319,52 @@ export class Minimap {
 
   /* ------------------------------------------------ terrain backdrop */
 
-  #paintWorld() {
+  #paintWorldOffThread() {
     const { width: W, height: H, cellSize, minX, minZ } = this.#map.meta.grid;
-    const heights = this.#map.heights;
-    const surface = this.#map.surface;
     const c = document.createElement("canvas");
     c.width = W;
     c.height = H;
     const ctx = c.getContext("2d")!;
-    const img = ctx.createImageData(W, H);
-    const d = img.data;
-    for (let y = 0; y < H; y++) {
-      for (let x = 0; x < W; x++) {
-        const i = y * W + x;
-        const o = i * 4;
-        const s = surface[i];
-        const h = heights[i];
-        const isWater = s === 3 || palaceLagoonMask(minX + x * cellSize, minZ + y * cellSize) > 0.08;
-        let r: number, g: number, b: number;
-        if (isWater) {
-          // bay: deeper = darker
-          const t = Math.min(1, Math.max(0, s === 3 ? -h / 16 : 0.18));
-          r = 24 + (1 - t) * 20;
-          g = 88 + (1 - t) * 46;
-          b = 112 + (1 - t) * 42;
-        } else {
-          if (s === 1) {
-            r = 52;
-            g = 92;
-            b = 60; // parks
-          } else if (s === 2) {
-            r = 158;
-            g = 142;
-            b = 104; // sand
-          } else if (s === 4) {
-            // The surface grid is a coarse but immediate road fallback. The
-            // shared vector road graph paints the crisp hierarchy over it once
-            // the traffic system's existing load resolves.
-            r = 111;
-            g = 124;
-            b = 123;
-          } else {
-            r = 62;
-            g = 74;
-            b = 86; // urban
-          }
-          // NW hillshade from the height gradient
-          const hx = heights[i + (x < W - 1 ? 1 : 0)] - h;
-          const hy = heights[i + (y < H - 1 ? W : 0)] - h;
-          const shade = Math.min(1.25, Math.max(0.62, 1 - (hx + hy) * 0.02));
-          // subtle altitude lift so the hills read even face-on
-          const lift = 1 + Math.min(0.35, Math.max(0, h) * 0.0016);
-          r *= shade * lift;
-          g *= shade * lift;
-          b *= shade * lift;
-        }
-        d[o] = r;
-        d[o + 1] = g;
-        d[o + 2] = b;
-        d[o + 3] = 255;
-      }
-    }
-    ctx.putImageData(img, 0, 0);
+    // Immediate period-paper fallback while the full terrain wash is painted
+    // off-thread. This avoids both a blank first draw and main-thread pixel work.
+    ctx.fillStyle = "#beae8e";
+    ctx.fillRect(0, 0, W, H);
     this.#world = c;
+    try {
+      const worker = new Worker(new URL("./minimapWorldWorker.ts", import.meta.url), { type: "module" });
+      worker.onmessage = (event: MessageEvent<{ bitmap: ImageBitmap }>) => {
+        worker.terminate();
+        ctx.clearRect(0, 0, W, H);
+        ctx.drawImage(event.data.bitmap, 0, 0);
+        event.data.bitmap.close();
+        if (this.#mini) this.update();
+      };
+      worker.onerror = (event) => {
+        event.preventDefault();
+        worker.terminate();
+        console.warn("[minimap] terrain worker unavailable; using plain backdrop");
+        if (this.#mini) this.update();
+      };
+      const heights = this.#map.heights.slice();
+      const surface = this.#map.surface.slice();
+      worker.postMessage(
+        { width: W, height: H, cellSize, minX, minZ, heights, surface },
+        [heights.buffer, surface.buffer]
+      );
+    } catch {
+      console.warn("[minimap] terrain worker unavailable; using plain backdrop");
+    }
   }
 
-  /** Paint the traffic system's already-decoded road graph into the persistent
-   * terrain canvas. This is one-time CPU canvas work; map redraws remain a
-   * single cropped drawImage instead of walking thousands of roads per frame. */
+  /** Retain the traffic system's already-decoded road graph as grouped Path2D
+   * geometry. Roads are painted in screen space, so close zoom never magnifies
+   * the old 8 m/px raster. */
   setRoadGraph(roads: RoadGraph) {
     if (this.#roadsPainted) return;
     this.#roadsPainted = true;
 
     const { cellSize, minX, minZ } = this.#map.meta.grid;
-    const paths = new Map<string, { path: Path2D; width: number; roadClass: number }>();
+    const paths = new Map<string, RoadPaintGroup>();
     roads.forEachSegment((pointsX, pointsZ, start, count, width, roadClass) => {
       if (count < 2) return;
       const cls = Math.max(0, Math.min(ROAD_COLORS.length - 1, roadClass));
@@ -394,24 +381,102 @@ export class Minimap {
       }
     });
 
-    const ctx = this.#world.getContext("2d")!;
+    this.#roadPaths = [...paths.values()];
+    this.update();
+  }
+
+  #loadHistoricalPilot() {
+    if (this.#historicalPilotStarted) return;
+    this.#historicalPilotStarted = true;
+    const image = new Image();
+    image.decoding = "async";
+    image.addEventListener(
+      "load",
+      () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = image.naturalWidth;
+        canvas.height = image.naturalHeight;
+        const ctx = canvas.getContext("2d")!;
+        ctx.drawImage(image, 0, 0);
+
+        // Feather the pilot into the city-wide procedural period palette. A
+        // later tiled atlas can use hard shared edges instead.
+        ctx.globalCompositeOperation = "destination-in";
+        const gx = ctx.createLinearGradient(0, 0, canvas.width, 0);
+        gx.addColorStop(0, "rgba(0,0,0,0)");
+        gx.addColorStop(0.035, "rgba(0,0,0,1)");
+        gx.addColorStop(0.965, "rgba(0,0,0,1)");
+        gx.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.fillStyle = gx;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        const gy = ctx.createLinearGradient(0, 0, 0, canvas.height);
+        gy.addColorStop(0, "rgba(0,0,0,0)");
+        gy.addColorStop(0.025, "rgba(0,0,0,1)");
+        gy.addColorStop(0.975, "rgba(0,0,0,1)");
+        gy.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.fillStyle = gy;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        this.#historicalPilot = canvas;
+        this.update();
+      },
+      { once: true }
+    );
+    image.src = HISTORICAL_PILOT_URL;
+  }
+
+  #drawHistoricalPilot(
+    ctx: CanvasRenderingContext2D,
+    px: (x: number) => number,
+    pz: (z: number) => number
+  ) {
+    const tile = this.#historicalPilot;
+    if (!tile) return;
+    const x = px(HISTORICAL_PILOT_BOUNDS.minX);
+    const y = pz(HISTORICAL_PILOT_BOUNDS.minZ);
+    const w = px(HISTORICAL_PILOT_BOUNDS.maxX) - x;
+    const h = pz(HISTORICAL_PILOT_BOUNDS.maxZ) - y;
+    ctx.drawImage(tile, x, y, w, h);
+  }
+
+  #drawVectorRoads(
+    ctx: CanvasRenderingContext2D,
+    center: { x: number; z: number },
+    centerX: number,
+    centerY: number,
+    pxPerMX: number,
+    pxPerMZ = pxPerMX
+  ) {
+    if (!this.#roadPaths.length) return;
+    const { cellSize, minX, minZ } = this.#map.meta.grid;
+    const scaleX = cellSize * pxPerMX;
+    const scaleY = cellSize * pxPerMZ;
+    const scale = Math.max(0.0001, Math.min(scaleX, scaleY));
+    const dpr = this.#dpr;
     ctx.save();
+    ctx.setTransform(
+      scaleX,
+      0,
+      0,
+      scaleY,
+      centerX + (minX - center.x) * pxPerMX,
+      centerY + (minZ - center.z) * pxPerMZ
+    );
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
-    // A dark casing separates streets from both urban terrain and parks, then
-    // the class colour supplies the navigational hierarchy.
-    ctx.strokeStyle = "rgba(18, 29, 35, 0.92)";
-    for (const { path, width } of paths.values()) {
-      ctx.lineWidth = Math.max(1.35, width / cellSize + 1.05);
+    ctx.strokeStyle = "rgba(73, 57, 38, 0.82)";
+    for (const { path, width } of this.#roadPaths) {
+      const targetPx = Math.max(1.25 * dpr, width * Math.min(pxPerMX, pxPerMZ) + 1.15 * dpr);
+      ctx.lineWidth = targetPx / scale;
       ctx.stroke(path);
     }
-    for (const { path, width, roadClass } of paths.values()) {
+    for (const { path, width, roadClass } of this.#roadPaths) {
+      const targetPx = Math.max(0.7 * dpr, width * Math.min(pxPerMX, pxPerMZ));
       ctx.strokeStyle = ROAD_COLORS[roadClass];
-      ctx.lineWidth = Math.max(0.72, width / cellSize);
+      ctx.lineWidth = targetPx / scale;
       ctx.stroke(path);
     }
     ctx.restore();
-    this.update();
   }
 
   /** world metres → world-canvas px */
@@ -717,10 +782,14 @@ export class Minimap {
     );
 
     const mc = size / 2;
+    const miniPx = (x: number) => mc + (x - center.x) * pxPerM;
+    const miniPz = (z: number) => mc + (z - center.z) * pxPerM;
+    this.#drawHistoricalPilot(ctx, miniPx, miniPz);
+    this.#drawVectorRoads(ctx, center, mc, mc, pxPerM);
     this.#drawBridges(
       ctx,
-      (x) => mc + (x - center.x) * pxPerM,
-      (z) => mc + (z - center.z) * pxPerM,
+      miniPx,
+      miniPz,
       pxPerM
     );
     if (LAYERS_ENABLED) this.#drawMiniPlaces(ctx, center, pxPerM, size);
@@ -1273,6 +1342,9 @@ export class Minimap {
     if (on === this.expanded) return;
     this.expanded = on;
     if (on) {
+      // The detailed GPT-painted plate is optional map art. Keep it out of the
+      // clean boot waterfall and request it only on first full-map activation.
+      this.#loadHistoricalPilot();
       this.#centerBigOnSelf(true);
       this.#padCursor = { nx: 0, ny: 0 };
       if (!this.#bigWrap) this.#buildBig();
@@ -1700,6 +1772,11 @@ export class Minimap {
     const pz = (z: number) => canvas.height / 2 + (z - center.z) * sy;
     const visible = (x: number, y: number, margin = 16 * dpr) =>
       x >= -margin && y >= -margin && x <= canvas.width + margin && y <= canvas.height + margin;
+
+    // GPT-painted detail is only an underlay. Authoritative vector streets and
+    // bridges are redrawn above it at the current screen resolution.
+    this.#drawHistoricalPilot(ctx, px, pz);
+    this.#drawVectorRoads(ctx, center, canvas.width / 2, canvas.height / 2, sx, sy);
 
     // bridge decks under the pins
     this.#drawBridges(ctx, px, pz, sx);

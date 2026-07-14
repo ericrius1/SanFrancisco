@@ -47,6 +47,13 @@ const VIEW = {
 
 const smoothstep = (t: number) => t * t * (3 - 2 * t)
 
+// A continuous vehicle can cover this distance only over many rendered frames.
+// Crossing it in one camera sample is therefore a world-space relocation, not
+// follow motion. Keep this local fallback even when the normal teleport caller
+// uses cutTo(), so restores/invites cannot accidentally fly the camera across SF.
+const TELEPORT_SNAP_DISTANCE = 45
+const TELEPORT_SNAP_DISTANCE_SQ = TELEPORT_SNAP_DISTANCE * TELEPORT_SNAP_DISTANCE
+
 // Per-mode camera volume and minimum readable framing. `comfort` is the nearest
 // boom distance we keep once the cutaway takes over; `cutRadius` is the visual
 // tunnel radius around the sight line. Large/faster mounts need more context.
@@ -106,6 +113,9 @@ export class ChaseCamera {
   #initialized = false
   #externallyOwned = false
   #holdOrbitPose = false
+  #lastAnchor = new THREE.Vector3()
+  #hasLastAnchor = false
+  #cutOnResume = false
   #lastMode: PlayerMode | null = null
   #surfCamera: SurfCameraController | null = null
   #surfCameraLoading: Promise<void> | null = null
@@ -137,6 +147,42 @@ export class ChaseCamera {
 
   surfCameraDiagnostics(): SurfCameraDiagnostics | null {
     return this.#surfCamera?.diagnostics() ?? null
+  }
+
+  /**
+   * Hard-cut every local camera pose to the player's current rendered transform.
+   * Call this after an atomic relocation (and after assigning a destination yaw,
+   * when desired) so no old-world follow, first-person, or obstruction history
+   * can leak into the first destination frame.
+   */
+  cutTo(player: Player): void {
+    this.#setDesiredPose(player)
+    this.#snapFollowPose()
+    this.#indoor = 0
+    this.#firstPersonAvatarHidden = false
+    this.#safeBoomDistance = 0
+    this.#cutaway = 0
+    this.#buildingBlocked = false
+    this.#lastHitDistance = Infinity
+    this.#holdOrbitPose = false
+    this.#initialized = true
+    this.#externallyOwned = false
+    this.#lastMode = player.mode
+    this.#cutOnResume = false
+    this.shakeAmount = 0
+    this.#surfCamera?.reset()
+    player.setFirstPersonView(false)
+    clearCameraCutaway()
+    this.#applyFov(0)
+    this.camera.position.copy(this.#orbitPos)
+    this.camera.up.copy(this.#up)
+    this.#lookMatrix.lookAt(this.#orbitPos, this.#target, this.#up)
+    this.#orbitQuat.setFromRotationMatrix(this.#lookMatrix)
+    this.#heldOrbitQuat.copy(this.#orbitQuat)
+    this.#firstPersonEuler.set(-this.pitch, this.yaw, 0, "YXZ")
+    this.#firstPersonQuat.setFromEuler(this.#firstPersonEuler)
+    this.camera.quaternion.copy(this.#orbitQuat)
+    this.#recordAnchor(player)
   }
 
   /** First-use gate for the activity-only camera chunk. */
@@ -179,6 +225,9 @@ export class ChaseCamera {
 
   /** Hand camera ownership to orbit/cinematics and restore the local avatar. */
   suspend(player: Player) {
+    // Keep ordinary cinematic travel out of the teleport detector, but remember
+    // a one-frame player jump so resuming cannot reintroduce a cross-city lerp.
+    if (this.#recordAnchor(player)) this.#cutOnResume = true
     if (!this.#externallyOwned) {
       this.#externallyOwned = true
       this.#surfCamera?.reset()
@@ -193,6 +242,84 @@ export class ChaseCamera {
     clearCameraCutaway()
     player.setFirstPersonView(false)
     this.#applyFov(0)
+  }
+
+  #recordAnchor(player: Player): boolean {
+    const anchor = player.renderPosition
+    const discontinuity =
+      this.#hasLastAnchor &&
+      anchor.distanceToSquared(this.#lastAnchor) > TELEPORT_SNAP_DISTANCE_SQ
+    this.#lastAnchor.copy(anchor)
+    this.#hasLastAnchor = true
+    return discontinuity
+  }
+
+  /** Build both desired rig endpoints without mutating any follow history. */
+  #setDesiredPose(player: Player): boolean {
+    const o = OFFSETS[player.mode]
+    const backBase = o.back * this.zoom
+    let back = backBase
+    let up = o.up * this.zoom
+    // bigger phoenix needs more boom; tuck/stoop adds a little more so the mount
+    // stays in frame instead of filling the viewport at triple speed
+    if (player.mode === "bird") {
+      const fast = THREE.MathUtils.clamp(player.speed / 110, 0, 1)
+      back = backBase * (1 + fast * 0.38)
+      up += fast * 1.1
+    }
+
+    // Anchor on the interpolated render transform. Player relocations reset that
+    // interpolation history, so this is also the authoritative cut destination.
+    const anchor = player.renderPosition
+    this.#target.copy(anchor)
+    this.#target.y += o.look
+    const cx = anchor.x + Math.sin(this.yaw) * Math.cos(this.pitch) * back
+    const cz = anchor.z + Math.cos(this.yaw) * Math.cos(this.pitch) * back
+    const cy = anchor.y + up + Math.sin(this.pitch) * back
+    this.#chasePos.set(cx, cy, cz)
+
+    // Keep above the terrain/seabed only — NOT above sea level. Clamping to y=0
+    // used to pin the camera on the surface, so diving or a sinking car left the
+    // view locked overhead. Following down to the bay floor lets the shot stay on
+    // the player underwater; the seabed clamp still stops it clipping through.
+    const floor = this.#map.effectiveGround(cx, cz) + 0.7
+    if (this.#chasePos.y < floor) this.#chasePos.y = floor
+    // Swim camera: surface rest stays above the live waterline (a low boom must
+    // not flash the underwater overlay); a committed dive still ducks under.
+    // Dive detection uses the calm/mean surface — Ocean Beach crests otherwise
+    // spike waterY by metres and false-trigger the underwater path while the
+    // body is still surface-swimming. Clearance sits above the overlay
+    // hysteresis (~0.45 m) so swell bob doesn't flicker the tint.
+    let surfaceSwimCam = false
+    if (player.mode === "walk") {
+      const waterY = waterHeight(anchor.x, anchor.z, player.time)
+      const calmY =
+        waterY - oceanBeachWaveHeight(anchor.x, anchor.z, player.time)
+      const seabed = this.#map.effectiveGround(anchor.x, anchor.z)
+      // threshold sits well below the surface-swim rest (~0.5 m down) so bobbing
+      // at the top keeps the eye above water; only a committed dive ducks it under
+      const deepDive = anchor.y < calmY - 1.6 && seabed < calmY - 2.5
+      if (deepDive) {
+        this.#chasePos.y = Math.min(this.#chasePos.y, waterY - 0.8)
+      } else if (player.swimming) {
+        surfaceSwimCam = true
+        const camWater =
+          waterHeight(this.#chasePos.x, this.#chasePos.z, player.time) + 0.55
+        if (this.#chasePos.y < camWater) this.#chasePos.y = camWater
+      }
+    }
+
+    // The walk rig's eyes are ~0.78 m above the capsule centre. This endpoint is
+    // fixed to that eye line and deliberately ignores chase zoom; the local walk
+    // embodiment is hidden near the end of the blend to prevent self-clipping.
+    this.#eyePos.set(anchor.x, anchor.y + VIEW.eyeHeight, anchor.z)
+    return surfaceSwimCam
+  }
+
+  #snapFollowPose() {
+    this.#orbitPos.copy(this.#chasePos)
+    this.#firstPersonPos.copy(this.#eyePos)
+    this.#orbitViewPos.copy(this.#chasePos)
   }
 
   #resume(player: Player) {
@@ -218,6 +345,8 @@ export class ChaseCamera {
 
   update(dt: number, player: Player, input: Input) {
     this.#resume(player)
+    const discontinuity = this.#cutOnResume || this.#recordAnchor(player)
+    if (discontinuity) this.cutTo(player)
     if (player.mode === "surf") {
       // Surf is a complete camera context. It deliberately consumes no Input,
       // orbit/zoom state, board roll, or Flow hero-shot rotation.
@@ -348,64 +477,11 @@ export class ChaseCamera {
       )
     }
 
-    const o = OFFSETS[player.mode]
-    const backBase = o.back * this.zoom
-    let back = backBase
-    let up = o.up * this.zoom
-    // bigger phoenix needs more boom; tuck/stoop adds a little more so the mount
-    // stays in frame instead of filling the viewport at triple speed
-    if (player.mode === "bird") {
-      const fast = THREE.MathUtils.clamp(player.speed / 110, 0, 1)
-      back = backBase * (1 + fast * 0.38)
-      up += fast * 1.1
-    }
-
-    // anchor on the interpolated render transform — the raw physics transform
-    // only advances at the fixed step and stutters at high refresh rates
-    const anchor = player.renderPosition
-    this.#target.copy(anchor)
-    this.#target.y += o.look
-    const cx = anchor.x + Math.sin(this.yaw) * Math.cos(this.pitch) * back
-    const cz = anchor.z + Math.cos(this.yaw) * Math.cos(this.pitch) * back
-    const cy = anchor.y + up + Math.sin(this.pitch) * back
-
-    this.#chasePos.set(cx, cy, cz)
-
-    // keep above the terrain/seabed only — NOT above sea level. Clamping to y=0
-    // used to pin the camera on the surface, so diving or a sinking car left the
-    // view locked overhead. Following down to the bay floor lets the shot stay on
-    // the player underwater; the seabed clamp still stops it clipping through.
-    const floor = this.#map.effectiveGround(cx, cz) + 0.7
-    if (this.#chasePos.y < floor) this.#chasePos.y = floor
-    // Swim camera: surface rest stays above the live waterline (a low boom must
-    // not flash the underwater overlay); a committed dive still ducks under.
-    // Dive detection uses the calm/mean surface — Ocean Beach crests otherwise
-    // spike waterY by metres and false-trigger the underwater path while the
-    // body is still surface-swimming. Clearance sits above the overlay
-    // hysteresis (~0.45 m) so swell bob doesn't flicker the tint.
-    let surfaceSwimCam = false
-    if (player.mode === "walk") {
-      const waterY = waterHeight(anchor.x, anchor.z, player.time)
-      const calmY =
-        waterY - oceanBeachWaveHeight(anchor.x, anchor.z, player.time)
-      const seabed = this.#map.effectiveGround(anchor.x, anchor.z)
-      // threshold sits well below the surface-swim rest (~0.5 m down) so bobbing
-      // at the top keeps the eye above water; only a committed dive ducks it under
-      const deepDive = anchor.y < calmY - 1.6 && seabed < calmY - 2.5
-      if (deepDive) {
-        this.#chasePos.y = Math.min(this.#chasePos.y, waterY - 0.8)
-      } else if (player.swimming) {
-        surfaceSwimCam = true
-        const camWater =
-          waterHeight(this.#chasePos.x, this.#chasePos.z, player.time) + 0.55
-        if (this.#chasePos.y < camWater) this.#chasePos.y = camWater
-      }
-    }
-
-    // The walk rig's eyes are ~0.78 m above the capsule centre. This endpoint is
-    // fixed to that eye line and deliberately ignores chase zoom; the local walk
-    // embodiment is hidden near the end of the blend to prevent self-clipping.
-    this.#eyePos.set(anchor.x, anchor.y + VIEW.eyeHeight, anchor.z)
+    const surfaceSwimCam = this.#setDesiredPose(player)
+    // cutTo() ran before input/plane heading was consumed. Re-snap the endpoints
+    // to the final pose for this frame so even that small orientation update does
+    // not become a one-frame lerp after an automatically detected relocation.
+    if (discontinuity) this.#snapFollowPose()
 
     // critically-damped-ish follow; flying gets a floatier tail, the drone a
     // slightly loose one so swoops read as motion instead of a rigid rig

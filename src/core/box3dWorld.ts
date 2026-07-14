@@ -11,7 +11,6 @@
 // facade boundary; box3d's internal {v,s} form stays inside), the 1/60 fixed
 // step and the ragdoll bone layout are all kept identical to the old wrapper.
 
-import Box3DFactory from "box3d.js/inline";
 import { tracer } from "./hitchTracer";
 import type {
   Box3DModule,
@@ -771,8 +770,18 @@ export class PhysicsWorld {
 }
 
 export async function createBox3D(): Promise<Box3D> {
-  const module = await Box3DFactory();
+  const module = await loadBox3DModule();
   return new Box3D(module);
+}
+
+// The inline package contains the physics WASM as a ~1 MB JavaScript literal.
+// Keep it out of the entry chunk and initialize that shared Emscripten module
+// only when the first authoritative physics world is actually requested.
+let box3DModulePromise: Promise<Box3DModule> | null = null;
+
+function loadBox3DModule(): Promise<Box3DModule> {
+  box3DModulePromise ??= import("box3d.js/inline").then(({ default: Box3DFactory }) => Box3DFactory());
+  return box3DModulePromise;
 }
 
 // ---------------------------------------------------------------------------

@@ -46,7 +46,7 @@ import { buildCarMesh, CarController } from "../vehicles/car";
 import { buildPlaneMesh, collectPlaneAnim, FlyController, type PlaneAnim } from "../vehicles/plane";
 import { buildBoatMesh, buildSpeedboatMesh, BoatController, BOAT_TUNING, SPEEDBOAT_TUNING, type BoatSailRig } from "../vehicles/boat";
 import { buildDroneMesh, DroneController } from "../vehicles/drone";
-import { buildBoardMesh, animateBoard, updateBoardSurface, BoardController, BOARD_TUNING, type BoardConfig } from "../vehicles/board";
+import { buildBoardMesh, activateBoardSurface, animateBoard, updateBoardSurface, BoardController, BOARD_TUNING, type BoardConfig } from "../vehicles/board";
 import {
   activateSurfboardAssets,
   animateSurfboard,
@@ -58,7 +58,7 @@ import {
   type SurfTelemetry
 } from "../vehicles/surf";
 import { animateScooter, buildScooterMesh, ScooterController, type ScooterConfig } from "../vehicles/scooter";
-import { buildBirdMesh, BirdController } from "../vehicles/bird";
+import { activateBirdAssets, buildBirdMesh, BirdController } from "../vehicles/bird";
 import { setEmbodimentVisible } from "./embodimentVisibility";
 
 export type { GardenRakeMotion, GardenRakeTool } from "./gardenRake";
@@ -164,6 +164,9 @@ export class Player {
   #currQuaternion = new THREE.Quaternion();
   #prevPosition = new THREE.Vector3();
   #prevQuaternion = new THREE.Quaternion();
+  #arrivalHolds = new Set<string>();
+  #arrivalHoldPosition = new THREE.Vector3();
+  #arrivalHoldQuaternion = new THREE.Quaternion();
 
   meshes: Record<PlayerMode, THREE.Group>;
 
@@ -304,7 +307,9 @@ export class Player {
       boat: buildBoatMesh(),
       speedboat: buildSpeedboatMesh(),
       drone: buildDroneMesh(),
-      board: buildBoardMesh(board),
+      // The board is invisible in the ordinary walking boot. Its selected
+      // procedural deck art hydrates in a worker only if board mode is used.
+      board: buildBoardMesh(board, { deferSurface: true }),
       surf: buildSurfboardMesh(surfboard),
       bird: buildBirdMesh()
     };
@@ -439,6 +444,11 @@ export class Player {
     this.#prevQuaternion.copy(this.quaternion);
     this.renderPosition.copy(this.#currPosition);
     this.renderQuaternion.copy(this.quaternion);
+    if (this.worldArrivalHeld) {
+      this.#arrivalHoldPosition.copy(this.#currPosition);
+      this.#arrivalHoldQuaternion.copy(this.quaternion);
+      w.setBodyVelocity(this.body, [0, 0, 0], [0, 0, 0]);
+    }
     // keep the storage convention from the first frame, not just after an update
     this.heading = facing + Math.PI;
     for (const [k, m] of Object.entries(this.meshes)) {
@@ -447,6 +457,11 @@ export class Player {
     // Surf art is intentionally absent from boot. The active board requests
     // only its selected surface/decal the first time surfing actually starts.
     if (mode === "surf") void activateSurfboardAssets(this.meshes.surf);
+    if (mode === "board") void activateBoardSurface(this.meshes.board);
+    // Imported phoenix geometry/plumage is likewise first-use only. The stable
+    // root and controller already exist, so switching remains synchronous while
+    // the visual asset hydrates into that root.
+    if (mode === "bird") void activateBirdAssets(this.meshes.bird);
     this.#lightPool.claim(this.meshes[mode]);
     this.onModeChange(mode);
   }
@@ -478,6 +493,52 @@ export class Player {
   respawn(spawn: { x: number; z: number; heading: number }) {
     this.position.set(spawn.x, this.map.effectiveGround(spawn.x, spawn.z) + 1.5, spawn.z);
     this.#spawnBody("walk", spawn.heading);
+  }
+
+  /**
+   * Pin the authoritative body while a world arrival streams its local safety
+   * collision. The renderer and the rest of the world remain live, but neither
+   * gravity nor held movement input can move the player into an incomplete
+   * collision neighbourhood. Body recreation during the arrival (walk landing,
+   * remote-mode join) refreshes the pin in #spawnBody.
+   */
+  holdForWorldArrival(reason = "world-arrival"): void {
+    this.#arrivalHolds.add(reason);
+    if (!this.body || this.riding) return;
+    const t = this.physics.world.getBodyTransform(this.body);
+    this.#arrivalHoldPosition.set(t.position[0], t.position[1], t.position[2]);
+    this.#arrivalHoldQuaternion.set(t.rotation[0], t.rotation[1], t.rotation[2], t.rotation[3]);
+    this.#applyArrivalHold();
+  }
+
+  releaseWorldArrivalHold(reason = "world-arrival"): void {
+    if (!this.#arrivalHolds.has(reason)) return;
+    if (this.body && !this.riding) this.#applyArrivalHold();
+    this.#arrivalHolds.delete(reason);
+  }
+
+  get worldArrivalHeld(): boolean {
+    return this.#arrivalHolds.size > 0;
+  }
+
+  #applyArrivalHold(): void {
+    if (!this.body || this.riding) return;
+    const w = this.physics.world;
+    const p = this.#arrivalHoldPosition;
+    const q = this.#arrivalHoldQuaternion;
+    w.setBodyTransform(this.body, [p.x, p.y, p.z], [q.x, q.y, q.z, q.w]);
+    w.setBodyVelocity(this.body, [0, 0, 0], [0, 0, 0]);
+    w.setBodyAwake(this.body, true);
+    this.position.copy(p);
+    this.renderPosition.copy(p);
+    this.#currPosition.copy(p);
+    this.#prevPosition.copy(p);
+    this.quaternion.copy(q);
+    this.renderQuaternion.copy(q);
+    this.#currQuaternion.copy(q);
+    this.#prevQuaternion.copy(q);
+    this.velocity.set(0, 0, 0);
+    this.speed = 0;
   }
 
   /**
@@ -547,7 +608,7 @@ export class Player {
    * shove while driving would feel like a physics bug.
    */
   separateFromAvatars(others: readonly { x: number; z: number }[], dt: number) {
-    if (this.riding || this.mode !== "walk" || !this.body) return;
+    if (this.worldArrivalHeld || this.riding || this.mode !== "walk" || !this.body) return;
     const RADIUS = 0.7; // rig shoulders are ~0.6 m wide
     const SPEED = 1.1; // m/s of drift, slow enough to read as a polite step
     let px = 0;
@@ -628,6 +689,10 @@ export class Player {
   /** One fixed physics step of control. `aim` (camera direction) drives drone movement; fly steers via steerFly. */
   update(dt: number, input: Input, camYaw: number, aim: THREE.Vector3) {
     if (this.riding) return; // no body — the driver's car moves us
+    if (this.worldArrivalHeld) {
+      this.#applyArrivalHold();
+      return;
+    }
     this.time += dt;
     const w = this.physics.world;
     // keep the player body hot: box3d silently drops velocity writes on sleeping
@@ -1376,6 +1441,10 @@ export class Player {
    * frame, `alpha` is accumulator/fixedTimeStep in [0,1).
    */
   afterSteps(stepped: number, alpha: number) {
+    if (this.worldArrivalHeld) {
+      this.#applyArrivalHold();
+      return;
+    }
     if (stepped > 0) {
       // this.position/quaternion hold the state read at the START of the last
       // update() — i.e. one step behind the solver — which is exactly `prev`
