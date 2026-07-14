@@ -188,6 +188,7 @@ async function main() {
     assert(regionRequestCount() === 1, `close zoom refetched or added regions (${JSON.stringify(requests.regions)})`);
     assert(requests.detail === 1, `close zoom made ${requests.detail} detail requests`);
     assert(pageErrors.length === 0, `page errors: ${pageErrors.join(" | ")}`);
+    const closeZoomRequests = snapshotRequests();
 
     // Visit every regional core independently. Each move should add exactly
     // the requested tile and no other region; r1-c0 is already resident.
@@ -225,7 +226,7 @@ async function main() {
       bootRequests,
       activationRequests: { overview: 1, regions: 0, detail: 0 },
       regionalRequests: { overview: 1, regions: { [regionAsset]: 1 }, detail: 0 },
-      closeZoomRequests: snapshotRequests(),
+      closeZoomRequests,
       completeAtlasRequests: snapshotRequests(),
       canvas: canvasInfo,
       closestZoomSpanM: timing.debug.spanX,
