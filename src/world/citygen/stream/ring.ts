@@ -23,6 +23,12 @@ import { buildCityGenMaterials } from "../theme/materials";
 import type { BuildingSpec, ColliderBox, ColliderMesh, MeshData, ModuleInstance } from "../core/types";
 import { CITYGEN_TUNING, CONFIG } from "../../../config";
 import { enableShadowLayer, SHADOW_LAYERS } from "../../shadows/shadowLayers";
+import {
+  aabbDistance2,
+  compareDetailAdmission,
+  footprintSurfaceDistance2,
+  shouldAdmitNewDetail,
+} from "./detailAdmission";
 import type { CityGridIngestReply, PackedCityGrid } from "./ingestTypes";
 
 const READY = new Set(["victorian", "edwardian", "marina", "downtown", "soma"]);
@@ -288,6 +294,20 @@ export interface CityGenRing {
     interiors: number;
     exteriorPipelinesPrepared: number;
     exteriorPipelinePrepareFailures: number;
+    exteriorPipelinePrepareCancellations: number;
+    cellsReady: number;
+    cellsAwaitingPrepare: number;
+    cellsPreparing: number;
+    activeChunkPrepare: boolean;
+    cellGeneration: number;
+    hydrationQueued: number;
+    detailBuildQueued: number;
+    detailBuildActive: boolean;
+    admissionRadius: number;
+    detailCoreRadius: number;
+    detailCoreEligible: number;
+    detailCoreMissing: number;
+    detailCostUsed: number;
     shellBatches: number;
     shellPreparedBatches: number;
     shellGeometryVertexCapacity: number;
@@ -376,9 +396,10 @@ export async function createCityGenRing(
     map: { groundHeight(x: number, z: number): number; surfaceType?(x: number, z: number): number };
     tiles: Tiles;
     schedule?: ScheduleFn;
-    /** Re-enter the host's quiet-work gate after async ingestion, immediately
-     * before this function creates any Three/WebGPU render owner. */
-    beforeRenderOwnership?: () => Promise<void>;
+    /** Yield to the host immediately before creating/preparing a WebGPU owner.
+     * Per-cell calls receive a current-generation predicate so a destination
+     * change can cancel work before a non-cancellable driver compile begins. */
+    beforeRenderOwnership?: (isCurrent?: () => boolean) => Promise<boolean | void>;
     /** Prepare one detached render owner in the exact host render context. The
      * production host uses WebGPURenderer.compileAsync(owner, camera, scene). */
     prepareRenderOwner?: (owner: THREE.Object3D) => Promise<void>;
@@ -406,24 +427,39 @@ export async function createCityGenRing(
   let chunkLODBeautyWarmup: ReturnType<typeof createChunkLODBeautyWarmup> | null = null;
   let exteriorPipelinesPrepared = 0;
   let exteriorPipelinePrepareFailures = 0;
+  let exteriorPipelinePrepareCancellations = 0;
   const prepareOwner = async (
     label: string,
     owner: THREE.Object3D,
     isCurrent?: () => boolean,
   ): Promise<boolean> => {
     if (!ctx.prepareRenderOwner) return false;
-    if (isCurrent && !isCurrent()) return false;
+    if (isCurrent && !isCurrent()) {
+      exteriorPipelinePrepareCancellations++;
+      return false;
+    }
     try {
-      // A previous async compile can outlive the quiet decision that admitted
-      // it. Re-enter the movement/arrival gate before EVERY next driver request.
-      await ctx.beforeRenderOwnership?.();
-      // A teleport/unload can happen while the quiet gate is pending. Do not
+      // Yield once before EVERY driver request. The host passes `isCurrent`
+      // through its arrival wait, so a teleport can abort a pending old-cell
+      // owner instead of serializing the destination behind it.
+      const admitted = await ctx.beforeRenderOwnership?.(isCurrent);
+      if (admitted === false) {
+        exteriorPipelinePrepareCancellations++;
+        return false;
+      }
+      // A teleport/unload can happen while the host yield is pending. Do not
       // start driver work for an owner that has already lost publication rights.
-      if (isCurrent && !isCurrent()) return false;
+      if (isCurrent && !isCurrent()) {
+        exteriorPipelinePrepareCancellations++;
+        return false;
+      }
       await ctx.prepareRenderOwner(owner);
       // compileAsync itself is not cancellable. Its late result may warm caches,
       // but it must never publish a stale owner.
-      if (isCurrent && !isCurrent()) return false;
+      if (isCurrent && !isCurrent()) {
+        exteriorPipelinePrepareCancellations++;
+        return false;
+      }
       exteriorPipelinesPrepared++;
       return true;
     } catch (error) {
@@ -718,6 +754,11 @@ export async function createCityGenRing(
   // per frame doing nothing but an early-out (measured ~8% of frame CPU).
   const detailSet = new Set<Entry>();
   let accum = 0;
+  let lastAdmissionRadius = CT.detailRadius;
+  let lastDetailCoreRadius = Math.min(CT.detailCoreRadius, CT.detailRadius);
+  let lastDetailCoreEligible = 0;
+  let lastDetailCoreMissing = 0;
+  let lastDetailCostUsed = 0;
 
   // Every box is mirrored into the query world (walls AND interior geometry) so
   // raycasts (paint / world cursor / aim reticle) hit citygen geometry exactly
@@ -923,8 +964,9 @@ export async function createCityGenRing(
     grade: e.grade, frontGround: e.frontGround, h: e.h, archetype: e.archetype, seed: e.seed,
   });
   const detailBuildDistance2 = (e: Entry) => {
-    const dx = e.cx - lastPlayer.x, dz = e.cz - lastPlayer.z;
-    return dx * dx + dz * dz;
+    // Queue the nearest wall, not the nearest centroid. This matters for long
+    // blocks whose facade is beside the player while their centre is far away.
+    return aabbDistance2(e.bb, lastPlayer.x, lastPlayer.z);
   };
   const detailBuildIsCurrent = (e: Entry, reservation?: number) => {
     if (
@@ -1843,12 +1885,20 @@ export async function createCityGenRing(
       // Fixed visual retention/exit band: no runtime quality contraction.
       const detailR = CT.detailRadius;
       const detailExit = detailR + DETAIL_EXIT_MARGIN, detailExit2 = detailExit * detailExit;
+      // A compact footprint-edge core is never sacrificed merely because a
+      // large nearby facade costs more than the remainder of the legacy outer
+      // budget. It still counts against maxDetail and spends that budget, so
+      // this fixes close architecture without expanding the whole 700 m tier.
+      const detailCoreR = Math.min(CT.detailCoreRadius, detailR);
+      const detailCoreR2 = detailCoreR * detailCoreR;
       // Fast traversal can still avoid starting work that will be passed before
       // it finishes. This affects candidates only; holders use detailR/detailExit.
       const speedT = Math.min(1, Math.max(0, (speedEma - 18) / 22));
       const admissionFloor = Math.min(160, detailR);
       const admissionR = detailR * (1 - speedT) + admissionFloor * speedT;
       const admissionR2 = admissionR * admissionR;
+      lastAdmissionRadius = admissionR;
+      lastDetailCoreRadius = detailCoreR;
       const maxDetail = CT.maxDetail;
       const collR2 = COLLIDER_R * COLLIDER_R, collExit2 = COLLIDER_EXIT * COLLIDER_EXIT;
       // headroom check for the detail budget below — dt is this frame's delta (update()
@@ -1893,18 +1943,48 @@ export async function createCityGenRing(
       // helps after a long drive frees slots). Rank everyone in range, keep the
       // closest maxDetail, fade the rest. Fading-out holders do NOT count toward
       // the cap, so a nearer candidate can start building while the far one fades.
-      const candidates: [Entry, number][] = [];
-      const haveDetail: [Entry, number][] = [];
+      type RankedDetail = {
+        entry: Entry;
+        centerDistance2: number;
+        surfaceDistance2: number;
+        sticky: boolean;
+      };
+      const candidates: RankedDetail[] = [];
+      const haveDetail: RankedDetail[] = [];
       const wantColl: [Entry, number][] = [];
+      let detailCoreEligible = 0;
+      let detailCoreMissing = 0;
       for (const cell of loaded.values()) {
         if (cell.phase !== "ready") continue;
         for (const e of cell.entries) {
           const dx = playerPos.x - e.cx, dz = playerPos.z - e.cz;
           const d2 = dx * dx + dz * dz;
+          const surfaceDistance2 = footprintSurfaceDistance2(
+            e.poly,
+            e.bb,
+            playerPos.x,
+            playerPos.z,
+            detailCoreR2,
+          );
+          const inCore = surfaceDistance2 <= detailCoreR2;
+          if (inCore) {
+            detailCoreEligible++;
+            if (!e.detail) detailCoreMissing++;
+          }
           if (e.detail) {
-            haveDetail.push([e, d2]);
-          } else if (d2 < admissionR2) {
-            candidates.push([e, d2]);
+            haveDetail.push({
+              entry: e,
+              centerDistance2: d2,
+              surfaceDistance2,
+              sticky: e.fadeDir >= 0,
+            });
+          } else if (inCore || d2 < admissionR2) {
+            candidates.push({
+              entry: e,
+              centerDistance2: d2,
+              surfaceDistance2,
+              sticky: false,
+            });
           }
           if (!e.detail) {
             if (e.state === "lod") { if (d2 < collR2) wantColl.push([e, d2]); }
@@ -1912,6 +1992,8 @@ export async function createCityGenRing(
           }
         }
       }
+      lastDetailCoreEligible = detailCoreEligible;
+      lastDetailCoreMissing = detailCoreMissing;
 
       // Rank holders + candidates by distance; nearest maxDetail earn/keep a slot.
       // Holders past detailExit are ranked but never kept (they must leave).
@@ -1925,13 +2007,12 @@ export async function createCityGenRing(
       // dissolve on one façade/roof while its neighbours were solid. The bonus also
       // covers fading-IN holders so an in-flight fade can finish before it's evictable.
       const STICKY = 0.76; // ≈0.87² on squared distance → ~13% linear dead-band
-      const rankKey = (e: Entry, d2: number) => (e.detail && e.fadeDir >= 0 ? d2 * STICKY : d2);
       const ranked = haveDetail.concat(candidates);
-      ranked.sort((a, b) => rankKey(a[0], a[1]) - rankKey(b[0], b[1]));
+      ranked.sort((a, b) => compareDetailAdmission(a, b, detailCoreR2, STICKY));
       const keep = new Set<Entry>();
       // Occupancy/reveal safety outranks the nearest-N cap. This prevents a large
       // building (centroid far from its doorway) from fading around its player.
-      for (const [e] of haveDetail) if (playerOccupiesDetail(e)) keep.add(e);
+      for (const { entry } of haveDetail) if (playerOccupiesDetail(entry)) keep.add(entry);
       const costOf = (e: Entry): number => {
         if (e.cost === undefined) {
           // Entry hydration normally guarantees this. Keep the cache invariant
@@ -1948,10 +2029,11 @@ export async function createCityGenRing(
         return e.cost;
       };
       let costLeft = DETAIL_COST_BUDGET;
-      for (const [e, d2] of ranked) {
+      for (const { entry: e, centerDistance2, surfaceDistance2 } of ranked) {
         if (keep.has(e)) { costLeft -= costOf(e); continue; }
         if (keep.size >= maxDetail) break;
-        if (d2 > detailExit2) continue; // past the hard exit band — never kept
+        const inCore = surfaceDistance2 <= detailCoreR2;
+        if (!inCore && centerDistance2 > detailExit2) continue; // past both retention bands
         const c = costOf(e);
         // Grandfather clause (second half of the flicker fix): a building that
         // ALREADY owns detail and isn't fading out skips the entry-band + cost-
@@ -1962,19 +2044,17 @@ export async function createCityGenRing(
         // when it falls past detailExit2 (distance) or the sticky rank pushes it
         // past the count cap.
         const holder = e.detail && e.fadeDir >= 0;
-        if (!holder) {
-          if (d2 > admissionR2) continue; // new candidates need the speed-throttled entry band
-          if (c > costLeft) continue; // facade-area budget spent — skip big, keep filling small
-        }
+        if (!holder && !shouldAdmitNewDetail(inCore, centerDistance2, admissionR2, c, costLeft)) continue;
         costLeft -= c;
         keep.add(e);
       }
+      lastDetailCostUsed = DETAIL_COST_BUDGET - costLeft;
       // Drive fade direction from keep membership (not a separate distance hysteresis
       // that would fight eviction and flicker opacity every scan).
-      for (const [e, d2] of haveDetail) {
+      for (const { entry: e, centerDistance2, surfaceDistance2 } of haveDetail) {
         if (keep.has(e)) {
           if (e.fadeDir < 0) e.fadeDir = 1; // reclaimed a slot → fade back in
-        } else if (d2 > detailExit2) {
+        } else if (surfaceDistance2 > detailCoreR2 && centerDistance2 > detailExit2) {
           dropDetail(e); // past hard exit — free the slot now
         } else if (e.fadeDir >= 0) {
           // Restore the prism BEFORE detail opacity starts falling, preserving
@@ -1991,7 +2071,7 @@ export async function createCityGenRing(
         for (const e of cell.entries) if ((e.detail && e.fadeDir >= 0) || e.pendingBuild) detailCount++;
       }
       let db = detailBudget;
-      for (const [e] of ranked) {
+      for (const { entry: e } of ranked) {
         if (db <= 0 || detailCount >= maxDetail) break;
         if (!keep.has(e) || e.detail || e.pendingBuild) continue;
         if (!requestDetail(e)) break;
@@ -2044,12 +2124,36 @@ export async function createCityGenRing(
     },
     stats() {
       let buildings = 0, detail = 0, interiors = 0;
-      for (const cell of loaded.values()) { buildings += cell.entries.length; for (const e of cell.entries) { if (e.detail) detail++; if (e.interior) interiors++; } }
+      let cellsReady = 0, cellsAwaitingPrepare = 0, cellsPreparing = 0;
+      for (const cell of loaded.values()) {
+        buildings += cell.entries.length;
+        if (cell.phase === "ready") cellsReady++;
+        else if (cell.phase === "awaiting-prepare") cellsAwaitingPrepare++;
+        else if (cell.phase === "preparing") cellsPreparing++;
+        for (const e of cell.entries) {
+          if (e.detail) detail++;
+          if (e.interior) interiors++;
+        }
+      }
       const shell = shellBatch.stats();
       return {
         total, cells: loaded.size, buildings, detail, interiors,
         exteriorPipelinesPrepared,
         exteriorPipelinePrepareFailures,
+        exteriorPipelinePrepareCancellations,
+        cellsReady,
+        cellsAwaitingPrepare,
+        cellsPreparing,
+        activeChunkPrepare: activeChunkPrepare !== null,
+        cellGeneration,
+        hydrationQueued: cellQueue.length + (activeCellHydration ? 1 : 0),
+        detailBuildQueued: detailBuildQueue.length,
+        detailBuildActive: activeDetailBuild !== null,
+        admissionRadius: lastAdmissionRadius,
+        detailCoreRadius: lastDetailCoreRadius,
+        detailCoreEligible: lastDetailCoreEligible,
+        detailCoreMissing: lastDetailCoreMissing,
+        detailCostUsed: lastDetailCostUsed,
         shellBatches: shell.batches,
         shellPreparedBatches: shell.preparedBatches,
         shellGeometryVertexCapacity: shell.geometryVertexCapacity,

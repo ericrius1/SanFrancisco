@@ -183,6 +183,9 @@ export const FOLIAGE_TUNING = tunables("foliage", {
  *    inside the band actually get the mesh (rest stay as chunk prisms).
  *  · maxDetail    — hard cap on resident full-detail buildings. Always the nearest-N
  *    inside detailRadius (far holders are evicted when nearer ones need a slot).
+ *  · detailCoreRadius — footprint-edge radius whose nearby architecture ranks
+ *    ahead of the facade-cost ring. It still counts against maxDetail and spends
+ *    the same cost allowance, so the guarantee stays local and bounded.
  *  · fadeTime     — LOD crossfade duration (s).
  * How FAR chunk-LOD cells stream is no longer its own knob — the ring derives it
  * from the master draw-distance slider (CONFIG.tileLoadRadius) each scan.
@@ -209,6 +212,16 @@ export const CITYGEN_TUNING = tunables("citygen", {
     max: 20000,
     step: 2,
     label: "max detail buildings"
+  },
+  // 80 m is intentionally compact: a 60 m-grid audit over all 91,010 ready
+  // footprints found a worst local core of ~43.4k facade-cost units, below the
+  // existing 55k ring budget. At 90 m the densest sampled block reached it.
+  detailCoreRadius: {
+    v: 80,
+    min: 30,
+    max: 160,
+    step: 5,
+    label: "guaranteed detail core (m)"
   },
   fadeTime: { v: 0.4, min: 0.05, max: 2, step: 0.05, label: "crossfade (s)" }
 })

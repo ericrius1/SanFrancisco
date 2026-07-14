@@ -1514,6 +1514,25 @@ async function boot() {
       await new Promise<void>((resolve) => setTimeout(resolve, remaining));
     }
   };
+  const nextPresentationFrame = () => new Promise<void>((resolve) => {
+    requestAnimationFrame(() => resolve());
+  });
+  /**
+   * CityGen's destination cell is part of the nearby world, not optional far
+   * scenery. Yield one frame between WebGPU owner preparations, and continue to
+   * defer across an active arrival, but never require the player to stop moving.
+   * A per-cell generation predicate lets a teleport cancel an old owner before
+   * its non-cancellable compileAsync call begins.
+   */
+  const waitForCityGenRenderWindow = async (isCurrent?: () => boolean): Promise<boolean> => {
+    while (worldArrival.active) {
+      if (isCurrent && !isCurrent()) return false;
+      await nextPresentationFrame();
+    }
+    if (isCurrent && !isCurrent()) return false;
+    await nextPresentationFrame();
+    return !isCurrent || isCurrent();
+  };
   const navigation = new NavigationController({
     player,
     hud,
@@ -2314,17 +2333,18 @@ async function boot() {
   const buenaVistaGates = nearBuenaVista(player.position.x, player.position.z, NEAR_GATE);
   const wildlandsGolfGates = regionGates("wildlands") || regionGates("golf");
   void (async () => {
-    // Optional regions, activities and CityGen enhancement cannot compete with
-    // the local first frame. Baked city/terrain remain the complete fallback;
-    // this layer begins only after reveal and one browser idle opportunity.
+    // CityGen remains a post-reveal dynamic import, so it cannot compete with
+    // the local first frame or enter the clean-boot bundle/request waterfall.
+    // Once admitted, however, its nearby destination cell must make progress
+    // during ordinary walking/driving instead of waiting for movement to stop.
     await revealedPromise;
-    await waitForWorldBackgroundWindow(1800);
+    await waitForCityGenRenderWindow();
 
     // CityGen improves every district, so start it before fauna and authored
-    // sites. Ingestion may outlive the idle window that admitted it; the hook
-    // re-enters that gate before an async reply constructs Three/WebGPU owners.
+    // sites. The ring yields once per detached WebGPU owner and can cancel stale
+    // cell work by generation before driver compilation starts.
     const citygenMod = await import("./world/citygen");
-    await waitForWorldBackgroundWindow(1800);
+    await waitForCityGenRenderWindow();
     try {
       citygenRing.current = await citygenMod.createCityGenRing(
         { excludeBuilding: isTeaGardenBuilding },
@@ -2334,10 +2354,10 @@ async function boot() {
           map,
           tiles,
           schedule: scheduler.schedule,
-          beforeRenderOwnership: () => waitForWorldBackgroundWindow(),
+          beforeRenderOwnership: (isCurrent) => waitForCityGenRenderWindow(isCurrent),
           // The ring keeps these exact owners detached and submits them one at
-          // a time, re-entering the quiet gate before every compile. It is not
-          // published until every exterior driving variant is prepared.
+          // a time, yielding a presentation frame before every compile. It is
+          // not published until every exterior driving variant is prepared.
           prepareRenderOwner: (owner) => renderer.compileAsync(owner, camera, scene)
         }
       );
@@ -2358,6 +2378,7 @@ async function boot() {
     }
 
     // Forest + Creatures: ambient wildlife and rideable animals
+    await waitForWorldBackgroundWindow(1800);
     const [forestMod, creaturesMod] = await Promise.all([
       import("./gameplay/forest"),
       import("./gameplay/creatures")
