@@ -239,7 +239,7 @@ export const FLOWER_TUNING = tunables("flowers", {
   density: { v: 1, min: 0, max: 2.5, step: 0.05, label: "density" },
   clumpiness: { v: 0.6, min: 0, max: 1, step: 0.02, label: "clump ↔ scatter" },
   clumpSize: { v: 9, min: 2, max: 30, step: 0.5, label: "clump size (m)" },
-  reach: { v: 80, min: 30, max: 110, step: 2, label: "reach (m)" }
+  reach: { v: 110, min: 30, max: 110, step: 2, label: "reach (m)" }
 })
 
 /**

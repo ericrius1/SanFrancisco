@@ -31,7 +31,12 @@
         wildGrassLayerKeep,
         wildGrassLayersAt
       } from "/src/world/wildlands/grassField.ts";
-      import { createFlowerRing } from "/src/world/wildlands/flowerRing.ts";
+      import {
+        createFlowerRing,
+        FLOWER_EDGE_FADE_BAND_METRES,
+        FLOWER_EDGE_STAGGER_METRES,
+        FLOWER_ROTATION_SHADE_AMPLITUDE
+      } from "/src/world/wildlands/flowerRing.ts";
 
       const W = 320;
       const H = 320;
@@ -40,6 +45,7 @@
       const GRASS_FADE_BAND_METRES = 8;
       const FLOWER_HERO_FADE_START = 13;
       const FLOWER_HERO_FADE_END = 19;
+      const FLOWER_REACH = 110;
       const FADE_BAND = 0.16;
 
       function finish(result) {
@@ -63,6 +69,19 @@
           : fade <= 0
             ? FLOWER_HERO_FADE_END + 1
             : (FLOWER_HERO_FADE_START + FLOWER_HERO_FADE_END) * 0.5;
+        return new THREE.Vector2(ANCHOR.x + distance, ANCHOR.z);
+      }
+
+      function focusForFlowerEdgeFade(fade) {
+        // aFlowerAnchor.w = 1 below maps to phase 0.5. Its deterministic outer
+        // window therefore ends halfway through the eight-metre stagger band.
+        const edgeEnd = FLOWER_REACH - FLOWER_EDGE_STAGGER_METRES * 0.5;
+        const edgeStart = edgeEnd - FLOWER_EDGE_FADE_BAND_METRES;
+        const distance = fade >= 1
+          ? edgeStart - 1
+          : fade <= 0
+            ? edgeEnd + 1
+            : (edgeStart + edgeEnd) * 0.5;
         return new THREE.Vector2(ANCHOR.x + distance, ANCHOR.z);
       }
 
@@ -282,7 +301,7 @@
         // Flowers: createFlowerRing owns the private production material state.
         // Updating far outside every wild region only writes its focus uniform and
         // deliberately avoids terrain/map sampling; then the fixture writes one
-        // deterministic poppy into the production instance attributes.
+        // deterministic hero and far accents into production instance attributes.
         const flowers = createFlowerRing({
           groundHeight: () => 0,
           surfaceType: () => 0,
@@ -290,41 +309,45 @@
         });
         flowers.update({ x: ANCHOR.x, z: ANCHOR.z });
         const flowerMeshes = flowers.group.children.filter((child) => child.isInstancedMesh);
-        const flower = flowerMeshes[0];
-        for (const mesh of flowerMeshes) mesh.count = 0;
-        flower.material.colorNode = color(0xff4ec4);
-        flower.material.emissiveNode = color(0xff4ec4);
-        flower.receiveShadow = false;
+        const heroFlower = flowerMeshes.find((mesh) => mesh.name.startsWith("wildlands_flowers_hero_"));
+        const farFlower = flowerMeshes.find((mesh) => mesh.name.startsWith("wildlands_flowers_far_"));
+        if (!heroFlower || !farFlower) throw new Error("production hero/far flower buckets are missing");
+        for (const mesh of flowerMeshes) {
+          mesh.count = 0;
+          mesh.visible = false;
+        }
 
         const flowerDummy = new THREE.Object3D();
         flowerDummy.position.copy(ANCHOR);
         flowerDummy.rotation.y = 0.47;
         flowerDummy.scale.set(1.75, 1.75, 1.75);
         flowerDummy.updateMatrix();
-        flowerDummy.matrix.toArray(flower.instanceMatrix.array, 0);
-        flower.instanceMatrix.needsUpdate = true;
-        const bloom = flower.geometry.getAttribute("aBloom");
-        bloom.setXYZ(0, 1, 1, 1);
-        bloom.needsUpdate = true;
-        const flowerAnchor = flower.geometry.getAttribute("aFlowerAnchor");
-        flowerAnchor.setXYZW(0, ANCHOR.x, ANCHOR.y, ANCHOR.z, 1);
-        flowerAnchor.needsUpdate = true;
-        // Wind is not part of this regression. Zeroing its static tip weights makes
-        // repeated pixel counts identical while the full production fade graph,
-        // anchor transform, and world/local offset conversion still compile/run.
-        const sway = flower.geometry.getAttribute("aSway");
-        sway.array.fill(0);
-        sway.needsUpdate = true;
-        flower.count = 1;
-        // Production uploads recompute exact per-sector bounds after every
-        // resample. This fixture bypasses that writer, so refresh the manually
-        // injected instance's bound before testing the now-frustum-culled mesh.
-        flower.computeBoundingSphere();
-        flower.boundingSphere.radius += 0.65;
-        // Streaming flower pools deliberately start invisible while empty so
-        // WebGPU does not compile their pipelines at app reveal. This fixture
-        // manually bypasses the ring writer, so opt its injected instance in.
-        flower.visible = true;
+
+        function injectFlower(mesh, rotationShade) {
+          mesh.material.colorNode = color(0xff4ec4);
+          mesh.material.emissiveNode = color(0xff4ec4);
+          mesh.receiveShadow = false;
+          flowerDummy.matrix.toArray(mesh.instanceMatrix.array, 0);
+          mesh.instanceMatrix.needsUpdate = true;
+          const bloom = mesh.geometry.getAttribute("aBloom");
+          bloom.setXYZ(0, 1, 1, 1);
+          bloom.needsUpdate = true;
+          const anchor = mesh.geometry.getAttribute("aFlowerAnchor");
+          anchor.setXYZW(0, ANCHOR.x, ANCHOR.y, ANCHOR.z, rotationShade);
+          anchor.needsUpdate = true;
+          // Wind is not part of this regression. Zeroing its static tip weights
+          // keeps pixel counts identical while the production position graph runs.
+          const sway = mesh.geometry.getAttribute("aSway");
+          sway.array.fill(0);
+          sway.needsUpdate = true;
+          mesh.count = 1;
+          // Production uploads recompute exact per-sector bounds. This fixture
+          // bypasses that writer, so refresh the manually injected bound.
+          mesh.computeBoundingSphere();
+          mesh.boundingSphere.radius += 0.65;
+        }
+        injectFlower(heroFlower, 1);
+        injectFlower(farFlower, 1);
         scene.add(flowers.group);
 
         const target = new THREE.RenderTarget(W, H, {
@@ -335,7 +358,9 @@
 
         async function renderSample(system, fade) {
           grass.visible = system === "grass";
-          flowers.group.visible = system === "flower";
+          flowers.group.visible = system === "flower" || system === "flower-edge";
+          heroFlower.visible = system === "flower";
+          farFlower.visible = system === "flower-edge";
           if (system === "grass") {
             const focus = focusForFade(GRASS_REACH, fade, GRASS_FADE_BAND_METRES);
             grassState.focus.copy(focus);
@@ -344,6 +369,12 @@
             // update() always moves the private per-ring focus uniform before its
             // resample throttle / outside-region early return.
             flowers.update({ x: focus.x, z: focus.y });
+          } else if (system === "flower-edge") {
+            const anchor = farFlower.geometry.getAttribute("aFlowerAnchor");
+            anchor.setW(0, 1);
+            anchor.needsUpdate = true;
+            const focus = focusForFlowerEdgeFade(fade);
+            flowers.update({ x: focus.x, z: focus.y });
           }
           renderer.setRenderTarget(target);
           await renderer.renderAsync(scene, camera);
@@ -351,18 +382,50 @@
           return { fade, ...analyzePixels(buf, expectedAnchor) };
         }
 
+        async function captureCurrentFlower(label) {
+          renderer.setRenderTarget(target);
+          await renderer.renderAsync(scene, camera);
+          const buf = await renderer.readRenderTargetPixelsAsync(target, 0, 0, W, H);
+          return { fade: label, ...analyzePixels(buf, expectedAnchor) };
+        }
+
         const grassSamples = [];
         const flowerSamples = [];
+        const flowerEdgeSamples = [];
         for (const fade of [1, 0.5, 0]) grassSamples.push(await renderSample("grass", fade));
         for (const fade of [1, 0.5, 0]) flowerSamples.push(await renderSample("flower", fade));
+        for (const fade of [1, 0.5, 0]) flowerEdgeSamples.push(await renderSample("flower-edge", fade));
+
+        // At one fixed radius, the late phase remains visible while the early
+        // phase has already dissolved. This is the rendered proof that the edge
+        // no longer resolves into one circular threshold.
+        const staggerDistance = FLOWER_REACH - FLOWER_EDGE_STAGGER_METRES + 1;
+        const farAnchor = farFlower.geometry.getAttribute("aFlowerAnchor");
+        farAnchor.setW(0, 1 + FLOWER_ROTATION_SHADE_AMPLITUDE);
+        farAnchor.needsUpdate = true;
+        flowers.update({ x: ANCHOR.x + staggerDistance, z: ANCHOR.z });
+        const latePhase = await captureCurrentFlower("late");
+        farAnchor.setW(0, 1 - FLOWER_ROTATION_SHADE_AMPLITUDE);
+        farAnchor.needsUpdate = true;
+        const earlyPhase = await captureCurrentFlower("early");
+        const edgeStagger = {
+          ok: latePhase.pixels >= 8 && earlyPhase.pixels <= 1,
+          distance: staggerDistance,
+          latePhase,
+          earlyPhase
+        };
 
         renderer.setRenderTarget(null);
         const systems = [
           verifyTriplet("grass", grassSamples),
-          verifyTriplet("flower", flowerSamples)
+          verifyTriplet("flower", flowerSamples),
+          verifyTriplet("flower-edge", flowerEdgeSamples)
         ];
         const result = {
-          ok: systems.every((system) => system.ok) && grassContracts.every((contract) => contract.pass),
+          ok:
+            systems.every((system) => system.ok) &&
+            grassContracts.every((contract) => contract.pass) &&
+            edgeStagger.ok,
           backend: "webgpu",
           anchor: ANCHOR.toArray(),
           expectedAnchorPixel: [
@@ -370,6 +433,7 @@
             +expectedAnchor.y.toFixed(2)
           ],
           systems,
+          edgeStagger,
           grassContracts
         };
         finish(result);

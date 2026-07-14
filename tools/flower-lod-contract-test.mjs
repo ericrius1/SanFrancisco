@@ -37,7 +37,12 @@ globalThis.localStorage = {
   removeItem: (key) => store.delete(key)
 };
 
-const { createFlowerRing } = await import("../src/world/wildlands/flowerRing.ts");
+const {
+  createFlowerRing,
+  flowerEdgeFadeWindow,
+  FLOWER_EDGE_FADE_BAND_METRES,
+  FLOWER_EDGE_STAGGER_METRES
+} = await import("../src/world/wildlands/flowerRing.ts");
 const { FLOWER_TUNING } = await import("../src/config.ts");
 
 const FOCUS = { x: -4000, z: 2440 };
@@ -50,7 +55,13 @@ const flowers = createFlowerRing({
 flowers.update(FOCUS);
 
 const stats = flowers.stats;
+const LEGACY_DEFAULT_CLUMPS = 5337;
+const LEGACY_DEFAULT_TRIANGLES = 538116;
+const LEGACY_DEFAULT_DRAWS = 32;
+const LEGACY_RESERVED_INSTANCE_BYTES = 3_344_384;
+assert.equal(FLOWER_TUNING.values.reach, 110, "flowers should reach the full 110 m ground-cover horizon by default");
 assert(stats.count > 100, `expected populated test meadow, got ${stats.count}`);
+assert(stats.count > LEGACY_DEFAULT_CLUMPS, "110 m reach should populate more of the meadow than the former 80 m ring");
 assert(stats.lodInstances.hero > 0, "hero flower LOD must populate");
 assert(stats.lodInstances.mid > 0, "mid flower LOD must populate");
 assert(stats.lodInstances.far > 0, "far flower LOD must populate");
@@ -65,6 +76,38 @@ assert(
   stats.trianglesPerClumpByLod.far < Math.min(...stats.trianglesPerClumpByLod.hero) * 0.15,
   "far accent must stay below 15% of the cheapest hero clump"
 );
+assert.equal(stats.trianglesPerClumpByLod.far, 6, "far flowers should use the six-triangle crossed accent");
+assert(
+  stats.submittedTriangles <= LEGACY_DEFAULT_TRIANGLES,
+  `extended default ring should not exceed the former high-end triangle envelope (${stats.submittedTriangles} <= ${LEGACY_DEFAULT_TRIANGLES})`
+);
+assert(
+  stats.draws <= LEGACY_DEFAULT_DRAWS,
+  `extended default ring should not add flower draws (${stats.draws} <= ${LEGACY_DEFAULT_DRAWS})`
+);
+assert(
+  stats.reservedInstanceBytes <= LEGACY_RESERVED_INSTANCE_BYTES,
+  `extended default ring should not reserve more instance memory (${stats.reservedInstanceBytes} <= ${LEGACY_RESERVED_INSTANCE_BYTES})`
+);
+
+const edgeWindows = Array.from({ length: 128 }, (_, index) =>
+  flowerEdgeFadeWindow(FLOWER_TUNING.values.reach, (index / 128) * Math.PI * 2)
+);
+const repeatedEdgeWindows = Array.from({ length: 128 }, (_, index) =>
+  flowerEdgeFadeWindow(FLOWER_TUNING.values.reach, (index / 128) * Math.PI * 2)
+);
+assert.deepEqual(edgeWindows, repeatedEdgeWindows, "edge staggering must be deterministic");
+assert(
+  edgeWindows.every((window) => Math.abs(window.end - window.start - FLOWER_EDGE_FADE_BAND_METRES) < 1e-9),
+  "every flower should traverse the complete broad fade band"
+);
+const earliestEdgeEnd = Math.min(...edgeWindows.map((window) => window.end));
+const latestEdgeEnd = Math.max(...edgeWindows.map((window) => window.end));
+assert(
+  latestEdgeEnd - earliestEdgeEnd > FLOWER_EDGE_STAGGER_METRES * 0.98,
+  "yaw phases should distribute outer fade endpoints across the stagger band"
+);
+assert(latestEdgeEnd <= FLOWER_TUNING.values.reach + 1e-9, "no staggered flower may exceed configured reach");
 
 const legacyCapacityPerSpecies = Math.ceil(((119 * 2) / 1.6) ** 2 * 0.5);
 const legacyReservedBytes = legacyCapacityPerSpecies * 4 * (16 + 3 + 4) * Float32Array.BYTES_PER_ELEMENT;
@@ -110,8 +153,15 @@ assert.equal(flowers.group.children.length, 0, "dispose must release all flower 
 console.log("flower LOD contract: ok", JSON.stringify({
   clumps: stats.count,
   lodInstances: stats.lodInstances,
+  submittedInstances: stats.submittedInstances,
   triangles: stats.trianglesPerClumpByLod,
   submittedTriangles: stats.submittedTriangles,
+  edgeFade: {
+    band: FLOWER_EDGE_FADE_BAND_METRES,
+    stagger: FLOWER_EDGE_STAGGER_METRES,
+    earliestEnd: +earliestEdgeEnd.toFixed(2),
+    latestEnd: +latestEdgeEnd.toFixed(2)
+  },
   stressClumps: stressStats.count,
   draws: stats.draws,
   reservedMiB: +(stats.reservedInstanceBytes / (1024 * 1024)).toFixed(2),

@@ -82,14 +82,24 @@ const frame = (dt) => `(async()=>{window.__sf.tick(${dt});await new Promise(r=>r
 async function tick(c, dt) { await ev(c, frame(dt)); }
 async function settle(c, n) { for (let i = 0; i < n; i++) { await ev(c, frame(0)); await sleep(60); } }
 
-async function teleport(c, x, z, facing) {
-  await ev(c, `(()=>{const m=window.__sf.map,p=window.__sf.player;const y=m.groundHeight(${x},${z});p.teleportTo({x:${x},y:y+1.5,z:${z},facing:${facing},mode:'walk'});return true;})()`);
+async function teleport(c, x, z, _facing) {
+  const generation = await ev(c, `(()=>{const sf=window.__sf;const g=sf.worldArrival.snapshot.generation;sf.teleportToTarget(${x},${z},'flower probe');return g;})()`);
+  const started = Date.now();
+  while (Date.now() - started < 180_000) {
+    await tick(c, 0);
+    const arrived = await ev(c, `(()=>{const sf=window.__sf,a=sf.worldArrival.snapshot;return a.generation>${generation}&&a.state==='idle'&&!sf.player.worldArrivalHeld;})()`);
+    if (arrived) return;
+    await sleep(250);
+  }
+  throw new Error(`covered arrival timed out at ${x}, ${z}`);
 }
 async function freeCam(c, x, z, facing, back, up) {
-  await ev(c, `(()=>{const m=window.__sf.map;const gy=m.groundHeight(${x},${z});
+  await ev(c, `(()=>{const m=window.__sf.map;
     const dx=Math.sin(${facing}),dz=Math.cos(${facing});
-    const eye=[${x}-dx*${back}, gy+${up}, ${z}-dz*${back}];
-    window.__sfFreeCam(eye,[${x}+dx*20, gy+${Math.max(1.5, up * 0.4)}, ${z}+dz*20]);return true;})()`);
+    const ex=${x}-dx*${back},ez=${z}-dz*${back};
+    const tx=${x}+dx*20,tz=${z}+dz*20;
+    const eye=[ex,m.groundHeight(ex,ez)+${up},ez];
+    window.__sfFreeCam(eye,[tx,m.groundHeight(tx,tz)+${Math.max(1.5, up * 0.4)},tz]);return eye;})()`);
 }
 async function flowerStats(c) {
   return ev(c, `(()=>{const f=window.__sf.wildlands.flowers,s=f.stats;const per=f.group.children.map(m=>m.count||0);
@@ -125,7 +135,7 @@ async function main() {
   const proc = spawn(chrome, [
     `--user-data-dir=${profile}`, "--headless=new", `--remote-debugging-port=${port}`,
     "--enable-unsafe-webgpu", "--enable-features=WebGPUDeveloperFeatures", "--use-angle=metal",
-    "--hide-scrollbars", "--mute-audio", `--window-size=${W},${H}`, `${SERVER_URL}/?autostart=1&fullfps=1`
+    "--hide-scrollbars", "--mute-audio", `--window-size=${W},${H}`, `${SERVER_URL}/?autostart=1&fullfps=1&profile=1`
   ], { cwd: ROOT, stdio: "ignore" });
   await sleep(2500);
   let page;
@@ -154,7 +164,7 @@ async function main() {
   console.log("[probe] waiting for base world...");
   const t0 = Date.now();
   let ready = false;
-  while (Date.now() - t0 < 180000) { try { if (await ev(c, `!!(window.__sf&&window.__sf.map&&window.__sf.player&&window.__sf.tick)`)) { ready = true; break; } } catch {} await sleep(600); }
+  while (Date.now() - t0 < 180000) { try { if (await ev(c, `!!(window.__sf&&window.__sf.map&&window.__sf.player&&window.__sf.tick&&window.__sf.worldArrival?.snapshot?.state==='idle'&&window.__sf.renderIdle?.())`)) { ready = true; break; } } catch {} await sleep(600); }
   if (!ready) throw new Error("base world never ready (see [page-exception]/[page-error] above)");
   console.log(`[probe] base world ready in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
 
