@@ -163,6 +163,22 @@ async function discoverProductionContract() {
   const teaChunk = teaChunks[0];
   if (!contentHashedAsset(teaChunk, "js")) throw new Error(`Tea Garden chunk is not content-hashed: ${teaChunk}`);
   const teaSource = jsSources.get(teaChunk);
+  // The Tea Garden sits inside Golden Gate Park, but its first activation must
+  // not wake the broader Wildlands/golf/Afterlight owner merely because their
+  // proximity bounds overlap. Discover those content hashes from stable
+  // compiled markers instead of hard-coding build output names.
+  const unrelatedRegionChunks = jsNames.filter((name) => {
+    const source = jsSources.get(name);
+    return source.includes("wildlands_grass") ||
+      source.includes("GOLF_SITE_PADS") ||
+      source.includes("inAfterlightGroundcoverClear");
+  });
+  if (unrelatedRegionChunks.length < 3) {
+    throw new Error(
+      `Could not discover the deferred Wildlands/golf/Afterlight chunks: ` +
+      unrelatedRegionChunks.join(", ")
+    );
+  }
 
   const cssNames = files.filter((entry) => entry.isFile() && entry.name.endsWith(".css")).map((entry) => entry.name).sort();
   const teaStyles = [];
@@ -216,6 +232,7 @@ async function discoverProductionContract() {
     scannedChunks: jsNames.length,
     teaChunk,
     teaStyles,
+    unrelatedRegionChunks,
     directLogical,
     directCatalog: [...new Set([...artCatalog, ...teaCatalog])].sort(),
     nativeSelections: native.selections,
@@ -226,6 +243,7 @@ async function discoverProductionContract() {
 
 function makeClassifier(contract) {
   const teaStyles = new Set(contract.teaStyles);
+  const unrelatedRegionChunks = new Set(contract.unrelatedRegionChunks);
   const directExpected = new Map();
   for (const logical of contract.directLogical) {
     for (const variant of logical.variants) directExpected.set(variant, logical);
@@ -246,6 +264,7 @@ function makeClassifier(contract) {
     if (basename === contract.mainEntry) kinds.push("main-entry");
     if (basename === contract.teaChunk) kinds.push("tea-feature-chunk");
     if (teaStyles.has(basename)) kinds.push("tea-feature-style");
+    if (unrelatedRegionChunks.has(basename)) kinds.push("unrelated-region-chunk");
 
     const direct = directExpected.get(pathname);
     if (direct) {
@@ -280,7 +299,10 @@ function isTeaRecord(record) {
 }
 
 function isTrackedRecord(record) {
-  return isTeaRecord(record) || record.kinds.includes("native-manifest") || record.kinds.includes("native-runtime");
+  return isTeaRecord(record) ||
+    record.kinds.includes("native-manifest") ||
+    record.kinds.includes("native-runtime") ||
+    record.kinds.includes("unrelated-region-chunk");
 }
 
 function publicRecord(record) {
@@ -370,6 +392,7 @@ async function worldState(page) {
       siteState: site?.debugState?.() ?? null,
       teaGardenTiming: sf.lazyRegionTimings?.["tea-garden"] ?? null,
       teaGardenBuildingSwap: sf.teaGardenBuildingSwapState?.() ?? null,
+      wildlandsPresent: Boolean(sf.wildlands),
       adjacentGardenPresent: Boolean(sf.garden),
       renderIdle: sf.renderIdle?.() === true
     };
@@ -524,7 +547,11 @@ async function main() {
     expect("boot-is-far-from-tea-garden", bootState.entranceDistance > 2_000, bootState);
     expect("boot-no-tea-garden-chunk-style-or-media", !boot.some(isTeaRecord),
       boot.filter(isTeaRecord).map(publicRecord));
+    expect("boot-no-overlapping-park-or-activity-chunk",
+      !boot.some((record) => hasKind(record, "unrelated-region-chunk")),
+      boot.filter((record) => hasKind(record, "unrelated-region-chunk")).map(publicRecord));
     expect("boot-no-tea-garden-instance", !bootState.sitePresent && !bootState.siteAttached, bootState);
+    expect("boot-no-wildlands-instance", !bootState.wildlandsPresent, bootState);
     expect("boot-keeps-baked-tea-garden-fallback", Boolean(
       bootState.teaGardenBuildingSwap &&
       !bootState.teaGardenBuildingSwap.claimed &&
@@ -620,6 +647,8 @@ async function main() {
       !activationState.worldArrival?.active, activationState);
     expect("activation-tea-garden-ready-attached-awake", activationState.sitePresent &&
       activationState.siteAttached && activationState.siteState?.awake, activationState);
+    expect("activation-does-not-construct-overlapping-wildlands", !activationState.wildlandsPresent,
+      activationState);
     expect("activation-atomically-claims-baked-fallback", Boolean(
       activationState.teaGardenBuildingSwap?.claimed &&
       activationState.teaGardenBuildingSwap.buildings.every((building) => building.suppressed) &&
@@ -645,6 +674,13 @@ async function main() {
       { expected: contract.teaChunk, requests: chunkRequests.map(publicRecord) });
     expect("activation-loads-one-discovered-feature-style", styleRequests.length === 1,
       { expected: contract.teaStyles, requests: styleRequests.map(publicRecord) });
+    expect("activation-isolates-tea-from-wildlands-golf-and-afterlight",
+      !activation.some((record) => hasKind(record, "unrelated-region-chunk")), {
+        deferredChunks: contract.unrelatedRegionChunks,
+        requests: activation
+          .filter((record) => hasKind(record, "unrelated-region-chunk"))
+          .map(publicRecord)
+      });
     expect("activation-loads-one-selected-direct-variant-per-slot", directAudit.every((entry) => entry.pass), directAudit);
     expect("activation-loads-only-complete-nearby-native-packs", nativeAudit.every((entry) => entry.pass), nativeAudit);
     const manifestRequests = [...boot, ...activation].filter((record) => hasKind(record, "native-manifest"));
@@ -704,6 +740,9 @@ async function main() {
     expect("subsequent-zero-native-manifest-refetch",
       !subsequent.some((record) => hasKind(record, "native-manifest")),
       subsequent.filter((record) => hasKind(record, "native-manifest")).map(publicRecord));
+    expect("subsequent-keeps-overlapping-region-owner-deferred",
+      !subsequent.some((record) => hasKind(record, "unrelated-region-chunk")),
+      subsequent.filter((record) => hasKind(record, "unrelated-region-chunk")).map(publicRecord));
 
     const featureFailures = records.filter((record) =>
       isTrackedRecord(record) && (record.failure || (record.status != null && record.status >= 400))

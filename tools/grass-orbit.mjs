@@ -101,16 +101,24 @@ async function main() {
   while (Date.now() - t0 < 150000) { try { if (await ev(c, `!!(window.__sf&&window.__sf.player&&window.__sf.camera)`)) { ready = true; break; } } catch {} await sleep(600); }
   if (!ready) throw new Error("never ready");
   console.log("[probe] ready");
-  await ev(c, `window.__sfManual&&window.__sfManual(true)`);
   await ev(c, `(()=>{const s=window.__sf.sky;s.cycleEnabled=false;s.setTimeOfDay(${TIME});return true;})()`);
-  // teleport player to flat spot, DO NOT move again
+  const bootState = await ev(c, `(()=>({
+    wildlandsPresent:!!window.__sf.wildlands,
+    trace:window.__sf.lazyRegionTimings?.wildlands??null,
+    generation:window.__sf.worldArrival.snapshot.generation
+  }))()`);
+  if (bootState.wildlandsPresent || bootState.trace) {
+    throw new Error(`wildlands was not lazy at clean boot: ${JSON.stringify(bootState)}`);
+  }
+  // Use the real covered destination coordinator. A direct player teleport can
+  // bypass terrain readiness and produce a visually meaningless white/empty
+  // meadow even when grass streaming itself is correct.
   const activationStarted = Date.now();
-  await ev(c, `(()=>{const m=window.__sf.map,p=window.__sf.player;const y=m.groundHeight(${FX},${FZ});p.teleportTo({x:${FX},y:y+1.5,z:${FZ},facing:0,mode:'walk'});return true;})()`);
-  await settle(c, 30);
+  await ev(c, `window.__sf.teleportToTarget(${FX},${FZ},'Wildlands grass probe')`);
   const regionStart = Date.now();
   while (Date.now() - regionStart < 90000) {
     if (await ev(c, `!!window.__sf.wildlands?.grass?.group`).catch(() => false)) break;
-    await settle(c, 4);
+    await sleep(100);
   }
   if (!(await ev(c, `!!window.__sf.wildlands?.grass?.group`).catch(() => false))) {
     throw new Error("wildlands lazy owner never activated after entering Golden Gate Park");
@@ -129,7 +137,7 @@ async function main() {
       grassState.streaming.criticalLayers < 4 ||
       grassState.visible < 4)
   ) {
-    await settle(c, 4);
+    await sleep(100);
     grassState = await ev(c, GRASS_STATE);
   }
   if (!grassState?.attached || !grassState?.streaming?.criticalReady || grassState.visible < 4) {
@@ -137,6 +145,10 @@ async function main() {
   }
   const criticalRenderableMs = Date.now() - activationStarted;
   const criticalGrassState = grassState;
+  const arrival = await ev(c, `({...window.__sf.worldArrival.snapshot})`);
+  if (arrival.state !== "idle" || arrival.active) {
+    throw new Error(`covered Wildlands arrival did not settle: ${JSON.stringify(arrival)}`);
+  }
   console.log(`[probe] critical grass coverage attached + renderable ${criticalRenderableMs}ms after activation`, JSON.stringify(criticalGrassState));
 
   while (
@@ -145,7 +157,7 @@ async function main() {
       !grassState?.meshes ||
       grassState.visible !== grassState.meshes)
   ) {
-    await settle(c, 4);
+    await sleep(100);
     grassState = await ev(c, GRASS_STATE);
   }
   if (grassState?.streaming?.pendingJobs !== 0 || !grassState?.meshes || grassState.visible !== grassState.meshes) {
@@ -155,6 +167,8 @@ async function main() {
   const lazyTrace = await ev(c, `window.__sf.lazyRegionTimings?.wildlands ?? null`);
   console.log(`[probe] full grass ring settled + renderable ${fullRenderableMs}ms after activation`, JSON.stringify(grassState));
   console.log(`[probe] wildlands trace ${JSON.stringify(lazyTrace)}`);
+
+  await ev(c, `window.__sfManual&&window.__sfManual(true)`);
 
   // orbit the free camera AROUND the stationary player; look inward.
   // If the grass centroid tracks the camera, the ring is camera-locked.
@@ -178,6 +192,8 @@ async function main() {
     generatedAt: new Date().toISOString(),
     serverUrl: SERVER_URL,
     focus: { x: FX, z: FZ },
+    bootState,
+    arrival,
     ownerObservedMs,
     criticalRenderableMs,
     fullRenderableMs,

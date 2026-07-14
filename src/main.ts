@@ -3840,8 +3840,16 @@ async function boot() {
       wakeDeferredWildlandsGolf &&
       (
         // Buena Vista owns the Corona skyline separately. Wake the primary
-        // Wildlands only on a real approach to one of its four regions.
-        nearPrimaryWildRegion(player.position.x, player.position.z, 320) ||
+        // Wildlands only on a real approach to one of its four regions. The
+        // authored Tea Garden owns its immediate foliage and keeps this broader
+        // park/golf bundle asleep until the player leaves that site.
+        (
+          nearPrimaryWildRegion(player.position.x, player.position.z, 320) &&
+          Math.hypot(
+            player.position.x - JAPANESE_TEA_GARDEN_ENTRANCE.x,
+            player.position.z - JAPANESE_TEA_GARDEN_ENTRANCE.z
+          ) >= 820
+        ) ||
         Math.hypot(player.position.x - GOLF_XZ.x, player.position.z - GOLF_XZ.z) < 700
       )
     ) {
