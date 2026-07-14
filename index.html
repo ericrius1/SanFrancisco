@@ -143,10 +143,15 @@
         inset: 0;
         transition: opacity 0.5s ease;
       }
-      /* while a reading overlay is open the world stops rendering entirely and
-         the frozen canvas dims a touch — no live frames flicker through. */
-      #app.world-dimmed {
-        opacity: 0.45;
+      /* While a full reading overlay (Behind the scenes, the museum book) is open,
+         the world canvas is HIDDEN entirely — not merely dimmed — so nothing
+         composites or gets sampled behind the modal. A translucent backdrop-filter
+         over a live WebGPU canvas flickers in Chrome even when the render loop is
+         frozen; taking the canvas out of the compositor is the only robust fix. The
+         page's solid #0b1520 background shows through instead, and the world render
+         itself freezes (see the reading-overlay guard in tick). */
+      #app.world-dimmed canvas {
+        visibility: hidden;
       }
       canvas {
         display: block;
@@ -1418,8 +1423,10 @@
         align-items: center;
         justify-content: center;
         padding: 4vh 16px;
-        background: rgba(4, 10, 16, 0.34);
-        backdrop-filter: blur(5px);
+        /* Solid dark backdrop — NO backdrop-filter. The world canvas is hidden while
+           this is open (see #app.world-dimmed canvas), so there is nothing to blur,
+           and a backdrop-filter over a WebGPU canvas is exactly what flickered. */
+        background: rgba(6, 12, 20, 0.9);
         pointer-events: auto;
       }
       #hud .bts-overlay.open {
