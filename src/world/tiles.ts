@@ -1,4 +1,5 @@
 import * as THREE from "three/webgpu";
+import { float, mix, positionWorld, smoothstep, uniform } from "three/tsl";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
 import { CONFIG } from "../config";
@@ -95,6 +96,85 @@ type ReadyTile = { key: string; group: THREE.Group | null; colliders: BuildingCo
 
 // precomputed per-manifest-tile scan entry (avoids Object.keys + string parsing every scan)
 type TileEntry = { key: string; cx: number; cz: number; d2: number };
+
+export type TerrainCutoutSpec = {
+  centerX: number;
+  centerZ: number;
+  halfX: number;
+  halfZ: number;
+  yaw: number;
+  /** Narrow antialias band in metres. Alpha test keeps the final boundary solid. */
+  feather?: number;
+};
+
+const TERRAIN_CUTOUT_CAPACITY = 2;
+
+type TerrainCutoutMaterial = {
+  material: THREE.MeshStandardNodeMaterial;
+  sync(cutouts: readonly TerrainCutoutSpec[]): void;
+};
+
+/**
+ * Terrain chunks are 3.2 km assets, so hiding a whole chunk for one authored
+ * interior would erase most of Lands End. Two uniform-driven oriented cutouts
+ * keep the streamed geometry immutable and discard only the pixels whose
+ * surface ownership has explicitly moved to an authored site. The graph is
+ * compiled once; activating a cutout changes uniforms, never pipelines.
+ */
+function createTerrainCutoutMaterial(): TerrainCutoutMaterial {
+  const bounds = [
+    uniform(new THREE.Vector4(0, 0, 1, 1)),
+    uniform(new THREE.Vector4(0, 0, 1, 1))
+  ] as const;
+  // xy = cos/sin(yaw), z = enabled, w = feather.
+  const frames = [
+    uniform(new THREE.Vector4(1, 0, 0, 0.2)),
+    uniform(new THREE.Vector4(1, 0, 0, 0.2))
+  ] as const;
+
+  const slotVisibility = (slot: 0 | 1) => {
+    const bound = bounds[slot];
+    const frame = frames[slot];
+    const dx = positionWorld.x.sub(bound.x);
+    const dz = positionWorld.z.sub(bound.y);
+    const localX = dx.mul(frame.x).sub(dz.mul(frame.y));
+    const localZ = dx.mul(frame.y).add(dz.mul(frame.x));
+    const signedOutside = localX.abs().sub(bound.z).max(localZ.abs().sub(bound.w));
+    const outside = smoothstep(frame.w.negate(), frame.w, signedOutside);
+    return mix(float(1), outside, frame.z);
+  };
+
+  const material = new THREE.MeshStandardNodeMaterial();
+  material.name = "terrain_with_authored_site_cutouts";
+  material.color.setHex(0x969390);
+  material.vertexColors = true;
+  material.roughness = 0.92;
+  material.metalness = 0;
+  material.opacityNode = slotVisibility(0).mul(slotVisibility(1));
+  material.alphaTestNode = float(0.5);
+
+  return {
+    material,
+    sync(cutouts) {
+      for (let slot = 0; slot < TERRAIN_CUTOUT_CAPACITY; slot++) {
+        const cutout = cutouts[slot];
+        const bound = bounds[slot].value;
+        const frame = frames[slot].value;
+        if (!cutout) {
+          frame.z = 0;
+          continue;
+        }
+        bound.set(cutout.centerX, cutout.centerZ, cutout.halfX, cutout.halfZ);
+        frame.set(
+          Math.cos(cutout.yaw),
+          Math.sin(cutout.yaw),
+          1,
+          Math.max(0.02, cutout.feather ?? 0.2)
+        );
+      }
+    }
+  };
+}
 
 // concurrent GLB loads: meshopt decode rides a 4-worker pool (see useWorkers below),
 // so this caps how many decodes can be queued on it at once
@@ -322,6 +402,8 @@ export class TileStreamer {
 
   #loader = new GLTFLoader();
   #scene: THREE.Scene;
+  #terrainCutoutMaterial = createTerrainCutoutMaterial();
+  #terrainCutouts = new Map<string, TerrainCutoutSpec>();
   #pending = new Set<string>();
   #tick = 0;
   #entries: TileEntry[] = [];
@@ -624,7 +706,7 @@ export class TileStreamer {
         }
         gltf.scene.traverse((o) => {
           if ((o as THREE.Mesh).isMesh) {
-            (o as THREE.Mesh).material = plainMat;
+            (o as THREE.Mesh).material = this.#terrainCutoutMaterial.material;
             o.receiveShadow = true;
           }
         });
@@ -649,6 +731,46 @@ export class TileStreamer {
     const dx = this.#px - e.cx;
     const dz = this.#pz - e.cz;
     return dx * dx + dz * dz < TileStreamer.#TERRAIN_UNLOAD_R * TileStreamer.#TERRAIN_UNLOAD_R;
+  }
+
+  /**
+   * Hand a small oriented footprint from the streamed heightfield to authored
+   * geometry. IDs make ownership explicit and let the feature undo its claim on
+   * disposal or failed creation. A hard two-slot cap bounds terrain shader cost.
+   */
+  setTerrainCutout(id: string, cutout: TerrainCutoutSpec): void {
+    if (!id) throw new Error("terrain cutout id must be non-empty");
+    if (
+      !Number.isFinite(cutout.centerX) ||
+      !Number.isFinite(cutout.centerZ) ||
+      !Number.isFinite(cutout.halfX) ||
+      !Number.isFinite(cutout.halfZ) ||
+      !Number.isFinite(cutout.yaw) ||
+      cutout.halfX <= 0 ||
+      cutout.halfZ <= 0
+    ) {
+      throw new Error(`terrain cutout ${id} must have finite positive bounds`);
+    }
+    if (!this.#terrainCutouts.has(id) && this.#terrainCutouts.size >= TERRAIN_CUTOUT_CAPACITY) {
+      throw new Error(`terrain cutout capacity ${TERRAIN_CUTOUT_CAPACITY} exceeded by ${id}`);
+    }
+    this.#terrainCutouts.set(id, { ...cutout });
+    this.#terrainCutoutMaterial.sync([...this.#terrainCutouts.values()]);
+    this.onShadowCastersChanged("all");
+  }
+
+  clearTerrainCutout(id: string): void {
+    if (!this.#terrainCutouts.delete(id)) return;
+    this.#terrainCutoutMaterial.sync([...this.#terrainCutouts.values()]);
+    this.onShadowCastersChanged("all");
+  }
+
+  /** Read-only diagnostics used by focused site/runtime probes. */
+  get terrainCutoutDebug(): { capacity: number; active: readonly string[] } {
+    return {
+      capacity: TERRAIN_CUTOUT_CAPACITY,
+      active: [...this.#terrainCutouts.keys()]
+    };
   }
 
   #scan(px: number, pz: number) {

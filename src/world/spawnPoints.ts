@@ -11,6 +11,35 @@ import type { PlayerMode } from "../player/types";
 import { OCEAN_BEACH_SURF, oceanBeachApproxShoreX } from "./oceanBeachWaves";
 import { mdToWorldXZ, Z_ENTRANCE } from "./missionDolores/layout";
 
+/** Lightweight gate metadata stays in the boot spawn registry; the restored
+ * hall, pools, vegetation and effects remain wholly behind their dynamic import. */
+export const SUTRO_BATHS_GATE = {
+  centerX: -6125,
+  centerZ: 1117,
+  yaw: -0.077,
+  halfWidth: 38.7,
+  halfLength: 76.1
+} as const;
+
+/** The dry Point Lobos portal above the broad descending museum stair. */
+export const SUTRO_BATHS_ARRIVAL = {
+  x: -6086,
+  z: 1184,
+  heading: Math.PI / 2
+} as const;
+
+export function distanceToSutroBaths(x: number, z: number): number {
+  const dxWorld = x - SUTRO_BATHS_GATE.centerX;
+  const dzWorld = z - SUTRO_BATHS_GATE.centerZ;
+  const c = Math.cos(SUTRO_BATHS_GATE.yaw);
+  const s = Math.sin(SUTRO_BATHS_GATE.yaw);
+  const localX = c * dxWorld - s * dzWorld;
+  const localZ = s * dxWorld + c * dzWorld;
+  const dx = Math.max(Math.abs(localX) - SUTRO_BATHS_GATE.halfWidth, 0);
+  const dz = Math.max(Math.abs(localZ) - SUTRO_BATHS_GATE.halfLength, 0);
+  return Math.hypot(dx, dz);
+}
+
 const MISSION_DOLORES_ENTRY = mdToWorldXZ(0, Z_ENTRANCE - 8);
 
 /** Heavy park regions built lazily off the boot path (own Vite chunks). A spawn
@@ -151,6 +180,19 @@ export const SPAWN_POINTS: Record<string, SpawnPoint> = {
     x: -5872,
     z: 792,
     heading: 2.0, // faces WNW over the labyrinth toward the open ocean
+    mode: "walk",
+    gates: [],
+    bootTileRadius: 700
+  },
+  // Point Lobos entry terrace above the restored 1896 enclosure. The feature
+  // chunk crosses its own first-approach gate after reveal; this dry exterior
+  // spawn stays safe even if construction is still finishing below.
+  sutroBaths: {
+    key: "sutroBaths",
+    label: "Sutro Baths · 1896",
+    x: SUTRO_BATHS_ARRIVAL.x,
+    z: SUTRO_BATHS_ARRIVAL.z,
+    heading: SUTRO_BATHS_ARRIVAL.heading,
     mode: "walk",
     gates: [],
     bootTileRadius: 700

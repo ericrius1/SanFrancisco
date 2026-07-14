@@ -175,7 +175,9 @@ export const NATURE_REGIONS: NatureRegionSpec[] = [
     // in the marine layer at night. Fog-soft and open-air reverberant.
     id: "landsEnd",
     label: "Lands End",
-    bounds: { minX: -6140, maxX: -5700, minZ: 540, maxZ: 1020 },
+    // Includes the full historic Sutro Baths basin and Cliff House shelf so
+    // its open ocean windows inherit the same wind, gulls and foghorn bed.
+    bounds: { minX: -6200, maxX: -5700, minZ: 540, maxZ: 1280 },
     fade: 140,
     beds: { windGrass: 0.85, windTree: 0.35, nightCrickets: 0.2 },
     day: [
