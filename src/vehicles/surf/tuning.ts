@@ -65,7 +65,9 @@ export const SURF_TUNING = tunables("movement.surf", {
   launchChargeRate: { v: 4.6, min: 0.2, max: 6, step: 0.05, label: "launch charge" },
   launchChargeDecay: { v: 1.1, min: 0, max: 3, step: 0.05, label: "launch decay" },
   launchFacewardSpeed: { v: 0.25, min: 0, max: 6, step: 0.05, label: "lip approach speed" },
-  launchVelocity: { v: 8.4, min: 2, max: 18, step: 0.2, label: "launch lift" },
+  // Pop height: enough for a big, readable 360 (~9-11 m apex) without rocketing
+  // the rider so high the follow camera climbs out of the framed sky band.
+  launchVelocity: { v: 6.5, min: 2, max: 18, step: 0.2, label: "launch lift" },
   launchSpeedLift: { v: 0.16, min: 0, max: 0.5, step: 0.01, label: "speed lift" },
   launchLipLift: { v: 3.2, min: 0, max: 8, step: 0.1, label: "lip lift" },
   launchCooldown: { v: 0.85, min: 0.3, max: 4, step: 0.05, label: "launch cooldown" },

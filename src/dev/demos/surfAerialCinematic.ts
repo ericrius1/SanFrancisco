@@ -6,7 +6,7 @@ import { OCEAN_BEACH_SURF } from "../../world/oceanBeachWaves";
 import type { Demo } from "../demo";
 import { cleanPlate } from "./shared";
 
-export const SURF_AERIAL_SECONDS = 7;
+export const SURF_AERIAL_SECONDS = 10;
 
 // Release only after the board has visually closed the full turn. The earlier
 // 5.7-radian threshold was mechanically a near-360, but its remaining ~32°
@@ -305,11 +305,11 @@ export const surfAerialCinematic: Demo = {
           // the controller's own lip-energy telemetry commits takeoff.
           stage = "approach";
           if (time < HIGH_LINE_START_SECONDS) hold("KeyW");
-          else hold("KeyW", "KeyD");
+          else hold("KeyW", "KeyA");
         } else if (telemetry.phase === "air") {
           if (spinReleasedAt === null && Math.abs(telemetry.airSpin) < SPIN_RELEASE_RADIANS) {
             stage = "spin";
-            hold("KeyD");
+            hold("KeyA");
           } else {
             if (spinReleasedAt === null) spinReleasedAt = time;
             stage = "align";
@@ -321,7 +321,7 @@ export const surfAerialCinematic: Demo = {
             // Opposite rail: descend the face under power, then let the final
             // beat coast so the result reads as a completed surf line.
             stage = "carve-down";
-            hold("KeyW", "KeyA");
+            hold("KeyW", "KeyD");
           } else {
             stage = "resolve";
             hold();

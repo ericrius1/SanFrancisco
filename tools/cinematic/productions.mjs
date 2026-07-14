@@ -95,10 +95,10 @@ const DEFINITIONS = Object.freeze({
     id: "surf-aerial",
     demo: "surf-aerial",
     title: "Ocean Beach Aerial",
-    duration: 7,
+    duration: 10,
     seed: 0x53_55_52_46,
-    posterAt: 3.05,
-    stillTimes: Object.freeze([0.3, 1.35, 2.2, 2.8, 3.35, 4.05, 5.35, 6.75]),
+    posterAt: 3.6,
+    stillTimes: Object.freeze([0.3, 1.35, 2.2, 2.8, 3.35, 4.05, 4.8, 5.8, 6.9, 8.0, 9.0, 9.7]),
     audio: Object.freeze({
       profile: "surf-aerial",
       description: "Pacific rush, lip takeoff, one airy rotation, and a clean rail landing."

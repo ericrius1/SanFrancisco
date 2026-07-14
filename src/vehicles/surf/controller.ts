@@ -404,6 +404,10 @@ export class SurfController implements ModeController {
     const speed = this.#lineSpeed * riderRate;
     const authoredVx = -Math.sin(this.yaw) * speed;
     let vz = -Math.cos(this.yaw) * speed;
+    // #carve = -steer, so holding the up-carve key drives this negative and the
+    // rail dwells the board high on the face (near the lip) regardless of which
+    // down-line direction #linePos is sweeping toward — that dwell is what lets
+    // launch charge accumulate. Down-carve drops onto the shoulder for speed.
     let desiredFaceOffset = tb.faceOffset + this.#carve * tb.carveFaceRange;
     // Stalling under an available roof settles onto the tube line. The player
     // still has to climb into the pocket; S/LT then gives a readable way to let
@@ -472,7 +476,11 @@ export class SurfController implements ModeController {
     const rawVy = (nextFloor - y) / Math.max(dt, 1e-4);
     const vy = THREE.MathUtils.clamp(rawVy, -tb.maxSurfaceVy, tb.maxSurfaceVy);
     const totalSpeed = Math.hypot(vx, vz);
-    const fastEnough = totalSpeed >= tb.launchMinSpeed * (2 - shape.launch);
+    // Aiming the nose up the face collapses the down-line velocity component, so
+    // the frame speed cannot gate takeoff — the board is still carrying its
+    // pumped line speed. Launch off that.
+    const launchSpeed = Math.max(totalSpeed, speed);
+    const fastEnough = launchSpeed >= tb.launchMinSpeed * (2 - shape.launch);
     const lipEnergy = THREE.MathUtils.clamp(
       (sample.lip - tb.autoLaunchLip) / Math.max(0.05, 1 - tb.autoLaunchLip),
       0,
@@ -496,7 +504,7 @@ export class SurfController implements ModeController {
       approachingLip
     ) {
       const speedEnergy = THREE.MathUtils.clamp(
-        (totalSpeed - tb.launchMinSpeed) / Math.max(1, tb.maxTrim - tb.launchMinSpeed),
+        (launchSpeed - tb.launchMinSpeed) / Math.max(1, tb.maxTrim - tb.launchMinSpeed),
         0,
         1
       );
@@ -514,7 +522,7 @@ export class SurfController implements ModeController {
 
     this.#chargeFlow(dt, totalSpeed, sample.face, Math.abs(this.#carve));
     if (this.#launchCharge >= 1 && this.#launchCooldown <= 0) {
-      this.#beginAutoLaunch(totalSpeed, sample.lip, shape);
+      this.#beginAutoLaunch(launchSpeed, sample.lip, shape);
       this.#orientRide(ctx, motionDt, steer, vx, vz, vy, sample);
       this.#commit(ctx, y, vx, this.#airVy * riderRate, vz);
       this.#syncTelemetry(ctx, frame, sample, totalSpeed, y, riderRate);
@@ -639,9 +647,10 @@ export class SurfController implements ModeController {
       if (quality < tb.recoveryQuality) this.#beginRecovery(1 - quality);
       else this.#phase = "ride";
       this.yaw += shortestAngle(travelYaw, this.yaw) * 0.75;
-      // Re-seat the across-face position from where the landing points us so the
-      // grounded carve model resumes on a clean line rather than a stale one.
-      this.#linePos = THREE.MathUtils.clamp(this.yaw / Math.PI, 0, 1);
+      // Re-seat the across-face position from the actual landing travel direction
+      // so the grounded carve model resumes on a clean line. (Post-spin yaw is
+      // unbounded — reading it directly would always saturate to one end.)
+      this.#linePos = vz >= 0 ? 1 : 0;
       this.lean *= 0.35;
       this.pitch *= 0.5;
       this.#commit(ctx, y, vx, trackVy, vz);
@@ -831,9 +840,16 @@ export class SurfController implements ModeController {
   }
 
   #commit(ctx: PlayerCtx, y: number, vx: number, vy: number, vz: number) {
-    const floor = this.#phase === "air"
-      ? this.#surface(ctx.position.x, ctx.position.z, ctx.time, SURF_TUNING.values.railHeight)
-      : this.#contactFloor(ctx.position.x, ctx.position.z, ctx.time, SURF_TUNING.values.railHeight);
+    // Use the full five-point footprint floor in the air too. Centre-only let a
+    // rail/nose probe of the tilted board dip a millimetre or two under the wave
+    // on the takeoff and touchdown frames; the max() only binds when a probe is
+    // actually at/below the surface, so it never interferes with the arc.
+    const floor = this.#contactFloor(
+      ctx.position.x,
+      ctx.position.z,
+      ctx.time,
+      SURF_TUNING.values.railHeight
+    );
     const safeY = this.#phase === "air" ? Math.max(y, floor) : floor;
     const q = ctx.quaternion.setFromEuler(V.euler.set(this.pitch, this.yaw, this.lean, "YXZ"));
     const w = ctx.physics.world;
