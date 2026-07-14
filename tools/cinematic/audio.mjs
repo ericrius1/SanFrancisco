@@ -17,7 +17,7 @@ const PRODUCTION_DURATIONS = Object.freeze({
   "palace-reverie": 15,
   landsend: 15,
   "roqn-open-road": 30,
-  "surf-aerial": 7,
+  "surf-aerial": 10,
   ...Object.fromEntries(Array.from({ length: 8 }, (_, index) => [
     `twitter-summer-${String(index + 1).padStart(2, "0")}`,
     7.5
@@ -202,16 +202,18 @@ export async function renderCinematicAudio(production, outputPath) {
 }
 
 function scoreSurfAerial(mix) {
+  // Beds span the full 10 s take; the trick SFX below stay physics-timed to the
+  // launch/spin/land in the first ~7 s, then a soft tail carries the ride-out.
   addPad(mix, {
     start: 0,
-    duration: 7,
+    duration: 10,
     notes: [45, 52, 57, 61, 66, 73],
     gain: 0.05,
     pan: 0,
     brightness: 0.58
   });
-  addAir(mix, { start: 0, duration: 7, gain: 0.026, panDrift: 0.72 });
-  addFoley(mix, { start: 0.05, duration: 6.9, gain: 0.023, pan: 0, character: "board" });
+  addAir(mix, { start: 0, duration: 10, gain: 0.026, panDrift: 0.72 });
+  addFoley(mix, { start: 0.05, duration: 9.9, gain: 0.023, pan: 0, character: "board" });
   addPropulsion(mix, { start: 0.12, duration: 2.25, fromHz: 58, toHz: 118, gain: 0.045 });
   addWhoosh(mix, {
     start: 1.78,
@@ -239,6 +241,16 @@ function scoreSurfAerial(mix) {
     gain: 0.05,
     panFrom: -0.25,
     panTo: 0.45,
+    direction: "out"
+  });
+  // Ride-out tail: a settled glide after the landing carries the last ~3 s.
+  addChime(mix, { start: 7.15, midi: 69, duration: 1.9, gain: 0.038, pan: 0.18 });
+  addWhoosh(mix, {
+    start: 7.6,
+    duration: 2.1,
+    gain: 0.042,
+    panFrom: 0.4,
+    panTo: -0.32,
     direction: "out"
   });
 }
