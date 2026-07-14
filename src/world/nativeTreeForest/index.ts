@@ -29,6 +29,14 @@ import {
   disposeTreeInstanceGeometry,
   type TreeInstanceGeometry
 } from "./nativeGeometry";
+import {
+  NATIVE_TREE_LOD_UPDATE_MOVE,
+  nativeTreeChunkLodBias,
+  nativeTreeUsesHorizonLod,
+  resolveNativeTreeLodTransition,
+  type NativeTreeLodTransitionDirection,
+  type NativeTreeSilhouetteLod
+} from "./lodTransition";
 import { growTemplate, type GrownTemplate, type NativeTreeDesignSpec } from "./templates";
 
 export type { NativeTreeDesignSpec } from "./templates";
@@ -101,7 +109,7 @@ export type NativeTreeForest = {
 
 const REBIN_MS = 250;
 const REBIN_MOVE_SQ = 4;
-const CULL_MOVE = 24;
+const RESIDENCY_MOVE = 24;
 const HORIZON_HYSTERESIS = 14;
 const VISIBILITY_HYSTERESIS = 18;
 const PREFETCH_CHUNK_RINGS = 0.75;
@@ -129,6 +137,7 @@ type Slot = NativeTreeSlot & {
   key: string;
   variation: number;
   dryness: number;
+  lodRank: number;
 };
 
 type BatchVariant = {
@@ -156,6 +165,7 @@ type TreeBatch = {
 type ChunkDesign = {
   slots: Slot[];
   batch: TreeBatch;
+  transitionBatch: TreeBatch;
 };
 
 type Chunk = {
@@ -164,7 +174,10 @@ type Chunk = {
   cx: number;
   cz: number;
   horizontalRadius: number;
-  lod: 2 | 3;
+  lod: NativeTreeSilhouetteLod;
+  lodBias: number;
+  lodDirection: NativeTreeLodTransitionDirection;
+  horizonFraction: number;
   hasCullState: boolean;
   wantedVisible: boolean;
   preparedLods: Set<2 | 3>;
@@ -182,6 +195,7 @@ type ChunkDescriptor = {
   cx: number;
   cz: number;
   horizontalRadius: number;
+  lodBias: number;
   designs: number[];
   chunk: Chunk | null;
 };
@@ -268,6 +282,27 @@ function setBatchEntries(batch: TreeBatch, slots: readonly Slot[]): void {
   finishBatchWrite(batch, slots.length, true);
 }
 
+function setBatchVisible(batch: TreeBatch, visible: boolean): void {
+  batch.branch.visible = visible;
+  batch.foliage.visible = visible;
+}
+
+function setPrimaryBatchEntries(
+  batch: TreeBatch,
+  allSlots: readonly Slot[],
+  visibleSlots: readonly Slot[]
+): void {
+  for (const slot of allSlots) slot.index = -1;
+  for (let index = 0; index < visibleSlots.length; index++) visibleSlots[index].index = index;
+  setBatchEntries(batch, visibleSlots);
+  setBatchVisible(batch, visibleSlots.length > 0);
+}
+
+function setTransitionBatchEntries(batch: TreeBatch, slots: readonly Slot[]): void {
+  setBatchEntries(batch, slots);
+  setBatchVisible(batch, slots.length > 0);
+}
+
 function setBatchLod(batch: TreeBatch, lod: number): void {
   if (batch.currentLod === lod) return;
   const variant = batch.variants.find((candidate) => candidate.lod === lod);
@@ -277,6 +312,47 @@ function setBatchLod(batch: TreeBatch, lod: number): void {
   batch.branch.material = batch.branchByLod.get(lod) ?? batch.materials.branch[lod];
   batch.foliage.material = batch.foliageByLod.get(lod) ?? batch.materials.foliage[lod];
   batch.currentLod = lod;
+}
+
+function settleChunkLod(chunk: Chunk, lod: NativeTreeSilhouetteLod): void {
+  for (const entry of chunk.byDesign.values()) {
+    setBatchLod(entry.batch, lod);
+    setPrimaryBatchEntries(entry.batch, entry.slots, entry.slots);
+    setBatchLod(
+      entry.transitionBatch,
+      lod === LOD_LANDSCAPE ? LOD_HORIZON : LOD_LANDSCAPE
+    );
+    setTransitionBatchEntries(entry.transitionBatch, []);
+  }
+  chunk.lod = lod;
+  chunk.lodDirection = 0;
+  chunk.horizonFraction = lod === LOD_HORIZON ? 1 : 0;
+}
+
+function applyChunkLodTransition(
+  chunk: Chunk,
+  horizonFraction: number,
+  direction: NativeTreeLodTransitionDirection
+): number {
+  let targetInstances = 0;
+  for (const entry of chunk.byDesign.values()) {
+    const primarySlots: Slot[] = [];
+    const transitionSlots: Slot[] = [];
+    for (const slot of entry.slots) {
+      const usesHorizon = nativeTreeUsesHorizonLod(slot.lodRank, horizonFraction);
+      const staysPrimary = chunk.lod === LOD_LANDSCAPE ? !usesHorizon : usesHorizon;
+      (staysPrimary ? primarySlots : transitionSlots).push(slot);
+    }
+    const targetLod = chunk.lod === LOD_LANDSCAPE ? LOD_HORIZON : LOD_LANDSCAPE;
+    setBatchLod(entry.batch, chunk.lod);
+    setBatchLod(entry.transitionBatch, targetLod);
+    setPrimaryBatchEntries(entry.batch, entry.slots, primarySlots);
+    setTransitionBatchEntries(entry.transitionBatch, transitionSlots);
+    targetInstances += transitionSlots.length;
+  }
+  chunk.lodDirection = direction;
+  chunk.horizonFraction = horizonFraction;
+  return targetInstances;
 }
 
 function setBatchMaterials(batch: TreeBatch, materials: NativeTreeMaterials): void {
@@ -309,11 +385,14 @@ function createBatch(
   name: string,
   sphere: THREE.Sphere | null,
   parent: THREE.Group,
-  ownMaterials = false
+  ownMaterials = false,
+  dynamicInstances = false
 ): TreeBatch {
   if (capacity < 1) throw new Error(`${name} needs a positive capacity`);
   const variants: BatchVariant[] = [];
-  const instanceUsage = sphere === null ? THREE.DynamicDrawUsage : THREE.StaticDrawUsage;
+  const instanceUsage = sphere === null || dynamicInstances
+    ? THREE.DynamicDrawUsage
+    : THREE.StaticDrawUsage;
   let sharedAttributes: Pick<TreeInstanceGeometry, "root" | "yaw"> | undefined;
   for (const lod of lods) {
     const source = template.geometry.lods[lod];
@@ -513,7 +592,8 @@ export function createNativeTreeForest(
       chunk,
       key: "",
       variation: slotRandom(source, design.seed, 0x2c1b3c6d),
-      dryness: Math.pow(slotRandom(source, design.seed, 0x6a09e667), 3) * 0.32
+      dryness: Math.pow(slotRandom(source, design.seed, 0x6a09e667), 3) * 0.32,
+      lodRank: slotRandom(source, design.seed, 0x510e527f)
     };
     const bucket = chunkSlots.get(chunk);
     if (bucket) bucket.push(slot);
@@ -535,6 +615,7 @@ export function createNativeTreeForest(
   const nearPreparations = new Map<TreeBatch, NearPreparation>();
   const active = new Map<string, ActiveNear>();
   const lastFocus = { x: 1e9, z: 1e9 };
+  const lastResidencyFocus = { x: 1e9, z: 1e9 };
   const lastRebinFocus = new THREE.Vector2(1e9, 1e9);
   const requestedDesigns = new Set<number>();
   for (const slots of chunkSlots.values()) for (const slot of slots) requestedDesigns.add(slot.design);
@@ -587,7 +668,10 @@ export function createNativeTreeForest(
 
   function setFarHidden(chunk: Chunk, slot: Slot, hidden: boolean): void {
     const batch = chunk.byDesign.get(slot.design)?.batch;
-    if (!batch) return;
+    // A slot assigned to the transition batch cannot be close enough for a
+    // near-detail takeover. A stale near rebin can briefly observe that state
+    // after a teleport, so simply leave its already-visible far copy alone.
+    if (!batch || slot.index < 0) return;
     writeBatchSlot(batch, slot, slot.index, hidden, false);
     batch.root.clearUpdateRanges();
     batch.root.addUpdateRange(slot.index * 4 + 3, 1);
@@ -737,6 +821,9 @@ export function createNativeTreeForest(
       cz: descriptor.cz,
       horizontalRadius: descriptor.horizontalRadius,
       lod: LOD_LANDSCAPE,
+      lodBias: descriptor.lodBias,
+      lodDirection: 0,
+      horizonFraction: 0,
       hasCullState: false,
       wantedVisible: false,
       preparedLods: new Set(),
@@ -776,13 +863,25 @@ export function createNativeTreeForest(
         designSlots.length,
         `${options.name}_${designs[design].species}_${descriptor.key}`,
         descriptor.sphere,
-        chunk.group
+        chunk.group,
+        false,
+        true
       );
-      for (let index = 0; index < designSlots.length; index++) {
-        writeBatchSlot(batch, designSlots[index], index);
-      }
-      finishBatchWrite(batch, designSlots.length, true);
-      chunk.byDesign.set(design, { slots: designSlots, batch });
+      const transitionBatch = createBatch(
+        template,
+        materialPack,
+        [LOD_LANDSCAPE, LOD_HORIZON],
+        designSlots.length,
+        `${options.name}_${designs[design].species}_${descriptor.key}_lod_transition`,
+        descriptor.sphere,
+        chunk.group,
+        false,
+        true
+      );
+      setPrimaryBatchEntries(batch, designSlots, designSlots);
+      setBatchLod(transitionBatch, LOD_HORIZON);
+      setTransitionBatchEntries(transitionBatch, []);
+      chunk.byDesign.set(design, { slots: designSlots, batch, transitionBatch });
 
       const shadowProfile = nativeShadowProfile(template);
       for (const slot of designSlots) {
@@ -839,7 +938,10 @@ export function createNativeTreeForest(
     for (let index = allNearSlots.length - 1; index >= 0; index--) {
       if (allNearSlots[index].chunk === chunk) allNearSlots.splice(index, 1);
     }
-    for (const entry of chunk.byDesign.values()) disposeBatch(entry.batch);
+    for (const entry of chunk.byDesign.values()) {
+      disposeBatch(entry.batch);
+      disposeBatch(entry.transitionBatch);
+    }
     chunk.shadowProxy?.dispose();
     chunk.group.removeFromParent();
     chunk.group.clear();
@@ -923,9 +1025,11 @@ export function createNativeTreeForest(
       hasCullFocus = false;
       lastFocus.x = 1e9;
       lastFocus.z = 1e9;
+      lastResidencyFocus.x = 1e9;
+      lastResidencyFocus.z = 1e9;
       return;
     }
-    if (!force && Math.hypot(x - lastFocus.x, z - lastFocus.z) < CULL_MOVE) return;
+    if (!force && Math.hypot(x - lastFocus.x, z - lastFocus.z) < NATIVE_TREE_LOD_UPDATE_MOVE) return;
     const firstCull = !hasCullFocus;
     // update() is intentionally useful before ready: it records the destination
     // that asynchronous assembly should cull around. Do not consume the first-
@@ -954,15 +1058,37 @@ export function createNativeTreeForest(
       // still in flight. Being wanted again cancels its deferred retirement.
       chunk.retireRequested = false;
       const previousLod = chunk.lod;
+      let transitionTarget: NativeTreeSilhouetteLod | null = null;
       if (firstChunkCull) {
-        chunk.lod = edgeDistance >= horizonDistance ? LOD_HORIZON : LOD_LANDSCAPE;
-      } else if (chunk.lod === LOD_LANDSCAPE && edgeDistance >= horizonDistance + HORIZON_HYSTERESIS) {
-        chunk.lod = LOD_HORIZON;
-      } else if (chunk.lod === LOD_HORIZON && edgeDistance < horizonDistance - HORIZON_HYSTERESIS) {
-        chunk.lod = LOD_LANDSCAPE;
+        settleChunkLod(
+          chunk,
+          edgeDistance >= horizonDistance + chunk.lodBias ? LOD_HORIZON : LOD_LANDSCAPE
+        );
+      } else {
+        const transition = resolveNativeTreeLodTransition(
+          edgeDistance,
+          horizonDistance + chunk.lodBias,
+          chunk.lod,
+          undefined,
+          HORIZON_HYSTERESIS
+        );
+        if (transition.settledLod !== chunk.lod) {
+          settleChunkLod(chunk, transition.settledLod);
+        } else if (
+          transition.horizonFraction !== chunk.horizonFraction ||
+          transition.direction !== chunk.lodDirection
+        ) {
+          const targetInstances = applyChunkLodTransition(
+            chunk,
+            transition.horizonFraction,
+            transition.direction
+          );
+          if (transition.transitioning && targetInstances > 0) {
+            transitionTarget = chunk.lod === LOD_LANDSCAPE ? LOD_HORIZON : LOD_LANDSCAPE;
+          }
+        }
       }
       if (previousLod !== chunk.lod) chunk.prepareEpoch++;
-      for (const entry of chunk.byDesign.values()) setBatchLod(entry.batch, chunk.lod);
       if (prepareUnit && !chunk.preparedLods.has(chunk.lod)) {
         chunk.group.visible = false;
         void queueChunkPreparation(chunk).catch((error) => {
@@ -970,6 +1096,11 @@ export function createNativeTreeForest(
         });
       } else {
         chunk.group.visible = true;
+        // Once the ranked target population is submitted, the target material
+        // and shared vertex layout have crossed the real renderer path. This
+        // prevents the final consolidation from hiding a chunk that has already
+        // displayed that grade throughout the bounded transition band.
+        if (transitionTarget !== null) chunk.preparedLods.add(transitionTarget);
       }
     }
   }
@@ -1258,6 +1389,126 @@ export function createNativeTreeForest(
     }
   }
 
+  function batchSubmission(batch: TreeBatch, rootVisible: boolean) {
+    const count = batch.branch.geometry.instanceCount;
+    let draws = 0;
+    let triangles = 0;
+    for (const mesh of [batch.branch, batch.foliage]) {
+      if (!rootVisible || !mesh.visible || count <= 0) continue;
+      draws++;
+      const primitiveCount = mesh.geometry.index?.count ?? mesh.geometry.attributes.position.count;
+      triangles += primitiveCount / 3 * count;
+    }
+    return {
+      lod: batch.currentLod,
+      instances: rootVisible && count > 0 ? count : 0,
+      draws,
+      triangles
+    };
+  }
+
+  function collectLodTransitionStats() {
+    const rows = chunks.map((chunk) => {
+      let primaryInstances = 0;
+      let transitionInstances = 0;
+      let landscapeInstances = 0;
+      let horizonInstances = 0;
+      let draws = 0;
+      let transitionDraws = 0;
+      let triangles = 0;
+      for (const entry of chunk.byDesign.values()) {
+        const primary = batchSubmission(entry.batch, chunk.group.visible);
+        const transition = batchSubmission(entry.transitionBatch, chunk.group.visible);
+        primaryInstances += primary.instances;
+        transitionInstances += transition.instances;
+        landscapeInstances += primary.lod === LOD_LANDSCAPE ? primary.instances : 0;
+        landscapeInstances += transition.lod === LOD_LANDSCAPE ? transition.instances : 0;
+        horizonInstances += primary.lod === LOD_HORIZON ? primary.instances : 0;
+        horizonInstances += transition.lod === LOD_HORIZON ? transition.instances : 0;
+        draws += primary.draws + transition.draws;
+        transitionDraws += transition.draws;
+        triangles += primary.triangles + transition.triangles;
+      }
+      return {
+        key: chunk.key,
+        cx: chunk.cx,
+        cz: chunk.cz,
+        horizontalRadius: chunk.horizontalRadius,
+        edgeDistance: Number.isFinite(lastFocus.x)
+          ? descriptorEdgeDistance(chunk, lastFocus.x, lastFocus.z)
+          : null,
+        lodCenter: horizonDistance + chunk.lodBias,
+        lodBias: chunk.lodBias,
+        settledLod: chunk.lod,
+        direction: chunk.lodDirection,
+        horizonFraction: chunk.horizonFraction,
+        transitioning: chunk.lodDirection !== 0,
+        wantedVisible: chunk.wantedVisible,
+        visible: chunk.group.visible,
+        preparedLods: Array.from(chunk.preparedLods).sort(),
+        preparing: chunk.preparing !== null,
+        retireRequested: chunk.retireRequested,
+        slots: Array.from(chunk.byDesign.values()).reduce((sum, entry) => sum + entry.slots.length, 0),
+        primaryInstances,
+        transitionInstances,
+        landscapeInstances,
+        horizonInstances,
+        draws,
+        transitionDraws,
+        triangles
+      };
+    });
+    return {
+      updateMove: NATIVE_TREE_LOD_UPDATE_MOVE,
+      residencyMove: RESIDENCY_MOVE,
+      residentChunks: rows.length,
+      transitioningChunks: rows.filter((row) => row.transitioning).length,
+      visibleDraws: rows.reduce((sum, row) => sum + row.draws, 0),
+      transitionDraws: rows.reduce((sum, row) => sum + row.transitionDraws, 0),
+      visibleTriangles: rows.reduce((sum, row) => sum + row.triangles, 0),
+      chunks: rows
+    };
+  }
+
+  function collectNearLodStats() {
+    const entries = Array.from(active.values()).map((entry) => ({
+      key: entry.slot.key,
+      x: entry.slot.x,
+      z: entry.slot.z,
+      distance: Math.hypot(
+        entry.slot.x - lastRebinFocus.x,
+        entry.slot.z - lastRebinFocus.y
+      ),
+      lod: entry.lod,
+      lodName: entry.lod === LOD_CANOPY ? "canopy" : "grove",
+      design: entry.slot.design
+    })).sort((a, b) => a.distance - b.distance);
+    const closestCandidate = allNearSlots.map((entry) => ({
+      key: entry.slot.key,
+      x: entry.slot.x,
+      z: entry.slot.z,
+      distance: Math.hypot(
+        entry.slot.x - lastRebinFocus.x,
+        entry.slot.z - lastRebinFocus.y
+      ),
+      design: entry.slot.design,
+      detailMaterialReady: nearMaterials[entry.slot.design] !== null
+    })).sort((a, b) => a.distance - b.distance)[0] ?? null;
+    return {
+      focus: { x: lastRebinFocus.x, z: lastRebinFocus.y },
+      nearRadius,
+      nearExit,
+      canopyRadius,
+      nearMax,
+      active: entries.length,
+      canopy: entries.filter((entry) => entry.lod === LOD_CANOPY).length,
+      grove: entries.filter((entry) => entry.lod === LOD_GROVE).length,
+      closest: entries[0] ?? null,
+      closestCandidate,
+      entries: entries.slice(0, 12)
+    };
+  }
+
   const ready = (async () => {
     const loaded = await Promise.all(designs.map(async (design, index) => {
       if (!requestedDesigns.has(index)) return null;
@@ -1308,9 +1559,13 @@ export function createNativeTreeForest(
         stats.instances++;
         stats.farTriangles += template.geometry.lods[LOD_LANDSCAPE].triangles;
         stats.horizonTriangles += template.geometry.lods[LOD_HORIZON].triangles;
-        instanceBytes += (4 + 4) * 4;
+        // Primary + empty-at-rest transition storage. The latter lets ranked
+        // trees move between opaque silhouette grades without allocating GPU
+        // buffers or render objects on the transition frame.
+        instanceBytes += (4 + 4) * 4 * 2;
       }
       if (validDesigns.size === 0) continue;
+      const [chunkX, chunkZ] = key.split(",").map(Number);
       const descriptor: ChunkDescriptor = {
         key,
         slots,
@@ -1318,6 +1573,7 @@ export function createNativeTreeForest(
         cx: sphere.center.x,
         cz: sphere.center.z,
         horizontalRadius: chunkHorizontalRadius(slots, templates, sphere.center.x, sphere.center.z),
+        lodBias: nativeTreeChunkLodBias(chunkX, chunkZ),
         designs: Array.from(validDesigns),
         chunk: null
       };
@@ -1401,6 +1657,12 @@ export function createNativeTreeForest(
       chunks.filter((chunk) => !chunk.wantedVisible && chunk.preparedLods.has(LOD_HORIZON)).length;
     group.userData.nativeTreeShadowMeshes = () =>
       chunks.reduce((sum, chunk) => sum + (chunk.shadowProxy?.meshes.length ?? 0), 0);
+    group.userData.nativeTreeLodTransitionStats = collectLodTransitionStats;
+    group.userData.nativeTreeNearLodStats = collectNearLodStats;
+    group.userData.nativeTreeLodProbeAt = (x: number, z: number) => {
+      applyDistanceCull(x, z, true);
+      return collectLodTransitionStats();
+    };
     group.userData.disposeTreeShadowProxies = () => {
       for (const chunk of chunks) chunk.shadowProxy?.dispose();
     };
@@ -1435,9 +1697,14 @@ export function createNativeTreeForest(
         Number.isFinite(focus.z) &&
         Math.abs(focus.x) < 1e8 &&
         Math.abs(focus.z) < 1e8;
-      const refreshResidency = finiteFocus && Math.hypot(focus.x - lastFocus.x, focus.z - lastFocus.z) >= CULL_MOVE;
+      const refreshResidency = finiteFocus && Math.hypot(
+        focus.x - lastResidencyFocus.x,
+        focus.z - lastResidencyFocus.z
+      ) >= RESIDENCY_MOVE;
       applyDistanceCull(focus.x, focus.z);
       if (refreshResidency) {
+        lastResidencyFocus.x = focus.x;
+        lastResidencyFocus.z = focus.z;
         const epoch = ++residencyEpoch;
         const retired = descriptorsInitialized ? retireDistantChunks(focus.x, focus.z) : false;
         if (retired) rebin(focus.x, focus.z, true);
@@ -1461,6 +1728,9 @@ export function createNativeTreeForest(
       }
       if (signal?.aborted) throw superseded();
       if (prepare) prepareUnit = prepare;
+
+      lastResidencyFocus.x = focus.x;
+      lastResidencyFocus.z = focus.z;
 
       const epoch = ++residencyEpoch;
       const onAbort = () => cancelResidencyPrime(epoch);
