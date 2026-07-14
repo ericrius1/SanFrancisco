@@ -133,6 +133,7 @@ import {
   carKey,
   loadSavedCar,
   randomCarConfig,
+  refreshCarHeadlightUniforms,
   saveCarConfig,
   setLocalCarConfig,
   type CarConfig
@@ -3966,6 +3967,7 @@ async function boot() {
     tiles.update(player.position.x, player.position.z, highUp, !revealed);
     trafficLights?.update(player.position, performance.now() / 1000);
     streetLamps?.update(player.position);
+    refreshCarHeadlightUniforms();
     abandonedMounts.update(frameDt, player.position);
     if (!worldArrival.active) {
       creatures?.update(elapsed, camera.position); // gulls live at altitude — never distance-gated

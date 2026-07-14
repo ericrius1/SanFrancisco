@@ -1,4 +1,5 @@
 import {
+  CAR_BRAKE_COLORS,
   CAR_DECALS,
   CAR_FORMS,
   CAR_INTERIOR_COLORS,
@@ -7,6 +8,7 @@ import {
   CAR_SURFACES,
   CAR_TRIM_COLORS,
   CAR_WHEELS,
+  carBrakeHex,
   carInteriorHex,
   carPaintHex,
   carRimHex,
@@ -17,14 +19,15 @@ import {
 } from "../vehicles/car";
 
 type ChoiceKey = "form" | "surface" | "decal" | "wheel";
-type ColorKey = "paint" | "trim" | "interior" | "rim";
+type ColorKey = "paint" | "trim" | "interior" | "rim" | "brake";
 type SliderKey = "surfaceScale" | "decalScale" | "decalPosition" | "clearcoat";
 
 const COLOR_ROWS = {
   paint: { palette: CAR_PAINT_COLORS, hexKey: "paintHex", resolve: carPaintHex },
   trim: { palette: CAR_TRIM_COLORS, hexKey: "trimHex", resolve: carTrimHex },
   interior: { palette: CAR_INTERIOR_COLORS, hexKey: "interiorHex", resolve: carInteriorHex },
-  rim: { palette: CAR_RIM_COLORS, hexKey: "rimHex", resolve: carRimHex }
+  rim: { palette: CAR_RIM_COLORS, hexKey: "rimHex", resolve: carRimHex },
+  brake: { palette: CAR_BRAKE_COLORS, hexKey: "brakeHex", resolve: carBrakeHex }
 } as const;
 
 const toCss = (hex: number) => `#${hex.toString(16).padStart(6, "0")}`;
@@ -202,7 +205,8 @@ export class CarSelector {
       this.#colorRow("paint"),
       this.#colorRow("trim"),
       this.#colorRow("interior"),
-      this.#colorRow("rim")
+      this.#colorRow("rim"),
+      this.#colorRow("brake")
     );
     const sliders = document.createElement("div");
     sliders.className = "car-slider-grid";

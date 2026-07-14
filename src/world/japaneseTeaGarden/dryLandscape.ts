@@ -9,6 +9,8 @@ import {
   type SandSimulation,
   type SandSimulationStats
 } from "./sandSimulation";
+import { TeaGardenRakeAudio } from "./rakeAudio";
+import type { NatureSoundscape } from "../../audio/natureSoundscape";
 
 export const DRY_LANDSCAPE_CENTER = { x: -2344, z: 2166.5 } as const;
 export const DRY_LANDSCAPE_RADII = { x: 10.8, z: 6.4 } as const;
@@ -43,6 +45,7 @@ export type DryLandscapeDebugState = {
   /** Tine-head back toward player direction, for pose/clearance diagnostics. */
   pull: { x: number; z: number };
   simulation: SandSimulationStats;
+  rakeAudio: TeaGardenRakeAudio["debugState"];
 };
 
 export type DryLandscape = {
@@ -57,6 +60,8 @@ export type DryLandscape = {
 
 export type DryLandscapeOptions = {
   renderer: THREE.WebGPURenderer;
+  /** Shared audio engine; the rake's ASMR sand voice rides its buses. */
+  nature: NatureSoundscape;
   onCarryRake?: (rake: GardenRakeTool | null) => void;
   onRakeMotion?: (motion: Readonly<GardenRakeMotion> | null) => void;
   notify?: (message: string, seconds?: number) => void;
@@ -295,6 +300,8 @@ export function createDryLandscape(map: TeaGardenTerrain, options: DryLandscapeO
   });
   group.add(simulation.mesh, createRim(map), createRockIslands(map), createLeafScatter(map));
 
+  const rakeAudio = new TeaGardenRakeAudio(options.nature);
+
   const rake = createRake();
   const rack = createRakeRack(map, rake);
   group.add(rack);
@@ -378,94 +385,116 @@ export function createDryLandscape(map: TeaGardenTerrain, options: DryLandscapeO
     group,
     update(dt, _time, player, mode) {
       if (disposed) return;
-      distanceToRake = Math.hypot(player.x - RAKE_RACK.x, player.z - RAKE_RACK.z);
-      insideSand = inDryLandscape(player.x, player.z, -0.55);
-      if (!held) {
-        if (mode === "walk" && distanceToRake <= PICKUP_RANGE + 1.2 && !promptVisible) {
-          options.notify?.(formatInteractPrompt("pick up the little garden rake"), 2.1);
-          promptVisible = true;
-        } else if (distanceToRake > PICKUP_RANGE + 1.8) {
-          promptVisible = false;
+      // Always drive the rake's ASMR sand voice — even on the early-return paths
+      // — so it fades and tears down cleanly. Fields fill in as they're computed.
+      const audioFrame = {
+        holding: false,
+        onSand: false,
+        speed: 0,
+        x: player.x,
+        y: player.y,
+        z: player.z
+      };
+      try {
+        distanceToRake = Math.hypot(player.x - RAKE_RACK.x, player.z - RAKE_RACK.z);
+        insideSand = inDryLandscape(player.x, player.z, -0.55);
+        if (!held) {
+          if (mode === "walk" && distanceToRake <= PICKUP_RANGE + 1.2 && !promptVisible) {
+            options.notify?.(formatInteractPrompt("pick up the little garden rake"), 2.1);
+            promptVisible = true;
+          } else if (distanceToRake > PICKUP_RANGE + 1.8) {
+            promptVisible = false;
+          }
+          simulation.update(dt);
+          return;
         }
-        simulation.update(dt);
-        return;
-      }
-      if (mode !== "walk" || Math.hypot(player.x - DRY_LANDSCAPE_CENTER.x, player.z - DRY_LANDSCAPE_CENTER.z) > RETURN_RANGE) {
-        setHeld(false, "The rake has returned to its garden stand.");
-        simulation.update(dt);
-        return;
-      }
-      if (!previousPlayer) {
-        previousPlayer = { x: player.x, z: player.z };
-        publishMotion(false, false);
-        simulation.update(dt);
-        return;
-      }
-      const moveX = player.x - previousPlayer.x;
-      const moveZ = player.z - previousPlayer.z;
-      const moved = Math.hypot(moveX, moveZ);
-      previousPlayer.x = player.x;
-      previousPlayer.z = player.z;
-      if (moved >= RAKE_STAMP_MIN_DISTANCE) {
-        // GardenRakeMotion.pull is head→player. The player is pushing the rake,
-        // so it points opposite travel and places the grounded head in front.
-        pullX = -moveX / moved;
-        pullZ = -moveZ / moved;
-      }
-
-      motion.contactX = player.x - pullX * RAKE_CONTACT_FORWARD;
-      motion.contactZ = player.z - pullZ * RAKE_CONTACT_FORWARD;
-      motion.contactY = map.groundTop(motion.contactX, motion.contactZ) + SAND_LIFT + 0.006;
-      const hL = map.groundTop(motion.contactX - RAKE_CONTACT_EPSILON, motion.contactZ);
-      const hR = map.groundTop(motion.contactX + RAKE_CONTACT_EPSILON, motion.contactZ);
-      const hD = map.groundTop(motion.contactX, motion.contactZ - RAKE_CONTACT_EPSILON);
-      const hU = map.groundTop(motion.contactX, motion.contactZ + RAKE_CONTACT_EPSILON);
-      const nx = hL - hR;
-      const ny = RAKE_CONTACT_EPSILON * 2;
-      const nz = hD - hU;
-      const normalLength = Math.hypot(nx, ny, nz) || 1;
-      motion.normalX = nx / normalLength;
-      motion.normalY = ny / normalLength;
-      motion.normalZ = nz / normalLength;
-
-      const engaged =
-        insideSand &&
-        inDryLandscape(motion.contactX, motion.contactZ, -0.4) &&
-        !nearRock(motion.contactX, motion.contactZ, 0.22);
-      const dragging = engaged && moved >= RAKE_STAMP_MIN_DISTANCE;
-      publishMotion(engaged, dragging);
-      setRaking(dragging);
-
-      if (!engaged) {
-        previousContactValid = false;
-        simulation.update(dt);
-        return;
-      }
-
-      if (dragging && previousContactValid) {
-        const contactDistance = Math.hypot(
-          motion.contactX - previousContactX,
-          motion.contactZ - previousContactZ
-        );
-        // A teleport or tab-resume must not carve a stripe across the garden.
-        if (contactDistance <= 1.35 && contactDistance >= RAKE_STAMP_MIN_DISTANCE * 0.45) {
-          stamp.previous.x = previousContactX;
-          stamp.previous.z = previousContactZ;
-          stamp.current.x = motion.contactX;
-          stamp.current.z = motion.contactZ;
-          stamp.across.x = pullZ;
-          stamp.across.z = -pullX;
-          // Sand stores the actual tool-travel direction for directional
-          // shading, which is opposite the shaft's head→player pose axis.
-          stamp.pull.x = -pullX;
-          stamp.pull.z = -pullZ;
-          simulation.queueStamp(stamp);
+        if (mode !== "walk" || Math.hypot(player.x - DRY_LANDSCAPE_CENTER.x, player.z - DRY_LANDSCAPE_CENTER.z) > RETURN_RANGE) {
+          setHeld(false, "The rake has returned to its garden stand.");
+          simulation.update(dt);
+          return;
         }
+        audioFrame.holding = true;
+        if (!previousPlayer) {
+          previousPlayer = { x: player.x, z: player.z };
+          publishMotion(false, false);
+          simulation.update(dt);
+          return;
+        }
+        const moveX = player.x - previousPlayer.x;
+        const moveZ = player.z - previousPlayer.z;
+        const moved = Math.hypot(moveX, moveZ);
+        previousPlayer.x = player.x;
+        previousPlayer.z = player.z;
+        if (moved >= RAKE_STAMP_MIN_DISTANCE) {
+          // GardenRakeMotion.pull is head→player. The player is pushing the rake,
+          // so it points opposite travel and places the grounded head in front.
+          pullX = -moveX / moved;
+          pullZ = -moveZ / moved;
+        }
+        // Tine drag speed for the sand voice; a teleport/tab-resume jump is not a
+        // stroke, so ignore it (same 1.35 m guard the stamp uses below).
+        audioFrame.speed = moved > 1.35 ? 0 : moved / Math.max(dt, 1e-3);
+
+        motion.contactX = player.x - pullX * RAKE_CONTACT_FORWARD;
+        motion.contactZ = player.z - pullZ * RAKE_CONTACT_FORWARD;
+        motion.contactY = map.groundTop(motion.contactX, motion.contactZ) + SAND_LIFT + 0.006;
+        audioFrame.x = motion.contactX;
+        audioFrame.y = motion.contactY;
+        audioFrame.z = motion.contactZ;
+        const hL = map.groundTop(motion.contactX - RAKE_CONTACT_EPSILON, motion.contactZ);
+        const hR = map.groundTop(motion.contactX + RAKE_CONTACT_EPSILON, motion.contactZ);
+        const hD = map.groundTop(motion.contactX, motion.contactZ - RAKE_CONTACT_EPSILON);
+        const hU = map.groundTop(motion.contactX, motion.contactZ + RAKE_CONTACT_EPSILON);
+        const nx = hL - hR;
+        const ny = RAKE_CONTACT_EPSILON * 2;
+        const nz = hD - hU;
+        const normalLength = Math.hypot(nx, ny, nz) || 1;
+        motion.normalX = nx / normalLength;
+        motion.normalY = ny / normalLength;
+        motion.normalZ = nz / normalLength;
+
+        const engaged =
+          insideSand &&
+          inDryLandscape(motion.contactX, motion.contactZ, -0.4) &&
+          !nearRock(motion.contactX, motion.contactZ, 0.22);
+        audioFrame.onSand = engaged;
+        const dragging = engaged && moved >= RAKE_STAMP_MIN_DISTANCE;
+        publishMotion(engaged, dragging);
+        setRaking(dragging);
+
+        if (!engaged) {
+          previousContactValid = false;
+          simulation.update(dt);
+          return;
+        }
+
+        if (dragging && previousContactValid) {
+          const contactDistance = Math.hypot(
+            motion.contactX - previousContactX,
+            motion.contactZ - previousContactZ
+          );
+          // A teleport or tab-resume must not carve a stripe across the garden.
+          if (contactDistance <= 1.35 && contactDistance >= RAKE_STAMP_MIN_DISTANCE * 0.45) {
+            stamp.previous.x = previousContactX;
+            stamp.previous.z = previousContactZ;
+            stamp.current.x = motion.contactX;
+            stamp.current.z = motion.contactZ;
+            stamp.across.x = pullZ;
+            stamp.across.z = -pullX;
+            // Sand stores the actual tool-travel direction for directional
+            // shading, which is opposite the shaft's head→player pose axis.
+            stamp.pull.x = -pullX;
+            stamp.pull.z = -pullZ;
+            simulation.queueStamp(stamp);
+          }
+        }
+        previousContactX = motion.contactX;
+        previousContactZ = motion.contactZ;
+        previousContactValid = true;
+        simulation.update(dt);
+      } finally {
+        rakeAudio.update(dt, audioFrame);
       }
-      previousContactX = motion.contactX;
-      previousContactZ = motion.contactZ;
-      previousContactValid = true;
-      simulation.update(dt);
     },
     interact(player, mode) {
       if (disposed) return false;
@@ -487,6 +516,7 @@ export function createDryLandscape(map: TeaGardenTerrain, options: DryLandscapeO
       if (disposed) return;
       disposed = true;
       if (held) setHeld(false);
+      rakeAudio.dispose();
       simulation.dispose();
       const geometries = new Set<THREE.BufferGeometry>();
       const materials = new Set<THREE.Material>();
@@ -510,7 +540,8 @@ export function createDryLandscape(map: TeaGardenTerrain, options: DryLandscapeO
         distanceToRake,
         contact: { x: motion.contactX, y: motion.contactY, z: motion.contactZ },
         pull: { x: motion.pullX, z: motion.pullZ },
-        simulation: simulation.stats
+        simulation: simulation.stats,
+        rakeAudio: rakeAudio.debugState
       };
     }
   };

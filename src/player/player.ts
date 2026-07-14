@@ -47,6 +47,7 @@ import {
   animateCar,
   buildCarMesh,
   previewCarConfig as previewCarAppearance,
+  updateCarLights,
   CarController,
   type CarConfig
 } from "../vehicles/car";
@@ -1684,6 +1685,7 @@ export class Player {
       poseDrive(this.#driverRig, steer, this.#animT, this.#hasWheel);
       this.#wheel.spin.rotation.z = steer * 2.3;
       animateCar(this.meshes.drive, dt, Math.hypot(this.velocity.x, this.velocity.z), steer);
+      updateCarLights(this.meshes.drive, this.#modes.drive.brakeLevel);
     } else if (this.mode === "plane") {
       // pilot leans with the bank, hands following the yoke; props spin with
       // airspeed (the local mesh's parts — remotes rediscover their clones')

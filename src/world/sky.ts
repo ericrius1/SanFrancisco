@@ -31,6 +31,7 @@ import { BAY_LIGHTS_INTENSITY } from "./bayLights"
 import { GOLDEN_GATE_LIGHTS_INTENSITY } from "./goldenGateLights"
 import { SUTRO_LIGHTS_INTENSITY } from "./sutroTower"
 import { STREET_LAMPS_INTENSITY } from "./streetLamps"
+import { CAR_HEADLIGHT_INTENSITY } from "../vehicles/car/lights"
 import { BUENA_VISTA_MIST, BUENA_VISTA_SUMMIT_CLEARING } from "./buenaVista"
 import { EXPOSURE_REBASE, LIGHT_SCALE, WORLD_TUNING } from "../config"
 import { tunables } from "../core/persist"
@@ -1085,6 +1086,9 @@ export class Sky {
     // Fake street-lamp pools: dark by day, warm pools fading in through twilight
     // so the night streets read instead of going pitch black. (No real lights.)
     STREET_LAMPS_INTENSITY.value = LIGHT_SCALE * 2.2 * goldenGateTwilightW
+    // Car headlamp beams / ground splash: off by day, thrown after dark on the
+    // same twilight ramp as the street lamps (fake lights — no THREE.Light).
+    CAR_HEADLIGHT_INTENSITY.value = LIGHT_SCALE * 0.95 * goldenGateTwilightW
     // lit building windows (baked facades + citygen glass + far LOD): dark by
     // day, on through the same twilight ramp as the lamps
     WINDOW_GLOW_W.value = goldenGateTwilightW

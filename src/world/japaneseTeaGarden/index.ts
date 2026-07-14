@@ -25,6 +25,7 @@ import {
   JapaneseTeaGardenStreamAudio,
   TEA_GARDEN_STREAM_AUDIO_TUNING
 } from "./streamAudio";
+import { TEA_GARDEN_RAKE_AUDIO_TUNING } from "./rakeAudio";
 import {
   createTeaGardenWaterSimulation,
   type TeaGardenWaterDebugState
@@ -188,6 +189,7 @@ export function createJapaneseTeaGarden(
   });
   const dryLandscape = createDryLandscape(map, {
     renderer: options.renderer,
+    nature: options.nature,
     onCarryRake: options.onCarryRake,
     onRakeMotion: options.onRakeMotion,
     notify: options.notify
@@ -518,6 +520,8 @@ export function createJapaneseTeaGarden(
           const sand = folder.addFolder({ title: "raked sand", expanded: false });
           const sound = folder.addFolder({ title: "stream sound", expanded: false });
           TEA_GARDEN_STREAM_AUDIO_TUNING.bind(sound);
+          const rakeSound = folder.addFolder({ title: "rake sound", expanded: false });
+          TEA_GARDEN_RAKE_AUDIO_TUNING.bind(rakeSound);
           return { monitors: [...water.addTuning(flowingWater), ...dryLandscape.addTuning(sand)] };
         },
         sync: () => {

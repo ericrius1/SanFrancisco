@@ -69,6 +69,8 @@ export class CarController implements ModeController {
   #jump = new CarJumpState();
   #groundNormal = new THREE.Vector3(0, 1, 0);
   #groundBlend = 1;
+  /** Smoothed 0..1 brake-light level: reverse/brake input (S / down) or handbrake. */
+  #brakeLevel = 0;
   /** 0 = glued tires, 1 = full bumper-slide slip. Soft blend avoids icy on/off. */
   #slideBlend = 0;
   /** Seconds the current bumper slide has been held (for snap turbo). */
@@ -145,6 +147,11 @@ export class CarController implements ModeController {
     return this.#landingFeedback;
   }
 
+  /** Brake-light glow amount (0..1), consumed by the car mesh's taillight lerp. */
+  get brakeLevel(): number {
+    return this.#brakeLevel;
+  }
+
   /** Continuous skid intensity for tire marks + audio. */
   get slideFeedback(): Readonly<CarSlideFeedback> {
     return {
@@ -167,6 +174,7 @@ export class CarController implements ModeController {
     this.#skidIntensity = 0;
     this.#slideDir = 0;
     this.#slideSteerLatch = 0;
+    this.#brakeLevel = 0;
     this.#supportClearance = 0;
     this.#jumpPeakY = p.y;
     this.#jumpMaxClearance = 0;
@@ -299,6 +307,10 @@ export class CarController implements ModeController {
     }
     const slideHeld = slideLeftKb || slideRightKb || slidePad;
     this.steerVis += (steer - this.steerVis) * Math.min(1, dt * 9);
+    // Brake light: reverse/brake input (S or stick-down) or the handbrake. Smoothed
+    // here so every early-return path below leaves a consistent glow level.
+    const braking = throttle < -0.02 || handbrake;
+    this.#brakeLevel += ((braking ? 1 : 0) - this.#brakeLevel) * Math.min(1, dt * 14);
 
     const td = CAR_TUNING.values;
     const spec = ctx.driveSpec;

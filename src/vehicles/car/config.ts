@@ -12,10 +12,12 @@ export type CarConfig = {
   trim: number;
   interior: number;
   rim: number;
+  brake: number;
   paintHex: number | null;
   trimHex: number | null;
   interiorHex: number | null;
   rimHex: number | null;
+  brakeHex: number | null;
   surfaceScale: number;
   decalScale: number;
   decalPosition: number;
@@ -90,6 +92,16 @@ export const CAR_RIM_COLORS = [
   { label: "black", color: 0x11161a }
 ];
 
+// Brake-light glow: the colour the taillights lerp toward under braking.
+// Default is a reddish-purple so the brake reads distinct from the resting red.
+export const CAR_BRAKE_COLORS = [
+  { label: "magenta", color: 0xff1f5e },
+  { label: "orchid", color: 0xd23bff },
+  { label: "crimson", color: 0xff2436 },
+  { label: "violet", color: 0x7c3cff },
+  { label: "rose", color: 0xff5a8a }
+];
+
 const DEFAULT_CAR: CarConfig = {
   form: "coast-coupe",
   surface: "solid",
@@ -99,10 +111,12 @@ const DEFAULT_CAR: CarConfig = {
   trim: 0,
   interior: 0,
   rim: 0,
+  brake: 0,
   paintHex: null,
   trimHex: null,
   interiorHex: null,
   rimHex: null,
+  brakeHex: null,
   surfaceScale: 48,
   decalScale: 50,
   decalPosition: 52,
@@ -141,10 +155,12 @@ export function normalizeCarConfig(raw: unknown): CarConfig {
     trim: index(value.trim, CAR_TRIM_COLORS.length, DEFAULT_CAR.trim),
     interior: index(value.interior, CAR_INTERIOR_COLORS.length, DEFAULT_CAR.interior),
     rim: index(value.rim, CAR_RIM_COLORS.length, DEFAULT_CAR.rim),
+    brake: index(value.brake, CAR_BRAKE_COLORS.length, DEFAULT_CAR.brake),
     paintHex: hex(value.paintHex),
     trimHex: hex(value.trimHex),
     interiorHex: hex(value.interiorHex),
     rimHex: hex(value.rimHex),
+    brakeHex: hex(value.brakeHex),
     surfaceScale: percent(value.surfaceScale, DEFAULT_CAR.surfaceScale),
     decalScale: percent(value.decalScale, DEFAULT_CAR.decalScale),
     decalPosition: percent(value.decalPosition, DEFAULT_CAR.decalPosition),
@@ -185,10 +201,12 @@ export function carFromSeed(seed: string | number): CarConfig {
     trim: Math.floor(roll() * CAR_TRIM_COLORS.length) % CAR_TRIM_COLORS.length,
     interior: Math.floor(roll() * CAR_INTERIOR_COLORS.length) % CAR_INTERIOR_COLORS.length,
     rim: Math.floor(roll() * CAR_RIM_COLORS.length) % CAR_RIM_COLORS.length,
+    brake: Math.floor(roll() * CAR_BRAKE_COLORS.length) % CAR_BRAKE_COLORS.length,
     paintHex: null,
     trimHex: null,
     interiorHex: null,
     rimHex: null,
+    brakeHex: null,
     surfaceScale: 28 + Math.floor(roll() * 57),
     decalScale: 28 + Math.floor(roll() * 55),
     decalPosition: 20 + Math.floor(roll() * 61),
@@ -211,10 +229,12 @@ export function carKey(raw: CarConfig): string {
     config.trim,
     config.interior,
     config.rim,
+    config.brake,
     config.paintHex,
     config.trimHex,
     config.interiorHex,
     config.rimHex,
+    config.brakeHex,
     config.surfaceScale,
     config.decalScale,
     config.decalPosition,
@@ -240,6 +260,10 @@ export function carInteriorHex(config: CarConfig): number {
 
 export function carRimHex(config: CarConfig): number {
   return config.rimHex ?? CAR_RIM_COLORS[config.rim]?.color ?? CAR_RIM_COLORS[0].color;
+}
+
+export function carBrakeHex(config: CarConfig): number {
+  return config.brakeHex ?? CAR_BRAKE_COLORS[config.brake]?.color ?? CAR_BRAKE_COLORS[0].color;
 }
 
 export function loadSavedCar(): CarConfig | null {

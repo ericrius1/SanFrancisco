@@ -19,6 +19,7 @@ import {
   paintCarSurface,
   prepareCarSurface
 } from "./surfaceTexture";
+import { attachCarLights, previewCarBrakeColor } from "./lights";
 
 /** Wheel hub and actual tire radius in mesh space (root = physics body centre). */
 export const CAR_WHEEL_HUB_Y = -0.38;
@@ -185,7 +186,7 @@ export function buildCarMesh(raw?: CarConfig): THREE.Group {
   const cabin = new THREE.MeshStandardMaterial({ color: 0x191a1c, roughness: 0.76, metalness: 0.02 });
   const interior = new THREE.MeshStandardMaterial({ color: carInteriorHex(config), roughness: 0.82, metalness: 0.01 });
   const rim = new THREE.MeshStandardMaterial({ color: carRimHex(config), roughness: 0.22, metalness: 0.92 });
-  const brake = new THREE.MeshStandardMaterial({ color: 0xe25b39, roughness: 0.4, metalness: 0.42 });
+  const caliper = new THREE.MeshStandardMaterial({ color: 0xe25b39, roughness: 0.4, metalness: 0.42 });
   const headlight = new THREE.MeshStandardMaterial({
     color: 0xfff5d7,
     emissive: 0xffe8ad,
@@ -217,7 +218,7 @@ export function buildCarMesh(raw?: CarConfig): THREE.Group {
     side: THREE.DoubleSide
   });
   decalMaterial.visible = config.decal !== "none";
-  for (const material of [paint, trim, darkTrim, tire, glass, cabin, interior, rim, brake, headlight, taillight, indicator, plate, decalMaterial]) {
+  for (const material of [paint, trim, darkTrim, tire, glass, cabin, interior, rim, caliper, headlight, taillight, indicator, plate, decalMaterial]) {
     materials.add(material);
   }
 
@@ -407,7 +408,7 @@ export function buildCarMesh(raw?: CarConfig): THREE.Group {
       if (config.wheel === "split-five") spoke.rotation.x += (i % 2 ? 0.045 : -0.045);
     }
     // Calipers steer with the wheel but do not rotate, making spin legible.
-    box(brake, 0.11, 0.18, 0.09, side * 0.16, 0.02, -0.21, 0, 0, 0, false, steering);
+    box(caliper, 0.11, 0.18, 0.09, side * 0.16, 0.02, -0.21, 0, 0, 0, false, steering);
   }
 
   root.userData.cockpit = spec.cockpit;
@@ -418,6 +419,10 @@ export function buildCarMesh(raw?: CarConfig): THREE.Group {
   const anim = collectCarAnim(root);
   root.userData.carAnim = anim;
   carAnimations.set(root, anim);
+  // Volumetric headlamp beams + ground splash + brake-glow wiring on the shared
+  // taillight material. Added before the shadow policy pass so the additive
+  // cones are classified as non-casting / non-receiving like the other lamps.
+  const lightRig = attachCarLights(root, taillight, config);
 
   const state: CarSurfaceState = {
     surfaceCanvas,
@@ -441,6 +446,7 @@ export function buildCarMesh(raw?: CarConfig): THREE.Group {
     state.loadSerial++;
     surfaceStates.delete(root);
     carAnimations.delete(root);
+    lightRig.dispose();
     for (const geometry of geometries) geometry.dispose();
     for (const material of materials) material.dispose();
     surfaceTexture.dispose();
@@ -486,6 +492,7 @@ export function previewCarConfig(root: THREE.Group, raw: CarConfig): void {
   state.decalMaterial.visible = config.decal !== "none";
   state.paintMaterial.roughness = 0.24 + (100 - config.clearcoat) * 0.0032;
   state.paintMaterial.clearcoat = 0.25 + config.clearcoat * 0.0075;
+  previewCarBrakeColor(root, config);
   if (state.assetsActivated) void activateCarAssets(root);
 }
 
