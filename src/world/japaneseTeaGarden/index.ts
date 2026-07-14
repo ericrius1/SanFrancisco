@@ -75,6 +75,10 @@ export type JapaneseTeaGardenDebugState = {
 export type JapaneseTeaGarden = {
   group: THREE.Group;
   ready: Promise<void>;
+  /** Exclude native trees from the first destination-essential WebGPU compile. */
+  deferOptionalFoliage(): void;
+  /** Prepare deferred native trees without holding back architecture, Hiro, or grass. */
+  prepareOptionalFoliage(prepare: (group: THREE.Group) => Promise<void>): Promise<void>;
   setFoliageVisible(visible: boolean): void;
   update(dt: number, time: number, player: TeaGardenPlayerPosition, camera: THREE.Camera, mode?: string): void;
   project(camera: THREE.Camera): void;
@@ -166,6 +170,12 @@ export function createJapaneseTeaGarden(
   return {
     group,
     ready: Promise.all([architecture.ready, vegetation.ready]).then(() => undefined),
+    deferOptionalFoliage() {
+      vegetation.deferTrees();
+    },
+    prepareOptionalFoliage(prepare) {
+      return vegetation.prepareTrees(prepare);
+    },
     setFoliageVisible(visible: boolean) {
       foliageVisible = visible;
       vegetation.setVisible(visible);

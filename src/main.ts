@@ -886,13 +886,10 @@ async function boot() {
   } catch (err) {
     console.warn("[boot] sutro beacons unavailable:", err);
   }
-  // The seven mapped Tea Garden buildings are replaced by authored, walkable
-  // structures. Hide both baked prisms and their generic colliders up front;
-  // the garden module owns the replacement collision and restores these on a
-  // construction failure.
-  for (const building of TEA_GARDEN_SUPPRESSED_BUILDINGS) {
-    tiles.suppressBuilding(building.key, building.index);
-  }
+  // Keep the seven mapped Tea Garden buildings as the immediate baked fallback.
+  // Their authored, walkable replacements claim the footprints atomically only
+  // after the essential Tea Garden subtree is GPU-ready and attached. Suppressing
+  // them here created the conspicuous empty garden during first approach.
   // Authored sites are first-approach features. Their map metadata is already
   // available, but code, geometry, UI/audio and shader compilation stay behind
   // the generic post-arrival proximity coordinator below.
@@ -1411,12 +1408,18 @@ async function boot() {
   }
   minimap.addLandmark(LANDS_END_CENTER.x, LANDS_END_CENTER.z, "Lands End · Labyrinth");
   const playerLocator = new PlayerLocator();
+  let prepareDestinationEssentials: (
+    destination: Readonly<{ x: number; z: number }>,
+    signal: AbortSignal
+  ) => void | Promise<void> = () => {};
   const worldArrival = new WorldArrivalCoordinator({
     input,
     player,
     chase,
     tiles,
-    physics
+    physics,
+    prepareDestinationVisuals: (destination, signal) =>
+      prepareDestinationEssentials(destination, signal)
   });
   // Background expansion waits for a quiet interval after every arrival. This
   // keeps nonessential region constructors, shader warmups and far-tile decodes
@@ -1786,10 +1789,14 @@ async function boot() {
     let mode = invite.mode;
     if (invite.animal) {
       embodiments.currentAnimal = invite.animal;
-      if (forest && ANIMALS && invite.animal) {
+      // Forest is hydrated by a deferred async owner; preserve its declared
+      // runtime type here instead of letting synchronous flow analysis freeze
+      // the captured binding at its boot-time null value.
+      const invitedForest = forest as Forest | null;
+      if (invitedForest && ANIMALS && invite.animal) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const animalEntry: any = ANIMALS[invite.animal];
-        player.setDriveStyle(forest.buildRiddenMesh(invite.animal), animalEntry?.spec);
+        player.setDriveStyle(invitedForest.buildRiddenMesh(invite.animal), animalEntry?.spec);
       }
       mode = "drive";
     }
@@ -2020,6 +2027,305 @@ async function boot() {
   minimap.addLandmark(AFTERLIGHT_ARRIVAL.x, AFTERLIGHT_ARRIVAL.z, "Afterlight");
   const missionDoloresSpawn = SPAWN_POINTS.missionDolores;
   minimap.addLandmark(missionDoloresSpawn.x, missionDoloresSpawn.z, missionDoloresSpawn.label);
+
+  type LazyRegionTimingEvent = { phase: string; atMs: number; elapsedMs: number };
+  const lazyRegionTimings: Record<string, { startedAt: number; events: LazyRegionTimingEvent[] }> = {};
+  const markLazyRegion = (region: string, phase: string) => {
+    const now = performance.now();
+    const timing = lazyRegionTimings[region] ??= { startedAt: now, events: [] };
+    const event = { phase, atMs: now, elapsedMs: now - timing.startedAt };
+    timing.events.push(event);
+    performance.mark(`sf:${region}:${phase}`);
+    if (new URLSearchParams(location.search).has("profile")) {
+      console.info(`[lazy:${region}] ${phase} +${Math.round(event.elapsedMs)}ms`);
+    }
+  };
+
+  // Tea Garden destination essentials have their own immediate first-approach
+  // path. Merely defining this loader requests nothing: the split chunk remains
+  // absent at a distant clean boot, but a teleport can start it under the travel
+  // cover instead of waiting behind CityGen, fauna, or movement-idle admission.
+  let teaGardenModPromise: Promise<typeof import("./world/japaneseTeaGarden")> | null = null;
+  let teaGardenEssentialPromise: Promise<void> | null = null;
+  let teaGardenOptionalPromise: Promise<void> | null = null;
+  let teaGardenBuildingsClaimed = false;
+
+  const teaGardenBuildingSwapState = () => ({
+    claimed: teaGardenBuildingsClaimed,
+    buildings: TEA_GARDEN_SUPPRESSED_BUILDINGS.map((building) => ({
+      key: building.key,
+      index: building.index,
+      suppressed: tiles.isBuildingSuppressed(building.key, building.index)
+    }))
+  });
+
+  const publishTeaGardenDebug = () => {
+    const hooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
+    if (hooks) Object.assign(hooks, {
+      japaneseTeaGarden,
+      lazyRegionTimings,
+      teaGardenBuildingSwapState
+    });
+  };
+  const claimTeaGardenBuildings = () => {
+    if (teaGardenBuildingsClaimed) return;
+    for (const building of TEA_GARDEN_SUPPRESSED_BUILDINGS) {
+      tiles.suppressBuilding(building.key, building.index);
+    }
+    teaGardenBuildingsClaimed = true;
+    markLazyRegion("tea-garden", "baked-swap");
+  };
+  const restoreTeaGardenBuildings = () => {
+    if (!teaGardenBuildingsClaimed) return;
+    for (const building of TEA_GARDEN_SUPPRESSED_BUILDINGS) {
+      tiles.unsuppressBuilding(building.key, building.index);
+    }
+    teaGardenBuildingsClaimed = false;
+  };
+  const waitForAbortable = <T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> => {
+    if (!signal) return promise;
+    if (signal.aborted) return Promise.reject(new DOMException("Destination superseded", "AbortError"));
+    return new Promise<T>((resolve, reject) => {
+      const onAbort = () => reject(new DOMException("Destination superseded", "AbortError"));
+      signal.addEventListener("abort", onAbort, { once: true });
+      promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+    });
+  };
+
+  type WildlandsGroundcoverBootstrap = {
+    site: import("./world/wildlands").Wildlands;
+    golfMod: typeof import("./gameplay/golf");
+    loadedGolfCourse: import("./gameplay/golf").GolfCourse | null;
+  };
+  let wildlandsGroundcoverPromise: Promise<WildlandsGroundcoverBootstrap> | null = null;
+  let requestedWildlandsFocus: { x: number; z: number } | null = null;
+
+  /**
+   * Request only the selected Wildlands destination's immediate surface. This
+   * bootstrap is deliberately declared before the sequential CityGen/fauna
+   * coordinator: a teleport must not wait for unrelated owners merely to begin
+   * fetching its grass chunk. Defining the gate performs no request at boot.
+   */
+  const startWildlandsGroundcover = (
+    focus: Readonly<{ x: number; z: number }>
+  ): Promise<WildlandsGroundcoverBootstrap> => {
+    requestedWildlandsFocus = { x: focus.x, z: focus.z };
+    if (wildlandsGroundcoverPromise) return wildlandsGroundcoverPromise;
+
+    let candidate: import("./world/wildlands").Wildlands | null = null;
+    const attempt = (async (): Promise<WildlandsGroundcoverBootstrap> => {
+      markLazyRegion("wildlands", "requested");
+      const [wildlandsMod, golfMod, afterlightLayout] = await Promise.all([
+        import("./world/wildlands"),
+        import("./gameplay/golf"),
+        import("./gameplay/afterlight/layout")
+      ]);
+      let loadedGolfCourse: import("./gameplay/golf").GolfCourse | null = null;
+      try {
+        loadedGolfCourse = await golfMod.loadGolfCourse(map);
+      } catch (error) {
+        // Golf data is optional to the world surface. The park remains usable
+        // if a deploy is missing its course manifest.
+        console.warn("[golf] course unavailable:", error);
+      }
+
+      candidate = wildlandsMod.createWildlands(map, {
+        scheduleGroundcoverBuild: (job) => scheduler.schedule("build", job),
+        groundcover: (x: number, z: number) =>
+          afterlightLayout.inAfterlightGroundcoverClear(x, z, 1.2) ||
+          (loadedGolfCourse?.contains(x, z, 1.2) ?? false),
+        trees: loadedGolfCourse
+          ? (x: number, z: number) => loadedGolfCourse!.clearsProceduralTrees(x, z)
+          : undefined
+      });
+      const site = candidate;
+      wildlands = site;
+      markLazyRegion("wildlands", "constructed");
+      const [treeGroup, ...groundcoverGroups] = site.groups;
+      treeGroup.visible = false;
+      const hooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
+      if (hooks) Object.assign(hooks, { wildlands: site, lazyRegionTimings });
+
+      // Use the latest requested destination, not the player's pre-commit
+      // position under the travel cover. Native-tree assembly records the same
+      // focus but remains detached and optional.
+      const destination = requestedWildlandsFocus ?? player.renderPosition;
+      site.trees.update(destination);
+      site.update(destination, destination);
+      try {
+        markLazyRegion("wildlands", "groundcover-compile-start");
+        await site.prepareGroundcover((root) => renderer.compileAsync(root, camera, scene));
+        markLazyRegion("wildlands", "groundcover-compile-end");
+      } catch (error) {
+        // Precompilation is an optimization. Publish the complete buffers and
+        // let the live renderer compile a valid fallback rather than preserving
+        // an empty destination forever.
+        console.warn("[wildlands] destination groundcover compile failed:", error);
+      }
+      for (const group of groundcoverGroups) {
+        group.visible = foliageOn;
+        scene.add(group);
+      }
+      markLazyRegion("wildlands", "groundcover-attached");
+      return { site, golfMod, loadedGolfCourse };
+    })();
+    wildlandsGroundcoverPromise = attempt;
+    void attempt.catch(() => {
+      if (wildlandsGroundcoverPromise !== attempt) return;
+      wildlandsGroundcoverPromise = null;
+      if (candidate) {
+        if (wildlands === candidate) wildlands = null;
+        candidate.dispose();
+      }
+    });
+    return attempt;
+  };
+
+  const prepareWildlandsGroundcoverAt = async (
+    focus: Readonly<{ x: number; z: number }>,
+    signal?: AbortSignal
+  ): Promise<void> => {
+    const bootstrap = await waitForAbortable(startWildlandsGroundcover(focus), signal);
+    // A latest-wins teleport can supersede the focus while shared imports or a
+    // previous compile finish. Recenter once more, then await only critical
+    // grass/flower pipelines—not native trees or golf.
+    bootstrap.site.update(focus, focus);
+    await waitForAbortable(
+      bootstrap.site.prepareGroundcover((root) => renderer.compileAsync(root, camera, scene)),
+      signal
+    );
+  };
+
+  // Walking into a park before the broader deferred coordinator reaches its
+  // region setup receives the same early bootstrap. The callback itself is
+  // still proximity-gated by the frame loop and therefore requests nothing at
+  // a distant clean boot.
+  wakeDeferredWildlandsGolf = () => {
+    wakeDeferredWildlandsGolf = null;
+    void startWildlandsGroundcover(player.renderPosition).catch((error) =>
+      console.warn("[wildlands] first-approach groundcover failed:", error)
+    );
+  };
+
+  const startTeaGardenOptionalPreparation = (
+    site: import("./world/japaneseTeaGarden").JapaneseTeaGarden
+  ) => {
+    if (teaGardenOptionalPromise) return;
+    teaGardenOptionalPromise = (async () => {
+      markLazyRegion("tea-garden", "optional-trees-wait");
+      await site.prepareOptionalFoliage(async (treeGroup) => {
+        // Trees are optional enrichment. They alone retain the movement/arrival
+        // quiet policy; architecture, Hiro, shrubs and grass are already live.
+        await waitForWorldBackgroundWindow();
+        markLazyRegion("tea-garden", "optional-tree-compile-start");
+        treeGroup.updateMatrixWorld(true);
+        await renderer.compileAsync(treeGroup, camera, scene);
+        markLazyRegion("tea-garden", "optional-tree-compile-end");
+      });
+      await site.ready;
+      markLazyRegion("tea-garden", "optional-ready");
+      if (foliageOn) sky.invalidateStaticShadows("all");
+    })().catch((error) => {
+      console.warn("[tea-garden] optional foliage preparation failed:", error);
+    });
+  };
+
+  const ensureTeaGardenEssential = (signal?: AbortSignal): Promise<void> => {
+    if (!teaGardenEssentialPromise) {
+      const attempt = (async () => {
+        markLazyRegion("tea-garden", "requested");
+        teaGardenModPromise ??= import("./world/japaneseTeaGarden");
+        const teaGardenMod = await teaGardenModPromise;
+        markLazyRegion("tea-garden", "chunk-ready");
+        await nextPresentationFrame();
+
+        let site: import("./world/japaneseTeaGarden").JapaneseTeaGarden | null = null;
+        try {
+          site = teaGardenMod.createJapaneseTeaGarden(map, {
+            renderer,
+            physics,
+            nature,
+            dialogueParent: document.body,
+            onCarryRake: (rake) => player.setGardenRakeTool(rake),
+            onRakeMotion: (motion) => player.setGardenRakeMotion(motion),
+            notify: (message, seconds) => hud.message(message, seconds)
+          });
+          site.deferOptionalFoliage();
+          japaneseTeaGarden = site;
+          debugPanel.registerFeatureTuning(site.tuningDescriptor());
+          site.setFoliageVisible(foliageOn);
+          site.update(0, performance.now() / 1000, player.renderPosition, camera, player.mode);
+          markLazyRegion("tea-garden", "constructed");
+          publishTeaGardenDebug();
+
+          const awakeBeforeCompile = site.group.visible;
+          site.group.visible = true;
+          site.group.updateMatrixWorld(true);
+          try {
+            markLazyRegion("tea-garden", "essential-compile-start");
+            await renderer.compileAsync(site.group, camera, scene);
+            markLazyRegion("tea-garden", "essential-compile-end");
+          } catch (error) {
+            // Compilation is a presentation optimization; the live renderer can
+            // still compile a valid fallback on the first authored frame.
+            console.warn("[tea-garden] essential compile failed:", error);
+          } finally {
+            site.group.visible = awakeBeforeCompile;
+          }
+
+          scene.add(site.group);
+          site.update(0, performance.now() / 1000, player.renderPosition, camera, player.mode);
+          if (site.group.visible) claimTeaGardenBuildings();
+          if (autoStartHiroTour) site.interact(player.renderPosition, player.mode);
+          markLazyRegion("tea-garden", "essential-attached");
+          startTeaGardenOptionalPreparation(site);
+        } catch (error) {
+          site?.dispose();
+          if (japaneseTeaGarden === site) japaneseTeaGarden = null;
+          restoreTeaGardenBuildings();
+          publishTeaGardenDebug();
+          throw error;
+        }
+      })();
+      teaGardenEssentialPromise = attempt;
+      // A transient chunk/construction failure must not poison the one-shot
+      // cache forever. The baked buildings remain live, and a later approach
+      // gets a genuine retry instead of awaiting the same rejected promise.
+      void attempt.catch(() => {
+        if (teaGardenEssentialPromise !== attempt) return;
+        teaGardenEssentialPromise = null;
+        teaGardenModPromise = null;
+      });
+    }
+    return waitForAbortable(teaGardenEssentialPromise, signal);
+  };
+
+  wakeDeferredTeaGarden = () => {
+    wakeDeferredTeaGarden = null;
+    void ensureTeaGardenEssential().catch((error) =>
+      console.warn("[tea-garden] first-approach construction failed:", error)
+    );
+  };
+
+  prepareDestinationEssentials = async (destination, signal) => {
+    const teaDistance = Math.hypot(
+      destination.x - JAPANESE_TEA_GARDEN_ENTRANCE.x,
+      destination.z - JAPANESE_TEA_GARDEN_ENTRANCE.z
+    );
+    if (teaDistance < 820) await ensureTeaGardenEssential(signal);
+
+    // Selected park groundcover starts under the travel cover even when its
+    // bundle was not previously resident. The authored Tea Garden owns its own
+    // grass and is excluded so Hiro/Tea House remain the sole priority there.
+    const inPrimaryWildlands = WILD_REGIONS.some((region) =>
+      region.id !== "buenavista" &&
+      destination.x >= region.minX - 320 && destination.x <= region.maxX + 320 &&
+      destination.z >= region.minZ - 320 && destination.z <= region.maxZ + 320
+    );
+    if (inPrimaryWildlands && teaDistance >= 820) {
+      await prepareWildlandsGroundcoverAt(destination, signal);
+    }
+  };
 
   // Authored sites share one first-approach policy: keep only lightweight
   // coordinates at boot, request one site at a time after reveal, and re-check
@@ -2392,17 +2698,9 @@ async function boot() {
     // own gate. A clean boot does not fetch all parks merely because the module
     // coordinator itself is running.
     let gardenModPromise: Promise<typeof import("./world/garden")> | null = null;
-    let teaGardenModPromise: Promise<typeof import("./world/japaneseTeaGarden")> | null = null;
     let buenaVistaTreesModPromise: Promise<typeof import("./world/wildlands/buenaVistaTrees")> | null = null;
-    let wildlandsModPromise: Promise<typeof import("./world/wildlands")> | null = null;
-    let golfModPromise: Promise<typeof import("./gameplay/golf")> | null = null;
-    let afterlightLayoutModPromise: Promise<typeof import("./gameplay/afterlight/layout")> | null = null;
     const loadGardenMod = () => gardenModPromise ??= import("./world/garden");
-    const loadTeaGardenMod = () => teaGardenModPromise ??= import("./world/japaneseTeaGarden");
     const loadBuenaVistaTreesMod = () => buenaVistaTreesModPromise ??= import("./world/wildlands/buenaVistaTrees");
-    const loadWildlandsMod = () => wildlandsModPromise ??= import("./world/wildlands");
-    const loadGolfMod = () => golfModPromise ??= import("./gameplay/golf");
-    const loadAfterlightLayoutMod = () => afterlightLayoutModPromise ??= import("./gameplay/afterlight/layout");
     // Botanical garden (heaviest single park: native trees + textures). Gate
     // it only when the spawn is near; otherwise build it AFTER the cover lifts,
     // hidden until compiled, so its trees never sit on the boot path.
@@ -2441,75 +2739,6 @@ async function boot() {
           wakeDeferredGarden = null;
           void prepareGardenForScene().catch((err) =>
             console.warn("[garden] first-approach construction failed:", err)
-          );
-        };
-      });
-    }
-
-    // Japanese Tea Garden: exact OSM footprint with authored gates, Tea House,
-    // pagoda, ponds, bridges, specimen planting and Hiro's walkable guided tour.
-    // It shares the Botanical Garden region gate because the two sites touch;
-    // distant boots compile it after reveal so it never delays first play.
-    const buildTeaGarden = async () => {
-      await waitForWorldBackgroundWindow(1800);
-      const teaGardenMod = await loadTeaGardenMod();
-      await waitForWorldBackgroundWindow(1800);
-      try {
-        const site = teaGardenMod.createJapaneseTeaGarden(map, {
-          renderer,
-          physics,
-          nature,
-          // Conversation is gameplay-critical, so it must remain visible when
-          // the optional HUD panels are faded with Tab.
-          dialogueParent: document.body,
-          onCarryRake: (rake) => player.setGardenRakeTool(rake),
-          onRakeMotion: (motion) => player.setGardenRakeMotion(motion),
-          notify: (message, seconds) => hud.message(message, seconds)
-        });
-        japaneseTeaGarden = site;
-        debugPanel.registerFeatureTuning(site.tuningDescriptor());
-        site.setFoliageVisible(foliageOn);
-        minimap.addLandmark(
-          JAPANESE_TEA_GARDEN_ENTRANCE.x,
-          JAPANESE_TEA_GARDEN_ENTRANCE.z,
-          "Japanese Tea Garden"
-        );
-        const h = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
-        if (h) Object.assign(h, { japaneseTeaGarden: site });
-        return site;
-      } catch (err) {
-        for (const building of TEA_GARDEN_SUPPRESSED_BUILDINGS) {
-          tiles.unsuppressBuilding(building.key, building.index);
-        }
-        throw err;
-      }
-    };
-    const prepareTeaGardenForScene = async () => {
-      const site = await buildTeaGarden();
-      await site.ready;
-      site.update(0, 0, player.renderPosition, camera);
-      try {
-        await waitForWorldBackgroundWindow();
-        // The site is born asleep/hidden. Compile its detached subtree while
-        // temporarily visible because Three skips hidden roots.
-        site.group.visible = true;
-        await renderer.compileAsync(site.group, camera, scene);
-      } catch (err) {
-        console.warn("[tea-garden] deferred compile failed:", err);
-      }
-      scene.add(site.group);
-      site.update(0, 0, player.renderPosition, camera);
-      if (autoStartHiroTour) site.interact(player.renderPosition, player.mode);
-    };
-    let teaGardenReady: Promise<unknown> | null = null;
-    if (gardenGates) {
-      teaGardenReady = prepareTeaGardenForScene();
-    } else {
-      void revealedPromise.then(() => {
-        wakeDeferredTeaGarden = () => {
-          wakeDeferredTeaGarden = null;
-          void prepareTeaGardenForScene().catch((err) =>
-            console.warn("[tea-garden] first-approach construction failed:", err)
           );
         };
       });
@@ -2564,51 +2793,22 @@ async function boot() {
     // otherwise the whole pair streams in after reveal, groves hidden until
     // compiled. `deferred` selects which.
     const buildWildlandsGolf = async (deferred: boolean) => {
-      await waitForWorldBackgroundWindow(1800);
-      const [wildlandsMod, golfMod, afterlightLayout] = await Promise.all([
-        loadWildlandsMod(),
-        loadGolfMod(),
-        loadAfterlightLayoutMod()
-      ]);
-      await waitForWorldBackgroundWindow(1800);
-      let loadedGolfCourse: import("./gameplay/golf").GolfCourse | null = null;
-      try {
-        loadedGolfCourse = await golfMod.loadGolfCourse(map);
-      } catch (err) {
-        // Golf data is optional to world boot: vegetation and the city still
-        // load if a deploy is missing golf.json.
-        console.warn("[golf] course unavailable:", err);
-      }
-      const _wildlands = wildlandsMod.createWildlands(map, {
-        // Keep animated blades and flowers off the compact installation as well
-        // as the golf surfaces. The wider Buena Vista meadow stays untouched.
-        groundcover: (x: number, z: number) =>
-          afterlightLayout.inAfterlightGroundcoverClear(x, z, 1.2) ||
-          (loadedGolfCourse?.contains(x, z, 1.2) ?? false),
-        // Keep the wooded rough character, but never procedural-tree a play
-        // surface or the graded apron around greens/tee pads.
-        trees: loadedGolfCourse
-          ? (x: number, z: number) => loadedGolfCourse!.clearsProceduralTrees(x, z)
-          : undefined
-      });
-      wildlands = _wildlands;
-      // Keep every layer detached and hidden until its own render objects have
-      // been prepared. The forest retains this preparer for chunks encountered
-      // later through movement or a cross-city teleport.
-      for (const g of _wildlands.groups) g.visible = false;
-      const h = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
-      if (h) Object.assign(h, { wildlands: _wildlands });
-      // NativeTreeForest accepts a pre-ready focus. Recording it here lets the
-      // sliced 403-chunk assembly finish with the correct local cull already in
-      // place instead of briefly exposing every authored grove.
-      _wildlands.trees.update(camera.position);
+      // Destination groundcover has an independent early gate above. Reuse that
+      // exact owner here so the later tree/golf enrichment cannot construct a
+      // duplicate park or refetch its chunks.
+      const {
+        site: _wildlands,
+        golfMod,
+        loadedGolfCourse
+      } = await startWildlandsGroundcover(player.renderPosition);
+      const [wildTreeGroup] = _wildlands.groups;
+
+      // Tree assembly and driver preparation continue as optional enrichment.
+      // They retain the quiet-window policy without holding back the lawn.
       await _wildlands.ready;
-      // A first-approach build can overlap a later user teleport. Re-enter the
-      // shared quiet gate before renderer compilation so background foliage can
-      // never knowingly compete with a destination prime.
+      markLazyRegion("wildlands", "trees-ready");
       await waitForWorldBackgroundWindow();
-      _wildlands.update(player.renderPosition, camera.position);
-      await _wildlands.prepareVisible(async (unit) => {
+      await _wildlands.prepareTrees(async (unit) => {
         try {
           // A stationary player can resume moving between two native-tree
           // pipelines. Re-admit every unit instead of letting one old idle
@@ -2624,10 +2824,9 @@ async function boot() {
           );
         }
       });
-      for (const g of _wildlands.groups) {
-        g.visible = foliageOn;
-        scene.add(g);
-      }
+      wildTreeGroup.visible = foliageOn;
+      scene.add(wildTreeGroup);
+      markLazyRegion("wildlands", "trees-attached");
       if (foliageOn) sky.invalidateStaticShadows();
       // Presidio golf game. Own guard — a bad golf.json must not take the
       // groves/city down with it.
@@ -2691,7 +2890,6 @@ async function boot() {
     // are intentionally excluded here so they never hold the cover.
     await Promise.all([
       gardenReady,
-      teaGardenReady,
       buenaVistaTreesReady,
       wildlandsGolfReady
     ].filter(Boolean));
@@ -2708,11 +2906,7 @@ async function boot() {
 
   })()
     .catch((err) => {
-      if (!japaneseTeaGarden) {
-        for (const building of TEA_GARDEN_SUPPRESSED_BUILDINGS) {
-          tiles.unsuppressBuilding(building.key, building.index);
-        }
-      }
+      if (!japaneseTeaGarden) restoreTeaGardenBuildings();
       console.warn("[sf] deferred module load failed:", err);
     });
 
@@ -3713,6 +3907,10 @@ async function boot() {
     buskers.update(frameDt, camera, windGustValue(), sky.sunElevation);
     if (!worldArrival.active) {
       japaneseTeaGarden?.update(frameDt, elapsed, player.renderPosition, camera, player.mode);
+      if (
+        japaneseTeaGarden?.group.parent === scene &&
+        japaneseTeaGarden.debugState().awake
+      ) claimTeaGardenBuildings();
     }
     // MASTER foliage gate: when the "/" panel's foliage switch is OFF, every
     // vegetation group is already hidden (setFoliageVisible) — skip all its
@@ -4114,6 +4312,8 @@ async function boot() {
     if (hooks) {
       Object.assign(hooks, {
         worldArrival,
+        lazyRegionTimings,
+        teaGardenBuildingSwapState,
         oceanBeachKite,
         ensureOceanBeachKite,
         oceanKiteSite

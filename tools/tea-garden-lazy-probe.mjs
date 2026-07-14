@@ -33,6 +33,7 @@ const VIEWPORT = { width: 1280, height: 800 };
 const TEA_ENTRANCE = { x: -2248.8, z: 2187.2 };
 const FEATURE_IDLE_MS = 2_000;
 const FEATURE_TIMEOUT_MS = 180_000;
+const DESTINATION_ESSENTIAL_BUDGET_MS = 8_000;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const TEA_CHUNK_MARKERS = [
@@ -367,6 +368,8 @@ async function worldState(page) {
       sitePresent: Boolean(site),
       siteAttached: Boolean(site?.group?.parent === sf.scene),
       siteState: site?.debugState?.() ?? null,
+      teaGardenTiming: sf.lazyRegionTimings?.["tea-garden"] ?? null,
+      teaGardenBuildingSwap: sf.teaGardenBuildingSwapState?.() ?? null,
       adjacentGardenPresent: Boolean(sf.garden),
       renderIdle: sf.renderIdle?.() === true
     };
@@ -401,6 +404,8 @@ async function main() {
   const consoleMessages = [];
   const serviceWorkers = [];
   const startedAt = performance.now();
+  const phaseStartedAt = new Map();
+  const milestones = {};
   let phase = "boot";
   let bootUrl;
 
@@ -408,6 +413,7 @@ async function main() {
   const nowMs = () => Math.round(performance.now() - startedAt);
   const setPhase = (next) => {
     phase = next;
+    phaseStartedAt.set(next, nowMs());
     activityAt.set(next, performance.now());
     console.log(`[tea-garden-lazy] phase: ${next}`);
   };
@@ -519,8 +525,47 @@ async function main() {
     expect("boot-no-tea-garden-chunk-style-or-media", !boot.some(isTeaRecord),
       boot.filter(isTeaRecord).map(publicRecord));
     expect("boot-no-tea-garden-instance", !bootState.sitePresent && !bootState.siteAttached, bootState);
+    expect("boot-keeps-baked-tea-garden-fallback", Boolean(
+      bootState.teaGardenBuildingSwap &&
+      !bootState.teaGardenBuildingSwap.claimed &&
+      bootState.teaGardenBuildingSwap.buildings.every((building) => !building.suppressed)
+    ), bootState.teaGardenBuildingSwap);
 
     setPhase("activation");
+    const activationStartedAt = nowMs();
+    const markWhen = async (id, predicate, argument = null) => {
+      await page.waitForFunction(predicate, argument, { timeout: FEATURE_TIMEOUT_MS });
+      milestones[id] = nowMs() - activationStartedAt;
+    };
+    const activationMilestones = [
+      markWhen("arrivalCommittedMs", ({ entrance }) => {
+        const sf = window.__sf;
+        return !sf.worldArrival?.active &&
+          Math.hypot(sf.player.position.x - entrance.x, sf.player.position.z - entrance.z) < 250;
+      }, { entrance: TEA_ENTRANCE }),
+      markWhen("siteConstructedMs", () => Boolean(window.__sf?.japaneseTeaGarden)),
+      markWhen("teaHouseVisibleMs", () => {
+        const sf = window.__sf;
+        const object = sf?.scene?.getObjectByName("japanese_tea_garden_tea_house");
+        if (!object) return false;
+        for (let current = object; current; current = current.parent) if (!current.visible) return false;
+        return true;
+      }),
+      markWhen("hiroVisibleMs", () => {
+        const sf = window.__sf;
+        const object = sf?.scene?.getObjectByName("tea_master_hiro");
+        if (!object) return false;
+        for (let current = object; current; current = current.parent) if (!current.visible) return false;
+        return true;
+      }),
+      markWhen("groundcoverVisibleMs", () => {
+        const sf = window.__sf;
+        const object = sf?.scene?.getObjectByName("tea_garden_moss_grass");
+        if (!object) return false;
+        for (let current = object; current; current = current.parent) if (!current.visible) return false;
+        return true;
+      })
+    ];
     await page.evaluate(({ entrance }) => {
       window.__sf.teleportToTarget(entrance.x, entrance.z, "Japanese Tea Garden");
     }, { entrance: TEA_ENTRANCE });
@@ -551,14 +596,19 @@ async function main() {
             timer = setTimeout(() => reject(new Error("Timed out waiting for Japanese Tea Garden ready")), timeoutMs);
           })
         ]);
-        await Promise.race([
-          window.__sf.renderer.backend.device.queue.onSubmittedWorkDone(),
-          new Promise((resolve) => setTimeout(resolve, 5_000))
-        ]);
       } finally {
         clearTimeout(timer);
       }
     }, { timeoutMs: FEATURE_TIMEOUT_MS });
+    milestones.siteReadyMs = nowMs() - activationStartedAt;
+    await page.evaluate(async () => {
+      await Promise.race([
+        window.__sf.renderer.backend.device.queue.onSubmittedWorkDone(),
+        new Promise((resolve) => setTimeout(resolve, 5_000))
+      ]);
+    });
+    milestones.queueSettledMs = nowMs() - activationStartedAt;
+    await Promise.all(activationMilestones);
     await waitForTrackedQuiet("activation", FEATURE_IDLE_MS, FEATURE_TIMEOUT_MS);
     const activationState = await worldState(page);
     const activation = phaseRecords("activation");
@@ -570,6 +620,25 @@ async function main() {
       !activationState.worldArrival?.active, activationState);
     expect("activation-tea-garden-ready-attached-awake", activationState.sitePresent &&
       activationState.siteAttached && activationState.siteState?.awake, activationState);
+    expect("activation-atomically-claims-baked-fallback", Boolean(
+      activationState.teaGardenBuildingSwap?.claimed &&
+      activationState.teaGardenBuildingSwap.buildings.every((building) => building.suppressed) &&
+      activationState.teaGardenTiming?.events.some((event) => event.phase === "baked-swap")
+    ), {
+      swap: activationState.teaGardenBuildingSwap,
+      timing: activationState.teaGardenTiming
+    });
+    expect("activation-destination-essentials-visible-within-budget", [
+      milestones.teaHouseVisibleMs,
+      milestones.hiroVisibleMs,
+      milestones.groundcoverVisibleMs
+    ].every((elapsed) => elapsed <= DESTINATION_ESSENTIAL_BUDGET_MS), {
+      budgetMs: DESTINATION_ESSENTIAL_BUDGET_MS,
+      teaHouseVisibleMs: milestones.teaHouseVisibleMs,
+      hiroVisibleMs: milestones.hiroVisibleMs,
+      groundcoverVisibleMs: milestones.groundcoverVisibleMs,
+      arrivalCommittedMs: milestones.arrivalCommittedMs
+    });
     expect("activation-webgpu-only", activationState.renderer.webgpu && activationState.renderer.hasDevice,
       activationState.renderer);
     expect("activation-loads-one-discovered-feature-chunk", chunkRequests.length === 1,
@@ -587,6 +656,28 @@ async function main() {
     expect("activation-no-unselected-tea-tree-variant",
       !activation.some((record) => hasKind(record, "tea-native-unselected-variant")),
       activation.filter((record) => hasKind(record, "tea-native-unselected-variant")).map(publicRecord));
+
+    await page.evaluate(async () => {
+      const sf = window.__sf;
+      sf.sky.cycleEnabled = false;
+      sf.sky.setTimeOfDay(13.5);
+      const house = sf.scene.getObjectByName("japanese_tea_garden_tea_house");
+      if (house && typeof window.__sfFreeCam === "function") {
+        const bounds = new sf.THREE.Box3().setFromObject(house);
+        const center = bounds.getCenter(new sf.THREE.Vector3());
+        window.__sfFreeCam(
+          [center.x + 22, center.y + 8, center.z + 24],
+          [center.x, center.y + 1.5, center.z]
+        );
+      }
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      await Promise.race([
+        sf.renderer.backend.device.queue.onSubmittedWorkDone(),
+        new Promise((resolve) => setTimeout(resolve, 5_000))
+      ]);
+    });
+    const activationScreenshot = path.join(OUT, "activation.png");
+    await page.screenshot({ path: activationScreenshot });
 
     setPhase("subsequent");
     const actionState = await page.evaluate(async () => {
@@ -650,6 +741,18 @@ async function main() {
         },
         subsequent: { state: actionState, summary: summarize(subsequent), requests: subsequent.map(publicRecord) }
       },
+      timings: {
+        phaseStartedAtMs: Object.fromEntries(phaseStartedAt),
+        activation: {
+          ...milestones,
+          firstTeaRequestMs: Math.min(...activation.filter(isTeaRecord)
+            .map((record) => record.atMs - activationStartedAt)),
+          firstFeatureChunkRequestMs: Math.min(...chunkRequests
+            .map((record) => record.atMs - activationStartedAt)),
+          runtimeTrace: activationState.teaGardenTiming
+        }
+      },
+      artifacts: { activationScreenshot },
       pageErrors,
       consoleMessages,
       serviceWorkers
@@ -663,6 +766,7 @@ async function main() {
     console.log(`[tea-garden-lazy] boot ${summarize(boot).teaRequests} Tea request(s)`);
     console.log(`[tea-garden-lazy] activation ${summarize(activation).teaRequests} Tea request(s)`);
     console.log(`[tea-garden-lazy] subsequent ${summarize(subsequent).teaRequests} Tea request(s)`);
+    console.log(`[tea-garden-lazy] activation timings ${JSON.stringify(result.timings.activation)}`);
     console.log(`[tea-garden-lazy] report ${RESULT_PATH}`);
     if (!result.pass) process.exitCode = 1;
   } finally {
