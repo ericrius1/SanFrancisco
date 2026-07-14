@@ -72,9 +72,9 @@ const V = {
 
 const GARDEN_RAKE_DEFAULT_ELEVATION = THREE.MathUtils.degToRad(55);
 const GARDEN_RAKE_CARRY_ELEVATION = THREE.MathUtils.degToRad(78);
-const GARDEN_RAKE_DEFAULT_BODY_LEAN = 0.3;
+const GARDEN_RAKE_DEFAULT_BODY_LEAN = 0.34;
 const GARDEN_RAKE_LEGACY_SAND_LIFT = 0.12;
-const GARDEN_RAKE_LEGACY_CONTACT_FORWARD = 1.36;
+const GARDEN_RAKE_LEGACY_CONTACT_FORWARD = 1.44;
 const GARDEN_RAKE_GRIP_TILT = -Math.atan2(0.5, 1.52);
 
 // One local player, one rake. All per-frame pose math reuses this scratch so

@@ -76,10 +76,10 @@ const SAND_TUNING = tunables("teaGarden.sandSimulation", {
   tineSpacing: { v: 0.15, min: 0.08, max: 0.24, step: 0.005, label: "tine spacing (m)" },
   shoulderLift: { v: 0.64, min: 0.15, max: 1.1, step: 0.01, label: "shoulder lift" },
   compaction: { v: 0.14, min: 0, max: 0.5, step: 0.01, label: "compaction / pass" },
-  surfaceSmoothing: { v: 0.62, min: 0, max: 1, step: 0.01, label: "surface smoothing" },
+  surfaceSmoothing: { v: 0.72, min: 0, max: 1, step: 0.01, label: "surface smoothing" },
   heightScale: { v: 1, min: 0.25, max: MAX_HEIGHT_SCALE, step: 0.05, label: "height relief" },
-  normalStrength: { v: 0.92, min: 0, max: 2, step: 0.02, label: "relief shading" },
-  microRelief: { v: 0.00055, min: 0, max: 0.002, step: 0.00005, label: "grain relief" },
+  normalStrength: { v: 0.82, min: 0, max: 2, step: 0.02, label: "relief shading" },
+  microRelief: { v: 0.00022, min: 0, max: 0.002, step: 0.00002, label: "grain relief" },
   compactionTint: { v: 0.18, min: 0, max: 0.4, step: 0.01, label: "rake mark contrast" }
 });
 
@@ -194,7 +194,7 @@ function initialHeight(
   rocks: readonly SandSimulationRock[],
   center: SandSimulationPoint
 ): { height: number; compaction: number } {
-  let height = (hash01(gridX, gridZ) - 0.5) * 0.0016;
+  let height = (hash01(gridX, gridZ) - 0.5) * 0.0009;
   let compaction = 0;
 
   for (let row = 0; row < 15; row++) {
@@ -335,10 +335,10 @@ export function createSandSimulation(options: SandSimulationOptions): SandSimula
   const tineSpacingU = uniform(0.15);
   const shoulderLiftU = uniform(0.64);
   const compactionU = uniform(0.14);
-  const surfaceSmoothingU = uniform(0.62);
+  const surfaceSmoothingU = uniform(0.72);
   const heightScaleU = uniform(1);
-  const normalStrengthU = uniform(0.92);
-  const microReliefU = uniform(0.00055);
+  const normalStrengthU = uniform(0.82);
+  const microReliefU = uniform(0.00022);
   const compactionTintU = uniform(0.18);
 
   const resetCompute = Fn(() => {
@@ -561,26 +561,34 @@ export function createSandSimulation(options: SandSimulationOptions): SandSimula
   });
   material.positionNode = positionLocal.add(vec3(0, renderedHeight, 0));
   const broad = sin(positionWorld.x.mul(0.31).add(positionWorld.z.mul(0.23))).mul(0.5).add(0.5);
-  const grainPhaseA = positionWorld.x.mul(37.2).add(positionWorld.z.mul(51.7));
-  const grainPhaseB = positionWorld.x.mul(73.1).sub(positionWorld.z.mul(31.4));
-  const grain = sin(grainPhaseA).mul(0.62).add(sin(grainPhaseB).mul(0.38));
+  // Three incommensurate directions avoid the checker/moire pattern produced
+  // by the previous pair of high-frequency waves. The effect stays deliberately
+  // quiet: rake relief should read first, individual grains only at close range.
+  const grainPhaseA = positionWorld.x.mul(19.3).add(positionWorld.z.mul(27.7));
+  const grainPhaseB = positionWorld.x.mul(-31.1).add(positionWorld.z.mul(14.9));
+  const grainPhaseC = positionWorld.x.mul(11.7).sub(positionWorld.z.mul(39.2));
+  const grain = sin(grainPhaseA).mul(0.46)
+    .add(sin(grainPhaseB).mul(0.33))
+    .add(sin(grainPhaseC).mul(0.21));
   const compacted = saturate(renderedState.y);
   material.colorNode = mix(
     color(0xe8d7b3),
     color(0xc3a474),
     saturate(compacted.mul(compactionTintU).add(broad.mul(0.045)))
-  ).mul(grain.mul(0.012).add(0.994));
+  ).mul(grain.mul(0.006).add(0.997));
   // Coarse relief derivatives are reconstructed on the GPU and interpolated
   // between dense display vertices. The old screen-space derivative saw a
   // constant gradient per triangle, which is what exposed the pixelated shard
   // pattern. Only tiny analytic grain slopes are added here in the fragment.
   const reliefSlopeX = renderedState.z.mul(heightScaleU).mul(normalStrengthU);
   const reliefSlopeZ = renderedState.w.mul(heightScaleU).mul(normalStrengthU);
-  const microSlopeX = cos(grainPhaseA).mul(37.2 * 0.62)
-    .add(cos(grainPhaseB).mul(73.1 * 0.38))
+  const microSlopeX = cos(grainPhaseA).mul(19.3 * 0.46)
+    .add(cos(grainPhaseB).mul(-31.1 * 0.33))
+    .add(cos(grainPhaseC).mul(11.7 * 0.21))
     .mul(microReliefU);
-  const microSlopeZ = cos(grainPhaseA).mul(51.7 * 0.62)
-    .sub(cos(grainPhaseB).mul(31.4 * 0.38))
+  const microSlopeZ = cos(grainPhaseA).mul(27.7 * 0.46)
+    .add(cos(grainPhaseB).mul(14.9 * 0.33))
+    .sub(cos(grainPhaseC).mul(39.2 * 0.21))
     .mul(microReliefU);
   const smoothLocalNormal = normalize(vec3(
     normalLocal.x.sub(reliefSlopeX).sub(microSlopeX),

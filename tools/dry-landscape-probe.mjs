@@ -231,7 +231,7 @@ try {
     // controller reports grounded before its rake overlay is audited.
     const x = center.x + 7.6;
     const z = center.z;
-    const y = sf.map.effectiveGround(x, z) + 1.5;
+    const y = sf.map.effectiveGround(x, z) + 0.9;
     sf.physics.world.setBodyTransform(
       sf.player.body,
       [x, y, z],
@@ -239,7 +239,10 @@ try {
     );
     sf.physics.world.setBodyVelocity(sf.player.body, [0, 0, 0], [0, 0, 0]);
     sf.player.snapRenderPose();
-    for (let i = 0; i < 12; i++) sf.tick(1 / 60);
+    for (let i = 0; i < 30; i++) sf.tick(1 / 60);
+    sf.player.syncMesh(1 / 60);
+    sf.japaneseTeaGarden.update(1 / 60, 0, sf.player.renderPosition, sf.camera, "walk");
+    sf.player.syncMesh(1 / 60);
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   }, { center: CENTER });
 
@@ -271,19 +274,6 @@ try {
     const rakeTopWorld = world(rake);
     const rightGripWorld = world(rightGrip);
     const leftGripWorld = world(leftGrip);
-    const rigRoot = handR.parent?.parent?.parent?.parent?.parent;
-    const rightChain = [];
-    for (let object = handR; object; object = object.parent) {
-      rightChain.push({
-        name: object.name,
-        type: object.type,
-        localPosition: object.position.toArray(),
-        worldPosition: world(object).toArray(),
-        localScale: object.scale.toArray(),
-        worldScale: object.getWorldScale(new THREE.Vector3()).toArray()
-      });
-      if (object === playerRoot) break;
-    }
     return {
       dry,
       rakeParent: playerRoot?.name ?? null,
@@ -305,12 +295,7 @@ try {
         rightGrip: rightGripWorld.toArray(),
         leftGrip: leftGripWorld.toArray(),
         rightHand: world(handR).toArray(),
-        leftHand: world(handL).toArray(),
-        rigRoot: rigRoot ? world(rigRoot).toArray() : null,
-        rigRootLocal: rigRoot?.position.toArray() ?? null,
-        playerScale: playerRoot.getWorldScale(new THREE.Vector3()).toArray(),
-        rigScale: rigRoot?.getWorldScale(new THREE.Vector3()).toArray() ?? null,
-        rightChain
+        leftHand: world(handL).toArray()
       },
       renderer: {
         backend: sf.renderer.backend?.constructor?.name ?? null,
@@ -372,9 +357,11 @@ try {
     const travelZ = -pull.z;
     const sideX = pull.z;
     const sideZ = -pull.x;
-    const eyeX = targetX + travelX * 4.8 + sideX * 4.2;
-    const eyeZ = targetZ + travelZ * 4.8 + sideZ * 4.2;
-    const eyeY = sf.map.groundTop(eyeX, eyeZ) + 3.7;
+    // Stay inside the dry garden and look across the avatar's working side;
+    // the old exterior camera was regularly hidden by the perimeter pine.
+    const eyeX = targetX - travelX * 2.6 - sideX * 2;
+    const eyeZ = targetZ - travelZ * 2.6 - sideZ * 2;
+    const eyeY = sf.map.groundTop(eyeX, eyeZ) + 2.25;
     const targetY = sf.map.groundTop(targetX, targetZ) + 0.92;
     window.__sfFreeCam([eyeX, eyeY, eyeZ], [targetX, targetY, targetZ]);
   }, {
@@ -393,10 +380,10 @@ try {
   assert.ok(simulationAudit.groundError < 0.015, `tines are not grounded (${simulationAudit.groundError}m error)`);
   assert.ok(simulationAudit.rightGripError < 0.025, `right hand missed rake grip by ${simulationAudit.rightGripError}m`);
   assert.ok(simulationAudit.leftGripError < 0.025, `left hand missed rake grip by ${simulationAudit.leftGripError}m`);
-  assert.ok(simulationAudit.forwardClearance.contact > 1.2, "rake head is not being pushed ahead of the avatar");
-  assert.ok(simulationAudit.forwardClearance.rakeTop > 0.18, "rake handle top crosses behind the avatar");
-  assert.ok(simulationAudit.forwardClearance.rightGrip > 0.34, "dominant rake grip is not in front of the torso");
-  assert.ok(simulationAudit.forwardClearance.leftGrip > 0.24, "upper rake grip is not in front of the torso");
+  assert.ok(simulationAudit.forwardClearance.contact > 1.34, "rake head is not being pushed ahead of the avatar");
+  assert.ok(simulationAudit.forwardClearance.rakeTop > 0.24, "rake handle top crosses behind the avatar");
+  assert.ok(simulationAudit.forwardClearance.rightGrip > 0.44, "dominant rake grip is not in front of the torso");
+  assert.ok(simulationAudit.forwardClearance.leftGrip > 0.32, "upper rake grip is not in front of the torso");
   assert.ok(simulationAudit.forwardClearance.pullDotForward < -0.9, "head-to-player rake axis no longer opposes travel");
 
   console.log(JSON.stringify({

@@ -85,6 +85,7 @@ type HistoricalTileSpec = {
   id: string;
   url: string;
   bounds: HistoricalBounds;
+  coreBounds: HistoricalBounds;
 };
 
 // 3 x 3 generated atlas level. Bounds include a 5.5% bleed (clamped at the
@@ -94,47 +95,56 @@ const HISTORICAL_REGION_TILES: readonly HistoricalTileSpec[] = [
   {
     id: "r0-c0",
     url: "/map/historical-atlas/region-r0-c0.webp",
-    bounds: { minX: -7168, maxX: -1856.4267, minZ: -8896, maxZ: -4012.0533 }
+    bounds: { minX: -7168, maxX: -1856.4267, minZ: -8896, maxZ: -4012.0533 },
+    coreBounds: { minX: -7168, maxX: -2133.3333, minZ: -8896, maxZ: -4266.6667 }
   },
   {
     id: "r0-c1",
     url: "/map/historical-atlas/region-r0-c1.webp",
-    bounds: { minX: -2410.24, maxX: 3178.24, minZ: -8896, maxZ: -4012.0533 }
+    bounds: { minX: -2410.24, maxX: 3178.24, minZ: -8896, maxZ: -4012.0533 },
+    coreBounds: { minX: -2133.3333, maxX: 2901.3333, minZ: -8896, maxZ: -4266.6667 }
   },
   {
     id: "r0-c2",
     url: "/map/historical-atlas/region-r0-c2.webp",
-    bounds: { minX: 2624.4267, maxX: 7936, minZ: -8896, maxZ: -4012.0533 }
+    bounds: { minX: 2624.4267, maxX: 7936, minZ: -8896, maxZ: -4012.0533 },
+    coreBounds: { minX: 2901.3333, maxX: 7936, minZ: -8896, maxZ: -4266.6667 }
   },
   {
     id: "r1-c0",
     url: "/map/historical-atlas/region-r1-c0.webp",
-    bounds: { minX: -7168, maxX: -1856.4267, minZ: -4521.28, maxZ: 617.28 }
+    bounds: { minX: -7168, maxX: -1856.4267, minZ: -4521.28, maxZ: 617.28 },
+    coreBounds: { minX: -7168, maxX: -2133.3333, minZ: -4266.6667, maxZ: 362.6667 }
   },
   {
     id: "r1-c1",
     url: "/map/historical-atlas/region-r1-c1.webp",
-    bounds: { minX: -2410.24, maxX: 3178.24, minZ: -4521.28, maxZ: 617.28 }
+    bounds: { minX: -2410.24, maxX: 3178.24, minZ: -4521.28, maxZ: 617.28 },
+    coreBounds: { minX: -2133.3333, maxX: 2901.3333, minZ: -4266.6667, maxZ: 362.6667 }
   },
   {
     id: "r1-c2",
     url: "/map/historical-atlas/region-r1-c2.webp",
-    bounds: { minX: 2624.4267, maxX: 7936, minZ: -4521.28, maxZ: 617.28 }
+    bounds: { minX: 2624.4267, maxX: 7936, minZ: -4521.28, maxZ: 617.28 },
+    coreBounds: { minX: 2901.3333, maxX: 7936, minZ: -4266.6667, maxZ: 362.6667 }
   },
   {
     id: "r2-c0",
     url: "/map/historical-atlas/region-r2-c0.webp",
-    bounds: { minX: -7168, maxX: -1856.4267, minZ: 108.0533, maxZ: 4992 }
+    bounds: { minX: -7168, maxX: -1856.4267, minZ: 108.0533, maxZ: 4992 },
+    coreBounds: { minX: -7168, maxX: -2133.3333, minZ: 362.6667, maxZ: 4992 }
   },
   {
     id: "r2-c1",
     url: "/map/historical-atlas/region-r2-c1.webp",
-    bounds: { minX: -2410.24, maxX: 3178.24, minZ: 108.0533, maxZ: 4992 }
+    bounds: { minX: -2410.24, maxX: 3178.24, minZ: 108.0533, maxZ: 4992 },
+    coreBounds: { minX: -2133.3333, maxX: 2901.3333, minZ: 362.6667, maxZ: 4992 }
   },
   {
     id: "r2-c2",
     url: "/map/historical-atlas/region-r2-c2.webp",
-    bounds: { minX: 2624.4267, maxX: 7936, minZ: 108.0533, maxZ: 4992 }
+    bounds: { minX: 2624.4267, maxX: 7936, minZ: 108.0533, maxZ: 4992 },
+    coreBounds: { minX: 2901.3333, maxX: 7936, minZ: 362.6667, maxZ: 4992 }
   }
 ] as const;
 
@@ -548,12 +558,18 @@ export class Minimap {
       maxZ: center.z + spanZ / 2
     };
     for (const tile of HISTORICAL_REGION_TILES) {
-      if (this.#boundsIntersect(view, tile.bounds)) this.#loadHistoricalRegion(tile);
+      const overlapX = Math.max(
+        0,
+        Math.min(view.maxX, tile.coreBounds.maxX) - Math.max(view.minX, tile.coreBounds.minX)
+      );
+      const overlapZ = Math.max(
+        0,
+        Math.min(view.maxZ, tile.coreBounds.maxZ) - Math.max(view.minZ, tile.coreBounds.minZ)
+      );
+      // Ignore a core sliver smaller than 2% of either view dimension. The
+      // overview remains underneath that edge until the user pans into it.
+      if (overlapX / spanX >= 0.02 && overlapZ / spanZ >= 0.02) this.#loadHistoricalRegion(tile);
     }
-  }
-
-  #boundsIntersect(a: HistoricalBounds, b: HistoricalBounds) {
-    return !(a.maxX < b.minX || a.minX > b.maxX || a.maxZ < b.minZ || a.minZ > b.maxZ);
   }
 
   #drawHistoricalOverview(
@@ -1727,6 +1743,16 @@ export class Minimap {
     this.#selected = { kind: "fixed", x: lm.x, z: lm.z, name: lm.name, toName: lm.name };
     this.#drawBig();
     return { x: lm.x, z: lm.z };
+  }
+
+  /** Capture/QA hook for exercising atlas regions without changing player
+   * position. Normal users reach the same state by dragging and scrolling. */
+  focusWorldPoint(x: number, z: number, span = 1700) {
+    this.setExpanded(true);
+    this.#bigCenter = this.#clampBigCenter({ x, z });
+    this.#bigSpan = this.#clampBigSpan(span);
+    this.#selected = null;
+    this.#drawBig();
   }
 
   #buildBig() {

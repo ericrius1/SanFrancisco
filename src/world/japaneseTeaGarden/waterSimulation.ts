@@ -60,7 +60,7 @@ const MIN_SIM_DEPTH = 0.08;
 const MAX_QUEUED_IMPULSES = 64;
 const MAX_IMPULSES_PER_DISPATCH = 24;
 const WATER_BOUNDS_PAD = 0.36;
-const BANK_INSET = 0.34;
+const BANK_INSET = 0.58;
 const BANK_WIDTH = 0.72;
 const WATER_LIFT = 0.22;
 const POND_CENTER = { x: -2289.1, z: 2219.7 } as const;
@@ -84,7 +84,7 @@ const WATER_TUNING = tunables("teaGarden.waterSimulation", {
   interactionFoam: { v: 0.12, min: 0, max: 1, step: 0.01, label: "interaction foam" },
   relief: { v: 1, min: 0, max: 2.2, step: 0.02, label: "surface relief" },
   normal: { v: 1.45, min: 0, max: 6, step: 0.05, label: "field-gradient normal" },
-  waveContrast: { v: 0.72, min: 0, max: 2, step: 0.02, label: "simulated wave contrast" },
+  waveContrast: { v: 0.78, min: 0, max: 2, step: 0.02, label: "simulated wave contrast" },
   ripple: { v: 0.0015, min: 0, max: 0.025, step: 0.0005, label: "micro ripple" },
   streak: { v: 0.07, min: 0, max: 1.5, step: 0.01, label: "ink-flow streaks" },
   foam: { v: 0.56, min: 0, max: 2, step: 0.01, label: "foam / eddies" },
@@ -382,6 +382,33 @@ function distanceToSegment(x: number, z: number, a: TeaGardenXZ, b: TeaGardenXZ)
   return Math.hypot(x - (a[0] + dx * t), z - (a[1] + dz * t));
 }
 
+function signedDistanceToWaterSimulation(x: number, z: number): number {
+  // Union of the authored water polygons: max composes signed-distance fields
+  // without exposing the stream/pond overlap as an internal visual seam.
+  let unionDistance = Number.NEGATIVE_INFINITY;
+  for (const feature of TEA_GARDEN_WATER_FEATURES) {
+    let edgeDistance = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < feature.outline.length; i++) {
+      edgeDistance = Math.min(
+        edgeDistance,
+        distanceToSegment(x, z, feature.outline[i], feature.outline[(i + 1) % feature.outline.length])
+      );
+    }
+    unionDistance = Math.max(
+      unionDistance,
+      pointInTeaGardenPolygon(x, z, feature.outline) ? edgeDistance : -edgeDistance
+    );
+  }
+  // Subtract each solid rock circle from the union.
+  for (const rock of TEA_GARDEN_STREAM_ROCKS) {
+    unionDistance = Math.min(
+      unionDistance,
+      Math.hypot(x - rock.x, z - rock.z) - rock.radius
+    );
+  }
+  return unionDistance;
+}
+
 function distanceToWater(x: number, z: number): number {
   if (insideWaterFeature(x, z)) return 0;
   let distance = Infinity;
@@ -541,7 +568,7 @@ function makeShorelineGeometry(
         z: point[1] + miterZ * BANK_WIDTH * miterScale
       };
       positions.push(
-        inner.x - centerX, surfaceY(inner.x, inner.z) + 0.045, inner.z - centerZ,
+        inner.x - centerX, surfaceY(inner.x, inner.z) + 0.075, inner.z - centerZ,
         outer.x - centerX, map.groundTop(outer.x, outer.z) + 0.085, outer.z - centerZ
       );
       colors.push(
@@ -632,7 +659,8 @@ export function createTeaGardenWaterSimulation(
   const initialStateData = new Float32Array(CELL_COUNT * 4);
   const metadataData = new Float32Array(CELL_COUNT * 4);
   const guideData = new Float32Array(CELL_COUNT * 4);
-  const active = new Uint8Array(CELL_COUNT);
+  const renderBand = new Uint8Array(CELL_COUNT);
+  const renderBandWidth = Math.hypot(cellSizeX, cellSizeZ) * 1.6;
   let activeCells = 0;
 
   for (let gz = 0; gz < GRID_HEIGHT; gz++) {
@@ -644,7 +672,7 @@ export function createTeaGardenWaterSimulation(
       const flow = preferredFlowField(worldX, worldZ);
       const rock = nearestRockField(worldX, worldZ, flow.flowX, flow.flowZ);
       const isActive = insideWaterFeature(worldX, worldZ) && !rock.inside;
-      const source = smoothstep01((0.15 - flow.progress) / 0.15) * (flow.pond < 0.01 ? 1 : 0);
+      const signedWaterDistance = signedDistanceToWaterSimulation(worldX, worldZ);
 
       positions[index * 3] = worldX - centerX;
       positions[index * 3 + 1] = surfaceY(worldX, worldZ);
@@ -653,14 +681,14 @@ export function createTeaGardenWaterSimulation(
       metadataData[stateOffset] = isActive ? 1 : 0;
       metadataData[stateOffset + 1] = flow.pond;
       metadataData[stateOffset + 2] = rock.influence;
-      metadataData[stateOffset + 3] = source;
+      metadataData[stateOffset + 3] = signedWaterDistance;
       guideData[stateOffset] = flow.flowX;
       guideData[stateOffset + 1] = flow.flowZ;
       guideData[stateOffset + 2] = rock.tangentX;
       guideData[stateOffset + 3] = rock.tangentZ;
 
+      if (signedWaterDistance >= -renderBandWidth) renderBand[index] = 1;
       if (!isActive) continue;
-      active[index] = 1;
       activeCells++;
       const authoredRipple =
         Math.sin(worldX * 0.31 + worldZ * 0.17) * 0.0022 +
@@ -681,8 +709,8 @@ export function createTeaGardenWaterSimulation(
       const b = a + 1;
       const c = a + GRID_WIDTH;
       const d = c + 1;
-      if (active[a] && active[b] && active[c]) indices.push(a, c, b);
-      if (active[b] && active[c] && active[d]) indices.push(b, c, d);
+      if (renderBand[a] || renderBand[b] || renderBand[c]) indices.push(a, c, b);
+      if (renderBand[b] || renderBand[c] || renderBand[d]) indices.push(b, c, d);
     }
   }
 
@@ -741,7 +769,7 @@ export function createTeaGardenWaterSimulation(
   const wakeResponseU = uniform(0.82);
   const reliefU = uniform(1);
   const normalU = uniform(1.45);
-  const waveContrastU = uniform(0.72);
+  const waveContrastU = uniform(0.78);
   const rippleU = uniform(0.0015);
   const streakU = uniform(0.07);
   const foamU = uniform(0.56);
@@ -1096,27 +1124,30 @@ export function createTeaGardenWaterSimulation(
   const foamHighlight = saturate(
     smoothstep(0.012, 0.58, renderedState.w).mul(foamU)
       .add(renderedMeta.z.mul(0.07).mul(foamU))
-      .add(waveHighlight.mul(0.08))
+      .add(waveHighlight.mul(0.09))
   );
   const waterColor = mix(deepColorU, shallowColorU, shallow);
   const sculptedColor = mix(waterColor, deepColorU.mul(0.72), troughInk);
   const streakedColor = mix(
     sculptedColor,
     streakColorU,
-    saturate(streak.mul(0.48).add(waveHighlight.mul(0.44)))
+    saturate(streak.mul(0.48).add(waveHighlight.mul(0.48)))
   );
+  const shorelineMask = smoothstep(-0.08, 0.12, renderedMeta.w);
 
   const material = new THREE.MeshStandardNodeMaterial({
-    roughness: 0.56,
+    roughness: 0.52,
     metalness: 0,
     transparent: true,
     depthWrite: false
   });
   material.positionNode = positionLocal.add(vec3(0, renderedHeight, 0));
   material.colorNode = mix(streakedColor, foamColorU, foamHighlight);
-  material.emissiveNode = streakColorU.mul(waveHighlight.mul(0.18))
-    .add(foamColorU.mul(foamHighlight.mul(0.08)));
-  material.opacityNode = opacityU.mul(mix(float(0.9), float(1), foamHighlight));
+  material.emissiveNode = streakColorU.mul(waveHighlight.mul(0.28))
+    .add(foamColorU.mul(foamHighlight.mul(0.1)));
+  material.opacityNode = opacityU
+    .mul(mix(float(0.9), float(1), foamHighlight))
+    .mul(shorelineMask);
   // The committed terrain beneath the pond is not a carved basin, so the mesh
   // uses a clearance envelope. Shade it as one water body rather than inheriting
   // every little terrain triangle's normal. The simulated height gradient is
@@ -1131,7 +1162,7 @@ export function createTeaGardenWaterSimulation(
     normalWaveZ.sub(clamp(renderedDerivatives.y.mul(reliefU).mul(normalU), -1.2, 1.2))
   ));
   material.normalNode = normalize(cameraViewMatrix.mul(vec4(worldNormal, 0)).xyz);
-  material.envMapIntensity = 0.32;
+  material.envMapIntensity = 0.37;
 
   const mesh = new THREE.Mesh(geometry, material);
   mesh.name = "tea_garden_unified_webgpu_shallow_water_surface";

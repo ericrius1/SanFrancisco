@@ -366,11 +366,11 @@ export function createJapaneseTeaGarden(
         queueInteraction("balls", {
           x: impactX,
           z: impactZ,
-          radius: THREE.MathUtils.clamp(0.5 + totalSpeed * 0.028, 0.5, 1.25),
-          strength: -THREE.MathUtils.clamp(0.022 + Math.abs(state.vy) * 0.005, 0.022, 0.075),
-          velocityX: THREE.MathUtils.clamp(state.vx * 0.22, -3.2, 3.2),
-          velocityZ: THREE.MathUtils.clamp(state.vz * 0.22, -3.2, 3.2),
-          foam: THREE.MathUtils.clamp(0.08 + totalSpeed * 0.018, 0.08, 0.34)
+          radius: THREE.MathUtils.clamp(0.75 + totalSpeed * 0.045, 0.75, 1.55),
+          strength: -THREE.MathUtils.clamp(0.045 + Math.abs(state.vy) * 0.008, 0.045, 0.11),
+          velocityX: THREE.MathUtils.clamp(state.vx * 0.32, -3.2, 3.2),
+          velocityZ: THREE.MathUtils.clamp(state.vz * 0.32, -3.2, 3.2),
+          foam: THREE.MathUtils.clamp(0.18 + totalSpeed * 0.028, 0.18, 0.55)
         });
         track.lastWakeX = impactX;
         track.lastWakeZ = impactZ;

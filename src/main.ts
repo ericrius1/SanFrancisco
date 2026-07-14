@@ -106,7 +106,7 @@ import type { RadialLightSource } from "./render/radialLightTypes";
 import { DebugPanel } from "./ui/debug";
 import { ColliderDebug, type DebugBox, type DebugMesh } from "./ui/colliderDebug";
 import { CalibrationChart } from "./ui/calibrationChart";
-import { Net, hasChosenName, pickName } from "./net/net";
+import { Net } from "./net/net";
 import { RemotePlayers } from "./net/remotes";
 import { Voice } from "./net/voice";
 import { Minimap } from "./ui/minimap";
@@ -2721,14 +2721,14 @@ async function boot() {
   // Explicit headless verification, demos and perf runs also skip the settle
   // hold because they measure live-frame behaviour rather than boot polish.
   const skipGate = ["autostart", "demo"].some((key) => bootQuery.has(key));
-  // A returning player who already picked a real name skips the gate: once the
-  // world is ready we drop them straight in under their saved name. Fun/generated
-  // names don't count (re-rolled each load), and the headless/demo (`skipGate`)
-  // and reading-link paths run their own start, so they opt out here.
+  // Local HMR reloads that were already in-game resume without the identity gate.
+  // Production always waits for Start / Enter — returning players keep their saved
+  // name prefilled in the form. Deployed tests still opt in via `?autostart` etc.
+  // (handled by `autoEnter` above).
   const autoStartSaved =
     !parseReadLink(location.search) &&
     !bootQuery.has("startscreen") &&
-    ((!skipGate && hasChosenName()) || Boolean(devReload?.started));
+    Boolean(devReload?.started);
   const revealWorld = (reason = "settled") => {
     if (revealed) return;
     revealed = true;
@@ -2751,16 +2751,18 @@ async function boot() {
     );
     console.info(`[boot] phases ${bootMarkSummary()}`);
     persistBootHistory();
+    // Prefer HMR resume over generic local auto-enter so a mid-session reload
+    // keeps the player's name instead of minting a fresh fun one.
+    if (autoStartSaved) {
+      // no click to consume, so pointer lock has no gesture — startGame still
+      // requests it (a no-op if the browser declines; first click re-locks)
+      bootScreen.startNow(devReload!.name);
+      return;
+    }
     if (autoEnter) {
       // Programmatic starts have no user gesture, so do not request pointer
       // lock. The first canvas click can capture it normally when needed.
       bootScreen.startNow(suggestedName, { lock: false });
-      return;
-    }
-    if (autoStartSaved) {
-      // no click to consume, so pointer lock has no gesture — startGame still
-      // requests it (a no-op if the browser declines; first click re-locks)
-      bootScreen.startNow(devReload?.started ? devReload.name : pickName());
       return;
     }
     bootScreen.focusNameInput(); // re-focus in case the player clicked away while waiting

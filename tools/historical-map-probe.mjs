@@ -122,6 +122,7 @@ async function main() {
     await page.evaluate(() => window.__sf.minimap.setExpanded(true));
     const overviewResponse = await plateResponse;
     assert(overviewResponse.ok(), `overview plate returned ${overviewResponse.status()}`);
+    await page.evaluate(() => window.__sf.minimap.focusWorldPoint(384, -1952, 15104));
     await page.waitForTimeout(500);
 
     const canvas = page.locator("canvas[data-big-map]");
@@ -169,6 +170,7 @@ async function main() {
     await page.mouse.wheel(0, -1800);
     const closeResponse = await detailResponse;
     assert(closeResponse.ok(), `detail plate returned ${closeResponse.status()}`);
+    await page.mouse.wheel(0, -1800);
     await page.waitForTimeout(500);
     const close = path.join(OUT, "historical-close.png");
     await canvas.screenshot({ path: close });
@@ -187,6 +189,36 @@ async function main() {
     assert(requests.detail === 1, `close zoom made ${requests.detail} detail requests`);
     assert(pageErrors.length === 0, `page errors: ${pageErrors.join(" | ")}`);
 
+    // Visit every regional core independently. Each move should add exactly
+    // the requested tile and no other region; r1-c0 is already resident.
+    const centers = [
+      [-4650.6667, -6581.3333], [384, -6581.3333], [5418.6667, -6581.3333],
+      [-4650.6667, -1952], [384, -1952], [5418.6667, -1952],
+      [-4650.6667, 2677.3333], [384, 2677.3333], [5418.6667, 2677.3333]
+    ];
+    for (let index = 0; index < REGION_ASSETS.length; index++) {
+      const asset = REGION_ASSETS[index];
+      if (requests.regions[asset] === 1) continue;
+      const expectedBefore = regionRequestCount();
+      const responsePromise = page.waitForResponse(
+        (response) => new URL(response.url()).pathname === asset,
+        { timeout: 30_000 }
+      );
+      const [x, z] = centers[index];
+      await page.evaluate(([wx, wz]) => window.__sf.minimap.focusWorldPoint(wx, wz, 1500), [x, z]);
+      const response = await responsePromise;
+      assert(response.ok(), `${asset} returned ${response.status()}`);
+      assert(
+        regionRequestCount() === expectedBefore + 1,
+        `regional sweep loaded more than ${asset} (${JSON.stringify(requests.regions)})`
+      );
+    }
+    assert(regionRequestCount() === REGION_ASSETS.length, "regional sweep did not load the complete atlas");
+    await page.evaluate(() => window.__sf.minimap.focusWorldPoint(-2133.3333, 362.6667, 2800));
+    await page.waitForTimeout(400);
+    const seam = path.join(OUT, "historical-four-tile-seam.png");
+    await canvas.screenshot({ path: seam });
+
     const result = {
       url: BASE_URL,
       assets: { overview: OVERVIEW_ASSET, regions: REGION_ASSETS, detail: DETAIL_ASSET },
@@ -194,13 +226,14 @@ async function main() {
       activationRequests: { overview: 1, regions: 0, detail: 0 },
       regionalRequests: { overview: 1, regions: { [regionAsset]: 1 }, detail: 0 },
       closeZoomRequests: snapshotRequests(),
+      completeAtlasRequests: snapshotRequests(),
       canvas: canvasInfo,
       closestZoomSpanM: timing.debug.spanX,
       averageMapUpdateMs: timing.averageUpdateMs,
       consoleErrors,
       pageErrors,
       failedResponses,
-      screenshots: { overview, regional, close }
+      screenshots: { overview, regional, close, seam }
     };
     await writeFile(path.join(OUT, "result.json"), JSON.stringify(result, null, 2));
     console.log(JSON.stringify(result, null, 2));

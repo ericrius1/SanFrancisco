@@ -18,7 +18,7 @@ const PICKUP_RANGE = 3.7;
 const RETURN_RANGE = 29;
 // Far enough ahead that the handle top and both grips remain in front of the
 // torso at the authored shaft elevation—not merely the tine head.
-const RAKE_CONTACT_FORWARD = 1.36;
+const RAKE_CONTACT_FORWARD = 1.44;
 const RAKE_STAMP_MIN_DISTANCE = 0.018;
 const RAKE_CONTACT_EPSILON = 0.28;
 const RAKE_RACK = { x: -2354.45, z: 2169.15 } as const;
@@ -324,7 +324,7 @@ export function createDryLandscape(map: TeaGardenTerrain, options: DryLandscapeO
     normalY: 1,
     normalZ: 0,
     shaftElevation: THREE.MathUtils.degToRad(55),
-    bodyLean: 0.3
+    bodyLean: 0.34
   };
   const stamp = {
     previous: { x: 0, z: 0 },

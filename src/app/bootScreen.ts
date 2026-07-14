@@ -1,4 +1,4 @@
-import { makeFunName } from "../net/net";
+import { pickName } from "../net/net";
 
 export type StartOptions = { lock?: boolean };
 export type StartHandler = (typedName: string, opts?: StartOptions) => void;
@@ -12,7 +12,8 @@ export class BootScreen {
   readonly app = document.getElementById("app")!;
   readonly loading = document.getElementById("loading")!;
   readonly nameInput = document.querySelector<HTMLInputElement>("[data-name-input]")!;
-  readonly suggestedName = makeFunName();
+  /** Saved custom name when present; otherwise a fresh fun suggestion. */
+  readonly suggestedName = pickName();
 
   #loadingLabel = document.querySelector<HTMLElement>("[data-loading-label]")!;
   #loadingBar = document.querySelector<HTMLElement>("[data-loading-bar]")!;
@@ -46,7 +47,7 @@ export class BootScreen {
     this.#start = handler;
   }
 
-  /** Starts through code (deep links/returning players), independent of button readiness. */
+  /** Starts through code (deep links / local auto-enter), independent of button readiness. */
   startNow(name: string, opts?: StartOptions): boolean {
     if (!this.#start) return false;
     this.#start(name, opts);

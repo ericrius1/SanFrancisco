@@ -1374,9 +1374,11 @@ export function createTeaGardenArchitecture(
         const x = pond.center.x + Math.cos(angle) * pond.rx * wobble;
         const z = pond.center.z + Math.sin(angle) * pond.rz * wobble;
         const surface = waterSurfaceY?.(x, z);
+        const swimDepth = 0.075
+          + (Math.sin(angle * 0.63 + i * 1.73 + pondIndex * 0.9) * 0.5 + 0.5) * 0.14;
         const y = surface === undefined
           ? map.groundTop(x, z) + 0.1 + Math.sin(angle * 2.1 + i) * 0.02
-          : surface - 0.075 + Math.sin(angle * 2.1 + i) * 0.014;
+          : surface - swimDepth + Math.sin(angle * 2.1 + i) * 0.008;
         dummy.position.set(
           x,
           y,

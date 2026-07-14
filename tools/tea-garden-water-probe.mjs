@@ -421,7 +421,7 @@ try {
     if (impactSample < 0 && snapshot.interactions.balls > ballBefore) {
       impactSample = sample;
       ballImpactShot = await page.screenshot({ path: `${OUT}/ball-ripple-impact.png`, fullPage: false });
-    } else if (impactSample >= 0 && sample === impactSample + 4) {
+    } else if (impactSample >= 0 && sample === impactSample + 2) {
       rippleSample = sample;
       await page.evaluate(() => {
         const ball = window.__sf.scene.getObjectByName("player_tennis_ball");
