@@ -89,7 +89,7 @@ const COLORS = {
 } as const;
 
 const DEFAULT_TUNING: SutroBathsArchitectureTuning = {
-  glassOpacity: 0.2,
+  glassOpacity: 0.12,
   lampIntensity: 4.6
 };
 
@@ -142,9 +142,11 @@ function createGlassMaterial(opts: {
   }) as GlassNodeMaterial;
   const edgeOpacity = uniform(opts.edgeOpacity);
   const clearOpacity = float(opts.clearOpacity);
-  // fresnel = pow(1 - saturate(dot(normalView, viewDir)), FRESNEL_POWER)
-  //  -> ~0 head-on (clear), ~1 at grazing angles (glassy sheen).
-  const facing = saturate(dot(normalView, positionViewDirection));
+  // fresnel = pow(1 - abs(dot(normalView, viewDir)), FRESNEL_POWER)
+  //  -> ~0 head-on (clear), ~1 at grazing angles (glassy sheen). abs() makes
+  //  front and back faces of the DoubleSide panes behave symmetrically, so the
+  //  far side of a pane doesn't read milky when viewed head-on.
+  const facing = dot(normalView, positionViewDirection).abs();
   const fresnel = oneMinus(facing).pow(FRESNEL_POWER);
   mat.opacityNode = mix(clearOpacity, edgeOpacity, fresnel);
   mat.edgeOpacityUniform = edgeOpacity;

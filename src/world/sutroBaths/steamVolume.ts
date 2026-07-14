@@ -117,8 +117,13 @@ export function createSteamShell(
   const kHalfX = float(halfX);
   const kHalfZ = float(halfZ);
   const kWaterY = float(waterY);
-  const kCx = float(box.cx);
-  const kCz = float(box.cz);
+  // The shell mesh is placed at the pool's WORLD centre (sutroLocalToWorld
+  // below), so the shader must fold the world-space view ray around that same
+  // world centre — NOT the site-local pool centre — or the marched column is
+  // displaced by the whole ~6 km site translation and density collapses to 0.
+  const worldCentre = sutroLocalToWorld(box.cx, box.cz);
+  const kCx = float(worldCentre.x);
+  const kCz = float(worldCentre.z);
   const kCos = float(c);
   const kSin = float(s);
   const kHeat = float(box.heat);
@@ -185,7 +190,10 @@ export function createSteamShell(
     const top = kWaterY.add(u.height);
     const bmin = vec3(kHalfX.negate(), kWaterY, kHalfZ.negate());
     const bmax = vec3(kHalfX, top, kHalfZ);
-    const inv = vec3(1, 1, 1).div(rdL);
+    // Guard the slab reciprocal: axis-parallel rays give rdL component 0, and
+    // 0 * inf in the slab test poisons tNear/tFar with NaN. Keep the sign, floor
+    // the magnitude so parallel rays yield a large-but-finite slope.
+    const inv = rdL.sign().div(rdL.abs().max(vec3(1e-5, 1e-5, 1e-5)));
     const t0 = bmin.sub(roL).mul(inv);
     const t1 = bmax.sub(roL).mul(inv);
     const tsmall = t0.min(t1);

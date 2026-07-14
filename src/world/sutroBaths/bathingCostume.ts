@@ -183,6 +183,12 @@ export function applyBathingCostume(rig: Rig, seed: string | number, opts: Costu
   const showHair = cap === "none";
   for (const o of s.allHair) o.visible = showHair;
   // (crowns are part of allHair; nothing extra needed — they follow showHair)
+  // Every rig carries a fixed dark "shades" bar across the face (materials.visor,
+  // rig.ts) that reads as modern sunglasses — wrong for 1900s bathers. The slot
+  // is per-rig, so hide it by zeroing its opacity (no rig.ts edit needed).
+  s.materials.visor.transparent = true;
+  s.materials.visor.opacity = 0;
+  s.materials.visor.depthWrite = false;
 
   // ---- box helper (tracks + shadow-diets its own additions) ------------
   const addBox = (

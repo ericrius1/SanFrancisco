@@ -18,8 +18,11 @@ export const SUTRO_BATHS_TUNING = tunables("sutroBaths", {
   steamEnabled: { v: true, label: "thermal steam" },
   steamAmount: { v: 0.68, min: 0, max: 1, step: 0.01, label: "steam amount" },
   steamHeight: { v: 5.8, min: 1, max: 12, step: 0.1, label: "steam rise" },
-  steamOpacity: { v: 0.22, min: 0, max: 0.65, step: 0.01, label: "steam opacity" },
-  glassOpacity: { v: 0.2, min: 0.04, max: 0.52, step: 0.01, label: "glass opacity" },
+  steamOpacity: { v: 0.32, min: 0, max: 0.85, step: 0.01, label: "steam opacity" },
+  steamSteps: { v: 28, min: 12, max: 40, step: 1, label: "steam raymarch steps" },
+  steamSunGain: { v: 0.9, min: 0, max: 2, step: 0.02, label: "steam sun glow" },
+  steamCurl: { v: 0.6, min: 0, max: 2, step: 0.02, label: "steam curl" },
+  glassOpacity: { v: 0.12, min: 0.04, max: 0.6, step: 0.01, label: "glass sheen" },
   lampIntensity: { v: 4.6, min: 0, max: 18, step: 0.1, label: "warm lamp intensity" }
 });
 
@@ -48,6 +51,9 @@ export const SUTRO_TUNING_FOLDERS = [
       "steamAmount",
       "steamHeight",
       "steamOpacity",
+      "steamSteps",
+      "steamSunGain",
+      "steamCurl",
       "glassOpacity",
       "lampIntensity"
     ]

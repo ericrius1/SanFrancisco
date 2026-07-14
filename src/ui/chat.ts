@@ -22,7 +22,7 @@ export class Chat {
     head.className = "chat-head";
     const tag = document.createElement("span");
     tag.className = "chat-tag";
-    tag.textContent = "Comms";
+    tag.textContent = "The Wire";
     const hint = document.createElement("span");
     hint.className = "chat-hint";
     hint.textContent = "T";

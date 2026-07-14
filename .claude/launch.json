@@ -13,13 +13,6 @@
       "runtimeArgs": ["-c", "SF_RELAY_PORT=8788 exec npm run dev -- --port \"$PORT\" --strictPort"],
       "port": 5240,
       "autoPort": true
-    },
-    {
-      "name": "sf-collide",
-      "runtimeExecutable": "sh",
-      "runtimeArgs": ["-c", "SF_RELAY_PORT=8799 exec npm run dev -- --port \"$PORT\" --strictPort"],
-      "port": 5251,
-      "autoPort": true
     }
   ]
 }
