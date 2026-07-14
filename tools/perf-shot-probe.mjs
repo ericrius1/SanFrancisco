@@ -92,7 +92,7 @@ async function main() {
   const proc = spawn(chrome, [
     `--user-data-dir=${path.join(OUT, "chrome-" + NAME)}`, "--headless=new", `--remote-debugging-port=${port}`,
     "--enable-unsafe-webgpu", "--enable-features=WebGPUDeveloperFeatures", "--use-angle=metal",
-    "--hide-scrollbars", "--mute-audio", `--window-size=${W},${H}`, `${SERVER_URL}/?autostart&fullfps&profile`
+    "--hide-scrollbars", "--mute-audio", `--window-size=${W},${H}`, `${SERVER_URL}/?autostart=1&fullfps=1&profile=1`
   ], { cwd: ROOT, stdio: "ignore" });
   liveChrome = proc;
   await sleep(2500);
@@ -113,13 +113,53 @@ async function main() {
   await c.send("Emulation.setDeviceMetricsOverride", { width: W, height: H, deviceScaleFactor: 1, mobile: false });
   const t0 = Date.now();
   let ready = false;
-  while (Date.now() - t0 < 180000) { try { if (await ev(c, `!!(window.__sf&&window.__sf.player&&window.__sf.renderer&&window.__sf.renderer.backend&&window.__sf.renderer.backend.device&&window.__sf.renderIdle?.())`)) { ready = true; break; } } catch {} await sleep(600); }
+  while (Date.now() - t0 < 180000) { try { if (await ev(c, `!!(window.__sf&&window.__sf.player&&window.__sf.renderer&&window.__sf.renderer.backend&&window.__sf.renderer.backend.device&&window.__sf.renderIdle?.()&&window.__sf.worldArrival?.snapshot?.state==='idle'&&!window.__sf.player.worldArrivalHeld)`)) { ready = true; break; } } catch {} await sleep(600); }
   if (!ready) throw new Error("app never ready");
+
+  // Cross-city stops must use the same covered arrival path as the live map.
+  // The coordinator primes destination visuals and collision before committing;
+  // a direct pre-prime player teleport can fall through the newly streamed world.
+  if (STOP) {
+    const beforeGeneration = await ev(c, `(()=>{const sf=window.__sf;const generation=sf.worldArrival.snapshot.generation;sf.teleportToTarget(${STOP.x},${STOP.z},'performance probe');return generation;})()`);
+    const arrivalT0 = Date.now();
+    let arrived = false;
+    while (Date.now() - arrivalT0 < 180000) {
+      try {
+        if (await ev(c, `(()=>{const a=window.__sf.worldArrival.snapshot;return a.generation>${beforeGeneration}&&a.state==='idle'&&!window.__sf.player.worldArrivalHeld;})()`)) {
+          arrived = true;
+          break;
+        }
+      } catch {}
+      await sleep(400);
+    }
+    if (!arrived) throw new Error(`arrival never settled for ${WHERE}`);
+  }
+
+  // The new massive-world boot intentionally starts regional foliage only
+  // after destination-critical streaming and a quiet background window. A
+  // meadow benchmark is meaningful only once both regional owners have
+  // finished their detached compile and joined the live scene.
+  if (WHERE === "meadow") {
+    const foliageT0 = Date.now();
+    let foliageReady = false;
+    while (Date.now() - foliageT0 < 300000) {
+      try {
+        if (await ev(c, `(()=>{const sf=window.__sf;return !!(sf.garden?.group?.parent&&sf.wildlands?.groups?.length&&sf.wildlands.groups.every((group)=>group.parent));})()`)) {
+          foliageReady = true;
+          break;
+        }
+      } catch {}
+      await sleep(500);
+    }
+    if (!foliageReady) throw new Error("meadow foliage never joined the live scene");
+  }
   await ev(c, `window.__sfManual&&window.__sfManual(true)`);
   if (Number.isFinite(FIXED_TIME)) {
     await ev(c, `(()=>{const sky=window.__sf.sky;sky.cycleEnabled=false;sky.setTimeOfDay(${FIXED_TIME});return true;})()`);
   }
   await ev(c, `(()=>{const sf=window.__sf;sf.hud?.setHidden?.(true);sf.remotes?.setTagsVisible?.(false);for(const avatar of sf.remotes?.avatars?.values?.()??[])avatar.root.visible=false;const loading=document.getElementById('loading');if(loading)loading.style.display='none';return true;})()`);
+  // Snap the final few metres only after the destination neighbourhood is live,
+  // keeping historical comparison shots on their exact authored camera stop.
   if (STOP) await ev(c, `(()=>{const sf=window.__sf;const gy=sf.map.groundTop(${STOP.x},${STOP.z});sf.player.teleportTo({x:${STOP.x},y:gy+1.1,z:${STOP.z},facing:${STOP.facing},mode:'walk'});sf.chase.yaw=${STOP.facing};sf.chase.pitch=0.26;sf.chase.zoom=0.82;return true;})()`);
   // settle with fence-yields so streaming completes
   for (let k = 0; k < 25; k++) {

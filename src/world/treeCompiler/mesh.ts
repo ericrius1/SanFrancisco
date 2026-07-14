@@ -166,6 +166,7 @@ export function buildBranchMesh(
     const compactSupport = lod.radialSegments <= 4 && !nominalIds.has(branch.id);
     return {
       branch,
+      compactSupport,
       radialSegments: compactSupport ? 3 : lod.radialSegments,
       ...resampleBranch(branch, compactSupport ? branch.points.length : lod.axialStride)
     };
@@ -197,9 +198,15 @@ export function buildBranchMesh(
     for (let pointIndex = 0; pointIndex < plan.points.length; pointIndex++) {
       if (pointIndex > 0) barkV += length(sub(plan.points[pointIndex], plan.points[pointIndex - 1])) / recipe.trunk.barkRepeat;
       const point = plan.points[pointIndex];
-      const radius = plan.radii[pointIndex];
       const frame = frames[pointIndex];
       const along = pointIndex / (plan.points.length - 1);
+      // Support-only far twigs are real branch ancestry, not floating-leaf
+      // impostors. Keep them just wide enough to survive sub-pixel projection,
+      // while preserving the skeleton's taper and avoiding close-LOD bulk.
+      const supportFloor = plan.compactSupport
+        ? recipe.height * (lod.name === "horizon" ? 0.003 : 0.0024) * (1 - along * 0.3)
+        : 0;
+      const radius = Math.max(plan.radii[pointIndex], supportFloor);
       const bendWeight = clamp(along * (0.12 + plan.branch.level * 0.24), 0, 1);
       const height01 = clamp(point.y / recipe.height, 0, 1);
 

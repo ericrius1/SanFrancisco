@@ -5,9 +5,9 @@
 // three phases instead of relying on the browser cache view after the fact:
 //
 //   1. clean boot: no native tree runtime, worker, loader, manifest, or KTX2;
-//   2. first approach: Corona's code boundary + shared worker/loader and only
-//      the close coast-live-oak material set; distant Buena Vista stays on the
-//      network-free geometric silhouette tier;
+//   2. first approach: Corona's optional-site gate + foliage code boundary,
+//      shared worker/loader, and only the close coast-live-oak material set;
+//      distant Buena Vista stays on the network-free geometric silhouette tier;
 //   3. toggle + leave/re-enter: the existing patch is reused with no refetch.
 //
 // Usage:
@@ -254,7 +254,11 @@ async function main() {
     const bootUrl = `${BASE_URL}/?autostart=1&fullfps=1&profile=1&spawn=oceanBeach`;
     await page.goto(bootUrl, { waitUntil: "domcontentloaded", timeout: 90_000 });
     await page.waitForFunction(
-      () => Boolean(window.__sf?.renderer?.backend?.device && window.__sf?.player && window.__sf?.coronaHeights),
+      () => Boolean(
+        window.__sf?.renderer?.backend?.device &&
+        window.__sf?.player &&
+        window.__sf?.ensureOptionalWorldSite
+      ),
       null,
       { timeout: 180_000 }
     );
@@ -278,16 +282,22 @@ async function main() {
     expect("boot-corona-remains-dormant", !bootState.coronaRoot, bootState);
 
     setPhase("activation");
-    await page.evaluate((target) => {
+    await page.evaluate(async (target) => {
       const sf = window.__sf;
+      // Latest main keeps the complete Corona site dormant at Ocean Beach.
+      // Open that site boundary only after the boot phase has been audited,
+      // then instrument its independently lazy foliage boundary below.
+      await sf.ensureOptionalWorldSite("corona");
+      const park = sf.coronaHeights;
+      if (!park) throw new Error("Corona Heights optional site did not load");
       const nativeProbe = window.__nativeFoliageProbe = {
         group: null,
         prepareEnteredAt: null,
         prepareDoneAt: null,
         prepareError: null
       };
-      const prepare = sf.coronaHeights.prepareFoliage;
-      sf.coronaHeights.prepareFoliage = async (group) => {
+      const prepare = park.prepareFoliage;
+      park.prepareFoliage = async (group) => {
         nativeProbe.group = group;
         nativeProbe.prepareEnteredAt = performance.now();
         try {
@@ -305,7 +315,7 @@ async function main() {
       // passes camera.position). A headless teleport can leave the spring-arm
       // camera at its old coast pose for a long time, so drive that same gate
       // once with the arrival focus instead of timing the camera easing.
-      sf.coronaHeights.update(1 / 60, performance.now() / 1000, target);
+      park.update(1 / 60, performance.now() / 1000, target);
     }, CORONA);
     let patchReadyReached = true;
     try {
@@ -326,7 +336,7 @@ async function main() {
       await page.waitForFunction(
         () => Boolean(window.__sf.scene.getObjectByName("corona_heights_unified_foliage")?.parent),
         null,
-        { timeout: 15_000 }
+        { timeout: 60_000 }
       );
     } catch {}
     await page.evaluate(() => Promise.race([

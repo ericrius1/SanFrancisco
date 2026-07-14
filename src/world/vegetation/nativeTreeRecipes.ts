@@ -70,20 +70,20 @@ const LODS: readonly TreeLodRecipe[] = [
     branchRetention: 0.28,
     // More, smaller shapes read as a natural crown instead of oversized cards.
     // The compiler also retains every selected anchor's support hierarchy.
-    foliageRetention: 0.36,
+    foliageRetention: 0.5,
     maxBranchLevel: 2,
     radialSegments: 4,
     axialStride: 3,
-    foliageScale: 1.5
+    foliageScale: 1.42
   },
   {
     name: "horizon",
     branchRetention: 0.14,
-    foliageRetention: 0.18,
+    foliageRetention: 0.32,
     maxBranchLevel: 1,
     radialSegments: 3,
     axialStride: 4,
-    foliageScale: 1.9
+    foliageScale: 1.65
   }
 ];
 
