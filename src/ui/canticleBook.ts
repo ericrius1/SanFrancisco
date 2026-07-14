@@ -112,7 +112,7 @@ const CSS = `
   align-items: center; justify-content: center; padding: 3vh 3vw;
   background: radial-gradient(ellipse at center, rgba(30,18,6,0.55), rgba(8,5,2,0.82));
   backdrop-filter: blur(6px); pointer-events: auto;
-  font-family: Georgia, 'Times New Roman', serif; color: #3f2f1c;
+  font-family: var(--font, 'Newsreader', Georgia, serif); color: #3f2f1c;
   opacity: 0; transition: opacity .28s cubic-bezier(.2,.7,.2,1);
 }
 #canticle-book.open { display: flex; opacity: 1; }

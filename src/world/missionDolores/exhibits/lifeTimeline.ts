@@ -2,6 +2,7 @@ import * as THREE from "three/webgpu";
 import type { MuseumCtx } from "../ctx";
 import type { MdExhibit } from "./index";
 import { WALL_ART_X } from "../layout";
+import { CANVAS_FONT_FAMILY } from "../../../core/typography";
 
 // East-aisle "Life & Legacy" timeline — seven biographical stations hung on
 // the east wall (x ≈ +11.55), read from the entrance (-z) toward the altar
@@ -132,8 +133,8 @@ export function createLifeTimeline(ctx: MuseumCtx): MdExhibit {
   // ---- header sign at the entrance end of the gallery ----
   const headerTex = ctx.textTexture(
     [
-      { text: "THE LIFE OF FRANCIS", font: "700 60px Georgia, 'Times New Roman', serif", color: "#f3e3bd", gap: 66 },
-      { text: "a pilgrim's road — east aisle", font: "italic 32px Georgia, 'Times New Roman', serif", color: "#cbb27a" }
+      { text: "THE LIFE OF FRANCIS", font: `700 60px ${CANVAS_FONT_FAMILY}`, color: "#f3e3bd", gap: 66 },
+      { text: "a pilgrim's road — east aisle", font: `italic 32px ${CANVAS_FONT_FAMILY}`, color: "#cbb27a" }
     ],
     { width: 900, height: 200, bg: "#3a2a16", align: "center" }
   );
@@ -199,7 +200,7 @@ export function createLifeTimeline(ctx: MuseumCtx): MdExhibit {
     grp.add(corbelBot);
 
     // ---- date medallion mounted on the rail ----
-    const medTex = ctx.textTexture([{ text: entry.year, font: "700 78px Georgia, 'Times New Roman', serif", color: "#3f2f1c" }], {
+    const medTex = ctx.textTexture([{ text: entry.year, font: `700 78px ${CANVAS_FONT_FAMILY}`, color: "#3f2f1c" }], {
       width: 220,
       height: 220,
       bg: "#e8d9bd",
