@@ -376,8 +376,9 @@ export class DebugPanel {
     for (let i = 0; i < children.length; i++) {
       const child = children[i];
       if (!isFolderApi(child)) return i;
-      if (child.title === "metta") continue;
-      if (child.title.localeCompare(title, undefined, { sensitivity: "base" }) > 0) {
+      const childTitle = child.title;
+      if (!childTitle || childTitle === "metta") continue;
+      if (childTitle.localeCompare(title, undefined, { sensitivity: "base" }) > 0) {
         return i;
       }
     }
