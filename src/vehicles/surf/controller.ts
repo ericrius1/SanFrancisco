@@ -256,6 +256,7 @@ export class SurfController implements ModeController {
     this.pitch = 0;
     this.grounded = true;
     this.#phase = "ride";
+    this.#linePos = this.#lineDirection < 0 ? 0 : 1;
     this.#lineSpeed = SURF_TUNING.values.trimSpeed;
     this.#pump = 0;
     this.#carve = 0;
@@ -638,6 +639,9 @@ export class SurfController implements ModeController {
       if (quality < tb.recoveryQuality) this.#beginRecovery(1 - quality);
       else this.#phase = "ride";
       this.yaw += shortestAngle(travelYaw, this.yaw) * 0.75;
+      // Re-seat the across-face position from where the landing points us so the
+      // grounded carve model resumes on a clean line rather than a stale one.
+      this.#linePos = THREE.MathUtils.clamp(this.yaw / Math.PI, 0, 1);
       this.lean *= 0.35;
       this.pitch *= 0.5;
       this.#commit(ctx, y, vx, trackVy, vz);
@@ -721,7 +725,10 @@ export class SurfController implements ModeController {
 
     this.#orientRide(ctx, motionDt, steer * 0.35, vx, vz, vy, sample);
     this.grounded = true;
-    if (this.#recoveryTimer <= 0) this.#phase = "ride";
+    if (this.#recoveryTimer <= 0) {
+      this.#phase = "ride";
+      this.#linePos = this.#lineDirection < 0 ? 0 : 1;
+    }
     this.#commit(ctx, y, vx, vy, vz);
     this.#syncTelemetry(ctx, frame, sample, Math.hypot(vx, vz), y, riderRate);
   }
@@ -848,12 +855,10 @@ export class SurfController implements ModeController {
     const tb = SURF_TUNING.values;
     const shape = surfboardHandling(this.#config);
     const speed = Math.hypot(vx, vz);
-    // Yaw is owned by A/D in ride; only nudge toward travel if input is near-neutral
-    // so the board does not fight a held carve.
-    if (speed > 0.1 && Math.abs(steer) < 0.12) {
-      const travelYaw = Math.atan2(-vx, -vz);
-      this.yaw += shortestAngle(travelYaw, this.yaw) * (1 - Math.exp(-motionDt * 3.2));
-    }
+    // Heading is fully owned by the across-face carve model (#linePos) now, so
+    // no travel-align nudge here — it would fight the bounded carve and its
+    // neutral re-center.
+    void speed;
     // Align the deck to the analytic surface normal, then layer a smaller
     // rider-authored rail set on top. The old version rolled only from input,
     // which left the board visually flat while crossing a near-vertical face.
@@ -993,6 +998,7 @@ export class SurfController implements ModeController {
     const vx = b.speed;
     const vz = this.#lineDirection * this.#lineSpeed;
     this.yaw = Math.atan2(-vx, -vz);
+    this.#linePos = this.#lineDirection < 0 ? 0 : 1;
     this.lean = 0;
     this.pitch = 0;
     this.grounded = true;

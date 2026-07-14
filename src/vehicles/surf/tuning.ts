@@ -20,11 +20,12 @@ export const SURF_TUNING = tunables("movement.surf", {
   // wave-local contact solve keeps the board tangent to the rendered wall.
   carveYawAngle: { v: 0.68, min: 0.2, max: 1.05, step: 0.01, label: "carve heading angle" },
   yawResponse: { v: 6.5, min: 1, max: 14, step: 0.25, label: "carve heading response" },
-  // Continuous carve: how fast A/D swing the heading (rad/s at full stick). High
-  // enough to whip a full cutback in ~1.3 s; the wave still constrains the line.
-  carveTurnRate: { v: 2.6, min: 0.6, max: 5, step: 0.1, label: "carve turn rate" },
-  // How firmly a neutral stick eases the heading back to the nearest down-line.
-  yawRecenter: { v: 2.4, min: 0, max: 8, step: 0.1, label: "carve re-center" },
+  // Continuous carve: full stick slides the across-face position (0..1) at this
+  // rate/sec, so a committed carve crosses the fall line into a cutback in ~1.1 s
+  // and holding it just parks you on the far line — bounded, never a spin-out.
+  carveTurnRate: { v: 0.95, min: 0.3, max: 2.5, step: 0.05, label: "carve turn rate" },
+  // How firmly a neutral stick eases the line back to the nearest down-line end.
+  yawRecenter: { v: 2.6, min: 0, max: 8, step: 0.1, label: "carve re-center" },
   carveResponse: { v: 10, min: 1, max: 18, step: 0.25, label: "carve lean response" },
   carveFaceRange: { v: 6.2, min: 0.5, max: 9, step: 0.1, label: "carve face range" },
 
