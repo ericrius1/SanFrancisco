@@ -10,12 +10,10 @@
   </head>
   <body>
     <script type="module">
-      // Rendered regression for the r185 NodeMaterial transform order. Three applies
-      // an InstancedMesh's instance matrix before positionNode, so fading with
-      // `positionLocal * fade` also scales the absolute instance translation. At a
-      // large coordinate the half-faded blade/bloom then flies thousands of metres
-      // toward the origin. This fixture renders the real shared grass and flower
-      // positionNode graphs at fade = 1, 0.5, and 0.
+      // Rendered regression for large-coordinate anchor fades. Grass now uses
+      // compact InstancedBufferGeometry attributes and reconstructs its transform
+      // in positionNode; flowers retain InstancedMesh. Both must collapse around
+      // their explicit anchor at fade = 1, 0.5, and 0.
       import * as THREE from "three/webgpu";
       import { color } from "three/tsl";
       import {
@@ -24,13 +22,20 @@
         createGrassMesh,
         writeGrassMesh
       } from "/src/world/groundcover/bladeGrass.ts";
+      import {
+        WILD_GRASS_SPACING,
+        WILD_GRASS_TILE_SIZE,
+        wildGrassLayerKeep,
+        wildGrassLod
+      } from "/src/world/wildlands/grassField.ts";
       import { createFlowerRing } from "/src/world/wildlands/flowerRing.ts";
 
       const W = 320;
       const H = 320;
       const ANCHOR = new THREE.Vector3(8192, 0, 8192);
       const GRASS_REACH = 20;
-      const FLOWER_REACH = 80; // flowerMaterial's production default
+      const FLOWER_HERO_FADE_START = 13;
+      const FLOWER_HERO_FADE_END = 19;
       const FADE_BAND = 0.16;
 
       function finish(result) {
@@ -43,6 +48,18 @@
         // Moving focus on +X keeps the rendered instance fixed at the large anchor.
         const band = Math.max(reach * FADE_BAND, 1);
         const distance = fade >= 1 ? 0 : reach - fade * band;
+        return new THREE.Vector2(ANCHOR.x + distance, ANCHOR.z);
+      }
+
+      function focusForFlowerHeroFade(fade) {
+        // This fixture injects its instance into the production hero bucket.
+        // Exercise that bucket's actual inverse-smoothstep handoff instead of
+        // the much farther outer-ring fade, where a hero is intentionally gone.
+        const distance = fade >= 1
+          ? 0
+          : fade <= 0
+            ? FLOWER_HERO_FADE_END + 1
+            : (FLOWER_HERO_FADE_START + FLOWER_HERO_FADE_END) * 0.5;
         return new THREE.Vector2(ANCHOR.x + distance, ANCHOR.z);
       }
 
@@ -196,6 +213,49 @@
           color: new THREE.Color(1, 1, 1),
           windAmp: 0
         }], GRASS_REACH);
+        const grassInstanceAttributes = ["aGrassTransform", "aGrassShape", "aGrassColor"]
+          .map((name) => grass.geometry.getAttribute(name));
+        const grassBytesPerInstance = grassInstanceAttributes.reduce(
+          (sum, attribute) => sum + attribute.itemSize * attribute.array.BYTES_PER_ELEMENT,
+          0
+        );
+        const authoredNormals = grassGeometry.getAttribute("normal");
+        let directionalNormals = 0;
+        for (let i = 0; i < authoredNormals.count; i++) {
+          if (Math.hypot(authoredNormals.getX(i), authoredNormals.getZ(i)) > 0.5) directionalNormals++;
+        }
+        const grassContracts = [
+          {
+            name: "grass: compact instanced geometry path",
+            pass: grass.geometry.isInstancedBufferGeometry === true && grass.isInstancedMesh !== true,
+            detail: grass.geometry.type
+          },
+          {
+            name: "grass: instance payload stays at 36 bytes",
+            pass: grassBytesPerInstance === 36,
+            detail: `${grassBytesPerInstance} bytes`
+          },
+          {
+            name: "grass: structural blade normals are directional",
+            pass: directionalNormals === authoredNormals.count,
+            detail: `${directionalNormals}/${authoredNormals.count} directional normals`
+          },
+          {
+            name: "grass: designed density guarantees a base cluster",
+            pass: [0, 0.25, 0.5, 0.75, 1].every((patch) => wildGrassLayerKeep(1, 1, patch, 0) === 1),
+            detail: "all patch samples retain layer 0"
+          },
+          {
+            name: "grass: stable tiles use the dense spacing contract",
+            pass: WILD_GRASS_SPACING <= 0.7 && WILD_GRASS_TILE_SIZE >= 16,
+            detail: `${WILD_GRASS_SPACING} m spacing / ${WILD_GRASS_TILE_SIZE} m tiles`
+          },
+          {
+            name: "grass: distance grades cover near, mid, and far",
+            pass: wildGrassLod(0) === "near" && wildGrassLod(24) === "mid" && wildGrassLod(48) === "far",
+            detail: `${wildGrassLod(0)} / ${wildGrassLod(24)} / ${wildGrassLod(48)}`
+          }
+        ];
         scene.add(grass);
 
         // Flowers: createFlowerRing owns the private production material state.
@@ -235,6 +295,11 @@
         sway.array.fill(0);
         sway.needsUpdate = true;
         flower.count = 1;
+        // Production uploads recompute exact per-sector bounds after every
+        // resample. This fixture bypasses that writer, so refresh the manually
+        // injected instance's bound before testing the now-frustum-culled mesh.
+        flower.computeBoundingSphere();
+        flower.boundingSphere.radius += 0.65;
         scene.add(flowers.group);
 
         const target = new THREE.RenderTarget(W, H, {
@@ -250,7 +315,7 @@
             const focus = focusForFade(GRASS_REACH, fade);
             grassState.focus.copy(focus);
           } else if (system === "flower") {
-            const focus = focusForFade(FLOWER_REACH, fade);
+            const focus = focusForFlowerHeroFade(fade);
             // update() always moves the private per-ring focus uniform before its
             // resample throttle / outside-region early return.
             flowers.update({ x: focus.x, z: focus.y });
@@ -272,14 +337,15 @@
           verifyTriplet("flower", flowerSamples)
         ];
         const result = {
-          ok: systems.every((system) => system.ok),
+          ok: systems.every((system) => system.ok) && grassContracts.every((contract) => contract.pass),
           backend: "webgpu",
           anchor: ANCHOR.toArray(),
           expectedAnchorPixel: [
             +expectedAnchor.x.toFixed(2),
             +expectedAnchor.y.toFixed(2)
           ],
-          systems
+          systems,
+          grassContracts
         };
         finish(result);
 

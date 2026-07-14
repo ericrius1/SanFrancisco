@@ -29,12 +29,26 @@ async function ev(c, expr) { const r = await c.send("Runtime.evaluate", { expres
 const frame = (dt) => `(async()=>{window.__sf.tick(${dt});await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));return true;})()`;
 async function settle(c, n) { for (let i = 0; i < n; i++) { await ev(c, frame(1 / 60)); await sleep(45); } }
 
-// centroid of the wildlands grass instances (the ring center) + count
+// centroid of the wildlands grass instances (the ring center) + count. The
+// compact path stores anchorXYZ/yaw directly instead of a 4x4 instance matrix.
 const CENTROID = `(() => {
   const sf = window.__sf, THREE = sf.THREE, m4 = new THREE.Matrix4(), p = new THREE.Vector3();
   let sx = 0, sz = 0, n = 0, minY = 1e9, maxY = -1e9;
   const g = sf.wildlands && sf.wildlands.grass && sf.wildlands.grass.group;
-  if (g) g.traverse(o => { if (o.isInstancedMesh && /grass/i.test(o.name)) { const step = Math.max(1, (o.count/300)|0); for (let i=0;i<o.count;i+=step){ o.getMatrixAt(i,m4); p.setFromMatrixPosition(m4); if (p.lengthSq()<1) continue; sx+=p.x; sz+=p.z; n++; } } });
+  if (g) g.traverse(o => {
+    if (!/grass/i.test(o.name)) return;
+    const compact = o.geometry?.getAttribute?.('aGrassTransform');
+    if (compact) {
+      const count = o.geometry.instanceCount;
+      const step = Math.max(1, (count/300)|0);
+      for (let i=0;i<count;i+=step){ sx+=compact.getX(i); sz+=compact.getZ(i); n++; }
+      return;
+    }
+    if (o.isInstancedMesh) {
+      const step = Math.max(1, (o.count/300)|0);
+      for (let i=0;i<o.count;i+=step){ o.getMatrixAt(i,m4); p.setFromMatrixPosition(m4); if (p.lengthSq()<1) continue; sx+=p.x; sz+=p.z; n++; }
+    }
+  });
   const cam = sf.camera.position, pl = sf.player.position;
   return { grassCentroid: n?[Math.round(sx/n), Math.round(sz/n)]:null, grassN: n, camXZ:[Math.round(cam.x),Math.round(cam.z)], playerXZ:[Math.round(pl.x),Math.round(pl.z)] };
 })()`;
@@ -54,7 +68,9 @@ async function main() {
   await c.send("Emulation.setDeviceMetricsOverride", { width: W, height: H, deviceScaleFactor: 1, mobile: false });
   console.log("[probe] waiting __sf...");
   const t0 = Date.now(); let ready = false;
-  while (Date.now() - t0 < 150000) { try { if (await ev(c, `!!(window.__sf&&window.__sf.player&&window.__sf.wildlands&&window.__sf.camera)`)) { ready = true; break; } } catch {} await sleep(600); }
+  // Wildlands is intentionally absent at clean boot. Wait only for fundamentals,
+  // then activate the region by teleporting before expecting its lazy owner.
+  while (Date.now() - t0 < 150000) { try { if (await ev(c, `!!(window.__sf&&window.__sf.player&&window.__sf.camera)`)) { ready = true; break; } } catch {} await sleep(600); }
   if (!ready) throw new Error("never ready");
   console.log("[probe] ready");
   await ev(c, `window.__sfManual&&window.__sfManual(true)`);
@@ -62,6 +78,14 @@ async function main() {
   // teleport player to flat spot, DO NOT move again
   await ev(c, `(()=>{const m=window.__sf.map,p=window.__sf.player;const y=m.groundHeight(${FX},${FZ});p.teleportTo({x:${FX},y:y+1.5,z:${FZ},facing:0,mode:'walk'});return true;})()`);
   await settle(c, 30);
+  const regionStart = Date.now();
+  while (Date.now() - regionStart < 90000) {
+    if (await ev(c, `!!window.__sf.wildlands?.grass?.group`).catch(() => false)) break;
+    await settle(c, 4);
+  }
+  if (!(await ev(c, `!!window.__sf.wildlands?.grass?.group`).catch(() => false))) {
+    throw new Error("wildlands lazy owner never activated after entering Golden Gate Park");
+  }
 
   // orbit the free camera AROUND the stationary player; look inward.
   // If the grass centroid tracks the camera, the ring is camera-locked.

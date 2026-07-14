@@ -12,6 +12,13 @@ import {
   type FoliageKind,
   type TreeRecipe
 } from "./index.ts";
+import {
+  collectFoliageSupportBranchIds,
+  selectLodBranches,
+  selectLodFoliageAnchors
+} from "./mesh.ts";
+import { generateTreeSkeleton, type SkeletonBranch } from "./skeleton.ts";
+import { validateTreeRecipe } from "./validate.ts";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(`Native tree compiler probe failed: ${message}`);
@@ -67,8 +74,8 @@ function testRecipe(kind: FoliageKind): TreeRecipe {
     foliage: {
       kind,
       placement: {
-        // Deliberately higher than the far LOD's tube limit: distant crowns
-        // must survive even when their supporting twigs are omitted.
+        // Deliberately higher than the nominal far branch level: the compiler
+        // must retain the exact supporting twigs selected by the crown.
         minBranchLevel: 2,
         start: 0.46,
         end: 0.98,
@@ -198,9 +205,39 @@ assert(treePrototypeTransferables(first).length === 19, "unexpected transferable
 assertFinite(first);
 assertBranchWindingOutward(first);
 
+const supportRecipe = testRecipe("leaf");
+const supportSkeleton = generateTreeSkeleton(
+  supportRecipe,
+  0x5eed1234,
+  validateTreeRecipe(supportRecipe)
+);
+for (const lod of supportRecipe.lods) {
+  const anchors = selectLodFoliageAnchors(supportRecipe, supportSkeleton.foliageAnchors, lod);
+  const required = collectFoliageSupportBranchIds(supportSkeleton.branches, anchors);
+  const selected = selectLodBranches(supportSkeleton.branches, lod, required).selectedIds;
+  for (const anchor of anchors) {
+    let branch: SkeletonBranch | undefined = supportSkeleton.branches[anchor.branchId];
+    while (branch) {
+      assert(
+        selected.has(branch.id),
+        `${lod.name} foliage anchor ${anchor.id} is orphaned from branch ${branch.id}`
+      );
+      branch = branch.parent >= 0 ? supportSkeleton.branches[branch.parent] : undefined;
+    }
+  }
+}
+
 const needle = compileTree(testRecipe("needle"), 0xabc123);
 const rosette = compileTree(testRecipe("rosette"), 0xabc123);
-assert(needle.lods[0].stats.foliageVertices > first.lods[0].stats.foliageVertices, "needle clusters were not expanded");
+assert(
+  first.lods[0].stats.foliageVertices === first.lods[0].stats.foliageAnchors * 16,
+  "near broadleaves were not emitted as two curved surfaces"
+);
+assert(
+  first.lods[2].stats.foliageVertices === first.lods[2].stats.foliageAnchors * 8,
+  "far broadleaves kept unnecessary crossed geometry"
+);
+assert(needle.lods[0].stats.foliageVertices > 0, "needle clusters were not expanded");
 assert(rosette.lods[0].stats.foliageVertices > needle.lods[0].stats.foliageVertices, "rosettes were not expanded");
 assertFinite(needle);
 assertFinite(rosette);

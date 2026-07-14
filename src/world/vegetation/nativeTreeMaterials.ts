@@ -75,6 +75,10 @@ function phaseOffset(phase: N): N {
   return vec2(phase.sin(), phase.cos()).mul(1.7);
 }
 
+function structuralSway(shared: N, height01: N): N {
+  return shared.mul(height01.clamp(0, 1).pow(1.65)).mul(0.24);
+}
+
 /**
  * Three r185 runs positionNode after the instance matrix. `positionLocal` is
  * therefore already translated/rotated/scaled; only the world-space wind
@@ -86,7 +90,7 @@ function branchPositionNode(style: NativeTreeStyle, gradeIndex: number): N {
   const shared = gradeIndex === 0 ? groundSway(rootWorld.xz) : groundSwayLite(rootWorld.xz);
   // Every point at a branch junction receives the same height-based offset.
   // This keeps the flattened hierarchy welded without cumulative phase data.
-  const trunkBend = shared.mul(wind.z.clamp(0, 1).pow(1.65)).mul(0.24);
+  const trunkBend = structuralSway(shared, wind.z);
   const windWorld = vec3(WIND_DIR.x, 0, WIND_DIR.z)
     .mul(trunkBend)
     .mul(style.windAmplitude * WIND_BY_GRADE[gradeIndex])
@@ -100,9 +104,9 @@ function foliagePositionNode(style: NativeTreeStyle, gradeIndex: number): N {
   const wind: N = attribute("aTreeWind", "vec4"); // phase, stiffness, height01, leaf tip weight
   const anchorWorld = instanceAnchorWorld(foliageAnchorLocal(anchor, root, yaw));
   const shared = gradeIndex === 0 ? groundSway(rootWorld.xz) : groundSwayLite(rootWorld.xz);
-  const baseSway = shared
-    .mul(wind.z.clamp(0, 1).pow(1.65))
-    .mul(0.24);
+  // Leaf roots use the same root sample, height curve and amplitude as the
+  // supporting tube, so local flutter begins at zero without opening a seam.
+  const baseSway = structuralSway(shared, wind.z);
   const compliance = float(1).div(wind.y.max(0.12).mul(1.35));
   const leafSway = (gradeIndex === 3
     ? float(0)
@@ -233,12 +237,14 @@ function landscapeFoliageMaterial(
   configureCommon(material, `native-tree:${assets.id}:foliage:far`);
   material.side = THREE.DoubleSide;
   material.shadowSide = THREE.DoubleSide;
-  // At this distance each compiler shape is a whole foliage cluster. Keeping
-  // it opaque gives a stable stylized crown, skips texture sampling/alpha
+  // At this distance the denser compiler shapes form one crown cluster. Keeping
+  // them opaque gives a stable silhouette, skips texture sampling/alpha
   // overdraw, and lets KTX2 detail remain genuinely close-range and on-demand.
   const leafColor = foliageColorNode(style, null);
   material.colorNode = leafColor;
-  (material as N).emissiveNode = leafColor.mul(0.12);
+  // Far crowns should still receive scene light; high self-lighting was
+  // flattening every leaf into the same cartoon cutout.
+  (material as N).emissiveNode = leafColor.mul(0.025);
   material.positionNode = foliagePositionNode(style, gradeIndex);
   return material;
 }
@@ -257,7 +263,7 @@ function horizonFoliageMaterial(
   material.colorNode = leafColor;
   // MeshLambertNodeMaterial inherits the common NodeMaterial emissive path at
   // runtime even though Three's declaration omits the field for this subclass.
-  (material as N).emissiveNode = leafColor.mul(0.14);
+  (material as N).emissiveNode = leafColor.mul(0.012);
   material.positionNode = foliagePositionNode(style, gradeIndex);
   return material;
 }

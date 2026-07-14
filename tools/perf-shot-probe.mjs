@@ -173,7 +173,7 @@ async function main() {
     const sf=window.__sf;
     const root=sf.scene.getObjectByName('japanese_tea_garden');
     const geometries=new Set(),materials=new Set();let meshes=0,instances=0,triangles=0;
-    root?.traverse((o)=>{if(!o.isMesh)return;meshes++;const count=o.isInstancedMesh?o.count:1;instances+=count;const g=o.geometry;geometries.add(g.uuid);const ma=Array.isArray(o.material)?o.material:[o.material];for(const value of ma)materials.add(value.uuid);const base=g.index?g.index.count/3:(g.attributes.position?.count??0)/3;triangles+=base*count;});
+    root?.traverse((o)=>{if(!o.isMesh)return;meshes++;const g=o.geometry;const compactCount=g?.isInstancedBufferGeometry&&Number.isFinite(g.instanceCount)?g.instanceCount:1;const count=o.isInstancedMesh?o.count:compactCount;instances+=count;geometries.add(g.uuid);const ma=Array.isArray(o.material)?o.material:[o.material];for(const value of ma)materials.add(value.uuid);const base=g.index?g.index.count/3:(g.attributes.position?.count??0)/3;triangles+=base*count;});
     return {
       cpu:p50(cpu), tot:p50(tot),
       player:sf.player.position.toArray(), camera:sf.camera.position.toArray(),

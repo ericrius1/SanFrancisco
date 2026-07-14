@@ -5,6 +5,13 @@
 
 import { compileTree } from "../treeCompiler/index.ts";
 import {
+  collectFoliageSupportBranchIds,
+  selectLodBranches,
+  selectLodFoliageAnchors
+} from "../treeCompiler/mesh.ts";
+import { generateTreeSkeleton, type SkeletonBranch } from "../treeCompiler/skeleton.ts";
+import { validateTreeRecipe } from "../treeCompiler/validate.ts";
+import {
   NATIVE_TREE_SPECIES,
   createNativeTreeArchetype
 } from "./nativeTreeRecipes.ts";
@@ -18,7 +25,13 @@ const report = [];
 for (let speciesIndex = 0; speciesIndex < NATIVE_TREE_SPECIES.length; speciesIndex++) {
   const species = NATIVE_TREE_SPECIES[speciesIndex];
   const archetype = createNativeTreeArchetype(species);
-  const prototype = compileTree(archetype.recipe, 0x51f15e + speciesIndex * 977);
+  const seed = 0x51f15e + speciesIndex * 977;
+  const prototype = compileTree(archetype.recipe, seed);
+  const skeleton = generateTreeSkeleton(
+    archetype.recipe,
+    seed,
+    validateTreeRecipe(archetype.recipe)
+  );
   const totalAnchors = prototype.stats.foliageAnchors;
 
   assert(totalAnchors > 0, `${species} generated no crown anchors`);
@@ -32,6 +45,19 @@ for (let speciesIndex = 0; speciesIndex < NATIVE_TREE_SPECIES.length; speciesInd
     assert(lod.stats.foliageAnchors === expected, `${species}/${lod.name} retained ${lod.stats.foliageAnchors}, expected ${expected}`);
     assert(lod.foliage.vertices.length > 0, `${species}/${lod.name} crown geometry is empty`);
     assert(lod.bounds.sphereRadius > 0, `${species}/${lod.name} bounds are empty`);
+    const selectedAnchors = selectLodFoliageAnchors(archetype.recipe, skeleton.foliageAnchors, recipeLod);
+    const supports = collectFoliageSupportBranchIds(skeleton.branches, selectedAnchors);
+    const selectedBranches = selectLodBranches(skeleton.branches, recipeLod, supports).selectedIds;
+    for (const anchor of selectedAnchors) {
+      let branch: SkeletonBranch | undefined = skeleton.branches[anchor.branchId];
+      while (branch) {
+        assert(
+          selectedBranches.has(branch.id),
+          `${species}/${lod.name} orphaned anchor ${anchor.id} from branch ${branch.id}`
+        );
+        branch = branch.parent >= 0 ? skeleton.branches[branch.parent] : undefined;
+      }
+    }
     if (lodIndex > 0) {
       const previous = prototype.lods[lodIndex - 1];
       assert(previous.stats.foliageAnchors >= lod.stats.foliageAnchors, `${species}/${lod.name} is not nested`);
@@ -54,6 +80,8 @@ for (let speciesIndex = 0; speciesIndex < NATIVE_TREE_SPECIES.length; speciesInd
     lods: prototype.lods.map((lod) => ({
       name: lod.name,
       foliage: lod.stats.foliageAnchors,
+      branches: lod.stats.branches,
+      orphanAnchors: 0,
       triangles: lod.stats.triangles
     }))
   });

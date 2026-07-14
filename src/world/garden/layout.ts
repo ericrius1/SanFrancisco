@@ -405,8 +405,7 @@ function appendMeadowShadeTrees(map: GardenTerrain, trees: GardenTree[]) {
       z: pz,
       scale: scale * (1.12 + gardenHash(i, 0, 587) * 0.24),
       yaw: gardenHash(i, 0, 593) * Math.PI * 2,
-      species,
-      nearDetail: false
+      species
     });
     added++;
   }

@@ -4,6 +4,8 @@ import {
   FOLIAGE_VERTEX_STRIDE_FLOATS,
   buildBranchMesh,
   buildFoliageMesh,
+  collectFoliageSupportBranchIds,
+  selectLodFoliageAnchors,
   unionTreeBounds
 } from "./mesh.ts";
 import { generateTreeSkeleton, type GeneratedTreeSkeleton } from "./skeleton.ts";
@@ -83,10 +85,18 @@ export function compileTree(recipe: TreeRecipe, seed: number): CompiledTreeProto
   const lods: CompiledTreeLod[] = [];
 
   for (const lodRecipe of recipe.lods) {
-    const branch = buildBranchMesh(recipe, skeleton.branches, lodRecipe, limits.maxVerticesPerLod);
+    const selectedFoliage = selectLodFoliageAnchors(recipe, skeleton.foliageAnchors, lodRecipe);
+    const requiredBranches = collectFoliageSupportBranchIds(skeleton.branches, selectedFoliage);
+    const branch = buildBranchMesh(
+      recipe,
+      skeleton.branches,
+      lodRecipe,
+      limits.maxVerticesPerLod,
+      requiredBranches
+    );
     const foliage = buildFoliageMesh(
       recipe,
-      skeleton.foliageAnchors,
+      selectedFoliage,
       lodRecipe,
       limits.maxVerticesPerLod - branch.vertexCount
     );

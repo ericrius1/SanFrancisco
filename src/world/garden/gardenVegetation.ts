@@ -43,6 +43,7 @@ export type GardenVegetation = {
   /** Resolves once the asynchronous shared tree patch is ready. */
   ready: Promise<void>;
   update(focus: { x: number; z: number }): void;
+  dispose(): void;
   /** hidden trunk+canopy proxy mesh for the surface raycaster (BVH) */
   proxy: THREE.Mesh;
   grass: BotanicalGrassController;
@@ -160,9 +161,12 @@ export function createGardenVegetation(map: GardenTerrain): GardenVegetation {
     name: "sf_botanical_garden_trees",
     chunkSize: 128,
     visibleDistance: 1050,
-    nearRadius: 58,
-    nearExitRadius: 66,
-    nearMax: 24,
+    // The forest allocator is nearest-first with enter/exit hysteresis. A
+    // larger close pool prevents meadow trees from being arbitrarily stranded
+    // in landscape LOD while the player is standing beside them.
+    nearRadius: 72,
+    nearExitRadius: 82,
+    nearMax: 48,
     horizonDistance: 520
   });
   group.add(treePatch.group);
@@ -176,8 +180,9 @@ export function createGardenVegetation(map: GardenTerrain): GardenVegetation {
     palettes: SHRUB_PALETTES
   });
   group.add(fernPatch.group);
+  let fernShadow: THREE.Mesh | null = null;
   if (treeFerns.length > 0) {
-    const fernShadow = new THREE.Mesh(
+    fernShadow = new THREE.Mesh(
       buildProxyGeometry(treeFerns),
       new THREE.MeshBasicMaterial({ color: 0xffffff })
     );
@@ -232,12 +237,30 @@ export function createGardenVegetation(map: GardenTerrain): GardenVegetation {
   proxy.name = "sf_botanical_garden_bvh_proxy";
   proxy.visible = false;
   group.add(proxy);
+  let disposed = false;
 
   return {
     group,
     ready,
     update(focus) {
       treePatch.update(focus);
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      treePatch.dispose();
+      fernPatch.dispose();
+      shrubPatch.dispose();
+      flowerPatch.dispose();
+      grass.dispose();
+      if (fernShadow) {
+        fernShadow.geometry.dispose();
+        (fernShadow.material as THREE.Material).dispose();
+      }
+      proxy.geometry.dispose();
+      (proxy.material as THREE.Material).dispose();
+      group.removeFromParent();
+      group.clear();
     },
     proxy,
     grass,

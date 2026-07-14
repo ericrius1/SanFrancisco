@@ -17,8 +17,13 @@ import {
   createBladeClusterGeometry,
   createGrassMaterial,
   createGrassMesh,
+  grassMeshCount,
+  setGrassMeshBounds,
+  setGrassMeshCount,
   writeGrassMesh,
-  type GrassEntry
+  type GrassEntry,
+  type GrassMaterialState,
+  type GrassMesh
 } from "../groundcover/bladeGrass";
 import { fitGroundY } from "../groundcover/grounding";
 import { BOTANICAL_GRASS_TUNING } from "./grassTuning";
@@ -37,7 +42,24 @@ type GrassSampleOptions = {
   bounds?: { minX: number; maxX: number; minZ: number; maxZ: number };
   salt?: number;
   densityScale?: number;
-  focus?: GrassFocus & { radius: number };
+  treeInfluenceAt?: (x: number, z: number) => number;
+};
+
+type DetailLod = "near" | "mid" | "far";
+
+type DetailTile = {
+  tx: number;
+  tz: number;
+  low: GrassEntry[];
+  tall: GrassEntry[];
+  lod: DetailLod;
+  mesh: GrassMesh | null;
+  targetLow: number;
+  targetTall: number;
+  targetLive: number;
+  liveLow: number;
+  liveTall: number;
+  live: number;
 };
 
 const TREE_BUCKET = 18;
@@ -106,7 +128,10 @@ function createTreeInfluence(trees: GardenTree[]) {
 
 function sampleGrassEntries(map: GardenTerrain, trees: GardenTree[], options: GrassSampleOptions) {
   const values = BOTANICAL_GRASS_TUNING.values;
-  const treeInfluenceAt = createTreeInfluence(trees);
+  // Detail streaming samples one tile at a time. Reuse the controller's tree
+  // index instead of rebuilding and string-allocating the whole bucket map for
+  // every entering tile.
+  const treeInfluenceAt = options.treeInfluenceAt ?? createTreeInfluence(trees);
   const low: GrassEntry[] = [];
   const tall: GrassEntry[] = [];
   const b = BOTANICAL_GARDEN_BOUNDS;
@@ -132,26 +157,15 @@ function sampleGrassEntries(map: GardenTerrain, trees: GardenTree[], options: Gr
       const z = b.minZ + gz * spacing;
       const px = x + (hash(gx, gz, 11 + salt) - 0.5) * spacing * 0.85;
       const pz = z + (hash(gx, gz, 17 + salt) - 0.5) * spacing * 0.85;
+      // Stable half-open ownership keeps jittered samples from appearing in
+      // both neighbouring streamed tiles.
+      if (options.bounds && (px < minX || px >= maxX || pz < minZ || pz >= maxZ)) continue;
       if (
         !inBotanicalGarden(px, pz) ||
         inJapaneseTeaGarden(px, pz, 4) ||
         map.surfaceType(px, pz) !== 1 ||
         map.isWater(px, pz)
       ) continue;
-
-      let focusWeight = 1;
-      if (options.focus) {
-        const d = Math.hypot(px - options.focus.x, pz - options.focus.z);
-        if (d > options.focus.radius) continue;
-        focusWeight = 1 - smoothstep(options.focus.radius * 0.58, options.focus.radius, d);
-        // Radial density taper (code, not a knob): the detail ring's job is
-        // eye-level density right around the player — full density to ~25% of
-        // the radius, easing to ~24% by ~78% where foreshortening + the base
-        // layer carry the read. Cuts the ring's instance count ~2.7× with no
-        // visible thinning at the feet.
-        focusWeight *= 1 - 0.76 * smoothstep(options.focus.radius * 0.25, options.focus.radius * 0.78, d);
-        if (focusWeight <= 0.02) continue;
-      }
 
       const pathDistance = gardenPathSignedDistance(px, pz);
       if (pathDistance < values.pathMargin) continue;
@@ -163,10 +177,11 @@ function sampleGrassEntries(map: GardenTerrain, trees: GardenTree[], options: Gr
       const meadow = meadowEllipse(px, pz);
       const inMeadow = meadow < 1.04;
       let keep = inMeadow ? values.meadowKeep : values.collectionKeep;
-      keep *= 0.72 + 0.48 * smoothstep(0.22, 0.8, patch);
+      // Coverage is spatially even. Noise changes colour, height and tall share
+      // below instead of deleting broad low-noise patches from the lawn.
       if (pathDistance < values.pathMargin + values.pathFeather) keep *= values.pathEdgeKeep;
-      if (treeShade > 0) keep *= 0.9;
-      keep *= densityScale * focusWeight;
+      if (treeShade > 0) keep *= 0.95;
+      keep *= densityScale;
       if (hash(gx, gz, 23 + salt) > Math.min(1, keep)) continue;
 
       const lowNoise = valueNoise(px, pz, 17, 907);
@@ -185,8 +200,9 @@ function sampleGrassEntries(map: GardenTerrain, trees: GardenTree[], options: Gr
 
       const isTall = !inMeadow && hash(gx, gz, 31 + salt) < values.tallShare * (0.75 + treeShade * 0.5);
       const heightBase = isTall ? 0.9 + hash(gx, gz, 37 + salt) * 0.7 : 0.44 + hash(gx, gz, 41 + salt) * 0.38;
-      const height = heightBase * values.heightScale * (treeShade > 0 ? 0.82 : 1);
-      const spread = (isTall ? 1.05 : 0.82) * (0.82 + hash(gx, gz, 43 + salt) * 0.36);
+      const vigour = 0.88 + patch * 0.24;
+      const height = heightBase * vigour * values.heightScale * (treeShade > 0 ? 0.82 : 1);
+      const spread = (isTall ? 1.05 : 0.84) * (0.84 + hash(gx, gz, 43 + salt) * 0.34) * (0.96 + vigour * 0.04);
       const yaw = hash(gx, gz, 47 + salt) * Math.PI * 2;
       const windAmp = (0.74 + height * 0.34) * (isTall ? 1.08 : 1);
       const entry = {
@@ -213,27 +229,32 @@ export class BotanicalGrassController extends THREE.Group {
 
   #map: GardenTerrain;
   #trees: GardenTree[];
-  #materialState = createGrassMaterial();
-  #material = this.#materialState.material;
-  // Both tiers use the lean 4/5-blade clusters — the old 5/6 near ring spent
-  // ~25% more vertex work on overlapping silhouettes that read identically at
-  // eye level, and meadow probes were triangle-bound (~4M garden tris).
-  #lowGeometryFar = createBladeClusterGeometry({ blades: 4, segments: 3, width: 0.085, radius: 0.34, curvature: 0.22 });
-  #tallGeometryFar = createBladeClusterGeometry({ blades: 5, segments: 4, width: 0.095, radius: 0.45, curvature: 0.36 });
-  #lowGeometryNear = createBladeClusterGeometry({ blades: 4, segments: 3, width: 0.09, radius: 0.37, curvature: 0.24 });
-  #tallGeometryNear = createBladeClusterGeometry({ blades: 5, segments: 4, width: 0.105, radius: 0.48, curvature: 0.4 });
-  // Hard live-instance caps (~1.2M tris at ~28 tris/cluster). Density knobs can
-  // request more; updateFocus scales draw ranges down so GG Park never blows the
-  // frame budget even if a slider is cranked.
-  static readonly #MAX_LIVE_BASE = 28_000;
-  static readonly #MAX_LIVE_DETAIL = 12_000;
+  #treeInfluenceAt: (x: number, z: number) => number;
+  // The static base is deliberately cheap: wide 1/2-segment clusters provide a
+  // continuous distant carpet with one-sine wind and no 12-slot interaction
+  // loop. Detail tiles graduate to full geometry + all displacers at the feet.
+  #baseMaterialState = createGrassMaterial({ wind: "lite", interactionSlots: 0 });
+  #detailMaterials: Record<DetailLod, GrassMaterialState> = {
+    near: createGrassMaterial({ wind: "full", interactionSlots: 12 }),
+    mid: createGrassMaterial({ wind: "lite", interactionSlots: 4 }),
+    far: createGrassMaterial({ wind: "lite", interactionSlots: 0 })
+  };
+  #lowGeometryFar = createBladeClusterGeometry({ blades: 3, segments: 1, width: 0.14, radius: 0.53, curvature: 0.2 });
+  #tallGeometryFar = createBladeClusterGeometry({ blades: 3, segments: 2, width: 0.14, radius: 0.58, curvature: 0.3 });
+  #detailGeometry: Record<DetailLod, THREE.BufferGeometry> = {
+    near: createBladeClusterGeometry({ blades: 5, segments: 3, width: 0.088, radius: 0.38, curvature: 0.27 }),
+    mid: createBladeClusterGeometry({ blades: 4, segments: 2, width: 0.115, radius: 0.46, curvature: 0.25 }),
+    far: createBladeClusterGeometry({ blades: 3, segments: 1, width: 0.16, radius: 0.6, curvature: 0.2 })
+  };
+  static readonly #MAX_LIVE_BASE = 36_000;
+  static readonly #MAX_LIVE_DETAIL = 16_000;
   #baseGroup = new THREE.Group();
   #detailGroup = new THREE.Group();
-  #baseChunks: { mesh: THREE.InstancedMesh; cx: number; cz: number; full: number }[] = [];
-  #detailLow: THREE.InstancedMesh | null = null;
-  #detailTall: THREE.InstancedMesh | null = null;
+  #baseChunks: { mesh: GrassMesh; cx: number; cz: number; full: number }[] = [];
+  #detailTiles = new Map<string, DetailTile>();
   #focus: GrassFocus | null = null;
-  #lastDetailFocus: GrassFocus | null = null;
+  #detailSyncX = Number.NaN;
+  #detailSyncZ = Number.NaN;
   // focus speed estimate (m/s) — at vehicle/flight speed the near-detail ring is
   // unresolvable AND its full-ring resample every nearRebuildStep was a measured
   // 100-180 ms hitch crossing GG Park; fast movers skip it (base grass persists)
@@ -241,12 +262,14 @@ export class BotanicalGrassController extends THREE.Group {
   #lastFocusX = 0;
   #lastFocusZ = 0;
   #focusSpeed = 0;
+  #disposed = false;
 
   constructor(map: GardenTerrain, trees: GardenTree[]) {
     super();
     this.name = "sfbg_procedural_grass";
     this.#map = map;
     this.#trees = trees;
+    this.#treeInfluenceAt = createTreeInfluence(trees);
     this.#baseGroup.name = "sfbg_procedural_grass_base";
     this.#detailGroup.name = "sfbg_procedural_grass_near_detail";
     this.add(this.#baseGroup, this.#detailGroup);
@@ -257,17 +280,18 @@ export class BotanicalGrassController extends THREE.Group {
     this.#clearGroup(this.#baseGroup);
     this.#baseChunks.length = 0;
     const values = BOTANICAL_GRASS_TUNING.values;
-    const base = sampleGrassEntries(this.#map, this.#trees, { spacing: values.spacing });
+    const base = sampleGrassEntries(this.#map, this.#trees, {
+      spacing: values.spacing,
+      treeInfluenceAt: this.#treeInfluenceAt
+    });
     const baseFade = Math.max(80, Number(values.baseViewDistance));
     if (values.showLow) this.#buildBaseChunks("low", base.low, this.#lowGeometryFar, baseFade);
     if (values.showTall) this.#buildBaseChunks("tall", base.tall, this.#tallGeometryFar, baseFade);
     this.stats.baseLow = values.showLow ? base.low.length : 0;
     this.stats.baseTall = values.showTall ? base.tall.length : 0;
-    // Drop the detail pool so geometry changes are picked up.
-    this.#clearGroup(this.#detailGroup);
-    this.#detailLow = null;
-    this.#detailTall = null;
-    this.#lastDetailFocus = null;
+    // Drop streamed detail tiles so spacing/geometry tuning is regenerated from
+    // deterministic world cells on the next focus update.
+    this.#clearDetailTiles();
     if (this.#focus) this.updateFocus(this.#focus, true);
     else {
       this.stats.detailLow = 0;
@@ -282,20 +306,44 @@ export class BotanicalGrassController extends THREE.Group {
   park() {
     for (const chunk of this.#baseChunks) {
       chunk.mesh.visible = false;
-      chunk.mesh.count = 0;
+      setGrassMeshCount(chunk.mesh, 0);
     }
-    if (this.#detailLow) this.#detailLow.count = 0;
-    if (this.#detailTall) this.#detailTall.count = 0;
+    this.#clearDetailTiles();
     this.stats.detailLow = 0;
     this.stats.detailTall = 0;
-    this.#lastDetailFocus = null;
     this.#syncStats();
+  }
+
+  dispose() {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    this.#clearDetailTiles();
+    this.#clearGroup(this.#baseGroup);
+    this.#lowGeometryFar.dispose();
+    this.#tallGeometryFar.dispose();
+    this.#detailGeometry.near.dispose();
+    this.#detailGeometry.mid.dispose();
+    this.#detailGeometry.far.dispose();
+    this.#baseMaterialState.material.dispose();
+    this.#detailMaterials.near.material.dispose();
+    this.#detailMaterials.mid.material.dispose();
+    this.#detailMaterials.far.material.dispose();
+    this.removeFromParent();
+    this.clear();
   }
 
   updateFocus(focus: GrassFocus, force = false) {
     const values = BOTANICAL_GRASS_TUNING.values;
-    this.#focus = { x: focus.x, z: focus.z };
-    this.#materialState.focus.set(focus.x, focus.z);
+    if (this.#focus) {
+      this.#focus.x = focus.x;
+      this.#focus.z = focus.z;
+    } else {
+      this.#focus = { x: focus.x, z: focus.z };
+    }
+    this.#baseMaterialState.focus.set(focus.x, focus.z);
+    this.#detailMaterials.near.focus.set(focus.x, focus.z);
+    this.#detailMaterials.mid.focus.set(focus.x, focus.z);
+    this.#detailMaterials.far.focus.set(focus.x, focus.z);
 
     // smoothed focus speed (m/s) from successive calls; long gaps reset
     {
@@ -330,10 +378,10 @@ export class BotanicalGrassController extends THREE.Group {
         const nearUnderlap = 1 - 0.4 * (1 - smoothstep(24, 48, d));
         const farThin = 1 - 0.75 * smoothstep(80, 130, d);
         const n = Math.max(1, Math.round(chunk.full * nearUnderlap * farThin));
-        chunk.mesh.count = n;
+        setGrassMeshCount(chunk.mesh, n);
         liveBase += n;
       } else {
-        chunk.mesh.count = 0;
+        setGrassMeshCount(chunk.mesh, 0);
       }
     }
     // Hard budget: scale every visible chunk's count down if the park still
@@ -342,7 +390,7 @@ export class BotanicalGrassController extends THREE.Group {
       const scale = BotanicalGrassController.#MAX_LIVE_BASE / liveBase;
       for (const chunk of this.#baseChunks) {
         if (!chunk.mesh.visible) continue;
-        chunk.mesh.count = Math.max(1, Math.round(chunk.mesh.count * scale));
+        setGrassMeshCount(chunk.mesh, Math.max(1, Math.round(grassMeshCount(chunk.mesh) * scale)));
       }
     }
     // fast movers (car boost / plane / bird) skip the near-detail ring exactly
@@ -350,64 +398,22 @@ export class BotanicalGrassController extends THREE.Group {
     // the resample was the hitch. Rebuilds once you slow back under ~18 m/s.
     const tooFast = this.#focusSpeed > 18 && !force;
     if (tooFast || values.nearRadius <= 0 || values.nearDensity <= 0 || !inBotanicalGarden(focus.x, focus.z, values.nearRadius)) {
-      if (this.stats.detailLow || this.stats.detailTall) {
-        if (this.#detailLow) this.#detailLow.count = 0;
-        if (this.#detailTall) this.#detailTall.count = 0;
+      if (this.#detailTiles.size > 0) {
+        this.#clearDetailTiles();
         this.stats.detailLow = 0;
         this.stats.detailTall = 0;
         this.#syncStats();
       }
-      this.#lastDetailFocus = null;
       return;
     }
-
-    if (!force && this.#lastDetailFocus) {
-      const moved = Math.hypot(focus.x - this.#lastDetailFocus.x, focus.z - this.#lastDetailFocus.z);
-      if (moved < values.nearRebuildStep) return;
-    }
-
-    const r = values.nearRadius;
-    const detail = sampleGrassEntries(this.#map, this.#trees, {
-      spacing: values.nearSpacing,
-      bounds: { minX: focus.x - r, maxX: focus.x + r, minZ: focus.z - r, maxZ: focus.z + r },
-      salt: DETAIL_SALT,
-      densityScale: values.nearDensity,
-      focus: { x: focus.x, z: focus.z, radius: r }
-    });
-    // Cap detail samples before upload so a density crank can't explode the ring.
-    const maxDetail = BotanicalGrassController.#MAX_LIVE_DETAIL;
-    let lowEntries = values.showLow ? detail.low : [];
-    let tallEntries = values.showTall ? detail.tall : [];
-    const detailTotal = lowEntries.length + tallEntries.length;
-    if (detailTotal > maxDetail) {
-      const keep = maxDetail / detailTotal;
-      lowEntries = lowEntries.slice(0, Math.max(0, Math.round(lowEntries.length * keep)));
-      tallEntries = tallEntries.slice(0, Math.max(0, Math.round(tallEntries.length * keep)));
-    }
-    const fadeRadius = Math.max(1, r);
-    this.#detailLow = this.#writeDetailTier(
-      this.#detailLow,
-      "sfbg_near_low_grass_clumps",
-      this.#lowGeometryNear,
-      lowEntries,
-      fadeRadius
-    );
-    this.#detailTall = this.#writeDetailTier(
-      this.#detailTall,
-      "sfbg_near_tall_grass_clumps",
-      this.#tallGeometryNear,
-      tallEntries,
-      fadeRadius
-    );
-    this.stats.detailLow = lowEntries.length;
-    this.stats.detailTall = tallEntries.length;
-    this.#lastDetailFocus = { x: focus.x, z: focus.z };
-    this.#syncStats();
+    this.#syncDetailTiles(focus, force);
   }
 
-  // Base grass is split into ~48 m tiles so the regular frustum culling can
-  // drop everything behind the camera, and updateFocus distance-culls tiles
-  // past the base view distance. One InstancedMesh per tile.
+  // Base grass is split into ~48 m tiles so regular frustum culling can drop
+  // everything behind the camera. Instance positions are authored in the
+  // mesh's local/world-aligned space, so the bound is set once on that mesh —
+  // it is not a world sphere on InstancedMesh geometry that gets transformed a
+  // second time (the old botanical culling bug).
   #buildBaseChunks(tier: string, entries: GrassEntry[], geometry: THREE.BufferGeometry, fadeRadius: number) {
     const CHUNK = 48;
     const chunks = new Map<string, GrassEntry[]>();
@@ -429,66 +435,196 @@ export class BotanicalGrassController extends THREE.Group {
         `sfbg_base_${tier}_grass_${key}`,
         list.length,
         geometry,
-        this.#material,
+        this.#baseMaterialState.material,
         false
       );
       writeGrassMesh(mesh, list, fadeRadius);
       let minX = Infinity;
       let maxX = -Infinity;
-      let minY = Infinity;
-      let maxY = -Infinity;
       let minZ = Infinity;
       let maxZ = -Infinity;
       for (const e of list) {
         if (e.x < minX) minX = e.x;
         if (e.x > maxX) maxX = e.x;
-        if (e.y < minY) minY = e.y;
-        if (e.y > maxY) maxY = e.y;
         if (e.z < minZ) minZ = e.z;
         if (e.z > maxZ) maxZ = e.z;
       }
       const cx = (minX + maxX) / 2;
-      const cy = (minY + maxY) / 2;
       const cz = (minZ + maxZ) / 2;
-      const radius = Math.hypot(maxX - minX, maxY - minY, maxZ - minZ) / 2 + 3;
-      mesh.geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(cx, cy, cz), radius);
+      setGrassMeshBounds(mesh, list, 3);
       mesh.frustumCulled = true;
       this.#baseGroup.add(mesh);
       this.#baseChunks.push({ mesh, cx, cz, full: list.length });
     }
   }
 
-  // Pooled detail meshes: rewrite instance buffers in place while walking and
-  // only reallocate when the sample outgrows capacity — no per-step mesh
-  // creation, no pipeline churn.
-  #writeDetailTier(
-    mesh: THREE.InstancedMesh | null,
-    name: string,
-    geometry: THREE.BufferGeometry,
-    entries: GrassEntry[],
-    fadeRadius: number
-  ): THREE.InstancedMesh | null {
-    if (entries.length === 0) {
-      if (mesh) mesh.count = 0;
-      return mesh;
+  #detailTileSize(): number {
+    // The old rebuild-step knob now controls stable tile granularity. Crossing
+    // one tile streams an entering strip; it never causes a whole-ring upload.
+    return THREE.MathUtils.clamp(Math.round(Number(BOTANICAL_GRASS_TUNING.values.nearRebuildStep) * 1.4), 12, 20);
+  }
+
+  #detailLod(tx: number, tz: number, tileSize: number, focus: GrassFocus, radius: number): DetailLod {
+    const minX = tx * tileSize;
+    const minZ = tz * tileSize;
+    const dx = Math.max(minX - focus.x, 0, focus.x - (minX + tileSize));
+    const dz = Math.max(minZ - focus.z, 0, focus.z - (minZ + tileSize));
+    const stagger = (hash(tx, tz, 409) - 0.5) * Math.min(5, radius * 0.1);
+    const d = Math.max(0, Math.hypot(dx, dz) + stagger);
+    if (d < radius * 0.34) return "near";
+    if (d < radius * 0.68) return "mid";
+    return "far";
+  }
+
+  #entryRank(entry: GrassEntry): number {
+    return hash(Math.round(entry.x * 100), Math.round(entry.z * 100), 431 + Math.round(entry.yaw * 10));
+  }
+
+  #removeDetailMesh(tile: DetailTile) {
+    if (!tile.mesh) return;
+    this.#detailGroup.remove(tile.mesh);
+    tile.mesh.geometry.dispose();
+    tile.mesh = null;
+    tile.live = tile.liveLow = tile.liveTall = 0;
+  }
+
+  #applyDetailLod(tile: DetailTile, lod: DetailLod, radius: number) {
+    if (tile.mesh && tile.lod === lod) {
+      setGrassMeshCount(tile.mesh, tile.targetLive);
+      tile.live = tile.targetLive;
+      tile.liveLow = tile.targetLow;
+      tile.liveTall = tile.targetTall;
+      return;
     }
-    const capacity = mesh ? (mesh.instanceMatrix.array as Float32Array).length / 16 : 0;
-    if (!mesh || capacity < entries.length) {
-      if (mesh) {
-        this.#detailGroup.remove(mesh);
-        mesh.geometry.dispose();
+    this.#removeDetailMesh(tile);
+    tile.lod = lod;
+    const density = lod === "near" ? 1 : lod === "mid" ? 0.62 : 0.3;
+    const values = BOTANICAL_GRASS_TUNING.values;
+    const lowCount = values.showLow ? Math.round(tile.low.length * density) : 0;
+    const tallCount = values.showTall ? Math.round(tile.tall.length * density) : 0;
+    const selected = tile.low.slice(0, lowCount).concat(tile.tall.slice(0, tallCount));
+    // A hash-ordered merged buffer makes every global-budget prefix spatially
+    // uniform and preserves both height classes across a tile.
+    selected.sort((a, b) => this.#entryRank(a) - this.#entryRank(b));
+    tile.targetLow = lowCount;
+    tile.targetTall = tallCount;
+    tile.targetLive = selected.length;
+    tile.liveLow = lowCount;
+    tile.liveTall = tallCount;
+    tile.live = selected.length;
+    if (selected.length === 0) return;
+
+    const all = tile.low.concat(tile.tall);
+    const mesh = createGrassMesh(
+      `sfbg_detail_${tile.tx}_${tile.tz}_${lod}`,
+      all.length,
+      this.#detailGeometry[lod],
+      this.#detailMaterials[lod].material,
+      false
+    );
+    writeGrassMesh(mesh, selected, Math.max(1, radius));
+    setGrassMeshBounds(mesh, all, 2.5);
+    mesh.frustumCulled = true;
+    this.#detailGroup.add(mesh);
+    tile.mesh = mesh;
+  }
+
+  #syncDetailTiles(focus: GrassFocus, force: boolean) {
+    const values = BOTANICAL_GRASS_TUNING.values;
+    const radius = Math.max(1, Number(values.nearRadius));
+    const tileSize = this.#detailTileSize();
+    const focusTileX = Math.floor(focus.x / tileSize);
+    const focusTileZ = Math.floor(focus.z / tileSize);
+    const streamStep = Math.max(3, Math.min(6, tileSize * 0.4));
+    if (
+      !force &&
+      Number.isFinite(this.#detailSyncX) &&
+      Math.hypot(focus.x - this.#detailSyncX, focus.z - this.#detailSyncZ) < streamStep
+    ) return;
+    this.#detailSyncX = focus.x;
+    this.#detailSyncZ = focus.z;
+
+    const streamRadius = radius + streamStep + 2;
+    const tileReach = Math.ceil(streamRadius / tileSize) + 1;
+    const desired = new Set<string>();
+    for (let tx = focusTileX - tileReach; tx <= focusTileX + tileReach; tx++) {
+      for (let tz = focusTileZ - tileReach; tz <= focusTileZ + tileReach; tz++) {
+        const minX = tx * tileSize;
+        const minZ = tz * tileSize;
+        const dx = Math.max(minX - focus.x, 0, focus.x - (minX + tileSize));
+        const dz = Math.max(minZ - focus.z, 0, focus.z - (minZ + tileSize));
+        if (Math.hypot(dx, dz) > streamRadius) continue;
+        const key = `${tx},${tz}`;
+        desired.add(key);
+        let tile = this.#detailTiles.get(key);
+        if (!tile) {
+          const detail = sampleGrassEntries(this.#map, this.#trees, {
+            spacing: values.nearSpacing,
+            bounds: {
+              minX: tx * tileSize,
+              maxX: (tx + 1) * tileSize,
+              minZ: tz * tileSize,
+              maxZ: (tz + 1) * tileSize
+            },
+            salt: DETAIL_SALT,
+            densityScale: values.nearDensity,
+            treeInfluenceAt: this.#treeInfluenceAt
+          });
+          detail.low.sort((a, b) => this.#entryRank(a) - this.#entryRank(b));
+          detail.tall.sort((a, b) => this.#entryRank(a) - this.#entryRank(b));
+          tile = {
+            tx,
+            tz,
+            low: detail.low,
+            tall: detail.tall,
+            lod: "far",
+            mesh: null,
+            targetLow: 0,
+            targetTall: 0,
+            targetLive: 0,
+            liveLow: 0,
+            liveTall: 0,
+            live: 0
+          };
+          this.#detailTiles.set(key, tile);
+        }
+        this.#applyDetailLod(tile, this.#detailLod(tx, tz, tileSize, focus, radius), radius);
       }
-      mesh = createGrassMesh(
-        name,
-        Math.ceil(entries.length * 1.3) + 64,
-        geometry,
-        this.#material,
-        false
-      );
-      this.#detailGroup.add(mesh);
     }
-    writeGrassMesh(mesh, entries, fadeRadius);
-    return mesh;
+
+    for (const [key, tile] of this.#detailTiles) {
+      if (desired.has(key)) continue;
+      this.#removeDetailMesh(tile);
+      this.#detailTiles.delete(key);
+    }
+
+    let live = 0;
+    for (const tile of this.#detailTiles.values()) live += tile.live;
+    if (live > BotanicalGrassController.#MAX_LIVE_DETAIL) {
+      const scale = BotanicalGrassController.#MAX_LIVE_DETAIL / live;
+      for (const tile of this.#detailTiles.values()) {
+        if (!tile.mesh) continue;
+        tile.live = Math.max(1, Math.round(tile.targetLive * scale));
+        tile.liveLow = Math.round(tile.targetLow * scale);
+        tile.liveTall = Math.round(tile.targetTall * scale);
+        setGrassMeshCount(tile.mesh, tile.live);
+      }
+    }
+
+    this.stats.detailLow = 0;
+    this.stats.detailTall = 0;
+    for (const tile of this.#detailTiles.values()) {
+      this.stats.detailLow += tile.liveLow;
+      this.stats.detailTall += tile.liveTall;
+    }
+    this.#syncStats();
+  }
+
+  #clearDetailTiles() {
+    for (const tile of this.#detailTiles.values()) this.#removeDetailMesh(tile);
+    this.#detailTiles.clear();
+    this.#detailSyncX = Number.NaN;
+    this.#detailSyncZ = Number.NaN;
   }
 
   #clearGroup(group: THREE.Group) {

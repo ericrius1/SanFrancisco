@@ -99,6 +99,7 @@ export type TreeLodRecipe = {
   branchRetention: number;
   /** Stable subset of foliage anchors retained at this level. */
   foliageRetention: number;
+  /** Nominal structural depth; selected foliage may retain deeper support twigs. */
   maxBranchLevel: number;
   /** Tube sides. */
   radialSegments: number;

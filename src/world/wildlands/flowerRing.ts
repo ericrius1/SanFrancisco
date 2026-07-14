@@ -15,10 +15,10 @@
 // LOOK (chasing momentchan/false-earth's luminous roses, our own wildflowers): real
 // 3D curved layered petals with true normals + a translucent MeshSSS material + a
 // fresnel rim glow + a pale-centre→saturated-edge colour ramp, so blooms read as
-// dimensional, back-lit, glowing cups — not flat cards. Each GPU instance is a small
-// 3–5-stem botanical clump: substantially more visible flower heads for the same four
-// draws, with the old single-bloom triangle budget redistributed across hero + simpler
-// satellite blooms instead of multiplying the scatter count.
+// dimensional, back-lit, glowing cups — not flat cards. Nearby GPU instances remain
+// small 3–5-stem botanical clumps; distance tiers redistribute that detail into
+// simplified species silhouettes and tiny static accents, spatially bucketed so
+// off-camera meadow sectors actually cull.
 
 import * as THREE from "three/webgpu";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
@@ -32,12 +32,14 @@ import {
   normalView,
   positionLocal,
   positionViewDirection,
+  smoothstep as smoothstepNode,
   uniform,
   vec3
 } from "three/tsl";
-import { groundSway, WIND_DIR } from "../groundcover/sway";
+import { groundSway, groundSwayLite, WIND_DIR } from "../groundcover/sway";
 import { DISPLACERS, MAX_DISPLACERS } from "../groundcover/displacers";
 import { fadeAroundInstanceAnchor, instanceAnchorWorld, worldOffsetToModelLocal } from "../groundcover/instanceDeform";
+import { fitGroundY } from "../groundcover/grounding";
 import { hash2, smoothstep, worleyClump } from "../groundcover/scatter";
 import { flowerDriftAt, grassyGround, nearAnyWildRegion, wildRegionAt } from "./layout";
 import type { GardenTerrain } from "../garden/layout";
@@ -378,6 +380,85 @@ function goldfieldGeometry(): THREE.BufferGeometry {
 const BUILDERS = [poppyGeometry, lupineGeometry, yarrowGeometry, goldfieldGeometry];
 const HEADS_PER_CLUMP = [3, 3, 3, 5] as const;
 
+// Geometry and deformation are now distance-graded. Hero clumps keep the full
+// curved, layered botanical meshes and interactive trample. Mid clumps keep a
+// recognizable species silhouette with 60–80% fewer triangles and one-sine
+// sway. The distant field is a shared 16-triangle static accent, where stems and
+// petal layering are sub-pixel anyway. Adjacent tiers overlap and scale through
+// noisy handoff bands in the shader instead of hard-switching at a ring edge.
+const HERO_FADE_START = 13;
+const HERO_FADE_END = 19;
+const MID_FADE_START = HERO_FADE_START;
+const MID_FADE_END = HERO_FADE_END;
+const MID_FADE_OUT_START = 43;
+const MID_FADE_OUT_END = 51;
+const FAR_FADE_START = MID_FADE_OUT_START;
+const FAR_FADE_END = MID_FADE_OUT_END;
+const LOD_NOISE_METRES = 1.5;
+const HERO_SAMPLE_END = HERO_FADE_END + LOD_NOISE_METRES + 1;
+const MID_SAMPLE_START = MID_FADE_START - LOD_NOISE_METRES - 1;
+const MID_SAMPLE_END = MID_FADE_OUT_END + LOD_NOISE_METRES + 1;
+const FAR_SAMPLE_START = FAR_FADE_START - LOD_NOISE_METRES - 1;
+
+const MID_HEADS_PER_CLUMP = [2, 2, 2, 2] as const;
+
+function simplePoppy(stemH: number): THREE.BufferGeometry {
+  const parts = makeStem(stemH, 0.03);
+  bloomRings(parts, stemH + 0.015, [
+    { count: 6, pitch: 0.28, len: 0.16, wid: 0.135, rise: 0.4, close: 0.18, cup: 0.64, out: 0.014 }
+  ], 1);
+  parts.push(makeCentre(0.029, stemH + 0.018));
+  return finalizeBloom(parts, stemH + 0.19);
+}
+
+function midPoppyGeometry(): THREE.BufferGeometry {
+  return flowerClump([
+    { geometry: simplePoppy(0.47), x: 0, z: 0, yaw: 0.2, windPhase: 0.3 },
+    { geometry: simplePoppy(0.39), x: 0.19, z: 0.11, scale: 0.82, yaw: 2.7, windPhase: 2.4 }
+  ]);
+}
+
+function midLupineGeometry(): THREE.BufferGeometry {
+  return flowerClump([
+    { geometry: singleLupine(0.32, 0.38, 5, 3, 1), x: 0, z: 0, windPhase: 0.4 },
+    { geometry: singleLupine(0.27, 0.29, 4, 3, 1), x: 0.17, z: 0.11, scale: 0.82, yaw: 2.5, windPhase: 2.8 }
+  ]);
+}
+
+function midYarrowGeometry(): THREE.BufferGeometry {
+  return flowerClump([
+    { geometry: singleYarrow(0.32, 5, 1), x: 0, z: 0, windPhase: 0.6 },
+    { geometry: singleYarrow(0.27, 4, 1), x: 0.16, z: 0.09, scale: 0.8, yaw: 2.4, windPhase: 2.9 }
+  ]);
+}
+
+function midGoldfieldGeometry(): THREE.BufferGeometry {
+  return flowerClump([
+    { geometry: singleGoldfield(0.18, 6, 1, false), x: 0, z: 0, windPhase: 0.2 },
+    { geometry: singleGoldfield(0.14, 5, 1, false), x: 0.13, z: 0.08, scale: 0.8, yaw: 2.6, windPhase: 2.7 }
+  ]);
+}
+
+const MID_BUILDERS = [midPoppyGeometry, midLupineGeometry, midYarrowGeometry, midGoldfieldGeometry];
+
+/** Two crossed stem strips plus two crossed bloom diamonds. At 50+ metres this
+ *  retains a planted coloured fleck without carrying invisible petal topology. */
+function farAccentGeometry(): THREE.BufferGeometry {
+  const parts = makeStem(0.38, 0.03);
+  const pos = [
+    -0.09, 0.38, 0, 0, 0.43, 0, 0.09, 0.38, 0, 0, 0.33, 0,
+    0, 0.38, -0.09, 0, 0.43, 0, 0, 0.38, 0.09, 0, 0.33, 0
+  ];
+  const bloom = new THREE.BufferGeometry();
+  bloom.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  bloom.setAttribute("aHead", new THREE.Float32BufferAttribute(new Float32Array(8).fill(1), 1));
+  bloom.setAttribute("aG", new THREE.Float32BufferAttribute(new Float32Array(8).fill(0.72), 1));
+  bloom.setIndex([0, 3, 1, 1, 3, 2, 4, 7, 5, 5, 7, 6]);
+  bloom.computeVertexNormals();
+  parts.push(bloom);
+  return finalizeBloom(parts, 0.45);
+}
+
 // Flower heads remain clearly readable nearby, where their movement spans
 // several pixels. Farther out, even a few centimetres of sway makes the bright
 // petals jump between pixels after their thin stems disappear. Ease that motion
@@ -390,17 +471,23 @@ const FLOWER_WIND_ZERO_DISTANCE = 46;
 const STEM_COL = vec3(0.12, 0.22, 0.09);
 
 type FlowerMaterialState = {
-  material: THREE.MeshSSSNodeMaterial;
+  material: THREE.MeshSSSNodeMaterial | THREE.MeshStandardNodeMaterial;
   focus: THREE.Vector2;
   reach: N;
 };
 
-function flowerMaterial(): FlowerMaterialState {
-  // MeshSSS (same family as the grass) so petals are TRANSLUCENT — light passes
-  // through them and they glow when back-lit, the ethereal look from the reference.
-  const mat = new THREE.MeshSSSNodeMaterial();
+type FlowerRenderTier = "authored" | "hero" | "mid" | "far";
+
+function flowerMaterial(tier: FlowerRenderTier): FlowerMaterialState {
+  // True SSS is reserved for hero/authored petals where translucency covers
+  // enough pixels to read. Mid/far tiers use a cheaper standard node material,
+  // retaining the colour ramp and rim lift without paying SSS over the field.
+  const usesSss = tier === "authored" || tier === "hero";
+  const mat: THREE.MeshSSSNodeMaterial | THREE.MeshStandardNodeMaterial = usesSss
+    ? new THREE.MeshSSSNodeMaterial()
+    : new THREE.MeshStandardNodeMaterial();
   mat.side = THREE.DoubleSide;
-  mat.roughness = 0.5;
+  mat.roughness = tier === "far" ? 0.72 : 0.5;
   mat.metalness = 0;
   const swayData: N = attribute("aSway", "vec3");
   const swayW: N = swayData.x;
@@ -437,44 +524,58 @@ function flowerMaterial(): FlowerMaterialState {
   // edge — the reference blooms read self-lit, not lit only by where the sun happens
   // to hit them. Combined with the sky-biased normals + SSS this glows without going flat.
   // authored at the reference exposure — rebased (config.EXPOSURE_REBASE)
-  mat.emissiveNode = petalCol.mul(rim.mul(0.5).add(0.42)).mul(headMask).mul(EXPOSURE_REBASE);
+  const emissiveGain = tier === "far" ? 0.24 : tier === "mid" ? 0.34 : 0.42;
+  mat.emissiveNode = petalCol.mul(rim.mul(0.5).add(emissiveGain)).mul(headMask).mul(EXPOSURE_REBASE);
 
   // Translucency: petals let colour through when back-lit; stems stay opaque green.
-  mat.thicknessColorNode = petalCol.mul(0.9).mul(headMask);
-  mat.thicknessDistortionNode = uniform(0.45);
-  mat.thicknessAmbientNode = uniform(0.24);
-  mat.thicknessAttenuationNode = uniform(1.0);
-  mat.thicknessPowerNode = uniform(3.0);
-  mat.thicknessScaleNode = uniform(9.0);
+  if (usesSss) {
+    const sss = mat as THREE.MeshSSSNodeMaterial;
+    sss.thicknessColorNode = petalCol.mul(0.9).mul(headMask);
+    sss.thicknessDistortionNode = uniform(0.45);
+    sss.thicknessAmbientNode = uniform(0.24);
+    sss.thicknessAttenuationNode = uniform(1.0);
+    sss.thicknessPowerNode = uniform(3.0);
+    sss.thicknessScaleNode = uniform(9.0);
+  }
 
   // SHARED trample — read the same displacer field the grass reads, so walking a
-  // drift presses the blooms down as the grass flattens (head dips, wind damps).
-  const crush: N = (Fn(() => {
-    const c = (float(0) as N).toVar();
-    Loop(MAX_DISPLACERS, ({ i }: { i: N }) => {
-      const d = (DISPLACERS as N).element(i);
-      const len = anchorWorld.xz.sub(d.xy).length().max(1e-4);
-      const infl = d.z.sub(len).div(d.z.max(1e-4)).clamp(0, 1);
-      c.addAssign(infl.mul(infl).mul(d.w));
-    });
-    return c.min(1);
-  }) as N)();
+  // drift presses hero blooms down as the grass flattens. The 12-displacer loop
+  // is deliberately absent from mid/far shaders, where that response is invisible.
+  const interactive = tier === "authored" || tier === "hero";
+  const crush: N = interactive
+    ? (Fn(() => {
+        const c = (float(0) as N).toVar();
+        Loop(MAX_DISPLACERS, ({ i }: { i: N }) => {
+          const d = (DISPLACERS as N).element(i);
+          const len = anchorWorld.xz.sub(d.xy).length().max(1e-4);
+          const infl = d.z.sub(len).div(d.z.max(1e-4)).clamp(0, 1);
+          c.addAssign(infl.mul(infl).mul(d.w));
+        });
+        return c.min(1);
+      }) as N)()
+    : float(0);
 
   // SHARED wind — form every offset in world space, then map that VECTOR (w=0)
   // through only the mesh world inverse. The instance transform already ran.
   // Every stalk in a clump still uses the one canonical grass/flower wind, but its
   // baked phase-space offset prevents all 3–5 stems from behaving like one rigid mesh.
-  const swayAmt: N = groundSway(anchorWorld.xz.add(windOffset));
+  const swayAmt: N = tier === "mid"
+    ? groundSwayLite(anchorWorld.xz.add(windOffset))
+    : interactive
+      ? groundSway(anchorWorld.xz.add(windOffset))
+      : float(0);
   const windDamp: N = float(1).sub(crush.mul(0.7));
-  const windLod: N = anchorWorld
-    .distance(cameraPosition)
-    .sub(FLOWER_WIND_FULL_DISTANCE)
-    .div(FLOWER_WIND_ZERO_DISTANCE - FLOWER_WIND_FULL_DISTANCE)
-    .clamp(0, 1)
-    .oneMinus();
+  const cameraDist: N = anchorWorld.distance(cameraPosition);
+  const windLod: N = tier === "authored"
+    ? cameraDist
+        .sub(FLOWER_WIND_FULL_DISTANCE)
+        .div(FLOWER_WIND_ZERO_DISTANCE - FLOWER_WIND_FULL_DISTANCE)
+        .clamp(0, 1)
+        .oneMinus()
+    : float(1);
   const windWorld: N = vec3(WIND_DIR.x, 0, WIND_DIR.z)
     .mul(swayAmt)
-    .mul(0.11)
+    .mul(tier === "mid" ? 0.065 : tier === "far" ? 0 : 0.11)
     .mul(swayW)
     .mul(windDamp)
     .mul(windLod);
@@ -483,12 +584,29 @@ function flowerMaterial(): FlowerMaterialState {
   // Fade toward the ring rim (shared idea with the grass) so blooms shrink to nothing
   // at the edge instead of popping in as the ring re-scatters.
   const dist: N = anchorWorld.xz.sub(focusU).length();
-  const fade: N = reachU.sub(dist).div(reachU.mul(0.16).max(1)).clamp(0, 1);
+  const ringFade: N = tier === "authored"
+    ? float(1)
+    : reachU.sub(dist).div(reachU.mul(0.16).max(1)).clamp(0, 1);
+
+  // W is already a deterministic yaw-derived variance. Reuse it to slide the
+  // LOD thresholds by ±1.5 m: the handoff is a noisy band, never a visible ring.
+  // CPU tier membership is also focus-relative, so orbit/free cameras cannot
+  // fade the only submitted tier away and open a flowerless hole at the player.
+  const lodNoise: N = rotShade.sub(1).div(0.117).clamp(-1, 1).mul(LOD_NOISE_METRES);
+  const lodFade: N = tier === "hero"
+    ? smoothstepNode(float(HERO_FADE_START).add(lodNoise), float(HERO_FADE_END).add(lodNoise), dist).oneMinus()
+    : tier === "mid"
+      ? smoothstepNode(float(MID_FADE_START).add(lodNoise), float(MID_FADE_END).add(lodNoise), dist)
+          .mul(smoothstepNode(float(MID_FADE_OUT_START).add(lodNoise), float(MID_FADE_OUT_END).add(lodNoise), dist).oneMinus())
+      : tier === "far"
+        ? smoothstepNode(float(FAR_FADE_START).add(lodNoise), float(FAR_FADE_END).add(lodNoise), dist)
+        : float(1);
+  const fade: N = ringFade.mul(lodFade);
 
   const scaled: N = fadeAroundInstanceAnchor(positionLocal as N, anchorLocal, fade);
   const offsetLocal: N = worldOffsetToModelLocal(windWorld.add(dipWorld).mul(fade));
   mat.positionNode = scaled.add(offsetLocal);
-  mat.envMapIntensity = 0.5;
+  mat.envMapIntensity = tier === "far" ? 0.25 : 0.5;
   return { material: mat, focus, reach: reachU };
 }
 
@@ -513,6 +631,8 @@ const CLUMP_PEAK = 0.85; // clumpiness 1: dense inside a clump
 const CLUMP_FLOOR = 0.03; // clumpiness 1: sparse singles between clumps
 
 type Row = { x: number; y: number; z: number; yaw: number; sx: number; sy: number; r: number; g: number; b: number };
+
+const FLOWER_DEFORM_BOUNDS_MARGIN = 0.65;
 
 function writeFlowerInstances(mesh: THREE.InstancedMesh, list: readonly Row[], computeBounds = false) {
   const m = mesh.instanceMatrix.array as Float32Array;
@@ -541,8 +661,15 @@ function writeFlowerInstances(mesh: THREE.InstancedMesh, list: readonly Row[], c
   bloomAttr.needsUpdate = true;
   anchorAttr.needsUpdate = true;
   if (computeBounds) {
-    mesh.computeBoundingBox();
-    mesh.computeBoundingSphere();
+    if (list.length === 0) {
+      mesh.boundingBox = new THREE.Box3().makeEmpty();
+      mesh.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 0);
+    } else {
+      mesh.computeBoundingBox();
+      mesh.computeBoundingSphere();
+      mesh.boundingBox?.expandByScalar(FLOWER_DEFORM_BOUNDS_MARGIN);
+      if (mesh.boundingSphere) mesh.boundingSphere.radius += FLOWER_DEFORM_BOUNDS_MARGIN;
+    }
   }
 }
 
@@ -560,7 +687,7 @@ export function createAuthoredFlowerPatch(
 ) {
   const group = new THREE.Group();
   group.name = options.name;
-  const materialState = flowerMaterial();
+  const materialState = flowerMaterial("authored");
   // Authored patches are spatially bounded by their owner and use its range
   // gate. Keep the ring-edge shader fade fully open for these static instances.
   materialState.focus.set(0, 0);
@@ -644,6 +771,7 @@ export type FlowerRing = {
   update(focus: { x: number; z: number }): void;
   /** force an immediate re-scatter at the last focus (debug panel calls this on a slider change) */
   refresh(): void;
+  dispose(): void;
   stats: {
     /** GPU clump instances (kept as `count` for existing diagnostics). */
     count: number;
@@ -653,45 +781,181 @@ export type FlowerRing = {
     submittedTriangles: number;
     /** Static triangles in one clump mesh for each of the four species. */
     trianglesPerClump: readonly number[];
+    trianglesPerClumpByLod: {
+      hero: readonly number[];
+      mid: readonly number[];
+      far: number;
+    };
+    /** Submitted GPU instances, including short cross-fade overlap bands. */
+    submittedInstances: number;
+    lodInstances: { hero: number; mid: number; far: number };
+    draws: number;
+    reservedInstances: number;
+    reservedInstanceBytes: number;
+    droppedByCapacity: number;
     instanceCapPerSpecies: number;
   };
 };
 
+type FlowerBucket = {
+  mesh: THREE.InstancedMesh;
+  rows: Row[];
+  capacity: number;
+  triangles: number;
+};
+
+const HERO_CAPACITY_PER_SPECIES = 640;
+const MID_SECTORS = 6;
+const MID_CAPACITY_PER_SPECIES_SECTOR = 768;
+const FAR_SECTORS = 10;
+const FAR_CAPACITY_PER_SECTOR = 1536;
+const FLOWER_INSTANCE_BYTES = (16 + 3 + 4) * Float32Array.BYTES_PER_ELEMENT;
+
+const ROOT_FOOTPRINT_RADIUS = [0.31, 0.29, 0.27, 0.24] as const;
+const ROOT_MAX_RISE = 0.78;
+const ROOT_SINK = 0.035;
+const FAR_HEIGHT_SCALE = [1, 1.28, 0.9, 0.68] as const;
+
+/** Give every spatial bucket its own instanced attributes while sharing the
+ *  immutable vertex/index buffers for that LOD geometry. */
+function createFlowerBucket(
+  group: THREE.Group,
+  name: string,
+  base: THREE.BufferGeometry,
+  material: THREE.Material,
+  capacity: number
+): FlowerBucket {
+  // InstancedMesh owns the instance count. A plain BufferGeometry can still
+  // carry InstancedBufferAttributes; using InstancedBufferGeometry here would
+  // add its independent default `instanceCount = Infinity` to WebGPU draws.
+  const geometry = new THREE.BufferGeometry();
+  geometry.setIndex(base.index);
+  for (const [attributeName, value] of Object.entries(base.attributes)) {
+    geometry.setAttribute(attributeName, value);
+  }
+  for (const drawGroup of base.groups) geometry.addGroup(drawGroup.start, drawGroup.count, drawGroup.materialIndex);
+  geometry.setDrawRange(base.drawRange.start, base.drawRange.count);
+  geometry.boundingBox = base.boundingBox?.clone() ?? null;
+  geometry.boundingSphere = base.boundingSphere?.clone() ?? null;
+
+  const bloom = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 3), 3);
+  const anchor = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 4), 4);
+  // The ring only rewrites these buffers when it crosses the resample step.
+  // StaticDrawUsage prevents Three r185's WebGPU path from re-uploading every
+  // reserved slot on otherwise unchanged frames; needsUpdate below still
+  // uploads each newly scattered ring exactly once.
+  bloom.setUsage(THREE.StaticDrawUsage);
+  anchor.setUsage(THREE.StaticDrawUsage);
+  geometry.setAttribute("aBloom", bloom);
+  geometry.setAttribute("aFlowerAnchor", anchor);
+
+  const mesh = new THREE.InstancedMesh(geometry, material, capacity);
+  mesh.name = name;
+  mesh.castShadow = false;
+  mesh.receiveShadow = true;
+  mesh.frustumCulled = true;
+  mesh.layers.set(BEAUTY_ONLY_LAYER);
+  mesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
+  mesh.count = 0;
+  mesh.boundingBox = new THREE.Box3().makeEmpty();
+  mesh.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 0);
+  group.add(mesh);
+  return {
+    mesh,
+    rows: [],
+    capacity,
+    triangles: (base.index?.count ?? base.getAttribute("position").count) / 3
+  };
+}
+
+function sectorFor(dx: number, dz: number, sectors: number): number {
+  const normalized = (Math.atan2(dz, dx) + Math.PI) / (Math.PI * 2);
+  return Math.min(sectors - 1, Math.max(0, Math.floor(normalized * sectors)));
+}
+
 export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: number) => boolean): FlowerRing {
   const group = new THREE.Group();
   group.name = "wildlands_flowers";
-  const materialState = flowerMaterial();
-  const material = materialState.material;
-  const geoms = BUILDERS.map((b) => b());
-  const trianglesPerClump = geoms.map((g) => (g.index?.count ?? g.getAttribute("position").count) / 3);
+  const heroState = flowerMaterial("hero");
+  const midState = flowerMaterial("mid");
+  const farState = flowerMaterial("far");
+  const materialStates = [heroState, midState, farState] as const;
+  const heroGeometries = BUILDERS.map((builder) => builder());
+  const midGeometries = MID_BUILDERS.map((builder) => builder());
+  const farGeometry = farAccentGeometry();
+  const trianglesPerClump = heroGeometries.map((geometry) =>
+    (geometry.index?.count ?? geometry.getAttribute("position").count) / 3
+  );
+  const midTrianglesPerClump = midGeometries.map((geometry) =>
+    (geometry.index?.count ?? geometry.getAttribute("position").count) / 3
+  );
+  const farTrianglesPerClump = (farGeometry.index?.count ?? farGeometry.getAttribute("position").count) / 3;
 
-  const cellsAcross = (MAX_SAMPLE_REACH * 2) / SPACING;
-  const capPerSpecies = Math.ceil(cellsAcross * cellsAcross * 0.5);
-  const meshes = geoms.map((geo, species) => {
-    const mesh = new THREE.InstancedMesh(geo, material, capPerSpecies);
-    mesh.name = `wildlands_flowers_sp${species}`;
-    mesh.castShadow = false;
-    mesh.receiveShadow = true;
-    mesh.frustumCulled = false; // always right around the player
-    mesh.layers.set(BEAUTY_ONLY_LAYER);
-    mesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
-    const bloom = new THREE.InstancedBufferAttribute(new Float32Array(capPerSpecies * 3), 3);
-    bloom.setUsage(THREE.StaticDrawUsage);
-    const anchor = new THREE.InstancedBufferAttribute(new Float32Array(capPerSpecies * 4), 4);
-    anchor.setUsage(THREE.StaticDrawUsage);
-    mesh.geometry.setAttribute("aBloom", bloom);
-    mesh.geometry.setAttribute("aFlowerAnchor", anchor);
-    mesh.count = 0;
-    group.add(mesh);
-    return mesh;
-  });
+  // Near stays at four whole-species draws. Mid/far are split into angular
+  // buckets with exact instance bounds, so sectors behind the camera finally
+  // frustum-cull instead of submitting one always-visible 220 m ring.
+  const heroBuckets = heroGeometries.map((geometry, species) =>
+    createFlowerBucket(
+      group,
+      `wildlands_flowers_hero_sp${species}`,
+      geometry,
+      heroState.material,
+      HERO_CAPACITY_PER_SPECIES
+    )
+  );
+  const midBuckets = Array.from({ length: MID_SECTORS }, (_, sector) =>
+    midGeometries.map((geometry, species) =>
+      createFlowerBucket(
+        group,
+        `wildlands_flowers_mid_s${sector}_sp${species}`,
+        geometry,
+        midState.material,
+        MID_CAPACITY_PER_SPECIES_SECTOR
+      )
+    )
+  );
+  const farBuckets = Array.from({ length: FAR_SECTORS }, (_, sector) =>
+    createFlowerBucket(
+      group,
+      `wildlands_flowers_far_s${sector}`,
+      farGeometry,
+      farState.material,
+      FAR_CAPACITY_PER_SECTOR
+    )
+  );
+  const allBuckets = [heroBuckets, ...midBuckets, farBuckets].flat();
+  const reservedInstances = allBuckets.reduce((sum, bucket) => sum + bucket.capacity, 0);
+  const capPerSpecies =
+    HERO_CAPACITY_PER_SPECIES +
+    MID_SECTORS * MID_CAPACITY_PER_SPECIES_SECTOR +
+    Math.ceil((FAR_SECTORS * FAR_CAPACITY_PER_SECTOR) / PALETTES.length);
 
   const col = new THREE.Color();
   const a = new THREE.Color();
   const b = new THREE.Color();
-  const rows: Row[][] = geoms.map(() => []);
   const last = { x: 1e9, z: 1e9 };
   let count = 0;
+  let heads = 0;
+  let droppedByCapacity = 0;
+
+  const sampleGround = (x: number, z: number) => map.groundHeight(x, z);
+
+  function clearRows() {
+    for (const bucket of allBuckets) bucket.rows.length = 0;
+  }
+
+  function uploadRows() {
+    for (const bucket of allBuckets) writeFlowerInstances(bucket.mesh, bucket.rows, true);
+  }
+
+  function pushRow(bucket: FlowerBucket, row: Row): boolean {
+    if (bucket.rows.length >= bucket.capacity) {
+      droppedByCapacity += 1;
+      return false;
+    }
+    bucket.rows.push(row);
+    return true;
+  }
 
   function resample(fx: number, fz: number) {
     const T = FLOWER_TUNING.values;
@@ -699,9 +963,12 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
     const density = Math.max(0, T.density as number);
     const clumpiness = Math.min(1, Math.max(0, T.clumpiness as number));
     const clumpSize = Math.max(2, T.clumpSize as number);
-    materialState.reach.value = reach;
+    for (const state of materialStates) state.reach.value = reach;
 
-    for (const list of rows) list.length = 0;
+    clearRows();
+    count = 0;
+    heads = 0;
+    droppedByCapacity = 0;
     const sampleReach = reach + SAMPLE_OVERSCAN;
     const r2 = sampleReach * sampleReach;
     const gx0 = Math.floor((fx - sampleReach) / SPACING);
@@ -741,18 +1008,25 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
         if (useDrift && drift.species >= 0) species = drift.species;
         else if (inClump) species = pal[Math.floor(wc.seed * pal.length) % pal.length]; // one dominant species per clump
         else species = pal[Math.floor(hash2(gx, gz, 29) * pal.length) % pal.length]; // singles are mixed
-        const list = rows[species];
-        if (list.length >= capPerSpecies) continue;
-
         const tint = hash2(gx, gz, 41);
         const pal2 = PALETTES[species];
         a.setHex(pal2.a);
         b.setHex(pal2.b);
         col.copy(a).lerp(b, tint).multiplyScalar(0.88 + wc.seed * 0.24); // per-clump brightness
         const sx = (inClump ? 0.9 : 0.72) + hash2(gx, gz, 37) * 0.5;
-        list.push({
+        const y = fitGroundY(
+          sampleGround,
+          px,
+          pz,
+          ROOT_FOOTPRINT_RADIUS[species] * sx,
+          ROOT_MAX_RISE,
+          -ROOT_SINK
+        );
+        if (y === null) continue;
+
+        const row: Row = {
           x: px,
-          y: map.groundHeight(px, pz) - 0.03,
+          y,
           z: pz,
           yaw: hash2(gx, gz, 31) * Math.PI * 2,
           sx,
@@ -760,15 +1034,34 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
           r: col.r,
           g: col.g,
           b: col.b
-        });
+        };
+
+        const distance = Math.hypot(dx, dz);
+        let submitted = false;
+        if (distance <= HERO_SAMPLE_END) submitted = pushRow(heroBuckets[species], row) || submitted;
+        if (distance >= MID_SAMPLE_START && distance <= MID_SAMPLE_END) {
+          const sector = sectorFor(dx, dz, MID_SECTORS);
+          submitted = pushRow(midBuckets[sector][species], row) || submitted;
+        }
+        if (distance >= FAR_SAMPLE_START) {
+          const sector = sectorFor(dx, dz, FAR_SECTORS);
+          const farScale = FAR_HEIGHT_SCALE[species];
+          submitted = pushRow(farBuckets[sector], {
+            ...row,
+            sy: row.sy * farScale,
+            sx: row.sx * (0.88 + farScale * 0.12)
+          }) || submitted;
+        }
+        if (!submitted) continue;
+        count += 1;
+        heads += distance < (HERO_FADE_START + HERO_FADE_END) * 0.5
+          ? HEADS_PER_CLUMP[species]
+          : distance < (MID_FADE_OUT_START + MID_FADE_OUT_END) * 0.5
+            ? MID_HEADS_PER_CLUMP[species]
+            : 1;
       }
     }
-
-    count = 0;
-    meshes.forEach((mesh, species) => {
-      writeFlowerInstances(mesh, rows[species]);
-      count += rows[species].length;
-    });
+    uploadRows();
   }
 
   return {
@@ -776,20 +1069,21 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
     update(focus) {
       // Keep fade centred on the live player every frame; only the deterministic
       // scatter itself is throttled by RESAMPLE_STEP.
-      materialState.focus.set(focus.x, focus.z);
+      for (const state of materialStates) state.focus.set(focus.x, focus.z);
       const dx = focus.x - last.x, dz = focus.z - last.z;
       if (dx * dx + dz * dz < RESAMPLE_STEP * RESAMPLE_STEP) return;
       last.x = focus.x;
       last.z = focus.z;
-      // Region AABB early-out: the ~8k-cell worley scan used to run every 9 m
+      // Region AABB early-out: the up-to-~18k-cell Worley scan used to run every 9 m
       // city-wide, even downtown where grassyGround rejects every cell. Outside
       // every wild region (+reach) skip the scan; one clearing write empties
       // the ring on the way out.
       if (!nearAnyWildRegion(focus.x, focus.z, MAX_SAMPLE_REACH + 2)) {
         if (count > 0) {
-          for (const list of rows) list.length = 0;
-          meshes.forEach((mesh, species) => writeFlowerInstances(mesh, rows[species]));
+          clearRows();
+          uploadRows();
           count = 0;
+          heads = 0;
         }
         return;
       }
@@ -798,14 +1092,42 @@ export function createFlowerRing(map: GardenTerrain, excluded?: (x: number, z: n
     refresh() {
       if (last.x < 1e8) resample(last.x, last.z);
     },
+    dispose() {
+      for (const bucket of allBuckets) bucket.mesh.geometry.dispose();
+      for (const geometry of heroGeometries) geometry.dispose();
+      for (const geometry of midGeometries) geometry.dispose();
+      farGeometry.dispose();
+      for (const state of materialStates) state.material.dispose();
+      group.removeFromParent();
+      group.clear();
+    },
     get stats() {
-      let heads = 0;
-      let submittedTriangles = 0;
-      for (let species = 0; species < rows.length; species++) {
-        heads += rows[species].length * HEADS_PER_CLUMP[species];
-        submittedTriangles += rows[species].length * trianglesPerClump[species];
-      }
-      return { count, heads, submittedTriangles, trianglesPerClump, instanceCapPerSpecies: capPerSpecies };
+      const heroInstances = heroBuckets.reduce((sum, bucket) => sum + bucket.rows.length, 0);
+      const midInstances = midBuckets.flat().reduce((sum, bucket) => sum + bucket.rows.length, 0);
+      const farInstances = farBuckets.reduce((sum, bucket) => sum + bucket.rows.length, 0);
+      const submittedTriangles =
+        heroBuckets.reduce((sum, bucket) => sum + bucket.rows.length * bucket.triangles, 0) +
+        midBuckets.flat().reduce((sum, bucket) => sum + bucket.rows.length * bucket.triangles, 0) +
+        farBuckets.reduce((sum, bucket) => sum + bucket.rows.length * bucket.triangles, 0);
+      const submittedInstances = heroInstances + midInstances + farInstances;
+      return {
+        count,
+        heads,
+        submittedTriangles,
+        trianglesPerClump,
+        trianglesPerClumpByLod: {
+          hero: trianglesPerClump,
+          mid: midTrianglesPerClump,
+          far: farTrianglesPerClump
+        },
+        submittedInstances,
+        lodInstances: { hero: heroInstances, mid: midInstances, far: farInstances },
+        draws: allBuckets.reduce((draws, bucket) => draws + (bucket.rows.length > 0 ? 1 : 0), 0),
+        reservedInstances,
+        reservedInstanceBytes: reservedInstances * FLOWER_INSTANCE_BYTES,
+        droppedByCapacity,
+        instanceCapPerSpecies: capPerSpecies
+      };
     }
   };
 }

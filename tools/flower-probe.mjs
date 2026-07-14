@@ -93,9 +93,12 @@ async function freeCam(c, x, z, facing, back, up) {
 }
 async function flowerStats(c) {
   return ev(c, `(()=>{const f=window.__sf.wildlands.flowers,s=f.stats;const per=f.group.children.map(m=>m.count||0);
-    const g=window.__sf.wildlands.grass.group;let grass=0;for(const m of g.children)if(m.isInstancedMesh)grass+=m.count;
+    const g=window.__sf.wildlands.grass.group;let grass=0;for(const m of g.children){if(m.isInstancedMesh)grass+=m.count;else if(m.geometry?.isInstancedBufferGeometry&&Number.isFinite(m.geometry.instanceCount))grass+=m.geometry.instanceCount;}
     return{flowers:s.count,heads:s.heads,submittedTriangles:s.submittedTriangles,
-      trianglesPerClump:s.trianglesPerClump,instanceCapPerSpecies:s.instanceCapPerSpecies,perSpecies:per,grass};})()`);
+      submittedInstances:s.submittedInstances,lodInstances:s.lodInstances,draws:s.draws,
+      trianglesPerClump:s.trianglesPerClump,trianglesPerClumpByLod:s.trianglesPerClumpByLod,
+      reservedInstanceBytes:s.reservedInstanceBytes,droppedByCapacity:s.droppedByCapacity,
+      instanceCapPerSpecies:s.instanceCapPerSpecies,perBucket:per,grass};})()`);
 }
 async function setTuning(c, obj) {
   const sets = Object.entries(obj).map(([k, v]) => `t.${k}=${v};`).join("");
@@ -148,12 +151,32 @@ async function main() {
   await c.send("Page.enable"); await c.send("Runtime.enable");
   await c.send("Emulation.setDeviceMetricsOverride", { width: W, height: H, deviceScaleFactor: 1, mobile: false });
 
-  console.log("[probe] waiting for __sf...");
+  console.log("[probe] waiting for base world...");
   const t0 = Date.now();
   let ready = false;
-  while (Date.now() - t0 < 150000) { try { if (await ev(c, `!!(window.__sf&&window.__sf.wildlands&&window.__sf.wildlands.flowers&&window.__sf.player)`)) { ready = true; break; } } catch {} await sleep(600); }
-  if (!ready) throw new Error("__sf never ready (see [page-exception]/[page-error] above)");
-  console.log(`[probe] __sf ready in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
+  while (Date.now() - t0 < 180000) { try { if (await ev(c, `!!(window.__sf&&window.__sf.map&&window.__sf.player&&window.__sf.tick)`)) { ready = true; break; } } catch {} await sleep(600); }
+  if (!ready) throw new Error("base world never ready (see [page-exception]/[page-error] above)");
+  console.log(`[probe] base world ready in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
+
+  // Wildlands is intentionally lazy at the Ocean Beach boot. Move into the
+  // first meadow before waiting on the optional owner, then tick its approach
+  // gate until the flowers/grass module activates.
+  const [, activationX, activationZ, activationFacing] = VIEWS[0];
+  await teleport(c, activationX, activationZ, activationFacing);
+  const activationStarted = Date.now();
+  ready = false;
+  while (Date.now() - activationStarted < 180000) {
+    try {
+      await tick(c, 1 / 60);
+      if (await ev(c, `!!(window.__sf.wildlands&&window.__sf.wildlands.flowers&&window.__sf.wildlands.grass)`)) {
+        ready = true;
+        break;
+      }
+    } catch {}
+    await sleep(300);
+  }
+  if (!ready) throw new Error("lazy Wildlands owner never activated");
+  console.log(`[probe] Wildlands activated in ${((Date.now() - activationStarted) / 1000).toFixed(0)}s`);
   await ev(c, `window.__sfManual&&window.__sfManual(true)`); // freeze wall clock
   await settle(c, 12);
 

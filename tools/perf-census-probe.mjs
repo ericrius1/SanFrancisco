@@ -137,7 +137,8 @@ async function main() {
         const g = m.geometry; if (!g) return 0;
         const idx = g.index ? g.index.count : (g.attributes.position ? g.attributes.position.count : 0);
         let t = idx / 3;
-        if (m.isInstancedMesh) t *= m.count;
+        const count = m.isInstancedMesh ? m.count : (g.isInstancedBufferGeometry && Number.isFinite(g.instanceCount) ? g.instanceCount : 1);
+        t *= count;
         return t;
       };
       sf.scene.traverse((o) => {
@@ -162,8 +163,11 @@ async function main() {
         const key = root.name || root.type || "?";
         const g = groups[key] ?? (groups[key] = { draws: 0, tris: 0, meshes: 0, instanced: 0 });
         const t = trisOf(o);
-        g.draws += 1; g.tris += t; g.meshes += 1; if (o.isInstancedMesh) g.instanced += 1;
-        heavy.push({ name: o.name || o.type, root: key, tris: Math.round(t), instanced: !!o.isInstancedMesh, count: o.isInstancedMesh ? o.count : 1 });
+        const compactInstanced = o.geometry?.isInstancedBufferGeometry && Number.isFinite(o.geometry.instanceCount);
+        const isInstanced = o.isInstancedMesh || compactInstanced;
+        const count = o.isInstancedMesh ? o.count : (compactInstanced ? o.geometry.instanceCount : 1);
+        g.draws += 1; g.tris += t; g.meshes += 1; if (isInstanced) g.instanced += 1;
+        heavy.push({ name: o.name || o.type, root: key, tris: Math.round(t), instanced: isInstanced, count });
       });
       heavy.sort((a,b)=>b.tris-a.tris);
       return { groups, heavy: heavy.slice(0, 25) };

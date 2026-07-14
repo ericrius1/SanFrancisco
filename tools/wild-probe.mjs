@@ -220,7 +220,7 @@ async function main() {
       for (let i = 0; i < 20; i++) { await tick(c, 1 / 60); await sleep(30); }
       const diag = name === "tea_garden" ? {} : await ev(c, `(()=>{const sf=window.__sf,w=sf.wildlands;const read=(s)=>s?({nearActive:s.nearActive(),instances:s.instances,chunks:s.chunks,designs:s.designs}):null;return{main:read(w?.trees?.stats),buenaVista:read(sf.buenaVistaTrees?.stats)};})()`);
       console.log(`[diag] ${name}`, JSON.stringify(diag));
-      const gdiag = name === "tea_garden" ? {} : await ev(c, `(()=>{const g=window.__sf.wildlands.grass.group;const m=g.children.find(o=>o.isInstancedMesh);if(!m)return{grass:'none'};const a=m.instanceMatrix.array;let n=m.count,lo=1e9,hi=-1e9;for(let i=0;i<n;i++){const y=a[i*16+13];if(y<lo)lo=y;if(y>hi)hi=y;}const cam=window.__sf.camera.position;const gh=window.__sf.map.groundHeight(cam.x,cam.z);return{count:n,yLo:+lo.toFixed(1),yHi:+hi.toFixed(1),camGround:+gh.toFixed(1),camY:+cam.y.toFixed(1)};})()`);
+      const gdiag = name === "tea_garden" ? {} : await ev(c, `(()=>{const g=window.__sf.wildlands.grass.group;const meshes=g.children.filter(o=>o.geometry?.getAttribute?.('aGrassTransform'));if(!meshes.length)return{grass:'none'};let n=0,lo=1e9,hi=-1e9;for(const m of meshes){const a=m.geometry.getAttribute('aGrassTransform'),count=m.geometry.instanceCount;n+=count;for(let i=0;i<count;i++){const y=a.getY(i);if(y<lo)lo=y;if(y>hi)hi=y;}}const cam=window.__sf.camera.position;const gh=window.__sf.map.groundHeight(cam.x,cam.z);return{tiles:meshes.length,count:n,yLo:+lo.toFixed(1),yHi:+hi.toFixed(1),camGround:+gh.toFixed(1),camY:+cam.y.toFixed(1)};})()`);
       console.log(`[grass] ${name}`, JSON.stringify(gdiag));
       if (name === "tea_garden") {
         const tea = await ev(c, `(()=>{
@@ -230,7 +230,7 @@ async function main() {
           const legacyExact=['japanese_tea_garden_specimen_trees','japanese_tea_garden_azaleas','japanese_tea_garden_mt_fuji_hedge','japanese_tea_garden_hiroshima_descendant_ginkgoes','mt_fuji_clipped_hedge_mound','survivor_ginkgo_trunk','survivor_ginkgo_fan_crown'];
           const legacy=[];scene.traverse(o=>{if(legacyExact.includes(o.name)||/^tea_garden_.+_(branches|foliage)$/.test(o.name)||/^tea_garden_azalea_palette_/.test(o.name))legacy.push(o.name);});
           const live=scene.getObjectByName('japanese_tea_garden_live_plants');let meshObjects=0,instancedDraws=0,instances=0,submittedTriangles=0;
-          live?.traverse(o=>{if(!o.isMesh)return;meshObjects++;const mult=o.isInstancedMesh?o.count:1;if(o.isInstancedMesh){instancedDraws++;instances+=o.count;}const g=o.geometry;submittedTriangles+=((g.index?.count??g.getAttribute('position')?.count??0)/3)*mult;});
+          live?.traverse(o=>{if(!o.isMesh)return;meshObjects++;const g=o.geometry;const compact=g?.isInstancedBufferGeometry&&Number.isFinite(g.instanceCount);const mult=o.isInstancedMesh?o.count:(compact?g.instanceCount:1);if(o.isInstancedMesh||compact){instancedDraws++;instances+=mult;}submittedTriangles+=((g.index?.count??g.getAttribute('position')?.count??0)/3)*mult;});
           return{found,legacy,meshObjects,instancedDraws,instances,submittedTriangles:Math.round(submittedTriangles),siteStats:window.__sf.japaneseTeaGarden.stats};
         })()`);
         console.log(`[tea-garden] ${JSON.stringify(tea)}`);

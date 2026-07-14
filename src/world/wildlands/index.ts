@@ -36,6 +36,8 @@ export type Wildlands = {
    * wants the camera so off-screen groves drop.
    */
   update(ringFocus: { x: number; z: number }, cullFocus?: { x: number; z: number }): void;
+  /** Release all GPU resources owned by this regional foliage bundle. */
+  dispose(): void;
   stats: { trees: number; flowers: number; treeChunks: number };
 };
 
@@ -83,6 +85,11 @@ export function createWildlands(map: GardenTerrain, exclusions: WildlandsExclusi
       trees.update(cullFocus); // distance-cull to what the camera sees
       flowers.update(ringFocus); // rings stay centred on the player, not the camera
       grass.update(ringFocus);
+    },
+    dispose() {
+      trees.dispose();
+      flowers.dispose();
+      grass.dispose();
     },
     get stats() {
       return {

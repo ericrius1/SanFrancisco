@@ -67,24 +67,23 @@ const LODS: readonly TreeLodRecipe[] = [
   },
   {
     name: "landscape",
-    branchRetention: 0.24,
-    // One far card reads as a foliage cluster rather than one literal leaf.
-    // Keep enough independently ranked anchors to close the crown silhouette
-    // without restoring the omitted twig hierarchy.
-    foliageRetention: 0.28,
+    branchRetention: 0.28,
+    // More, smaller shapes read as a natural crown instead of oversized cards.
+    // The compiler also retains every selected anchor's support hierarchy.
+    foliageRetention: 0.36,
     maxBranchLevel: 2,
     radialSegments: 4,
     axialStride: 3,
-    foliageScale: 1.72
+    foliageScale: 1.5
   },
   {
     name: "horizon",
-    branchRetention: 0.12,
-    foliageRetention: 0.12,
+    branchRetention: 0.14,
+    foliageRetention: 0.18,
     maxBranchLevel: 1,
     radialSegments: 3,
     axialStride: 4,
-    foliageScale: 2.35
+    foliageScale: 1.9
   }
 ];
 

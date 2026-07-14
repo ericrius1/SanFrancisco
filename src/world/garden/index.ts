@@ -67,6 +67,8 @@ export type BotanicalGarden = {
    * Tree LOD self-drives off the render loop — nothing else to tick.
    */
   update(focus: { x: number; z: number }): void;
+  /** Release every tree, shrub, flower, grass, and proxy GPU resource. */
+  dispose(): void;
 };
 
 /** Build the whole garden over a host terrain. Synchronous; trees populate as
@@ -114,7 +116,8 @@ export function createBotanicalGarden(map: GardenTerrain): BotanicalGarden {
 
       veg.grass.updateFocus(focus);
       veg.update(focus);
-    }
+    },
+    dispose: veg.dispose
   };
 }
 
