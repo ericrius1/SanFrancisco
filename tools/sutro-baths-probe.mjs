@@ -1,0 +1,611 @@
+// Headless WebGPU + lazy-loading verification for the restored Sutro Baths.
+//
+// The probe uses isolated browser contexts so its three loading phases are
+// unambiguous:
+//   1. clean boot at the normal saved/default spawn: the cheap layout contract
+//      may be in main, but no optional Sutro module/chunk may be requested;
+//   2. a cold `spawn=sutroBaths` visit: the hall, close WebGPU water, and steam
+//      boundaries must all cross, then produce a nonblank rendered scene;
+//   3. movement into the great plunge: the existing GPU field must continue to
+//      tick/dispatch without another Sutro request.
+//
+// Run against an existing dev or production server:
+//   SF_PROBE_URL=http://127.0.0.1:5240 node tools/sutro-baths-probe.mjs
+
+// Evidence is written under .data/sutro-baths-probe by default.
+
+// This project intentionally requires WebGPU. The probe enables Chrome's native
+// WebGPU path and fails clearly instead of attempting any WebGL fallback.
+
+import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { chromium } from "playwright-core";
+import sharp from "sharp";
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const BASE_URL = (process.env.SF_PROBE_URL ?? "http://127.0.0.1:5240").replace(/\/$/, "");
+const OUT = path.resolve(ROOT, process.env.SF_PROBE_OUT ?? ".data/sutro-baths-probe");
+const VIEWPORT = { width: 1600, height: 1000 };
+const SITE = { x: -6125, z: 1117, yaw: -0.077, waterY: 5.18 };
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function exists(file) {
+  try {
+    await access(file);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function findChrome() {
+  const candidates = [
+    process.env.CHROME_BIN,
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    "/usr/bin/google-chrome",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser"
+  ].filter(Boolean);
+  for (const candidate of candidates) if (await exists(candidate)) return candidate;
+  throw new Error("Chrome/Chromium not found; set CHROME_BIN");
+}
+
+async function waitHttp(url, timeoutMs = 20_000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    try {
+      if ((await fetch(url, { cache: "no-store" })).ok) return;
+    } catch {}
+    await sleep(250);
+  }
+  throw new Error(`Timed out waiting for ${url}`);
+}
+
+function localPoint(x, y, z) {
+  const c = Math.cos(SITE.yaw);
+  const s = Math.sin(SITE.yaw);
+  return [SITE.x + c * x + s * z, y, SITE.z - s * x + c * z];
+}
+
+/**
+ * Production's site-level dynamic import is named index-[hash].js. Discover
+ * its identity from the local build instead of guessing from a generic name.
+ * The source-path classifier below remains the authority for Vite dev.
+ */
+async function discoverBuiltChunks() {
+  const directory = path.join(ROOT, "dist", "assets");
+  const result = { site: new Set(), water: new Set(), steam: new Set() };
+  if (!(await exists(directory))) return result;
+  for (const name of await readdir(directory)) {
+    if (!name.endsWith(".js")) continue;
+    const source = await readFile(path.join(directory, name), "utf8");
+    if (source.includes("sutro_baths_restored_1896")) result.site.add(name);
+    if (source.includes("sutro_baths_seven_pool_webgpu_water")) result.water.add(name);
+    if (source.includes("sutro_baths_instanced_steam_puffs")) result.steam.add(name);
+  }
+  return result;
+}
+
+function createClassifier(built) {
+  return (url) => {
+    let pathname = url;
+    try {
+      pathname = new URL(url).pathname;
+    } catch {}
+    const base = pathname.split("/").at(-1) ?? "";
+    const sourceRoot = pathname.includes("/src/world/sutroBaths/");
+    const eagerLayout = sourceRoot && /\/layout\.ts$/.test(pathname);
+    const sourceWater = sourceRoot && /\/waterSimulation\.ts$/.test(pathname);
+    const sourceSteam = sourceRoot && /\/steam\.ts$/.test(pathname);
+    const sourceSite = sourceRoot && !eagerLayout && !sourceWater && !sourceSteam;
+    const kinds = [];
+    if (eagerLayout) kinds.push("eager-layout");
+    if (sourceSite || built.site.has(base)) kinds.push("site-runtime");
+    if (sourceWater || built.water.has(base)) kinds.push("water-runtime");
+    if (sourceSteam || built.steam.has(base)) kinds.push("steam-runtime");
+    if (kinds.some((kind) => kind !== "eager-layout")) kinds.push("optional-sutro");
+    return { pathname, kinds: [...new Set(kinds)] };
+  };
+}
+
+function publicRecord(record) {
+  return {
+    phase: record.phase,
+    atMs: record.atMs,
+    method: record.method,
+    resourceType: record.resourceType,
+    pathname: record.pathname,
+    kinds: record.kinds,
+    status: record.status ?? null,
+    encodedBodySize: record.encodedBodySize ?? null,
+    failure: record.failure ?? null
+  };
+}
+
+function summarize(records, phase) {
+  const rows = records.filter((record) => record.phase === phase);
+  const byKind = {};
+  let encodedBodySize = 0;
+  for (const row of rows) {
+    encodedBodySize += row.encodedBodySize ?? 0;
+    for (const kind of row.kinds) byKind[kind] = (byKind[kind] ?? 0) + 1;
+  }
+  return { requests: rows.length, encodedBodySize, byKind };
+}
+
+async function imageAudit(file) {
+  const metadata = await sharp(file).metadata();
+  const stats = await sharp(file).stats();
+  return {
+    width: metadata.width ?? 0,
+    height: metadata.height ?? 0,
+    entropy: stats.entropy,
+    channelStdDev: stats.channels.slice(0, 3).map((channel) => channel.stdev)
+  };
+}
+
+async function temporalDelta(beforeFile, afterFile) {
+  const [before, after] = await Promise.all([
+    sharp(beforeFile).removeAlpha().raw().toBuffer({ resolveWithObject: true }),
+    sharp(afterFile).removeAlpha().raw().toBuffer({ resolveWithObject: true })
+  ]);
+  if (
+    before.info.width !== after.info.width ||
+    before.info.height !== after.info.height ||
+    before.info.channels !== after.info.channels
+  ) {
+    throw new Error("Temporal Sutro screenshots changed dimensions");
+  }
+  let absolute = 0;
+  let changed = 0;
+  const channels = before.info.channels;
+  const pixels = before.info.width * before.info.height;
+  for (let offset = 0; offset < before.data.length; offset += channels) {
+    let pixelDelta = 0;
+    for (let channel = 0; channel < channels; channel++) {
+      const delta = Math.abs(before.data[offset + channel] - after.data[offset + channel]);
+      absolute += delta;
+      pixelDelta = Math.max(pixelDelta, delta);
+    }
+    if (pixelDelta >= 3) changed++;
+  }
+  return {
+    meanChannelDelta: absolute / (before.data.length * 255),
+    changedPixelRatio: changed / pixels
+  };
+}
+
+async function main() {
+  await mkdir(OUT, { recursive: true });
+  await waitHttp(BASE_URL);
+  const builtChunks = await discoverBuiltChunks();
+  const classify = createClassifier(builtChunks);
+  const executablePath = await findChrome();
+  const browser = await chromium.launch({
+    executablePath,
+    headless: true,
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=WebGPUDeveloperFeatures,SharedArrayBuffer",
+      `--use-angle=${process.env.SF_ANGLE ?? (process.platform === "darwin" ? "metal" : "swiftshader")}`,
+      "--disable-background-timer-throttling",
+      "--disable-renderer-backgrounding",
+      "--hide-scrollbars",
+      "--mute-audio"
+    ]
+  });
+
+  const startedAt = performance.now();
+  const records = [];
+  const allRequests = { boot: 0, activation: 0, subsequent: 0 };
+  const checks = [];
+  const pageErrors = [];
+  const consoleMessages = [];
+  let phase = "boot";
+  let mode = "unknown";
+
+  const nowMs = () => Math.round(performance.now() - startedAt);
+  const expect = (id, pass, detail) => checks.push({ id, pass: Boolean(pass), detail });
+  const hasKind = (record, kind) => record.kinds.includes(kind);
+  const phaseRows = (name) => records.filter((record) => record.phase === name);
+
+  const createContext = () => browser.newContext({
+    viewport: VIEWPORT,
+    deviceScaleFactor: 1,
+    serviceWorkers: "block"
+  });
+
+  const instrument = (page) => {
+    const requestRows = new Map();
+    page.on("pageerror", (error) => pageErrors.push({ phase, atMs: nowMs(), message: String(error) }));
+    page.on("console", (message) => {
+      if (!["warning", "error"].includes(message.type()) || consoleMessages.length >= 250) return;
+      consoleMessages.push({
+        phase,
+        atMs: nowMs(),
+        type: message.type(),
+        text: message.text(),
+        location: message.location()
+      });
+    });
+    page.on("request", (request) => {
+      allRequests[phase]++;
+      if (request.url().includes("/@vite/client")) mode = "vite-dev";
+      const { pathname, kinds } = classify(request.url());
+      if (kinds.length === 0) return;
+      const row = {
+        phase,
+        atMs: nowMs(),
+        method: request.method(),
+        resourceType: request.resourceType(),
+        pathname,
+        kinds
+      };
+      records.push(row);
+      requestRows.set(request, row);
+    });
+    page.on("response", (response) => {
+      const row = requestRows.get(response.request());
+      if (!row) return;
+      row.status = response.status();
+      const bytes = Number(response.headers()["content-length"] ?? 0);
+      if (Number.isFinite(bytes)) row.encodedBodySize = bytes;
+    });
+    page.on("requestfailed", (request) => {
+      const row = requestRows.get(request);
+      if (!row) return;
+      row.failure = request.failure()?.errorText ?? "request failed";
+    });
+  };
+
+  try {
+    // Phase one: exact requested clean boot, in a context that cannot inherit a
+    // cache or service worker from any previous QA pass.
+    phase = "boot";
+    const bootContext = await createContext();
+    const bootPage = await bootContext.newPage();
+    instrument(bootPage);
+    const bootUrl = `${BASE_URL}/?autostart=1&fullfps=1&profile=1`;
+    await bootPage.goto(bootUrl, { waitUntil: "domcontentloaded", timeout: 120_000 });
+    await bootPage.waitForFunction(
+      () => Boolean(
+        window.__sf?.renderer?.backend?.device &&
+        window.__sf?.player &&
+        document.body.classList.contains("started")
+      ),
+      null,
+      { timeout: 180_000 }
+    );
+    await bootPage.waitForFunction(() => window.__sf.renderIdle?.() === true, null, { timeout: 180_000 });
+    await bootPage.waitForTimeout(1800);
+    const bootState = await bootPage.evaluate(() => ({
+      backend: window.__sf.renderer.backend?.constructor?.name ?? null,
+      webgpu: window.__sf.renderer.backend?.isWebGPUBackend === true,
+      player: {
+        x: Number(window.__sf.player.position.x.toFixed(1)),
+        z: Number(window.__sf.player.position.z.toFixed(1))
+      },
+      site: Boolean(window.__sf.sutroBaths),
+      siteRoot: Boolean(window.__sf.scene.getObjectByName("sutro_baths_restored_1896")),
+      renderIdle: window.__sf.renderIdle?.() === true
+    }));
+    const bootOptional = phaseRows("boot").filter((record) => hasKind(record, "optional-sutro"));
+    expect("boot-direct-webgpu", bootState.webgpu, bootState);
+    expect("boot-zero-sutro-optional-requests", bootOptional.length === 0, bootOptional.map(publicRecord));
+    expect("boot-site-remains-unconstructed", !bootState.site && !bootState.siteRoot, bootState);
+    await bootContext.close();
+
+    // Phase two: a new context is a real cold visitor. The authored spawn should
+    // cross both the hall boundary and its second, close-range effects boundary.
+    phase = "activation";
+    const context = await createContext();
+    const page = await context.newPage();
+    instrument(page);
+    const activationUrl = `${BASE_URL}/?autostart=1&fullfps=1&profile=1&spawn=sutroBaths`;
+    await page.goto(activationUrl, { waitUntil: "domcontentloaded", timeout: 120_000 });
+    await page.waitForFunction(
+      () => Boolean(
+        window.__sf?.renderer?.backend?.device &&
+        window.__sf?.sutroBaths?.debugState?.().nearEffectsLoaded &&
+        window.__sf.sutroBaths.debugState().water?.stats?.totalDispatches > 0 &&
+        document.body.classList.contains("started")
+      ),
+      null,
+      { timeout: 240_000 }
+    );
+    await page.waitForFunction(() => window.__sf.renderIdle?.() === true, null, { timeout: 180_000 });
+    await page.waitForTimeout(1500);
+    await page.evaluate(() => Promise.race([
+      window.__sf.renderer.backend.device.queue.onSubmittedWorkDone(),
+      new Promise((resolve) => setTimeout(resolve, 5000))
+    ]));
+
+    const activationState = await page.evaluate(() => {
+      const sf = window.__sf;
+      const site = sf.sutroBaths;
+      const debug = site.debugState();
+      const canvas = sf.renderer.domElement.getBoundingClientRect();
+      const buffer = sf.renderer.getDrawingBufferSize(new sf.THREE.Vector2());
+      const names = [
+        "sutro_baths_restored_1896",
+        "sutro_baths_restored_architecture",
+        "sutro_baths_glass_barrel_roof",
+        "sutro_baths_ocean_window_seating_gallery",
+        "sutro_baths_unified_foliage",
+        "sutro_baths_seven_pool_webgpu_water",
+        "sutro_baths_instanced_steam_puffs"
+      ];
+      return {
+        backend: sf.renderer.backend?.constructor?.name ?? null,
+        webgpu: sf.renderer.backend?.isWebGPUBackend === true,
+        player: {
+          x: Number(sf.player.position.x.toFixed(2)),
+          y: Number(sf.player.position.y.toFixed(2)),
+          z: Number(sf.player.position.z.toFixed(2))
+        },
+        debug,
+        stats: site.stats,
+        namedObjects: Object.fromEntries(names.map((name) => [name, Boolean(sf.scene.getObjectByName(name))])),
+        renderer: {
+          calls: sf.renderer.info.render.drawCalls ?? sf.renderer.info.render.calls ?? 0,
+          triangles: sf.renderer.info.render.triangles ?? 0,
+          geometries: sf.renderer.info.memory?.geometries ?? null,
+          textures: sf.renderer.info.memory?.textures ?? null
+        },
+        canvas: {
+          cssWidth: Math.round(canvas.width),
+          cssHeight: Math.round(canvas.height),
+          bufferWidth: buffer.x,
+          bufferHeight: buffer.y,
+          dpr: devicePixelRatio
+        }
+      };
+    });
+
+    const activationRows = phaseRows("activation");
+    const activationFailures = activationRows.filter((row) => row.failure || (row.status != null && row.status >= 400));
+    expect("activation-site-runtime-requested", activationRows.some((row) => hasKind(row, "site-runtime")), activationRows.map(publicRecord));
+    expect("activation-water-runtime-requested", activationRows.some((row) => hasKind(row, "water-runtime")), activationRows.map(publicRecord));
+    expect("activation-steam-runtime-requested", activationRows.some((row) => hasKind(row, "steam-runtime")), activationRows.map(publicRecord));
+    expect("activation-sutro-requests-succeeded", activationFailures.length === 0, activationFailures.map(publicRecord));
+    expect("activation-direct-webgpu", activationState.webgpu, activationState.backend);
+    expect("activation-site-awake", activationState.debug.awake && !activationState.debug.disposed, activationState.debug);
+    expect(
+      "activation-all-signature-groups-present",
+      Object.values(activationState.namedObjects).every(Boolean),
+      activationState.namedObjects
+    );
+    expect(
+      "activation-restoration-detail-present",
+      activationState.stats.roofRibs >= 16 &&
+        activationState.stats.glassPanels >= 100 &&
+        activationState.stats.lamps >= 8 &&
+        activationState.stats.planters >= 1,
+      activationState.stats
+    );
+    expect(
+      "activation-water-field-running",
+      activationState.debug.water?.webgpu === true &&
+        activationState.debug.water?.proximityActive === true &&
+        activationState.debug.water?.stats?.backend === "WebGPU storage buffers" &&
+        activationState.debug.water?.stats?.gridWidth === 88 &&
+        activationState.debug.water?.stats?.gridHeight === 184 &&
+        activationState.debug.water?.stats?.activeCells > 1000 &&
+        activationState.debug.water?.stats?.triangles > 1000 &&
+        activationState.debug.water?.stats?.totalDispatches > 0,
+      activationState.debug.water
+    );
+    expect(
+      "activation-steam-awake",
+      activationState.debug.steam?.puffs === 72 &&
+        activationState.debug.steam?.awake === true &&
+        activationState.debug.steam?.visible > 0,
+      activationState.debug.steam
+    );
+    expect(
+      "activation-canvas-has-display-and-buffer",
+      activationState.canvas.cssWidth > 0 &&
+        activationState.canvas.cssHeight > 0 &&
+        activationState.canvas.bufferWidth > 0 &&
+        activationState.canvas.bufferHeight > 0,
+      activationState.canvas
+    );
+
+    // Canvas-only captures deliberately exclude DOM HUD/debug overlays.
+    const canvas = page.locator("#app > canvas").first();
+    await page.evaluate(() => window.__sf.hud?.setHidden?.(true));
+    const shots = [
+      {
+        name: "hall-from-south.png",
+        eye: localPoint(27, 17.5, 56),
+        target: localPoint(-7, 8, -17)
+      },
+      {
+        name: "ocean-window-gallery.png",
+        eye: localPoint(16, 13.5, -4),
+        target: localPoint(-39, 10.8, -4)
+      },
+      {
+        name: "thermal-pools-close.png",
+        eye: localPoint(4, 10.5, 12),
+        target: localPoint(-17, SITE.waterY + 0.15, 2)
+      }
+    ];
+    const screenshotEvidence = {};
+    for (const shot of shots) {
+      await page.evaluate(({ eye, target }) => window.__sfFreeCam(eye, target), shot);
+      await page.waitForTimeout(900);
+      const file = path.join(OUT, shot.name);
+      await canvas.screenshot({ path: file });
+      screenshotEvidence[shot.name] = { file, ...(await imageAudit(file)) };
+      expect(
+        `visual-${shot.name}-nonblank`,
+        screenshotEvidence[shot.name].entropy > 2 &&
+          screenshotEvidence[shot.name].channelStdDev.some((value) => value > 8),
+        screenshotEvidence[shot.name]
+      );
+    }
+
+    // Phase three: move into the great plunge. This is close enough to supply a
+    // localized wake, but must reuse both already-allocated storage buffers and
+    // the existing procedural steam graph.
+    const beforeAction = await page.evaluate(() => {
+      const debug = window.__sf.sutroBaths.debugState();
+      return {
+        ticks: debug.water.stats.totalTicks,
+        dispatches: debug.water.stats.totalDispatches,
+        revision: debug.water.stats.revision,
+        steamVisible: debug.steam.visible
+      };
+    });
+    phase = "subsequent";
+    const plunge = localPoint(-20, SITE.waterY + 1.25, 8);
+    await page.evaluate(([x, y, z]) => {
+      const sf = window.__sf;
+      sf.player.teleportTo({ x, y, z, facing: -0.15, mode: "walk" });
+    }, plunge);
+    await page.waitForTimeout(1500);
+    await page.evaluate(() => Promise.race([
+      window.__sf.renderer.backend.device.queue.onSubmittedWorkDone(),
+      new Promise((resolve) => setTimeout(resolve, 5000))
+    ]));
+    const afterAction = await page.evaluate(() => {
+      const debug = window.__sf.sutroBaths.debugState();
+      return {
+        distanceToBaths: debug.distanceToBaths,
+        proximityActive: debug.water.proximityActive,
+        playerDistance: debug.water.stats.playerDistance,
+        running: debug.water.stats.running,
+        ticks: debug.water.stats.totalTicks,
+        dispatches: debug.water.stats.totalDispatches,
+        revision: debug.water.stats.revision,
+        steamVisible: debug.steam.visible
+      };
+    });
+    const subsequentRows = phaseRows("subsequent").filter((row) => hasKind(row, "optional-sutro"));
+    expect("subsequent-zero-sutro-refetch", subsequentRows.length === 0, subsequentRows.map(publicRecord));
+    expect(
+      "subsequent-water-continues-compute",
+      afterAction.proximityActive &&
+        afterAction.running &&
+        afterAction.playerDistance < 1 &&
+        afterAction.ticks > beforeAction.ticks &&
+        afterAction.dispatches > beforeAction.dispatches &&
+        afterAction.revision > beforeAction.revision,
+      { before: beforeAction, after: afterAction }
+    );
+
+    // Capture a second close frame after the movement action. Compute counters
+    // are the authoritative fluid assertion; this bounded pixel delta is useful
+    // visual evidence that the close surface/steam is not a frozen card.
+    const closeFirst = path.join(OUT, "thermal-pools-close.png");
+    const closeLater = path.join(OUT, "thermal-pools-close-later.png");
+    await page.evaluate(({ eye, target }) => window.__sfFreeCam(eye, target), shots[2]);
+    await page.waitForTimeout(550);
+    await canvas.screenshot({ path: closeLater });
+    screenshotEvidence["thermal-pools-close-later.png"] = {
+      file: closeLater,
+      ...(await imageAudit(closeLater))
+    };
+    const animation = await temporalDelta(closeFirst, closeLater);
+    expect(
+      "visual-close-effects-animate",
+      animation.meanChannelDelta > 0.00005 &&
+        animation.changedPixelRatio > 0.001 &&
+        animation.meanChannelDelta < 0.2,
+      animation
+    );
+
+    const gpuPattern = /WebGPU|GPUValidation|WGSL|storage buffer|compute pipeline|bind group/i;
+    const gpuErrors = [
+      ...pageErrors.filter((error) => gpuPattern.test(error.message)),
+      ...consoleMessages.filter((message) => message.type === "error" && gpuPattern.test(message.text))
+    ];
+    expect("runtime-no-page-errors", pageErrors.length === 0, pageErrors);
+    expect(
+      "runtime-no-console-errors",
+      consoleMessages.filter((message) => message.type === "error").length === 0,
+      consoleMessages.filter((message) => message.type === "error")
+    );
+    expect("runtime-no-webgpu-errors", gpuErrors.length === 0, gpuErrors);
+
+    if (mode === "unknown") mode = "preview-or-production";
+    const result = {
+      generatedAt: new Date().toISOString(),
+      pass: checks.every((check) => check.pass),
+      target: {
+        baseUrl: BASE_URL,
+        bootUrl,
+        activationUrl,
+        browser: await browser.version(),
+        executablePath,
+        mode,
+        viewport: VIEWPORT,
+        dpr: 1,
+        serviceWorkers: "blocked",
+        requiredBackend: "WebGPU"
+      },
+      builtChunkDiscovery: Object.fromEntries(
+        Object.entries(builtChunks).map(([key, value]) => [key, [...value].sort()])
+      ),
+      checks,
+      phases: {
+        boot: {
+          state: bootState,
+          allRequests: allRequests.boot,
+          summary: summarize(records, "boot"),
+          sutroRequests: phaseRows("boot").map(publicRecord)
+        },
+        activation: {
+          state: activationState,
+          allRequests: allRequests.activation,
+          summary: summarize(records, "activation"),
+          sutroRequests: activationRows.map(publicRecord)
+        },
+        subsequent: {
+          state: { before: beforeAction, after: afterAction },
+          allRequests: allRequests.subsequent,
+          summary: summarize(records, "subsequent"),
+          sutroRequests: phaseRows("subsequent").map(publicRecord)
+        }
+      },
+      animation,
+      renderer: activationState.renderer,
+      screenshots: screenshotEvidence,
+      pageErrors,
+      consoleMessages
+    };
+    const resultFile = path.join(OUT, "result.json");
+    await writeFile(resultFile, `${JSON.stringify(result, null, 2)}\n`);
+
+    for (const check of checks) console.log(`[${check.pass ? "PASS" : "FAIL"}] ${check.id}`);
+    console.log(`[sutro-baths] boot: ${summarize(records, "boot").requests} tracked Sutro request(s)`);
+    console.log(`[sutro-baths] activation: ${summarize(records, "activation").requests} tracked Sutro request(s)`);
+    console.log(`[sutro-baths] subsequent: ${summarize(records, "subsequent").requests} tracked Sutro request(s)`);
+    console.log(`[sutro-baths] report: ${resultFile}`);
+    console.log(`[sutro-baths] screenshots: ${OUT}`);
+    if (!result.pass) process.exitCode = 1;
+    await context.close();
+  } catch (error) {
+    const failure = {
+      generatedAt: new Date().toISOString(),
+      pass: false,
+      error: error instanceof Error ? error.stack ?? error.message : String(error),
+      checks,
+      records: records.map(publicRecord),
+      pageErrors,
+      consoleMessages
+    };
+    await writeFile(path.join(OUT, "failure.json"), `${JSON.stringify(failure, null, 2)}\n`);
+    throw error;
+  } finally {
+    await browser.close();
+  }
+}
+
+main().catch((error) => {
+  console.error(`[sutro-baths] ${error instanceof Error ? error.stack : error}`);
+  process.exitCode = 1;
+});

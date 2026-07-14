@@ -49,7 +49,14 @@ import { CORONA_HEIGHTS_SUMMIT } from "./world/coronaHeights/meta";
 import type { MissionDoloresMuseum } from "./world/missionDolores";
 import { MD_CENTER as MISSION_DOLORES_CENTER } from "./world/missionDolores/layout";
 import { findOpenSpawn } from "./world/spawn";
-import { pickLandmarkSpawn, resolveSpawnPoint, SAFE_SPAWN_FALLBACK, SPAWN_POINTS } from "./world/spawnPoints";
+import {
+  distanceToSutroBaths,
+  pickLandmarkSpawn,
+  resolveSpawnPoint,
+  SAFE_SPAWN_FALLBACK,
+  SPAWN_POINTS,
+  SUTRO_BATHS_ARRIVAL,
+} from "./world/spawnPoints";
 import { WILD_REGIONS } from "./world/wildlands/regions";
 import { BUENA_VISTA_REGION } from "./world/buenaVista";
 import { Player } from "./player/player";
@@ -815,6 +822,7 @@ async function boot() {
   let coronaHeights: CoronaHeightsPark | null = null;
   let missionDolores: MissionDoloresMuseum | null = null;
   let missionDoloresLoading: Promise<void> | null = null;
+  let sutroBaths: import("./world/sutroBaths").SutroBaths | null = null;
   let activeMissionDoloresRadialSource: RadialLightSource | null = null;
   let museumBookOpen = false;
   const ensureMissionDolores = (playerPos: THREE.Vector3): void => {
@@ -873,6 +881,7 @@ async function boot() {
     if (buenaVistaTrees) buenaVistaTrees.group.visible = visible;
     goldenGateTennis?.setFoliageVisible(visible);
     japaneseTeaGarden?.setFoliageVisible(visible);
+    sutroBaths?.setFoliageVisible(visible);
     coronaHeights?.setFoliageVisible(visible);
     landsEnd?.setFoliageVisible(visible);
     islands.setFoliageVisible(visible);
@@ -2186,13 +2195,21 @@ async function boot() {
   minimap.addLandmark(AFTERLIGHT_ARRIVAL.x, AFTERLIGHT_ARRIVAL.z, "Afterlight");
   const missionDoloresSpawn = SPAWN_POINTS.missionDolores;
   minimap.addLandmark(missionDoloresSpawn.x, missionDoloresSpawn.z, missionDoloresSpawn.label);
+  minimap.addLandmark(SUTRO_BATHS_ARRIVAL.x, SUTRO_BATHS_ARRIVAL.z, "Sutro Baths · 1896");
 
   // Authored sites share one first-approach policy: keep only lightweight
   // coordinates at boot, request one site at a time after reveal, and re-check
   // the destination after the arrival-quiet window before evaluating its chunk.
   // The radius is deliberately generic; visual quality and each site's own LOD
   // remain untouched once the exact same authored root is attached.
-  type OptionalSiteId = "goldman" | "archery" | "palace" | "afterlight" | "corona" | "lands-end";
+  type OptionalSiteId =
+    | "goldman"
+    | "archery"
+    | "palace"
+    | "afterlight"
+    | "corona"
+    | "lands-end"
+    | "sutro-baths";
   type OptionalSiteState = "dormant" | "queued" | "loading" | "ready" | "failed";
   type OptionalWorldSite = {
     id: OptionalSiteId;
@@ -2222,7 +2239,8 @@ async function boot() {
       palaceReverie,
       afterlight,
       coronaHeights,
-      landsEnd
+      landsEnd,
+      sutroBaths
     });
   };
 
@@ -2400,6 +2418,51 @@ async function boot() {
     refreshOptionalSiteDebug();
   };
 
+  const loadSutroBaths = async (): Promise<void> => {
+    const { createSutroBaths } = await import("./world/sutroBaths");
+    await waitForOptionalSiteStage();
+    let candidate: import("./world/sutroBaths").SutroBaths | null = null;
+    let suppressed = false;
+    try {
+      candidate = createSutroBaths({ renderer, scene, physics, tiles });
+      // Compile the complete period hall, including its foliage, while detached.
+      // The user's foliage preference is restored before the root is published.
+      candidate.setFoliageVisible(true);
+      await candidate.ready;
+      await prepareOptionalRoot("sutro-baths", candidate.group);
+
+      // Keep the baked fallback present until the authored replacement is ready.
+      // CityGen excludes this footprint when its fixed roster is constructed.
+      tiles.suppressBuilding("1_12", 0);
+      suppressed = true;
+      candidate.setFoliageVisible(foliageOn);
+      scene.add(candidate.group);
+      sutroBaths = candidate;
+      refreshOptionalSiteDebug();
+
+      // Let the feature cross its nested close-water gate only after the hall is
+      // warm. The scheduler and render-idle checks below observe that private
+      // warmup flag before admitting nearby Lands End or a probe capture.
+      candidate.update(
+        0,
+        performance.now() * 0.001,
+        player.renderPosition,
+        camera,
+        windGustValue()
+      );
+
+      debugPanel.registerFeatureTuning(candidate.tuningDescriptor());
+      sky.invalidateStaticShadows();
+      refreshOptionalSiteDebug();
+    } catch (error) {
+      if (sutroBaths === candidate) sutroBaths = null;
+      candidate?.dispose();
+      if (suppressed) tiles.unsuppressBuilding("1_12", 0);
+      refreshOptionalSiteDebug();
+      throw error;
+    }
+  };
+
   const optionalWorldSites: OptionalWorldSite[] = [
     {
       id: "goldman",
@@ -2415,7 +2478,17 @@ async function boot() {
     { id: "palace", label: "Palace Reverie", ...REVERIE_CENTER, state: "dormant", forced: false, promise: null, load: loadPalace },
     { id: "afterlight", label: "Afterlight", ...AFTERLIGHT_ARRIVAL, state: "dormant", forced: false, promise: null, load: loadAfterlight },
     { id: "corona", label: "Corona Heights", ...CORONA_HEIGHTS_SUMMIT, state: "dormant", forced: false, promise: null, load: loadCorona },
-    { id: "lands-end", label: "Lands End", ...LANDS_END_CENTER, state: "dormant", forced: false, promise: null, load: loadLandsEnd }
+    { id: "lands-end", label: "Lands End", ...LANDS_END_CENTER, state: "dormant", forced: false, promise: null, load: loadLandsEnd },
+    {
+      id: "sutro-baths",
+      label: "Sutro Baths · 1896",
+      x: SUTRO_BATHS_ARRIVAL.x,
+      z: SUTRO_BATHS_ARRIVAL.z,
+      state: "dormant",
+      forced: false,
+      promise: null,
+      load: loadSutroBaths
+    }
   ];
   let optionalSiteQueue: Promise<void> = Promise.resolve();
 
@@ -2455,6 +2528,10 @@ async function boot() {
 
   const updateOptionalWorldSites = (): void => {
     if (!revealed || worldArrival.active) return;
+    // Sutro owns an internal, closer GPU gate whose promise is intentionally
+    // private. Treat its observable warmup as render-busy before admitting the
+    // neighboring Lands End site to this serialized scheduler.
+    if (sutroBaths?.debugState().nearEffectsLoading) return;
     if (optionalWorldSites.some((site) => site.state === "queued" || site.state === "loading")) return;
     let nearest: OptionalWorldSite | null = null;
     let nearestDistanceSq = OPTIONAL_SITE_APPROACH_RADIUS * OPTIONAL_SITE_APPROACH_RADIUS;
@@ -2512,7 +2589,12 @@ async function boot() {
     await waitForWorldBackgroundWindow(1800);
     try {
       citygenRing.current = await citygenMod.createCityGenRing(
-        { excludeBuilding: isTeaGardenBuilding },
+        {
+          excludeBuilding: (key, index) =>
+            // The roster is fixed here, before the restored hall wakes. Reserve
+            // its boiler-room footprint alongside the authored Tea Garden.
+            isTeaGardenBuilding(key, index) || (key === "1_12" && index === 0)
+        },
         {
           scene,
           physics,
@@ -3362,12 +3444,16 @@ async function boot() {
       // Live-player pause still allows walking. Keep the generated-building gate
       // and streaming focus current so crossing a doorway cannot leave the camera
       // stuck in the previous indoor/outdoor mode.
-      if (!worldArrival.active) citygenRing.current?.update(player.position, frameDt);
+      if (!worldArrival.active) {
+        citygenRing.current?.update(player.position, frameDt);
+        sutroBaths?.update(0, elapsed, player.renderPosition, camera, windGustValue());
+      }
       if (inOrbit()) { chase.suspend(player); orbit.update(frameDt); }
       else {
         player.indoor = chase.indoor =
           (citygenRing.current?.isPlayerInside() ?? false) ||
-          (missionDolores?.isPlayerInside(player.position) ?? false);
+          (missionDolores?.isPlayerInside(player.position) ?? false) ||
+          (sutroBaths?.isPlayerInside(player.position) ?? false);
         chase.update(frameDt, player, input);
       }
       // keep the vehicle hum, ambience and social presence alive like full pause
@@ -3932,6 +4018,7 @@ async function boot() {
     oceanBeachKite?.update(frameDt, elapsed, player.renderPosition, windGustValue());
     buskers.update(frameDt, camera, windGustValue(), sky.sunElevation);
     if (!worldArrival.active) {
+      sutroBaths?.update(frameDt, elapsed, player.renderPosition, camera, windGustValue());
       japaneseTeaGarden?.update(
         frameDt,
         elapsed,
@@ -4060,7 +4147,8 @@ async function boot() {
     } else {
       player.indoor = chase.indoor =
         (citygenRing.current?.isPlayerInside() ?? false) ||
-        (missionDolores?.isPlayerInside(player.position) ?? false); // blend into the indoor eye rig
+        (missionDolores?.isPlayerInside(player.position) ?? false) ||
+        (sutroBaths?.isPlayerInside(player.position) ?? false); // blend into the indoor eye rig
       chase.update(frameDt, player, input);
     }
     // World-anchored dialogue must project after the chase/orbit/cinematic has
@@ -4109,7 +4197,17 @@ async function boot() {
       );
     }
     updateSurfPresentation(frameDt);
-    waveAudio.update(frameDt, oceanWaveEnergyAt(map, player.position.x, player.position.z, elapsed));
+    const waveEnergy = oceanWaveEnergyAt(map, player.position.x, player.position.z, elapsed);
+    // The restored glasshouse sits just inland of the sampled shoreline, but
+    // period accounts describe the Pacific as audible throughout the hall.
+    // Preserve the generic coast model and add a local surf floor that fades
+    // naturally across the Point Lobos approach.
+    const sutroSurf = THREE.MathUtils.clamp(1 - distanceToSutroBaths(player.position.x, player.position.z) / 170, 0, 1);
+    if (sutroSurf > 0) {
+      waveEnergy.level = Math.max(waveEnergy.level, sutroSurf * 0.5);
+      waveEnergy.breaking = Math.max(waveEnergy.breaking, sutroSurf * 0.68);
+    }
+    waveAudio.update(frameDt, waveEnergy);
     // Explicit E/B is the normal exit. This far-away guard only repairs external
     // teleports that bypass NavigationController; the ride itself never beaches.
     if (player.mode === "surf") {
@@ -4346,11 +4444,11 @@ async function boot() {
       // deferred render warmup runs, tick() early-returns without rendering, so
       // screenshots would capture a stale boot-pose frame no matter what the
       // camera was set to.
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController?.game ?? null, pickleballAmbient: pickleballController?.ambient ?? null, pickleballAudio: pickleballController?.audio ?? null, pickleballUI: pickleballController?.ui ?? null, pickleballController, coronaHeights, missionDolores, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, ensureSurfRuntime, roadMarkings, debugOverlays, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, ensureCarCustomizer, getCarSelector: () => carSelector, getCarConfig: () => ({ ...carConfig }), ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate, palaceReverie, landsEnd, afterlight, optionalWorldSites, ensureOptionalWorldSite,
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController?.game ?? null, pickleballAmbient: pickleballController?.ambient ?? null, pickleballAudio: pickleballController?.audio ?? null, pickleballUI: pickleballController?.ui ?? null, pickleballController, coronaHeights, missionDolores, sutroBaths, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, ensureSurfRuntime, roadMarkings, debugOverlays, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, ensureCarCustomizer, getCarSelector: () => carSelector, getCarConfig: () => ({ ...carConfig }), ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate, palaceReverie, landsEnd, afterlight, optionalWorldSites, ensureOptionalWorldSite,
         TSL,
         renderIdle: () => modulesReady && !optionalWorldSites.some(
           (site) => site.state === "queued" || site.state === "loading"
-        ) }
+        ) && !(sutroBaths?.debugState().nearEffectsLoading ?? false) }
     });
     const hooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
     if (hooks) {

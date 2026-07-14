@@ -35,6 +35,7 @@
     "test:golf:terrain": "node --experimental-strip-types tools/golf-terrain-probe.mjs",
     "test:tea-garden": "node --experimental-strip-types tools/tea-garden-probe.mjs",
     "test:ocean-beach-kite": "node tools/ocean-beach-kite-probe.mjs",
+    "test:sutro-baths": "node tools/sutro-baths-probe.mjs",
     "test:drum-bridge": "node tools/drum-bridge-probe.mjs",
     "test:mission-dolores": "node --experimental-strip-types tools/mission-dolores-contract-test.mjs",
     "test:car-jump": "node --experimental-strip-types tools/car-jump-physics-probe.mjs",

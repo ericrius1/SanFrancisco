@@ -17,7 +17,13 @@ import {
 } from "./shadows/landmarkShadowProxy";
 import { enableShadowLayer, SHADOW_LAYERS } from "./shadows/shadowLayers";
 import type { StaticShadowScope } from "./shadows/clipmapShadowNode";
-import { TerrainClipmap } from "./terrainClipmap";
+import {
+  TERRAIN_CUTOUT_CAPACITY,
+  TerrainClipmap,
+  type TerrainCutoutSpec
+} from "./terrainClipmap";
+
+export type { TerrainCutoutSpec } from "./terrainClipmap";
 
 // Includes the 48 m local receiver square plus low-sun caster reach and one
 // microcell. Changes beyond this cannot affect the cached local projection.
@@ -414,6 +420,7 @@ export class TileStreamer {
   #generation = 0;
   #nextLoadId = 0;
   #visualPrime: ActiveVisualPrime | null = null;
+  #terrainCutouts = new Map<string, TerrainCutoutSpec>();
   #tick = 0;
   #entries: TileEntry[] = [];
   #queue: TileEntry[] = [];
@@ -559,6 +566,7 @@ export class TileStreamer {
     // terrain GLBs. Gameplay continues to query WorldMap directly, so visual and
     // collision heights still share the same canonical source.
     this.terrainClipmap = new TerrainClipmap(map);
+    this.terrainClipmap.setCutouts([...this.#terrainCutouts.values()]);
     this.terrainClipmap.update(0, 0, true);
     this.terrain.set("terrain_clipmap", this.terrainClipmap.group);
     this.#scene.add(this.terrainClipmap.group);
@@ -864,6 +872,46 @@ export class TileStreamer {
       const mesh = child as THREE.Mesh;
       if (mesh.isMesh) mesh.geometry.dispose();
     });
+  }
+
+  /**
+   * Hand a small oriented footprint from the GPU clipmap to authored
+   * geometry. IDs make ownership explicit and let the feature undo its claim on
+   * disposal or failed creation. A hard two-slot cap bounds terrain shader cost.
+   */
+  setTerrainCutout(id: string, cutout: TerrainCutoutSpec): void {
+    if (!id) throw new Error("terrain cutout id must be non-empty");
+    if (
+      !Number.isFinite(cutout.centerX) ||
+      !Number.isFinite(cutout.centerZ) ||
+      !Number.isFinite(cutout.halfX) ||
+      !Number.isFinite(cutout.halfZ) ||
+      !Number.isFinite(cutout.yaw) ||
+      cutout.halfX <= 0 ||
+      cutout.halfZ <= 0
+    ) {
+      throw new Error(`terrain cutout ${id} must have finite positive bounds`);
+    }
+    if (!this.#terrainCutouts.has(id) && this.#terrainCutouts.size >= TERRAIN_CUTOUT_CAPACITY) {
+      throw new Error(`terrain cutout capacity ${TERRAIN_CUTOUT_CAPACITY} exceeded by ${id}`);
+    }
+    this.#terrainCutouts.set(id, { ...cutout });
+    this.terrainClipmap?.setCutouts([...this.#terrainCutouts.values()]);
+    this.onShadowCastersChanged("all");
+  }
+
+  clearTerrainCutout(id: string): void {
+    if (!this.#terrainCutouts.delete(id)) return;
+    this.terrainClipmap?.setCutouts([...this.#terrainCutouts.values()]);
+    this.onShadowCastersChanged("all");
+  }
+
+  /** Read-only diagnostics used by focused site/runtime probes. */
+  get terrainCutoutDebug(): { capacity: number; active: readonly string[] } {
+    return {
+      capacity: TERRAIN_CUTOUT_CAPACITY,
+      active: [...this.#terrainCutouts.keys()]
+    };
   }
 
   #scan(px: number, pz: number) {
