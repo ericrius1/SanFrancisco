@@ -372,10 +372,15 @@ export class SurfController implements ModeController {
     // the other way, with lineDirection following the resulting travel below.
     // Neutral input eases toward whichever down-line trim is nearest, so you
     // still settle onto a clean racing line instead of drifting or spinning.
+    // The range overshoots BOTH down-line ends so you can carve down toward the
+    // shoulder from either direction — not just up toward the crest. Without the
+    // overshoot the nose clamped exactly at the down-line trim, so one of A/D was
+    // dead (e.g. heading south, "carve toward shore" did nothing) and steering
+    // read as reversed.
     this.#linePos = THREE.MathUtils.clamp(
       this.#linePos + steer * tb.carveTurnRate * shape.carve * entryBlend * motionDt,
-      -0.08,
-      1.08
+      -0.32,
+      1.32
     );
     if (Math.abs(steer) < 0.15) {
       // Neutral eases to the nearest down-line end so you keep cruising a clean
@@ -383,7 +388,7 @@ export class SurfController implements ModeController {
       const end = this.#linePos < 0.5 ? 0 : 1;
       this.#linePos += (end - this.#linePos) * (1 - Math.exp(-motionDt * tb.yawRecenter));
     }
-    this.yaw = Math.PI * THREE.MathUtils.clamp(this.#linePos, 0, 1);
+    this.yaw = Math.PI * this.#linePos;
     // Lean follows steer for readable body language (A leans screen-left).
     this.#carve +=
       (-steer - this.#carve) *
@@ -425,14 +430,14 @@ export class SurfController implements ModeController {
     const nextZ = p.z + vz * dt;
     if (nextZ < OCEAN_BEACH_SURF.minZ + tb.boundaryMargin && vz < 0) {
       this.#linePos = 1 - this.#linePos;
-      this.yaw = Math.PI * THREE.MathUtils.clamp(this.#linePos, 0, 1);
+      this.yaw = Math.PI * this.#linePos;
       vz = Math.abs(vz);
       this.#lineDirection = 1;
       this.telemetry.assistSerial++;
       this.#emitSplash(0.7);
     } else if (nextZ > OCEAN_BEACH_SURF.maxZ - tb.boundaryMargin && vz > 0) {
       this.#linePos = 1 - this.#linePos;
-      this.yaw = Math.PI * THREE.MathUtils.clamp(this.#linePos, 0, 1);
+      this.yaw = Math.PI * this.#linePos;
       vz = -Math.abs(vz);
       this.#lineDirection = -1;
       this.telemetry.assistSerial++;

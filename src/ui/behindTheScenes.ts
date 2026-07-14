@@ -9,6 +9,7 @@
  */
 
 import { SOUNDSCAPE_TAB_HTML, mountSoundscape } from "./btsSoundscape";
+import { FOLIAGE_TAB_HTML, mountFoliage } from "./btsFoliage";
 import { registerShareable, buildReadUrl, copyText, type ShareableModal } from "./deepLinks";
 
 const X_URL = "https://x.com/EricLevin77";
@@ -547,6 +548,7 @@ type Tab = { id: string; label: string; icon: string; html: string };
 const TABS: Tab[] = [
   { id: "world", label: "Building the world", icon: "🏗️", html: TAB_WORLD },
   { id: "life", label: "Bringing it to life", icon: "🌆", html: TAB_LIFE },
+  { id: "foliage", label: "The living layer", icon: "🌿", html: FOLIAGE_TAB_HTML },
   { id: "smooth", label: "Making it smooth", icon: "⚡", html: TAB_SMOOTH },
   { id: "play", label: "Playing in it", icon: "🎮", html: TAB_PLAY },
   { id: "sound", label: "The soundscape", icon: "🐦", html: SOUNDSCAPE_TAB_HTML }
@@ -559,7 +561,8 @@ export class BehindTheScenes implements ShareableModal {
   #body!: HTMLDivElement;
   #open = false;
   #activeTab = "world";
-  #soundscape: { activate(): void; deactivate(): void } | null = null;
+  // per-tab controllers that run an rAF/scroll loop only while their tab is shown
+  #tabMounts = new Map<string, { activate(): void; deactivate(): void }>();
   #onToggle?: (open: boolean) => void;
   #shareBtn!: HTMLButtonElement;
   #shareResetTimer: ReturnType<typeof setTimeout> | undefined;
@@ -627,9 +630,12 @@ export class BehindTheScenes implements ShareableModal {
       });
     }
 
-    // the soundscape chapter animates its diagrams from scroll + a gentle rAF
+    // the soundscape and foliage chapters animate their diagrams from scroll + a
+    // gentle rAF; each is mounted once and only loops while its tab is on screen
     const soundPane = this.#overlay.querySelector<HTMLElement>('[data-pane="sound"]');
-    if (soundPane) this.#soundscape = mountSoundscape(soundPane, this.#body);
+    if (soundPane) this.#tabMounts.set("sound", mountSoundscape(soundPane, this.#body));
+    const foliagePane = this.#overlay.querySelector<HTMLElement>('[data-pane="foliage"]');
+    if (foliagePane) this.#tabMounts.set("foliage", mountFoliage(foliagePane, this.#body));
 
     // backdrop click (but not clicks inside the modal) closes it
     this.#overlay.addEventListener("click", (e) => {
@@ -685,9 +691,15 @@ export class BehindTheScenes implements ShareableModal {
       pane.classList.toggle("active", pane.dataset.pane === id);
     }
     this.#body.scrollTop = 0;
-    // only the soundscape tab runs an animation loop, and only while it's shown
-    if (id === "sound" && this.#open) this.#soundscape?.activate();
-    else this.#soundscape?.deactivate();
+    this.#syncMounts();
+  }
+
+  /** Run only the active tab's animation loop (if the panel is open); pause the rest. */
+  #syncMounts() {
+    for (const [tabId, ctrl] of this.#tabMounts) {
+      if (tabId === this.#activeTab && this.#open) ctrl.activate();
+      else ctrl.deactivate();
+    }
   }
 
   #iconLink(href: string, title: string, svg: string): HTMLAnchorElement {
@@ -709,13 +721,9 @@ export class BehindTheScenes implements ShareableModal {
     if (open === this.#open) return;
     this.#open = open;
     this.#overlay.classList.toggle("open", open);
-    if (open) {
-      this.#body.scrollTop = 0;
-      // (re)start the diagram loop if we opened onto the soundscape chapter
-      if (this.#activeTab === "sound") this.#soundscape?.activate();
-    } else {
-      this.#soundscape?.deactivate();
-    }
+    if (open) this.#body.scrollTop = 0;
+    // (re)start the active chapter's diagram loop, or pause everything on close
+    this.#syncMounts();
     this.#onToggle?.(open);
   }
 }

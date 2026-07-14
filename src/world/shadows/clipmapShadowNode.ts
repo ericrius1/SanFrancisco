@@ -56,6 +56,23 @@ export const CLIPMAP_SHADOW_CONFIG = {
   }
 } as const
 
+/**
+ * Feather the far raster's outer light-space rim over this many metres. The far
+ * map is a 1024 m player-centric square; when the world atlas is faded out (low
+ * or stale sun, or mid-rebuild) it becomes the visible layer, and without this
+ * its frustum edge hard-cuts a rotated square across grazing-sun/fog terrain.
+ * Interior far coverage and atlas ownership are unchanged — this only softens
+ * the last metres before the square boundary, deep in fog where it is invisible.
+ */
+const FAR_EDGE_FADE_METERS = 96
+
+/**
+ * Feather the hero map's ±16 m rim so a long grazing-sun dynamic shadow fades to
+ * lit instead of hard-clipping along a straight light-space edge (the local map
+ * does not carry HERO_DYNAMIC casters, so there is nothing to hand off to).
+ */
+const HERO_EDGE_FADE_METERS = 3
+
 type DomainId = keyof typeof CLIPMAP_SHADOW_CONFIG
 export type StaticShadowScope = "local" | "far" | "all"
 type DomainConfig = (typeof CLIPMAP_SHADOW_CONFIG)[DomainId]
@@ -289,6 +306,9 @@ export class ClipmapShadowNode extends THREE.ShadowBaseNode {
     const localCenter = this.#localCenterUniform
     const localRight = this.#localRightUniform
     const localUp = this.#localUpUniform
+    const farCenter = this.#farCenterUniform
+    const farRight = this.#farRightUniform
+    const farUp = this.#farUpUniform
     const enabled = this.#enabledUniform
     const farFieldStrength = this.#farFieldStrengthUniform
     const farField = this.#farOcclusion?.replacementSampleNode() ?? null
@@ -300,10 +320,18 @@ export class ClipmapShadowNode extends THREE.ShadowBaseNode {
       // at low sun a long ground shadow can stay inside a 32 m projection even
       // when its receiver is tens of metres from the player.
       const heroOffset = positionWorld.sub(heroCenter)
-      const heroInside = heroOffset.dot(heroRight).abs().lessThan(16.25)
-        .and(heroOffset.dot(heroUp).abs().lessThan(16.25))
+      const heroAxisRight = heroOffset.dot(heroRight).abs()
+      const heroAxisUp = heroOffset.dot(heroUp).abs()
+      const heroInside = heroAxisRight.lessThan(16.25).and(heroAxisUp.lessThan(16.25))
       If(heroInside, () => {
-        visibility.mulAssign(hero as N)
+        // Feather the rim so a long grazing-sun dynamic shadow fades to lit
+        // rather than terminating along the straight square edge.
+        const heroEdgeFade = smoothstep(
+          16.25 - HERO_EDGE_FADE_METERS,
+          16.25,
+          heroAxisRight.max(heroAxisUp)
+        ).oneMinus()
+        visibility.mulAssign(mix(1, hero as N, heroEdgeFade))
       })
 
       // Representation handoffs follow each cached map's real light-space
@@ -312,6 +340,21 @@ export class ClipmapShadowNode extends THREE.ShadowBaseNode {
       const localOffset = positionWorld.sub(localCenter)
       const localRadius = localOffset.dot(localRight).abs()
         .max(localOffset.dot(localUp).abs())
+      // Fade the far raster to lit before its own light-space square boundary.
+      // When the world atlas is faded out this is the visible layer; without the
+      // feather its 1024 m frustum edge draws a hard rotated square across the
+      // fog. Interior far radii are unaffected (fade weight is 1 there), so the
+      // atlas handoff and normal daytime far coverage are unchanged.
+      const farOffset = positionWorld.sub(farCenter)
+      const farRadius = farOffset.dot(farRight).abs()
+        .max(farOffset.dot(farUp).abs())
+      const farHalfExtent = CLIPMAP_SHADOW_CONFIG.far.extent * 0.5
+      const farEdgeFade = smoothstep(
+        farHalfExtent - FAR_EDGE_FADE_METERS,
+        farHalfExtent,
+        farRadius
+      ).oneMinus()
+      const farVisible = mix(1, far as N, farEdgeFade)
       const farFieldVisibility = farField
         ? mix(1, farField.visibility as N, farFieldStrength)
         : null
@@ -346,16 +389,16 @@ export class ClipmapShadowNode extends THREE.ShadowBaseNode {
         visibility.mulAssign(composeWithFarField(local as N, 0 as N))
       }).ElseIf(localRadius.lessThan(48), () => {
         const farWeight = smoothstep(42, 48, localRadius)
-        const rasterVisibility = mix(local as N, far as N, farWeight)
+        const rasterVisibility = mix(local as N, farVisible, farWeight)
         const rasterRetire = atlasOwnership
           ? farWeight.mul(atlasOwnership)
           : 0 as N
         visibility.mulAssign(composeWithFarField(rasterVisibility as N, rasterRetire))
       }).Else(() => {
         if (!farField || !farFieldBase || !atlasOwnership) {
-          visibility.mulAssign(far as N)
+          visibility.mulAssign(farVisible)
         } else {
-          visibility.mulAssign(composeWithFarField(far as N, atlasOwnership))
+          visibility.mulAssign(composeWithFarField(farVisible, atlasOwnership))
         }
       })
 
