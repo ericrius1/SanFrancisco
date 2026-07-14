@@ -15,6 +15,7 @@ import {
 import { LIGHT_SCALE } from "../../config";
 import { avatarFromSeed, type AvatarTraits } from "../../player/avatar";
 import { buildRig, poseIdle, type Rig } from "../../player/rig";
+import { CANVAS_FONT_FAMILY } from "../../core/typography";
 import type { WorldMap } from "../../world/heightmap";
 import { AFTERLIGHT_CENTER, AFTERLIGHT_TUNING, ECHO_LAYOUT, KEEPER_LAYOUT } from "./layout";
 
@@ -77,7 +78,7 @@ function makeNameTag(text: string, accent: string): THREE.Sprite {
   ctx.fill();
   ctx.stroke();
   ctx.fillStyle = "rgba(244,252,248,.96)";
-  ctx.font = "600 30px Inter, system-ui, sans-serif";
+  ctx.font = `600 30px ${CANVAS_FONT_FAMILY}`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillText(text, 160, 42);

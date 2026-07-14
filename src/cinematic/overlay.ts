@@ -1,5 +1,6 @@
 import { clamp01, smoothstep } from "./curves";
 import type { OverlayCue } from "./types";
+import { CANVAS_FONT_FAMILY } from "../core/typography";
 
 type CueView = {
   cue: OverlayCue;
@@ -67,7 +68,7 @@ export class CinematicOverlay {
     style.dataset.cinematicStyle = "true";
     style.textContent = `
       .cine-overlay{position:fixed;inset:0;z-index:2147483000;pointer-events:none;color:#f7fff9;
-        font-family:Inter,ui-sans-serif,system-ui,sans-serif;letter-spacing:.01em;overflow:hidden}
+        font-family:var(--font,"Newsreader",Georgia,serif);letter-spacing:.01em;overflow:hidden}
       .cine-bar{position:absolute;left:0;right:0;height:var(--cine-letterbox);background:#050709;z-index:3}
       .cine-bar.top{top:0}.cine-bar.bottom{bottom:0}
       .cine-card{position:absolute;top:18%;width:min(37vw,660px);padding:22px 26px 24px;
@@ -193,9 +194,9 @@ export class CinematicOverlay {
       gradient.addColorStop(1, "rgba(4,10,14,.12)");
       ctx.fillStyle = gradient;
 
-      ctx.font = `760 ${titleSize}px Inter, ui-sans-serif, system-ui, sans-serif`;
+      ctx.font = `760 ${titleSize}px ${CANVAS_FONT_FAMILY}`;
       const titleLines = wrappedLines(ctx, cue.title, textWidth);
-      ctx.font = "400 18px Inter, ui-sans-serif, system-ui, sans-serif";
+      ctx.font = `400 18px ${CANVAS_FONT_FAMILY}`;
       const detailLines = cue.detail ? wrappedLines(ctx, cue.detail, textWidth) : [];
       const eyebrowHeight = cue.eyebrow ? 20 : 0;
       const titleHeight = titleLines.length * titleSize * 0.98;
@@ -213,12 +214,12 @@ export class CinematicOverlay {
       ctx.shadowBlur = 16;
       if (cue.eyebrow) {
         ctx.fillStyle = cue.accent ?? "#8ff8eb";
-        ctx.font = "750 12px Inter, ui-sans-serif, system-ui, sans-serif";
+        ctx.font = `750 12px ${CANVAS_FONT_FAMILY}`;
         ctx.fillText(cue.eyebrow.toUpperCase(), textX, textY);
         textY += 20;
       }
       ctx.fillStyle = "#f7fff9";
-      ctx.font = `760 ${titleSize}px Inter, ui-sans-serif, system-ui, sans-serif`;
+      ctx.font = `760 ${titleSize}px ${CANVAS_FONT_FAMILY}`;
       for (const line of titleLines) {
         ctx.fillText(line, textX, textY);
         textY += titleSize * 0.98;
@@ -226,7 +227,7 @@ export class CinematicOverlay {
       if (detailLines.length) {
         textY += 11;
         ctx.fillStyle = "rgba(241,255,249,.82)";
-        ctx.font = "400 18px Inter, ui-sans-serif, system-ui, sans-serif";
+        ctx.font = `400 18px ${CANVAS_FONT_FAMILY}`;
         for (const line of detailLines) {
           ctx.fillText(line, textX, textY);
           textY += 24;
@@ -247,7 +248,7 @@ export class CinematicOverlay {
     ctx.fillStyle = progressGradient;
     ctx.fillRect(safe, trackY, (width - safe * 2) * progress, 2);
     ctx.fillStyle = "rgba(242,255,250,.72)";
-    ctx.font = "720 10px Inter, ui-sans-serif, system-ui, sans-serif";
+    ctx.font = `720 10px ${CANVAS_FONT_FAMILY}`;
     ctx.textAlign = "left";
     ctx.textBaseline = "bottom";
     ctx.fillText(chapter.replaceAll("-", "  ·  ").toUpperCase(), safe, trackY - 8);

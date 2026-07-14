@@ -116,12 +116,12 @@
     inset 0 1px 0 rgba(255, 255, 255, 0.2),
     0 2px 5px rgba(7, 15, 25, 0.22);
   color: #fff8e9;
-  font: 800 11px/1 var(--font, ui-sans-serif, system-ui, sans-serif);
+  font: 800 11px/1 var(--font, "Newsreader", Georgia, serif);
   letter-spacing: 0.04em;
 }
 
 .projected-dialogue__prompt-label {
-  font: 750 12px/1 var(--font, ui-sans-serif, system-ui, sans-serif);
+  font: 750 12px/1 var(--font, "Newsreader", Georgia, serif);
   letter-spacing: 0.035em;
 }
 
@@ -213,7 +213,7 @@
   background: var(--projected-dialogue-vermilion);
   box-shadow: inset 0 0 0 2px rgba(255, 241, 214, 0.18);
   color: #fff5df;
-  font: 800 15px/1 Georgia, serif;
+  font: 800 15px/1 var(--font, "Newsreader", Georgia, serif);
 }
 
 .projected-dialogue__identity {
@@ -225,7 +225,7 @@
 .projected-dialogue__speaker {
   overflow: hidden;
   color: var(--projected-dialogue-indigo);
-  font: 800 13px/1.15 var(--font, ui-sans-serif, system-ui, sans-serif);
+  font: 800 13px/1.15 var(--font, "Newsreader", Georgia, serif);
   letter-spacing: 0.035em;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -234,7 +234,7 @@
 .projected-dialogue__speaker-title {
   overflow: hidden;
   color: #6b6255;
-  font: 650 10px/1.2 var(--font, ui-sans-serif, system-ui, sans-serif);
+  font: 650 10px/1.2 var(--font, "Newsreader", Georgia, serif);
   letter-spacing: 0.06em;
   text-overflow: ellipsis;
   text-transform: uppercase;
@@ -259,7 +259,7 @@
   z-index: 1;
   margin: 12px 2px 11px;
   color: var(--projected-dialogue-ink);
-  font: 500 15.5px/1.52 "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  font: 500 15.5px/1.52 var(--font, "Newsreader", Georgia, serif);
   hyphens: auto;
   letter-spacing: 0.005em;
   overflow-wrap: anywhere;
@@ -276,7 +276,7 @@
   padding-top: 9px;
   border-top: 1px solid rgba(23, 43, 69, 0.14);
   color: var(--projected-dialogue-indigo-soft);
-  font: 700 10.5px/1.25 var(--font, ui-sans-serif, system-ui, sans-serif);
+  font: 700 10.5px/1.25 var(--font, "Newsreader", Georgia, serif);
 }
 
 .projected-dialogue__topic {

@@ -4,6 +4,7 @@ import { BOTANICAL_GARDEN_BOUNDS } from "../world/garden/layout";
 import { WILD_REGIONS } from "../world/wildlands/regions";
 import { SPAWN_POINTS } from "../world/spawnPoints";
 import type { RoadGraph } from "../world/traffic/roadGraph";
+import { CANVAS_FONT_FAMILY } from "../core/typography";
 
 /**
  * Minimap (top-left, always on) + full-city map (M or click to expand).
@@ -39,9 +40,7 @@ type LandmarkLabelPlacement = {
   pill?: { x: number; y: number; w: number; h: number };
 };
 
-// Canvas 2D can't read CSS custom properties, so mirror the --font stack here
-// for the labels painted straight onto the map.
-const MAP_FONT = "'InterVariable', Inter, system-ui, -apple-system, sans-serif";
+const MAP_FONT = CANVAS_FONT_FAMILY;
 const MINI_SIZE = 236; // css px
 const MINI_SPAN = 1400; // metres across the minimap view
 const MINI_MIN_SPAN = 260;
