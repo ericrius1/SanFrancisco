@@ -1671,6 +1671,28 @@ async function boot() {
   // Escape priority: dismiss an open overlay (stay unlocked) → else release pointer
   // lock. Stops the old "Esc closes UI and immediately re-locks" double-tap.
   // Registered after minimap exists so an early Esc can't hit a TDZ binding.
+  //
+  // The three world overlays below can (only in a degenerate/future state) be
+  // open while the pointer is still locked, and Chrome reserves the *locked*
+  // Escape keydown for its native pointer-lock exit — the page never sees it.
+  // So route their dismissal through a shared closer driven by BOTH keydown and
+  // keyup: the browser still delivers the keyup, so one Escape both unlocks and
+  // closes the overlay no matter which phase survives. Idempotent — whichever
+  // phase runs first stops propagation and closes it; the other finds nothing.
+  const dismissEscapeOverlay = (e: KeyboardEvent): boolean => {
+    if (missionDolores?.bookOpen) {
+      missionDolores.closeBook();
+    } else if (behindTheScenes?.isOpen) {
+      behindTheScenes.setOpen(false);
+    } else if (minimap.expanded) {
+      minimap.setExpanded(false);
+    } else {
+      return false;
+    }
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    return true;
+  };
   window.addEventListener(
     "keydown",
     (e) => {
@@ -1686,24 +1708,7 @@ async function boot() {
       ) {
         return;
       }
-      if (missionDolores?.bookOpen) {
-        missionDolores.closeBook();
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        return;
-      }
-      if (behindTheScenes?.isOpen) {
-        behindTheScenes.setOpen(false);
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        return;
-      }
-      if (minimap.expanded) {
-        minimap.setExpanded(false);
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        return;
-      }
+      if (dismissEscapeOverlay(e)) return;
       if (chat.focused) {
         skipChatRelock = true;
         chat.blur();
@@ -1713,6 +1718,19 @@ async function boot() {
       }
       // Lock already released above; don't preventDefault so the UA default
       // unlock still runs if exitPointerLock is ignored.
+    },
+    true
+  );
+  // Keyup mirror: when Chrome swallowed the locked Escape keydown, the keyup is
+  // still delivered here (pointer already released by then), so the overlay
+  // closes on the same single Escape instead of needing a second press. Chat /
+  // field clearing stays keydown-only — a focused field means the pointer is
+  // unlocked, so that keydown is never swallowed.
+  window.addEventListener(
+    "keyup",
+    (e) => {
+      if (e.code !== "Escape" && e.key !== "Escape") return;
+      dismissEscapeOverlay(e);
     },
     true
   );
@@ -3325,24 +3343,20 @@ async function boot() {
         switchMode(nextMode);
       }
     }
+    // Keyboard arrows and d-pad share the toolbar: ↑/↓ change row focus,
+    // ←/→ cycle the focused row (vehicles / tools / paint swatches).
     if (!playingPickleball) {
       const dx =
         (input.pressed("ArrowRight") && !input.altPressed("ArrowRight") ? 1 : 0) -
-        (input.pressed("ArrowLeft") && !input.altPressed("ArrowLeft") ? 1 : 0);
+        (input.pressed("ArrowLeft") && !input.altPressed("ArrowLeft") ? 1 : 0) +
+        (input.pressed("PadModeNext") ? 1 : 0) -
+        (input.pressed("PadModePrev") ? 1 : 0);
       const dy =
-        (input.pressed("ArrowDown") ? 1 : 0) - (input.pressed("ArrowUp") ? 1 : 0);
+        (input.pressed("ArrowDown") ? 1 : 0) -
+        (input.pressed("ArrowUp") ? 1 : 0) +
+        (input.pressed("PadNavDown") ? 1 : 0) -
+        (input.pressed("PadNavUp") ? 1 : 0);
       if (dx || dy) toolbar.navigate(dx, dy);
-    }
-    const padCycle = (input.pressed("PadModeNext") ? 1 : 0) - (input.pressed("PadModePrev") ? 1 : 0);
-    if (padCycle && !playingPickleball) {
-      const cycleOrder = MENU_MODES;
-      const idx = cycleOrder.indexOf(player.mode);
-      const from = idx >= 0 ? idx : 0;
-      const step = padCycle < 0 ? -1 : 1;
-      if (cycleOrder.length) {
-        toolbar.focusVehicles();
-        switchMode(cycleOrder[(from + step + cycleOrder.length) % cycleOrder.length]);
-      }
     }
     if (!playingPickleball && input.altPressed("ArrowLeft")) applyPlaceHistory(-1);
     if (!playingPickleball && input.altPressed("ArrowRight")) applyPlaceHistory(1);
@@ -4202,7 +4216,7 @@ async function boot() {
       // deferred render warmup runs, tick() early-returns without rendering, so
       // screenshots would capture a stale boot-pose frame no matter what the
       // camera was set to.
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController?.game ?? null, pickleballAmbient: pickleballController?.ambient ?? null, pickleballAudio: pickleballController?.audio ?? null, pickleballUI: pickleballController?.ui ?? null, pickleballController, coronaHeights, missionDolores, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, ensureSurfRuntime, roadMarkings, debugOverlays, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate, palaceReverie, landsEnd, afterlight, optionalWorldSites, ensureOptionalWorldSite,
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController?.game ?? null, pickleballAmbient: pickleballController?.ambient ?? null, pickleballAudio: pickleballController?.audio ?? null, pickleballUI: pickleballController?.ui ?? null, pickleballController, coronaHeights, missionDolores, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, ensureSurfRuntime, roadMarkings, debugOverlays, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, ensureCarCustomizer, getCarSelector: () => carSelector, getCarConfig: () => ({ ...carConfig }), ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate, palaceReverie, landsEnd, afterlight, optionalWorldSites, ensureOptionalWorldSite,
         TSL,
         renderIdle: () => modulesReady && !optionalWorldSites.some(
           (site) => site.state === "queued" || site.state === "loading"

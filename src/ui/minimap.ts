@@ -48,7 +48,9 @@ const MINI_MIN_SPAN = 260;
 const MINI_ZOOM_SPEED = 0.0012;
 const MINI_DRAG_PX = 4;
 const BIG_ZOOM_SPEED = 0.0012;
-const BIG_MIN_SPAN = 260;
+/** Closest expanded-map zoom (metres across). Stops short of the atlas
+ *  upsampling into mush — roughly a neighborhood of city blocks. */
+const BIG_MIN_SPAN = 1200;
 const PAD_PAN_SPEED = 0.7; // view-spans per second at full stick
 const PAD_ZOOM_SPEED = 1.6; // exp rate per second at full trigger
 const PAD_CURSOR_SPEED = 1.15; // normalized half-widths per second

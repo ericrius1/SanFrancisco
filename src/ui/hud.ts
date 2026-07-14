@@ -319,7 +319,7 @@ export class HUD {
       ? [
           { c: ["Back"], label: "map" },
           { c: ["R3"], label: "view" },
-          { c: ["▲"], label: "fireworks" },
+          { c: ["B"], label: "fireworks" },
           { c: ["Start"], label: "pause" }
         ]
       : [

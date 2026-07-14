@@ -205,6 +205,7 @@ export function buildCarMesh(raw?: CarConfig): THREE.Group {
     emissiveIntensity: 1.1 * LIGHT_SCALE,
     roughness: 0.28
   });
+  const plate = new THREE.MeshStandardMaterial({ color: 0xdde4df, roughness: 0.48, metalness: 0.02 });
   const decalMaterial = new THREE.MeshBasicMaterial({
     map: decalTexture,
     transparent: true,
@@ -212,10 +213,10 @@ export function buildCarMesh(raw?: CarConfig): THREE.Group {
     toneMapped: true,
     polygonOffset: true,
     polygonOffsetFactor: -2,
-    side: THREE.FrontSide
+    side: THREE.DoubleSide
   });
   decalMaterial.visible = config.decal !== "none";
-  for (const material of [paint, trim, darkTrim, tire, glass, cabin, interior, rim, brake, headlight, taillight, indicator, decalMaterial]) {
+  for (const material of [paint, trim, darkTrim, tire, glass, cabin, interior, rim, brake, headlight, taillight, indicator, plate, decalMaterial]) {
     materials.add(material);
   }
 
@@ -364,8 +365,7 @@ export function buildCarMesh(raw?: CarConfig): THREE.Group {
     add(exhaust, trim, side * 0.55, -0.21, 2.36);
   }
   box(darkTrim, 1.25, 0.12, 0.24, 0, -0.27, 2.28);
-  box(new THREE.MeshStandardMaterial({ color: 0xdde4df, roughness: 0.48 }), 0.46, 0.18, 0.035, 0, -0.02, 2.42);
-  materials.add((root.children[root.children.length - 1] as THREE.Mesh).material as THREE.Material);
+  box(plate, 0.46, 0.18, 0.035, 0, -0.02, 2.42);
 
   const wheelGeometry = new THREE.CylinderGeometry(CAR_WHEEL_RADIUS, CAR_WHEEL_RADIUS, 0.37, 24);
   wheelGeometry.rotateZ(Math.PI / 2);
@@ -395,13 +395,14 @@ export function buildCarMesh(raw?: CarConfig): THREE.Group {
     spin.name = `car_wheel_${id}`;
     steering.add(spin);
     const wheel = add(wheelGeometry, tire, 0, 0, 0, 0, 0, 0, true, spin);
-    wheel.scale.y = 1.015; // minute bulge makes the sidewall read under load
+    wheel.scale.x = 1.03; // a little sidewall bulge without moving ground contact
     add(discGeometry, darkTrim, side * 0.13, 0, 0, 0, 0, 0, false, spin);
     add(rimGeometry, rim, side * 0.205, 0, 0, 0, 0, 0, false, spin);
     add(hubGeometry, rim, 0, 0, 0, 0, 0, 0, false, spin);
     for (let i = 0; i < count; i++) {
       const angle = (i / count) * Math.PI * 2;
       const spoke = add(spokeGeometry, rim, side * 0.205, Math.cos(angle) * 0.16, Math.sin(angle) * 0.16, angle, 0, 0, false, spin);
+      spoke.name = `car_spoke_${id}_${i}`;
       if (config.wheel === "split-five") spoke.rotation.x += (i % 2 ? 0.045 : -0.045);
     }
     // Calipers steer with the wheel but do not rotate, making spin legible.

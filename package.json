@@ -38,6 +38,7 @@
     "test:drum-bridge": "node tools/drum-bridge-probe.mjs",
     "test:mission-dolores": "node --experimental-strip-types tools/mission-dolores-contract-test.mjs",
     "test:car-jump": "node --experimental-strip-types tools/car-jump-physics-probe.mjs",
+    "test:car-customizer": "node tools/car-customizer-probe.mjs",
     "test:terrain-collision": "node tools/terrain-collision-probe.mjs",
     "test:terrain-assets": "node tools/terrain-asset-probe.mjs",
     "test:terrain-runtime": "node tools/terrain-runtime-probe.mjs",

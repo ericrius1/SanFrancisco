@@ -1,7 +1,15 @@
 import * as THREE from "three/webgpu";
 import { applyAvatarToRig, buildRig, poseAir, poseDrive, poseIdle, poseRide, poseScooter, poseWalk, type Rig } from "../player/rig";
 import { avatarFromSeed, avatarKey, type AvatarTraits } from "../player/avatar";
-import { animateCar, buildCarMesh } from "../vehicles/car";
+import {
+  activateCarAssets,
+  animateCar,
+  buildCarMesh,
+  carFromSeed,
+  carKey,
+  normalizeCarConfig,
+  type CarConfig
+} from "../vehicles/car";
 import { buildPlaneMesh, collectPlaneAnim, type PlaneAnim } from "../vehicles/plane";
 import { buildBoatMesh, buildSpeedboatMesh } from "../vehicles/boat";
 import { buildDroneMesh } from "../vehicles/drone";
@@ -91,7 +99,7 @@ function makeTag(name: string, hue: number): THREE.Sprite {
 /** Tag height above the avatar origin, per embodiment. */
 const TAG_Y: Record<PlayerMode, number> = {
   walk: 2.1,
-  drive: 2.2,
+  drive: 2.8,
   scooter: 2.4,
   plane: 2.6,
   boat: 7.6, // above the mast
@@ -121,6 +129,8 @@ type Avatar = {
   boardKey: string;
   scooter: ScooterConfig;
   scooterKey: string;
+  car: CarConfig;
+  carKey: string;
   surfboard: SurfboardConfig;
   surfboardKey: string;
 };
@@ -144,6 +154,10 @@ function scooterForInfo(info: RemoteInfo): ScooterConfig {
   return info.scooter ? normalizeScooterConfig(info.scooter) : scooterFromSeed(info.id);
 }
 
+function carForInfo(info: RemoteInfo): CarConfig {
+  return info.car ? normalizeCarConfig(info.car) : carFromSeed(info.id);
+}
+
 function surfboardForInfo(info: RemoteInfo): SurfboardConfig {
   return info.surfboard ? normalizeSurfboardConfig(info.surfboard) : surfboardFromSeed(info.id);
 }
@@ -164,6 +178,7 @@ export class RemotePlayers {
   #tagsVisible = true;
   #surfAssetsEnabled = false;
   #scooterAssetsEnabled = false;
+  #carAssetsEnabled = false;
 
   constructor(scene: THREE.Scene) {
     this.#scene = scene;
@@ -172,14 +187,11 @@ export class RemotePlayers {
     // boards are NOT prototyped: each remote builds its own from their config
     // (same material classes as the local player's board, so nothing compiles)
     this.#protos = {
-      drive: buildCarMesh(),
       plane: buildPlaneMesh(),
       boat: buildBoatMesh(),
       speedboat: buildSpeedboatMesh(),
       drone: buildDroneMesh()
     };
-    const c = this.#protos.drive!.userData.cockpit as Cockpit | undefined;
-    if (c) this.#passengerSeat.set(-c.seat[0], c.seat[1], c.seat[2]);
   }
 
   #walkScratch: { x: number; z: number }[] = [];
@@ -317,6 +329,11 @@ export class RemotePlayers {
     this.#scooterAssetsEnabled = enabled;
   }
 
+  /** Remote car art follows the same local-first, nearby-only contract. */
+  setCarAssetsEnabled(enabled: boolean) {
+    this.#carAssetsEnabled = enabled;
+  }
+
   add(info: RemoteInfo) {
     if (this.avatars.has(info.id)) return;
     const root = new THREE.Group();
@@ -329,6 +346,7 @@ export class RemotePlayers {
     const av = avatarForInfo(info);
     const bd = boardForInfo(info);
     const sc = scooterForInfo(info);
+    const car = carForInfo(info);
     const surf = surfboardForInfo(info);
     this.avatars.set(info.id, {
       info,
@@ -349,6 +367,8 @@ export class RemotePlayers {
       boardKey: boardVisualKey(bd),
       scooter: sc,
       scooterKey: scooterKey(sc),
+      car,
+      carKey: carKey(car),
       surfboard: surf,
       surfboardKey: surfboardVisualKey(surf)
     });
@@ -425,6 +445,26 @@ export class RemotePlayers {
     }
   }
 
+  updateCar(info: RemoteInfo) {
+    const a = this.avatars.get(info.id);
+    if (!a) return;
+    a.info = info;
+    const next = carForInfo(info);
+    const key = carKey(next);
+    a.car = next;
+    if (key === a.carKey) return;
+    a.carKey = key;
+    const old = a.bodies.drive;
+    if (!old) return;
+    a.root.remove(old);
+    (old.userData.dispose as (() => void) | undefined)?.();
+    delete a.bodies.drive;
+    if (a.mode === "drive") {
+      a.mode = null;
+      this.#embody(a, "drive");
+    }
+  }
+
   /** They changed their surfboard. Surfboards are built per remote rather than
    * cloned from a prototype so userData, generated decals, and owned GPU
    * resources cannot leak between players. */
@@ -455,7 +495,8 @@ export class RemotePlayers {
     this.#scene.remove(a.root);
     a.tag.material.map?.dispose();
     a.tag.material.dispose();
-    // Per-player board/scooter/surfboard builds own their resources.
+    // Per-player customizable vehicle builds own their resources.
+    (a.bodies.drive?.userData.dispose as (() => void) | undefined)?.();
     (a.bodies.board?.userData.dispose as (() => void) | undefined)?.();
     (a.bodies.scooter?.userData.dispose as (() => void) | undefined)?.();
     (a.bodies.surf?.userData.dispose as (() => void) | undefined)?.();
@@ -538,9 +579,20 @@ export class RemotePlayers {
       g.userData.remoteRig = rig;
       return g;
     }
+    if (mode === "drive") {
+      const g = buildCarMesh(a.car);
+      const cockpit = g.userData.cockpit as Cockpit | undefined;
+      if (cockpit && !cockpit.hide) {
+        const rig = buildRig(a.avatar);
+        rig.group.position.set(...cockpit.seat);
+        g.add(rig.group);
+        g.userData.remoteRig = rig;
+      }
+      return g;
+    }
     const proto = this.#protos[mode]!;
     const g = proto.clone(true);
-    if (mode === "drive" || mode === "plane" || mode === "speedboat") {
+    if (mode === "plane" || mode === "speedboat") {
       const c = proto.userData.cockpit as Cockpit | undefined;
       if (c && !c.hide) {
         const rig = buildRig(a.avatar);
@@ -622,6 +674,19 @@ export class RemotePlayers {
         ) {
           body.userData.scooterAssetsActivated = true;
           void activateScooterAssets(body);
+        }
+      }
+      if (a.mode === "drive" && this.#carAssetsEnabled) {
+        const local = this.localPlayerPosition();
+        const body = a.bodies.drive;
+        if (
+          local &&
+          body &&
+          !body.userData.carAssetsActivated &&
+          a.root.position.distanceToSquared(local) <= 180 * 180
+        ) {
+          body.userData.carAssetsActivated = true;
+          void activateCarAssets(body);
         }
       }
 

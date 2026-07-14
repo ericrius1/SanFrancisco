@@ -4,7 +4,7 @@ import type { Physics } from "../core/physics";
 import type { PlayerMode } from "../player/types";
 import { DEFAULT_DRIVE_SPEC } from "../player/types";
 import { waterHeight, type WorldMap } from "../world/heightmap";
-import { buildCarMesh } from "../vehicles/car";
+import { buildCarMesh, localCarConfig } from "../vehicles/car";
 import { buildPlaneMesh, collectPlaneAnim, type PlaneAnim } from "../vehicles/plane";
 import { buildBoatMesh, buildSpeedboatMesh } from "../vehicles/boat";
 import { buildDroneMesh } from "../vehicles/drone";
@@ -82,7 +82,7 @@ export const ABANDONED_MOUNT_PROMPT: Record<MountMode, string> = {
 
 const SPECS: Record<MountMode, MountSpec> = {
   drive: {
-    build: buildCarMesh,
+    build: () => buildCarMesh(localCarConfig()),
     halfExtents: driveHalfExtentsWithClearance(CAR_RIDE_HEIGHT, [
       DEFAULT_DRIVE_SPEC.halfExtents[0],
       DEFAULT_DRIVE_SPEC.halfExtents[1],
@@ -201,6 +201,11 @@ const V = {
 };
 
 function disposeObject(root: THREE.Object3D) {
+  const ownedDispose = root.userData.dispose as (() => void) | undefined;
+  if (ownedDispose) {
+    ownedDispose();
+    return;
+  }
   const geometries = new Set<THREE.BufferGeometry>();
   const materials = new Set<THREE.Material>();
   root.traverse((o) => {

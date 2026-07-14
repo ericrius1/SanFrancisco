@@ -2321,6 +2321,13 @@
       }
       #hud .car-toggle .car-ic-front { left: 9px; }
       #hud .car-toggle .car-ic-rear { right: 9px; }
+      #hud .car-launcher-ui .car-ic-body {
+        background: #d74432;
+        border-color: #707b82;
+      }
+      #hud .car-launcher-ui .car-ic-wheel {
+        border-color: #aab3b8;
+      }
       #hud .scooter-panel {
         width: min(390px, calc(100vw - 24px));
         max-height: min(78vh, 650px);
@@ -2918,6 +2925,9 @@
         color: #ffd0a1;
       }
       @media (max-width: 480px) {
+        #hud .car-ui {
+          right: max(8px, env(safe-area-inset-right));
+        }
         #hud .board-panel.scooter-panel {
           width: min(430px, calc(100vw - 16px));
         }
@@ -2927,6 +2937,9 @@
         }
         #hud .car-slider-grid {
           grid-template-columns: minmax(0, 1fr);
+        }
+        #hud .car-panel input[type="range"] {
+          min-height: 24px;
         }
       }
       @media (max-width: 360px) {

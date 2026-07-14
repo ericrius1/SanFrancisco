@@ -324,7 +324,10 @@ async function main() {
         const exp = await ev(c, `window.__sf.minimap.expanded`);
         const trace = await ev(c, `window.__lc2`);
         s = await ev(c, lockState);
-        push("C-esc-overlay-unlocks", !s.el && !s.locked, `open+relock→el=${afterOpen.el}; after Esc: expanded=${exp} el=${s.el} locked=${s.locked}; trace=[${trace}]`);
+        // One Esc must BOTH release the lock AND close the overlay — even though
+        // Chrome reserves the locked keydown for its native pointer-lock exit,
+        // the keyup mirror in main.ts still closes the map on the same press.
+        push("C-esc-overlay-unlocks", !s.el && !s.locked && exp === false, `open+relock→el=${afterOpen.el}; after Esc: expanded=${exp} el=${s.el} locked=${s.locked}; trace=[${trace}]`);
       }
       await ev(c, `document.removeEventListener('pointerlockchange',window.__lch)`);
     }

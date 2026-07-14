@@ -538,6 +538,16 @@ const SCOOTER_CARGO = ["none", "rack", "basket", "topbox"];
 const SCOOTER_PAINT_COUNT = 8;
 const SCOOTER_TRIM_COUNT = 6;
 const SCOOTER_SEAT_COUNT = 6;
+// Stock-car customization — mirrors src/vehicles/car/config.ts. Generated art
+// is referenced by enum only; clients keep image requests behind local gates.
+const CAR_FORMS = ["coast-coupe", "apex-wedge", "trail-box", "mission-gt"];
+const CAR_SURFACES = ["solid", "fogline-graphite", "sunset-terrazzo", "midnight-switchback"];
+const CAR_DECALS = ["none", "coastal-gull", "bridge-flash", "poppy-rush"];
+const CAR_WHEELS = ["split-five", "mesh-ten", "rally-eight"];
+const CAR_PAINT_COUNT = 8;
+const CAR_TRIM_COUNT = 6;
+const CAR_INTERIOR_COUNT = 6;
+const CAR_RIM_COUNT = 5;
 
 const makeFunName = () => `${ADJ[(Math.random() * ADJ.length) | 0]} ${NOUN[(Math.random() * NOUN.length) | 0]}`;
 
@@ -842,6 +852,73 @@ const sanitizeScooter = (raw) => {
   };
 };
 
+const DEFAULT_CAR = {
+  form: "coast-coupe",
+  surface: "solid",
+  decal: "none",
+  wheel: "split-five",
+  paint: 0,
+  trim: 0,
+  interior: 0,
+  rim: 0,
+  paintHex: null,
+  trimHex: null,
+  interiorHex: null,
+  rimHex: null,
+  surfaceScale: 48,
+  decalScale: 50,
+  decalPosition: 52,
+  clearcoat: 72
+};
+
+// Identical seed draw order to the client config. Keep both sides in lockstep.
+const carFromSeed = (seed) => {
+  const roll = lcg(hashSeed(seed));
+  return {
+    form: pick(CAR_FORMS, roll),
+    surface: pick(CAR_SURFACES, roll),
+    decal: pick(CAR_DECALS, roll),
+    wheel: pick(CAR_WHEELS, roll),
+    paint: Math.floor(roll() * CAR_PAINT_COUNT) % CAR_PAINT_COUNT,
+    trim: Math.floor(roll() * CAR_TRIM_COUNT) % CAR_TRIM_COUNT,
+    interior: Math.floor(roll() * CAR_INTERIOR_COUNT) % CAR_INTERIOR_COUNT,
+    rim: Math.floor(roll() * CAR_RIM_COUNT) % CAR_RIM_COUNT,
+    paintHex: null,
+    trimHex: null,
+    interiorHex: null,
+    rimHex: null,
+    surfaceScale: 28 + Math.floor(roll() * 57),
+    decalScale: 28 + Math.floor(roll() * 55),
+    decalPosition: 20 + Math.floor(roll() * 61),
+    clearcoat: 45 + Math.floor(roll() * 51)
+  };
+};
+
+const carKey = (car) =>
+  `${car.form}|${car.surface}|${car.decal}|${car.wheel}|${car.paint}|${car.trim}|${car.interior}|${car.rim}|${car.paintHex}|${car.trimHex}|${car.interiorHex}|${car.rimHex}|${car.surfaceScale}|${car.decalScale}|${car.decalPosition}|${car.clearcoat}`;
+const isDefaultCar = (car) => carKey(car) === carKey(DEFAULT_CAR);
+const sanitizeCar = (raw) => {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  return {
+    form: oneOf(raw.form, CAR_FORMS, DEFAULT_CAR.form),
+    surface: oneOf(raw.surface, CAR_SURFACES, DEFAULT_CAR.surface),
+    decal: oneOf(raw.decal, CAR_DECALS, DEFAULT_CAR.decal),
+    wheel: oneOf(raw.wheel, CAR_WHEELS, DEFAULT_CAR.wheel),
+    paint: intRange(raw.paint, CAR_PAINT_COUNT, DEFAULT_CAR.paint),
+    trim: intRange(raw.trim, CAR_TRIM_COUNT, DEFAULT_CAR.trim),
+    interior: intRange(raw.interior, CAR_INTERIOR_COUNT, DEFAULT_CAR.interior),
+    rim: intRange(raw.rim, CAR_RIM_COUNT, DEFAULT_CAR.rim),
+    paintHex: hexOrNull(raw.paintHex),
+    trimHex: hexOrNull(raw.trimHex),
+    interiorHex: hexOrNull(raw.interiorHex),
+    rimHex: hexOrNull(raw.rimHex),
+    surfaceScale: intRange(raw.surfaceScale, 101, DEFAULT_CAR.surfaceScale),
+    decalScale: intRange(raw.decalScale, 101, DEFAULT_CAR.decalScale),
+    decalPosition: intRange(raw.decalPosition, 101, DEFAULT_CAR.decalPosition),
+    clearcoat: intRange(raw.clearcoat, 101, DEFAULT_CAR.clearcoat)
+  };
+};
+
 const send = (ws, obj) => {
   if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj));
 };
@@ -941,6 +1018,7 @@ wss.on("connection", (ws) => {
     board: boardFromSeed(id),
     scooter: scooterFromSeed(id),
     surfboard: surfboardFromSeed(id),
+    car: carFromSeed(id),
     alive: true,
     budget: MSG_BUDGET_PER_SEC,
     lastState: Date.now(),
@@ -969,6 +1047,8 @@ wss.on("connection", (ws) => {
       if (customScooter && !isDefaultScooter(customScooter)) p.scooter = customScooter;
       const customSurfboard = sanitizeSurfboard(msg.surfboard);
       if (customSurfboard && !isDefaultSurfboard(customSurfboard)) p.surfboard = customSurfboard;
+      const customCar = sanitizeCar(msg.car);
+      if (customCar && !isDefaultCar(customCar)) p.car = customCar;
       send(ws, {
         t: "welcome",
         id,
@@ -984,6 +1064,7 @@ wss.on("connection", (ws) => {
             board: o.board,
             scooter: o.scooter,
             surfboard: o.surfboard,
+            car: o.car,
             golf: o.golf
           })),
         pickle: pickleballWelcome()
@@ -997,7 +1078,8 @@ wss.on("connection", (ws) => {
           avatar: p.avatar,
           board: p.board,
           scooter: p.scooter,
-          surfboard: p.surfboard
+          surfboard: p.surfboard,
+          car: p.car
         },
         id
       );
@@ -1032,6 +1114,10 @@ wss.on("connection", (ws) => {
       const custom = sanitizeSurfboard(msg.surfboard);
       p.surfboard = custom && !isDefaultSurfboard(custom) ? custom : surfboardFromSeed(id);
       broadcast({ t: "surfboard", id, surfboard: p.surfboard }, id);
+    } else if (msg.t === "car") {
+      const custom = sanitizeCar(msg.car);
+      p.car = custom && !isDefaultCar(custom) ? custom : carFromSeed(id);
+      broadcast({ t: "car", id, car: p.car }, id);
     } else if (msg.t === "paint" && Array.isArray(msg.d) && msg.d.length === 7) {
       // paintball shot: [x,y,z,vx,vy,vz,rgb] — pure relay, every client
       // simulates the flight and splats locally

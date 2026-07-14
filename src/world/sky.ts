@@ -95,7 +95,7 @@ export const SKY_TUNING = tunables("sky", {
   // scales the low-sun/night fill (moon key, hemi fill, sky/IBL night palette,
   // moon disc) so full dark and late twilight stay readable; 1 = authored look
   nightBrightness: {
-    v: 1.18,
+    v: 1.55,
     min: 0.4,
     max: 2.5,
     step: 0.05,

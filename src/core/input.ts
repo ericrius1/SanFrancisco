@@ -54,13 +54,14 @@ function shapeAxis(v: number, deadzone: number, curve: number): number {
 
 // button index (standard mapping) → key code it impersonates. X (2) and RT (7)
 // are fire (mouse-hold equivalent for the selected tool), handled separately.
-// Dpad ◀/▶ emit synthetic mode-cycle codes main.ts reads. Face layout follows
-// RDR2 conventions where they map cleanly: Y is the world interact / mount /
-// dismount button (keyboard E), not B. Boost/run/tuck live on L3 only so RT
-// can own the tool action.
+// Dpad ↑/↓/◀/▶ emit synthetic toolbar-nav codes main.ts reads (row focus +
+// within-row cycle; map pin cycle reuses ◀/▶ while expanded). Face layout
+// follows RDR2 conventions where they map cleanly: Y is the world interact /
+// mount / dismount button (keyboard E). Boost/run/tuck live on L3 only so RT
+// can own the tool action. Face B holds fireworks (keyboard B).
 const PAD_BUTTONS: Record<number, string> = {
   0: "Space", //     A: jump / ollie / drift / air brake / hover
-  // 1 B: unbound (RDR2 reload/melee — unused here)
+  1: "KeyB", //      B: fireworks (held)
   3: "KeyE", //      Y: interact / enter-exit vehicle (RDR2-style)
   4: "KeyQ", //      LB: drone down / bird twirl left / (drive also gets PadSlideLeft)
   // 5 RB: bird twirl right / drive PadSlideRight — axis/synthetic (not KeyE, which exits)
@@ -69,9 +70,9 @@ const PAD_BUTTONS: Record<number, string> = {
   9: "KeyP", //      Start: pause
   10: "ShiftLeft", //L3: boost / run / tuck
   11: "KeyC", //     R3: cycle third / first / camera-controls
-  12: "KeyB", //     dpad up: fireworks (held)
-  13: "KeyG", //     dpad down: zero-g
-  14: "PadModePrev", // dpad left/right: cycle travel modes
+  12: "PadNavUp", //  dpad up/down: toolbar row focus (vehicles ↔ tools ↔ swatches)
+  13: "PadNavDown",
+  14: "PadModePrev", // dpad left/right: cycle focused toolbar row (map: pins)
   15: "PadModeNext"
 };
 
