@@ -1,4 +1,5 @@
 import * as THREE from "three/webgpu";
+import { formatInteractPrompt } from "../../core/input";
 import { buildRig, poseIdle, type Rig } from "../../player/rig";
 import { avatarFromSeed } from "../../player/avatar";
 import type { WorldMap } from "../../world/heightmap";
@@ -63,9 +64,9 @@ export class ReverieNpcs {
   promptLine(x: number, z: number, lit: number, total: number, complete: boolean): string | null {
     const npc = this.nearest(x, z, REVERIE_TUNING.promptRadius);
     if (!npc) return null;
-    if (complete) return `E — listen to ${npc.name}`;
-    if (lit === 0) return `E — talk to ${npc.name}`;
-    return `E — check in with ${npc.name}`;
+    if (complete) return formatInteractPrompt(`listen to ${npc.name}`);
+    if (lit === 0) return formatInteractPrompt(`talk to ${npc.name}`);
+    return formatInteractPrompt(`check in with ${npc.name}`);
   }
 
   talk(x: number, z: number, lit: number, total: number, complete: boolean): string | null {

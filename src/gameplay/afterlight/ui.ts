@@ -7,6 +7,8 @@
  * capture hide it through the app's existing HUD controls.
  */
 
+import { interactKeyLabel } from "../../core/input";
+
 export type AfterlightUIState = "idle" | "active" | "failed" | "complete";
 
 export type AfterlightTrackerView = {
@@ -655,7 +657,7 @@ export class AfterlightUI {
   }
 
   /** Persistent proximity prompt. Pass null to dismiss it. */
-  setPrompt(text: string | null, key = "E"): void {
+  setPrompt(text: string | null, key = interactKeyLabel()): void {
     if (this.#disposed) return;
     this.#promptText = text?.trim() || null;
     this.#promptKey.textContent = key;

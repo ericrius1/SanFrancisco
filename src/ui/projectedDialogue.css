@@ -120,6 +120,30 @@
   letter-spacing: 0.04em;
 }
 
+.projected-dialogue__key.is-pad-face[data-face="Y"] {
+  border-color: rgba(242, 206, 107, 0.9);
+  background: linear-gradient(180deg, #e8c45a, #c9a22e);
+  color: #1a1608;
+}
+
+.projected-dialogue__key.is-pad-face[data-face="A"] {
+  border-color: rgba(126, 214, 126, 0.9);
+  background: linear-gradient(180deg, #6fcf6f, #3f9e3f);
+  color: #071407;
+}
+
+.projected-dialogue__key.is-pad-face[data-face="B"] {
+  border-color: rgba(240, 127, 114, 0.9);
+  background: linear-gradient(180deg, #e87a6c, #b9483a);
+  color: #1a0806;
+}
+
+.projected-dialogue__key.is-pad-face[data-face="X"] {
+  border-color: rgba(106, 170, 255, 0.9);
+  background: linear-gradient(180deg, #6aaaff, #3a6fbf);
+  color: #061018;
+}
+
 .projected-dialogue__prompt-label {
   font: 750 12px/1 var(--font, "Newsreader", Georgia, serif);
   letter-spacing: 0.035em;

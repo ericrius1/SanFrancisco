@@ -1,7 +1,7 @@
 import * as THREE from "three/webgpu";
 import { color, float, uv } from "three/tsl";
 import { LIGHT_SCALE } from "../../config";
-import type { Input } from "../../core/input";
+import { localizeInteractText, type Input } from "../../core/input";
 import type { ChaseCamera } from "../../core/camera";
 import type { Physics } from "../../core/physics";
 import type { HUD } from "../../ui/hud";
@@ -677,7 +677,10 @@ export class GolfGame {
         if (near >= 0) {
           const h = this.#course.holes[near];
           if (!this.#teePromptShown) {
-            hud.message(`Press E to start · Hole ${h.ref} · Par ${h.par} · ${h.len}m`, 2.4);
+            hud.message(
+              localizeInteractText(`Press E to start · Hole ${h.ref} · Par ${h.par} · ${h.len}m`),
+              2.4
+            );
             this.#teePromptShown = true;
           }
         } else this.#teePromptShown = false;

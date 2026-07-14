@@ -3627,7 +3627,7 @@
       }
       #loading .start-lede {
         margin: clamp(16px, 2.2vh, 24px) auto clamp(17px, 2.3vh, 26px);
-        max-width: 310px;
+        max-width: 340px;
         color: #515144;
         font-size: clamp(15px, 1.3vw, 17px);
         font-style: italic;
@@ -4042,7 +4042,54 @@
         <div class="title-eyebrow">A living atlas of</div>
         <h1><span>San</span><span>Francisco</span></h1>
         <div class="coordinates"><span>37° 46′ N · 122° 25′ W</span></div>
-        <p class="start-lede">Walk the hills. Follow the fog.<br />Make the city yours.</p>
+        <p class="start-lede" data-start-lede>Walk the hills. Follow the fog.<br />Make the city yours.</p>
+        <script>
+          (() => {
+            const LEDE_LINES = [
+              "Walk the hills",
+              "Follow the fog",
+              "Make the city yours",
+              "Surf the waves",
+              "Find the tea master",
+              "Share tea with Hiro",
+              "Wander the gardens",
+              "Play pickleball",
+              "Fly a kite on the sand",
+              "Walk the labyrinth",
+              "Rake the dry garden",
+              "Sit in stillness",
+              "Listen to the wind",
+              "Chase the afterlight",
+              "Light the palace lamps",
+              "Cross the Golden Gate",
+              "Climb Corona Heights",
+              "Become the phoenix",
+              "Hunt for crabs",
+              "Drift the lagoon",
+              "Draw a bow in the park",
+              "Fetch with the dogs",
+              "Ride the hoverboard",
+              "Watch the gulls wheel",
+              "Trace the drum bridge",
+              "Tee off in the Presidio",
+              "Follow the buskers",
+              "Sit with the koi",
+              "Swim the bay",
+              "Carve the fog line",
+            ];
+            const el = document.querySelector("[data-start-lede]");
+            if (!el) return;
+            const pool = LEDE_LINES.slice();
+            for (let i = pool.length - 1; i > 0; i--) {
+              const j = Math.floor(Math.random() * (i + 1));
+              const tmp = pool[i];
+              pool[i] = pool[j];
+              pool[j] = tmp;
+            }
+            const [a, b, c] = pool;
+            el.innerHTML = `${a}. ${b}.<br />${c}.`;
+          })();
+        </script>
         <div class="loading-status" aria-live="polite">
           <div class="bar"><div data-loading-bar></div></div>
           <div data-loading-label></div>

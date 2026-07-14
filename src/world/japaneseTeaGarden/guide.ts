@@ -5,6 +5,7 @@ import {
   type DialogueTurn,
   type VoiceOutput
 } from "../../gameplay/agents/dialogue";
+import { interactKeyLabel } from "../../core/input";
 import { ProjectedDialogueUI } from "../../ui/projectedDialogue";
 import {
   createScriptedTeaGardenDialogueSource,
@@ -140,8 +141,12 @@ export function createTeaGardenGuide(
   };
 
   const showIdlePrompt = () => {
-    if (uiPresentation === "prompt:idle") return;
-    ui.showPrompt({ speaker: TEA_MASTER_SPEAKER, key: "E", label: "Share tea with Hiro" });
+    // Refresh every approach frame so a mid-prompt kb↔pad switch updates the glyph.
+    ui.showPrompt({
+      speaker: TEA_MASTER_SPEAKER,
+      key: interactKeyLabel(),
+      label: "Share tea with Hiro"
+    });
     uiPresentation = "prompt:idle";
   };
 
@@ -159,10 +164,9 @@ export function createTeaGardenGuide(
 
   const showCurrentTurn = () => {
     if (!currentTurn) return;
-    const key = `turn:${currentTurn.id}`;
-    if (uiPresentation === key) return;
+    // Re-show so next-hint glyphs track kb↔pad switches mid-conversation.
     ui.showTurn(currentTurn);
-    uiPresentation = key;
+    uiPresentation = `turn:${currentTurn.id}`;
   };
 
   const stopVoice = () => {
@@ -281,7 +285,11 @@ export function createTeaGardenGuide(
     } catch (error: unknown) {
       if (!controller.signal.aborted) {
         console.warn("[tea-garden] Dialogue provider failed", error);
-        ui.showPrompt({ speaker: TEA_MASTER_SPEAKER, key: "E", label: "Ask Hiro again" });
+        ui.showPrompt({
+          speaker: TEA_MASTER_SPEAKER,
+          key: interactKeyLabel(),
+          label: "Ask Hiro again"
+        });
         uiPresentation = "prompt:error";
       }
     } finally {

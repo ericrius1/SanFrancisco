@@ -1,6 +1,6 @@
 import * as THREE from "three/webgpu";
 import type { ChaseCamera } from "../../core/camera";
-import type { Input } from "../../core/input";
+import { interactKeyLabel, type Input } from "../../core/input";
 import type { FX } from "../../fx/fx";
 import {
   createPickleball,
@@ -307,7 +307,7 @@ export class PickleballController {
             this.#player.setExternalEmbodimentHidden(true);
             consumed = true;
             prompt = null;
-            this.#hud.message("You’re playing · WASD move · click/Space swings · E leaves", 3.4);
+            this.#hud.message(`You’re playing · WASD move · click/Space swings · ${interactKeyLabel()} leaves`, 3.4);
           }
         }
       }
@@ -478,7 +478,7 @@ export class PickleballController {
       this.#net.claimPickleball(side);
       this.#hud.message("Claiming pickleball side…", 1.4);
     } else if (this.#enterSide(side)) {
-      this.#hud.message("You’re playing · WASD move · click/Space swings · E leaves", 3.4);
+      this.#hud.message(`You’re playing · WASD move · click/Space swings · ${interactKeyLabel()} leaves`, 3.4);
     }
   }
 
@@ -504,7 +504,7 @@ export class PickleballController {
         if (ok && ownerId === this.#net.selfId) {
           this.#pendingClaim = null;
           this.#enterSide(side);
-          this.#hud.message("You’re playing · WASD move · click/Space swings · E leaves", 3.4);
+          this.#hud.message(`You’re playing · WASD move · click/Space swings · ${interactKeyLabel()} leaves`, 3.4);
         } else if (!ok && this.#pendingClaim === side) {
           this.#pendingClaim = null;
           if (this.game?.localSide === side) this.#finishExit(side);

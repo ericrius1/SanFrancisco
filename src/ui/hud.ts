@@ -90,14 +90,14 @@ const KB: Record<PlayerMode, Row[]> = {
   ]
 }
 
-// Xbox controller controls per mode (Input.pollPad's mapping)
+// Xbox controller controls per mode (Input.pollPad's mapping; Y = RDR2-style interact)
 const PAD: Record<PlayerMode, Row[]> = {
   walk: [
     { c: ["RS"], label: "look" },
     { c: ["LS"], label: "move" },
     { c: ["RT"], label: "run" },
     { c: ["A"], label: "jump" },
-    { c: ["B"], label: "hop on a ride" },
+    { c: ["Y"], label: "hop on a ride" },
     { c: ["X"], label: "shoot" }
   ],
   drive: [
@@ -106,7 +106,7 @@ const PAD: Record<PlayerMode, Row[]> = {
     { c: ["LS"], label: "steer" },
     { c: ["A"], label: "drift" },
     { c: ["RT"], label: "boost" },
-    { c: ["B"], label: "get out" },
+    { c: ["Y"], label: "get out" },
     { c: ["X"], label: "shoot" }
   ],
   scooter: [
@@ -115,7 +115,7 @@ const PAD: Record<PlayerMode, Row[]> = {
     { c: ["LS"], label: "steer" },
     { c: ["A"], label: "drift" },
     { c: ["RT"], label: "boost" },
-    { c: ["B"], label: "hop off" }
+    { c: ["Y"], label: "hop off" }
   ],
   plane: [
     { c: ["RS"], label: "aim nose" },
@@ -137,15 +137,15 @@ const PAD: Record<PlayerMode, Row[]> = {
     { c: ["RT", "LT"], label: "throttle" },
     { c: ["LS"], label: "steer" },
     { c: ["RT"], label: "boost" },
-    { c: ["B"], label: "get out" },
+    { c: ["Y"], label: "get out" },
     { c: ["X"], label: "shoot" }
   ],
   drone: [
     { c: ["RS"], label: "aim" },
     { c: ["LS"], label: "move" },
-    { c: ["B", "LB"], label: "up · down" },
+    { c: ["RT", "LT"], label: "up · down" },
     { c: ["A"], label: "hover" },
-    { c: ["RT"], label: "boost" },
+    { c: ["Y"], label: "land" },
     { c: ["X"], label: "shoot" }
   ],
   board: [
@@ -164,7 +164,7 @@ const PAD: Record<PlayerMode, Row[]> = {
     { c: ["LS"], label: "carve left / right" },
     { c: ["A"], label: "flow when ready" },
     { c: ["Auto"], label: "lip launch" },
-    { c: ["B"], label: "exit to beach" }
+    { c: ["Y"], label: "exit to beach" }
   ],
   bird: [
     { c: ["RS"], label: "aim" },
@@ -312,11 +312,10 @@ export class HUD {
 
     const extraRows = (pad
       ? [
-          { c: ["Y"], label: "map" },
+          { c: ["Back"], label: "map" },
           { c: ["R3"], label: "view" },
           { c: ["▲"], label: "fireworks" },
-          { c: ["Start"], label: "pause" },
-          { c: ["Back"], label: "immersive" }
+          { c: ["Start"], label: "pause" }
         ]
       : [
           { c: ["B"], label: "fireworks" },

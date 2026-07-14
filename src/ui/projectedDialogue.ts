@@ -4,6 +4,7 @@ import type {
   DialogueSpeaker,
   DialogueTurn
 } from "../gameplay/agents/dialogue"
+import { interactKeyLabel, localizeInteractText } from "../core/input"
 import "./projectedDialogue.css"
 
 export interface DialogueVector3Like {
@@ -97,7 +98,7 @@ export class ProjectedDialogueUI {
     const offset = options.worldOffset ?? DEFAULT_OFFSET
     this.#worldOffset.set(offset.x, offset.y, offset.z)
     this.#defaultTopic = options.defaultTopic ?? "Conversation"
-    this.#defaultNextHint = options.defaultNextHint ?? "E · Continue"
+    this.#defaultNextHint = options.defaultNextHint ?? `${interactKeyLabel("kb")} · Continue`
 
     projectedDialogueId += 1
     const speakerId = `projected-dialogue-speaker-${projectedDialogueId}`
@@ -179,12 +180,14 @@ export class ProjectedDialogueUI {
 
   showPrompt(options: DialoguePromptOptions = {}): void {
     if (this.#disposed) return
-    const key = visibleText(options.key ?? "E")
+    const key = visibleText(options.key ?? interactKeyLabel())
     const label = visibleText(options.label ?? "Talk") ?? "Talk"
     const speakerName = visibleText(options.speaker?.name)
 
     this.#promptKey.textContent = key ?? ""
     this.#promptKey.hidden = key === null
+    this.#promptKey.classList.toggle("is-pad-face", key === "Y" || key === "A" || key === "B" || key === "X")
+    this.#promptKey.dataset.face = key === "Y" || key === "A" || key === "B" || key === "X" ? key : ""
     this.#promptLabel.textContent = label
     this.#prompt.setAttribute(
       "aria-label",
@@ -203,11 +206,12 @@ export class ProjectedDialogueUI {
     const progress = options.progress === undefined
       ? turn.metadata?.progress
       : options.progress ?? undefined
-    const nextHint = visibleText(
+    const rawHint = visibleText(
       options.nextHint === undefined
         ? turn.metadata?.nextHint ?? this.#defaultNextHint
         : options.nextHint
     )
+    const nextHint = rawHint ? localizeInteractText(rawHint) : null
 
     this.#mark.textContent = Array.from(speakerName)[0]?.toLocaleUpperCase() ?? "•"
     this.#speakerName.textContent = speakerName

@@ -1,4 +1,5 @@
 import * as THREE from "three/webgpu";
+import { formatInteractPrompt } from "../../core/input";
 import type { WorldMap } from "../../world/heightmap";
 import type { GameSite } from "../siteGate";
 import {
@@ -172,15 +173,15 @@ export class PalaceReverieGame {
     if (!this.#awake) return null;
     if (this.#phase === "complete") {
       const npc = this.#npcs.nearest(x, z, REVERIE_TUNING.promptRadius);
-      if (npc) return `E — listen to ${npc.name}`;
+      if (npc) return formatInteractPrompt(`listen to ${npc.name}`);
       return null;
     }
     const lamp = this.#lamps.nearestUnlit(x, z, REVERIE_TUNING.promptRadius);
     if (lamp) {
       const n = this.litCount;
-      if (n === 0) return "E — awaken the first memory lamp";
-      if (n === this.totalLamps - 1) return "E — awaken the last lamp";
-      return `E — awaken lamp (${n}/${this.totalLamps})`;
+      if (n === 0) return formatInteractPrompt("awaken the first memory lamp");
+      if (n === this.totalLamps - 1) return formatInteractPrompt("awaken the last lamp");
+      return formatInteractPrompt(`awaken lamp (${n}/${this.totalLamps})`);
     }
     return this.#npcs.promptLine(x, z, this.litCount, this.totalLamps, false);
   }

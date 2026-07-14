@@ -85,7 +85,7 @@ export class EmbodimentController {
     return true;
   }
 
-  /** E (or pad B): leave any vehicle, creature, or passenger seat for on-foot. */
+  /** E (or pad Y): leave any vehicle, creature, or passenger seat for on-foot. */
   exitToWalk(): boolean {
     const player = this.#player;
     if (this.passengerOf !== null) {

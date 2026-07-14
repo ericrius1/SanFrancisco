@@ -6,7 +6,7 @@
 //   - keyboard E starts an already-standing, already-moving surf session,
 //   - neutral input survives a deterministic endless-wave run,
 //   - mouse and right-stick look cannot move the authored surf camera,
-//   - keyboard E and gamepad B exit onto sand without abandoning a board,
+//   - keyboard E and gamepad Y exit onto sand without abandoning a board,
 //   - standard-gamepad LS/triggers/A map to carve/pump/stall/Flow,
 //   - the shaping room and each cosmetic image remain first-use lazy,
 //   - desktop active play and the mobile shaping panel render nonblank.
@@ -760,10 +760,10 @@ async function main() {
       { flowCharge, flowSerialBefore, padFlow }
     );
 
-    // Physical B maps to the exact E exit action; release and press it again to
+    // Physical Y maps to the exact E exit action; release and press it again to
     // prove the full controller-only leave/retry loop.
     const padExitCount = await evaluate(cdp, "window.__sf.abandonedMounts.count");
-    await setProbePad(cdp, { buttons: { 1: 1 } });
+    await setProbePad(cdp, { buttons: { 3: 1 } });
     await tickFrames(cdp, 2);
     await setProbePad(cdp);
     await tickFrames(cdp, 2);
@@ -772,11 +772,11 @@ async function main() {
         abandoned:s.abandonedMounts.count,x:p.position.x,z:p.position.z};})()`);
     check(
       padExit.mode === "walk" && !padExit.onWater && padExit.abandoned === padExitCount,
-      "standard-gamepad B exits onto the beach without abandoning the board",
+      "standard-gamepad Y exits onto the beach without abandoning the board",
       { beforeAbandoned: padExitCount, ...padExit }
     );
-    await setProbePad(cdp, { buttons: { 1: 1 } });
-    await tickFrames(cdp, 1); // poll B and consume its synthetic KeyE edge
+    await setProbePad(cdp, { buttons: { 3: 1 } });
+    await tickFrames(cdp, 1); // poll Y and consume its synthetic KeyE edge
     await waitEval(cdp, "window.__sf.player.mode==='surf'", 5000,
       "gamepad surf re-entry");
     await setProbePad(cdp);
@@ -784,7 +784,7 @@ async function main() {
     check(
       padReentry.mode === "surf" && padReentry.phase === "ride" &&
         padReentry.grounded && padReentry.speed > 7,
-      "standard-gamepad B re-entry immediately resumes surfing",
+      "standard-gamepad Y re-entry immediately resumes surfing",
       padReentry
     );
 

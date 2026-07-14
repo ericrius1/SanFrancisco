@@ -1,6 +1,6 @@
 // Browser regression probe for the player-facing Tea Master interaction path.
-// Verifies both physical keyboard E and the standard-gamepad B button rather
-// than calling JapaneseTeaGarden.interact() directly.
+// Verifies both physical keyboard E and the standard-gamepad Y button (RDR2-style
+// interact) rather than calling JapaneseTeaGarden.interact() directly.
 //
 // Run: node tools/tea-garden-interaction-browser-probe.mjs
 // Env: SF_PROBE_URL (default http://127.0.0.1:5240), CHROME_BIN
@@ -171,9 +171,9 @@ try {
     });
     window.__teaGardenProbePad = pad;
   });
-  console.log("[probe] standard-gamepad B to continue");
+  console.log("[probe] standard-gamepad Y to continue");
   await page.evaluate(() => {
-    const button = window.__teaGardenProbePad.buttons[1];
+    const button = window.__teaGardenProbePad.buttons[3];
     button.pressed = true;
     button.touched = true;
     button.value = 1;
@@ -190,9 +190,9 @@ try {
     padConnected: controllerSnapshot.padConnected,
     action: controllerSnapshot.guide.hiro.action
   }));
-  assert.equal(controllerSnapshot.guide.hiro.action, "serve", "controller B did not advance the Tea Master conversation");
+  assert.equal(controllerSnapshot.guide.hiro.action, "serve", "controller Y did not advance the Tea Master conversation");
   await page.evaluate(() => {
-    const button = window.__teaGardenProbePad.buttons[1];
+    const button = window.__teaGardenProbePad.buttons[3];
     button.pressed = false;
     button.touched = false;
     button.value = 0;

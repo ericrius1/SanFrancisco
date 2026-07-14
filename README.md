@@ -1,10 +1,10 @@
 # San Francisco
 
-An open-world San Francisco you can **walk, drive, fly, sail, skate and soar**
-through — with friends. It's rebuilt from real OpenStreetMap building/road data
-and USGS elevation, and everything is a rigid body: cars, boats and bodies all
-collide, and the buildings are solid — you bump and stop against them. The bay is
-a custom water shader — calm, clear, Caribbean-green.
+An open-world San Francisco you can **walk, drive, scoot, skate, surf, fly,
+sail and soar** through — with friends. It's rebuilt from real OpenStreetMap
+building/road data and USGS elevation, and everything is a rigid body: cars,
+boats and bodies all collide, and the buildings are solid — you bump and stop
+against them. The bay is a custom water shader — calm, clear, Caribbean-green.
 
 There's no goal and nothing to win. It's a city-sized sandbox with parks to
 wander, sports to play, and a few small worlds tucked inside the big one. Show
@@ -24,17 +24,19 @@ npm run dev      # http://localhost:5179
 ```
 
 `npm run dev` starts vite **and** the multiplayer relay (port 8787) in one
-process; the dev server proxies `/ws` to it. Open the URL, type a name (or keep
-the suggested one), and press Start. Open a second browser window to see
+process; the dev server proxies `/ws` to it. In local dev the world auto-enters
+with a suggested name once it's ready (use `?startscreen=1` to keep the Start
+gate). Production still waits for Start. Open a second browser window to see
 multiplayer working locally.
 
-Sessions default to the **Corona Heights** summit — scenic, cheap to boot, and
-a short walk from the dog park and the jammer trio. The world's assets are
-already committed to the repo (`public/data` for the heightmap/colliders/metadata,
-`public/tiles` for the GLB geometry), so there's nothing to build or download
-first — `npm install` and `npm run dev` is the whole setup. You only need the
-[asset pipeline](#asset-pipeline) if you want to change the map or regenerate
-geometry.
+Sessions default to **Ocean Beach · Surf** — sand at the waterline, board under
+arm. Corona Heights (dog park + jammer trio) is a short map teleport away. The
+world's assets are already committed to the repo (`public/data` for the
+heightmap/colliders/metadata, `public/tiles` for the GLB geometry), so there's
+nothing to build or download first — `npm install` and `npm run dev` is the
+whole setup. You only need the [asset pipeline](#asset-pipeline) if you want to
+change the map or regenerate geometry. Tiles stream in by distance around you
+rather than loading the whole city at once.
 
 ---
 
@@ -45,17 +47,21 @@ use whatever tool is active. That's the whole game.
 
 ### Modes
 
-Press `Shift`+`1`–`7` to switch how you get around. Each one has its own feel:
+Press `1`–`9` to switch how you get around. Each one has its own feel:
 
 | | Mode | Notes |
 | --- | --- | --- |
-| `Shift`+`1` | **Walk** | Run with `Shift`, jump with `Space`. Climb anything you can reach. |
-| `Shift`+`2` | **Drive** | A sports car. `Space` drifts. |
-| `Shift`+`3` | **Fly** | Free flight. Good for getting your bearings over the whole city. |
-| `Shift`+`4` | **Boat** | A sailboat on the bay. Heaves and pitches with the swell. |
-| `Shift`+`5` | **Drone** | Nimble hover; look straight down at the streets. |
-| `Shift`+`6` | **Board** | A hoverboard. `Space` ollies. |
-| `Shift`+`7` | **Bird** | A phoenix. `Space` flaps. Dive and soar. |
+| `1` | **Walk** | Run with `Shift`, jump with `Space`. Climb anything you can reach. |
+| `2` | **Drive** | A sports car. `Space` drifts. |
+| `3` | **Scooter** | Electric scooter — bring a friend. |
+| `4` | **Board** | A hoverboard. `Space` ollies. |
+| `5` | **Surf** | Ocean Beach surfboard. |
+| `6` | **Plane** | Free flight. Good for getting your bearings over the whole city. |
+| `7` | **Boat** | A sailboat on the bay. Heaves and pitches with the swell. |
+| `8` | **Drone** | Nimble hover; look straight down at the streets. `Q` descends. |
+| `9` | **Bird** | A phoenix. `Space` flaps. Dive and soar. `Q` twirls. |
+
+A bay-only **speedboat** unlocks out on the water (not on the number-row roster).
 
 ### Controls
 
@@ -65,15 +71,14 @@ Press `Shift`+`1`–`7` to switch how you get around. Each one has its own feel:
 | `Shift` | Run / boost |
 | `Space` | Jump / drift / ollie / flap / pickleball swing (depends on the mode) |
 | `E` | Mount/dismount a nearby ride, pick up a returned fetch ball, start a nearby activity, or interact with its people and props |
-| `Q` | Cycle the Corona Heights jammer trio to the next song |
-| `1`–`9` | Teleport to the numbered player next to you (or pick a golf club while playing) |
+| `1`–`9` | Switch travel mode (see above); while golfing, pick a club |
+| `Shift`+`1`–`9` | Teleport to the numbered player next to you |
 | `M` | **Full-city map** — drag/scroll to pan/zoom, click a landmark or spot, press Teleport |
 | Left click | Use the current tool; near your golf ball, hold to draw back and release to swing |
 | `B` | Fireworks |
 | `Z` (hold) | Scrub the time of day with the trackpad |
-| `R` | Respawn |
 | `P` | Pause |
-| `C` | Orbit camera |
+| `C` | Cycle camera: third person → first person → free orbit |
 | `I` | Immersive (hide the UI chrome) |
 | `Tab` | Fade the UI |
 | `/` | Live tuning panel (draw distance, fog, foliage, render) |
@@ -96,10 +101,12 @@ toolbar (cycle it with the arrow keys while the UI is up):
 
 Open the map (`M`) and teleport, or just wander. A few of the denser spots:
 
-- **Corona Heights** — default spawn. Red-chert summit, downtown/Mission vista,
-  a dog park just below, and a **jammer trio** (ukulele, handpan, flute) perched
-  on a boulder. Stand nearby to hear their original songbook rotate with a
-  natural quiet break between tunes. Throw the ball tool for the dogs.
+- **Ocean Beach · Surf** — default spawn. Sand at the waterline facing the
+  swell; switch to Surf (`5`) and paddle out.
+- **Corona Heights** — red-chert summit, downtown/Mission vista, a dog park
+  just below, and a **jammer trio** (ukulele, handpan, flute) perched on a
+  boulder. Stand nearby to hear their original songbook rotate with a natural
+  quiet break between tunes. Throw the ball tool for the dogs.
 - **Afterlight** (Buena Vista summit) — a hidden wind observatory in the treeless
   summit clearing west of Corona Heights. Meet Mara and Sol at the loom, press `E`,
   then gather five wandering light-echoes before the fog closes. Restoring the tune
@@ -128,10 +135,10 @@ Open the map (`M`) and teleport, or just wander. A few of the denser spots:
 
 Nothing here is required — it's a list of things people tend to find fun.
 
-- **Fly up first.** Switch to fly or bird (`Shift`+`3` / `Shift`+`7`) and get
-  above the fog. The whole city is easiest to orient from the air.
-- **Hang with the jammers.** Spawn is already on Corona Heights — walk to the
-  boulder, listen for a while, then toss a ball for the dogs.
+- **Fly up first.** Switch to plane or bird (`6` / `9`) and get above the fog.
+  The whole city is easiest to orient from the air.
+- **Hang with the jammers.** Map → **Corona Heights** — walk to the boulder,
+  listen for a while, then toss a ball for the dogs.
 - **Wake the Afterlight.** Map → **Afterlight** (west of Corona Heights). Ask Mara about
   the quiet sky, chase the five colored echoes around the summit, and look up
   when the last note reaches the loom.
@@ -145,8 +152,10 @@ Nothing here is required — it's a list of things people tend to find fun.
   Buildings have real colliders, so you bump and stop against them.
 - **Hunt the critters.** Crabs scuttle along the waterfront. Catch them — the
   satchel bottom-right keeps score.
-- **Sail the bay.** Take the boat (`Shift`+`4`) out past the promenade — the
-  water heaves and the boat trims bow-up as it climbs the swell.
+- **Surf Ocean Beach.** You're already on the sand — press `5`, paddle out, and
+  catch a set.
+- **Sail the bay.** Take the boat (`7`) out past the promenade — the water
+  heaves and the boat trims bow-up as it climbs the swell.
 - **Chase the light.** Hold `Z` and drag to scrub the time of day. Sunset over
   the bridge, then night with tower beacons and Bay Bridge lights lit.
 - **Bring a friend.** Send them your local URL (or the live link). The minimap
@@ -177,11 +186,11 @@ Everyone shares one world. No accounts, no login — connect and you're in.
   **150 ms in the past**, interpolating between the two bracketing snapshots —
   the standard technique for smooth motion over jittery networks. If packets
   stop, avatars hold their last pose instead of extrapolating into walls.
-- **Remote avatars are full embodiments** — walker rig, sports car, plane,
-  sailboat, drone, hoverboard (with rider), phoenix — with name tags, walk/ride
-  animation driven by their reported speed, and *no* extra lights (light-count
-  changes rebuild every GPU pipeline in this renderer; emissive materials do
-  the glowing instead).
+- **Remote avatars are full embodiments** — walker, sports car, scooter, plane,
+  sailboat, drone, hoverboard (with rider), surfboard, phoenix — with name tags,
+  walk/ride animation driven by their reported speed, and *no* extra lights
+  (light-count changes rebuild every GPU pipeline in this renderer; emissive
+  materials do the glowing instead).
 - **Shared toys.** Paintball shots and fireworks volleys relay so friends see
   them. **Golf** shares balls, swings, hole results, and score (striker's sim is
   authoritative; the relay caches state for late joins). **Pickleball** reserves
@@ -218,8 +227,9 @@ Protocol details live at the top of `server/server.mjs` and `src/net/net.ts`.
 - **`src/core/physics.ts`** runs Box3D: a moving "carpet" of static ground boxes follows the
   player (sampling the heightmap + bridge decks), and nearby buildings get static box bodies,
   so a crash is resolved entirely by the contact solver — it just stops you.
-- **`src/player/`** + **`src/vehicles/`** implement the seven embodiments (one
-  `ModeController` per folder) on capped-speed arcade physics.
+- **`src/player/`** + **`src/vehicles/`** implement the nine toolbar modes
+  (plus a bay-only speedboat): walk in `src/player/`, vehicles under
+  `src/vehicles/*/`, each as a `ModeController` on capped-speed arcade physics.
 - **`src/world/water.ts`** is the bay shader: depth-based turquoise gradient from a bay-floor
   texture, gentle Gerstner-ish swell, fresnel sky reflection, sun sparkle, and shore foam.
 - **`src/world/coronaHeights/`** + **`src/gameplay/buskers/`** — summit park, dog park,
@@ -445,10 +455,13 @@ Blender's glTF exporter (`bpy.ops.export_scene.gltf` in
 `tools/blender_city.py`) writes **honest but fat** GLBs: vertex positions,
 normals and colors are stored as raw 32-bit floats, one attribute per vertex,
 with no entropy coding. That's the correct thing for an exporter to do — it has
-no idea how the data will be used — but for a streaming open world it's the
-difference between a snappy load and a stall. A raw export of the whole city is
-**~474 MB across 232 tiles**, and every one of those tiles gets fetched, parsed
-and uploaded to the GPU while the player is standing in the fog waiting to move.
+no idea how the data will be used. A raw export of the whole city is still
+**~474 MB across 232 tiles** (205 city + 25 terrain + landmarks + water). The
+runtime never loads that set at once — `src/world/tiles.ts` streams GLBs and
+colliders in and out by player distance — but every tile that *does* enter the
+ring still has to be fetched, meshopt-decoded, parsed, and uploaded to the GPU.
+Fat float32 buffers make those arrivals hitchy; compressed ones stay snappy
+enough to outrun the camera.
 
 `tools/optimize-tiles.mjs` is a thin post-export pass built on
 [glTF-Transform](https://gltf-transform.dev/) that closes that gap without
@@ -485,24 +498,27 @@ Two things are deliberately left alone:
 - **`landmarks.glb` skips quantization entirely** (meshopt-only). The Salesforce
   Tower crown material reads its mesh's bounding box in world meters to place the
   LED display; quantization rescales geometry into the node transform and would
-  move that box.
+  move that box. Landmarks stay always-resident at runtime (~0.8 MB); Palace of
+  Fine Arts and Sutro Tower are authored in their geographic Blender tile
+  collections and also travel with this bundle.
 
 ### The savings
 
-Compression is roughly **8x on disk**. The over-the-wire win is larger and
-compounds, because meshopt's output gzips a further 2–3x while raw float GLBs
-barely compress at all — so end-to-end the player pulls **~17x less for the
-whole city, and ~25x less for a dense downtown tile**:
+Compression is roughly **8× on disk**. The over-the-wire win is larger and
+compounds, because meshopt's output gzips a further 2–3× while raw float GLBs
+barely compress at all — so end-to-end a dense downtown tile is about **~25×**
+smaller over the wire, and the committed city corpus shrinks from hundreds of
+megabytes to tens:
 
 | | Raw Blender export | After `optimize:tiles` (on disk) | Served gzipped (over the wire) |
 | --- | --- | --- | --- |
-| Whole city (232 tiles) | ~474 MB | ~61 MB | ~27 MB |
-| `tile_4_14.glb` (dense downtown) | 16.6 MB | 1.65 MB | 0.59 MB |
-| `terrain_0_0.glb` (full-8m smooth DEM chunk) | 9.78 MB | 0.98 MB | 0.38 MB |
+| Whole city (232 tiles) | ~474 MB | ~54 MB | ~27 MB |
+| `tile_4_14.glb` (dense downtown) | 16.6 MB | 1.58 MB | 0.59 MB |
+| `terrain_0_0.glb` (full-8m smooth DEM chunk) | 9.78 MB | 0.94 MB | 0.38 MB |
 
-The right-hand column is the number the player feels. Streaming the tiles around
-you pulls tens of megabytes instead of hundreds, so tiles pop in fast enough to
-outrun the camera, mobile clients on cellular don't choke, and the committed
+The right-hand column is the number that matters per fetch. Streaming the tiles
+around you pulls tens of megabytes instead of hundreds, so arrivals stay ahead
+of the camera, mobile clients on cellular don't choke, and the committed
 `public/tiles` directory stays a reasonable size in git. The disk win feeds GPU
 upload too — smaller buffers parse and upload faster, so the hitch when a new
 tile streams in shrinks along with the download.

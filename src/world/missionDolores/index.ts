@@ -1,4 +1,5 @@
 import * as THREE from "three/webgpu";
+import { formatInteractPrompt } from "../../core/input";
 import { BodyType, type Physics } from "../../core/physics";
 import type { GroundTopOverlay, WorldMap } from "../heightmap";
 import { MuseumCtx, type MdWorldBox, type MdWorldMesh } from "./ctx";
@@ -233,7 +234,7 @@ export class MissionDoloresMuseum {
 
     const near = playerMode === "walk" && !this.#book.isOpen && playerPos.distanceTo(this.#bookWorld) < BOOK_REACH + 0.4;
     if (near && !this.#promptShown) {
-      hud.message("E — read the Canticle of the Creatures", 1.8);
+      hud.message(formatInteractPrompt("read the Canticle of the Creatures"), 1.8);
       this.#promptShown = true;
     }
     if (!near) this.#promptShown = false;

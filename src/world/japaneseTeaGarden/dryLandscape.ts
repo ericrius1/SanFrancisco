@@ -1,5 +1,6 @@
 import * as THREE from "three/webgpu";
 import type { FolderApi } from "tweakpane";
+import { formatInteractPrompt } from "../../core/input";
 import type { DebugMonitorBinding } from "../../ui/debug";
 import type { GardenRakeMotion, GardenRakeTool } from "../../player/gardenRake";
 import type { TeaGardenTerrain } from "./layout";
@@ -381,7 +382,7 @@ export function createDryLandscape(map: TeaGardenTerrain, options: DryLandscapeO
       insideSand = inDryLandscape(player.x, player.z, -0.55);
       if (!held) {
         if (mode === "walk" && distanceToRake <= PICKUP_RANGE + 1.2 && !promptVisible) {
-          options.notify?.("E — pick up the little garden rake", 2.1);
+          options.notify?.(formatInteractPrompt("pick up the little garden rake"), 2.1);
           promptVisible = true;
         } else if (distanceToRake > PICKUP_RANGE + 1.8) {
           promptVisible = false;

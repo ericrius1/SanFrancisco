@@ -5,7 +5,7 @@ import * as TSL from "three/tsl";
 import CameraControls from "camera-controls";
 import { CAMERA_TUNING, CITYGEN_TUNING, CONFIG, FLOWER_TUNING, FOLIAGE_TUNING, INPUT_TUNING, RENDER_TUNING, START, START_DEFAULTS, WORLD_TUNING } from "./config";
 import { loadPlayerState, resetAllTweaks, saveTweak } from "./core/persist";
-import { Input } from "./core/input";
+import { Input, formatInteractPrompt, localizeInteractText } from "./core/input";
 import { tracer } from "./core/hitchTracer";
 import { bootMarkStart, bootMark, bootMarkSummary, persistBootHistory } from "./core/bootMarks";
 import { createFrameScheduler } from "./core/frameBudget";
@@ -1529,10 +1529,13 @@ async function boot() {
   const switchMode = (mode: PlayerMode) => {
     const request = ++surfEntryRequest;
     // Surf is an isolated activity context. Prevent number keys, toolbar clicks,
-    // and d-pad travel cycling from silently swapping vehicles mid-wave; E/B is
+    // and d-pad travel cycling from silently swapping vehicles mid-wave; E/Y is
     // the single clear exit back to the beach.
     if (player.mode === "surf" && mode !== "walk") {
-      hud.message("E / B exits surfing — then choose another way to travel", 2.2);
+      hud.message(
+        localizeInteractText("E exits surfing — then choose another way to travel", input.device),
+        2.2
+      );
       return;
     }
     if (mode === "surf") {
@@ -3252,7 +3255,7 @@ async function boot() {
     if (!playingPickleball && input.altPressed("ArrowLeft")) applyPlaceHistory(-1);
     if (!playingPickleball && input.altPressed("ArrowRight")) applyPlaceHistory(1);
 
-    // E / pad B: nearby conversations get first refusal. When the prompt was
+    // E / pad Y: nearby conversations get first refusal. When the prompt was
     // reached on a vehicle or creature, the same press dismounts and is handed
     // back to the conversation once the player is on foot; requiring a second
     // press made Hiro's visible prompt appear unresponsive.
@@ -3774,16 +3777,14 @@ async function boot() {
           ? palaceReverie?.nearbyPrompt(player.position.x, player.position.z) ?? null
           : null;
       if ((drv || nearAnimal || nearSurfBreak || reveriePrompt) && !ridePromptShown) {
-        hud.message(
-          drv
-            ? `E — ride with ${drv.name}`
-            : nearAnimal
-              ? `E — ride the ${nearAnimal.label}`
-              : nearSurfBreak
-                ? "E — start surfing at Ocean Beach"
-                : (reveriePrompt as string),
-          1.8
-        );
+        const rideCopy = drv
+          ? formatInteractPrompt(`ride with ${drv.name}`, input.device)
+          : nearAnimal
+            ? formatInteractPrompt(`ride the ${nearAnimal.label}`, input.device)
+            : nearSurfBreak
+              ? formatInteractPrompt("start surfing at Ocean Beach", input.device)
+              : localizeInteractText(reveriePrompt as string, input.device);
+        hud.message(rideCopy, 1.8);
         ridePromptShown = true;
       }
       if (!drv && !nearAnimal && !nearSurfBreak && !reveriePrompt) ridePromptShown = false;
@@ -3797,7 +3798,7 @@ async function boot() {
       const door = doorScanHit;
       const nearClosedDoor = !!door && !door.open && door.dist < 3.2;
       if (nearClosedDoor && !drv && !nearAnimal && !doorPromptShown) {
-        hud.message("E — open the door", 1.8);
+        hud.message(formatInteractPrompt("open the door", input.device), 1.8);
         doorPromptShown = true;
       }
       if (!nearClosedDoor) doorPromptShown = false;

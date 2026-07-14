@@ -11,10 +11,10 @@ import { INPUT_TUNING } from "../config";
  *
  * A gamepad (Xbox standard mapping) rides the same logical rails: pollPad()
  * translates buttons into the key codes the game already reads (A→Space,
- * B→E, RT→Shift, …), the left stick into the WASD axis pairs (radial deadzone
- * + move curve from INPUT_TUNING), the right stick into mouselook deltas
- * outside the locked surf activity (same deadzone + look curve), and the
- * triggers into the active mode's throttle —
+ * Y→E interact/mount like RDR2, RT→Shift, Back→map, …), the left stick into
+ * the WASD axis pairs (radial deadzone + move curve from INPUT_TUNING), the
+ * right stick into mouselook deltas outside the locked surf activity (same
+ * deadzone + look curve), and the triggers into the active mode's throttle —
  * fly routes them to ↑/↓, bird routes LB/RB to Q/E twirl —
  * so modes/camera/fireworks never see a second input path. `device` tracks
  * whichever input was touched last; the HUD swaps its control labels off it.
@@ -42,14 +42,16 @@ function shapeStick(x: number, y: number, deadzone: number, curve: number): [num
 
 // button index (standard mapping) → key code it impersonates. X (2) is fire,
 // handled separately. Dpad ◀/▶ emit synthetic mode-cycle codes main.ts reads.
+// Face layout follows RDR2 conventions where they map cleanly: Y is the world
+// interact / mount / dismount button (keyboard E), not B.
 const PAD_BUTTONS: Record<number, string> = {
   0: "Space", //     A: jump / ollie / drift / air brake / hover
-  1: "KeyE", //      B: enter-exit vehicle
-  3: "KeyM", //      Y: map toggle
+  // 1 B: unbound (RDR2 reload/melee — unused here)
+  3: "KeyE", //      Y: interact / enter-exit vehicle (RDR2-style)
   4: "KeyQ", //      LB: drone down / bird twirl left
   // 5 RB: bird twirl right — routed via pad axis (not KeyE, which exits)
   7: "ShiftLeft", // RT: boost / run / tuck
-  8: "KeyI", //      Back: hide UI
+  8: "KeyM", //      Back/View: map (RDR2 holds Select for map; tap here)
   9: "KeyP", //      Start: pause
   10: "ShiftLeft", //L3: boost too
   11: "KeyC", //     R3: cycle third / first / camera-controls
@@ -58,6 +60,34 @@ const PAD_BUTTONS: Record<number, string> = {
   14: "PadModePrev", // dpad left/right: cycle travel modes
   15: "PadModeNext"
 };
+
+/** Last keyboard/pad device that produced input — for glyph prompts without plumbing. */
+let lastInputDevice: "kb" | "pad" = "kb";
+
+/** Keyboard E / pad Y (RDR2-style interact). */
+export function interactKeyLabel(device: "kb" | "pad" = lastInputDevice): string {
+  return device === "pad" ? "Y" : "E";
+}
+
+/** `Y — open the door` when a pad is active, else `E — open the door`. */
+export function formatInteractPrompt(action: string, device: "kb" | "pad" = lastInputDevice): string {
+  return `${interactKeyLabel(device)} — ${action}`;
+}
+
+/**
+ * Rewrite keyboard-authored interact copy (`E — …`, `Press E …`, `E · …`) for
+ * the active device. Leaves non-interact text alone.
+ */
+export function localizeInteractText(text: string, device: "kb" | "pad" = lastInputDevice): string {
+  if (device !== "pad") return text;
+  const key = interactKeyLabel("pad");
+  return text
+    .replace(/\bPress E\b/g, `Press ${key}`)
+    .replace(/\bE ·/g, `${key} ·`)
+    .replace(/\bE —/g, `${key} —`)
+    .replace(/\bE \/ B\b/g, `E / ${key}`)
+    .replace(/\bpad B\b/gi, `pad ${key}`);
+}
 
 export type MapPadAxes = { lx: number; ly: number; rx: number; ry: number; lt: number; rt: number };
 
@@ -309,6 +339,7 @@ export class Input {
   #setDevice(device: "kb" | "pad") {
     if (this.device === device) return;
     this.device = device;
+    lastInputDevice = device;
     this.onDeviceChange(device);
   }
 

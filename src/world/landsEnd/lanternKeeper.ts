@@ -7,6 +7,7 @@
 import * as THREE from "three/webgpu";
 import { color } from "three/tsl";
 import { LIGHT_SCALE } from "../../config";
+import { formatInteractPrompt } from "../../core/input";
 import type { WorldMap } from "../heightmap";
 import { avatarFromSeed } from "../../player/avatar";
 import { buildRig, poseIdle, type Rig } from "../../player/rig";
@@ -85,7 +86,7 @@ export class LanternKeeper {
     const near = dx * dx + dz * dz < REACH * REACH;
     if (near && !this.#promptShown) {
       this.#promptShown = true;
-      hud.message("E — speak with the lantern-keeper", 2.2);
+      hud.message(formatInteractPrompt("speak with the lantern-keeper"), 2.2);
     } else if (!near && this.#promptShown) {
       this.#promptShown = false;
     }

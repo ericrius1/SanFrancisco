@@ -1,4 +1,5 @@
 import * as THREE from "three/webgpu";
+import { formatInteractPrompt } from "../../core/input";
 import { PICKLEBALL_COURT as C, PICKLEBALL_TUNING as T } from "./constants";
 import { PickleballCourtView } from "./court";
 import {
@@ -248,9 +249,9 @@ export class PickleballGame {
         distance,
         available: owner === null || local,
         prompt: local
-          ? "E — leave pickleball"
+          ? formatInteractPrompt("leave pickleball")
           : owner === null
-            ? `E — take over ${side === 0 ? "near" : "far"} player`
+            ? formatInteractPrompt(`take over ${side === 0 ? "near" : "far"} player`)
             : `${owner} is playing this side`,
         worldPosition: at
       };

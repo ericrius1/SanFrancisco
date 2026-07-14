@@ -1,6 +1,6 @@
 import * as THREE from "three/webgpu";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
-import type { Input } from "../../core/input";
+import { formatInteractPrompt, type Input } from "../../core/input";
 import type { ChaseCamera } from "../../core/camera";
 import type { HUD } from "../../ui/hud";
 import type { Player } from "../../player/player";
@@ -422,8 +422,8 @@ export class ArcheryGame {
         this.#ui.setPrompt(
           nearRack || nearLine || nearNpc
             ? nearNpc
-              ? "E — Take over this archery lane"
-              : "E — Start archery"
+              ? formatInteractPrompt("Take over this archery lane")
+              : formatInteractPrompt("Start archery")
             : null
         );
       }
