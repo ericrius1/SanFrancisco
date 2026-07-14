@@ -33,7 +33,6 @@ import type { TileStreamer } from "../world/tiles";
 import { TUNABLES_UPDATED_EVENT, withTweakBindingEventsSuppressed, saveTweak } from "../core/persist";
 import { BUSKER_FIREFLY_TUNING } from "../gameplay/buskers/tuning";
 import { VEGETATION_TUNING, applyVegetationTuning } from "../world/vegetation/tuning";
-import type { ShadowDiagnosticsSnapshot } from "../world/shadows/diagnostics";
 import { SHADOW_TUNING } from "../world/shadows/tuning";
 import type { ContactShadowComplement } from "../render/contactShadows";
 
@@ -158,8 +157,6 @@ export class DebugPanel {
   #lightingBindings: { refresh(): void }[] = [];
   #monitorBindings: DebugMonitorBinding[] = [];
   #featureTunings = new Map<string, DebugFeatureTuningRecord>();
-  #shadowMonitorSnapshot: ShadowDiagnosticsSnapshot | null = null;
-  #shadowMonitorView: Record<string, string> | null = null;
   #fogMonitorView: Record<string, string> | null = null;
   #syncingFromSky = false;
   #syncingPane = false;
@@ -287,7 +284,6 @@ export class DebugPanel {
     this.#syncingPane = true;
     try {
       withTweakBindingEventsSuppressed(() => {
-        this.#refreshShadowMonitor(now);
         this.#refreshFogWeatherMonitor();
         for (const binding of this.#lightingBindings) binding.refresh();
         for (const binding of this.#monitorBindings) binding.refresh();
@@ -295,20 +291,6 @@ export class DebugPanel {
     } finally {
       this.#syncingPane = false;
       this.#syncingFromSky = false;
-    }
-  }
-
-  #refreshShadowMonitor(now: number) {
-    const snapshot = this.#shadowMonitorSnapshot;
-    const view = this.#shadowMonitorView;
-    if (!snapshot || !view) return;
-    this.#sky.shadowDiagnostics.writeSnapshot(snapshot, now);
-    for (const domain of snapshot.domains) {
-      const prefix = domain.id;
-      view[`${prefix} age`] = Number.isFinite(domain.ageFrames) ? `${domain.ageFrames} frames` : "pending";
-      view[`${prefix} rate`] = `${domain.updateHz.toFixed(1)} Hz`;
-      view[`${prefix} texel`] = `${(domain.texelMeters * 100).toFixed(1)} cm`;
-      view[`${prefix} reason`] = domain.reason;
     }
   }
 
@@ -383,11 +365,34 @@ export class DebugPanel {
     }
   }
 
+  /**
+   * Insert index for a top-level folder so the pane stays alphabetical after
+   * pinned `metta`, and before non-folder blades (the profiler button).
+   */
+  #alphabeticalFolderIndex(title: string): number {
+    const pane = this.#pane;
+    if (!pane) return 0;
+    const children = pane.children;
+    for (let i = 0; i < children.length; i++) {
+      const child = children[i];
+      if (!isFolderApi(child)) return i;
+      if (child.title === "metta") continue;
+      if (child.title.localeCompare(title, undefined, { sensitivity: "base" }) > 0) {
+        return i;
+      }
+    }
+    return children.length;
+  }
+
   #buildFeatureTuning(record: DebugFeatureTuningRecord) {
     const pane = this.#pane;
     if (!pane || record.folder) return;
 
-    const folder = pane.addFolder({ title: record.registration.title, expanded: false });
+    const folder = pane.addFolder({
+      title: record.registration.title,
+      expanded: false,
+      index: this.#alphabeticalFolderIndex(record.registration.title)
+    });
     record.folder = folder;
     try {
       const result = record.registration.build(folder);
@@ -480,34 +485,9 @@ export class DebugPanel {
     const pane = new Pane({ container: root, title: "tuning — / to close" });
     this.#pane = pane;
 
-    // Shadows first. Parameters stay open for quick A/B work; read-only metrics
-    // are tucked into a collapsed sibling and refresh at the pane's 4 Hz cadence.
-    const shadows = pane.addFolder({ title: "shadows", expanded: true });
-    const shadowParameters = shadows.addFolder({ title: "parameters", expanded: true });
-    SHADOW_TUNING.bind(shadowParameters, {
-      onChange: (key, _value, last) => {
-        if (this.#syncingPane) return;
-        // Avoid resizing the R8 target for every pointer-move while dragging.
-        if (key === "contactResolutionScale" && !last) return;
-        this.#applyShadowTuning();
-      }
-    });
-    const shadowMetrics = shadows.addFolder({ title: "metrics", expanded: false });
-    this.#shadowMonitorSnapshot = this.#sky.shadowDiagnostics.createSnapshotBuffer();
-    this.#shadowMonitorView = {};
-    for (const { id } of this.#shadowMonitorSnapshot.domains) {
-      for (const suffix of ["age", "rate", "texel", "reason"]) {
-        const key = `${id} ${suffix}`;
-        this.#shadowMonitorView[key] = "pending";
-        this.#monitorBindings.push(
-          shadowMetrics.addBinding(this.#shadowMonitorView, key, { readonly: true, label: key })
-        );
-      }
-    }
-
-    // Session meta — foliage / draw distance / day cycle. Open, right under
-    // shadows; everything else starts collapsed.
-    const meta = pane.addFolder({ title: "meta", expanded: true });
+    // Master/meta knobs stay open at the top. Everything else is collapsed and
+    // sorted alphabetically below.
+    const meta = pane.addFolder({ title: "metta", expanded: true });
 
     // MASTER foliage switch. One checkbox hides AND stops per-frame work for
     // the ENTIRE vegetation system (all trees, grass, flowers, shrubs).
@@ -585,7 +565,123 @@ export class DebugPanel {
       }
     });
 
-    // Render knobs live under meta (not buried in advanced). Fog nests here.
+    // --- alphabetical folders (after metta) ---
+
+    const advanced = pane.addFolder({ title: "advanced", expanded: false });
+
+    // Bay Bridge light installation. Brightness multiplies the sky-driven
+    // BAY_LIGHTS_INTENSITY, same shape as the crown below.
+    const bay = advanced.addFolder({ title: "bay lights" });
+    BAY_LIGHTS_SLIDERS.bind(bay, {
+      onChange: (key, value) => (BAY_LIGHTS_TUNING[key].value = value as number)
+    });
+
+    // free-orbit camera (C): duration of the O-key 180° flip around the target
+    const cameraF = advanced.addFolder({ title: "camera" });
+    CAMERA_TUNING.bind(cameraF);
+
+    // gamepad look polarity — master switch for every mode (walk + vehicles)
+    const controls = advanced.addFolder({ title: "controls" });
+    INPUT_TUNING.bind(controls);
+
+    // foliage detail knobs (the master on/off lives in the metta folder above).
+    const foliage = advanced.addFolder({ title: "foliage" });
+    const grass = foliage.addFolder({ title: "grass" });
+    GRASS_TUNING.bind(grass, {
+      onChange: (_key, _value, last) => {
+        if (last) this.#refreshGrass();
+      }
+    });
+    const sharedVegetation = foliage.addFolder({ title: "shared wind + canopy" });
+    VEGETATION_TUNING.bind(sharedVegetation, {
+      onChange: () => applyVegetationTuning()
+    });
+    // Wildflower ring: density + clump↔scatter shaping. The ring reads these live on
+    // its next re-scatter; force one now (on slider RELEASE only, `last`) so the edit
+    // shows without waiting for the player to walk.
+    const flowers = foliage.addFolder({ title: "wildflowers" });
+    FLOWER_TUNING.bind(flowers, {
+      onChange: (_key, _value, last) => {
+        if (last) this.#refreshFlowers();
+      }
+    });
+
+    const goldenGate = advanced.addFolder({ title: "golden gate lights" });
+    GOLDEN_GATE_LIGHTS_SLIDERS.bind(goldenGate, {
+      onChange: (key, value) => (GOLDEN_GATE_LIGHTS_TUNING[key].value = value as number)
+    });
+
+    // Alpha-hashed tee volumes poll these values into shader uniforms each
+    // frame, so both the coverage and Fresnel rim can be judged in place.
+    const golfBeacons = advanced.addFolder({ title: "golf tee beacons" });
+    TEE_BEACON_TUNING.bind(golfBeacons);
+
+    const lighting = advanced.addFolder({ title: "lighting" });
+    RENDER_TUNING.bind(lighting, {
+      // greyCards is a persisted toggle only — main's tick polls the live value
+      // and poses the calibration chart (src/ui/calibrationChart.ts).
+      keys: ["exposure", "greyCards"],
+      onChange: (key, value) => {
+        if (key === "exposure") {
+          this.#renderer.toneMappingExposure = value as number;
+        }
+      }
+    });
+    // day grade: where daylight lands on the ACES curve (sun key + sky fill).
+    // Read by #applySun — re-run it so a drag re-grades even with time pinned.
+    SKY_TUNING.bind(lighting, {
+      keys: ["sunDay", "hemiDay"],
+      onChange: () => this.#sky.applyLightGrade()
+    });
+
+    this.#moveFolders = addMovementTuning(advanced);
+
+    // nature soundscape mix — engine polls these live each frame, no side effects
+    const natureF = advanced.addFolder({ title: "nature audio", expanded: false });
+    NATURE_AUDIO_TUNING.bind(natureF);
+
+    // Particle systems live together; fireflies are a tiny CPU-driven ambient
+    // group, while fireworks own their GPU simulation controls and monitors.
+    const particles = advanced.addFolder({ title: "particles" });
+    const fireflies = particles.addFolder({ title: "busker fireflies" });
+    BUSKER_FIREFLY_TUNING.bind(fireflies);
+    this.#monitorBindings.push(...(this.#fireworks?.addTuning(particles) ?? []));
+
+    // Salesforce crown projection. Brightness is a multiplier on the sky-driven
+    // CROWN_INTENSITY, which is rewritten every frame.
+    const crown = advanced.addFolder({ title: "tower projection" });
+    CROWN_SLIDERS.bind(crown, {
+      onChange: (key, value) => (CROWN_TUNING[key].value = value as number)
+    });
+
+    // proximity voice chat: Voice.update polls these live every frame, so
+    // plain persisted bindings are enough — no onChange side effects
+    const voiceF = advanced.addFolder({ title: "voice chat" });
+    VOICE_TUNING.bind(voiceF);
+    // procedural building DETAIL (src/world/citygen) — how many nearby buildings get
+    // the full grammar mesh. Reach comes from the top-level draw-distance slider.
+    // The ring reads these live each scan, so no onChange side-effect is needed —
+    // drag + watch the fps counter and the near-detail band move.
+    const citygenF = pane.addFolder({ title: "buildings (citygen)", expanded: false });
+    CITYGEN_TUNING.bind(citygenF, { onChange: () => {} });
+
+    // Stylized post effects: toggles select retained shader variants; sliders
+    // are live uniforms — see render/postfx.ts.
+    const postfx = pane.addFolder({ title: "post fx", expanded: false });
+    POSTFX_TUNING.bind(postfx, {
+      onChange: (key, _value, last) => {
+        if (this.#syncingPane) return;
+        if ((POSTFX_TOGGLES as readonly string[]).includes(key)) this.#postfx?.applyPostFx();
+        else if ((POSTFX_QUALITY_KEYS as readonly string[]).includes(key)) {
+          if (last) this.#postfx?.applyPostQuality();
+        }
+        else if ((POSTFX_RADIAL_LIGHT_KEYS as readonly string[]).includes(key)) {
+          if (key !== "museumRaysResolution" || last) this.#postfx?.applyRadialLightFx();
+        } else applyPostFxParams();
+      }
+    });
+
+    // Render knobs. Fog nests here.
     const rendering = pane.addFolder({ title: "rendering", expanded: false });
     RENDER_TUNING.bind(rendering, {
       keys: ["pixelRatio"],
@@ -636,124 +732,28 @@ export class DebugPanel {
     }
     this.#refreshFogWeatherMonitor();
 
-    // procedural building DETAIL (src/world/citygen) — how many nearby buildings get
-    // the full grammar mesh. Reach comes from the top-level draw-distance slider.
-    // The ring reads these live each scan, so no onChange side-effect is needed —
-    // drag + watch the fps counter and the near-detail band move.
-    const citygenF = pane.addFolder({ title: "buildings (citygen)", expanded: false });
-    CITYGEN_TUNING.bind(citygenF, { onChange: () => {} });
-
-    // Stylized post effects: toggles select retained shader variants; sliders
-    // are live uniforms — see render/postfx.ts.
-    const postfx = pane.addFolder({ title: "post fx", expanded: false });
-    POSTFX_TUNING.bind(postfx, {
+    // Strength + contact essentials only. Bias / fade minutiae stay off the pane.
+    const shadows = pane.addFolder({ title: "shadows", expanded: false });
+    SHADOW_TUNING.bind(shadows, {
+      keys: [
+        "enabled",
+        "heroStrength",
+        "localStrength",
+        "farStrength",
+        "farFieldStrength",
+        "contactEnabled",
+        "contactIntensity",
+        "contactResolutionScale",
+        "contactMaxDistance",
+        "contactFadeEnd"
+      ],
       onChange: (key, _value, last) => {
         if (this.#syncingPane) return;
-        if ((POSTFX_TOGGLES as readonly string[]).includes(key)) this.#postfx?.applyPostFx();
-        else if ((POSTFX_QUALITY_KEYS as readonly string[]).includes(key)) {
-          if (last) this.#postfx?.applyPostQuality();
-        }
-        else if ((POSTFX_RADIAL_LIGHT_KEYS as readonly string[]).includes(key)) {
-          if (key !== "museumRaysResolution" || last) this.#postfx?.applyRadialLightFx();
-        } else applyPostFxParams();
+        // Avoid resizing the R8 target for every pointer-move while dragging.
+        if (key === "contactResolutionScale" && !last) return;
+        this.#applyShadowTuning();
       }
     });
-
-    const advanced = pane.addFolder({ title: "advanced", expanded: false });
-
-    const lighting = advanced.addFolder({ title: "lighting" });
-    RENDER_TUNING.bind(lighting, {
-      // greyCards is a persisted toggle only — main's tick polls the live value
-      // and poses the calibration chart (src/ui/calibrationChart.ts).
-      keys: ["exposure", "greyCards"],
-      onChange: (key, value) => {
-        if (key === "exposure") {
-          this.#renderer.toneMappingExposure = value as number;
-        }
-      }
-    });
-    // day grade: where daylight lands on the ACES curve (sun key + sky fill).
-    // Read by #applySun — re-run it so a drag re-grades even with time pinned.
-    SKY_TUNING.bind(lighting, {
-      keys: ["sunDay", "hemiDay"],
-      onChange: () => this.#sky.applyLightGrade()
-    });
-
-    // free-orbit camera (C): duration of the O-key 180° flip around the target
-    const cameraF = advanced.addFolder({ title: "camera" });
-    CAMERA_TUNING.bind(cameraF);
-
-    // gamepad look polarity — master switch for every mode (walk + vehicles)
-    const controls = advanced.addFolder({ title: "controls" });
-    INPUT_TUNING.bind(controls);
-
-    // foliage detail knobs (the master on/off lives in the meta folder above).
-    const foliage = advanced.addFolder({ title: "foliage" });
-    const sharedVegetation = foliage.addFolder({ title: "shared wind + canopy" });
-    VEGETATION_TUNING.bind(sharedVegetation, {
-      onChange: () => applyVegetationTuning()
-    });
-    // Wildflower ring: density + clump↔scatter shaping. The ring reads these live on
-    // its next re-scatter; force one now (on slider RELEASE only, `last`) so the edit
-    // shows without waiting for the player to walk.
-    const flowers = foliage.addFolder({ title: "wildflowers" });
-    FLOWER_TUNING.bind(flowers, {
-      onChange: (_key, _value, last) => {
-        if (last) this.#refreshFlowers();
-      }
-    });
-
-    // Grass ring: density + patchiness, independent of the flowers but sharing
-    // the same global wind. Re-scatters on slider RELEASE (`last`) so the edit
-    // shows immediately without waiting for the player to walk.
-    const grass = foliage.addFolder({ title: "grass" });
-    GRASS_TUNING.bind(grass, {
-      onChange: (_key, _value, last) => {
-        if (last) this.#refreshGrass();
-      }
-    });
-
-    // Salesforce crown projection. Brightness is a multiplier on the sky-driven
-    // CROWN_INTENSITY, which is rewritten every frame.
-    const crown = advanced.addFolder({ title: "tower projection" });
-    CROWN_SLIDERS.bind(crown, {
-      onChange: (key, value) => (CROWN_TUNING[key].value = value as number)
-    });
-
-    // Bay Bridge light installation. Brightness multiplies the sky-driven
-    // BAY_LIGHTS_INTENSITY, same shape as the crown above.
-    const bay = advanced.addFolder({ title: "bay lights" });
-    BAY_LIGHTS_SLIDERS.bind(bay, {
-      onChange: (key, value) => (BAY_LIGHTS_TUNING[key].value = value as number)
-    });
-
-    const goldenGate = advanced.addFolder({ title: "golden gate lights" });
-    GOLDEN_GATE_LIGHTS_SLIDERS.bind(goldenGate, {
-      onChange: (key, value) => (GOLDEN_GATE_LIGHTS_TUNING[key].value = value as number)
-    });
-
-    // Alpha-hashed tee volumes poll these values into shader uniforms each
-    // frame, so both the coverage and Fresnel rim can be judged in place.
-    const golfBeacons = advanced.addFolder({ title: "golf tee beacons" });
-    TEE_BEACON_TUNING.bind(golfBeacons);
-
-    // proximity voice chat: Voice.update polls these live every frame, so
-    // plain persisted bindings are enough — no onChange side effects
-    const voiceF = advanced.addFolder({ title: "voice chat" });
-    VOICE_TUNING.bind(voiceF);
-
-    // nature soundscape mix — engine polls these live each frame, no side effects
-    const natureF = advanced.addFolder({ title: "nature audio", expanded: false });
-    NATURE_AUDIO_TUNING.bind(natureF);
-
-    this.#moveFolders = addMovementTuning(advanced);
-
-    // Particle systems live together; fireflies are a tiny CPU-driven ambient
-    // group, while fireworks own their GPU simulation controls and monitors.
-    const particles = advanced.addFolder({ title: "particles" });
-    const fireflies = particles.addFolder({ title: "busker fireflies" });
-    BUSKER_FIREFLY_TUNING.bind(fireflies);
-    this.#monitorBindings.push(...(this.#fireworks?.addTuning(particles) ?? []));
 
     // Optional feature modules register callbacks rather than being imported by
     // this file. Materialize any surfaces that arrived before the first `/` now;

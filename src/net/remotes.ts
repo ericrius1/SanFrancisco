@@ -628,8 +628,8 @@ export class RemotePlayers {
       if (Math.abs(a.vy) > 3.2) {
         poseAir(rig);
       } else if (h > 0.35) {
-        a.strideT += dt * (3.2 + h * 1.15);
-        poseWalk(rig, a.strideT, THREE.MathUtils.clamp((h - 6) / 4.8, 0, 1));
+        a.strideT += dt * (3.0 + h * 1.05);
+        poseWalk(rig, a.strideT, THREE.MathUtils.clamp((h - 5.2) / 6.3, 0, 1));
       } else {
         poseIdle(rig, a.animT);
       }

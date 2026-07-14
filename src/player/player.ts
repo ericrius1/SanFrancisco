@@ -1530,8 +1530,9 @@ export class Player {
         if (h > 0.35) {
           const tw = WALK_TUNING.values;
           // cadence scales with speed so the athletic sprint doesn't look like
-          // moonwalk-slow legs under a fast capsule
-          this.#strideT += dt * (3.5 + h * 1.35);
+          // moonwalk-slow legs under a fast capsule — kept a touch under the
+          // old rate so full sprint reads grounded instead of flailing
+          this.#strideT += dt * (3.0 + h * 1.05);
           const runBlend = THREE.MathUtils.clamp(
             (h - tw.speed) / Math.max(0.1, tw.runSpeed - tw.speed),
             0,

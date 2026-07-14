@@ -152,10 +152,12 @@ Selecting `procedural SF` stops the feed. Selecting a live-capable mode later st
 The Rendering / Fog folder contains:
 
 - **All fog** — enables or disables the fog system.
-- **Master density** — globally scales the marine bank, distance haze, and localized mist; default 85%, range 0–150%. The cull-edge concealment veil is intentionally excluded because it hides world-streaming boundaries rather than representing weather.
+- **Master density** — globally scales the marine bank, distance haze, and localized mist. The cull-edge concealment veil is intentionally excluded because it hides world-streaming boundaries rather than representing weather.
 - **Weather source** — selects one of the three modes above.
-- **Live influence** — maximum requested live blend in `procedural + live`; default 70%.
+- **Live influence** — maximum requested live blend in `procedural + live`.
 - Existing art controls for height, marine bank, billow, motion, and distance haze.
+
+Slider defaults, ranges, and labels live in `WORLD_TUNING` in `src/config.ts` — treat those tweakpane params as the source of truth, not this doc.
 
 Read-only diagnostics in the same folder report the active driver, San Francisco date, actual live mix, bank and haze levels, coastal-front state, observation summary, provider detail, satellite status, and receipt time. The actual live mix is the useful truth: it reflects mode, real-clock eligibility, confidence, and freshness rather than merely echoing the requested slider.
 

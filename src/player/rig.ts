@@ -569,24 +569,24 @@ export function poseIdle(r: Rig, t: number) {
  *  *back* into the sprint which read as flailing; this tips into the run like
  *  a Nike spot — hips drive, chest over the lead foot, high knees, tight arms. */
 export function poseWalk(r: Rig, t: number, run: number) {
-  const swing = 0.58 + run * 0.72; // longer stride at sprint
+  const swing = 0.52 + run * 0.55; // longer stride at sprint, capped short of flail
   const sL = Math.sin(t);
   const sR = Math.sin(t + Math.PI);
   // push-off bob: deeper at sprint so the silhouette loads then springs
-  r.hips.position.y = -(0.02 + run * 0.06) * (0.5 - 0.5 * Math.cos(2 * t));
+  r.hips.position.y = -(0.02 + run * 0.045) * (0.5 - 0.5 * Math.cos(2 * t));
   // whole-hip tip into the run + a touch of counter-rotate with the stride
-  const lean = -0.05 - run * 0.32; // walk slight forward → sprint aggressive
-  set(r.hips, lean * 0.4, sL * 0.05 * run, 0);
-  set(r.torso, lean * 0.7, sL * (0.06 + run * 0.08), 0);
+  const lean = -0.05 - run * 0.24; // walk slight forward → sprint athletic
+  set(r.hips, lean * 0.4, sL * 0.04 * run, 0);
+  set(r.torso, lean * 0.7, sL * (0.05 + run * 0.06), 0);
   // lift the head against the lean so eyes stay on the horizon
-  set(r.head, -lean * 0.55 - run * 0.05, sL * 0.03, 0);
-  set(r.legL, sL * swing, 0, 0.015 * run);
-  set(r.legR, sR * swing, 0, -0.015 * run);
+  set(r.head, -lean * 0.55 - run * 0.04, sL * 0.025, 0);
+  set(r.legL, sL * swing, 0, 0.012 * run);
+  set(r.legR, sR * swing, 0, -0.012 * run);
   // higher knee drive when sprinting
-  set(r.shinL, -Math.max(0, Math.sin(t + Math.PI * 0.55)) * (0.55 + run * 1.0), 0, 0);
-  set(r.shinR, -Math.max(0, Math.sin(t + Math.PI * 1.55)) * (0.55 + run * 1.0), 0, 0);
+  set(r.shinL, -Math.max(0, Math.sin(t + Math.PI * 0.55)) * (0.5 + run * 0.75), 0, 0);
+  set(r.shinR, -Math.max(0, Math.sin(t + Math.PI * 1.55)) * (0.5 + run * 0.75), 0, 0);
   // tight opposite arm pump, elbows tucked; ~90° forearms at full sprint
-  const armSwing = swing * (0.7 + run * 0.35);
+  const armSwing = swing * (0.65 + run * 0.28);
   set(r.armL, sR * armSwing, 0, 0.07 + run * 0.05);
   set(r.armR, sL * armSwing, 0, -(0.07 + run * 0.05));
   set(r.foreL, 0.4 + run * 0.5 + Math.max(0, sR) * 0.12, 0, 0);
