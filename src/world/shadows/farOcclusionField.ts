@@ -1,19 +1,9 @@
 import * as THREE from "three/webgpu"
-import { mix, positionWorld, renderGroup, smoothstep, texture, uniform, vec2 } from "three/tsl"
+import { mix, positionWorld, renderGroup, smoothstep, texture, uniform } from "three/tsl"
 import { FAR_OCCLUDER_STRIDE } from "./farOcclusionCore"
 import { composeDualEnvelopeVisibility } from "./visibilityComposition"
 
 type N = any
-
-/**
- * Radius (in atlas texels) of the rotated 4-tap softening kernel sampled per
- * fragment. A single 16 m-texel tap gives far shadow edges a hard, stair-
- * stepped silhouette; averaging four taps ~0.65 texel out spreads a ~1.3-texel
- * penumbra so mid-distance shadows read soft instead of blocky. Sentinel
- * (no-occlusion) taps resolve to fully lit, so the average feathers cleanly
- * toward light at edges.
- */
-const FAR_OCCLUSION_SOFTEN_TEXELS = 0.65
 
 export const FAR_OCCLUSION_DEFAULTS = {
   /** 16 m resolves skyline-scale massing while keeping the full SF atlas < 4 MB. */
@@ -477,49 +467,27 @@ export class FarOcclusionField {
     rawVisibility: N
     coverage: N
   } {
-    const uv = worldPositionNode.xz.sub(this.#boundsUniform.xy).div(this.#boundsUniform.zw)
+    const { field, coverage } = this.#sampleContext(worldPositionNode)
     const receiverY = worldPositionNode.y.add(this.options.receiverBiasMeters)
-    const outerSoftness = this.options.outerVerticalSoftnessMeters
-    const coreSoftness = this.options.coreVerticalSoftnessMeters
-    const outerStrength = this.options.outerShadowStrength as N
-    const coreStrength = this.options.coreShadowStrength as N
-    // One dual-envelope visibility sample at a given atlas UV.
-    const sampleVisibility = (sampleUv: N): N => {
-      const field = texture(this.texture, sampleUv)
-      const outerCeilingVisibility = smoothstep(
-        field.r.sub(outerSoftness),
-        field.r.add(outerSoftness),
-        receiverY
-      )
-      const coreCeilingVisibility = smoothstep(
-        field.g.sub(coreSoftness),
-        field.g.add(coreSoftness),
-        receiverY
-      )
-      return composeDualEnvelopeVisibility(
-        outerCeilingVisibility as N,
-        coreCeilingVisibility as N,
-        1 as N,
-        outerStrength,
-        coreStrength,
-        (a, b, weight) => (mix as N)(a, b, weight),
-        (a, b) => (a as N).min(b as N)
-      )
-    }
-    // Rotated 4-tap kernel: average visibility (not raw ceiling heights, which
-    // carry a large no-occlusion sentinel that would corrupt an average) so the
-    // 16 m-quantized shadow edge gains a soft penumbra instead of a hard step.
-    const du = FAR_OCCLUSION_SOFTEN_TEXELS / this.#stats.width
-    const dv = FAR_OCCLUSION_SOFTEN_TEXELS / this.#stats.height
-    const rawVisibility = sampleVisibility(uv.add(vec2(du, dv)))
-      .add(sampleVisibility(uv.add(vec2(-du, dv))))
-      .add(sampleVisibility(uv.add(vec2(du, -dv))))
-      .add(sampleVisibility(uv.add(vec2(-du, -dv))))
-      .mul(0.25)
-    // Availability + world-edge guard (sampled once at the fragment centre).
-    const edgeDistance = uv.x.min(uv.y).min(uv.x.oneMinus()).min(uv.y.oneMinus())
-    const edgeFadeUv = this.options.edgeFadeTexels / Math.min(this.#stats.width, this.#stats.height)
-    const coverage = smoothstep(0, edgeFadeUv, edgeDistance).mul(this.#availabilityUniform)
+    const outerCeilingVisibility = smoothstep(
+      field.r.sub(this.options.outerVerticalSoftnessMeters),
+      field.r.add(this.options.outerVerticalSoftnessMeters),
+      receiverY
+    )
+    const coreCeilingVisibility = smoothstep(
+      field.g.sub(this.options.coreVerticalSoftnessMeters),
+      field.g.add(this.options.coreVerticalSoftnessMeters),
+      receiverY
+    )
+    const rawVisibility = composeDualEnvelopeVisibility(
+      outerCeilingVisibility as N,
+      coreCeilingVisibility as N,
+      1 as N,
+      this.options.outerShadowStrength as N,
+      this.options.coreShadowStrength as N,
+      (a, b, weight) => (mix as N)(a, b, weight),
+      (a, b) => (a as N).min(b as N)
+    )
     return { rawVisibility, coverage }
   }
 
@@ -530,6 +498,18 @@ export class FarOcclusionField {
     this.#worker = null
     this.texture.dispose()
     this.#setCounts.clear()
+  }
+
+  #sampleContext(worldPositionNode: N): { field: N; coverage: N } {
+    const uv = worldPositionNode.xz.sub(this.#boundsUniform.xy).div(this.#boundsUniform.zw)
+    const field = texture(this.texture, uv)
+    const edgeDistance = uv.x.min(uv.y).min(uv.x.oneMinus()).min(uv.y.oneMinus())
+    const edgeFadeUv = this.options.edgeFadeTexels / Math.min(this.#stats.width, this.#stats.height)
+    const edgeWeight = smoothstep(0, edgeFadeUv, edgeDistance)
+    return {
+      field,
+      coverage: edgeWeight.mul(this.#availabilityUniform)
+    }
   }
 
   #applyBuilt(message: WorkerBuiltMessage): void {
