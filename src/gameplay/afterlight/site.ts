@@ -14,10 +14,11 @@ import {
 } from "three/tsl";
 import { LIGHT_SCALE } from "../../config";
 import { avatarFromSeed, type AvatarTraits } from "../../player/avatar";
-import { buildRig, poseIdle, type Rig } from "../../player/rig";
+import { buildRig, poseIdle, setHandPose, type Rig } from "../../player/rig";
 import { CANVAS_FONT_FAMILY } from "../../core/typography";
 import type { WorldMap } from "../../world/heightmap";
 import { AFTERLIGHT_CENTER, AFTERLIGHT_TUNING, ECHO_LAYOUT, KEEPER_LAYOUT } from "./layout";
+import { CosmicEnergyWeb, WEB_TUNING } from "./energyWeb";
 
 type N = any;
 type ScalarUniform = { value: number };
@@ -42,6 +43,13 @@ type KeeperVisual = {
   rig: Rig;
   label: THREE.Sprite;
   phase: number;
+};
+
+type Celebrant = {
+  rig: Rig;
+  phase: number;
+  armPhase: number;
+  swirl: number;
 };
 
 function clamp01(value: number): number {
@@ -207,9 +215,13 @@ export class AfterlightSiteVisuals {
   #keepers: KeeperVisual[] = [];
   #loomRings = new THREE.Group();
   #loomCharge = uniform(0);
-  #completion = uniform(0);
-  #visitors: THREE.Group[] = [];
   #glowTexture = makeRadialTexture();
+  #celebrants: Celebrant[] = [];
+  #web: CosmicEnergyWeb | null = null;
+  #anchorHands: THREE.Group[] = [];
+  #energy = WEB_TUNING.baseEnergy;
+  #energyTarget = WEB_TUNING.baseEnergy;
+  #handWorld = new THREE.Vector3();
   #elapsed = 0;
 
   constructor(map: WorldMap) {
@@ -222,7 +234,7 @@ export class AfterlightSiteVisuals {
     this.#buildLoom();
     this.#buildEchoes();
     this.#buildKeepers();
-    this.#buildVisitors();
+    this.#buildCelebrants();
   }
 
   setAwake(on: boolean): void {
@@ -248,8 +260,9 @@ export class AfterlightSiteVisuals {
 
   setCompletion(value: number): void {
     const completion = clamp01(value);
-    this.#completion.value = completion;
-    for (const visitor of this.#visitors) visitor.visible = completion > 0.002;
+    // Celebrants + web are ambient whenever the site is awake; completion just
+    // surges the web energy (brighter, higher arms) for the finale.
+    this.#energyTarget = WEB_TUNING.baseEnergy + completion * (1 - WEB_TUNING.baseEnergy);
   }
 
   petalTarget(index: number, out = new THREE.Vector3()): THREE.Vector3 {
@@ -289,10 +302,37 @@ export class AfterlightSiteVisuals {
       }
       keeper.label.position.y = 2.82 + Math.sin(this.#elapsed * 0.8 + i) * 0.035;
     }
-    for (let i = 0; i < this.#visitors.length; i++) {
-      const visitor = this.#visitors[i];
-      visitor.position.y = Number(visitor.userData.baseY) + Math.sin(elapsed * 0.55 + i * 0.9) * 0.16;
-      visitor.rotation.y = Math.atan2(-visitor.position.x, -visitor.position.z);
+    // Energy eases toward the ambient/finale target; arms rise with it.
+    this.#energyTarget = WEB_TUNING.baseEnergy + clamp01(completion) * (1 - WEB_TUNING.baseEnergy);
+    this.#energy += (this.#energyTarget - this.#energy) * Math.min(1, dt * 1.8);
+    const energy = this.#energy;
+    const lift = energy * 0.55;
+
+    for (let i = 0; i < this.#celebrants.length; i++) {
+      const c = this.#celebrants[i];
+      poseIdle(c.rig, elapsed + c.phase);
+      // Both arms reach up-and-in toward the hub and trace a slow circle, so the
+      // hands (which pin the web) drift and ripple the whole net as they move.
+      const raise = 1.94 + lift + Math.sin(elapsed * 0.6 + c.armPhase) * 0.3;
+      const swirlX = Math.cos(elapsed * 0.5 + c.armPhase) * 0.22;
+      const swirlZ = Math.sin(elapsed * 0.43 + c.swirl) * 0.18;
+      c.rig.armL.rotation.set(raise + swirlX, 0, 0.16 + swirlZ + lift * 0.1);
+      c.rig.armR.rotation.set(raise - swirlX, 0, -0.16 - swirlZ - lift * 0.1);
+      c.rig.foreL.rotation.x = 0.42 + Math.sin(elapsed * 0.7 + c.armPhase) * 0.12;
+      c.rig.foreR.rotation.x = 0.42 + Math.cos(elapsed * 0.7 + c.armPhase) * 0.12;
+      c.rig.head.rotation.x = -0.18; // gaze up toward the light
+      setHandPose(c.rig, "L", 0.3);
+      setHandPose(c.rig, "R", 0.3);
+    }
+
+    if (this.#web) {
+      for (let i = 0; i < this.#anchorHands.length; i++) {
+        this.#anchorHands[i].getWorldPosition(this.#handWorld);
+        this.root.worldToLocal(this.#handWorld);
+        this.#web.anchorTargets[i].copy(this.#handWorld);
+      }
+      this.#web.setEnergy(energy);
+      this.#web.update(dt, elapsed);
     }
   }
 
@@ -305,6 +345,15 @@ export class AfterlightSiteVisuals {
       keeper.rig.group.removeFromParent();
     }
     this.#keepers.length = 0;
+    // Web owns its own geometry/materials; detach before the traverse below.
+    this.#web?.dispose();
+    this.#web = null;
+    for (const celebrant of this.#celebrants) {
+      for (const material of Object.values(celebrant.rig.avatar.materials)) material.dispose();
+      celebrant.rig.group.removeFromParent();
+    }
+    this.#celebrants.length = 0;
+    this.#anchorHands.length = 0;
     this.#glowTexture.dispose();
     const geometries = new Set<THREE.BufferGeometry>();
     const materials = new Set<THREE.Material>();
@@ -530,39 +579,86 @@ export class AfterlightSiteVisuals {
     this.root.add(reel);
   }
 
-  #buildVisitors(): void {
-    const material = new THREE.MeshBasicNodeMaterial();
-    const noise = mx_noise_float((positionWorld as N).mul(0.22).add(vec3(0, time.mul(0.08), 0)))
-      .mul(0.5)
-      .add(0.5) as N;
-    material.colorNode = mix(color(0x78dfd1), color(0xdab6ff), noise)
-      .mul((this.#completion as N).mul(LIGHT_SCALE * 0.42));
-    material.opacityNode = (this.#completion as N).mul(noise.mul(0.16).add(0.17));
-    material.transparent = true;
-    material.depthWrite = false;
-    material.blending = THREE.AdditiveBlending;
-    material.side = THREE.DoubleSide;
-    material.fog = false;
-    const cloakGeometry = new THREE.ConeGeometry(0.68, 2.15, 9, 1, true);
-    const headGeometry = new THREE.SphereGeometry(0.32, 12, 8);
-    for (let i = 0; i < 8; i++) {
-      const angle = (i / 8) * Math.PI * 2 + 0.22;
-      const radius = 9.2 + (i % 2) * 2.1;
-      const x = Math.cos(angle) * radius;
-      const z = Math.sin(angle) * radius;
-      const visitor = new THREE.Group();
-      const baseY = this.#groundY(x, z);
-      visitor.position.set(x, baseY, z);
-      visitor.userData.baseY = baseY;
-      visitor.visible = false;
-      const cloak = new THREE.Mesh(cloakGeometry, material);
-      cloak.position.y = 1.18;
-      const head = new THREE.Mesh(headGeometry, material);
-      head.position.y = 2.55;
-      visitor.add(cloak, head);
-      this.root.add(visitor);
-      this.#visitors.push(visitor);
+  /**
+   * The ring of celebrants — real avatars in cosmic sci-fi robes — who stand
+   * around the loom and hold the energy web aloft. Present whenever the site is
+   * awake; both hands of each avatar pin a vein, so their slow arm circles
+   * ripple through the whole net.
+   */
+  #buildCelebrants(): void {
+    const COUNT = 7;
+    const RING = 9.2;
+    // Deep-space robes with glowing trim; each avatar gets a distinct pairing.
+    const COSMIC: Array<{
+      robe: number;
+      sleeve: number;
+      trim: number;
+      sash: number;
+      hair: AvatarTraits["hair"];
+      hat: AvatarTraits["hat"];
+      outfit: AvatarTraits["outfit"];
+    }> = [
+      { robe: 0x2a1c54, sleeve: 0x1b1440, trim: 0x8fe8ff, sash: 0x0e3b6b, hair: "long", hat: "crown", outfit: "dress" },
+      { robe: 0x123f6b, sleeve: 0x0c2b4a, trim: 0x86ffd6, sash: 0x146b6b, hair: "bob", hat: "crown", outfit: "jacket" },
+      { robe: 0x3a1650, sleeve: 0x26103a, trim: 0xff9be0, sash: 0x4a1d5c, hair: "mohawk", hat: "none", outfit: "hoodie" },
+      { robe: 0x0f3b52, sleeve: 0x0a2838, trim: 0x9be8ff, sash: 0x0d5a6e, hair: "long", hat: "crown", outfit: "dress" },
+      { robe: 0x241a5e, sleeve: 0x160f3e, trim: 0xc6b4ff, sash: 0x2a2470, hair: "short", hat: "crown", outfit: "jacket" },
+      { robe: 0x4a1d3a, sleeve: 0x2f1226, trim: 0xffc0e6, sash: 0x5c1d3a, hair: "long", hat: "none", outfit: "dress" },
+      { robe: 0x0d5a6e, sleeve: 0x08313e, trim: 0x7fe9ff, sash: 0x123f3a, hair: "buzz", hat: "crown", outfit: "hoodie" }
+    ];
+
+    const raw: Array<{ hand: THREE.Group; local: THREE.Vector3 }> = [];
+    for (let i = 0; i < COUNT; i++) {
+      const spec = COSMIC[i % COSMIC.length];
+      const seeded = avatarFromSeed(`afterlight-celebrant-${i}`);
+      const traits: AvatarTraits = { ...seeded, outfit: spec.outfit, hair: spec.hair, hat: spec.hat };
+      const rig = buildRig(traits);
+      // Off-palette cosmic recolour (after buildRig; never re-run applyAvatarToRig).
+      const m = rig.avatar.materials;
+      m.jacket.color.set(spec.robe);
+      m.sleeve.color.set(spec.sleeve);
+      m.shirt.color.set(spec.trim);
+      m.pants.color.set(spec.sash).multiplyScalar(0.7);
+      m.hat.color.set(spec.trim);
+      m.trim.color.set(spec.trim);
+      m.pack.color.set(spec.robe);
+
+      const angle = (i / COUNT) * Math.PI * 2 + 0.4;
+      const x = Math.cos(angle) * RING;
+      const z = Math.sin(angle) * RING;
+      rig.group.position.set(x, this.#groundY(x, z) + 0.93, z);
+      rig.group.rotation.y = Math.atan2(-x, -z); // face the hub
+
+      // Bind pose so the sampled hand positions match the ambient reach.
+      poseIdle(rig, i * 1.7);
+      rig.armL.rotation.set(1.94, 0, 0.16);
+      rig.armR.rotation.set(1.94, 0, -0.16);
+      rig.foreL.rotation.x = 0.42;
+      rig.foreR.rotation.x = 0.42;
+      setHandPose(rig, "L", 0.3);
+      setHandPose(rig, "R", 0.3);
+      this.root.add(rig.group);
+      this.#celebrants.push({ rig, phase: i * 2.13, armPhase: i * 1.3, swirl: i * 0.9 });
+      raw.push({ hand: rig.handL, local: new THREE.Vector3() }, { hand: rig.handR, local: new THREE.Vector3() });
     }
+
+    // Sample bind-pose hand positions in site-local space, sorted by angle so
+    // the membrane wraps the ring cleanly.
+    this.root.updateMatrixWorld(true);
+    for (const entry of raw) {
+      entry.hand.getWorldPosition(this.#handWorld);
+      this.root.worldToLocal(this.#handWorld);
+      entry.local = this.#handWorld.clone();
+    }
+    raw.sort((a, b) => Math.atan2(a.local.z, a.local.x) - Math.atan2(b.local.z, b.local.x));
+    const anchorInit: THREE.Vector3[] = [];
+    for (const entry of raw) {
+      anchorInit.push(entry.local);
+      this.#anchorHands.push(entry.hand);
+    }
+
+    this.#web = new CosmicEnergyWeb({ anchorInit, seed: 7 });
+    this.root.add(this.#web.root);
   }
 }
 
