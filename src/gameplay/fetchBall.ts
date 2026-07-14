@@ -133,10 +133,22 @@ class ThrowMeter {
 }
 
 type FreeBall = {
+  id: number;
   mesh: THREE.Mesh;
   material: THREE.MeshStandardMaterial;
   state: BallSimState;
   born: number; // elapsed at launch, drives the abandoned-ball TTL
+};
+
+/** Read-only, allocation-free world state for systems reacting to live throws. */
+export type FetchBallWorldState = {
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+  readonly vx: number;
+  readonly vy: number;
+  readonly vz: number;
+  readonly grounded: boolean;
 };
 
 type DogPhase =
@@ -152,6 +164,7 @@ export class FetchBall {
   #ctxPark: BallSimCtx; // inside the fence: rebound + woodchip lift
   #ctxOpen: BallSimCtx; // open terrain: pure roll, no lift
   #free: FreeBall[] = [];
+  #nextBallId = 1;
   #dogPhase: DogPhase = { kind: "none" };
   #active = false;
   #elapsed = 0;
@@ -429,6 +442,24 @@ export class FetchBall {
     return true;
   }
 
+  /**
+   * Visits every physically free ball without allocating a snapshot array.
+   * Mouth-carried balls are omitted because their simulation state is paused.
+   */
+  visitFreeBalls(
+    visitor: (id: number, state: FetchBallWorldState, radius: number) => void
+  ): void {
+    for (const ball of this.#free) {
+      if (
+        (this.#dogPhase.kind === "returning" || this.#dogPhase.kind === "waiting") &&
+        this.#dogPhase.ball === ball
+      ) {
+        continue;
+      }
+      visitor(ball.id, ball.state, BALL_R);
+    }
+  }
+
   /** Claimed fetch dog's chest-height camera target. */
   fetchDogWorld(out: THREE.Vector3): boolean {
     if (!this.#dog) return false;
@@ -562,6 +593,7 @@ export class FetchBall {
     mesh.visible = true;
     this.#deps.scene.add(mesh);
     const ball: FreeBall = {
+      id: this.#nextBallId++,
       mesh,
       material: this.#ballMat!,
       born: this.#elapsed,

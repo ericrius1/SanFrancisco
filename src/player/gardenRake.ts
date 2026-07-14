@@ -43,8 +43,8 @@ export type GardenRakeMotion = {
   normalX: number;
   normalY: number;
   normalZ: number;
-  /** Shaft elevation above the surface tangent, in radians. Default: 46°. */
+  /** Shaft elevation above the surface tangent, in radians. Default: 55°. */
   shaftElevation?: number;
-  /** Additive forward torso hinge, in radians. Default: 0.34. */
+  /** Additive forward torso hinge, in radians. Default: 0.30. */
   bodyLean?: number;
 };

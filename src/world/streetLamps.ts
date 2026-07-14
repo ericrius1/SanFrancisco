@@ -32,6 +32,7 @@ const HEAD_X = ARM_LEN; // arm tip / head centre (local +X)
 const BULB_Y = ARM_Y - 0.28; // bulb hangs just under the head
 const POOL_R = 6; // ground-pool disc radius
 const LATERAL_PAD = 0.8; // extra set-back past the paved edge (m)
+const ROAD_CLEARANCE = 0.35; // pole-base clearance beyond every paved edge (m)
 
 const CAP = 1024; // per-mesh instance capacity; nearest lamps win the slots
 const REFRESH_MOVE = 30; // re-scan residency only after the player moves this far
@@ -138,6 +139,12 @@ export class StreetLamps {
       const lateral = halfWidth + LATERAL_PAD;
       const lx = rx + ox * lateral;
       const lz = rz + oz * lateral;
+
+      // A point outside this segment can still land inside a crossing street or
+      // the neighbouring carriageway of a divided road. Check the complete road
+      // graph, not just the segment that proposed the lamp, and leave those
+      // conflict areas empty rather than putting a pole in live pavement.
+      if (roads.pavementClearance(lx, lz, lateral + ROAD_CLEARANCE + 1) < ROAD_CLEARANCE) return;
 
       // dedup: reject if any placed lamp sits within DEDUP_R (kills the pile-up
       // where many short segments meet at an intersection)

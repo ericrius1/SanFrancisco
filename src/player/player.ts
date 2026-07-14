@@ -70,11 +70,11 @@ const V = {
   quat: new THREE.Quaternion()
 };
 
-const GARDEN_RAKE_DEFAULT_ELEVATION = THREE.MathUtils.degToRad(46);
+const GARDEN_RAKE_DEFAULT_ELEVATION = THREE.MathUtils.degToRad(55);
 const GARDEN_RAKE_CARRY_ELEVATION = THREE.MathUtils.degToRad(78);
-const GARDEN_RAKE_DEFAULT_BODY_LEAN = 0.34;
+const GARDEN_RAKE_DEFAULT_BODY_LEAN = 0.3;
 const GARDEN_RAKE_LEGACY_SAND_LIFT = 0.12;
-const GARDEN_RAKE_LEGACY_CONTACT_FORWARD = 1.55;
+const GARDEN_RAKE_LEGACY_CONTACT_FORWARD = 1.36;
 const GARDEN_RAKE_GRIP_TILT = -Math.atan2(0.5, 1.52);
 
 // One local player, one rake. All per-frame pose math reuses this scratch so
@@ -94,6 +94,7 @@ const RAKE = {
   gripPosition: new THREE.Vector3(),
   gripAim: new THREE.Quaternion(),
   wristTarget: new THREE.Vector3(),
+  elbowPole: new THREE.Vector3(),
   worldQuaternion: new THREE.Quaternion(),
   localBasis: new THREE.Matrix4(),
   localBasisInverse: new THREE.Matrix4(),
@@ -860,6 +861,7 @@ export class Player {
     this.#gardenRakeMotion.dragging = false;
 
     if (!tool) {
+      this.#walkRig.hips.position.z = 0;
       this.#walkRig.handL.rotation.set(0, 0, 0);
       this.#walkRig.handR.rotation.set(0, 0, 0);
       setHandPose(this.#walkRig, "L", 0);
@@ -1051,9 +1053,15 @@ export class Player {
     anchor.getWorldPosition(RAKE.gripPosition);
     anchor.getWorldQuaternion(RAKE.gripAim);
     wristTargetForGrip(rig, side, RAKE.gripPosition, RAKE.gripAim, RAKE.wristTarget);
+    // Keep elbows outboard and forward. The generic IK pole bends slightly
+    // backward, which is natural for a resting hand but wrong for a two-hand
+    // push and can tuck the forearms behind the torso from side views.
+    RAKE.elbowPole.set(side === "R" ? -0.62 : 0.62, 0.2, -0.48);
+    rig.torso.localToWorld(RAKE.elbowPole);
     setHandTarget(rig, side, {
       pos: RAKE.wristTarget,
       aim: RAKE.gripAim,
+      pole: RAKE.elbowPole,
       hand: HAND_GRIP,
       reach: 0.99
     });
@@ -1078,11 +1086,18 @@ export class Player {
       rig.torso.rotation.x -= lean;
       rig.hips.rotation.x -= lean * 0.28;
       rig.head.rotation.x += lean * 0.62;
+      if (motion.dragging) {
+        const workTwist = Math.sin(this.#strideT) * 0.04;
+        rig.torso.rotation.y += workTwist;
+        rig.hips.rotation.y -= workTwist * 0.45;
+      }
       // Load the legs and send the hips back as the chest reaches over the
       // handle. This keeps the silhouette balanced instead of reading as an
       // ordinary walk cycle with two IK arms pasted on top.
       rig.hips.position.y -= 0.075;
-      rig.hips.position.z += 0.045;
+      // Walk/idle reset hip Y and rotation, but not Z. Assign this authored
+      // working offset outright so it cannot accumulate every render frame.
+      rig.hips.position.z = 0.045;
       rig.legL.rotation.x += 0.08;
       rig.legR.rotation.x += 0.08;
       rig.shinL.rotation.x -= 0.18;
@@ -1096,6 +1111,7 @@ export class Player {
 
     // Upright one-hand carry: correct shaft alignment and a low head, without
     // pretending the tines are dragging outside the sand activity.
+    rig.hips.position.z = 0;
     RAKE.normal.set(0, 1, 0);
     this.meshes.walk.getWorldQuaternion(RAKE.gripAim);
     RAKE.pull.copy(RAKE.forwardLocal).applyQuaternion(RAKE.gripAim).setY(0);
@@ -1566,7 +1582,7 @@ export class Player {
       const crouch = Math.min(1, this.speed / BOARD_TUNING.values.boostMaxSpeed + Math.abs(board.lean) * 0.6);
       poseRide(this.#riderRig, board.lean, crouch, !board.grounded, this.#animT);
       this.#riderRig.group.rotation.z = board.lean * 0.4; // whole-body dip on top of the deck roll
-      animateBoard(this.meshes.board, dt, this.#animT, board.horizontalSpeed, board.boosting);
+      animateBoard(this.meshes.board, dt, this.#animT, board.horizontalSpeed, board);
     } else if (this.mode === "surf") {
       const surf = this.#modes.surf;
       const crouch = Math.min(1, this.speed / SURF_TUNING.values.maxTrim + Math.abs(surf.lean) * 0.5);

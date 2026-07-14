@@ -344,14 +344,27 @@ type BoardHalo = {
   spread: number; // current tail arc, eased toward the speed-scaled target
 };
 
-type BoardPlume = PlumeUniforms & {
+type PlumeMote = { mesh: THREE.Mesh; phase: number };
+
+type BoardPlumeChannel = PlumeUniforms & {
+  material: THREE.MeshBasicNodeMaterial;
   cones: THREE.Mesh[]; // one shell per pod; scale.y is the eased length
-  motes: { mesh: THREE.Mesh; phase: number }[]; // spark motes, 3 per pod
+  motes: PlumeMote[]; // spark motes, 3 per pod
   moteMat: THREE.MeshBasicMaterial;
+  baseColor: THREE.Color;
+  boostColor: THREE.Color;
+  tintMix: number;
+  length: number; // current eased shell length (m)
+  strength: number; // eased opacity/energy multiplier
+  colorMix: number; // eased base → boost/landing tint
+};
+
+type BoardPlume = {
+  hover: BoardPlumeChannel;
+  thrust: BoardPlumeChannel;
   reach: number; // 0..1 from config
   shimmer: number; // 0..1 from config
   sparks: boolean;
-  length: number; // current eased shell length (m)
 };
 
 /** Pod mount: hover fires local -Y (world down); thrust rotates so -Y is aft (+Z). */
@@ -370,15 +383,27 @@ const HALO_RADIUS = 0.16;
 const HALO_HEAD_RADIUS = 0.034;
 const PLUME_MIN_LEN = 0.08;
 const PLUME_MAX_LEN = 0.4;
+const PLUME_ENERGY_TINT = new THREE.Color(0x9effff);
 
 export type BoardAnim = {
-  spinners: { obj: THREE.Object3D; axis: "y" | "z"; rate: number }[];
+  spinners: { obj: THREE.Object3D; axis: "y" | "z"; rate: number; kind: "hover" | "thrust" }[];
   pulseMat: THREE.MeshBasicMaterial;
   pulseBase: THREE.Color; // LIGHT_SCALE already applied
   lights: { spec: LightAnchorSpec; baseIntensity: number }[];
   surface: BoardSurfaceState;
   halo?: BoardHalo; // only halo-fin boards carry a comet
   plume: BoardPlume;
+};
+
+/** Fixed-step controller signals consumed by the visual exhaust system. */
+export type BoardThrusterDynamics = {
+  boosting: boolean;
+  grounded: boolean;
+  driveThrust: number;
+  hoverThrust: number;
+  landingAssist: number;
+  takeoffPulse: number;
+  verticalVelocity: number;
 };
 
 export function buildBoardMesh(config?: BoardConfig, options: { deferSurface?: boolean } = {}): THREE.Group {
@@ -501,23 +526,42 @@ export function buildBoardMesh(config?: BoardConfig, options: { deferSurface?: b
   plumeGeo.translate(0, -0.5, 0);
   const moteGeo = geo(new THREE.SphereGeometry(0.016, 6, 5));
   const plumeHexNow = boardPlumeHex(cfg);
-  const plumeUniforms: PlumeUniforms = {
-    uPlumeTime: uniform(0),
-    uPlumeStrength: uniform(0),
-    uPlumeShimmer: uniform(cfg.plumeShimmer / 100),
-    uPlumeFresnelPower: uniform(BOARD_EFFECT_TUNING.values.plumeFresnelPower),
-    uPlumeColor: uniform(new THREE.Color(plumeHexNow))
-  };
-  const plumeMat = mat(buildPlumeMaterial(plumeUniforms)); // ONE material, all pods
-  const moteMat = mat(new THREE.MeshBasicMaterial({
-    color: new THREE.Color(plumeHexNow).multiplyScalar(LIGHT_SCALE),
-    transparent: true,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false
-  }));
-  const plumeCones: THREE.Mesh[] = [];
-  const plumeMotes: BoardPlume["motes"] = [];
   const plumeLen0 = PLUME_MIN_LEN + (cfg.plumeReach / 100) * (PLUME_MAX_LEN - PLUME_MIN_LEN);
+  const makePlumeChannel = (tintMix: number): BoardPlumeChannel => {
+    const baseColor = new THREE.Color(plumeHexNow);
+    const boostColor = baseColor.clone().lerp(PLUME_ENERGY_TINT, tintMix);
+    const uniforms: PlumeUniforms = {
+      uPlumeTime: uniform(0),
+      uPlumeStrength: uniform(0),
+      uPlumeShimmer: uniform(cfg.plumeShimmer / 100),
+      uPlumeFresnelPower: uniform(BOARD_EFFECT_TUNING.values.plumeFresnelPower),
+      uPlumeColor: uniform(baseColor.clone())
+    };
+    return {
+      ...uniforms,
+      material: mat(buildPlumeMaterial(uniforms)),
+      cones: [],
+      motes: [],
+      moteMat: mat(
+        new THREE.MeshBasicMaterial({
+          color: baseColor.clone().multiplyScalar(LIGHT_SCALE),
+          transparent: true,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false
+        })
+      ),
+      baseColor,
+      boostColor,
+      tintMix,
+      length: plumeLen0,
+      strength: 0,
+      colorMix: 0
+    };
+  };
+  // Independent uniforms let the underside braking jets flare without making
+  // the rear drive exhaust flare too (and vice versa). Geometry stays shared.
+  const hoverPlume = makePlumeChannel(0.38);
+  const thrustPlume = makePlumeChannel(0.68);
   // hover pair along the keel; thrust pair at the tail, left/right, firing aft
   const thrustZ = p.notch !== undefined ? p.notch - 0.02 : p.halfL - 0.14;
   const thrustY = kickLift(p, thrustZ) - 0.06;
@@ -528,6 +572,8 @@ export function buildBoardMesh(config?: BoardConfig, options: { deferSurface?: b
     { x: 0.18, y: thrustY, z: thrustZ, pitch: -Math.PI / 2, spinRate: -11, motePhase: Math.PI * 1.5 }
   ];
   for (const pod of pods) {
+    const kind = pod.pitch === 0 ? "hover" : "thrust";
+    const channel = kind === "hover" ? hoverPlume : thrustPlume;
     // root at the mouth; children sit along local -Y so pitch aims the stream
     const root = new THREE.Group();
     root.position.set(pod.x, pod.y, pod.z);
@@ -547,30 +593,27 @@ export function buildBoardMesh(config?: BoardConfig, options: { deferSurface?: b
       turbine.add(blade);
     }
     root.add(turbine);
-    spinners.push({ obj: turbine, axis: "y", rate: pod.spinRate });
-    const cone = new THREE.Mesh(plumeGeo, plumeMat);
+    spinners.push({ obj: turbine, axis: "y", rate: pod.spinRate, kind });
+    const cone = new THREE.Mesh(plumeGeo, channel.material);
     cone.scale.y = plumeLen0;
     root.add(cone);
-    plumeCones.push(cone);
+    channel.cones.push(cone);
     for (let k = 0; k < 3; k++) {
-      const mote = new THREE.Mesh(moteGeo, moteMat);
+      const mote = new THREE.Mesh(moteGeo, channel.moteMat);
       const phase = pod.motePhase + k * 2.1;
       mote.position.set(Math.cos(phase) * 0.05, -((k + 0.5) / 3) * plumeLen0, Math.sin(phase) * 0.05);
       mote.visible = cfg.plumeSparks;
       root.add(mote);
-      plumeMotes.push({ mesh: mote, phase });
+      channel.motes.push({ mesh: mote, phase });
     }
     g.add(root);
   }
   const plume: BoardPlume = {
-    ...plumeUniforms,
-    cones: plumeCones,
-    motes: plumeMotes,
-    moteMat,
+    hover: hoverPlume,
+    thrust: thrustPlume,
     reach: cfg.plumeReach / 100,
     shimmer: cfg.plumeShimmer / 100,
-    sparks: cfg.plumeSparks,
-    length: plumeLen0
+    sparks: cfg.plumeSparks
   };
 
   // --- direction identity: warm-white nose orb + red tail bar ---
@@ -813,12 +856,34 @@ export function updateBoardSurface(board: THREE.Group, config: BoardConfig) {
     plume.reach = cfg.plumeReach / 100;
     plume.shimmer = cfg.plumeShimmer / 100;
     plume.sparks = cfg.plumeSparks;
-    plume.uPlumeShimmer.value = plume.shimmer;
     const hex = boardPlumeHex(cfg);
-    (plume.uPlumeColor.value as THREE.Color).set(hex);
-    plume.moteMat.color.set(hex).multiplyScalar(LIGHT_SCALE);
-    for (const mote of plume.motes) mote.mesh.visible = plume.sparks;
+    for (const channel of [plume.hover, plume.thrust]) {
+      channel.uPlumeShimmer.value = plume.shimmer;
+      channel.baseColor.set(hex);
+      channel.boostColor.copy(channel.baseColor).lerp(PLUME_ENERGY_TINT, channel.tintMix);
+      for (const mote of channel.motes) mote.mesh.visible = plume.sparks;
+    }
   }
+}
+
+function easePlumeChannel(
+  channel: BoardPlumeChannel,
+  targetLength: number,
+  targetStrength: number,
+  targetColorMix: number,
+  step: number
+) {
+  const lengthRate = targetLength > channel.length ? 16 : 5;
+  const energyRate = targetStrength > channel.strength ? 18 : 6;
+  channel.length += (targetLength - channel.length) * (1 - Math.exp(-step * lengthRate));
+  channel.strength += (targetStrength - channel.strength) * (1 - Math.exp(-step * energyRate));
+  channel.colorMix += (targetColorMix - channel.colorMix) * (1 - Math.exp(-step * 9));
+  channel.uPlumeStrength.value = channel.strength;
+  const color = channel.uPlumeColor.value as THREE.Color;
+  color.copy(channel.baseColor).lerp(channel.boostColor, channel.colorMix);
+  channel.moteMat.color.copy(color).multiplyScalar(LIGHT_SCALE);
+  channel.moteMat.opacity = THREE.MathUtils.clamp(channel.strength, 0.18, 1);
+  for (const cone of channel.cones) cone.scale.y = channel.length;
 }
 
 /**
@@ -827,13 +892,30 @@ export function updateBoardSurface(board: THREE.Group, config: BoardConfig) {
  * Flow is the single tempo knob — it drives how fast the artwork streams,
  * sways, and how quickly the chosen deck effect churns.
  */
-export function animateBoard(board: THREE.Group, dt: number, t: number, speed: number, boosting = false) {
+export function animateBoard(
+  board: THREE.Group,
+  dt: number,
+  t: number,
+  speed: number,
+  dynamics: BoardThrusterDynamics | boolean = false
+) {
   const anim = board.userData.boardAnim as BoardAnim | undefined;
   if (!anim) return;
   const step = THREE.MathUtils.clamp(dt, 0, 0.05);
   const norm = Math.min(1, speed / 30);
+  const telemetry = typeof dynamics === "boolean" ? undefined : dynamics;
+  const boosting = typeof dynamics === "boolean" ? dynamics : dynamics.boosting;
+  const driveThrust = THREE.MathUtils.clamp(telemetry?.driveThrust ?? norm, 0, 1);
+  const hoverThrust = THREE.MathUtils.clamp(telemetry?.hoverThrust ?? 0.4, 0, 1);
+  const landingAssist = THREE.MathUtils.clamp(telemetry?.landingAssist ?? 0, 0, 1);
+  const takeoffPulse = THREE.MathUtils.clamp(telemetry?.takeoffPulse ?? 0, 0, 1);
+  const boostLevel = boosting ? Math.max(0.55, driveThrust) : 0;
+  const hoverDemand = Math.max(hoverThrust, landingAssist, takeoffPulse * 0.9);
   for (const s of anim.spinners) {
-    const spool = s.axis === "y" ? 0.55 + norm * 2.6 : 1 + norm * 0.8;
+    const spool =
+      s.kind === "hover"
+        ? 0.65 + hoverDemand * 2.7 + landingAssist * 2.8
+        : 0.55 + norm * 1.8 + driveThrust * 2.1 + boostLevel * 2.8;
     s.obj.rotation[s.axis] += step * s.rate * spool;
   }
 
@@ -850,34 +932,69 @@ export function animateBoard(board: THREE.Group, dt: number, t: number, speed: n
   surface.uFlow.value = flow;
   surface.uEmissive.value = 0.06 + fx * 0.05 + (boosting ? flow * 0.05 : 0);
 
-  const breathe = 0.82 + 0.18 * Math.sin(t * 2.4) + 0.06 * Math.sin(t * 11) * norm;
+  const breathe =
+    (0.82 + 0.18 * Math.sin(t * 2.4) + 0.06 * Math.sin(t * 11) * norm) *
+    (1 + boostLevel * 0.1 + landingAssist * 0.16);
   anim.pulseMat.color.copy(anim.pulseBase).multiplyScalar(breathe);
   const lightPulse = 0.88 + 0.24 * (breathe - 0.82);
   const lightGain = BOARD_EFFECT_TUNING.values.boardLightIntensity;
   for (const light of anim.lights) light.spec.intensity = light.baseIntensity * lightGain * lightPulse;
 
-  // --- thruster plumes: uniforms + transforms only, shared by all four pods ---
+  // --- thruster plumes: two shared channels (hover pair + rear thrust pair) ---
   const plume = anim.plume;
-  // reducedMotion freezes the flow but keeps the static soft glow standing
-  if (!surface.reducedMotion) {
-    plume.uPlumeTime.value = (plume.uPlumeTime.value as number) + step * (0.8 + plume.shimmer * 2.2 + norm * 0.8);
-  }
   const effects = BOARD_EFFECT_TUNING.values;
-  plume.uPlumeFresnelPower.value = effects.plumeFresnelPower;
-  plume.uPlumeStrength.value = (0.28 + plume.reach * 0.22) * effects.plumeIntensity * (boosting ? 1.4 : 1);
-  const targetLen =
-    PLUME_MIN_LEN + plume.reach * (PLUME_MAX_LEN - PLUME_MIN_LEN) + norm * 0.08 + (boosting ? 0.05 : 0);
-  plume.length += (targetLen - plume.length) * Math.min(1, dt * 6);
-  for (const cone of plume.cones) cone.scale.y = plume.length;
+  const baseLength = PLUME_MIN_LEN + plume.reach * (PLUME_MAX_LEN - PLUME_MIN_LEN);
+  const baseStrength = (0.28 + plume.reach * 0.22) * effects.plumeIntensity;
+  const airborne = telemetry ? !telemetry.grounded : false;
+  const hoverBase = airborne ? 0.24 : 0.58;
+  const hoverLength =
+    baseLength * (hoverBase + hoverDemand * 0.68) +
+    takeoffPulse * effects.hoverTakeoffReach +
+    landingAssist * effects.hoverLandingReach;
+  const thrustLength =
+    baseLength * (0.28 + norm * 0.78) +
+    driveThrust * effects.rearDriveReach +
+    boostLevel * effects.rearBoostReach;
+  const hoverStrength =
+    baseStrength *
+    (0.6 + hoverDemand * 0.85) *
+    (1 + (effects.landingIntensity - 1) * landingAssist);
+  const thrustStrength =
+    baseStrength *
+    (0.55 + norm * 0.45 + driveThrust * 0.55) *
+    (1 + (effects.boostIntensity - 1) * boostLevel);
+
+  for (const channel of [plume.hover, plume.thrust]) {
+    channel.uPlumeFresnelPower.value = effects.plumeFresnelPower;
+  }
+  easePlumeChannel(plume.hover, hoverLength, hoverStrength, landingAssist * 0.72, step);
+  easePlumeChannel(plume.thrust, thrustLength, thrustStrength, boostLevel, step);
+
+  // reducedMotion freezes the internal streaming but retains live length,
+  // intensity, and color responses so gameplay state still reads clearly.
+  if (!surface.reducedMotion) {
+    plume.hover.uPlumeTime.value =
+      (plume.hover.uPlumeTime.value as number) +
+      step * (0.75 + plume.shimmer * 2 + hoverDemand * 1.8 + landingAssist * 2.4);
+    plume.thrust.uPlumeTime.value =
+      (plume.thrust.uPlumeTime.value as number) +
+      step * (0.8 + plume.shimmer * 2.2 + norm * 1.2 + driveThrust * 1.5 + boostLevel * 2.3);
+  }
   if (plume.sparks && !surface.reducedMotion) {
-    // motes spiral lazily along each plume, wrap back to the mouth, and pulse —
-    // cheap CPU transforms on twelve tiny spheres (3 × 4 pods)
-    for (const mote of plume.motes) {
-      const cyc = (t * 0.45 + mote.phase * 0.161) % 1;
-      const ang = t * 1.4 + mote.phase;
-      const r = 0.05 + 0.015 * Math.sin(t * 2.1 + mote.phase * 2);
-      mote.mesh.position.set(Math.cos(ang) * r, -cyc * plume.length, Math.sin(ang) * r);
-      mote.mesh.scale.setScalar(1 + 0.35 * Math.sin(t * 6 + mote.phase * 3));
+    // Motes inherit their own channel's reach and energy. Landing sparks race
+    // down, while boost sparks stretch aft with the rear plume.
+    for (const channel of [plume.hover, plume.thrust]) {
+      const channelTime = channel.uPlumeTime.value as number;
+      for (const mote of channel.motes) {
+        const cyc = (channelTime * 0.22 + mote.phase * 0.161) % 1;
+        const ang = channelTime * 0.7 + mote.phase;
+        const r = 0.05 + 0.015 * Math.sin(channelTime * 1.05 + mote.phase * 2);
+        mote.mesh.position.set(Math.cos(ang) * r, -cyc * channel.length, Math.sin(ang) * r);
+        mote.mesh.scale.setScalar(
+          (0.8 + Math.min(0.7, channel.strength * 0.45)) *
+            (1 + 0.35 * Math.sin(channelTime * 3 + mote.phase * 3))
+        );
+      }
     }
   }
 

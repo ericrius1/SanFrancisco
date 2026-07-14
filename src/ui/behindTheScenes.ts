@@ -365,8 +365,9 @@ const TAB_PLAY = `
     <p>A whole city needs a map, so there are two. A minimap in the corner is always on — painted as flat
     2D canvas from the same heightmap and land-class grids the game already ships, with every other player
     drawn as a coloured dot in their own hue. Open the full map and it layers in a hand-engraved,
-    turn-of-the-century cartography plate; close detail streams only for the part you actually zoom into,
-    while the real road graph stays razor-sharp above the artwork. The nearest handful get numbered
+    turn-of-the-century atlas: a light city plate first, then only the regional plates under the area you
+    zoom into. Fine ink is redrawn at screen resolution while the real road graph stays razor-sharp above
+    the artwork. The nearest handful get numbered
     indicators out in the main view; press that number and you teleport straight to them. Anyone out of
     range is clamped to the minimap's rim, so you always know which way to head.</p>
     <p>Press M for the <strong>full-city map</strong>: drag and scroll to pan and zoom, click any

@@ -13,6 +13,10 @@ const RELANDED_MAX_VY = 1.2;
 const V = {
   fwd: new THREE.Vector3(),
   right: new THREE.Vector3(),
+  up: new THREE.Vector3(0, 1, 0),
+  localX: new THREE.Vector3(1, 0, 0),
+  localZ: new THREE.Vector3(0, 0, 1),
+  quat: new THREE.Quaternion(),
   euler: new THREE.Euler()
 };
 
@@ -23,6 +27,10 @@ const V = {
  * heading (leaning the deck into the turn), Space ollies, and while airborne
  * gravity is integrated by hand (the body spawns with gravityScale 0 so the
  * hover spring owns the vertical everywhere else).
+ *
+ * Right-stick Y pitches the deck (stick back = nose up): manuals on the
+ * ground, and a hard hold in the air spins full flips around the board's
+ * lateral axis. Stick X still orbits the chase camera.
  */
 export class BoardController implements ModeController {
   readonly spawnLift = 1.0;
@@ -30,17 +38,26 @@ export class BoardController implements ModeController {
   // carve yaw (raw body yaw) + visual lean, read by the rider-pose animation
   yaw = 0;
   lean = 0;
-  pitch = 0; // smoothed deck pitch (euler.x): +ve = nose up
+  pitch = 0; // deck pitch around local X: +ve = nose up (unbounded in air for flips)
   grounded = true;
   // Render-facing motion is kept separate from the looser jumpable `grounded`
   // flag above. These values are scalar, fixed-step state, so consuming them
   // from the render loop allocates nothing and cannot affect body physics.
   horizontalSpeed = 0;
   boosting = false;
+  // Render-only telemetry for the independent rear/hover exhaust channels.
+  // These are fixed-step scalars, so the mesh can feel the real controller
+  // without reading physics or allocating per frame.
+  driveThrust = 0;
+  hoverThrust = 0.4;
+  landingAssist = 0;
+  takeoffPulse = 0;
+  verticalVelocity = 0;
   #rest = 0; // seconds spent resting on a collider the heightmap can't see
   #jumpBuf = 0; // jump buffer: seconds a Space press stays pending
   #coyote = 0; // seconds after losing footing an ollie still fires
   #jumping = 0; // post-ollie lockout so the hover spring doesn't eat the launch
+  #wasGrounded = true;
 
   spawnBody(ctx: PlayerCtx, facing: number): number {
     const p = ctx.position;
@@ -60,10 +77,16 @@ export class BoardController implements ModeController {
     this.grounded = true;
     this.horizontalSpeed = 0;
     this.boosting = false;
+    this.driveThrust = 0;
+    this.hoverThrust = 0.4;
+    this.landingAssist = 0;
+    this.takeoffPulse = 0;
+    this.verticalVelocity = 0;
     this.#rest = 0;
     this.#jumpBuf = 0;
     this.#coyote = 0;
     this.#jumping = 0;
+    this.#wasGrounded = true;
     return p.y + 1.0;
   }
 
@@ -89,11 +112,14 @@ export class BoardController implements ModeController {
 
     const throttle = input.axis("KeyS", "KeyW");
     const steer = input.axis("KeyD", "KeyA");
+    // Stick back (+) = nose up. Keyboard has no dedicated pitch axis yet.
+    const pitchStick = input.padAxis("BoardNoseDown", "BoardNoseUp");
     const boost = input.down("ShiftLeft");
     this.boosting = boost;
     // `Player.speed` includes vertical launch/fall velocity; retain the actual
     // horizontal body speed so a stationary ollie does not read as full throttle.
     this.horizontalSpeed = Math.hypot(v.linear[0], v.linear[2]);
+    this.takeoffPulse = Math.max(0, this.takeoffPulse - dt * 3.2);
 
     const surface = Math.max(
       ctx.map.rideGround(ctx.position.x, ctx.position.z, ctx.position.y),
@@ -138,23 +164,54 @@ export class BoardController implements ModeController {
 
     const maxSpeed = boost ? tb.boostMaxSpeed : tb.maxSpeed;
     let targetSpeed = fwdSpeed;
+    // Nose-up manuals bleed a little speed; nose-down digs in for a push.
+    const pitchTrim = 1 - THREE.MathUtils.clamp(pitchStick, -1, 1) * 0.14;
     // grind floor, same trick as drive: a blocked board builds its target from
     // fwdSpeed ≈ 0 and only ever asks for accel·dt, which solver contacts eat —
     // so it wedged on curbs/props forever. Floor the request so it shoves free.
     if (throttle > 0)
-      targetSpeed = Math.min(maxSpeed, Math.max(fwdSpeed + (boost ? tb.boostAccel : tb.accel) * dt, tb.grindSpeed));
+      targetSpeed = Math.min(
+        maxSpeed,
+        Math.max(fwdSpeed + (boost ? tb.boostAccel : tb.accel) * dt * pitchTrim, tb.grindSpeed)
+      );
     else if (throttle < 0) {
       targetSpeed = Math.max(-tb.reverseMax, fwdSpeed - tb.reverseAccel * dt);
       if (fwdSpeed < 0.5) targetSpeed = Math.min(targetSpeed, -tb.reverseGrind);
     } else targetSpeed = fwdSpeed * (1 - tb.coastDrag * dt);
 
+    const forwardInput = Math.max(0, throttle);
+    const speedLoad = THREE.MathUtils.clamp(Math.abs(fwdSpeed) / tb.boostMaxSpeed, 0, 1);
+    this.driveThrust = THREE.MathUtils.clamp(
+      forwardInput * (0.4 + speedLoad * 0.3 + (boost ? 0.3 : 0)),
+      0,
+      1
+    );
+
     const nvx = fwd.x * targetSpeed + right.x * latSpeed * tb.gripLat;
     const nvz = fwd.z * targetSpeed + right.z * latSpeed * tb.gripLat;
 
     let vy = v.linear[1];
+    let jumpedThisStep = false;
+    // Predictive landing jets wake before the ordinary hover spring. Proximity
+    // handles normal drops; time-to-hover lets a fast, tall fall start braking
+    // early enough to feel intentional instead of flashing only at contact.
+    const descentSpeed = Math.max(0, -vy);
+    const timeToHover = descentSpeed > 0.01 ? Math.max(0, heightAbove) / descentSpeed : Infinity;
+    const nearHover = 1 - THREE.MathUtils.smoothstep(heightAbove, 0.55, tb.landingAssistRange);
+    const timeUrgency = 1 - THREE.MathUtils.smoothstep(timeToHover, 0.22, 0.72);
+    const descentLoad = THREE.MathUtils.smoothstep(descentSpeed, 1.5, 14);
+    this.landingAssist =
+      !grounded &&
+      this.#jumping <= 0 &&
+      heightAbove > 0.25 &&
+      heightAbove < tb.landingAssistRange * 1.5
+        ? THREE.MathUtils.clamp(Math.max(nearHover, timeUrgency * 0.9) * descentLoad, 0, 1)
+        : 0;
     if (this.#jumpBuf > 0 && this.#jumping <= 0 && (canJump || this.#coyote > 0)) {
       // max() so a buffered ollie never nerfs a bigger launch (trampoline pad)
       vy = Math.max(vy, tb.jump);
+      jumpedThisStep = true;
+      this.takeoffPulse = 1;
       this.#jumpBuf = 0;
       this.#coyote = 0;
       this.#rest = 0;
@@ -179,32 +236,89 @@ export class BoardController implements ModeController {
       const horiz = Math.max(Math.abs(fwdSpeed), 2);
       const slopeRate = THREE.MathUtils.clamp(((ahead - surface) / nose) * horiz, -14, 28);
       const rideYnose = Math.max(surface, ahead) + tb.hover + bob; // float over the rise
+      // Nose-up manuals ride a touch higher; nose-down hugs the carpet.
+      const manualHover = pitchStick * tb.hover * 0.35;
       // clamp the spring: a board wedged far below its ride height (collider
       // gap, overhang) must climb out, not get slammed at error·9 m/s
-      vy = THREE.MathUtils.clamp((rideYnose - ctx.position.y) * 9, -12, 18) + slopeRate;
+      vy = THREE.MathUtils.clamp((rideYnose + manualHover - ctx.position.y) * 9, -12, 18) + slopeRate;
     } else {
       vy -= tb.fallGravity * dt; // hand-integrated fall (gravityScale is 0)
+      if (this.landingAssist > 0 && vy < -0.6) {
+        // Never turn the brake into a second jump. It only bleeds downward
+        // velocity until the close-range hover spring takes ownership again.
+        vy = Math.min(-0.6, vy + tb.landingAssistBrake * this.landingAssist * dt);
+      }
+      // Angle-of-attack lift: nose up floats the ollie, nose down dives.
+      vy += Math.sin(this.pitch) * tb.pitchLift * dt;
     }
+
+    const upwardCorrection = Math.max(0, vy - v.linear[1]);
+    const springLoad = grounded
+      ? THREE.MathUtils.clamp(
+          0.35 + upwardCorrection / 18 + Math.max(0, -heightAbove) / Math.max(0.2, tb.hover) * 0.25,
+          0.25,
+          1
+        )
+      : 0.08;
+    this.hoverThrust = THREE.MathUtils.clamp(
+      Math.max(springLoad, this.landingAssist, this.takeoffPulse * (jumpedThisStep ? 1 : 0.75)),
+      0,
+      1
+    );
+    this.verticalVelocity = vy;
 
     w.setBodyVelocity(ctx.body, [nvx, vy, nvz], [0, 0, 0]);
 
-    // attitude is code-owned: yaw from carving, lean into the turn, nose with the
-    // slope. The grounded sign lifts the nose UP going uphill: a -Z-forward deck
-    // needs +euler.x to raise the nose, so target = +atan2(front-back) (the old
-    // code negated this and buried the nose into the hill). Smoothed so carpet
-    // refinement + grounded↔air transitions don't pop.
+    // attitude: yaw from carving, lean into the turn, pitch from slope + stick.
+    // Compose yaw → pitch → lean as local axes so air flips past ±90° stay clean
+    // (Euler YXZ would gimbal-lock mid-backflip).
     const lean = THREE.MathUtils.clamp(steerRate * tb.carveLean, -0.85, 0.85);
     this.lean += (lean - this.lean) * Math.min(1, dt * 7);
     const e = 2.0;
-    const targetPitch = grounded
+    const slopePitch = grounded
       ? Math.atan2(
           ctx.map.rideGround(ctx.position.x + fwd.x * e, ctx.position.z + fwd.z * e, ctx.position.y) -
             ctx.map.rideGround(ctx.position.x - fwd.x * e, ctx.position.z - fwd.z * e, ctx.position.y),
           2 * e
         ) * 0.8
-      : THREE.MathUtils.clamp(vy * 0.02, -0.3, 0.3);
-    this.pitch += (targetPitch - this.pitch) * Math.min(1, dt * 8);
-    const q = ctx.quaternion.setFromEuler(V.euler.set(this.pitch, this.yaw, this.lean, "YXZ"));
+      : 0;
+    const stickAbs = Math.abs(pitchStick);
+    const resp = Math.min(1, dt * tb.pitchResponse);
+
+    if (grounded) {
+      // Touchdown: wrap to the shortest upright path so a mid-flip landing
+      // recovers toward the slope instead of spinning the long way around.
+      if (!this.#wasGrounded) {
+        this.pitch = Math.atan2(Math.sin(this.pitch), Math.cos(this.pitch));
+      }
+      const manual = pitchStick * tb.pitchManual;
+      const targetPitch = slopePitch + manual;
+      this.pitch += (targetPitch - this.pitch) * resp;
+    } else {
+      // Light stick = gentle air pitch; past the flip threshold the rate ramps
+      // up so a hard hold completes a backflip / frontflip in under a second.
+      const flipBlend =
+        stickAbs <= tb.pitchFlipThresh
+          ? 0
+          : (stickAbs - tb.pitchFlipThresh) / Math.max(1e-4, 1 - tb.pitchFlipThresh);
+      const rate = tb.pitchAirRate + flipBlend * flipBlend * (tb.pitchFlipRate - tb.pitchAirRate);
+      this.pitch += pitchStick * rate * dt;
+      // Stick released near upright: ease toward a mild velocity pitch. Mid-flip
+      // freezes attitude so a half-commit doesn't auto-unwind through upright.
+      if (stickAbs < 0.12) {
+        const wrapped = Math.atan2(Math.sin(this.pitch), Math.cos(this.pitch));
+        if (Math.abs(wrapped) < 0.9) {
+          const coast = THREE.MathUtils.clamp(vy * 0.02, -0.35, 0.35);
+          this.pitch = wrapped + (coast - wrapped) * Math.min(1, dt * 2.2);
+        }
+      }
+    }
+    this.#wasGrounded = grounded;
+
+    // yaw (world Y) → pitch (local X, nose up) → lean (local Z)
+    const q = ctx.quaternion.setFromAxisAngle(V.up, this.yaw);
+    q.multiply(V.quat.setFromAxisAngle(V.localX, this.pitch));
+    q.multiply(V.quat.setFromAxisAngle(V.localZ, this.lean));
     w.setBodyTransform(ctx.body, [ctx.position.x, ctx.position.y, ctx.position.z], [q.x, q.y, q.z, q.w]);
     ctx.heading = this.yaw + Math.PI;
   }

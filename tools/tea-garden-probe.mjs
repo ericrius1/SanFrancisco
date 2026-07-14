@@ -51,6 +51,7 @@ const dryLandscapeSource = readFileSync(new URL("../src/world/japaneseTeaGarden/
 const sandSimulationSource = readFileSync(new URL("../src/world/japaneseTeaGarden/sandSimulation.ts", import.meta.url), "utf8");
 const waterSimulationSource = readFileSync(new URL("../src/world/japaneseTeaGarden/waterSimulation.ts", import.meta.url), "utf8");
 const streamAudioSource = readFileSync(new URL("../src/world/japaneseTeaGarden/streamAudio.ts", import.meta.url), "utf8");
+const fetchBallSource = readFileSync(new URL("../src/gameplay/fetchBall.ts", import.meta.url), "utf8");
 const vegetationSource = readFileSync(new URL("../src/world/japaneseTeaGarden/vegetation.ts", import.meta.url), "utf8");
 const clothSource = readFileSync(new URL("../src/fx/cloth.ts", import.meta.url), "utf8");
 const costumeSource = readFileSync(new URL("../src/world/japaneseTeaGarden/hiroCostume.ts", import.meta.url), "utf8");
@@ -156,6 +157,7 @@ for (const seam of [
   "instancedArray",
   "storage(",
   "renderer.compute(solverGroup)",
+  "renderer.compute(impulseCompute)",
   "derivatives",
   "divergence",
   "curl",
@@ -166,6 +168,29 @@ for (const seam of [
 ]) {
   assert.ok(waterSimulationSource.includes(seam), `WebGPU shallow-water seam missing: ${seam}`);
 }
+for (const fluidSeam of [
+  "type TeaGardenWaterImpulse",
+  "queueImpulse(impulse: TeaGardenWaterImpulse): boolean",
+  "MAX_QUEUED_IMPULSES",
+  "MAX_IMPULSES_PER_DISPATCH",
+  "impulseHeaders.value.needsUpdate = true",
+  "impulseMotions.value.needsUpdate = true",
+  "totalImpulses",
+  "waveContrast",
+  "fluxX",
+  "fluxZ",
+  "reflectedX",
+  "reflectedZ"
+]) {
+  assert.ok(waterSimulationSource.includes(fluidSeam), `boundary-fluid/impulse seam missing: ${fluidSeam}`);
+}
+assert.equal(
+  waterSimulationSource.includes("visibleEddyInfluence"),
+  false,
+  "simulated relief is masked to authored rock eddies instead of driving the unified surface"
+);
+assert.ok(waterSimulationSource.includes("miterScale"), "mitered green shoreline lip disappeared");
+assert.ok(waterSimulationSource.includes("mesh.receiveShadow = false"), "broad cascaded shadows can obscure fluid relief again");
 for (const legacy of [".setPBO(", "readBuffer", "new THREE.WebGLRenderer", "WebGLBackend"]) {
   assert.equal(waterSimulationSource.includes(legacy), false, `WebGPU water introduced a legacy/readback path: ${legacy}`);
 }
@@ -177,6 +202,29 @@ assert.match(teaGardenIndexSource, /water\.update\(dt, time, player\)/, "connect
 assert.match(teaGardenIndexSource, /surfaceY:\s*water\.surfaceY/, "water audio no longer shares the authored surface grade");
 assert.match(teaGardenIndexSource, /water\.addTuning/, "water controls are missing from the late Tweakpane registration");
 assert.equal(mainSource.includes('from "./world/japaneseTeaGarden/waterSimulation"'), false, "water solver leaked into the boot-critical main chunk");
+
+// Gameplay disturbances stay allocation-free at their sources and converge on
+// the same bounded GPU impulse queue. Cumulative per-source counters give the
+// headless probe an observable contract without introducing a GPU readback.
+for (const seam of [
+  "JapaneseTeaGardenWaterInteractions",
+  "updatePlayerWaterInteraction",
+  "updateBallWaterInteractions",
+  "water.queueImpulse(impulse)",
+  "options.ballSource?.visitFreeBalls",
+  "architecture.update(time, visitKoi)",
+  "waterInteractions: { ...waterInteractions }"
+]) {
+  assert.ok(teaGardenIndexSource.includes(seam), `water gameplay-interaction seam missing: ${seam}`);
+}
+for (const seam of ["#nextBallId", "visitFreeBalls(", "FetchBallWorldState"]) {
+  assert.ok(fetchBallSource.includes(seam), `allocation-free thrown-ball sampling seam missing: ${seam}`);
+}
+for (const seam of ["TeaGardenKoiVisitor", "waterSurfaceY", "visitKoi("]) {
+  assert.ok(architectureSource.includes(seam), `near-surface koi wake seam missing: ${seam}`);
+}
+assert.match(mainSource, /fetchBall\?\.visitFreeBalls\(visitor\)/, "Tea Garden does not sample live thrown balls lazily");
+assert.match(mainSource, /player\.mode,\s*player\.velocity/s, "Tea Garden does not receive live player velocity for directional foot wakes");
 
 // Audio stays procedural and shares the one nature context/FX buses. It must
 // remain inert until approach, positional at bridge/pond/rocks, and bounded.
@@ -245,6 +293,12 @@ console.log(JSON.stringify({
   tour: TEA_GARDEN_TOUR_STOPS.map((stop) => ({ id: stop.id, routePoints: stop.route.length })),
   art: ["misty-pines", "drum-bridge-moon", "koi-ginkgo", "four-seasons"],
   drumBridgeTextures: ["painted timber color + normal", "worn timber color + normal", "KTX2 + WebP"],
-  water: ["WebGPU shallow-water field", "unified stream + pond", "five eddy rocks", "procedural positional audio"],
+  water: [
+    "WebGPU boundary-constrained shallow-water field",
+    "bounded GPU impulse queue",
+    "unified stream + pond",
+    "five eddy rocks",
+    "procedural positional audio"
+  ],
   cloth: ["shared-cloth-runtime", "static-layered-hiro-costume", "distance-driven-motion"]
 }, null, 2));

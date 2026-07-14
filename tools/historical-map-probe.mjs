@@ -1,8 +1,9 @@
-// End-to-end QA for the historical expanded-map pilot.
+// End-to-end QA for the city-wide historical expanded-map atlas.
 //
 // Verifies:
-// - the optional painted plate is absent from a clean boot
-// - first map activation requests only the overview plate
+// - every optional atlas plate is absent from a clean boot
+// - first map activation requests only the city overview plate
+// - focusing Golden Gate requests only its intersecting regional plate
 // - close Golden Gate zoom requests exactly one nearby detail plate
 // - Retina canvas backing resolution is active
 // - subsequent redraws do not refetch either plate
@@ -14,9 +15,13 @@ import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const OUT = path.join(ROOT, ".data", "historical-map-pilot");
+const OUT = path.join(ROOT, ".data", "historical-map-atlas");
 const BASE_URL = (process.env.SF_PROBE_URL ?? "http://127.0.0.1:5243").replace(/\/$/, "");
-const OVERVIEW_ASSET = "/map/golden-gate-historical-pilot.webp";
+const OVERVIEW_ASSET = "/map/historical-atlas/city-overview.webp";
+const REGION_ASSETS = Array.from(
+  { length: 9 },
+  (_, index) => `/map/historical-atlas/region-r${Math.floor(index / 3)}-c${index % 3}.webp`
+);
 const DETAIL_ASSET = "/map/golden-gate-historical-detail.webp";
 
 const assert = (condition, message) => {
@@ -46,7 +51,11 @@ async function findChrome() {
 
 async function main() {
   await mkdir(OUT, { recursive: true });
-  const requests = { overview: 0, detail: 0 };
+  const requests = {
+    overview: 0,
+    detail: 0,
+    regions: Object.fromEntries(REGION_ASSETS.map((asset) => [asset, 0]))
+  };
   const consoleErrors = [];
   const pageErrors = [];
   const failedResponses = [];
@@ -74,6 +83,7 @@ async function main() {
       const pathname = new URL(request.url()).pathname;
       if (pathname === OVERVIEW_ASSET) requests.overview++;
       else if (pathname === DETAIL_ASSET) requests.detail++;
+      else if (pathname in requests.regions) requests.regions[pathname]++;
     });
     page.on("console", (message) => {
       if (message.type() === "error") consoleErrors.push(message.text());
@@ -94,17 +104,22 @@ async function main() {
     });
     await page.waitForTimeout(700);
 
-    const bootRequests = { ...requests };
+    const snapshotRequests = () => ({
+      overview: requests.overview,
+      detail: requests.detail,
+      regions: { ...requests.regions }
+    });
+    const regionRequestCount = () => Object.values(requests.regions).reduce((sum, count) => sum + count, 0);
+    const bootRequests = snapshotRequests();
     assert(
-      bootRequests.overview === 0 && bootRequests.detail === 0,
-      `historical plate requested during boot (${JSON.stringify(bootRequests)})`
+      bootRequests.overview === 0 && bootRequests.detail === 0 && regionRequestCount() === 0,
+      `historical atlas requested during boot (${JSON.stringify(bootRequests)})`
     );
 
     const plateResponse = page.waitForResponse((response) => new URL(response.url()).pathname === OVERVIEW_ASSET, {
       timeout: 30_000
     });
-    const resolved = await page.evaluate(() => window.__sf.minimap.focusLandmark("Golden Gate Bridge"));
-    assert(resolved, "Golden Gate Bridge landmark did not resolve");
+    await page.evaluate(() => window.__sf.minimap.setExpanded(true));
     const overviewResponse = await plateResponse;
     assert(overviewResponse.ok(), `overview plate returned ${overviewResponse.status()}`);
     await page.waitForTimeout(500);
@@ -126,7 +141,24 @@ async function main() {
     });
     assert(canvasInfo.pixelWidth / canvasInfo.cssWidth > 1.9, "expanded map canvas is not Retina resolution");
     assert(requests.overview === 1, `first activation made ${requests.overview} overview requests`);
+    assert(regionRequestCount() === 0, "regional atlas loaded before a regional zoom/focus");
     assert(requests.detail === 0, "detail tile loaded before close zoom");
+
+    const regionAsset = "/map/historical-atlas/region-r1-c0.webp";
+    const regionalResponsePromise = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === regionAsset,
+      { timeout: 30_000 }
+    );
+    const resolved = await page.evaluate(() => window.__sf.minimap.focusLandmark("Golden Gate Bridge"));
+    assert(resolved, "Golden Gate Bridge landmark did not resolve");
+    const regionalResponse = await regionalResponsePromise;
+    assert(regionalResponse.ok(), `regional plate returned ${regionalResponse.status()}`);
+    await page.waitForTimeout(400);
+    const regional = path.join(OUT, "historical-regional.png");
+    await canvas.screenshot({ path: regional });
+    assert(requests.regions[regionAsset] === 1, "Golden Gate regional plate did not load exactly once");
+    assert(regionRequestCount() === 1, `focus loaded non-intersecting regions (${JSON.stringify(requests.regions)})`);
+    assert(requests.detail === 0, "detail tile loaded at regional zoom");
 
     const box = await canvas.boundingBox();
     assert(box, "expanded map has no bounding box");
@@ -134,8 +166,7 @@ async function main() {
       timeout: 30_000
     });
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-    await page.mouse.wheel(0, -2200);
-    await page.mouse.wheel(0, -2200);
+    await page.mouse.wheel(0, -1800);
     const closeResponse = await detailResponse;
     assert(closeResponse.ok(), `detail plate returned ${closeResponse.status()}`);
     await page.waitForTimeout(500);
@@ -152,22 +183,24 @@ async function main() {
     });
     assert(timing.debug.spanX <= 261, `closest zoom did not reach its clamp (${timing.debug.spanX})`);
     assert(requests.overview === 1, `zoom/pan refetched the overview (${requests.overview})`);
+    assert(regionRequestCount() === 1, `close zoom refetched or added regions (${JSON.stringify(requests.regions)})`);
     assert(requests.detail === 1, `close zoom made ${requests.detail} detail requests`);
     assert(pageErrors.length === 0, `page errors: ${pageErrors.join(" | ")}`);
 
     const result = {
       url: BASE_URL,
-      assets: { overview: OVERVIEW_ASSET, detail: DETAIL_ASSET },
+      assets: { overview: OVERVIEW_ASSET, regions: REGION_ASSETS, detail: DETAIL_ASSET },
       bootRequests,
-      activationRequests: { overview: 1, detail: 0 },
-      closeZoomRequests: { ...requests },
+      activationRequests: { overview: 1, regions: 0, detail: 0 },
+      regionalRequests: { overview: 1, regions: { [regionAsset]: 1 }, detail: 0 },
+      closeZoomRequests: snapshotRequests(),
       canvas: canvasInfo,
       closestZoomSpanM: timing.debug.spanX,
       averageMapUpdateMs: timing.averageUpdateMs,
       consoleErrors,
       pageErrors,
       failedResponses,
-      screenshots: { overview, close }
+      screenshots: { overview, regional, close }
     };
     await writeFile(path.join(OUT, "result.json"), JSON.stringify(result, null, 2));
     console.log(JSON.stringify(result, null, 2));

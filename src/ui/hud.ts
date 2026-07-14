@@ -149,7 +149,8 @@ const PAD: Record<PlayerMode, Row[]> = {
     { c: ["X"], label: "shoot" }
   ],
   board: [
-    { c: ["RS"], label: "look" },
+    { c: ["RS ↔"], label: "look" },
+    { c: ["RS ↕"], label: "pitch · hold to flip" },
     { c: ["RT"], label: "push" },
     { c: ["LT"], label: "reverse" },
     { c: ["LS"], label: "carve" },
@@ -180,7 +181,7 @@ const TIPS: Partial<Record<PlayerMode, string>> = {
   walk: "Every building has a front door — walk in and explore",
   drive: "Handbrake (Space) drifts · Shift boosts",
   scooter: "Ramps launch cleanly · rear seat fits a friend or your pet",
-  board: "White glow = nose · surfs streets, hills and the bay",
+  board: "White glow = nose · pull right stick back in the air to flip",
   surf: "Neutral input keeps you riding · mouse and right stick cannot move this camera",
   bird: "Look down + Shift to stoop — skim the bay for spray"
 }

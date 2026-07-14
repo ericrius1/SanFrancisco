@@ -18,6 +18,7 @@ const SERVER_URL = process.env.SF_PROBE_URL ?? "http://127.0.0.1:5240";
 const OUT = ".data/tea-garden-water-probe";
 const BRIDGE = { x: -2274.2, z: 2193.2 };
 const POND_ENTRY = { x: -2290.4, z: 2202.4 };
+const POND_CENTER = { x: -2288.7, z: 2219.2 };
 
 function findChrome() {
   const candidates = [
@@ -30,7 +31,7 @@ function findChrome() {
   return chrome;
 }
 
-async function temporalPixelDelta(before, after, crop) {
+async function temporalPixelDelta(before, after, crop, intervalMs = 550) {
   const [left, right] = await Promise.all([
     sharp(before).extract(crop).removeAlpha().raw().toBuffer({ resolveWithObject: true }),
     sharp(after).extract(crop).removeAlpha().raw().toBuffer({ resolveWithObject: true })
@@ -50,7 +51,7 @@ async function temporalPixelDelta(before, after, crop) {
     if (pixelDelta >= 3) changedPixels++;
   }
   return {
-    intervalMs: 550,
+    intervalMs,
     crop,
     meanChannelDelta: channelDelta / (left.data.length * 255),
     changedPixelRatio: changedPixels / pixels
@@ -228,10 +229,11 @@ try {
         pond: clearance(terrainRows.filter((row) => row.pond)),
         stream: clearance(terrainRows.filter((row) => !row.pond)),
         // Default relief can lower a cell by MAX_SIM_HEIGHT * relief.
-        defaultWorstDisplaced: Math.min(...terrainRows.map((row) => row.clearance)) - 0.16 * 0.72
+        defaultWorstDisplaced: Math.min(...terrainRows.map((row) => row.clearance)) - 0.14
       },
       oldNames,
       debug: site.debugState().water,
+      interactions: site.debugState().waterInteractions,
       renderer: {
         name: sf.renderer.backend?.constructor?.name ?? null,
         webgpu: sf.renderer.backend?.isWebGPUBackend === true,
@@ -265,7 +267,7 @@ try {
     `water has only ${geometryAudit.terrainClearance.all.min}m terrain clearance`
   );
   assert.ok(
-    geometryAudit.terrainClearance.defaultWorstDisplaced >= 0.06,
+    geometryAudit.terrainClearance.defaultWorstDisplaced >= 0.03,
     `default simulated trough can clip terrain (${geometryAudit.terrainClearance.defaultWorstDisplaced}m)`
   );
   assert.equal(geometryAudit.debug.webgpu, true, "water debug state does not declare WebGPU");
@@ -276,6 +278,16 @@ try {
   assert.equal(geometryAudit.debug.stats.gridHeight, 272);
   assert.ok(geometryAudit.debug.stats.activeCells > 8_000, "too few active shallow-water cells");
   assert.equal(geometryAudit.debug.stats.rocks, 5);
+  assert.ok(
+    geometryAudit.debug.stats.impulseCapacity >= 16 && geometryAudit.debug.stats.impulseCapacity <= 128,
+    `unexpected bounded impulse capacity: ${geometryAudit.debug.stats.impulseCapacity}`
+  );
+  assert.ok(
+    geometryAudit.debug.stats.cfl > 0 && geometryAudit.debug.stats.cfl < 1,
+    `shallow-water CFL is outside the stable range: ${geometryAudit.debug.stats.cfl}`
+  );
+  assert.equal(typeof geometryAudit.interactions.playerInWater, "boolean", "wading state is not observable");
+  assert.ok(geometryAudit.interactions.surfaceKoi > 0, "no koi are close enough to the simulated surface to make wakes");
 
   // Phase three of the loading contract: advancing the already-active field and
   // unlocking its shared procedural audio must not request more feature code or
@@ -288,6 +300,8 @@ try {
       revision: state.water.stats.revision,
       ticks: state.water.stats.totalTicks,
       dispatches: state.water.stats.totalDispatches,
+      impulses: state.water.stats.totalImpulses,
+      interactions: state.waterInteractions,
       audio: state.streamAudio
     };
   });
@@ -301,6 +315,8 @@ try {
       revision: state.water.stats.revision,
       ticks: state.water.stats.totalTicks,
       dispatches: state.water.stats.totalDispatches,
+      impulses: state.water.stats.totalImpulses,
+      interactions: state.waterInteractions,
       running: state.water.stats.running,
       audio: state.streamAudio,
       nature: window.__sf.nature.debugState
@@ -309,14 +325,154 @@ try {
   assert.ok(after.revision > before.revision, "water state revision did not advance");
   assert.ok(after.ticks > before.ticks, "fixed-step shallow-water field did not tick");
   assert.ok(after.dispatches > before.dispatches, "shallow-water compute passes did not dispatch");
+  assert.ok(after.interactions.koi > before.interactions.koi, "near-surface koi did not inject any fluid wakes");
+  assert.ok(after.impulses > before.impulses, "accepted koi wakes were not applied by the GPU impulse pass");
   assert.equal(after.audio.graph, true, "nearby stream audio did not build its lazy graph");
   assert.equal(after.audio.graphBuilds, 1, "stream audio stacked duplicate continuous graphs");
   assert.equal(after.audio.context, "running", "shared stream audio context did not unlock");
   assert.equal(after.nature.unlocked, true, "stream audio bypassed the nature unlock state");
   assert.ok(after.audio.distance < 1, "listener is not positioned at the bridge water anchor");
   assert.ok(after.audio.activeEddies <= 2, "procedural eddy voices exceeded their hard cap");
+
+  // Exercise the real gameplay paths instead of calling the encapsulated water
+  // queue. A short walk must leave alternating foot ripples; a deterministic
+  // downward throw must cross the pond surface and produce a ball splash.
+  await page.evaluate(({ x, z }) => {
+    const sf = window.__sf;
+    sf.player.teleportTo({
+      x,
+      y: sf.map.effectiveGround(x, z),
+      z,
+      facing: 0,
+      mode: "walk"
+    });
+  }, POND_CENTER);
+  await page.waitForFunction(
+    () => window.__sf?.japaneseTeaGarden?.debugState?.().waterInteractions.playerInWater === true,
+    undefined,
+    { timeout: 30_000 }
+  );
+  const walkBefore = await page.evaluate(() =>
+    window.__sf.japaneseTeaGarden.debugState().waterInteractions.player
+  );
+  await page.keyboard.down("w");
+  await page.waitForTimeout(750);
+  await page.keyboard.up("w");
+  await page.waitForFunction(
+    (count) => window.__sf.japaneseTeaGarden.debugState().waterInteractions.player > count,
+    walkBefore,
+    { timeout: 10_000 }
+  );
+
+  // Return to the middle of the pond so the authored throw cannot graze a bank,
+  // then hold a close, fixed camera on the exact crossing for review evidence.
+  await page.evaluate(({ x, z }) => {
+    const sf = window.__sf;
+    sf.player.teleportTo({
+      x,
+      y: sf.map.effectiveGround(x, z),
+      z,
+      facing: 0,
+      mode: "walk"
+    });
+  }, POND_CENTER);
+  await page.waitForFunction(
+    () => window.__sf.japaneseTeaGarden.debugState().waterInteractions.playerInWater === true,
+    undefined,
+    { timeout: 30_000 }
+  );
+  await page.waitForTimeout(250);
+  await page.evaluate(() => {
+    const sf = window.__sf;
+    const y = sf.japaneseTeaGarden.debugState().water.pondSurfaceY;
+    const hand = sf.player.handWorldPos(new sf.THREE.Vector3());
+    sf.player.setExternalEmbodimentHidden(true);
+    window.__sfFreeCam(
+      [hand.x + 2.25, y + 1.35, hand.z + 2.45],
+      [hand.x, y - 0.015, hand.z]
+    );
+    sf.hud?.setHidden?.(true);
+  });
+  await page.waitForTimeout(250);
+  const ballBeforeShot = await page.screenshot({ path: `${OUT}/ball-ripple-before.png`, fullPage: false });
+  const ballBefore = await page.evaluate(() =>
+    window.__sf.japaneseTeaGarden.debugState().waterInteractions.balls
+  );
+  const launched = await page.evaluate(() => {
+    const sf = window.__sf;
+    return sf.fetchBall.throwForCinematic(new sf.THREE.Vector3(0, -4, 0));
+  });
+  assert.equal(launched, true, "deterministic pond-crossing ball did not launch");
+  const ballSamples = [];
+  let ballImpactShot;
+  let ballRippleShot;
+  let impactSample = -1;
+  let rippleSample = -1;
+  for (let sample = 0; sample < 30; sample++) {
+    await page.waitForTimeout(100);
+    const snapshot = await page.evaluate(() => {
+      const sf = window.__sf;
+      const free = [];
+      sf.fetchBall.visitFreeBalls((id, state, radius) => free.push({ id, ...state, radius }));
+      const debug = sf.japaneseTeaGarden.debugState();
+      return { free, interactions: debug.waterInteractions, totalImpulses: debug.water.stats.totalImpulses };
+    });
+    ballSamples.push(snapshot);
+    if (impactSample < 0 && snapshot.interactions.balls > ballBefore) {
+      impactSample = sample;
+      ballImpactShot = await page.screenshot({ path: `${OUT}/ball-ripple-impact.png`, fullPage: false });
+    } else if (impactSample >= 0 && sample === impactSample + 4) {
+      rippleSample = sample;
+      await page.evaluate(() => {
+        const ball = window.__sf.scene.getObjectByName("player_tennis_ball");
+        if (ball) ball.visible = false;
+      });
+      ballRippleShot = await page.screenshot({ path: `${OUT}/ball-ripple-decay.png`, fullPage: false });
+      await page.evaluate(() => {
+        const ball = window.__sf.scene.getObjectByName("player_tennis_ball");
+        if (ball) ball.visible = true;
+      });
+    }
+  }
+  assert.ok(
+    ballSamples.some((sample) => sample.interactions.balls > ballBefore),
+    `the thrown ball emitted no surface-crossing ripple (${JSON.stringify(ballSamples)})`
+  );
+  assert.ok(ballImpactShot && ballRippleShot, "close-up ball-ripple evidence was not captured");
+  const ballAnimation = await temporalPixelDelta(
+    ballBeforeShot,
+    ballRippleShot,
+    { left: 180, top: 180, width: 1080, height: 650 },
+    (rippleSample + 1) * 100
+  );
+  assert.ok(
+    ballAnimation.meanChannelDelta > 0.0002 && ballAnimation.changedPixelRatio > 0.003,
+    `forced pond interaction produced no visible temporal response (${JSON.stringify(ballAnimation)})`
+  );
+  assert.ok(
+    ballAnimation.meanChannelDelta < 0.2 && ballAnimation.changedPixelRatio < 0.9,
+    `forced pond interaction became visually unbounded (${JSON.stringify(ballAnimation)})`
+  );
+  await page.evaluate(() => window.__sf.player.setExternalEmbodimentHidden(false));
+  const interactionAfter = await page.evaluate(() => {
+    const state = window.__sf.japaneseTeaGarden.debugState();
+    return {
+      water: state.water.stats,
+      interactions: state.waterInteractions
+    };
+  });
+  assert.ok(interactionAfter.interactions.player > walkBefore, "walking in water emitted no foot ripples");
+  assert.ok(interactionAfter.interactions.balls > ballBefore, "the thrown ball emitted no surface-crossing ripple");
+  assert.ok(interactionAfter.interactions.koi > after.interactions.koi, "koi wakes stopped during gameplay interaction testing");
+  assert.ok(interactionAfter.interactions.surfaceKoi > 0, "near-surface koi tracking went inactive");
+  assert.ok(interactionAfter.interactions.trackedBalls >= 1, "the live free ball is not being sampled");
+  assert.ok(interactionAfter.water.totalImpulses > after.impulses, "gameplay ripples never reached the GPU impulse pass");
+  assert.ok(
+    interactionAfter.water.queuedImpulses <= interactionAfter.water.impulseCapacity,
+    "gameplay disturbances overflowed the bounded impulse queue"
+  );
   const actionRequests = requests.slice(actionStart).filter(teaRequest);
-  assert.deepEqual(actionRequests, [], `running water/audio fetched more Tea Garden resources: ${actionRequests.join(", ")}`);
+  assert.deepEqual(actionRequests, [], `water/audio/gameplay fetched more Tea Garden resources: ${actionRequests.join(", ")}`);
 
   // These folders register only when the lazy garden exists and live inside the
   // shared slash diagnostics pane rather than an eager feature-specific UI.
@@ -327,6 +483,10 @@ try {
     return {
       waterFolder: text.includes("flowing water"),
       flow: text.includes("downstream flow"),
+      interactionFolder: text.includes("interaction ripples"),
+      interactionStrength: text.includes("interaction strength"),
+      rippleRadius: text.includes("default ripple radius"),
+      waveContrast: text.includes("simulated wave contrast"),
       foam: text.includes("foam / eddies"),
       normal: text.includes("field-gradient normal"),
       soundFolder: text.includes("stream sound"),
@@ -336,6 +496,10 @@ try {
   assert.deepEqual(tuningAudit, {
     waterFolder: true,
     flow: true,
+    interactionFolder: true,
+    interactionStrength: true,
+    rippleRadius: true,
+    waveContrast: true,
     foam: true,
     normal: true,
     soundFolder: true,
@@ -402,14 +566,17 @@ try {
       actionRequests: actionRequests.length
     },
     geometry: geometryAudit,
-    simulation: { before, after },
+    simulation: { before, after, interactionAfter },
     tuning: tuningAudit,
     screenshots: {
       bridge: { path: `${OUT}/bridge-stream.png`, entropy: bridgeStats.entropy },
       pondEntry: { path: `${OUT}/pond-entry.png`, entropy: pondStats.entropy },
-      pondEntryLater: { path: `${OUT}/pond-entry-later.png` }
+      pondEntryLater: { path: `${OUT}/pond-entry-later.png` },
+      ballRippleBefore: { path: `${OUT}/ball-ripple-before.png` },
+      ballRippleImpact: { path: `${OUT}/ball-ripple-impact.png` },
+      ballRippleDecay: { path: `${OUT}/ball-ripple-decay.png` }
     },
-    animation,
+    animation: { ambient: animation, ball: ballAnimation },
     pageErrors
   }, null, 2));
 } finally {

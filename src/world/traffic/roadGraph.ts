@@ -337,6 +337,46 @@ export class RoadGraph {
     };
   }
 
+  /** Signed distance to the nearest paved edge among all nearby road segments.
+   *  Negative means the point is on pavement. Unlike nearestPoint(), this
+   *  compares edge clearance rather than centreline distance, so a wide road
+   *  cannot be hidden by the centreline of a closer, narrower road. */
+  pavementClearance(x: number, z: number, maxCenterlineDist = MAX_PROJECT_DIST): number {
+    const gen = ++this.stampGen;
+    const ccx = Math.floor(x / CELL);
+    const ccz = Math.floor(z / CELL);
+    const cellR = Math.ceil(maxCenterlineDist / CELL);
+    const maxD2 = maxCenterlineDist * maxCenterlineDist;
+    let best = Infinity;
+    for (let cx = ccx - cellR; cx <= ccx + cellR; cx++) {
+      for (let cz = ccz - cellR; cz <= ccz + cellR; cz++) {
+        const slot = packedRoadCellSlot(this.cells, cx, cz);
+        if (slot < 0) continue;
+        const end = this.cells.starts[slot + 1];
+        for (let li = this.cells.starts[slot]; li < end; li++) {
+          const g = this.cells.members[li];
+          if (this.stamp[g] === gen) continue;
+          this.stamp[g] = gen;
+          const ax = this.px[g];
+          const az = this.pz[g];
+          const ex = this.px[g + 1] - ax;
+          const ez = this.pz[g + 1] - az;
+          const len2 = ex * ex + ez * ez;
+          let t = len2 > 1e-9 ? ((x - ax) * ex + (z - az) * ez) / len2 : 0;
+          if (t < 0) t = 0;
+          else if (t > 1) t = 1;
+          const dx = x - (ax + t * ex);
+          const dz = z - (az + t * ez);
+          const d2 = dx * dx + dz * dz;
+          if (d2 > maxD2) continue;
+          const seg = this.ptSeg[g];
+          best = Math.min(best, Math.sqrt(d2) - this.segW[seg] * 0.5);
+        }
+      }
+    }
+    return best;
+  }
+
   segmentMeta(segId: number): {
     total: number;
     halfWidth: number;

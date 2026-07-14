@@ -11,6 +11,15 @@ export const BOARD_TUNING = tunables("movement.board", {
   hover: { v: 1.0, min: 0.4, max: 3, step: 0.05, label: "hover height" },
   coastDrag: { v: 0.45, min: 0.05, max: 2, step: 0.05, label: "coast drag" },
   carveLean: { v: 0.42, min: 0, max: 1.2, step: 0.02, label: "carve lean" },
+  // Right-stick Y: light presses are manuals; hard hold in air drives flips.
+  pitchManual: { v: 0.55, min: 0.15, max: 1.2, step: 0.02, label: "ground pitch" },
+  pitchAirRate: { v: 2.4, min: 0.5, max: 8, step: 0.1, label: "air pitch rate" },
+  pitchFlipRate: { v: 9.5, min: 2, max: 18, step: 0.25, label: "flip rate" },
+  pitchFlipThresh: { v: 0.72, min: 0.4, max: 0.95, step: 0.01, label: "flip stick thresh" },
+  pitchLift: { v: 7.5, min: 0, max: 20, step: 0.25, label: "air pitch lift" },
+  pitchResponse: { v: 8, min: 2, max: 18, step: 0.25, label: "pitch response" },
+  landingAssistRange: { v: 5.5, min: 1.5, max: 12, step: 0.25, label: "landing sensor range" },
+  landingAssistBrake: { v: 44, min: 0, max: 90, step: 1, label: "landing brake" },
   gripLat: { v: 0.3 },
   fallGravity: { v: 16 },
   grindSpeed: { v: 3 },
@@ -25,6 +34,12 @@ export const BOARD_TUNING = tunables("movement.board", {
 export const BOARD_EFFECT_TUNING = tunables("board.effects", {
   plumeIntensity: { v: 1, min: 0, max: 2, step: 0.05, label: "plume intensity" },
   plumeFresnelPower: { v: 2.2, min: 0.25, max: 6, step: 0.05, label: "plume fresnel" },
+  rearDriveReach: { v: 0.24, min: 0, max: 0.8, step: 0.02, label: "rear drive reach" },
+  rearBoostReach: { v: 0.62, min: 0, max: 1.4, step: 0.02, label: "rear boost reach" },
+  hoverTakeoffReach: { v: 0.34, min: 0, max: 1, step: 0.02, label: "takeoff reach" },
+  hoverLandingReach: { v: 0.72, min: 0, max: 1.4, step: 0.02, label: "landing reach" },
+  boostIntensity: { v: 1.8, min: 1, max: 3, step: 0.05, label: "boost intensity" },
+  landingIntensity: { v: 1.65, min: 1, max: 3, step: 0.05, label: "landing intensity" },
   boardLightIntensity: { v: 0.4, min: 0, max: 1, step: 0.05, label: "board light intensity" }
 });
 

@@ -50,10 +50,21 @@ export type TeaGardenArchitecture = {
   group: THREE.Group;
   waterGroup: THREE.Group;
   ready: Promise<void>;
-  update(time: number): void;
+  update(time: number, visitKoi?: TeaGardenKoiVisitor): void;
   dispose(): void;
   stats: { meshes: number; ponds: number; koi: number; physicsBodies: number };
 };
+
+/** Allocation-free surface sample used to turn the visible koi into fluid wakes. */
+export type TeaGardenKoiVisitor = (
+  id: number,
+  x: number,
+  y: number,
+  z: number,
+  velocityX: number,
+  velocityZ: number,
+  depth: number
+) => void;
 
 function material(color: number, roughness = 0.86, metalness = 0): THREE.MeshStandardMaterial {
   return new THREE.MeshStandardMaterial({ color, roughness, metalness });
@@ -1314,7 +1325,8 @@ function makeWaterfall(map: TeaGardenTerrain, mats: ReturnType<typeof createMate
 
 export function createTeaGardenArchitecture(
   map: TeaGardenTerrain,
-  physics?: Physics
+  physics?: Physics,
+  waterSurfaceY?: (x: number, z: number) => number
 ): TeaGardenArchitecture {
   const mats = createMaterials();
   const group = new THREE.Group();
@@ -1353,7 +1365,7 @@ export function createTeaGardenArchitecture(
   group.add(makeWaterfall(map, mats));
 
   const dummy = new THREE.Object3D();
-  const update = (time: number) => {
+  const update = (time: number, visitKoi?: TeaGardenKoiVisitor) => {
     pondLife.koi.forEach((pond, pondIndex) => {
       for (let i = 0; i < pond.mesh.count; i++) {
         const speed = 0.11 + (i % 4) * 0.018;
@@ -1361,9 +1373,13 @@ export function createTeaGardenArchitecture(
         const wobble = 0.74 + (i % 3) * 0.09;
         const x = pond.center.x + Math.cos(angle) * pond.rx * wobble;
         const z = pond.center.z + Math.sin(angle) * pond.rz * wobble;
+        const surface = waterSurfaceY?.(x, z);
+        const y = surface === undefined
+          ? map.groundTop(x, z) + 0.1 + Math.sin(angle * 2.1 + i) * 0.02
+          : surface - 0.075 + Math.sin(angle * 2.1 + i) * 0.014;
         dummy.position.set(
           x,
-          map.groundTop(x, z) + 0.1 + Math.sin(angle * 2.1 + i) * 0.02,
+          y,
           z
         );
         dummy.rotation.set(0, -angle + Math.PI / 2, 0);
@@ -1371,6 +1387,17 @@ export function createTeaGardenArchitecture(
         dummy.scale.setScalar(scale);
         dummy.updateMatrix();
         pond.mesh.setMatrixAt(i, dummy.matrix);
+        if (visitKoi && surface !== undefined) {
+          visitKoi(
+            pondIndex * 32 + i,
+            x,
+            y,
+            z,
+            -Math.sin(angle) * pond.rx * wobble * speed,
+            Math.cos(angle) * pond.rz * wobble * speed,
+            surface - y
+          );
+        }
       }
       pond.mesh.instanceMatrix.needsUpdate = true;
     });

@@ -68,7 +68,7 @@ try {
   const activationStart = requests.length;
   await page.evaluate(({ x, z }) => {
     const sf = window.__sf;
-    const y = sf.map.effectiveGround(x, z) + 1.5;
+    const y = sf.map.effectiveGround(x, z) + 0.9;
     sf.player.teleportTo({ x, y, z, facing: Math.PI * 0.5, mode: "walk" });
   }, RACK);
   await page.waitForFunction(
@@ -104,11 +104,12 @@ try {
       const z = position.getZ(i) + sand.position.z;
       maxTerrainError = Math.max(maxTerrainError, Math.abs(y - (sf.map.groundTop(x, z) + 0.12)));
     }
-    const matrix = grass.instanceMatrix.array;
+    const grassTransform = grass.geometry.getAttribute("aGrassTransform");
+    const grassCount = grass.geometry.instanceCount;
     let grassViolations = 0;
-    for (let i = 0; i < grass.count; i++) {
-      const x = matrix[i * 16 + 12];
-      const z = matrix[i * 16 + 14];
+    for (let i = 0; i < grassCount; i++) {
+      const x = grassTransform.getX(i);
+      const z = grassTransform.getZ(i);
       const nx = (x - center.x) / (radii.x + 1.2);
       const nz = (z - center.z) / (radii.z + 1.2);
       if (nx * nx + nz * nz <= 1) grassViolations++;
@@ -116,7 +117,7 @@ try {
     return {
       sandVertices: position.count,
       maxTerrainError,
-      grassCount: grass.count,
+      grassCount,
       grassViolations,
       rimInstances: rim.count,
       rakeParent: rake.parent?.name ?? null,
@@ -128,8 +129,8 @@ try {
       ].filter(Boolean).length
     };
   }, { center: CENTER, radii: RADII });
-  assert.ok(geometryAudit.sandVertices > 20_000, "GPU sand surface lost its dense heightfield");
-  assert.ok(geometryAudit.indexCount > 50_000, "ellipse-clipped sand surface lost most triangles");
+  assert.ok(geometryAudit.sandVertices > 80_000, "GPU sand surface lost its 2× display reconstruction");
+  assert.ok(geometryAudit.indexCount > 250_000, "ellipse-clipped display surface lost most triangles");
   assert.ok(geometryAudit.maxTerrainError < 0.002, `sand floats away from terrain by ${geometryAudit.maxTerrainError}`);
   assert.equal(geometryAudit.grassViolations, 0, "authored grass clips inside the dry-garden clearance mask");
   assert.equal(geometryAudit.rimInstances, 96, "stone rim lost its fixed instanced count");
@@ -137,6 +138,8 @@ try {
   assert.equal(geometryAudit.oldFakeMeshes, 0, "legacy box-line trails are still in the scene");
   assert.equal(geometryAudit.simulation.gridWidth, 192, "unexpected sand grid width");
   assert.equal(geometryAudit.simulation.gridHeight, 112, "unexpected sand grid height");
+  assert.equal(geometryAudit.simulation.displayGrid, "383×223", "unexpected display reconstruction grid");
+  assert.equal(geometryAudit.simulation.displayVertices, 85_409, "unexpected display vertex count");
   assert.ok(geometryAudit.simulation.activeCells > 13_000, "too few active granular cells");
 
   const prePickup = await page.evaluate(({ rack }) => {
@@ -154,6 +157,7 @@ try {
   console.log("[dry-landscape] pre-pickup", JSON.stringify(prePickup));
   for (let attempt = 0; attempt < 3; attempt++) {
     await page.keyboard.press("e");
+    await page.evaluate(() => window.__sf.tick(1 / 30));
     await page.waitForTimeout(650);
     if (await page.evaluate(() => window.__sf.japaneseTeaGarden.debugState().dryLandscape.held)) break;
   }
@@ -206,21 +210,38 @@ try {
   // so the pose audit is deterministic in a throttled headless tab.
   await page.evaluate(async ({ center }) => {
     const sf = window.__sf;
+    let finalFacing = 0;
     for (let i = 0; i <= 72; i++) {
       const t = i / 72;
       const x = center.x - 8.1 + t * 15.7;
       const z = center.z + Math.sin(t * Math.PI * 2) * 2.15;
       const y = sf.map.groundTop(x, z) + 1.5;
-      sf.player.teleportTo({ x, y, z, facing: Math.PI * 0.5, mode: "walk" });
+      const tangentX = 15.7;
+      const tangentZ = Math.cos(t * Math.PI * 2) * 2.15 * Math.PI * 2;
+      // Raw yaw whose local -Z axis follows the analytic S-curve tangent.
+      const facing = Math.atan2(-tangentX, -tangentZ);
+      finalFacing = facing;
+      sf.player.teleportTo({ x, y, z, facing, mode: "walk" });
       sf.player.syncMesh(1 / 30);
       sf.japaneseTeaGarden.update(1 / 30, i / 30, sf.player.renderPosition, sf.camera, "walk");
       sf.player.syncMesh(1 / 30);
     }
+    // teleportTo intentionally arrives 2 m above its destination. Pin the last
+    // sample to standing hip height, then run real fixed steps so the walk
+    // controller reports grounded before its rake overlay is audited.
+    const x = center.x + 7.6;
+    const z = center.z;
+    const y = sf.map.effectiveGround(x, z) + 1.5;
+    sf.physics.world.setBodyTransform(
+      sf.player.body,
+      [x, y, z],
+      [0, Math.sin(finalFacing * 0.5), 0, Math.cos(finalFacing * 0.5)]
+    );
+    sf.physics.world.setBodyVelocity(sf.player.body, [0, 0, 0], [0, 0, 0]);
+    sf.player.snapRenderPose();
+    for (let i = 0; i < 12; i++) sf.tick(1 / 60);
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   }, { center: CENTER });
-  // Repeated deterministic teleports momentarily clear WalkController.grounded;
-  // let the real fixed-step loop settle the capsule before judging the pose.
-  await page.waitForTimeout(900);
 
   const simulationAudit = await page.evaluate(() => {
     const sf = window.__sf;
@@ -241,13 +262,56 @@ try {
     };
     const contactWorld = world(contact);
     const expected = new THREE.Vector3(dry.contact.x, dry.contact.y, dry.contact.z);
+    const playerWorld = world(playerRoot);
+    const avatarForward = new THREE.Vector3(0, 0, -1)
+      .applyQuaternion(playerRoot.getWorldQuaternion(new THREE.Quaternion()))
+      .setY(0)
+      .normalize();
+    const forwardOfPlayer = (point) => point.clone().sub(playerWorld).setY(0).dot(avatarForward);
+    const rakeTopWorld = world(rake);
+    const rightGripWorld = world(rightGrip);
+    const leftGripWorld = world(leftGrip);
+    const rigRoot = handR.parent?.parent?.parent?.parent?.parent;
+    const rightChain = [];
+    for (let object = handR; object; object = object.parent) {
+      rightChain.push({
+        name: object.name,
+        type: object.type,
+        localPosition: object.position.toArray(),
+        worldPosition: world(object).toArray(),
+        localScale: object.scale.toArray(),
+        worldScale: object.getWorldScale(new THREE.Vector3()).toArray()
+      });
+      if (object === playerRoot) break;
+    }
     return {
       dry,
       rakeParent: playerRoot?.name ?? null,
       contactError: contactWorld.distanceTo(expected),
       groundError: Math.abs(contactWorld.y - (sf.map.groundTop(contactWorld.x, contactWorld.z) + 0.126)),
-      rightGripError: world(rightGrip).distanceTo(pocket(handR)),
-      leftGripError: world(leftGrip).distanceTo(pocket(handL)),
+      rightGripError: rightGripWorld.distanceTo(pocket(handR)),
+      leftGripError: leftGripWorld.distanceTo(pocket(handL)),
+      forwardClearance: {
+        contact: forwardOfPlayer(contactWorld),
+        rakeTop: forwardOfPlayer(rakeTopWorld),
+        rightGrip: forwardOfPlayer(rightGripWorld),
+        leftGrip: forwardOfPlayer(leftGripWorld),
+        pullDotForward: dry.pull.x * avatarForward.x + dry.pull.z * avatarForward.z
+      },
+      points: {
+        player: playerWorld.toArray(),
+        contact: contactWorld.toArray(),
+        rakeTop: rakeTopWorld.toArray(),
+        rightGrip: rightGripWorld.toArray(),
+        leftGrip: leftGripWorld.toArray(),
+        rightHand: world(handR).toArray(),
+        leftHand: world(handL).toArray(),
+        rigRoot: rigRoot ? world(rigRoot).toArray() : null,
+        rigRootLocal: rigRoot?.position.toArray() ?? null,
+        playerScale: playerRoot.getWorldScale(new THREE.Vector3()).toArray(),
+        rigScale: rigRoot?.getWorldScale(new THREE.Vector3()).toArray() ?? null,
+        rightChain
+      },
       renderer: {
         backend: sf.renderer.backend?.constructor?.name ?? null,
         webgpu: sf.renderer.backend?.isWebGPUBackend === true,
@@ -263,10 +327,6 @@ try {
   assert.ok(simulationAudit.dry.simulation.totalDispatches > 40, "raking did not execute the granular GPU pipeline");
   assert.ok(simulationAudit.dry.simulation.revision > 10, "sand state did not advance while raking");
   assert.ok(simulationAudit.dry.simulation.queuedStamps <= 18, "bounded stamp queue overflowed");
-  assert.ok(simulationAudit.contactError < 0.015, `visible tine contact diverged from GPU brush by ${simulationAudit.contactError}m`);
-  assert.ok(simulationAudit.groundError < 0.015, `tines are not grounded (${simulationAudit.groundError}m error)`);
-  assert.ok(simulationAudit.rightGripError < 0.025, `right hand missed rake grip by ${simulationAudit.rightGripError}m`);
-  assert.ok(simulationAudit.leftGripError < 0.025, `left hand missed rake grip by ${simulationAudit.leftGripError}m`);
 
   const actionRequests = requests.slice(actionStart).filter(teaRequest);
   assert.deepEqual(actionRequests, [], `raking fetched more Tea Garden code/assets: ${actionRequests.join(", ")}`);
@@ -278,21 +338,21 @@ try {
   const tuningAudit = await page.evaluate(() => ({
     hasRepose: document.body.textContent.includes("angle of repose"),
     hasRakeDepth: document.body.textContent.includes("rake depth"),
+    hasSurfaceSmoothing: document.body.textContent.includes("surface smoothing"),
+    hasRakeMarkContrast: document.body.textContent.includes("rake mark contrast"),
     hasReset: document.body.textContent.includes("reset authored rake pattern")
   }));
-  assert.deepEqual(tuningAudit, { hasRepose: true, hasRakeDepth: true, hasReset: true });
+  assert.deepEqual(tuningAudit, {
+    hasRepose: true,
+    hasRakeDepth: true,
+    hasSurfaceSmoothing: true,
+    hasRakeMarkContrast: true,
+    hasReset: true
+  });
   await page.evaluate(() => window.__sf.debugPanel.toggle());
 
   await page.evaluate(({ center }) => {
     const sf = window.__sf;
-    const playerZ = center.z + 4.4;
-    sf.player.teleportTo({
-      x: center.x,
-      y: sf.map.effectiveGround(center.x, playerZ) + 1.5,
-      z: playerZ,
-      facing: 0,
-      mode: "walk"
-    });
     const eyeX = center.x - 1;
     const eyeZ = center.z + 16.5;
     const eyeY = sf.map.groundTop(eyeX, eyeZ) + 12.5;
@@ -304,14 +364,24 @@ try {
   const screenshot = await page.screenshot({ path: `${OUT}/raked-garden.png`, fullPage: false });
   const screenshotStats = await sharp(screenshot).stats();
   assert.ok(screenshotStats.entropy > 2, `dry-garden screenshot appears blank (${screenshotStats.entropy})`);
-  await page.evaluate(({ center }) => {
+  await page.evaluate(({ player, contact, pull }) => {
     const sf = window.__sf;
-    const eyeX = center.x + 3.8;
-    const eyeZ = center.z + 10.8;
-    const eyeY = sf.map.groundTop(eyeX, eyeZ) + 5.2;
-    const targetY = sf.map.groundTop(center.x, center.z) + 0.75;
-    window.__sfFreeCam([eyeX, eyeY, eyeZ], [center.x, targetY, center.z]);
-  }, { center: CENTER });
+    const targetX = (player[0] + contact[0]) * 0.5;
+    const targetZ = (player[2] + contact[2]) * 0.5;
+    const travelX = -pull.x;
+    const travelZ = -pull.z;
+    const sideX = pull.z;
+    const sideZ = -pull.x;
+    const eyeX = targetX + travelX * 4.8 + sideX * 4.2;
+    const eyeZ = targetZ + travelZ * 4.8 + sideZ * 4.2;
+    const eyeY = sf.map.groundTop(eyeX, eyeZ) + 3.7;
+    const targetY = sf.map.groundTop(targetX, targetZ) + 0.92;
+    window.__sfFreeCam([eyeX, eyeY, eyeZ], [targetX, targetY, targetZ]);
+  }, {
+    player: simulationAudit.points.player,
+    contact: simulationAudit.points.contact,
+    pull: simulationAudit.dry.pull
+  });
   await page.waitForTimeout(250);
   const closeScreenshot = await page.screenshot({ path: `${OUT}/raked-garden-close.png`, fullPage: false });
   const closeStats = await sharp(closeScreenshot).stats();
@@ -319,6 +389,15 @@ try {
 
   const gpuErrors = pageErrors.filter((message) => /WebGPU|GPUValidation|WGSL|storage|compute|render pipeline|bind group|vertex buffer|TypeError/i.test(message));
   assert.deepEqual(gpuErrors, [], `WebGPU errors: ${gpuErrors.join("\n")}`);
+  assert.ok(simulationAudit.contactError < 0.015, `visible tine contact diverged from GPU brush by ${simulationAudit.contactError}m`);
+  assert.ok(simulationAudit.groundError < 0.015, `tines are not grounded (${simulationAudit.groundError}m error)`);
+  assert.ok(simulationAudit.rightGripError < 0.025, `right hand missed rake grip by ${simulationAudit.rightGripError}m`);
+  assert.ok(simulationAudit.leftGripError < 0.025, `left hand missed rake grip by ${simulationAudit.leftGripError}m`);
+  assert.ok(simulationAudit.forwardClearance.contact > 1.2, "rake head is not being pushed ahead of the avatar");
+  assert.ok(simulationAudit.forwardClearance.rakeTop > 0.18, "rake handle top crosses behind the avatar");
+  assert.ok(simulationAudit.forwardClearance.rightGrip > 0.34, "dominant rake grip is not in front of the torso");
+  assert.ok(simulationAudit.forwardClearance.leftGrip > 0.24, "upper rake grip is not in front of the torso");
+  assert.ok(simulationAudit.forwardClearance.pullDotForward < -0.9, "head-to-player rake axis no longer opposes travel");
 
   console.log(JSON.stringify({
     ok: true,

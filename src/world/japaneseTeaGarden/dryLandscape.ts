@@ -18,7 +18,7 @@ const PICKUP_RANGE = 3.7;
 const RETURN_RANGE = 29;
 // Far enough ahead that the handle top and both grips remain in front of the
 // torso at the authored shaft elevation—not merely the tine head.
-const RAKE_CONTACT_FORWARD = 1.55;
+const RAKE_CONTACT_FORWARD = 1.36;
 const RAKE_STAMP_MIN_DISTANCE = 0.018;
 const RAKE_CONTACT_EPSILON = 0.28;
 const RAKE_RACK = { x: -2354.45, z: 2169.15 } as const;
@@ -39,6 +39,8 @@ export type DryLandscapeDebugState = {
   insideSand: boolean;
   distanceToRake: number;
   contact: { x: number; y: number; z: number };
+  /** Tine-head back toward player direction, for pose/clearance diagnostics. */
+  pull: { x: number; z: number };
   simulation: SandSimulationStats;
 };
 
@@ -321,8 +323,8 @@ export function createDryLandscape(map: TeaGardenTerrain, options: DryLandscapeO
     normalX: 0,
     normalY: 1,
     normalZ: 0,
-    shaftElevation: THREE.MathUtils.degToRad(46),
-    bodyLean: 0.34
+    shaftElevation: THREE.MathUtils.degToRad(55),
+    bodyLean: 0.3
   };
   const stamp = {
     previous: { x: 0, z: 0 },
@@ -506,6 +508,7 @@ export function createDryLandscape(map: TeaGardenTerrain, options: DryLandscapeO
         insideSand,
         distanceToRake,
         contact: { x: motion.contactX, y: motion.contactY, z: motion.contactZ },
+        pull: { x: motion.pullX, z: motion.pullZ },
         simulation: simulation.stats
       };
     }

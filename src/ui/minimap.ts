@@ -11,8 +11,9 @@ import { CANVAS_FONT_FAMILY } from "../core/typography";
  *
  * The immediate terrain backdrop is painted from the heightmap + surface-class
  * grids the game already ships (8 m/px). The expanded map then first-use loads
- * period-cartography plates, including a smaller detail tile only at close
- * zoom. Authoritative roads/bridges stay as live vectors above the artwork.
+ * a period-cartography pyramid: one city overview, viewport-selected regional
+ * plates, and a smaller Golden Gate detail tile at close zoom. Authoritative
+ * roads/bridges stay as live vectors above the artwork.
  * Everything here is 2D canvas; the WebGPU world renderer remains untouched.
  *
  * Multiplayer: every remote player is a colored dot (their server-assigned
@@ -67,21 +68,75 @@ const LAYERS_ENABLED = false; // art/science/music layers parked for now
 // primary/trunk, motorway. The warm progression belongs to the historical
 // survey-map treatment while keeping the hierarchy readable under player pins.
 const ROAD_COLORS = ["#e4d7b8", "#dfcfaa", "#d7bd8d", "#cea66e", "#c58d52", "#bd7541"] as const;
-const HISTORICAL_PILOT_URL = "/map/golden-gate-historical-pilot.webp";
+const HISTORICAL_OVERVIEW_URL = "/map/historical-atlas/city-overview.webp";
 const HISTORICAL_DETAIL_URL = "/map/golden-gate-historical-detail.webp";
-const HISTORICAL_PILOT_BOUNDS = {
-  minX: -5800,
-  maxX: -1600,
-  minZ: -3900,
-  maxZ: 2400
-} as const;
+const HISTORICAL_WORLD_BOUNDS = { minX: -7168, maxX: 7936, minZ: -8896, maxZ: 4992 } as const;
 const HISTORICAL_DETAIL_BOUNDS = {
   minX: -3232,
   maxX: -2732,
   minZ: -3172.5,
   maxZ: -2422.5
 } as const;
+const HISTORICAL_REGIONAL_LOAD_SPAN = 6800;
 const HISTORICAL_DETAIL_LOAD_SPAN = 900;
+
+type HistoricalBounds = { minX: number; maxX: number; minZ: number; maxZ: number };
+type HistoricalTileSpec = {
+  id: string;
+  url: string;
+  bounds: HistoricalBounds;
+};
+
+// 3 x 3 generated atlas level. Bounds include a 5.5% bleed (clamped at the
+// world edge), which is alpha-feathered over the overview to hide model-to-
+// model texture changes without moving any live geometry.
+const HISTORICAL_REGION_TILES: readonly HistoricalTileSpec[] = [
+  {
+    id: "r0-c0",
+    url: "/map/historical-atlas/region-r0-c0.webp",
+    bounds: { minX: -7168, maxX: -1856.4267, minZ: -8896, maxZ: -4012.0533 }
+  },
+  {
+    id: "r0-c1",
+    url: "/map/historical-atlas/region-r0-c1.webp",
+    bounds: { minX: -2410.24, maxX: 3178.24, minZ: -8896, maxZ: -4012.0533 }
+  },
+  {
+    id: "r0-c2",
+    url: "/map/historical-atlas/region-r0-c2.webp",
+    bounds: { minX: 2624.4267, maxX: 7936, minZ: -8896, maxZ: -4012.0533 }
+  },
+  {
+    id: "r1-c0",
+    url: "/map/historical-atlas/region-r1-c0.webp",
+    bounds: { minX: -7168, maxX: -1856.4267, minZ: -4521.28, maxZ: 617.28 }
+  },
+  {
+    id: "r1-c1",
+    url: "/map/historical-atlas/region-r1-c1.webp",
+    bounds: { minX: -2410.24, maxX: 3178.24, minZ: -4521.28, maxZ: 617.28 }
+  },
+  {
+    id: "r1-c2",
+    url: "/map/historical-atlas/region-r1-c2.webp",
+    bounds: { minX: 2624.4267, maxX: 7936, minZ: -4521.28, maxZ: 617.28 }
+  },
+  {
+    id: "r2-c0",
+    url: "/map/historical-atlas/region-r2-c0.webp",
+    bounds: { minX: -7168, maxX: -1856.4267, minZ: 108.0533, maxZ: 4992 }
+  },
+  {
+    id: "r2-c1",
+    url: "/map/historical-atlas/region-r2-c1.webp",
+    bounds: { minX: -2410.24, maxX: 3178.24, minZ: 108.0533, maxZ: 4992 }
+  },
+  {
+    id: "r2-c2",
+    url: "/map/historical-atlas/region-r2-c2.webp",
+    bounds: { minX: 2624.4267, maxX: 7936, minZ: 108.0533, maxZ: 4992 }
+  }
+] as const;
 
 type RoadPaintGroup = { path: Path2D; width: number; roadClass: number };
 
@@ -172,8 +227,10 @@ export class Minimap {
   #world!: HTMLCanvasElement; // pre-rendered terrain, 1 grid cell = 1 px
   #roadsPainted = false;
   #roadPaths: RoadPaintGroup[] = [];
-  #historicalPilot: HTMLCanvasElement | null = null;
-  #historicalPilotStarted = false;
+  #historicalOverview: HTMLCanvasElement | null = null;
+  #historicalOverviewStarted = false;
+  #historicalRegions = new Map<string, HTMLCanvasElement>();
+  #historicalRegionsStarted = new Set<string>();
   #historicalDetail: HTMLCanvasElement | null = null;
   #historicalDetailStarted = false;
   #mini!: HTMLCanvasElement;
@@ -395,22 +452,36 @@ export class Minimap {
     this.update();
   }
 
-  #loadHistoricalPilot() {
-    if (this.#historicalPilotStarted) return;
-    this.#historicalPilotStarted = true;
+  #loadHistoricalOverview() {
+    if (this.#historicalOverviewStarted) return;
+    this.#historicalOverviewStarted = true;
     const image = new Image();
     image.decoding = "async";
     image.addEventListener(
       "load",
       () => {
-        // Feather the pilot into the city-wide procedural period palette. A
-        // later tiled atlas can use hard shared edges instead.
-        this.#historicalPilot = this.#featherHistoricalImage(image, 0.025);
+        this.#historicalOverview = this.#featherHistoricalImage(image, 0.012);
         this.update();
       },
       { once: true }
     );
-    image.src = HISTORICAL_PILOT_URL;
+    image.src = HISTORICAL_OVERVIEW_URL;
+  }
+
+  #loadHistoricalRegion(tile: HistoricalTileSpec) {
+    if (this.#historicalRegionsStarted.has(tile.id)) return;
+    this.#historicalRegionsStarted.add(tile.id);
+    const image = new Image();
+    image.decoding = "async";
+    image.addEventListener(
+      "load",
+      () => {
+        this.#historicalRegions.set(tile.id, this.#featherHistoricalImage(image, 0.055));
+        this.update();
+      },
+      { once: true }
+    );
+    image.src = tile.url;
   }
 
   #loadHistoricalDetail() {
@@ -468,12 +539,39 @@ export class Minimap {
     if (intersects) this.#loadHistoricalDetail();
   }
 
-  #drawHistoricalPilot(
+  #maybeLoadHistoricalRegions(center: { x: number; z: number }, spanX: number, spanZ: number) {
+    if (spanX > HISTORICAL_REGIONAL_LOAD_SPAN) return;
+    const view = {
+      minX: center.x - spanX / 2,
+      maxX: center.x + spanX / 2,
+      minZ: center.z - spanZ / 2,
+      maxZ: center.z + spanZ / 2
+    };
+    for (const tile of HISTORICAL_REGION_TILES) {
+      if (this.#boundsIntersect(view, tile.bounds)) this.#loadHistoricalRegion(tile);
+    }
+  }
+
+  #boundsIntersect(a: HistoricalBounds, b: HistoricalBounds) {
+    return !(a.maxX < b.minX || a.minX > b.maxX || a.maxZ < b.minZ || a.minZ > b.maxZ);
+  }
+
+  #drawHistoricalOverview(
     ctx: CanvasRenderingContext2D,
     px: (x: number) => number,
     pz: (z: number) => number
   ) {
-    this.#drawHistoricalTile(ctx, this.#historicalPilot, HISTORICAL_PILOT_BOUNDS, px, pz);
+    this.#drawHistoricalTile(ctx, this.#historicalOverview, HISTORICAL_WORLD_BOUNDS, px, pz);
+  }
+
+  #drawHistoricalRegions(
+    ctx: CanvasRenderingContext2D,
+    px: (x: number) => number,
+    pz: (z: number) => number
+  ) {
+    for (const spec of HISTORICAL_REGION_TILES) {
+      this.#drawHistoricalTile(ctx, this.#historicalRegions.get(spec.id) ?? null, spec.bounds, px, pz);
+    }
   }
 
   #drawHistoricalDetail(
@@ -497,6 +595,74 @@ export class Minimap {
     const w = px(bounds.maxX) - x;
     const h = pz(bounds.maxZ) - y;
     ctx.drawImage(tile, x, y, w, h);
+  }
+
+  /** Add fine screen-resolution ink when regional source pixels become larger
+   * than the display. The regional GPT plate still supplies the composition;
+   * these deterministic water strokes and land stipples keep every close view
+   * crisp without hundreds of eager bitmap tiles. */
+  #drawCloseEngraving(
+    ctx: CanvasRenderingContext2D,
+    center: { x: number; z: number },
+    spanX: number,
+    spanZ: number
+  ) {
+    const maxSpan = 1900;
+    if (spanX > maxSpan) return;
+    const width = ctx.canvas.width;
+    const height = ctx.canvas.height;
+    const dpr = this.#dpr;
+    const strength = Math.min(1, Math.max(0, (maxSpan - spanX) / 1150 + 0.18));
+    const g = this.#map.meta.grid;
+    const worldMaxX = g.minX + g.width * g.cellSize;
+    const worldMaxZ = g.minZ + g.height * g.cellSize;
+    const worldAt = (x: number, y: number) => ({
+      x: center.x + (x / width - 0.5) * spanX,
+      z: center.z + (y / height - 0.5) * spanZ
+    });
+    const inWorld = (x: number, z: number) =>
+      x >= g.minX && x <= worldMaxX && z >= g.minZ && z <= worldMaxZ;
+
+    ctx.save();
+    ctx.lineWidth = Math.max(0.55, 0.42 * dpr);
+    ctx.strokeStyle = `rgba(42,72,74,${0.28 * strength})`;
+    ctx.beginPath();
+    const lineGap = 7 * dpr;
+    const sampleStep = 15 * dpr;
+    for (let sy = -lineGap; sy <= height + lineGap; sy += lineGap) {
+      let active = false;
+      for (let sx = -sampleStep; sx <= width + sampleStep; sx += sampleStep) {
+        const p = worldAt(sx, sy);
+        const water = inWorld(p.x, p.z) && this.#map.isWater(p.x, p.z);
+        const y = sy + Math.sin(p.x * 0.018 + p.z * 0.007) * 1.15 * dpr;
+        if (!water) {
+          active = false;
+          continue;
+        }
+        if (active) ctx.lineTo(sx, y);
+        else ctx.moveTo(sx, y);
+        active = true;
+      }
+    }
+    ctx.stroke();
+
+    ctx.fillStyle = `rgba(73,58,39,${0.23 * strength})`;
+    const dotGap = 13 * dpr;
+    for (let sy = dotGap / 2; sy < height; sy += dotGap) {
+      for (let sx = dotGap / 2; sx < width; sx += dotGap) {
+        const p = worldAt(sx, sy);
+        if (!inWorld(p.x, p.z) || this.#map.isWater(p.x, p.z)) continue;
+        const hx = Math.floor(p.x / 11);
+        const hz = Math.floor(p.z / 11);
+        const hash = Math.imul(hx, 73856093) ^ Math.imul(hz, 19349663);
+        if ((hash & 3) !== 0) continue;
+        const jx = ((hash >>> 3) & 7) * 0.13 * dpr;
+        const jy = ((hash >>> 7) & 7) * 0.13 * dpr;
+        const r = Math.max(0.6, 0.43 * dpr);
+        ctx.fillRect(sx + jx, sy + jy, r, r);
+      }
+    }
+    ctx.restore();
   }
 
   #drawVectorRoads(
@@ -844,8 +1010,10 @@ export class Minimap {
     const mc = size / 2;
     const miniPx = (x: number) => mc + (x - center.x) * pxPerM;
     const miniPz = (z: number) => mc + (z - center.z) * pxPerM;
-    this.#drawHistoricalPilot(ctx, miniPx, miniPz);
+    this.#drawHistoricalOverview(ctx, miniPx, miniPz);
+    this.#drawHistoricalRegions(ctx, miniPx, miniPz);
     this.#drawHistoricalDetail(ctx, miniPx, miniPz);
+    this.#drawCloseEngraving(ctx, center, this.#miniSpan, this.#miniSpan);
     this.#drawVectorRoads(ctx, center, mc, mc, pxPerM);
     this.#drawBridges(
       ctx,
@@ -1405,9 +1573,9 @@ export class Minimap {
     if (on === this.expanded) return;
     this.expanded = on;
     if (on) {
-      // The detailed GPT-painted plate is optional map art. Keep it out of the
-      // clean boot waterfall and request it only on first full-map activation.
-      this.#loadHistoricalPilot();
+      // The GPT-painted atlas is optional map art. Keep it out of the clean
+      // boot waterfall and request only its overview on first map activation.
+      this.#loadHistoricalOverview();
       this.#centerBigOnSelf(true);
       this.#padCursor = { nx: 0, ny: 0 };
       if (!this.#bigWrap) this.#buildBig();
@@ -1811,6 +1979,7 @@ export class Minimap {
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     const { center, spanX, spanZ } = this.#bigView();
+    this.#maybeLoadHistoricalRegions(center, spanX, spanZ);
     this.#maybeLoadHistoricalDetail(center, spanX, spanZ);
     const self = this.#getSelf();
     this.#bigRecenter?.classList.toggle(
@@ -1839,8 +2008,10 @@ export class Minimap {
 
     // GPT-painted detail is only an underlay. Authoritative vector streets and
     // bridges are redrawn above it at the current screen resolution.
-    this.#drawHistoricalPilot(ctx, px, pz);
+    this.#drawHistoricalOverview(ctx, px, pz);
+    this.#drawHistoricalRegions(ctx, px, pz);
     this.#drawHistoricalDetail(ctx, px, pz);
+    this.#drawCloseEngraving(ctx, center, spanX, spanZ);
     this.#drawVectorRoads(ctx, center, canvas.width / 2, canvas.height / 2, sx, sy);
 
     // bridge decks under the pins

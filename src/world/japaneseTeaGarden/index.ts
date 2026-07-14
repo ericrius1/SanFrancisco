@@ -17,6 +17,7 @@ import {
 } from "./guide";
 import {
   JAPANESE_TEA_GARDEN_CENTER,
+  inTeaGardenWater,
   type TeaGardenTerrain
 } from "./layout";
 import { createTeaGardenVegetation } from "./vegetation";
@@ -67,16 +68,56 @@ export type JapaneseTeaGardenDebugState = {
   foliageVisible: boolean;
   distanceToGarden: number;
   water: TeaGardenWaterDebugState;
+  waterInteractions: JapaneseTeaGardenWaterInteractions;
   streamAudio: JapaneseTeaGardenStreamAudio["debugState"];
   dryLandscape: DryLandscapeDebugState;
   guide: TeaGardenGuideDebugState;
+};
+
+export type JapaneseTeaGardenWaterInteractions = {
+  player: number;
+  balls: number;
+  koi: number;
+  rejected: number;
+  playerInWater: boolean;
+  trackedBalls: number;
+  surfaceKoi: number;
+};
+
+export type TeaGardenPlayerVelocity = {
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+};
+
+export type TeaGardenBallWorldState = {
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+  readonly vx: number;
+  readonly vy: number;
+  readonly vz: number;
+  readonly grounded: boolean;
+};
+
+export type TeaGardenBallSource = {
+  visitFreeBalls(
+    visitor: (id: number, state: TeaGardenBallWorldState, radius: number) => void
+  ): void;
 };
 
 export type JapaneseTeaGarden = {
   group: THREE.Group;
   ready: Promise<void>;
   setFoliageVisible(visible: boolean): void;
-  update(dt: number, time: number, player: TeaGardenPlayerPosition, camera: THREE.Camera, mode?: string): void;
+  update(
+    dt: number,
+    time: number,
+    player: TeaGardenPlayerPosition,
+    camera: THREE.Camera,
+    mode?: string,
+    velocity?: TeaGardenPlayerVelocity
+  ): void;
   project(camera: THREE.Camera): void;
   interact(player: TeaGardenPlayerPosition, mode: string): boolean;
   tuningDescriptor(): DebugFeatureTuningRegistration;
@@ -98,11 +139,34 @@ export type JapaneseTeaGardenOptions = {
   onCarryRake?: (rake: GardenRakeTool | null) => void;
   /** One exact world contact drives both the granular brush and the avatar pose. */
   onRakeMotion?: (motion: Readonly<GardenRakeMotion> | null) => void;
+  /** Boot-resident ball state is sampled only while this lazy world feature is awake. */
+  ballSource?: TeaGardenBallSource;
   notify?: (message: string, seconds?: number) => void;
 };
 
 const WAKE_DISTANCE = 720;
 const SLEEP_DISTANCE = 860;
+const PLAYER_FOOT_BELOW_CENTER = 0.9;
+const PLAYER_STEP_DISTANCE = 0.42;
+const PLAYER_FOOT_SPREAD = 0.17;
+const PLAYER_MAX_INTERACTION_SPEED = 9;
+const KOI_SURFACE_DEPTH = 0.13;
+
+type BallWaterTrack = {
+  x: number;
+  z: number;
+  surfaceDelta: number;
+  inWater: boolean;
+  lastWakeX: number;
+  lastWakeZ: number;
+  seenFrame: number;
+};
+
+type KoiWaterTrack = {
+  x: number;
+  z: number;
+  pulse: number;
+};
 
 /**
  * Complete, self-owned Tea Garden feature. `ready` joins the streamed hero
@@ -116,9 +180,9 @@ export function createJapaneseTeaGarden(
   group.name = "japanese_tea_garden";
   group.visible = false;
 
-  const architecture = createTeaGardenArchitecture(map, options.physics);
-  const vegetation = createTeaGardenVegetation(map);
   const water = createTeaGardenWaterSimulation({ renderer: options.renderer, map });
+  const architecture = createTeaGardenArchitecture(map, options.physics, water.surfaceY);
+  const vegetation = createTeaGardenVegetation(map);
   const streamAudio = new JapaneseTeaGardenStreamAudio(options.nature, {
     surfaceY: water.surfaceY
   });
@@ -141,6 +205,238 @@ export function createJapaneseTeaGarden(
   let foliageVisible = true;
   let distanceToGarden = Number.POSITIVE_INFINITY;
   let disposed = false;
+  let interactionFrame = 0;
+  let playerTrackValid = false;
+  let playerWasInWater = false;
+  let playerLastX = 0;
+  let playerLastZ = 0;
+  let playerStepTravel = 0;
+  let playerFootSide = 1;
+  const ballWaterTracks = new Map<number, BallWaterTrack>();
+  const koiWaterTracks = new Map<number, KoiWaterTrack>();
+  const waterInteractions: JapaneseTeaGardenWaterInteractions = {
+    player: 0,
+    balls: 0,
+    koi: 0,
+    rejected: 0,
+    playerInWater: false,
+    trackedBalls: 0,
+    surfaceKoi: 0
+  };
+
+  const queueInteraction = (
+    source: "player" | "balls" | "koi",
+    impulse: Parameters<typeof water.queueImpulse>[0]
+  ): boolean => {
+    const accepted = water.queueImpulse(impulse);
+    if (accepted) waterInteractions[source]++;
+    else waterInteractions.rejected++;
+    return accepted;
+  };
+
+  const updatePlayerWaterInteraction = (
+    player: TeaGardenPlayerPosition,
+    mode: string,
+    velocity?: TeaGardenPlayerVelocity
+  ) => {
+    const surface = water.surfaceY(player.x, player.z);
+    const footY = player.y - PLAYER_FOOT_BELOW_CENTER;
+    const inWater = mode === "walk"
+      && inTeaGardenWater(player.x, player.z)
+      && footY <= surface + 0.1
+      && footY >= surface - 0.82;
+    waterInteractions.playerInWater = inWater;
+
+    if (!playerTrackValid) {
+      playerTrackValid = true;
+      playerLastX = player.x;
+      playerLastZ = player.z;
+      playerWasInWater = inWater;
+      return;
+    }
+
+    const dx = player.x - playerLastX;
+    const dz = player.z - playerLastZ;
+    const travel = Math.hypot(dx, dz);
+    const velocitySpeed = Math.min(
+      PLAYER_MAX_INTERACTION_SPEED,
+      Math.hypot(velocity?.x ?? 0, velocity?.z ?? 0)
+    );
+    const directionLength = velocitySpeed > 0.08 ? velocitySpeed : travel;
+    const directionX = directionLength > 1e-4
+      ? (velocitySpeed > 0.08 ? velocity!.x : dx) / directionLength
+      : 0;
+    const directionZ = directionLength > 1e-4
+      ? (velocitySpeed > 0.08 ? velocity!.z : dz) / directionLength
+      : 0;
+
+    if (inWater && !playerWasInWater) {
+      queueInteraction("player", {
+        x: player.x,
+        z: player.z,
+        radius: 0.72,
+        strength: -0.024,
+        velocityX: directionX * velocitySpeed * 0.24,
+        velocityZ: directionZ * velocitySpeed * 0.24,
+        foam: 0.06
+      });
+      playerStepTravel = 0;
+    }
+
+    if (inWater && travel < 3) {
+      playerStepTravel += travel;
+      let emitted = 0;
+      while (playerStepTravel >= PLAYER_STEP_DISTANCE && emitted < 3) {
+        playerStepTravel -= PLAYER_STEP_DISTANCE;
+        const sideX = -directionZ * PLAYER_FOOT_SPREAD * playerFootSide;
+        const sideZ = directionX * PLAYER_FOOT_SPREAD * playerFootSide;
+        queueInteraction("player", {
+          x: player.x - directionX * 0.14 + sideX,
+          z: player.z - directionZ * 0.14 + sideZ,
+          radius: 0.38 + Math.min(0.18, velocitySpeed * 0.018),
+          strength: -(0.014 + Math.min(0.018, velocitySpeed * 0.0024)),
+          velocityX: directionX * velocitySpeed * 0.22,
+          velocityZ: directionZ * velocitySpeed * 0.22,
+          foam: 0.035 + Math.min(0.06, velocitySpeed * 0.006)
+        });
+        playerFootSide *= -1;
+        emitted++;
+      }
+    } else if (!inWater) {
+      playerStepTravel = 0;
+    }
+
+    if (!inWater && playerWasInWater) {
+      queueInteraction("player", {
+        x: playerLastX,
+        z: playerLastZ,
+        radius: 0.54,
+        strength: -0.012,
+        velocityX: directionX * velocitySpeed * 0.12,
+        velocityZ: directionZ * velocitySpeed * 0.12,
+        foam: 0.025
+      });
+    }
+
+    playerLastX = player.x;
+    playerLastZ = player.z;
+    playerWasInWater = inWater;
+  };
+
+  const updateBallWaterInteractions = () => {
+    interactionFrame++;
+    let trackedBalls = 0;
+    options.ballSource?.visitFreeBalls((id, state, radius) => {
+      trackedBalls++;
+      const surface = water.surfaceY(state.x, state.z);
+      const surfaceDelta = state.y - radius - surface;
+      const currentInWater = inTeaGardenWater(state.x, state.z, radius * 0.25);
+      const track = ballWaterTracks.get(id);
+      if (!track) {
+        ballWaterTracks.set(id, {
+          x: state.x,
+          z: state.z,
+          surfaceDelta,
+          inWater: currentInWater,
+          lastWakeX: state.x,
+          lastWakeZ: state.z,
+          seenFrame: interactionFrame
+        });
+        return;
+      }
+
+      const denominator = track.surfaceDelta - surfaceDelta;
+      const crossingT = denominator > 1e-5 ? track.surfaceDelta / denominator : -1;
+      const crossedSurface = track.surfaceDelta > 0
+        && surfaceDelta <= 0
+        && crossingT >= 0
+        && crossingT <= 1;
+      const impactX = crossedSurface
+        ? THREE.MathUtils.lerp(track.x, state.x, crossingT)
+        : state.x;
+      const impactZ = crossedSurface
+        ? THREE.MathUtils.lerp(track.z, state.z, crossingT)
+        : state.z;
+      const enteredBank = !track.inWater && currentInWater && surfaceDelta <= 0;
+      const impactInWater = inTeaGardenWater(impactX, impactZ, radius * 0.2);
+      const horizontalSpeed = Math.hypot(state.vx, state.vz);
+      const totalSpeed = Math.hypot(horizontalSpeed, state.vy);
+
+      if ((crossedSurface && impactInWater && state.vy < -0.05) || enteredBank) {
+        queueInteraction("balls", {
+          x: impactX,
+          z: impactZ,
+          radius: THREE.MathUtils.clamp(0.5 + totalSpeed * 0.028, 0.5, 1.25),
+          strength: -THREE.MathUtils.clamp(0.022 + Math.abs(state.vy) * 0.005, 0.022, 0.075),
+          velocityX: THREE.MathUtils.clamp(state.vx * 0.22, -3.2, 3.2),
+          velocityZ: THREE.MathUtils.clamp(state.vz * 0.22, -3.2, 3.2),
+          foam: THREE.MathUtils.clamp(0.08 + totalSpeed * 0.018, 0.08, 0.34)
+        });
+        track.lastWakeX = impactX;
+        track.lastWakeZ = impactZ;
+      } else if (currentInWater && surfaceDelta <= 0.04 && horizontalSpeed > 0.22) {
+        const wakeTravel = Math.hypot(state.x - track.lastWakeX, state.z - track.lastWakeZ);
+        if (wakeTravel >= Math.max(0.32, radius * 2.2)) {
+          queueInteraction("balls", {
+            x: state.x,
+            z: state.z,
+            radius: 0.34 + Math.min(0.24, horizontalSpeed * 0.025),
+            strength: -0.009,
+            velocityX: THREE.MathUtils.clamp(state.vx * 0.28, -2.4, 2.4),
+            velocityZ: THREE.MathUtils.clamp(state.vz * 0.28, -2.4, 2.4),
+            foam: 0.045
+          });
+          track.lastWakeX = state.x;
+          track.lastWakeZ = state.z;
+        }
+      }
+
+      track.x = state.x;
+      track.z = state.z;
+      track.surfaceDelta = surfaceDelta;
+      track.inWater = currentInWater;
+      track.seenFrame = interactionFrame;
+    });
+    for (const [id, track] of ballWaterTracks) {
+      if (track.seenFrame !== interactionFrame) ballWaterTracks.delete(id);
+    }
+    waterInteractions.trackedBalls = trackedBalls;
+  };
+
+  const visitKoi = (
+    id: number,
+    x: number,
+    _y: number,
+    z: number,
+    velocityX: number,
+    velocityZ: number,
+    depth: number
+  ) => {
+    if (depth > KOI_SURFACE_DEPTH || !inTeaGardenWater(x, z)) return;
+    waterInteractions.surfaceKoi++;
+    const track = koiWaterTracks.get(id);
+    if (!track) {
+      koiWaterTracks.set(id, { x, z, pulse: id & 1 });
+      return;
+    }
+    if (Math.hypot(x - track.x, z - track.z) < 0.3) return;
+    const speed = Math.hypot(velocityX, velocityZ);
+    const directionX = speed > 1e-4 ? velocityX / speed : 0;
+    const directionZ = speed > 1e-4 ? velocityZ / speed : 0;
+    const side = track.pulse & 1 ? 1 : -1;
+    queueInteraction("koi", {
+      x: x - directionX * 0.2 - directionZ * side * 0.055,
+      z: z - directionZ * 0.2 + directionX * side * 0.055,
+      radius: 0.27,
+      strength: side > 0 ? -0.011 : 0.008,
+      velocityX: velocityX * 0.38,
+      velocityZ: velocityZ * 0.38,
+      foam: 0.015
+    });
+    track.x = x;
+    track.z = z;
+    track.pulse++;
+  };
 
   const stats: JapaneseTeaGardenStats = {
     architectureMeshes: architecture.stats.meshes,
@@ -161,6 +457,14 @@ export function createJapaneseTeaGarden(
     awake = next;
     group.visible = next;
     guide.setWorldVisible(next);
+    playerTrackValid = false;
+    playerWasInWater = false;
+    playerStepTravel = 0;
+    waterInteractions.playerInWater = false;
+    waterInteractions.trackedBalls = 0;
+    waterInteractions.surfaceKoi = 0;
+    ballWaterTracks.clear();
+    koiWaterTracks.clear();
   };
 
   return {
@@ -170,7 +474,14 @@ export function createJapaneseTeaGarden(
       foliageVisible = visible;
       vegetation.setVisible(visible);
     },
-    update(dt: number, time: number, player: TeaGardenPlayerPosition, camera: THREE.Camera, mode = "walk") {
+    update(
+      dt: number,
+      time: number,
+      player: TeaGardenPlayerPosition,
+      camera: THREE.Camera,
+      mode = "walk",
+      velocity?: TeaGardenPlayerVelocity
+    ) {
       if (disposed) return;
       distanceToGarden = Math.hypot(
         player.x - JAPANESE_TEA_GARDEN_CENTER.x,
@@ -181,8 +492,11 @@ export function createJapaneseTeaGarden(
       streamAudio.update(dt, { playerPos: player });
       if (!awake) return;
       if (foliageVisible) vegetation.update(player);
+      updatePlayerWaterInteraction(player, mode, velocity);
+      updateBallWaterInteractions();
+      waterInteractions.surfaceKoi = 0;
+      architecture.update(time, visitKoi);
       water.update(dt, time, player);
-      architecture.update(time);
       dryLandscape.update(dt, time, player, mode);
       guide.update(dt, time, player, camera);
     },
@@ -230,6 +544,7 @@ export function createJapaneseTeaGarden(
         foliageVisible,
         distanceToGarden,
         water: water.debugState(),
+        waterInteractions: { ...waterInteractions },
         streamAudio: streamAudio.debugState,
         dryLandscape: dryLandscape.debugState(),
         guide: guide.debugState()

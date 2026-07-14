@@ -19,8 +19,10 @@ import { INPUT_TUNING } from "../config";
  * so modes/camera/fireworks never see a second input path. `device` tracks
  * whichever input was touched last; the HUD swaps its control labels off it.
  *
- * Right-stick pitch polarity is global via INPUT_TUNING.invertPadLookY (every
- * free-camera mode, including ones added later) — mouse look is never flipped here.
+ * Board mode steals right-stick Y for deck pitch / air flips (stick back =
+ * nose up); only right-stick X still feeds mouselook there. Right-stick pitch
+ * polarity for camera look is global via INPUT_TUNING.invertPadLookY — mouse
+ * look is never flipped here.
  */
 
 // right-stick look speed, mouse-pixel-equivalents per second at full deflection
@@ -342,7 +344,8 @@ export class Input {
   /**
    * Read the gamepad once per frame, before any consumer. Buttons feed
    * keys/justPressed under their mapped codes, sticks and triggers feed the
-   * axis pairs, and the right stick feeds mouselook outside surf.
+   * axis pairs, and the right stick feeds mouselook outside surf (board keeps
+   * stick-X look and routes stick-Y to BoardNoseDown|BoardNoseUp).
    */
   pollPad(dt: number) {
     const pads = navigator.getGamepads?.() ?? [];
@@ -398,19 +401,33 @@ export class Input {
       this.#padAxes.set("ArrowDown|ArrowUp", trig);
       this.#padAxes.delete("KeyQ|KeyE");
       this.#padAxes.delete("KeyQ|KeyU");
+      this.#padAxes.delete("BoardNoseDown|BoardNoseUp");
     } else if (this.#triggerRoute === "bird") {
       // LB is also KeyQ in PAD_BUTTONS; RB contributes via this axis only
       this.#padAxes.set("KeyQ|KeyE", rb);
       this.#padAxes.delete("ArrowDown|ArrowUp");
       this.#padAxes.delete("KeyQ|KeyU");
+      this.#padAxes.delete("BoardNoseDown|BoardNoseUp");
     } else if (this.#triggerRoute === "drone") {
       this.#padAxes.set("KeyQ|KeyU", trig);
       this.#padAxes.delete("ArrowDown|ArrowUp");
       this.#padAxes.delete("KeyQ|KeyE");
+      this.#padAxes.delete("BoardNoseDown|BoardNoseUp");
+    } else if (this.#mode === "board") {
+      // Stick back/down (+ry) = nose up; shaped so light presses are manuals
+      // and a hard hold can drive air flips in BoardController.
+      const pitchMag = Math.abs(ryLin);
+      const pitchShaped =
+        pitchMag < 1e-8 ? 0 : Math.sign(ryLin) * Math.pow(pitchMag, Math.max(1, tune.moveResponse));
+      this.#padAxes.set("BoardNoseDown|BoardNoseUp", pitchShaped);
+      this.#padAxes.delete("ArrowDown|ArrowUp");
+      this.#padAxes.delete("KeyQ|KeyE");
+      this.#padAxes.delete("KeyQ|KeyU");
     } else {
       this.#padAxes.delete("ArrowDown|ArrowUp");
       this.#padAxes.delete("KeyQ|KeyE");
       this.#padAxes.delete("KeyQ|KeyU");
+      this.#padAxes.delete("BoardNoseDown|BoardNoseUp");
     }
     if (lx !== 0 || ly !== 0 || rxLin !== 0 || ryLin !== 0 || lt > 0.02 || rt > 0.02 || lb || rb) {
       active = true;
@@ -420,14 +437,17 @@ export class Input {
     this.#mapPadAxes = { lx, ly, rx: rxLin, ry: ryLin, lt, rt };
 
     // right stick = mouselook; works without pointer lock except in surf's
-    // authored camera. Pitch polarity is the global INPUT_TUNING toggle.
+    // authored camera. Board keeps stick-X look but routes stick-Y to deck pitch.
+    // Pitch polarity is the global INPUT_TUNING toggle.
     // Sensitivity is applied once in ChaseCamera (same path as mouse) — do not
     // multiply it here or pad look scales with lookSensitivity².
     if (!this.suspended && this.#mode !== "surf") {
       const [rx, ry] = shapeStick(rxLin, ryLin, 0, tune.lookResponse);
       this.mouseDX += rx * LOOK_X * dt;
-      const pitchStick = tune.invertPadLookY ? -ry : ry;
-      this.mouseDY += pitchStick * LOOK_Y * dt;
+      if (this.#mode !== "board") {
+        const pitchStick = tune.invertPadLookY ? -ry : ry;
+        this.mouseDY += pitchStick * LOOK_Y * dt;
+      }
     }
 
     if (active) this.#setDevice("pad");

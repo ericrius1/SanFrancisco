@@ -2441,6 +2441,9 @@ async function boot() {
           // Conversation is gameplay-critical, so it must remain visible when
           // the optional HUD panels are faded with Tab.
           dialogueParent: document.body,
+          ballSource: {
+            visitFreeBalls: (visitor) => fetchBall?.visitFreeBalls(visitor)
+          },
           onCarryRake: (rake) => player.setGardenRakeTool(rake),
           onRakeMotion: (motion) => player.setGardenRakeMotion(motion),
           notify: (message, seconds) => hud.message(message, seconds)
@@ -3691,7 +3694,14 @@ async function boot() {
     oceanBeachKite?.update(frameDt, elapsed, player.renderPosition, windGustValue());
     buskers.update(frameDt, camera, windGustValue(), sky.sunElevation);
     if (!worldArrival.active) {
-      japaneseTeaGarden?.update(frameDt, elapsed, player.renderPosition, camera, player.mode);
+      japaneseTeaGarden?.update(
+        frameDt,
+        elapsed,
+        player.renderPosition,
+        camera,
+        player.mode,
+        player.velocity
+      );
     }
     // MASTER foliage gate: when the "/" panel's foliage switch is OFF, every
     // vegetation group is already hidden (setFoliageVisible) — skip all its

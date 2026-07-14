@@ -40,13 +40,13 @@ import { TEA_GARDEN_STREAM_AUDIO_ANCHORS } from "./streamAudio";
  * One WebGPU shallow-water field shared by the Drum Bridge stream and pond.
  *
  * The regular grid is both the render lattice and the spatial binning scheme:
- * every cell reads only its four immediate bins. A derivative pass measures
- * height gradient, divergence, and vorticity; an integration pass advances the
- * ping-pong (height, vx, vz, foam) state. Nothing is read back to the CPU.
+ * every cell reads only its four immediate bins. Local Rusanov face fluxes
+ * conservatively advance ping-pong (height, x discharge, z discharge, foam)
+ * state; reflected ghost states turn the polygon banks and rock mask into solid
+ * boundaries. A bounded impulse pass injects gameplay wakes without readback.
  *
- * This path is deliberately WebGPU-only. The garden's previous static sheet is
- * a better failure mode than silently compiling this solver into a costly
- * transform-feedback emulation on WebGL2.
+ * This path is deliberately WebGPU-only and fails at construction unless the
+ * renderer owns a native WebGPU backend.
  */
 
 const GRID_WIDTH = 224;
@@ -54,10 +54,13 @@ const GRID_HEIGHT = 272;
 const CELL_COUNT = GRID_WIDTH * GRID_HEIGHT;
 const FIXED_STEP = 1 / 60;
 const MAX_TICKS_PER_FRAME = 2;
-const MAX_SIM_HEIGHT = 0.04;
-const MAX_SIM_SPEED = 1.9;
+const MAX_SIM_HEIGHT = 0.14;
+const MAX_SIM_SPEED = 2.4;
+const MIN_SIM_DEPTH = 0.08;
+const MAX_QUEUED_IMPULSES = 64;
+const MAX_IMPULSES_PER_DISPATCH = 24;
 const WATER_BOUNDS_PAD = 0.36;
-const BANK_INSET = 0.24;
+const BANK_INSET = 0.34;
 const BANK_WIDTH = 0.72;
 const WATER_LIFT = 0.22;
 const POND_CENTER = { x: -2289.1, z: 2219.7 } as const;
@@ -68,16 +71,22 @@ export const TEA_GARDEN_WATER_DROP = 0.8;
 const WATER_TUNING = tunables("teaGarden.waterSimulation", {
   enabled: { v: true, label: "simulation enabled" },
   flow: { v: 0.48, min: 0, max: 1.6, step: 0.01, label: "downstream flow" },
-  pressure: { v: 1.8, min: 0.2, max: 10, step: 0.1, label: "surface pressure" },
-  viscosity: { v: 3.2, min: 0, max: 8, step: 0.05, label: "viscosity" },
-  damping: { v: 1.1, min: 0.05, max: 3.5, step: 0.01, label: "damping" },
+  depth: { v: 0.38, min: 0.12, max: 1.2, step: 0.01, label: "effective depth" },
+  pressure: { v: 5.2, min: 0.2, max: 12, step: 0.1, label: "gravity / wave speed" },
+  viscosity: { v: 0.42, min: 0, max: 4, step: 0.02, label: "viscosity" },
+  damping: { v: 0.32, min: 0.01, max: 2.5, step: 0.01, label: "wave damping" },
   vorticity: { v: 0.68, min: 0, max: 4, step: 0.02, label: "eddy strength" },
   substeps: { v: 2, min: 1, max: 4, step: 1, label: "solver substeps" },
   rockSlip: { v: 0.76, min: 0, max: 1, step: 0.01, label: "rock slip" },
-  relief: { v: 0.14, min: 0, max: 2.2, step: 0.02, label: "surface relief" },
-  normal: { v: 0.45, min: 0, max: 6, step: 0.05, label: "field-gradient normal" },
-  ripple: { v: 0.007, min: 0, max: 0.065, step: 0.001, label: "fine ripple" },
-  streak: { v: 0.3, min: 0, max: 1.5, step: 0.01, label: "ink-flow streaks" },
+  interactionScale: { v: 1, min: 0, max: 3, step: 0.02, label: "interaction strength" },
+  interactionRadius: { v: 0.58, min: 0.18, max: 2.4, step: 0.02, label: "default ripple radius" },
+  wakeResponse: { v: 0.82, min: 0, max: 2.5, step: 0.02, label: "wake response" },
+  interactionFoam: { v: 0.12, min: 0, max: 1, step: 0.01, label: "interaction foam" },
+  relief: { v: 1, min: 0, max: 2.2, step: 0.02, label: "surface relief" },
+  normal: { v: 1.45, min: 0, max: 6, step: 0.05, label: "field-gradient normal" },
+  waveContrast: { v: 0.72, min: 0, max: 2, step: 0.02, label: "simulated wave contrast" },
+  ripple: { v: 0.0015, min: 0, max: 0.025, step: 0.0005, label: "micro ripple" },
+  streak: { v: 0.07, min: 0, max: 1.5, step: 0.01, label: "ink-flow streaks" },
   foam: { v: 0.56, min: 0, max: 2, step: 0.01, label: "foam / eddies" },
   opacity: { v: 0.92, min: 0.45, max: 1, step: 0.01, label: "water opacity" },
   palette: {
@@ -102,17 +111,22 @@ const WATER_TUNING_FOLDERS: readonly {
   {
     title: "shallow-water field",
     expanded: true,
-    keys: ["enabled", "flow", "pressure", "viscosity", "damping", "vorticity", "substeps", "rockSlip"]
+    keys: ["enabled", "flow", "depth", "pressure", "viscosity", "damping", "vorticity", "substeps", "rockSlip"]
+  },
+  {
+    title: "interaction ripples",
+    expanded: true,
+    keys: ["interactionScale", "interactionRadius", "wakeResponse", "interactionFoam"]
   },
   {
     title: "celadon surface",
     expanded: true,
-    keys: ["relief", "normal", "ripple", "streak", "foam", "opacity", "palette"]
+    keys: ["relief", "normal", "waveContrast", "ripple", "streak", "foam", "opacity", "palette"]
   }
 ];
 
 const WATER_PALETTES = {
-  "celadon-dusk": { deep: 0x143f3b, shallow: 0x5f9e7f, streak: 0xaed4ae, foam: 0xe4edcf },
+  "celadon-dusk": { deep: 0x1a514b, shallow: 0x6ca989, streak: 0xb8d9b5, foam: 0xe4edcf },
   "jade-ink": { deep: 0x102f2c, shallow: 0x3f8068, streak: 0x8ec49a, foam: 0xdde9c4 },
   "moonlit-teal": { deep: 0x173b44, shallow: 0x689d99, streak: 0xa8cec1, foam: 0xe9eed8 }
 } as const;
@@ -168,6 +182,21 @@ export const TEA_GARDEN_STREAM_ROCKS: readonly TeaGardenWaterRockSpec[] =
 
 export type TeaGardenWaterPlayer = { x: number; y?: number; z: number };
 
+/**
+ * A bounded, world-space disturbance applied by a dedicated GPU pass.
+ * `strength` is signed surface displacement in metres. Horizontal velocity is
+ * in metres/second, so moving feet, balls, and koi can leave directional wakes.
+ */
+export type TeaGardenWaterImpulse = {
+  x: number;
+  z: number;
+  radius?: number;
+  strength?: number;
+  velocityX?: number;
+  velocityZ?: number;
+  foam?: number;
+};
+
 export type TeaGardenWaterSimulationStats = {
   backend: string;
   grid: string;
@@ -183,6 +212,12 @@ export type TeaGardenWaterSimulationStats = {
   substeps: number;
   running: boolean;
   playerDistance: number;
+  impulseCapacity: number;
+  queuedImpulses: number;
+  impulses: number;
+  totalImpulses: number;
+  droppedImpulses: number;
+  cfl: number;
   revision: number;
 };
 
@@ -208,6 +243,8 @@ export type TeaGardenWaterSimulation = {
   addTuning(folder: FolderApi): TeaGardenWaterTuningMonitor[];
   syncTuning(): void;
   reset(): void;
+  /** Returns false for invalid/out-of-water impulses or when the bounded queue is full. */
+  queueImpulse(impulse: TeaGardenWaterImpulse): boolean;
   /** CPU twin of the authored, non-terrain-draped simulation surface. */
   surfaceY(x: number, z: number): number;
   readonly stats: TeaGardenWaterSimulationStats;
@@ -219,6 +256,8 @@ export type TeaGardenWaterSimulationOptions = {
   renderer: THREE.WebGPURenderer;
   map: TeaGardenTerrain;
 };
+
+type QueuedWaterImpulse = Required<TeaGardenWaterImpulse>;
 
 type WaterStorageAttribute = THREE.StorageInstancedBufferAttribute | THREE.StorageBufferAttribute;
 
@@ -266,6 +305,27 @@ function centroid(outline: readonly TeaGardenXZ[]): { x: number; z: number } {
   return { x: x / outline.length, z: z / outline.length };
 }
 
+/** Rounded visual bank only; the authored polygons remain the exact solver walls. */
+function smoothClosedOutline(
+  source: readonly TeaGardenXZ[],
+  passes = 2
+): TeaGardenXZ[] {
+  let points: TeaGardenXZ[] = [...source];
+  for (let pass = 0; pass < passes; pass++) {
+    const next: TeaGardenXZ[] = [];
+    for (let i = 0; i < points.length; i++) {
+      const a = points[i];
+      const b = points[(i + 1) % points.length];
+      next.push(
+        [a[0] * 0.75 + b[0] * 0.25, a[1] * 0.75 + b[1] * 0.25],
+        [a[0] * 0.25 + b[0] * 0.75, a[1] * 0.25 + b[1] * 0.75]
+      );
+    }
+    points = next;
+  }
+  return points;
+}
+
 function nearestFlowSample(x: number, z: number): {
   progress: number;
   distance: number;
@@ -305,6 +365,13 @@ function nearestFlowSample(x: number, z: number): {
 
 function insideWaterFeature(x: number, z: number): boolean {
   return TEA_GARDEN_WATER_FEATURES.some((feature) => pointInTeaGardenPolygon(x, z, feature.outline));
+}
+
+function insideWaterSimulation(x: number, z: number): boolean {
+  return (
+    insideWaterFeature(x, z) &&
+    !TEA_GARDEN_STREAM_ROCKS.some((rock) => Math.hypot(x - rock.x, z - rock.z) <= rock.radius)
+  );
 }
 
 function distanceToSegment(x: number, z: number, a: TeaGardenXZ, b: TeaGardenXZ): number {
@@ -430,40 +497,62 @@ function makeShorelineGeometry(
   const outerColor = new THREE.Color(0x8db665);
 
   for (const feature of TEA_GARDEN_WATER_FEATURES) {
-    const c = centroid(feature.outline);
-    for (let i = 0; i < feature.outline.length; i++) {
-      const a = feature.outline[i];
-      const b = feature.outline[(i + 1) % feature.outline.length];
+    const outline = smoothClosedOutline(feature.outline);
+    const c = centroid(outline);
+    const outwardNormal = (a: TeaGardenXZ, b: TeaGardenXZ) => {
       const dx = b[0] - a[0];
       const dz = b[1] - a[1];
       const length = Math.hypot(dx, dz) || 1;
-      let nx = -dz / length;
-      let nz = dx / length;
+      let x = -dz / length;
+      let z = dx / length;
       const midX = (a[0] + b[0]) * 0.5;
       const midZ = (a[1] + b[1]) * 0.5;
-      if (nx * (midX - c.x) + nz * (midZ - c.z) < 0) {
-        nx *= -1;
-        nz *= -1;
+      if (x * (midX - c.x) + z * (midZ - c.z) < 0) {
+        x *= -1;
+        z *= -1;
       }
-
-      const innerA = { x: a[0] - nx * BANK_INSET, z: a[1] - nz * BANK_INSET };
-      const innerB = { x: b[0] - nx * BANK_INSET, z: b[1] - nz * BANK_INSET };
-      const outerA = { x: a[0] + nx * BANK_WIDTH, z: a[1] + nz * BANK_WIDTH };
-      const outerB = { x: b[0] + nx * BANK_WIDTH, z: b[1] + nz * BANK_WIDTH };
-      const base = positions.length / 3;
+      return { x, z };
+    };
+    const base = positions.length / 3;
+    for (let i = 0; i < outline.length; i++) {
+      const point = outline[i];
+      const previous = outline[(i - 1 + outline.length) % outline.length];
+      const next = outline[(i + 1) % outline.length];
+      const previousNormal = outwardNormal(previous, point);
+      const nextNormal = outwardNormal(point, next);
+      let miterX = previousNormal.x + nextNormal.x;
+      let miterZ = previousNormal.z + nextNormal.z;
+      const miterLength = Math.hypot(miterX, miterZ);
+      if (miterLength < 1e-4) {
+        miterX = nextNormal.x;
+        miterZ = nextNormal.z;
+      } else {
+        miterX /= miterLength;
+        miterZ /= miterLength;
+      }
+      const alignment = Math.max(0.42, miterX * nextNormal.x + miterZ * nextNormal.z);
+      const miterScale = Math.min(1.75, 1 / alignment);
+      const inner = {
+        x: point[0] - miterX * BANK_INSET * miterScale,
+        z: point[1] - miterZ * BANK_INSET * miterScale
+      };
+      const outer = {
+        x: point[0] + miterX * BANK_WIDTH * miterScale,
+        z: point[1] + miterZ * BANK_WIDTH * miterScale
+      };
       positions.push(
-        innerA.x - centerX, surfaceY(innerA.x, innerA.z) - 0.025, innerA.z - centerZ,
-        innerB.x - centerX, surfaceY(innerB.x, innerB.z) - 0.025, innerB.z - centerZ,
-        outerA.x - centerX, map.groundTop(outerA.x, outerA.z) + 0.085, outerA.z - centerZ,
-        outerB.x - centerX, map.groundTop(outerB.x, outerB.z) + 0.085, outerB.z - centerZ
+        inner.x - centerX, surfaceY(inner.x, inner.z) + 0.045, inner.z - centerZ,
+        outer.x - centerX, map.groundTop(outer.x, outer.z) + 0.085, outer.z - centerZ
       );
       colors.push(
         innerColor.r, innerColor.g, innerColor.b,
-        innerColor.r, innerColor.g, innerColor.b,
-        outerColor.r, outerColor.g, outerColor.b,
         outerColor.r, outerColor.g, outerColor.b
       );
-      indices.push(base, base + 2, base + 1, base + 1, base + 2, base + 3);
+    }
+    for (let i = 0; i < outline.length; i++) {
+      const current = base + i * 2;
+      const next = base + ((i + 1) % outline.length) * 2;
+      indices.push(current, current + 1, next, next, current + 1, next + 1);
     }
   }
 
@@ -577,9 +666,10 @@ export function createTeaGardenWaterSimulation(
         Math.sin(worldX * 0.31 + worldZ * 0.17) * 0.0022 +
         Math.sin(worldX * 0.13 - worldZ * 0.23) * 0.0015;
       const initialSpeed = WATER_TUNING.values.flow * THREE.MathUtils.lerp(0.82, 0.18, flow.pond);
+      const initialDischarge = initialSpeed * WATER_TUNING.values.depth;
       initialStateData[stateOffset] = authoredRipple;
-      initialStateData[stateOffset + 1] = flow.flowX * initialSpeed;
-      initialStateData[stateOffset + 2] = flow.flowZ * initialSpeed;
+      initialStateData[stateOffset + 1] = flow.flowX * initialDischarge;
+      initialStateData[stateOffset + 2] = flow.flowZ * initialDischarge;
       initialStateData[stateOffset + 3] = rock.influence * 0.12;
     }
   }
@@ -604,33 +694,56 @@ export function createTeaGardenWaterSimulation(
   geometry.computeBoundingSphere();
   if (geometry.boundingSphere) geometry.boundingSphere.radius += MAX_SIM_HEIGHT;
 
-  // vec4 keeps the state naturally aligned for native WGSL storage-buffer IO.
+  // State is (surface displacement, x discharge, z discharge, foam). Keeping
+  // discharge rather than velocity lets the local finite-volume update remain
+  // conservative while still using one naturally aligned vec4 storage slot.
   const initialState = instancedArray(initialStateData, "vec4").toReadOnly();
   const metadata = instancedArray(metadataData, "vec4").toReadOnly();
   const guide = instancedArray(guideData, "vec4").toReadOnly();
   const stateA = instancedArray(CELL_COUNT, "vec4");
   const stateB = instancedArray(CELL_COUNT, "vec4");
   const derivatives = instancedArray(CELL_COUNT, "vec4");
+  const impulseHeaderData = new Float32Array(MAX_IMPULSES_PER_DISPATCH * 4);
+  const impulseMotionData = new Float32Array(MAX_IMPULSES_PER_DISPATCH * 4);
+  // header = (world x, world z, radius, signed height displacement)
+  // motion = (x velocity, z velocity, foam, unused)
+  const impulseHeaders = instancedArray(impulseHeaderData, "vec4").toReadOnly();
+  const impulseMotions = instancedArray(impulseMotionData, "vec4").toReadOnly();
 
   const metadataRead = storage(metadata.value, "vec4", CELL_COUNT).toReadOnly();
   const guideRead = storage(guide.value, "vec4", CELL_COUNT).toReadOnly();
   const stateARead = storage(stateA.value, "vec4", CELL_COUNT).toReadOnly();
   const stateBRead = storage(stateB.value, "vec4", CELL_COUNT).toReadOnly();
   const derivativesRead = storage(derivatives.value, "vec4", CELL_COUNT).toReadOnly();
+  const impulseHeadersRead = storage(
+    impulseHeaders.value,
+    "vec4",
+    MAX_IMPULSES_PER_DISPATCH
+  ).toReadOnly();
+  const impulseMotionsRead = storage(
+    impulseMotions.value,
+    "vec4",
+    MAX_IMPULSES_PER_DISPATCH
+  ).toReadOnly();
 
   const stepDtU = uniform(FIXED_STEP / 4);
   const timeU = uniform(0);
   const flowU = uniform(0.48);
-  const pressureU = uniform(1.8);
-  const viscosityU = uniform(3.2);
-  const dampingU = uniform(1.1);
+  const depthU = uniform(0.38);
+  const pressureU = uniform(5.2);
+  const viscosityU = uniform(0.42);
+  const dampingU = uniform(0.32);
   const vorticityU = uniform(0.68);
   const rockSlipU = uniform(0.76);
   const maxSpeedU = uniform(MAX_SIM_SPEED);
-  const reliefU = uniform(0.14);
-  const normalU = uniform(0.45);
-  const rippleU = uniform(0.007);
-  const streakU = uniform(0.3);
+  const impulseCountU = uniform(0, "uint");
+  const interactionScaleU = uniform(1);
+  const wakeResponseU = uniform(0.82);
+  const reliefU = uniform(1);
+  const normalU = uniform(1.45);
+  const waveContrastU = uniform(0.72);
+  const rippleU = uniform(0.0015);
+  const streakU = uniform(0.07);
   const foamU = uniform(0.56);
   const opacityU = uniform(0.92);
   const deepColorU = uniform(new THREE.Color(WATER_PALETTES["celadon-dusk"].deep));
@@ -639,11 +752,124 @@ export function createTeaGardenWaterSimulation(
   const foamColorU = uniform(new THREE.Color(WATER_PALETTES["celadon-dusk"].foam));
 
   const resetCompute = Fn(() => {
-    const value = initialState.element(instanceIndex);
+    const seed = initialState.element(instanceIndex);
+    const meta = metadataRead.element(instanceIndex);
+    const flowGuide = guideRead.element(instanceIndex);
+    const speed = flowU.mul(mix(float(0.82), float(0.18), meta.y));
+    const discharge = flowGuide.xy.mul(speed).mul(depthU);
+    const value = select(
+      meta.x.greaterThan(0.5),
+      vec4(seed.x, discharge.x, discharge.y, seed.w),
+      vec4(0)
+    );
     stateA.element(instanceIndex).assign(value);
     stateB.element(instanceIndex).assign(value);
     derivatives.element(instanceIndex).assign(vec4(0));
   })().compute(CELL_COUNT, [256]);
+
+  // A zero-net-volume Mexican-hat displacement creates a crest and matching
+  // trough instead of continuously adding water. Directional velocity turns
+  // that radial wave into a foot, ball, or fish wake. The fixed-size loop is
+  // deliberately bounded so a burst of gameplay events cannot grow GPU work.
+  const impulseCompute = Fn(() => {
+    const gx = instanceIndex.mod(uint(GRID_WIDTH));
+    const gz = instanceIndex.div(uint(GRID_WIDTH));
+    const cell = vec2(
+      float(gx).mul(cellSizeX).add(bounds.minX),
+      float(gz).mul(cellSizeZ).add(bounds.minZ)
+    );
+    const meta = metadataRead.element(instanceIndex);
+    const value = stateA.element(instanceIndex);
+    const heightDelta = float(0).toVar();
+    const motionDelta = vec2(0).toVar();
+    const foamDelta = float(0).toVar();
+
+    for (let i = 0; i < MAX_IMPULSES_PER_DISPATCH; i++) {
+      const header = impulseHeadersRead.element(uint(i));
+      const motion = impulseMotionsRead.element(uint(i));
+      const enabled = select(uint(i).lessThan(impulseCountU), float(1), float(0));
+      const offset = cell.sub(header.xy);
+      const radius = header.z.max(Math.min(cellSizeX, cellSizeZ) * 1.5);
+      const radiusSquared = offset.dot(offset).div(radius.mul(radius));
+      const envelope = exp(radiusSquared.mul(-0.5)).mul(enabled);
+      const balancedWave = envelope.mul(float(1).sub(radiusSquared.mul(0.5)));
+      heightDelta.addAssign(balancedWave.mul(header.w));
+      motionDelta.addAssign(motion.xy.mul(envelope));
+      foamDelta.addAssign(motion.z.mul(envelope));
+    }
+
+    const nextHeight = clamp(
+      value.x.add(heightDelta.mul(interactionScaleU)),
+      -MAX_SIM_HEIGHT,
+      MAX_SIM_HEIGHT
+    );
+    const nextDepth = depthU.add(nextHeight).max(MIN_SIM_DEPTH);
+    const nextMomentum = value.yz.add(
+      motionDelta.mul(nextDepth).mul(wakeResponseU)
+    );
+    const next = vec4(
+      nextHeight,
+      nextMomentum.x,
+      nextMomentum.y,
+      clamp(value.w.add(foamDelta), 0, 1)
+    );
+    value.assign(select(meta.x.greaterThan(0.5), next, vec4(0)));
+  })().compute(CELL_COUNT, [256]);
+
+  const reflectedX = (value: any, slip: any) =>
+    vec4(value.x, value.y.negate(), value.z.mul(slip), value.w);
+  const reflectedZ = (value: any, slip: any) =>
+    vec4(value.x, value.y.mul(slip), value.z.negate(), value.w);
+
+  // Local Lax-Friedrichs (Rusanov) face fluxes. They conservatively transport
+  // height and both momentum components and add just enough wave-speed-scaled
+  // numerical diffusion to remain stable at discontinuities and stair-stepped
+  // polygon/rock boundaries.
+  const fluxX = (left: any, right: any) => {
+    const leftDepth = depthU.add(left.x).max(MIN_SIM_DEPTH);
+    const rightDepth = depthU.add(right.x).max(MIN_SIM_DEPTH);
+    const leftU = left.y.div(leftDepth);
+    const leftV = left.z.div(leftDepth);
+    const rightU = right.y.div(rightDepth);
+    const rightV = right.z.div(rightDepth);
+    const leftFlux = vec3(
+      left.y,
+      left.y.mul(leftU).add(pressureU.mul(leftDepth.mul(leftDepth)).mul(0.5)),
+      left.y.mul(leftV)
+    );
+    const rightFlux = vec3(
+      right.y,
+      right.y.mul(rightU).add(pressureU.mul(rightDepth.mul(rightDepth)).mul(0.5)),
+      right.y.mul(rightV)
+    );
+    const speed = leftU.abs().add(pressureU.mul(leftDepth).sqrt())
+      .max(rightU.abs().add(pressureU.mul(rightDepth).sqrt()));
+    return leftFlux.add(rightFlux).mul(0.5)
+      .sub(right.xyz.sub(left.xyz).mul(speed).mul(0.5));
+  };
+
+  const fluxZ = (up: any, down: any) => {
+    const upDepth = depthU.add(up.x).max(MIN_SIM_DEPTH);
+    const downDepth = depthU.add(down.x).max(MIN_SIM_DEPTH);
+    const upU = up.y.div(upDepth);
+    const upV = up.z.div(upDepth);
+    const downU = down.y.div(downDepth);
+    const downV = down.z.div(downDepth);
+    const upFlux = vec3(
+      up.z,
+      up.z.mul(upU),
+      up.z.mul(upV).add(pressureU.mul(upDepth.mul(upDepth)).mul(0.5))
+    );
+    const downFlux = vec3(
+      down.z,
+      down.z.mul(downU),
+      down.z.mul(downV).add(pressureU.mul(downDepth.mul(downDepth)).mul(0.5))
+    );
+    const speed = upV.abs().add(pressureU.mul(upDepth).sqrt())
+      .max(downV.abs().add(pressureU.mul(downDepth).sqrt()));
+    return upFlux.add(downFlux).mul(0.5)
+      .sub(down.xyz.sub(up.xyz).mul(speed).mul(0.5));
+  };
 
   const buildAnalyze = (source: typeof stateARead) =>
     Fn(() => {
@@ -659,10 +885,16 @@ export function createTeaGardenWaterSimulation(
       const right = select(metadataRead.element(rightIndex).x.greaterThan(0.5), source.element(rightIndex), center);
       const up = select(metadataRead.element(upIndex).x.greaterThan(0.5), source.element(upIndex), center);
       const down = select(metadataRead.element(downIndex).x.greaterThan(0.5), source.element(downIndex), center);
+      const leftVelocity = left.yz.div(depthU.add(left.x).max(MIN_SIM_DEPTH));
+      const rightVelocity = right.yz.div(depthU.add(right.x).max(MIN_SIM_DEPTH));
+      const upVelocity = up.yz.div(depthU.add(up.x).max(MIN_SIM_DEPTH));
+      const downVelocity = down.yz.div(depthU.add(down.x).max(MIN_SIM_DEPTH));
       const gradientX = right.x.sub(left.x).div(cellSizeX * 2);
       const gradientZ = down.x.sub(up.x).div(cellSizeZ * 2);
-      const divergence = right.y.sub(left.y).div(cellSizeX * 2).add(down.z.sub(up.z).div(cellSizeZ * 2));
-      const curl = right.z.sub(left.z).div(cellSizeX * 2).sub(down.y.sub(up.y).div(cellSizeZ * 2));
+      const divergence = rightVelocity.x.sub(leftVelocity.x).div(cellSizeX * 2)
+        .add(downVelocity.y.sub(upVelocity.y).div(cellSizeZ * 2));
+      const curl = rightVelocity.y.sub(leftVelocity.y).div(cellSizeX * 2)
+        .sub(downVelocity.x.sub(upVelocity.x).div(cellSizeZ * 2));
       derivatives.element(instanceIndex).assign(
         select(centerMeta.x.greaterThan(0.5), vec4(gradientX, gradientZ, divergence, curl), vec4(0))
       );
@@ -679,60 +911,109 @@ export function createTeaGardenWaterSimulation(
       const current = source.element(instanceIndex);
       const meta = metadataRead.element(instanceIndex);
       const flowGuide = guideRead.element(instanceIndex);
-      const derived = derivativesRead.element(instanceIndex);
-      const left = select(metadataRead.element(leftIndex).x.greaterThan(0.5), source.element(leftIndex), current);
-      const right = select(metadataRead.element(rightIndex).x.greaterThan(0.5), source.element(rightIndex), current);
-      const up = select(metadataRead.element(upIndex).x.greaterThan(0.5), source.element(upIndex), current);
-      const down = select(metadataRead.element(downIndex).x.greaterThan(0.5), source.element(downIndex), current);
-      const velocity = current.yz.toVar();
-      const neighborVelocity = left.yz.add(right.yz).add(up.yz).add(down.yz).mul(0.25);
-      const neighborHeight = left.x.add(right.x).add(up.x).add(down.x).mul(0.25);
-      velocity.addAssign(derived.xy.mul(pressureU).mul(stepDtU).negate());
-      velocity.addAssign(neighborVelocity.sub(velocity).mul(viscosityU).mul(stepDtU));
+      const leftMeta = metadataRead.element(leftIndex);
+      const rightMeta = metadataRead.element(rightIndex);
+      const upMeta = metadataRead.element(upIndex);
+      const downMeta = metadataRead.element(downIndex);
+      const leftActive = leftMeta.x.greaterThan(0.5);
+      const rightActive = rightMeta.x.greaterThan(0.5);
+      const upActive = upMeta.x.greaterThan(0.5);
+      const downActive = downMeta.x.greaterThan(0.5);
+      const leftSlip = mix(float(0.92), rockSlipU, saturate(leftMeta.z));
+      const rightSlip = mix(float(0.92), rockSlipU, saturate(rightMeta.z));
+      const upSlip = mix(float(0.92), rockSlipU, saturate(upMeta.z));
+      const downSlip = mix(float(0.92), rockSlipU, saturate(downMeta.z));
+      const left = select(leftActive, source.element(leftIndex), reflectedX(current, leftSlip));
+      const right = select(rightActive, source.element(rightIndex), reflectedX(current, rightSlip));
+      const up = select(upActive, source.element(upIndex), reflectedZ(current, upSlip));
+      const down = select(downActive, source.element(downIndex), reflectedZ(current, downSlip));
 
-      const desiredSpeed = flowU.mul(mix(float(1), float(0.22), meta.y));
+      const conservative = current.xyz
+        .sub(fluxX(current, right).sub(fluxX(left, current)).mul(stepDtU.div(cellSizeX)))
+        .sub(fluxZ(current, down).sub(fluxZ(up, current)).mul(stepDtU.div(cellSizeZ)));
+      const height = clamp(conservative.x, -MAX_SIM_HEIGHT, MAX_SIM_HEIGHT);
+      const localDepth = depthU.add(height).max(MIN_SIM_DEPTH);
+      const momentum = conservative.yz.toVar();
+      const velocity = momentum.div(localDepth).toVar();
+      const leftVelocity = left.yz.div(depthU.add(left.x).max(MIN_SIM_DEPTH));
+      const rightVelocity = right.yz.div(depthU.add(right.x).max(MIN_SIM_DEPTH));
+      const upVelocity = up.yz.div(depthU.add(up.x).max(MIN_SIM_DEPTH));
+      const downVelocity = down.yz.div(depthU.add(down.x).max(MIN_SIM_DEPTH));
+      const neighborVelocity = leftVelocity.add(rightVelocity).add(upVelocity).add(downVelocity).mul(0.25);
+      momentum.addAssign(
+        neighborVelocity.sub(velocity)
+          .mul(localDepth)
+          .mul(clamp(viscosityU.mul(stepDtU), 0, 0.18))
+      );
+
+      // The path is a gentle body-force source, not a rendered velocity field.
+      // All visible direction, waves, wakes, and obstacle flow come from state.
+      const desiredSpeed = flowU.mul(mix(float(0.88), float(0.08), meta.y));
       const desiredVelocity = flowGuide.xy.mul(desiredSpeed);
-      velocity.addAssign(
-        desiredVelocity.sub(velocity).mul(stepDtU).mul(mix(float(1.5), float(0.38), meta.y))
-      );
-      const vortexTurn = vec2(velocity.y.negate(), velocity.x)
-        .mul(derived.w.sign())
-        .mul(derived.w.abs().min(2.5))
-        .mul(vorticityU)
-        .mul(stepDtU)
-        .mul(0.055);
-      velocity.addAssign(vortexTurn);
-      velocity.addAssign(
-        flowGuide.zw.mul(meta.z).mul(vorticityU).mul(flowU).mul(stepDtU).mul(0.52)
+      momentum.addAssign(
+        desiredVelocity.sub(velocity)
+          .mul(localDepth)
+          .mul(stepDtU)
+          .mul(mix(float(0.72), float(0.07), meta.y))
       );
 
-      const tangentialVelocity = flowGuide.zw.mul(velocity.dot(flowGuide.zw)).mul(rockSlipU);
-      velocity.assign(mix(velocity, tangentialVelocity, meta.z.mul(0.88)));
-      velocity.mulAssign(
-        exp(dampingU.mul(stepDtU).mul(mix(float(1), float(2.15), meta.y)).negate())
+      const curl = rightVelocity.y.sub(leftVelocity.y).div(cellSizeX * 2)
+        .sub(downVelocity.x.sub(upVelocity.x).div(cellSizeZ * 2));
+      momentum.addAssign(
+        vec2(velocity.y.negate(), velocity.x)
+          .mul(curl.sign())
+          .mul(curl.abs().min(4))
+          .mul(vorticityU)
+          .mul(stepDtU)
+          .mul(localDepth)
+          .mul(0.024)
       );
-      const speed = velocity.length();
-      velocity.mulAssign(select(speed.greaterThan(maxSpeedU), maxSpeedU.div(speed.max(1e-5)), float(1)));
+      momentum.addAssign(
+        flowGuide.zw.mul(meta.z).mul(vorticityU).mul(flowU)
+          .mul(stepDtU).mul(localDepth).mul(0.18)
+      );
 
-      const worldX = float(gx).mul(cellSizeX).add(bounds.minX);
-      const worldZ = float(gz).mul(cellSizeZ).add(bounds.minZ);
-      const sourceRipple = sin(timeU.mul(0.88).add(worldX.mul(0.19)).sub(worldZ.mul(0.13)))
-        .mul(meta.w)
-        .mul(0.004);
-      const height = mix(current.x, neighborHeight, 0.18)
-        .mul(exp(stepDtU.mul(mix(float(0.18), float(0.5), meta.y)).negate()))
-        .sub(derived.z.mul(stepDtU).mul(mix(float(0.09), float(0.055), meta.y)))
-        .add(sourceRipple.mul(stepDtU));
-      const turbulence = derived.w.abs().sub(0.12).max(0).mul(vorticityU).mul(0.16)
-        .add(derived.z.abs().sub(0.1).max(0).mul(0.1))
-        .add(meta.z.mul(speed).mul(0.92));
-      const foam = current.w
-        .mul(exp(stepDtU.mul(mix(float(0.95), float(1.4), meta.y)).negate()))
-        .add(saturate(turbulence).mul(stepDtU).mul(0.76));
+      // Immediately outside rock cut-outs, retain tangential discharge and
+      // remove radial penetration. Reflected face states do the same for the
+      // polygon banks while retaining their tangential component.
+      const rockConstraint = smoothstep(0.58, 0.98, meta.z);
+      const tangentialMomentum = flowGuide.zw
+        .mul(momentum.dot(flowGuide.zw))
+        .mul(rockSlipU);
+      momentum.assign(mix(momentum, tangentialMomentum, rockConstraint.mul(0.72)));
+      momentum.x.assign(select(leftActive, momentum.x, momentum.x.max(0)));
+      momentum.x.assign(select(rightActive, momentum.x, momentum.x.min(0)));
+      momentum.y.assign(select(upActive, momentum.y, momentum.y.max(0)));
+      momentum.y.assign(select(downActive, momentum.y, momentum.y.min(0)));
+      momentum.mulAssign(
+        exp(dampingU.mul(stepDtU).mul(mix(float(1), float(1.45), meta.y)).negate())
+      );
+      const constrainedVelocity = momentum.div(localDepth);
+      const speed = constrainedVelocity.length();
+      momentum.mulAssign(
+        select(speed.greaterThan(maxSpeedU), maxSpeedU.div(speed.max(1e-5)), float(1))
+      );
+
+      const upwindX = select(constrainedVelocity.x.greaterThanEqual(0), left.w, right.w);
+      const upwindZ = select(constrainedVelocity.y.greaterThanEqual(0), up.w, down.w);
+      const courant = clamp(
+        speed.mul(stepDtU).div(Math.min(cellSizeX, cellSizeZ)),
+        0,
+        0.45
+      );
+      const transportedFoam = mix(current.w, upwindX.add(upwindZ).mul(0.5), courant);
+      const divergence = rightVelocity.x.sub(leftVelocity.x).div(cellSizeX * 2)
+        .add(downVelocity.y.sub(upVelocity.y).div(cellSizeZ * 2));
+      const turbulence = curl.abs().sub(0.18).max(0).mul(vorticityU).mul(0.13)
+        .add(divergence.abs().sub(0.16).max(0).mul(0.11))
+        .add(meta.z.mul(speed).mul(0.34));
+      const foam = transportedFoam
+        .mul(exp(stepDtU.mul(mix(float(0.52), float(0.85), meta.y)).negate()))
+        .add(saturate(turbulence).mul(stepDtU).mul(0.72));
       const next = vec4(
-        clamp(height, -MAX_SIM_HEIGHT, MAX_SIM_HEIGHT),
-        velocity.x,
-        velocity.y,
+        height,
+        momentum.x,
+        momentum.y,
         clamp(foam, 0, 1)
       );
       destination.element(instanceIndex).assign(select(meta.x.greaterThan(0.5), next, vec4(0)));
@@ -740,9 +1021,8 @@ export function createTeaGardenWaterSimulation(
 
   const analyzeACompute = buildAnalyze(stateARead);
   const integrateABCompute = buildIntegrate(stateARead, stateB);
-  const analyzeBCompute = buildAnalyze(stateBRead);
   const integrateBACompute = buildIntegrate(stateBRead, stateA);
-  const solverGroup = [analyzeACompute, integrateABCompute, analyzeBCompute, integrateBACompute];
+  const solverGroup = [integrateABCompute, integrateBACompute];
 
   // A five-bin display reconstruction removes the collocated-grid checkerboard
   // mode while preserving broad pressure ripples and the velocity field. This
@@ -763,25 +1043,20 @@ export function createTeaGardenWaterSimulation(
       const down = select(metadataRead.element(downIndex).x.greaterThan(0.5), stateARead.element(downIndex), center);
       const reconstructedHeight = center.x.mul(0.5)
         .add(left.x.add(right.x).add(up.x).add(down.x).mul(0.125));
-      const reconstructedVelocity = center.yz.mul(0.5)
+      const reconstructedDischarge = center.yz.mul(0.5)
         .add(left.yz.add(right.yz).add(up.yz).add(down.yz).mul(0.125));
       const reconstructedFoam = center.w.mul(0.5)
         .add(left.w.add(right.w).add(up.w).add(down.w).mul(0.125));
-      return vec4(reconstructedHeight, reconstructedVelocity.x, reconstructedVelocity.y, reconstructedFoam);
+      return vec4(reconstructedHeight, reconstructedDischarge.x, reconstructedDischarge.y, reconstructedFoam);
     })()
   );
   const renderedMeta = vertexStage(Fn(() => metadataRead.element(vertexIndex))());
-  const renderedGuide = vertexStage(Fn(() => guideRead.element(vertexIndex))());
   const renderedDerivatives = vertexStage(Fn(() => derivativesRead.element(vertexIndex))());
   const renderedHeight = renderedState.x.mul(reliefU);
-  const visibleEddyInfluence = saturate(renderedMeta.z.mul(1.35));
-  // Let the compute field bend the authored stream direction strongly at rocks,
-  // but keep pressure-wave noise from breaking a unified body into glittering
-  // cell-sized directions across the quiet pond.
-  const displayedVelocity = mix(
-    renderedGuide.xy.mul(flowU),
-    renderedState.yz,
-    visibleEddyInfluence.mul(0.82)
+  // Render the evolved discharge everywhere. The old surface substituted an
+  // authored guide outside rock wakes, which made the simulation look static.
+  const displayedVelocity = renderedState.yz.div(
+    depthU.add(renderedState.x).max(MIN_SIM_DEPTH)
   );
   const renderedSpeed = displayedVelocity.length();
   const flowDirection = mix(
@@ -802,46 +1077,70 @@ export function createTeaGardenWaterSimulation(
     .mul(saturate(renderedSpeed.mul(1.1).add(0.18)));
   const broadLight = sin(positionWorld.x.mul(0.15).add(positionWorld.z.mul(0.11))).mul(0.5).add(0.5);
   const shallow = saturate(
-    renderedHeight.mul(visibleEddyInfluence).mul(0.2)
-      .add(broadLight.mul(0.2)).add(renderedMeta.y.mul(0.16)).add(0.2)
+    renderedHeight.mul(1.8)
+      .add(broadLight.mul(0.035)).add(renderedMeta.y.mul(0.12)).add(0.28)
   );
+  const simulatedSlope = renderedDerivatives.xy.length();
+  const crest = smoothstep(0.0025, 0.04, renderedHeight);
+  const trough = smoothstep(0.0025, 0.04, renderedHeight.negate());
+  const compression = smoothstep(0.1, 0.85, renderedDerivatives.z.abs());
+  // Stylized relief comes only from the evolved field: crests catch celadon
+  // light, troughs carry a thin ink edge, and compression adds a restrained
+  // glint. This makes small gameplay waves readable without drawing fake rings.
+  const waveHighlight = saturate(
+    smoothstep(0.008, 0.11, simulatedSlope).mul(0.58)
+      .add(crest.mul(0.34))
+      .add(compression.mul(0.18))
+  ).mul(waveContrastU);
+  const troughInk = saturate(trough.mul(waveContrastU).mul(0.3));
   const foamHighlight = saturate(
-    smoothstep(0.16, 0.82, renderedState.w).mul(foamU).mul(visibleEddyInfluence)
+    smoothstep(0.012, 0.58, renderedState.w).mul(foamU)
       .add(renderedMeta.z.mul(0.07).mul(foamU))
+      .add(waveHighlight.mul(0.08))
   );
   const waterColor = mix(deepColorU, shallowColorU, shallow);
-  const streakedColor = mix(waterColor, streakColorU, saturate(streak.mul(0.62)));
+  const sculptedColor = mix(waterColor, deepColorU.mul(0.72), troughInk);
+  const streakedColor = mix(
+    sculptedColor,
+    streakColorU,
+    saturate(streak.mul(0.48).add(waveHighlight.mul(0.44)))
+  );
 
   const material = new THREE.MeshStandardNodeMaterial({
-    roughness: 0.62,
+    roughness: 0.56,
     metalness: 0,
     transparent: true,
     depthWrite: false
   });
-  material.positionNode = positionLocal.add(vec3(0, renderedHeight.mul(visibleEddyInfluence), 0));
+  material.positionNode = positionLocal.add(vec3(0, renderedHeight, 0));
   material.colorNode = mix(streakedColor, foamColorU, foamHighlight);
+  material.emissiveNode = streakColorU.mul(waveHighlight.mul(0.18))
+    .add(foamColorU.mul(foamHighlight.mul(0.08)));
   material.opacityNode = opacityU.mul(mix(float(0.9), float(1), foamHighlight));
   // The committed terrain beneath the pond is not a carved basin, so the mesh
   // uses a clearance envelope. Shade it as one water body rather than inheriting
-  // every little terrain triangle's normal; the GPU field gradient and two
-  // animated ripples provide the gentle surface normal in world space.
+  // every little terrain triangle's normal. The simulated height gradient is
+  // the primary normal; the sine terms are only sub-millimetre micro texture.
   const normalWaveX = sin(positionWorld.x.mul(0.72).add(timeU.mul(0.47)))
     .mul(rippleU).mul(normalU).mul(5.5);
   const normalWaveZ = sin(positionWorld.z.mul(0.61).sub(timeU.mul(0.39)))
     .mul(rippleU).mul(normalU).mul(5.5);
   const worldNormal = normalize(vec3(
-    normalWaveX.sub(renderedDerivatives.x.mul(visibleEddyInfluence).mul(reliefU).mul(normalU).mul(0.012)),
+    normalWaveX.sub(clamp(renderedDerivatives.x.mul(reliefU).mul(normalU), -1.2, 1.2)),
     1,
-    normalWaveZ.sub(renderedDerivatives.y.mul(visibleEddyInfluence).mul(reliefU).mul(normalU).mul(0.012))
+    normalWaveZ.sub(clamp(renderedDerivatives.y.mul(reliefU).mul(normalU), -1.2, 1.2))
   ));
   material.normalNode = normalize(cameraViewMatrix.mul(vec4(worldNormal, 0)).xyz);
-  material.envMapIntensity = 0.25;
+  material.envMapIntensity = 0.32;
 
   const mesh = new THREE.Mesh(geometry, material);
   mesh.name = "tea_garden_unified_webgpu_shallow_water_surface";
   mesh.position.set(centerX, 0, centerZ);
   mesh.castShadow = false;
-  mesh.receiveShadow = true;
+  // Hard cascaded shadows hid centimetre-scale relief beneath broad dark bands.
+  // The PBR surface still receives scene/environment lighting and its simulated
+  // normals, while nearby rocks/banks retain grounded shadows.
+  mesh.receiveShadow = false;
   mesh.renderOrder = 5;
   mesh.frustumCulled = false;
 
@@ -884,6 +1183,12 @@ export function createTeaGardenWaterSimulation(
     substeps: 2,
     running: false,
     playerDistance: Number.POSITIVE_INFINITY,
+    impulseCapacity: MAX_QUEUED_IMPULSES,
+    queuedImpulses: 0,
+    impulses: 0,
+    totalImpulses: 0,
+    droppedImpulses: 0,
+    cfl: 0,
     revision: 0
   };
   group.userData.waterSimulation = stats;
@@ -891,6 +1196,7 @@ export function createTeaGardenWaterSimulation(
 
   let accumulator = 0;
   let disposed = false;
+  const impulseQueue: QueuedWaterImpulse[] = [];
 
   const countDispatches = (count: number) => {
     stats.dispatches += count;
@@ -903,14 +1209,18 @@ export function createTeaGardenWaterSimulation(
     const substeps = Math.round(THREE.MathUtils.clamp(tuning.substeps, 1, 4));
     stepDtU.value = FIXED_STEP / (substeps * 2);
     flowU.value = tuning.flow;
+    depthU.value = tuning.depth;
     pressureU.value = tuning.pressure;
     viscosityU.value = tuning.viscosity;
     dampingU.value = tuning.damping;
     vorticityU.value = tuning.vorticity;
     rockSlipU.value = tuning.rockSlip;
     maxSpeedU.value = Math.min(MAX_SIM_SPEED, Math.max(0.55, tuning.flow * 2.4 + 0.65));
+    interactionScaleU.value = tuning.interactionScale;
+    wakeResponseU.value = tuning.wakeResponse;
     reliefU.value = tuning.relief;
     normalU.value = tuning.normal;
+    waveContrastU.value = tuning.waveContrast;
     rippleU.value = tuning.ripple;
     streakU.value = tuning.streak;
     foamU.value = tuning.foam;
@@ -921,13 +1231,97 @@ export function createTeaGardenWaterSimulation(
     streakColorU.value.setHex(palette.streak);
     foamColorU.value.setHex(palette.foam);
     stats.substeps = substeps;
+    stats.cfl =
+      ((maxSpeedU.value + Math.sqrt(tuning.pressure * tuning.depth)) * stepDtU.value) /
+      Math.min(cellSizeX, cellSizeZ);
+  };
+
+  const queueImpulse = (impulse: TeaGardenWaterImpulse): boolean => {
+    if (disposed || impulseQueue.length >= MAX_QUEUED_IMPULSES) {
+      stats.droppedImpulses++;
+      return false;
+    }
+    if (!Number.isFinite(impulse.x) || !Number.isFinite(impulse.z)) {
+      stats.droppedImpulses++;
+      return false;
+    }
+    const radius = THREE.MathUtils.clamp(
+      Number.isFinite(impulse.radius) ? impulse.radius! : WATER_TUNING.values.interactionRadius,
+      Math.min(cellSizeX, cellSizeZ) * 1.5,
+      3.2
+    );
+    if (!insideWaterSimulation(impulse.x, impulse.z)) {
+      stats.droppedImpulses++;
+      return false;
+    }
+    impulseQueue.push({
+      x: impulse.x,
+      z: impulse.z,
+      radius,
+      strength: THREE.MathUtils.clamp(
+        Number.isFinite(impulse.strength) ? impulse.strength! : 0.024,
+        -MAX_SIM_HEIGHT * 0.82,
+        MAX_SIM_HEIGHT * 0.82
+      ),
+      velocityX: THREE.MathUtils.clamp(
+        Number.isFinite(impulse.velocityX) ? impulse.velocityX! : 0,
+        -MAX_SIM_SPEED,
+        MAX_SIM_SPEED
+      ),
+      velocityZ: THREE.MathUtils.clamp(
+        Number.isFinite(impulse.velocityZ) ? impulse.velocityZ! : 0,
+        -MAX_SIM_SPEED,
+        MAX_SIM_SPEED
+      ),
+      foam: THREE.MathUtils.clamp(
+        Number.isFinite(impulse.foam) ? impulse.foam! : WATER_TUNING.values.interactionFoam,
+        0,
+        1
+      )
+    });
+    stats.queuedImpulses = impulseQueue.length;
+    return true;
+  };
+
+  const applyQueuedImpulses = (): boolean => {
+    const count = Math.min(impulseQueue.length, MAX_IMPULSES_PER_DISPATCH);
+    if (count === 0) return false;
+    for (let i = 0; i < count; i++) {
+      const impulse = impulseQueue[i];
+      const offset = i * 4;
+      impulseHeaderData[offset] = impulse.x;
+      impulseHeaderData[offset + 1] = impulse.z;
+      impulseHeaderData[offset + 2] = impulse.radius;
+      impulseHeaderData[offset + 3] = impulse.strength;
+      impulseMotionData[offset] = impulse.velocityX;
+      impulseMotionData[offset + 1] = impulse.velocityZ;
+      impulseMotionData[offset + 2] = impulse.foam;
+      impulseMotionData[offset + 3] = 0;
+    }
+    impulseHeaders.value.needsUpdate = true;
+    impulseMotions.value.needsUpdate = true;
+    impulseCountU.value = count;
+    renderer.compute(impulseCompute);
+    countDispatches(1);
+    impulseQueue.splice(0, count);
+    impulseCountU.value = 0;
+    stats.impulses += count;
+    stats.totalImpulses += count;
+    stats.queuedImpulses = impulseQueue.length;
+    // Always advance at least one stable solve step so the newly injected wake
+    // is boundary-constrained and starts propagating in this rendered frame.
+    accumulator = Math.max(accumulator, FIXED_STEP);
+    return true;
   };
 
   const reset = () => {
     if (disposed) return;
     accumulator = 0;
+    impulseQueue.length = 0;
     stats.dispatches = 0;
     stats.ticks = 0;
+    stats.impulses = 0;
+    stats.queuedImpulses = 0;
     syncTuning();
     renderer.compute(resetCompute);
     countDispatches(1);
@@ -938,6 +1332,7 @@ export function createTeaGardenWaterSimulation(
     if (disposed) return;
     stats.dispatches = 0;
     stats.ticks = 0;
+    stats.impulses = 0;
     stats.playerDistance = distanceToWater(player.x, player.z);
     timeU.value = Number.isFinite(time) ? time : 0;
     syncTuning();
@@ -947,6 +1342,7 @@ export function createTeaGardenWaterSimulation(
       return;
     }
 
+    const appliedImpulse = applyQueuedImpulses();
     accumulator = Math.min(
       accumulator + Math.min(Math.max(Number.isFinite(dt) ? dt : 0, 0), 0.1),
       FIXED_STEP * MAX_TICKS_PER_FRAME
@@ -960,7 +1356,11 @@ export function createTeaGardenWaterSimulation(
       stats.ticks++;
       stats.totalTicks++;
     }
-    stats.running = stats.ticks > 0;
+    if (stats.ticks > 0 || appliedImpulse) {
+      renderer.compute(analyzeACompute);
+      countDispatches(1);
+    }
+    stats.running = stats.ticks > 0 || appliedImpulse;
   };
 
   const addTuning = (folder: FolderApi): TeaGardenWaterTuningMonitor[] => {
@@ -978,6 +1378,14 @@ export function createTeaGardenWaterSimulation(
       debug.addBinding(stats, "rocks", { readonly: true, label: "eddy rocks" }),
       debug.addBinding(stats, "dispatches", { readonly: true, label: "dispatches/frame" }),
       debug.addBinding(stats, "ticks", { readonly: true, label: "fixed ticks/frame" }),
+      debug.addBinding(stats, "impulses", { readonly: true, label: "impulses/frame" }),
+      debug.addBinding(stats, "queuedImpulses", { readonly: true, label: "queued impulses" }),
+      debug.addBinding(stats, "droppedImpulses", { readonly: true, label: "dropped impulses" }),
+      debug.addBinding(stats, "cfl", {
+        readonly: true,
+        label: "solver CFL",
+        format: (value: number) => value.toFixed(3)
+      }),
       debug.addBinding(stats, "running", { readonly: true, label: "running" }),
       debug.addBinding(stats, "playerDistance", {
         readonly: true,
@@ -1003,9 +1411,9 @@ export function createTeaGardenWaterSimulation(
     disposed = true;
     group.removeFromParent();
     resetCompute.dispose();
+    impulseCompute.dispose();
     analyzeACompute.dispose();
     integrateABCompute.dispose();
-    analyzeBCompute.dispose();
     integrateBACompute.dispose();
     geometry.dispose();
     material.dispose();
@@ -1019,6 +1427,9 @@ export function createTeaGardenWaterSimulation(
     disposeStorageBuffer(stateA);
     disposeStorageBuffer(stateB);
     disposeStorageBuffer(derivatives);
+    disposeStorageBuffer(impulseHeaders);
+    disposeStorageBuffer(impulseMotions);
+    impulseQueue.length = 0;
   };
 
   syncTuning();
@@ -1033,6 +1444,7 @@ export function createTeaGardenWaterSimulation(
     addTuning,
     syncTuning,
     reset,
+    queueImpulse,
     surfaceY,
     stats,
     debugState,

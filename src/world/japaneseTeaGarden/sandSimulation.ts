@@ -4,17 +4,21 @@ import {
   If,
   clamp,
   color,
+  cos,
   exp,
   float,
   instancedArray,
   instanceIndex,
   mix,
+  normalLocal,
+  normalize,
   positionLocal,
   positionWorld,
   saturate,
   select,
   sin,
   storage,
+  transformNormalToView,
   uint,
   uniform,
   vec2,
@@ -26,7 +30,6 @@ import {
 import type { FolderApi } from "tweakpane";
 import { releaseRendererAttribute } from "../../app/rendererRegistry";
 import { tunables } from "../../core/persist";
-import { bumpNormal } from "../tslUtil";
 import type { TeaGardenTerrain } from "./layout";
 
 /**
@@ -45,6 +48,13 @@ import type { TeaGardenTerrain } from "./layout";
 const GRID_WIDTH = 192;
 const GRID_HEIGHT = 112;
 const CELL_COUNT = GRID_WIDTH * GRID_HEIGHT;
+// The granular solve stays compact while a one-draw, 2× reconstruction grid
+// carries the visible surface. Rebuilding this buffer only while the state is
+// dirty is substantially cheaper than quadrupling every avalanche dispatch.
+const DISPLAY_SUBDIVISIONS = 2;
+const DISPLAY_WIDTH = (GRID_WIDTH - 1) * DISPLAY_SUBDIVISIONS + 1;
+const DISPLAY_HEIGHT = (GRID_HEIGHT - 1) * DISPLAY_SUBDIVISIONS + 1;
+const DISPLAY_CELL_COUNT = DISPLAY_WIDTH * DISPLAY_HEIGHT;
 const TINE_COUNT = 7;
 const FIXED_STEP = 1 / 60;
 const MAX_SETTLE_TICKS_PER_FRAME = 2;
@@ -52,6 +62,7 @@ const MAX_STAMPS_PER_FRAME = 6;
 const MAX_QUEUED_STAMPS = 18;
 const EDGE_INSET = 0.16;
 const MAX_RENDER_RELIEF = 0.16;
+const MAX_HEIGHT_SCALE = 2.25;
 
 const SAND_TUNING = tunables("teaGarden.sandSimulation", {
   reposeDeg: { v: 32, min: 18, max: 42, step: 0.5, label: "angle of repose (°)" },
@@ -65,9 +76,11 @@ const SAND_TUNING = tunables("teaGarden.sandSimulation", {
   tineSpacing: { v: 0.15, min: 0.08, max: 0.24, step: 0.005, label: "tine spacing (m)" },
   shoulderLift: { v: 0.64, min: 0.15, max: 1.1, step: 0.01, label: "shoulder lift" },
   compaction: { v: 0.14, min: 0, max: 0.5, step: 0.01, label: "compaction / pass" },
-  heightScale: { v: 1, min: 0.25, max: 2.25, step: 0.05, label: "height relief" },
-  normalStrength: { v: 1.45, min: 0, max: 4, step: 0.05, label: "relief shading" },
-  microRelief: { v: 0.0018, min: 0, max: 0.008, step: 0.0002, label: "grain relief" }
+  surfaceSmoothing: { v: 0.62, min: 0, max: 1, step: 0.01, label: "surface smoothing" },
+  heightScale: { v: 1, min: 0.25, max: MAX_HEIGHT_SCALE, step: 0.05, label: "height relief" },
+  normalStrength: { v: 0.92, min: 0, max: 2, step: 0.02, label: "relief shading" },
+  microRelief: { v: 0.00055, min: 0, max: 0.002, step: 0.00005, label: "grain relief" },
+  compactionTint: { v: 0.18, min: 0, max: 0.4, step: 0.01, label: "rake mark contrast" }
 });
 
 export type SandSimulationPoint = { x: number; z: number };
@@ -95,6 +108,8 @@ export type SandSimulationStats = {
   grid: string;
   gridWidth: number;
   gridHeight: number;
+  displayGrid: string;
+  displayVertices: number;
   activeCells: number;
   queuedStamps: number;
   /** GPU dispatches issued by the most recent update/reset. */
@@ -221,10 +236,16 @@ export function createSandSimulation(options: SandSimulationOptions): SandSimula
   const cellSizeZ = (radii.z * 2) / (GRID_HEIGHT - 1);
   const meanCellSize = (cellSizeX + cellSizeZ) * 0.5;
 
-  const positions = new Float32Array(CELL_COUNT * 3);
-  const active = new Uint8Array(CELL_COUNT);
   const initialState = new Float32Array(CELL_COUNT * 4);
   let activeCells = 0;
+  const isActivePoint = (localX: number, localZ: number, worldX: number, worldZ: number) => {
+    const ellipseX = localX / Math.max(0.1, radii.x - EDGE_INSET);
+    const ellipseZ = localZ / Math.max(0.1, radii.z - EDGE_INSET);
+    const outsideRock = !rocks.some(
+      (rock) => Math.hypot(worldX - rock.x, worldZ - rock.z) <= rock.radius
+    );
+    return ellipseX * ellipseX + ellipseZ * ellipseZ <= 1 && outsideRock;
+  };
 
   for (let gz = 0; gz < GRID_HEIGHT; gz++) {
     const localZ = -radii.z + gz * cellSizeZ;
@@ -233,18 +254,10 @@ export function createSandSimulation(options: SandSimulationOptions): SandSimula
       const localX = -radii.x + gx * cellSizeX;
       const worldX = center.x + localX;
       const worldZ = center.z + localZ;
-      const ellipseX = localX / Math.max(0.1, radii.x - EDGE_INSET);
-      const ellipseZ = localZ / Math.max(0.1, radii.z - EDGE_INSET);
-      const outsideRock = !rocks.some((rock) => Math.hypot(worldX - rock.x, worldZ - rock.z) <= rock.radius);
-      const isActive = ellipseX * ellipseX + ellipseZ * ellipseZ <= 1 && outsideRock;
-
-      positions[index * 3] = localX;
-      positions[index * 3 + 1] = map.groundTop(worldX, worldZ) + sandLift;
-      positions[index * 3 + 2] = localZ;
+      const isActive = isActivePoint(localX, localZ, worldX, worldZ);
 
       if (isActive) {
         const authored = initialHeight(localX, localZ, gx, gz, rocks, center);
-        active[index] = 1;
         activeCells++;
         initialState[index * 4] = authored.height;
         initialState[index * 4 + 1] = authored.compaction;
@@ -256,15 +269,33 @@ export function createSandSimulation(options: SandSimulationOptions): SandSimula
     }
   }
 
+  const displayCellSizeX = (radii.x * 2) / (DISPLAY_WIDTH - 1);
+  const displayCellSizeZ = (radii.z * 2) / (DISPLAY_HEIGHT - 1);
+  const positions = new Float32Array(DISPLAY_CELL_COUNT * 3);
+  const displayActive = new Uint8Array(DISPLAY_CELL_COUNT);
+  for (let gz = 0; gz < DISPLAY_HEIGHT; gz++) {
+    const localZ = -radii.z + gz * displayCellSizeZ;
+    for (let gx = 0; gx < DISPLAY_WIDTH; gx++) {
+      const index = gz * DISPLAY_WIDTH + gx;
+      const localX = -radii.x + gx * displayCellSizeX;
+      const worldX = center.x + localX;
+      const worldZ = center.z + localZ;
+      displayActive[index] = isActivePoint(localX, localZ, worldX, worldZ) ? 1 : 0;
+      positions[index * 3] = localX;
+      positions[index * 3 + 1] = map.groundTop(worldX, worldZ) + sandLift;
+      positions[index * 3 + 2] = localZ;
+    }
+  }
+
   const indices: number[] = [];
-  for (let gz = 0; gz < GRID_HEIGHT - 1; gz++) {
-    for (let gx = 0; gx < GRID_WIDTH - 1; gx++) {
-      const a = gz * GRID_WIDTH + gx;
+  for (let gz = 0; gz < DISPLAY_HEIGHT - 1; gz++) {
+    for (let gx = 0; gx < DISPLAY_WIDTH - 1; gx++) {
+      const a = gz * DISPLAY_WIDTH + gx;
       const b = a + 1;
-      const c = a + GRID_WIDTH;
+      const c = a + DISPLAY_WIDTH;
       const d = c + 1;
-      if (active[a] && active[b] && active[c]) indices.push(a, c, b);
-      if (active[b] && active[c] && active[d]) indices.push(b, c, d);
+      if (displayActive[a] && displayActive[b] && displayActive[c]) indices.push(a, c, b);
+      if (displayActive[b] && displayActive[c] && displayActive[d]) indices.push(b, c, d);
     }
   }
 
@@ -273,19 +304,22 @@ export function createSandSimulation(options: SandSimulationOptions): SandSimula
   geometry.setIndex(indices);
   geometry.computeVertexNormals();
   geometry.computeBoundingSphere();
-  if (geometry.boundingSphere) geometry.boundingSphere.radius += MAX_RENDER_RELIEF;
+  if (geometry.boundingSphere) geometry.boundingSphere.radius += MAX_RENDER_RELIEF * MAX_HEIGHT_SCALE;
 
   // vec4 keeps every cell naturally aligned to a 16-byte WebGPU storage slot.
   const initial = instancedArray(initialState, "vec4").toReadOnly();
   const stateA = instancedArray(CELL_COUNT, "vec4");
   const stateB = instancedArray(CELL_COUNT, "vec4");
   const flux = instancedArray(CELL_COUNT, "vec4");
+  // Height, compaction, dHeight/dX and dHeight/dZ for the dense display mesh.
+  const displayState = instancedArray(DISPLAY_CELL_COUNT, "vec4");
 
   // Separate read-only views permit arbitrary neighbour loads while the write
   // nodes remain valid storage-buffer destinations in the compute pipelines.
   const stateARead = storage(stateA.value, "vec4", CELL_COUNT).toReadOnly();
   const stateBRead = storage(stateB.value, "vec4", CELL_COUNT).toReadOnly();
   const fluxRead = storage(flux.value, "vec4", CELL_COUNT).toReadOnly();
+  const displayStateRead = storage(displayState.value, "vec4", DISPLAY_CELL_COUNT).toReadOnly();
 
   const reposeThresholdU = uniform(Math.tan(THREE.MathUtils.degToRad(32)) * meanCellSize);
   const avalancheRateU = uniform(0.46);
@@ -301,9 +335,11 @@ export function createSandSimulation(options: SandSimulationOptions): SandSimula
   const tineSpacingU = uniform(0.15);
   const shoulderLiftU = uniform(0.64);
   const compactionU = uniform(0.14);
+  const surfaceSmoothingU = uniform(0.62);
   const heightScaleU = uniform(1);
-  const normalStrengthU = uniform(1.45);
-  const microReliefU = uniform(0.0018);
+  const normalStrengthU = uniform(0.92);
+  const microReliefU = uniform(0.00055);
+  const compactionTintU = uniform(0.18);
 
   const resetCompute = Fn(() => {
     const value = initial.element(instanceIndex);
@@ -440,32 +476,119 @@ export function createSandSimulation(options: SandSimulationOptions): SandSimula
   const fluxBCompute = buildFlux(stateBRead);
   const integrateBACompute = buildIntegrate(stateBRead, stateA);
   const settleGroup = [fluxACompute, integrateABCompute, fluxBCompute, integrateBACompute];
-  const warmupGroup = [...settleGroup, resetCompute];
+
+  // Mask-aware bilinear sampling prevents inactive rock/ellipse cells (whose
+  // compaction sentinel is -1) from bleeding into the reconstructed surface.
+  const sampleSimulationState = (coordinate: any) => {
+    const x = clamp(coordinate.x, 0, GRID_WIDTH - 1);
+    const z = clamp(coordinate.y, 0, GRID_HEIGHT - 1);
+    const x0 = x.floor();
+    const z0 = z.floor();
+    const x1 = x0.add(1).min(GRID_WIDTH - 1);
+    const z1 = z0.add(1).min(GRID_HEIGHT - 1);
+    const ix0 = uint(x0);
+    const iz0 = uint(z0);
+    const ix1 = uint(x1);
+    const iz1 = uint(z1);
+    const fractionX = x.fract();
+    const fractionZ = z.fract();
+    const state00 = stateARead.element(iz0.mul(uint(GRID_WIDTH)).add(ix0));
+    const state10 = stateARead.element(iz0.mul(uint(GRID_WIDTH)).add(ix1));
+    const state01 = stateARead.element(iz1.mul(uint(GRID_WIDTH)).add(ix0));
+    const state11 = stateARead.element(iz1.mul(uint(GRID_WIDTH)).add(ix1));
+    const weight00 = fractionX.oneMinus().mul(fractionZ.oneMinus());
+    const weight10 = fractionX.mul(fractionZ.oneMinus());
+    const weight01 = fractionX.oneMinus().mul(fractionZ);
+    const weight11 = fractionX.mul(fractionZ);
+    const validWeight00 = select(state00.y.greaterThanEqual(0), weight00, float(0));
+    const validWeight10 = select(state10.y.greaterThanEqual(0), weight10, float(0));
+    const validWeight01 = select(state01.y.greaterThanEqual(0), weight01, float(0));
+    const validWeight11 = select(state11.y.greaterThanEqual(0), weight11, float(0));
+    const weightSum = validWeight00.add(validWeight10).add(validWeight01).add(validWeight11);
+    const weighted = state00.mul(validWeight00)
+      .add(state10.mul(validWeight10))
+      .add(state01.mul(validWeight01))
+      .add(state11.mul(validWeight11));
+    return select(
+      weightSum.greaterThan(1e-6),
+      weighted.div(weightSum.max(1e-6)),
+      vec4(0, -1, 0, 0)
+    );
+  };
+
+  const displayReconstructCompute = Fn(() => {
+    const displayX = instanceIndex.mod(uint(DISPLAY_WIDTH));
+    const displayZ = instanceIndex.div(uint(DISPLAY_WIDTH));
+    const coordinate = vec2(
+      float(displayX).div(DISPLAY_SUBDIVISIONS),
+      float(displayZ).div(DISPLAY_SUBDIVISIONS)
+    );
+    const centerState = sampleSimulationState(coordinate);
+    // Wider finite differences trade cell-scale sparkle for a continuous sand
+    // sheet. A small cross-filter softens the height itself without erasing the
+    // conservative coarse field or widening the physical rake brush.
+    const gradientRadius = mix(float(0.55), float(1.45), surfaceSmoothingU);
+    const leftRaw = sampleSimulationState(vec2(coordinate.x.sub(gradientRadius), coordinate.y));
+    const rightRaw = sampleSimulationState(vec2(coordinate.x.add(gradientRadius), coordinate.y));
+    const upRaw = sampleSimulationState(vec2(coordinate.x, coordinate.y.sub(gradientRadius)));
+    const downRaw = sampleSimulationState(vec2(coordinate.x, coordinate.y.add(gradientRadius)));
+    const left = select(leftRaw.y.greaterThanEqual(0), leftRaw, centerState);
+    const right = select(rightRaw.y.greaterThanEqual(0), rightRaw, centerState);
+    const up = select(upRaw.y.greaterThanEqual(0), upRaw, centerState);
+    const down = select(downRaw.y.greaterThanEqual(0), downRaw, centerState);
+    const crossHeight = left.x.add(right.x).add(up.x).add(down.x).mul(0.25);
+    const crossCompaction = left.y.add(right.y).add(up.y).add(down.y).mul(0.25);
+    const displayHeight = mix(centerState.x, crossHeight, surfaceSmoothingU.mul(0.08));
+    const displayCompaction = mix(centerState.y, crossCompaction, surfaceSmoothingU.mul(0.18));
+    const slopeX = right.x.sub(left.x).div(gradientRadius.mul(cellSizeX * 2));
+    const slopeZ = down.x.sub(up.x).div(gradientRadius.mul(cellSizeZ * 2));
+    displayState.element(instanceIndex).assign(select(
+      centerState.y.greaterThanEqual(0),
+      vec4(displayHeight, displayCompaction.max(0), slopeX, slopeZ),
+      vec4(0, -1, 0, 0)
+    ));
+  })().compute(DISPLAY_CELL_COUNT, [256]);
+
+  const warmupGroup = [...settleGroup, resetCompute, displayReconstructCompute];
 
   const renderedState = vertexStage(
-    Fn(() => stateARead.element(vertexIndex))()
+    Fn(() => displayStateRead.element(vertexIndex))()
   );
   const renderedHeight = renderedState.x.mul(heightScaleU);
   const material = new THREE.MeshStandardNodeMaterial({
-    roughness: 1,
+    roughness: 0.96,
     metalness: 0
   });
   material.positionNode = positionLocal.add(vec3(0, renderedHeight, 0));
-  const broad = sin(positionWorld.x.mul(0.43).add(positionWorld.z.mul(0.29))).mul(0.5).add(0.5);
-  const grain = sin(
-    positionWorld.x.mul(42).add(sin(positionWorld.z.mul(31)).mul(1.7))
-  ).mul(0.5).add(0.5);
+  const broad = sin(positionWorld.x.mul(0.31).add(positionWorld.z.mul(0.23))).mul(0.5).add(0.5);
+  const grainPhaseA = positionWorld.x.mul(37.2).add(positionWorld.z.mul(51.7));
+  const grainPhaseB = positionWorld.x.mul(73.1).sub(positionWorld.z.mul(31.4));
+  const grain = sin(grainPhaseA).mul(0.62).add(sin(grainPhaseB).mul(0.38));
   const compacted = saturate(renderedState.y);
   material.colorNode = mix(
-    color(0xe4cda0),
-    color(0xb89161),
-    saturate(compacted.mul(0.34).add(broad.mul(0.09)))
-  ).mul(grain.mul(0.055).add(0.965));
-  const microHeight = sin(positionWorld.x.mul(48).add(positionWorld.z.mul(37)))
-    .add(sin(positionWorld.x.mul(71).sub(positionWorld.z.mul(53))).mul(0.45))
+    color(0xe8d7b3),
+    color(0xc3a474),
+    saturate(compacted.mul(compactionTintU).add(broad.mul(0.045)))
+  ).mul(grain.mul(0.012).add(0.994));
+  // Coarse relief derivatives are reconstructed on the GPU and interpolated
+  // between dense display vertices. The old screen-space derivative saw a
+  // constant gradient per triangle, which is what exposed the pixelated shard
+  // pattern. Only tiny analytic grain slopes are added here in the fragment.
+  const reliefSlopeX = renderedState.z.mul(heightScaleU).mul(normalStrengthU);
+  const reliefSlopeZ = renderedState.w.mul(heightScaleU).mul(normalStrengthU);
+  const microSlopeX = cos(grainPhaseA).mul(37.2 * 0.62)
+    .add(cos(grainPhaseB).mul(73.1 * 0.38))
     .mul(microReliefU);
-  material.normalNode = bumpNormal(renderedHeight.mul(normalStrengthU).add(microHeight));
-  material.envMapIntensity = 0.22;
+  const microSlopeZ = cos(grainPhaseA).mul(51.7 * 0.62)
+    .sub(cos(grainPhaseB).mul(31.4 * 0.38))
+    .mul(microReliefU);
+  const smoothLocalNormal = normalize(vec3(
+    normalLocal.x.sub(reliefSlopeX).sub(microSlopeX),
+    normalLocal.y,
+    normalLocal.z.sub(reliefSlopeZ).sub(microSlopeZ)
+  ));
+  material.normalNode = transformNormalToView(smoothLocalNormal);
+  material.envMapIntensity = 0.18;
 
   const mesh = new THREE.Mesh(geometry, material);
   mesh.name = "dry_landscape_gpu_granular_sand";
@@ -477,6 +600,8 @@ export function createSandSimulation(options: SandSimulationOptions): SandSimula
     grid: `${GRID_WIDTH}×${GRID_HEIGHT}`,
     gridWidth: GRID_WIDTH,
     gridHeight: GRID_HEIGHT,
+    displayGrid: `${DISPLAY_WIDTH}×${DISPLAY_HEIGHT}`,
+    displayVertices: DISPLAY_CELL_COUNT,
     activeCells,
     queuedStamps: 0,
     dispatches: 0,
@@ -492,6 +617,8 @@ export function createSandSimulation(options: SandSimulationOptions): SandSimula
   let dirtySeconds = 0;
   let disposed = false;
   let warmed = false;
+  let displayDirty = true;
+  let appliedSurfaceSmoothing = Number.NaN;
 
   const countDispatches = (count: number) => {
     stats.dispatches += count;
@@ -510,9 +637,15 @@ export function createSandSimulation(options: SandSimulationOptions): SandSimula
     tineSpacingU.value = tuning.tineSpacing;
     shoulderLiftU.value = tuning.shoulderLift;
     compactionU.value = tuning.compaction;
+    surfaceSmoothingU.value = tuning.surfaceSmoothing;
+    if (appliedSurfaceSmoothing !== tuning.surfaceSmoothing) {
+      appliedSurfaceSmoothing = tuning.surfaceSmoothing;
+      displayDirty = true;
+    }
     heightScaleU.value = tuning.heightScale;
     normalStrengthU.value = tuning.normalStrength;
     microReliefU.value = tuning.microRelief;
+    compactionTintU.value = tuning.compactionTint;
   };
 
   const reset = () => {
@@ -530,9 +663,10 @@ export function createSandSimulation(options: SandSimulationOptions): SandSimula
       countDispatches(warmupGroup.length);
       warmed = true;
     } else {
-      renderer.compute(resetCompute);
-      countDispatches(1);
+      renderer.compute([resetCompute, displayReconstructCompute]);
+      countDispatches(2);
     }
+    displayDirty = false;
 
     stats.queuedStamps = 0;
     stats.dirtySeconds = 0;
@@ -583,6 +717,7 @@ export function createSandSimulation(options: SandSimulationOptions): SandSimula
       stampStrengthU.value = stamp.strength;
       renderer.compute(stampCompute);
       countDispatches(1);
+      displayDirty = true;
       dirtySeconds = Math.max(dirtySeconds, SAND_TUNING.values.settleTime);
     }
     stats.queuedStamps = queuedStamps.length;
@@ -595,6 +730,7 @@ export function createSandSimulation(options: SandSimulationOptions): SandSimula
         for (let iteration = 0; iteration < iterations; iteration++) {
           renderer.compute(settleGroup);
           countDispatches(settleGroup.length);
+          displayDirty = true;
         }
         accumulator -= FIXED_STEP;
         dirtySeconds = Math.max(0, dirtySeconds - FIXED_STEP);
@@ -603,6 +739,12 @@ export function createSandSimulation(options: SandSimulationOptions): SandSimula
     } else if (iterations === 0) {
       accumulator = 0;
       dirtySeconds = 0;
+    }
+
+    if (displayDirty) {
+      renderer.compute(displayReconstructCompute);
+      countDispatches(1);
+      displayDirty = false;
     }
 
     stats.dirtySeconds = dirtySeconds;
@@ -625,12 +767,13 @@ export function createSandSimulation(options: SandSimulationOptions): SandSimula
     });
     const appearance = folder.addFolder({ title: "sand appearance" });
     SAND_TUNING.bind(appearance, {
-      keys: ["heightScale", "normalStrength", "microRelief"],
+      keys: ["surfaceSmoothing", "heightScale", "normalStrength", "microRelief", "compactionTint"],
       onChange: () => syncTuning()
     });
     folder.addButton({ title: "reset authored rake pattern", label: "sand" }).on("click", reset);
     return [
       folder.addBinding(stats, "grid", { readonly: true, label: "grid" }),
+      folder.addBinding(stats, "displayGrid", { readonly: true, label: "display grid" }),
       folder.addBinding(stats, "activeCells", { readonly: true, label: "active cells" }),
       folder.addBinding(stats, "queuedStamps", { readonly: true, label: "queued stamps" }),
       folder.addBinding(stats, "dispatches", { readonly: true, label: "dispatches/frame" }),
@@ -653,12 +796,14 @@ export function createSandSimulation(options: SandSimulationOptions): SandSimula
     integrateABCompute.dispose();
     fluxBCompute.dispose();
     integrateBACompute.dispose();
+    displayReconstructCompute.dispose();
     geometry.dispose();
     material.dispose();
     disposeStorageBuffer(initial);
     disposeStorageBuffer(stateA);
     disposeStorageBuffer(stateB);
     disposeStorageBuffer(flux);
+    disposeStorageBuffer(displayState);
   };
 
   syncTuning();

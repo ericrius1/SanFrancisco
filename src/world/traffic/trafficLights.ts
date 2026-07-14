@@ -208,7 +208,7 @@ export class TrafficLightView {
     // The pole belongs at a corner: clear THIS road along P and the CROSS road
     // along T. The ideal is the far-side right corner (+P, +T), but a dense,
     // irregular grid can bury that spot under a third street — so try all four
-    // corners, push each straight away from whatever road it lands nearest, and
+    // corners, push each diagonally out of the whole paved union, and
     // keep the one that ends up furthest from any pavement.
     const baseX = thisHalf + CLEAR;
     const baseZ = crossHalf + CLEAR;
@@ -221,18 +221,15 @@ export class TrafficLightView {
         for (let iter = 0; iter < 5; iter++) {
           const wx = signal.x + lx * Px + lz * Tx;
           const wz = signal.z + lx * Pz + lz * Tz;
-          const hit = this.#roads.nearestPoint(wx, wz, 14);
-          clearance = hit ? hit.distance - hit.halfWidth : 14;
-          if (clearance > 0.4 || !hit) break;
-          // shove the shaft directly away from the offending road edge
-          let ax = wx - hit.x;
-          let az = wz - hit.z;
-          const al = Math.hypot(ax, az) || 1;
-          ax /= al;
-          az /= al;
-          const step = hit.halfWidth + 0.9 - hit.distance;
-          lx += (ax * Px + az * Pz) * step;
-          lz += (ax * Tx + az * Tz) * step;
+          clearance = this.#roads.pavementClearance(wx, wz, 20);
+          if (clearance > 0.4 || !Number.isFinite(clearance)) break;
+          // Move farther into this corner. Checking the full paved union matters
+          // at skewed/wide junctions where the closest centreline can belong to
+          // a narrow road even though the shaft is still inside a wider one.
+          const length = Math.hypot(lx, lz) || 1;
+          const step = 0.9 - clearance;
+          lx += (lx / length) * step;
+          lz += (lz / length) * step;
         }
         const pref = (sx === 1 ? 0.25 : 0) + (sz === 1 ? 0.15 : 0); // prefer far-side right
         const score = Math.min(clearance, 1.2) + pref; // cap so preference breaks near-ties

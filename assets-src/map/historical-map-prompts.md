@@ -1,9 +1,43 @@
 # Historical map generation prompts
 
-These are the approved built-in image-generation prompts for the first two
-geographically registered historical map plates. Control images are generated
-with `node tools/build-historical-map-control.mjs` and
-`node tools/build-historical-map-control.mjs --detail`.
+These are the approved built-in image-generation prompts for the geographically
+registered historical map pyramid. Pilot/detail controls are generated with
+`node tools/build-historical-map-control.mjs` and
+`node tools/build-historical-map-control.mjs --detail`. The full-city overview
+and 3 × 3 regional controls are generated with
+`node tools/build-historical-map-atlas.mjs`.
+
+## Full-city overview
+
+```text
+Use case: style-transfer
+Asset type: geographically registered full-city game-map overview plate
+Input images: Image 1 is the edit target and exact geometry control.
+Primary request: repaint Image 1 as an exceptionally beautiful San Francisco and Bay cartographic plate from approximately 1895–1915.
+Style/medium: hand-colored copperplate engraving and restrained lithography on warm ivory rag paper; elegant civic survey atlas; very fine archival ink work.
+Composition/framing: preserve Image 1's exact top-down orthographic framing, aspect ratio, coastline, islands, land masses, park boundaries, bridge alignments, and every road centerline. The output must register directly over Image 1 without repositioning or changing geography.
+Color palette: warm ivory and pale sepia urban land; muted moss and sage parks; desaturated teal-blue water; charcoal-brown ink; restrained rust-red Golden Gate Bridge and muted gray Bay Bridge.
+Materials/textures: subtle aged paper fibers, extremely fine engraved water-current lines, delicate park stippling, restrained hill hachures and contour engraving, slight ink bleed, quiet tonal variation. Keep texture scale fine enough for a zoomable game map.
+Constraints: change only visual materials and cartographic treatment; keep all geometry and proportions fixed; preserve every existing street and do not add, remove, bend, or reroute roads; preserve the exact coastline, island shapes, and green-area silhouettes; no perspective; no 3D buildings; no labels; no letters; no numbers; no icons; no pins; no legend; no compass rose; no border; no vignette; no decorative objects; no modern satellite imagery; no watermark. Carry paper and texture naturally through every image edge.
+```
+
+## Regional atlas tiles (r0-c0 through r2-c2)
+
+The following prompt is repeated once per exact regional control, substituting
+the tile id. `r0-c2` was rejected for invented shoreline; its sparse water
+coverage uses an exact registered crop of the approved overview instead.
+
+```text
+Use case: style-transfer
+Asset type: geographically registered regional game-map tile (<tile-id>)
+Input images: Image 1 is the edit target and exact geometry control.
+Primary request: repaint Image 1 as an exceptionally beautiful San Francisco Bay regional cartographic plate from approximately 1895–1915, matching an elegant hand-colored civic survey atlas.
+Style/medium: hand-colored copperplate engraving and restrained lithography on warm ivory rag paper; fine archival ink work.
+Composition/framing: preserve Image 1's exact top-down orthographic framing, aspect ratio, coastline, land masses, park boundaries, bridge alignments, and every road centerline. The output must register directly over Image 1 without repositioning or changing geography.
+Color palette: warm ivory and pale sepia land; muted moss and sage vegetation; desaturated blue-gray water; charcoal-brown ink; restrained rust-red Golden Gate Bridge and muted gray Bay Bridge where present.
+Materials/textures: subtle aged paper fibers, dense fine engraved water-current lines, delicate park stippling, restrained hill hachures and contour engraving, slight ink bleed, quiet tonal variation. Render substantially finer than a whole-city overview because this is a zoomable regional tile.
+Constraints: change only visual materials and cartographic treatment; keep all geometry and proportions fixed; preserve every existing street and do not add, remove, bend, or reroute roads; preserve the exact coastline, island shapes, and green-area silhouettes; no perspective; no 3D buildings; no labels; no letters; no numbers; no icons; no pins; no legend; no compass rose; no border; no vignette; no decorative objects; no modern satellite imagery; no watermark. Carry paper and texture naturally through every edge so adjacent tiles can feather together.
+```
 
 ## Golden Gate / Presidio overview
 
