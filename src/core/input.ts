@@ -20,9 +20,10 @@ import { INPUT_TUNING } from "../config";
  * whichever input was touched last; the HUD swaps its control labels off it.
  *
  * Board mode steals right-stick Y for deck pitch / air flips (stick back =
- * nose up); only right-stick X still feeds mouselook there. Right-stick pitch
- * polarity for camera look is global via INPUT_TUNING.invertPadLookY — mouse
- * look is never flipped here.
+ * nose up); only right-stick X still feeds mouselook there, with an extra
+ * axial deadzone (boardLookXDeadzone) so near-vertical flip holds don't yaw
+ * the cam. Right-stick pitch polarity for camera look is global via
+ * INPUT_TUNING.invertPadLookY — mouse look is never flipped here.
  */
 
 // right-stick look speed, mouse-pixel-equivalents per second at full deflection
@@ -38,6 +39,14 @@ function shapeStick(x: number, y: number, deadzone: number, curve: number): [num
   const shaped = Math.pow(remapped, Math.max(1, curve));
   const scale = shaped / mag;
   return [x * scale, y * scale];
+}
+
+/** Axial deadzone + power curve on one axis (independent of the other stick axis). */
+function shapeAxis(v: number, deadzone: number, curve: number): number {
+  const a = Math.abs(v);
+  if (a < deadzone || a < 1e-8) return 0;
+  const remapped = Math.min(1, (a - deadzone) / (1 - deadzone));
+  return Math.sign(v) * Math.pow(remapped, Math.max(1, curve));
 }
 
 // button index (standard mapping) → key code it impersonates. X (2) is fire,
@@ -473,9 +482,14 @@ export class Input {
     // Sensitivity is applied once in ChaseCamera (same path as mouse) — do not
     // multiply it here or pad look scales with lookSensitivity².
     if (!this.suspended && this.#mode !== "surf") {
-      const [rx, ry] = shapeStick(rxLin, ryLin, 0, tune.lookResponse);
-      this.mouseDX += rx * LOOK_X * dt;
-      if (this.#mode !== "board") {
+      if (this.#mode === "board") {
+        // Axial look-X deadzone on the raw axis (not radial) so holding mostly
+        // up/down for flips stays camera-stable until a deliberate horizontal push.
+        const rx = shapeAxis(gp.axes[2] ?? 0, tune.boardLookXDeadzone, tune.lookResponse);
+        this.mouseDX += rx * LOOK_X * dt;
+      } else {
+        const [rx, ry] = shapeStick(rxLin, ryLin, 0, tune.lookResponse);
+        this.mouseDX += rx * LOOK_X * dt;
         const pitchStick = tune.invertPadLookY ? -ry : ry;
         this.mouseDY += pitchStick * LOOK_Y * dt;
       }

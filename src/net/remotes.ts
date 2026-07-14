@@ -1,7 +1,7 @@
 import * as THREE from "three/webgpu";
 import { applyAvatarToRig, buildRig, poseAir, poseDrive, poseIdle, poseRide, poseScooter, poseWalk, type Rig } from "../player/rig";
 import { avatarFromSeed, avatarKey, type AvatarTraits } from "../player/avatar";
-import { buildCarMesh } from "../vehicles/car";
+import { animateCar, buildCarMesh } from "../vehicles/car";
 import { buildPlaneMesh, collectPlaneAnim, type PlaneAnim } from "../vehicles/plane";
 import { buildBoatMesh, buildSpeedboatMesh } from "../vehicles/boat";
 import { buildDroneMesh } from "../vehicles/drone";
@@ -14,7 +14,15 @@ import {
   surfboardVisualKey,
   type SurfboardConfig
 } from "../vehicles/surf/config";
-import { animateScooter, buildScooterMesh, normalizeScooterConfig, scooterFromSeed, scooterKey, type ScooterConfig } from "../vehicles/scooter";
+import {
+  activateScooterAssets,
+  animateScooter,
+  buildScooterMesh,
+  normalizeScooterConfig,
+  scooterFromSeed,
+  scooterKey,
+  type ScooterConfig
+} from "../vehicles/scooter";
 import type { Cockpit, PlayerMode } from "../player/types";
 import type { NetSample, RemoteInfo } from "./net";
 import { setEmbodimentVisible } from "../player/embodimentVisibility";
@@ -155,6 +163,7 @@ export class RemotePlayers {
   #passengerSeat = new THREE.Vector3(0.42, 0.55, 0.66); // driver seat mirrored across x
   #tagsVisible = true;
   #surfAssetsEnabled = false;
+  #scooterAssetsEnabled = false;
 
   constructor(scene: THREE.Scene) {
     this.#scene = scene;
@@ -301,6 +310,11 @@ export class RemotePlayers {
    */
   setSurfboardAssetsEnabled(enabled: boolean) {
     this.#surfAssetsEnabled = enabled;
+  }
+
+  /** Remote scooter art follows the same local-first, nearby-only contract. */
+  setScooterAssetsEnabled(enabled: boolean) {
+    this.#scooterAssetsEnabled = enabled;
   }
 
   add(info: RemoteInfo) {
@@ -597,6 +611,19 @@ export class RemotePlayers {
           void activateSurfboardAssets(body);
         }
       }
+      if (a.mode === "scooter" && this.#scooterAssetsEnabled) {
+        const local = this.localPlayerPosition();
+        const body = a.bodies.scooter;
+        if (
+          local &&
+          body &&
+          !body.userData.scooterAssetsActivated &&
+          a.root.position.distanceToSquared(local) <= 180 * 180
+        ) {
+          body.userData.scooterAssetsActivated = true;
+          void activateScooterAssets(body);
+        }
+      }
 
       // motion estimate for animation (from the buffer, not frame deltas)
       a.speed = b.speed;
@@ -614,6 +641,10 @@ export class RemotePlayers {
     if (a.mode === "surf") {
       const body = a.bodies.surf;
       if (body) animateSurfboard(body, dt, a.animT);
+    }
+    if (a.mode === "drive") {
+      const body = a.bodies.drive;
+      if (body) animateCar(body, dt, a.speed, 0);
     }
     const rig = a.rig;
     if (!rig || !a.mode) return;

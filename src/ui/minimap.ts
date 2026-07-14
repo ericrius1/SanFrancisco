@@ -68,6 +68,15 @@ const LAYERS_ENABLED = false; // art/science/music layers parked for now
 // primary/trunk, motorway. The warm progression belongs to the historical
 // survey-map treatment while keeping the hierarchy readable under player pins.
 const ROAD_COLORS = ["#e4d7b8", "#dfcfaa", "#d7bd8d", "#cea66e", "#c58d52", "#bd7541"] as const;
+/** Fraction of the expanded viewport that may show off-map backdrop at each edge. */
+const BIG_EDGE_BLEED = 0.035;
+/** Live overlay layers drawn above the parchment (roads first; more later). */
+export type MapOverlayId = "roads" | "landmarks";
+type MapOverlayDefinition = { id: MapOverlayId; label: string; color: string };
+const MAP_OVERLAY_DEFS: readonly MapOverlayDefinition[] = [
+  { id: "roads", label: "Roads", color: "#c58d52" },
+  { id: "landmarks", label: "Landmarks", color: LANDMARK_DOT_COLOR }
+];
 const HISTORICAL_OVERVIEW_URL = "/map/historical-atlas/city-overview.webp";
 const HISTORICAL_DETAIL_URL = "/map/golden-gate-historical-detail.webp";
 const HISTORICAL_WORLD_BOUNDS = { minX: -7168, maxX: 7936, minZ: -8896, maxZ: 4992 } as const;
@@ -260,6 +269,8 @@ export class Minimap {
   #dpr = 1;
   #layers: MapLayer[] = [];
   #layerButtons = new Map<MapLayerId, HTMLButtonElement>();
+  #overlays = new Map<MapOverlayId, boolean>(MAP_OVERLAY_DEFS.map((d) => [d.id, true]));
+  #overlayButtons = new Map<MapOverlayId, HTMLButtonElement>();
   #selectedPlaceId: string | null = null;
   expanded = false;
   #miniSpan = MINI_SPAN;
@@ -681,6 +692,28 @@ export class Minimap {
     ctx.restore();
   }
 
+  #overlayEnabled(id: MapOverlayId) {
+    return this.#overlays.get(id) !== false;
+  }
+
+  #setOverlayEnabled(id: MapOverlayId, enabled: boolean) {
+    this.#overlays.set(id, enabled);
+    const button = this.#overlayButtons.get(id);
+    if (button) {
+      button.classList.toggle("on", enabled);
+      button.setAttribute("aria-pressed", enabled ? "true" : "false");
+    }
+    if (id === "landmarks" && !enabled) {
+      const s = this.#selected;
+      if (s?.kind === "fixed" && this.#landmarks.some((lm) => lm.name === s.name)) {
+        this.#selected = null;
+        this.#selectedPlaceId = null;
+      }
+    }
+    this.update();
+    if (this.expanded) this.#drawBig();
+  }
+
   #drawVectorRoads(
     ctx: CanvasRenderingContext2D,
     center: { x: number; z: number },
@@ -689,13 +722,24 @@ export class Minimap {
     pxPerMX: number,
     pxPerMZ = pxPerMX
   ) {
-    if (!this.#roadPaths.length) return;
-    const { cellSize, minX, minZ } = this.#map.meta.grid;
+    if (!this.#overlayEnabled("roads") || !this.#roadPaths.length) return;
+    const { cellSize, minX, minZ, width, height } = this.#map.meta.grid;
+    const worldMaxX = minX + width * cellSize;
+    const worldMaxZ = minZ + height * cellSize;
+    // Clip to the world rectangle so OSM stubs past the heightmap never paint
+    // into the off-map blue backdrop when the view sits near an edge.
+    const left = centerX + (minX - center.x) * pxPerMX;
+    const top = centerY + (minZ - center.z) * pxPerMZ;
+    const right = centerX + (worldMaxX - center.x) * pxPerMX;
+    const bottom = centerY + (worldMaxZ - center.z) * pxPerMZ;
     const scaleX = cellSize * pxPerMX;
     const scaleY = cellSize * pxPerMZ;
     const scale = Math.max(0.0001, Math.min(scaleX, scaleY));
     const dpr = this.#dpr;
     ctx.save();
+    ctx.beginPath();
+    ctx.rect(left, top, right - left, bottom - top);
+    ctx.clip();
     ctx.setTransform(
       scaleX,
       0,
@@ -707,13 +751,13 @@ export class Minimap {
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
     ctx.strokeStyle = "rgba(73, 57, 38, 0.82)";
-    for (const { path, width } of this.#roadPaths) {
-      const targetPx = Math.max(1.25 * dpr, width * Math.min(pxPerMX, pxPerMZ) + 1.15 * dpr);
+    for (const { path, width: roadWidth } of this.#roadPaths) {
+      const targetPx = Math.max(1.25 * dpr, roadWidth * Math.min(pxPerMX, pxPerMZ) + 1.15 * dpr);
       ctx.lineWidth = targetPx / scale;
       ctx.stroke(path);
     }
-    for (const { path, width, roadClass } of this.#roadPaths) {
-      const targetPx = Math.max(0.7 * dpr, width * Math.min(pxPerMX, pxPerMZ));
+    for (const { path, width: roadWidth, roadClass } of this.#roadPaths) {
+      const targetPx = Math.max(0.7 * dpr, roadWidth * Math.min(pxPerMX, pxPerMZ));
       ctx.strokeStyle = ROAD_COLORS[roadClass];
       ctx.lineWidth = targetPx / scale;
       ctx.stroke(path);
@@ -960,13 +1004,18 @@ export class Minimap {
     const g = this.#map.meta.grid;
     const worldW = g.width * g.cellSize;
     const worldH = g.height * g.cellSize;
-    // The viewport center may reach the world edge. This intentionally allows
-    // some off-map backdrop around edge locations, which keeps an exact player
-    // center from snapping inward on the first drag or wheel interaction.
-    const minX = g.minX;
-    const maxX = g.minX + worldW;
-    const minZ = g.minZ;
-    const maxZ = g.minZ + worldH;
+    const spanX = this.#clampBigSpan(this.#bigSpan || this.#bigMaxSpan());
+    const spanZ = spanX / this.#bigAspect();
+    // Keep almost all of the viewport on the map; only a thin ribbon of blue
+    // backdrop is allowed when panned hard against an edge.
+    const bleedX = spanX * BIG_EDGE_BLEED;
+    const bleedZ = spanZ * BIG_EDGE_BLEED;
+    const insetX = Math.min(spanX / 2 - bleedX, worldW / 2);
+    const insetZ = Math.min(spanZ / 2 - bleedZ, worldH / 2);
+    const minX = g.minX + insetX;
+    const maxX = g.minX + worldW - insetX;
+    const minZ = g.minZ + insetZ;
+    const maxZ = g.minZ + worldH - insetZ;
     return {
       x: Math.min(maxX, Math.max(minX, center.x)),
       z: Math.min(maxZ, Math.max(minZ, center.z))
@@ -976,11 +1025,7 @@ export class Minimap {
   #bigView() {
     const spanX = this.#clampBigSpan(this.#bigSpan || this.#bigMaxSpan());
     this.#bigSpan = spanX;
-    // Keep explicitly requested centers exact. User-driven pan/zoom assignments
-    // are clamped at the interaction sites, but opening/recentering near a world
-    // edge may intentionally reveal a little off-map backdrop so the player can
-    // remain mathematically centered.
-    const center = this.#bigCenter ?? this.#mapCenter();
+    const center = this.#clampBigCenter(this.#bigCenter ?? this.#mapCenter());
     this.#bigCenter = center;
     return { center, spanX, spanZ: spanX / this.#bigAspect() };
   }
@@ -1578,11 +1623,11 @@ export class Minimap {
 
   #centerBigOnSelf(resetZoom = false) {
     const self = this.#getSelf();
-    this.#bigCenter = { x: self.x, z: self.z };
     if (resetZoom) {
       const maxSpan = this.#bigMaxSpan();
       this.#bigSpan = (maxSpan + BIG_MIN_SPAN) / 2;
     }
+    this.#bigCenter = this.#clampBigCenter({ x: self.x, z: self.z });
   }
 
   setExpanded(on: boolean) {
@@ -1782,6 +1827,36 @@ export class Minimap {
       this.#centerBigOnSelf();
       this.#drawBig();
     });
+    const sideControls = document.createElement("div");
+    sideControls.className = "bigmap-side-controls";
+    const layers = document.createElement("div");
+    layers.className = "bigmap-layers";
+    layers.setAttribute("role", "group");
+    layers.setAttribute("aria-label", "Map layers");
+    for (const def of MAP_OVERLAY_DEFS) {
+      const enabled = this.#overlayEnabled(def.id);
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = enabled ? "bigmap-layer on" : "bigmap-layer";
+      button.setAttribute("aria-pressed", enabled ? "true" : "false");
+      button.title = `${enabled ? "Hide" : "Show"} ${def.label.toLowerCase()}`;
+      button.style.setProperty("--layer-color", def.color);
+      const dot = document.createElement("span");
+      dot.className = "bigmap-layer-dot";
+      const label = document.createElement("span");
+      label.className = "bigmap-layer-label";
+      label.textContent = def.label;
+      button.append(dot, label);
+      button.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const next = !this.#overlayEnabled(def.id);
+        this.#setOverlayEnabled(def.id, next);
+        button.title = `${next ? "Hide" : "Show"} ${def.label.toLowerCase()}`;
+      });
+      layers.appendChild(button);
+      this.#overlayButtons.set(def.id, button);
+    }
+    sideControls.append(layers, recenter);
     const hint = document.createElement("div");
     hint.className = "bigmap-hint";
     hint.textContent = "Select a destination";
@@ -1808,7 +1883,7 @@ export class Minimap {
     pinHint.className = "bigmap-pin-hint";
     pinHint.hidden = true;
     pinHint.setAttribute("aria-hidden", "true");
-    mapFrame.append(canvas, recenter, pinHint);
+    mapFrame.append(canvas, sideControls, pinHint);
     inner.appendChild(mapFrame);
     inner.appendChild(action);
     inner.appendChild(hint);
@@ -2008,9 +2083,10 @@ export class Minimap {
     this.#maybeLoadHistoricalRegions(center, spanX, spanZ);
     this.#maybeLoadHistoricalDetail(center, spanX, spanZ);
     const self = this.#getSelf();
+    const focusedSelf = this.#clampBigCenter({ x: self.x, z: self.z });
     this.#bigRecenter?.classList.toggle(
       "centered",
-      Math.hypot(center.x - self.x, center.z - self.z) < 0.5
+      Math.hypot(center.x - focusedSelf.x, center.z - focusedSelf.z) < 0.5
     );
     const cell = this.#map.meta.grid.cellSize;
     ctx.drawImage(

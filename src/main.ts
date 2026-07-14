@@ -535,6 +535,7 @@ async function boot() {
   let setSurfboardLauncherVisible: (visible: boolean) => void = () => {};
   let setSurfboardCustomizerMode: (active: boolean) => void = () => {};
   let setRemoteSurfboardAssetsActive: (active: boolean) => void = () => {};
+  let setRemoteScooterAssetsActive: (active: boolean) => void = () => {};
   let leaveCameraModeForSurf: () => void = () => {};
   const birdTrails = new BirdTrails(scene, player.meshes.bird);
   const droneFireworkMounts = player.meshes.drone.userData.fireworkMounts as THREE.Object3D[] | undefined;
@@ -591,6 +592,7 @@ async function boot() {
       releaseSurfVisual();
     }
     setRemoteSurfboardAssetsActive(mode === "surf");
+    setRemoteScooterAssetsActive(mode === "scooter");
     setSurfboardLauncherVisible(mode === "surf");
     setSurfboardCustomizerMode(mode === "surf");
     if (fresh) {
@@ -1086,8 +1088,10 @@ async function boot() {
   const remotes = new RemotePlayers(scene);
   remotes.localPlayerPosition = () => player.renderPosition;
   setRemoteSurfboardAssetsActive = (active) => remotes.setSurfboardAssetsEnabled(active);
+  setRemoteScooterAssetsActive = (active) => remotes.setScooterAssetsEnabled(active);
   // Startup/invite can enter surf before networking and its remote-art gate exist.
   setRemoteSurfboardAssetsActive(player.mode === "surf");
+  setRemoteScooterAssetsActive(player.mode === "scooter");
   // The controller statically owns every pickleball mesh, UI and audio class,
   // so even constructing an empty facade would pull the activity into boot.
   // It is installed together with the Goldman site on first approach.
@@ -1155,6 +1159,7 @@ async function boot() {
       if (changed) player.setScooterConfig(config);
       net.setScooter(config);
     },
+    (config) => player.previewScooterConfig(config),
     () => {
       if (player.mode !== "scooter" && !player.riding) switchModeFromToolbar("scooter");
     }

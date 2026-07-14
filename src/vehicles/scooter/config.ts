@@ -2,12 +2,18 @@ export type ScooterBody = "classic" | "sport" | "touring";
 export type ScooterSeat = "bench" | "saddle" | "petpad";
 export type ScooterScreen = "none" | "fly" | "touring";
 export type ScooterCargo = "none" | "rack" | "basket" | "topbox";
+export type ScooterWheel = "spoke" | "turbine";
+export type ScooterSurface = "solid" | "fog-circuit" | "night-topography";
+export type ScooterDecal = "none" | "volt-wasp" | "bridge-bolt" | "poppy-power";
 
 export type ScooterConfig = {
   body: ScooterBody;
   seat: ScooterSeat;
   screen: ScooterScreen;
   cargo: ScooterCargo;
+  wheel: ScooterWheel;
+  surface: ScooterSurface;
+  decal: ScooterDecal;
   paint: number;
   trim: number;
   upholstery: number;
@@ -15,9 +21,17 @@ export type ScooterConfig = {
   trimHex: number | null;
   upholsteryHex: number | null;
   whitewalls: boolean;
+  stance: number;
+  bodyVolume: number;
+  decalScale: number;
+  decalPosition: number;
+  rimGlow: number;
+  screenTint: number;
 };
 
-export const SCOOTER_STORAGE_KEY = "sf-scooter-v1";
+// v2 intentionally resets the old compact-scooter schema. There is one current
+// shape/art schema and no migration path to keep in the boot bundle.
+export const SCOOTER_STORAGE_KEY = "sf-scooter-v2";
 
 export const SCOOTER_BODIES: { id: ScooterBody; label: string }[] = [
   { id: "classic", label: "classic" },
@@ -42,6 +56,24 @@ export const SCOOTER_CARGO: { id: ScooterCargo; label: string }[] = [
   { id: "rack", label: "chrome rack" },
   { id: "basket", label: "front basket" },
   { id: "topbox", label: "top box" }
+];
+
+export const SCOOTER_WHEELS: { id: ScooterWheel; label: string }[] = [
+  { id: "spoke", label: "wire spoke" },
+  { id: "turbine", label: "electric turbine" }
+];
+
+export const SCOOTER_SURFACES: { id: ScooterSurface; label: string; url: string | null }[] = [
+  { id: "solid", label: "pinstripe", url: null },
+  { id: "fog-circuit", label: "fog circuit", url: "/scooters/textures/fog-circuit.webp" },
+  { id: "night-topography", label: "night topo", url: "/scooters/textures/night-topography.webp" }
+];
+
+export const SCOOTER_DECALS: { id: ScooterDecal; label: string; url: string | null }[] = [
+  { id: "none", label: "clean", url: null },
+  { id: "volt-wasp", label: "volt wasp", url: "/scooters/decals/volt-wasp.webp" },
+  { id: "bridge-bolt", label: "bridge bolt", url: "/scooters/decals/bridge-bolt.webp" },
+  { id: "poppy-power", label: "poppy power", url: "/scooters/decals/poppy-power.webp" }
 ];
 
 export const SCOOTER_PAINT_COLORS = [
@@ -78,19 +110,31 @@ const DEFAULT_SCOOTER: ScooterConfig = {
   seat: "bench",
   screen: "fly",
   cargo: "rack",
+  wheel: "spoke",
+  surface: "fog-circuit",
+  decal: "bridge-bolt",
   paint: 0,
   trim: 0,
   upholstery: 0,
   paintHex: null,
   trimHex: null,
   upholsteryHex: null,
-  whitewalls: true
+  whitewalls: true,
+  stance: 54,
+  bodyVolume: 58,
+  decalScale: 46,
+  decalPosition: 56,
+  rimGlow: 38,
+  screenTint: 48
 };
 
 const BODIES = SCOOTER_BODIES.map((v) => v.id);
 const SEATS = SCOOTER_SEATS.map((v) => v.id);
 const SCREENS = SCOOTER_SCREENS.map((v) => v.id);
 const CARGO = SCOOTER_CARGO.map((v) => v.id);
+const WHEELS = SCOOTER_WHEELS.map((v) => v.id);
+const SURFACES = SCOOTER_SURFACES.map((v) => v.id);
+const DECALS = SCOOTER_DECALS.map((v) => v.id);
 
 function oneOf<T extends string>(value: unknown, values: readonly T[], fallback: T): T {
   return typeof value === "string" && (values as readonly string[]).includes(value) ? (value as T) : fallback;
@@ -104,6 +148,10 @@ function hex(value: unknown): number | null {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 0xffffff ? value : null;
 }
 
+function percent(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 100 ? value : fallback;
+}
+
 export function normalizeScooterConfig(raw: unknown): ScooterConfig {
   const v = (raw ?? {}) as Partial<ScooterConfig>;
   return {
@@ -111,13 +159,22 @@ export function normalizeScooterConfig(raw: unknown): ScooterConfig {
     seat: oneOf(v.seat, SEATS, DEFAULT_SCOOTER.seat),
     screen: oneOf(v.screen, SCREENS, DEFAULT_SCOOTER.screen),
     cargo: oneOf(v.cargo, CARGO, DEFAULT_SCOOTER.cargo),
+    wheel: oneOf(v.wheel, WHEELS, DEFAULT_SCOOTER.wheel),
+    surface: oneOf(v.surface, SURFACES, DEFAULT_SCOOTER.surface),
+    decal: oneOf(v.decal, DECALS, DEFAULT_SCOOTER.decal),
     paint: index(v.paint, SCOOTER_PAINT_COLORS.length, DEFAULT_SCOOTER.paint),
     trim: index(v.trim, SCOOTER_TRIM_COLORS.length, DEFAULT_SCOOTER.trim),
     upholstery: index(v.upholstery, SCOOTER_SEAT_COLORS.length, DEFAULT_SCOOTER.upholstery),
     paintHex: hex(v.paintHex),
     trimHex: hex(v.trimHex),
     upholsteryHex: hex(v.upholsteryHex),
-    whitewalls: typeof v.whitewalls === "boolean" ? v.whitewalls : DEFAULT_SCOOTER.whitewalls
+    whitewalls: typeof v.whitewalls === "boolean" ? v.whitewalls : DEFAULT_SCOOTER.whitewalls,
+    stance: percent(v.stance, DEFAULT_SCOOTER.stance),
+    bodyVolume: percent(v.bodyVolume, DEFAULT_SCOOTER.bodyVolume),
+    decalScale: percent(v.decalScale, DEFAULT_SCOOTER.decalScale),
+    decalPosition: percent(v.decalPosition, DEFAULT_SCOOTER.decalPosition),
+    rimGlow: percent(v.rimGlow, DEFAULT_SCOOTER.rimGlow),
+    screenTint: percent(v.screenTint, DEFAULT_SCOOTER.screenTint)
   };
 }
 
@@ -150,13 +207,22 @@ export function scooterFromSeed(seed: string | number): ScooterConfig {
     seat: pick(SEATS, roll),
     screen: pick(SCREENS, roll),
     cargo: pick(CARGO, roll),
+    wheel: pick(WHEELS, roll),
+    surface: pick(SURFACES, roll),
+    decal: pick(DECALS, roll),
     paint: Math.floor(roll() * SCOOTER_PAINT_COLORS.length) % SCOOTER_PAINT_COLORS.length,
     trim: Math.floor(roll() * SCOOTER_TRIM_COLORS.length) % SCOOTER_TRIM_COLORS.length,
     upholstery: Math.floor(roll() * SCOOTER_SEAT_COLORS.length) % SCOOTER_SEAT_COLORS.length,
     whitewalls: roll() > 0.35,
     paintHex: null,
     trimHex: null,
-    upholsteryHex: null
+    upholsteryHex: null,
+    stance: 28 + Math.floor(roll() * 57),
+    bodyVolume: 24 + Math.floor(roll() * 65),
+    decalScale: 24 + Math.floor(roll() * 59),
+    decalPosition: 18 + Math.floor(roll() * 65),
+    rimGlow: 16 + Math.floor(roll() * 69),
+    screenTint: 24 + Math.floor(roll() * 67)
   };
 }
 
@@ -166,7 +232,28 @@ export function randomScooterConfig(): ScooterConfig {
 
 export function scooterKey(config: ScooterConfig): string {
   const c = normalizeScooterConfig(config);
-  return `${c.body}|${c.seat}|${c.screen}|${c.cargo}|${c.paint}|${c.trim}|${c.upholstery}|${c.paintHex}|${c.trimHex}|${c.upholsteryHex}|${c.whitewalls}`;
+  return [
+    c.body,
+    c.seat,
+    c.screen,
+    c.cargo,
+    c.wheel,
+    c.surface,
+    c.decal,
+    c.paint,
+    c.trim,
+    c.upholstery,
+    c.paintHex,
+    c.trimHex,
+    c.upholsteryHex,
+    c.whitewalls,
+    c.stance,
+    c.bodyVolume,
+    c.decalScale,
+    c.decalPosition,
+    c.rimGlow,
+    c.screenTint
+  ].join("|");
 }
 
 export function isDefaultScooter(config: ScooterConfig): boolean {

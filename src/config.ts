@@ -76,6 +76,10 @@ export const INPUT_TUNING = tunables("input", {
   moveSpeedScale: { v: 1, min: 0.4, max: 2.5, step: 0.05, label: "move speed ×" },
   // Ignore stick noise inside this radius, then remap the rest to 0..1.
   stickDeadzone: { v: 0.18, min: 0.05, max: 0.4, step: 0.01, label: "stick deadzone" },
+  // Board-only: axial deadzone on right-stick X look so near-vertical flip
+  // holds (even a little diagonal) don't spin the chase cam. Hard push still
+  // orbits for jump cinematic shots.
+  boardLookXDeadzone: { v: 0.42, min: 0.15, max: 0.7, step: 0.01, label: "board look-X deadzone" },
   // >1 eases in: half stick is slower than half speed (fine control near center).
   moveResponse: { v: 1.45, min: 1, max: 3, step: 0.05, label: "move stick curve" },
   lookResponse: { v: 2, min: 1, max: 3, step: 0.05, label: "look stick curve" }

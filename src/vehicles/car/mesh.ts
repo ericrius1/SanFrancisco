@@ -10,6 +10,24 @@ export const CAR_WHEEL_RADIUS = 0.42;
 export const CAR_CONTACT_Y = CAR_WHEEL_HUB_Y - CAR_WHEEL_RADIUS;
 export const CAR_RIDE_HEIGHT = rideHeightFromContact(CAR_CONTACT_Y);
 
+export type CarAnim = {
+  wheels: THREE.Group[];
+  steering: THREE.Group[];
+};
+
+const carAnimations = new WeakMap<THREE.Object3D, CarAnim>();
+
+export function collectCarAnim(root: THREE.Object3D): CarAnim {
+  const wheels: THREE.Group[] = [];
+  const steering: THREE.Group[] = [];
+  root.traverse((object) => {
+    if (!(object instanceof THREE.Group)) return;
+    if (object.name.startsWith("car_wheel_")) wheels.push(object);
+    if (object.name.startsWith("car_steer_")) steering.push(object);
+  });
+  return { wheels, steering };
+}
+
 // Front of the car is local -Z (matches CarController's forward).
 export function buildCarMesh(): THREE.Group {
   const g = new THREE.Group();
@@ -69,15 +87,42 @@ export function buildCarMesh(): THREE.Group {
   const hubGeo = new THREE.CylinderGeometry(0.19, 0.19, 0.38, 12);
   hubGeo.rotateZ(Math.PI / 2);
   const hubMat = new THREE.MeshLambertMaterial({ color: 0xb9bdc4 });
-  for (const [wx, wz] of [[-1.05, -1.55], [1.05, -1.55], [-1.05, 1.55], [1.05, 1.55]]) {
+  const placements = [
+    [-1.05, -1.55, "fl"],
+    [1.05, -1.55, "fr"],
+    [-1.05, 1.55, "rl"],
+    [1.05, 1.55, "rr"]
+  ] as const;
+  for (const [wx, wz, id] of placements) {
+    const steering = new THREE.Group();
+    steering.name = wz < 0 ? `car_steer_${id}` : `car_axle_${id}`;
+    steering.position.set(wx, CAR_WHEEL_HUB_Y, wz);
+    g.add(steering);
+    const spin = new THREE.Group();
+    spin.name = `car_wheel_${id}`;
+    steering.add(spin);
     const w = new THREE.Mesh(wheelGeo, trim);
-    w.position.set(wx, CAR_WHEEL_HUB_Y, wz);
-    g.add(w);
+    spin.add(w);
     const hub = new THREE.Mesh(hubGeo, hubMat);
-    hub.position.set(wx, CAR_WHEEL_HUB_Y, wz);
-    g.add(hub);
+    spin.add(hub);
   }
   g.userData.contactY = CAR_CONTACT_Y;
+  carAnimations.set(g, collectCarAnim(g));
   applyVehicleShadowPolicy(g, shadowCasters);
   return g;
+}
+
+/** Visible tire rotation and front-wheel steering for local and cloned cars. */
+export function animateCar(root: THREE.Group, dt: number, speed: number, steer: number): void {
+  let anim = carAnimations.get(root);
+  if (!anim) {
+    anim = collectCarAnim(root);
+    carAnimations.set(root, anim);
+  }
+  const spin = dt * speed / CAR_WHEEL_RADIUS;
+  for (const wheel of anim.wheels) wheel.rotation.x -= spin;
+  const turn = THREE.MathUtils.clamp(steer, -1, 1) * 0.34;
+  for (const pivot of anim.steering) {
+    pivot.rotation.y += (turn - pivot.rotation.y) * Math.min(1, dt * 11);
+  }
 }

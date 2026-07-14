@@ -2741,6 +2741,80 @@
           height: 90px;
         }
       }
+      /* electric scooter atelier: same tactile lab language as the hoverboard,
+         with warmer lacquer/metal accents and two dedicated 2D controls */
+      #hud .board-panel.scooter-panel {
+        width: min(440px, calc(100vw - 24px));
+        max-height: min(82dvh, 720px);
+        background:
+          radial-gradient(circle at 100% 0, rgba(255, 139, 79, 0.11), transparent 42%),
+          linear-gradient(145deg, rgba(41, 25, 29, 0.96), rgba(6, 18, 27, 0.97));
+        border-color: rgba(255, 171, 112, 0.3);
+        box-shadow:
+          0 18px 48px rgba(0, 6, 12, 0.54),
+          inset 0 1px 0 rgba(255, 255, 255, 0.07),
+          inset 3px 0 0 rgba(255, 139, 79, 0.12);
+      }
+      #hud .scooter-panel .board-panel-head > span {
+        color: #ffc08d;
+      }
+      #hud .scooter-labs .board-lab {
+        border-color: rgba(255, 177, 119, 0.2);
+        background: rgba(10, 12, 18, 0.68);
+      }
+      #hud .scooter-labs .board-lab-name,
+      #hud .scooter-labs .board-lab-readout {
+        color: #ffd1aa;
+      }
+      #hud .scooter-labs .board-xy-puck {
+        background: rgba(255, 139, 79, 0.46);
+        box-shadow:
+          0 0 0 3px rgba(255, 139, 79, 0.13),
+          0 0 14px rgba(255, 163, 94, 0.86),
+          inset 0 0 5px rgba(255, 255, 255, 0.75);
+      }
+      #hud .scooter-xy-canvas {
+        filter: saturate(1.08) contrast(1.04) brightness(0.84);
+      }
+      #hud .scooter-slider {
+        position: relative;
+        flex: 1 1 118px;
+        min-width: 112px;
+        padding: 3px 24px 14px 0;
+      }
+      #hud .scooter-slider input[type="range"] {
+        width: 100%;
+        height: 18px;
+        margin: 0;
+        cursor: ew-resize;
+        accent-color: #ff9e63;
+      }
+      #hud .scooter-slider-ends {
+        position: absolute;
+        left: 0;
+        right: 24px;
+        bottom: 0;
+        display: flex;
+        justify-content: space-between;
+        color: rgba(232, 239, 241, 0.48);
+        font: 700 7px var(--font);
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+      }
+      #hud .scooter-slider output {
+        position: absolute;
+        top: 6px;
+        right: 0;
+        width: 22px;
+        color: #ffc08d;
+        font: 750 9px ui-monospace, SFMono-Regular, Menlo, monospace;
+        text-align: right;
+      }
+      @media (max-width: 480px) {
+        #hud .board-panel.scooter-panel {
+          width: min(430px, calc(100vw - 16px));
+        }
+      }
       #hud .chat {
         position: absolute;
         /* Sit above .audio (3 sliders + mute + mic ≈ 180px tall at bottom: 48). */
@@ -3136,6 +3210,74 @@
       .bigmap-frame {
         position: relative;
       }
+      .bigmap-side-controls {
+        position: absolute;
+        top: 50%;
+        right: -22px;
+        z-index: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 10px;
+        transform: translateY(-50%);
+      }
+      .bigmap-layers {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 6px;
+        min-width: 92px;
+      }
+      .bigmap-layer {
+        box-sizing: border-box;
+        height: 36px;
+        padding: 0 11px 0 10px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: flex-start;
+        gap: 8px;
+        cursor: pointer;
+        border-radius: 999px;
+        border: 1px solid rgba(190, 225, 240, 0.34);
+        background: rgba(10, 24, 36, 0.94);
+        color: var(--text-soft);
+        box-shadow: var(--edge-hi), 0 8px 24px rgba(0, 0, 0, 0.42);
+        backdrop-filter: blur(var(--blur));
+        font:
+          700 12px var(--font);
+        transition:
+          border-color var(--dur) var(--ease),
+          color var(--dur) var(--ease),
+          background var(--dur) var(--ease),
+          opacity var(--dur) var(--ease),
+          filter var(--dur) var(--ease),
+          transform 0.12s var(--ease);
+      }
+      .bigmap-layer:hover {
+        border-color: var(--accent);
+        color: var(--accent-strong);
+        background: rgba(15, 35, 47, 0.98);
+        transform: scale(1.03);
+      }
+      .bigmap-layer:active {
+        transform: scale(0.97);
+      }
+      .bigmap-layer:not(.on) {
+        opacity: 0.55;
+        filter: saturate(0.45);
+      }
+      .bigmap-layer-dot {
+        width: 9px;
+        height: 9px;
+        flex: 0 0 9px;
+        border-radius: 50%;
+        background: var(--layer-color, #c58d52);
+        box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
+      }
+      .bigmap-layer-label {
+        min-width: 0;
+        white-space: nowrap;
+      }
       .bigmap canvas {
         border-radius: 14px;
         cursor: grab;
@@ -3148,9 +3290,9 @@
       }
       .bigmap-recenter {
         box-sizing: border-box;
-        position: absolute;
-        top: 50%;
-        right: -22px;
+        position: relative;
+        top: auto;
+        right: auto;
         z-index: 1;
         width: 44px;
         height: 44px;
@@ -3158,7 +3300,7 @@
         display: grid;
         place-items: center;
         cursor: pointer;
-        transform: translateY(-50%);
+        transform: none;
         border-radius: 50%;
         border: 1px solid rgba(190, 225, 240, 0.34);
         background: rgba(10, 24, 36, 0.94);
@@ -3188,10 +3330,10 @@
         border-color: var(--accent);
         color: var(--accent-strong);
         background: rgba(15, 35, 47, 0.98);
-        transform: translateY(-50%) scale(1.04);
+        transform: scale(1.04);
       }
       .bigmap-recenter:active {
-        transform: translateY(-50%) scale(0.97);
+        transform: scale(0.97);
       }
       .bigmap-recenter.centered {
         border-color: rgba(111, 215, 196, 0.68);

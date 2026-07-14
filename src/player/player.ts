@@ -42,7 +42,7 @@ import {
   prepareBallGlowMaterial,
   TENNIS_BALL_COLOR
 } from "../fx/ballGlow";
-import { buildCarMesh, CarController } from "../vehicles/car";
+import { animateCar, buildCarMesh, CarController } from "../vehicles/car";
 import { buildPlaneMesh, collectPlaneAnim, FlyController, type PlaneAnim } from "../vehicles/plane";
 import { buildBoatMesh, buildSpeedboatMesh, BoatController, BOAT_TUNING, SPEEDBOAT_TUNING, type BoatSailRig } from "../vehicles/boat";
 import { buildDroneMesh, DroneController } from "../vehicles/drone";
@@ -57,7 +57,14 @@ import {
   type SurfboardConfig,
   type SurfTelemetry
 } from "../vehicles/surf";
-import { animateScooter, buildScooterMesh, ScooterController, type ScooterConfig } from "../vehicles/scooter";
+import {
+  activateScooterAssets,
+  animateScooter,
+  buildScooterMesh,
+  previewScooterConfig as previewScooterAppearance,
+  ScooterController,
+  type ScooterConfig
+} from "../vehicles/scooter";
 import { activateBirdAssets, buildBirdMesh, BirdController } from "../vehicles/bird";
 import { setEmbodimentVisible } from "./embodimentVisibility";
 
@@ -459,6 +466,7 @@ export class Player {
     // only its selected surface/decal the first time surfing actually starts.
     if (mode === "surf") void activateSurfboardAssets(this.meshes.surf);
     if (mode === "board") void activateBoardSurface(this.meshes.board);
+    if (mode === "scooter") void activateScooterAssets(this.meshes.scooter);
     // Imported phoenix geometry/plumage is likewise first-use only. The stable
     // root and controller already exist, so switching remains synchronous while
     // the visual asset hydrates into that root.
@@ -1404,7 +1412,15 @@ export class Player {
     this.#scene.add(next);
     this.meshes.scooter = next;
     setEmbodimentVisible(next, this.mode === "scooter");
-    if (this.mode === "scooter") this.#lightPool.claim(next);
+    if (this.mode === "scooter") {
+      this.#lightPool.claim(next);
+      void activateScooterAssets(next);
+    }
+  }
+
+  /** Held-pad/slider preview without rebuilding or broadcasting the scooter. */
+  previewScooterConfig(config: ScooterConfig) {
+    previewScooterAppearance(this.meshes.scooter, config);
   }
 
   /** Lightweight local-only preview used while the deck XY pad is held. */
@@ -1610,6 +1626,7 @@ export class Player {
       const steer = this.#modes.drive.steerVis;
       poseDrive(this.#driverRig, steer, this.#animT, this.#hasWheel);
       this.#wheel.spin.rotation.z = steer * 2.3;
+      animateCar(this.meshes.drive, dt, Math.hypot(this.velocity.x, this.velocity.z), steer);
     } else if (this.mode === "plane") {
       // pilot leans with the bank, hands following the yoke; props spin with
       // airspeed (the local mesh's parts — remotes rediscover their clones')
