@@ -1,6 +1,5 @@
 import * as THREE from "three/webgpu";
 import type { WorldMap } from "../heightmap";
-import { oceanBeachShoreline } from "../oceanBeachWaves";
 import { WIND_DIR } from "../vegetation/wind";
 import { avatarFromSeed } from "../../player/avatar";
 import { setHandTarget, type HandTarget } from "../../player/handIK";
@@ -77,6 +76,20 @@ const SLEEP_DISTANCE = 520;
 const RIG_HIP_HEIGHT = 0.92;
 const ROUTE_HALF_LENGTH = 40;
 const ROUTE_STEP = 5;
+// Dry-sand offset east of the live waterline so the runner stays off the wet edge.
+const BEACH_RUNNER_PAD = 12;
+
+/**
+ * Walk east (shoreward) from just offshore of the anchor until `isWater` flips
+ * false, then step a few metres onto dry sand. Generic coastline scan — works on
+ * any west-facing beach, unlike the Ocean-Beach-specific shoreline fit.
+ */
+function beachEdgeX(map: WorldMap, referenceX: number, z: number): number {
+  for (let x = referenceX - 90; x < referenceX + 110; x += 2) {
+    if (!map.isWater(x, z)) return x + BEACH_RUNNER_PAD;
+  }
+  return referenceX + BEACH_RUNNER_PAD;
+}
 const TETHER_POINTS = 30;
 const TAIL_POINTS = 22;
 const UP = new THREE.Vector3(0, 1, 0);
@@ -312,8 +325,8 @@ class KiteEncounter implements OceanBeachKiteEncounter {
     const samples: RouteSample[] = [];
     for (let dz = -ROUTE_HALF_LENGTH; dz <= ROUTE_HALF_LENGTH; dz += ROUTE_STEP) {
       const z = this.#site.z + dz;
-      const shore = oceanBeachShoreline(this.#map, z, 20);
-      samples.push({ x: shore.x, z });
+      const x = beachEdgeX(this.#map, this.#site.x, z);
+      samples.push({ x, z });
     }
     return samples;
   }

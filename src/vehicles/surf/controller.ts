@@ -301,7 +301,11 @@ export class SurfController implements ModeController {
 
   update(ctx: PlayerCtx, dt: number, input: Input, frame: ModeFrame) {
     const throttle = input.axis("KeyS", "KeyW");
-    const steer = input.axis("KeyA", "KeyD");
+    // Screen-relative carve: pulling left (A / stick-left) turns the board left
+    // with the locked camera behind. axis(pos,neg) order flips the sign for both
+    // keyboard and pad in one place; lean/spin/launch all derive from `steer`
+    // so they stay consistent with the turn.
+    const steer = input.axis("KeyD", "KeyA");
     if (!input.suspended && (input.pressed("Space") || input.pressed("KeyX"))) this.requestFlow();
 
     this.#launchCooldown = Math.max(0, this.#launchCooldown - dt);
@@ -458,10 +462,10 @@ export class SurfController implements ModeController {
     // an entire one-second charge window made launch practically unreachable:
     // the rail spring correctly slowed to zero exactly where takeoff should
     // happen. The intent + lip corridor now own the final part of the charge.
-    const highLineIntent = this.#carve < -0.58 && desiredFaceOffset <= 3.3;
+    const highLineIntent = this.#carve < -0.42 && desiredFaceOffset <= 5.2;
     const approachingLip =
       this.#relativeFaceSpeed < -tb.launchFacewardSpeed ||
-      (highLineIntent && sample.crestDistance <= 4.8);
+      (highLineIntent && sample.crestDistance <= 6.5);
     if (
       fastEnough &&
       lipEnergy > 0 &&

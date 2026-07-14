@@ -10,7 +10,7 @@ import { tracer } from "./core/hitchTracer";
 import { bootMarkStart, bootMark, bootMarkSummary, persistBootHistory } from "./core/bootMarks";
 import { createFrameScheduler } from "./core/frameBudget";
 import { WorldMap, waterHeight } from "./world/heightmap";
-import { OCEAN_BEACH_SURF, oceanBeachShoreline, nearOceanBeachShore } from "./world/oceanBeachWaves";
+import { OCEAN_BEACH_SURF, nearOceanBeachShore } from "./world/oceanBeachWaves";
 import {
   createSurfShack,
   oceanBeachSurfShackPose,
@@ -1894,11 +1894,20 @@ async function boot() {
   );
   debugPanel.setMode(player.mode);
 
-  // Ocean Beach ambient life is an optional, fully procedural chunk. Resolve
-  // its anchor against the real shoreline now (cheap), but do not request its
-  // person/cloth/behavior code until a post-reveal approach. Loading well before
-  // the encounter's own wake radius leaves time for detached WebGPU compilation.
-  const oceanKiteSite = oceanBeachShoreline(map, OCEAN_BEACH_SURF.entryZ + 45, 20);
+  // Kid-with-a-kite ambient life is an optional, fully procedural chunk. It
+  // stands on the sandy NW-headland beach just south of Sutro Baths (roughly
+  // between Sutro Baths and the Archery Range), where the player trolley passes.
+  // Resolve the waterline X now (cheap) but defer the person/cloth/behavior code
+  // until a post-reveal approach so detached WebGPU compilation has runway.
+  const KITE_BEACH_Z = 1650;
+  let kiteShoreX = -6160;
+  for (let x = -6260; x < -6040; x += 2) {
+    if (!map.isWater(x, KITE_BEACH_Z)) {
+      kiteShoreX = x;
+      break;
+    }
+  }
+  const oceanKiteSite = { x: kiteShoreX, z: KITE_BEACH_Z };
   const OCEAN_KITE_LOAD_DISTANCE = 650;
   let oceanBeachKite: import("./world/oceanBeachKite").OceanBeachKiteEncounter | null = null;
   let oceanBeachKiteLoading: Promise<void> | null = null;
