@@ -3,7 +3,7 @@
 // generic and proximity-driven, never customized per landmark.
 
 import type { PlayerMode } from "../player/types";
-import { OCEAN_BEACH_SURF, oceanBeachApproxShoreX } from "./oceanBeachWaves";
+import { oceanBeachSurfShackApproxPose } from "../gameplay/surfing/shack";
 import { mdToWorldXZ, Z_ENTRANCE } from "./missionDolores/layout";
 
 const MISSION_DOLORES_ENTRY = mdToWorldXZ(0, Z_ENTRANCE - 8);
@@ -31,16 +31,19 @@ export const SPAWN_POINTS: Record<string, SpawnPoint> = {
     heading: Math.PI, // local +z, through the portal toward the apse
     mode: "walk"
   },
-  // Ocean Beach surf pin — dry sand at the live waterline (approx until map
-  // resolves the exact edge via oceanBeachShoreline), facing the swell.
-  oceanBeach: {
-    key: "oceanBeach",
-    label: "Ocean Beach · Surf",
-    x: oceanBeachApproxShoreX(OCEAN_BEACH_SURF.entryZ) + 4,
-    z: OCEAN_BEACH_SURF.entryZ,
-    heading: Math.PI / 2, // west into the break
-    mode: "walk"
-  },
+  // Ocean Beach surf shack apron — dry sand facing the racked boards (refined
+  // at boot via oceanBeachSurfShackPose once the shoreline is known).
+  oceanBeach: (() => {
+    const pose = oceanBeachSurfShackApproxPose();
+    return {
+      key: "oceanBeach",
+      label: "Ocean Beach · Surf",
+      x: pose.x,
+      z: pose.z,
+      heading: pose.heading,
+      mode: "walk" as const
+    };
+  })(),
   // Main entrance to the Japanese Tea Garden. The authored garden is coupled to
   // the Botanical Garden region so both designed landscapes are ready before a
   // direct-location boot reveals the world.

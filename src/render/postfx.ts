@@ -33,6 +33,7 @@ import type { RadialLightParams } from "./radialLightTypes";
  *    pastel lift, gentle vignette and fine animated grain — hazy memory.
  *  - retro crt: virtual pixel grid, Bayer-dithered color quantize and
  *    scanline shading — the handheld-that-never-existed.
+ *  - FXAA: an optional final display-space edge cleanup owned by pipeline.ts.
  *
  * Everything runs AFTER tone mapping (the pipeline hands us display-referred
  * sRGB via renderOutput), so quantize/grain/vignette work on the 0..1 image
@@ -41,6 +42,7 @@ import type { RadialLightParams } from "./radialLightTypes";
  * JS branches only, so the mx_noise branch-corruption hazard never applies.
  */
 export const POSTFX_TUNING = tunables("postfx", {
+  fxaa: { v: false, label: "FXAA" },
   ink: { v: false, label: "ink & wash" },
   inkStrength: { v: 0.65, min: 0, max: 1, step: 0.05, label: "· ink strength" },
   inkWidth: { v: 1.5, min: 1, max: 4, step: 0.5, label: "· line width (px)" },
@@ -64,8 +66,8 @@ export const POSTFX_TUNING = tunables("postfx", {
   }
 });
 
-/** The keys that change the shader itself (everything else is a live uniform). */
-export const POSTFX_TOGGLES = ["ink", "dream", "retro"] as const;
+/** Toggles that select retained render graphs (everything else is a live uniform). */
+export const POSTFX_TOGGLES = ["fxaa", "ink", "dream", "retro"] as const;
 export const POSTFX_RADIAL_LIGHT_KEYS = [
   "museumRays",
   "museumRaysIntensity",

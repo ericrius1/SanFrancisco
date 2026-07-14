@@ -11,6 +11,13 @@ export interface ProjectedSurfaceLightSource {
   readonly active: boolean;
   readonly count: number;
   readonly intensity: number;
+  /** Fraction of drawing-buffer resolution used by the lazy projection pass. */
+  readonly resolutionScale: number;
+  /** Shared multiplier and curve keep the close pass matched to its fallback. */
+  readonly strength: number;
+  readonly falloffPower: number;
+  /** Vertical rejection distance; keeps the ground light off roofs above it. */
+  readonly heightReach: number;
   copyLight(
     index: number,
     positionAndRadius: THREE.Vector4,

@@ -5,7 +5,7 @@ import type { Player } from "../../player/player";
 import type { PlayerMode } from "../../player/types";
 import type { HUD } from "../../ui/hud";
 import { waterHeight } from "../../world/heightmap";
-import { oceanBeachShoreline } from "../../world/oceanBeachWaves";
+import { oceanBeachSurfShackPose } from "../../gameplay/surfing/shack";
 import { findLand, findWater } from "../../vehicles/shared";
 import { oceanBeachSurfEntryPose } from "../../vehicles/surf/entry";
 
@@ -100,18 +100,18 @@ export class EmbodimentController {
 
     const exitMode = player.mode;
     if (exitMode === "surf") {
-      // Surf is an activity, not a mount. Exit atomically to the sand: no
-      // abandoned board, swimming interlude, paddle-out, or stale surf body.
-      const shore = oceanBeachShoreline(player.map, player.position.z, 3);
+      // Surf is an activity, not a mount. Exit atomically to the shack apron:
+      // no abandoned board, swimming interlude, paddle-out, or stale surf body.
+      const apron = oceanBeachSurfShackPose(player.map);
       player.position.set(
-        shore.x,
-        player.map.effectiveGround(shore.x, shore.z) + 1.5,
-        shore.z
+        apron.x,
+        player.map.effectiveGround(apron.x, apron.z) + 1.5,
+        apron.z
       );
-      player.heading = Math.PI * 1.5; // face offshore toward the break
+      player.heading = apron.heading;
       player.swimEnter = false;
       player.trySwitch("walk");
-      this.#hud.message("Back on the beach — E to surf again", 2.2);
+      this.#hud.message("Back on the beach — grab a board at the shack", 2.2);
       return true;
     }
 
@@ -208,12 +208,12 @@ export class EmbodimentController {
       }
     }
     if (mode === "walk" && player.mode === "surf") {
-      const shore = oceanBeachShoreline(player.map, p.z, 3);
+      const apron = oceanBeachSurfShackPose(player.map);
       return {
-        x: shore.x,
-        y: player.map.effectiveGround(shore.x, shore.z) + 1.5,
-        z: shore.z,
-        label: "Ocean Beach shore"
+        x: apron.x,
+        y: player.map.effectiveGround(apron.x, apron.z) + 1.5,
+        z: apron.z,
+        label: "Ocean Beach surf shack"
       };
     }
     return null;

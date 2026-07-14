@@ -3,7 +3,7 @@ import { suppressesFullReload } from "./app/hmr/suppressFullReload";
 import * as THREE from "three/webgpu";
 import * as TSL from "three/tsl";
 import CameraControls from "camera-controls";
-import { CAMERA_TUNING, CITYGEN_TUNING, CONFIG, FLOWER_TUNING, FOLIAGE_TUNING, INPUT_TUNING, RENDER_TUNING, START, START_DEFAULTS, WORLD_TUNING } from "./config";
+import { CAMERA_TUNING, CITYGEN_TUNING, CONFIG, FLOWER_TUNING, FOLIAGE_TUNING, INPUT_TUNING, LIGHT_SCALE, RENDER_TUNING, START, START_DEFAULTS, WORLD_TUNING } from "./config";
 import { loadPlayerState, resetAllTweaks, saveTweak } from "./core/persist";
 import { Input, formatInteractPrompt, localizeInteractText } from "./core/input";
 import { tracer } from "./core/hitchTracer";
@@ -11,6 +11,11 @@ import { bootMarkStart, bootMark, bootMarkSummary, persistBootHistory } from "./
 import { createFrameScheduler } from "./core/frameBudget";
 import { WorldMap, waterHeight } from "./world/heightmap";
 import { OCEAN_BEACH_SURF, oceanBeachShoreline, nearOceanBeachShore } from "./world/oceanBeachWaves";
+import {
+  createSurfShack,
+  oceanBeachSurfShackPose,
+  type SurfShack
+} from "./gameplay/surfing/shack";
 import { Sky, SKY_TUNING } from "./world/sky";
 import { Water } from "./world/water";
 import { UnderwaterOverlay } from "./fx/underwater";
@@ -142,6 +147,7 @@ import { initTextures } from "./render/textures";
 import { createBuskersSystem } from "./app/systems/buskers";
 import { createSessionPersistence } from "./app/sessionPersistence";
 import { startFrameDriver } from "./app/frameDriver";
+import { isInGameScreenshotBusy, takeInGameScreenshot } from "./app/inGameScreenshot";
 import { EmbodimentController } from "./app/player/embodimentController";
 import { NavigationController } from "./app/navigation";
 import { WorldArrivalCoordinator } from "./app/worldArrival";
@@ -281,9 +287,10 @@ async function boot() {
         : resolveSpawnPoint(spawnKey) ?? resolveSpawnPoint(START_DEFAULTS.spawn)
     );
     if (spawnPoint?.key === "oceanBeach") {
-      const shore = oceanBeachShoreline(map, spawnPoint.z, 3);
-      spawnPoint.x = shore.x;
-      spawnPoint.z = shore.z;
+      const apron = oceanBeachSurfShackPose(map);
+      spawnPoint.x = apron.x;
+      spawnPoint.z = apron.z;
+      spawnPoint.heading = apron.heading;
     }
     const registeredStart =
       spawnPoint ??
@@ -524,11 +531,18 @@ async function boot() {
   camera.position.set(spawn.x + 20, map.effectiveGround(spawn.x, spawn.z) + 30, spawn.z + 20);
   let surfExperience: import("./gameplay/surfing/game").SurfExperience | null = null;
   let surfRuntimeLoading: Promise<void> | null = null;
+  let surfShack: SurfShack | null = null;
+  const ensureSurfShack = () => {
+    if (surfShack) return;
+    surfShack = createSurfShack(map);
+    scene.add(surfShack.group);
+  };
   const refreshSurfDebug = () => {
     const hooks = (window as unknown as { __sf?: Record<string, unknown> }).__sf;
-    if (hooks) Object.assign(hooks, { oceanBeachWaves, surfExperience });
+    if (hooks) Object.assign(hooks, { oceanBeachWaves, surfExperience, surfShack });
   };
   const ensureSurfRuntime = () => {
+    ensureSurfShack();
     const surfing = player.mode === "surf";
     // Face mesh can warm on the sand; SurfExperience only while actually surfing.
     if (oceanBeachWaves && (!surfing || surfExperience)) return Promise.resolve();
@@ -1542,11 +1556,12 @@ async function boot() {
   // the range is asleep. Marks the field + gives a teleport like golf/tennis.
   minimap.addLandmark(ARCHERY_CENTER.x, ARCHERY_CENTER.z, "Archery Range");
   minimap.addLandmark(REVERIE_CENTER.x, REVERIE_CENTER.z, "Palace Reverie");
-  // Ocean Beach surf break. Teleporting arrives on foot at the waterline;
-  // one E press enters the live face already standing and moving.
+  // Ocean Beach surf shack. Teleporting arrives on foot at the apron;
+  // one E press on a racked board enters the live face already standing and moving.
   {
-    const shore = oceanBeachShoreline(map, OCEAN_BEACH_SURF.entryZ, 3);
-    minimap.addLandmark(shore.x, shore.z, "Ocean Beach · Surf");
+    const apron = oceanBeachSurfShackPose(map);
+    minimap.addLandmark(apron.x, apron.z, "Ocean Beach · Surf");
+    ensureSurfShack();
   }
   minimap.addLandmark(LANDS_END_CENTER.x, LANDS_END_CENTER.z, "Lands End · Labyrinth");
   const playerLocator = new PlayerLocator();
@@ -3094,6 +3109,32 @@ async function boot() {
     );
   };
   const sendPickleballNetwork = () => pickleballController?.sendNetwork();
+  // 0..1 "how strongly a lit streetlamp pool falls on the rider right now",
+  // rebuilt on the CPU from the same hero pool centres + night intensity the
+  // projected-surface-light pass uses to paint the warm glow on the avatar. Feeds
+  // the hoverboard's electric-field whoosh (vehicleAudio) so the sound tracks the
+  // light you see on yourself: skirting the edge is a whisper, dead-centre is full.
+  const lampFieldPos = new THREE.Vector4();
+  const lampFieldNrm = new THREE.Vector4();
+  const computeLampField = (): number => {
+    const lamps = streetLamps?.projectedSurfaceLightSource;
+    if (!lamps) return 0;
+    const nightW = Math.min(1, Math.max(0, lamps.intensity / LIGHT_SCALE)); // day→0, night→1
+    if (nightW <= 0.001 || lamps.count <= 0) return 0;
+    const px = player.position.x;
+    const pz = player.position.z;
+    let hit = 0;
+    for (let i = 0; i < lamps.count; i++) {
+      lamps.copyLight(i, lampFieldPos, lampFieldNrm); // xyz = pool centre, w = radius
+      const dx = px - lampFieldPos.x;
+      const dz = pz - lampFieldPos.z;
+      const radius = lampFieldPos.w || 6;
+      const fall = Math.max(0, 1 - Math.hypot(dx, dz) / radius);
+      const f = fall * fall; // matches the pass's pow(...,2) radial falloff
+      if (f > hit) hit = f;
+    }
+    return hit * nightW;
+  };
   const tick = (forcedDt?: number) => {
     // HMR factories are queued by Vite's socket callback and committed only at
     // this frame boundary, never halfway through simulation/render work.
@@ -3330,7 +3371,8 @@ async function boot() {
         surfFlow: player.mode === "surf" && player.surfTelemetry.flowActive ? 1 : 0,
         surfMotionRate: player.mode === "surf" ? player.surfTelemetry.riderMotionRate : 1,
         driveVoice: player.driveSpec.voice ?? "engine",
-        driveSlide: player.driveSlideFeedback.intensity
+        driveSlide: player.driveSlideFeedback.intensity,
+        lampLight: computeLampField()
       });
       swimAudio.update(frameDt, {
         swimming: player.swimming,
@@ -3438,23 +3480,21 @@ async function boot() {
       !palaceReverie?.tryInteract(player, hud) &&
       !landsEnd?.keeper.tryInteract(player, hud) &&
       !missionDolores?.tryInteract(player.position, player.mode, hud) &&
-      !afterlight?.tryInteract(player, hud)
+      !afterlight?.tryInteract(player, hud) &&
+      !(
+        surfShack?.tryInteract(player, hud, (config) => {
+          surfboardConfig = config;
+          setLocalSurfboardConfig(config);
+          player.setSurfboardConfig(config);
+          const request = ++surfEntryRequest;
+          void chase.ensureSurfCamera().then(() => {
+            if (request !== surfEntryRequest || player.mode !== "walk") return;
+            navigation.switchMode("surf");
+          });
+        }) ?? false
+      )
     ) {
-      const nearOceanBeach = player.mode === "walk" && nearOceanBeachShore(player.position.x, player.position.z);
-      if (nearOceanBeach) {
-        // Load the exclusive rig before changing embodiment, so even the first
-        // visible surf frame uses the locked shot rather than world-camera state.
-        const request = ++surfEntryRequest;
-        void chase.ensureSurfCamera().then(() => {
-          if (request !== surfEntryRequest || player.mode !== "walk") return;
-          if (!nearOceanBeachShore(player.position.x, player.position.z)) return;
-          // Surf enter() can move the player from shore to the nearest wave
-          // crest. Route that discontinuity through the same covered arrival
-          // transaction as every other long mode-entry relocation.
-          navigation.switchMode("surf");
-          hud.message("You're surfing — A/D carve · W pump · S stall · E exits to the beach", 4);
-        });
-      } else if (!fetchBall?.tryPickup(player.position)) {
+      if (!fetchBall?.tryPickup(player.position)) {
         const drv = remotes.nearestDriver(player.position, 5.5);
         const animal = drv ? null : forest?.nearest(player.position, 5);
         if (drv) {
@@ -3555,6 +3595,29 @@ async function boot() {
     if (input.pressed("KeyF")) {
       if (document.fullscreenElement) void document.exitFullscreen();
       else void document.documentElement.requestFullscreen().catch(() => hud.message("Fullscreen blocked by browser"));
+    }
+    // H: high-res in-game still → local in_game_shots folder (dev server writer)
+    if (
+      document.body.classList.contains("started") &&
+      !worldArrival.active &&
+      input.pressed("KeyH") &&
+      !isInGameScreenshotBusy()
+    ) {
+      hud.message("Capturing…", 1.2);
+      void takeInGameScreenshot({
+        renderer,
+        renderFrame,
+        captureStillRgba: pipeline.captureStillRgba,
+        setCinematicMultisampling: pipeline.setCinematicMultisampling
+      })
+        .then((shot) => {
+          const name = shot.path.split("/").pop() ?? "shot.png";
+          hud.message(`Saved ${name} (${shot.width}×${shot.height})`, 3.5);
+        })
+        .catch((err) => {
+          console.warn("[screenshot]", err);
+          hud.message(err instanceof Error ? err.message : "Screenshot failed", 3.5);
+        });
     }
     updateCrownDisplay(frameDt);
     updateBayLights(frameDt);
@@ -3934,26 +3997,28 @@ async function boot() {
         !drv && !nearAnimal
           ? abandonedMounts.nearest(player.position.x, player.position.z, 5.5)
           : null;
-      const nearSurfBreak =
-        !drv && !nearAnimal && !nearMount && nearOceanBeachShore(player.position.x, player.position.z);
+      const surfBoardPrompt =
+        !drv && !nearAnimal && !nearMount
+          ? surfShack?.nearbyPrompt(player.position.x, player.position.z, input.device) ?? null
+          : null;
       const reveriePrompt =
-        !drv && !nearAnimal && !nearMount && !nearSurfBreak
+        !drv && !nearAnimal && !nearMount && !surfBoardPrompt
           ? palaceReverie?.nearbyPrompt(player.position.x, player.position.z) ?? null
           : null;
-      if ((drv || nearAnimal || nearMount || nearSurfBreak || reveriePrompt) && !ridePromptShown) {
+      if ((drv || nearAnimal || nearMount || surfBoardPrompt || reveriePrompt) && !ridePromptShown) {
         const rideCopy = drv
           ? formatInteractPrompt(`ride with ${drv.name}`, input.device)
           : nearAnimal
             ? formatInteractPrompt(`ride the ${nearAnimal.label}`, input.device)
             : nearMount
               ? formatInteractPrompt(ABANDONED_MOUNT_PROMPT[nearMount.mode], input.device)
-              : nearSurfBreak
-                ? formatInteractPrompt("start surfing at Ocean Beach", input.device)
+              : surfBoardPrompt
+                ? surfBoardPrompt
                 : localizeInteractText(reveriePrompt as string, input.device);
         hud.message(rideCopy, 1.8);
         ridePromptShown = true;
       }
-      if (!drv && !nearAnimal && !nearMount && !nearSurfBreak && !reveriePrompt) ridePromptShown = false;
+      if (!drv && !nearAnimal && !nearMount && !surfBoardPrompt && !reveriePrompt) ridePromptShown = false;
       // "open the door" nudge — same one-shot pattern; the ride prompt wins
       // when both are in range. nearestDoor is alloc-light but not free, so
       // it runs every 6th frame (prompt latency ~0.1 s) and only on foot.
@@ -4044,10 +4109,8 @@ async function boot() {
         player.position.z > b.maxZ + 500;
       if (farFromBreak) exitToWalk();
     }
-    // On foot at Ocean Beach you carry your board, ready to start the activity.
-    player.setCarryingBoard(
-      player.mode === "walk" && nearOceanBeachShore(player.position.x, player.position.z)
-    );
+    // Boards live on the shack rack until grabbed — no under-arm carry on the sand.
+    player.setCarryingBoard(false);
     vehicleAudio.update(frameDt, {
       mode: player.mode,
       speed: player.speed,
@@ -4058,7 +4121,8 @@ async function boot() {
       surfFlow: player.mode === "surf" && player.surfTelemetry.flowActive ? 1 : 0,
       surfMotionRate: player.mode === "surf" ? player.surfTelemetry.riderMotionRate : 1,
       driveVoice: player.driveSpec.voice ?? "engine",
-      driveSlide: player.driveSlideFeedback.intensity
+      driveSlide: player.driveSlideFeedback.intensity,
+      lampLight: computeLampField()
     });
     swimAudio.update(frameDt, {
       swimming: player.swimming,

@@ -251,8 +251,8 @@ export const START_DEFAULTS = {
   // triggers the random pick whenever START.spawn still equals this default. The
   // value below is therefore the "not pinned" sentinel + the hard fallback if a
   // spawn key ever fails to resolve; set START.spawn to any concrete key to pin
-  // the start to one place instead. Ocean Beach: sand at the waterline, board
-  // underarm, ready to surf.
+  // the start to one place instead. Ocean Beach: sand at the surf shack,
+  // racked boards ready to grab.
   spawn: "oceanBeach",
   mode: "walk" as PlayerMode
 }

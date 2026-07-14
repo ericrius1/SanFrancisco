@@ -5,15 +5,14 @@ export const MENU_MODES: PlayerMode[] = [
   "drive",
   "scooter",
   "board",
-  "surf",
   "plane",
   "boat",
   "drone",
   "bird"
 ];
 
-/** Every switchable mode (speedboat is bay-only — never on the roster). */
-export const ALL_MODES: PlayerMode[] = [...MENU_MODES, "speedboat"];
+/** Every switchable mode (surf / speedboat are location-gated — never on the roster). */
+export const ALL_MODES: PlayerMode[] = [...MENU_MODES, "speedboat", "surf"];
 
 export const MODE_META: Record<PlayerMode, { icon: string; label: string }> = {
   walk: { icon: "🚶", label: "Walk" },

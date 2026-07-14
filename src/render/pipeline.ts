@@ -4,7 +4,8 @@ import {
   pass,
   mrt,
   normalViewGeometry,
-  packNormalToRGB
+  packNormalToRGB,
+  texture
 } from "three/tsl";
 import {
   createPostFx,
@@ -42,6 +43,11 @@ type ProjectedSurfaceLightRuntime = {
   sample(sampleUv?: any): any;
   update(): void;
   dispose(): void;
+};
+type FxaaRuntime = {
+  pipeline: THREE.RenderPipeline;
+  sourceTarget: THREE.RenderTarget;
+  size: THREE.Vector2;
 };
 
 const OUTLINE_PREPASS_SCALE = 0.5;
@@ -454,8 +460,51 @@ export function createRenderPipeline(
     };
   }
 
+  // FXAA is a final display-space pass, after every optional light/style graph.
+  // Its implementation and one shared RGBA8 source target are first-use gated:
+  // clean boot fetches/allocates neither while the toggle remains off.
+  let fxaaRequested = Boolean(POSTFX_TUNING.values.fxaa);
+  let fxaaRuntime: FxaaRuntime | null = null;
+  let fxaaModulePromise: Promise<typeof import("three/addons/tsl/display/FXAANode.js")> | null = null;
+  const ensureFxaaRuntime = async () => {
+    if (fxaaRuntime) return fxaaRuntime;
+    if (!fxaaModulePromise) {
+      fxaaModulePromise = import("three/addons/tsl/display/FXAANode.js").catch((err) => {
+        fxaaModulePromise = null;
+        throw err;
+      });
+    }
+    const { fxaa } = await fxaaModulePromise;
+    if (fxaaRuntime) return fxaaRuntime;
+
+    const sourceTarget = new THREE.RenderTarget(1, 1, {
+      format: THREE.RGBAFormat,
+      type: THREE.UnsignedByteType,
+      colorSpace: THREE.SRGBColorSpace,
+      depthBuffer: false,
+      stencilBuffer: false,
+      minFilter: THREE.LinearFilter,
+      magFilter: THREE.LinearFilter,
+      generateMipmaps: false
+    });
+    sourceTarget.texture.name = "FXAA display source";
+    const fxaaPipeline = new THREE.RenderPipeline(renderer);
+    fxaaPipeline.outputColorTransform = false;
+    fxaaPipeline.outputNode = fxaa(texture(sourceTarget.texture));
+    fxaaRuntime = {
+      pipeline: fxaaPipeline,
+      sourceTarget,
+      size: new THREE.Vector2()
+    };
+    return fxaaRuntime;
+  };
+
   const applyPostFx = () => {
     applyPostFxParams();
+    fxaaRequested = Boolean(POSTFX_TUNING.values.fxaa);
+    if (fxaaRequested && !fxaaRuntime) {
+      void ensureFxaaRuntime().catch((err) => console.warn("[render] FXAA unavailable:", err));
+    }
     const mask = getPostFxVariantMask();
     if (mask !== activeVariantMask) activeVariantMask = mask;
     applyRadialLightFx();
@@ -490,12 +539,8 @@ export function createRenderPipeline(
    * asking the pipeline to configure it. Keeping this adapter here makes the
    * returned warmup API independent of Three's private shape.
    */
-  const compilePostFxVariants = async (masks: readonly number[] = POSTFX_VARIANT_MASKS) => {
-    const quads = masks.map((mask) => {
-      const internal = getVariantPipeline(mask) as WarmableRenderPipeline;
-      internal._update();
-      return internal._quadMesh;
-    });
+  const compileFullscreenQuads = async (quads: THREE.QuadMesh[]) => {
+    if (quads.length === 0) return;
     const group = new THREE.Group();
     group.add(...quads);
 
@@ -523,6 +568,20 @@ export function createRenderPipeline(
       renderer.xr.enabled = xrEnabled;
       group.remove(...quads);
     }
+  };
+  const compilePostFxVariants = async (masks: readonly number[] = POSTFX_VARIANT_MASKS) => {
+    const quads = masks.map((mask) => {
+      const internal = getVariantPipeline(mask) as WarmableRenderPipeline;
+      internal._update();
+      return internal._quadMesh;
+    });
+    await compileFullscreenQuads(quads);
+  };
+  const compileFxaaPipeline = async () => {
+    const runtime = await ensureFxaaRuntime();
+    const internal = runtime.pipeline as WarmableRenderPipeline;
+    internal._update();
+    await compileFullscreenQuads([internal._quadMesh]);
   };
 
   /**
@@ -593,6 +652,10 @@ export function createRenderPipeline(
 
       await compilePostFxVariants(scope === "boot" ? [activeVariantMask & 7] : POSTFX_VARIANT_MASKS);
       markStage("output-compile");
+      if (fxaaRequested) {
+        await compileFxaaPipeline();
+        markStage("fxaa-compile");
+      }
 
       // Explicitly visit an ink pipeline: deferred BundleGroup contents need
       // recording in the normal/depth MRT even after the quad's GPU program was
@@ -652,15 +715,31 @@ export function createRenderPipeline(
       radialRuntime?.update();
       radialRenderedFrames += 1;
     }
-    if (!fastCaptureTarget) {
+    const fxaaActive = fxaaRequested && fxaaRuntime !== null;
+    if (!fastCaptureTarget && !fxaaActive) {
       activePipeline.render();
       return;
     }
     const previousTarget = renderer.getRenderTarget();
     const previousCubeFace = renderer.getActiveCubeFace();
     const previousMipmapLevel = renderer.getActiveMipmapLevel();
-    renderer.setRenderTarget(fastCaptureTarget);
-    activePipeline.render();
+    if (fxaaActive) {
+      const runtime = fxaaRuntime!;
+      if (fastCaptureTarget) runtime.size.set(fastCaptureTarget.width, fastCaptureTarget.height);
+      else renderer.getDrawingBufferSize(runtime.size);
+      const width = Math.max(1, Math.round(runtime.size.x));
+      const height = Math.max(1, Math.round(runtime.size.y));
+      if (runtime.sourceTarget.width !== width || runtime.sourceTarget.height !== height) {
+        runtime.sourceTarget.setSize(width, height);
+      }
+      renderer.setRenderTarget(runtime.sourceTarget);
+      activePipeline.render();
+      renderer.setRenderTarget(fastCaptureTarget);
+      runtime.pipeline.render();
+    } else {
+      renderer.setRenderTarget(fastCaptureTarget);
+      activePipeline.render();
+    }
     renderer.setRenderTarget(previousTarget, previousCubeFace, previousMipmapLevel);
   };
 
@@ -718,6 +797,96 @@ export function createRenderPipeline(
     return drainFastSlot(pending.slot);
   };
 
+  // On-demand still capture for the H-key in-game screenshot path. Unlike
+  // ?fastcapture=1 (which redirects every live frame into a ping-pong RT), this
+  // only allocates when a still is requested and restores the canvas afterward.
+  let stillCaptureTarget: THREE.RenderTarget | null = null;
+  let stillReadbackBuffer: { destroy(): void; mapAsync(mode: number): Promise<unknown>; getMappedRange(): ArrayBuffer; unmap(): void } | null =
+    null;
+  let stillBytesPerRow = 0;
+
+  const ensureStillCapture = (width: number, height: number) => {
+    const backend = renderer.backend as any;
+    const bytesPerRow = Math.ceil((width * 4) / 256) * 256;
+    const needsTarget =
+      !stillCaptureTarget || stillCaptureTarget.width !== width || stillCaptureTarget.height !== height;
+    if (needsTarget) {
+      stillCaptureTarget?.dispose();
+      stillCaptureTarget = new THREE.RenderTarget(width, height, {
+        format: THREE.RGBAFormat,
+        type: THREE.UnsignedByteType,
+        depthBuffer: false,
+        stencilBuffer: false
+      });
+      stillCaptureTarget.texture.name = "in-game-still-final-color";
+    }
+    if (!stillReadbackBuffer || stillBytesPerRow !== bytesPerRow || needsTarget) {
+      stillReadbackBuffer?.destroy();
+      stillReadbackBuffer = backend.device.createBuffer({
+        size: bytesPerRow * height,
+        usage: GPU_BUFFER_USAGE_COPY_DST | GPU_BUFFER_USAGE_MAP_READ
+      });
+      stillBytesPerRow = bytesPerRow;
+    }
+  };
+
+  const captureStillRgba = async () => {
+    const size = new THREE.Vector2();
+    renderer.getDrawingBufferSize(size);
+    const width = Math.max(1, Math.round(size.x));
+    const height = Math.max(1, Math.round(size.y));
+    ensureStillCapture(width, height);
+    if (!stillCaptureTarget || !stillReadbackBuffer) {
+      throw new Error("in-game still capture buffers failed to allocate");
+    }
+
+    if (wireframeActive) syncWireframeCamera();
+    projectedSource?.setViewPosition(camera.position as THREE.Vector3);
+    if (projectedSource?.active) ensureProjectedRuntime();
+    else if (projectedActive) selectActivePipeline();
+    if (projectedActive) projectedRuntime?.update();
+    if (radialActive) radialRuntime?.update();
+
+    const previousTarget = renderer.getRenderTarget();
+    const previousCubeFace = renderer.getActiveCubeFace();
+    const previousMipmapLevel = renderer.getActiveMipmapLevel();
+    renderer.setRenderTarget(stillCaptureTarget);
+    activePipeline.render();
+    renderer.setRenderTarget(previousTarget, previousCubeFace, previousMipmapLevel);
+
+    const backend = renderer.backend as any;
+    const texture = backend.get(stillCaptureTarget.texture).texture;
+    if (!texture) throw new Error("in-game still GPU texture is not initialized");
+
+    const encoder = backend.device.createCommandEncoder();
+    encoder.copyTextureToBuffer(
+      { texture },
+      {
+        buffer: stillReadbackBuffer,
+        bytesPerRow: stillBytesPerRow,
+        rowsPerImage: height
+      },
+      [width, height, 1]
+    );
+    backend.device.queue.submit([encoder.finish()]);
+    await stillReadbackBuffer.mapAsync(GPU_MAP_MODE_READ);
+
+    const tightStride = width * 4;
+    const padded = new Uint8Array(stillReadbackBuffer.getMappedRange());
+    const tight = new Uint8ClampedArray(tightStride * height);
+    if (stillBytesPerRow === tightStride) tight.set(padded.subarray(0, tight.length));
+    else {
+      for (let y = 0; y < height; y++) {
+        tight.set(
+          padded.subarray(y * stillBytesPerRow, y * stillBytesPerRow + tightStride),
+          y * tightStride
+        );
+      }
+    }
+    stillReadbackBuffer.unmap();
+    return { width, height, pixels: tight };
+  };
+
   return {
     render,
     /** The currently selected persistent fullscreen pipeline. */
@@ -731,6 +900,14 @@ export function createRenderPipeline(
     /** Read-only diagnostics for probes; normal play remains at one sample. */
     get sceneSampleCount() {
       return activeSceneSamples || 1;
+    },
+    /** Probe-facing first-use state for the optional final FXAA pass. */
+    get fxaaState() {
+      return {
+        requested: fxaaRequested,
+        loaded: fxaaRuntime !== null,
+        active: fxaaRequested && fxaaRuntime !== null
+      };
     },
     /** Attach/detach an optional interior-only radial-light source. */
     setRadialLightSource,
@@ -759,11 +936,16 @@ export function createRenderPipeline(
     /** Browser-native review capture reads the final post-FX texture here. */
     queueFastFrame,
     drainFastFrame,
+    /** One-shot GPU readback of the post-FX frame for in-game stills (H key). */
+    captureStillRgba,
     fastCaptureSize: fastCaptureTarget ? [fastCaptureTarget.width, fastCaptureTarget.height] as const : null,
     /** Precompile scene/effect variants; safe to repeat after new loads. */
     warmup,
     /** Compile every retained post-FX style graph so "/" toggles stay hitch-free. */
-    warmupPostFx: () => compilePostFxVariants(POSTFX_VARIANT_MASKS),
+    warmupPostFx: async () => {
+      await compilePostFxVariants(POSTFX_VARIANT_MASKS);
+      await compileFxaaPipeline();
+    },
     /** Stable half-resolution close-contact complement and live controls. */
     contactShadows
   };

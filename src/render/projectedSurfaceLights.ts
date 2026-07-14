@@ -20,15 +20,11 @@ import {
   type ProjectedSurfaceLightSource
 } from "./projectedSurfaceLightTypes";
 
-// These are broad, low-frequency six-metre pools. One-third resolution plus
-// hardware bilinear upsampling preserves the gradient while keeping the hero
-// complement well below the cost of another full scene-lighting path.
-const RESOLUTION_SCALE = 0.35;
-// SF's road/sidewalk meshes can be separate sloped ribbons whose interpolated
-// elevations differ at a segment seam. Horizontal XZ projection bridges those
-// ribbons; this vertical band still prevents roofs above a lamp from glowing.
-const HEIGHT_FADE_START = 2;
-const HEIGHT_FADE_END = 4;
+// These are broad, low-frequency six-metre pools. The default 35% target plus
+// hardware bilinear upsampling preserves the gradient cheaply; Tweakpane can
+// raise it for image-quality/performance comparisons without rebuilding nodes.
+const MIN_RESOLUTION_SCALE = 0.25;
+const MAX_RESOLUTION_SCALE = 1;
 
 /**
  * Fixed-budget close lighting complement. It reconstructs the already-visible
@@ -46,6 +42,8 @@ class ProjectedSurfaceLightPassNode extends THREE.TempNode {
   readonly #cameraWorldMatrix: any;
   readonly #count = uniform(0, "int");
   readonly #intensity = uniform(0);
+  readonly #falloffPower = uniform(1);
+  readonly #heightReach = uniform(4);
   readonly #positions = Array.from(
     { length: MAX_PROJECTED_SURFACE_LIGHTS },
     () => new THREE.Vector4()
@@ -62,6 +60,7 @@ class ProjectedSurfaceLightPassNode extends THREE.TempNode {
   readonly #textureNode: any;
   readonly #size = new THREE.Vector2();
   #rendererState: any = undefined;
+  #resolutionScale = 0.35;
   #disposed = false;
 
   constructor(
@@ -107,7 +106,25 @@ class ProjectedSurfaceLightPassNode extends THREE.TempNode {
       Math.max(0, this.#source.count | 0)
     );
     this.#count.value = count;
-    this.#intensity.value = Math.max(0, this.#source.intensity);
+    this.#intensity.value = Math.max(
+      0,
+      this.#source.intensity * this.#source.strength
+    );
+    this.#falloffPower.value = THREE.MathUtils.clamp(
+      this.#source.falloffPower,
+      0.5,
+      3
+    );
+    this.#heightReach.value = THREE.MathUtils.clamp(
+      this.#source.heightReach,
+      0.1,
+      20
+    );
+    this.#resolutionScale = THREE.MathUtils.clamp(
+      this.#source.resolutionScale,
+      MIN_RESOLUTION_SCALE,
+      MAX_RESOLUTION_SCALE
+    );
     for (let i = 0; i < count; i++) {
       this.#source.copyLight(i, this.#positions[i], this.#normals[i]);
     }
@@ -123,8 +140,8 @@ class ProjectedSurfaceLightPassNode extends THREE.TempNode {
     if (this.#disposed) return undefined;
     const renderer = frame.renderer as THREE.WebGPURenderer;
     const size = renderer.getDrawingBufferSize(this.#size);
-    const width = Math.max(1, Math.round(size.x * RESOLUTION_SCALE));
-    const height = Math.max(1, Math.round(size.y * RESOLUTION_SCALE));
+    const width = Math.max(1, Math.round(size.x * this.#resolutionScale));
+    const height = Math.max(1, Math.round(size.y * this.#resolutionScale));
     if (this.#renderTarget.width !== width || this.#renderTarget.height !== height) {
       this.#renderTarget.setSize(width, height);
     }
@@ -179,12 +196,18 @@ class ProjectedSurfaceLightPassNode extends THREE.TempNode {
         // tangent plane. That is the seam-proof part: adjacent road/sidewalk
         // meshes may disagree on slope/elevation but agree on XZ coverage.
         const planarDistance = delta.xz.length();
-        const radial = saturate(planarDistance.div(positionAndRadius.w.max(0.01)))
+        const radialDistance = saturate(
+          planarDistance.div(positionAndRadius.w.max(0.01))
+        );
+        const radial = smoothstep(0, 1, radialDistance)
           .oneMinus()
-          .pow(2);
+          .pow(this.#falloffPower);
+        // SF's road/sidewalk meshes can be separate sloped ribbons whose
+        // interpolated elevations differ at a segment seam. Horizontal XZ
+        // projection bridges those ribbons; this band rejects roofs above it.
         const heightGate = smoothstep(
-          HEIGHT_FADE_START,
-          HEIGHT_FADE_END,
+          this.#heightReach.mul(0.5),
+          this.#heightReach,
           height.abs()
         ).oneMinus();
         const facing = smoothstep(

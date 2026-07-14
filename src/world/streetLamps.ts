@@ -19,6 +19,7 @@ import {
   type ProjectedSurfaceLightSource
 } from "../render/projectedSurfaceLightTypes";
 import type { WorldMap } from "./heightmap";
+import { STREET_LIGHT_TUNING } from "./streetLightTuning";
 import type { RoadGraph } from "./traffic/roadGraph";
 
 // TSL node generics fight composition; any is the idiom here (see bayLights.ts)
@@ -110,6 +111,8 @@ export class StreetLamps {
   #discs: THREE.InstancedMesh;
   #discProjected: THREE.InstancedBufferAttribute;
   #projectionReady = uniform(0);
+  #poolStrength = uniform(STREET_LIGHT_TUNING.values.strength);
+  #falloffPower = uniform(STREET_LIGHT_TUNING.values.falloffPower);
   // flat lamp store, stride 4: x, z, towardRoadX, towardRoadZ (all placed lamps)
   #lamps: Float32Array;
   #count: number;
@@ -169,6 +172,18 @@ export class StreetLamps {
       },
       get intensity() {
         return Number(STREET_LAMPS_INTENSITY.value);
+      },
+      get resolutionScale() {
+        return STREET_LIGHT_TUNING.values.resolutionScale;
+      },
+      get strength() {
+        return STREET_LIGHT_TUNING.values.strength;
+      },
+      get falloffPower() {
+        return STREET_LIGHT_TUNING.values.falloffPower;
+      },
+      get heightReach() {
+        return STREET_LIGHT_TUNING.values.heightReach;
       },
       copyLight(index, positionAndRadius, normalAndWeight) {
         owner.#copyProjectedLight(index, positionAndRadius, normalAndWeight);
@@ -304,7 +319,12 @@ export class StreetLamps {
     discGeo.setAttribute("surfaceProjected", this.#discProjected);
     const discMat = new THREE.MeshBasicNodeMaterial();
     const d = uv().sub(0.5).length().mul(2); // 0 at centre → 1 at rim
-    const falloff = saturate(d).oneMinus().pow(2) as N;
+    // A cubic Hermite ramp is C1-continuous at the rim. Compared with the old
+    // quadratic cutoff it leaves a longer, gentler low-energy tail, so pools no
+    // longer read as bright decals floating just above the road while driving.
+    const falloff = smoothstep(0, 1, saturate(d))
+      .oneMinus()
+      .pow(this.#falloffPower) as N;
     // For the selected close set, crossfade this geometry-only fallback out as
     // the depth-aware pass fades in. Distance is evaluated at the vertices and
     // interpolated across the 16-gon, avoiding a per-fragment square root.
@@ -319,6 +339,7 @@ export class StreetLamps {
     discMat.colorNode = color(0xffb866)
       .mul(falloff)
       .mul(discWeight)
+      .mul(this.#poolStrength)
       .mul(STREET_LAMPS_INTENSITY) as N;
     discMat.transparent = true;
     discMat.blending = THREE.AdditiveBlending;
@@ -364,6 +385,10 @@ export class StreetLamps {
   }
 
   update(playerPos: THREE.Vector3): void {
+    // Tweakpane writes plain numbers; polling two uniforms keeps slider changes
+    // allocation-free and avoids rebuilding either node material.
+    this.#poolStrength.value = STREET_LIGHT_TUNING.values.strength;
+    this.#falloffPower.value = STREET_LIGHT_TUNING.values.falloffPower;
     // no additive draw by day — the intensity uniform is the on/off switch
     this.#discs.visible = STREET_LAMPS_INTENSITY.value > 0.01;
     if (this.#count === 0) return;

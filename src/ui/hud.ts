@@ -328,7 +328,8 @@ export class HUD {
           { c: ["C"], label: "view" },
           { c: ["/"], label: "debug" },
           { c: ["I"], label: "immersive" },
-          { c: ["F"], label: "fullscreen" }
+          { c: ["F"], label: "fullscreen" },
+          { c: ["H"], label: "screenshot" }
         ]
     )
       .filter((r) => this.#current !== "surf" || r.label !== "view")
