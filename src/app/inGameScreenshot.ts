@@ -42,7 +42,9 @@ async function rgbaToPngBlob(width: number, height: number, pixels: Uint8Clamped
   const canvas = new OffscreenCanvas(width, height);
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("2D context unavailable for PNG encode");
-  ctx.putImageData(new ImageData(pixels, width, height), 0, 0);
+  // ImageData requires an ArrayBuffer-backed view; WebGPU readback types may
+  // also admit SharedArrayBuffer, so make the encoder's ownership explicit.
+  ctx.putImageData(new ImageData(Uint8ClampedArray.from(pixels), width, height), 0, 0);
   return canvas.convertToBlob({ type: "image/png" });
 }
 
