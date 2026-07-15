@@ -196,7 +196,7 @@
         max-width: 420px;
         font-size: 12px;
         opacity: 0.92;
-        padding: 12px 14px;
+        padding: 10px 12px 12px;
         border-radius: var(--r-md);
         background: var(--surface);
         border: 1px solid var(--hairline);
@@ -207,6 +207,42 @@
         max-height: calc(100dvh - 58px);
         overflow-y: auto;
         overscroll-behavior: contain;
+        pointer-events: auto;
+      }
+      #hud .help .help-toggle {
+        pointer-events: auto;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        margin: 0 0 8px;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: var(--text);
+        font: 700 11px var(--font);
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        opacity: 0.78;
+      }
+      #hud .help .help-toggle:hover {
+        opacity: 1;
+        color: var(--accent-strong);
+      }
+      #hud .help .help-toggle-chevron {
+        font-size: 10px;
+        opacity: 0.75;
+      }
+      #hud .help.collapsed {
+        padding: 8px 12px;
+        max-height: none;
+        overflow: visible;
+      }
+      #hud .help.collapsed .help-toggle {
+        margin-bottom: 0;
+      }
+      #hud .help.collapsed .help-body {
+        display: none;
       }
       /* movement grid + global shortcuts, side by side */
       #hud .help .cols {
@@ -320,6 +356,7 @@
         opacity: 0;
         transition: opacity 1s ease;
       }
+      #hud.faded .help,
       #hud.faded .toolbar,
       #hud.faded .audio,
       #hud.faded .chat,
@@ -4357,6 +4394,7 @@
         <div class="controls-hint" aria-label="Essential controls">
           <div class="row"><span class="k">Tab</span><span>show or hide the folio</span></div>
           <div class="row"><span class="k">Esc</span><span>release the mouse</span></div>
+          <div class="row"><span class="k">L</span><span>toggle free cursor</span></div>
         </div>
         <div class="start-imprint">Pacific coast · A city in motion</div>
       </main>

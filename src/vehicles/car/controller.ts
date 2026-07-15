@@ -79,7 +79,7 @@ export class CarController implements ModeController {
   #slideBoost = 0;
   #skidIntensity = 0;
   #slideDir = 0;
-  /** Last non-zero steer side while LB slide is held (neutral stick keeps this). */
+  /** Last non-zero steer side while pad slide is held (neutral stick keeps this). */
   #slideSteerLatch = 0;
   #skidTrack = 0.9;
   #skidRear = 1.6;
@@ -286,8 +286,8 @@ export class CarController implements ModeController {
     const steer = input.axis("KeyD", "KeyA");
     const handbrake = input.down("Space");
     const boost = input.down("ShiftLeft");
-    // Keyboard [ / ] (and Q) pick a side; pad LB slides whichever way you're
-    // steering. RB is intentionally unbound. Space stays classic omni drift.
+    // Keyboard [ / ] (and Q) pick a side; pad RB slides whichever way you're
+    // steering. LB is boost. Space stays classic omni drift.
     const slideLeftKb = input.down("BracketLeft") || input.down("KeyQ");
     const slideRightKb = input.down("BracketRight");
     const slidePad = input.down("PadSlideLeft");

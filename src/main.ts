@@ -1512,7 +1512,7 @@ async function boot() {
   net.onGolf = (id, m) => golf?.handleNet(id, m, hud, net.roster.get(id)?.name ?? "Player");
   input.onLockChange = (locked) => {
     if (!locked && !inOrbit() && !input.freeCursor && !chat.focused) {
-      hud.message("Click to capture the mouse · Esc releases · ⌘ toggles free cursor", 2.8);
+      hud.message("Click to capture the mouse · Esc releases · L toggles free cursor", 2.8);
     }
   };
   // passenger seat support: cars and scooters both publish a local seat anchor.
@@ -2165,7 +2165,7 @@ async function boot() {
   const aim = new THREE.Vector3();
   const rayOrigin = new THREE.Vector3(); // aimOrigin returns a shared tmp — keep our own copy
   // The interaction ray. Normally it's the centre-screen aim; while the free
-  // cursor is out (⌘ toggled) it's the camera-through-mouse ray instead, so
+  // cursor is out (L toggled) it's the camera-through-mouse ray instead, so
   // clicks and the hover glow track wherever the loose orb is pointing.
   const aimRay = (origin: THREE.Vector3, dir: THREE.Vector3) => {
     if (input.freeCursor) {
@@ -3609,14 +3609,13 @@ async function boot() {
       }
     }
 
-    // Expanded map: gamepad pan / zoom / cursor / select / teleport / pin cycle.
+    // Expanded map: gamepad pan / zoom / select / teleport / pin cycle.
     // World + player are fully frozen while the map is open (kb or pad).
     if (minimap.expanded) {
       const axes = input.mapPadAxes();
       minimap.padPan(axes.lx, axes.ly, frameDt);
-      // RT zooms in, LT zooms out. Right stick moves the selection cursor.
-      minimap.padZoom(axes.rt - axes.lt, frameDt);
-      minimap.padMoveCursor(axes.rx, axes.ry, frameDt);
+      // RT / stick-up zoom in; LT / stick-down zoom out. Selector stays centered.
+      minimap.padZoom(axes.rt - axes.lt - axes.ry, frameDt);
       if (input.pressedRaw("Space")) minimap.padSelectAtCursor();
       if (input.firePressed) minimap.padTeleport();
       if (input.pressedRaw("Enter") || input.pressedRaw("NumpadEnter")) minimap.padTeleport();
@@ -4659,7 +4658,7 @@ async function boot() {
 
     // The in-world cursor: a glowing orb that rests where you're pointing. It
     // sits centre-screen while the mouse is captured (a soft aim reticle too),
-    // and rides the free mouse ray while free-cursor mode is on (⌘). Runs after the entity
+    // and rides the free mouse ray while free-cursor mode is on (L). Runs after the entity
     // proxies are synced so its depth is world-aware: a hovered bus/car/avatar
     // lifts it onto their near face instead of letting the ray punch through to
     // the ground behind.

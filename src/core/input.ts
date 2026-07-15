@@ -4,24 +4,25 @@ import { INPUT_TUNING } from "../config";
 /**
  * Pointer-lock game input. Clicking the canvas captures the mouse; mouselook
  * deltas accumulate only while locked. Escape is left to the browser's native
- * pointer-lock exit — this layer only syncs via `pointerlockchange`. Tap
- * Command/Meta (alone) toggles free-cursor controls vs pointer-lock controls.
+ * pointer-lock exit — this layer only syncs via `pointerlockchange`. Tap L
+ * toggles free-cursor controls vs pointer-lock controls.
  * The game keeps simulating while unlocked. While `suspended` (camera-orbit mode)
  * all game inputs read as idle so the player coasts. Global holds that must
  * still work there (Z time-scrub, N look/speed) use `holding()` instead of `down()`.
  *
  * A gamepad (Xbox standard mapping) rides the same logical rails: pollPad()
  * translates buttons into the key codes the game already reads (A→Space,
- * Y→E interact/mount like RDR2, L3/LT→Shift boost/run, Back→map, …), the left
- * stick into the WASD axis pairs (radial deadzone + move curve from
- * INPUT_TUNING), the right stick into mouselook deltas outside the locked surf
- * activity (same deadzone + look curve), RT into the selected tool while walking
- * or flying as a bird (mouse-hold fire — ball / paint / bubbles; vehicles keep
- * RT as throttle and fire on X), and the triggers into the active mode's
- * throttle — fly routes RT to ↑ (LT is boost), bird routes LB/RB to Q/E twirl,
- * drive/scooter map LB to PadSlideLeft (slide follows steer; RB left free) —
- * so modes/camera never see a second input path. `device` tracks
- * whichever input was touched last; the HUD swaps its control labels off it.
+ * Y→E interact/mount like RDR2, L3/LT→Shift boost/run (drive: LB + L3; LT is
+ * reverse), Back→map, …), the left stick into the WASD axis pairs (radial
+ * deadzone + move curve from INPUT_TUNING), the right stick into mouselook
+ * deltas outside the locked surf activity (same deadzone + look curve), RT into
+ * the selected tool while walking or flying as a bird (mouse-hold fire — ball /
+ * paint / bubbles; vehicles keep RT as throttle and fire on X), and the
+ * triggers into the active mode's throttle — fly routes RT to ↑ (LT is boost),
+ * bird routes LB/RB to Q/E twirl, drive uses RT−LT gas/reverse, LB boost, and
+ * RB → PadSlideLeft (slide follows steer) — so modes/camera never see a second
+ * input path. `device` tracks whichever input was touched last; the HUD swaps
+ * its control labels off it.
  *
  * Board mode steals right-stick Y for deck pitch / air flips (stick back =
  * nose up); only right-stick X still feeds mouselook there, with an extra
@@ -55,19 +56,20 @@ function shapeAxis(v: number, deadzone: number, curve: number): number {
 
 // button index (standard mapping) → key code it impersonates. X (2) and RT (7)
 // are fire (mouse-hold equivalent for the selected tool), handled separately.
-// LT (6) is boost alongside L3 (also handled in pollPad so it stays out of
-// the analog throttle). Dpad ↑/↓/◀/▶ emit synthetic toolbar-nav codes main.ts
-// reads (row focus + within-row cycle; map pin cycle reuses ◀/▶ while expanded).
-// Face layout follows RDR2 conventions where they map cleanly: Y is the world
-// interact / mount / dismount button (keyboard E). Boost/run/tuck live on L3
-// and LT so RT can own the tool action on foot.
+// LT (6) is boost alongside L3 except in drive (reverse) and surf (stall) —
+// handled in pollPad so boost modes leave LT out of analog throttle. Dpad
+// ↑/↓/◀/▶ emit synthetic toolbar-nav codes main.ts reads (row focus + within-row
+// cycle; map pin cycle reuses ◀/▶ while expanded). Face layout follows RDR2
+// conventions where they map cleanly: Y is the world interact / mount / dismount
+// button (keyboard E). Boost/run/tuck live on L3 and LT (drive: LB + L3; LT is
+// reverse) so RT can own the tool action on foot.
 const PAD_BUTTONS: Record<number, string> = {
   0: "Space", //     A: jump / ollie / drift / air brake / hover
   // 1 B: unbound
   3: "KeyE", //      Y: interact / enter-exit vehicle (RDR2-style)
-  4: "KeyQ", //      LB: drone down / bird twirl left / (drive: PadSlideLeft only — see pollPad)
-  // 5 RB: bird twirl right; drive/scooter leave unbound for a later action
-  // 6 LT: boost / run / tuck — see pollPad (not in this table; must leave throttle)
+  4: "KeyQ", //      LB: drone down / bird twirl left / (drive: boost; scooter: slide — see pollPad)
+  // 5 RB: bird twirl right; drive: PadSlideLeft; scooter unbound
+  // 6 LT: boost / run / tuck, or drive reverse / surf stall — see pollPad
   // 7 RT: fire — selected tool (ball / paint / bubbles); see pollPad
   8: "KeyM", //      Back/View: map (RDR2 holds Select for map; tap here)
   9: "KeyP", //      Start: pause
@@ -122,16 +124,14 @@ export class Input {
   #wantLocked = false;
   /** Invalidates rejected/late request promises without touching a newer gesture. */
   #lockRequestGeneration = 0;
-  /** Lonely Meta tap (no chord) toggles free-cursor ↔ pointer-lock. */
-  #metaAlone = false;
   #suspended = false;
   #suspensionHolds = new Set<string>();
   padConnected = false;
   device: "kb" | "pad" = "kb";
 
-  // Command/Meta tap toggles this: free in-world cursor (mouseNDC is the live
-  // screen position, -1..1) vs pointer-lock mouselook. While true, canvas
-  // presses feed the cursor, not re-lock — tap Meta again to recapture.
+  // L tap toggles this: free in-world cursor (mouseNDC is the live screen
+  // position, -1..1) vs pointer-lock mouselook. While true, canvas presses
+  // feed the cursor, not re-lock — tap L again to recapture.
   freeCursor = false;
   mouseNDCx = 0;
   mouseNDCy = 0;
@@ -196,12 +196,15 @@ export class Input {
       // Alt+arrow is location history inside the game, not browser history.
       if (e.altKey && (e.code === "ArrowLeft" || e.code === "ArrowRight")) e.preventDefault();
       if (e.repeat) return;
-      // Lonely Meta tap toggles free-cursor; any other key while Meta is down is a chord
-      // (Cmd+C, etc.) and must not flip the mode.
-      if (e.code === "MetaLeft" || e.code === "MetaRight") {
-        this.#metaAlone = true;
-      } else if (e.metaKey) {
-        this.#metaAlone = false;
+      // L toggles free-cursor ↔ pointer-lock (ignores chords with modifiers).
+      if (
+        e.code === "KeyL" &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !this.suspended
+      ) {
+        this.#toggleFreeCursor();
       }
       this.keys.add(e.code);
       this.#justPressed.add(e.code);
@@ -212,24 +215,13 @@ export class Input {
       // Slash: keep "/" (debug panel) from triggering Firefox quick-find
       if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Slash"].includes(e.code)) e.preventDefault();
     });
-    window.addEventListener(
-      "keyup",
-      (e) => {
-        this.keys.delete(e.code);
-        if (e.code === "MetaLeft" || e.code === "MetaRight") {
-          const t = e.target;
-          const typing = t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement;
-          if (this.#metaAlone && !this.suspended && !typing) this.#toggleFreeCursor();
-          this.#metaAlone = false;
-        }
-      },
-      true
-    );
+    window.addEventListener("keyup", (e) => {
+      this.keys.delete(e.code);
+    });
     window.addEventListener("blur", () => {
       this.keys.clear();
       this.fireHeld = false;
-      this.#metaAlone = false;
-      // Drop capture on focus loss; free-cursor mode is sticky until Meta toggles it.
+      // Drop capture on focus loss; free-cursor mode is sticky until L toggles it.
       this.#lockRequestGeneration++;
       this.#wantLocked = false;
       document.exitPointerLock();
@@ -361,18 +353,23 @@ export class Input {
     // RT owns the selected tool on foot / as a bird. Elsewhere it is throttle
     // (drive, board, plane, …) — those modes keep fire on X.
     const rtFiresTool = this.#mode === "walk" || this.#mode === "bird";
-    // LT mirrors L3 as boost/run/tuck everywhere except surf (which still uses
-    // LT as stall) so it must not also subtract from analog throttle.
-    const ltIsBoost = this.#mode !== "surf";
+    // LT mirrors L3 as boost/run/tuck except drive (reverse) and surf (stall),
+    // so boost modes must not also subtract from analog throttle.
+    const ltIsBoost = this.#mode !== "surf" && this.#mode !== "drive";
     const held = new Set<string>();
     for (let i = 0; i < gp.buttons.length; i++) {
       const on = gp.buttons[i].pressed || gp.buttons[i].value > 0.5;
       if (on) active = true;
       const code = PAD_BUTTONS[i];
       if (code) {
-        // Drive/scooter: LB is PadSlideLeft only — skip KeyQ so it can't force a left slide.
-        if (i === 4 && (this.#mode === "drive" || this.#mode === "scooter")) {
-          // PadSlideLeft is added below; RB stays unbound on purpose.
+        // Drive: LB is boost (ShiftLeft); scooter: PadSlideLeft — skip KeyQ either way.
+        if (i === 4 && this.#mode === "drive") {
+          if (on) {
+            held.add("ShiftLeft");
+            if (!this.#padPrev[i]) this.#justPressed.add("ShiftLeft");
+          }
+        } else if (i === 4 && this.#mode === "scooter") {
+          // PadSlideLeft is added below.
         } else if (on) {
           held.add(code);
           if (!this.#padPrev[i]) this.#justPressed.add(code);
@@ -401,19 +398,20 @@ export class Input {
     // Left stick: deadzone + move curve (vehicles/walk read these axes analog).
     const [lx, ly] = shapeStick(gp.axes[0] ?? 0, gp.axes[1] ?? 0, deadzone, tune.moveResponse);
     // Right stick: deadzone only here — look curve applied when writing mouse deltas
-    // so map-cursor mode still gets linear post-deadzone motion.
+    // so expanded-map zoom still gets linear post-deadzone motion.
     const [rxLin, ryLin] = shapeStick(gp.axes[2] ?? 0, gp.axes[3] ?? 0, deadzone, 1);
     const lt = gp.buttons[6]?.value ?? 0;
     const rt = gp.buttons[7]?.value ?? 0;
     // Walk: stick-only move so holding RT to throw/paint does not also shove forward.
     // When LT is boost, only RT feeds forward throttle (stick back still brakes).
+    // Drive: RT−LT is gas/reverse (same dual-trigger shape as surf pump/stall).
     const trig = this.#mode === "walk" ? 0 : rt - (ltIsBoost ? 0 : lt);
     // bumpers: bird twirl (RB is axis-only so it doesn't impersonate KeyE / exit);
-    // drive/scooter: LB → PadSlideLeft only (steer picks the slide side; RB stays free).
+    // drive: RB → PadSlideLeft (steer picks the side); scooter: LB → PadSlideLeft.
     const lb = gp.buttons[4]?.pressed || (gp.buttons[4]?.value ?? 0) > 0.5 ? 1 : 0;
     const rb = gp.buttons[5]?.pressed || (gp.buttons[5]?.value ?? 0) > 0.5 ? 1 : 0;
-    const vehicleSlide = this.#mode === "drive" || this.#mode === "scooter";
-    if (vehicleSlide && lb) held.add("PadSlideLeft");
+    if (this.#mode === "drive" && rb) held.add("PadSlideLeft");
+    else if (this.#mode === "scooter" && lb) held.add("PadSlideLeft");
     this.#padHeld = held;
     this.#padAxes.set("KeyA|KeyD", lx);
     this.#padAxes.set("KeyS|KeyW", -ly + (this.#triggerRoute ? 0 : trig));
@@ -505,7 +503,7 @@ export class Input {
   }
 
   requestLock() {
-    // Free-cursor mode owns the pointer until Meta toggles it off.
+    // Free-cursor mode owns the pointer until L toggles it off.
     if (this.freeCursor) return;
     const generation = ++this.#lockRequestGeneration;
     this.#wantLocked = true;
@@ -527,7 +525,7 @@ export class Input {
     // Unconditional: `this.locked` lags reality (pointerlockchange is async) and
     // a pending requestLock grant may still be in flight — clearing the intent
     // flag makes the pointerlockchange handler drop that late grant too.
-    // Free-cursor mode stays sticky (Meta toggles it); this only drops capture.
+    // Free-cursor mode stays sticky (L toggles it); this only drops capture.
     this.#lockRequestGeneration++;
     this.#wantLocked = false;
     document.exitPointerLock();

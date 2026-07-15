@@ -105,10 +105,12 @@ const PAD: Record<PlayerMode, Row[]> = {
   drive: [
     { c: ["RS"], label: "look" },
     { c: ["RT"], label: "gas" },
+    { c: ["LT"], label: "reverse" },
     { c: ["LS"], label: "steer" },
-    { c: ["LB"], label: "power slide" },
+    { c: ["LB"], label: "boost" },
+    { c: ["RB"], label: "power slide" },
     { c: ["A"], label: "handbrake" },
-    { c: ["L3", "LT"], label: "boost" },
+    { c: ["L3"], label: "boost" },
     { c: ["Y"], label: "get out" },
     { c: ["X"], label: "shoot" }
   ],
@@ -183,7 +185,7 @@ const PAD: Record<PlayerMode, Row[]> = {
 // one-liner flavor tip under the controls
 const TIPS: Partial<Record<PlayerMode, string>> = {
   walk: "Every building has a front door — walk in and explore",
-  drive: "LB power-slide with steer · release for a snap boost · Space handbrake",
+  drive: "LB boost · RB power-slide with steer · release for a snap boost · Space handbrake",
   scooter: "LB power-slide with steer · ramps launch cleanly · rear seat fits a friend",
   board: "White glow = nose · pull right stick back in the air to flip",
   surf: "Neutral input keeps you riding · mouse and right stick cannot move this camera",
@@ -231,6 +233,8 @@ const PANELS: Record<string, string> = {
 export class HUD {
   #root = document.getElementById("hud")!
   #help = document.querySelector<HTMLElement>('[data-hud="help"]')!
+  #helpBody = document.createElement("div")
+  #helpToggle = document.createElement("button")
   #center = document.querySelector<HTMLElement>('[data-hud="center"]')!
   #history = document.createElement("div")
   #msgTimer = 0
@@ -239,11 +243,25 @@ export class HUD {
   #toolVerb = "hold 1s to throw" // what a click does right now (the toolbar's tool)
   #historyCanBack = false
   #historyCanForward = false
+  /** Controls info panel starts open; user can collapse it. */
+  #helpCollapsed = false
 
   onHistoryBack: () => void = () => {}
   onHistoryForward: () => void = () => {}
 
   constructor() {
+    this.#helpBody.className = "help-body"
+    this.#helpToggle.type = "button"
+    this.#helpToggle.className = "help-toggle"
+    this.#helpToggle.addEventListener("click", (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      this.#helpCollapsed = !this.#helpCollapsed
+      this.#syncHelpCollapse()
+    })
+    this.#help.replaceChildren(this.#helpToggle, this.#helpBody)
+    this.#syncHelpCollapse()
+
     this.#history.className = "place-history"
     this.#root.appendChild(this.#history)
     this.#history.addEventListener("click", (e) => {
@@ -254,6 +272,16 @@ export class HUD {
       }
     })
     this.#renderHistory()
+  }
+
+  #syncHelpCollapse() {
+    this.#help.classList.toggle("collapsed", this.#helpCollapsed)
+    this.#helpToggle.setAttribute("aria-expanded", this.#helpCollapsed ? "false" : "true")
+    this.#helpToggle.title = this.#helpCollapsed ? "Show controls" : "Hide controls"
+    this.#helpToggle.setAttribute("aria-label", this.#helpToggle.title)
+    this.#helpToggle.innerHTML =
+      `<span class="help-toggle-label">Controls</span>` +
+      `<span class="help-toggle-chevron" aria-hidden="true">${this.#helpCollapsed ? "▸" : "▾"}</span>`
   }
 
   /** The Click/X row tracks the active toolbar tool. */
@@ -306,7 +334,7 @@ export class HUD {
           { c: ["T"], label: "chat" },
           { c: ["Tab"], label: "toggle UI" },
           { c: ["Esc"], label: "release mouse" },
-          { c: ["⌘"], label: "toggle free cursor" }
+          { c: ["L"], label: "toggle free cursor" }
         ]
     const rows = allRows
       .map(
@@ -347,7 +375,7 @@ export class HUD {
     const tip = TIPS[this.#current]
     if (tip) html.push(`<div class="tip">${tip}</div>`)
 
-    this.#help.innerHTML = html.join("")
+    this.#helpBody.innerHTML = html.join("")
     // restart the fade-in so mode/device swaps read as a deliberate change
     this.#help.classList.remove("swap")
     void this.#help.offsetWidth
