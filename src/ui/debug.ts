@@ -35,6 +35,7 @@ import { BUSKER_FIREFLY_TUNING } from "../gameplay/buskers/tuning";
 import { VEGETATION_TUNING, applyVegetationTuning } from "../world/vegetation/tuning";
 import { SHADOW_TUNING } from "../world/shadows/tuning";
 import { TERRAIN_CLIPMAP_TUNING } from "../world/terrainClipmapTuning";
+import { WATER_ECHO_TUNING } from "../world/waterEchoes";
 import type { ContactShadowComplement } from "../render/contactShadows";
 import { OVERLAY_TUNING } from "./overlays/tuning";
 import type { OverlayContextFlags } from "./overlays/manager";
@@ -770,6 +771,8 @@ export class DebugPanel {
         this.#renderer.setSize(window.innerWidth, window.innerHeight);
       }
     });
+    const waterEchoes = rendering.addFolder({ title: "water echoes", expanded: false });
+    WATER_ECHO_TUNING.bind(waterEchoes, { onChange: () => {} });
     const fog = rendering.addFolder({ title: "fog", expanded: false });
     WORLD_TUNING.bind(fog, {
       keys: [
