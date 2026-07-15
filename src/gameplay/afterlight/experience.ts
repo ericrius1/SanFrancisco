@@ -41,6 +41,7 @@ const CINEMATIC_COLLECT = [3.0, 3.72, 4.44, 5.16, 5.88] as const;
 const CINEMATIC_RETURN_SECONDS = 0.86;
 const CINEMATIC_COMPLETE = 6.74;
 const CINEMATIC_WHALE = 7.15;
+const LATTICE_INTERACT_RADIUS = 3.6;
 
 function smooth01(value: number): number {
   const t = THREE.MathUtils.clamp(value, 0, 1);
@@ -58,6 +59,10 @@ function interactionDistance(x: number, z: number): number {
 function keeperDistance(x: number, z: number): number {
   const mara = KEEPER_LAYOUT[0];
   return Math.hypot(x - (AFTERLIGHT_CENTER.x + mara.x), z - (AFTERLIGHT_CENTER.z + mara.z));
+}
+
+function latticeDistance(x: number, z: number): number {
+  return Math.hypot(x - AFTERLIGHT_CENTER.x, z - AFTERLIGHT_CENTER.z);
 }
 
 /**
@@ -142,6 +147,7 @@ export class AfterlightExperience {
     if (!on) {
       this.#releaseTakeover();
       this.#visuals.setInteractionFocus(-1, interactKeyLabel());
+      this.#visuals.setWebDiagnosticsFocus(false, interactKeyLabel());
       this.root.removeFromParent();
     }
     if (on && !this.#cinematic) this.#visuals.setLabelsVisible(true);
@@ -187,6 +193,27 @@ export class AfterlightExperience {
       this.#releaseTakeover(player);
       this.#ui.setPrompt(null);
       hud.message("You let the strand go. The web keeps your last ripple.", 2.4);
+      return true;
+    }
+
+    if (latticeDistance(player.position.x, player.position.z) <= LATTICE_INTERACT_RADIUS) {
+      const active = this.#visuals.toggleWebDiagnostics();
+      const key = interactKeyLabel();
+      this.#visuals.setWebDiagnosticsFocus(true, key);
+      this.#ui.showMilestone(active ? "LATTICE VISION // OPEN" : "LATTICE VISION // FOLDED", {
+        eyebrow: "Hyperweb core",
+        detail: active
+          ? "Live nodes, pinned anchors and constraint tension revealed"
+          : "The solver keeps breathing beneath the visible veil",
+        tone: active ? "mist" : "brass",
+        seconds: 2.2
+      });
+      hud.message(
+        active
+          ? "Lattice Vision open · cyan nodes drift · gold anchors pin · rose constraints carry tension"
+          : "Lattice Vision folded. The hyperweb keeps moving.",
+        3.8
+      );
       return true;
     }
 
@@ -524,11 +551,23 @@ export class AfterlightExperience {
     if (player.mode !== "walk" || player.riding) {
       this.#ui.setPrompt(null);
       this.#visuals.setInteractionFocus(-1, key);
+      this.#visuals.setWebDiagnosticsFocus(false, key);
       return;
     }
     if (this.#visuals.controlsCaptured) {
+      this.#visuals.setWebDiagnosticsFocus(false, key);
       this.#visuals.setInteractionFocus(this.#visuals.controlledCelebrant, key, true);
       this.#ui.setPrompt("release control · your avatar is shaping the web", key);
+      return;
+    }
+    const latticeNear = latticeDistance(player.position.x, player.position.z) <= LATTICE_INTERACT_RADIUS;
+    this.#visuals.setWebDiagnosticsFocus(latticeNear, key);
+    if (latticeNear) {
+      this.#visuals.setInteractionFocus(-1, key);
+      this.#ui.setPrompt(
+        this.#visuals.webDiagnosticsActive ? "fold lattice vision" : "unfold lattice vision",
+        key
+      );
       return;
     }
     const participant = this.#visuals.nearestCelebrant(player.position.x, player.position.z);

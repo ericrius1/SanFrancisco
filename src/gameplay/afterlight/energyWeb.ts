@@ -19,6 +19,7 @@ import {
   vec3
 } from "three/tsl";
 import { LIGHT_SCALE } from "../../config";
+import { HyperwebDiagnosticsHud } from "./webDiagnosticsHud";
 
 type N = any;
 
@@ -44,6 +45,61 @@ type N = any;
  */
 
 const UP = new THREE.Vector3(0, 1, 0);
+const DEBUG_PULSE_COUNT = 48;
+
+function makeDiagnosticGlowTexture(): THREE.CanvasTexture {
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = 64;
+  const ctx = canvas.getContext("2d")!;
+  const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 31);
+  gradient.addColorStop(0, "rgba(255,255,255,1)");
+  gradient.addColorStop(0.18, "rgba(235,255,255,.96)");
+  gradient.addColorStop(0.48, "rgba(115,232,255,.44)");
+  gradient.addColorStop(1, "rgba(80,120,255,0)");
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, 64, 64);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+function makeDiagnosticLabelTexture(): THREE.CanvasTexture {
+  const canvas = document.createElement("canvas");
+  canvas.width = 512;
+  canvas.height = 128;
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+function paintDiagnosticLabel(texture: THREE.CanvasTexture, key: string, active: boolean): void {
+  const canvas = texture.image as HTMLCanvasElement;
+  const ctx = canvas.getContext("2d")!;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const gradient = ctx.createLinearGradient(48, 0, 464, 0);
+  gradient.addColorStop(0, "rgba(8,18,35,.2)");
+  gradient.addColorStop(0.18, "rgba(8,18,35,.92)");
+  gradient.addColorStop(0.82, "rgba(8,18,35,.92)");
+  gradient.addColorStop(1, "rgba(8,18,35,.2)");
+  ctx.fillStyle = gradient;
+  ctx.fillRect(28, 18, 456, 92);
+  ctx.strokeStyle = active ? "rgba(255,217,143,.9)" : "rgba(143,252,255,.82)";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(72, 23);
+  ctx.lineTo(440, 23);
+  ctx.moveTo(72, 105);
+  ctx.lineTo(440, 105);
+  ctx.stroke();
+  ctx.fillStyle = active ? "#ffd98f" : "#8ffcff";
+  ctx.font = "700 18px ui-monospace, SFMono-Regular, Menlo, monospace";
+  ctx.textAlign = "center";
+  ctx.fillText("HYPERWEB CORE", 256, 51);
+  ctx.fillStyle = "#f2ffff";
+  ctx.font = "600 24px ui-monospace, SFMono-Regular, Menlo, monospace";
+  ctx.fillText(`${key}  ·  ${active ? "FOLD LATTICE" : "UNFOLD LATTICE"}`, 256, 84);
+  texture.needsUpdate = true;
+}
 
 export const WEB_TUNING = {
   hubY: 3.15, // local height of the shared hub (floats above the loom orb)
@@ -152,6 +208,33 @@ export class CosmicEnergyWeb {
   #jointNodes: number[] = [];
   #jointPos!: THREE.BufferAttribute;
 
+  // Lattice Vision is a bounded diagnostic render: two shared point draws, one
+  // line draw, one pulse draw, and one instanced anchor-ring draw. It exposes
+  // the real solver state without introducing a second simulation.
+  #diagnosticsHud = new HyperwebDiagnosticsHud();
+  #diagnosticsActive = false;
+  #diagnosticsFocused = false;
+  #diagnosticsKey = "E";
+  #diagnosticsRoot = new THREE.Group();
+  #diagnosticsCore = new THREE.Group();
+  #diagnosticsCoreInner!: THREE.Mesh;
+  #diagnosticsCoreOuter!: THREE.Mesh;
+  #diagnosticsNodePos!: THREE.BufferAttribute;
+  #diagnosticsLinePos!: THREE.BufferAttribute;
+  #diagnosticsLineColor!: THREE.BufferAttribute;
+  #diagnosticsPulsePos!: THREE.BufferAttribute;
+  #diagnosticsPulseLinks!: Uint16Array;
+  #diagnosticsAnchorNodes: number[] = [];
+  #diagnosticsAnchorRings!: THREE.InstancedMesh;
+  #diagnosticsLabel!: THREE.Sprite;
+  #diagnosticsGlow = makeDiagnosticGlowTexture();
+  #diagnosticsLabelTexture = makeDiagnosticLabelTexture();
+  #diagnosticsMatrix = new THREE.Matrix4();
+  #diagnosticsQuat = new THREE.Quaternion();
+  #diagnosticsEuler = new THREE.Euler();
+  #diagnosticsPosition = new THREE.Vector3();
+  #diagnosticsScale = new THREE.Vector3(1, 1, 1);
+
   #anchorPrevious: THREE.Vector3[] = [];
   #accumulator = 0;
   #strain = 0;
@@ -190,13 +273,51 @@ export class CosmicEnergyWeb {
     this.#buildVeinGeometry();
     this.#buildMembrane();
     this.#buildJoints();
+    this.#buildDiagnostics();
     this.#writeVeins();
     this.#writeMembrane();
     this.#writeJoints();
+    this.#writeDiagnosticTopology();
+    this.#writeDiagnosticPulses();
   }
 
   setEnergy(value: number): void {
     this.#energy.value = THREE.MathUtils.clamp(value, 0, 1.6);
+  }
+
+  get diagnosticsActive(): boolean {
+    return this.#diagnosticsActive;
+  }
+
+  setAwake(on: boolean): void {
+    this.#diagnosticsHud.setAwake(on);
+  }
+
+  setDiagnosticsFocus(focused: boolean, key = "E"): void {
+    const normalizedKey = key.trim() || "E";
+    const changed = this.#diagnosticsFocused !== focused || this.#diagnosticsKey !== normalizedKey;
+    this.#diagnosticsFocused = focused;
+    this.#diagnosticsKey = normalizedKey;
+    this.#diagnosticsLabel.visible = focused;
+    this.#diagnosticsHud.setInteractionKey(normalizedKey);
+    if (changed) paintDiagnosticLabel(this.#diagnosticsLabelTexture, normalizedKey, this.#diagnosticsActive);
+  }
+
+  toggleDiagnostics(): boolean {
+    this.setDiagnosticsActive(!this.#diagnosticsActive);
+    return this.#diagnosticsActive;
+  }
+
+  setDiagnosticsActive(on: boolean): void {
+    if (this.#diagnosticsActive === on) return;
+    this.#diagnosticsActive = on;
+    this.#diagnosticsRoot.visible = on;
+    this.#diagnosticsHud.setActive(on);
+    if (this.#diagnosticsFocused) paintDiagnosticLabel(this.#diagnosticsLabelTexture, this.#diagnosticsKey, on);
+    if (on) {
+      this.#writeDiagnosticTopology();
+      this.#writeDiagnosticPulses();
+    }
   }
 
   update(dt: number, elapsed: number): void {
@@ -227,6 +348,7 @@ export class CosmicEnergyWeb {
     if (substeps > 0) this.#writeVeins();
     this.#writeMembrane();
     if (substeps > 0) this.#writeJoints();
+    this.#updateDiagnostics(step, elapsed, substeps > 0);
   }
 
   debugState(): {
@@ -238,6 +360,7 @@ export class CosmicEnergyWeb {
     detailMultiplier: number;
     strain: number;
     ripple: number;
+    diagnostics: boolean;
   } {
     return {
       solver: "verlet",
@@ -247,14 +370,18 @@ export class CosmicEnergyWeb {
       anchors: this.#count,
       detailMultiplier: this.#nodeCount / 533,
       strain: this.#strain,
-      ripple: this.#ripple.value
+      ripple: this.#ripple.value,
+      diagnostics: this.#diagnosticsActive
     };
   }
 
   dispose(): void {
+    this.#diagnosticsHud.dispose();
+    this.#diagnosticsGlow.dispose();
+    this.#diagnosticsLabelTexture.dispose();
     this.root.traverse((object) => {
       const mesh = object as THREE.Mesh;
-      if (mesh.isMesh || (object as THREE.Points).isPoints) {
+      if (mesh.isMesh || (object as THREE.Points).isPoints || (object as THREE.Sprite).isSprite) {
         mesh.geometry?.dispose();
         const material = mesh.material;
         const list = Array.isArray(material) ? material : [material];
@@ -865,5 +992,315 @@ export class CosmicEnergyWeb {
       positions[offset + 2] = this.#pz[node];
     }
     this.#jointPos.needsUpdate = true;
+  }
+
+  // ───────────────────────────────────────────────────── Lattice Vision
+
+  #buildDiagnostics(): void {
+    this.#diagnosticsRoot.name = "afterlight-lattice-vision";
+    this.#diagnosticsRoot.visible = false;
+    this.#diagnosticsRoot.renderOrder = 18;
+
+    const nodeGeometry = new THREE.BufferGeometry();
+    this.#diagnosticsNodePos = new THREE.BufferAttribute(
+      new Float32Array(this.#nodeCount * 3),
+      3
+    ).setUsage(THREE.DynamicDrawUsage);
+    const nodeColors = new Float32Array(this.#nodeCount * 3);
+    for (let i = 0; i < this.#nodeCount; i++) {
+      const offset = i * 3;
+      if (i === this.#hub) {
+        nodeColors[offset] = 1;
+        nodeColors[offset + 1] = 0.95;
+        nodeColors[offset + 2] = 0.78;
+      } else if (this.#pin[i]) {
+        nodeColors[offset] = 1;
+        nodeColors[offset + 1] = 0.68;
+        nodeColors[offset + 2] = 0.26;
+      } else if (this.#sprung[i]) {
+        nodeColors[offset] = 1;
+        nodeColors[offset + 1] = 0.34;
+        nodeColors[offset + 2] = 0.76;
+      } else {
+        const drift = this.#drift[i];
+        nodeColors[offset] = 0.32 + drift * 0.16;
+        nodeColors[offset + 1] = 0.76 + drift * 0.19;
+        nodeColors[offset + 2] = 1;
+      }
+    }
+    nodeGeometry.setAttribute("position", this.#diagnosticsNodePos);
+    nodeGeometry.setAttribute("color", new THREE.BufferAttribute(nodeColors, 3));
+    nodeGeometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, WEB_TUNING.hubY, 0), 40);
+
+    const nodes = new THREE.Points(nodeGeometry, new THREE.PointsMaterial({
+      map: this.#diagnosticsGlow,
+      vertexColors: true,
+      size: 0.115,
+      sizeAttenuation: true,
+      transparent: true,
+      opacity: 0.96,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      fog: false
+    }));
+    nodes.name = "afterlight-lattice-nodes";
+    nodes.frustumCulled = false;
+    nodes.renderOrder = 19;
+
+    const halos = new THREE.Points(nodeGeometry, new THREE.PointsMaterial({
+      map: this.#diagnosticsGlow,
+      vertexColors: true,
+      size: 0.29,
+      sizeAttenuation: true,
+      transparent: true,
+      opacity: 0.2,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      fog: false
+    }));
+    halos.name = "afterlight-lattice-node-halos";
+    halos.frustumCulled = false;
+    halos.renderOrder = 18;
+
+    const lineGeometry = new THREE.BufferGeometry();
+    this.#diagnosticsLinePos = new THREE.BufferAttribute(
+      new Float32Array(this.#linkA.length * 2 * 3),
+      3
+    ).setUsage(THREE.DynamicDrawUsage);
+    this.#diagnosticsLineColor = new THREE.BufferAttribute(
+      new Float32Array(this.#linkA.length * 2 * 3),
+      3
+    ).setUsage(THREE.DynamicDrawUsage);
+    lineGeometry.setAttribute("position", this.#diagnosticsLinePos);
+    lineGeometry.setAttribute("color", this.#diagnosticsLineColor);
+    lineGeometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, WEB_TUNING.hubY, 0), 40);
+    const constraints = new THREE.LineSegments(lineGeometry, new THREE.LineBasicMaterial({
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.5,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      fog: false
+    }));
+    constraints.name = "afterlight-lattice-constraints";
+    constraints.frustumCulled = false;
+    constraints.renderOrder = 18;
+
+    const pulseCount = Math.min(DEBUG_PULSE_COUNT, this.#linkA.length);
+    const pulseGeometry = new THREE.BufferGeometry();
+    this.#diagnosticsPulsePos = new THREE.BufferAttribute(
+      new Float32Array(pulseCount * 3),
+      3
+    ).setUsage(THREE.DynamicDrawUsage);
+    this.#diagnosticsPulseLinks = new Uint16Array(pulseCount);
+    const pulseColors = new Float32Array(pulseCount * 3);
+    for (let i = 0; i < pulseCount; i++) {
+      this.#diagnosticsPulseLinks[i] = (i * 37 + 11) % this.#linkA.length;
+      const p = i * 3;
+      const rose = i % 5 === 0;
+      pulseColors[p] = rose ? 1 : 0.72;
+      pulseColors[p + 1] = rose ? 0.48 : 1;
+      pulseColors[p + 2] = rose ? 0.82 : 1;
+    }
+    pulseGeometry.setAttribute("position", this.#diagnosticsPulsePos);
+    pulseGeometry.setAttribute("color", new THREE.BufferAttribute(pulseColors, 3));
+    pulseGeometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, WEB_TUNING.hubY, 0), 40);
+    const pulses = new THREE.Points(pulseGeometry, new THREE.PointsMaterial({
+      map: this.#diagnosticsGlow,
+      vertexColors: true,
+      size: 0.24,
+      sizeAttenuation: true,
+      transparent: true,
+      opacity: 0.95,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      fog: false
+    }));
+    pulses.name = "afterlight-lattice-signal-pulses";
+    pulses.frustumCulled = false;
+    pulses.renderOrder = 20;
+
+    this.#diagnosticsAnchorNodes.push(this.#hub, ...this.#anchorNode);
+    this.#diagnosticsAnchorRings = new THREE.InstancedMesh(
+      new THREE.TorusGeometry(0.18, 0.012, 4, 18),
+      new THREE.MeshBasicMaterial({
+        color: 0xffd98f,
+        transparent: true,
+        opacity: 0.78,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        fog: false
+      }),
+      this.#diagnosticsAnchorNodes.length
+    );
+    this.#diagnosticsAnchorRings.name = "afterlight-lattice-pinned-anchors";
+    this.#diagnosticsAnchorRings.frustumCulled = false;
+    this.#diagnosticsAnchorRings.renderOrder = 20;
+
+    this.#diagnosticsRoot.add(constraints, halos, nodes, pulses, this.#diagnosticsAnchorRings);
+    this.root.add(this.#diagnosticsRoot);
+
+    this.#buildDiagnosticCore();
+  }
+
+  #buildDiagnosticCore(): void {
+    this.#diagnosticsCore.name = "afterlight-hyperweb-core";
+    this.#diagnosticsCore.position.set(0, WEB_TUNING.hubY + 0.48, 0);
+    const innerMaterial = new THREE.MeshBasicMaterial({
+      color: 0x8ffcff,
+      transparent: true,
+      opacity: 0.78,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      fog: false
+    });
+    this.#diagnosticsCoreInner = new THREE.Mesh(new THREE.IcosahedronGeometry(0.18, 1), innerMaterial);
+    this.#diagnosticsCoreInner.renderOrder = 20;
+    const outerMaterial = new THREE.MeshBasicMaterial({
+      color: 0x8ffcff,
+      wireframe: true,
+      transparent: true,
+      opacity: 0.58,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      fog: false
+    });
+    this.#diagnosticsCoreOuter = new THREE.Mesh(new THREE.IcosahedronGeometry(0.36, 1), outerMaterial);
+    this.#diagnosticsCoreOuter.renderOrder = 20;
+
+    const ringGeometry = new THREE.TorusGeometry(0.43, 0.012, 4, 28);
+    const ringMaterial = new THREE.MeshBasicMaterial({
+      color: 0xffd98f,
+      transparent: true,
+      opacity: 0.66,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      fog: false
+    });
+    const rings = new THREE.InstancedMesh(ringGeometry, ringMaterial, 3);
+    for (let i = 0; i < 3; i++) {
+      this.#diagnosticsPosition.set(0, 0, 0);
+      this.#diagnosticsEuler.set(i * 0.82, i * 1.17, i * 0.43);
+      this.#diagnosticsQuat.setFromEuler(this.#diagnosticsEuler);
+      this.#diagnosticsScale.setScalar(0.82 + i * 0.18);
+      this.#diagnosticsMatrix.compose(this.#diagnosticsPosition, this.#diagnosticsQuat, this.#diagnosticsScale);
+      rings.setMatrixAt(i, this.#diagnosticsMatrix);
+    }
+    rings.instanceMatrix.needsUpdate = true;
+    rings.renderOrder = 20;
+
+    paintDiagnosticLabel(this.#diagnosticsLabelTexture, this.#diagnosticsKey, false);
+    this.#diagnosticsLabel = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: this.#diagnosticsLabelTexture,
+      transparent: true,
+      depthWrite: false,
+      depthTest: false,
+      fog: false
+    }));
+    this.#diagnosticsLabel.name = "afterlight-lattice-core-prompt";
+    this.#diagnosticsLabel.position.set(0, 1.02, 0);
+    this.#diagnosticsLabel.scale.set(3.7, 0.925, 1);
+    this.#diagnosticsLabel.visible = false;
+    this.#diagnosticsLabel.renderOrder = 24;
+    this.#diagnosticsCore.add(this.#diagnosticsCoreInner, this.#diagnosticsCoreOuter, rings, this.#diagnosticsLabel);
+    this.root.add(this.#diagnosticsCore);
+  }
+
+  #updateDiagnostics(step: number, elapsed: number, topologyMoved: boolean): void {
+    const focus = this.#diagnosticsFocused ? 1 : 0;
+    const active = this.#diagnosticsActive ? 1 : 0;
+    const scaleTarget = 0.9 + focus * 0.16 + active * 0.22;
+    const scale = this.#diagnosticsCore.scale.x + (scaleTarget - this.#diagnosticsCore.scale.x) * Math.min(1, step * 9);
+    this.#diagnosticsCore.scale.setScalar(scale);
+    this.#diagnosticsCore.rotation.y = elapsed * (0.38 + active * 0.34);
+    this.#diagnosticsCore.rotation.x = Math.sin(elapsed * 0.7) * (0.08 + active * 0.05);
+    this.#diagnosticsCoreOuter.rotation.x = elapsed * 0.57;
+    this.#diagnosticsCoreOuter.rotation.z = -elapsed * 0.43;
+    this.#diagnosticsCoreInner.scale.setScalar(0.86 + Math.sin(elapsed * 3.2) * 0.12 + active * 0.14);
+    (this.#diagnosticsCoreInner.material as THREE.MeshBasicMaterial).color.setHex(active ? 0xffd98f : 0x8ffcff);
+    (this.#diagnosticsCoreOuter.material as THREE.MeshBasicMaterial).color.setHex(active ? 0xff9ddb : 0x8ffcff);
+
+    if (!this.#diagnosticsActive) return;
+    if (topologyMoved) this.#writeDiagnosticTopology();
+    this.#writeDiagnosticPulses();
+    this.#writeDiagnosticAnchors(elapsed);
+    this.#diagnosticsHud.update({
+      nodes: this.#nodeCount,
+      links: this.#linkA.length,
+      anchors: this.#count,
+      fixedStep: WEB_TUNING.fixedStep,
+      iterations: WEB_TUNING.iterations,
+      strain: this.#strain,
+      ripple: this.#ripple.value,
+      energy: this.#energy.value
+    });
+  }
+
+  #writeDiagnosticTopology(): void {
+    const nodes = this.#diagnosticsNodePos.array as Float32Array;
+    for (let i = 0; i < this.#nodeCount; i++) {
+      const p = i * 3;
+      nodes[p] = this.#px[i];
+      nodes[p + 1] = this.#py[i];
+      nodes[p + 2] = this.#pz[i];
+    }
+    this.#diagnosticsNodePos.needsUpdate = true;
+
+    const positions = this.#diagnosticsLinePos.array as Float32Array;
+    const colors = this.#diagnosticsLineColor.array as Float32Array;
+    for (let i = 0; i < this.#linkA.length; i++) {
+      const a = this.#linkA[i];
+      const b = this.#linkB[i];
+      const p = i * 6;
+      positions[p] = this.#px[a];
+      positions[p + 1] = this.#py[a];
+      positions[p + 2] = this.#pz[a];
+      positions[p + 3] = this.#px[b];
+      positions[p + 4] = this.#py[b];
+      positions[p + 5] = this.#pz[b];
+      const dx = this.#px[b] - this.#px[a];
+      const dy = this.#py[b] - this.#py[a];
+      const dz = this.#pz[b] - this.#pz[a];
+      const rest = Math.max(0.0001, this.#linkRest[i]);
+      const tension = Math.min(1, Math.abs(Math.sqrt(dx * dx + dy * dy + dz * dz) / rest - 1) * 12);
+      const stiffness = this.#linkStiff[i];
+      colors[p] = 0.2 + tension * 0.8;
+      colors[p + 1] = 0.72 - tension * 0.32 + stiffness * 0.12;
+      colors[p + 2] = 1 - tension * 0.12;
+      colors[p + 3] = 0.36 + tension * 0.64;
+      colors[p + 4] = 0.9 - tension * 0.5;
+      colors[p + 5] = 1 - tension * 0.08;
+    }
+    this.#diagnosticsLinePos.needsUpdate = true;
+    this.#diagnosticsLineColor.needsUpdate = true;
+  }
+
+  #writeDiagnosticPulses(): void {
+    const positions = this.#diagnosticsPulsePos.array as Float32Array;
+    for (let i = 0; i < this.#diagnosticsPulseLinks.length; i++) {
+      const link = this.#diagnosticsPulseLinks[i];
+      const a = this.#linkA[link];
+      const b = this.#linkB[link];
+      const t = (this.#elapsed * (0.22 + (i % 7) * 0.018) + i * 0.137) % 1;
+      const eased = t * t * (3 - 2 * t);
+      const p = i * 3;
+      positions[p] = this.#px[a] + (this.#px[b] - this.#px[a]) * eased;
+      positions[p + 1] = this.#py[a] + (this.#py[b] - this.#py[a]) * eased;
+      positions[p + 2] = this.#pz[a] + (this.#pz[b] - this.#pz[a]) * eased;
+    }
+    this.#diagnosticsPulsePos.needsUpdate = true;
+  }
+
+  #writeDiagnosticAnchors(elapsed: number): void {
+    for (let i = 0; i < this.#diagnosticsAnchorNodes.length; i++) {
+      const node = this.#diagnosticsAnchorNodes[i];
+      this.#diagnosticsPosition.set(this.#px[node], this.#py[node], this.#pz[node]);
+      this.#diagnosticsEuler.set(elapsed * 0.38 + i * 0.2, elapsed * -0.31 + i * 0.37, i * 0.51);
+      this.#diagnosticsQuat.setFromEuler(this.#diagnosticsEuler);
+      this.#diagnosticsScale.setScalar(0.82 + Math.sin(elapsed * 2.1 + i) * 0.12 + (i === 0 ? 0.44 : 0));
+      this.#diagnosticsMatrix.compose(this.#diagnosticsPosition, this.#diagnosticsQuat, this.#diagnosticsScale);
+      this.#diagnosticsAnchorRings.setMatrixAt(i, this.#diagnosticsMatrix);
+    }
+    this.#diagnosticsAnchorRings.instanceMatrix.needsUpdate = true;
   }
 }

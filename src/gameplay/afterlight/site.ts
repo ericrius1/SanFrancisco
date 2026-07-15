@@ -313,6 +313,7 @@ export class AfterlightSiteVisuals {
 
   setAwake(on: boolean): void {
     this.root.visible = on;
+    this.#web?.setAwake(on);
   }
 
   setLabelsVisible(on: boolean): void {
@@ -325,6 +326,18 @@ export class AfterlightSiteVisuals {
 
   get controlledCelebrant(): number {
     return this.#controlledCelebrant;
+  }
+
+  get webDiagnosticsActive(): boolean {
+    return this.#web?.diagnosticsActive ?? false;
+  }
+
+  toggleWebDiagnostics(): boolean {
+    return this.#web?.toggleDiagnostics() ?? false;
+  }
+
+  setWebDiagnosticsFocus(focused: boolean, key: string): void {
+    this.#web?.setDiagnosticsFocus(focused, key);
   }
 
   /** Nearest participant in world space, or -1 when none can be claimed. */
