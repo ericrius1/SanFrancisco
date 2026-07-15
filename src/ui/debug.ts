@@ -38,6 +38,7 @@ import { TERRAIN_CLIPMAP_TUNING } from "../world/terrainClipmapTuning";
 import type { ContactShadowComplement } from "../render/contactShadows";
 import { OVERLAY_TUNING } from "./overlays/tuning";
 import type { OverlayContextFlags } from "./overlays/manager";
+import { createFrameBudgetCheckpoint, yieldToFrame } from "../core/cooperativeWork";
 
 type DebugRenderPipeline = {
   applyPostFx: () => void;
@@ -130,14 +131,16 @@ function filterPane(blade: BladeApi, query: string): boolean {
 
 /**
  * Tweakpane debug panel, toggled with "/". Built lazily on first open so it costs
- * nothing until asked for. Opening releases pointer lock (the pane needs the mouse);
- * clicking the canvas re-locks as usual.
+ * nothing until asked for. The first open spreads folder construction across
+ * frames so the world keeps rendering; opening releases pointer lock (the pane
+ * needs the mouse); clicking the canvas re-locks as usual.
  */
 export class DebugPanel {
   visible = false;
 
   #pane: Pane | null = null;
   #root: HTMLDivElement | null = null;
+  #buildTask: Promise<void> | null = null;
   #searchQuery = "";
   #mode: PlayerMode = "walk";
   #moveFolders: ReturnType<typeof addMovementTuning> | null = null;
@@ -197,16 +200,23 @@ export class DebugPanel {
 
   toggle() {
     this.visible = !this.visible;
-    if (this.visible && !this.#pane) this.#build();
-    if (this.#root) this.#root.style.display = this.visible ? "" : "none";
-    if (this.visible) {
-      this.#onOpen();
-      // Boot only warms the active look; finish the other style graphs and the
-      // first-use FXAA pass in the background so comparisons avoid compile hitches.
-      void this.#postfx?.warmupPostFx?.().catch((err) => {
-        console.warn("[debug] post-fx warmup failed:", err);
+    if (this.visible && !this.#buildTask) {
+      this.#buildTask = this.#build().catch((err) => {
+        // Retry only when the shell never landed; a partial pane stays put.
+        if (!this.#pane) this.#buildTask = null;
+        console.warn("[debug] panel build failed:", err);
+        throw err;
       });
     }
+    if (this.#root) this.#root.style.display = this.visible ? "" : "none";
+    if (this.visible) this.#onOpen();
+  }
+
+  /** Finish inactive post-FX graphs only when someone opens that folder. */
+  #warmPostFxGraphs() {
+    void this.#postfx?.warmupPostFx?.().catch((err) => {
+      console.warn("[debug] post-fx warmup failed:", err);
+    });
   }
 
   /** Movement tuning is context-dependent — only the active mode's folder shows. */
@@ -470,7 +480,9 @@ export class DebugPanel {
     this.#wireframeActive = on;
   }
 
-  #build() {
+  async #build() {
+    if (this.#pane) return;
+
     // Tweakpane checkboxes: the real <input> is opacity:0 and 0×0, while the
     // visible mark sits in a sibling. Label mousedown calls preventDefault (to
     // avoid text selection), which also cancels the label→input activation, so
@@ -489,6 +501,8 @@ export class DebugPanel {
     const root = document.createElement("div");
     root.style.cssText =
       "position:fixed;top:12px;right:12px;z-index:40;width:300px;max-height:calc(100vh - 24px);overflow:auto;overscroll-behavior:contain";
+    // Honor current visibility in case "/" was toggled off before the shell landed.
+    root.style.display = this.visible ? "" : "none";
     document.body.appendChild(root);
     this.#root = root;
 
@@ -521,6 +535,8 @@ export class DebugPanel {
 
     const pane = new Pane({ container: root, title: "tuning — / to close" });
     this.#pane = pane;
+    // Yield between heavy folder groups so the animation loop keeps presenting.
+    const checkpoint = createFrameBudgetCheckpoint(6);
 
     // Master/meta knobs stay open at the top. Every other folder (and all nested
     // subfolders) starts collapsed — open only what you need.
@@ -602,6 +618,9 @@ export class DebugPanel {
       }
     });
 
+    // Shell + metta are enough to show the pane; yield before the heavy folders.
+    await yieldToFrame();
+
     // --- alphabetical folders (after metta) ---
 
     const advanced = pane.addFolder({ title: "advanced", expanded: false });
@@ -674,8 +693,10 @@ export class DebugPanel {
     // shared group, so sliders stay live without shader recompiles.
     const streetLights = lighting.addFolder({ title: "street lights", expanded: false });
     STREET_LIGHT_TUNING.bind(streetLights);
+    await checkpoint();
 
     this.#moveFolders = addMovementTuning(advanced);
+    await yieldToFrame();
 
     // nature soundscape mix — engine polls these live each frame, no side effects
     const natureF = advanced.addFolder({ title: "nature audio", expanded: false });
@@ -699,6 +720,8 @@ export class DebugPanel {
     // plain persisted bindings are enough — no onChange side effects
     const voiceF = advanced.addFolder({ title: "voice chat", expanded: false });
     VOICE_TUNING.bind(voiceF);
+    await checkpoint();
+
     // procedural building DETAIL (src/world/citygen) — how many nearby buildings get
     // the full grammar mesh. Reach comes from the top-level draw-distance slider.
     // The ring reads these live each scan, so no onChange side-effect is needed —
@@ -707,8 +730,12 @@ export class DebugPanel {
     CITYGEN_TUNING.bind(citygenF, { onChange: () => {} });
 
     // Stylized post effects: toggles select retained shader variants; sliders
-    // are live uniforms — see render/postfx.ts.
+    // are live uniforms — see render/postfx.ts. Boot only warms the active look;
+    // expanding this folder finishes the other graphs so comparisons stay smooth.
     const postfx = pane.addFolder({ title: "post fx", expanded: false });
+    postfx.on("fold", ({ expanded }) => {
+      if (expanded) this.#warmPostFxGraphs();
+    });
     POSTFX_TUNING.bind(postfx, {
       onChange: (key, _value, last) => {
         if (this.#syncingPane) return;
@@ -718,6 +745,7 @@ export class DebugPanel {
         } else applyPostFxParams();
       }
     });
+    await checkpoint();
 
     // Render knobs. Fog nests here.
     const rendering = pane.addFolder({ title: "rendering", expanded: false });
@@ -766,6 +794,7 @@ export class DebugPanel {
       );
     }
     this.#refreshFogWeatherMonitor();
+    await checkpoint();
 
     const terrain = pane.addFolder({ title: "terrain", expanded: false });
     TERRAIN_CLIPMAP_TUNING.bind(terrain, {
@@ -807,11 +836,15 @@ export class DebugPanel {
         this.#applyShadowTuning();
       }
     });
+    await checkpoint();
 
     // Optional feature modules register callbacks rather than being imported by
     // this file. Materialize any surfaces that arrived before the first `/` now;
     // later registrations build immediately in registerFeatureTuning().
-    for (const record of this.#featureTunings.values()) this.#buildFeatureTuning(record);
+    for (const record of this.#featureTunings.values()) {
+      this.#buildFeatureTuning(record);
+      await checkpoint();
+    }
 
     // Full GPU profiler (three.js Inspector: FPS/CPU/GPU graph, timing, memory).
     // Heavy — per-frame GPU timestamp queries + canvas redraw — so it's OFF by

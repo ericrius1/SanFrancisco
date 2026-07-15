@@ -17,6 +17,7 @@ import {
 } from "./postfx";
 import { createContactShadowComplement } from "./contactShadows";
 import { SHADOW_TUNING } from "../world/shadows/tuning";
+import { yieldToFrame } from "../core/cooperativeWork";
 import type { RadialLightParams, RadialLightSource } from "./radialLightTypes";
 import type { ProjectedSurfaceLightSource } from "./projectedSurfaceLightTypes";
 
@@ -513,11 +514,17 @@ export function createRenderPipeline(
     applyRadialLightFx();
   };
 
+  // compileAsync mutates shared renderer state (tone mapping, color space, …)
+  // across an await. Live frames must not draw in that window or atmosphere/fog
+  // briefly renders with the compile setup.
+  let exclusiveCompileDepth = 0;
+
   /**
    * PassNode.compileAsync does not restore its render state if compilation
    * rejects, so put a defensive boundary around the Three r185 API.
    */
   const compilePass = async (node: typeof scenePass) => {
+    exclusiveCompileDepth++;
     const renderTarget = renderer.getRenderTarget();
     const activeCubeFace = renderer.getActiveCubeFace();
     const activeMipmapLevel = renderer.getActiveMipmapLevel();
@@ -533,6 +540,7 @@ export function createRenderPipeline(
       renderer.setMRT(renderMRT);
       renderer.opaque = renderOpaque;
       renderer.transparent = renderTransparent;
+      exclusiveCompileDepth--;
     }
   };
 
@@ -544,6 +552,7 @@ export function createRenderPipeline(
    */
   const compileFullscreenQuads = async (quads: THREE.QuadMesh[]) => {
     if (quads.length === 0) return;
+    exclusiveCompileDepth++;
     const group = new THREE.Group();
     group.add(...quads);
 
@@ -570,6 +579,7 @@ export function createRenderPipeline(
       renderer.outputColorSpace = outputColorSpace;
       renderer.xr.enabled = xrEnabled;
       group.remove(...quads);
+      exclusiveCompileDepth--;
     }
   };
   const compilePostFxVariants = async (masks: readonly number[] = POSTFX_VARIANT_MASKS) => {
@@ -706,6 +716,7 @@ export function createRenderPipeline(
   applyPostFx();
 
   const render = () => {
+    if (exclusiveCompileDepth > 0) return;
     if (wireframeActive) syncWireframeCamera();
     projectedSource?.setViewPosition(camera.position as THREE.Vector3);
     if (projectedSource?.active) ensureProjectedRuntime();
@@ -944,11 +955,26 @@ export function createRenderPipeline(
     fastCaptureSize: fastCaptureTarget ? [fastCaptureTarget.width, fastCaptureTarget.height] as const : null,
     /** Precompile scene/effect variants; safe to repeat after new loads. */
     warmup,
-    /** Compile every retained style graph plus the first-use FXAA pass. */
-    warmupPostFx: async () => {
-      await compilePostFxVariants(POSTFX_VARIANT_MASKS);
-      await compileFxaaPipeline();
-    },
+    /** Compile every retained style graph plus the first-use FXAA pass.
+     * One variant per frame so live atmosphere is never drawn under the
+     * compile-time tone-mapping/color-space override. */
+    warmupPostFx: (() => {
+      let inFlight: Promise<void> | null = null;
+      return async () => {
+        if (inFlight) return inFlight;
+        inFlight = (async () => {
+          for (const mask of POSTFX_VARIANT_MASKS) {
+            await compilePostFxVariants([mask]);
+            await yieldToFrame();
+          }
+          await compileFxaaPipeline();
+        })().catch((err) => {
+          inFlight = null;
+          throw err;
+        });
+        return inFlight;
+      };
+    })(),
     /** Stable half-resolution close-contact complement and live controls. */
     contactShadows
   };
