@@ -8,6 +8,13 @@ import { findOpenSpawn } from "../world/spawn";
 import type { EmbodimentController } from "./player/embodimentController";
 import type { WorldArrivalCoordinator } from "./worldArrival";
 
+type AuthoredArrivalPose = {
+  x: number;
+  y: number;
+  z: number;
+  heading: number;
+};
+
 type PlaceHistoryEntry = {
   x: number;
   y: number;
@@ -35,6 +42,7 @@ export class NavigationController {
   #remotes: RemotePlayers;
   #embodiments: EmbodimentController;
   #arrival: WorldArrivalCoordinator;
+  #resolveAuthoredArrival: (x: number, z: number, label?: string) => AuthoredArrivalPose | null;
   #releaseGameplay: () => void;
   #history: PlaceHistoryEntry[] = [];
   #historyIndex = -1;
@@ -47,6 +55,7 @@ export class NavigationController {
     remotes: RemotePlayers;
     embodiments: EmbodimentController;
     arrival: WorldArrivalCoordinator;
+    resolveAuthoredArrival?: (x: number, z: number, label?: string) => AuthoredArrivalPose | null;
     releaseGameplay: () => void;
   }) {
     this.#player = opts.player;
@@ -56,6 +65,7 @@ export class NavigationController {
     this.#remotes = opts.remotes;
     this.#embodiments = opts.embodiments;
     this.#arrival = opts.arrival;
+    this.#resolveAuthoredArrival = opts.resolveAuthoredArrival ?? (() => null);
     this.#releaseGameplay = opts.releaseGameplay;
   }
 
@@ -182,6 +192,22 @@ export class NavigationController {
                 facing: heading,
                 mode: target.mode
               });
+            }
+          };
+        }
+
+        const authored = this.#resolveAuthoredArrival(tx, tz, toName);
+        if (authored) {
+          return {
+            x: authored.x,
+            y: authored.y,
+            z: authored.z,
+            cameraYaw: authored.heading,
+            commit: () => {
+              this.#releaseGameplay();
+              this.#embodiments.leaveRide();
+              this.#embodiments.exitToWalk();
+              this.#player.respawn(authored);
             }
           };
         }

@@ -18,9 +18,9 @@ export const SUTRO_BATHS_GATE = {
 
 /** The dry Point Lobos portal above the broad descending museum stair. */
 export const SUTRO_BATHS_ARRIVAL = {
-  x: -6086,
-  z: 1184,
-  heading: Math.PI / 2
+  x: -6092.582031,
+  z: 1182.788696,
+  heading: 1.493796
 } as const;
 
 export function distanceToSutroBaths(x: number, z: number): number {

@@ -341,7 +341,7 @@ export class Player {
     physics: Physics,
     map: WorldMap,
     scene: THREE.Scene,
-    spawn: { x: number; z: number; heading: number },
+    spawn: { x: number; y?: number; z: number; heading: number },
     avatar: AvatarTraits = avatarFromSeed("local-default"),
     board?: BoardConfig,
     scooter?: ScooterConfig,
@@ -457,7 +457,7 @@ export class Player {
       setEmbodimentVisible(m, false);
       scene.add(m);
     }
-    this.position.set(spawn.x, map.effectiveGround(spawn.x, spawn.z) + 1.5, spawn.z);
+    this.position.set(spawn.x, spawn.y ?? map.effectiveGround(spawn.x, spawn.z) + 1.5, spawn.z);
     this.#spawnBody("walk", spawn.heading);
   }
 
@@ -572,8 +572,8 @@ export class Player {
 
   /** Landmark teleport landing — always on foot. Callers should exitToWalk first
    *  so surf/vehicles leave an abandoned mount and fire mode-change cleanup. */
-  respawn(spawn: { x: number; z: number; heading: number }) {
-    this.position.set(spawn.x, this.map.effectiveGround(spawn.x, spawn.z) + 1.5, spawn.z);
+  respawn(spawn: { x: number; y?: number; z: number; heading: number }) {
+    this.position.set(spawn.x, spawn.y ?? this.map.effectiveGround(spawn.x, spawn.z) + 1.5, spawn.z);
     this.#spawnBody("walk", spawn.heading);
   }
 

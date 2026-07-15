@@ -66,6 +66,9 @@
     "fetch:terrain": "node tools/fetch-terrain.mjs",
     "prepare:city": "node tools/prepare-city.mjs",
     "landmarks:apply": "node tools/apply-authored-landmarks.mjs",
+    "bake:region": "node tools/bake-authored-site.mjs",
+    "bake:site": "node tools/bake-authored-site.mjs",
+    "test:authored-regions": "node tools/validate-authored-regions.mjs",
     "optimize:tiles": "node tools/optimize-tiles.mjs",
     "sync:box3d": "rm -rf vendor/box3d-wasm && mkdir -p vendor/box3d-wasm && cp -R ../box3d-wasm/packages/box3d-wasm/dist ../box3d-wasm/packages/box3d-wasm/package.json vendor/box3d-wasm/ && npm install"
   },

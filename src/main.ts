@@ -44,6 +44,8 @@ import {
   TEA_GARDEN_SUPPRESSED_BUILDINGS,
   isTeaGardenBuilding
 } from "./world/japaneseTeaGarden/layout";
+import { AuthoredRegionStreamer } from "./world/authoredRegions";
+import { warmStaticRegion } from "./render/warmStaticRegion";
 import type { CoronaHeightsPark } from "./world/coronaHeights";
 import { prepareCoronaHeightsGround } from "./world/coronaHeights/ground";
 import { CORONA_HEIGHTS_SUMMIT } from "./world/coronaHeights/meta";
@@ -251,6 +253,26 @@ async function boot() {
   const tiles = new TileStreamer(scene);
   tiles.onShadowCastersChanged = (scope) => sky.invalidateStaticShadows(scope);
   await tiles.init(map);
+  const authoredRegions = new AuthoredRegionStreamer({
+    scene,
+    map,
+    tiles,
+    prepareRoot: async (label, root) => {
+      try {
+        const warmup = await warmStaticRegion(renderer, camera, scene, root);
+        console.info(
+          `[authored-region] ${label} warmed ${warmup.representatives}/${warmup.meshes} meshes ` +
+          `(${warmup.renderSignatures} render paths) in ${(warmup.durationMs / 1000).toFixed(2)}s`
+        );
+      } catch (error) {
+        // Compilation is a covered presentation optimization. The parsed
+        // Blender visual remains valid and can compile on its first live frame.
+        console.warn(`[authored-region] ${label} covered compile failed`, error);
+      }
+    }
+  });
+  await authoredRegions.init();
+  import.meta.hot?.dispose(() => authoredRegions.dispose());
   bootMark("tiles");
 
   // Resolve the real initial destination and start its fixed-quality local tile
@@ -268,10 +290,17 @@ async function boot() {
     initialVisualState = "pending";
     initialVisualDeadlineAt = performance.now() + 15_000;
     const prime = tiles.primeAt(x, z);
-    void prime.ready.then((result) => {
+    void Promise.all([
+      prime.ready,
+      authoredRegions.prepareAt({ x, z })
+    ]).then(([result]) => {
       if (epoch !== initialVisualEpoch) return;
       if (result.status === "ready") initialVisualState = "ready";
-      else if (result.status === "failed") initialVisualState = "fallback";
+      else initialVisualState = "fallback";
+    }).catch((error) => {
+      if (epoch !== initialVisualEpoch) return;
+      initialVisualState = "fallback";
+      console.warn("[boot] required authored region unavailable", error);
     });
   };
   const initialArrivalPromise = (async () => {
@@ -317,6 +346,7 @@ async function boot() {
       requestedBakedSpawn ??
       map.meta.spawns[spawnKey] ??
       map.meta.spawns[START_DEFAULTS.spawn];
+    const authoredStart = invite || resumed ? null : authoredRegions.arrivalForKey(spawnKey);
     const inviteMode = invite?.animal ? "drive" : invite?.mode;
     const inviteSide = invite
       ? inviteMode === "boat" || inviteMode === "plane"
@@ -335,9 +365,9 @@ async function boot() {
     const resumeStart = resumed
       ? { x: resumed.x, z: resumed.z, heading: resumed.heading - Math.PI }
       : null;
-    const startAt = inviteStart ?? resumeStart ?? registeredStart;
+    const startAt = inviteStart ?? resumeStart ?? authoredStart ?? registeredStart;
     const scatterA = Math.random() * Math.PI * 2;
-    const scatterR = requestedSpawn || inviteStart || resumeStart
+    const scatterR = requestedSpawn || inviteStart || resumeStart || authoredStart
       ? 0
       : 0.8 + Math.random() * 1.6;
     const openSpawnOrFallback = async () => {
@@ -362,7 +392,7 @@ async function boot() {
         return await findOpenSpawn(map, tiles.manifest, fallback, 12, 400);
       }
     };
-    const spawn = inviteStart ?? resumeStart ?? await openSpawnOrFallback();
+    const spawn = inviteStart ?? resumeStart ?? authoredStart ?? await openSpawnOrFallback();
 
     // Arrival breadcrumb: which pool landmark (or resume/invite) placed the
     // player, and where they actually landed after the open-ground search.
@@ -1733,6 +1763,8 @@ async function boot() {
     chase,
     tiles,
     physics,
+    prepareRequiredDestinationVisuals: (destination, signal) =>
+      authoredRegions.prepareAt(destination, signal),
     prepareDestinationVisuals: (destination, signal) =>
       prepareDestinationEssentials(destination, signal)
   });
@@ -1859,6 +1891,7 @@ async function boot() {
     remotes,
     embodiments,
     arrival: worldArrival,
+    resolveAuthoredArrival: (x, z, label) => authoredRegions.arrivalForDestination(x, z, label),
     releaseGameplay: releaseGameplayForNavigation
   });
   const applyPlaceHistory = (step: -1 | 1) => navigation.applyHistory(step);
@@ -2413,7 +2446,7 @@ async function boot() {
       CONFIG.tileLoadRadius = fullTileRadius;
       CONFIG.tileUnloadRadius = fullTileRadius + 400;
     }
-    tiles.forceScan();
+    tiles.beginBackgroundExpansion();
   });
   void revealedPromise.then(async () => {
     await waitForWorldBackgroundWindow(1800);
@@ -2450,7 +2483,9 @@ async function boot() {
   minimap.addLandmark(AFTERLIGHT_ARRIVAL.x, AFTERLIGHT_ARRIVAL.z, "Afterlight");
   const missionDoloresSpawn = SPAWN_POINTS.missionDolores;
   minimap.addLandmark(missionDoloresSpawn.x, missionDoloresSpawn.z, missionDoloresSpawn.label);
-  minimap.addLandmark(SUTRO_BATHS_ARRIVAL.x, SUTRO_BATHS_ARRIVAL.z, "Sutro Baths · 1896");
+  for (const arrival of authoredRegions.landmarkArrivals()) {
+    minimap.addLandmark(arrival.x, arrival.z, arrival.label);
+  }
 
   type LazyRegionTimingEvent = { phase: string; atMs: number; elapsedMs: number };
   const lazyRegionTimings: Record<string, { startedAt: number; events: LazyRegionTimingEvent[] }> = {};
@@ -3007,26 +3042,21 @@ async function boot() {
     const { createSutroBaths } = await import("./world/sutroBaths");
     await waitForOptionalSiteStage();
     let candidate: import("./world/sutroBaths").SutroBaths | null = null;
-    let suppressed = false;
     try {
       candidate = createSutroBaths({
         renderer,
         scene,
         physics,
-        tiles,
+        authoredRegions,
         ballSource: { visitFreeBalls: (visitor) => fetchBall?.visitFreeBalls(visitor) },
         getRemotes: getSutroRemotes
       });
-      // Compile the complete period hall, including its foliage, while detached.
-      // The user's foliage preference is restored before the root is published.
+      // The geographic tile already owns and displays the period hall. Warm only
+      // its optional living layer (foliage, bathers and nearby effects) here.
       candidate.setFoliageVisible(true);
       await candidate.ready;
       await prepareOptionalRoot("sutro-baths", candidate.group);
 
-      // Keep the baked fallback present until the authored replacement is ready.
-      // CityGen excludes this footprint when its fixed roster is constructed.
-      tiles.suppressBuilding("1_12", 0);
-      suppressed = true;
       candidate.setFoliageVisible(foliageOn);
       scene.add(candidate.group);
       sutroBaths = candidate;
@@ -3049,7 +3079,6 @@ async function boot() {
     } catch (error) {
       if (sutroBaths === candidate) sutroBaths = null;
       candidate?.dispose();
-      if (suppressed) tiles.unsuppressBuilding("1_12", 0);
       refreshOptionalSiteDebug();
       throw error;
     }
@@ -3456,7 +3485,7 @@ async function boot() {
     (import.meta.env.DEV || ["autostart", "demo", "profile"].some((key) => bootQuery.has(key)));
   // Explicit headless verification, demos and perf runs also skip the settle
   // hold because they measure live-frame behaviour rather than boot polish.
-  const skipGate = ["autostart", "demo"].some((key) => bootQuery.has(key));
+  const skipGate = ["demo", "skipsettle"].some((key) => bootQuery.has(key));
   // Local HMR reloads that were already in-game resume without the identity gate.
   // Production always waits for Start / Enter — returning players keep their saved
   // name prefilled in the form. Deployed tests still opt in via `?autostart` etc.
@@ -3525,7 +3554,11 @@ async function boot() {
     else quietFrames = 0;
     // 15 s cap: a missing chunk or a genuinely slow connection falls back to
     // the old behaviour (reveal while still streaming) instead of wedging.
-    if (quietFrames >= 12) {
+    // One already-rendered covered destination frame plus this reveal tick are
+    // enough to prove the destination is stable: the browser cannot composite
+    // the removed cover until this tick's render has also returned. A 12-frame
+    // hold made slow GPUs wait much longer than fast ones after identical work.
+    if (quietFrames >= 2) {
       revealWorld();
       return;
     }
@@ -4505,6 +4538,7 @@ async function boot() {
     }
     // high over the city streams buildings only — no park lawns / trees uploaded.
     // turbo while the loading cover is still up (see the settle gate)
+    if (!worldArrival.active) authoredRegions.update(player.position.x, player.position.z);
     tiles.update(player.position.x, player.position.z, highUp, !revealed);
     trafficLights?.update(player.position, performance.now() / 1000);
     streetLamps?.update(player.position);
@@ -5025,7 +5059,7 @@ async function boot() {
       // deferred render warmup runs, tick() early-returns without rendering, so
       // screenshots would capture a stale boot-pose frame no matter what the
       // camera was set to.
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController?.game ?? null, pickleballAmbient: pickleballController?.ambient ?? null, pickleballAudio: pickleballController?.audio ?? null, pickleballUI: pickleballController?.ui ?? null, pickleballController, coronaHeights, missionDolores, sutroBaths, splashes, vehicleAudio, swimAudio, gameplaySfxBus, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio, doorAudio, getPaintAudio: () => paintAudio, getBubbleAudio: () => bubbleAudio, nature, dogParkAudio, ballImpactAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, ensureSurfRuntime, roadMarkings, debugOverlays, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, ensureCarCustomizer, getCarSelector: () => carSelector, getCarConfig: () => ({ ...carConfig }), ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate, palaceReverie, landsEnd, afterlight, optionalWorldSites, ensureOptionalWorldSite,
+      __sf: { scene, camera, player, tiles, authoredRegions, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController?.game ?? null, pickleballAmbient: pickleballController?.ambient ?? null, pickleballAudio: pickleballController?.audio ?? null, pickleballUI: pickleballController?.ui ?? null, pickleballController, coronaHeights, missionDolores, sutroBaths, splashes, vehicleAudio, swimAudio, gameplaySfxBus, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio, doorAudio, getPaintAudio: () => paintAudio, getBubbleAudio: () => bubbleAudio, nature, dogParkAudio, ballImpactAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, ensureSurfRuntime, roadMarkings, debugOverlays, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, ensureCarCustomizer, getCarSelector: () => carSelector, getCarConfig: () => ({ ...carConfig }), ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate, palaceReverie, landsEnd, afterlight, optionalWorldSites, ensureOptionalWorldSite,
         TSL,
         renderIdle: () => modulesReady && !optionalWorldSites.some(
           (site) => site.state === "queued" || site.state === "loading"

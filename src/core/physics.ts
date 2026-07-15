@@ -74,6 +74,12 @@ const QUERY_FOCUS_STEP = 24;
 const BODY_ATTACH_PER_FRAME = 10;
 const BODY_RETIRE_PER_FRAME = 16;
 const BODY_MUTATION_MS = 0.8;
+// A discontinuous arrival is already held behind an opaque cover. Materialise
+// only its 72 m fail-closed safety set in a larger, still wall-time-bounded
+// slice so low first-frame cadence cannot stretch 50 tiny Box3D inserts across
+// several seconds. The ordinary 260 m neighborhood keeps the steady cap above.
+const ARRIVAL_BODY_ATTACH_PER_FRAME = 64;
+const ARRIVAL_BODY_MUTATION_MS = 6;
 const QUERY_ATTACH_PER_FRAME = 10;
 const QUERY_RETIRE_PER_FRAME = 20;
 const QUERY_MUTATION_MS = 0.65;
@@ -952,6 +958,12 @@ export class Physics {
    * short first slice to free budget, leaving the majority for nearest attaches. */
   #drainBuildingMutations(): void {
     const t0 = performance.now();
+    const arrival = this.#arrival;
+    const arrivalBurst = Boolean(
+      arrival?.active && this.#arrivalSelectionEpoch === arrival.epoch
+    );
+    const attachLimit = arrivalBurst ? ARRIVAL_BODY_ATTACH_PER_FRAME : BODY_ATTACH_PER_FRAME;
+    const mutationBudget = arrivalBurst ? ARRIVAL_BODY_MUTATION_MS : BODY_MUTATION_MS;
     let retired = 0;
     while (
       retired < BODY_RETIRE_PER_FRAME &&
@@ -973,11 +985,17 @@ export class Physics {
 
     let attached = 0;
     while (
-      attached < BODY_ATTACH_PER_FRAME &&
+      attached < attachLimit &&
       this.#bodyAttachQueue.length > 0 &&
-      performance.now() - t0 < BODY_MUTATION_MS
+      performance.now() - t0 < mutationBudget
     ) {
       const job = this.#bodyAttachQueue.pop()!;
+      // The burst exists only for controls-unlock safety. Leave the rest of the
+      // steady collision neighborhood queued for normal post-arrival budgets.
+      if (arrivalBurst && job.d > ARRIVAL_COLLISION_RADIUS) {
+        this.#bodyAttachQueue.push(job);
+        break;
+      }
       if (!this.#desiredBodyIds.has(job.id) || this.#bodyByBuilding.has(job.id)) continue;
       if (!this.#bodyIsAlive(job.key, job.c.i)) continue;
       if (this.#buildingBodies.size >= CONFIG.maxActiveBuildingBodies) {

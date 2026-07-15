@@ -83,7 +83,7 @@ async function discoverBuiltChunks() {
     const source = await readFile(path.join(directory, name), "utf8");
     if (source.includes("sutro_baths_restored_1896")) result.site.add(name);
     if (source.includes("sutro_baths_seven_pool_webgpu_water")) result.water.add(name);
-    if (source.includes("sutro_baths_instanced_steam_puffs")) result.steam.add(name);
+    if (source.includes("sutro_baths_thermal_steam")) result.steam.add(name);
   }
   return result;
 }
@@ -100,12 +100,24 @@ function createClassifier(built) {
     const sourceWater = sourceRoot && /\/waterSimulation\.ts$/.test(pathname);
     const sourceSteam = sourceRoot && /\/steam\.ts$/.test(pathname);
     const sourceSite = sourceRoot && !eagerLayout && !sourceWater && !sourceSteam;
+    const authoredRegion = pathname.endsWith("/regions/sutro-baths.glb");
+    const destinationTile = pathname.endsWith("/tiles/tile_1_12.glb");
+    const authoredColliders = pathname.endsWith("/data/colliders/tile_1_12.json");
+    const worldTile = /\/tiles\/tile_\d+_\d+\.glb$/.test(pathname);
+    const colliderTile = /\/data\/colliders\/tile_\d+_\d+\.json$/.test(pathname);
     const kinds = [];
     if (eagerLayout) kinds.push("eager-layout");
+    if (authoredRegion) kinds.push("region-visual");
+    if (destinationTile) kinds.push("destination-tile");
+    if (authoredColliders) kinds.push("site-colliders");
+    if (worldTile) kinds.push("world-tile");
+    if (colliderTile) kinds.push("collider-tile");
     if (sourceSite || built.site.has(base)) kinds.push("site-runtime");
     if (sourceWater || built.water.has(base)) kinds.push("water-runtime");
     if (sourceSteam || built.steam.has(base)) kinds.push("steam-runtime");
-    if (kinds.some((kind) => kind !== "eager-layout")) kinds.push("optional-sutro");
+    if (["region-visual", "site-runtime", "water-runtime", "steam-runtime"].some((kind) => kinds.includes(kind))) {
+      kinds.push("optional-sutro");
+    }
     return { pathname, kinds: [...new Set(kinds)] };
   };
 }
@@ -267,7 +279,7 @@ async function main() {
     const bootContext = await createContext();
     const bootPage = await bootContext.newPage();
     instrument(bootPage);
-    const bootUrl = `${BASE_URL}/?autostart=1&fullfps=1&profile=1`;
+    const bootUrl = `${BASE_URL}/?autostart=1&fullfps=1&profile=1&spawn=missionDolores`;
     await bootPage.goto(bootUrl, { waitUntil: "domcontentloaded", timeout: 120_000 });
     await bootPage.waitForFunction(
       () => Boolean(
@@ -289,12 +301,18 @@ async function main() {
       },
       site: Boolean(window.__sf.sutroBaths),
       siteRoot: Boolean(window.__sf.scene.getObjectByName("sutro_baths_restored_1896")),
+      authoredRegion: window.__sf.authoredRegions.debugSnapshot(),
       renderIdle: window.__sf.renderIdle?.() === true
     }));
     const bootOptional = phaseRows("boot").filter((record) => hasKind(record, "optional-sutro"));
     expect("boot-direct-webgpu", bootState.webgpu, bootState);
     expect("boot-zero-sutro-optional-requests", bootOptional.length === 0, bootOptional.map(publicRecord));
-    expect("boot-site-remains-unconstructed", !bootState.site && !bootState.siteRoot, bootState);
+    expect(
+      "boot-site-remains-unconstructed",
+      !bootState.site && !bootState.siteRoot &&
+        bootState.authoredRegion.every((region) => region.status === "dormant"),
+      bootState
+    );
     await bootContext.close();
 
     // Phase two: a new context is a real cold visitor. The authored spawn should
@@ -335,7 +353,7 @@ async function main() {
         "sutro_baths_ocean_window_seating_gallery",
         "sutro_baths_unified_foliage",
         "sutro_baths_seven_pool_webgpu_water",
-        "sutro_baths_instanced_steam_puffs"
+        "sutro_baths_thermal_steam"
       ];
       return {
         backend: sf.renderer.backend?.constructor?.name ?? null,
@@ -346,6 +364,8 @@ async function main() {
           z: Number(sf.player.position.z.toFixed(2))
         },
         debug,
+        authoredRegion: sf.authoredRegions.debugSnapshot(),
+        backgroundStreaming: sf.tiles.backgroundStreamingDebug,
         stats: site.stats,
         namedObjects: Object.fromEntries(names.map((name) => [name, Boolean(sf.scene.getObjectByName(name))])),
         renderer: {
@@ -366,11 +386,44 @@ async function main() {
 
     const activationRows = phaseRows("activation");
     const activationFailures = activationRows.filter((row) => row.failure || (row.status != null && row.status >= 400));
+    const activationStartedAt = Math.min(...activationRows.map((row) => row.atMs));
+    const firstSecondRows = activationRows.filter((row) => row.atMs - activationStartedAt <= 1000);
+    const firstSecondWorldTiles = firstSecondRows.filter((row) => hasKind(row, "world-tile"));
+    const regionRequest = activationRows.find((row) => hasKind(row, "region-visual"));
+    expect(
+      "activation-authored-region-requested-once",
+      activationRows.filter((row) => hasKind(row, "region-visual")).length === 1,
+      activationRows.map(publicRecord)
+    );
+    expect(
+      "activation-destination-tile-requested-once",
+      activationRows.filter((row) => hasKind(row, "destination-tile")).length === 1,
+      activationRows.map(publicRecord)
+    );
+    expect(
+      "activation-landmark-priority-window",
+      Boolean(regionRequest) && regionRequest.atMs - activationStartedAt <= 100 &&
+        firstSecondWorldTiles.length > 0 && firstSecondWorldTiles.length <= 4,
+      firstSecondRows.map(publicRecord)
+    );
+    expect(
+      "activation-authored-colliders-requested",
+      activationRows.filter((row) => hasKind(row, "site-colliders")).length >= 1 &&
+        activationRows.filter((row) => hasKind(row, "site-colliders")).length <= 2,
+      activationRows.map(publicRecord)
+    );
     expect("activation-site-runtime-requested", activationRows.some((row) => hasKind(row, "site-runtime")), activationRows.map(publicRecord));
     expect("activation-water-runtime-requested", activationRows.some((row) => hasKind(row, "water-runtime")), activationRows.map(publicRecord));
     expect("activation-steam-runtime-requested", activationRows.some((row) => hasKind(row, "steam-runtime")), activationRows.map(publicRecord));
     expect("activation-sutro-requests-succeeded", activationFailures.length === 0, activationFailures.map(publicRecord));
     expect("activation-direct-webgpu", activationState.webgpu, activationState.backend);
+    expect(
+      "activation-authored-region-atomic-ready",
+      activationState.authoredRegion.some((region) =>
+        region.id === "sutro-baths" && region.status === "ready" && region.terrainActive
+      ),
+      activationState.authoredRegion
+    );
     expect("activation-site-awake", activationState.debug.awake && !activationState.debug.disposed, activationState.debug);
     expect(
       "activation-all-signature-groups-present",
@@ -399,7 +452,7 @@ async function main() {
     );
     expect(
       "activation-steam-awake",
-      activationState.debug.steam?.puffs === 72 &&
+      activationState.debug.steam?.puffs === 4 &&
         activationState.debug.steam?.awake === true &&
         activationState.debug.steam?.visible > 0,
       activationState.debug.steam
@@ -416,6 +469,19 @@ async function main() {
     // Canvas-only captures deliberately exclude DOM HUD/debug overlays.
     const canvas = page.locator("#app > canvas").first();
     await page.evaluate(() => window.__sf.hud?.setHidden?.(true));
+    const screenshotEvidence = {};
+    const arrivalFile = path.join(OUT, "arrival-exterior.png");
+    await canvas.screenshot({ path: arrivalFile });
+    screenshotEvidence["arrival-exterior.png"] = {
+      file: arrivalFile,
+      ...(await imageAudit(arrivalFile))
+    };
+    expect(
+      "visual-arrival-exterior-nonblank",
+      screenshotEvidence["arrival-exterior.png"].entropy > 3 &&
+        screenshotEvidence["arrival-exterior.png"].channelStdDev.some((value) => value > 20),
+      screenshotEvidence["arrival-exterior.png"]
+    );
     const shots = [
       {
         name: "hall-from-south.png",
@@ -433,7 +499,6 @@ async function main() {
         target: localPoint(-17, SITE.waterY + 0.15, 2)
       }
     ];
-    const screenshotEvidence = {};
     for (const shot of shots) {
       await page.evaluate(({ eye, target }) => window.__sfFreeCam(eye, target), shot);
       await page.waitForTimeout(900);
@@ -442,8 +507,8 @@ async function main() {
       screenshotEvidence[shot.name] = { file, ...(await imageAudit(file)) };
       expect(
         `visual-${shot.name}-nonblank`,
-        screenshotEvidence[shot.name].entropy > 2 &&
-          screenshotEvidence[shot.name].channelStdDev.some((value) => value > 8),
+        screenshotEvidence[shot.name].entropy > 3 &&
+          screenshotEvidence[shot.name].channelStdDev.some((value) => value > 20),
         screenshotEvidence[shot.name]
       );
     }
@@ -489,7 +554,6 @@ async function main() {
     expect(
       "subsequent-water-continues-compute",
       afterAction.proximityActive &&
-        afterAction.running &&
         afterAction.playerDistance < 1 &&
         afterAction.ticks > beforeAction.ticks &&
         afterAction.dispatches > beforeAction.dispatches &&

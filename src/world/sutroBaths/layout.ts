@@ -23,16 +23,6 @@ export type SutroPoolSpec = {
   heat: number;
 };
 
-export type SutroTerrainCutoutSpec = {
-  id: string;
-  centerX: number;
-  centerZ: number;
-  halfX: number;
-  halfZ: number;
-  yaw: number;
-  feather: number;
-};
-
 export const SUTRO_BATHS = {
   ...SUTRO_BATHS_GATE,
   /** Local +z (south) rotated so the north end sits slightly farther east. */
@@ -127,64 +117,6 @@ export function sutroWorldToLocal(x: number, z: number): { x: number; z: number 
   const c = Math.cos(SUTRO_BATHS.yaw);
   const s = Math.sin(SUTRO_BATHS.yaw);
   return { x: c * dx - s * dz, z: s * dx + c * dz };
-}
-
-const ENTRY_CUTOUT_LOCAL = {
-  minX: SUTRO_BATHS.halfWidth - 0.35,
-  maxX: SUTRO_BATHS.halfWidth + 5.75,
-  centerZ: SUTRO_BATHS.halfLength - 13,
-  halfZ: 4.6
-} as const;
-
-const entryCutoutCenter = sutroLocalToWorld(
-  (ENTRY_CUTOUT_LOCAL.minX + ENTRY_CUTOUT_LOCAL.maxX) * 0.5,
-  ENTRY_CUTOUT_LOCAL.centerZ
-);
-
-/**
- * The shipped terrain predates the restoration and climbs through the eastern
- * bleachers and the Point Lobos stair. These two small oriented rectangles are
- * the complete ownership handoff: the hall proper plus only the short stairwell
- * that tunnels from the pool deck into the surviving cliff shelf.
- */
-export const SUTRO_TERRAIN_CUTOUTS: readonly SutroTerrainCutoutSpec[] = [
-  {
-    id: "sutro-baths:hall",
-    centerX: SUTRO_BATHS.centerX,
-    centerZ: SUTRO_BATHS.centerZ,
-    halfX: SUTRO_BATHS.halfWidth + 0.35,
-    halfZ: SUTRO_BATHS.halfLength + 0.35,
-    yaw: SUTRO_BATHS.yaw,
-    feather: 0.22
-  },
-  {
-    id: "sutro-baths:entry-stairwell",
-    centerX: entryCutoutCenter.x,
-    centerZ: entryCutoutCenter.z,
-    halfX: (ENTRY_CUTOUT_LOCAL.maxX - ENTRY_CUTOUT_LOCAL.minX) * 0.5,
-    halfZ: ENTRY_CUTOUT_LOCAL.halfZ,
-    yaw: SUTRO_BATHS.yaw,
-    feather: 0.18
-  }
-] as const;
-
-export function inSutroTerrainCutout(x: number, z: number): boolean {
-  for (const cutout of SUTRO_TERRAIN_CUTOUTS) {
-    const dx = x - cutout.centerX;
-    const dz = z - cutout.centerZ;
-    const c = Math.cos(cutout.yaw);
-    const s = Math.sin(cutout.yaw);
-    const localX = c * dx - s * dz;
-    const localZ = s * dx + c * dz;
-    if (Math.abs(localX) <= cutout.halfX && Math.abs(localZ) <= cutout.halfZ) return true;
-  }
-  return false;
-}
-
-/** CPU/collision twin of the visual terrain cutout. Authored deck and basin
- * bodies become the surface authority above this deliberately buried floor. */
-export function sutroRestoredGroundTop(x: number, z: number, base: number): number {
-  return inSutroTerrainCutout(x, z) ? Math.min(base, SUTRO_BATHS.basinY - 0.55) : base;
 }
 
 export function inSutroBathsHall(x: number, z: number, pad = 0): boolean {

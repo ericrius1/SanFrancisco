@@ -81,6 +81,7 @@ export class WorldArrivalCoordinator {
   #chase: ChaseCamera;
   #tiles: TileStreamer;
   #physics: Physics;
+  #prepareRequiredDestinationVisuals: DestinationVisualPreparer | null;
   #prepareDestinationVisuals: DestinationVisualPreparer | null;
   #view = new WorldTransitionView();
   #generation = 0;
@@ -99,6 +100,7 @@ export class WorldArrivalCoordinator {
     chase: ChaseCamera;
     tiles: TileStreamer;
     physics: Physics;
+    prepareRequiredDestinationVisuals?: DestinationVisualPreparer;
     prepareDestinationVisuals?: DestinationVisualPreparer;
   }) {
     this.#input = options.input;
@@ -106,6 +108,7 @@ export class WorldArrivalCoordinator {
     this.#chase = options.chase;
     this.#tiles = options.tiles;
     this.#physics = options.physics;
+    this.#prepareRequiredDestinationVisuals = options.prepareRequiredDestinationVisuals ?? null;
     this.#prepareDestinationVisuals = options.prepareDestinationVisuals ?? null;
   }
 
@@ -153,6 +156,9 @@ export class WorldArrivalCoordinator {
       // attaches only its one-to-four local cells.
       const visualPrime = this.#tiles.primeAt(destination.x, destination.z);
       const collisionEpoch = this.#physics.prepareCollisionArrival(destination);
+      const requiredVisuals = Promise.resolve().then(() =>
+        this.#prepareRequiredDestinationVisuals?.(destination, controller.signal)
+      );
       const supplementalVisuals = this.#prepareSupplementalVisuals(destination, controller, generation);
       preparedEpoch = collisionEpoch;
       this.#collisionEpoch = collisionEpoch;
@@ -172,7 +178,11 @@ export class WorldArrivalCoordinator {
       this.#callSafely(plan.onCommitted, "onCommitted");
 
       this.#setState("loading-visuals");
-      const visual = await this.#waitForDestinationVisuals(visualPrime, supplementalVisuals);
+      const visual = await this.#waitForDestinationVisuals(
+        visualPrime,
+        requiredVisuals,
+        supplementalVisuals
+      );
       if (!this.#isCurrent(generation, controller)) return false;
       if (visual.status === "failed") {
         throw new DestinationVisualError("Destination visuals could not be loaded");
@@ -398,6 +408,7 @@ export class WorldArrivalCoordinator {
 
   async #waitForDestinationVisuals(
     visualPrime: TileVisualPrime,
+    requiredVisuals: Promise<void>,
     supplementalVisuals: Promise<void>
   ): Promise<TileVisualPrimeResult> {
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -410,9 +421,14 @@ export class WorldArrivalCoordinator {
     });
     try {
       return await Promise.race([
-        Promise.all([visualPrime.ready, supplementalVisuals]).then(([visual]) => visual),
+        Promise.all([visualPrime.ready, requiredVisuals, supplementalVisuals]).then(([visual]) => visual),
         deadline
       ]);
+    } catch (error) {
+      if (error instanceof DestinationVisualError) throw error;
+      throw new DestinationVisualError(
+        `Required destination visuals failed: ${error instanceof Error ? error.message : String(error)}`
+      );
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }

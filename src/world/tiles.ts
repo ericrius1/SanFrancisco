@@ -212,11 +212,20 @@ const TILE_MAX_ATTEMPTS = TILE_RETRY_DELAYS_MS.length + 1;
 // Staying just inside half a tile gives one cell at its centre, two across an edge and
 // four around a corner, while still covering a useful local bubble.
 const MINIMUM_VISUAL_RADIUS_CAP = 360;
+// Arrival completion opens a modest 360-degree neighborhood first, then grows
+// the ordinary draw ring in two quiet stages. This keeps a newly requested
+// authored landmark ahead of tiles that cannot yet contribute to its view.
+const BACKGROUND_STREAM_RADII = [1200, 2200] as const;
+const BACKGROUND_STREAM_STAGE_MS = 1800;
 // The far selective map covers 512 m from focus; include collider overhang and
 // a handoff margin. Citywide farOcclusion handles everything beyond this local
 // proxy residency without constructing dozens of invisible InstancedMeshes.
 const SHADOW_PROXY_RADIUS = 680;
 const SHADOW_PROXY_EXIT_RADIUS = 900;
+// Distant beauty tiles use their far facade path and citywide occlusion. Their
+// collider JSON adds no gameplay safety, so only the local shadow/physics band
+// may acquire a visual metadata lease.
+const VISUAL_COLLIDER_RADIUS = 1000;
 const COLLIDER_METADATA_SLICE = 256;
 // meshopt decompression workers: without them decodeGltfBufferAsync runs the WASM
 // decode synchronously on the main thread — the biggest single hitch per tile load
@@ -438,6 +447,9 @@ export class TileStreamer {
   #shadowProxyBuildActive = false;
   #colliderSource: TileColliderSource | null = null;
   #unsubscribeColliderSource: (() => void) | null = null;
+  #backgroundStage: number = BACKGROUND_STREAM_RADII.length;
+  #backgroundRadius = Number.POSITIVE_INFINITY;
+  #nextBackgroundStageAt = 0;
   // tiles with pendingParts still attaching, one mesh per frame
   #attaching: string[] = [];
   // tiles whose dense park-surface detail is held back until the player descends
@@ -650,6 +662,21 @@ export class TileStreamer {
     this.#prevPx = focusX;
     this.#prevPz = focusZ;
     this.#hasPrevPos = true;
+    if (!this.#visualPrime && this.#backgroundStage < BACKGROUND_STREAM_RADII.length) {
+      if (this.#fastStream || performance.now() >= this.#nextBackgroundStageAt) {
+        if (this.#fastStream) {
+          this.#backgroundStage = BACKGROUND_STREAM_RADII.length;
+          this.#backgroundRadius = Number.POSITIVE_INFINITY;
+        } else {
+          this.#backgroundStage++;
+          this.#backgroundRadius = this.#backgroundStage < BACKGROUND_STREAM_RADII.length
+            ? BACKGROUND_STREAM_RADII[this.#backgroundStage]
+            : Number.POSITIVE_INFINITY;
+          this.#nextBackgroundStageAt = performance.now() + BACKGROUND_STREAM_STAGE_MS;
+        }
+        this.#scan(focusX, focusZ);
+      }
+    }
     if (highUp !== this.#highUp) {
       this.#highUp = highUp;
       // descended: re-queue every tile whose dense park-surface detail was
@@ -730,7 +757,29 @@ export class TileStreamer {
     const prime = this.#visualPrime;
     if (!prime?.settled || prime.generation !== this.#generation) return;
     this.#visualPrime = null;
-    this.#scan(prime.focusX, prime.focusZ);
+    this.beginBackgroundExpansion();
+  }
+
+  /** Restart the ordinary ring center-out after boot restores the user's full
+   * draw distance or a covered arrival releases its destination hold. */
+  beginBackgroundExpansion(): void {
+    if (this.#visualPrime) return;
+    this.#backgroundStage = 0;
+    this.#backgroundRadius = BACKGROUND_STREAM_RADII[0];
+    this.#nextBackgroundStageAt = performance.now() + BACKGROUND_STREAM_STAGE_MS;
+    this.#scan(this.#px, this.#pz);
+  }
+
+  get backgroundStreamingDebug(): Readonly<{
+    stage: number;
+    radius: number;
+    fullRadius: number;
+  }> {
+    return {
+      stage: this.#backgroundStage,
+      radius: this.#currentLoadRadius(),
+      fullRadius: CONFIG.tileLoadRadius
+    };
   }
 
   /**
@@ -918,7 +967,8 @@ export class TileStreamer {
     this.#px = px;
     this.#pz = pz;
     this.#hasScanned = true;
-    const loadR2 = CONFIG.tileLoadRadius * CONFIG.tileLoadRadius;
+    const loadRadius = this.#currentLoadRadius();
+    const loadR2 = loadRadius * loadRadius;
     const unloadR2 = CONFIG.tileUnloadRadius * CONFIG.tileUnloadRadius;
     const required = this.#visualPrime?.generation === this.#generation
       ? this.#visualPrime.requiredTileSet
@@ -963,6 +1013,7 @@ export class TileStreamer {
     // Facade near/far material swap: far tiles drop brick/weather noise ALU.
     // Hysteresis on enter/exit; BundleGroup re-records only when the bind changes.
     for (const tile of this.loaded.values()) {
+      this.#retainCanonicalColliders(tile.key, tile.loadToken);
       if (!tile.slot) continue;
       const [cx, cz] = this.keyToCenter(tile.key);
       const d = Math.hypot(px - cx, pz - cz);
@@ -981,7 +1032,8 @@ export class TileStreamer {
   }
 
   #pump() {
-    const loadR2 = CONFIG.tileLoadRadius * CONFIG.tileLoadRadius;
+    const loadRadius = this.#currentLoadRadius();
+    const loadR2 = loadRadius * loadRadius;
     const required = this.#visualPrime?.generation === this.#generation
       ? this.#visualPrime.requiredTileSet
       : null;
@@ -1007,6 +1059,12 @@ export class TileStreamer {
       current++;
       total++;
     }
+  }
+
+  #currentLoadRadius(): number {
+    return this.#visualPrime
+      ? CONFIG.tileLoadRadius
+      : Math.min(CONFIG.tileLoadRadius, this.#backgroundRadius);
   }
 
   #tileInFlightCounts(): { current: number; total: number } {
@@ -1389,6 +1447,7 @@ export class TileStreamer {
     const source = this.#colliderSource;
     const tile = this.loaded.get(key);
     if (!source || !tile || tile.loadId !== token.id || token.discarded) return;
+    if (!this.#shadowProxyWanted(key, VISUAL_COLLIDER_RADIUS)) return;
     if (!token.colliderRetained) {
       token.colliderRetained = true;
       source.retainTile(key);
