@@ -30,6 +30,9 @@ type Pop = { pos: THREE.Vector3; radius: number; age: number };
  * one-frame-ish expanding flash ring from a second small pool.
  */
 export class Bubbles {
+  /** Presentation hook; simulation stays independent from the audio layer. */
+  onPop: (position: THREE.Vector3, radius: number) => void = () => {};
+
   #bubbles: Bubble[] = [];
   #pops: Pop[] = [];
   #mesh: THREE.InstancedMesh;
@@ -134,6 +137,7 @@ export class Bubbles {
   #pop(b: Bubble) {
     if (this.#pops.length >= MAX_POPS) this.#pops.shift();
     this.#pops.push({ pos: b.pos.clone(), radius: b.radius, age: 0 });
+    this.onPop(b.pos, b.radius);
   }
 
   update(dt: number, elapsed: number) {

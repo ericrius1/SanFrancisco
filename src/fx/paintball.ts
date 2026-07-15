@@ -36,6 +36,36 @@ type Ball = {
   shooter: number;
 };
 
+export type PaintImpactMaterial =
+  | "concrete"
+  | "wood"
+  | "metal"
+  | "foliage"
+  | "fabric"
+  | "water"
+  | "generic";
+
+export type PaintImpactEvent = {
+  x: number;
+  y: number;
+  z: number;
+  material: PaintImpactMaterial;
+  speed: number;
+  r: number;
+  g: number;
+  b: number;
+  shooter: number;
+};
+
+const impactMaterial = (kind: string): PaintImpactMaterial => {
+  if (kind === "water") return "water";
+  if (kind === "vehicle" || kind === "mount") return "metal";
+  if (kind === "avatar" || kind === "player" || kind === "creature") return "fabric";
+  if (kind === "tree") return "wood";
+  if (kind === "building" || kind === "terrain") return "concrete";
+  return kind === "prop" ? "wood" : "generic";
+};
+
 /**
  * Paintballs: kinematic blobs of paint that actually fly — no physics bodies,
  * just a ballistic integrate + a per-step cast through the shared WorldQueries
@@ -50,6 +80,8 @@ export class Paintballs {
   mesh: THREE.InstancedMesh;
   /** Wall/ground impact hook (world splat + net-free extras like audio). */
   onWater: (x: number, y: number, z: number) => void = () => {};
+  /** Presentation hook for local spatial audio; simulation remains net-safe. */
+  onImpact: (event: PaintImpactEvent) => void = () => {};
 
   #balls: Ball[] = [];
   #tint: THREE.InstancedBufferAttribute;
@@ -141,6 +173,17 @@ export class Paintballs {
               this.#nrm.copy(hit.normal);
             }
             skins.stamp(hit.object, this.#hit, this.#nrm, ball.r, ball.g, ball.b, 0.55);
+            this.onImpact({
+              x: this.#hit.x,
+              y: this.#hit.y,
+              z: this.#hit.z,
+              material: impactMaterial(hit.kind),
+              speed: Math.hypot(ball.vx, ball.vy, ball.vz),
+              r: ball.r,
+              g: ball.g,
+              b: ball.b,
+              shooter: ball.shooter
+            });
             this.#balls.splice(i, 1);
             continue;
           }
@@ -149,6 +192,17 @@ export class Paintballs {
           } else {
             graffiti.burst(hit.point, hit.normal, TMP_COLOR.setRGB(ball.r, ball.g, ball.b));
           }
+          this.onImpact({
+            x: hit.point.x,
+            y: hit.point.y,
+            z: hit.point.z,
+            material: impactMaterial(hit.kind),
+            speed: Math.hypot(ball.vx, ball.vy, ball.vz),
+            r: ball.r,
+            g: ball.g,
+            b: ball.b,
+            shooter: ball.shooter
+          });
           this.#balls.splice(i, 1);
           continue;
         }

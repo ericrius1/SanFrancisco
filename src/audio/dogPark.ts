@@ -390,7 +390,7 @@ export class DogParkAudio {
 
     const send = ctx.createGain();
     send.gain.value = DOG_AUDIO.reverbCharacter * Number(NATURE_AUDIO_TUNING.values.reverb);
-    panner.connect(send).connect(io.reverbSend);
+    panner.connect(send).connect(io.effectsReverbSend);
 
     const patterFilter = ctx.createBiquadFilter();
     patterFilter.type = "bandpass";

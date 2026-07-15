@@ -96,7 +96,7 @@ function configurePanner(
  * It owns no AudioContext. The wind-harp ambience follows NatureSoundscape's
  * regional bus, while quest one-shots use its presence-independent gameplay tap
  * so a disabled nature layer cannot swallow collection feedback. Both still
- * respect the shared limiter, HUD effects level, page visibility, and mute.
+ * respect the shared limiter, their matching HUD mix group, visibility, and mute.
  */
 export class AfterlightAudio {
   #nature: NatureSoundscape;
@@ -105,6 +105,7 @@ export class AfterlightAudio {
   #dryLayer: GainNode | null = null;
   #wetLayer: GainNode | null = null;
   #eventLayer: GainNode | null = null;
+  #eventWetLayer: GainNode | null = null;
   #ambient: AmbientGraph | null = null;
   #shots = new Set<ActiveShot>();
   #parkTimer: number | null = null;
@@ -151,7 +152,7 @@ export class AfterlightAudio {
         if (this.#awake || this.#disposed) return;
         this.#disposeAmbient();
         const now = this.#io?.ctx.currentTime ?? 0;
-        for (const layer of [this.#dryLayer, this.#wetLayer, this.#eventLayer]) {
+        for (const layer of [this.#dryLayer, this.#wetLayer, this.#eventLayer, this.#eventWetLayer]) {
           if (!layer) continue;
           layer.gain.cancelScheduledValues(now);
           layer.gain.value = 0;
@@ -159,11 +160,12 @@ export class AfterlightAudio {
       }, 900);
     }
     const io = this.#io;
-    if (!io || !this.#dryLayer || !this.#wetLayer || !this.#eventLayer || io.ctx.state === "closed") return;
+    if (!io || !this.#dryLayer || !this.#wetLayer || !this.#eventLayer || !this.#eventWetLayer || io.ctx.state === "closed") return;
     const now = io.ctx.currentTime;
     this.#dryLayer.gain.setTargetAtTime(on ? DRY_LAYER_GAIN : 0, now, on ? 0.3 : 0.2);
     this.#wetLayer.gain.setTargetAtTime(on ? WET_LAYER_GAIN : 0, now, on ? 0.38 : 0.24);
     this.#eventLayer.gain.setTargetAtTime(on ? 0.9 : 0, now, on ? 0.08 : 0.16);
+    this.#eventWetLayer.gain.setTargetAtTime(on ? 0.9 : 0, now, on ? 0.08 : 0.16);
     if (this.#ambient) {
       this.#ambient.send.gain.setTargetAtTime(
         AMBIENT_REVERB * Number(NATURE_AUDIO_TUNING.values.reverb),
@@ -319,9 +321,11 @@ export class AfterlightAudio {
     if (this.#dryLayer) disconnectSafely(this.#dryLayer);
     if (this.#wetLayer) disconnectSafely(this.#wetLayer);
     if (this.#eventLayer) disconnectSafely(this.#eventLayer);
+    if (this.#eventWetLayer) disconnectSafely(this.#eventWetLayer);
     this.#dryLayer = null;
     this.#wetLayer = null;
     this.#eventLayer = null;
+    this.#eventWetLayer = null;
     this.#io = null;
   }
 
@@ -329,16 +333,19 @@ export class AfterlightAudio {
     if (this.#disposed) return null;
     const io = (this.#io ??= this.#nature.voiceBus());
     if (!io || io.ctx.state === "closed") return null;
-    if (!this.#dryLayer || !this.#wetLayer || !this.#eventLayer) {
+    if (!this.#dryLayer || !this.#wetLayer || !this.#eventLayer || !this.#eventWetLayer) {
       this.#dryLayer = io.ctx.createGain();
       this.#dryLayer.gain.value = 0;
       this.#dryLayer.connect(io.bus);
       this.#wetLayer = io.ctx.createGain();
       this.#wetLayer.gain.value = 0;
-      this.#wetLayer.connect(io.reverbSend);
+      this.#wetLayer.connect(io.regionalReverbSend);
       this.#eventLayer = io.ctx.createGain();
       this.#eventLayer.gain.value = 0;
       this.#eventLayer.connect(io.alwaysBus);
+      this.#eventWetLayer = io.ctx.createGain();
+      this.#eventWetLayer.gain.value = 0;
+      this.#eventWetLayer.connect(io.effectsReverbSend);
     }
     if (!this.#ambient) this.#ambient = this.#buildAmbient(io);
     return io;
@@ -450,7 +457,7 @@ export class AfterlightAudio {
     send.gain.value = reverb * Number(NATURE_AUDIO_TUNING.values.reverb);
     input.connect(panner);
     panner.connect(this.#eventLayer!);
-    panner.connect(send).connect(this.#wetLayer!);
+    panner.connect(send).connect(this.#eventWetLayer!);
     const shot: ActiveShot = {
       input,
       nodes: [input, panner, send],

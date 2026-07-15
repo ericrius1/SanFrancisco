@@ -16,12 +16,12 @@
 //
 // Regions are pure data (regions.ts). Adding a nature area is one config entry;
 // this engine is generic over the list. The master respects the HUD volume/mute
-// (effectsAudioLevel) and the whole context suspends itself when the listener is
+// (soundscapeAudioLevel) and the whole context suspends itself when the listener is
 // nowhere near any nature region, so it costs nothing in the city.
 
 import * as THREE from "three/webgpu";
 import { tunables } from "../core/persist";
-import { effectsAudioLevel } from "../core/audioSettings";
+import { effectsAudioLevel, soundscapeAudioLevel } from "../core/audioSettings";
 import type { NatureBufferResult } from "./natureBuffersWorker";
 import { ProceduralWindSynth } from "./proceduralWind";
 import { VOICE_LIB, RESPONDER_KINDS, type NatureVoiceKind } from "./voices";
@@ -65,11 +65,16 @@ type ActiveVoice = { panner: PannerNode; send: GainNode; expires: number };
 
 export class NatureSoundscape {
   #ctx: AudioContext | null = null;
-  #bus!: GainNode; // master volume/presence fade
-  #alwaysBus!: GainNode; // HUD effects/mute scaled, but NOT nature/presence-faded
+  #bus!: GainNode; // regional soundscape volume + presence fade
+  #worldBus!: GainNode; // presence-independent environmental soundscape
+  #alwaysBus!: GainNode; // foreground effects, never nature/presence-faded
   #externalAwake = false; // a sibling layer (pet at heel) needs the ctx kept alive
-  #reverbSend!: GainNode;
-  #convolver!: ConvolverNode;
+  #regionalReverbSend!: GainNode;
+  #worldReverbSend!: GainNode;
+  #effectsReverbSend!: GainNode;
+  #regionalConvolver!: ConvolverNode;
+  #worldConvolver!: ConvolverNode;
+  #effectsConvolver!: ConvolverNode;
   #noise!: AudioBuffer;
   #wind: ProceduralWindSynth | null = null;
   #beds = new Map<BedId, Bed>();
@@ -105,8 +110,9 @@ export class NatureSoundscape {
     return {
       ctx: this.#ctx?.state ?? "none",
       unlocked: this.#unlocked,
-      master: +this.#masterLevel.toFixed(3),
-      always: +(this.#alwaysBus?.gain.value ?? 0).toFixed(3),
+      regional: +this.#masterLevel.toFixed(3),
+      world: +(this.#worldBus?.gain.value ?? 0).toFixed(3),
+      effects: +(this.#alwaysBus?.gain.value ?? 0).toFixed(3),
       presence: +this.#presence.toFixed(3),
       beds: BED_IDS.map((id) => ({ id, level: +(this.#beds.get(id)?.level ?? 0).toFixed(3) })),
       influence: NATURE_REGIONS.map((r, i) => ({ id: r.id, inf: +this.#inf[i].toFixed(3) })),
@@ -131,12 +137,20 @@ export class NatureSoundscape {
     if (ctx) void this.#prepareBuffers(ctx);
   }
 
-  /** Minimal handle for sibling ambient layers (the dog park): the shared
-   *  context, the master bus (HUD volume/mute, region presence fades and the
-   *  out-of-region suspend all ride along), the reverb send and the shared
-   *  voice-noise buffer. Call once and cache — not per frame. */
+  /** Shared graph taps. `bus` is regional ambience, `worldBus` is environmental
+   *  ambience without a nature-region fade, and `alwaysBus` is foreground FX.
+   *  Each category has a matching reverb return so mixer sliders never leak. */
   voiceBus():
-    | { ctx: AudioContext; bus: GainNode; alwaysBus: GainNode; reverbSend: GainNode; noise: AudioBuffer }
+    | {
+        ctx: AudioContext;
+        bus: GainNode;
+        worldBus: GainNode;
+        alwaysBus: GainNode;
+        regionalReverbSend: GainNode;
+        worldReverbSend: GainNode;
+        effectsReverbSend: GainNode;
+        noise: AudioBuffer;
+      }
     | null {
     // Audio is optional world content. Until a real gesture (or an explicit
     // headless-test unlock) has crossed the browser's audio gate, do not create
@@ -145,7 +159,16 @@ export class NatureSoundscape {
     if (!this.#unlocked) return null;
     const ctx = this.#ensure();
     if (!ctx || !this.#buffersReady) return null;
-    return { ctx, bus: this.#bus, alwaysBus: this.#alwaysBus, reverbSend: this.#reverbSend, noise: this.#noise };
+    return {
+      ctx,
+      bus: this.#bus,
+      worldBus: this.#worldBus,
+      alwaysBus: this.#alwaysBus,
+      regionalReverbSend: this.#regionalReverbSend,
+      worldReverbSend: this.#worldReverbSend,
+      effectsReverbSend: this.#effectsReverbSend,
+      noise: this.#noise
+    };
   }
 
   /** Sibling layers (the dog park's adopted pet) that must stay audible while the
@@ -207,6 +230,7 @@ export class NatureSoundscape {
     const visible = document.visibilityState === "visible";
     const allowed = visible && Boolean(T.enabled) && Number(T.master) > 0.001;
     const effects = effectsAudioLevel();
+    const soundscape = soundscapeAudioLevel();
     const targetPresence = allowed ? presence : 0;
     this.#presence = approach(this.#presence, targetPresence, dt, 1.6);
 
@@ -216,28 +240,19 @@ export class NatureSoundscape {
     if (presence > 0.02 || this.#externalAwake) this.#updateListener(o.camera);
 
     // ---- master fade + park the whole graph when far from any region ------
-    const targetMaster = allowed ? effects * Number(T.master) * this.#presence : 0;
+    const targetMaster = allowed ? soundscape * Number(T.master) * this.#presence : 0;
+    const worldTarget = visible ? soundscape : 0;
     // Sibling gameplay SFX (currently dog fetch audio) must not disappear when
     // the optional nature layer or its wildlife slider is disabled. This tap
     // follows only the user's global FX/mute preference and page visibility.
     const alwaysTarget = visible ? effects : 0;
     if (ctx.state === "running") this.#reapVoices(ctx.currentTime);
-    if (targetMaster <= 0.0001 && this.#masterLevel <= 0.001) {
-      // No region presence. Normally park the whole graph (zero city cost). But
-      // if a sibling layer (pet at heel) needs to stay audible, keep the ctx
-      // alive and drive only the presence-independent tap.
-      if (this.#externalAwake && visible && effects > 0.001) {
-        if (ctx.state === "suspended") void ctx.resume();
-        if (ctx.state === "running") {
-          this.#bus.gain.value = 0;
-          this.#masterLevel = 0;
-          this.#alwaysBus.gain.setTargetAtTime(alwaysTarget, ctx.currentTime, 0.2);
-        }
-        return; // region layers stay silent; only #alwaysBus is live
-      }
+    const graphAwake = visible && (presence > 0.02 || this.#externalAwake);
+    if (!graphAwake && targetMaster <= 0.0001 && this.#masterLevel <= 0.001) {
       if (ctx.state === "running") {
         this.#bus.gain.value = 0;
         this.#masterLevel = 0;
+        this.#worldBus.gain.value = 0;
         this.#alwaysBus.gain.value = 0;
         void ctx.suspend();
       }
@@ -247,6 +262,7 @@ export class NatureSoundscape {
     if (ctx.state !== "running") return;
     this.#masterLevel = approach(this.#masterLevel, targetMaster, dt, 3.5);
     this.#bus.gain.value = this.#masterLevel;
+    this.#worldBus.gain.setTargetAtTime(worldTarget, ctx.currentTime, 0.2);
     this.#alwaysBus.gain.setTargetAtTime(alwaysTarget, ctx.currentTime, 0.2);
 
     const now = ctx.currentTime;
@@ -286,7 +302,7 @@ export class NatureSoundscape {
     }
 
     // ---- spatial voice scheduler ----------------------------------------
-    if (presence > 0.02 && effects > 0.001 && Number(T.voices) > 0.001) {
+    if (presence > 0.02 && soundscape > 0.001 && Number(T.voices) > 0.001) {
       let ratePerMin = 0;
       for (let i = 0; i < NATURE_REGIONS.length; i++) {
         ratePerMin += this.#inf[i] * NATURE_REGIONS[i].density;
@@ -345,11 +361,18 @@ export class NatureSoundscape {
     this.#bus.gain.value = 0;
     this.#bus.connect(limiter);
 
+    // Environmental layers such as ocean wash and garden streams belong to the
+    // World slider, but manage their own distance fades instead of a nature
+    // region. Their bus stays independent of #presence.
+    this.#worldBus = ctx.createGain();
+    this.#worldBus.gain.value = 0;
+    this.#worldBus.connect(limiter);
+
     // Presence-independent tap straight to the limiter: sibling layers (the dog
     // park's pet at heel) route here so a pet trotting through the city — where
     // region presence and thus #bus are 0 and the ctx would otherwise suspend —
     // stays audible. Still scaled by HUD master/mute (set each update) so mute
-    // and the master slider silence it.
+    // and the foreground FX slider silence it.
     this.#alwaysBus = ctx.createGain();
     this.#alwaysBus.gain.value = 0;
     this.#alwaysBus.connect(limiter);
@@ -359,14 +382,36 @@ export class NatureSoundscape {
     const sr = ctx.sampleRate;
     this.#noise = ctx.createBuffer(1, 1, sr);
 
-    // reverb: a generated exponential-decay impulse gives the open-canyon /
-    // enclosed-garden "space" without any IR asset. One convolver, per-source send.
-    this.#convolver = ctx.createConvolver();
-    const reverbReturn = ctx.createGain();
-    reverbReturn.gain.value = 0.9;
-    this.#reverbSend = ctx.createGain();
-    this.#reverbSend.gain.value = 1;
-    this.#reverbSend.connect(this.#convolver).connect(reverbReturn).connect(this.#bus);
+    // One generated impulse, three returns: regional ambience keeps its
+    // presence fade, independent environmental beds use World without that
+    // fade, and foreground effects remain isolated from both.
+    this.#regionalConvolver = ctx.createConvolver();
+    this.#worldConvolver = ctx.createConvolver();
+    this.#effectsConvolver = ctx.createConvolver();
+    const regionalReverbReturn = ctx.createGain();
+    regionalReverbReturn.gain.value = 0.9;
+    const worldReverbReturn = ctx.createGain();
+    worldReverbReturn.gain.value = 0.9;
+    const effectsReverbReturn = ctx.createGain();
+    effectsReverbReturn.gain.value = 0.9;
+    this.#regionalReverbSend = ctx.createGain();
+    this.#regionalReverbSend.gain.value = 1;
+    this.#regionalReverbSend
+      .connect(this.#regionalConvolver)
+      .connect(regionalReverbReturn)
+      .connect(this.#bus);
+    this.#worldReverbSend = ctx.createGain();
+    this.#worldReverbSend.gain.value = 1;
+    this.#worldReverbSend
+      .connect(this.#worldConvolver)
+      .connect(worldReverbReturn)
+      .connect(this.#worldBus);
+    this.#effectsReverbSend = ctx.createGain();
+    this.#effectsReverbSend.gain.value = 1;
+    this.#effectsReverbSend
+      .connect(this.#effectsConvolver)
+      .connect(effectsReverbReturn)
+      .connect(this.#alwaysBus);
 
     // wind synth draws into the master bus (with a small fixed reverb tap)
     this.#wind = new ProceduralWindSynth(ctx, this.#bus);
@@ -383,7 +428,7 @@ export class NatureSoundscape {
       gain.connect(this.#bus);
       const send = ctx.createGain();
       send.gain.value = 0.16;
-      gain.connect(send).connect(this.#reverbSend);
+      gain.connect(send).connect(this.#regionalReverbSend);
       this.#beds.set(id, { source: null, filter, gain, panLfo: null, level: 0 });
     }
     return ctx;
@@ -414,7 +459,10 @@ export class NatureSoundscape {
         return buffer;
       };
       this.#noise = makeBuffer([result.voiceNoise]);
-      this.#convolver.buffer = makeBuffer([result.impulseLeft, result.impulseRight]);
+      const impulse = makeBuffer([result.impulseLeft, result.impulseRight]);
+      this.#regionalConvolver.buffer = impulse;
+      this.#worldConvolver.buffer = impulse;
+      this.#effectsConvolver.buffer = impulse;
       this.#wind?.setNoiseBuffer(makeBuffer([result.windLeft, result.windRight]));
       this.#buffersReady = true;
     }).catch((error) => {
@@ -550,7 +598,7 @@ export class NatureSoundscape {
     panner.connect(this.#bus);
     const send = ctx.createGain();
     send.gain.value = region.character.reverb * Number(NATURE_AUDIO_TUNING.values.reverb);
-    panner.connect(send).connect(this.#reverbSend);
+    panner.connect(send).connect(this.#regionalReverbSend);
 
     const level = Number(NATURE_AUDIO_TUNING.values.voices) * (0.7 + Math.random() * 0.35);
     const dur = VOICE_LIB[kind]({ ctx, out: panner, t0: now + 0.02, noise: this.#noise, rng: Math.random, level });

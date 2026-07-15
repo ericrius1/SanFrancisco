@@ -40,6 +40,8 @@
     "test:drum-bridge": "node tools/drum-bridge-probe.mjs",
     "test:mission-dolores": "node --experimental-strip-types tools/mission-dolores-contract-test.mjs",
     "test:car-jump": "node --experimental-strip-types tools/car-jump-physics-probe.mjs",
+    "test:player-audio": "node --experimental-strip-types tools/audio-mixer-probe.mjs && node --experimental-strip-types tools/player-foley-audio-probe.mjs && node --experimental-strip-types tools/jump-landing-audio-probe.mjs",
+    "test:player-audio:browser": "node tools/player-audio-browser-probe.mjs",
     "test:car-customizer": "node tools/car-customizer-probe.mjs",
     "test:terrain-collision": "node tools/terrain-collision-probe.mjs",
     "test:terrain-clipmap": "node --experimental-strip-types tools/terrain-clipmap-probe.mjs",

@@ -1,26 +1,30 @@
 /**
- * Master audio preferences (mute toggle + music/effects/voice sliders in the HUD).
+ * Master audio preferences (mute + a compact music/effects/world/voice mixer).
  * Stored under its own localStorage key — deliberately outside the "/" tweak
  * store, so a factory reset (".") doesn't blast the speakers back on.
- * Consumers poll musicAudioLevel(), effectsAudioLevel() or voiceAudioLevel();
+ * Consumers poll the matching group level; environmental beds use
+ * soundscapeAudioLevel(), while player/action feedback uses effectsAudioLevel().
  * vehicle hum reads every frame, fireworks read per triggered sound, voice
  * applies per peer, corona songs poll music.
  */
 
 const KEY = "sf-audio";
+const SCHEMA = 2;
 
 export type AudioPrefs = {
   musicVolume: number;
   effectsVolume: number;
+  soundscapeVolume: number;
   voiceVolume: number;
   enabled: boolean;
 };
 
 const DEFAULTS: AudioPrefs = {
-  // Music defaults near FX so corona songs sit in the same mix ballpark.
+  // Foreground feedback starts decisively above the always-on world bed.
   musicVolume: 0.42,
-  // Voice defaults a little hotter than FX so proximity chat cuts through the mix.
-  effectsVolume: 0.42,
+  effectsVolume: 0.68,
+  soundscapeVolume: 0.25,
+  // Voice stays present enough for proximity chat to cut through the mix.
   voiceVolume: 0.62,
   enabled: true
 };
@@ -31,26 +35,17 @@ function clamp01(n: number) {
 
 export const AUDIO_PREFS: AudioPrefs = (() => {
   try {
-    const s = JSON.parse(localStorage.getItem(KEY) ?? "{}") as Partial<
-      AudioPrefs & { volume?: number }
-    >;
-    const legacy = typeof s.volume === "number" ? clamp01(s.volume) : null;
-    const effectsVolume =
-      typeof s.effectsVolume === "number"
-        ? clamp01(s.effectsVolume)
-        : legacy ?? DEFAULTS.effectsVolume;
+    const s = JSON.parse(localStorage.getItem(KEY) ?? "{}") as Partial<AudioPrefs> & {
+      schema?: number;
+    };
+    // One current settings shape: incompatible stored mixes reset cleanly.
+    if (s.schema !== SCHEMA) return { ...DEFAULTS };
     return {
-      // Music used to ride the effects slider; seed from it when missing so the
-      // corona song doesn't jump when the third slider lands.
-      musicVolume:
-        typeof s.musicVolume === "number" ? clamp01(s.musicVolume) : effectsVolume,
-      effectsVolume,
-      voiceVolume:
-        typeof s.voiceVolume === "number"
-          ? clamp01(s.voiceVolume)
-          : legacy != null
-            ? clamp01(legacy * 1.25)
-            : DEFAULTS.voiceVolume,
+      musicVolume: typeof s.musicVolume === "number" ? clamp01(s.musicVolume) : DEFAULTS.musicVolume,
+      effectsVolume: typeof s.effectsVolume === "number" ? clamp01(s.effectsVolume) : DEFAULTS.effectsVolume,
+      soundscapeVolume:
+        typeof s.soundscapeVolume === "number" ? clamp01(s.soundscapeVolume) : DEFAULTS.soundscapeVolume,
+      voiceVolume: typeof s.voiceVolume === "number" ? clamp01(s.voiceVolume) : DEFAULTS.voiceVolume,
       enabled: typeof s.enabled === "boolean" ? s.enabled : DEFAULTS.enabled
     };
   } catch {
@@ -59,7 +54,7 @@ export const AUDIO_PREFS: AudioPrefs = (() => {
 })();
 
 export function saveAudioPrefs() {
-  localStorage.setItem(KEY, JSON.stringify(AUDIO_PREFS));
+  localStorage.setItem(KEY, JSON.stringify({ schema: SCHEMA, ...AUDIO_PREFS }));
 }
 
 /** 0 when muted; volume² otherwise (perceptual taper so mid-slider feels mid-loud). */
@@ -73,6 +68,10 @@ export function musicAudioLevel() {
 
 export function effectsAudioLevel() {
   return levelFrom(AUDIO_PREFS.effectsVolume);
+}
+
+export function soundscapeAudioLevel() {
+  return levelFrom(AUDIO_PREFS.soundscapeVolume);
 }
 
 export function voiceAudioLevel() {
