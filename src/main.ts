@@ -18,6 +18,7 @@ import {
 } from "./gameplay/surfing/shack";
 import { Sky, SKY_TUNING } from "./world/sky";
 import { Water } from "./world/water";
+import { emitEmbodimentWaterEcho } from "./world/waterEchoes";
 import { UnderwaterOverlay } from "./fx/underwater";
 import { syncBallGlowNight } from "./fx/ballGlow";
 import { SeaPillars } from "./world/seaPillars";
@@ -4503,6 +4504,13 @@ async function boot() {
     // elapsed here let the visible crest and barrel envelope drift away after
     // loading, pause, or deterministic headless stepping.
     const surfaceTime = player.mode === "surf" ? player.time : elapsed;
+    water.echoes.beginFrame(surfaceTime, camera);
+    const activeEchoMesh = player.meshes[player.mode];
+    const birdReady = player.mode !== "bird" || Boolean(activeEchoMesh.userData.rig);
+    if (activeEchoMesh.visible && birdReady) {
+      emitEmbodimentWaterEcho(water.echoes, player);
+    }
+    water.echoes.endFrame();
     water.update(surfaceTime, camera.position, player.renderPosition, player.mode === "surf");
     const surfTubeState = player.surfTelemetry.tubeState;
     const surfTubeVisibility =
