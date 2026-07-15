@@ -124,8 +124,14 @@ import { Satchel } from "./ui/satchel";
 import { HUD } from "./ui/hud";
 import { ShareButton } from "./ui/share";
 import { PauseToggle } from "./ui/pauseToggle";
-// The launcher and reader are both dynamically deferred until after the core reveal.
-import { parseReadLink, openReadLink } from "./ui/deepLinks";
+// The launcher and reader stay dynamically loaded; a reading entry may create
+// the shared reader before this game module begins.
+import { beganAsReadingVisit, initialReadLink } from "./app/startupIntent";
+import {
+  getBehindTheScenes,
+  openBehindTheScenes,
+  subscribeBehindTheScenes
+} from "./ui/behindTheScenesHost";
 import { Tutorial } from "./ui/tutorial";
 import { createRenderPipeline } from "./render/pipeline";
 import { POSTFX_TUNING, setFlowPostFx } from "./render/postfx";
@@ -312,7 +318,7 @@ async function boot() {
     const autoStartHiroTour = arrivalQuery.get("tour") === "hiro";
     const invite = parseInviteIntent(location.search);
     const reloadCandidate = import.meta.env.DEV ? consumeDevReloadSnapshot() : null;
-    const devReload = invite || parseReadLink(location.search) || arrivalQuery.has("demo")
+    const devReload = invite || beganAsReadingVisit || arrivalQuery.has("demo")
       ? null
       : reloadCandidate;
     const resumed = invite || requestedSpawn ? null : (devReload?.player ?? loadPlayerState());
@@ -1628,8 +1634,6 @@ async function boot() {
   // ephemeral text chat (T to type) — fire-and-forget over the relay, no history.
   // Esc-blur must not re-lock (see Escape priority stack below); Enter-submit may.
   let skipChatRelock = false;
-  // Constructed in the deferred loader; Escape stack checks .open when present.
-  let behindTheScenes: { isOpen: boolean; setOpen(open: boolean): void } | null = null;
   const chat = new Chat(
     (text) => {
       chat.addMessage(net.name, text, true); // local echo (server doesn't bounce back to sender)
@@ -1961,10 +1965,11 @@ async function boot() {
   // exit, so overlay dismissal also listens on keyup: one Esc both unlocks
   // (browser) and closes the overlay when the keydown was swallowed.
   const dismissEscapeOverlay = (e: KeyboardEvent): boolean => {
+    const reader = getBehindTheScenes();
     if (missionDolores?.bookOpen) {
       missionDolores.closeBook();
-    } else if (behindTheScenes?.isOpen) {
-      behindTheScenes.setOpen(false);
+    } else if (reader?.isOpen) {
+      reader.setOpen(false);
     } else if (minimap.expanded) {
       minimap.setExpanded(false);
     } else {
@@ -2257,21 +2262,8 @@ async function boot() {
     // it drops back to the normal start screen instead of leaving them mid-modal.
     if (!open) document.body.classList.remove("reading");
   };
-  let btsCtor: Promise<void> | null = null;
-  const ensureBehindTheScenes = (): Promise<void> => {
-    if (behindTheScenes) return Promise.resolve();
-    if (!btsCtor) {
-      btsCtor = import("./ui/behindTheScenes")
-        .then(({ BehindTheScenes }) => {
-          if (!behindTheScenes) behindTheScenes = new BehindTheScenes(onBtsToggle);
-        })
-        .catch((error) => {
-          btsCtor = null;
-          throw error;
-        });
-    }
-    return btsCtor;
-  };
+  const unsubscribeBehindTheScenes = subscribeBehindTheScenes(onBtsToggle);
+  import.meta.hot?.dispose(unsubscribeBehindTheScenes);
   let btsLauncherMounted = false;
   const mountBehindTheScenesLauncher = async () => {
     if (btsLauncherMounted) return;
@@ -2279,8 +2271,7 @@ async function boot() {
     const { BehindTheScenesLauncher } = await import("./ui/behindTheScenesLauncher");
     new BehindTheScenesLauncher(
       async () => {
-        await ensureBehindTheScenes();
-        behindTheScenes?.setOpen(true);
+        await openBehindTheScenes();
       },
       (error) => {
         console.warn("[bts] reader load failed:", error);
@@ -2292,9 +2283,12 @@ async function boot() {
   // world still streaming behind it (no game entry, no name gate); closing it lands
   // on the normal start screen. Build the panel ASAP instead of waiting for the
   // deferred loader, and let `body.reading` reveal just the modal over the folio.
-  if (parseReadLink(location.search)) {
+  if (initialReadLink && !getBehindTheScenes()?.isOpen) {
     document.body.classList.add("reading");
-    void ensureBehindTheScenes().then(() => openReadLink());
+    void openBehindTheScenes(initialReadLink.sub).catch((error) => {
+      document.body.classList.remove("reading");
+      console.warn("[bts] reader load failed:", error);
+    });
   }
 
   // Debug overlays ("/" → overlays). Off unless toggled; tick gathers active
@@ -3480,7 +3474,7 @@ async function boot() {
   // human identity gate. `?startscreen=1` keeps the real onboarding path easy
   // to inspect. Deployed browser tests opt in explicitly with `?autostart=1`.
   const autoEnter =
-    !parseReadLink(location.search) &&
+    !beganAsReadingVisit &&
     !bootQuery.has("startscreen") &&
     (import.meta.env.DEV || ["autostart", "demo", "profile"].some((key) => bootQuery.has(key)));
   // Explicit headless verification, demos and perf runs also skip the settle
@@ -3491,7 +3485,7 @@ async function boot() {
   // name prefilled in the form. Deployed tests still opt in via `?autostart` etc.
   // (handled by `autoEnter` above).
   const autoStartSaved =
-    !parseReadLink(location.search) &&
+    !beganAsReadingVisit &&
     !bootQuery.has("startscreen") &&
     Boolean(devReload?.started);
   const revealWorld = (reason = "settled") => {
@@ -3589,7 +3583,7 @@ async function boot() {
     revealWorld("skip-gate");
   }
 
-  // A shared `?read=` link is handled earlier (see ensureBehindTheScenes): the
+  // A shared `?read=` link is handled earlier by startup.ts: the
   // panel is already opening over the loading folio while the world settles here
   // in the background. No auto-enter — the visitor meets the start screen only
   // when they close the panel.

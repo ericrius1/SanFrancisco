@@ -4,8 +4,8 @@
  * WebGPU renderer, Box3D physics (compiled to WASM), and the multiplayer relay.
  * Lives in the top-right HUD stack under Tutorial, next to X/GitHub links.
  *
- * Self-contained: it owns its own DOM and Escape/backdrop close. main.ts only
- * hands it an `onToggle` so it can free the pointer lock while you're reading.
+ * Self-contained: it owns its own DOM and Escape/backdrop close. The shared host
+ * forwards toggle state so main.ts can free the pointer lock while you're reading.
  */
 
 import { registerShareable, buildReadUrl, type ShareableModal } from "./deepLinks";
@@ -675,6 +675,11 @@ export class BehindTheScenes implements ShareableModal {
   /** ShareableModal: the tab on screen, so a link points back at it. */
   shareSub(): string | undefined {
     return this.#activeTab;
+  }
+
+  /** Resolves once the selected chapter's lazy UI has mounted (or shown its retry state). */
+  whenReady(): Promise<void> {
+    return this.#ensureTabLoaded(this.#activeTab);
   }
 
   #selectTab(id: string) {

@@ -4,13 +4,29 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <script>
-      // Boot-critical data starts downloading before the module graph parses (main.ts consumes via __sfPrefetch).
-      window.__sfPrefetch = Object.fromEntries(
-        ["/data/meta.json","/data/heightmap.bin","/data/surface.bin","/data/groundtop-delta.bin","/data/manifest.json"].map((u) => [u, fetch(u)])
-      );
+      (() => {
+        const read = new URLSearchParams(location.search).get("read") || "";
+        const readingEntry = read === "bts" || read.startsWith("bts.");
+        if (readingEntry) document.documentElement.classList.add("reading-entry");
+
+        // Normal visits retain the earliest possible city prefetch. A reading
+        // entry calls this only after its selected chapter has painted.
+        window.__sfStartPrefetch = () => {
+          if (window.__sfPrefetch) return;
+          const cover = document.createElement("link");
+          cover.rel = "preload";
+          cover.href = "/ui/san-francisco-survey-map.webp";
+          cover.as = "image";
+          cover.type = "image/webp";
+          document.head.appendChild(cover);
+          window.__sfPrefetch = Object.fromEntries(
+            ["/data/meta.json","/data/heightmap.bin","/data/surface.bin","/data/groundtop-delta.bin","/data/manifest.json"].map((u) => [u, fetch(u)])
+          );
+        };
+        if (!readingEntry) window.__sfStartPrefetch();
+      })();
     </script>
     <title>San Francisco</title>
-    <link rel="preload" href="/ui/san-francisco-survey-map.webp" as="image" type="image/webp" />
     <link
       rel="preload"
       href="/fonts/Newsreader-Variable.woff2"
@@ -3655,7 +3671,6 @@
         position: absolute;
         inset: 0;
         z-index: -2;
-        background-image: url("/ui/san-francisco-survey-map.webp");
         background-repeat: no-repeat;
         background-position: 44% 47%;
         background-size: max(900px, 80vw) auto;
@@ -3663,6 +3678,9 @@
         transform-origin: 62% 40%;
         animation: atlas-drift 54s ease-in-out infinite alternate;
         will-change: transform;
+      }
+      html:not(.reading-entry) #loading::before {
+        background-image: url("/ui/san-francisco-survey-map.webp");
       }
       /* Slow "living atlas" push toward the Golden Gate. */
       @keyframes atlas-drift {
@@ -4449,6 +4467,6 @@
         <div class="start-imprint">Pacific coast · A city in motion</div>
       </main>
     </div>
-    <script type="module" src="/src/main.ts"></script>
+    <script type="module" src="/src/startup.ts"></script>
   </body>
 </html>
