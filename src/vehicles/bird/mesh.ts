@@ -1,10 +1,10 @@
 import * as THREE from "three/webgpu";
 
 /**
- * Playable phoenix, loaded from /models/phoenix.glb. The GLB faces +Z so the
- * model hangs under a π-yawed wrapper to match the game convention (front is
- * local -Z). Its baked FlyCycle clip is never played — the controller poses
- * the skeleton procedurally from flight state instead.
+ * Playable phoenix, loaded lazily from /models/phoenix-hero.glb. The hero faces
+ * +X and hangs under a quarter-turn wrapper to match the game convention
+ * (front is local -Z). The controller poses its purpose-built skeleton from
+ * flight state; baked feather masks drive GPU-only secondary plumage motion.
  *
  * Each animated bone is wrapped in a BoneCtl snapshotting its rest quaternion
  * plus the rig-space axes expressed in the bone's parent frame. poseBone then
@@ -17,9 +17,9 @@ import * as THREE from "three/webgpu";
 export type BoneCtl = {
   bone: THREE.Bone;
   rest: THREE.Quaternion;
-  axX: THREE.Vector3; // rig-space right/left axis (GLB left wing points +X)
+  axX: THREE.Vector3; // rig-space lateral axis (GLB left wing points -Z)
   axY: THREE.Vector3; // rig-space up
-  axZ: THREE.Vector3; // rig-space facing (+Z toward the beak, pre-flip)
+  axZ: THREE.Vector3; // rig-space facing (+X toward the beak, pre-wrapper)
 };
 
 export type BirdRig = {
@@ -56,7 +56,7 @@ const activations = new WeakMap<THREE.Group, Promise<void>>();
 /**
  * First-use gate for the imported phoenix. The lightweight embodiment root is
  * present from boot so controllers/trails retain stable references, while the
- * loader, plumage builders and GLB stay in a separate chunk until bird mode is
+ * loader, GPU plumage material and GLB stay in a separate chunk until bird mode is
  * actually selected.
  */
 export function activateBirdAssets(root: THREE.Group): Promise<void> {

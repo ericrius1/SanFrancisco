@@ -1,12 +1,15 @@
 import * as THREE from "three/webgpu";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
-import { LIGHT_SCALE } from "../../config";
 import { applyVehicleShadowPolicy } from "../shadows";
-import { dressPhoenix } from "./feathers";
 import type { BirdRig, BoneCtl } from "./mesh";
+import { applyPhoenixPlumage } from "./plumage";
 
-const PHOENIX_SCALE = 1.26; // 3× the original 0.42 — a proper mount, not a lap pet
+const PHOENIX_SCALE = 1.26;
+const PHOENIX_URL = "/models/phoenix-hero.glb";
+const LEFT = new THREE.Vector3(0, 0, -1);
+const UP = new THREE.Vector3(0, 1, 0);
+const FORWARD = new THREE.Vector3(1, 0, 0);
 
 export function loadBirdAssets(root: THREE.Group): Promise<void> {
   const loader = new GLTFLoader();
@@ -14,7 +17,7 @@ export function loadBirdAssets(root: THREE.Group): Promise<void> {
 
   return new Promise<void>((resolve, reject) => {
     loader.load(
-      "/models/phoenix.glb",
+      PHOENIX_URL,
       (gltf) => {
         try {
           const scene = gltf.scene;
@@ -31,25 +34,22 @@ export function loadBirdAssets(root: THREE.Group): Promise<void> {
             mesh.visible = true;
             mesh.frustumCulled = false;
             shadowCasters.push(mesh);
-            const materials = (Array.isArray(mesh.material) ? mesh.material : [mesh.material]) as THREE.MeshStandardMaterial[];
-            for (const material of materials) {
-              if (!material.emissive || material.emissive.getHex() === 0) continue;
-              material.emissiveIntensity *= material.name === "MatEye" ? LIGHT_SCALE : LIGHT_SCALE * 0.25;
-            }
+            applyPhoenixPlumage(mesh);
           });
           applyVehicleShadowPolicy(scene, shadowCasters);
 
-          // Capture rig-space axes before the wrapper flip so controller poses
-          // remain in the source rig's +Z-beak/+X-left-wing convention.
+          // Capture semantic rig axes before the wrapper yaw. This hero faces
+          // +X, with its left wing along -Z; the controller can continue to
+          // think in lateral/up/forward rotations regardless of bone roll.
           const control = (bone: THREE.Bone | undefined, name: string): BoneCtl => {
             if (!bone?.parent) throw new Error(`phoenix rig is missing ${name}`);
             const inverseParent = bone.parent.getWorldQuaternion(new THREE.Quaternion()).invert();
             return {
               bone,
               rest: bone.quaternion.clone(),
-              axX: new THREE.Vector3(1, 0, 0).applyQuaternion(inverseParent),
-              axY: new THREE.Vector3(0, 1, 0).applyQuaternion(inverseParent),
-              axZ: new THREE.Vector3(0, 0, 1).applyQuaternion(inverseParent)
+              axX: LEFT.clone().applyQuaternion(inverseParent),
+              axY: UP.clone().applyQuaternion(inverseParent),
+              axZ: FORWARD.clone().applyQuaternion(inverseParent)
             };
           };
           const rig: BirdRig = {
@@ -74,10 +74,18 @@ export function loadBirdAssets(root: THREE.Group): Promise<void> {
             ]
           };
 
-          // Plumage placement uses rest-world quaternions and therefore runs
-          // before the wrapper flip/scale.
-          root.userData.trailPoints = dressPhoenix(bones, true);
-          scene.rotation.y = Math.PI;
+          const attachment = (name: string) => {
+            const object = scene.getObjectByName(name);
+            if (!object) throw new Error(`phoenix handoff is missing ${name}`);
+            return object;
+          };
+          root.userData.trailPoints = [attachment("PHX_Gen_Trail_L"), attachment("PHX_Gen_Trail_R")];
+          root.userData.fireCore = attachment("PHX_Gen_Fire_Core");
+          root.userData.wingTips = [attachment("PHX_Gen_Wingtip_L"), attachment("PHX_Gen_Wingtip_R")];
+          root.userData.phoenixAsset = { url: PHOENIX_URL, lod: 0, featherMode: "tsl-vertex" };
+
+          // Asset +X becomes the game's local -Z forward convention.
+          scene.rotation.y = Math.PI * 0.5;
           scene.scale.setScalar(PHOENIX_SCALE);
           root.add(scene);
           root.userData.rig = rig;
