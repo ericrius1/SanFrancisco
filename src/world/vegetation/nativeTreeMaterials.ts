@@ -8,7 +8,7 @@ import {
   mix,
   normalLocal,
   normalMap,
-  normalView,
+  normalViewGeometry,
   positionLocal,
   texture,
   transformNormalToView,
@@ -90,22 +90,29 @@ const silhouetteStyleNodes: NativeTreeStyleNodes = Object.freeze({
 // SpeedTree/SeedThree "Global Smoothing": the far/horizon crowns are crossed leaf
 // cards, so shading off the card's own facing normal reads as flat cardboard —
 // undersides go black as the sun swings. Instead we remap the shading normal to a
-// crown DOME: the direction from the canopy centre out to the leaf, lifted toward
-// the sky (hemispherical) so undersides still catch light, blended over the card
-// normal. The same normal is used on both faces (no back-side negate) so nothing
-// blacks out. Per-design canopy centre arrives as a shared materialReference, so
-// all designs still collapse to ONE pipeline per grade.
+// crown DOME: the ellipsoid surface normal from the canopy centre out to the leaf,
+// lifted toward the sky (hemispherical) so undersides still catch light, blended
+// over the unflipped card normal. Using the compiled canopy radii matters: a tall
+// redwood and a broad cypress should not shade as the same sphere. The same normal
+// is used on both faces (no back-side negate) so nothing blacks out. Per-design
+// canopy data arrives as shared materialReferences, so all designs still collapse
+// to ONE pipeline per grade.
 const CANOPY_DOME_UP = 0.35; // hemispherical lift of the dome normal toward +Y
 const CANOPY_DOME_BLEND = 0.72; // how far to pull the card normal toward the dome
 const silhouetteCanopyCenter: N = materialReference("nativeTreeCanopyCenter", "vec3");
+const silhouetteCanopyRadii: N = materialReference("nativeTreeCanopyRadii", "vec3");
 const DEFAULT_CANOPY_CENTER: readonly [number, number, number] = [0, 5, 0];
+const DEFAULT_CANOPY_RADII: readonly [number, number, number] = [4, 5, 4];
 
 function domeFoliageNormal(): N {
   const anchor: N = attribute("aTreeAnchor", "vec3");
   const yaw: N = attribute("aTreeYaw", "vec4"); // sin, cos, palette, dryness
   const radial = anchor.sub(silhouetteCanopyCenter);
-  const unit = radial.div(radial.length().max(1e-4));
-  const dome = unit.add(vec3(0, CANOPY_DOME_UP, 0)).normalize();
+  const radii = silhouetteCanopyRadii.max(vec3(1e-3));
+  // Gradient of (x/a)^2 + (y/b)^2 + (z/c)^2 = 1. This produces the
+  // outward normal of the compiled canopy ellipsoid, not merely its radius.
+  const dome = radial.div(radii.mul(radii)).normalize()
+    .add(vec3(0, CANOPY_DOME_UP, 0)).normalize();
   // Rotate by the instance yaw exactly as nativeInstancePosition rotates the card
   // normal, so the dome tracks each tree's orientation instead of world-locking.
   const rotated = vec3(
@@ -113,14 +120,18 @@ function domeFoliageNormal(): N {
     dome.y,
     dome.z.mul(yaw.y).sub(dome.x.mul(yaw.x))
   ).normalize();
-  return mix(normalView, transformNormalToView(rotated), CANOPY_DOME_BLEND).normalize();
+  // normalViewGeometry deliberately skips DoubleSide's faceDirection negate.
+  // The silhouette is a volume proxy; both sides of a card must shade as the
+  // same piece of crown instead of cancelling toward black on the back face.
+  return mix(normalViewGeometry, transformNormalToView(rotated), CANOPY_DOME_BLEND).normalize();
 }
 
 function applySilhouetteStyle(
   material: THREE.Material,
   style: NativeTreeStyle,
   gradeIndex: 2 | 3,
-  canopyCenter: readonly [number, number, number] = DEFAULT_CANOPY_CENTER
+  canopyCenter: readonly [number, number, number] = DEFAULT_CANOPY_CENTER,
+  canopyRadii: readonly [number, number, number] = DEFAULT_CANOPY_RADII
 ): void {
   const target = material as N;
   target.nativeTreeFoliageColor = new THREE.Color(style.foliageColor);
@@ -130,6 +141,7 @@ function applySilhouetteStyle(
   target.nativeTreeWindAmplitude = style.windAmplitude;
   target.nativeTreeWindGrade = WIND_BY_GRADE[gradeIndex];
   target.nativeTreeCanopyCenter = new THREE.Vector3(canopyCenter[0], canopyCenter[1], canopyCenter[2]);
+  target.nativeTreeCanopyRadii = new THREE.Vector3(canopyRadii[0], canopyRadii[1], canopyRadii[2]);
 }
 
 function treeInstanceNodes(): Readonly<{
@@ -367,12 +379,13 @@ const silhouetteFoliageNodes = Object.freeze({
 function landscapeFoliageMaterial(
   style: NativeTreeStyle,
   assets: NativeTreeMaterialAssets,
-  canopyCenter: readonly [number, number, number]
+  canopyCenter: readonly [number, number, number],
+  canopyRadii: readonly [number, number, number]
 ): THREE.MeshLambertNodeMaterial {
   const gradeIndex = 2;
   const material = new THREE.MeshLambertNodeMaterial();
   configureCommon(material, `native-tree:${assets.id}:foliage:far`);
-  applySilhouetteStyle(material, style, gradeIndex, canopyCenter);
+  applySilhouetteStyle(material, style, gradeIndex, canopyCenter, canopyRadii);
   material.side = THREE.DoubleSide;
   material.shadowSide = THREE.DoubleSide;
   // At this distance the denser compiler shapes form one crown cluster. Keeping
@@ -389,12 +402,13 @@ function landscapeFoliageMaterial(
 function horizonFoliageMaterial(
   style: NativeTreeStyle,
   assets: NativeTreeMaterialAssets,
-  canopyCenter: readonly [number, number, number]
+  canopyCenter: readonly [number, number, number],
+  canopyRadii: readonly [number, number, number]
 ): THREE.MeshLambertNodeMaterial {
   const gradeIndex = 3;
   const material = new THREE.MeshLambertNodeMaterial();
   configureCommon(material, `native-tree:${assets.id}:foliage:horizon`);
-  applySilhouetteStyle(material, style, gradeIndex, canopyCenter);
+  applySilhouetteStyle(material, style, gradeIndex, canopyCenter, canopyRadii);
   material.side = THREE.DoubleSide;
   // Native compiler silhouettes are real geometry, so the horizon grade needs
   // no texture or alpha overdraw at all.
@@ -415,7 +429,8 @@ function horizonFoliageMaterial(
 export function createNativeTreeMaterials(
   style: NativeTreeStyle,
   assets: NativeTreeMaterialAssets,
-  canopyCenter: readonly [number, number, number] = DEFAULT_CANOPY_CENTER
+  canopyCenter: readonly [number, number, number] = DEFAULT_CANOPY_CENTER,
+  canopyRadii: readonly [number, number, number] = DEFAULT_CANOPY_RADII
 ): NativeTreeMaterials {
   const branch: NativeTreeMaterialTuple = Object.freeze([
     texturedBranchMaterial(style, assets, 0),
@@ -426,8 +441,8 @@ export function createNativeTreeMaterials(
   const foliage: NativeTreeMaterialTuple = Object.freeze([
     texturedFoliageMaterial(style, assets, 0),
     texturedFoliageMaterial(style, assets, 1),
-    landscapeFoliageMaterial(style, assets, canopyCenter),
-    horizonFoliageMaterial(style, assets, canopyCenter)
+    landscapeFoliageMaterial(style, assets, canopyCenter, canopyRadii),
+    horizonFoliageMaterial(style, assets, canopyCenter, canopyRadii)
   ]);
   let disposed = false;
   return Object.freeze({

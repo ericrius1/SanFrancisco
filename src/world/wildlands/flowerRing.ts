@@ -856,8 +856,12 @@ type FlowerBucket = {
 };
 
 const HERO_CAPACITY_PER_SPECIES = 640;
-const MID_SECTORS = 6;
-const MID_CAPACITY_PER_SPECIES_SECTOR = 768;
+// Four quadrants retain meaningful behind-camera culling for the mid ring while
+// avoiding a thicket of nearly empty species draws (the R2 scatter exposed 33
+// live draws with six sectors). Capacity grows proportionally, preserving the
+// exact supported population and reserved-memory envelope.
+const MID_SECTORS = 4;
+const MID_CAPACITY_PER_SPECIES_SECTOR = 1152;
 const FAR_SECTORS = 10;
 const FAR_CAPACITY_PER_SECTOR = 1536;
 const FLOWER_INSTANCE_BYTES = (16 + 3 + 4) * Float32Array.BYTES_PER_ELEMENT;

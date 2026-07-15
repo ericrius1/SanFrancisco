@@ -1,6 +1,7 @@
-// CPU benchmark for Wildlands grass streaming. It runs the real deterministic
-// sampler on a flat Golden Gate Park fixture and records both immediate update
-// cost and any bounded scheduler slices used to finish the exact tile set.
+// CPU-side benchmark for the part of Wildlands grass that still belongs on the
+// CPU: paging the player-following RGBA foliage field. Actual grass placement,
+// compaction and indirect command generation are covered by the browser WebGPU
+// probe in tools/grass-orbit.mjs.
 //
 //   node --expose-gc tools/wild-grass-streaming-benchmark.mjs
 
@@ -35,14 +36,8 @@ if (process.env.SF_WILD_GRASS_BENCH_BUNDLED !== "1") {
   process.exit(result.status ?? 1);
 }
 
-const store = new Map();
-globalThis.localStorage = {
-  getItem: (key) => store.get(key) ?? null,
-  setItem: (key, value) => store.set(key, String(value)),
-  removeItem: (key) => store.delete(key)
-};
-
-const { createWildGrass } = await import("../src/world/wildlands/grassField.ts");
+const { FoliageField, FOLIAGE_FIELD_SIZE } =
+  await import("../src/world/groundcover/foliageField.ts");
 const { createFrameScheduler } = await import("../src/core/frameBudget.ts");
 
 const percentile = (values, p) => {
@@ -60,129 +55,113 @@ const summarize = (values) => ({
 });
 
 const scheduled = [];
-const schedulerSlices = [];
-const schedule = (job) => scheduled.push(job);
+const slices = [];
+const field = new FoliageField({
+  groundHeight: (x, z) => 74 + Math.sin(x * 0.008) * 4 + Math.cos(z * 0.006) * 3,
+  plantable: (x, z) => ((Math.floor(x) * 31 + Math.floor(z) * 17) & 15) !== 0,
+  schedule: (job) => scheduled.push(job)
+});
 const drain = (limit = 1_000_000) => {
   let turns = 0;
-  while (scheduled.length > 0 && turns < limit) {
+  while (scheduled.length > 0) {
+    assert(turns++ < limit, "foliage field scheduler failed to settle");
     const job = scheduled.shift();
     const started = performance.now();
-    const result = job();
-    schedulerSlices.push(performance.now() - started);
-    if (result === "again") scheduled.push(job);
-    turns++;
+    const again = job();
+    slices.push(performance.now() - started);
+    if (again === "again") scheduled.push(job);
   }
-  assert(turns < limit, `grass scheduler failed to settle after ${limit} slices`);
   return turns;
 };
 
 globalThis.gc?.();
 const heapBefore = process.memoryUsage().heapUsed;
-const grass = createWildGrass({
-  groundHeight: () => 75,
-  surfaceType: () => 1,
-  isWater: () => false
-}, undefined, { schedule });
-
-const origin = { x: -4000, z: 2440 };
-const updateDurations = [];
-const timedUpdate = (focus) => {
-  const started = performance.now();
-  grass.update(focus);
-  const elapsed = performance.now() - started;
-  updateDurations.push(elapsed);
-  return elapsed;
-};
-
-const initialImmediateMs = timedUpdate(origin);
-const initialSlicesBefore = schedulerSlices.length;
+const origin = { x: -4600, z: 2080 };
+const initialStarted = performance.now();
+const initialPromise = field.request(origin);
 const initialTurns = drain();
-const initialSliceDurations = schedulerSlices.slice(initialSlicesBefore);
-const initialStats = structuredClone(grass.stats);
-assert(initialStats.count > 0, "initial fixture must produce grass");
+await initialPromise;
+const initialMs = performance.now() - initialStarted;
+const initialStats = { ...field.stats };
+assert.equal(initialStats.sampledCells, FOLIAGE_FIELD_SIZE ** 2);
+assert.equal(initialStats.fullRebuilds, 1);
 
-const movementImmediate = [];
+const movementRequests = [];
 const movementSlices = [];
+let priorSlice = slices.length;
 for (let step = 1; step <= 28; step++) {
-  // A shallow deterministic zig-zag repeatedly crosses 6m stream boundaries
-  // without leaving Golden Gate Park.
-  const focus = {
-    x: origin.x + step * 8,
-    z: origin.z + ((step % 6) - 3) * 5
-  };
-  const beforeSlices = schedulerSlices.length;
-  movementImmediate.push(timedUpdate(focus));
+  const focus = { x: origin.x + step * 6, z: origin.z };
+  const started = performance.now();
+  const promise = field.request(focus);
   drain();
-  movementSlices.push(...schedulerSlices.slice(beforeSlices));
+  await promise;
+  movementRequests.push(performance.now() - started);
+  movementSlices.push(...slices.slice(priorSlice));
+  priorSlice = slices.length;
 }
+const finalStats = { ...field.stats };
+const expectedMovementSamples = 28 * 6 * FOLIAGE_FIELD_SIZE;
+assert.equal(finalStats.sampledCells - initialStats.sampledCells, expectedMovementSamples);
+assert.equal(finalStats.slabUpdates, 28);
+
+// Also exercise the real app-wide build lane. This reports aggregate work per
+// scheduler turn rather than pretending Node can time the browser GPU dispatch.
+const scheduler = createFrameScheduler();
+const central = new FoliageField({
+  groundHeight: () => 75,
+  plantable: () => true,
+  schedule: (job) => scheduler.schedule("build", job)
+});
+const centralPromise = central.request(origin);
+const aggregateFrames = [];
+while (scheduler.pending > 0) {
+  assert(aggregateFrames.length < 10_000, "central foliage scheduler must settle");
+  const started = performance.now();
+  scheduler.run(1.5);
+  aggregateFrames.push(performance.now() - started);
+}
+await centralPromise;
 
 globalThis.gc?.();
-const heapAfterSettled = process.memoryUsage().heapUsed;
-const finalStats = structuredClone(grass.stats);
-const streaming = grass.group.userData.grassStreaming ?? null;
-
-// Measure the real app-wide scheduler integration, not four unconstrained rAF
-// callbacks. The central scheduler owns the aggregate per-frame budget.
-const centralScheduler = createFrameScheduler();
-const centrallyScheduledGrass = createWildGrass({
-  groundHeight: () => 75,
-  surfaceType: () => 1,
-  isWater: () => false
-}, undefined, {
-  schedule: (job) => centralScheduler.schedule("build", job)
-});
-centrallyScheduledGrass.update(origin);
-const aggregateFrames = [];
-let aggregateFrameGuard = 0;
-let criticalFrame = null;
-let criticalWallMs = null;
-const aggregateStarted = performance.now();
-while (centralScheduler.pending > 0) {
-  assert(aggregateFrameGuard++ < 10_000, "central grass scheduler must settle");
-  const started = performance.now();
-  centralScheduler.run(1.5);
-  aggregateFrames.push(performance.now() - started);
-  if (criticalFrame === null && centrallyScheduledGrass.group.userData.grassStreaming.criticalReady) {
-    criticalFrame = aggregateFrames.length;
-    criticalWallMs = performance.now() - aggregateStarted;
-  }
-}
-const aggregateScheduler = {
-  budgetMs: 1.5,
-  frames: aggregateFrames.length,
-  criticalFrame,
-  criticalSimulatedMsAt60Fps: criticalFrame === null ? null : rounded(criticalFrame * 1000 / 60),
-  criticalWallMs: criticalWallMs === null ? null : rounded(criticalWallMs),
-  frameWork: summarize(aggregateFrames),
-  grass: structuredClone(centrallyScheduledGrass.group.userData.grassStreaming)
-};
-centrallyScheduledGrass.dispose();
-
+const heapAfter = process.memoryUsage().heapUsed;
 const result = {
   generatedAt: new Date().toISOString(),
+  contract: {
+    fieldSize: FOLIAGE_FIELD_SIZE,
+    fieldCells: FOLIAGE_FIELD_SIZE ** 2,
+    fieldBytes: field.data.byteLength,
+    sixMetreSlabCells: 6 * FOLIAGE_FIELD_SIZE,
+    gpuCandidateThreads: 204_204,
+    fixedGpuOutputBytes: 204_204 * 48,
+    indirectCommandBytes: 80
+  },
   initial: {
-    immediateMs: rounded(initialImmediateMs),
+    wallMs: rounded(initialMs),
     schedulerTurns: initialTurns,
-    schedulerSlices: summarize(initialSliceDurations),
+    slices: summarize(slices.slice(0, initialTurns)),
     stats: initialStats
   },
   movement: {
-    immediate: summarize(movementImmediate),
-    schedulerSlices: summarize(movementSlices)
+    requests: summarize(movementRequests),
+    slices: summarize(movementSlices),
+    sampledCells: expectedMovementSamples
   },
-  allUpdates: summarize(updateDurations),
+  aggregateScheduler: {
+    budgetMs: 1.5,
+    frames: aggregateFrames.length,
+    frameWork: summarize(aggregateFrames),
+    stats: { ...central.stats }
+  },
   heap: {
     beforeBytes: heapBefore,
-    settledBytes: heapAfterSettled,
-    retainedDeltaBytes: heapAfterSettled - heapBefore,
-    retainedDeltaMiB: rounded((heapAfterSettled - heapBefore) / (1024 * 1024))
+    settledBytes: heapAfter,
+    retainedDeltaBytes: heapAfter - heapBefore
   },
-  finalStats,
-  streaming,
-  aggregateScheduler
+  finalStats
 };
 
 mkdirSync(OUT, { recursive: true });
 writeFileSync(path.join(OUT, "result.json"), `${JSON.stringify(result, null, 2)}\n`);
 console.log(JSON.stringify(result, null, 2));
-grass.dispose();
+field.dispose();
+central.dispose();

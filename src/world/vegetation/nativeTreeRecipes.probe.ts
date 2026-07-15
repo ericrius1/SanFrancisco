@@ -74,8 +74,9 @@ for (let speciesIndex = 0; speciesIndex < NATIVE_TREE_SPECIES.length; speciesInd
     assert(lod.bounds.sphereRadius > 0, `${species}/${lod.name} bounds are empty`);
     if (archetype.recipe.foliage.kind === "leaf") {
       const close = lodIndex <= 1;
-      const verticesPerAnchor = close ? 16 : 8;
-      const trianglesPerAnchor = close ? 8 : 6;
+      const leafletCount = lodIndex === 0 ? 6 : lodIndex === 1 ? 4 : 0;
+      const verticesPerAnchor = close ? leafletCount * 4 : 8;
+      const trianglesPerAnchor = close ? leafletCount * 2 : 6;
       assert(
         lod.foliage.vertices.length / FOLIAGE_VERTEX_STRIDE_FLOATS === expected * verticesPerAnchor,
         `${species}/${lod.name} broadleaf vertex budget changed`
@@ -85,7 +86,7 @@ for (let speciesIndex = 0; speciesIndex < NATIVE_TREE_SPECIES.length; speciesInd
         `${species}/${lod.name} broadleaf triangle budget changed`
       );
       if (close) {
-        // Each close anchor is four distinct leaflets staggered along one tiny
+        // Each close anchor is a set of distinct leaflets staggered along one tiny
         // implied twig rather than coincident cards forming one dark rosette.
         // The fixed stride makes this a deterministic compiler contract rather
         // than a screenshot-only assertion.
@@ -105,11 +106,11 @@ for (let speciesIndex = 0; speciesIndex < NATIVE_TREE_SPECIES.length; speciesInd
           a[1] - b[1],
           a[2] - b[2]
         );
-        const roots = [leafletAnchor(0), leafletAnchor(4), leafletAnchor(8), leafletAnchor(12)];
-        const tips = [position(2), position(6), position(10), position(14)];
-        assert(distance(roots[0], roots[1]) > 0.01 && distance(roots[0], roots[3]) < 0.4,
+        const roots = Array.from({ length: leafletCount }, (_, index) => leafletAnchor(index * 4));
+        const tips = Array.from({ length: leafletCount }, (_, index) => position(index * 4 + 2));
+        assert(distance(roots[0], roots[1]) > 0.01 && distance(roots[0], roots[roots.length - 1]) < 0.4,
           `${species}/${lod.name} close leaflet roots lost their compact stagger`);
-        assert(distance(tips[0], tips[1]) > 0.02 && distance(tips[2], tips[3]) > 0.02,
+        assert(distance(tips[0], tips[1]) > 0.02 && distance(tips[tips.length - 2], tips[tips.length - 1]) > 0.02,
           `${species}/${lod.name} close leaflets collapsed into one card`);
       }
     }

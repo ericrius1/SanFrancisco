@@ -283,11 +283,12 @@ const LEAF_SHAPE: FoliageShape = {
   indices: [0, 1, 2, 1, 3, 2, 2, 3, 4, 3, 5, 4, 4, 5, 6, 5, 7, 6]
 };
 
-// Close broadleaf anchors are small four-leaf twig clusters rather than two
+// Close broadleaf anchors are small twig clusters rather than two
 // coincident full-size cards. Alpha supplies each botanical silhouette, so a
 // two-triangle quad is both cleaner and cheaper than tracing transparent texel
-// corners in geometry. Four half-scale leaves preserve projected surface area
-// with the former 16 vertices and fewer triangles.
+// corners in geometry. The canopy grade spends six smaller leaflets; grove
+// keeps four. Both preserve roughly the old projected surface area while the
+// closest crown gains finer negative space and fewer conspicuous large planes.
 const CLOSE_LEAFLET_SHAPE: FoliageShape = {
   vertices: [
     [-0.5, 0, 0, 0],
@@ -298,18 +299,19 @@ const CLOSE_LEAFLET_SHAPE: FoliageShape = {
   indices: [0, 1, 2, 1, 3, 2]
 };
 
-const CLOSE_LEAFLET_COUNT = 4;
-const CLOSE_LEAFLET_FAN_ANGLES = [-0.42, 0.34, -0.16, 0.12] as const;
+const CLOSE_LEAFLET_FAN_ANGLES = [-0.52, 0.45, -0.24, 0.19, -0.08, 0.08] as const;
 const CLOSE_LEAFLET_FAN_WEIGHTS = CLOSE_LEAFLET_FAN_ANGLES.map((angle) =>
   [Math.cos(angle), Math.sin(angle)] as const
 );
-const CLOSE_LEAFLET_ROLL_ANGLES = [-0.48, 0.45, 0.13, -0.24] as const;
-const CLOSE_LEAFLET_LENGTH_SCALES = [0.54, 0.52, 0.51, 0.5] as const;
-const CLOSE_LEAFLET_WIDTH_SCALES = [0.51, 0.52, 0.53, 0.51] as const;
-const CLOSE_LEAFLET_ALONG_OFFSETS = [0, 0.12, 0.21, 0.32] as const;
-const CLOSE_LEAFLET_WIDTH_OFFSETS = [-0.05, 0.06, -0.04, 0.03] as const;
-const CLOSE_LEAFLET_PALETTE_OFFSETS = [-0.14, 0.1, -0.03, 0.16] as const;
-const CLOSE_LEAFLET_CAMBERS = [0.07, -0.06, 0.08, -0.07] as const;
+const CLOSE_LEAFLET_ROLL_ANGLES = [-0.52, 0.48, 0.18, -0.27, 0.36, -0.4] as const;
+const CLOSE_LEAFLET_ALONG_OFFSETS = [0, 0.1, 0.18, 0.27, 0.34, 0.41] as const;
+const CLOSE_LEAFLET_WIDTH_OFFSETS = [-0.07, 0.07, -0.045, 0.04, -0.025, 0.025] as const;
+const CLOSE_LEAFLET_PALETTE_OFFSETS = [-0.14, 0.1, -0.03, 0.16, -0.09, 0.06] as const;
+const CLOSE_LEAFLET_CAMBERS = [0.07, -0.06, 0.08, -0.07, 0.055, -0.05] as const;
+const CANOPY_LEAFLET_LENGTH_SCALES = [0.45, 0.43, 0.44, 0.42, 0.43, 0.42] as const;
+const CANOPY_LEAFLET_WIDTH_SCALES = [0.42, 0.44, 0.43, 0.42, 0.44, 0.43] as const;
+const GROVE_LEAFLET_LENGTH_SCALES = [0.54, 0.52, 0.51, 0.5] as const;
+const GROVE_LEAFLET_WIDTH_SCALES = [0.51, 0.52, 0.53, 0.51] as const;
 
 const BLADE_SHAPE: FoliageShape = {
   vertices: [
@@ -326,22 +328,38 @@ function usesCloseBroadleafCluster(recipe: TreeRecipe, lod: TreeLodRecipe): bool
   return recipe.foliage.kind === "leaf" && index >= 0 && index <= 1;
 }
 
+function closeBroadleafLeafletCount(recipe: TreeRecipe, lod: TreeLodRecipe): number {
+  if (recipe.foliage.kind !== "leaf") return 0;
+  const index = recipe.lods.findIndex((candidate) => candidate === lod || candidate.name === lod.name);
+  return index === 0 ? 6 : index === 1 ? 4 : 0;
+}
+
+function needleBladeCount(recipe: TreeRecipe, lod: TreeLodRecipe): number {
+  const authored = recipe.foliage.needleBlades ?? 3;
+  const index = recipe.lods.findIndex((candidate) => candidate === lod || candidate.name === lod.name);
+  // A third rolled spray is cheap at the two close grades and removes the
+  // unmistakable crossed-card profile when the camera gets inside a conifer
+  // crown. Distant grades retain their authored two-card silhouette budget.
+  return authored + (index >= 0 && index <= 1 && authored < 3 ? 1 : 0);
+}
+
 function foliageElementsPerAnchor(
   recipe: TreeRecipe,
   lod: TreeLodRecipe
 ): { vertices: number; indices: number } {
   switch (recipe.foliage.kind) {
     case "leaf":
+      const leafletCount = closeBroadleafLeafletCount(recipe, lod);
       return {
         vertices: usesCloseBroadleafCluster(recipe, lod)
-          ? CLOSE_LEAFLET_SHAPE.vertices.length * CLOSE_LEAFLET_COUNT
+          ? CLOSE_LEAFLET_SHAPE.vertices.length * leafletCount
           : LEAF_SHAPE.vertices.length,
         indices: usesCloseBroadleafCluster(recipe, lod)
-          ? CLOSE_LEAFLET_SHAPE.indices.length * CLOSE_LEAFLET_COUNT
+          ? CLOSE_LEAFLET_SHAPE.indices.length * leafletCount
           : LEAF_SHAPE.indices.length
       };
     case "needle": {
-      const blades = recipe.foliage.needleBlades ?? 3;
+      const blades = needleBladeCount(recipe, lod);
       return { vertices: BLADE_SHAPE.vertices.length * blades, indices: BLADE_SHAPE.indices.length * blades };
     }
     case "rosette": {
@@ -427,12 +445,15 @@ function emitLeaf(writer: FoliageWriter, recipe: TreeRecipe, lod: TreeLodRecipe,
   const leafWidth = anchor.width * lod.foliageScale * detailScale;
 
   if (usesCloseBroadleafCluster(recipe, lod)) {
-    // One compiler anchor denotes a compact twig-tip cluster. Fan four smaller
+    // One compiler anchor denotes a compact twig-tip cluster. Fan smaller
     // leaves from staggered points along that implied twig and roll their cards
     // independently so nearby crowns retain negative space instead of merging
     // into dark rosettes. The summed length/width products match the previous
     // crossed-card pair's projected surface.
-    for (let index = 0; index < CLOSE_LEAFLET_COUNT; index++) {
+    const leafletCount = closeBroadleafLeafletCount(recipe, lod);
+    const lengthScales = leafletCount === 6 ? CANOPY_LEAFLET_LENGTH_SCALES : GROVE_LEAFLET_LENGTH_SCALES;
+    const widthScales = leafletCount === 6 ? CANOPY_LEAFLET_WIDTH_SCALES : GROVE_LEAFLET_WIDTH_SCALES;
+    for (let index = 0; index < leafletCount; index++) {
       const [alongWeight, widthWeight] = CLOSE_LEAFLET_FAN_WEIGHTS[index];
       // `along`, `width`, and `normal` are an orthonormal frame, so these
       // combinations are already unit length. Avoiding redundant per-leaflet
@@ -462,8 +483,8 @@ function emitLeaf(writer: FoliageWriter, recipe: TreeRecipe, lod: TreeLodRecipe,
         direction,
         leafletWidth,
         leafletNormal,
-        length * CLOSE_LEAFLET_LENGTH_SCALES[index],
-        leafWidth * CLOSE_LEAFLET_WIDTH_SCALES[index],
+        length * lengthScales[index]!,
+        leafWidth * widthScales[index]!,
         recipe.foliage.droop * (index % 2 === 0 ? 1.04 : 0.92),
         CLOSE_LEAFLET_CAMBERS[index],
         leafletPosition,
@@ -489,7 +510,7 @@ function emitLeaf(writer: FoliageWriter, recipe: TreeRecipe, lod: TreeLodRecipe,
 }
 
 function emitNeedles(writer: FoliageWriter, recipe: TreeRecipe, lod: TreeLodRecipe, anchor: FoliageAnchor): void {
-  const bladeCount = recipe.foliage.needleBlades ?? 3;
+  const bladeCount = needleBladeCount(recipe, lod);
   const baseWidth = normalize(cross(anchor.direction, anchor.radial), { x: 1, y: 0, z: 0 });
   for (let blade = 0; blade < bladeCount; blade++) {
     const angle = (blade / bladeCount) * Math.PI * 2;
