@@ -122,8 +122,9 @@ const TAB_WORLD = `
     but they all submit those placements to shared tree, grass and wildflower renderers, so a garden keeps
     its own identity without quietly dragging a second foliage look along with it.</p>
     <p>Trees grow once per design, then a chunked far forest and a small capped pool of nearby hero trees
-    share the result across four levels of detail. Grass and flowers ride a <strong>ring that follows
-    you</strong> — a carpet that streams in around wherever you are, so a meadow costs the same whether
+    share the result across four levels of detail. Flowers ride a ring; grass grows from a compact
+    <strong>foliage field that follows you</strong>, with WebGPU compute placing and compacting four distance
+    layers directly into indirect draws. A meadow therefore costs the same whether
     the park is an acre or a mile — bending to one shared gust and one shared trample field. Placement is
     deterministic, so every player sees the same planting. This whole layer recently got a lot denser
     <em>and</em> a lot smoother without getting more expensive; how that's even possible is its own
@@ -329,15 +330,14 @@ const TAB_SMOOTH = `
     <h3><span class="bts-ic">🌲</span> Denser foliage, no hitch</h3>
     <p>The trees, grass and wildflowers went through a big density-and-quality pass, and the whole point
     was to add far <em>more</em> of them without adding cost you can feel. Two ideas do most of the work.
-    First, grass and flowers aren't strewn across the whole map — they ride a <strong>ring that follows
-    you</strong> and re-samples as you walk, so a meadow's cost is fixed no matter how large the region is,
-    and there's nothing to pay anywhere you aren't. Second, that ring is <strong>built through the
-    scheduler</strong>: a dense patch is sampled, allocated, uploaded and published a slice at a time,
-    budgeted to well under a millisecond a frame, nearest blades first so the ground under you is never
-    bare. The same grass generation that once blocked the main thread for <strong>~450&nbsp;ms</strong> in
-    one lump now costs <strong>under a millisecond</strong> per frame — and you never see the join.</p>
+    First, grass and flowers aren't strewn across the whole map — they follow <strong>you</strong>, so a
+    meadow's cost is fixed no matter how large the region is, and there's nothing to pay anywhere you
+    aren't. Second, the CPU now pages only a 288 × 288 texture containing terrain height, density, species
+    and vigour. WebGPU compute tests 204,204 candidate clusters in parallel, compacts the survivors into
+    storage buffers and submits the four layers with indirect draws. A six-metre move samples only the
+    1,728 newly entered field cells; it no longer builds or uploads CPU grass-instance arrays.</p>
     <p>Trees are instanced and batched across <strong>four levels of detail</strong> — lush and leafy up
-    close, then progressively cheaper cards out to the horizon. The hard part of any LOD system is the
+    close, then progressively leaner but still opaque 3-D geometry out to the horizon. The hard part of any LOD system is the
     <em>pop</em> when something swaps levels; here the swap distances are deliberately
     <strong>staggered</strong>, so a stand converts a few trees at a time across a wide band instead of the
     whole grid flipping at once along a circle, with a hysteresis margin so a jittering camera can't make
@@ -356,10 +356,9 @@ const TAB_SMOOTH = `
     scene</strong> — so the first frame you actually see has no shader stall and no bare-then-pop-in
     landscape. Only once the destination reports ready does the cover lift.</p>
     <p>A few things make that quick. The terrain is already there — it's a clipmap, so it just re-centres
-    on the spot instead of streaming a fresh hillside. The grass builder is handed a <strong>much fatter
-    time budget while the cover is up</strong> (there's no visible frame to protect yet), so the meadow
-    fills in fast in the dark and then drops back to its gentle per-frame trickle the instant you can see.
-    And each destination's activation is kept <strong>isolated</strong> — arriving at the Japanese Tea
+    on the spot instead of streaming a fresh hillside. The new foliage field fills progressively while the
+    cover is up, then one compute submission compacts all four grass layers and the renderer warms their
+    pipelines before reveal. And each destination's activation is kept <strong>isolated</strong> — arriving at the Japanese Tea
     Garden warms exactly the Tea Garden and doesn't drag in the far heavier wild-park foliage next door,
     which stays asleep until you actually walk toward it.</p>
   </section>

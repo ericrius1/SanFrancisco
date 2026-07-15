@@ -230,8 +230,8 @@ for (const lod of supportRecipe.lods) {
 const needle = compileTree(testRecipe("needle"), 0xabc123);
 const rosette = compileTree(testRecipe("rosette"), 0xabc123);
 assert(
-  first.lods[0].stats.foliageVertices === first.lods[0].stats.foliageAnchors * 16,
-  "near broadleaves were not emitted as two curved surfaces"
+  first.lods[0].stats.foliageVertices === first.lods[0].stats.foliageAnchors * 24,
+  "near broadleaves were not emitted as six-leaflet twig fans"
 );
 assert(
   first.lods[2].stats.foliageVertices === first.lods[2].stats.foliageAnchors * 8,

@@ -1812,6 +1812,21 @@
         #hud .scrolly-step {
           min-height: 68vh;
         }
+        #hud .ss-daybar {
+          flex-wrap: wrap;
+          gap: 9px;
+        }
+        #hud .ss-daybar .ss-slider {
+          flex: 1 1 150px;
+          min-width: 0;
+        }
+        #hud .ss-daybar .ss-readout,
+        #hud .ss-toy-actions .ss-readout {
+          flex: 1 0 100%;
+          min-width: 0;
+          white-space: normal;
+          overflow-wrap: anywhere;
+        }
       }
       #hud .ss-t {
         fill: #cfe6ee;

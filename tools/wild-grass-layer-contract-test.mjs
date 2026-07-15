@@ -35,17 +35,63 @@ globalThis.localStorage = {
 const {
   WILD_GRASS_LAYER_SPECS,
   WILD_GRASS_RING_RADIUS,
-  createWildGrass,
   wildGrassBladeDensityAt,
+  wildGrassGpuCandidateCapacity,
   wildGrassLayerTriangles,
   wildGrassLayersAt
 } = await import("../src/world/wildlands/grassField.ts");
 const { createMicroBladeClusterGeometry } = await import("../src/world/groundcover/bladeGrass.ts");
-const {
-  createGroundcoverPreparationRegistry,
-  prepareGroundcoverRootPipelines
-} = await import("../src/world/wildlands/index.ts");
-const THREE = await import("three/webgpu");
+const { hash2, r2Offset } = await import("../src/world/groundcover/scatter.ts");
+
+function scatterSpacing(kind, size = 72) {
+  const points = [];
+  for (let gx = 0; gx < size; gx++) {
+    for (let gz = 0; gz < size; gz++) {
+      const offset = kind === "r2"
+        ? r2Offset(gx, gz, 11)
+        : { ox: hash2(gx, gz, 11), oz: hash2(gx, gz, 17) };
+      points.push([
+        gx + (offset.ox - 0.5) * 0.86,
+        gz + (offset.oz - 0.5) * 0.86
+      ]);
+    }
+  }
+
+  const nearest = [];
+  let nearTouching = 0;
+  for (let gx = 1; gx < size - 1; gx++) {
+    for (let gz = 1; gz < size - 1; gz++) {
+      const point = points[gx * size + gz];
+      let best = Infinity;
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dz = -1; dz <= 1; dz++) {
+          if (dx === 0 && dz === 0) continue;
+          const other = points[(gx + dx) * size + gz + dz];
+          best = Math.min(best, Math.hypot(point[0] - other[0], point[1] - other[1]));
+        }
+      }
+      nearest.push(best);
+      if (best < 0.35) nearTouching++;
+    }
+  }
+  nearest.sort((a, b) => a - b);
+  return {
+    p05: nearest[Math.floor(nearest.length * 0.05)],
+    nearTouching
+  };
+}
+
+// Lock the reason for using R2, not merely its current output count. A future
+// refactor must keep the low-discrepancy spacing advantage over white-noise
+// jitter instead of silently reintroducing clumps and bald gaps.
+const hashSpacing = scatterSpacing("hash");
+const r2Spacing = scatterSpacing("r2");
+assert(r2Spacing.p05 > hashSpacing.p05 * 1.25,
+  `R2 fifth-percentile spacing regressed (${r2Spacing.p05} vs ${hashSpacing.p05})`);
+assert(r2Spacing.nearTouching < hashSpacing.nearTouching * 0.4,
+  `R2 near-touching pairs regressed (${r2Spacing.nearTouching} vs ${hashSpacing.nearTouching})`);
+assert.deepEqual(r2Offset(-413, 271, 11), r2Offset(-413, 271, 11),
+  "R2 offsets must remain deterministic at negative world cells");
 
 assert.equal(WILD_GRASS_RING_RADIUS, 110, "far field must reach 110m");
 assert.deepEqual(wildGrassLayersAt(0), ["far", "mid", "near", "hero"]);
@@ -79,137 +125,52 @@ for (const [name, spec] of Object.entries(WILD_GRASS_LAYER_SPECS)) {
   geometry.dispose();
 }
 
-const FOCUS = { x: -4000, z: 2440 };
-const scheduledGrassJobs = [];
-const scheduleGrass = (job) => scheduledGrassJobs.push(job);
-const drainGrass = () => {
-  let turns = 0;
-  while (scheduledGrassJobs.length > 0) {
-    const job = scheduledGrassJobs.shift();
-    if (job() === "again") scheduledGrassJobs.push(job);
-    assert(++turns < 100_000, "progressive grass jobs must settle");
+// The GPU path owns exactly one resident draw per layer. Fixed output capacity
+// covers the 2.5× density slider ceiling; the indirect instance count exposes
+// only accepted candidates to rasterization.
+const flatLayers = {};
+let flatCount = 0;
+let flatTriangles = 0;
+let capacity = 0;
+for (const [name, spec] of Object.entries(WILD_GRASS_LAYER_SPECS)) {
+  const gpu = wildGrassGpuCandidateCapacity(spec);
+  assert.equal(gpu.side % 2, 1, `${name} candidate square must have one stable centre cell`);
+  assert(gpu.capacity > gpu.side ** 2 * 2, `${name} capacity must cover all three density layers`);
+  capacity += gpu.capacity;
+
+  const step = 0.68 * spec.gridStride;
+  const reach = (gpu.side - 1) / 2;
+  let count = 0;
+  for (let gx = -reach; gx <= reach; gx++) {
+    for (let gz = -reach; gz <= reach; gz++) {
+      const jitter = r2Offset(gx, gz, 11);
+      const x = gx * step + (jitter.ox - 0.5) * step * 0.86;
+      const z = gz * step + (jitter.oz - 0.5) * step * 0.86;
+      if (Math.hypot(x, z) < spec.visibleRadius) count++;
+    }
   }
-};
-const grass = createWildGrass({
-  groundHeight: () => 75,
-  surfaceType: () => 1,
-  isWater: () => false
-}, undefined, { schedule: scheduleGrass });
-grass.update(FOCUS);
-drainGrass();
-
-const initial = grass.stats;
-for (const name of ["far", "mid", "near", "hero"]) {
-  const layer = initial.layers[name];
-  assert(layer.count > 0, `${name} layer must populate in the flat GG Park fixture`);
-  assert(layer.draws > 0, `${name} layer must own at least one draw`);
-  assert.equal(layer.trianglesPerCluster, wildGrassLayerTriangles(WILD_GRASS_LAYER_SPECS[name]));
-  assert.equal(layer.submittedTriangles, layer.count * layer.trianglesPerCluster);
+  const triangles = count * wildGrassLayerTriangles(spec);
+  flatLayers[name] = { ...gpu, count, triangles };
+  flatCount += count;
+  flatTriangles += triangles;
 }
-assert(initial.draws <= 52, `resident grass draws must remain near the legacy envelope, got ${initial.draws}`);
-assert(
-  initial.submittedTriangles <= 575_000,
-  `submitted grass triangles must remain near the legacy high-end envelope, got ${initial.submittedTriangles}`
-);
-assert(initial.count * 36 < 6 * 1024 * 1024, "compact live instance payload must stay below 6MiB");
-
-const populated = grass.group.children.filter((child) => child.geometry?.instanceCount > 0);
-assert.equal(populated.length, initial.draws, "each non-empty layer tile should be exactly one draw");
-for (const mesh of populated) {
-  assert(/^wildlands_grass_(far|mid|near|hero)_/.test(mesh.name), `${mesh.name} must expose its additive layer`);
-  assert.equal(mesh.frustumCulled, true, `${mesh.name} must participate in frustum culling`);
-  assert.equal(mesh.isInstancedMesh, undefined, `${mesh.name} must retain compact InstancedBufferGeometry rendering`);
-  const attributes = ["aGrassTransform", "aGrassShape", "aGrassColor"]
-    .map((attributeName) => mesh.geometry.getAttribute(attributeName));
-  const bytes = attributes.reduce(
-    (sum, attribute) => sum + attribute.itemSize * attribute.array.BYTES_PER_ELEMENT,
-    0
-  );
-  assert.equal(bytes, 36, `${mesh.name} must retain the compact 36-byte instance payload`);
-}
-
-// Pipeline preparation is allowed to force an otherwise hidden root visible
-// only while that root is detached. It must restore both master visibility and
-// parent/sibling order before resolving.
-const preparationRegistry = createGroundcoverPreparationRegistry();
-const foliageParent = new THREE.Group();
-const beforeSibling = new THREE.Group();
-const afterSibling = new THREE.Group();
-foliageParent.add(beforeSibling, grass.group, afterSibling);
-grass.group.visible = false;
-let observedDetachedCompile = false;
-await prepareGroundcoverRootPipelines(
-  grass.group,
-  populated,
-  async (root) => {
-    observedDetachedCompile = true;
-    assert.equal(root.parent, null, "hidden root must compile while detached from the live scene");
-    assert.equal(root.visible, true, "detached root must be traversable during compile");
-  },
-  preparationRegistry
-);
-assert(observedDetachedCompile, "the first populated ring must warm its pipelines");
-assert.equal(grass.group.parent, foliageParent, "prepared root must return to its original parent");
-assert.equal(grass.group.visible, false, "prepared root must preserve the master foliage toggle");
-assert.deepEqual(
-  foliageParent.children,
-  [beforeSibling, grass.group, afterSibling],
-  "prepared root must return at its original sibling position"
-);
-grass.group.visible = true;
-
-const firstMesh = populated.find((mesh) => mesh.geometry.getAttribute("aGrassColor").count > 8);
-assert(firstMesh, "fixture needs one populated mesh for rank inspection");
-const rankBytes = firstMesh.geometry.getAttribute("aGrassColor").array;
-const observedRanks = new Set();
-for (let i = 3; i < Math.min(rankBytes.length, 4 * 128); i += 4) observedRanks.add(rankBytes[i]);
-assert(observedRanks.size > 16, "instance alpha byte must contain varied deterministic fade ranks");
-assert(!observedRanks.has(0) && !observedRanks.has(255), "fade ranks must stay strictly inside (0,255)");
-
-// Below the 6m stream step, only focus uniforms move; every tile object stays.
-const beforeSmallMove = new Map(grass.group.children.map((mesh) => [mesh.name, mesh]));
-grass.update({ x: FOCUS.x + 3, z: FOCUS.z + 1 });
-drainGrass();
-assert.equal(grass.group.children.length, beforeSmallMove.size);
-for (const mesh of grass.group.children) assert.equal(mesh, beforeSmallMove.get(mesh.name));
-
-// Crossing the stream step may add/remove only entering/exiting tiles. Shared
-// world tiles retain object identity: there is no distance-band LOD replacement.
-grass.update({ x: FOCUS.x + 8, z: FOCUS.z + 1 });
-drainGrass();
-let stableSharedTiles = 0;
-for (const mesh of grass.group.children) {
-  const previous = beforeSmallMove.get(mesh.name);
-  if (!previous) continue;
-  assert.equal(mesh, previous, `${mesh.name} must not be replaced when focus crosses a layer band`);
-  stableSharedTiles++;
-}
-assert(stableSharedTiles > initial.draws * 0.6, "most shared streamed tiles should retain identity");
-
-// A real stream shift creates fresh mesh/buffer objects. Because each entering
-// tile reuses a warmed layer material + vertex layout, the reveal gate must
-// admit it immediately instead of launching another compile-and-reveal job.
-const beforeStreamShift = new Set(grass.group.children);
-grass.update({ x: FOCUS.x + 40, z: FOCUS.z + 1 });
-drainGrass();
-const enteringTiles = grass.group.children.filter((mesh) => !beforeStreamShift.has(mesh));
-assert(enteringTiles.length > 0, "fixture must stream at least one fresh grass tile");
-for (const mesh of enteringTiles) {
-  assert(
-    preparationRegistry.has(mesh),
-    `${mesh.name} must inherit the already-warmed pipeline/layout for its grass layer`
-  );
-}
-
-grass.dispose();
-assert.equal(grass.group.children.length, 0, "dispose must release every additive layer tile");
+assert.equal(Object.keys(flatLayers).length, 4);
+assert.equal(capacity, 204204, "fixed GPU candidate capacity changed unexpectedly");
+assert(flatCount > 45_000, `flat default field lost too much coverage (${flatCount})`);
+assert(flatTriangles < 200_000, `default compacted geometry exceeded its envelope (${flatTriangles})`);
+assert(capacity * 48 < 10 * 1024 * 1024, "GPU output buffers must stay below 10MiB");
 
 console.log("wild grass additive layer contract: ok", JSON.stringify({
   reach: WILD_GRASS_RING_RADIUS,
   closeBladesPerM2: +wildGrassBladeDensityAt(0).toFixed(2),
-  draws: initial.draws,
-  instances: initial.count,
-  submittedTriangles: initial.submittedTriangles,
-  instanceMiB: +((initial.count * 36) / (1024 * 1024)).toFixed(2),
-  layers: initial.layers
+  draws: 4,
+  instances: flatCount,
+  submittedTriangles: flatTriangles,
+  gpuCapacity: capacity,
+  gpuBufferMiB: +((capacity * 48) / (1024 * 1024)).toFixed(2),
+  scatter: {
+    p05Gain: +(r2Spacing.p05 / hashSpacing.p05).toFixed(2),
+    nearTouchingReduction: +(1 - r2Spacing.nearTouching / hashSpacing.nearTouching).toFixed(2)
+  },
+  layers: flatLayers
 }));

@@ -43,9 +43,12 @@ export function groundSway(anchorWorldXZ: TslNode): TslNode {
   return mix(sine, gust, 0.55).mul(windStrengthNode.mul(0.34)).mul(gustEnvelope);
 }
 
-// How far the local swirl pulls the bend direction off the prevailing WIND_DIR
-// (0 = today's single-heading look, 1 = pure eddies). Rampable for staged rollout.
-const WIND_FLOW_MIX = 0.5;
+// How far the local swirl pulls the bend direction off the prevailing WIND_DIR.
+// Keep this below 0.5: at an exact half-blend an opposing curl vector cancels the
+// prevailing vector to zero, producing thin dead-wind seams where the normalized
+// direction becomes numerically unstable. 0.38 still gives broad visible arcs
+// while retaining a guaranteed prevailing component everywhere.
+const WIND_FLOW_MIX = 0.38;
 
 /**
  * Shared wind as a spatially-varying FLOW (vec2 x=worldX bend, y=worldZ bend),
