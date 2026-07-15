@@ -1629,7 +1629,7 @@ async function boot() {
   net.onGolf = (id, m) => golf?.handleNet(id, m, hud, net.roster.get(id)?.name ?? "Player");
   input.onLockChange = (locked) => {
     if (!locked && !inOrbit() && !input.freeCursor && !chat.focused) {
-      hud.message("Esc releases the mouse · L recaptures · L also toggles free cursor", 2.8);
+      hud.message("Click the scene to capture · Esc releases · L toggles free cursor", 2.8);
     }
   };
   // passenger seat support: cars and scooters both publish a local seat anchor.
@@ -2211,7 +2211,7 @@ async function boot() {
   // Free the pointer lock while it's open so the cursor can reach the links.
   // While it's open the whole world stops rendering (see `btsReading` in tick)
   // and the frozen canvas dims a touch, so no live frames flicker behind the read.
-  // Esc-dismiss stays unlocked (press L to recapture); see Escape priority stack.
+  // Esc-dismiss stays unlocked (click the scene to recapture); see Escape priority stack.
   let btsReading = false;
   // Both the post-reveal launcher and a shared `?read=` link route through this
   // function so the optional reader chunk is fetched and constructed once.
@@ -3491,13 +3491,13 @@ async function boot() {
     // keeps the player's name instead of minting a fresh fun one.
     if (autoStartSaved) {
       // no click to consume, so pointer lock has no gesture — startGame still
-      // requests it (a no-op if the browser declines; press L to recapture)
+      // requests it (a no-op if the browser declines; first scene click re-locks)
       bootScreen.startNow(devReload!.name);
       return;
     }
     if (autoEnter) {
       // Programmatic starts have no user gesture, so do not request pointer
-      // lock. Press L once the world is up to capture the mouse.
+      // lock. The first canvas click can capture it normally when needed.
       bootScreen.startNow(suggestedName, { lock: false });
       return;
     }

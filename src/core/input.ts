@@ -2,11 +2,11 @@ import type { PlayerMode } from "../player/types";
 import { INPUT_TUNING } from "../config";
 
 /**
- * Pointer-lock game input. Mouselook deltas accumulate only while locked.
- * Escape is left to the browser's native pointer-lock exit — this layer only
- * syncs via `pointerlockchange`. Tap L toggles free-cursor controls vs
- * pointer-lock controls (and is the only way to re-capture after Esc unlock —
- * canvas clicks never re-lock).
+ * Pointer-lock game input. Clicking the canvas (not HUD/UI) re-captures the
+ * mouse when unlocked; mouselook deltas accumulate only while locked. Escape is
+ * left to the browser's native pointer-lock exit — this layer only syncs via
+ * `pointerlockchange`. Tap L toggles free-cursor controls vs pointer-lock
+ * controls (a scene click also exits free-cursor and re-locks).
  * The game keeps simulating while unlocked. While `suspended` (camera-orbit mode)
  * all game inputs read as idle so the player coasts. Global holds that must
  * still work there (Z time-scrub, N look/speed) use `holding()` instead of `down()`.
@@ -132,8 +132,8 @@ export class Input {
   device: "kb" | "pad" = "kb";
 
   // L tap toggles this: free in-world cursor (mouseNDC is the live screen
-  // position, -1..1) vs pointer-lock mouselook. Canvas presses never re-lock;
-  // tap L to recapture (also after a bare Esc unlock while this is false).
+  // position, -1..1) vs pointer-lock mouselook. A canvas press (not UI) exits
+  // free-cursor and re-locks; L also recaptures after a bare Esc unlock.
   freeCursor = false;
   mouseNDCx = 0;
   mouseNDCy = 0;
@@ -251,17 +251,20 @@ export class Input {
     el.addEventListener("mousedown", (e) => {
       if (e.button !== 0) return;
       if (this.suspended) return;
-      // Never re-lock from a canvas press — L (or an explicit requestLock from
-      // start/UI) is the only capture path. That way Esc unlock stays unlocked
-      // when you click the scene, and UI clicks were already a no-op here.
-      // captured: fire the held tool. free cursor: a single click-to-inspect
-      // (no held auto-fire — the world stays put while you point at things).
-      if (this.locked && this.#mode !== "surf") {
+      // Scene click re-captures. HUD/UI sits above the canvas so those presses
+      // never reach here — only a real world click re-locks. Capture on the
+      // fresh press, never on click: if the browser releases while a button is
+      // held, that old pointer sequence's trailing mouse-up/click must not undo
+      // the release.
+      if (!this.locked) {
+        if (this.freeCursor) this.#endFreeCursor(false);
+        this.requestLock();
+        return;
+      }
+      // captured: fire the held tool.
+      if (this.#mode !== "surf") {
         this.firePressed = true;
         this.fireHeld = true;
-        this.#setDevice("kb");
-      } else if (this.freeCursor && this.#mode !== "surf") {
-        this.firePressed = true;
         this.#setDevice("kb");
       }
     });

@@ -1,10 +1,18 @@
 import * as THREE from "three/webgpu";
 import {
+  cameraPosition,
+  clamp,
+  color,
+  log2,
+  mix,
   NodeUpdateType,
   pass,
   mrt,
   normalViewGeometry,
   packNormalToRGB,
+  positionWorld,
+  smoothstep,
+  uniform,
   texture
 } from "three/tsl";
 import {
@@ -133,9 +141,24 @@ export function createRenderPipeline(
   // camera re-records those bundles as line lists and leaves them stuck after
   // the toggle clears. A separate camera keeps normal and wireframe caches
   // side by side so off restores solid materials instantly.
+  const wireframeLodGradient = uniform(1);
   const wireframeMaterial = new THREE.MeshBasicNodeMaterial();
   wireframeMaterial.name = "debug-wireframe-override";
   wireframeMaterial.color.set(0xcccccc);
+  // Clipmap spacing doubles at roughly 64/128/256/512/1024/2048/4096 m.
+  // Mapping log2(distance / 64) onto 0..1 therefore turns those geometric LOD
+  // bands into an unbroken perceptual ramp. The override is scene-wide, so the
+  // same resolution story remains visible across terrain and buildings.
+  const wireframeDistance = positionWorld.distance(cameraPosition).max(64);
+  const wireframeLod = clamp(log2(wireframeDistance.div(64)).div(6), 0, 1);
+  const nearColor = color(0x69f5c6);
+  const middleColor = color(0x59a7ff);
+  const coarseColor = color(0x8c72e8);
+  const farColor = color(0xff789e);
+  const nearRamp = mix(nearColor, middleColor, smoothstep(0, 0.46, wireframeLod));
+  const farRamp = mix(coarseColor, farColor, smoothstep(0.52, 1, wireframeLod));
+  const resolutionRamp = mix(nearRamp, farRamp, smoothstep(0.34, 0.7, wireframeLod));
+  wireframeMaterial.colorNode = mix(color(0xcccccc), resolutionRamp, wireframeLodGradient);
   wireframeMaterial.wireframe = true;
   wireframeMaterial.toneMapped = false;
   const wireframeCamera = camera.clone();
@@ -150,6 +173,9 @@ export function createRenderPipeline(
     wireframeActive = on;
     if (on) syncWireframeCamera();
     applyWireframeOverride(on);
+  };
+  const setWireframeLodGradient = (on: boolean) => {
+    wireframeLodGradient.value = on ? 1 : 0;
   };
 
   // Stylized effects apply renderOutput inside their custom shaders. The zero
@@ -947,6 +973,8 @@ export function createRenderPipeline(
     },
     /** Swap the scene pass to/from the retained wireframe override + camera. */
     setWireframe,
+    /** Blend the wireframe override from neutral grey to its logarithmic LOD ramp. */
+    setWireframeLodGradient,
     /** Browser-native review capture reads the final post-FX texture here. */
     queueFastFrame,
     drainFastFrame,

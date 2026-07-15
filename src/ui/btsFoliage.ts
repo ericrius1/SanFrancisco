@@ -1298,8 +1298,9 @@ export const FOLIAGE_TAB_HTML = `
     <h3><span class="bts-ic">🌸</span> Where the flowers decide to grow</h3>
     <p>Real wildflowers don't sprinkle evenly across a field — they clump. A patch of the same species here,
     a lonely single there, bare ground between. Scatter flowers with an even random spray and the eye reads
-    it instantly as fake. So placement here borrows an idea from <a href="https://github.com/momentchan"
-    target="_blank" rel="noopener noreferrer">momentchan</a>'s generative piece <em>False&nbsp;Earth</em>:
+    it instantly as fake. So placement here borrows an idea from momentchan's generative piece
+    <a href="https://tympanus.net/codrops/2026/04/21/false-earth-from-webgl-limits-to-a-webgpu-driven-world/"
+    target="_blank" rel="noopener noreferrer"><em>False&nbsp;Earth</em></a>:
     <strong>Voronoi clustering</strong>. Every point on the ground asks
     a simple question — "which clump centre owns me, and how deep inside it am I?" Deep in a clump you get a
     dense, single-species patch; far from every centre you get sparse, mixed singles. Drag the knob to take
@@ -1416,7 +1417,8 @@ export const FOLIAGE_TAB_HTML = `
     your own, that was the whole point.</p>
     <div class="bts-chips">
       <a href="https://threejs.org/" target="_blank" rel="noopener noreferrer">three.js</a>
-      <a href="https://github.com/momentchan" target="_blank" rel="noopener noreferrer">momentchan · False Earth</a>
+      <a href="https://github.com/SkyeShark/SeedThree" target="_blank" rel="noopener noreferrer">SeedThree</a>
+      <a href="https://tympanus.net/codrops/2026/04/21/false-earth-from-webgl-limits-to-a-webgpu-driven-world/" target="_blank" rel="noopener noreferrer">False Earth</a>
       <a href="https://en.wikipedia.org/wiki/L-system" target="_blank" rel="noopener noreferrer">L-systems</a>
       <a href="https://github.com/ericrius1/SanFrancisco" target="_blank" rel="noopener noreferrer">This project on GitHub</a>
     </div>

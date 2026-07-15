@@ -18,9 +18,8 @@
 //      corresponding keydown while pointer lock was active
 //   I. Escape's re-lock barrier must survive pointerlockchange until keyup
 // Plus controls proving the lock plumbing itself works in background Chrome
-// (L re-locks after Esc, exit+request relocks) so a pass is meaningful.
-// Canvas clicks must NOT re-capture after unlock — only L (or explicit
-// requestLock from start/UI) may.
+// (click locks, exit+request relocks) so a pass is meaningful.
+// Canvas scene clicks re-capture after unlock; HUD/UI clicks do not.
 //
 //   node tools/esc-pointerlock-probe.mjs
 // Env: SF_PROBE_OUT (default scratchpad), CHROME_BIN,
@@ -233,28 +232,22 @@ async function main() {
   await sleep(1500);
 
   // Headed CDP lock is focus-sensitive — front + retry a few times before giving up.
-  // Canvas click no longer captures; L is the re-lock gesture after Esc unlock.
-  const lockViaL = async () => {
-    let st = await ev(c, lockState);
-    if (st.el && st.locked) return st;
+  const lockViaClick = async () => {
+    let st = { el: false, locked: false };
     for (let i = 0; i < 5 && !st.el; i++) {
       await c.send("Page.bringToFront");
-      // Drop sticky free-cursor if a prior test left it on, then L re-captures.
+      // Drop sticky free-cursor so a scene click is allowed to re-capture.
       await ev(c, `(()=>{const i=window.__sf.input;if(i.freeCursor){i.freeCursor=false;i.onFreeCursorChange(false);}return true;})()`);
-      await pressL(c);
+      await click(c, W / 2, H / 2);
       st = await waitLock(c, true, 2000);
-      if (!st.el) {
-        await evGesture(c, `(()=>{window.__sf.input.requestLock();return true;})()`);
-        st = await waitLock(c, true, 2000);
-      }
       if (!st.el) { await pressEscape(c); await sleep(400); }
     }
     return st;
   };
 
-  // ---- control: L re-locks the pointer after start (proves lock plumbing)
-  let s = await lockViaL();
-  push("control-L-locks", s.el && s.locked, `after L: pointerLockElement=${s.el} input.locked=${s.locked}`);
+  // ---- control: trusted scene click locks the pointer (proves lock plumbing)
+  let s = await lockViaClick();
+  push("control-click-locks", s.el && s.locked, `after canvas click: pointerLockElement=${s.el} input.locked=${s.locked}`);
   if (!s.el) {
     const diag = await evGesture(c, `(async()=>{try{await (document.querySelector('canvas')||document.body).requestPointerLock();return "granted:"+!!document.pointerLockElement;}catch(e){return "rejected:"+e.name+":"+e.message;}})()`);
     console.log(`[probe] direct requestPointerLock: ${diag}; hasFocus=${await ev(c, "document.hasFocus()")}`);
@@ -287,7 +280,7 @@ async function main() {
   // re-locks on its own (which would explain "Esc sometimes doesn't unlock").
   console.log("[probe] test A: bare exitPointerLock isolation");
   try {
-    const beforeExit = await lockViaL();
+    const beforeExit = await lockViaClick();
     if (!beforeExit.el || !beforeExit.locked) {
       push("A-bare-exit-stays-unlocked", false, `lock precondition failed: el=${beforeExit.el} locked=${beforeExit.locked}`);
     } else {
@@ -321,7 +314,7 @@ async function main() {
   // to the minimap's dismissal handler; modal state is logged but not asserted.
   console.log("[probe] test C: overlay + Esc unlocks");
   try {
-    s = await lockViaL(); // re-lock (trusted gesture, retried)
+    s = await lockViaClick(); // re-lock (trusted gesture, retried)
     if (!s.el) { push("C-esc-overlay-unlocks", false, "could not re-lock for overlay test"); }
     else {
       await ev(c, `(()=>{window.__lc2=[];window.__lch=()=>window.__lc2.push((document.pointerLockElement?'L':'U'));document.addEventListener('pointerlockchange',window.__lch);return true;})()`);
@@ -380,7 +373,7 @@ async function main() {
   // capture the pointer again.
   console.log("[probe] test E: held primary + Esc stays unlocked after mouse-up");
   try {
-    s = await lockViaL();
+    s = await lockViaClick();
     if (!s.el) {
       push("E-held-primary-esc-stays-unlocked", false, "could not re-lock for held-primary test");
     } else {
@@ -415,7 +408,7 @@ async function main() {
     if (!fullscreen) {
       push("F-fullscreen-esc-unlocks", false, "could not enter Fullscreen API state");
     } else {
-      s = await lockViaL();
+      s = await lockViaClick();
       if (!s.el) {
         push("F-fullscreen-esc-unlocks", false, "could not lock while fullscreen");
       } else {
@@ -472,7 +465,7 @@ async function main() {
   // fallback instead of passing on the UA's eventual native unlock.
   console.log("[probe] test H: keyup-only Escape releases pointer lock");
   try {
-    s = await lockViaL();
+    s = await lockViaClick();
     if (!s.el) {
       push("H-keyup-only-esc-unlocks", false, "could not re-lock for keyup-only test");
     } else {
@@ -492,7 +485,7 @@ async function main() {
   // must not end the Escape transaction or let an async callback request again.
   console.log("[probe] test I: Escape barrier survives unlock until keyup");
   try {
-    s = await lockViaL();
+    s = await lockViaClick();
     if (!s.el) {
       push("I-esc-barrier-survives-unlock", false, "could not re-lock for Escape barrier test");
     } else {

@@ -45,6 +45,7 @@ type DebugRenderPipeline = {
   applyPostFx: () => void;
   applyRadialLightFx: () => void;
   setWireframe: (on: boolean) => void;
+  setWireframeLodGradient: (on: boolean) => void;
   warmupPostFx?: () => Promise<void>;
   contactShadows: Pick<ContactShadowComplement, "configure" | "setEnabled">;
 };
@@ -491,6 +492,7 @@ export class DebugPanel {
    * not overwritten by the wireframe draw path (see pipeline.setWireframe).
    */
   #applyWireframe(on: boolean) {
+    this.#postfx?.setWireframeLodGradient(RENDER_TUNING.values.wireframeLodGradient);
     this.#postfx?.setWireframe(on);
     this.#wireframeActive = on;
   }
@@ -623,14 +625,6 @@ export class DebugPanel {
       target: lightingView,
       keys: ["timeOfDay", "realTime", "timeRatePercent", "nightBrightness"],
       onChange: onSkyChange
-    });
-
-    this.#wireframeBindings = RENDER_TUNING.bind(meta, {
-      keys: ["wireframe"],
-      onChange: (_key, value) => {
-        if (this.#syncingPane) return;
-        this.#applyWireframe(Boolean(value));
-      }
     });
 
     // Shell + metta are enough to show the pane; yield before the heavy folders.
@@ -816,6 +810,18 @@ export class DebugPanel {
     const terrain = pane.addFolder({ title: "terrain", expanded: false });
     TERRAIN_CLIPMAP_TUNING.bind(terrain, {
       onChange: () => this.#tiles?.terrainClipmap?.applyTuning()
+    });
+
+    // Scene-wide topology inspection: neutral grey remains available, while
+    // the default gradient reveals the near→far resolution falloff.
+    const wireframe = pane.addFolder({ title: "wireframe", expanded: false });
+    this.#wireframeBindings = RENDER_TUNING.bind(wireframe, {
+      keys: ["wireframe", "wireframeLodGradient"],
+      onChange: (key, value) => {
+        if (this.#syncingPane) return;
+        if (key === "wireframe") this.#applyWireframe(Boolean(value));
+        else this.#postfx?.setWireframeLodGradient(Boolean(value));
+      }
     });
 
     // Debug overlays — physics boxes, raycast, and context-sensitive site grids.
