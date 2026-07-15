@@ -141,6 +141,21 @@ export function poolAtLocal(x: number, z: number, inset = 0): SutroPoolSpec | nu
   return null;
 }
 
+/**
+ * Returns the lowest authored walk surface beneath a visitor inside the hall.
+ *
+ * The streamed Box3D colliders remain the primary collision source. This is a
+ * recovery contract for the frame in which those bodies replace the old
+ * terrain, or for an unusually fast capsule that crosses a thin floor slab.
+ * Pool footprints deliberately resolve to the basin instead of the deck so a
+ * visitor can still step into and wade through every bath.
+ */
+export function sutroWalkSurfaceY(x: number, z: number): number | null {
+  if (!inSutroBathsHall(x, z)) return null;
+  const local = sutroWorldToLocal(x, z);
+  return poolAtLocal(local.x, local.z) ? SUTRO_BATHS.basinY : SUTRO_BATHS.deckY;
+}
+
 export function distanceToSutroWater(x: number, z: number): number {
   const local = sutroWorldToLocal(x, z);
   let best = Number.POSITIVE_INFINITY;

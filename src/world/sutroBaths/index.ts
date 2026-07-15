@@ -6,7 +6,8 @@ import {
   SUTRO_BATHS,
   distanceToSutroBaths,
   distanceToSutroWater,
-  inSutroBathsHall
+  inSutroBathsHall,
+  sutroWalkSurfaceY
 } from "./layout";
 import { SUTRO_BATHS_TUNING, SUTRO_TUNING_FOLDERS } from "./tuning";
 import { createSutroBathsVegetation } from "./vegetation";
@@ -149,13 +150,12 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
   let foliageVisible = true;
   let distanceToBaths = Number.POSITIVE_INFINITY;
   let disposed = false;
-  // The authored region has already handed terrain ownership to the hall
-  // and published the deck/basin colliders. A walking capsule that was standing
-  // on the old ground (near sea level on the ocean side) can be trapped beneath
-  // the deck slab, which — being above it — can never lift it back out.
-  // Arm a one-shot handoff so main lifts it onto the deck once, like the raised
-  // Mission Dolores basilica floor. Only meaningful when physics is present.
-  let floorHandoffPending = options.physics != null;
+  // The authored region hands terrain ownership to the hall and publishes its
+  // deck/basin bodies asynchronously. Keep a lightweight recovery contract
+  // armed for the lifetime of the site: it covers both that handoff frame and
+  // rare tunnelling through a thin floor, while pool footprints still resolve
+  // to the lower basin so visitors can enter the water normally.
+  const hasFloorRecovery = options.physics != null;
 
   // index.ts only receives a player POSITION each frame; derive velocity from
   // the frame-to-frame delta for directional wader wakes, and keep a dummy
@@ -314,14 +314,8 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
       );
     },
     takeFloorHandoffHeight(player, playerMode) {
-      if (!floorHandoffPending || disposed || playerMode !== "walk") return null;
-      // Fire only once the walker is actually over the hall footprint. The entry
-      // portal and grand stair sit just OUTSIDE it, so this consumes cleanly at
-      // the deck rather than up on the cliff approach. recoverOntoWalkSurface is
-      // lift-only, so a visitor who arrived correctly on the deck is untouched.
-      if (!inSutroBathsHall(player.x, player.z)) return null;
-      floorHandoffPending = false;
-      return SUTRO_BATHS.deckY;
+      if (!hasFloorRecovery || disposed || playerMode !== "walk") return null;
+      return sutroWalkSurfaceY(player.x, player.z);
     },
     tuningDescriptor() {
       return {

@@ -3144,11 +3144,11 @@ async function boot() {
         };
       case "corona":
         return {
-          runtime: coronaHeights?.activity.visible
-            ? "ACTIVE"
-            : coronaHeights?.group.visible
-              ? "DETAIL"
-              : "SLEEP",
+          runtime: !coronaHeights?.group.visible
+            ? "SLEEP"
+            : coronaHeights.activity.visible
+              ? "ACTIVE"
+              : "DETAIL",
           sceneState: optionalSiteSceneState(coronaHeights?.group)
         };
       case "lands-end":
