@@ -66,7 +66,7 @@ export class ArcheryAudio {
     p.connect(this.#layer!);
     const send = io.ctx.createGain();
     send.gain.value = 0.3 * Number(NATURE_AUDIO_TUNING.values.reverb);
-    p.connect(send).connect(io.reverbSend);
+    p.connect(send).connect(io.effectsReverbSend);
     setTimeout(() => {
       p.disconnect();
       send.disconnect();

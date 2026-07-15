@@ -1,7 +1,7 @@
 // Procedural water sound for the Japanese Tea Garden's connected Drum Bridge
 // stream and south pond. This module deliberately owns no AudioContext and
 // fetches no sample: it shapes NatureSoundscape's shared noise buffer, routes
-// through its shared FX/mute bus and leaves gesture unlock/listener updates to
+// through its shared World/mute bus and leaves gesture unlock/listener updates to
 // that engine. Construction is inert; the graph is built only on first approach
 // and torn down after the distance fade reaches silence.
 
@@ -222,14 +222,14 @@ export class JapaneseTeaGardenStreamAudio {
     const { ctx } = io;
     this.#dry = ctx.createGain();
     this.#dry.gain.value = 0;
-    // Water is an environmental FX layer, independent of the wildlife/bed
-    // enable switch. alwaysBus supplies HUD FX/mute + visibility through the
+    // Water is environmental ambience, independent of the wildlife/bed enable
+    // switch. worldBus supplies HUD World/mute + visibility through the
     // shared limiter; #requestSharedContext keeps it alive only while nearby.
-    this.#dry.connect(io.alwaysBus);
+    this.#dry.connect(io.worldBus);
 
     this.#wet = ctx.createGain();
     this.#wet.gain.value = 0;
-    this.#wet.connect(io.reverbSend);
+    this.#wet.connect(io.worldReverbSend);
 
     this.#bridge = this.#makeContinuousVoice(io, BRIDGE_ANCHOR, fallbackY, {
       playbackRate: 0.773,

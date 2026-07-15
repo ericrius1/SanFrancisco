@@ -1353,6 +1353,16 @@ export class Player {
     return this.mode === "walk" && this.#modes.walk.swimming;
   }
 
+  /** Stable contact bit used by movement foley and headless audio probes. */
+  get walkGrounded(): boolean {
+    return this.mode === "walk" && this.#modes.walk.grounded;
+  }
+
+  /** The exact animation phase that alternates the visible feet. */
+  get walkStridePhase(): number {
+    return this.#strideT;
+  }
+
   /** Frame-rate flight steering — mouse aims the plane, A/D add banked yaw. */
   steerFly(input: Input, dt: number) {
     if (this.mode !== "plane") return;

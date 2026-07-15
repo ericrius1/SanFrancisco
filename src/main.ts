@@ -82,6 +82,11 @@ import { AudioControls } from "./ui/audioControls";
 import { Chat } from "./ui/chat";
 import { VehicleAudio } from "./fx/vehicleAudio";
 import { SwimAudio } from "./fx/swimAudio";
+import { GameplaySfxBus } from "./audio/gameplaySfxBus";
+import { PlayerFoleyAudio } from "./fx/playerFoleyAudio";
+import { ModeTransitionAudio } from "./fx/modeTransitionAudio";
+import { JumpLandingAudio } from "./fx/jumpLandingAudio";
+import { DoorAudio } from "./fx/doorAudio";
 import { createNatureSoundscape, DogParkAudio, BallImpactAudio, BALL_IMPACT_AUDIO_TUNING } from "./audio";
 import { WaveAudio, oceanWaveEnergyAt } from "./audio/waveAudio";
 import { AbandonedMounts, ABANDONED_MOUNT_PROMPT } from "./gameplay/abandonedMounts";
@@ -449,6 +454,10 @@ async function boot() {
   // so perform its existing no-network prewarm under the loading cover; later
   // gesture handlers only resume the already-built suspended context.
   fireworks.prewarm();
+  // Fundamental player/interaction foley shares one small procedural graph.
+  // Prewarming here avoids synthesizing its noise/room buffers on the first W.
+  const gameplaySfxBus = new GameplaySfxBus();
+  gameplaySfxBus.prewarm();
 
   // Space / pad-X toys — ↑/↓ pick the toolbar row, ←/→ cycle within it
   const graffiti = new Graffiti(scene);
@@ -457,10 +466,34 @@ async function boot() {
   paintballs.onWater = (x, y, z) => splashes.splash(x, y, z, elapsed, 0.5);
   const bubbles = new Bubbles(scene, map, physics);
   const worldCursor = new WorldCursor(scene);
+  type PaintAudioInstance = import("./fx/paintAudio").PaintAudio;
+  type BubbleAudioInstance = import("./fx/bubbleAudio").BubbleAudio;
+  let paintAudio: PaintAudioInstance | null = null;
+  let paintAudioLoading: Promise<PaintAudioInstance> | null = null;
+  let bubbleAudio: BubbleAudioInstance | null = null;
+  let bubbleAudioLoading: Promise<BubbleAudioInstance> | null = null;
+  const ensurePaintAudio = () => {
+    if (paintAudio) return Promise.resolve(paintAudio);
+    if (paintAudioLoading) return paintAudioLoading;
+    paintAudioLoading = import("./fx/paintAudio")
+      .then(({ PaintAudio }) => paintAudio ??= new PaintAudio(gameplaySfxBus))
+      .finally(() => { paintAudioLoading = null; });
+    return paintAudioLoading;
+  };
+  const ensureBubbleAudio = () => {
+    if (bubbleAudio) return Promise.resolve(bubbleAudio);
+    if (bubbleAudioLoading) return bubbleAudioLoading;
+    bubbleAudioLoading = import("./fx/bubbleAudio")
+      .then(({ BubbleAudio }) => bubbleAudio ??= new BubbleAudio(gameplaySfxBus))
+      .finally(() => { bubbleAudioLoading = null; });
+    return bubbleAudioLoading;
+  };
   let tool: ToolName = "ball";
   let fetchBall: FetchBall | null = null; // built after coronaHeights; setTool runs once before it exists
   const setTool = (t: ToolName) => {
     tool = t;
+    if (t === "spray") void ensurePaintAudio();
+    else if (t === "bubbles") void ensureBubbleAudio();
     toolbar.setTool(t);
     hud.setToolVerb(TOOL_VERB[t]);
     // ball tool → hold-to-throw prop; leaving it hides the prop, but free balls,
@@ -483,9 +516,13 @@ async function boot() {
   setTool("ball");
   setColor(0);
 
-  // procedural vehicle hum + the HUD's master volume/mute widget (bottom-left)
+  // procedural vehicle hum + the HUD's compact four-group mixer (bottom-left)
   const vehicleAudio = new VehicleAudio();
   const swimAudio = new SwimAudio();
+  const playerFoleyAudio = new PlayerFoleyAudio(gameplaySfxBus);
+  const modeTransitionAudio = new ModeTransitionAudio(gameplaySfxBus);
+  const jumpLandingAudio = new JumpLandingAudio(gameplaySfxBus);
+  const doorAudio = new DoorAudio(gameplaySfxBus);
   const audioControls = new AudioControls();
   // procedural, layered nature soundscape (Botanical Garden / GG Park / Presidio
   // / Marin): sampled beds + gust-locked wind synth + spatial animal calls, all
@@ -529,6 +566,28 @@ async function boot() {
   setLocalSurfboardConfig(surfboardConfig);
   vehicleAudio.setBoardStyle(boardConfig);
   const player = new Player(physics, map, scene, spawn, avatarTraits, boardConfig, scooterConfig, surfboardConfig, carConfig);
+  const updatePlayerFoley = (dt: number, active: boolean) => {
+    const speed = Math.hypot(player.velocity.x, player.velocity.z);
+    const surfaceType = map.surfaceType(player.position.x, player.position.z);
+    const onFoot = active && player.mode === "walk" && !player.riding;
+    jumpLandingAudio.update(dt, onFoot ? {
+      active: !player.swimming,
+      grounded: player.walkGrounded,
+      verticalSpeed: player.velocity.y,
+      horizontalSpeed: speed,
+      surfaceSoftness: surfaceType === 1 ? 0.82 : surfaceType === 2 ? 0.95 : 0.12
+    } : null);
+    playerFoleyAudio.update(dt, onFoot ? {
+      active: player.mode === "walk" && !player.riding,
+      grounded: player.walkGrounded,
+      swimming: player.swimming,
+      speed,
+      stridePhase: player.walkStridePhase,
+      surfaceType,
+      running: speed > 6.2,
+      indoor: player.indoor
+    } : null);
+  };
   player.holdForWorldArrival("boot-arrival");
   let initialCollisionEpoch = physics.prepareCollisionArrival(player.position);
   physics.activateCollisionArrival(initialCollisionEpoch);
@@ -541,6 +600,45 @@ async function boot() {
   chase.yaw = spawn.heading; // behind the player, looking the way they face (spawn.heading is raw facing)
   // Seed above the local ground — hilltop spawns sit well over y=30.
   camera.position.set(spawn.x + 20, map.effectiveGround(spawn.x, spawn.z) + 30, spawn.z + 20);
+  const localAudioPlacement = (x: number, y: number, z: number, reach = 70) => {
+    const dx = x - camera.position.x;
+    const dy = y - camera.position.y;
+    const dz = z - camera.position.z;
+    const distance = Math.hypot(dx, dy, dz);
+    if (distance > reach) return null;
+    const horizontal = Math.hypot(dx, dz) || 1;
+    return {
+      pan: THREE.MathUtils.clamp(
+        ((dx * Math.cos(chase.yaw) - dz * Math.sin(chase.yaw)) / horizontal) * 0.72,
+        -0.8,
+        0.8
+      ),
+      intensity: 1 / (1 + Math.pow(distance / 18, 1.35))
+    };
+  };
+  bubbles.onPop = (position, radius) => {
+    const placement = localAudioPlacement(position.x, position.y, position.z, 55);
+    if (!placement) return;
+    bubbleAudio?.pop({
+      radius,
+      pan: placement.pan,
+      intensity: placement.intensity
+    });
+  };
+  paintballs.onImpact = (event) => {
+    const placement = localAudioPlacement(event.x, event.y, event.z, 85);
+    if (!placement || !paintAudio) return;
+    paintAudio.impact({
+      material: event.material,
+      color: { r: event.r, g: event.g, b: event.b },
+      speed: event.speed,
+      intensity: placement.intensity,
+      wetness: event.material === "water" ? 0.92 : 0.76,
+      pan: placement.pan,
+      room: player.indoor ? 0.22 : 0.08,
+      sourceId: event.shooter
+    });
+  };
   let surfExperience: import("./gameplay/surfing/game").SurfExperience | null = null;
   let surfRuntimeLoading: Promise<void> | null = null;
   let surfShack: SurfShack | null = null;
@@ -662,7 +760,10 @@ async function boot() {
       tiles.forceScan();
     }
   };
+  let previousAudioMode = player.mode;
   player.onModeChange = (mode) => {
+    modeTransitionAudio.event(previousAudioMode, mode);
+    previousAudioMode = mode;
     const fresh = modeDiscovery.discover(mode);
     hud.setMode(mode);
     toolbar.setVehicle(mode);
@@ -1880,7 +1981,10 @@ async function boot() {
     teleport: (t) => navigation.teleportToPose(t),
     message: (m, s) => hud.message(m, s)
   });
-  navigation.onTeleported = () => tutorial.note("teleport");
+  navigation.onTeleported = () => {
+    jumpLandingAudio.reset();
+    tutorial.note("teleport");
+  };
 
 
   const diagnostics = new RendererDiagnostics(renderer);
@@ -3626,6 +3730,7 @@ async function boot() {
       dogParkAudio.setPaused(true);
       vehicleAudio.update(frameDt, null);
       swimAudio.update(frameDt, null);
+      updatePlayerFoley(frameDt, false);
       nature.update(frameDt, {
         playerPos: player.renderPosition,
         camera,
@@ -3672,6 +3777,7 @@ async function boot() {
     if (paused && freezePlayer && !worldArrival.active) {
       vehicleAudio.update(frameDt, null); // fade the hum out while frozen
       swimAudio.update(frameDt, null);
+      updatePlayerFoley(frameDt, false);
       // ambience keeps breathing while frozen — it's a chill/social feature
       nature.update(frameDt, {
         playerPos: player.renderPosition,
@@ -3782,6 +3888,7 @@ async function boot() {
         speed: Math.hypot(player.velocity.x, player.velocity.z),
         vspeed: player.velocity.y
       });
+      updatePlayerFoley(frameDt, true);
       nature.update(frameDt, {
         playerPos: player.renderPosition,
         camera,
@@ -3943,6 +4050,19 @@ async function boot() {
             const d = citygenRing.current.nearestDoor(player.position);
             if (d && d.dist < 2.6) {
               const r = citygenRing.current.toggleDoor(d.id);
+              if (r === "opened" || r === "closed" || r === "blocked") {
+                const dx = d.x - camera.position.x;
+                const dz = d.z - camera.position.z;
+                const distance = Math.hypot(dx, dz) || 1;
+                const pan = ((dx * Math.cos(chase.yaw) - dz * Math.sin(chase.yaw)) / distance) * 0.5;
+                doorAudio.event(r, {
+                  sourceId: d.id,
+                  pan,
+                  room: player.indoor ? 0.42 : 0.24,
+                  intensity: r === "blocked" ? 0.64 : 0.78,
+                  weight: 0.68
+                });
+              }
               if (r === "opened") hud.message("Door's open — step inside", 2.4);
               else if (r === "closed") hud.message("Door closed", 1.6);
               else if (r === "blocked") hud.message("Step out of the doorway first", 2);
@@ -4091,6 +4211,17 @@ async function boot() {
         // is broadcast (origin+velocity+color) so everyone sees it fly.
         fireCooldown = 0.12;
         const col = graffiti.nextColor();
+        const paintColor = { r: col.r, g: col.g, b: col.b };
+        const soundPaintShot = (audio: PaintAudioInstance) => audio.shot({
+          color: paintColor,
+          pressure: 0.82,
+          intensity: 0.74,
+          pan: 0.035,
+          room: player.indoor ? 0.16 : 0.05,
+          sourceId: net.selfId
+        });
+        if (paintAudio) soundPaintShot(paintAudio);
+        else void ensurePaintAudio().then(soundPaintShot);
         // In a plane, fire down the nose, not the free-look camera: the mouse
         // steers the plane and the camera on different rates, so the view drifts
         // off the flight path. Inherit the full airspeed (not 0.6) and add the
@@ -4110,6 +4241,21 @@ async function boot() {
       } else if (tool === "bubbles" && fireCooldown <= 0) {
         fireCooldown = 0.14;
         bubbles.blow(rayOrigin, aim, player.velocity);
+        if (bubbleAudio) {
+          bubbleAudio.blow({
+            pan: 0.04,
+            intensity: 0.72,
+            duration: 0.24,
+            shimmer: 0.62
+          });
+        } else {
+          void ensureBubbleAudio().then((audio) => audio.blow({
+            pan: 0.04,
+            intensity: 0.72,
+            duration: 0.24,
+            shimmer: 0.62
+          }));
+        }
       }
     }
 
@@ -4593,6 +4739,7 @@ async function boot() {
       speed: Math.hypot(player.velocity.x, player.velocity.z),
       vspeed: player.velocity.y
     });
+    updatePlayerFoley(frameDt, true);
     // Keep the sim ticking for remotes / drone salvo / future area shows — no
     // player hold-to-fire binding (keyboard B / pad face B retired).
     fireworks.update(frameDt, {
@@ -4803,7 +4950,7 @@ async function boot() {
       // deferred render warmup runs, tick() early-returns without rendering, so
       // screenshots would capture a stale boot-pose frame no matter what the
       // camera was set to.
-      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController?.game ?? null, pickleballAmbient: pickleballController?.ambient ?? null, pickleballAudio: pickleballController?.audio ?? null, pickleballUI: pickleballController?.ui ?? null, pickleballController, coronaHeights, missionDolores, sutroBaths, splashes, vehicleAudio, swimAudio, nature, dogParkAudio, ballImpactAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, ensureSurfRuntime, roadMarkings, debugOverlays, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, ensureCarCustomizer, getCarSelector: () => carSelector, getCarConfig: () => ({ ...carConfig }), ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate, palaceReverie, landsEnd, afterlight, optionalWorldSites, ensureOptionalWorldSite,
+      __sf: { scene, camera, player, tiles, physics, renderer, pipeline, dynRes, tracer, scheduler, POSTFX_TUNING, WORLD_TUNING, FLOWER_TUNING, RENDER_TUNING, CAR_LANDING_TUNING, chase, map, input, hud, fx, fireworks, graffiti, bubbles, setTool, setColor, sky, farOcclusion, debugPanel, CONFIG, THREE, tick, creatures, forest, garden, wildlands, buenaVistaTrees, goldenGateTennis, japaneseTeaGarden, pickleball: pickleballController?.game ?? null, pickleballAmbient: pickleballController?.ambient ?? null, pickleballAudio: pickleballController?.audio ?? null, pickleballUI: pickleballController?.ui ?? null, pickleballController, coronaHeights, missionDolores, sutroBaths, splashes, vehicleAudio, swimAudio, gameplaySfxBus, playerFoleyAudio, jumpLandingAudio, modeTransitionAudio, doorAudio, getPaintAudio: () => paintAudio, getBubbleAudio: () => bubbleAudio, nature, dogParkAudio, ballImpactAudio, net, remotes, voice, minimap, playerLocator, boardWake, abandonedMounts, paintballs, paintSkins, hunt, satchel, buildShareUrl, tutorial, fetchBall, goldenGateLights, teleportToTarget, trafficLights, streetLamps, citygen, citygenRing, worldCursor, worldQueries, buildingRayRefiner, underwater, seaPillars, water, oceanBeachWaves, surfExperience, ensureSurfRuntime, roadMarkings, debugOverlays, calibrationChart, FOLIAGE_TUNING, CITYGEN_TUNING, setFoliageVisible, buskers, boardSelector, ensureCarCustomizer, getCarSelector: () => carSelector, getCarConfig: () => ({ ...carConfig }), ensureSurfboardCustomizer, getSurfboardConfig: () => ({ ...surfboardConfig }), siteGate, palaceReverie, landsEnd, afterlight, optionalWorldSites, ensureOptionalWorldSite,
         TSL,
         renderIdle: () => modulesReady && !optionalWorldSites.some(
           (site) => site.state === "queued" || site.state === "loading"

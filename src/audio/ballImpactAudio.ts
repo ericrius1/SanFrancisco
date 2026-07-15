@@ -257,7 +257,7 @@ export class BallImpactAudio {
     if (this.#ready) return this.#io!.ctx;
     const io = (this.#io ??= this.#nature.voiceBus());
     if (!io || io.ctx.state === "closed") return null;
-    const { ctx, alwaysBus, reverbSend } = io;
+    const { ctx, alwaysBus, effectsReverbSend } = io;
 
     this.#groundOut = ctx.createGain();
     this.#groundOut.gain.value = 1;
@@ -288,7 +288,7 @@ export class BallImpactAudio {
     this.#echoTone.connect(this.#echoWet); // tap the repeats
     this.#echoWet.connect(alwaysBus);
     this.#echoWet.connect(this.#echoSpace);
-    this.#echoSpace.connect(reverbSend);
+    this.#echoSpace.connect(effectsReverbSend);
 
     this.#echoLfo = ctx.createOscillator();
     this.#echoLfo.type = "sine";

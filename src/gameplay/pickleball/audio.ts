@@ -5,11 +5,10 @@ import type { PickleballEvent } from "./types";
 /**
  * Pickleball court sounds, riding the shared nature soundscape context (the
  * dogPark.ts pattern): no new AudioContext, and every one-shot flows through
- * nature's presence-faded master bus — HUD volume/mute, effectsAudioLevel and
- * the out-of-region suspend are already applied there, so this layer never
- * re-multiplies them. The Goldman courts sit inside the "ggpark" nature
- * region, so the context is guaranteed alive whenever a court is audible;
- * unlike the roaming pet layer this one never needs setExternalAwake.
+ * nature's foreground-effects bus — HUD FX volume/mute and the shared limiter
+ * are already applied there, so this layer never re-multiplies them. The
+ * Goldman courts sit inside the "ggpark" nature region, which keeps the shared
+ * context alive whenever a court is audible.
  *
  * One class serves every court: handle(event, at) spatializes each one-shot at
  * the event's world position (falling back to `at`, the court center, for
@@ -94,9 +93,7 @@ export class PickleballAudio {
     if (!this.#layer) {
       this.#layer = io.ctx.createGain();
       this.#layer.gain.value = PB_AUDIO.layerGain;
-      // presence-faded master bus: distance to the courts already fades this
-      // whole layer out with the region, and it parks when the ctx suspends
-      this.#layer.connect(io.bus);
+      this.#layer.connect(io.alwaysBus);
       for (let i = 0; i < PB_AUDIO.voices; i++) {
         const panner = io.ctx.createPanner();
         panner.panningModel = "HRTF";
@@ -107,7 +104,7 @@ export class PickleballAudio {
         panner.connect(this.#layer);
         const send = io.ctx.createGain();
         send.gain.value = PB_AUDIO.reverbSend;
-        panner.connect(send).connect(io.reverbSend);
+        panner.connect(send).connect(io.effectsReverbSend);
         this.#voices.push({ panner });
       }
     }

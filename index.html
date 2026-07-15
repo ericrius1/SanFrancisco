@@ -3022,7 +3022,7 @@
         flex-direction: column;
         align-items: stretch;
         gap: 6px;
-        padding: 6px 10px;
+        padding: 6px;
         border-radius: 10px;
         background: var(--surface);
         border: 1px solid var(--hairline);
@@ -3032,8 +3032,21 @@
       #hud .audio-sliders {
         display: flex;
         flex-direction: column;
-        gap: 5px;
+        gap: 7px;
         min-width: 0;
+        width: 196px;
+        padding: 7px 8px 9px;
+        border-radius: 8px;
+        background: rgba(6, 21, 31, 0.48);
+        border: 1px solid rgba(190, 225, 240, 0.12);
+      }
+      #hud .audio-sliders[hidden] {
+        display: none;
+      }
+      #hud .audio-actions {
+        display: flex;
+        align-items: stretch;
+        gap: 5px;
       }
       #hud .audio-row {
         display: flex;
@@ -3042,7 +3055,7 @@
         min-width: 0;
       }
       #hud .audio-lbl {
-        flex: 0 0 42px;
+        flex: 0 0 45px;
         font:
           600 10px var(--font);
         letter-spacing: 0.04em;
@@ -3050,11 +3063,13 @@
         color: rgba(188, 217, 230, 0.72);
       }
       #hud .audio .mute-btn,
+      #hud .audio .mixer-btn,
       #hud .audio .mic-btn {
         display: inline-flex;
         align-items: center;
-        gap: 8px;
-        padding: 5px 10px;
+        justify-content: center;
+        gap: 6px;
+        padding: 5px 8px;
         border-radius: 7px;
         cursor: pointer;
         background: rgba(18, 40, 56, 0.6);
@@ -3068,15 +3083,22 @@
           color 0.15s;
       }
       #hud .audio .mute-btn .ic,
+      #hud .audio .mixer-btn .ic,
       #hud .audio .mic-btn .ic {
-        font-size: 18px;
+        font-size: 15px;
         line-height: 1;
       }
+      #hud .audio .mixer-btn .chev {
+        color: rgba(188, 217, 230, 0.56);
+        font-size: 9px;
+      }
       #hud .audio .mute-btn:hover,
+      #hud .audio .mixer-btn:hover,
       #hud .audio .mic-btn:hover {
         border-color: rgba(190, 225, 240, 0.55);
       }
       #hud .audio .mute-btn.off,
+      #hud .audio.mixer-open .mixer-btn,
       #hud .audio .mic-btn.on {
         border-color: var(--accent);
         color: var(--accent-strong);
@@ -3110,6 +3132,19 @@
       }
       #hud .audio input[type="range"].off {
         opacity: 0.35;
+      }
+      @media (max-width: 480px) {
+        #hud .audio {
+          left: max(10px, env(safe-area-inset-left));
+          bottom: max(42px, env(safe-area-inset-bottom));
+        }
+        #hud .audio .mute-btn .label,
+        #hud .audio .mic-btn .label {
+          display: none;
+        }
+        #hud .audio-sliders {
+          width: min(196px, calc(100vw - 32px));
+        }
       }
       #hud .minimap {
         position: absolute;
