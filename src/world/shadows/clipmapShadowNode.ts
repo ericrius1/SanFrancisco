@@ -8,6 +8,7 @@ import {
   renderGroup,
   smoothstep,
   uniform,
+  vec2,
   vec4
 } from "three/tsl"
 import {
@@ -305,13 +306,13 @@ export class ClipmapShadowNode extends THREE.ShadowBaseNode {
       this.setupShadowPosition(builder)
       const visibility = (vec4(1) as N).toVar()
 
-      // Gate against the actual light-space square, not radial world distance:
-      // at low sun a long ground shadow can stay inside a 32 m projection even
-      // when its receiver is tens of metres from the player.
+      // Use a radial metric in the light's projection plane. All samples retire
+      // inside the square texture, but the transition has no square isocontour
+      // that can become visible on broad, low-sun shadow fields.
       const heroOffset = positionWorld.sub(heroCenter)
       const heroAxisRight = heroOffset.dot(heroRight).abs()
       const heroAxisUp = heroOffset.dot(heroUp).abs()
-      const heroRadius = heroAxisRight.max(heroAxisUp)
+      const heroRadius = vec2(heroAxisRight, heroAxisUp).length()
       const heroFadeEnd = CLIPMAP_SHADOW_CONFIG.hero.extent * 0.5
         - CLIPMAP_SHADOW_EDGES.hero.sampleMarginMeters
       const heroEdgeWeight = smoothstep(
@@ -323,20 +324,24 @@ export class ClipmapShadowNode extends THREE.ShadowBaseNode {
       // no branch or out-of-domain edge texel can become a visible hard line.
       visibility.mulAssign(mix(1, hero as N, heroEdgeWeight))
 
-      // Representation handoffs follow each cached map's real light-space
-      // square. This keeps long grazing-sun shadows in the high-resolution
-      // domain instead of degrading them merely because XZ distance is large.
+      // Representation handoffs use the same projection-plane radius. A broad
+      // local feather makes the composition stable for every caster set and sun
+      // angle rather than attempting to special-case oversized projections.
       const localOffset = positionWorld.sub(localCenter)
-      const localRadius = localOffset.dot(localRight).abs()
-        .max(localOffset.dot(localUp).abs())
+      const localRadius = vec2(
+        localOffset.dot(localRight),
+        localOffset.dot(localUp)
+      ).length()
       // Fade the far raster to lit before its own light-space square boundary.
       // When the world atlas is faded out this is the visible layer; without the
       // feather its 1024 m frustum edge draws a hard rotated square across the
       // fog. Interior far radii are unaffected (fade weight is 1 there), so the
       // atlas handoff and normal daytime far coverage are unchanged.
       const farOffset = positionWorld.sub(farCenter)
-      const farRadius = farOffset.dot(farRight).abs()
-        .max(farOffset.dot(farUp).abs())
+      const farRadius = vec2(
+        farOffset.dot(farRight),
+        farOffset.dot(farUp)
+      ).length()
       const farHalfExtent = CLIPMAP_SHADOW_CONFIG.far.extent * 0.5
       const farFadeEnd = farHalfExtent - CLIPMAP_SHADOW_EDGES.far.sampleMarginMeters
       const farEdgeFade = smoothstep(
@@ -380,20 +385,22 @@ export class ClipmapShadowNode extends THREE.ShadowBaseNode {
           (a, b, weight) => (mix as N)(a, b, weight)
         )
       }
-      If(localRadius.lessThan(CLIPMAP_SHADOW_EDGES.local.handoffStartMeters), () => {
+      const localHalfExtent = CLIPMAP_SHADOW_CONFIG.local.extent * 0.5
+      const localFadeEnd = localHalfExtent - CLIPMAP_SHADOW_EDGES.local.sampleMarginMeters
+      const localFadeStart = localFadeEnd - CLIPMAP_SHADOW_EDGES.local.fadeMeters
+      If(localRadius.lessThan(localFadeStart), () => {
         visibility.mulAssign(composeWithFarField(local as N, 0 as N))
-      }).ElseIf(localRadius.lessThan(CLIPMAP_SHADOW_EDGES.local.handoffEndMeters), () => {
-        const farWeight = smoothstep(
-          CLIPMAP_SHADOW_EDGES.local.handoffStartMeters,
-          CLIPMAP_SHADOW_EDGES.local.handoffEndMeters,
-          localRadius
-        )
+      }).ElseIf(localRadius.lessThan(localFadeEnd), () => {
+        const farWeight = smoothstep(localFadeStart, localFadeEnd, localRadius)
         const rasterVisibility = mix(local as N, farVisible, farWeight)
         const rasterRetire = atlasOwnership
           ? farWeight.mul(atlasOwnership)
           : 0 as N
         visibility.mulAssign(composeWithFarField(rasterVisibility as N, rasterRetire))
       }).Else(() => {
+        // Stop sampling LOCAL once its weight reaches zero. Besides avoiding an
+        // unnecessary PCF read over the rest of the world, this guarantees no
+        // out-of-domain texture result can participate in the composition.
         if (!farField || !farFieldBase || !atlasOwnership) {
           visibility.mulAssign(farVisible)
         } else {

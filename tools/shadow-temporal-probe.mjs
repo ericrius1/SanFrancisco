@@ -199,7 +199,10 @@ async function configureScene(page) {
     sf.WORLD_TUNING.values.fogBank = 0;
     sf.WORLD_TUNING.values.fogNoise = 0;
     sf.sky.applyFogParams();
-    sf.dynRes.sample = () => {};
+    // Dynamic resolution is currently owned inside the render pipeline. Older
+    // builds exposed a sampler on __sf; keep the probe compatible with the
+    // current diagnostics surface without inventing a legacy controller.
+    if (sf.dynRes) sf.dynRes.sample = () => {};
     sf.renderer.setPixelRatio(1);
     sf.renderer.setSize(viewport.width, viewport.height);
 

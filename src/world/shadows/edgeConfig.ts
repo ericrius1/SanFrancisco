@@ -1,6 +1,9 @@
 export const CLIPMAP_SHADOW_EDGES = Object.freeze({
   hero: { fadeMeters: 5, sampleMarginMeters: 0.125 },
-  local: { handoffStartMeters: 41.5, handoffEndMeters: 47.75 },
+  // Local shadows can contain long, nearly solid low-sun projections. Retire
+  // them over the outer half of the map instead of preserving full opacity up
+  // to a narrow edge strip, where the square projection becomes perceptible.
+  local: { fadeMeters: 24, sampleMarginMeters: 0.25 },
   far: { fadeMeters: 96, sampleMarginMeters: 4 }
 });
 
