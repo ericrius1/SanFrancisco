@@ -19,9 +19,9 @@ export const TERRAIN_CLIPMAP_TUNING = tunables("terrainClipmap", {
     label: "LOD morph band"
   },
   macroVariation: {
-    v: 0.16,
+    v: 0.07,
     min: 0,
-    max: 0.4,
+    max: 0.2,
     step: 0.01,
     label: "macro variation"
   },

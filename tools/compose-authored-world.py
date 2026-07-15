@@ -68,10 +68,10 @@ def main():
         root["sf_composed_region"] = region["id"]
         root["sf_source"] = region["source"]
         bpy.context.scene.collection.children.link(root)
-        collider_collection = next((item for item in collection_tree(root) if item.name.startswith("COLLIDERS")), None)
-        if collider_collection:
-            collider_collection.hide_viewport = True
-            collider_collection.hide_render = True
+        for item in collection_tree(root):
+            if item.name.startswith(("COLLIDERS", "AUTHORING", "TERRAIN_OWNERSHIP")):
+                item.hide_viewport = True
+                item.hide_render = True
         composed.append(region["id"])
 
     bpy.context.scene["sf_authored_region_schema"] = 1

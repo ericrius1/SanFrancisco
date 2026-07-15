@@ -17,13 +17,6 @@
 
 const clamp = (x: number, a = 0, b = 1) => Math.min(b, Math.max(a, x));
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
-/** Sample a per-stage value array at a continuous position f (0..len-1). */
-function atStage(vals: number[], f: number): number {
-  const i = clamp(Math.floor(f), 0, vals.length - 1);
-  const j = clamp(i + 1, 0, vals.length - 1);
-  return lerp(vals[i], vals[j], clamp(f - i));
-}
-
 /* --- deterministic placement math, ported verbatim from world/groundcover/scatter.ts,
    so the clump toy clusters flowers with the exact algorithm the game plants them with. */
 
@@ -1146,6 +1139,148 @@ const DIAGRAM_FOREST = `
 /* ---------------------------------------------------------------- the content */
 
 export const FOLIAGE_TAB_HTML = `
+  <style>
+    #hud .fo-asset-flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 9px;
+      margin: 16px 0;
+    }
+    #hud .fo-asset-stage {
+      position: relative;
+      min-width: 0;
+      padding: 12px 11px;
+      border: 1px solid rgba(190, 225, 240, 0.14);
+      border-radius: 11px;
+      background: linear-gradient(180deg, rgba(18, 43, 58, 0.74), rgba(10, 26, 39, 0.74));
+      box-shadow: inset 0 1px rgba(255, 255, 255, 0.035);
+    }
+    #hud .fo-asset-stage:not(:last-child)::after {
+      content: "→";
+      position: absolute;
+      z-index: 1;
+      top: 50%;
+      right: -9px;
+      width: 9px;
+      transform: translateY(-50%);
+      color: rgba(111, 215, 196, 0.78);
+      font: 800 13px/1 var(--font);
+      text-align: center;
+    }
+    #hud .fo-asset-stage b,
+    #hud .fo-asset-stage small {
+      display: block;
+      overflow-wrap: anywhere;
+    }
+    #hud .fo-asset-stage b {
+      margin-bottom: 5px;
+      color: #b6f6e8;
+      font-size: 13px;
+      line-height: 1.2;
+    }
+    #hud .fo-asset-stage small {
+      color: #a9c8d2;
+      font: 600 11.5px/1.35 var(--font);
+    }
+    #hud .fo-asset-stage .fo-stage-n {
+      display: inline-grid;
+      place-items: center;
+      width: 19px;
+      height: 19px;
+      margin-bottom: 7px;
+      border-radius: 50%;
+      background: rgba(111, 215, 196, 0.14);
+      color: var(--accent-strong);
+      font: 800 10px/1 var(--font);
+    }
+    @media (max-width: 720px) {
+      #hud .fo-asset-flow { grid-template-columns: 1fr 1fr; }
+      #hud .fo-asset-stage:not(:last-child)::after { display: none; }
+      #hud .fo-asset-stage:last-child { grid-column: 1 / -1; }
+    }
+    #hud [data-diagram="forest"] .scrolly-graphic {
+      flex-direction: column;
+      align-items: stretch;
+      justify-content: flex-start;
+    }
+    #hud .fo-scene-head {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      width: 100%;
+      padding: 1px 4px 9px;
+      border-bottom: 1px solid rgba(190, 225, 240, 0.1);
+    }
+    #hud .fo-scene-count {
+      color: var(--accent);
+      font: 800 9.5px/1 var(--font);
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    #hud .fo-scene-title {
+      min-width: 0;
+      overflow: hidden;
+      color: #e4f6f2;
+      font: 800 13px/1.2 var(--font);
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #hud .fo-scene-dots {
+      display: flex;
+      gap: 5px;
+      align-items: center;
+    }
+    #hud .fo-scene-dots span {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: rgba(190, 225, 240, 0.2);
+      box-shadow: 0 0 0 1px rgba(190, 225, 240, 0.08);
+    }
+    #hud .fo-scene-dots span.active {
+      background: var(--accent);
+      box-shadow: 0 0 8px rgba(111, 215, 196, 0.65);
+    }
+    #hud [data-diagram="forest"] .ss-svg {
+      flex: 1 1 auto;
+      min-height: 0;
+    }
+    #hud [data-diagram="forest"] .scrolly-step:not(.active) p {
+      opacity: 0;
+      pointer-events: none;
+    }
+    #hud [data-diagram="forest"] .scrolly-step p {
+      transition: none;
+    }
+    @media (max-width: 520px) {
+      #hud .fo-scene-head { grid-template-columns: auto 1fr; }
+      #hud .fo-scene-dots { display: none; }
+      #hud .fo-scene-title { font-size: 11.5px; }
+    }
+    #hud .fo-hero {
+      margin: 4px 0 2px;
+      border-radius: 12px;
+      overflow: hidden;
+      border: 1px solid rgba(190, 225, 240, 0.16);
+      background: rgba(6, 16, 25, 0.55);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    }
+    #hud .fo-hero img {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+    #hud .fo-hero figcaption {
+      margin: 0;
+      padding: 9px 12px 10px;
+      color: #a9c8d2;
+      font: 600 12.5px/1.4 var(--font);
+      border-top: 1px solid rgba(190, 225, 240, 0.1);
+    }
+  </style>
+
   <section>
     <p class="bts-lede">Stand in Golden Gate Park and turn a slow circle. There are trees to the horizon,
     grass moving under your feet, wildflowers clumped in the sun and scattered in the shade — and it keeps
@@ -1157,6 +1292,10 @@ export const FOLIAGE_TAB_HTML = `
     away) connected to a very modern WebGPU pipeline. The CPU pages a compact description of the ground;
     compute shaders turn it into a meadow; instancing turns a few grown tree designs into a forest. A few
     of the diagrams below you can grab and play with.</p>
+    <figure class="fo-hero">
+      <img src="/ui/bts-foliage-night.webp" width="1024" height="535" alt="Night hillside of procedural grass, trees and bushes under a bright moon" loading="lazy" decoding="async">
+      <figcaption>A night hillside of grown grass, trees and bushes — none of it hand-placed.</figcaption>
+    </figure>
   </section>
 
   <!-- WEB-DEPENDENT: SeedThree lineage / "it started as a seed" -->
@@ -1178,6 +1317,59 @@ export const FOLIAGE_TAB_HTML = `
     steady frame.</p>
   </section>
 
+  <div class="bts-act">Asset generation pipeline</div>
+
+  <section>
+    <h3><span class="bts-ic">🧬</span> How the tree assets are generated</h3>
+    <p>There is no redwood GLB, oak GLB or folder full of hand-exported tree models. The source asset is a
+    compact <strong>species recipe</strong>: height and trunk flare; how many branch levels to grow; where
+    children attach; their length, angle, gravity, taper and curvature; whether the canopy uses broad leaves,
+    needle sprays or blossom rosettes; and the palette and wind response. Ten archetypes — from coast redwood
+    and Monterey cypress to Japanese maple, flowering cherry and Chilean palm — use the same compiler with
+    different recipes. A seed changes the individual; the recipe changes the species.</p>
+
+    <div class="fo-asset-flow" role="list" aria-label="Tree asset generation pipeline">
+      <div class="fo-asset-stage" role="listitem"><span class="fo-stage-n">1</span><b>Species recipe</b><small>Trunk, branching, foliage, colour, wind and four LOD budgets.</small></div>
+      <div class="fo-asset-stage" role="listitem"><span class="fo-stage-n">2</span><b>Worker growth</b><small>A deterministic seed grows one centreline skeleton and stable foliage anchors.</small></div>
+      <div class="fo-asset-stage" role="listitem"><span class="fo-stage-n">3</span><b>Mesh compiler</b><small>Tapered branch tubes and leaf, needle or rosette meshes become typed arrays.</small></div>
+      <div class="fo-asset-stage" role="listitem"><span class="fo-stage-n">4</span><b>GPU prototype</b><small>Four nested LODs become shared vertex/index buffers, ready for instancing.</small></div>
+      <div class="fo-asset-stage" role="listitem"><span class="fo-stage-n">5</span><b>Material pack</b><small>The nearby species requests its KTX2 leaf and bark maps only when needed.</small></div>
+    </div>
+
+    <p>The geometry compiler is deliberately renderer-free: <code>compileTree(recipe, seed)</code> is pure
+    TypeScript, so it runs in a worker without Three.js, the DOM or a texture loader. It first grows one
+    parented branch skeleton, then gives every branch and foliage anchor a stable keep score. All four detail
+    levels prune <em>that same tree</em>, always retaining the support branches beneath a surviving leaf. This
+    is why a tree can simplify without turning into a different random specimen at each distance.</p>
+    <p>Branches are skinned into merged tapered tubes with stable frames and world-scale bark UVs. Foliage is
+    flattened into merged leaf cards, crossed needle clusters or petal rosettes. Alongside position, normal
+    and UV, the compiler bakes the less visible assets the shader needs: each leaf's supporting anchor, wind
+    phase and stiffness, height and tip weights, palette variation and canopy opening. The result is one
+    interleaved vertex buffer plus one index buffer per branch/foliage pair, transferred out of the worker
+    without copying. Bounds, triangle and byte counts, a skeleton fingerprint and an analytic canopy-shadow
+    profile ride along in the same prototype.</p>
+  </section>
+
+  <section>
+    <h3><span class="bts-ic">🎨</span> Even the bark and leaves are generated</h3>
+    <p>The close-up texture assets are not photographs or a vendor foliage pack either. An offline compiler
+    draws them deterministically at 512×512 from species rules: serrated oak leaves, eucalyptus blades,
+    ginkgo fans, redwood and cypress sprays, black-pine tufts and palm fronds; then fibrous, plated, mottled,
+    twisted, ringed or lenticelled bark. It derives height and veins from those shapes, turns the gradients
+    into normals, assigns roughness and translucency, and generates every mip level while preserving the
+    cutout's alpha coverage so distant leaves do not evaporate.</p>
+    <p>The build packs colour/opacity and surface channels into GPU-compressed <strong>KTX2</strong> files,
+    validates orientation and mip chains, fingerprints the outputs into cache-safe filenames, and writes a
+    manifest recording their procedural seed and provenance. Seasonal palettes — new redwood growth,
+    juvenile eucalyptus, autumn maple and ginkgo, cherry blossom and dry palm — reuse the same generated
+    shape and surface data with a different colour map.</p>
+    <p>That rich pack is still optional. Landscape and horizon trees start with opaque, texture-free
+    silhouettes and do not even request the manifest. Only when a species enters the bounded close-detail
+    pool does the runtime fetch its selected leaf colour, leaf surface, bark colour and bark surface maps,
+    transcode them for the current WebGPU device and lease them from a bounded cache. Missing files fall back
+    to deterministic one-pixel maps, so a material problem can reduce detail but cannot stop the forest.</p>
+  </section>
+
   <section>
     <h3><span class="bts-ic">🌳</span> Grow it once, then cheat</h3>
     <p>A tree is expensive to <em>grow</em> — branching, bark, thousands of leaves — but you only pay that
@@ -1197,6 +1389,13 @@ export const FOLIAGE_TAB_HTML = `
 
   <div class="scrolly" data-diagram="forest">
     <div class="scrolly-graphic">
+      <div class="fo-scene-head" aria-live="polite" aria-atomic="true">
+        <span class="fo-scene-count" data-fo-stage-count>Stage 1 of 5</span>
+        <strong class="fo-scene-title" data-fo-stage-title>Grow one prototype</strong>
+        <span class="fo-scene-dots" aria-hidden="true">
+          <span class="active"></span><span></span><span></span><span></span><span></span>
+        </span>
+      </div>
       ${DIAGRAM_FOREST}
     </div>
     <div class="scrolly-steps">
@@ -1291,6 +1490,34 @@ export const FOLIAGE_TAB_HTML = `
     <strong>four indirect draws</strong>. There is no CPU <code>GrassEntry</code> list, no per-tile grass
     allocation, and no upload of newly placed instance arrays. Teleports still prepare and warm the four
     pipelines under the arrival cover; ordinary movement just pages the thin field slab.</p>
+  </section>
+
+  <section>
+    <h3><span class="bts-ic">🌼</span> How the flower assets are generated</h3>
+    <p>The flowers use no downloaded models and almost no texture memory. Their source assets are small mesh
+    functions. A stem begins as two crossed tapered strips. A petal begins as a ruled surface: three points
+    across its width and a few rows along its length, widened into a rounded outline, curled upward and cupped
+    at the edges. The generator spins copies into rings, adds a tiny faceted pollen centre, computes real
+    normals, then merges several differently scaled and rotated stems into one reusable botanical clump.</p>
+
+    <div class="fo-asset-flow" role="list" aria-label="Flower asset generation pipeline">
+      <div class="fo-asset-stage" role="listitem"><span class="fo-stage-n">1</span><b>Botanical rule</b><small>Poppy cup, lupine spike, yarrow umbel or goldfield daisy.</small></div>
+      <div class="fo-asset-stage" role="listitem"><span class="fo-stage-n">2</span><b>Mesh parts</b><small>Curved petals, crossed stems and compact pollen centres.</small></div>
+      <div class="fo-asset-stage" role="listitem"><span class="fo-stage-n">3</span><b>Merged clump</b><small>Three to five varied heads share one immutable geometry.</small></div>
+      <div class="fo-asset-stage" role="listitem"><span class="fo-stage-n">4</span><b>Three LODs</b><small>Layered hero, simplified mid and a six-triangle far accent.</small></div>
+      <div class="fo-asset-stage" role="listitem"><span class="fo-stage-n">5</span><b>Instanced field</b><small>Colour, root anchor, scale and yaw turn prototypes into a meadow.</small></div>
+    </div>
+
+    <p>Each vertex carries a head mask, a centre-to-tip colour gradient and a tip-weighted sway channel. Each
+    instance adds only a transform, bloom colour and root anchor. Nearby clumps keep curved layered petals,
+    subsurface scattering, fresnel light and the shared trample field; mid-distance versions keep the species
+    silhouette with simpler geometry and wind; beyond that, one shared six-triangle accent is enough to hold
+    a coloured fleck in the grass. Spatial buckets let whole off-camera meadow sectors disappear before draw
+    submission.</p>
+    <p>The same four generated prototypes serve two ownership models. Designed beds in gardens receive a
+    fixed authored list of positions, but use the exact same geometry, lighting, wind and trample material.
+    Wild meadows throw their instance lists away and deterministically rebuild the player-following ring.
+    The <em>asset</em> stays immutable; only the lightweight list of where it grows changes.</p>
   </section>
 
   <!-- WEB-DEPENDENT: False Earth attribution woven into the flower story -->
@@ -1427,7 +1654,23 @@ export const FOLIAGE_TAB_HTML = `
 
 /* ------------------------------------------------------------- controller */
 
-type ScrollyState = { el: HTMLElement; steps: HTMLElement[]; svg: SVGSVGElement | null };
+type ScrollyState = {
+  el: HTMLElement;
+  steps: HTMLElement[];
+  svg: SVGSVGElement | null;
+  stageCount: HTMLElement | null;
+  stageTitle: HTMLElement | null;
+  stageDots: HTMLElement[];
+  lastStage: number;
+};
+
+const FOREST_STAGE_TITLES = [
+  "Grow one prototype",
+  "Instance it across a chunk",
+  "Spend detail by distance",
+  "Cull outside the camera view",
+  "Cast one stable shadow layer"
+] as const;
 
 function setOpacity(svg: SVGSVGElement, id: string, v: number) {
   const el = svg.getElementById(id) as SVGElement | null;
@@ -1446,7 +1689,11 @@ export function mountFoliage(pane: HTMLElement, scrollEl: HTMLElement) {
   const scrollies: ScrollyState[] = [...pane.querySelectorAll<HTMLElement>(".scrolly")].map((el) => ({
     el,
     steps: [...el.querySelectorAll<HTMLElement>(".scrolly-step")],
-    svg: el.querySelector<SVGSVGElement>("svg")
+    svg: el.querySelector<SVGSVGElement>("svg"),
+    stageCount: el.querySelector<HTMLElement>("[data-fo-stage-count]"),
+    stageTitle: el.querySelector<HTMLElement>("[data-fo-stage-title]"),
+    stageDots: [...el.querySelectorAll<HTMLElement>(".fo-scene-dots span")],
+    lastStage: -1
   }));
 
   // plant the diagram's trees + shadow proxies once (positions reused each frame)
@@ -1458,21 +1705,43 @@ export function mountFoliage(pane: HTMLElement, scrollEl: HTMLElement) {
 
   function paint(t: number) {
     const cr = scrollEl.getBoundingClientRect();
-    const trigger = cr.top + cr.height * 0.58;
+    const defaultTrigger = cr.top + cr.height * 0.58;
     for (const s of scrollies) {
+      const graphic = s.el.querySelector<HTMLElement>(".scrolly-graphic");
+      const graphicRect = graphic?.getBoundingClientRect();
+      const stacked = getComputedStyle(s.el).flexDirection === "column";
+      // In the narrow stacked layout the sticky illustration sits above the
+      // caption. Keep the reading line below it so the two never overlap.
+      const trigger = stacked && graphicRect
+        ? Math.max(defaultTrigger, graphicRect.bottom + 16)
+        : defaultTrigger;
       let stage = 0;
       let p = 0;
       for (let i = 0; i < s.steps.length; i++) {
-        const r = s.steps[i].getBoundingClientRect();
-        s.steps[i].classList.toggle("active", false);
+        // Switch the diagram when the caption itself reaches the reading line,
+        // rather than when its tall spacing wrapper does. This keeps the scene,
+        // title and visible explanation in lockstep throughout a slow scroll.
+        const card = s.steps[i].querySelector<HTMLElement>("p");
+        const r = (card ?? s.steps[i]).getBoundingClientRect();
         if (r.top <= trigger) {
           stage = i;
-          const next = s.steps[i + 1]?.getBoundingClientRect();
+          const nextStep = s.steps[i + 1];
+          const next = (nextStep?.querySelector<HTMLElement>("p") ?? nextStep)?.getBoundingClientRect();
           const span = (next ? next.top : r.bottom) - r.top;
           p = clamp((trigger - r.top) / Math.max(1, span));
         }
       }
-      s.steps[stage]?.classList.add("active");
+      for (let i = 0; i < s.steps.length; i++) {
+        s.steps[i].classList.toggle("active", i === stage);
+      }
+      if (stage !== s.lastStage) {
+        s.lastStage = stage;
+        if (s.stageCount) s.stageCount.textContent = `Stage ${stage + 1} of ${s.steps.length}`;
+        if (s.stageTitle) s.stageTitle.textContent = FOREST_STAGE_TITLES[stage] ?? "Forest pipeline";
+        for (let i = 0; i < s.stageDots.length; i++) {
+          s.stageDots[i].classList.toggle("active", i === stage);
+        }
+      }
       if (s.svg) renderForest(s.svg, stage, p, t);
     }
     for (const f of frames) f(t);
@@ -1566,24 +1835,21 @@ function plantForestDiagram(svg: SVGSVGElement) {
 const TIER_FILL = ["#5fce93", "#4f9d72", "#3c7d5b", "#2f5f47"];
 
 function renderForest(svg: SVGSVGElement, stage: number, p: number, t: number) {
-  const f = stage + p; // 0..4 continuous
-  // Let the first caption hold on the grown seed instead of ghosting the chunk
-  // over it halfway through the caption's viewport. The handoff happens only
-  // near the bottom of that step; later stages keep the regular interpolation.
-  setOpacity(svg, "fo-seed", stage === 0
-    ? 1 - smoothstep(0.68, 0.95, p)
-    : atStage([1, 0.15, 0, 0, 0], f));
-  setOpacity(svg, "fo-chunk", stage === 0
-    ? smoothstep(0.68, 0.95, p)
-    : atStage([0, 1, 0.2, 0, 0], f));
-  setOpacity(svg, "fo-rings", atStage([0, 0.1, 1, 0.7, 0.5], f));
-  setOpacity(svg, "fo-frustum", atStage([0, 0, 0.1, 1, 0.7], f));
-  setOpacity(svg, "fo-shadows", atStage([0, 0, 0, 0.2, 1], f));
-  setOpacity(svg, "fo-forest", atStage([0, 0.2, 1, 1, 1], f));
-  setOpacity(svg, "fo-youlbl", atStage([0, 0, 1, 1, 1], f));
+  // Each caption owns one discrete visual scene. Do not cross-fade adjacent
+  // stages: rings + frustum + shadow layers read as one muddled diagram when
+  // their partial opacities overlap during a slow scroll.
+  const forestStage = stage >= 2;
+  setOpacity(svg, "fo-seed", stage === 0 ? 1 : 0);
+  setOpacity(svg, "fo-chunk", stage === 1 ? 1 : 0);
+  setOpacity(svg, "fo-rings", stage === 2 ? 1 : 0);
+  setOpacity(svg, "fo-frustum", stage === 3 ? 1 : 0);
+  setOpacity(svg, "fo-shadows", stage === 4 ? 1 : 0);
+  setOpacity(svg, "fo-forest", forestStage ? 1 : 0);
+  setOpacity(svg, "fo-you", forestStage ? 1 : 0);
+  setOpacity(svg, "fo-youlbl", forestStage ? 1 : 0);
 
   // seed sprout grows in stage 0
-  const grow = clamp(0.62 + atStage([0, 1, 1, 1, 1], f) * 0.38);
+  const grow = stage === 0 ? clamp(0.62 + p * 0.38) : 1;
   setAttr(svg, "fo-sprout", "d", `M410 250 L410 ${(250 - 112 * grow).toFixed(1)}`);
   setOpacity(svg, "fo-seed-crown", smoothstep(0.34, 0.72, grow));
   setAttr(svg, "fo-seed-crown", "transform", `translate(410 250) scale(${grow.toFixed(3)}) translate(-410 -250)`);
@@ -1591,7 +1857,7 @@ function renderForest(svg: SVGSVGElement, stage: number, p: number, t: number) {
   // forest trees: size by tier (near = big/detailed), tint by tier, sway idle
   const forest = svg.getElementById("fo-forest");
   const wedge = { apexX: 410, apexY: 180, halfAng: 1.05, dir: -Math.PI / 2 }; // pointing up
-  const cullOn = clamp(atStage([0, 0, 0, 1, 1], f));
+  const cullOn = stage === 3 ? 1 : 0;
   if (forest) {
     for (let i = 0; i < diagTrees.length; i++) {
       const tr = diagTrees[i];

@@ -11,10 +11,19 @@ FOV, orbit, shake, and indoor transitions cannot resize or phase-shift them.
 | Far | 1024 m | 1024² | 1 m | Coarse skyline/massing proxies only | 8 m anchor, 0.15° sun, or far content revision |
 
 The three factors are selected with real light-space coordinates. Hero affects
-only its 32 m projection square. Local hands off to far across 42–48 m, and the
-raster far map hands off to the world-locked field across 420–500 m. Do not
-multiply the field over the far map: they represent the same direct occlusion
-and must replace/crossfade one another.
+only its 32 m projection square and fades to neutral over its final 5 m, ending
+0.125 m inside the map so a PCF footprint never exposes a clamped edge texel.
+Local hands off to far across 41.5–47.75 m, also before the 48 m map edge. Once
+the world-locked field has valid coverage it owns the far domain outside that
+local guard band; the raster far map is the fallback during low/stale sun or a
+field rebuild. That fallback fades over its final 96 m and reaches neutral 4 m
+inside its projection edge. Do not multiply the field over the far map: they
+represent the same direct occlusion and must replace/crossfade one another.
+
+Projection-edge fades must finish *inside* the corresponding orthographic map,
+not at an enlarged analytical boundary. Ending at or beyond the camera extent
+lets PCF filtering repeat a boundary texel into a long light-space wedge, which
+can appear to follow the edge of the screen under a grazing sun.
 
 ## Caster layers
 
@@ -67,6 +76,10 @@ npm run test:shadows:far-field
 npm run test:shadows:contact
 npm run test:shadows:temporal
 ```
+
+The analysis command includes the projection-edge contract: monotonic hero
+retirement, a fully neutral sample before the map edge, and inside-safe local
+and far handoffs.
 
 The temporal probe uses a hero-only moving caster and neutral receiver material
 to detect stationary shimmer and 2/4-frame update impulses. It manually advances

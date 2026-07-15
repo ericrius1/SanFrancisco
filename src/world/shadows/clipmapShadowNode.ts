@@ -18,6 +18,7 @@ import {
 import { SHADOW_LAYERS, type ShadowLayer } from "./shadowLayers"
 import type { FarOcclusionField } from "./farOcclusionField"
 import { SHADOW_DEFAULTS } from "./defaults"
+import { CLIPMAP_SHADOW_EDGES } from "./edgeConfig"
 import { SHADOW_TUNING } from "./tuning"
 import { composeRasterAtlasVisibility } from "./visibilityComposition"
 
@@ -57,22 +58,10 @@ export const CLIPMAP_SHADOW_CONFIG = {
 } as const
 
 /**
- * Feather the far raster's outer light-space rim over this many metres. The far
- * map is a 1024 m player-centric square; when the world atlas is faded out (low
- * or stale sun, or mid-rebuild) it becomes the visible layer, and without this
- * its frustum edge hard-cuts a rotated square across grazing-sun/fog terrain.
- * Interior far coverage and atlas ownership are unchanged — this only softens
- * the last metres before the square boundary, deep in fog where it is invisible.
+ * Projection samples must be fully retired before a PCF footprint touches a
+ * map boundary. Ending a fade at (or beyond) the camera extent can still expose
+ * a clamped edge texel as a long screen-space wedge under a grazing sun.
  */
-const FAR_EDGE_FADE_METERS = 96
-
-/**
- * Feather the hero map's ±16 m rim so a long grazing-sun dynamic shadow fades to
- * lit instead of hard-clipping along a straight light-space edge (the local map
- * does not carry HERO_DYNAMIC casters, so there is nothing to hand off to).
- */
-const HERO_EDGE_FADE_METERS = 3
-
 type DomainId = keyof typeof CLIPMAP_SHADOW_CONFIG
 export type StaticShadowScope = "local" | "far" | "all"
 type DomainConfig = (typeof CLIPMAP_SHADOW_CONFIG)[DomainId]
@@ -322,17 +311,17 @@ export class ClipmapShadowNode extends THREE.ShadowBaseNode {
       const heroOffset = positionWorld.sub(heroCenter)
       const heroAxisRight = heroOffset.dot(heroRight).abs()
       const heroAxisUp = heroOffset.dot(heroUp).abs()
-      const heroInside = heroAxisRight.lessThan(16.25).and(heroAxisUp.lessThan(16.25))
-      If(heroInside, () => {
-        // Feather the rim so a long grazing-sun dynamic shadow fades to lit
-        // rather than terminating along the straight square edge.
-        const heroEdgeFade = smoothstep(
-          16.25 - HERO_EDGE_FADE_METERS,
-          16.25,
-          heroAxisRight.max(heroAxisUp)
-        ).oneMinus()
-        visibility.mulAssign(mix(1, hero as N, heroEdgeFade))
-      })
+      const heroRadius = heroAxisRight.max(heroAxisUp)
+      const heroFadeEnd = CLIPMAP_SHADOW_CONFIG.hero.extent * 0.5
+        - CLIPMAP_SHADOW_EDGES.hero.sampleMarginMeters
+      const heroEdgeWeight = smoothstep(
+        heroFadeEnd - CLIPMAP_SHADOW_EDGES.hero.fadeMeters,
+        heroFadeEnd,
+        heroRadius
+      ).oneMinus()
+      // This continuous weight is already zero inside the valid map boundary;
+      // no branch or out-of-domain edge texel can become a visible hard line.
+      visibility.mulAssign(mix(1, hero as N, heroEdgeWeight))
 
       // Representation handoffs follow each cached map's real light-space
       // square. This keeps long grazing-sun shadows in the high-resolution
@@ -349,9 +338,10 @@ export class ClipmapShadowNode extends THREE.ShadowBaseNode {
       const farRadius = farOffset.dot(farRight).abs()
         .max(farOffset.dot(farUp).abs())
       const farHalfExtent = CLIPMAP_SHADOW_CONFIG.far.extent * 0.5
+      const farFadeEnd = farHalfExtent - CLIPMAP_SHADOW_EDGES.far.sampleMarginMeters
       const farEdgeFade = smoothstep(
-        farHalfExtent - FAR_EDGE_FADE_METERS,
-        farHalfExtent,
+        farFadeEnd - CLIPMAP_SHADOW_EDGES.far.fadeMeters,
+        farFadeEnd,
         farRadius
       ).oneMinus()
       const farVisible = mix(1, far as N, farEdgeFade)
@@ -390,10 +380,14 @@ export class ClipmapShadowNode extends THREE.ShadowBaseNode {
           (a, b, weight) => (mix as N)(a, b, weight)
         )
       }
-      If(localRadius.lessThan(42), () => {
+      If(localRadius.lessThan(CLIPMAP_SHADOW_EDGES.local.handoffStartMeters), () => {
         visibility.mulAssign(composeWithFarField(local as N, 0 as N))
-      }).ElseIf(localRadius.lessThan(48), () => {
-        const farWeight = smoothstep(42, 48, localRadius)
+      }).ElseIf(localRadius.lessThan(CLIPMAP_SHADOW_EDGES.local.handoffEndMeters), () => {
+        const farWeight = smoothstep(
+          CLIPMAP_SHADOW_EDGES.local.handoffStartMeters,
+          CLIPMAP_SHADOW_EDGES.local.handoffEndMeters,
+          localRadius
+        )
         const rasterVisibility = mix(local as N, farVisible, farWeight)
         const rasterRetire = atlasOwnership
           ? farWeight.mul(atlasOwnership)

@@ -116,21 +116,70 @@ await sleep(800);
 
 const targets = [
   ["top", ".bts-pane.active"],
-  ["forest", ".scrolly"],
+  ["asset-pipeline", '.fo-asset-flow[aria-label="Tree asset generation pipeline"]'],
+  ["forest-stage-1", '[data-pane="foliage"] .scrolly-step:nth-child(1)', "stage"],
+  ["forest-stage-2", '[data-pane="foliage"] .scrolly-step:nth-child(2)', "stage"],
+  ["forest-stage-3", '[data-pane="foliage"] .scrolly-step:nth-child(3)', "stage"],
+  ["forest-stage-4", '[data-pane="foliage"] .scrolly-step:nth-child(4)', "stage"],
+  ["forest-stage-5", '[data-pane="foliage"] .scrolly-step:nth-child(5)', "stage"],
   ["lod", '[data-ftoy="lodDial"]'],
   ["gpu-meadow", '[data-ftoy="gpuMeadow"]'],
+  ["flower-pipeline", '.fo-asset-flow[aria-label="Flower asset generation pipeline"]'],
   ["measure", ".bts-pane.active section:nth-last-of-type(2)"]
 ];
-for (const [name, selector] of targets) {
-  await evaluate(cdp, `(() => {
+const forestStages = [];
+for (const [name, selector, alignment] of targets) {
+  await evaluate(cdp, `(async () => {
     const body = document.querySelector('.bts-body');
     const target = document.querySelector(${JSON.stringify(selector)});
     if (!body || !target) return false;
-    body.scrollTop = Math.max(0, target.offsetTop - body.offsetTop - 28);
+    if (${JSON.stringify(alignment)} === 'stage') {
+      const targetCard = target.querySelector('p') ?? target;
+      let bodyRect = body.getBoundingClientRect();
+      let targetRect = targetCard.getBoundingClientRect();
+      // First bring the requested step into the scrollport so the diagram has
+      // reached its sticky position; only then can its true bottom be measured.
+      body.scrollTop = Math.max(0, body.scrollTop + targetRect.top - (bodyRect.top + bodyRect.height * 0.72));
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      bodyRect = body.getBoundingClientRect();
+      targetRect = targetCard.getBoundingClientRect();
+      const scrolly = target.closest('.scrolly');
+      const graphic = scrolly?.querySelector('.scrolly-graphic');
+      const graphicRect = graphic?.getBoundingClientRect();
+      const stacked = scrolly && getComputedStyle(scrolly).flexDirection === 'column';
+      const readingLine = stacked && graphicRect
+        ? Math.max(bodyRect.top + bodyRect.height * 0.58, graphicRect.bottom + 16)
+        : bodyRect.top + bodyRect.height * 0.58;
+      body.scrollTop = Math.max(0, body.scrollTop + targetRect.top - readingLine + 4);
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    } else {
+      body.scrollTop = Math.max(0, target.offsetTop - body.offsetTop - 28);
+    }
     if (${JSON.stringify(name)} === 'gpu-meadow') target.querySelector('[data-el="run"]')?.click();
     return true;
   })()`);
   await sleep(name === "gpu-meadow" ? 2100 : 450);
+  if (alignment === "stage") {
+    forestStages.push(await evaluate(cdp, `(() => {
+      const svg = document.querySelector('.scrolly-graphic svg');
+      const opacity = (id) => Number.parseFloat(getComputedStyle(svg.getElementById(id)).opacity);
+      const activeCard = document.querySelector('[data-pane="foliage"] .scrolly-step.active p');
+      const activeRect = activeCard?.getBoundingClientRect();
+      const scrolly = activeCard?.closest('.scrolly');
+      const graphic = scrolly?.querySelector('.scrolly-graphic');
+      return {
+        name: ${JSON.stringify(name)},
+        count: document.querySelector('[data-fo-stage-count]')?.textContent?.trim(),
+        title: document.querySelector('[data-fo-stage-title]')?.textContent?.trim(),
+        activeCaption: activeCard?.textContent?.trim(),
+        activeCaptionOpacity: activeCard ? Number.parseFloat(getComputedStyle(activeCard).opacity) : null,
+        activeCaptionRect: activeRect ? { top: Math.round(activeRect.top), bottom: Math.round(activeRect.bottom) } : null,
+        stacked: scrolly ? getComputedStyle(scrolly).flexDirection === 'column' : false,
+        graphicBottom: graphic ? Math.round(graphic.getBoundingClientRect().bottom) : null,
+        layers: Object.fromEntries(['fo-seed', 'fo-chunk', 'fo-rings', 'fo-frustum', 'fo-shadows', 'fo-forest', 'fo-you'].map(id => [id, opacity(id)]))
+      };
+    })()`));
+  }
   const shot = await cdp.send("Page.captureScreenshot", { format: "png", fromSurface: true });
   writeFileSync(path.join(OUT, `${name}.png`), Buffer.from(shot.data, "base64"));
 }
@@ -144,10 +193,32 @@ const layout = await evaluate(cdp, `(() => ({
   heading:[...document.querySelectorAll('[data-pane="foliage"] h3')].map(e=>e.textContent.trim())
 }))()`);
 
-writeFileSync(path.join(OUT, "result.json"), `${JSON.stringify({ layout, errors }, null, 2)}\n`);
-console.log(JSON.stringify({ layout, errors, captures: targets.map(([name]) => path.join(OUT, `${name}.png`)) }, null, 2));
+const expectedStages = [
+  { count: "Stage 1 of 5", on: ["fo-seed"] },
+  { count: "Stage 2 of 5", on: ["fo-chunk"] },
+  { count: "Stage 3 of 5", on: ["fo-rings", "fo-forest", "fo-you"] },
+  { count: "Stage 4 of 5", on: ["fo-frustum", "fo-forest", "fo-you"] },
+  { count: "Stage 5 of 5", on: ["fo-shadows", "fo-forest", "fo-you"] }
+];
+writeFileSync(path.join(OUT, "result.json"), `${JSON.stringify({ layout, forestStages, errors }, null, 2)}\n`);
+console.log(JSON.stringify({ layout, forestStages, errors, captures: targets.map(([name]) => path.join(OUT, `${name}.png`)) }, null, 2));
 if (layout.body.scrollWidth > layout.body.clientWidth + 1) throw new Error("foliage chapter overflows horizontally");
 for (const toy of layout.toys) if (toy.scrollWidth > toy.width + 1) throw new Error(`${toy.name} overflows horizontally`);
+for (let i = 0; i < expectedStages.length; i++) {
+  const actual = forestStages[i];
+  const expected = expectedStages[i];
+  if (actual?.count !== expected.count) throw new Error(`${actual?.name ?? `stage ${i + 1}`} reported ${actual?.count ?? "no stage"}`);
+  if (actual.activeCaptionOpacity < 0.99) throw new Error(`${actual.name} active caption opacity ${actual.activeCaptionOpacity}`);
+  if (actual.stacked && actual.activeCaptionRect.top < actual.graphicBottom) {
+    throw new Error(`${actual.name} caption overlaps sticky graphic`);
+  }
+  for (const [id, opacity] of Object.entries(actual.layers)) {
+    const shouldShow = expected.on.includes(id);
+    if (shouldShow ? opacity < 0.99 : opacity > 0.01) {
+      throw new Error(`${actual.name} ${id} opacity ${opacity}; expected ${shouldShow ? "visible" : "hidden"}`);
+    }
+  }
+}
 if (errors.length > 0) throw new Error(`runtime exceptions: ${errors.join(" | ")}`);
 
 cdp.close();

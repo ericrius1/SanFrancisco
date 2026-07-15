@@ -11,10 +11,51 @@ import {
   terrainClipmapTriangleCount,
   terrainClipmapVertexCount
 } from "../src/world/terrainClipmapLayout.ts";
+import {
+  createTerrainDetailTextureData,
+  createTerrainNormalMipData,
+  createTerrainSurfaceMipData
+} from "../src/world/terrainMaterialData.ts";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const layout = createTerrainClipmapLayout();
 const sourceGridCenter = createTerrainClipmapSourceGridCenter();
+
+const ramp = new Float32Array(25);
+for (let z = 0; z < 5; z++) {
+  for (let x = 0; x < 5; x++) ramp[z * 5 + x] = x * 4 + z * 2;
+}
+const normalMip = createTerrainNormalMipData(ramp, 5, 5, 8, 2).mipmaps[0];
+const normalOffset = (2 * 5 + 2) * 2;
+const normalX = normalMip.data[normalOffset] / 255 * 2 - 1;
+const normalZ = normalMip.data[normalOffset + 1] / 255 * 2 - 1;
+const normalY = Math.sqrt(Math.max(0, 1 - normalX ** 2 - normalZ ** 2));
+assert(Math.abs(normalX + 0.436) < 0.015, `filtered normal X is ${normalX}`);
+assert(Math.abs(normalY - 0.873) < 0.015, `filtered normal Y is ${normalY}`);
+assert(Math.abs(normalZ + 0.218) < 0.015, `filtered normal Z is ${normalZ}`);
+
+const surfaceMip = createTerrainSurfaceMipData(new Uint8Array([1, 1, 0]), 3, 1, 1).mipmaps[0];
+const surfaceOffset = 4;
+assert(surfaceMip.data[surfaceOffset] > 0, "surface feather lost the adjacent developed class");
+assert(surfaceMip.data[surfaceOffset + 1] > 0, "surface feather lost the dominant grass class");
+assert(
+  Math.abs(surfaceMip.data[surfaceOffset] + surfaceMip.data[surfaceOffset + 1] - 255) <= 1,
+  "surface feather weights no longer normalize"
+);
+
+const detailA = createTerrainDetailTextureData();
+const detailB = createTerrainDetailTextureData();
+assert.deepEqual(detailA, detailB, "terrain detail generation is not deterministic");
+let macroNeighborDelta = 0;
+for (let y = 0; y < 256; y++) {
+  for (let x = 0; x < 256; x++) {
+    const here = detailA[(y * 256 + x) * 2];
+    const right = detailA[(y * 256 + ((x + 1) % 256)) * 2];
+    macroNeighborDelta += Math.abs(here - right);
+  }
+}
+macroNeighborDelta /= 256 * 256;
+assert(macroNeighborDelta < 8, `macro field is still hash-cell noisy (${macroNeighborDelta.toFixed(2)})`);
 
 assert.equal(layout.length, 7, "clipmap must retain seven nested levels");
 assert.equal(layout.flatMap((level) => level.patches).length, 28, "clipmap patch count changed");
