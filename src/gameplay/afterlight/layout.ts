@@ -20,6 +20,7 @@ export const AFTERLIGHT_TUNING = {
   questSeconds: 82,
   collectRadius: 3.25,
   interactRadius: 5.6,
+  takeoverRadius: 4.8,
   activatePad: 28,
   deactivatePad: 95,
   loomRadius: 5.2,

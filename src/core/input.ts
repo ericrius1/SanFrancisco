@@ -126,6 +126,7 @@ export class Input {
   #lockRequestGeneration = 0;
   #suspended = false;
   #suspensionHolds = new Set<string>();
+  #activityCaptured = false;
   padConnected = false;
   device: "kb" | "pad" = "kb";
 
@@ -481,6 +482,24 @@ export class Input {
     return this.#mapPadAxes;
   }
 
+  /**
+   * An in-world station owns locomotion, camera look, wheel and tool fire for
+   * the rest of this frame. Edge buttons remain readable so E/Y can release it
+   * and global UI shortcuts still work.
+   */
+  captureActivity(): void {
+    this.#activityCaptured = true;
+    this.mouseDX = 0;
+    this.mouseDY = 0;
+    this.wheel = 0;
+    this.wheelX = 0;
+    this.firePressed = false;
+  }
+
+  get activityCaptured(): boolean {
+    return this.#activityCaptured;
+  }
+
   #toggleFreeCursor() {
     if (this.freeCursor) {
       this.#endFreeCursor(true);
@@ -532,7 +551,7 @@ export class Input {
   }
 
   down(code: string) {
-    return !this.suspended && (this.keys.has(code) || this.#padHeld.has(code));
+    return !this.suspended && !this.#activityCaptured && (this.keys.has(code) || this.#padHeld.has(code));
   }
 
   /** Physical hold — ignores `suspended` so global holds (Z time-scrub) work in camera-orbit mode. */
@@ -571,7 +590,7 @@ export class Input {
 
   /** −1..1: keyboard keys are digital, pad sticks/triggers merge in analog. */
   axis(neg: string, pos: string) {
-    if (this.suspended) return 0;
+    if (this.suspended || this.#activityCaptured) return 0;
     const d = (c: string) => (this.keys.has(c) || this.#padHeld.has(c) ? 1 : 0);
     let v = d(pos) - d(neg);
     // pad contributions are stored under one canonical pair; the reversed
@@ -582,7 +601,7 @@ export class Input {
 
   /** −1..1 from pad-only virtual axes; useful when keyboard keys have another global action. */
   padAxis(neg: string, pos: string) {
-    if (this.suspended) return 0;
+    if (this.suspended || this.#activityCaptured) return 0;
     const v = this.#padAxisValue(neg, pos);
     return Math.max(-1, Math.min(1, v));
   }
@@ -592,7 +611,7 @@ export class Input {
   }
 
   get firing() {
-    return this.#mode !== "surf" && !this.suspended && (this.fireHeld || this.#padFireHeld);
+    return this.#mode !== "surf" && !this.suspended && !this.#activityCaptured && (this.fireHeld || this.#padFireHeld);
   }
 
   /** Diagnostics/QA contract: surf never forwards pointer/right-stick look. */
@@ -602,6 +621,7 @@ export class Input {
 
   /** Call once per frame after consuming state. */
   endFrame() {
+    this.#activityCaptured = false;
     this.mouseDX = 0;
     this.mouseDY = 0;
     this.wheel = 0;

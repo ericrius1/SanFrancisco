@@ -3,25 +3,22 @@ import {
   color,
   float,
   mix,
-  mx_noise_float,
-  normalWorld,
   oscSine,
-  positionLocal,
-  positionWorld,
   time,
-  uniform,
-  vec3
+  uniform
 } from "three/tsl";
 import { LIGHT_SCALE } from "../../config";
+import type { Input } from "../../core/input";
 import { avatarFromSeed, type AvatarTraits } from "../../player/avatar";
+import { setHandTarget } from "../../player/handIK";
 import { buildRig, poseIdle, setHandPose, type Rig } from "../../player/rig";
 import { CANVAS_FONT_FAMILY } from "../../core/typography";
 import type { WorldMap } from "../../world/heightmap";
 import { AFTERLIGHT_CENTER, AFTERLIGHT_TUNING, ECHO_LAYOUT, KEEPER_LAYOUT } from "./layout";
 import { CosmicEnergyWeb, WEB_TUNING } from "./energyWeb";
+import { makeVolumetricOrbMaterial, type ScalarUniform } from "./volumeOrb";
 
 type N = any;
-type ScalarUniform = { value: number };
 
 export type EchoVisual = {
   root: THREE.Group;
@@ -50,10 +47,42 @@ type Celebrant = {
   phase: number;
   armPhase: number;
   swirl: number;
+  stationPosition: THREE.Vector3;
+  stationYaw: number;
+  observerTarget: THREE.Vector3;
+  observerYaw: number;
+  observerBlend: number;
+  controlBaseL: THREE.Vector3;
+  controlBaseR: THREE.Vector3;
+  controlTargetL: THREE.Vector3;
+  controlTargetR: THREE.Vector3;
+  controlSmoothL: THREE.Vector3;
+  controlSmoothR: THREE.Vector3;
+  controlWorldL: THREE.Vector3;
+  controlWorldR: THREE.Vector3;
+};
+
+type AnchorBinding = {
+  celebrantIndex: number;
+  side: "L" | "R";
+};
+
+type InteractionBeacon = {
+  sprite: THREE.Sprite;
+  texture: THREE.CanvasTexture;
+  context: CanvasRenderingContext2D;
+  key: string;
+  action: string;
 };
 
 function clamp01(value: number): number {
   return Math.min(1, Math.max(0, value));
+}
+
+function clampHandTarget(target: THREE.Vector3, base: THREE.Vector3): void {
+  target.x = THREE.MathUtils.clamp(target.x, base.x - 1.15, base.x + 1.15);
+  target.y = THREE.MathUtils.clamp(target.y, base.y - 0.9, base.y + 1.25);
+  target.z = THREE.MathUtils.clamp(target.z, base.z - 0.9, base.z + 0.7);
 }
 
 function makeRadialTexture(): THREE.CanvasTexture {
@@ -105,39 +134,70 @@ function makeNameTag(text: string, accent: string): THREE.Sprite {
   return sprite;
 }
 
-function makeEchoMaterial(hue: number, glow: ScalarUniform): THREE.MeshBasicNodeMaterial {
-  const material = new THREE.MeshBasicNodeMaterial();
-  const pulse = oscSine(time.mul(0.52).add(hue * 0.00001)) as N;
-  const noise = mx_noise_float(
-    (positionWorld as N).mul(0.58).add(vec3(time.mul(0.2), time.mul(-0.11), time.mul(0.13)))
-  )
-    .mul(0.5)
-    .add(0.5) as N;
-  const edge = float(1).sub((normalWorld as N).z.abs()).mul(0.35).add(0.65) as N;
-  material.positionNode = (positionLocal as N).mul(float(1).add(pulse.mul(0.055)));
-  material.colorNode = mix(color(hue), color(0xfff5cf), noise.pow(3).mul(0.72))
-    .mul(edge)
-    .mul((glow as N).mul(0.55).add(pulse.mul(0.18)).add(0.48))
-    .mul(LIGHT_SCALE * 1.18);
-  material.opacityNode = (glow as N).mul(0.58).add(0.24);
-  material.transparent = true;
-  material.depthWrite = false;
-  material.side = THREE.DoubleSide;
-  material.blending = THREE.AdditiveBlending;
-  material.fog = false;
-  return material;
+function makeInteractionBeacon(): InteractionBeacon {
+  const canvas = document.createElement("canvas");
+  canvas.width = 640;
+  canvas.height = 144;
+  const context = canvas.getContext("2d")!;
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const material = new THREE.SpriteMaterial({
+    map: texture,
+    transparent: true,
+    depthTest: false,
+    depthWrite: false,
+    fog: false
+  });
+  const sprite = new THREE.Sprite(material);
+  sprite.name = "afterlight-takeover-beacon";
+  sprite.scale.set(4.15, 0.94, 1);
+  sprite.renderOrder = 42;
+  sprite.visible = false;
+  return { sprite, texture, context, key: "", action: "" };
 }
 
-function makePetalMaterial(hue: number, activation: ScalarUniform): THREE.MeshStandardNodeMaterial {
-  const material = new THREE.MeshStandardNodeMaterial();
-  const pulse = oscSine(time.mul(0.38).add(hue * 0.00003)) as N;
-  material.colorNode = mix(color(0x607b7b), color(hue), (activation as N).mul(0.72));
-  material.roughnessNode = float(0.24);
-  material.metalnessNode = float(0.28);
-  material.emissiveNode = color(hue)
-    .mul((activation as N).mul(pulse.mul(0.36).add(0.78)).add(0.075))
-    .mul(LIGHT_SCALE * 1.02);
-  return material;
+function drawInteractionBeacon(beacon: InteractionBeacon, key: string, action: string): void {
+  if (beacon.key === key && beacon.action === action) return;
+  beacon.key = key;
+  beacon.action = action;
+  const { context: ctx } = beacon;
+  ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+  ctx.save();
+  ctx.shadowColor = "rgba(92, 242, 255, .45)";
+  ctx.shadowBlur = 22;
+  ctx.fillStyle = "rgba(5, 15, 25, .9)";
+  ctx.strokeStyle = "rgba(132, 244, 255, .9)";
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.roundRect(42, 20, 556, 104, 36);
+  ctx.fill();
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = "rgba(117, 236, 240, .2)";
+  ctx.strokeStyle = "rgba(255, 235, 180, .95)";
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.roundRect(64, 35, 74, 74, 19);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = "#fff0c2";
+  ctx.font = `800 37px ${CANVAS_FONT_FAMILY}`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(key, 101, 73);
+  ctx.fillStyle = "#eafcff";
+  ctx.font = `750 29px ${CANVAS_FONT_FAMILY}`;
+  ctx.textAlign = "left";
+  ctx.letterSpacing = "2px";
+  ctx.fillText(action, 166, 75);
+  ctx.restore();
+  beacon.texture.needsUpdate = true;
+}
+
+function disposeRig(rig: Rig | null): void {
+  if (!rig) return;
+  for (const material of Object.values(rig.avatar.materials)) material.dispose();
+  rig.group.removeFromParent();
 }
 
 function makeBeamMaterial(hue: number, activation: ScalarUniform): THREE.MeshBasicNodeMaterial {
@@ -217,8 +277,14 @@ export class AfterlightSiteVisuals {
   #loomCharge = uniform(0);
   #glowTexture = makeRadialTexture();
   #celebrants: Celebrant[] = [];
+  #playerRig: Rig | null = null;
   #web: CosmicEnergyWeb | null = null;
-  #anchorHands: THREE.Group[] = [];
+  #anchorBindings: AnchorBinding[] = [];
+  #controlledCelebrant = -1;
+  #controlHalo: THREE.Mesh | null = null;
+  #interactionBeacon: InteractionBeacon | null = null;
+  #interactionBeaconBaseY = 0;
+  #takeoverMotion = 0;
   #energy = WEB_TUNING.baseEnergy;
   #energyTarget = WEB_TUNING.baseEnergy;
   #handWorld = new THREE.Vector3();
@@ -243,6 +309,184 @@ export class AfterlightSiteVisuals {
 
   setLabelsVisible(on: boolean): void {
     for (const keeper of this.#keepers) keeper.label.visible = on;
+  }
+
+  get controlsCaptured(): boolean {
+    return this.#controlledCelebrant >= 0;
+  }
+
+  get controlledCelebrant(): number {
+    return this.#controlledCelebrant;
+  }
+
+  /** Nearest participant in world space, or -1 when none can be claimed. */
+  nearestCelebrant(worldX: number, worldZ: number, radius = AFTERLIGHT_TUNING.takeoverRadius): number {
+    const localX = worldX - AFTERLIGHT_CENTER.x;
+    const localZ = worldZ - AFTERLIGHT_CENTER.z;
+    let nearest = -1;
+    let nearestSq = radius * radius;
+    for (let i = 0; i < this.#celebrants.length; i++) {
+      const position = this.#celebrants[i].rig.group.position;
+      const dx = localX - position.x;
+      const dz = localZ - position.z;
+      const distanceSq = dx * dx + dz * dz;
+      if (distanceSq >= nearestSq) continue;
+      nearestSq = distanceSq;
+      nearest = i;
+    }
+    return nearest;
+  }
+
+  celebrantDistance(index: number, worldX: number, worldZ: number): number {
+    const celebrant = this.#celebrants[index];
+    if (!celebrant) return Infinity;
+    return Math.hypot(
+      worldX - (AFTERLIGHT_CENTER.x + celebrant.rig.group.position.x),
+      worldZ - (AFTERLIGHT_CENTER.z + celebrant.rig.group.position.z)
+    );
+  }
+
+  beginTakeover(index: number, avatar: AvatarTraits, key: string): boolean {
+    const celebrant = this.#celebrants[index];
+    if (!celebrant) return false;
+    if (this.#controlledCelebrant >= 0) this.endTakeover();
+    const playerRig = buildRig(avatar);
+    playerRig.group.position.copy(celebrant.stationPosition);
+    playerRig.group.rotation.y = celebrant.stationYaw;
+    poseIdle(playerRig, this.#elapsed + 0.37);
+    this.root.add(playerRig.group);
+    this.#playerRig = playerRig;
+    this.#controlledCelebrant = index;
+    this.root.updateMatrixWorld(true);
+    playerRig.handL.getWorldPosition(this.#handWorld);
+    playerRig.group.worldToLocal(this.#handWorld);
+    celebrant.controlBaseL.copy(this.#handWorld);
+    celebrant.controlTargetL.copy(this.#handWorld);
+    celebrant.controlSmoothL.copy(this.#handWorld);
+    playerRig.handR.getWorldPosition(this.#handWorld);
+    playerRig.group.worldToLocal(this.#handWorld);
+    celebrant.controlBaseR.copy(this.#handWorld);
+    celebrant.controlTargetR.copy(this.#handWorld);
+    celebrant.controlSmoothR.copy(this.#handWorld);
+    celebrant.observerBlend = 0;
+    this.setInteractionFocus(index, key, true);
+    this.#takeoverMotion = Math.max(this.#takeoverMotion, 0.45);
+    return true;
+  }
+
+  endTakeover(): void {
+    const celebrant = this.#celebrants[this.#controlledCelebrant];
+    if (celebrant) {
+      celebrant.rig.group.position.copy(celebrant.stationPosition);
+      celebrant.rig.group.rotation.y = celebrant.stationYaw;
+      celebrant.observerBlend = 0;
+    }
+    disposeRig(this.#playerRig);
+    this.#playerRig = null;
+    this.#controlledCelebrant = -1;
+    if (this.#controlHalo) this.#controlHalo.visible = false;
+    if (this.#interactionBeacon) this.#interactionBeacon.sprite.visible = false;
+  }
+
+  /** Pair the HUD affordance with an unmistakable in-world focus marker. */
+  setInteractionFocus(index: number, key: string, captured = false): void {
+    const celebrant = this.#celebrants[index];
+    if (!celebrant || (this.#controlledCelebrant >= 0 && index !== this.#controlledCelebrant)) {
+      if (this.#controlledCelebrant < 0) {
+        if (this.#controlHalo) this.#controlHalo.visible = false;
+        if (this.#interactionBeacon) this.#interactionBeacon.sprite.visible = false;
+      }
+      return;
+    }
+    if (this.#controlHalo) {
+      this.#controlHalo.position.set(
+        celebrant.stationPosition.x,
+        this.#groundY(celebrant.stationPosition.x, celebrant.stationPosition.z) + 0.07,
+        celebrant.stationPosition.z
+      );
+      this.#controlHalo.visible = true;
+    }
+    if (this.#interactionBeacon) {
+      drawInteractionBeacon(this.#interactionBeacon, key, captured ? "RELEASE CONTROL" : "TAKE OVER");
+      this.#interactionBeaconBaseY = celebrant.stationPosition.y + 3.28;
+      this.#interactionBeacon.sprite.position.set(
+        celebrant.stationPosition.x,
+        this.#interactionBeaconBaseY,
+        celebrant.stationPosition.z
+      );
+      this.#interactionBeacon.sprite.visible = true;
+    }
+  }
+
+  /** Capture one frame of player input and turn it into two reachable hand targets. */
+  driveTakeover(input: Input, dt: number): void {
+    const celebrant = this.#celebrants[this.#controlledCelebrant];
+    if (!celebrant) return;
+    const step = Math.min(Math.max(dt, 0), 0.05);
+    let motion = 0;
+    if (input.device === "pad") {
+      const axes = input.mapPadAxes();
+      const speed = 1.85 * step;
+      celebrant.controlTargetL.x += axes.lx * speed;
+      celebrant.controlTargetL.y -= axes.ly * speed;
+      celebrant.controlTargetR.x += axes.rx * speed;
+      celebrant.controlTargetR.y -= axes.ry * speed;
+      celebrant.controlTargetL.z = celebrant.controlBaseL.z - axes.lt * 0.82;
+      celebrant.controlTargetR.z = celebrant.controlBaseR.z - axes.rt * 0.82;
+      motion = (Math.abs(axes.lx) + Math.abs(axes.ly) + Math.abs(axes.rx) + Math.abs(axes.ry)) * step
+        + Math.abs(axes.lt) * 0.025
+        + Math.abs(axes.rt) * 0.025;
+    } else {
+      const dx = THREE.MathUtils.clamp(input.mouseDX * 0.0042, -0.22, 0.22);
+      const dy = THREE.MathUtils.clamp(-input.mouseDY * 0.0042, -0.22, 0.22);
+      const dz = THREE.MathUtils.clamp(-input.wheel * 0.00125, -0.22, 0.22);
+      const leftOnly = input.holding("ShiftLeft");
+      const rightOnly = input.fireHeld && !leftOnly;
+      if (leftOnly) {
+        celebrant.controlTargetL.x += dx;
+        celebrant.controlTargetL.y += dy;
+        celebrant.controlTargetL.z += dz;
+      } else if (rightOnly) {
+        celebrant.controlTargetR.x += dx;
+        celebrant.controlTargetR.y += dy;
+        celebrant.controlTargetR.z += dz;
+      } else {
+        // Mirrored pair: horizontal motion opens/closes the span while vertical
+        // and scroll move both hands together.
+        celebrant.controlTargetL.x += dx;
+        celebrant.controlTargetR.x -= dx;
+        celebrant.controlTargetL.y += dy;
+        celebrant.controlTargetR.y += dy;
+        celebrant.controlTargetL.z += dz;
+        celebrant.controlTargetR.z += dz;
+      }
+      motion = Math.abs(dx) + Math.abs(dy) + Math.abs(dz);
+    }
+    clampHandTarget(celebrant.controlTargetL, celebrant.controlBaseL);
+    clampHandTarget(celebrant.controlTargetR, celebrant.controlBaseR);
+    this.#takeoverMotion = Math.max(this.#takeoverMotion, Math.min(1, motion * 4.2));
+    input.captureActivity();
+  }
+
+  takeoverDebugState(): {
+    index: number | null;
+    motion: number;
+    playerEmbodied: boolean;
+    observerOffset: number;
+    beaconVisible: boolean;
+    web: ReturnType<CosmicEnergyWeb["debugState"]> | null;
+  } {
+    const controlled = this.#celebrants[this.#controlledCelebrant];
+    return {
+      index: this.#controlledCelebrant >= 0 ? this.#controlledCelebrant : null,
+      motion: this.#takeoverMotion,
+      playerEmbodied: this.#playerRig !== null,
+      observerOffset: controlled
+        ? controlled.rig.group.position.distanceTo(controlled.stationPosition)
+        : 0,
+      beaconVisible: this.#interactionBeacon?.sprite.visible ?? false,
+      web: this.#web?.debugState() ?? null
+    };
   }
 
   setPetalActivation(index: number, value: number): void {
@@ -280,6 +524,12 @@ export class AfterlightSiteVisuals {
 
   update(dt: number, elapsed: number, completion: number): void {
     this.#elapsed += Math.min(dt, 0.1);
+    const focusPulse = 1 + Math.sin(this.#elapsed * 4.2) * 0.08;
+    if (this.#controlHalo?.visible) this.#controlHalo.scale.setScalar(focusPulse);
+    if (this.#interactionBeacon?.sprite.visible) {
+      this.#interactionBeacon.sprite.scale.set(4.15 * focusPulse, 0.94 * focusPulse, 1);
+      this.#interactionBeacon.sprite.position.y = this.#interactionBeaconBaseY + Math.sin(this.#elapsed * 2.8) * 0.08;
+    }
     const charge = Number(this.#loomCharge.value);
     this.#loomRings.rotation.y = elapsed * (0.08 + charge * 0.13);
     this.#loomRings.rotation.x = Math.sin(elapsed * 0.31) * 0.08;
@@ -303,7 +553,11 @@ export class AfterlightSiteVisuals {
       keeper.label.position.y = 2.82 + Math.sin(this.#elapsed * 0.8 + i) * 0.035;
     }
     // Energy eases toward the ambient/finale target; arms rise with it.
-    this.#energyTarget = WEB_TUNING.baseEnergy + clamp01(completion) * (1 - WEB_TUNING.baseEnergy);
+    this.#takeoverMotion *= Math.exp(-Math.max(0, dt) * 2.8);
+    this.#energyTarget = Math.max(
+      WEB_TUNING.baseEnergy + clamp01(completion) * (1 - WEB_TUNING.baseEnergy),
+      WEB_TUNING.baseEnergy + this.#takeoverMotion * 0.48
+    );
     this.#energy += (this.#energyTarget - this.#energy) * Math.min(1, dt * 1.8);
     const energy = this.#energy;
     const lift = energy * 0.55;
@@ -311,23 +565,60 @@ export class AfterlightSiteVisuals {
     for (let i = 0; i < this.#celebrants.length; i++) {
       const c = this.#celebrants[i];
       poseIdle(c.rig, elapsed + c.phase);
-      // Both arms reach up-and-in toward the hub and trace a slow circle, so the
-      // hands (which pin the web) drift and ripple the whole net as they move.
-      const raise = 1.94 + lift + Math.sin(elapsed * 0.6 + c.armPhase) * 0.3;
-      const swirlX = Math.cos(elapsed * 0.5 + c.armPhase) * 0.22;
-      const swirlZ = Math.sin(elapsed * 0.43 + c.swirl) * 0.18;
-      c.rig.armL.rotation.set(raise + swirlX, 0, 0.16 + swirlZ + lift * 0.1);
-      c.rig.armR.rotation.set(raise - swirlX, 0, -0.16 - swirlZ - lift * 0.1);
-      c.rig.foreL.rotation.x = 0.42 + Math.sin(elapsed * 0.7 + c.armPhase) * 0.12;
-      c.rig.foreR.rotation.x = 0.42 + Math.cos(elapsed * 0.7 + c.armPhase) * 0.12;
-      c.rig.head.rotation.x = -0.18; // gaze up toward the light
-      setHandPose(c.rig, "L", 0.3);
-      setHandPose(c.rig, "R", 0.3);
+      if (i === this.#controlledCelebrant && this.#playerRig) {
+        c.observerBlend += (1 - c.observerBlend) * Math.min(1, dt * 7.5);
+        const observerEase = smoothstepNumber(0, 1, c.observerBlend);
+        c.rig.group.position.lerpVectors(c.stationPosition, c.observerTarget, observerEase);
+        c.rig.group.rotation.y = THREE.MathUtils.lerp(c.stationYaw, c.observerYaw, observerEase);
+        c.rig.armL.rotation.x += 0.22;
+        c.rig.armR.rotation.x += 0.34;
+        c.rig.foreL.rotation.x += 0.48;
+        c.rig.foreR.rotation.x += 0.38;
+        c.rig.head.rotation.x = -0.1;
+        c.rig.head.rotation.y = Math.sin(elapsed * 0.68 + c.phase) * 0.12;
+
+        const activeRig = this.#playerRig;
+        activeRig.group.position.copy(c.stationPosition);
+        activeRig.group.rotation.y = c.stationYaw;
+        poseIdle(activeRig, elapsed + 0.37);
+        const follow = 1 - Math.exp(-Math.max(0, dt) * 15);
+        c.controlSmoothL.lerp(c.controlTargetL, follow);
+        c.controlSmoothR.lerp(c.controlTargetR, follow);
+        activeRig.group.updateWorldMatrix(true, true);
+        c.controlWorldL.copy(c.controlSmoothL);
+        activeRig.group.localToWorld(c.controlWorldL);
+        c.controlWorldR.copy(c.controlSmoothR);
+        activeRig.group.localToWorld(c.controlWorldR);
+        setHandTarget(activeRig, "L", { pos: c.controlWorldL, hand: 0.12, reach: 0.985 });
+        setHandTarget(activeRig, "R", { pos: c.controlWorldR, hand: 0.12, reach: 0.985 });
+        activeRig.head.rotation.x = -0.24;
+      } else {
+        // Both arms reach up-and-in toward the hub and trace a slow circle, so
+        // every unclaimed participant keeps contributing a living baseline.
+        const raise = 2.02 + lift + Math.sin(elapsed * 0.82 + c.armPhase) * 0.46;
+        const swirlX = Math.cos(elapsed * 0.67 + c.armPhase) * 0.34;
+        const swirlZ = Math.sin(elapsed * 0.57 + c.swirl) * 0.28;
+        c.rig.armL.rotation.set(raise + swirlX, 0, 0.16 + swirlZ + lift * 0.1);
+        c.rig.armR.rotation.set(raise - swirlX, 0, -0.16 - swirlZ - lift * 0.1);
+        c.rig.foreL.rotation.x = 0.48 + Math.sin(elapsed * 0.93 + c.armPhase) * 0.22;
+        c.rig.foreR.rotation.x = 0.48 + Math.cos(elapsed * 0.89 + c.armPhase) * 0.22;
+        c.rig.torso.rotation.z += Math.sin(elapsed * 0.48 + c.swirl) * 0.055;
+        c.rig.head.rotation.x = -0.2;
+        c.rig.head.rotation.y = Math.sin(elapsed * 0.52 + c.armPhase) * 0.09;
+        setHandPose(c.rig, "L", 0.3);
+        setHandPose(c.rig, "R", 0.3);
+      }
     }
 
     if (this.#web) {
-      for (let i = 0; i < this.#anchorHands.length; i++) {
-        this.#anchorHands[i].getWorldPosition(this.#handWorld);
+      for (let i = 0; i < this.#anchorBindings.length; i++) {
+        const binding = this.#anchorBindings[i];
+        const celebrant = this.#celebrants[binding.celebrantIndex];
+        const rig = binding.celebrantIndex === this.#controlledCelebrant && this.#playerRig
+          ? this.#playerRig
+          : celebrant.rig;
+        const hand = binding.side === "L" ? rig.handL : rig.handR;
+        hand.getWorldPosition(this.#handWorld);
         this.root.worldToLocal(this.#handWorld);
         this.#web.anchorTargets[i].copy(this.#handWorld);
       }
@@ -337,6 +628,7 @@ export class AfterlightSiteVisuals {
   }
 
   dispose(): void {
+    this.endTakeover();
     for (const keeper of this.#keepers) {
       disposeSprite(keeper.label);
       // Rig box geometry comes from player/rig's global cache and remains owned
@@ -353,7 +645,10 @@ export class AfterlightSiteVisuals {
       celebrant.rig.group.removeFromParent();
     }
     this.#celebrants.length = 0;
-    this.#anchorHands.length = 0;
+    this.#anchorBindings.length = 0;
+    this.#controlHalo = null;
+    this.#interactionBeacon?.texture.dispose();
+    this.#interactionBeacon = null;
     this.#glowTexture.dispose();
     const geometries = new Set<THREE.BufferGeometry>();
     const materials = new Set<THREE.Material>();
@@ -417,18 +712,23 @@ export class AfterlightSiteVisuals {
     plinth.receiveShadow = true;
     this.root.add(plinth);
 
-    const centerMaterial = new THREE.MeshBasicNodeMaterial();
-    const breath = oscSine(time.mul(0.24)) as N;
-    centerMaterial.colorNode = mix(color(0x6ad9d4), color(0xffd58e), (this.#loomCharge as N).mul(0.72))
-      .mul((this.#loomCharge as N).mul(0.74).add(breath.mul(0.16)).add(0.38))
-      .mul(LIGHT_SCALE * 1.08);
-    centerMaterial.opacityNode = (this.#loomCharge as N).mul(0.28).add(0.54);
-    centerMaterial.transparent = true;
-    centerMaterial.depthWrite = false;
-    centerMaterial.blending = THREE.NormalBlending;
-    centerMaterial.fog = false;
-    const seed = new THREE.Mesh(new THREE.IcosahedronGeometry(0.72, 2), centerMaterial);
+    const seed = new THREE.Mesh(
+      new THREE.SphereGeometry(0.76, 24, 16),
+      makeVolumetricOrbMaterial(0x75eadf, this.#loomCharge, 0.17, 0.76, 0.58)
+    );
     this.#loomRings.add(seed);
+    const seedAura = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: this.#glowTexture,
+      color: 0x72e7e0,
+      transparent: true,
+      opacity: 0.48,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      fog: false
+    }));
+    seedAura.scale.setScalar(5.2);
+    seedAura.renderOrder = 13;
+    this.#loomRings.add(seedAura);
 
     const ringMaterial = new THREE.MeshStandardNodeMaterial();
     ringMaterial.colorNode = color(0x8c744f);
@@ -459,10 +759,12 @@ export class AfterlightSiteVisuals {
       group.add(base);
 
       const activation = uniform(0);
-      const crystal = new THREE.Mesh(new THREE.OctahedronGeometry(0.48, 1), makePetalMaterial(echo.hue, activation));
-      crystal.position.y = 1.48;
-      crystal.rotation.z = 0.38;
-      group.add(crystal);
+      const orb = new THREE.Mesh(
+        new THREE.SphereGeometry(0.48, 20, 14),
+        makeVolumetricOrbMaterial(echo.hue, activation, 0.41 + i * 0.193, 0.48, 0.42)
+      );
+      orb.position.y = 1.48;
+      group.add(orb);
       const arch = new THREE.Mesh(new THREE.TorusGeometry(0.86, 0.055, 7, 30, Math.PI * 1.48), brass);
       arch.position.y = 1.1;
       arch.rotation.z = -Math.PI * 0.74;
@@ -484,7 +786,7 @@ export class AfterlightSiteVisuals {
   }
 
   #buildEchoes(): void {
-    const geometry = new THREE.IcosahedronGeometry(0.72, 2);
+    const geometry = new THREE.SphereGeometry(0.72, 24, 16);
     for (let i = 0; i < ECHO_LAYOUT.length; i++) {
       const spec = ECHO_LAYOUT[i];
       const root = new THREE.Group();
@@ -496,7 +798,10 @@ export class AfterlightSiteVisuals {
       const floatGroup = new THREE.Group();
       root.add(floatGroup);
       const glow = uniform(1);
-      const core = new THREE.Mesh(geometry, makeEchoMaterial(spec.hue, glow));
+      const core = new THREE.Mesh(
+        geometry,
+        makeVolumetricOrbMaterial(spec.hue, glow, (i + 1) * 0.173, 0.72, 0.5)
+      );
       floatGroup.add(core);
       const rings = new THREE.Group();
       for (let r = 0; r < 3; r++) {
@@ -607,7 +912,12 @@ export class AfterlightSiteVisuals {
       { robe: 0x0d5a6e, sleeve: 0x08313e, trim: 0x7fe9ff, sash: 0x123f3a, hair: "buzz", hat: "crown", outfit: "hoodie" }
     ];
 
-    const raw: Array<{ hand: THREE.Group; local: THREE.Vector3 }> = [];
+    const raw: Array<{
+      hand: THREE.Group;
+      local: THREE.Vector3;
+      celebrantIndex: number;
+      side: "L" | "R";
+    }> = [];
     for (let i = 0; i < COUNT; i++) {
       const spec = COSMIC[i % COSMIC.length];
       const seeded = avatarFromSeed(`afterlight-celebrant-${i}`);
@@ -628,6 +938,15 @@ export class AfterlightSiteVisuals {
       const z = Math.sin(angle) * RING;
       rig.group.position.set(x, this.#groundY(x, z) + 0.93, z);
       rig.group.rotation.y = Math.atan2(-x, -z); // face the hub
+      const stationPosition = rig.group.position.clone();
+      const radial = new THREE.Vector3(x, 0, z).normalize();
+      const tangent = new THREE.Vector3(-radial.z, 0, radial.x).multiplyScalar(i % 2 === 0 ? 0.62 : -0.62);
+      const observerTarget = stationPosition.clone().addScaledVector(radial, 2.25).add(tangent);
+      observerTarget.y = this.#groundY(observerTarget.x, observerTarget.z) + 0.93;
+      const observerYaw = Math.atan2(
+        stationPosition.x - observerTarget.x,
+        stationPosition.z - observerTarget.z
+      );
 
       // Bind pose so the sampled hand positions match the ambient reach.
       poseIdle(rig, i * 1.7);
@@ -638,8 +957,29 @@ export class AfterlightSiteVisuals {
       setHandPose(rig, "L", 0.3);
       setHandPose(rig, "R", 0.3);
       this.root.add(rig.group);
-      this.#celebrants.push({ rig, phase: i * 2.13, armPhase: i * 1.3, swirl: i * 0.9 });
-      raw.push({ hand: rig.handL, local: new THREE.Vector3() }, { hand: rig.handR, local: new THREE.Vector3() });
+      this.#celebrants.push({
+        rig,
+        phase: i * 2.13,
+        armPhase: i * 1.3,
+        swirl: i * 0.9,
+        stationPosition,
+        stationYaw: rig.group.rotation.y,
+        observerTarget,
+        observerYaw,
+        observerBlend: 0,
+        controlBaseL: new THREE.Vector3(),
+        controlBaseR: new THREE.Vector3(),
+        controlTargetL: new THREE.Vector3(),
+        controlTargetR: new THREE.Vector3(),
+        controlSmoothL: new THREE.Vector3(),
+        controlSmoothR: new THREE.Vector3(),
+        controlWorldL: new THREE.Vector3(),
+        controlWorldR: new THREE.Vector3()
+      });
+      raw.push(
+        { hand: rig.handL, local: new THREE.Vector3(), celebrantIndex: i, side: "L" },
+        { hand: rig.handR, local: new THREE.Vector3(), celebrantIndex: i, side: "R" }
+      );
     }
 
     // Sample bind-pose hand positions in site-local space, sorted by angle so
@@ -654,11 +994,31 @@ export class AfterlightSiteVisuals {
     const anchorInit: THREE.Vector3[] = [];
     for (const entry of raw) {
       anchorInit.push(entry.local);
-      this.#anchorHands.push(entry.hand);
+      this.#anchorBindings.push({ celebrantIndex: entry.celebrantIndex, side: entry.side });
     }
 
     this.#web = new CosmicEnergyWeb({ anchorInit, seed: 7 });
     this.root.add(this.#web.root);
+
+    const haloMaterial = new THREE.MeshBasicNodeMaterial();
+    const haloPulse = oscSine(time.mul(0.82)) as N;
+    haloMaterial.colorNode = mix(color(0x74ecf0), color(0xffb3e5), haloPulse)
+      .mul(haloPulse.mul(0.45).add(0.65))
+      .mul(LIGHT_SCALE * 0.8);
+    haloMaterial.opacityNode = haloPulse.mul(0.28).add(0.48);
+    haloMaterial.transparent = true;
+    haloMaterial.depthWrite = false;
+    haloMaterial.blending = THREE.AdditiveBlending;
+    haloMaterial.fog = false;
+    this.#controlHalo = new THREE.Mesh(new THREE.TorusGeometry(0.72, 0.045, 6, 42), haloMaterial);
+    this.#controlHalo.name = "afterlight-controlled-participant";
+    this.#controlHalo.rotation.x = Math.PI / 2;
+    this.#controlHalo.visible = false;
+    this.#controlHalo.renderOrder = 17;
+    this.root.add(this.#controlHalo);
+
+    this.#interactionBeacon = makeInteractionBeacon();
+    this.root.add(this.#interactionBeacon.sprite);
   }
 }
 

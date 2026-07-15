@@ -1,6 +1,7 @@
 import * as THREE from "three/webgpu";
 import type { NatureSoundscape } from "../../audio/natureSoundscape";
 import type { GameSite } from "../siteGate";
+import { interactKeyLabel, type Input } from "../../core/input";
 import type { Player } from "../../player/player";
 import type { HUD } from "../../ui/hud";
 import type { WorldMap } from "../../world/heightmap";
@@ -31,6 +32,7 @@ export type AfterlightDebugState = {
   remainingSeconds: number;
   completionTime: number;
   whaleActive: boolean;
+  takeover: ReturnType<AfterlightSiteVisuals["takeoverDebugState"]>;
   audio: AfterlightAudio["debugState"];
 };
 
@@ -51,6 +53,11 @@ function interactionDistance(x: number, z: number): number {
     Math.hypot(x - AFTERLIGHT_CENTER.x, z - AFTERLIGHT_CENTER.z),
     Math.hypot(x - (AFTERLIGHT_CENTER.x + mara.x), z - (AFTERLIGHT_CENTER.z + mara.z))
   );
+}
+
+function keeperDistance(x: number, z: number): number {
+  const mara = KEEPER_LAYOUT[0];
+  return Math.hypot(x - (AFTERLIGHT_CENTER.x + mara.x), z - (AFTERLIGHT_CENTER.z + mara.z));
 }
 
 /**
@@ -76,6 +83,7 @@ export class AfterlightExperience {
   #temp = new THREE.Vector3();
   #target = new THREE.Vector3();
   #scene: THREE.Scene;
+  #embodiedPlayer: Player | null = null;
   #disposed = false;
 
   constructor(map: WorldMap, scene: THREE.Scene, nature: NatureSoundscape) {
@@ -97,7 +105,11 @@ export class AfterlightExperience {
   }
 
   get capturesInteraction(): boolean {
-    return this.#phase === "active";
+    return this.#phase === "active" || this.#visuals.controlsCaptured;
+  }
+
+  get controlsCaptured(): boolean {
+    return this.#visuals.controlsCaptured;
   }
 
   siteHooks(): GameSite {
@@ -127,7 +139,11 @@ export class AfterlightExperience {
       if (this.root.parent !== this.#scene) this.#scene.add(this.root);
     }
     this.#visuals.setAwake(on);
-    if (!on) this.root.removeFromParent();
+    if (!on) {
+      this.#releaseTakeover();
+      this.#visuals.setInteractionFocus(-1, interactKeyLabel());
+      this.root.removeFromParent();
+    }
     if (on && !this.#cinematic) this.#visuals.setLabelsVisible(true);
     this.#ui.setAwake(on && !this.#cinematic);
     this.#audio.setAwake(on && !this.#cinematic);
@@ -167,6 +183,36 @@ export class AfterlightExperience {
   /** Shared E-chain hook. Returns true only when the loom actually owns E. */
   tryInteract(player: Player, hud: HUD): boolean {
     if (!this.#awake || player.mode !== "walk" || player.riding) return false;
+    if (this.#visuals.controlsCaptured) {
+      this.#releaseTakeover(player);
+      this.#ui.setPrompt(null);
+      hud.message("You let the strand go. The web keeps your last ripple.", 2.4);
+      return true;
+    }
+
+    const participant = this.#visuals.nearestCelebrant(player.position.x, player.position.z);
+    if (
+      participant >= 0 &&
+      this.#visuals.celebrantDistance(participant, player.position.x, player.position.z) <
+        keeperDistance(player.position.x, player.position.z)
+    ) {
+      const release = interactKeyLabel();
+      if (!this.#visuals.beginTakeover(participant, player.avatarTraits, release)) return false;
+      this.#embodiedPlayer = player;
+      player.setExternalEmbodimentHidden(true);
+      hud.message(
+        `You're shaping the web · trackpad moves both hands · Shift/click isolates one · controller sticks split hands · ${release} releases`,
+        5.2
+      );
+      this.#ui.showMilestone("YOUR HANDS ENTER THE CIRCUIT", {
+        eyebrow: "Collective sculpture",
+        detail: "Every movement travels through the ring",
+        tone: "mist",
+        seconds: 2.4
+      });
+      return true;
+    }
+
     const distance = interactionDistance(player.position.x, player.position.z);
     if (distance > AFTERLIGHT_TUNING.interactRadius) return false;
 
@@ -183,6 +229,20 @@ export class AfterlightExperience {
     }
     const replay = this.#phase === "failed" || this.#phase === "complete";
     this.#begin(replay, hud);
+    return true;
+  }
+
+  /** Called before the player fixed-step so claimed controls cannot move the body. */
+  captureInput(input: Input, dt: number, player: Player): boolean {
+    if (!this.#visuals.controlsCaptured) return false;
+    if (!this.#awake || player.mode !== "walk" || player.riding) {
+      this.#releaseTakeover(player);
+      this.#ui.setPrompt(null);
+      return false;
+    }
+    player.velocity.x = 0;
+    player.velocity.z = 0;
+    this.#visuals.driveTakeover(input, dt);
     return true;
   }
 
@@ -222,6 +282,7 @@ export class AfterlightExperience {
 
   /** Capture helper: resets to a deterministic, UI-free authored timeline. */
   resetForCinematic(_seed = 1): void {
+    this.#releaseTakeover();
     this.#cinematic = true;
     this.#awake = true;
     if (this.root.parent !== this.#scene) this.#scene.add(this.root);
@@ -299,6 +360,7 @@ export class AfterlightExperience {
       remainingSeconds: this.#remaining,
       completionTime: this.#completionTime,
       whaleActive: this.#whale.active,
+      takeover: this.#visuals.takeoverDebugState(),
       audio: this.#audio.debugState
     };
   }
@@ -306,6 +368,7 @@ export class AfterlightExperience {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
+    this.#releaseTakeover();
     this.#audio.dispose();
     this.#ui.dispose();
     this.#whale.dispose();
@@ -457,10 +520,28 @@ export class AfterlightExperience {
   }
 
   #updatePrompt(player: Player): void {
+    const key = interactKeyLabel();
     if (player.mode !== "walk" || player.riding) {
       this.#ui.setPrompt(null);
+      this.#visuals.setInteractionFocus(-1, key);
       return;
     }
+    if (this.#visuals.controlsCaptured) {
+      this.#visuals.setInteractionFocus(this.#visuals.controlledCelebrant, key, true);
+      this.#ui.setPrompt("release control · your avatar is shaping the web", key);
+      return;
+    }
+    const participant = this.#visuals.nearestCelebrant(player.position.x, player.position.z);
+    if (
+      participant >= 0 &&
+      this.#visuals.celebrantDistance(participant, player.position.x, player.position.z) <
+        keeperDistance(player.position.x, player.position.z)
+    ) {
+      this.#visuals.setInteractionFocus(participant, key);
+      this.#ui.setPrompt("take over this participant", key);
+      return;
+    }
+    this.#visuals.setInteractionFocus(-1, key);
     const distance = interactionDistance(player.position.x, player.position.z);
     if (distance > AFTERLIGHT_TUNING.interactRadius || this.#phase === "active") {
       this.#ui.setPrompt(null);
@@ -470,5 +551,11 @@ export class AfterlightExperience {
     else if (this.#phase === "failed") this.#ui.setPrompt("try the song again");
     else if (this.#completionTime >= AFTERLIGHT_TUNING.completionHoldSeconds) this.#ui.setPrompt("call the singer again");
     else this.#ui.setPrompt(null);
+  }
+
+  #releaseTakeover(player: Player | null = this.#embodiedPlayer): void {
+    this.#visuals.endTakeover();
+    (player ?? this.#embodiedPlayer)?.setExternalEmbodimentHidden(false);
+    this.#embodiedPlayer = null;
   }
 }

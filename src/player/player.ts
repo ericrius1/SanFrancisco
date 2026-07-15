@@ -473,6 +473,11 @@ export class Player {
     applyAvatarToRig(this.#pilotRig, this.#avatar);
   }
 
+  /** Snapshot used by activity-owned embodiment rigs without exposing mutable player state. */
+  get avatarTraits(): AvatarTraits {
+    return { ...this.#avatar };
+  }
+
   /** Hide only the local walk embodiment once the camera reaches the FPS eye. */
   setFirstPersonView(active: boolean) {
     this.#firstPersonView = active;

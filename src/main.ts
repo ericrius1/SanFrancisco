@@ -4092,6 +4092,12 @@ async function boot() {
       }
     }
 
+    // A claimed Afterlight participant owns locomotion, pointer/right-stick
+    // look, wheel and tool fire for this frame. Capture before the player fixed
+    // step so controller sticks move the two hands instead of the body/camera.
+    const afterlightControlsCaptured =
+      !worldArrival.active && (afterlight?.captureInput(input, frameDt, player) ?? false);
+
     // ".": factory reset for tweaks — every tweakpane value back to its
     // source-code default, saved tweaks wiped. Player stays put.
     if (!worldArrival.active && input.pressed("Period")) {
@@ -4357,7 +4363,13 @@ async function boot() {
       player.mode === "surf" &&
       (input.pressed("Space") || input.pressed("KeyX"))
     ) player.requestSurfFlow();
-    if (!playingPickleball && !input.suspended && player.mode === "walk" && input.pressed("Space")) player.requestWalkJump();
+    if (
+      !playingPickleball &&
+      !afterlightControlsCaptured &&
+      !input.suspended &&
+      player.mode === "walk" &&
+      input.pressed("Space")
+    ) player.requestWalkJump();
 
     chase.lookDir(aim); // drone moves along the true view direction (no shot bias)
     tracer.begin("physics");

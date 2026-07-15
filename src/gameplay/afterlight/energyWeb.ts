@@ -47,32 +47,37 @@ const UP = new THREE.Vector3(0, 1, 0);
 
 export const WEB_TUNING = {
   hubY: 3.15, // local height of the shared hub (floats above the loom orb)
-  segments: 6, // hub→hand nodes per main vein
-  bow: 1.85, // upward arch of a slack main vein
-  branchAt: [2, 4] as number[], // main-vein node indices that sprout branches
-  branchChildren: 2, // side branches per branch point
-  branchNodes: 3, // nodes per first-level branch
-  branchLen: 1.9,
-  subBranchNodes: 2, // nodes per second-level branch
-  subBranchLen: 1.05,
-  iterations: 4, // constraint relaxation passes per step
-  damping: 0.93, // Verlet velocity retention
-  driftAmp: 1.05, // cosmic curl-noise force
-  driftScale: 0.42,
-  buoyancy: 0.22, // gentle lift on free branch tips
-  homeSpring: 2.6, // pull branch tips back toward their rest shape
-  crossStiff: 0.55, // lateral coupling between neighbouring veins
-  chainStiff: 0.9,
-  mainWidth: 0.11,
-  tipWidth: 0.014,
-  membraneInnerRow: 2, // leave the hub region open so the orb shows through
-  membraneAngular: 3, // angular subdivisions between adjacent anchors
-  flowSpeed: 0.32, // energy pulses travelling hub→tip
-  flowFreq: 2.4,
-  baseEnergy: 0.4
+  segments: 16, // hub→hand nodes per main vein (2× linear resolution)
+  bow: 2.35, // upward arch of a slack main vein
+  branchAt: [2, 4, 6, 8, 10, 12, 14] as number[],
+  branchChildren: 3,
+  branchNodes: 4,
+  branchLen: 2.05,
+  subBranchNodes: 3,
+  subBranchLen: 1.18,
+  fixedStep: 1 / 60,
+  maxSubsteps: 6,
+  iterations: 3, // short links converge quickly; keep the 4× topology affordable
+  damping: 0.958, // equivalent persistence after moving the solve to 60 Hz
+  driftAmp: 1.58, // cosmic curl + standing-wave force
+  driftScale: 0.56,
+  buoyancy: 0.3,
+  homeSpring: 2.25,
+  crossStiff: 0.43,
+  shearStiff: 0.2,
+  longStiff: 0.13,
+  rippleImpulse: 1.12,
+  chainStiff: 0.88,
+  mainWidth: 0.105,
+  tipWidth: 0.009,
+  membraneInnerRow: 3,
+  membraneAngular: 6,
+  flowSpeed: 0.48,
+  flowFreq: 3.4,
+  baseEnergy: 0.46
 };
 
-type Chain = { nodes: number[]; level: number };
+type Chain = { nodes: number[]; level: number; phase: number };
 
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
@@ -128,6 +133,7 @@ export class CosmicEnergyWeb {
   #mainNodes: number[][] = []; // [anchor][row] node index along each main vein
 
   #energy = uniform(WEB_TUNING.baseEnergy);
+  #ripple = uniform(0);
   #hubYUniform = uniform(WEB_TUNING.hubY);
 
   // Vein ribbon geometry (all chains merged into one dynamic mesh).
@@ -138,9 +144,20 @@ export class CosmicEnergyWeb {
   // Membrane geometry (annulus stretched across the main veins).
   #memGeom!: THREE.BufferGeometry;
   #memPos!: THREE.BufferAttribute;
-  #memBind: { a: number; b: number; row: number; u: number }[] = [];
+  #memBind: { a: number; b: number; row: number; u: number; angle: number; radial: number }[] = [];
+
+  // Explicit knot layer: one compact dynamic points draw over every main-vein
+  // joint. This makes the solver topology readable without raymarching dozens
+  // of tiny spheres.
+  #jointNodes: number[] = [];
+  #jointPos!: THREE.BufferAttribute;
+
+  #anchorPrevious: THREE.Vector3[] = [];
+  #accumulator = 0;
+  #strain = 0;
 
   #elapsed = 0;
+  #renderFrame = 0;
 
   constructor(opts: CosmicWebOptions) {
     this.#count = opts.anchorInit.length;
@@ -166,11 +183,13 @@ export class CosmicEnergyWeb {
     for (let a = 0; a < this.#count; a++) {
       const hand = opts.anchorInit[a];
       this.anchorTargets.push(hand.clone());
+      this.#anchorPrevious.push(hand.clone());
       this.#buildMainVein(a, hubPos, hand, rand);
     }
     this.#buildCrossLinks();
     this.#buildVeinGeometry();
     this.#buildMembrane();
+    this.#buildJoints();
   }
 
   setEnergy(value: number): void {
@@ -178,22 +197,61 @@ export class CosmicEnergyWeb {
   }
 
   update(dt: number, elapsed: number): void {
-    const step = Math.min(Math.max(dt, 0), 0.05);
+    const step = Math.min(Math.max(dt, 0), 0.1);
     this.#elapsed += step;
     this.#hubYUniform.value = WEB_TUNING.hubY + Math.sin(elapsed * 0.72) * 0.08;
-    this.#integrate(step, elapsed);
-    for (let it = 0; it < WEB_TUNING.iterations; it++) {
-      this.#solveLinks();
-      this.#pinNodes(elapsed);
+    this.#injectAnchorMotion();
+    this.#accumulator += step;
+    let substeps = 0;
+    while (this.#accumulator >= WEB_TUNING.fixedStep && substeps < WEB_TUNING.maxSubsteps) {
+      this.#integrate(WEB_TUNING.fixedStep, this.#elapsed - this.#accumulator);
+      for (let it = 0; it < WEB_TUNING.iterations; it++) {
+        this.#solveLinks();
+        this.#pinNodes();
+      }
+      this.#accumulator -= WEB_TUNING.fixedStep;
+      substeps++;
     }
+    if (substeps === WEB_TUNING.maxSubsteps) this.#accumulator = 0;
+    this.#renderFrame++;
+    if ((this.#renderFrame & 1) === 0) this.#measureStrain();
+    const ambientRipple = 0.24 + this.#energy.value * 0.16 + (Math.sin(this.#elapsed * 1.7) * 0.5 + 0.5) * 0.12;
+    this.#ripple.value = Math.max(
+      ambientRipple,
+      this.#strain * 9.5,
+      this.#ripple.value * Math.exp(-step * 1.45)
+    );
     this.#writeVeins();
     this.#writeMembrane();
+    this.#writeJoints();
+  }
+
+  debugState(): {
+    solver: "verlet";
+    fixedStep: number;
+    nodes: number;
+    links: number;
+    anchors: number;
+    detailMultiplier: number;
+    strain: number;
+    ripple: number;
+  } {
+    return {
+      solver: "verlet",
+      fixedStep: WEB_TUNING.fixedStep,
+      nodes: this.#nodeCount,
+      links: this.#linkA.length,
+      anchors: this.#count,
+      detailMultiplier: this.#nodeCount / 533,
+      strain: this.#strain,
+      ripple: this.#ripple.value
+    };
   }
 
   dispose(): void {
     this.root.traverse((object) => {
       const mesh = object as THREE.Mesh;
-      if (mesh.isMesh) {
+      if (mesh.isMesh || (object as THREE.Points).isPoints) {
         mesh.geometry?.dispose();
         const material = mesh.material;
         const list = Array.isArray(material) ? material : [material];
@@ -251,7 +309,7 @@ export class CosmicEnergyWeb {
     }
     this.#anchorNode.push(prev);
     this.#mainNodes.push(rows);
-    this.#chains.push({ nodes: rows.slice(), level: 0 });
+    this.#chains.push({ nodes: rows.slice(), level: 0, phase: a / Math.max(1, this.#count) });
 
     // Fractal side branches off interior nodes.
     const veinDir = dir.clone().normalize();
@@ -259,12 +317,20 @@ export class CosmicEnergyWeb {
       if (bp < 1 || bp >= rows.length - 1) continue;
       const base = rows[bp];
       for (let c = 0; c < WEB_TUNING.branchChildren; c++) {
-        this.#buildBranch(base, veinDir, WEB_TUNING.branchLen, WEB_TUNING.branchNodes, 1, rand);
+        this.#buildBranch(base, veinDir, WEB_TUNING.branchLen, WEB_TUNING.branchNodes, 1, a / Math.max(1, this.#count), rand);
       }
     }
   }
 
-  #buildBranch(base: number, veinDir: THREE.Vector3, length: number, count: number, level: number, rand: () => number): void {
+  #buildBranch(
+    base: number,
+    veinDir: THREE.Vector3,
+    length: number,
+    count: number,
+    level: number,
+    phase: number,
+    rand: () => number
+  ): void {
     // Direction roughly perpendicular to the vein, fanned + lifted, seeded.
     const side = new THREE.Vector3().crossVectors(veinDir, UP);
     if (side.lengthSq() < 1e-4) side.set(1, 0, 0);
@@ -298,10 +364,11 @@ export class CosmicEnergyWeb {
       if (k === Math.max(1, count - 1)) midNode = idx;
       prev = idx;
     }
-    this.#chains.push({ nodes: chain, level });
+    const branchPhase = phase + (rand() - 0.5) * 0.16 + level * 0.07;
+    this.#chains.push({ nodes: chain, level, phase: branchPhase });
 
     if (level === 1 && WEB_TUNING.subBranchNodes > 0) {
-      this.#buildBranch(midNode, bdir, WEB_TUNING.subBranchLen, WEB_TUNING.subBranchNodes, 2, rand);
+      this.#buildBranch(midNode, bdir, WEB_TUNING.subBranchLen, WEB_TUNING.subBranchNodes, 2, branchPhase, rand);
     }
   }
 
@@ -309,11 +376,22 @@ export class CosmicEnergyWeb {
     if (this.#count < 2) return;
     for (let a = 0; a < this.#count; a++) {
       const next = (a + 1) % this.#count;
-      // couple the inner rows so a tug on one vein drags its neighbours
-      for (const row of [1, 2]) {
+      // Hoop constraints carry tension around the entire ring, while diagonal
+      // shear links stop the membrane acting like disconnected radial ropes.
+      for (let row = 1; row < WEB_TUNING.segments; row++) {
         const na = this.#mainNodes[a][row];
         const nb = this.#mainNodes[next][row];
         if (na != null && nb != null) this.#addLink(na, nb, WEB_TUNING.crossStiff);
+        const naNext = this.#mainNodes[a][row + 1];
+        const nbNext = this.#mainNodes[next][row + 1];
+        if (na != null && nbNext != null) this.#addLink(na, nbNext, WEB_TUNING.shearStiff);
+        if (naNext != null && nb != null) this.#addLink(naNext, nb, WEB_TUNING.shearStiff);
+      }
+      const skip = (a + 2) % this.#count;
+      for (let row = 3; row < WEB_TUNING.segments; row += 3) {
+        const na = this.#mainNodes[a][row];
+        const nb = this.#mainNodes[skip][row];
+        if (na != null && nb != null) this.#addLink(na, nb, WEB_TUNING.longStiff);
       }
     }
   }
@@ -344,6 +422,20 @@ export class CosmicEnergyWeb {
       let ay = fy * d;
       let az = fz * d;
 
+      // Two crossing wave families keep the sculpture breathing even when no
+      // player is touching it. Phases come from the rest topology, so the
+      // motion travels coherently through branches instead of reading as noise.
+      const hx = this.#hx[i];
+      const hz = this.#hz[i];
+      const radius = Math.sqrt(hx * hx + hz * hz) || 1;
+      const angle = Math.atan2(hz, hx);
+      const waveA = Math.sin(radius * 1.08 - elapsed * 2.35 + angle * 4.0);
+      const waveB = Math.cos(radius * 1.72 + elapsed * 1.28 - angle * 6.0);
+      const wave = (waveA * 0.72 + waveB * 0.38) * d * (0.4 + energy * 0.36);
+      ax += (hx / radius) * wave * 0.72;
+      ay += wave * 0.62;
+      az += (hz / radius) * wave * 0.72;
+
       if (this.#sprung[i]) {
         const k = WEB_TUNING.homeSpring;
         ax += (this.#hx[i] - x) * k;
@@ -360,6 +452,55 @@ export class CosmicEnergyWeb {
     }
   }
 
+  #injectAnchorMotion(): void {
+    let strongest = 0;
+    const outerRow = Math.max(1, WEB_TUNING.segments - 1);
+    for (let a = 0; a < this.#count; a++) {
+      const target = this.anchorTargets[a];
+      const previous = this.#anchorPrevious[a];
+      const dx = target.x - previous.x;
+      const dy = target.y - previous.y;
+      const dz = target.z - previous.z;
+      const magnitude = Math.hypot(dx, dy, dz);
+      if (magnitude > 0.0001) {
+        strongest = Math.max(strongest, magnitude);
+        for (let depth = 0; depth < 5; depth++) {
+          const row = Math.max(1, outerRow - depth * 2);
+          const falloff = Math.pow(0.68, depth);
+          const impulse = WEB_TUNING.rippleImpulse * falloff;
+          const node = this.#mainNodes[a][row];
+          const nextNode = this.#mainNodes[(a + 1) % this.#count][row];
+          const prevNode = this.#mainNodes[(a + this.#count - 1) % this.#count][row];
+          this.#ox[node] -= dx * impulse;
+          this.#oy[node] -= dy * impulse;
+          this.#oz[node] -= dz * impulse;
+          this.#ox[nextNode] -= dx * impulse * 0.32;
+          this.#oy[nextNode] -= dy * impulse * 0.32;
+          this.#oz[nextNode] -= dz * impulse * 0.32;
+          this.#ox[prevNode] -= dx * impulse * 0.24;
+          this.#oy[prevNode] -= dy * impulse * 0.24;
+          this.#oz[prevNode] -= dz * impulse * 0.24;
+        }
+      }
+      previous.copy(target);
+    }
+    this.#ripple.value = Math.max(this.#ripple.value, Math.min(1.4, strongest * 4.8));
+  }
+
+  #measureStrain(): void {
+    let total = 0;
+    for (let i = 0; i < this.#linkA.length; i++) {
+      const a = this.#linkA[i];
+      const b = this.#linkB[i];
+      const dx = this.#px[b] - this.#px[a];
+      const dy = this.#py[b] - this.#py[a];
+      const dz = this.#pz[b] - this.#pz[a];
+      const rest = Math.max(0.0001, this.#linkRest[i]);
+      total += Math.abs(Math.sqrt(dx * dx + dy * dy + dz * dz) / rest - 1);
+    }
+    this.#strain = this.#linkA.length > 0 ? total / this.#linkA.length : 0;
+  }
+
   #solveLinks(): void {
     const A = this.#linkA;
     const B = this.#linkB;
@@ -371,7 +512,7 @@ export class CosmicEnergyWeb {
       const dx = this.#px[b] - this.#px[a];
       const dy = this.#py[b] - this.#py[a];
       const dz = this.#pz[b] - this.#pz[a];
-      const dist = Math.hypot(dx, dy, dz) || 1e-5;
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1e-5;
       const diff = ((dist - rest[l]) / dist) * stiff[l];
       const pinA = this.#pin[a];
       const pinB = this.#pin[b];
@@ -389,7 +530,7 @@ export class CosmicEnergyWeb {
     }
   }
 
-  #pinNodes(elapsed: number): void {
+  #pinNodes(): void {
     this.#px[this.#hub] = 0;
     this.#py[this.#hub] = this.#hubYUniform.value;
     this.#pz[this.#hub] = 0;
@@ -414,6 +555,7 @@ export class CosmicEnergyWeb {
     const side = new Float32Array(vertCount);
     const span = new Float32Array(vertCount);
     const level = new Float32Array(vertCount);
+    const phase = new Float32Array(vertCount);
     const indices: number[] = [];
     let v = 0;
     for (const chain of this.#chains) {
@@ -424,6 +566,7 @@ export class CosmicEnergyWeb {
         side[v + 1] = 0.5;
         span[v] = span[v + 1] = s;
         level[v] = level[v + 1] = chain.level;
+        phase[v] = phase[v + 1] = chain.phase;
         if (k > 0) {
           const a = v - 2;
           indices.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
@@ -438,6 +581,7 @@ export class CosmicEnergyWeb {
     geom.setAttribute("aSide", new THREE.BufferAttribute(side, 1));
     geom.setAttribute("aSpan", new THREE.BufferAttribute(span, 1));
     geom.setAttribute("aLevel", new THREE.BufferAttribute(level, 1));
+    geom.setAttribute("aPhase", new THREE.BufferAttribute(phase, 1));
     geom.setIndex(indices);
     geom.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, WEB_TUNING.hubY, 0), 40);
 
@@ -454,7 +598,9 @@ export class CosmicEnergyWeb {
     const sideN = attribute("aSide", "float") as N;
     const span = attribute("aSpan", "float") as N;
     const level = attribute("aLevel", "float") as N;
+    const phase = attribute("aPhase", "float") as N;
     const energy = this.#energy as N;
+    const rippleStrength = this.#ripple as N;
 
     const view = normalize(cameraPosition.sub(positionWorld)) as N;
     const lateral = normalize(cross(dir, view).add(vec3(0, 1e-4, 0))) as N;
@@ -479,14 +625,35 @@ export class CosmicEnergyWeb {
     // travelling energy pulses hub→tip
     const flow = fract(span.mul(WEB_TUNING.flowFreq).sub(time.mul(WEB_TUNING.flowSpeed)).sub(level.mul(0.3))) as N;
     const pulse = smoothstep(0, 0.35, flow).mul(smoothstep(1, 0.55, flow)) as N;
+    const rippleFlow = fract(span.mul(1.65).sub(time.mul(0.92)).add(phase)) as N;
+    const rippleBand = smoothstep(0, 0.22, rippleFlow)
+      .mul(smoothstep(0.52, 0.24, rippleFlow))
+      .mul(rippleStrength) as N;
+    const counterFlow = fract(span.mul(2.65).add(time.mul(0.68)).sub(phase.mul(1.7))) as N;
+    const counterBand = smoothstep(0, 0.15, counterFlow)
+      .mul(smoothstep(0.42, 0.18, counterFlow))
+      .mul(rippleStrength.mul(0.72)) as N;
+    const resonance = span
+      .mul(15.0)
+      .sub(time.mul(3.4))
+      .add(phase.mul(9.0))
+      .sin()
+      .mul(0.5)
+      .add(0.5)
+      .pow(5)
+      .mul(rippleStrength.mul(0.58)) as N;
     const edge = smoothstep(1, 0.12, sideN.abs().mul(2)) as N;
     const tipFade = smoothstep(1.02, 0.5, span).mul(0.55).add(0.45) as N;
     const glow = edge
-      .mul(pulse.mul(0.8).add(0.5))
+      .mul(pulse.mul(0.72).add(rippleBand.mul(1.25)).add(counterBand).add(resonance).add(0.48))
       .mul(tipFade)
       .mul(energy.mul(0.7).add(0.5)) as N;
 
-    material.colorNode = mix(aurora, hot, drift.pow(3).mul(0.4).add(pulse.mul(0.3)))
+    material.colorNode = mix(
+      aurora,
+      hot,
+      drift.pow(3).mul(0.35).add(pulse.mul(0.25)).add(rippleBand.mul(0.62)).add(counterBand.mul(0.48)).add(resonance)
+    )
       .mul(glow)
       .mul(LIGHT_SCALE * 0.95);
     material.opacityNode = edge.mul(tipFade).mul(energy.mul(0.5).add(0.35)).mul(0.85);
@@ -542,7 +709,7 @@ export class CosmicEnergyWeb {
     const rows = seg - innerRow + 1; // inclusive rows from innerRow..seg
     const sub = WEB_TUNING.membraneAngular;
     const cols = this.#count * sub; // wraps around the ring
-    const bind: { a: number; b: number; row: number; u: number }[] = [];
+    const bind: { a: number; b: number; row: number; u: number; angle: number; radial: number }[] = [];
     const uvs: number[] = [];
     for (let c = 0; c < cols; c++) {
       const a = Math.floor(c / sub);
@@ -550,7 +717,7 @@ export class CosmicEnergyWeb {
       const u = (c % sub) / sub;
       for (let r = 0; r < rows; r++) {
         const row = innerRow + r;
-        bind.push({ a, b, row, u });
+        bind.push({ a, b, row, u, angle: (c / cols) * Math.PI * 2, radial: row / seg });
         uvs.push(c / cols, r / (rows - 1));
       }
     }
@@ -637,15 +804,63 @@ export class CosmicEnergyWeb {
     const pos = this.#memPos.array as Float32Array;
     const bind = this.#memBind;
     for (let i = 0; i < bind.length; i++) {
-      const { a, b, row, u } = bind[i];
+      const { a, b, row, u, angle, radial } = bind[i];
       const na = this.#mainNodes[a][row];
       const nb = this.#mainNodes[b][row];
       const p = i * 3;
-      pos[p] = this.#px[na] + (this.#px[nb] - this.#px[na]) * u;
-      pos[p + 1] = this.#py[na] + (this.#py[nb] - this.#py[na]) * u;
-      pos[p + 2] = this.#pz[na] + (this.#pz[nb] - this.#pz[na]) * u;
+      const x = this.#px[na] + (this.#px[nb] - this.#px[na]) * u;
+      const y = this.#py[na] + (this.#py[nb] - this.#py[na]) * u;
+      const z = this.#pz[na] + (this.#pz[nb] - this.#pz[na]) * u;
+      const wave = Math.sin(radial * 14.5 - this.#elapsed * 2.65 + angle * 4.0)
+        + Math.sin(radial * 23.0 + this.#elapsed * 1.48 - angle * 7.0) * 0.45;
+      const amplitude = (0.025 + this.#ripple.value * 0.055) * (0.35 + radial * 0.65);
+      pos[p] = x;
+      pos[p + 1] = y + wave * amplitude;
+      pos[p + 2] = z;
     }
     this.#memPos.needsUpdate = true;
-    this.#memGeom.computeVertexNormals();
+    if ((this.#renderFrame & 1) === 0) this.#memGeom.computeVertexNormals();
+  }
+
+  #buildJoints(): void {
+    for (let anchor = 0; anchor < this.#mainNodes.length; anchor++) {
+      for (let row = 1; row < this.#mainNodes[anchor].length; row++) {
+        this.#jointNodes.push(this.#mainNodes[anchor][row]);
+      }
+    }
+    const geometry = new THREE.BufferGeometry();
+    this.#jointPos = new THREE.BufferAttribute(
+      new Float32Array(this.#jointNodes.length * 3),
+      3
+    ).setUsage(THREE.DynamicDrawUsage);
+    geometry.setAttribute("position", this.#jointPos);
+    geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, WEB_TUNING.hubY, 0), 40);
+    const material = new THREE.PointsMaterial({
+      color: 0xcbefff,
+      size: 0.095,
+      sizeAttenuation: true,
+      transparent: true,
+      opacity: 0.82,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      fog: false
+    });
+    const points = new THREE.Points(geometry, material);
+    points.name = "afterlight-web-joints";
+    points.frustumCulled = false;
+    points.renderOrder = 17;
+    this.root.add(points);
+  }
+
+  #writeJoints(): void {
+    const positions = this.#jointPos.array as Float32Array;
+    for (let i = 0; i < this.#jointNodes.length; i++) {
+      const node = this.#jointNodes[i];
+      const offset = i * 3;
+      positions[offset] = this.#px[node];
+      positions[offset + 1] = this.#py[node];
+      positions[offset + 2] = this.#pz[node];
+    }
+    this.#jointPos.needsUpdate = true;
   }
 }
