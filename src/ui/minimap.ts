@@ -2171,7 +2171,7 @@ export class Minimap {
         const label = lmLabels.get(lm)!;
         ctx.textAlign = label.align;
         if (label.pill) {
-          ctx.fillStyle = "rgba(6,14,20,0.72)";
+          ctx.fillStyle = "#060e14";
           ctx.fillRect(label.pill.x, label.pill.y, label.pill.w, label.pill.h);
         }
         ctx.fillStyle = selected ? LANDMARK_DOT_COLOR : "rgba(234,244,248,0.88)";
@@ -2192,7 +2192,7 @@ export class Minimap {
       const y = pz(r.z);
       if (!visible(x, y, 40 * dpr)) continue;
       this.#dot(ctx, x, y, 5 * dpr, r.hue);
-      ctx.fillStyle = "rgba(6,14,20,0.75)";
+      ctx.fillStyle = "#060e14";
       const label = r.name;
       const tw = ctx.measureText(label).width;
       ctx.fillRect(x + 7 * dpr, y - 8 * dpr, tw + 8 * dpr, 16 * dpr);
@@ -2446,7 +2446,7 @@ export class Minimap {
     if (bx + boxW > width - 5 * dpr) bx = x - boxW - 9 * dpr;
     if (by < 5 * dpr) by = y + 9 * dpr;
     if (by + boxH > height - 5 * dpr) by = height - boxH - 5 * dpr;
-    ctx.fillStyle = "rgba(8,16,24,0.84)";
+    ctx.fillStyle = "#081018";
     ctx.strokeStyle = color;
     ctx.lineWidth = 1.2 * dpr;
     ctx.beginPath();

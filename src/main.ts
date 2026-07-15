@@ -3113,6 +3113,62 @@ async function boot() {
   const optionalSiteMonitorView: Record<string, string> = { summary: "—" };
   for (const site of optionalWorldSites) optionalSiteMonitorView[site.id] = "dormant";
 
+  // Perf A/B toggles on the streaming monitor. Armed only after the panel is
+  // built so ordinary play is untouched until "/" opens this folder. Defaults
+  // match ACTIVE at open time; flipping off hides + skips that site's work.
+  const optionalSitePerfEnabled: Record<OptionalSiteId, boolean> = {
+    goldman: false,
+    archery: false,
+    palace: false,
+    afterlight: false,
+    corona: false,
+    "lands-end": false,
+    "sutro-baths": false
+  };
+  let optionalSitePerfGating = false;
+  const OPTIONAL_SITE_GATE_ID: Partial<Record<OptionalSiteId, string>> = {
+    goldman: "pickleball",
+    archery: "archery",
+    palace: "palace-reverie",
+    afterlight: "afterlight"
+  };
+  const optionalSitePerfAllowed = (id: OptionalSiteId): boolean =>
+    !optionalSitePerfGating || optionalSitePerfEnabled[id];
+
+  const applyOptionalSitePerfGate = (site: OptionalWorldSite): void => {
+    if (!optionalSitePerfGating) return;
+    const on = optionalSitePerfEnabled[site.id];
+    const gateId = OPTIONAL_SITE_GATE_ID[site.id];
+    if (gateId) siteGate.suppress(gateId, !on);
+    switch (site.id) {
+      case "goldman":
+        if (goldenGateTennis) goldenGateTennis.group.visible = on;
+        break;
+      case "archery":
+        if (!on && archery) archery.root.visible = false;
+        break;
+      case "palace":
+        if (!on && palaceReverie) palaceReverie.root.visible = false;
+        break;
+      case "afterlight":
+        if (!on && afterlight) afterlight.root.visible = false;
+        break;
+      case "corona":
+        if (!on && coronaHeights) coronaHeights.group.visible = false;
+        break;
+      case "lands-end":
+        if (!on && landsEnd) landsEnd.group.visible = false;
+        break;
+      case "sutro-baths":
+        sutroBaths?.setPerfSuppressed(!on);
+        break;
+    }
+  };
+
+  const applyAllOptionalSitePerfGates = (): void => {
+    for (const site of optionalWorldSites) applyOptionalSitePerfGate(site);
+  };
+
   const optionalSiteSceneState = (root: THREE.Object3D | null | undefined): string => {
     if (!root?.parent) return "detached";
     return root.visible ? "visible" : "hidden";
@@ -3177,8 +3233,9 @@ async function boot() {
       ready++;
       const state = optionalSiteRuntimeState(site);
       if (state.runtime === "ACTIVE" || state.runtime === "DETAIL") working++;
+      const gated = optionalSitePerfGating && !optionalSitePerfEnabled[site.id] ? " | OFF" : "";
       optionalSiteMonitorView[site.id] =
-        `ready | ${state.runtime} | ${state.sceneState} | ${distanceText}`;
+        `ready | ${state.runtime} | ${state.sceneState} | ${distanceText}${gated}`;
     }
     optionalSiteMonitorView.summary =
       `${ready}/${optionalWorldSites.length} resident | ${working} working`;
@@ -3188,23 +3245,45 @@ async function boot() {
     id: "world-streaming-monitor",
     title: "World streaming · optional sites",
     build(folder) {
+      optionalSitePerfGating = true;
+      refreshOptionalSiteMonitor();
+      for (const site of optionalWorldSites) {
+        optionalSitePerfEnabled[site.id] =
+          site.state === "ready" && optionalSiteRuntimeState(site).runtime === "ACTIVE";
+      }
+      applyAllOptionalSitePerfGates();
+
       const bindings = [
         folder.addBinding(optionalSiteMonitorView, "summary", {
           readonly: true,
           label: "summary"
         }),
-        ...optionalWorldSites.map((site) =>
-          folder.addBinding(optionalSiteMonitorView, site.id, {
-            readonly: true,
+        ...optionalWorldSites.flatMap((site) => {
+          const toggle = folder.addBinding(optionalSitePerfEnabled, site.id, {
             label: site.label
-          })
-        )
+          });
+          toggle.on("change", () => {
+            applyOptionalSitePerfGate(site);
+            if (optionalSitePerfEnabled[site.id]) {
+              void requestOptionalWorldSite(site, true);
+            }
+            refreshOptionalSiteMonitor();
+          });
+          return [
+            toggle,
+            folder.addBinding(optionalSiteMonitorView, site.id, {
+              readonly: true,
+              label: " "
+            })
+          ];
+        })
       ];
       refreshOptionalSiteMonitor();
       return {
         monitors: [{
           refresh() {
             refreshOptionalSiteMonitor();
+            applyAllOptionalSitePerfGates();
             for (const binding of bindings) binding.refresh();
           }
         }]
@@ -3231,6 +3310,7 @@ async function boot() {
       await site.load();
       site.state = "ready";
       console.info(`[lazy-site] ${site.label} ready`);
+      applyOptionalSitePerfGate(site);
     }).catch((error) => {
       site.state = "failed";
       console.warn(`[lazy-site] ${site.label} unavailable:`, error);
@@ -3258,6 +3338,7 @@ async function boot() {
     let nearestDistanceSq = OPTIONAL_SITE_APPROACH_RADIUS * OPTIONAL_SITE_APPROACH_RADIUS;
     for (const site of optionalWorldSites) {
       if (site.state !== "dormant") continue;
+      if (!optionalSitePerfAllowed(site.id)) continue;
       const dx = player.position.x - site.x;
       const dz = player.position.z - site.z;
       const distanceSq = dx * dx + dz * dz;
@@ -3949,6 +4030,7 @@ async function boot() {
     // Crossing the generic approach radius requests at most one authored site;
     // the queue rechecks after the arrival-quiet window before importing it.
     updateOptionalWorldSites();
+    if (optionalSitePerfGating) applyAllOptionalSitePerfGates();
     // One wake/sleep pass over every registered minigame site (pickleball,
     // golf, …): a contains() test per site, setAwake only on transitions.
     if (!worldArrival.active) siteGate.update(player.position.x, player.position.z);
@@ -3956,7 +4038,10 @@ async function boot() {
     // The shared court keeps advancing even while the rest of the world is
     // paused, so a remote opponent never loses the match when authority opens
     // photo/pause controls.
-    const pickleballEConsumed = worldArrival.active ? false : updatePickleballGameplay(frameDt);
+    const pickleballEConsumed =
+      worldArrival.active || !optionalSitePerfAllowed("goldman")
+        ? false
+        : updatePickleballGameplay(frameDt);
     const playingPickleball = pickleballController?.playing ?? false;
     applyPickleballPlayerPose();
 
@@ -4048,7 +4133,9 @@ async function boot() {
       // stuck in the previous indoor/outdoor mode.
       if (!worldArrival.active) {
         citygenRing.current?.update(player.position, frameDt);
-        sutroBaths?.update(0, elapsed, player.renderPosition, camera, windGustValue());
+        if (optionalSitePerfAllowed("sutro-baths")) {
+          sutroBaths?.update(0, elapsed, player.renderPosition, camera, windGustValue());
+        }
       }
       if (inOrbit()) { chase.suspend(player); orbit.update(frameDt); }
       else {
@@ -4652,10 +4739,20 @@ async function boot() {
     // pickleball all read BALL_GLOW_NIGHT). Uses last sky.update's elevation —
     // fine; elevation only moves with the clock.
     syncBallGlowNight(sky.sunElevation);
-    if (!worldArrival.active) coronaHeights?.update(frameDt, elapsed, camera.position);
-    if (!worldArrival.active) landsEnd?.update(frameDt, elapsed, player.position);
-    if (!worldArrival.active && landsEnd && player.mode === "walk") {
-      landsEnd.keeper.updatePrompt(player.position.x, player.position.z, hud);
+    if (!worldArrival.active) {
+      if (optionalSitePerfAllowed("corona")) {
+        coronaHeights?.update(frameDt, elapsed, camera.position);
+      } else if (coronaHeights) {
+        coronaHeights.group.visible = false;
+      }
+      if (optionalSitePerfAllowed("lands-end")) {
+        landsEnd?.update(frameDt, elapsed, player.position);
+        if (landsEnd && player.mode === "walk") {
+          landsEnd.keeper.updatePrompt(player.position.x, player.position.z, hud);
+        }
+      } else if (landsEnd) {
+        landsEnd.group.visible = false;
+      }
     }
     // Ball fetch loop + pet follow run every frame, tool-agnostic, so a thrown
     // ball keeps bouncing and a returning/adopted dog keeps moving even after
@@ -4695,7 +4792,9 @@ async function boot() {
     oceanBeachKite?.update(frameDt, elapsed, player.renderPosition, windGustValue());
     buskers.update(frameDt, camera, windGustValue(), sky.sunElevation);
     if (!worldArrival.active) {
-      sutroBaths?.update(frameDt, elapsed, player.renderPosition, camera, windGustValue());
+      if (optionalSitePerfAllowed("sutro-baths")) {
+        sutroBaths?.update(frameDt, elapsed, player.renderPosition, camera, windGustValue());
+      }
       japaneseTeaGarden?.update(
         frameDt,
         elapsed,
@@ -4750,18 +4849,24 @@ async function boot() {
     if (!worldArrival.active) citygenRing.current?.update(player.position, frameDt);
     if (!worldArrival.active && !highUp) hunt.update(frameDt, elapsed, player.position);
     if (!worldArrival.active) golf?.update(frameDt, elapsed, { player, input, hud, chase, camera });
-    if (!worldArrival.active) palaceReverie?.update(frameDt, elapsed, player.position, hud);
-    if (!worldArrival.active) {
+    if (!worldArrival.active && optionalSitePerfAllowed("palace")) {
+      palaceReverie?.update(frameDt, elapsed, player.position, hud);
       const welcome = palaceReverie?.takeWelcome();
       if (welcome) hud.message(welcome, 6.2);
     }
     // Archery: site-gated, one boolean early-return when asleep with nothing live
-    if (!worldArrival.active) archery?.update(frameDt, elapsed, { player, input, hud, chase, camera });
+    if (!worldArrival.active && optionalSitePerfAllowed("archery")) {
+      archery?.update(frameDt, elapsed, { player, input, hud, chase, camera });
+    }
     // Afterlight: proximity collectibles, return flights, quest clock and the
     // completed sky performance; site-gated to a single asleep early return.
-    if (!worldArrival.active) afterlight?.update(frameDt, elapsed, player, hud);
+    if (!worldArrival.active && optionalSitePerfAllowed("afterlight")) {
+      afterlight?.update(frameDt, elapsed, player, hud);
+    }
     // Goldman clubhouse NPCs: one-hypot early return when far — safe every frame
-    if (!worldArrival.active) goldenGateTennis?.update(frameDt, elapsed, player.position);
+    if (!worldArrival.active && optionalSitePerfAllowed("goldman")) {
+      goldenGateTennis?.update(frameDt, elapsed, player.position);
+    }
     // Mission Dolores: dynamic code gate first, then shell/art proximity gates.
     if (!worldArrival.active) ensureMissionDolores(player.position);
     if (!worldArrival.active) missionDolores?.update(frameDt, elapsed, player.position, player.mode, hud);

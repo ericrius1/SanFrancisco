@@ -63,10 +63,10 @@ export class LandsEndRegion {
   update(dt: number, elapsed: number, playerPos: { x: number; z: number }) {
     const dist = Math.hypot(playerPos.x - LANDS_END_CENTER.x, playerPos.z - LANDS_END_CENTER.z);
     const near = dist < DETAIL_RANGE;
-    if (near !== this.#wasNear) {
-      this.group.visible = near;
-      this.#wasNear = near;
-    }
+    // Always assign visibility so a debug perf-suppress that hid the group while
+    // near can restore cleanly on the next enabled frame.
+    this.group.visible = near;
+    this.#wasNear = near;
     if (!near) return;
     this.#labyrinth.update(dt, playerPos.x, playerPos.z);
     this.#keeper.update(dt, elapsed);

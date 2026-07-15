@@ -56,6 +56,8 @@ export type SutroBaths = {
   group: THREE.Group;
   ready: Promise<void>;
   setFoliageVisible(visible: boolean): void;
+  /** Debug streaming panel: force sleep and block proximity wake while on. */
+  setPerfSuppressed(on: boolean): void;
   update(
     dt: number,
     time: number,
@@ -241,6 +243,8 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
     steam?.setEnabled(next);
   };
 
+  let perfSuppressed = false;
+
   syncTuning();
 
   return {
@@ -250,8 +254,18 @@ export function createSutroBaths(options: SutroBathsOptions): SutroBaths {
       foliageVisible = visible;
       vegetation.setVisible(visible);
     },
+    /** Debug perf gate: force sleep and block proximity wake while suppressed. */
+    setPerfSuppressed(on: boolean) {
+      if (perfSuppressed === on) return;
+      perfSuppressed = on;
+      if (on) setAwake(false);
+    },
     update(dt, time, player, camera, gust) {
       if (disposed) return;
+      if (perfSuppressed) {
+        if (awake) setAwake(false);
+        return;
+      }
       distanceToBaths = distanceToSutroBaths(player.x, player.z);
       if (!awake && distanceToBaths <= WAKE_DISTANCE) setAwake(true);
       else if (awake && distanceToBaths >= SLEEP_DISTANCE) setAwake(false);

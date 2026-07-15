@@ -47,7 +47,6 @@ const CSS = /* css */ `
   background: var(--surface-strong);
   border: 1px solid var(--hairline-2);
   box-shadow: var(--shadow-sm), var(--edge-hi);
-  backdrop-filter: blur(var(--blur));
   opacity: 0;
   transition: opacity 0.25s var(--ease), transform 0.25s var(--ease);
   pointer-events: none;
@@ -127,7 +126,6 @@ const CSS = /* css */ `
   background: var(--surface-strong);
   border: 1px solid var(--accent-line);
   box-shadow: var(--shadow-sm), var(--edge-hi), 0 0 24px var(--accent-soft);
-  backdrop-filter: blur(var(--blur));
   font: 800 24px var(--font);
   letter-spacing: 0.06em;
   color: var(--accent-strong);
@@ -161,7 +159,6 @@ const CSS = /* css */ `
   background: var(--surface-strong);
   border: 1px solid var(--hairline-2);
   box-shadow: var(--shadow-sm), var(--edge-hi);
-  backdrop-filter: blur(var(--blur));
   opacity: 0;
   transition: opacity 0.25s var(--ease);
   pointer-events: none;

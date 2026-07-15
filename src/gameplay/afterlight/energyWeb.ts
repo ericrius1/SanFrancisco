@@ -27,9 +27,9 @@ type N = any;
  * Cosmic energy web — the fractal light-net the Afterlight keepers hold aloft.
  * ───────────────────────────────────────────────────────────────────────────
  * A ring of celebrants each pin a "main vein" from their hand to a shared hub
- * above the loom orb. Every main vein sheds two recursive levels of side
- * branches, so the silhouette reads as a detailed fractal energy map rather
- * than a handful of arcs. All of it is one connected Verlet mass-spring net:
+ * above the loom orb. Every main vein sheds a sparse fan of side branches, so
+ * the silhouette reads as a detailed fractal energy map rather than a handful
+ * of arcs. All of it is one connected Verlet mass-spring net:
  * hands and hub are pinned, everything between them is distance-constrained
  * rope, and cross-links near the hub couple neighbouring veins so that lifting
  * one arm pulls and ripples through the whole structure — cloth + rope feel,
@@ -47,18 +47,18 @@ const UP = new THREE.Vector3(0, 1, 0);
 
 export const WEB_TUNING = {
   hubY: 3.15, // local height of the shared hub (floats above the loom orb)
-  segments: 16, // hub→hand nodes per main vein (2× linear resolution)
+  segments: 12,
   bow: 2.35, // upward arch of a slack main vein
-  branchAt: [2, 4, 6, 8, 10, 12, 14] as number[],
-  branchChildren: 3,
-  branchNodes: 4,
-  branchLen: 2.05,
-  subBranchNodes: 3,
+  branchAt: [2, 5, 8, 10] as number[],
+  branchChildren: 2,
+  branchNodes: 3,
+  branchLen: 2.2,
+  subBranchNodes: 0,
   subBranchLen: 1.18,
-  fixedStep: 1 / 60,
-  maxSubsteps: 6,
-  iterations: 3, // short links converge quickly; keep the 4× topology affordable
-  damping: 0.958, // equivalent persistence after moving the solve to 60 Hz
+  fixedStep: 1 / 30,
+  maxSubsteps: 2,
+  iterations: 2,
+  damping: 0.918, // preserves the previous per-second damping at the 30 Hz solve rate
   driftAmp: 1.58, // cosmic curl + standing-wave force
   driftScale: 0.56,
   buoyancy: 0.3,
@@ -71,7 +71,7 @@ export const WEB_TUNING = {
   mainWidth: 0.105,
   tipWidth: 0.009,
   membraneInnerRow: 3,
-  membraneAngular: 6,
+  membraneAngular: 4,
   flowSpeed: 0.48,
   flowFreq: 3.4,
   baseEnergy: 0.46
@@ -190,6 +190,9 @@ export class CosmicEnergyWeb {
     this.#buildVeinGeometry();
     this.#buildMembrane();
     this.#buildJoints();
+    this.#writeVeins();
+    this.#writeMembrane();
+    this.#writeJoints();
   }
 
   setEnergy(value: number): void {
@@ -200,9 +203,9 @@ export class CosmicEnergyWeb {
     const step = Math.min(Math.max(dt, 0), 0.1);
     this.#elapsed += step;
     this.#hubYUniform.value = WEB_TUNING.hubY + Math.sin(elapsed * 0.72) * 0.08;
-    this.#injectAnchorMotion();
     this.#accumulator += step;
     let substeps = 0;
+    if (this.#accumulator >= WEB_TUNING.fixedStep) this.#injectAnchorMotion();
     while (this.#accumulator >= WEB_TUNING.fixedStep && substeps < WEB_TUNING.maxSubsteps) {
       this.#integrate(WEB_TUNING.fixedStep, this.#elapsed - this.#accumulator);
       for (let it = 0; it < WEB_TUNING.iterations; it++) {
@@ -214,16 +217,16 @@ export class CosmicEnergyWeb {
     }
     if (substeps === WEB_TUNING.maxSubsteps) this.#accumulator = 0;
     this.#renderFrame++;
-    if ((this.#renderFrame & 1) === 0) this.#measureStrain();
+    if (substeps > 0 && (this.#renderFrame & 3) === 0) this.#measureStrain();
     const ambientRipple = 0.24 + this.#energy.value * 0.16 + (Math.sin(this.#elapsed * 1.7) * 0.5 + 0.5) * 0.12;
     this.#ripple.value = Math.max(
       ambientRipple,
       this.#strain * 9.5,
       this.#ripple.value * Math.exp(-step * 1.45)
     );
-    this.#writeVeins();
+    if (substeps > 0) this.#writeVeins();
     this.#writeMembrane();
-    this.#writeJoints();
+    if (substeps > 0) this.#writeJoints();
   }
 
   debugState(): {
@@ -819,7 +822,7 @@ export class CosmicEnergyWeb {
       pos[p + 2] = z;
     }
     this.#memPos.needsUpdate = true;
-    if ((this.#renderFrame & 1) === 0) this.#memGeom.computeVertexNormals();
+    if ((this.#renderFrame & 3) === 0) this.#memGeom.computeVertexNormals();
   }
 
   #buildJoints(): void {

@@ -1,5 +1,6 @@
 import * as THREE from "three/webgpu";
-import { isInsideSutroPool, poolWaterY, type SutroWaterImpulse } from "./waterSimulation";
+import { isInsideSutroPool, poolWaterY } from "./layout";
+import type { SutroWaterImpulse } from "./waterSimulation";
 
 /**
  * Gameplay injectors for the shared Sutro Baths shallow-water field.

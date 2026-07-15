@@ -86,6 +86,14 @@ function clampHandTarget(target: THREE.Vector3, base: THREE.Vector3): void {
   target.z = THREE.MathUtils.clamp(target.z, base.z - 0.9, base.z + 0.7);
 }
 
+/** Decorative crowd rigs receive world light but do not enter shadow passes. */
+function configureLightweightRig(rig: Rig): void {
+  rig.group.traverse((object) => {
+    const mesh = object as THREE.Mesh;
+    if (mesh.isMesh) mesh.castShadow = false;
+  });
+}
+
 function makeRadialTexture(): THREE.CanvasTexture {
   const canvas = document.createElement("canvas");
   canvas.width = canvas.height = 96;
@@ -108,14 +116,14 @@ function makeNameTag(text: string, accent: string): THREE.Sprite {
   canvas.height = 92;
   const ctx = canvas.getContext("2d")!;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = "rgba(8,20,26,.72)";
+  ctx.fillStyle = "#08141a";
   ctx.strokeStyle = accent;
   ctx.lineWidth = 2;
   ctx.beginPath();
   ctx.roundRect(46, 12, 228, 58, 24);
   ctx.fill();
   ctx.stroke();
-  ctx.fillStyle = "rgba(244,252,248,.96)";
+  ctx.fillStyle = "#f4fcf8";
   ctx.font = `600 30px ${CANVAS_FONT_FAMILY}`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
@@ -126,7 +134,6 @@ function makeNameTag(text: string, accent: string): THREE.Sprite {
     map: texture,
     transparent: true,
     depthWrite: false,
-    opacity: 0.92,
     fog: false
   });
   const sprite = new THREE.Sprite(material);
@@ -352,6 +359,7 @@ export class AfterlightSiteVisuals {
     if (!celebrant) return false;
     if (this.#controlledCelebrant >= 0) this.endTakeover();
     const playerRig = buildRig(avatar);
+    configureLightweightRig(playerRig);
     playerRig.group.position.copy(celebrant.stationPosition);
     playerRig.group.rotation.y = celebrant.stationYaw;
     poseIdle(playerRig, this.#elapsed + 0.37);
@@ -874,6 +882,7 @@ export class AfterlightSiteVisuals {
         ? { ...seeded, outfit: "overalls", hair: "long", hat: "beanie" }
         : { ...seeded, outfit: "jacket", hair: "mohawk", hat: "none" };
       const rig = buildRig(avatar);
+      configureLightweightRig(rig);
       rig.group.position.set(spec.x, this.#groundY(spec.x, spec.z) + 0.93, spec.z);
       rig.group.rotation.y = spec.yaw;
       poseIdle(rig, i * 1.7);
@@ -900,7 +909,7 @@ export class AfterlightSiteVisuals {
    * ripple through the whole net.
    */
   #buildCelebrants(): void {
-    const COUNT = 7;
+    const COUNT = 5;
     const RING = 9.2;
     // Deep-space robes with glowing trim; each avatar gets a distinct pairing.
     const COSMIC: Array<{
@@ -932,6 +941,7 @@ export class AfterlightSiteVisuals {
       const seeded = avatarFromSeed(`afterlight-celebrant-${i}`);
       const traits: AvatarTraits = { ...seeded, outfit: spec.outfit, hair: spec.hair, hat: spec.hat };
       const rig = buildRig(traits);
+      configureLightweightRig(rig);
       // Off-palette cosmic recolour (after buildRig; never re-run applyAvatarToRig).
       const m = rig.avatar.materials;
       m.jacket.color.set(spec.robe);

@@ -79,12 +79,11 @@
   border-radius: 999px;
   background:
     linear-gradient(105deg, rgba(255, 255, 255, 0.07), transparent 42%),
-    rgba(18, 38, 62, 0.94);
+    #12263e;
   box-shadow:
     0 8px 24px rgba(3, 10, 19, 0.38),
     inset 0 1px 0 rgba(255, 255, 255, 0.12);
   color: var(--projected-dialogue-ivory);
-  backdrop-filter: blur(7px);
   white-space: nowrap;
 }
 

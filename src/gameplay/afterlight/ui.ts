@@ -66,11 +66,10 @@ const STYLE = `
   border-radius: 4px 12px 4px 12px;
   background:
     radial-gradient(140% 130% at 0% 0%, rgba(205, 226, 222, 0.13), transparent 52%),
-    linear-gradient(112deg, rgba(7, 19, 25, 0.84), rgba(12, 27, 32, 0.68));
+    linear-gradient(112deg, #071319, #0c1b20);
   box-shadow:
     0 10px 28px rgba(0, 5, 9, 0.3),
     inset 0 1px 0 rgba(255, 244, 214, 0.045);
-  backdrop-filter: blur(8px) saturate(0.8);
   opacity: 0;
   transform: translateX(-50%) translateY(-8px);
   transition: opacity 0.24s var(--ease), transform 0.3s var(--ease), border-color 0.3s var(--ease);
@@ -310,9 +309,8 @@ const STYLE = `
   border-radius: 5px 12px 5px 12px;
   background:
     radial-gradient(120% 180% at 20% 0%, rgba(190, 216, 211, 0.11), transparent 62%),
-    rgba(5, 15, 24, 0.92);
+    #050f18;
   box-shadow: 0 10px 32px rgba(0, 5, 9, 0.5), 0 0 22px rgba(92, 232, 240, 0.14), inset 0 1px 0 rgba(255, 244, 214, 0.08);
-  backdrop-filter: blur(10px);
   opacity: 0;
   transform: translate(-50%, 7px);
   transition: opacity 0.2s var(--ease), transform 0.24s var(--ease);

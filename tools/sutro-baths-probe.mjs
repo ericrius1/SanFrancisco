@@ -466,6 +466,39 @@ async function main() {
       activationState.canvas
     );
 
+    // Exercise the streamed-floor recovery at both elevations. These forced
+    // under-floor poses model the bad handoff/tunnelling case directly: deck
+    // corridors must recover to the deck, while pool footprints must recover
+    // only to the basin so entering the water remains possible.
+    const forceBelowFloor = async (point) => {
+      await page.evaluate(([x, y, z]) => {
+        const sf = window.__sf;
+        const transform = sf.physics.world.getBodyTransform(sf.player.body);
+        sf.physics.world.setBodyTransform(sf.player.body, [x, y, z], transform.rotation);
+        sf.physics.world.setBodyVelocity(sf.player.body, [0, -8, 0], [0, 0, 0]);
+        sf.physics.world.setBodyAwake(sf.player.body, true);
+      }, point);
+      await page.waitForTimeout(180);
+      return page.evaluate(() => ({
+        x: window.__sf.player.position.x,
+        y: window.__sf.player.position.y,
+        z: window.__sf.player.position.z
+      }));
+    };
+    const deckRecovery = await forceBelowFloor(localPoint(-7, -3, 0));
+    const basinRecovery = await forceBelowFloor(localPoint(-20, -3, 8));
+    const collisionRecovery = { deck: deckRecovery, basin: basinRecovery };
+    expect(
+      "activation-deck-fallthrough-recovers",
+      Math.abs(deckRecovery.y - (5.62 + 0.92)) < 0.12,
+      collisionRecovery
+    );
+    expect(
+      "activation-pool-fallthrough-recovers-to-basin",
+      Math.abs(basinRecovery.y - (2.62 + 0.92)) < 0.12,
+      collisionRecovery
+    );
+
     // Canvas-only captures deliberately exclude DOM HUD/debug overlays.
     const canvas = page.locator("#app > canvas").first();
     await page.evaluate(() => window.__sf.hud?.setHidden?.(true));
@@ -624,6 +657,7 @@ async function main() {
         },
         activation: {
           state: activationState,
+          collisionRecovery,
           allRequests: allRequests.activation,
           summary: summarize(records, "activation"),
           sutroRequests: activationRows.map(publicRecord)

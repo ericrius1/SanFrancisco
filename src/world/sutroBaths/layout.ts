@@ -156,6 +156,17 @@ export function sutroWalkSurfaceY(x: number, z: number): number | null {
   return poolAtLocal(local.x, local.z) ? SUTRO_BATHS.basinY : SUTRO_BATHS.deckY;
 }
 
+/** True when a WORLD-space point sits inside any of the seven pool rectangles. */
+export function isInsideSutroPool(x: number, z: number): boolean {
+  const local = sutroWorldToLocal(x, z);
+  return poolAtLocal(local.x, local.z) !== null;
+}
+
+/** Authored water plane at a pool point, or NaN outside every pool. */
+export function poolWaterY(x: number, z: number): number {
+  return isInsideSutroPool(x, z) ? SUTRO_BATHS.waterY : Number.NaN;
+}
+
 export function distanceToSutroWater(x: number, z: number): number {
   const local = sutroWorldToLocal(x, z);
   let best = Number.POSITIVE_INFINITY;

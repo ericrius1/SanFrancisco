@@ -34,15 +34,17 @@ export function createSiteGate(): {
   register(site: GameSite): GameSiteRegistration;
   update(x: number, z: number): void;
   awake(id: string): boolean;
+  /** Force a site asleep for perf A/B; clears on the next unsuppress + update. */
+  suppress(id: string, on: boolean): void;
 } {
-  type Entry = { site: GameSite; awake: boolean };
+  type Entry = { site: GameSite; awake: boolean; suppressed: boolean };
   const entries: Entry[] = [];
   const byId = new Map<string, Entry>();
 
   return {
     /** Sites register asleep; the next update() wakes any the player is already in. */
     register(site: GameSite) {
-      const entry: Entry = { site, awake: false };
+      const entry: Entry = { site, awake: false, suppressed: false };
       entries.push(entry);
       byId.set(site.id, entry);
       let disposed = false;
@@ -54,7 +56,7 @@ export function createSiteGate(): {
           if (byId.get(entry.site.id) === entry) byId.delete(entry.site.id);
           entry.site = next;
           byId.set(next.id, entry);
-          if (wasAwake) {
+          if (wasAwake && !entry.suppressed) {
             next.setAwake(true);
             next.onWake?.();
           }
@@ -74,8 +76,9 @@ export function createSiteGate(): {
       for (const entry of entries) {
         const s = entry.site;
         const next =
-          (s.keepAwake?.() ?? false) ||
-          s.contains(x, z, entry.awake ? s.deactivatePad : s.activatePad);
+          !entry.suppressed &&
+          ((s.keepAwake?.() ?? false) ||
+            s.contains(x, z, entry.awake ? s.deactivatePad : s.activatePad));
         if (next === entry.awake) continue;
         entry.awake = next;
         s.setAwake(next);
@@ -85,6 +88,16 @@ export function createSiteGate(): {
 
     awake(id: string): boolean {
       return byId.get(id)?.awake ?? false;
+    },
+
+    suppress(id: string, on: boolean) {
+      const entry = byId.get(id);
+      if (!entry || entry.suppressed === on) return;
+      entry.suppressed = on;
+      if (on && entry.awake) {
+        entry.awake = false;
+        entry.site.setAwake(false);
+      }
     }
   };
 }
