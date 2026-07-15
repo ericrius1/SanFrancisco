@@ -1497,7 +1497,12 @@ async function boot() {
         skipChatRelock = false;
         return;
       }
-      if (!inOrbit() && document.body.classList.contains("started") && !input.suspended) {
+      if (
+        !inOrbit() &&
+        document.body.classList.contains("started") &&
+        !input.suspended &&
+        !input.freeCursor
+      ) {
         input.requestLock();
       }
     }
@@ -1507,7 +1512,7 @@ async function boot() {
   net.onGolf = (id, m) => golf?.handleNet(id, m, hud, net.roster.get(id)?.name ?? "Player");
   input.onLockChange = (locked) => {
     if (!locked && !inOrbit() && !input.freeCursor && !chat.focused) {
-      hud.message("Click to capture the mouse · Esc releases it", 2.8);
+      hud.message("Click to capture the mouse · Esc releases · ⌘ toggles free cursor", 2.8);
     }
   };
   // passenger seat support: cars and scooters both publish a local seat anchor.
@@ -1798,17 +1803,13 @@ async function boot() {
   };
   minimap.setDevice(input.device);
 
-  // Escape priority: dismiss an open overlay (stay unlocked) → else release pointer
-  // lock. Stops the old "Esc closes UI and immediately re-locks" double-tap.
-  // Registered after minimap exists so an early Esc can't hit a TDZ binding.
+  // Escape priority: dismiss an open overlay (stay unlocked). Pointer-lock exit
+  // is the browser's job — do not call releaseLock here. Registered after
+  // minimap exists so an early Esc can't hit a TDZ binding.
   //
-  // The three world overlays below can (only in a degenerate/future state) be
-  // open while the pointer is still locked, and Chrome reserves the *locked*
-  // Escape keydown for its native pointer-lock exit — the page never sees it.
-  // So route their dismissal through a shared closer driven by BOTH keydown and
-  // keyup: the browser still delivers the keyup, so one Escape both unlocks and
-  // closes the overlay no matter which phase survives. Idempotent — whichever
-  // phase runs first stops propagation and closes it; the other finds nothing.
+  // Chrome may reserve the *locked* Escape keydown for its native pointer-lock
+  // exit, so overlay dismissal also listens on keyup: one Esc both unlocks
+  // (browser) and closes the overlay when the keydown was swallowed.
   const dismissEscapeOverlay = (e: KeyboardEvent): boolean => {
     if (missionDolores?.bookOpen) {
       missionDolores.closeBook();
@@ -1827,9 +1828,6 @@ async function boot() {
     "keydown",
     (e) => {
       if ((e.code !== "Escape" && e.key !== "Escape") || e.repeat) return;
-      // Input owns this invariant in an earlier capture listener. Keep this
-      // idempotent call here too so UI routing can never precede the unlock.
-      input.releaseLock();
       const t = e.target;
       // Debug search / other fields keep their own Esc behavior.
       if (
@@ -1846,8 +1844,6 @@ async function boot() {
         e.stopImmediatePropagation();
         return;
       }
-      // Lock already released above; don't preventDefault so the UA default
-      // unlock still runs if exitPointerLock is ignored.
     },
     true
   );
@@ -2169,7 +2165,7 @@ async function boot() {
   const aim = new THREE.Vector3();
   const rayOrigin = new THREE.Vector3(); // aimOrigin returns a shared tmp — keep our own copy
   // The interaction ray. Normally it's the centre-screen aim; while the free
-  // cursor is out (Command held) it's the camera-through-mouse ray instead, so
+  // cursor is out (⌘ toggled) it's the camera-through-mouse ray instead, so
   // clicks and the hover glow track wherever the loose orb is pointing.
   const aimRay = (origin: THREE.Vector3, dir: THREE.Vector3) => {
     if (input.freeCursor) {
@@ -4663,7 +4659,7 @@ async function boot() {
 
     // The in-world cursor: a glowing orb that rests where you're pointing. It
     // sits centre-screen while the mouse is captured (a soft aim reticle too),
-    // and rides the free mouse ray while Command is held. Runs after the entity
+    // and rides the free mouse ray while free-cursor mode is on (⌘). Runs after the entity
     // proxies are synced so its depth is world-aware: a hovered bus/car/avatar
     // lifts it onto their near face instead of letting the ray punch through to
     // the ground behind.

@@ -208,8 +208,22 @@ export class DebugPanel {
         throw err;
       });
     }
-    if (this.#root) this.#root.style.display = this.visible ? "" : "none";
+    this.#applyRootVisibility();
     if (this.visible) this.#onOpen();
+  }
+
+  /**
+   * Keep the completed pane in layout so reopening it does not synchronously
+   * restyle and lay out its large binding tree. Visibility/opacity are paint-
+   * only changes; pointer-events and aria-hidden keep the closed pane inert.
+   */
+  #applyRootVisibility() {
+    if (!this.#root) return;
+    const visible = this.visible;
+    this.#root.style.visibility = visible ? "visible" : "hidden";
+    this.#root.style.opacity = visible ? "1" : "0";
+    this.#root.style.pointerEvents = visible ? "auto" : "none";
+    this.#root.setAttribute("aria-hidden", visible ? "false" : "true");
   }
 
   /** Finish inactive post-FX graphs only when someone opens that folder. */
@@ -500,11 +514,11 @@ export class DebugPanel {
 
     const root = document.createElement("div");
     root.style.cssText =
-      "position:fixed;top:12px;right:12px;z-index:40;width:300px;max-height:calc(100vh - 24px);overflow:auto;overscroll-behavior:contain";
-    // Honor current visibility in case "/" was toggled off before the shell landed.
-    root.style.display = this.visible ? "" : "none";
+      "position:fixed;top:12px;right:12px;z-index:40;width:300px;max-height:calc(100vh - 24px);overflow:auto;overscroll-behavior:contain;contain:layout style paint;transition:none";
     document.body.appendChild(root);
     this.#root = root;
+    // Honor current visibility in case "/" was toggled off before the shell landed.
+    this.#applyRootVisibility();
 
     const search = document.createElement("input");
     search.type = "search";

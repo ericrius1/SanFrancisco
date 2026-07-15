@@ -3,9 +3,10 @@ import { INPUT_TUNING } from "../config";
 
 /**
  * Pointer-lock game input. Clicking the canvas captures the mouse; mouselook
- * deltas accumulate only while locked. Escape release is an input-layer
- * invariant; main.ts separately decides which overlay Escape dismisses. The
- * game keeps simulating while unlocked. While `suspended` (camera-orbit mode)
+ * deltas accumulate only while locked. Escape is left to the browser's native
+ * pointer-lock exit — this layer only syncs via `pointerlockchange`. Tap
+ * Command/Meta (alone) toggles free-cursor controls vs pointer-lock controls.
+ * The game keeps simulating while unlocked. While `suspended` (camera-orbit mode)
  * all game inputs read as idle so the player coasts. Global holds that must
  * still work there (Z time-scrub, N look/speed) use `holding()` instead of `down()`.
  *
@@ -121,18 +122,16 @@ export class Input {
   #wantLocked = false;
   /** Invalidates rejected/late request promises without touching a newer gesture. */
   #lockRequestGeneration = 0;
-  /** Escape owns the current key transaction; no callback may re-lock during it. */
-  #escapeHeld = false;
-  /** Prevents a swallowed keyup from leaving pointer capture disabled forever. */
-  #escapeReleaseTimeout: number | null = null;
+  /** Lonely Meta tap (no chord) toggles free-cursor ↔ pointer-lock. */
+  #metaAlone = false;
   #suspended = false;
   #suspensionHolds = new Set<string>();
   padConnected = false;
   device: "kb" | "pad" = "kb";
 
-  // Hold Command/Meta to temporarily release the pointer and steer a free
-  // in-world cursor (mouseNDC is the live screen position, -1..1). Releasing
-  // Meta re-locks. While true, canvas presses feed the cursor, not re-lock.
+  // Command/Meta tap toggles this: free in-world cursor (mouseNDC is the live
+  // screen position, -1..1) vs pointer-lock mouselook. While true, canvas
+  // presses feed the cursor, not re-lock — tap Meta again to recapture.
   freeCursor = false;
   mouseNDCx = 0;
   mouseNDCy = 0;
@@ -188,20 +187,6 @@ export class Input {
   constructor(el: HTMLElement) {
     this.#el = el;
 
-    // This runs in capture phase and is registered before any UI is built.
-    // Focused fields and modals may consume Escape for their own close/clear
-    // behavior, but none of them may keep (or later restore) pointer lock.
-    window.addEventListener(
-      "keydown",
-      (e) => {
-        if (e.code === "Escape" || e.key === "Escape") {
-          this.#beginEscapeRelease();
-          this.releaseLock();
-        }
-      },
-      true
-    );
-
     window.addEventListener("keydown", (e) => {
       // typing into a DOM field (e.g. the "/" tuning panel) must not drive the game
       const t = e.target;
@@ -211,19 +196,12 @@ export class Input {
       // Alt+arrow is location history inside the game, not browser history.
       if (e.altKey && (e.code === "ArrowLeft" || e.code === "ArrowRight")) e.preventDefault();
       if (e.repeat) return;
-      // Any key with Command demonstrably up recovers a stale free cursor whose
-      // Meta keyup was lost (macOS) — heal then relock (keydown is a gesture).
-      // (never re-lock on Escape — Esc must always leave the cursor free)
-      if (this.freeCursor && !e.metaKey && !this.suspended) this.#endFreeCursor(e.code !== "Escape");
-      // Command/Meta held: drop pointer lock so a free cursor can roam the world
-      // and reach UI panels. Its keyup re-locks. Never fights the map/camera modes.
-      if ((e.code === "MetaLeft" || e.code === "MetaRight") && this.locked && !this.suspended && !this.freeCursor) {
-        this.freeCursor = true;
-        this.mouseNDCx = 0;
-        this.mouseNDCy = 0;
-        this.fireHeld = false;
-        this.onFreeCursorChange(true);
-        document.exitPointerLock();
+      // Lonely Meta tap toggles free-cursor; any other key while Meta is down is a chord
+      // (Cmd+C, etc.) and must not flip the mode.
+      if (e.code === "MetaLeft" || e.code === "MetaRight") {
+        this.#metaAlone = true;
+      } else if (e.metaKey) {
+        this.#metaAlone = false;
       }
       this.keys.add(e.code);
       this.#justPressed.add(e.code);
@@ -238,41 +216,35 @@ export class Input {
       "keyup",
       (e) => {
         this.keys.delete(e.code);
-        if (e.code === "Escape" || e.key === "Escape") {
-          // Chrome/Firefox may reserve the locked keydown for browser UI yet
-          // deliver keyup while the pointer is still captured. Treat either
-          // phase as authoritative, and keep re-lock blocked through the rest
-          // of this event's propagation.
-          this.#beginEscapeRelease();
-          this.releaseLock();
-          queueMicrotask(() => {
-            this.#endEscapeRelease();
-          });
+        if (e.code === "MetaLeft" || e.code === "MetaRight") {
+          const t = e.target;
+          const typing = t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement;
+          if (this.#metaAlone && !this.suspended && !typing) this.#toggleFreeCursor();
+          this.#metaAlone = false;
         }
-        if ((e.code === "MetaLeft" || e.code === "MetaRight") && this.freeCursor) this.#endFreeCursor(true);
       },
       true
     );
     window.addEventListener("blur", () => {
       this.keys.clear();
       this.fireHeld = false;
-      this.#endEscapeRelease();
-      // Focus loss can swallow keyup and browser-owned Escape events. Make it an
-      // authoritative release too; the next fresh canvas press may recapture.
-      this.releaseLock();
+      this.#metaAlone = false;
+      // Drop capture on focus loss; free-cursor mode is sticky until Meta toggles it.
+      this.#lockRequestGeneration++;
+      this.#wantLocked = false;
+      document.exitPointerLock();
     });
 
     document.addEventListener("pointerlockchange", () => {
       const nowLocked = document.pointerLockElement === el;
-      // The browser is the authority on release. It may consume Escape before
-      // the page receives a key event, so every observed unlock must also cancel
-      // all earlier request intent. Only a later, explicit gesture may set it.
+      // The browser is the authority on release (including native Escape exit).
+      // Cancel earlier request intent; only a later, explicit gesture may set it.
       if (!nowLocked) {
         this.#lockRequestGeneration++;
         this.#wantLocked = false;
       }
-      // A grant that lands after releaseLock() (Esc during an in-flight
-      // requestLock) is stale — drop it so Esc always wins.
+      // A grant that lands after releaseLock() (UI dismiss during an in-flight
+      // requestLock) is stale — drop it.
       if (nowLocked && !this.#wantLocked) {
         document.exitPointerLock();
         return;
@@ -285,14 +257,7 @@ export class Input {
     el.addEventListener("mousedown", (e) => {
       if (e.button !== 0) return;
       if (this.suspended) return;
-      // Command released but its keyup never arrived (macOS Chrome swallows the
-      // Meta keyup behind system shortcuts / Mission Control) — this new press's
-      // metaKey is authoritative, so drop the stale free cursor and recapture.
-      if (this.freeCursor && !e.metaKey) {
-        this.#endFreeCursor(true);
-        return;
-      }
-      // Capture on the fresh press, never on click: if Escape releases while a
+      // Capture on the fresh press, never on click: if the browser releases while a
       // button is held, that old pointer sequence's trailing mouse-up/click can
       // no longer undo the release.
       if (!this.locked && !this.freeCursor) {
@@ -329,9 +294,6 @@ export class Input {
         }
         if (this.locked) return;
       }
-      // stale free cursor (lost Meta keyup): metaKey is authoritative, so drop
-      // it here too — the next canvas press then relocks like it used to.
-      if (this.freeCursor && !e.metaKey) this.#endFreeCursor(false);
       // free cursor / unlocked: track the absolute pointer as NDC (-1..1)
       this.mouseNDCx = (e.clientX / window.innerWidth) * 2 - 1;
       this.mouseNDCy = -((e.clientY / window.innerHeight) * 2 - 1);
@@ -358,23 +320,6 @@ export class Input {
     this.device = device;
     lastInputDevice = device;
     this.onDeviceChange(device);
-  }
-
-  #beginEscapeRelease() {
-    this.#escapeHeld = true;
-    if (this.#escapeReleaseTimeout !== null) window.clearTimeout(this.#escapeReleaseTimeout);
-    // Some browser/OS paths swallow keyup without blurring the page. Keep the
-    // barrier long enough to cover async UI callbacks, then recover click-to-lock.
-    this.#escapeReleaseTimeout = window.setTimeout(() => {
-      this.#escapeHeld = false;
-      this.#escapeReleaseTimeout = null;
-    }, 1500);
-  }
-
-  #endEscapeRelease() {
-    this.#escapeHeld = false;
-    if (this.#escapeReleaseTimeout !== null) window.clearTimeout(this.#escapeReleaseTimeout);
-    this.#escapeReleaseTimeout = null;
   }
 
   /** Per-mode pad routing: fly → ↑/↓ throttle, bird → LB/RB twirl, drone → Q/U vertical. */
@@ -538,6 +483,21 @@ export class Input {
     return this.#mapPadAxes;
   }
 
+  #toggleFreeCursor() {
+    if (this.freeCursor) {
+      this.#endFreeCursor(true);
+      return;
+    }
+    this.freeCursor = true;
+    this.mouseNDCx = 0;
+    this.mouseNDCy = 0;
+    this.fireHeld = false;
+    this.#lockRequestGeneration++;
+    this.#wantLocked = false;
+    this.onFreeCursorChange(true);
+    document.exitPointerLock();
+  }
+
   #endFreeCursor(relock: boolean) {
     this.freeCursor = false;
     this.onFreeCursorChange(false);
@@ -545,13 +505,8 @@ export class Input {
   }
 
   requestLock() {
-    // Escape dominates the entire key transaction, including UI blur/toggle
-    // callbacks that run later during the same event propagation.
-    if (this.#escapeHeld) {
-      this.#lockRequestGeneration++;
-      this.#wantLocked = false;
-      return;
-    }
+    // Free-cursor mode owns the pointer until Meta toggles it off.
+    if (this.freeCursor) return;
     const generation = ++this.#lockRequestGeneration;
     this.#wantLocked = true;
     // Chrome returns a promise and rejects during the post-Esc cooldown —
@@ -571,11 +526,10 @@ export class Input {
   releaseLock() {
     // Unconditional: `this.locked` lags reality (pointerlockchange is async) and
     // a pending requestLock grant may still be in flight — clearing the intent
-    // flag makes the pointerlockchange handler drop that late grant too. End a
-    // temporary Command cursor as well, otherwise its later keyup could re-lock.
+    // flag makes the pointerlockchange handler drop that late grant too.
+    // Free-cursor mode stays sticky (Meta toggles it); this only drops capture.
     this.#lockRequestGeneration++;
     this.#wantLocked = false;
-    if (this.freeCursor) this.#endFreeCursor(false);
     document.exitPointerLock();
   }
 

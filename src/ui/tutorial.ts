@@ -69,7 +69,7 @@ const CHAPTERS: Chapter[] = [
         keys: ["Mouse"],
         action: "Move",
         text: "to look around",
-        hint: "click the city first if the cursor is loose — Esc lets it go",
+        hint: "click the city first if the cursor is loose — Esc or ⌘ lets it go",
         check: (c, _dt, st) => (st.n += c.mouseDelta()) / 400
       },
       {
