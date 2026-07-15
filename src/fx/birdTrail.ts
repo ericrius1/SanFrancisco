@@ -175,8 +175,8 @@ const DELTA = new THREE.Vector3();
 
 /**
  * Phoenix tail trails: one LightRibbon per outer tail streamer. The anchors
- * are Object3Ds dressPhoenix parents onto the tail05 bone (they resolve only
- * once the GLB loads), so the emit points ride the full procedural tail dance
+ * are authored GLB attachment nodes parented to tail05 (they resolve only once
+ * the hero loads), so the emit points ride the full procedural tail dance
  * — flare, ripple, bank-curl — for free. Points shed by distance the tip
  * itself travels, so a tail whip packs the ribbon exactly where the motion
  * was; hovering (below MIN_SPEED) lets the trail burn out.

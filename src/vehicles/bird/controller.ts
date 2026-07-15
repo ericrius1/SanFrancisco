@@ -4,7 +4,7 @@ import { waterHeight } from "../../world/heightmap";
 import type { Input } from "../../core/input";
 import type { ModeController, ModeFrame, PlayerCtx } from "../../player/types";
 import { poseBone, type BirdRig } from "./mesh";
-import { featherWind } from "./wind";
+import { featherAirspeed, featherBeat, featherWind } from "./wind";
 import { BIRD_TUNING } from "./tuning";
 import { TYPICAL_TREE_HEIGHT } from "../shared";
 
@@ -237,6 +237,8 @@ export class BirdController implements ModeController {
     poseBone(r.handL, feather, fold * 0.6, tip);
     poseBone(r.handR, feather, -fold * 0.6, -tip);
     featherWind.value = Math.min(1, 0.2 + sn * 0.45 + pow * 0.3);
+    featherAirspeed.value = THREE.MathUtils.clamp(this.#speedVis / 42, 0, 1);
+    featherBeat.value = tip * drive;
 
     // chest rocks against the downstroke
     poseBone(r.chest, Math.sin(this.#flapPhase - 0.4) * 0.05 * pow, 0, 0);
