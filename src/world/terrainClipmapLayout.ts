@@ -66,6 +66,27 @@ export function createTerrainClipmapLayout(): readonly TerrainClipmapLevelLayout
   });
 }
 
+/**
+ * Full-resolution source-grid centre used for a direct A/B comparison with the
+ * adaptive 1/2/4 m inner levels. It replaces levels 0–3 with one 8 m mesh while
+ * retaining the ordinary 16/32/64 m outer rings.
+ */
+export function createTerrainClipmapSourceGridCenter(): TerrainClipmapLevelLayout {
+  const level = 3;
+  const spacing = TERRAIN_CLIPMAP_SPACINGS[level];
+  return {
+    level,
+    spacing,
+    halfExtent: (TERRAIN_CLIPMAP_GRID_CELLS * spacing) / 2,
+    sourceLod: 0,
+    patches: FINE_PATCHES,
+    triangles: FINE_PATCHES.reduce(
+      (sum, patch) => sum + patch.widthCells * patch.depthCells * 2,
+      0
+    )
+  };
+}
+
 export function terrainClipmapTriangleCount(
   layout: readonly TerrainClipmapLevelLayout[] = createTerrainClipmapLayout()
 ): number {

@@ -22,6 +22,7 @@ import {
 import type { WorldMap } from "./heightmap";
 import {
   createTerrainClipmapLayout,
+  createTerrainClipmapSourceGridCenter,
   terrainClipmapCenter,
   terrainClipmapTriangleCount,
   terrainClipmapVertexCount,
@@ -74,6 +75,8 @@ export type TerrainClipmapStats = {
   vertices: number;
   triangles: number;
   nearSpacing: number;
+  activeNearSpacing: number;
+  adaptiveMeterMesh: boolean;
   farSpacing: number;
   coverageRadius: number;
   centerX: number;
@@ -400,6 +403,7 @@ export class TerrainClipmap {
 
   readonly #layout = createTerrainClipmapLayout();
   readonly #levelMeshes: TerrainLevelMesh[] = [];
+  readonly #sourceGridCenter: TerrainLevelMesh;
   readonly #materials: THREE.MeshStandardNodeMaterial[] = [];
   readonly #height: HeightTextureData;
   readonly #surface: { texture: THREE.DataTexture; bytes: number };
@@ -424,6 +428,7 @@ export class TerrainClipmap {
   #geometryBytes = 0;
   #centerX = Number.NaN;
   #centerZ = Number.NaN;
+  #adaptiveMeterMesh = TERRAIN_CLIPMAP_TUNING.values.adaptiveMeterMesh;
 
   constructor(map: WorldMap) {
     const buildStarted = performance.now();
@@ -446,6 +451,20 @@ export class TerrainClipmap {
       this.#levelMeshes.push({ mesh, geometry, level });
       this.group.add(mesh);
     }
+    // Keep an 8 m source-lattice centre resident for an instantaneous visual
+    // A/B. Only this mesh or the adaptive 1/2/4/8 m inner levels is visible at
+    // once, so the comparison changes real topology without recompiling TSL.
+    const sourceGridLevel = createTerrainClipmapSourceGridCenter();
+    const sourceGridGeometry = createLevelGeometry(sourceGridLevel);
+    this.#geometryBytes += sourceGridGeometry.getAttribute("position").array.byteLength;
+    this.#geometryBytes += sourceGridGeometry.index?.array.byteLength ?? 0;
+    const sourceGridMesh = new THREE.Mesh(sourceGridGeometry, this.#materials[sourceGridLevel.level]);
+    sourceGridMesh.name = "terrainClipmapSourceGridCenter";
+    sourceGridMesh.receiveShadow = true;
+    sourceGridMesh.castShadow = false;
+    sourceGridMesh.visible = false;
+    this.#sourceGridCenter = { mesh: sourceGridMesh, geometry: sourceGridGeometry, level: sourceGridLevel };
+    this.group.add(sourceGridMesh);
     this.#buildMs = performance.now() - buildStarted;
   }
 
@@ -669,7 +688,7 @@ export class TerrainClipmap {
     this.#centerZ = centerZ;
     this.#center.value.set(centerX, centerZ);
 
-    for (const entry of this.#levelMeshes) {
+    for (const entry of [...this.#levelMeshes, this.#sourceGridCenter]) {
       const halfExtent = entry.level.halfExtent;
       entry.mesh.position.set(centerX, 0, centerZ);
       const bounds = this.#bounds.query(
@@ -678,7 +697,11 @@ export class TerrainClipmap {
         centerZ - halfExtent,
         centerZ + halfExtent
       );
-      entry.mesh.visible = bounds !== null;
+      const isSourceGridCenter = entry === this.#sourceGridCenter;
+      const hiddenAdaptiveInnerLevel = !this.#adaptiveMeterMesh && entry.level.level <= 3;
+      entry.mesh.visible = bounds !== null && (
+        isSourceGridCenter ? !this.#adaptiveMeterMesh : !hiddenAdaptiveInnerLevel
+      );
       if (!bounds) continue;
       const box = entry.geometry.boundingBox ?? new THREE.Box3();
       box.min.set(-halfExtent, bounds.min, -halfExtent);
@@ -690,10 +713,20 @@ export class TerrainClipmap {
   }
 
   applyTuning(): void {
+    this.setAdaptiveMeterMesh(TERRAIN_CLIPMAP_TUNING.values.adaptiveMeterMesh);
     this.#morphBand.value = TERRAIN_CLIPMAP_TUNING.values.morphBand;
     this.#macroVariation.value = TERRAIN_CLIPMAP_TUNING.values.macroVariation;
     this.#microVariation.value = TERRAIN_CLIPMAP_TUNING.values.microVariation;
     this.setLevelDebug(TERRAIN_CLIPMAP_TUNING.values.debugLevels);
+  }
+
+  /** Switch between the adaptive 1 m near mesh and a direct 8 m source-grid mesh. */
+  setAdaptiveMeterMesh(enabled: boolean): void {
+    if (enabled === this.#adaptiveMeterMesh) return;
+    this.#adaptiveMeterMesh = enabled;
+    if (Number.isFinite(this.#centerX) && Number.isFinite(this.#centerZ)) {
+      this.update(this.#centerX, this.#centerZ, true);
+    }
   }
 
   /** Runtime/probe override; persisted UI changes still flow through applyTuning. */
@@ -709,6 +742,8 @@ export class TerrainClipmap {
       vertices: terrainClipmapVertexCount(this.#layout),
       triangles: terrainClipmapTriangleCount(this.#layout),
       nearSpacing: this.#layout[0].spacing,
+      activeNearSpacing: this.#adaptiveMeterMesh ? this.#layout[0].spacing : this.#sourceGridCenter.level.spacing,
+      adaptiveMeterMesh: this.#adaptiveMeterMesh,
       farSpacing: this.#layout.at(-1)!.spacing,
       coverageRadius: this.#layout.at(-1)!.halfExtent,
       centerX: this.#centerX,
@@ -722,6 +757,7 @@ export class TerrainClipmap {
 
   dispose(): void {
     for (const entry of this.#levelMeshes) entry.geometry.dispose();
+    this.#sourceGridCenter.geometry.dispose();
     for (const material of this.#materials) material.dispose();
     this.#height.texture.dispose();
     this.#surface.texture.dispose();

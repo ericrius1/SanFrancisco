@@ -334,7 +334,7 @@ export class HUD {
           { c: ["T"], label: "chat" },
           { c: ["Tab"], label: "toggle UI" },
           { c: ["Esc"], label: "release mouse" },
-          { c: ["L"], label: "toggle free cursor" }
+          { c: ["L"], label: "pointer lock / free cursor" }
         ]
     const rows = allRows
       .map(

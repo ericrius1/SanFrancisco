@@ -6,6 +6,7 @@ import {
   TERRAIN_CLIPMAP_CENTER_SNAP,
   TERRAIN_CLIPMAP_GRID_CELLS,
   createTerrainClipmapLayout,
+  createTerrainClipmapSourceGridCenter,
   terrainClipmapCenter,
   terrainClipmapTriangleCount,
   terrainClipmapVertexCount
@@ -13,6 +14,7 @@ import {
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const layout = createTerrainClipmapLayout();
+const sourceGridCenter = createTerrainClipmapSourceGridCenter();
 
 assert.equal(layout.length, 7, "clipmap must retain seven nested levels");
 assert.equal(layout.flatMap((level) => level.patches).length, 28, "clipmap patch count changed");
@@ -20,6 +22,9 @@ assert.equal(terrainClipmapTriangleCount(layout), 180_224, "clipmap triangle bud
 assert.equal(terrainClipmapVertexCount(layout), 93_724, "clipmap vertex budget changed");
 assert.equal(layout[0].spacing, 1, "near terrain is no longer one-metre geometry");
 assert.equal(layout.at(-1).halfExtent, 4096, "clipmap coverage radius changed");
+assert.equal(sourceGridCenter.spacing, 8, "comparison centre must use the source lattice");
+assert.equal(sourceGridCenter.halfExtent, layout[3].halfExtent, "comparison centre must fill the 8 m ring");
+assert.equal(sourceGridCenter.triangles, 32_768, "comparison centre triangle budget changed");
 
 for (const level of layout) {
   const occupied = new Set();

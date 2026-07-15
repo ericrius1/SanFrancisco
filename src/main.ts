@@ -122,7 +122,7 @@ import { Satchel } from "./ui/satchel";
 import { HUD } from "./ui/hud";
 import { ShareButton } from "./ui/share";
 import { PauseToggle } from "./ui/pauseToggle";
-// BehindTheScenes is deferred (dynamic import after start is ready)
+// The launcher and reader are both dynamically deferred until after the core reveal.
 import { parseReadLink, openReadLink } from "./ui/deepLinks";
 import { Tutorial } from "./ui/tutorial";
 import { createRenderPipeline } from "./render/pipeline";
@@ -1629,7 +1629,7 @@ async function boot() {
   net.onGolf = (id, m) => golf?.handleNet(id, m, hud, net.roster.get(id)?.name ?? "Player");
   input.onLockChange = (locked) => {
     if (!locked && !inOrbit() && !input.freeCursor && !chat.focused) {
-      hud.message("Click to capture the mouse · Esc releases · L toggles free cursor", 2.8);
+      hud.message("Esc releases the mouse · L recaptures · L also toggles free cursor", 2.8);
     }
   };
   // passenger seat support: cars and scooters both publish a local seat anchor.
@@ -2211,11 +2211,10 @@ async function boot() {
   // Free the pointer lock while it's open so the cursor can reach the links.
   // While it's open the whole world stops rendering (see `btsReading` in tick)
   // and the frozen canvas dims a touch, so no live frames flicker behind the read.
-  // Esc-dismiss stays unlocked (click to capture); see Escape priority stack.
+  // Esc-dismiss stays unlocked (press L to recapture); see Escape priority stack.
   let btsReading = false;
-  // BehindTheScenes is built lazily. Both the deferred boot loader and a shared
-  // `?read=` link route through ensureBehindTheScenes so it's constructed exactly
-  // once, sharing one toggle.
+  // Both the post-reveal launcher and a shared `?read=` link route through this
+  // function so the optional reader chunk is fetched and constructed once.
   const onBtsToggle = (open: boolean) => {
     btsReading = open;
     app.classList.toggle("world-dimmed", open);
@@ -2229,11 +2228,32 @@ async function boot() {
   const ensureBehindTheScenes = (): Promise<void> => {
     if (behindTheScenes) return Promise.resolve();
     if (!btsCtor) {
-      btsCtor = import("./ui/behindTheScenes").then(({ BehindTheScenes }) => {
-        if (!behindTheScenes) behindTheScenes = new BehindTheScenes(onBtsToggle);
-      });
+      btsCtor = import("./ui/behindTheScenes")
+        .then(({ BehindTheScenes }) => {
+          if (!behindTheScenes) behindTheScenes = new BehindTheScenes(onBtsToggle);
+        })
+        .catch((error) => {
+          btsCtor = null;
+          throw error;
+        });
     }
     return btsCtor;
+  };
+  let btsLauncherMounted = false;
+  const mountBehindTheScenesLauncher = async () => {
+    if (btsLauncherMounted) return;
+    btsLauncherMounted = true;
+    const { BehindTheScenesLauncher } = await import("./ui/behindTheScenesLauncher");
+    new BehindTheScenesLauncher(
+      async () => {
+        await ensureBehindTheScenes();
+        behindTheScenes?.setOpen(true);
+      },
+      (error) => {
+        console.warn("[bts] reader load failed:", error);
+        hud.message("Behind the scenes couldn't load — please try again", 3.2);
+      }
+    );
   };
   // `?read=bts.<tab>` — a shared reading link. Drop straight into the panel with the
   // world still streaming behind it (no game entry, no name gate); closing it lands
@@ -2355,6 +2375,27 @@ async function boot() {
   let resolveRevealed!: () => void;
   const revealedPromise = new Promise<void>((r) => {
     resolveRevealed = r;
+  });
+  // Keep all Behind-the-scenes UI out of essential loading. After the visual +
+  // collision reveal, give the live world a quiet beat, then request only the
+  // tiny launcher during browser idle. The timeout guarantees it appears within
+  // a few seconds instead of waiting on optional garden/tree/golf completion.
+  // The reader itself waits for a click; its heavy chapters wait for their tabs.
+  void revealedPromise.then(async () => {
+    await new Promise<void>((resolve) => setTimeout(resolve, 2500));
+    await new Promise<void>((resolve) => {
+      if ("requestIdleCallback" in window) {
+        window.requestIdleCallback(() => resolve(), { timeout: 2000 });
+      } else {
+        setTimeout(resolve, 120);
+      }
+    });
+    try {
+      await mountBehindTheScenesLauncher();
+    } catch (error) {
+      btsLauncherMounted = false;
+      console.warn("[bts] deferred launcher load failed:", error);
+    }
   });
   // Expand from the fixed-quality local boot bubble to the normal city radius
   // only after the first view has had a quiet beat. Asset quality is unchanged;
@@ -3387,11 +3428,6 @@ async function boot() {
       wildlandsGolfReady
     ].filter(Boolean));
 
-    // BehindTheScenes: the "how it was made" reading overlay (built once; a
-    // ?read= link may have already constructed it — see ensureBehindTheScenes).
-    // Closing does not re-lock — Esc (and backdrop/close) leave the cursor free.
-    await ensureBehindTheScenes();
-
   })()
     .catch((err) => {
       if (!japaneseTeaGarden) restoreTeaGardenBuildings();
@@ -3455,13 +3491,13 @@ async function boot() {
     // keeps the player's name instead of minting a fresh fun one.
     if (autoStartSaved) {
       // no click to consume, so pointer lock has no gesture — startGame still
-      // requests it (a no-op if the browser declines; first click re-locks)
+      // requests it (a no-op if the browser declines; press L to recapture)
       bootScreen.startNow(devReload!.name);
       return;
     }
     if (autoEnter) {
       // Programmatic starts have no user gesture, so do not request pointer
-      // lock. The first canvas click can capture it normally when needed.
+      // lock. Press L once the world is up to capture the mouse.
       bootScreen.startNow(suggestedName, { lock: false });
       return;
     }
