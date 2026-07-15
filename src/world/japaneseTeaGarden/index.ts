@@ -2,6 +2,7 @@ import * as THREE from "three/webgpu";
 import type { NatureSoundscape } from "../../audio";
 import type { Physics } from "../../core/physics";
 import type { VoiceOutput } from "../../gameplay/agents/dialogue";
+import type { PaintWaterSegment } from "../../fx/paintball";
 import type { GardenRakeMotion, GardenRakeTool } from "../../player/gardenRake";
 import type { DebugFeatureTuningRegistration } from "../../ui/debug";
 import { createTeaGardenArchitecture } from "./architecture";
@@ -70,6 +71,15 @@ export type JapaneseTeaGardenDebugState = {
   distanceToGarden: number;
   water: TeaGardenWaterDebugState;
   waterInteractions: JapaneseTeaGardenWaterInteractions;
+  koi: {
+    total: number;
+    insideWater: number;
+    submerged: number;
+    minSubmersion: number;
+    tailStrokes: number;
+    wakeImpulses: number;
+    cadenceLimited: number;
+  };
   streamAudio: JapaneseTeaGardenStreamAudio["debugState"];
   dryLandscape: DryLandscapeDebugState;
   guide: TeaGardenGuideDebugState;
@@ -79,10 +89,25 @@ export type JapaneseTeaGardenWaterInteractions = {
   player: number;
   balls: number;
   koi: number;
+  paint: number;
   rejected: number;
   playerInWater: boolean;
   trackedBalls: number;
   surfaceKoi: number;
+  koiCadenceLimited: number;
+};
+
+export type TeaGardenPaintWaterImpact = {
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+  readonly velocityX: number;
+  readonly velocityY: number;
+  readonly velocityZ: number;
+  readonly r: number;
+  readonly g: number;
+  readonly b: number;
+  readonly shooter: number;
 };
 
 export type TeaGardenPlayerVelocity = {
@@ -128,6 +153,10 @@ export type JapaneseTeaGarden = {
   /** True when (x, z) is over an authored water feature (pond/stream). Lets the
    *  ball tool suppress its dry ground thud for a bounce on the pond bottom. */
   containsWater(x: number, z: number): boolean;
+  /** Turns a paintball surface crossing into a ripple plus advected GPU dye. */
+  paintWater(impact: TeaGardenPaintWaterImpact): boolean;
+  /** Finds and consumes the real water crossing before hidden terrain is hit. */
+  paintWaterSegment(segment: Readonly<PaintWaterSegment>): boolean;
   tuningDescriptor(): DebugFeatureTuningRegistration;
   dispose(): void;
   stats: JapaneseTeaGardenStats;
@@ -161,7 +190,8 @@ const PLAYER_FOOT_BELOW_CENTER = 0.9;
 const PLAYER_STEP_DISTANCE = 0.42;
 const PLAYER_FOOT_SPREAD = 0.17;
 const PLAYER_MAX_INTERACTION_SPEED = 9;
-const KOI_SURFACE_DEPTH = 0.13;
+const KOI_SURFACE_DEPTH = 0.17;
+const KOI_WAKE_MIN_INTERVAL = 0.1;
 
 type BallWaterTrack = {
   x: number;
@@ -176,7 +206,7 @@ type BallWaterTrack = {
 type KoiWaterTrack = {
   x: number;
   z: number;
-  pulse: number;
+  tailStroke: number;
 };
 
 /**
@@ -224,26 +254,95 @@ export function createJapaneseTeaGarden(
   let playerLastZ = 0;
   let playerStepTravel = 0;
   let playerFootSide = 1;
+  let koiUpdateTime = 0;
+  let nextKoiWakeTime = 0;
   const ballWaterTracks = new Map<number, BallWaterTrack>();
   const koiWaterTracks = new Map<number, KoiWaterTrack>();
   const waterInteractions: JapaneseTeaGardenWaterInteractions = {
     player: 0,
     balls: 0,
     koi: 0,
+    paint: 0,
     rejected: 0,
     playerInWater: false,
     trackedBalls: 0,
-    surfaceKoi: 0
+    surfaceKoi: 0,
+    koiCadenceLimited: 0
   };
 
   const queueInteraction = (
-    source: "player" | "balls" | "koi",
+    source: "player" | "balls" | "koi" | "paint",
     impulse: Parameters<typeof water.queueImpulse>[0]
   ): boolean => {
     const accepted = water.queueImpulse(impulse);
-    if (accepted) waterInteractions[source]++;
-    else waterInteractions.rejected++;
+    if (accepted) {
+      waterInteractions[source]++;
+      const horizontal = Math.hypot(impulse.velocityX ?? 0, impulse.velocityZ ?? 0);
+      const motion = THREE.MathUtils.clamp(horizontal / 1.35, 0, 1);
+      const foam = THREE.MathUtils.clamp((impulse.foam ?? 0) / 0.13, 0, 1);
+      const displacement = THREE.MathUtils.clamp(Math.abs(impulse.strength ?? 0) / 0.11, 0, 1);
+      const paintEnergy = THREE.MathUtils.clamp(((impulse.dye ?? 0.72) - 0.72) / 0.46, 0, 1);
+      const energy = source === "paint"
+        ? paintEnergy
+        : source === "balls"
+          ? THREE.MathUtils.clamp(0.18 + displacement * 0.55 + motion * 0.22, 0, 1)
+          : source === "player"
+            ? THREE.MathUtils.clamp(0.07 + displacement * 0.38 + motion * 0.18, 0, 0.72)
+            : THREE.MathUtils.clamp(0.035 + motion * 0.14 + foam * 0.08, 0, 0.3);
+      streamAudio.playRippleImpact({
+        kind: source === "player" ? "foot" : source === "balls" ? "ball" : source,
+        x: impulse.x,
+        y: water.surfaceY(impulse.x, impulse.z),
+        z: impulse.z,
+        energy,
+        rippleRadius: impulse.radius,
+        dyeAmount: source === "paint" ? impulse.dye : undefined,
+        dyeRadius: source === "paint" ? impulse.radius : undefined,
+        color: source === "paint"
+          ? { r: impulse.dyeR ?? 1, g: impulse.dyeG ?? 1, b: impulse.dyeB ?? 1 }
+          : undefined,
+        flow: motion,
+        turbulence: source === "paint"
+          ? energy * (0.55 + 0.45 * THREE.MathUtils.clamp((impulse.dye ?? 0) / 1.18, 0, 1))
+          : foam
+      });
+    } else {
+      waterInteractions.rejected++;
+    }
     return accepted;
+  };
+
+  const queuePaintWater = (
+    x: number,
+    z: number,
+    velocityX: number,
+    velocityY: number,
+    velocityZ: number,
+    r: number,
+    g: number,
+    b: number
+  ): boolean => {
+    if (disposed || !awake || !inTeaGardenWater(x, z)) return false;
+    const horizontalSpeed = Math.hypot(velocityX, velocityZ);
+    const totalSpeed = Math.hypot(horizontalSpeed, velocityY);
+    const energy = THREE.MathUtils.clamp(totalSpeed / 20, 0, 1);
+    const directionScale = horizontalSpeed > 1e-4 ? 1 / horizontalSpeed : 0;
+    queueInteraction("paint", {
+      x,
+      z,
+      radius: 0.48 + energy * 0.34,
+      strength: -(0.012 + energy * 0.024),
+      velocityX: velocityX * directionScale * Math.min(1.35, horizontalSpeed * 0.045),
+      velocityZ: velocityZ * directionScale * Math.min(1.35, horizontalSpeed * 0.045),
+      foam: 0.035 + energy * 0.095,
+      dyeR: r,
+      dyeG: g,
+      dyeB: b,
+      dye: 0.72 + energy * 0.46
+    });
+    // The Tea Garden owns every paint/water response even if the bounded GPU
+    // queue is saturated; never fall back to a decal on hidden terrain.
+    return true;
   };
 
   const updatePlayerWaterInteraction = (
@@ -354,6 +453,24 @@ export function createJapaneseTeaGarden(
           lastWakeZ: state.z,
           seenFrame: interactionFrame
         });
+        // A player wading through the coherent pond can release the ball with
+        // its lower hemisphere already under the surface. There is no prior
+        // sample to form a sign-changing crossing, so treat that first
+        // downward in-water frame as the entry instead of silently losing it.
+        if (currentInWater && surfaceDelta <= 0 && state.vy < -0.05) {
+          const horizontalSpeed = Math.hypot(state.vx, state.vz);
+          const totalSpeed = Math.hypot(horizontalSpeed, state.vy);
+          queueInteraction("balls", {
+            x: state.x,
+            z: state.z,
+            radius: THREE.MathUtils.clamp(0.75 + totalSpeed * 0.045, 0.75, 1.55),
+            strength: -THREE.MathUtils.clamp(0.045 + Math.abs(state.vy) * 0.008, 0.045, 0.11),
+            velocityX: THREE.MathUtils.clamp(state.vx * 0.32, -3.2, 3.2),
+            velocityZ: THREE.MathUtils.clamp(state.vz * 0.32, -3.2, 3.2),
+            foam: THREE.MathUtils.clamp(0.18 + totalSpeed * 0.028, 0.18, 0.55)
+          });
+          options.onBallWaterImpact?.(state.x, surface, state.z, totalSpeed);
+        }
         return;
       }
 
@@ -424,32 +541,45 @@ export function createJapaneseTeaGarden(
     z: number,
     velocityX: number,
     velocityZ: number,
-    depth: number
+    depth: number,
+    tailStroke: number,
+    tailSide: number
   ) => {
     if (depth > KOI_SURFACE_DEPTH || !inTeaGardenWater(x, z)) return;
     waterInteractions.surfaceKoi++;
     const track = koiWaterTracks.get(id);
     if (!track) {
-      koiWaterTracks.set(id, { x, z, pulse: id & 1 });
+      koiWaterTracks.set(id, { x, z, tailStroke });
       return;
     }
-    if (Math.hypot(x - track.x, z - track.z) < 0.3) return;
+    track.x = x;
+    track.z = z;
+    if (track.tailStroke === tailStroke) return;
+    track.tailStroke = tailStroke;
+    if (koiUpdateTime < nextKoiWakeTime) {
+      waterInteractions.koiCadenceLimited++;
+      return;
+    }
     const speed = Math.hypot(velocityX, velocityZ);
     const directionX = speed > 1e-4 ? velocityX / speed : 0;
     const directionZ = speed > 1e-4 ? velocityZ / speed : 0;
-    const side = track.pulse & 1 ? 1 : -1;
+    const energy = THREE.MathUtils.clamp(speed / 1.2, 0, 1);
+    let wakeX = x - directionX * 0.24 - directionZ * tailSide * 0.055;
+    let wakeZ = z - directionZ * 0.24 + directionX * tailSide * 0.055;
+    if (!inTeaGardenWater(wakeX, wakeZ)) {
+      wakeX = x;
+      wakeZ = z;
+    }
+    nextKoiWakeTime = koiUpdateTime + KOI_WAKE_MIN_INTERVAL;
     queueInteraction("koi", {
-      x: x - directionX * 0.2 - directionZ * side * 0.055,
-      z: z - directionZ * 0.2 + directionX * side * 0.055,
-      radius: 0.27,
-      strength: side > 0 ? -0.011 : 0.008,
-      velocityX: velocityX * 0.38,
-      velocityZ: velocityZ * 0.38,
-      foam: 0.015
+      x: wakeX,
+      z: wakeZ,
+      radius: 0.24 + energy * 0.06,
+      strength: tailSide > 0 ? -(0.006 + energy * 0.003) : 0.004 + energy * 0.002,
+      velocityX: velocityX * (0.38 + energy * 0.1),
+      velocityZ: velocityZ * (0.38 + energy * 0.1),
+      foam: 0.008 + energy * 0.004
     });
-    track.x = x;
-    track.z = z;
-    track.pulse++;
   };
 
   const stats: JapaneseTeaGardenStats = {
@@ -477,6 +607,7 @@ export function createJapaneseTeaGarden(
     waterInteractions.playerInWater = false;
     waterInteractions.trackedBalls = 0;
     waterInteractions.surfaceKoi = 0;
+    nextKoiWakeTime = 0;
     ballWaterTracks.clear();
     koiWaterTracks.clear();
   };
@@ -515,6 +646,7 @@ export function createJapaneseTeaGarden(
       updatePlayerWaterInteraction(player, mode, velocity);
       updateBallWaterInteractions();
       waterInteractions.surfaceKoi = 0;
+      koiUpdateTime = time;
       architecture.update(time, visitKoi);
       water.update(dt, time, player);
       dryLandscape.update(dt, time, player, mode);
@@ -531,6 +663,66 @@ export function createJapaneseTeaGarden(
     },
     containsWater(x: number, z: number): boolean {
       return inTeaGardenWater(x, z);
+    },
+    paintWater(impact: TeaGardenPaintWaterImpact): boolean {
+      return queuePaintWater(
+        impact.x,
+        impact.z,
+        impact.velocityX,
+        impact.velocityY,
+        impact.velocityZ,
+        impact.r,
+        impact.g,
+        impact.b
+      );
+    },
+    paintWaterSegment(segment: Readonly<PaintWaterSegment>): boolean {
+      if (disposed || !awake) return false;
+      const startSurface = water.surfaceY(segment.fromX, segment.fromZ);
+      const endSurface = water.surfaceY(segment.toX, segment.toZ);
+      const startWet = inTeaGardenWater(segment.fromX, segment.fromZ);
+      const endWet = inTeaGardenWater(segment.toX, segment.toZ);
+      const startDelta = segment.fromY - startSurface;
+      const endDelta = segment.toY - endSurface;
+      let crossingT = -1;
+
+      if (startWet && startDelta <= 0) {
+        crossingT = 0;
+      } else if (startDelta > 0 && endDelta <= 0) {
+        const candidate = THREE.MathUtils.clamp(startDelta / (startDelta - endDelta), 0, 1);
+        const candidateX = THREE.MathUtils.lerp(segment.fromX, segment.toX, candidate);
+        const candidateZ = THREE.MathUtils.lerp(segment.fromZ, segment.toZ, candidate);
+        if (inTeaGardenWater(candidateX, candidateZ)) crossingT = candidate;
+      }
+
+      if (crossingT < 0 && endWet && endDelta <= 0) {
+        // The step entered the horizontal mask after it was already beneath the
+        // surface. Bisect the combined mask/height predicate so the response is
+        // placed at the earliest wet point, not at the hidden terrain hit.
+        let lo = 0;
+        let hi = 1;
+        for (let i = 0; i < 7; i++) {
+          const mid = (lo + hi) * 0.5;
+          const x = THREE.MathUtils.lerp(segment.fromX, segment.toX, mid);
+          const y = THREE.MathUtils.lerp(segment.fromY, segment.toY, mid);
+          const z = THREE.MathUtils.lerp(segment.fromZ, segment.toZ, mid);
+          if (inTeaGardenWater(x, z) && y <= water.surfaceY(x, z)) hi = mid;
+          else lo = mid;
+        }
+        crossingT = hi;
+      }
+
+      if (crossingT < 0) return false;
+      return queuePaintWater(
+        THREE.MathUtils.lerp(segment.fromX, segment.toX, crossingT),
+        THREE.MathUtils.lerp(segment.fromZ, segment.toZ, crossingT),
+        segment.velocityX,
+        segment.velocityY,
+        segment.velocityZ,
+        segment.r,
+        segment.g,
+        segment.b
+      );
     },
     tuningDescriptor() {
       return {
@@ -570,6 +762,15 @@ export function createJapaneseTeaGarden(
         distanceToGarden,
         water: water.debugState(),
         waterInteractions: { ...waterInteractions },
+        koi: {
+          total: architecture.stats.koi,
+          insideWater: architecture.stats.koiInWater,
+          submerged: architecture.stats.koiSubmerged,
+          minSubmersion: architecture.stats.koiMinSubmersion,
+          tailStrokes: architecture.stats.koiTailStrokes,
+          wakeImpulses: waterInteractions.koi,
+          cadenceLimited: waterInteractions.koiCadenceLimited
+        },
         streamAudio: streamAudio.debugState,
         dryLandscape: dryLandscape.debugState(),
         guide: guide.debugState()

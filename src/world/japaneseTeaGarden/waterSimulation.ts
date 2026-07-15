@@ -3,8 +3,10 @@ import {
   Fn,
   cameraViewMatrix,
   clamp,
+  cos,
   exp,
   float,
+  floor,
   instancedArray,
   instanceIndex,
   mix,
@@ -62,6 +64,9 @@ const MAX_SIM_SPEED = 2.4;
 const MIN_SIM_DEPTH = 0.08;
 const MAX_QUEUED_IMPULSES = 64;
 const MAX_IMPULSES_PER_DISPATCH = 24;
+const DYE_ADVECTION_STEPS = 2;
+const DYE_MAX_ACTIVE_SECONDS = 90;
+const MAX_DYE_CONCENTRATION = 1.25;
 const BANK_INSET = 0.58;
 const BANK_WIDTH = 0.72;
 const WATER_LIFT = 0.22;
@@ -77,6 +82,7 @@ const WATER_TUNING = tunables("teaGarden.waterSimulation", {
   pressure: { v: 5.2, min: 0.2, max: 12, step: 0.1, label: "gravity / wave speed" },
   viscosity: { v: 0.42, min: 0, max: 4, step: 0.02, label: "viscosity" },
   damping: { v: 0.32, min: 0.01, max: 2.5, step: 0.01, label: "wave damping" },
+  shoreDamping: { v: 1.15, min: 0, max: 4, step: 0.02, label: "shore wave absorption" },
   vorticity: { v: 0.68, min: 0, max: 4, step: 0.02, label: "eddy strength" },
   substeps: { v: 2, min: 1, max: 4, step: 1, label: "solver substeps" },
   rockSlip: { v: 0.76, min: 0, max: 1, step: 0.01, label: "rock slip" },
@@ -91,6 +97,11 @@ const WATER_TUNING = tunables("teaGarden.waterSimulation", {
   streak: { v: 0.07, min: 0, max: 1.5, step: 0.01, label: "ink-flow streaks" },
   foam: { v: 0.56, min: 0, max: 2, step: 0.01, label: "foam / eddies" },
   opacity: { v: 0.92, min: 0.45, max: 1, step: 0.01, label: "water opacity" },
+  dyeSpread: { v: 0.075, min: 0, max: 0.4, step: 0.005, label: "paint diffusion" },
+  dyePersistence: { v: 20, min: 4, max: 60, step: 1, label: "paint persistence (s)" },
+  dyeSwirl: { v: 0.72, min: 0, max: 1.5, step: 0.01, label: "fey paint swirl" },
+  dyeOpacity: { v: 0.86, min: 0, max: 1.5, step: 0.01, label: "paint saturation" },
+  dyeGlow: { v: 0.62, min: 0, max: 2, step: 0.01, label: "paint edge glow" },
   palette: {
     v: "celadon-dusk",
     options: {
@@ -112,7 +123,7 @@ const WATER_TUNING_FOLDERS: readonly {
 }[] = [
   {
     title: "shallow-water field",
-    keys: ["enabled", "flow", "depth", "pressure", "viscosity", "damping", "vorticity", "substeps", "rockSlip"]
+    keys: ["enabled", "flow", "depth", "pressure", "viscosity", "damping", "shoreDamping", "vorticity", "substeps", "rockSlip"]
   },
   {
     title: "interaction ripples",
@@ -121,6 +132,10 @@ const WATER_TUNING_FOLDERS: readonly {
   {
     title: "celadon surface",
     keys: ["relief", "normal", "waveContrast", "ripple", "streak", "foam", "opacity", "palette"]
+  },
+  {
+    title: "fey paint dye",
+    keys: ["dyeSpread", "dyePersistence", "dyeSwirl", "dyeOpacity", "dyeGlow"]
   }
 ];
 
@@ -194,6 +209,11 @@ export type TeaGardenWaterImpulse = {
   velocityX?: number;
   velocityZ?: number;
   foam?: number;
+  /** Premultiplied-color dye payload. Omitted for ordinary wakes. */
+  dyeR?: number;
+  dyeG?: number;
+  dyeB?: number;
+  dye?: number;
 };
 
 export type TeaGardenWaterSimulationStats = {
@@ -215,6 +235,12 @@ export type TeaGardenWaterSimulationStats = {
   queuedImpulses: number;
   impulses: number;
   totalImpulses: number;
+  dyeImpulses: number;
+  totalDyeImpulses: number;
+  dyeRunning: boolean;
+  dyeDispatches: number;
+  totalDyeDispatches: number;
+  dyeSecondsRemaining: number;
   droppedImpulses: number;
   cfl: number;
   revision: number;
@@ -630,17 +656,40 @@ export function createTeaGardenWaterSimulation(
   const centerZ = (bounds.minZ + bounds.maxZ) * 0.5;
   const cellSizeX = (bounds.maxX - bounds.minX) / (GRID_WIDTH - 1);
   const cellSizeZ = (bounds.maxZ - bounds.minZ) / (GRID_HEIGHT - 1);
-  const pondSurfaceY = samplePondSurfaceLevel(map);
+  let pondSurfaceY = samplePondSurfaceLevel(map);
+
+  // Find one shared vertical offset that clears the terrain across the complete
+  // authored water body. The previous per-cell max() inherited buried terrain
+  // humps, making the nominally level pond look like paint was landing on ice.
+  // A single offset keeps the pond planar and the stream continuously graded.
+  let requiredSurfaceLift = 0;
+  for (let gz = 0; gz < GRID_HEIGHT; gz++) {
+    const worldZ = bounds.minZ + gz * cellSizeZ;
+    for (let gx = 0; gx < GRID_WIDTH; gx++) {
+      const worldX = bounds.minX + gx * cellSizeX;
+      if (!insideWaterFeature(worldX, worldZ)) continue;
+      const authored = pointInTeaGardenPolygon(worldX, worldZ, SOUTH_POND_OUTLINE)
+        ? pondSurfaceY
+        : pondSurfaceY + TEA_GARDEN_WATER_DROP * (1 - smoothstep01(nearestFlowSample(worldX, worldZ).progress));
+      requiredSurfaceLift = Math.max(
+        requiredSurfaceLift,
+        map.groundTop(worldX, worldZ) + WATER_LIFT - authored
+      );
+    }
+  }
+  pondSurfaceY += Math.max(0, requiredSurfaceLift);
   const upstreamSurfaceY = pondSurfaceY + TEA_GARDEN_WATER_DROP;
 
   const surfaceY = (x: number, z: number): number => {
     const authored = pointInTeaGardenPolygon(x, z, SOUTH_POND_OUTLINE)
       ? pondSurfaceY
       : pondSurfaceY + TEA_GARDEN_WATER_DROP * (1 - smoothstep01(nearestFlowSample(x, z).progress));
-    // The committed terrain has no carved pond basin. A dense per-cell
-    // clearance envelope keeps the unified surface above that terrain without
-    // resurrecting the old giant, terrain-crossing triangles.
-    return Math.max(authored, map.groundTop(x, z) + WATER_LIFT);
+    // The faint render band extends just outside the solver mask. Keep only that
+    // invisible fringe terrain-safe; every authored pond/stream cell shares the
+    // coherent level/grade above instead of draping over terrain.
+    return insideWaterFeature(x, z)
+      ? authored
+      : Math.max(authored, map.groundTop(x, z) + WATER_LIFT);
   };
 
   const positions = new Float32Array(CELL_COUNT * 3);
@@ -719,18 +768,28 @@ export function createTeaGardenWaterSimulation(
   const stateA = instancedArray(CELL_COUNT, "vec4");
   const stateB = instancedArray(CELL_COUNT, "vec4");
   const derivatives = instancedArray(CELL_COUNT, "vec4");
+  // Dye uses one aligned vec4 per cell: premultiplied linear RGB and scalar
+  // concentration. Two buffers keep advection free of in-place read/write
+  // hazards, and the field never leaves the GPU after an impulse upload.
+  const dyeA = instancedArray(CELL_COUNT, "vec4");
+  const dyeB = instancedArray(CELL_COUNT, "vec4");
   const impulseHeaderData = new Float32Array(MAX_IMPULSES_PER_DISPATCH * 4);
   const impulseMotionData = new Float32Array(MAX_IMPULSES_PER_DISPATCH * 4);
+  const impulseDyeData = new Float32Array(MAX_IMPULSES_PER_DISPATCH * 4);
   // header = (world x, world z, radius, signed height displacement)
   // motion = (x velocity, z velocity, foam, unused)
+  // dye = (linear red, green, blue, concentration)
   const impulseHeaders = instancedArray(impulseHeaderData, "vec4").toReadOnly();
   const impulseMotions = instancedArray(impulseMotionData, "vec4").toReadOnly();
+  const impulseDyes = instancedArray(impulseDyeData, "vec4").toReadOnly();
 
   const metadataRead = storage(metadata.value, "vec4", CELL_COUNT).toReadOnly();
   const guideRead = storage(guide.value, "vec4", CELL_COUNT).toReadOnly();
   const stateARead = storage(stateA.value, "vec4", CELL_COUNT).toReadOnly();
   const stateBRead = storage(stateB.value, "vec4", CELL_COUNT).toReadOnly();
   const derivativesRead = storage(derivatives.value, "vec4", CELL_COUNT).toReadOnly();
+  const dyeARead = storage(dyeA.value, "vec4", CELL_COUNT).toReadOnly();
+  const dyeBRead = storage(dyeB.value, "vec4", CELL_COUNT).toReadOnly();
   const impulseHeadersRead = storage(
     impulseHeaders.value,
     "vec4",
@@ -738,6 +797,11 @@ export function createTeaGardenWaterSimulation(
   ).toReadOnly();
   const impulseMotionsRead = storage(
     impulseMotions.value,
+    "vec4",
+    MAX_IMPULSES_PER_DISPATCH
+  ).toReadOnly();
+  const impulseDyesRead = storage(
+    impulseDyes.value,
     "vec4",
     MAX_IMPULSES_PER_DISPATCH
   ).toReadOnly();
@@ -749,6 +813,7 @@ export function createTeaGardenWaterSimulation(
   const pressureU = uniform(5.2);
   const viscosityU = uniform(0.42);
   const dampingU = uniform(0.32);
+  const shoreDampingU = uniform(1.15);
   const vorticityU = uniform(0.68);
   const rockSlipU = uniform(0.76);
   const maxSpeedU = uniform(MAX_SIM_SPEED);
@@ -762,6 +827,12 @@ export function createTeaGardenWaterSimulation(
   const streakU = uniform(0.07);
   const foamU = uniform(0.56);
   const opacityU = uniform(0.92);
+  const dyeStepDtU = uniform(FIXED_STEP / DYE_ADVECTION_STEPS);
+  const dyeSpreadU = uniform(0.075);
+  const dyePersistenceU = uniform(20);
+  const dyeSwirlU = uniform(0.72);
+  const dyeOpacityU = uniform(0.86);
+  const dyeGlowU = uniform(0.62);
   const deepColorU = uniform(new THREE.Color(WATER_PALETTES["celadon-dusk"].deep));
   const shallowColorU = uniform(new THREE.Color(WATER_PALETTES["celadon-dusk"].shallow));
   const streakColorU = uniform(new THREE.Color(WATER_PALETTES["celadon-dusk"].streak));
@@ -781,6 +852,13 @@ export function createTeaGardenWaterSimulation(
     stateA.element(instanceIndex).assign(value);
     stateB.element(instanceIndex).assign(value);
     derivatives.element(instanceIndex).assign(vec4(0));
+    dyeA.element(instanceIndex).assign(vec4(0));
+    dyeB.element(instanceIndex).assign(vec4(0));
+  })().compute(CELL_COUNT, [256]);
+
+  const clearDyeCompute = Fn(() => {
+    dyeA.element(instanceIndex).assign(vec4(0));
+    dyeB.element(instanceIndex).assign(vec4(0));
   })().compute(CELL_COUNT, [256]);
 
   // A zero-net-volume Mexican-hat displacement creates a crest and matching
@@ -796,13 +874,17 @@ export function createTeaGardenWaterSimulation(
     );
     const meta = metadataRead.element(instanceIndex);
     const value = stateA.element(instanceIndex);
+    const dyeValue = dyeA.element(instanceIndex);
     const heightDelta = float(0).toVar();
     const motionDelta = vec2(0).toVar();
     const foamDelta = float(0).toVar();
+    const dyeColorDelta = vec3(0).toVar();
+    const dyeConcentrationDelta = float(0).toVar();
 
     for (let i = 0; i < MAX_IMPULSES_PER_DISPATCH; i++) {
       const header = impulseHeadersRead.element(uint(i));
       const motion = impulseMotionsRead.element(uint(i));
+      const injectedDye = impulseDyesRead.element(uint(i));
       const enabled = select(uint(i).lessThan(impulseCountU), float(1), float(0));
       const offset = cell.sub(header.xy);
       const radius = header.z.max(Math.min(cellSizeX, cellSizeZ) * 1.5);
@@ -812,6 +894,40 @@ export function createTeaGardenWaterSimulation(
       heightDelta.addAssign(balancedWave.mul(header.w));
       motionDelta.addAssign(motion.xy.mul(envelope));
       foamDelta.addAssign(motion.z.mul(envelope));
+      // Momentum stretches the pigment into a compact teardrop at entry. This
+      // gives the advection pass a directional seed instead of a perfectly
+      // circular decal-like disk, while stationary/non-dye wakes retain the
+      // ordinary radial pressure envelope.
+      const motionSpeed = motion.xy.length();
+      const motionDirection = motion.xy.div(motionSpeed.max(1e-4));
+      const motionPerpendicular = vec2(motionDirection.y.negate(), motionDirection.x);
+      const dyeOffset = offset.sub(motionDirection.mul(radius).mul(0.18));
+      const dyeAlong = dyeOffset.dot(motionDirection).div(radius.mul(1.28));
+      const dyeAcross = dyeOffset.dot(motionPerpendicular).div(radius.mul(0.62));
+      const directionalRadiusSquared = dyeAlong.mul(dyeAlong).add(dyeAcross.mul(dyeAcross));
+      const dyeRadiusSquared = mix(
+        radiusSquared,
+        directionalRadiusSquared,
+        smoothstep(0.025, 0.18, motionSpeed)
+      );
+      const dyeEnvelope = exp(dyeRadiusSquared.mul(-2)).mul(enabled).mul(injectedDye.w);
+      // Color also chooses a gentle vortex handedness. The exact same hue
+      // changes the audio glass overtone, so visual curl and timbre feel like
+      // one magical material response rather than unrelated embellishments.
+      const dyeSpinSign = select(
+        injectedDye.r.add(injectedDye.g.mul(0.35)).greaterThan(injectedDye.b),
+        float(1),
+        float(-1)
+      );
+      const dyeSpin = vec2(offset.y.negate(), offset.x)
+        .div(radius)
+        .mul(envelope)
+        .mul(injectedDye.w)
+        .mul(dyeSpinSign)
+        .mul(0.52);
+      motionDelta.addAssign(dyeSpin);
+      dyeColorDelta.addAssign(injectedDye.rgb.mul(dyeEnvelope));
+      dyeConcentrationDelta.addAssign(dyeEnvelope);
     }
 
     const nextHeight = clamp(
@@ -830,6 +946,15 @@ export function createTeaGardenWaterSimulation(
       clamp(value.w.add(foamDelta), 0, 1)
     );
     value.assign(select(meta.x.greaterThan(0.5), next, vec4(0)));
+    const combinedDye = dyeValue.add(vec4(dyeColorDelta, dyeConcentrationDelta));
+    const concentrationScale = select(
+      combinedDye.w.greaterThan(MAX_DYE_CONCENTRATION),
+      float(MAX_DYE_CONCENTRATION).div(combinedDye.w.max(1e-5)),
+      float(1)
+    );
+    dyeValue.assign(
+      select(meta.x.greaterThan(0.5), combinedDye.mul(concentrationScale), vec4(0))
+    );
   })().compute(CELL_COUNT, [256]);
 
   const reflectedX = (value: any, slip: any) =>
@@ -947,7 +1072,17 @@ export function createTeaGardenWaterSimulation(
       const conservative = current.xyz
         .sub(fluxX(current, right).sub(fluxX(left, current)).mul(stepDtU.div(cellSizeX)))
         .sub(fluxZ(current, down).sub(fluxZ(up, current)).mul(stepDtU.div(cellSizeZ)));
-      const height = clamp(conservative.x, -MAX_SIM_HEIGHT, MAX_SIM_HEIGHT);
+      // A narrow sponge layer absorbs returning pressure waves at polygon banks
+      // and rock cut-outs. This keeps repeated impacts from building broad,
+      // stationary white rings along the old hard reflective boundary.
+      const shoreAbsorption = float(1).sub(smoothstep(0.1, 0.92, meta.w));
+      const height = clamp(
+        conservative.x.mul(
+          exp(shoreDampingU.mul(stepDtU).mul(shoreAbsorption).mul(-3.2))
+        ),
+        -MAX_SIM_HEIGHT,
+        MAX_SIM_HEIGHT
+      );
       const localDepth = depthU.add(height).max(MIN_SIM_DEPTH);
       const momentum = conservative.yz.toVar();
       const velocity = momentum.div(localDepth).toVar();
@@ -1002,7 +1137,12 @@ export function createTeaGardenWaterSimulation(
       momentum.y.assign(select(upActive, momentum.y, momentum.y.max(0)));
       momentum.y.assign(select(downActive, momentum.y, momentum.y.min(0)));
       momentum.mulAssign(
-        exp(dampingU.mul(stepDtU).mul(mix(float(1), float(1.45), meta.y)).negate())
+        exp(
+          dampingU.mul(mix(float(1), float(1.45), meta.y))
+            .add(shoreDampingU.mul(shoreAbsorption).mul(2.4))
+            .mul(stepDtU)
+            .negate()
+        )
       );
       const constrainedVelocity = momentum.div(localDepth);
       const speed = constrainedVelocity.length();
@@ -1040,6 +1180,93 @@ export function createTeaGardenWaterSimulation(
   const integrateBACompute = buildIntegrate(stateBRead, stateA);
   const solverGroup = [integrateABCompute, integrateBACompute];
 
+  // Stable semi-Lagrangian dye transport. Each fixed water tick runs two
+  // ping-pong half-steps, backtracing through the final evolved water velocity.
+  // The added curl is derived from a scalar stream function, so it is
+  // divergence-free: it teases pigment into fey filaments without creating or
+  // destroying dye mass through an artificial compressive force.
+  const buildDyeAdvect = (source: typeof dyeARead, destination: typeof dyeA) =>
+    Fn(() => {
+      const gx = instanceIndex.mod(uint(GRID_WIDTH));
+      const gz = instanceIndex.div(uint(GRID_WIDTH));
+      const meta = metadataRead.element(instanceIndex);
+      const waterState = stateARead.element(instanceIndex);
+      const waterVelocity = waterState.yz.div(depthU.add(waterState.x).max(MIN_SIM_DEPTH));
+      const worldX = float(gx).mul(cellSizeX).add(bounds.minX);
+      const worldZ = float(gz).mul(cellSizeZ).add(bounds.minZ);
+      const phaseX = worldX.mul(0.23).add(timeU.mul(0.11));
+      const phaseZ = worldZ.mul(0.19).sub(timeU.mul(0.09));
+      const broadCurl = vec2(
+        sin(phaseX).mul(cos(phaseZ)).mul(0.19),
+        cos(phaseX).mul(sin(phaseZ)).mul(-0.23)
+      );
+      const finePhaseX = worldX.mul(0.83).sub(timeU.mul(0.17));
+      const finePhaseZ = worldZ.mul(0.71).add(timeU.mul(0.15));
+      // This second stream-function curl is small enough to bend a single
+      // paint bloom into filaments. The paired .71/-.83 coefficients preserve
+      // zero divergence, so the magic changes shape without inventing mass.
+      const fineCurl = vec2(
+        sin(finePhaseX).mul(cos(finePhaseZ)).mul(0.71),
+        cos(finePhaseX).mul(sin(finePhaseZ)).mul(-0.83)
+      ).mul(0.62);
+      const feyCurl = broadCurl.add(fineCurl)
+        .mul(dyeSwirlU)
+        .mul(mix(float(0.72), float(1.18), meta.y));
+      const transportVelocity = waterVelocity.add(feyCurl);
+      const traced = clamp(
+        vec2(float(gx), float(gz)).sub(
+          transportVelocity.mul(dyeStepDtU).div(vec2(cellSizeX, cellSizeZ))
+        ),
+        vec2(0),
+        vec2(GRID_WIDTH - 1, GRID_HEIGHT - 1)
+      );
+      const baseCell = floor(traced);
+      const x0 = uint(baseCell.x);
+      const z0 = uint(baseCell.y);
+      const x1 = select(x0.lessThan(uint(GRID_WIDTH - 1)), x0.add(uint(1)), x0);
+      const z1 = select(z0.lessThan(uint(GRID_HEIGHT - 1)), z0.add(uint(1)), z0);
+      const fraction = traced.sub(baseCell);
+      const i00 = z0.mul(uint(GRID_WIDTH)).add(x0);
+      const i10 = z0.mul(uint(GRID_WIDTH)).add(x1);
+      const i01 = z1.mul(uint(GRID_WIDTH)).add(x0);
+      const i11 = z1.mul(uint(GRID_WIDTH)).add(x1);
+      const sampled = mix(
+        mix(source.element(i00), source.element(i10), fraction.x),
+        mix(source.element(i01), source.element(i11), fraction.x),
+        fraction.y
+      );
+
+      const leftIndex = select(gx.greaterThan(0), instanceIndex.sub(uint(1)), instanceIndex);
+      const rightIndex = select(gx.lessThan(uint(GRID_WIDTH - 1)), instanceIndex.add(uint(1)), instanceIndex);
+      const upIndex = select(gz.greaterThan(0), instanceIndex.sub(uint(GRID_WIDTH)), instanceIndex);
+      const downIndex = select(gz.lessThan(uint(GRID_HEIGHT - 1)), instanceIndex.add(uint(GRID_WIDTH)), instanceIndex);
+      const neighborAverage = source.element(leftIndex)
+        .add(source.element(rightIndex))
+        .add(source.element(upIndex))
+        .add(source.element(downIndex))
+        .mul(0.25);
+      const diffusion = clamp(
+        dyeSpreadU.mul(dyeStepDtU).div(Math.min(cellSizeX, cellSizeZ) ** 2),
+        0,
+        0.12
+      );
+      const diffused = mix(sampled, neighborAverage, diffusion);
+      const shoreAbsorption = float(1).sub(smoothstep(0.08, 0.82, meta.w));
+      const decay = exp(
+        dyeStepDtU.div(dyePersistenceU.max(1))
+          .add(dyeStepDtU.mul(shoreAbsorption).mul(1.8))
+          .negate()
+      );
+      const next = diffused.mul(decay);
+      destination.element(instanceIndex).assign(
+        select(meta.x.greaterThan(0.5), next, vec4(0))
+      );
+    })().compute(CELL_COUNT, [256]);
+
+  const advectDyeABCompute = buildDyeAdvect(dyeARead, dyeB);
+  const advectDyeBACompute = buildDyeAdvect(dyeBRead, dyeA);
+  const dyeAdvectionGroup = [advectDyeABCompute, advectDyeBACompute];
+
   // A five-bin display reconstruction removes the collocated-grid checkerboard
   // mode while preserving broad pressure ripples and the velocity field. This
   // is the 2D analogue of reconstructing a continuous relief from a particle
@@ -1067,7 +1294,76 @@ export function createTeaGardenWaterSimulation(
     })()
   );
   const renderedMeta = vertexStage(Fn(() => metadataRead.element(vertexIndex))());
-  const renderedDerivatives = vertexStage(Fn(() => derivativesRead.element(vertexIndex))());
+  // Derivatives receive the exact same five-bin reconstruction as height, so
+  // normals/highlights cannot re-amplify a checkerboard mode the visible relief
+  // already removed.
+  const renderedDerivatives = vertexStage(
+    Fn(() => {
+      const gx = vertexIndex.mod(uint(GRID_WIDTH));
+      const gz = vertexIndex.div(uint(GRID_WIDTH));
+      const leftIndex = select(gx.greaterThan(0), vertexIndex.sub(uint(1)), vertexIndex);
+      const rightIndex = select(gx.lessThan(uint(GRID_WIDTH - 1)), vertexIndex.add(uint(1)), vertexIndex);
+      const upIndex = select(gz.greaterThan(0), vertexIndex.sub(uint(GRID_WIDTH)), vertexIndex);
+      const downIndex = select(gz.lessThan(uint(GRID_HEIGHT - 1)), vertexIndex.add(uint(GRID_WIDTH)), vertexIndex);
+      return derivativesRead.element(vertexIndex).mul(0.5)
+        .add(
+          derivativesRead.element(leftIndex)
+            .add(derivativesRead.element(rightIndex))
+            .add(derivativesRead.element(upIndex))
+            .add(derivativesRead.element(downIndex))
+            .mul(0.125)
+        );
+    })()
+  );
+  // A compact nine-bin Gaussian reconstruction makes the dye read as one
+  // submerged pigment field rather than grid-aligned flecks.
+  const renderedDye = vertexStage(
+    Fn(() => {
+      const gx = vertexIndex.mod(uint(GRID_WIDTH));
+      const gz = vertexIndex.div(uint(GRID_WIDTH));
+      const leftX = select(gx.greaterThan(0), gx.sub(uint(1)), gx);
+      const rightX = select(gx.lessThan(uint(GRID_WIDTH - 1)), gx.add(uint(1)), gx);
+      const upZ = select(gz.greaterThan(0), gz.sub(uint(1)), gz);
+      const downZ = select(gz.lessThan(uint(GRID_HEIGHT - 1)), gz.add(uint(1)), gz);
+      const left = gz.mul(uint(GRID_WIDTH)).add(leftX);
+      const right = gz.mul(uint(GRID_WIDTH)).add(rightX);
+      const up = upZ.mul(uint(GRID_WIDTH)).add(gx);
+      const down = downZ.mul(uint(GRID_WIDTH)).add(gx);
+      const upLeft = upZ.mul(uint(GRID_WIDTH)).add(leftX);
+      const upRight = upZ.mul(uint(GRID_WIDTH)).add(rightX);
+      const downLeft = downZ.mul(uint(GRID_WIDTH)).add(leftX);
+      const downRight = downZ.mul(uint(GRID_WIDTH)).add(rightX);
+      return dyeARead.element(vertexIndex).mul(0.36)
+        .add(
+          dyeARead.element(left)
+            .add(dyeARead.element(right))
+            .add(dyeARead.element(up))
+            .add(dyeARead.element(down))
+            .mul(0.12)
+        )
+        .add(
+          dyeARead.element(upLeft)
+            .add(dyeARead.element(upRight))
+            .add(dyeARead.element(downLeft))
+            .add(dyeARead.element(downRight))
+            .mul(0.04)
+        );
+    })()
+  );
+  const renderedDyeGradient = vertexStage(
+    Fn(() => {
+      const gx = vertexIndex.mod(uint(GRID_WIDTH));
+      const gz = vertexIndex.div(uint(GRID_WIDTH));
+      const leftIndex = select(gx.greaterThan(0), vertexIndex.sub(uint(1)), vertexIndex);
+      const rightIndex = select(gx.lessThan(uint(GRID_WIDTH - 1)), vertexIndex.add(uint(1)), vertexIndex);
+      const upIndex = select(gz.greaterThan(0), vertexIndex.sub(uint(GRID_WIDTH)), vertexIndex);
+      const downIndex = select(gz.lessThan(uint(GRID_HEIGHT - 1)), vertexIndex.add(uint(GRID_WIDTH)), vertexIndex);
+      return vec2(
+        dyeARead.element(rightIndex).w.sub(dyeARead.element(leftIndex).w).div(cellSizeX * 2),
+        dyeARead.element(downIndex).w.sub(dyeARead.element(upIndex).w).div(cellSizeZ * 2)
+      );
+    })()
+  );
   const renderedHeight = renderedState.x.mul(reliefU);
   // Render the evolved discharge everywhere. The old surface substituted an
   // authored guide outside rock wakes, which made the simulation look static.
@@ -1104,24 +1400,48 @@ export function createTeaGardenWaterSimulation(
   // light, troughs carry a thin ink edge, and compression adds a restrained
   // glint. This makes small gameplay waves readable without drawing fake rings.
   const waveHighlight = saturate(
-    smoothstep(0.008, 0.11, simulatedSlope).mul(0.58)
-      .add(crest.mul(0.34))
-      .add(compression.mul(0.18))
+    smoothstep(0.018, 0.13, simulatedSlope).mul(0.42)
+      .add(crest.mul(smoothstep(0.012, 0.09, simulatedSlope)).mul(0.14))
+      .add(compression.mul(0.1))
   ).mul(waveContrastU);
   const troughInk = saturate(trough.mul(waveContrastU).mul(0.3));
   const foamHighlight = saturate(
     smoothstep(0.012, 0.58, renderedState.w).mul(foamU)
-      .add(renderedMeta.z.mul(0.07).mul(foamU))
-      .add(waveHighlight.mul(0.09))
+      .add(renderedMeta.z.mul(0.05).mul(foamU))
   );
   const waterColor = mix(deepColorU, shallowColorU, shallow);
   const sculptedColor = mix(waterColor, deepColorU.mul(0.72), troughInk);
   const streakedColor = mix(
     sculptedColor,
     streakColorU,
-    saturate(streak.mul(0.48).add(waveHighlight.mul(0.48)))
+    saturate(streak.mul(0.48).add(waveHighlight.mul(0.18)))
   );
   const shorelineMask = smoothstep(-0.08, 0.12, renderedMeta.w);
+  const dyeConcentration = renderedDye.w.max(0);
+  const dyeColor = clamp(
+    renderedDye.rgb.div(dyeConcentration.max(1e-4)),
+    vec3(0),
+    vec3(1)
+  );
+  const dyeCoverage = float(1).sub(
+    exp(dyeConcentration.mul(dyeOpacityU).mul(-1.35))
+  ).mul(shorelineMask);
+  const submergedDyeColor = dyeColor.mul(0.84).add(shallowColorU.mul(0.16));
+  const dyedSurfaceColor = mix(
+    streakedColor,
+    submergedDyeColor,
+    saturate(dyeCoverage.mul(0.82))
+  );
+  const dyeEdge = smoothstep(0.025, 0.52, renderedDyeGradient.length())
+    .mul(smoothstep(0.015, 0.28, dyeConcentration))
+    .mul(dyeGlowU)
+    .mul(shorelineMask);
+  const feyDyeColor = mix(dyeColor, vec3(0.48, 0.92, 1), 0.2);
+  const enchantedDyeSurface = mix(
+    dyedSurfaceColor,
+    feyDyeColor,
+    saturate(dyeEdge.mul(0.2))
+  );
 
   const material = new THREE.MeshStandardNodeMaterial({
     roughness: 0.52,
@@ -1130,9 +1450,10 @@ export function createTeaGardenWaterSimulation(
     depthWrite: false
   });
   material.positionNode = positionLocal.add(vec3(0, renderedHeight, 0));
-  material.colorNode = mix(streakedColor, foamColorU, foamHighlight);
-  material.emissiveNode = streakColorU.mul(waveHighlight.mul(0.28))
-    .add(foamColorU.mul(foamHighlight.mul(0.1)));
+  material.colorNode = mix(enchantedDyeSurface, foamColorU, foamHighlight);
+  material.emissiveNode = streakColorU.mul(waveHighlight.mul(0.12))
+    .add(foamColorU.mul(foamHighlight.mul(0.08)))
+    .add(feyDyeColor.mul(dyeEdge.mul(0.28)));
   material.opacityNode = opacityU
     .mul(mix(float(0.9), float(1), foamHighlight))
     .mul(shorelineMask);
@@ -1206,6 +1527,12 @@ export function createTeaGardenWaterSimulation(
     queuedImpulses: 0,
     impulses: 0,
     totalImpulses: 0,
+    dyeImpulses: 0,
+    totalDyeImpulses: 0,
+    dyeRunning: false,
+    dyeDispatches: 0,
+    totalDyeDispatches: 0,
+    dyeSecondsRemaining: 0,
     droppedImpulses: 0,
     cfl: 0,
     revision: 0
@@ -1214,6 +1541,7 @@ export function createTeaGardenWaterSimulation(
   mesh.userData.waterSimulation = stats;
 
   let accumulator = 0;
+  let dyeActivityRemaining = 0;
   let disposed = false;
   const impulseQueue: QueuedWaterImpulse[] = [];
 
@@ -1232,6 +1560,7 @@ export function createTeaGardenWaterSimulation(
     pressureU.value = tuning.pressure;
     viscosityU.value = tuning.viscosity;
     dampingU.value = tuning.damping;
+    shoreDampingU.value = tuning.shoreDamping;
     vorticityU.value = tuning.vorticity;
     rockSlipU.value = tuning.rockSlip;
     maxSpeedU.value = Math.min(MAX_SIM_SPEED, Math.max(0.55, tuning.flow * 2.4 + 0.65));
@@ -1244,6 +1573,12 @@ export function createTeaGardenWaterSimulation(
     streakU.value = tuning.streak;
     foamU.value = tuning.foam;
     opacityU.value = tuning.opacity;
+    dyeStepDtU.value = FIXED_STEP / DYE_ADVECTION_STEPS;
+    dyeSpreadU.value = tuning.dyeSpread;
+    dyePersistenceU.value = tuning.dyePersistence;
+    dyeSwirlU.value = tuning.dyeSwirl;
+    dyeOpacityU.value = tuning.dyeOpacity;
+    dyeGlowU.value = tuning.dyeGlow;
     const palette = WATER_PALETTES[tuning.palette as keyof typeof WATER_PALETTES] ?? WATER_PALETTES["celadon-dusk"];
     deepColorU.value.setHex(palette.deep);
     shallowColorU.value.setHex(palette.shallow);
@@ -1296,6 +1631,14 @@ export function createTeaGardenWaterSimulation(
         Number.isFinite(impulse.foam) ? impulse.foam! : WATER_TUNING.values.interactionFoam,
         0,
         1
+      ),
+      dyeR: THREE.MathUtils.clamp(Number.isFinite(impulse.dyeR) ? impulse.dyeR! : 0, 0, 1),
+      dyeG: THREE.MathUtils.clamp(Number.isFinite(impulse.dyeG) ? impulse.dyeG! : 0, 0, 1),
+      dyeB: THREE.MathUtils.clamp(Number.isFinite(impulse.dyeB) ? impulse.dyeB! : 0, 0, 1),
+      dye: THREE.MathUtils.clamp(
+        Number.isFinite(impulse.dye) ? impulse.dye! : 0,
+        0,
+        MAX_DYE_CONCENTRATION
       )
     });
     stats.queuedImpulses = impulseQueue.length;
@@ -1305,6 +1648,7 @@ export function createTeaGardenWaterSimulation(
   const applyQueuedImpulses = (): boolean => {
     const count = Math.min(impulseQueue.length, MAX_IMPULSES_PER_DISPATCH);
     if (count === 0) return false;
+    let dyeCount = 0;
     for (let i = 0; i < count; i++) {
       const impulse = impulseQueue[i];
       const offset = i * 4;
@@ -1316,9 +1660,15 @@ export function createTeaGardenWaterSimulation(
       impulseMotionData[offset + 1] = impulse.velocityZ;
       impulseMotionData[offset + 2] = impulse.foam;
       impulseMotionData[offset + 3] = 0;
+      impulseDyeData[offset] = impulse.dyeR;
+      impulseDyeData[offset + 1] = impulse.dyeG;
+      impulseDyeData[offset + 2] = impulse.dyeB;
+      impulseDyeData[offset + 3] = impulse.dye;
+      if (impulse.dye > 0) dyeCount++;
     }
     impulseHeaders.value.needsUpdate = true;
     impulseMotions.value.needsUpdate = true;
+    impulseDyes.value.needsUpdate = true;
     impulseCountU.value = count;
     renderer.compute(impulseCompute);
     countDispatches(1);
@@ -1326,6 +1676,16 @@ export function createTeaGardenWaterSimulation(
     impulseCountU.value = 0;
     stats.impulses += count;
     stats.totalImpulses += count;
+    stats.dyeImpulses += dyeCount;
+    stats.totalDyeImpulses += dyeCount;
+    if (dyeCount > 0) {
+      dyeActivityRemaining = Math.max(
+        dyeActivityRemaining,
+        Math.min(DYE_MAX_ACTIVE_SECONDS, WATER_TUNING.values.dyePersistence * 3.5)
+      );
+      stats.dyeRunning = true;
+      stats.dyeSecondsRemaining = dyeActivityRemaining;
+    }
     stats.queuedImpulses = impulseQueue.length;
     // Always advance at least one stable solve step so the newly injected wake
     // is boundary-constrained and starts propagating in this rendered frame.
@@ -1336,11 +1696,16 @@ export function createTeaGardenWaterSimulation(
   const reset = () => {
     if (disposed) return;
     accumulator = 0;
+    dyeActivityRemaining = 0;
     impulseQueue.length = 0;
     stats.dispatches = 0;
     stats.ticks = 0;
     stats.impulses = 0;
+    stats.dyeImpulses = 0;
+    stats.dyeDispatches = 0;
     stats.queuedImpulses = 0;
+    stats.dyeRunning = false;
+    stats.dyeSecondsRemaining = 0;
     syncTuning();
     renderer.compute(resetCompute);
     countDispatches(1);
@@ -1352,12 +1717,15 @@ export function createTeaGardenWaterSimulation(
     stats.dispatches = 0;
     stats.ticks = 0;
     stats.impulses = 0;
+    stats.dyeImpulses = 0;
+    stats.dyeDispatches = 0;
     stats.playerDistance = distanceToWater(player.x, player.z);
     timeU.value = Number.isFinite(time) ? time : 0;
     syncTuning();
     if (!WATER_TUNING.values.enabled) {
       accumulator = 0;
       stats.running = false;
+      stats.dyeRunning = false;
       return;
     }
 
@@ -1371,6 +1739,19 @@ export function createTeaGardenWaterSimulation(
         renderer.compute(solverGroup);
         countDispatches(solverGroup.length);
       }
+      if (dyeActivityRemaining > 0) {
+        renderer.compute(dyeAdvectionGroup);
+        countDispatches(dyeAdvectionGroup.length);
+        stats.dyeDispatches += dyeAdvectionGroup.length;
+        stats.totalDyeDispatches += dyeAdvectionGroup.length;
+        dyeActivityRemaining = Math.max(0, dyeActivityRemaining - FIXED_STEP);
+        if (dyeActivityRemaining === 0) {
+          renderer.compute(clearDyeCompute);
+          countDispatches(1);
+          stats.dyeDispatches++;
+          stats.totalDyeDispatches++;
+        }
+      }
       accumulator -= FIXED_STEP;
       stats.ticks++;
       stats.totalTicks++;
@@ -1380,6 +1761,8 @@ export function createTeaGardenWaterSimulation(
       countDispatches(1);
     }
     stats.running = stats.ticks > 0 || appliedImpulse;
+    stats.dyeRunning = dyeActivityRemaining > 0;
+    stats.dyeSecondsRemaining = dyeActivityRemaining;
   };
 
   const addTuning = (folder: FolderApi): TeaGardenWaterTuningMonitor[] => {
@@ -1401,6 +1784,14 @@ export function createTeaGardenWaterSimulation(
       debug.addBinding(stats, "dispatches", { readonly: true, label: "dispatches/frame" }),
       debug.addBinding(stats, "ticks", { readonly: true, label: "fixed ticks/frame" }),
       debug.addBinding(stats, "impulses", { readonly: true, label: "impulses/frame" }),
+      debug.addBinding(stats, "dyeImpulses", { readonly: true, label: "paint entries/frame" }),
+      debug.addBinding(stats, "dyeDispatches", { readonly: true, label: "dye dispatches/frame" }),
+      debug.addBinding(stats, "dyeRunning", { readonly: true, label: "dye active" }),
+      debug.addBinding(stats, "dyeSecondsRemaining", {
+        readonly: true,
+        label: "dye activity (s)",
+        format: (value: number) => value.toFixed(1)
+      }),
       debug.addBinding(stats, "queuedImpulses", { readonly: true, label: "queued impulses" }),
       debug.addBinding(stats, "droppedImpulses", { readonly: true, label: "dropped impulses" }),
       debug.addBinding(stats, "cfl", {
@@ -1433,10 +1824,13 @@ export function createTeaGardenWaterSimulation(
     disposed = true;
     group.removeFromParent();
     resetCompute.dispose();
+    clearDyeCompute.dispose();
     impulseCompute.dispose();
     analyzeACompute.dispose();
     integrateABCompute.dispose();
     integrateBACompute.dispose();
+    advectDyeABCompute.dispose();
+    advectDyeBACompute.dispose();
     geometry.dispose();
     material.dispose();
     shorelineGeometry.dispose();
@@ -1449,8 +1843,11 @@ export function createTeaGardenWaterSimulation(
     disposeStorageBuffer(stateA);
     disposeStorageBuffer(stateB);
     disposeStorageBuffer(derivatives);
+    disposeStorageBuffer(dyeA);
+    disposeStorageBuffer(dyeB);
     disposeStorageBuffer(impulseHeaders);
     disposeStorageBuffer(impulseMotions);
+    disposeStorageBuffer(impulseDyes);
     impulseQueue.length = 0;
   };
 

@@ -70,7 +70,13 @@ import { BirdTrails } from "./fx/birdTrail";
 import { WaterSplashes } from "./fx/splash";
 import { Fireworks } from "./fx/fireworks";
 import { Graffiti, PAINT_COLORS } from "./fx/graffiti";
-import { Paintballs, PaintSkins, PAINTBALL_SPEED } from "./fx/paintball";
+import {
+  Paintballs,
+  PaintSkins,
+  PAINTBALL_SPEED,
+  type PaintWaterImpact,
+  type PaintWaterSegment
+} from "./fx/paintball";
 import { Bubbles } from "./fx/bubbles";
 import { WorldCursor } from "./fx/worldCursor";
 import { WorldQueries, ProxySet } from "./core/worldQueries";
@@ -464,7 +470,16 @@ async function boot() {
   const graffiti = new Graffiti(scene);
   const paintballs = new Paintballs(scene);
   const paintSkins = new PaintSkins();
-  paintballs.onWater = (x, y, z) => splashes.splash(x, y, z, elapsed, 0.5);
+  let teaGardenPaintWater: ((impact: PaintWaterImpact) => boolean) | null = null;
+  let teaGardenPaintWaterSegment: ((segment: Readonly<PaintWaterSegment>) => boolean) | null = null;
+  paintballs.onWaterSegment = (segment) => teaGardenPaintWaterSegment?.(segment) ?? false;
+  paintballs.onWater = (impact) => {
+    if (teaGardenPaintWater?.(impact)) return;
+    // The generic plume is designed for bodies and aircraft. Paint gets a much
+    // smaller fallback outside the Tea Garden so it cannot freeze into cyan
+    // camera-facing islands across the water plane.
+    splashes.splash(impact.x, impact.y, impact.z, elapsed, 0.3, 0.3);
+  };
   const bubbles = new Bubbles(scene, map, physics);
   const worldCursor = new WorldCursor(scene);
   type PaintAudioInstance = import("./fx/paintAudio").PaintAudio;
@@ -2624,6 +2639,8 @@ async function boot() {
           });
           site.deferOptionalFoliage();
           japaneseTeaGarden = site;
+          teaGardenPaintWater = (impact) => site?.paintWater(impact) ?? false;
+          teaGardenPaintWaterSegment = (segment) => site?.paintWaterSegment(segment) ?? false;
           debugPanel.registerFeatureTuning(site.tuningDescriptor());
           site.setFoliageVisible(foliageOn);
           site.update(0, performance.now() / 1000, player.renderPosition, camera, player.mode);
@@ -2654,6 +2671,8 @@ async function boot() {
         } catch (error) {
           site?.dispose();
           if (japaneseTeaGarden === site) japaneseTeaGarden = null;
+          if (japaneseTeaGarden === null) teaGardenPaintWater = null;
+          if (japaneseTeaGarden === null) teaGardenPaintWaterSegment = null;
           restoreTeaGardenBuildings();
           publishTeaGardenDebug();
           throw error;

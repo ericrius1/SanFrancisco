@@ -7,6 +7,7 @@ import {
   TEA_GARDEN_PATHS,
   TEA_GARDEN_WATER_FEATURES,
   inTeaGardenWater,
+  pointInTeaGardenPolygon,
   type TeaGardenBuildingSpec,
   type TeaGardenTerrain,
   type TeaGardenXZ
@@ -52,7 +53,18 @@ export type TeaGardenArchitecture = {
   ready: Promise<void>;
   update(time: number, visitKoi?: TeaGardenKoiVisitor): void;
   dispose(): void;
-  stats: { meshes: number; ponds: number; koi: number; physicsBodies: number };
+  stats: TeaGardenArchitectureStats;
+};
+
+export type TeaGardenArchitectureStats = {
+  meshes: number;
+  ponds: number;
+  koi: number;
+  physicsBodies: number;
+  koiInWater: number;
+  koiSubmerged: number;
+  koiMinSubmersion: number;
+  koiTailStrokes: number;
 };
 
 /** Allocation-free surface sample used to turn the visible koi into fluid wakes. */
@@ -63,7 +75,9 @@ export type TeaGardenKoiVisitor = (
   z: number,
   velocityX: number,
   velocityZ: number,
-  depth: number
+  depth: number,
+  tailStroke: number,
+  tailSide: number
 ) => void;
 
 function material(color: number, roughness = 0.86, metalness = 0): THREE.MeshStandardMaterial {
@@ -1146,7 +1160,85 @@ function makeDrumBridge(
   return group;
 }
 
-type KoiRuntime = { mesh: THREE.InstancedMesh; center: THREE.Vector3; rx: number; rz: number };
+const KOI_WATER_MARGIN = 0.46;
+const KOI_BODY_HALF_HEIGHT = 0.22 * 0.31;
+const KOI_TRACK_LOOKAHEAD = 0.012;
+
+type KoiRuntime = {
+  body: THREE.InstancedMesh;
+  tail: THREE.InstancedMesh;
+  center: THREE.Vector3;
+  rx: number;
+  rz: number;
+  outline: readonly TeaGardenXZ[];
+};
+
+type MutableKoiPosition = { x: number; z: number };
+
+function distanceToKoiOutline(x: number, z: number, outline: readonly TeaGardenXZ[]): number {
+  let distance = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < outline.length; i++) {
+    const a = outline[i];
+    const b = outline[(i + 1) % outline.length];
+    const dx = b[0] - a[0];
+    const dz = b[1] - a[1];
+    const lengthSq = dx * dx + dz * dz;
+    const t = lengthSq > 0
+      ? THREE.MathUtils.clamp(((x - a[0]) * dx + (z - a[1]) * dz) / lengthSq, 0, 1)
+      : 0;
+    distance = Math.min(distance, Math.hypot(x - (a[0] + dx * t), z - (a[1] + dz * t)));
+  }
+  return distance;
+}
+
+function insideKoiWaterLane(
+  x: number,
+  z: number,
+  outline: readonly TeaGardenXZ[]
+): boolean {
+  return (
+    pointInTeaGardenPolygon(x, z, outline) &&
+    distanceToKoiOutline(x, z, outline) >= KOI_WATER_MARGIN
+  );
+}
+
+/**
+ * Pull an orbital sample back toward a known wet anchor until the complete koi
+ * silhouette has bank clearance. This preserves the existing leisurely loops
+ * while making the authored polygon—not an ellipse—the final authority.
+ */
+function sampleConstrainedKoiTrack(
+  pond: KoiRuntime,
+  angle: number,
+  wobble: number,
+  out: MutableKoiPosition
+): void {
+  const candidateX = pond.center.x + Math.cos(angle) * pond.rx * wobble;
+  const candidateZ = pond.center.z + Math.sin(angle) * pond.rz * wobble;
+  if (insideKoiWaterLane(candidateX, candidateZ, pond.outline)) {
+    out.x = candidateX;
+    out.z = candidateZ;
+    return;
+  }
+
+  let wetX = pond.center.x;
+  let wetZ = pond.center.z;
+  let dryX = candidateX;
+  let dryZ = candidateZ;
+  for (let iteration = 0; iteration < 12; iteration++) {
+    const midX = (wetX + dryX) * 0.5;
+    const midZ = (wetZ + dryZ) * 0.5;
+    if (insideKoiWaterLane(midX, midZ, pond.outline)) {
+      wetX = midX;
+      wetZ = midZ;
+    } else {
+      dryX = midX;
+      dryZ = midZ;
+    }
+  }
+  out.x = wetX;
+  out.z = wetZ;
+}
 
 function createPondLife(): { group: THREE.Group; koi: KoiRuntime[] } {
   const group = new THREE.Group();
@@ -1160,16 +1252,67 @@ function createPondLife(): { group: THREE.Group; koi: KoiRuntime[] } {
     const count = pondIndex === 0 ? 10 : 6;
     const fishGeometry = new THREE.SphereGeometry(0.22, 10, 6);
     fishGeometry.scale(1.65, 0.31, 0.48);
-    const fishMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55, metalness: 0 });
+    const tailGeometry = new THREE.BufferGeometry();
+    tailGeometry.setAttribute(
+      "position",
+      new THREE.Float32BufferAttribute([
+        0.04, 0, 0,
+        -0.24, 0, -0.16,
+        -0.24, 0, 0.16
+      ], 3)
+    );
+    tailGeometry.computeVertexNormals();
+    const fishMaterial = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      vertexColors: true,
+      roughness: 0.55,
+      metalness: 0,
+      // The shared water layer correctly draws over the submerged school. A
+      // restrained warm lift keeps orange and white koi readable at dusk
+      // without making them look self-lit above the surface.
+      emissive: 0x6b2e16,
+      emissiveIntensity: 0.24,
+      side: THREE.DoubleSide
+    });
     const fish = new THREE.InstancedMesh(fishGeometry, fishMaterial, count);
+    const tails = new THREE.InstancedMesh(tailGeometry, fishMaterial, count);
     fish.name = `${name}_koi`;
+    tails.name = `${name}_koi_tails`;
     fish.castShadow = false;
     fish.receiveShadow = false;
+    tails.castShadow = false;
+    tails.receiveShadow = false;
+    fish.frustumCulled = false;
+    tails.frustumCulled = false;
+    fish.renderOrder = 4;
+    tails.renderOrder = 4;
+    fish.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    tails.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     const colors = [0xd8692e, 0xf1e6cc, 0xc94c32, 0xe29d3f];
-    for (let i = 0; i < count; i++) fish.setColorAt(i, new THREE.Color(colors[(i + pondIndex) % colors.length]));
+    for (let i = 0; i < count; i++) {
+      const color = new THREE.Color(colors[(i + pondIndex) % colors.length]);
+      fish.setColorAt(i, color);
+      tails.setColorAt(i, color);
+    }
     if (fish.instanceColor) fish.instanceColor.needsUpdate = true;
-    group.add(fish);
-    koi.push({ mesh: fish, center: new THREE.Vector3(c.x, 0, c.z), rx, rz });
+    if (tails.instanceColor) tails.instanceColor.needsUpdate = true;
+    fish.userData.authoredWaterFeature = feature.name;
+    fish.userData.bankClearance = KOI_WATER_MARGIN;
+    tails.userData.authoredWaterFeature = feature.name;
+    tails.userData.bankClearance = KOI_WATER_MARGIN;
+    group.add(fish, tails);
+    const runtime = {
+      body: fish,
+      tail: tails,
+      center: new THREE.Vector3(c.x, 0, c.z),
+      rx,
+      rz,
+      outline: feature.outline
+    };
+    if (!insideKoiWaterLane(runtime.center.x, runtime.center.z, runtime.outline)) {
+      throw new Error(`${feature.name} koi anchor is outside its authored water lane`);
+    }
+    koi.push(runtime);
   });
   return { group, koi };
 }
@@ -1364,45 +1507,98 @@ export function createTeaGardenArchitecture(
   }
   group.add(makeWaterfall(map, mats));
 
+  const koiCount = pondLife.koi.reduce((sum, pond) => sum + pond.body.count, 0);
+  const stats: TeaGardenArchitectureStats = {
+    meshes: 0,
+    ponds: pondLife.koi.length,
+    koi: koiCount,
+    physicsBodies: 0,
+    koiInWater: 0,
+    koiSubmerged: 0,
+    koiMinSubmersion: 0,
+    koiTailStrokes: 0
+  };
   const dummy = new THREE.Object3D();
+  const koiPosition: MutableKoiPosition = { x: 0, z: 0 };
+  const koiAhead: MutableKoiPosition = { x: 0, z: 0 };
+  const lastTailStroke = pondLife.koi.map((pond) => new Int32Array(pond.body.count).fill(-2147483648));
   const update = (time: number, visitKoi?: TeaGardenKoiVisitor) => {
+    stats.koiInWater = 0;
+    stats.koiSubmerged = 0;
+    stats.koiMinSubmersion = Number.POSITIVE_INFINITY;
     pondLife.koi.forEach((pond, pondIndex) => {
-      for (let i = 0; i < pond.mesh.count; i++) {
+      for (let i = 0; i < pond.body.count; i++) {
         const speed = 0.11 + (i % 4) * 0.018;
-        const angle = time * speed + (i / pond.mesh.count) * Math.PI * 2 + pondIndex * 0.7;
+        const angle = time * speed + (i / pond.body.count) * Math.PI * 2 + pondIndex * 0.7;
         const wobble = 0.74 + (i % 3) * 0.09;
-        const x = pond.center.x + Math.cos(angle) * pond.rx * wobble;
-        const z = pond.center.z + Math.sin(angle) * pond.rz * wobble;
+        sampleConstrainedKoiTrack(pond, angle, wobble, koiPosition);
+        sampleConstrainedKoiTrack(pond, angle + KOI_TRACK_LOOKAHEAD, wobble, koiAhead);
+        const x = koiPosition.x;
+        const z = koiPosition.z;
+        const velocityScale = speed / KOI_TRACK_LOOKAHEAD;
+        const velocityX = (koiAhead.x - x) * velocityScale;
+        const velocityZ = (koiAhead.z - z) * velocityScale;
+        const swimSpeed = Math.max(Math.hypot(velocityX, velocityZ), 1e-5);
+        const forwardX = velocityX / swimSpeed;
+        const forwardZ = velocityZ / swimSpeed;
         const surface = waterSurfaceY?.(x, z);
-        const swimDepth = 0.075
-          + (Math.sin(angle * 0.63 + i * 1.73 + pondIndex * 0.9) * 0.5 + 0.5) * 0.14;
+        const swimDepth = 0.115
+          + (Math.sin(angle * 0.63 + i * 1.73 + pondIndex * 0.9) * 0.5 + 0.5) * 0.105;
         const y = surface === undefined
-          ? map.groundTop(x, z) + 0.1 + Math.sin(angle * 2.1 + i) * 0.02
-          : surface - swimDepth + Math.sin(angle * 2.1 + i) * 0.008;
-        dummy.position.set(
-          x,
-          y,
-          z
-        );
-        dummy.rotation.set(0, -angle + Math.PI / 2, 0);
+          ? map.groundTop(x, z) + 0.1
+          : surface - swimDepth + Math.sin(angle * 2.1 + i) * 0.004;
         const scale = 0.62 + (i % 4) * 0.075;
+        const heading = Math.atan2(-forwardZ, forwardX);
+        const tailRate = 6.3 + (i % 4) * 0.58;
+        const tailPhase = time * tailRate + i * 1.37 + pondIndex * 0.83;
+        const tailSide = Math.sin(tailPhase) >= 0 ? 1 : -1;
+        const tailStroke = Math.floor((tailPhase + Math.PI * 0.5) / Math.PI);
+        const tailSwing = Math.sin(tailPhase) * 0.42;
+
+        dummy.position.set(x, y, z);
+        dummy.rotation.set(0, heading, tailSwing * 0.055);
         dummy.scale.setScalar(scale);
         dummy.updateMatrix();
-        pond.mesh.setMatrixAt(i, dummy.matrix);
+        pond.body.setMatrixAt(i, dummy.matrix);
+
+        dummy.position.set(
+          x - forwardX * 0.29 * scale,
+          y,
+          z - forwardZ * 0.29 * scale
+        );
+        dummy.rotation.set(0, heading + tailSwing, 0);
+        dummy.scale.setScalar(scale);
+        dummy.updateMatrix();
+        pond.tail.setMatrixAt(i, dummy.matrix);
+
+        if (pointInTeaGardenPolygon(x, z, pond.outline)) stats.koiInWater++;
+        if (surface !== undefined) {
+          const topSubmersion = surface - (y + KOI_BODY_HALF_HEIGHT * scale);
+          if (topSubmersion > 0) stats.koiSubmerged++;
+          stats.koiMinSubmersion = Math.min(stats.koiMinSubmersion, topSubmersion);
+        }
+        if (lastTailStroke[pondIndex][i] !== tailStroke) {
+          if (lastTailStroke[pondIndex][i] !== -2147483648) stats.koiTailStrokes++;
+          lastTailStroke[pondIndex][i] = tailStroke;
+        }
         if (visitKoi && surface !== undefined) {
           visitKoi(
             pondIndex * 32 + i,
             x,
             y,
             z,
-            -Math.sin(angle) * pond.rx * wobble * speed,
-            Math.cos(angle) * pond.rz * wobble * speed,
-            surface - y
+            velocityX,
+            velocityZ,
+            surface - y,
+            tailStroke,
+            tailSide
           );
         }
       }
-      pond.mesh.instanceMatrix.needsUpdate = true;
+      pond.body.instanceMatrix.needsUpdate = true;
+      pond.tail.instanceMatrix.needsUpdate = true;
     });
+    if (!Number.isFinite(stats.koiMinSubmersion)) stats.koiMinSubmersion = 0;
   };
 
   let meshCount = 0;
@@ -1411,6 +1607,8 @@ export function createTeaGardenArchitecture(
     if (!mesh.isMesh) return;
     meshCount++;
   });
+  stats.meshes = meshCount;
+  stats.physicsBodies = bodies.length;
 
   return {
     group,
@@ -1452,11 +1650,6 @@ export function createTeaGardenArchitecture(
       bodies.length = 0;
       group.removeFromParent();
     },
-    stats: {
-      meshes: meshCount,
-      ponds: pondLife.koi.length,
-      koi: pondLife.koi.reduce((sum, pond) => sum + pond.mesh.count, 0),
-      physicsBodies: bodies.length
-    }
+    stats
   };
 }
