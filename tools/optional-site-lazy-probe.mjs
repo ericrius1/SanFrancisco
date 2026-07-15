@@ -441,6 +441,11 @@ async function main() {
     expect("boot-no-authored-site-root", !bootState.afterlightReady && !bootState.coronaReady && !bootState.landsEndReady &&
       !bootState.afterlightAttached && !bootState.coronaAttached && !bootState.landsEndAttached, bootState);
 
+    // Afterlight is a world-time exhibit (21:00–05:00). Forced loading remains
+    // useful for the request-waterfall contract, but its interaction root only
+    // wakes during the authored night window.
+    await page.evaluate(() => window.__sf.sky.setTimeOfDay(22));
+
     setPhase("afterlight");
     await ensureSite(page, "afterlight");
     await page.waitForFunction(() => Boolean(window.__sf.afterlight), null, { timeout: FEATURE_TIMEOUT_MS });
@@ -481,7 +486,9 @@ async function main() {
       afterlightActionState.takeover?.index === 0 &&
       afterlightActionState.takeover?.playerEmbodied === true &&
       afterlightActionState.takeover?.web?.solver === "verlet" &&
-      afterlightActionState.takeover?.web?.detailMultiplier >= 4,
+      afterlightActionState.takeover?.web?.nodes <= 400 &&
+      afterlightActionState.takeover?.web?.links <= 800 &&
+      afterlightActionState.takeover?.web?.detailMultiplier <= 0.75,
       afterlightActionState);
     expect("afterlight-takeover-loads-no-follow-on-feature-resources",
       afterlightAction.filter(isFeatureRecord).length === 0,

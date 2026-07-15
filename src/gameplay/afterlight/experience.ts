@@ -26,6 +26,7 @@ type ReturnFlight = {
 export type AfterlightDebugState = {
   phase: AfterlightPhase;
   awake: boolean;
+  nightOpen: boolean;
   cinematic: boolean;
   collected: boolean[];
   arrived: boolean[];
@@ -80,6 +81,7 @@ export class AfterlightExperience {
   #audio: AfterlightAudio;
   #phase: AfterlightPhase = "idle";
   #awake = false;
+  #nightOpen = false;
   #cinematic = false;
   #collected = ECHO_LAYOUT.map(() => false);
   #flights: ReturnFlight[] = ECHO_LAYOUT.map(() => ({ from: new THREE.Vector3(), t: 0, arrived: false }));
@@ -121,6 +123,7 @@ export class AfterlightExperience {
     return {
       id: "afterlight",
       contains: (x, z, pad) => {
+        if (!this.#nightOpen && !this.#cinematic) return false;
         const rx = 66 + pad;
         const rz = 50 + pad;
         const dx = (x - AFTERLIGHT_CENTER.x) / rx;
@@ -130,11 +133,18 @@ export class AfterlightExperience {
       activatePad: AFTERLIGHT_TUNING.activatePad,
       deactivatePad: AFTERLIGHT_TUNING.deactivatePad,
       keepAwake: () =>
-        this.#phase === "active" ||
         this.#cinematic ||
-        (this.#phase === "complete" && this.#completionTime < AFTERLIGHT_TUNING.whaleDuration),
+        (this.#nightOpen && (
+          this.#phase === "active" ||
+          (this.#phase === "complete" && this.#completionTime < AFTERLIGHT_TUNING.whaleDuration)
+        )),
       setAwake: (on) => this.setAwake(on)
     };
+  }
+
+  /** World-time availability. Proximity still owns the actual wake/sleep work. */
+  setNightOpen(on: boolean): void {
+    this.#nightOpen = on;
   }
 
   setAwake(on: boolean): void {
@@ -381,6 +391,7 @@ export class AfterlightExperience {
     return {
       phase: this.#phase,
       awake: this.#awake,
+      nightOpen: this.#nightOpen,
       cinematic: this.#cinematic,
       collected: [...this.#collected],
       arrived: this.#flights.map((flight) => flight.arrived),

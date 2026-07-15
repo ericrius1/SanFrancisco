@@ -119,7 +119,10 @@ import { REVERIE_CENTER } from "./gameplay/palaceReverie/meta";
 import type { LandsEndRegion } from "./world/landsEnd";
 import { LANDS_END_CENTER } from "./world/landsEnd/meta";
 import type { AfterlightExperience } from "./gameplay/afterlight";
-import { AFTERLIGHT_ARRIVAL } from "./gameplay/afterlight/meta";
+import {
+  AFTERLIGHT_ARRIVAL,
+  isAfterlightOpenAtHour
+} from "./gameplay/afterlight/meta";
 import { Satchel } from "./ui/satchel";
 import { HUD } from "./ui/hud";
 import { ShareButton } from "./ui/share";
@@ -2474,7 +2477,7 @@ async function boot() {
   minimap.addLandmark(CORONA_HEIGHTS_SUMMIT.x, CORONA_HEIGHTS_SUMMIT.z, "Corona Heights");
   // Buena Vista summit clearing — west of Corona Heights. Static pin so the
   // quest stays findable even if the site-gated experience fails to boot.
-  minimap.addLandmark(AFTERLIGHT_ARRIVAL.x, AFTERLIGHT_ARRIVAL.z, "Afterlight");
+  minimap.addLandmark(AFTERLIGHT_ARRIVAL.x, AFTERLIGHT_ARRIVAL.z, "Afterlight · 9 PM–5 AM");
   const missionDoloresSpawn = SPAWN_POINTS.missionDolores;
   minimap.addLandmark(missionDoloresSpawn.x, missionDoloresSpawn.z, missionDoloresSpawn.label);
   for (const arrival of authoredRegions.landmarkArrivals()) {
@@ -2811,6 +2814,8 @@ async function boot() {
     forced: boolean;
     promise: Promise<void> | null;
     load: () => Promise<void>;
+    /** A false value prevents automatic import; explicit debug loads still work. */
+    available?: () => boolean;
   };
   const OPTIONAL_SITE_APPROACH_RADIUS = 1100;
   const OPTIONAL_SITE_RECHECK_RADIUS = OPTIONAL_SITE_APPROACH_RADIUS * 1.25;
@@ -2976,6 +2981,7 @@ async function boot() {
       restore();
     }
     afterlight = experience;
+    experience.setNightOpen(isAfterlightOpenAtHour(sky.timeOfDay));
     siteGate.register(experience.siteHooks());
     refreshOptionalSiteDebug();
   };
@@ -3091,7 +3097,16 @@ async function boot() {
     },
     { id: "archery", label: "Archery Range", ...ARCHERY_CENTER, state: "dormant", forced: false, promise: null, load: loadArchery },
     { id: "palace", label: "Palace Reverie", ...REVERIE_CENTER, state: "dormant", forced: false, promise: null, load: loadPalace },
-    { id: "afterlight", label: "Afterlight", ...AFTERLIGHT_ARRIVAL, state: "dormant", forced: false, promise: null, load: loadAfterlight },
+    {
+      id: "afterlight",
+      label: "Afterlight · 21:00–05:00",
+      ...AFTERLIGHT_ARRIVAL,
+      state: "dormant",
+      forced: false,
+      promise: null,
+      load: loadAfterlight,
+      available: () => isAfterlightOpenAtHour(sky.timeOfDay)
+    },
     { id: "corona", label: "Corona Heights", ...CORONA_HEIGHTS_SUMMIT, state: "dormant", forced: false, promise: null, load: loadCorona },
     { id: "lands-end", label: "Lands End", ...LANDS_END_CENTER, state: "dormant", forced: false, promise: null, load: loadLandsEnd },
     {
@@ -3113,17 +3128,17 @@ async function boot() {
   const optionalSiteMonitorView: Record<string, string> = { summary: "—" };
   for (const site of optionalWorldSites) optionalSiteMonitorView[site.id] = "dormant";
 
-  // Perf A/B toggles on the streaming monitor. Armed only after the panel is
-  // built so ordinary play is untouched until "/" opens this folder. Defaults
-  // match ACTIVE at open time; flipping off hides + skips that site's work.
+  // Perf A/B toggles on the streaming monitor. Inspection is side-effect free:
+  // opening "/" must never suppress dormant sites or block first approach.
+  // Flipping one off explicitly hides + skips that site's work.
   const optionalSitePerfEnabled: Record<OptionalSiteId, boolean> = {
-    goldman: false,
-    archery: false,
-    palace: false,
-    afterlight: false,
-    corona: false,
-    "lands-end": false,
-    "sutro-baths": false
+    goldman: true,
+    archery: true,
+    palace: true,
+    afterlight: true,
+    corona: true,
+    "lands-end": true,
+    "sutro-baths": true
   };
   let optionalSitePerfGating = false;
   const OPTIONAL_SITE_GATE_ID: Partial<Record<OptionalSiteId, string>> = {
@@ -3226,8 +3241,9 @@ async function boot() {
     for (const site of optionalWorldSites) {
       const distance = Math.hypot(player.position.x - site.x, player.position.z - site.z);
       const distanceText = `${Math.round(distance)}m`;
+      const availability = site.available?.() === false ? " | CLOSED" : "";
       if (site.state !== "ready") {
-        optionalSiteMonitorView[site.id] = `${site.state} | — | — | ${distanceText}`;
+        optionalSiteMonitorView[site.id] = `${site.state} | — | — | ${distanceText}${availability}`;
         continue;
       }
       ready++;
@@ -3235,7 +3251,7 @@ async function boot() {
       if (state.runtime === "ACTIVE" || state.runtime === "DETAIL") working++;
       const gated = optionalSitePerfGating && !optionalSitePerfEnabled[site.id] ? " | OFF" : "";
       optionalSiteMonitorView[site.id] =
-        `ready | ${state.runtime} | ${state.sceneState} | ${distanceText}${gated}`;
+        `ready | ${state.runtime} | ${state.sceneState} | ${distanceText}${availability}${gated}`;
     }
     optionalSiteMonitorView.summary =
       `${ready}/${optionalWorldSites.length} resident | ${working} working`;
@@ -3247,10 +3263,6 @@ async function boot() {
     build(folder) {
       optionalSitePerfGating = true;
       refreshOptionalSiteMonitor();
-      for (const site of optionalWorldSites) {
-        optionalSitePerfEnabled[site.id] =
-          site.state === "ready" && optionalSiteRuntimeState(site).runtime === "ACTIVE";
-      }
       applyAllOptionalSitePerfGates();
 
       const bindings = [
@@ -3301,7 +3313,7 @@ async function boot() {
       await revealedPromise;
       await waitForOptionalSiteStage();
       const distance = Math.hypot(player.position.x - site.x, player.position.z - site.z);
-      if (!site.forced && distance > OPTIONAL_SITE_RECHECK_RADIUS) {
+      if (!site.forced && (distance > OPTIONAL_SITE_RECHECK_RADIUS || site.available?.() === false)) {
         site.state = "dormant";
         site.forced = false;
         return;
@@ -3339,6 +3351,7 @@ async function boot() {
     for (const site of optionalWorldSites) {
       if (site.state !== "dormant") continue;
       if (!optionalSitePerfAllowed(site.id)) continue;
+      if (site.available?.() === false) continue;
       const dx = player.position.x - site.x;
       const dz = player.position.z - site.z;
       const distanceSq = dx * dx + dz * dz;
@@ -4029,6 +4042,7 @@ async function boot() {
 
     // Crossing the generic approach radius requests at most one authored site;
     // the queue rechecks after the arrival-quiet window before importing it.
+    afterlight?.setNightOpen(isAfterlightOpenAtHour(sky.timeOfDay));
     updateOptionalWorldSites();
     if (optionalSitePerfGating) applyAllOptionalSitePerfGates();
     // One wake/sleep pass over every registered minigame site (pickleball,
