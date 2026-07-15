@@ -16,6 +16,7 @@ import { CANVAS_FONT_FAMILY } from "../../core/typography";
 import type { WorldMap } from "../../world/heightmap";
 import { AFTERLIGHT_CENTER, AFTERLIGHT_TUNING, ECHO_LAYOUT, KEEPER_LAYOUT } from "./layout";
 import { CosmicEnergyWeb, WEB_TUNING } from "./energyWeb";
+import { makeSubsurfaceOrbMaterial } from "./subsurfaceOrb";
 import { makeVolumetricOrbMaterial, type ScalarUniform } from "./volumeOrb";
 
 type N = any;
@@ -716,6 +717,7 @@ export class AfterlightSiteVisuals {
       new THREE.SphereGeometry(0.76, 24, 16),
       makeVolumetricOrbMaterial(0x75eadf, this.#loomCharge, 0.17, 0.76, 0.58)
     );
+    seed.name = "afterlight-loom-volumetric-orb";
     this.#loomRings.add(seed);
     const seedAura = new THREE.Sprite(new THREE.SpriteMaterial({
       map: this.#glowTexture,
@@ -745,6 +747,7 @@ export class AfterlightSiteVisuals {
     this.#loomRings.position.y = 2.5;
     this.root.add(this.#loomRings);
 
+    const petalGeometry = new THREE.DodecahedronGeometry(0.48, 1);
     for (let i = 0; i < ECHO_LAYOUT.length; i++) {
       const echo = ECHO_LAYOUT[i];
       const angle = (i / ECHO_LAYOUT.length) * Math.PI * 2 - Math.PI / 2;
@@ -760,10 +763,13 @@ export class AfterlightSiteVisuals {
 
       const activation = uniform(0);
       const orb = new THREE.Mesh(
-        new THREE.SphereGeometry(0.48, 20, 14),
-        makeVolumetricOrbMaterial(echo.hue, activation, 0.41 + i * 0.193, 0.48, 0.42)
+        petalGeometry,
+        makeSubsurfaceOrbMaterial(echo.hue, activation, 0.41 + i * 0.193, 0.48, 0.42)
       );
+      orb.name = `afterlight-subsurface-petal-${i + 1}`;
       orb.position.y = 1.48;
+      orb.rotation.set(0.22 + i * 0.31, i * 0.77, -0.16 + i * 0.19);
+      orb.scale.set(0.88 + (i % 2) * 0.06, 1.16 - (i % 3) * 0.035, 0.92 + (i % 3) * 0.025);
       group.add(orb);
       const arch = new THREE.Mesh(new THREE.TorusGeometry(0.86, 0.055, 7, 30, Math.PI * 1.48), brass);
       arch.position.y = 1.1;
@@ -786,7 +792,7 @@ export class AfterlightSiteVisuals {
   }
 
   #buildEchoes(): void {
-    const geometry = new THREE.SphereGeometry(0.72, 24, 16);
+    const geometry = new THREE.DodecahedronGeometry(0.72, 1);
     for (let i = 0; i < ECHO_LAYOUT.length; i++) {
       const spec = ECHO_LAYOUT[i];
       const root = new THREE.Group();
@@ -800,8 +806,11 @@ export class AfterlightSiteVisuals {
       const glow = uniform(1);
       const core = new THREE.Mesh(
         geometry,
-        makeVolumetricOrbMaterial(spec.hue, glow, (i + 1) * 0.173, 0.72, 0.5)
+        makeSubsurfaceOrbMaterial(spec.hue, glow, (i + 1) * 0.173, 0.72, 0.5)
       );
+      core.name = `afterlight-subsurface-echo-${i + 1}`;
+      core.rotation.set(i * 0.29, i * 0.61, 0.18 - i * 0.13);
+      core.scale.set(0.86 + (i % 3) * 0.035, 1.18 - (i % 2) * 0.055, 0.93 + (i % 2) * 0.04);
       floatGroup.add(core);
       const rings = new THREE.Group();
       for (let r = 0; r < 3; r++) {

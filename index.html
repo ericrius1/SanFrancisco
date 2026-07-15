@@ -26,7 +26,7 @@
         if (!readingEntry) window.__sfStartPrefetch();
       })();
     </script>
-    <title>San Francisco</title>
+    <title>San Francisco - main</title>
     <link
       rel="preload"
       href="/fonts/Newsreader-Variable.woff2"
@@ -177,6 +177,7 @@
         inset: 0;
         pointer-events: none;
         font-family: var(--font);
+        font-optical-sizing: auto;
         color: var(--text);
         text-shadow: 0 1px 3px rgba(0, 10, 20, 0.8);
       }
@@ -712,7 +713,7 @@
         background: var(--surface-raised);
         border: 1px solid var(--hairline-2);
         color: var(--text);
-        font: 600 11.5px var(--font);
+        font: 700 11.5px var(--font);
         letter-spacing: 0.02em;
         transition:
           border-color var(--dur) var(--ease),
@@ -1190,7 +1191,7 @@
         border: 1px solid var(--hairline-2);
         background: var(--surface-strong);
         color: var(--text-soft);
-        font: 600 11.5px var(--font);
+        font: 700 11.5px var(--font);
         letter-spacing: 0.02em;
         box-shadow: var(--edge-hi), var(--shadow-sm);
         backdrop-filter: blur(var(--blur));
@@ -1404,7 +1405,7 @@
         border: 1px solid rgba(190, 225, 240, 0.2);
         color: var(--text-dim);
         font:
-          600 10.5px var(--font);
+          700 10.5px var(--font);
         letter-spacing: 0.02em;
         transition:
           border-color 0.15s,
@@ -2099,6 +2100,24 @@
         color: #8fb3c1;
         white-space: nowrap;
       }
+      /* LOD dial slider jitter fix: this toy's readout string changes width as you
+         scrub (tier name, digit count — biggest jump at the 520 m culling boundary).
+         With a `flex: 1 1 auto` slider beside a nowrap readout, that width change fed
+         back into the slider's track width mid-drag, so the native range remapped the
+         pointer and the thumb ping-ponged. Drop the readout onto its own line (as the
+         mobile layout already does) so the slider's width no longer depends on the
+         readout's text — the track stays fixed and the thumb tracks the pointer. */
+      #hud [data-ftoy="lodDial"] .ss-daybar {
+        flex-wrap: wrap;
+      }
+      #hud [data-ftoy="lodDial"] .ss-daybar .ss-slider {
+        flex: 1 1 0;
+        min-width: 0;
+      }
+      #hud [data-ftoy="lodDial"] .ss-daybar .ss-readout {
+        flex: 1 0 100%;
+        white-space: normal;
+      }
 
       /* lone affordance when Tab hides the HUD — hidden in immersive (display:none on #hud) */
       #hud .ui-restore {
@@ -2197,7 +2216,7 @@
         color: var(--text-soft);
         box-shadow: var(--edge-hi), var(--shadow-sm);
         backdrop-filter: blur(var(--blur));
-        font: 650 11.5px/22px var(--font);
+        font: 700 11.5px/22px var(--font);
         letter-spacing: 0.01em;
         text-shadow: 0 1px 3px rgba(0, 10, 20, 0.8);
       }
@@ -3036,7 +3055,7 @@
         color: #eaf6fa;
         outline: none;
         font:
-          500 12.5px var(--font);
+          600 12.5px var(--font);
       }
       #hud .chat-input::placeholder {
         color: rgba(188, 217, 230, 0.45);
@@ -3107,7 +3126,7 @@
         border: 1px solid rgba(190, 225, 240, 0.25);
         color: var(--text-dim);
         font:
-          600 11.5px var(--font);
+          700 11.5px var(--font);
         letter-spacing: 0.02em;
         transition:
           border-color 0.15s,

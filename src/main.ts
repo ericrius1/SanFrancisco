@@ -3105,6 +3105,112 @@ async function boot() {
       load: loadSutroBaths
     }
   ];
+
+  // One compact truth panel for the authored-site streaming contract. "ready"
+  // means a chunk/resource set is resident after first approach; runtime and
+  // scene state answer the more important question of whether it is doing work
+  // or drawing right now. The debug panel invokes this only while open (4 Hz).
+  const optionalSiteMonitorView: Record<string, string> = { summary: "—" };
+  for (const site of optionalWorldSites) optionalSiteMonitorView[site.id] = "dormant";
+
+  const optionalSiteSceneState = (root: THREE.Object3D | null | undefined): string => {
+    if (!root?.parent) return "detached";
+    return root.visible ? "visible" : "hidden";
+  };
+
+  const optionalSiteRuntimeState = (
+    site: OptionalWorldSite
+  ): { runtime: "ACTIVE" | "DETAIL" | "STATIC" | "SLEEP"; sceneState: string } => {
+    switch (site.id) {
+      case "goldman":
+        return {
+          runtime: siteGate.awake("pickleball") ? "ACTIVE" : "STATIC",
+          sceneState: optionalSiteSceneState(goldenGateTennis?.group)
+        };
+      case "archery":
+        return {
+          runtime: siteGate.awake("archery") ? "ACTIVE" : "SLEEP",
+          sceneState: optionalSiteSceneState(archery?.root)
+        };
+      case "palace":
+        return {
+          runtime: siteGate.awake("palace-reverie") ? "ACTIVE" : "SLEEP",
+          sceneState: optionalSiteSceneState(palaceReverie?.root)
+        };
+      case "afterlight":
+        return {
+          runtime: siteGate.awake("afterlight") ? "ACTIVE" : "SLEEP",
+          sceneState: optionalSiteSceneState(afterlight?.root)
+        };
+      case "corona":
+        return {
+          runtime: coronaHeights?.activity.visible
+            ? "ACTIVE"
+            : coronaHeights?.group.visible
+              ? "DETAIL"
+              : "SLEEP",
+          sceneState: optionalSiteSceneState(coronaHeights?.group)
+        };
+      case "lands-end":
+        return {
+          runtime: landsEnd?.group.visible ? "ACTIVE" : "SLEEP",
+          sceneState: optionalSiteSceneState(landsEnd?.group)
+        };
+      case "sutro-baths":
+        return {
+          runtime: sutroBaths?.debugState().awake ? "ACTIVE" : "SLEEP",
+          sceneState: optionalSiteSceneState(sutroBaths?.group)
+        };
+    }
+  };
+
+  const refreshOptionalSiteMonitor = (): void => {
+    let ready = 0;
+    let working = 0;
+    for (const site of optionalWorldSites) {
+      const distance = Math.hypot(player.position.x - site.x, player.position.z - site.z);
+      const distanceText = `${Math.round(distance)}m`;
+      if (site.state !== "ready") {
+        optionalSiteMonitorView[site.id] = `${site.state} | — | — | ${distanceText}`;
+        continue;
+      }
+      ready++;
+      const state = optionalSiteRuntimeState(site);
+      if (state.runtime === "ACTIVE" || state.runtime === "DETAIL") working++;
+      optionalSiteMonitorView[site.id] =
+        `ready | ${state.runtime} | ${state.sceneState} | ${distanceText}`;
+    }
+    optionalSiteMonitorView.summary =
+      `${ready}/${optionalWorldSites.length} resident | ${working} working`;
+  };
+
+  debugPanel.registerFeatureTuning({
+    id: "world-streaming-monitor",
+    title: "World streaming · optional sites",
+    build(folder) {
+      const bindings = [
+        folder.addBinding(optionalSiteMonitorView, "summary", {
+          readonly: true,
+          label: "summary"
+        }),
+        ...optionalWorldSites.map((site) =>
+          folder.addBinding(optionalSiteMonitorView, site.id, {
+            readonly: true,
+            label: site.label
+          })
+        )
+      ];
+      refreshOptionalSiteMonitor();
+      return {
+        monitors: [{
+          refresh() {
+            refreshOptionalSiteMonitor();
+            for (const binding of bindings) binding.refresh();
+          }
+        }]
+      };
+    }
+  });
   let optionalSiteQueue: Promise<void> = Promise.resolve();
 
   const requestOptionalWorldSite = (site: OptionalWorldSite, forced = false): Promise<void> => {

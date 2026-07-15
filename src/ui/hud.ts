@@ -261,6 +261,9 @@ export class HUD {
     })
     this.#help.replaceChildren(this.#helpToggle, this.#helpBody)
     this.#syncHelpCollapse()
+    // Defaults match boot (walk / kb / ball), so setMode/setDevice/setToolVerb
+    // all early-return — paint the rows once here or the panel stays empty.
+    this.#renderHelp()
 
     this.#history.className = "place-history"
     this.#root.appendChild(this.#history)

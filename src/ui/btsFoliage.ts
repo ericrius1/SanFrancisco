@@ -250,20 +250,45 @@ function createLodDial(): FoliageToy {
     let walkPhase = 0;
     let lastT = 0;
     let lastReadKey = "";
-    const heroVis = [1, 0, 0, 0]; // eased per-tier opacity — only one is ever ~1
+    // Pairwise LOD crossfade: only the outgoing + incoming tiers are ever visible.
+    // A plain ease-toward-current left residual opacity on skipped tiers while
+    // scrubbing right, which stacked into the muddy "glitch" silhouette.
+    let heroFrom = 0;
+    let heroTo = 0;
+    let heroBlend = 1;
     let lastHeroTier = 0;
 
     // staggered -> per-chunk hash bias ±12 m so the grid never flips along one circle
     const biasOf = (i: number): number => (staggered ? hash2(i, 7, 3) * 24 - 12 : 0);
 
-    const prevTier: number[] = [];
-    const vis: number[][] = [];
+    const rowFrom: number[] = [];
+    const rowTo: number[] = [];
+    const rowBlend: number[] = [];
     for (let i = 0; i < N; i++) {
       const tier = tierAt(gbase[i] + (dist - 40) + biasOf(i));
-      prevTier.push(tier);
-      vis.push([tier === 0 ? 1 : 0, tier === 1 ? 1 : 0, tier === 2 ? 1 : 0, tier === 3 ? 1 : 0]);
+      rowFrom.push(tier);
+      rowTo.push(tier);
+      rowBlend.push(1);
     }
     const popStart: number[] = new Array<number>(N).fill(-1);
+
+    /** Retarget a pairwise blend when the wanted tier changes mid-scrub. */
+    const retarget = (
+      from: number,
+      to: number,
+      blend: number,
+      next: number
+    ): { from: number; to: number; blend: number } => {
+      if (next === to) return { from, to, blend };
+      const dominant = blend >= 0.5 || blend >= 1 ? to : from;
+      return { from: dominant, to: next, blend: 0 };
+    };
+
+    const tierOpacity = (k: number, from: number, to: number, blend: number): number => {
+      if (to === k) return to < 4 ? blend : 0;
+      if (from === k) return from < 4 ? 1 - blend : 0;
+      return 0;
+    };
 
     slider.addEventListener("input", () => {
       dist = parseFloat(slider.value);
@@ -282,7 +307,7 @@ function createLodDial(): FoliageToy {
     return (t: number): void => {
       const dt = lastT ? Math.min(0.05, t - lastT) : 0.016;
       lastT = t;
-      const ease = Math.min(1, dt * 9); // shared time-based crossfade rate
+      const easeAmt = Math.min(1, dt * 9); // shared time-based crossfade rate
 
       if (auto) {
         walkPhase += dt * 0.34;
@@ -290,15 +315,19 @@ function createLodDial(): FoliageToy {
         slider.value = String(Math.round(dist));
       }
 
-      // hero tree: show exactly ONE tier, eased in time (not blended by distance).
-      // Hovering inside a tier lets the opacities settle to a clean 1/0, so two
-      // silhouettes never sit ghosted over each other mid-drag — that overlap was the
-      // "glitch". Crossing a boundary is a quick clean dissolve. Sways from its base.
+      // hero tree: pairwise dissolve between the previous and current tier only.
+      // Scrubbing across several bands no longer leaves ghosted intermediate LODs.
       const curTier = tierAt(dist);
+      const hRet = retarget(heroFrom, heroTo, heroBlend, curTier);
+      heroFrom = hRet.from;
+      heroTo = hRet.to;
+      heroBlend = Math.min(1, hRet.blend + easeAmt);
       const hTiers = [hCanopy, hGrove, hLand, hHoriz];
       for (let k = 0; k < 4; k++) {
-        heroVis[k] += ((curTier === k ? 1 : 0) - heroVis[k]) * ease;
-        hTiers[k].setAttribute("opacity", heroVis[k].toFixed(3));
+        hTiers[k].setAttribute(
+          "opacity",
+          tierOpacity(k, heroFrom, heroTo, heroBlend).toFixed(3)
+        );
       }
       if (curTier !== lastHeroTier) {
         lastHeroTier = curTier;
@@ -324,20 +353,26 @@ function createLodDial(): FoliageToy {
       for (let i = 0; i < N; i++) {
         const eff = gbase[i] + off + biasOf(i);
         const tier = tierAt(eff);
-        if (tier !== prevTier[i]) {
-          if (!staggered) {
-            // hard flip: snap variants + fire an ugly pop jolt
-            for (let k = 0; k < 4; k++) vis[i][k] = tier === k ? 1 : 0;
-            popStart[i] = t;
+        if (!staggered) {
+          // hard flip: snap variants + fire an ugly pop jolt on change
+          if (tier !== rowTo[i] || rowBlend[i] < 1) {
+            if (tier !== rowTo[i]) popStart[i] = t;
+            rowFrom[i] = tier;
+            rowTo[i] = tier;
+            rowBlend[i] = 1;
           }
-          prevTier[i] = tier;
+        } else {
+          const r = retarget(rowFrom[i], rowTo[i], rowBlend[i], tier);
+          rowFrom[i] = r.from;
+          rowTo[i] = r.to;
+          rowBlend[i] = Math.min(1, r.blend + easeAmt);
         }
         const vr = rv[i];
         for (let k = 0; k < 4; k++) {
-          const target = tier === k ? 1 : 0;
-          if (staggered) vis[i][k] += (target - vis[i][k]) * ease; // gentle crossfade
-          else vis[i][k] = target;
-          vr[k].setAttribute("opacity", vis[i][k].toFixed(3));
+          vr[k].setAttribute(
+            "opacity",
+            tierOpacity(k, rowFrom[i], rowTo[i], rowBlend[i]).toFixed(3)
+          );
         }
 
         // pop jolt is only ever armed when staggering is OFF
