@@ -29,10 +29,34 @@ for (let radius = heroFadeEnd - hero.fadeMeters; radius <= heroHalfExtent; radiu
 }
 assert(largestStep < 0.004, `hero edge retirement has a visible step (${largestStep})`);
 
+const localHalfExtent = 48;
+const local = CLIPMAP_SHADOW_EDGES.local;
+const localFadeEnd = localHalfExtent - local.sampleMarginMeters;
+const localFadeStart = localFadeEnd - local.fadeMeters;
+assert(localFadeEnd < localHalfExtent, "local fade must finish inside the projection");
 assert(
-  CLIPMAP_SHADOW_EDGES.local.handoffEndMeters < 48,
-  "local handoff still reaches the 48 m projection boundary"
+  local.fadeMeters >= localHalfExtent * 0.45,
+  "local fade is too narrow to hide broad low-sun projection boundaries"
 );
+assert(
+  localFadeStart <= localHalfExtent * 0.5,
+  "local shadows remain fully opaque too close to the projection edge"
+);
+assert.equal(
+  shadowMapEdgeWeight(localHalfExtent, localHalfExtent, local.fadeMeters, local.sampleMarginMeters),
+  0,
+  "local visibility must be neutral before the PCF footprint reaches the edge"
+);
+
+previous = 1;
+largestStep = 0;
+for (let radius = localFadeStart; radius <= localHalfExtent; radius += 0.01) {
+  const weight = shadowMapEdgeWeight(radius, localHalfExtent, local.fadeMeters, local.sampleMarginMeters);
+  assert(weight <= previous + 1e-12, "local edge retirement is not monotonic");
+  largestStep = Math.max(largestStep, previous - weight);
+  previous = weight;
+}
+assert(largestStep < 0.001, `local edge retirement has a visible step (${largestStep})`);
 assert(
   512 - CLIPMAP_SHADOW_EDGES.far.sampleMarginMeters < 512,
   "far raster fade still ends on its projection boundary"
