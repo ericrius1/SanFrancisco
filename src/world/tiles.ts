@@ -75,8 +75,9 @@ type LoadedTile = {
   // meshes not yet attached to the group: a whole tile uploading its geometry in
   // one frame is a visible spike, so children re-attach one per frame instead
   pendingParts?: THREE.Object3D[];
-  // park ground (grn_) held back while the player is high — a plane climb should
-  // upload only the skyline, not the (up to 379k-vert) lawn meshes. Drained
+  // pier decks (grn_) held back while the player is high — a plane climb should
+  // upload only the skyline. (Lawns render on the terrain clipmap now; grn_
+  // meshes only carry piers.) Drained
   // once the player descends, at a catch-up rate for the first few frames so
   // it doesn't trickle in tile by tile (see #drainAttach / #resumeDetail).
   detailParts?: THREE.Object3D[];

@@ -583,7 +583,9 @@ export class TerrainClipmap {
       .max(0.001);
     const surface = surfaceSample.div(surfaceWeight);
     const urban = color(0xa19d96);
-    const grass = color(0x78986d);
+    // Warmed toward the retired lawn-drape palette (PARK_COLOR mixed with its
+    // grass noise) so parks keep their pre-consolidation richness.
+    const grass = color(0x7aa163);
     const sand = color(0xd1c49f);
     const bayFloor = color(0x466c68);
     const rock = color(0x878178);
