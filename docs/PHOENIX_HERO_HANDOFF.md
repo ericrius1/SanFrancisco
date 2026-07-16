@@ -23,13 +23,17 @@ Blender world position `(384, 1952, 700)`.
 
 The original pre-phoenix scene backup remains at
 `/Users/eric/EricAssetLibrary/world-building/sanfrancisco.pre-phoenix-20260714.blend`.
+The pre-flight-polish backup is
+`/Users/eric/EricAssetLibrary/world-building/sanfrancisco.pre-phoenix-flight-polish-20260715.blend`.
+The pre-unfurled/dragon-cadence backup is
+`/Users/eric/EricAssetLibrary/world-building/sanfrancisco.pre-phoenix-unfurled-polish-20260715.blend`.
 
 ## Runtime budget
 
 | Item | LOD0 | LOD1 |
 | --- | ---: | ---: |
-| File size, meshopt GLB | 3,298,076 bytes | 2,654,608 bytes |
-| Vertices | 38,949 | 19,740 |
+| File size, meshopt GLB | 3,516,688 bytes | 2,774,208 bytes |
+| Vertices | 38,949 | 19,844 |
 | Triangles | 58,000 | 23,000 |
 | Skinned primitives / materials | 1 / 1 | 1 / 1 |
 | Bones | 17 | 17 |
@@ -59,11 +63,17 @@ into the game's local -Z convention, and continues to drive all 17 bones from
 the existing flight controller.
 
 `src/vehicles/bird/plumage.ts` converts the imported atlas material to one
-`MeshStandardNodeMaterial`. `_PHX_FLUTTER`, flap pressure, airspeed, and wind
-drive three bands of vertex-stage motion: broad wash, a travelling span ripple,
-and restrained high-frequency tip turbulence. `_PHX_HEAT` drives pulsing
-coal-red/gold emission while the imported base-color, normal, and ORM maps stay
+`MeshSSSNodeMaterial`. The packed `_PHX_DYNAMICS` and `_PHX_STYLE` controls,
+flap pressure, airspeed, and wind drive broad wash, travelling span ripple,
+high-frequency primary flutter, and a slower independently phased tail wave.
+The style heat channel drives pulsing coal-red/gold emission plus a restrained
+atlas-derived shadow lift. The imported base-color, normal, and ORM maps stay
 intact.
+
+The SSS is a direct-light feather backscatter lobe, not a blur or volumetric
+pass. It is strongest at thin free tips, warm red-gold rather than white, and
+adds no draw call or render target. The shader is double-sided so the avian mesh
+stays continuous through a full axial roll.
 
 A dedicated compute dispatch is intentionally not used for this one 38,949
 vertex hero. Direct vertex-stage TSL performs the deformation only for visible
@@ -108,9 +118,19 @@ axes are:
 - tail local Z: fan/curl shaping
 - neck/head local Z: look yaw; local X: pitch/breath follow-through
 
-Use asymmetric phase and amplitude across the three wing stages. The outer hand
-chain should lag the arm by roughly 8-14% of a flap cycle; the five tail bones
-should accumulate progressively rather than receive one identical rotation.
+The Blender source now owns the forward-flight rest silhouette: chest and neck
+lean into `+X`, wings sweep aft and flatten into a broad load-bearing span, and
+the widened tail fan streams nearly horizontally into the wake. The old vertical
+presentation height is compressed. Runtime code must not undo this with a
+permanent nose-up compensation.
+
+The runtime cycle is deliberately non-sinusoidal: compact recovery, a short
+body-led power stroke, extension rebound, then a long open glide. Elbow and hand
+lag the shoulder by roughly 3% and 7% of a cycle, contribute less flap rotation,
+and contribute more recovery fold/feather pitch. This prevents cumulative joint
+rotation from turning a wing into a hinged fan. The five tail bones use slow
+attitude lag plus two travelling wind waves; do not replace them with one
+identical per-bone rotation.
 
 ## Attachment nodes
 
@@ -127,22 +147,33 @@ sparks. Fire geometry is intentionally not baked into the GLB.
 
 ## Shader contract
 
-Each skinned primitive exports:
+Each skinned primitive exports two packed `VEC3` attributes:
 
-- `_PHX_FLUTTER`: zero near rigid quills/body and strongest at free wing/tail
-  tips.
-- `_PHX_HEAT`: the authored ember/emission distribution, strongest through the
-  tail and outer flight feathers.
+- `_PHX_DYNAMICS = (flutter, wing, tail)`: graduated free-tip bend plus wing
+  primary and tail-streamer region masks.
+- `_PHX_STYLE = (heat, phase, reserved)`: ember distribution plus stable
+  per-region phase variation.
 
-The audit verifies both exact glTF semantics. Depending on the Three.js loader
-version, custom attribute keys may be preserved or lowercased; resolve
-`_PHX_FLUTTER`/`_phx_flutter` and `_PHX_HEAT`/`_phx_heat` once at load time.
+Packing is required. Position, normal, UV, joints, weights, and the two custom
+streams total seven active vertex buffers; splitting these controls back into
+five scalar attributes can exceed WebGPU's guaranteed eight-buffer limit once
+the skinned shadow pipeline compiles. The audit verifies both exact semantics.
+GLTFLoader lowercases custom semantics, so alias `_phx_dynamics` and
+`_phx_style` once to the stable shader names `phxDynamics` and `phxStyle`.
 
 In TSL/WGSL, displace the final skinned position along its normal with layered
-low-frequency wing wash plus high-frequency tip flutter. Multiply emission and
-subtle hue shift by `_PHX_HEAT`, airspeed, flap effort, and a slow ember pulse.
+low-frequency wing wash plus high-frequency tip flutter; stream tail tips in
+both lateral and lift axes with their own phase. Multiply emission and subtle
+hue shift by the heat channel, airspeed, flap effort, and a slow ember pulse.
 Keep this on GPU—no per-feather CPU transforms or readback. The detailed eye is
 part of the PBR atlas; do not replace it with a flat emissive sphere.
+
+The controller composes attitude explicitly as yaw × pitch × local-flight-axis
+roll. Q/E therefore performs a true axial twirl while the wings fold and tail
+counter-twists; releasing recovers upright. The heavy flight cycle has a compact
+recovery, a short powered downstroke, and a long unfurled glide, with no old
+constant climb pose. Feather and tail masks add faster vertex-stage motion over
+that slower skeletal mass.
 
 ## Tripo and Blender provenance
 
@@ -175,15 +206,19 @@ Verified on both GLBs:
 - one material and three 2K WebP PBR textures
 - 17/17 semantic bones and five attachment nodes
 - no `JOINTS_1`, therefore at most four exported skin influences
-- `_PHX_FLUTTER` and `_PHX_HEAT` round-trip through Blender and meshopt
+- `_PHX_DYNAMICS` and `_PHX_STYLE` round-trip through Blender and meshopt
 - zero baked animation clips
 - exaggerated wing/head/tail pose renders without tears, shards, or rigid tail
   hinging
 - clean boot makes zero phoenix requests; first bird activation requests LOD0
   exactly once and never requests the legacy `/models/phoenix.glb`
-- WebGPU compiles one `MeshStandardNodeMaterial` with position and emissive
-  nodes, all three PBR maps, both feather aliases, and both trail/wingtip pairs
+- WebGPU compiles one `MeshSSSNodeMaterial` with position, emissive, and feather
+  thickness nodes, all three PBR maps, both packed aliases, and both
+  trail/wingtip pairs
 - runtime screenshot: `.data/phoenix/phoenix-runtime.png`
+- deterministic five-second flight proof: `phoenix-palace-flyby`, loading the
+  real Palace feature only for the cinematic and driving the real bird
+  controller through powered flight, one 360-degree roll, and a tucked exit
 
 ## Reference ledger
 

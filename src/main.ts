@@ -4876,7 +4876,7 @@ async function boot() {
     const ensureDemoSite = async (name: string): Promise<void> => {
       const site: OptionalSiteId | null =
         name === "afterlight" ? "afterlight" :
-        name === "palace" || name === "palace-reverie" ? "palace" :
+        name === "palace" || name === "palace-reverie" || name === "phoenix-palace-flyby" ? "palace" :
         name === "landsend" ? "lands-end" :
         null;
       if (site) await ensureOptionalWorldSite(site);

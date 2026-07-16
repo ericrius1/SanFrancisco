@@ -59,6 +59,7 @@ export function loadBirdAssets(root: THREE.Group): Promise<void> {
             elbowR: control(bones.wing_forearm_R, "wing_forearm_R"),
             handL: control(bones.wing_hand_L, "wing_hand_L"),
             handR: control(bones.wing_hand_R, "wing_hand_R"),
+            spine: control(bones.spine01, "spine01"),
             chest: control(bones.chest, "chest"),
             neck: [
               control(bones.neck01, "neck01"),

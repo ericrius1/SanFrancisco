@@ -29,6 +29,7 @@ export type BirdRig = {
   elbowR: BoneCtl;
   handL: BoneCtl;
   handR: BoneCtl;
+  spine: BoneCtl;
   chest: BoneCtl;
   neck: BoneCtl[]; // neck01 → neck02 → head, for distributed look
   tail: BoneCtl[]; // tail01 → tail05, root to tip

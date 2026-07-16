@@ -24,6 +24,8 @@
     "render:dog-park:fast": "node tools/render-cinematic.mjs dog-park --fast",
     "render:palace-reverie": "node tools/render-cinematic.mjs palace-reverie --full",
     "render:palace-reverie:fast": "node tools/render-cinematic.mjs palace-reverie --fast",
+    "render:phoenix-flyby": "node tools/render-cinematic.mjs phoenix-palace-flyby --full",
+    "render:phoenix-flyby:fast": "node tools/render-cinematic.mjs phoenix-palace-flyby --fast",
     "render:roqn-open-road": "node tools/render-cinematic.mjs roqn-open-road --full",
     "render:roqn-open-road:fast": "node tools/render-cinematic.mjs roqn-open-road --fast",
     "render:twitter-summer": "node tools/render-twitter-summer.mjs",

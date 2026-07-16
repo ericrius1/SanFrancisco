@@ -64,6 +64,42 @@ def smoothstep(edge0: float, edge1: float, value: float) -> float:
     return t * t * (3.0 - 2.0 * t)
 
 
+def fract(value: float) -> float:
+    return value - math.floor(value)
+
+
+def flight_warp(point: Vector) -> Vector:
+    """Re-sculpt the vertical Tripo presentation pose into an avian flight rest.
+
+    The generated texture/geometry is excellent, but its concept-sheet stance
+    puts the spine and tail on the vertical axis. Baking this smooth warp before
+    export gives Three.js a truthful forward-flight silhouette without a large
+    permanent runtime pose correction. +X remains forward and +Z remains up.
+    """
+    x, y, z = point
+    abs_y = abs(y)
+    span = smoothstep(0.42, 5.28, abs_y) * smoothstep(-0.35, 0.9, z)
+    tail = smoothstep(0.08, 5.85, -z) * (1.0 - smoothstep(2.0, 4.5, abs_y))
+
+    # Lean the body/neck into +X, but fade that lean along the wings so the
+    # primary tips sweep behind the shoulder instead of spearing forward.
+    leaned_x = x + max(0.0, z) * 0.52 * (1.0 - span * 0.86)
+    swept_x = leaned_x - 0.82 * (span ** 1.35)
+    streamed_x = swept_x + z * 0.95 * tail
+
+    # Compress the upright presentation height, flatten the U-shaped wing
+    # rest, and redirect the hanging tail backward with a modest downward rake.
+    rest_z = z * (0.54 if z >= 0.0 else 1.0)
+    wing_anchor_z = 1.08
+    wing_z = wing_anchor_z + (rest_z - wing_anchor_z) * (1.0 - span * 0.72)
+    # The Tripo concept's tail hangs like a robe. Flatten it into the wake and
+    # open the streamer fan laterally; this is the load-bearing rest shape, not
+    # a runtime correction.
+    streamed_z = wing_z * (1.0 - tail * 0.88)
+    opened_y = y * (1.0 + span * 0.08 + tail * 0.42)
+    return Vector((streamed_x, opened_y, streamed_z))
+
+
 def segment_distance(point: Vector, a: Vector, b: Vector) -> float:
     line = b - a
     denom = line.length_squared
@@ -266,9 +302,10 @@ def build_rig(coll: bpy.types.Collection) -> bpy.types.Object:
             ).length < 1e-4
     bpy.ops.object.mode_set(mode="OBJECT")
     arm["phoenix_generated"] = True
-    arm["phoenix_asset_version"] = 3
+    arm["phoenix_asset_version"] = 5
     arm["runtime_animation"] = "procedural_threejs"
     arm["runtime_forward"] = "+X in Blender asset space; glTF converted Y-up"
+    arm["rest_pose"] = "flight-ready forward spine, swept wings, streamed tail"
     arm["runtime_triangle_budget_lod0"] = LOD0_TRIANGLES
     arm["runtime_triangle_budget_lod1"] = LOD1_TRIANGLES
     arm["runtime_material_budget"] = 2
@@ -300,11 +337,14 @@ def skin_and_mask(mesh: bpy.types.Object, arm: bpy.types.Object) -> dict:
         mesh.vertex_groups.remove(group)
     groups = {name: mesh.vertex_groups.new(name=name) for name in BONES}
 
-    flutter = mesh.data.attributes.get("_PHX_FLUTTER") or mesh.data.attributes.new(
-        name="_PHX_FLUTTER", type="FLOAT", domain="POINT"
+    # Pack five authored controls into two VEC3 streams so the skinned mesh
+    # stays below WebGPU's guaranteed eight vertex-buffer slots:
+    # dynamics = flutter, wing, tail; style = heat, phase, reserved.
+    dynamics = mesh.data.attributes.get("_PHX_DYNAMICS") or mesh.data.attributes.new(
+        name="_PHX_DYNAMICS", type="FLOAT_VECTOR", domain="POINT"
     )
-    heat = mesh.data.attributes.get("_PHX_HEAT") or mesh.data.attributes.new(
-        name="_PHX_HEAT", type="FLOAT", domain="POINT"
+    style = mesh.data.attributes.get("_PHX_STYLE") or mesh.data.attributes.new(
+        name="_PHX_STYLE", type="FLOAT_VECTOR", domain="POINT"
     )
 
     max_influences = 0
@@ -337,8 +377,15 @@ def skin_and_mask(mesh: bpy.types.Object, arm: bpy.types.Object) -> dict:
 
         wing_tip = smoothstep(0.55, 5.25, abs_y)
         tail_tip = smoothstep(0.60, 5.85, -z) * tail_back
-        flutter.data[vertex.index].value = max(wing_tip, tail_tip)
-        heat.data[vertex.index].value = max(tail_tip, wing_tip * 0.68, smoothstep(2.35, 3.35, z) * 0.30)
+        flutter_value = max(wing_tip, tail_tip)
+        heat_value = max(tail_tip, wing_tip * 0.68, smoothstep(2.35, 3.35, z) * 0.30)
+        wing_value = wing_strength * wing_tip
+        tail_value = tail_strength * tail_tip
+        # Stable per-region phase variation separates neighbouring feather
+        # clumps without allocating feather objects or another vertex stream.
+        phase_value = fract(abs_y * 0.173 + (-z) * 0.117 + x * 0.071)
+        dynamics.data[vertex.index].vector = (flutter_value, wing_value, tail_value)
+        style.data[vertex.index].vector = (heat_value, phase_value, 0.0)
 
     mesh.parent = arm
     mesh.matrix_parent_inverse = Matrix.Identity(4)
@@ -348,6 +395,30 @@ def skin_and_mask(mesh: bpy.types.Object, arm: bpy.types.Object) -> dict:
     modifier.object = arm
     modifier.use_deform_preserve_volume = True
     return {"vertices": len(mesh.data.vertices), "max_influences": max_influences}
+
+
+def apply_flight_rest_pose(mesh: bpy.types.Object, arm: bpy.types.Object) -> dict:
+    for vertex in mesh.data.vertices:
+        vertex.co = flight_warp(vertex.co)
+    mesh.data.update()
+
+    active_object(arm)
+    bpy.ops.object.mode_set(mode="EDIT")
+    for name, (head, tail, _parent) in BONES.items():
+        bone = arm.data.edit_bones[name]
+        bone.head = flight_warp(Vector(head))
+        bone.tail = flight_warp(Vector(tail))
+    bpy.ops.object.mode_set(mode="OBJECT")
+    bpy.context.view_layer.update()
+
+    bounds = [Vector(corner) for corner in mesh.bound_box]
+    minimum = Vector((min(v.x for v in bounds), min(v.y for v in bounds), min(v.z for v in bounds)))
+    maximum = Vector((max(v.x for v in bounds), max(v.y for v in bounds), max(v.z for v in bounds)))
+    mesh["phoenix_rest_pose"] = "forward-flight-unfurled-v2"
+    return {
+        "min": tuple(round(value, 4) for value in minimum),
+        "max": tuple(round(value, 4) for value in maximum),
+    }
 
 
 def eye_glint_material() -> bpy.types.Material:
@@ -540,6 +611,7 @@ def main() -> dict:
     image_stats = optimize_source_images(mesh)
     arm = build_rig(coll)
     skin_stats = skin_and_mask(mesh, arm)
+    rest_pose_stats = apply_flight_rest_pose(mesh, arm)
     attachments = [
         marker(coll, arm, "PHX_Gen_Trail_L", "tail05", (0.0, 0.48, 0.0)),
         marker(coll, arm, "PHX_Gen_Trail_R", "tail05", (0.0, -0.48, 0.0)),
@@ -597,6 +669,7 @@ def main() -> dict:
         "lod1_triangles": lod1_triangles,
         "materials": [material.name for material in mesh.data.materials],
         "skin": skin_stats,
+        "rest_pose": rest_pose_stats,
         "images": image_stats,
         "attachments": [obj.name for obj in attachments],
         "collision_reference": collision.name,

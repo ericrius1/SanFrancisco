@@ -98,6 +98,7 @@ import { twitterSummerShot07 } from "./demos/twitterSummerShot07";
 import { twitterSummerShot08 } from "./demos/twitterSummerShot08";
 import { afterlightCinematic } from "./demos/afterlightCinematic";
 import { surfAerialCinematic } from "./demos/surfAerialCinematic";
+import { phoenixPalaceFlyby } from "./demos/phoenixPalaceFlyby";
 
 const DEMOS: Record<string, Demo> = {
   [buskersCinematic.name]: buskersCinematic,
@@ -116,7 +117,8 @@ const DEMOS: Record<string, Demo> = {
   [twitterSummerShot07.name]: twitterSummerShot07,
   [twitterSummerShot08.name]: twitterSummerShot08,
   [afterlightCinematic.name]: afterlightCinematic,
-  [surfAerialCinematic.name]: surfAerialCinematic
+  [surfAerialCinematic.name]: surfAerialCinematic,
+  [phoenixPalaceFlyby.name]: phoenixPalaceFlyby
 };
 
 export function runDemo(name: string, ctx: DemoContext) {

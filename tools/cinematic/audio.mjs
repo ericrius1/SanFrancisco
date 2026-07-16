@@ -18,6 +18,7 @@ const PRODUCTION_DURATIONS = Object.freeze({
   landsend: 15,
   "roqn-open-road": 30,
   "surf-aerial": 10,
+  "phoenix-palace-flyby": 5,
   ...Object.fromEntries(Array.from({ length: 8 }, (_, index) => [
     `twitter-summer-${String(index + 1).padStart(2, "0")}`,
     7.5
@@ -85,6 +86,12 @@ export const CINEMATIC_AUDIO_PLANS = Object.freeze({
     { time: 3.1, id: "rotation", description: "aerial rotation reaches its apex" },
     { time: 4.05, id: "landing", description: "rails reconnect with the wave" },
     { time: 6.35, id: "resolve", description: "down-face carve resolves" }
+  ]),
+  "phoenix-palace-flyby": Object.freeze([
+    { time: 0, id: "arrival", description: "sunset wingbeat establishes the pass" },
+    { time: 2.15, id: "roll", description: "the phoenix enters one axial roll" },
+    { time: 3.65, id: "stream", description: "wings tuck into the Palace flyby exit" },
+    { time: 4.55, id: "resolve", description: "golden tail stream resolves over the rotunda" }
   ]),
   ...Object.fromEntries(Array.from({ length: 8 }, (_, index) => {
     const shot = index + 1;
@@ -175,6 +182,8 @@ export async function renderCinematicAudio(production, outputPath) {
     scoreRoqnOpenRoad(mix);
   } else if (id === "surf-aerial") {
     scoreSurfAerial(mix);
+  } else if (id === "phoenix-palace-flyby") {
+    scorePhoenixPalaceFlyby(mix);
   } else {
     scoreTwitterSummerShot(mix, Number(id.slice(-2)));
   }
@@ -199,6 +208,45 @@ export async function renderCinematicAudio(production, outputPath) {
     cues: CINEMATIC_AUDIO_PLANS[id],
     beds
   };
+}
+
+function scorePhoenixPalaceFlyby(mix) {
+  addPad(mix, {
+    start: 0,
+    duration: 5,
+    notes: [45, 52, 57, 61, 66, 73],
+    gain: 0.058,
+    pan: 0,
+    brightness: 0.62
+  });
+  addAir(mix, { start: 0, duration: 5, gain: 0.025, panDrift: 0.82 });
+  addWhoosh(mix, {
+    start: 0.08,
+    duration: 1.55,
+    gain: 0.07,
+    panFrom: -0.65,
+    panTo: 0.15,
+    direction: "out"
+  });
+  addFoley(mix, { start: 0.18, duration: 4.65, gain: 0.021, pan: 0, character: "grass" });
+  addWhoosh(mix, {
+    start: 2.0,
+    duration: 1.45,
+    gain: 0.13,
+    panFrom: 0.72,
+    panTo: -0.7,
+    direction: "in"
+  });
+  addSub(mix, { start: 2.32, duration: 0.86, fromHz: 58, toHz: 36, gain: 0.11 });
+  addChime(mix, { start: 3.55, midi: 81, duration: 1.35, gain: 0.052, pan: 0.28 });
+  addWhoosh(mix, {
+    start: 3.58,
+    duration: 1.35,
+    gain: 0.075,
+    panFrom: -0.28,
+    panTo: 0.62,
+    direction: "out"
+  });
 }
 
 function scoreSurfAerial(mix) {
