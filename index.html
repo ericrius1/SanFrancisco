@@ -209,56 +209,90 @@
         gap: 8px;
         max-width: 420px;
       }
+      /* .help is just a positioning context anchored (via .br-stack) to the
+         bottom-right. It shrinks to the handle: the fold-out panel is absolutely
+         positioned so it never enlarges the handle's footprint. */
       #hud .help {
+        position: relative;
+        display: inline-flex;
+        flex-direction: column;
+        align-items: flex-end;
         max-width: 420px;
         font-size: 12px;
+        pointer-events: none;
+      }
+      /* The always-visible handle pill. Pinned bottom-right; never moves when the
+         panel opens/closes — the panel folds out above it. */
+      #hud .help .help-toggle {
+        pointer-events: auto;
+        cursor: pointer;
+        position: relative;
+        z-index: 1;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 8px 14px;
+        border: 1px solid var(--hairline);
+        border-radius: var(--r-md);
+        background: var(--surface);
+        box-shadow: var(--shadow-sm), var(--edge-hi);
+        color: var(--text);
+        font: 700 11px var(--font);
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
         opacity: 0.92;
+        transition:
+          opacity 0.15s ease,
+          color 0.15s ease,
+          border-color 0.15s ease;
+      }
+      #hud .help .help-toggle:hover {
+        opacity: 1;
+        color: var(--accent-strong);
+        border-color: rgba(111, 215, 196, 0.5);
+      }
+      #hud .help .help-toggle-chevron {
+        font-size: 10px;
+        opacity: 0.75;
+        transition: transform 0.2s ease;
+      }
+      /* Fold-out panel, floating just above the handle and right-aligned to it.
+         Opens/closes with a ~600ms fold: grid-rows 1fr<->0fr animates to the
+         content's natural height (no magic numbers), plus opacity + a small
+         upward slide out of the handle. */
+      #hud .help .help-body-wrap {
+        pointer-events: auto;
+        position: absolute;
+        right: 0;
+        bottom: calc(100% + 8px);
+        display: grid;
+        grid-template-rows: 1fr;
+        /* size to content, not to the handle-width containing block (.help) */
+        width: max-content;
+        max-width: min(420px, calc(100vw - 40px));
+        opacity: 1;
+        transform-origin: bottom right;
+        transition:
+          grid-template-rows 600ms cubic-bezier(0.22, 1, 0.36, 1),
+          opacity 360ms ease,
+          transform 600ms cubic-bezier(0.22, 1, 0.36, 1);
+      }
+      #hud .help .help-body-wrap > .help-body {
+        /* the grid child must clip + allow 0 height for the fold to work */
+        overflow: hidden;
+        min-height: 0;
+        max-width: 420px;
         padding: 10px 12px 12px;
         border-radius: var(--r-md);
         background: var(--surface);
         border: 1px solid var(--hairline);
         box-shadow: var(--shadow-sm), var(--edge-hi);
-        /* bottom-anchored panel grows upward — cap it so short viewports scroll
-           inside the panel instead of pushing rows off the top of the screen */
-        max-height: calc(100dvh - 58px);
-        overflow-y: auto;
-        overscroll-behavior: contain;
-        pointer-events: auto;
       }
-      #hud .help .help-toggle {
-        pointer-events: auto;
-        cursor: pointer;
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        margin: 0 0 8px;
-        padding: 0;
-        border: 0;
-        background: transparent;
-        color: var(--text);
-        font: 700 11px var(--font);
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
-        opacity: 0.78;
-      }
-      #hud .help .help-toggle:hover {
-        opacity: 1;
-        color: var(--accent-strong);
-      }
-      #hud .help .help-toggle-chevron {
-        font-size: 10px;
-        opacity: 0.75;
-      }
-      #hud .help.collapsed {
-        padding: 8px 12px;
-        max-height: none;
-        overflow: visible;
-      }
-      #hud .help.collapsed .help-toggle {
-        margin-bottom: 0;
-      }
-      #hud .help.collapsed .help-body {
-        display: none;
+      #hud .help.collapsed .help-body-wrap {
+        grid-template-rows: 0fr;
+        opacity: 0;
+        transform: translateY(8px) scale(0.985);
+        pointer-events: none;
       }
       /* movement grid + global shortcuts, side by side */
       #hud .help .cols {
@@ -389,7 +423,7 @@
       #hud .panel-hidden {
         display: none !important;
       }
-      #hud .help.swap {
+      #hud .help.swap .help-body-wrap {
         animation: hudswap 0.28s ease;
       }
       @keyframes hudswap {
