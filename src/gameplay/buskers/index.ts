@@ -37,6 +37,9 @@ const ANIM_RADIUS = 200; // beyond this, skip musician animation updates
 // keep running while hidden — the show goes on unheard, exactly as before.
 const SHOW_RADIUS = 240;
 const HIDE_RADIUS = 270;
+// Kick the detached pipeline warmup well outside the show gate so even a fast
+// flyover crosses SHOW_RADIUS with every pipeline already cached.
+const PRIME_RADIUS = 520;
 // Parts smaller than this never shadow-cast: a gem/string/fret cast is
 // invisible at CSM resolution, but each casting mesh re-encodes into every
 // shadow cascade every shadow frame.
@@ -64,6 +67,13 @@ export type BuskerTrioOptions = {
   /** terrain sampler (map.groundHeight) — used on every (re)placement */
   groundHeight: (x: number, z: number) => number;
   physics?: Physics | null;
+  /**
+   * Detached pipeline warmup (see render/warmHiddenRoot.ts). When provided,
+   * the trio stays hidden until this resolves — kicked once at PRIME_RADIUS —
+   * so the first visible flip never compiles pipelines mid-frame. Omitted in
+   * tests/headless contexts: the flip then behaves exactly as before.
+   */
+  prepareRender?: (root: THREE.Object3D) => Promise<void>;
   /** Plain-data transport state restored by the development HMR boundary. */
   state?: BuskerTrioState;
 };
@@ -105,9 +115,16 @@ export class BuskerTrio {
   #clock: TrioClock = { phase: "countin", phaseTime: 0, songTime: 0, beat: 0, wind: 0.3 };
   #tmp = new THREE.Vector3();
   #disposed = false;
+  #prepareRender: ((root: THREE.Object3D) => Promise<void>) | null;
+  #renderWarm: "cold" | "warming" | "ready";
 
   constructor(opts: BuskerTrioOptions) {
     this.#groundHeight = opts.groundHeight;
+    this.#prepareRender = opts.prepareRender ?? null;
+    this.#renderWarm = this.#prepareRender ? "cold" : "ready";
+    // Never let an uncompiled trio into a live frame (boot renders can land
+    // before the first update() hides a distant act).
+    if (this.#prepareRender) this.group.visible = false;
     this.#perch = buildPerchRock(opts.physics ?? null);
     this.group.add(this.#perch.group);
     this.group.add(this.#fireflies.group);
@@ -292,9 +309,10 @@ export class BuskerTrio {
     }
 
     // ---- render gate + animation ----
+    if (this.#renderWarm === "cold" && dist < PRIME_RADIUS) this.#kickRenderWarm();
     if (this.group.visible) {
       if (dist > HIDE_RADIUS) this.group.visible = false;
-    } else if (dist < SHOW_RADIUS) {
+    } else if (dist < SHOW_RADIUS && this.#renderWarm === "ready") {
       this.group.visible = true;
     }
     if (this.group.visible && dist < ANIM_RADIUS) {
@@ -313,6 +331,20 @@ export class BuskerTrio {
     this.#audio.dispose();
     this.group.parent?.remove(this.group);
     this.group.clear();
+  }
+
+  /** One-shot detached compile so the SHOW_RADIUS flip never pays a
+   * synchronous WebGPU pipeline build. A failed warmup logs and unblocks the
+   * gate — the old flip-and-compile behavior is the safe fallback. */
+  #kickRenderWarm() {
+    const prepare = this.#prepareRender;
+    if (!prepare || this.#renderWarm !== "cold") return;
+    this.#renderWarm = "warming";
+    void prepare(this.group)
+      .catch((error) => console.warn("[buskers] render warmup failed:", error))
+      .finally(() => {
+        this.#renderWarm = "ready";
+      });
   }
 
   /** The root sits outside the scene's auto matrix pass (matrixWorldAutoUpdate
