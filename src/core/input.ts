@@ -65,7 +65,7 @@ function shapeAxis(v: number, deadzone: number, curve: number): number {
 // button (keyboard E). Boost/run/tuck live on L3 and LT (drive: LB + L3; LT is
 // reverse) so RT can own the tool action on foot.
 const PAD_BUTTONS: Record<number, string> = {
-  0: "Space", //     A: jump / ollie / drift / air brake / hover
+  0: "Space", //     A: jump / ollie / drift / air brake / drone climb
   // 1 B: unbound
   3: "KeyE", //      Y: interact / enter-exit vehicle (RDR2-style)
   4: "KeyQ", //      LB: drone down / bird twirl left / (drive: boost; scooter: slide — see pollPad)

@@ -13,6 +13,7 @@ export class AudioControls {
   #muteIcon: HTMLSpanElement;
   #muteLabel: HTMLSpanElement;
   #mic: HTMLButtonElement;
+  #micIcon: HTMLSpanElement;
   #micLabel: HTMLSpanElement;
   #mixerButton: HTMLButtonElement;
   #mixerPanel: HTMLDivElement;
@@ -89,13 +90,12 @@ export class AudioControls {
     this.#mic = document.createElement("button");
     this.#mic.className = "mic-btn";
     this.#mic.type = "button";
-    this.#mic.title = "voice chat mic (V)";
-    const micIcon = document.createElement("span");
-    micIcon.className = "ic";
-    micIcon.textContent = "🎙️";
+    this.#micIcon = document.createElement("span");
+    this.#micIcon.className = "ic";
+    this.#micIcon.setAttribute("aria-hidden", "true");
     this.#micLabel = document.createElement("span");
     this.#micLabel.className = "label";
-    this.#mic.append(micIcon, this.#micLabel);
+    this.#mic.append(this.#micIcon, this.#micLabel);
     this.#mic.addEventListener("click", () => {
       this.onMicToggle();
       this.#mic.blur();
@@ -149,7 +149,14 @@ export class AudioControls {
   /** Reflect the live mic state (Voice.onMicChange drives this). */
   setMic(on: boolean) {
     this.#mic.classList.toggle("on", on);
-    this.#micLabel.textContent = on ? "Mic on" : "Mic";
+    this.#mic.classList.toggle("off", !on);
+    // Same studio-mic glyph either way; `.off` draws a slash so mobile (label
+    // hidden) still reads clearly as not transmitting.
+    this.#micIcon.textContent = "🎙️";
+    this.#micLabel.textContent = on ? "Mic on" : "Mic off";
+    this.#mic.title = on ? "mic live — press V to mute" : "mic off — press V to go live";
+    this.#mic.setAttribute("aria-label", on ? "Microphone on" : "Microphone off");
+    this.#mic.setAttribute("aria-pressed", on ? "true" : "false");
   }
 
   #setMixerOpen(open: boolean) {

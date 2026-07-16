@@ -6,7 +6,6 @@ export const DRONE_TUNING = tunables("movement.drone", {
   vertSpeed: { v: 9, min: 2, max: 30, step: 0.5, label: "climb speed" },
   boostVertSpeed: { v: 17, min: 4, max: 50, step: 0.5, label: "boost climb" },
   response: { v: 2.6, min: 0.5, max: 10, step: 0.1, label: "response" },
-  brakeResponse: { v: 7, min: 1, max: 20, step: 0.5, label: "brake response" },
   strafeFactor: { v: 0.85, min: 0.2, max: 1, step: 0.05, label: "strafe ×" },
   tiltPerSpeed: { v: 0.016, min: 0, max: 0.05, step: 0.001, label: "tilt/speed" },
   maxTilt: { v: 0.5, min: 0, max: 1, step: 0.02, label: "max tilt" },

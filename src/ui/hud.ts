@@ -59,8 +59,8 @@ const KB: Record<PlayerMode, Row[]> = {
     { c: ["Mouse"], label: "aim" },
     { c: ["W", "S"], label: "along the view" },
     { c: ["A", "D"], label: "strafe" },
-    { c: ["E", "Q"], label: "up · down" },
-    { c: ["Space"], label: "hover" },
+    { c: ["U", "Q"], label: "up · down" },
+    { c: ["Space"], label: "fly up" },
     { c: ["Shift"], label: "boost" },
     { c: ["Click"], label: "shoot" }
   ],
@@ -153,7 +153,7 @@ const PAD: Record<PlayerMode, Row[]> = {
     { c: ["LS"], label: "move" },
     { c: ["RT", "LB"], label: "up · down" },
     { c: ["L3", "LT"], label: "boost" },
-    { c: ["A"], label: "hover" },
+    { c: ["A"], label: "fly up" },
     { c: ["Y"], label: "land" },
     { c: ["X"], label: "shoot" }
   ],

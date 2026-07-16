@@ -3153,6 +3153,10 @@
         font-size: 15px;
         line-height: 1;
       }
+      #hud .audio .mic-btn .ic {
+        position: relative;
+        display: inline-block;
+      }
       #hud .audio .mixer-btn .chev {
         color: rgba(188, 217, 230, 0.56);
         font-size: 9px;
@@ -3167,6 +3171,30 @@
       #hud .audio .mic-btn.on {
         border-color: var(--accent);
         color: var(--accent-strong);
+      }
+      /* Mic-off: dim chrome + slash over the icon so it never reads as live. */
+      #hud .audio .mic-btn.off {
+        border-color: rgba(190, 225, 240, 0.18);
+        color: rgba(188, 217, 230, 0.55);
+        opacity: 0.78;
+      }
+      #hud .audio .mic-btn.off:hover {
+        border-color: rgba(190, 225, 240, 0.4);
+        color: rgba(188, 217, 230, 0.78);
+        opacity: 1;
+      }
+      #hud .audio .mic-btn.off .ic::after {
+        content: "";
+        position: absolute;
+        left: 50%;
+        top: -2px;
+        width: 2px;
+        height: calc(100% + 4px);
+        background: #e8a0a8;
+        border-radius: 1px;
+        transform: translateX(-50%) rotate(-42deg);
+        box-shadow: 0 0 0 1px rgba(18, 40, 56, 0.85);
+        pointer-events: none;
       }
       #hud .audio input[type="range"] {
         -webkit-appearance: none;

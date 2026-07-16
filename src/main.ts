@@ -2574,9 +2574,9 @@ async function boot() {
   minimap.addLandmark(GARDEN_XZ.x, GARDEN_XZ.z, "Botanical Garden");
   minimap.addLandmark(GOLF_XZ.x, GOLF_XZ.z, "Presidio Golf");
   minimap.addLandmark(CORONA_HEIGHTS_SUMMIT.x, CORONA_HEIGHTS_SUMMIT.z, "Corona Heights");
-  // Buena Vista summit clearing — west of Corona Heights. Static pin so the
-  // quest stays findable even if the site-gated experience fails to boot.
-  minimap.addLandmark(AFTERLIGHT_ARRIVAL.x, AFTERLIGHT_ARRIVAL.z, "Afterlight · 9 PM–5 AM");
+  // Buena Vista summit clearing — west of Corona Heights. Plain park name so
+  // the pin reads as a place, not a secret quest.
+  minimap.addLandmark(AFTERLIGHT_ARRIVAL.x, AFTERLIGHT_ARRIVAL.z, "Buena Vista");
   const missionDoloresSpawn = SPAWN_POINTS.missionDolores;
   minimap.addLandmark(missionDoloresSpawn.x, missionDoloresSpawn.z, missionDoloresSpawn.label);
   for (const arrival of authoredRegions.landmarkArrivals()) {
