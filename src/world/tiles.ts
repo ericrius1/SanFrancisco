@@ -6,6 +6,7 @@ import { tracer } from "../core/hitchTracer";
 import { createFacadeMaterial, BASEY_OFFSET, BASEY_SCALE, TOPH_SCALE } from "./facade";
 import { createRoadMaterial, createParkMaterial } from "./streets";
 import { bumpNormal } from "./tslUtil";
+import { registerTerrainFieldNormal } from "./groundcover/terrainFieldNormal";
 import { createCrownMaterial } from "./salesforceCrown";
 import { applyLandmarkFixes } from "./landmarkFixes";
 import type { WorldMap } from "./heightmap";
@@ -594,6 +595,10 @@ export class TileStreamer {
       mat.normalNode = bumpNormal(mat.userData.bumpHeightNode, groundBase);
       mat.needsUpdate = true;
     }
+    // Groundcover (grass blades etc.) builds later, behind region deferral —
+    // hand it the same lighting field so hillside cover shades with the hill.
+    const clipmap = this.terrainClipmap;
+    registerTerrainFieldNormal((worldXZ) => clipmap.worldFieldNormal(worldXZ));
   }
 
   keyToCenter(key: string): [number, number] {

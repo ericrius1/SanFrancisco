@@ -4171,7 +4171,7 @@ async function boot() {
         surfMotionRate: player.mode === "surf" ? player.surfTelemetry.riderMotionRate : 1,
         driveVoice: player.driveSpec.voice ?? "engine",
         driveSlide: player.driveSlideFeedback.intensity,
-        lampLight: computeLampField()
+        lampLight: player.mode === "board" ? computeLampField() : 0
       });
       swimAudio.update(frameDt, {
         swimming: player.swimming,
@@ -5060,7 +5060,9 @@ async function boot() {
       surfMotionRate: player.mode === "surf" ? player.surfTelemetry.riderMotionRate : 1,
       driveVoice: player.driveSpec.voice ?? "engine",
       driveSlide: player.driveSlideFeedback.intensity,
-      lampLight: computeLampField()
+      // Lamp-field whoosh only exists on the hoverboard voice — skip the
+      // all-lamps scan for every other mode (it already early-outs by day).
+      lampLight: player.mode === "board" ? computeLampField() : 0
     });
     swimAudio.update(frameDt, {
       swimming: player.swimming,

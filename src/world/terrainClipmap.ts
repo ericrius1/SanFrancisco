@@ -758,14 +758,32 @@ export class TerrainClipmap {
   }
 
   /**
+   * World-space terrain lighting normal at an arbitrary world XZ, sampled from
+   * the prefiltered pyramid with fragment auto-mip (distance band-limiting for
+   * free). Shared by ground drapes and groundcover so everything standing on
+   * the terrain lights consistently with it.
+   */
+  worldFieldNormal(worldXZ: N): N {
+    const grid = this.#grid;
+    const uv = worldXZ
+      .sub(vec2(grid.minX, grid.minZ))
+      .div(grid.cellSize)
+      .add(0.5)
+      .div(vec2(grid.width, grid.height));
+    const packedNormal = texture(this.#normal.texture, uv) as N;
+    const xz = packedNormal.rg.mul(2).sub(1);
+    const upComponent = float(1).sub(xz.dot(xz)).max(0).sqrt();
+    return normalize(vec3(xz.x, upComponent, xz.y));
+  }
+
+  /**
    * View-space base normal that conforms a draped ground mesh (baked lawn/road
    * ribbons, which ship flat-shaded) to the same prefiltered terrain lighting
    * field the clipmap uses, so drape shading is seamless with the ground around
    * it. A height-agreement gate falls back to the mesh's own interpolated
    * normal wherever the surface leaves the heightfield — pier decks, bridge
    * roadways, graded terraces — those are not terrain and must keep their own
-   * lighting. Fragment-stage auto-mip sampling band-limits both lookups with
-   * distance for free.
+   * lighting.
    */
   groundConformNormalBase(): unknown {
     const grid = this.#grid;
@@ -775,10 +793,7 @@ export class TerrainClipmap {
       .div(grid.cellSize)
       .add(0.5)
       .div(vec2(grid.width, grid.height));
-    const packedNormal = texture(this.#normal.texture, uv) as N;
-    const xz = packedNormal.rg.mul(2).sub(1);
-    const upComponent = float(1).sub(xz.dot(xz)).max(0).sqrt();
-    const fieldWorld = normalize(vec3(xz.x, upComponent, xz.y));
+    const fieldWorld = this.worldFieldNormal(world.xz);
     const packedHeight = texture(this.#height.texture, uv) as N;
     const terrainY = packedHeight.r.mul(255 * 256)
       .add(packedHeight.g.mul(255))
