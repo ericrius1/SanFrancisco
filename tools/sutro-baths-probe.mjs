@@ -290,7 +290,7 @@ async function main() {
       null,
       { timeout: 180_000 }
     );
-    await bootPage.waitForFunction(() => window.__sf.renderIdle?.() === true, null, { timeout: 180_000 });
+    await bootPage.waitForFunction(() => window.__sf?.renderIdle?.() === true, null, { timeout: 180_000 });
     await bootPage.waitForTimeout(1800);
     const bootState = await bootPage.evaluate(() => ({
       backend: window.__sf.renderer.backend?.constructor?.name ?? null,
@@ -333,7 +333,7 @@ async function main() {
       null,
       { timeout: 240_000 }
     );
-    await page.waitForFunction(() => window.__sf.renderIdle?.() === true, null, { timeout: 180_000 });
+    await page.waitForFunction(() => window.__sf?.renderIdle?.() === true, null, { timeout: 180_000 });
     await page.waitForTimeout(1500);
     await page.evaluate(() => Promise.race([
       window.__sf.renderer.backend.device.queue.onSubmittedWorkDone(),
@@ -349,6 +349,8 @@ async function main() {
       const names = [
         "sutro_baths_restored_1896",
         "sutro_baths_restored_architecture",
+        "sutro_baths_player_entrances_v2",
+        "sutro_baths_beach_gate_v2",
         "sutro_baths_glass_barrel_roof",
         "sutro_baths_ocean_window_seating_gallery",
         "sutro_baths_unified_foliage",
@@ -478,16 +480,40 @@ async function main() {
         sf.physics.world.setBodyVelocity(sf.player.body, [0, -8, 0], [0, 0, 0]);
         sf.physics.world.setBodyAwake(sf.player.body, true);
       }, point);
-      await page.waitForTimeout(180);
+      await page.waitForTimeout(450);
       return page.evaluate(() => ({
         x: window.__sf.player.position.x,
         y: window.__sf.player.position.y,
         z: window.__sf.player.position.z
       }));
     };
-    const deckRecovery = await forceBelowFloor(localPoint(-7, -3, 0));
-    const basinRecovery = await forceBelowFloor(localPoint(-20, -3, 8));
-    const collisionRecovery = { deck: deckRecovery, basin: basinRecovery };
+    const roadRecovery = await forceBelowFloor(localPoint(44.25, 29.58, 63.1));
+    const switchbackRecovery = await forceBelowFloor(localPoint(29.5, 19.995, 59.2));
+    const beachRecovery = await forceBelowFloor(localPoint(-48, 2.58, 33.29));
+    const deckRecovery = await forceBelowFloor(localPoint(-7, 4.12, 0));
+    const basinRecovery = await forceBelowFloor(localPoint(-20, 1.12, 8));
+    const collisionRecovery = {
+      road: roadRecovery,
+      switchback: switchbackRecovery,
+      beach: beachRecovery,
+      deck: deckRecovery,
+      basin: basinRecovery
+    };
+    expect(
+      "activation-road-entrance-fallthrough-recovers",
+      Math.abs(roadRecovery.y - (31.08 + 0.92)) < 0.12,
+      collisionRecovery
+    );
+    expect(
+      "activation-switchback-fallthrough-recovers",
+      Math.abs(switchbackRecovery.y - (21.495 + 0.92)) < 0.12,
+      collisionRecovery
+    );
+    expect(
+      "activation-beach-stair-fallthrough-recovers",
+      Math.abs(beachRecovery.y - (4.08 + 0.92)) < 0.12,
+      collisionRecovery
+    );
     expect(
       "activation-deck-fallthrough-recovers",
       Math.abs(deckRecovery.y - (5.62 + 0.92)) < 0.12,
@@ -516,6 +542,16 @@ async function main() {
       screenshotEvidence["arrival-exterior.png"]
     );
     const shots = [
+      {
+        name: "road-entrance-switchback.png",
+        eye: localPoint(38.5, 33.5, 72.5),
+        target: localPoint(24, 14.5, 59)
+      },
+      {
+        name: "beach-gate-approach.png",
+        eye: localPoint(-62, 5.4, 33.29),
+        target: localPoint(-36, 7.2, 33.29)
+      },
       {
         name: "hall-from-south.png",
         eye: localPoint(27, 17.5, 56),
@@ -599,7 +635,11 @@ async function main() {
     // visual evidence that the close surface/steam is not a frozen card.
     const closeFirst = path.join(OUT, "thermal-pools-close.png");
     const closeLater = path.join(OUT, "thermal-pools-close-later.png");
-    await page.evaluate(({ eye, target }) => window.__sfFreeCam(eye, target), shots[2]);
+    const closeShot = shots.find((shot) => shot.name === "thermal-pools-close.png");
+    if (!closeShot) throw new Error("Thermal-pool visual shot is missing");
+    await page.evaluate(({ eye, target }) => window.__sfFreeCam(eye, target), closeShot);
+    await page.waitForTimeout(250);
+    await canvas.screenshot({ path: closeFirst });
     await page.waitForTimeout(550);
     await canvas.screenshot({ path: closeLater });
     screenshotEvidence["thermal-pools-close-later.png"] = {
@@ -620,11 +660,22 @@ async function main() {
       ...pageErrors.filter((error) => gpuPattern.test(error.message)),
       ...consoleMessages.filter((message) => message.type === "error" && gpuPattern.test(message.text))
     ];
+    const unexpectedConsoleErrors = consoleMessages.filter((message) => {
+      if (message.type !== "error") return false;
+      if (mode !== "vite-dev") return true;
+      // The bare Vite preview intentionally has neither the multiplayer relay
+      // nor the weather API. Those 404s are preview infrastructure, not scene
+      // runtime failures; production/server probes still treat them as errors.
+      return !(
+        /WebSocket connection .*\/ws.*404/i.test(message.text) ||
+        (/404 \(Not Found\)/i.test(message.text) && message.location?.url?.includes("/api/weather/fog"))
+      );
+    });
     expect("runtime-no-page-errors", pageErrors.length === 0, pageErrors);
     expect(
       "runtime-no-console-errors",
-      consoleMessages.filter((message) => message.type === "error").length === 0,
-      consoleMessages.filter((message) => message.type === "error")
+      unexpectedConsoleErrors.length === 0,
+      unexpectedConsoleErrors
     );
     expect("runtime-no-webgpu-errors", gpuErrors.length === 0, gpuErrors);
 
